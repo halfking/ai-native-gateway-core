@@ -11,11 +11,11 @@
 
 ## 执行摘要
 
-**发现 8 项关键缺陷**（P0-P2），其中 3 项导致错误信号丢失，5 项导致计费/审计数据缺失：
+**审计记录 8 项关键缺陷**（P0-P2）；其中已标注“已修复”的项目已完成代码与回归验证，未修复项目仍按优先级跟踪：
 
 | 厂商 | 缺陷 | 优先级 | 影响 |
 |------|------|--------|------|
-| **MiniMax** | `base_resp.status_code` 被 strip 导致 HTTP 200 包装的错误信号丢失 | **P0** | 流式+非流式失败被误判为成功 |
+| **MiniMax** | `base_resp.status_code` 错误信号（已由 `ed64a2291` 修复） | **P0** | 流式+非流式现已正确识别 HTTP 200 包装错误 |
 | **Qwen** | `output.choices[].message.content: [{text:"..."}]` 数组结构未解包 | **P1** | 客户端收到 `[{text:"hello"}]` 而非 `"hello"` |
 | **Zhipu GLM** | 流中 `finish_reason` 异常值（network_error/sensitive/model_context_window_exceeded）已拦截但非流式路径未检测 | **P1** | 非流式 200 响应中这三个错误被当成功 |
 | **DeepSeek** | `reasoning_content`/`prompt_cache_*_tokens` 被误删 | **P2** | 推理计费统计丢失 |
@@ -117,15 +117,15 @@
 #### 响应差异（**P0 缺陷**）
 | 字段 | OpenAI 标准 | MiniMax 扩展 | 当前处理 |
 |------|-------------|--------------|---------|
-| **`base_resp`** | HTTP 4xx/5xx | ⚠️ **HTTP 200 + 错误包装**：<br>`{status_code: 0=成功, 非0=失败, status_msg}` | ❌ **P0-MiniMax-1**: `stripMinimaxFieldsBody` 删除 `base_resp`，导致 status_code 非0 的错误信号**完全丢失** |
+| **`base_resp`** | HTTP 4xx/5xx | ⚠️ **HTTP 200 + 错误包装**：<br>`{status_code: 0=成功, 非0=失败, status_msg}` | ✅ **P0-MiniMax-1 已修复（`ed64a2291`）**：流式与非流式均在 strip 前识别非0 status_code |
 | `input_sensitive_type`/`output_sensitive_type` | ❌ 无 | ✅ int 1-7：严重违规/色情/广告/禁止/辱骂/恐怖暴力/其他 | ❌ **P2-MiniMax-2**: 被 strip 删除，内容审核细粒度分类丢失 |
 | `reasoning_content` | ❌ 无 | ✅ 推理模型返回 | ⚠️ strip 未删但 IR 未映射 |
 | `usage.completion_tokens_details.reasoning_tokens` | ❌ 无 | ✅ 推理计费 | ✅ 保留 |
 
-**缺陷 P0-MiniMax-1（严重）**：
-- **根因**：MiniMax 规范用 HTTP 200 + `base_resp.status_code` 编码错误（如 1002=限流、1008=余额不足、1027=输出无效），而非标准 4xx/5xx。
-- **影响**：`stripMinimaxFieldsBody` (L25) 将 `base_resp` 列为私有字段删除，导致网关在 `resp.StatusCode == 200` 路径下**永远看不到**这些错误信号，误判为成功响应。
-- **路径**：流式 (`stream.go` L1046 `stripChunkFields`) + 非流式 (`executor_chat.go` L1323 `stripVendorFields`) 均受影响。
+**缺陷 P0-MiniMax-1（已修复，`ed64a2291`）**：
+- **根因（历史）**：MiniMax 规范用 HTTP 200 + `base_resp.status_code` 编码错误，而非标准 4xx/5xx。
+- **修复**：流式与非流式路径均在 strip 字段前解析非0 `status_code`，并将其转换为分类的上游错误；相关回归测试已随该提交落地。
+- **保留事项**：`input_sensitive_type`/`output_sensitive_type` 的 P2-MiniMax-2 与本缺陷无关，仍待处理。
 
 **缺陷 P2-MiniMax-2**：内容审核细粒度分类（1=严重违规、2=色情...）被删除，合规审计无法区分违规类型。
 
@@ -253,80 +253,16 @@ const (
 
 ## 3. 缺陷修复优先级与实施路径
 
-### P0 缺陷（阻塞性，必须立即修复）
+### P0 缺陷（阻塞性）
 
-#### P0-MiniMax-1: base_resp.status_code 错误信号丢失
+#### P0-MiniMax-1: base_resp.status_code 错误信号丢失（已修复）
 
-**修复方案**：
-1. **检测阶段**：在 `stripMinimaxFieldsBody` 之前，新增 `parseMiniMaxBaseResp` 检测 `status_code` 非0：
-   ```go
-   // domains/streaming/minimax_error.go
-   func ParseMiniMaxBaseResp(body []byte) (statusCode int, statusMsg string, isError bool) {
-       var raw map[string]json.RawMessage
-       if json.Unmarshal(body, &raw) != nil {
-           return 0, "", false
-       }
-       baseRespRaw, ok := raw["base_resp"]
-       if !ok {
-           return 0, "", false
-       }
-       var baseResp struct {
-           StatusCode int    `json:"status_code"`
-           StatusMsg  string `json:"status_msg"`
-       }
-       if json.Unmarshal(baseRespRaw, &baseResp) != nil {
-           return 0, "", false
-       }
-       return baseResp.StatusCode, baseResp.StatusMsg, baseResp.StatusCode != 0
-   }
-   ```
+**完成记录（`ed64a2291`）**：
+- 流式与非流式路径均在 strip 字段前解析 `base_resp.status_code`，不再丢失 HTTP 200 包装的错误信号。
+- 非流式响应会返回分类后的上游错误；流式响应会中断并保留分类结果。
+- 非流式与流式回归测试已随该提交落地。
 
-2. **非流式路径**：`executor_chat.go` L1323 之前插入检测：
-   ```go
-   if cand.CatalogCode == "minimax" {
-       if code, msg, isErr := ParseMiniMaxBaseResp(respBody); isErr {
-           return &errorsx.UpstreamError{
-               Kind:       classifyMiniMaxStatusCode(code),
-               Message:    fmt.Sprintf("minimax base_resp error %d: %s", code, msg),
-               StatusCode: 200, // HTTP status is 200 but base_resp signals error
-           }
-       }
-   }
-   ```
-
-3. **流式路径**：`stream.go` L1046 之前对每个 chunk 检测（仅对包含 `base_resp` 的最后 chunk）：
-   ```go
-   func stripChunkFields(line string, stripFn func([]byte) []byte) (string, error) {
-       // ... 现有解析逻辑 ...
-       if stripFn == streaming.StripMinimaxFieldsBody { // 特化判断
-           if code, msg, isErr := streaming.ParseMiniMaxBaseResp([]byte(payload)); isErr {
-               return "", fmt.Errorf("minimax stream error %d: %s", code, msg)
-           }
-       }
-       // ... 现有 strip 逻辑 ...
-   }
-   ```
-
-4. **分类映射**：新增 `classifyMiniMaxStatusCode`：
-   ```go
-   func classifyMiniMaxStatusCode(code int) errorsx.ErrorKind {
-       switch code {
-       case 1002: return errorsx.KindRateLimit
-       case 1004: return errorsx.KindAuth
-       case 1008: return errorsx.KindQuotaExceeded
-       case 1027: return errorsx.KindContentFilter // 输出无效
-       case 1039: return errorsx.KindContextLength
-       case 2013: return errorsx.KindBadRequest
-       default:   return errorsx.KindUpstreamDown
-       }
-   }
-   ```
-
-5. **测试**：
-   - `TestMiniMaxBaseRespErrorDetection_NonStream`：200 + `base_resp.status_code=1002` → KindRateLimit
-   - `TestMiniMaxBaseRespErrorDetection_Stream`：流最后 chunk 含 `base_resp.status_code=1008` → interrupted
-
-**工作量**：2-3 小时。
+**后续事项**：`input_sensitive_type`/`output_sensitive_type` 的细粒度审核字段属于独立的 P2-MiniMax-2，仍待处理。
 
 ---
 
@@ -439,9 +375,9 @@ type Response struct {
 
 | 阶段 | 任务 | 工作量 | 截止日期 |
 |------|------|--------|---------|
-| **Week 1** | P0-MiniMax-1 修复 + 测试 | 3h | 2026-08-29 |
+| **已完成** | P0-MiniMax-1 修复 + 测试（`ed64a2291`） | — | 2026-08-28 |
 | **Week 1** | P1-GLM-2 非流式 finish_reason | 2h | 2026-08-30 |
-| **Week 2** | P1-Qwen-1 content 数组解包 | 6h | 2026-09-02 |
+| **已完成** | P1-Qwen-1 content 数组解包 | — | 2026-08-28 |
 | **Week 2-3** | P1-Reasoning IR 扩展 + 三协议序列化器 | 2d | 2026-09-06 |
 | **Week 3** | P2-MiniMax-2 内容审核字段 | 8h | 2026-09-09 |
 | **Week 4** | P2-Ernie-1 搜索结果保留 | 6h | 2026-09-12 |
