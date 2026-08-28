@@ -593,7 +593,15 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 
 		healthEvidence = true
-		if cand.Protocol == "openai-responses" && !cand.SupportsNativeResponses {
+		// Audit-2026-08-29: native Responses stream capability is verified
+		// independently of the non-stream capability. A credential that opts
+		// in to native_responses_stream only must still be usable here; the
+		// executeOpenAI gate (executor_chat.go:374-382) accepts both forms,
+		// so the dispatch gate has to mirror that contract or stream-only
+		// candidates are silently dropped before the gate even fires.
+		if cand.Protocol == "openai-responses" &&
+			!cand.SupportsNativeResponses &&
+			!cand.SupportsNativeResponsesStream {
 			execErr = fmt.Errorf("native Responses upstream capability is not enabled")
 			return
 		}
