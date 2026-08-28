@@ -73,7 +73,9 @@ func TestApply_AnthropicBudgetOK_NoChange(t *testing.T) {
 	}
 	// If it was modified, budget must still be < max_tokens
 	m := mustUnmarshal(out)
-	var th struct{ BudgetTokens int `json:"budget_tokens"` }
+	var th struct {
+		BudgetTokens int `json:"budget_tokens"`
+	}
 	if err := json.Unmarshal(m["thinking"], &th); err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +111,56 @@ func TestApply_KeepTemperatureWhenThinkingDisabled(t *testing.T) {
 	m := mustUnmarshal(out)
 	if _, ok := m["temperature"]; !ok {
 		t.Error("temperature should be kept when thinking is disabled")
+	}
+}
+
+func TestApply_AnthropicThinkingRemovesSamplingAndPreservesExtensions(t *testing.T) {
+	body := mustMarshal(map[string]any{
+		"max_tokens":  4096,
+		"temperature": 2.0,
+		"top_p":       0.9,
+		"thinking": map[string]any{
+			"type":          "enabled",
+			"budget_tokens": 4096,
+			"vendor_option": "keep-me",
+		},
+	})
+	out := Apply(body, paramreg.DialectAnthropic)
+	m := mustUnmarshal(out)
+	if _, ok := m["temperature"]; ok {
+		t.Fatal("temperature must be removed for active thinking")
+	}
+	if _, ok := m["top_p"]; ok {
+		t.Fatal("top_p must be removed for active thinking")
+	}
+	var thinking map[string]json.RawMessage
+	if err := json.Unmarshal(m["thinking"], &thinking); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := thinking["vendor_option"]; !ok {
+		t.Fatal("budget clamp must preserve unknown thinking fields")
+	}
+	var budget int
+	requireRaw := thinking["budget_tokens"]
+	if err := json.Unmarshal(requireRaw, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if budget != 4095 {
+		t.Fatalf("budget = %d, want 4095", budget)
+	}
+}
+
+func TestApply_AnthropicDisabledThinkingIsNotRemoved(t *testing.T) {
+	body := mustMarshal(map[string]any{
+		"max_tokens": 1024,
+		"thinking": map[string]any{
+			"type":          "disabled",
+			"budget_tokens": 4096,
+		},
+	})
+	out := Apply(body, paramreg.DialectAnthropic)
+	if string(out) != string(body) {
+		t.Fatalf("disabled thinking must not be rewritten: got %s want %s", out, body)
 	}
 }
 
@@ -179,6 +231,27 @@ func TestApply_GrokNoThinking_NoStrip(t *testing.T) {
 	m := mustUnmarshal(out)
 	if _, ok := m["stop"]; !ok {
 		t.Error("stop should not be removed for non-Grok dialect")
+	}
+}
+
+func TestApply_GrokOnlyStripsReasoningModelsAndAliases(t *testing.T) {
+	reasoning := mustMarshal(map[string]any{
+		"model":             "grok-4-0709",
+		"stop_sequences":    []string{"END"},
+		"presence_penalty":  0.5,
+		"frequency_penalty": 0.3,
+	})
+	m := mustUnmarshal(Apply(reasoning, paramreg.DialectGrok))
+	for _, key := range []string{"stop_sequences", "presence_penalty", "frequency_penalty"} {
+		if _, ok := m[key]; ok {
+			t.Errorf("reasoning Grok key %q must be removed", key)
+		}
+	}
+
+	nonReasoning := mustMarshal(map[string]any{"model": "grok-beta", "stop": []string{"END"}})
+	m = mustUnmarshal(Apply(nonReasoning, paramreg.DialectGrok))
+	if _, ok := m["stop"]; !ok {
+		t.Fatal("non-reasoning Grok stop must be preserved")
 	}
 }
 

@@ -13,16 +13,19 @@ import type { UserInfo } from '../store'
 
 export const BASE = '' // same origin in prod; proxied in dev
 
-export function headers(method: string): Record<string, string> {
+export function headers(method: string, hasBody = false): Record<string, string> {
   const h: Record<string, string> = {}
-  // Only send Content-Type when we actually have a body — some
-  // middleware/WAFs reject GETs with application/json content-type.
-  if (method !== 'GET') {
+  // Some middleware/WAFs reject application/json when there is no body.
+  // The decision must be based on the payload, not the HTTP method.
+  if (hasBody) {
     h['Content-Type'] = 'application/json'
   }
   // Add Accept-Language header for i18n support
   h['Accept-Language'] = getLocale()
-  const bearer = authBearer()
+  // Same-origin admin calls use the HttpOnly session cookie. Do not let the
+  // in-memory JWT shadow a newer cookie from another tab; legacy sk-* auth has
+  // no session cookie and must still use Authorization.
+  const bearer = store.apiKey || ''
   if (bearer) h['Authorization'] = `Bearer ${bearer}`
   return h
 }
@@ -40,8 +43,7 @@ function isAdminProtectedPath(path: string): boolean {
     path.startsWith('/api/auth/logout') ||
     path.startsWith('/api/auth/change-password') ||
     path.startsWith('/api/routing/') ||
-    path.startsWith('/api/admin') ||
-    path.startsWith('/api/auth/me')
+    path.startsWith('/api/admin')
   )
 }
 
@@ -69,10 +71,29 @@ function isOnInlineLoginScreen(): boolean {
 // When true the caller clears auth state and bounces to the inline
 // login so mounted pollers stop hammering protected endpoints.
 function isSessionExpiredAuthLoss(path: string): boolean {
-  if (!path.startsWith('/api/') || path === '/api/auth/me') {
+  const pathname = path.split('?', 1)[0]
+  if (!pathname.startsWith('/api/')) return false
+  // Authentication endpoints deliberately return 401 for an invalid login or
+  // an already-cleared session; neither means the current page lost its auth.
+  if (pathname === '/api/auth/me' || pathname === '/api/auth/token' || pathname === '/api/auth/logout') {
     return false
   }
   return isAuthenticated()
+}
+
+let authRedirectStarted = false
+
+function redirectAfterAuthLoss(destination: string): void {
+  if (authRedirectStarted) return
+  authRedirectStarted = true
+  clearAll()
+  if (typeof window !== 'undefined') {
+    window.location.href = destination
+  }
+}
+
+export function isAbortError(error: unknown): boolean {
+  return !!error && typeof error === 'object' && (error as { name?: unknown }).name === 'AbortError'
 }
 
 export interface RequestOptions {
@@ -93,63 +114,57 @@ export class ApiError extends Error {
   }
 }
 
+function errorMessage(statusText: string, text: string): string {
+  if (!text) return statusText
+  try {
+    const j = JSON.parse(text)
+    return (j && typeof j.error === 'string') ? j.error :
+      (j && j.error && typeof j.error.message === 'string') ? j.error.message :
+      (j && j.error && typeof j.error.detail === 'string') ? j.error.detail :
+      (j && typeof j.detail === 'string') ? j.detail : text
+  } catch {
+    return text
+  }
+}
+
 export async function req<T>(method: string, path: string, body?: unknown, options?: RequestOptions): Promise<T> {
+  const hasBody = body !== undefined
   const r = await fetch(BASE + path, {
     method,
-    headers: headers(method),
+    headers: headers(method, hasBody),
     // Rule 20 §6.1: send HttpOnly session cookie (llmgw_session) so the
     // server's AdminMiddleware can authenticate JWT logins via cookie.
     credentials: 'same-origin',
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: hasBody ? JSON.stringify(body) : undefined,
     signal: options?.signal,
   })
+  if (options?.signal?.aborted) {
+    throw new DOMException('The operation was aborted', 'AbortError')
+  }
   if (r.status === 401) {
-    if (isAdminProtectedPath(path)) {
-      // 真正的 admin 端点 401：token 失效，clear + redirect 到 /login 让用户重新认证
-      clearAll()
-      if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-        window.location.href = '/login'
-      }
-    } else if (isSessionExpiredAuthLoss(path)) {
-      // 2026-08-24: 其他受保护 /api 端点（background-tasks、credentials/
-      // sliding-window 等）在 SPA 仍认为已登录时返回 401 = 会话中途失效
-      // （cookie 过期）。此前这些路径的 401 只 throw，挂着的管理面板轮询
-      // 永不停歇 —— 252 nginx 单日 9.6 万次 /api 401 风暴的根因之一。
-      // clear + 整页跳到内联登录（与 router 守卫的 /?login=1 语义一致），
-      // 页面刷新后所有轮询组件随路由卸载自然停止。
-      clearAll()
-      if (typeof window !== 'undefined' && !isOnInlineLoginScreen()) {
-        const redirect = window.location.pathname + window.location.search
-        window.location.href = '/?login=1&redirect=' + encodeURIComponent(redirect)
-      }
+    const msg = errorMessage(r.statusText, await r.text())
+    if (isAdminProtectedPath(path) && typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+      redirectAfterAuthLoss('/login')
+    } else if (isSessionExpiredAuthLoss(path) && typeof window !== 'undefined' && !isOnInlineLoginScreen()) {
+      const redirect = window.location.pathname + window.location.search
+      redirectAfterAuthLoss('/?login=1&redirect=' + encodeURIComponent(redirect))
     }
-    // 公共/半公开端点 401（如 /healthz?full=true）只 throw，不强制 redirect，避免 loop
-    throw new ApiError(401, 'Unauthorized')
+    // Public endpoints and the hydration probe only surface their status.
+    throw new ApiError(401, msg || 'Unauthorized')
   }
   if (!r.ok) {
-    // Try to parse JSON error first (backend uses {"error": "..."}),
-    // fall back to plain text.
     let msg = r.statusText
     try {
-      const text = await r.text()
-      if (text) {
-        try {
-          const j = JSON.parse(text)
-          msg = (j && typeof j.error === 'string') ? j.error :
-                (j && j.error && typeof j.error.message === 'string') ? j.error.message :
-                (j && j.error && typeof j.error.detail === 'string') ? j.error.detail :
-                text
-        } catch {
-          msg = text
-        }
-      }
+      msg = errorMessage(r.statusText, await r.text())
     } catch {
       // network/abort error reading body; keep statusText
     }
     throw new ApiError(r.status, msg)
   }
-  if (r.status === 204) return undefined as T
-  return r.json()
+  if (r.status === 204 || r.status === 205) return undefined as T
+  const text = await r.text()
+  if (!text) return undefined as T
+  return JSON.parse(text) as T
 }
 
 // Re-export shared store types that some domain files reference in

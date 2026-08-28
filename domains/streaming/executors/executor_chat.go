@@ -19,6 +19,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -80,7 +82,7 @@ type ChatExecutor struct {
 	Normalize          func([]byte, bool) []byte
 	XMLCoerceNonStream func([]byte, bool) []byte
 	// P1-2 fix (2026-08-28): Updated to StreamHandler signature with ctx parameter.
-	StreamChat         StreamHandler
+	StreamChat StreamHandler
 	// StripMinimaxFields strips minimax-private top-level fields
 	// (nvext, audio_content, name, etc.) from the chat response body
 	// before it is returned to the client. Wired from main.go.
@@ -1316,23 +1318,23 @@ func (e *Executor) executeOpenAI(
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
 			}
-				// 2026-08-28 P0-MiniMax-1: Detect MiniMax base_resp.status_code
-				// before stripVendorFields. MiniMax wraps errors in HTTP 200
-				// responses with {base_resp: {status_code: non-0, status_msg}}.
-				// If we strip base_resp first, the error signal is permanently lost.
-				if cand.CatalogCode == "minimax" {
-					if code, msg, isErr := parseMiniMaxBaseResp(respBody); isErr {
-						kind := classifyMiniMaxStatusCode(code)
-						return nil, &upstreampkg.Error{
-							Kind:       kind,
-							Message:    fmt.Sprintf("MiniMax error %d: %s", code, msg),
-							Body:       append([]byte(nil), respBody...),
-							StatusCode: resp.StatusCode, // HTTP status is 200 but base_resp signals error
-							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
-						}
+			// 2026-08-28 P0-MiniMax-1: Detect MiniMax base_resp.status_code
+			// before stripVendorFields. MiniMax wraps errors in HTTP 200
+			// responses with {base_resp: {status_code: non-0, status_msg}}.
+			// If we strip base_resp first, the error signal is permanently lost.
+			if cand.CatalogCode == "minimax" {
+				if code, msg, isErr := parseMiniMaxBaseResp(respBody); isErr {
+					kind := classifyMiniMaxStatusCode(code)
+					return nil, &upstreampkg.Error{
+						Kind:       kind,
+						Message:    fmt.Sprintf("MiniMax error %d: %s", code, msg),
+						Body:       append([]byte(nil), respBody...),
+						StatusCode: resp.StatusCode, // HTTP status is 200 but base_resp signals error
+						RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 					}
 				}
-				// 2026-07-20: Strip vendor-private fields (minimax/zhipu/deepseek/doubao)
+			}
+			// 2026-07-20: Strip vendor-private fields (minimax/zhipu/deepseek/doubao)
 			// before protocol conversion and client write. Missing this step caused
 			// 5xx errors for gpt-5.2/gpt-5.6-luna/Minimax-m3 when vendor fields were
 			// present in the response body but not properly cleaned.
@@ -1620,7 +1622,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		if params.SessionKey != "" && cand.SupportsPromptCache {
 			bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
 		}
-		return bodyBytes, nil
+		return paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol)), nil
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
@@ -1819,7 +1821,7 @@ func (e *Executor) applyOpenAITailTransforms(params *ExecParams, cand provider.C
 	if params.SessionKey != "" && cand.SupportsPromptCache {
 		bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
 	}
-	return bodyBytes, nil
+	return paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol)), nil
 }
 
 // prepareRequestBody builds the upstream request body from params and cand.
@@ -1905,6 +1907,7 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 		bodyBytes = transformation.CollapseToolHistory(bodyBytes)
 	}
 	bodyBytes = transformation.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
+	bodyBytes = paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol))
 	bodyBytes = transformation.MergeConsecutiveMessages(bodyBytes)
 	// Client-side context window enforcement for Q1/Q2/Q3 openai protocol.
 	// Q4 (anthropic-messages) is handled in prepareAnthropicRequestBody
@@ -1947,6 +1950,7 @@ func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (c
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
 }
+
 // parseMiniMaxBaseResp extracts MiniMax's HTTP 200-wrapped error signal
 // (base_resp.status_code). Inline version to avoid import cycle with streaming pkg.
 func parseMiniMaxBaseResp(body []byte) (statusCode int, statusMsg string, isError bool) {

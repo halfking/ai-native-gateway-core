@@ -293,3 +293,43 @@ func TestHandleUnifiedRequestDetail_TenantIsolation_SameTenant(t *testing.T) {
 			rr.Code, rr.Body.String())
 	}
 }
+
+func TestHandleUnifiedRequestDetail_UnknownRoleIsTenantScoped(t *testing.T) {
+	h := &Handler{}
+	store, err := requestdetail.NewStore(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, store.PutMeta(requestdetail.Meta{RequestID: "req-unknown-role", TenantID: "tenant-a"}))
+	h.SetRequestDetailStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/request-detail/req-unknown-role", nil)
+	req = SetAuthContext(req, &AuthContext{UserID: 9, TenantID: "tenant-b", Role: "viewer", IsJWT: true})
+	rr := httptest.NewRecorder()
+	h.handleUnifiedRequestDetail(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("non-super-admin cross-tenant read must be 404, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandleUnifiedRequestDetail_InvalidRequestID(t *testing.T) {
+	h := &Handler{}
+	store, err := requestdetail.NewStore(t.TempDir())
+	require.NoError(t, err)
+	h.SetRequestDetailStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/request-detail/short", nil)
+	rr := httptest.NewRecorder()
+	h.handleUnifiedRequestDetail(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid request ID must be 400, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAnyToRawQuotesPlainText(t *testing.T) {
+	raw := anyToRaw("upstream returned plain text")
+	if !json.Valid(raw) {
+		t.Fatalf("plain text must be encoded as valid JSON, got %q", raw)
+	}
+	var got string
+	require.NoError(t, json.Unmarshal(raw, &got))
+	require.Equal(t, "upstream returned plain text", got)
+}

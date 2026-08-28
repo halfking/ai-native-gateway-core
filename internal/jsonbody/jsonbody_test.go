@@ -300,3 +300,27 @@ func TestDecodeBody_NullSentinel(t *testing.T) {
 		t.Fatalf("DecodeBody(null) must return ErrEmptyBody, got %v", err)
 	}
 }
+
+func TestDecodeBody_RejectsMalformedTrailingData(t *testing.T) {
+	for _, body := range []string{
+		`{"a":1}garbage`,
+		`{"a":1}{`,
+		`null garbage`,
+	} {
+		if err := DecodeBody([]byte(body), &struct{ A int }{}); err == nil {
+			t.Errorf("trailing input must be rejected: %q", body)
+		}
+	}
+}
+
+func TestDecodeBody_AcceptsTrailingWhitespace(t *testing.T) {
+	var dst struct {
+		A int `json:"a"`
+	}
+	if err := DecodeBody([]byte("{\"a\":1} \n\t"), &dst); err != nil {
+		t.Fatalf("trailing whitespace must be accepted: %v", err)
+	}
+	if dst.A != 1 {
+		t.Fatalf("body was not decoded: %+v", dst)
+	}
+}
