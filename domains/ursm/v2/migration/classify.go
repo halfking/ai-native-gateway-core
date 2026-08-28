@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 	"github.com/redis/go-redis/v9"
 )
@@ -67,16 +69,24 @@ func (s *RedisScanner) Scan(ctx context.Context, pattern string) ([]ScannedKey, 
 			}
 			var fields map[string]string
 			var gen int64
-			if t == "hash" {
-				hf, ferr := s.RDB.HGetAll(ctx, k).Result()
-				if ferr != nil {
-					return nil, fmt.Errorf("migration: hgetall %s: %w", k, ferr)
+				if t == "hash" {
+					// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent
+					// WRONGTYPE. The preflight scanned kind=="hash" so a
+					// TypedError here is a TOCTOU race. ErrKeyNotFound
+					// collapses to empty fields.
+					hf, ferr := redissafe.SafeHGetAll(ctx, s.RDB, k)
+					if ferr != nil {
+						if errors.Is(ferr, redissafe.ErrKeyNotFound) {
+							hf = map[string]string{}
+						} else {
+							return nil, fmt.Errorf("migration: hgetall %s: %w", k, ferr)
+						}
+					}
+					fields = hf
+					if g, ok := hf["generation"]; ok {
+						gen = parseInt64OrZero(g)
+					}
 				}
-				fields = hf
-				if g, ok := hf["generation"]; ok {
-					gen = parseInt64OrZero(g)
-				}
-			}
 			out = append(out, ScannedKey{
 				SourceKey:  k,
 				KeyType:    t,

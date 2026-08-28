@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
@@ -277,8 +278,15 @@ func (m *MetadataLuaStore) Read(ctx context.Context) (Metadata, error) {
 	if m == nil || m.rdb == nil {
 		return Metadata{}, fmt.Errorf("ursm.v2: migration metadata requires redis")
 	}
-	values, err := m.rdb.HGetAll(ctx, m.key()).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the metadata key collides with a non-hash type. ErrKeyNotFound
+	// is collapsed into the existing redis.Nil return below (the original
+	// contract: 'metadata not yet initialized' is the caller-facing signal).
+	values, err := redissafe.SafeHGetAll(ctx, m.rdb, m.key())
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return Metadata{}, redis.Nil
+		}
 		return Metadata{}, err
 	}
 	if len(values) == 0 {

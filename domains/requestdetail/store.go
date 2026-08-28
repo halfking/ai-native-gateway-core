@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,9 +15,15 @@ import (
 
 var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{8,128}$`)
 
+// ErrBodyTooLarge indicates that a request-detail body exceeds the storage/read limit.
+var ErrBodyTooLarge = errors.New("requestdetail: body file exceeds size limit")
+
 const (
 	defaultMaxEntries = 4096
 	defaultTTL        = 30 * time.Minute
+	// MaxBodyFileSize is the upper limit for a single request-detail body file (10MB).
+	// Files exceeding this limit are rejected to prevent OOM.
+	MaxBodyFileSize = 10 * 1024 * 1024
 )
 
 // Store keeps in-flight request meta in memory and bodies on local files
@@ -100,10 +107,16 @@ func (s *Store) PutBodies(meta Meta, bodies Bodies) error {
 	if err := validateRequestID(meta.RequestID); err != nil {
 		return err
 	}
+	if bodyBytes := len(bodies.RequestBody) + len(bodies.ResponseBody) + len(bodies.OutboundBody); bodyBytes > MaxBodyFileSize {
+		return fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, bodyBytes, MaxBodyFileSize)
+	}
 	payload := filePayload{Meta: meta, Bodies: bodies}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("requestdetail: marshal: %w", err)
+	}
+	if int64(len(raw)) > MaxBodyFileSize {
+		return fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, len(raw), MaxBodyFileSize)
 	}
 
 	// Hold the lifecycle lock through file replacement and memory publication.
@@ -150,22 +163,59 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	if err := validateRequestID(requestID); err != nil {
 		return filePayload{}, false, err
 	}
+
+	// Hold lock only for eviction and path resolution (fast operations)
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.evictLocked(time.Now())
-	raw, err := os.ReadFile(s.filePath(requestID))
+	path := s.filePath(requestID)
+	s.mu.Unlock()
+
+	// File I/O operations outside lock to avoid blocking concurrent reads
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return filePayload{}, false, nil
 		}
 		return filePayload{}, false, err
 	}
-	var p filePayload
-	info, statErr := os.Stat(s.filePath(requestID))
-	if statErr == nil && s.ttl > 0 && time.Since(info.ModTime()) >= s.ttl {
-		_ = os.Remove(s.filePath(requestID))
+
+	// Check file size before reading to prevent OOM on oversized bodies
+	if info.Size() > MaxBodyFileSize {
+		return filePayload{}, false, fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, info.Size(), MaxBodyFileSize)
+	}
+
+	// Check TTL expiration
+	if s.ttl > 0 && time.Since(info.ModTime()) >= s.ttl {
+		_ = os.Remove(path)
 		return filePayload{}, false, nil
 	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return filePayload{}, false, nil
+		}
+		return filePayload{}, false, err
+	}
+	defer f.Close()
+
+	// Re-stat the opened descriptor and cap the read to the same file handle.
+	// This closes the stat/read TOCTOU window introduced by lock-free file I/O.
+	info, err = f.Stat()
+	if err != nil {
+		return filePayload{}, false, err
+	}
+	if info.Size() > MaxBodyFileSize {
+		return filePayload{}, false, fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, info.Size(), MaxBodyFileSize)
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, MaxBodyFileSize+1))
+	if err != nil {
+		return filePayload{}, false, err
+	}
+	if int64(len(raw)) > MaxBodyFileSize {
+		return filePayload{}, false, fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, info.Size(), MaxBodyFileSize)
+	}
+	var p filePayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		// A broken local snapshot must not prevent the DB fallback.
 		slog.Warn("requestdetail: ignoring malformed local snapshot", "request_id", requestID, "error", err)

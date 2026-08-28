@@ -32,6 +32,7 @@ import (
 	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability counters
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/recentmodels"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -2694,9 +2695,8 @@ func livePopularModels(ctx context.Context, rdb *redis.Client, limit int) []popu
 //   - Persistent across gateway restarts via AOF/RDB (lane queue
 //     contents live in process memory only).
 const (
-	recentlyUsedModelsKeyPrefix = "llmgw:routing:recently_used_models:"
-	RecentlyUsedModelsTTL       = 7 * 24 * time.Hour
-	recentlyUsedModelsLimit     = 10
+	RecentlyUsedModelsTTL   = recentmodels.TTL
+	recentlyUsedModelsLimit = 10
 )
 
 // recentlyUsedPopularModels reads the top-N recently-used canonical model
@@ -2704,35 +2704,22 @@ const (
 // super-admin reads remain DB-backed and cannot be served by a global key.
 // Best-effort: returns nil on any Redis error so callers fall back to SQL.
 func recentlyUsedModelsKey(tenantID string) string {
-	tenantID = strings.TrimSpace(tenantID)
-	if tenantID == "" {
-		return ""
-	}
-	return recentlyUsedModelsKeyPrefix + tenantID
+	return recentmodels.Key(tenantID)
 }
 
 func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, tenantID string, limit int) []popularModelEntry {
-	key := recentlyUsedModelsKey(tenantID)
-	if rdb == nil || key == "" || limit <= 0 {
+	entries := recentmodels.Read(ctx, rdb, tenantID, limit)
+	if len(entries) == 0 {
 		return nil
 	}
-	pairs, err := rdb.ZRevRangeWithScores(ctx, key, 0, int64(limit-1)).Result()
-	if err != nil || len(pairs) == 0 {
-		return nil
-	}
-	out := make([]popularModelEntry, 0, len(pairs))
-	for _, p := range pairs {
-		name, _ := p.Member.(string)
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		c := int(p.Score)
+	out := make([]popularModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		count := entry.Count
 		out = append(out, popularModelEntry{
-			CanonicalName: name,
-			DisplayName:   name,
+			CanonicalName: entry.Model,
+			DisplayName:   entry.Model,
 			Source:        "recent",
-			Count:         &c,
+			Count:         &count,
 		})
 	}
 	return out
@@ -2747,25 +2734,7 @@ func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, tenantID 
 // health-check traffic does not skew the dashboard ranking. tenantID is
 // required so model popularity never crosses tenant boundaries.
 func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, tenantID, canonical string, isProbe bool) {
-	if rdb == nil || isProbe {
-		return
-	}
-	key := recentlyUsedModelsKey(tenantID)
-	if key == "" {
-		return
-	}
-	canonical = normalizeModelKey(canonical)
-	if canonical == "" || canonical == "unknown" {
-		return
-	}
-	pipe := rdb.Pipeline()
-	pipe.ZIncrBy(ctx, key, 1, canonical)
-	pipe.Expire(ctx, key, RecentlyUsedModelsTTL)
-	if _, err := pipe.Exec(ctx); err != nil {
-		// Best-effort: do not log per-request (would flood). A future
-		// counter hook (RecentlyUsedRedisErrors) can catch chronic issues.
-		_ = err
-	}
+	recentmodels.Record(ctx, rdb, tenantID, canonical, isProbe)
 }
 
 func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry, tenantID string, limit int) []popularModelEntry {

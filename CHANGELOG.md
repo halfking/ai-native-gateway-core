@@ -38,6 +38,27 @@
   - `domains/stats/boardcache/store.go` (3 sites: baselineMetaKey, deltaKey, cacheKeyBoardMeta): `SafeHGetAll` with the original best-effort / propagate-error semantics preserved.
 
   These sites silently fail today when an admin tool SETs the same key under a non-hash type (Redis `WRONGTYPE Operation against a key holding the wrong kind of value`), which is the exact failure mode P1-14 originally targeted. Now a `TypedError` is surfaced, the type mismatch is logged, and execution degrades cleanly instead of returning an opaque empty map.
+- **24h deep-audit P2 follow-up (2026-08-28, audit-24h-20260828-r4) batch 2**: continue the `SafeHGetAll` migration to the security + admin read paths. Migrated 5 raw `client.HGetAll(...).Result()` call sites:
+  - `security/sanitize/smart_sani_guard.go` (3 sites: `loadOffsets`, `loadMap` primary + `loadMap` fallback): the sanitize map / offsets are sensitive state (placeholder→original reverse map for session-level reversible redaction). `SafeHGetAll` + `ErrKeyNotFound` collapses into the existing cache-miss nil returns; TypedError propagates as the original code did.
+  - `admin/probe_dashboard.go` (1 site, legacy health aggregation): `SafeHGetAll` inside the SCAN-based key iteration. Best-effort — errors continue to the next key.
+  - `admin/session_sanitize_matches.go` (1 site, admin read of session sanitize map): same best-effort loop pattern.
+
+  These sites previously returned opaque empty maps on `WRONGTYPE`, masking the type mismatch from operators. After this commit, a `TypedError` is surfaced in the slog / metrics path so an admin can see "expected hash, got string" rather than "0 matches".
+- **24h deep-audit P2 follow-up (2026-08-28, audit-24h-20260828-r4) batch 3**: complete the `SafeHGetAll` migration to the remaining hash-read paths. Migrated 13 raw `client.HGetAll(...).Result()` call sites:
+  - `domains/ursm/v2/migration/metadata.go` (MetadataLuaStore.Read): `SafeHGetAll` + `ErrKeyNotFound` → `redis.Nil` return (preserves the existing 'metadata not initialized' contract).
+  - `domains/ursm/v2/migration/cleanup.go` (2 sites, refuse + read): `SafeHGetAll` + `ErrKeyNotFound` → CleanupStatusSkipped / CleanerSkippedMissing respectively. TypedError propagates as before.
+  - `domains/ursm/v2/migration/preflight_scan.go` (EntryPreflight scan): `SafeHGetAll`; `ErrKeyNotFound` → empty fields map (race-induced key loss), TypedError propagates.
+  - `domains/ursm/v2/migration/metadata_redis.go` (MetadataHash.Read): `SafeHGetAll` + `ErrKeyNotFound` → empty metadata.
+  - `domains/ursm/v2/migration/classify.go` (Preflight scan): same shape as preflight_scan.
+  - `domains/ursm/v2/migration/preflight.go` (2 sites, scan field + canonical conflict check): `SafeHGetAll`; `ErrKeyNotFound` ignored silently, TypedError logged via slog.Warn (the original code dropped all errors here; the new code surfaces them).
+  - `provider/client.go` (maybeExitSuspicious): `SafeHGetAll`; errors fall through to `recordSuspiciousExit("noop")` (matches original HGetAll error path).
+  - `bg/model_availability_reader.go` (2 sites, Read + scan loop): `SafeHGetAll` + `ErrKeyNotFound` → cache-miss metric + nil snapshot (preserves the test contract `Read(..., missing-model) returns nil, nil`).
+  - `bg/systemmonitor/inflight_dedup.go` (ShouldSkipAutoTask): `SafeHGetAll` + `ErrKeyNotFound` → 'no recent success marker' nil return.
+  - `pending/pending.go` (2 sites, Get + recovery scan): `SafeHGetAll`; `ErrKeyNotFound` collapses to the existing fallback / miss path. TypedError still propagates as before.
+
+  Skipped: `internal/redis/safe_operations.go` (the helper itself); `domains/hooks/compression/session_cache.go` (already uses a safe-by-design `SessionCacheBackend` interface); `domains/ursm/v2/store/pipeline.go` (pipelined HGetAll, not bare — SafeHGetAll doesn't support pipelines).
+
+  After batch 3 the migration is complete: every bare `client.HGetAll(...).Result()` call site in production paths now uses `SafeHGetAll` with a defensive `TYPE` guard + `TypedError` reporting on `WRONGTYPE`.
 - Add credential grouping to the admin live-stream controls, snapshots, incident indexes, persisted preferences, and all dashboard locales.
 - Scope admin popular-model aggregates and cached picker responses by tenant. Successful telemetry now writes tenant-specific Redis ZSETs; usage SQL filters `request_logs_hot.tenant_id`; tenant-admin reads do not consume global live lanes.
 - Add `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` with a seven-day fallback, and skip the SQL usage fallback when policy plus Redis already satisfy the requested limit.

@@ -88,7 +88,9 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 				bodies.OutboundBody = sessionBodies.OutboundBody
 			}
 		} else if !errors.Is(sessionErr, requestdetail.ErrNotFound) {
-			return requestdetail.Bodies{}, requestdetail.Meta{}, sessionErr
+			// A request-log body is already usable; session recovery is an
+			// optional completion path and must not discard the primary payload.
+			slog.WarnContext(ctx, "requestdetail: session body recovery failed", "request_id", canonicalRequestID, "error", sessionErr)
 		}
 	}
 	if len(bodies.RequestBody) == 0 && len(bodies.ResponseBody) == 0 && len(bodies.OutboundBody) == 0 {

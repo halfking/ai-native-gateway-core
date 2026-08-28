@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -348,5 +349,92 @@ func TestLocatorPropagatesSessionTurnErrors(t *testing.T) {
 	_, err := (&Locator{Bodies: sessionErrorBodies{}}).Get(context.Background(), "req-session-error", false)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected session error to propagate, got %v", err)
+	}
+}
+
+func TestGetFileRejectsOversizedBody(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a body file slightly over 10MB limit
+	reqID := "req-large-body"
+	// Build a valid JSON array that exceeds MaxBodyFileSize
+	largeArray := make([]string, 0, 200000)
+	for i := 0; i < 200000; i++ {
+		largeArray = append(largeArray, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") // 50 chars each
+	}
+	largeBodyJSON, _ := json.Marshal(largeArray)
+
+	meta := Meta{RequestID: reqID, TenantID: "default"}
+	bodies := Bodies{RequestBody: json.RawMessage(largeBodyJSON)}
+
+	// Write directly to disk to bypass any Put validation
+	payload := filePayload{Meta: meta, Bodies: bodies}
+	raw, _ := json.Marshal(payload)
+	if err := os.WriteFile(s.filePath(reqID), raw, 0o640); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	// Verify file is actually over limit
+	info, _ := os.Stat(s.filePath(reqID))
+	if info.Size() <= MaxBodyFileSize {
+		t.Fatalf("test file size %d is not over limit %d", info.Size(), MaxBodyFileSize)
+	}
+
+	// Attempt to read should fail with size limit error
+	_, ok, err := s.GetFile(reqID)
+	if err == nil {
+		t.Fatal("expected error for oversized body, got nil")
+	}
+	if ok {
+		t.Fatal("expected ok=false for oversized body")
+	}
+	if !errors.Is(err, ErrBodyTooLarge) || !strings.Contains(err.Error(), "limit 10485760") {
+		t.Fatalf("unexpected size limit error: %v", err)
+	}
+}
+
+func TestGetFileAcceptsBodyAtLimit(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a body file just under 10MB limit with valid JSON
+	reqID := "req-at-limit"
+	// Build a valid JSON array that is close to but under MaxBodyFileSize
+	largeArray := make([]string, 0, 150000)
+	for i := 0; i < 150000; i++ {
+		largeArray = append(largeArray, "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx") // 50 chars each
+	}
+	largeBodyJSON, _ := json.Marshal(largeArray)
+
+	meta := Meta{RequestID: reqID, TenantID: "default"}
+	bodies := Bodies{RequestBody: json.RawMessage(largeBodyJSON)}
+
+	if err := s.Put(meta, &bodies); err != nil {
+		t.Fatalf("failed to put body at limit: %v", err)
+	}
+
+	// Verify file is under limit
+	info, _ := os.Stat(s.filePath(reqID))
+	if info.Size() > MaxBodyFileSize {
+		t.Fatalf("test file size %d exceeds limit %d", info.Size(), MaxBodyFileSize)
+	}
+
+	// Should succeed
+	payload, ok, err := s.GetFile(reqID)
+	if err != nil {
+		t.Fatalf("expected no error for body under limit, got %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true for body under limit")
+	}
+	if len(payload.Bodies.RequestBody) != len(largeBodyJSON) {
+		t.Fatalf("expected body size %d, got %d", len(largeBodyJSON), len(payload.Bodies.RequestBody))
 	}
 }
