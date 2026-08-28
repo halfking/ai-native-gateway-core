@@ -19,6 +19,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -560,11 +562,12 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				"tenant_id", params.TenantID,
 			)
 		}
-		return bodyBytes, nil
+		return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic), nil
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
 	return e.legacyAnthropicBody(params, cand, sourceBody)
+
 }
 
 // legacyAnthropicBody performs the legacy ChatToAnthropic conversion path.
@@ -635,7 +638,7 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 		}
 	}
 
-	return bodyBytes, nil
+	return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic), nil
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of
