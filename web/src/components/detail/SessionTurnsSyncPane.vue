@@ -19,8 +19,15 @@ import { statusToneClass } from './statusTone'
 import {
   deriveConversationTurns,
   extractMessagesFromBody,
+  firstUserPrompt,
+  previewText,
+  type ConversationTurn,
   type RoleFilter,
 } from './messageHelpers'
+import {
+  fetchSessionTurnsBodies,
+  type SessionTurnBodiesResponse,
+} from '../../api/sessions_v2'
 
 const props = defineProps<{
   sessionId: string
@@ -47,10 +54,16 @@ const treeSelectedTurn = ref<number | null>(null)
 
 // Derived-turns view state.
 const subView = ref<SubView>('turns')
-const derivedSelected = ref(0)
+const selectedIndex = ref(0)
 const derivedExpanded = ref<Set<number>>(new Set())
 const showAllTurns = ref(false)
 const leftWidth = ref(36) // percentage width of the left panel
+
+// V2 per-turn bodies (session_bodies) — the primary source once the gateway
+// dual-writes sessions. Empty when the session has no V2 bodies yet, in which
+// case we fall back to deriving turns from the request_logs body.
+const v2Bodies = ref<SessionTurnBodiesResponse | null>(null)
+const v2Error = ref('')
 
 watch(
   () => props.sessionId,
@@ -58,6 +71,8 @@ watch(
     turns.value = []
     error.value = ''
     treeSelectedTurn.value = null
+    v2Bodies.value = null
+    v2Error.value = ''
     if (!id) return
     loading.value = true
     try {
@@ -70,32 +85,73 @@ watch(
     } finally {
       loading.value = false
     }
+    // Best-effort: V2 bodies are optional until the cutover completes.
+    try {
+      v2Bodies.value = await fetchSessionTurnsBodies(id, { limit: 200 })
+    } catch (e: unknown) {
+      v2Error.value = e instanceof Error ? e.message : String(e)
+      v2Bodies.value = null
+    }
   },
   { immediate: true },
 )
 
+// V2 turns built from session_bodies deltas (each turn = its own messages).
+const v2Turns = computed<ConversationTurn[]>(() => {
+  const list = v2Bodies.value?.turns
+  if (!list?.length) return []
+  return list.map((t, i) => {
+    const reqMsgs = extractMessagesFromBody(t.request_delta)
+    const respMsgs = extractMessagesFromBody(t.response_delta)
+    const messages =
+      reqMsgs.length || respMsgs.length
+        ? [...reqMsgs, ...respMsgs]
+        : extractMessagesFromBody(t.outbound_body)
+    const full = firstUserPrompt(t.request_delta) || firstUserPrompt(t.outbound_body)
+    const { text, truncated } = previewText(full, 6)
+    return {
+      index: i,
+      number: t.turn_no,
+      messages,
+      userPreview: text,
+      userPreviewFull: full,
+      truncated,
+      assistantCount: messages.filter((m) => String(m.role || '') === 'assistant').length,
+    }
+  })
+})
+
+// Fallback: derive turns from the accumulated request_logs body.
 const derivedTurns = computed(() =>
   deriveConversationTurns(extractMessagesFromBody(props.requestBody)),
 )
 
-// Reset selection when the conversation body changes.
+// V2 bodies win when present; otherwise fall back to request_logs derivation.
+const displayTurns = computed<ConversationTurn[]>(() =>
+  v2Turns.value.length ? v2Turns.value : derivedTurns.value,
+)
+
+// Reset selection when the displayed turn set changes.
 watch(
-  derivedTurns,
+  displayTurns,
   (list) => {
-    if (derivedSelected.value >= list.length) derivedSelected.value = 0
+    if (selectedIndex.value >= list.length) selectedIndex.value = 0
   },
   { immediate: true },
 )
 
-const selectedTurn = computed(() =>
-  derivedTurns.value[derivedSelected.value] || null,
-)
+const selectedTurn = computed(() => displayTurns.value[selectedIndex.value] || null)
 const selectedTurnNumber = computed(() => selectedTurn.value?.number ?? 0)
 
 // Body fed to the right panel: the full conversation, or just the selected turn.
 const rightBody = computed(() => {
-  if (showAllTurns.value || !selectedTurn.value) return props.requestBody
-  return { messages: selectedTurn.value.messages }
+  if (showAllTurns.value) {
+    if (v2Turns.value.length) {
+      return { messages: displayTurns.value.flatMap((t) => t.messages) }
+    }
+    return props.requestBody
+  }
+  return selectedTurn.value ? { messages: selectedTurn.value.messages } : props.requestBody
 })
 
 const treeCurrent = computed(() =>
@@ -116,7 +172,7 @@ function selectChild(c: SessionChildRequest) {
 }
 
 function selectDerived(i: number) {
-  derivedSelected.value = i
+  selectedIndex.value = i
   showAllTurns.value = false
 }
 
@@ -187,13 +243,13 @@ function onDividerUp() {
         :class="{ 'left--single': timelineOnly }"
         :style="timelineOnly ? undefined : { width: leftWidth + '%' }"
       >
-        <div v-if="!derivedTurns.length" class="muted">无对话数据</div>
+        <div v-if="!displayTurns.length" class="muted">无对话数据</div>
         <button
-          v-for="t in derivedTurns"
+          v-for="t in displayTurns"
           :key="t.index"
           type="button"
           class="turn-card"
-          :class="{ active: derivedSelected === t.index }"
+          :class="{ active: selectedIndex === t.index }"
           @click="selectDerived(t.index)"
         >
           <div class="turn-card-head">
