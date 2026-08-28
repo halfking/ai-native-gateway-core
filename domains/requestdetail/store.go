@@ -17,6 +17,9 @@ var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{8,128}$`)
 const (
 	defaultMaxEntries = 4096
 	defaultTTL        = 30 * time.Minute
+	// MaxBodyFileSize is the upper limit for a single request-detail body file (10MB).
+	// Files exceeding this limit are rejected to prevent OOM.
+	MaxBodyFileSize = 10 * 1024 * 1024
 )
 
 // Store keeps in-flight request meta in memory and bodies on local files
@@ -153,7 +156,28 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.evictLocked(time.Now())
-	raw, err := os.ReadFile(s.filePath(requestID))
+	
+	path := s.filePath(requestID)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return filePayload{}, false, nil
+		}
+		return filePayload{}, false, err
+	}
+	
+	// Check file size before reading to prevent OOM on oversized bodies
+	if info.Size() > MaxBodyFileSize {
+		return filePayload{}, false, fmt.Errorf("requestdetail: body file exceeds %d bytes", MaxBodyFileSize)
+	}
+	
+	// Check TTL expiration
+	if s.ttl > 0 && time.Since(info.ModTime()) >= s.ttl {
+		_ = os.Remove(path)
+		return filePayload{}, false, nil
+	}
+	
+	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return filePayload{}, false, nil
@@ -161,11 +185,6 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 		return filePayload{}, false, err
 	}
 	var p filePayload
-	info, statErr := os.Stat(s.filePath(requestID))
-	if statErr == nil && s.ttl > 0 && time.Since(info.ModTime()) >= s.ttl {
-		_ = os.Remove(s.filePath(requestID))
-		return filePayload{}, false, nil
-	}
 	if err := json.Unmarshal(raw, &p); err != nil {
 		// A broken local snapshot must not prevent the DB fallback.
 		slog.Warn("requestdetail: ignoring malformed local snapshot", "request_id", requestID, "error", err)
