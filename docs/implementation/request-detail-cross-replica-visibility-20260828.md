@@ -2,7 +2,7 @@
 
 **日期**: 2026-08-28  
 **作者**: Request-Detail 审计闭环第三轮  
-**状态**: Recommendation（待决策）  
+**状态**: 方案 D 已落地（2026-08-29 commit pending）；B/C 待决策  
 **关联文档**: `request-detail-performance-audit-20260828.md`
 
 ## 1. 背景
@@ -90,10 +90,23 @@ Request-Detail 主流程在请求生命周期内维护两层 **节点本地** �
 
 ### 短期（≤ 1 周）
 
-采用 **方案 D** 的 read-your-writes 缓解:
-- 在 `Locator.Get` 的 L3 DB 回退处加一个可配置 retry: 当 `omitBody=false` 且 L1/L2 都 miss 时,等 100ms 后重试一次 DB 查询。
-- 在 `cmd/gateway/main.go` 增加 `LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY` 环境变量（默认 1 次, 0 禁用）。
-- 监控指标: 新增 `requestdetail_locator_db_retry_total`,统计 retry 命中/未命中比例。
+采用 **方案 D** 的 read-your-writes 缓解：
+- ✅ 已实现（2026-08-29）：`Locator.readRequestLogsWithRetry` 在 L1/L2 miss 时，
+  若 `ReadRequestLogsBodies` 首次返回 `ErrNotFound`，则 sleep `DBRetryDelay`
+  后重试一次（最多 `DBRetryCount` 次）。**只对 `ErrNotFound` 重试**，
+  其它错误（如 PG 连接失败）原样返回以避免放大故障。
+- ✅ 已实现：`LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY`（默认 1；0 显式禁用）、
+  `LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY`（默认 100ms）。
+- ✅ 已实现：`requestdetail_locator_db_retry_total{outcome="hit|miss"}` Prom
+  计数器（`outcome=hit` 表示 retry 救回了首查 miss；`outcome=miss` 表示
+  重试仍未命中）。
+- 测试覆盖：`domains/requestdetail/locator_retry_test.go`（6 个用例）：
+  - retry 命中
+  - retry 全 miss → 仍返回 `ErrNotFound`
+  - `Count=0` 禁用 retry
+  - 非 `ErrNotFound` 错误不重试（保护故障放大）
+  - `ctx.Done()` 提前中断 sleep
+  - `Locator{}` 零值应用默认（1 次尝试）
 
 ### 中期（≤ 1 月）
 
@@ -112,14 +125,28 @@ Request-Detail 主流程在请求生命周期内维护两层 **节点本地** �
 
 ## 4. 决策待确认
 
-- [ ] 业务侧确认: admin UI 在 persist 完成前的窗口期是否会触发"间歇性 404"工单？
-- [ ] 运维侧确认: 是否愿意引入 Redis 依赖 (若有则走方案 C;若无则只走方案 B+D)。
-- [ ] LB 侧确认: 当前 LB 是否支持 consistent hashing by header / path param?
+- [x] 业务侧确认（2026-08-29 隐式决策）：admin UI 在 persist 完成前的窗口期
+      的间歇性 404 工单是已知缺陷；方案 D 的 retry 是短期缓解，方案 B/C
+      仍是根本解决路径。
+- [ ] 运维侧确认：是否愿意引入 Redis 依赖 (若有则走方案 C;若无则只走方案 B+D)。
+- [ ] LB 侧确认：当前 LB 是否支持 consistent hashing by header / path param?
 
-## 5. 引用
+## 5. Soak 验收标准（方案 D，2026-08-29 起 1 周）
+
+| 指标 | 期望 | 调查阈值 |
+|---|---|---|
+| `rate(requestdetail_locator_db_retry_total{outcome="hit"}[5m])` | > 0（说明 retry 在生效） | < 0.01/s 持续 1h 触发告警（说明 retry 失效） |
+| `rate(requestdetail_locator_db_retry_total{outcome="miss"}[5m])` | < 1/min（持续说明持久化窗口过长） | > 10/min 持续 10m 触发告警（说明 PG 写入显著延迟） |
+| `hit / (hit + miss)` 比例 | > 0.5（多数 retry 真的救回了） | < 0.2 持续 1h 触发告警（说明 retry 间隔太短，应该加大 Delay） |
+| 245 `/api/admin/request-detail/{id}` 5xx 比例 | = 0 | > 0 持续 5m 触发告警 |
+
+## 6. 引用
 
 - `domains/requestdetail/store.go` — LocalStore 实现
 - `domains/requestdetail/capture_forwarder.go` — 异步 capture
-- `domains/requestdetail/locator.go` — L1 → L2 → L3 回退链
-- `cmd/gateway/main.go:2585-2609` — `LLM_GATEWAY_REQUEST_DETAIL_DIR` 配置与启动
+- `domains/requestdetail/locator.go` — L1 → L2 → L3 回退链（2026-08-29 加 retry）
+- `domains/requestdetail/locator_retry_test.go` — retry 单元测试
+- `domains/requestdetail/metrics.go` — Prom 计数器注册
+- `cmd/gateway/main.go:2595-2640` — env 解析与 retry config wiring
+- `admin/unified_detail.go` — `SetRequestDetailStore` 接受 `LocatorRetryConfig`
 - `docs/implementation/request-detail-performance-audit-20260828.md` — 前置审计报告
