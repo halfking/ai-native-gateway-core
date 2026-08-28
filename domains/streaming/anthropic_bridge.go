@@ -400,6 +400,37 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// Interrupted on the completed-upstream exit — the pending capturer needs
 	// a completed replay body (see pending_disconnect_test.go /
 	// TestStreamAnthropicPassthroughContinuesAfterClientDisconnect).
+
+	// audit-24h-20260828-r4 CRITICAL: anthropic stream empty-response parity
+	// with the non-stream detector at executor_anthropic.go:1273. The earlier
+	// r3 patch (c6ab79105) only wired this check into
+	// domains/transformation/anthropic/anthropic_passthrough_stream.go, which
+	// is NOT on the live Q4 hot path — the production entry point is
+	// StreamAnthropicPassthroughWithDiagnostics (cmd/gateway/main.go:1269
+	// wires StreamAnthropicPassthrough → here). Without this guard, an
+	// upstream that returns message_start + message_stop with zero
+	// content_block_* events is recorded as a successful empty stream and
+	// never fails over.
+	//
+	// Strict check mirrors the r3 transformation-path semantics: chunkCount==0
+	// AND (capture is nil OR both OutputTokens and InputTokens are nil). Usage
+	// tokens alone do NOT count as content — matching non-stream semantics
+	// (isEmptyAnthropicMessagesResponse checks content array length).
+	if chunkCount == 0 && (capture == nil || (capture.OutputTokens == nil && capture.InputTokens == nil)) {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("anthropic_empty_response")
+		}
+		if pc != nil {
+			pc.markInterrupted("anthropic_empty_response")
+		}
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "anthropic_empty_response",
+			Kind:        errorsx.KindEmptyResponse,
+			Resumable:   true,
+			ChunkCount:  0,
+		}
+	}
 	outcome.ChunkCount = chunkCount
 	return outcome
 }
