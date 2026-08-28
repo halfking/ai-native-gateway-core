@@ -1,0 +1,189 @@
+canonical_name,family,parameters_b,modality,context_window,multimodal_caps,context_window_override,context_window_source,released_at,version_rank,complexity_ceiling,display_name,notes
+abab5.5-chat,abab5.5,,text,16384,{},,catalog,,,easy,abab5.5-chat,
+abab6.5s-chat,abab6.5s,,text,245760,{},,catalog,,,easy,abab6.5s-chat,稀宇科技 ABAB 6.5s Chat (旧系列)
+allamoe-13b,allamoe,,text,,{},,catalog,,,,allamoe-13b,SDAIA ALLaMo-E 13B
+claude-3-5-haiku,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-3-5-haiku,
+claude-3-5-sonnet,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-3-5-sonnet,
+claude-3-5-sonnet-20241022,anthropic-claude,,multimodal,200000,{},,manual,,,,claude-3-5-sonnet-20241022,Anthropic Claude 3.5 Sonnet
+claude-3-7-sonnet,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-3-7-sonnet,
+claude-haiku-4.5,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-haiku-4.5,
+claude-haiku-4.6,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-haiku-4.6,
+claude-opus-4,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-opus-4,
+claude-opus-4.5,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-opus-4.5,
+claude-opus-4.6,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-opus-4.6,
+claude-opus-4.7,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-opus-4.7,
+claude-sonnet-4,anthropic-claude,,multimodal,200000,{},,manual,,,,claude-sonnet-4,Agent terminal display name
+claude-sonnet-4.5,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-sonnet-4.5,
+claude-sonnet-4.6,anthropic-claude,,multimodal,200000,{},,catalog,,,,claude-sonnet-4.6,
+baichuan-13b,baichuan,,text,,{},,catalog,,,,baichuan-13b,百川智能 Baichuan 13B
+baichuan-53b,baichuan,,text,,{},,catalog,,,,baichuan-53b,百川智能 Baichuan 53B
+baichuan3-turbo,baichuan,,text,32768,{},,catalog,,,,baichuan3-turbo,
+baichuan3-turbo-128k,baichuan,,text,131072,{},,catalog,,,,baichuan3-turbo-128k,
+baichuan4,baichuan,,text,32768,{},,catalog,,,,baichuan4,
+bloom-176b,bigscience-bloom,,text,,{},,catalog,,,,bloom-176b,BigScience BLOOM 176B
+command-r,cohere,,text,131072,{},,catalog,,,,command-r,
+command-r-plus,cohere,,text,131072,{},,catalog,,,,command-r-plus,Cohere Command R+
+embed-v3,cohere,,text,,{},,catalog,,,,embed-v3,Cohere Embed v3
+rerank-v3,cohere,,text,,{},,catalog,,,,rerank-v3,Cohere Rerank v3
+composer,cursor,,text,,{},,catalog,,,,composer,Cursor Composer alias
+cursor-small,cursor,,text,,{},,catalog,,,,cursor-small,Cursor Small
+deepseek-chat,deepseek,,text,65536,{},,manual,,,,deepseek-chat,深度求索 DeepSeek Chat
+deepseek-coder,deepseek,,text,65536,{},,manual,,,,deepseek-coder,深度求索 DeepSeek Coder
+deepseek-r1,deepseek,671.00,text,65536,{},,catalog,,,hard,deepseek-r1,reasoning
+deepseek-v3,deepseek,671.00,text,65536,{},,catalog,,,medium,deepseek-v3,
+deepseek-v3.1,deepseek,671.00,text,65536,{},,catalog,,,,deepseek-v3.1,
+deepseek-v3.2,deepseek,,multimodal,131072,{},,manual,,,,deepseek-v3.2,
+deepseek-v3.2-exp,deepseek,,multimodal,131072,{},,manual,,,,deepseek-v3.2-exp,
+deepseek-v4-flash,deepseek,,multimodal,131072,{},,manual,,,medium,deepseek-v4-flash,
+deepseek-v4-flash-vision-exp,deepseek,,multimodal,131072,{},,manual,,,,deepseek-v4-flash-vision-exp,
+deepseek-v4-pro,deepseek,,multimodal,131072,{},,manual,,,hard,deepseek-v4-pro,
+deepseek-v4-pro-cn,deepseek,,multimodal,131072,{},,manual,,,,deepseek-v4-pro-cn,
+doubao-1-5-lite-32k,doubao,,text,32768,{},,catalog,,,medium,doubao-1-5-lite-32k,
+doubao-1-5-pro-256k,doubao,,text,262144,{},,catalog,,,medium,doubao-1-5-pro-256k,
+doubao-1-5-pro-32k,doubao,,text,32768,{},,catalog,,,medium,doubao-1-5-pro-32k,
+doubao-embedding-large-text,doubao,,embedding,8192,{},,catalog,,,,doubao-embedding-large-text,
+doubao-embedding-vision,doubao,,embedding,32768,{},,catalog,,,,doubao-embedding-vision,
+doubao-lite-4k,doubao,,text,4096,{},,catalog,,,easy,doubao-lite-4k,字节跳动 豆包 Lite 4K
+doubao-pro-128k,doubao,,text,131072,{},,catalog,,,medium,doubao-pro-128k,
+doubao-pro-32k,doubao,,text,32768,{},,catalog,,,medium,doubao-pro-32k,字节跳动 豆包 Pro 32K
+doubao-pro-4k,doubao,,text,4096,{},,catalog,,,medium,doubao-pro-4k,
+doubao-seed-2-0-code-preview-260215,doubao,,text,131072,{},,manual,,,,doubao-seed-2-0-code-preview-260215,
+doubao-seed-2.0-lite,doubao,,text,131072,{},,catalog,,,,doubao-seed-2.0-lite,
+doubao-seed-2.0-mini,doubao,,text,131072,{},,catalog,,,,doubao-seed-2.0-mini,
+doubao-seed-2.0-pro,doubao,,text,131072,{},,catalog,,,,doubao-seed-2.0-pro,
+gpt-neox-20b,eleutherai,,text,,{},,catalog,,,,gpt-neox-20b,EleutherAI GPT-NeoX 20B
+pythia-12b,eleutherai,,text,,{},,catalog,,,,pythia-12b,EleutherAI Pythia 12B
+ernie-3.5-8k,ernie,,text,8192,{},,manual,,,,ernie-3.5-8k,百度 文心一言 3.5
+ernie-4.0-turbo-128k,ernie,,text,131072,{},,manual,,,,ernie-4.0-turbo-128k,百度 文心一言 4.0 Turbo
+falcon-180b,falcon,,text,,{},,catalog,,,,falcon-180b,Inception Falcon 180B
+gemma-2-27b,gemma,,text,,{},,catalog,,,,gemma-2-27b,Google Gemma 2 27B
+gemma-7b,gemma,,text,,{},,catalog,,,,gemma-7b,Google Gemma 7B
+gemini-1.5-flash,google-gemini,,multimodal,1048576,{},,catalog,,,,gemini-1.5-flash,
+gemini-1.5-pro,google-gemini,,multimodal,2097152,{},,catalog,,,,gemini-1.5-pro,Google Gemini 1.5 Pro
+gemini-2.0-flash,google-gemini,,multimodal,1048576,{},,catalog,,,,gemini-2.0-flash,
+gemini-2.0-flash-exp,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-2.0-flash-exp,Google Gemini 2.0 Flash
+gemini-2.0-flash-lite,google-gemini,,multimodal,1048576,{},,catalog,,,,gemini-2.0-flash-lite,
+gemini-2.5-flash,google-gemini,,multimodal,1048576,{},,catalog,,,,gemini-2.5-flash,
+gemini-2.5-pro,google-gemini,,multimodal,1048576,{},,catalog,,,,gemini-2.5-pro,
+gemini-3-flash-preview,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3-flash-preview,
+gemini-3-pro-image,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3-pro-image,
+gemini-3.1-flash-image,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3.1-flash-image,
+gemini-3.1-flash-lite,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3.1-flash-lite,
+gemini-3.1-flash-lite-image,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3.1-flash-lite-image,
+gemini-3.1-pro-preview,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3.1-pro-preview,
+gemini-3.5-flash,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3.5-flash,
+gemini-3.5-flash-lite,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3.5-flash-lite,
+gemini-3.6-flash,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-3.6-flash,
+gemini-omni-flash,google-gemini,,multimodal,1048576,{},,manual,,,,gemini-omni-flash,
+palm-2,google-palm,,text,,{},,catalog,,,,palm-2,Google PaLM 2
+hunyuan-lite,hunyuan,,text,,{},,catalog,,,,hunyuan-lite,腾讯 混元 Lite
+hunyuan-pro,hunyuan,,text,,{},,catalog,,,,hunyuan-pro,腾讯 混元 Pro
+hunyuan-turbo,hunyuan,,text,,{},,catalog,,,,hunyuan-turbo,腾讯 混元 Turbo
+kimi-k2.7-code-highspeed,kimi,,text,262144,{},,manual,,,,kimi-k2.7-code-highspeed,
+kuae-1.5,kuae,,text,,{},,catalog,,,,kuae-1.5,光年之外 光年 1.5
+skywork-13b,kuae,,text,,{},,catalog,,,,skywork-13b,光年之外 天工 13B
+codellama-34b,meta-llama,,text,,{},,catalog,,,,codellama-34b,Meta Code Llama 34B
+llama-2-70b-chat,meta-llama,,text,,{},,catalog,,,,llama-2-70b-chat,Meta Llama 2 70B Chat
+llama-3-70b,meta-llama,,text,,{},,catalog,,,,llama-3-70b,Meta Llama 3 70B
+llama-3-8b,meta-llama,,text,,{},,catalog,,,,llama-3-8b,Meta Llama 3 8B
+llama-3.1-405b-instruct,meta-llama,405.00,text,131072,{},,catalog,,,,llama-3.1-405b-instruct,
+llama-3.1-70b-instruct,meta-llama,70.00,text,131072,{},,catalog,,,,llama-3.1-70b-instruct,
+llama-3.1-8b-instruct,meta-llama,8.00,text,131072,{},,catalog,,,,llama-3.1-8b-instruct,
+llama-3.2-3b-instruct,meta-llama,3.00,text,131072,{},,catalog,,,,llama-3.2-3b-instruct,
+llama-3.2-90b-vision-instruct,meta-llama,90.00,multimodal,131072,{},,catalog,,,,llama-3.2-90b-vision-instruct,
+llama-3.3-70b-instruct,meta-llama,70.00,text,131072,{},,catalog,,,,llama-3.3-70b-instruct,
+llama-4-preview,meta-llama,,multimodal,10485760,{},,manual,,,,llama-4-preview,Meta Llama 4 Preview
+phi-3-medium,microsoft-phi,,text,,{},,catalog,,,,phi-3-medium,Microsoft Phi-3 Medium
+phi-4,microsoft-phi,,text,,{},,catalog,,,,phi-4,Microsoft Phi-4
+mimo-v2.5-pro,mimo,14.00,multimodal,128000,"{text,image}",,catalog,,,,mimo-v2.5-pro,小米 小米大模型 v2.5 Pro
+minimax-m2.5,minimax,,text,245760,{},,catalog,,,medium,minimax-m2.5,
+minimax-m2.7,minimax,,text,245760,{},,catalog,,,medium,minimax-m2.7,
+minimax-text-01,minimax,,text,1000000,{},,catalog,,,medium,minimax-text-01,
+codestral,mistral,,text,32768,{},,manual,,,,codestral,Mistral AI Codestral
+codestral-latest,mistral,,text,32768,{},,catalog,,,,codestral-latest,
+ministral-8b,mistral,,text,131072,{},,manual,,,,ministral-8b,Mistral AI Ministral 8B
+mistral-large-latest,mistral,,text,131072,{},,catalog,,,,mistral-large-latest,
+mistral-small-latest,mistral,,text,32768,{},,catalog,,,,mistral-small-latest,
+mixtral-8x22b,mistral,,text,65536,{},,manual,,,,mixtral-8x22b,Mistral AI Mixtral 8x22B
+open-mistral-nemo,mistral,,text,131072,{},,catalog,,,,open-mistral-nemo,
+kimi-chat,moonshot,,text,8192,{},,manual,,,,kimi-chat,月之暗面 Kimi Chat
+kimi-k2.6,moonshot,,vision,262144,{},,manual,,,,kimi-k2.6,
+kimi-k2.7-code,moonshot,,text,262144,{},,manual,,,,kimi-k2.7-code,
+kimi-k3,moonshot,,multimodal,1048576,{},,manual,,,,kimi-k3,
+moonshot-v1-128k,moonshot,,text,131072,{},,catalog,,,,moonshot-v1-128k,月之暗面 Moonshot v1 128K
+moonshot-v1-32k,moonshot,,text,32768,{},,catalog,,,,moonshot-v1-32k,
+moonshot-v1-8k,moonshot,,text,8192,{},,catalog,,,,moonshot-v1-8k,
+hyperclova-x,naver-hyperclova,,text,,{},,catalog,,,,hyperclova-x,NAVER HyperCLOVA X
+nemotron-4-340b,nvidia-nemotron,,text,,{},,catalog,,,,nemotron-4-340b,NVIDIA Nemotron-4 340B
+tts-1,openai-audio,,text,,{},,catalog,,,,tts-1,OpenAI TTS 语音合成
+whisper-1,openai-audio,,text,,{},,catalog,,,,whisper-1,OpenAI Whisper 语音识别
+text-embedding-3,openai-embedding,,embedding,8192,{},,manual,,,,text-embedding-3,
+gpt-3.5-turbo,openai-gpt,,text,16385,{},,catalog,,,,gpt-3.5-turbo,OpenAI GPT-3.5 Turbo
+gpt-4-turbo,openai-gpt,,multimodal,128000,{},,catalog,,,,gpt-4-turbo,OpenAI GPT-4 Turbo
+gpt-4o,openai-gpt,,multimodal,128000,{},,catalog,,,,gpt-4o,OpenAI GPT-4 Omni
+gpt-4o-audio-preview,openai-gpt,,multimodal,128000,{audio},,catalog,,,,gpt-4o-audio-preview,
+gpt-4o-mini,openai-gpt,,multimodal,128000,{},,catalog,,,,gpt-4o-mini,
+o1,openai-gpt,,multimodal,200000,{},,catalog,,,,o1,reasoning
+o1-mini,openai-gpt,,text,128000,{},,catalog,,,,o1-mini,reasoning
+o1-preview,openai-gpt,,text,,{},,catalog,,,,o1-preview,OpenAI o1 系列
+o3,openai-gpt,,multimodal,200000,{},,catalog,,,,o3,reasoning
+o3-mini,openai-gpt,,multimodal,200000,{},,catalog,,,,o3-mini,OpenAI o3 mini
+o4-mini,openai-gpt,,multimodal,200000,{},,catalog,,,,o4-mini,reasoning
+o5-preview,openai-gpt,,text,,{},,catalog,,,,o5-preview,OpenAI o5 preview
+dall-e-3,openai-image,,text,,{},,catalog,,,,dall-e-3,OpenAI DALL-E 图像生成
+pangu-chat,pangu,,text,,{},,catalog,,,,pangu-chat,华为 盘古大模型
+sonar,perplexity,,text,200000,{},,catalog,,,,sonar,
+sonar-reasoning,perplexity,,text,200000,{},,catalog,,,,sonar-reasoning,reasoning
+sonar-pro,perplexity-sonar,,text,200000,{},,catalog,,,,sonar-pro,Perplexity Sonar Pro
+qwen-max,qwen,,text,32768,{},,catalog,,,,qwen-max,阿里云 通义千问 Max
+qwen-plus,qwen,,text,131072,{},,catalog,,,,qwen-plus,
+qwen-turbo,qwen,,text,131072,{},,catalog,,,,qwen-turbo,阿里云 通义千问 Turbo
+qwen2.5-72b-instruct,qwen,72.00,text,131072,{},,catalog,,,,qwen2.5-72b-instruct,
+qwen2.5-7b-instruct,qwen,7.00,text,131072,{},,catalog,,,,qwen2.5-7b-instruct,
+qwen2-72b,qwen2,,text,32768,{},,manual,,,,qwen2-72b,阿里云 Qwen2 72B
+qwen3-235b,qwen3,,text,131072,{},,manual,,,,qwen3-235b,阿里云 Qwen3 235B
+qwq-32b,qwq,32.00,text,131072,{},,catalog,,,,qwq-32b,reasoning
+qwq-32b-preview,qwq,,text,131072,{},,manual,,,,qwq-32b-preview,阿里云 QwQ 32B
+rinna-3.6b,rinna,,text,,{},,catalog,,,,rinna-3.6b,Rinna 3.6B
+sensechat-5,sensetime,,text,131072,{},,catalog,,,medium,sensechat-5,商汤科技 日日新 SenseChat 5
+sensechat-5-thinking,sensetime,,text,131072,{},,catalog,,,medium,sensechat-5-thinking,reasoning
+sensechat-turbo,sensetime,,text,32768,{},,catalog,,,easy,sensechat-turbo,
+sensenova-xl,sensetime,,text,,{},,catalog,,,,sensenova-xl,商汤科技 SenseNova XL
+spark-3.5,spark,,text,,{},,catalog,,,,spark-3.5,科大讯飞 星火 3.5
+spark-max,spark,,text,,{},,catalog,,,,spark-max,科大讯飞 星火 Max
+stable-diffusion-3,stability,,text,,{},,catalog,,,,stable-diffusion-3,Stability AI Stable Diffusion 3
+stable-lm-2,stability,,text,,{},,catalog,,,,stable-lm-2,Stability AI Stable LM 2
+step-1-256k,stepfun,,text,262144,{},,catalog,,,,step-1-256k,阶跃星辰 Step-1 256K
+step-1v-32k,stepfun,,multimodal,32768,{},,catalog,,,,step-1v-32k,
+step-2-16k,stepfun,,text,16384,{},,catalog,,,,step-2-16k,阶跃星辰 Step-2 16K
+together-7b,together,,text,,{},,catalog,,,,together-7b,Together AI 7B
+grok-4.6,unknown,,vision,262144,{},,manual,,,,grok-4.6,
+grok-2-1212,xai,,multimodal,131072,{},,catalog,,,,grok-2-1212,
+grok-3,xai,,multimodal,131072,{},,catalog,,,,grok-3,
+grok-3-mini,xai,,multimodal,131072,{},,catalog,,,,grok-3-mini,reasoning
+grok-1,xai-grok,,multimodal,131072,{},,manual,,,,grok-1,xAI Grok 1
+grok-2,xai-grok,,multimodal,131072,{},,manual,,,,grok-2,xAI Grok 2
+yi-large,yi,,text,32768,{},,catalog,,,,yi-large,零一万物 Yi Large
+yi-large-turbo,yi,,text,16384,{},,catalog,,,,yi-large-turbo,
+yi-medium,yi,,text,16384,{},,catalog,,,,yi-medium,零一万物 Yi Medium
+youdao-translate,youdao,,text,,{},,catalog,,,,youdao-translate,网易 有道翻译
+chatglm-turbo,zhipu-glm,,text,131072,{},,manual,,,,chatglm-turbo,智谱AI ChatGLM Turbo
+codegeex-4,zhipu-glm,,text,131072,{},,manual,,,,codegeex-4,智谱AI CodeGeeX 4
+glm-4,zhipu-glm,,text,131072,{},,catalog,,,easy,glm-4,
+glm-4-9b-chat,zhipu-glm,9.00,text,131072,{},,catalog,,,easy,glm-4-9b-chat,
+glm-4-air,zhipu-glm,,text,131072,{},,catalog,,,easy,glm-4-air,
+glm-4-flash,zhipu-glm,,text,131072,{},,catalog,,,easy,glm-4-flash,
+glm-4-plus,zhipu-glm,,text,131072,{},,manual,,,,glm-4-plus,智谱AI GLM-4 Plus
+glm-4.5,zhipu-glm,,text,131072,{},,catalog,,,medium,glm-4.5,
+glm-4.5-air,zhipu-glm,,text,131072,{},,catalog,,,easy,glm-4.5-air,
+glm-4.5-flash,zhipu-glm,,text,131072,{},,catalog,,,easy,glm-4.5-flash,
+glm-4.7,zhipu-glm,,text,131072,{},,catalog,,,medium,glm-4.7,
+glm-4.7-flash,zhipu-glm,,text,131072,{},,catalog,,,easy,glm-4.7-flash,
+glm-4v-flash,zhipu-glm,,multimodal,8192,{},,catalog,,,,glm-4v-flash,
+glm-4v-plus,zhipu-glm,,multimodal,8192,{},,manual,,,,glm-4v-plus,智谱AI GLM-4V Plus (多模态)
+glm-5,zhipu-glm,,text,131072,{},,manual,,,frontier,glm-5,
+glm-5-2-260617,zhipu-glm,,text,131072,{},,manual,,,,glm-5-2-260617,
+glm-5.1,zhipu-glm,,text,131072,{},,manual,,,hard,glm-5.1,
+glm-5.2,zhipu-glm,,text,131072,{},,manual,,,frontier,glm-5.2,
+glm-5.3,zhipu-glm,,text,1048576,{},,manual,,,,glm-5.3,
+glm-z1-flash,zhipu-glm,,text,65536,{},,catalog,,,medium,glm-z1-flash,reasoning
