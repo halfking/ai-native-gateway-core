@@ -210,7 +210,10 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 		ORDER BY t.turn_number ASC, t.request_id ASC
 		LIMIT $%d`,
 		len(args)+1, len(args)+2, len(args)+3, len(args)+4)
-	args = append(args, p.Cursor.TurnNumber, p.Cursor.RequestID, p.Limit+1)
+	// 游标比较用 (turn_number, request_id): turn_number 出现在两个比较分支
+	// ("> $N" 与 "= $N+1") 中, 需各传一个值, 否则占位符数量 > 实参数 →
+	// pgx 报 "insufficient arguments" → /turns 接口 500。
+	args = append(args, p.Cursor.TurnNumber, p.Cursor.TurnNumber, p.Cursor.RequestID, p.Limit+1)
 
 	rows, err := db.Query(ctx, mainSQL, args...)
 	if err != nil {
