@@ -6037,7 +6037,7 @@ func main() {
 	//   With h2c on the gateway, 252 nginx can speak HTTP/2 to the backend
 	//   (`proxy_http_version 1.1` becomes optional) and HTTP/2 frame
 	//   conversion stays correct end-to-end.
-	srv.Handler = h2c.NewHandler(handler, &http2.Server{
+	srv.Handler = h2c.NewHandler(finalHandler, &http2.Server{
 		MaxConcurrentStreams: 250,
 		MaxReadFrameSize:     1 << 20,
 		// IdleTimeout 从 60s → 300s: 匹配 http.Server.IdleTimeout。

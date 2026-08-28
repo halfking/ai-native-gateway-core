@@ -445,7 +445,6 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		toolCallIDs         = make(map[int]string)
 		messageStopReceived bool
 		conversionOverflow  bool
-		clientWriteFailed   bool
 		// emittedContent (audit-24h-20260828-r3 P1-B parity, Phase E):
 		// tracks whether any client-visible semantic bytes — text,
 		// thinking, tool-call deltas — reached the wire. Set true inside
@@ -492,7 +491,6 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if !written {
 			// Keep consuming upstream and building the pending replay body, but
 			// do not count this failed frame as client-visible output.
-			clientWriteFailed = true
 		}
 		if pc != nil {
 			pc.append(sseLine)
@@ -897,7 +895,6 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		toolCallIDs          = make(map[int]string)
 		upstreamDoneReceived bool
 		conversionOverflow   bool
-		clientWriteFailed    bool
 	)
 
 	writeChunkIR := func(chunk *ir.StreamChunk) {
@@ -929,7 +926,6 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if !written {
 			// Keep consuming upstream and building the pending replay body, but
 			// do not count this failed frame as client-visible output.
-			clientWriteFailed = true
 		}
 		if pc != nil {
 			pc.append(sseLine)
