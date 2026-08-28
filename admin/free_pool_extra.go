@@ -753,77 +753,89 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 	var lastStatus *int
 	var lastError string
 
-	for _, url := range candidates {
-		httpReq, _ := http.NewRequest(http.MethodGet, url, nil)
-		for k, v := range headers {
-			httpReq.Header.Set(k, v)
-		}
-		resp, err := client.Do(httpReq)
-		if err != nil {
-			lastError = err.Error()[:min(200, len(err.Error()))]
-			continue
-		}
-		status := resp.StatusCode
-		lastStatus = &status
-		if status == 200 || status == 401 || status == 403 {
-			modelCount := 0
-			models := []string{}
-			if status == 200 {
-				body, err := readLimitedBody(resp.Body, maxProbeResponseBytes)
-				if err != nil {
-					resp.Body.Close()
-					lastError = err.Error()
-					continue
-				}
-				var data map[string]any
-				if err := json.Unmarshal(body, &data); err == nil {
-					rows, _ := data["data"].([]any)
-					if rows == nil {
-						rows, _ = data["models"].([]any)
+		for _, url := range candidates {
+			httpReq, _ := http.NewRequest(http.MethodGet, url, nil)
+			for k, v := range headers {
+				httpReq.Header.Set(k, v)
+			}
+			resp, err := client.Do(httpReq)
+			if err != nil {
+				lastError = err.Error()[:min(200, len(err.Error()))]
+				continue
+			}
+			status := resp.StatusCode
+			lastStatus = &status
+			if status == 200 || status == 401 || status == 403 {
+				modelCount := 0
+				models := []string{}
+				var errorDetail string
+				
+				if status == 200 {
+					body, err := readLimitedBody(resp.Body, maxProbeResponseBytes)
+					if err != nil {
+						resp.Body.Close()
+						lastError = err.Error()
+						continue
 					}
-					for _, row := range rows {
-						if m, ok := row.(map[string]any); ok {
-							id, _ := m["id"].(string)
-							if id == "" {
-								id, _ = m["name"].(string)
-							}
-							if id != "" {
-								models = append(models, id)
-								if len(models) >= 20 {
-									break
+					var data map[string]any
+					if err := json.Unmarshal(body, &data); err == nil {
+						rows, _ := data["data"].([]any)
+						if rows == nil {
+							rows, _ = data["models"].([]any)
+						}
+						for _, row := range rows {
+							if m, ok := row.(map[string]any); ok {
+								id, _ := m["id"].(string)
+								if id == "" {
+									id, _ = m["name"].(string)
+								}
+								if id != "" {
+									models = append(models, id)
+									if len(models) >= 20 {
+										break
+									}
 								}
 							}
 						}
+						modelCount = len(rows)
 					}
-					modelCount = len(rows)
+				} else {
+					// Read error body for 401/403 to provide better diagnostics
+					bodyBytes, _ := readLimitedBody(resp.Body, maxProbeErrorBytes)
+					errorDetail = string(bodyBytes)
 				}
+				//nolint:errcheck // best-effort close
+				resp.Body.Close()
+
+				// 403 with a key means invalid/expired key, should fail the probe
+				authOK := status == 200 || (status == 401 && strings.TrimSpace(apiKey) == "")
+				if strings.TrimSpace(apiKey) != "" && status == 200 {
+					authOK = true
+				}
+				var authValid *bool
+				if strings.TrimSpace(apiKey) != "" {
+					// 403 means invalid key, not just unauthorized
+					b := status == 200
+					authValid = &b
+				}
+				result := map[string]any{
+					"ok":          authOK,
+					"status_code": status,
+					"probe_url":   url,
+					"model_count": modelCount,
+					"models":      models,
+					"auth_valid":  authValid,
+				}
+				if errorDetail != "" {
+					result["error"] = errorDetail[:min(200, len(errorDetail))]
+				}
+				return result, nil
 			}
+			bodyBytes, _ := io.ReadAll(resp.Body)
 			//nolint:errcheck // best-effort close
 			resp.Body.Close()
-
-			authOK := status == 200 || (status == 401 && strings.TrimSpace(apiKey) == "")
-			if strings.TrimSpace(apiKey) != "" && status == 200 {
-				authOK = true
-			}
-			var authValid *bool
-			if strings.TrimSpace(apiKey) != "" {
-				b := status == 200
-				authValid = &b
-			}
-			return map[string]any{
-				"ok":          authOK,
-				"status_code": status,
-				"probe_url":   url,
-				"model_count": modelCount,
-				"models":      models,
-				"auth_valid":  authValid,
-			}, nil
+			lastError = string(bodyBytes)[:min(200, len(bodyBytes))]
 		}
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		//nolint:errcheck // best-effort close
-		resp.Body.Close()
-		lastError = string(bodyBytes)[:min(200, len(bodyBytes))]
-	}
 
 	// Fallback: try chat/completions with a 1-token request
 	if strings.TrimSpace(apiKey) != "" {
@@ -953,29 +965,36 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		catalogCode = slug
 	}
 
-	var probeResult map[string]any
-	if req.ProbeFirst && strings.TrimSpace(req.BaseURL) != "" {
-		p, _ := probeOpenAICompatibleBase(req.BaseURL, req.APIKey, 10*time.Second)
-		probeResult = p
-		if strings.TrimSpace(req.APIKey) != "" {
-			if authValid, ok := probeResult["auth_valid"].(bool); ok && !authValid {
+		var probeResult map[string]any
+		if req.ProbeFirst && strings.TrimSpace(req.BaseURL) != "" {
+			p, _ := probeOpenAICompatibleBase(req.BaseURL, req.APIKey, 10*time.Second)
+			probeResult = p
+			if strings.TrimSpace(req.APIKey) != "" {
+				if authValid, ok := probeResult["auth_valid"].(bool); ok && !authValid {
+					statusCode, _ := probeResult["status_code"].(int)
+					errMsg := "API Key 探活未通过，请检查 base_url 与 Key"
+					if statusCode == 403 {
+						errMsg = "API Key 无效或已过期（403 Forbidden），请检查 Key 是否正确"
+					} else if statusCode == 401 {
+						errMsg = "API Key 认证失败（401 Unauthorized），请检查 Key 格式"
+					}
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status": "probe_failed",
+						"probe":  probeResult,
+						"error":  errMsg,
+					})
+					return
+				}
+			}
+			if !probeOK(probeResult) && strings.TrimSpace(req.APIKey) != "" {
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status": "probe_failed",
 					"probe":  probeResult,
-					"error":  "API Key 探活未通过，请检查 base_url 与 Key",
+					"error":  "端点不可达或 Key 无效",
 				})
 				return
 			}
 		}
-		if !probeOK(probeResult) && strings.TrimSpace(req.APIKey) != "" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "probe_failed",
-				"probe":  probeResult,
-				"error":  "端点不可达或 Key 无效",
-			})
-			return
-		}
-	}
 
 	models := req.Models
 	if len(models) == 0 && probeResult != nil {
