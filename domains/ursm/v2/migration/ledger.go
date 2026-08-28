@@ -2,6 +2,7 @@ package migration
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -91,10 +92,10 @@ type Ledger struct {
 }
 
 // NewLedger returns a handle to the NDJSON file at path. The file is opened
-// lazily on first Append. Existence is not required up front so callers can
-// bootstrap a fresh run by passing a path under t.TempDir(). syncOnAppend
-// is enabled by default — fsync-on-append is the safe baseline for an
-// authoritative resume/audit artefact.
+// (and closed) on every Append call, so existence is not required up front and
+// callers can bootstrap a fresh run by passing a path under t.TempDir().
+// syncOnAppend is enabled by default — fsync-on-append is the safe baseline
+// for an authoritative resume/audit artefact.
 func NewLedger(path string) *Ledger {
 	return &Ledger{path: path, syncOnAppend: true}
 }
@@ -127,14 +128,21 @@ func (l *Ledger) Append(item Item) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Marshal fully into memory first. A partial Encode() error would otherwise
+	// leave a truncated NDJSON line on disk that poisons LoadAll on resume —
+	// defeating the "authoritative resume/audit artefact" contract. Writing one
+	// complete line also keeps the file a valid NDJSON stream at all times.
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(item); err != nil {
+		return fmt.Errorf("migration: encode ledger item: %w", err)
+	}
 	f, err := os.OpenFile(l.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("migration: open ledger: %w", err)
 	}
 	defer f.Close()
-	enc := json.NewEncoder(f)
-	if err := enc.Encode(item); err != nil {
-		return fmt.Errorf("migration: encode ledger item: %w", err)
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		return fmt.Errorf("migration: write ledger: %w", err)
 	}
 	if l.syncOnAppend {
 		if err := f.Sync(); err != nil {
