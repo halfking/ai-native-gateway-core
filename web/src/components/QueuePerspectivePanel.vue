@@ -526,31 +526,36 @@ function passesUpperFilters(group: ModelGroup): boolean {
   }
 
   // 供应商/原厂/客户端/状态筛选：从关联的请求中提取
-  // LiveNodeStatus 本身没有这些字段，需要通过 credential_id → requests 获取
+  // 2026-08-29 修复：同时从节点元数据和请求中获取数据，避免无请求时筛选失败
   const credentialIds = new Set(group.nodes.map(n => n.credential_id))
   const groupRequests: LiveRequest[] = []
   for (const credId of credentialIds) {
     groupRequests.push(...getRequestsForCredential(credId))
   }
 
-  // 供应商筛选：请求中至少有一个匹配
+  // 供应商筛选：从节点的 provider_code 或请求中至少有一个匹配
   if (props.providerFilter.size > 0) {
-    const hasMatchingProvider = groupRequests.some(r => 
+    const hasMatchingProviderInNodes = group.nodes.some(n =>
+      n.provider_code && props.providerFilter.has(n.provider_code)
+    )
+    const hasMatchingProviderInRequests = groupRequests.some(r => 
       r.provider_code && props.providerFilter.has(r.provider_code)
     )
-    if (!hasMatchingProvider) return false
+    if (!hasMatchingProviderInNodes && !hasMatchingProviderInRequests) return false
   }
 
-  // 原厂筛选：请求中至少有一个匹配
-  if (props.vendorFilter.size > 0) {
+  // 原厂筛选：仅从请求中匹配（节点本身没有 model_category）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.vendorFilter.size > 0 && groupRequests.length > 0) {
     const hasMatchingVendor = groupRequests.some(r =>
       r.model_category && props.vendorFilter.has(r.model_category)
     )
     if (!hasMatchingVendor) return false
   }
 
-  // 客户端筛选：请求中至少有一个匹配
-  if (props.agentFilter.size > 0) {
+  // 客户端筛选：仅从请求中匹配（节点本身没有 agent_name）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.agentFilter.size > 0 && groupRequests.length > 0) {
     const hasMatchingAgent = groupRequests.some(r => {
       const agent = (r.agent_name || '').trim().toLowerCase()
       return agent && props.agentFilter.has(agent)
@@ -558,8 +563,9 @@ function passesUpperFilters(group: ModelGroup): boolean {
     if (!hasMatchingAgent) return false
   }
 
-  // 状态筛选：请求中至少有一个匹配
-  if (props.statusFilter.size > 0) {
+  // 状态筛选：仅从请求中匹配（节点本身没有请求状态）
+  // 但如果没有请求，则不应用此筛选条件（保留该分组）
+  if (props.statusFilter.size > 0 && groupRequests.length > 0) {
     const hasMatchingStatus = groupRequests.some(r => 
       r.status && props.statusFilter.has(r.status)
     )
