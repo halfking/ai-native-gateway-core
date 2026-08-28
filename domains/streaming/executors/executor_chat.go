@@ -23,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
@@ -1995,46 +1996,9 @@ func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (c
 // parseMiniMaxBaseResp extracts MiniMax's HTTP 200-wrapped error signal
 // (base_resp.status_code). Inline version to avoid import cycle with streaming pkg.
 func parseMiniMaxBaseResp(body []byte) (statusCode int, statusMsg string, isError bool) {
-	if len(body) == 0 {
-		return 0, "", false
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return 0, "", false
-	}
-	baseRespRaw, ok := raw["base_resp"]
-	if !ok {
-		return 0, "", false
-	}
-	var baseResp struct {
-		StatusCode int    `json:"status_code"`
-		StatusMsg  string `json:"status_msg"`
-	}
-	if err := json.Unmarshal(baseRespRaw, &baseResp); err != nil {
-		return 0, "", false
-	}
-	return baseResp.StatusCode, baseResp.StatusMsg, baseResp.StatusCode != 0
+	return vendorstrip.ParseMiniMaxBaseResp(body)
 }
 
 func classifyMiniMaxStatusCode(code int) errorsx.ErrorKind {
-	switch code {
-	case 0:
-		return ""
-	case 1002:
-		return errorsx.KindRateLimit
-	case 1004:
-		return errorsx.KindAuth
-	case 1008:
-		return errorsx.KindQuota
-	case 1027:
-		return errorsx.KindContentFilter
-	case 1039:
-		return errorsx.KindContextLength
-	case 1001:
-		return errorsx.KindTimeout
-	case 2013:
-		return errorsx.KindClientBug
-	default:
-		return errorsx.KindUpstreamDown
-	}
+	return vendorstrip.ClassifyMiniMaxStatusCode(code)
 }
