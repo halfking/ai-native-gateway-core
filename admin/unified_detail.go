@@ -167,28 +167,22 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 	}
 	meta := requestdetail.Meta{RequestID: canonicalRequestID, TenantID: tenantID}
 	if gwSessionID.Valid {
-		v := gwSessionID.String
-		meta.GwSessionID = &v
+		meta.GwSessionID = requestdetail.PtrTo(gwSessionID.String)
 	}
 	if gwTaskID.Valid {
-		v := gwTaskID.String
-		meta.GwTaskID = &v
+		meta.GwTaskID = requestdetail.PtrTo(gwTaskID.String)
 	}
 	if clientModel.Valid {
-		v := clientModel.String
-		meta.ClientModel = &v
+		meta.ClientModel = requestdetail.PtrTo(clientModel.String)
 	}
 	if status.Valid {
-		v := status.String
-		meta.Status = &v
+		meta.Status = requestdetail.PtrTo(status.String)
 	}
 	if success.Valid {
-		v := success.Bool
-		meta.Success = &v
+		meta.Success = requestdetail.PtrTo(success.Bool)
 	}
 	if latencyMs.Valid {
-		v := int(latencyMs.Int32)
-		meta.LatencyMs = &v
+		meta.LatencyMs = requestdetail.PtrTo(int(latencyMs.Int32))
 	}
 	return meta, nil
 }
@@ -264,16 +258,14 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	meta := requestdetail.Meta{
 		RequestID:   requestID,
 		TenantID:    tenantID,
-		GwSessionID: &sessionID,
-		TurnNumber:  &turnNo,
+		GwSessionID: requestdetail.PtrTo(sessionID),
+		TurnNumber:  requestdetail.PtrTo(turnNo),
 	}
 	if model.Valid {
-		v := model.String
-		meta.ClientModel = &v
+		meta.ClientModel = requestdetail.PtrTo(model.String)
 	}
 	if latencyMs.Valid {
-		v := int(latencyMs.Int32)
-		meta.LatencyMs = &v
+		meta.LatencyMs = requestdetail.PtrTo(int(latencyMs.Int32))
 	}
 	bodies := requestdetail.Bodies{
 		RequestBody:  json.RawMessage(requestDelta),

@@ -169,6 +169,13 @@ func mergeMeta(base, overlay Meta) Meta {
 	return out
 }
 
+// PtrTo is a helper that returns a pointer to a copy of v.
+// It reduces heap allocations when constructing pointer fields by enabling
+// stack-to-heap escape analysis optimization in patterns like: field = PtrTo(value)
+func PtrTo[T any](v T) *T {
+	return &v
+}
+
 // DecodeRaw helpers for callers that hold string bodies.
 func DecodeRaw(s *string) json.RawMessage {
 	if s == nil || *s == "" {
