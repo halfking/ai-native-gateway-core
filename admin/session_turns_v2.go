@@ -520,15 +520,21 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 	})
 }
 
-// tenantFromQueryOrContext 从查询参数或请求上下文解析租户（缺省 "default"）。
+// tenantFromQueryOrContext resolves a session tenant from authenticated scope.
+// Only platform-wide administrators may select another tenant explicitly; every
+// other authenticated role is pinned to its own tenant and cannot override it
+// through a query parameter or request header.
 func tenantFromQueryOrContext(r *http.Request) string {
+	if !IsSuperAdminOrLegacy(r) {
+		return GetTenantID(r)
+	}
 	if t := r.URL.Query().Get("tenant"); t != "" {
 		return t
 	}
 	if t := r.Header.Get("X-Tenant-ID"); t != "" {
 		return t
 	}
-	return "default"
+	return GetTenantID(r)
 }
 
 func timePtrOrNil(t time.Time) *time.Time {

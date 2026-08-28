@@ -184,9 +184,23 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 		return filePayload{}, false, fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, info.Size(), MaxBodyFileSize)
 	}
 
-	// Check TTL expiration
+	// Check TTL expiration. Re-check and remove under the lifecycle lock so a
+	// concurrent atomic Put cannot be followed by deletion of its fresh file.
 	if s.ttl > 0 && time.Since(info.ModTime()) >= s.ttl {
-		_ = os.Remove(path)
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		latest, statErr := os.Stat(path)
+		if statErr == nil && time.Since(latest.ModTime()) >= s.ttl {
+			if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+				return filePayload{}, false, removeErr
+			}
+		}
+		if os.IsNotExist(statErr) {
+			return filePayload{}, false, nil
+		}
+		if statErr != nil {
+			return filePayload{}, false, statErr
+		}
 		return filePayload{}, false, nil
 	}
 

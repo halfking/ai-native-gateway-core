@@ -144,6 +144,39 @@ func TestPGBodyReaderOmitBodySkipsBodyQueries(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestReadSessionTurnsBodiesOmitBodyReturnsMetadata(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no, t.tenant_id,\s+NULL::text, NULL::text, NULL::text,\s+t.model, t.latency_ms\s+FROM public.session_turns_with_current_month t\s+WHERE t.request_id = \$1`).
+		WithArgs("req-session-only").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"session_id", "turn_no", "tenant_id", "request_delta", "response_delta", "outbound_body", "model", "latency_ms",
+		}).AddRow("session-1", 3, "tenant-a", nil, nil, nil, "model-a", 15))
+
+	reader := &pgBodyReader{db: mock}
+	bodies, meta, err := reader.ReadSessionTurnsBodies(context.Background(), "req-session-only", true)
+	require.NoError(t, err)
+	require.Empty(t, bodies)
+	require.Equal(t, "req-session-only", meta.RequestID)
+	require.Equal(t, "tenant-a", meta.TenantID)
+	require.Equal(t, "session-1", *meta.GwSessionID)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestHandleUnifiedRequestDetailStoreMissWithoutDBReturnsNotFound(t *testing.T) {
+	h := &Handler{}
+	store, err := requestdetail.NewStore("")
+	require.NoError(t, err)
+	h.SetRequestDetailStore(store)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/request-detail/req-store-miss", nil)
+	rr := httptest.NewRecorder()
+	h.handleUnifiedRequestDetail(rr, req)
+	require.Equal(t, http.StatusNotFound, rr.Code)
+}
+
 func TestHandleUnifiedRequestDetailNotConfigured(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/request-detail/req-x", nil)
@@ -332,4 +365,162 @@ func TestAnyToRawQuotesPlainText(t *testing.T) {
 	var got string
 	require.NoError(t, json.Unmarshal(raw, &got))
 	require.Equal(t, "upstream returned plain text", got)
+}
+
+// 2026-08-28 (audit follow-up, P1-29 follow-up): the previous implementation
+// accepted tenant_admin lookups but only gated them at the HTTP handler. A
+// SQL-level collision was still possible: when a client-supplied
+// client_request_id collides across tenants, the SQL query without a
+// tenant_id predicate could resolve to the wrong tenant's row. These tests
+// pin the new behaviour: with a tenant-scoped LookupScope, the SQL filter
+// (and a defense-in-depth post-scan check) MUST keep the response 404.
+//
+// The mock expectation captures BOTH the SQL pattern (with `AND tenant_id =
+// $2`) and the WithArgs (with the tenant_id arg). If a regression regresses
+// the SQL to the unrestricted form, the mock will fail.
+
+func TestPGBodyReader_ClientRequestIDCollision_RespectsTenantScope(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	metaCols := []string{
+		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
+	}
+	// request_logs_hot: request_id lookup must include tenant_id predicate.
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+		WithArgs("client-req-collision", "tenant-a").
+		WillReturnRows(pgxmock.NewRows(metaCols))
+	// client_request_id fallback must also include tenant_id predicate.
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE client_request_id = \$1 AND tenant_id = \$2\s+ORDER BY ts DESC\s+LIMIT 1`).
+		WithArgs("client-req-collision", "tenant-a").
+		WillReturnRows(pgxmock.NewRows(metaCols))
+	// partitioned request_id path is also constrained.
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_with_current_month\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+		WithArgs("client-req-collision", "tenant-a").
+		WillReturnRows(pgxmock.NewRows(metaCols))
+	// partitioned client_request_id fallback.
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_with_current_month\s+WHERE client_request_id = \$1 AND tenant_id = \$2\s+ORDER BY ts DESC\s+LIMIT 1`).
+		WithArgs("client-req-collision", "tenant-a").
+		WillReturnRows(pgxmock.NewRows(metaCols))
+
+	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
+		return nil, nil, nil
+	})}
+	ctx := requestdetail.WithLookupScope(context.Background(), requestdetail.LookupScope{TenantID: "tenant-a"})
+	_, _, err = reader.ReadRequestLogsBodies(ctx, "client-req-collision", false)
+	require.ErrorIs(t, err, requestdetail.ErrNotFound,
+		"tenant-scoped query must not surface cross-tenant rows; got %v", err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPGBodyReader_ClientRequestIDCollision_AllowsOwnTenant(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	metaCols := []string{
+		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
+	}
+	// request_logs_hot request_id lookup is constrained and returns tenant-a's row.
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+		WithArgs("client-req-own", "tenant-a").
+		WillReturnRows(pgxmock.NewRows(metaCols).
+			AddRow("gateway-req-own", "tenant-a", nil, nil, "m", "success", true, 10))
+	// Body tables are keyed only by the canonical request ID; tenant scope was
+	// enforced while resolving that ID from request_logs_hot.
+	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot\s+WHERE request_id = \$1`).
+		WithArgs("gateway-req-own").
+		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"o":1}`))
+
+	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
+		return `{"req":1}`, `{"resp":1}`, nil
+	})}
+	ctx := requestdetail.WithLookupScope(context.Background(), requestdetail.LookupScope{TenantID: "tenant-a"})
+	bodies, meta, err := reader.ReadRequestLogsBodies(ctx, "client-req-own", false)
+	require.NoError(t, err)
+	require.Equal(t, "gateway-req-own", meta.RequestID)
+	require.Equal(t, "tenant-a", meta.TenantID)
+	require.JSONEq(t, `{"req":1}`, string(bodies.RequestBody))
+	require.JSONEq(t, `{"resp":1}`, string(bodies.ResponseBody))
+	require.JSONEq(t, `{"o":1}`, string(bodies.OutboundBody))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPGBodyReader_DefenseInDepth_TenantMismatch(t *testing.T) {
+	// Even if RLS/bypass GUCs widen the SQL view and the row comes back with a
+	// tenant_id different from the caller's scope, the post-scan check must
+	// still treat it as ErrNotFound.
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	metaCols := []string{
+		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
+	}
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1 AND tenant_id = \$2\s+LIMIT 1`).
+		WithArgs("client-req-defense", "tenant-a").
+		WillReturnRows(pgxmock.NewRows(metaCols).
+			AddRow("gateway-req-defense", "tenant-b", nil, nil, "m", "success", true, 10))
+
+	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
+		return nil, nil, nil
+	})}
+	ctx := requestdetail.WithLookupScope(context.Background(), requestdetail.LookupScope{TenantID: "tenant-a"})
+	_, _, err = reader.ReadRequestLogsBodies(ctx, "client-req-defense", false)
+	require.ErrorIs(t, err, requestdetail.ErrNotFound,
+		"defense-in-depth tenant mismatch must be ErrNotFound, got %v", err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPGBodyReader_SuperAdminSeesCrossTenant(t *testing.T) {
+	// Sanity: unrestricted (super_admin) callers still see cross-tenant rows.
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	metaCols := []string{
+		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
+	}
+	// No `AND tenant_id` predicate when scope is unrestricted.
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+		WithArgs("client-req-sa").
+		WillReturnRows(pgxmock.NewRows(metaCols).
+			AddRow("gateway-req-sa", "tenant-a", nil, nil, "m", "success", true, 10))
+	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+		WithArgs("gateway-req-sa").
+		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{}`))
+
+	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
+		return `{}`, `{}`, nil
+	})}
+	// Default LookupScope is unrestricted (no WithLookupScope called).
+	bodies, meta, err := reader.ReadRequestLogsBodies(context.Background(), "client-req-sa", false)
+	require.NoError(t, err)
+	require.Equal(t, "gateway-req-sa", meta.RequestID)
+	require.Equal(t, "tenant-a", meta.TenantID)
+	require.JSONEq(t, `{}`, string(bodies.RequestBody))
+	require.JSONEq(t, `{}`, string(bodies.ResponseBody))
+	require.JSONEq(t, `{}`, string(bodies.OutboundBody))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestReadSessionTurnsBodies_TenantScopeFiltersRows(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no,.*FROM public.session_turns_with_current_month t`).
+		WithArgs("req-turns-x", "tenant-a").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"session_id", "turn_no", "tenant_id", "request_delta", "response_delta", "outbound_body", "model", "latency_ms",
+		}))
+
+	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
+		return nil, nil, nil
+	})}
+	ctx := requestdetail.WithLookupScope(context.Background(), requestdetail.LookupScope{TenantID: "tenant-a"})
+	_, _, err = reader.ReadSessionTurnsBodies(ctx, "req-turns-x", false)
+	require.ErrorIs(t, err, requestdetail.ErrNotFound)
+	require.NoError(t, mock.ExpectationsWereMet())
 }

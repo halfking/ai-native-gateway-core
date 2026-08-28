@@ -2530,6 +2530,7 @@ func main() {
 			slog.Warn("request detail content store disabled", "dir", detailDir, "error", err)
 		} else {
 			requestdetail.SetGlobal(detailStore)
+			requestdetail.StartGlobalCaptureForwarder()
 			adminHandler.SetRequestDetailStore(detailStore)
 			slog.Info("request detail content store wired", "dir", detailDir)
 		}
@@ -6147,6 +6148,7 @@ func main() {
 			requestLogger.Stop()
 		}
 		telemetryClient.Stop()
+		requestdetail.StopGlobalCaptureForwarder()
 		// 2026-07-28 request-flow Step 3 (spec §6.3 + Step 3): session DBWriter
 		// 必须在 telemetryClient.Stop 之后、依赖（pools）关闭之前显式 Stop，
 		// 排空 flush loop。DBWriter.Stop 自身是 idempotent（sync.Once），
