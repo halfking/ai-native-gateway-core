@@ -153,13 +153,13 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	if err := validateRequestID(requestID); err != nil {
 		return filePayload{}, false, err
 	}
-	
+
 	// Hold lock only for eviction and path resolution (fast operations)
 	s.mu.Lock()
 	s.evictLocked(time.Now())
 	path := s.filePath(requestID)
 	s.mu.Unlock()
-	
+
 	// File I/O operations outside lock to avoid blocking concurrent reads
 	info, err := os.Stat(path)
 	if err != nil {
@@ -168,18 +168,18 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 		}
 		return filePayload{}, false, err
 	}
-	
+
 	// Check file size before reading to prevent OOM on oversized bodies
 	if info.Size() > MaxBodyFileSize {
 		return filePayload{}, false, fmt.Errorf("requestdetail: body file exceeds %d bytes", MaxBodyFileSize)
 	}
-	
+
 	// Check TTL expiration
 	if s.ttl > 0 && time.Since(info.ModTime()) >= s.ttl {
 		_ = os.Remove(path)
 		return filePayload{}, false, nil
 	}
-	
+
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
