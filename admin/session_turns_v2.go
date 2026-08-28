@@ -89,7 +89,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		       COALESCE(attachment_count,0)
 		FROM public.session_turns_with_current_month
 		WHERE tenant_id=$1 AND session_id=$2 AND turn_no < $3
-		ORDER BY turn_no DESC LIMIT $4`, tenantID, sessionID, beforeTurnNo, limit+1)
+		ORDER BY turn_no DESC LIMIT 50`, tenantID, sessionID, beforeTurnNo)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "serveSessionTurnsList query failed",
 			"session_id", sessionID, "tenant_id", tenantID,
