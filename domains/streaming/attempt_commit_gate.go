@@ -823,8 +823,12 @@ func isPartialTerminalFrame(protocol ClientProtocol, partial string) bool {
 // goroutine currently in the write side (e.g. checkpointStateAdvance
 // under WriteLock at line 461) and is not required for correctness.
 func (g *AttemptCommitGate) Discard() error {
-	g.writeMu.Lock()
-	defer g.writeMu.Unlock()
+	// mu-only acquisition: see lock-scope comment above. writeMu is omitted
+	// because (a) Discard performs no wire write, only resets in-memory state,
+	// and (b) Commit/WriteFrame/FinishAttempt/FlushHoldback all hold writeMu
+	// around their hook or wire-IO windows — adding writeMu here would deadlock
+	// any concurrent caller that is mid-hook (regression caught by
+	// TestAttemptCommitGateCommitReturnsDiscardedWhenDiscardWinsDuringHook).
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	bufferBytes := g.bufferLen
