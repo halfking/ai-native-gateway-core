@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -86,6 +87,8 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 			if len(bodies.OutboundBody) == 0 {
 				bodies.OutboundBody = sessionBodies.OutboundBody
 			}
+		} else if !errors.Is(sessionErr, requestdetail.ErrNotFound) {
+			return requestdetail.Bodies{}, requestdetail.Meta{}, sessionErr
 		}
 	}
 	if len(bodies.RequestBody) == 0 && len(bodies.ResponseBody) == 0 && len(bodies.OutboundBody) == 0 {
@@ -105,57 +108,64 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 		success            sql.NullBool
 		latencyMs          sql.NullInt32
 	)
+	scope := requestdetail.LookupScopeFromContext(ctx)
+	tenantClause := ""
+	args := []any{requestID}
+	if !scope.Unrestricted {
+		tenantClause = " AND tenant_id = $2"
+		args = append(args, scope.TenantID)
+	}
 
 	// 2026-08-27 OPTIMIZATION: Split OR into two separate queries for better index usage.
 	// The previous OR query prevented efficient index usage. Now we try request_id first
 	// (primary key lookup), then client_request_id if not found (indexed lookup).
 
 	// Try request_id first (should be fast - primary key or indexed lookup)
-	err := r.db.QueryRow(ctx, `
+	err := r.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT request_id, COALESCE(tenant_id, ''),
 		       gw_session_id, gw_task_id, client_model,
 		       request_status, success, latency_ms
 		  FROM request_logs_hot
-		 WHERE request_id = $1
+		 WHERE request_id = $1%s
 		 LIMIT 1
-	`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+	`, tenantClause), args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 
 	// If not found by request_id, try client_request_id
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = r.db.QueryRow(ctx, `
+		err = r.db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT request_id, COALESCE(tenant_id, ''),
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
 			  FROM request_logs_hot
-			 WHERE client_request_id = $1
+			 WHERE client_request_id = $1%s
 			 ORDER BY ts DESC
 			 LIMIT 1
-		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, tenantClause), args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	// If still not found in hot table, try partitioned table
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = r.db.QueryRow(ctx, `
+		err = r.db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT request_id, COALESCE(tenant_id, ''),
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
 			  FROM request_logs_with_current_month
-			 WHERE request_id = $1
+			 WHERE request_id = $1%s
 			 LIMIT 1
-		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, tenantClause), args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	// Try client_request_id in partitioned table
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = r.db.QueryRow(ctx, `
+		err = r.db.QueryRow(ctx, fmt.Sprintf(`
 			SELECT request_id, COALESCE(tenant_id, ''),
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
 			  FROM request_logs_with_current_month
-			 WHERE client_request_id = $1
+			 WHERE client_request_id = $1%s
 			 ORDER BY ts DESC
 			 LIMIT 1
-		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, tenantClause), args...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -323,7 +333,12 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
-	detail, err := h.requestDetailLocator.Get(r.Context(), requestID, omitBody)
+	ctx := r.Context()
+	ctx = requestdetail.WithLookupScope(ctx, requestdetail.LookupScope{
+		TenantID:     GetTenantID(r),
+		Unrestricted: IsSuperAdminOrLegacy(r),
+	})
+	detail, err := h.requestDetailLocator.Get(ctx, requestID, omitBody)
 	if errors.Is(err, requestdetail.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "request detail not found")
 		return

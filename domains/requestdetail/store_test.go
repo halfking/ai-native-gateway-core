@@ -301,3 +301,20 @@ func TestLocatorRequestLogsMetadataFallback(t *testing.T) {
 }
 
 func ptrStr(s string) *string { return &s }
+
+type sessionErrorBodies struct{}
+
+func (sessionErrorBodies) ReadRequestLogsBodies(_ context.Context, requestID string, _ bool) (Bodies, Meta, error) {
+	return Bodies{}, Meta{RequestID: requestID, TenantID: "tenant-a"}, ErrNotFound
+}
+
+func (sessionErrorBodies) ReadSessionTurnsBodies(context.Context, string, bool) (Bodies, Meta, error) {
+	return Bodies{}, Meta{}, context.DeadlineExceeded
+}
+
+func TestLocatorPropagatesSessionTurnErrors(t *testing.T) {
+	_, err := (&Locator{Bodies: sessionErrorBodies{}}).Get(context.Background(), "req-session-error", false)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected session error to propagate, got %v", err)
+	}
+}
