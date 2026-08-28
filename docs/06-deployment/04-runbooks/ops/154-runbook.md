@@ -179,6 +179,7 @@ ssh 154 'redis-cli dbsize'
 
 ### 9.4 "deploy 一启动就报 `local lock held`"
 - 报错形如: `ERROR: local lock held at /var/folders/.../T/kx-llm-gateway-deploy-154.lock`，下面打印持有者元数据 (target/source_user/source_host/pid/started_at/commit/version)。
+- `deploy-154.sh --force`（`--force-unlock` 兼容别名）会按顺序恢复 154 目标锁、共享构建锁和 154 远端锁，然后重新获取全部锁；它不是跳过锁。仅在确认旧部署不应继续运行时使用。
 - 先确认是不是真有另一个 154 deploy 在跑: 看目标锁元数据里的 `pid` 和 `started_at`。
   - **pid 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
   - **pid 已死 / 是另一个 repo checkout 的陈旧锁** → 用 `--force-unlock`:
@@ -209,7 +210,7 @@ ssh 154 'redis-cli dbsize'
     bash scripts/deploy-lib/unlock-remote.sh 154 --force    # 确认无误后删
     ```
   - 默认模式 (无 `--force`) 仅读 metadata 报告持有者，**不删**；加了 `--force` 才 `rm -rf` 远端锁目录。
-  - 与本地 helper 不同：远端 holder 的 PID 在远端机器上，本机无法可靠 kill，所以 `--force` 只清锁、**不杀进程**；若 metadata 里的 PID 仍存活，helper 会在 stderr 提示你手动 SSH 进去 `kill`。
+  - 与本地 helper 不同：远端 metadata 中的 PID 是发起部署进程的本机 PID，不是 154 上的 PID；`--force` 只清锁、**不杀远端进程**。执行前必须从发起机确认该部署进程已结束。
   - sanity check：metadata 里的 `target` 必须与传入的 `<target>` 一致 (154 vs 245)，不一致直接拒绝 (防止 SSH 连错主机误删别人的锁)。
   - 校验入口：`scripts/deploy-lib/test/test-unlock-remote.sh` (14 路 stub e2e，可在无真实 SSH 的情况下回归)。
 
