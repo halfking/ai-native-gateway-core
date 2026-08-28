@@ -407,6 +407,10 @@ type AnthropicToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
 
+// NativeResponsesSSEFunc forwards an already-native OpenAI Responses SSE stream
+// without converting it through the Chat Completions bridge.
+type NativeResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture) StreamOutcome
+
 // AnthropicToChatResponseFunc is the non-stream counterpart that
 // converts an Anthropic Messages JSON body into an OpenAI
 // chat.completion JSON body. Wired from main.go.
@@ -571,6 +575,9 @@ type Executor struct {
 	// "openai-responses". Wired from main.go via
 	// streaming.StreamOpenAIToResponsesSSE.
 	OpenAIToResponsesStream OpenAIToResponsesSSEFunc
+	// NativeResponsesStream forwards a verified native Responses SSE stream
+	// without converting it through the Chat bridge.
+	NativeResponsesStream NativeResponsesSSEFunc
 	// AnthropicToChatResponse is the Q3 non-stream counterpart:
 	// converts an Anthropic Messages JSON body into an OpenAI
 	// chat.completion JSON body. Used by executeAnthropic when

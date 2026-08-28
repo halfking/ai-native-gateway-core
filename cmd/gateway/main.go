@@ -1494,6 +1494,9 @@ func main() {
 			return outcome
 		}
 		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+		routingExec.NativeResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, cap *audit.StreamCapture) executors.StreamOutcome {
+			return streaming.StreamNativeResponsesSSE(ctx, w, resp, requestID, cap)
+		}
 		routingExec.OpenAIToResponsesStream = func(
 			ctx context.Context,
 			w http.ResponseWriter,

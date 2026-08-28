@@ -370,7 +370,10 @@ func (e *Executor) executeOpenAI(
 	}
 
 	nativeNonStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponses && !params.IsStream
-	if cand.Protocol == "openai-responses" && (params.IsStream || !cand.SupportsNativeResponses) {
+	nativeStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponsesStream && params.IsStream
+	if cand.Protocol == "openai-responses" &&
+		((params.IsStream && (!cand.SupportsNativeResponsesStream || e.NativeResponsesStream == nil)) ||
+			(!params.IsStream && !cand.SupportsNativeResponses)) {
 		return nil, &upstreampkg.Error{
 			Kind:       errorsx.KindUnsupportedFeature,
 			Message:    "native Responses transport is not enabled for this request",
@@ -380,7 +383,7 @@ func (e *Executor) executeOpenAI(
 
 	sourceBody := append([]byte(nil), params.BodyBytes...)
 	var bodyBytes []byte
-	if nativeNonStream {
+	if nativeNonStream || nativeStream {
 		sourceBody = append([]byte(nil), params.ResponsesBodyBytes...)
 		if len(sourceBody) == 0 {
 			return nil, &upstreampkg.Error{
@@ -500,7 +503,7 @@ func (e *Executor) executeOpenAI(
 			switch {
 			case cand.Protocol == "anthropic-messages":
 				upstreamURL = upstreamurl.MessagesURL(cand.BaseURL)
-			case nativeNonStream:
+			case nativeNonStream || nativeStream:
 				upstreamURL = upstreamurl.ResponsesURL(cand.BaseURL)
 			default:
 				upstreamURL = upstreamurl.ChatCompletionsURL(cand.BaseURL)
@@ -1090,32 +1093,36 @@ func (e *Executor) executeOpenAI(
 				// writer，让 upstream body 照常读入 params.Capture 而不
 				//触碰已失效的客户端连接。
 				streamSink := responseSink(params)
-				switch {
-				case e.OpenAIToAnthropicStream != nil &&
-					params.ClientProtocol == "anthropic-messages" &&
-					cand.Protocol != "anthropic-messages":
-					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
-					streamOutcome = e.OpenAIToAnthropicStream(
-						params.R.Context(), streamSink, resp,
-						params.ClientModel, outboundModel,
-						diagnosticRequestID(params),
-						params.Capture, nil,
-					)
-				case e.OpenAIToResponsesStream != nil &&
-					params.ClientProtocol == "openai-responses" &&
-					cand.Protocol != "anthropic-messages":
-					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
-					streamOutcome = e.OpenAIToResponsesStream(
-						params.R.Context(), streamSink, resp,
-						params.ClientModel, outboundModel,
-						diagnosticRequestID(params),
-						params.Capture, nil,
-					)
-				case params.StreamWrapper != nil:
-					streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
-				case e.StreamChat != nil:
-					// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
-					streamOutcome = e.StreamChat(params.R.Context(), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+				if nativeStream {
+					streamOutcome = e.NativeResponsesStream(params.R.Context(), streamSink, resp, diagnosticRequestID(params), params.Capture)
+				} else {
+					switch {
+					case e.OpenAIToAnthropicStream != nil &&
+						params.ClientProtocol == "anthropic-messages" &&
+						cand.Protocol != "anthropic-messages":
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.OpenAIToAnthropicStream(
+							params.R.Context(), streamSink, resp,
+							params.ClientModel, outboundModel,
+							diagnosticRequestID(params),
+							params.Capture, nil,
+						)
+					case e.OpenAIToResponsesStream != nil &&
+						params.ClientProtocol == "openai-responses" &&
+						cand.Protocol != "anthropic-messages":
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.OpenAIToResponsesStream(
+							params.R.Context(), streamSink, resp,
+							params.ClientModel, outboundModel,
+							diagnosticRequestID(params),
+							params.Capture, nil,
+						)
+					case params.StreamWrapper != nil:
+						streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
+					case e.StreamChat != nil:
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.StreamChat(params.R.Context(), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+					}
 				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)

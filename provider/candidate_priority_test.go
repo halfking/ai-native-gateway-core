@@ -51,6 +51,22 @@ func TestCandidateNativeResponsesCapabilityContract(t *testing.T) {
 	}
 }
 
+func TestCandidateNativeResponsesStreamCapabilityContract(t *testing.T) {
+	field, ok := reflect.TypeOf(Candidate{}).FieldByName("SupportsNativeResponsesStream")
+	if !ok {
+		t.Fatal("Candidate must expose SupportsNativeResponsesStream")
+	}
+	if field.Type.Kind() != reflect.Bool {
+		t.Fatalf("Candidate.SupportsNativeResponsesStream type = %s, want bool", field.Type)
+	}
+	if field.Tag.Get("json") != "supports_native_responses_stream,omitempty" {
+		t.Fatalf("unexpected JSON tag %q", field.Tag.Get("json"))
+	}
+	if (Candidate{}).SupportsNativeResponsesStream {
+		t.Fatal("native Responses stream capability must default to false")
+	}
+}
+
 func TestCandidateNativeResponsesCapabilityDBRead(t *testing.T) {
 	src := readProviderFile(t, "client.go")
 	for _, needle := range []string{
@@ -58,6 +74,9 @@ func TestCandidateNativeResponsesCapabilityDBRead(t *testing.T) {
 		"cmcap.credential_model_binding_id = mo.id",
 		"cmcap.capability = 'native_responses_nonstream'",
 		"COALESCE(cmcap.supported, FALSE) AS supports_native_responses",
+		"LEFT JOIN credential_model_capabilities cmstream",
+		"cmstream.capability = 'native_responses_stream'",
+		"COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("candidate query must contain %s", needle)
