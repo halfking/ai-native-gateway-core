@@ -1202,5 +1202,57 @@ fi
 
 ---
 
+## 13. 实地核实补充 (2026-08-28, 代码级核对)
+
+> 第 1~12 节基于 OmniRoute 行为的概括性还原；本节是对 `/Users/xutaohuang/workspace/ai/OmniRoute`
+> 源码（`open-sse/services/compression/`）的实际核对，修正若干近似表述，供实现侧参考。
+
+### 13.1 引擎与模式数量（修正 §1.1）
+
+- **实际为 13 个引擎**（`engines/index.ts` 注册表），非"12+"：
+  `session-dedup(3) / ccr(4) / lite(5) / rtk(10) / codex-responses(12) / ionizer(13) /
+  headroom(15) / relevance(18) / caveman(20) / aggressive(30) / llmlingua(35) / llm(38) /
+  ultra(40) / omniglyph(90)`（括号内为 `stackPriority`）。
+- **9 种模式**（`CompressionMode`）：`off / lite / standard(=caveman) / aggressive / ultra /
+  rtk / codex-responses / omniglyph / stacked`。`standard` 即 caveman；`stacked` 跑有序的
+  `CompressionEngineId` 管道。
+
+### 13.2 Caveman 规则数（修正 §1.1.3）
+
+实际为 **306 条规则**（8 语言），非"150+"。`engineCatalog` 标注 `caveman full` 约 30% 节省。
+
+### 13.3 自适应升级阶梯（修正 §2.1 的 `escalationSteps` 近似）
+
+OmniRoute 真实实现（`adaptiveCompression/ladder.ts`）并非"阈值→模式"的离散阶梯，而是：
+
+1. 按 `policy`（`reserve-output` / `percentage` / `absolute`）从**模型上下文窗口**推导
+   `targetTokens`：`reserve-output`（默认）= `limit − max_tokens − safetyMargin`；
+   `percentage`= `limit × pct`（默认 0.85）；`absolute`= 固定预算。
+2. `headroomBefore >= 0` → **不压缩**（与本文§2.1 及 llm-gateway-go 的 `NeverOverCompress` 一致）。
+3. 否则沿 `DEFAULT_LADDER` 从最便宜档逐级升级，用 `REDUCTION_FACTOR` 廉价估算每档压缩后体量，
+   直到拟合 `targetTokens`。`REDUCTION_FACTOR`（便宜估算）：session-dedup 0.95 / ccr 0.9 /
+   rtk 0.85 / ionizer 0.83 / headroom 0.8 / lite 0.92 / relevance 0.75 / caveman 0.7 /
+   aggressive 0.55 / llmlingua 0.5 / llm 0.45 / ultra 0.4 / omniglyph 0.35。
+4. `fit==false` 时仍发送尽力而为计划，内容**绝不丢弃**（仅告警）。
+
+**llm-gateway-go 对应实现**：`strategy.AdaptiveSelector`（`selector_adaptive.go`）采用同一思想——
+`BudgetFn` 由 `est.ThresholdBytes(contextWindow)` 提供预算，`EscalationProfile.ReductionFactor()`
+提供每策略预估压缩率（lite 0.92 / toolfocused 0.85 / caveman 0.70），按 `CostTier` 升序升级，
+`NeverOverCompress` 保证预算内不压缩。
+
+### 13.4 其它已核实要点
+
+- **Cache-aware 降级**：支持 prompt caching 的 provider（Anthropic/OpenAI/Codex），`aggressive`/
+  `ultra` 会被降级为 `standard` 并置 `skipSystemPrompt=true`，保护可缓存前缀（OmniRoute #3955）。
+  llm-gateway-go 当前未实现此降级，但 `A-track` 始终保留 system（等价保护）。
+- **Hard-budget post-pass**（`hardBudget.ts`）：所有引擎跑完后确定性地按句/行显著性裁剪到 N token，
+  匹配 `UNIT_PRESERVE_RE`（数字/URL/错误/代码块/栈帧/路径/key=value）的内容**绝不丢弃**。
+- **Fail-open 每一档**：任何引擎抛错 → 跳过该档而非丢弃目标（对应 llm-gateway-go 的 NeverWorse 守卫）。
+- **Token 估算**：`CHARS_PER_TOKEN = 4` 启发式（Codex 走 tiktoken 精确值）；PNG 由 IHDR 解码真实 token。
+- **Fidelity eval**（`eval/fidelityCheck.ts`）：USD 封顶的 LLM judge，输出 `SAME` / `MATERIALLY_DIFFERS`，
+  含 CONTROL_PAIR 自检，属运营级 A/B 能力，非算法可直移植入 Go。
+
+---
+
 **文档结束** - 2026-08-28  
 **下一步**: 根据本文档设计算法选择机制，并实施 245 log benchmark
