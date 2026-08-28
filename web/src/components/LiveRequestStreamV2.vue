@@ -60,6 +60,7 @@ const {
   mode: laneMode,
   setMode: setLaneMode,
   lanes,
+  filterSourceLanes,
   selectedLegends,
   legendItems,
   statusLegendItems,
@@ -92,10 +93,10 @@ const {
   modelFilterSelected,
   providerFilterSelected,
   vendorFilterSelected,
-  agentFilterSelected,
-  activeFilterCount,
-  filteredLanes,
-} = useLiveStreamFilters({ lanes })
+    agentFilterSelected,
+    activeFilterCount,
+    filteredLanes,
+  } = useLiveStreamFilters({ lanes: filterSourceLanes })
 
 // 2026-07-24: 筛选弹窗状态（保留在组件内，仅 UI 控制）
 const filterDialog = ref<'status' | 'model' | 'provider' | 'vendor' | 'agent' | null>(null)
