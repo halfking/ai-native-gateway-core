@@ -100,7 +100,7 @@ type fakeBodies struct {
 	meta         map[string]Meta
 }
 
-func (f *fakeBodies) ReadRequestLogsBodies(_ context.Context, requestID string) (Bodies, Meta, error) {
+func (f *fakeBodies) ReadRequestLogsBodies(_ context.Context, requestID string, omitBody bool) (Bodies, Meta, error) {
 	if f.meta == nil {
 		f.meta = map[string]Meta{}
 	}
@@ -115,7 +115,7 @@ func (f *fakeBodies) ReadRequestLogsBodies(_ context.Context, requestID string) 
 	return b, m, nil
 }
 
-func (f *fakeBodies) ReadSessionTurnsBodies(_ context.Context, requestID string) (Bodies, Meta, error) {
+func (f *fakeBodies) ReadSessionTurnsBodies(_ context.Context, requestID string, omitBody bool) (Bodies, Meta, error) {
 	if f.sessionTurns == nil {
 		return Bodies{}, Meta{}, ErrNotFound
 	}
@@ -125,3 +125,152 @@ func (f *fakeBodies) ReadSessionTurnsBodies(_ context.Context, requestID string)
 	}
 	return b, Meta{RequestID: requestID}, nil
 }
+
+// partialMetaBodies simulates the DB returning request_logs metadata when the
+// body row is missing (TTL purge, partial persistence, historical migration).
+// requestLogsMeta records which ids still have metadata even though their
+// body row was dropped; requestLogs keeps ids that still have bodies.
+type partialMetaBodies struct {
+	requestLogs      map[string]Bodies
+	requestLogsMeta  map[string]Meta
+	sessionTurns     map[string]Bodies
+}
+
+func (f *partialMetaBodies) ReadRequestLogsBodies(_ context.Context, requestID string, omitBody bool) (Bodies, Meta, error) {
+	if b, ok := f.requestLogs[requestID]; ok {
+		m := f.requestLogsMeta[requestID]
+		if m.RequestID == "" {
+			m.RequestID = requestID
+		}
+		return b, m, nil
+	}
+	if m, ok := f.requestLogsMeta[requestID]; ok {
+		// Mirror pgBodyReader: keep the metadata and surface ErrNotFound so
+		// the locator can fall back to session_turns / metadata-only.
+		return Bodies{}, m, ErrNotFound
+	}
+	return Bodies{}, Meta{}, ErrNotFound
+}
+
+func (f *partialMetaBodies) ReadSessionTurnsBodies(_ context.Context, requestID string, omitBody bool) (Bodies, Meta, error) {
+	if f.sessionTurns == nil {
+		return Bodies{}, Meta{}, ErrNotFound
+	}
+	b, ok := f.sessionTurns[requestID]
+	if !ok {
+		return Bodies{}, Meta{}, ErrNotFound
+	}
+	return b, Meta{RequestID: requestID}, nil
+}
+
+// TestLocatorRequestLogsMetadataFallback covers the case where request_logs
+// still has the metadata row but its body row is gone. The locator should:
+// 1) fall back to session_turns bodies if available, merging the metadata,
+// 2) otherwise return a metadata-only detail (not 404) with a Warning,
+// 3) still return ErrNotFound when neither store has any signal at all.
+func TestLocatorRequestLogsMetadataFallback(t *testing.T) {
+	t.Run("session_turns_supplies_body_when_request_logs_body_missing", func(t *testing.T) {
+		reqID := "req-meta-fb-001"
+		reader := &partialMetaBodies{
+			requestLogsMeta: map[string]Meta{
+				reqID: {RequestID: reqID, TenantID: "tenant-a"},
+			},
+			sessionTurns: map[string]Bodies{
+				reqID: {RequestBody: json.RawMessage(`{"prompt":"hi"}`)},
+			},
+		}
+		loc := &Locator{Bodies: reader}
+		d, err := loc.Get(context.Background(), reqID, false)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if d.Source != SourceSessionTurns {
+			t.Fatalf("expected session_turns source, got %s", d.Source)
+		}
+		if d.Persistence != PersistencePersisted {
+			t.Fatalf("expected persisted, got %s", d.Persistence)
+		}
+		if d.Meta.TenantID != "tenant-a" {
+			t.Fatalf("merged meta lost tenant: %+v", d.Meta)
+		}
+		if d.Bodies == nil || string(d.Bodies.RequestBody) == "" {
+			t.Fatalf("expected session_turns body, got %+v", d.Bodies)
+		}
+		if d.Warning != "" {
+			t.Fatalf("did not expect warning, got %q", d.Warning)
+		}
+	})
+
+	t.Run("metadata_only_when_both_bodies_missing", func(t *testing.T) {
+		reqID := "req-meta-fb-002"
+		reader := &partialMetaBodies{
+			requestLogsMeta: map[string]Meta{
+				reqID: {RequestID: reqID, TenantID: "tenant-b", Status: ptrStr("success")},
+			},
+		}
+		loc := &Locator{Bodies: reader}
+		d, err := loc.Get(context.Background(), reqID, false)
+		if err != nil {
+			t.Fatalf("metadata-only should not error, got: %v", err)
+		}
+		if d == nil {
+			t.Fatal("expected metadata-only detail, got nil")
+		}
+		if d.Source != SourceRequestLogs {
+			t.Fatalf("expected request_logs source, got %s", d.Source)
+		}
+		if d.Persistence != PersistencePersisted {
+			t.Fatalf("expected persisted, got %s", d.Persistence)
+		}
+		if d.Meta.TenantID != "tenant-b" {
+			t.Fatalf("metadata not returned: %+v", d.Meta)
+		}
+		if d.Bodies != nil {
+			t.Fatalf("expected nil bodies, got %+v", d.Bodies)
+		}
+		if d.Warning == "" {
+			t.Fatal("expected warning for metadata-only fallback")
+		}
+	})
+
+	t.Run("not_found_when_neither_store_has_signal", func(t *testing.T) {
+		reader := &partialMetaBodies{}
+		loc := &Locator{Bodies: reader}
+		_, err := loc.Get(context.Background(), "req-meta-fb-missing", false)
+		if !errors.Is(err, ErrNotFound) {
+			t.Fatalf("expected ErrNotFound, got %v", err)
+		}
+	})
+
+	t.Run("omit_body_returns_metadata_only_without_querying_bodies", func(t *testing.T) {
+		reqID := "req-meta-fb-003"
+		// Session turns has bodies, but omitBody=true must skip loading them.
+		// We assert this by leaving the session_turns map nil — if the locator
+		// tries to read bodies the call would still succeed (no rows) but the
+		// stronger guarantee is that the returned Detail has no Bodies.
+		reader := &partialMetaBodies{
+			requestLogs: map[string]Bodies{
+				reqID: {RequestBody: json.RawMessage(`{"x":1}`), ResponseBody: json.RawMessage(`{"y":2}`)},
+			},
+			requestLogsMeta: map[string]Meta{
+				reqID: {RequestID: reqID, TenantID: "tenant-c"},
+			},
+		}
+		loc := &Locator{Bodies: reader}
+		d, err := loc.Get(context.Background(), reqID, true)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if d.Source != SourceRequestLogs {
+			t.Fatalf("expected request_logs, got %s", d.Source)
+		}
+		if d.Bodies != nil {
+			t.Fatalf("omit_body=true must not populate bodies, got %+v", d.Bodies)
+		}
+		if d.Warning != "" {
+			t.Fatalf("did not expect warning when bodies exist, got %q", d.Warning)
+		}
+	})
+}
+
+func ptrStr(s string) *string { return &s }
