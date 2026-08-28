@@ -153,11 +153,14 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	if err := validateRequestID(requestID); err != nil {
 		return filePayload{}, false, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.evictLocked(time.Now())
 	
+	// Hold lock only for eviction and path resolution (fast operations)
+	s.mu.Lock()
+	s.evictLocked(time.Now())
 	path := s.filePath(requestID)
+	s.mu.Unlock()
+	
+	// File I/O operations outside lock to avoid blocking concurrent reads
 	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
