@@ -1322,7 +1322,8 @@ func (e *Executor) executeOpenAI(
 			// before stripVendorFields. MiniMax wraps errors in HTTP 200
 			// responses with {base_resp: {status_code: non-0, status_msg}}.
 			// If we strip base_resp first, the error signal is permanently lost.
-			if cand.CatalogCode == "minimax" {
+			catalogCode := strings.ToLower(strings.TrimSpace(cand.CatalogCode))
+			if catalogCode == "minimax" || catalogCode == "" {
 				if code, msg, isErr := parseMiniMaxBaseResp(respBody); isErr {
 					kind := classifyMiniMaxStatusCode(code)
 					return nil, &upstreampkg.Error{

@@ -159,7 +159,7 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 	textAccMode := textAccProbing
 
 	// First-byte timeout
-	firstLine, err := readLineWithTimeout(ctx, reader, runtimeCfg.firstByteTimeout)
+	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
