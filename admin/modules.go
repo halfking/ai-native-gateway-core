@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -860,7 +861,7 @@ func (h *Handler) handleModulesToggle(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Enabled bool `json:"enabled"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := jsonbody.DecodeRequest(r, &body, jsonbody.MaxRequiredBody, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}

@@ -1224,19 +1224,24 @@ func main() {
 					markCapturedPendingInProgress(pendingStore, resp, tenantID)
 				}
 				var stripFn func([]byte) []byte
-				switch catalogCode {
+				vendorCode := strings.ToLower(strings.TrimSpace(catalogCode))
+				switch vendorCode {
 				case "doubao":
 					stripFn = streaming.StripDoubaoFieldsBody
 				case "minimax":
 					stripFn = streaming.StripMinimaxFieldsBody
+				case "zhipu", "glm":
+					stripFn = streaming.StripZhipuFieldsBody
+				case "deepseek":
+					stripFn = streaming.StripDeepSeekFieldsBody
 				}
 				diagnostics := &streaming.DiagnosticContext{
 					RawLogger: routingExec.RawDataLogger,
 					Anomaly:   routingExec.AnomalyReporter,
 					Semantic:  routingExec.SemanticAnalyzer,
 				}
-				outcome := streaming.StreamChatWithPendingCaptureAndDiagnostics(
-					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, diagnostics,
+				outcome := streaming.StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
+					ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, vendorCode, pc, diagnostics,
 				)
 				saveCapturedPending(pendingStore, pc, resp, tenantID)
 				return outcome
