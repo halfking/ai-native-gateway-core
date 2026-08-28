@@ -60,9 +60,12 @@ type CandidateFailureAlert struct {
 
 // CandidateFailureMonitor runs the alert + auto-cool loop. nil-safe.
 type CandidateFailureMonitor struct {
-	db     *pgxpool.Pool
-	cancel context.CancelFunc
-	done   chan struct{}
+	db      *pgxpool.Pool
+	cancel  context.CancelFunc
+	done    chan struct{}
+	stateMu sync.Mutex
+	started bool
+	stopped bool
 
 	interval           time.Duration
 	alertThresh        int
@@ -114,16 +117,34 @@ func NewCandidateFailureMonitor(db *pgxpool.Pool) *CandidateFailureMonitor {
 }
 
 func (m *CandidateFailureMonitor) Start(ctx context.Context) {
+	m.stateMu.Lock()
+	if m.started || m.stopped {
+		m.stateMu.Unlock()
+		return
+	}
+	m.started = true
 	ctx, m.cancel = context.WithCancel(ctx)
+	m.stateMu.Unlock()
 	go m.run(ctx)
 	slog.Info("candidate_failure_monitor started")
 }
 
 func (m *CandidateFailureMonitor) Stop() {
-	if m.cancel != nil {
-		m.cancel()
+	m.stateMu.Lock()
+	if m.stopped {
+		m.stateMu.Unlock()
+		return
 	}
-	<-m.done
+	m.stopped = true
+	cancel := m.cancel
+	started := m.started
+	m.stateMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if started {
+		<-m.done
+	}
 }
 
 func (m *CandidateFailureMonitor) run(ctx context.Context) {

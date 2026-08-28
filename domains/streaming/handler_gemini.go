@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -183,9 +183,17 @@ func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Step 2: Read the request body (Gemini format)
-	bodyBytes, err := io.ReadAll(r.Body)
+	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
 	if err != nil {
-		writeGeminiError(w, http.StatusBadRequest, "failed to read body")
+		status := http.StatusBadRequest
+		message := "failed to read body"
+		if len(bodyBytes) > maxBodySize {
+			status = http.StatusRequestEntityTooLarge
+			message = "request body exceeds gateway limit"
+		} else if errors.Is(err, context.DeadlineExceeded) {
+			message = "request body read timed out"
+		}
+		writeGeminiError(w, status, message)
 		return
 	}
 	_ = r.Body.Close()

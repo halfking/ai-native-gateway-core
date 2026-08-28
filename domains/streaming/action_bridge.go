@@ -244,7 +244,11 @@ func (b *ActionBridge) pump(src <-chan liveactions.ActionEvent) {
 					return
 				}
 			}
-		case ev := <-src:
+		case ev, ok := <-src:
+			if !ok {
+				src = nil
+				continue
+			}
 			b.dispatch(ev)
 		case ev := <-b.events:
 			b.dispatch(ev)
