@@ -7,9 +7,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
@@ -22,10 +24,11 @@ func (h *Handler) SetRequestDetailStore(store *requestdetail.Store) {
 		h.requestDetailLocator = nil
 		return
 	}
-	h.requestDetailLocator = &requestdetail.Locator{
-		Store:  store,
-		Bodies: &pgBodyReader{db: h.db, fetch: h},
+	locator := &requestdetail.Locator{Store: store}
+	if h.db != nil {
+		locator.Bodies = &pgBodyReader{db: h.db, fetch: h}
 	}
+	h.requestDetailLocator = locator
 }
 
 type bodyFetcher interface {
@@ -42,7 +45,8 @@ type pgBodyReader struct {
 }
 
 func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID string, omitBody bool) (requestdetail.Bodies, requestdetail.Meta, error) {
-	meta, err := r.loadRequestLogMeta(ctx, requestID)
+	scope := requestdetail.LookupScopeFromContext(ctx)
+	meta, err := r.loadRequestLogMeta(ctx, requestID, scope)
 	if err != nil {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, err
 	}
@@ -98,7 +102,7 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 	return bodies, meta, nil
 }
 
-func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string) (requestdetail.Meta, error) {
+func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string, scope requestdetail.LookupScope) (requestdetail.Meta, error) {
 	var (
 		canonicalRequestID string
 		tenantID           string
@@ -110,6 +114,25 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 		latencyMs          sql.NullInt32
 	)
 
+	// 2026-08-28 (audit follow-up, request-detail tenant gate):
+	// tenant-scoped lookups MUST be enforced inside SQL, not just at the HTTP
+	// handler. Otherwise a tenant_admin can still trip a cross-tenant collision
+	// when:
+	//   - tenant A and tenant B both wrote a row whose canonical request_id is
+	//     shared (rare; usually via shared upstream id) but client_request_id
+	//     collides more often because clients control that value.
+	//   - the request_id path matches a row owned by another tenant.
+	//
+	// The HTTP handler still applies its post-fetch 404 gate (defense in depth);
+	// SQL-level tenant filtering prevents the wrong row from ever being
+	// scanned/serialized on the path.
+	tenantClause := ""
+	tenantArgs := []any(nil)
+	if !scope.Unrestricted {
+		tenantClause = " AND tenant_id = $2"
+		tenantArgs = []any{scope.TenantID}
+	}
+
 	// 2026-08-27 OPTIMIZATION: Split OR into two separate queries for better index usage.
 	// The previous OR query prevented efficient index usage. Now we try request_id first
 	// (primary key lookup), then client_request_id if not found (indexed lookup).
@@ -120,9 +143,9 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 		       gw_session_id, gw_task_id, client_model,
 		       request_status, success, latency_ms
 		  FROM request_logs_hot
-		 WHERE request_id = $1
+		 WHERE request_id = $1`+tenantClause+`
 		 LIMIT 1
-	`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+	`, append([]any{requestID}, tenantArgs...)...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 
 	// If not found by request_id, try client_request_id
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -131,10 +154,10 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
 			  FROM request_logs_hot
-			 WHERE client_request_id = $1
+			 WHERE client_request_id = $1`+tenantClause+`
 			 ORDER BY ts DESC
 			 LIMIT 1
-		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, append([]any{requestID}, tenantArgs...)...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	// If still not found in hot table, try partitioned table
@@ -144,9 +167,9 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
 			  FROM request_logs_with_current_month
-			 WHERE request_id = $1
+			 WHERE request_id = $1`+tenantClause+`
 			 LIMIT 1
-		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, append([]any{requestID}, tenantArgs...)...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	// Try client_request_id in partitioned table
@@ -156,10 +179,10 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 			       gw_session_id, gw_task_id, client_model,
 			       request_status, success, latency_ms
 			  FROM request_logs_with_current_month
-			 WHERE client_request_id = $1
+			 WHERE client_request_id = $1`+tenantClause+`
 			 ORDER BY ts DESC
 			 LIMIT 1
-		`, requestID).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
+		`, append([]any{requestID}, tenantArgs...)...).Scan(&canonicalRequestID, &tenantID, &gwSessionID, &gwTaskID, &clientModel, &status, &success, &latencyMs)
 	}
 
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -167,6 +190,13 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 	}
 	if err != nil {
 		return requestdetail.Meta{}, err
+	}
+	// 2026-08-28 (audit follow-up): when the SQL lookup was tenant-scoped, the
+	// returned tenant_id is the row's stored tenant. A non-empty mismatch with
+	// the caller's scope would only happen if RLS/role bypass GUCs widened the
+	// view — defense in depth: refuse to leak a cross-tenant row.
+	if !scope.Unrestricted && (scope.TenantID == "" || tenantID == "" || tenantID != scope.TenantID) {
+		return requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
 	meta := requestdetail.Meta{RequestID: canonicalRequestID, TenantID: tenantID}
 	if gwSessionID.Valid {
@@ -193,7 +223,11 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (json.RawMessage, error) {
 	var raw []byte
 
-	// 2026-08-27 OPTIMIZATION: Try hot table first, then fall back to partitioned table
+	// Body tables are intentionally tenant-neutral after migration 604. The
+	// canonical request ID was resolved through a tenant-scoped metadata query;
+	// use that immutable identity for the body lookup rather than duplicating a
+	// removed tenant_id column in the body schema.
+	// 2026-08-27 OPTIMIZATION: Try hot table first, then fall back to partitioned bodies table
 	err := r.db.QueryRow(ctx, `
 		SELECT outbound_body::text
 		  FROM request_logs_bodies_hot
@@ -220,6 +254,9 @@ func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (
 	if len(raw) == 0 {
 		return nil, nil
 	}
+	if int64(len(raw)) > requestdetail.MaxBodyFileSize {
+		return nil, fmt.Errorf("%w: %d bytes (limit %d)", requestdetail.ErrBodyTooLarge, len(raw), requestdetail.MaxBodyFileSize)
+	}
 	return json.RawMessage(raw), nil
 }
 
@@ -234,29 +271,50 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 		model         sql.NullString
 		latencyMs     sql.NullInt32
 	)
-	if omitBody {
-		return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrNotFound
+	// 2026-08-28 (audit follow-up): session_turns already joins on
+	// tenant_id; for restricted lookups, pin t.tenant_id to the caller's scope
+	// so a cross-tenant row never enters the result set, then double-check
+	// after scan as defense-in-depth.
+	scope := requestdetail.LookupScopeFromContext(ctx)
+	tenantClause := ""
+	tenantArg := ""
+	if !scope.Unrestricted {
+		tenantClause = " AND t.tenant_id = $2"
+		tenantArg = scope.TenantID
 	}
 
-	err := r.db.QueryRow(ctx, `
-		SELECT t.session_id, t.turn_no, t.tenant_id,
-		       b.request_delta, b.response_delta, b.outbound_body,
-		       t.model, t.latency_ms
-		  FROM public.session_turns_with_current_month t
+	bodyColumns := "NULL::text, NULL::text, NULL::text"
+	bodyJoin := ""
+	if !omitBody {
+		bodyColumns = "b.request_delta, b.response_delta, b.outbound_body"
+		bodyJoin = `
 		  LEFT JOIN public.session_bodies b
 		    ON b.tenant_id = t.tenant_id
 		   AND b.session_id = t.session_id
 		   AND b.turn_no = t.turn_no
-		   AND b.partition_date = t.partition_date
-		 WHERE t.request_id = $1
+		   AND b.partition_date = t.partition_date`
+	}
+	args := []any{requestID}
+	if !scope.Unrestricted {
+		args = append(args, tenantArg)
+	}
+	err := r.db.QueryRow(ctx, `
+		SELECT t.session_id, t.turn_no, t.tenant_id,
+		       `+bodyColumns+`,
+		       t.model, t.latency_ms
+		  FROM public.session_turns_with_current_month t`+bodyJoin+`
+		 WHERE t.request_id = $1`+tenantClause+`
 		 ORDER BY t.ts DESC NULLS LAST
 		 LIMIT 1
-	`, requestID).Scan(&sessionID, &turnNo, &tenantID, &requestDelta, &responseDelta, &outboundBody, &model, &latencyMs)
+	`, args...).Scan(&sessionID, &turnNo, &tenantID, &requestDelta, &responseDelta, &outboundBody, &model, &latencyMs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
 	if err != nil {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, err
+	}
+	if !scope.Unrestricted && (scope.TenantID == "" || tenantID == "" || tenantID != scope.TenantID) {
+		return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
 	meta := requestdetail.Meta{
 		RequestID:   requestID,
@@ -318,7 +376,8 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
-	ctx := r.Context()
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
 	ctx = requestdetail.WithLookupScope(ctx, requestdetail.LookupScope{
 		TenantID:     GetTenantID(r),
 		Unrestricted: IsSuperAdminOrLegacy(r),
