@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -285,7 +284,7 @@ func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, pro
 		Status string `json:"status"`
 	}
 	// body optional; default to "active"
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = readJSONRequired(r, &req)
 	if req.Status == "" {
 		req.Status = "active"
 	}

@@ -86,6 +86,43 @@ func TestAttemptCommitGateBuffersMetadataUntilSemanticCommit(t *testing.T) {
 	}
 }
 
+func TestAttemptCommitGateCommitReturnsDiscardedWhenDiscardWinsDuringHook(t *testing.T) {
+	f := &trackingFlusher{}
+	hookEntered := make(chan struct{})
+	releaseHook := make(chan struct{})
+	g := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode: GateModeBuffered,
+		BeforeSemanticCommit: func(_ context.Context, state CommitState) error {
+			if state != CommitStateMetadata {
+				t.Errorf("checkpoint state = %v, want metadata", state)
+			}
+			close(hookEntered)
+			<-releaseHook
+			return nil
+		},
+	})
+	meta := "event: message_start\ndata: {}\n\n"
+	if err := g.WriteFrame(meta); err != nil {
+		t.Fatal(err)
+	}
+
+	commitErr := make(chan error, 1)
+	go func() { commitErr <- g.Commit() }()
+	<-hookEntered
+
+	if err := g.Discard(); err != nil {
+		t.Fatalf("Discard during checkpoint hook: %v", err)
+	}
+	close(releaseHook)
+
+	if err := <-commitErr; !errors.Is(err, ErrAttemptDiscarded) {
+		t.Fatalf("Commit after concurrent Discard = %v, want ErrAttemptDiscarded", err)
+	}
+	if got := f.buf.String(); got != "" {
+		t.Fatalf("discarded attempt flushed old content: %q", got)
+	}
+}
+
 func TestAttemptCommitGateConcurrentWritesDoNotDropFrames(t *testing.T) {
 	gate, writer := newGateForTest(GateModeImmediate)
 	const writers = 100

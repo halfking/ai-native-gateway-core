@@ -2,7 +2,10 @@
   "name": "llm-gateway-web",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.29.2",
   "scripts": {
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
     "dev": "vite",
     "build": "node scripts/export-menu-config.mjs && vite build",
     "preview": "vite preview",

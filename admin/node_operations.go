@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -149,7 +150,7 @@ func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Req
 	var req struct {
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, 4096, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -326,7 +327,7 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req nodeEnableRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}

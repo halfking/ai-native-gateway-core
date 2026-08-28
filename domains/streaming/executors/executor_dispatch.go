@@ -241,7 +241,7 @@ func dispatchExecutionContext(params *ExecParams) (context.Context, context.Canc
 		return context.WithCancel(context.Background())
 	}
 	if params.IsStream && params.StreamSurvivesClientCancel {
-		return context.WithCancel(context.WithoutCancel(params.R.Context()))
+		return context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
 	}
 	return context.WithCancel(params.R.Context())
 }
@@ -580,6 +580,10 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		}
 
 		healthEvidence = true
+		if cand.Protocol == "openai-responses" && !cand.SupportsNativeResponses {
+			execErr = fmt.Errorf("native Responses upstream capability is not enabled")
+			return
+		}
 		switch cand.Protocol {
 		case "anthropic-messages":
 			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)

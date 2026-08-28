@@ -38,6 +38,56 @@ var upstreamCredentialKeys = []string{
 	MsgUpstreamQuotaGeneric,
 }
 
+// allMessageKeys is the union of every user-facing code the gateway can emit.
+// Kept in sync with the Msg* constants in messages.go so a new key that is
+// referenced at runtime but never added to a locale catalog fails CI instead
+// of silently falling back to English or the raw key.
+var allMessageKeys = []string{
+	MsgMissingKey,
+	MsgInvalidKey,
+	MsgMissingAuth,
+	MsgRateLimitExceeded,
+	MsgBudgetExhausted,
+	MsgInsufficientCredits,
+	MsgSessionForbidden,
+	MsgSessionAssignFailed,
+	MsgBlocked,
+	MsgContentFilter,
+	MsgContentFilterHint,
+	MsgNoCandidate,
+	MsgInvalidModel,
+	MsgUnsupportedFeature,
+	MsgModelDeprecated,
+	MsgMetaToolError,
+	MsgProviderError,
+	MsgUpstreamCredentialInvalid,
+	MsgUpstreamCredentialRevoked,
+	MsgUpstreamQuotaPeriodic,
+	MsgUpstreamQuotaPermanent,
+	MsgUpstreamQuotaBalance,
+	MsgUpstreamQuotaGeneric,
+	MsgInternalError,
+}
+
+// TestLocaleCatalogsCoverAllMessageKeys asserts every shipped locale carries
+// its OWN translation for every runtime-referenced message key.
+//
+// This is the generalized sibling of
+// TestLocaleCatalogsCoverUpstreamCredentialKeys. It reads the embedded catalog
+// directly (see localeCatalogKeys) because T() silently falls back to English
+// for a key a locale lacks, so a T()-based assertion cannot tell "translated"
+// from "missing and served in English".
+func TestLocaleCatalogsCoverAllMessageKeys(t *testing.T) {
+	for _, loc := range Supported() {
+		keys := localeCatalogKeys(t, loc)
+		for _, key := range allMessageKeys {
+			if _, ok := keys[key]; !ok {
+				t.Errorf("locale %s: catalog is missing key %q (T() would silently serve English/raw key)", loc, key)
+			}
+		}
+	}
+}
+
 // localeCatalogKeys reads the embedded catalog for loc and returns its
 // top-level message keys.
 //

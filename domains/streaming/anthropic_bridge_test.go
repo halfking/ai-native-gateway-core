@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
@@ -395,6 +396,26 @@ func TestStreamOpenAIToAnthropicSSE_OtherSideClosedIsNetworkError(t *testing.T) 
 	assert.Equal(t, errorsx.KindNetwork, out.Kind)
 	assert.True(t, out.Resumable)
 	assert.NotContains(t, rec.Body.String(), `"text":"hello"`)
+}
+
+func TestStreamAnthropicSSEToOpenAI_SignatureDeltaRetainedAndObserved(t *testing.T) {
+	body := strings.Join([]string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_sig\",\"model\":\"claude-opus-4-8\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_opaque_123\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+	}, "")
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil)}
+	rec := httptest.NewRecorder()
+	capture := audit.NewStreamCapture()
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-signature", capture, nil)
+	require.False(t, out.Interrupted, "signature_delta must not interrupt the bridge: %+v", out)
+	wire := rec.Body.String()
+	assert.NotContains(t, wire, "sig_opaque_123", "opaque Anthropic signature must not be forged into OpenAI wire")
+	flags := capture.SummaryAsMap()["quality_flags"]
+	assert.Contains(t, flags, "anthropic_signature_delta:f961f12556af3c7b")
 }
 
 func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing.T) {

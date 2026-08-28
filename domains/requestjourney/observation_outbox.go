@@ -62,7 +62,11 @@ type ObservationOutbox struct {
 	cancel      context.CancelFunc
 }
 
-func newObservationOutbox(db observationOutboxDB, pg, redis journeyEventWriter, owner string) *ObservationOutbox {
+// NewObservationOutbox constructs the durable write-ahead queue used by a
+// Recorder in PostgreSQL-backed deployments. It returns nil when the required
+// database or PostgreSQL projector is unavailable; callers can then retain the
+// memory-only recorder mode.
+func NewObservationOutbox(db observationOutboxDB, pg, redis journeyEventWriter, owner string) *ObservationOutbox {
 	if db == nil || pg == nil {
 		return nil
 	}
@@ -78,7 +82,9 @@ func newObservationOutbox(db observationOutboxDB, pg, redis journeyEventWriter, 
 	}
 }
 
-func (o *ObservationOutbox) start() {
+// Start begins the immediate-and-periodic outbox delivery worker. It is
+// idempotent; a closed outbox is terminal and cannot be restarted.
+func (o *ObservationOutbox) Start() {
 	if o == nil {
 		return
 	}
@@ -283,6 +289,9 @@ func (o *ObservationOutbox) claim(ctx context.Context, tenantID, requestID strin
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit request journey observation claim: %w", err)
 	}
+	for range claims {
+		recordObservationOutboxClaim()
+	}
 	return claims, nil
 }
 
@@ -335,6 +344,7 @@ func (o *ObservationOutbox) deliver(ctx context.Context, claim claimedObservatio
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit request journey observation acknowledgement: %w", err)
 	}
+	recordObservationOutboxAck()
 	return nil
 }
 
@@ -368,6 +378,7 @@ func (o *ObservationOutbox) release(ctx context.Context, claim claimedObservatio
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit request journey observation retry: %w", err)
 	}
+	recordObservationOutboxRetry("projection")
 	return nil
 }
 
@@ -384,17 +395,17 @@ func (o *ObservationOutbox) Close(ctx context.Context) error {
 		close(o.stop)
 	}
 	started := o.started
+	// Cancel in-flight work promptly; unacknowledged rows remain durable for
+	// lease-based recovery by the next process.
+	o.cancel()
 	o.lifecycleMu.Unlock()
 	if !started {
-		o.cancel()
 		return nil
 	}
 	select {
 	case <-o.done:
-		o.cancel()
 		return nil
 	case <-ctx.Done():
-		o.cancel()
 		return ctx.Err()
 	}
 }

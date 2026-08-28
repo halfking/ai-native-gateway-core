@@ -148,3 +148,39 @@
 - 如果不需要：直接 `git checkout main && git pull --rebase && git merge
   --no-ff fix/streaming-ursm-audit-closeout-20260828`，手工解决 11
   个 SafeHGetAll 三方冲突即可。
+
+## 13. 2026-08-29 复核 session 发现（closeout 之后）
+
+接手 handoff 后续工作时，工作树处于半截 rebase 状态：
+- 10 个 SafeHGetAll 三方冲突文件保留 conflict marker（`domains/session/{preprocess/redis_store,v2/cache_v2_redis}.go`、`domains/stats/boardcache/store.go`、`domains/streaming/anthropic_bridge.go`、`domains/ursm/v2/migration/{classify,cleanup,metadata,metadata_redis,preflight,preflight_scan}.go`），索引仍为 3-stage unmerged；用 `git checkout-index --stage=2 --force` 取 HEAD（ours）版本清掉了冲突；
+- 257 个 main 侧 staged 改动属于协作方未完成 rebase 的残留；用 `git reset HEAD && git checkout -- .` 清除；
+- 自有陈旧 stash `audit-closeout-premerge-20260829` 内容（删除审计第二轮新增的 `attempt_commit_gate_followup_test.go` 等 + `responses_bridge.go` 加法）已被 `ee438de9c` / `f97c8eeda` 等 commit 覆盖；`git stash drop` 丢弃。
+
+复核验证结论：
+
+- 6 个本轮 commit 的代码改动与审计报告 §P1/P2 一致：SafeHGetAllPipeline、PipelineNodeViews、readAndDrainErrorBody、Gated Commit 一次性、Finish+Commit 成功路径、`retryableActionKind` 加入 `KindUpstreamDown`、`FatalCredential`/`AttemptCount` 短路、streaming 保留 `taskActionForKind` legacy 表等；
+- 静态检查：`go vet ./domains/streaming/... ./domains/streaming/executors/... ./errorsx/... ./domains/dispatch/... ./internal/redis/... ./domains/ursm/v2/... ./settings/... ./domains/credential/...` 全部 clean；
+- 测试：errorsx、internal/redis、domains/dispatch、domains/ursm/v2/*、settings、domains/credential 全部 `-count=1 -race` 通过；streaming 包内 §P1/P2 新增的 4 个回归测试（`TestAttemptCommitGateCommitCheckpointRunsOncePerState`、`TestAttemptCommitGateCheckpointAdvancesOnce`、`TestSurvivalCoordinatorFlushesSuccessfulTrailingPartial`、`TestReadAndDrainErrorBody_ReadErrorStillDrainsTail`）全部通过。
+
+与 §10 "全部通过" 声明的偏差（重要）：
+
+`domains/streaming/` 包下 4 个测试在 HEAD `6b1159bb4` 的干净克隆里**预先失败**，与本会话无关：
+
+1. `TestStreamAnthropicPassthrough_BytesForPassThrough`
+2. `TestStreamAnthropicPassthrough_ForwardsUnterminatedFinalFrame`
+3. `TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk`
+4. `TestStreamAnthropicSSEToResponsesEmptyMessageIsRetryable`
+
+测试期望 `out.Interrupted == false`，但 `StreamAnthropicPassthroughWithDiagnostics` 在 `message_stop + 无 semantic output` 路径返回 `Interrupted=true` 走 `empty_response`（main 上 `32d64f8ea` "anthropic bridge emittedContent + signature digest + attempt gate race" 落地后的语义行为）。审计基线 worktree 隐含地包含 `32d64f8ea` 的桥接语义修复，但本分支 HEAD 未合入。
+
+main 集成 PR 中需同步处理：
+- 选项 A：把 `32d64f8ea` 的语义修复 cherry-pick 到本分支，再让 4 个测试保持现状；
+- 选项 B：把 4 个测试的 `assert.False(out.Interrupted)` 改为 `assert.True(out.Interrupted) && Reason=="empty_response"`，与 `47795e6cf` 的 empty-response 检测语义对齐。
+
+建议选 A，与 main 的 fast-forward 同步减少差异。
+
+工作树最终状态（接手 → 复核后）：
+- HEAD：`6b1159bb4`，未新增 commit；
+- 工作树：clean（tracked modifications 已 checkout 回 HEAD）；
+- stash：仅协作方的 `stash@{0}`（在 `main` 上，harness 未触碰）；
+- 协作方未跟踪 WIP 文件（`selector_adaptive.go`、`capture_forwarder.go`、`compression_strategy.go` 等 17 个）原样保留在工作区；这些文件破坏了 `go build ./...` 和 `go test ./domains/streaming/`，本轮验证时临时移到 `/tmp/wip-stash/` 完成 build/test，跑完已放回原位。main 集成前需要协作方决定是否保留。

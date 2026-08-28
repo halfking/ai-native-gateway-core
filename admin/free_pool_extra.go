@@ -497,11 +497,11 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 	}
 	//nolint:errcheck // best-effort close
 	defer createResp.Body.Close()
-		if createResp.StatusCode != http.StatusOK && createResp.StatusCode != http.StatusCreated {
-			bodyBytes, err := readLimitedBody(createResp.Body, maxProbeErrorBytes)
-			if err != nil {
-				bodyBytes = []byte(err.Error())
-			}
+	if createResp.StatusCode != http.StatusOK && createResp.StatusCode != http.StatusCreated {
+		bodyBytes, err := readLimitedBody(createResp.Body, maxProbeErrorBytes)
+		if err != nil {
+			bodyBytes = []byte(err.Error())
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     false,
@@ -527,11 +527,11 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 	}
 	//nolint:errcheck // best-effort close
 	defer tokenResp.Body.Close()
-		if tokenResp.StatusCode != http.StatusOK && tokenResp.StatusCode != http.StatusCreated {
-			bodyBytes, err := readLimitedBody(tokenResp.Body, maxProbeErrorBytes)
-			if err != nil {
-				bodyBytes = []byte(err.Error())
-			}
+	if tokenResp.StatusCode != http.StatusOK && tokenResp.StatusCode != http.StatusCreated {
+		bodyBytes, err := readLimitedBody(tokenResp.Body, maxProbeErrorBytes)
+		if err != nil {
+			bodyBytes = []byte(err.Error())
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     false,
@@ -768,6 +768,8 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 		if status == 200 || status == 401 || status == 403 {
 			modelCount := 0
 			models := []string{}
+			var errorDetail string
+
 			if status == 200 {
 				body, err := readLimitedBody(resp.Body, maxProbeResponseBytes)
 				if err != nil {
@@ -797,27 +799,37 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 					}
 					modelCount = len(rows)
 				}
+			} else {
+				// Read error body for 401/403 to provide better diagnostics
+				bodyBytes, _ := readLimitedBody(resp.Body, maxProbeErrorBytes)
+				errorDetail = string(bodyBytes)
 			}
 			//nolint:errcheck // best-effort close
 			resp.Body.Close()
 
+			// 403 with a key means invalid/expired key, should fail the probe
 			authOK := status == 200 || (status == 401 && strings.TrimSpace(apiKey) == "")
 			if strings.TrimSpace(apiKey) != "" && status == 200 {
 				authOK = true
 			}
 			var authValid *bool
 			if strings.TrimSpace(apiKey) != "" {
+				// 403 means invalid key, not just unauthorized
 				b := status == 200
 				authValid = &b
 			}
-			return map[string]any{
+			result := map[string]any{
 				"ok":          authOK,
 				"status_code": status,
 				"probe_url":   url,
 				"model_count": modelCount,
 				"models":      models,
 				"auth_valid":  authValid,
-			}, nil
+			}
+			if errorDetail != "" {
+				result["error"] = errorDetail[:min(200, len(errorDetail))]
+			}
+			return result, nil
 		}
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		//nolint:errcheck // best-effort close
@@ -920,6 +932,7 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		ProbeFirst       bool     `json:"probe_first"`
 		Save             bool     `json:"save"`
 		NoAPIKeyRequired bool     `json:"no_api_key_required"`
+		ForceSkipProbe   bool     `json:"force_skip_probe"` // 跳过探活检查，强制保存（用于 GFW 环境）
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -957,23 +970,34 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 	if req.ProbeFirst && strings.TrimSpace(req.BaseURL) != "" {
 		p, _ := probeOpenAICompatibleBase(req.BaseURL, req.APIKey, 10*time.Second)
 		probeResult = p
-		if strings.TrimSpace(req.APIKey) != "" {
-			if authValid, ok := probeResult["auth_valid"].(bool); ok && !authValid {
+
+		// 如果设置了 ForceSkipProbe，跳过探活检查，仅记录探活结果用于诊断
+		if !req.ForceSkipProbe {
+			if strings.TrimSpace(req.APIKey) != "" {
+				if authValid, ok := probeResult["auth_valid"].(bool); ok && !authValid {
+					statusCode, _ := probeResult["status_code"].(int)
+					errMsg := "API Key 探活未通过，请检查 base_url 与 Key"
+					if statusCode == 403 {
+						errMsg = "API Key 无效或已过期（403 Forbidden），请检查 Key 是否正确。如果确认 Key 有效但因网络环境无法探活（如 GFW），可勾选「强制跳过探活」直接保存"
+					} else if statusCode == 401 {
+						errMsg = "API Key 认证失败（401 Unauthorized），请检查 Key 格式"
+					}
+					writeJSON(w, http.StatusOK, map[string]any{
+						"status": "probe_failed",
+						"probe":  probeResult,
+						"error":  errMsg,
+					})
+					return
+				}
+			}
+			if !probeOK(probeResult) && strings.TrimSpace(req.APIKey) != "" {
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status": "probe_failed",
 					"probe":  probeResult,
-					"error":  "API Key 探活未通过，请检查 base_url 与 Key",
+					"error":  "端点不可达或 Key 无效。如果确认配置正确但因网络环境无法探活（如 GFW），可勾选「强制跳过探活」直接保存",
 				})
 				return
 			}
-		}
-		if !probeOK(probeResult) && strings.TrimSpace(req.APIKey) != "" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"status": "probe_failed",
-				"probe":  probeResult,
-				"error":  "端点不可达或 Key 无效",
-			})
-			return
 		}
 	}
 

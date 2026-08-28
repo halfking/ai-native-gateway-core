@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
-	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // Mode describes the k2 schema mode for the Redis key layout (doc 14 §3).
@@ -259,7 +259,7 @@ func (m *MetadataLuaStore) Initialize(ctx context.Context, in Metadata) error {
 		return fmt.Errorf("ursm.v2: initialize migration metadata mode: %w", err)
 	}
 	deadline := rollbackDeadlineWire(in.RollbackDeadline)
-	result, err := redissafe.RunScript(ctx, m.rdb, metadataIdentityWriteScript, "metadata_identity_write.lua", []string{m.key()},
+	result, err := metadataIdentityWriteScript.Run(ctx, m.rdb, []string{m.key()},
 		in.Owner, in.LedgerID, schemaMode.String(), strconv.FormatInt(in.CutoverEpoch, 10),
 		in.StartedAt.UTC().Format(time.RFC3339Nano), in.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		in.PreflightChecksum, string(in.Checkpoint), deadline).Text()
@@ -278,12 +278,16 @@ func (m *MetadataLuaStore) Read(ctx context.Context) (Metadata, error) {
 	if m == nil || m.rdb == nil {
 		return Metadata{}, fmt.Errorf("ursm.v2: migration metadata requires redis")
 	}
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the metadata key collides with a non-hash type. ErrKeyNotFound
+	// is collapsed into the existing redis.Nil return below (the original
+	// contract: 'metadata not yet initialized' is the caller-facing signal).
 	values, err := redissafe.SafeHGetAll(ctx, m.rdb, m.key())
 	if err != nil {
 		if errors.Is(err, redissafe.ErrKeyNotFound) {
 			return Metadata{}, redis.Nil
 		}
-		return Metadata{}, fmt.Errorf("ursm.v2: read migration metadata: %w", err)
+		return Metadata{}, err
 	}
 	if len(values) == 0 {
 		return Metadata{}, redis.Nil

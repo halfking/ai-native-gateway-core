@@ -183,8 +183,8 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 	if task.Command == "node_probe" && w.cfg.ProbeService != nil {
 		result, err := w.cfg.ProbeService.Run(ctx, task)
 		if err != nil {
-			if errors.Is(err, ErrProbeOutOfScope) {
-				slog.Info("probe_service skipped out-of-scope task", "queue_id", task.ID)
+			if errors.Is(err, ErrProbeOutOfScope) || errors.Is(err, ErrProbeAutomaticIneligible) {
+				slog.Info("probe_service skipped task", "queue_id", task.ID, "reason", result.ReasonCode)
 				w.complete(ctx, task, result)
 				return
 			}

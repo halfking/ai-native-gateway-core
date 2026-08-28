@@ -22,6 +22,8 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/reasoncap"
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
 // Apply runs all param-guard rules for the given dialect and returns the
@@ -51,6 +53,14 @@ func Apply(body []byte, dialect paramreg.Dialect) []byte {
 	// Temperature cap per dialect applies only when the field survives the
 	// thinking rule above.
 	modified = fixTemperatureCap(obj, dialect) || modified
+
+	// These provider rules operate on the final OpenAI-shaped body. They are
+	// intentionally model-gated so unknown/new models retain forward-compatible
+	// fields rather than being silently rewritten.
+	modified = fixOpenAIOTokens(obj, dialect) || modified
+	modified = fixGLMToolChoice(obj, dialect) || modified
+	modified = fixMiniMaxN(obj, dialect) || modified
+	modified = fixReasoningEffort(obj, dialect) || modified
 
 	// Grok only rejects these controls on reasoning models. The raw model is
 	// carried in the body and is the compatibility signal available here.
@@ -228,6 +238,141 @@ func isGrokReasoningModel(obj map[string]json.RawMessage) bool {
 	}
 	model = strings.ToLower(model)
 	return strings.HasPrefix(model, "grok-3-mini") || strings.HasPrefix(model, "grok-4")
+}
+
+// fixOpenAIOTokens converts the legacy token alias for o-series models.
+// OpenAI rejects max_tokens on these models; an explicit completion-token
+// value wins when both aliases are present.
+func fixOpenAIOTokens(obj map[string]json.RawMessage, dialect paramreg.Dialect) bool {
+	if dialect != paramreg.DialectOpenAIChat || !isOpenAIOSeries(obj) {
+		return false
+	}
+	legacy, hasLegacy := obj["max_tokens"]
+	_, hasExplicit := obj["max_completion_tokens"]
+	if !hasLegacy && !hasExplicit {
+		return false
+	}
+	if hasExplicit {
+		if hasLegacy {
+			delete(obj, "max_tokens")
+			return true
+		}
+		return false
+	}
+	obj["max_completion_tokens"] = legacy
+	delete(obj, "max_tokens")
+	return true
+}
+
+func isOpenAIOSeries(obj map[string]json.RawMessage) bool {
+	model, ok := stringField(obj, "model")
+	if !ok {
+		return false
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	return model == "o1" || model == "o3" || model == "o4" ||
+		strings.HasPrefix(model, "o1-") || strings.HasPrefix(model, "o3-") || strings.HasPrefix(model, "o4-")
+}
+
+// fixGLMToolChoice normalises GLM's narrower tool_choice contract.
+func fixGLMToolChoice(obj map[string]json.RawMessage, dialect paramreg.Dialect) bool {
+	if dialect != paramreg.DialectGLM {
+		return false
+	}
+	raw, ok := obj["tool_choice"]
+	if !ok {
+		return false
+	}
+	var choice string
+	if json.Unmarshal(raw, &choice) == nil && choice == "auto" {
+		return false
+	}
+	obj["tool_choice"] = json.RawMessage(`"auto"`)
+	return true
+}
+
+// fixMiniMaxN enforces MiniMax's single-completion contract.
+func fixMiniMaxN(obj map[string]json.RawMessage, dialect paramreg.Dialect) bool {
+	if dialect != paramreg.DialectMiniMax {
+		return false
+	}
+	raw, ok := obj["n"]
+	if !ok {
+		return false
+	}
+	var n int
+	if json.Unmarshal(raw, &n) == nil && n == 1 {
+		return false
+	}
+	obj["n"] = json.RawMessage(`1`)
+	return true
+}
+
+// fixReasoningEffort narrows effort values only when the raw model is known to
+// have a target effort capability. Unknown models are left untouched.
+func fixReasoningEffort(obj map[string]json.RawMessage, dialect paramreg.Dialect) bool {
+	rawEffort, ok := obj["reasoning_effort"]
+	if !ok || dialect == paramreg.DialectUnknown {
+		return false
+	}
+	effort, ok := stringValue(rawEffort)
+	if !ok || effort == "" {
+		return false
+	}
+	model, ok := stringField(obj, "model")
+	if !ok {
+		return false
+	}
+	caps := reasoncap.Resolve(nil, model, nil)
+	if !caps.Supported || len(caps.Efforts) == 0 {
+		return false
+	}
+	// The capability table is authoritative for model names. Apply only when
+	// its wire dialect matches the outgoing family to avoid cross-provider edits.
+	if !reasonDialectMatchesParamDialect(caps.Dialect, dialect) {
+		return false
+	}
+	clamped := reasonnorm.ClampEffort(effort, caps.Efforts)
+	if clamped == "" || clamped == effort {
+		return false
+	}
+	encoded, err := json.Marshal(clamped)
+	if err != nil {
+		return false
+	}
+	obj["reasoning_effort"] = encoded
+	return true
+}
+
+func reasonDialectMatchesParamDialect(reasonDialect reasoncap.Dialect, dialect paramreg.Dialect) bool {
+	switch reasonDialect {
+	case reasoncap.DialectOpenAI:
+		return dialect == paramreg.DialectOpenAIChat
+	case reasoncap.DialectGrok:
+		return dialect == paramreg.DialectGrok
+	case reasoncap.DialectMistral:
+		return dialect == paramreg.DialectMistral
+	case reasoncap.DialectKimiEffort:
+		return dialect == paramreg.DialectKimi
+	default:
+		return false
+	}
+}
+
+func stringField(obj map[string]json.RawMessage, key string) (string, bool) {
+	raw, ok := obj[key]
+	if !ok {
+		return "", false
+	}
+	return stringValue(raw)
+}
+
+func stringValue(raw json.RawMessage) (string, bool) {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

@@ -1345,6 +1345,13 @@ func writeErrorWithCode(w http.ResponseWriter, status int, code, msg string) {
 	})
 }
 
+func readJSONRequired(r *http.Request, v any) error {
+	if r == nil || r.Body == nil {
+		return jsonbody.ErrEmptyBody
+	}
+	return readJSON(r, v)
+}
+
 func readJSON(r *http.Request, v any) error {
 	if r == nil || r.Body == nil {
 		return nil

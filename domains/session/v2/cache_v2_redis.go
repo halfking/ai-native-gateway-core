@@ -16,9 +16,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -104,15 +103,23 @@ func (r *RedisGovernanceCache) Get(ctx context.Context, tenantID, sessionID stri
 
 	key := redisKeyV2(tenantID, sessionID)
 
-	// Use SafeHGetAll so a non-hash key surfaces a typed error instead of a
-	// raw WRONGTYPE panic from go-redis.
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the manifest key collides with a non-hash Redis type (some admin
+	// tools SET the same key during live debugging). SafeHGetAll performs
+	// a TYPE guard before HGETALL and surfaces a TypedError on type mismatch.
+	// Both ErrKeyNotFound (key absent) and empty map (key present but empty)
+	// are valid cache-miss signals — preserved from the original code path.
 	data, err := redissafe.SafeHGetAll(ctx, r.client, key)
-	if errors.Is(err, redissafe.ErrKeyNotFound) || len(data) == 0 {
-		return nil, nil // Cache miss (not an error)
-	}
 	if err != nil {
-		// Redis error, log and return nil (fail-open)
-		return nil, fmt.Errorf("redis hgetall: %w", err)
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, nil // Cache miss (not an error)
+		}
+		// TypedError (WRONGTYPE) or genuine network error — log and
+		// return nil (fail-open semantics preserved from the original).
+		return nil, fmt.Errorf("redis safe hgetall: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, nil // Cache miss (not an error)
 	}
 
 	// Parse fields into GovernanceMeta

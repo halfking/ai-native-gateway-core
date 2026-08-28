@@ -12,6 +12,8 @@ package streaming
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,56 +86,6 @@ func applyClientDisconnectOutcome(outcome *StreamOutcome, clientWriter *clientSt
 		outcome.Reason = "client_disconnected"
 	} else {
 		outcome.Reason = "client_write_failed"
-	}
-}
-
-// anthropicPayloadHasSemanticOutput reports whether one native Anthropic data
-// payload contains output that a client could use. Protocol envelopes and
-// usage/stop metadata deliberately do not count as a successful response.
-func streamChunkHasSemanticOutput(chunk *ir.StreamChunk) bool {
-	if chunk == nil || chunk.Delta == nil {
-		return false
-	}
-	if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" || chunk.Delta.ThinkingSignature != "" || chunk.Delta.AudioDelta != nil {
-		return true
-	}
-	for _, call := range chunk.Delta.ToolCalls {
-		if call.ID != "" || call.Name != "" || call.Arguments != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func anthropicPayloadHasSemanticOutput(payload string) bool {
-	var envelope struct {
-		Type         string `json:"type"`
-		ContentBlock struct {
-			Type string `json:"type"`
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"content_block"`
-		Delta struct {
-			Type        string `json:"type"`
-			Text        string `json:"text"`
-			Thinking    string `json:"thinking"`
-			PartialJSON string `json:"partial_json"`
-		} `json:"delta"`
-	}
-	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
-		return false
-	}
-	switch envelope.Type {
-	case "content_block_delta":
-		return envelope.Delta.Text != "" || envelope.Delta.Thinking != "" || envelope.Delta.PartialJSON != ""
-	case "content_block_start":
-		switch envelope.ContentBlock.Type {
-		case "tool_use", "server_tool_use", "web_search_tool_result", "redacted_thinking":
-			return envelope.ContentBlock.ID != "" || envelope.ContentBlock.Name != ""
-		}
-		return false
-	default:
-		return false
 	}
 }
 
@@ -263,11 +215,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	}
 
 	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
-	hasSemanticOutput := false
-	messageStopReceived := false
-
 	// P1-2 fix (2026-08-28): ctx is now a function parameter, no need to redeclare.
-
 	// Use the passed ctx directly; fallback to resp.Request.Context() is no longer needed
 	// since the caller provides the authoritative context.
 	runtimeCfg := currentStreamRuntimeConfig()
@@ -418,14 +366,6 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
 			continue
 		}
-		if dataPayload != "" {
-			var envelope struct {
-				Type string `json:"type"`
-			}
-			if json.Unmarshal([]byte(dataPayload), &envelope) == nil && envelope.Type == "message_stop" {
-				messageStopReceived = true
-			}
-		}
 		if dataPayload != "" && isAnthropicErrorPayload(dataPayload) {
 			// Standalone error payload (relay omitted the event: line).
 			if pc != nil {
@@ -448,9 +388,6 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		if capture != nil && isDataLine {
 			observeAnthropicPayload(capture, dataPayload, clientModel, outboundModel)
 		}
-		if isDataLine && anthropicPayloadHasSemanticOutput(dataPayload) {
-			hasSemanticOutput = true
-		}
 
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
 		if err == io.EOF {
@@ -465,24 +402,39 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// Interrupted on the completed-upstream exit — the pending capturer needs
 	// a completed replay body (see pending_disconnect_test.go /
 	// TestStreamAnthropicPassthroughContinuesAfterClientDisconnect).
-	// A disconnected client must not turn a successfully captured stream into
-	// an empty-response retry; pending replay owns that recovery path.
-	if !clientWriter.clientDisconnected && messageStopReceived && !hasSemanticOutput {
-		outcome = StreamOutcome{
+
+	// audit-24h-20260828-r4 CRITICAL: anthropic stream empty-response parity
+	// with the non-stream detector at executor_anthropic.go:1273. The earlier
+	// r3 patch (c6ab79105) only wired this check into
+	// domains/transformation/anthropic/anthropic_passthrough_stream.go, which
+	// is NOT on the live Q4 hot path — the production entry point is
+	// StreamAnthropicPassthroughWithDiagnostics (cmd/gateway/main.go:1269
+	// wires StreamAnthropicPassthrough → here). Without this guard, an
+	// upstream that returns message_start + message_stop with zero
+	// content_block_* events is recorded as a successful empty stream and
+	// never fails over.
+	//
+	// Strict check mirrors the r3 transformation-path semantics: chunkCount==0
+	// AND (capture is nil OR both OutputTokens and InputTokens are nil). Usage
+	// tokens alone do NOT count as content — matching non-stream semantics
+	// (isEmptyAnthropicMessagesResponse checks content array length).
+	if chunkCount == 0 && (capture == nil || (capture.OutputTokens == nil && capture.InputTokens == nil)) {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("anthropic_empty_response")
+		}
+		if pc != nil {
+			pc.markInterrupted("anthropic_empty_response")
+		}
+		return StreamOutcome{
 			Interrupted: true,
-			Reason:      "empty_response",
+			Reason:      "anthropic_empty_response",
 			Kind:        errorsx.KindEmptyResponse,
 			Resumable:   true,
-			ChunkCount:  chunkCount,
+			ChunkCount:  0,
 		}
-		if capture != nil {
-			capture.MarkInterruptedWithReason(outcome.Reason)
-		}
-		return outcome
 	}
 	outcome.ChunkCount = chunkCount
 	return outcome
-
 }
 
 // finalizePassthroughInterruption renders the gateway's own Anthropic error
@@ -789,7 +741,11 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		currentToolCallID   string
 		initialArgsSent     bool
 		messageStopReceived bool
-		hasSemanticOutput   bool
+		emittedContent      bool
+		// Anthropic signature_delta has no OpenAI Chat Completions wire
+		// representation. Keep the opaque token in bridge-local state and
+		// expose only a stable digest to audit; never invent an OpenAI field.
+		thinkingSignatures = make(map[int]string)
 	)
 
 	clientWriter := newClientStreamWriter(w, flusher)
@@ -801,25 +757,34 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		if chunk == nil {
 			return
 		}
-		if streamChunkHasSemanticOutput(chunk) {
-			hasSemanticOutput = true
-		}
 
 		sseLine := chunk.SerializeOpenAI(chatID, chunkModel, createdAt)
 		// Count converted tool calls as emitted evidence before the write:
 		// a client disconnect must not look like the gateway dropped them.
 		diagnosticCollector.observeEmittedChunk(chunk)
-		clientWriter.write(sseLine)
+		written := clientWriter.write(sseLine)
 
+		// The translated chunk is part of client-visible accounting only when
+		// the write/flush succeeded. The pending capture still receives the
+		// translated frame after a disconnect so it can be replayed.
 		if pc != nil {
 			pc.append(sseLine)
 		}
 
 		if capture != nil {
 			capture.ObserveChunk(chunk)
+			if written {
+				capture.RecordChunkSent()
+			}
 		}
 
-		chunkCount++
+		if written {
+			chunkCount++
+			if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil &&
+				(chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" || len(chunk.Delta.ToolCalls) > 0) {
+				emittedContent = true
+			}
+		}
 	}
 
 	flushBufferedText := func() {
@@ -1079,6 +1044,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							Text        string `json:"text"`
 							Thinking    string `json:"thinking"`
 							PartialJSON string `json:"partial_json"`
+							Signature   string `json:"signature"`
 						} `json:"delta"`
 					}
 					if err := json.Unmarshal(data, &evt); err == nil {
@@ -1096,7 +1062,15 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
 							}
 						case "signature_delta":
-							_ = evt.Delta
+							if evt.Delta.Signature != "" {
+								thinkingSignatures[evt.Index] = evt.Delta.Signature
+								if capture != nil {
+									// The token is opaque and must not be logged. A digest
+									// makes presence/identity observable without exposing it.
+									digest := sha256.Sum256([]byte(evt.Delta.Signature))
+									capture.AddQualityFlag("anthropic_signature_delta:" + hex.EncodeToString(digest[:8]))
+								}
+							}
 						default:
 							slog.Warn("unknown_delta_type_in_stream",
 								"delta_type", evt.Delta.Type,
@@ -1155,15 +1129,11 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		case ir.ChunkTypeDone:
 			messageStopReceived = true
 			flushBufferedText()
-			if !hasSemanticOutput {
-				outcome = StreamOutcome{Interrupted: true, Reason: "empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
+			if !emittedContent && inputTokens == 0 && outputTokens == 0 {
 				if capture != nil {
-					capture.MarkInterruptedWithReason(outcome.Reason)
+					capture.MarkInterruptedWithReason("anthropic_empty_response")
 				}
-				if pc != nil {
-					pc.markInterrupted(outcome.Reason)
-				}
-				return outcome
+				return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
 			}
 			if finishReason != nil && *finishReason == "tool_calls" && !hasEmittedToolCalls {
 				slog.Warn("inconsistent_tool_calls_finish_reason",

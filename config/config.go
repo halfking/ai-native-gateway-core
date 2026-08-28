@@ -63,6 +63,10 @@ type Config struct {
 	StreamChunkTimeout int `yaml:"stream_chunk_timeout_seconds" env:"LLM_GATEWAY_STREAM_CHUNK_TIMEOUT"`
 	FirstByteTimeout   int `yaml:"first_byte_timeout_seconds" env:"LLM_GATEWAY_FIRST_BYTE_TIMEOUT"`
 	KeepaliveInterval  int `yaml:"keepalive_interval_seconds" env:"LLM_GATEWAY_KEEPALIVE_INTERVAL"`
+	// SSEMaxLineBytes bounds one physical upstream SSE line, including its line
+	// terminator. It is not a cumulative response limit and does not affect the
+	// existing 128 MiB non-stream response limit.
+	SSEMaxLineBytes int `yaml:"sse_max_line_bytes" env:"LLM_GATEWAY_SSE_MAX_LINE_BYTES"`
 
 	// Stream failover
 	StreamRetryThreshold int `yaml:"stream_retry_threshold" env:"LLM_GATEWAY_STREAM_RETRY_THRESHOLD"`
@@ -245,6 +249,10 @@ type Config struct {
 	// Config file path (internal, not serialized)
 	configPath                 string `yaml:"-"`
 	modelAliasPrefixConfigured bool   `yaml:"-"`
+	// yamlConfigured tracks fields whose zero value is meaningful (notably
+	// booleans). It lets LoadFile apply an explicit YAML false while retaining
+	// environment-variable precedence.
+	yamlConfigured map[string]bool `yaml:"-"`
 }
 
 // IsProduction reports whether the process is running in a production-like
@@ -408,6 +416,7 @@ func Load() *Config {
 		UpstreamTimeout:         150,
 		StreamTimeout:           900,
 		StreamChunkTimeout:      600,
+		SSEMaxLineBytes:         16 << 20,
 		// 2026-08-04: 120→180s. Reasoning models (Claude thinking, o-series)
 		// with large tool-call contexts regularly exceed 120s to first byte.
 		// Combined with all-protocol pre-stream keepalive (now on by default),
@@ -497,7 +506,13 @@ func Load() *Config {
 	applyPositiveIntEnv("LLM_GATEWAY_UPSTREAM_TIMEOUT", &cfg.UpstreamTimeout)
 	applyPositiveIntEnv("LLM_GATEWAY_STREAM_TIMEOUT", &cfg.StreamTimeout)
 	applyPositiveIntEnv("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", &cfg.StreamChunkTimeout)
+	applyPositiveIntEnv("LLM_GATEWAY_SSE_MAX_LINE_BYTES", &cfg.SSEMaxLineBytes)
 	applyPositiveIntEnv("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", &cfg.FirstByteTimeout)
+	applyNonNegativeIntEnv("LLM_GATEWAY_STREAM_RETRY_THRESHOLD", &cfg.StreamRetryThreshold)
+	applyNonNegativeIntEnv("LLM_GATEWAY_STREAM_RETRY_MAX_RETRIES", &cfg.StreamRetryMaxRetries)
+	applyPositiveIntEnv("LLM_GATEWAY_STREAM_RETRY_BASE_DELAY_MS", &cfg.StreamRetryBaseDelayMs)
+	applyPositiveIntEnv("LLM_GATEWAY_STREAM_RETRY_MAX_DELAY_MS", &cfg.StreamRetryMaxDelayMs)
+	applyPositiveIntEnv("LLM_GATEWAY_STREAM_RETRY_KEEPALIVE_SECS", &cfg.StreamRetryKeepaliveSecs)
 	applyPositiveIntEnv("LLM_GATEWAY_KEEPALIVE_INTERVAL", &cfg.KeepaliveInterval)
 	if pidStr := os.Getenv("LLM_GATEWAY_DEFAULT_PROVIDER"); pidStr != "" {
 		if v, err := strconv.Atoi(pidStr); err == nil {
@@ -560,6 +575,9 @@ func Load() *Config {
 	}
 	if v := os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE"); v != "" {
 		cfg.EnablePreStreamKeepalive = v == "true" || v == "1"
+	}
+	if v := os.Getenv("LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE"); v != "" {
+		cfg.EnableEmptyStreamGate = v == "true" || v == "1"
 	}
 	applyNonNegativeIntEnv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", &cfg.EmptyStreamEarlyEmptyChunks)
 	// streamretry flag: the struct tag declares the env var but the parse was
@@ -648,13 +666,21 @@ func (cfg *Config) LoadFile(path string) error {
 	if err := yaml.Unmarshal(data, &fileCfg); err != nil {
 		return err
 	}
-	var raw map[string]yaml.Node
+	var raw map[string]any
 	if err := yaml.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	_, fileCfg.modelAliasPrefixConfigured = raw["model_alias_prefix"]
+	fileCfg.yamlConfigured = make(map[string]bool, len(raw))
+	for key := range raw {
+		fileCfg.yamlConfigured[key] = true
+	}
+	fileCfg.modelAliasPrefixConfigured = fileCfg.yamlConfigured["model_alias_prefix"]
 	cfg.mergeFrom(&fileCfg)
 	return nil
+}
+
+func configValueConfigured(cfg *Config, key string) bool {
+	return cfg != nil && (cfg.yamlConfigured == nil || cfg.yamlConfigured[key])
 }
 
 func (cfg *Config) mergeFrom(other *Config) {
@@ -721,6 +747,25 @@ func (cfg *Config) mergeFrom(other *Config) {
 	if other.StreamChunkTimeout != 0 && os.Getenv("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT") == "" {
 		cfg.StreamChunkTimeout = other.StreamChunkTimeout
 	}
+	if configValueConfigured(other, "stream_retry_threshold") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_THRESHOLD") == "" {
+		cfg.StreamRetryThreshold = other.StreamRetryThreshold
+	}
+	if configValueConfigured(other, "stream_retry_max_retries") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_MAX_RETRIES") == "" {
+		cfg.StreamRetryMaxRetries = other.StreamRetryMaxRetries
+	}
+	if configValueConfigured(other, "stream_retry_base_delay_ms") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_BASE_DELAY_MS") == "" {
+		cfg.StreamRetryBaseDelayMs = other.StreamRetryBaseDelayMs
+	}
+	if configValueConfigured(other, "stream_retry_max_delay_ms") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_MAX_DELAY_MS") == "" {
+		cfg.StreamRetryMaxDelayMs = other.StreamRetryMaxDelayMs
+	}
+	if configValueConfigured(other, "stream_retry_keepalive_secs") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_KEEPALIVE_SECS") == "" {
+		cfg.StreamRetryKeepaliveSecs = other.StreamRetryKeepaliveSecs
+	}
+	if configValueConfigured(other, "sse_max_line_bytes") && os.Getenv("LLM_GATEWAY_SSE_MAX_LINE_BYTES") == "" {
+		cfg.SSEMaxLineBytes = other.SSEMaxLineBytes
+	}
+
 	if other.FirstByteTimeout != 0 && os.Getenv("LLM_GATEWAY_FIRST_BYTE_TIMEOUT") == "" {
 		cfg.FirstByteTimeout = other.FirstByteTimeout
 	}
@@ -736,9 +781,36 @@ func (cfg *Config) mergeFrom(other *Config) {
 	if other.EnablePreStreamKeepalive && os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE") == "" {
 		cfg.EnablePreStreamKeepalive = true
 	}
+	if other.yamlConfigured["enable_empty_stream_gate"] {
+
+		if os.Getenv("LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE") == "" {
+			cfg.EnableEmptyStreamGate = other.EnableEmptyStreamGate
+		}
+	}
+	if other.yamlConfigured["stream_retry_enabled"] {
+
+		if os.Getenv("LLM_GATEWAY_STREAM_RETRY_ENABLED") == "" {
+			cfg.StreamRetryEnabled = other.StreamRetryEnabled
+		}
+	}
+	if other.DefaultCredentialConcurrency != 0 && os.Getenv("LLM_GATEWAY_DEFAULT_CREDENTIAL_CONCURRENCY") == "" {
+		cfg.DefaultCredentialConcurrency = other.DefaultCredentialConcurrency
+	}
+	if other.yamlConfigured["enable_credential_fp_slots"] {
+		if os.Getenv("LLM_GATEWAY_ENABLE_CREDENTIAL_FP_SLOTS") == "" {
+			cfg.EnableCredentialFpSlots = other.EnableCredentialFpSlots
+		}
+	}
+	if other.CredentialFpSlotActiveGateSeconds != 0 && os.Getenv("LLM_GATEWAY_CREDENTIAL_FP_SLOT_ACTIVE_GATE_SECONDS") == "" {
+		cfg.CredentialFpSlotActiveGateSeconds = other.CredentialFpSlotActiveGateSeconds
+	}
+	if other.CredentialFpSlotReclaimIdleSeconds != 0 && os.Getenv("LLM_GATEWAY_CREDENTIAL_FP_SLOT_RECLAIM_IDLE_SECONDS") == "" {
+		cfg.CredentialFpSlotReclaimIdleSeconds = other.CredentialFpSlotReclaimIdleSeconds
+	}
 	if other.EmptyStreamEarlyEmptyChunks != 0 && os.Getenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS") == "" {
 		cfg.EmptyStreamEarlyEmptyChunks = other.EmptyStreamEarlyEmptyChunks
 	}
+
 	// Request survival file overrides (env wins, same pattern as above).
 
 	if other.RequestSurvivalEnabled && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED") == "" {

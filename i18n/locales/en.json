@@ -38,6 +38,9 @@
   "invalid_model": {
     "other": "Model '{{.Model}}' is not supported by this gateway"
   },
+  "unsupported_feature": {
+    "other": "The selected model does not support this request format or modality."
+  },
   "model_deprecated": {
     "other": "The requested model has been permanently removed (end-of-life) by the upstream provider."
   },

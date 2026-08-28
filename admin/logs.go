@@ -11,6 +11,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 )
 
 type requestLogRow struct {
@@ -801,6 +803,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request id")
 		return
 	}
+	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
 
 	// 2026-08-17 BUGFIX: extend outer ctx to 30s for cold-path defense.
 	//
@@ -849,7 +852,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		   AND ($2 OR rl.tenant_id = $3)
 		 ORDER BY CASE WHEN rl.request_id = $1 THEN 0 ELSE 1 END, rl.ts DESC
 		 LIMIT 1
-	`, requestLogsDetailCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(
+		`, requestLogsDetailCols, requestLogsJoins), requestID, IsSuperAdminOrLegacy(r), GetTenantID(r)).Scan(
 		&detail.Ts,
 		&detail.RequestID,
 		&detail.APIKeyID,
@@ -966,38 +969,50 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 			"request_id", requestID, "elapsed_ms", metaElapsed.Milliseconds())
 	}
 
-	// Bodies are keyed by the gateway-generated request_id. A lookup by
-	// client_request_id must therefore switch to the canonical ID returned by
-	// the metadata row before reading body storage or caching the result.
-	canonicalRequestID := detail.RequestID
-	var bodyErr error
-	detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, canonicalRequestID)
-	if bodyErr != nil {
-		// sql.ErrNoRows（两端都没找到 body）是预期情况 — 不打 WARN 噪音。
-		// transport 错误（ctx cancel, conn refused, ...）才打 WARN 便于排查。
-		if !errors.Is(bodyErr, sql.ErrNoRows) {
-			slog.WarnContext(ctx, "admin getLog body fetch failed",
+	if !omitBody {
+		// Bodies are keyed by the gateway-generated request_id. A lookup by
+		// client_request_id must therefore switch to the canonical ID returned by
+		// the metadata row before reading body storage or caching the result.
+		canonicalRequestID := detail.RequestID
+		var bodyErr error
+		detail.RequestBody, detail.ResponseBody, bodyErr = h.fetchRequestBodies(ctx, canonicalRequestID)
+		if bodyErr != nil {
+			if errors.Is(bodyErr, requestdetail.ErrBodyTooLarge) {
+				writeError(w, http.StatusRequestEntityTooLarge, "request detail body exceeds size limit")
+				return
+			}
+			// sql.ErrNoRows（两端都没找到 body）是预期情况 — 不打 WARN 噪音。
+			// transport 错误（ctx cancel, conn refused, ...）才打 WARN 便于排查。
+			if !errors.Is(bodyErr, sql.ErrNoRows) {
+				slog.WarnContext(ctx, "admin getLog body fetch failed",
+					"request_id", canonicalRequestID,
+					"total_elapsed_ms", time.Since(start).Milliseconds(),
+					"error", bodyErr.Error())
+			}
+			// body 缺失不应让详情接口 500 — metadata 已成功返回，前端可正常展示
+			// 请求/响应以外的所有字段（latency/tokens/cost/model…）。只把 body 置 nil。
+			detail.RequestBody = nil
+			detail.ResponseBody = nil
+		}
+		detail.OutboundBody, bodyErr = h.fetchRequestOutboundBody(ctx, canonicalRequestID)
+		if bodyErr == nil {
+			if err := validatePersistedBodySize(detail.OutboundBody); err != nil {
+				writeError(w, http.StatusRequestEntityTooLarge, "request detail body exceeds size limit")
+				return
+			}
+		}
+		if bodyErr != nil && !errors.Is(bodyErr, sql.ErrNoRows) {
+			slog.WarnContext(ctx, "admin getLog outbound body fetch failed",
 				"request_id", canonicalRequestID,
 				"total_elapsed_ms", time.Since(start).Milliseconds(),
 				"error", bodyErr.Error())
+			detail.OutboundBody = nil
 		}
-		// body 缺失不应让详情接口 500 — metadata 已成功返回，前端可正常展示
-		// 请求/响应以外的所有字段（latency/tokens/cost/model…）。只把 body 置 nil。
-		detail.RequestBody = nil
-		detail.ResponseBody = nil
-	}
-	detail.OutboundBody, bodyErr = h.fetchRequestOutboundBody(ctx, canonicalRequestID)
-	if bodyErr != nil && !errors.Is(bodyErr, sql.ErrNoRows) {
-		slog.WarnContext(ctx, "admin getLog outbound body fetch failed",
-			"request_id", canonicalRequestID,
-			"total_elapsed_ms", time.Since(start).Milliseconds(),
-			"error", bodyErr.Error())
-		detail.OutboundBody = nil
-	}
-	// Outbound body: it's already a JSON RawMessage from JSONB scan; convert to
-	// a structured payload so the UI can render it as a message list.
-	if len(detail.OutboundBody) > 0 {
-		detail.OutboundBody = normalizeJSONForAPI(detail.OutboundBody)
+		// Outbound body: it's already a JSON RawMessage from JSONB scan; convert to
+		// a structured payload so the UI can render it as a message list.
+		if len(detail.OutboundBody) > 0 {
+			detail.OutboundBody = normalizeJSONForAPI(detail.OutboundBody)
+		}
 	}
 	if len(detail.OutboundMsgHashes) > 0 {
 		detail.OutboundMsgHashes = normalizeJSONForAPI(detail.OutboundMsgHashes)
@@ -1096,6 +1111,9 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		 LIMIT 1
 	`, requestID)
 	if scanErr := row.Scan(&rb, &ob); scanErr == nil {
+		if err := validatePersistedBodySize(rb, ob); err != nil {
+			return nil, nil, err
+		}
 		body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
 		h.bodyFetchCache.Put(requestID, body, resp)
 		elapsed := time.Since(start)
@@ -1137,6 +1155,9 @@ func (h *Handler) fetchRequestBodies(ctx context.Context, requestID string) (req
 		// transport-class error（ctx cancel, conn refused, ...）不缓存 — 让
 		// 下一次请求能 retry（rule 22 §4 错误缓存防抖）。
 		return nil, nil, scanErr
+	}
+	if err := validatePersistedBodySize(rb, ob); err != nil {
+		return nil, nil, err
 	}
 	body, resp := decodeStoredBodyForAdmin(rb), decodeStoredBodyForAdmin(ob)
 	h.bodyFetchCache.Put(requestID, body, resp)
@@ -1256,6 +1277,17 @@ func parseQueryTimeStrict(r *http.Request, key string, def time.Time) (time.Time
 		}
 	}
 	return time.Time{}, false
+}
+
+func validatePersistedBodySize(parts ...[]byte) error {
+	total := int64(0)
+	for _, part := range parts {
+		total += int64(len(part))
+		if total > requestdetail.MaxBodyFileSize {
+			return fmt.Errorf("%w: %d bytes (limit %d)", requestdetail.ErrBodyTooLarge, total, requestdetail.MaxBodyFileSize)
+		}
+	}
+	return nil
 }
 
 func decodeStoredBodyForAdmin(raw []byte) any {

@@ -696,6 +696,12 @@ func (g *AttemptCommitGate) Commit() error {
 		g.mu.Unlock()
 		checkpointErr := hook(ctx, state)
 		g.mu.Lock()
+		// The checkpoint hook runs without g.mu, so Discard may win while it is
+		// blocked. Discard is terminal for this attempt and must win before any
+		// hook result can lead to flushing the old buffer.
+		if g.discarded {
+			return ErrAttemptDiscarded
+		}
 		if checkpointErr != nil {
 			g.blockCheckpointLocked(checkpointErr)
 			return g.checkpointErr
@@ -793,6 +799,29 @@ func isPartialTerminalFrame(protocol ClientProtocol, partial string) bool {
 // connection. Only legal while the state is none/metadata (nothing was
 // committed); after the semantic commit it returns
 // ErrAttemptAlreadyCommitted.
+//
+// Lock scope (audit-24h-20260828-r4 P3 doc): Discard acquires g.mu only,
+// NOT writeMu. This is intentional and SAFE under the gate's contract:
+//
+//   - writeMu serializes state-changing WRITES with the corresponding
+//     wire write (gates share a single client connection; each wire write
+//     is a serialized event on the shared channel).
+//   - Discard performs no wire write — it only resets in-memory state
+//     (buffer, state machine, discarded flag). The shared client
+//     connection is untouched, so writeMu exclusion is unnecessary.
+//   - The g.discarded flag set here is read under g.mu inside WriteFrame
+//     (line 325), which holds writeMu first, so a concurrent WriteFrame
+//     will either: (a) complete before Discard acquires g.mu, in which
+//     case the pre-Discard write has already been flushed and Discard
+//     is a no-op for that frame; or (b) see g.discarded == true after
+//     Discard releases g.mu and return ErrAttemptDiscarded without any
+//     wire write. There is no interleaving that emits frames after a
+//     Discard.
+//
+// The mu-only acquisition is documented here so future contributors do
+// not 'fix' the asymmetry by adding writeMu — that would deadlock any
+// goroutine currently in the write side (e.g. checkpointStateAdvance
+// under WriteLock at line 461) and is not required for correctness.
 func (g *AttemptCommitGate) Discard() error {
 	g.writeMu.Lock()
 	defer g.writeMu.Unlock()

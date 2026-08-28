@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/redis/go-redis/v9"
-
 	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
+	"github.com/redis/go-redis/v9"
 )
 
 // MetadataKey is the Redis HASH key used for the k2 migration metadata.
@@ -74,7 +73,7 @@ func (s *MetadataHash) Write(ctx context.Context, m Metadata) error {
 	if !m.RollbackDeadline.IsZero() {
 		deadline = m.RollbackDeadline.UTC().Format(time.RFC3339Nano)
 	}
-	result, err := redissafe.RunScript(ctx, s.RDB, metadataIdentityWriteScript, "metadata_identity_write.lua", []string{MetadataKey(s.Prefix)},
+	result, err := metadataIdentityWriteScript.Run(ctx, s.RDB, []string{MetadataKey(s.Prefix)},
 		m.Owner, m.LedgerID, string(m.Mode), fmt.Sprintf("%d", m.CutoverEpoch),
 		m.StartedAt.UTC().Format(time.RFC3339Nano), m.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		m.PreflightChecksum, string(m.Checkpoint), deadline).Text()
@@ -92,12 +91,14 @@ func (s *MetadataHash) Read(ctx context.Context) (Metadata, error) {
 	if s.Prefix == "" || s.RDB == nil {
 		return Metadata{}, fmt.Errorf("migration: metadata store: missing prefix/redis client")
 	}
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE.
+	// ErrKeyNotFound collapses into the existing empty-metadata return.
 	values, err := redissafe.SafeHGetAll(ctx, s.RDB, MetadataKey(s.Prefix))
 	if err != nil {
 		if errors.Is(err, redissafe.ErrKeyNotFound) {
 			return Metadata{}, nil
 		}
-		return Metadata{}, fmt.Errorf("migration: hgetall metadata: %w", err)
+		return Metadata{}, fmt.Errorf("migration: safe hgetall metadata: %w", err)
 	}
 	if len(values) == 0 {
 		return Metadata{}, nil

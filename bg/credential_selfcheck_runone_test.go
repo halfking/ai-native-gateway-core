@@ -29,16 +29,18 @@ func TestRunOne_NoRoutableModels_InsertsFailedPlaceholder(t *testing.T) {
 
 	const credID = 2 // the credential that triggered the bug on prod 154
 
-	// pickModels returns empty: 3 tier queries all return nothing.
-	mock.ExpectQuery("pol.tenant_id = 'default'").
-		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name"}))
-	mock.ExpectQuery("credential_most_used_model").
-		WithArgs(credID).
-		WillReturnError(scErrNoRows)
-	mock.ExpectQuery("c.id = \\$1").
-		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name"}))
+	// pickModels returns empty: active credential, no available bindings,
+	// no due failed bindings, and no policy featured models.
+	mock.ExpectQuery("SELECT c.tenant_id").WithArgs(credID).
+		WillReturnRows(pgxmock.NewRows([]string{"tenant_id"}).AddRow("default"))
+	mock.ExpectQuery("COALESCE\\(cmb.available, FALSE\\) = \\$2").WithArgs(credID, true).
+		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "standardized_name"}))
+	mock.ExpectQuery("COALESCE\\(cmb.available, FALSE\\) = \\$2").WithArgs(credID, false).
+		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "standardized_name"}))
+	mock.ExpectQuery("FROM routing_policy").WithArgs("default").
+		WillReturnRows(pgxmock.NewRows([]string{"featured_models"}).AddRow([]string{}))
+	mock.ExpectQuery("FROM request_logs_hot rl").WithArgs(credID, "default").
+		WillReturnRows(pgxmock.NewRows([]string{"model", "count"}))
 
 	// insertRun: INSERT INTO self_check_runs (...) RETURNING id
 	// Args: ($1=cred-N, $2=startedAt time.Time).
@@ -49,19 +51,19 @@ func TestRunOne_NoRoutableModels_InsertsFailedPlaceholder(t *testing.T) {
 	// finalizeRun: UPDATE self_check_runs SET ... WHERE id=$1
 	mock.ExpectExec("UPDATE self_check_runs SET").
 		WithArgs(
-			int64(42),        // run id
-			pgxmock.AnyArg(), // completed_at
-			pgxmock.AnyArg(), // duration_ms
-			"failed",         // status
-			0,                // rounds_total
-			0,                // rounds_success
-			false,            // had_tool_call
-			0,                // total_tokens
-			0,                // avg_latency_ms
-			"none",           // error_type — must satisfy 338 CHECK on prod
-			pgxmock.AnyArg(), // error_detail
-			"random",         // selection_strategy — must satisfy 341 CHECK
-			pgxmock.AnyArg(), // attempted_models jsonb
+			int64(42),           // run id
+			pgxmock.AnyArg(),    // completed_at
+			pgxmock.AnyArg(),    // duration_ms
+			"failed",            // status
+			0,                   // rounds_total
+			0,                   // rounds_success
+			false,               // had_tool_call
+			0,                   // total_tokens
+			0,                   // avg_latency_ms
+			"none",              // error_type — must satisfy 338 CHECK on prod
+			pgxmock.AnyArg(),    // error_detail
+			"no_eligible_model", // selection_strategy — no ranked or due failed model
+			pgxmock.AnyArg(),    // attempted_models jsonb
 		).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -118,7 +120,7 @@ func TestRunOne_PickModelsError_DoesNotInsertPlaceholder(t *testing.T) {
 	const credID = 3
 	const dbErr = "simulated pg boom"
 
-	mock.ExpectQuery("pol.tenant_id = 'default'").
+	mock.ExpectQuery("SELECT c.tenant_id").
 		WithArgs(credID).
 		WillReturnError(errors.New(dbErr))
 

@@ -1,59 +1,20 @@
 package streaming
 
 import (
-	"encoding/json"
-	"log/slog"
 	"strings"
-)
 
-// TODO(AUDIT-2026-07-11): 以下字段清单为推测，需要根据生产环境抓包结果验证和补充。
-// 抓包方法：curl 真实 API 并观察响应字段。
-// 参考文档：https://www.volcengine.com/docs/82379/1099475
-//
-// 2026-07-12 audit fix (audit-09): 移除 OpenAI compatible 标准字段。
-// - system_fingerprint 是 OpenAI compatible 标准字段，保留供客户端解析
-var doubaoPrivateFields = []string{
-	"doubao_request_id",      // 豆包私有请求ID
-	"seeddance_request_id",   // 火山引擎内部请求ID（豆包母公司）
-	"content_safety_score",   // 内容安全评分（可能包含敏感检测信息）
-	"model_endpoint",         // 内部模型端点标识
-	"ab_test_group",          // A/B测试分组标识
-	"seed_token_usage",       // 火山引擎内部token计费字段
-	"request_id",             // 通用请求ID字段
-	"volc_request_id",        // 火山引擎请求ID（可能的别名）
-	"internal_model_version", // 内部模型版本号
-	"sensitive_check",        // 敏感词检查结果
-}
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
+)
 
 // IsDoubaoCatalog reports whether a candidate is the official Doubao
 // provider. Aggregated Volcengine Coding credentials must not use this
 // policy because they can return GLM, DeepSeek, MiniMax, or other payloads.
 func IsDoubaoCatalog(catalogCode string) bool {
-	return strings.EqualFold(strings.TrimSpace(catalogCode), "doubao")
+	return strings.EqualFold(strings.TrimSpace(catalogCode), vendorstrip.VendorDoubao)
 }
 
+// StripDoubaoFieldsBody is retained as a compatibility adapter. The canonical
+// implementation lives in internal/vendorstrip.
 func StripDoubaoFieldsBody(body []byte) []byte {
-	if len(body) == 0 {
-		return body
-	}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return body
-	}
-	stripped := 0
-	for _, k := range doubaoPrivateFields {
-		if _, ok := raw[k]; ok {
-			delete(raw, k)
-			stripped++
-		}
-	}
-	if stripped == 0 {
-		return body
-	}
-	out, err := json.Marshal(raw)
-	if err != nil {
-		slog.Warn("strip_doubao: marshal failed, returning original body", "error", err)
-		return body
-	}
-	return out
+	return vendorstrip.DefaultRegistry.Strip(body, vendorstrip.VendorDoubao)
 }
