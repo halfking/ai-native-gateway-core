@@ -419,6 +419,9 @@ func TestGeminiStreamWriter_PendingCapFailClosed(t *testing.T) {
 	if !w.failed {
 		t.Fatal("writer should be failed after exceeding pending cap")
 	}
+	if w.pending != nil {
+		t.Fatalf("failClosed must release the pending buffer, got %d bytes retained", len(w.pending))
+	}
 
 	// The client must have received a Gemini-native error frame.
 	out := fw.body.String()

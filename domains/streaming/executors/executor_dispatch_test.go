@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/nodehealth"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -386,6 +388,135 @@ func TestForwardForDispatchReducesFailureAndCancellationOnce(t *testing.T) {
 			t.Fatalf("canceled decision = %+v", decision)
 		}
 	})
+}
+
+func TestForwardForDispatchAcceptsStreamOnlyNativeCapability(t *testing.T) {
+	// Audit-2026-08-29: regression guard for the dispatch↔executeOpenAI
+	// capability-gate asymmetry. native_responses_stream is verified
+	// independently of native_responses_nonstream (migration 612), so a
+	// credential that opts in to SSE only must NOT be rejected by the
+	// dispatch gate before executeOpenAI has a chance to forward it.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"event: response.created\ndata: {\"type\":\"response.created\"}\n\n"+
+				"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n"+
+				"event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n")
+	}))
+	defer upstream.Close()
+
+	limiter := newLimiterForTest()
+	defer limiter.Stop()
+	exec := newOverloadTestExecutor()
+	exec.Circuit = newCircuitManagerForTest()
+	exec.Limiter = limiter
+	exec.NativeResponsesStream = func(_ context.Context, w http.ResponseWriter, resp *http.Response, _ string, _ *audit.StreamCapture) StreamOutcome {
+		defer resp.Body.Close()
+		_, _ = io.Copy(w, resp.Body)
+		return StreamOutcome{ChunkCount: 1}
+	}
+
+	candidate := provider.Candidate{
+		CredentialID:                33,
+		ProviderID:                  44,
+		BaseURL:                     upstream.URL,
+		Protocol:                    "openai-responses",
+		CatalogCode:                 "openai",
+		RawModel:                    "gpt-responses-stream-only",
+		APIKey:                      "sk-stream-only",
+		SupportsNativeResponsesStream: true,
+		// SupportsNativeResponses intentionally false: stream-only credential.
+		Routable:          true,
+		LifecycleStatus:   "active",
+		AvailabilityState: "ready",
+		QuotaState:        "ok",
+		CircuitState:      "closed",
+	}
+	params := &ExecParams{
+		W:                  httptest.NewRecorder(),
+		R:                  httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		IsStream:           true,
+		BodyBytes:          []byte(`{"model":"gpt-responses","messages":[]}`),
+		ResponsesBodyBytes: []byte(`{"model":"gpt-responses","input":"hello"}`),
+		ClientProtocol:     "openai-responses",
+		ClientModel:        "gpt-responses",
+		OutboundModel:      "gpt-responses",
+		RequestID:          "dispatch-stream-only-cap",
+	}
+	dctx := &dispatchCtx{
+		params:       params,
+		candidates:   []provider.Candidate{candidate},
+		retryPerCred: 0,
+		tTotal:       time.Now(),
+	}
+
+	out := exec.forwardForDispatch(dctx, candidate, "stream-only-attempt", func() {})
+	if out.Err != nil {
+		t.Fatalf("forward outcome err = %v, want stream-only capability to be honoured", out.Err)
+	}
+	result, ok := out.Result.(*ExecuteResult)
+	if !ok || result == nil || result.Response == nil {
+		t.Fatalf("forward outcome result = %+v, want upstream call to succeed", out.Result)
+	}
+}
+
+func TestForwardForDispatchRejectsNoNativeCapability(t *testing.T) {
+	// Counter-case to TestForwardForDispatchAcceptsStreamOnlyNativeCapability:
+	// a credential without either stream OR non-stream native Responses
+	// capability must still be rejected at the dispatch gate (the executeOpenAI
+	// gate would reject it too, but failing fast at dispatch keeps the audit
+	// signal clean and avoids burning an upstream circuit probe).
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	limiter := newLimiterForTest()
+	defer limiter.Stop()
+	exec := newOverloadTestExecutor()
+	exec.Circuit = newCircuitManagerForTest()
+	exec.Limiter = limiter
+
+	candidate := provider.Candidate{
+		CredentialID:                33,
+		ProviderID:                  44,
+		BaseURL:                     upstream.URL,
+		Protocol:                    "openai-responses",
+		CatalogCode:                 "openai",
+		RawModel:                    "gpt-responses-no-cap",
+		APIKey:                      "sk-no-cap",
+		// Neither SupportsNativeResponses nor SupportsNativeResponsesStream.
+		Routable:          true,
+		LifecycleStatus:   "active",
+		AvailabilityState: "ready",
+		QuotaState:        "ok",
+		CircuitState:      "closed",
+	}
+	params := &ExecParams{
+		R:                  httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		IsStream:           true,
+		BodyBytes:          []byte(`{"model":"gpt-responses","messages":[]}`),
+		ResponsesBodyBytes: []byte(`{"model":"gpt-responses","input":"hello"}`),
+		ClientProtocol:     "openai-responses",
+		ClientModel:        "gpt-responses",
+		RequestID:          "dispatch-no-native-cap",
+	}
+	dctx := &dispatchCtx{
+		params:       params,
+		candidates:   []provider.Candidate{candidate},
+		retryPerCred: 0,
+		tTotal:       time.Now(),
+	}
+
+	out := exec.forwardForDispatch(dctx, candidate, "no-cap-attempt", func() {})
+	if out.Err == nil {
+		t.Fatalf("forward outcome err = nil, want capability rejection")
+	}
+	if called {
+		t.Fatal("upstream was contacted; dispatch gate must reject before executeOpenAI")
+	}
 }
 
 func TestDispatchReducerDuplicateAppliesOnce(t *testing.T) {
