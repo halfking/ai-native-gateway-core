@@ -285,15 +285,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chatBody := convertResponsesToChatBody(&reqBody)
-	chatBodyBytes, err := json.Marshal(chatBody)
-	if err != nil {
-		attemptErrCode = "conversion_error"
-		attemptErrMsg = "internal conversion error"
-		attemptClientModel = reqBody.Model
-		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
-		return
-	}
 	attemptClientModel = reqBody.Model
 	requestedModel := reqBody.Model
 
@@ -318,6 +309,19 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAutoDecisionHeader(w, wire)
 		}
 	}
+
+	// Build the legacy Chat fallback only after auto-route has rewritten the
+	// Responses model, so both protocol bodies describe the same attempt.
+	chatBody := convertResponsesToChatBody(&reqBody)
+	chatBodyBytes, err := json.Marshal(chatBody)
+	if err != nil {
+		attemptErrCode = "conversion_error"
+		attemptErrMsg = "internal conversion error"
+		attemptClientModel = reqBody.Model
+		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
+		return
+	}
+	responsesBodyBytes := append([]byte(nil), bodyBytes...)
 
 	// 2026-07-14: lowercase at the wire boundary.
 	clientModel := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
@@ -613,6 +617,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			W:                          streamWriter,
 			R:                          r,
 			BodyBytes:                  chatBodyBytes,
+			ResponsesBodyBytes:         responsesBodyBytes,
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,
