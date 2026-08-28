@@ -192,6 +192,11 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 		latest, statErr := os.Stat(path)
 		if statErr == nil && time.Since(latest.ModTime()) >= s.ttl {
 			if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+				storeEvictionFailuresTotal.WithLabelValues("ttl", normalizeRemoveErr(removeErr)).Inc()
+				slog.Warn("requestdetail: ttl remove on read failed",
+					"request_id", requestID,
+					"path", path,
+					"error", removeErr)
 				return filePayload{}, false, removeErr
 			}
 		}
@@ -258,6 +263,11 @@ func (s *Store) HasLocal(requestID string) bool {
 }
 
 // Clear removes memory meta and the local file after DB persist.
+// Surface os.Remove failures via slog.Warn + the residue counters so
+// dashboards can alert on persistent failures (read-only mount, NFS
+// stale handle, chmod 0). 2026-08-28 (audit follow-up): previously the
+// failure path only emitted a single warn line; operators had no
+// quantitative signal for sensitive-file residue.
 func (s *Store) Clear(requestID string) error {
 	if s == nil {
 		return nil
@@ -274,9 +284,22 @@ func (s *Store) Clear(requestID string) error {
 	}
 	path := s.filePath(requestID)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		storeClearFailuresTotal.WithLabelValues(normalizeRemoveErr(err)).Inc()
+		slog.Warn("requestdetail: clear after persist failed to remove file",
+			"request_id", requestID,
+			"path", path,
+			"error", err)
 		return err
 	}
-	_ = os.Remove(path + ".tmp")
+	if tmpErr := os.Remove(path + ".tmp"); tmpErr != nil && !os.IsNotExist(tmpErr) {
+		storeClearFailuresTotal.WithLabelValues(normalizeRemoveErr(tmpErr)).Inc()
+		slog.Warn("requestdetail: clear after persist failed to remove tmp sidecar",
+			"request_id", requestID,
+			"path", path+".tmp",
+			"error", tmpErr)
+		return tmpErr
+	}
+	storeClearSuccessTotal.Inc()
 	return nil
 }
 
@@ -286,8 +309,18 @@ func (s *Store) evictLocked(now time.Time) {
 			delete(s.mem, id)
 			delete(s.updated, id)
 			if s.dir != "" {
-				_ = os.Remove(s.filePath(id))
-				_ = os.Remove(s.filePath(id) + ".tmp")
+				if err := os.Remove(s.filePath(id)); err != nil && !os.IsNotExist(err) {
+					storeEvictionFailuresTotal.WithLabelValues("ttl", normalizeRemoveErr(err)).Inc()
+					slog.Warn("requestdetail: ttl eviction remove failed",
+						"request_id", id,
+						"error", err)
+				}
+				if err := os.Remove(s.filePath(id) + ".tmp"); err != nil && !os.IsNotExist(err) {
+					storeEvictionFailuresTotal.WithLabelValues("ttl", normalizeRemoveErr(err)).Inc()
+					slog.Warn("requestdetail: ttl eviction tmp remove failed",
+						"request_id", id,
+						"error", err)
+				}
 			}
 		}
 	}
@@ -305,8 +338,18 @@ func (s *Store) evictLocked(now time.Time) {
 		delete(s.mem, oldest)
 		delete(s.updated, oldest)
 		if s.dir != "" {
-			_ = os.Remove(s.filePath(oldest))
-			_ = os.Remove(s.filePath(oldest) + ".tmp")
+			if err := os.Remove(s.filePath(oldest)); err != nil && !os.IsNotExist(err) {
+				storeEvictionFailuresTotal.WithLabelValues("lru", normalizeRemoveErr(err)).Inc()
+				slog.Warn("requestdetail: lru eviction remove failed",
+					"request_id", oldest,
+					"error", err)
+			}
+			if err := os.Remove(s.filePath(oldest) + ".tmp"); err != nil && !os.IsNotExist(err) {
+				storeEvictionFailuresTotal.WithLabelValues("lru", normalizeRemoveErr(err)).Inc()
+				slog.Warn("requestdetail: lru eviction tmp remove failed",
+					"request_id", oldest,
+					"error", err)
+			}
 		}
 	}
 }
@@ -328,7 +371,12 @@ func (s *Store) cleanupFiles(now time.Time) {
 			continue
 		}
 		if now.Sub(info.ModTime()) >= s.ttl {
-			_ = os.Remove(filepath.Join(s.dir, entry.Name()))
+			if err := os.Remove(filepath.Join(s.dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+				storeEvictionFailuresTotal.WithLabelValues("cleanup", normalizeRemoveErr(err)).Inc()
+				slog.Warn("requestdetail: cleanup remove failed",
+					"path", entry.Name(),
+					"error", err)
+			}
 		}
 	}
 }
