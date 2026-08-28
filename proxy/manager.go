@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -81,15 +82,24 @@ func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (*Nod
 		candidates = nodes
 	}
 	
-	// 过滤掉不健康的节点
+	// 过滤掉不健康、以及 Go 无法直接拨号的节点（trojan/vless 等需本地网桥）
 	activeNodes := make([]*Node, 0, len(candidates))
+	skippedUndialable := 0
 	for _, node := range candidates {
-		if node.Status == "active" && node.ConsecutiveFailures < 3 {
-			activeNodes = append(activeNodes, node)
+		if node.Status != "active" || node.ConsecutiveFailures >= 3 {
+			continue
 		}
+		if !node.Dialable() {
+			skippedUndialable++
+			continue
+		}
+		activeNodes = append(activeNodes, node)
 	}
-	
+
 	if len(activeNodes) == 0 {
+		if skippedUndialable > 0 {
+			return nil, fmt.Errorf("no dialable proxy node: %d node(s) use protocols Go cannot proxy directly (trojan/vless/vmess/ss); expose them via a local mihomo/xray http or socks5 bridge and register that endpoint instead", skippedUndialable)
+		}
 		return nil, fmt.Errorf("no available active nodes")
 	}
 	
@@ -154,16 +164,29 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 	}
 	
 	// 插入新节点
+	var createErrs []string
 	for _, node := range nodes {
 		node.SubscriptionID = subscriptionID
 		if err := m.store.CreateNode(ctx, node); err != nil {
+			createErrs = append(createErrs, fmt.Sprintf("%s: %v", node.Name, err))
 			slog.Warn("proxy: failed to create node", "error", err, "name", node.Name)
 		}
 	}
-	
+
 	// 4. 更新订阅状态
 	sub.NodeCount = len(nodes)
 	sub.LastFetchAt = time.Now()
+	if len(createErrs) > 0 {
+		// 解析出节点但在入库时全部或部分失败：必须上报，不能伪装成功。
+		sub.LastFetchStatus = "failed"
+		sub.LastError = fmt.Sprintf("persisted %d/%d nodes; %d failed: %s",
+			len(nodes)-len(createErrs), len(nodes), len(createErrs), strings.Join(createErrs, "; "))
+		if err := m.store.UpdateSubscription(ctx, sub); err != nil {
+			return fmt.Errorf("update subscription: %w", err)
+		}
+		return fmt.Errorf("persist nodes: %d/%d failed: %s",
+			len(createErrs), len(nodes), strings.Join(createErrs, "; "))
+	}
 	sub.LastFetchStatus = "success"
 	sub.LastError = ""
 	if err := m.store.UpdateSubscription(ctx, sub); err != nil {
@@ -221,6 +244,16 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 	m.updateNodeInCache(node)
 	
 	return nil
+}
+
+// ReloadCache 重新从数据库加载节点缓存。
+// 通过 API 增删节点后必须调用，否则 SelectBestNode 会命中过期缓存。
+func (m *Manager) ReloadCache() error {
+	m.nodesCache.Range(func(key, _ interface{}) bool {
+		m.nodesCache.Delete(key)
+		return true
+	})
+	return m.loadAllNodesIntoCache()
 }
 
 // GetProxyTransport 获取代理 Transport

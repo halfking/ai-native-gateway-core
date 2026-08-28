@@ -37,6 +37,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
+	"github.com/kaixuan/llm-gateway-go/proxy"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
@@ -75,6 +76,11 @@ type Handler struct {
 	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
 	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// 2026-08-29 代理管理：由 proxyRuntime() 惰性构建（见 admin/proxy.go），
+	// 避免改动所有 Handler 构造点。请求路径不会启动后台 goroutine。
+	proxyOnce  sync.Once
+	proxyMgr   *proxy.Manager
+	proxyStore *proxy.PgStore
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
 	// still registered (URL stays stable across deployments); the
@@ -1228,6 +1234,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/quick-entry", h.superAdmin(h.handleFreePoolQuickEntry))
 	mux.HandleFunc("/api/free-pool/keys", h.superAdmin(h.handleFreePoolKeysRouter))
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
+
+	// 2026-08-29 代理管理（出口基础设施，仅 superAdmin）
+	mux.HandleFunc("/api/proxy/status", h.superAdmin(h.handleProxyStatus))
+	mux.HandleFunc("/api/proxy/subscriptions", h.superAdmin(h.handleProxySubscriptionsRoot))
+	mux.HandleFunc("/api/proxy/subscriptions/", h.superAdmin(h.handleProxySubscriptions))
+	mux.HandleFunc("/api/proxy/nodes", h.superAdmin(h.handleProxyNodesRoot))
+	mux.HandleFunc("/api/proxy/nodes/", h.superAdmin(h.handleProxyNodes))
 	if h.freePoolSSE != nil {
 		mux.HandleFunc("/api/free-pool/stream", h.admin(h.freePoolSSE.HandleStream))
 	}

@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -723,14 +724,40 @@ func (h *Handler) handleFreePoolProbe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"probe": probe})
 }
 
+// probeOpenAICompatibleBase 直连探活（默认行为，保持不变）。
 func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (map[string]any, error) {
+	return probeOpenAICompatibleBaseVia(rawBase, apiKey, timeout, nil, "")
+}
+
+// probeOpenAICompatibleBaseVia 允许指定出口 Transport 进行探活。
+// transport 为 nil 时行为与直连完全一致；非 nil 时经由代理访问（用于 GFW 环境下的
+// 海外供应商）。proxyLabel 仅用于回显所用节点，绝不包含代理凭据。
+//
+// 注意：isAllowedPublicURL 仍然只校验「目标 URL」。代理入口本身可以是
+// 127.0.0.1:7897 这类本地网桥地址——它是 Transport 的 Proxy，不是被校验的目标。
+func probeOpenAICompatibleBaseVia(rawBase, apiKey string, timeout time.Duration, transport http.RoundTripper, proxyLabel string) (map[string]any, error) {
+	egress := "direct"
+	if transport != nil {
+		egress = "proxy"
+	}
+	decorate := func(m map[string]any) map[string]any {
+		if m == nil {
+			return m
+		}
+		m["egress"] = egress
+		if egress == "proxy" && proxyLabel != "" {
+			m["proxy_node"] = proxyLabel
+		}
+		return m
+	}
+
 	normalized := strings.TrimRight(rawBase, "/")
 	if !isAllowedPublicURL(normalized) {
-		return map[string]any{
+		return decorate(map[string]any{
 			"ok":          false,
 			"reason":      "blocked_url",
 			"status_code": nil,
-		}, nil
+		}), nil
 	}
 
 	headers := map[string]string{}
@@ -747,6 +774,14 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 		}
 		return nil
 	}}
+	// 注意：transport 是 *http.Transport，当调用方未启用代理时为「类型化的 nil
+	// 指针」。把它直接赋给 http.RoundTripper 接口会让接口变为「非 nil（包着 nil
+	// 指针)」，client.Transport 因此不为 nil，net/http 在 Do 时解引用该 nil
+	// Transport 会 panic（alternateRoundTripper）。所以必须判断具体指针非空后再
+	// 赋值；否则保留 client.Transport=nil，由 net/http 使用 http.DefaultTransport。
+	if transport != nil {
+		client.Transport = transport
+	}
 
 	candidates := upstreamurl.ModelsURLCandidates(normalized)
 
@@ -829,7 +864,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 			if errorDetail != "" {
 				result["error"] = errorDetail[:min(200, len(errorDetail))]
 			}
-			return result, nil
+			return decorate(result), nil
 		}
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		//nolint:errcheck // best-effort close
@@ -858,7 +893,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 				//nolint:errcheck // best-effort close
 				resp.Body.Close()
 				authValid := true
-				return map[string]any{
+				return decorate(map[string]any{
 					"ok":          true,
 					"status_code": status,
 					"probe_url":   chatURL,
@@ -866,7 +901,7 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 					"models":      []string{},
 					"auth_valid":  &authValid,
 					"probe_mode":  "chat_completions",
-				}, nil
+				}), nil
 			}
 			bodyBytes, err := readLimitedBody(resp.Body, maxProbeErrorBytes)
 			resp.Body.Close()
@@ -880,12 +915,32 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 		}
 	}
 
-	return map[string]any{
+	return decorate(map[string]any{
 		"ok":          false,
 		"reason":      "probe_failed",
 		"status_code": lastStatus,
 		"error":       lastError,
-	}, nil
+	}), nil
+}
+
+// proxyEgressForProbe 为探活构造代理 Transport。
+// 返回 (transport, label, error)。没有可拨号节点时返回错误，绝不静默回退直连——
+// 否则调用方会以为「已走代理」而实际仍被 GFW 阻断。
+func (h *Handler) proxyEgressForProbe(ctx context.Context, subscriptionID *int) (*http.Transport, string, error) {
+	mgr, _ := h.proxyRuntime()
+	if mgr == nil {
+		return nil, "", fmt.Errorf("代理管理器不可用（数据库未配置）")
+	}
+	node, err := mgr.SelectBestNode(ctx, subscriptionID)
+	if err != nil {
+		return nil, "", err
+	}
+	transport, err := mgr.GetProxyTransport(ctx, subscriptionID)
+	if err != nil {
+		return nil, "", err
+	}
+	label := node.Name + " (" + node.Protocol + "://" + node.Server + ":" + strconv.Itoa(node.Port) + ")"
+	return transport, label, nil
 }
 
 // ── Quick entry (free_pool.py quick_entry) ───────────────────────────────
@@ -933,6 +988,10 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		Save             bool     `json:"save"`
 		NoAPIKeyRequired bool     `json:"no_api_key_required"`
 		ForceSkipProbe   bool     `json:"force_skip_probe"` // 跳过探活检查，强制保存（用于 GFW 环境）
+		// 2026-08-29 代理出口：true 时经代理探活，并把供应商 egress_profile 记为 proxy。
+		// 无可拨号代理节点时直接报错，不会静默回退直连。
+		UseProxy             bool `json:"use_proxy"`
+		ProxySubscriptionID  *int `json:"proxy_subscription_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -967,8 +1026,41 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 	}
 
 	var probeResult map[string]any
-	if req.ProbeFirst && strings.TrimSpace(req.BaseURL) != "" {
-		p, _ := probeOpenAICompatibleBase(req.BaseURL, req.APIKey, 10*time.Second)
+
+	// 代理出口：仅在显式请求时启用；拿不到可拨号节点就报错，不静默回退直连。
+	var probeTransport *http.Transport
+	var probeProxyLabel string
+	if req.UseProxy {
+		tr, label, err := h.proxyEgressForProbe(r.Context(), req.ProxySubscriptionID)
+		if err != nil {
+			if !req.ForceSkipProbe {
+				writeError(w, http.StatusBadRequest, "use_proxy 已启用但没有可用代理出口："+err.Error())
+				return
+			}
+			// force_skip_probe 时允许继续保存，但探活结果必须诚实反映代理失败。
+			probeResult = map[string]any{
+				"ok":     false,
+				"reason": "proxy_unavailable",
+				"egress": "proxy",
+				"error":  err.Error(),
+			}
+		} else {
+			probeTransport = tr
+			probeProxyLabel = label
+			defer tr.CloseIdleConnections()
+		}
+	}
+
+	if req.ProbeFirst && strings.TrimSpace(req.BaseURL) != "" && !(req.UseProxy && probeTransport == nil) {
+		// 仅当 probeTransport 为具体非 nil 指针时才传入；否则传 nil，
+		// 让 probeOpenAICompatibleBaseVia 走直连（client.Transport=nil→DefaultTransport）。
+		// 注意：*http.Transport 的「类型化 nil」赋给 http.RoundTripper 接口会变成
+		// 非 nil，导致 net/http 解引用 nil Transport 而 panic，故此处必须判具体指针。
+		var rt http.RoundTripper
+		if probeTransport != nil {
+			rt = probeTransport
+		}
+		p, _ := probeOpenAICompatibleBaseVia(req.BaseURL, req.APIKey, 10*time.Second, rt, probeProxyLabel)
 		probeResult = p
 
 		// 如果设置了 ForceSkipProbe，跳过探活检查，仅记录探活结果用于诊断
@@ -1079,20 +1171,30 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		// back to 0 (unlimited) for unknown catalog codes.
 		rpmLimit: lookupFreePoolRPMLimit(catalogCode),
 	}
+	if req.UseProxy {
+		cfg.egressProfile = "proxy"
+		cfg.proxySubscriptionID = req.ProxySubscriptionID
+	}
 
 	h.logAudit(r, "free_pool_quick_entry", map[string]any{
 		"catalog_code": catalogCode,
 		"platform_id":  req.PlatformID,
 		"probed":       req.ProbeFirst,
+		"use_proxy":    req.UseProxy,
 	})
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"status":       "ok",
 		"probe":        probeResult,
 		"catalog_code": catalogCode,
 		"message":      "use POST /api/free-pool/keys to persist credential",
 		"config":       cfg,
-	})
+		"egress":       cfg.egressProfileOrDefault(),
+	}
+	if req.UseProxy && probeProxyLabel != "" {
+		resp["proxy_node"] = probeProxyLabel
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func probeOK(p map[string]any) bool {
@@ -1216,6 +1318,9 @@ func (h *Handler) handleFreePoolAddKey(w http.ResponseWriter, r *http.Request) {
 		Models           []string `json:"models"`
 		Protocol         string   `json:"protocol"`
 		NoAPIKeyRequired bool     `json:"no_api_key_required"`
+		// 2026-08-29 代理出口：持久化时把 egress_profile 记为 proxy。
+		UseProxy            bool `json:"use_proxy"`
+		ProxySubscriptionID *int `json:"proxy_subscription_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -1293,6 +1398,10 @@ func (h *Handler) handleFreePoolAddKey(w http.ResponseWriter, r *http.Request) {
 		acquisitionDetail: acqDetail,
 		credentialLabel:   label,
 		rpmLimit:          lookupFreePoolRPMLimit(req.CatalogCode),
+	}
+	if req.UseProxy {
+		cfg.egressProfile = "proxy"
+		cfg.proxySubscriptionID = req.ProxySubscriptionID
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
@@ -1441,15 +1550,23 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 	}
 
 	// 2. Ensure providers row
+	// egress_profile 默认仍为 'direct'；仅当调用方显式要求走代理时才写 'proxy'。
+	egressProfile := strings.TrimSpace(cfg.egressProfile)
+	if egressProfile == "" {
+		egressProfile = "direct"
+	}
 	if _, err := h.db.Exec(ctx, `
 		INSERT INTO providers (tenant_id, code, display_name, catalog_code, is_custom,
-			kind, category, protocol, base_url, egress_profile, domestic, enabled)
-		VALUES ('default', $1, $2, $1, false, 'cloud', 'aggregator', $3, $4, 'direct', true, true)
+			kind, category, protocol, base_url, egress_profile, domestic, enabled,
+			proxy_subscription_id)
+		VALUES ('default', $1, $2, $1, false, 'cloud', 'aggregator', $3, $4, $5, true, true, $6)
 		ON CONFLICT (tenant_id, code) DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			base_url = EXCLUDED.base_url,
+			egress_profile = EXCLUDED.egress_profile,
+			proxy_subscription_id = EXCLUDED.proxy_subscription_id,
 			enabled = true
-	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL); err != nil {
+	`, cfg.catalogCode, cfg.displayName, cfg.protocol, cfg.baseURL, egressProfile, cfg.proxySubscriptionID); err != nil {
 		return map[string]any{"status": "error", "message": "provider upsert failed: " + err.Error()}
 	}
 

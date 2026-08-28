@@ -4,7 +4,19 @@ package proxy
 
 import (
 	"context"
+	"net"
+	"net/url"
+	"strconv"
 	"time"
+)
+
+// 直接可用协议：Go 的 net/http 只能通过 http/https/socks5 代理拨号。
+// 订阅里常见的 trojan/vless/vmess/ss 需要本地网桥（mihomo/xray）转换成
+// http/socks5 入口后才能被网关使用，因此它们只作为库存记录，不参与拨号。
+const (
+	ProtocolHTTP   = "http"
+	ProtocolHTTPS  = "https"
+	ProtocolSOCKS5 = "socks5"
 )
 
 // Subscription 代理订阅
@@ -62,23 +74,42 @@ type Domain struct {
 	UpdatedAt          time.Time `json:"updated_at"`
 }
 
-// ProxyURL 生成代理 URL
-func (n *Node) ProxyURL() string {
+// Dialable 表示该节点能否被 Go 的 HTTP 客户端直接当作代理使用。
+// trojan/vless/vmess/ss 返回 false —— 它们需要先经由本地 mihomo/xray 网桥暴露成
+// http/socks5 入口，再以那个入口作为节点录入。
+func (n *Node) Dialable() bool {
 	switch n.Protocol {
-	case "http", "https":
-		if n.Username != "" && n.Password != "" {
-			return n.Protocol + "://" + n.Username + ":" + n.Password + "@" + n.Server + ":" + string(rune(n.Port))
-		}
-		return n.Protocol + "://" + n.Server + ":" + string(rune(n.Port))
-	case "socks5":
-		if n.Username != "" && n.Password != "" {
-			return "socks5://" + n.Username + ":" + n.Password + "@" + n.Server + ":" + string(rune(n.Port))
-		}
-		return "socks5://" + n.Server + ":" + string(rune(n.Port))
+	case ProtocolHTTP, ProtocolHTTPS, ProtocolSOCKS5:
+		return n.Server != "" && n.Port > 0 && n.Port <= 65535
 	default:
-		return ""
+		return false
 	}
 }
+
+// ProxyURL 生成可供 http.Transport 使用的代理 URL。
+// 节点不可拨号时返回空串，调用方需据此报错而不是继续发起请求。
+// Password 此处应为明文（Store 读取时已解密），仅在数据库中加密存储。
+func (n *Node) ProxyURL() string {
+	if !n.Dialable() {
+		return ""
+	}
+	hostPort := net.JoinHostPort(n.Server, strconv.Itoa(n.Port))
+	u := url.URL{Scheme: n.Protocol, Host: hostPort}
+	if n.Username != "" {
+		if n.Password != "" {
+			u.User = url.UserPassword(n.Username, n.Password)
+		} else {
+			u.User = url.User(n.Username)
+		}
+	}
+	return u.String()
+}
+
+// EncryptFunc 加密节点密码（写库前调用）。由 admin.Handler.encryptCred 注入。
+type EncryptFunc func(plaintext []byte) (string, error)
+
+// DecryptFunc 解密节点密码（读库后调用）。由 admin.Handler.decryptCredStr 注入。
+type DecryptFunc func(ciphertext string) (string, error)
 
 // Store 代理存储接口
 type Store interface {

@@ -4985,6 +4985,19 @@ type freeProviderConfig struct {
 	// quota). Only meaningful when the keys belong to ONE account — bulk-
 	// importing keys from different accounts would wrongly pool their quota.
 	extraKeys []string
+	// 2026-08-29 代理出口：空串保持历史默认 'direct'。设为 'proxy' 表示该供应商
+	// 需经代理访问（GFW 环境下的海外供应商）。proxySubscriptionID 可选，
+	// 为 nil 时由 ProxyManager 自动挑选最优可拨号节点。
+	egressProfile       string
+	proxySubscriptionID *int
+}
+
+// egressProfileOrDefault 返回实际生效的出口配置，空串视为历史默认 'direct'。
+func (c freeProviderConfig) egressProfileOrDefault() string {
+	if s := strings.TrimSpace(c.egressProfile); s != "" {
+		return s
+	}
+	return "direct"
 }
 
 func (h *Handler) collectEnvProviderConfigs() []freeProviderConfig {
