@@ -3707,15 +3707,129 @@ func main() {
 			} else if useNewProbeMode() {
 				slog.Warn("new probe workers skipped: system API key unavailable")
 			}
+			// 2026-08-29: system_health_worker and model_quality_worker moved
+			// outside the stateManager != nil block to line ~3923 so they can
+			// run in URSM v2 authoritative mode. See comment at new location.
+		}
+
+		// 2026-08-11: start the model_iq_runs retention cleaner. Mirrors
+		// ProfileCleaner: daily tick, 365-day retention default. Only started
+		// when DB is available (the table does not exist without migration 350).
+		if dbConn != nil {
+			modelIQCleaner = bg.NewModelIQCleaner(dbConn.Pool(), 24*time.Hour, 365)
+			modelIQCleaner.Start()
+		}
+
+		// 2026-08-11: wire the provider-profile alert handler so a quality
+		// degradation alert (score_drop / dimension_low) on a credential
+		// triggers model-IQ re-tests for that credential's nodes — the
+		// "suspicious action" path in docs/model-iq/01-design.md §3.4.
+		// Best-effort: enumerates the credential's routable models and fires
+		// an async IQ re-test for each. No-op when model-quality worker is
+		// absent (e.g. model_quality.enabled=false) or the alert engine is
+		// absent (provider_profile disabled).
+		if modelQualityWorker != nil && profileWorkers != nil {
+			if eng := profileWorkers.AlertEngine(); eng != nil {
+				pool := dbConn.Pool()
+				mqw := modelQualityWorker
+				eng.SetAlertHandler(func(ctx context.Context, credentialID, providerID int64, alertType providerprofile.AlertType) {
+					switch alertType {
+					case providerprofile.AlertTypeScoreDrop,
+						providerprofile.AlertTypeTrendDrop,
+						providerprofile.AlertTypeDimensionLow:
+					default:
+						return // only quality-degradation alerts trigger a re-test
+					}
+					rows, err := pool.Query(ctx, `
+						SELECT DISTINCT pm.raw_model_name
+						FROM credential_model_bindings cmb
+						JOIN provider_models pm ON pm.id = cmb.provider_model_id
+						WHERE cmb.credential_id = $1`, credentialID)
+					if err != nil {
+						return
+					}
+					var models []string
+					for rows.Next() {
+						var m string
+						if err := rows.Scan(&m); err == nil {
+							models = append(models, m)
+						}
+					}
+					rows.Close()
+					for _, m := range models {
+						mqw.TriggerNodeIQTest(int(credentialID), m)
+					}
+				})
+			}
+		}
+
+		// Authoritative URSM v2 has no credentialstate.Manager by design, but
+		// active probes must continue to provide recovery evidence. Start the
+		// worker independently and route its final state through the v2 sink.
+		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
+			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
+			nodeProbeWorker.SetEmitter(newProbeEmitter())
+			if probeStreamHub != nil {
+				nodeProbeWorker.SetProbeSink(probeStreamHub)
+			}
+			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+			if routingExec != nil && routingExec.Circuit != nil {
+				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
+			}
+			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
+				if modelQualityWorker != nil {
+					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
+				}
+			})
+			// 2026-08-13: mirror the unified-queue wiring for the authoritative
+			// URSM v2 fallback path (no credentialstate.Manager).
+			if probeQueueWorker != nil && probeQueue != nil {
+				gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
+				if gatewayURL == "" {
+					gatewayURL = "http://127.0.0.1:8781/v1"
+				}
+				if queueExecutor != nil {
+					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
+				}
+				ps := bg.NewProbeService(nodeProbeWorker, queueExecutor)
+				ps.SetProbeQueue(probeQueue)
+				probeQueueWorker.SetProbeService(ps)
+				nodeProbeWorker.SetProbeQueue(probeQueue)
+			}
+			// 2026-08-18: the legacy block above wires SyncNoCandidateProbe /
+			// ProbeSync / NodeProbeHealthy on the executor, but only when the
+			// credentialstate.Manager exists. In authoritative URSM v2 mode the
+			// manager is disabled (spec §10 Step 5 C-1) and this fallback path
+			// runs instead — without this wiring a request whose node keys
+			// expired (NodeTTL < probe backoff) got an immediate 503 with no
+			// probe and no recovery path (glm-5.2 outage on 154).
+			if routingExec != nil {
+				syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
+				routingExec.SyncNoCandidateProbe = syncOn
+				routingExec.SyncNoCandidateTimeout = 5 * time.Second
+				routingExec.ProbeSync = nodeProbeWorker.ProbeSync
+				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
+					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
+				}
+				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "path", "authoritative_fallback", "timeout", routingExec.SyncNoCandidateTimeout)
+			}
+			nodeProbeWorker.Start(context.Background())
+			slog.Info("authoritative URSM v2 node_probe_worker started")
+		}
+
+		// 2026-08-29: system_health_worker and model_quality_worker do not depend
+		// on stateManager, so they can run in URSM v2 authoritative mode.
+		// Move them outside the stateManager != nil block to ensure they start
+		// in all configurations when shouldStartNewProbeWorkers returns true.
+		if shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			// C. system_health — 30s windowed success-rate monitor
 			// for the GDRT H badge. Starts with the new probe worker group so
 			// all new probe/self-check workers share the system API key gate.
-			if shouldStartNewProbeWorkers(selfCheckAPIKey) {
-				systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
-				systemHealthWorker.Start(context.Background())
-				slog.Info("CHECKPOINT: system_health_worker started")
+			systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
+			systemHealthWorker.Start(context.Background())
+			slog.Info("CHECKPOINT: system_health_worker started")
 
-			}
 			// 2026-08-06: Model Quality Monitoring worker (MMLU benchmark
 			// against featured models to detect provider model degradation).
 			// Controlled by settings.model_quality.enabled (default true).
@@ -3838,112 +3952,6 @@ func main() {
 					"use_lite", mqUseLite,
 					"per_node", mqEnablePerNode)
 			}
-		}
-
-		// 2026-08-11: start the model_iq_runs retention cleaner. Mirrors
-		// ProfileCleaner: daily tick, 365-day retention default. Only started
-		// when DB is available (the table does not exist without migration 350).
-		if dbConn != nil {
-			modelIQCleaner = bg.NewModelIQCleaner(dbConn.Pool(), 24*time.Hour, 365)
-			modelIQCleaner.Start()
-		}
-
-		// 2026-08-11: wire the provider-profile alert handler so a quality
-		// degradation alert (score_drop / dimension_low) on a credential
-		// triggers model-IQ re-tests for that credential's nodes — the
-		// "suspicious action" path in docs/model-iq/01-design.md §3.4.
-		// Best-effort: enumerates the credential's routable models and fires
-		// an async IQ re-test for each. No-op when model-quality worker is
-		// absent (e.g. model_quality.enabled=false) or the alert engine is
-		// absent (provider_profile disabled).
-		if modelQualityWorker != nil && profileWorkers != nil {
-			if eng := profileWorkers.AlertEngine(); eng != nil {
-				pool := dbConn.Pool()
-				mqw := modelQualityWorker
-				eng.SetAlertHandler(func(ctx context.Context, credentialID, providerID int64, alertType providerprofile.AlertType) {
-					switch alertType {
-					case providerprofile.AlertTypeScoreDrop,
-						providerprofile.AlertTypeTrendDrop,
-						providerprofile.AlertTypeDimensionLow:
-					default:
-						return // only quality-degradation alerts trigger a re-test
-					}
-					rows, err := pool.Query(ctx, `
-						SELECT DISTINCT pm.raw_model_name
-						FROM credential_model_bindings cmb
-						JOIN provider_models pm ON pm.id = cmb.provider_model_id
-						WHERE cmb.credential_id = $1`, credentialID)
-					if err != nil {
-						return
-					}
-					var models []string
-					for rows.Next() {
-						var m string
-						if err := rows.Scan(&m); err == nil {
-							models = append(models, m)
-						}
-					}
-					rows.Close()
-					for _, m := range models {
-						mqw.TriggerNodeIQTest(int(credentialID), m)
-					}
-				})
-			}
-		}
-
-		// Authoritative URSM v2 has no credentialstate.Manager by design, but
-		// active probes must continue to provide recovery evidence. Start the
-		// worker independently and route its final state through the v2 sink.
-		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
-			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
-			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
-			nodeProbeWorker.SetEmitter(newProbeEmitter())
-			if probeStreamHub != nil {
-				nodeProbeWorker.SetProbeSink(probeStreamHub)
-			}
-			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
-			if routingExec != nil && routingExec.Circuit != nil {
-				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
-			}
-			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
-				if modelQualityWorker != nil {
-					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
-				}
-			})
-			// 2026-08-13: mirror the unified-queue wiring for the authoritative
-			// URSM v2 fallback path (no credentialstate.Manager).
-			if probeQueueWorker != nil && probeQueue != nil {
-				gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
-				if gatewayURL == "" {
-					gatewayURL = "http://127.0.0.1:8781/v1"
-				}
-				if queueExecutor != nil {
-					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
-				}
-				ps := bg.NewProbeService(nodeProbeWorker, queueExecutor)
-				ps.SetProbeQueue(probeQueue)
-				probeQueueWorker.SetProbeService(ps)
-				nodeProbeWorker.SetProbeQueue(probeQueue)
-			}
-			// 2026-08-18: the legacy block above wires SyncNoCandidateProbe /
-			// ProbeSync / NodeProbeHealthy on the executor, but only when the
-			// credentialstate.Manager exists. In authoritative URSM v2 mode the
-			// manager is disabled (spec §10 Step 5 C-1) and this fallback path
-			// runs instead — without this wiring a request whose node keys
-			// expired (NodeTTL < probe backoff) got an immediate 503 with no
-			// probe and no recovery path (glm-5.2 outage on 154).
-			if routingExec != nil {
-				syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
-				routingExec.SyncNoCandidateProbe = syncOn
-				routingExec.SyncNoCandidateTimeout = 5 * time.Second
-				routingExec.ProbeSync = nodeProbeWorker.ProbeSync
-				routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
-					return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
-				}
-				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "path", "authoritative_fallback", "timeout", routingExec.SyncNoCandidateTimeout)
-			}
-			nodeProbeWorker.Start(context.Background())
-			slog.Info("authoritative URSM v2 node_probe_worker started")
 		}
 
 		slog.Info("CHECKPOINT: before NewStickyCleaner")
