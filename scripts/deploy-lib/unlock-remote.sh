@@ -38,6 +38,12 @@
 #   LOCK_REMOTE_SSH_CMD  — function name to invoke instead of plain ssh
 #                          (deploy-seamless.sh exports this so its retry
 #                          and 252-hop logic is reused transparently)
+#   LOCK_AUDIT_LOG       — path to JSONL audit log for force-unlock events
+#                          (default: /var/log/llm-gateway/lock-audit.jsonl;
+#                          set to empty string to disable audit recording)
+#   LOCK_STALE_AFTER_SEC — age threshold (seconds) at which a held lock
+#                          is reported as "stale-detected" without --force.
+#                          Default 3600 (1h); set to 0 to disable.
 #
 # Exit codes:
 #   0  — removed (or nothing to remove)
@@ -54,12 +60,14 @@ fi
 
 TARGET=$1; shift
 FORCE=0
+DETECT_STALE=0
 SSH_KEY_OPT=""
 DIRECT=0
 SSH_KEY_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force|-f)        FORCE=1; shift ;;
+    --detect-stale)    DETECT_STALE=1; shift ;;
     --ssh-key)
       [[ $# -ge 2 ]] || { echo "missing value for --ssh-key" >&2; exit 2; }
       SSH_KEY_OVERRIDE=$2; shift 2 ;;
@@ -71,6 +79,9 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+
+: "${LOCK_STALE_AFTER_SEC:=3600}"
+: "${LOCK_AUDIT_LOG:=/var/log/llm-gateway/lock-audit.jsonl}"
 
 # Resolve target → host:port. Mirrors scripts/deploy-seamless.sh so the
 # helper can stand alone for on-call use without sourcing the wrapper.
@@ -96,6 +107,53 @@ RED=$'\033[0;31m'; YELLOW=$'\033[1;33m'; GREEN=$'\033[0;32m'; NC=$'\033[0m'
 err()  { echo -e "${RED}  ✗${NC} $*" >&2; }
 warn() { echo -e "${YELLOW}  ⚠${NC} $*"; }
 ok()   { echo -e "${GREEN}  ✓${NC} $*"; }
+
+# Audit log writer (MEDIUM hardening, 2026-08-29). Records every
+# force-unlock event to a JSONL file so the security team can audit
+# operator overrides. Disabled when LOCK_AUDIT_LOG is empty. Writes
+# are best-effort: a missing dir or permission error is warned but does
+# NOT abort the unlock itself — operators need the escape hatch more
+# than they need the audit line.
+#
+# Schema (one JSON object per line):
+#   ts         — RFC3339 UTC timestamp
+#   action     — "force-unlock-remote" | "force-unlock-malformed"
+#   target     — 154 | 245
+#   remote     — user@host:port
+#   lock_path  — absolute path on the target host
+#   operator   — $USER from the local shell that invoked the helper
+#   holder_pid — recorded source PID (when present)
+#   holder_user/holder_host/holder_started_at/holder_commit/holder_version
+#              — recorded metadata fields (when present)
+#   lock_age_s — derived from started_at, may be negative on clock skew
+audit_log() {
+  local action=$1
+  [[ -n "${LOCK_AUDIT_LOG:-}" ]] || return 0
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%S.%6N%z 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+  local holder_pid=${HOLDER_PID:-}
+  local holder_user=${HOLDER_USER:-}
+  local holder_host=${HOLDER_HOST:-}
+  local holder_started_at=${HOLDER_STARTED:-}
+  local holder_commit=${HOLDER_COMMIT:-}
+  local holder_version=${HOLDER_VERSION:-}
+  local age_s=""
+  if [[ -n "${START_EPOCH:-}" && "$START_EPOCH" =~ ^[0-9]+$ && "$START_EPOCH" -gt 0 ]]; then
+    age_s=$(( $(date -u +%s) - START_EPOCH ))
+  fi
+  local entry
+  entry=$(printf '{"ts":"%s","action":"%s","target":"%s","remote":"%s","lock_path":"%s","operator":"%s","holder_pid":"%s","holder_user":"%s","holder_host":"%s","holder_started_at":"%s","holder_commit":"%s","holder_version":"%s","lock_age_s":%s}' \
+    "$ts" "$action" "$TARGET" "${REMOTE_USER}@${REMOTE_HOST}:${SSH_PORT}" \
+    "$LOCK_REMOTE_PATH" "${USER:-$(id -un 2>/dev/null || echo unknown)}" \
+    "$holder_pid" "$holder_user" "$holder_host" "$holder_started_at" \
+    "$holder_commit" "$holder_version" \
+    "${age_s:-null}")
+  local dir
+  dir=$(dirname "$LOCK_AUDIT_LOG")
+  if ! ( umask 027 && mkdir -p "$dir" 2>/dev/null && printf '%s\n' "$entry" >> "$LOCK_AUDIT_LOG" 2>/dev/null ); then
+    warn "audit log write failed ($LOCK_AUDIT_LOG); unlock proceeded"
+  fi
+}
 
 # Build the remote shell invocation. Resolution order:
 #
@@ -178,6 +236,7 @@ if [[ -z "$META_B64" || "$META_B64" == "MISSING" ]]; then
     err "refusing to remove without --force"
     exit 1
   fi
+  audit_log "force-unlock-malformed"
   ssh_invoke "rm -rf '$LOCK_REMOTE_PATH'" || { err "remote rm failed"; exit 3; }
   ok "removed malformed lock at $LOCK_REMOTE_PATH"
   exit 0
@@ -253,6 +312,21 @@ if [[ -n "$HOLDER_TARGET" && "$HOLDER_TARGET" != "$TARGET" ]]; then
   exit 1
 fi
 
+# Stale-detection (MEDIUM, 2026-08-29). With --detect-stale we report
+# the lock's age and exit non-zero if the lock has been held longer
+# than LOCK_STALE_AFTER_SEC, even when --force is not set. The check
+# is local-clock based and conservative (clock skew on the target host
+# could push a live lock past the threshold) — it never removes the
+# lock and never replaces the live-PID safety check.
+if [[ "$DETECT_STALE" == "1" && "$LOCK_STALE_AFTER_SEC" -gt 0 ]]; then
+  if [[ "${AGE_S:-0}" =~ ^-?[0-9]+$ && "$AGE_S" -ge "$LOCK_STALE_AFTER_SEC" ]]; then
+    warn "lock age=$AGE_HUMAN exceeds threshold ${LOCK_STALE_AFTER_SEC}s — stale"
+    exit 75
+  fi
+  ok "lock age=$AGE_HUMAN within threshold ${LOCK_STALE_AFTER_SEC}s"
+  exit 0
+fi
+
 if [[ $FORCE -eq 0 ]]; then
   REASON=""
   if [[ -n "$HOLDER_PID" && "$HOLDER_PID" =~ ^[0-9]+$ ]]; then
@@ -273,6 +347,7 @@ warn "removing remote lock at $LOCK_REMOTE_PATH (operator request)"
 if [[ -n "$HOLDER_PID" && "$HOLDER_PID" =~ ^[0-9]+$ ]]; then
   warn "recorded PID $HOLDER_PID belongs to the source deploy host; verify it is no longer running before force removal"
 fi
+audit_log "force-unlock-remote"
 if ! ssh_invoke "rm -rf '$LOCK_REMOTE_PATH'"; then
   err "remote rm failed"
   exit 3
