@@ -6088,6 +6088,11 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		// Stop monitors before closing the database pool they query. The
+		// monitor is idempotent and safely handles a not-started instance.
+		if candidateFailureMonitor != nil {
+			candidateFailureMonitor.Stop()
+		}
 		// Stop dispatch before its RequestJourney Redis/PostgreSQL dependencies.
 		if pipeline != nil {
 			pipeline.Stop()
