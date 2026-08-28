@@ -13,7 +13,36 @@ import (
 	"time"
 )
 
-var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{8,128}$`)
+// safeRequestID accepts three families of request-id shapes observed in
+// the codebase. The whitelist is intentionally narrow at the CHARACTER
+// level — every accepted shape is built from [A-Za-z0-9._-] — but the
+// structure constraints are strict:
+//
+//   - hex-only:    [0-9a-f]{32}                       (server-generated,
+//                                                       case-insensitive)
+//   - uuid-dashed: [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
+//   - prefixed:    starts with a letter, total 8-128 chars,
+//                  no runs of dots or dashes. Examples: "req-unified-01",
+//                  "req_1", "req-same-tenant", "bench-1a2b3c4d",
+//                  "routing-test-<uuid>-00".
+//
+// 2026-08-28 (audit follow-up): the original regex
+// `^[A-Za-z0-9._-]{8,128}$` was too permissive — any 8-char "abc..def"
+// was accepted even though ".." could be a path-traversal vector if a
+// downstream tool failed to call filepath.Base. The new pattern:
+//   - exact-shape branches for hex-only and uuid-dashed (case-insensitive)
+//   - prefix branch that MUST start with a letter (rejects ".hidden",
+//     "..", "1abc" — anything beginning with a digit or dot)
+//   - prefix branch atom = (one or more safe chars) or (one separator
+//     followed by exactly one safe char). The atom trick is the
+//     RE2-friendly way to forbid runs of separators since RE2 has no
+//     negative-lookahead. See TestSafeRequestIDCompatibilityMatrix.
+//
+// Length 8-128 is enforced programmatically alongside the regex match.
+// The (?i) flag covers both upper- and lowercase hex.
+var safeRequestIDPattern = regexp.MustCompile(
+	`(?i)^([0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[A-Za-z](?:[A-Za-z0-9]+|[._-][A-Za-z0-9])+)$`,
+)
 
 // ErrBodyTooLarge indicates that a request-detail body exceeds the storage/read limit.
 var ErrBodyTooLarge = errors.New("requestdetail: body file exceeds size limit")
@@ -387,8 +416,23 @@ func (s *Store) filePath(requestID string) string {
 
 // ValidateRequestID validates the identifier accepted by the local file store.
 // It is exported so HTTP entry points can return a client error before lookup.
+//
+// The check has three parts:
+//   - structural: safeRequestIDPattern matches one of the three accepted
+//     shapes (hex-only, uuid-dashed, prefixed).
+//   - length: 8 <= len(id) <= 128 (enforced separately because RE2's
+//     {min,max} cannot distinguish "8 chars of safe" from "8 chars including
+//     separators").
+//   - non-empty: empty string is rejected by both above checks, but listed
+//     here for documentation.
 func ValidateRequestID(id string) error {
-	if !safeRequestID.MatchString(id) {
+	if id == "" {
+		return fmt.Errorf("requestdetail: invalid request_id")
+	}
+	if len(id) < 8 || len(id) > 128 {
+		return fmt.Errorf("requestdetail: invalid request_id")
+	}
+	if !safeRequestIDPattern.MatchString(id) {
 		return fmt.Errorf("requestdetail: invalid request_id")
 	}
 	return nil
