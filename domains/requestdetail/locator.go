@@ -8,8 +8,12 @@ import (
 
 // BodyReader loads persisted bodies from a dual-write DB source.
 type BodyReader interface {
-	ReadRequestLogsBodies(ctx context.Context, requestID string) (Bodies, Meta, error)
-	ReadSessionTurnsBodies(ctx context.Context, requestID string) (Bodies, Meta, error)
+	// ReadRequestLogsBodies returns ErrNotFound when metadata exists but no
+	// request-log body row exists. In that case the returned Meta is still
+	// populated so the locator can preserve the request identity while trying
+	// the session-turns fallback.
+	ReadRequestLogsBodies(ctx context.Context, requestID string, omitBody bool) (Bodies, Meta, error)
+	ReadSessionTurnsBodies(ctx context.Context, requestID string, omitBody bool) (Bodies, Meta, error)
 }
 
 // ErrNotFound means no layer could supply the request.
@@ -67,7 +71,7 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 		return nil, ErrNotFound
 	}
 
-	bodies, meta, err := l.Bodies.ReadRequestLogsBodies(ctx, requestID)
+	bodies, meta, err := l.Bodies.ReadRequestLogsBodies(ctx, requestID, omitBody)
 	if err == nil {
 		d := &Detail{
 			Source:      SourceRequestLogs,
@@ -84,18 +88,33 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 		return nil, err
 	}
 
-	bodies, meta, err = l.Bodies.ReadSessionTurnsBodies(ctx, requestID)
+	// A request-log row can outlive its body row (TTL, partial persistence, or
+	// a historical migration). Try the session store before giving up, while
+	// retaining the metadata returned by the request-log reader.
+	requestLogsMeta := meta
+	bodies, sessionMeta, err := l.Bodies.ReadSessionTurnsBodies(ctx, requestID, omitBody)
 	if err == nil {
 		d := &Detail{
 			Source:      SourceSessionTurns,
 			Persistence: PersistencePersisted,
-			Meta:        meta,
+			Meta:        mergeMeta(requestLogsMeta, sessionMeta),
 		}
 		if !omitBody {
 			b := bodies
 			d.Bodies = &b
 		}
 		return d, nil
+	}
+	if requestLogsMeta.RequestID != "" {
+		// Metadata is still useful to the detail page even when both body stores
+		// are empty. Return it as a successful metadata-only response instead of
+		// misreporting an existing request as 404.
+		return &Detail{
+			Source:      SourceRequestLogs,
+			Persistence: PersistencePersisted,
+			Meta:        requestLogsMeta,
+			Warning:     "request body row not found in request_logs or session_turns; metadata-only fallback",
+		}, nil
 	}
 	return nil, err
 }

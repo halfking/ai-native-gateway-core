@@ -76,7 +76,7 @@ func TestPGBodyReaderResolvesClientRequestIDToCanonicalID(t *testing.T) {
 	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
 		return `{"messages":[]}`, `{"content":"ok"}`, nil
 	})}
-	bodies, meta, err := reader.ReadRequestLogsBodies(context.Background(), "client-req-1")
+	bodies, meta, err := reader.ReadRequestLogsBodies(context.Background(), "client-req-1", false)
 	require.NoError(t, err)
 	require.Equal(t, "gateway-req-1", meta.RequestID)
 	require.Equal(t, "tenant-a", meta.TenantID)

@@ -40,21 +40,35 @@ type pgBodyReader struct {
 	fetch bodyFetcher
 }
 
-func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID string) (requestdetail.Bodies, requestdetail.Meta, error) {
+func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID string, omitBody bool) (requestdetail.Bodies, requestdetail.Meta, error) {
 	meta, err := r.loadRequestLogMeta(ctx, requestID)
 	if err != nil {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, err
 	}
 	canonicalRequestID := meta.RequestID
+	if omitBody {
+		return requestdetail.Bodies{}, meta, nil
+	}
 	reqBody, respBody, bodyErr := r.fetch.fetchRequestBodies(ctx, canonicalRequestID)
 	if bodyErr != nil && !errors.Is(bodyErr, sql.ErrNoRows) {
+		return requestdetail.Bodies{}, requestdetail.Meta{}, bodyErr
+	}
+	if bodyErr != nil {
+		if errors.Is(bodyErr, sql.ErrNoRows) {
+			// Keep the metadata so Locator can try session_turns before
+			// returning a metadata-only detail.
+			return requestdetail.Bodies{}, meta, requestdetail.ErrNotFound
+		}
 		return requestdetail.Bodies{}, requestdetail.Meta{}, bodyErr
 	}
 	bodies := requestdetail.Bodies{
 		RequestBody:  anyToRaw(reqBody),
 		ResponseBody: anyToRaw(respBody),
 	}
-	outbound, _ := r.loadOutboundBody(ctx, canonicalRequestID)
+	outbound, outboundErr := r.loadOutboundBody(ctx, canonicalRequestID)
+	if outboundErr != nil && !errors.Is(outboundErr, requestdetail.ErrNotFound) {
+		return requestdetail.Bodies{}, requestdetail.Meta{}, outboundErr
+	}
 	bodies.OutboundBody = outbound
 	return bodies, meta, nil
 }
@@ -190,7 +204,7 @@ func (r *pgBodyReader) loadOutboundBody(ctx context.Context, requestID string) (
 	return json.RawMessage(raw), nil
 }
 
-func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID string) (requestdetail.Bodies, requestdetail.Meta, error) {
+func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID string, omitBody bool) (requestdetail.Bodies, requestdetail.Meta, error) {
 	var (
 		sessionID     string
 		turnNo        int
@@ -200,6 +214,9 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 		model         sql.NullString
 		latencyMs     sql.NullInt32
 	)
+	if omitBody {
+		return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrNotFound
+	}
 	err := r.db.QueryRow(ctx, `
 		SELECT t.session_id, t.turn_no,
 		       b.request_delta, b.response_delta, b.outbound_body,
