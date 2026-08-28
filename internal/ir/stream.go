@@ -202,7 +202,7 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			Index int `json:"index"`
 			Delta struct {
 				Role             string          `json:"role"`
-				Content          string          `json:"content"`
+				Content          json.RawMessage `json:"content"`
 				ReasoningContent string          `json:"reasoning_content"`
 				ToolCalls        json.RawMessage `json:"tool_calls"`
 				// audit-stream-multimodal (2026-07-13): OpenAI audio output delta
@@ -286,10 +286,11 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 		choice := raw.Choices[0]
 		delta := choice.Delta
 
+		content := normalizeOpenAIStreamContent(delta.Content)
 		chunk.Type = ChunkTypeDelta
 		chunk.Delta = &StreamDelta{
 			Role:             delta.Role,
-			Content:          delta.Content,
+			Content:          content,
 			ReasoningContent: delta.ReasoningContent,
 		}
 		// Determine delta type for cross-protocol routing
@@ -298,7 +299,7 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			chunk.Delta.DeltaType = "audio"
 		case delta.ReasoningContent != "":
 			chunk.Delta.DeltaType = "reasoning"
-		case delta.Content != "":
+		case content != "":
 			chunk.Delta.DeltaType = "text"
 		}
 
@@ -356,6 +357,33 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 	chunk.Type = ChunkTypeDelta
 	chunk.Delta = &StreamDelta{}
 	return chunk, nil
+}
+
+// normalizeOpenAIStreamContent accepts both standard OpenAI string deltas and
+// Qwen/DashScope's structured text delta array. Unknown block shapes do not
+// represent text and are intentionally omitted from the text-only StreamDelta.
+func normalizeOpenAIStreamContent(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text
+	}
+
+	var blocks []map[string]any
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return ""
+	}
+
+	var builder strings.Builder
+	for _, block := range blocks {
+		if value, ok := block["text"].(string); ok {
+			builder.WriteString(value)
+		}
+	}
+	return builder.String()
 }
 
 // ParseAnthropicStreamEvent parses an Anthropic SSE event into StreamChunk IR.
