@@ -245,3 +245,70 @@ func (f *fakeStore) ListNodes(_ context.Context, subscriptionID *int) ([]*Node, 
 	}
 	return out, nil
 }
+
+// TestTransportFactoryCachesPerSubscription 验证 Stage 2 的 Transport 工厂：
+// 同一订阅 + 相同代理 URL 复用同一 Transport；代理 URL 变化时才重建；
+// Invalidate 后下一次 Get 重建。避免每次 SelectBestNode/探活都新建 Transport 造成连接泄漏。
+func TestTransportFactoryCachesPerSubscription(t *testing.T) {
+	f := NewTransportFactory(nil)
+
+	t1, err := f.Get(1, "http://127.0.0.1:7897")
+	if err != nil {
+		t.Fatalf("Get #1: %v", err)
+	}
+	// 同订阅 + 同代理 URL：必须复用，不应新建。
+	t2, err := f.Get(1, "http://127.0.0.1:7897")
+	if err != nil {
+		t.Fatalf("Get #2: %v", err)
+	}
+	if t1 != t2 {
+		t.Fatal("expected cached transport to be reused for same subscription+proxyURL")
+	}
+
+	// 不同订阅：必须是另一个 Transport 实例。
+	t3, err := f.Get(2, "http://127.0.0.1:7897")
+	if err != nil {
+		t.Fatalf("Get #3: %v", err)
+	}
+	if t3 == t1 {
+		t.Fatal("different subscription must not share transport instance")
+	}
+
+	// 同一订阅但代理 URL 变化（节点切换）：应重建为新的实例。
+	t4, err := f.Get(1, "socks5://127.0.0.1:7898")
+	if err != nil {
+		t.Fatalf("Get #4: %v", err)
+	}
+	if t4 == t1 {
+		t.Fatal("changed proxy url must rebuild transport")
+	}
+	// 切回原 URL：再次复用（缓存已更新为新 URL 对应的实例）。
+	t5, err := f.Get(1, "socks5://127.0.0.1:7898")
+	if err != nil {
+		t.Fatalf("Get #5: %v", err)
+	}
+	if t5 != t4 {
+		t.Fatal("expected cached transport to be reused after url change")
+	}
+
+	// 直连（空代理 URL）也应可构造且不 panic。
+	if _, err := f.Get(3, ""); err != nil {
+		t.Fatalf("Get direct: %v", err)
+	}
+
+	// Invalidate 后该订阅的缓存被清除；再次 Get 同一 URL 会新建实例。
+	f.Invalidate(1)
+	t6, err := f.Get(1, "socks5://127.0.0.1:7898")
+	if err != nil {
+		t.Fatalf("Get #6 after invalidate: %v", err)
+	}
+	if t6 == t4 {
+		t.Fatal("after Invalidate, Get must rebuild transport")
+	}
+
+	// CloseIdleConnections 不应 panic，且可继续 Get。
+	f.CloseIdleConnections()
+	if _, err := f.Get(9, "http://127.0.0.1:7897"); err != nil {
+		t.Fatalf("Get after CloseIdleConnections: %v", err)
+	}
+}

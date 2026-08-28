@@ -17,15 +17,18 @@ type Manager struct {
 	store   Store
 	parser  Parser
 	checker HealthChecker
-	
+	// transportFactory 按订阅缓存可复用的 http.Transport（Stage 2：避免每次
+	// SelectBestNode/探活都新建 Transport 导致连接泄漏）。
+	transportFactory *TransportFactory
+
 	// 内存缓存：subscription_id -> nodes
 	nodesCache sync.Map
-	
+
 	// 配置
 	autoRefreshInterval   time.Duration
 	healthCheckInterval   time.Duration
 	unknownDomainStrategy string // direct/proxy/probe
-	
+
 	stopCh chan struct{}
 }
 
@@ -35,6 +38,7 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 		store:                 store,
 		parser:                parser,
 		checker:               checker,
+		transportFactory:      NewTransportFactory(nil),
 		autoRefreshInterval:   1 * time.Hour,
 		healthCheckInterval:   5 * time.Minute,
 		unknownDomainStrategy: "direct",
@@ -56,9 +60,12 @@ func (m *Manager) Start() {
 	go m.healthCheckLoop()
 }
 
-// Stop 停止定时任务
+// Stop 停止定时任务，并关闭 Transport 工厂的空闲连接。
 func (m *Manager) Stop() {
 	close(m.stopCh)
+	if m.transportFactory != nil {
+		m.transportFactory.CloseIdleConnections()
+	}
 }
 
 // SelectBestNode 选择最优节点
@@ -105,11 +112,15 @@ func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (*Nod
 	
 	// 按健康状态和响应时间排序
 	sort.Slice(activeNodes, func(i, j int) bool {
-		// 优先选择成功率高的
+		// 优先选择连续失败次数少的（最近探活健康的节点排前面）
+		if activeNodes[i].ConsecutiveFailures != activeNodes[j].ConsecutiveFailures {
+			return activeNodes[i].ConsecutiveFailures < activeNodes[j].ConsecutiveFailures
+		}
+		// 其次选择成功率高的
 		if activeNodes[i].SuccessRate != activeNodes[j].SuccessRate {
 			return activeNodes[i].SuccessRate > activeNodes[j].SuccessRate
 		}
-		// 其次选择响应时间快的
+		// 最后选择响应时间快的
 		return activeNodes[i].ResponseTimeMs < activeNodes[j].ResponseTimeMs
 	})
 	
@@ -256,37 +267,33 @@ func (m *Manager) ReloadCache() error {
 	return m.loadAllNodesIntoCache()
 }
 
-// GetProxyTransport 获取代理 Transport
+// InvalidateTransport 使订阅的缓存 Transport 失效并关闭其空闲连接。
+// 供节点/订阅删除后调用，避免持有指向已删节点的陈旧连接池。
+func (m *Manager) InvalidateTransport(subscriptionID int) {
+	if m.transportFactory != nil {
+		m.transportFactory.Invalidate(subscriptionID)
+	}
+}
+
+// GetProxyTransport 获取代理 Transport（按订阅缓存复用，避免每次新建导致连接泄漏）。
 func (m *Manager) GetProxyTransport(ctx context.Context, subscriptionID *int) (*http.Transport, error) {
 	node, err := m.SelectBestNode(ctx, subscriptionID)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	proxyURLStr := node.ProxyURL()
 	if proxyURLStr == "" {
 		return nil, fmt.Errorf("unsupported proxy protocol: %s", node.Protocol)
 	}
-	
-	proxyURL, err := url.Parse(proxyURLStr)
-	if err != nil {
-		return nil, fmt.Errorf("parse proxy url: %w", err)
+
+	subID := 0
+	if subscriptionID != nil {
+		subID = *subscriptionID
 	}
-	
-	transport := &http.Transport{
-		Proxy: http.ProxyURL(proxyURL),
-		// TLS 配置
-		TLSHandshakeTimeout: 10 * time.Second,
-		// 连接池配置
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
-		// 超时配置
-		ResponseHeaderTimeout: 30 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-	}
-	
-	return transport, nil
+	// 工厂按订阅缓存 Transport，仅当选出的节点代理 URL 变化时才重建；
+	// 命中同一订阅的多次请求共享连接池。
+	return m.transportFactory.Get(subID, proxyURLStr)
 }
 
 // 内部方法
@@ -341,25 +348,107 @@ func (m *Manager) refreshAllSubscriptions() {
 
 func (m *Manager) healthCheckAllNodes() {
 	ctx := context.Background()
-	nodes, err := m.store.ListNodes(ctx, nil)
+	subs, err := m.store.ListSubscriptions(ctx)
 	if err != nil {
-		slog.Error("proxy: failed to list nodes", "error", err)
+		slog.Error("proxy: failed to list subscriptions for health check", "error", err)
 		return
 	}
-	
-	for _, node := range nodes {
-		if node.Status == "active" || node.Status == "unhealthy" {
-			if err := m.HealthCheckNode(ctx, node.ID); err != nil {
-				slog.Warn("proxy: health check error",
-					"node_id", node.ID,
-					"node_name", node.Name,
-					"error", err)
-			}
-			
-			// 避免过快检查
-			time.Sleep(100 * time.Millisecond)
+	for _, sub := range subs {
+		if sub.Status != "active" {
+			continue
+		}
+		summary, herr := m.HealthCheckSubscription(ctx, sub.ID)
+		if herr != nil {
+			slog.Warn("proxy: subscription health check failed", "id", sub.ID, "name", sub.Name, "error", herr)
+			continue
+		}
+		if summary.Total > 0 {
+			slog.Info("proxy: subscription health check done",
+				"id", sub.ID, "name", sub.Name,
+				"total", summary.Total, "ok", summary.OK, "failed", summary.Failed)
 		}
 	}
+}
+
+// HealthCheckSummary 一次订阅并发探活的汇总。
+type HealthCheckSummary struct {
+	Total    int
+	OK       int
+	Failed   int
+	Skipped  int // 不可拨号（trojan/vless 等）节点数
+	AvgMs    int
+	MaxMs    int
+}
+
+// HealthCheckSubscription 对单个订阅下的节点做并发探活，并把结果写回 Store 与缓存。
+// 相比逐节点串行（每次请求 + 100ms sleep），并发受限于并发度，100+ 节点整体耗时显著下降。
+func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID int) (HealthCheckSummary, error) {
+	var summary HealthCheckSummary
+	nodes, err := m.store.ListNodes(ctx, &subscriptionID)
+	if err != nil {
+		return summary, fmt.Errorf("list nodes: %w", err)
+	}
+
+	var toCheck []*Node
+	for _, n := range nodes {
+		if n.Status != "active" && n.Status != "unhealthy" {
+			continue
+		}
+		summary.Total++
+		if !n.Dialable() {
+			summary.Skipped++
+			continue
+		}
+		toCheck = append(toCheck, n)
+	}
+
+	for res := range m.checker.CheckConcurrent(ctx, toCheck, 16) {
+		node, gerr := m.store.GetNode(ctx, res.NodeID)
+		if gerr != nil {
+			slog.Warn("proxy: health check: get node failed", "node_id", res.NodeID, "error", gerr)
+			continue
+		}
+		node.LastHealthCheckAt = res.CheckedAt
+		if res.OK {
+			node.LastHealthCheckStatus = "success"
+			node.ResponseTimeMs = res.Latency
+			node.ConsecutiveFailures = 0
+			node.Status = "active"
+			node.SuccessRate = node.SuccessRate*0.9 + 0.1
+			summary.OK++
+			summary.AvgMs += res.Latency
+			if res.Latency > summary.MaxMs {
+				summary.MaxMs = res.Latency
+			}
+		} else {
+			node.LastHealthCheckStatus = "failed"
+			node.ConsecutiveFailures++
+			if node.ConsecutiveFailures >= 3 {
+				node.Status = "unhealthy"
+			}
+			summary.Failed++
+			slog.Warn("proxy: health check failed",
+				"node", node.Name, "error", redactErr(res.Err), "latency_ms", res.Latency)
+		}
+		if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
+			slog.Warn("proxy: health check: update node failed", "node_id", node.ID, "error", uerr)
+			continue
+		}
+		m.updateNodeInCache(node)
+	}
+	if summary.OK > 0 {
+		summary.AvgMs /= summary.OK
+	}
+	return summary, nil
+}
+
+// redactErr 去掉错误里可能泄露的代理凭据（ProxyURL 出现在错误信息中）。
+func redactErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	return s
 }
 
 func (m *Manager) loadAllNodesIntoCache() error {

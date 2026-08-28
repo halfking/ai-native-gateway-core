@@ -340,6 +340,10 @@ func (h *Handler) deleteProxySubscription(w http.ResponseWriter, r *http.Request
 		writeProxyLookupError(w, err, "subscription")
 		return
 	}
+	// 该订阅的缓存 Transport 一并失效，关闭其空闲连接。
+	if mgr != nil {
+		mgr.InvalidateTransport(id)
+	}
 	// 节点由外键 ON DELETE CASCADE 一并删除，缓存需同步失效。
 	if err := mgr.ReloadCache(); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "cache_reload_error": err.Error()})
@@ -537,9 +541,18 @@ func (h *Handler) getProxyNode(w http.ResponseWriter, r *http.Request, id int) {
 
 func (h *Handler) deleteProxyNode(w http.ResponseWriter, r *http.Request, id int) {
 	mgr, store := h.proxyRuntime()
+	// 先取出节点以拿到其订阅 ID，供删除后失效对应 Transport。
+	existing, gerr := store.GetNode(r.Context(), id)
+	if gerr != nil {
+		writeProxyLookupError(w, gerr, "node")
+		return
+	}
 	if err := store.DeleteNode(r.Context(), id); err != nil {
 		writeProxyLookupError(w, err, "node")
 		return
+	}
+	if mgr != nil && existing != nil {
+		mgr.InvalidateTransport(existing.SubscriptionID)
 	}
 	if err := mgr.ReloadCache(); err != nil {
 		writeError(w, http.StatusInternalServerError, "reload cache: "+err.Error())
