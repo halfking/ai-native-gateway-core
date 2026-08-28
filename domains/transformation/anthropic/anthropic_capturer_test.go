@@ -82,6 +82,8 @@ func TestStreamAnthropicPassthrough_CapturerAccumulatesLines(t *testing.T) {
 func TestStreamAnthropicPassthrough_NilCapturerIsNoOp(t *testing.T) {
 	events := []string{
 		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_nil\",\"model\":\"m\"}}\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n",
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n",
 		"",
 	}
 	body, _ := makeAnthropicSSEBody(t, events)
