@@ -86,6 +86,64 @@ func TestPGBodyReaderResolvesClientRequestIDToCanonicalID(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+func TestPGBodyReaderFillsPartialBodiesFromSessionTurns(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	metaCols := []string{
+		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
+	}
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+		WithArgs("req-partial").
+		WillReturnRows(pgxmock.NewRows(metaCols).
+			AddRow("req-partial", "default", "session-1", nil, "model", "success", true, 10))
+	mock.ExpectQuery(`SELECT outbound_body::text\s+FROM request_logs_bodies_hot`).
+		WithArgs("req-partial").
+		WillReturnRows(pgxmock.NewRows([]string{"outbound_body"}).AddRow(`{"messages":["from-logs"]}`))
+	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no,.*FROM public.session_turns_with_current_month t`).
+		WithArgs("req-partial").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"session_id", "turn_no", "request_delta", "response_delta", "outbound_body", "model", "latency_ms",
+		}).AddRow("session-1", 1, []byte(`{"messages":["from-session"]}`), []byte(`{"choices":[{"message":{"content":"reply"}}]}`), []byte(`{"messages":["from-session"]}`), "model", 10))
+
+	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
+		return `{"messages":["from-logs"]}`, nil, nil
+	})}
+	bodies, _, err := reader.ReadRequestLogsBodies(context.Background(), "req-partial", false)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"messages":["from-logs"]}`, string(bodies.RequestBody))
+	require.JSONEq(t, `{"messages":["from-logs"]}`, string(bodies.OutboundBody))
+	require.JSONEq(t, `{"choices":[{"message":{"content":"reply"}}]}`, string(bodies.ResponseBody))
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestPGBodyReaderOmitBodySkipsBodyQueries(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mock.Close()
+
+	metaCols := []string{
+		"request_id", "tenant_id", "gw_session_id", "gw_task_id", "client_model", "request_status", "success", "latency_ms",
+	}
+	mock.ExpectQuery(`(?s)SELECT request_id, COALESCE\(tenant_id, ''\).*FROM request_logs_hot\s+WHERE request_id = \$1\s+LIMIT 1`).
+		WithArgs("req-meta-only").
+		WillReturnRows(pgxmock.NewRows(metaCols).
+			AddRow("req-meta-only", "default", "session-1", nil, "model", "success", true, 10))
+
+	called := false
+	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
+		called = true
+		return nil, nil, nil
+	})}
+	bodies, meta, err := reader.ReadRequestLogsBodies(context.Background(), "req-meta-only", true)
+	require.NoError(t, err)
+	require.Empty(t, bodies)
+	require.Equal(t, "req-meta-only", meta.RequestID)
+	require.False(t, called, "omit_body must not invoke body fetch")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestHandleUnifiedRequestDetailNotConfigured(t *testing.T) {
 	h := &Handler{}
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/request-detail/req-x", nil)
