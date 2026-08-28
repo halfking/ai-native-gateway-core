@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -186,35 +187,51 @@ var taskActionForKind = map[errorsx.ErrorKind]TaskAction{
 // Ordering: success > unmapped (fail closed) > terminal > committed-output
 // block > retry-now > wait-recovery. Mixed candidates prefer the strongest
 // recovery still available; a single terminal candidate fails the task.
+// centralActionForTask folds the legacy per-kind task action table with the
+// central policy's commit-aware override. The kind → action table remains
+// authoritative for the streaming context (where retry-budget, history-loop
+// protection, and credential-scope switches are not the right granularity);
+// the central policy only contributes the commit-block and disconnect rules
+// that the central spec hard-pins across all phases.
 func centralActionForTask(kind errorsx.ErrorKind, committed bool, retryAfter time.Duration) TaskDecision {
-	commit := errorsx.ActionCommitNone
-	if committed {
-		commit = errorsx.ActionCommitContent
-	}
-	action := errorsx.DecideNextAction(errorsx.DecisionContext{
-		Kind:        kind,
-		CommitState: commit,
-		RetryAfter:  retryAfter,
-		// Candidate availability and attempt budgets are aggregated by this
-		// layer; the central policy supplies only the kind-level action.
+	// Central policy owns: client disconnect, unmapped kinds, and the
+	// "committed recoverable output is never transparently retried" rule.
+	central := errorsx.DecideNextAction(errorsx.DecisionContext{
+		Kind:               kind,
+		CommitState:        commitStateCentral(committed),
+		RetryAfter:         retryAfter,
 		HasAlternateNode:   true,
 		RemainingAttempts:  1,
 		MaxSameNodeRetries: 0,
 	})
-	switch action.Action {
-	case errorsx.ActionRetrySameNode, errorsx.ActionSwitchNode:
-		return TaskDecision{Action: TaskActionRetryNow, Reason: action.ReasonCode, NextRetryAfter: action.RetryAfter}
-	case errorsx.ActionWaitRecovery:
-		return TaskDecision{Action: TaskActionWaitRecovery, Reason: action.ReasonCode, NextRetryAfter: action.RetryAfter}
-	case errorsx.ActionResumeBlocked:
-		return TaskDecision{Action: TaskActionResumeBlocked, Reason: action.ReasonCode}
-	case errorsx.ActionFailTerminal:
-		return TaskDecision{Action: TaskActionFailTerminal, Reason: action.ReasonCode}
-	case errorsx.ActionClientCanceled:
-		return TaskDecision{Action: TaskActionFailTerminal, Reason: action.ReasonCode}
-	default:
-		return TaskDecision{Action: TaskActionFailClosed, Reason: action.ReasonCode}
+	if committed && central.Action == errorsx.ActionResumeBlocked {
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
 	}
+	if central.Action == errorsx.ActionClientCanceled {
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: central.ReasonCode}
+	}
+	if central.Action == errorsx.ActionFailClosed {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: central.ReasonCode}
+	}
+	action, mapped := taskActionForKind[kind]
+	if !mapped {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: fmt.Sprintf("unmapped_kind:%s", kind)}
+	}
+	switch action {
+	case TaskActionRetryNow:
+		return TaskDecision{Action: TaskActionRetryNow, Reason: string(kind), NextRetryAfter: retryAfter}
+	case TaskActionWaitRecovery:
+		return TaskDecision{Action: TaskActionWaitRecovery, Reason: string(kind), NextRetryAfter: retryAfter}
+	default:
+		return TaskDecision{Action: action, Reason: string(kind)}
+	}
+}
+
+func commitStateCentral(committed bool) errorsx.ActionCommitState {
+	if committed {
+		return errorsx.ActionCommitContent
+	}
+	return errorsx.ActionCommitNone
 }
 
 func appendSurvivalHistory(history *errorsx.DecisionHistory, result *AttemptResult, attemptNo int, decision TaskDecision) {
@@ -245,7 +262,18 @@ func candidateModel(id string) string {
 }
 
 func candidateCredential(id string) int {
-	n, _ := strconv.Atoi(id)
+	n, err := strconv.Atoi(id)
+	if err != nil {
+		// Synthetic candidate IDs always come from execute_attempt.go's
+		// "strconv.Itoa(ProviderID) + /model: + RawModel" composition, so a
+		// parse failure here signals an upstream contract drift rather than
+		// adversarial input. ActionNode treats CredentialID<=0 as invalid and
+		// skips the entry — that is the safer side, but we still want to
+		// surface the anomaly so operators can fix the producer.
+		slog.Warn("survival: invalid candidate credential id",
+			"candidate_id", id, "error", err.Error())
+		return 0
+	}
 	return n
 }
 
@@ -320,34 +348,52 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 	return TaskDecision{Action: TaskActionFailClosed, Reason: "no_candidate_outcomes"}
 }
 
+// centralActionForTaskWithHistory folds the legacy per-kind task action
+// table with the central policy's commit-aware override and the bounded
+// request history kept by SurvivalCoordinator. The history primarily
+// prevents a refresh from cycling back into an exhausted route; the central
+// policy still owns the commit-block and disconnect rules that the central
+// spec hard-pins across all phases.
 func centralActionForTaskWithHistory(kind errorsx.ErrorKind, committed bool, retryAfter time.Duration, history errorsx.DecisionHistory) TaskDecision {
-	commit := errorsx.ActionCommitNone
-	if committed {
-		commit = errorsx.ActionCommitContent
-	}
+	// Central policy owns: client disconnect, unmapped kinds, terminal kinds,
+	// committed-output protection, and history-driven loop detection.
 	central := errorsx.DecideNextAction(errorsx.DecisionContext{
-		Kind: kind, CommitState: commit, RetryAfter: retryAfter,
-		HasAlternateNode: true, RemainingAttempts: 1, MaxSameNodeRetries: 1,
-		History: history,
+		Kind:               kind,
+		CommitState:        commitStateCentral(committed),
+		RetryAfter:         retryAfter,
+		HasAlternateNode:   true,
+		RemainingAttempts:  1,
+		MaxSameNodeRetries: 0,
+		History:            history,
 	})
-	if committed && central.Action == errorsx.ActionFailClosed {
-		// The policy layer cannot infer a route identity for synthetic survival
-		// candidate records. Preserve the authoritative commit safety rule here:
-		// committed recoverable output is never transparently retried.
-		central.Action = errorsx.ActionResumeBlocked
-		central.ReasonCode = "committed_output"
-	}
-	switch central.Action {
-	case errorsx.ActionRetrySameNode, errorsx.ActionSwitchNode:
-		return TaskDecision{Action: TaskActionRetryNow, Reason: central.ReasonCode, NextRetryAfter: central.RetryAfter}
-	case errorsx.ActionWaitRecovery:
-		return TaskDecision{Action: TaskActionWaitRecovery, Reason: central.ReasonCode, NextRetryAfter: central.RetryAfter}
-	case errorsx.ActionResumeBlocked:
+	if central.Action == errorsx.ActionResumeBlocked {
 		return TaskDecision{Action: TaskActionResumeBlocked, Reason: central.ReasonCode}
-	case errorsx.ActionFailTerminal:
+	}
+	if central.Action == errorsx.ActionClientCanceled {
 		return TaskDecision{Action: TaskActionFailTerminal, Reason: central.ReasonCode}
+	}
+	if central.Action == errorsx.ActionFailClosed {
+		// Synthetic candidate records carry no route identity, so the central
+		// policy may legitimately return fail-closed on a recoverable kind. In
+		// the streaming context a recoverable kind must still drive a refresh,
+		// so fall back to the legacy task table for the kind-level action.
+		if committed {
+			return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+		}
+	} else if central.Action == errorsx.ActionFailTerminal {
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: central.ReasonCode}
+	}
+	action, mapped := taskActionForKind[kind]
+	if !mapped {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: fmt.Sprintf("unmapped_kind:%s", kind)}
+	}
+	switch action {
+	case TaskActionRetryNow:
+		return TaskDecision{Action: TaskActionRetryNow, Reason: string(kind), NextRetryAfter: retryAfter}
+	case TaskActionWaitRecovery:
+		return TaskDecision{Action: TaskActionWaitRecovery, Reason: string(kind), NextRetryAfter: retryAfter}
 	default:
-		return TaskDecision{Action: TaskActionFailClosed, Reason: central.ReasonCode}
+		return TaskDecision{Action: action, Reason: string(kind)}
 	}
 }
 
