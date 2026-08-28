@@ -3,6 +3,7 @@ package migration
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -13,6 +14,28 @@ import (
 // Preflight is read-only: SCAN + TYPE/HGETALL/ZRANGE/PTTL inspection. These
 // miniredis tests prove deterministic inventory classification/checksums,
 // not production Redis SCAN/TTL behavior.
+
+func TestPTTLMillisNormalizesRedisSentinels(t *testing.T) {
+	cases := []struct {
+		name string
+		in   time.Duration
+		want int64
+	}{
+		{"missing nanoseconds", -2 * time.Nanosecond, -2},
+		{"missing milliseconds", -2 * time.Millisecond, -2},
+		{"persistent nanoseconds", -1 * time.Nanosecond, -1},
+		{"persistent milliseconds", -1 * time.Millisecond, -1},
+		{"zero", 0, 0},
+		{"positive", 1500 * time.Millisecond, 1500},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pttlMillis(tc.in); got != tc.want {
+				t.Fatalf("pttlMillis(%v)=%d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
 
 func TestPreflightScanProducesDeterministicChecksum(t *testing.T) {
 	mr := miniredis.RunT(t)

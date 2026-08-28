@@ -8,6 +8,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // survival_coordinator.go — SR-06 (doc 18 §5.1, §7, §8, §9.1)
@@ -81,6 +82,11 @@ type SurvivalResult struct {
 	FinalAttempt *AttemptResult
 	// Attempts counts bounded executor passes.
 	Attempts int
+	// History is the bounded, content-free decision history retained for the
+	// lifetime of this request. It complements FinalAttempt: the latter is only
+	// the most recent pass, while History prevents a refresh from reusing an
+	// exhausted node/model combination.
+	History errorsx.DecisionHistory
 }
 
 // SurvivalCoordinator drives one request's in-connection recovery loop.
@@ -253,7 +259,8 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		res.FinalAttempt = ExecuteAttempt(ctx, c.Exec, gate, &attemptParams)
 		res.Attempts++
 		recordSurvivalAttempt(res.FinalAttempt)
-		res.Decision = AggregateTaskOutcome(res.FinalAttempt)
+		res.Decision = AggregateTaskOutcomeWithHistory(res.FinalAttempt, res.History)
+		appendSurvivalHistory(&res.History, res.FinalAttempt, res.Attempts, res.Decision)
 
 		// 2026-08-19: log the per-attempt verdict right after aggregation so
 		// the committed/resume-blocked transition is visible regardless of
@@ -326,9 +333,6 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
-			// FinishAttempt buffers a non-terminal trailing partial frame on an
-			// uncommitted buffered gate. A successful attempt must publish that
-			// final partial before it can be reported as succeeded.
 			if err := gate.Commit(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)

@@ -94,23 +94,17 @@ func (s *SerializedStreamWriter) write(p []byte, capture bool) (int, error) {
 		return n, err
 	}
 	// 2026-08-28 audit fix: treat short writes as errors to preserve
-	// fail-closed semantics. A writer returning (n < len(p), err == nil) violates
+	// fail-closed semantics. A writer returning (n < len(p), nil) violates
 	// io.Writer contract and would leave the gate believing bytes were sent
 	// while the underlying connection dropped part of the frame.
-	if n != len(p) {
+	if n < len(p) {
 		s.detached = true
-		if n < len(p) {
-			s.detachErr = io.ErrShortWrite
-		} else {
-			s.detachErr = fmt.Errorf("serialized stream writer: invalid write count %d for %d bytes", n, len(p))
-		}
-		return n, s.detachErr
+		s.detachErr = io.ErrShortWrite
+		return n, io.ErrShortWrite
 	}
 	if capture && s.captureLimit > 0 && !s.captureOverflow {
 		if len(s.capture)+n > s.captureLimit {
-			// P1-3 fix (2026-08-28): Clear capture when overflow is detected to prevent
-			// audit from using partial/truncated response data. Auditors must check
-			// captureOverflow flag and reject incomplete captures.
+			// Clear capture on overflow so replay cannot consume a truncated body.
 			s.captureOverflow = true
 			s.capture = nil
 		} else {
@@ -118,7 +112,6 @@ func (s *SerializedStreamWriter) write(p []byte, capture bool) (int, error) {
 		}
 	}
 	return n, nil
-
 }
 
 // Flush flushes the underlying connection, serialized with writes. It is a

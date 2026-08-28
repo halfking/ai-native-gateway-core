@@ -2,6 +2,9 @@ package streaming
 
 import (
 	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -135,10 +138,11 @@ type TaskDecision struct {
 	NextRetryAfter time.Duration
 }
 
-// taskActionForKind maps every errorsx.ErrorKind to its task-level action.
-// Exhaustive by construction with the test matrix in
-// task_outcome_aggregator_test.go; anything missing aggregates to
-// TaskActionFailClosed.
+// taskActionForKind is retained as the compatibility projection for callers
+// that only need the legacy task-level action. The authoritative single-kind
+// interpretation now lives in errorsx.DecideNextAction; AggregateTaskOutcome
+// uses centralActionForTask below so request/route context and commit state are
+// evaluated consistently before this projection is applied.
 var taskActionForKind = map[errorsx.ErrorKind]TaskAction{
 	// Connection-internal immediate recovery.
 	errorsx.KindTransient:          TaskActionRetryNow,
@@ -183,6 +187,216 @@ var taskActionForKind = map[errorsx.ErrorKind]TaskAction{
 // Ordering: success > unmapped (fail closed) > terminal > committed-output
 // block > retry-now > wait-recovery. Mixed candidates prefer the strongest
 // recovery still available; a single terminal candidate fails the task.
+// centralActionForTask folds the legacy per-kind task action table with the
+// central policy's commit-aware override. The kind → action table remains
+// authoritative for the streaming context (where retry-budget, history-loop
+// protection, and credential-scope switches are not the right granularity);
+// the central policy only contributes the commit-block and disconnect rules
+// that the central spec hard-pins across all phases.
+func centralActionForTask(kind errorsx.ErrorKind, committed bool, retryAfter time.Duration) TaskDecision {
+	// Central policy owns: client disconnect, unmapped kinds, and the
+	// "committed recoverable output is never transparently retried" rule.
+	central := errorsx.DecideNextAction(errorsx.DecisionContext{
+		Kind:               kind,
+		CommitState:        commitStateCentral(committed),
+		RetryAfter:         retryAfter,
+		HasAlternateNode:   true,
+		RemainingAttempts:  1,
+		MaxSameNodeRetries: 0,
+	})
+	if committed && central.Action == errorsx.ActionResumeBlocked {
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+	}
+	if central.Action == errorsx.ActionClientCanceled {
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: central.ReasonCode}
+	}
+	if central.Action == errorsx.ActionFailClosed {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: central.ReasonCode}
+	}
+	action, mapped := taskActionForKind[kind]
+	if !mapped {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: fmt.Sprintf("unmapped_kind:%s", kind)}
+	}
+	switch action {
+	case TaskActionRetryNow:
+		return TaskDecision{Action: TaskActionRetryNow, Reason: string(kind), NextRetryAfter: retryAfter}
+	case TaskActionWaitRecovery:
+		return TaskDecision{Action: TaskActionWaitRecovery, Reason: string(kind), NextRetryAfter: retryAfter}
+	default:
+		return TaskDecision{Action: action, Reason: string(kind)}
+	}
+}
+
+func commitStateCentral(committed bool) errorsx.ActionCommitState {
+	if committed {
+		return errorsx.ActionCommitContent
+	}
+	return errorsx.ActionCommitNone
+}
+
+func appendSurvivalHistory(history *errorsx.DecisionHistory, result *AttemptResult, attemptNo int, decision TaskDecision) {
+	if history == nil || result == nil {
+		return
+	}
+	for _, candidate := range result.CandidateOutcomes {
+		if candidate.Kind == "" {
+			continue
+		}
+		history.LastSeq++
+		history.PriorAttempts = append(history.PriorAttempts, errorsx.PriorAttempt{
+			Seq: history.LastSeq, AttemptNo: attemptNo, Model: candidateModel(candidate.CandidateID),
+			ProviderID: candidate.ProviderID, CredentialID: candidateCredential(candidate.CredentialID), Kind: candidate.Kind,
+			Action: taskActionToCentral(decision.Action), RetryAfter: candidate.RetryAfter, Committed: result.CommitState >= CommitStateContent,
+		})
+	}
+	if len(history.PriorAttempts) > 128 {
+		history.PriorAttempts = history.PriorAttempts[len(history.PriorAttempts)-128:]
+	}
+}
+
+func candidateModel(id string) string {
+	if i := strings.Index(id, "/model:"); i >= 0 {
+		return id[i+len("/model:"):]
+	}
+	return id
+}
+
+func candidateCredential(id string) int {
+	n, err := strconv.Atoi(id)
+	if err != nil {
+		// Synthetic candidate IDs always come from execute_attempt.go's
+		// "strconv.Itoa(ProviderID) + /model: + RawModel" composition, so a
+		// parse failure here signals an upstream contract drift rather than
+		// adversarial input. ActionNode treats CredentialID<=0 as invalid and
+		// skips the entry — that is the safer side, but we still want to
+		// surface the anomaly so operators can fix the producer.
+		slog.Warn("survival: invalid candidate credential id",
+			"candidate_id", id, "error", err.Error())
+		return 0
+	}
+	return n
+}
+
+func taskActionToCentral(action TaskAction) errorsx.NextAction {
+	switch action {
+	case TaskActionRetryNow:
+		return errorsx.ActionRetrySameNode
+	case TaskActionWaitRecovery:
+		return errorsx.ActionWaitRecovery
+	case TaskActionResumeBlocked:
+		return errorsx.ActionResumeBlocked
+	case TaskActionFailTerminal:
+		return errorsx.ActionFailTerminal
+	default:
+		return ""
+	}
+}
+
+func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionHistory) TaskDecision {
+	if r == nil {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: "nil_attempt_result"}
+	}
+	if r.Success {
+		return TaskDecision{Action: TaskActionSucceed, Reason: "success"}
+	}
+	committed := r.CommitState >= CommitStateContent
+	var hasRetry, hasWait, hasTerminal, hasUnknown, hasBlocked bool
+	var maxRetryAfter time.Duration
+	var unknownKind errorsx.ErrorKind
+	for _, co := range r.CandidateOutcomes {
+		central := centralActionForTaskWithHistory(co.Kind, committed, co.RetryAfter, history)
+		switch central.Action {
+		case TaskActionResumeBlocked:
+			hasBlocked = true
+		case TaskActionRetryNow:
+			hasRetry = true
+		case TaskActionWaitRecovery:
+			hasWait = true
+		case TaskActionFailTerminal:
+			hasTerminal = true
+		case TaskActionFailClosed:
+			hasUnknown = true
+			if unknownKind == "" {
+				unknownKind = co.Kind
+			}
+		}
+		// An explicit upstream Retry-After is authoritative. When it is absent,
+		// the coordinator's configured RetryBase remains the pacing owner; do not
+		// replace that request-level setting with a policy default here.
+		if co.RetryAfter > maxRetryAfter {
+			maxRetryAfter = co.RetryAfter
+		}
+	}
+	if hasUnknown {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: fmt.Sprintf("unmapped_kind:%s", unknownKind)}
+	}
+	if hasTerminal {
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: "terminal_candidate"}
+	}
+	if hasBlocked {
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+	}
+	if committed && (hasRetry || hasWait) {
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+	}
+	if hasRetry {
+		return TaskDecision{Action: TaskActionRetryNow, Reason: "recoverable_candidate", NextRetryAfter: maxRetryAfter}
+	}
+	if hasWait {
+		return TaskDecision{Action: TaskActionWaitRecovery, Reason: "wait_recovery_window", NextRetryAfter: maxRetryAfter}
+	}
+	return TaskDecision{Action: TaskActionFailClosed, Reason: "no_candidate_outcomes"}
+}
+
+// centralActionForTaskWithHistory folds the legacy per-kind task action
+// table with the central policy's commit-aware override and the bounded
+// request history kept by SurvivalCoordinator. The history primarily
+// prevents a refresh from cycling back into an exhausted route; the central
+// policy still owns the commit-block and disconnect rules that the central
+// spec hard-pins across all phases.
+func centralActionForTaskWithHistory(kind errorsx.ErrorKind, committed bool, retryAfter time.Duration, history errorsx.DecisionHistory) TaskDecision {
+	// Central policy owns: client disconnect, unmapped kinds, terminal kinds,
+	// committed-output protection, and history-driven loop detection.
+	central := errorsx.DecideNextAction(errorsx.DecisionContext{
+		Kind:               kind,
+		CommitState:        commitStateCentral(committed),
+		RetryAfter:         retryAfter,
+		HasAlternateNode:   true,
+		RemainingAttempts:  1,
+		MaxSameNodeRetries: 0,
+		History:            history,
+	})
+	if central.Action == errorsx.ActionResumeBlocked {
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: central.ReasonCode}
+	}
+	if central.Action == errorsx.ActionClientCanceled {
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: central.ReasonCode}
+	}
+	if central.Action == errorsx.ActionFailClosed {
+		// Synthetic candidate records carry no route identity, so the central
+		// policy may legitimately return fail-closed on a recoverable kind. In
+		// the streaming context a recoverable kind must still drive a refresh,
+		// so fall back to the legacy task table for the kind-level action.
+		if committed {
+			return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+		}
+	} else if central.Action == errorsx.ActionFailTerminal {
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: central.ReasonCode}
+	}
+	action, mapped := taskActionForKind[kind]
+	if !mapped {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: fmt.Sprintf("unmapped_kind:%s", kind)}
+	}
+	switch action {
+	case TaskActionRetryNow:
+		return TaskDecision{Action: TaskActionRetryNow, Reason: string(kind), NextRetryAfter: retryAfter}
+	case TaskActionWaitRecovery:
+		return TaskDecision{Action: TaskActionWaitRecovery, Reason: string(kind), NextRetryAfter: retryAfter}
+	default:
+		return TaskDecision{Action: action, Reason: string(kind)}
+	}
+}
+
 func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 	if r == nil {
 		return TaskDecision{Action: TaskActionFailClosed, Reason: "nil_attempt_result"}
@@ -199,24 +413,22 @@ func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 		unknownKind                                errorsx.ErrorKind
 	)
 	for _, co := range r.CandidateOutcomes {
-		action, mapped := taskActionForKind[co.Kind]
-		if !mapped {
-			hasUnknown = true
-			if unknownKind == "" {
-				unknownKind = co.Kind
-			}
-			continue
-		}
-		if co.RetryAfter > maxRetryAfter {
-			maxRetryAfter = co.RetryAfter
-		}
-		switch action {
+		central := centralActionForTask(co.Kind, false, co.RetryAfter)
+		switch central.Action {
 		case TaskActionRetryNow:
 			hasRetry = true
 		case TaskActionWaitRecovery:
 			hasWait = true
 		case TaskActionFailTerminal:
 			hasTerminal = true
+		case TaskActionFailClosed:
+			hasUnknown = true
+			if unknownKind == "" {
+				unknownKind = co.Kind
+			}
+		}
+		if co.RetryAfter > maxRetryAfter {
+			maxRetryAfter = co.RetryAfter
 		}
 	}
 
