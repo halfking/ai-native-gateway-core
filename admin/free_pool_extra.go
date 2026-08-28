@@ -497,11 +497,11 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 	}
 	//nolint:errcheck // best-effort close
 	defer createResp.Body.Close()
-		if createResp.StatusCode != http.StatusOK && createResp.StatusCode != http.StatusCreated {
-			bodyBytes, err := readLimitedBody(createResp.Body, maxProbeErrorBytes)
-			if err != nil {
-				bodyBytes = []byte(err.Error())
-			}
+	if createResp.StatusCode != http.StatusOK && createResp.StatusCode != http.StatusCreated {
+		bodyBytes, err := readLimitedBody(createResp.Body, maxProbeErrorBytes)
+		if err != nil {
+			bodyBytes = []byte(err.Error())
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     false,
@@ -527,11 +527,11 @@ func (h *Handler) handleFreePoolTempEmail(w http.ResponseWriter, r *http.Request
 	}
 	//nolint:errcheck // best-effort close
 	defer tokenResp.Body.Close()
-		if tokenResp.StatusCode != http.StatusOK && tokenResp.StatusCode != http.StatusCreated {
-			bodyBytes, err := readLimitedBody(tokenResp.Body, maxProbeErrorBytes)
-			if err != nil {
-				bodyBytes = []byte(err.Error())
-			}
+	if tokenResp.StatusCode != http.StatusOK && tokenResp.StatusCode != http.StatusCreated {
+		bodyBytes, err := readLimitedBody(tokenResp.Body, maxProbeErrorBytes)
+		if err != nil {
+			bodyBytes = []byte(err.Error())
+		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":     false,
@@ -753,89 +753,89 @@ func probeOpenAICompatibleBase(rawBase, apiKey string, timeout time.Duration) (m
 	var lastStatus *int
 	var lastError string
 
-		for _, url := range candidates {
-			httpReq, _ := http.NewRequest(http.MethodGet, url, nil)
-			for k, v := range headers {
-				httpReq.Header.Set(k, v)
-			}
-			resp, err := client.Do(httpReq)
-			if err != nil {
-				lastError = err.Error()[:min(200, len(err.Error()))]
-				continue
-			}
-			status := resp.StatusCode
-			lastStatus = &status
-			if status == 200 || status == 401 || status == 403 {
-				modelCount := 0
-				models := []string{}
-				var errorDetail string
-				
-				if status == 200 {
-					body, err := readLimitedBody(resp.Body, maxProbeResponseBytes)
-					if err != nil {
-						resp.Body.Close()
-						lastError = err.Error()
-						continue
+	for _, url := range candidates {
+		httpReq, _ := http.NewRequest(http.MethodGet, url, nil)
+		for k, v := range headers {
+			httpReq.Header.Set(k, v)
+		}
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastError = err.Error()[:min(200, len(err.Error()))]
+			continue
+		}
+		status := resp.StatusCode
+		lastStatus = &status
+		if status == 200 || status == 401 || status == 403 {
+			modelCount := 0
+			models := []string{}
+			var errorDetail string
+
+			if status == 200 {
+				body, err := readLimitedBody(resp.Body, maxProbeResponseBytes)
+				if err != nil {
+					resp.Body.Close()
+					lastError = err.Error()
+					continue
+				}
+				var data map[string]any
+				if err := json.Unmarshal(body, &data); err == nil {
+					rows, _ := data["data"].([]any)
+					if rows == nil {
+						rows, _ = data["models"].([]any)
 					}
-					var data map[string]any
-					if err := json.Unmarshal(body, &data); err == nil {
-						rows, _ := data["data"].([]any)
-						if rows == nil {
-							rows, _ = data["models"].([]any)
-						}
-						for _, row := range rows {
-							if m, ok := row.(map[string]any); ok {
-								id, _ := m["id"].(string)
-								if id == "" {
-									id, _ = m["name"].(string)
-								}
-								if id != "" {
-									models = append(models, id)
-									if len(models) >= 20 {
-										break
-									}
+					for _, row := range rows {
+						if m, ok := row.(map[string]any); ok {
+							id, _ := m["id"].(string)
+							if id == "" {
+								id, _ = m["name"].(string)
+							}
+							if id != "" {
+								models = append(models, id)
+								if len(models) >= 20 {
+									break
 								}
 							}
 						}
-						modelCount = len(rows)
 					}
-				} else {
-					// Read error body for 401/403 to provide better diagnostics
-					bodyBytes, _ := readLimitedBody(resp.Body, maxProbeErrorBytes)
-					errorDetail = string(bodyBytes)
+					modelCount = len(rows)
 				}
-				//nolint:errcheck // best-effort close
-				resp.Body.Close()
-
-				// 403 with a key means invalid/expired key, should fail the probe
-				authOK := status == 200 || (status == 401 && strings.TrimSpace(apiKey) == "")
-				if strings.TrimSpace(apiKey) != "" && status == 200 {
-					authOK = true
-				}
-				var authValid *bool
-				if strings.TrimSpace(apiKey) != "" {
-					// 403 means invalid key, not just unauthorized
-					b := status == 200
-					authValid = &b
-				}
-				result := map[string]any{
-					"ok":          authOK,
-					"status_code": status,
-					"probe_url":   url,
-					"model_count": modelCount,
-					"models":      models,
-					"auth_valid":  authValid,
-				}
-				if errorDetail != "" {
-					result["error"] = errorDetail[:min(200, len(errorDetail))]
-				}
-				return result, nil
+			} else {
+				// Read error body for 401/403 to provide better diagnostics
+				bodyBytes, _ := readLimitedBody(resp.Body, maxProbeErrorBytes)
+				errorDetail = string(bodyBytes)
 			}
-			bodyBytes, _ := io.ReadAll(resp.Body)
 			//nolint:errcheck // best-effort close
 			resp.Body.Close()
-			lastError = string(bodyBytes)[:min(200, len(bodyBytes))]
+
+			// 403 with a key means invalid/expired key, should fail the probe
+			authOK := status == 200 || (status == 401 && strings.TrimSpace(apiKey) == "")
+			if strings.TrimSpace(apiKey) != "" && status == 200 {
+				authOK = true
+			}
+			var authValid *bool
+			if strings.TrimSpace(apiKey) != "" {
+				// 403 means invalid key, not just unauthorized
+				b := status == 200
+				authValid = &b
+			}
+			result := map[string]any{
+				"ok":          authOK,
+				"status_code": status,
+				"probe_url":   url,
+				"model_count": modelCount,
+				"models":      models,
+				"auth_valid":  authValid,
+			}
+			if errorDetail != "" {
+				result["error"] = errorDetail[:min(200, len(errorDetail))]
+			}
+			return result, nil
 		}
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		//nolint:errcheck // best-effort close
+		resp.Body.Close()
+		lastError = string(bodyBytes)[:min(200, len(bodyBytes))]
+	}
 
 	// Fallback: try chat/completions with a 1-token request
 	if strings.TrimSpace(apiKey) != "" {
@@ -970,7 +970,7 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 	if req.ProbeFirst && strings.TrimSpace(req.BaseURL) != "" {
 		p, _ := probeOpenAICompatibleBase(req.BaseURL, req.APIKey, 10*time.Second)
 		probeResult = p
-		
+
 		// 如果设置了 ForceSkipProbe，跳过探活检查，仅记录探活结果用于诊断
 		if !req.ForceSkipProbe {
 			if strings.TrimSpace(req.APIKey) != "" {
@@ -994,7 +994,7 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 				writeJSON(w, http.StatusOK, map[string]any{
 					"status": "probe_failed",
 					"probe":  probeResult,
-					"error":  "端点不可达或 Key 无效。如果确认配置正确但因网络环境无法探活（如 GFW），可勾选\"强制跳过探活\"直接保存",
+					"error":  "端点不可达或 Key 无效。如果确认配置正确但因网络环境无法探活（如 GFW），可勾选「强制跳过探活」直接保存",
 				})
 				return
 			}
