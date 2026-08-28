@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -62,7 +61,7 @@ func (h *Handler) handleDegradationControl(w http.ResponseWriter, r *http.Reques
 	var req struct {
 		Action string `json:"action"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -120,7 +119,7 @@ func (h *Handler) handleDegradationRecovery(w http.ResponseWriter, r *http.Reque
 		Filename string `json:"filename"`
 		Archive  bool   `json:"archive"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Filename == "" {
+	if err := readJSONRequired(r, &req); err != nil || req.Filename == "" {
 		writeError(w, http.StatusBadRequest, "filename required")
 		return
 	}

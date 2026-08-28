@@ -234,7 +234,7 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 		return
 	}
 	var req promoteHotAsyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -564,7 +564,7 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 		return
 	}
 	var req promoteHotRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -723,7 +723,7 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 		return
 	}
 	var req dropPartitionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -823,7 +823,7 @@ func (h *Handler) handleDataLifecycleDropPartitionAsync(w http.ResponseWriter, r
 		return
 	}
 	var req dropPartitionAsyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}

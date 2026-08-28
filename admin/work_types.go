@@ -19,7 +19,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -204,7 +203,7 @@ func (h *WorkTypeHandlers) fetchL1Counts(ctx context.Context) (map[string]int, e
 // default label/icon). Pure function — testable without a DB.
 //
 // Defensive: filters out empty-string keys from dbCounts. The SQL
-// already enforces `l1_task_type <> ''` but this is a safety net for any
+// already enforces `l1_task_type <> ”` but this is a safety net for any
 // future caller that constructs the map in-process.
 func mergeL1TaskTypes(dbCounts map[string]int) []L1TaskTypeMeta {
 	merged := make([]L1TaskTypeMeta, 0, len(canonicalL1TaskTypes)+len(dbCounts))
@@ -558,7 +557,7 @@ func (h *WorkTypeHandlers) getWorkType(w http.ResponseWriter, r *http.Request, k
 
 func (h *WorkTypeHandlers) createWorkType(w http.ResponseWriter, r *http.Request) {
 	var req workTypeConfig
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_json")
 		return
 	}
@@ -610,7 +609,7 @@ func (h *WorkTypeHandlers) createWorkType(w http.ResponseWriter, r *http.Request
 
 func (h *WorkTypeHandlers) updateWorkType(w http.ResponseWriter, r *http.Request, key string) {
 	var req map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_json")
 		return
 	}
@@ -733,7 +732,7 @@ func (h *WorkTypeHandlers) deleteWorkType(w http.ResponseWriter, r *http.Request
 
 func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key string) {
 	var routes []modelRoute
-	if err := json.NewDecoder(r.Body).Decode(&routes); err != nil {
+	if err := readJSONRequired(r, &routes); err != nil {
 		writeJSONErr(w, http.StatusBadRequest, "invalid JSON body; expected array of routes")
 		return
 	}

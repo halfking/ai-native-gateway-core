@@ -42,7 +42,7 @@ func (h *MetaToolsHandler) LoadTools(w http.ResponseWriter, r *http.Request) {
 		Categories []string `json:"categories"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		http.Error(w, "invalid request body", http.StatusBadRequest)
 		return
 	}

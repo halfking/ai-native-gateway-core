@@ -1576,7 +1576,7 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 		CredentialID int    `json:"credential_id"`
 		Reason       string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -1676,7 +1676,7 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		ManualDisabled bool   `json:"manual_disabled"`
 		Reason         string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

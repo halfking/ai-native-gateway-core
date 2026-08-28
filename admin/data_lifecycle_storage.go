@@ -19,7 +19,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -670,7 +669,7 @@ func (h *Handler) handleTableMaintenanceDispatch(w http.ResponseWriter, r *http.
 	}
 
 	var req tableMaintenanceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
