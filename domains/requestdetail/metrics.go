@@ -44,6 +44,23 @@ var (
 		Name: "requestdetail_store_clear_success_total",
 		Help: "request-detail Store.Clear calls that successfully removed the file.",
 	})
+
+	// storeForwarderDroppedOversizeTotal counts forwarder entries that
+	// exceeded MaxBodyFileSize at emit time and were dropped before they
+	// could enqueue. Without this guard, a single 100MB body would sit
+	// in the queue buffer for the entire 2048-entry capacity (=200GB).
+	storeForwarderDroppedOversizeTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "requestdetail_forwarder_dropped_oversize_total",
+		Help: "request-detail capture forwarder entries dropped because their body size exceeded MaxBodyFileSize.",
+	})
+
+	// storeMalformedSnapshotTotal counts GetFile calls that found a JSON
+	// file but could not unmarshal it. The previous code only slog.Warn'd;
+	// adding a counter makes the rate observable on dashboards.
+	storeMalformedSnapshotTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "requestdetail_malformed_snapshot_total",
+		Help: "request-detail Store.GetFile calls that hit a local file with invalid JSON.",
+	})
 )
 
 // normalizeRemoveErr maps an os.Remove error into the {permission, other}

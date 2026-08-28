@@ -357,6 +357,46 @@ func TestHandleUnifiedRequestDetail_InvalidRequestID(t *testing.T) {
 	}
 }
 
+// TestHandleUnifiedRequestDetail_OversizedBodyReturns413 (2026-08-29 audit
+// follow-up): a Locator.Get that returns ErrBodyTooLarge must be mapped
+// to HTTP 413, not 500. The previous code's only explicit error mapping
+// was for ErrNotFound; ErrBodyTooLarge fell through to the generic 500
+// path. This test pins the new mapping.
+//
+// We inject a stub locator via the private field (same package) so we
+// don't need to mock the entire pgBodyReader chain.
+func TestHandleUnifiedRequestDetail_OversizedBodyReturns413(t *testing.T) {
+	h := &Handler{}
+	store, err := requestdetail.NewStore(t.TempDir())
+	require.NoError(t, err)
+	h.SetRequestDetailStore(store)
+
+	// Replace the locator with one whose Get returns ErrBodyTooLarge.
+	h.requestDetailLocator = &requestdetail.Locator{
+		Store: store,
+		Bodies: oversizedBodyReader{},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/request-detail/req-oversize-test-01", nil)
+	rr := httptest.NewRecorder()
+	h.handleUnifiedRequestDetail(rr, req)
+	if rr.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized body must be 413, got %d body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+// oversizedBodyReader is a stub that always returns ErrBodyTooLarge so
+// the handler's error mapping path is exercised end-to-end without
+// requiring a real oversized body file or DB row.
+type oversizedBodyReader struct{}
+
+func (oversizedBodyReader) ReadRequestLogsBodies(_ context.Context, _ string, _ bool) (requestdetail.Bodies, requestdetail.Meta, error) {
+	return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrBodyTooLarge
+}
+func (oversizedBodyReader) ReadSessionTurnsBodies(_ context.Context, _ string, _ bool) (requestdetail.Bodies, requestdetail.Meta, error) {
+	return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrBodyTooLarge
+}
+
 func TestAnyToRawQuotesPlainText(t *testing.T) {
 	raw := anyToRaw("upstream returned plain text")
 	if !json.Valid(raw) {

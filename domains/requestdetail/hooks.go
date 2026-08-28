@@ -101,9 +101,17 @@ func CaptureFromEntry(entry *telemetry.RequestLogEntry) {
 // ordering, and as a last-resort fallback if StartGlobalCaptureForwarder
 // was never called (e.g. embedded use without telemetry). Production
 // callers should use CaptureFromEntry.
+//
+// 2026-08-29 (audit follow-up): empty RequestID now logs a Warn so
+// misconfigured callers are visible.
 func CaptureFromEntrySync(entry *telemetry.RequestLogEntry) {
 	s := Global()
-	if s == nil || entry == nil || entry.RequestID == "" {
+	if s == nil || entry == nil {
+		return
+	}
+	if entry.RequestID == "" {
+		slog.Warn("requestdetail: CaptureFromEntrySync skipping entry with empty RequestID",
+			"tenant_id", entry.TenantID)
 		return
 	}
 	meta := Meta{
@@ -142,7 +150,12 @@ func CaptureFromEntrySync(entry *telemetry.RequestLogEntry) {
 // for a terminal request status (not in_progress).
 func ClearAfterPersist(entry *telemetry.RequestLogEntry) {
 	s := Global()
-	if s == nil || entry == nil || entry.RequestID == "" {
+	if s == nil || entry == nil {
+		return
+	}
+	if entry.RequestID == "" {
+		slog.Warn("requestdetail: ClearAfterPersist skipping entry with empty RequestID",
+			"tenant_id", entry.TenantID)
 		return
 	}
 	if entry.RequestStatus != nil && *entry.RequestStatus == "in_progress" {

@@ -266,6 +266,7 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	var p filePayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		// A broken local snapshot must not prevent the DB fallback.
+		storeMalformedSnapshotTotal.Inc()
 		slog.Warn("requestdetail: ignoring malformed local snapshot", "request_id", requestID, "error", err)
 		return filePayload{}, false, nil
 	}
@@ -297,6 +298,12 @@ func (s *Store) HasLocal(requestID string) bool {
 // stale handle, chmod 0). 2026-08-28 (audit follow-up): previously the
 // failure path only emitted a single warn line; operators had no
 // quantitative signal for sensitive-file residue.
+//
+// 2026-08-29 (audit follow-up): the previous implementation returned
+// immediately on the primary file's Remove failure, leaving the .tmp
+// sidecar behind. Both files must be attempted in a single pass —
+// residue is residue regardless of which file it lives in. The errors
+// are joined so the caller still sees a non-nil return.
 func (s *Store) Clear(requestID string) error {
 	if s == nil {
 		return nil
@@ -312,13 +319,15 @@ func (s *Store) Clear(requestID string) error {
 		return nil
 	}
 	path := s.filePath(requestID)
+	var errs []error
+
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		storeClearFailuresTotal.WithLabelValues(normalizeRemoveErr(err)).Inc()
 		slog.Warn("requestdetail: clear after persist failed to remove file",
 			"request_id", requestID,
 			"path", path,
 			"error", err)
-		return err
+		errs = append(errs, fmt.Errorf("primary: %w", err))
 	}
 	if tmpErr := os.Remove(path + ".tmp"); tmpErr != nil && !os.IsNotExist(tmpErr) {
 		storeClearFailuresTotal.WithLabelValues(normalizeRemoveErr(tmpErr)).Inc()
@@ -326,7 +335,10 @@ func (s *Store) Clear(requestID string) error {
 			"request_id", requestID,
 			"path", path+".tmp",
 			"error", tmpErr)
-		return tmpErr
+		errs = append(errs, fmt.Errorf("tmp: %w", tmpErr))
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	storeClearSuccessTotal.Inc()
 	return nil

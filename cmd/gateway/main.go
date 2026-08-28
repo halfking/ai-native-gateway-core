@@ -2582,6 +2582,16 @@ func main() {
 		// 2026-08-25: in-flight request detail content store (memory meta +
 		// per-request_id local files). Cleared after telemetry DB persist
 		// (see onEmitted/onPersisted wiring near live stream hub).
+		//
+		// 2026-08-29 (audit follow-up): the SetOnRequestLogEmitted callback
+		// is registered earlier in this file (~line 2118), but the
+		// callback dereferences requestdetail.globalFwd at CALL time (via
+		// CaptureFromEntry → RLock + lookup), not at registration time.
+		// This means the call site order is safe by construction: by the
+		// time any telemetry event fires, this block has already wired
+		// globalFwd and started the consumer goroutine. Do NOT swap the
+		// block above (2602-2609) with the hook registration block without
+		// also re-architecting the deferred-lookup in hooks.go.
 		detailDir := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_DIR"))
 		if detailDir == "" {
 			detailDir = filepath.Join(os.TempDir(), "llmgw-request-detail")
