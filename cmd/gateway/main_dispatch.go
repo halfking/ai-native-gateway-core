@@ -37,6 +37,7 @@ var gatewayLiveActionsEmitter *liveactions.Emitter
 var gatewayActionBridge *streaming.ActionBridge
 
 var gatewayRequestJourneySink dispatch.ObservationSink
+var gatewayRequestJourneyJournalSink dispatch.JournalSink
 var gatewayMinuteStats *dispatch.MinuteStatsAggregator
 
 func stableGatewayInstanceID() string {
@@ -61,6 +62,10 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	}
 	p := routingExec.NewDispatchPipeline()
 	p.SetObservationSink(gatewayRequestJourneySink)
+	// audit-24h-20260828-r3: wire the attempt journal sink so the
+	// per-request execution trace flows into requestjourney at terminal
+	// time. Mirror of the SetObservationSink call above.
+	p.SetJournalSink(gatewayRequestJourneyJournalSink)
 	projection := dispatch.NewQueueProjection()
 	gatewayQueueProjection.Store(projection)
 	p.SetQueueObservationSink(projection)

@@ -253,3 +253,35 @@ func (f ObservationSinkFunc) ObserveDispatch(ctx context.Context, observation Ob
 		f(ctx, observation)
 	}
 }
+
+// JournalSnapshot is a detached, immutable view of a QueuedRequest's full
+// attempt journal. It is delivered to the optional JournalSink exactly once
+// at terminal time (Pipeline.complete, CAS-guarded). The terminal entry is
+// already in Entries by the time the snapshot is taken, so consumers see the
+// complete trace.
+type JournalSnapshot struct {
+	TenantID  string
+	RequestID string
+	Entries   []JournalEntry
+}
+
+// JournalSink consumes the per-request attempt journal at terminal time.
+// The dispatch lifecycle owns ordering and exactly-once delivery (the same
+// CAS guard as ObservationSink); the sink only translates values into its
+// own persistence contract. nil sinks disable the path (no goroutine spawned,
+// no metric emission). Mirrors ObservationSink — keeps the journal bridge to
+// requestjourney independently wired from the observation bridge.
+type JournalSink interface {
+	// ApplyJournalSnapshot delivers one detached journal snapshot to the sink.
+	ApplyJournalSnapshot(context.Context, JournalSnapshot)
+}
+
+// JournalSinkFunc adapts a function to JournalSink.
+type JournalSinkFunc func(context.Context, JournalSnapshot)
+
+// ApplyJournalSnapshot calls the wrapped snapshot function.
+func (f JournalSinkFunc) ApplyJournalSnapshot(ctx context.Context, snapshot JournalSnapshot) {
+	if f != nil {
+		f(ctx, snapshot)
+	}
+}

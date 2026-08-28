@@ -55,6 +55,9 @@ type Deps struct {
 	// The caller owns the scheduler's lifecycle (pipeline does not Close it).
 	RetryScheduler       RetryScheduler
 	ObservationSink      ObservationSink
+	// JournalSink (audit-24h-20260828-r3) receives the per-request attempt
+	// journal snapshot exactly once at terminal time. nil = disabled.
+	JournalSink          JournalSink
 	QueueObservationSink QueueObservationSink
 	SessionAffinitySink  SessionAffinitySink
 	MinuteStatsSink      MinuteStatsSink
@@ -138,6 +141,13 @@ type Pipeline struct {
 	observationClosed bool
 	observationWg     sync.WaitGroup
 
+	// journalSink (audit-24h-20260828-r3) holds the terminal-time consumer
+	// of the per-request attempt journal. Mirrors observationSink — guarded
+	// by its own mutex so emitJournalSnapshot can read lock-free against
+	// SetJournalSink.
+	journalSinkMu sync.RWMutex
+	journalSink   JournalSink
+
 	queueObservationMu   sync.RWMutex
 	queueObservationSink QueueObservationSink
 	inFlight             atomic.Int64
@@ -217,6 +227,19 @@ func (p *Pipeline) SetObservationSink(sink ObservationSink) {
 	p.observationSinkMu.Unlock()
 }
 
+// SetJournalSink replaces the optional terminal-time journal sink. Safe
+// before or after Start; a nil sink disables journal emission. Mirrors
+// SetObservationSink and is invoked at shutdown by the composition root to
+// release the sink reference promptly.
+func (p *Pipeline) SetJournalSink(sink JournalSink) {
+	if p == nil {
+		return
+	}
+	p.journalSinkMu.Lock()
+	p.journalSink = sink
+	p.journalSinkMu.Unlock()
+}
+
 // SetQueueObservationSink replaces the queue read-model sink.
 func (p *Pipeline) SetQueueObservationSink(sink QueueObservationSink) {
 	if p == nil {
@@ -279,6 +302,7 @@ func NewPipeline(deps Deps) *Pipeline {
 		forwardFunc:          deps.ForwardFunc,
 		allowModelChange:     deps.AllowModelChange,
 		observationSink:      deps.ObservationSink,
+		journalSink:          deps.JournalSink,
 		queueObservationSink: deps.QueueObservationSink,
 		affinitySink:         deps.SessionAffinitySink,
 		minuteStatsSink:      deps.MinuteStatsSink,
@@ -1441,6 +1465,13 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	p.recordSessionAffinity(qr, out)
 	p.recordMinuteStats(qr, out)
 	p.emitRequestTerminal(qr, out)
+	// audit-24h-20260828-r3: ship the per-request attempt journal to the
+	// optional JournalSink so post-hoc ops/CS diagnosis can see the trace
+	// after the global /api/admin/dispatch/journal endpoint was removed in
+	// ff18dc3b6. Runs before the abandoned-guard so a caller that already
+	// left still gets the trace persisted (the trace is for the system, not
+	// the caller). Exactly-once is guaranteed by the CAS at line 1402.
+	p.emitJournalSnapshot(qr)
 
 	// V3.1: Export stage histograms + waterfall/projection samples even if the
 	// caller already left — abandoned requests still carry useful latency signal.
@@ -1481,6 +1512,39 @@ func (p *Pipeline) emitRequestTerminal(qr *QueuedRequest, out ForwardOutcome) {
 		}
 	}
 	qr.emitObservation(event)
+}
+
+// emitJournalSnapshot reads the optional terminal-time journal sink and, if
+// present and the journal is non-empty, delivers a detached snapshot. The
+// journal's terminal entry is already in the ring at this point (recordDecision
+// at the top of complete), so consumers see the full trace. Sink failures
+// are logged and dropped — terminal delivery is best-effort, like the
+// observation path.
+func (p *Pipeline) emitJournalSnapshot(qr *QueuedRequest) {
+	if p == nil || qr == nil {
+		return
+	}
+	p.journalSinkMu.RLock()
+	sink := p.journalSink
+	p.journalSinkMu.RUnlock()
+	if sink == nil {
+		return
+	}
+	entries := qr.JournalSnapshot()
+	if len(entries) == 0 {
+		return
+	}
+	snap := JournalSnapshot{
+		TenantID:  qr.TenantID,
+		RequestID: qr.ID,
+		Entries:   entries,
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("dispatch journal sink panic", "request_id", qr.ID, "panic", r)
+		}
+	}()
+	sink.ApplyJournalSnapshot(context.WithoutCancel(ctxOf(qr)), snap)
 }
 
 // resultLabel maps a ForwardOutcome to the closed-enum "result" label used by

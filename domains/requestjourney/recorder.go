@@ -460,6 +460,24 @@ func (r *Recorder) Apply(_ context.Context, event JourneyEvent) error {
 	return nil
 }
 
+// MaxSeq returns the highest sequence number currently held in memory for
+// (tenantID, requestID), or 0 if no journey exists. Used by the dispatch
+// journal sink to assign monotonic seq numbers to the attempt-journal
+// events it ships at terminal time without colliding with the seqs already
+// used by the observation path. Best-effort peek — memory is the local
+// view; persistence stores may lag, but the projection's seq-monotonic
+// invariant is what guards correctness for the seq space.
+func (r *Recorder) MaxSeq(tenantID, requestID string) int64 {
+	if r == nil || r.memory == nil {
+		return 0
+	}
+	journey, err := r.memory.Detail(tenantID, requestID)
+	if err != nil || journey == nil || len(journey.Events) == 0 {
+		return 0
+	}
+	return journey.Events[len(journey.Events)-1].Seq
+}
+
 // RecordIngress synchronously updates the local global FIFO and only queues the
 // optional Redis write. Redis latency and request cancellation never block the
 // request path.
