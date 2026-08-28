@@ -91,7 +91,10 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		WHERE tenant_id=$1 AND session_id=$2 AND turn_no < $3
 		ORDER BY turn_no DESC LIMIT $4`, tenantID, sessionID, beforeTurnNo, limit+1)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query turns failed")
+		slog.ErrorContext(r.Context(), "serveSessionTurnsList query failed",
+			"session_id", sessionID, "tenant_id", tenantID,
+			"before_turn_no", beforeTurnNo, "limit", limit, "error", err.Error())
+		writeError(w, http.StatusInternalServerError, "query turns failed: "+err.Error())
 		return
 	}
 	defer rows.Close()
