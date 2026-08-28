@@ -56,9 +56,9 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 				Meta:        meta,
 			}
 			if !omitBody {
-				if file, ok, err := l.Store.GetFile(requestID); err != nil {
+				if file, ok, err := l.Store.GetFile(requestID); err != nil && !errors.Is(err, ErrBodyTooLarge) {
 					return nil, err
-				} else if ok {
+				} else if err == nil && ok {
 					bodies := file.Bodies
 					d.Bodies = &bodies
 					d.Source = SourceFile
@@ -69,9 +69,9 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 			}
 			return d, nil
 		}
-		if file, ok, err := l.Store.GetFile(requestID); err != nil {
+		if file, ok, err := l.Store.GetFile(requestID); err != nil && !errors.Is(err, ErrBodyTooLarge) {
 			return nil, err
-		} else if ok {
+		} else if err == nil && ok {
 			d := &Detail{
 				Source:      SourceFile,
 				Persistence: PersistenceInFlight,
@@ -110,7 +110,11 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 	// a historical migration). Try the session store before giving up, while
 	// retaining the metadata returned by the request-log reader.
 	requestLogsMeta := meta
-	bodies, sessionMeta, err := l.Bodies.ReadSessionTurnsBodies(ctx, requestID, omitBody)
+	sessionLookupID := requestID
+	if requestLogsMeta.RequestID != "" {
+		sessionLookupID = requestLogsMeta.RequestID
+	}
+	bodies, sessionMeta, err := l.Bodies.ReadSessionTurnsBodies(ctx, sessionLookupID, omitBody)
 	if err == nil {
 		d := &Detail{
 			Source:      SourceSessionTurns,

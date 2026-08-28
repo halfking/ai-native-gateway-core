@@ -1,6 +1,7 @@
 package requestdetail
 
 import (
+	"log/slog"
 	"sync"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
@@ -47,16 +48,20 @@ func CaptureFromEntry(entry *telemetry.RequestLogEntry) {
 	if entry.RequestBody != nil || entry.ResponseBody != nil || len(entry.OutboundBody) > 0 {
 		bodies = &Bodies{}
 		if entry.RequestBody != nil {
-			bodies.RequestBody = []byte(*entry.RequestBody)
+			bodies.RequestBody = DecodeRaw(entry.RequestBody)
 		}
 		if entry.ResponseBody != nil {
-			bodies.ResponseBody = []byte(*entry.ResponseBody)
+			bodies.ResponseBody = DecodeRaw(entry.ResponseBody)
 		}
 		if len(entry.OutboundBody) > 0 {
 			bodies.OutboundBody = append([]byte(nil), entry.OutboundBody...)
 		}
 	}
-	_ = s.Put(meta, bodies)
+	if err := s.Put(meta, bodies); err != nil {
+		// Capture runs on the telemetry path; retain observability without
+		// turning a best-effort snapshot failure into a request failure.
+		slog.Warn("requestdetail: capture failed", "request_id", entry.RequestID, "error", err)
+	}
 }
 
 // ClearAfterPersist removes local hot content once DB persist succeeded

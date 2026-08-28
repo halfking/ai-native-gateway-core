@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -86,7 +87,9 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 				bodies.OutboundBody = sessionBodies.OutboundBody
 			}
 		} else if !errors.Is(sessionErr, requestdetail.ErrNotFound) {
-			return requestdetail.Bodies{}, requestdetail.Meta{}, sessionErr
+			// Session recovery is best-effort once request-log content exists;
+			// preserve the usable primary payload on optional fallback failure.
+			slog.WarnContext(ctx, "requestdetail: session body recovery failed", "request_id", canonicalRequestID, "error", sessionErr)
 		}
 	}
 	if len(bodies.RequestBody) == 0 && len(bodies.ResponseBody) == 0 && len(bodies.OutboundBody) == 0 {
@@ -326,6 +329,10 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if err != nil {
+		if errors.Is(err, requestdetail.ErrBodyTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request detail body exceeds size limit")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
