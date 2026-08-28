@@ -1058,6 +1058,7 @@ func main() {
 
 		// Phase 3.2: Provider-level settings resolver
 		providerSettingsResolver = settings.NewProviderSettingsResolver(dbConn.Pool(), settings.Global)
+		defer providerSettingsResolver.Close()
 		slog.Info("settings: provider-level resolver initialised")
 	} else {
 		slog.Info("settings: registry disabled (no DB)")

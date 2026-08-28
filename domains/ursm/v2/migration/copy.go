@@ -155,6 +155,11 @@ func (c *Copy) copyOne(ctx context.Context, it Item, now time.Time) CopyResult {
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
 	fields, err := redissafe.SafeHGetAll(ctx, c.RDB, it.SourceKey)
 	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			res.Status = CopyStatusSkipped
+			res.Reason = "source expired before hash read"
+			return res
+		}
 		res.Status = CopyStatusFailed
 		res.Reason = "hgetall failed: " + err.Error()
 		return res

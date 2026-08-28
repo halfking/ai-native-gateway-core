@@ -3,6 +3,7 @@ package persist
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -50,6 +51,22 @@ func TestWriterCollectsEmptyRedis(t *testing.T) {
 	_ = rows
 	_ = sql.ErrNoRows
 	_ = (*pgxpool.Pool)(nil)
+}
+
+func TestWriterRejectsWrongTypeNodeHash(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	if err := rdb.Set(context.Background(), "ursm:v2:node:tenant-a:42:model", "not-a-hash", 0).Err(); err != nil {
+		t.Fatalf("seed wrong-type node: %v", err)
+	}
+
+	_, err := New(rdb, "ursm:v2:", nil).Collect(context.Background())
+	if err == nil {
+		t.Fatal("Collect should surface a wrong-type node hash error")
+	}
+	if !strings.Contains(err.Error(), "read node hash") {
+		t.Fatalf("Collect error = %v, want read node hash context", err)
+	}
 }
 
 // TestWriterCollectsHealthStatusBridge pins the persist half of UT-UR-12
