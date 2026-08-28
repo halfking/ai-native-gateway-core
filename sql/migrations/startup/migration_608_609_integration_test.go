@@ -14,8 +14,11 @@ import (
 )
 
 // migration608StripPsqlMeta removes psql meta-commands (`\set ...`) so the
-// file body can run through pgx simple-protocol Exec (same file still uses
-// ON_ERROR_STOP when applied via psql).
+// file body can run through pgx simple-protocol Exec. Note: stripping also
+// drops `\set ON_ERROR_STOP on`; the test harness relies on pgx surfacing
+// errors itself (RAISE EXCEPTION aborts the surrounding DO block, which
+// propagates as a query error from Exec) — DO NOT copy this pattern into
+// psql-only directives that change failure semantics.
 func migration608StripPsqlMeta(body string) string {
 	lines := strings.Split(body, "\n")
 	kept := make([]string, 0, len(lines))

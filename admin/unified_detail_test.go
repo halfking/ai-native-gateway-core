@@ -104,8 +104,8 @@ func TestPGBodyReaderFillsPartialBodiesFromSessionTurns(t *testing.T) {
 	mock.ExpectQuery(`(?s)SELECT t.session_id, t.turn_no,.*FROM public.session_turns_with_current_month t`).
 		WithArgs("req-partial").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"session_id", "turn_no", "request_delta", "response_delta", "outbound_body", "model", "latency_ms",
-		}).AddRow("session-1", 1, []byte(`{"messages":["from-session"]}`), []byte(`{"choices":[{"message":{"content":"reply"}}]}`), []byte(`{"messages":["from-session"]}`), "model", 10))
+			"session_id", "turn_no", "tenant_id", "request_delta", "response_delta", "outbound_body", "model", "latency_ms",
+		}).AddRow("session-1", 1, "default", []byte(`{"messages":["from-session"]}`), []byte(`{"choices":[{"message":{"content":"reply"}}]}`), []byte(`{"messages":["from-session"]}`), "model", 10))
 
 	reader := &pgBodyReader{db: mock, fetch: bodyFetcherFunc(func(context.Context, string) (any, any, error) {
 		return `{"messages":["from-logs"]}`, nil, nil
