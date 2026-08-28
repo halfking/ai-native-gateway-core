@@ -46,6 +46,9 @@ func makeSessionDetailMockRow(payload []byte) *pgxmock.Rows {
 		"task_type", "client_type", "topic", "intent",
 		"primary_request_id", "turn_logs_summary",
 		// session_analysis_metadata LATERAL 列（顺序固定，见 session_meta_view.go）
+		// 注意: sa_status/sa_schema_version/sa_input_hash 在生产代码里以 *string
+		// 接收 (LEFT JOIN miss 时为 SQL NULL), 因此 pgxmock 必须以 *string
+		// 指针值传入, 否则报 destination kind 'ptr' not supported。
 		"sa_status", "sa_schema_version", "sa_input_hash",
 		"sa_source_task_id", "sa_updated_at", "sa_payload",
 	}).AddRow(
@@ -56,7 +59,7 @@ func makeSessionDetailMockRow(payload []byte) *pgxmock.Rows {
 		&lastModel, &lastProvider,
 		&taskType, &clientType, &topic, &intent,
 		&primaryReq, []byte(`{"hint":"ok"}`),
-		"final", "session-analysis/v1", "hash-001",
+		ptrStr("final"), ptrStr("session-analysis/v1"), ptrStr("hash-001"),
 		&sourceTask, &saUpdatedAt, payload,
 	)
 }
@@ -155,7 +158,7 @@ func TestQuerySession_LeftJoinMissLeavesAnalysisNil(t *testing.T) {
 			nil, nil, nil, nil, nil,
 			nil, nil, nil, nil,
 			nil, nil,
-			"", "", "", nil, nil, nil,
+			nil, nil, nil, nil, nil, nil,
 		))
 
 	api := newSessionDetailV2APIWithDB(mock)
