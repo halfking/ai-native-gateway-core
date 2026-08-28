@@ -106,6 +106,9 @@ ssh 245 '
 | MemoryMax 触发 | `journalctl -u llmgo-245 --since "10m ago" \| grep -i "memory" \| grep -i "kill"` | 0 |
 | requestdetail Clear residue | `curl -s http://127.0.0.1:9090/metrics \| grep requestdetail_store_clear_failures_total` | rate == 0 |
 | requestdetail eviction residue | `curl -s http://127.0.0.1:9090/metrics \| grep requestdetail_store_eviction_failures_total` | rate == 0 |
+| requestdetail oversize drop | `curl -s http://127.0.0.1:9090/metrics \| grep requestdetail_forwarder_dropped_oversize_total` | rate == 0；持续 > 0 提示客户端发送了异常大体量 body |
+| requestdetail malformed snapshot | `curl -s http://127.0.0.1:9090/metrics \| grep requestdetail_malformed_snapshot_total` | rate == 0；持续 > 0 提示 /tmp 写入或 JSON 序列化有 bug |
+| requestdetail forwarder stop timeout | `journalctl -u llmgo-245 --since "10m ago" \| grep "capture forwarder stop timed out"` | 0；> 0 提示 /tmp 极慢或磁盘 I/O 拥塞 |
 | cert 剩余 | `ssh 245 'certbot certificates 2>&1 \| grep "Expiry Date"'` | ≥ 30 days |
 | DB cache hit | `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT ROUND(100.0*blks_hit/(blks_hit+blks_read),1) FROM pg_stat_database WHERE datname='llm_gateway';"` | ≥ 99 % |
 | DB rollback 率 | `docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c "SELECT ROUND(100.0*xact_rollback::numeric/(xact_commit+xact_rollback),1) FROM pg_stat_database WHERE datname='llm_gateway';"` | ≤ 5 % |
