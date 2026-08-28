@@ -5968,7 +5968,8 @@ func main() {
 		Add(middleware.NewCORSMiddleware(cfg.CORSOrigins)).
 		Add(middleware.NewPrometheusMiddleware()).
 		Add(middleware.NewAuthMiddleware(cfg.APIKey)).
-		Add(middleware.NewOriginMiddleware()).
+		Add(middleware.NewOriginMiddlewareWithTrustedProxies(
+			middleware.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs))).
 		Add(middleware.NewLoggingMiddleware()).
 		Add(middleware.NewSecurityHeadersMiddleware()).
 		Build().
