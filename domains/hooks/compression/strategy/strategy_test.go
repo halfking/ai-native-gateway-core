@@ -110,7 +110,7 @@ func TestManualSelector_OffEmptyPolicy(t *testing.T) {
 		&stubStrategy{name: "a", enabled: true},
 		&stubStrategy{name: "b", enabled: true},
 	}
-	got := sel.Select(context.Background(), all)
+	got := sel.Select(context.Background(), all, nil)
 	if got != nil {
 		t.Errorf("off selector must return nil; got %v", namesOf(got))
 	}
@@ -125,7 +125,7 @@ func TestManualSelector_AllExpandsToRegistry(t *testing.T) {
 		&stubStrategy{name: "b", enabled: false},
 		&stubStrategy{name: "c", enabled: true},
 	}
-	gotNames := namesOf(sel.Select(context.Background(), all))
+	gotNames := namesOf(sel.Select(context.Background(), all, nil))
 	if len(gotNames) != 3 {
 		t.Errorf("all selector must return all strategies; got %v", gotNames)
 	}
@@ -138,7 +138,7 @@ func TestManualSelector_NamedOrderRespected(t *testing.T) {
 		&stubStrategy{name: "b", enabled: true},
 		&stubStrategy{name: "c", enabled: true},
 	}
-	gotNames := namesOf(sel.Select(context.Background(), all))
+	gotNames := namesOf(sel.Select(context.Background(), all, nil))
 	if len(gotNames) != 2 || gotNames[0] != "c" || gotNames[1] != "a" {
 		t.Errorf("policy order not preserved: got %v, want [c a]", gotNames)
 	}
@@ -149,7 +149,7 @@ func TestManualSelector_UnknownIgnored(t *testing.T) {
 	all := []Strategy{
 		&stubStrategy{name: "a", enabled: true},
 	}
-	gotNames := namesOf(sel.Select(context.Background(), all))
+	gotNames := namesOf(sel.Select(context.Background(), all, nil))
 	if len(gotNames) != 1 || gotNames[0] != "a" {
 		t.Errorf("ghost must be ignored; got %v", gotNames)
 	}
@@ -161,7 +161,7 @@ func TestManualSelector_DuplicateInPolicyDeduped(t *testing.T) {
 		&stubStrategy{name: "a", enabled: true},
 		&stubStrategy{name: "b", enabled: true},
 	}
-	gotNames := namesOf(sel.Select(context.Background(), all))
+	gotNames := namesOf(sel.Select(context.Background(), all, nil))
 	if len(gotNames) != 2 {
 		t.Errorf("dup dedup failed: %v", gotNames)
 	}
@@ -297,7 +297,7 @@ func TestRunner_AppliedFalseSkipped(t *testing.T) {
 	}
 }
 
-func TestRunner_ApplyErrorAborts(t *testing.T) {
+func TestRunner_ApplyErrorFailsOpen(t *testing.T) {
 	reg := NewRegistry()
 	a := &stubStrategy{name: "a", enabled: true, applied: true, out: []byte("aaaa"), guardStage: "a"}
 	b := &stubStrategy{name: "b", enabled: true, applied: true, err: errors.New("boom"), guardStage: "b"}
@@ -306,8 +306,11 @@ func TestRunner_ApplyErrorAborts(t *testing.T) {
 	r := NewRunner(reg)
 	sel := NewManualSelector(Policy{Names: []string{"a", "b"}, UnknownMode: "ignore"})
 	out, stats, err := r.RunWithBody(context.Background(), sel, []byte("start!"))
-	if err == nil {
-		t.Fatal("expected error from b")
+	if err != nil {
+		t.Fatalf("optional strategy path must fail open: %v", err)
+	}
+	if len(stats.FailedNames) != 1 || stats.FailedNames[0] != "b" {
+		t.Errorf("FailedNames = %v, want [b]", stats.FailedNames)
 	}
 	if string(out) != "aaaa" {
 		t.Errorf("error body must be the body as of last successful apply; got %q", out)
@@ -361,20 +364,18 @@ func TestRunner_DisabledStrategySkippedAtApply(t *testing.T) {
 	}
 }
 
-func TestRunner_NoGuardStageNoGuardCall(t *testing.T) {
-	// 没有 GuardStage 的 strategy：runner 不调守卫，仍可能让 len(out) > len(in)。
-	// Phase 1 设计：advisor only，user 自己保证 Output <= Input。
+func TestRunner_AggregateGuardRevertsUnguardedGrowth(t *testing.T) {
 	reg := NewRegistry()
 	grow := &stubStrategy{name: "g", enabled: true, applied: true, out: []byte("longer-output"), guardStage: ""}
 	_ = reg.Register(grow)
 	r := NewRunner(reg)
 	sel := NewManualSelector(Policy{Names: []string{"g"}, UnknownMode: "ignore"})
-	_, stats, _ := r.RunWithBody(context.Background(), sel, []byte("in"))
-	if len(stats.TruncatedBy) != 0 {
-		t.Errorf("no guard means no truncation; got %v", stats.TruncatedBy)
+	out, stats, _ := r.RunWithBody(context.Background(), sel, []byte("in"))
+	if string(out) != "in" {
+		t.Errorf("aggregate guard must revert growth; got %q", out)
 	}
-	if len(stats.AppliedNames) != 1 {
-		t.Errorf("AppliedNames = %v", stats.AppliedNames)
+	if len(stats.TruncatedBy) != 1 || stats.TruncatedBy[0] != "aggregate" {
+		t.Errorf("TruncatedBy = %v, want [aggregate]", stats.TruncatedBy)
 	}
 }
 

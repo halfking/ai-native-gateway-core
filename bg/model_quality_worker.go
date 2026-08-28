@@ -35,6 +35,7 @@ type ModelQualityWorker struct {
 	// nodeSource 由外部注入（含 DB pool + 解密 key）；为 nil 时仅支持经网关的聚合测试。
 	nodeSource  *CredentialNodeSource
 	nodeInvoker *modelquality.DirectNodeInvoker
+	nodeGate    *modelquality.NodeInFlightGate
 
 	// 2026-08-11: DB-backed 存储（model_iq_runs / node_iq_latest），由 main.go 注入。
 	// 非空时 Start 用它（叠加 FileStorage 离线备份）替代纯文件存储。
@@ -88,6 +89,7 @@ func NewModelQualityWorker(dataDir string, apiKey string, baseURL string, timeou
 		triggerInFlight: make(map[string]struct{}),
 		triggerLast:     make(map[string]time.Time),
 		triggerCooldown: 10 * time.Minute,
+		nodeGate:        modelquality.NewNodeInFlightGate(),
 	}
 	w.triggerCtx, w.triggerCancel = context.WithCancel(context.Background())
 	return w
@@ -169,6 +171,11 @@ func (w *ModelQualityWorker) testSingleNode(ctx context.Context, credentialID in
 	if src == nil || invoker == nil {
 		return nil, fmt.Errorf("node source not configured (call SetNodeSource first)")
 	}
+	release, ok := w.nodeGate.TryAcquire("", rawModel, credentialID)
+	if !ok {
+		return nil, fmt.Errorf("node benchmark already in flight")
+	}
+	defer release()
 	node, err := src.FindNodeByModel(ctx, credentialID, rawModel)
 	if err != nil {
 		return nil, err
@@ -184,7 +191,7 @@ func (w *ModelQualityWorker) testSingleNode(ctx context.Context, credentialID in
 	score.TriggerKind = triggerKind
 	if dbStorage != nil {
 		if err := dbStorage.SaveScore(ctx, score); err != nil {
-			slog.Warn("TestSingleNode: save score to DB failed", "err", err)
+			return nil, fmt.Errorf("save node score: %w", err)
 		}
 	}
 	return score, nil
@@ -273,8 +280,13 @@ func (w *ModelQualityWorker) RunPerNodeCheck(ctx context.Context, storage modelq
 			return tested, ctx.Err()
 		default:
 		}
+		release, ok := w.nodeGate.TryAcquire(nodes[i].Provider, nodes[i].RawModelName, nodes[i].CredentialID)
+		if !ok {
+			continue
+		}
 		nodeExec := modelquality.NewNodeInvoker(invoker, nodes[i], w.timeout)
 		report, err := nodeExec.Execute(ctx, suite)
+		release()
 		if err != nil {
 			slog.Warn("per-node quality test failed",
 				"credential_id", nodes[i].CredentialID, "model", nodes[i].RawModel, "error", err)

@@ -1088,3 +1088,103 @@ func (s *HybridStrategy) Apply(ctx context.Context, req *ApplyRequest) (*ApplyRe
 **文档状态**: RFC - 等待评审  
 **下一步**: 开始 Phase 1 实施
 
+---
+
+## 12. 实现状态 (GW-10 Phase 1 + Phase 2, 2026-08-28 落地)
+
+> 本节记录与本文 RFC 设计**实际已落地**的部分。RFC 描述的接口（`ApplyRequest` /
+> `SessionFeatures` / CEL 表达式 / ML 选择器 / 租户级隔离）是更大范围的设计目标；
+> 真实落地的 `domains/hooks/compression/strategy/` 包采用更精简但可演进的接口，
+> 关注意义不变：**策略可插拔 + 选择器编排 + 自适应升级**。
+
+### 12.1 已交付 (Phase 1 — 策略模式基础设施)
+
+代码位置：`domains/hooks/compression/strategy/`
+
+| 组件 | 文件 | 状态 |
+|------|------|------|
+| `Strategy` 接口 | `strategy.go` | ✅ 最小契约：`Name / Description / Enabled / GuardStage / Apply(ctx, []byte) ([]byte, bool, error)` |
+| `Registry` 注册表 | `strategy.go` | ✅ name→Strategy，线程安全，注册顺序即默认执行顺序 |
+| `ManualSelector` | `selector.go` | ✅ 按 `Policy`（name 列表 / `all` / `off`）筛选 |
+| `Runner` + `NeverWorse` 守卫 | `runner.go` | ✅ 链式执行 + 每策略字节不增守卫 + `RunStats` |
+| `LiteAdapter` / `CavemanAdapter` / `ToolFocusedAdapter` | `adapters.go` | ✅ 把现有 lite/caveman/toolfocused 阶段包装为 `Strategy` |
+| `ResolvePolicy` / `Policy` | `selector.go` | ✅ `"off" / "" / "all" / "lite,caveman"` 解析 |
+
+**接口签名（真实）**：
+```go
+type Selector interface {
+    Select(ctx context.Context, all []Strategy, body []byte) []Strategy
+}
+```
+注意：与 RFC §3.2 的 `Select(ctx, *SelectRequest)` 不同，真实接口把决策输入
+收敛为 `all []Strategy` + `body []byte`，不强制 `SessionFeatures`/约束结构——保持
+`strategy` 包零业务依赖、可被 `Compressor` 直接复用。
+
+### 12.2 已交付 (Phase 2 — 自适应上下文预算选择器)
+
+| 组件 | 文件 | 状态 |
+|------|------|------|
+| `EscalationProfile` 可选接口 | `selector_adaptive.go` | ✅ `ReductionFactor() float64` + `CostTier() int`；策略可选实现 |
+| `AdaptiveSelector` | `selector_adaptive.go` | ✅ 预算驱动升级阶梯 + 绝不"过度压缩" |
+| `AdaptiveConfig` | `selector_adaptive.go` | ✅ `TargetRatio / MaxStages / NeverOverCompress / Estimator / BudgetFn` |
+| Adapter 暴露 `EscalationProfile` | `adapters.go` | ✅ lite(0.92,tier0) / toolfocused(0.85,tier1) / caveman(0.70,tier2) |
+| `Compressor.NewSelector` / `RunCompressStrategies` | `compressor.go` | ✅ 按 `SelectorMode` 构建 manual/adaptive 选择器并执行 |
+| env/配置 接入 | `compressor.go` + `cmd/gateway/main.go` | ✅ 见 §12.3 |
+
+**自适应升级阶梯算法**（平移 OmniRoute `ladder.ts` 的 REDUCTION_FACTOR 思想）：
+```
+1. budget = BudgetFn(body)            // Compressor 注入 = est.ThresholdBytes(contextWindow)
+2. size   = len(body)
+3. target = budget × TargetRatio；if size <= target && NeverOverCompress → 返回 nil（绝不压缩）
+4. ordered = 已启用 stage 按 CostTier 升序（lite → toolfocused → caveman）
+5. 沿阶梯逐个累加预估压缩率，纳入策略直到 预估size<=target 或 达 MaxStages
+6. 返回有序子集（Runner 按序执行，每段仍过 NeverWorse 守卫）
+```
+降级纪律：预算未知（BudgetFn≤0）→ 返回 nil（不压缩）；预估压缩率≥1.0 的策略
+在阶梯中被跳过但允许继续看更激进档。
+
+### 12.3 配置与环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `LLM_GATEWAY_COMPRESSION_SELECTOR` | `manual` | `manual`（Phase 1 行为）/ `adaptive`（启用升级选择器） |
+| `LLM_GATEWAY_COMPRESSION_SELECTOR_SPEC` | `""` | manual 模式下的 Policy（`lite,caveman` / `all` / `off`） |
+| `LLM_GATEWAY_COMPRESSION_TARGET_RATIO` | `0.8` | adaptive 模式的字节启发式目标比例 (0,1] |
+| `LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED` | `false` | 显式接入真实请求路径的 gate；默认关闭 |
+| `LLM_GATEWAY_COMPRESSION_LITE` / `_CAVEMAN` / `_TOOLFOCUSED` | `false` | 三个 stage 的 feature flag；adaptive 只能选择已启用 stage |
+
+`Compressor` 在 `NewCompressor()` 时经 `NormalizeSelectorConfig()` 从
+**显式 DB settings > canonical env > 默认** 解析以上配置。默认 settings 值不会覆盖 env。
+
+### 12.4 RFC → 实际代码映射
+
+| RFC 章节 | 实际落地情况 |
+|----------|--------------|
+| §3.2 `Strategy`/`Selector` 接口 | 已落地，但更精简（见 §12.1 签名）；`Apply(*ApplyRequest)` 未采用 |
+| §3.2 `SessionFeatures` / 约束 | 已由 `body []byte` + `BudgetFn` 内联替代；未抽象独立结构 |
+| §4.1 Phase 1 基础架构 | ✅ 全部完成 |
+| §4.3 Phase 3 自动选择器 | ✅ 以 `AdaptiveSelector`（预算升级）形态落地，未用 CEL/ML |
+| §4.2 `ToolFocusedStrategy` | ✅ 已作为 `ToolFocusedAdapter` 存在（GW-09） |
+| §4.5 `RuleBasedStrategy` (caveman) | ✅ 已作为 `CavemanAdapter` 存在（GW-07） |
+| §7 监控指标 | 复用 `compression` 包既有 Prometheus 指标；未新增 selector 专属指标 |
+| §10.2 Adaptive 选择器 | ✅ 已实现为 `AdaptiveSelector`（本表 §12.2） |
+| §10.1 ML 选择器 / §10.3 Hybrid | ⏳ 未实现（未来 Phase） |
+
+### 12.5 测试覆盖
+
+- `strategy/strategy_test.go`：Registry / ManualSelector / Runner（含 NeverWorse 回归、Applied=false 跳过、Apply error fail-open、整链防膨胀）。
+- `strategy/selector_adaptive_test.go`：预算未知→nil、预算内绝不压缩、升级阶梯按 CostTier 升序、预算满足即停、MaxStages 上限、reduction=1.0 跳过、disabled 跳过、Adapter `EscalationProfile` 契约、与 Runner 真实集成。
+- `compressor_strategy_test.go`：feature-flag 传播、Phase 1 链顺序、自适应 oversized→压缩、自适应 under-budget→不压缩、`NewSelector` 类型断言。
+
+运行：`go test ./domains/hooks/compression/... -count=1`
+
+### 12.6 后续待办（未在本轮实现）
+
+1. **租户/会话级 override**：RFC §3.2 的 `tenantConfig > sessionHint > auto > default` 优先级。
+   当前仅实现全局级 `SelectorMode`（与 RFC §4.1 范围一致）；会话级 hint 可作为
+   `Compressor.RunCompressStrategies` 的参数扩展。
+2. **245 log benchmark**：默认路径仅使用最小权限只读连接且不生成本地文件；安全 CLI、aggregate-only 输出和持久化限制见 [`docs/benchmark/README.md`](../benchmark/README.md)。实测仍需受控数据接入。
+3. **信息密度 / 遗失率量化**：`metrics.go` 现有 bytes ratio；fidelity 评估需 LLM judge
+   或启发式（RFC §7.2 / §9.3），未接入自动流水线。
+4. **更多策略引擎**：OmniRoute 的 rtk / relevance / ccr / llmlingua 等（见研究文档），
+   未来若移植，只需实现 `Strategy` + `EscalationProfile` 即可被选择器编排。
