@@ -2223,9 +2223,9 @@ func main() {
 		if routingExec != nil {
 			rcDeps := compression.RecoveryDeps{
 				Cache:      scCache,
-				MaxRetries: 2,
 				Summarizer: compression.NewSummaryFunc(compactionDeps),
 			}
+
 			routingExec.RecoveryCoord = compression.NewRecoveryCoordinator(rcDeps)
 			slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 		}

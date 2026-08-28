@@ -197,39 +197,52 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 				irScoped = a.IR
 			}
 			irResp, irErr := irScoped.ParseAnthropicResponse(body)
-			if irErr == nil {
-				var converted []byte
-				var serErr error
-				if a.ClientProtocol == "openai-responses" {
-					converted, serErr = irScoped.SerializeResponsesResponse(irResp, clientModel)
-				} else {
-					converted, serErr = irScoped.SerializeOpenAIResponse(irResp, clientModel)
+			if irErr != nil {
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindConversion,
+					Message:    "parse Anthropic response for client protocol",
+					Err:        irErr,
+					StatusCode: resp.StatusCode,
 				}
-				if serErr == nil {
-					body = converted
-				} else {
-					slog.Warn("ir serialize response failed; forwarding raw body",
-						"error", serErr,
-						"client_protocol", a.ClientProtocol)
-				}
-			} else {
-				slog.Warn("ir parse anthropic response failed; forwarding raw body",
-					"error", irErr)
 			}
+
+			var (
+				converted []byte
+				serErr    error
+			)
+			if a.ClientProtocol == "openai-responses" {
+				converted, serErr = irScoped.SerializeResponsesResponse(irResp, clientModel)
+			} else {
+				converted, serErr = irScoped.SerializeOpenAIResponse(irResp, clientModel)
+			}
+			if serErr != nil {
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindConversion,
+					Message:    "convert Anthropic response to client protocol",
+					Err:        serErr,
+					StatusCode: resp.StatusCode,
+				}
+			}
+			body = converted
 		} else if a.ChatResponseConverter != nil {
-			// Legacy path: use the ChatResponseConverter callback.
-			// Note: legacy callback emits OpenAI Chat Completions shape
-			// regardless of ClientProtocol, so legacy mode with a
-			// Responses API client would still produce the wrong shape.
-			// This is acceptable pre-IR behavior; the IR path is the
-			// recommended mode for Responses API clients.
-			converted, convErr := a.ChatResponseConverter(body, clientModel)
-			if convErr == nil {
-				body = converted
-			} else {
-				slog.Warn("anthropic_to_chat convert failed; forwarding raw body",
-					"error", convErr, "request_id", clientModel)
+			// Legacy conversion only supports the OpenAI Chat Completions shape.
+			if a.ClientProtocol == "openai-responses" {
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindConversion,
+					Message:    "Responses API response conversion requires IR converter",
+					StatusCode: resp.StatusCode,
+				}
 			}
+			converted, convErr := a.ChatResponseConverter(body, clientModel)
+			if convErr != nil {
+				return nil, &upstreampkg.Error{
+					Kind:       errorsx.KindConversion,
+					Message:    "convert Anthropic response to OpenAI response",
+					Err:        convErr,
+					StatusCode: resp.StatusCode,
+				}
+			}
+			body = converted
 		}
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 		// After Anthropic → OpenAI conversion the body is OpenAI-shaped,
@@ -650,7 +663,7 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 	if params != nil && params.R != nil {
 		requestCtx = params.R.Context()
 	}
-	if out, applied := e.runOptionalCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold); applied {
+	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
 		bodyBytes = out
 	}
 	return bodyBytes, nil

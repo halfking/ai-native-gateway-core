@@ -236,6 +236,7 @@ func NewGatewayModelInvoker(baseURL, apiKey string, timeout time.Duration) *Gate
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
+				MaxConnsPerHost:     64,
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
@@ -315,6 +316,7 @@ func NewDirectNodeInvoker(timeout time.Duration) *DirectNodeInvoker {
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
+				MaxConnsPerHost:     64,
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
@@ -374,8 +376,10 @@ func doChatCompletion(client *http.Client, req *http.Request, startTime time.Tim
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return "", 0, latency, fmt.Errorf("upstream returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+		const maxErrorBody = 4096
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
+		return "", 0, latency, fmt.Errorf("upstream returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
 	}
 
 	var result struct {

@@ -3,20 +3,30 @@ package executors
 import (
 	"context"
 	"log/slog"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 )
 
-// runOptionalCompressionStrategies runs the selector pipeline only when an
-// operator explicitly enabled it for the matching dispatcher mode. It is a
-// best-effort optimization: no reduction or an internal failure leaves the
-// caller's established compression/recovery path untouched.
-func (e *Executor) runOptionalCompressionStrategies(ctx context.Context, body []byte, contextWindow *int, mode compression.Mode) ([]byte, bool) {
+func forceCompression(params *ExecParams) bool {
+	if params == nil {
+		return false
+	}
+	if params.ForceCompression {
+		return true
+	}
+	return params.R != nil && strings.EqualFold(strings.TrimSpace(params.R.Header.Get("X-Gw-Force-Compression")), "true")
+}
+
+// runCompressionStrategies runs the selector pipeline only when an operator
+// enabled it for the matching dispatcher mode. force bypasses only the auto
+// threshold; it does not enable disabled policies or accept an expanding body.
+func (e *Executor) runCompressionStrategies(ctx context.Context, body []byte, contextWindow *int, mode compression.Mode, force bool) ([]byte, bool) {
 	if e == nil || e.Compressor == nil || !e.Compressor.StrategyRunnerEnabled ||
 		e.Compressor.Mode() != mode || contextWindow == nil || *contextWindow <= 0 {
 		return body, false
 	}
-	if mode == compression.ModeAutoThreshold && !e.Compressor.ShouldCompressPreRequest(body, *contextWindow) {
+	if mode == compression.ModeAutoThreshold && !force && !e.Compressor.ShouldCompressPreRequest(body, *contextWindow) {
 		return body, false
 	}
 
@@ -37,4 +47,10 @@ func (e *Executor) runOptionalCompressionStrategies(ctx context.Context, body []
 		"strategies", stats.AppliedNames,
 		"failed_strategies", stats.FailedNames)
 	return out, true
+}
+
+// runOptionalCompressionStrategies preserves the existing non-forced call
+// sites, including context-length recovery.
+func (e *Executor) runOptionalCompressionStrategies(ctx context.Context, body []byte, contextWindow *int, mode compression.Mode) ([]byte, bool) {
+	return e.runCompressionStrategies(ctx, body, contextWindow, mode, false)
 }

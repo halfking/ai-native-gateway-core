@@ -1362,9 +1362,14 @@ func (e *Executor) executeOpenAI(
 						if converted, serErr := irScoped.SerializeAnthropicResponse(irResp, params.ClientModel); serErr == nil {
 							respBody = converted
 						} else {
-							slog.Warn("q2 ir serialize anthropic response failed; forwarding raw body",
-								"error", serErr, "request_id", params.R.Header.Get("X-Request-Id"))
+							return nil, &upstreampkg.Error{
+								Kind:       errorsx.KindConversion,
+								Message:    "convert OpenAI response to Anthropic response",
+								Err:        serErr,
+								StatusCode: resp.StatusCode,
+							}
 						}
+
 					} else {
 						// 2026-08-28 P1-GLM-2: If ParseOpenAIResponse returns a
 						// *ir.ParseError (e.g. GLM finish_reason error channel),
@@ -1380,16 +1385,25 @@ func (e *Executor) executeOpenAI(
 								RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 							}
 						}
-						slog.Warn("q2 ir parse openai response failed; forwarding raw body",
-							"error", irErr, "request_id", params.R.Header.Get("X-Request-Id"))
+						return nil, &upstreampkg.Error{
+							Kind:       errorsx.KindConversion,
+							Message:    "parse OpenAI response for Anthropic client",
+							Err:        irErr,
+							StatusCode: resp.StatusCode,
+						}
 					}
 				} else if e.ChatResponseToAnthropic != nil {
 					if converted, convErr := e.ChatResponseToAnthropic(respBody, params.ClientModel, params.R.Header.Get("X-Request-Id")); convErr == nil {
 						respBody = converted
 					} else {
-						slog.Warn("q2 chat_to_anthropic response convert failed; forwarding raw body",
-							"error", convErr, "request_id", params.R.Header.Get("X-Request-Id"))
+						return nil, &upstreampkg.Error{
+							Kind:       errorsx.KindConversion,
+							Message:    "convert OpenAI response to Anthropic response",
+							Err:        convErr,
+							StatusCode: resp.StatusCode,
+						}
 					}
+
 				}
 			}
 			// 并发修复 2026-07-27：异步重试路径既设 SuppressSuccessWrite
@@ -1642,19 +1656,33 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
 			// Override model to outbound model
 			irReq.Model = resolveOutboundModel(params, cand)
-			bodyBytes, _ = irScoped.SerializeOpenAI(irReq)
-			slog.Info("finalizeOpenAIUpstreamBody: legacy IR path validated",
-				"request_id", params.RequestID,
-				"path", "legacy_with_ir",
-				"model", params.Model,
-				"provider_id", cand.ProviderID,
-				"credential_id", cand.CredentialID,
-				"raw_model", cand.RawModel,
-				"pre_body_bytes", preBodyBytes,
-				"post_body_bytes", len(bodyBytes),
-				"pre_messages", preMsgs,
-				"post_messages", len(irReq.Messages),
-			)
+			serializedBody, serializeErr := irScoped.SerializeOpenAI(irReq)
+			if serializeErr != nil {
+				slog.Warn("finalizeOpenAIUpstreamBody: legacy IR serialization failed; preserving pre-validation body",
+					"request_id", params.RequestID,
+					"path", "legacy_with_ir_serialize_failed",
+					"model", params.Model,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"pre_body_bytes", preBodyBytes,
+					"error", serializeErr,
+				)
+			} else {
+				bodyBytes = serializedBody
+				slog.Info("finalizeOpenAIUpstreamBody: legacy IR path validated",
+					"request_id", params.RequestID,
+					"path", "legacy_with_ir",
+					"model", params.Model,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"pre_body_bytes", preBodyBytes,
+					"post_body_bytes", len(bodyBytes),
+					"pre_messages", preMsgs,
+					"post_messages", len(irReq.Messages),
+				)
+			}
 		} else if errors.Is(parseErr, transformation.ErrConverterCircuitOpen) {
 			// 2026-08-09 P0 fix (req cb103844b742b0611478cd033ad3c187,
 			// tool_call_id_mismatch on gpt-5.6-luna/apiclaude.cc): when the
@@ -1804,7 +1832,7 @@ func (e *Executor) applyOptionalOpenAIStrategies(params *ExecParams, cand provid
 	if params != nil && params.R != nil {
 		requestCtx = params.R.Context()
 	}
-	if out, applied := e.runOptionalCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold); applied {
+	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
 		return out
 	}
 	return bodyBytes
@@ -1947,14 +1975,15 @@ func strPtrCompat(s string) *string {
 	return &s
 }
 
-// Streaming requests carry no wall-clock deadline. A stuck vendor is bounded
-// by ResponseHeaderTimeout and the bridge's per-read streamChunkTimeout. An
-// ordinary stream still derives from the request context, so client disconnect
-// cancels promptly. Only an explicit session/durable owner uses WithoutCancel;
-// SurvivalAttempt by itself only identifies retry ownership.
+const detachedStreamMaxLifetime = 2 * time.Hour
+
+// Streaming requests are bounded by streamChunkTimeout while the client stays
+// attached. A detached durable stream also receives a wall-clock cap so an
+// upstream that keeps emitting infrequent data cannot retain a pool slot
+// indefinitely after the client has disconnected.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if params.IsStream && params.StreamSurvivesClientCancel {
-		return context.WithCancel(context.WithoutCancel(params.R.Context()))
+		return context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
 	}
 	if params.IsStream {
 		return context.WithCancel(params.R.Context())
