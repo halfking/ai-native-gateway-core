@@ -1,4 +1,4 @@
--- Migration 612: enable an independent native Responses SSE capability key.
+-- Migration 613: enable an independent native Responses SSE capability key.
 -- Default-off: existing non-stream capability does not imply stream support.
 
 BEGIN;
