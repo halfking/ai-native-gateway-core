@@ -77,3 +77,35 @@ The first rollout adds the policy and adapts dispatch planning and survival
 aggregation while preserving their existing public result types. Subsequent
 changes should remove duplicated kind-to-action tables only after parity tests
 cover all error kinds, route scopes, commit states, and client lifecycle paths.
+
+## Phase-aware kind mapping (2026-08-28 audit)
+
+The same `ErrorKind` can drive a different `TaskAction` in the streaming
+context versus the dispatch context:
+
+- `KindUpstreamDown` is **retryable in dispatch** (the per-credential retry
+  budget is the right granularity at the queue layer) but
+  **wait-recovery in streaming** (a single open client connection has no
+  reason to refresh against the same credential before the upstream
+  reports a recovery hint).
+- `KindUpstreamOverloaded` follows the same split.
+- `KindRateLimit` is uniformly `wait_recovery` everywhere; the streaming
+  layer keeps it there because rate-limit hints are addressed to the same
+  credential and the connection should not abandon it mid-stream.
+
+The streaming aggregator therefore delegates the **kind → action** mapping
+to the legacy `taskActionForKind` table and uses the central policy only
+for the overrides that must hold across all phases:
+
+- client disconnect → `ClientCanceled` (no provider punishment);
+- committed semantic output → `ResumeBlocked` (no transparent replay);
+- unmapped kinds → `FailClosed` (never guessed into a retry);
+- bounded history feeds loop detection so a refresh cannot return to an
+  exhausted route.
+
+The dispatch planner uses the central policy for the full
+`RetrySameNode / SwitchNode / FailTerminal` decision because at the queue
+layer the per-credential budget, attempt cap, and credential-fatal flag are
+the right input granularity. `out.FatalCredential` and
+`qr.AttemptCount >= maxAttempts` short-circuit before the central policy
+to preserve the journal vocabulary (`cred_fatal`, `attempt_cap`).
