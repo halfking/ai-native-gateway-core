@@ -2,6 +2,8 @@ package streaming
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -135,10 +137,11 @@ type TaskDecision struct {
 	NextRetryAfter time.Duration
 }
 
-// taskActionForKind maps every errorsx.ErrorKind to its task-level action.
-// Exhaustive by construction with the test matrix in
-// task_outcome_aggregator_test.go; anything missing aggregates to
-// TaskActionFailClosed.
+// taskActionForKind is retained as the compatibility projection for callers
+// that only need the legacy task-level action. The authoritative single-kind
+// interpretation now lives in errorsx.DecideNextAction; AggregateTaskOutcome
+// uses centralActionForTask below so request/route context and commit state are
+// evaluated consistently before this projection is applied.
 var taskActionForKind = map[errorsx.ErrorKind]TaskAction{
 	// Connection-internal immediate recovery.
 	errorsx.KindTransient:          TaskActionRetryNow,
@@ -183,6 +186,171 @@ var taskActionForKind = map[errorsx.ErrorKind]TaskAction{
 // Ordering: success > unmapped (fail closed) > terminal > committed-output
 // block > retry-now > wait-recovery. Mixed candidates prefer the strongest
 // recovery still available; a single terminal candidate fails the task.
+func centralActionForTask(kind errorsx.ErrorKind, committed bool, retryAfter time.Duration) TaskDecision {
+	commit := errorsx.ActionCommitNone
+	if committed {
+		commit = errorsx.ActionCommitContent
+	}
+	action := errorsx.DecideNextAction(errorsx.DecisionContext{
+		Kind:        kind,
+		CommitState: commit,
+		RetryAfter:  retryAfter,
+		// Candidate availability and attempt budgets are aggregated by this
+		// layer; the central policy supplies only the kind-level action.
+		HasAlternateNode:   true,
+		RemainingAttempts:  1,
+		MaxSameNodeRetries: 0,
+	})
+	switch action.Action {
+	case errorsx.ActionRetrySameNode, errorsx.ActionSwitchNode:
+		return TaskDecision{Action: TaskActionRetryNow, Reason: action.ReasonCode, NextRetryAfter: action.RetryAfter}
+	case errorsx.ActionWaitRecovery:
+		return TaskDecision{Action: TaskActionWaitRecovery, Reason: action.ReasonCode, NextRetryAfter: action.RetryAfter}
+	case errorsx.ActionResumeBlocked:
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: action.ReasonCode}
+	case errorsx.ActionFailTerminal:
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: action.ReasonCode}
+	case errorsx.ActionClientCanceled:
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: action.ReasonCode}
+	default:
+		return TaskDecision{Action: TaskActionFailClosed, Reason: action.ReasonCode}
+	}
+}
+
+func appendSurvivalHistory(history *errorsx.DecisionHistory, result *AttemptResult, attemptNo int, decision TaskDecision) {
+	if history == nil || result == nil {
+		return
+	}
+	for _, candidate := range result.CandidateOutcomes {
+		if candidate.Kind == "" {
+			continue
+		}
+		history.LastSeq++
+		history.PriorAttempts = append(history.PriorAttempts, errorsx.PriorAttempt{
+			Seq: history.LastSeq, AttemptNo: attemptNo, Model: candidateModel(candidate.CandidateID),
+			ProviderID: candidate.ProviderID, CredentialID: candidateCredential(candidate.CredentialID), Kind: candidate.Kind,
+			Action: taskActionToCentral(decision.Action), RetryAfter: candidate.RetryAfter, Committed: result.CommitState >= CommitStateContent,
+		})
+	}
+	if len(history.PriorAttempts) > 128 {
+		history.PriorAttempts = history.PriorAttempts[len(history.PriorAttempts)-128:]
+	}
+}
+
+func candidateModel(id string) string {
+	if i := strings.Index(id, "/model:"); i >= 0 {
+		return id[i+len("/model:"):]
+	}
+	return id
+}
+
+func candidateCredential(id string) int {
+	n, _ := strconv.Atoi(id)
+	return n
+}
+
+func taskActionToCentral(action TaskAction) errorsx.NextAction {
+	switch action {
+	case TaskActionRetryNow:
+		return errorsx.ActionRetrySameNode
+	case TaskActionWaitRecovery:
+		return errorsx.ActionWaitRecovery
+	case TaskActionResumeBlocked:
+		return errorsx.ActionResumeBlocked
+	case TaskActionFailTerminal:
+		return errorsx.ActionFailTerminal
+	default:
+		return ""
+	}
+}
+
+func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionHistory) TaskDecision {
+	if r == nil {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: "nil_attempt_result"}
+	}
+	if r.Success {
+		return TaskDecision{Action: TaskActionSucceed, Reason: "success"}
+	}
+	committed := r.CommitState >= CommitStateContent
+	var hasRetry, hasWait, hasTerminal, hasUnknown, hasBlocked bool
+	var maxRetryAfter time.Duration
+	var unknownKind errorsx.ErrorKind
+	for _, co := range r.CandidateOutcomes {
+		central := centralActionForTaskWithHistory(co.Kind, committed, co.RetryAfter, history)
+		switch central.Action {
+		case TaskActionResumeBlocked:
+			hasBlocked = true
+		case TaskActionRetryNow:
+			hasRetry = true
+		case TaskActionWaitRecovery:
+			hasWait = true
+		case TaskActionFailTerminal:
+			hasTerminal = true
+		case TaskActionFailClosed:
+			hasUnknown = true
+			if unknownKind == "" {
+				unknownKind = co.Kind
+			}
+		}
+		// An explicit upstream Retry-After is authoritative. When it is absent,
+		// the coordinator's configured RetryBase remains the pacing owner; do not
+		// replace that request-level setting with a policy default here.
+		if co.RetryAfter > maxRetryAfter {
+			maxRetryAfter = co.RetryAfter
+		}
+	}
+	if hasUnknown {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: fmt.Sprintf("unmapped_kind:%s", unknownKind)}
+	}
+	if hasTerminal {
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: "terminal_candidate"}
+	}
+	if hasBlocked {
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+	}
+	if committed && (hasRetry || hasWait) {
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+	}
+	if hasRetry {
+		return TaskDecision{Action: TaskActionRetryNow, Reason: "recoverable_candidate", NextRetryAfter: maxRetryAfter}
+	}
+	if hasWait {
+		return TaskDecision{Action: TaskActionWaitRecovery, Reason: "wait_recovery_window", NextRetryAfter: maxRetryAfter}
+	}
+	return TaskDecision{Action: TaskActionFailClosed, Reason: "no_candidate_outcomes"}
+}
+
+func centralActionForTaskWithHistory(kind errorsx.ErrorKind, committed bool, retryAfter time.Duration, history errorsx.DecisionHistory) TaskDecision {
+	commit := errorsx.ActionCommitNone
+	if committed {
+		commit = errorsx.ActionCommitContent
+	}
+	central := errorsx.DecideNextAction(errorsx.DecisionContext{
+		Kind: kind, CommitState: commit, RetryAfter: retryAfter,
+		HasAlternateNode: true, RemainingAttempts: 1, MaxSameNodeRetries: 1,
+		History: history,
+	})
+	if committed && central.Action == errorsx.ActionFailClosed {
+		// The policy layer cannot infer a route identity for synthetic survival
+		// candidate records. Preserve the authoritative commit safety rule here:
+		// committed recoverable output is never transparently retried.
+		central.Action = errorsx.ActionResumeBlocked
+		central.ReasonCode = "committed_output"
+	}
+	switch central.Action {
+	case errorsx.ActionRetrySameNode, errorsx.ActionSwitchNode:
+		return TaskDecision{Action: TaskActionRetryNow, Reason: central.ReasonCode, NextRetryAfter: central.RetryAfter}
+	case errorsx.ActionWaitRecovery:
+		return TaskDecision{Action: TaskActionWaitRecovery, Reason: central.ReasonCode, NextRetryAfter: central.RetryAfter}
+	case errorsx.ActionResumeBlocked:
+		return TaskDecision{Action: TaskActionResumeBlocked, Reason: central.ReasonCode}
+	case errorsx.ActionFailTerminal:
+		return TaskDecision{Action: TaskActionFailTerminal, Reason: central.ReasonCode}
+	default:
+		return TaskDecision{Action: TaskActionFailClosed, Reason: central.ReasonCode}
+	}
+}
+
 func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 	if r == nil {
 		return TaskDecision{Action: TaskActionFailClosed, Reason: "nil_attempt_result"}
@@ -199,24 +367,22 @@ func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 		unknownKind                                errorsx.ErrorKind
 	)
 	for _, co := range r.CandidateOutcomes {
-		action, mapped := taskActionForKind[co.Kind]
-		if !mapped {
-			hasUnknown = true
-			if unknownKind == "" {
-				unknownKind = co.Kind
-			}
-			continue
-		}
-		if co.RetryAfter > maxRetryAfter {
-			maxRetryAfter = co.RetryAfter
-		}
-		switch action {
+		central := centralActionForTask(co.Kind, false, co.RetryAfter)
+		switch central.Action {
 		case TaskActionRetryNow:
 			hasRetry = true
 		case TaskActionWaitRecovery:
 			hasWait = true
 		case TaskActionFailTerminal:
 			hasTerminal = true
+		case TaskActionFailClosed:
+			hasUnknown = true
+			if unknownKind == "" {
+				unknownKind = co.Kind
+			}
+		}
+		if co.RetryAfter > maxRetryAfter {
+			maxRetryAfter = co.RetryAfter
 		}
 	}
 
