@@ -309,7 +309,7 @@ func (h *Handler) MigrateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SessionID string `json:"session_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := jsonbody.DecodeRequest(r, &body, jsonbody.MaxRequiredBody, true); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid request body", "session_error", "INVALID_REQUEST")
 		return
 	}
