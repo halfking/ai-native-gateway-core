@@ -106,16 +106,28 @@ client request
 
 结果应绑定最终提交 SHA 记录；任何未执行的真实 provider、密钥、TCP 长连接、Redis/PG 故障演练均标记为 `UNKNOWN` 或 `SKIPPED-CONFIG`。
 
-## 8. 剩余任务
+## 8. 本轮后续落地（2026-08-29）
 
-以下事项不在本轮最小安全修复内，已写入最新 handoff：
+- 新增 `internal/sse` 有界物理行 reader：按 bytes 限制单条 SSE 行（默认 16 MiB，含终止符），支持 fragment、CRLF、EOF 最后一行、timeout/cancellation 和 body closer；超限不截断、不把 payload 写入错误日志。
+- `SSEMaxLineBytes` 已接入 config、环境变量 `LLM_GATEWAY_SSE_MAX_LINE_BYTES`、配置文件合并和 streaming runtime。OpenAI、Responses、Anthropic event/bridge/passthrough 及 transformation reader 入口统一使用该 reader；既有 128 MiB 非流 body 限制未改动。
+- 新增 `internal/vendorstrip` 共享 registry。Go 将路径组件 `vendor` 视为 vendoring 目录，因此 handoff 中的 `internal/vendor/strip` 无法作为本模块可导入包；实际使用可编译的等价路径 `internal/vendorstrip`。旧 streaming 导出函数保留为兼容 adapter，MiniMax 错误优先检测、四家字段规则、Ernie 透传和顶层安全推断保持不变；通用 JSON error detector 也收敛到该包。
+- Responses IR bridge 增加 reasoning/audio delta、tool-call arguments terminal 事件和有界 text/reasoning/tool-arguments 累积；超限返回 `errorsx.KindConversion` 的 `responses_conversion_accumulator_limit`，不生成截断的成功终态。
+- `StreamResponsesSSE` / `responsesStreamWrapper` 已标记 deprecated，但暂不删除：当前没有真实流量观察窗口和生产回滚开关证据，保留为 text-only 对照/回滚参考。生产 `/v1/responses` 仍由 IR bridge wiring 处理。
+- pending capture 的 overflow 状态和保存侧告警已由基线实现；overflow 不再标记为可重放的 completed 前缀。
 
-1. legacy `StreamResponsesSSE` 是否下线或补齐 reasoning/tool/audio IR 数据。
-2. SSE 单行最大长度和完整非流 body 超限后的 fail-closed 语义。
-3. vendor strip/错误分类统一抽取到 `internal/vendor/strip`，消除 streaming/executors 重复实现。
-4. Doubao multimodal embedding 路由、能力注册和计费的独立项目。
-5. 使用真实 provider/API key 的外部可用性与 TCP 长连接演练（需受控环境和脱敏凭据）。
+## 9. 验证与未验证边界
 
-## 9. 总结
+已通过：
 
-本轮修复关闭了流式首帧/gate 脱敏绕过、MiniMax 错误信号吞失、跨 vendor 误分类、正常 JSON 错误误判、Anthropic timeout 生命周期和 MiniMax 未闭合内容截断等问题。核心代码、竞态、构建和协议回归验证通过；未验证的外部 API/密钥/生产 TCP 可用性保持明确的未知状态。
+```text
+go test ./internal/ir ./internal/vendorstrip ./domains/transformation ./domains/transformation/anthropic ./domains/streaming ./domains/streaming/executors -count=1
+go test -race ./domains/streaming ./domains/streaming/executors ./domains/transformation/anthropic ./internal/vendorstrip -count=1
+go vet ./domains/streaming ./domains/streaming/executors ./domains/transformation/anthropic ./internal/vendorstrip
+go build ./...
+```
+
+以下仍为 `UNKNOWN` / `SKIPPED-CONFIG`：真实厂商 API key 可用性、余额和权限；MiniMax/Qwen/GLM/DeepSeek/Doubao/Ernie 真实响应兼容性；公网 TCP 长连接/代理/断链；真实 Redis/PostgreSQL 故障和 failover；生产 OOM、句柄上限、指标和 legacy 流量观察窗口。Doubao multimodal embedding 路由、能力注册和计费仍是独立项目。
+
+## 10. 总结
+
+本轮补齐了 SSE 单行内存边界、共享 vendor policy/error contract、Responses bridge 的 reasoning/audio/tool 终态和 semantic accumulator 保护，同时保留兼容 adapter 与 legacy rollback 参考。核心回归、竞态、静态检查和全量构建通过；外部 provider、生产流量及基础设施演练没有被虚构为已验证。

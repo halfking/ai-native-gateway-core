@@ -49,13 +49,18 @@ go build ./...
 - 真实 Redis/PostgreSQL 故障、锁竞争、连接池耗尽和 failover 演练。
 - 生产环境 OOM/句柄上限和外部监控指标的实际值。
 
-## 5. 剩余任务
+## 5. 本轮执行结果与剩余任务
 
-1. 评估 legacy `domains/streaming/responses_stream.go` 是否下线或补齐 reasoning/tool/audio 数据。
-2. 为 SSE 单行长度增加 reader 层上限，并定义超限时 fail-closed/failover 语义。
-3. 统一四类 vendor strip/error 逻辑到 `internal/vendor/strip`，先做设计和迁移门禁，再分批迁移。
+已落地：
+
+1. legacy `StreamResponsesSSE` 已完成审计并标记 deprecated；生产 `/v1/responses` 使用 IR bridge。bridge 已补 reasoning/audio delta、tool-call terminal 事件及有界累积。legacy 暂保留为 text-only 对照和回滚参考，待真实流量观察窗口后再删除。
+2. 新增 `internal/sse` reader 和 `SSEMaxLineBytes`（默认 16 MiB）；所有主要 SSE reader 入口接入，超限不截断，错误 reason 为 `stream_line_too_large`，并按客户端语义输出区分可 failover 与不可透明重试。
+3. 新增可编译的 `internal/vendorstrip` registry（Go 的 `vendor` 保留目录语义使 `internal/vendor/strip` 不可导入），旧 streaming API 保留为兼容 adapter；MiniMax、Zhipu/GLM、DeepSeek、Doubao、Ernie 行为门禁保持。
+
+仍需：
+
 4. 单独规划 Doubao multimodal embedding 路由、能力注册和计费支持。
-5. 在有授权和脱敏凭据的环境执行真实 provider/API/TCP/Redis/PG 演练。
+5. 在有授权和脱敏凭据的环境执行真实 provider/API/TCP/Redis/PG 演练，并观察 legacy 流量后决定删除兼容路径。
 
 ## 6. 子代理提示词
 
