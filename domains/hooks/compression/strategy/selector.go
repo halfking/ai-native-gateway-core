@@ -10,16 +10,18 @@ import (
 	"fmt"
 )
 
-// Selector 决策接口。给定 Registry 全部 strategy + 决策上下文（Phase 1 暂只需
-// ctx），返回按执行顺序排列的 strategy 列表。返回 nil 表示不压缩。
+// Selector 决策接口。给定 Registry 全部 strategy + 决策上下文 + 待压缩 body，
+// 返回按执行顺序排列的 strategy 列表。返回 nil 表示不压缩。
 //
 // 设计取舍：
 //   - 返回 []Strategy 而非 []string：避免 runner 再做一次 Get(name) 查找，
 //     也允许 selector 在返回前对 strategy 做状态注入（如注入 per-request hint）。
+//   - 接收 body：自适应选择器（AdaptiveSelector）需要基于 body 体量/上下文预算
+//     决定升级到哪一档策略；手动选择器（ManualSelector）忽略 body。
 //   - 不抛 error：selector 失败 = 退化为"全部不跑"，比 panic 安全；
 //     真要日志告警，由 selector 内部 slog 而非抛上来。
 type Selector interface {
-	Select(ctx context.Context, all []Strategy) []Strategy
+	Select(ctx context.Context, all []Strategy, body []byte) []Strategy
 }
 
 // Policy 手动策略：name 列表 + 是否按注册顺序。Phase 1 唯一支持的 selector 输入。
@@ -115,7 +117,8 @@ func NewManualSelector(policy Policy) *ManualSelector {
 	return &ManualSelector{policy: policy}
 }
 
-// Select 实现 Selector 接口。
+// Select 实现 Selector 接口。body 参数被 ManualSelector 忽略（手动选择器只
+// 看 Policy，不做上下文预算升级）。
 //
 // 行为：
 //   - 若 policy.Names 为空且 policy.UnknownMode != "ignore"  → nil（off）
@@ -123,7 +126,7 @@ func NewManualSelector(policy Policy) *ManualSelector {
 //     → 全部 strategy，按注册顺序（不过滤 Enabled；
 //     Runner 负责 disable 跳过，便于动态启用）
 //   - 否则                    → 按 policy.Names 顺序过滤，未注册项跳过
-func (m *ManualSelector) Select(_ context.Context, all []Strategy) []Strategy {
+func (m *ManualSelector) Select(_ context.Context, all []Strategy, _ []byte) []Strategy {
 	// off 语义：空 Names 且 UnknownMode 非 "ignore" 标记 → 关闭。
 	if len(m.policy.Names) == 0 && m.policy.UnknownMode != "ignore" {
 		return nil

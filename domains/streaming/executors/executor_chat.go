@@ -14,8 +14,9 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain"              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -1606,23 +1607,11 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			}
 			return nil, fmt.Errorf("ir serialize openai: %w", err)
 		}
-		// Apply remaining OpenAI-path transforms (disguise, prompt cache)
-		if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
-			profileName := ""
-			if params.Transform != nil && params.Transform.DisguiseProfileID != "" {
-				profileName = params.Transform.DisguiseProfileID
-			} else if params.ClientID.Fingerprint.ClientProfile != "" {
-				profileName = params.ClientID.Fingerprint.ClientProfile
-			}
-			if profileName != "" {
-				bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, profileName, 0)
-				slog.Debug("disguise layer applied", "profile", profileName)
-			}
+		bodyBytes, err = e.applyOpenAITailTransforms(params, cand, bodyBytes)
+		if err != nil {
+			return nil, err
 		}
-		if params.SessionKey != "" && cand.SupportsPromptCache {
-			bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
-		}
-		return paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol)), nil
+		return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
@@ -1769,7 +1758,11 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			bodyBytes = converted
 		}
 	}
-	return e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	bodyBytes, err := e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+	return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
 }
 
 // legacyChatToOpenAIBody performs the legacy Anthropic→OpenAI body conversion
@@ -1796,7 +1789,25 @@ func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Cand
 			bodyBytes = converted
 		}
 	}
-	return e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	bodyBytes, err := e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+	return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
+}
+
+func (e *Executor) applyOptionalOpenAIStrategies(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {
+	if cand.ContextWindow != nil {
+		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+	}
+	requestCtx := context.Background()
+	if params != nil && params.R != nil {
+		requestCtx = params.R.Context()
+	}
+	if out, applied := e.runOptionalCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold); applied {
+		return out
+	}
+	return bodyBytes
 }
 
 // applyOpenAITailTransforms runs the format-agnostic tail steps of the OpenAI
