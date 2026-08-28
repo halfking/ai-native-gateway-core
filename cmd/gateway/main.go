@@ -2526,12 +2526,25 @@ func main() {
 		if detailDir == "" {
 			detailDir = filepath.Join(os.TempDir(), "llmgw-request-detail")
 		}
-		if detailStore, err := requestdetail.NewStore(detailDir); err != nil {
+		detailTTL := 30 * time.Minute
+		if rawTTL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REQUEST_DETAIL_TTL")); rawTTL != "" {
+			if parsedTTL, parseErr := time.ParseDuration(rawTTL); parseErr == nil && parsedTTL > 0 {
+				detailTTL = parsedTTL
+			} else {
+				slog.Warn("invalid request detail TTL; using default", "value", rawTTL, "default", detailTTL)
+			}
+		}
+		detailMaxEntries := getEnvInt("LLM_GATEWAY_REQUEST_DETAIL_MAX_ENTRIES", 4096)
+		if detailMaxEntries <= 0 {
+			slog.Warn("invalid request detail maximum entries; using default", "value", detailMaxEntries, "default", 4096)
+			detailMaxEntries = 4096
+		}
+		if detailStore, err := requestdetail.NewStoreWithOptions(detailDir, requestdetail.StoreOptions{TTL: detailTTL, MaxEntries: detailMaxEntries}); err != nil {
 			slog.Warn("request detail content store disabled", "dir", detailDir, "error", err)
 		} else {
 			requestdetail.SetGlobal(detailStore)
 			adminHandler.SetRequestDetailStore(detailStore)
-			slog.Info("request detail content store wired", "dir", detailDir)
+			slog.Info("request detail content store wired", "dir", detailDir, "ttl", detailTTL, "max_entries", detailMaxEntries)
 		}
 
 		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())
