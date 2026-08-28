@@ -1,6 +1,7 @@
 package executors
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -83,6 +84,48 @@ func TestReadAndDrainErrorBody_NilBody(t *testing.T) {
 	if captured != nil {
 		t.Errorf("captured = %v, want nil", captured)
 	}
+}
+
+func TestReadAndDrainErrorBody_ReadErrorStillDrainsTail(t *testing.T) {
+	readErr := errors.New("upstream read failed")
+	r := &errorThenTailReader{
+		first: []byte(strings.Repeat("a", 1024)),
+		tail:  []byte(strings.Repeat("b", 1024)),
+		err:   readErr,
+	}
+	captured, err := readAndDrainErrorBody(r)
+	if !errors.Is(err, readErr) {
+		t.Fatalf("error=%v, want %v", err, readErr)
+	}
+	if len(captured) != 1024 {
+		t.Fatalf("captured=%d, want 1024", len(captured))
+	}
+	if len(r.tail) != 0 {
+		t.Fatalf("tail remains undrained: %d bytes", len(r.tail))
+	}
+}
+
+type errorThenTailReader struct {
+	first []byte
+	tail  []byte
+	err   error
+}
+
+func (r *errorThenTailReader) Read(p []byte) (int, error) {
+	if len(r.first) > 0 {
+		n := copy(p, r.first)
+		r.first = r.first[n:]
+		if len(r.first) == 0 {
+			return n, r.err
+		}
+		return n, nil
+	}
+	if len(r.tail) > 0 {
+		n := copy(p, r.tail)
+		r.tail = r.tail[n:]
+		return n, nil
+	}
+	return 0, io.EOF
 }
 
 func TestReadAndDrainErrorBody_EmptyBody(t *testing.T) {
