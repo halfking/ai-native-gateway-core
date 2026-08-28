@@ -261,11 +261,13 @@ func (api *SessionDetailV2API) querySession(
 
 	var s SessionV2
 	var turnLogsSummaryRaw []byte
+	// session_analysis_metadata 来自 LEFT JOIN LATERAL, JOIN miss 时为 SQL NULL,
+	// 必须用 *string 接收 (参见 turns 列表 / snapshot 同类修复)。
 	var (
-		saStatus, saSchemaVersion, saInputHash string
-		saSourceTaskID                          *string
-		saUpdatedAt                             *time.Time
-		saPayloadRaw                            []byte
+		saStatus, saSchemaVersion, saInputHash *string
+		saSourceTaskID                         *string
+		saUpdatedAt                            *time.Time
+		saPayloadRaw                           []byte
 	)
 	err := api.pool.QueryRow(ctx, query, sessionID, tenantID).Scan(
 		&s.ID, &s.SessionID, &s.TenantID, &s.CreatedAt, &s.UpdatedAt, &s.ClosedAt, &s.Status,
@@ -292,9 +294,19 @@ func (api *SessionDetailV2API) querySession(
 	}
 
 	// LEFT JOIN LATERAL 命中 → 填充 SessionAnalysisView。
-	if saStatus != "" {
+	saStatusVal, saSchemaVal, saHashVal := "", "", ""
+	if saStatus != nil {
+		saStatusVal = *saStatus
+	}
+	if saSchemaVersion != nil {
+		saSchemaVal = *saSchemaVersion
+	}
+	if saInputHash != nil {
+		saHashVal = *saInputHash
+	}
+	if saStatusVal != "" {
 		var view SessionAnalysisView
-		scanSessionAnalysis(&view, saStatus, saSchemaVersion, saInputHash, saSourceTaskID, saUpdatedAt, saPayloadRaw)
+		scanSessionAnalysis(&view, saStatusVal, saSchemaVal, saHashVal, saSourceTaskID, saUpdatedAt, saPayloadRaw)
 		s.SessionAnalysis = &view
 	}
 

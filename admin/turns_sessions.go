@@ -265,9 +265,11 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	sessions := make([]*TurnsSessionGroup, 0, limit+1)
 	for rows.Next() {
 		var g TurnsSessionGroup
-		// session_analysis_metadata 列（LEFT JOIN LATERAL 命中时为非空）。
+		// session_analysis_metadata 列来自 LEFT JOIN LATERAL, 在 JOIN miss
+		// (会话从未被分析) 时为 SQL NULL。必须用 *string 接收, 否则 pgx 报
+		// "cannot scan NULL into *string" → /turns/sessions 接口 500。
 		var (
-			saStatus, saSchemaVersion, saInputHash string
+			saStatus, saSchemaVersion, saInputHash *string
 			saSourceTaskID                         *string
 			saUpdatedAt                            *time.Time
 			saPayloadRaw                           []byte
@@ -288,14 +290,24 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "scan session failed")
 			return
 		}
+		saStatusVal, saSchemaVal, saHashVal := "", "", ""
+		if saStatus != nil {
+			saStatusVal = *saStatus
+		}
+		if saSchemaVersion != nil {
+			saSchemaVal = *saSchemaVersion
+		}
+		if saInputHash != nil {
+			saHashVal = *saInputHash
+		}
 		g.ModelsUsed = []string{}
 		if g.UserTags == nil {
 			g.UserTags = []string{}
 		}
 		g.Compression = TurnsCompressionAgg{Strategies: []string{}}
-		if saStatus != "" {
+		if saStatusVal != "" {
 			var view SessionAnalysisView
-			scanSessionAnalysis(&view, saStatus, saSchemaVersion, saInputHash, saSourceTaskID, saUpdatedAt, saPayloadRaw)
+			scanSessionAnalysis(&view, saStatusVal, saSchemaVal, saHashVal, saSourceTaskID, saUpdatedAt, saPayloadRaw)
 			g.SessionAnalysis = &view
 		}
 
