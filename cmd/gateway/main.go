@@ -3481,6 +3481,7 @@ func main() {
 				// (uses the same system api key as the legacy worker).
 				if !ursmV2Cfg.StrictCanary {
 					credentialSelfcheckWorker = bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
+					credentialSelfcheckWorker.SetRedisClient(fpSlotRedis)
 					if probeStreamHub != nil {
 						credentialSelfcheckWorker.SetProbeSink(probeStreamHub)
 					}
@@ -3902,7 +3903,9 @@ func main() {
 		// rows. Without this, the request handler queues into a
 		// channel that no consumer ever drains.
 		admin.StartIngester(dbConn.Pool())
+		admin.SetIngesterRedisClient(fpSlotRedis)
 		defer admin.StopIngester()
+
 		slog.Info("CHECKPOINT: after StartIngester")
 		// 2026-06-27: 启动审批超时扫描 worker。approvalMgr 在前面
 		// 已通过 adminHandler.SetApprovalManager 注入；这里直接构造 worker
