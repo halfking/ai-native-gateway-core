@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -391,8 +392,8 @@ func TestGetFileRejectsOversizedBody(t *testing.T) {
 	if ok {
 		t.Fatal("expected ok=false for oversized body")
 	}
-	if err.Error() != "requestdetail: body file exceeds 10485760 bytes" {
-		t.Fatalf("unexpected error message: %v", err)
+	if !errors.Is(err, ErrBodyTooLarge) || !strings.Contains(err.Error(), "limit 10485760") {
+		t.Fatalf("unexpected size limit error: %v", err)
 	}
 }
 
