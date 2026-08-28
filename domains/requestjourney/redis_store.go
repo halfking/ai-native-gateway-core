@@ -17,6 +17,7 @@ import (
 
 type redisJourneyClient interface {
 	redis.Scripter
+	Type(ctx context.Context, key string) *redis.StatusCmd
 	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
 	LRange(ctx context.Context, key string, start, stop int64) *redis.StringSliceCmd
 	ZRange(ctx context.Context, key string, start, stop int64) *redis.StringSliceCmd
@@ -92,7 +93,7 @@ func (s *RedisStore) RecentIngress(ctx context.Context) ([]IngressSnapshot, erro
 	}
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
 	// Cast to redis.Cmdable since redisJourneyClient embeds the necessary methods
-	items, err := redissafe.SafeHGetAll(ctx, s.client.(redis.Cmdable), redisIngressItemsKey())
+	items, err := redissafe.SafeHGetAll(ctx, s.client, redisIngressItemsKey())
 	if err != nil {
 		// Missing key = empty snapshot set; keep the bare-HGETALL contract.
 		if errors.Is(err, redissafe.ErrKeyNotFound) {
@@ -178,7 +179,7 @@ func (s *RedisStore) Detail(ctx context.Context, tenantID, requestID string) (*R
 		return nil, errors.New("request journey Redis is unavailable")
 	}
 	// P1-14 fix (2026-08-28): Use SafeHGetAll to prevent WRONGTYPE errors
-	values, err := redissafe.SafeHGetAll(ctx, s.client.(redis.Cmdable), redisDetailKey(tenantID, requestID))
+	values, err := redissafe.SafeHGetAll(ctx, s.client, redisDetailKey(tenantID, requestID))
 	if err != nil {
 		// SafeHGetAll surfaces a missing key as ErrKeyNotFound where bare
 		// HGETALL returned an empty map — restore the empty/nil contract so a

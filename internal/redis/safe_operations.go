@@ -60,7 +60,11 @@ func (e *TypedError) Unwrap() error {
 // may DEL + re-SET the key under a different type. Callers must still
 // inspect the read command error for WRONGTYPE — see the fallback path in
 // SafeHGetAll et al.
-func checkType(ctx context.Context, client redis.Cmdable, key, want string) (string, error) {
+type typeChecker interface {
+	Type(ctx context.Context, key string) *redis.StatusCmd
+}
+
+func checkType(ctx context.Context, client typeChecker, key, want string) (string, error) {
 	got, err := client.Type(ctx, key).Result()
 	if err != nil {
 		return "", fmt.Errorf("redis TYPE check failed: %w", err)
@@ -107,7 +111,12 @@ func isWrongType(err error) bool {
 // is reclassified via isWrongType → TypedError so callers don't need a
 // separate handler. This is the only path that converts a network error
 // into a typed sentinel.
-func SafeHGetAll(ctx context.Context, client redis.Cmdable, key string) (map[string]string, error) {
+type hashReader interface {
+	typeChecker
+	HGetAll(ctx context.Context, key string) *redis.MapStringStringCmd
+}
+
+func SafeHGetAll(ctx context.Context, client hashReader, key string) (map[string]string, error) {
 	if client == nil {
 		return nil, fmt.Errorf("nil redis client")
 	}
