@@ -332,29 +332,15 @@ const (
 
 ### P1 缺陷（功能性，1-2 周内修复）
 
-#### P1-Qwen-1: content 数组结构未解包
+#### P1-Qwen-1: content 数组结构未解包（已修复）
 
-**修复方案**：
-1. 扩展 `ir.ParseOpenAIResponseChunk` / `ir.ParseOpenAIResponse`，新增 Qwen 专用分支：
-   ```go
-   // internal/ir/parse_openai.go
-   if providerHint == "qwen" || providerHint == "dashscope" {
-       // choices[].message.content: [{"text":"..."}] → "..."
-       if contentArr, ok := msg.Content.([]any); ok && len(contentArr) > 0 {
-           if obj, ok := contentArr[0].(map[string]any); ok {
-               if text, ok := obj["text"].(string); ok {
-                   msg.Content = text
-               }
-           }
-       }
-   }
-   ```
+**修复（2026-08-28）**：
+1. `ir.ParseOpenAIResponse` 现在将 Qwen/DashScope 风格的无 `type` 文本块 `[{"text":"..."}]` 映射为标准 IR `text` 内容块，并保留多个文本块的顺序。
+2. `ir.ParseOpenAIStreamChunk` 兼容标准 string delta 与结构化文本数组 delta，仅合并显式 `text` 值；空、null 或未知块不会制造文本输出。
+3. 不新增 `providerHint` 参数。结构化形状本身足以安全识别，避免扩大十余个调用者的 API 变更面。
+4. 测试覆盖非流式和流式的标准 string、Qwen 文本数组、多文本块、空数组及 null。
 
-2. 确保 `providerHint` 从上下文传入（executor 需带 `cand.CatalogCode` 或 `cand.ProviderCode`）。
-
-3. **测试**：`TestQwenContentArrayUnpacking`。
-
-**工作量**：4-6 小时。
+**结果**：协议转换不再将 Qwen `content: [{"text":"hello"}]` 丢失为无效内容块。
 
 ---
 
@@ -382,38 +368,17 @@ const (
 
 ---
 
-#### P1-Reasoning: reasoning_content 字段统一映射
+#### P1-Reasoning: reasoning_content 响应侧安全映射（已验证并补充回归）
 
-**修复方案**：
-1. 扩展 `IR.Message` 新增 `ReasoningContent string`：
-   ```go
-   // internal/ir/types.go
-   type Message struct {
-       Role             string
-       Content          string
-       ReasoningContent string // 推理过程（Kimi/GLM/Qwen/MiniMax/DeepSeek/Ernie）
-       // ... 现有字段 ...
-   }
-   ```
+**结论（2026-08-28）**：原审计建议在 `IR.Message` 新增第二套 `ReasoningContent` 字段并将任意厂商推理内容转换为 Anthropic `thinking` 块。复核后不采用该方案：IR 已有带 `signature` 的 `thinking` 内容块，重复字段会破坏内容排序和签名语义。
 
-2. 解析器填充（OpenAI 侧）：
-   ```go
-   // internal/ir/parse_openai.go
-   if reasoningContent, ok := msg["reasoning_content"].(string); ok {
-       irMsg.ReasoningContent = reasoningContent
-   }
-   ```
+**当前实现与本轮验证**：
+1. OpenAI-compatible 响应的顶层 `reasoning_content` 已解析至 `InternalResponse.ReasoningContent`，并在序列化为 OpenAI-compatible 响应时原样保留。
+2. Anthropic 原生 `thinking` 内容块会连同其原始 `signature` 无损序列化；这是唯一可安全回传为 Anthropic thinking 的路径。
+3. 无 Anthropic signature 的厂商 `reasoning_content` **不会**被伪造为 Anthropic `thinking` 块。这样避免产生 Anthropic 无法验证的历史推理内容；正文仍按正常协议转换。
+4. 本轮新增回归测试覆盖 OpenAI reasoning round-trip、带 signature 的 Anthropic thinking 保留，以及无签名 vendor reasoning 不生成 Anthropic thinking。
 
-3. 序列化器输出（按目标协议）：
-   - **Anthropic 序列化器**：`ReasoningContent` → 单独 `thinking` 内容块（`type: "thinking"`）
-   - **OpenAI 序列化器**：原样输出 `reasoning_content` 字段
-   - **Gemini 序列化器**：暂不支持（Gemini 无推理字段）
-
-4. **测试**：
-   - `TestReasoningContentIRRoundtrip`：Kimi 响应 → IR → Anthropic 请求（保留推理块）
-   - `TestReasoningContentProtocolConversion`：GLM 流式 → IR → OpenAI 客户端（保留 `reasoning_content`）
-
-**工作量**：1-2 天。
+**限制**：跨到 Anthropic 的无签名 vendor reasoning 不可等价保留为可回传的 thinking；这是协议签名约束，不应通过伪造 signature 绕过。
 
 ---
 

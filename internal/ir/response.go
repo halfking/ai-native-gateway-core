@@ -208,10 +208,10 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 				}
 			}
 			ir.ToolCalls = append(ir.ToolCalls, ResponseToolCall{
-				ID:       c.ID,
-				Name:     c.Name,
+				ID:        c.ID,
+				Name:      c.Name,
 				Arguments: arguments,
-				InputRaw: append(json.RawMessage(nil), c.Input...),
+				InputRaw:  append(json.RawMessage(nil), c.Input...),
 			})
 		case "thinking":
 			if c.Thinking != "" {
@@ -401,7 +401,9 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 	return ir, nil
 }
 
-// parseOpenAIResponseContentBlock parses a single OpenAI content block into IR format.
+// parseOpenAIResponseContentBlock parses a single OpenAI-compatible content
+// block into IR format. Qwen/DashScope use {"text":"..."} without the
+// OpenAI Responses API's type:"text" discriminator.
 func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
 	typ, _ := m["type"].(string)
 	switch typ {
@@ -413,6 +415,10 @@ func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
 		name, _ := m["name"].(string)
 		inputRaw, _ := json.Marshal(m["input"])
 		return ResponseContentBlock{Type: "tool_use", ID: id, Name: name, Input: inputRaw}
+	case "":
+		if text, ok := m["text"].(string); ok {
+			return ResponseContentBlock{Type: "text", Text: text}
+		}
 	}
 	return ResponseContentBlock{Type: typ}
 }

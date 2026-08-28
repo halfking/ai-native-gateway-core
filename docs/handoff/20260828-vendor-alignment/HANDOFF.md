@@ -2,18 +2,20 @@
 
 **会话**: sess_e73b023f-f2fd-4e95-975f-29ed3009d4b5  
 **日期**: 2026-08-28  
-**状态**: ✅ P0 + 2/4 P1 已完成，剩余 P1 缺陷待实施  
+**状态**: ✅ P0 + 全部 P1 已完成；剩余为 P2 数据完整性与路由范围
 
 ---
 
 ## 执行摘要
 
-对网关非 Big3 厂商（Moonshot/Zhipu/Qwen/MiniMax/Ernie/DeepSeek/Doubao）进行系统性协议对齐审计，对比官方 API 文档与当前实现，发现 **8 项缺陷**（P0: 1, P1: 3, P2: 4）。已修复：
+对网关非 Big3 厂商（Moonshot/Zhipu/Qwen/MiniMax/Ernie/DeepSeek/Doubao）进行系统性协议对齐审计，对比官方 API 文档与当前实现，发现 **8 项缺陷**（P0: 1, P1: 3, P2: 4）。已完成全部 P0/P1：
 
 - ✅ **P0-MiniMax-1**: HTTP 200 包装的 `base_resp.status_code` 错误信号丢失（流式+非流式）
 - ✅ **P1-GLM-2**: GLM 非流式 `finish_reason` 错误通道未检测
+- ✅ **P1-Qwen-1**: Qwen/DashScope `content: [{"text":"..."}]` 在流式与非流式 IR 中归一化为文本块
+- ✅ **P1-Reasoning**: OpenAI-compatible 响应中的 `reasoning_content` 维持 round-trip；仅保留带原始 signature 的 Anthropic `thinking`，不伪造无签名 thinking
 
-剩余 **2 项 P1 缺陷** 需继续实施（估算 2-3 天）。
+后续仅剩 P2 数据完整性和独立路由范围工作；不存在待实施的 P1 缺陷。
 
 ---
 
@@ -29,9 +31,9 @@
 
 | 编号 | 厂商 | 问题 | 影响 | 状态 |
 |------|------|------|------|------|
-| P1-Qwen-1 | Qwen | `content` 数组结构未解包 | 客户端收到 `[{text:"hello"}]` 而非 `"hello"` | ❌ **待修复** |
+| P1-Qwen-1 | Qwen | `content` 数组结构未解包 | 客户端收到 `[{text:"hello"}]` 而非 `"hello"` | ✅ **已修复**（本轮） |
 | P1-GLM-2 | Zhipu GLM | 非流式 `finish_reason` 异常值未检测 | network_error/sensitive/model_context_window_exceeded 被当成功 | ✅ **已修复** (fb188483d) |
-| P1-Reasoning | 全厂商 | `reasoning_content` 字段无统一 IR 映射 | 推理输出在协议转换时丢失或格式不一致 | ❌ **待修复** |
+| P1-Reasoning | 全厂商 | `reasoning_content` 响应侧安全映射 | OpenAI-compatible round-trip 保留；无签名内容不伪装为 Anthropic thinking | ✅ **已验证并回归覆盖**（本轮） |
 
 ### P2 缺陷（数据完整性，优先级较低）
 
@@ -88,67 +90,25 @@
 
 ---
 
-## 剩余 P1 缺陷实施路径
+## P1 完成记录与安全边界
 
-### ❌ P1-Qwen-1: content 数组结构未解包
+### ✅ P1-Qwen-1: Qwen content 数组归一化
 
-**工作量**: 4-6 小时  
-**位置**: `internal/ir/parse_openai.go` (需新增 Qwen 专用分支)
+**实现（2026-08-28）**：
+- `internal/ir/response.go` 将 Qwen/DashScope 风格的无 `type` 文本块 `[{"text":"..."}]` 映射为 IR `text` 内容块。
+- `internal/ir/stream.go` 同时支持 `delta.content` 为标准 JSON string 或结构化文本数组；多个显式 text 值按顺序合并。
+- 不引入 `providerHint` 或扩大 IR 接口：该安全兼容规则由结构本身决定，标准 OpenAI typed text 块仍保持原行为。
+- 新增 `internal/ir/qwen_content_test.go`，覆盖非流式及流式 string、文本数组、多文本块、空数组与 null。
 
-**方案**:
-1. 扩展 `ParseOpenAIResponseChunk` / `ParseOpenAIResponse`，新增 `providerHint` 参数（或从上下文传入 `cand.CatalogCode`）
-2. 检测 `providerHint == "qwen" || "dashscope"` 时，解包 `content: [{"text":"..."}]` → `content: "..."`：
-   ```go
-   if providerHint == "qwen" || providerHint == "dashscope" {
-       if contentArr, ok := msg.Content.([]any); ok && len(contentArr) > 0 {
-           if obj, ok := contentArr[0].(map[string]any); ok {
-               if text, ok := obj["text"].(string); ok {
-                   msg.Content = text
-               }
-           }
-       }
-   }
-   ```
-3. 确保 `providerHint` 从 executor 层传入（需修改 `IRConverter` 接口，或在 `scopedConverter` 中注入）
-4. **测试**: `TestQwenContentArrayUnpacking` 验证 `[{"text":"hello"}]` → `"hello"`
+### ✅ P1-Reasoning: 响应侧安全映射
 
-**风险**: `ParseOpenAIResponse` 签名变更会影响所有调用者（约 10 处），需逐一修改。替代方案：在 `scopedConverter.ParseOpenAIResponse` 中根据 `providerID` 后处理。
+**复核结论（2026-08-28）**：不新增第二套 `Message.ReasoningContent` 字段。IR 已有携带 signature 的 Anthropic `thinking` 内容块；重复表示会损害块排序和签名语义。
 
----
-
-### ❌ P1-Reasoning: reasoning_content 统一 IR 映射
-
-**工作量**: 1-2 天  
-**位置**: `internal/ir/types.go`, `internal/ir/serialize_*.go` (3 个序列化器)
-
-**方案**:
-1. 扩展 `IR.Message` 新增 `ReasoningContent string`：
-   ```go
-   type Message struct {
-       Role             string
-       Content          string
-       ReasoningContent string // Kimi/GLM/Qwen/MiniMax/DeepSeek/Ernie 推理过程
-       // ... 现有字段
-   }
-   ```
-
-2. **解析器填充**（OpenAI 侧，`parse_openai.go`）:
-   ```go
-   if reasoningContent, ok := msg["reasoning_content"].(string); ok {
-       irMsg.ReasoningContent = reasoningContent
-   }
-   ```
-
-3. **序列化器输出**（按目标协议）:
-   - **Anthropic 序列化器** (`serialize_anthropic.go`): `ReasoningContent` → 单独 `thinking` 内容块（`type: "thinking"`）
-   - **OpenAI 序列化器** (`serialize_openai.go`): 原样输出 `reasoning_content` 字段
-   - **Gemini 序列化器** (`serialize_gemini.go`): 暂不支持（Gemini 无推理字段）
-
-4. **测试**:
-   - `TestReasoningContentIRRoundtrip`: Kimi 响应 → IR → Anthropic 请求（保留推理块）
-   - `TestReasoningContentProtocolConversion`: GLM 流式 → IR → OpenAI 客户端（保留 `reasoning_content`）
-
-**依赖**: 需要明确 Anthropic `thinking` 块的序列化格式（索引编号、stop 事件时机）
+**保证的行为**：
+- OpenAI-compatible 响应的顶层 `reasoning_content` 解析为 `InternalResponse.ReasoningContent`，再序列化为 OpenAI-compatible 响应时保持不变。
+- 原生 Anthropic `thinking` 块仅在保留其原始 `signature` 时输出；签名路径维持无损。
+- 无 Anthropic signature 的 vendor `reasoning_content` 不会被伪造成 Anthropic `thinking`。正文仍可转换，这项保守限制避免生成无法验证的 Anthropic 历史上下文。
+- 新增 `internal/ir/reasoning_response_test.go` 固定上述 round-trip 和签名安全语义。
 
 ---
 
@@ -174,18 +134,15 @@
   - `internal/ir/response_glm_test.go` (97 行)
   - `domains/streaming/executors/executor_chat.go` (L1358-1377, +14 行)
 
-### 待修改文件（剩余 P1）
+### 本轮 P1 文件与测试
 - **P1-Qwen-1**:
-  - `internal/ir/parse_openai.go` (需新增 Qwen 专用分支)
-  - `internal/ir/serialize_openai.go` (需确保 content 序列化正确)
-  - 调用者层（executor/converter）需传入 `providerHint`
+  - `internal/ir/response.go`: 识别无 `type` 的 `{ "text": "..." }` 结构化响应块
+  - `internal/ir/stream.go`: 归一化 string 或结构化文本数组 `delta.content`
+  - `internal/ir/qwen_content_test.go`: 非流式及流式结构化文本回归覆盖
 
 - **P1-Reasoning**:
-  - `internal/ir/types.go` (扩展 `Message` 结构体)
-  - `internal/ir/parse_openai.go` (填充 `ReasoningContent`)
-  - `internal/ir/serialize_anthropic.go` (输出 `thinking` 块)
-  - `internal/ir/serialize_openai.go` (输出 `reasoning_content`)
-  - `internal/ir/serialize_gemini.go` (暂不支持，文档说明)
+  - `internal/ir/reasoning_response_test.go`: OpenAI-compatible reasoning round-trip、已签名 Anthropic thinking 保留、无签名 vendor reasoning 不伪造 thinking
+  - 不修改 `Message` 结构体；`InternalResponse.ReasoningContent` 与已有带 signature 的 thinking 内容块各自承担正确语义
 
 ---
 
@@ -215,9 +172,10 @@ ae1ecaedf fix(streaming): second-round audit corrections on Q2 bridge
 - ✅ MiniMax 单元测试: 8 status codes + 3 边缘情况（无 base_resp / 无效 JSON / 空 body）
 - ✅ GLM 单元测试: 3 错误 finish_reason + 4 正常 finish_reason
 
-### 待补充（剩余 P1）
-- ❌ P1-Qwen-1: 需测试 Qwen 数组 content 解包
-- ❌ P1-Reasoning: 需测试 reasoning_content 跨协议转换（OpenAI ↔ Anthropic）
+### 本轮新增验证
+- ✅ P1-Qwen-1：Qwen 数组 content 的流式与非流式归一化测试（string、文本数组、多文本块、空数组、null）。
+- ✅ P1-Reasoning：OpenAI-compatible `reasoning_content` round-trip、原生 Anthropic 带 signature thinking 保留、无 signature vendor reasoning 不生成 Anthropic thinking。
+- ✅ 本轮回归：`go test ./internal/ir ./domains/transformation -count=1`、`go test ./domains/streaming ./domains/streaming/executors -count=1`。
 
 ---
 
@@ -237,35 +195,24 @@ ae1ecaedf fix(streaming): second-round audit corrections on Q2 bridge
 
 ## 后续任务优先级
 
-### 立即执行（本周内）
-1. **P1-Qwen-1**: content 数组解包（4-6h）
-2. **P1-Reasoning**: reasoning_content 统一映射（1-2d）
-
-### 中期（2-4 周）
-3. **P2-MiniMax-2**: 内容审核细粒度字段保留（8h）
-4. **P2-Ernie-1**: 搜索结果引用保留（6h）
+### P2 数据完整性（可并行）
+1. **P2-MiniMax-2**：保留 `input_sensitive_type` / `output_sensitive_type` 的细粒度内容审核分类（预计 8h）。
+2. **P2-Ernie-1**：保留 `search_info.search_results[]` 的搜索来源引用（预计 6h）。
+3. **P2-Doubao-1**：评估多模态 embedding 独立端点的路由和能力注册；该项不是 IR 转换器问题。
 
 ### 长期优化
-5. 重构 vendor-specific 逻辑到独立包（避免循环依赖）
-6. 扩展 IR 支持更多厂商扩展字段（如 Ernie `system_memory`, Qwen `search_options`）
+4. 提取 MiniMax vendor-specific 错误解析至独立内部包，消除 `streaming` 与 `executors` 的重复内联实现。
+5. 评估对更多厂商扩展字段的显式 IR/extension 映射，例如 Ernie `system_memory` 和 Qwen `search_options`。
 
 ---
 
-## 子任务分配建议（多 Agent 并行）
+## 可并行子任务建议
 
-可启动 **2 个并行 Agent** 分别处理剩余 P1 缺陷：
+后续会话可启动两个独立子 Agent：
+- **Agent A**：实施 P2-MiniMax-2，重点验证错误检测仍发生在 vendor 字段 strip 之前。
+- **Agent B**：实施 P2-Ernie-1，重点验证跨协议序列化不会丢失引用数组或生成无效 content block。
 
-### Agent A: P1-Qwen-1 修复
-**输入**: `docs/2026-08-28-vendor-protocol-alignment-audit.md` § P1-Qwen-1  
-**输出**: PR with `internal/ir/parse_openai.go` 修改 + 测试  
-**估时**: 4-6h
-
-### Agent B: P1-Reasoning 修复
-**输入**: `docs/2026-08-28-vendor-protocol-alignment-audit.md` § P1-Reasoning  
-**输出**: PR with IR 扩展 + 3 序列化器修改 + 测试  
-**估时**: 1-2d
-
-两者**无依赖**，可完全并行。完成后合并到 main 并更新审计报告状态。
+两项没有直接依赖；合并前须运行 `internal/ir`、`domains/transformation`、`domains/streaming` 和相关 executor 回归。
 
 ---
 
@@ -274,13 +221,13 @@ ae1ecaedf fix(streaming): second-round audit corrections on Q2 bridge
 - [x] 所有代码已提交并推送至 main
 - [x] 测试全部通过（streaming / executors / ir）
 - [x] 审计报告已归档（`docs/2026-08-28-vendor-protocol-alignment-audit.md`）
-- [x] P0 + 2/4 P1 缺陷已修复并验证
-- [x] 剩余 P1 缺陷有明确实施路径
-- [x] 工作树干净（unrelated changes 已 stash）
-- [x] Git 历史清晰（独立 commit per 缺陷）
+- [x] P0 + 全部 P1 缺陷已修复或以协议安全边界验证并回归覆盖
+- [x] 剩余 P2 缺陷有明确实施路径
+- [ ] 当前工作树包含其他并行任务改动；提交时仅暂存本审计任务文件
+- [x] Git 历史按缺陷保持独立提交
 
 ---
 
-**移交给**: 新会话继续实施 P1-Qwen-1 + P1-Reasoning  
+**移交给**: 新会话实施 P2-MiniMax-2、P2-Ernie-1 或长期 vendor 解析重构
 **联系人**: 当前会话 sess_e73b023f-f2fd-4e95-975f-29ed3009d4b5  
 **日期**: 2026-08-28
