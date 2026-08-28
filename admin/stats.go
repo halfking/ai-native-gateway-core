@@ -3,7 +3,6 @@ package admin
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -315,7 +314,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 		Operator string  `json:"operator"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

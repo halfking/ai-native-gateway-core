@@ -338,7 +338,7 @@ func parseOlderThanDays(r *http.Request, def int) int { //nolint:unused
 		var body struct {
 			OlderThanDays int `json:"older_than_days"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && body.OlderThanDays > 0 {
+		if err := readJSONRequired(r, &body); err == nil && body.OlderThanDays > 0 {
 			return body.OlderThanDays
 		}
 	}

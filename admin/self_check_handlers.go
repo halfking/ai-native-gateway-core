@@ -367,7 +367,7 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 		MaxTokens      *int            `json:"max_tokens_per_run"`
 		FeaturedModels json.RawMessage `json:"featured_model_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "invalid json"})
 		return
 	}
@@ -502,7 +502,7 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+	if err := readJSONRequired(r, &body); err != nil && err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}

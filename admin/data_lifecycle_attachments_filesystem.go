@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"io/fs"
 	"net/http"
 	"os"
@@ -144,7 +143,7 @@ func (h *Handler) handleAttachmentFilesystemCleanup(w http.ResponseWriter, r *ht
 	}
 
 	var req AttachmentFilesystemCleanupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}

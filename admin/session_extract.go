@@ -112,7 +112,7 @@ func (h *Handler) handleSessionExtractToMemora(w http.ResponseWriter, r *http.Re
 
 	var body extractToMemoraRequest
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = readJSONRequired(r, &body)
 	}
 	includeResponses := true
 

@@ -837,7 +837,7 @@ func (h *Handler) releaseCredentialFpSlot(w http.ResponseWriter, r *http.Request
 	var body struct {
 		SlotIndex int `json:"slot_index"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
