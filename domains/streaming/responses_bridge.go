@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +43,19 @@ import (
 
 // responsesScaffold holds the IDs and writer state shared by both
 // orchestrators. Created once per stream, used until response.completed.
+const (
+	// These limits keep a malformed or unusually verbose upstream stream from
+	// retaining unbounded data while the bridge waits for its terminal event.
+	maxResponsesBridgeTextBytes          = 4 * 1024 * 1024
+	maxResponsesBridgeToolArgumentsBytes = 1 * 1024 * 1024
+)
+
+type responsesToolTerminalState struct {
+	ID        string
+	Name      string
+	Arguments strings.Builder
+}
+
 type responsesScaffold struct {
 	w           http.ResponseWriter
 	flusher     http.Flusher
@@ -51,6 +65,11 @@ type responsesScaffold struct {
 	respID  string // "resp_" + requestID-derived suffix
 	msgID   string // "msg_" + requestID-derived suffix
 	created int64  // unix timestamp
+
+	// Terminal state is kept separately from wire emission so reasoning and
+	// tool-call streams are represented in the final Responses envelope too.
+	reasoningText strings.Builder
+	toolStates    map[int]*responsesToolTerminalState
 
 	// pc is the optional pending capturer so initial/final envelope events
 	// are still recorded when the client has already gone away (Track C C5).
@@ -85,7 +104,9 @@ func newResponsesScaffold(w http.ResponseWriter, flusher http.Flusher, requestID
 		respID:      respID,
 		msgID:       msgID,
 		created:     time.Now().Unix(),
+		toolStates:  make(map[int]*responsesToolTerminalState),
 	}
+
 }
 
 func (s *responsesScaffold) attachCapturer(pc *pendingCapturer, cw *clientStreamWriter) {
@@ -93,62 +114,79 @@ func (s *responsesScaffold) attachCapturer(pc *pendingCapturer, cw *clientStream
 	s.clientWriter = cw
 }
 
+// appendResponsesBounded appends only while the bridge's terminal-state
+// accumulator remains within its local bound. The caller turns false into a
+// conversion outcome; it must never silently emit a truncated terminal value.
+func appendResponsesBounded(builder *strings.Builder, value string, limit int) bool {
+	if builder == nil || len(value) > limit-builder.Len() {
+		return false
+	}
+	builder.WriteString(value)
+	return true
+}
+
+// responsesDeltaFits checks accumulator capacity before the corresponding
+// Responses SSE delta is written. This prevents a client-visible delta from
+// being omitted from the terminal response after an overflow is detected.
+func responsesDeltaFits(scaffold *responsesScaffold, fullText *strings.Builder, chunk *ir.StreamChunk) bool {
+	if scaffold == nil || fullText == nil || chunk == nil || chunk.Delta == nil {
+		return true
+	}
+	delta := chunk.Delta
+	if len(delta.Content) > maxResponsesBridgeTextBytes-fullText.Len() ||
+		len(delta.ReasoningContent) > maxResponsesBridgeTextBytes-scaffold.reasoningText.Len() {
+		return false
+	}
+	for _, tc := range delta.ToolCalls {
+		state := scaffold.toolStates[tc.Index]
+		used := 0
+		if state != nil {
+			used = state.Arguments.Len()
+		}
+		if len(tc.Arguments) > maxResponsesBridgeToolArgumentsBytes-used {
+			return false
+		}
+	}
+	return true
+}
+
 // writeSSEEvent writes a single Responses API SSE event. When pc is
 // attached, the same bytes are appended to the capturer so the envelope
 // survives a client disconnect.
-func (s *responsesScaffold) writeSSEEvent(event string, payload any) {
+func (s *responsesScaffold) writeSSEEvent(event string, payload any) bool {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return
+		return false
 	}
 	line := fmt.Sprintf("event: %s\ndata: %s\n\n", event, data)
+	ok := true
 	if s.clientWriter != nil {
-		s.clientWriter.write(line)
+		ok = s.clientWriter.write(line)
 	} else {
-		writeSSE(s.w, event, payload)
+		ok = safeWriteSSE(s.w, line)
 	}
 	if s.pc != nil {
 		s.pc.append(line)
 	}
+	return ok
 }
 
 // writeInitialEvents emits the Responses API opening sequence so SDK
 // clients see a well-formed response envelope from the first event.
 func (s *responsesScaffold) writeInitialEvents() {
 	s.writeSSEEvent("response.created", map[string]any{
-		"type": "response.created",
-		"response": map[string]any{
-			"id":         s.respID,
-			"object":     "response",
-			"created_at": s.created,
-			"model":      s.clientModel,
-			"status":     "in_progress",
-			"output":     []any{},
+		"type": "response.created", "response": map[string]any{
+			"id": s.respID, "object": "response", "created_at": s.created,
+			"model": s.clientModel, "status": "in_progress", "output": []any{},
 		},
 	})
-
 	s.writeSSEEvent("response.output_item.added", map[string]any{
-		"type":         "response.output_item.added",
-		"output_index": 0,
-		"item": map[string]any{
-			"type":    "message",
-			"id":      s.msgID,
-			"status":  "in_progress",
-			"role":    "assistant",
-			"content": []any{},
-		},
+		"type": "response.output_item.added", "output_index": 0,
+		"item": map[string]any{"type": "message", "id": s.msgID, "status": "in_progress", "role": "assistant", "content": []any{}},
 	})
-
 	s.writeSSEEvent("response.content_part.added", map[string]any{
-		"type":          "response.content_part.added",
-		"item_id":       s.msgID,
-		"output_index":  0,
-		"content_index": 0,
-		"part": map[string]any{
-			"type":        "output_text",
-			"text":        "",
-			"annotations": []any{},
-		},
+		"type": "response.content_part.added", "item_id": s.msgID, "output_index": 0,
+		"content_index": 0, "part": map[string]any{"type": "output_text", "text": "", "annotations": []any{}},
 	})
 }
 
@@ -186,54 +224,80 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 		status = "incomplete"
 	}
 
-	textDone := map[string]any{
-		"type":          "response.output_text.done",
-		"item_id":       s.msgID,
-		"output_index":  0,
-		"content_index": 0,
-		"text":          fullText,
+	// Close every semantic stream explicitly. A tool-only (or mixed) response
+	// must not be represented as a message-only response in the terminal
+	// envelope. Keep the legacy message item for text/reasoning streams.
+	if s.reasoningText.Len() > 0 {
+		s.writeSSEEvent("response.reasoning_text.done", map[string]any{
+			"type": "response.reasoning_text.done", "item_id": s.msgID,
+			"output_index": 0, "content_index": 0, "text": s.reasoningText.String(),
+		})
 	}
-	s.writeSSEEvent("response.output_text.done", textDone)
-
-	itemDone := map[string]any{
-		"type":         "response.output_item.done",
-		"output_index": 0,
-		"item": map[string]any{
-			"type":   "message",
-			"id":     s.msgID,
-			"status": status,
-			"role":   "assistant",
-			"content": []map[string]any{
-				{"type": "output_text", "text": fullText, "annotations": []any{}},
-			},
-		},
+	indices := make([]int, 0, len(s.toolStates))
+	for index := range s.toolStates {
+		indices = append(indices, index)
 	}
-	s.writeSSEEvent("response.output_item.done", itemDone)
+	sort.Ints(indices)
+	for _, index := range indices {
+		state := s.toolStates[index]
+		if state == nil {
+			continue
+		}
+		item := map[string]any{
+			"type": "function_call", "id": state.ID, "call_id": state.ID,
+			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
+		}
+		s.writeSSEEvent("response.function_call_arguments.done", map[string]any{
+			"type": "response.function_call_arguments.done", "item_id": state.ID,
+			"output_index": index, "call_id": state.ID, "name": state.Name,
+			"arguments": state.Arguments.String(),
+		})
+		s.writeSSEEvent("response.output_item.done", map[string]any{
+			"type": "response.output_item.done", "output_index": index, "item": item,
+		})
+	}
 
-	completed := map[string]any{
-		"type": "response.completed",
-		"response": map[string]any{
-			"id":         s.respID,
-			"object":     "response",
-			"created_at": s.created,
-			"model":      s.clientModel,
-			"status":     status,
-			"output": []map[string]any{
-				{
-					"type":   "message",
-					"id":     s.msgID,
-					"status": status,
-					"role":   "assistant",
-					"content": []map[string]any{
-						{"type": "output_text", "text": fullText, "annotations": []any{}},
-					},
+	// Preserve the historical message terminal events for ordinary and mixed
+	// streams, but omit the synthetic message for a tool-only response.
+	hasMessage := len(indices) == 0 || fullText != "" || s.reasoningText.Len() > 0
+	if hasMessage {
+		s.writeSSEEvent("response.output_text.done", map[string]any{
+			"type": "response.output_text.done", "item_id": s.msgID,
+			"output_index": 0, "content_index": 0, "text": fullText,
+		})
+		s.writeSSEEvent("response.output_item.done", map[string]any{
+			"type": "response.output_item.done", "output_index": 0,
+			"item": map[string]any{
+				"type": "message", "id": s.msgID, "status": status,
+				"role": "assistant", "content": []map[string]any{
+					{"type": "output_text", "text": fullText, "annotations": []any{}},
 				},
 			},
-			"usage": map[string]any{
-				"input_tokens":  inputTokens,
-				"output_tokens": outputTokens,
-				"total_tokens":  totalTokens,
-			},
+		})
+	}
+
+	output := make([]map[string]any, 0, len(indices)+1)
+	for _, index := range indices {
+		state := s.toolStates[index]
+		if state == nil {
+			continue
+		}
+		output = append(output, map[string]any{
+			"type": "function_call", "id": state.ID, "call_id": state.ID,
+			"name": state.Name, "arguments": state.Arguments.String(), "status": status,
+		})
+	}
+	if hasMessage {
+		output = append(output, map[string]any{
+			"type": "message", "id": s.msgID, "status": status, "role": "assistant",
+			"content": []map[string]any{{"type": "output_text", "text": fullText, "annotations": []any{}}},
+		})
+	}
+	completed := map[string]any{
+		"type": "response.completed", "response": map[string]any{
+			"id": s.respID, "object": "response", "created_at": s.created,
+			"model": s.clientModel, "status": status, "output": output,
+			"usage": map[string]any{"input_tokens": inputTokens, "output_tokens": outputTokens, "total_tokens": totalTokens},
 		},
 	}
 	s.writeSSEEvent("response.completed", completed)
@@ -255,6 +319,7 @@ func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inpu
 //     follow the last delta.
 //   - Accumulated usage flows into `response.completed.usage` — never
 //     emitted as a standalone event.
+//
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamAnthropicSSEToResponses(
 	ctx context.Context,
@@ -350,6 +415,15 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 	scaffold := newResponsesScaffold(w, flusher, requestID, clientModel)
 	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
+	if clientWriter.clientDisconnected {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		if pc != nil {
+			pc.markInterrupted("client_write_failed")
+		}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+	}
 
 	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
@@ -370,6 +444,8 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		// for input_json_delta, so the bridge maintains this lookup.
 		toolCallIDs         = make(map[int]string)
 		messageStopReceived bool
+		conversionOverflow  bool
+		clientWriteFailed   bool
 		// emittedContent (audit-24h-20260828-r3 P1-B parity, Phase E):
 		// tracks whether any client-visible semantic bytes — text,
 		// thinking, tool-call deltas — reached the wire. Set true inside
@@ -392,6 +468,10 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			if !responsesDeltaFits(scaffold, &fullText, chunk) {
+				conversionOverflow = true
+				return
+			}
 			for i := range chunk.Delta.ToolCalls {
 				tc := &chunk.Delta.ToolCalls[i]
 				if tc.Name != "" && tc.ID != "" {
@@ -408,18 +488,25 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if sseLine == "" {
 			return
 		}
-		clientWriter.write(sseLine)
-		diagnosticCollector.observeEmittedChunk(chunk)
+		written := clientWriter.write(sseLine)
+		if !written {
+			// Keep consuming upstream and building the pending replay body, but
+			// do not count this failed frame as client-visible output.
+			clientWriteFailed = true
+		}
 		if pc != nil {
 			pc.append(sseLine)
 		}
 		if capture != nil {
 			capture.ObserveChunk(chunk)
-			if !clientWriter.clientDisconnected {
+			if written {
 				capture.RecordChunkSent()
 			}
 		}
-		chunkCount++
+		if written {
+			diagnosticCollector.observeEmittedChunk(chunk)
+			chunkCount++
+		}
 
 		// Mark semantic emission: any non-empty text / thinking /
 		// tool-call delta reaches the client as part of sseLine above.
@@ -437,9 +524,31 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			}
 		}
 
-		// Track visible text for the final response.output_text.done payload.
+		// Track terminal state with bounded accumulators; overflow is handled
+		// by the orchestrator instead of emitting a silently truncated result.
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
-			fullText.WriteString(chunk.Delta.Content)
+			if !appendResponsesBounded(&fullText, chunk.Delta.Content, maxResponsesBridgeTextBytes) ||
+				!appendResponsesBounded(&scaffold.reasoningText, chunk.Delta.ReasoningContent, maxResponsesBridgeTextBytes) {
+				conversionOverflow = true
+				return
+			}
+			for _, tc := range chunk.Delta.ToolCalls {
+				state := scaffold.toolStates[tc.Index]
+				if state == nil {
+					state = &responsesToolTerminalState{}
+					scaffold.toolStates[tc.Index] = state
+				}
+				if tc.ID != "" {
+					state.ID = tc.ID
+				}
+				if tc.Name != "" {
+					state.Name = tc.Name
+				}
+				if !appendResponsesBounded(&state.Arguments, tc.Arguments, maxResponsesBridgeToolArgumentsBytes) {
+					conversionOverflow = true
+					return
+				}
+			}
 		}
 	}
 
@@ -482,12 +591,6 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					// stream right after the finish_reason chunk instead of
 					// emitting a terminal event).
 					if finishReason != "" {
-						scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
-						// audit-24h-20260828-r3 P1-B parity (Phase E):
-						// even when finishReason was already accumulated
-						// before EOF, an empty stream is still empty — no
-						// semantic bytes AND no usage tokens means the
-						// executor must fail over, not record success.
 						if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
 							if capture != nil {
 								capture.MarkInterruptedWithReason("anthropic_empty_response")
@@ -495,13 +598,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 							if pc != nil {
 								pc.markInterrupted("anthropic_empty_response")
 							}
-							return StreamOutcome{
-								Interrupted: true,
-								Reason:      "anthropic_empty_response",
-								Kind:        errorsx.KindEmptyResponse,
-								Resumable:   true,
-								ChunkCount:  chunkCount,
-							}
+							return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
 						}
 						return StreamOutcome{ChunkCount: chunkCount}
 					}
@@ -520,6 +617,15 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 						capture.MarkInterruptedWithReason(outcome.Reason)
 					}
 					return outcome
+				}
+				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens) {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("anthropic_empty_response")
+					}
+					if pc != nil {
+						pc.markInterrupted("anthropic_empty_response")
+					}
+					return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
 				}
 				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				// audit-24h-20260828-r3 P1-B parity (Phase E): empty-response
@@ -640,6 +746,14 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		}
 
 		writeChunkIR(chunk)
+		if conversionOverflow {
+			outcome = StreamOutcome{Interrupted: true, Reason: "responses_conversion_accumulator_limit", Kind: errorsx.KindConversion, Resumable: false, ChunkCount: chunkCount}
+			if capture != nil {
+				capture.MarkInterruptedWithReason(outcome.Reason)
+			}
+			scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
+			return outcome
+		}
 
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
@@ -753,6 +867,15 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	scaffold := newResponsesScaffold(w, flusher, requestID, clientModel)
 	scaffold.attachCapturer(pc, clientWriter)
 	scaffold.writeInitialEvents()
+	if clientWriter.clientDisconnected {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		if pc != nil {
+			pc.markInterrupted("client_write_failed")
+		}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+	}
 
 	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
@@ -773,6 +896,8 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		// correct item_id (matching the Responses API contract).
 		toolCallIDs          = make(map[int]string)
 		upstreamDoneReceived bool
+		conversionOverflow   bool
+		clientWriteFailed    bool
 	)
 
 	writeChunkIR := func(chunk *ir.StreamChunk) {
@@ -780,6 +905,10 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			return
 		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			if !responsesDeltaFits(scaffold, &fullText, chunk) {
+				conversionOverflow = true
+				return
+			}
 			for i := range chunk.Delta.ToolCalls {
 				tc := &chunk.Delta.ToolCalls[i]
 				if tc.Name != "" && tc.ID != "" {
@@ -796,20 +925,48 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if sseLine == "" {
 			return
 		}
-		clientWriter.write(sseLine)
-		diagnosticCollector.observeEmittedChunk(chunk)
+		written := clientWriter.write(sseLine)
+		if !written {
+			// Keep consuming upstream and building the pending replay body, but
+			// do not count this failed frame as client-visible output.
+			clientWriteFailed = true
+		}
 		if pc != nil {
 			pc.append(sseLine)
 		}
 		if capture != nil {
 			capture.ObserveChunk(chunk)
-			if !clientWriter.clientDisconnected {
+			if written {
 				capture.RecordChunkSent()
 			}
 		}
-		chunkCount++
+		if written {
+			diagnosticCollector.observeEmittedChunk(chunk)
+			chunkCount++
+		}
 		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
-			fullText.WriteString(chunk.Delta.Content)
+			if !appendResponsesBounded(&fullText, chunk.Delta.Content, maxResponsesBridgeTextBytes) ||
+				!appendResponsesBounded(&scaffold.reasoningText, chunk.Delta.ReasoningContent, maxResponsesBridgeTextBytes) {
+				conversionOverflow = true
+				return
+			}
+			for _, tc := range chunk.Delta.ToolCalls {
+				state := scaffold.toolStates[tc.Index]
+				if state == nil {
+					state = &responsesToolTerminalState{}
+					scaffold.toolStates[tc.Index] = state
+				}
+				if tc.ID != "" {
+					state.ID = tc.ID
+				}
+				if tc.Name != "" {
+					state.Name = tc.Name
+				}
+				if !appendResponsesBounded(&state.Arguments, tc.Arguments, maxResponsesBridgeToolArgumentsBytes) {
+					conversionOverflow = true
+					return
+				}
+			}
 		}
 	}
 
@@ -958,6 +1115,14 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 
 		writeChunkIR(chunk)
+		if conversionOverflow {
+			outcome = StreamOutcome{Interrupted: true, Reason: "responses_conversion_accumulator_limit", Kind: errorsx.KindConversion, Resumable: false, ChunkCount: chunkCount}
+			if capture != nil {
+				capture.MarkInterruptedWithReason(outcome.Reason)
+			}
+			scaffold.finishInterrupted(gate, fullText.String(), outcome.Reason, inputTokens, outputTokens)
+			return outcome
+		}
 
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.

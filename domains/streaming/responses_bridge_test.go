@@ -143,6 +143,21 @@ func TestStreamAnthropicSSEToResponses_MaxTokensMapsToIncomplete(t *testing.T) {
 	assert.Contains(t, body, `"output_tokens":100`)
 }
 
+func TestStreamAnthropicSSEToResponses_ReasoningAndTerminal(t *testing.T) {
+	upstreamBody := "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"plan\"}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, upstreamBody) }))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToResponses(context.Background(), rec, resp, "claude", "claude", "req-reasoning", nil, nil)
+	require.False(t, out.Interrupted)
+	body := rec.Body.String()
+	assert.Contains(t, body, "event: response.reasoning_text.delta")
+	assert.Contains(t, body, "event: response.reasoning_text.done")
+}
+
 // TestStreamAnthropicSSEToResponses_ToolUse verifies tool_use blocks
 // surface as response.output_item.added + function_call_arguments.delta.
 func TestStreamAnthropicSSEToResponses_ToolUse(t *testing.T) {
