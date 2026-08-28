@@ -486,15 +486,15 @@ func (g *AttemptCommitGate) appendBufferedLocked(frame string) error {
 		metrics.SurvivalAttemptGateMetadataOverflowTotal.WithLabelValues(protocolMetricLabel(g.protocol)).Inc()
 		return ErrAttemptMetadataBufferExceeded
 	}
-	g.buffer = append(g.buffer, frame...)
-	g.bufferLen += len(frame)
-	// The cap guards the attempt-local buffer itself — whatever frame class
-	// lands in it (metadata, error, keepalive), not just the metadata state.
-	if g.bufferLen > g.maxMetadata {
-		// Surface the overflow; never force a commit to reclaim memory.
+	// 2026-08-28 audit fix: check capacity BEFORE appending to prevent
+	// bufferLen from transiently exceeding maxMetadata. The old code
+	// appended first, then checked, allowing overflow until the next call.
+	if g.bufferLen+len(frame) > g.maxMetadata {
 		metrics.SurvivalAttemptGateMetadataOverflowTotal.WithLabelValues(protocolMetricLabel(g.protocol)).Inc()
 		return ErrAttemptMetadataBufferExceeded
 	}
+	g.buffer = append(g.buffer, frame...)
+	g.bufferLen += len(frame)
 	return nil
 }
 
