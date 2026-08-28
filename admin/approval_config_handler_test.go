@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/approval"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // mockConfigManager is a mock implementation of approval.ConfigManager for testing
@@ -708,5 +709,67 @@ func TestApprovalConfigHandler_CanAccessTenant(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestApprovalConfigHandler_MutationBodiesUseStrictJSONContract(t *testing.T) {
+	auth := &AuthContext{UserID: 1, TenantID: "tenant1", Role: "tenant_admin"}
+	cases := []struct {
+		name, path, method string
+		body               []byte
+		call               func(*ApprovalConfigHandler, http.ResponseWriter, *http.Request)
+		mutated            func(*mockConfigManager) bool
+	}{
+		{"add approver", "/api/admin/tenants/tenant1/approvers", http.MethodPost, []byte(`{"user_id":"user2","name":"User Two"}`), func(h *ApprovalConfigHandler, w http.ResponseWriter, r *http.Request) { h.AddApprover(w, r) }, func(m *mockConfigManager) bool { return len(m.approvers) == 1 }},
+		{"update approver", "/api/admin/tenants/tenant1/approvers/user1", http.MethodPut, []byte(`{"user_id":"user1","name":"User Two"}`), func(h *ApprovalConfigHandler, w http.ResponseWriter, r *http.Request) { h.UpdateApprover(w, r) }, func(m *mockConfigManager) bool { return len(m.approvers) == 1 && m.approvers[0].Name == "User Two" }},
+		{"add rule", "/api/admin/tenants/tenant1/approval-rules", http.MethodPost, []byte(`{"name":"rule2","enabled":true}`), func(h *ApprovalConfigHandler, w http.ResponseWriter, r *http.Request) { h.AddRule(w, r) }, func(m *mockConfigManager) bool { return len(m.rules) == 1 }},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name+" accepts BOM", func(t *testing.T) {
+			m := &mockConfigManager{}
+			if tt.name == "update approver" {
+				m.approvers = []approval.Approver{{UserID: "user1", Name: "Old"}}
+			}
+			h := NewApprovalConfigHandler(m)
+			r := httptest.NewRequest(tt.method, tt.path, bytes.NewReader(append([]byte{0xef, 0xbb, 0xbf}, tt.body...)))
+			r = SetAuthContext(r, auth)
+			rr := httptest.NewRecorder()
+			tt.call(h, rr, r)
+			want := http.StatusCreated
+			if tt.method == http.MethodPut {
+				want = http.StatusOK
+			}
+			if rr.Code != want || !tt.mutated(m) {
+				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
+			}
+		})
+		for _, tc := range []struct {
+			name   string
+			body   []byte
+			status int
+		}{
+			{"null", []byte("null"), http.StatusBadRequest},
+			{"trailing document", append(append([]byte(nil), tt.body...), []byte(`{"extra":true}`)...), http.StatusBadRequest},
+			{"trailing garbage", append(append([]byte(nil), tt.body...), []byte("garbage")...), http.StatusBadRequest},
+			{"oversized", bytes.Repeat([]byte("x"), jsonbody.MaxRequiredBody+1), http.StatusRequestEntityTooLarge},
+		} {
+			t.Run(tt.name+" rejects "+tc.name, func(t *testing.T) {
+				m := &mockConfigManager{}
+				if tt.name == "update approver" {
+					m.approvers = []approval.Approver{{UserID: "user1", Name: "Old"}}
+				}
+				h := NewApprovalConfigHandler(m)
+				r := httptest.NewRequest(tt.method, tt.path, bytes.NewReader(tc.body))
+				r = SetAuthContext(r, auth)
+				rr := httptest.NewRecorder()
+				tt.call(h, rr, r)
+				if rr.Code != tc.status {
+					t.Fatalf("status=%d want=%d body=%s", rr.Code, tc.status, rr.Body.String())
+				}
+				if tt.mutated(m) {
+					t.Fatal("rejected body mutated manager")
+				}
+			})
+		}
 	}
 }

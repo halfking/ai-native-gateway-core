@@ -86,6 +86,10 @@ func (r *pgBodyReader) ReadRequestLogsBodies(ctx context.Context, requestID stri
 			if len(bodies.OutboundBody) == 0 {
 				bodies.OutboundBody = sessionBodies.OutboundBody
 			}
+		} else if !errors.Is(sessionErr, requestdetail.ErrNotFound) {
+			// Session recovery is best-effort once request-log content exists;
+			// preserve the usable primary payload on optional fallback failure.
+			slog.WarnContext(ctx, "requestdetail: session body recovery failed", "request_id", canonicalRequestID, "error", sessionErr)
 		}
 	}
 	if len(bodies.RequestBody) == 0 && len(bodies.ResponseBody) == 0 && len(bodies.OutboundBody) == 0 {
@@ -166,28 +170,22 @@ func (r *pgBodyReader) loadRequestLogMeta(ctx context.Context, requestID string)
 	}
 	meta := requestdetail.Meta{RequestID: canonicalRequestID, TenantID: tenantID}
 	if gwSessionID.Valid {
-		v := gwSessionID.String
-		meta.GwSessionID = &v
+		meta.GwSessionID = requestdetail.PtrTo(gwSessionID.String)
 	}
 	if gwTaskID.Valid {
-		v := gwTaskID.String
-		meta.GwTaskID = &v
+		meta.GwTaskID = requestdetail.PtrTo(gwTaskID.String)
 	}
 	if clientModel.Valid {
-		v := clientModel.String
-		meta.ClientModel = &v
+		meta.ClientModel = requestdetail.PtrTo(clientModel.String)
 	}
 	if status.Valid {
-		v := status.String
-		meta.Status = &v
+		meta.Status = requestdetail.PtrTo(status.String)
 	}
 	if success.Valid {
-		v := success.Bool
-		meta.Success = &v
+		meta.Success = requestdetail.PtrTo(success.Bool)
 	}
 	if latencyMs.Valid {
-		v := int(latencyMs.Int32)
-		meta.LatencyMs = &v
+		meta.LatencyMs = requestdetail.PtrTo(int(latencyMs.Int32))
 	}
 	return meta, nil
 }
@@ -254,7 +252,6 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 		 ORDER BY t.ts DESC NULLS LAST
 		 LIMIT 1
 	`, requestID).Scan(&sessionID, &turnNo, &tenantID, &requestDelta, &responseDelta, &outboundBody, &model, &latencyMs)
-
 	if errors.Is(err, pgx.ErrNoRows) {
 		return requestdetail.Bodies{}, requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
@@ -264,16 +261,14 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	meta := requestdetail.Meta{
 		RequestID:   requestID,
 		TenantID:    tenantID,
-		GwSessionID: &sessionID,
-		TurnNumber:  &turnNo,
+		GwSessionID: requestdetail.PtrTo(sessionID),
+		TurnNumber:  requestdetail.PtrTo(turnNo),
 	}
 	if model.Valid {
-		v := model.String
-		meta.ClientModel = &v
+		meta.ClientModel = requestdetail.PtrTo(model.String)
 	}
 	if latencyMs.Valid {
-		v := int(latencyMs.Int32)
-		meta.LatencyMs = &v
+		meta.LatencyMs = requestdetail.PtrTo(int(latencyMs.Int32))
 	}
 	bodies := requestdetail.Bodies{
 		RequestBody:  json.RawMessage(requestDelta),
@@ -323,23 +318,31 @@ func (h *Handler) handleUnifiedRequestDetail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	omitBody := r.URL.Query().Get("omit_body") == "1" || r.URL.Query().Get("omit_body") == "true"
-	detail, err := h.requestDetailLocator.Get(r.Context(), requestID, omitBody)
+	ctx := r.Context()
+	ctx = requestdetail.WithLookupScope(ctx, requestdetail.LookupScope{
+		TenantID:     GetTenantID(r),
+		Unrestricted: IsSuperAdminOrLegacy(r),
+	})
+	detail, err := h.requestDetailLocator.Get(ctx, requestID, omitBody)
 	if errors.Is(err, requestdetail.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "request detail not found")
 		return
 	}
 	if err != nil {
-		slog.Error("request detail lookup failed", "request_id", requestID, "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to load request detail")
+		if errors.Is(err, requestdetail.ErrBodyTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request detail body exceeds size limit")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	// 2026-08-26 (P1-29 fix): the previous implementation only checked
 	// tenant isolation for PersistencePersisted details, leaving the
 	// in-flight / on-disk path (PersistenceInFlight) open to a tenant
 	// admin who knew / guessed another tenant's request_id. Apply the
-	// same gate to ALL sources: a tenant_admin may only see details
-	// whose TenantID matches their own. An empty TenantID on the
-	// detail is treated as "unknown origin" and denied for tenant_admins
+	// same gate to ALL sources: any non-super-admin user may only see
+	// details whose TenantID matches their own. An empty TenantID on the
+	// detail is treated as "unknown origin" and denied for non-super-admins
 	// (fail-closed) — legacy in-flight meta written before this commit
 	// has no tenant recorded and must not leak across tenants.
 	if !IsSuperAdminOrLegacy(r) {

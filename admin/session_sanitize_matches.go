@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
@@ -123,7 +124,12 @@ func loadSanitizeMapForSession(ctx context.Context, rc *redis.Client, tenantID, 
 		sanitize.SanitizeRedisKey(sessionID),
 	)
 	for _, key := range keys {
-		vals, err := rc.HGetAll(ctx, key).Result()
+		// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE
+		// errors when the sanitize map key collides with a non-hash type.
+		// Errors continue to the next key — best-effort aggregation
+		// semantics preserved (the loop tries 3 key shapes in priority
+		// order and accepts whichever returns a non-empty map first).
+		vals, err := redissafe.SafeHGetAll(ctx, rc, key)
 		if err != nil || len(vals) == 0 {
 			continue
 		}

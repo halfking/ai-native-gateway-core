@@ -106,18 +106,49 @@ func TestParseOpenAIStreamChunk_QwenStructuredContent(t *testing.T) {
 		},
 	}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			chunk, err := ParseOpenAIStreamChunk(`data: {
-				"id":"qwen-stream",
-				"object":"chat.completion.chunk",
-				"model":"qwen-plus",
-				"choices":[{"index":0,"delta":{"content":` + tc.contentJSON + `},"finish_reason":null}]
-			}`)
-			require.NoError(t, err)
-			require.NotNil(t, chunk.Delta)
-			assert.Equal(t, tc.wantContent, chunk.Delta.Content)
-			assert.Equal(t, tc.wantType, chunk.Delta.DeltaType)
-		})
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				chunk, err := ParseOpenAIStreamChunk(`data: {
+					"id":"qwen-stream",
+					"object":"chat.completion.chunk",
+					"model":"qwen-plus",
+					"choices":[{"index":0,"delta":{"content":` + tc.contentJSON + `},"finish_reason":null}]
+				}`)
+				require.NoError(t, err)
+				require.NotNil(t, chunk.Delta)
+				assert.Equal(t, tc.wantContent, chunk.Delta.Content)
+				assert.Equal(t, tc.wantType, chunk.Delta.DeltaType)
+			})
+		}
 	}
+
+func TestParseOpenAIResponse_QwenContentWithToolCalls(t *testing.T) {
+	body := []byte(`{
+		"id":"qwen-response",
+		"object":"chat.completion",
+		"model":"qwen-plus",
+		"choices":[{
+			"message":{
+				"role":"assistant",
+				"content":[{"text":"Let me search for that."}],
+				"tool_calls":[{
+					"id":"call_1",
+					"type":"function",
+					"function":{"name":"search","arguments":"{\"query\":\"test\"}"}
+				}]
+			},
+			"finish_reason":"tool_calls"
+		}]
+	}`)
+
+	response, err := ParseOpenAIResponse(body)
+	require.NoError(t, err)
+	require.Len(t, response.Content, 1)
+	assert.Equal(t, "text", response.Content[0].Type)
+	assert.Equal(t, "Let me search for that.", response.Content[0].Text)
+	require.Len(t, response.ToolCalls, 1)
+	assert.Equal(t, "call_1", response.ToolCalls[0].ID)
+	assert.Equal(t, "search", response.ToolCalls[0].Name)
+	assert.Equal(t, `{"query":"test"}`, response.ToolCalls[0].Arguments)
+	assert.Equal(t, "tool_calls", response.FinishReason)
 }

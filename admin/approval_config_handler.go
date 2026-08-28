@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -166,8 +165,7 @@ func (h *ApprovalConfigHandler) AddApprover(w http.ResponseWriter, r *http.Reque
 	}
 
 	var approver approval.Approver
-	if err := json.NewDecoder(r.Body).Decode(&approver); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+	if ok, _ := jsonbody.ReadRequired(w, r, &approver); !ok {
 		return
 	}
 
@@ -211,8 +209,7 @@ func (h *ApprovalConfigHandler) UpdateApprover(w http.ResponseWriter, r *http.Re
 	}
 
 	var approver approval.Approver
-	if err := json.NewDecoder(r.Body).Decode(&approver); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+	if ok, _ := jsonbody.ReadRequired(w, r, &approver); !ok {
 		return
 	}
 
@@ -321,8 +318,7 @@ func (h *ApprovalConfigHandler) AddRule(w http.ResponseWriter, r *http.Request) 
 	}
 
 	var rule approval.ApprovalRule
-	if err := json.NewDecoder(r.Body).Decode(&rule); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+	if ok, _ := jsonbody.ReadRequired(w, r, &rule); !ok {
 		return
 	}
 

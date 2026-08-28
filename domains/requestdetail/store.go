@@ -4,33 +4,65 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
+	"time"
 )
 
 var safeRequestID = regexp.MustCompile(`^[A-Za-z0-9._-]{8,128}$`)
 
+// ErrBodyTooLarge indicates that a request-detail body exceeds the storage/read limit.
+var ErrBodyTooLarge = errors.New("requestdetail: body file exceeds size limit")
+
+const (
+	defaultMaxEntries = 4096
+	defaultTTL        = 30 * time.Minute
+	// MaxBodyFileSize is the upper limit for a single request-detail body file (10MB).
+	// Files exceeding this limit are rejected to prevent OOM.
+	MaxBodyFileSize = 10 * 1024 * 1024
+)
+
 // Store keeps in-flight request meta in memory and bodies on local files
 // named by request_id. Redis is never used for full bodies.
 type Store struct {
-	dir string
-	mu  sync.RWMutex
-	mem map[string]Meta
+	dir        string
+	mu         sync.RWMutex
+	mem        map[string]Meta
+	updated    map[string]time.Time
+	maxEntries int
+	ttl        time.Duration
+}
+
+type StoreOptions struct {
+	MaxEntries int
+	TTL        time.Duration
 }
 
 // NewStore creates a ContentStore rooted at dir. Empty dir disables file I/O
 // but memory still works (useful in tests).
 func NewStore(dir string) (*Store, error) {
-	s := &Store{dir: dir, mem: make(map[string]Meta)}
+	return NewStoreWithOptions(dir, StoreOptions{})
+}
+
+func NewStoreWithOptions(dir string, opts StoreOptions) (*Store, error) {
+	if opts.MaxEntries <= 0 {
+		opts.MaxEntries = defaultMaxEntries
+	}
+	if opts.TTL <= 0 {
+		opts.TTL = defaultTTL
+	}
+	s := &Store{dir: dir, mem: make(map[string]Meta), updated: make(map[string]time.Time), maxEntries: opts.MaxEntries, ttl: opts.TTL}
 	if dir == "" {
 		return s, nil
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("requestdetail: mkdir %s: %w", dir, err)
 	}
+	s.cleanupFiles(time.Now())
 	return s, nil
 }
 
@@ -51,8 +83,10 @@ func (s *Store) PutMeta(meta Meta) error {
 		return err
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.mem[meta.RequestID] = meta
-	s.mu.Unlock()
+	s.updated[meta.RequestID] = time.Now()
+	s.evictLocked(time.Now())
 	return nil
 }
 
@@ -73,10 +107,16 @@ func (s *Store) PutBodies(meta Meta, bodies Bodies) error {
 	if err := validateRequestID(meta.RequestID); err != nil {
 		return err
 	}
+	if bodyBytes := len(bodies.RequestBody) + len(bodies.ResponseBody) + len(bodies.OutboundBody); bodyBytes > MaxBodyFileSize {
+		return fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, bodyBytes, MaxBodyFileSize)
+	}
 	payload := filePayload{Meta: meta, Bodies: bodies}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("requestdetail: marshal: %w", err)
+	}
+	if int64(len(raw)) > MaxBodyFileSize {
+		return fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, len(raw), MaxBodyFileSize)
 	}
 
 	// Hold the lifecycle lock through file replacement and memory publication.
@@ -98,6 +138,8 @@ func (s *Store) PutBodies(meta Meta, bodies Bodies) error {
 		}
 	}
 	s.mem[meta.RequestID] = meta
+	s.updated[meta.RequestID] = time.Now()
+	s.evictLocked(time.Now())
 	return nil
 }
 
@@ -106,8 +148,9 @@ func (s *Store) GetMeta(requestID string) (Meta, bool) {
 	if s == nil {
 		return Meta{}, false
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.evictLocked(time.Now())
 	m, ok := s.mem[requestID]
 	return m, ok
 }
@@ -120,14 +163,57 @@ func (s *Store) GetFile(requestID string) (filePayload, bool, error) {
 	if err := validateRequestID(requestID); err != nil {
 		return filePayload{}, false, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	raw, err := os.ReadFile(s.filePath(requestID))
+
+	// Hold lock only for eviction and path resolution (fast operations)
+	s.mu.Lock()
+	s.evictLocked(time.Now())
+	path := s.filePath(requestID)
+	s.mu.Unlock()
+
+	// File I/O operations outside lock to avoid blocking concurrent reads
+	info, err := os.Stat(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return filePayload{}, false, nil
 		}
 		return filePayload{}, false, err
+	}
+
+	// Check file size before reading to prevent OOM on oversized bodies
+	if info.Size() > MaxBodyFileSize {
+		return filePayload{}, false, fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, info.Size(), MaxBodyFileSize)
+	}
+
+	// Check TTL expiration
+	if s.ttl > 0 && time.Since(info.ModTime()) >= s.ttl {
+		_ = os.Remove(path)
+		return filePayload{}, false, nil
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return filePayload{}, false, nil
+		}
+		return filePayload{}, false, err
+	}
+	defer f.Close()
+
+	// Re-stat the opened descriptor and cap the read to the same file handle.
+	// This closes the stat/read TOCTOU window introduced by lock-free file I/O.
+	info, err = f.Stat()
+	if err != nil {
+		return filePayload{}, false, err
+	}
+	if info.Size() > MaxBodyFileSize {
+		return filePayload{}, false, fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, info.Size(), MaxBodyFileSize)
+	}
+	raw, err := io.ReadAll(io.LimitReader(f, MaxBodyFileSize+1))
+	if err != nil {
+		return filePayload{}, false, err
+	}
+	if int64(len(raw)) > MaxBodyFileSize {
+		return filePayload{}, false, fmt.Errorf("%w: %d bytes (limit %d)", ErrBodyTooLarge, info.Size(), MaxBodyFileSize)
 	}
 	var p filePayload
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -168,6 +254,7 @@ func (s *Store) Clear(requestID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.mem, requestID)
+	delete(s.updated, requestID)
 	if s.dir == "" {
 		return nil
 	}
@@ -177,6 +264,59 @@ func (s *Store) Clear(requestID string) error {
 	}
 	_ = os.Remove(path + ".tmp")
 	return nil
+}
+
+func (s *Store) evictLocked(now time.Time) {
+	for id, at := range s.updated {
+		if s.ttl > 0 && now.Sub(at) >= s.ttl {
+			delete(s.mem, id)
+			delete(s.updated, id)
+			if s.dir != "" {
+				_ = os.Remove(s.filePath(id))
+				_ = os.Remove(s.filePath(id) + ".tmp")
+			}
+		}
+	}
+	for len(s.mem) > s.maxEntries {
+		var oldest string
+		var oldestAt time.Time
+		for id, at := range s.updated {
+			if oldest == "" || at.Before(oldestAt) {
+				oldest, oldestAt = id, at
+			}
+		}
+		if oldest == "" {
+			break
+		}
+		delete(s.mem, oldest)
+		delete(s.updated, oldest)
+		if s.dir != "" {
+			_ = os.Remove(s.filePath(oldest))
+			_ = os.Remove(s.filePath(oldest) + ".tmp")
+		}
+	}
+}
+
+func (s *Store) cleanupFiles(now time.Time) {
+	if s.dir == "" || s.ttl <= 0 {
+		return
+	}
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) >= s.ttl {
+			_ = os.Remove(filepath.Join(s.dir, entry.Name()))
+		}
+	}
 }
 
 func (s *Store) filePath(requestID string) string {

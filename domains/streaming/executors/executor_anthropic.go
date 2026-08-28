@@ -14,12 +14,13 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
-	"github.com/kaixuan/llm-gateway-go/domain"              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
+	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -45,10 +46,14 @@ func readAndDrainErrorBody(body io.Reader) ([]byte, error) {
 	}
 
 	captured, readErr := io.ReadAll(io.LimitReader(body, maxPassthroughErrorBody))
-	if _, drainErr := io.Copy(io.Discard, body); readErr == nil {
-		readErr = drainErr
+	// Always attempt to consume the remainder, even when the bounded read
+	// reports an error. Some response bodies can return data with an error and
+	// still expose a readable tail; leaving it unread prevents connection reuse.
+	_, drainErr := io.Copy(io.Discard, body)
+	if readErr != nil {
+		return captured, readErr
 	}
-	return captured, readErr
+	return captured, drainErr
 }
 
 // AnthropicExecutor is the ProtocolHandler for Anthropic Messages API
@@ -205,7 +210,6 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 					StatusCode: resp.StatusCode,
 				}
 			}
-
 			var (
 				converted []byte
 				serErr    error
@@ -225,7 +229,6 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 			}
 			body = converted
 		} else if a.ChatResponseConverter != nil {
-			// Legacy conversion only supports the OpenAI Chat Completions shape.
 			if a.ClientProtocol == "openai-responses" {
 				return nil, &upstreampkg.Error{
 					Kind:       errorsx.KindConversion,
@@ -574,21 +577,12 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				"tenant_id", params.TenantID,
 			)
 		}
-		if cand.ContextWindow != nil {
-			bodyBytes = transformation.CompressAnthropicMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
-		}
-		requestCtx := context.Background()
-		if params != nil && params.R != nil {
-			requestCtx = params.R.Context()
-		}
-		if out, applied := e.runOptionalCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold); applied {
-			bodyBytes = out
-		}
-		return bodyBytes, nil
+		return e.finalizeAnthropicRequestBody(params, cand, bodyBytes), nil
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
 	return e.legacyAnthropicBody(params, cand, sourceBody)
+
 }
 
 // legacyAnthropicBody performs the legacy ChatToAnthropic conversion path.
@@ -659,6 +653,10 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 		}
 	}
 
+	return e.finalizeAnthropicRequestBody(params, cand, bodyBytes), nil
+}
+
+func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {
 	requestCtx := context.Background()
 	if params != nil && params.R != nil {
 		requestCtx = params.R.Context()
@@ -666,7 +664,7 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
 		bodyBytes = out
 	}
-	return bodyBytes, nil
+	return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic)
 }
 
 // executeAnthropic is the Q3/Q4 (anthropic-messages upstream) path of

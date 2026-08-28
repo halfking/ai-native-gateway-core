@@ -6,6 +6,24 @@ import (
 	"errors"
 )
 
+type lookupScopeKey struct{}
+
+type LookupScope struct {
+	TenantID     string
+	Unrestricted bool
+}
+
+func WithLookupScope(ctx context.Context, scope LookupScope) context.Context {
+	return context.WithValue(ctx, lookupScopeKey{}, scope)
+}
+
+func LookupScopeFromContext(ctx context.Context) LookupScope {
+	if scope, ok := ctx.Value(lookupScopeKey{}).(LookupScope); ok {
+		return scope
+	}
+	return LookupScope{Unrestricted: true}
+}
+
 // BodyReader loads persisted bodies from a dual-write DB source.
 type BodyReader interface {
 	// ReadRequestLogsBodies returns ErrNotFound when metadata exists but no
@@ -38,9 +56,9 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 				Meta:        meta,
 			}
 			if !omitBody {
-				if file, ok, err := l.Store.GetFile(requestID); err != nil {
+				if file, ok, err := l.Store.GetFile(requestID); err != nil && !errors.Is(err, ErrBodyTooLarge) {
 					return nil, err
-				} else if ok {
+				} else if err == nil && ok {
 					bodies := file.Bodies
 					d.Bodies = &bodies
 					d.Source = SourceFile
@@ -51,9 +69,9 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 			}
 			return d, nil
 		}
-		if file, ok, err := l.Store.GetFile(requestID); err != nil {
+		if file, ok, err := l.Store.GetFile(requestID); err != nil && !errors.Is(err, ErrBodyTooLarge) {
 			return nil, err
-		} else if ok {
+		} else if err == nil && ok {
 			d := &Detail{
 				Source:      SourceFile,
 				Persistence: PersistenceInFlight,
@@ -92,7 +110,11 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 	// a historical migration). Try the session store before giving up, while
 	// retaining the metadata returned by the request-log reader.
 	requestLogsMeta := meta
-	bodies, sessionMeta, err := l.Bodies.ReadSessionTurnsBodies(ctx, requestID, omitBody)
+	sessionLookupID := requestID
+	if requestLogsMeta.RequestID != "" {
+		sessionLookupID = requestLogsMeta.RequestID
+	}
+	bodies, sessionMeta, err := l.Bodies.ReadSessionTurnsBodies(ctx, sessionLookupID, omitBody)
 	if err == nil {
 		d := &Detail{
 			Source:      SourceSessionTurns,
@@ -105,7 +127,7 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 		}
 		return d, nil
 	}
-	if requestLogsMeta.RequestID != "" {
+	if errors.Is(err, ErrNotFound) && requestLogsMeta.RequestID != "" {
 		// Metadata is still useful to the detail page even when both body stores
 		// are empty. Return it as a successful metadata-only response instead of
 		// misreporting an existing request as 404.
@@ -149,6 +171,13 @@ func mergeMeta(base, overlay Meta) Meta {
 		out.TurnNumber = overlay.TurnNumber
 	}
 	return out
+}
+
+// PtrTo is a helper that returns a pointer to a copy of v.
+// It reduces heap allocations when constructing pointer fields by enabling
+// stack-to-heap escape analysis optimization in patterns like: field = PtrTo(value)
+func PtrTo[T any](v T) *T {
+	return &v
 }
 
 // DecodeRaw helpers for callers that hold string bodies.
