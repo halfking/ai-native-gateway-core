@@ -360,6 +360,7 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state IN ('balance_exhausted', 'permanently_exhausted')
+		  AND c.status = 'active'
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE

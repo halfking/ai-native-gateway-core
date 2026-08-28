@@ -130,6 +130,9 @@ availability / tenant / protocol / model filters
 
 - Dispatch failover、executor 协议重试、Goal retry、request survival 与可选 stream retry 共同存在。
 - stream retry 只应处理首字节前可安全重试的故障；首字节后要遵循流一致性和客户端可见性规则。
+- OpenAI-compatible 流式响应在首帧、empty-stream gate 缓冲和主循环共用 vendor sanitizer；MiniMax 的 `base_resp.status_code` 必须在字段删除前检测，Zhipu/DeepSeek/Doubao 只执行各自字段过滤，避免跨厂商误分类。
+- `catalog_code` 在流式接线中统一 trim/lower；空 catalog 仅按已解析的顶层 vendor 字段自动识别，不按用户文本子串判断。Ernie/Baidu 没有 strip 接线，`search_info.search_results[]` 透传。
+- 非 SSE JSON 只有标准 `error` envelope 或显式顶层 `type`/`code` 才会被当作错误；孤立的顶层 `message` 不会中断正常响应。
 - 当前存在多层 retry budget/backoff；统一 request-level retry contract 是 `TARGET`，在此之前必须用集成测试约束最大上游尝试和计费语义。
 
 ---

@@ -22,6 +22,17 @@ func TestCompressionSpecs_DefaultsEnableAutomaticCompression(t *testing.T) {
 	if fraction == nil || fraction.Default != 0.85 {
 		t.Fatalf("compression.window_fraction default = %#v, want 0.85", fraction)
 	}
+	wantEnv := map[string]string{
+		"compression.strategy_runner_enabled": "LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED",
+		"compression.selector_mode":           "LLM_GATEWAY_COMPRESSION_SELECTOR",
+		"compression.selector_spec":           "LLM_GATEWAY_COMPRESSION_SELECTOR_SPEC",
+		"compression.adaptive_target_ratio":   "LLM_GATEWAY_COMPRESSION_TARGET_RATIO",
+	}
+	for key, want := range wantEnv {
+		if got := byKey[key]; got == nil || got.EnvName != want {
+			t.Errorf("%s EnvName = %#v, want %q", key, got, want)
+		}
+	}
 }
 
 func TestHandoffSpecs_DefaultToTransparentWithoutUpstreamRewrite(t *testing.T) {

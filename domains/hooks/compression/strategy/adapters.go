@@ -95,8 +95,16 @@ func (a *LiteAdapter) Apply(ctx context.Context, input []byte) ([]byte, bool, er
 	return out, applied, nil
 }
 
+// ReductionFactor 声明 lite 在典型 body 上的预估压缩率（无损格式化 ~0.92，
+// 即约 8% 缩减）。OmniRoute REDUCTION_FACTOR.lite=0.92 等价物。
+func (a *LiteAdapter) ReductionFactor() float64 { return 0.92 }
+
+// CostTier lite 是最便宜/无损档（0），升级阶梯排第一位。
+func (a *LiteAdapter) CostTier() int { return 0 }
+
 // Compile-time interface check.
 var _ Strategy = (*LiteAdapter)(nil)
+var _ EscalationProfile = (*LiteAdapter)(nil)
 
 // CavemanAdapter 包装 caveman.Compress 为 Strategy。
 type CavemanAdapter struct {
@@ -122,7 +130,15 @@ func (a *CavemanAdapter) Apply(ctx context.Context, input []byte) ([]byte, bool,
 	return out, applied, nil
 }
 
+// ReductionFactor 声明 caveman 在典型 body 上的预估压缩率（规则化改写 ~0.70，
+// 即约 30% 缩减）。OmniRoute REDUCTION_FACTOR.caveman=0.70 等价物。
+func (a *CavemanAdapter) ReductionFactor() float64 { return 0.70 }
+
+// CostTier caveman 是最激进/最有损档（2），升级阶梯排最后。
+func (a *CavemanAdapter) CostTier() int { return 2 }
+
 var _ Strategy = (*CavemanAdapter)(nil)
+var _ EscalationProfile = (*CavemanAdapter)(nil)
 
 // ToolFocusedAdapter 包装 toolfocused.Apply 为 Strategy。
 type ToolFocusedAdapter struct {
@@ -150,4 +166,12 @@ func (a *ToolFocusedAdapter) Apply(ctx context.Context, input []byte) ([]byte, b
 	return out, applied, nil
 }
 
+// ReductionFactor 声明 toolfocused 在典型 body 上的预估压缩率（工具结果压缩
+// ~0.85，即约 15% 缩减）。OmniRoute REDUCTION_FACTOR.rtk=0.85 等价物。
+func (a *ToolFocusedAdapter) ReductionFactor() float64 { return 0.85 }
+
+// CostTier toolfocused 是中档（1），升级阶梯排在 lite 之后、caveman 之前。
+func (a *ToolFocusedAdapter) CostTier() int { return 1 }
+
 var _ Strategy = (*ToolFocusedAdapter)(nil)
+var _ EscalationProfile = (*ToolFocusedAdapter)(nil)

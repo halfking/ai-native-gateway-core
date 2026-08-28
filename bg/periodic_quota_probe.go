@@ -197,13 +197,7 @@ func (p *PeriodicQuotaProbe) probePeriodicExhausted(ctx context.Context) (int, e
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state = 'periodic_exhausted'
 		  AND c.status = 'active'
-		  AND (
-		      c.lifecycle_status = 'active'
-		      OR (
-		          c.lifecycle_status = 'disabled'
-		          AND c.auto_disabled_at IS NOT NULL
-		      )
-		  )
+		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
@@ -250,13 +244,7 @@ func (p *PeriodicQuotaProbe) probePreExhausted(ctx context.Context) (int, error)
 		JOIN providers p ON p.id = c.provider_id
 		WHERE c.quota_state = 'periodic_exhausted'
 		  AND c.status = 'active'
-		  AND (
-		      c.lifecycle_status = 'active'
-		      OR (
-		          c.lifecycle_status = 'disabled'
-		          AND c.auto_disabled_at IS NOT NULL
-		      )
-		  )
+		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE

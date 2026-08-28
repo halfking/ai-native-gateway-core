@@ -14313,8 +14313,8 @@ CREATE TABLE public.self_check_runs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     selection_strategy text DEFAULT 'most_used'::text,
     attempted_models jsonb DEFAULT '[]'::jsonb,
-    CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type = ANY (ARRAY['http_000'::text, 'http_502'::text, 'http_503'::text, 'http_504'::text, 'timeout'::text, 'upstream_fail'::text, 'none'::text])))),
-    CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'most_used'::text) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = 'random'::text))),
+    CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type ~~ 'http_%'::text) OR (error_type = ANY (ARRAY['none'::text, 'timeout'::text, 'network'::text, 'transient'::text, 'rate_limit'::text, 'auth'::text, 'auth_revoked'::text, 'quota'::text, 'quota_periodic'::text, 'quota_balance'::text, 'quota_permanent'::text, 'upstream_down'::text, 'upstream_overloaded'::text, 'concurrent'::text, 'stream_timeout'::text, 'model_not_found'::text, 'model_deprecated'::text, 'unsupported_feature'::text, 'context_length_exceeded'::text, 'content_filter'::text, 'tool_call_id_mismatch'::text, 'empty_response'::text, 'conversion_error'::text, 'upstream_context_loss'::text, 'no_available_channel'::text, 'canceled'::text, 'client_bug'::text, 'parse_error'::text, 'internal'::text, 'unattributed'::text, 'upstream_fail'::text])))),
+    CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = ANY (ARRAY['most_used'::text, 'random'::text, 'featured'::text, 'recent'::text, 'common_7d'::text, 'failed_model'::text, 'no_eligible_model'::text))))),
     CONSTRAINT self_check_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'success'::text, 'partial'::text, 'failed'::text, 'retrying'::text])))
 );
 
@@ -14323,7 +14323,7 @@ CREATE TABLE public.self_check_runs (
 -- Name: COLUMN self_check_runs.selection_strategy; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.self_check_runs.selection_strategy IS '341: most_used | fallback_<n> | random — which model the credential_selfcheck worker tested';
+COMMENT ON COLUMN public.self_check_runs.selection_strategy IS 'Primary selection: recent/common_7d/featured plus fallback_<n> failed-model follow-ups.';
 
 
 --

@@ -14,8 +14,9 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain"              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -1322,7 +1323,8 @@ func (e *Executor) executeOpenAI(
 			// before stripVendorFields. MiniMax wraps errors in HTTP 200
 			// responses with {base_resp: {status_code: non-0, status_msg}}.
 			// If we strip base_resp first, the error signal is permanently lost.
-			if cand.CatalogCode == "minimax" {
+			catalogCode := strings.ToLower(strings.TrimSpace(cand.CatalogCode))
+			if catalogCode == "minimax" || catalogCode == "" {
 				if code, msg, isErr := parseMiniMaxBaseResp(respBody); isErr {
 					kind := classifyMiniMaxStatusCode(code)
 					return nil, &upstreampkg.Error{
@@ -1361,9 +1363,14 @@ func (e *Executor) executeOpenAI(
 						if converted, serErr := irScoped.SerializeAnthropicResponse(irResp, params.ClientModel); serErr == nil {
 							respBody = converted
 						} else {
-							slog.Warn("q2 ir serialize anthropic response failed; forwarding raw body",
-								"error", serErr, "request_id", params.R.Header.Get("X-Request-Id"))
+							return nil, &upstreampkg.Error{
+								Kind:       errorsx.KindConversion,
+								Message:    "convert OpenAI response to Anthropic response",
+								Err:        serErr,
+								StatusCode: resp.StatusCode,
+							}
 						}
+
 					} else {
 						// 2026-08-28 P1-GLM-2: If ParseOpenAIResponse returns a
 						// *ir.ParseError (e.g. GLM finish_reason error channel),
@@ -1379,16 +1386,25 @@ func (e *Executor) executeOpenAI(
 								RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 							}
 						}
-						slog.Warn("q2 ir parse openai response failed; forwarding raw body",
-							"error", irErr, "request_id", params.R.Header.Get("X-Request-Id"))
+						return nil, &upstreampkg.Error{
+							Kind:       errorsx.KindConversion,
+							Message:    "parse OpenAI response for Anthropic client",
+							Err:        irErr,
+							StatusCode: resp.StatusCode,
+						}
 					}
 				} else if e.ChatResponseToAnthropic != nil {
 					if converted, convErr := e.ChatResponseToAnthropic(respBody, params.ClientModel, params.R.Header.Get("X-Request-Id")); convErr == nil {
 						respBody = converted
 					} else {
-						slog.Warn("q2 chat_to_anthropic response convert failed; forwarding raw body",
-							"error", convErr, "request_id", params.R.Header.Get("X-Request-Id"))
+						return nil, &upstreampkg.Error{
+							Kind:       errorsx.KindConversion,
+							Message:    "convert OpenAI response to Anthropic response",
+							Err:        convErr,
+							StatusCode: resp.StatusCode,
+						}
 					}
+
 				}
 			}
 			// 并发修复 2026-07-27：异步重试路径既设 SuppressSuccessWrite
@@ -1606,23 +1622,11 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			}
 			return nil, fmt.Errorf("ir serialize openai: %w", err)
 		}
-		// Apply remaining OpenAI-path transforms (disguise, prompt cache)
-		if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
-			profileName := ""
-			if params.Transform != nil && params.Transform.DisguiseProfileID != "" {
-				profileName = params.Transform.DisguiseProfileID
-			} else if params.ClientID.Fingerprint.ClientProfile != "" {
-				profileName = params.ClientID.Fingerprint.ClientProfile
-			}
-			if profileName != "" {
-				bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, profileName, 0)
-				slog.Debug("disguise layer applied", "profile", profileName)
-			}
+		bodyBytes, err = e.applyOpenAITailTransforms(params, cand, bodyBytes)
+		if err != nil {
+			return nil, err
 		}
-		if params.SessionKey != "" && cand.SupportsPromptCache {
-			bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
-		}
-		return paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol)), nil
+		return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
@@ -1653,19 +1657,33 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
 			// Override model to outbound model
 			irReq.Model = resolveOutboundModel(params, cand)
-			bodyBytes, _ = irScoped.SerializeOpenAI(irReq)
-			slog.Info("finalizeOpenAIUpstreamBody: legacy IR path validated",
-				"request_id", params.RequestID,
-				"path", "legacy_with_ir",
-				"model", params.Model,
-				"provider_id", cand.ProviderID,
-				"credential_id", cand.CredentialID,
-				"raw_model", cand.RawModel,
-				"pre_body_bytes", preBodyBytes,
-				"post_body_bytes", len(bodyBytes),
-				"pre_messages", preMsgs,
-				"post_messages", len(irReq.Messages),
-			)
+			serializedBody, serializeErr := irScoped.SerializeOpenAI(irReq)
+			if serializeErr != nil {
+				slog.Warn("finalizeOpenAIUpstreamBody: legacy IR serialization failed; preserving pre-validation body",
+					"request_id", params.RequestID,
+					"path", "legacy_with_ir_serialize_failed",
+					"model", params.Model,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"pre_body_bytes", preBodyBytes,
+					"error", serializeErr,
+				)
+			} else {
+				bodyBytes = serializedBody
+				slog.Info("finalizeOpenAIUpstreamBody: legacy IR path validated",
+					"request_id", params.RequestID,
+					"path", "legacy_with_ir",
+					"model", params.Model,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"pre_body_bytes", preBodyBytes,
+					"post_body_bytes", len(bodyBytes),
+					"pre_messages", preMsgs,
+					"post_messages", len(irReq.Messages),
+				)
+			}
 		} else if errors.Is(parseErr, transformation.ErrConverterCircuitOpen) {
 			// 2026-08-09 P0 fix (req cb103844b742b0611478cd033ad3c187,
 			// tool_call_id_mismatch on gpt-5.6-luna/apiclaude.cc): when the
@@ -1769,7 +1787,11 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			bodyBytes = converted
 		}
 	}
-	return e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	bodyBytes, err := e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+	return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
 }
 
 // legacyChatToOpenAIBody performs the legacy Anthropic→OpenAI body conversion
@@ -1796,7 +1818,25 @@ func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Cand
 			bodyBytes = converted
 		}
 	}
-	return e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	bodyBytes, err := e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+	return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
+}
+
+func (e *Executor) applyOptionalOpenAIStrategies(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {
+	if cand.ContextWindow != nil {
+		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+	}
+	requestCtx := context.Background()
+	if params != nil && params.R != nil {
+		requestCtx = params.R.Context()
+	}
+	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+		return out
+	}
+	return bodyBytes
 }
 
 // applyOpenAITailTransforms runs the format-agnostic tail steps of the OpenAI
@@ -1936,14 +1976,15 @@ func strPtrCompat(s string) *string {
 	return &s
 }
 
-// Streaming requests carry no wall-clock deadline. A stuck vendor is bounded
-// by ResponseHeaderTimeout and the bridge's per-read streamChunkTimeout. An
-// ordinary stream still derives from the request context, so client disconnect
-// cancels promptly. Only an explicit session/durable owner uses WithoutCancel;
-// SurvivalAttempt by itself only identifies retry ownership.
+const detachedStreamMaxLifetime = 2 * time.Hour
+
+// Streaming requests are bounded by streamChunkTimeout while the client stays
+// attached. A detached durable stream also receives a wall-clock cap so an
+// upstream that keeps emitting infrequent data cannot retain a pool slot
+// indefinitely after the client has disconnected.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if params.IsStream && params.StreamSurvivesClientCancel {
-		return context.WithCancel(context.WithoutCancel(params.R.Context()))
+		return context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
 	}
 	if params.IsStream {
 		return context.WithCancel(params.R.Context())

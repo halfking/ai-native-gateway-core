@@ -262,6 +262,6 @@ func (s *alwaysExpand) Apply(_ context.Context, in []byte) ([]byte, bool, error)
 // oneStrategySel 测试用 selector：只返回指定的 strategy。
 type oneStrategySel struct{ s strategy.Strategy }
 
-func (s *oneStrategySel) Select(_ context.Context, _ []strategy.Strategy) []strategy.Strategy {
+func (s *oneStrategySel) Select(_ context.Context, _ []strategy.Strategy, _ []byte) []strategy.Strategy {
 	return []strategy.Strategy{s.s}
 }

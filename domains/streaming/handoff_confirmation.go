@@ -1,13 +1,13 @@
 package streaming
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 const maxHandoffConfirmationBodyBytes = 16 << 10
@@ -30,10 +30,8 @@ func (h *ChatHandler) HandleHandoffConfirmation(w http.ResponseWriter, r *http.R
 		writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "handoff confirmation is unavailable", "handoff_error", "handoff_confirmation_unavailable")
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxHandoffConfirmationBodyBytes)
-	defer r.Body.Close()
 	var payload handoffConfirmationRequest
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := jsonbody.DecodeRequest(r, &payload, maxHandoffConfirmationBodyBytes, true); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, requestID, "invalid confirmation request", "handoff_error", "handoff_confirmation_invalid")
 		return
 	}

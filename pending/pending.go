@@ -28,6 +28,7 @@ import (
 	"strings"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -193,7 +194,17 @@ func (s *Store) Get(ctx context.Context, sessionID, requestID string) (*Response
 	if sessionID == "" || requestID == "" {
 		return nil, false, errors.New("pending: SessionID and RequestID required")
 	}
-	fields, err := s.rdb.HGetAll(ctx, entryKey(sessionID, requestID)).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE.
+	// SafeHGetAll surfaces ErrKeyNotFound when the key is absent (unlike
+	// raw HGetAll which returns (empty-map, nil) for missing keys) — so
+	// we explicitly treat ErrKeyNotFound as "try fallback / miss" (same
+	// as len == 0 below), and only propagate genuine network / TypedError.
+	fields, err := redissafe.SafeHGetAll(ctx, s.rdb, entryKey(sessionID, requestID))
+	if err != nil && !errors.Is(err, redissafe.ErrKeyNotFound) {
+		if s.fallback == nil {
+			return nil, false, fmt.Errorf("pending: hgetall: %w", err)
+		}
+	}
 	if err == nil && len(fields) > 0 {
 		return parseResponse(sessionID, fields), true, nil
 	}
@@ -206,7 +217,7 @@ func (s *Store) Get(ctx context.Context, sessionID, requestID string) (*Response
 			return r, true, nil
 		}
 	}
-	if err != nil {
+	if err != nil && !errors.Is(err, redissafe.ErrKeyNotFound) {
 		return nil, false, fmt.Errorf("pending: hgetall: %w", err)
 	}
 	return nil, false, nil
@@ -331,7 +342,11 @@ func (s *Store) ListStaleInProgress(ctx context.Context, staleBefore time.Time, 
 				continue
 			}
 			seen[k] = struct{}{}
-			fields, err := s.rdb.HGetAll(ctx, k).Result()
+			// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent
+			// WRONGTYPE. Best-effort iteration — errors (including
+			// TypedError / ErrKeyNotFound) continue to the next key,
+			// same as the original HGetAll error path.
+			fields, err := redissafe.SafeHGetAll(ctx, s.rdb, k)
 			if err != nil || len(fields) == 0 {
 				continue
 			}
