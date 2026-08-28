@@ -117,11 +117,25 @@ ok  	github.com/kaixuan/llm-gateway-go/domains/streaming/state	(cached)
 
 所有 streaming 包测试通过，无新增回归。
 
-## 未修复风险
+## 已关闭的后续风险
 
-1. **Gate checkpoint 与 Discard 并发**：计划审计中识别了 `Commit`/`WriteFrame` metadata hook 解锁期间与 `Discard` 的竞态窗口，但现有测试未能稳定复现该行为，因此暂未修改实现；保留为未来 P2 审计项。
+1. **Gate checkpoint 与 Discard 并发**：`Discard` 现按与写路径一致的 `writeMu → mu` 锁序执行，避免与 checkpoint hook、immediate 写入交错；新增回归覆盖 checkpoint exactly-once、Discard 屏障及成功尾部 partial flush。
 
-2. **Durable checkpoint context 接线**：当前审计分支工作树包含未提交的 `CheckpointContext` API，但生产 wiring 尚未完整接入；本次修复不改变该状态。
+2. **Durable checkpoint context 接线**：生产 wiring 已通过 `survival_wiring.go` 与 `durable_stream.go` 传递请求 context，并由 gate 使用该 context 调用 checkpoint hook。
+
+## 仍需单独验证
+
+1. 真实上游连接复用的端到端 Anthropic 4xx/5xx 测试仍需稳定 upstream mock。
+2. 全仓库测试需将主线既有 dispatch attempt-cap 断言失败与本轮 streaming 回归分开跟踪。
+
+## 2026-08-28 综合审计补充
+
+在 closeout 分支上执行了流式、URSM、平台三个独立的只读审计。结论摘要：
+
+- 流式模块与本轮修复保持一致；`GateWriter.pending` 与 executor dispatch 的 defer 顺序属于低风险遗留。
+- URSM v2 已修复本轮 P1；剩余重要级 `apply_decision.lua` TOCTOU、`Ledger.Append` 缺 fsync、`Manager.startInvalidationSubscriber` 泄漏需独立 PR。
+- 平台层两项 HIGH 安全风险已在本分支修复：`cmd/regen-credentials` 移除了 hardcoded Fernet 密钥并避免凭据输出；`session/v2`、`session/preprocess`、`stats/boardcache` 的 5 处 HGETALL 已恢复 `SafeHGetAll`。
+- `middleware/origin_mw.go` 的 XFF/X-Real-IP 信任与 deploy lock 恢复脚本删除等中风险项留给独立 PR。
 
 ## 审计依据
 
