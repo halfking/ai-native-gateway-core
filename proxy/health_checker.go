@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -40,6 +41,30 @@ func NewHTTPHealthChecker(timeout time.Duration) *HTTPHealthChecker {
 	return &HTTPHealthChecker{timeout: timeout}
 }
 
+// newTransportForProxy 为给定代理 URL 构造一个 http.Transport（包级共享实现，
+// 供健康检查器与 TransportFactory 复用）。
+//   - proxyURL 为空表示直连（Proxy=nil）。
+//   - disableKeepAlives=true 用于一次性探测请求，避免滞留连接；
+//     false 用于工厂缓存的业务流量连接池，复用经由代理的出站连接。
+func newTransportForProxy(proxyURL string, timeout time.Duration, disableKeepAlives bool) (*http.Transport, error) {
+	var proxyFunc func(*http.Request) (*url.URL, error)
+	if proxyURL != "" {
+		u, err := url.Parse(proxyURL)
+		if err != nil {
+			return nil, fmt.Errorf("proxy: invalid proxy url %q: %w", proxyURL, err)
+		}
+		proxyFunc = http.ProxyURL(u)
+	}
+	return &http.Transport{
+		Proxy:                 proxyFunc,
+		TLSHandshakeTimeout:   timeout,
+		ResponseHeaderTimeout: timeout,
+		ExpectContinueTimeout: time.Second,
+		DisableKeepAlives:     disableKeepAlives,
+		ForceAttemptHTTP2:     !disableKeepAlives,
+	}, nil
+}
+
 // Check 探测节点健康状态，返回耗时（毫秒）。
 // 2xx/3xx 视为健康；4xx/5xx 返回带状态码的错误。
 func (c *HTTPHealthChecker) Check(ctx context.Context, node *Node) (int, error) {
@@ -50,13 +75,6 @@ func (c *HTTPHealthChecker) Check(ctx context.Context, node *Node) (int, error) 
 		return 0, fmt.Errorf("proxy: node %q (protocol %q, %s) cannot be probed directly: "+
 			"Go's HTTP client only dials http/https/socks5 proxies; expose this node through a "+
 			"local mihomo/xray http or socks5 bridge and register that bridge endpoint instead",
-			node.Name, node.Protocol, net.JoinHostPort(node.Server, strconv.Itoa(node.Port)))
-	}
-
-	// ProxyURL 可能带凭据，绝不能出现在错误信息里。
-	proxyURL, err := url.Parse(node.ProxyURL())
-	if err != nil {
-		return 0, fmt.Errorf("proxy: node %q has an invalid proxy endpoint %s://%s",
 			node.Name, node.Protocol, net.JoinHostPort(node.Server, strconv.Itoa(node.Port)))
 	}
 
@@ -74,13 +92,9 @@ func (c *HTTPHealthChecker) Check(ctx context.Context, node *Node) (int, error) 
 
 	// socks5 也走 http.ProxyURL：net/http 对 socks5:// 代理会用 SOCKS5 拨号，
 	// 对 https 目标则通过该通道建立 CONNECT 式隧道。
-	transport := &http.Transport{
-		Proxy:                 http.ProxyURL(proxyURL),
-		TLSHandshakeTimeout:   c.timeout,
-		ResponseHeaderTimeout: c.timeout,
-		ExpectContinueTimeout: time.Second,
-		DisableKeepAlives:     true, // 探测是一次性请求，不留连接
-		ForceAttemptHTTP2:     true,
+	transport, err := newTransportForProxy(node.ProxyURL(), c.timeout, true)
+	if err != nil {
+		return 0, err
 	}
 	defer transport.CloseIdleConnections()
 
@@ -129,4 +143,66 @@ func elapsedMillis(start time.Time) int {
 		ms = 1
 	}
 	return ms
+}
+
+// HealthCheckResult 单次并发探测的结果。
+type HealthCheckResult struct {
+	NodeID   int
+	NodeName string
+	OK       bool
+	Latency  int // 毫秒；失败时为达到失败前的耗时
+	Err      error
+	CheckedAt time.Time
+}
+
+// CheckConcurrent 对一批节点做并发健康检查，结果通过返回的 channel 逐个送出
+// （发送完毕后会关闭 channel）。concurrency <= 0 时回退为 16。
+//
+// 用于定时批量探活：相比串行循环（每个节点一次请求 + 100ms sleep），并发能显著
+// 缩短 100+ 节点的整体探测耗时。调用方负责把结果持久化到 Store 与缓存。
+func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, concurrency int) <-chan HealthCheckResult {
+	out := make(chan HealthCheckResult, len(nodes))
+	if concurrency <= 0 {
+		concurrency = 16
+	}
+	if len(nodes) == 0 {
+		close(out)
+		return out
+	}
+
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for _, node := range nodes {
+		if !node.Dialable() {
+			// 不可拨号节点（trojan/vless）跳过，直接标记不可探活。
+			out <- HealthCheckResult{
+				NodeID:   node.ID,
+				NodeName: node.Name,
+				OK:       false,
+				Err:      fmt.Errorf("node not dialable (protocol %q)", node.Protocol),
+				CheckedAt: time.Now(),
+			}
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{} // 获取并发额度
+		go func(n *Node) {
+			defer wg.Done()
+			defer func() { <-sem }() // 释放额度
+			latency, err := c.Check(ctx, n)
+			out <- HealthCheckResult{
+				NodeID:   n.ID,
+				NodeName: n.Name,
+				OK:       err == nil,
+				Latency:  latency,
+				Err:      err,
+				CheckedAt: time.Now(),
+			}
+		}(node)
+	}
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+	return out
 }

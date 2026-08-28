@@ -146,4 +146,6 @@ type Parser interface {
 type HealthChecker interface {
 	// Check 检查节点健康状态
 	Check(ctx context.Context, node *Node) (responseTimeMs int, err error)
+	// CheckConcurrent 对一批节点做并发健康检查，结果通过 channel 返回。
+	CheckConcurrent(ctx context.Context, nodes []*Node, concurrency int) <-chan HealthCheckResult
 }
