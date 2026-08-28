@@ -16,6 +16,7 @@ import (
 	telemetryv1 "github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // RequestLogEntry struct lives here; aliased to avoid clash with /telemetry extractor package
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/middleware"                                        //nolint:depguard // origin trust-list resolved IP context
 	"github.com/kaixuan/llm-gateway-go/settings"                                          //nolint:depguard // hot-reloadable prompt budget
 	"github.com/kaixuan/llm-gateway-go/telemetry"                                         //nolint:depguard // canonical IP / agent / protocol extractors
 )
@@ -295,10 +296,18 @@ func (h *ChatHandler) fillAttemptMeta(r *http.Request, keyInfo *authentication.K
 		meta.AgentType = telemetry.ExtractAgentType(r)
 	}
 	if meta.ClientIP == "" {
-		meta.ClientIP = telemetry.ExtractClientIP(r)
+		// Prefer the OriginMiddleware-resolved IP (trust-list enforced); only
+		// fall back to raw header extraction when the middleware never ran.
+		meta.ClientIP = middleware.ContextClientIP(r.Context())
+		if meta.ClientIP == "" {
+			meta.ClientIP = telemetry.ExtractClientIP(r)
+		}
 	}
 	if meta.ForwardedFor == "" {
-		meta.ForwardedFor = telemetry.ExtractForwardedFor(r)
+		meta.ForwardedFor = middleware.ContextClientForwardedFor(r.Context())
+		if meta.ForwardedFor == "" {
+			meta.ForwardedFor = telemetry.ExtractForwardedFor(r)
+		}
 	}
 	if meta.ClientProtocol == "" {
 		// body 为空时 DetectProtocolByURL 退回 URL path 路由（openai-chat/

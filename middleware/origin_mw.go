@@ -154,11 +154,12 @@ type OriginMiddleware struct {
 	trustedProxies []*net.IPNet
 }
 
-// NewOriginMiddleware constructs an OriginMiddleware that trusts every
-// immediate peer by default (legacy behaviour, kept for backwards
-// compatibility with internal tests). Production wiring MUST use
-// NewOriginMiddlewareWithTrustedProxies so that X-Forwarded-For /
-// X-Real-IP from public clients cannot impersonate other tenants.
+// NewOriginMiddleware constructs an OriginMiddleware with no trusted-proxy
+// allowlist: X-Forwarded-For / X-Real-IP are ignored and the resolved client
+// IP falls back to the immediate peer (RemoteAddr). Production wiring MUST
+// use NewOriginMiddlewareWithTrustedProxies with the trusted CIDR list so
+// that X-Forwarded-For / X-Real-IP from public clients cannot impersonate
+// other tenants.
 func NewOriginMiddleware() *OriginMiddleware {
 	loadEgressEnv()
 	return &OriginMiddleware{
