@@ -110,7 +110,14 @@ Request-Detail 主流程在请求生命周期内维护两层 **节点本地** �
 
 ### 中期（≤ 1 月）
 
-采用 **方案 B** 的 sticky 路由:
+~~采用 **方案 B** 的 sticky 路由~~
+
+**⚠️ 2026-08-29 决策：不实施**。当前架构下所有 LB 都是单实例部署
+（154 单 systemd / 245 单 systemd / 252 active-passive failover / k3s `replicas: 1`），
+方案 B 没有实施场景。完整决策依据与重新评估触发条件见
+`docs/implementation/request-detail-sticky-routing-deferred-20260829.md`。
+
+如未来扩展到多副本，按如下思路恢复 sticky 路由调研：
 - 在现有 LB (k8s Ingress / envoy) 上开启 `sessionAffinity`。
 - 路由 key 优先用 `X-LLM-Gateway-Request-ID` header;若缺失则降级为 round-robin。
 - 验证: 在 staging 集群跑 mixed-traffic 测试,确认同 request_id 的读写命中率 ≥ 99%。
