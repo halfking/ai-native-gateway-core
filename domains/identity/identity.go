@@ -12,7 +12,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // canonical IP resolver lives in telemetry
+	"github.com/kaixuan/llm-gateway-go/middleware" //nolint:depguard // trust-list resolved client IP context
+	"github.com/kaixuan/llm-gateway-go/telemetry"  //nolint:depguard // canonical IP resolver lives in telemetry
 )
 
 var identitySalt = os.Getenv("LLM_GATEWAY_IDENTITY_SALT")
@@ -186,6 +187,14 @@ func ExtractFingerprint(r *http.Request, clientProfile string) ClientFingerprint
 // causing the fingerprint's IP and the logged client_ip to disagree on
 // proxied requests. Now both share the canonical precedence chain.
 func extractClientIP(r *http.Request) string {
+	// Prefer the OriginMiddleware trust-list resolution when available; only
+	// fall back to raw header extraction when the middleware never ran (e.g.
+	// unit tests or endpoints that bypass the chain).
+	if r != nil && r.Context() != nil {
+		if ip := middleware.ContextClientIP(r.Context()); ip != "" {
+			return ip
+		}
+	}
 	return telemetry.ExtractClientIP(r)
 }
 

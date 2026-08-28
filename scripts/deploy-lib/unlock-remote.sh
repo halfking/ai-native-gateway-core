@@ -319,7 +319,13 @@ fi
 # could push a live lock past the threshold) — it never removes the
 # lock and never replaces the live-PID safety check.
 if [[ "$DETECT_STALE" == "1" && "$LOCK_STALE_AFTER_SEC" -gt 0 ]]; then
-  if [[ "${AGE_S:-0}" =~ ^-?[0-9]+$ && "$AGE_S" -ge "$LOCK_STALE_AFTER_SEC" ]]; then
+  if [[ -z "${AGE_S:-}" ]]; then
+    # Never report "fresh" when the age is uncomputable — an unparseable
+    # started_at must fail the check, not silently pass it.
+    warn "lock age unknown (started_at unparseable); cannot assess staleness"
+    exit 75
+  fi
+  if [[ "$AGE_S" =~ ^-?[0-9]+$ && "$AGE_S" -ge "$LOCK_STALE_AFTER_SEC" ]]; then
     warn "lock age=$AGE_HUMAN exceeds threshold ${LOCK_STALE_AFTER_SEC}s — stale"
     exit 75
   fi

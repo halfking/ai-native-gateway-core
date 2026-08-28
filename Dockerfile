@@ -4,18 +4,19 @@
 #   - Runtime image pins a non-root user (UID 65532, GID 65532) and the
 #     final USER directive switches to it. The previous Dockerfile ran the
 #     binary as root, which let any container-escape vuln inherit root.
-#   - Digest pinning is opt-in via BASE_IMAGE_DIGEST / RUNTIME_IMAGE_DIGEST
+#   - Digest pinning is opt-in via GO_IMAGE_DIGEST / RUNTIME_IMAGE_DIGEST
 #     build args. CI overrides them with the immutable @sha256:... value
 #     resolved from the registry; leaving them empty falls back to the
 #     mutable tag (local dev only — production builds must pin).
 
 ARG BASE_REGISTRY=registry.kxpms.cn/kx-base
 ARG GO_BASE_IMAGE=${BASE_REGISTRY}/golang:1.25-alpine
+ARG GO_IMAGE_DIGEST=
 ARG RUNTIME_BASE_IMAGE=${BASE_REGISTRY}/alpine:3.22
 ARG RUNTIME_IMAGE_DIGEST=
 
 # 构建阶段
-FROM ${GO_BASE_IMAGE} AS builder
+FROM ${GO_BASE_IMAGE}${GO_IMAGE_DIGEST:+@${GO_IMAGE_DIGEST}} AS builder
 
 # China network: proxy.golang.org is unreachable, use goproxy.cn instead.
 # The offline-package build script already does this; Docker builds need it too.

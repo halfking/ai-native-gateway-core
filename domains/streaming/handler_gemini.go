@@ -119,6 +119,10 @@ func (w *geminiStreamWriter) failClosed(message string) {
 		return
 	}
 	w.failed = true
+	// Release the accumulated pending buffer immediately: the stream is
+	// terminal and holding up to maxGeminiPendingBytes beyond this point
+	// only inflates RSS for the life of the request.
+	w.pending = nil
 	body, _ := json.Marshal(map[string]any{
 		"error": map[string]any{
 			"code":    http.StatusInternalServerError,

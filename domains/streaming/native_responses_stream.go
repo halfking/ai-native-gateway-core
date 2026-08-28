@@ -223,11 +223,18 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 			observeNativeResponsesEvent(capture, event)
 		}
 		if capture != nil {
-			if event.Name == "response.completed" || event.Name == "response.incomplete" {
-				capture.MarkDone()
+			switch event.Name {
+			case "response.completed", "response.incomplete":
+				// MarkDone only on the first canonical terminal event: an
+				// earlier response.failed already finalized the capture as
+				// interrupted, and MarkDone must not overwrite that outcome.
+				// (MarkDone currently does not clear the interrupted flag,
+				// but guard against the ordering in case that changes.)
+				if !terminal {
+					capture.MarkDone()
+				}
 				terminal = true
-			}
-			if event.Name == "response.failed" {
+			case "response.failed":
 				// The failed terminal event is already client-visible. Count it
 				// as sent so dispatch cannot mistake a failure-only stream for a
 				// pre-commit attempt and switch credentials after exposing it.
