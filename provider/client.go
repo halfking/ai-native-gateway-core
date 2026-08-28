@@ -553,7 +553,20 @@ func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey st
 		slog.Warn("credential keyring unavailable; AES-GCM v1 envelopes will fail to decrypt", "error", kerr)
 	}
 	if pool != nil {
+		// Stop any prior rotator's sweeper before overwriting — a reconfigure
+		// path must not leak the previous background goroutine.
+		if c.keyRotator != nil {
+			c.keyRotator.StopSweeper()
+		}
 		c.keyRotator = credential.NewKeyRotator()
+		// Start the sweeper so a stale KeyStatusInvalid key auto-recovers to
+		// active after credential.DefaultInvalidCooldown. Without this, a
+		// transient 401 during a key-rotation overlap would permanently eject
+		// the key from rotation until an admin ResetKey or a process restart.
+		// context.Background() here is fine: the sweeper runs for the lifetime
+		// of the rotator, which is the lifetime of the process. StopSweeper
+		// above is the explicit shutdown path.
+		c.keyRotator.StartSweeper(context.Background())
 	}
 }
 
