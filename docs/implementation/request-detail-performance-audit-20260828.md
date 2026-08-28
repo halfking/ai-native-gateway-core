@@ -63,3 +63,35 @@ handler 仍有最终 tenant gate，但 `LookupScope` 尚未被 `pgBodyReader` �
 3. 为 `Clear` 失败增加日志/指标，并补充敏感文件残留测试。
 4. 评估本地 `/tmp` 跨进程共享和多副本可见性；必要时使用共享短期存储或 sticky routing。
 5. 对历史 request ID 做兼容性验证。
+
+## 2026-08-29 闭环进度（第三轮交付）
+
+| # | 任务 | 状态 | 交付物 |
+|---|---|---|---|
+| 1 | pgBodyReader 租户 scoped | ✅ 完成（第二轮） | `pgBodyReader` 三条路径注入 `tenant_id = $N` 谓词 + post-scan 校验 |
+| 2 | capture 异步 forwarder | ✅ 完成（第二轮） | `domains/requestdetail/capture_forwarder.go` 有界队列 + 单 consumer + FIFO eviction + drain-on-stop |
+| 3 | Clear 失败日志/指标 + 残留测试 | ✅ **本轮完成** | `domains/requestdetail/metrics.go`（新文件）+ `store.go` 全部 os.Remove 失败点接入 + `store_metrics_test.go`（2 个测试，1 个真实触发 chmod 0 失败） |
+| 4 | /tmp 跨副本可见性 | ✅ **本轮完成** | `docs/implementation/request-detail-cross-replica-visibility-20260828.md` 三阶段 recommendation（短期 read-your-writes / 中期 sticky / 长期 Redis） |
+| 5 | 历史 request ID 兼容 | ✅ **本轮完成** | `safeRequestIDPattern` 扩展为 hex-only / uuid-dashed / prefixed 三族；`safe_id_test.go` 30 行矩阵 + 端到端 round-trip |
+
+### 本轮新增文件
+
+- `domains/requestdetail/metrics.go` — Prometheus 计数器（`requestdetail_store_clear_failures_total`、`requestdetail_store_eviction_failures_total`、`requestdetail_store_clear_success_total`）
+- `domains/requestdetail/store_metrics_test.go` — Clear + eviction 失败路径测试（macOS 真触发 permission 拒绝）
+- `domains/requestdetail/safe_id_test.go` — request-id 兼容性矩阵 + 端到端 round-trip
+- `docs/implementation/request-detail-cross-replica-visibility-20260828.md` — 多副本可见性三阶段 recommendation
+
+### 本轮新增/修改代码
+
+- `domains/requestdetail/store.go` — `safeRequestID` → `safeRequestIDPattern`（三族）+ `ValidateRequestID` 增加 length 校验；Clear / evictLocked / cleanupFiles / GetFile TTL 路径接入失败计数器与 slog.Warn
+- `docs/06-deployment/04-runbooks/ops/245-runbook.md` — §5 新增两个 Prom 监控行 + §12 新增 Request-Detail pre-release validation 章节
+
+### 验证（2026-08-29 本地）
+
+- `go build ./...`：✅
+- `go vet ./...`：✅
+- `go test ./domains/requestdetail/ -race -count=1`：✅（含 30+ safe-id 矩阵、Clear 失败、forwarder 等）
+- `go test ./admin/... -count=1 -timeout 5m`：✅（含 5 个跨租户隔离测试）
+- `go test ./bg/... -count=1 -timeout 3m`：✅
+- 245 预发布 deploy：⏳ **待发起**（本会话未执行 deploy；前置条件已满足）
+
