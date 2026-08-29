@@ -10,6 +10,30 @@ import (
 	"github.com/pashagolub/pgxmock/v4"
 )
 
+func TestSnapshotPayloadHashExcludesCallerAuthorizationMetadata(t *testing.T) {
+	entries := []struct {
+		Seq int `json:"seq"`
+	}{{Seq: 1}}
+	first, err := SnapshotPayloadHash("tenant-a", "request-a", entries, false, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := SnapshotPayloadHash("tenant-a", "request-a", entries, false, 0, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("canonical snapshot hash changed without payload change: %q != %q", first, second)
+	}
+	changed, err := SnapshotPayloadHash("tenant-a", "request-a", entries, true, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == changed {
+		t.Fatal("truncation metadata must participate in the payload hash")
+	}
+}
+
 func TestJournalSnapshotReceiptClaimIsIdempotentAndHashBound(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {

@@ -42,7 +42,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"546_stats_reconciliation_diffs_unique.sql",
 			"547_session_project_attribution.sql",
 			"548_stats_reconciliation_diffs_identity.sql",
-				"552_request_journey_durable_outbox.sql",
+			"552_request_journey_durable_outbox.sql",
 			"553_approval_resume_claim.sql",
 			"554_goal_runs.sql",
 			"555_goal_run_actions_lease_fencing.sql",
@@ -60,9 +60,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"571_candidate_binding_scope_revision_canonical_priority_hash.sql",
 			"600_outbound_body_to_bodies_hot.sql",
 			"601_request_logs_bodies_drop_metadata.sql",
-				"602_request_logs_promote_atomic.sql",
-				"618_request_journey_snapshot_receipts.sql",
-			},
+			"602_request_logs_promote_atomic.sql",
+			"618_request_journey_snapshot_receipts.sql",
+		},
 	}
 }
 
