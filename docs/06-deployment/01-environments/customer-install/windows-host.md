@@ -1,88 +1,32 @@
-# Windows Host 安装（NSSM / sc.exe）
+# Windows Host 安装
 
-## 快速上手
+> 状态：NOT_RELEASE_READY
+>
+> 当前仓库中的 `scripts/deploy/windows/install-service.ps1` 仍包含 Maintain 项目残留（binary/env/log identity），尚未形成可验证的 Gateway Windows 服务契约。本页只记录阻塞和验收要求，不把该脚本作为客户生产安装入口。
 
-```powershell
-# 1. 一行式（生产，PowerShell）
-irm https://llmgo.kxpms.cn/maintain-api/distribution/install-scripts/llm-gateway-host.ps1 | iex
+## 当前支持边界
 
-# 2. 本地脚本（开发）
-cd services/llm-gateway-go/scripts/deploy/windows
-powershell -ExecutionPolicy Bypass -File .\install-service.ps1 -Action install `
-  -ReleaseDir 'D:\kaixuan\llm-gateway\releases\2.4.7.1795' `
-  -ConfirmAction
-```
+- Windows host 暂不列入 `RELEASE_READY`。
+- Windows Docker/WSL 也没有统一、经过验收的官方客户入口。
+- 不要执行文档中的旧一键安装命令，也不要将 Maintain binary 重命名为 Gateway binary。
 
-## 默认路径
+## 必须完成后才能开放支持
 
-- `D:\kaixuan\llm-gateway\`（D: 可写时；不可写回退 `C:\llm-gateway\`）
-- `%ProgramFiles%\LLM-Gateway-Go\gateway.exe`（service binary）
-- `%ProgramData%\LLM-Gateway-Go\gateway.env`（mode 0600 等效）
-- 服务名：`LLM-Gateway-Go`
+1. 提供真正的 Gateway Windows amd64/arm64 artifact、`version.json`、web assets 和 checksum。
+2. 修正 PowerShell 安装脚本的服务名、binary、环境变量、日志路径和配置加载方式。
+3. 明确管理员权限、服务账户、`gateway.env` 权限、Windows Firewall 和事件日志策略。
+4. 提供升级、失败回退、schema 向前兼容和 release identity 验证。
+5. 在干净 Windows 主机执行安装、启动、`/healthz`、`/readyz`、`/version`、升级和回滚验收。
+6. 补齐正式 `client-deploy.ps1` 或明确替代入口，并加入 artifact-content contract test。
 
-## 服务注册
+## 目标契约（仅供实现/评审，不是当前操作指引）
 
-`install-service.ps1 -Action install`：
+| 项目 | 目标 |
+| --- | --- |
+| 进程监听 | 默认 `8781`，由 Gateway 配置明确设置 |
+| 外部端口 | 由客户代理或防火墙策略决定；不能与 Docker `8080 -> 8781` 混写 |
+| 健康检查 | `/healthz` liveness、`/readyz` DB+Redis readiness、`/version` release identity |
+| 配置 | 使用 Gateway 环境变量和客户密钥管理，不写明文 secret |
+| 服务 | 服务名、binary 和日志必须使用 Gateway identity |
 
-1. 复制 `gateway.exe` 到 `%InstallRoot%`
-2. 写 `%ConfigFile%`（首次拷 `gateway.env.example`）
-3. `sc.exe create LLM-Gateway-Go binPath= "%InstallRoot%\gateway.exe" start= auto` 或 NSSM `nssm install LLM-Gateway-Go ...`
-4. `sc.exe start LLM-Gateway-Go`
-
-**注意**：sc.exe / NSSM 在 Windows 上**不支持** `@PREFIX@` / `@CONFIG_FILE@` sed 占位符——参数在 install-service.ps1 内已硬编码。
-
-## 升级
-
-```powershell
-# 1. 停服务
-Stop-Service LLM-Gateway-Go
-
-# 2. 备份当前
-Copy-Item D:\kaixuan\llm-gateway\releases\<old> D:\kaixuan\llm-gateway\releases\<old>.bak
-
-# 3. 解压新 bundle
-Expand-Archive .\llm-gateway-go-<v>-windows-amd64.zip -DestinationPath D:\kaixuan\llm-gateway\releases\<new>
-
-# 4. 更新 current symlink (需 admin)
-New-Item -ItemType SymbolicLink -Path D:\kaixuan\llm-gateway\current -Target D:\kaixuan\llm-gateway\releases\<new>
-
-# 5. 启服务
-Start-Service LLM-Gateway-Go
-
-# 6. preflight (从 Linux/macOS 机器)
-curl http://<host>:8080/healthz | ConvertFrom-Json
-curl http://<host>:8080/readyz
-curl http://<host>:8080/version | ConvertFrom-Json
-```
-
-> **计划中**：PowerShell 版的 `upgrade-host.ps1` 会把这套流程化（与 macOS/Linux 的 `upgrade.sh` 对齐）。当前 PR 范围只覆盖 install + service 注册。
-
-## 回退（人工）
-
-```powershell
-Stop-Service LLM-Gateway-Go
-New-Item -ItemType SymbolicLink -Path D:\kaixuan\llm-gateway\current -Target D:\kaixuan\llm-gateway\releases\<old> -Force
-Start-Service LLM-Gateway-Go
-```
-
-## 故障排查
-
-```powershell
-# 服务状态
-Get-Service LLM-Gateway-Go
-sc.exe query LLM-Gateway-Go
-
-# 实时日志
-Get-Content "$env:ProgramData\LLM-Gateway-Go\logs\gateway.stdout.log" -Wait
-
-# eventlog
-Get-EventLog -LogName Application -Source LLM-Gateway-Go -Newest 50
-
-# 健康检查（gateway 默认 listen 0.0.0.0:8080）
-curl http://127.0.0.1:8080/healthz | ConvertFrom-Json
-curl http://127.0.0.1:8080/readyz
-curl http://127.0.0.1:8080/version | ConvertFrom-Json
-
-# Windows firewall（首次安装后需放行 8080）
-New-NetFirewallRule -DisplayName "LLM-Gateway-Go" -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow
-```
+在上述契约落地前，请使用 Linux/macOS host 或已验收的 Docker 路径，不要绕过状态标记。

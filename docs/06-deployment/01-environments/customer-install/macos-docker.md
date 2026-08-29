@@ -1,86 +1,59 @@
 # macOS Docker 安装（Docker Desktop）
 
-## 快速上手
+> 状态：PARTIAL；需要 Docker Desktop、真实 DB/Redis 和 clean-machine 验收。
+
+## 推荐入口
 
 ```bash
-# 1. 一行式（生产）
-curl -fsSL https://llmgo.kxpms.cn/maintain-api/distribution/install-scripts/llm-gateway-docker | bash
-
-# 2. 本地脚本（开发）
-cd llm-gateway-go/scripts/user
-bash install-docker.sh
+INSTALL_ROOT="$HOME/Downloads/llm-gateway-files" \
+  bash scripts/user/client-deploy.sh --install-mode docker deploy
 ```
 
-macOS Docker 路径与 Linux 同源码——`install-docker.sh` 与 `client-deploy.sh` 都强制 `PLATFORM=linux`（容器内跑 Linux 镜像）。
+macOS 使用 Linux 容器。`client-deploy.sh` 是客户编排入口；`install-docker.sh` 是底层脚本，使用时应显式设置 `COMPOSE_DIR`，不能假定 `INSTALL_ROOT` 会被它读取。
 
 ## 前置条件
 
-- Docker Desktop for Mac 已安装并运行（脚本会自动检测；缺失会打印安装链接）
-- Apple Silicon（M1/M2/M3）默认 `linux/arm64`；Intel Mac 默认 `linux/amd64`
+- Docker Desktop 已安装并运行。
+- Apple Silicon 使用 `linux/arm64`，Intel 使用 `linux/amd64`。
+- 对应 release 必须提供镜像 tar、SHA256SUMS、Gateway 配置模板和版本 metadata。
+- PostgreSQL 与 Redis 必须明确是 Compose 服务还是外部服务；未提供 Redis 时不能声称 `/readyz` 完整通过。
 
-## 路径布局
+## 目录和端口
 
-```
-~/Downloads/llm-gateway-files/
-├── docker-compose.yml          # gateway + pg 容器定义
-├── .env                        # mode 0600，PG 密码 + gateway secrets
-├── .env.bak/                   # 升级前自动备份
-├── versions/
-│   └── <v>/docker/linux-arm64/   # 镜像 tar + SHA256SUMS
-├── releases/
-│   └── <v>-<ts>/              # 升级前快照（rollback 用）
-├── data/                       # bind-mount 给 llm-gateway-pg
-└── CHANGELOG.log
-```
+- `INSTALL_ROOT`：客户编排的服务/版本根，默认建议 `~/Downloads/llm-gateway-files`，也可显式改为稳定路径。
+- `COMPOSE_DIR`：仅底层 `install-docker.sh` 的 compose 输出目录。
+- 容器内 Gateway 固定监听 `8781`；推荐宿主 `8080 -> 8781`。
+- `.env` 必须为 `0600`，secret 只通过环境变量或客户密钥管理提供。
 
-## 升级
+## 安装后验证
 
 ```bash
-# 检测到 docker-compose.yml → INSTALL_MODE=compose → 走 compose 升级路径
+docker compose -f "$HOME/Downloads/llm-gateway-files/docker-compose.yml" ps
+curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:8080/readyz
+curl -fsS http://127.0.0.1:8080/version
+bash scripts/lifecycle/preflight.sh \
+  --base-url http://127.0.0.1:8080 \
+  --expected-version <bundle-version>
+```
+
+## 升级与回滚
+
+```bash
 bash scripts/user/upgrade.sh run
-
-# 查看镜像缓存
-ls versions/
-
-# 回退到上一个 verified bundle
+bash scripts/user/upgrade.sh list
 bash scripts/user/upgrade.sh rollback
 ```
 
-Compose 升级三段：
-1. `docker compose stop`（gate 流量）
-2. `docker load -i versions/<new>/docker/linux-<arch>/gateway.tar` + sha256 校验
-3. `docker compose up -d --force-recreate`
-4. preflight.sh 三段
-
-失败自动回退（从 `releases/<v>-<ts>/.env.snapshot + docker-compose.yml.snapshot` 恢复）。
-
-## 回退（人工）
-
-```bash
-# 看快照
-ls releases/
-
-# 恢复 .env.snapshot + compose.snapshot + 旧 docker-compose.yml
-cp releases/<v>-<ts>/.env.snapshot .env
-cp releases/<v>-<ts>/docker-compose.yml.snapshot docker-compose.yml
-docker compose up -d
-```
+升级必须先备份 `.env`/compose，校验新镜像 checksum，再启动并执行三段 preflight。失败时恢复最近 release snapshot；若 migration 已执行，必须使用兼容性 runbook，不得只恢复旧 binary。
 
 ## 故障排查
 
 ```bash
-# 容器状态
 docker compose ps
-docker compose logs -f gateway
-docker compose logs -f llm-gateway-pg
-
-# 健康检查
-curl http://127.0.0.1:8080/healthz | jq
-curl http://127.0.0.1:8080/readyz
-curl http://127.0.0.1:8080/version | jq
-
-# PG 密码对齐（.env vs 容器）
-docker exec llm-gateway-pg pg_isready -U llm_user
-docker exec -e PGPASSWORD=$(grep POSTGRES_PASSWORD .env | cut -d= -f2) llm-gateway-pg \
-  psql -U llm_user -d llm_gateway -tAc 'SELECT 1'
+docker compose logs --tail=100 gateway
+docker compose exec <db-service> pg_isready
+docker compose exec <redis-service> redis-cli ping
 ```
+
+Windows Docker 当前没有统一官方入口；不能将本页 macOS Docker 流程直接移植到 Windows。
