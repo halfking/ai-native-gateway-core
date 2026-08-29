@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"log/slog"
+	"sync"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
@@ -77,21 +80,41 @@ func translateDispatchObservation(observation dispatch.Observation) (requestjour
 // errors are logged and dropped; the trace is best-effort diagnostics, never
 // gating execution. Kept independent of dispatchJourneyAdapter so a future
 // change to one bridge cannot silently drop the other.
+type journalSnapshotReceipt struct {
+	hash [sha256.Size]byte
+}
+
+type journalSnapshotReceiptKey struct {
+	tenantID, requestID string
+	version             int64
+}
+
 type dispatchJourneyJournalAdapter struct {
 	recorder *requestjourney.Recorder
 	instance string
+	store    dispatch.JournalSnapshotStore
 	receipt  *requestjourney.JournalSnapshotReceiptStore
+	mu       sync.Mutex
+	receipts map[journalSnapshotReceiptKey]journalSnapshotReceipt
 }
 
-func newDispatchJourneyJournalAdapter(recorder *requestjourney.Recorder, instanceID string) dispatch.JournalSink {
-	return newDispatchJourneyJournalAdapterWithReceipt(recorder, instanceID, nil)
+func newDispatchJourneyJournalAdapter(recorder *requestjourney.Recorder, instanceID string, stores ...dispatch.JournalSnapshotStore) dispatch.JournalSink {
+	return newDispatchJourneyJournalAdapterWithDependencies(recorder, instanceID, nil, stores...)
 }
 
-func newDispatchJourneyJournalAdapterWithReceipt(recorder *requestjourney.Recorder, instanceID string, receipt *requestjourney.JournalSnapshotReceiptStore) dispatch.JournalSink {
+func newDispatchJourneyJournalAdapterWithReceipt(recorder *requestjourney.Recorder, instanceID string, receipt *requestjourney.JournalSnapshotReceiptStore, stores ...dispatch.JournalSnapshotStore) dispatch.JournalSink {
+	return newDispatchJourneyJournalAdapterWithDependencies(recorder, instanceID, receipt, stores...)
+}
+
+func newDispatchJourneyJournalAdapterWithDependencies(recorder *requestjourney.Recorder, instanceID string, receipt *requestjourney.JournalSnapshotReceiptStore, stores ...dispatch.JournalSnapshotStore) dispatch.JournalSink {
 	if recorder == nil {
 		return nil
 	}
-	return &dispatchJourneyJournalAdapter{recorder: recorder, instance: instanceID, receipt: receipt}
+	var store dispatch.JournalSnapshotStore
+	if len(stores) > 0 {
+		store = stores[0]
+	}
+	return &dispatchJourneyJournalAdapter{recorder: recorder, instance: instanceID, store: store, receipt: receipt, receipts: make(map[journalSnapshotReceiptKey]journalSnapshotReceipt)}
 }
 
 // ApplyJournalSnapshot fans the per-request attempt journal out into the
@@ -124,16 +147,12 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 			"snap_tenant", snap.TenantID)
 		return
 	}
-	if snap.TenantID == "" || snap.RequestID == "" || len(snap.Entries) == 0 {
+	if snap.TenantID == "" || snap.RequestID == "" || len(snap.Entries) == 0 || snap.SnapshotVersion <= 0 {
 		return
 	}
 
 	var receiptClaim requestjourney.JournalSnapshotReceiptClaim
 	if a.receipt != nil {
-		if snap.SnapshotVersion <= 0 {
-			slog.Warn("dispatch journal sink rejected invalid snapshot version", "request_id", snap.RequestID)
-			return
-		}
 		hash, err := requestjourney.SnapshotPayloadHash(snap)
 		if err != nil {
 			slog.Warn("dispatch journal snapshot hash failed", "request_id", snap.RequestID, "error", err)
