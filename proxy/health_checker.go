@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 var _ HealthChecker = (*HTTPHealthChecker)(nil)
@@ -76,15 +77,15 @@ func (c *HTTPHealthChecker) getOrCreateTransport(proxyURL string) (*http.Transpo
 	if cached, ok := c.transports.Load(proxyURL); ok {
 		return cached.(*http.Transport), nil
 	}
-	
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	// 再次检查（double-check）
 	if cached, ok := c.transports.Load(proxyURL); ok {
 		return cached.(*http.Transport), nil
 	}
-	
+
 	// 创建可复用的 Transport（disableKeepAlives=false）
 	tr, err := newTransportForProxy(proxyURL, c.timeout, false)
 	if err != nil {
@@ -94,7 +95,7 @@ func (c *HTTPHealthChecker) getOrCreateTransport(proxyURL string) (*http.Transpo
 	tr.MaxIdleConns = 10
 	tr.MaxIdleConnsPerHost = 2
 	tr.IdleConnTimeout = 90 * time.Second
-	
+
 	c.transports.Store(proxyURL, tr)
 	return tr, nil
 }
@@ -168,8 +169,9 @@ func (c *HTTPHealthChecker) Check(ctx context.Context, node *Node) (int, error) 
 	}
 
 	// 必须读干并关闭正文，避免连接与 goroutine 泄漏。
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, healthCheckDrainLimit))
-	_ = resp.Body.Close()
+	if _, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, healthCheckDrainLimit); bodyErr != nil {
+		return elapsedMillis(start), fmt.Errorf("proxy: node %q health check body cleanup failed: %w", node.Name, bodyErr)
+	}
 
 	elapsedMs := elapsedMillis(start)
 	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
@@ -196,11 +198,11 @@ func elapsedMillis(start time.Time) int {
 
 // HealthCheckResult 单次并发探测的结果。
 type HealthCheckResult struct {
-	NodeID   int
-	NodeName string
-	OK       bool
-	Latency  int // 毫秒；失败时为达到失败前的耗时
-	Err      error
+	NodeID    int
+	NodeName  string
+	OK        bool
+	Latency   int // 毫秒；失败时为达到失败前的耗时
+	Err       error
 	CheckedAt time.Time
 }
 
@@ -224,7 +226,7 @@ func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, 
 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	
+
 	// 监听 context 取消，提前中止
 	cancelCh := make(chan struct{})
 	go func() {
@@ -240,7 +242,7 @@ func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, 
 			break
 		default:
 		}
-		
+
 		if !node.Dialable() {
 			// 不可拨号节点（trojan/vless）跳过，直接标记不可探活。
 			out <- HealthCheckResult{
@@ -257,10 +259,10 @@ func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, 
 		go func(n *Node) {
 			defer wg.Done()
 			defer func() { <-sem }() // 释放额度
-			
+
 			// 使用调用方的 context，在取消时探测会立即中止
 			latency, err := c.Check(ctx, n)
-			
+
 			// 尝试发送结果，如果 out 已关闭则丢弃
 			select {
 			case out <- HealthCheckResult{

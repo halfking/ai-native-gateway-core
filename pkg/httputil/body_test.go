@@ -2,6 +2,7 @@ package httputil
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -9,12 +10,31 @@ import (
 
 type closeTracker struct {
 	io.Reader
-	closed bool
+	closed   bool
+	closeErr error
 }
 
 func (c *closeTracker) Close() error {
 	c.closed = true
-	return nil
+	return c.closeErr
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("read failed") }
+
+type trackingReader struct {
+	data []byte
+	read int
+}
+
+func (r *trackingReader) Read(p []byte) (int, error) {
+	if r.read == len(r.data) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data[r.read:])
+	r.read += n
+	return n, nil
 }
 
 func TestDrainAndClose(t *testing.T) {
@@ -31,13 +51,24 @@ func TestDrainAndClose(t *testing.T) {
 		}
 	})
 
-	t.Run("large body is limited", func(t *testing.T) {
-		// 128KB body, should only drain 64KB
+	t.Run("large body is fully drained after prefix", func(t *testing.T) {
 		largeBody := bytes.Repeat([]byte("x"), 128*1024)
-		body := &closeTracker{Reader: bytes.NewReader(largeBody)}
+		reader := &trackingReader{data: largeBody}
+		body := &closeTracker{Reader: reader}
 		DrainAndClose(body)
 		if !body.closed {
 			t.Error("expected body to be closed")
+		}
+		if reader.read != len(largeBody) {
+			t.Fatalf("expected all body bytes drained, read %d of %d", reader.read, len(largeBody))
+		}
+	})
+
+	t.Run("reports read and close errors", func(t *testing.T) {
+		body := &closeTracker{Reader: errReader{}, closeErr: errors.New("close failed")}
+		_, err := ReadPrefixAndDrain(body, 16)
+		if err == nil || !strings.Contains(err.Error(), "read failed") || !strings.Contains(err.Error(), "close failed") {
+			t.Fatalf("expected read and close errors, got %v", err)
 		}
 	})
 

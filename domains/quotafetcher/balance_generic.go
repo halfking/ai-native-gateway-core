@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 // balanceFetcher covers providers whose "quota" is a USD balance exposed via a
@@ -74,16 +74,15 @@ func (f *balanceFetcher) Fetch(ctx context.Context, req FetchRequest) (*QuotaInf
 			"credential_id", req.CredentialID, "url", balURL, "error", err.Error())
 		return nil, nil
 	}
-	defer resp.Body.Close()
+	body, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, 64*1024)
+	if bodyErr != nil {
+		return nil, nil
+	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		f.cache.Invalidate(req.CredentialID)
 		return nil, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if err != nil {
 		return nil, nil
 	}
 

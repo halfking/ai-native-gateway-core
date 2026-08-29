@@ -1,6 +1,7 @@
 package bg
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -194,4 +195,45 @@ func TestPromoteLockKeyDeterministic(t *testing.T) {
 	if a == promoteLockKey("request_logs_hot") {
 		t.Fatalf("promoteLockKey collision between distinct labels")
 	}
+}
+
+func TestPartitionManagerStopBeforeStartIsSafe(t *testing.T) {
+	pm := NewPartitionManager(nil, time.Hour)
+	done := make(chan struct{})
+	go func() {
+		pm.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Stop before Start blocked")
+	}
+}
+
+func TestPartitionManagerStartStopIsIdempotent(t *testing.T) {
+	pm := NewPartitionManager(nil, time.Hour)
+	pm.SetPromoteInterval(0)
+	pm.Start(context.Background())
+	pm.Start(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		pm.Stop()
+		pm.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idempotent Stop did not complete")
+	}
+}
+
+func TestPartitionManagerPromoteIntervalNonPositiveDoesNotPanic(t *testing.T) {
+	pm := NewPartitionManager(nil, time.Hour)
+	pm.SetPromoteInterval(0)
+	pm.promoteDefaultToPartitions(context.Background())
+	pm.SetPromoteInterval(-time.Second)
+	pm.promoteDefaultToPartitions(context.Background())
 }

@@ -13,10 +13,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 // WebhookConfig Webhook 渠道配置。
@@ -100,7 +101,7 @@ func (c *WebhookChannel) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("webhook healthcheck: %w", err)
 	}
-	defer resp.Body.Close()
+	defer httputil.DrainAndClose(resp.Body)
 	// 2xx / 3xx / 405（HEAD 不支持）都算可达
 	if resp.StatusCode < 200 || resp.StatusCode >= 500 {
 		return fmt.Errorf("webhook healthcheck: unexpected status %d", resp.StatusCode)
@@ -167,17 +168,18 @@ func (c *WebhookChannel) doPost(ctx context.Context, body []byte) error {
 	if err != nil {
 		return fmt.Errorf("http post: %w", err)
 	}
-	defer resp.Body.Close()
-
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		httputil.DrainAndClose(resp.Body)
 		return nil
 	}
-	// 读取响应体用于错误信息（限制 1KB）
-	bodySnippet := make([]byte, 0, 1024)
-	n, _ := io.ReadFull(resp.Body, bodySnippet)
+	// 读取响应体用于错误信息（限制 1KB），并继续排空尾部后关闭。
+	bodySnippet, readErr := httputil.ReadPrefixAndDrain(resp.Body, 1024)
+	if readErr != nil {
+		slog.Debug("webhook channel: failed to read or close error response body", "error", readErr)
+	}
 	return &webhookHTTPError{
 		StatusCode: resp.StatusCode,
-		Body:       string(bodySnippet[:n]),
+		Body:       string(bodySnippet),
 	}
 }
 
