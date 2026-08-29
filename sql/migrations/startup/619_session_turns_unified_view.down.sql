@@ -1,9 +1,9 @@
 -- ===========================================================================
--- File:          sql/migrations/startup/617_session_turns_unified_view.down.sql
+-- File:          sql/migrations/startup/619_session_turns_unified_view.down.sql
 -- Database:      llm_gateway
 -- Purpose:       回滚 session_turns_unified 统一视图
 --
--- Related:       617_session_turns_unified_view.sql
+-- Related:       619_session_turns_unified_view.sql
 -- ===========================================================================
 
 \set ON_ERROR_STOP on
