@@ -55,48 +55,58 @@ func main() {
 	}
 	defer pool.Close()
 
-	// Optimized query: no window function, just ORDER BY.
-	// turn_no is computed in Go to avoid ROW_NUMBER() triggering slow scans.
+	// Step 1: Query request_logs only (fast: ~15ms for 2 turns).
+	// Avoids slow LEFT JOIN on large request_logs_bodies partitions.
 	rows, err := pool.Query(context.Background(), `
-		SELECT r.request_id, r.tenant_id, r.ts,
-		       b.request_body, b.response_body
-		FROM request_logs r
-		LEFT JOIN request_logs_bodies b ON b.request_id = r.request_id
-		WHERE r.gw_session_id = $1 AND ($2 = '' OR r.tenant_id = $2)
-		ORDER BY r.ts ASC, r.request_id ASC`, *session, *tenant)
+		SELECT request_id, tenant_id, ts
+		FROM request_logs
+		WHERE gw_session_id = $1 AND ($2 = '' OR tenant_id = $2)
+		ORDER BY ts ASC, request_id ASC`, *session, *tenant)
 	if err != nil {
-		log.Fatalf("query turns: %v", err)
+		log.Fatalf("query request_logs: %v", err)
 	}
 
 	var turnRows []turnRow
-	var fullMsgs, respMsgs [][]Msg
 	turnNo := 1
 	for rows.Next() {
 		var r turnRow
-		var reqBody, respBody []byte
-		if err := rows.Scan(&r.requestID, &r.tenantID, &r.ts, &reqBody, &respBody); err != nil {
-			log.Fatalf("scan turn: %v", err)
+		if err := rows.Scan(&r.requestID, &r.tenantID, &r.ts); err != nil {
+			log.Fatalf("scan turn metadata: %v", err)
 		}
 		r.turnNo = turnNo
 		turnNo++
-		r.reqBody = reqBody
-		r.respBody = respBody
-		full, err := ParseRequestMessages(reqBody)
-		if err != nil {
-			log.Fatalf("turn %d parse request: %v", r.turnNo, err)
-		}
-		resp, err := ParseResponseMessages(respBody)
-		if err != nil {
-			log.Fatalf("turn %d parse response: %v", r.turnNo, err)
-		}
 		turnRows = append(turnRows, r)
-		fullMsgs = append(fullMsgs, full)
-		respMsgs = append(respMsgs, resp)
 	}
 	if err := rows.Err(); err != nil {
 		log.Fatalf("iterate turns: %v", err)
 	}
 	rows.Close()
+
+	// Step 2: Fetch bodies individually (small queries, avoids partition scan).
+	var fullMsgs, respMsgs [][]Msg
+	for i := range turnRows {
+		var reqBody, respBody []byte
+		err := pool.QueryRow(context.Background(), `
+			SELECT request_body, response_body
+			FROM request_logs_bodies
+			WHERE request_id = $1`, turnRows[i].requestID).Scan(&reqBody, &respBody)
+		if err != nil {
+			log.Fatalf("fetch bodies turn %d request_id=%s: %v", turnRows[i].turnNo, turnRows[i].requestID, err)
+		}
+		turnRows[i].reqBody = reqBody
+		turnRows[i].respBody = respBody
+
+		full, err := ParseRequestMessages(reqBody)
+		if err != nil {
+			log.Fatalf("turn %d parse request: %v", turnRows[i].turnNo, err)
+		}
+		resp, err := ParseResponseMessages(respBody)
+		if err != nil {
+			log.Fatalf("turn %d parse response: %v", turnRows[i].turnNo, err)
+		}
+		fullMsgs = append(fullMsgs, full)
+		respMsgs = append(respMsgs, resp)
+	}
 
 	reqDeltas, respDeltas := DeriveTurnDeltas(fullMsgs, respMsgs)
 
