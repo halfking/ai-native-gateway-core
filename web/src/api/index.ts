@@ -20,6 +20,7 @@ export * from './request-journeys'
 export * from './node-health'
 export * from './connection-registry'
 export * from './vendor-credential-error'
+export * from './proxy'
 export {
   BASE,
   headers,
