@@ -113,3 +113,36 @@ func TestStreamNativeResponsesSSEPreSemanticEOFIsResumable(t *testing.T) {
 		t.Fatalf("outcome = %#v, want resumable pre-semantic EOF", outcome)
 	}
 }
+
+// panickingReader returns a synthetic error on the first Read so we can
+// exercise the goroutine panic-recover guard without taking down the whole
+// test process. The reader raises panic() inside Read; without the recover()
+// added in NativeResponsesEventReader.ReadEvent, the reader goroutine would
+// die, the channel would never receive, and the caller would block until
+// the chunk timeout fires — turning a recoverable panic into a full
+// stream timeout for the client.
+type panickingReader struct{}
+
+func (panickingReader) Read(p []byte) (int, error) {
+	panic("synthetic panic inside native Responses SSE reader")
+}
+
+func TestNativeResponsesEventReaderPanicBecomesError(t *testing.T) {
+	reader := NewNativeResponsesEventReader(panickingReader{}, 1024)
+	// Use a tight timeout so that, even if the panic-recover is missing and
+	// the goroutine silently dies, the test fails fast with a clear timeout
+	// signal rather than a 30s default.
+	start := time.Now()
+	_, err := reader.ReadEvent(context.Background(), 500*time.Millisecond, nil)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("ReadEvent after panic = nil error, want recovered panic error")
+	}
+	if !strings.Contains(err.Error(), "panic") {
+		t.Fatalf("ReadEvent error = %v, want recovered panic", err)
+	}
+	// Sanity check: recovery must surface promptly, not wait for ctx timeout.
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("ReadEvent blocked %v after panic; recover() likely missing", elapsed)
+	}
+}
