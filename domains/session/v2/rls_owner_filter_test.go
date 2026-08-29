@@ -2,10 +2,7 @@ package v2
 
 import (
 	"context"
-	"os"
 	"testing"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // TestRLS_SessionsV2_OwnerFilter_CrossTenantDenied exercises the RESTRICTIVE
@@ -21,15 +18,7 @@ func TestRLS_SessionsV2_OwnerFilter_CrossTenantDenied(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in -short mode")
 	}
-	dsn := os.Getenv("TEST_DB_URL")
-	if dsn == "" {
-		t.Skip("TEST_DB_URL not set")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("pool: %v", err)
-	}
-	defer pool.Close()
+	pool := setupTestDB(t)
 
 	ctxA := context.Background()
 	if _, err := pool.Exec(ctxA,

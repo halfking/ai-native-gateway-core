@@ -460,6 +460,11 @@ func (d *DB) ensureJournalSnapshotReceiptSchema(ctx context.Context) error {
 				status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
 			)
 		)`,
+		`ALTER TABLE public.journal_snapshot_receipts
+			ADD COLUMN IF NOT EXISTS projection_base_seq BIGINT NOT NULL DEFAULT 0`,
+		`ALTER TABLE public.journal_snapshot_receipts
+			DROP CONSTRAINT IF EXISTS journal_snapshot_receipts_projection_base_seq_chk,
+			ADD CONSTRAINT journal_snapshot_receipts_projection_base_seq_chk CHECK (projection_base_seq >= 0)`,
 		`CREATE INDEX IF NOT EXISTS idx_journal_snapshot_receipts_claim
 			ON public.journal_snapshot_receipts (claim_until, updated_at)
 			WHERE status = 'processing'`,

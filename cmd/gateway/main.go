@@ -797,7 +797,7 @@ func main() {
 	// diagnostic read model and bridged into RequestJourney events.
 	var journalSnapshotReceipt *requestjourney.JournalSnapshotReceiptStore
 	if dbConn != nil && dbConn.Enabled() {
-		journalSnapshotReceipt = requestjourney.NewPostgresJournalSnapshotReceiptStore(dbConn.Pool(), journeyInstanceID)
+		journalSnapshotReceipt = requestjourney.NewPostgresJournalSnapshotReceiptStore(dbConn.Pool(), journalSnapshotReceiptOwner(journeyInstanceID))
 	}
 	gatewayRequestJourneyJournalSink = newDispatchJourneyJournalAdapterWithReceipt(journeyRecorder, journeyInstanceID, journalSnapshotReceipt, journalSnapshotStore)
 	slog.Info("request journey recorder wired",
