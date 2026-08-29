@@ -58,6 +58,8 @@ type Node struct {
 	UpdatedAt              time.Time              `json:"updated_at"`
 	// 审计修复 (2026-08-29)：问题 11 - 解密失败标志，避免密文被当作明文使用。
 	PasswordDecryptFailed  bool                   `json:"password_decrypt_failed,omitempty"`
+	// 阶段 2 优化：智能探活间隔 - 下次健康检查时间（内存字段，不持久化）
+	NextHealthCheckAt      time.Time              `json:"-"`
 }
 
 // Domain 供应商域名
