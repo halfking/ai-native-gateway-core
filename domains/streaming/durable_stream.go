@@ -48,10 +48,11 @@ type DurableStreamBinding struct {
 	task  *durable.Task
 	lease time.Duration
 
-	mu        sync.Mutex
-	lastRank  int
-	stopRenew chan struct{}
-	renewDone chan struct{}
+	mu          sync.Mutex
+	lastRank    int
+	renewCtx    context.Context
+	renewCancel context.CancelFunc
+	renewDone   chan struct{}
 	// renewInterval is the ticker period of the renewal loop; Stop bounds its
 	// wait on it so it never times out before a pending tick can drain.
 	renewInterval time.Duration
@@ -73,34 +74,40 @@ func newDurableStreamBinding(store DurableForegroundStore, task *durable.Task, l
 // Start launches the lease renewal loop (every lease/2) until Stop.
 func (b *DurableStreamBinding) Start() {
 	b.mu.Lock()
-	if b.stopRenew != nil {
+	if b.renewCancel != nil {
 		b.mu.Unlock()
 		return
 	}
-	stop := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	b.stopRenew, b.renewDone = stop, done
-	b.mu.Unlock()
+	b.renewCtx, b.renewCancel, b.renewDone = ctx, cancel, done
 
 	interval := b.lease / 2
 	if interval <= 0 {
 		interval = time.Second
 	}
-	b.mu.Lock()
 	b.renewInterval = interval
 	b.mu.Unlock()
+
 	go func() {
-		defer close(done)
+		defer func() {
+			b.mu.Lock()
+			if b.renewDone == done {
+				b.renewCtx, b.renewCancel, b.renewDone = nil, nil, nil
+			}
+			b.mu.Unlock()
+			close(done)
+		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stop:
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				err := b.store.RenewLease(ctx, b.task.ID, b.task.LeaseOwner, b.task.FencingToken, time.Now().Add(b.lease))
-				cancel()
+				renewCtx, renewCancel := context.WithTimeout(ctx, 5*time.Second)
+				err := b.store.RenewLease(renewCtx, b.task.ID, b.task.LeaseOwner, b.task.FencingToken, time.Now().Add(b.lease))
+				renewCancel()
 				if err != nil {
 					// Fence lost or DB unavailable: stop renewing. Post-content
 					// tasks are unclaimable (commit_state gate) and the safety
@@ -119,25 +126,20 @@ func (b *DurableStreamBinding) Start() {
 }
 
 // Stop ends the renewal loop. Idempotent; bounded wait so a stuck renewal
-// call cannot pin the request goroutine.
+// call cannot pin the request goroutine. Cancellation is propagated to the
+// in-flight renewal before waiting for the loop to exit.
 func (b *DurableStreamBinding) Stop() {
 	b.mu.Lock()
-	stop, done := b.stopRenew, b.renewDone
-	b.stopRenew, b.renewDone = nil, nil
-	// Worst-case wait: a pending renewal tick may be mid-flight when we close
-	// stop. The loop's select can defer up to one full interval before seeing
-	// stop, then a RenewLease call can run up to its 5s timeout. Bound the
-	// wait on that sum so Stop returns promptly but never times out early
-	// (a short fixed grace < interval would spurious-timeout ~every stop).
+	cancel, done := b.renewCancel, b.renewDone
 	grace := b.renewInterval + 6*time.Second
 	if grace < 3*time.Second {
 		grace = 3 * time.Second
 	}
 	b.mu.Unlock()
-	if stop == nil {
+	if cancel == nil {
 		return
 	}
-	close(stop)
+	cancel()
 	select {
 	case <-done:
 	case <-time.After(grace):
