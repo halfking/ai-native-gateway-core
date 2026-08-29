@@ -130,7 +130,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			COALESCE(body, '{}'::jsonb) as request_body,
 			COALESCE(response, '{}'::jsonb) as response_body,
 			COALESCE(success, false) as success
-		FROM gateway.request_logs
+		FROM request_logs
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY ts ASC
 	`
@@ -359,7 +359,7 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 
 	query := `
 		SELECT DISTINCT session_id
-		FROM gateway.request_logs
+		FROM request_logs
 		WHERE tenant_id = $1
 		  AND ts >= $2
 		  AND ts < $3
@@ -387,7 +387,7 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 		// Check if session is settled (last update > settle window ago)
 		var lastUpdate time.Time
 		err := l.db.QueryRow(ctx, `
-			SELECT MAX(ts) FROM gateway.request_logs
+			SELECT MAX(ts) FROM request_logs
 			WHERE tenant_id = $1 AND session_id = $2
 		`, tenantID, sessionID).Scan(&lastUpdate)
 
