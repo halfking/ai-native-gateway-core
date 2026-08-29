@@ -46,7 +46,7 @@ const facet = ref<Facet>('integrated')
 const treeSelectedTurn = ref<number | null>(null)
 
 // Derived-turns view state.
-const subView = ref<SubView>('turns')
+const subView = ref<SubView>('tree')
 const derivedSelected = ref(0)
 const derivedExpanded = ref<Set<number>>(new Set())
 const showAllTurns = ref(false)
@@ -78,6 +78,15 @@ const derivedTurns = computed(() =>
   deriveConversationTurns(extractMessagesFromBody(props.requestBody)),
 )
 
+// Map turn numbers to latency from the tree data
+const turnLatencyMap = computed(() => {
+  const map = new Map<number, number | null>()
+  for (const t of turns.value) {
+    map.set(t.turn_number, t.latency)
+  }
+  return map
+})
+
 // Reset selection when the conversation body changes.
 watch(
   derivedTurns,
@@ -104,6 +113,14 @@ const treeCurrent = computed(() =>
 
 function latencyLabel(ms: number | null): string {
   return ms == null ? '—' : `${ms}ms`
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  const mins = Math.floor(ms / 60000)
+  const secs = Math.floor((ms % 60000) / 1000)
+  return `${mins}m${secs}s`
 }
 
 function selectTreeTurn(t: SessionTurnTreeItem) {
@@ -199,8 +216,9 @@ function onDividerUp() {
           <div class="turn-card-head">
             <span class="tn">#{{ t.number }}</span>
             <span v-if="t.assistantCount" class="badge">回复 {{ t.assistantCount }}</span>
+            <span v-if="turnLatencyMap.get(t.number) != null" class="duration">{{ formatDuration(turnLatencyMap.get(t.number)!) }}</span>
           </div>
-          <pre v-if="derivedExpanded.has(t.index)" class="turn-preview">{{ t.userPreviewFull }}</pre>
+          <pre v-if="derivedExpanded.has(t.index)" class="turn-preview turn-preview--expanded">{{ t.userPreviewFull }}</pre>
           <pre v-else class="turn-preview">{{ t.userPreview }}</pre>
           <button
             v-if="t.truncated"
@@ -364,10 +382,24 @@ function onDividerUp() {
   background: color-mix(in srgb, var(--kx-success) 14%, transparent);
   padding: 0 6px; border-radius: 999px;
 }
+.turn-card .duration {
+  font-size: 10px; color: var(--kx-primary);
+  background: color-mix(in srgb, var(--kx-primary) 14%, transparent);
+  padding: 0 6px; border-radius: 999px;
+  margin-left: auto;
+}
 .turn-preview {
   margin: 0; white-space: pre-wrap; word-break: break-word;
   font-size: 12px; line-height: 1.45; color: var(--fg, inherit);
-  max-height: 180px; overflow: auto; background: transparent;
+  background: transparent;
+}
+.turn-preview:not(.turn-preview--expanded) {
+  max-height: 180px;
+  overflow: auto;
+}
+.turn-preview--expanded {
+  max-height: none;
+  overflow: visible;
 }
 .linkish { margin-top: 4px; }
 
