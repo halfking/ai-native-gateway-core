@@ -61,4 +61,83 @@ var (
 		Name: "llmgw_node_probe_sync_inflight_waiters",
 		Help: "Number of request goroutines currently blocked on an in-flight background probe (dedup reuse).",
 	})
+
+	// 2026-08-29 P2: Hot table promote metrics for monitoring partition migration health.
+	//
+	// hotTablePromoteFailuresTotal counts promote failures by table label.
+	// A rate() > 0 means hot table data is accumulating and not being
+	// drained into monthly partitions, which will degrade query performance.
+	// Operators should alert on sustained failures (e.g., rate(5m) > 0).
+	//
+	// Label "table" is the human-readable hot table name from promoteSpecs(),
+	// e.g. "request_logs_hot", "session_bodies_hot", etc.
+	hotTablePromoteFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_hot_table_promote_failures_total",
+			Help: "Hot table promote failures by table (label = hot table name from promoteSpecs)",
+		},
+		[]string{"table"},
+	)
+
+	// hotTablePromoteBatchesTotal counts successful promote batches by table.
+	// Useful for monitoring promote throughput and comparing against failures.
+	hotTablePromoteBatchesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_hot_table_promote_batches_total",
+			Help: "Successful hot table promote batches by table",
+		},
+		[]string{"table"},
+	)
+
+	// hotTablePromoteRowsTotal counts total rows promoted by table.
+	// Tracks the volume of data being moved from hot to partition tables.
+	hotTablePromoteRowsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_hot_table_promote_rows_total",
+			Help: "Total rows promoted from hot to partition tables",
+		},
+		[]string{"table"},
+	)
+
+	// hotTablePromoteDurationSeconds observes promote batch duration by table.
+	// High durations may indicate database load or large backlog.
+	hotTablePromoteDurationSeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llm_gateway_hot_table_promote_duration_seconds",
+			Help:    "Hot table promote batch duration by table",
+			Buckets: []float64{0.1, 0.5, 1, 2, 5, 10, 30, 60},
+		},
+		[]string{"table"},
+	)
+
+	// hotTablePromoteSkippedTotal counts promote attempts skipped due to
+	// advisory lock contention (peer gateway holding the lock).
+	hotTablePromoteSkippedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llm_gateway_hot_table_promote_skipped_total",
+			Help: "Hot table promote attempts skipped due to advisory lock contention",
+		},
+		[]string{"table"},
+	)
 )
+
+// recordPromoteFailure increments the failure counter for a table.
+func recordPromoteFailure(table string) {
+	hotTablePromoteFailuresTotal.WithLabelValues(table).Inc()
+}
+
+// recordPromoteBatch increments the batch counter and records row count.
+func recordPromoteBatch(table string, rows int64) {
+	hotTablePromoteBatchesTotal.WithLabelValues(table).Inc()
+	hotTablePromoteRowsTotal.WithLabelValues(table).Add(float64(rows))
+}
+
+// recordPromoteDuration observes the duration of a promote batch.
+func recordPromoteDuration(table string, seconds float64) {
+	hotTablePromoteDurationSeconds.WithLabelValues(table).Observe(seconds)
+}
+
+// recordPromoteSkipped increments the skipped counter for a table.
+func recordPromoteSkipped(table string) {
+	hotTablePromoteSkippedTotal.WithLabelValues(table).Inc()
+}

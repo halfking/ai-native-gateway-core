@@ -292,6 +292,13 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// Append-only alert events, no partition strategy. Default 30d via
 	// lifecycle.runtime_alert_events_ttl_days.
 	pm.cleanupOldRuntimeAlertEvents(ctx)
+
+	// 11. 2026-08-29 P2: provider_error_details resolved errors cleanup.
+	// Deletes resolved error aggregations older than 30 days to prevent
+	// unbounded growth. Unresolved errors are retained indefinitely for
+	// operational visibility. Default 30d via
+	// lifecycle.provider_error_details_ttl_days.
+	pm.cleanupOldProviderErrorDetails(ctx)
 }
 
 // dropOldStatePartitions calls the SQL helper
@@ -821,12 +828,14 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
+			batchStart := time.Now() // 2026-08-29 P2: track duration
 			timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 			tx, err := pm.db.Begin(timeoutCtx)
 			if err != nil {
 				cancel()
 				slog.Error("partition_manager: promote begin failed",
 					"label", s.label, "error", err)
+				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
 				break
 			}
 			// Serialize against the peer gateway's promote on the same
@@ -841,6 +850,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				cancel()
 				slog.Error("partition_manager: promote lock failed",
 					"label", s.label, "error", err)
+				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
 				break
 			}
 			if !locked {
@@ -848,6 +858,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				cancel()
 				slog.Debug("partition_manager: promote skipped (peer holds lock)",
 					"label", s.label)
+				recordPromoteSkipped(s.label) // 2026-08-29 P2: record skip
 				break
 			}
 			var n int64
@@ -857,16 +868,19 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			).Scan(&n)
 			commitErr := tx.Commit(timeoutCtx) // releases the xact lock
 			cancel()
+			batchDuration := time.Since(batchStart).Seconds() // 2026-08-29 P2
 			if err != nil {
 				slog.Error("partition_manager: promote failed",
 					"fn", s.fnName, "label", s.label,
 					"retention", retention, "batch_size", batchSize,
 					"error", err)
-				break // move on to the next table
+				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
+				break                         // move on to the next table
 			}
 			if commitErr != nil {
 				slog.Error("partition_manager: promote commit failed",
 					"label", s.label, "error", commitErr)
+				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
 				break
 			}
 			if n == 0 {
@@ -875,6 +889,9 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 					"retention", retention)
 				break
 			}
+			// 2026-08-29 P2: record successful batch
+			recordPromoteBatch(s.label, n)
+			recordPromoteDuration(s.label, batchDuration)
 			slog.Info("partition_manager: promote batch",
 				"label", s.label, "rows", n)
 		}
@@ -999,3 +1016,43 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 		return retention, batchSize
 	}
 }
+
+// cleanupOldProviderErrorDetails deletes resolved error aggregations from
+// provider_error_details older than the configured TTL. Unresolved errors
+// (resolved=false) are retained indefinitely for operational visibility.
+// This prevents the aggregation table from growing unboundedly while
+// preserving active error signals.
+//
+// Retention: lifecycle.provider_error_details_ttl_days (default 30, hot-reloadable).
+// Backed by idx_ped_last_seen (last_seen_at DESC) and idx_ped_unresolved
+// (partial index on resolved=false).
+//
+// 2026-08-29 P2: Added to prevent unbounded growth of the error aggregation
+// table after the聚合器 was implemented in migration 616.
+func (pm *PartitionManager) cleanupOldProviderErrorDetails(ctx context.Context) {
+	retentionDays := settings.GetPlatformInt("lifecycle.provider_error_details_ttl_days", 30)
+	if retentionDays < 1 {
+		retentionDays = 30 // safety floor — never set to 0
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Only delete resolved errors older than TTL.
+	// Unresolved errors are kept indefinitely for operational visibility.
+	tag, err := pm.db.Exec(timeoutCtx,
+		`DELETE FROM provider_error_details 
+		 WHERE resolved = true 
+		 AND updated_at < now() - ($1 || ' days')::interval`,
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: provider_error_details cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("partition_manager: cleaned provider_error_details",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
