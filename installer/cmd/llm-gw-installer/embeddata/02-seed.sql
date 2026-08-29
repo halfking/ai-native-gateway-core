@@ -1036,7 +1036,9 @@ ON CONFLICT (canonical_name) DO NOTHING;
 
 -- kimi-k3 / kimi-k2.6 / kimi-k2.7-code / kimi-k2.7-code-highspeed
 -- (mirror 354 + 358 modality + 611 correction)
--- 2026-08-29: 611 验证 modelname/modality_defaults.go 注释.
+-- 2026-08-29: 611 验证 modelname/modality_defaults.go 注释:
+--   kimi-k3 = 1M context, multimodal; kimi-k2.6 = 256K context, vision;
+--   kimi-k2.7-code* = 256K context, text (无 vision input).
 INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
 VALUES
     ('kimi-k3',                   'kimi', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
