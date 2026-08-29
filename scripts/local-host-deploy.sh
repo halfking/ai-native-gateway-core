@@ -65,6 +65,7 @@ lh_require_root >/dev/null
 # Try to discover the local PG password from env-injector. Fall back to
 # kxpass (the r112 compose default) only if no secret is loaded.
 if [[ -z "${COMMON_PG_SUPERUSER_PASS:-}" ]]; then
+  # shellcheck disable=SC1090 # loader path is env-dependent (per-machine), shellcheck can't follow it
   source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server 115.29.212.252 2>/dev/null || true
 fi
 LOCAL_PG_PASS="${COMMON_PG_SUPERUSER_PASS:-kxpass}"
@@ -233,6 +234,7 @@ build_backend() {
 }
 
 build_frontend() {
+  # shellcheck disable=SC2034 # `dist` is kept for the public function signature even though the build path doesn't currently take it.
   local dist=$1
   log "npm run build (web/)"
   if [[ -d "$PROJECT_ROOT/web" ]]; then

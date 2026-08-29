@@ -625,6 +625,7 @@ cmd_switch() {
     echo "rsync required for switch" >&2
     return 1
   fi
+  # shellcheck disable=SC2155 # mask is acceptable: $INSTALL_ROOT is always set at this point and a stale path would only fail downstream.
   local BACKUP="${INSTALL_ROOT}/.upgrade-backup-$(date +%Y%m%d%H%M%S)-$$"
   detect_install_mode || return 1
   validate_compose_upgrade || return 1
@@ -635,6 +636,7 @@ cmd_switch() {
     return 1
   fi
   # 备份在停服之前做，且失败就退出 —— 此时线上安装还未被触碰。
+  # shellcheck disable=SC2010 # ls/grep is fine here: we filter literal `.upgrade*` names, filenames are well-known
   if [[ -n "$(ls -A "$INSTALL_ROOT" 2>/dev/null | grep -v '^\.upgrade' || true)" ]]; then
     if ! make_backup "$BACKUP"; then
       echo "[upgrade] aborting switch: 没有可用备份，不会覆盖 ${INSTALL_ROOT}" >&2
