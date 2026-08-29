@@ -973,7 +973,13 @@ func (m *Manager) startInvalidationSubscriber(rdb *redis.Client) {
 // than once and does not alter Redis state. When the LRU mirror is disabled
 // (LRUMirrorSize==0) the subscriber is never started and Close is a no-op.
 func (m *Manager) Close() {
-	if m == nil || m.invalidationStop == nil {
+	if m == nil {
+		return
+	}
+	m.invalidationMu.Lock()
+	hasSubscriber := m.invalidationStop != nil
+	m.invalidationMu.Unlock()
+	if !hasSubscriber {
 		return
 	}
 	m.closeOnce.Do(func() {
