@@ -94,7 +94,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		slog.ErrorContext(r.Context(), "serveSessionTurnsList query failed",
 			"session_id", sessionID, "tenant_id", tenantID,
 			"before_turn_no", beforeTurnNo, "limit", limit, "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "query turns failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "query turns failed")
 		return
 	}
 	defer rows.Close()
@@ -213,9 +213,12 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
 		FROM public.session_turns_with_current_month t
-		LEFT JOIN public.session_bodies b
-			ON t.session_id = b.session_id AND t.turn_no = b.turn_no AND t.partition_date = b.partition_date
-		WHERE t.session_id = $1 AND t.tenant_id = $2 AND t.turn_no = $3
+			LEFT JOIN public.session_bodies b
+				ON t.tenant_id = b.tenant_id
+				AND t.session_id = b.session_id
+				AND t.turn_no = b.turn_no
+				AND t.partition_date = b.partition_date
+			WHERE t.session_id = $1 AND t.tenant_id = $2 AND t.turn_no = $3
 		LIMIT 1`
 	var (
 		turnNoOut                                                                   int
@@ -350,6 +353,89 @@ func stringPtrValue(p *string) string {
 		return ""
 	}
 	return *p
+}
+
+// turnBodyItem 是 serveSessionTurnsBodies 返回的单轮正文投影。
+// 正文来自 public.session_bodies（V2 增量存储），每轮只保存「本轮新增」
+// 的请求消息 + 本轮回复 + 实际发往 LLM 的 outbound，避免 request_logs
+// 那种每轮全量套娃。全面切到 session_turns 模式后，这是会话正文的唯一来源。
+type turnBodyItem struct {
+	TurnNo        int    `json:"turn_no"`
+	RequestID     string `json:"request_id"`
+	RequestDelta  any    `json:"request_delta"`
+	ResponseDelta any    `json:"response_delta"`
+	OutboundBody  any    `json:"outbound_body"`
+}
+
+// serveSessionTurnsBodies 返回会话所有轮次的正文（按 turn_no 升序），
+// 数据源为 public.session_bodies。前端「会话轮次」视图据此渲染每轮用户指令
+// 摘要与单轮消息过滤；request_logs 正文派生作为空数据时的兜底。
+//
+// GET /api/admin/sessions/<id>/turns/bodies?limit=
+func (h *Handler) serveSessionTurnsBodies(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	tenantID := tenantFromQueryOrContext(r)
+	limit := defaultTurnsListLimit
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= maxTurnsListLimit {
+			limit = n
+		}
+	}
+
+	rows, err := h.db.Query(r.Context(), `
+		SELECT turn_no, request_id, request_delta, response_delta, outbound_body
+		FROM public.session_bodies
+		WHERE tenant_id = $1 AND session_id = $2
+		ORDER BY turn_no ASC
+		LIMIT $3`, tenantID, sessionID, limit+1)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "serveSessionTurnsBodies query failed",
+			"session_id", sessionID, "tenant_id", tenantID, "error", err.Error())
+		writeError(w, http.StatusInternalServerError, "query turn bodies failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	items := make([]turnBodyItem, 0, limit)
+	for rows.Next() {
+		var (
+			turnNo                                             int
+			requestID                                          string
+			requestDeltaRaw, responseDeltaRaw, outboundBodyRaw []byte
+		)
+		if err := rows.Scan(&turnNo, &requestID, &requestDeltaRaw, &responseDeltaRaw, &outboundBodyRaw); err != nil {
+			writeError(w, http.StatusInternalServerError, "scan turn body failed")
+			return
+		}
+		items = append(items, turnBodyItem{
+			TurnNo:        turnNo,
+			RequestID:     requestID,
+			RequestDelta:  decodeStoredJSON("request_delta", requestID, requestDeltaRaw),
+			ResponseDelta: decodeStoredJSON("response_delta", requestID, responseDeltaRaw),
+			OutboundBody:  decodeStoredJSON("outbound_body", requestID, outboundBodyRaw),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "iterate turn bodies failed")
+		return
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"session_id": sessionID,
+		"turns":      items,
+		"has_more":   hasMore,
+	})
 }
 
 func intPtrValue(p *int) int {

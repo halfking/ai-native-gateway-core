@@ -108,6 +108,17 @@ export function extractLastUserPrompt(body: unknown): string {
   return ''
 }
 
+/** First user message text from a chat body (per-turn user instruction). */
+export function firstUserPrompt(body: unknown): string {
+  const msgs = extractMessagesFromBody(body)
+  for (const m of msgs) {
+    if (String(m.role || '') === 'user') {
+      return contentToPlain(m.content).trim()
+    }
+  }
+  return ''
+}
+
 /**
  * deriveConversationTurns splits a flat chat message list into turns.
  *

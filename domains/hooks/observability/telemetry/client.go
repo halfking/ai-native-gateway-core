@@ -2381,14 +2381,16 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// (request_id, ts) — the composite form triggers 42P10 at runtime.
 	// The UPDATE clause only replaces a body when this write supplied one.
 	_, err := tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body, outbound_body)
-		VALUES ($1, now(), NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb, NULLIF($4, 'null')::jsonb)
-		ON CONFLICT (request_id) DO UPDATE
-			SET request_body  = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-			    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
-			    outbound_body = COALESCE(EXCLUDED.outbound_body, request_logs_bodies_hot.outbound_body),
-			    ts            = EXCLUDED.ts
-	`, requestID, reqJSON, respJSON, outJSON)
+INSERT INTO request_logs_bodies_hot (request_id, tenant_id, ts, request_body, response_body, outbound_body)
+			SELECT $1, rl.tenant_id, rl.ts, NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb, NULLIF($4, 'null')::jsonb
+			FROM request_logs_hot rl
+			WHERE rl.request_id = $1
+			ON CONFLICT (request_id) DO UPDATE
+				SET tenant_id    = COALESCE(request_logs_bodies_hot.tenant_id, EXCLUDED.tenant_id),
+				    request_body  = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+				    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
+				    outbound_body = COALESCE(EXCLUDED.outbound_body, request_logs_bodies_hot.outbound_body)
+		`, requestID, reqJSON, respJSON, outJSON)
 	return err
 }
 

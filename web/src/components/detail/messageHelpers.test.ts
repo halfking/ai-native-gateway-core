@@ -3,6 +3,7 @@ import {
   deriveConversationTurns,
   extractAssistantReply,
   extractLastUserPrompt,
+  firstUserPrompt,
   extractMessagesFromBody,
   filterMessages,
   previewText,
@@ -63,6 +64,18 @@ describe('messageHelpers', () => {
       { role: 'system', content: 'only sys' },
     ])
     expect(turns).toHaveLength(0)
+  })
+
+  it('extracts the first user prompt', () => {
+    expect(firstUserPrompt({
+      messages: [
+        { role: 'system', content: 'sys' },
+        { role: 'assistant', content: 'hi' },
+        { role: 'user', content: [{ type: 'text', text: 'first ask' }] },
+        { role: 'user', content: 'second ask' },
+      ],
+    })).toBe('first ask')
+    expect(firstUserPrompt({ messages: [{ role: 'assistant', content: 'no user' }] })).toBe('')
   })
 
   it('truncates long user previews', () => {

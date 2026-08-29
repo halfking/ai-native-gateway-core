@@ -168,8 +168,8 @@ func TestFindRunningJobForTable(t *testing.T) {
 }
 
 func TestDefaultHotRetentionHours(t *testing.T) {
-	if defaultHotRetentionHours != 24 {
-		t.Errorf("expected default retention 24h (1 day), got %d", defaultHotRetentionHours)
+	if defaultHotRetentionHours != 8 {
+		t.Errorf("expected default retention 8h, got %d", defaultHotRetentionHours)
 	}
 }
 
@@ -185,6 +185,11 @@ func TestHotPromoteTableMap(t *testing.T) {
 		"request_logs_bodies_hot",
 		"credit_ledger_hot",
 		"tool_usage_stats_hot",
+		"candidate_failure_logs_hot",
+		"session_turns_hot",
+		"handoff_logs_hot",
+		"session_module_executions_hot",
+		"dashboard_access_events_hot",
 	}
 	for _, name := range expected {
 		if _, ok := hotPromoteTableMap[name]; !ok {

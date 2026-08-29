@@ -458,6 +458,13 @@ func TestEncodeDecodeSessionStateFields_RoundTrip(t *testing.T) {
 		ApprovalStatus:       ApprovalStatePending,
 		ApprovalID:           "appr-uuid",
 		OptimizationApplied:  OptSummarize,
+		RawTokenEstimate:     120,
+		RawMsgCount:          12,
+		CompressedTokens:     80,
+		CompressedMsgs:       8,
+		SanitizeMapRef:       "session:s1:sanitize",
+		SanitizeStats:        SanitizeStats{PlaceholderCount: 2, SecretCount: 1, SanitizedAt: 1699999901},
+		CompressionQuality:   CompressionQualityScore{TokenSavingsPercent: 33.3, OverallScore: 91},
 	}
 	fields := encodeSessionStateFields(original)
 
@@ -496,6 +503,16 @@ func TestEncodeDecodeSessionStateFields_RoundTrip(t *testing.T) {
 	}
 	if decoded.OptimizationApplied != original.OptimizationApplied {
 		t.Errorf("round-trip OptimizationApplied mismatch")
+	}
+	if decoded.RawTokenEstimate != original.RawTokenEstimate || decoded.RawMsgCount != original.RawMsgCount ||
+		decoded.CompressedTokens != original.CompressedTokens || decoded.CompressedMsgs != original.CompressedMsgs {
+		t.Errorf("round-trip v8 counters mismatch: got %+v", decoded)
+	}
+	if decoded.SanitizeMapRef != original.SanitizeMapRef || decoded.SanitizeStats != original.SanitizeStats {
+		t.Errorf("round-trip sanitize state mismatch")
+	}
+	if decoded.CompressionQuality != original.CompressionQuality {
+		t.Errorf("round-trip compression quality mismatch")
 	}
 }
 
@@ -679,9 +696,13 @@ func TestInvalidate_RemovesFromAllTiers(t *testing.T) {
 // silently no-ops and stale sanitize maps leak until TTL.
 //
 // Without the fix, the deleted sanitize keys would be
-//   session:t:s1:sanitize / session:t:s1:sanitize:offsets
+//
+//	session:t:s1:sanitize / session:t:s1:sanitize:offsets
+//
 // (raw tenant "t"), but the writer stores them under
-//   session:<sha256("t")[:8]>:s1:sanitize / ...:offsets
+//
+//	session:<sha256("t")[:8]>:s1:sanitize / ...:offsets
+//
 // so the deletes never hit and the test fails.
 func TestInvalidate_DeletesSanitizeKeysWithTenantHash(t *testing.T) {
 	redis := newFakeRedis()
