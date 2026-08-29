@@ -1,7 +1,7 @@
 # Gateway Deployment — 部署入口
 
-> **事实快照：** 2026-08-21
-> **本页定位：** 部署文档唯一入口；可执行脚本和 manifest 位于 `deploy/`，数据库/初始化/runbook 详见本目录子目录。
+> **事实快照：** 2026-08-29
+> **本页定位：** 部署文档入口；现役物料总导航见仓库根目录的 [`deploy/README.md`](../../deploy/README.md)，环境定义见 [`01-environments/README.md`](01-environments/README.md)。
 
 ## 1. 部署模式
 
@@ -16,14 +16,16 @@
 
 ## 2. 文档入口
 
-- 环境规则与构建：`01-environments/`
+- [环境规则与构建](01-environments/README.md)
+- [客户安装](01-environments/customer-install/README.md)
 - 数据库初始化和迁移：`02-database/`、`03-initialization/`
 - 运维 runbook：`04-runbooks/`
-- 可执行 systemd/K8s/Nginx/Prometheus：`../../deploy/`
+- [现役 deploy 物料导航](../../deploy/README.md)
 - Installer：`../../installer/`
 - 当前架构：`../03-design/01-architecture/architecture/ARCHITECTURE.md`
 - 运行时请求流：`../03-design/01-architecture/architecture/runtime-request-flow.md`
 - 测试矩阵：`../05-testing/01-strategy/test-matrix.md`
+- [下一阶段主代理提示词](../next-phase-master-prompt-20260829.md)
 
 ## 3. 依赖契约
 
