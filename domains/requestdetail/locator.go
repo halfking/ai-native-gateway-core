@@ -35,6 +35,18 @@ type BodyReader interface {
 	ReadSessionTurnsBodies(ctx context.Context, requestID string, omitBody bool) (Bodies, Meta, error)
 }
 
+// LiveDetailReader reads the latest in-flight request detail from the
+// Redis-backed live stream cache. It is invoked between the local
+// in-process store and the DB readers so a click on a live swim lane
+// returns immediately while the request is still being persisted to
+// request_logs / session_turns.
+//
+// LoadLiveDetail returns ErrNotFound when Redis has no entry for the
+// request id; the Locator falls through to the DB layers in that case.
+type LiveDetailReader interface {
+	LoadLiveDetail(ctx context.Context, tenantID, requestID string) (Meta, error)
+}
+
 // ErrNotFound means no layer could supply the request.
 var ErrNotFound = errors.New("requestdetail: not found")
 
@@ -43,24 +55,32 @@ var ErrNotFound = errors.New("requestdetail: not found")
 // replica (or just finished its own async INSERT on this replica) and the
 // admin read happened a few milliseconds too early. Tunable via env:
 //
-//	LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY=1   // total attempts; 0 disables
+//	LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY=2   // total attempts; 0 disables
 //	LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY_DELAY=100ms
 //
 // See docs/implementation/request-detail-cross-replica-visibility-20260828.md
 // §3 (方案 D, 短期).
+//
+// 2026-08-30: default raised from 1 → 2. The original single attempt
+// proved too tight when the live stream publishes a request that has
+// not yet been written to request_logs on the responding replica; two
+// short retries (≈100ms apart) collapse most cross-replica races
+// without inflating latency for the steady state.
 const (
-	defaultDBRetryCount = 1
+	defaultDBRetryCount = 2
 	defaultDBRetryDelay = 100 * time.Millisecond
 )
 
-// Locator resolves detail in order: memory → file → request_logs → session_turns.
+// Locator resolves detail in order: memory → file → live (Redis) →
+// request_logs → session_turns.
 type Locator struct {
 	Store  *Store
 	Bodies BodyReader
+	Live   LiveDetailReader
 
 	// DBRetryCount is the number of total attempts (≥1) against ReadRequestLogsBodies
 	// when the first attempt returns ErrNotFound. 0 disables the retry entirely.
-	// Configurable via LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY; default 1.
+	// Configurable via LLM_GATEWAY_REQUEST_DETAIL_DB_RETRY; default 2.
 	DBRetryCount int
 
 	// DBRetryDelay is the pause between retry attempts. Default 100ms.
@@ -112,6 +132,30 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 
 	if l.Bodies == nil {
 		return nil, ErrNotFound
+	}
+
+	// 2026-08-30: live-stream Redis cache. Inserted between the local
+	// store and the DB readers so a click on a still-running swim lane
+	// returns metadata immediately instead of bouncing off the eventual
+	// request_logs write. Tenant gating is enforced by LoadLiveDetail.
+	// When the caller wants bodies, we treat the live hit as metadata
+	// only and fall through to the DB readers so the response still
+	// contains request/response bodies.
+	if l.Live != nil && omitBody {
+		scope := LookupScopeFromContext(ctx)
+		if liveMeta, liveErr := l.Live.LoadLiveDetail(ctx, scope.TenantID, requestID); liveErr == nil {
+			d := &Detail{
+				Source:      SourceLive,
+				Persistence: PersistenceInFlight,
+				Meta:        liveMeta,
+			}
+			return d, nil
+		} else if !errors.Is(liveErr, ErrNotFound) {
+			// Treat unexpected live-store failures as a miss and fall
+			// through; the DB layer will surface a real error if it
+			// also fails. Do NOT block the locator on Redis hiccups.
+			_ = liveErr
+		}
 	}
 
 	// L3 DB lookup. Wrap the first attempt in a bounded retry so that a read

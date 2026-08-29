@@ -213,7 +213,7 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
 		FROM public.session_turns_with_current_month t
-			LEFT JOIN public.session_bodies b
+			LEFT JOIN public.session_bodies_unified b
 				ON t.tenant_id = b.tenant_id
 				AND t.session_id = b.session_id
 				AND t.turn_no = b.turn_no
@@ -391,7 +391,7 @@ func (h *Handler) serveSessionTurnsBodies(w http.ResponseWriter, r *http.Request
 
 	rows, err := h.db.Query(r.Context(), `
 		SELECT turn_no, request_id, request_delta, response_delta, outbound_body
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 		LIMIT $3`, tenantID, sessionID, limit+1)
@@ -571,7 +571,7 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 	summary, err := api.generateSummary(r.Context(), &SessionSummaryRequest{
 		SessionID: sessionID,
 		Tenant:    tenantID,
-	})
+	}, tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "summary failed: "+err.Error())
 		return

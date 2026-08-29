@@ -333,7 +333,7 @@ func (api *SessionDetailV2API) queryTurns(
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
 		FROM public.session_turns_with_current_month t
-		LEFT JOIN public.session_bodies b 
+		LEFT JOIN public.session_bodies_unified b
 			ON t.tenant_id = b.tenant_id
 			AND t.session_id = b.session_id
 			AND t.turn_no = b.turn_no

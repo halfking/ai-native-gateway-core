@@ -11,6 +11,7 @@ type Source string
 const (
 	SourceMemory       Source = "memory"
 	SourceFile         Source = "file"
+	SourceLive         Source = "live_stream"
 	SourceRequestLogs  Source = "request_logs"
 	SourceSessionTurns Source = "session_turns"
 )

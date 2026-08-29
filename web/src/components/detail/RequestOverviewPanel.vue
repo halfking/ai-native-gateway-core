@@ -20,7 +20,7 @@ import {
 import { statusToneClass } from './statusTone'
 import { useFormat } from '../../i18n/useFormat'
 
-const { fmtDateTime } = useFormat()
+const { fmtDateTime, fmtDateTimeWithSeconds } = useFormat()
 
 const props = defineProps<{
   log: RequestLogDetail | null
@@ -55,8 +55,11 @@ const persistenceLabel = computed(() =>
 const log = computed(() => props.log)
 const um = computed(() => props.unified?.meta)
 
-/** 请求发起时间（request_logs.ts）。unified.meta 不携带时间字段，故以 log.ts 为准。 */
-const requestTime = computed(() => fmtDateTime(props.log?.ts))
+/**
+ * 请求发起时间（request_logs.ts），精确到秒。unified.meta 不携带时间字段，
+ * 故以 log.ts 为准。
+ */
+const requestTime = computed(() => fmtDateTimeWithSeconds(props.log?.ts))
 
 function fmt(v: unknown): string {
   if (v == null || v === '') return '—'
@@ -190,8 +193,11 @@ function clip(text: string, max = 480): string {
 
     <div class="grid">
       <div class="cell"><span class="lbl">请求ID</span><code>{{ fmt(log?.request_id || um?.request_id) }}</code></div>
-      <!-- 请求时间：request_logs.ts，基础信息必备字段，此前缺失。 -->
-      <div class="cell"><span class="lbl">请求时间</span><span>{{ requestTime || '—' }}</span></div>
+      <!-- 请求时间：request_logs.ts，基础信息必备字段。精确到秒，方便与日志对照。 -->
+      <div class="cell cell--emphasis" data-testid="overview-request-time">
+        <span class="lbl">请求时间</span>
+        <span class="value-lg">{{ requestTime || '—' }}</span>
+      </div>
       <div class="cell" :class="statusToneClass(requestStatus, 'cell')">
         <span class="lbl">状态</span>
         <span class="pill" :class="statusToneClass(requestStatus, 'pill')">{{ fmt(requestStatus) }}</span>
@@ -203,8 +209,15 @@ function clip(text: string, max = 480): string {
       <div class="cell"><span class="lbl">Tenant</span><code>{{ fmt(um?.tenant_id) }}</code></div>
       <!-- success: 两个端点都有；用 ?? 让 log?.success 为 null 时仍能回退到 um。 -->
       <div class="cell"><span class="lbl">Success</span><span>{{ fmt(log?.success ?? um?.success) }}</span></div>
-      <div class="cell"><span class="lbl">客户端模型</span><span>{{ fmt(log?.client_model ?? um?.client_model) }}</span></div>
-      <div class="cell"><span class="lbl">出站/规范模型</span><span>{{ fmt(log?.outbound_model || log?.canonical_model) }}</span></div>
+      <!-- 模型字段放大展示，便于在概览中快速识别。 -->
+      <div class="cell cell--emphasis" data-testid="overview-client-model">
+        <span class="lbl">客户端模型</span>
+        <span class="value-lg">{{ fmt(log?.client_model ?? um?.client_model) }}</span>
+      </div>
+      <div class="cell cell--emphasis" data-testid="overview-canonical-model">
+        <span class="lbl">出站/规范模型</span>
+        <span class="value-lg">{{ fmt(log?.outbound_model || log?.canonical_model) }}</span>
+      </div>
       <div class="cell"><span class="lbl">供应商</span><span>{{ fmt(log?.provider_name || log?.provider_code) }}</span></div>
       <div class="cell"><span class="lbl">凭据</span><span>{{ fmt(log?.credential_label || log?.credential_id) }}</span></div>
       <div class="cell"><span class="lbl">Session</span><code>{{ fmt(log?.gw_session_id ?? um?.gw_session_id) }}</code></div>
@@ -291,6 +304,12 @@ function clip(text: string, max = 480): string {
 .cell--info { border-color: color-mix(in srgb, var(--kx-primary) 45%, var(--border)); }
 .cell--meta { gap: 4px; }
 .cell--meta > span:not(.lbl) { display: block; line-height: 1.35; }
+.cell--emphasis .value-lg {
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
 .pill {
   display: inline-block; width: fit-content; padding: 1px 8px; border-radius: 999px;
   font-size: 11px; font-weight: 600;

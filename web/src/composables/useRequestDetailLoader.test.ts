@@ -150,4 +150,67 @@ describe('useRequestDetailLoader', () => {
     await p
     expect(loader.waterfall.value).toBeNull()
   })
+
+  it('switching requests clears waterfall error so UI does not show stale error', async () => {
+    getUnifiedRequestDetail
+      .mockResolvedValueOnce({
+        source: 'request_logs',
+        persistence: 'persisted',
+        meta: { request_id: 'r1' },
+      })
+      .mockResolvedValueOnce({
+        source: 'request_logs',
+        persistence: 'persisted',
+        meta: { request_id: 'r2' },
+      })
+    getRequestLogDetail
+      .mockResolvedValueOnce({ request_id: 'r1' })
+      .mockResolvedValueOnce({ request_id: 'r2' })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('r1')
+    await loader.ensureWaterfall('r1').catch(() => undefined)
+    // Inject an error so we can verify it's cleared on the next loadMeta.
+    loader.waterfallError.value = 'simulated upstream failure'
+
+    await loader.loadMeta('r2')
+    expect(loader.waterfallError.value).toBe('')
+  })
+
+  it('cache hit on the same request preserves cached waterfall and error', async () => {
+    getUnifiedRequestDetail.mockResolvedValue({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 'cached' },
+    })
+    getRequestLogDetail.mockResolvedValue({ request_id: 'cached' })
+    fetchWaterfallByRequestId.mockResolvedValue({
+      request: {
+        request_id: 'cached',
+        result: 'success',
+        waiting_in_total_ms: 0,
+        waiting_in_model_ms: 0,
+        waiting_in_node_ms: 0,
+        routing_ms: 0,
+        acquire_ms: 0,
+        upstream_latency_ms: 0,
+        streaming_duration_ms: 0,
+        queue_wait_ms: 0,
+        total_ms: 0,
+      },
+      source: 'memory',
+    })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('cached')
+    await loader.ensureWaterfall('cached')
+    expect(loader.waterfall.value?.request_id).toBe('cached')
+
+    const wfCallsBefore = fetchWaterfallByRequestId.mock.calls.length
+    // Second loadMeta with the same request_id should reuse cache and
+    // NOT re-fetch the waterfall.
+    await loader.loadMeta('cached')
+    expect(fetchWaterfallByRequestId.mock.calls.length).toBe(wfCallsBefore)
+    expect(loader.waterfall.value?.request_id).toBe('cached')
+  })
 })
