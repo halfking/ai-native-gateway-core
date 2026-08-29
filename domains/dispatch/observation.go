@@ -277,9 +277,23 @@ const maxJournalSnapshotEvents = 50
 // already in Entries by the time the snapshot is taken, so consumers see the
 // complete trace.
 //
+// JournalSnapshot is a detached, immutable view of a QueuedRequest's full
+// attempt journal. It is delivered to the optional JournalSink exactly once
+// at terminal time (Pipeline.complete, CAS-guarded). The terminal entry is
+// already in Entries by the time the snapshot is taken, so consumers see the
+// complete trace.
+//
 // Per ADR 2026-08-28-requestjourney-journal-snapshot.md §Decision point 3,
 // snapshots are bounded by a maximum event count. When the journal exceeds
 // this limit, the oldest entries are dropped and Truncated is set to true.
+//
+// §Decision point 4 / §6 extensions (audit-24h-20260829-r5 §5.5 merged):
+//   - SnapshotVersion   — qr.journalSeq at terminal time; consumers may
+//     short-circuit duplicate retries by comparing it to the recorder's
+//     MaxSeq for (tenant, request).
+//   - CallerTenantID / CallerAuthorized — auth context required by sinks
+//     that gate on tenant or operator identity; an unauthorized snapshot
+//     must be rejected, not silently dropped.
 type JournalSnapshot struct {
 	TenantID  string
 	RequestID string
@@ -289,6 +303,16 @@ type JournalSnapshot struct {
 	// entries dropped.
 	Truncated      bool
 	TruncatedCount int
+	// SnapshotVersion is the monotonic journal seq observed at terminal time.
+	// Sinks that ship via the recorder's MaxSeq can short-circuit retries by
+	// comparing it against the live recorder state. See ADR §6.
+	SnapshotVersion int64
+	// CallerTenantID / CallerAuthorized carry the trusted caller's tenant
+	// identity at the terminal-time wiring boundary. Sinks must reject
+	// mismatched or unauthorized snapshots rather than silently drop them.
+	// See ADR §4.
+	CallerTenantID   string
+	CallerAuthorized bool
 }
 
 // JournalSink consumes the per-request attempt journal at terminal time.
