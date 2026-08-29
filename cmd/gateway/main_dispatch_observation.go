@@ -131,61 +131,70 @@ func newDispatchJourneyJournalAdapterWithDependencies(recorder *requestjourney.R
 // guarantees a second delivery of the same (tenant, request, seq) tuple is
 // a silent no-op.
 func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context, snap dispatch.JournalSnapshot) {
-	if a == nil || a.recorder == nil {
+	if a == nil || a.recorder == nil || !snap.CallerAuthorized {
 		return
 	}
-	if !snap.CallerAuthorized {
-		slog.Warn("dispatch journal sink rejected unauthorized snapshot",
-			"request_id", snap.RequestID,
-			"reason", "caller_not_authorized")
-		return
-	}
-	if snap.CallerTenantID != "" && snap.TenantID != "" && snap.CallerTenantID != snap.TenantID {
-		slog.Warn("dispatch journal sink rejected tenant mismatch",
-			"request_id", snap.RequestID,
-			"caller_tenant", snap.CallerTenantID,
-			"snap_tenant", snap.TenantID)
+	if snap.CallerTenantID != "" && snap.CallerTenantID != snap.TenantID {
+		slog.Warn("dispatch journal sink rejected tenant mismatch", "request_id", snap.RequestID)
 		return
 	}
 	if snap.TenantID == "" || snap.RequestID == "" || len(snap.Entries) == 0 || snap.SnapshotVersion <= 0 {
 		return
 	}
 
-	var receiptClaim requestjourney.JournalSnapshotReceiptClaim
+	// Serialize same-process delivery before claiming the durable receipt. The
+	// durable store fences across processes; this lock also prevents two calls
+	// from the same owner reclaiming their own live lease concurrently.
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	var claim requestjourney.JournalSnapshotReceiptClaim
 	if a.receipt != nil {
 		hash, err := requestjourney.SnapshotPayloadHash(snap)
 		if err != nil {
 			slog.Warn("dispatch journal snapshot hash failed", "request_id", snap.RequestID, "error", err)
 			return
 		}
-		receiptClaim, err = a.receipt.Claim(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash)
-		if err != nil {
-			slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
-			return
-		}
-		if receiptClaim.AlreadyCompleted {
-			slog.Debug("dispatch journal snapshot receipt already completed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion)
-			return
-		}
-		if !receiptClaim.Claimed {
-			slog.Debug("dispatch journal snapshot receipt held by another worker", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion)
-			return
-		}
-	}
-
-	if max := a.recorder.MaxSeq(snap.TenantID, snap.RequestID); max >= snap.SnapshotVersion {
-		slog.Debug("dispatch journal snapshot already persisted",
-			"request_id", snap.RequestID,
-			"snapshot_version", snap.SnapshotVersion,
-			"max_seq", max)
-		if a.receipt != nil {
-			if err := a.receipt.Complete(ctx, receiptClaim); err != nil {
-				slog.Warn("dispatch journal snapshot receipt completion failed", "request_id", snap.RequestID, "error", err)
+		claim, err = a.receipt.Claim(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash)
+		if err != nil || claim.AlreadyCompleted || !claim.Claimed {
+			if err != nil {
+				slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
 			}
+			return
 		}
-		return
 	}
 
+	hash := journalSnapshotHash(snap)
+	key := journalSnapshotReceiptKey{tenantID: snap.TenantID, requestID: snap.RequestID, version: snap.SnapshotVersion}
+	localClaimed := a.receipt == nil
+	if localClaimed {
+		if prior, ok := a.receipts[key]; ok {
+			if prior.hash != hash {
+				slog.Error("dispatch journal snapshot version conflict", "request_id", snap.RequestID)
+			}
+			return
+		}
+		a.receipts[key] = journalSnapshotReceipt{hash: hash}
+	}
+	failed := false
+	defer func() {
+		if a.receipt != nil {
+			if !failed {
+				if err := a.receipt.Complete(ctx, claim); err != nil {
+					slog.Warn("dispatch journal snapshot receipt completion failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
+				}
+			}
+		} else if localClaimed && failed {
+			delete(a.receipts, key)
+		}
+		a.mu.Unlock()
+	}()
+
+	if a.store != nil {
+		stored := snap
+		stored.Entries = append([]dispatch.JournalEntry(nil), snap.Entries...)
+		a.store.Store(stored)
+	}
 	baseSeq := a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
 	for i, entry := range snap.Entries {
 		event, ok := journalEntryToJourneyEvent(a.instance, snap.TenantID, snap.RequestID, baseSeq, i, entry)
@@ -193,19 +202,8 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 			continue
 		}
 		if err := a.recorder.Apply(ctx, event); err != nil {
-			slog.Warn("dispatch request journey journal entry rejected",
-				"request_id", snap.RequestID,
-				"journal_seq", entry.Seq,
-				"event_seq", event.Seq,
-				"error", err)
-			if a.receipt != nil {
-				return
-			}
-		}
-	}
-	if a.receipt != nil {
-		if err := a.receipt.Complete(ctx, receiptClaim); err != nil {
-			slog.Warn("dispatch journal snapshot receipt completion failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
+			failed = true
+			slog.Warn("dispatch request journey journal entry rejected", "request_id", snap.RequestID, "journal_seq", entry.Seq, "event_seq", event.Seq, "error", err)
 		}
 	}
 }

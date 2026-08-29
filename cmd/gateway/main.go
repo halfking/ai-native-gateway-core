@@ -790,17 +790,16 @@ func main() {
 		slog.Warn("request journey observation degraded", "error", err)
 	})
 	journeyQueryService := requestjourney.NewQueryService(journeyRedisStore, journeyRepository, journeyProjection, journeyConfig)
+	journalSnapshotStore := dispatch.NewInMemoryJournalStore()
 	chatHandler.SetRequestJourney(journeyRecorder, journeyInstanceID)
 	gatewayRequestJourneySink = newDispatchJourneyAdapter(journeyRecorder)
-	// audit-24h-20260828-r3: terminal-time consumer of the per-request
-	// attempt journal. Mirrors the observation adapter above; the
-	// dispatch.JournalSink interface keeps the two paths independent so a
-	// future change to the observation bridge can't silently drop journals.
+	// Terminal journal snapshots are retained in a bounded, tenant-scoped
+	// diagnostic read model and bridged into RequestJourney events.
 	var journalSnapshotReceipt *requestjourney.JournalSnapshotReceiptStore
 	if dbConn != nil && dbConn.Enabled() {
 		journalSnapshotReceipt = requestjourney.NewPostgresJournalSnapshotReceiptStore(dbConn.Pool(), journeyInstanceID)
 	}
-	gatewayRequestJourneyJournalSink = newDispatchJourneyJournalAdapterWithReceipt(journeyRecorder, journeyInstanceID, journalSnapshotReceipt)
+	gatewayRequestJourneyJournalSink = newDispatchJourneyJournalAdapterWithReceipt(journeyRecorder, journeyInstanceID, journalSnapshotReceipt, journalSnapshotStore)
 	slog.Info("request journey recorder wired",
 		"gateway_instance_id", journeyInstanceID,
 		"durable_outbox", journeyObservationOutbox != nil,
@@ -5814,9 +5813,8 @@ func main() {
 		mux.HandleFunc("/api/admin/dispatch/waterfall", wrapAdmin(handleDispatchWaterfall))
 		// v6 G-Ⅳ (2026-08-27): 分维成员索引（模型/凭据/供应商）查询。
 		mux.HandleFunc("/api/admin/dispatch/dimensions", wrapAdmin(handleDispatchDimensions))
-		// V6-W1.6 R10（2026-08-27 范围修正）：按请求查分维成员归属。执行轨迹
-		// (AttemptJournal) 附属请求自身，不提供全局 journal 端点；事后路径查询
-		// 走该请求自己的 requestjourney 持久投影。
+		// V6-W1.6 R10（2026-08-27 范围修正）：按请求查分维成员归属；执行轨迹
+		// (AttemptJournal) 通过 tenant/request-scoped journal snapshot 端点查询。
 		mux.HandleFunc("/api/admin/dispatch/request-dimensions/", wrapAdmin(handleDispatchRequestDimensions))
 		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues, /waterfall, /dimensions, /request-dimensions/{request_id})")
 
