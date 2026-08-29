@@ -31,11 +31,16 @@ type Manager struct {
 	healthCheckInterval   time.Duration
 	unknownDomainStrategy string // direct/proxy/probe
 
+	// 审计修复 (2026-08-29)：问题 7 - 增加 context 用于优雅停止后台 goroutine。
+	ctx    context.Context
+	cancel context.CancelFunc
 	stopCh chan struct{}
+	wg     sync.WaitGroup
 }
 
 // NewManager 创建代理管理器
 func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		store:                 store,
 		parser:                parser,
@@ -45,6 +50,8 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 		autoRefreshInterval:   1 * time.Hour,
 		healthCheckInterval:   5 * time.Minute,
 		unknownDomainStrategy: "direct",
+		ctx:                   ctx,
+		cancel:                cancel,
 		stopCh:                make(chan struct{}),
 	}
 }
@@ -57,15 +64,20 @@ func (m *Manager) Start() {
 	}
 	
 	// 定时刷新订阅
+	m.wg.Add(1)
 	go m.refreshLoop()
 	
 	// 定时健康检查
+	m.wg.Add(1)
 	go m.healthCheckLoop()
 }
 
 // Stop 停止定时任务，并关闭 Transport 工厂的空闲连接。
+// 审计修复 (2026-08-29)：问题 7 - 使用 context 取消和 WaitGroup 确保 goroutine 优雅退出。
 func (m *Manager) Stop() {
+	m.cancel() // 取消 context，通知所有后台任务停止
 	close(m.stopCh)
+	m.wg.Wait() // 等待所有后台 goroutine 退出
 	if m.transportFactory != nil {
 		m.transportFactory.CloseIdleConnections()
 	}
@@ -90,6 +102,10 @@ func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (*Nod
 			return nil, fmt.Errorf("list nodes: %w", err)
 		}
 		candidates = nodes
+		// 审计修复 (2026-08-29)：问题 3 - 缓存未命中时回填缓存，避免后续请求继续打数据库。
+		if subscriptionID != nil && len(nodes) > 0 {
+			m.nodesCache.Store(*subscriptionID, nodes)
+		}
 	}
 	
 	// 过滤掉不健康、以及 Go 无法直接拨号的节点（trojan/vless 等需本地网桥）
@@ -181,36 +197,48 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 		return fmt.Errorf("parse subscription: %w", err)
 	}
 	
-	// 3. 更新数据库
-	// 删除旧节点
-	if err := m.store.DeleteNodesBySubscription(ctx, subscriptionID); err != nil {
-		return fmt.Errorf("delete old nodes: %w", err)
-	}
-	
-	// 插入新节点
-	var createErrs []string
+	// 3. 更新数据库（事务保护，审计修复 2026-08-29 问题 1）
 	for _, node := range nodes {
 		node.SubscriptionID = subscriptionID
-		if err := m.store.CreateNode(ctx, node); err != nil {
-			createErrs = append(createErrs, fmt.Sprintf("%s: %v", node.Name, err))
-			slog.Warn("proxy: failed to create node", "error", err, "name", node.Name)
+	}
+	
+	// 使用事务方法原子性地删除旧节点并插入新节点，避免中断导致订阅变空。
+	if pgStore, ok := m.store.(*PgStore); ok {
+		if err := pgStore.RefreshSubscriptionNodes(ctx, subscriptionID, nodes); err != nil {
+			sub.NodeCount = 0
+			sub.LastFetchAt = time.Now()
+			sub.LastFetchStatus = "failed"
+			sub.LastError = fmt.Sprintf("transaction failed: %v", err)
+			_ = m.store.UpdateSubscription(ctx, sub)
+			return fmt.Errorf("refresh nodes in transaction: %w", err)
+		}
+	} else {
+		// 回退到非事务方法（用于测试或非 PgStore 实现）
+		if err := m.store.DeleteNodesBySubscription(ctx, subscriptionID); err != nil {
+			return fmt.Errorf("delete old nodes: %w", err)
+		}
+		var createErrs []string
+		for _, node := range nodes {
+			if err := m.store.CreateNode(ctx, node); err != nil {
+				createErrs = append(createErrs, fmt.Sprintf("%s: %v", node.Name, err))
+				slog.Warn("proxy: failed to create node", "error", err, "name", node.Name)
+			}
+		}
+		if len(createErrs) > 0 {
+			sub.NodeCount = len(nodes) - len(createErrs)
+			sub.LastFetchAt = time.Now()
+			sub.LastFetchStatus = "failed"
+			sub.LastError = fmt.Sprintf("persisted %d/%d nodes; %d failed: %s",
+				len(nodes)-len(createErrs), len(nodes), len(createErrs), strings.Join(createErrs, "; "))
+			_ = m.store.UpdateSubscription(ctx, sub)
+			return fmt.Errorf("persist nodes: %d/%d failed: %s",
+				len(createErrs), len(nodes), strings.Join(createErrs, "; "))
 		}
 	}
 
 	// 4. 更新订阅状态
 	sub.NodeCount = len(nodes)
 	sub.LastFetchAt = time.Now()
-	if len(createErrs) > 0 {
-		// 解析出节点但在入库时全部或部分失败：必须上报，不能伪装成功。
-		sub.LastFetchStatus = "failed"
-		sub.LastError = fmt.Sprintf("persisted %d/%d nodes; %d failed: %s",
-			len(nodes)-len(createErrs), len(nodes), len(createErrs), strings.Join(createErrs, "; "))
-		if err := m.store.UpdateSubscription(ctx, sub); err != nil {
-			return fmt.Errorf("update subscription: %w", err)
-		}
-		return fmt.Errorf("persist nodes: %d/%d failed: %s",
-			len(createErrs), len(nodes), strings.Join(createErrs, "; "))
-	}
 	sub.LastFetchStatus = "success"
 	sub.LastError = ""
 	if err := m.store.UpdateSubscription(ctx, sub); err != nil {
@@ -272,12 +300,36 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 
 // ReloadCache 重新从数据库加载节点缓存。
 // 通过 API 增删节点后必须调用，否则 SelectBestNode 会命中过期缓存。
+// 审计修复 (2026-08-29)：问题 5 - 原子替换缓存，避免清空和加载之间的空窗期。
 func (m *Manager) ReloadCache() error {
+	// 先加载新数据
+	ctx := context.Background()
+	nodes, err := m.store.ListNodes(ctx, nil)
+	if err != nil {
+		return err
+	}
+	
+	// 按订阅 ID 分组
+	nodesBySubscription := make(map[int][]*Node)
+	for _, node := range nodes {
+		nodesBySubscription[node.SubscriptionID] = append(
+			nodesBySubscription[node.SubscriptionID], node)
+	}
+	
+	// 原子替换：先删除不存在的订阅，再更新/新增
 	m.nodesCache.Range(func(key, _ interface{}) bool {
-		m.nodesCache.Delete(key)
+		subID := key.(int)
+		if _, exists := nodesBySubscription[subID]; !exists {
+			m.nodesCache.Delete(subID)
+		}
 		return true
 	})
-	return m.loadAllNodesIntoCache()
+	
+	for subID, nodes := range nodesBySubscription {
+		m.nodesCache.Store(subID, nodes)
+	}
+	
+	return nil
 }
 
 // InvalidateTransport 使订阅的缓存 Transport 失效并关闭其空闲连接。
@@ -312,35 +364,46 @@ func (m *Manager) GetProxyTransport(ctx context.Context, subscriptionID *int) (*
 // 内部方法
 
 func (m *Manager) refreshLoop() {
+	defer m.wg.Done()
 	ticker := time.NewTicker(m.autoRefreshInterval)
 	defer ticker.Stop()
 	
 	for {
 		select {
 		case <-ticker.C:
-			m.refreshAllSubscriptions()
+			// 使用带超时的 context，避免阻塞 stopCh
+			ctx, cancel := context.WithTimeout(m.ctx, 10*time.Minute)
+			m.refreshAllSubscriptions(ctx)
+			cancel()
 		case <-m.stopCh:
+			return
+		case <-m.ctx.Done():
 			return
 		}
 	}
 }
 
 func (m *Manager) healthCheckLoop() {
+	defer m.wg.Done()
 	ticker := time.NewTicker(m.healthCheckInterval)
 	defer ticker.Stop()
 	
 	for {
 		select {
 		case <-ticker.C:
-			m.healthCheckAllNodes()
+			// 使用带超时的 context，避免阻塞 stopCh
+			ctx, cancel := context.WithTimeout(m.ctx, 10*time.Minute)
+			m.healthCheckAllNodes(ctx)
+			cancel()
 		case <-m.stopCh:
+			return
+		case <-m.ctx.Done():
 			return
 		}
 	}
 }
 
-func (m *Manager) refreshAllSubscriptions() {
-	ctx := context.Background()
+func (m *Manager) refreshAllSubscriptions(ctx context.Context) {
 	subs, err := m.store.ListSubscriptions(ctx)
 	if err != nil {
 		slog.Error("proxy: failed to list subscriptions", "error", err)
@@ -366,8 +429,7 @@ func (m *Manager) refreshAllSubscriptions() {
 	}
 }
 
-func (m *Manager) healthCheckAllNodes() {
-	ctx := context.Background()
+func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 	subs, err := m.store.ListSubscriptions(ctx)
 	if err != nil {
 		slog.Error("proxy: failed to list subscriptions for health check", "error", err)
@@ -474,11 +536,20 @@ func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID in
 }
 
 // redactErr 去掉错误里可能泄露的代理凭据（ProxyURL 出现在错误信息中）。
+// 审计修复 (2026-08-29)：密钥安全 - 实际调用 sanitizeSecrets 进行脱敏。
 func redactErr(err error) string {
 	if err == nil {
 		return ""
 	}
+	// 复用 parser.go 的 sanitizeSecrets 逻辑（但 parser 包不能反向依赖 manager）
+	// 这里内联简化版：移除 URL userinfo
 	s := err.Error()
+	// 移除 scheme://userinfo@ 形式的凭据
+	if idx := strings.Index(s, "://"); idx > 0 {
+		if end := strings.Index(s[idx+3:], "@"); end > 0 {
+			s = s[:idx+3] + "[REDACTED]@" + s[idx+3+end+1:]
+		}
+	}
 	return s
 }
 
@@ -530,20 +601,25 @@ func (m *Manager) getAllActiveCachedNodes() []*Node {
 	return allNodes
 }
 
+// 审计修复 (2026-08-29)：问题 6 - 使用深拷贝避免 slice 竞态条件。
 func (m *Manager) updateNodeInCache(node *Node) {
 	nodes := m.getNodesFromCache(node.SubscriptionID)
 	if nodes == nil {
 		return
 	}
 	
+	// 深拷贝 slice，避免并发读写竞态
+	newNodes := make([]*Node, len(nodes))
+	copy(newNodes, nodes)
+	
 	// 更新缓存中的节点
-	for i, n := range nodes {
+	for i, n := range newNodes {
 		if n.ID == node.ID {
-			nodes[i] = node
+			newNodes[i] = node
 			break
 		}
 	}
-	m.nodesCache.Store(node.SubscriptionID, nodes)
+	m.nodesCache.Store(node.SubscriptionID, newNodes)
 }
 
 // extractDomain 从 URL 提取域名
