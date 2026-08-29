@@ -287,7 +287,11 @@ func TestJournalSnapshot_Authorization(t *testing.T) {
 	store.Store(snap2)
 
 	t.Run("same_tenant_access_succeeds", func(t *testing.T) {
-		result, err := store.ConsumeSnapshot(ctx, "tenant-a", "request-001")
+		result, err := store.ConsumeSnapshot(ctx, JournalSnapshotQuery{
+			CallerTenantID: "tenant-a",
+			TargetTenantID: "tenant-a",
+			RequestID:      "request-001",
+		})
 		if err != nil {
 			t.Fatalf("ConsumeSnapshot(tenant-a, request-001) error = %v, want nil", err)
 		}
@@ -300,37 +304,65 @@ func TestJournalSnapshot_Authorization(t *testing.T) {
 	})
 
 	t.Run("cross_tenant_access_returns_not_found", func(t *testing.T) {
-		_, err := store.ConsumeSnapshot(ctx, "tenant-a", "request-002")
+		_, err := store.ConsumeSnapshot(ctx, JournalSnapshotQuery{
+			CallerTenantID: "tenant-a",
+			TargetTenantID: "tenant-b",
+			RequestID:      "request-002",
+		})
 		if !errors.Is(err, ErrJournalNotFound) {
 			t.Errorf("ConsumeSnapshot(tenant-a, request-002) error = %v, want ErrJournalNotFound", err)
 		}
 	})
 
 	t.Run("missing_snapshot_returns_not_found", func(t *testing.T) {
-		_, err := store.ConsumeSnapshot(ctx, "tenant-a", "request-999")
+		_, err := store.ConsumeSnapshot(ctx, JournalSnapshotQuery{
+			CallerTenantID: "tenant-a",
+			TargetTenantID: "tenant-a",
+			RequestID:      "request-999",
+		})
 		if !errors.Is(err, ErrJournalNotFound) {
 			t.Errorf("ConsumeSnapshot(tenant-a, request-999) error = %v, want ErrJournalNotFound", err)
 		}
 	})
 
 	t.Run("empty_caller_tenant_returns_not_found", func(t *testing.T) {
-		_, err := store.ConsumeSnapshot(ctx, "", "request-001")
+		_, err := store.ConsumeSnapshot(ctx, JournalSnapshotQuery{
+			CallerTenantID: "",
+			TargetTenantID: "tenant-a",
+			RequestID:      "request-001",
+		})
 		if !errors.Is(err, ErrJournalNotFound) {
 			t.Errorf("ConsumeSnapshot('', request-001) error = %v, want ErrJournalNotFound", err)
 		}
 	})
 
 	t.Run("empty_request_id_returns_not_found", func(t *testing.T) {
-		_, err := store.ConsumeSnapshot(ctx, "tenant-a", "")
+		_, err := store.ConsumeSnapshot(ctx, JournalSnapshotQuery{
+			CallerTenantID: "tenant-a",
+			TargetTenantID: "tenant-a",
+			RequestID:      "",
+		})
 		if !errors.Is(err, ErrJournalNotFound) {
 			t.Errorf("ConsumeSnapshot(tenant-a, '') error = %v, want ErrJournalNotFound", err)
 		}
 	})
 
 	t.Run("indistinguishable_errors", func(t *testing.T) {
-		_, err1 := store.ConsumeSnapshot(ctx, "tenant-a", "request-002")
-		_, err2 := store.ConsumeSnapshot(ctx, "tenant-a", "request-999")
-		_, err3 := store.ConsumeSnapshot(ctx, "", "request-001")
+		_, err1 := store.ConsumeSnapshot(ctx, JournalSnapshotQuery{
+			CallerTenantID: "tenant-a",
+			TargetTenantID: "tenant-b",
+			RequestID:      "request-002",
+		})
+		_, err2 := store.ConsumeSnapshot(ctx, JournalSnapshotQuery{
+			CallerTenantID: "tenant-a",
+			TargetTenantID: "tenant-a",
+			RequestID:      "request-999",
+		})
+		_, err3 := store.ConsumeSnapshot(ctx, JournalSnapshotQuery{
+			CallerTenantID: "",
+			TargetTenantID: "tenant-a",
+			RequestID:      "request-001",
+		})
 
 		if !errors.Is(err1, ErrJournalNotFound) || !errors.Is(err2, ErrJournalNotFound) || !errors.Is(err3, ErrJournalNotFound) {
 			t.Errorf("all denial cases must return ErrJournalNotFound, got err1=%v err2=%v err3=%v", err1, err2, err3)

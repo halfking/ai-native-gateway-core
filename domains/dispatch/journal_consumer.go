@@ -19,16 +19,20 @@ type JournalSnapshotStore interface {
 //
 // This implementation satisfies ADR 2026-08-28 §Decision point 4:
 // authorization checking with not-found-shaped errors for cross-tenant access.
-type InMemoryJournalStore struct {
-	mu        sync.RWMutex
-	snapshots map[string]JournalSnapshot // key: tenantID + ":" + requestID
+type journalSnapshotKey struct {
+	tenantID  string
+	requestID string
 }
 
-// NewInMemoryJournalStore creates an empty in-memory journal store.
+type InMemoryJournalStore struct {
+	mu        sync.RWMutex
+	snapshots map[journalSnapshotKey]JournalSnapshot
+}
+
+// NewInMemoryJournalStore creates an empty, instance-local journal read model.
+// It is not a durable history store; production callers must treat entries as ephemeral diagnostics.
 func NewInMemoryJournalStore() *InMemoryJournalStore {
-	return &InMemoryJournalStore{
-		snapshots: make(map[string]JournalSnapshot),
-	}
+	return &InMemoryJournalStore{snapshots: make(map[journalSnapshotKey]JournalSnapshot)}
 }
 
 // Store persists a snapshot for later authorized retrieval. This is a test
@@ -38,10 +42,13 @@ func (s *InMemoryJournalStore) Store(snap JournalSnapshot) {
 	if s == nil || snap.TenantID == "" || snap.RequestID == "" {
 		return
 	}
-	key := snap.TenantID + ":" + snap.RequestID
+	key := journalSnapshotKey{tenantID: snap.TenantID, requestID: snap.RequestID}
 	snap.Entries = append([]JournalEntry(nil), snap.Entries...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, found := s.snapshots[key]; found && existing.SnapshotVersion > snap.SnapshotVersion {
+		return
+	}
 	s.snapshots[key] = snap
 }
 
@@ -55,24 +62,20 @@ func (s *InMemoryJournalStore) Store(snap JournalSnapshot) {
 //
 // This not-found-shaped error prevents existence leaks: an unauthorized caller
 // cannot distinguish "does not exist" from "exists but unauthorized" (ADR DP4).
-func (s *InMemoryJournalStore) ConsumeSnapshot(ctx context.Context, callerTenant, requestID string) (JournalSnapshot, error) {
-	if s == nil {
+func (s *InMemoryJournalStore) ConsumeSnapshot(_ context.Context, query JournalSnapshotQuery) (JournalSnapshot, error) {
+	if s == nil || query.CallerTenantID == "" || query.TargetTenantID == "" || query.RequestID == "" {
 		return JournalSnapshot{}, ErrJournalNotFound
 	}
-	if callerTenant == "" || requestID == "" {
+	if !query.Privileged && query.CallerTenantID != query.TargetTenantID {
 		return JournalSnapshot{}, ErrJournalNotFound
 	}
 
-	key := callerTenant + ":" + requestID
+	key := journalSnapshotKey{tenantID: query.TargetTenantID, requestID: query.RequestID}
 	s.mu.RLock()
 	snap, found := s.snapshots[key]
 	s.mu.RUnlock()
 
-	if !found {
-		return JournalSnapshot{}, ErrJournalNotFound
-	}
-
-	if snap.TenantID != callerTenant {
+	if !found || snap.TenantID != query.TargetTenantID || snap.RequestID != query.RequestID {
 		return JournalSnapshot{}, ErrJournalNotFound
 	}
 
@@ -97,5 +100,5 @@ func (s *InMemoryJournalStore) Clear() {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.snapshots = make(map[string]JournalSnapshot)
+	s.snapshots = make(map[journalSnapshotKey]JournalSnapshot)
 }
