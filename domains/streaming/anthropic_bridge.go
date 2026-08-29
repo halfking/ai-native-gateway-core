@@ -1198,13 +1198,18 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			// was a regression — restored here so Q3 / Q-E / non-stream all
 			// agree on the same shape.
 			//
-	// Skip the interrupt when pc != nil: the caller wired a pending
-	// replay buffer for client-disconnect recovery and MUST see a
-	// completed body even on empty streams. The downstream executor
-	// decides whether to re-attempt or surface the empty body.
-	if !emittedContent {
-		if capture != nil {
-			capture.MarkInterruptedWithReason("anthropic_empty_response")
+			// hasPendingReplay (pc != nil) short-circuits the interrupt: the
+			// caller wired a pending replay buffer for client-disconnect
+			// recovery and MUST see a completed body even on empty streams.
+			// The downstream executor (executor_anthropic.go) decides whether
+			// to re-attempt or surface the empty body. Without this guard
+			// every pc-equipped empty fixture (e.g.
+			// TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer) was
+			// wrongly marked as empty_response and the [DONE] chunk was
+			// never written to the capturer.
+			if anthropictransform.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("anthropic_empty_response")
 				}
 				return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
 			}
