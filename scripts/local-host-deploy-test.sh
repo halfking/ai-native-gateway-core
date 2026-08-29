@@ -17,6 +17,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034 # PROJECT_ROOT is referenced by the test harness when invoked directly
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=local-host-layout-helper.sh
@@ -28,7 +29,7 @@ source "$SCRIPT_DIR/local-host-layout-helper.sh"
 # returns 401. Treat `CHANGE_ME` the same as unset, then fall back to the
 # canonical local-dev fallback that env.sh uses.
 if [[ -z "${LLM_GATEWAY_ADMIN_API_KEY:-}" || "${LLM_GATEWAY_ADMIN_API_KEY:-}" == "CHANGE_ME" ]] && [[ -f ~/workspace/ai-native-tools/envs/loader.sh ]]; then
-  # shellcheck disable=SC1091
+  # shellcheck disable=SC1091,SC1090 # loader path is env-dependent (per-machine), shellcheck can't follow it
   source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server 115.29.212.252 2>/dev/null || true
 fi
 

@@ -6,6 +6,7 @@
 set -euo pipefail
 
 LIFECYCLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034 # referenced by sibling lifecycle scripts when sourced
 PROJECT_ROOT="$(cd "$LIFECYCLE_DIR/../.." && pwd)"
 
 log() { printf '[lifecycle] %s\n' "$*"; }
@@ -74,7 +75,9 @@ PY
 }
 
 validate_backup() {
-  local backup=$1 manifest=${2:-"$backup.manifest.json"}
+  local backup=$1
+  # shellcheck disable=SC2318 # manifest var is intentional — first in a chain of two `local`s below
+  local manifest=${2:-"$backup.manifest.json"}
   [[ -f "$backup" ]] || die "backup file not found: $backup"
   [[ -f "$manifest" ]] || die "backup manifest not found: $manifest"
   need_cmd python3

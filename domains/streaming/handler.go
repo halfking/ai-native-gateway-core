@@ -6873,6 +6873,15 @@ type ResourceStatus struct {
 type HealthResponse struct {
 	Status      string          `json:"status"`
 	Version     string          `json:"version"`
+	// 2026-08-29 扩 fields：/healthz 暴露 git_sha + build_seq + build_date，
+	// 让 scripts/lifecycle/preflight.sh 的 /version 段能与切完后的 bundle version 比对。
+	// 字段保持 minimal，仅 SSOT；不要把 internal versionInfoStruct 全部泄出去。
+	GitSHA    string `json:"git_sha,omitempty"`
+	BuildSeq  int    `json:"build_seq,omitempty"`
+	BuildDate string `json:"build_date,omitempty"`
+	// Ready 标识依赖是否就绪：DB ping + Redis ping 都通时 true。
+	// 由 HealthHandler.ServeHTTP 在 anonymous 路径上设置（不暴露任何内网拓扑）。
+	Ready       bool            `json:"ready"`
 	Database    *ResourceStatus `json:"database,omitempty"`
 	Redis       *ResourceStatus `json:"redis,omitempty"`
 	Circuit     any             `json:"circuit,omitempty"`
@@ -6955,17 +6964,31 @@ func (h *HealthHandler) SetRedis(redis redisConnector) {
 }
 
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// /version is intentionally metadata-only and must not run dependency checks.
-	// Keep it separate from the liveness/readiness response so deploy preflight
-	// cannot mistake a healthy process for a matching binary.
-	if r.URL.Path == "/version" {
-		writeGatewayVersionMetadata(w)
+	// 2026-08-29：按 path 分发：
+	//   /version   仅 build metadata（version + git_sha + build_seq + build_date）
+	//   /readyz    严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
+	//   /healthz   现有逻辑（anon 暴露 Ready，full=true 暴露 Circuit/Concurrency/Proxy 需 admin token）
+	switch r.URL.Path {
+	case "/version":
+		h.serveVersion(w)
+		return
+	case "/readyz":
+		h.serveReadyz(w, r)
 		return
 	}
 
+	// 2026-08-29：/healthz 暴露 git_sha / build_seq / build_date / ready（DB+Redis 是否通）。
+	// 字段保持 minimal，不暴露 internal versionInfoStruct 的全部内容；与
+	// scripts/lifecycle/preflight.sh 的 /version 段配合，让客户级升级器能确认
+	// 切完后的 binary 真的起来了，且依赖就绪。
+	// 解析 version.json 时拿到 GitSHA / BuildSeq / BuildDate；与 BuildNumber() 复用同一路径。
+	vInfo := resolveGatewayVersionInfo()
 	resp := HealthResponse{
-		Status:  "ok",
-		Version: resolveGatewayVersion(),
+		Status:    "ok",
+		Version:   vInfo.Version,
+		GitSHA:    vInfo.GitSHA,
+		BuildSeq:  vInfo.BuildSeq,
+		BuildDate: vInfo.BuildDate,
 	}
 
 	// /readyz is a strict dependency gate. Unlike /healthz (liveness), it must
@@ -7051,6 +7074,11 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				resp.Redis.Error = redisErr.Error()
 			}
 		}
+	} else {
+		// 匿名路径：DB + Redis ping 都通才算 ready=true。任一不通 → ready=false 但仍 200，
+		// 让 L1 healthz 在依赖故障时仍能 serve 探针（K8s liveness 不应 fail），
+		// 同时把 Ready=false 暴露给 readyz 端点做 L2 严格门。
+		resp.Ready = h.dependenciesReady(r)
 	}
 
 	// NET-007 fix: proxy 字段也属于敏感信息（暴露 internal.example.com 等内网
@@ -7065,6 +7093,99 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(resp)
+}
+
+// serveVersion — /version 端点：仅 build metadata，anon 可访问。
+// scripts/lifecycle/preflight.sh 用它与切完后的 bundle version.json 比对。
+func (h *HealthHandler) serveVersion(w http.ResponseWriter) {
+	v := resolveGatewayVersionInfo()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck
+	json.NewEncoder(w).Encode(map[string]any{
+		"version":    v.Version,
+		"git_sha":    v.GitSHA,
+		"build_seq":  v.BuildSeq,
+		"build_date": v.BuildDate,
+		"module":     "llm-gateway-go",
+	})
+}
+
+// serveReadyz — /readyz 端点：DB + Redis 都通才 200，否则 503。
+// 严格门：与 /healthz 的 anon 路径区分——healthz 在 K8s liveness 中应 fail-open，
+// readyz 在 readiness 中应 fail-closed（依赖故障时摘流量）。
+func (h *HealthHandler) serveReadyz(w http.ResponseWriter, r *http.Request) {
+	ready := h.dependenciesReady(r)
+	w.Header().Set("Content-Type", "application/json")
+	if ready {
+		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck
+		json.NewEncoder(w).Encode(map[string]any{"status": "ready"})
+		return
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	//nolint:errcheck
+	json.NewEncoder(w).Encode(map[string]any{"status": "not_ready"})
+}
+
+// dependenciesReady — 内部 helper：DB ping + Redis ping（任一失败返回 false）。
+func (h *HealthHandler) dependenciesReady(r *http.Request) bool {
+	if h.db != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := h.db.Ping(ctx); err != nil {
+			return false
+		}
+	}
+	if h.redis != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := h.redis.Ping(ctx); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// healthVersionInfo 是 /healthz 暴露字段的子集（SSOT 来自 version.json）。
+// 不要把这个 struct 直接暴露给客户端——只暴露 HealthResponse 字段。
+type healthVersionInfo struct {
+	Version   string
+	GitSHA    string
+	BuildSeq  int
+	BuildDate string
+}
+
+// resolveGatewayVersionInfo 复用 resolveGatewayVersion 的 version.json 解析路径，
+// 同时返回 git_sha / build_seq / build_date。原始解析仍只读 version.json（SSOT）。
+func resolveGatewayVersionInfo() healthVersionInfo {
+	candidates := []string{
+		"/opt/llm-gateway-go/version.json",
+		"version.json",
+	}
+	out := healthVersionInfo{
+		Version:   "dev",
+		GitSHA:    "unknown",
+		BuildDate: "unknown",
+	}
+	for _, path := range candidates {
+		if raw, err := os.ReadFile(path); err == nil {
+			var v struct {
+				Version   string `json:"version"`
+				GitSHA    string `json:"git_sha"`
+				BuildSeq  int    `json:"build_seq"`
+				BuildDate string `json:"build_date"`
+			}
+			if err := json.Unmarshal(raw, &v); err == nil && v.Version != "" {
+				out.Version = v.Version
+				out.GitSHA = v.GitSHA
+				out.BuildSeq = v.BuildSeq
+				out.BuildDate = v.BuildDate
+				return out
+			}
+		}
+	}
+	return out
 }
 
 func extractBearerToken(r *http.Request) string {
