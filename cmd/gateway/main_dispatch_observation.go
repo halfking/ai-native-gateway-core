@@ -208,6 +208,18 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 	}
 }
 
+func journalSnapshotHash(snap dispatch.JournalSnapshot) [sha256.Size]byte {
+	payload, _ := json.Marshal(struct {
+		TenantID       string                  `json:"tenant_id"`
+		RequestID      string                  `json:"request_id"`
+		Entries        []dispatch.JournalEntry `json:"entries"`
+		Truncated      bool                    `json:"truncated"`
+		TruncatedCount int                     `json:"truncated_count"`
+		Version        int64                   `json:"version"`
+	}{snap.TenantID, snap.RequestID, snap.Entries, snap.Truncated, snap.TruncatedCount, snap.SnapshotVersion})
+	return sha256.Sum256(payload)
+}
+
 // journalEntryToJourneyEvent translates one dispatch.JournalEntry into a
 // requestjourney.JourneyEvent. The closed EventType / Outcome / Stage
 // vocabularies force a fixed mapping: terminal actions → terminal
