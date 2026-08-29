@@ -52,9 +52,18 @@ func NewPostgresJournalSnapshotReceiptStore(db observationOutboxDB, owner string
 }
 
 // SnapshotPayloadHash returns the canonical SHA-256 hash used to detect a
-// conflicting replay of the same (tenant, request, version) identity.
-func SnapshotPayloadHash(snapshot any) (string, error) {
-	payload, err := json.Marshal(snapshot)
+// conflicting replay of the same (tenant, request, version) identity. Only
+// immutable snapshot content participates; caller authorization metadata is
+// deliberately excluded from the idempotency payload.
+func SnapshotPayloadHash(tenantID, requestID string, entries any, truncated bool, truncatedCount int, version int64) (string, error) {
+	payload, err := json.Marshal(struct {
+		TenantID       string `json:"tenant_id"`
+		RequestID      string `json:"request_id"`
+		Entries        any    `json:"entries"`
+		Truncated      bool   `json:"truncated"`
+		TruncatedCount int    `json:"truncated_count"`
+		Version        int64  `json:"version"`
+	}{tenantID, requestID, entries, truncated, truncatedCount, version})
 	if err != nil {
 		return "", fmt.Errorf("marshal journal snapshot payload: %w", err)
 	}

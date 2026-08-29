@@ -98,6 +98,27 @@ type PrometheusRecorder struct {
 	// Triggers investigation when rate(malformed_sse_frame_total[5m]) > threshold.
 	malformedSSEFrameTotal *prometheus.CounterVec
 
+	// successEmptyResponseTotal (2026-08-29): counts requests marked as
+	// successful but returned no content (empty response body or zero tokens).
+	// Label: provider_id. Helps identify providers with high empty response
+	// rates (e.g., NVIDIA NIM ~13%). Uses provider_id instead of model to
+	// avoid high cardinality (GW-00 label constraint).
+	successEmptyResponseTotal *prometheus.CounterVec
+
+	// journalSnapshotStoredTotal (2026-08-29): counts journal snapshots
+	// successfully written to JournalSnapshotStore. No labels to keep
+	// cardinality minimal (tenant_id is forbidden per GW-00).
+	journalSnapshotStoredTotal prometheus.Counter
+
+	// journalSnapshotAppliedTotal (2026-08-29): counts journal snapshot
+	// Apply() operations. Label: success (true|false). No tenant_id per GW-00.
+	journalSnapshotAppliedTotal *prometheus.CounterVec
+
+	// journalSnapshotDeduplicatedTotal (2026-08-29): counts journal snapshots
+	// rejected due to deduplication. Label: reason
+	// (already_completed|version_conflict|not_claimed). No tenant_id per GW-00.
+	journalSnapshotDeduplicatedTotal *prometheus.CounterVec
+
 	logger logger.Logger
 }
 
@@ -383,6 +404,37 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 			[]string{"provider", "stage"},
 		),
 
+		// 2026-08-29: success empty response counter
+		successEmptyResponseTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_success_empty_response_total",
+				Help: "Requests marked as successful but returned no content (empty response body or zero tokens). Label: provider_id.",
+			},
+			[]string{"provider_id"},
+		),
+
+		// 2026-08-29: journal snapshot lifecycle counters
+		journalSnapshotStoredTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "gateway_journal_snapshot_stored_total",
+				Help: "Journal snapshots successfully written to JournalSnapshotStore.",
+			},
+		),
+		journalSnapshotAppliedTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_journal_snapshot_applied_total",
+				Help: "Journal snapshot Apply() operations. Label: success (true|false).",
+			},
+			[]string{"success"},
+		),
+		journalSnapshotDeduplicatedTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_journal_snapshot_deduplicated_total",
+				Help: "Journal snapshots rejected due to deduplication. Label: reason (already_completed|version_conflict|not_claimed).",
+			},
+			[]string{"reason"},
+		),
+
 		logger: logger.New("metrics"),
 	}
 	for _, result := range []string{"recorded", "skipped", "failed"} {
@@ -616,4 +668,45 @@ func (p *PrometheusRecorder) RecordURSMv2ShadowResult(result string) {
 // rate(malformed_sse_frame_total[5m]) to detect provider issues.
 func (p *PrometheusRecorder) RecordMalformedSSEFrame(provider, stage string) {
 	p.malformedSSEFrameTotal.WithLabelValues(provider, stage).Inc()
+}
+
+// RecordSuccessEmptyResponse (2026-08-29) increments the counter when a
+// request is marked as successful but returned no content (empty response
+// body or zero tokens). This helps identify providers with high empty
+// response rates (e.g., NVIDIA NIM ~13%).
+//
+//   - providerID: provider identifier (low cardinality)
+//
+// Note: model and tenant_id are intentionally excluded per GW-00 label
+// cardinality constraints. Use provider_id aggregation instead.
+func (p *PrometheusRecorder) RecordSuccessEmptyResponse(model, providerID, tenantID string) {
+	p.successEmptyResponseTotal.WithLabelValues(providerID).Inc()
+}
+
+// RecordJournalSnapshotStored (2026-08-29) increments the counter when a
+// journal snapshot is successfully written to the JournalSnapshotStore.
+// No labels per GW-00 (tenant_id is forbidden).
+func (p *PrometheusRecorder) RecordJournalSnapshotStored(tenantID string) {
+	p.journalSnapshotStoredTotal.Inc()
+}
+
+// RecordJournalSnapshotApplied (2026-08-29) increments the counter when a
+// journal snapshot Apply() operation completes. success=true for clean apply,
+// success=false for any Apply() error. No tenant_id per GW-00.
+func (p *PrometheusRecorder) RecordJournalSnapshotApplied(tenantID string, success bool) {
+	successStr := "false"
+	if success {
+		successStr = "true"
+	}
+	p.journalSnapshotAppliedTotal.WithLabelValues(successStr).Inc()
+}
+
+// RecordJournalSnapshotDeduplicated (2026-08-29) increments the counter when
+// a journal snapshot is rejected due to deduplication. No tenant_id per GW-00.
+//
+//   - reason: "already_completed" (durable receipt found) |
+//             "version_conflict" (hash mismatch) |
+//             "not_claimed" (failed to acquire lease)
+func (p *PrometheusRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string) {
+	p.journalSnapshotDeduplicatedTotal.WithLabelValues(reason).Inc()
 }

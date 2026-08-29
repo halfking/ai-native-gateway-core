@@ -76,6 +76,32 @@ type Recorder interface {
 	// send incomplete JSON like bare "{". High rates trigger investigation.
 	// Uses "provider" label instead of "model" to avoid high cardinality.
 	RecordMalformedSSEFrame(provider, stage string)
+
+	// SuccessEmptyResponse (2026-08-29): count requests marked as successful
+	// but returned no content (empty response body or zero tokens). Label:
+	// provider_id (low cardinality). Helps identify providers with high empty
+	// response rates (e.g., NVIDIA NIM ~13%). model and tenant_id are
+	// intentionally excluded per GW-00 cardinality constraints.
+	RecordSuccessEmptyResponse(model, providerID, tenantID string)
+
+	// JournalSnapshot (2026-08-29): track journal snapshot lifecycle events
+	// during dispatch observation persistence. No tenant_id labels per GW-00.
+	// Operators monitor these to detect snapshot storage failures,
+	// deduplication patterns, and apply errors.
+	//
+	// RecordJournalSnapshotStored: increments when a snapshot is written to
+	// the JournalSnapshotStore (successful Store() call). No labels.
+	RecordJournalSnapshotStored(tenantID string)
+
+	// RecordJournalSnapshotApplied: increments when Apply() completes,
+	// success=true for clean apply, success=false for any Apply() error.
+	// Label: success (true|false).
+	RecordJournalSnapshotApplied(tenantID string, success bool)
+
+	// RecordJournalSnapshotDeduplicated: increments when a snapshot is
+	// rejected due to deduplication. Label: reason (already_completed |
+	// version_conflict | not_claimed).
+	RecordJournalSnapshotDeduplicated(tenantID, reason string)
 }
 
 // NoopRecorder 是空实现，用于测试
@@ -127,6 +153,14 @@ func (n *NoopRecorder) RecordURSMv2ShadowResult(result string) {}
 
 // 2026-08-29: malformed SSE frame counter.
 func (n *NoopRecorder) RecordMalformedSSEFrame(provider, stage string) {}
+
+// 2026-08-29: success empty response counter.
+func (n *NoopRecorder) RecordSuccessEmptyResponse(model, providerID, tenantID string) {}
+
+// 2026-08-29: journal snapshot lifecycle counters.
+func (n *NoopRecorder) RecordJournalSnapshotStored(tenantID string)                       {}
+func (n *NoopRecorder) RecordJournalSnapshotApplied(tenantID string, success bool)        {}
+func (n *NoopRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string)         {}
 
 // globalRecorder 保存全局默认 Recorder。
 //
