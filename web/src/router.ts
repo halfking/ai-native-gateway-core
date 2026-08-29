@@ -331,10 +331,17 @@ router.beforeEach(async (to) => {
       // Already going to home with login=1, allow
       return
     }
-    // 第一次访问：等 hydration 完成
+    // 第一次访问：等 hydration 完成。
+    // 加超时上限：若 auth 始终未就绪（接口挂掉 / 竞态），30ms 轮询会永远
+    // 卡住、Promise 永不 resolve，导航死锁。超过阈值则 fail-open 放行，
+    // 由后续 isAuthed() 检查兜底（未登录走 login 流程），不再无限轮询。
+    const AUTH_HYDRATE_MAX_WAIT_MS = 10_000
+    const startedAt = Date.now()
     return new Promise<void>((resolve) => {
       const check = () => {
         if (store.authHydrated) {
+          resolve()
+        } else if (Date.now() - startedAt >= AUTH_HYDRATE_MAX_WAIT_MS) {
           resolve()
         } else {
           setTimeout(check, 30)
