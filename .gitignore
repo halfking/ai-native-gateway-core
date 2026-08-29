@@ -250,3 +250,8 @@ test-history-demo.sh
 docs/全方面测试/results/runs/
 docs/全方面测试/results/*.jsonl
 gui-test-screenshots/
+
+# Tool binaries (cmd/tools/)
+/backfill_session_bodies
+/backfill_sessions_v2_v2
+/validate_sessions_v2
