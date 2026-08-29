@@ -83,7 +83,9 @@ type Recorder interface {
 	// before message_stop) | "incomplete_tool_call_after_done" (message_stop
 	// received but tool_result missing, protocol violation). High rates
 	// indicate unstable Anthropic upstreams or mid-stream interruptions.
-	// Uses "model" label for attribution (lower cardinality than provider).
+	// The label is recorded as a normalized "provider_family" (route key of
+	// the passed-in model); the raw model name is never used as a label per
+	// GW-00 high-cardinality constraints.
 	RecordIncompleteToolCall(model, reason string)
 
 	// SuccessEmptyResponse (2026-08-29): count requests marked as successful
