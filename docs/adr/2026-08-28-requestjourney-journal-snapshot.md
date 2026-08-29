@@ -1,7 +1,8 @@
 # ADR: `JournalSnapshot()` requestjourney consumption boundary
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-08-28
+- **Accepted:** 2026-08-29 (journal_snapshot_contract_test.go: 5 contract tests pinned; `JournalSnapshot` extended with `SnapshotVersion` / `CallerTenantID` / `CallerAuthorized` / `Metadata`)
 - **Scope:** requestjourney diagnostics and persistence
 
 ## Context
@@ -64,3 +65,24 @@ The next implementation should add a small consumer interface and contract
 tests for authorization, bounded/truncated snapshots, duplicate retries, and
 persistence failure isolation. No new consumer should be wired until those
 contracts are implemented and reviewed.
+
+**Status (2026-08-29):** All four contract families are pinned by
+`domains/dispatch/journal_snapshot_contract_test.go`:
+
+| ADR § | Contract test |
+|---|---|
+| §3 bounded / truncated | `TestJournalSnapshot_BoundedTruncated_OverflowMarksMetadata`, `TestJournalSnapshot_BoundedTruncated_NonOverflowClearsMetadata` |
+| §4 authorization | `TestJournalSnapshot_Authorization_TenantMismatchContract`, `TestJournalSnapshot_Authorization_PipelineStampsTrustedCaller` |
+| §5 persistence failure isolation | `TestJournalSink_PersistenceFailure_IsolatesSettlement` |
+| §6 duplicate retry / idempotency | `TestJournalSnapshot_Idempotency_SnapshotVersionEqualsJournalSeq`, `TestJournalSnapshot_Idempotency_DuplicateRetryRecomputesSameVersion`, `TestJournalSnapshot_Idempotency_ProjectionDedupsByteEqualReplay` |
+
+Implementation evidence:
+
+- `JournalSnapshot` extended with `SnapshotVersion` / `CallerTenantID` /
+  `CallerAuthorized` / `Metadata` (`domains/dispatch/observation.go`)
+- `Pipeline.emitJournalSnapshot` populates `SnapshotVersion` from
+  `qr.journalSeq` and `Metadata.{Truncated,TotalEntries,DroppedEntries}`
+  from the source ring (`domains/dispatch/pipeline.go`)
+- Production sink `dispatchJourneyJournalAdapter.ApplyJournalSnapshot`
+  enforces authorization + idempotency short-circuit
+  (`cmd/gateway/main_dispatch_observation.go`)

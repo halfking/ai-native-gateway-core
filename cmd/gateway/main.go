@@ -1945,6 +1945,10 @@ func main() {
 
 	// ── Telemetry ─────────────────────────────────────────────────────────
 	telemetryClient := telemetry.NewClient()
+	// audit-24h-20260829-r5 §5.5: classify success-but-empty-response-body
+	// on every persisted request_logs row. Wired at process start so the
+	// hook sees every INSERT/UPDATE that survives persistRequestLog.
+	telemetry.RegisterEmptyResponseGate(telemetryClient)
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
 

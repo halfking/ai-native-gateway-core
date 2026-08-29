@@ -93,13 +93,44 @@ func newDispatchJourneyJournalAdapter(recorder *requestjourney.Recorder, instanc
 // recorder as a sequence of JourneyEvents. Seq is offset from the recorder's
 // current max for (tenant, request) so journal entries never collide with
 // observation seqs (the projection rejects non-monotonic Seq).
+//
+// ADR §4 (2026-08-28-journal-snapshot): reject snapshots whose caller auth
+// context disagrees with the snapshot's own tenant — a misconfigured or
+// compromised caller must not be able to persist cross-tenant traces.
+// ADR §6: idempotency by (tenant, request, snapshot_version). When the
+// recorder's MaxSeq already covers the snapshot, the per-entry loop is
+// short-circuited; otherwise projection.Apply's existing byte-equal dedup
+// guarantees a second delivery of the same (tenant, request, seq) tuple is
+// a silent no-op.
 func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context, snap dispatch.JournalSnapshot) {
 	if a == nil || a.recorder == nil {
+		return
+	}
+	if !snap.CallerAuthorized {
+		slog.Warn("dispatch journal sink rejected unauthorized snapshot",
+			"request_id", snap.RequestID,
+			"reason", "caller_not_authorized")
+		return
+	}
+	if snap.CallerTenantID != "" && snap.TenantID != "" && snap.CallerTenantID != snap.TenantID {
+		slog.Warn("dispatch journal sink rejected tenant mismatch",
+			"request_id", snap.RequestID,
+			"caller_tenant", snap.CallerTenantID,
+			"snap_tenant", snap.TenantID)
 		return
 	}
 	if snap.RequestID == "" || len(snap.Entries) == 0 {
 		return
 	}
+
+	if max := a.recorder.MaxSeq(snap.TenantID, snap.RequestID); max >= snap.SnapshotVersion {
+		slog.Debug("dispatch journal snapshot already persisted",
+			"request_id", snap.RequestID,
+			"snapshot_version", snap.SnapshotVersion,
+			"max_seq", max)
+		return
+	}
+
 	baseSeq := a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
 	for i, entry := range snap.Entries {
 		event, ok := journalEntryToJourneyEvent(a.instance, snap.TenantID, snap.RequestID, baseSeq, i, entry)
