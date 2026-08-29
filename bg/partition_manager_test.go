@@ -69,6 +69,7 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_handoff_logs_hot_to_partition":              false, // Migration 532
 		"promote_session_module_executions_hot_to_partition": false, // Migration 580
 		"promote_dashboard_access_events_hot_to_partition":   false, // Migration 579 (body repaired by 607)
+		"promote_session_bodies_hot_to_partition":            false, // Migration 615
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
