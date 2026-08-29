@@ -63,6 +63,8 @@ type AutoRevokeDB interface {
 
 // AutoRevokeConfig captures the runtime tunables. Zero values fall back to
 // safe defaults (see DefaultAutoRevokeConfig).
+//
+// Treat as immutable after NewAutoRevoker.
 type AutoRevokeConfig struct {
 	// Threshold is the number of auth_failed cycles within Window that
 	// triggers manual_disabled=TRUE. Must be >= 1.
@@ -115,12 +117,12 @@ func LoadAutoRevokeConfig() AutoRevokeConfig {
 // AutoRevoker runs the periodic escalation sweep. Safe to construct without
 // calling Start; Start is the only side-effecting entry point.
 type AutoRevoker struct {
-	db      AutoRevokeDB
-	cfg     AutoRevokeConfig
-	mu      sync.Mutex
-	started bool
-	stop    chan struct{}
-	done    chan struct{}
+	db        AutoRevokeDB
+	cfg       AutoRevokeConfig // cfg is immutable after NewAutoRevoker; reads in sweepOnce are safe without locking.
+	mu        sync.Mutex
+	startOnce sync.Once
+	stop      chan struct{}
+	done      chan struct{}
 }
 
 // NewAutoRevoker wires a revoker against a *pgxpool.Pool. The db argument
@@ -170,38 +172,45 @@ func (r *AutoRevoker) Enabled() bool {
 // Start launches the background sweep. Idempotent: a second Start is a no-op.
 // The sweep only does work when cfg.Enabled is true; otherwise Start waits
 // for Stop and exits.
+//
+// Idempotency is enforced by sync.Once: the goroutine (or park goroutine) is
+// spawned exactly once. After Stop is called and the goroutine exits, a fresh
+// r.stop channel would be needed to start again — callers are expected to
+// treat Start as one-shot per AutoRevoker instance.
 func (r *AutoRevoker) Start(ctx context.Context) {
 	if r == nil {
 		return
 	}
+	// Refuse if Stop already closed r.stop — this is the post-stop guard.
 	r.mu.Lock()
 	select {
 	case <-r.stop:
-		// Already started and stopped; refuse to start again.
 		r.mu.Unlock()
 		return
 	default:
-		// Mark started so a second Start sees us as "in progress".
 	}
-	started := !r.started
-	r.started = true
 	r.mu.Unlock()
-	if !started {
+	launched := false
+	r.startOnce.Do(func() {
+		launched = true
+		if !r.cfg.Enabled {
+			slog.Info("credential.auto_revoke: disabled (set LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE=on to enable)",
+				"threshold", r.cfg.Threshold,
+				"window", r.cfg.Window.String(),
+				"interval", r.cfg.Interval.String())
+			// Park goroutine so Stop is still safe.
+			go func() {
+				<-r.stop
+				close(r.done)
+			}()
+			return
+		}
+		go r.run(ctx)
+	})
+	if !launched {
+		// Already started; nothing to do.
 		return
 	}
-	if !r.cfg.Enabled {
-		slog.Info("credential.auto_revoke: disabled (set LLM_GATEWAY_CREDENTIAL_AUTO_REVOKE=on to enable)",
-			"threshold", r.cfg.Threshold,
-			"window", r.cfg.Window.String(),
-			"interval", r.cfg.Interval.String())
-		// Park goroutine so Stop is still safe.
-		go func() {
-			<-r.stop
-			close(r.done)
-		}()
-		return
-	}
-	go r.run(ctx)
 }
 
 // Stop signals the sweep loop to exit and waits for it to drain. Safe to

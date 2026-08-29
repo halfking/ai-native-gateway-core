@@ -35,6 +35,7 @@ const brandLogo = ref(logoSrc(detectTheme()))
 const logoObserver = typeof MutationObserver !== 'undefined'
   ? new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
   : null
+let stopMaintainAvailabilityWatch: (() => void) | null = null
 
 onMounted(async () => {
   brandLogo.value = logoSrc(detectTheme())
@@ -60,11 +61,14 @@ onMounted(async () => {
   void probeMaintainAvailable()
   // 保留 maintain 可用性订阅入口以便未来 topbar 内 onUnmounted 正确清理。
   // 当前无回调（topbar 自取），不会泄漏 — onMaintainAvailabilityChange 在静态模块层仅保留全局 listener。
-  onMaintainAvailabilityChange(() => { /* noop */ })
+  stopMaintainAvailabilityWatch?.()
+  stopMaintainAvailabilityWatch = onMaintainAvailabilityChange(() => { /* noop */ })
 })
 
 onUnmounted(() => {
   logoObserver?.disconnect()
+  stopMaintainAvailabilityWatch?.()
+  stopMaintainAvailabilityWatch = null
 })
 
 const versionInfo = ref<{

@@ -12,8 +12,14 @@ DECLARE
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
+        -- 2026-08-23 (migration 562): switched from columnar to heap.
+        -- request_wal is a heap parent; columnar partitions blocked the
+        -- hot→monthly promote path. Kept in sync with
+        -- ensure_request_wal_partition(timestamptz) (the active call
+        -- site). This orphan is retained for backwards compatibility
+        -- but now matches the active function's storage policy.
         EXECUTE format(
-            'CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L) USING columnar',
+            'CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)',
             partition_name, next_month_start, next_month_end
         );
     END IF;

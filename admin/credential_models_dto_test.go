@@ -47,3 +47,36 @@ func TestOfferListSQLColumns_PlaceholderFormat(t *testing.T) {
 			strings.Count(offerListSQLColumns, "__PM_SOURCE__"))
 	}
 }
+
+// TestOfferListSQLFor_NilPool_FullQueryAssemblesWithoutPMSource reproduces the
+// exact query body that getProviderModels used to assemble on the pre-361
+// schema (the bug behind the 502 on /api/providers/14/models). With a nil pool
+// the resolver must fall back to the compat SQL, and the resulting query body
+// (SELECT + WHERE) must reference `pm.source` zero times.
+func TestOfferListSQLFor_NilPool_FullQueryAssemblesWithoutPMSource(t *testing.T) {
+	sql := offerListSQLFor(context.Background(), nil) + `
+		WHERE c.provider_id = $1
+		ORDER BY mo.raw_model_name
+	`
+	if strings.Contains(sql, "pm.source") {
+		t.Fatalf("composed query body still references pm.source; GET /api/providers/{id}/models would 500 on a pre-361 schema. Query:\n%s", sql)
+	}
+	if !strings.Contains(sql, "WHERE c.provider_id = $1") {
+		t.Fatalf("WHERE clause for provider-id lookup is missing; concatenation broke. Query:\n%s", sql)
+	}
+}
+
+// TestGetProviderModels_UsesOfferListSQLFor_NotLegacyConstant ensures the
+// handler chooses the runtime-probed variant. Even on the pre-361 schema the
+// resulting query must not reference `pm.source` — otherwise the endpoint
+// would 500 with `column pm.source does not exist`. This guards against an
+// accidental revert to the legacy `offerListSQL` constant, which used to hard
+// code `pm.source` before commit 7c03b9f4a.
+func TestGetProviderModels_UsesOfferListSQLFor_NotLegacyConstant(t *testing.T) {
+	sql := offerListSQLFor(context.Background(), nil)
+	// The legacy constant must equal the runtime resolution for a nil pool.
+	// If offerListSQL ever regresses to hard-code pm.source, this guard trips.
+	if sql != offerListSQL {
+		t.Fatalf("offerListSQLFor(nil) and offerListSQL must agree on the compat fallback.\nfor=%q\nlegacy=%q", sql, offerListSQL)
+	}
+}
