@@ -21,7 +21,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/proxy"
 )
 
-const proxyRefreshTimeout = 45 * time.Second
+// 审计修复 (2026-08-29)：问题 2 - 订阅刷新超时过长。
+// 降低为 20 秒，parser 层面已有 20 秒拉取超时，外层再加缓冲足够。
+const proxyRefreshTimeout = 20 * time.Second
 
 // proxyRuntime 惰性初始化代理管理器，避免改动所有 Handler 构造点。
 func (h *Handler) proxyRuntime() (*proxy.Manager, *proxy.PgStore) {

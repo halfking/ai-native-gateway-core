@@ -70,13 +70,14 @@ const requestLogsBodiesPromoteBatchSize = 500
 //	pm.Start(context.Background())
 //	defer pm.Stop()
 type PartitionManager struct {
-	db              *pgxpool.Pool
-	interval        time.Duration
-	promoteInterval time.Duration
-	cancel          context.CancelFunc
-	done            chan struct{}
-	mu              sync.Mutex // 2026-07-20: protect lastAnalyzeAt
-	lastAnalyzeAt   time.Time  // 2026-07-20: analyze cooldown 5min
+	db                 *pgxpool.Pool
+	interval           time.Duration
+	promoteInterval    time.Duration
+	errorAggregator    *ProviderErrorAggregator // 2026-08-29: provider error aggregation
+	cancel             context.CancelFunc
+	done               chan struct{}
+	mu                 sync.Mutex // 2026-07-20: protect lastAnalyzeAt
+	lastAnalyzeAt      time.Time  // 2026-07-20: analyze cooldown 5min
 }
 
 // archiveSpec describes one archive_xxx call: which SQL function to
@@ -106,6 +107,7 @@ func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionMan
 		db:              db,
 		interval:        interval,
 		promoteInterval: DefaultPromoteInterval,
+		errorAggregator: NewProviderErrorAggregator(db, 10*time.Minute), // 每 10 分钟聚合一次
 		done:            make(chan struct{}),
 	}
 }
@@ -120,6 +122,12 @@ func (pm *PartitionManager) SetPromoteInterval(d time.Duration) {
 func (pm *PartitionManager) Start(ctx context.Context) {
 	ctx, pm.cancel = context.WithCancel(ctx)
 	go pm.run(ctx)
+	
+	// 启动错误聚合器
+	if pm.errorAggregator != nil {
+		pm.errorAggregator.Start(ctx)
+	}
+	
 	slog.Info("partition_manager started", "interval", pm.interval)
 }
 
@@ -127,6 +135,12 @@ func (pm *PartitionManager) Stop() {
 	if pm.cancel != nil {
 		pm.cancel()
 	}
+	
+	// 停止错误聚合器
+	if pm.errorAggregator != nil {
+		pm.errorAggregator.Stop()
+	}
+	
 	<-pm.done
 }
 
@@ -762,6 +776,7 @@ func promoteSpecs() []archiveSpec {
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"},       // Migration 392
 		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                         // Migration 526
+		{fnName: "promote_session_bodies_hot_to_partition", label: "session_bodies_hot"},                       // Migration 614
 		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                           // Migration 532
 		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
 		{fnName: "promote_dashboard_access_events_hot_to_partition", label: "dashboard_access_events_hot"},     // Migration 579

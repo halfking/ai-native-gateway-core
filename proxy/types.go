@@ -56,6 +56,8 @@ type Node struct {
 	ConsecutiveFailures    int                    `json:"consecutive_failures"`
 	CreatedAt              time.Time              `json:"created_at"`
 	UpdatedAt              time.Time              `json:"updated_at"`
+	// 审计修复 (2026-08-29)：问题 11 - 解密失败标志，避免密文被当作明文使用。
+	PasswordDecryptFailed  bool                   `json:"password_decrypt_failed,omitempty"`
 }
 
 // Domain 供应商域名
