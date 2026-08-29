@@ -59,6 +59,8 @@ set -euo pipefail
 MAINTAIN_BASE="${MAINTAIN_BASE:-https://llmgo.kxpms.cn/maintain-api}"
 CHANNEL="${CHANNEL:-stable}"
 VERSION="${VERSION:-}"
+# BUNDLE_DIR 仅在离线模式（OFFLINE_BUNDLE 提供）时由 init_offline_bundle 赋值；在线/docker 流程必须先 declare 才能被 set -u 容忍引用。
+BUNDLE_DIR="${BUNDLE_DIR:-}"
 # INSTALL_ROOT 默认值用 uname 直接探测（detect_platform 函数在下面定义，OS_KERNEL 是 local 变量）。
 # host mode：直接调 install-host.sh。docker mode：下面 compose 路径。
 INSTALL_MODE="${INSTALL_MODE:-auto}"

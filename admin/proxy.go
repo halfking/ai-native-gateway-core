@@ -634,18 +634,36 @@ func (h *Handler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
 
 	byProtocol := map[string]int{}
 	dialable := 0
+	unhealthy := 0
+	healthy := 0
 	for _, n := range nodes {
 		byProtocol[n.Protocol]++
 		if n.Dialable() {
 			dialable++
 		}
+		switch n.Status {
+		case "unhealthy":
+			unhealthy++
+		case "active":
+			healthy++
+		}
+	}
+
+	activeSubs := 0
+	for _, s := range subs {
+		if s.Status == "active" {
+			activeSubs++
+		}
 	}
 
 	resp := map[string]any{
-		"subscription_count": len(subs),
-		"node_count":         len(nodes),
-		"by_protocol":        byProtocol,
-		"dialable_count":     dialable,
+		"subscription_count":  len(subs),
+		"active_subscriptions": activeSubs,
+		"node_count":          len(nodes),
+		"by_protocol":         byProtocol,
+		"dialable_count":      dialable,
+		"unhealthy_count":     unhealthy,
+		"healthy_count":       healthy,
 	}
 	if best, err := mgr.SelectBestNode(ctx, nil); err != nil {
 		resp["selected_node"] = nil

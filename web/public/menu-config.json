@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-08-29T02:10:56.019Z",
+  "exported_at": "2026-08-29T06:28:56.710Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -262,6 +262,16 @@
           "label": "系统设置",
           "labelKey": "nav.item.settings",
           "icon": "⚙️",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/proxy",
+          "label": "代理管理",
+          "labelKey": "nav.item.proxy",
+          "icon": "🌐",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",
