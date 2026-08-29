@@ -211,3 +211,19 @@ groups:
         annotations:
           summary: "路由压力信号查询大量失败"
           description: "近 5 分钟 FpSlots/Limiter 压力查询失败 {{ $value }} 次。压力感知路由已 fail-open（按原权重选路），检查 Redis 连通性。"
+
+  # The accepted response-body ADR defines this counter as the single alert SSOT.
+  # Only non-stream bodies are alertable; streaming body bytes are held separately.
+  - name: response_body_integrity_alerts
+    interval: 30s
+    rules:
+      - alert: GatewaySuccessfulNonStreamResponseBodyMissing
+        expr: increase(telemetry_success_response_body_missing_total{stream="non_stream"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: telemetry
+        annotations:
+          summary: "成功的非流式请求缺少响应正文"
+          description: "过去 5 分钟检测到 {{ $value }} 个成功但无 response body 的非流式请求。该指标来自 settlement telemetry；检查 request_logs_bodies_hot 写入、转换和脱敏链路。"
+          runbook: "docs/06-deployment/04-runbooks/journal-provider-next-phase.md#3.3-监控与历史完整性"
