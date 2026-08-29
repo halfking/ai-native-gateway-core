@@ -3,6 +3,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -48,6 +50,17 @@ func stableGatewayInstanceID() string {
 		return strings.TrimSpace(hostname)
 	}
 	return "llm-gateway"
+}
+
+// journalSnapshotReceiptOwner adds a process-local nonce to the stable gateway
+// identity. Receipt leases use it for fencing; a hostname alone is shared by
+// sibling processes on one host and must not grant reclaim rights.
+func journalSnapshotReceiptOwner(instanceID string) string {
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err == nil {
+		return instanceID + ":" + hex.EncodeToString(nonce[:])
+	}
+	return instanceID + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
 // wireDispatchPipeline builds the V2 dispatch pipeline from the executor,
