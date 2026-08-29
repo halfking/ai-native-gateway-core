@@ -55,7 +55,22 @@ func (r *NativeResponsesEventReader) ReadEvent(ctx context.Context, timeout time
 	defer cancel()
 	ch := make(chan result, 1)
 	go func() {
-		event, err := r.readEvent(readCtx)
+		// Audit-2026-08-29 (hardening §4 #1): if readEvent panics, the channel
+		// send is skipped and the reader goroutine dies. The caller in
+		// ReadEvent blocks on the select until readCtx times out, leaving
+		// StreamNativeResponsesSSE hung for the entire stream chunk timeout.
+		// LineReader is known safe today, but contract surface includes
+		// finishNativeResponsesEvent / json.Unmarshal on attacker-controlled
+		// data — guard the goroutine so a panic becomes an error, never a
+		// silent reader death.
+		event, err := func() (ev NativeResponsesEvent, retErr error) {
+			defer func() {
+				if r := recover(); r != nil {
+					retErr = fmt.Errorf("native Responses SSE read panic: %v", r)
+				}
+			}()
+			return r.readEvent(readCtx)
+		}()
 		ch <- result{event: event, err: err}
 	}()
 	select {
