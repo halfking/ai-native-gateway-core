@@ -153,8 +153,9 @@ scripts/audit-incomplete-tool-calls.sh             # 审计脚本
    - 在流结束时验证完整性
 
 3. **添加指标**
-   - `llm_gateway_incomplete_tool_call_total{provider, reason}`
-   - reason: missing_result | stream_interrupted | mismatch
+   - `llm_gateway_incomplete_tool_call_total{provider_family, reason}`
+   - `provider_family` 由 raw model 经 `NormalizeRouteKey` 归一化得到，不可依赖原始 `model` 标签
+   - `reason` 仅允许：`incomplete_tool_call_interrupted`、`incomplete_tool_call_after_done`
 
 4. **添加测试**
    - 单元测试：验证器逻辑

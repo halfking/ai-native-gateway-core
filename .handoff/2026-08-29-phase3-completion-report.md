@@ -117,9 +117,11 @@ Phase 3 的所有核心开发任务已全部完成！两个后台代理并行工
   - 恢复机制: 不完整流标记为 Resumable=true
 
 #### 3. Prometheus 指标
-- ✅ 新增指标: `llm_gateway_incomplete_tool_call_total{model, reason}`
-  - incomplete_tool_call_interrupted
-  - incomplete_tool_call_after_done
+- ✅ 新增指标: `llm_gateway_incomplete_tool_call_total{provider_family, reason}`
+  - `incomplete_tool_call_interrupted`
+  - `incomplete_tool_call_after_done`
+  - 当前 schema 已迁移：`provider_family` 由 raw model 经 `NormalizeRouteKey` 归一化得到，不可依赖原始 `model` 标签
+  - `reason` 仅允许上述两个值
 
 #### 4. 全面测试 (587 行)
 - ✅ `tool_call_validator_test.go` (280 行)

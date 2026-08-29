@@ -39,6 +39,29 @@ func (h *Handler) proxyRuntime() (*proxy.Manager, *proxy.PgStore) {
 	return h.proxyMgr, h.proxyStore
 }
 
+// StartProxyRuntime starts the proxy manager when the admin handler has a DB.
+// It is safe to call on a nil handler or repeatedly.
+func (h *Handler) StartProxyRuntime() {
+	if h == nil {
+		return
+	}
+	mgr, _ := h.proxyRuntime()
+	if mgr != nil {
+		mgr.Start()
+	}
+}
+
+// StopProxyRuntime stops the already-created proxy manager. It does not lazily
+// initialize the runtime, and is safe to call on a nil handler or repeatedly.
+func (h *Handler) StopProxyRuntime() {
+	if h == nil {
+		return
+	}
+	if h.proxyMgr != nil {
+		h.proxyMgr.Stop()
+	}
+}
+
 // ── 响应视图 ──────────────────────────────────────────────────────────────
 
 // proxyNodeView 是节点的对外视图：绝不泄露密码明文。
@@ -659,13 +682,13 @@ func (h *Handler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"subscription_count":  len(subs),
+		"subscription_count":   len(subs),
 		"active_subscriptions": activeSubs,
-		"node_count":          len(nodes),
-		"by_protocol":         byProtocol,
-		"dialable_count":      dialable,
-		"unhealthy_count":     unhealthy,
-		"healthy_count":       healthy,
+		"node_count":           len(nodes),
+		"by_protocol":          byProtocol,
+		"dialable_count":       dialable,
+		"unhealthy_count":      unhealthy,
+		"healthy_count":        healthy,
 	}
 	if best, err := mgr.SelectBestNode(ctx, nil); err != nil {
 		resp["selected_node"] = nil
