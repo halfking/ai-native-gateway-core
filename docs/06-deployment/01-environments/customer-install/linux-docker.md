@@ -1,86 +1,65 @@
-# Linux Docker 安装（Docker Engine）
+# Linux Docker 安装（Docker Engine + Compose V2）
 
-## 快速上手
+> 状态：PARTIAL；必须先确认 PostgreSQL/Redis 是 Compose 内置还是外部依赖。
+
+## 推荐入口
 
 ```bash
-# 1. 一行式（生产）
-curl -fsSL https://llmgo.kxpms.cn/maintain-api/distribution/install-scripts/llm-gateway-docker | bash
-
-# 2. 本地脚本（开发）
-cd llm-gateway-go/scripts/user
-sudo bash install-docker.sh
+INSTALL_ROOT=/opt/llm-gateway \
+  bash scripts/user/client-deploy.sh --install-mode docker deploy
 ```
 
-`install-docker.sh` 内部会自动安装 Docker（如缺失），写入 docker-compose.yml，下载 + load 镜像，启动。
+`install-docker.sh` 是底层/轻量脚本，默认写入 `COMPOSE_DIR="$PWD/llm-gateway-docker"`，不会因为设置 `INSTALL_ROOT` 自动改变目录。使用它时必须显式设置 `COMPOSE_DIR` 并自行确认依赖契约：
+
+```bash
+COMPOSE_DIR=/opt/llm-gateway-docker \
+  bash scripts/user/install-docker.sh
+```
 
 ## 前置条件
 
-- Linux kernel ≥ 3.10
-- 联网（首次安装需要从 maintain API 拉 docker image tar）
-- root 或 sudo 权限（创建 `/var/run/docker.sock` 权限 + `/opt/llm-gateway`）
+- Linux amd64/arm64；loong64 需 `LOONG64_OK=1` 和实际镜像 artifact。
+- Docker Engine + Compose V2；首次安装需要镜像下载或本地 tar 包。
+- Gateway 容器内部监听 `8781`。
+- `/readyz` 完整通过要求 PostgreSQL 和 Redis 都可用；若 compose 只包含 Gateway/PG，必须标记 Redis 为外部依赖或 readiness 未验证。
 
-## 支持 ARCH
+## 路径和端口
 
-| 架构 | catalog ARCH | 国产芯片 |
-| --- | --- | --- |
-| x86_64 | amd64 | 海光、兆芯 |
-| aarch64 | arm64 | 鲲鹏、飞腾 |
-| loongarch64 | loong64（需 `LOONG64_OK=1`） | 龙芯 |
+- 完整客户编排默认安装根：`/opt/llm-gateway`，可由 `INSTALL_ROOT` 覆盖。
+- `COMPOSE_DIR` 只控制底层 `install-docker.sh` 的输出目录。
+- 推荐宿主映射：`8080 -> 8781`；local host 直接访问 `8781`，二者不要混淆。
+- `.env` 必须为 `0600`，其中只存环境变量引用对应的 secret 值，不写入仓库。
 
-## 路径布局
-
-```
-/opt/llm-gateway/
-├── docker-compose.yml
-├── .env                              # mode 0600
-├── .env.bak/                         # 升级前自动备份
-├── versions/<v>/docker/linux-<arch>/
-│   ├── gateway.tar                   # 容器镜像 tarball
-│   ├── pg17-circus.tar               # pg image（可选）
-│   └── SHA256SUMS
-├── releases/<v>-<ts>/                # 升级前快照
-├── data/                             # bind-mount 给 llm-gateway-pg
-├── logs/  backups/
-└── CHANGELOG.log
-```
-
-## 升级
+## 安装后验证
 
 ```bash
-bash scripts/user/upgrade.sh run         # auto 模式
-INSTALL_MODE=compose bash scripts/user/upgrade.sh run   # 强制 compose
+docker compose -f /opt/llm-gateway/docker-compose.yml ps
+curl -fsS http://127.0.0.1:8080/healthz
+curl -fsS http://127.0.0.1:8080/readyz
+curl -fsS http://127.0.0.1:8080/version
+bash scripts/lifecycle/preflight.sh \
+  --base-url http://127.0.0.1:8080 \
+  --expected-version <bundle-version>
 ```
 
-Compose 升级三段：
-1. `docker compose stop` 流量隔离
-2. `docker load -i versions/<new>/docker/linux-<arch>/gateway.tar` + `sha256 -c SHA256SUMS` 校验
-3. `docker compose up -d --force-recreate`
-4. preflight.sh 三段
-
-失败自动 `releases/<v>-<ts>/.env.snapshot + docker-compose.yml.snapshot` 回退。
-
-## 回退（人工）
+## 升级与回滚
 
 ```bash
-ls /opt/llm-gateway/releases/
-cp /opt/llm-gateway/releases/<v>-<ts>/docker-compose.yml.snapshot /opt/llm-gateway/docker-compose.yml
-cp /opt/llm-gateway/releases/<v>-<ts>/.env.snapshot /opt/llm-gateway/.env
-docker compose up -d
+bash scripts/user/upgrade.sh run
+bash scripts/user/upgrade.sh list
+bash scripts/user/upgrade.sh rollback
 ```
+
+升级前备份 `.env` 和 compose 文件，校验镜像 checksum，启动后依次检查 liveness、readiness、release identity。失败时恢复最近 release snapshot 并重新执行 preflight。不要在未确认 schema 向前兼容性时只回滚 binary。
 
 ## 故障排查
 
 ```bash
+docker compose -f /opt/llm-gateway/docker-compose.yml logs --tail=100 gateway
 docker compose -f /opt/llm-gateway/docker-compose.yml ps
-docker compose logs -f gateway
-docker compose logs -f llm-gateway-pg
-
-# PG 密码对齐
-docker exec -e PGPASSWORD=$(grep POSTGRES_PASSWORD /opt/llm-gateway/.env | cut -d= -f2) llm-gateway-pg \
-  pg_isready -U llm_user
-
-# 健康检查
-curl http://127.0.0.1:8080/healthz | jq
-curl http://127.0.0.1:8080/readyz
-curl http://127.0.0.1:8080/version | jq
+# 按实际 compose 服务名检查 DB/Redis
+docker compose -f /opt/llm-gateway/docker-compose.yml exec <db-service> pg_isready
+docker compose -f /opt/llm-gateway/docker-compose.yml exec <redis-service> redis-cli ping
 ```
+
+当前 Docker 客户链路仍需 clean-machine、真实 DB/Redis 和升级回滚证据，不能标记 `RELEASE_READY`。

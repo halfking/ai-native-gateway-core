@@ -1,6 +1,11 @@
-# GLM-5.2 降级问题修复 - 立即执行指南
+# GLM-5.2 降级问题修复 - 事故 Runbook
 
-## 🎯 核心问题
+> 本文件是 GLM-5.2 专项事故处理手册，不是通用 Quick Start，也不是生产发布授权。
+> 通用部署入口请从 [`deploy/README.md`](deploy/README.md) 和
+> [`docs/06-deployment/01-environments/README.md`](docs/06-deployment/01-environments/README.md) 开始。
+> 执行数据库、部署或重启前必须确认目标环境、授权窗口、备份和回滚路径。
+
+## 核心问题
 sp1/spi-3 的 glm-5.2 直连正常，通过网关频繁降级
 
 ## ⚡ 立即执行（5 分钟紧急修复）
@@ -11,10 +16,13 @@ export DB_PASSWORD=your_actual_password
 ```
 
 ### 步骤 2: 执行快速修复
+
 ```bash
-cd /Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2
+# 在已检出的仓库根目录执行；不要依赖某台机器的绝对路径。
 bash scripts/quick-fix-glm5.2.sh
 ```
+
+> 仅在已确认目标环境、备份和回滚方案后执行；脚本涉及数据库状态，不适合未经授权的生产操作。
 
 ### 步骤 3: 验证结果
 脚本会自动验证，看到以下输出表示成功：

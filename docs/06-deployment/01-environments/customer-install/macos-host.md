@@ -1,89 +1,63 @@
 # macOS Host 安装（launchd）
 
-## 快速上手
+> 状态：PARTIAL；需在干净 macOS 主机完成安装、启动、升级和回滚验收。
+
+## 入口
 
 ```bash
-# 1. 一行式（生产）
-curl -fsSL https://llmgo.kxpms.cn/maintain-api/distribution/install-scripts/llm-gateway-host | bash
+# 推荐：客户编排入口
+bash scripts/user/client-deploy.sh --install-mode host deploy
 
-# 2. 本地脚本（开发）
-cd llm-gateway-go/scripts/user
-bash install-host.sh
+# 底层 host 脚本（不接受 --install-mode）
+bash scripts/user/install-host.sh
 ```
 
-默认 `INSTALL_ROOT=~/Downloads/llm-gateway-files`（与开发机 local-host-deploy 一致；`~/Downloads` 不可写时回退 `~/.local/llm-gateway`）。
+生产或离线安装应使用 Maintain 分发的已校验 release，不要直接执行未验证的源码脚本。
 
-## 路径布局
+## 前置条件
 
-```
-~/Downloads/llm-gateway-files/
-├── bin/
-│   ├── <version>/              # bundle: gateway binary + web + version.json
-│   ├── current → <version>     # atomic symlink
-│   ├── start.sh stop.sh        # bundle 内置 wrapper（scripts 也用）
-│   └── env.sh
-├── logs/  run/  backups/
-└── (你的 db / data 也在此)
-```
+- macOS amd64 或 arm64；Docker Desktop 场景见 [macOS Docker](macos-docker.md)。
+- 可写的 `INSTALL_ROOT`、launchd 权限以及客户自有 PostgreSQL/Redis。
+- release 必须包含 Gateway binary、`version.json`、web assets、`config/gateway.env.example` 和 checksum。
 
-## 服务注册
+## 目录、服务和端口
 
-`install-host.sh` 调包内 `install.sh` → 调 `scripts/lifecycle/install-service.sh`：
+- 下载/解压根由 `INSTALL_ROOT` 决定，默认倾向 `~/Downloads/llm-gateway-files`，不可写时使用 `~/.local/llm-gateway`。
+- launchd 服务配置可能位于 `/usr/local/etc/llm-gateway/gateway.env`；服务运行根可能是 `/usr/local/llm-gateway`。这与下载缓存目录不是同一概念，必须以 release 生成的 plist 为准。
+- 服务默认监听 `8781`；如果客户配置覆盖，必须同步修改 preflight 的 base URL。
+- plist 模板：`scripts/deploy/launchd/com.kaixuan.llm-gateway-go.plist`。
 
-1. 创建 `llm-gateway` user / group（macOS 上 user/group 概念较轻，launchd 默认以 root 跑）
-2. 写 `/etc/llm-gateway/gateway.env`（mode 0600）—— 首次会拷 `gateway.env.example` 让用户填 secrets
-3. 写 `/Library/LaunchDaemons/com.kaixuan.llm-gateway-go.plist`（来自 `scripts/deploy/launchd/com.kaixuan.llm-gateway-go.plist` 模板，sed 替换占位符）
-4. `launchctl bootstrap system <plist>`
-
-## 升级
+## 安装后验证
 
 ```bash
-# 自动检测 current + 切到 latest stable
+sudo launchctl list | grep llm-gateway
+curl -fsS http://127.0.0.1:8781/healthz
+curl -fsS http://127.0.0.1:8781/readyz
+curl -fsS http://127.0.0.1:8781/version
+bash scripts/lifecycle/preflight.sh \
+  --base-url http://127.0.0.1:8781 \
+  --expected-version <bundle-version>
+```
+
+`readyz` 不是单纯进程检查；没有可用 DB 或 Redis 时应为 503，不能把失败记录为安装成功。
+
+## 升级与回滚
+
+```bash
 bash scripts/user/upgrade.sh run
-
-# 仅下载不切
-bash scripts/user/upgrade.sh download
-
-# 查看可用版本
 bash scripts/user/upgrade.sh list
-
-# 回退（从 .upgrade-backup-* 最近备份）
 bash scripts/user/upgrade.sh rollback
 ```
 
-升级三段健康检查（自动）：
-1. `service_stop` → `launchctl bootout system/com.kaixuan.llm-gateway-go`
-2. `rsync -a --delete --exclude '.upgrade-*' staging/ → INSTALL_ROOT/`
-3. `service_start` → `launchctl bootstrap system <plist>`
-4. `preflight.sh` 三段（healthz + readyz + version 匹配）
-
-失败自动回退（`upgrade.sh:818` restore_from_backup）。
-
-## 回退（人工）
-
-```bash
-# 看 releases/
-ls -la ~/Downloads/llm-gateway-files/bin/
-
-# 切到旧 bundle
-ln -sfn ~/Downloads/llm-gateway-files/bin/2.4.7.1794 ~/Downloads/llm-gateway-files/bin/current
-~/Downloads/llm-gateway-files/bin/current/start.sh
-```
+升级前保留配置、当前 verified release 和 checksum。失败时停止候选服务、恢复旧 release/链接、重新 bootstrap launchd，再执行三段 preflight。需要真实数据回滚时必须使用单独 migration runbook。
 
 ## 故障排查
 
 ```bash
-# 服务状态
-sudo launchctl list | grep kaixuan
-
-# 实时日志
-tail -f ~/Downloads/llm-gateway-files/logs/gateway.stdout.log
-
-# plist 路径错误？
+sudo launchctl print system/com.kaixuan.llm-gateway-go
+log show --last 10m --predicate 'process == "gateway"'
 plutil -lint /Library/LaunchDaemons/com.kaixuan.llm-gateway-go.plist
-
-# 健康检查
-curl http://127.0.0.1:8781/healthz | jq
-curl http://127.0.0.1:8781/readyz   # 期望 200
-curl http://127.0.0.1:8781/version | jq
+lsof -nP -iTCP:8781 -sTCP:LISTEN
 ```
+
+macOS clean-machine 验收尚未完成前，状态保持 `PARTIAL`。
