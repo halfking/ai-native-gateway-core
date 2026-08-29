@@ -118,16 +118,37 @@ export function useRequestDetailLoader() {
     return loadSeq.value
   }
 
+  function resetTransientState() {
+    // 2026-08-30: when the route navigates to a new request (or returns
+    // from a session-mode back to a different single-request), previous
+    // waterfall loading / error state must not bleed into the new view.
+    // We deliberately keep the meta cache so a short back-and-forth
+    // navigation still hits the in-memory entry, but drop every
+    // section-specific signal so the UI doesn't show "加载失败" for a
+    // request that hasn't even started loading yet.
+    waterfall.value = null
+    waterfallSource.value = ''
+    waterfallError.value = ''
+    bodiesLoaded.value = false
+  }
+
   function applyEntry(e: CacheEntry) {
     log.value = e.log
     unified.value = e.unified
     bodiesLoaded.value = e.bodiesLoaded
-    waterfall.value = e.waterfall
-    waterfallSource.value = e.waterfallSource
+    if (e.waterfall) {
+      waterfall.value = e.waterfall
+      waterfallSource.value = e.waterfallSource
+    } else {
+      waterfall.value = null
+      waterfallSource.value = ''
+    }
+    waterfallError.value = ''
     sessionSnap.value = e.sessionSnap
   }
 
   async function loadMeta(requestId: string) {
+    resetTransientState()
     const cached = cacheGet(requestId)
     if (cached?.log || cached?.unified) {
       bumpSeq()
@@ -141,11 +162,6 @@ export function useRequestDetailLoader() {
     const seq = bumpSeq()
     log.value = null
     unified.value = null
-    waterfall.value = null
-    waterfallSource.value = ''
-    waterfallError.value = ''
-    metaError.value = ''
-    bodiesLoaded.value = false
     sessionSnap.value = null
     metaLoading.value = true
     try {

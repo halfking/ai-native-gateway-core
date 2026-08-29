@@ -28,6 +28,31 @@ export function useFormat() {
     }
   }
 
+  /**
+   * Format a date-time value with seconds.
+   * Used by detail views where a single-request timestamp needs to be
+   * precise enough to correlate against logs (HH:MM alone collides for
+   * requests that finish within the same minute).
+   */
+  function fmtDateTimeWithSeconds(value?: string | number | Date | null): string {
+    if (value === undefined || value === null || value === '') return ''
+    const date = value instanceof Date ? value : new Date(value)
+    if (Number.isNaN(date.getTime())) return ''
+    try {
+      return new Intl.DateTimeFormat(currentLocale.value, {
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }).format(date)
+    } catch {
+      return date.toISOString()
+    }
+  }
+
   function fmtDate(value?: string | number | Date | null): string {
     if (value === undefined || value === null || value === '') return ''
     const date = value instanceof Date ? value : new Date(value)
@@ -52,5 +77,5 @@ export function useFormat() {
     }
   }
 
-  return { fmtDateTime, fmtDate, fmtNumber, locale: currentLocale }
+  return { fmtDateTime, fmtDateTimeWithSeconds, fmtDate, fmtNumber, locale: currentLocale }
 }

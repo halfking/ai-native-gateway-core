@@ -344,6 +344,10 @@ type Handler struct {
 	// local body files. Locator prefers memory/file before DB dual-write.
 	requestDetailStore   *requestdetail.Store
 	requestDetailLocator *requestdetail.Locator
+	// liveStreamRedisStore (2026-08-30): optional Redis-backed live
+	// request cache. When non-nil, SetRequestDetailStore wires it as the
+	// Locator's LiveDetailReader so swim-lane clicks resolve immediately.
+	liveStreamRedisStore *LiveStreamRedisStore
 
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
@@ -508,6 +512,20 @@ func (h *Handler) SetKeyring(kr *secret.Keyring) {
 // telemetry to connected dashboards. Pass nil to disable.
 func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
 	h.liveStreamHub = hub
+}
+
+// SetLiveStreamRedisStore wires the Redis-backed live-stream detail
+// cache so the unified request detail locator can answer swim-lane
+// clicks immediately, before the eventual request_logs write.
+// Pass nil to disable. Must be called BEFORE SetRequestDetailStore so
+// the locator sees the wired reader.
+func (h *Handler) SetLiveStreamRedisStore(store *LiveStreamRedisStore) {
+	h.liveStreamRedisStore = store
+	// Rebuild the locator if the request-detail store was already
+	// configured so a later wiring still picks up the live reader.
+	if h.requestDetailStore != nil {
+		h.SetRequestDetailStore(h.requestDetailStore)
+	}
 }
 
 // SetRequestTraceHandler (2026-07-17) wires the trace viewer endpoints.

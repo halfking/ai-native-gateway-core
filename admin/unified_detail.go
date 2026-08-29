@@ -32,13 +32,13 @@ func (h *Handler) SetRequestDetailStore(store *requestdetail.Store, retry ...Loc
 		h.requestDetailLocator = nil
 		return
 	}
-	cfg := LocatorRetryConfig{Count: 1, Delay: 100 * time.Millisecond}
+	cfg := LocatorRetryConfig{Count: 2, Delay: 100 * time.Millisecond}
 	if len(retry) > 0 {
 		cfg = retry[0]
 		if cfg.Count == 0 {
 			// explicit "disable" wins over the default
 		} else if cfg.Count < 0 {
-			cfg.Count = 1
+			cfg.Count = 2
 		}
 		if cfg.Delay < 0 {
 			cfg.Delay = 100 * time.Millisecond
@@ -51,6 +51,14 @@ func (h *Handler) SetRequestDetailStore(store *requestdetail.Store, retry ...Loc
 	}
 	if h.db != nil {
 		locator.Bodies = &pgBodyReader{db: h.db, fetch: h}
+	}
+	// 2026-08-30: route Redis-backed live-stream details through the
+	// same locator so a click on a still-running swim lane resolves
+	// without waiting for the eventual request_logs write. The adapter
+	// is nil-safe — when liveStreamRedisStore is nil (no Redis or
+	// feature flag off), the live step is simply skipped.
+	if h.liveStreamRedisStore != nil {
+		locator.Live = &liveStreamLiveDetailAdapter{store: h.liveStreamRedisStore}
 	}
 	h.requestDetailLocator = locator
 }
@@ -318,7 +326,7 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	if !omitBody {
 		bodyColumns = "b.request_delta, b.response_delta, b.outbound_body"
 		bodyJoin = `
-		  LEFT JOIN public.session_bodies b
+		  LEFT JOIN public.session_bodies_unified b
 		    ON b.tenant_id = t.tenant_id
 		   AND b.session_id = t.session_id
 		   AND b.turn_no = t.turn_no

@@ -90,7 +90,11 @@ function openAsRequest(rid: string) {
 function switchMode(mode: ViewMode) {
   if (mode === 'session-turns' && !sessionId.value) return
   viewMode.value = mode
-  void router.replace({ query: { ...route.query, mode } })
+  void router.replace({
+    name: 'request-detail',
+    params: { requestId: requestId.value },
+    query: { ...route.query, mode },
+  })
 }
 
 function goBack() {
@@ -110,7 +114,16 @@ function openSession() {
 function gotoSection(s: DetailSection) {
   section.value = s
   viewMode.value = 'request'
-  void router.replace({ query: { ...route.query, mode: 'request', tab: s } })
+  // 2026-08-30: pin the navigation to the request-detail route, the active
+  // requestId, mode=request, and the target tab. Spreading route.query
+  // alone can drop the param when previous queries (e.g. mode=session-turns)
+  // overwrite the requestId-derived path and the router resolves to the
+  // dashboard root.
+  void router.replace({
+    name: 'request-detail',
+    params: { requestId: requestId.value },
+    query: { ...route.query, mode: 'request', tab: s },
+  })
 }
 
 function onSummaryUpdated(snap: Record<string, unknown>) {

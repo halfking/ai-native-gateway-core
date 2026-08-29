@@ -89,7 +89,8 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	summary, err := api.generateSummary(ctx, &req)
+	authTenant := GetTenantID(r)
+	summary, err := api.generateSummary(ctx, &req, authTenant)
 	if err != nil {
 		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("summary failed: %v", err))
 		return
@@ -101,15 +102,36 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 func (api *SessionSummaryV2API) generateSummary(
 	ctx context.Context,
 	req *SessionSummaryRequest,
+	authTenant string,
 ) (*SessionSummaryResponse, error) {
-	// 1. Query turns from session_turns + session_bodies
-	turns, err := api.queryTurnsForSummary(ctx, req.SessionID, req.Tenant, req.UpToTurn)
+	tenantID := req.Tenant
+	if authTenant != "" && (tenantID == "" || tenantID == "default") {
+		// Caller-supplied tenant wins only when the authenticated context does
+		// not pin a different tenant. This avoids a tenant admin being able
+		// to point the summary at another tenant's session.
+		tenantID = authTenant
+	}
+
+	// 1. Query turns from session_turns + session_bodies_unified.
+	turns, err := api.queryTurnsForSummary(ctx, req.SessionID, tenantID, req.UpToTurn)
 	if err != nil {
 		return nil, fmt.Errorf("query turns: %w", err)
 	}
 
 	if len(turns) == 0 {
-		return nil, fmt.Errorf("no turns found for session %s", req.SessionID)
+		// 2026-08-30: many sessions have V2 shadow-write disabled
+		// (sessions_v2.enabled=false) so session_turns is empty even though
+		// request_logs (the V1 store) has the full conversation. Fall back
+		// to request_logs so the operator gets a real summary instead of
+		// "no turns found".
+		fallback, ferr := api.queryRequestLogsFallback(ctx, req.SessionID, tenantID, req.UpToTurn)
+		if ferr != nil {
+			return nil, fmt.Errorf("query turns (request_logs fallback): %w", ferr)
+		}
+		if len(fallback) == 0 {
+			return nil, fmt.Errorf("no turns found for session %s", req.SessionID)
+		}
+		turns = fallback
 	}
 
 	// 2. Build conversation text for LLM
@@ -128,6 +150,74 @@ func (api *SessionSummaryV2API) generateSummary(
 	}, nil
 }
 
+// queryRequestLogsFallback derives turn-shaped conversation text from the
+// V1 request_logs store. request_logs_hot is the recent-write window;
+// older turns live in the monthly partitions accessible through
+// request_logs_with_current_month. We sort by ts so the summary reads in
+// chronological order, regardless of which store a turn lives in.
+func (api *SessionSummaryV2API) queryRequestLogsFallback(
+	ctx context.Context,
+	sessionID, tenantID string,
+	upToTurn *int,
+) ([]turnForSummary, error) {
+	query := `
+		SELECT rl.request_id,
+		       rl.ts,
+		       rb.request_body,
+		       rb.response_body
+		FROM request_logs_hot rl
+		LEFT JOIN request_logs_bodies_hot rb ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1
+	`
+	args := []any{sessionID}
+	if tenantID != "" {
+		query += " AND rl.tenant_id = $2"
+		args = append(args, tenantID)
+	}
+	query += `
+		UNION ALL
+		SELECT rl.request_id,
+		       rl.ts,
+		       rb.request_body,
+		       rb.response_body
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1
+	`
+	if tenantID != "" {
+		query += " AND rl.tenant_id = $2"
+	}
+	query += " ORDER BY ts ASC"
+
+	rows, err := api.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var turns []turnForSummary
+	turn := 0
+	for rows.Next() {
+		turn++
+		if upToTurn != nil && turn > *upToTurn {
+			break
+		}
+		var requestID string
+		var ts time.Time
+		var reqRaw, respRaw []byte
+		if err := rows.Scan(&requestID, &ts, &reqRaw, &respRaw); err != nil {
+			return nil, err
+		}
+		t := turnForSummary{
+			TurnNo:        turn,
+			RequestDelta:  decodeStoredJSON("request_body", requestID, reqRaw),
+			ResponseDelta: decodeStoredJSON("response_body", requestID, respRaw),
+		}
+		turns = append(turns, t)
+	}
+	return turns, rows.Err()
+}
+
 // turnForSummary 是用于总结的简化turn结构
 type turnForSummary struct {
 	TurnNo        int
@@ -140,13 +230,18 @@ func (api *SessionSummaryV2API) queryTurnsForSummary(
 	sessionID, tenantID string,
 	upToTurn *int,
 ) ([]turnForSummary, error) {
+	// 2026-08-30: read from public.session_bodies_unified so that turns whose
+	// body row is still in session_bodies_hot (the recent-write window after
+	// migration 614) are visible. Falling back to public.session_bodies
+	// directly would silently drop hot rows and surface a misleading
+	// "no turns found" error to the caller even when metadata exists.
 	query := `
-		SELECT 
+		SELECT
 			t.turn_no,
-			b.request_delta, 
+			b.request_delta,
 			b.response_delta
 		FROM public.session_turns_with_current_month t
-		LEFT JOIN public.session_bodies b 
+		LEFT JOIN public.session_bodies_unified b
 			ON t.tenant_id = b.tenant_id
 			AND t.session_id = b.session_id
 			AND t.turn_no = b.turn_no

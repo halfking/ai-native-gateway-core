@@ -2646,12 +2646,21 @@ func main() {
 		} else {
 			requestdetail.SetGlobal(detailStore)
 			requestdetail.StartGlobalCaptureForwarder()
+			// 2026-08-30: wire the Redis-backed live-stream detail cache
+			// into the admin handler before SetRequestDetailStore so the
+			// unified detail locator can answer swim-lane clicks
+			// immediately, before the eventual request_logs write.
+			if fpSlotRedis != nil {
+				liveStreamStore := admin.NewLiveStreamRedisStore(fpSlotRedis)
+				adminHandler.SetLiveStreamRedisStore(liveStreamStore)
+			}
 			adminHandler.SetRequestDetailStore(detailStore, admin.LocatorRetryConfig{
 				Count: detailDBRetryCount,
 				Delay: detailDBRetryDelay,
 			})
 			slog.Info("request detail content store wired", "dir", detailDir, "ttl", detailTTL, "max_entries", detailMaxEntries,
-				"db_retry_count", detailDBRetryCount, "db_retry_delay", detailDBRetryDelay)
+				"db_retry_count", detailDBRetryCount, "db_retry_delay", detailDBRetryDelay,
+				"live_stream_reader", fpSlotRedis != nil)
 		}
 
 		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())
