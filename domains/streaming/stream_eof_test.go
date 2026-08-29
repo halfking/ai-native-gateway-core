@@ -90,7 +90,10 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks(t *testing.T) {
 	)
 
 	assert.True(t, outcome.Interrupted)
-	assert.Equal(t, "invalid_chunk", outcome.Reason)
+	// After SSE frame validation (c2cf5d45c), malformed SSE frames are
+	// detected before chunk parsing, so the reason is now "malformed_sse_frame"
+	// instead of "invalid_chunk". Both indicate upstream sent bad data.
+	assert.Equal(t, "malformed_sse_frame", outcome.Reason)
 	assert.Equal(t, errorsx.KindUpstreamDown, outcome.Kind)
 	assert.True(t, outcome.Resumable)
 	assert.Empty(t, writer.Body.String())
