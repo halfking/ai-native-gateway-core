@@ -77,6 +77,15 @@ type Recorder interface {
 	// Uses "provider" label instead of "model" to avoid high cardinality.
 	RecordMalformedSSEFrame(provider, stage string)
 
+	// IncompleteToolCall (2026-08-29): count streams where tool_use blocks
+	// were sent but corresponding tool_result blocks were missing when the
+	// stream ended. reason = "incomplete_tool_call_interrupted" (stream ended
+	// before message_stop) | "incomplete_tool_call_after_done" (message_stop
+	// received but tool_result missing, protocol violation). High rates
+	// indicate unstable Anthropic upstreams or mid-stream interruptions.
+	// Uses "model" label for attribution (lower cardinality than provider).
+	RecordIncompleteToolCall(model, reason string)
+
 	// SuccessEmptyResponse (2026-08-29): count requests marked as successful
 	// but returned no content (empty response body or zero tokens). Label:
 	// provider_id (low cardinality). Helps identify providers with high empty
@@ -153,6 +162,9 @@ func (n *NoopRecorder) RecordURSMv2ShadowResult(result string) {}
 
 // 2026-08-29: malformed SSE frame counter.
 func (n *NoopRecorder) RecordMalformedSSEFrame(provider, stage string) {}
+
+// 2026-08-29: incomplete tool call counter.
+func (n *NoopRecorder) RecordIncompleteToolCall(model, reason string) {}
 
 // 2026-08-29: success empty response counter.
 func (n *NoopRecorder) RecordSuccessEmptyResponse(model, providerID, tenantID string) {}
