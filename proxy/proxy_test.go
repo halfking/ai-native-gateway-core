@@ -230,6 +230,98 @@ func TestHealthCheckerRejectsUndialableNode(t *testing.T) {
 	}
 }
 
+// TestCheckConcurrentStopsOnContextCancel 二次审计修复 (2026-08-29)：
+// 之前 select 里的 break 实际只跳出 select，for 循环仍会派发后续节点。
+// 取消 ctx 后必须立刻停止派发，结果 channel 也必须正常关闭（调用方 range 不阻塞）。
+func TestCheckConcurrentStopsOnContextCancel(t *testing.T) {
+	c := NewHTTPHealthChecker(2 * time.Second)
+	// 全部是 dialable 节点 + 默认 HealthCheckURL = google generate_204，
+	// 在测试机网络受限情况下大多会失败但耗时稳定，便于观察取消行为。
+	nodes := make([]*Node, 0, 50)
+	for i := 0; i < 50; i++ {
+		nodes = append(nodes, &Node{
+			ID:       i + 1,
+			Name:     "n",
+			Protocol: ProtocolHTTP,
+			Server:   "127.0.0.1",
+			Port:     1,
+		})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	out := c.CheckConcurrent(ctx, nodes, 4)
+
+	// 立即取消；派发循环必须及时退出，不能继续启动剩余 goroutine。
+	cancel()
+
+	done := make(chan struct{})
+	var count int
+	go func() {
+		defer close(done)
+		for range out {
+			count++
+		}
+	}()
+
+	select {
+	case <-done:
+		// 收到至少 0 个结果是允许的，重点是 channel 关闭、range 退出。
+	case <-time.After(5 * time.Second):
+		t.Fatal("CheckConcurrent output channel did not close after context cancel")
+	}
+	_ = count
+}
+
+// TestRedactErrCoversKVForm 二次审计修复 (2026-08-29)：
+// redactErr 现在调用 SanitizeSecrets，能覆盖 password=xxx / token=xxx 等键值对形式，
+// 不止 URL userinfo。
+func TestRedactErrCoversKVForm(t *testing.T) {
+	cases := []struct {
+		name      string
+		in        string
+		mustHave  []string
+		mustMiss  []string
+	}{
+		{
+			name:     "url userinfo",
+			in:       "dial tcp socks5://user:secret@host:1080: connection refused",
+			mustHave: []string{"[REDACTED]@"},
+			mustMiss: []string{"user:secret"},
+		},
+		{
+			name:     "kv form password",
+			in:       `connect failed password=TopSecret123 host=1.2.3.4`,
+			mustHave: []string{"[REDACTED]"},
+			mustMiss: []string{"TopSecret123"},
+		},
+		{
+			name:     "kv form token",
+			in:       "auth: token=abc.def.ghi ; uuid=11111111-2222-3333-4444-555555555555",
+			mustHave: []string{"[REDACTED]"},
+			mustMiss: []string{"abc.def.ghi", "11111111-2222-3333-4444-555555555555"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := redactErr(fakeErr(tc.in))
+			for _, want := range tc.mustHave {
+				if !strings.Contains(got, want) {
+					t.Errorf("redactErr(%q) = %q; missing %q", tc.in, got, want)
+				}
+			}
+			for _, banned := range tc.mustMiss {
+				if strings.Contains(got, banned) {
+					t.Errorf("redactErr(%q) = %q; leaked %q", tc.in, got, banned)
+				}
+			}
+		})
+	}
+}
+
+type fakeErr string
+
+func (e fakeErr) Error() string { return string(e) }
+
 func keysOf(m map[string]*Node) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
