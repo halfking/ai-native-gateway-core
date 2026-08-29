@@ -97,3 +97,14 @@
 | 612 | `612_native_responses_capability.sql` | `1bb7769b9de61c3432cc95bd6a86c18a9e58556c6af1d8a5b40b5953a5317dcc` | applied+verified |
 | 613 | `613_native_responses_stream_capability.sql` | `fbf7c9f55108fde7659e31730b2d9f9c4d5fb0ba3b044336a5fc479c8d0195d1` | applied+verified |
 
+## 2026-08-29T08:48:10Z — deploy 245 build_seq 1805 (64b9b19c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 614 | `614_session_bodies_hot.sql` | `c4923c95840de66578b751d321ea7a53823813d00fd487481c71949aa1084a3b` | applied+verified |
+| 615 | `615_session_bodies_hot_promote_function.sql` | `0c892f4764f0fec9b61414b6ea11d14158fc107dd272fdfe85c5c3cee6ff18c5` | applied+verified |
+| 616 | `616_provider_error_details_unique_constraint.sql` | `aafd7ecfcf3e916d18b575d1a8c390d3be922720658be9597daecf33aad306d5` | applied+verified |
+| 617 | `617_candidate_failure_logs_hot_contract.sql` | `9ecc6dbb2e07bb704dfeb8b6b8880b0a1930083a637092084d7f7d8cc66acd98` | applied+verified |
+| 618 | `618_request_journey_snapshot_receipts.sql` | `6d4d9f44cd931641363e61c2c72a50c90b606830645e5ea375dae62dc26f21fb` | applied+verified |
+| 619 | `619_session_turns_unified_view.sql` | `6dc542c85761925ded3ed0ffe3d4d0556e62bbd96eb5208a428c7bde4ff4199b` | applied+verified |
+
