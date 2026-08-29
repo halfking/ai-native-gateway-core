@@ -762,6 +762,7 @@ func promoteSpecs() []archiveSpec {
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
 		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"},       // Migration 392
 		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                         // Migration 526
+		{fnName: "promote_session_bodies_hot_to_partition", label: "session_bodies_hot"},                       // Migration 614
 		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                           // Migration 532
 		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
 		{fnName: "promote_dashboard_access_events_hot_to_partition", label: "dashboard_access_events_hot"},     // Migration 579

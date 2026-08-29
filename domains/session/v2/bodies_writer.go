@@ -222,7 +222,7 @@ func jsonTextOrNull(data []byte) string {
 	return string(data)
 }
 
-// WriteBodies writes turn bodies to public.session_bodies
+// WriteBodies writes turn bodies to public.session_bodies_hot
 //
 // This is the backwards-compatible wrapper that runs against the writer's own
 // pool. Prefer WriteBodiesInTx when you need turn + bodies to commit atomically
@@ -231,6 +231,9 @@ func jsonTextOrNull(data []byte) string {
 // The key optimization is RequestDelta only contains messages that
 // were not present in the previous turn, avoiding exponential growth
 // of storing full history in every row.
+//
+// Architecture: All writes go to session_bodies_hot (8-hour retention window),
+// then promoted to monthly partitions via PartitionManager.
 func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord) error {
 	return w.WriteBodiesInTx(ctx, w.db, rec)
 }
@@ -277,8 +280,10 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 
 	partitionDate := calendarDate(rec.Ts)
 
+	// Write to session_bodies_hot (8-hour window), not directly to partitioned table
+	// PartitionManager promotes rows to session_bodies monthly partitions after 8h
 	_, err = tx.Exec(ctx, `
-		INSERT INTO public.session_bodies AS existing (
+		INSERT INTO public.session_bodies_hot AS existing (
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments,
@@ -326,12 +331,13 @@ func (w *SessionBodiesWriter) GetBodies(ctx context.Context, tenantID, sessionID
 	var requestDeltaJSON, responseDeltaJSON, outboundBodyJSON []byte
 	var requestAttachmentsJSON, responseAttachmentsJSON []byte
 
+	// Use unified view to read from both hot table and partitions
 	query := `
 		SELECT 
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2 AND turn_no = $3
 		LIMIT 1
 	`
@@ -400,12 +406,13 @@ func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID strin
 	var requestDeltaJSON, responseDeltaJSON, outboundBodyJSON []byte
 	var requestAttachmentsJSON, responseAttachmentsJSON []byte
 
+	// Use unified view to read from both hot table and partitions
 	err := db.QueryRow(ctx, `
 		SELECT
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no DESC
 		LIMIT 1
@@ -450,13 +457,14 @@ func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID strin
 }
 
 // ListAllBodies retrieves all turn bodies for a session
+// Use unified view to read from both hot table and partitions
 func (w *SessionBodiesWriter) ListAllBodies(ctx context.Context, tenantID, sessionID string) ([]BodiesRecord, error) {
 	query := `
 		SELECT 
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 	`
