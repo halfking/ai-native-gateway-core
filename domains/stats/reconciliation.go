@@ -191,9 +191,11 @@ func (w *ReconciliationWorker) ReconcilePeriod(ctx context.Context, start, end t
 
 	// Get source watermark from usage_facts
 	err = w.db.QueryRow(ctx, `
-		SELECT COALESCE(MAX(occurred_at), $1)
-		FROM usage_facts
-		WHERE occurred_at >= $1 AND occurred_at < $2
+		SELECT COALESCE(MAX(f.occurred_at), $1)
+		FROM usage_facts f
+		JOIN stats_event_dedup d
+		  ON d.event_id = f.event_id AND d.occurred_at = f.occurred_at
+		WHERE f.occurred_at >= $1 AND f.occurred_at < $2
 	`, start, end).Scan(&sourceWatermark)
 	if err != nil && err != pgx.ErrNoRows {
 		w.finishRun(ctx, runID, "failed", eventsSeen, rowsCompared, rowsRepaired, diffCount, sourceWatermark, err.Error())
@@ -203,9 +205,11 @@ func (w *ReconciliationWorker) ReconcilePeriod(ctx context.Context, start, end t
 
 	// Count events seen
 	err = w.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM usage_facts
-		WHERE occurred_at >= $1 AND occurred_at < $2
-	`, start, end).Scan(&eventsSeen)
+			SELECT COUNT(*) FROM usage_facts f
+			JOIN stats_event_dedup d
+			  ON d.event_id = f.event_id AND d.occurred_at = f.occurred_at
+			WHERE f.occurred_at >= $1 AND f.occurred_at < $2
+		`, start, end).Scan(&eventsSeen)
 	if err != nil {
 		w.finishRun(ctx, runID, "failed", eventsSeen, rowsCompared, rowsRepaired, diffCount, sourceWatermark, err.Error())
 		metrics.RecordStatsReconciliationRun("failed", 1)
@@ -292,8 +296,10 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 			SUM(total_tokens) AS total_tokens,
 			SUM(cost_amount) AS cost_usd,
 			SUM(credits_charged) AS credits_charged
-		FROM usage_facts
-		WHERE occurred_at >= $1 AND occurred_at < $2
+			FROM usage_facts f
+			JOIN stats_event_dedup d
+			  ON d.event_id = f.event_id AND d.occurred_at = f.occurred_at
+			WHERE f.occurred_at >= $1 AND f.occurred_at < $2
 		GROUP BY day_utc, tenant_id, provider_id, credential_id, canonical_id, raw_model_name, traffic_class
 	`, start, end)
 	if err != nil {
@@ -483,24 +489,32 @@ func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID str
 
 	// Any remaining entries in factsMap are facts without projections (missing data)
 	for key, source := range factsMap {
-		totalDiffs++
 		dimensionKey := fmt.Sprintf("tenant:%s:day:%s:provider:%d:cred:%d:model:%d:%s",
 			key.tenantID, key.day.Format("2006-01-02"), key.providerID, key.credentialID, key.canonicalID, key.modelName)
 
 		// Missing projections can be rebuilt from the source facts, but are
 		// not resolved until that rebuild has committed.
 		resolution := "auto_repair_pending"
-		pendingRepairs++
 
-		_, err := w.db.Exec(ctx, `
-			INSERT INTO stats_reconciliation_diffs 
-				(run_id, tenant_id, dimension_type, dimension_key, metric, 
+		// Keep the same idempotency contract as projection-side diffs. This
+		// loop can be revisited after a window split or retry, so counters must
+		// reflect rows actually inserted for this reconciliation run.
+		ct, err := w.db.Exec(ctx, `
+			INSERT INTO stats_reconciliation_diffs
+				(run_id, tenant_id, dimension_type, dimension_key, metric,
 				 source_value, projected_value, difference, resolution, created_at)
 			VALUES ($1, $2, 'daily_rollup', $3, 'request_count', $4, 0, $4, $5, now())
+			ON CONFLICT (run_id, tenant_id, dimension_type, dimension_key, metric) DO NOTHING
 		`, runID, key.tenantID, dimensionKey, source.requests, resolution)
 		if err != nil {
 			slog.Warn("failed to record missing projection diff", "error", err)
+			continue
 		}
+		if ct.RowsAffected() == 0 {
+			continue
+		}
+		totalDiffs++
+		pendingRepairs++
 	}
 
 	// Rebuild first; only then mark the candidate diffs repaired. This keeps
