@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard
@@ -158,7 +159,7 @@ func classifyNativeResponsesEvent(name string, data []byte) FrameClass {
 // StreamNativeResponsesSSE forwards a verified native Responses stream without
 // generating bridge scaffold or terminal events. Raw event bytes are written
 // unchanged; parsing only drives capture and retry semantics.
-func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
+func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture, clientSemanticVisible *atomic.Bool) (outcome StreamOutcome) {
 	if resp == nil || resp.Body == nil {
 		return StreamOutcome{Interrupted: true, Reason: "empty_response", Kind: errorsx.KindUpstreamDown, Resumable: true}
 	}
@@ -227,6 +228,9 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 			return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
 		}
 		if event.Class == FrameClassContent || event.Class == FrameClassToolCall || event.Class == FrameClassUnknown {
+			if clientSemanticVisible != nil {
+				clientSemanticVisible.Store(true)
+			}
 			chunkCount++
 			if capture != nil {
 				capture.RecordChunkSent()
@@ -262,9 +266,15 @@ func StreamNativeResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *
 			terminal = true
 		}
 		if event.Name == "error" {
+			if clientSemanticVisible != nil {
+				clientSemanticVisible.Store(true)
+			}
 			return StreamOutcome{Interrupted: true, Reason: "native_response_error", Kind: errorsx.KindUpstreamDown, Resumable: !attemptHasClientSemanticOutput(gate, chunkCount), ChunkCount: chunkCount}
 		}
 		if event.Name == "response.failed" {
+			if clientSemanticVisible != nil {
+				clientSemanticVisible.Store(true)
+			}
 			return StreamOutcome{Interrupted: true, Reason: "native_response_failed", Kind: errorsx.KindUpstreamDown, Resumable: false, ChunkCount: chunkCount}
 		}
 	}

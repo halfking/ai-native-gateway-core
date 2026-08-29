@@ -25,6 +25,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -1494,8 +1495,8 @@ func main() {
 			return outcome
 		}
 		// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
-		routingExec.NativeResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, cap *audit.StreamCapture) executors.StreamOutcome {
-			return streaming.StreamNativeResponsesSSE(ctx, w, resp, requestID, cap)
+		routingExec.NativeResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, cap *audit.StreamCapture, visible *atomic.Bool) executors.StreamOutcome {
+			return streaming.StreamNativeResponsesSSE(ctx, w, resp, requestID, cap, visible)
 		}
 		routingExec.OpenAIToResponsesStream = func(
 			ctx context.Context,

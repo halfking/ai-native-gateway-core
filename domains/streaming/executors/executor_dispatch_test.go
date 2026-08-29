@@ -410,20 +410,20 @@ func TestForwardForDispatchAcceptsStreamOnlyNativeCapability(t *testing.T) {
 	exec := newOverloadTestExecutor()
 	exec.Circuit = newCircuitManagerForTest()
 	exec.Limiter = limiter
-	exec.NativeResponsesStream = func(_ context.Context, w http.ResponseWriter, resp *http.Response, _ string, _ *audit.StreamCapture) StreamOutcome {
+	exec.NativeResponsesStream = func(_ context.Context, w http.ResponseWriter, resp *http.Response, _ string, _ *audit.StreamCapture, _ *atomic.Bool) StreamOutcome {
 		defer resp.Body.Close()
 		_, _ = io.Copy(w, resp.Body)
 		return StreamOutcome{ChunkCount: 1}
 	}
 
 	candidate := provider.Candidate{
-		CredentialID:                33,
-		ProviderID:                  44,
-		BaseURL:                     upstream.URL,
-		Protocol:                    "openai-responses",
-		CatalogCode:                 "openai",
-		RawModel:                    "gpt-responses-stream-only",
-		APIKey:                      "sk-stream-only",
+		CredentialID:                  33,
+		ProviderID:                    44,
+		BaseURL:                       upstream.URL,
+		Protocol:                      "openai-responses",
+		CatalogCode:                   "openai",
+		RawModel:                      "gpt-responses-stream-only",
+		APIKey:                        "sk-stream-only",
 		SupportsNativeResponsesStream: true,
 		// SupportsNativeResponses intentionally false: stream-only credential.
 		Routable:          true,
@@ -480,13 +480,13 @@ func TestForwardForDispatchRejectsNoNativeCapability(t *testing.T) {
 	exec.Limiter = limiter
 
 	candidate := provider.Candidate{
-		CredentialID:                33,
-		ProviderID:                  44,
-		BaseURL:                     upstream.URL,
-		Protocol:                    "openai-responses",
-		CatalogCode:                 "openai",
-		RawModel:                    "gpt-responses-no-cap",
-		APIKey:                      "sk-no-cap",
+		CredentialID: 33,
+		ProviderID:   44,
+		BaseURL:      upstream.URL,
+		Protocol:     "openai-responses",
+		CatalogCode:  "openai",
+		RawModel:     "gpt-responses-no-cap",
+		APIKey:       "sk-no-cap",
 		// Neither SupportsNativeResponses nor SupportsNativeResponsesStream.
 		Routable:          true,
 		LifecycleStatus:   "active",

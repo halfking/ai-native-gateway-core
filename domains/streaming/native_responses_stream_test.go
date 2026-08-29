@@ -59,7 +59,7 @@ func TestStreamNativeResponsesSSEPreservesLifecycleAndNoSyntheticDone(t *testing
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	outcome := StreamNativeResponsesSSE(context.Background(), rec, resp, "req-native", capture)
+	outcome := StreamNativeResponsesSSE(context.Background(), rec, resp, "req-native", capture, nil)
 	if outcome.Interrupted || outcome.ChunkCount != 1 {
 		t.Fatalf("outcome = %#v, want completed one semantic event", outcome)
 	}
@@ -90,7 +90,7 @@ func TestObserveNativeResponsesEventCapturesNativeSemantics(t *testing.T) {
 func TestStreamNativeResponsesSSEFailedTerminalIsNotResumable(t *testing.T) {
 	body := "event: response.failed\ndata: {\"type\":\"response.failed\",\"error\":{\"code\":\"upstream\"}}\n\n"
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
-	outcome := StreamNativeResponsesSSE(context.Background(), httptest.NewRecorder(), resp, "req-failed", audit.NewStreamCapture())
+	outcome := StreamNativeResponsesSSE(context.Background(), httptest.NewRecorder(), resp, "req-failed", audit.NewStreamCapture(), nil)
 	if !outcome.Interrupted || outcome.Resumable || outcome.Reason != "native_response_failed" {
 		t.Fatalf("outcome = %#v, want non-resumable failed terminal", outcome)
 	}
@@ -99,7 +99,7 @@ func TestStreamNativeResponsesSSEFailedTerminalIsNotResumable(t *testing.T) {
 func TestStreamNativeResponsesSSEPostSemanticEOFIsNotResumable(t *testing.T) {
 	body := "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
-	outcome := StreamNativeResponsesSSE(context.Background(), httptest.NewRecorder(), resp, "req-post", audit.NewStreamCapture())
+	outcome := StreamNativeResponsesSSE(context.Background(), httptest.NewRecorder(), resp, "req-post", audit.NewStreamCapture(), nil)
 	if !outcome.Interrupted || outcome.Resumable || outcome.Reason != "native_responses_read_error" {
 		t.Fatalf("outcome = %#v, want non-resumable post-semantic EOF", outcome)
 	}
@@ -108,7 +108,7 @@ func TestStreamNativeResponsesSSEPostSemanticEOFIsNotResumable(t *testing.T) {
 func TestStreamNativeResponsesSSEPreSemanticEOFIsResumable(t *testing.T) {
 	body := "event: response.created\ndata: {\"type\":\"response.created\"}\n\n"
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
-	outcome := StreamNativeResponsesSSE(context.Background(), httptest.NewRecorder(), resp, "req-pre", audit.NewStreamCapture())
+	outcome := StreamNativeResponsesSSE(context.Background(), httptest.NewRecorder(), resp, "req-pre", audit.NewStreamCapture(), nil)
 	if !outcome.Interrupted || !outcome.Resumable || outcome.Kind != errorsx.KindUpstreamDown {
 		t.Fatalf("outcome = %#v, want resumable pre-semantic EOF", outcome)
 	}
