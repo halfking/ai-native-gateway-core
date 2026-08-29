@@ -241,6 +241,85 @@ func TestSelectBestNodeRecordsStoreError(t *testing.T) {
 	}
 }
 
+func TestManagerSelectionAPIs(t *testing.T) {
+	store := &fakeStore{nodes: []*Node{
+		{ID: 1, SubscriptionID: 7, Protocol: ProtocolHTTP, Server: "fast", Port: 8080, Status: "active", SuccessRate: 1, ResponseTimeMs: 10, Location: "US"},
+		{ID: 2, SubscriptionID: 7, Protocol: ProtocolHTTP, Server: "slow", Port: 8081, Status: "active", SuccessRate: 1, ResponseTimeMs: 20, Location: "US"},
+	}}
+	mgr := NewManager(store, nil, nil)
+	mgr.SetLoadBalanceStrategy(StrategyRoundRobin)
+
+	for i, want := range []int{1, 2, 1} {
+		node, err := mgr.SelectNodeWithStrategy(context.Background(), intPtr(7), "")
+		if err != nil {
+			t.Fatalf("round robin selection %d: %v", i, err)
+		}
+		if node.ID != want {
+			t.Fatalf("round robin selection %d = node %d, want %d", i, node.ID, want)
+		}
+	}
+
+	best, err := mgr.SelectBestNode(context.Background(), intPtr(7))
+	if err != nil {
+		t.Fatalf("SelectBestNode: %v", err)
+	}
+	if best.ID != 1 {
+		t.Fatalf("SelectBestNode must remain best-only, got node %d", best.ID)
+	}
+}
+
+func TestManagerLocationAndCandidateFilters(t *testing.T) {
+	store := &fakeStore{nodes: []*Node{
+		{ID: 1, SubscriptionID: 9, Protocol: ProtocolHTTP, Server: "decrypt-failed", Port: 8080, Status: "active", PasswordDecryptFailed: true, SuccessRate: 1, ResponseTimeMs: 1, Location: "CN"},
+		{ID: 2, SubscriptionID: 9, Protocol: ProtocolHTTP, Server: "too-many-failures", Port: 8081, Status: "active", ConsecutiveFailures: 2, SuccessRate: 1, ResponseTimeMs: 2, Location: "CN"},
+		{ID: 3, SubscriptionID: 9, Protocol: ProtocolHTTP, Server: "us", Port: 8082, Status: "active", SuccessRate: 1, ResponseTimeMs: 3, Location: "US"},
+	}}
+	mgr := NewManager(store, nil, nil)
+	mgr.SetAutoDisablePolicy(2, true, false)
+	mgr.SetLocationAffinity(AffinityRequireSame)
+
+	if _, err := mgr.SelectNodeWithLocation(context.Background(), intPtr(9), "", "CN"); err == nil {
+		t.Fatal("expected no node when required location has only filtered candidates")
+	}
+
+	node, err := mgr.SelectNodeWithStrategy(context.Background(), intPtr(9), "")
+	if err != nil {
+		t.Fatalf("SelectNodeWithStrategy: %v", err)
+	}
+	if node.ID != 3 {
+		t.Fatalf("selected node %d, want the only eligible node 3", node.ID)
+	}
+}
+
+func TestManagerStartStopAreIdempotent(t *testing.T) {
+	checker := &closableHealthChecker{}
+	mgr := NewManager(&fakeStore{}, nil, checker)
+	mgr.Start()
+	mgr.Start()
+	mgr.Stop()
+	mgr.Stop()
+
+	if checker.closeCalls != 1 {
+		t.Fatalf("checker Close calls = %d, want 1", checker.closeCalls)
+	}
+}
+
+func intPtr(v int) *int { return &v }
+
+type closableHealthChecker struct {
+	closeCalls int
+}
+
+func (c *closableHealthChecker) Check(context.Context, *Node) (int, error) { return 0, nil }
+
+func (c *closableHealthChecker) CheckConcurrent(context.Context, []*Node, int) <-chan HealthCheckResult {
+	out := make(chan HealthCheckResult)
+	close(out)
+	return out
+}
+
+func (c *closableHealthChecker) Close() { c.closeCalls++ }
+
 func TestSelectBestNodePicksDialableAndFastest(t *testing.T) {
 	store := &fakeStore{nodes: []*Node{
 		{ID: 1, Protocol: "trojan", Server: "a", Port: 443, Status: "active", SuccessRate: 1, ResponseTimeMs: 1},

@@ -10,7 +10,7 @@
 
 ### 1.1 Prometheus 指标增强
 
-**新增 12 个指标：**
+**新增低基数聚合指标：**
 
 #### 订阅刷新指标（3个）
 - `llm_gateway_proxy_subscription_refresh_total` - 订阅刷新总次数（按状态）
@@ -21,7 +21,6 @@
 - `llm_gateway_proxy_node_health_check_total` - 健康检查总次数
 - `llm_gateway_proxy_node_health_check_duration_seconds` - 健康检查耗时
 - `llm_gateway_proxy_node_response_time_ms` - 节点响应时间
-- `llm_gateway_proxy_node_consecutive_failures` - 节点连续失败次数
 
 #### 节点选择指标（2个）
 - `llm_gateway_proxy_node_selection_total` - 节点选择总次数
@@ -45,16 +44,16 @@
 
 ### 1.2 Grafana 监控面板
 
-**创建 4 个 Dashboard（42 个可视化面板）：**
+**配置 4 个 Dashboard（节点面板采用低基数聚合可视化）：**
 
 1. **Proxy Overview Dashboard** - 系统概览
    - 10 个面板：订阅统计、节点统计、健康率趋势、刷新成功率等
 
 2. **Proxy Subscription Dashboard** - 订阅详情
-   - 8 个面板：节点数趋势、刷新成功率、耗时分位数、Top 10 订阅
+   - 聚合节点数趋势、刷新成功率与耗时分位数面板
 
 3. **Proxy Node Dashboard** - 节点详情
-   - 11 个面板：健康状态分布、响应时间、连续失败统计、Top 20 失败节点
+   - 聚合节点健康状态、响应时间与健康检查状态面板（不展示逐节点失败分布）
 
 4. **Proxy Performance Dashboard** - 性能监控
    - 13 个面板：选择/探活耗时（P50/P95/P99）、Transport 缓存监控
@@ -63,7 +62,7 @@
 - Grafana 8.0+
 - 数据源：Prometheus
 - 刷新间隔：30 秒
-- 支持变量过滤（订阅 ID）
+- 使用低基数聚合指标，不提供订阅或节点标识过滤
 
 ---
 
@@ -270,46 +269,34 @@ node, err := manager.SelectNodeWithLocation(ctx, subscriptionID, requestKey, "CN
 
 ---
 
-### 3.3 自动禁用策略
+### 3.3 失败阈值与自动策略配置
 
-**功能特性：**
-- 连续失败达到阈值后自动禁用节点
-- 健康检查成功后自动恢复节点
-- 可配置的失败阈值（默认 3 次）
-- 可独立开关自动禁用和自动恢复
+**当前实现：**
+- 可配置失败阈值（默认 3 次）；达到阈值的节点不会再参与选择
+- `SetAutoDisablePolicy` 保留自动禁用/恢复开关，供健康检查策略接入
+- 手动健康检查会拒绝密码解密失败的节点，避免使用不可验证的凭据
 
-**核心实现：**
-- 在 `Manager` 中添加配置字段：
-  - `maxConsecutiveFailures` - 连续失败阈值（默认 3）
-  - `autoDisableEnabled` - 是否启用自动禁用（默认 true）
-  - `autoRecoverEnabled` - 是否启用自动恢复（默认 true）
-- 更新健康检查逻辑，使用可配置的阈值
-- 添加日志记录自动禁用和恢复事件
+**边界说明：**
+- 当前后台批量健康检查会标记达到阈值的节点为 `unhealthy`，成功探活会恢复为 `active`
+- 开关的完整生产策略（独立恢复探测间隔、事件审计与灰度验证）仍需在部署环境中验证后再启用
 
-**API 设计：**
+**API：**
 ```go
-// 设置自动禁用策略
-// 参数：失败阈值、是否自动禁用、是否自动恢复
+// 参数：失败阈值、是否启用自动禁用、是否启用自动恢复
 manager.SetAutoDisablePolicy(5, true, true)
-```
-
-**日志输出：**
-```
-WARN proxy: node auto-disabled due to consecutive failures node=node1 consecutive_failures=3 threshold=3
-INFO proxy: node auto-recovered node=node1 previous_failures=3
 ```
 
 ---
 
-## 📊 性能提升总结
+## 📊 性能优化方案与待验证项
 
-### 预期性能指标
+### 预期性能指标（部署/生产性能验收待独立环境验证）
 
 | 优化项 | 优化前 | 优化后 | 提升幅度 |
 |--------|--------|--------|----------|
-| 重复探测 | 100% | 70-80% | 减少 20-30% |
+| 重复探测 | 基线 | 70-80% | 目标减少 20-30%（待验证） |
 | 健康探测频率 | 5 分钟/次 | 10 分钟/次（健康节点） | 减少 50% |
-| 数据库查询 | 100% | 20-50% | 减少 50-80% |
+| 数据库查询 | 基线 | 20-50% | 目标减少 50-80%（待验证） |
 | 缓存命中率 | ~60% | ~90% | 提升 50% |
 | 节点选择策略 | 1 种 | 5 种 | 增加 4 种 |
 
@@ -347,7 +334,7 @@ INFO proxy: node auto-recovered node=node1 previous_failures=3
 ### 测试覆盖
 
 - **总测试用例**：35+ 个
-- **测试通过率**：100%
+- **测试结果**：规则测试结果以独立执行为准；部署/生产性能验收待独立环境验证
 - **覆盖模块**：指标、负载均衡、地域亲和性、健康检查、缓存
 
 ---
@@ -401,21 +388,15 @@ cat docs/operations/proxy-ops-manual.md
 ## ✅ 验收标准
 
 ### 功能完整性
-- ✅ 12 个 Prometheus 指标全部采集
-- ✅ 4 个 Grafana dashboard 可视化
-- ✅ 9 条告警规则配置完成
-- ✅ 完整运维手册和 SOP
-- ✅ 5 种负载均衡策略实现
-- ✅ 3 种地域亲和性策略实现
-- ✅ 自动禁用/恢复策略实现
+- 实现完成；部署/生产性能验收待独立环境验证
+- 低基数 Prometheus 指标与 Grafana dashboard 已配置
+- 告警规则、运维手册及策略实现已交付
 
 ### 性能指标
-- ✅ 批量健康检查去重（减少 20-30% 探测）
-- ✅ 智能探活间隔（减少 40-50% 探测）
-- ✅ 节点缓存 TTL（减少 30% 数据库查询）
+- 批量健康检查去重、智能探活间隔与节点缓存 TTL 已实现；实际收益待独立环境验证
 
 ### 代码质量
-- ✅ 35+ 单元测试，全部通过
+- 35+ 单元测试已编写；部署/生产性能验收待独立环境验证
 - ✅ 向后兼容，不破坏现有 API
 - ✅ 完整的错误处理和日志记录
 - ✅ 代码注释清晰，可维护性高
@@ -474,4 +455,4 @@ cat docs/operations/proxy-ops-manual.md
 **总代码行数**：2000+ 行（新增 + 修改）  
 **文档行数**：2000+ 行  
 **测试用例**：35+ 个  
-**所有测试**：✅ 100% 通过
+**验收状态**：实现完成，部署/生产性能验收待独立环境验证
