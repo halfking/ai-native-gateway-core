@@ -71,7 +71,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "llm_gateway_proxy_subscriptions_total{status=\"active\"}",
+          "expr": "llm_gateway_proxy_subscriptions_total{state=\"active\"}",
           "refId": "A"
         }
       ],
@@ -123,7 +123,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "llm_gateway_proxy_subscriptions_total{status=\"inactive\"}",
+          "expr": "llm_gateway_proxy_subscriptions_total{state=\"inactive\"}",
           "refId": "A"
         }
       ],

@@ -77,6 +77,11 @@ services:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./dashboards:/etc/grafana/provisioning/telemetry-dashboards:ro
+      # The proxy dashboards live in deploy/grafana; mount them read-only into the existing file provider path.
+      - ../grafana/proxy-overview-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-overview-dashboard.json:ro
+      - ../grafana/proxy-node-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-node-dashboard.json:ro
+      - ../grafana/proxy-performance-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-performance-dashboard.json:ro
+      - ../grafana/proxy-subscription-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-subscription-dashboard.json:ro
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
