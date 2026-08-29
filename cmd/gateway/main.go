@@ -6178,6 +6178,14 @@ func main() {
 			pipeline.SetQueueObservationSink(nil)
 		}
 		gatewayRequestJourneySink = nil
+		// Close journal sink to stop TTL cleanup goroutine (2026-08-29)
+		if gatewayRequestJourneyJournalSink != nil {
+			if closer, ok := gatewayRequestJourneyJournalSink.(interface{ Close() error }); ok {
+				if err := closer.Close(); err != nil {
+					slog.Warn("journal sink cleanup failed", "error", err)
+				}
+			}
+		}
 		gatewayRequestJourneyJournalSink = nil
 		gatewayQueueProjection.Close()
 		if err := journeyRecorder.Close(stopCtx); err != nil {
