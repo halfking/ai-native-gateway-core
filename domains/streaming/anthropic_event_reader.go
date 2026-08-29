@@ -26,13 +26,23 @@ func readAnthropicSSEEventWithTimeoutRaw(ctx context.Context, reader io.Reader, 
 	readCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// P1-1 fix (2026-08-28): resultCh MUST remain buffered (size >= 1) to prevent
-	// goroutine leak when timeout occurs before the read completes. Without buffer,
-	// the background goroutine would block forever on the channel send after the
-	// select case has already returned due to timeout.
+	// Audit-2026-08-29 (§5.2 hardening, peer to native_responses_stream.go:57):
+	// if readAnthropicSSEEventRaw panics, the channel send is skipped and the
+	// reader goroutine dies. The caller in this function blocks on the select
+	// until readCtx times out, leaving StreamAnthropicSSEToOpenAI hung for the
+	// entire stream chunk timeout. LineReader + strings.Builder are known safe
+	// today, but contract surface includes attacker-controlled SSE bytes — guard
+	// the goroutine so a panic becomes an error, never a silent reader death.
 	resultCh := make(chan anthropicSSEReadResult, 1)
 	go func() {
-		eventType, data, raw, err := readAnthropicSSEEventRaw(readCtx, reader)
+		eventType, data, raw, err := func() (eventType string, data, raw []byte, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("anthropic SSE read panic: %v", r)
+				}
+			}()
+			return readAnthropicSSEEventRaw(readCtx, reader)
+		}()
 		resultCh <- anthropicSSEReadResult{eventType: eventType, data: data, raw: raw, err: err}
 	}()
 

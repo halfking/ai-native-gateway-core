@@ -1094,7 +1094,7 @@ func (e *Executor) executeOpenAI(
 				//触碰已失效的客户端连接。
 				streamSink := responseSink(params)
 				if nativeStream {
-					streamOutcome = e.NativeResponsesStream(params.R.Context(), streamSink, resp, diagnosticRequestID(params), params.Capture)
+					streamOutcome = e.NativeResponsesStream(params.R.Context(), streamSink, resp, diagnosticRequestID(params), params.Capture, params.ClientSemanticBytesVisible)
 				} else {
 					switch {
 					case e.OpenAIToAnthropicStream != nil &&

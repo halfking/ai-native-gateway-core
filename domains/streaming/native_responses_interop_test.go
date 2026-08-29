@@ -66,7 +66,7 @@ func TestStreamNativeResponsesSSE_InteropTopology(t *testing.T) {
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
 
-	outcome := StreamNativeResponsesSSE(context.Background(), rec, resp, "req-interop", capture)
+	outcome := StreamNativeResponsesSSE(context.Background(), rec, resp, "req-interop", capture, nil)
 	if outcome.Interrupted {
 		t.Fatalf("outcome.Interrupted=true reason=%q kind=%v, want completed stream", outcome.Reason, outcome.Kind)
 	}
@@ -97,7 +97,7 @@ func TestStreamNativeResponsesSSE_FunctionCallOnlyLifecycle(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 	rec := httptest.NewRecorder()
 
-	outcome := StreamNativeResponsesSSE(context.Background(), rec, resp, "req-fc", audit.NewStreamCapture())
+	outcome := StreamNativeResponsesSSE(context.Background(), rec, resp, "req-fc", audit.NewStreamCapture(), nil)
 	if outcome.Interrupted {
 		t.Fatalf("outcome.Interrupted=true reason=%q, want completed", outcome.Reason)
 	}

@@ -409,7 +409,7 @@ type OpenAIToResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, r
 
 // NativeResponsesSSEFunc forwards an already-native OpenAI Responses SSE stream
 // without converting it through the Chat Completions bridge.
-type NativeResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture) StreamOutcome
+type NativeResponsesSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture, clientSemanticVisible *atomic.Bool) StreamOutcome
 
 // AnthropicToChatResponseFunc is the non-stream counterpart that
 // converts an Anthropic Messages JSON body into an OpenAI
@@ -1140,6 +1140,8 @@ type ExecParams struct {
 	// bridges invoke it only for the first real content/tool SSE frame; non-stream
 	// execution invokes it after the complete successful response is available.
 	FirstSemanticByteCallback func()
+	// ClientSemanticBytesVisible records an attempt-scoped client-visible semantic commit.
+	ClientSemanticBytesVisible *atomic.Bool
 	// OnStreamReady is called exactly once right before the executor hands
 	// control to the normal stream writer. Kept for compatibility; heartbeat
 	// owners now remain active until the request reaches a terminal outcome.
@@ -1361,6 +1363,9 @@ func responseSink(params *ExecParams) http.ResponseWriter {
 	if params != nil && params.IsStream && params.FirstSemanticByteCallback != nil {
 		if target, ok := writer.(interface{ SetFirstSemanticByteCallback(func()) }); ok {
 			target.SetFirstSemanticByteCallback(params.FirstSemanticByteCallback)
+			if visible, ok := writer.(interface{ SetClientSemanticVisibility(func()) }); ok && params.ClientSemanticBytesVisible != nil {
+				visible.SetClientSemanticVisibility(func() { params.ClientSemanticBytesVisible.Store(true) })
+			}
 			return writer
 		}
 		return &firstSemanticResponseWriter{ResponseWriter: writer, callback: params.FirstSemanticByteCallback}

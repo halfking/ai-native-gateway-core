@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -136,7 +137,23 @@ func (w *DurableRecoveryWorker) Start(parent context.Context) {
 	w.mu.Unlock()
 	go func() {
 		defer close(w.done)
-		w.runOnce(ctx)
+		// Audit-2026-08-29 (§5.2 hardening): wrap runOnce in a recover so a
+		// single tick's panic doesn't silently kill the worker goroutine.
+		// Without this, a panic in store.ReapDeadlines / ClaimRunnable /
+		// runTask leaves durable_recovery_runs_total frozen until process
+		// restart. The deferred recover logs and lets the loop continue so
+		// subsequent ticks still run.
+		safeRunOnce := func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("durable recovery worker panicked during runOnce",
+						"panic", r,
+						"stack", string(debug.Stack()))
+				}
+			}()
+			w.runOnce(ctx)
+		}
+		safeRunOnce()
 		ticker := time.NewTicker(w.opts.PollInterval)
 		defer ticker.Stop()
 		for {
@@ -144,7 +161,7 @@ func (w *DurableRecoveryWorker) Start(parent context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				w.runOnce(ctx)
+				safeRunOnce()
 			}
 		}
 	}()
@@ -277,10 +294,28 @@ func (w *DurableRecoveryWorker) runTask(ctx context.Context, task *durable.Task)
 	var attempt *DurableAttempt
 	go func() {
 		defer close(attemptDone)
-		attempt, err = w.runner.Run(attemptCtx, task, snapshot)
-		if err == nil && attempt == nil {
-			err = errors.New("durable runner returned nil attempt")
-		}
+		// Audit-2026-08-29 (§5.2 hardening): w.runner.Run is an external
+		// interface that may panic on a misbehaving implementation. Without
+		// recover, the outer-scope `attempt, err` assignment is skipped and
+		// `err` retains its previous value; the existing reschedule branch
+		// at attemptFinished would log a generic message with no traceback
+		// to the actual panic. Capture the panic value into `err` so the
+		// reschedule reason and the slog line carry the panic message.
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("durable attempt runner panicked: %v", r)
+					slog.Warn("durable attempt runner panicked",
+						"task_id", task.ID,
+						"panic", r,
+						"stack", string(debug.Stack()))
+				}
+			}()
+			attempt, err = w.runner.Run(attemptCtx, task, snapshot)
+			if err == nil && attempt == nil {
+				err = errors.New("durable runner returned nil attempt")
+			}
+		}()
 	}()
 	for {
 		select {

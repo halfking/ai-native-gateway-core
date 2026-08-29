@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
@@ -67,6 +68,119 @@ func protocolCandidate(baseURL, protocol, catalog, model, apiKey string, provide
 }
 
 func streamResult(out executors.StreamOutcome) executors.StreamOutcome { return out }
+
+func nativeStreamCandidate(baseURL, model, apiKey string, providerID, credentialID int) provider.Candidate {
+	cand := protocolCandidate(baseURL, "openai-responses", "openai", model, apiKey, providerID, credentialID)
+	cand.SupportsNativeResponsesStream = true
+	return cand
+}
+
+func TestExecuteResponses_NativePreCommitFailoverUsesSecondCredential(t *testing.T) {
+	var mu sync.Mutex
+	var auth []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = append(auth, r.Header.Get("Authorization"))
+		attempt := len(auth)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempt <= 3 {
+			_, _ = fmt.Fprint(w, `event: response.created
+data: {"type":"response.created","response":{"id":"failed"}}
+
+`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `event: response.created
+data: {"type":"response.created"}
+
+`)
+		_, _ = fmt.Fprint(w, `event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"native-ok"}
+
+`)
+		_, _ = fmt.Fprint(w, `event: response.completed
+data: {"type":"response.completed","response":{"status":"completed"}}
+
+`)
+	}))
+	defer server.Close()
+
+	exec := newProtocolFailoverExecutor(t)
+	exec.NativeResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture, visible *atomic.Bool) executors.StreamOutcome {
+		return streaming.StreamNativeResponsesSSE(ctx, w, resp, requestID, capture, visible)
+	}
+	rec := httptest.NewRecorder()
+	result, err := exec.Execute(&executors.ExecParams{
+		W: rec, R: httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`)),
+		BodyBytes:          []byte(`{"model":"gpt-test","messages":[],"stream":true}`),
+		ResponsesBodyBytes: []byte(`{"model":"gpt-test","input":"hello","stream":true}`),
+		Model:              "gpt-test", ClientModel: "gpt-test", ClientProtocol: "openai-responses", IsStream: true,
+		ClientID: identity.ClientIdentity{IdentityHash: "native-precommit-failover"},
+		Candidates: []provider.Candidate{
+			nativeStreamCandidate(server.URL, "gpt-test", "native-a", 601, 6001),
+			nativeStreamCandidate(server.URL, "gpt-test", "native-b", 602, 6002),
+		},
+		Policy: &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0}, DispatchAllowProviderChange: true,
+	})
+	if err != nil || result == nil || result.Candidate.CredentialID != 6002 {
+		t.Fatalf("Execute = (%#v, %v), want second native credential", result, err)
+	}
+	if wire := rec.Body.String(); !strings.Contains(wire, "native-ok") || strings.Contains(wire, "failed") {
+		t.Fatalf("wire = %q, want only successful native stream", wire)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(auth) != 4 || auth[0] != "Bearer native-a" || auth[1] != "Bearer native-a" || auth[2] != "Bearer native-a" || auth[3] != "Bearer native-b" {
+		t.Fatalf("Authorization sequence = %v, want A,A,A,B", auth)
+	}
+}
+
+func TestExecuteResponses_NativePostCommitDoesNotSwitchWithNilCapture(t *testing.T) {
+	var mu sync.Mutex
+	var auth []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		auth = append(auth, r.Header.Get("Authorization"))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, `event: response.created
+data: {"type":"response.created"}
+
+`)
+		_, _ = fmt.Fprint(w, `event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"committed"}
+
+`)
+	}))
+	defer server.Close()
+
+	exec := newProtocolFailoverExecutor(t)
+	exec.NativeResponsesStream = func(ctx context.Context, w http.ResponseWriter, resp *http.Response, requestID string, capture *audit.StreamCapture, visible *atomic.Bool) executors.StreamOutcome {
+		return streaming.StreamNativeResponsesSSE(ctx, w, resp, requestID, capture, visible)
+	}
+	rec := httptest.NewRecorder()
+	_, err := exec.Execute(&executors.ExecParams{
+		W: rec, R: httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`)),
+		BodyBytes:          []byte(`{"model":"gpt-test","messages":[],"stream":true}`),
+		ResponsesBodyBytes: []byte(`{"model":"gpt-test","input":"hello","stream":true}`),
+		Model:              "gpt-test", ClientModel: "gpt-test", ClientProtocol: "openai-responses", IsStream: true,
+		ClientID: identity.ClientIdentity{IdentityHash: "native-postcommit-nil-capture"},
+		Candidates: []provider.Candidate{
+			nativeStreamCandidate(server.URL, "gpt-test", "native-post-a", 701, 7001),
+			nativeStreamCandidate(server.URL, "gpt-test", "native-post-b", 702, 7002),
+		},
+		Policy: &provider.Policy{TierFallbackMax: 4, RetryPerCredential: 0}, DispatchAllowProviderChange: true,
+	})
+	if err == nil || !strings.Contains(rec.Body.String(), "committed") {
+		t.Fatalf("Execute error=%v wire=%q, want committed interruption", err, rec.Body.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(auth) != 1 || auth[0] != "Bearer native-post-a" {
+		t.Fatalf("Authorization sequence = %v, want only first credential", auth)
+	}
+}
 
 func TestExecuteAnthropicMessages_PreCommitFailoverUsesSecondProvider(t *testing.T) {
 	var mu sync.Mutex

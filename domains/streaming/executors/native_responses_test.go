@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -62,7 +63,7 @@ func TestExecuteOpenAI_NativeResponsesStreamUsesNativeHandlerAndBody(t *testing.
 
 	exec := newOverloadTestExecutor()
 	called := false
-	exec.NativeResponsesStream = func(_ context.Context, w http.ResponseWriter, resp *http.Response, _ string, _ *audit.StreamCapture) StreamOutcome {
+	exec.NativeResponsesStream = func(_ context.Context, w http.ResponseWriter, resp *http.Response, _ string, _ *audit.StreamCapture, _ *atomic.Bool) StreamOutcome {
 		called = true
 		defer resp.Body.Close()
 		_, _ = io.Copy(w, resp.Body)
