@@ -1,7 +1,9 @@
 package credential
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
@@ -244,3 +246,126 @@ func TestKeyRotator_ResetCredential(t *testing.T) {
 		t.Fatalf("unregistered after ResetCredential should resolve primary 0, got %d", idx)
 	}
 }
+
+// TestKeyRotator_SweepInvalid_BeforeCooldown asserts that an invalid key whose
+// invalidSince is still within the cooldown window is left alone by the
+// sweeper. This protects against sweeping too aggressively and re-burning the
+// key inside its cooldown window.
+func TestKeyRotator_SweepInvalid_BeforeCooldown(t *testing.T) {
+	kr := NewKeyRotator()
+	const credID = 90
+	kr.EnsureCred(credID, 2)
+	kr.RecordKeyFailure(credID, 0, errorsx.KindTransient)
+	kr.RecordKeyFailure(credID, 0, errorsx.KindTransient) // → invalid
+
+	now := time.Now()
+	// 1 second after invalidSince — well inside a 15-minute cooldown.
+	if n := kr.SweepInvalid(now.Add(1*time.Second), 15*time.Minute); n != 0 {
+		t.Fatalf("SweepInvalid before cooldown recovered %d keys, want 0", n)
+	}
+	if idx := kr.ResolveKey(credID, -1); idx == 0 {
+		t.Fatal("key 0 became eligible before its cooldown elapsed")
+	}
+	// Sibling key 1 was never touched — it must still be active.
+	if kr.AllKeysInvalid(credID) {
+		t.Fatal("SweepInvalid must not affect non-KeyStatusInvalid entries")
+	}
+}
+
+// TestKeyRotator_SweepInvalid_AfterCooldown locks the self-heal contract for
+// the handoff's MEDIUM-severity finding: a stale invalid key auto-recovers to
+// active after DefaultInvalidCooldown elapses, so a transient 401 during a
+// key-rotation window doesn't permanently eject the key from rotation.
+func TestKeyRotator_SweepInvalid_AfterCooldown(t *testing.T) {
+	kr := NewKeyRotator()
+	const credID = 91
+	kr.EnsureCred(credID, 2)
+	kr.RecordKeyFailure(credID, 0, errorsx.KindTransient)
+	kr.RecordKeyFailure(credID, 0, errorsx.KindTransient) // → invalid
+
+	// Drift the synthetic clock past DefaultInvalidCooldown.
+	now := time.Now().Add(DefaultInvalidCooldown + time.Second)
+	if n := kr.SweepInvalid(now, DefaultInvalidCooldown); n != 1 {
+		t.Fatalf("SweepInvalid after cooldown recovered %d keys, want 1", n)
+	}
+	// Key 0 must now be eligible again.
+	found := false
+	for i := 0; i < 10; i++ {
+		if kr.ResolveKey(credID, -1) == 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("key 0 not eligible after sweeper recovery")
+	}
+	// Sibling key 1 was never touched.
+	if kr.AllKeysInvalid(credID) {
+		t.Fatal("key 1 was erroneously affected by the sweeper")
+	}
+}
+
+// TestKeyRotator_SweepInvalid_SkipsTerminal asserts that terminal keys (402
+// balance, revoked) are NEVER recovered by the sweeper — they're non-
+// recoverable without operator action by design.
+func TestKeyRotator_SweepInvalid_SkipsTerminal(t *testing.T) {
+	kr := NewKeyRotator()
+	const credID = 92
+	kr.EnsureCred(credID, 2)
+	kr.RecordKeyFailure(credID, 0, errorsx.KindQuotaPermanent) // → terminal
+
+	now := time.Now().Add(24 * time.Hour)
+	if n := kr.SweepInvalid(now, DefaultInvalidCooldown); n != 0 {
+		t.Fatalf("SweepInvalid recovered %d terminal keys, want 0", n)
+	}
+	if idx := kr.ResolveKey(credID, -1); idx == 0 {
+		t.Fatal("terminal key 0 became eligible after sweep — must never recover")
+	}
+}
+
+// TestKeyRotator_ResetKey_ClearsInvalidSince asserts that an admin ResetKey
+// clears the invalidSince stamp so a subsequent sweep won't treat the
+// operator-reset key as stale.
+func TestKeyRotator_ResetKey_ClearsInvalidSince(t *testing.T) {
+	kr := NewKeyRotator()
+	const credID = 93
+	kr.EnsureCred(credID, 1)
+	kr.RecordKeyFailure(credID, 0, errorsx.KindTransient)
+	kr.RecordKeyFailure(credID, 0, errorsx.KindTransient) // → invalid
+
+	// Admin resets while still inside cooldown.
+	kr.ResetKey(credID, 0)
+
+	// Sweep well past the original invalidSince — must NOT touch anything
+	// because the operator already cleared the state.
+	now := time.Now().Add(DefaultInvalidCooldown + time.Hour)
+	if n := kr.SweepInvalid(now, DefaultInvalidCooldown); n != 0 {
+		t.Fatalf("SweepInvalid recovered %d keys after admin ResetKey, want 0", n)
+	}
+	if idx := kr.ResolveKey(credID, -1); idx != 0 {
+		t.Fatalf("ResolveKey after ResetKey = %d, want 0", idx)
+	}
+}
+
+// TestKeyRotator_StartSweeper_StopIdempotent asserts that the background
+// sweeper lifecycle is safe to call from multiple goroutines and that
+// repeated stop calls don't panic. We cancel the parent context before any
+// tick fires (DefaultSweepInterval = 1 minute), then exercise a sequence of
+// start/stop calls to verify idempotency under -race.
+func TestKeyRotator_StartSweeper_StopIdempotent(t *testing.T) {
+	kr := NewKeyRotator()
+	kr.EnsureCred(100, 2)
+	kr.RecordKeyFailure(100, 0, errorsx.KindTransient)
+	kr.RecordKeyFailure(100, 0, errorsx.KindTransient) // → invalid
+
+	ctx, cancel := context.WithCancel(context.Background())
+	kr.StartSweeper(ctx)
+	kr.StartSweeper(ctx) // second call must be idempotent — no extra goroutine
+	kr.StartSweeper(ctx)
+
+	cancel()
+	kr.StopSweeper()
+	kr.StopSweeper() // must not panic
+	kr.StopSweeper()
+}
+
