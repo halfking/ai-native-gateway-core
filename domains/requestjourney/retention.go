@@ -11,6 +11,7 @@ package requestjourney
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -115,7 +116,8 @@ func (w *RetentionWorker) CleanupOnce(ctx context.Context) {
 }
 
 // CleanupExpired 在单事务内设置事务级 bypass_rls（跨租户删除需要）并删除
-// created_at 早于保留期的行。会话级 GUC 会污染连接池中的共享连接，禁止使用。
+// created_at 早于保留期的 journey rows，以及同一窗口外的 snapshot receipts。
+// 会话级 GUC 会污染连接池中的共享连接，禁止使用。
 func (w *RetentionWorker) CleanupExpired(ctx context.Context) (int64, error) {
 	if w == nil || w.db == nil {
 		return 0, nil
@@ -136,8 +138,22 @@ func (w *RetentionWorker) CleanupExpired(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Receipt cleanup is deliberately best-effort for mixed-version databases:
+	// older installations may not have migration 618 yet. The runtime migration
+	// creates the table before this worker starts; this guard preserves startup
+	// compatibility for operators running retention during an upgrade window.
+	receiptTag, receiptErr := tx.Exec(ctx, `
+		DELETE FROM journal_snapshot_receipts
+		WHERE updated_at < NOW() - $1::interval
+		  AND (status = 'completed' OR claim_until < NOW())`, w.retention.String())
+	if receiptErr != nil {
+		if !strings.Contains(receiptErr.Error(), "journal_snapshot_receipts") {
+			return 0, receiptErr
+		}
+		receiptTag = pgconn.NewCommandTag("DELETE 0")
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	return tag.RowsAffected() + receiptTag.RowsAffected(), nil
 }

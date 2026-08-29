@@ -98,6 +98,14 @@ type PrometheusRecorder struct {
 	// Triggers investigation when rate(malformed_sse_frame_total[5m]) > threshold.
 	malformedSSEFrameTotal *prometheus.CounterVec
 
+	// incompleteToolCallTotal (2026-08-29): counts streams where tool_use
+	// blocks were sent but corresponding tool_result blocks were missing.
+	// Labels: model (for attribution), reason ("incomplete_tool_call_interrupted"
+	// when stream ended before message_stop | "incomplete_tool_call_after_done"
+	// when message_stop received but tool_result missing). High rates indicate
+	// unstable Anthropic upstreams or mid-stream interruptions.
+	incompleteToolCallTotal *prometheus.CounterVec
+
 	// successEmptyResponseTotal (2026-08-29): counts requests marked as
 	// successful but returned no content (empty response body or zero tokens).
 	// Label: provider_id. Helps identify providers with high empty response
@@ -404,6 +412,15 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 			[]string{"provider", "stage"},
 		),
 
+		// 2026-08-29: incomplete tool call counter
+		incompleteToolCallTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_incomplete_tool_call_total",
+				Help: "Streams where tool_use blocks were sent but tool_result blocks were missing (labels: model, reason=incomplete_tool_call_interrupted|incomplete_tool_call_after_done). High rates indicate unstable upstreams.",
+			},
+			[]string{"model", "reason"},
+		),
+
 		// 2026-08-29: success empty response counter
 		successEmptyResponseTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -668,6 +685,20 @@ func (p *PrometheusRecorder) RecordURSMv2ShadowResult(result string) {
 // rate(malformed_sse_frame_total[5m]) to detect provider issues.
 func (p *PrometheusRecorder) RecordMalformedSSEFrame(provider, stage string) {
 	p.malformedSSEFrameTotal.WithLabelValues(provider, stage).Inc()
+}
+
+// RecordIncompleteToolCall (2026-08-29) increments the counter when a stream
+// ends with incomplete tool execution (tool_use sent but tool_result missing).
+//
+//   - model: client-facing model name for attribution
+//   - reason: "incomplete_tool_call_interrupted" (stream ended before message_stop) |
+//             "incomplete_tool_call_after_done" (message_stop received but tool_result missing)
+//
+// High rates indicate unstable Anthropic upstreams or mid-stream interruptions
+// during tool execution. Operators monitor rate(incomplete_tool_call_total[5m])
+// to detect provider issues.
+func (p *PrometheusRecorder) RecordIncompleteToolCall(model, reason string) {
+	p.incompleteToolCallTotal.WithLabelValues(model, reason).Inc()
 }
 
 // RecordSuccessEmptyResponse (2026-08-29) increments the counter when a

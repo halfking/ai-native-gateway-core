@@ -97,6 +97,22 @@ func TestJournalSnapshotAPIRejectsMalformedPathAndMethod(t *testing.T) {
 	}
 }
 
+func TestJournalSnapshotAPIFailsClosedForMissingOrUnknownAuth(t *testing.T) {
+	api := NewJournalSnapshotAPI(&journalConsumerStub{snapshot: dispatch.JournalSnapshot{TenantID: "tenant-a", RequestID: "request-1", Entries: []dispatch.JournalEntry{}}})
+	for name, req := range map[string]*http.Request{
+		"missing": httptest.NewRequest(http.MethodGet, dispatchJournalAPIPath+"tenant-a/request-1", nil),
+		"unknown": journalRequest(dispatchJournalAPIPath+"tenant-a/request-1", "viewer", "tenant-a"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			api.ServeHTTP(response, req)
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestJournalSnapshotAPINilConsumerReturnsUnavailable(t *testing.T) {
 	response := httptest.NewRecorder()
 	NewJournalSnapshotAPI(nil).ServeHTTP(response, journalRequest(dispatchJournalAPIPath+"tenant/request", "tenant_admin", "tenant"))

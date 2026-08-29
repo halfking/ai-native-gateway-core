@@ -144,18 +144,21 @@ func TestRetentionCleanupScopesBypassAndDeletesAllRowTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 3 {
-		t.Fatalf("deleted = %d, want 3 (fake tag)", deleted)
+	if deleted != 6 {
+		t.Fatalf("deleted = %d, want 6 (fake tag: 3 transitions + 3 receipts)", deleted)
 	}
 	stmts := db.statements()
-	if len(stmts) != 2 {
-		t.Fatalf("executed %d statements, want bypass + delete: %v", len(stmts), stmts)
+	if len(stmts) != 3 {
+		t.Fatalf("executed %d statements, want bypass + 2 deletes: %v", len(stmts), stmts)
 	}
 	if !strings.Contains(stmts[0], "app.bypass_rls") || !strings.Contains(stmts[0], "', true)") {
 		t.Fatalf("bypass GUC must be transaction-scoped, got:\n%s", stmts[0])
 	}
 	if !strings.Contains(stmts[1], "DELETE FROM request_state_transitions") || !strings.Contains(stmts[1], "created_at") {
 		t.Fatalf("cleanup SQL must delete expired transitions by created_at, got:\n%s", stmts[1])
+	}
+	if !strings.Contains(stmts[2], "DELETE FROM journal_snapshot_receipts") || !strings.Contains(stmts[2], "updated_at") {
+		t.Fatalf("cleanup SQL must delete expired receipts by updated_at, got:\n%s", stmts[2])
 	}
 	if !db.commit {
 		t.Fatal("cleanup transaction was not committed")

@@ -248,6 +248,7 @@ func (c *countingRecorder) RecordRawAuditWriteFailure()                         
 func (c *countingRecorder) RecordURSMv2ShadowResult(_ string)                    {}
 func (c *countingRecorder) RecordMalformedSSEFrame(_, _ string)                  {}
 func (c *countingRecorder) RecordStreamSynthesizedDone()                         { c.synth++ }
+func (c *countingRecorder) RecordIncompleteToolCall(_, _ string)                 {}
 func (c *countingRecorder) RecordSuccessEmptyResponse(_, _, _ string)            {}
 func (c *countingRecorder) RecordJournalSnapshotStored(_ string)                 {}
 func (c *countingRecorder) RecordJournalSnapshotApplied(_ string, _ bool)        {}

@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
@@ -93,14 +93,14 @@ type journalSnapshotReceiptKey struct {
 }
 
 type dispatchJourneyJournalAdapter struct {
-	recorder       *requestjourney.Recorder
-	instance       string
-	store          dispatch.JournalSnapshotStore
-	receipt        *requestjourney.JournalSnapshotReceiptStore
-	mu             sync.Mutex
-	receipts       map[journalSnapshotReceiptKey]journalSnapshotReceipt
-	cleanupTicker  *time.Ticker
-	stopCleanup    chan struct{}
+	recorder      *requestjourney.Recorder
+	instance      string
+	store         dispatch.JournalSnapshotStore
+	receipt       *requestjourney.JournalSnapshotReceiptStore
+	mu            sync.Mutex
+	receipts      map[journalSnapshotReceiptKey]journalSnapshotReceipt
+	cleanupTicker *time.Ticker
+	stopCleanup   chan struct{}
 }
 
 func newDispatchJourneyJournalAdapter(recorder *requestjourney.Recorder, instanceID string, stores ...dispatch.JournalSnapshotStore) dispatch.JournalSink {
@@ -148,8 +148,8 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 	if a == nil || a.recorder == nil || !snap.CallerAuthorized {
 		return
 	}
-	if snap.CallerTenantID != "" && snap.CallerTenantID != snap.TenantID {
-		slog.Warn("dispatch journal sink rejected tenant mismatch", "request_id", snap.RequestID)
+	if snap.CallerTenantID == "" || snap.CallerTenantID != snap.TenantID {
+		slog.Warn("dispatch journal sink rejected caller tenant", "request_id", snap.RequestID)
 		return
 	}
 	if snap.TenantID == "" || snap.RequestID == "" || len(snap.Entries) == 0 || snap.SnapshotVersion <= 0 {
@@ -169,38 +169,38 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 			slog.Warn("dispatch journal snapshot hash failed", "request_id", snap.RequestID, "error", err)
 			return
 		}
-	claim, err = a.receipt.Claim(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash)
-	if err != nil || claim.AlreadyCompleted || !claim.Claimed {
-		if err != nil {
-			slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
+		claim, err = a.receipt.Claim(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash)
+		if err != nil || claim.AlreadyCompleted || !claim.Claimed {
+			if err != nil {
+				slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
+			}
+			// Record deduplication metrics (2026-08-29)
+			if claim.AlreadyCompleted {
+				metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "already_completed")
+			} else if !claim.Claimed {
+				metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "not_claimed")
+			}
+			return
 		}
-		// Record deduplication metrics (2026-08-29)
-		if claim.AlreadyCompleted {
-			metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "already_completed")
-		} else if !claim.Claimed {
-			metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "not_claimed")
-		}
-		return
-	}
 	}
 
 	hash := journalSnapshotHash(snap)
 	key := journalSnapshotReceiptKey{tenantID: snap.TenantID, requestID: snap.RequestID, version: snap.SnapshotVersion}
-		localClaimed := a.receipt == nil
-		if localClaimed {
-			if prior, ok := a.receipts[key]; ok {
-				if prior.hash != hash {
-					slog.Error("dispatch journal snapshot version conflict", "request_id", snap.RequestID)
-					// Record version conflict deduplication (2026-08-29)
-					metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "version_conflict")
-				} else {
-					// Same hash, already processed - record deduplication (2026-08-29)
-					metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "already_completed")
-				}
-				return
+	localClaimed := a.receipt == nil
+	if localClaimed {
+		if prior, ok := a.receipts[key]; ok {
+			if prior.hash != hash {
+				slog.Error("dispatch journal snapshot version conflict", "request_id", snap.RequestID)
+				// Record version conflict deduplication (2026-08-29)
+				metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "version_conflict")
+			} else {
+				// Same hash, already processed - record deduplication (2026-08-29)
+				metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "already_completed")
 			}
-			a.receipts[key] = journalSnapshotReceipt{hash: hash, createdAt: time.Now()}
+			return
 		}
+		a.receipts[key] = journalSnapshotReceipt{hash: hash, createdAt: time.Now()}
+	}
 	failed := false
 	defer func() {
 		if a.receipt != nil {
@@ -230,25 +230,24 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 		if err := a.recorder.Apply(ctx, event); err != nil {
 			failed = true
 			slog.Warn("dispatch request journey journal entry rejected", "request_id", snap.RequestID, "journal_seq", entry.Seq, "event_seq", event.Seq, "error", err)
-			// Record failed apply metric (2026-08-29)
-			metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, false)
-		} else {
-			// Record successful apply metric (2026-08-29)
-			metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, true)
 		}
 	}
+	// Record snapshot apply metric once per snapshot (2026-08-29)
+	metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, !failed)
 }
 
 func journalSnapshotHash(snap dispatch.JournalSnapshot) [sha256.Size]byte {
-	payload, _ := json.Marshal(struct {
-		TenantID       string                  `json:"tenant_id"`
-		RequestID      string                  `json:"request_id"`
-		Entries        []dispatch.JournalEntry `json:"entries"`
-		Truncated      bool                    `json:"truncated"`
-		TruncatedCount int                     `json:"truncated_count"`
-		Version        int64                   `json:"version"`
-	}{snap.TenantID, snap.RequestID, snap.Entries, snap.Truncated, snap.TruncatedCount, snap.SnapshotVersion})
-	return sha256.Sum256(payload)
+	hash, err := requestjourney.SnapshotPayloadHash(snap.TenantID, snap.RequestID, snap.Entries, snap.Truncated, snap.TruncatedCount, snap.SnapshotVersion)
+	if err != nil {
+		return [sha256.Size]byte{}
+	}
+	var result [sha256.Size]byte
+	decoded, err := hex.DecodeString(hash)
+	if err != nil || len(decoded) != len(result) {
+		return result
+	}
+	copy(result[:], decoded)
+	return result
 }
 
 // journalEntryToJourneyEvent translates one dispatch.JournalEntry into a
@@ -306,8 +305,8 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 		RetryReason:       string(entry.Action),
 		ObservationStatus: requestjourney.ObservationComplete,
 		OccurredAt:        occurredAt,
-		}, true
-	}
+	}, true
+}
 
 // startCleanup initiates a background goroutine that periodically cleans up
 // old receipts from the in-memory map based on the provided TTL.
@@ -348,4 +347,3 @@ func (a *dispatchJourneyJournalAdapter) Close() error {
 	}
 	return nil
 }
-

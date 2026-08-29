@@ -117,6 +117,11 @@ func (v *ToolCallValidator) OnToolResult(toolUseID string) {
 // blocks. Returns nil if complete, or an error describing the incompleteness.
 //
 // This should be called when the stream ends (either EOF or message_stop).
+//
+// IMPORTANT: In Anthropic's protocol, tool_use blocks do NOT require tool_result
+// in the same message. The assistant sends tool_use with stop_reason="tool_use",
+// then the client sends tool_result in the next turn. We only validate that
+// tool_result blocks have matching tool_use blocks (not the reverse).
 func (v *ToolCallValidator) ValidateComplete() error {
 	if v == nil {
 		return nil
@@ -126,7 +131,17 @@ func (v *ToolCallValidator) ValidateComplete() error {
 
 	v.streamEnded = true
 
-	// Find any pending tool_use blocks that never received a tool_result
+	// Only validate if we saw any tool_result blocks. If the stream only
+	// contains tool_use blocks (assistant requesting tool execution), that's
+	// a valid complete turn - the tool_result comes in the next message from
+	// the client.
+	if len(v.toolResultSeen) == 0 {
+		// No tool_result blocks → no validation needed
+		return nil
+	}
+
+	// We saw at least one tool_result. Verify all tool_results have matching
+	// tool_use blocks, and all tool_use blocks have matching tool_results.
 	var incomplete []string
 	for id, state := range v.pendingToolUses {
 		if !state.Completed {
