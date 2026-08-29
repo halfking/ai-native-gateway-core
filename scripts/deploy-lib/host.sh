@@ -255,9 +255,29 @@ host_wait_healthy() {
   return 1
 }
 
-# 2026-08-19: OOM 复盘加固. OOM killer 杀 nginx 后 systemd 不自愈 (vendor unit
-# 缺 Restart=always), gateway 仍然存活且 127.0.0.1:8781/healthz OK — 旧 host_wait_healthy
-# 通过但公网 80/443 实际挂了 1h21min 才被发现.
+# Wait for the strict dependency readiness endpoint. Unlike /healthz, /readyz
+# returns 2xx only when the gateway dependencies are usable.
+host_wait_readyz() {
+  local ssh_cmd=$1 target=$2 timeout_s=${3:-60}
+  local health_url ready_url deadline
+  health_url=$(target_field "$target" health_url)
+  [[ -n "$health_url" ]] || { echo "readyz: health_url missing for $target" >&2; return 1; }
+  ready_url="${health_url%/healthz}/readyz"
+  local deadline=$(( $(date +%s) + timeout_s ))
+  while (( $(date +%s) < deadline )); do
+    if "$ssh_cmd" "curl -fsS --max-time 2 '$ready_url' >/dev/null 2>&1"; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: $target readyz check timed out after ${timeout_s}s" >&2
+  return 1
+}
+
+# Wait for the strict dependency readiness endpoint. Unlike /healthz, /readyz
+# must return 2xx only when the gateway can serve requests with its configured
+# dependencies. Keep this as a separate gate so liveness remains useful during
+# startup and incident diagnosis.
 #
 # 本函数在 target 自身 curl https://127.0.0.1/healthz 验证 nginx→gateway 链路.
 # nginx 用的是 let's encrypt 给 kxpms.cn 的 cert, curl 127.0.0.1 会 CN mismatch,
@@ -334,14 +354,10 @@ host_wait_upgrade_banner() {
   return 1
 }
 
-# Mark a release bundle as verified=true once /healthz answers 2xx.
-# The metadata file is rewritten in-place — the orchestrator rolls
-# back via the deployment.json instead of new sidecars.
-#
-# Implementation: pure shell. The deployment.json format is fixed
-# (verified, verified_at, target, version), and rewriting two fields
-# in-place is straightforward enough that pulling in python / jq on a
-# minimal target host would be overkill.
+# Mark a release bundle as verified=true after the orchestrator has passed
+# liveness, strict readiness, and release-identity gates. Metadata is written
+# through a temporary file and rename so rollback selection never reads a
+# partially updated deployment.json.
 host_mark_verified() {
   local ssh_cmd=$1 target=$2 version=$3
   local metadata_file
@@ -349,23 +365,22 @@ host_mark_verified() {
   local now
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-  # Hand the rewrite to a single remote shell so atomicity is preserved.
-  # Steps:
-  #   1. mkdir -p the metadata directory.
-  #   2. Replace `"verified":(true|false)` with `"verified":true`.
-  #      Use sed -E for portability; macOS sed needs `sed -E`.
-  #   3. Upsert verified_at, target, version fields (existing values win).
-  #   4. Validate JSON shape — the orchestrator re-reads it during
-  #      rollback selection.
-  "$ssh_cmd" "set -e; m='$metadata_file'; mkdir -p \"\$(dirname \"\$m\")\"; \
+  "$ssh_cmd" "set -e; m='$metadata_file'; mkdir -p \"\$(dirname \"\$m\")\"; tmp=\"\$m.tmp.\$\$\"; \
     if [ ! -f \"\$m\" ]; then \
-      printf '{\"target\":\"$target\",\"version\":\"$version\",\"verified\":true,\"verified_at\":\"$now\"}\\n' > \"\$m\"; \
+      printf '{\"target\":\"$target\",\"version\":\"$version\",\"verified\":true,\"verified_at\":\"$now\"}\\n' > \"\$tmp\"; \
     else \
-      sed -E -i.bak 's/\"verified\"[[:space:]]*:[[:space:]]*(true|false)/\"verified\":true/' \"\$m\" && rm -f \"\$m.bak\"; \
-      if ! grep -q '\"verified_at\"' \"\$m\"; then \
-        sed -E -i.bak 's/}$/, \"verified_at\":\"$now\"}/' \"\$m\" && rm -f \"\$m.bak\"; \
-      fi; \
-    fi"
+      python3 - \"\$m\" \"\$tmp\" '$target' '$version' '$now' <<'PY'; \
+import json, sys
+source, destination, target, version, verified_at = sys.argv[1:]
+with open(source, encoding='utf-8') as handle:
+    metadata = json.load(handle)
+metadata.update(target=target, version=version, verified=True, verified_at=verified_at)
+with open(destination, 'w', encoding='utf-8') as handle:
+    json.dump(metadata, handle, separators=(',', ':'))
+    handle.write('\\n')
+PY
+    fi; \
+    python3 -m json.tool \"\$tmp\" >/dev/null; mv -f \"\$tmp\" \"\$m\""
 }
 
 # ============================================================================
