@@ -40,7 +40,7 @@ for session in "${SESSIONS[@]}"; do
   
   start=$(date +%s%N)
   
-  if "$BACKFILL_TOOL" --dsn="$DSN" --tenant="default" --session="$session" --dry-run="$DRY_RUN"; then
+  if "$BACKFILL_TOOL" --dsn="$DSN" --tenant="default" --session="$session" --dry-run="$DRY_RUN" --use-hot=true; then
     end=$(date +%s%N)
     elapsed=$((($end - $start) / 1000000))  # Convert to milliseconds
     total_time=$(($total_time + $elapsed))
