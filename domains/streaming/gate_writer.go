@@ -27,8 +27,9 @@ type GateWriter struct {
 	gate     *AttemptCommitGate
 	pending  []byte
 	delegate http.ResponseWriter
-	status   int
-	header   http.Header
+	status              int
+	header              http.Header
+	semanticVisibility  func()
 }
 
 // NewGateWriter wraps the client connection for one attempt. The gate must
@@ -124,6 +125,21 @@ func (gw *GateWriter) UnderlyingAttemptGate() *AttemptCommitGate {
 func (gw *GateWriter) SetFirstSemanticByteCallback(callback func()) {
 	if gw != nil && gw.gate != nil {
 		gw.gate.SetFirstSemanticByteCallback(callback)
+	}
+}
+
+// MarkClientSemanticVisible records a client-visible terminal/error frame that
+// intentionally does not advance AttemptCommitGate semantic state. Dispatch
+// uses this only for post-write failover protection.
+func (gw *GateWriter) MarkClientSemanticVisible() {
+	if gw != nil && gw.semanticVisibility != nil {
+		gw.semanticVisibility()
+	}
+}
+
+func (gw *GateWriter) SetClientSemanticVisibility(callback func()) {
+	if gw != nil {
+		gw.semanticVisibility = callback
 	}
 }
 
