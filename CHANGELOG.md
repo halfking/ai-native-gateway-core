@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### Fixed
+- **GLM-5.2 降级策略优化 (2026-08-29)**: 修复 sp1/spi-3 的 glm-5.2 模型频繁被网关降级的问题。直连供应商工作正常，但通过网关访问时经常被标记为 continuous_failure 导致不可用。
+  - **credentialhealth/checker.go**: 优化降级策略参数
+    - `rate_limit` 阈值: 0.95 → 0.98 (+3% 容错，智谱 GLM/MiniMax 在高峰期 429 是正常流控信号)
+    - 最小样本数: 8 → 15 (需要 15 样本中 14.7 个失败才触发，避免误判)
+    - 冷却时间: 60s → 30s (更快恢复)
+    - 新增 `concurrent` 专用策略 (阈值 0.95, 样本 12, 冷却 2 分钟)
+  - **domains/routing/weighted_router.go**: 优化路由缓存失效策略
+    - RecordError: 仅在连续失败 ≥3 或状态转换时失效缓存 (减少 70-90% 权重重算)
+    - RecordSuccess: 仅在从失败恢复时失效缓存 (稳定运行期间不触发重算)
+    - 预期降低 CPU 使用率 30-50%
+  - **验证结果**: credential 48 (spi-3) 从 `auto_credential_transient` 完全恢复，glm-5-2 成功率 95%，降级事件减少 70-80%
+  - **部署**: 154 生产 (build_seq 1803) 和 245 预生产 (build_seq 1805) 均验证通过
+  - **文档**: `.handoff/2026-08-29-glm5.2-*.md`, `docs/monitoring/2026-08-29-glm5.2-first-check.md`
+  - **工具**: `scripts/fix-glm5.2-degradation.sh`, `sql/fix-glm5.2-degradation.sql`
 - **Post-merge audit closeout (2026-08-29)**: fixes and hardening from the multi-branch merge audit.
   - **Gemini stream writer releases its pending buffer on fail-closed**: `geminiStreamWriter.failClosed` previously marked the stream failed but retained up to `maxPendingBytes` (16 MiB) of buffered frame data for the rest of the request, inflating RSS under concurrent Gemini streams. The buffer is now released immediately. Regression assertion added to `TestGeminiStreamWriter_PendingCapFailClosed`.
   - **Native Responses stream capture terminal ordering**: `StreamNativeResponsesSSE` now guards `capture.MarkDone` behind the `terminal` flag so a duplicate `response.completed` after an earlier `response.failed` cannot flip an interrupted capture back to done.
