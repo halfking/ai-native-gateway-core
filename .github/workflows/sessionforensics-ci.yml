@@ -121,15 +121,18 @@ jobs:
         run: make test-pg-contracts
 
   gateway-session-v2:
+    # Never execute PR-controlled code with a persistent database credential.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     # Integration tests for the Sessions V2 read path (OutboundBuilder,
     # TurnReader) against a live PostgreSQL with migration 430 applied.
-    # Shares the TEST_DATABASE_URL secret with gateway-rls; the v2 test
-    # helper also accepts TEST_DB_URL for local runs.
+    # Uses a dedicated test-only secret. The helper still accepts legacy
+    # TEST_DB_URL / TEST_DATABASE_URL values for explicitly isolated local runs.
     name: Sessions V2 integration
     runs-on: [self-hosted, postgresql-low-priv]
     timeout-minutes: 15
     env:
-      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+      TEST_SESSION_V2_DATABASE_URL: ${{ secrets.TEST_SESSION_V2_DATABASE_URL }}
+      TEST_SESSION_V2_ISOLATED: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -139,8 +142,11 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Require database DSN
-        run: test -n "$TEST_DATABASE_URL"
+      - name: Require isolated V2 database DSN
+        run: |
+          test -n "$TEST_SESSION_V2_DATABASE_URL"
+          database=$(psql "$TEST_SESSION_V2_DATABASE_URL" -XAtqc 'SELECT current_database()')
+          case "$database" in *_test) ;; *) echo "refusing non-test database: $database"; exit 1;; esac
 
       - name: Verify migration 430 schema is present
         # Fail loudly (rather than skip) if the CI DB lacks the V2 tables.
@@ -148,9 +154,9 @@ jobs:
         # before this job; this guard makes a missing schema a visible
         # CI failure instead of a green-but-meaningless skip.
         run: |
-          psql "$TEST_DATABASE_URL" -c "\d gateway.session_bodies" \
+          psql "$TEST_SESSION_V2_DATABASE_URL" -c "\d public.session_bodies" \
             | grep -q "session_bodies" \
-            || { echo "gateway.session_bodies missing — apply migration 430 to the CI DB"; exit 1; }
+            || { echo "public.session_bodies missing — apply migration 430 to the CI DB"; exit 1; }
 
       - name: Run Sessions V2 integration tests
         # Scoped to the V2 read/write round-trip tests for outbound_body
