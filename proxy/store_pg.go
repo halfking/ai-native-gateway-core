@@ -331,6 +331,66 @@ func (s *PgStore) DeleteNodesBySubscription(ctx context.Context, subscriptionID 
 	return nil
 }
 
+// RefreshSubscriptionNodes 在事务内删除旧节点并插入新节点，保证原子性。
+// 审计修复 (2026-08-29)：问题 1 - 订阅刷新缺少事务保护。
+// 之前的 DeleteNodesBySubscription + 循环 CreateNode 在中断时会导致订阅变成空节点状态。
+func (s *PgStore) RefreshSubscriptionNodes(ctx context.Context, subscriptionID int, nodes []*Node) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("proxy: begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx) // 成功提交后 Rollback 是无操作
+	}()
+
+	// 1. 删除旧节点
+	const deleteQ = `DELETE FROM proxy_nodes WHERE subscription_id = $1`
+	if _, err := tx.Exec(ctx, deleteQ, subscriptionID); err != nil {
+		return fmt.Errorf("proxy: delete old nodes in transaction: %w", err)
+	}
+
+	// 2. 插入新节点
+	const insertQ = `
+		INSERT INTO proxy_nodes
+			(subscription_id, name, protocol, server, port, username, password, config, location, status, health_check_url)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		RETURNING id, created_at, updated_at`
+
+	for _, node := range nodes {
+		pw := node.Password
+		if s.enc != nil && pw != "" {
+			enc, err := s.enc([]byte(pw))
+			if err != nil {
+				return fmt.Errorf("proxy: encrypt node %q password in transaction: %w", node.Name, err)
+			}
+			pw = enc
+		}
+
+		row := tx.QueryRow(ctx, insertQ,
+			subscriptionID,
+			node.Name,
+			node.Protocol,
+			node.Server,
+			node.Port,
+			node.Username,
+			pw,
+			marshalConfig(node.Config),
+			node.Location,
+			node.Status,
+			node.HealthCheckURL,
+		)
+		if err := row.Scan(&node.ID, &node.CreatedAt, &node.UpdatedAt); err != nil {
+			return fmt.Errorf("proxy: insert node %q in transaction: %w", node.Name, err)
+		}
+	}
+
+	// 3. 提交事务
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("proxy: commit transaction: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Domain CRUD
 // ---------------------------------------------------------------------------
@@ -614,17 +674,22 @@ func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 	}
 
 	// 密码：数据库列可能加密也可能为历史明文。dec 为 nil 或解密失败时保留原值。
+	// 审计修复 (2026-08-29)：问题 11 - 设置解密失败标志，调用方可据此判断密码是否可用。
 	pw := ""
+	decryptFailed := false
 	if password != nil {
 		pw = *password
 	}
 	if s.dec != nil && pw != "" {
 		if dec, err := s.dec(pw); err == nil {
 			pw = dec
+		} else {
+			// 解密失败：视为历史明文，原样保留，但标记失败状态
+			decryptFailed = true
 		}
-		// 解密失败：视为历史明文，原样保留，不影响整行。
 	}
 	node.Password = pw
+	node.PasswordDecryptFailed = decryptFailed
 	return node, nil
 }
 

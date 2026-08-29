@@ -497,6 +497,40 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 	if circuitOpen && settings.IsEnabled("circuit_degradation") {
 		releaseFpLease(e.FpSlots, fpLease)
+		
+		// 2026-08-29 P1: 记录熔断拒绝到 candidate_failure_logs_hot
+		// 审计发现：circuit-open 错误未记录，运维无法看到哪些 credential 处于熔断状态
+		if e.FailureLogger != nil {
+			perAttemptMs := int(time.Since(startedAt).Milliseconds())
+			circuitErr := errDispatchCircuitOpen
+			extra := map[string]any{
+				"circuit_open":    true,
+				"rejection_type":  "circuit_breaker",
+				"candidates_left": len(dctx.candidates),
+			}
+			// 获取熔断器状态用于诊断
+			if e.Circuit != nil {
+				if breaker := e.Circuit.Get(cand.ProviderID, cand.CredentialID); breaker != nil {
+					extra["circuit_state"] = breaker.State().String()
+					extra["circuit_consecutive_failures"] = breaker.ConsecutiveFailures()
+				}
+			}
+			e.FailureLogger.LogFailureWithKind(
+				params.R.Header.Get("X-Request-Id"),
+				tenantFromCtx(params.R),
+				params.SessionID,
+				cand.CredentialID,
+				cand.ProviderID,
+				cand.RawModel,
+				params.AttemptNo,
+				circuitErr,
+				errorsx.KindConcurrent, // 使用 concurrent 作为 circuit-open 的错误类型
+				nil,
+				&perAttemptMs,
+				extra,
+			)
+		}
+		
 		return dispatch.ForwardOutcome{Err: errDispatchCircuitOpen}
 	}
 
@@ -517,6 +551,32 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 			probeConsumed = false
 		}
+		
+		// 2026-08-29 P1: 记录并发限流拒绝到 candidate_failure_logs_hot
+		// 审计发现：并发限流拒绝未记录，无法统计因并发限流导致的失败
+		if e.FailureLogger != nil {
+			perAttemptMs := int(time.Since(startedAt).Milliseconds())
+			extra := map[string]any{
+				"rate_limit_rejection": true,
+				"rejection_type":       "concurrency_limiter",
+				"candidates_left":      len(dctx.candidates),
+			}
+			e.FailureLogger.LogFailureWithKind(
+				params.R.Header.Get("X-Request-Id"),
+				tenantFromCtx(params.R),
+				params.SessionID,
+				cand.CredentialID,
+				cand.ProviderID,
+				cand.RawModel,
+				params.AttemptNo,
+				acquireErr,
+				errorsx.KindConcurrent, // 并发限流使用 concurrent 错误类型
+				nil,
+				&perAttemptMs,
+				extra,
+			)
+		}
+		
 		return dispatch.ForwardOutcome{Err: acquireErr}
 	}
 
