@@ -85,7 +85,9 @@ startup_migrations=(
 	546_stats_reconciliation_diffs_unique.sql
 	547_session_project_attribution.sql
 	548_stats_reconciliation_diffs_identity.sql
-	553_approval_resume_claim.sql	552_request_journey_durable_outbox.sql
+	553_approval_resume_claim.sql
+	552_request_journey_durable_outbox.sql
+	618_request_journey_snapshot_receipts.sql
 )
 for name in "${startup_migrations[@]}"; do
   source="sql/migrations/startup/$name"
