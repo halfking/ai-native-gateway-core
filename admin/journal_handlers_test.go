@@ -14,12 +14,11 @@ import (
 type journalConsumerStub struct {
 	snapshot dispatch.JournalSnapshot
 	err      error
-	caller   string
-	request  string
+	query    dispatch.JournalSnapshotQuery
 }
 
-func (s *journalConsumerStub) ConsumeSnapshot(_ context.Context, caller, request string) (dispatch.JournalSnapshot, error) {
-	s.caller, s.request = caller, request
+func (s *journalConsumerStub) ConsumeSnapshot(_ context.Context, query dispatch.JournalSnapshotQuery) (dispatch.JournalSnapshot, error) {
+	s.query = query
 	return s.snapshot, s.err
 }
 
@@ -37,8 +36,8 @@ func TestJournalSnapshotAPIServesScopedSnapshot(t *testing.T) {
 	response := httptest.NewRecorder()
 	api.ServeHTTP(response, journalRequest(dispatchJournalAPIPath+"tenant-a/request%20id", "tenant_admin", "tenant-a"))
 
-	if response.Code != http.StatusOK || consumer.caller != "tenant-a" || consumer.request != "request id" {
-		t.Fatalf("status=%d caller/request=%q/%q body=%s", response.Code, consumer.caller, consumer.request, response.Body.String())
+	if response.Code != http.StatusOK || consumer.query.CallerTenantID != "tenant-a" || consumer.query.RequestID != "request id" {
+		t.Fatalf("status=%d caller/request=%q/%q body=%s", response.Code, consumer.query.CallerTenantID, consumer.query.RequestID, response.Body.String())
 	}
 	body := response.Body.String()
 	for _, field := range []string{`"tenant_id":"tenant-a"`, `"request_id":"request id"`, `"entries":[]`, `"truncated":true`, `"truncated_count":3`, `"snapshot_version":9`} {
@@ -71,8 +70,8 @@ func TestJournalSnapshotAPISuperAdminCanSelectTenant(t *testing.T) {
 	consumer := &journalConsumerStub{snapshot: dispatch.JournalSnapshot{TenantID: "tenant-b", RequestID: "request-1", Entries: []dispatch.JournalEntry{}}}
 	response := httptest.NewRecorder()
 	NewJournalSnapshotAPI(consumer).ServeHTTP(response, journalRequest(dispatchJournalAPIPath+"tenant-b/request-1", "super_admin", "default"))
-	if response.Code != http.StatusOK || consumer.caller != "tenant-b" {
-		t.Fatalf("status=%d caller=%q body=%s", response.Code, consumer.caller, response.Body.String())
+	if response.Code != http.StatusOK || consumer.query.TargetTenantID != "tenant-b" {
+		t.Fatalf("status=%d target_tenant=%q body=%s", response.Code, consumer.query.TargetTenantID, response.Body.String())
 	}
 }
 

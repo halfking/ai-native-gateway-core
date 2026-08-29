@@ -11,7 +11,11 @@ func TestInMemoryJournalStoreStoresDetachedEntries(t *testing.T) {
 	store.Store(JournalSnapshot{TenantID: "tenant-a", RequestID: "request-1", Entries: entries})
 	entries[0].Seq = 99
 
-	snapshot, err := store.ConsumeSnapshot(context.Background(), "tenant-a", "request-1")
+	snapshot, err := store.ConsumeSnapshot(context.Background(), JournalSnapshotQuery{
+		CallerTenantID: "tenant-a",
+		TargetTenantID: "tenant-a",
+		RequestID:      "request-1",
+	})
 	if err != nil {
 		t.Fatalf("ConsumeSnapshot: %v", err)
 	}

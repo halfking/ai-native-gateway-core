@@ -13,7 +13,7 @@ import (
 const dispatchJournalAPIPath = "/api/admin/dispatch/journal/"
 
 type journalSnapshotConsumer interface {
-	ConsumeSnapshot(context.Context, string, string) (dispatch.JournalSnapshot, error)
+	ConsumeSnapshot(context.Context, dispatch.JournalSnapshotQuery) (dispatch.JournalSnapshot, error)
 }
 
 // JournalSnapshotAPI exposes one tenant/request-scoped journal snapshot. The
@@ -28,17 +28,15 @@ func NewJournalSnapshotAPI(consumer journalSnapshotConsumer) *JournalSnapshotAPI
 }
 
 func (api *JournalSnapshotAPI) RegisterRoutes(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
-	if mux == nil {
+	if mux == nil || wrap == nil {
 		return
-	}
-	if wrap == nil {
-		wrap = func(next http.HandlerFunc) http.HandlerFunc { return next }
 	}
 	mux.HandleFunc(dispatchJournalAPIPath, wrap(api.ServeHTTP))
 }
 
 func (api *JournalSnapshotAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
 		writeRequestJourneyError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -52,23 +50,38 @@ func (api *JournalSnapshotAPI) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		writeRequestJourneyError(w, http.StatusBadRequest, "invalid journal path")
 		return
 	}
-	callerTenant := strings.TrimSpace(GetTenantID(r))
-	if IsTenantAdmin(r) && callerTenant != tenantID {
+	auth := GetAuthContext(r)
+	if auth == nil || strings.TrimSpace(auth.TenantID) == "" {
 		writeRequestJourneyError(w, http.StatusNotFound, "not found")
 		return
 	}
-	if callerTenant == "" {
+	callerTenant := strings.TrimSpace(auth.TenantID)
+	privileged := auth.Role == "super_admin" || auth.Role == "admin_key"
+	if !privileged && auth.Role != "tenant_admin" {
+		writeRequestJourneyError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if !privileged && callerTenant != tenantID {
 		writeRequestJourneyError(w, http.StatusNotFound, "not found")
 		return
 	}
 
-	snapshot, err := api.consumer.ConsumeSnapshot(r.Context(), tenantID, requestID)
+	snapshot, err := api.consumer.ConsumeSnapshot(r.Context(), dispatch.JournalSnapshotQuery{
+		CallerTenantID: callerTenant,
+		TargetTenantID: tenantID,
+		RequestID:      requestID,
+		Privileged:     privileged,
+	})
 	if err != nil {
 		if errors.Is(err, dispatch.ErrJournalNotFound) {
 			writeRequestJourneyError(w, http.StatusNotFound, "not found")
 			return
 		}
 		writeRequestJourneyError(w, http.StatusServiceUnavailable, "journal unavailable")
+		return
+	}
+	if snapshot.TenantID != tenantID || snapshot.RequestID != requestID {
+		writeRequestJourneyError(w, http.StatusNotFound, "not found")
 		return
 	}
 	if snapshot.Entries == nil {
@@ -95,7 +108,9 @@ func parseDispatchJournalPath(path string) (tenantID, requestID string, ok bool)
 		return "", "", false
 	}
 	requestID, err = url.PathUnescape(parts[1])
-	if err != nil || strings.TrimSpace(tenantID) == "" || strings.TrimSpace(requestID) == "" || strings.Contains(tenantID, "/") || strings.Contains(requestID, "/") {
+	tenantID = strings.TrimSpace(tenantID)
+	requestID = strings.TrimSpace(requestID)
+	if err != nil || tenantID == "" || requestID == "" || strings.ContainsAny(tenantID, "/\\\x00") || strings.ContainsAny(requestID, "/\\\x00") || tenantID == "." || tenantID == ".." || requestID == "." || requestID == ".." {
 		return "", "", false
 	}
 	return tenantID, requestID, true

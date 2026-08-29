@@ -347,17 +347,18 @@ func (f JournalSinkFunc) ApplyJournalSnapshot(ctx context.Context, snapshot Jour
 // terminal completion), AuthorizedJournalConsumer is designed for external query
 // paths (e.g., admin APIs, diagnostic tools) where the caller's tenant must be
 // verified before snapshot access is granted.
+// JournalSnapshotQuery carries the authenticated caller identity separately
+// from the snapshot target. Privileged is set only by a trusted HTTP adapter
+// after validating the caller role.
+type JournalSnapshotQuery struct {
+	CallerTenantID string
+	TargetTenantID string
+	RequestID      string
+	Privileged     bool
+}
+
 type AuthorizedJournalConsumer interface {
-	// ConsumeSnapshot retrieves a journal snapshot for the specified tenant and
-	// request ID, verifying that callerTenant matches the snapshot's TenantID.
-	//
-	// Returns ErrJournalNotFound when:
-	//   - The snapshot does not exist
-	//   - callerTenant does not match the snapshot's TenantID
-	//   - callerTenant is empty and the caller is not a super-admin bypass
-	//
-	// This not-found-shaped error prevents cross-tenant existence leaks: an
-	// unauthorized caller cannot distinguish "does not exist" from "exists but
-	// you cannot access it."
-	ConsumeSnapshot(ctx context.Context, callerTenant, requestID string) (JournalSnapshot, error)
+	// ConsumeSnapshot retrieves one target snapshot after validating the caller
+	// identity in query. Missing and unauthorized results use ErrJournalNotFound.
+	ConsumeSnapshot(ctx context.Context, query JournalSnapshotQuery) (JournalSnapshot, error)
 }
