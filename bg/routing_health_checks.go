@@ -36,6 +36,7 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 			err = fmt.Errorf("query %s: %w", chk.CheckID, qErr)
 			return
 		}
+		defer rows.Close()
 		found := 0
 		for rows.Next() {
 			found++
@@ -112,8 +113,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				fixSQL = fmt.Sprintf("-- 调用 admin API: POST /api/admin/diagnostics/routing-blocked/fix\n-- Body: {\"provider_id\": <该 credential 的 provider_id>}")
 			}
 
-			rows.Close()
-
 			_, insErr := db.Exec(ctx, `
 				INSERT INTO routing_health_checks
 					(check_id, severity, entity_type, entity_id, entity_name, detail, fix_sql, status, created_at, updated_at)
@@ -133,7 +132,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				newWarning++
 			}
 		}
-		rows.Close()
 		if rows.Err() != nil {
 			err = fmt.Errorf("rows %s: %w", chk.CheckID, rows.Err())
 			return

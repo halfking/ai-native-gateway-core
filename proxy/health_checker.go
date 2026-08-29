@@ -59,10 +59,12 @@ func newTransportForProxy(proxyURL string, timeout time.Duration, disableKeepAli
 		}
 		proxyFunc = http.ProxyURL(u)
 	}
+	// 审计修复 (2026-08-29)：并发安全 P1-5 - 添加 IdleConnTimeout 防止连接永久挂起
 	return &http.Transport{
 		Proxy:                 proxyFunc,
 		TLSHandshakeTimeout:   timeout,
 		ResponseHeaderTimeout: timeout,
+		IdleConnTimeout:       90 * time.Second,
 		ExpectContinueTimeout: time.Second,
 		DisableKeepAlives:     disableKeepAlives,
 		ForceAttemptHTTP2:     !disableKeepAlives,

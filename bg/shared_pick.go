@@ -119,14 +119,13 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	if qerr != nil {
 		return PickProbeResult{}, qerr
 	}
+	defer rows.Close()
 	if rows.Next() {
 		var pick string
 		if scanErr := rows.Scan(&pick); scanErr == nil && pick != "" {
-			rows.Close()
 			return PickProbeResult{Model: pick, Source: "auto:domestic_featured"}, nil
 		}
 	}
-	rows.Close()
 
 	// Priority 3: safety-net random pick across all available bindings.
 	// Only reached when no featured model is bound to this credential.

@@ -25,6 +25,8 @@ type Manager struct {
 
 	// 内存缓存：subscription_id -> nodes
 	nodesCache sync.Map
+	// 审计修复 (2026-08-29)：并发安全 P1-2 - per-subscription 锁保护并发写入
+	cacheLocks sync.Map // subscription_id -> *sync.RWMutex
 
 	// 配置
 	autoRefreshInterval   time.Duration
@@ -603,6 +605,11 @@ func (m *Manager) getAllActiveCachedNodes() []*Node {
 
 // 审计修复 (2026-08-29)：问题 6 - 使用深拷贝避免 slice 竞态条件。
 func (m *Manager) updateNodeInCache(node *Node) {
+	// 审计修复 (2026-08-29)：并发安全 P1-2 - 使用 per-subscription 锁保护并发写入
+	mu := m.getCacheLock(node.SubscriptionID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	nodes := m.getNodesFromCache(node.SubscriptionID)
 	if nodes == nil {
 		return
@@ -620,6 +627,13 @@ func (m *Manager) updateNodeInCache(node *Node) {
 		}
 	}
 	m.nodesCache.Store(node.SubscriptionID, newNodes)
+}
+
+// getCacheLock 获取 subscription 的锁（lazy initialization）
+// 审计修复 (2026-08-29)：并发安全 P1-2 - per-subscription 锁
+func (m *Manager) getCacheLock(subscriptionID int) *sync.RWMutex {
+	v, _ := m.cacheLocks.LoadOrStore(subscriptionID, &sync.RWMutex{})
+	return v.(*sync.RWMutex)
 }
 
 // extractDomain 从 URL 提取域名
