@@ -7,10 +7,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // TestProxyURLEncodesPortAsDigits 锁定一个曾经的真实 bug：端口用 string(rune(port))
 // 拼接，8443 会变成一个 CJK 字符，生成的代理 URL 完全不可用。
+func TestNewMetricsReusesExistingCollectors(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	first := NewMetrics(reg)
+	second := NewMetrics(reg)
+	if first.nodesTotal != second.nodesTotal || first.healthFailuresTotal != second.healthFailuresTotal {
+		t.Fatal("NewMetrics must reuse collectors already registered on the same registry")
+	}
+}
+
 func TestProxyURLEncodesPortAsDigits(t *testing.T) {
 	cases := []struct {
 		name string

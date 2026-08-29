@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
@@ -906,6 +907,16 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 				}()
 				h(entry)
 			}(hook)
+		}
+		if entry.Success && len(strings.TrimSpace(stringValue(entry.ResponseBody))) == 0 {
+			metrics.RecordSuccessfulResponseBodyMissing()
+			slog.Warn("successful request log missing response body",
+				"request_id", entry.RequestID,
+				"tenant_id", entry.TenantID,
+				"credential_id", entry.CredentialID,
+				"provider_id", entry.ProviderID,
+				"operation", entry.Op,
+			)
 		}
 		entry.releaseBodies()
 	}

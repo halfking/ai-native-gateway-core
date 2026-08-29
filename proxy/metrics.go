@@ -12,11 +12,11 @@ import (
 // 设计为可注入 Registerer：生产用 prometheus.DefaultRegisterer，测试用私有
 // prometheus.NewRegistry()（参考 domains/orchestration/observ/metrics.go）。
 type Metrics struct {
-	subscriptionsTotal   *prometheus.GaugeVec
-	nodesTotal           prometheus.Gauge
-	nodesDialable        prometheus.Gauge
-	nodesUnhealthy       prometheus.Gauge
-	healthFailuresTotal  prometheus.Counter
+	subscriptionsTotal    *prometheus.GaugeVec
+	nodesTotal            prometheus.Gauge
+	nodesDialable         prometheus.Gauge
+	nodesUnhealthy        prometheus.Gauge
+	healthFailuresTotal   prometheus.Counter
 	egressSelectionsTotal *prometheus.CounterVec
 }
 
@@ -51,15 +51,61 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Help: "出口节点选择次数（按结果：dialable / undialable / none）",
 		}, []string{"result"}),
 	}
-	reg.MustRegister(
-		m.subscriptionsTotal,
-		m.nodesTotal,
-		m.nodesDialable,
-		m.nodesUnhealthy,
-		m.healthFailuresTotal,
-		m.egressSelectionsTotal,
-	)
+	m.subscriptionsTotal = registerOrGetGaugeVec(reg, m.subscriptionsTotal)
+	m.nodesTotal = registerOrGetGauge(reg, m.nodesTotal)
+	m.nodesDialable = registerOrGetGauge(reg, m.nodesDialable)
+	m.nodesUnhealthy = registerOrGetGauge(reg, m.nodesUnhealthy)
+	m.healthFailuresTotal = registerOrGetCounter(reg, m.healthFailuresTotal)
+	m.egressSelectionsTotal = registerOrGetCounterVec(reg, m.egressSelectionsTotal)
 	return m
+}
+
+func registerOrGetGaugeVec(reg prometheus.Registerer, collector *prometheus.GaugeVec) *prometheus.GaugeVec {
+	if err := reg.Register(collector); err != nil {
+		if registered, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := registered.ExistingCollector.(*prometheus.GaugeVec); ok {
+				return existing
+			}
+		}
+		panic(err)
+	}
+	return collector
+}
+
+func registerOrGetGauge(reg prometheus.Registerer, collector prometheus.Gauge) prometheus.Gauge {
+	if err := reg.Register(collector); err != nil {
+		if registered, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := registered.ExistingCollector.(prometheus.Gauge); ok {
+				return existing
+			}
+		}
+		panic(err)
+	}
+	return collector
+}
+
+func registerOrGetCounter(reg prometheus.Registerer, collector prometheus.Counter) prometheus.Counter {
+	if err := reg.Register(collector); err != nil {
+		if registered, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := registered.ExistingCollector.(prometheus.Counter); ok {
+				return existing
+			}
+		}
+		panic(err)
+	}
+	return collector
+}
+
+func registerOrGetCounterVec(reg prometheus.Registerer, collector *prometheus.CounterVec) *prometheus.CounterVec {
+	if err := reg.Register(collector); err != nil {
+		if registered, ok := err.(prometheus.AlreadyRegisteredError); ok {
+			if existing, ok := registered.ExistingCollector.(*prometheus.CounterVec); ok {
+				return existing
+			}
+		}
+		panic(err)
+	}
+	return collector
 }
 
 // SetSubscriptions 设置订阅计数（active=true/false 各一列）。

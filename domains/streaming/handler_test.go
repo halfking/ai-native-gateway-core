@@ -1,14 +1,89 @@
 package streaming
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 )
+
+type healthTestConnector struct{ err error }
+
+func (c healthTestConnector) Ping(context.Context) error { return c.err }
+
+func TestHealthHandlerReadyzRequiresBothDependencies(t *testing.T) {
+	tests := []struct {
+		name  string
+		db    dbConnector
+		redis redisConnector
+		want  int
+	}{
+		{name: "healthy", db: healthTestConnector{}, redis: healthTestConnector{}, want: http.StatusOK},
+		{name: "missing database", redis: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "missing redis", db: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "database error", db: healthTestConnector{err: errors.New("private db error")}, redis: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "redis error", db: healthTestConnector{}, redis: healthTestConnector{err: errors.New("private redis error")}, want: http.StatusServiceUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHealthHandler(nil, nil, nil, tt.db, tt.redis)
+			r := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, tt.want, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "private ") {
+				t.Fatalf("anonymous readiness leaked dependency error: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestHealthHandlerHealthzIsLivenessWhenDependencyFails(t *testing.T) {
+	h := NewHealthHandler(nil, nil, nil, healthTestConnector{}, healthTestConnector{err: errors.New("private redis error")})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body HealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode healthz response: %v", err)
+	}
+	if body.Ready {
+		t.Fatalf("healthz ready = true, want false")
+	}
+	if strings.Contains(w.Body.String(), "private redis error") {
+		t.Fatalf("anonymous liveness leaked dependency error: %s", w.Body.String())
+	}
+}
+
+func TestHealthHandlerVersionDoesNotRequireDependencies(t *testing.T) {
+	h := NewHealthHandler(nil, nil, nil, nil, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode version response: %v", err)
+	}
+	for _, key := range []string{"version", "git_sha", "build_seq", "build_date", "module"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("version response missing %q: %s", key, w.Body.String())
+		}
+	}
+}
 
 func TestApplyActualOutboundBodyPrefersExecutorBody(t *testing.T) {
 	logCtx := &RequestLogContext{OutboundBody: []byte(`{"messages":[{"role":"system","content":"old"}]}`)}

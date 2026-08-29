@@ -6871,8 +6871,8 @@ type ResourceStatus struct {
 
 // HealthResponse represents the health check response.
 type HealthResponse struct {
-	Status      string          `json:"status"`
-	Version     string          `json:"version"`
+	Status  string `json:"status"`
+	Version string `json:"version"`
 	// 2026-08-29 扩 fields：/healthz 暴露 git_sha + build_seq + build_date，
 	// 让 scripts/lifecycle/preflight.sh 的 /version 段能与切完后的 bundle version 比对。
 	// 字段保持 minimal，仅 SSOT；不要把 internal versionInfoStruct 全部泄出去。
@@ -6926,35 +6926,6 @@ func healthResourceStatus(parent context.Context, connector interface{ Ping(cont
 		status.Error = err.Error()
 	}
 	return status
-}
-
-func writeGatewayVersionMetadata(w http.ResponseWriter) {
-	metadata := map[string]any{
-		"version":    "unknown",
-		"git_sha":    "unknown",
-		"build_seq":  0,
-		"build_date": "unknown",
-	}
-	for _, path := range []string{"/opt/llm-gateway-go/version.json", "version.json"} {
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var v struct {
-			Version   string `json:"version"`
-			GitSHA    string `json:"git_sha"`
-			BuildSeq  int    `json:"build_seq"`
-			BuildDate string `json:"build_date"`
-		}
-		if json.Unmarshal(raw, &v) == nil && v.Version != "" {
-			metadata["version"], metadata["git_sha"] = v.Version, v.GitSHA
-			metadata["build_seq"], metadata["build_date"] = v.BuildSeq, v.BuildDate
-			break
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	//nolint:errcheck // HTTP write error non-recoverable
-	json.NewEncoder(w).Encode(metadata)
 }
 
 // SetRedis updates the Redis connection for health checks (2026-07-08).
@@ -7130,21 +7101,19 @@ func (h *HealthHandler) serveReadyz(w http.ResponseWriter, r *http.Request) {
 
 // dependenciesReady — 内部 helper：DB ping + Redis ping（任一失败返回 false）。
 func (h *HealthHandler) dependenciesReady(r *http.Request) bool {
-	if h.db != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := h.db.Ping(ctx); err != nil {
-			return false
-		}
+	// DB and Redis are mandatory runtime dependencies. A nil connector means
+	// initialization did not complete and must never be reported as ready.
+	if h.db == nil || h.redis == nil {
+		return false
 	}
-	if h.redis != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
-		defer cancel()
-		if err := h.redis.Ping(ctx); err != nil {
-			return false
-		}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := h.db.Ping(ctx); err != nil {
+		return false
 	}
-	return true
+	ctx, cancel = context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	return h.redis.Ping(ctx) == nil
 }
 
 // healthVersionInfo 是 /healthz 暴露字段的子集（SSOT 来自 version.json）。
@@ -8382,30 +8351,11 @@ func requestBytesFromLogCtx(c *RequestLogContext) *int {
 //
 // 2026-07-14: 移除对旧 VERSION 文件的依赖，统一读 version.json。
 func resolveGatewayVersion() string {
-	candidates := []string{
-		"/opt/llm-gateway-go/version.json",
-		"version.json",
+	v := resolveGatewayVersionInfo()
+	if v.GitSHA != "" && v.GitSHA != "unknown" {
+		return v.Version + "-" + v.GitSHA
 	}
-	for _, path := range candidates {
-		if raw, err := os.ReadFile(path); err == nil {
-			var v struct {
-				Version string `json:"version"`
-				GitSHA  string `json:"git_sha"`
-			}
-			if json.Unmarshal(raw, &v) == nil {
-				if v.Version != "" {
-					if v.GitSHA != "" {
-						return v.Version + "-" + v.GitSHA
-					}
-					return v.Version
-				}
-			}
-		}
-	}
-	if sha := strings.TrimSpace(os.Getenv("GIT_SHA")); sha != "" {
-		return "1.0.0-" + sha + "-" + time.Now().UTC().Format("2006-01-02")
-	}
-	return "0.2.0-unknown"
+	return v.Version
 }
 
 // detectEmptyStreamResponse checks if a streaming response is effectively empty.

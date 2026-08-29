@@ -428,15 +428,25 @@ func TestDurableRecoveryWorkerCountsLeaseLost(t *testing.T) {
 // PollInterval, must produce a commit on the second tick — proof the worker
 // goroutine is still alive after the panic.
 type panickingThenSucceedingRunner struct {
+	mu    sync.Mutex
 	calls int
 }
 
 func (r *panickingThenSucceedingRunner) Run(context.Context, *durable.Task, *durable.Snapshot) (*DurableAttempt, error) {
+	r.mu.Lock()
 	r.calls++
-	if r.calls == 1 {
+	calls := r.calls
+	r.mu.Unlock()
+	if calls == 1 {
 		panic("synthetic panic from durable runner on first call")
 	}
 	return successAttempt(), nil
+}
+
+func (r *panickingThenSucceedingRunner) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
 }
 
 // rearmingWorkerFakeStore yields the same task on every ClaimRunnable so the
@@ -510,7 +520,7 @@ func TestDurableRecoveryWorkerSurvivesRunnerPanic(t *testing.T) {
 	store := &rearmingWorkerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
 	runner := &panickingThenSucceedingRunner{}
 	worker := NewDurableRecoveryWorker(store, nil, runner, DurableWorkerOptions{
-		Owner:       "worker",
+		Owner:        "worker",
 		PollInterval: 50 * time.Millisecond,
 		Lease:        time.Second,
 		StopGrace:    50 * time.Millisecond,
@@ -523,19 +533,22 @@ func TestDurableRecoveryWorkerSurvivesRunnerPanic(t *testing.T) {
 	// worker goroutine would have died on the first panic.
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if runner.calls >= 2 {
+		if runner.callCount() >= 2 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if runner.calls < 2 {
-		t.Fatalf("runner.calls = %d, want >= 2 — worker likely died after first panic", runner.calls)
+	if got := runner.callCount(); got < 2 {
+		t.Fatalf("runner.calls = %d, want >= 2 — worker likely died after first panic", got)
 	}
 
 	// And the second invocation actually committed — proof the post-panic
 	// runOnce ran end-to-end, not just that the goroutine woke up.
-	if store.commitCalls < 1 {
-		t.Fatalf("commitCalls = %d, want >= 1 — post-panic runOnce did not reach commit", store.commitCalls)
+	store.mu.Lock()
+	commitCalls := store.commitCalls
+	store.mu.Unlock()
+	if commitCalls < 1 {
+		t.Fatalf("commitCalls = %d, want >= 1 — post-panic runOnce did not reach commit", commitCalls)
 	}
 }
 
