@@ -13,8 +13,10 @@ func TestApplyMigrationsIncludesRequestJourneyObservationEnsure(t *testing.T) {
 	}
 	text := string(source)
 	for _, want := range []string{
-		"ensureRequestJourneyObservationSchema(migCtx)",
-		"func (d *DB) ensureRequestJourneyObservationSchema",
+			"ensureRequestJourneyObservationSchema(migCtx)",
+			"ensureJournalSnapshotReceiptSchema(migCtx)",
+			"func (d *DB) ensureRequestJourneyObservationSchema",
+			"func (d *DB) ensureJournalSnapshotReceiptSchema",
 		"request_journey_observation_outbox",
 		"claim_fencing_token",
 		"uq_state_transitions_legacy_request_seq",
