@@ -227,43 +227,53 @@ func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 
-	// 监听 context 取消，提前中止
-	cancelCh := make(chan struct{})
-	go func() {
-		<-ctx.Done()
-		close(cancelCh)
-	}()
-
 	for _, node := range nodes {
-		// 检查是否已取消
+		// Do not create a watcher goroutine per batch: a background context may
+		// never be cancelled. Check ctx directly before dispatch and while
+		// waiting for a concurrency slot instead.
 		select {
-		case <-cancelCh:
-			// context 已取消，停止派发新任务
-			break
+		case <-ctx.Done():
+			go func() {
+				wg.Wait()
+				close(out)
+			}()
+			return out
 		default:
 		}
 
 		if !node.Dialable() {
-			// 不可拨号节点（trojan/vless）跳过，直接标记不可探活。
-			out <- HealthCheckResult{
+			select {
+			case out <- HealthCheckResult{
 				NodeID:    node.ID,
 				NodeName:  node.Name,
 				OK:        false,
 				Err:       fmt.Errorf("node not dialable (protocol %q)", node.Protocol),
 				CheckedAt: time.Now(),
+			}:
+			case <-ctx.Done():
+				go func() {
+					wg.Wait()
+					close(out)
+				}()
+				return out
 			}
 			continue
 		}
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			go func() {
+				wg.Wait()
+				close(out)
+			}()
+			return out
+		}
 		wg.Add(1)
-		sem <- struct{}{} // 获取并发额度
 		go func(n *Node) {
 			defer wg.Done()
-			defer func() { <-sem }() // 释放额度
+			defer func() { <-sem }()
 
-			// 使用调用方的 context，在取消时探测会立即中止
 			latency, err := c.Check(ctx, n)
-
-			// 尝试发送结果，如果 out 已关闭则丢弃
 			select {
 			case out <- HealthCheckResult{
 				NodeID:    n.ID,
@@ -273,8 +283,7 @@ func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, 
 				Err:       err,
 				CheckedAt: time.Now(),
 			}:
-			case <-cancelCh:
-				// channel 已关闭，不再发送
+			case <-ctx.Done():
 			}
 		}(node)
 	}

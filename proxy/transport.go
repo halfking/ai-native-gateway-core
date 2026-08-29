@@ -24,7 +24,7 @@ type TransportFactory struct {
 	mu sync.Mutex
 	// subID -> 该订阅当前缓存的 Transport 及所选节点代理 URL（用于判断是否需要重建）。
 	transports map[int]*subscriptionTransport
-	
+
 	// metrics 用于记录缓存大小和失效次数（可选）
 	metrics *Metrics
 
@@ -45,13 +45,13 @@ type subscriptionTransport struct {
 
 // TransportFactoryConfig 可调的 Transport 参数。零值使用合理默认。
 type TransportFactoryConfig struct {
-	MaxIdleConns        int
-	MaxIdleConnsPerHost int
-	IdleConnTimeout     time.Duration
-	TLSHandshakeTimeout time.Duration
+	MaxIdleConns          int
+	MaxIdleConnsPerHost   int
+	IdleConnTimeout       time.Duration
+	TLSHandshakeTimeout   time.Duration
 	ResponseHeaderTimeout time.Duration
 	ExpectContinueTimeout time.Duration
-	DialTimeout         time.Duration
+	DialTimeout           time.Duration
 }
 
 // NewTransportFactory 创建 Transport 工厂。config 为 nil 或零值字段时使用默认。
@@ -138,12 +138,12 @@ func (f *TransportFactory) Get(subID int, proxyURL string) (*http.Transport, err
 		return nil, err
 	}
 	f.transports[subID] = &subscriptionTransport{transport: tr, proxyURL: proxyURL}
-	
+
 	// 更新缓存大小指标
 	if f.metrics != nil {
 		f.metrics.SetTransportCacheSize(len(f.transports))
 	}
-	
+
 	slog.Debug("proxy: transport rebuilt for subscription", "subscription_id", subID, "proxy_url", redactProxyURL(proxyURL))
 	return tr, nil
 }
@@ -156,7 +156,7 @@ func (f *TransportFactory) Invalidate(subID int) {
 	if st, ok := f.transports[subID]; ok && st.transport != nil {
 		st.transport.CloseIdleConnections()
 		delete(f.transports, subID)
-		
+
 		// 记录失效指标
 		if f.metrics != nil {
 			f.metrics.IncTransportInvalidation()
@@ -174,6 +174,9 @@ func (f *TransportFactory) CloseIdleConnections() {
 			st.transport.CloseIdleConnections()
 		}
 		delete(f.transports, id)
+	}
+	if f.metrics != nil {
+		f.metrics.SetTransportCacheSize(0)
 	}
 }
 

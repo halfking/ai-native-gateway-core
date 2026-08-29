@@ -1,262 +1,254 @@
 package proxy
 
 import (
+	"fmt"
 	"hash/fnv"
 	"sort"
 	"sync"
 )
 
-// LoadBalanceStrategy 负载均衡策略（阶段 3 优化）
+// LoadBalanceStrategy 负载均衡策略（阶段 3 优化）。
 type LoadBalanceStrategy string
 
 const (
-	// StrategyBestOnly 只选择最优节点（默认策略，向后兼容）
-	StrategyBestOnly LoadBalanceStrategy = "best_only"
-	// StrategyRoundRobin 轮询策略
-	StrategyRoundRobin LoadBalanceStrategy = "round_robin"
-	// StrategyWeightedRoundRobin 加权轮询策略（按响应时间权重）
+	StrategyBestOnly           LoadBalanceStrategy = "best_only"
+	StrategyRoundRobin         LoadBalanceStrategy = "round_robin"
 	StrategyWeightedRoundRobin LoadBalanceStrategy = "weighted_rr"
-	// StrategyLeastConnections 最少连接策略
-	StrategyLeastConnections LoadBalanceStrategy = "least_conn"
-	// StrategyConsistentHash 一致性哈希策略（按请求 key）
-	StrategyConsistentHash LoadBalanceStrategy = "consistent_hash"
+	StrategyLeastConnections   LoadBalanceStrategy = "least_conn"
+	StrategyConsistentHash     LoadBalanceStrategy = "consistent_hash"
 )
 
-// LocationAffinityPolicy 地域亲和性策略（阶段 3 优化）
+// LocationAffinityPolicy 地域亲和性策略。
 type LocationAffinityPolicy string
 
 const (
-	// AffinityAny 不限制地域（默认）
-	AffinityAny LocationAffinityPolicy = "any"
-	// AffinityPreferSame 优先选择同地域节点，无同地域节点时选择其他地域
-	AffinityPreferSame LocationAffinityPolicy = "prefer_same"
-	// AffinityRequireSame 强制同地域节点，无同地域节点时返回 nil
+	AffinityAny         LocationAffinityPolicy = "any"
+	AffinityPreferSame  LocationAffinityPolicy = "prefer_same"
 	AffinityRequireSame LocationAffinityPolicy = "require_same"
 )
 
-// LoadBalancer 负载均衡器
+const virtualNodesPerNode = 64
+
+// LoadBalancer owns the mutable state required by stateful strategies. Its
+// methods are safe for direct concurrent use as well as Manager-mediated use.
 type LoadBalancer struct {
+	mu               sync.Mutex
 	strategy         LoadBalanceStrategy
-	locationAffinity LocationAffinityPolicy // 阶段 3 优化：地域亲和性策略
-	
-	// 轮询策略的状态：subscription_id -> 当前索引
-	roundRobinIndex sync.Map
-	
-	// 最少连接策略的状态：node_id -> 当前连接数
-	connectionCounts sync.Map
+	locationAffinity LocationAffinityPolicy
+	roundRobinIndex  map[int]uint64
+	connectionCounts map[int]int
+	weightedCurrent  map[int]map[int]int
 }
 
-// NewLoadBalancer 创建负载均衡器
 func NewLoadBalancer(strategy LoadBalanceStrategy) *LoadBalancer {
+	if !validLoadBalanceStrategy(strategy) {
+		strategy = StrategyBestOnly
+	}
 	return &LoadBalancer{
 		strategy:         strategy,
-		locationAffinity: AffinityAny, // 默认不限制地域
+		locationAffinity: AffinityAny,
+		roundRobinIndex:  make(map[int]uint64),
+		connectionCounts: make(map[int]int),
+		weightedCurrent:  make(map[int]map[int]int),
 	}
 }
 
-// SetLocationAffinity 设置地域亲和性策略（阶段 3 优化）
-func (lb *LoadBalancer) SetLocationAffinity(policy LocationAffinityPolicy) {
-	lb.locationAffinity = policy
+func validLoadBalanceStrategy(strategy LoadBalanceStrategy) bool {
+	switch strategy {
+	case StrategyBestOnly, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyLeastConnections, StrategyConsistentHash:
+		return true
+	default:
+		return false
+	}
 }
 
-// SelectNode 根据策略从候选节点中选择一个节点
+// SetStrategy changes the selection strategy. Unknown values are ignored.
+func (lb *LoadBalancer) SetStrategy(strategy LoadBalanceStrategy) {
+	if !validLoadBalanceStrategy(strategy) {
+		return
+	}
+	lb.mu.Lock()
+	lb.strategy = strategy
+	lb.mu.Unlock()
+}
+
+// SetLocationAffinity 设置地域亲和性策略。未知值被忽略。
+func (lb *LoadBalancer) SetLocationAffinity(policy LocationAffinityPolicy) {
+	switch policy {
+	case AffinityAny, AffinityPreferSame, AffinityRequireSame:
+	default:
+		return
+	}
+	lb.mu.Lock()
+	lb.locationAffinity = policy
+	lb.mu.Unlock()
+}
+
+func (lb *LoadBalancer) LocationAffinity() LocationAffinityPolicy {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.locationAffinity
+}
+
+// SelectNode 根据策略从候选节点中选择一个节点。候选项由调用方按健康度排序。
 func (lb *LoadBalancer) SelectNode(nodes []*Node, subscriptionID int, requestKey string) *Node {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	return lb.selectLocked(nodes, subscriptionID, requestKey)
+}
+
+// SelectNodeWithLocation 根据策略和地域亲和性选择节点。
+func (lb *LoadBalancer) SelectNodeWithLocation(nodes []*Node, subscriptionID int, requestKey, preferredLocation string) *Node {
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+	if len(nodes) == 0 || lb.locationAffinity == AffinityAny || preferredLocation == "" {
+		return lb.selectLocked(nodes, subscriptionID, requestKey)
+	}
+
+	sameLocation := make([]*Node, 0, len(nodes))
+	for _, node := range nodes {
+		if node.Location == preferredLocation {
+			sameLocation = append(sameLocation, node)
+		}
+	}
+	if lb.locationAffinity == AffinityRequireSame {
+		return lb.selectLocked(sameLocation, subscriptionID, requestKey)
+	}
+	if len(sameLocation) > 0 {
+		return lb.selectLocked(sameLocation, subscriptionID, requestKey)
+	}
+	return lb.selectLocked(nodes, subscriptionID, requestKey)
+}
+
+func (lb *LoadBalancer) selectLocked(nodes []*Node, subscriptionID int, requestKey string) *Node {
 	if len(nodes) == 0 {
 		return nil
 	}
-	
 	if len(nodes) == 1 {
 		return nodes[0]
 	}
-	
+
 	switch lb.strategy {
 	case StrategyRoundRobin:
-		return lb.selectRoundRobin(nodes, subscriptionID)
+		index := lb.roundRobinIndex[subscriptionID]
+		selected := nodes[index%uint64(len(nodes))]
+		lb.roundRobinIndex[subscriptionID] = index + 1
+		return selected
 	case StrategyWeightedRoundRobin:
-		return lb.selectWeightedRoundRobin(nodes)
+		return lb.selectWeightedRoundRobinLocked(nodes, subscriptionID)
 	case StrategyLeastConnections:
-		return lb.selectLeastConnections(nodes)
+		return lb.selectLeastConnectionsLocked(nodes)
 	case StrategyConsistentHash:
-		return lb.selectConsistentHash(nodes, requestKey)
-	case StrategyBestOnly:
-		fallthrough
+		return selectConsistentHash(nodes, requestKey)
 	default:
-		return nodes[0] // 默认返回第一个（已排序的最优节点）
+		return nodes[0]
 	}
 }
 
-// SelectNodeWithLocation 根据策略和地域亲和性选择节点（阶段 3 优化）
-func (lb *LoadBalancer) SelectNodeWithLocation(nodes []*Node, subscriptionID int, requestKey string, preferredLocation string) *Node {
-	if len(nodes) == 0 {
-		return nil
+// selectWeightedRoundRobinLocked implements smooth weighted round robin so the
+// lowest-latency node receives more traffic without starving other candidates.
+func (lb *LoadBalancer) selectWeightedRoundRobinLocked(nodes []*Node, subscriptionID int) *Node {
+	current := lb.weightedCurrent[subscriptionID]
+	if current == nil {
+		current = make(map[int]int, len(nodes))
+		lb.weightedCurrent[subscriptionID] = current
 	}
-	
-	// 如果没有设置地域亲和性或没有指定位置，使用标准选择
-	if lb.locationAffinity == AffinityAny || preferredLocation == "" {
-		return lb.SelectNode(nodes, subscriptionID, requestKey)
-	}
-	
-	// 按地域过滤节点
-	sameLocationNodes := make([]*Node, 0, len(nodes))
-	for _, node := range nodes {
-		if node.Location == preferredLocation {
-			sameLocationNodes = append(sameLocationNodes, node)
-		}
-	}
-	
-	// 根据策略处理
-	switch lb.locationAffinity {
-	case AffinityRequireSame:
-		// 强制同地域，无同地域节点时返回 nil
-		if len(sameLocationNodes) == 0 {
-			return nil
-		}
-		return lb.SelectNode(sameLocationNodes, subscriptionID, requestKey)
-		
-	case AffinityPreferSame:
-		// 优先同地域，无同地域节点时选择其他地域
-		if len(sameLocationNodes) > 0 {
-			return lb.SelectNode(sameLocationNodes, subscriptionID, requestKey)
-		}
-		return lb.SelectNode(nodes, subscriptionID, requestKey)
-		
-	default:
-		return lb.SelectNode(nodes, subscriptionID, requestKey)
-	}
-}
 
-// selectRoundRobin 轮询策略
-func (lb *LoadBalancer) selectRoundRobin(nodes []*Node, subscriptionID int) *Node {
-	// 获取当前索引
-	var index int
-	if v, ok := lb.roundRobinIndex.Load(subscriptionID); ok {
-		index = v.(int)
-	}
-	
-	// 选择节点
-	selected := nodes[index%len(nodes)]
-	
-	// 更新索引
-	lb.roundRobinIndex.Store(subscriptionID, (index+1)%len(nodes))
-	
-	return selected
-}
-
-// selectWeightedRoundRobin 加权轮询策略
-// 权重计算：响应时间越短权重越高
-func (lb *LoadBalancer) selectWeightedRoundRobin(nodes []*Node) *Node {
-	// 计算权重（响应时间的倒数，避免除零）
-	type weightedNode struct {
-		node   *Node
-		weight int
-	}
-	
-	weighted := make([]weightedNode, 0, len(nodes))
 	totalWeight := 0
-	
+	bestWeight := -1 << 30
+	var selected *Node
+	active := make(map[int]struct{}, len(nodes))
 	for _, node := range nodes {
-		// 权重 = 1000 / (响应时间 + 10)，响应时间越短权重越高
-		weight := 1000 / (node.ResponseTimeMs + 10)
-		if weight < 1 {
-			weight = 1
-		}
-		weighted = append(weighted, weightedNode{node: node, weight: weight})
+		weight := nodeWeight(node)
 		totalWeight += weight
-	}
-	
-	if totalWeight == 0 {
-		return nodes[0]
-	}
-	
-	// 简化实现：按权重比例选择（权重越高，在列表中出现越多）
-	// 这里使用简单的权重选择，选择权重最高的节点
-	maxWeight := 0
-	var selected *Node
-	for _, wn := range weighted {
-		if wn.weight > maxWeight {
-			maxWeight = wn.weight
-			selected = wn.node
+		current[node.ID] += weight
+		active[node.ID] = struct{}{}
+		if selected == nil || current[node.ID] > bestWeight || (current[node.ID] == bestWeight && node.ID < selected.ID) {
+			selected, bestWeight = node, current[node.ID]
 		}
 	}
-	
-	if selected == nil {
-		return nodes[0]
+	for id := range current {
+		if _, ok := active[id]; !ok {
+			delete(current, id)
+		}
 	}
-	
+	current[selected.ID] -= totalWeight
 	return selected
 }
 
-// selectLeastConnections 最少连接策略
-func (lb *LoadBalancer) selectLeastConnections(nodes []*Node) *Node {
-	var selected *Node
-	minConnections := int(^uint(0) >> 1) // max int
-	
-	for _, node := range nodes {
-		count := 0
-		if v, ok := lb.connectionCounts.Load(node.ID); ok {
-			count = v.(int)
-		}
-		
-		if count < minConnections {
-			minConnections = count
-			selected = node
+func nodeWeight(node *Node) int {
+	latency := node.ResponseTimeMs
+	if latency < 0 {
+		latency = 0
+	}
+	weight := 1000 / (latency + 10)
+	if weight < 1 {
+		return 1
+	}
+	return weight
+}
+
+func (lb *LoadBalancer) selectLeastConnectionsLocked(nodes []*Node) *Node {
+	selected := nodes[0]
+	least := lb.connectionCounts[selected.ID]
+	for _, node := range nodes[1:] {
+		count := lb.connectionCounts[node.ID]
+		if count < least || (count == least && node.ID < selected.ID) {
+			selected, least = node, count
 		}
 	}
-	
-	if selected == nil {
-		return nodes[0]
-	}
-	
 	return selected
 }
 
-// selectConsistentHash 一致性哈希策略
-func (lb *LoadBalancer) selectConsistentHash(nodes []*Node, requestKey string) *Node {
+// selectConsistentHash builds a small virtual-node hash ring. Unlike modulo
+// hashing, changing the candidate set remaps only keys near the changed node.
+func selectConsistentHash(nodes []*Node, requestKey string) *Node {
 	if requestKey == "" {
 		return nodes[0]
 	}
-	
-	// 使用 FNV-1a 哈希
-	hash := fnv.New32a()
-	hash.Write([]byte(requestKey))
-	hashValue := hash.Sum32()
-	
-	// 按节点 ID 排序确保一致性
-	sorted := make([]*Node, len(nodes))
-	copy(sorted, nodes)
-	sort.Slice(sorted, func(i, j int) bool {
-		return sorted[i].ID < sorted[j].ID
+	type point struct {
+		hash uint32
+		node *Node
+	}
+	ring := make([]point, 0, len(nodes)*virtualNodesPerNode)
+	for _, node := range nodes {
+		for replica := 0; replica < virtualNodesPerNode; replica++ {
+			ring = append(ring, point{hashString(fmt.Sprintf("%d#%d", node.ID, replica)), node})
+		}
+	}
+	sort.Slice(ring, func(i, j int) bool {
+		if ring[i].hash == ring[j].hash {
+			return ring[i].node.ID < ring[j].node.ID
+		}
+		return ring[i].hash < ring[j].hash
 	})
-	
-	// 选择节点
-	index := int(hashValue) % len(sorted)
-	return sorted[index]
+	key := hashString(requestKey)
+	index := sort.Search(len(ring), func(i int) bool { return ring[i].hash >= key })
+	if index == len(ring) {
+		index = 0
+	}
+	return ring[index].node
 }
 
-// IncConnection 增加节点连接数（用于最少连接策略）
+func hashString(value string) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(value))
+	return h.Sum32()
+}
+
+// IncConnection 和 DecConnection 必须由最少连接策略的调用方在请求生命周期两端配对调用。
 func (lb *LoadBalancer) IncConnection(nodeID int) {
-	if lb.strategy != StrategyLeastConnections {
-		return
-	}
-	
-	count := 0
-	if v, ok := lb.connectionCounts.Load(nodeID); ok {
-		count = v.(int)
-	}
-	lb.connectionCounts.Store(nodeID, count+1)
+	lb.mu.Lock()
+	lb.connectionCounts[nodeID]++
+	lb.mu.Unlock()
 }
 
-// DecConnection 减少节点连接数（用于最少连接策略）
 func (lb *LoadBalancer) DecConnection(nodeID int) {
-	if lb.strategy != StrategyLeastConnections {
-		return
+	lb.mu.Lock()
+	if count := lb.connectionCounts[nodeID]; count <= 1 {
+		delete(lb.connectionCounts, nodeID)
+	} else {
+		lb.connectionCounts[nodeID] = count - 1
 	}
-	
-	count := 0
-	if v, ok := lb.connectionCounts.Load(nodeID); ok {
-		count = v.(int)
-	}
-	if count > 0 {
-		lb.connectionCounts.Store(nodeID, count-1)
-	}
+	lb.mu.Unlock()
 }
