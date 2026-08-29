@@ -43,6 +43,7 @@ func main() {
 	tenant := flag.String("tenant", "", "tenant id (optional; empty = any)")
 	session := flag.String("session", "", "gw_session_id (required)")
 	dryRun := flag.Bool("dry-run", true, "when true, derive and report but do not write session_bodies")
+	useHot := flag.Bool("use-hot", false, "query from request_logs_bodies_hot instead of partitioned table")
 	flag.Parse()
 
 	if *dsn == "" || *session == "" {
@@ -83,15 +84,19 @@ func main() {
 	rows.Close()
 
 	// Step 2: Fetch bodies individually (small queries, avoids partition scan).
+	// Use request_logs_bodies_hot if --use-hot is specified (for recent sessions)
+	bodiesTable := "request_logs_bodies"
+	if *useHot {
+		bodiesTable = "request_logs_bodies_hot"
+	}
+	
 	var fullMsgs, respMsgs [][]Msg
 	for i := range turnRows {
 		var reqBody, respBody []byte
-		err := pool.QueryRow(context.Background(), `
-			SELECT request_body, response_body
-			FROM request_logs_bodies
-			WHERE request_id = $1`, turnRows[i].requestID).Scan(&reqBody, &respBody)
+		query := `SELECT request_body, response_body FROM ` + bodiesTable + ` WHERE request_id = $1`
+		err := pool.QueryRow(context.Background(), query, turnRows[i].requestID).Scan(&reqBody, &respBody)
 		if err != nil {
-			log.Fatalf("fetch bodies turn %d request_id=%s: %v", turnRows[i].turnNo, turnRows[i].requestID, err)
+			log.Fatalf("fetch bodies turn %d request_id=%s from %s: %v", turnRows[i].turnNo, turnRows[i].requestID, bodiesTable, err)
 		}
 		turnRows[i].reqBody = reqBody
 		turnRows[i].respBody = respBody
