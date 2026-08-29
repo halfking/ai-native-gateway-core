@@ -12,6 +12,12 @@ import (
 	"time"
 )
 
+// cacheEntry 缓存条目，包含节点列表和过期时间（阶段 2 优化：TTL 机制）
+type cacheEntry struct {
+	nodes     []*Node
+	expiresAt time.Time
+}
+
 // Manager 代理管理器
 type Manager struct {
 	store   Store
@@ -20,10 +26,10 @@ type Manager struct {
 	// transportFactory 按订阅缓存可复用的 http.Transport（Stage 2：避免每次
 	// SelectBestNode/探活都新建 Transport 导致连接泄漏）。
 	transportFactory *TransportFactory
-	// metrics 代理子系统 Prometheus 指标（Stage 3）。
+	// metrics 代理子系统 Prometheus 指标。
 	metrics *Metrics
 
-	// 内存缓存：subscription_id -> nodes
+	// 内存缓存：subscription_id -> cacheEntry（阶段 2 优化：从 []*Node 改为带 TTL 的 cacheEntry）
 	nodesCache sync.Map
 	// 审计修复 (2026-08-29)：并发安全 P1-2 - per-subscription 锁保护并发写入
 	cacheLocks sync.Map // subscription_id -> *sync.RWMutex
@@ -32,6 +38,7 @@ type Manager struct {
 	autoRefreshInterval   time.Duration
 	healthCheckInterval   time.Duration
 	unknownDomainStrategy string // direct/proxy/probe
+	cacheTTL              time.Duration // 缓存 TTL，默认 5 分钟
 
 	// 审计修复 (2026-08-29)：问题 7 - 增加 context 用于优雅停止后台 goroutine。
 	ctx    context.Context
@@ -43,15 +50,20 @@ type Manager struct {
 // NewManager 创建代理管理器
 func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
+	metrics := NewMetrics(nil)
+	factory := NewTransportFactory(nil)
+	factory.metrics = metrics
+	
 	return &Manager{
 		store:                 store,
 		parser:                parser,
 		checker:               checker,
-		transportFactory:      NewTransportFactory(nil),
-		metrics:               NewMetrics(nil),
-		autoRefreshInterval:   1 * time.Hour,
+		transportFactory:      factory,
+		metrics:               metrics,
+		autoRefreshInterval:   time.Hour,
 		healthCheckInterval:   5 * time.Minute,
 		unknownDomainStrategy: "direct",
+		cacheTTL:              5 * time.Minute,
 		ctx:                   ctx,
 		cancel:                cancel,
 		stopCh:                make(chan struct{}),
@@ -85,76 +97,72 @@ func (m *Manager) Stop() {
 	}
 }
 
-// SelectBestNode 选择最优节点
-func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (*Node, error) {
+// SelectBestNode 选择当前最健康、成功率最高且响应最快的可拨号节点。
+func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (_ *Node, err error) {
+	startedAt := time.Now()
+	result := "store_error"
+	defer func() {
+		if m.metrics != nil {
+			m.metrics.ObserveNodeSelection(result, time.Since(startedAt).Seconds())
+		}
+	}()
+
 	var candidates []*Node
-	
 	if subscriptionID != nil {
-		// 从指定订阅选择
-		candidates = m.getNodesFromCache(*subscriptionID)
-	} else {
-		// 从所有 active 订阅选择
-		candidates = m.getAllActiveCachedNodes()
+		if cached, ok := m.getNodesFromCacheWithTTL(*subscriptionID, time.Now()); ok {
+			candidates = cached
+		}
 	}
-	
 	if len(candidates) == 0 {
-		// 尝试从数据库加载
-		nodes, err := m.store.ListNodes(ctx, subscriptionID)
+		candidates, err = m.store.ListNodes(ctx, subscriptionID)
 		if err != nil {
 			return nil, fmt.Errorf("list nodes: %w", err)
 		}
-		candidates = nodes
-		// 审计修复 (2026-08-29)：问题 3 - 缓存未命中时回填缓存，避免后续请求继续打数据库。
-		if subscriptionID != nil && len(nodes) > 0 {
-			m.nodesCache.Store(*subscriptionID, nodes)
+		if subscriptionID != nil {
+			m.setCacheWithTTL(*subscriptionID, candidates, time.Now())
 		}
 	}
-	
-	// 过滤掉不健康、以及 Go 无法直接拨号的节点（trojan/vless 等需本地网桥）
+
 	activeNodes := make([]*Node, 0, len(candidates))
-	skippedUndialable := 0
+	undialable := 0
 	for _, node := range candidates {
 		if node.Status != "active" || node.ConsecutiveFailures >= 3 {
 			continue
 		}
 		if !node.Dialable() {
-			skippedUndialable++
+			undialable++
 			continue
 		}
 		activeNodes = append(activeNodes, node)
 	}
-
 	if len(activeNodes) == 0 {
-		if skippedUndialable > 0 {
+		if undialable > 0 {
+			result = "no_dialable"
 			if m.metrics != nil {
 				m.metrics.IncEgressSelection("undialable")
 			}
-			return nil, fmt.Errorf("no dialable proxy node: %d node(s) use protocols Go cannot proxy directly (trojan/vless/vmess/ss); expose them via a local mihomo/xray http or socks5 bridge and register that endpoint instead", skippedUndialable)
+			return nil, fmt.Errorf("no dialable proxy node: %d node(s) use protocols Go cannot proxy directly (trojan/vless/vmess/ss); expose them via a local mihomo/xray http or socks5 bridge and register that endpoint instead", undialable)
 		}
+		result = "no_available"
 		if m.metrics != nil {
 			m.metrics.IncEgressSelection("none")
 		}
 		return nil, fmt.Errorf("no available active nodes")
 	}
 
-	if m.metrics != nil {
-		m.metrics.IncEgressSelection("dialable")
-	}
-	
-	// 按健康状态和响应时间排序
 	sort.Slice(activeNodes, func(i, j int) bool {
-		// 优先选择连续失败次数少的（最近探活健康的节点排前面）
 		if activeNodes[i].ConsecutiveFailures != activeNodes[j].ConsecutiveFailures {
 			return activeNodes[i].ConsecutiveFailures < activeNodes[j].ConsecutiveFailures
 		}
-		// 其次选择成功率高的
 		if activeNodes[i].SuccessRate != activeNodes[j].SuccessRate {
 			return activeNodes[i].SuccessRate > activeNodes[j].SuccessRate
 		}
-		// 最后选择响应时间快的
 		return activeNodes[i].ResponseTimeMs < activeNodes[j].ResponseTimeMs
 	})
-	
+	result = "success"
+	if m.metrics != nil {
+		m.metrics.IncEgressSelection("dialable")
+	}
 	return activeNodes[0], nil
 }
 
@@ -177,6 +185,8 @@ func (m *Manager) RequiresProxy(ctx context.Context, baseURL string) bool {
 
 // RefreshSubscription 刷新订阅
 func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) error {
+	startTime := time.Now()
+	
 	// 1. 查询订阅配置
 	sub, err := m.store.GetSubscription(ctx, subscriptionID)
 	if err != nil {
@@ -196,6 +206,11 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 		sub.LastFetchStatus = "failed"
 		sub.LastError = err.Error()
 		_ = m.store.UpdateSubscription(ctx, sub)
+		
+		// 记录失败指标
+		if m.metrics != nil {
+			m.metrics.ObserveSubscriptionRefresh(fmt.Sprintf("%d", subscriptionID), "failed", time.Since(startTime).Seconds())
+		}
 		return fmt.Errorf("parse subscription: %w", err)
 	}
 	
@@ -206,14 +221,19 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 	
 	// 使用事务方法原子性地删除旧节点并插入新节点，避免中断导致订阅变空。
 	if pgStore, ok := m.store.(*PgStore); ok {
-		if err := pgStore.RefreshSubscriptionNodes(ctx, subscriptionID, nodes); err != nil {
-			sub.NodeCount = 0
-			sub.LastFetchAt = time.Now()
-			sub.LastFetchStatus = "failed"
-			sub.LastError = fmt.Sprintf("transaction failed: %v", err)
-			_ = m.store.UpdateSubscription(ctx, sub)
-			return fmt.Errorf("refresh nodes in transaction: %w", err)
-		}
+			if err := pgStore.RefreshSubscriptionNodes(ctx, subscriptionID, nodes); err != nil {
+				sub.NodeCount = 0
+				sub.LastFetchAt = time.Now()
+				sub.LastFetchStatus = "failed"
+				sub.LastError = fmt.Sprintf("transaction failed: %v", err)
+				_ = m.store.UpdateSubscription(ctx, sub)
+				
+				// 记录失败指标
+				if m.metrics != nil {
+					m.metrics.ObserveSubscriptionRefresh(fmt.Sprintf("%d", subscriptionID), "failed", time.Since(startTime).Seconds())
+				}
+				return fmt.Errorf("refresh nodes in transaction: %w", err)
+			}
 	} else {
 		// 回退到非事务方法（用于测试或非 PgStore 实现）
 		if err := m.store.DeleteNodesBySubscription(ctx, subscriptionID); err != nil {
@@ -228,13 +248,18 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 		}
 		if len(createErrs) > 0 {
 			sub.NodeCount = len(nodes) - len(createErrs)
-			sub.LastFetchAt = time.Now()
-			sub.LastFetchStatus = "failed"
-			sub.LastError = fmt.Sprintf("persisted %d/%d nodes; %d failed: %s",
-				len(nodes)-len(createErrs), len(nodes), len(createErrs), strings.Join(createErrs, "; "))
-			_ = m.store.UpdateSubscription(ctx, sub)
-			return fmt.Errorf("persist nodes: %d/%d failed: %s",
-				len(createErrs), len(nodes), strings.Join(createErrs, "; "))
+				sub.LastFetchAt = time.Now()
+				sub.LastFetchStatus = "failed"
+				sub.LastError = fmt.Sprintf("persisted %d/%d nodes; %d failed: %s",
+					len(nodes)-len(createErrs), len(nodes), len(createErrs), strings.Join(createErrs, "; "))
+				_ = m.store.UpdateSubscription(ctx, sub)
+				
+				// 记录失败指标
+				if m.metrics != nil {
+					m.metrics.ObserveSubscriptionRefresh(fmt.Sprintf("%d", subscriptionID), "failed", time.Since(startTime).Seconds())
+				}
+				return fmt.Errorf("persist nodes: %d/%d failed: %s",
+					len(createErrs), len(nodes), strings.Join(createErrs, "; "))
 		}
 	}
 
@@ -249,6 +274,12 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 	
 	// 5. 刷新内存缓存
 	m.loadNodesIntoCache(ctx, subscriptionID)
+	
+	// 记录成功指标
+	if m.metrics != nil {
+		m.metrics.ObserveSubscriptionRefresh(fmt.Sprintf("%d", subscriptionID), "success", time.Since(startTime).Seconds())
+		m.metrics.SetSubscriptionNodeCount(fmt.Sprintf("%d", subscriptionID), len(nodes))
+	}
 	
 	slog.Info("proxy: subscription refreshed", "id", subscriptionID, "node_count", len(nodes))
 	return nil
@@ -271,9 +302,15 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 		node.LastHealthCheckStatus = "failed"
 		node.ConsecutiveFailures++
 		
-		// 连续失败 3 次则标记为不健康
 		if node.ConsecutiveFailures >= 3 {
 			node.Status = "unhealthy"
+		}
+		
+		// 记录失败指标
+		if m.metrics != nil {
+			m.metrics.IncHealthCheck("failed")
+			m.metrics.ObserveHealthCheckDuration(elapsed.Seconds())
+			m.metrics.ObserveNodeConsecutiveFailures(node.ConsecutiveFailures)
 		}
 		
 		slog.Warn("proxy: health check failed",
@@ -283,11 +320,27 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 	} else {
 		node.LastHealthCheckStatus = "success"
 		node.ResponseTimeMs = responseTimeMs
+		
+		// 阶段 3 优化：自动恢复策略
+		if m.autoRecoverEnabled && node.ConsecutiveFailures > 0 {
+			slog.Info("proxy: node auto-recovered",
+				"node", node.Name,
+				"previous_failures", node.ConsecutiveFailures)
+		}
+		
 		node.ConsecutiveFailures = 0
 		node.Status = "active"
 		
 		// 更新成功率（简单的移动平均）
 		node.SuccessRate = node.SuccessRate*0.9 + 0.1
+		
+		// 记录成功指标
+		if m.metrics != nil {
+			m.metrics.IncHealthCheck("success")
+			m.metrics.ObserveHealthCheckDuration(elapsed.Seconds())
+			m.metrics.ObserveNodeResponseTime(float64(responseTimeMs))
+			m.metrics.ObserveNodeConsecutiveFailures(0)
+		}
 	}
 	
 	if err := m.store.UpdateNode(ctx, node); err != nil {
@@ -327,8 +380,9 @@ func (m *Manager) ReloadCache() error {
 		return true
 	})
 	
+	now := time.Now()
 	for subID, nodes := range nodesBySubscription {
-		m.nodesCache.Store(subID, nodes)
+		m.setCacheWithTTL(subID, nodes, now)
 	}
 	
 	return nil
@@ -432,26 +486,256 @@ func (m *Manager) refreshAllSubscriptions(ctx context.Context) {
 }
 
 func (m *Manager) healthCheckAllNodes(ctx context.Context) {
-	subs, err := m.store.ListSubscriptions(ctx)
+	startTime := time.Now()
+	now := time.Now()
+	
+	// 阶段 2 优化：全局批量探活，按 URL 去重 + 智能探活间隔
+	// 1. 收集所有活跃订阅的节点
+	allNodes, err := m.store.ListNodes(ctx, nil)
 	if err != nil {
-		slog.Error("proxy: failed to list subscriptions for health check", "error", err)
+		slog.Error("proxy: failed to list all nodes for health check", "error", err)
 		return
 	}
-	for _, sub := range subs {
-		if sub.Status != "active" {
+	
+	// 2. 过滤需要探活的节点（基于智能间隔），并按 ProxyURL 分组去重
+	type nodeGroup struct {
+		proxyURL string
+		nodes    []*Node // 相同 URL 的所有节点
+	}
+	urlToGroup := make(map[string]*nodeGroup)
+	totalNodes := 0
+	skippedUndialable := 0
+	skippedByInterval := 0 // 由于智能间隔跳过的节点
+	healthyNodes := 0
+	unhealthyNodes := 0
+	
+	for _, node := range allNodes {
+		// 只检查 active 和 unhealthy 状态的节点
+		if node.Status != "active" && node.Status != "unhealthy" {
 			continue
 		}
-		summary, herr := m.HealthCheckSubscription(ctx, sub.ID)
-		if herr != nil {
-			slog.Warn("proxy: subscription health check failed", "id", sub.ID, "name", sub.Name, "error", herr)
+		totalNodes++
+		
+		// 跳过不可拨号的节点
+		if !node.Dialable() {
+			skippedUndialable++
 			continue
 		}
-		if summary.Total > 0 {
-			slog.Info("proxy: subscription health check done",
-				"id", sub.ID, "name", sub.Name,
-				"total", summary.Total, "ok", summary.OK, "failed", summary.Failed)
+		
+		// 智能探活间隔：根据节点健康状态决定是否需要探活
+		if !node.NextHealthCheckAt.IsZero() && now.Before(node.NextHealthCheckAt) {
+			skippedByInterval++
+			continue
+		}
+		
+		proxyURL := node.ProxyURL()
+		if proxyURL == "" {
+			continue
+		}
+		
+		// 按 URL 分组
+		if _, exists := urlToGroup[proxyURL]; !exists {
+			urlToGroup[proxyURL] = &nodeGroup{
+				proxyURL: proxyURL,
+				nodes:    []*Node{node},
+			}
+		} else {
+			urlToGroup[proxyURL].nodes = append(urlToGroup[proxyURL].nodes, node)
+		}
+		
+		// 统计健康/不健康节点数
+		if node.ConsecutiveFailures == 0 {
+			healthyNodes++
+		} else {
+			unhealthyNodes++
 		}
 	}
+	
+	// 3. 构建去重后的节点列表（每个 URL 只取一个代表节点）
+	uniqueNodes := make([]*Node, 0, len(urlToGroup))
+	for _, group := range urlToGroup {
+		uniqueNodes = append(uniqueNodes, group.nodes[0]) // 取第一个节点作为代表
+	}
+	
+	duplicateCount := len(urlToGroup) - len(uniqueNodes)
+	if len(urlToGroup) > 0 {
+		duplicateCount = 0
+		for _, group := range urlToGroup {
+			duplicateCount += len(group.nodes) - 1
+		}
+	}
+	
+	slog.Info("proxy: global health check started",
+		"total_nodes", totalNodes,
+		"unique_urls", len(uniqueNodes),
+		"duplicates_skipped", duplicateCount,
+		"undialable_skipped", skippedUndialable,
+		"interval_skipped", skippedByInterval,
+		"healthy_to_check", healthyNodes,
+		"unhealthy_to_check", unhealthyNodes)
+	
+	// 如果没有需要探活的节点，直接返回
+	if len(uniqueNodes) == 0 {
+		slog.Debug("proxy: no nodes to health check at this time")
+		return
+	}
+	
+	// 4. 并发探活去重后的节点
+	checkResults := make(map[int]struct {
+		ok      bool
+		latency int
+		err     error
+		checkedAt time.Time
+	})
+	
+	for res := range m.checker.CheckConcurrent(ctx, uniqueNodes, 16) {
+		checkResults[res.NodeID] = struct {
+			ok      bool
+			latency int
+			err     error
+			checkedAt time.Time
+		}{
+			ok:      res.OK,
+			latency: res.Latency,
+			err:     res.Err,
+			checkedAt: res.CheckedAt,
+		}
+	}
+	
+	// 5. 将结果分发到所有相同 URL 的节点，并设置下次探活时间
+	nodesToUpdate := make([]*Node, 0, len(uniqueNodes)*2)
+	successCount := 0
+	failedCount := 0
+	
+	for _, group := range urlToGroup {
+		// 获取代表节点的探活结果
+		representativeNode := group.nodes[0]
+		result, ok := checkResults[representativeNode.ID]
+		if !ok {
+			continue
+		}
+		
+		// 将结果应用到该 URL 的所有节点
+		for _, node := range group.nodes {
+			node.LastHealthCheckAt = result.checkedAt
+			
+			if result.ok {
+				node.LastHealthCheckStatus = "success"
+				node.ResponseTimeMs = result.latency
+				
+				// 阶段 3 优化：自动恢复策略
+				wasUnhealthy := node.ConsecutiveFailures > 0
+				node.ConsecutiveFailures = 0
+				node.Status = "active"
+				node.SuccessRate = node.SuccessRate*0.9 + 0.1
+				
+				if m.autoRecoverEnabled && wasUnhealthy {
+					slog.Info("proxy: node auto-recovered",
+						"node", node.Name,
+						"url", group.proxyURL)
+				}
+				
+				// 健康节点：10 分钟后再探活
+				node.NextHealthCheckAt = now.Add(10 * time.Minute)
+				successCount++
+				
+				// 记录成功指标
+				if m.metrics != nil {
+					m.metrics.IncHealthCheck("success")
+					m.metrics.ObserveNodeResponseTime(float64(result.latency))
+				}
+			} else {
+				node.LastHealthCheckStatus = "failed"
+				node.ConsecutiveFailures++
+				
+				// 阶段 3 优化：使用可配置的阈值自动禁用
+				if m.autoDisableEnabled && node.ConsecutiveFailures >= m.maxConsecutiveFailures {
+					node.Status = "unhealthy"
+					if len(group.nodes) == 1 {
+						slog.Warn("proxy: node auto-disabled due to consecutive failures",
+							"node", node.Name,
+							"consecutive_failures", node.ConsecutiveFailures,
+							"threshold", m.maxConsecutiveFailures)
+					}
+				}
+				
+				// 不健康节点：1 分钟后再探活（加快恢复检测）
+				node.NextHealthCheckAt = now.Add(1 * time.Minute)
+				failedCount++
+				
+				// 记录失败指标
+				if m.metrics != nil {
+					m.metrics.IncHealthCheck("failed")
+					m.metrics.ObserveNodeConsecutiveFailures(node.ConsecutiveFailures)
+				}
+				
+				if len(group.nodes) == 1 {
+					// 只在非重复节点时记录详细日志
+					slog.Warn("proxy: health check failed",
+						"node", node.Name, "error", redactErr(result.err), "latency_ms", result.latency)
+				}
+			}
+			
+			nodesToUpdate = append(nodesToUpdate, node)
+		}
+	}
+	
+	// 6. 批量更新数据库（分批，每批 50 个节点）
+	batchSize := 50
+	for i := 0; i < len(nodesToUpdate); i += batchSize {
+		end := i + batchSize
+		if end > len(nodesToUpdate) {
+			end = len(nodesToUpdate)
+		}
+		batch := nodesToUpdate[i:end]
+		
+		// 使用事务批量更新
+		if pgStore, ok := m.store.(*PgStore); ok {
+			if err := pgStore.BatchUpdateNodes(ctx, batch); err != nil {
+				slog.Error("proxy: batch update nodes failed", "error", err, "batch_size", len(batch))
+				// 降级到逐个更新
+				for _, node := range batch {
+					if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
+						slog.Warn("proxy: update node failed", "node_id", node.ID, "error", uerr)
+					}
+				}
+			}
+		} else {
+			// 非 PgStore 实现，逐个更新
+			for _, node := range batch {
+				if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
+					slog.Warn("proxy: update node failed", "node_id", node.ID, "error", uerr)
+				}
+			}
+		}
+	}
+	
+	// 7. 批量更新缓存
+	for _, node := range nodesToUpdate {
+		m.updateNodeInCache(node)
+	}
+	
+	// 8. 更新指标
+	if m.metrics != nil {
+		dialableCount := totalNodes - skippedUndialable
+		unhealthyCount := 0
+		for _, node := range allNodes {
+			if node.Status == "unhealthy" {
+				unhealthyCount++
+			}
+		}
+		m.metrics.SetNodeCounts(totalNodes, dialableCount, unhealthyCount)
+	}
+	
+	elapsed := time.Since(startTime)
+	slog.Info("proxy: global health check completed",
+		"total_nodes", totalNodes,
+		"checked_urls", len(uniqueNodes),
+		"duplicates_saved", duplicateCount,
+		"interval_skipped", skippedByInterval,
+		"success", successCount,
+		"failed", failedCount,
+		"elapsed_ms", elapsed.Milliseconds())
 }
 
 // HealthCheckSummary 一次订阅并发探活的汇总。
@@ -486,34 +770,47 @@ func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID in
 		toCheck = append(toCheck, n)
 	}
 
-	for res := range m.checker.CheckConcurrent(ctx, toCheck, 16) {
-		node, gerr := m.store.GetNode(ctx, res.NodeID)
-		if gerr != nil {
-			slog.Warn("proxy: health check: get node failed", "node_id", res.NodeID, "error", gerr)
-			continue
-		}
-		node.LastHealthCheckAt = res.CheckedAt
-		if res.OK {
-			node.LastHealthCheckStatus = "success"
-			node.ResponseTimeMs = res.Latency
-			node.ConsecutiveFailures = 0
-			node.Status = "active"
-			node.SuccessRate = node.SuccessRate*0.9 + 0.1
-			summary.OK++
-			summary.AvgMs += res.Latency
-			if res.Latency > summary.MaxMs {
-				summary.MaxMs = res.Latency
+		for res := range m.checker.CheckConcurrent(ctx, toCheck, 16) {
+			node, gerr := m.store.GetNode(ctx, res.NodeID)
+			if gerr != nil {
+				slog.Warn("proxy: health check: get node failed", "node_id", res.NodeID, "error", gerr)
+				continue
 			}
-		} else {
-			node.LastHealthCheckStatus = "failed"
-			node.ConsecutiveFailures++
-			if node.ConsecutiveFailures >= 3 {
-				node.Status = "unhealthy"
+			node.LastHealthCheckAt = res.CheckedAt
+			if res.OK {
+				node.LastHealthCheckStatus = "success"
+				node.ResponseTimeMs = res.Latency
+				node.ConsecutiveFailures = 0
+				node.Status = "active"
+				node.SuccessRate = node.SuccessRate*0.9 + 0.1
+				summary.OK++
+				summary.AvgMs += res.Latency
+				if res.Latency > summary.MaxMs {
+					summary.MaxMs = res.Latency
+				}
+				
+				// 记录成功指标
+				if m.metrics != nil {
+					m.metrics.IncHealthCheck("success")
+					m.metrics.ObserveNodeResponseTime(float64(res.Latency))
+				}
+			} else {
+				node.LastHealthCheckStatus = "failed"
+				node.ConsecutiveFailures++
+				if node.ConsecutiveFailures >= 3 {
+					node.Status = "unhealthy"
+				}
+				summary.Failed++
+				
+				// 记录失败指标
+				if m.metrics != nil {
+					m.metrics.IncHealthCheck("failed")
+					m.metrics.ObserveNodeConsecutiveFailures(node.ConsecutiveFailures)
+				}
+				
+				slog.Warn("proxy: health check failed",
+					"node", node.Name, "error", redactErr(res.Err), "latency_ms", res.Latency)
 			}
-			summary.Failed++
-			slog.Warn("proxy: health check failed",
-				"node", node.Name, "error", redactErr(res.Err), "latency_ms", res.Latency)
-		}
 		if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
 			slog.Warn("proxy: health check: update node failed", "node_id", node.ID, "error", uerr)
 			continue
@@ -562,9 +859,10 @@ func (m *Manager) loadAllNodesIntoCache() error {
 			nodesBySubscription[node.SubscriptionID], node)
 	}
 	
-	// 存入缓存
+	// 存入缓存（带 TTL）
+	now := time.Now()
 	for subID, nodes := range nodesBySubscription {
-		m.nodesCache.Store(subID, nodes)
+		m.setCacheWithTTL(subID, nodes, now)
 	}
 	
 	return nil
@@ -576,21 +874,60 @@ func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) {
 		slog.Error("proxy: failed to load nodes into cache", "error", err)
 		return
 	}
-	m.nodesCache.Store(subscriptionID, nodes)
+	
+	// 检查密码解密失败并记录指标
+	if m.metrics != nil {
+		for _, node := range nodes {
+			if node.PasswordDecryptFailed {
+				m.metrics.IncPasswordDecryptFailed()
+			}
+		}
+	}
+	
+	m.setCacheWithTTL(subscriptionID, nodes, time.Now())
 }
 
+// getNodesFromCache 已废弃，使用 getNodesFromCacheWithTTL 替代
 func (m *Manager) getNodesFromCache(subscriptionID int) []*Node {
+	nodes, _ := m.getNodesFromCacheWithTTL(subscriptionID, time.Now())
+	return nodes
+}
+
+// getNodesFromCacheWithTTL 从缓存获取节点，检查 TTL（阶段 2 优化）
+// 返回节点列表和缓存是否命中（未过期）
+func (m *Manager) getNodesFromCacheWithTTL(subscriptionID int, now time.Time) ([]*Node, bool) {
 	if value, ok := m.nodesCache.Load(subscriptionID); ok {
-		return value.([]*Node)
+		entry := value.(*cacheEntry)
+		// 检查是否过期
+		if now.Before(entry.expiresAt) {
+			return entry.nodes, true // 缓存命中
+		}
+		// 缓存过期，异步刷新
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			m.loadNodesIntoCache(ctx, subscriptionID)
+		}()
+		// 返回过期数据，避免阻塞
+		return entry.nodes, false
 	}
-	return nil
+	return nil, false
+}
+
+// setCacheWithTTL 设置缓存，带 TTL（阶段 2 优化）
+func (m *Manager) setCacheWithTTL(subscriptionID int, nodes []*Node, now time.Time) {
+	entry := &cacheEntry{
+		nodes:     nodes,
+		expiresAt: now.Add(m.cacheTTL),
+	}
+	m.nodesCache.Store(subscriptionID, entry)
 }
 
 func (m *Manager) getAllActiveCachedNodes() []*Node {
 	var allNodes []*Node
 	m.nodesCache.Range(func(key, value interface{}) bool {
-		nodes := value.([]*Node)
-		allNodes = append(allNodes, nodes...)
+		entry := value.(*cacheEntry)
+		allNodes = append(allNodes, entry.nodes...)
 		return true
 	})
 	return allNodes
@@ -619,7 +956,18 @@ func (m *Manager) updateNodeInCache(node *Node) {
 			break
 		}
 	}
-	m.nodesCache.Store(node.SubscriptionID, newNodes)
+	
+	// 保持原有的过期时间（阶段 2 优化：TTL）
+	if value, ok := m.nodesCache.Load(node.SubscriptionID); ok {
+		entry := value.(*cacheEntry)
+		m.nodesCache.Store(node.SubscriptionID, &cacheEntry{
+			nodes:     newNodes,
+			expiresAt: entry.expiresAt, // 保持原有过期时间
+		})
+	} else {
+		// 如果缓存不存在，设置新的过期时间
+		m.setCacheWithTTL(node.SubscriptionID, newNodes, time.Now())
+	}
 }
 
 // getCacheLock 获取 subscription 的锁（lazy initialization）

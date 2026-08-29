@@ -24,6 +24,9 @@ type TransportFactory struct {
 	mu sync.Mutex
 	// subID -> 该订阅当前缓存的 Transport 及所选节点代理 URL（用于判断是否需要重建）。
 	transports map[int]*subscriptionTransport
+	
+	// metrics 用于记录缓存大小和失效次数（可选）
+	metrics *Metrics
 
 	// 连接池与超时默认值（可通过构造参数微调）。
 	maxIdleConns        int
@@ -114,12 +117,20 @@ func (f *TransportFactory) Get(subID int, proxyURL string) (*http.Transport, err
 	defer f.mu.Unlock()
 
 	if st, ok := f.transports[subID]; ok && st.proxyURL == proxyURL {
+		// 缓存命中，更新缓存大小指标
+		if f.metrics != nil {
+			f.metrics.SetTransportCacheSize(len(f.transports))
+		}
 		return st.transport, nil
 	}
 
 	// 节点变化或首次：重建并关闭旧 transport 的空闲连接（避免泄漏）。
 	if old, ok := f.transports[subID]; ok && old.transport != nil {
 		old.transport.CloseIdleConnections()
+		// 记录失效指标
+		if f.metrics != nil {
+			f.metrics.IncTransportInvalidation()
+		}
 	}
 
 	tr, err := f.newTransportForProxy(proxyURL)
@@ -127,6 +138,12 @@ func (f *TransportFactory) Get(subID int, proxyURL string) (*http.Transport, err
 		return nil, err
 	}
 	f.transports[subID] = &subscriptionTransport{transport: tr, proxyURL: proxyURL}
+	
+	// 更新缓存大小指标
+	if f.metrics != nil {
+		f.metrics.SetTransportCacheSize(len(f.transports))
+	}
+	
 	slog.Debug("proxy: transport rebuilt for subscription", "subscription_id", subID, "proxy_url", redactProxyURL(proxyURL))
 	return tr, nil
 }
@@ -139,6 +156,12 @@ func (f *TransportFactory) Invalidate(subID int) {
 	if st, ok := f.transports[subID]; ok && st.transport != nil {
 		st.transport.CloseIdleConnections()
 		delete(f.transports, subID)
+		
+		// 记录失效指标
+		if f.metrics != nil {
+			f.metrics.IncTransportInvalidation()
+			f.metrics.SetTransportCacheSize(len(f.transports))
+		}
 	}
 }
 

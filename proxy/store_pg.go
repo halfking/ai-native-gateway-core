@@ -313,6 +313,53 @@ func (s *PgStore) UpdateNode(ctx context.Context, node *Node) error {
 	return nil
 }
 
+// BatchUpdateNodes 批量更新节点（阶段 2 优化：减少数据库往返）。
+// 使用事务批量更新，仅更新健康检查相关字段，不更新密码和配置。
+func (s *PgStore) BatchUpdateNodes(ctx context.Context, nodes []*Node) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("proxy: begin batch update transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	
+	// 批量更新，只更新健康检查相关字段
+	const q = `
+		UPDATE proxy_nodes
+		SET status = $1,
+			last_health_check_at = $2,
+			last_health_check_status = $3,
+			response_time_ms = $4,
+			success_rate = $5,
+			consecutive_failures = $6,
+			updated_at = NOW()
+		WHERE id = $7`
+	
+	for _, node := range nodes {
+		_, err := tx.Exec(ctx, q,
+			node.Status,
+			timePtrOrNil(node.LastHealthCheckAt),
+			node.LastHealthCheckStatus,
+			node.ResponseTimeMs,
+			node.SuccessRate,
+			node.ConsecutiveFailures,
+			node.ID,
+		)
+		if err != nil {
+			return fmt.Errorf("proxy: batch update node %d: %w", node.ID, err)
+		}
+	}
+	
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("proxy: commit batch update transaction: %w", err)
+	}
+	
+	return nil
+}
+
 // DeleteNode 按 id 删除节点。
 func (s *PgStore) DeleteNode(ctx context.Context, id int) error {
 	const q = `DELETE FROM proxy_nodes WHERE id = $1`
