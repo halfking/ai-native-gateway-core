@@ -59,10 +59,10 @@ type vendorRecentFailure struct {
 }
 
 type vendorQualityScore struct {
-	ProfileDate       time.Time `json:"profile_date"`
-	TotalScore        float64   `json:"total_score"`
-	AvailabilityScore float64   `json:"availability_score"`
-	StabilityScore    float64   `json:"stability_score"`
+	ProfileDate       string  `json:"profile_date"`
+	TotalScore        float64 `json:"total_score"`
+	AvailabilityScore float64 `json:"availability_score"`
+	StabilityScore    float64 `json:"stability_score"`
 }
 
 func (h *vendorCredentialErrorHandlers) getVendorCredentialErrorDetail(w http.ResponseWriter, r *http.Request) {
@@ -227,9 +227,11 @@ func (h *vendorCredentialErrorHandlers) loadVendorQualityScores(ctx context.Cont
 	result := make([]vendorQualityScore, 0, 7)
 	for rows.Next() {
 		var item vendorQualityScore
-		if err := rows.Scan(&item.ProfileDate, &item.TotalScore, &item.AvailabilityScore, &item.StabilityScore); err != nil {
+		var profileDate time.Time
+		if err := rows.Scan(&profileDate, &item.TotalScore, &item.AvailabilityScore, &item.StabilityScore); err != nil {
 			return nil, fmt.Errorf("scan vendor quality score failed: %w (credential_id=%d)", err, id)
 		}
+		item.ProfileDate = profileDate.Format("2006-01-02")
 		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {

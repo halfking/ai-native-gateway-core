@@ -1,7 +1,6 @@
--- Rollback Migration 622: provider error aggregation watermark state.
--- This removes only aggregator bookkeeping; provider error aggregate rows are
--- intentionally retained and are never merged or deleted by the rollback.
-
+-- V365 down: remove provider-error aggregation watermark state.
+-- This removes only aggregator bookkeeping; aggregate rows are intentionally
+-- retained and are never merged or deleted by the rollback.
 BEGIN;
 
 ALTER TABLE IF EXISTS public.candidate_failure_logs_hot

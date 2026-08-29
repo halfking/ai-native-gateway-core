@@ -131,15 +131,18 @@ func (a *ProviderErrorAggregator) aggregateErrors(ctx context.Context) {
 	}
 
 	// Migration 622 adds aggregation_id, a dedicated monotonic key because the
-	// legacy candidate failure id is explicitly non-unique. The source watermark,
-	// bucket aggregation, upsert, and watermark advance all commit atomically.
+	// legacy candidate failure id is explicitly non-unique. Watermark rows first
+	// identify changed aggregate keys, then every source row in those buckets is
+	// re-read and replace-upserted. Thus N rows plus one new row becomes N+1, and
+	// replaying the transaction leaves the bucket at N+1. The lock, aggregation,
+	// upsert, and watermark advance all commit atomically.
 	query := `
 WITH watermark AS (
  SELECT last_source_id
  FROM provider_error_aggregator_state
  WHERE id = 1
  FOR UPDATE
-), source_rows AS (
+), all_source_rows AS NOT MATERIALIZED (
  SELECT c.aggregation_id,
   c.tenant_id,
   c.provider_id,
@@ -156,8 +159,27 @@ WITH watermark AS (
   c.context,
   c.ts
  FROM candidate_failure_logs_hot c
+), new_source_rows AS (
+ SELECT s.*
+ FROM all_source_rows s
  CROSS JOIN watermark w
- WHERE c.aggregation_id > w.last_source_id
+ WHERE s.aggregation_id > w.last_source_id
+), affected_buckets AS (
+ SELECT DISTINCT tenant_id, provider_id, model_name, endpoint, error_type,
+  error_code, error_message, aggregation_bucket
+ FROM new_source_rows
+), bucket_rows AS (
+ SELECT s.*
+ FROM all_source_rows s
+ JOIN affected_buckets b
+  ON s.tenant_id IS NOT DISTINCT FROM b.tenant_id
+ AND s.provider_id IS NOT DISTINCT FROM b.provider_id
+ AND s.model_name IS NOT DISTINCT FROM b.model_name
+ AND s.endpoint IS NOT DISTINCT FROM b.endpoint
+ AND s.error_type IS NOT DISTINCT FROM b.error_type
+ AND s.error_code IS NOT DISTINCT FROM b.error_code
+ AND s.error_message IS NOT DISTINCT FROM b.error_message
+ AND s.aggregation_bucket IS NOT DISTINCT FROM b.aggregation_bucket
 ), aggregated AS (
  SELECT DISTINCT ON (tenant_id, provider_id, model_name, endpoint, error_type,
                      error_code, error_message, aggregation_bucket)
@@ -168,9 +190,8 @@ WITH watermark AS (
   max(ts) OVER (PARTITION BY tenant_id, provider_id, model_name, endpoint,
                 error_type, error_code, error_message, aggregation_bucket) AS last_seen_at,
   count(*) OVER (PARTITION BY tenant_id, provider_id, model_name, endpoint,
-                 error_type, error_code, error_message, aggregation_bucket) AS occurrences,
-  max(aggregation_id) OVER () AS max_source_id
- FROM source_rows
+                 error_type, error_code, error_message, aggregation_bucket) AS occurrences
+ FROM bucket_rows
  ORDER BY tenant_id, provider_id, model_name, endpoint, error_type, error_code,
           error_message, aggregation_bucket, ts DESC
 ), inserted AS (
@@ -203,7 +224,7 @@ WITH watermark AS (
 ), advanced AS (
  UPDATE provider_error_aggregator_state
  SET last_source_id = COALESCE(
-       (SELECT MAX(max_source_id) FROM aggregated),
+       (SELECT MAX(aggregation_id) FROM new_source_rows),
        provider_error_aggregator_state.last_source_id),
      updated_at = NOW()
  WHERE id = 1

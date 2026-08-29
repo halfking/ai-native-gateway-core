@@ -9,6 +9,44 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestResponseBodyMissingAlertUsesTelemetrySSOT(t *testing.T) {
+	data, err := os.ReadFile("alerts.yml")
+	require.NoError(t, err)
+
+	var raw struct {
+		Groups []struct {
+			Name  string `yaml:"name"`
+			Rules []struct {
+				Alert string `yaml:"alert"`
+				Expr  string `yaml:"expr"`
+				For   string `yaml:"for"`
+			} `yaml:"rules"`
+		} `yaml:"groups"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &raw))
+
+	var rule struct {
+		Alert string
+		Expr  string
+		For   string
+	}
+	for _, group := range raw.Groups {
+		if group.Name != "response_body_integrity_alerts" {
+			continue
+		}
+		require.Len(t, group.Rules, 1)
+		rule.Alert = group.Rules[0].Alert
+		rule.Expr = group.Rules[0].Expr
+		rule.For = group.Rules[0].For
+	}
+	require.Equal(t, "GatewaySuccessfulNonStreamResponseBodyMissing", rule.Alert)
+	require.Contains(t, rule.Expr, "telemetry_success_response_body_missing_total")
+	require.Contains(t, rule.Expr, `stream="non_stream"`)
+	require.Equal(t, "5m", rule.For)
+	require.NotContains(t, rule.Expr, "tenant")
+	require.NotContains(t, rule.Expr, "request_id")
+}
+
 func TestHotTablePromoteAlertsUseRegisteredLowCardinalityMetrics(t *testing.T) {
 	data, err := os.ReadFile("alerts.yml")
 	require.NoError(t, err)
