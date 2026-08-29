@@ -58,17 +58,17 @@ func (s *InMemoryJournalStore) Store(snap JournalSnapshot) {
 	snap.Entries = append([]JournalEntry(nil), snap.Entries...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if existing, found := s.snapshots[key]; found && existing.SnapshotVersion > snap.SnapshotVersion {
+	if existing, found := s.snapshots[key]; found && existing.SnapshotVersion >= snap.SnapshotVersion {
 		return
 	}
-	
+
 	// If key already exists, update and move to front
 	if _, found := s.snapshots[key]; found {
 		s.snapshots[key] = snap
 		s.moveToFrontLocked(key)
 		return
 	}
-	
+
 	// If at capacity, evict least recently used (tail of lru)
 	if len(s.snapshots) >= s.capacity {
 		if len(s.lru) > 0 {
@@ -77,7 +77,7 @@ func (s *InMemoryJournalStore) Store(snap JournalSnapshot) {
 			s.lru = s.lru[:len(s.lru)-1]
 		}
 	}
-	
+
 	// Add new entry to map and front of lru
 	s.snapshots[key] = snap
 	s.lru = append([]journalSnapshotKey{key}, s.lru...)
