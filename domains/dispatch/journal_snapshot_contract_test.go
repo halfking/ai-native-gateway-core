@@ -172,6 +172,78 @@ func TestJournalSnapshot_LargeJournal_CurrentBehavior(t *testing.T) {
 	}
 }
 
+// TestJournalSnapshot_SmallJournal_NoTruncation verifies that journals
+// below maxJournalSnapshotEvents are delivered without truncation.
+func TestJournalSnapshot_SmallJournal_NoTruncation(t *testing.T) {
+	var receivedSnap JournalSnapshot
+	var mu sync.Mutex
+
+	sink := JournalSinkFunc(func(_ context.Context, snap JournalSnapshot) {
+		mu.Lock()
+		receivedSnap = snap
+		mu.Unlock()
+	})
+
+	p := NewPipeline(Deps{
+		RouteFunc:        func(context.Context, *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) { return "m", nil, nil },
+		ForwardFunc:      func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { return ForwardOutcome{} },
+		JournalSink:      sink,
+	})
+	p.registry = NewLifecycleRegistry(100, 50, 10)
+	p.totalQueue = newTotalExecutionQueue(10)
+	p.dimensionIndex = NewDimensionIndex(DefaultDimensionIndexConfig())
+	defer p.Stop()
+
+	qr := NewQueuedRequest("small-journal", "tenant1", "model1", context.Background(), nil)
+	qr.GatewayInstanceID = "gw1"
+	qr.TenantID = "tenant1"
+
+	// Simulate a normal request with 10 retry decisions (small journal).
+	for i := 0; i < 10; i++ {
+		qr.recordDecision(JournalEntry{
+			Action:       NextActionRetrySameCred,
+			Model:        "m1",
+			CredentialID: i % 3,
+			ErrorKind:    "rate_limit",
+		})
+	}
+
+	p.complete(qr, ForwardOutcome{Result: "success"})
+
+	mu.Lock()
+	snap := receivedSnap
+	mu.Unlock()
+
+	// Verify no truncation: 10 retries + 1 terminal = 11 entries, all delivered.
+	expectedCount := 11
+	if len(snap.Entries) != expectedCount {
+		t.Errorf("expected %d entries (no truncation), got %d", expectedCount, len(snap.Entries))
+	}
+
+	if snap.Truncated {
+		t.Error("expected Truncated=false for a journal below maxJournalSnapshotEvents")
+	}
+
+	if snap.TruncatedCount != 0 {
+		t.Errorf("expected TruncatedCount=0, got %d", snap.TruncatedCount)
+	}
+
+	// Verify the terminal entry is included.
+	lastEntry := snap.Entries[len(snap.Entries)-1]
+	if lastEntry.Action != NextActionCompleted {
+		t.Errorf("expected terminal entry (NextActionCompleted) as last entry, got %v", lastEntry.Action)
+	}
+
+	// Verify all entries are in order (seq 1..11).
+	for i, entry := range snap.Entries {
+		expectedSeq := i + 1
+		if entry.Seq != expectedSeq {
+			t.Errorf("entry[%d]: expected seq=%d, got seq=%d", i, expectedSeq, entry.Seq)
+		}
+	}
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // 3. Authorization (NOT IMPLEMENTED: expected behavior)
 // ────────────────────────────────────────────────────────────────────────────
