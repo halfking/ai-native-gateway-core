@@ -117,6 +117,8 @@ func NewSessionLoader(db *pgxpool.Pool) *SessionLoader {
 // Uses two-step query to avoid JOIN timeout with request_logs_bodies
 func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID string) ([]V1Turn, error) {
 	// Step 1: Query request_logs for metadata
+	// Note: staging schema doesn't have 'usage' or 'compression_meta' columns
+	// Token counts are stored as separate columns (prompt_tokens, completion_tokens, etc.)
 	metaQuery := `
 		SELECT 
 			request_id,
@@ -126,9 +128,11 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			COALESCE(client_model, '') as client_model,
 			COALESCE(provider_id::text, '') as provider_id,
 			COALESCE(credential_id::text, '') as credential_id,
-			COALESCE(usage, '{}'::jsonb) as usage,
+			COALESCE(prompt_tokens, 0) as prompt_tokens,
+			COALESCE(completion_tokens, 0) as completion_tokens,
+			COALESCE(cache_read_tokens, 0) as cache_read_tokens,
+			COALESCE(cache_write_tokens, 0) as cache_write_tokens,
 			COALESCE(cost_usd, 0) as cost_usd,
-			COALESCE(compression_meta, '{}'::jsonb) as compression_meta,
 			COALESCE(success, false) as success
 		FROM request_logs
 		WHERE tenant_id = $1 AND gw_session_id = $2
@@ -144,6 +148,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	var turns []V1Turn
 	for rows.Next() {
 		var turn V1Turn
+		var promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens int
 		err := rows.Scan(
 			&turn.RequestID,
 			&turn.Ts,
@@ -152,15 +157,30 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			&turn.ClientModel,
 			&turn.ProviderID,
 			&turn.CredentialID,
-			&turn.Usage,
+			&promptTokens,
+			&completionTokens,
+			&cacheReadTokens,
+			&cacheWriteTokens,
 			&turn.CostUSD,
-			&turn.CompressionMeta,
 			&turn.Success,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan request_logs row: %w", err)
 		}
-		// Initialize empty bodies (will be filled in step 2)
+		
+		// Reconstruct usage JSON from separate columns
+		usage := map[string]interface{}{
+			"prompt_tokens":      promptTokens,
+			"completion_tokens":  completionTokens,
+			"cache_read_tokens":  cacheReadTokens,
+			"cache_write_tokens": cacheWriteTokens,
+			"total_tokens":       promptTokens + completionTokens,
+		}
+		usageJSON, _ := json.Marshal(usage)
+		turn.Usage = usageJSON
+		
+		// Initialize empty compression_meta and bodies (bodies filled in step 2)
+		turn.CompressionMeta = json.RawMessage("{}")
 		turn.RequestBody = json.RawMessage("{}")
 		turn.ResponseBody = json.RawMessage("{}")
 		turns = append(turns, turn)
