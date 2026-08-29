@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -203,26 +204,14 @@ type BodiesRecord struct {
 func safeJSONMarshal(v interface{}) ([]byte, error) {
 	data, err := json.Marshal(v)
 	if err != nil {
-		// Fallback to empty array/object depending on type
-		switch v.(type) {
-		case []interface{}, []Message, []AttachmentRef:
-			return []byte("[]"), nil
-		default:
-			return []byte("{}"), nil
-		}
+		return nil, fmt.Errorf("marshal JSON: %w", err)
 	}
-
-	// Extra safety: if marshal succeeded but produced empty string,
-	// replace with null to avoid PostgreSQL parse errors
 	if len(data) == 0 {
-		return []byte("null"), nil
+		return nil, errors.New("marshal JSON produced empty output")
 	}
-
-	// Validate it's actually parseable JSON
 	if !json.Valid(data) {
-		return []byte("null"), nil
+		return nil, errors.New("marshal JSON produced invalid output")
 	}
-
 	return data, nil
 }
 

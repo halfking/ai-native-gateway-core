@@ -167,7 +167,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 		if err != nil {
 			return nil, fmt.Errorf("scan request_logs row: %w", err)
 		}
-		
+
 		// Reconstruct usage JSON from separate columns
 		usage := map[string]interface{}{
 			"prompt_tokens":      promptTokens,
@@ -178,7 +178,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 		}
 		usageJSON, _ := json.Marshal(usage)
 		turn.Usage = usageJSON
-		
+
 		// Initialize empty compression_meta and bodies (bodies filled in step 2)
 		turn.CompressionMeta = json.RawMessage("{}")
 		turn.RequestBody = json.RawMessage("{}")
@@ -216,9 +216,9 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	return turns, nil
 }
 
-	// LoadV2Turns loads all turns for a session from session_turns
-	func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID string) ([]V2Turn, error) {
-		query := `
+// LoadV2Turns loads all turns for a session from session_turns
+func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID string) ([]V2Turn, error) {
+	query := `
 			SELECT 
 				request_id,
 				turn_no,
@@ -293,9 +293,9 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	return turns, nil
 }
 
-	// LoadV2Bodies loads all bodies for a session from session_bodies
-	func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID string) ([]V2Body, error) {
-		query := `
+// LoadV2Bodies loads all bodies for a session from session_bodies
+func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID string) ([]V2Body, error) {
+	query := `
 			SELECT 
 				session_id,
 				turn_no,
@@ -346,9 +346,9 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	return bodies, nil
 }
 
-	// LoadV2Session loads the session snapshot from sessions table
-	func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID string) (*V2Session, error) {
-		query := `
+// LoadV2Session loads the session snapshot from sessions table
+func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID string) (*V2Session, error) {
+	query := `
 			SELECT 
 				session_id,
 				tenant_id,
@@ -397,25 +397,27 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	return &session, nil
 }
 
-	// LoadSessionsInRange loads session IDs within a date range for batch validation
-	func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
-		settleThreshold := time.Now().Add(-settleWindow)
-	
-		query := `
-			SELECT DISTINCT gw_session_id
+// LoadSessionsInRange loads session IDs within a date range for batch validation
+func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
+	settleThreshold := time.Now().Add(-settleWindow)
+
+	query := `
+			SELECT gw_session_id
 			FROM request_logs
 			WHERE tenant_id = $1
 			  AND ts >= $2
 			  AND ts < $3
 			  AND gw_session_id IS NOT NULL
 			  AND gw_session_id != ''
+			GROUP BY gw_session_id
+			HAVING MAX(ts) < $4
 			ORDER BY gw_session_id
-			LIMIT $4
+			LIMIT $5
 		`
 
 	// For batch mode, we select from request_logs and filter by settle window
 	// We'll additionally filter by updated_at from sessions table if it exists
-	rows, err := l.db.Query(ctx, query, tenantID, startDate, endDate, maxSessions)
+	rows, err := l.db.Query(ctx, query, tenantID, startDate, endDate, settleThreshold, maxSessions)
 	if err != nil {
 		return nil, fmt.Errorf("query session IDs: %w", err)
 	}
@@ -428,16 +430,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			return nil, fmt.Errorf("scan session_id: %w", err)
 		}
 
-		// Check if session is settled (last update > settle window ago)
-		var lastUpdate time.Time
-		err := l.db.QueryRow(ctx, `
-			SELECT MAX(ts) FROM request_logs
-			WHERE tenant_id = $1 AND gw_session_id = $2
-		`, tenantID, sessionID).Scan(&lastUpdate)
-
-		if err == nil && lastUpdate.Before(settleThreshold) {
-			sessionIDs = append(sessionIDs, sessionID)
-		}
+		sessionIDs = append(sessionIDs, sessionID)
 	}
 
 	if err := rows.Err(); err != nil {

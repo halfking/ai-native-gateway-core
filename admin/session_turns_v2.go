@@ -94,7 +94,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		slog.ErrorContext(r.Context(), "serveSessionTurnsList query failed",
 			"session_id", sessionID, "tenant_id", tenantID,
 			"before_turn_no", beforeTurnNo, "limit", limit, "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "query turns failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "query turns failed")
 		return
 	}
 	defer rows.Close()
@@ -213,9 +213,12 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
 		FROM public.session_turns_with_current_month t
-		LEFT JOIN public.session_bodies b
-			ON t.session_id = b.session_id AND t.turn_no = b.turn_no AND t.partition_date = b.partition_date
-		WHERE t.session_id = $1 AND t.tenant_id = $2 AND t.turn_no = $3
+			LEFT JOIN public.session_bodies b
+				ON t.tenant_id = b.tenant_id
+				AND t.session_id = b.session_id
+				AND t.turn_no = b.turn_no
+				AND t.partition_date = b.partition_date
+			WHERE t.session_id = $1 AND t.tenant_id = $2 AND t.turn_no = $3
 		LIMIT 1`
 	var (
 		turnNoOut                                                                   int
@@ -403,9 +406,9 @@ func (h *Handler) serveSessionTurnsBodies(w http.ResponseWriter, r *http.Request
 	items := make([]turnBodyItem, 0, limit)
 	for rows.Next() {
 		var (
-			turnNo                                                  int
-			requestID                                               string
-			requestDeltaRaw, responseDeltaRaw, outboundBodyRaw     []byte
+			turnNo                                             int
+			requestID                                          string
+			requestDeltaRaw, responseDeltaRaw, outboundBodyRaw []byte
 		)
 		if err := rows.Scan(&turnNo, &requestID, &requestDeltaRaw, &responseDeltaRaw, &outboundBodyRaw); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan turn body failed")

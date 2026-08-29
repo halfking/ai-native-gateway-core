@@ -30,8 +30,8 @@ const DefaultPromoteInterval = 1 * time.Hour
 // promote_*_default_batch functions installed in migration 336.
 //
 // 2026-07 hot-table architecture:
-//   - most *_hot tables keep an 8-hour hot window, then promote into monthly
-//     partitions on the promote scheduler;
+//   - most *_hot tables keep an 8-hour hot window by default, then promote
+//     into monthly partitions on the promote scheduler;
 //   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
 //     promotes and is cleaned by direct TTL DELETE.
 const DefaultRetentionWindow = 8 * time.Hour
