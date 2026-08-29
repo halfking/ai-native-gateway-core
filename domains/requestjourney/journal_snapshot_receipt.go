@@ -95,8 +95,11 @@ func (s *JournalSnapshotReceiptStore) Claim(ctx context.Context, tenantID, reque
 // returns that same base on lease reclaim. The immutable base makes retry event
 // identities stable even after partial projection or a failed Complete call.
 func (s *JournalSnapshotReceiptStore) ClaimWithProjectionBase(ctx context.Context, tenantID, requestID string, version int64, payloadHash string, projectionBaseSeq int64) (JournalSnapshotReceiptClaim, error) {
+	if s == nil {
+		return JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, ProjectionBaseSeq: projectionBaseSeq}, ErrSnapshotReceiptInvalid
+	}
 	claim := JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, ProjectionBaseSeq: projectionBaseSeq, Owner: s.owner}
-	if s == nil || s.db == nil || tenantID == "" || requestID == "" || version <= 0 || payloadHash == "" || projectionBaseSeq < 0 {
+	if s.db == nil || tenantID == "" || requestID == "" || version <= 0 || payloadHash == "" || projectionBaseSeq < 0 {
 		return claim, ErrSnapshotReceiptInvalid
 	}
 	now := s.clock()
@@ -128,7 +131,8 @@ func (s *JournalSnapshotReceiptStore) ClaimWithProjectionBase(ctx context.Contex
 		return claim, nil
 	}
 
-	var existingHash, status, owner string
+	var existingHash, status string
+	var owner pgtype.Text
 	var existingBase int64
 	var until pgtype.Timestamptz
 	if err := tx.QueryRow(ctx, `
@@ -144,7 +148,10 @@ func (s *JournalSnapshotReceiptStore) ClaimWithProjectionBase(ctx context.Contex
 	if status == "completed" {
 		return JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, ProjectionBaseSeq: existingBase, AlreadyCompleted: true}, nil
 	}
-	if until.Valid && until.Time.After(now) && owner != "" && owner != s.owner {
+	// Any unexpired processing lease is owned by another delivery attempt.
+	// Do not treat equal owner strings as safe: hostname/configured owners can
+	// be shared by multiple local processes.
+	if until.Valid && until.Time.After(now) {
 		return claim, nil
 	}
 	if _, err := tx.Exec(ctx, `
