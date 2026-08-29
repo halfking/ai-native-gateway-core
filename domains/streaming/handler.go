@@ -5500,6 +5500,52 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			}
 		}
 
+		// 2026-08-29 §4.4: Detect non-streaming success with empty response body.
+		// Runs only on non-streaming requests still marked success.
+		// Per design decision §4.1 (conservative approach), this does NOT modify
+		// reqLog.Success — it only logs and emits metrics for observability.
+		if capture == nil && reqLog.Success {
+			if detectEmptyNonStreamResponse(reqLog) {
+				modelName := ""
+				if reqLog.OutboundModel != nil {
+					modelName = *reqLog.OutboundModel
+				} else if reqLog.ClientModel != nil {
+					modelName = *reqLog.ClientModel
+				}
+				
+				providerID := 0
+				if reqLog.ProviderID != nil {
+					providerID = *reqLog.ProviderID
+				}
+
+				slog.Warn("success_with_empty_response_body",
+					"request_id", reqLog.RequestID,
+					"tenant_id", reqLog.TenantID,
+					"model", modelName,
+					"provider_id", providerID,
+					"has_response_body", reqLog.ResponseBody != nil,
+					"response_body_len", func() int {
+						if reqLog.ResponseBody == nil {
+							return 0
+						}
+						return len(*reqLog.ResponseBody)
+					}(),
+				)
+
+				// Emit Prometheus metric (will be added to metrics package)
+				// TODO: Uncomment when metrics.SuccessEmptyResponseTotal is added
+				// if h.metrics != nil {
+				// 	h.metrics.SuccessEmptyResponseTotal.WithLabelValues(
+				// 		modelName,
+				// 		fmt.Sprintf("%d", providerID),
+				// 	).Inc()
+				// }
+
+				// Add quality flag for downstream analysis
+				reqLog.QualityFlags = append(reqLog.QualityFlags, "empty_response_body")
+			}
+		}
+
 		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 		// audit/audit.go::SummaryAsMap now publishes the upstream finish_reason
 		// under the new "upstream_finish_reason" key (for BOTH success and
@@ -8508,6 +8554,43 @@ func detectUpstreamContextLoss(m map[string]any, reqLog *telemetry.RequestLogEnt
 	}
 
 	return true
+}
+
+// detectEmptyNonStreamResponse checks for the anomalous pattern where a
+// non-streaming request is marked as successful but has no response body.
+// This mirrors the empty-response detection for streams (detectEmptyStreamResponse).
+//
+// Per §4.4 design (2026-08-29-success-empty-response-design.md), detection
+// does NOT modify settlement or already-sent responses; it only logs and
+// emits metrics for observability.
+//
+// Returns true when ALL of the following conditions hold:
+//   - Request is marked as successful (reqLog.Success == true)
+//   - Response body is missing or empty (nil, "", or "{}")
+//
+// Note: This function does not check isStream because the caller
+// (emitTelemetry) already guards the call with `if !isStream`.
+func detectEmptyNonStreamResponse(reqLog *telemetry.RequestLogEntry) bool {
+	if reqLog == nil {
+		return false
+	}
+
+	// Only check successful requests
+	if !reqLog.Success {
+		return false
+	}
+
+	// Missing or empty response_body
+	if reqLog.ResponseBody == nil {
+		return true
+	}
+
+	body := strings.TrimSpace(*reqLog.ResponseBody)
+	if body == "" || body == "{}" {
+		return true
+	}
+
+	return false
 }
 
 func hasStructuredToolCalls(value any) bool {
