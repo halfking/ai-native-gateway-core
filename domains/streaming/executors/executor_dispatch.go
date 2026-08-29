@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -437,7 +438,14 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 	paramsCopy.DispatchAttempt = true
 	paramsCopy.DispatchAttemptID = attemptID
-	paramsCopy.FirstSemanticByteCallback = firstSemanticByte
+	visibility := &atomic.Bool{}
+	paramsCopy.ClientSemanticBytesVisible = visibility
+	paramsCopy.FirstSemanticByteCallback = func() {
+		visibility.Store(true)
+		if firstSemanticByte != nil {
+			firstSemanticByte()
+		}
+	}
 	params := &paramsCopy
 	startedAt := time.Now()
 	probeConsumed := false
@@ -618,8 +626,8 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		return dispatch.ForwardOutcome{Result: result}
 	}
 
-	bytesSent := false
-	if params.IsStream && params.Capture != nil {
+	bytesSent := params.ClientSemanticBytesVisible != nil && params.ClientSemanticBytesVisible.Load()
+	if !bytesSent && params.IsStream && params.Capture != nil {
 		if sent, _ := params.Capture.ChunkCountersSnapshot(); sent > 0 {
 			bytesSent = true
 		}
