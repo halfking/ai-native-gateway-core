@@ -699,6 +699,11 @@ func sanitizeSecrets(s string) string {
 	return s
 }
 
+// SanitizeSecrets 公开包装，供其他包（如 manager）在打日志前调用。
+// 二次审计修复 (2026-08-29)：补强 redactErr，复用同款脱敏逻辑以覆盖
+// key=value / password=xxx / token=xxx 等键值对形式。
+func SanitizeSecrets(s string) string { return sanitizeSecrets(s) }
+
 // bodyExcerpt 生成用于排障的正文摘录（已脱敏、已截断、单行）。
 func bodyExcerpt(body []byte, max int) string {
 	trimmed := strings.TrimSpace(string(body))

@@ -539,20 +539,13 @@ func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID in
 
 // redactErr 去掉错误里可能泄露的代理凭据（ProxyURL 出现在错误信息中）。
 // 审计修复 (2026-08-29)：密钥安全 - 实际调用 sanitizeSecrets 进行脱敏。
+// 二次审计修复 (2026-08-29)：调用 parser.SanitizeSecrets 公开包装，覆盖
+// key=value / password=xxx / token=xxx 等键值对形式，避免日志里泄露凭据。
 func redactErr(err error) string {
 	if err == nil {
 		return ""
 	}
-	// 复用 parser.go 的 sanitizeSecrets 逻辑（但 parser 包不能反向依赖 manager）
-	// 这里内联简化版：移除 URL userinfo
-	s := err.Error()
-	// 移除 scheme://userinfo@ 形式的凭据
-	if idx := strings.Index(s, "://"); idx > 0 {
-		if end := strings.Index(s[idx+3:], "@"); end > 0 {
-			s = s[:idx+3] + "[REDACTED]@" + s[idx+3+end+1:]
-		}
-	}
-	return s
+	return SanitizeSecrets(err.Error())
 }
 
 func (m *Manager) loadAllNodesIntoCache() error {

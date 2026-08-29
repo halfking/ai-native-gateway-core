@@ -224,23 +224,29 @@ func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, 
 
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	
-	// 监听 context 取消，提前中止
+
+	// 监听 context 取消，提前中止。
+	// 二次审计修复 (2026-08-29)：用 sync.Once 防止 cancelCh 被重复关闭引发 panic。
 	cancelCh := make(chan struct{})
+	var cancelOnce sync.Once
 	go func() {
 		<-ctx.Done()
-		close(cancelCh)
+		cancelOnce.Do(func() { close(cancelCh) })
 	}()
 
+	// 二次审计修复 (2026-08-29)：原实现在 select 里写 break，实际只跳出 select
+	// 而非 for 循环，导致 context 取消后仍会派发剩余节点任务。这里改为循环前
+	// 用 goto 跳出；保留 cancelCh 用于 goroutine 内部停止发送。
+dispatchLoop:
 	for _, node := range nodes {
 		// 检查是否已取消
 		select {
 		case <-cancelCh:
 			// context 已取消，停止派发新任务
-			break
+			break dispatchLoop
 		default:
 		}
-		
+
 		if !node.Dialable() {
 			// 不可拨号节点（trojan/vless）跳过，直接标记不可探活。
 			out <- HealthCheckResult{
@@ -257,10 +263,10 @@ func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, 
 		go func(n *Node) {
 			defer wg.Done()
 			defer func() { <-sem }() // 释放额度
-			
+
 			// 使用调用方的 context，在取消时探测会立即中止
 			latency, err := c.Check(ctx, n)
-			
+
 			// 尝试发送结果，如果 out 已关闭则丢弃
 			select {
 			case out <- HealthCheckResult{
