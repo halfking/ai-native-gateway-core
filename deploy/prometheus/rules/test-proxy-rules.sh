@@ -1,79 +1,66 @@
-#!/bin/bash
-# Test script for proxy alerting rules validation
+#!/usr/bin/env bash
+# Static and (when installed) promtool contract checks for proxy monitoring assets.
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+RULES="$ROOT/deploy/prometheus/rules/proxy-rules.yml"
+DASH="$ROOT/deploy/grafana"
 
-set -e
+python3 - "$ROOT" "$RULES" "$DASH" <<'PY'
+import json, pathlib, re, sys
+try:
+    import yaml
+except ImportError:
+    raise SystemExit("PyYAML is required for proxy rule contract tests")
+root, rules_file, dash_dir = map(pathlib.Path, sys.argv[1:])
+rules = yaml.safe_load(rules_file.read_text())
+assert rules and rules["groups"], "rules must contain groups"
+assert all("receiver" not in r for g in rules["groups"] for r in g.get("rules", [])), "rules must not invent receivers"
+text = rules_file.read_text()
+assert "wiki.example.com" not in text
+assert "nodes_total > 0 and llm_gateway_proxy_nodes_dialable == 0" in text
+assert "clamp_min(llm_gateway_proxy_nodes_total, 1)" in text
+assert 'status="timeout"' not in text
+assert 'status="failure"' not in text
+for p in rules["groups"]:
+    for r in p.get("rules", []):
+        url = r.get("annotations", {}).get("runbook_url", "")
+        assert url and not re.match(r"https?://", url), f"runbook must be repository-relative: {url}"
 
-RULES_FILE="proxy-rules.yml"
-PROMETHEUS_URL="${PROMETHEUS_URL:-http://localhost:9090}"
+allowed = {
+    "llm_gateway_proxy_subscriptions_total": {"state"},
+    "llm_gateway_proxy_subscription_refresh_total": {"status"},
+    "llm_gateway_proxy_node_health_check_total": {"status"},
+    "llm_gateway_proxy_node_selection_total": {"result"},
+}
+for f in sorted(dash_dir.glob("proxy-*-dashboard.json")):
+    d = json.loads(f.read_text())
+    raw = json.dumps(d, ensure_ascii=False)
+    for forbidden in ("node_id", "subscription_id", "location", "error_type", "wiki.example.com"):
+        assert forbidden not in raw, f"{f}: forbidden label/text {forbidden}"
+    exprs = []
+    def walk(x):
+        if isinstance(x, dict):
+            if isinstance(x.get("expr"), str): exprs.append(x["expr"])
+            for v in x.values(): walk(v)
+        elif isinstance(x, list):
+            for v in x: walk(v)
+    walk(d)
+    for e in exprs:
+        assert 'status="failure"' not in e and 'status="timeout"' not in e
+        assert 'result="no_healthy"' not in e
+        if "histogram_quantile" in e:
+            assert "sum by (le) (rate(" in e, f"{f}: histogram must aggregate by le"
+        if re.search(r"/\s*rate\([^)]*_count\[", e):
+            raise AssertionError(f"{f}: unguarded histogram denominator: {e}")
+        if "llm_gateway_proxy_subscription_refresh_total" in e:
+            assert "subscription_id" not in e
+    if f.name == "proxy-subscription-dashboard.json":
+        assert not d.get("templating", {}).get("list"), "subscription dashboard must not filter by subscription ID"
+print("proxy monitoring contract checks passed")
+PY
 
-echo "=== Proxy Alerting Rules Test ==="
-echo ""
-
-# 1. Validate YAML syntax
-echo "1. Validating YAML syntax..."
-if command -v python3 &> /dev/null; then
-    python3 -c "import yaml; yaml.safe_load(open('$RULES_FILE')); print('   ✓ YAML syntax valid')"
+if command -v promtool >/dev/null 2>&1; then
+  promtool check rules "$RULES"
 else
-    echo "   ⚠ Python3 not found, skipping YAML validation"
+  echo "promtool not installed; YAML and dashboard contract checks passed"
 fi
-
-# 2. Validate with promtool (if available)
-echo ""
-echo "2. Validating Prometheus rule syntax..."
-if command -v promtool &> /dev/null; then
-    promtool check rules "$RULES_FILE"
-    echo "   ✓ Prometheus rule syntax valid"
-elif command -v docker &> /dev/null; then
-    echo "   Using Docker to validate..."
-    docker run --rm -v "$(pwd):/rules:ro" prom/prometheus:v2.47.0 promtool check rules "/rules/$RULES_FILE"
-    echo "   ✓ Prometheus rule syntax valid (via Docker)"
-else
-    echo "   ⚠ Neither promtool nor docker found, skipping validation"
-fi
-
-# 3. Check if rules are loaded in Prometheus
-echo ""
-echo "3. Checking if rules are loaded in Prometheus..."
-if curl -sf "$PROMETHEUS_URL/api/v1/rules" > /dev/null 2>&1; then
-    LOADED=$(curl -sf "$PROMETHEUS_URL/api/v1/rules" | grep -c "proxy_alerts" || echo "0")
-    if [ "$LOADED" -gt 0 ]; then
-        echo "   ✓ proxy_alerts rule group is loaded in Prometheus"
-        
-        # Count rules
-        RULE_COUNT=$(curl -sf "$PROMETHEUS_URL/api/v1/rules" | grep -o '"alert"' | wc -l)
-        echo "   ℹ Total alert rules loaded: $RULE_COUNT"
-    else
-        echo "   ✗ proxy_alerts rule group NOT found in Prometheus"
-        echo "   → Run: curl -X POST $PROMETHEUS_URL/-/reload"
-    fi
-else
-    echo "   ⚠ Cannot connect to Prometheus at $PROMETHEUS_URL"
-fi
-
-# 4. Check metrics availability
-echo ""
-echo "4. Checking if proxy metrics are available..."
-METRICS=(
-    "llm_gateway_proxy_nodes_total"
-    "llm_gateway_proxy_nodes_dialable"
-    "llm_gateway_proxy_nodes_unhealthy"
-    "llm_gateway_proxy_subscription_refresh_total"
-    "llm_gateway_proxy_node_health_check_total"
-    "llm_gateway_proxy_node_selection_total"
-    "llm_gateway_proxy_password_decrypt_failed_total"
-)
-
-AVAILABLE=0
-for metric in "${METRICS[@]}"; do
-    if curl -sf "$PROMETHEUS_URL/api/v1/query?query=$metric" | grep -q '"result":\['; then
-        ((AVAILABLE++))
-    fi
-done
-
-echo "   ℹ $AVAILABLE/${#METRICS[@]} metrics are available"
-if [ $AVAILABLE -eq 0 ]; then
-    echo "   ⚠ No proxy metrics found. Is the LLM Gateway running and exposing metrics?"
-fi
-
-echo ""
-echo "=== Test Complete ==="

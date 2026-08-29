@@ -294,17 +294,17 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "histogram_quantile(0.50, rate(llm_gateway_proxy_subscription_refresh_duration_seconds_bucket{}[5m]))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(llm_gateway_proxy_subscription_refresh_duration_seconds_bucket[5m])))",
           "legendFormat": " P50",
           "refId": "A"
         },
         {
-          "expr": "histogram_quantile(0.95, rate(llm_gateway_proxy_subscription_refresh_duration_seconds_bucket{}[5m]))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(llm_gateway_proxy_subscription_refresh_duration_seconds_bucket[5m])))",
           "legendFormat": " P95",
           "refId": "B"
         },
         {
-          "expr": "histogram_quantile(0.99, rate(llm_gateway_proxy_subscription_refresh_duration_seconds_bucket{}[5m]))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(llm_gateway_proxy_subscription_refresh_duration_seconds_bucket[5m])))",
           "legendFormat": " P99",
           "refId": "C"
         }
@@ -368,7 +368,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "rate(llm_gateway_proxy_subscription_refresh_duration_seconds_sum{}[5m]) / rate(llm_gateway_proxy_subscription_refresh_duration_seconds_count{}[5m])",
+          "expr": "rate(llm_gateway_proxy_subscription_refresh_duration_seconds_sum[5m]) / clamp_min(rate(llm_gateway_proxy_subscription_refresh_duration_seconds_count[5m]), 1e-9)",
           "legendFormat": "",
           "refId": "A"
         }
@@ -504,7 +504,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "increase(llm_gateway_proxy_subscription_refresh_total{}[5m])",
+          "expr": "increase(llm_gateway_proxy_subscription_refresh_total[5m])",
           "legendFormat": " {{status}}",
           "refId": "A"
         }
@@ -578,7 +578,7 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "topk(10, rate(llm_gateway_proxy_subscription_refresh_total{}[5m]))",
+          "expr": "topk(10, rate(llm_gateway_proxy_subscription_refresh_total[5m]))",
           "format": "table",
           "instant": true,
           "legendFormat": "",
