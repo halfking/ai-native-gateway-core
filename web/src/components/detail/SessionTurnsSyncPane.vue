@@ -19,8 +19,8 @@ import { statusToneClass } from './statusTone'
 import {
   deriveConversationTurns,
   extractMessagesFromBody,
-  firstUserPrompt,
-  previewText,
+  splitTurnMessages,
+  summarizeTurnUserInstruction,
   type ConversationTurn,
   type RoleFilter,
 } from './messageHelpers'
@@ -96,26 +96,30 @@ watch(
   { immediate: true },
 )
 
-// V2 turns built from session_bodies deltas (each turn = its own messages).
+// V2 turns built from session_bodies. Each turn's request-side messages are
+// drawn from outbound_body (the full prompt the gateway actually sent) so
+// system context survives across turns; the assistant reply block uses
+// response_delta independently so we don't conflate request and response.
 const v2Turns = computed<ConversationTurn[]>(() => {
   const list = v2Bodies.value?.turns
   if (!list?.length) return []
   return list.map((t, i) => {
-    const reqMsgs = extractMessagesFromBody(t.request_delta)
-    const respMsgs = extractMessagesFromBody(t.response_delta)
-    const messages =
-      reqMsgs.length || respMsgs.length
-        ? [...reqMsgs, ...respMsgs]
-        : extractMessagesFromBody(t.outbound_body)
-    const full = firstUserPrompt(t.request_delta) || firstUserPrompt(t.outbound_body)
-    const { text, truncated } = previewText(full, 6)
+    const { requestMessages, responseMessages } = splitTurnMessages(
+      t.request_delta,
+      t.response_delta,
+      t.outbound_body,
+    )
+    const summary = summarizeTurnUserInstruction(t.request_delta, t.outbound_body)
+    const messages = [...requestMessages, ...responseMessages]
     return {
       index: i,
       number: t.turn_no,
+      turnNo: t.turn_no,
+      requestId: typeof t.request_id === 'string' ? t.request_id : null,
       messages,
-      userPreview: text,
-      userPreviewFull: full,
-      truncated,
+      userPreview: summary.text,
+      userPreviewFull: summary.full,
+      truncated: summary.truncated,
       assistantCount: messages.filter((m) => String(m.role || '') === 'assistant').length,
     }
   })
@@ -135,6 +139,28 @@ const displayTurns = computed<ConversationTurn[]>(() =>
 watch(
   displayTurns,
   (list) => {
+    if (selectedIndex.value >= list.length) selectedIndex.value = 0
+  },
+  { immediate: true },
+)
+
+// When the route's active request changes, align the selected turn card so
+// the left rail reflects the request the user is currently looking at
+// instead of always defaulting to the first card.
+watch(
+  [() => props.activeRequestId, displayTurns],
+  ([activeId, list]) => {
+    if (!list.length) {
+      selectedIndex.value = 0
+      return
+    }
+    if (activeId) {
+      const match = list.findIndex((t) => t.requestId === activeId)
+      if (match >= 0) {
+        selectedIndex.value = match
+        return
+      }
+    }
     if (selectedIndex.value >= list.length) selectedIndex.value = 0
   },
   { immediate: true },
@@ -244,13 +270,17 @@ function onDividerUp() {
         :style="timelineOnly ? undefined : { width: leftWidth + '%' }"
       >
         <div v-if="!displayTurns.length" class="muted">无对话数据</div>
-        <button
+        <div
           v-for="t in displayTurns"
           :key="t.index"
-          type="button"
           class="turn-card"
           :class="{ active: selectedIndex === t.index }"
+          role="button"
+          tabindex="0"
+          :aria-pressed="selectedIndex === t.index"
           @click="selectDerived(t.index)"
+          @keydown.enter.prevent="selectDerived(t.index)"
+          @keydown.space.prevent="selectDerived(t.index)"
         >
           <div class="turn-card-head">
             <span class="tn">#{{ t.number }}</span>
@@ -264,7 +294,7 @@ function onDividerUp() {
             class="btn btn-sm linkish"
             @click.stop="toggleDerivedExpand(t.index)"
           >{{ derivedExpanded.has(t.index) ? '收起' : '展开' }}</button>
-        </button>
+        </div>
       </aside>
 
       <template v-if="!timelineOnly">
@@ -301,13 +331,17 @@ function onDividerUp() {
       <aside class="left">
         <div v-if="loading" class="muted">加载轮次…</div>
         <div v-else-if="error" class="err">{{ error }}</div>
-        <button
+        <div
           v-for="t in turns"
           :key="t.turn_number"
-          type="button"
           class="turn-row"
           :class="[{ active: treeSelectedTurn === t.turn_number }, statusToneClass(t.status, 'turn')]"
+          role="button"
+          tabindex="0"
+          :aria-pressed="treeSelectedTurn === t.turn_number"
           @click="selectTreeTurn(t)"
+          @keydown.enter.prevent="selectTreeTurn(t)"
+          @keydown.space.prevent="selectTreeTurn(t)"
         >
           <span class="tn">#{{ t.turn_number }}</span>
           <span class="st pill" :class="statusToneClass(t.status, 'pill')">{{ t.status }}</span>
@@ -324,7 +358,7 @@ function onDividerUp() {
               · {{ latencyLabel(c.latency) }}
             </li>
           </ul>
-        </button>
+        </div>
       </aside>
       <section class="right">
         <div class="facet-row">
