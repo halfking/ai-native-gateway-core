@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 )
 
@@ -100,10 +101,12 @@ type PrometheusRecorder struct {
 
 	// incompleteToolCallTotal (2026-08-29): counts streams where tool_use
 	// blocks were sent but corresponding tool_result blocks were missing.
-	// Labels: model (for attribution), reason ("incomplete_tool_call_interrupted"
-	// when stream ended before message_stop | "incomplete_tool_call_after_done"
-	// when message_stop received but tool_result missing). High rates indicate
-	// unstable Anthropic upstreams or mid-stream interruptions.
+	// Labels: provider_family (route-key normalized model family; avoids the
+	// high-cardinality raw model name forbidden by GW-00), reason
+	// ("incomplete_tool_call_interrupted" when stream ended before message_stop |
+	// "incomplete_tool_call_after_done" when message_stop received but
+	// tool_result missing). High rates indicate unstable Anthropic upstreams
+	// or mid-stream interruptions.
 	incompleteToolCallTotal *prometheus.CounterVec
 
 	// successEmptyResponseTotal (2026-08-29): counts requests marked as
@@ -416,9 +419,9 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 		incompleteToolCallTotal: promauto.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "llm_gateway_incomplete_tool_call_total",
-				Help: "Streams where tool_use blocks were sent but tool_result blocks were missing (labels: model, reason=incomplete_tool_call_interrupted|incomplete_tool_call_after_done). High rates indicate unstable upstreams.",
+				Help: "Streams where tool_use blocks were sent but tool_result blocks were missing (labels: provider_family, reason=incomplete_tool_call_interrupted|incomplete_tool_call_after_done). High rates indicate unstable upstreams.",
 			},
-			[]string{"model", "reason"},
+			[]string{"provider_family", "reason"},
 		),
 
 		// 2026-08-29: success empty response counter
@@ -690,7 +693,10 @@ func (p *PrometheusRecorder) RecordMalformedSSEFrame(provider, stage string) {
 // RecordIncompleteToolCall (2026-08-29) increments the counter when a stream
 // ends with incomplete tool execution (tool_use sent but tool_result missing).
 //
-//   - model: client-facing model name for attribution
+//   - model: raw client-facing model name; internally normalized via
+//     modelname.NormalizeRouteKey to a low-cardinality "provider_family" value
+//     (strips date suffixes, provider prefixes, and feature tokens) so the
+//     Prometheus label never carries per-model high cardinality (GW-00).
 //   - reason: "incomplete_tool_call_interrupted" (stream ended before message_stop) |
 //             "incomplete_tool_call_after_done" (message_stop received but tool_result missing)
 //
@@ -698,7 +704,11 @@ func (p *PrometheusRecorder) RecordMalformedSSEFrame(provider, stage string) {
 // during tool execution. Operators monitor rate(incomplete_tool_call_total[5m])
 // to detect provider issues.
 func (p *PrometheusRecorder) RecordIncompleteToolCall(model, reason string) {
-	p.incompleteToolCallTotal.WithLabelValues(model, reason).Inc()
+	family := modelname.NormalizeRouteKey(model)
+	if family == "" {
+		family = "unknown"
+	}
+	p.incompleteToolCallTotal.WithLabelValues(family, reason).Inc()
 }
 
 // RecordSuccessEmptyResponse (2026-08-29) increments the counter when a
