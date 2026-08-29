@@ -67,6 +67,13 @@ func NewMultiFormatParserWithClient(client *http.Client) *MultiFormatParser {
 	}
 }
 
+// Close 关闭 HTTP 客户端的空闲连接（审计修复 2026-08-29 问题 9）。
+func (p *MultiFormatParser) Close() {
+	if p.client != nil {
+		p.client.CloseIdleConnections()
+	}
+}
+
 // Parse 拉取并解析订阅，返回节点列表。
 // 仅在正文无法被任何已知格式解释、或解析出 0 个有效节点时返回错误。
 func (p *MultiFormatParser) Parse(ctx context.Context, subscribeURL string) ([]*Node, error) {
