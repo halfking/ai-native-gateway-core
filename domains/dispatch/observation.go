@@ -304,8 +304,9 @@ type JournalSnapshot struct {
 	Truncated      bool
 	TruncatedCount int
 	// SnapshotVersion is the monotonic journal seq observed at terminal time.
-	// Sinks that ship via the recorder's MaxSeq can short-circuit retries by
-	// comparing it against the live recorder state. See ADR §6.
+	// Snapshot consumers use it as the identity component of their own
+	// (tenant, request, version) receipt; it is not interchangeable with a
+	// RequestJourney event sequence. See ADR §6.
 	SnapshotVersion int64
 	// CallerTenantID / CallerAuthorized carry the trusted caller's tenant
 	// identity at the terminal-time wiring boundary. Sinks must reject
