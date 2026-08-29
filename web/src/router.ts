@@ -61,6 +61,8 @@ const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
 // 2026-08-09: 跨会话轮次列表页
 const TurnsListView = () => import('./views/TurnsListView.vue')
+// 2026-08-29: 代理管理
+const ProxyView = () => import('./views/ProxyView.vue')
 const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
 const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
@@ -226,6 +228,7 @@ export const router = createRouter({
     { path: '/admin/usage',        component: UsageCostView }, // 用量成本视图 (T2.4)
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
     { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
+    { path: '/admin/proxy',        component: ProxyView, meta: { requiresSuper: true } }, // 2026-08-29: 代理管理
     // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线
     { path: '/admin/request-registry', component: RequestRegistryView, meta: { requiresSuper: true } },
     { path: '/admin/request-registry/journey/:requestId', name: 'request-journey-detail', component: RequestJourneyDetailView, meta: { requiresSuper: true } },
