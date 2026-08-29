@@ -90,3 +90,10 @@
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 610 | `610_request_class_due_at.sql` | `379ae7f22dcf656de3672ae20b6df33d73b1a6ee42aba4cc56d2a28d78c06ba0` | applied+verified |
+## 2026-08-28T23:54:59Z — deploy 154 build_seq 1801 (2ec1b325)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 612 | `612_native_responses_capability.sql` | `1bb7769b9de61c3432cc95bd6a86c18a9e58556c6af1d8a5b40b5953a5317dcc` | applied+verified |
+| 613 | `613_native_responses_stream_capability.sql` | `fbf7c9f55108fde7659e31730b2d9f9c4d5fb0ba3b044336a5fc479c8d0195d1` | applied+verified |
+

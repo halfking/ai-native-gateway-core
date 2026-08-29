@@ -39,7 +39,10 @@ func NewAuthMiddleware(apiKey string) *AuthMiddleware {
 			// admin/handler.go. Verified 2026-06-30 via grep — see
 			// docs/audit/2026-06-30-weekly-audit-report.md P0-3.
 			bypass: BypassRule{
-				ExactPaths:   []string{"/healthz", "/metrics", "/"},
+				// 2026-08-29：加 /readyz + /version。供 scripts/lifecycle/preflight.sh 三段检查使用。
+				// /readyz 返回 DB+Redis 是否就绪（K8s readiness），/version 暴露 build metadata。
+				// 两者均无敏感信息，必须 anon 可达。
+				ExactPaths:   []string{"/healthz", "/healthz/full", "/readyz", "/version", "/metrics", "/"},
 				PathPrefixes: []string{"/api/", "/admin/", "/assets/", "/maintain/", "/plugins/"},
 			},
 		},

@@ -6904,6 +6904,50 @@ func NewHealthHandler(cm *credential.Manager, l *credential.Limiter, proxy *upst
 	return &HealthHandler{circuit: cm, limiter: l, proxy: proxy, db: db, redis: redis}
 }
 
+func healthResourceStatus(parent context.Context, connector interface{ Ping(context.Context) error }) *ResourceStatus {
+	if connector == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := connector.Ping(ctx)
+	status := &ResourceStatus{Connected: err == nil, Latency: time.Since(start).String()}
+	if err != nil {
+		status.Error = err.Error()
+	}
+	return status
+}
+
+func writeGatewayVersionMetadata(w http.ResponseWriter) {
+	metadata := map[string]any{
+		"version":    "unknown",
+		"git_sha":    "unknown",
+		"build_seq":  0,
+		"build_date": "unknown",
+	}
+	for _, path := range []string{"/opt/llm-gateway-go/version.json", "version.json"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var v struct {
+			Version   string `json:"version"`
+			GitSHA    string `json:"git_sha"`
+			BuildSeq  int    `json:"build_seq"`
+			BuildDate string `json:"build_date"`
+		}
+		if json.Unmarshal(raw, &v) == nil && v.Version != "" {
+			metadata["version"], metadata["git_sha"] = v.Version, v.GitSHA
+			metadata["build_seq"], metadata["build_date"] = v.BuildSeq, v.BuildDate
+			break
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(metadata)
+}
+
 // SetRedis updates the Redis connection for health checks (2026-07-08).
 // Called after Redis is initialized in main.go.
 func (h *HealthHandler) SetRedis(redis redisConnector) {
@@ -6911,9 +6955,47 @@ func (h *HealthHandler) SetRedis(redis redisConnector) {
 }
 
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// /version is intentionally metadata-only and must not run dependency checks.
+	// Keep it separate from the liveness/readiness response so deploy preflight
+	// cannot mistake a healthy process for a matching binary.
+	if r.URL.Path == "/version" {
+		writeGatewayVersionMetadata(w)
+		return
+	}
+
 	resp := HealthResponse{
 		Status:  "ok",
 		Version: resolveGatewayVersion(),
+	}
+
+	// /readyz is a strict dependency gate. Unlike /healthz (liveness), it must
+	// return 503 when either required backing service is unavailable.
+	if r.URL.Path == "/readyz" {
+		ready := true
+		resp.Database = healthResourceStatus(r.Context(), h.db)
+		resp.Redis = healthResourceStatus(r.Context(), h.redis)
+		if resp.Database == nil || !resp.Database.Connected || resp.Redis == nil || !resp.Redis.Connected {
+			ready = false
+		}
+		if !ready {
+			resp.Status = "not_ready"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if !ready {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+		// Do not expose backend error strings on an anonymous readiness endpoint.
+		if resp.Database != nil {
+			resp.Database.Error = ""
+		}
+		if resp.Redis != nil {
+			resp.Redis.Error = ""
+		}
+		//nolint:errcheck // HTTP write error non-recoverable
+		json.NewEncoder(w).Encode(resp)
+		return
 	}
 
 	// NET-007 fix: ?full=true 必须 admin token（完整的 LLM_GATEWAY_ADMIN_API_KEY
