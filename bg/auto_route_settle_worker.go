@@ -329,6 +329,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 	if qErr != nil {
 		return 0, 0, qErr
 	}
+	defer rows.Close()
 
 	pending := make([]pendingSelection, 0, settleBatchSize)
 	for rows.Next() {
@@ -341,16 +342,13 @@ func (w *AutoRouteSettleWorker) settleBatch(
 			&p.sessionHealth, &p.sessionErrors, &p.sessionReqs,
 			&p.modelReqsInSes, &p.retryCount,
 		); scanErr != nil {
-			rows.Close()
 			return 0, 0, scanErr
 		}
 		pending = append(pending, p)
 	}
 	if rErr := rows.Err(); rErr != nil {
-		rows.Close()
 		return 0, 0, rErr
 	}
-	rows.Close()
 
 	now := time.Now()
 	for _, p := range pending {

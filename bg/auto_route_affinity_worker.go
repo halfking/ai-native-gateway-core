@@ -342,6 +342,7 @@ func (w *AutoRouteAffinityWorker) applyStalenessDecay(ctx context.Context) error
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	type staleRow struct {
 		taskType, profile, tenantID string
 		canonicalID                 int64
@@ -354,16 +355,13 @@ func (w *AutoRouteAffinityWorker) applyStalenessDecay(ctx context.Context) error
 		// Scan errors in pgx v5 terminate iteration. Treat as sweep-fatal.
 		if err := rows.Scan(&r.taskType, &r.profile, &r.canonicalID, &r.tenantID,
 			&r.affinity, &r.lastSampled); err != nil {
-			rows.Close()
 			return err
 		}
 		stale = append(stale, r)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return err
 	}
-	rows.Close()
 
 	now := time.Now()
 	for _, r := range stale {
