@@ -119,6 +119,89 @@ export function firstUserPrompt(body: unknown): string {
   return ''
 }
 
+/** Last user message text from a chat body (current-turn user instruction). */
+export function lastUserPrompt(body: unknown): string {
+  const msgs = extractMessagesFromBody(body)
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (String(msgs[i].role || '') === 'user') {
+      return contentToPlain(msgs[i].content).trim()
+    }
+  }
+  return ''
+}
+
+export interface TurnMessageSources {
+  /** Request-side messages for the turn (system + user + tool). */
+  requestMessages: Record<string, unknown>[]
+  /** Response-side messages for the turn (assistant + tool). */
+  responseMessages: Record<string, unknown>[]
+}
+
+/**
+ * Resolve the request-side message list for a single session turn.
+ *
+ * The V2 writer only persists incremental request_delta (the messages the
+ * client added this turn), while outbound_body is the full assembled prompt
+ * the gateway actually sent to the model (system + history + this turn's
+ * user + tools). Showing only request_delta for turn 2+ would hide the
+ * system prompt and earlier context — that's the bug this helper fixes:
+ * we prefer outbound_body when it carries messages, fall back to
+ * request_delta only when outbound is empty/unavailable.
+ *
+ * response_delta is always kept separate so the caller can render it as the
+ * turn's assistant reply block instead of pretending it was part of the
+ * request payload.
+ */
+export function pickTurnRequestMessages(
+  requestDelta: unknown,
+  outboundBody: unknown,
+): Record<string, unknown>[] {
+  const outboundMsgs = extractMessagesFromBody(outboundBody)
+  if (outboundMsgs.length) return outboundMsgs
+  return extractMessagesFromBody(requestDelta)
+}
+
+/**
+ * Build the per-turn message sources in one call. Useful for the
+ * SessionTurnsSyncPane V2 path, which always has both request_delta and
+ * response_delta available.
+ */
+export function splitTurnMessages(
+  requestDelta: unknown,
+  responseDelta: unknown,
+  outboundBody: unknown,
+): TurnMessageSources {
+  return {
+    requestMessages: pickTurnRequestMessages(requestDelta, outboundBody),
+    responseMessages: extractMessagesFromBody(responseDelta),
+  }
+}
+
+/**
+ * Pick the user instruction summary for a single session turn.
+ *
+ * Prefer the LAST user message in outbound_body so the card reflects the
+ * current turn's actual question, even when request_delta was attachment-
+ * only or otherwise empty. Fall back to the FIRST user message in
+ * request_delta so older turns without outbound still surface their prompt.
+ */
+export function summarizeTurnUserInstruction(
+  requestDelta: unknown,
+  outboundBody: unknown,
+): { text: string; full: string; truncated: boolean } {
+  const outboundMsgs = extractMessagesFromBody(outboundBody)
+  for (let i = outboundMsgs.length - 1; i >= 0; i--) {
+    if (String(outboundMsgs[i].role || '') === 'user') {
+      const full = contentToPlain(outboundMsgs[i].content).trim()
+      const { text, truncated } = previewText(full, 6)
+      return { text, full, truncated }
+    }
+  }
+  const full = firstUserPrompt(requestDelta)
+  const { text, truncated } = previewText(full, 6)
+  return { text, full, truncated }
+}
+
 /**
  * deriveConversationTurns splits a flat chat message list into turns.
  *
@@ -136,6 +219,10 @@ export interface ConversationTurn {
   index: number
   /** 1-based turn number for display. */
   number: number
+  /** Backed by the V2 turn_no column when available; falls back to `number`. */
+  turnNo?: number
+  /** V2 request_id; used to align the selected card with the current route. */
+  requestId?: string | null
   messages: Record<string, unknown>[]
   /** Plain-text preview of the turn's leading user message (truncated). */
   userPreview: string
