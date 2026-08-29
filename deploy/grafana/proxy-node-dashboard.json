@@ -20,7 +20,7 @@
   "panels": [
     {
       "datasource": "Prometheus",
-      "description": "Distribution of node health status",
+      "description": "Aggregate node health status from low-cardinality node gauges.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -89,12 +89,12 @@
           "refId": "C"
         }
       ],
-      "title": "Node Health Status Distribution",
+      "title": "Aggregate Node Health Status",
       "type": "piechart"
     },
     {
       "datasource": "Prometheus",
-      "description": "Current counts of nodes by health status",
+      "description": "Aggregate counts of nodes by dialability and health.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -203,12 +203,12 @@
           "refId": "D"
         }
       ],
-      "title": "Node Counts by Status",
+      "title": "Aggregate Node Counts",
       "type": "bargauge"
     },
     {
       "datasource": "Prometheus",
-      "description": "Node response time distribution histogram",
+      "description": "Aggregate node response-time histogram.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -281,7 +281,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Response time percentiles (P50, P95, P99)",
+      "description": "Aggregate response-time percentiles from the node response-time histogram.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -365,159 +365,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Distribution of consecutive failures across nodes",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisLabel": "Node Count",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "bars",
-            "fillOpacity": 80,
-            "gradientMode": "none",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "auto",
-            "spanNulls": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 17
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "displayMode": "table",
-          "placement": "right"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "pluginVersion": "8.0.0",
-      "targets": [
-        {
-          "expr": "sum by (le) (rate(llm_gateway_proxy_node_consecutive_failures_bucket[5m]))",
-          "format": "time_series",
-          "legendFormat": "{{le}} failures",
-          "refId": "A"
-        }
-      ],
-      "title": "Consecutive Failures Distribution",
-      "type": "timeseries"
-    },
-    {
-      "datasource": "Prometheus",
-      "description": "Nodes grouped by consecutive failure count",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "orange",
-                "value": 3
-              },
-              {
-                "color": "red",
-                "value": 5
-              }
-            ]
-          },
-          "unit": "short"
-        }
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 17
-      },
-      "id": 6,
-      "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "showUnfilled": true,
-        "text": {}
-      },
-      "pluginVersion": "8.0.0",
-      "targets": [
-        {
-          "expr": "count(llm_gateway_proxy_node_consecutive_failures == 0)",
-          "legendFormat": "0 failures",
-          "refId": "A"
-        },
-        {
-          "expr": "count(llm_gateway_proxy_node_consecutive_failures > 0 and llm_gateway_proxy_node_consecutive_failures <= 2)",
-          "legendFormat": "1-2 failures",
-          "refId": "B"
-        },
-        {
-          "expr": "count(llm_gateway_proxy_node_consecutive_failures > 2 and llm_gateway_proxy_node_consecutive_failures <= 5)",
-          "legendFormat": "3-5 failures",
-          "refId": "C"
-        },
-        {
-          "expr": "count(llm_gateway_proxy_node_consecutive_failures > 5)",
-          "legendFormat": ">5 failures",
-          "refId": "D"
-        }
-      ],
-      "title": "Nodes by Consecutive Failure Count",
-      "type": "bargauge"
-    },
-    {
-      "datasource": "Prometheus",
-      "description": "Health check success rate over time",
+      "description": "Aggregate health-check success rate by status.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -593,7 +441,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Current health check success rate gauge",
+      "description": "Current aggregate health-check success rate by status.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -654,7 +502,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Health check operations per second",
+      "description": "Aggregate health-check operations by status.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -733,7 +581,7 @@
     },
     {
       "datasource": "Prometheus",
-      "description": "Total health check operations",
+      "description": "Aggregate health-check totals by status.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -794,116 +642,6 @@
       ],
       "title": "Health Check Total by Status",
       "type": "piechart"
-    },
-    {
-      "datasource": "Prometheus",
-      "description": "Top nodes with highest failure rates",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "align": "auto",
-            "displayMode": "auto"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Consecutive Failures"
-            },
-            "properties": [
-              {
-                "id": "custom.displayMode",
-                "value": "color-background"
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "mode": "absolute",
-                  "steps": [
-                    {
-                      "color": "green",
-                      "value": null
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 1
-                    },
-                    {
-                      "color": "orange",
-                      "value": 3
-                    },
-                    {
-                      "color": "red",
-                      "value": 5
-                    }
-                  ]
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 41
-      },
-      "id": 11,
-      "options": {
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": true,
-            "displayName": "Consecutive Failures"
-          }
-        ]
-      },
-      "pluginVersion": "8.0.0",
-      "targets": [
-        {
-          "expr": "topk(20, llm_gateway_proxy_node_consecutive_failures > 0)",
-          "format": "table",
-          "instant": true,
-          "legendFormat": "",
-          "refId": "A"
-        }
-      ],
-      "title": "Top 20 Nodes with Failures",
-      "transformations": [
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Time": true,
-              "job": true,
-              "instance": true
-            },
-            "indexByName": {
-              "Value": 2
-            },
-            "renameByName": {
-              "Value": "Consecutive Failures"
-            }
-          }
-        }
-      ],
-      "type": "table"
     }
   ],
   "refresh": "30s",
@@ -934,7 +672,7 @@
     ]
   },
   "timezone": "browser",
-  "title": "LLM Gateway - Node Details",
+  "title": "LLM Gateway - Node Health (Aggregate)",
   "uid": "llm-gateway-node-details",
-  "version": 1
+  "version": 2
 }

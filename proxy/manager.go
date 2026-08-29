@@ -23,6 +23,10 @@ type Manager struct {
 	store   Store
 	parser  Parser
 	checker HealthChecker
+	// loadBalancer 在已排序的可用候选节点之间执行可配置的选择策略。
+	loadBalancer *LoadBalancer
+	// selectionMu serializes load-balancer state changes and selections.
+	selectionMu sync.Mutex
 	// transportFactory 按订阅缓存可复用的 http.Transport（Stage 2：避免每次
 	// SelectBestNode/探活都新建 Transport 导致连接泄漏）。
 	transportFactory *TransportFactory
@@ -44,12 +48,18 @@ type Manager struct {
 	healthCheckInterval   time.Duration
 	unknownDomainStrategy string        // direct/proxy/probe
 	cacheTTL              time.Duration // 缓存 TTL，默认 5 分钟
+	autoDisableThreshold  int
+	autoDisableEnabled    bool
+	autoRecoverEnabled    bool
 
 	// 审计修复 (2026-08-29)：问题 7 - 增加 context 用于优雅停止后台 goroutine。
-	ctx    context.Context
-	cancel context.CancelFunc
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
+	stopCh      chan struct{}
+	wg          sync.WaitGroup
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
 }
 
 // NewManager 创建代理管理器
@@ -63,47 +73,117 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 		store:                 store,
 		parser:                parser,
 		checker:               checker,
+		loadBalancer:          NewLoadBalancer(StrategyBestOnly),
 		transportFactory:      factory,
 		metrics:               metrics,
 		autoRefreshInterval:   time.Hour,
 		healthCheckInterval:   5 * time.Minute,
 		unknownDomainStrategy: "direct",
 		cacheTTL:              5 * time.Minute,
+		autoDisableThreshold:  3,
+		autoDisableEnabled:    true,
+		autoRecoverEnabled:    true,
 		ctx:                   ctx,
 		cancel:                cancel,
 		stopCh:                make(chan struct{}),
 	}
 }
 
-// Start 启动定时任务
+// Start 启动定时任务。多次调用只会启动一组后台任务。
 func (m *Manager) Start() {
-	// 启动时立即加载所有节点到内存
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.started || m.stopped {
+		return
+	}
+	m.started = true
+
 	if err := m.loadAllNodesIntoCache(); err != nil {
 		slog.Error("proxy: failed to load nodes into cache", "error", err)
 	}
-
-	// 定时刷新订阅
-	m.wg.Add(1)
+	// Keep lifecycleMu while adding workers so Stop cannot call Wait concurrently
+	// with WaitGroup.Add.
+	m.wg.Add(2)
 	go m.refreshLoop()
-
-	// 定时健康检查
-	m.wg.Add(1)
 	go m.healthCheckLoop()
 }
 
-// Stop 停止定时任务，并关闭 Transport 工厂的空闲连接。
-// 审计修复 (2026-08-29)：问题 7 - 使用 context 取消和 WaitGroup 确保 goroutine 优雅退出。
+// Stop 停止定时任务，并关闭可关闭的检查器及 Transport 工厂。
+// 多次调用安全，不会重复关闭 channel 或资源。
 func (m *Manager) Stop() {
-	m.cancel() // 取消 context，通知所有后台任务停止
+	m.lifecycleMu.Lock()
+	if m.stopped {
+		m.lifecycleMu.Unlock()
+		return
+	}
+	m.stopped = true
+	m.cancel()
 	close(m.stopCh)
-	m.wg.Wait() // 等待所有后台 goroutine 退出
+	m.lifecycleMu.Unlock()
+
+	m.wg.Wait()
+	if closer, ok := m.checker.(interface{ Close() }); ok && closer != nil {
+		closer.Close()
+	}
 	if m.transportFactory != nil {
 		m.transportFactory.CloseIdleConnections()
 	}
 }
 
-// SelectBestNode 选择当前最健康、成功率最高且响应最快的可拨号节点。
-func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (_ *Node, err error) {
+// SetLoadBalanceStrategy configures the strategy used by SelectNodeWithStrategy
+// and SelectNodeWithLocation. SelectBestNode always remains best-only.
+func (m *Manager) SetLoadBalanceStrategy(strategy LoadBalanceStrategy) {
+	m.selectionMu.Lock()
+	defer m.selectionMu.Unlock()
+	affinity := AffinityAny
+	if m.loadBalancer != nil {
+		affinity = m.loadBalancer.locationAffinity
+	}
+	m.loadBalancer = NewLoadBalancer(strategy)
+	m.loadBalancer.SetLocationAffinity(affinity)
+}
+
+// SetLocationAffinity configures location affinity for SelectNodeWithLocation.
+func (m *Manager) SetLocationAffinity(policy LocationAffinityPolicy) {
+	m.selectionMu.Lock()
+	defer m.selectionMu.Unlock()
+	if m.loadBalancer == nil {
+		m.loadBalancer = NewLoadBalancer(StrategyBestOnly)
+	}
+	m.loadBalancer.SetLocationAffinity(policy)
+}
+
+// SetAutoDisablePolicy configures failure handling. The threshold always affects
+// selection; the enablement flags are retained for health-check policy decisions.
+func (m *Manager) SetAutoDisablePolicy(maxFailures int, autoDisable, autoRecover bool) {
+	if maxFailures <= 0 {
+		maxFailures = 3
+	}
+	m.selectionMu.Lock()
+	m.autoDisableThreshold = maxFailures
+	m.autoDisableEnabled = autoDisable
+	m.autoRecoverEnabled = autoRecover
+	m.selectionMu.Unlock()
+}
+
+// SelectBestNode selects the best available node and intentionally ignores the
+// configured load-balancing strategy for backward compatibility.
+func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (*Node, error) {
+	return m.selectNode(ctx, subscriptionID, "", "", true)
+}
+
+// SelectNodeWithStrategy selects an available node using the configured strategy.
+func (m *Manager) SelectNodeWithStrategy(ctx context.Context, subscriptionID *int, requestKey string) (*Node, error) {
+	return m.selectNode(ctx, subscriptionID, requestKey, "", false)
+}
+
+// SelectNodeWithLocation selects an available node using the configured strategy
+// and configured location-affinity policy.
+func (m *Manager) SelectNodeWithLocation(ctx context.Context, subscriptionID *int, requestKey, preferredLocation string) (*Node, error) {
+	return m.selectNode(ctx, subscriptionID, requestKey, preferredLocation, false)
+}
+
+func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKey, preferredLocation string, bestOnly bool) (_ *Node, err error) {
 	startedAt := time.Now()
 	result := "store_error"
 	defer func() {
@@ -128,10 +208,16 @@ func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (_ *N
 		}
 	}
 
+	m.selectionMu.Lock()
+	defer m.selectionMu.Unlock()
+	threshold := m.autoDisableThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
 	activeNodes := make([]*Node, 0, len(candidates))
 	undialable := 0
 	for _, node := range candidates {
-		if node.Status != "active" || node.ConsecutiveFailures >= 3 {
+		if node == nil || node.Status != "active" || node.PasswordDecryptFailed || node.ConsecutiveFailures >= threshold {
 			continue
 		}
 		if !node.Dialable() {
@@ -164,11 +250,36 @@ func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (_ *N
 		}
 		return activeNodes[i].ResponseTimeMs < activeNodes[j].ResponseTimeMs
 	})
+
+	var selected *Node
+	if bestOnly {
+		selected = activeNodes[0]
+	} else {
+		if m.loadBalancer == nil {
+			m.loadBalancer = NewLoadBalancer(StrategyBestOnly)
+		}
+		subID := 0
+		if subscriptionID != nil {
+			subID = *subscriptionID
+		}
+		if preferredLocation != "" {
+			selected = m.loadBalancer.SelectNodeWithLocation(activeNodes, subID, requestKey, preferredLocation)
+		} else {
+			selected = m.loadBalancer.SelectNode(activeNodes, subID, requestKey)
+		}
+	}
+	if selected == nil {
+		result = "no_available"
+		if m.metrics != nil {
+			m.metrics.IncEgressSelection("none")
+		}
+		return nil, fmt.Errorf("no available active nodes")
+	}
 	result = "success"
 	if m.metrics != nil {
 		m.metrics.IncEgressSelection("dialable")
 	}
-	return activeNodes[0], nil
+	return selected, nil
 }
 
 // RequiresProxy 判断域名是否需要代理
@@ -295,6 +406,12 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 	if err != nil {
 		return fmt.Errorf("get node: %w", err)
 	}
+	if node.PasswordDecryptFailed {
+		if m.metrics != nil {
+			m.metrics.IncPasswordDecryptFailed()
+		}
+		return fmt.Errorf("health check node %d: password decryption failed", nodeID)
+	}
 
 	startTime := time.Now()
 	responseTimeMs, err := m.checker.Check(ctx, node)
@@ -306,7 +423,7 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 		node.LastHealthCheckStatus = "failed"
 		node.ConsecutiveFailures++
 
-		if node.ConsecutiveFailures >= 3 {
+		if node.ConsecutiveFailures >= m.autoDisableThreshold {
 			node.Status = "unhealthy"
 		}
 
