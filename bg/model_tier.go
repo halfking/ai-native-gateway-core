@@ -118,6 +118,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 	if rows, err := m.db.Query(ctx, `
 		SELECT COALESCE(featured_models, ARRAY[]::TEXT[])
 		FROM routing_policy WHERE tenant_id = $1 LIMIT 1`, staticTenant); err == nil {
+		defer rows.Close()
 		for rows.Next() {
 			var arr []string
 			if err := rows.Scan(&arr); err == nil {
@@ -128,7 +129,6 @@ func (m *ModelTier) refresh(ctx context.Context) {
 				}
 			}
 		}
-		rows.Close()
 	} else {
 		slog.Warn("model_tier: load static featured failed", "tenant", staticTenant, "error", err)
 	}
@@ -154,6 +154,7 @@ func (m *ModelTier) refresh(ctx context.Context) {
 			) t
 			ORDER BY calls DESC
 			LIMIT $2`, windowHours, topN); err == nil {
+			defer rows.Close()
 			for rows.Next() {
 				var model string
 				if err := rows.Scan(&model); err == nil {
@@ -162,7 +163,6 @@ func (m *ModelTier) refresh(ctx context.Context) {
 					}
 				}
 			}
-			rows.Close()
 		} else {
 			slog.Warn("model_tier: load usage top-N failed", "error", err)
 		}
