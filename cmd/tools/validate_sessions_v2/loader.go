@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // V1Turn represents a turn from request_logs (V1 schema)
@@ -105,11 +104,30 @@ type V2Session struct {
 
 // SessionLoader loads V1 and V2 data for validation
 type SessionLoader struct {
-	db *pgxpool.Pool
+	db sessionDB
 }
 
+type sessionDB interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+const v1BodyQuery = `
+		SELECT COALESCE(request_body, '{}'::jsonb), COALESCE(response_body, '{}'::jsonb)
+		FROM (
+			SELECT request_id, ts, request_body, response_body, 0 AS source_priority
+			FROM request_logs_bodies_hot
+			UNION ALL
+			SELECT request_id, ts, request_body, response_body, 1 AS source_priority
+			FROM request_logs_bodies
+		) AS bodies
+		WHERE request_id = $1 AND ts = $2
+		ORDER BY source_priority
+		LIMIT 1
+	`
+
 // NewSessionLoader creates a new session loader
-func NewSessionLoader(db *pgxpool.Pool) *SessionLoader {
+func NewSessionLoader(db sessionDB) *SessionLoader {
 	return &SessionLoader{db: db}
 }
 
@@ -190,18 +208,13 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 		return nil, fmt.Errorf("iterate request_logs: %w", err)
 	}
 
-	// Step 2: Query request_logs_bodies for each request_id
-	bodyQuery := `
-		SELECT 
-			COALESCE(request_body, '{}'::jsonb) as request_body,
-			COALESCE(response_body, '{}'::jsonb) as response_body
-		FROM request_logs_bodies
-		WHERE request_id = $1
-	`
-
+	// Step 2: Query the independent body store using the request log's identity.
+	// Bodies may still be in the hot table or already promoted to partitions. The
+	// timestamp is part of the body table key and prevents a reused request ID from
+	// receiving another turn's body.
 	for i := range turns {
 		var requestBody, responseBody json.RawMessage
-		err := l.db.QueryRow(ctx, bodyQuery, turns[i].RequestID).Scan(&requestBody, &responseBody)
+		err := l.db.QueryRow(ctx, v1BodyQuery, turns[i].RequestID, turns[i].Ts).Scan(&requestBody, &responseBody)
 		if err == pgx.ErrNoRows {
 			// No bodies for this request - keep empty defaults
 			continue

@@ -87,6 +87,8 @@ type journalSnapshotReceipt struct {
 	createdAt time.Time
 }
 
+const journalSnapshotReceiptCapacity = 10000
+
 type journalSnapshotReceiptKey struct {
 	tenantID, requestID string
 	version             int64
@@ -163,16 +165,14 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 	defer a.mu.Unlock()
 
 	var claim requestjourney.JournalSnapshotReceiptClaim
+	baseSeq := a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
 	if a.receipt != nil {
 		hash, err := requestjourney.SnapshotPayloadHash(snap.TenantID, snap.RequestID, snap.Entries, snap.Truncated, snap.TruncatedCount, snap.SnapshotVersion)
 		if err != nil {
 			slog.Warn("dispatch journal snapshot hash failed", "request_id", snap.RequestID, "error", err)
 			return
 		}
-		// MaxSeq is only the candidate base for a new receipt. Once a durable
-		// receipt exists, ClaimWithProjectionBase returns its immutable base.
-		candidateBase := a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
-		claim, err = a.receipt.ClaimWithProjectionBase(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash, candidateBase)
+		claim, err = a.receipt.ClaimWithProjectionBase(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash, baseSeq)
 		if err != nil || claim.AlreadyCompleted || !claim.Claimed {
 			if err != nil {
 				slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
@@ -202,8 +202,9 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 			}
 			return
 		}
-		a.receipts[key] = journalSnapshotReceipt{hash: hash, createdAt: time.Now()}
+		a.rememberReceiptLocked(key, journalSnapshotReceipt{hash: hash, createdAt: time.Now()})
 	}
+
 	failed := false
 	defer func() {
 		if a.receipt != nil {
@@ -224,9 +225,9 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 		// Record snapshot stored metric (2026-08-29)
 		metrics.Global().RecordJournalSnapshotStored(snap.TenantID)
 	}
-	baseSeq := a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
-	if a.receipt != nil {
-		baseSeq = claim.ProjectionBaseSeq
+	baseSeq = claim.ProjectionBaseSeq
+	if a.receipt == nil {
+		baseSeq = a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
 	}
 	for i, entry := range snap.Entries {
 		event, ok := journalEntryToJourneyEvent(a.instance, snap.TenantID, snap.RequestID, baseSeq, i, entry)
@@ -240,6 +241,33 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 	}
 	// Record snapshot apply metric once per snapshot (2026-08-29)
 	metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, !failed)
+}
+
+func (a *dispatchJourneyJournalAdapter) rememberReceiptLocked(key journalSnapshotReceiptKey, receipt journalSnapshotReceipt) {
+	if a.receipts == nil {
+		a.receipts = make(map[journalSnapshotReceiptKey]journalSnapshotReceipt)
+	}
+	a.receipts[key] = receipt
+	if len(a.receipts) <= journalSnapshotReceiptCapacity {
+		return
+	}
+
+	var oldestKey journalSnapshotReceiptKey
+	var oldestAt time.Time
+	foundOldest := false
+	for candidateKey, candidate := range a.receipts {
+		if candidateKey == key {
+			continue
+		}
+		if !foundOldest || candidate.createdAt.Before(oldestAt) {
+			oldestKey = candidateKey
+			oldestAt = candidate.createdAt
+			foundOldest = true
+		}
+	}
+	if foundOldest {
+		delete(a.receipts, oldestKey)
+	}
 }
 
 func journalSnapshotHash(snap dispatch.JournalSnapshot) [sha256.Size]byte {
