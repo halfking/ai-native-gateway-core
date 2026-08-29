@@ -196,6 +196,8 @@ func (h *Handler) handleSessionSubrouter(w http.ResponseWriter, r *http.Request)
 		h.HandleSessionRecycle(w, r)
 	case "turns":
 		h.serveSessionTurnsList(w, r, sessionID)
+	case "turns/bodies":
+		h.serveSessionTurnsBodies(w, r, sessionID)
 	case "snapshot":
 		h.serveSessionSnapshot(w, r, sessionID)
 	case "instant-summary":

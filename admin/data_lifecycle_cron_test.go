@@ -16,8 +16,8 @@ func TestHotCronConfig_Defaults(t *testing.T) {
 	if cfg.RunAtMinute != 0 {
 		t.Errorf("expected RunAtMinute=0, got %d", cfg.RunAtMinute)
 	}
-	if cfg.RetentionHours != 24 {
-		t.Errorf("expected RetentionHours=24, got %d", cfg.RetentionHours)
+	if cfg.RetentionHours != 8 {
+		t.Errorf("expected RetentionHours=8, got %d", cfg.RetentionHours)
 	}
 	if cfg.BatchSize != 500 {
 		t.Errorf("expected BatchSize=500, got %d", cfg.BatchSize)
@@ -36,8 +36,8 @@ func TestHotCronConfig_NewHotCronSchedulerAppliesDefaults(t *testing.T) {
 	if s.cfg.RunAtHour != 2 {
 		t.Errorf("expected default RunAtHour=2, got %d", s.cfg.RunAtHour)
 	}
-	if s.cfg.RetentionHours != 24 {
-		t.Errorf("expected default RetentionHours=24, got %d", s.cfg.RetentionHours)
+	if s.cfg.RetentionHours != 8 {
+		t.Errorf("expected default RetentionHours=8, got %d", s.cfg.RetentionHours)
 	}
 	if s.cfg.BatchSize != 500 {
 		t.Errorf("expected default BatchSize=500, got %d", s.cfg.BatchSize)
@@ -114,8 +114,8 @@ func TestHotCronConfigFromEnv_DefaultsWhenEmpty(t *testing.T) {
 	if cfg.RunAtHour != 2 {
 		t.Errorf("expected default RunAtHour=2, got %d", cfg.RunAtHour)
 	}
-	if cfg.RetentionHours != 24 {
-		t.Errorf("expected default RetentionHours=24 (1 day), got %d", cfg.RetentionHours)
+	if cfg.RetentionHours != 8 {
+		t.Errorf("expected default RetentionHours=8, got %d", cfg.RetentionHours)
 	}
 }
 
@@ -137,7 +137,7 @@ func TestHotCronStats(t *testing.T) {
 		t.Errorf("expected RunAt=02:00, got %s", stats.RunAt)
 	}
 	if stats.RetentionHrs != 24 {
-		t.Errorf("expected RetentionHrs=24, got %d", stats.RetentionHrs)
+		t.Errorf("explicit RetentionHrs=24 should be preserved, got %d", stats.RetentionHrs)
 	}
 	if stats.RunningNow {
 		t.Errorf("expected RunningNow=false initially")
