@@ -1520,6 +1520,11 @@ func (p *Pipeline) emitRequestTerminal(qr *QueuedRequest, out ForwardOutcome) {
 // at the top of complete), so consumers see the full trace. Sink failures
 // are logged and dropped — terminal delivery is best-effort, like the
 // observation path.
+//
+// Per ADR 2026-08-28-requestjourney-journal-snapshot.md §Decision point 3,
+// snapshots are bounded by maxJournalSnapshotEvents. When the journal exceeds
+// this limit, the oldest entries are dropped and the snapshot's Truncated
+// field is set to true, preserving the most recent execution context.
 func (p *Pipeline) emitJournalSnapshot(qr *QueuedRequest) {
 	if p == nil || qr == nil {
 		return
@@ -1534,10 +1539,23 @@ func (p *Pipeline) emitJournalSnapshot(qr *QueuedRequest) {
 	if len(entries) == 0 {
 		return
 	}
+	
+	// Apply bounded consumer limit: keep the most recent maxJournalSnapshotEvents
+	// entries. The terminal entry is always included (it's the newest).
+	var truncated bool
+	var truncatedCount int
+	if len(entries) > maxJournalSnapshotEvents {
+		truncatedCount = len(entries) - maxJournalSnapshotEvents
+		entries = entries[truncatedCount:]
+		truncated = true
+	}
+	
 	snap := JournalSnapshot{
-		TenantID:  qr.TenantID,
-		RequestID: qr.ID,
-		Entries:   entries,
+		TenantID:       qr.TenantID,
+		RequestID:      qr.ID,
+		Entries:        entries,
+		Truncated:      truncated,
+		TruncatedCount: truncatedCount,
 	}
 	defer func() {
 		if r := recover(); r != nil {

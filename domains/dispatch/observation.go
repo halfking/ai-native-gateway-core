@@ -254,15 +254,35 @@ func (f ObservationSinkFunc) ObserveDispatch(ctx context.Context, observation Ob
 	}
 }
 
+// maxJournalSnapshotEvents bounds the number of journal entries delivered
+// to a JournalSink consumer (ADR 2026-08-28-requestjourney-journal-snapshot.md
+// §Decision point 3). When a journal exceeds this limit, the oldest entries
+// are dropped and the snapshot's Truncated field is set to true. This defends
+// consumers from unbounded event streams while preserving the most recent
+// execution context (the terminal entry and its immediate predecessors).
+//
+// The bound is intentionally below journalCapacity (128) so a full-capacity
+// journal still truncates to a manageable consumer payload.
+const maxJournalSnapshotEvents = 50
+
 // JournalSnapshot is a detached, immutable view of a QueuedRequest's full
 // attempt journal. It is delivered to the optional JournalSink exactly once
 // at terminal time (Pipeline.complete, CAS-guarded). The terminal entry is
 // already in Entries by the time the snapshot is taken, so consumers see the
 // complete trace.
+//
+// Per ADR 2026-08-28-requestjourney-journal-snapshot.md §Decision point 3,
+// snapshots are bounded by a maximum event count. When the journal exceeds
+// this limit, the oldest entries are dropped and Truncated is set to true.
 type JournalSnapshot struct {
 	TenantID  string
 	RequestID string
 	Entries   []JournalEntry
+	// Truncated is true when the journal exceeded the max event count and
+	// the oldest entries were dropped. TruncatedCount is the number of
+	// entries dropped.
+	Truncated      bool
+	TruncatedCount int
 }
 
 // JournalSink consumes the per-request attempt journal at terminal time.

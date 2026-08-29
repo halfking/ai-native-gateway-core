@@ -91,16 +91,16 @@ func TestJournalSnapshot_PersistenceFailureIsolation(t *testing.T) {
 // 2. Bounded/truncated snapshots (NOT IMPLEMENTED: current behavior)
 // ────────────────────────────────────────────────────────────────────────────
 
-// TestJournalSnapshot_LargeJournal_CurrentBehavior documents the current
-// behavior when a journal has many entries. The ADR requires:
+// TestJournalSnapshot_LargeJournal_CurrentBehavior verifies that journals
+// exceeding maxJournalSnapshotEvents are truncated according to ADR requirements:
 //
 //   "Snapshot materialization is bounded by the existing event retention and a
 //    maximum event count/serialized size. Truncation is explicit in the returned
 //    metadata rather than silently dropping events." (§Decision point 3)
 //
-// Current implementation: dispatchJourneyJournalAdapter does NOT enforce a
-// max event count or size limit; it ships all entries via recorder.Apply().
-// This test establishes the baseline behavior for future bounded implementation.
+// Implementation: emitJournalSnapshot (pipeline.go) keeps the most recent
+// maxJournalSnapshotEvents (50) entries and sets Truncated=true with
+// TruncatedCount when the journal exceeds this limit.
 func TestJournalSnapshot_LargeJournal_CurrentBehavior(t *testing.T) {
 	var receivedSnap JournalSnapshot
 	var mu sync.Mutex
@@ -139,22 +139,37 @@ func TestJournalSnapshot_LargeJournal_CurrentBehavior(t *testing.T) {
 	p.complete(qr, ForwardOutcome{Result: "success"})
 
 	mu.Lock()
-	entryCount := len(receivedSnap.Entries)
+	snap := receivedSnap
 	mu.Unlock()
 
-	// Current behavior: all 100 + 1 (terminal) = 101 entries are delivered.
-	// The adapter does NOT truncate.
-	if entryCount != 101 {
-		t.Fatalf("received %d entries, want 101 (100 pre-terminal + 1 terminal)", entryCount)
+	// Verify truncation: the journal had 101 entries (100 retries + 1 terminal),
+	// so the snapshot should contain the most recent maxJournalSnapshotEvents (50).
+	if len(snap.Entries) != maxJournalSnapshotEvents {
+		t.Errorf("expected %d entries after truncation, got %d", maxJournalSnapshotEvents, len(snap.Entries))
 	}
 
-	// Future work (ADR §Decision point 3): implement a max event count/size
-	// limit (e.g., 50 entries, 10KB) and add explicit truncation metadata
-	// (e.g., JournalSnapshot.Truncated bool, TruncatedCount int). Then this
-	// test should verify:
-	//   - receivedSnap.Entries <= maxEventCount
-	//   - receivedSnap.Truncated == true
-	//   - receivedSnap.TruncatedCount == (total - maxEventCount)
+	if !snap.Truncated {
+		t.Error("expected Truncated=true for a journal exceeding maxJournalSnapshotEvents")
+	}
+
+	expectedTruncated := 101 - maxJournalSnapshotEvents // 101 total - 50 kept = 51 dropped
+	if snap.TruncatedCount != expectedTruncated {
+		t.Errorf("expected TruncatedCount=%d, got %d", expectedTruncated, snap.TruncatedCount)
+	}
+
+	// Verify the terminal entry is included (it should be the last entry).
+	lastEntry := snap.Entries[len(snap.Entries)-1]
+	if lastEntry.Action != NextActionCompleted {
+		t.Errorf("expected terminal entry (NextActionCompleted) as last entry, got %v", lastEntry.Action)
+	}
+
+	// Verify the oldest entries were dropped: the first entry in the snapshot
+	// should be seq 52 (101 total - 50 kept + 1).
+	firstEntry := snap.Entries[0]
+	expectedFirstSeq := 101 - maxJournalSnapshotEvents + 1 // seq 52
+	if firstEntry.Seq != expectedFirstSeq {
+		t.Errorf("expected first entry seq=%d (oldest dropped), got seq=%d", expectedFirstSeq, firstEntry.Seq)
+	}
 }
 
 // ────────────────────────────────────────────────────────────────────────────
