@@ -796,7 +796,11 @@ func main() {
 	// attempt journal. Mirrors the observation adapter above; the
 	// dispatch.JournalSink interface keeps the two paths independent so a
 	// future change to the observation bridge can't silently drop journals.
-	gatewayRequestJourneyJournalSink = newDispatchJourneyJournalAdapter(journeyRecorder, journeyInstanceID)
+	var journalSnapshotReceipt *requestjourney.JournalSnapshotReceiptStore
+	if dbConn != nil && dbConn.Enabled() {
+		journalSnapshotReceipt = requestjourney.NewPostgresJournalSnapshotReceiptStore(dbConn.Pool(), journeyInstanceID)
+	}
+	gatewayRequestJourneyJournalSink = newDispatchJourneyJournalAdapterWithReceipt(journeyRecorder, journeyInstanceID, journalSnapshotReceipt)
 	slog.Info("request journey recorder wired",
 		"gateway_instance_id", journeyInstanceID,
 		"durable_outbox", journeyObservationOutbox != nil,
