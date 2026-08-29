@@ -24,9 +24,10 @@ source "$SCRIPT_DIR/local-host-layout-helper.sh"
 
 # Try env-injector for the same credentials the gateway loaded at start time.
 # /metrics uses LLM_GATEWAY_ADMIN_API_KEY — when env-injector injects
-# `CHANGE_ME`, the placeholder below is wrong and every /metrics call returns
-# 401. Honor whatever the injector exported, then fall back.
-if [[ -z "${LLM_GATEWAY_ADMIN_API_KEY:-}" && -f ~/workspace/ai-native-tools/envs/loader.sh ]]; then
+# `CHANGE_ME`, the placeholder is not a valid bearer and every /metrics call
+# returns 401. Treat `CHANGE_ME` the same as unset, then fall back to the
+# canonical local-dev fallback that env.sh uses.
+if [[ -z "${LLM_GATEWAY_ADMIN_API_KEY:-}" || "${LLM_GATEWAY_ADMIN_API_KEY:-}" == "CHANGE_ME" ]] && [[ -f ~/workspace/ai-native-tools/envs/loader.sh ]]; then
   # shellcheck disable=SC1091
   source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server 115.29.212.252 2>/dev/null || true
 fi
@@ -195,8 +196,13 @@ fi
 heading "L4: 业务真实"
 
 # env-injector was sourced near the top of this script; LLM_GATEWAY_ADMIN_API_KEY
-# is now populated. If still empty (no injector), surface a clear hint.
+# is now populated (or already was). If still empty / placeholder, surface a
+# clear hint and use the same fallback env.sh uses when starting the gateway,
+# so the bearer matches what the gateway actually loaded.
 ADMIN_KEY="${LLM_GATEWAY_ADMIN_API_KEY:-local-admin-test-token-do-not-use-in-production}"
+if [[ -z "$ADMIN_KEY" || "$ADMIN_KEY" == "CHANGE_ME" ]]; then
+  ADMIN_KEY="local-admin-test-token-do-not-use-in-production"
+fi
 metrics_code=$(curl -sS -o /tmp/verify_metrics.txt -w "%{http_code}" \
   -H "Authorization: Bearer $ADMIN_KEY" "$BASE/metrics" --max-time 10 2>/dev/null || echo "000")
 if [[ "$metrics_code" == "200" ]]; then
