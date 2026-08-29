@@ -19,19 +19,19 @@ type Metrics struct {
 	healthFailuresTotal   prometheus.Counter
 	egressSelectionsTotal *prometheus.CounterVec
 
-	// 订阅刷新指标
-	subscriptionRefreshTotal          *prometheus.CounterVec // labels: subscription_id_prefix, status
+	// 订阅刷新指标。仅按结果聚合，避免订阅标识成为无界 label。
+	subscriptionRefreshTotal           *prometheus.CounterVec // labels: status
 	subscriptionRefreshDurationSeconds prometheus.Histogram
-	subscriptionNodeCount             *prometheus.GaugeVec // labels: subscription_id_prefix
+	subscriptionNodeCount              prometheus.Gauge
 
 	// 节点健康检查指标
-	nodeHealthCheckTotal          *prometheus.CounterVec // labels: status
+	nodeHealthCheckTotal           *prometheus.CounterVec // labels: status
 	nodeHealthCheckDurationSeconds prometheus.Histogram
-	nodeResponseTimeMs            prometheus.Histogram
-	nodeConsecutiveFailures       prometheus.Histogram
+	nodeResponseTimeMs             prometheus.Histogram
+	nodeConsecutiveFailures        prometheus.Histogram
 
 	// 节点选择指标
-	nodeSelectionTotal          *prometheus.CounterVec // labels: result
+	nodeSelectionTotal           *prometheus.CounterVec // labels: result
 	nodeSelectionDurationSeconds prometheus.Histogram
 
 	// 密码解密指标
@@ -50,8 +50,8 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	m := &Metrics{
 		subscriptionsTotal: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "llm_gateway_proxy_subscriptions_total",
-			Help: "代理订阅数量（按 active 状态分列）",
-		}, []string{"active"}),
+			Help: "代理订阅数量（按状态分列）",
+		}, []string{"state"}),
 		nodesTotal: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "llm_gateway_proxy_nodes_total",
 			Help: "代理节点总数",
@@ -76,22 +76,22 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		// 订阅刷新指标
 		subscriptionRefreshTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "llm_gateway_proxy_subscription_refresh_total",
-			Help: "代理订阅刷新次数（按订阅ID前缀和状态分列）",
-		}, []string{"subscription_id_prefix", "status"}),
+			Help: "代理订阅刷新次数（按结果分列）",
+		}, []string{"status"}),
 		subscriptionRefreshDurationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "llm_gateway_proxy_subscription_refresh_duration_seconds",
 			Help:    "代理订阅刷新耗时分布（秒）",
 			Buckets: []float64{0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0},
 		}),
-		subscriptionNodeCount: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		subscriptionNodeCount: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: "llm_gateway_proxy_subscription_node_count",
-			Help: "每个订阅的节点数量",
-		}, []string{"subscription_id_prefix"}),
+			Help: "全部订阅中的节点总数",
+		}),
 
 		// 节点健康检查指标
 		nodeHealthCheckTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "llm_gateway_proxy_node_health_check_total",
-			Help: "节点健康检查次数（按状态分列：success / timeout / error）",
+			Help: "节点健康检查次数（按结果分列：success / failed）",
 		}, []string{"status"}),
 		nodeHealthCheckDurationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "llm_gateway_proxy_node_health_check_duration_seconds",
@@ -112,7 +112,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		// 节点选择指标
 		nodeSelectionTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "llm_gateway_proxy_node_selection_total",
-			Help: "节点选择次数（按结果分列：success / no_healthy / no_available）",
+			Help: "节点选择次数（按结果分列：success / no_dialable / no_available / store_error）",
 		}, []string{"result"}),
 		nodeSelectionDurationSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
 			Name:    "llm_gateway_proxy_node_selection_duration_seconds",
@@ -148,7 +148,7 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	// 注册订阅刷新指标
 	m.subscriptionRefreshTotal = registerOrGetCounterVec(reg, m.subscriptionRefreshTotal)
 	m.subscriptionRefreshDurationSeconds = registerOrGetHistogram(reg, m.subscriptionRefreshDurationSeconds)
-	m.subscriptionNodeCount = registerOrGetGaugeVec(reg, m.subscriptionNodeCount)
+	m.subscriptionNodeCount = registerOrGetGauge(reg, m.subscriptionNodeCount)
 
 	// 注册节点健康检查指标
 	m.nodeHealthCheckTotal = registerOrGetCounterVec(reg, m.nodeHealthCheckTotal)
@@ -230,10 +230,10 @@ func registerOrGetHistogram(reg prometheus.Registerer, collector prometheus.Hist
 	return collector
 }
 
-// SetSubscriptions 设置订阅计数（active=true/false 各一列）。
+// SetSubscriptions 设置订阅计数（state=active/inactive）。
 func (m *Metrics) SetSubscriptions(active, inactive int) {
-	m.subscriptionsTotal.WithLabelValues("true").Set(float64(active))
-	m.subscriptionsTotal.WithLabelValues("false").Set(float64(inactive))
+	m.subscriptionsTotal.WithLabelValues("active").Set(float64(active))
+	m.subscriptionsTotal.WithLabelValues("inactive").Set(float64(inactive))
 }
 
 // SetNodeCounts 设置节点计数。
@@ -253,23 +253,18 @@ func (m *Metrics) IncEgressSelection(result string) {
 	m.egressSelectionsTotal.WithLabelValues(result).Inc()
 }
 
-// ObserveSubscriptionRefresh 记录一次订阅刷新操作（带耗时）。
-// subscriptionID 会被截取前8位以避免高基数；status 为 "success" 或 "error"。
-func (m *Metrics) ObserveSubscriptionRefresh(subscriptionID string, status string, durationSeconds float64) {
-	prefix := truncateID(subscriptionID, 8)
-	m.subscriptionRefreshTotal.WithLabelValues(prefix, status).Inc()
+// ObserveSubscriptionRefresh records one refresh attempt with status success or failed.
+func (m *Metrics) ObserveSubscriptionRefresh(status string, durationSeconds float64) {
+	m.subscriptionRefreshTotal.WithLabelValues(status).Inc()
 	m.subscriptionRefreshDurationSeconds.Observe(durationSeconds)
 }
 
-// SetSubscriptionNodeCount 设置某个订阅的节点数量。
-// subscriptionID 会被截取前8位以避免高基数。
-func (m *Metrics) SetSubscriptionNodeCount(subscriptionID string, count int) {
-	prefix := truncateID(subscriptionID, 8)
-	m.subscriptionNodeCount.WithLabelValues(prefix).Set(float64(count))
+// SetSubscriptionNodeCount sets the total number of nodes across subscriptions.
+func (m *Metrics) SetSubscriptionNodeCount(count int) {
+	m.subscriptionNodeCount.Set(float64(count))
 }
 
-// IncHealthCheck 记录一次节点健康检查。
-// status 可以是 "success"、"timeout"、"error"。
+// IncHealthCheck records one health check with status success or failed.
 func (m *Metrics) IncHealthCheck(status string) {
 	m.nodeHealthCheckTotal.WithLabelValues(status).Inc()
 }
@@ -289,8 +284,7 @@ func (m *Metrics) ObserveNodeConsecutiveFailures(count int) {
 	m.nodeConsecutiveFailures.Observe(float64(count))
 }
 
-// ObserveNodeSelection 记录一次节点选择操作（带耗时）。
-// result 可以是 "success"、"no_healthy"、"no_available"。
+// ObserveNodeSelection records one selection with a fixed low-cardinality result.
 func (m *Metrics) ObserveNodeSelection(result string, durationSeconds float64) {
 	m.nodeSelectionTotal.WithLabelValues(result).Inc()
 	m.nodeSelectionDurationSeconds.Observe(durationSeconds)

@@ -48,22 +48,19 @@ func TestSubscriptionRefresh(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewMetrics(reg)
 
-	// 记录成功的刷新
-	m.ObserveSubscriptionRefresh("sub12345678abcd", "success", 1.5)
-	m.ObserveSubscriptionRefresh("sub12345678abcd", "success", 2.3)
+	// Refresh metrics deliberately have no subscription identifier label.
+	m.ObserveSubscriptionRefresh("success", 1.5)
+	m.ObserveSubscriptionRefresh("success", 2.3)
+	m.ObserveSubscriptionRefresh("failed", 0.5)
 
-	// 记录失败的刷新
-	m.ObserveSubscriptionRefresh("sub87654321xyz", "error", 0.5)
-
-	// 验证 Counter
-	counter := getCounterValue(t, m.subscriptionRefreshTotal, "sub12345", "success")
-	if counter != 2 {
-		t.Errorf("expected 2 success refreshes for sub12345, got %f", counter)
+	successCounter := getCounterValue(t, m.subscriptionRefreshTotal, "success")
+	if successCounter != 2 {
+		t.Errorf("expected 2 successful refreshes, got %f", successCounter)
 	}
 
-	errorCounter := getCounterValue(t, m.subscriptionRefreshTotal, "sub87654", "error")
-	if errorCounter != 1 {
-		t.Errorf("expected 1 error refresh for sub87654, got %f", errorCounter)
+	failedCounter := getCounterValue(t, m.subscriptionRefreshTotal, "failed")
+	if failedCounter != 1 {
+		t.Errorf("expected 1 failed refresh, got %f", failedCounter)
 	}
 
 	// 验证 Histogram 有数据
@@ -73,22 +70,15 @@ func TestSubscriptionRefresh(t *testing.T) {
 	}
 }
 
-// TestSubscriptionNodeCount 测试订阅节点数量指标。
+// TestSubscriptionNodeCount verifies the low-cardinality aggregate gauge.
 func TestSubscriptionNodeCount(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewMetrics(reg)
 
-	m.SetSubscriptionNodeCount("sub12345678", 10)
-	m.SetSubscriptionNodeCount("sub87654321", 5)
-
-	gauge1 := getGaugeValue(t, m.subscriptionNodeCount, "sub12345")
-	if gauge1 != 10 {
-		t.Errorf("expected node count 10 for sub12345, got %f", gauge1)
-	}
-
-	gauge2 := getGaugeValue(t, m.subscriptionNodeCount, "sub87654")
-	if gauge2 != 5 {
-		t.Errorf("expected node count 5 for sub87654, got %f", gauge2)
+	m.SetSubscriptionNodeCount(15)
+	gauge := getGaugeValueSimple(t, m.subscriptionNodeCount)
+	if gauge != 15 {
+		t.Errorf("expected aggregate node count 15, got %f", gauge)
 	}
 }
 
@@ -99,8 +89,7 @@ func TestHealthCheck(t *testing.T) {
 
 	m.IncHealthCheck("success")
 	m.IncHealthCheck("success")
-	m.IncHealthCheck("timeout")
-	m.IncHealthCheck("error")
+	m.IncHealthCheck("failed")
 
 	m.ObserveHealthCheckDuration(0.05)
 	m.ObserveHealthCheckDuration(0.15)
@@ -110,9 +99,9 @@ func TestHealthCheck(t *testing.T) {
 		t.Errorf("expected 2 success health checks, got %f", successCount)
 	}
 
-	timeoutCount := getCounterValue(t, m.nodeHealthCheckTotal, "timeout")
-	if timeoutCount != 1 {
-		t.Errorf("expected 1 timeout health check, got %f", timeoutCount)
+	failedCount := getCounterValue(t, m.nodeHealthCheckTotal, "failed")
+	if failedCount != 1 {
+		t.Errorf("expected 1 failed health check, got %f", failedCount)
 	}
 
 	histogram := getHistogramCount(t, m.nodeHealthCheckDurationSeconds)
@@ -158,16 +147,16 @@ func TestNodeSelection(t *testing.T) {
 
 	m.ObserveNodeSelection("success", 0.001)
 	m.ObserveNodeSelection("success", 0.002)
-	m.ObserveNodeSelection("no_healthy", 0.0005)
+	m.ObserveNodeSelection("no_dialable", 0.0005)
 
 	successCount := getCounterValue(t, m.nodeSelectionTotal, "success")
 	if successCount != 2 {
 		t.Errorf("expected 2 successful node selections, got %f", successCount)
 	}
 
-	noHealthyCount := getCounterValue(t, m.nodeSelectionTotal, "no_healthy")
-	if noHealthyCount != 1 {
-		t.Errorf("expected 1 no_healthy node selection, got %f", noHealthyCount)
+	noDialableCount := getCounterValue(t, m.nodeSelectionTotal, "no_dialable")
+	if noDialableCount != 1 {
+		t.Errorf("expected 1 no_dialable node selection, got %f", noDialableCount)
 	}
 
 	histogram := getHistogramCount(t, m.nodeSelectionDurationSeconds)
