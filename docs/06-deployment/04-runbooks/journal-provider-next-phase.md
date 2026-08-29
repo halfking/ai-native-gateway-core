@@ -28,13 +28,26 @@ cat version.json
 
 ### 数据库和 Redis
 
-真实 PG 测试必须使用授权的 `TEST_DATABASE_URL` 或运维提供的隔离/预发 DSN；不得连接生产库做试验。测试前确认：
+真实 PG 测试必须使用授权的、专用的 `*_test` 数据库；不得连接生产库做试验。写入型 contract 测试需要两个不同 DSN：
 
-1. migration 618（JournalSnapshot receipt）和 620（provider error tenant/bucket）已在目标 schema 应用；
-2. candidate failure hot 表具备 `session_id`、`per_attempt_latency_ms`；
+- `TEST_DATABASE_URL`：仅限隔离测试库的 writer/admin 角色；
+- `TEST_TENANT_DATABASE_URL`：同一隔离测试库的 `NOSUPERUSER + NOBYPASSRLS` tenant 角色。
+
+测试前确认：
+
+1. migrations 617、618、620、621、622、623 已在目标 schema 应用；
+2. candidate failure hot 表具备 `session_id`、`per_attempt_latency_ms`、`aggregation_id`，并启用 `FORCE ROW LEVEL SECURITY`；服务写入角色是 `llm_gateway_rls_bypass` 成员，tenant 测试角色不是该成员；
 3. 用两个专用测试 tenant（例如 `audit-alpha`/`audit-beta`）和独立 request/credential ID；
 4. Redis 使用隔离 namespace 或独立实例；
-5. 所有测试数据都有可定位的前缀，执行后清理。
+5. 所有测试数据都有可定位的前缀，执行后清理；共享库按 CI concurrency 串行运行。
+
+```bash
+TEST_DATABASE_URL='postgres://<writer>@<isolated>/_test' \
+TEST_TENANT_DATABASE_URL='postgres://<tenant-nobypass>@<isolated>/_test' \
+make test-pg-contracts
+```
+
+若任一 DSN 缺失、两个 DSN 指向不同数据库、数据库名不是 `*_test`，或 tenant 角色不符合要求，测试必须失败，不能记录为通过。
 
 ### 245/154 环境
 

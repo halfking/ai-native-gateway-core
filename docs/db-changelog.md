@@ -108,3 +108,17 @@
 | 618 | `618_request_journey_snapshot_receipts.sql` | `6d4d9f44cd931641363e61c2c72a50c90b606830645e5ea375dae62dc26f21fb` | applied+verified |
 | 619 | `619_session_turns_unified_view.sql` | `6dc542c85761925ded3ed0ffe3d4d0556e62bbd96eb5208a428c7bde4ff4199b` | applied+verified |
 
+## 2026-08-29T14:14:39Z — deploy 154 build_seq 1806 (5e94de42)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 620 | `620_provider_error_details_tenant_scope.sql` | `03dcbe61d75378720d537db953f5aaf284252ebf3ae8a2dc4a80110fd1cbfaba` | applied+verified |
+| 621 | `621_provider_error_details_cleanup_index.sql` | `df5873c19a7b4baefc06f28ef04c8e24b354cec3bbd7af5b153fa7c2b41daefe` | applied+verified |
+| 622 | `622_provider_error_aggregator_state.sql` | `b9b46c389f4345a56eb0f6d179db8dc96507f59d4f14d60b8c73a4a660ad1ba0` | applied+verified |
+
+## 2026-08-29T17:14:05Z — deploy 245 build_seq 1811 (c50f0376)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 623 | `623_candidate_failure_logs_hot_tenant_scope.sql` | `45f90eb7703c12ab476fa3b0e25181f2e4c33fd87919ece59eb7628e79681073` | applied+verified |
+
