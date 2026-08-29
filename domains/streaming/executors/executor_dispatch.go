@@ -450,6 +450,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	startedAt := time.Now()
 	probeConsumed := false
 	healthEvidence := false
+	failureLogged := false
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			out = dispatch.ForwardOutcome{Err: fmt.Errorf("dispatch forward panic: %v", recovered)}
@@ -458,6 +459,19 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			kind := classifyExecError(out.Err)
 			out.ErrorKind = string(kind)
 			out.HTTPStatus = dispatchHTTPStatus(out.Err)
+			if e.FailureLogger != nil && !failureLogged {
+				extra := buildEnhancedErrorContext(params, kind, out.Err, len(dctx.candidates), params.AttemptNo)
+				if extra == nil {
+					extra = map[string]any{}
+				}
+				extra["failure_stage"], extra["preflight_reason"] = dispatchFailureStage(out.Err)
+				e.FailureLogger.LogFailureWithKind(
+					params.R.Header.Get("X-Request-Id"), tenantFromCtx(params.R), params.SessionID,
+					cand.CredentialID, cand.ProviderID, cand.RawModel, params.AttemptNo,
+					out.Err, kind, nil, nil, extra,
+				)
+				failureLogged = true
+			}
 		} else if result, ok := out.Result.(*ExecuteResult); ok && result != nil && result.Response != nil {
 			out.HTTPStatus = result.Response.StatusCode
 		}
@@ -728,7 +742,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				&perAttemptMs,
 				extra,
 			)
+			failureLogged = true
 		} else {
+
 			e.FailureLogger.LogFailure(
 				params.R.Header.Get("X-Request-Id"),
 				tenantFromCtx(params.R),
@@ -742,7 +758,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				&perAttemptMs,
 				extra,
 			)
+			failureLogged = true
 		}
+
 	}
 
 	return dispatch.ForwardOutcome{

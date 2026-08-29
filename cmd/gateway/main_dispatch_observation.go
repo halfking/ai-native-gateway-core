@@ -80,13 +80,18 @@ func translateDispatchObservation(observation dispatch.Observation) (requestjour
 type dispatchJourneyJournalAdapter struct {
 	recorder *requestjourney.Recorder
 	instance string
+	receipt  *requestjourney.JournalSnapshotReceiptStore
 }
 
 func newDispatchJourneyJournalAdapter(recorder *requestjourney.Recorder, instanceID string) dispatch.JournalSink {
+	return newDispatchJourneyJournalAdapterWithReceipt(recorder, instanceID, nil)
+}
+
+func newDispatchJourneyJournalAdapterWithReceipt(recorder *requestjourney.Recorder, instanceID string, receipt *requestjourney.JournalSnapshotReceiptStore) dispatch.JournalSink {
 	if recorder == nil {
 		return nil
 	}
-	return &dispatchJourneyJournalAdapter{recorder: recorder, instance: instanceID}
+	return &dispatchJourneyJournalAdapter{recorder: recorder, instance: instanceID, receipt: receipt}
 }
 
 // ApplyJournalSnapshot fans the per-request attempt journal out into the
@@ -119,8 +124,34 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 			"snap_tenant", snap.TenantID)
 		return
 	}
-	if snap.RequestID == "" || len(snap.Entries) == 0 {
+	if snap.TenantID == "" || snap.RequestID == "" || len(snap.Entries) == 0 {
 		return
+	}
+
+	var receiptClaim requestjourney.JournalSnapshotReceiptClaim
+	if a.receipt != nil {
+		if snap.SnapshotVersion <= 0 {
+			slog.Warn("dispatch journal sink rejected invalid snapshot version", "request_id", snap.RequestID)
+			return
+		}
+		hash, err := requestjourney.SnapshotPayloadHash(snap)
+		if err != nil {
+			slog.Warn("dispatch journal snapshot hash failed", "request_id", snap.RequestID, "error", err)
+			return
+		}
+		receiptClaim, err = a.receipt.Claim(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash)
+		if err != nil {
+			slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
+			return
+		}
+		if receiptClaim.AlreadyCompleted {
+			slog.Debug("dispatch journal snapshot receipt already completed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion)
+			return
+		}
+		if !receiptClaim.Claimed {
+			slog.Debug("dispatch journal snapshot receipt held by another worker", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion)
+			return
+		}
 	}
 
 	if max := a.recorder.MaxSeq(snap.TenantID, snap.RequestID); max >= snap.SnapshotVersion {
@@ -128,6 +159,11 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 			"request_id", snap.RequestID,
 			"snapshot_version", snap.SnapshotVersion,
 			"max_seq", max)
+		if a.receipt != nil {
+			if err := a.receipt.Complete(ctx, receiptClaim); err != nil {
+				slog.Warn("dispatch journal snapshot receipt completion failed", "request_id", snap.RequestID, "error", err)
+			}
+		}
 		return
 	}
 
@@ -143,6 +179,14 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 				"journal_seq", entry.Seq,
 				"event_seq", event.Seq,
 				"error", err)
+			if a.receipt != nil {
+				return
+			}
+		}
+	}
+	if a.receipt != nil {
+		if err := a.receipt.Complete(ctx, receiptClaim); err != nil {
+			slog.Warn("dispatch journal snapshot receipt completion failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
 		}
 	}
 }
@@ -186,21 +230,21 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 		occurredAt = entry.At // recordDecision always fills; defensive against future zero-valued entries
 	}
 	return requestjourney.JourneyEvent{
-		TenantID:           tenantID,
-		GatewayInstanceID:  instance,
-		RequestID:          requestID,
-		Seq:                baseSeq + int64(offset) + 1,
-		Type:               eventType,
-		Stage:              stage,
-		ResolvedModel:      entry.Model,
-		Model:              entry.Model,
-		ProviderID:         int64(entry.ProviderID),
-		CredentialID:       int64(entry.CredentialID),
-		Outcome:            outcome,
-		ErrorKind:          entry.ErrorKind,
-		HTTPStatus:         entry.HTTPStatus,
-		RetryReason:        string(entry.Action),
-		ObservationStatus:  requestjourney.ObservationComplete,
-		OccurredAt:         occurredAt,
+		TenantID:          tenantID,
+		GatewayInstanceID: instance,
+		RequestID:         requestID,
+		Seq:               baseSeq + int64(offset) + 1,
+		Type:              eventType,
+		Stage:             stage,
+		ResolvedModel:     entry.Model,
+		Model:             entry.Model,
+		ProviderID:        int64(entry.ProviderID),
+		CredentialID:      int64(entry.CredentialID),
+		Outcome:           outcome,
+		ErrorKind:         entry.ErrorKind,
+		HTTPStatus:        entry.HTTPStatus,
+		RetryReason:       string(entry.Action),
+		ObservationStatus: requestjourney.ObservationComplete,
+		OccurredAt:        occurredAt,
 	}, true
 }

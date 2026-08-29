@@ -19,9 +19,8 @@
 //   - Writes are best-effort and use a 3s timeout independent of the
 //     request's own context (Background) so a slow request_log write does
 //     not delay the user-visible response.
-//   - The writer takes a *pgxpool.Pool so it can run independently of any
-//     telemetry/client wiring. The pool is the same one the gateway uses
-//     for everything else (request_logs, credentials, etc.).
+//   - The writer takes the small database interface it needs so it can run
+//     independently of any telemetry/client wiring and remain easy to test.
 package executors
 
 import (
@@ -30,7 +29,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
@@ -59,14 +58,32 @@ type candidateFailureLog struct {
 // CandidateFailureWriter persists per-credential failure rows so operators
 // can see "credential X failed N times in the last hour with status code 502".
 // nil-safe: LogFailure is a no-op when writer is nil.
+type candidateFailureDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+const candidateFailureInsertSQL = `
+		INSERT INTO candidate_failure_logs_hot (
+			request_id, tenant_id, session_id, credential_id, provider_id, raw_model_name,
+			attempt_index, error_kind, error_message,
+			upstream_status_code, upstream_response_body, upstream_response_preview,
+			latency_ms, per_attempt_latency_ms, retryable, context
+		) VALUES (
+			$1, $2, NULLIF($3, ''), $4, $5, $6,
+			$7, $8, $9,
+			$10, NULLIF($11, ''), NULLIF($12, ''),
+			$13, $14, $15, $16::text::jsonb
+		)
+	`
+
 type CandidateFailureWriter struct {
-	pool *pgxpool.Pool
+	pool candidateFailureDB
 }
 
 // NewCandidateFailureWriter wires the writer to the gateway's main DB pool.
 // Pass nil to disable the feature (the executor's LogFailure call becomes a
 // no-op, preserving behaviour for tests that don't have a DB).
-func NewCandidateFailureWriter(pool *pgxpool.Pool) *CandidateFailureWriter {
+func NewCandidateFailureWriter(pool candidateFailureDB) *CandidateFailureWriter {
 	return &CandidateFailureWriter{pool: pool}
 }
 
@@ -140,19 +157,7 @@ func (w *CandidateFailureWriter) logFailure(
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := w.pool.Exec(ctx, `
-		INSERT INTO candidate_failure_logs_hot (
-			request_id, tenant_id, session_id, credential_id, provider_id, raw_model_name,
-			attempt_index, error_kind, error_message,
-			upstream_status_code, upstream_response_body, upstream_response_preview,
-			latency_ms, per_attempt_latency_ms, retryable, context
-		) VALUES (
-			$1, $2, NULLIF($3, ''), $4, $5, $6,
-			$7, $8, $9,
-			$10, NULLIF($11, ''), NULLIF($12, ''),
-			$13, $14, $15, $16::text::jsonb
-		)
-	`,
+	_, err := w.pool.Exec(ctx, candidateFailureInsertSQL,
 		row.RequestID, row.TenantID, row.SessionID, row.CredentialID, row.ProviderID, row.RawModelName,
 		row.AttemptIndex, row.ErrorKind, row.ErrorMessage,
 		row.UpstreamStatusCode, row.UpstreamResponseBody, row.UpstreamResponsePreview,
