@@ -1,4 +1,7 @@
 -- Migration 620 rollback: restore the legacy provider error fingerprint index.
+-- Environment: PostgreSQL 17+ after migration 620 has completed.
+-- Dependency: this rollback can fail if tenant/bucket rows collide under the
+-- legacy global fingerprint; resolve or archive those rows before execution.
 -- Tenant isolation remains enabled; this rollback only removes the 620 index
 -- and aggregation bucket column.
 BEGIN;

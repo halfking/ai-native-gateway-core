@@ -136,11 +136,11 @@ LOG_FILE="\${LOGS_DIR}/gateway.stdout.log"
 ERR_FILE="\${LOGS_DIR}/gateway.stderr.log"
 mkdir -p "\$LOGS_DIR"
 
-# Stop any existing instance first (idempotent)
+# A candidate bundle must not stop the currently active instance. The caller
+# owns lifecycle transitions; this script only starts this bundle on its port.
 if [[ -f "\$PID_FILE" ]] && kill -0 "\$(cat "\$PID_FILE")" 2>/dev/null; then
-  echo "[start] killing existing PID \$(cat "\$PID_FILE")"
-  kill "\$(cat "\$PID_FILE")" 2>/dev/null || true
-  for _ in {1..20}; do kill -0 "\$(cat "\$PID_FILE")" 2>/dev/null || break; sleep 0.25; done
+  echo "[start] bundle already running PID=\$(cat "\$PID_FILE")"
+  exit 0
 fi
 
 # shellcheck disable=SC1091
@@ -279,22 +279,38 @@ cmd_deploy() {
   lh_verify_bundle "$bundle_dir"
   ok "bundle staged + SHA256SUMS verified"
 
-  # Atomic switch (updates `current` + top-level shortcuts)
+  local previous_version
+  previous_version=$(lh_active_version)
+
+  # The local runner is single-port today. Switch the bundle first, then start
+  # it; on any failure, restore the previous current link and restart it.
   lh_atomic_switch "$VERSION"
   ok "active symlink → $VERSION"
-
-  # Start
   log "starting gateway..."
-  "$bundle_dir/start.sh"
-
-  # Mark verified if healthz passes
-  local health_url="http://127.0.0.1:$PORT/healthz"
-  if curl -fsS --max-time 5 "$health_url" >/dev/null 2>&1; then
-    lh_mark_verified "$VERSION"
-    ok "$VERSION marked verified"
-  else
-    warn "healthz did not respond — leaving verified=false (rollback candidates may include this version after manual verification)"
+  if ! "$bundle_dir/start.sh"; then
+    err "candidate failed to start; restoring previous active bundle"
+    if [[ -n "$previous_version" ]]; then
+      lh_atomic_switch "$previous_version" || true
+      "$(lh_bundle_dir "$previous_version")/start.sh" >/dev/null 2>&1 || true
+    fi
+    return 1
   fi
+
+  local health_url="http://127.0.0.1:$PORT/healthz"
+  local ready_url="http://127.0.0.1:$PORT/readyz"
+  if ! curl -fsS --max-time 5 "$health_url" >/dev/null 2>&1 ||
+     ! curl -fsS --max-time 5 "$ready_url" >/dev/null 2>&1; then
+    err "candidate is not ready; restoring previous active bundle"
+    "$bundle_dir/stop.sh" >/dev/null 2>&1 || true
+    if [[ -n "$previous_version" ]]; then
+      lh_atomic_switch "$previous_version" || true
+      "$(lh_bundle_dir "$previous_version")/start.sh" >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
+
+  lh_mark_verified "$VERSION"
+  ok "$VERSION marked verified"
 
   # Prune old verified bundles
   log "pruning (keep=$KEEP_VERIFIED verified bundles + active)..."
