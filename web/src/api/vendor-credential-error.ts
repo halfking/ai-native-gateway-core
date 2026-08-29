@@ -1,4 +1,4 @@
-import { req } from './_core'
+import { req, type RequestOptions } from './_core'
 
 export type VendorErrorHours = '1' | '24' | '168'
 
@@ -62,10 +62,13 @@ export interface VendorCredentialErrorDetail {
 export function getVendorCredentialErrorDetail(
   credentialId: number,
   hours: VendorErrorHours = '24',
+  options?: RequestOptions,
 ) {
   const params = new URLSearchParams({ hours })
   return req<VendorCredentialErrorDetail>(
     'GET',
     `/api/vendors/credentials/${credentialId}/error-detail?${params.toString()}`,
+    undefined,
+    options,
   )
 }

@@ -8,8 +8,25 @@ BEGIN;
 ALTER TABLE public.provider_error_details
     ADD COLUMN IF NOT EXISTS aggregation_bucket TIMESTAMPTZ;
 
--- Replace the global fingerprint with a tenant-scoped identity. Existing rows
--- are retained; duplicate legacy fingerprints are merged before the constraint.
+-- Replace the global fingerprint with a tenant-scoped identity. Do not merge
+-- legacy rows implicitly: fail closed when the target identity is duplicated so
+-- operators can resolve production data explicitly before retrying this migration.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM public.provider_error_details
+        GROUP BY COALESCE(tenant_id, ''), provider_id, COALESCE(model_name, ''),
+                 COALESCE(endpoint, ''), error_type, COALESCE(error_code, ''),
+                 COALESCE(LEFT(error_message, 200), ''),
+                 COALESCE(aggregation_bucket, TIMESTAMPTZ 'epoch')
+        HAVING count(*) > 1
+    ) THEN
+        RAISE EXCEPTION 'migration 620 blocked: duplicate provider_error_details target identities require explicit operator resolution';
+    END IF;
+END
+$$;
+
 DROP INDEX IF EXISTS public.idx_provider_error_details_fingerprint;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_error_details_tenant_fingerprint
 ON public.provider_error_details (

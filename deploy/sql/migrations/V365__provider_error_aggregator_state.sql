@@ -1,9 +1,7 @@
--- Migration 622: make provider-error aggregation resumable and idempotent.
--- A dedicated monotonic source key is used because candidate_failure_logs_hot.id
--- is a legacy, non-unique business field and cannot safely be a watermark.
--- The aggregator re-reads complete affected buckets before replace-upserting, so
--- this migration never merges or otherwise rewrites provider_error_details data.
-
+-- V365: make provider-error aggregation resumable and idempotent.
+-- A dedicated monotonic key is used because candidate_failure_logs_hot.id is a
+-- legacy non-unique business field. The Go worker re-reads complete affected
+-- buckets before replace-upserting; this migration never rewrites aggregates.
 BEGIN;
 
 CREATE SEQUENCE IF NOT EXISTS public.candidate_failure_logs_hot_aggregation_id_seq;
