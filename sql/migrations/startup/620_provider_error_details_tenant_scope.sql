@@ -1,4 +1,8 @@
 -- Migration 620: make provider error aggregates tenant-scoped and replay-safe.
+-- Environment: PostgreSQL 17+ with provider_error_details created by migration 616.
+-- Dependency: candidate_failure_logs_hot must expose tenant_id and ts.
+-- Compatibility: aggregation_bucket is nullable so old writers remain compatible;
+-- the new unique index treats legacy NULL buckets as the epoch sentinel.
 BEGIN;
 
 ALTER TABLE public.provider_error_details

@@ -1,4 +1,4 @@
--- Migration 614: align candidate_failure_logs_hot with the candidate failure writer.
+-- Migration 617: align candidate_failure_logs_hot with the candidate failure writer.
 -- The writer explicitly inserts session_id and per_attempt_latency_ms. Older hot
 -- tables (including the original 392 shape) did not have either column, so the
 -- INSERT failed after V359 moved the write path to the heap hot table.

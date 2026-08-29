@@ -26,9 +26,11 @@ spec:
       labels:
         app: llm-gateway-go
     spec:
+      terminationGracePeriodSeconds: 35
       containers:
         - name: llm-gateway-go
-          image: registry.itestu.cn/kx-llm-gateway-go:latest
+          # Keep this immutable release tag in sync with version.json/build_seq.
+          image: registry.itestu.cn/kx-llm-gateway-go:2.5.0-1805
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -71,7 +73,7 @@ spec:
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10

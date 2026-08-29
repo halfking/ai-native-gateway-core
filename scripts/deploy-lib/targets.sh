@@ -146,8 +146,7 @@ _ssh_host_for() {
 # ---- canonical target contracts -----------------------------------------
 
 # Slice 1 / 5 target: 154 (production gateway, host-mode systemd).
-# Mirrors the same contract as 245 (release bundle + versioned rollback)
-# but rollback stays on the existing runbook for this slice.
+# Mirrors 245's release-bundle and verified versioned rollback contract.
 target_154_contract() {
   # 2026-08-19 OOM 复盘: 154 同 245 一样, 公网 443 走 nginx → 8781 链路.
   # deploy 完成后 SSH 到目标机 curl 这个, 验证目标自身 nginx 是否 alive,
@@ -165,7 +164,7 @@ target_154_contract() {
     internal_https_health_url "https://127.0.0.1/healthz" \
     ssh_host "$(_ssh_host_for 154)" \
     ssh_key_env "SSH_KEY_154" \
-    rollback_policy "runbook" \
+    rollback_policy "versioned" \
     legacy_aliases ""
 }
 
