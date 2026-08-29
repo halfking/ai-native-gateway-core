@@ -27,7 +27,7 @@ receipt 可用时不再使用 recorder 的 global MaxSeq 判断快照完成；re
 
 ### P1/P2 — schema 与生命周期（已修正）
 
-candidate failure hot 表补齐 writer 使用的 `session_id` 与 `per_attempt_latency_ms`（startup 617 / deploy V363）；provider error tenant/bucket schema 为 startup 620 / deploy V364。ProviderErrorAggregator 的 Stop 在未启动、重复和并发调用时安全返回。
+candidate failure hot 表补齐 writer 使用的 `session_id` 与 `per_attempt_latency_ms`（startup 617 / deploy V363）；provider error tenant/bucket schema 的权威来源为 startup 620。ProviderErrorAggregator 的 Stop 在未启动、重复和并发调用时安全返回。
 
 ## 数据流与状态闭环
 

@@ -219,20 +219,23 @@ host_restart_service() {
   [[ -n "$service_name" ]] || { echo "service_name missing for $target" >&2; return 1; }
   [[ -n "$health_url" ]] || { echo "health_url missing for $target" >&2; return 1; }
 
-  # Step 1: stop (旧 binary srv.Shutdown 开始 drain)
-  "$ssh_cmd" "systemctl stop '$service_name'" || true
+  # Step 1: stop (旧 binary srv.Shutdown 开始 drain). A stop failure means
+  # the old listener may still own the port, so fail closed rather than racing it.
+  "$ssh_cmd" "systemctl stop '$service_name'" || return 1
 
-  # Step 2: 等 :8781 端口真释放 (healthz 不可达 = port freed)
+  # Step 2: wait until :8781 is actually released. Do not start the new
+  # process after the deadline: that would recreate the bind/restart loop.
   deadline_port_release=$(( $(date +%s) + 30 ))
   while (( $(date +%s) < deadline_port_release )); do
     if ! "$ssh_cmd" "curl -fsS --max-time 1 '$health_url' >/dev/null 2>&1"; then
-      break
+      "$ssh_cmd" "systemctl start '$service_name'"
+      return
     fi
     sleep 1
   done
 
-  # Step 3: 此时端口必已释放,启新 binary (systemd 接管后续 RestartSec 兜底)
-  "$ssh_cmd" "systemctl start '$service_name'"
+  echo "host_restart_service: $target did not release $health_url within 30s" >&2
+  return 1
 }
 
 # Wait for /healthz on the target host to answer 2xx. Slice 1-4 uses a
@@ -369,18 +372,12 @@ host_mark_verified() {
     if [ ! -f \"\$m\" ]; then \
       printf '{\"target\":\"$target\",\"version\":\"$version\",\"verified\":true,\"verified_at\":\"$now\"}\\n' > \"\$tmp\"; \
     else \
-      python3 - \"\$m\" \"\$tmp\" '$target' '$version' '$now' <<'PY'; \
-import json, sys
-source, destination, target, version, verified_at = sys.argv[1:]
-with open(source, encoding='utf-8') as handle:
-    metadata = json.load(handle)
-metadata.update(target=target, version=version, verified=True, verified_at=verified_at)
-with open(destination, 'w', encoding='utf-8') as handle:
-    json.dump(metadata, handle, separators=(',', ':'))
-    handle.write('\\n')
-PY
+      sed -E 's/\"verified\"[[:space:]]*:[[:space:]]*(true|false)/\"verified\":true/' \"\$m\" > \"\$tmp\"; \
+      if ! grep -q '\"verified_at\"' \"\$tmp\"; then \
+        sed -E -i.bak 's/}[[:space:]]*$/,\"verified_at\":\"$now\"}/' \"\$tmp\" && rm -f \"\$tmp.bak\"; \
+      fi; \
     fi; \
-    python3 -m json.tool \"\$tmp\" >/dev/null; mv -f \"\$tmp\" \"\$m\""
+    python3 -m json.tool "\$tmp" >/dev/null; mv -f "\$tmp" "\$m""
 }
 
 # ============================================================================
