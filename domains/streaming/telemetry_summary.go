@@ -56,14 +56,28 @@ func transformSummary(tx *transformation.TransformResult, outboundModel string) 
 	return strings.Join(parts, " | ")
 }
 
+// maxPreviewParseBytes caps how much of a request/response body we feed into
+// the JSON preview path. Bodies on this gateway routinely reach ~1.9MB
+// (chat completions with long contexts), and summarizeJSON does a full
+// json.Unmarshal of the entire body into map[string]any just to render a
+// ~320-char preview. That allocation is the single largest transient heap
+// consumer under load and drives OOM spikes on the 3.5GB / 3GB-cgroup 245
+// host. A 64KB prefix is more than enough to summarise the leading messages,
+// so we never unmarshal the full payload for preview purposes.
+const maxPreviewParseBytes = 64 * 1024
+
 func previewJSON(body []byte, limit int) string {
 	if len(body) == 0 {
 		return ""
 	}
-	if summary := summarizeJSON(body); summary != "" {
+	parseBody := body
+	if len(parseBody) > maxPreviewParseBytes {
+		parseBody = body[:maxPreviewParseBytes]
+	}
+	if summary := summarizeJSON(parseBody); summary != "" {
 		return truncateText(summary, limit)
 	}
-	return truncateText(compactJSON(body), limit)
+	return truncateText(compactJSON(parseBody), limit)
 }
 
 func summarizeJSON(body []byte) string {

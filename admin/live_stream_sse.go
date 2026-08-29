@@ -878,6 +878,12 @@ func (h *LiveStreamSSEHub) Run() {
 			h.fanOutKeepalive()
 		case <-cacheCleanupTicker.C:
 			h.evictStaleCachedSnapshots()
+			// 2026-08-29: 这 4 个 sync.Map 是懒加载 + 永不过期 (Store on miss,
+			// 从无 Delete/Range 淘汰), 随 catalog 规模只增不减。虽然按 catalog
+			// 基数有界, 但在 245 3.5G/3G-cgroup 主机上仍属于无谓的常驻内存。
+			// 复用清理 ticker 周期性 Clear, 下次访问重新查 DB (catalog 稳定,
+			// 重查代价极低), 防止其无限常驻。
+			h.evictStaleLabelCaches()
 		case <-healthTicker.C:
 			h.checkAndBroadcastHealth()
 		case <-snapshotRefreshTicker.C:
@@ -1064,6 +1070,21 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	h.lastSnapshotAt[scope.cacheKey] = time.Now()
 	h.lastSnapshotAtMu.Unlock()
 	return delta
+}
+
+// evictStaleLabelCaches periodically clears the four lazy sync.Map label
+// caches (providerCache / credentialLabelCache / modelFamilyCache /
+// canonicalCache). They are populated on every miss via Store() and never
+// evicted, so they only grow with catalog cardinality for the process
+// lifetime. Clearing them on the cleanup ticker forces a cheap re-query on
+// next access — bounded, never-leaking memory under the 3GB cgroup.
+//
+// 2026-08-29: see cacheCleanupTicker handler.
+func (h *LiveStreamSSEHub) evictStaleLabelCaches() {
+	h.providerCache.Clear()
+	h.credentialLabelCache.Clear()
+	h.modelFamilyCache.Clear()
+	h.canonicalCache.Clear()
 }
 
 // evictStaleCachedSnapshots removes cached snapshots for scopes that are both
