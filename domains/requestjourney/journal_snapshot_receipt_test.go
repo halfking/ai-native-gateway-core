@@ -47,7 +47,7 @@ func TestJournalSnapshotReceiptClaimIsIdempotentAndHashBound(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.bypass_rls', 'true', true)")).WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec("INSERT INTO journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(4), "hash-a", "gateway-a", now.Add(journalSnapshotReceiptLease), now).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(4), "hash-a", int64(0), "gateway-a", now.Add(journalSnapshotReceiptLease), now).WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 	claim, err := store.Claim(context.Background(), "tenant-a", "request-a", 4, "hash-a")
 	if err != nil || !claim.Claimed || claim.AlreadyCompleted {
@@ -56,9 +56,9 @@ func TestJournalSnapshotReceiptClaimIsIdempotentAndHashBound(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.bypass_rls', 'true', true)")).WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec("INSERT INTO journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(4), "hash-a", "gateway-a", now.Add(journalSnapshotReceiptLease), now).WillReturnResult(pgxmock.NewResult("INSERT", 0))
-	mock.ExpectQuery("SELECT payload_hash, status, claim_owner, claim_until").WithArgs("tenant-a", "request-a", int64(4)).WillReturnRows(
-		pgxmock.NewRows([]string{"payload_hash", "status", "claim_owner", "claim_until"}).AddRow("hash-a", "completed", "gateway-a", nil),
+	mock.ExpectExec("INSERT INTO journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(4), "hash-a", int64(0), "gateway-a", now.Add(journalSnapshotReceiptLease), now).WillReturnResult(pgxmock.NewResult("INSERT", 0))
+	mock.ExpectQuery("SELECT payload_hash, projection_base_seq, status, claim_owner, claim_until").WithArgs("tenant-a", "request-a", int64(4)).WillReturnRows(
+		pgxmock.NewRows([]string{"payload_hash", "projection_base_seq", "status", "claim_owner", "claim_until"}).AddRow("hash-a", int64(0), "completed", "gateway-a", nil),
 	)
 	mock.ExpectRollback()
 	claim, err = store.Claim(context.Background(), "tenant-a", "request-a", 4, "hash-a")
@@ -68,9 +68,9 @@ func TestJournalSnapshotReceiptClaimIsIdempotentAndHashBound(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.bypass_rls', 'true', true)")).WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec("INSERT INTO journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(4), "hash-a", "gateway-a", now.Add(journalSnapshotReceiptLease), now).WillReturnResult(pgxmock.NewResult("INSERT", 0))
-	mock.ExpectQuery("SELECT payload_hash, status, claim_owner, claim_until").WithArgs("tenant-a", "request-a", int64(4)).WillReturnRows(
-		pgxmock.NewRows([]string{"payload_hash", "status", "claim_owner", "claim_until"}).AddRow("hash-other", "completed", "gateway-a", nil),
+	mock.ExpectExec("INSERT INTO journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(4), "hash-a", int64(0), "gateway-a", now.Add(journalSnapshotReceiptLease), now).WillReturnResult(pgxmock.NewResult("INSERT", 0))
+	mock.ExpectQuery("SELECT payload_hash, projection_base_seq, status, claim_owner, claim_until").WithArgs("tenant-a", "request-a", int64(4)).WillReturnRows(
+		pgxmock.NewRows([]string{"payload_hash", "projection_base_seq", "status", "claim_owner", "claim_until"}).AddRow("hash-other", int64(0), "completed", "gateway-a", nil),
 	)
 	mock.ExpectRollback()
 	_, err = store.Claim(context.Background(), "tenant-a", "request-a", 4, "hash-a")

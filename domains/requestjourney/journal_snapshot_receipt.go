@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const journalSnapshotReceiptLease = time.Minute
@@ -23,13 +25,16 @@ var (
 // than claimed, allowing retries to be safely acknowledged without replaying
 // the diagnostic projection.
 type JournalSnapshotReceiptClaim struct {
-	TenantID         string
-	RequestID        string
-	SnapshotVersion  int64
-	Owner            string
-	ClaimUntil       time.Time
-	Claimed          bool
-	AlreadyCompleted bool
+	TenantID        string
+	RequestID       string
+	SnapshotVersion int64
+	// ProjectionBaseSeq is fixed on the first claim and reused for every retry.
+	// It keeps generated JourneyEvent sequences stable across lease reclaim.
+	ProjectionBaseSeq int64
+	Owner             string
+	ClaimUntil        time.Time
+	Claimed           bool
+	AlreadyCompleted  bool
 }
 
 // JournalSnapshotReceiptStore persists the idempotency boundary for terminal
@@ -49,6 +54,13 @@ func NewPostgresJournalSnapshotReceiptStore(db observationOutboxDB, owner string
 		owner = "request-journey-snapshot"
 	}
 	return &JournalSnapshotReceiptStore{db: db, owner: owner, clock: time.Now}
+}
+
+// SetClockForTest controls lease timestamps in focused receipt tests.
+func (s *JournalSnapshotReceiptStore) SetClockForTest(clock func() time.Time) {
+	if s != nil && clock != nil {
+		s.clock = clock
+	}
 }
 
 // SnapshotPayloadHash returns the canonical SHA-256 hash used to detect a
@@ -73,9 +85,18 @@ func SnapshotPayloadHash(tenantID, requestID string, entries any, truncated bool
 
 // Claim atomically inserts or inspects a receipt. A pending/processing receipt
 // held by another live owner is not stolen; an expired claim may be reclaimed.
+// The compatibility form uses zero as the projection base; durable adapters
+// should call ClaimWithProjectionBase with their first-attempt candidate base.
 func (s *JournalSnapshotReceiptStore) Claim(ctx context.Context, tenantID, requestID string, version int64, payloadHash string) (JournalSnapshotReceiptClaim, error) {
-	claim := JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, Owner: s.owner}
-	if s == nil || s.db == nil || tenantID == "" || requestID == "" || version <= 0 || payloadHash == "" {
+	return s.ClaimWithProjectionBase(ctx, tenantID, requestID, version, payloadHash, 0)
+}
+
+// ClaimWithProjectionBase fixes the event-sequence base on the first claim and
+// returns that same base on lease reclaim. The immutable base makes retry event
+// identities stable even after partial projection or a failed Complete call.
+func (s *JournalSnapshotReceiptStore) ClaimWithProjectionBase(ctx context.Context, tenantID, requestID string, version int64, payloadHash string, projectionBaseSeq int64) (JournalSnapshotReceiptClaim, error) {
+	claim := JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, ProjectionBaseSeq: projectionBaseSeq, Owner: s.owner}
+	if s == nil || s.db == nil || tenantID == "" || requestID == "" || version <= 0 || payloadHash == "" || projectionBaseSeq < 0 {
 		return claim, ErrSnapshotReceiptInvalid
 	}
 	now := s.clock()
@@ -91,11 +112,11 @@ func (s *JournalSnapshotReceiptStore) Claim(ctx context.Context, tenantID, reque
 
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO journal_snapshot_receipts (
-			tenant_id, request_id, snapshot_version, payload_hash,
+			tenant_id, request_id, snapshot_version, payload_hash, projection_base_seq,
 			status, claim_owner, claim_until, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,'processing',$5,$6,$7,$7)
+		) VALUES ($1,$2,$3,$4,$5,'processing',$6,$7,$8,$8)
 		ON CONFLICT (tenant_id, request_id, snapshot_version) DO NOTHING`,
-		tenantID, requestID, version, payloadHash, s.owner, claim.ClaimUntil, now)
+		tenantID, requestID, version, payloadHash, projectionBaseSeq, s.owner, claim.ClaimUntil, now)
 	if err != nil {
 		return claim, fmt.Errorf("insert journal snapshot receipt: %w", err)
 	}
@@ -108,21 +129,22 @@ func (s *JournalSnapshotReceiptStore) Claim(ctx context.Context, tenantID, reque
 	}
 
 	var existingHash, status, owner string
-	var until *time.Time
+	var existingBase int64
+	var until pgtype.Timestamptz
 	if err := tx.QueryRow(ctx, `
-		SELECT payload_hash, status, claim_owner, claim_until
+		SELECT payload_hash, projection_base_seq, status, claim_owner, claim_until
 		FROM journal_snapshot_receipts
 		WHERE tenant_id=$1 AND request_id=$2 AND snapshot_version=$3
-		FOR UPDATE`, tenantID, requestID, version).Scan(&existingHash, &status, &owner, &until); err != nil {
+		FOR UPDATE`, tenantID, requestID, version).Scan(&existingHash, &existingBase, &status, &owner, &until); err != nil {
 		return claim, fmt.Errorf("load journal snapshot receipt: %w", err)
 	}
 	if existingHash != payloadHash {
 		return claim, ErrSnapshotReceiptConflict
 	}
 	if status == "completed" {
-		return JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, AlreadyCompleted: true}, nil
+		return JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, ProjectionBaseSeq: existingBase, AlreadyCompleted: true}, nil
 	}
-	if until != nil && until.After(now) {
+	if until.Valid && until.Time.After(now) && owner != "" && owner != s.owner {
 		return claim, nil
 	}
 	if _, err := tx.Exec(ctx, `
@@ -132,6 +154,7 @@ func (s *JournalSnapshotReceiptStore) Claim(ctx context.Context, tenantID, reque
 		tenantID, requestID, version, s.owner, claim.ClaimUntil, now); err != nil {
 		return claim, fmt.Errorf("reclaim journal snapshot receipt: %w", err)
 	}
+	claim.ProjectionBaseSeq = existingBase
 	if err := tx.Commit(ctx); err != nil {
 		return claim, fmt.Errorf("commit journal snapshot receipt reclaim: %w", err)
 	}

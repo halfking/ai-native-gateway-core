@@ -169,7 +169,10 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 			slog.Warn("dispatch journal snapshot hash failed", "request_id", snap.RequestID, "error", err)
 			return
 		}
-		claim, err = a.receipt.Claim(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash)
+		// MaxSeq is only the candidate base for a new receipt. Once a durable
+		// receipt exists, ClaimWithProjectionBase returns its immutable base.
+		candidateBase := a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
+		claim, err = a.receipt.ClaimWithProjectionBase(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash, candidateBase)
 		if err != nil || claim.AlreadyCompleted || !claim.Claimed {
 			if err != nil {
 				slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
@@ -222,6 +225,9 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 		metrics.Global().RecordJournalSnapshotStored(snap.TenantID)
 	}
 	baseSeq := a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
+	if a.receipt != nil {
+		baseSeq = claim.ProjectionBaseSeq
+	}
 	for i, entry := range snap.Entries {
 		event, ok := journalEntryToJourneyEvent(a.instance, snap.TenantID, snap.RequestID, baseSeq, i, entry)
 		if !ok {
