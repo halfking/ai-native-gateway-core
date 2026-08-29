@@ -187,7 +187,6 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 		} else if localClaimed && failed {
 			delete(a.receipts, key)
 		}
-		a.mu.Unlock()
 	}()
 
 	if a.store != nil {
