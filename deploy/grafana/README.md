@@ -25,22 +25,18 @@
 ### 2. 订阅详情面板 (Subscription Details)
 **文件:** `proxy-subscription-dashboard.json`
 
-深入分析每个订阅的性能和健康状况。
+展示订阅相关操作的全局聚合性能和状态。
 
 **主要可视化内容:**
-- 每个订阅的节点数时间序列图
-- 当前节点数横向条形图（按订阅分组）
-- 每个订阅的刷新成功率（5分钟窗口）
+- 全部订阅节点总数时间序列图
+- 当前节点总数横向条形图
+- 全部订阅的刷新成功率（5分钟窗口）
 - 刷新耗时分位数（P50/P95/P99）
 - 平均刷新耗时条形图
 - 刷新失败原因分布（饼图）
-- 刷新操作次数（按订阅和状态）
-- Top 10 订阅刷新率表格
+- 刷新操作次数（按状态聚合）
 
-**变量过滤:**
-- `$subscription` - 可多选订阅 ID 过滤
-
-**使用场景:** 定位特定订阅的问题，比较不同订阅的性能
+**使用场景:** 观察全局订阅刷新状态与趋势
 
 ---
 
@@ -54,13 +50,10 @@
 - 节点数量按状态分类（条形图）
 - 节点响应时间分布（直方图）
 - 响应时间分位数（P50/P95/P99）
-- 连续失败次数分布
-- 节点按失败次数分组（0次、1-2次、3-5次、>5次）
 - 健康检查成功率时间序列
 - 当前健康检查成功率仪表盘
 - 健康检查速率（成功/失败）
 - 健康检查总数（饼图）
-- Top 20 失败节点表格（显示节点 ID、订阅 ID、连续失败次数）
 
 **使用场景:** 诊断节点故障，识别响应慢或频繁失败的节点
 
@@ -169,9 +162,9 @@ docker-compose restart grafana
 所有面板使用以下 Prometheus 指标：
 
 ### 订阅指标
-- `llm_gateway_proxy_subscriptions_total{status="active|inactive"}` - 订阅总数
-- `llm_gateway_proxy_subscription_node_count{subscription_id}` - 每个订阅的节点数
-- `llm_gateway_proxy_subscription_refresh_total{status,subscription_id}` - 刷新操作计数
+- `llm_gateway_proxy_subscriptions_total{state="active|inactive"}` - 订阅总数
+- `llm_gateway_proxy_subscription_node_count` - 全部订阅中的节点总数
+- `llm_gateway_proxy_subscription_refresh_total{status}` - 刷新操作计数（按状态聚合）
 - `llm_gateway_proxy_subscription_refresh_duration_seconds` - 刷新耗时（直方图）
 
 ### 节点指标
@@ -179,7 +172,6 @@ docker-compose restart grafana
 - `llm_gateway_proxy_nodes_dialable` - 可拨号节点数
 - `llm_gateway_proxy_nodes_unhealthy` - 不健康节点数
 - `llm_gateway_proxy_node_response_time_ms` - 节点响应时间（直方图）
-- `llm_gateway_proxy_node_consecutive_failures` - 连续失败次数
 - `llm_gateway_proxy_node_health_check_total{status}` - 健康检查计数
 - `llm_gateway_proxy_node_health_check_duration_seconds` - 健康检查耗时（直方图）
 
@@ -210,7 +202,7 @@ docker-compose restart grafana
    (llm_gateway_proxy_nodes_total - llm_gateway_proxy_nodes_unhealthy) / llm_gateway_proxy_nodes_total < 0.8
    ```
 
-2. **订阅刷新成功率 < 90%**
+2. **订阅刷新成功率 < 90%（全局聚合）**
    ```promql
    rate(llm_gateway_proxy_subscription_refresh_total{status="success"}[5m]) / 
    (rate(llm_gateway_proxy_subscription_refresh_total{status="success"}[5m]) + 
@@ -247,7 +239,7 @@ docker-compose restart grafana
 
 ### 指标标签缺失
 
-某些面板使用特定的标签（如 `subscription_id`、`node_id`）。如果这些标签不存在，相关面板可能为空。检查 metrics 端点确保标签正确导出。
+所有 Proxy 面板均使用低基数聚合指标；节点和订阅标识不作为 Prometheus 标签。若面板无数据，请检查 metrics 端点及 Prometheus 抓取状态。
 
 ### 刷新间隔太长
 
