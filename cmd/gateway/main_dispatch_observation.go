@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"log/slog"
 	"sync"
 
