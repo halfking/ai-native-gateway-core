@@ -122,7 +122,7 @@ func (s *JournalSnapshotReceiptStore) Claim(ctx context.Context, tenantID, reque
 	if status == "completed" {
 		return JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, AlreadyCompleted: true}, nil
 	}
-	if until != nil && until.After(now) && owner != "" && owner != s.owner {
+	if until != nil && until.After(now) {
 		return claim, nil
 	}
 	if _, err := tx.Exec(ctx, `

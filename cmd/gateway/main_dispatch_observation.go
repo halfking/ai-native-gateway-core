@@ -148,8 +148,8 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 	if a == nil || a.recorder == nil || !snap.CallerAuthorized {
 		return
 	}
-	if snap.CallerTenantID != "" && snap.CallerTenantID != snap.TenantID {
-		slog.Warn("dispatch journal sink rejected tenant mismatch", "request_id", snap.RequestID)
+	if snap.CallerTenantID == "" || snap.CallerTenantID != snap.TenantID {
+		slog.Warn("dispatch journal sink rejected caller tenant", "request_id", snap.RequestID)
 		return
 	}
 	if snap.TenantID == "" || snap.RequestID == "" || len(snap.Entries) == 0 || snap.SnapshotVersion <= 0 {
