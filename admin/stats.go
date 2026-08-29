@@ -101,12 +101,12 @@ func (h *Handler) handleStatsSummary(w http.ResponseWriter, r *http.Request, sta
 	var requests, success, failures, timeouts, limited, prompt, completion, total, credits, latencyCount, latencySum int64
 	var cost float64
 	err := h.db.QueryRow(r.Context(), `
-		SELECT COALESCE(SUM(request_count),0), COALESCE(SUM(success_count),0),
-		       COALESCE(SUM(failure_count),0), COALESCE(SUM(timeout_count),0),
-		       COALESCE(SUM(rate_limited_count),0), COALESCE(SUM(prompt_tokens),0),
-		       COALESCE(SUM(completion_tokens),0), COALESCE(SUM(total_tokens),0),
-		       COALESCE(SUM(credits_charged),0), COALESCE(SUM(cost_usd),0),
-		       COALESCE(SUM(latency_count),0), COALESCE(SUM(latency_sum_ms),0)
+		SELECT COALESCE(SUM(request_count),0)::bigint, COALESCE(SUM(success_count),0)::bigint,
+		       COALESCE(SUM(failure_count),0)::bigint, COALESCE(SUM(timeout_count),0)::bigint,
+		       COALESCE(SUM(rate_limited_count),0)::bigint, COALESCE(SUM(prompt_tokens),0)::bigint,
+		       COALESCE(SUM(completion_tokens),0)::bigint, COALESCE(SUM(total_tokens),0)::bigint,
+		       COALESCE(SUM(credits_charged),0)::bigint, COALESCE(SUM(cost_usd),0)::float8,
+		       COALESCE(SUM(latency_count),0)::bigint, COALESCE(SUM(latency_sum_ms),0)::bigint
 		FROM stats_usage_daily WHERE `+where, args...).Scan(
 		&requests, &success, &failures, &timeouts, &limited, &prompt, &completion,
 		&total, &credits, &cost, &latencyCount, &latencySum)
@@ -115,6 +115,7 @@ func (h *Handler) handleStatsSummary(w http.ResponseWriter, r *http.Request, sta
 			writeJSON(w, http.StatusOK, map[string]any{"degraded": true, "error_code": "STATS_NOT_MIGRATED", "summary": map[string]any{}})
 			return
 		}
+		slog.Error("stats summary query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "stats summary query failed")
 		return
 	}
@@ -131,8 +132,9 @@ func (h *Handler) handleStatsSummary(w http.ResponseWriter, r *http.Request, sta
 func (h *Handler) handleStatsTrend(w http.ResponseWriter, r *http.Request, start, end time.Time, tenant string) {
 	where, args := statsWhere(start, end, tenant, r)
 	where += " AND dimension_type = 'provider_model'"
-	rows, err := h.db.Query(r.Context(), `SELECT day_utc, COALESCE(SUM(request_count),0), COALESCE(SUM(success_count),0), COALESCE(SUM(failure_count),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0), COALESCE(SUM(credits_charged),0) FROM stats_usage_daily WHERE `+where+` GROUP BY day_utc ORDER BY day_utc`, args...)
+	rows, err := h.db.Query(r.Context(), `SELECT day_utc, COALESCE(SUM(request_count),0)::bigint, COALESCE(SUM(success_count),0)::bigint, COALESCE(SUM(failure_count),0)::bigint, COALESCE(SUM(total_tokens),0)::bigint, COALESCE(SUM(cost_usd),0)::float8, COALESCE(SUM(credits_charged),0)::bigint FROM stats_usage_daily WHERE `+where+` GROUP BY day_utc ORDER BY day_utc`, args...)
 	if err != nil {
+		slog.Error("stats trend query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "stats trend query failed")
 		return
 	}
@@ -192,8 +194,9 @@ func (h *Handler) handleStatsBreakdown(w http.ResponseWriter, r *http.Request, s
 	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 && n <= 200 {
 		limit = n
 	}
-	rows, err := h.db.Query(r.Context(), `SELECT `+column+`, COALESCE(SUM(request_count),0), COALESCE(SUM(success_count),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0), COALESCE(SUM(credits_charged),0) FROM stats_usage_daily WHERE `+where+` GROUP BY 1 ORDER BY SUM(request_count) DESC LIMIT `+strconv.Itoa(limit), args...)
+	rows, err := h.db.Query(r.Context(), `SELECT `+column+`, COALESCE(SUM(request_count),0)::bigint, COALESCE(SUM(success_count),0)::bigint, COALESCE(SUM(total_tokens),0)::bigint, COALESCE(SUM(cost_usd),0)::float8, COALESCE(SUM(credits_charged),0)::bigint FROM stats_usage_daily WHERE `+where+` GROUP BY 1 ORDER BY SUM(request_count) DESC LIMIT `+strconv.Itoa(limit), args...)
 	if err != nil {
+		slog.Error("stats breakdown query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "stats breakdown query failed")
 		return
 	}
@@ -213,8 +216,9 @@ func (h *Handler) handleStatsBreakdown(w http.ResponseWriter, r *http.Request, s
 func (h *Handler) handleStatsErrors(w http.ResponseWriter, r *http.Request, start, end time.Time, tenant string) {
 	where, args := statsWhere(start, end, tenant, r)
 	where += " AND dimension_type = 'error' AND failure_count > 0"
-	rows, err := h.db.Query(r.Context(), `SELECT dimension_key, COALESCE(SUM(failure_count),0), COALESCE(SUM(request_count),0), COALESCE(SUM(total_tokens),0), COALESCE(SUM(cost_usd),0) FROM stats_usage_daily WHERE `+where+` GROUP BY dimension_key ORDER BY SUM(failure_count) DESC LIMIT 100`, args...)
+	rows, err := h.db.Query(r.Context(), `SELECT dimension_key, COALESCE(SUM(failure_count),0)::bigint, COALESCE(SUM(request_count),0)::bigint, COALESCE(SUM(total_tokens),0)::bigint, COALESCE(SUM(cost_usd),0)::float8 FROM stats_usage_daily WHERE `+where+` GROUP BY dimension_key ORDER BY SUM(failure_count) DESC LIMIT 100`, args...)
 	if err != nil {
+		slog.Error("stats errors query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "stats errors query failed")
 		return
 	}
@@ -497,7 +501,7 @@ func (h *Handler) handleStatsReconciliationApprove(w http.ResponseWriter, r *htt
 
 func statsWhere(start, end time.Time, tenant string, r *http.Request) (string, []any) {
 	args := []any{start, end}
-	where := "day_utc >= ($1 AT TIME ZONE 'UTC')::date AND day_utc < (($2 - INTERVAL '1 microsecond') AT TIME ZONE 'UTC')::date + 1"
+	where := "day_utc >= (($1::timestamptz) AT TIME ZONE 'UTC')::date AND day_utc < ((($2::timestamptz) - INTERVAL '1 microsecond') AT TIME ZONE 'UTC')::date + 1"
 	if strings.HasSuffix(r.URL.Path, "/monthly") {
 		where = "month_start >= date_trunc('month', $1::timestamptz)::date AND month_start < date_trunc('month', $2::timestamptz)::date + INTERVAL '1 month'"
 	}

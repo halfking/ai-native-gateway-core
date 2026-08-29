@@ -41,6 +41,9 @@ jobs:
       - name: Run unit tests (short mode)
         run: make test-short
 
+      - name: Compile PostgreSQL integration tests without credentials
+        run: go test -tags=integration ./bg ./domains/requestjourney -run '^$' -count=1
+
       - name: Run sessionforensics tests
         run: make test-sessionforensics
         env:
@@ -57,6 +60,8 @@ jobs:
             | head -10
 
   gateway-rls:
+    # Never execute PR-controlled code with a persistent database credential.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     name: Gateway RLS integration
     runs-on: [self-hosted, postgresql-low-priv]
     timeout-minutes: 15
@@ -76,6 +81,44 @@ jobs:
 
       - name: Run RLS integration tests
         run: go test ./admin -run '^Test(RLS_|AssertSessionOwnerAccessInTx_RealDB)' -count=1 -v
+
+  gateway-pg-contracts:
+    # This mutates the dedicated contract database and must never run PR code
+    # with database secrets. It runs only after a protected main push.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Gateway PostgreSQL contract integration
+    runs-on: [self-hosted, postgresql-low-priv]
+    environment: gateway-pg-contracts
+    concurrency:
+      group: gateway-pg-contracts-isolated-db
+      cancel-in-progress: false
+    timeout-minutes: 20
+    env:
+      TEST_DATABASE_URL: ${{ secrets.PG_CONTRACT_WRITER_DATABASE_URL }}
+      TEST_TENANT_DATABASE_URL: ${{ secrets.PG_CONTRACT_TENANT_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Require dedicated PostgreSQL contract DSNs
+        run: |
+          test -n "$TEST_DATABASE_URL"
+          test -n "$TEST_TENANT_DATABASE_URL"
+          test "$TEST_DATABASE_URL" != "$TEST_TENANT_DATABASE_URL"
+          writer_db=$(psql "$TEST_DATABASE_URL" -XAtqc 'SELECT current_database()')
+          tenant_db=$(psql "$TEST_TENANT_DATABASE_URL" -XAtqc 'SELECT current_database()')
+          test "$writer_db" = "$tenant_db"
+          case "$writer_db" in *_test) ;; *) echo "refusing non-test database: $writer_db"; exit 1;; esac
+          psql "$TEST_DATABASE_URL" -XAtqc "SELECT pg_has_role(current_user, 'llm_gateway_rls_bypass', 'member')" | grep -qx t
+          psql "$TEST_TENANT_DATABASE_URL" -XAtqc "SELECT NOT rolsuper AND NOT rolbypassrls AND NOT pg_has_role(current_user, 'llm_gateway_rls_bypass', 'member') FROM pg_roles WHERE rolname=current_user" | grep -qx t
+
+      - name: Run provider and JournalSnapshot contract tests
+        run: make test-pg-contracts
 
   gateway-session-v2:
     # Integration tests for the Sessions V2 read path (OutboundBuilder,

@@ -1131,8 +1131,8 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 // preserving active error signals.
 //
 // Retention: lifecycle.provider_error_details_ttl_days (default 30, hot-reloadable).
-// Backed by idx_ped_last_seen (last_seen_at DESC) and idx_ped_unresolved
-// (partial index on resolved=false).
+// Backed by idx_ped_resolved_updated_at (partial index on resolved=true,
+// keyed by updated_at).
 //
 // 2026-08-29 P2: Added to prevent unbounded growth of the error aggregation
 // table after the聚合器 was implemented in migration 616.
