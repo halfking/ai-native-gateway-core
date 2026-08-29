@@ -900,9 +900,9 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE providers SET display_name = $1, updated_at = now() WHERE id = $2`, *req.DisplayName, id)
 	}
-	if req.Name != nil {
+	if req.Name != nil && req.DisplayName == nil {
 		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE providers SET name = $1, updated_at = now() WHERE id = $2`, *req.Name, id)
+		h.db.Exec(ctx, `UPDATE providers SET display_name = $1, updated_at = now() WHERE id = $2`, *req.Name, id)
 	}
 	if req.BaseURL != nil {
 		//nolint:errcheck // best-effort exec, non-critical

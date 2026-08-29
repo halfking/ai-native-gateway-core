@@ -74,7 +74,7 @@ func TestUpsertRequestLogBodies_UsesBodyOnlyColumns(t *testing.T) {
 	tx, err := mockDB.Begin(context.Background())
 	require.NoError(t, err)
 
-	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot \(request_id, tenant_id, ts, request_body, response_body, outbound_body\)`).
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot \(request_id, ts, request_body, response_body, outbound_body\)`).
 		WithArgs("req-body-only", `{"messages":[]}`, `{"choices":[]}`, `{"messages":[]}`).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
