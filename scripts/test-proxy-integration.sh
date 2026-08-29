@@ -265,7 +265,10 @@ if [ "$(code)" = "200" ]; then
   SEL_NAME="$(jget "$RESP" '(d.get("selected_node") or {}).get("name","")')"
   SEL_ERR="$(jget "$RESP" 'd.get("selection_error","")')"
   TOTAL_DIALABLE="$(jget "$RESP" 'd.get("dialable_count",0)')"
-  info "dialable_count=$TOTAL_DIALABLE selected=${SEL_NAME:-none} ${SEL_ERR:+selection_error=$SEL_ERR}"
+  ACTIVE_SUBS="$(jget "$RESP" 'd.get("active_subscriptions",0)')"
+  UNHEALTHY="$(jget "$RESP" 'd.get("unhealthy_count",0)')"
+  HEALTHY="$(jget "$RESP" 'd.get("healthy_count",0)')"
+  info "dialable_count=$TOTAL_DIALABLE selected=${SEL_NAME:-none} active_subs=$ACTIVE_SUBS healthy=$HEALTHY unhealthy=$UNHEALTHY ${SEL_ERR:+selection_error=$SEL_ERR}"
   if [ -n "$SEL_NAME" ]; then
     ok "选出了可拨号节点：$SEL_NAME"
   else
