@@ -25,6 +25,8 @@ type fakeForegroundStore struct {
 	checks          []durable.CheckpointParams
 	terminals       []durable.TerminalCommit
 	renewErr        error
+	renewStarted    chan struct{}
+	renewCanceled   chan struct{}
 	checkErr        error
 	rescheduleErr   error
 	rescheduleCalls int
@@ -43,7 +45,17 @@ type durableRenewCall struct {
 	token  int64
 }
 
-func (f *fakeForegroundStore) RenewLease(_ context.Context, taskID, owner string, token int64, _ time.Time) error {
+func (f *fakeForegroundStore) RenewLease(ctx context.Context, taskID, owner string, token int64, _ time.Time) error {
+	if f.renewStarted != nil {
+		select {
+		case f.renewStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.renewCanceled != nil {
+		<-ctx.Done()
+		close(f.renewCanceled)
+	}
 	if f.renewErr != nil {
 		return f.renewErr
 	}
@@ -206,14 +218,15 @@ func TestDurableStreamBindingStopWaitsForRenewalExit(t *testing.T) {
 		200*time.Millisecond)
 
 	b.mu.Lock()
-	stopCh := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	doneCh := make(chan struct{})
-	b.stopRenew, b.renewDone = stopCh, doneCh
+	b.renewCtx, b.renewCancel, b.renewDone = ctx, cancel, doneCh
+	b.renewInterval = 100 * time.Millisecond
 	b.mu.Unlock()
-	// Simulate the renewal loop: exit only when Stop closes stopCh.
+	// Simulate the renewal loop: exit only when Stop cancels its context.
 	go func() {
 		defer close(doneCh)
-		<-stopCh
+		<-ctx.Done()
 	}()
 
 	stopStart := time.Now()
@@ -228,6 +241,33 @@ func TestDurableStreamBindingStopWaitsForRenewalExit(t *testing.T) {
 	case <-doneCh:
 	default:
 		t.Fatal("renewal goroutine still running after Stop returned")
+	}
+}
+
+func TestDurableStreamBindingRenewalCancellationStopsInFlightCall(t *testing.T) {
+	started := make(chan struct{}, 1)
+	canceled := make(chan struct{})
+	store := &fakeForegroundStore{renewStarted: started, renewCanceled: canceled}
+	b := newDurableStreamBinding(store,
+		&durable.Task{ID: "task-7", TenantID: "tenant-1", RequestID: "req-9",
+			SessionID: "sess-1", RequestHash: "hash-1", LeaseOwner: "gw-front", FencingToken: 1},
+		20*time.Millisecond)
+	b.Start()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("renewal did not start")
+	}
+
+	stopStart := time.Now()
+	b.Stop()
+	if elapsed := time.Since(stopStart); elapsed > time.Second {
+		t.Fatalf("Stop took %v; cancellation did not reach in-flight renewal", elapsed)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight renewal did not observe cancellation")
 	}
 }
 
