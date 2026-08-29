@@ -37,45 +37,43 @@ type Subscription struct {
 
 // Node 代理节点
 type Node struct {
-	ID                     int                    `json:"id"`
-	SubscriptionID         int                    `json:"subscription_id"`
-	Name                   string                 `json:"name"`
-	Protocol               string                 `json:"protocol"` // http/https/socks5/ss/vmess/trojan
-	Server                 string                 `json:"server"`
-	Port                   int                    `json:"port"`
-	Username               string                 `json:"username,omitempty"`
-	Password               string                 `json:"password,omitempty"` // 已加密
-	Config                 map[string]interface{} `json:"config,omitempty"`
-	Location               string                 `json:"location,omitempty"`
-	Status                 string                 `json:"status"` // active/disabled/unhealthy
-	HealthCheckURL         string                 `json:"health_check_url"`
-	LastHealthCheckAt      time.Time              `json:"last_health_check_at"`
-	LastHealthCheckStatus  string                 `json:"last_health_check_status"` // success/failed/timeout
-	ResponseTimeMs         int                    `json:"response_time_ms"`
-	SuccessRate            float64                `json:"success_rate"`
-	ConsecutiveFailures    int                    `json:"consecutive_failures"`
-	CreatedAt              time.Time              `json:"created_at"`
-	UpdatedAt              time.Time              `json:"updated_at"`
+	ID                    int                    `json:"id"`
+	SubscriptionID        int                    `json:"subscription_id"`
+	Name                  string                 `json:"name"`
+	Protocol              string                 `json:"protocol"` // http/https/socks5/ss/vmess/trojan
+	Server                string                 `json:"server"`
+	Port                  int                    `json:"port"`
+	Username              string                 `json:"username,omitempty"`
+	Password              string                 `json:"password,omitempty"` // 已加密
+	Config                map[string]interface{} `json:"config,omitempty"`
+	Location              string                 `json:"location,omitempty"`
+	Status                string                 `json:"status"` // active/disabled/unhealthy
+	HealthCheckURL        string                 `json:"health_check_url"`
+	LastHealthCheckAt     time.Time              `json:"last_health_check_at"`
+	LastHealthCheckStatus string                 `json:"last_health_check_status"` // success/failed/timeout
+	ResponseTimeMs        int                    `json:"response_time_ms"`
+	SuccessRate           float64                `json:"success_rate"`
+	ConsecutiveFailures   int                    `json:"consecutive_failures"`
+	CreatedAt             time.Time              `json:"created_at"`
+	UpdatedAt             time.Time              `json:"updated_at"`
 	// 审计修复 (2026-08-29)：问题 11 - 解密失败标志，避免密文被当作明文使用。
-	PasswordDecryptFailed  bool                   `json:"password_decrypt_failed,omitempty"`
-	// 阶段 2 优化：智能探活间隔 - 下次健康检查时间（内存字段，不持久化）
-	NextHealthCheckAt      time.Time              `json:"-"`
+	PasswordDecryptFailed bool `json:"password_decrypt_failed,omitempty"`
 }
 
 // Domain 供应商域名
 type Domain struct {
-	ID                 int       `json:"id"`
-	Domain             string    `json:"domain"`
-	CatalogCode        string    `json:"catalog_code,omitempty"`
-	RequiresProxy      bool      `json:"requires_proxy"`
-	Location           string    `json:"location,omitempty"`
-	ProbeStatus        string    `json:"probe_status"` // reachable/blocked/unknown
-	LastProbeAt        time.Time `json:"last_probe_at"`
-	LastProbeDirectMs  int       `json:"last_probe_direct_ms"`
-	LastProbeProxyMs   int       `json:"last_probe_proxy_ms"`
-	Notes              string    `json:"notes,omitempty"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID                int       `json:"id"`
+	Domain            string    `json:"domain"`
+	CatalogCode       string    `json:"catalog_code,omitempty"`
+	RequiresProxy     bool      `json:"requires_proxy"`
+	Location          string    `json:"location,omitempty"`
+	ProbeStatus       string    `json:"probe_status"` // reachable/blocked/unknown
+	LastProbeAt       time.Time `json:"last_probe_at"`
+	LastProbeDirectMs int       `json:"last_probe_direct_ms"`
+	LastProbeProxyMs  int       `json:"last_probe_proxy_ms"`
+	Notes             string    `json:"notes,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // Dialable 表示该节点能否被 Go 的 HTTP 客户端直接当作代理使用。

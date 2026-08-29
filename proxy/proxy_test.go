@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -204,6 +205,42 @@ func TestSelectBestNodeUndialableGivesActionableError(t *testing.T) {
 	}
 }
 
+func TestSelectBestNodeRecordsExactlyOneOutcome(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	mgr := NewManager(&fakeStore{nodes: []*Node{
+		{ID: 1, Protocol: "trojan", Server: "a", Port: 443, Status: "active"},
+	}}, nil, nil)
+	mgr.metrics = NewMetrics(reg)
+	mgr.transportFactory.metrics = mgr.metrics
+
+	if _, err := mgr.SelectBestNode(context.Background(), nil); err == nil {
+		t.Fatal("SelectBestNode should fail without a dialable node")
+	}
+	if got := getCounterValue(t, mgr.metrics.nodeSelectionTotal, "no_dialable"); got != 1 {
+		t.Fatalf("no_dialable selections = %v, want 1", got)
+	}
+	if got := getCounterValue(t, mgr.metrics.nodeSelectionTotal, "success"); got != 0 {
+		t.Fatalf("success selections = %v, want 0", got)
+	}
+}
+
+func TestSelectBestNodeRecordsStoreError(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	mgr := NewManager(&fakeStore{listErr: errors.New("database unavailable")}, nil, nil)
+	mgr.metrics = NewMetrics(reg)
+	mgr.transportFactory.metrics = mgr.metrics
+
+	if _, err := mgr.SelectBestNode(context.Background(), nil); err == nil {
+		t.Fatal("SelectBestNode should return the store error")
+	}
+	if got := getCounterValue(t, mgr.metrics.nodeSelectionTotal, "store_error"); got != 1 {
+		t.Fatalf("store_error selections = %v, want 1", got)
+	}
+	if got := getCounterValue(t, mgr.metrics.nodeSelectionTotal, "success"); got != 0 {
+		t.Fatalf("success selections = %v, want 0", got)
+	}
+}
+
 func TestSelectBestNodePicksDialableAndFastest(t *testing.T) {
 	store := &fakeStore{nodes: []*Node{
 		{ID: 1, Protocol: "trojan", Server: "a", Port: 443, Status: "active", SuccessRate: 1, ResponseTimeMs: 1},
@@ -277,10 +314,10 @@ func TestCheckConcurrentStopsOnContextCancel(t *testing.T) {
 // 不止 URL userinfo。
 func TestRedactErrCoversKVForm(t *testing.T) {
 	cases := []struct {
-		name      string
-		in        string
-		mustHave  []string
-		mustMiss  []string
+		name     string
+		in       string
+		mustHave []string
+		mustMiss []string
 	}{
 		{
 			name:     "url userinfo",
@@ -333,10 +370,14 @@ func keysOf(m map[string]*Node) []string {
 // fakeStore 只实现 SelectBestNode 需要的 ListNodes，其余方法返回零值。
 type fakeStore struct {
 	Store
-	nodes []*Node
+	nodes   []*Node
+	listErr error
 }
 
 func (f *fakeStore) ListNodes(_ context.Context, subscriptionID *int) ([]*Node, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	if subscriptionID == nil {
 		return f.nodes, nil
 	}
