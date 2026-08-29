@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // dispatchJourneyAdapter is the composition adapter between dispatch's
@@ -81,7 +83,8 @@ func translateDispatchObservation(observation dispatch.Observation) (requestjour
 // gating execution. Kept independent of dispatchJourneyAdapter so a future
 // change to one bridge cannot silently drop the other.
 type journalSnapshotReceipt struct {
-	hash [sha256.Size]byte
+	hash      [sha256.Size]byte
+	createdAt time.Time
 }
 
 type journalSnapshotReceiptKey struct {
@@ -90,12 +93,14 @@ type journalSnapshotReceiptKey struct {
 }
 
 type dispatchJourneyJournalAdapter struct {
-	recorder *requestjourney.Recorder
-	instance string
-	store    dispatch.JournalSnapshotStore
-	receipt  *requestjourney.JournalSnapshotReceiptStore
-	mu       sync.Mutex
-	receipts map[journalSnapshotReceiptKey]journalSnapshotReceipt
+	recorder       *requestjourney.Recorder
+	instance       string
+	store          dispatch.JournalSnapshotStore
+	receipt        *requestjourney.JournalSnapshotReceiptStore
+	mu             sync.Mutex
+	receipts       map[journalSnapshotReceiptKey]journalSnapshotReceipt
+	cleanupTicker  *time.Ticker
+	stopCleanup    chan struct{}
 }
 
 func newDispatchJourneyJournalAdapter(recorder *requestjourney.Recorder, instanceID string, stores ...dispatch.JournalSnapshotStore) dispatch.JournalSink {
@@ -114,7 +119,16 @@ func newDispatchJourneyJournalAdapterWithDependencies(recorder *requestjourney.R
 	if len(stores) > 0 {
 		store = stores[0]
 	}
-	return &dispatchJourneyJournalAdapter{recorder: recorder, instance: instanceID, store: store, receipt: receipt, receipts: make(map[journalSnapshotReceiptKey]journalSnapshotReceipt)}
+	adapter := &dispatchJourneyJournalAdapter{
+		recorder:    recorder,
+		instance:    instanceID,
+		store:       store,
+		receipt:     receipt,
+		receipts:    make(map[journalSnapshotReceiptKey]journalSnapshotReceipt),
+		stopCleanup: make(chan struct{}),
+	}
+	adapter.startCleanup(24 * time.Hour)
+	return adapter
 }
 
 // ApplyJournalSnapshot fans the per-request attempt journal out into the
@@ -150,32 +164,43 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 
 	var claim requestjourney.JournalSnapshotReceiptClaim
 	if a.receipt != nil {
-		hash, err := requestjourney.SnapshotPayloadHash(snap)
+		hash, err := requestjourney.SnapshotPayloadHash(snap.TenantID, snap.RequestID, snap.Entries, snap.Truncated, snap.TruncatedCount, snap.SnapshotVersion)
 		if err != nil {
 			slog.Warn("dispatch journal snapshot hash failed", "request_id", snap.RequestID, "error", err)
 			return
 		}
-		claim, err = a.receipt.Claim(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash)
-		if err != nil || claim.AlreadyCompleted || !claim.Claimed {
-			if err != nil {
-				slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
-			}
-			return
+	claim, err = a.receipt.Claim(ctx, snap.TenantID, snap.RequestID, snap.SnapshotVersion, hash)
+	if err != nil || claim.AlreadyCompleted || !claim.Claimed {
+		if err != nil {
+			slog.Warn("dispatch journal snapshot receipt claim failed", "request_id", snap.RequestID, "snapshot_version", snap.SnapshotVersion, "error", err)
 		}
+		// Record deduplication metrics (2026-08-29)
+		if claim.AlreadyCompleted {
+			metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "already_completed")
+		} else if !claim.Claimed {
+			metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "not_claimed")
+		}
+		return
+	}
 	}
 
 	hash := journalSnapshotHash(snap)
 	key := journalSnapshotReceiptKey{tenantID: snap.TenantID, requestID: snap.RequestID, version: snap.SnapshotVersion}
-	localClaimed := a.receipt == nil
-	if localClaimed {
-		if prior, ok := a.receipts[key]; ok {
-			if prior.hash != hash {
-				slog.Error("dispatch journal snapshot version conflict", "request_id", snap.RequestID)
+		localClaimed := a.receipt == nil
+		if localClaimed {
+			if prior, ok := a.receipts[key]; ok {
+				if prior.hash != hash {
+					slog.Error("dispatch journal snapshot version conflict", "request_id", snap.RequestID)
+					// Record version conflict deduplication (2026-08-29)
+					metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "version_conflict")
+				} else {
+					// Same hash, already processed - record deduplication (2026-08-29)
+					metrics.Global().RecordJournalSnapshotDeduplicated(snap.TenantID, "already_completed")
+				}
+				return
 			}
-			return
+			a.receipts[key] = journalSnapshotReceipt{hash: hash, createdAt: time.Now()}
 		}
-		a.receipts[key] = journalSnapshotReceipt{hash: hash}
-	}
 	failed := false
 	defer func() {
 		if a.receipt != nil {
@@ -193,6 +218,8 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 		stored := snap
 		stored.Entries = append([]dispatch.JournalEntry(nil), snap.Entries...)
 		a.store.Store(stored)
+		// Record snapshot stored metric (2026-08-29)
+		metrics.Global().RecordJournalSnapshotStored(snap.TenantID)
 	}
 	baseSeq := a.recorder.MaxSeq(snap.TenantID, snap.RequestID)
 	for i, entry := range snap.Entries {
@@ -203,6 +230,11 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 		if err := a.recorder.Apply(ctx, event); err != nil {
 			failed = true
 			slog.Warn("dispatch request journey journal entry rejected", "request_id", snap.RequestID, "journal_seq", entry.Seq, "event_seq", event.Seq, "error", err)
+			// Record failed apply metric (2026-08-29)
+			metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, false)
+		} else {
+			// Record successful apply metric (2026-08-29)
+			metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, true)
 		}
 	}
 }
@@ -274,5 +306,46 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 		RetryReason:       string(entry.Action),
 		ObservationStatus: requestjourney.ObservationComplete,
 		OccurredAt:        occurredAt,
-	}, true
+		}, true
+	}
+
+// startCleanup initiates a background goroutine that periodically cleans up
+// old receipts from the in-memory map based on the provided TTL.
+func (a *dispatchJourneyJournalAdapter) startCleanup(ttl time.Duration) {
+	a.cleanupTicker = time.NewTicker(1 * time.Hour)
+	go func() {
+		for {
+			select {
+			case <-a.cleanupTicker.C:
+				a.cleanupOldReceipts(ttl)
+			case <-a.stopCleanup:
+				return
+			}
+		}
+	}()
 }
+
+// cleanupOldReceipts removes receipts that are older than the specified TTL.
+func (a *dispatchJourneyJournalAdapter) cleanupOldReceipts(ttl time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	cutoff := time.Now().Add(-ttl)
+	for key, receipt := range a.receipts {
+		if receipt.createdAt.Before(cutoff) {
+			delete(a.receipts, key)
+		}
+	}
+}
+
+// Close stops the cleanup goroutine and releases resources.
+func (a *dispatchJourneyJournalAdapter) Close() error {
+	if a.cleanupTicker != nil {
+		a.cleanupTicker.Stop()
+	}
+	if a.stopCleanup != nil {
+		close(a.stopCleanup)
+	}
+	return nil
+}
+
