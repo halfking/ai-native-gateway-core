@@ -48,6 +48,7 @@ export default {
     wechatBot: '微信机器人',
     sessionContext: '会话上下文',
     settings: '系统设置',
+    proxy: '代理管理',
     dataLifecycle: '数据生命周期',
     formatAnomalies: '格式异常监控',
     modelIntegrity: '模型完整性监控',
