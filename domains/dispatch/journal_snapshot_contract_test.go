@@ -271,7 +271,7 @@ func TestJournalSnapshot_Authorization_NotImplemented(t *testing.T) {
 // satisfying ADR 2026-08-28 §Decision point 4.
 func TestJournalSnapshot_Authorization(t *testing.T) {
 	ctx := context.Background()
-	store := NewInMemoryJournalStore()
+	store := NewInMemoryJournalStore(0) // 0 means use default capacity
 
 	snap1 := JournalSnapshot{
 		TenantID:  "tenant-a",

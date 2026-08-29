@@ -790,7 +790,7 @@ func main() {
 		slog.Warn("request journey observation degraded", "error", err)
 	})
 	journeyQueryService := requestjourney.NewQueryService(journeyRedisStore, journeyRepository, journeyProjection, journeyConfig)
-	journalSnapshotStore := dispatch.NewInMemoryJournalStore()
+	journalSnapshotStore := dispatch.NewInMemoryJournalStore(10000)
 	chatHandler.SetRequestJourney(journeyRecorder, journeyInstanceID)
 	gatewayRequestJourneySink = newDispatchJourneyAdapter(journeyRecorder)
 	// Terminal journal snapshots are retained in a bounded, tenant-scoped
