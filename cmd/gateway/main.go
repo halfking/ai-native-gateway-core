@@ -2967,7 +2967,7 @@ func main() {
 
 		// 2026-07-13: 启动 hot 表夜间自动迁移 cron。
 		// 配置来源：环境变量 HOT_CRON_RUN_AT（"HH:MM"，默认 02:00），
-		// HOT_CRON_DISABLED=1 可关掉；保留时长 HOT_CRON_RETENTION_HOURS（默认 24）。
+		// HOT_CRON_DISABLED=1 可关掉；保留时长 HOT_CRON_RETENTION_HOURS（默认 8）。
 		hotCronCfg := admin.HotCronConfigFromEnv()
 		if hotCronCfg.Enabled {
 			hotCron := admin.NewHotCronScheduler(adminHandler, hotCronCfg)
