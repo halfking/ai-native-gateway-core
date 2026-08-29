@@ -114,8 +114,10 @@ func NewSessionLoader(db *pgxpool.Pool) *SessionLoader {
 }
 
 // LoadV1Turns loads all turns for a session from request_logs
+// Uses two-step query to avoid JOIN timeout with request_logs_bodies
 func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID string) ([]V1Turn, error) {
-	query := `
+	// Step 1: Query request_logs for metadata
+	metaQuery := `
 		SELECT 
 			request_id,
 			ts,
@@ -127,15 +129,13 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			COALESCE(usage, '{}'::jsonb) as usage,
 			COALESCE(cost_usd, 0) as cost_usd,
 			COALESCE(compression_meta, '{}'::jsonb) as compression_meta,
-			COALESCE(body, '{}'::jsonb) as request_body,
-			COALESCE(response, '{}'::jsonb) as response_body,
 			COALESCE(success, false) as success
 		FROM request_logs
 		WHERE tenant_id = $1 AND gw_session_id = $2
 		ORDER BY ts ASC
 	`
 
-	rows, err := l.db.Query(ctx, query, tenantID, sessionID)
+	rows, err := l.db.Query(ctx, metaQuery, tenantID, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("query request_logs: %w", err)
 	}
@@ -155,13 +155,14 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			&turn.Usage,
 			&turn.CostUSD,
 			&turn.CompressionMeta,
-			&turn.RequestBody,
-			&turn.ResponseBody,
 			&turn.Success,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan request_logs row: %w", err)
 		}
+		// Initialize empty bodies (will be filled in step 2)
+		turn.RequestBody = json.RawMessage("{}")
+		turn.ResponseBody = json.RawMessage("{}")
 		turns = append(turns, turn)
 	}
 
@@ -169,39 +170,62 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 		return nil, fmt.Errorf("iterate request_logs: %w", err)
 	}
 
+	// Step 2: Query request_logs_bodies for each request_id
+	bodyQuery := `
+		SELECT 
+			COALESCE(request_body, '{}'::jsonb) as request_body,
+			COALESCE(response_body, '{}'::jsonb) as response_body
+		FROM request_logs_bodies
+		WHERE request_id = $1
+	`
+
+	for i := range turns {
+		var requestBody, responseBody json.RawMessage
+		err := l.db.QueryRow(ctx, bodyQuery, turns[i].RequestID).Scan(&requestBody, &responseBody)
+		if err == pgx.ErrNoRows {
+			// No bodies for this request - keep empty defaults
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("query request_logs_bodies for request_id=%s: %w", turns[i].RequestID, err)
+		}
+		turns[i].RequestBody = requestBody
+		turns[i].ResponseBody = responseBody
+	}
+
 	return turns, nil
 }
 
-// LoadV2Turns loads all turns for a session from session_turns
-func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID string) ([]V2Turn, error) {
-	query := `
-		SELECT 
-			request_id,
-			turn_no,
-			ts,
-			session_id,
-			tenant_id,
-			submit_mode,
-			COALESCE(model, '') as model,
-			COALESCE(provider, '') as provider,
-			COALESCE(credential_id, '') as credential_id,
-			COALESCE(prompt_tokens, 0) as prompt_tokens,
-			COALESCE(completion_tokens, 0) as completion_tokens,
-			COALESCE(cache_read_tokens, 0) as cache_read_tokens,
-			COALESCE(cache_write_tokens, 0) as cache_write_tokens,
-			COALESCE(cost_usd, 0) as cost_usd,
-			COALESCE(injection_verdict, 'skip') as injection_verdict,
-			COALESCE(output_verdict, 'skip') as output_verdict,
-			COALESCE(latency_ms, 0) as latency_ms,
-			COALESCE(status_code, 0) as status_code,
-			COALESCE(success, false) as success,
-			COALESCE(error_kind, '') as error_kind,
-			source_kind,
-			quality
-		FROM public.session_turns_with_current_month
-		WHERE tenant_id = $1 AND gw_session_id = $2
-		ORDER BY turn_no ASC
-	`
+	// LoadV2Turns loads all turns for a session from session_turns
+	func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID string) ([]V2Turn, error) {
+		query := `
+			SELECT 
+				request_id,
+				turn_no,
+				ts,
+				session_id,
+				tenant_id,
+				submit_mode,
+				COALESCE(model, '') as model,
+				COALESCE(provider, '') as provider,
+				COALESCE(credential_id, '') as credential_id,
+				COALESCE(prompt_tokens, 0) as prompt_tokens,
+				COALESCE(completion_tokens, 0) as completion_tokens,
+				COALESCE(cache_read_tokens, 0) as cache_read_tokens,
+				COALESCE(cache_write_tokens, 0) as cache_write_tokens,
+				COALESCE(cost_usd, 0) as cost_usd,
+				COALESCE(injection_verdict, 'skip') as injection_verdict,
+				COALESCE(output_verdict, 'skip') as output_verdict,
+				COALESCE(latency_ms, 0) as latency_ms,
+				COALESCE(status_code, 0) as status_code,
+				COALESCE(success, false) as success,
+				COALESCE(error_kind, '') as error_kind,
+				source_kind,
+				quality
+			FROM session_turns
+			WHERE tenant_id = $1 AND session_id = $2
+			ORDER BY turn_no ASC
+		`
 
 	rows, err := l.db.Query(ctx, query, tenantID, sessionID)
 	if err != nil {
@@ -249,24 +273,24 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 	return turns, nil
 }
 
-// LoadV2Bodies loads all bodies for a session from session_bodies
-func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID string) ([]V2Body, error) {
-	query := `
-		SELECT 
-			session_id,
-			turn_no,
-			tenant_id,
-			request_id,
-			ts,
-			COALESCE(request_delta, '[]'::jsonb) as request_delta,
-			COALESCE(response_delta, '[]'::jsonb) as response_delta,
-			COALESCE(outbound_body, '[]'::jsonb) as outbound_body,
-			COALESCE(request_attachments, '[]'::jsonb) as request_attachments,
-			COALESCE(response_attachments, '[]'::jsonb) as response_attachments
-		FROM public.session_bodies
-		WHERE tenant_id = $1 AND gw_session_id = $2
-		ORDER BY turn_no ASC
-	`
+	// LoadV2Bodies loads all bodies for a session from session_bodies
+	func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID string) ([]V2Body, error) {
+		query := `
+			SELECT 
+				session_id,
+				turn_no,
+				tenant_id,
+				request_id,
+				ts,
+				COALESCE(request_delta, '[]'::jsonb) as request_delta,
+				COALESCE(response_delta, '[]'::jsonb) as response_delta,
+				COALESCE(outbound_body, '[]'::jsonb) as outbound_body,
+				COALESCE(request_attachments, '[]'::jsonb) as request_attachments,
+				COALESCE(response_attachments, '[]'::jsonb) as response_attachments
+			FROM session_bodies
+			WHERE tenant_id = $1 AND session_id = $2
+			ORDER BY turn_no ASC
+		`
 
 	rows, err := l.db.Query(ctx, query, tenantID, sessionID)
 	if err != nil {
@@ -302,28 +326,28 @@ func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID st
 	return bodies, nil
 }
 
-// LoadV2Session loads the session snapshot from sessions table
-func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID string) (*V2Session, error) {
-	query := `
-		SELECT 
-			session_id,
-			tenant_id,
-			created_at,
-			updated_at,
-			status,
-			total_turns,
-			total_tokens,
-			total_cost_usd,
-			COALESCE(last_turn_no, 0) as last_turn_no,
-			COALESCE(last_request_summary, '') as last_request_summary,
-			COALESCE(last_response_summary, '') as last_response_summary,
-			COALESCE(last_model, '') as last_model,
-			COALESCE(last_provider, '') as last_provider,
-			COALESCE(primary_request_id, '') as primary_request_id
-		FROM public.sessions
-		WHERE tenant_id = $1 AND gw_session_id = $2
-		LIMIT 1
-	`
+	// LoadV2Session loads the session snapshot from sessions table
+	func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID string) (*V2Session, error) {
+		query := `
+			SELECT 
+				session_id,
+				tenant_id,
+				created_at,
+				updated_at,
+				status,
+				total_turns,
+				total_tokens,
+				total_cost_usd,
+				COALESCE(last_turn_no, 0) as last_turn_no,
+				COALESCE(last_request_summary, '') as last_request_summary,
+				COALESCE(last_response_summary, '') as last_response_summary,
+				COALESCE(last_model, '') as last_model,
+				COALESCE(last_provider, '') as last_provider,
+				COALESCE(primary_request_id, '') as primary_request_id
+			FROM sessions
+			WHERE tenant_id = $1 AND session_id = $2
+			LIMIT 1
+		`
 
 	var session V2Session
 	err := l.db.QueryRow(ctx, query, tenantID, sessionID).Scan(
@@ -353,21 +377,21 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 	return &session, nil
 }
 
-// LoadSessionsInRange loads session IDs within a date range for batch validation
-func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
-	settleThreshold := time.Now().Add(-settleWindow)
-
-	query := `
-		SELECT DISTINCT gw_session_id
-		FROM request_logs
-		WHERE tenant_id = $1
-		  AND ts >= $2
-		  AND ts < $3
-		  AND session_id IS NOT NULL
-		  AND session_id != ''
-		ORDER BY session_id
-		LIMIT $4
-	`
+	// LoadSessionsInRange loads session IDs within a date range for batch validation
+	func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string, startDate, endDate time.Time, settleWindow time.Duration, maxSessions int) ([]string, error) {
+		settleThreshold := time.Now().Add(-settleWindow)
+	
+		query := `
+			SELECT DISTINCT gw_session_id
+			FROM request_logs
+			WHERE tenant_id = $1
+			  AND ts >= $2
+			  AND ts < $3
+			  AND gw_session_id IS NOT NULL
+			  AND gw_session_id != ''
+			ORDER BY gw_session_id
+			LIMIT $4
+		`
 
 	// For batch mode, we select from request_logs and filter by settle window
 	// We'll additionally filter by updated_at from sessions table if it exists
