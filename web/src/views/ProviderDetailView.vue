@@ -36,18 +36,40 @@ const modelsFocusOffer = ref<{ credential_id: number; raw_model_name: string } |
 
 function onOpenModelsTab(payload: { credential_id: number; raw_model_name: string }) {
   modelsFocusOffer.value = payload
-  tab.value = 'models'
+  setTab('models')
+}
+
+function setTab(nextTab: string, credentialId?: number) {
+  tab.value = nextTab
+  const query = { ...route.query, tab: nextTab } as Record<string, string | undefined>
+  if (nextTab === 'error-detail') {
+    const id = credentialId ?? errorCredentialId.value
+    if (Number.isInteger(id) && (id ?? 0) > 0) {
+      errorCredentialId.value = id
+      query.credential_id = String(id)
+    } else {
+      errorCredentialId.value = undefined
+      delete query.credential_id
+    }
+  } else {
+    delete query.credential_id
+  }
+  void router.replace({ query })
 }
 
 function onOpenErrorDetail(credentialId: number) {
-  errorCredentialId.value = credentialId
-  tab.value = 'error-detail'
+  setTab('error-detail', credentialId)
 }
 
-function selectErrorDetailTab() {
-  const value = Number(route.query.credential_id)
-  errorCredentialId.value = Number.isInteger(value) && value > 0 ? value : undefined
-  tab.value = 'error-detail'
+function syncTabFromRoute() {
+  const nextTab = typeof route.query.tab === 'string' ? route.query.tab : 'creds'
+  tab.value = nextTab
+  if (nextTab === 'error-detail') {
+    const value = Number(route.query.credential_id)
+    errorCredentialId.value = Number.isInteger(value) && value > 0 ? value : undefined
+  } else {
+    errorCredentialId.value = undefined
+  }
 }
 
 async function load() {
@@ -128,9 +150,8 @@ async function runDiagnose() {
 function back() { router.push('/providers') }
 
 onMounted(load)
-onMounted(() => {
-  if (route.query.tab === 'error-detail') selectErrorDetailTab()
-})
+onMounted(syncTabFromRoute)
+watch(() => [route.query.tab, route.query.credential_id], syncTabFromRoute)
 watch(providerId, () => {
   if (!Number.isNaN(providerId.value)) {
     load()
@@ -166,23 +187,23 @@ watch(providerId, () => {
       <OverviewCards :provider="provider" />
 
       <div class="tabs">
-        <button type="button" class="tab-btn" :class="{ active: tab === 'creds' }" @click="tab = 'creds'">{{ pp('tabCreds', { n: creds.length }) }}</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="tab = 'models'">{{ pp('tabModels') }}</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'quality' }" @click="tab = 'quality'">{{ pp('tabQuality') }}</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'logs' }" @click="tab = 'logs'">{{ pp('tabLogs') }}</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'error-detail' }" @click="selectErrorDetailTab">{{ pp('tabErrorDetail') }}</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="tab = 'diag'">{{ pp('tabDiag') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'creds' }" @click="setTab('creds')">{{ pp('tabCreds', { n: creds.length }) }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="setTab('models')">{{ pp('tabModels') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'quality' }" @click="setTab('quality')">{{ pp('tabQuality') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'logs' }" @click="setTab('logs')">{{ pp('tabLogs') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'error-detail' }" @click="setTab('error-detail')">{{ pp('tabErrorDetail') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="setTab('diag')">{{ pp('tabDiag') }}</button>
         <button
           type="button"
           class="tab-btn"
           :class="{ active: tab === 'probe' }"
-          @click="tab = 'probe'"
+          @click="setTab('probe')"
           :title="pp('tabProbeTitle')"
         >
           {{ pp('tabProbe') }}
           <span v-if="probeFailureCount > 0" class="tab-badge tab-badge-red">{{ probeFailureCount }}</span>
         </button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">{{ pp('tabSettings') }}</button>
+        <button type="button" class="tab-btn" :class="{ active: tab === 'settings' }" @click="setTab('settings')">{{ pp('tabSettings') }}</button>
       </div>
 
       <!-- 2026-07-03: `@silent-refresh` lets inline drawer edits (plan
