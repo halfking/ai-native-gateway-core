@@ -341,7 +341,6 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 		}
 		toResolve = append(toResolve, p)
 	}
-	rows.Close()
 
 	if len(toResolve) == 0 {
 		return
