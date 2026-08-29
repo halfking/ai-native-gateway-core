@@ -161,9 +161,23 @@ func readRequestBody(ctx context.Context, body io.ReadCloser, limit int) ([]byte
 		data []byte
 		err  error
 	}
+	// Audit-2026-08-29 (§5.2 hardening, peer to native_responses_stream.go:57):
+	// io.ReadAll can panic on a misbehaving body whose Read panics. Without
+	// recover, the goroutine dies and the channel send is skipped — the
+	// caller blocks on the outer select until ctx (default 120s) expires,
+	// AND then blocks on the unguarded second <-resultCh inside the timeout
+	// branch forever, leaking the request goroutine for the full request
+	// body timeout. Guard so a panic becomes an error, never a hang.
 	resultCh := make(chan result, 1)
 	go func() {
-		data, err := io.ReadAll(io.LimitReader(body, int64(limit)+1))
+		data, err := func() (data []byte, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("request body read panic: %v", r)
+				}
+			}()
+			return io.ReadAll(io.LimitReader(body, int64(limit)+1))
+		}()
 		resultCh <- result{data: data, err: err}
 	}()
 	select {
