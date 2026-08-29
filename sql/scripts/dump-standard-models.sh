@@ -92,7 +92,11 @@ COMMON_WHERE="status = 'active'
       'gemini-3.1-pro-preview','gemini-3.1-flash-image','gemini-3-pro-image',
       'gemini-3-flash-preview','gemini-omni-flash',
       'deepseek-v3.2','deepseek-v3.2-exp','deepseek-v4-flash',
-      'deepseek-v4-flash-vision-exp','deepseek-v4-pro','deepseek-v4-pro-cn'
+      'deepseek-v4-flash-vision-exp','deepseek-v4-pro','deepseek-v4-pro-cn',
+      -- 612-corrected sensenova / sensechat (SenseNova 原厂 + 历史 seed)
+      'sensechat-5','sensechat-5-thinking','sensechat-turbo','sensenova-xl',
+      'sensenova-6.7-flash-lite','sensenova-6.8-flash-lite',
+      'sensenova-u1-fast','sensenova-u1.5-lite'
     )
   )"
 
