@@ -62,7 +62,7 @@ const (
 
 var (
 	offerListSQLOnce sync.Once
-	offerListSQLVal atomic.Value // string
+	offerListSQLVal  atomic.Value // string
 )
 
 // resolveOfferListSQL probes the live schema once for the presence of

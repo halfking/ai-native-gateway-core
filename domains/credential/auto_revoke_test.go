@@ -2,6 +2,7 @@ package credential
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strconv"
 	"testing"
@@ -15,9 +16,14 @@ import (
 // fakeRows implements pgx.Rows just enough for AutoRevoker.SweepNow to scan
 // credential IDs + cycle counts. Tests use this to feed deterministic
 // candidate lists without a real PostgreSQL.
+//
+// Scan is gated by scanned: Next sets it true and Scan sets it false. A
+// Scan without a preceding Next (or a second Scan after one Next) returns an
+// error instead of panicking on f.rows[-1] or silently re-reading the row.
 type fakeRows struct {
-	rows []struct{ id int; cnt int64 }
-	pos  int
+	rows    []struct{ id int; cnt int64 }
+	pos     int
+	scanned bool
 }
 
 func (f *fakeRows) Close()                                       {}
@@ -29,12 +35,19 @@ func (f *fakeRows) Next() bool {
 		return false
 	}
 	f.pos++
+	// A fresh Next positions us on a new row; Scan is valid until consumed.
+	f.scanned = true
 	return true
 }
 func (f *fakeRows) Scan(dest ...any) error {
+	if !f.scanned {
+		return errors.New("fakeRows: Scan called without Next")
+	}
 	r := f.rows[f.pos-1]
 	*(dest[0].(*int)) = r.id
 	*(dest[1].(*int64)) = r.cnt
+	// Mark consumed so a second Scan without an intervening Next errors.
+	f.scanned = false
 	return nil
 }
 func (f *fakeRows) Values() ([]any, error)                       { return nil, nil }
@@ -67,10 +80,13 @@ func (f *fakeAutoRevokeDB) Exec(_ context.Context, sql string, args ...any) (pgc
 	}
 	exec := f.execs[0]
 	f.execs = f.execs[1:]
-	matched, _ := regexp.MatchString(exec.sql, sql)
-	if !matched {
-		// Tests use partial regex matches; allow non-strict matching.
-	}
+	// Note: the SQL pattern in exec.sql is intentionally NOT matched against
+	// the actual SQL here. This fake is shared scaffolding; threading
+	// *testing.T through Exec to fail on a mismatch would force every caller
+	// to construct a *testing.T. Tests that need strict SQL assertions should
+	// inspect db.execs / db.queries directly. (Query still does a non-fatal
+	// regex check, also for the same reason.)
+	_ = sql
 	return pgconn.NewCommandTag("UPDATE " + strconv.FormatInt(exec.rowsAffected, 10)), nil
 }
 
@@ -274,5 +290,9 @@ func TestAutoRevoker_StartIdempotent(t *testing.T) {
 	// Calling Start again must not panic and must not crash the first sweep.
 	r.Start(ctx)
 	time.Sleep(50 * time.Millisecond)
+	// Stop must close r.done exactly once: a double-close would panic here,
+	// which is the observable proof that Start spawned only one goroutine.
+	r.Stop()
+	// A second Stop on the now-closed channels must be a no-op (no panic).
 	r.Stop()
 }

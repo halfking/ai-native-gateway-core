@@ -452,6 +452,8 @@ let maxSeenTs = ''
 
 let es: EventSource | null = null
 let refCount = 0
+let connectionGeneration = 0
+let resizeHandler: (() => void) | null = null
 
 let onEvictCb: ((id: string) => void) | null = null
 const terminalListeners = new Set<(req: LiveRequest) => void>()
@@ -1254,18 +1256,16 @@ function mergeLegendsByKey(existing: LiveStreamLegendItem[], incoming: LiveStrea
 }
 
 function openConnection() {
-  if (es) return
-  // Recompute MAX_VISIBLE on resize so the replay buffer stays at 2× viewport.
-  recomputeMaxVisible()
-  const onResize = () => recomputeMaxVisible()
-  window.addEventListener('resize', onResize)
-  // Store reference for cleanup
-  ;(openConnection as any)._resizeHandler = onResize
-
+  if (es || refCount <= 0) return
   if (typeof EventSource === 'undefined') {
     liveStreamState.connection = 'unsupported'
     return
   }
+  const generation = ++connectionGeneration
+  // Recompute MAX_VISIBLE on resize so the replay buffer stays at 2× viewport.
+  recomputeMaxVisible()
+  resizeHandler = () => recomputeMaxVisible()
+  window.addEventListener('resize', resizeHandler)
   // Browser EventSource cannot set Authorization headers, and the
   // project uses HttpOnly cookies that some reverse-proxy / dev
   // setups do not propagate to the EventSource request (e.g. a
@@ -1277,20 +1277,24 @@ function openConnection() {
   // The backend (admin/live_stream_sse.go) accepts this only as a
   // fallback when neither the Bearer header nor the cookie is set,
   // so the security profile is unchanged.
-  let url = buildUrl(getCustomEndpoint() || ENDPOINT)
+  const url = buildUrl(getCustomEndpoint() || ENDPOINT)
+  let connection: EventSource
   try {
-    es = new EventSource(url, { withCredentials: true })
+    connection = new EventSource(url, { withCredentials: true })
+    es = connection
   } catch (err) {
     console.warn('[liveStream] EventSource construct failed', err)
-    liveStreamState.connection = 'closed'
+    closeConnection()
     return
   }
   liveStreamState.connection = 'connecting'
 
-  es.onopen = () => {
+  connection.onopen = () => {
+    if (es !== connection || connectionGeneration !== generation) return
     liveStreamState.connection = 'open'
   }
-  es.onmessage = (ev) => {
+  connection.onmessage = (ev) => {
+    if (es !== connection || connectionGeneration !== generation) return
     try {
       const env = JSON.parse(ev.data) as LiveStreamEnvelope
       
@@ -1312,8 +1316,9 @@ function openConnection() {
       console.warn('[liveStream] bad envelope', err)
     }
   }
-  es.onerror = () => {
-    if (es && es.readyState === 2) {
+  connection.onerror = () => {
+    if (es !== connection || connectionGeneration !== generation) return
+    if (connection.readyState === 2) {
       liveStreamState.connection = 'closed'
     } else {
       liveStreamState.connection = 'reconnecting'
@@ -1322,14 +1327,15 @@ function openConnection() {
 }
 
 function closeConnection() {
-  if (!es) return
-  try { es.close() } catch { /* ignore */ }
+  const connection = es
   es = null
-  // Remove the correct resize listener reference to prevent leak
-  const handler = (openConnection as any)._resizeHandler
-  if (handler) {
-    window.removeEventListener('resize', handler)
-    delete (openConnection as any)._resizeHandler
+  connectionGeneration += 1
+  if (connection) {
+    try { connection.close() } catch { /* ignore */ }
+  }
+  if (resizeHandler) {
+    window.removeEventListener('resize', resizeHandler)
+    resizeHandler = null
   }
   liveStreamState.connection = 'closed'
 }
@@ -1405,6 +1411,7 @@ export function resetStream() {
   maxSeenTs = ''
 }
 export function reconnectStream() {
+  if (refCount <= 0) return
   closeConnection()
   openConnection()
 }
