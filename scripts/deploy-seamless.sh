@@ -596,12 +596,18 @@ do_deploy() {
   switch_elapsed=$((switch_end - switch_start))
   ok "符号链接已切换 (${switch_elapsed}s 含 restart)"
 
-  # 9. wait healthy + DB ready (失败自动回滚)
-  # 先等进程健康，再同步 admin 密码，随后使用 JWT 访问真正触及 DB 的端点。
+  # 9. wait liveness + strict readiness (失败自动回滚)
+  # /healthz only proves that the process is alive. /readyz is the release gate:
+  # it requires the database and Redis dependencies to be usable before the
+  # release can be marked verified.
   # 2026-08-28: 90s → 120s, 启动时 license 验证 + 数据库迁移可能需要更长时间
-  log "[9/9] 验证 /healthz + DB + release identity"
+  log "[9/9] 验证 /healthz + /readyz + DB + release identity"
   if ! host_wait_healthy "$SSH_CMD" "$TARGET" 120 2>&1; then
     _seamless_auto_rollback "healthz 超时" "$version" || true
+    exit 1
+  fi
+  if ! host_wait_readyz "$SSH_CMD" "$TARGET" 120 2>&1; then
+    _seamless_auto_rollback "readyz 超时或依赖未就绪" "$version" || true
     exit 1
   fi
 

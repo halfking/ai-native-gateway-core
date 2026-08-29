@@ -165,7 +165,7 @@ target_154_contract() {
     internal_https_health_url "https://127.0.0.1/healthz" \
     ssh_host "$(_ssh_host_for 154)" \
     ssh_key_env "SSH_KEY_154" \
-    rollback_policy "runbook" \
+    rollback_policy "versioned" \
     legacy_aliases ""
 }
 
