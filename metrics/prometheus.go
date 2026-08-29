@@ -90,6 +90,14 @@ type PrometheusRecorder struct {
 	// cutover (audit §7.1 R-7.1).
 	ursmv2ShadowResult *prometheus.CounterVec
 
+	// malformedSSEFrameTotal (2026-08-29): counts SSE frames with invalid
+	// JSON rejected by the validation layer. Labels: provider (to avoid
+	// model name cardinality), stage ("first_frame" before any client
+	// output | "mid_stream" after chunks sent). High rates indicate
+	// unstable upstreams (minimax-m3, glm-5.2) sending incomplete JSON.
+	// Triggers investigation when rate(malformed_sse_frame_total[5m]) > threshold.
+	malformedSSEFrameTotal *prometheus.CounterVec
+
 	logger logger.Logger
 }
 
@@ -366,6 +374,15 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 			[]string{"result"},
 		),
 
+		// 2026-08-29: malformed SSE frame counter
+		malformedSSEFrameTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_malformed_sse_frame_total",
+				Help: "SSE frames with invalid JSON rejected by validation layer (labels: provider, stage=first_frame|mid_stream). High rates indicate unstable upstreams.",
+			},
+			[]string{"provider", "stage"},
+		),
+
 		logger: logger.New("metrics"),
 	}
 	for _, result := range []string{"recorded", "skipped", "failed"} {
@@ -585,4 +602,18 @@ func (p *PrometheusRecorder) RecordStreamSynthesizedDone() {
 // new Prometheus time series. Keep this list stable.
 func (p *PrometheusRecorder) RecordURSMv2ShadowResult(result string) {
 	p.ursmv2ShadowResult.WithLabelValues(result).Inc()
+}
+
+// RecordMalformedSSEFrame (2026-08-29) increments the counter when the
+// SSE frame validation layer rejects a frame with invalid JSON.
+//
+//   - provider: upstream provider name (e.g., "anthropic", "openai")
+//   - stage: "first_frame" (before any client output, resumable retry) |
+//            "mid_stream" (after chunks sent, frame skipped)
+//
+// High rates indicate unstable upstreams (minimax-m3, glm-5.2) sending
+// incomplete JSON (bare "{", truncated objects). Operators monitor
+// rate(malformed_sse_frame_total[5m]) to detect provider issues.
+func (p *PrometheusRecorder) RecordMalformedSSEFrame(provider, stage string) {
+	p.malformedSSEFrameTotal.WithLabelValues(provider, stage).Inc()
 }

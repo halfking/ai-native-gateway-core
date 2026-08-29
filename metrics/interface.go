@@ -68,6 +68,14 @@ type Recorder interface {
 	// diff legacy credentialstate log entries vs URSMv2Shadow counts
 	// after a 7-day shadow run to confirm < 1% drift before cutover.
 	RecordURSMv2ShadowResult(result string)
+
+	// MalformedSSEFrame (2026-08-29): count SSE frames with invalid JSON
+	// rejected by the validation layer. stage = "first_frame" (before any
+	// client output) | "mid_stream" (after some chunks sent). Operators
+	// monitor this to detect unstable upstreams (minimax-m3, glm-5.2) that
+	// send incomplete JSON like bare "{". High rates trigger investigation.
+	// Uses "provider" label instead of "model" to avoid high cardinality.
+	RecordMalformedSSEFrame(provider, stage string)
 }
 
 // NoopRecorder 是空实现，用于测试
@@ -116,6 +124,9 @@ func (n *NoopRecorder) RecordStreamSynthesizedDone() {}
 
 // P0-3 URSMv2Shadow method — no-op fallback.
 func (n *NoopRecorder) RecordURSMv2ShadowResult(result string) {}
+
+// 2026-08-29: malformed SSE frame counter.
+func (n *NoopRecorder) RecordMalformedSSEFrame(provider, stage string) {}
 
 // globalRecorder 保存全局默认 Recorder。
 //

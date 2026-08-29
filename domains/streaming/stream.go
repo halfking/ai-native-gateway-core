@@ -824,33 +824,35 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				ChunkCount:  0,
 			}
 		}
-			// 2026-08-29: Validate SSE frame JSON integrity before attempting to parse.
-			// Unstable upstreams (minimax-m3, glm-5.2) occasionally send incomplete JSON
-			// (e.g., bare "{" or truncated objects), which causes client-side parsing
-			// errors and premature gateway_survival_resume_blocked failures when the
-			// garbage reaches the client before the executor can retry. This check
-			// catches malformed frames early and marks them as resumable so the survival
-			// coordinator can discard within the holdback window and retry transparently.
-			if !validateSSEDataFrame(firstLine) {
-				payload := extractPayload(firstLine)
-				slog.Warn("stream: malformed first SSE frame detected",
-					"payload_prefix", truncateForLog(payload, 100),
-					"client_model", clientModel,
-					"reason", "incomplete_or_invalid_json",
-				)
-				if capture != nil {
-					capture.MarkInterruptedWithReason("malformed_sse_frame")
-				}
-				// Resumable=true allows survival coordinator to retry within holdback
-				// window before any bytes reach the client.
-				return StreamOutcome{
-					Interrupted: true,
-					Reason:      "malformed_sse_frame",
-					Kind:        errorsx.KindUpstreamDown,
-					Resumable:   true,
-					ChunkCount:  0,
-				}
+		// 2026-08-29: Validate SSE frame JSON integrity before attempting to parse.
+		// Unstable upstreams (minimax-m3, glm-5.2) occasionally send incomplete JSON
+		// (e.g., bare "{" or truncated objects), which causes client-side parsing
+		// errors and premature gateway_survival_resume_blocked failures when the
+		// garbage reaches the client before the executor can retry. This check
+		// catches malformed frames early and marks them as resumable so the survival
+		// coordinator can discard within the holdback window and retry transparently.
+		if !validateSSEDataFrame(firstLine) {
+			payload := extractPayload(firstLine)
+			slog.Warn("stream: malformed first SSE frame detected",
+				"payload_prefix", truncateForLog(payload, 100),
+				"client_model", clientModel,
+				"vendor", vendorCode,
+				"reason", "incomplete_or_invalid_json",
+			)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("malformed_sse_frame")
 			}
+			metrics.Global().RecordMalformedSSEFrame(vendorCode, "first_frame")
+			// Resumable=true allows survival coordinator to retry within holdback
+			// window before any bytes reach the client.
+			return StreamOutcome{
+				Interrupted: true,
+				Reason:      "malformed_sse_frame",
+				Kind:        errorsx.KindUpstreamDown,
+				Resumable:   true,
+				ChunkCount:  0,
+			}
+		}
 			if payload := extractPayload(firstLine); payload != "" && payload != "[DONE]" {
 				if _, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr != nil {
 					slog.Warn("stream: invalid first SSE chunk", "error", parseErr, "client_model", clientModel)
@@ -1120,37 +1122,39 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			}
 			logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
 			
-			// 2026-08-29: Validate SSE frame before processing. If the frame is malformed
-			// (incomplete JSON) and we haven't committed semantic output yet, fail the
-			// attempt as resumable so the survival coordinator can retry. If already
-			// committed, log the issue but continue (dropping the bad frame is safer
-			// than breaking the stream mid-flight).
-			if !validateSSEDataFrame(line) {
-				payload := extractPayload(line)
-				terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
-				slog.Warn("stream: malformed SSE frame detected mid-stream",
-					"payload_prefix", truncateForLog(payload, 100),
-					"chunk_count", chunkCount,
-					"committed", terminalVisible,
-					"client_model", clientModel,
-				)
-				if capture != nil {
-					capture.MarkInterruptedWithReason("malformed_sse_frame_mid_stream")
-				}
-				if !terminalVisible {
-					// Not yet committed — fail as resumable and retry
-					return StreamOutcome{
-						Interrupted: true,
-						Reason:      "malformed_sse_frame_mid_stream",
-						Kind:        errorsx.KindUpstreamDown,
-						Resumable:   true,
-						ChunkCount:  chunkCount,
-					}
-				}
-				// Already committed — skip this bad frame and continue
-				// (better to have a partial response than to break the stream)
-				continue
+		// 2026-08-29: Validate SSE frame before processing. If the frame is malformed
+		// (incomplete JSON) and we haven't committed semantic output yet, fail the
+		// attempt as resumable so the survival coordinator can retry. If already
+		// committed, log the issue but continue (dropping the bad frame is safer
+		// than breaking the stream mid-flight).
+		if !validateSSEDataFrame(line) {
+			payload := extractPayload(line)
+			terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
+			slog.Warn("stream: malformed SSE frame detected mid-stream",
+				"payload_prefix", truncateForLog(payload, 100),
+				"chunk_count", chunkCount,
+				"committed", terminalVisible,
+				"client_model", clientModel,
+				"vendor", vendorCode,
+			)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("malformed_sse_frame_mid_stream")
 			}
+			metrics.Global().RecordMalformedSSEFrame(vendorCode, "mid_stream")
+			if !terminalVisible {
+				// Not yet committed — fail as resumable and retry
+				return StreamOutcome{
+					Interrupted: true,
+					Reason:      "malformed_sse_frame_mid_stream",
+					Kind:        errorsx.KindUpstreamDown,
+					Resumable:   true,
+					ChunkCount:  chunkCount,
+				}
+			}
+			// Already committed — skip this bad frame and continue
+			// (better to have a partial response than to break the stream)
+			continue
+		}
 			
 			rawPayload := extractPayload(line)
 			if rawPayload != "" && rawPayload != "[DONE]" {
