@@ -108,6 +108,42 @@ groups:
           summary: "LLM Gateway 延迟过高"
           description: "LLM Gateway P99 延迟 > 5s (当前: {{ $value | humanizeDuration }})"
 
+  # 2026-08-29: hot-table promote health. These rules consume the metrics
+  # registered by bg/partition_manager.go; table is intentionally the only
+  # label so the alert remains low-cardinality.
+  - name: hot_table_promote_alerts
+    interval: 30s
+    rules:
+      - alert: HotTablePromoteFailures
+        expr: increase(llm_gateway_hot_table_promote_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: partition
+        annotations:
+          summary: "热表 promote 持续失败（{{ $labels.table }}）"
+          description: "表 {{ $labels.table }} 在过去 15 分钟出现 promote 失败；热表数据可能无法迁入月分区，请检查 PartitionManager 日志、目标分区和数据库错误。"
+
+      - alert: HotTablePromoteLockContention
+        expr: increase(llm_gateway_hot_table_promote_skipped_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: partition
+        annotations:
+          summary: "热表 promote 长时间被锁竞争跳过（{{ $labels.table }}）"
+          description: "表 {{ $labels.table }} 在过去 15 分钟只发生锁竞争跳过且没有成功批次，可能导致 hot 表积压。"
+
+      - alert: HotTablePromoteSlow
+        expr: histogram_quantile(0.95, sum by (le, table) (rate(llm_gateway_hot_table_promote_duration_seconds_bucket[15m]))) > 30
+        for: 10m
+        labels:
+          severity: warning
+          component: partition
+        annotations:
+          summary: "热表 promote 批次耗时过高（{{ $labels.table }}）"
+          description: "表 {{ $labels.table }} 的 promote 批次 P95 耗时超过 30 秒，请检查数据库负载和 hot 表积压。"
+
   # 2026-08-12: node-probe 同步路径 + 路由状态源告警。
   # 覆盖范围说明：仅覆盖请求热路径上的 ProbeSync（no_candidates 触发）
   # 与 routing_state_source 外层标签。后台 NodeProbeWorker 的探测结果只

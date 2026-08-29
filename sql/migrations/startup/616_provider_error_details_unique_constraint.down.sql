@@ -11,4 +11,7 @@
 -- 删除唯一约束索引
 DROP INDEX IF EXISTS idx_provider_error_details_fingerprint;
 
-RAISE NOTICE '✅ Migration 616 rolled back: unique constraint removed';
+DO $$
+BEGIN
+    RAISE NOTICE 'Migration 616 rolled back: unique constraint removed';
+END $$;

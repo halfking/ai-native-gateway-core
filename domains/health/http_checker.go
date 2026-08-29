@@ -3,9 +3,10 @@ package health
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 // HTTPCheckResult represents the result of an HTTP health check.
@@ -71,15 +72,14 @@ func (c *HTTPChecker) Check(ctx context.Context, url string) HTTPCheckResult {
 		result.Error = err
 		return result
 	}
-	defer resp.Body.Close()
-
 	result.StatusCode = resp.StatusCode
 
-	// Read response body (up to 1KB)
-	bodyBytes, err := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	if err == nil {
-		result.Body = string(bodyBytes)
+	// Read response body (up to 1KB), then drain and close the remainder.
+	bodyBytes, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, 1024)
+	if bodyErr != nil {
+		result.Error = fmt.Errorf("read response body: %w", bodyErr)
 	}
+	result.Body = string(bodyBytes)
 
 	// Consider 2xx as success
 	result.Success = resp.StatusCode >= 200 && resp.StatusCode < 300

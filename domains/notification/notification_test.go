@@ -35,6 +35,49 @@ func newMockChannel(name string) *mockChannel {
 	return &mockChannel{name: name}
 }
 
+func TestWebhookChannelDoPostBodySnippetAndDrain(t *testing.T) {
+	const prefix = "upstream failure"
+	largeTail := strings.Repeat("x", 4096)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(prefix + largeTail))
+	}))
+	defer server.Close()
+
+	channel := NewWebhookChannel(WebhookConfig{URL: server.URL})
+	err := channel.doPost(context.Background(), []byte(`{"ok":true}`))
+	if err == nil {
+		t.Fatal("expected webhook error")
+	}
+	var webhookErr *webhookHTTPError
+	if !asWebhookError(err, &webhookErr) {
+		t.Fatalf("expected webhook HTTP error, got %T: %v", err, err)
+	}
+	if webhookErr.Body != prefix+largeTail[:1024-len(prefix)] {
+		t.Fatalf("unexpected body snippet length/content: got %d bytes", len(webhookErr.Body))
+	}
+}
+
+func TestWebhookChannelDoPostEmptyErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	channel := NewWebhookChannel(WebhookConfig{URL: server.URL})
+	err := channel.doPost(context.Background(), []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected webhook error")
+	}
+	var webhookErr *webhookHTTPError
+	if !asWebhookError(err, &webhookErr) {
+		t.Fatalf("expected webhook HTTP error, got %T: %v", err, err)
+	}
+	if webhookErr.Body != "" {
+		t.Fatalf("expected empty body snippet, got %q", webhookErr.Body)
+	}
+}
+
 func (m *mockChannel) Name() string { return m.name }
 
 func (m *mockChannel) Send(ctx context.Context, msg *Message) error {
