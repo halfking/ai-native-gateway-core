@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
@@ -91,8 +93,9 @@ func (p *GatewayNetworkProber) ProbeLatency(ctx context.Context, credentialID in
 			// 单次探测失败：跳过，不中断整轮探测（可能是瞬时网络抖动）
 			continue
 		}
-		//nolint:errcheck // best-effort close
-		resp.Body.Close()
+		if _, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, 0); bodyErr != nil {
+			continue
+		}
 
 		latencies = append(latencies, elapsedMs)
 	}

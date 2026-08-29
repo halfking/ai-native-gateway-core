@@ -16,7 +16,9 @@ func TestProviderErrorAggregatorSQLIsTenantScopedAndBucketIdempotent(t *testing.
 	for _, want := range []string{
 		"set_config('app.current_role', 'super_admin', true)",
 		"set_config('app.bypass_rls', 'true', true)",
-		"GROUP BY tenant_id, provider_id",
+		"PARTITION BY tenant_id, provider_id",
+		"tenant_id, provider_id, model_name",
+
 		"AS aggregation_bucket",
 		"occurrences = EXCLUDED.occurrences",
 		"aggregation_bucket",

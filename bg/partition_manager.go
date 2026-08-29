@@ -17,11 +17,9 @@ func settingsGetPlatformInt(key string, fallback int) int {
 	return settings.GetPlatformInt(key, fallback)
 }
 
-// DefaultPromoteInterval is how often the migrate-default-to-partition
-// scheduler runs. 7-day *_default retention requires relatively
-// frequent polling so writes don't accumulate beyond the configured
-// window. 24h is too coarse — promote_xxx_default_batch must sweep at
-// least every few hours.
+// DefaultPromoteInterval is how often the hot-table promote scheduler runs.
+// The default 8-hour hot window requires more frequent polling than the
+// daily ensure/archive maintenance cycle.
 const DefaultPromoteInterval = 1 * time.Hour
 
 // DefaultRetentionWindow is the *_default "hot data" keep-window. Rows
@@ -35,6 +33,18 @@ const DefaultPromoteInterval = 1 * time.Hour
 //   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
 //     promotes and is cleaned by direct TTL DELETE.
 const DefaultRetentionWindow = 8 * time.Hour
+
+// promoteCycleTimeout bounds one promote scheduler cycle so a large backlog
+// cannot starve partition creation and cleanup workers.
+const promoteCycleTimeout = 5 * time.Minute
+
+// promoteCycleMaxBatches bounds the number of database batches processed by a
+// single cycle. The next cycle resumes from the remaining hot-table rows.
+const promoteCycleMaxBatches = 100
+
+// providerErrorCleanupInterval is independent from the daily partition/archive
+// schedule because resolved error rows should not wait 24 hours to be reaped.
+const providerErrorCleanupInterval = time.Hour
 
 // promoteBatchSize is the per-call LIMIT inside each promote_xxx_batch
 // CTE. Keeps per-tx memory bounded so a backlog cannot OOM the gateway.
@@ -57,11 +67,10 @@ const requestLogsBodiesPromoteBatchSize = 500
 // cold rows from most *_hot tables into matching monthly partitions,
 // and applies direct TTL cleanup for model_probe_runs_hot.
 //
-// Runs `interval` for ensure+archive (typically 24h). Runs
-// `promoteInterval` for the promote cycle (typically 1h — see
-// DefaultPromoteInterval). Three schedules are independent so a
-// long-running promote cycle never delays ensure_next_month.
-//
+// Runs `interval` for ensure+archive (typically 24h), an independent
+// hourly promote cycle, and an independent cleanup cycle. Promote cycles
+// are time- and batch-bounded so a backlog cannot delay other maintenance.
+
 // On day 1-3 of each month, archives the partition from 2 months ago.
 //
 // Usage:
@@ -70,14 +79,20 @@ const requestLogsBodiesPromoteBatchSize = 500
 //	pm.Start(context.Background())
 //	defer pm.Stop()
 type PartitionManager struct {
-	db                 *pgxpool.Pool
-	interval           time.Duration
-	promoteInterval    time.Duration
-	errorAggregator    *ProviderErrorAggregator // 2026-08-29: provider error aggregation
-	cancel             context.CancelFunc
-	done               chan struct{}
-	mu                 sync.Mutex // 2026-07-20: protect lastAnalyzeAt
-	lastAnalyzeAt      time.Time  // 2026-07-20: analyze cooldown 5min
+	db              *pgxpool.Pool
+	interval        time.Duration
+	promoteInterval time.Duration
+	errorAggregator *ProviderErrorAggregator // 2026-08-29: provider error aggregation
+
+	mu            sync.Mutex
+	cancel        context.CancelFunc
+	done          chan struct{}
+	promoteDone   chan struct{}
+	cleanupDone   chan struct{}
+	ready         chan struct{}
+	started       bool
+	stopped       bool
+	lastAnalyzeAt time.Time // 2026-07-20: analyze cooldown 5min
 }
 
 // archiveSpec describes one archive_xxx call: which SQL function to
@@ -100,77 +115,155 @@ type archiveSpec struct {
 }
 
 func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {
-	if interval == 0 {
+	if interval <= 0 {
 		interval = 24 * time.Hour
 	}
 	return &PartitionManager{
 		db:              db,
 		interval:        interval,
 		promoteInterval: DefaultPromoteInterval,
-		errorAggregator: NewProviderErrorAggregator(db, 10*time.Minute), // 每 10 分钟聚合一次
+		errorAggregator: NewProviderErrorAggregator(db, 10*time.Minute),
 		done:            make(chan struct{}),
+		promoteDone:     make(chan struct{}),
+		cleanupDone:     make(chan struct{}),
+		ready:           make(chan struct{}),
 	}
 }
 
-// SetPromoteInterval overrides the default promote cycle (1h). Tests
-// use a shorter interval to drain a backlog quickly. Setting to 0
-// disables the promote scheduler entirely.
+// SetPromoteInterval overrides the default promote cycle (1h). A non-positive
+// value disables the promote scheduler. It is safe to call before or after
+// Start; a running worker observes the value on its next cycle.
 func (pm *PartitionManager) SetPromoteInterval(d time.Duration) {
+	pm.mu.Lock()
 	pm.promoteInterval = d
+	pm.mu.Unlock()
 }
 
 func (pm *PartitionManager) Start(ctx context.Context) {
+	if pm == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pm.mu.Lock()
+	if pm.started {
+		pm.mu.Unlock()
+		return
+	}
+	pm.started = true
+	pm.stopped = false
 	ctx, pm.cancel = context.WithCancel(ctx)
+	pm.mu.Unlock()
+
 	go pm.run(ctx)
-	
-	// 启动错误聚合器
+	go pm.runPromote(ctx)
+	go pm.runCleanup(ctx)
 	if pm.errorAggregator != nil {
 		pm.errorAggregator.Start(ctx)
 	}
-	
 	slog.Info("partition_manager started", "interval", pm.interval)
 }
 
 func (pm *PartitionManager) Stop() {
-	if pm.cancel != nil {
-		pm.cancel()
+	if pm == nil {
+		return
 	}
-	
-	// 停止错误聚合器
+	pm.mu.Lock()
+	if !pm.started || pm.stopped {
+		pm.mu.Unlock()
+		return
+	}
+	pm.stopped = true
+	cancel := pm.cancel
+	pm.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
 	if pm.errorAggregator != nil {
 		pm.errorAggregator.Stop()
 	}
-	
 	<-pm.done
+	<-pm.promoteDone
+	<-pm.cleanupDone
 }
 
 func (pm *PartitionManager) run(ctx context.Context) {
 	defer close(pm.done)
 
-	// Run once on startup — the gateway has no insight into how long
-	// it was down so a single pass drains whatever _default rows have
-	// accumulated since the last run.
-	pm.ensureNextMonthPartitions(ctx)
-	pm.archiveOldPartitionsIfNeeded(ctx)
-	pm.promoteDefaultToPartitions(ctx)
+	// Run partition creation and archive once on startup. Promote runs in its
+	// own worker so a backlog cannot block these maintenance operations.
+	if pm.db != nil {
+		pm.ensureNextMonthPartitions(ctx)
+		pm.archiveOldPartitionsIfNeeded(ctx)
+	}
+	close(pm.ready)
 
 	mainTicker := time.NewTicker(pm.interval)
 	defer mainTicker.Stop()
-
-	// promoteTicker fires more frequently than mainTicker so the
-	// 7-day retention window stays sharp even during heavy write load.
-	promoteTicker := time.NewTicker(pm.promoteInterval)
-	defer promoteTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-mainTicker.C:
-			pm.ensureNextMonthPartitions(ctx)
-			pm.archiveOldPartitionsIfNeeded(ctx)
-		case <-promoteTicker.C:
+			if pm.db != nil {
+				pm.ensureNextMonthPartitions(ctx)
+				pm.archiveOldPartitionsIfNeeded(ctx)
+			}
+		}
+	}
+}
+
+func (pm *PartitionManager) runPromote(ctx context.Context) {
+	defer close(pm.promoteDone)
+	select {
+	case <-pm.ready:
+	case <-ctx.Done():
+		return
+	}
+	pm.promoteDefaultToPartitions(ctx)
+
+	for {
+		pm.mu.Lock()
+		promoteInterval := pm.promoteInterval
+		pm.mu.Unlock()
+		if promoteInterval <= 0 {
+			// A disabled scheduler remains cancellable and observes a later
+			// re-enable without constructing an invalid ticker.
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+
+		timer := time.NewTimer(promoteInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 			pm.promoteDefaultToPartitions(ctx)
+		}
+	}
+}
+
+func (pm *PartitionManager) runCleanup(ctx context.Context) {
+	defer close(pm.cleanupDone)
+	ticker := time.NewTicker(providerErrorCleanupInterval)
+	defer ticker.Stop()
+	pm.cleanupOldProviderErrorDetails(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pm.cleanupOldProviderErrorDetails(ctx)
 		}
 	}
 }
@@ -292,13 +385,6 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	// Append-only alert events, no partition strategy. Default 30d via
 	// lifecycle.runtime_alert_events_ttl_days.
 	pm.cleanupOldRuntimeAlertEvents(ctx)
-
-	// 11. 2026-08-29 P2: provider_error_details resolved errors cleanup.
-	// Deletes resolved error aggregations older than 30 days to prevent
-	// unbounded growth. Unresolved errors are retained indefinitely for
-	// operational visibility. Default 30d via
-	// lifecycle.provider_error_details_ttl_days.
-	pm.cleanupOldProviderErrorDetails(ctx)
 }
 
 // dropOldStatePartitions calls the SQL helper
@@ -817,22 +903,34 @@ func promoteLockKey(label string) int64 {
 }
 
 func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
-	if pm.promoteInterval == 0 {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	pm.mu.Lock()
+	promoteInterval := pm.promoteInterval
+	pm.mu.Unlock()
+	if promoteInterval <= 0 {
 		// Disabled via SetPromoteInterval(0) — used by tests.
 		return
 	}
+	cycleCtx, cycleCancel := context.WithTimeout(ctx, promoteCycleTimeout)
+	defer cycleCancel()
+	batches := 0
+	budgetExhausted := false
 	for _, s := range promoteSpecs() {
 		retention, batchSize := resolvePromoteConfig(s.label)
 		lockKey := promoteLockKey(s.label)
 		for {
-			if ctx.Err() != nil {
-				return
+			if cycleCtx.Err() != nil || batches >= promoteCycleMaxBatches {
+				budgetExhausted = true
+				break
 			}
 			batchStart := time.Now() // 2026-08-29 P2: track duration
-			timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			timeoutCtx, cancel := context.WithTimeout(cycleCtx, 60*time.Second)
 			tx, err := pm.db.Begin(timeoutCtx)
 			if err != nil {
 				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
 				slog.Error("partition_manager: promote begin failed",
 					"label", s.label, "error", err)
 				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
@@ -848,6 +946,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			).Scan(&locked); err != nil {
 				tx.Rollback(timeoutCtx)
 				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
 				slog.Error("partition_manager: promote lock failed",
 					"label", s.label, "error", err)
 				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
@@ -856,6 +955,7 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			if !locked {
 				tx.Rollback(timeoutCtx)
 				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
 				slog.Debug("partition_manager: promote skipped (peer holds lock)",
 					"label", s.label)
 				recordPromoteSkipped(s.label) // 2026-08-29 P2: record skip
@@ -874,26 +974,33 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 					"fn", s.fnName, "label", s.label,
 					"retention", retention, "batch_size", batchSize,
 					"error", err)
+				recordPromoteDuration(s.label, batchDuration)
 				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
 				break                         // move on to the next table
 			}
 			if commitErr != nil {
 				slog.Error("partition_manager: promote commit failed",
 					"label", s.label, "error", commitErr)
+				recordPromoteDuration(s.label, batchDuration)
 				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
 				break
 			}
+			// Record every completed attempt, including an empty batch.
+			recordPromoteDuration(s.label, batchDuration)
 			if n == 0 {
 				slog.Debug("partition_manager: promote done",
 					"label", s.label,
 					"retention", retention)
 				break
 			}
+			batches++
 			// 2026-08-29 P2: record successful batch
 			recordPromoteBatch(s.label, n)
-			recordPromoteDuration(s.label, batchDuration)
 			slog.Info("partition_manager: promote batch",
 				"label", s.label, "rows", n)
+		}
+		if budgetExhausted {
+			break
 		}
 	}
 	pm.analyzePartitionStats(ctx)
@@ -1030,6 +1137,9 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 // 2026-08-29 P2: Added to prevent unbounded growth of the error aggregation
 // table after the聚合器 was implemented in migration 616.
 func (pm *PartitionManager) cleanupOldProviderErrorDetails(ctx context.Context) {
+	if pm == nil || pm.db == nil {
+		return
+	}
 	retentionDays := settings.GetPlatformInt("lifecycle.provider_error_details_ttl_days", 30)
 	if retentionDays < 1 {
 		retentionDays = 30 // safety floor — never set to 0
@@ -1055,4 +1165,3 @@ func (pm *PartitionManager) cleanupOldProviderErrorDetails(ctx context.Context) 
 			"deleted_rows", n, "retention_days", retentionDays)
 	}
 }
-

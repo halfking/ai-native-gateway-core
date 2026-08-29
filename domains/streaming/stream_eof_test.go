@@ -90,9 +90,6 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks(t *testing.T) {
 	)
 
 	assert.True(t, outcome.Interrupted)
-	// After SSE frame validation (c2cf5d45c), malformed SSE frames are
-	// detected before chunk parsing, so the reason is now "malformed_sse_frame"
-	// instead of "invalid_chunk". Both indicate upstream sent bad data.
 	assert.Equal(t, "malformed_sse_frame", outcome.Reason)
 	assert.Equal(t, errorsx.KindUpstreamDown, outcome.Kind)
 	assert.True(t, outcome.Resumable)
@@ -249,8 +246,8 @@ func (c *countingRecorder) RecordShadowWriteFailure(_ string)                   
 func (c *countingRecorder) RecordRingBufferDropped(_ uint64)                     {}
 func (c *countingRecorder) RecordRawAuditWriteFailure()                          {}
 func (c *countingRecorder) RecordURSMv2ShadowResult(_ string)                    {}
-func (c *countingRecorder) RecordStreamSynthesizedDone()                         { c.synth++ }
 func (c *countingRecorder) RecordMalformedSSEFrame(_, _ string)                  {}
+func (c *countingRecorder) RecordStreamSynthesizedDone()                         { c.synth++ }
 
 // Compile-time check that countingRecorder satisfies metrics.Recorder.
 var _ metrics.Recorder = (*countingRecorder)(nil)
