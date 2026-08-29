@@ -24,6 +24,8 @@ func TestApplyMigrationsIncludesRequestJourneyObservationEnsure(t *testing.T) {
 		"FORCE ROW LEVEL SECURITY",
 		"request_journey_observation_outbox_processing_lease_chk",
 		"request_journey_observation_outbox_super_admin_bypass",
+		"projection_base_seq",
+		"journal_snapshot_receipts_projection_base_seq_chk",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("db.go missing request journey observation contract %q", want)
