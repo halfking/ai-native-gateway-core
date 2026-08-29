@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1874,10 +1875,27 @@ var fpReleaseWorkerOnce sync.Once
 func ensureFpReleaseWorker() {
 	fpReleaseWorkerOnce.Do(func() {
 		go func() {
+			// Audit-2026-08-29 (§5 hardening): this worker is started via
+			// sync.Once in init() and runs for the process lifetime. A panic
+			// in job.m.Release (Redis Lua script or network error) would kill
+			// the worker permanently, causing fpReleaseQueue to fill to 1024
+			// and all subsequent releaseFpLease calls to fall back to the
+			// synchronous 1s timeout path — adding hot-path latency and
+			// potentially leaking fp slots. Wrap each job in recover so the
+			// worker survives individual panics.
 			for job := range fpReleaseQueue {
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				job.m.Release(ctx, job.lease)
-				cancel()
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							slog.Warn("fp release worker panicked during Release",
+								"panic", r,
+								"stack", string(debug.Stack()))
+						}
+					}()
+					ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+					job.m.Release(ctx, job.lease)
+					cancel()
+				}()
 			}
 		}()
 	})
