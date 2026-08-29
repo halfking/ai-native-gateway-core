@@ -122,7 +122,14 @@ func defaultKindThresholds() map[string]KindThreshold {
 	return map[string]KindThreshold{
 		"timeout":            {FailureThreshold: 0.70, MinSampleSize: 5, DegradedCooldown: 20 * time.Minute},
 		"stream_timeout":     {FailureThreshold: 0.70, MinSampleSize: 5, DegradedCooldown: 20 * time.Minute},
-		"rate_limit":         {FailureThreshold: 0.95, MinSampleSize: 8, DegradedCooldown: 1 * time.Minute},
+		// 2026-08-29 fix: rate_limit 阈值从 0.95 提升到 0.98，最小样本从 8 提升到 15，
+		// 冷却从 1 分钟缩短到 30 秒。智谱 GLM/MiniMax 等国内模型在高峰期会返回较多
+		// 429，但这些是正常的流控信号，不应触发长时间降级。提升阈值需要更多证据
+		// (15 样本中有 14.7 个失败才触发)，缩短冷却让恢复更快。
+		"rate_limit":         {FailureThreshold: 0.98, MinSampleSize: 15, DegradedCooldown: 30 * time.Second},
+		// 2026-08-29 fix: concurrent 并发过载也应更宽容。智谱/MiniMax 的 503 "engine busy"
+		// 是瞬态信号，提升阈值到 0.95 避免误判，增加样本到 12 保证统计意义。
+		"concurrent":         {FailureThreshold: 0.95, MinSampleSize: 12, DegradedCooldown: 2 * time.Minute},
 		"upstream_context_loss": {FailureThreshold: 0.50, MinSampleSize: 3, DegradedCooldown: 30 * time.Minute},
 		"upstream_down":      {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
 		"upstream_overloaded": {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
