@@ -30,11 +30,11 @@ const DefaultPromoteInterval = 1 * time.Hour
 // promote_*_default_batch functions installed in migration 336.
 //
 // 2026-07 hot-table architecture:
-//   - most *_hot tables keep a short hot window, then promote into monthly
-//     partitions on the promote scheduler;
+//   - most *_hot tables keep an 8-hour hot window by default, then promote
+//     into monthly partitions on the promote scheduler;
 //   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
 //     promotes and is cleaned by direct TTL DELETE.
-const DefaultRetentionWindow = 24 * time.Hour
+const DefaultRetentionWindow = 8 * time.Hour
 
 // promoteBatchSize is the per-call LIMIT inside each promote_xxx_batch
 // CTE. Keeps per-tx memory bounded so a backlog cannot OOM the gateway.
