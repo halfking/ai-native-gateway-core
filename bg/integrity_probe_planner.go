@@ -216,7 +216,6 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	rows.Close()
 
 	for _, item := range batch {
 		task := ProbeQueueTask{

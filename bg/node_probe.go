@@ -669,6 +669,7 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 		slog.Warn("node_probe_worker: pump due states query failed", "error", err)
 		return
 	}
+	defer rows.Close()
 	type dueRow struct {
 		credID int
 		model  string
@@ -678,13 +679,11 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 	for rows.Next() {
 		var r dueRow
 		if err := rows.Scan(&r.credID, &r.model, &r.tenant); err != nil {
-			rows.Close()
 			slog.Warn("node_probe_worker: pump due states scan failed", "error", err)
 			return
 		}
 		due = append(due, r)
 	}
-	rows.Close()
 	if err := rows.Err(); err != nil {
 		slog.Warn("node_probe_worker: pump due states iterate failed", "error", err)
 		return

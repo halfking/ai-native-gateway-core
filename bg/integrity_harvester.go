@@ -231,7 +231,6 @@ func (h *IntegrityHarvester) bridgeCritical(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	rows.Close()
 	for _, p := range batch {
 		// metadata carries every key the operator dashboard + the
 		// WHERE NOT EXISTS dedup need: the integrity event id (dedup),
@@ -387,7 +386,6 @@ func (h *IntegrityHarvester) bridgeHigh(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	rows.Close()
 	for _, p := range batch {
 		// metadata mirrors the critical path's keys plus the cluster
 		// aggregates (count, window) so the operator dashboard can show

@@ -1685,6 +1685,7 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 		slog.Warn("credential_recovery: lookback candidate query failed", "error", err)
 		return
 	}
+	defer rows.Close()
 	type candidate struct {
 		credID   int
 		model    string
@@ -1702,7 +1703,6 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 	if err := rows.Err(); err != nil {
 		slog.Warn("credential_recovery: lookback scan iteration failed", "error", err)
 	}
-	rows.Close()
 	if len(candidates) == 0 {
 		return
 	}
