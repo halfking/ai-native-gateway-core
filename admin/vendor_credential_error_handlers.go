@@ -86,7 +86,8 @@ func (h *vendorCredentialErrorHandlers) getVendorCredentialErrorDetail(w http.Re
 	defer cancel()
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 
-	credential, err := h.loadVendorCredentialMeta(ctx, credentialID)
+	tenantID := EffectiveTenantIDAll(r)
+	credential, err := h.loadVendorCredentialMeta(ctx, credentialID, tenantID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeErrorWithCode(w, http.StatusNotFound, "credential_not_found", "credential not found")
@@ -97,19 +98,19 @@ func (h *vendorCredentialErrorHandlers) getVendorCredentialErrorDetail(w http.Re
 		return
 	}
 
-	summary, err := h.loadVendorErrorSummary(ctx, credentialID, since)
+	summary, err := h.loadVendorErrorSummary(ctx, credentialID, tenantID, since)
 	if err != nil {
 		slog.Error("load vendor error summary failed", "operation", "load error summary", "credential_id", credentialID, "error", err)
 		writeErrorWithCode(w, http.StatusInternalServerError, "error_summary_query_failed", "failed to load error summary")
 		return
 	}
-	recent, err := h.loadVendorRecentFailures(ctx, credentialID, since)
+	recent, err := h.loadVendorRecentFailures(ctx, credentialID, tenantID, since)
 	if err != nil {
 		slog.Error("load vendor recent failures failed", "operation", "load recent failures", "credential_id", credentialID, "error", err)
 		writeErrorWithCode(w, http.StatusInternalServerError, "recent_failures_query_failed", "failed to load recent failures")
 		return
 	}
-	scores, err := h.loadVendorQualityScores(ctx, credentialID)
+	scores, err := h.loadVendorQualityScores(ctx, credentialID, tenantID)
 	if err != nil {
 		slog.Error("load vendor quality scores failed", "operation", "load quality scores", "credential_id", credentialID, "error", err)
 		writeErrorWithCode(w, http.StatusInternalServerError, "quality_scores_query_failed", "failed to load quality scores")
@@ -139,15 +140,16 @@ func parseVendorErrorHours(raw string) (int, error) {
 	return hours, nil
 }
 
-func (h *vendorCredentialErrorHandlers) loadVendorCredentialMeta(ctx context.Context, id int64) (vendorCredentialMeta, error) {
+func (h *vendorCredentialErrorHandlers) loadVendorCredentialMeta(ctx context.Context, id int64, tenantID string) (vendorCredentialMeta, error) {
 	var c vendorCredentialMeta
 	err := h.db.QueryRow(ctx, `
 		SELECT id, label, provider_id, health_status, health_error, health_latency_ms,
 		       availability_state, state_reason_code, state_reason_detail, state_updated_at,
 		       quota_state, lifecycle_status, circuit_state, consecutive_failures,
 		       manual_disabled, balance_usd, balance_currency
-		FROM credentials WHERE id = $1
-	`, id).Scan(&c.ID, &c.Label, &c.ProviderID, &c.HealthStatus, &c.HealthError, &c.HealthLatencyMs,
+			FROM credentials
+			WHERE id = $1 AND ($2 = '' OR tenant_id = $2)
+		`, id, tenantID).Scan(&c.ID, &c.Label, &c.ProviderID, &c.HealthStatus, &c.HealthError, &c.HealthLatencyMs,
 		&c.AvailabilityState, &c.StateReasonCode, &c.StateReasonDetail, &c.StateUpdatedAt,
 		&c.QuotaState, &c.LifecycleStatus, &c.CircuitState, &c.ConsecutiveFailures,
 		&c.ManualDisabled, &c.BalanceUSD, &c.BalanceCurrency)
@@ -157,13 +159,13 @@ func (h *vendorCredentialErrorHandlers) loadVendorCredentialMeta(ctx context.Con
 	return c, nil
 }
 
-func (h *vendorCredentialErrorHandlers) loadVendorErrorSummary(ctx context.Context, id int64, since time.Time) ([]vendorErrorKindStat, error) {
+func (h *vendorCredentialErrorHandlers) loadVendorErrorSummary(ctx context.Context, id int64, tenantID string, since time.Time) ([]vendorErrorKindStat, error) {
 	rows, err := h.db.Query(ctx, `
 		SELECT error_kind, COUNT(*)::int, MAX(ts), COUNT(DISTINCT upstream_status_code)::int
 		FROM candidate_failure_logs_with_current_month
-		WHERE credential_id = $1 AND ts >= $2
-		GROUP BY error_kind ORDER BY COUNT(*) DESC
-	`, id, since)
+			WHERE credential_id = $1 AND ($2 = '' OR tenant_id = $2) AND ts >= $3
+			GROUP BY error_kind ORDER BY COUNT(*) DESC
+		`, id, tenantID, since)
 	if err != nil {
 		return nil, fmt.Errorf("query vendor error summary failed: %w (credential_id=%d)", err, id)
 	}
@@ -182,14 +184,14 @@ func (h *vendorCredentialErrorHandlers) loadVendorErrorSummary(ctx context.Conte
 	return result, nil
 }
 
-func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Context, id int64, since time.Time) ([]vendorRecentFailure, error) {
+func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Context, id int64, tenantID string, since time.Time) ([]vendorRecentFailure, error) {
 	rows, err := h.db.Query(ctx, `
 		SELECT ts, request_id, raw_model_name, attempt_index, error_kind, error_message,
 		       upstream_status_code, upstream_response_preview, latency_ms
-		FROM candidate_failure_logs_with_current_month
-		WHERE credential_id = $1 AND ts >= $2
-		ORDER BY ts DESC LIMIT 10
-	`, id, since)
+			FROM candidate_failure_logs_with_current_month
+			WHERE credential_id = $1 AND ($2 = '' OR tenant_id = $2) AND ts >= $3
+			ORDER BY ts DESC LIMIT 10
+		`, id, tenantID, since)
 	if err != nil {
 		return nil, fmt.Errorf("query vendor recent failures failed: %w (credential_id=%d)", err, id)
 	}
@@ -209,13 +211,15 @@ func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Con
 	return result, nil
 }
 
-func (h *vendorCredentialErrorHandlers) loadVendorQualityScores(ctx context.Context, id int64) ([]vendorQualityScore, error) {
+func (h *vendorCredentialErrorHandlers) loadVendorQualityScores(ctx context.Context, id int64, tenantID string) ([]vendorQualityScore, error) {
 	rows, err := h.db.Query(ctx, `
-		SELECT profile_date, total_score, availability_score, stability_score
-		FROM provider_profile_daily
-		WHERE credential_id = $1 AND profile_date >= CURRENT_DATE - 7
-		ORDER BY profile_date DESC
-	`, id)
+		SELECT p.profile_date, p.total_score, p.availability_score, p.stability_score
+		FROM provider_profile_daily p
+		JOIN credentials c ON c.id = p.credential_id
+		WHERE p.credential_id = $1 AND ($2 = '' OR c.tenant_id = $2)
+		  AND p.profile_date >= CURRENT_DATE - 7
+		ORDER BY p.profile_date DESC
+	`, id, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query vendor quality scores failed: %w (credential_id=%d)", err, id)
 	}
