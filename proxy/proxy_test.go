@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -306,6 +307,61 @@ func TestManagerStartStopAreIdempotent(t *testing.T) {
 
 func intPtr(v int) *int { return &v }
 
+func TestManagerHealthCheckPolicyKeepsHealthyWhenAutoDisableDisabled(t *testing.T) {
+	mgr := NewManager(&fakeStore{}, nil, nil)
+	mgr.SetAutoDisablePolicy(2, false, true)
+	node := &Node{Status: "active", ConsecutiveFailures: 1}
+
+	mgr.applyHealthCheckResult(node, false, 17, time.Unix(123, 0))
+	mgr.applyHealthCheckResult(node, false, 18, time.Unix(124, 0))
+
+	if node.ConsecutiveFailures != 3 {
+		t.Fatalf("failures = %d, want 3", node.ConsecutiveFailures)
+	}
+	if node.Status != "active" {
+		t.Fatalf("status = %q, want active when auto-disable is disabled", node.Status)
+	}
+	if node.LastHealthCheckStatus != "failed" {
+		t.Fatalf("health status = %q, want failed", node.LastHealthCheckStatus)
+	}
+}
+
+func TestManagerHealthCheckPolicyKeepsUnhealthyWhenAutoRecoverDisabled(t *testing.T) {
+	mgr := NewManager(&fakeStore{}, nil, nil)
+	mgr.SetAutoDisablePolicy(3, true, false)
+	node := &Node{Status: "unhealthy", ConsecutiveFailures: 4, SuccessRate: 0.5}
+
+	mgr.applyHealthCheckResult(node, true, 42, time.Unix(123, 0))
+
+	if node.Status != "unhealthy" {
+		t.Fatalf("status = %q, want unhealthy when auto-recover is disabled", node.Status)
+	}
+	if node.ConsecutiveFailures != 0 {
+		t.Fatalf("failures = %d, want 0", node.ConsecutiveFailures)
+	}
+	if node.ResponseTimeMs != 42 {
+		t.Fatalf("latency = %d, want 42", node.ResponseTimeMs)
+	}
+	if node.SuccessRate <= 0.5 {
+		t.Fatalf("success rate = %v, want updated value above 0.5", node.SuccessRate)
+	}
+}
+
+func TestManagerHealthCheckPolicyUsesConfiguredThreshold(t *testing.T) {
+	mgr := NewManager(&fakeStore{}, nil, nil)
+	mgr.SetAutoDisablePolicy(2, true, true)
+	node := &Node{Status: "active"}
+
+	mgr.applyHealthCheckResult(node, false, 0, time.Unix(123, 0))
+	if node.Status != "active" {
+		t.Fatalf("status after first failure = %q, want active", node.Status)
+	}
+	mgr.applyHealthCheckResult(node, false, 0, time.Unix(124, 0))
+	if node.Status != "unhealthy" {
+		t.Fatalf("status after threshold failure = %q, want unhealthy", node.Status)
+	}
+}
+
 type closableHealthChecker struct {
 	closeCalls int
 }
@@ -449,8 +505,37 @@ func keysOf(m map[string]*Node) []string {
 // fakeStore 只实现 SelectBestNode 需要的 ListNodes，其余方法返回零值。
 type fakeStore struct {
 	Store
-	nodes   []*Node
-	listErr error
+	nodes        []*Node
+	listErr      error
+	subscription *Subscription
+}
+
+func (f *fakeStore) GetSubscription(_ context.Context, id int) (*Subscription, error) {
+	if f.subscription == nil || f.subscription.ID != id {
+		return nil, errors.New("subscription not found")
+	}
+	return f.subscription, nil
+}
+
+func (f *fakeStore) UpdateSubscription(_ context.Context, sub *Subscription) error {
+	f.subscription = sub
+	return nil
+}
+
+func (f *fakeStore) DeleteNodesBySubscription(_ context.Context, subscriptionID int) error {
+	kept := f.nodes[:0]
+	for _, node := range f.nodes {
+		if node.SubscriptionID != subscriptionID {
+			kept = append(kept, node)
+		}
+	}
+	f.nodes = kept
+	return nil
+}
+
+func (f *fakeStore) CreateNode(_ context.Context, node *Node) error {
+	f.nodes = append(f.nodes, node)
+	return nil
 }
 
 func (f *fakeStore) ListNodes(_ context.Context, subscriptionID *int) ([]*Node, error) {
@@ -469,9 +554,91 @@ func (f *fakeStore) ListNodes(_ context.Context, subscriptionID *int) ([]*Node, 
 	return out, nil
 }
 
-// TestTransportFactoryCachesPerSubscription 验证 Stage 2 的 Transport 工厂：
-// 同一订阅 + 相同代理 URL 复用同一 Transport；代理 URL 变化时才重建；
-// Invalidate 后下一次 Get 重建。避免每次 SelectBestNode/探活都新建 Transport 造成连接泄漏。
+func TestManagerGetProxyTransportForNodeUsesSpecifiedNode(t *testing.T) {
+	mgr := NewManager(&fakeStore{}, nil, nil)
+	subscriptionID := 7
+	selected := &Node{
+		ID:             42,
+		SubscriptionID: subscriptionID,
+		Protocol:       ProtocolHTTP,
+		Server:         "selected-proxy.example",
+		Port:           8080,
+		Status:         "active",
+	}
+
+	transport, err := mgr.GetProxyTransportForNode(&subscriptionID, selected)
+	if err != nil {
+		t.Fatalf("GetProxyTransportForNode: %v", err)
+	}
+	proxyURL, err := transport.Proxy(&http.Request{URL: mustParseURL(t, "https://upstream.example")})
+	if err != nil {
+		t.Fatalf("transport Proxy: %v", err)
+	}
+	if got, want := proxyURL.String(), selected.ProxyURL(); got != want {
+		t.Fatalf("transport proxy URL = %q, want selected node URL %q", got, want)
+	}
+}
+
+func TestRefreshSubscriptionInvalidatesCachedTransport(t *testing.T) {
+	const subscriptionID = 7
+	oldNode := &Node{
+		ID:             1,
+		SubscriptionID: subscriptionID,
+		Protocol:       ProtocolHTTP,
+		Server:         "old-proxy.example",
+		Port:           8080,
+		Status:         "active",
+	}
+	store := &fakeStore{
+		nodes: []*Node{oldNode},
+		subscription: &Subscription{
+			ID:           subscriptionID,
+			Name:         "test",
+			SubscribeURL: "https://subscription.example",
+			Status:       "active",
+		},
+	}
+	mgr := NewManager(store, staticParser{nodes: []*Node{{
+		Name:     "new",
+		Protocol: ProtocolHTTP,
+		Server:   "new-proxy.example",
+		Port:     8081,
+		Status:   "active",
+	}}}, nil)
+
+	before, err := mgr.GetProxyTransportForNode(intPtr(subscriptionID), oldNode)
+	if err != nil {
+		t.Fatalf("cache initial transport: %v", err)
+	}
+	if err := mgr.RefreshSubscription(context.Background(), subscriptionID); err != nil {
+		t.Fatalf("RefreshSubscription: %v", err)
+	}
+	after, err := mgr.GetProxyTransportForNode(intPtr(subscriptionID), oldNode)
+	if err != nil {
+		t.Fatalf("get transport after refresh: %v", err)
+	}
+	if after == before {
+		t.Fatal("RefreshSubscription must invalidate the subscription transport cache")
+	}
+}
+
+func mustParseURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("url.Parse(%q): %v", raw, err)
+	}
+	return u
+}
+
+type staticParser struct {
+	nodes []*Node
+}
+
+func (p staticParser) Parse(context.Context, string) ([]*Node, error) {
+	return p.nodes, nil
+}
+
 func TestTransportFactoryCachesPerSubscription(t *testing.T) {
 	f := NewTransportFactory(nil)
 

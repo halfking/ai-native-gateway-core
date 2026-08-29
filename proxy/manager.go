@@ -388,8 +388,11 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 		return fmt.Errorf("update subscription: %w", err)
 	}
 
-	// 5. 刷新内存缓存
-	m.loadNodesIntoCache(ctx, subscriptionID)
+	// 5. 刷新内存缓存；仅在缓存成功更新后失效旧的订阅 Transport，
+	// 避免后续请求继续复用已被订阅刷新替换的节点连接池。
+	if m.loadNodesIntoCache(ctx, subscriptionID) {
+		m.InvalidateTransport(subscriptionID)
+	}
 
 	// 记录成功指标
 	if m.metrics != nil {
@@ -398,6 +401,37 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 
 	slog.Info("proxy: subscription refreshed", "id", subscriptionID, "node_count", len(nodes))
 	return nil
+}
+
+// healthCheckPolicy returns a consistent snapshot while callers may update the
+// policy at runtime through SetAutoDisablePolicy.
+func (m *Manager) healthCheckPolicy() (threshold int, disable, recover bool) {
+	m.selectionMu.Lock()
+	defer m.selectionMu.Unlock()
+	return m.autoDisableThreshold, m.autoDisableEnabled, m.autoRecoverEnabled
+}
+
+// applyHealthCheckResult applies the shared node state transition for a health check.
+// Probe metrics and logging remain with the individual health-check paths.
+func (m *Manager) applyHealthCheckResult(node *Node, ok bool, latency int, checkedAt time.Time) {
+	threshold, autoDisable, autoRecover := m.healthCheckPolicy()
+	node.LastHealthCheckAt = checkedAt
+	if ok {
+		node.LastHealthCheckStatus = "success"
+		node.ResponseTimeMs = latency
+		node.ConsecutiveFailures = 0
+		node.SuccessRate = node.SuccessRate*0.9 + 0.1
+		if node.Status == "active" || (node.Status == "unhealthy" && autoRecover) {
+			node.Status = "active"
+		}
+		return
+	}
+
+	node.LastHealthCheckStatus = "failed"
+	node.ConsecutiveFailures++
+	if autoDisable && node.ConsecutiveFailures >= threshold {
+		node.Status = "unhealthy"
+	}
 }
 
 // HealthCheckNode 健康检查单个节点
@@ -417,15 +451,8 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 	responseTimeMs, err := m.checker.Check(ctx, node)
 	elapsed := time.Since(startTime)
 
-	node.LastHealthCheckAt = time.Now()
-
 	if err != nil {
-		node.LastHealthCheckStatus = "failed"
-		node.ConsecutiveFailures++
-
-		if node.ConsecutiveFailures >= m.autoDisableThreshold {
-			node.Status = "unhealthy"
-		}
+		m.applyHealthCheckResult(node, false, responseTimeMs, time.Now())
 
 		// 记录失败指标
 		if m.metrics != nil {
@@ -440,14 +467,7 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 			"error", err,
 			"elapsed_ms", elapsed.Milliseconds())
 	} else {
-		node.LastHealthCheckStatus = "success"
-		node.ResponseTimeMs = responseTimeMs
-
-		node.ConsecutiveFailures = 0
-		node.Status = "active"
-
-		// 更新成功率（简单的移动平均）
-		node.SuccessRate = node.SuccessRate*0.9 + 0.1
+		m.applyHealthCheckResult(node, true, responseTimeMs, time.Now())
 
 		// 记录成功指标
 		if m.metrics != nil {
@@ -517,7 +537,15 @@ func (m *Manager) GetProxyTransport(ctx context.Context, subscriptionID *int) (*
 	if err != nil {
 		return nil, err
 	}
+	return m.GetProxyTransportForNode(subscriptionID, node)
+}
 
+// GetProxyTransportForNode 为已选节点构造或取得订阅缓存的 Transport。
+// 调用方先完成节点选择时应使用此方法，确保 Transport 与节点标签指向同一出口。
+func (m *Manager) GetProxyTransportForNode(subscriptionID *int, node *Node) (*http.Transport, error) {
+	if node == nil {
+		return nil, fmt.Errorf("proxy node is required")
+	}
 	proxyURLStr := node.ProxyURL()
 	if proxyURLStr == "" {
 		return nil, fmt.Errorf("unsupported proxy protocol: %s", node.Protocol)
@@ -527,7 +555,7 @@ func (m *Manager) GetProxyTransport(ctx context.Context, subscriptionID *int) (*
 	if subscriptionID != nil {
 		subID = *subscriptionID
 	}
-	// 工厂按订阅缓存 Transport，仅当选出的节点代理 URL 变化时才重建；
+	// 工厂按订阅缓存 Transport，仅当已选节点的代理 URL 变化时才重建；
 	// 命中同一订阅的多次请求共享连接池。
 	return m.transportFactory.Get(subID, proxyURLStr)
 }
@@ -741,28 +769,14 @@ func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 
 		// 将结果应用到该 URL 的所有节点
 		for _, node := range group.nodes {
-			node.LastHealthCheckAt = result.checkedAt
+			m.applyHealthCheckResult(node, result.ok, result.latency, result.checkedAt)
 
 			if result.ok {
-				node.LastHealthCheckStatus = "success"
-				node.ResponseTimeMs = result.latency
-
-				node.ConsecutiveFailures = 0
-				node.Status = "active"
-				node.SuccessRate = node.SuccessRate*0.9 + 0.1
-
 				// 健康节点：10 分钟后再探活。
 				m.scheduleNextHealthCheck(node.ID, now.Add(10*time.Minute))
 				successCount++
 
 			} else {
-				node.LastHealthCheckStatus = "failed"
-				node.ConsecutiveFailures++
-
-				if node.ConsecutiveFailures >= 3 {
-					node.Status = "unhealthy"
-				}
-
 				// 不健康节点：1 分钟后再探活（加快恢复检测）。
 				m.scheduleNextHealthCheck(node.ID, now.Add(time.Minute))
 				failedCount++
@@ -882,7 +896,6 @@ func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID in
 			slog.Warn("proxy: health check: get node failed", "node_id", res.NodeID, "error", gerr)
 			continue
 		}
-		node.LastHealthCheckAt = res.CheckedAt
 		if m.metrics != nil {
 			status := "failed"
 			if res.OK {
@@ -892,23 +905,14 @@ func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID in
 			m.metrics.IncHealthCheck(status)
 			m.metrics.ObserveHealthCheckDuration(float64(res.Latency) / 1000)
 		}
+		m.applyHealthCheckResult(node, res.OK, res.Latency, res.CheckedAt)
 		if res.OK {
-			node.LastHealthCheckStatus = "success"
-			node.ResponseTimeMs = res.Latency
-			node.ConsecutiveFailures = 0
-			node.Status = "active"
-			node.SuccessRate = node.SuccessRate*0.9 + 0.1
 			summary.OK++
 			summary.AvgMs += res.Latency
 			if res.Latency > summary.MaxMs {
 				summary.MaxMs = res.Latency
 			}
 		} else {
-			node.LastHealthCheckStatus = "failed"
-			node.ConsecutiveFailures++
-			if node.ConsecutiveFailures >= 3 {
-				node.Status = "unhealthy"
-			}
 			summary.Failed++
 
 			if m.metrics != nil {
@@ -918,6 +922,7 @@ func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID in
 			slog.Warn("proxy: health check failed",
 				"node", node.Name, "error", redactErr(res.Err), "latency_ms", res.Latency)
 		}
+
 		if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
 			slog.Warn("proxy: health check: update node failed", "node_id", node.ID, "error", uerr)
 			continue
@@ -975,11 +980,11 @@ func (m *Manager) loadAllNodesIntoCache() error {
 	return nil
 }
 
-func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) {
+func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) bool {
 	nodes, err := m.store.ListNodes(ctx, &subscriptionID)
 	if err != nil {
 		slog.Error("proxy: failed to load nodes into cache", "error", err)
-		return
+		return false
 	}
 
 	// 检查密码解密失败并记录指标
@@ -992,6 +997,7 @@ func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) {
 	}
 
 	m.setCacheWithTTL(subscriptionID, nodes, time.Now())
+	return true
 }
 
 // getNodesFromCache 已废弃，使用 getNodesFromCacheWithTTL 替代

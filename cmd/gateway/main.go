@@ -2491,6 +2491,9 @@ func main() {
 			adminDB = dbConn.Pool()
 		}
 		adminHandler = admin.NewHandler(adminDB, cfg.SecretKey, fernetKey)
+		if adminHandler != nil {
+			adminHandler.StartProxyRuntime()
+		}
 		// 会话优化 v4 (T4/R1.6): 流式连接注册表 — request_id → 客户端写出
 		// 流，供心跳/思考帧桥接回写与 /api/admin/connection-registry 只读
 		// 投影；写 deadline 默认 30s（G7：慢/僵死客户端按断开处理）。
@@ -6174,7 +6177,11 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		if adminHandler != nil {
+			adminHandler.StopProxyRuntime()
+		}
 		// Stop monitors before closing the database pool they query. The
+
 		// monitor is idempotent and safely handles a not-started instance.
 		if candidateFailureMonitor != nil {
 			candidateFailureMonitor.Stop()

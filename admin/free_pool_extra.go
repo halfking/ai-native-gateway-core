@@ -935,7 +935,7 @@ func (h *Handler) proxyEgressForProbe(ctx context.Context, subscriptionID *int) 
 	if err != nil {
 		return nil, "", err
 	}
-	transport, err := mgr.GetProxyTransport(ctx, subscriptionID)
+	transport, err := mgr.GetProxyTransportForNode(subscriptionID, node)
 	if err != nil {
 		return nil, "", err
 	}
@@ -990,8 +990,8 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		ForceSkipProbe   bool     `json:"force_skip_probe"` // 跳过探活检查，强制保存（用于 GFW 环境）
 		// 2026-08-29 代理出口：true 时经代理探活，并把供应商 egress_profile 记为 proxy。
 		// 无可拨号代理节点时直接报错，不会静默回退直连。
-		UseProxy             bool `json:"use_proxy"`
-		ProxySubscriptionID  *int `json:"proxy_subscription_id"`
+		UseProxy            bool `json:"use_proxy"`
+		ProxySubscriptionID *int `json:"proxy_subscription_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")

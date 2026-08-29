@@ -391,12 +391,17 @@ sum(rate(llm_gateway_malformed_sse_frame_total[5m])) by (provider)
 sum(rate(llm_gateway_malformed_sse_frame_total[5m])) by (stage)
 ```
 
-#### Tool Call Validation (计划中)
+#### Tool Call Validation
 ```go
-llm_gateway_incomplete_tool_call_total{provider="anthropic", reason="missing_result"}
-llm_gateway_incomplete_tool_call_total{provider="anthropic", reason="stream_interrupted"}
-llm_gateway_incomplete_tool_call_total{provider="anthropic", reason="id_mismatch"}
+llm_gateway_incomplete_tool_call_total{provider_family="anthropic", reason="incomplete_tool_call_interrupted"}
+llm_gateway_incomplete_tool_call_total{provider_family="anthropic", reason="incomplete_tool_call_after_done"}
 ```
+
+`provider_family` 由 raw model 经 `NormalizeRouteKey` 归一化得到，指标契约不可依赖原始 `model` 标签。`reason` 仅允许以下两个值：
+- `incomplete_tool_call_interrupted`：流在 tool call 完整前中断
+- `incomplete_tool_call_after_done`：收到 done 后仍检测到 tool call 不完整
+
+该指标契约以当前实现为准。
 
 ### 5.2 日志记录
 

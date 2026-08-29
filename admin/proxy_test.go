@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+// TestProxyRuntimeNilDBLifecycle verifies nil-DB lifecycle calls are repeatable
+// and do not panic.
+func TestProxyRuntimeNilDBLifecycle(t *testing.T) {
+	h := NewHandler(nil, "test-secret", nil)
+
+	for i := 0; i < 3; i++ {
+		h.StartProxyRuntime()
+		h.StopProxyRuntime()
+	}
+}
+
 // TestProxyRoutesAuth 验证代理管理路由的超级管理员鉴权：
 // super_admin 通过中间件；tenant_admin/无 token 被拒绝。
 // 这里只测鉴权层，不测实际 handler 逻辑（那些依赖真实 DB/manager）。
