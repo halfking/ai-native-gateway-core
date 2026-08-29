@@ -119,7 +119,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 		SELECT 
 			request_id,
 			ts,
-			session_id,
+			gw_session_id,
 			tenant_id,
 			COALESCE(client_model, '') as client_model,
 			COALESCE(provider_id, '') as provider_id,
@@ -131,7 +131,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 			COALESCE(response, '{}'::jsonb) as response_body,
 			COALESCE(success, false) as success
 		FROM request_logs
-		WHERE tenant_id = $1 AND session_id = $2
+		WHERE tenant_id = $1 AND gw_session_id = $2
 		ORDER BY ts ASC
 	`
 
@@ -199,7 +199,7 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 			source_kind,
 			quality
 		FROM public.session_turns_with_current_month
-		WHERE tenant_id = $1 AND session_id = $2
+		WHERE tenant_id = $1 AND gw_session_id = $2
 		ORDER BY turn_no ASC
 	`
 
@@ -264,7 +264,7 @@ func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID st
 			COALESCE(request_attachments, '[]'::jsonb) as request_attachments,
 			COALESCE(response_attachments, '[]'::jsonb) as response_attachments
 		FROM public.session_bodies
-		WHERE tenant_id = $1 AND session_id = $2
+		WHERE tenant_id = $1 AND gw_session_id = $2
 		ORDER BY turn_no ASC
 	`
 
@@ -321,7 +321,7 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 			COALESCE(last_provider, '') as last_provider,
 			COALESCE(primary_request_id, '') as primary_request_id
 		FROM public.sessions
-		WHERE tenant_id = $1 AND session_id = $2
+		WHERE tenant_id = $1 AND gw_session_id = $2
 		LIMIT 1
 	`
 
@@ -358,7 +358,7 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 	settleThreshold := time.Now().Add(-settleWindow)
 
 	query := `
-		SELECT DISTINCT session_id
+		SELECT DISTINCT gw_session_id
 		FROM request_logs
 		WHERE tenant_id = $1
 		  AND ts >= $2
@@ -388,7 +388,7 @@ func (l *SessionLoader) LoadSessionsInRange(ctx context.Context, tenantID string
 		var lastUpdate time.Time
 		err := l.db.QueryRow(ctx, `
 			SELECT MAX(ts) FROM request_logs
-			WHERE tenant_id = $1 AND session_id = $2
+			WHERE tenant_id = $1 AND gw_session_id = $2
 		`, tenantID, sessionID).Scan(&lastUpdate)
 
 		if err == nil && lastUpdate.Before(settleThreshold) {
