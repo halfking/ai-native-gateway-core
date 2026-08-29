@@ -34,8 +34,9 @@ import (
 // but does NOT propagate to the caller or affect request settlement.
 //
 // ADR requirement (§Decision point 5):
-//   "A failed diagnostic persistence attempt must not change request settlement
-//    or upstream response behavior, but must be observable."
+//
+//	"A failed diagnostic persistence attempt must not change request settlement
+//	 or upstream response behavior, but must be observable."
 //
 // Current implementation: cmd/gateway/main_dispatch_observation.go:109-115
 // logs the error via slog.Warn and continues; ApplyJournalSnapshot returns void.
@@ -94,9 +95,9 @@ func TestJournalSnapshot_PersistenceFailureIsolation(t *testing.T) {
 // TestJournalSnapshot_LargeJournal_CurrentBehavior verifies that journals
 // exceeding maxJournalSnapshotEvents are truncated according to ADR requirements:
 //
-//   "Snapshot materialization is bounded by the existing event retention and a
-//    maximum event count/serialized size. Truncation is explicit in the returned
-//    metadata rather than silently dropping events." (§Decision point 3)
+//	"Snapshot materialization is bounded by the existing event retention and a
+//	 maximum event count/serialized size. Truncation is explicit in the returned
+//	 metadata rather than silently dropping events." (§Decision point 3)
 //
 // Implementation: emitJournalSnapshot (pipeline.go) keeps the most recent
 // maxJournalSnapshotEvents (50) entries and sets Truncated=true with
@@ -245,25 +246,22 @@ func TestJournalSnapshot_SmallJournal_NoTruncation(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// 3. Authorization (NOT IMPLEMENTED: expected behavior)
+// 3. Authorization
 // ────────────────────────────────────────────────────────────────────────────
 
 // TestJournalSnapshot_Authorization_NotImplemented is a placeholder test
 // documenting the ADR's authorization requirement:
 //
-//   "Consumers must pass the caller's tenant and authorization context. An
-//    unauthorized request returns the same not-found-shaped result used by the
-//    detail path, avoiding cross-tenant existence leaks." (§Decision point 4)
+//	"Consumers must pass the caller's tenant and authorization context. An
+//	 unauthorized request returns the same not-found-shaped result used by the
+//	 detail path, avoiding cross-tenant existence leaks." (§Decision point 4)
 //
-// Current implementation: dispatchJourneyJournalAdapter does NOT check
-// authorization; it accepts any JournalSnapshot and applies all entries to
-// the recorder. A future bounded consumer interface should:
-//   1. Accept a caller context with tenant/auth claims
-//   2. Validate that the caller is authorized for snap.TenantID + snap.RequestID
-//   3. Return a not-found-shaped error (not "unauthorized") to avoid existence leaks
+// The bounded consumer implementation checks caller tenant authorization and
+// returns a not-found-shaped error for all denied reads. The production sink
+// also rejects unauthorized snapshots before persistence.
 //
-// This test is marked as skipped with t.Skip() to document the expected
-// behavior without failing CI.
+// This compatibility test remains skipped because the concrete authorization
+// behavior is covered by TestJournalSnapshot_Authorization.
 func TestJournalSnapshot_Authorization_NotImplemented(t *testing.T) {
 	t.Skip("replaced by TestJournalSnapshot_Authorization")
 }
@@ -344,39 +342,31 @@ func TestJournalSnapshot_Authorization(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// 4. Duplicate retry idempotency (NOT IMPLEMENTED: expected behavior)
+// 4. Duplicate retry idempotency
 // ────────────────────────────────────────────────────────────────────────────
 
-// TestJournalSnapshot_DuplicateRetryIdempotency_NotImplemented is a placeholder
-// test documenting the ADR's idempotency requirement:
+// TestJournalSnapshot_DuplicateRetryIdempotency_NotImplemented remains a
+// compatibility placeholder; the production adapter tests cover the concrete
+// receipt behavior. It documents the ADR's idempotency requirement:
 //
-//   "Repeated consumption is idempotent by (tenant_id, request_id, snapshot_version);
-//    restart/retry must not append duplicate summaries." (§Decision point 6)
+//	"Repeated consumption is idempotent by (tenant_id, request_id, snapshot_version);
+//	 restart/retry must not append duplicate summaries." (§Decision point 6)
 //
-// Current implementation: dispatchJourneyJournalAdapter does NOT track
-// snapshot_version; calling ApplyJournalSnapshot twice with the same
-// snapshot will ship duplicate events to recorder.Apply(). The recorder's
-// in-memory projection MAY reject duplicate seqs, but the adapter itself
-// has no idempotency guard.
-//
-// Future work: add a snapshot_version field (e.g., a hash of the journal
-// entries or a monotonic settlement seq) and persist a summary keyed by
-// (tenant_id, request_id, snapshot_version). On retry, check if that key
-// already exists; if so, skip re-applying.
+// The production adapter now tracks a process-local receipt keyed by
+// (tenant_id, request_id, snapshot_version), verifies the canonical payload
+// hash, and serializes same-key application. Durable restart/multi-instance
+// receipts remain a follow-up persistence task.
 func TestJournalSnapshot_DuplicateRetryIdempotency_NotImplemented(t *testing.T) {
 	t.Skip("replaced by TestJournalSnapshot_Idempotency")
 }
 
-// TestJournalSnapshot_Idempotency verifies that JournalSnapshot consumers can
-// detect and skip duplicate deliveries by comparing SnapshotVersion against
-// the recorder's MaxSeq for (tenant, request).
+// TestJournalSnapshot_Idempotency verifies the pipeline's snapshot version
+// contract and projection-level replay behavior. The production adapter's
+// process-local receipt behavior is covered in cmd/gateway tests.
 //
-// This satisfies ADR 2026-08-28 §Decision point 6: "Repeated consumption is
-// idempotent by (tenant_id, request_id, snapshot_version); restart/retry must
-// not append duplicate summaries."
-//
-// Implementation: production sink (cmd/gateway/main_dispatch_observation.go)
-// short-circuits when recorder.MaxSeq >= snap.SnapshotVersion.
+// ADR §Decision point 6 requires idempotency by
+// (tenant_id, request_id, snapshot_version); durable restart/multi-instance
+// receipt persistence remains a follow-up.
 func TestJournalSnapshot_Idempotency(t *testing.T) {
 	t.Run("snapshot_version_equals_journal_seq", func(t *testing.T) {
 		// Verify that SnapshotVersion is populated from qr.journalSeq at terminal time.

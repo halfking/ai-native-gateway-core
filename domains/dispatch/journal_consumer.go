@@ -5,6 +5,13 @@ import (
 	"sync"
 )
 
+// JournalSnapshotStore accepts detached terminal snapshots for a diagnostic
+// read model. Implementations must not make snapshot persistence part of request
+// settlement; the dispatch sink treats this path as best-effort.
+type JournalSnapshotStore interface {
+	Store(JournalSnapshot)
+}
+
 // InMemoryJournalStore is a simple in-memory implementation of
 // AuthorizedJournalConsumer for testing and demonstration purposes.
 // Production implementations should use durable storage (e.g., via
@@ -32,6 +39,7 @@ func (s *InMemoryJournalStore) Store(snap JournalSnapshot) {
 		return
 	}
 	key := snap.TenantID + ":" + snap.RequestID
+	snap.Entries = append([]JournalEntry(nil), snap.Entries...)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.snapshots[key] = snap
@@ -68,6 +76,7 @@ func (s *InMemoryJournalStore) ConsumeSnapshot(ctx context.Context, callerTenant
 		return JournalSnapshot{}, ErrJournalNotFound
 	}
 
+	snap.Entries = append([]JournalEntry(nil), snap.Entries...)
 	return snap, nil
 }
 
