@@ -230,13 +230,10 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 		if err := a.recorder.Apply(ctx, event); err != nil {
 			failed = true
 			slog.Warn("dispatch request journey journal entry rejected", "request_id", snap.RequestID, "journal_seq", entry.Seq, "event_seq", event.Seq, "error", err)
-			// Record failed apply metric (2026-08-29)
-			metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, false)
-		} else {
-			// Record successful apply metric (2026-08-29)
-			metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, true)
 		}
 	}
+	// Record snapshot apply metric once per snapshot (2026-08-29)
+	metrics.Global().RecordJournalSnapshotApplied(snap.TenantID, !failed)
 }
 
 func journalSnapshotHash(snap dispatch.JournalSnapshot) [sha256.Size]byte {
