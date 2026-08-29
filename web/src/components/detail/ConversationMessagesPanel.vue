@@ -115,7 +115,7 @@ function roleTone(role: unknown): string {
             <a v-else-if="m.url" :href="m.url" target="_blank" rel="noopener">{{ m.label || m.kind }}</a>
           </template>
         </div>
-        <pre class="msg-pre"><template v-if="expanded.has(i)"><template v-for="(seg, si) in contentSegments(msg)" :key="si"><span v-if="seg.kind === 'ph'" class="ph-badge">{{ seg.value }}</span><template v-else>{{ seg.value }}</template></template></template><template v-else>{{ previewText(contentOf(msg)).text }}</template></pre>
+        <pre class="msg-pre" :class="{ 'msg-pre--expanded': expanded.has(i) }"><template v-if="expanded.has(i)"><template v-for="(seg, si) in contentSegments(msg)" :key="si"><span v-if="seg.kind === 'ph'" class="ph-badge">{{ seg.value }}</span><template v-else>{{ seg.value }}</template></template></template><template v-else>{{ previewText(contentOf(msg)).text }}</template></pre>
         <button
           v-if="previewText(contentOf(msg)).truncated || expanded.has(i)"
           type="button"
@@ -138,7 +138,7 @@ function roleTone(role: unknown): string {
 
     <section v-if="responseBody !== undefined" class="reply-block msg-block--assistant" data-testid="chat-reply">
       <div class="msg-role" :style="{ color: roleColor('assistant') }">[assistant 回复]</div>
-      <pre class="msg-pre">{{ replyExpanded ? (replyText || '(无回复)') : replyPreview.text }}</pre>
+      <pre class="msg-pre" :class="{ 'msg-pre--expanded': replyExpanded }">{{ replyExpanded ? (replyText || '(无回复)') : replyPreview.text }}</pre>
       <button
         v-if="replyPreview.truncated || replyExpanded"
         type="button"
@@ -174,8 +174,16 @@ function roleTone(role: unknown): string {
 .inline-media audio { max-width: 100%; }
 .msg-pre, .tool-pre {
   margin: 0; white-space: pre-wrap; word-break: break-word;
-  font-size: 12px; line-height: 1.45; max-height: 320px; overflow: auto;
+  font-size: 12px; line-height: 1.45;
   background: transparent; padding: 4px 0; border-radius: 4px;
+}
+.msg-pre:not(.msg-pre--expanded) {
+  max-height: 320px;
+  overflow: auto;
+}
+.msg-pre--expanded {
+  max-height: none;
+  overflow: visible;
 }
 .tool-label { font-size: 11px; color: var(--muted); margin: 6px 0 2px; }
 .linkish { margin-top: 4px; }
