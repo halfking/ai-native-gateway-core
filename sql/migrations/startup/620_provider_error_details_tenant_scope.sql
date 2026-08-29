@@ -15,7 +15,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_error_details_tenant_fingerprint
 ON public.provider_error_details (
     COALESCE(tenant_id, ''), provider_id, COALESCE(model_name, ''),
     COALESCE(endpoint, ''), error_type, COALESCE(error_code, ''),
-    COALESCE(LEFT(error_message, 200), ''), aggregation_bucket
+    COALESCE(LEFT(error_message, 200), ''), COALESCE(aggregation_bucket, TIMESTAMPTZ 'epoch')
 );
 
 ALTER TABLE public.provider_error_details ENABLE ROW LEVEL SECURITY;
