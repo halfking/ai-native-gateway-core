@@ -90,7 +90,7 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks(t *testing.T) {
 	)
 
 	assert.True(t, outcome.Interrupted)
-	assert.Equal(t, "invalid_chunk", outcome.Reason)
+	assert.Equal(t, "malformed_sse_frame", outcome.Reason)
 	assert.Equal(t, errorsx.KindUpstreamDown, outcome.Kind)
 	assert.True(t, outcome.Resumable)
 	assert.Empty(t, writer.Body.String())
@@ -246,6 +246,7 @@ func (c *countingRecorder) RecordShadowWriteFailure(_ string)                   
 func (c *countingRecorder) RecordRingBufferDropped(_ uint64)                     {}
 func (c *countingRecorder) RecordRawAuditWriteFailure()                          {}
 func (c *countingRecorder) RecordURSMv2ShadowResult(_ string)                    {}
+func (c *countingRecorder) RecordMalformedSSEFrame(_, _ string)                  {}
 func (c *countingRecorder) RecordStreamSynthesizedDone()                         { c.synth++ }
 
 // Compile-time check that countingRecorder satisfies metrics.Recorder.

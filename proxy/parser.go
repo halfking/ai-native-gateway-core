@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -18,6 +17,8 @@ import (
 	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 var _ Parser = (*MultiFormatParser)(nil)
@@ -114,9 +115,7 @@ func (p *MultiFormatParser) fetch(ctx context.Context, subscribeURL string) ([]b
 	if err != nil {
 		return nil, fmt.Errorf("proxy: fetch subscription: %w", err)
 	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSubscriptionBody+1))
+	body, err := httputil.ReadPrefixAndDrain(resp.Body, maxSubscriptionBody+1)
 	if err != nil {
 		return nil, fmt.Errorf("proxy: read subscription body: %w", err)
 	}
