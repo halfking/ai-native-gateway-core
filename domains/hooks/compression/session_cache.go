@@ -770,6 +770,33 @@ func encodeSessionStateFields(st *SessionState) []any {
 			fields = append(fields, "algn", string(b))
 		}
 	}
+	// v8: persist the raw/compressed/audit semantic counters so Redis
+	// rehydration remains equivalent to an in-process L1 cache hit.
+	if st.RawTokenEstimate != 0 {
+		fields = append(fields, "raw_te", fmt.Sprintf("%d", st.RawTokenEstimate))
+	}
+	if st.RawMsgCount != 0 {
+		fields = append(fields, "raw_mc", fmt.Sprintf("%d", st.RawMsgCount))
+	}
+	if st.CompressedTokens != 0 {
+		fields = append(fields, "cmp_te", fmt.Sprintf("%d", st.CompressedTokens))
+	}
+	if st.CompressedMsgs != 0 {
+		fields = append(fields, "cmp_mc", fmt.Sprintf("%d", st.CompressedMsgs))
+	}
+	if st.CompressionQuality != (CompressionQualityScore{}) {
+		if b, err := json.Marshal(st.CompressionQuality); err == nil {
+			fields = append(fields, "cmp_q", string(b))
+		}
+	}
+	if st.SanitizeMapRef != "" {
+		fields = append(fields, "san_ref", st.SanitizeMapRef)
+	}
+	if st.SanitizeStats != (SanitizeStats{}) {
+		if b, err := json.Marshal(st.SanitizeStats); err == nil {
+			fields = append(fields, "san_stats", string(b))
+		}
+	}
 	return fields
 }
 
@@ -823,6 +850,18 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 		if err := json.Unmarshal([]byte(raw), &st.AlignmentMap); err != nil {
 			st.AlignmentMap = nil
 		}
+	}
+	st.TokensAfterStrip = int(parseInt(fields["tas"]))
+	st.RawTokenEstimate = int(parseInt(fields["raw_te"]))
+	st.RawMsgCount = int(parseInt(fields["raw_mc"]))
+	st.CompressedTokens = int(parseInt(fields["cmp_te"]))
+	st.CompressedMsgs = int(parseInt(fields["cmp_mc"]))
+	st.SanitizeMapRef = fields["san_ref"]
+	if raw := fields["cmp_q"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st.CompressionQuality)
+	}
+	if raw := fields["san_stats"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st.SanitizeStats)
 	}
 	return nil
 }
