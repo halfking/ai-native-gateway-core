@@ -20,6 +20,8 @@ type Manager struct {
 	// transportFactory 按订阅缓存可复用的 http.Transport（Stage 2：避免每次
 	// SelectBestNode/探活都新建 Transport 导致连接泄漏）。
 	transportFactory *TransportFactory
+	// metrics 代理子系统 Prometheus 指标（Stage 3）。
+	metrics *Metrics
 
 	// 内存缓存：subscription_id -> nodes
 	nodesCache sync.Map
@@ -39,6 +41,7 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 		parser:                parser,
 		checker:               checker,
 		transportFactory:      NewTransportFactory(nil),
+		metrics:               NewMetrics(nil),
 		autoRefreshInterval:   1 * time.Hour,
 		healthCheckInterval:   5 * time.Minute,
 		unknownDomainStrategy: "direct",
@@ -105,9 +108,19 @@ func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (*Nod
 
 	if len(activeNodes) == 0 {
 		if skippedUndialable > 0 {
+			if m.metrics != nil {
+				m.metrics.IncEgressSelection("undialable")
+			}
 			return nil, fmt.Errorf("no dialable proxy node: %d node(s) use protocols Go cannot proxy directly (trojan/vless/vmess/ss); expose them via a local mihomo/xray http or socks5 bridge and register that endpoint instead", skippedUndialable)
 		}
+		if m.metrics != nil {
+			m.metrics.IncEgressSelection("none")
+		}
 		return nil, fmt.Errorf("no available active nodes")
+	}
+
+	if m.metrics != nil {
+		m.metrics.IncEgressSelection("dialable")
 	}
 	
 	// 按健康状态和响应时间排序
@@ -334,15 +347,22 @@ func (m *Manager) refreshAllSubscriptions() {
 		return
 	}
 	
+	active, inactive := 0, 0
 	for _, sub := range subs {
 		if sub.Status == "active" {
+			active++
 			if err := m.RefreshSubscription(ctx, sub.ID); err != nil {
 				slog.Error("proxy: failed to refresh subscription",
 					"id", sub.ID,
 					"name", sub.Name,
 					"error", err)
 			}
+		} else {
+			inactive++
 		}
+	}
+	if m.metrics != nil {
+		m.metrics.SetSubscriptions(active, inactive)
 	}
 }
 
@@ -438,6 +458,17 @@ func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID in
 	}
 	if summary.OK > 0 {
 		summary.AvgMs /= summary.OK
+	}
+	// 指标：探活失败累计 + 节点计数（可拨号 = 总数 - 不可拨号跳过项）。
+	if m.metrics != nil {
+		for i := 0; i < summary.Failed; i++ {
+			m.metrics.IncHealthFailure()
+		}
+		dialable := summary.Total - summary.Skipped
+		if dialable < 0 {
+			dialable = 0
+		}
+		m.metrics.SetNodeCounts(summary.Total, dialable, summary.Total-summary.OK-summary.Skipped)
 	}
 	return summary, nil
 }

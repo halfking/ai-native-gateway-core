@@ -115,6 +115,7 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.dataOps',
     items: [
       { path: '/admin/settings', label: '系统设置', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
+      { path: '/admin/proxy', label: '代理管理', labelKey: 'nav.item.proxy', icon: '🌐', super: true, hideForTenant: true },
       { path: '/admin/data-lifecycle', label: '数据生命周期', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
       { path: '/format-anomalies', label: '格式异常监控', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
       { path: '/model-integrity', label: '模型完整性监控', labelKey: 'nav.item.modelIntegrity', icon: '🛰️', super: true, hideForTenant: true },

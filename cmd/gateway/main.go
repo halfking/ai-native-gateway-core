@@ -4903,7 +4903,6 @@ func main() {
 	// 2026-08-29：/readyz + /version 端点，供 scripts/lifecycle/preflight.sh 三段检查。
 	//   /readyz  严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
 	//   /version 仅暴露 build metadata（version + git_sha + build_seq + build_date），无敏感信息。
-	// 必须在 middleware/auth_mw.go 的 AuthMiddleware bypass 列表中（与 /healthz 同组）。
 	mux.Handle("/readyz", healthHandler)
 	mux.Handle("/version", healthHandler)
 	// 2026-07-14: 30s system-health JSON for the GDRT H badge on the
