@@ -14,20 +14,40 @@ import (
 )
 
 type disconnectingStreamWriter struct {
-	header http.Header
+	header     http.Header
+	writes     int
+	failAfter  int // Fail after this many successful writes (0 = fail immediately)
 }
 
 func (w *disconnectingStreamWriter) Header() http.Header { return w.header }
 
-func (w *disconnectingStreamWriter) Write([]byte) (int, error) {
-	return 0, errors.New("client disconnected")
+func (w *disconnectingStreamWriter) Write(p []byte) (int, error) {
+	w.writes++
+	if w.writes > w.failAfter {
+		return 0, errors.New("client disconnected")
+	}
+	return len(p), nil
 }
 
 func (w *disconnectingStreamWriter) WriteHeader(int) {}
 func (w *disconnectingStreamWriter) Flush()          {}
 
+// WriteCount returns the number of Write calls made (for testing/debugging)
+func (w *disconnectingStreamWriter) WriteCount() int {
+	return w.writes
+}
+
+// newDisconnectingStreamWriter creates a writer that fails immediately on first write.
+// Use newDisconnectingStreamWriterAfter for controlled disconnect timing.
 func newDisconnectingStreamWriter() *disconnectingStreamWriter {
-	return &disconnectingStreamWriter{header: http.Header{}}
+	return &disconnectingStreamWriter{header: http.Header{}, failAfter: 0}
+}
+
+// newDisconnectingStreamWriterAfter creates a writer that succeeds for the first
+// n writes, then fails on the (n+1)th write. Use this to simulate client
+// disconnects at specific points in the stream.
+func newDisconnectingStreamWriterAfter(n int) *disconnectingStreamWriter {
+	return &disconnectingStreamWriter{header: http.Header{}, failAfter: n}
 }
 
 func TestStreamChatWithPendingCaptureContinuesAfterClientDisconnect(t *testing.T) {
