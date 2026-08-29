@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   getVendorCredentialErrorDetail,
@@ -19,6 +19,8 @@ const hours = ref<VendorErrorHours>('24')
 const loading = ref(false)
 const error = ref('')
 const data = ref<VendorCredentialErrorDetail | null>(null)
+let requestSequence = 0
+let requestController: AbortController | null = null
 
 const hasCredential = computed(() => Number.isInteger(props.credentialId) && (props.credentialId ?? 0) > 0)
 
@@ -32,25 +34,41 @@ function formatScore(value: number | null | undefined): string {
 }
 
 async function loadData() {
+  const sequence = ++requestSequence
+  requestController?.abort()
+  requestController = null
   if (!hasCredential.value) {
     data.value = null
     error.value = ''
+    loading.value = false
     return
   }
+  const controller = new AbortController()
+  requestController = controller
   loading.value = true
   error.value = ''
   try {
-    data.value = await getVendorCredentialErrorDetail(props.credentialId as number, hours.value)
+    const result = await getVendorCredentialErrorDetail(props.credentialId as number, hours.value, { signal: controller.signal })
+    if (sequence === requestSequence) data.value = result
   } catch (err: unknown) {
+    if (sequence !== requestSequence || controller.signal.aborted) return
     data.value = null
     error.value = err instanceof Error ? err.message : pd('loadFailed')
   } finally {
-    loading.value = false
+    if (sequence === requestSequence) {
+      loading.value = false
+      requestController = null
+    }
   }
 }
 
 watch(() => props.credentialId, loadData, { immediate: true })
 watch(hours, loadData)
+onBeforeUnmount(() => {
+  requestSequence++
+  requestController?.abort()
+  requestController = null
+})
 </script>
 
 <template>
