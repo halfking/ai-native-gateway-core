@@ -5475,6 +5475,19 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ErrorKind = strPtr("empty_response")
 				reqLog.FailureStage = strPtr("upstream_empty_response")
 				reqLog.FailureDetailCode = strPtr("zero_tokens_few_chunks")
+				
+				// Emit Prometheus metric (2026-08-29)
+				modelName := ""
+				if reqLog.OutboundModel != nil {
+					modelName = *reqLog.OutboundModel
+				} else if reqLog.ClientModel != nil {
+					modelName = *reqLog.ClientModel
+				}
+				providerID := ""
+				if reqLog.ProviderID != nil {
+					providerID = fmt.Sprintf("%d", *reqLog.ProviderID)
+				}
+				metrics.Global().RecordSuccessEmptyResponse(modelName, providerID, reqLog.TenantID)
 			}
 		}
 
@@ -5532,14 +5545,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 					}(),
 				)
 
-				// Emit Prometheus metric (will be added to metrics package)
-				// TODO: Uncomment when metrics.SuccessEmptyResponseTotal is added
-				// if h.metrics != nil {
-				// 	h.metrics.SuccessEmptyResponseTotal.WithLabelValues(
-				// 		modelName,
-				// 		fmt.Sprintf("%d", providerID),
-				// 	).Inc()
-				// }
+				// Emit Prometheus metric (2026-08-29)
+				metrics.Global().RecordSuccessEmptyResponse(
+					modelName,
+					fmt.Sprintf("%d", providerID),
+					reqLog.TenantID,
+				)
 
 				// Add quality flag for downstream analysis
 				reqLog.QualityFlags = append(reqLog.QualityFlags, "empty_response_body")

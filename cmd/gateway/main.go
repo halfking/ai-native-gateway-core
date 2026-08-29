@@ -5595,8 +5595,10 @@ func main() {
 	requestJourneyAPI := admin.NewRequestJourneyAPI(journeyQueryService)
 	mux.HandleFunc("/api/admin/request-journeys/queues", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
 	mux.HandleFunc("/api/admin/request-journeys/", requestJourneyWrapAdmin(requestJourneyAPI.ServeHTTP))
+	journalSnapshotAPI := admin.NewJournalSnapshotAPI(journalSnapshotStore)
+	journalSnapshotAPI.RegisterRoutes(mux, requestJourneyWrapAdmin)
 	slog.Info("request journey admin API enabled",
-		"routes", []string{"GET /api/admin/request-journeys/queues", "GET /api/admin/request-journeys/{id}"})
+		"routes", []string{"GET /api/admin/request-journeys/queues", "GET /api/admin/request-journeys/{id}", "GET /api/admin/dispatch/journal/{tenant}/{request_id}"})
 	if dbConn != nil && dbConn.Enabled() {
 		attemptQualityAPI := admin.NewAttemptQualityAPIWithPool(dbConn.Pool())
 		mux.HandleFunc("/api/admin/quality/attempts", requestJourneyWrapAdmin(attemptQualityAPI.ServeHTTP))
