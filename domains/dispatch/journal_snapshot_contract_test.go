@@ -265,32 +265,82 @@ func TestJournalSnapshot_SmallJournal_NoTruncation(t *testing.T) {
 // This test is marked as skipped with t.Skip() to document the expected
 // behavior without failing CI.
 func TestJournalSnapshot_Authorization_NotImplemented(t *testing.T) {
-	t.Skip("ADR requirement not yet implemented: authorization checking")
+	t.Skip("replaced by TestJournalSnapshot_Authorization")
+}
 
-	// Expected future behavior:
-	//
-	// type AuthorizedJournalConsumer interface {
-	//     ConsumeSnapshot(ctx context.Context, callerTenant string, snap JournalSnapshot) error
-	// }
-	//
-	// Test scenario:
-	//   1. Caller with tenant="t1" requests snapshot for tenant="t2"
-	//   2. Consumer.ConsumeSnapshot returns ErrNotFound (not ErrUnauthorized)
-	//   3. Caller cannot distinguish "not found" from "exists but unauthorized"
-	//
-	// Implementation sketch:
-	//   func (c *AuthorizedConsumer) ConsumeSnapshot(ctx, callerTenant, snap) error {
-	//       if callerTenant != snap.TenantID {
-	//           return ErrNotFound // not-found-shaped, per ADR
-	//       }
-	//       // ... apply snapshot ...
-	//   }
-	//
-	// Test assertion:
-	//   err := consumer.ConsumeSnapshot(ctx, "t1", JournalSnapshot{TenantID: "t2"})
-	//   if !errors.Is(err, ErrNotFound) {
-	//       t.Error("expected not-found-shaped error for cross-tenant access")
-	//   }
+// TestJournalSnapshot_Authorization verifies that the AuthorizedJournalConsumer
+// interface enforces tenant-based authorization with not-found-shaped errors,
+// satisfying ADR 2026-08-28 §Decision point 4.
+func TestJournalSnapshot_Authorization(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryJournalStore()
+
+	snap1 := JournalSnapshot{
+		TenantID:  "tenant-a",
+		RequestID: "request-001",
+		Entries:   []JournalEntry{{Seq: 1, Action: NextActionRetrySameCred, ErrorKind: "rate_limit"}},
+	}
+	snap2 := JournalSnapshot{
+		TenantID:  "tenant-b",
+		RequestID: "request-002",
+		Entries:   []JournalEntry{{Seq: 1, Action: NextActionCompleted}},
+	}
+	store.Store(snap1)
+	store.Store(snap2)
+
+	t.Run("same_tenant_access_succeeds", func(t *testing.T) {
+		result, err := store.ConsumeSnapshot(ctx, "tenant-a", "request-001")
+		if err != nil {
+			t.Fatalf("ConsumeSnapshot(tenant-a, request-001) error = %v, want nil", err)
+		}
+		if result.TenantID != "tenant-a" || result.RequestID != "request-001" {
+			t.Errorf("got snapshot %+v, want TenantID=tenant-a RequestID=request-001", result)
+		}
+		if len(result.Entries) != 1 {
+			t.Errorf("got %d entries, want 1", len(result.Entries))
+		}
+	})
+
+	t.Run("cross_tenant_access_returns_not_found", func(t *testing.T) {
+		_, err := store.ConsumeSnapshot(ctx, "tenant-a", "request-002")
+		if !errors.Is(err, ErrJournalNotFound) {
+			t.Errorf("ConsumeSnapshot(tenant-a, request-002) error = %v, want ErrJournalNotFound", err)
+		}
+	})
+
+	t.Run("missing_snapshot_returns_not_found", func(t *testing.T) {
+		_, err := store.ConsumeSnapshot(ctx, "tenant-a", "request-999")
+		if !errors.Is(err, ErrJournalNotFound) {
+			t.Errorf("ConsumeSnapshot(tenant-a, request-999) error = %v, want ErrJournalNotFound", err)
+		}
+	})
+
+	t.Run("empty_caller_tenant_returns_not_found", func(t *testing.T) {
+		_, err := store.ConsumeSnapshot(ctx, "", "request-001")
+		if !errors.Is(err, ErrJournalNotFound) {
+			t.Errorf("ConsumeSnapshot('', request-001) error = %v, want ErrJournalNotFound", err)
+		}
+	})
+
+	t.Run("empty_request_id_returns_not_found", func(t *testing.T) {
+		_, err := store.ConsumeSnapshot(ctx, "tenant-a", "")
+		if !errors.Is(err, ErrJournalNotFound) {
+			t.Errorf("ConsumeSnapshot(tenant-a, '') error = %v, want ErrJournalNotFound", err)
+		}
+	})
+
+	t.Run("indistinguishable_errors", func(t *testing.T) {
+		_, err1 := store.ConsumeSnapshot(ctx, "tenant-a", "request-002")
+		_, err2 := store.ConsumeSnapshot(ctx, "tenant-a", "request-999")
+		_, err3 := store.ConsumeSnapshot(ctx, "", "request-001")
+
+		if !errors.Is(err1, ErrJournalNotFound) || !errors.Is(err2, ErrJournalNotFound) || !errors.Is(err3, ErrJournalNotFound) {
+			t.Errorf("all denial cases must return ErrJournalNotFound, got err1=%v err2=%v err3=%v", err1, err2, err3)
+		}
+		if err1 != ErrJournalNotFound || err2 != ErrJournalNotFound || err3 != ErrJournalNotFound {
+			t.Errorf("all denial cases must return the exact same ErrJournalNotFound sentinel")
+		}
+	})
 }
 
 // ────────────────────────────────────────────────────────────────────────────

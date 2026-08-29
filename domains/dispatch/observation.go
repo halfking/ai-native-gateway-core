@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// ErrJournalNotFound is returned when a requested journal snapshot does not
+// exist or the caller is not authorized to access it. This sentinel follows
+// the not-found-shaped error pattern used by requestjourney.Detail to avoid
+// cross-tenant existence leaks (ADR 2026-08-28 §Decision point 4).
+var ErrJournalNotFound = errors.New("journal snapshot not found")
+
 // ObservationType identifies one dispatch lifecycle fact. Values intentionally
 // match the persisted RequestJourney vocabulary, but dispatch owns this type.
 type ObservationType string
@@ -304,4 +310,29 @@ func (f JournalSinkFunc) ApplyJournalSnapshot(ctx context.Context, snapshot Jour
 	if f != nil {
 		f(ctx, snapshot)
 	}
+}
+
+// AuthorizedJournalConsumer provides a pull-based query interface for journal
+// snapshots with caller authorization. This interface satisfies ADR 2026-08-28
+// §Decision point 1 ("consumer requests a snapshot ... through the existing
+// requestjourney service boundary") and §Decision point 4 (tenant/authorization
+// context verification with not-found-shaped errors).
+//
+// Unlike the push-based JournalSink (which delivers snapshots from the pipeline's
+// terminal completion), AuthorizedJournalConsumer is designed for external query
+// paths (e.g., admin APIs, diagnostic tools) where the caller's tenant must be
+// verified before snapshot access is granted.
+type AuthorizedJournalConsumer interface {
+	// ConsumeSnapshot retrieves a journal snapshot for the specified tenant and
+	// request ID, verifying that callerTenant matches the snapshot's TenantID.
+	//
+	// Returns ErrJournalNotFound when:
+	//   - The snapshot does not exist
+	//   - callerTenant does not match the snapshot's TenantID
+	//   - callerTenant is empty and the caller is not a super-admin bypass
+	//
+	// This not-found-shaped error prevents cross-tenant existence leaks: an
+	// unauthorized caller cannot distinguish "does not exist" from "exists but
+	// you cannot access it."
+	ConsumeSnapshot(ctx context.Context, callerTenant, requestID string) (JournalSnapshot, error)
 }
