@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"strings"
 	"time"
@@ -300,8 +301,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				}
 			}
 		}
-		log.Info("survival_attempt_outcome",
-			"attempt", res.Attempts,
+		log.Info("survival_attempt_outcome", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
 			"committed", res.FinalAttempt.CommitState >= CommitStateContent,
 			"commit_state", res.FinalAttempt.CommitState.String(),
 			"kinds", strings.Join(attemptKinds, ","),
@@ -310,7 +310,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			"reason", res.Decision.Reason,
 			"provider_id", lastProviderID,
 			"raw_model", lastRawModel,
-		)
+		)...)
 
 		switch res.Decision.Action {
 		case TaskActionSucceed:
@@ -407,8 +407,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
-			log.Info("survival_attempt_discarded",
-				"attempt", res.Attempts,
+			log.Info("survival_attempt_discarded", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
 				"buffer_bytes", bufferBytes,
 				"holdback_held", holdbackHeld,
 				"state", gateState,
@@ -416,7 +415,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				"raw_model", lastRawModel,
 				"action", res.Decision.Action.String(),
 				"reason", res.Decision.Reason,
-			)
+			)...)
 			// Record the discard into the audit capture so request_logs_hot
 			// .discard_events JSONB column carries the buffer size and
 			// decision context for offline post-mortem.
@@ -527,18 +526,33 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			// survival ended: committed_output" failure class — it carries
 			// the same fields the SSE envelope does plus the
 			// request-correlation context the envelope cannot.
-			log.Warn("survival_resume_blocked",
-				"attempt", res.Attempts,
+			log.Warn("survival_resume_blocked", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
 				"action", res.Decision.Action.String(),
-				"reason", res.Decision.Reason,
 				"committed", res.FinalAttempt.CommitState >= CommitStateContent,
 				"commit_state", res.FinalAttempt.CommitState.String(),
 				"kinds", strings.Join(attemptKinds, ","),
 				"provider_id", lastProviderID,
 				"raw_model", lastRawModel,
-			)
+			)...)
 			return res
 		}
+	}
+}
+
+// survivalRouteLogAttrs provides stable, content-free dimensions shared by every
+// survival outcome/discard/resume-blocked event. attempt_id is deterministic for
+// a request and coordinator pass, while the route fields remain queryable even
+// when the router did not return a candidate.
+func survivalRouteLogAttrs(requestID string, attempt int, decision TaskDecision) []any {
+	attemptID := fmt.Sprintf("%s/%d", requestID, attempt)
+	return []any{
+		"request_id", requestID,
+		"attempt_id", attemptID,
+		"attempt", attempt,
+		"route_override", "none",
+		"fallback_reason", decision.Reason,
+		"effective_route_status", "normal",
+		"recovery_action", decision.Action.String(),
 	}
 }
 

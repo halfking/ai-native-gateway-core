@@ -1,11 +1,55 @@
 package credential
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
+
+func TestCircuitTransitionLogsExposeStableStateFields(t *testing.T) {
+	source, err := os.ReadFile("breaker.go")
+	if err != nil {
+		t.Fatalf("read breaker.go: %v", err)
+	}
+	text := string(source)
+	for _, logMessage := range []string{
+		"circuit half-open",
+		"circuit quarantined",
+		"circuit opened",
+		"circuit closed",
+		"circuit reset",
+	} {
+		idx := strings.Index(text, `slog.`)
+		for idx >= 0 {
+			if end := strings.Index(text[idx:], logMessage); end >= 0 {
+				idx += end
+				break
+			}
+			next := strings.Index(text[idx+len("slog."):], "slog.")
+			if next < 0 {
+				idx = -1
+				break
+			}
+			idx += len("slog.") + next
+		}
+		if idx < 0 {
+			t.Fatalf("transition log %q not found", logMessage)
+		}
+		end := idx + 350
+		if end > len(text) {
+			end = len(text)
+		}
+		entry := text[idx:end]
+		for _, field := range []string{"previous_state", "new_state", "error_kind", "cooling_duration_ms"} {
+			if !strings.Contains(entry, field) {
+				t.Fatalf("transition log %q missing stable field %q", logMessage, field)
+			}
+		}
+	}
+}
 
 func TestNewBreakerIsClosed(t *testing.T) {
 	b := New(1, 2)

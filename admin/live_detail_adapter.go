@@ -49,9 +49,9 @@ func loadLiveDetailForStore(
 	// all rows; a tenant-scoped caller must match the loaded tenant. Empty
 	// loaded tenant fails closed for restricted callers.
 	loadedTenant := req.TenantID
-		if !scope.Unrestricted && (loadedTenant == "" || loadedTenant != scope.TenantID) {
-			return requestdetail.Meta{}, requestdetail.ErrNotFound
-		}
+	if !scope.Unrestricted && (loadedTenant == "" || loadedTenant != scope.TenantID) {
+		return requestdetail.Meta{}, requestdetail.ErrNotFound
+	}
 	meta := requestdetail.Meta{
 		RequestID: req.RequestID,
 		TenantID:  loadedTenant,

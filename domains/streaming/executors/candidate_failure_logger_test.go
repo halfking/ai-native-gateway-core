@@ -69,6 +69,35 @@ func TestSafeErrorMessage_2026_07_20(t *testing.T) {
 // failure rows carry the session id directly, and the stream-interruption
 // call path passes its pre-classified kind so "other side closed"-style
 // failures are not flattened to the message-fallback transient kind.
+func TestBuildRow_RecoveryProjectionInContext(t *testing.T) {
+	w := &CandidateFailureWriter{}
+	for _, tt := range []struct {
+		name string
+		kind errorsx.ErrorKind
+	}{
+		{"empty response", errorsx.KindEmptyResponse},
+		{"no available channel", errorsx.KindNoAvailableChannel},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			row := w.buildRow("req", "tenant", "sess", 1, 2, "model", 0,
+				&upstreampkg.Error{Kind: tt.kind, Message: "failure"}, "", nil, nil,
+				map[string]any{"source": "test"})
+			if row.Retryable == nil || *row.Retryable {
+				t.Fatalf("retryable = %v, want false", row.Retryable)
+			}
+			if row.Context["generic_retryable"] != false || row.Context["candidate_failover"] != true {
+				t.Fatalf("recovery context = %#v", row.Context)
+			}
+			if row.Context["effective_action"] != errorsx.RecoveryActionCandidateFailover || row.Context["transparent_resume"] != true {
+				t.Fatalf("recovery action context = %#v", row.Context)
+			}
+			if row.Context["source"] != "test" {
+				t.Fatalf("caller context was not preserved: %#v", row.Context)
+			}
+		})
+	}
+}
+
 func TestBuildRow_SessionIDAndExplicitKind(t *testing.T) {
 	w := &CandidateFailureWriter{}
 

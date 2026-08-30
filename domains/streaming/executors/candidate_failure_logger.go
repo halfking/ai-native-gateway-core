@@ -216,8 +216,10 @@ func (w *CandidateFailureWriter) buildRow(
 		}
 	}
 
+	kind := errorsx.ErrorKind("")
 	if ue != nil {
-		row.ErrorKind = string(ue.Kind)
+		kind = ue.Kind
+		row.ErrorKind = string(kind)
 		if ue.StatusCode > 0 {
 			sc := ue.StatusCode
 			row.UpstreamStatusCode = &sc
@@ -232,14 +234,10 @@ func (w *CandidateFailureWriter) buildRow(
 			}
 			row.UpstreamResponsePreview = preview
 		}
-		retryable := errorsx.IsRetryable(ue.Kind)
-		row.Retryable = &retryable
 	} else {
 		// Fallback: classify from the message.
-		kind := errorsx.ClassifyError(execErr, nil)
+		kind = errorsx.ClassifyError(execErr, nil)
 		row.ErrorKind = string(kind)
-		retryable := errorsx.IsRetryable(kind)
-		row.Retryable = &retryable
 	}
 
 	// Caller-preclassified kind wins: the executor's stream-interruption
@@ -247,14 +245,13 @@ func (w *CandidateFailureWriter) buildRow(
 	// "other side closed" read failure) and the message-based fallback
 	// cannot recover it from "stream_interrupted: <reason>".
 	if explicitKind != "" {
-		row.ErrorKind = string(explicitKind)
-		retryable := errorsx.IsRetryable(explicitKind)
-		row.Retryable = &retryable
+		kind = explicitKind
+		row.ErrorKind = string(kind)
 	}
-
-	if extraContext != nil {
-		row.Context = extraContext
-	}
+	projection := errorsx.ProjectRecovery(kind)
+	retryable := projection.GenericRetryable
+	row.Retryable = &retryable
+	row.Context = recoveryContext(extraContext, projection)
 	return row
 }
 
@@ -287,6 +284,21 @@ func safeErrorMessage(err error) string {
 		_ = recover()
 	}()
 	return err.Error()
+}
+
+// recoveryContext preserves caller fields and adds the public recovery
+// projection to the existing JSONB context column.
+func recoveryContext(extra map[string]any, projection errorsx.RecoveryProjection) map[string]any {
+	ctx := make(map[string]any, len(extra)+5)
+	for key, value := range extra {
+		ctx[key] = value
+	}
+	ctx["generic_retryable"] = projection.GenericRetryable
+	ctx["candidate_failover"] = projection.CandidateFailover
+	ctx["transparent_resume"] = projection.TransparentResume
+	ctx["effective_action"] = projection.EffectiveAction
+	ctx["reason"] = projection.Reason
+	return ctx
 }
 
 // marshalContext renders a map as compact JSON string, returning nil when the
