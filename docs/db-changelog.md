@@ -161,9 +161,9 @@ relying on it.
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 627 | `627_provider_credential_soft_delete.sql` | `752cca46c944196a2ed26262329f16937eda1bad7ffa089fbcd858b075f9e00b` | pending deploy |
+| 631 | `631_provider_credential_soft_delete.sql` | `0fd2120475a78486e40d3fa2d082eade345aef74a952ccc030b95643db252804` | pending deploy |
 
-> 627: credentials.status CHECK 增加 `'deleted'` 终态；providers 新增
+> 631: credentials.status CHECK 增加 `'deleted'` 终态；providers 新增
 > `deleted_at` 软删除列 + 存活行部分索引 `idx_providers_live`。二进制
 > 启动时由 `db.ensureProviderSoftDelete`（db/db.go）幂等执行同一 DDL，
 > SQL 文件供 DBA 同步流程对账。

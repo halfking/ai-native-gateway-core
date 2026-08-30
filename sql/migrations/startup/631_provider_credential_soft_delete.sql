@@ -1,4 +1,4 @@
--- Migration 627: soft-delete for providers, terminal "deleted" status for credentials.
+-- Migration 631: soft-delete for providers, terminal "deleted" status for credentials.
 --
 -- Two changes that together support the operator workflow requested
 -- 2026-08-31 (删除功能): once a credential or provider is deleted it must

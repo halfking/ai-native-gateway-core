@@ -724,10 +724,11 @@ func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
 	return nil
 }
 
-// ensureProviderSoftDelete mirrors sql/migrations/startup/627_provider_credential_soft_delete.sql.
+// ensureProviderSoftDelete mirrors sql/migrations/startup/631_provider_credential_soft_delete.sql.
 // 2026-08-31 凭据/供应商软删除：
 //   - providers.deleted_at（NULL = 存活行）+ 存活行部分索引
 //   - credentials.status CHECK 增加 'deleted' 终态值
+//
 // 幂等：ADD COLUMN IF NOT EXISTS / 索引 IF NOT EXISTS / 约束先 DROP 再
 // ADD（PG 无法 IF NOT EXISTS 约束，重复执行等价重建，值集不变时无副作用）。
 // 编号 SQL 文件供 DBA 同步流程使用；本函数保证二进制启动即生效，
@@ -759,7 +760,7 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	slog.Info("provider/credential soft-delete schema ensured (migration 627)")
+	slog.Info("provider/credential soft-delete schema ensured (migration 631)")
 	return nil
 }
 
