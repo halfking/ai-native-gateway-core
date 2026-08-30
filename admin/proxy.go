@@ -587,8 +587,12 @@ func (h *Handler) deleteProxyNode(w http.ResponseWriter, r *http.Request, id int
 	if mgr != nil && existing != nil {
 		mgr.InvalidateTransport(existing.SubscriptionID)
 	}
+	if mgr == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+		return
+	}
 	if err := mgr.ReloadCache(); err != nil {
-		writeError(w, http.StatusInternalServerError, "reload cache: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "reload cache: "+proxy.SanitizeSecrets(err.Error()))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
@@ -656,6 +660,10 @@ func (h *Handler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mgr, store := h.proxyRuntime()
+	if mgr == nil || store == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
 	ctx := r.Context()
 
 	subs, err := store.ListSubscriptions(ctx)

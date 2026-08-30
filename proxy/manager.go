@@ -1128,14 +1128,15 @@ func (m *Manager) updateNodeInCache(node *Node) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	nodes := m.getNodesFromCache(node.SubscriptionID)
-	if nodes == nil {
+	value, ok := m.nodesCache.Load(node.SubscriptionID)
+	if !ok {
 		return
 	}
+	entry := value.(*cacheEntry)
 
 	// 深拷贝 slice，避免并发读写竞态
-	newNodes := make([]*Node, len(nodes))
-	copy(newNodes, nodes)
+	newNodes := make([]*Node, len(entry.nodes))
+	copy(newNodes, entry.nodes)
 
 	// 更新缓存中的节点
 	for i, n := range newNodes {
@@ -1145,17 +1146,11 @@ func (m *Manager) updateNodeInCache(node *Node) {
 		}
 	}
 
-	// 保持原有的过期时间（阶段 2 优化：TTL）
-	if value, ok := m.nodesCache.Load(node.SubscriptionID); ok {
-		entry := value.(*cacheEntry)
-		m.nodesCache.Store(node.SubscriptionID, &cacheEntry{
-			nodes:     newNodes,
-			expiresAt: entry.expiresAt, // 保持原有过期时间
-		})
-	} else {
-		// 如果缓存不存在，设置新的过期时间
-		m.setCacheWithTTL(node.SubscriptionID, newNodes, time.Now())
-	}
+	// 保持原有的过期时间（阶段 2 优化：TTL），在同一锁内原子替换。
+	m.nodesCache.Store(node.SubscriptionID, &cacheEntry{
+		nodes:     newNodes,
+		expiresAt: entry.expiresAt,
+	})
 }
 
 // getCacheLock 获取 subscription 的锁（lazy initialization）
