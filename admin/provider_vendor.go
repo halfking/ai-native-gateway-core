@@ -64,7 +64,7 @@ func (h *Handler) loadCredentialRowLiteAny(ctx context.Context, credID int) (cre
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
-		WHERE c.id = $1
+		WHERE c.id = $1 AND c.status <> 'deleted' AND p.deleted_at IS NULL
 	`, credID).Scan(&c.id, &c.label, &c.providerID, &c.providerName,
 		&c.baseURL, &c.protocol, &c.catalogCode,
 		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON)

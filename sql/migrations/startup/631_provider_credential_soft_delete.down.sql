@@ -1,4 +1,4 @@
--- Migration 627 DOWN: undo the credential 'deleted' status + provider
+-- Migration 631 DOWN: undo the credential 'deleted' status + provider
 -- deleted_at column. Only safe to run BEFORE the new DELETE endpoints have
 -- been used; once any rows are in the new soft-deleted state the rollback
 -- will block on the CHECK constraint.
@@ -14,7 +14,7 @@ ALTER TABLE public.providers DROP COLUMN IF EXISTS deleted_at;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM public.credentials WHERE status = 'deleted') THEN
-        RAISE EXCEPTION 'migration 627 down blocked: credentials with status=''deleted'' still exist; restore them first';
+        RAISE EXCEPTION 'migration 631 down blocked: credentials with status=''deleted'' still exist; restore them first';
     END IF;
 END
 $$;
