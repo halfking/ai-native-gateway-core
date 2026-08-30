@@ -57,6 +57,7 @@ export default {
       performanceScore: 'الأداء',
       health: 'صحة النظام',
       status: 'الحالة',
+      actions: "إجراءات"
     },
     channel: {
       official: 'المُصنّع الأصلي',
@@ -89,6 +90,8 @@ export default {
     empty: 'لم يتم تكوين أي مزود بعد',
     manualDisabledBadge: 'معطّل',
     manualDisabledTooltip: 'تم تعطيل هذا المزود يدويًا بواسطة المسؤول',
+    deleteProviderBtn: "حذف",
+    deleteProviderTooltip: "حذف (حذف ناعم) هذا المزوّد. سيتم استبعاد المزوّد وجميع بيانات اعتماده من جميع القوائم والتوجيه ولا يمكن التراجع عن ذلك.",
   },
   create: {
     title: 'إضافة مزود',
@@ -214,7 +217,7 @@ export default {
       checkBtn: 'فحص',
       checkTooltip: 'تنفيذ فحص صحي على بيانات الاعتماد هذه',
       diagnose: 'تشخيص',
-      disable: 'إيقاف',
+      disable: 'حذف',
     },
     addDialog: {
       title: 'إضافة بيانات اعتماد — {name}',
@@ -324,5 +327,14 @@ export default {
     table: {
       actions: 'Actions',
     },
+  },
+  // 2026-08-31: provider soft delete
+  providerDelete: {
+    confirm: "تأكيد حذف هذا المزوّد؟ سيتم تعليم جميع بيانات اعتماده كمحذوفة وستتوقف جميع مسارات النماذج المرتبطة فورًا. لا يمكن التراجع عن هذا الإجراء.",
+    failed: "فشل حذف المزوّد",
+    success: "تم حذف المزوّد",
+  },
+  toast: {
+    providerDeleted: "تم حذف المزوّد",
   },
 }
