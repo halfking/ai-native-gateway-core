@@ -1,0 +1,31 @@
+[Unit]
+Description=LLM Gateway Go 245 blue-green candidate (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/llm-gateway-go
+EnvironmentFile=/opt/llm-gateway-go/.env
+Environment=LLM_GATEWAY_LISTEN=:%i
+Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
+Environment=LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway-go/canary-%i.jsonl
+Environment=TRANSPORT_LAYER_IR_ENABLED=true
+# Each port has a stable slot symlink. The deployer updates only the
+# inactive slot, so an active candidate never moves underneath systemd.
+ExecStart=/opt/llm-gateway-go/slots/%i/gateway
+Restart=no
+TimeoutStartSec=30s
+TimeoutStopSec=25s
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+LimitNOFILE=65536
+LimitNPROC=32768
+
+[Install]
+WantedBy=multi-user.target
