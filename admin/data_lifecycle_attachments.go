@@ -21,6 +21,8 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -221,21 +223,68 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWri
 }
 
 // handleDataLifecycleAttachmentCleanupExecute POST /api/admin/attachments/cleanup/execute
-// 执行清理：将过期记录的 attachments 列置为 NULL。
+// 执行清理：将过期记录的 attachments 列置为 NULL，并在 audit_attachments_cleanup
+// 中记录每个被清理的 (request_id, attachment_hash) 对以供审计。
 func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWriter, r *http.Request) { //nolint:unused
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 	olderThanDays := parseOlderThanDays(r, 30)
+	triggeredBy := r.Header.Get("X-Admin-User")
+	if triggeredBy == "" {
+		triggeredBy = "unknown"
+	}
+	reason := r.URL.Query().Get("reason")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// 2026-07-05 migration 341: UPDATE targets request_logs_hot (独立热表)。
-	// 附件清理仅针对热表中的 0-7 天数据，已迁移到月度分区的数据不受影响
-	// (columnar 分区不支持 UPDATE，但已归档数据无需清理)。
-	tag, err := h.db.Exec(ctx, `
+	// audit-data-closure-B (2026-08-31): wrap the cleanup in a transaction so
+	// the audit INSERT and the column NULL-out either both happen or neither
+	// does. The cleanup itself only targets request_logs_hot (columnar
+	// historical partitions do not support UPDATE and stay append-only);
+	// historical rows are surfaced through audit_attachments_cleanup so
+	// future operator queries can tell what was cleaned when.
+	cleanupRunID := uuidOrZero(ctx)
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		slog.Warn("attachments: cleanup begin tx failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "cleanup failed")
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// Insert audit rows first so a partial failure leaves the audit trail
+	// pointing at rows that were *not* yet NULLed (which we can detect on
+	// retry). This is intentional — better to over-report than to lose the
+	// audit record.
+	_, err = tx.Exec(ctx, `
+		INSERT INTO audit_attachments_cleanup
+			(cleanup_run_id, tenant_id, request_id, attachment_hash,
+			 older_than_days, triggered_by_user, reason)
+		SELECT
+			$1,
+			tenant_id,
+			request_id,
+			hash,
+			$2,
+			$3,
+			$4
+		FROM request_logs_hot r,
+		     jsonb_array_elements(r.attachments) AS att,
+		     COALESCE(att->>'hash', att->>'sha256', att->>'id', att->>'url') AS hash
+		WHERE r.attachments IS NOT NULL
+		  AND r.ts < NOW() - ($2 || ' days')::interval`,
+		cleanupRunID, olderThanDays, triggeredBy, nullableReason(reason),
+	)
+	if err != nil {
+		slog.Warn("attachments: cleanup audit insert failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "cleanup failed")
+		return
+	}
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE request_logs_hot
 		SET attachments = NULL
 		WHERE attachments IS NOT NULL
@@ -248,10 +297,18 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 		return
 	}
 
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("attachments: cleanup commit failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "cleanup failed")
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"older_than_days":  olderThanDays,
 		"rows_affected":    tag.RowsAffected(),
-		"action":           "attachments 列已置 NULL",
+		"cleanup_run_id":   cleanupRunID,
+		"triggered_by":     triggeredBy,
+		"action":           "attachments 列已置 NULL；audit_attachments_cleanup 已记录",
 		"filesystem_files": "未删除（文件由 hash 命名，需单独清理）",
 	})
 }
@@ -343,4 +400,32 @@ func parseOlderThanDays(r *http.Request, def int) int { //nolint:unused
 		}
 	}
 	return def
+}
+
+// uuidOrZero returns a fresh RFC4122 v4 UUID encoded as hex (32 chars, no
+// dashes) suitable for the audit_attachments_cleanup.cleanup_run_id column.
+// On entropy failure (effectively never) returns the all-zero UUID so the
+// INSERT still proceeds and the row can be reconciled by hand later.
+//
+// audit-data-closure-B (2026-08-31): the caller MUST tolerate the zero UUID
+// rather than treat it as an error; we never want a cleanup to fail just
+// because the host's RNG is unhealthy.
+func uuidOrZero(_ context.Context) string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "00000000000000000000000000000000"
+	}
+	// RFC 4122 v4 — set version (0100) and variant (10xx).
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return hex.EncodeToString(b[:])
+}
+
+// nullableReason converts an empty reason string to a typed nil so the
+// audit_attachments_cleanup.reason column records NULL rather than "".
+func nullableReason(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
