@@ -133,6 +133,15 @@ export default {
     probeModelUnset: "Non défini",
     probeSetManual: "Définir manuellement",
     probeRepick: "Re-sélectionner",
+    // 2026-08-31 hzx-2 round-5 : remplace l'invite native prompt() par
+    // un sélecteur inline alimenté par les liaisons cmb routables ;
+    // la saisie libre n'est exposée que lorsque cmb est vide.
+    probeSave: "Enregistrer",
+    probeClear: "Effacer",
+    probeModelNoneOption: "(non défini)",
+    probeModelManualPlaceholder: "Aucune liaison pour ce credential ; saisissez un nom de modèle…",
+    probeModelNoBindingsHint: "Aucune liaison routable. Ouvrez l'onglet Modèles pour actualiser, ou saisissez un nom manuellement.",
+    probeLoadingModels: "Chargement de la liste des modèles…",
     probeRunning: "Vérification…",
     probeCheckNow: "Vérifier maintenant",
     manualDisabledSuffix: "Désactivé",
@@ -184,6 +193,8 @@ export default {
       manual: "🔒 Manuel",
       autoRequestLog: "📊 Journal de requêtes",
       autoDomestic: "🎲 Aléatoire domestique",
+      autoFeatured: "⭐ Modèle en vedette",
+      autoRefreshLatest: "🆕 Remplissage auto dernier modèle",
       cleared: "— Effacé"
     },
     resetAvailConfirm: "Réinitialiser le statut de disponibilité pour {name} ?",

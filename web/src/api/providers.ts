@@ -217,7 +217,10 @@ export interface ProviderCredential {
   state_reason_detail?: string | null
   // 900-series: default probe model (spec §4)
   default_probe_model?: string | null
-  default_probe_model_source?: 'manual' | 'auto:request_log' | 'auto:domestic_random' | 'cleared' | null
+  // Sources: admin pin (manual), shared picker (bg/shared_pick.go),
+  // refresh-time auto-fill (modelcatalog.AutoFillDefaultProbeModel), or
+  // explicitly cleared. Keep in sync with the Go-side writers.
+  default_probe_model_source?: 'manual' | 'auto:request_log' | 'auto:domestic_featured' | 'auto:domestic_random' | 'auto:refresh_latest' | 'cleared' | null
   default_probe_model_picked_at?: string | null
   health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable'
   health_checked_at?: string | null

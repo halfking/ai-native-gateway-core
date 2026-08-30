@@ -3083,6 +3083,13 @@ func main() {
 
 	slog.Info("CHECKPOINT: before bg services init")
 	var defaultProbePicker *bg.DefaultProbePicker
+	// 2026-08-31 hzx-2 round-5: high-frequency scanner that fills
+	// default_probe_model for credentials the operator never pinned and
+	// the daily DefaultProbePicker hasn't reached yet. Independent of
+	// discovery / admin refresh so a brand-new credential is reachable
+	// within LLM_GATEWAY_DEFAULT_PROBE_SCAN_INTERVAL minutes rather than
+	// up to 24h.
+	var defaultProbeScanner *bg.DefaultProbeScanner
 
 	// Health tracking workers (2026-06-22)
 	var callHistoryAggregator *bg.CallHistoryAggregator
@@ -3387,6 +3394,17 @@ func main() {
 			slog.Info("CHECKPOINT: before defaultProbePicker.Start")
 			defaultProbePicker.Start(context.Background())
 			slog.Info("CHECKPOINT: after defaultProbePicker.Start")
+
+			// 2026-08-31 hzx-2 round-5: high-frequency default_probe_model
+			// scanner. Bridges the gap between "credential just onboarded,
+			// no manual pin, default_probe_model is empty" and "the daily
+			// DefaultProbePicker happens to run". Scans every
+			// LLM_GATEWAY_DEFAULT_PROBE_SCAN_INTERVAL (default 5 min).
+			slog.Info("CHECKPOINT: before NewDefaultProbeScanner")
+			defaultProbeScanner = bg.NewDefaultProbeScanner(dbConn.Pool())
+			slog.Info("CHECKPOINT: before defaultProbeScanner.Start")
+			defaultProbeScanner.Start(context.Background())
+			slog.Info("CHECKPOINT: after defaultProbeScanner.Start")
 
 			// 2026-06-18: per-model re-probe of failing bindings.  Runs
 			// every 10 minutes; flips the binding back to routable as
@@ -6323,6 +6341,11 @@ func main() {
 		}
 		if balanceQuotaProbe != nil {
 			balanceQuotaProbe.Stop()
+		}
+		// 2026-08-31 hzx-2 round-5: stop the high-frequency probe-model
+		// scanner alongside the other bg workers.
+		if defaultProbeScanner != nil {
+			defaultProbeScanner.Stop()
 		}
 		if credProbeV2 != nil {
 			credProbeV2.Stop()

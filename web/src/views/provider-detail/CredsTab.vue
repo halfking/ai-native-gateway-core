@@ -11,6 +11,7 @@ import {
   releaseCredentialFpSlot,
   getCredentialFpSlotStats, type FpSlotStats,
   type CredentialLifecycleStatus, type ProviderCredential, type CredentialStatus,
+  getCredentialModels, type ModelOffer,
 } from '../../api'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 import CredentialModelsPanel from './CredentialModelsPanel.vue'
@@ -39,6 +40,71 @@ const saving = ref(false)
 const checking = ref(false)
 const saveMsg = ref('')
 const checkMsg = ref('')
+
+// 2026-08-31 hzx-2 round-5: cached cmb list for the default-probe-model
+// <select>. Loaded once per drawer open so toggling between the info and
+// models tab does not refetch. Cleared on close.
+const drawerModels = ref<ModelOffer[]>([])
+const drawerModelsLoading = ref(false)
+async function loadDrawerModels() {
+  if (!selected.value) {
+    drawerModels.value = []
+    return
+  }
+  drawerModelsLoading.value = true
+  try {
+    drawerModels.value = await getCredentialModels(props.provider.id, selected.value.id)
+  } catch (e: unknown) {
+    drawerModels.value = []
+    // Best-effort: surface only as console; the UI falls back to free-text
+    // input when drawerModels is empty, which is a strictly safer state
+    // than showing a stale select.
+    // eslint-disable-next-line no-console
+    console.warn('load drawer models failed', e)
+  } finally {
+    drawerModelsLoading.value = false
+  }
+}
+
+// probeModelOptions: routable bindings under this credential, projected
+// to the value the probe layer actually consumes —
+// COALESCE(outbound_model_name, raw_model_name), i.e. the PROVIDER-facing
+// name the probe request sends verbatim. standardized_name is kept in the
+// label for readability. Skips admin_protected and unavailable rows so
+// the operator cannot accidentally pin a model that's already been
+// retired by the probe path. Value projection matches
+// modelcatalog.AutoFillDefaultProbeModel / bg/shared_pick.go — keep the
+// three in sync (a standardized_name value here would 404 on NIM-style
+// vendors whose raw name carries a "z-ai/..." prefix).
+const probeModelOptions = computed(() =>
+  drawerModels.value
+    .filter(m => m.available && !m.admin_protected)
+    .map(m => {
+      const value = (m.outbound_model_name && m.outbound_model_name.trim() !== '')
+        ? m.outbound_model_name
+        : m.raw_model_name
+      const std = (m.standardized_name && m.standardized_name.trim() !== '') ? m.standardized_name : ''
+      const label = (std && std !== value) ? `${std}  (${value})` : value
+      return { value, label, offer: m }
+    })
+    // Dedup by value: two cmb rows may share the same probe-facing name
+    // (e.g. one via canonical_id backfill, one via direct). Show each
+    // value only once to avoid confusing the operator.
+    .filter((opt, idx, arr) => arr.findIndex(o => o.value === opt.value) === idx)
+)
+// probeModelHasOptions: true when the operator can pick from a list.
+// Drives the <select> vs <input> branching in the template.
+const probeModelHasOptions = computed(() => probeModelOptions.value.length > 0)
+
+// selectedDefaultModel: staging value for the inline picker. Synced to
+// selected.default_probe_model on drawer open so the operator sees the
+// current value immediately; reset on close. The Save button calls
+// setDefaultModel() which compares against selected.default_probe_model
+// before issuing the PATCH (no-op when unchanged).
+const selectedDefaultModel = ref<string>('')
+watch(() => selected.value?.id, (id) => {
+  selectedDefaultModel.value = selected.value?.default_probe_model ?? ''
+})
 // saveMsgKind tags the latest saveMsg so the UI can apply a targeted
 // style (e.g. red row for constraint violations) without parsing the
 // message string. Set alongside saveMsg in formatCredentialError callers.
@@ -213,6 +279,8 @@ function sourceLabel(s?: string | null) {
   if (s === 'manual') return pd('creds.source.manual')
   if (s === 'auto:request_log') return pd('creds.source.autoRequestLog')
   if (s === 'auto:domestic_random') return pd('creds.source.autoDomestic')
+  if (s === 'auto:domestic_featured') return pd('creds.source.autoFeatured')
+  if (s === 'auto:refresh_latest') return pd('creds.source.autoRefreshLatest')
   if (s === 'cleared') return pd('creds.source.cleared')
   return s
 }
@@ -232,6 +300,10 @@ function openDrawer(c: ProviderCredential) {
   saveMsgKind.value = ''
   saveMsgRejectCtx.value = null
   checkMsg.value = ''
+  // 2026-08-31 hzx-2 round-5: kick off cmb load for the default-probe-model
+  // <select>. Best-effort: if the load fails we fall back to free-text
+  // input via the computed probeModelHasOptions branch.
+  loadDrawerModels()
 }
 
 function closeDrawer() {
@@ -241,6 +313,7 @@ function closeDrawer() {
   saveMsgKind.value = ''
   saveMsgRejectCtx.value = null
   checkMsg.value = ''
+  drawerModels.value = []
 }
 
 function openAddCred() {
@@ -569,10 +642,41 @@ async function forceRecover() {
 async function setDefaultModel() {
   const c = selected.value
   if (!c) return
-  const v = prompt(pd('creds.defaultProbeModelPrompt'), c.default_probe_model ?? '')
-  if (v === null) return
+  const v = (selectedDefaultModel.value ?? '').trim()
+  if (v === (c.default_probe_model ?? '').trim()) {
+    // No-op: operator clicked "保存" without changing the value. The
+    // PATCH would still write the same row, but skipping avoids the
+    // silentRefresh reload + audit log churn. Also covers "clear an
+    // already-empty value" — nothing to clear.
+    return
+  }
+  if (v === '') {
+    // Empty input → treat as a clear request (server semantics: model=null).
+    await clearDefaultModel()
+    return
+  }
   try {
-    await setDefaultProbeModel(props.provider.id, c.id, v === '' ? null : v, 'admin UI set')
+    await setDefaultProbeModel(props.provider.id, c.id, v, 'admin UI set')
+    // Optimistic local update so the chip below the input flips
+    // immediately; the silentRefresh will reconcile any drift.
+    c.default_probe_model = v
+    c.default_probe_model_source = 'manual'
+    c.default_probe_model_picked_at = new Date().toISOString()
+    emit('silentRefresh')
+  } catch (e: unknown) {
+    alert(e instanceof Error ? e.message : pd('creds.setFailed'))
+  }
+}
+
+async function clearDefaultModel() {
+  const c = selected.value
+  if (!c) return
+  try {
+    await setDefaultProbeModel(props.provider.id, c.id, null, 'admin UI clear')
+    c.default_probe_model = null
+    c.default_probe_model_source = 'cleared'
+    c.default_probe_model_picked_at = new Date().toISOString()
+    selectedDefaultModel.value = ''
     emit('silentRefresh')
   } catch (e: unknown) {
     alert(e instanceof Error ? e.message : pd('creds.setFailed'))
@@ -587,6 +691,12 @@ async function repickDefault() {
     if (!r.model) {
       alert(pd('creds.defaultProbeModelPickNone'))
     } else {
+      // Server already wrote the new value; reflect it locally so the
+      // chip + <select> stay in sync without a hard refresh.
+      c.default_probe_model = r.model
+      c.default_probe_model_source = (r.source as ProviderCredential['default_probe_model_source']) ?? null
+      c.default_probe_model_picked_at = new Date().toISOString()
+      selectedDefaultModel.value = r.model
       alert(pd('creds.defaultProbeModelPicked', { model: r.model, source: r.source }))
     }
     emit('silentRefresh')
@@ -823,13 +933,44 @@ function onTagsInput(ev: Event) {
             <div v-else-if="checkMsg" class="cell-sub">{{ checkMsg }}</div>
           </div>
 
+          <!-- 2026-08-31 hzx-2 round-5: default-probe-model picker.
+               Prefer <select> over the cmb list (so the operator can never
+               pin a model that's not actually bound to this credential).
+               Fall back to a free-text input only when the credential has
+               zero routable bindings — that's the "manual override" path
+               for vendors whose /v1/models is unreachable on first open.
+               Source label stays visible below the input so the operator
+               knows whether the current value is a manual pin, an auto
+               pick, or unfilled. -->
           <div class="drawer-section">
             <div class="drawer-section-title">{{ pd('creds.drawerSectionDefaultProbeModel') }}</div>
-            <code v-if="selected.default_probe_model" class="mono-sm">{{ selected.default_probe_model }}</code>
+            <div v-if="drawerModelsLoading" class="cell-sub">{{ pd('creds.probeLoadingModels') }}</div>
+            <template v-else>
+              <select
+                v-if="probeModelHasOptions"
+                v-model="selectedDefaultModel"
+                class="field-input"
+                :aria-label="pd('creds.drawerSectionDefaultProbeModel')"
+              >
+                <option value="">{{ pd('creds.probeModelNoneOption') }}</option>
+                <option v-for="opt in probeModelOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+              </select>
+              <input
+                v-else
+                v-model="selectedDefaultModel"
+                type="text"
+                class="field-input"
+                :placeholder="pd('creds.probeModelManualPlaceholder')"
+                :aria-label="pd('creds.drawerSectionDefaultProbeModel')"
+              />
+              <div v-if="!probeModelHasOptions" class="cell-sub">{{ pd('creds.probeModelNoBindingsHint') }}</div>
+            </template>
+            <code v-if="selected.default_probe_model" class="mono-sm" style="margin-top:6px;display:block">{{ selected.default_probe_model }}</code>
             <span v-else class="cell-muted">{{ pd('creds.probeModelUnset') }}</span>
             <div class="cell-sub">{{ sourceLabel(selected.default_probe_model_source) }}</div>
             <div class="btn-row">
-              <button class="btn btn-sm" @click="setDefaultModel">{{ pd('creds.probeSetManual') }}</button>
+              <button class="btn btn-sm btn-primary" @click="setDefaultModel">{{ pd('creds.probeSave') }}</button>
+              <button class="btn btn-sm" :disabled="selectedDefaultModel === ''" @click="clearDefaultModel">{{ pd('creds.probeClear') }}</button>
               <button class="btn btn-sm" @click="repickDefault">{{ pd('creds.probeRepick') }}</button>
             </div>
           </div>

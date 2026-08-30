@@ -133,6 +133,15 @@ export default {
     probeModelUnset: "No establecido",
     probeSetManual: "Establecer manualmente",
     probeRepick: "Reelegir ahora",
+    // 2026-08-31 hzx-2 round-5: sustituye el prompt() nativo por un
+    // selector inline alimentado por los enlaces cmb enrutables; la
+    // entrada libre solo se permite cuando cmb está vacío.
+    probeSave: "Guardar",
+    probeClear: "Borrar",
+    probeModelNoneOption: "(no establecido)",
+    probeModelManualPlaceholder: "Sin enlaces en este credential; escriba un nombre de modelo…",
+    probeModelNoBindingsHint: "No hay enlaces enrutables. Actualice la pestaña Modelos o introduzca un nombre manualmente.",
+    probeLoadingModels: "Cargando lista de modelos…",
     probeRunning: "Sondeando…",
     probeCheckNow: "Sondear ahora",
     manualDisabledSuffix: "Desactivado",
@@ -184,6 +193,8 @@ export default {
       manual: "🔒 Manual",
       autoRequestLog: "📊 Registro de solicitudes",
       autoDomestic: "🎲 Aleatorio nacional",
+      autoFeatured: "⭐ Modelo destacado",
+      autoRefreshLatest: "🆕 Último modelo automático",
       cleared: "— Borrado"
     },
     resetAvailConfirm: "¿Restablecer el estado de disponibilidad de {name}?",

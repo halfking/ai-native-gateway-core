@@ -133,6 +133,15 @@ export default {
     probeModelUnset: "Not set",
     probeSetManual: "Set manually",
     probeRepick: "Re-pick now",
+    // 2026-08-31 hzx-2 round-5: inline picker replaces the legacy
+    // native prompt(). <select> when the credential has routable
+    // bindings; free-text input only when cmb is empty.
+    probeSave: "Save",
+    probeClear: "Clear",
+    probeModelNoneOption: "(unset)",
+    probeModelManualPlaceholder: "No bindings under this credential; type a model name…",
+    probeModelNoBindingsHint: "No routable bindings on this credential. Open the Models tab to refresh, or type a model name manually.",
+    probeLoadingModels: "Loading model list…",
     probeRunning: "Probing…",
     probeCheckNow: "Probe now",
     manualDisabledSuffix: "Disabled",
@@ -184,6 +193,8 @@ export default {
       manual: "🔒 Manual",
       autoRequestLog: "📊 Request log",
       autoDomestic: "🎲 Domestic random",
+      autoFeatured: "⭐ Featured model",
+      autoRefreshLatest: "🆕 Latest-model autofill",
       cleared: "— Cleared"
     },
     resetAvailConfirm: "Reset availability status for {name}?",
