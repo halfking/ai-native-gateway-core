@@ -79,7 +79,7 @@ kill $(lsof -tiTCP:15432 -sTCP:LISTEN)
 
 ### Verify consistency (scripts)
 
-`scripts/local-dev/verify-db-consistency.sh` (v1.1) compares SIX dimensions — table inventory, column signatures (ALL tables), views (name+md5(definition)), index logical shape, constraints (normalized), sequences — and classifies every difference as either **expected** (hot/partition tables) or **real drift**.
+`scripts/local-dev/verify-db-consistency.sh` (v1.2) compares SEVEN dimensions — table inventory, column signatures (ALL tables), views (name+md5(definition)), index logical shape, constraints (normalized), sequences, and functions (name + arg-identity + md5(prosrc)) — and classifies every difference as either **expected** (hot/partition tables) or **real drift**. The functions dimension closes the blind spot that the original 6-object audit never compared function DDL, so migrations like 628 (function bodies) were invisible to the audit.
 
 ```bash
 bash scripts/local-dev/verify-db-consistency.sh --verify   # read-only; sets up + tears down tunnel

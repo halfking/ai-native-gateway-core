@@ -4,11 +4,15 @@
 # Purpose:       Deep structure consistency check between 252 (test) and the
 #                local docker container (llm-gateway-pg): table inventory,
 #                column signatures (ALL tables), views (name+definition hash),
-#                index logical shape, constraints, sequences. Optionally
+#                index logical shape, constraints, sequences, functions
+#                (name + argument identity + body hash). Optionally
 #                reconcile schema drift by pushing local feature-table DDL
 #                to 252.
 # Status:        active
 # Changelog:
+#   2026-08-31  v1.2  + functions dimension (name|arg-identity|md5(prosrc)) to
+#                      close the blind spot that migrations like 628 (function
+#                      DDL) were never compared by the 6-object audit.
 #   2026-08-31  v1.1  Full-object audit: + views / indexes / constraints /
 #                      sequences comparison (v1.0 compared tables+columns only
 #                      and missed the drift found by the 2026-08-31 audit:
@@ -160,6 +164,14 @@ CONS_SQL="SELECT conrelid::regclass::text||'|'||conname||'|'||contype::text||'|'
 # sequence ownership, so legacy orphans must not count as drift).
 SEQS_SQL="SELECT s.relname FROM pg_class s LEFT JOIN pg_depend d ON d.objid=s.oid AND d.classid='pg_class'::regclass AND d.objsubid=0 AND d.deptype='a' LEFT JOIN pg_class tbl ON tbl.oid=d.refobjid WHERE s.relkind='S' AND s.relnamespace='public'::regnamespace AND (tbl.relname IS NULL OR (tbl.relname NOT LIKE '\_%' AND tbl.relname !~ '_202[0-9]_[0-9]+$')) ORDER BY 1"
 
+# Functions / procedures (prokind f|p): name + argument identity + body hash.
+# Closes the audit blind spot — migrations like 628 ship function DDL that the
+# 6-object audit (tables/cols/views/indexes/constraints/sequences) never
+# compared. Extension-owned functions (citus/columnar/vchord in public) are
+# identical on both instances so they are not drift; we keep them in scope to
+# surface a real extension-version gap if one ever appears.
+FUNCS_SQL="SELECT p.proname||'|'||pg_get_function_identity_arguments(p.oid)||'|'||md5(p.prosrc) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prokind IN ('f','p') AND p.proname NOT LIKE '\_%' ORDER BY 1"
+
 # ── Verify mode ────────────────────────────────────────────────────────────
 do_verify() {
   phase "A. Table inventory diff (252 vs local)"
@@ -193,6 +205,7 @@ do_verify() {
   p252 "$IDXS_SQL"  > "$WORK_DIR/idx252.txt";   ploc "$IDXS_SQL"  > "$WORK_DIR/idxlocal.txt"
   p252 "$CONS_SQL"  > "$WORK_DIR/cons252.txt";  ploc "$CONS_SQL"  > "$WORK_DIR/conslocal.txt"
   p252 "$SEQS_SQL"  > "$WORK_DIR/seqs252.txt";  ploc "$SEQS_SQL"  > "$WORK_DIR/seqslocal.txt"
+  p252 "$FUNCS_SQL" > "$WORK_DIR/funcs252.txt"; ploc "$FUNCS_SQL" > "$WORK_DIR/funcslocal.txt"
 
   # Normalize PG's two textual renderings of `= ANY(ARRAY[...])` in CHECK
   # constraints — logically identical constraints render differently on the
@@ -212,10 +225,11 @@ do_verify() {
   compare_sig "D. Index logical shape (table|idx|uniq|pk|cols|pred)" "$WORK_DIR/idx252.txt" "$WORK_DIR/idxlocal.txt" 40
   compare_sig "E. Constraints (table|name|type|def, normalized)" "$WORK_DIR/cons252.norm"  "$WORK_DIR/conslocal.norm" 40
   compare_sig "F. Sequences (excluding _-owned)"                "$WORK_DIR/seqs252.txt"  "$WORK_DIR/seqslocal.txt"
+  compare_sig "G. Functions (name|args|md5(prosrc))"            "$WORK_DIR/funcs252.txt" "$WORK_DIR/funcslocal.txt"
 
   phase "Verdict"
   if [[ "$DRIFT" -eq 0 ]]; then
-    ok "CONSISTENT — tables/columns/views/indexes/constraints/sequences all match"
+    ok "CONSISTENT — tables/columns/views/indexes/constraints/sequences/functions all match"
     ok "(expected hot/partition differences: $expected)"
     return 0
   else

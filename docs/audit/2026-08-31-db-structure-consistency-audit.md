@@ -2,7 +2,7 @@
 
 **审计人**: ZCode agent（用户指令：查文档→理需求→审计→修脚本→修问题→合并推送）
 **范围**: 252 测试库（172.16.2.210:5432，经 SSH 隧道）↔ 本地 docker `llm-gateway-pg`
-**结论**: 修复后两端**结构完全一致**（`verify-db-consistency.sh` 全部 6 个维度通过，唯一剩余差异为预期内的运行时月度分区）。
+**结论**: 修复后两端**结构完全一致**（`verify-db-consistency.sh` 全部 7 个维度通过，唯一剩余差异为预期内的运行时月度分区）。
 
 ---
 
@@ -76,8 +76,59 @@ F. 序列(173)   : identical
 4. 表面性差异（无需处理）：`request_logs` 物理列序两端不同；32 个 CHECK 约束与 3 个 partial index 的 `ANY(ARRAY[...])` 文本渲染不同（逻辑等价）；`_` 表遗留孤儿序列 3 个（`model_offers_id_seq` 等，随 rule 19 §11 清理流程处理）。
 5. **每次跑完 `pg-table-copy.sh` 后应执行 `verify-db-consistency.sh`**——迁移跟踪表可能随数据被复制而"说谎"，只有结构指纹可信。
 
-## 六、变更记录
+## 六、二次复验（2026-08-31，集成 origin/main `45840e2ca` 后）
+
+集成他人提交 `45840e2ca`（audit-data-closure 收尾修复，新增 `628` 的 `.down.sql`）后，按审计建议再次执行结构与数据双审计，并发现**函数维度盲区**。
+
+### 6.1 结构审计升维（v1.1 → v1.2）
+
+原六维审计（表/列/视图/索引/约束/序列）不比较**函数/存储过程**，因此函数迁移（如 628 的 `promote_candidate_failure_logs_hot_to_partition`、382/383/433 的归档与快照函数）的漂移完全不可见。已在 `verify-db-consistency.sh` 新增 **G. 函数维度**：`proname|pg_get_function_identity_arguments(oid)|md5(prosrc)`，覆盖 `prokind IN ('f','p')`。
+
+### 6.2 函数维度暴露的真实漂移（修复前）
+
+升维后结构审计首次报红：6 个函数**仅 local 存在，252 缺失**：
+
+| 函数 | 来源迁移 | 252 状态 |
+|------|---------|---------|
+| `archive_dashboard_events(retention_days integer)` | `383_dashboard_access_events.sql` | 未应用（表 `dashboard_access_events` 已存在，但 `schema_migrations` 无 383） |
+| `archive_session_module_executions(retention_days integer)` | `382_session_module_executions.sql` | 未应用（表已存在，但 `schema_migrations` 无 382） |
+| `get_system_snapshot(p_instance_id text, p_hours_ago integer)` | `433_system_metrics_local_ingest.sql` | **部分应用**：`schema_migrations` 记 433 已应用，但函数缺失 |
+| `handoff_logs_view_delete()` | `534_handoff_logs_hot_columnar.sql`（视图 INSTEAD OF 触发器函数） | 未应用 |
+| `handoff_logs_view_insert()` | 同上 | 未应用 |
+| `promote_handoff_logs_default_batch(p_retention interval, p_batch_size integer)` | 同上 | 未应用 |
+
+**根因**：同步契约是 252→local（252 是源）。local 在同步后自行跑 startup 迁移（382/383/433/534）补齐了这些函数；252 测试库要么尚未部署这些迁移（`schema_migrations` 缺 382/383），要么部署部分失败（433 已记录但函数未落地）。两端 `schema_migrations` 均为 211 行，故迁移跟踪表再次"掩盖"了函数级漂移——印证 §三结论。
+
+### 6.3 修复（gated reconcile 思路回灌 252）
+
+这些函数均来自**已提交迁移**，252 作为待部署测试环境应当具备。按 `verify-db-consistency.sh --reconcile` 的"local DDL → 252"回灌思路，从 local 抽取 `pg_get_functiondef`（`CREATE OR REPLACE FUNCTION`，幂等），剔除 `set_config('search_path','',false)` 守卫行，`ON_ERROR_STOP=1` 应用到 252：
+
+```bash
+# 抽取 6 个函数的 DDL（每个补末尾 ;），剔除 search_path 守卫，再
+PGPASSWORD="$PG_PASS_252" psql -h localhost -p 15432 -U llm_gateway -d llm_gateway \
+  -v ON_ERROR_STOP=1 -f /tmp/reconcile-funcs.sql.fixed
+# → CREATE FUNCTION × 6，252 现具备全部 6 个函数
+```
+
+> 注：此回灌为补偿 252 部署滞后/部分失败的临时措施；**权威修复**是让部署流水线完整应用 382/383/433/534，使其 `schema_migrations` 与函数体一致。回灌不影响 `schema_migrations` 记录（幂等，下次部署重跑同名迁移仍 `CREATE OR REPLACE` 成功）。
+
+### 6.4 复验结果（修复后，全绿）
+
+```
+A. 表清单      : 仅 252 多 request_logs_bodies_2026_10（预期运行时分区）
+B. 列(6836)    : identical
+C. 视图(68)    : identical
+D. 索引(1174)  : identical
+E. 约束(723)   : identical（归一化后）
+F. 序列(173)   : identical
+G. 函数(530)   : identical   ← 新增维度，此前为 6 行漂移
+→ CONSISTENT（七维）
+DATA AUDIT     : 261 张普通表集合 / 行数 / 内容摘要全部 identical
+```
+
+## 七、变更记录
 
 | 日期 | 说明 |
 |------|------|
 | 2026-08-31 | 初版：审计发现 4 类真实差异 + P0 脚本缺陷；修复 local 5 项 / 252 2 项 / 脚本 2 个；复验全绿 |
+| 2026-08-31 | 二次复验：结构审计升 v1.2（+函数维度）；发现并回灌 252 缺的 6 个函数（来自迁移 382/383/433/534）；七维结构 + 261 表数据双审计全绿；更新 SSOT v1.4 与 db-sync 技能 |
