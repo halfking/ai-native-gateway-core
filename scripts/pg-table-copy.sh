@@ -33,9 +33,13 @@ SCHEMA_ONLY=false
 DATA_ONLY=false
 DRY_RUN=false
 VERBOSE=false
+CLEAN_SCHEMA=false
+REPLACE_DATA=false
 WORK_DIR="/tmp/pg-table-copy"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SCHEMA_IMPORT_FAILED=false
+DATA_IMPORT_FAILED=false
+PGOPTIONS="${PGOPTIONS:-}"
 
 # ── Parse args ────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -45,6 +49,8 @@ while [[ $# -gt 0 ]]; do
     --hot-patterns)  HOT_PATTERNS="$2"; shift 2 ;;
     --schema-only)   SCHEMA_ONLY=true; shift ;;
     --data-only)     DATA_ONLY=true; shift ;;
+    --clean-schema)  CLEAN_SCHEMA=true; shift ;;
+    --replace-data)  REPLACE_DATA=true; shift ;;
     --dry-run)       DRY_RUN=true; shift ;;
     --verbose)       VERBOSE=true; shift ;;
     --work-dir)      WORK_DIR="$2"; shift 2 ;;
@@ -57,6 +63,9 @@ while [[ $# -gt 0 ]]; do
       echo "  --hot-patterns 'p'  Comma-separated LIKE patterns for schema-only tables"
       echo "  --schema-only       Only copy schemas, no data"
       echo "  --data-only         Only copy data, no schema"
+      echo "  --clean-schema      DROP/CREATE schema objects during import (destructive; opt-in)"
+      echo "  --replace-data      TRUNCATE classified normal tables before data import"
+      echo "                       (required for exact source→target replacement)"
       echo "  --dry-run           Show what would be done"
       echo "  --verbose           Show detailed progress"
       echo ""
@@ -144,23 +153,23 @@ tgt_psql() {
   fi
 }
 
-# Import a SQL file into the target. Local docker pipes via stdin to docker exec.
-# Caller can pass extra psql args (e.g. --single-transaction) via $2.
+# Import a SQL file into the target. Caller can pass extra psql args as a
+# whitespace-separated string (currently only --single-transaction).
 tgt_psql_file() {
   local f="$1"
   local extra_args="${2:-}"
   if $TGT_IS_LOCAL_DOCKER; then
-    docker exec -i -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
-      psql -U "$TGT_USER" -d "$TGT_DB" -v ON_ERROR_STOP=off $extra_args < "$f"
+    docker exec -i -e PGOPTIONS="$PGOPTIONS" -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
+      psql -U "$TGT_USER" -d "$TGT_DB" -v ON_ERROR_STOP=1 $extra_args < "$f"
   else
-    PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" \
-      -v ON_ERROR_STOP=off $extra_args -f "$f"
+    PGOPTIONS="$PGOPTIONS" PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" \
+      -v ON_ERROR_STOP=1 $extra_args -f "$f"
   fi
 }
 
-# Check if table matches any hot pattern (shell glob matching)
+# Check if table matches any configured hot pattern (shell glob matching).
 is_hot_table() {
-  local tbl="$1"
+  local tbl="$1" pat
   IFS=',' read -ra patterns <<< "$HOT_PATTERNS"
   for pat in "${patterns[@]}"; do
     pat=$(echo "$pat" | xargs)
@@ -170,6 +179,10 @@ is_hot_table() {
   done
   return 1
 }
+
+# Return 0 when a source catalog relation must not receive data. This uses
+# pg_inherits/relispartition rather than names alone, so unnamed/default
+# partitions are protected even when they do not match HOT_PATTERNS.
 
 # ============================================================================
 # PHASE 1: TEST CONNECTIONS
@@ -229,9 +242,13 @@ done
 mapfile -t TABLE_LINES < <(src_psql -c "
 SELECT schemaname, tablename,
        pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) AS size,
-       pg_total_relation_size(schemaname || '.' || tablename) AS bytes
-FROM pg_tables
-WHERE schemaname NOT IN (${EXCLUDE_SQL})
+       pg_total_relation_size(schemaname || '.' || tablename) AS bytes,
+       CASE WHEN c.relkind = 'p' OR c.relispartition OR pt.partrelid IS NOT NULL THEN 't' ELSE 'f' END AS catalog_hot
+FROM pg_tables t
+JOIN pg_class c ON c.relname=t.tablename
+JOIN pg_namespace n ON n.oid=c.relnamespace AND n.nspname=t.schemaname
+LEFT JOIN pg_partitioned_table pt ON pt.partrelid=c.oid
+WHERE t.schemaname NOT IN (${EXCLUDE_SQL})
 ORDER BY bytes DESC;
 ")
 
@@ -247,10 +264,10 @@ HOT_TABLES=()
 DATA_TABLES=()
 
 for line in "${TABLE_LINES[@]}"; do
-  IFS='|' read -r schema tbl size bytes <<< "$line"
+  IFS='|' read -r schema tbl size _bytes catalog_hot <<< "$line"
   [[ -z "$schema" ]] && continue
   
-  if is_hot_table "$tbl"; then
+  if [[ "$catalog_hot" == "t" ]] || is_hot_table "$tbl"; then
     HOT_TABLES+=("$schema.$tbl")
     $VERBOSE && dim "  SCHEMA-ONLY: $schema.$tbl ($size)"
   else
@@ -279,21 +296,34 @@ else
   SCHEMA_FILE="$WORK_DIR/$TIMESTAMP/schema_all.sql"
   info "Exporting schema to $SCHEMA_FILE"
   
-  # --clean --if-exists: emit per-object DROP ... IF EXISTS before each CREATE,
-  # so re-importing into a non-empty target replaces objects instead of failing
-  # with "already exists". This is safer than DROP SCHEMA CASCADE (which would
-  # also drop Citus/columnar metadata). columnar_internal.* stays excluded.
-  # Note: we do NOT use --disable-triggers here (schema-only, no data).
-  PGPASSWORD="$SRC_PASS" pg_dump \
+  # `--clean` is deliberately opt-in: pg_dump emits DROP statements for hot
+  # tables/partitions too, which can delete target data even though hot data is
+  # not exported. Use --clean-schema only when the target is disposable.
+  schema_clean_args=()
+  if $CLEAN_SCHEMA; then
+    schema_clean_args+=(--clean --if-exists)
+    warn "--clean-schema enabled: target schema objects (including hot tables) may be dropped"
+  else
+    info "Safe schema mode: no DROP statements; existing target data is preserved"
+  fi
+  dump_err="$WORK_DIR/$TIMESTAMP/schema_dump.err"
+  if ! PGOPTIONS="${PGOPTIONS:-}" PGPASSWORD="$SRC_PASS" pg_dump \
     -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" \
-    --schema-only \
-    --no-owner \
-    --no-privileges \
-    --clean --if-exists \
-    --exclude-schema='columnar_internal' \
-    --exclude-schema='citus' \
-    -f "$SCHEMA_FILE" 2>/dev/null
-  
+    --schema-only --no-owner --no-privileges \
+    "${schema_clean_args[@]}" \
+    --exclude-schema='columnar_internal' --exclude-schema='citus' \
+    -f "$SCHEMA_FILE" 2>"$dump_err"; then
+    err "Schema export failed; see $dump_err"; exit 1
+  fi
+  if [[ ! -s "$SCHEMA_FILE" ]]; then
+    err "Schema export produced an empty file"; exit 1
+  fi
+  if grep -q "set_config('search_path', '', false)" "$SCHEMA_FILE"; then
+    tmp_schema="$SCHEMA_FILE.fixed"
+    grep -vE "set_config\('search_path', '', false\)" "$SCHEMA_FILE" > "$tmp_schema"
+    mv "$tmp_schema" "$SCHEMA_FILE"
+    ok "Stripped pg_dump search_path='' guard before import"
+  fi
   SCHEMA_SIZE=$(du -h "$SCHEMA_FILE" | cut -f1)
   SCHEMA_LINES=$(wc -l < "$SCHEMA_FILE")
   ok "Schema exported: $SCHEMA_SIZE ($SCHEMA_LINES lines)"
@@ -305,7 +335,9 @@ fi
 phase "PHASE 5: DATA EXPORT"
 
 DATA_DIR="$WORK_DIR/$TIMESTAMP/data"
+MANIFEST_FILE="$WORK_DIR/$TIMESTAMP/data_manifest.tsv"
 mkdir -p "$DATA_DIR"
+: > "$MANIFEST_FILE"
 
 if $SCHEMA_ONLY; then
   info "Skipping data export (--schema-only)"
@@ -333,17 +365,22 @@ else
       if [[ "$row_count" == "0" ]]; then
         echo -e " ${C}(empty, skipping)${N}"
         touch "$DATA_FILE"
+        printf '%s\t%s\t%s\t%s\n' "$DATA_FILE" "$schema" "$tbl" "$row_count" >> "$MANIFEST_FILE"
         SKIPPED=$((SKIPPED + 1))
       else
-        PGPASSWORD="$SRC_PASS" pg_dump \
+        dump_err="$DATA_FILE.err"
+        if ! PGOPTIONS="${PGOPTIONS:-}" PGPASSWORD="$SRC_PASS" pg_dump \
           -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" \
-          --data-only \
-          --table="$schema.$tbl" \
-          --no-owner \
-          --no-privileges \
-          --disable-triggers \
-          -f "$DATA_FILE" 2>/dev/null
-        
+          --data-only --table="$schema.$tbl" --no-owner --no-privileges \
+          --disable-triggers -f "$DATA_FILE" 2>"$dump_err"; then
+          err "Data export failed for $schema.$tbl; see $dump_err"
+          exit 1
+        fi
+        if [[ ! -s "$DATA_FILE" ]]; then
+          err "Data export produced an empty file for non-empty table $schema.$tbl"
+          exit 1
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$DATA_FILE" "$schema" "$tbl" "$row_count" >> "$MANIFEST_FILE"
         DATA_SIZE=$(du -h "$DATA_FILE" | cut -f1)
         echo -e " ${G}→ $DATA_SIZE${N}"
         EXPORTED=$((EXPORTED + 1))
@@ -429,14 +466,47 @@ else
     info "Importing data..."
     echo ""
 
-    for data_file in "$DATA_DIR"/*.sql; do
-      [[ ! -f "$data_file" ]] && continue
+    if $REPLACE_DATA; then
+      if [[ ! -s "$MANIFEST_FILE" ]]; then
+        err "--replace-data requires a populated data manifest"; exit 1
+      fi
+      info "Checking foreign-key safety before replacing normal-table data..."
+      owned_tables_sql=""
+      while IFS=$'\t' read -r _manifest_file schema tbl _expected_rows; do
+        [[ -z "$tbl" ]] && continue
+        [[ -n "$owned_tables_sql" ]] && owned_tables_sql+=","
+        owned_tables_sql+="'${schema}.${tbl}'"
+      done < "$MANIFEST_FILE"
+      unsafe_fk=$(tgt_psql -tAc "
+        WITH owned(rel) AS (VALUES (${owned_tables_sql}))
+        SELECT count(*) FROM pg_constraint c
+        JOIN pg_class child ON child.oid=c.conrelid
+        JOIN pg_class parent ON parent.oid=c.confrelid
+        JOIN pg_namespace n1 ON n1.oid=child.relnamespace
+        JOIN pg_namespace n2 ON n2.oid=parent.relnamespace
+        WHERE c.contype='f' AND n1.nspname='public' AND n2.nspname='public'
+          AND (n1.nspname||'.'||child.relname) NOT IN (SELECT rel FROM owned)
+          AND (n2.nspname||'.'||parent.relname) IN (SELECT rel FROM owned);")
+      if [[ "${unsafe_fk:-0}" != "0" ]]; then
+        err "--replace-data refused: $unsafe_fk FK(s) from tables outside the manifest would make replacement unsafe"
+        exit 1
+      fi
+      truncate_tables_sql=""
+      while IFS=$'\t' read -r _manifest_file schema tbl _expected_rows; do
+        [[ -z "$tbl" ]] && continue
+        [[ -n "$truncate_tables_sql" ]] && truncate_tables_sql+=","
+        truncate_tables_sql+="\"$schema\".\"$tbl\""
+      done < "$MANIFEST_FILE"
+      tgt_psql -c "TRUNCATE TABLE $truncate_tables_sql RESTART IDENTITY;" >> "$IMPORT_LOG" 2>&1 || {
+        err "failed to atomically clear classified normal tables"; exit 1;
+      }
+    else
+      warn "append mode: existing target rows are preserved; use --replace-data for exact replacement"
+    fi
 
-      tbl_name=$(basename "$data_file" .sql)
+    while IFS=$'\t' read -r data_file schema tbl expected_rows; do
+      [[ -z "$tbl" ]] && continue
       tbl_size=$(du -h "$data_file" | cut -f1)
-
-      schema=$(echo "$tbl_name" | cut -d_ -f1)
-      tbl=$(echo "$tbl_name" | sed "s/^${schema}_//")
 
       if [[ ! -s "$data_file" ]]; then
         dim "  SKIP: $schema.$tbl (empty)"
@@ -445,22 +515,10 @@ else
       fi
 
       printf "  %-45s %8s" "$schema.$tbl" "$tbl_size"
-
-      # --single-transaction makes each table's COPY atomic: any error rolls
-      # back the whole COPY instead of leaving the table partially populated
-      # (which previously caused silent mismatches when stderr was discarded).
-      import_err="$WORK_DIR/$TIMESTAMP/.import_err.$$"
-      if tgt_psql_file "$data_file" "--single-transaction" 2>"$import_err"; then
-        # exit 0 — still need to verify against partial-import signals
-        if grep -qiE '^(ERROR:|ROLLBACK|FATAL:)' "$import_err" 2>/dev/null; then
-          echo -e " ${R}PARTIAL${N}"
-          printf "    [stderr] %s\n" "$(head -3 "$import_err" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
-          cat "$import_err" >> "$IMPORT_LOG"
-          PARTIAL=$((PARTIAL + 1))
-        else
-          echo -e " ${G}OK${N}"
-          IMPORTED=$((IMPORTED + 1))
-        fi
+      import_err="$WORK_DIR/$TIMESTAMP/${schema}_${tbl}.import.err"
+      if tgt_psql_file "$data_file" "--single-transaction" >>"$IMPORT_LOG" 2>"$import_err"; then
+        echo -e " ${G}OK${N}"
+        IMPORTED=$((IMPORTED + 1))
       else
         echo -e " ${R}FAILED${N}"
         printf "    [stderr] %s\n" "$(head -3 "$import_err" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
@@ -468,12 +526,13 @@ else
         FAILED=$((FAILED + 1))
       fi
       rm -f "$import_err"
-    done
+    done < "$MANIFEST_FILE"
 
     echo ""
-    if [[ $PARTIAL -gt 0 ]]; then
-      warn "Data imported: $IMPORTED succeeded, $FAILED failed, $PARTIAL partial, $SKIPPED skipped"
-      warn "Partial-import errors logged to: $IMPORT_LOG"
+    if [[ $FAILED -gt 0 || $PARTIAL -gt 0 ]]; then
+      err "Data import FAILED: $IMPORTED succeeded, $FAILED failed, $PARTIAL partial, $SKIPPED skipped"
+      err "Data import log: $IMPORT_LOG"
+      DATA_IMPORT_FAILED=true
     else
       ok "Data imported: $IMPORTED succeeded, $FAILED failed, $PARTIAL partial, $SKIPPED skipped"
     fi
@@ -567,11 +626,17 @@ echo "  Tables:  ${#HOT_TABLES[@]} hot (schema-only) + ${#DATA_TABLES[@]} normal
 echo "  Dump:    $WORK_DIR/$TIMESTAMP/"
 echo ""
 
-if $SCHEMA_IMPORT_FAILED; then
-  err "pg-table-copy completed WITH SCHEMA IMPORT ERRORS — target schema may be stale or partial."
-  err "Do NOT trust migration-tracking tables copied as data: they can claim migrations"
-  err "are applied while the DDL never landed. Fix the errors above and re-run, then"
-  err "verify with scripts/local-dev/verify-db-consistency.sh (252↔local)."
+if $SCHEMA_IMPORT_FAILED || $DATA_IMPORT_FAILED; then
+  if $SCHEMA_IMPORT_FAILED; then
+    err "pg-table-copy completed WITH SCHEMA IMPORT ERRORS — target schema may be stale or partial."
+    err "Do NOT trust migration-tracking tables copied as data: they can claim migrations"
+    err "are applied while the DDL never landed. Fix the errors above and re-run, then"
+  fi
+  if $DATA_IMPORT_FAILED; then
+    err "pg-table-copy completed WITH DATA IMPORT ERRORS — target data is partial or stale."
+    err "Fix the errors above and re-run with --replace-data, then"
+  fi
+  err "verify with scripts/local-dev/verify-db-consistency.sh and scripts/local-dev/verify-db-data-consistency.sh."
   exit 1
 fi
 

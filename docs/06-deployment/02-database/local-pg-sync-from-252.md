@@ -204,9 +204,9 @@ PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway
 
 | 文件 | 作用 |
 |------|------|
-| `scripts/pg-table-copy.sh` | 252 → local 同步入口（含 hot 表过滤、PGOPTIONS 透传；导入前剔除 search_path 守卫、导入日志强制查错，失败即 exit 1） |
-| `scripts/local-dev/recreate-llm-gateway-pg.sh` | 用 envs 252 密码重建 docker 容器 |
+| `scripts/pg-table-copy.sh` | 252 → local 同步入口；默认不 DROP/不清空目标，`--clean-schema` 与 `--replace-data` 均为显式危险选项；catalog 识别分区，manifest 驱动逐表导出/导入，导出/导入失败即 exit 1 || `scripts/local-dev/recreate-llm-gateway-pg.sh` | 用 envs 252 密码重建 docker 容器 |
 | `scripts/local-dev/verify-db-consistency.sh` | 252 ↔ local 六维结构校验（表/列/视图/索引/约束/序列）；含 gated `--reconcile` 回灌模式。**每次同步后必须执行**——迁移跟踪表随数据复制，不能反映真实结构 |
+| `scripts/local-dev/verify-db-data-consistency.sh` | 252 ↔ local 普通表数据校验；比较完整表集合、逐表精确行数和顺序无关/重复敏感内容摘要；hot/分区数据按契约跳过 |
 | `docs/audit/2026-08-31-db-structure-consistency-audit.md` | 2026-08-31 结构一致性审计报告（P0 脚本静默失败根因 + 修复清单）|
 | `configs/env-252.sh` | 252 端连接配置 |
 | `configs/env-local.sh` | local 端连接配置 |
@@ -220,4 +220,4 @@ PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway
 |------------|------|------|
 | 2026-08-27 | 1.0  | 初版（从 252 → local 完整同步流程 + `_` 前缀表规约 + recreate 脚本说明）|
 | 2026-08-31 | 1.1  | 新增 `verify-db-consistency.sh`（一致性校验 + 252←local feature 表回灌）；补充 `pg_dump` search_path 触发 columnar 事件触发器、`-t` 逐表、月度分区预期差异等踩坑点 |
-| 2026-08-31 | 1.2  | 结构审计修复：`pg-table-copy.sh` 导入前剔除 search_path 守卫 + 强制扫描导入日志错误（修复 08-26 同步静默失败根因，见 `docs/audit/2026-08-31-db-structure-consistency-audit.md`）；`verify-db-consistency.sh` 升级 v1.1 六维校验；local 补 573/610/364 欠账，252 补 364 §4/§5 |
+| 2026-08-30 | 1.3  | 数据同步安全修复：默认安全 schema 模式不 DROP，精确替换必须显式 `--replace-data`；catalog 识别分区并以 manifest 驱动数据导入；新增普通表数据签名审计；修复 local `request_logs_default` DEFAULT 分区关系及索引漂移；最终结构与数据双审计通过 |
