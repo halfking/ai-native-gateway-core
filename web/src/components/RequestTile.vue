@@ -152,7 +152,7 @@ const line2Content = computed(() => {
     return `${origin}${attempt}`
   }
 
-  if (props.groupBy === 'vendor' || props.groupBy === 'provider') {
+  if (props.groupBy === 'vendor' || props.groupBy === 'provider' || props.groupBy === 'credential') {
     return truncateText(props.tile.model, 12)
   }
   if (props.tile.status === 'success') return `✓ ${t('dashboard.liveStream.legend.success')}`
