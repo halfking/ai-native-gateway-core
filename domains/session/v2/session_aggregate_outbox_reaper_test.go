@@ -142,6 +142,11 @@ func TestReaper_ClaimAndReplay_Success_PinsLeaseAndGuards(t *testing.T) {
 
 	// 1. BEGIN (claim tx).
 	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config\\('app.current_role', 'super_admin', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("SELECT set_config\\('app.bypass_rls', 'true', true\\)").
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+
 	// 2. Claim SELECT — note the regex `status = 'pending'` AND
 	//    `status = 'claimed'` clauses must both be present in the SQL.
 	//    The claim also carries one arg (lease seconds).
@@ -153,7 +158,7 @@ func TestReaper_ClaimAndReplay_Success_PinsLeaseAndGuards(t *testing.T) {
 		}).AddRow(
 			int64(42), "tenant_a", "sess_1",
 			time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC),
-			"req_1", []byte(`{"session_id":"sess_1"}`), 0,
+			"req_1", []byte(`{"session_id":"sess_1","tenant_id":"tenant_a","request_id":"req_1"}`), 0,
 		))
 	// 3. Claim UPDATE — must carry `status IN ('pending','claimed')` guard.
 	mock.ExpectExec("UPDATE session_aggregate_outbox").

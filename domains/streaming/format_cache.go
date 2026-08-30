@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -13,6 +14,7 @@ type RedisFormatCache struct {
 	redis  *redis.Client
 	ttl    time.Duration
 	prefix string
+	mu     sync.Mutex
 }
 
 // NewRedisFormatCache creates a new Redis-backed format cache.
@@ -47,16 +49,16 @@ func (c *RedisFormatCache) Get(ctx context.Context, sessionID string) (*CachedFo
 		return nil, err
 	}
 
-	// Update usage statistics (fire and forget)
+	// Update usage statistics synchronously under a process-local lock so a
+	// Delete cannot be followed by an unbounded background write that revives
+	// the cached value.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	cached.UseCount++
 	cached.LastUsed = time.Now()
-	snapshot := cached
-	go func() {
-		// Use background context with timeout
-		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		c.Set(bgCtx, sessionID, &snapshot)
-	}()
+	if err := c.Set(ctx, sessionID, &cached); err != nil {
+		return nil, err
+	}
 
 	return &cached, nil
 }

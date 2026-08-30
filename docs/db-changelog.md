@@ -161,6 +161,10 @@ relying on it.
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
+| 627 | `627_candidate_failure_logs_aggregation_id_unified.sql` | `ca165d495efb526e403c0a727889e3d7c0a2a825e78afca777ef07798ca8c7ef` | pending deploy |
+| 628 | `628_candidate_failure_logs_promote_atomic_v3.sql` | `d9a30a29f0ac991e8e0d9b73e3a9b1943eb57e666cd604b24f3e1ba801f3a41c` | pending deploy |
+| 629 | `629_audit_attachments_cleanup.sql` | `ae462b3d4ef16d27d5c04f8799a7f15c93f140bbd575fa8769252a2acd442701` | pending deploy |
+| 630 | `630_session_aggregate_outbox.sql` | `da5c3cce36477be1a03dc64976e9384f37232fa83a48f34e577c7dcbb91da7f6` | pending deploy |
 | 631 | `631_provider_credential_soft_delete.sql` | `0fd2120475a78486e40d3fa2d082eade345aef74a952ccc030b95643db252804` | pending deploy |
 
 > 631: credentials.status CHECK 增加 `'deleted'` 终态；providers 新增

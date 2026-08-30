@@ -2,9 +2,9 @@
 # verify-migration-checksums.sh — verify SHA-256 of sql/migrations/startup/*.sql
 # against the registry recorded in docs/db-changelog.md.
 #
-# Any mismatch (missing in registry, stale in registry, missing on disk)
-# exits non-zero so this can be wired into pre-deploy hooks alongside
-# scripts/deploy-lib/db-changelog.sh's fail-closed ledger check.
+# Any mismatch or stale registry entry is fatal. Files present on disk but
+# absent from the registry are warnings only because db-changelog.md records
+# deployed/pending ledger entries rather than every historical startup file.
 #
 set -euo pipefail
 

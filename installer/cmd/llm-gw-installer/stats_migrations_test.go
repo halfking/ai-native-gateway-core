@@ -58,6 +58,11 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"624_candidate_failure_logs_promote_atomic_v2.sql":                 candidateFailureLogsPromoteAtomicV2Migration624,
 		"625_session_bodies_unified_explicit.sql":                          sessionBodiesUnifiedExplicitMigration625,
 		"626_session_bodies_hot_promote_reconcile.sql":                     sessionBodiesHotPromoteReconcileMigration626,
+		"627_candidate_failure_logs_aggregation_id_unified.sql":            candidateFailureLogsAggregationIDMigration627,
+		"628_candidate_failure_logs_promote_atomic_v3.sql":                 candidateFailureLogsPromoteAtomicV3Migration628,
+		"629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
+		"630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
+		"631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
 	}
 
 	for name, embedded := range expected {
