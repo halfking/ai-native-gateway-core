@@ -89,8 +89,46 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// 2026-08-30: enforce tenant isolation. The standalone summary endpoint
+	// is restricted to super_admin + tenant_admin. For tenant_admin, the
+	// tenant must be their own — any caller-supplied "tenant" field is
+	// ignored. For super_admin, the tenant is taken from the request body.
 	authTenant := GetTenantID(r)
-	summary, err := api.generateSummary(ctx, &req, authTenant)
+	isSuper := IsSuperAdminOrLegacy(r)
+	if !isSuper && !IsTenantAdmin(r) {
+		writeExportJSONError(w, http.StatusForbidden, "session summary requires super_admin or tenant_admin")
+		return
+	}
+
+	if !isSuper {
+		// tenant_admin: tenant MUST be their own. Ignore any caller-supplied tenant.
+		tenantID := authTenant
+		summary, err := api.generateSummary(ctx, &SessionSummaryRequest{
+			SessionID: req.SessionID,
+			Tenant:    tenantID,
+			UpToTurn:  req.UpToTurn,
+		}, tenantID)
+		if err != nil {
+			writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("summary failed: %v", err))
+			return
+		}
+		writeExportJSON(w, http.StatusOK, summary)
+		return
+	}
+
+	// super_admin: caller may specify tenant in body.
+	tenantID := req.Tenant
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	// Pass an empty authTenant for unrestricted callers so the explicit
+	// super-admin tenant selector is not overwritten by GetTenantID's
+	// legacy/default fallback value.
+	summary, err := api.generateSummary(ctx, &SessionSummaryRequest{
+		SessionID: req.SessionID,
+		Tenant:    tenantID,
+		UpToTurn:  req.UpToTurn,
+	}, "")
 	if err != nil {
 		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("summary failed: %v", err))
 		return
@@ -105,10 +143,10 @@ func (api *SessionSummaryV2API) generateSummary(
 	authTenant string,
 ) (*SessionSummaryResponse, error) {
 	tenantID := req.Tenant
-	if authTenant != "" && (tenantID == "" || tenantID == "default") {
-		// Caller-supplied tenant wins only when the authenticated context does
-		// not pin a different tenant. This avoids a tenant admin being able
-		// to point the summary at another tenant's session.
+	if authTenant != "" {
+		// The authenticated tenant is authoritative. Never let a caller
+		// supplied JSON tenant override it; doing so would turn this
+		// summary endpoint into a cross-tenant IDOR for tenant_admins.
 		tenantID = authTenant
 	}
 
@@ -151,7 +189,8 @@ func (api *SessionSummaryV2API) generateSummary(
 }
 
 // queryRequestLogsFallback derives turn-shaped conversation text from the
-// V1 request_logs store. request_logs_hot is the recent-write window;
+// V1 request_logs store. request_logs_with_current_month is the unified
+// view that already includes request_logs_hot (the recent-write window);
 // older turns live in the monthly partitions accessible through
 // request_logs_with_current_month. We sort by ts so the summary reads in
 // chronological order, regardless of which store a turn lives in.
@@ -165,8 +204,8 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 		       rl.ts,
 		       rb.request_body,
 		       rb.response_body
-		FROM request_logs_hot rl
-		LEFT JOIN request_logs_bodies_hot rb ON rb.request_id = rl.request_id
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1
 	`
 	args := []any{sessionID}
@@ -174,20 +213,7 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 		query += " AND rl.tenant_id = $2"
 		args = append(args, tenantID)
 	}
-	query += `
-		UNION ALL
-		SELECT rl.request_id,
-		       rl.ts,
-		       rb.request_body,
-		       rb.response_body
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1
-	`
-	if tenantID != "" {
-		query += " AND rl.tenant_id = $2"
-	}
-	query += " ORDER BY ts ASC"
+	query += " ORDER BY rl.ts ASC"
 
 	rows, err := api.pool.Query(ctx, query, args...)
 	if err != nil {

@@ -14,6 +14,7 @@ func TestMigration625BuildsExplicitSessionBodiesUnified(t *testing.T) {
 	s := string(data)
 	for _, want := range []string{
 		"CREATE OR REPLACE VIEW public.session_bodies_unified",
+		"ALTER VIEW public.session_bodies_unified SET (security_invoker = true)",
 		"security_invoker = true",
 		"FROM public.session_bodies_hot",
 		"FROM public.session_bodies",
@@ -25,16 +26,26 @@ func TestMigration625BuildsExplicitSessionBodiesUnified(t *testing.T) {
 	}
 }
 
-func TestMigration625DownDropsOnlyUnifiedView(t *testing.T) {
+func TestMigration625DownRecreatesSelectStarView(t *testing.T) {
 	data, err := os.ReadFile("625_session_bodies_unified_explicit.down.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(data)
-	if !strings.Contains(s, "DROP VIEW IF EXISTS public.session_bodies_unified") {
-		t.Fatal("migration 625 down must drop session_bodies_unified")
+	for _, want := range []string{
+		"CREATE OR REPLACE VIEW public.session_bodies_unified",
+		"FROM public.session_bodies_hot",
+		"FROM public.session_bodies",
+		"ALTER VIEW public.session_bodies_unified RESET (security_invoker)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("migration 625 down missing %q", want)
+		}
 	}
-	if strings.Contains(s, "DROP TABLE") || strings.Contains(s, "session_bodies_hot") {
+	if strings.Contains(s, "DROP VIEW") {
+		t.Fatal("migration 625 down must NOT drop the view — five Go readers depend on it")
+	}
+	if strings.Contains(s, "DROP TABLE") || strings.Contains(s, "session_bodies_hot") && strings.Contains(s, "DROP TABLE session_bodies_hot") {
 		t.Fatal("migration 625 down must not touch unrelated tables")
 	}
 }
