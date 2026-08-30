@@ -1459,23 +1459,26 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// asset health probe still runs hourly, so this is a
 		// layered defense — the cred is re-probed at most once per
 		// hour instead of once per day.
-		_, _ = w.db.Exec(ctx, `
-			UPDATE node_probe_state SET
-				consecutive_failures = 0,
-				consecutive_successes = consecutive_successes + 1,
-				last_attempt_at = now(),
-				next_retry_at = now() + interval '1 hour',
-				next_retry_seconds = 3600,
-				paused = FALSE,
-				last_run_id = NULL,
-				last_direct_ok = TRUE,
-				last_gateway_ok = TRUE,
-				last_err_code = NULL,
-				last_err_detail = NULL,
-				in_flight_until = NULL,
-				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2
-		`, credID, model)
+		if _, err := w.db.Exec(ctx, `
+				UPDATE node_probe_state SET
+					consecutive_failures = 0,
+					consecutive_successes = consecutive_successes + 1,
+					last_attempt_at = now(),
+					next_retry_at = now() + interval '1 hour',
+					next_retry_seconds = 3600,
+					paused = FALSE,
+					last_run_id = NULL,
+					last_direct_ok = TRUE,
+					last_gateway_ok = TRUE,
+					last_err_code = NULL,
+					last_err_detail = NULL,
+					in_flight_until = NULL,
+					updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2
+			`, credID, model); err != nil {
+
+			w.logNodeProbeStateUpdateWarning("success", direct.providerID, credID, model, trigger.parentID, err)
+		}
 
 		// 2026-07-25 SPEC §3.1.2: success must immediately drop
 		// node_probe_failed: invalidate URSM v2 candCache + pg_notify
@@ -1515,22 +1518,25 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
 		nextRetryAt := now.Add(backoff)
 		nextSec := int(backoff.Seconds())
-		_, _ = w.db.Exec(ctx, `
-			UPDATE node_probe_state SET
-				consecutive_failures = $3,
-				consecutive_successes = 0,
-				last_attempt_at = now(),
-				next_retry_at = $4,
-				next_retry_seconds = $5,
-				last_direct_ok = $6,
-				last_gateway_ok = $7,
-				last_err_code = $8,
-				last_err_detail = $9,
-				in_flight_until = NULL,
-				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2
-		`, credID, model, attempt, nextRetryAt, nextSec,
-			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw))
+		if _, err := w.db.Exec(ctx, `
+				UPDATE node_probe_state SET
+					consecutive_failures = $3,
+					consecutive_successes = 0,
+					last_attempt_at = now(),
+					next_retry_at = $4,
+					next_retry_seconds = $5,
+					last_direct_ok = $6,
+					last_gateway_ok = $7,
+					last_err_code = $8,
+					last_err_detail = $9,
+					in_flight_until = NULL,
+					updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2
+			`, credID, model, attempt, nextRetryAt, nextSec,
+			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw)); err != nil {
+
+			w.logNodeProbeStateUpdateWarning("failure", direct.providerID, credID, model, trigger.parentID, err)
+		}
 
 		// 2026-08-11: suspicious-action hook. When a node has failed 2+ times
 		// in a row (the same consecutive_threshold the active_probe submitter
@@ -2073,6 +2079,21 @@ func directProbeBody(model, protocol string) string {
 		"max_tokens": 10,
 	})
 	return string(body)
+}
+
+func (w *NodeProbeWorker) logNodeProbeStateUpdateWarning(phase string, providerID, credID int, model, parentRequestID string, err error) {
+	if err == nil {
+		return
+	}
+	slog.Warn("node_probe_worker: node_probe_state update failed",
+		"phase", phase,
+		"provider_id", providerID,
+		"credential_id", credID,
+		"raw_model", model,
+		"parent_request_id", parentRequestID,
+		"queue", w != nil && w.probeQueue != nil,
+		"error", err,
+	)
 }
 
 func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string) {

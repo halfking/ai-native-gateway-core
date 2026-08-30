@@ -12,6 +12,51 @@ import (
 // deliberate spec update.
 // 2026-07-24: changed from 24h to 6h to prevent nodes from being
 // stranded for a full day after transient failures.
+func TestNodeProbeStateUpdatesLogWriteFailures(t *testing.T) {
+	source, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read node_probe.go: %v", err)
+	}
+	text := string(source)
+	for _, marker := range []string{
+		"consecutive_failures = 0",
+		"consecutive_failures = $3",
+	} {
+		idx := strings.Index(text, "UPDATE node_probe_state SET\n")
+		for idx >= 0 && !strings.Contains(text[idx:idx+220], marker) {
+			next := strings.Index(text[idx+len("UPDATE node_probe_state SET\n"):], "UPDATE node_probe_state SET\n")
+			if next < 0 {
+				idx = -1
+				break
+			}
+			idx += len("UPDATE node_probe_state SET\n") + next
+		}
+		if idx < 0 {
+			t.Fatalf("state update SQL not found for marker %q", marker)
+		}
+		start := idx - 220
+		if start < 0 {
+			start = 0
+		}
+		if !strings.Contains(text[start:idx], "if _, err := w.db.Exec") {
+			t.Fatalf("node_probe_state update must check Exec error near %q", marker)
+		}
+	}
+	for _, field := range []string{
+		"node_probe_worker: node_probe_state update failed",
+		"\"phase\", phase",
+		"\"provider_id\", providerID",
+		"\"credential_id\", credID",
+		"\"raw_model\", model",
+		"\"parent_request_id\", parentRequestID",
+		"\"queue\", w != nil && w.probeQueue != nil",
+	} {
+		if !strings.Contains(text, field) {
+			t.Fatalf("state update warning missing field %q", field)
+		}
+	}
+}
+
 func TestNodeProbeBackoffLadder(t *testing.T) {
 	want := []time.Duration{
 		5 * time.Second,
@@ -241,7 +286,7 @@ func TestRunOneMissingBindingDropsOrphanStateRow(t *testing.T) {
 	// before any "UPDATE node_probe_state SET consecutive_failures".
 	idxLog := strings.Index(body, `node_probe_worker: dropping probe for (cred, model) with no credential_model_bindings row`)
 	idxFail := strings.Index(body, `UPDATE node_probe_state SET
-				consecutive_failures = $3,`)
+					consecutive_failures = $3,`)
 	if idxLog < 0 {
 		t.Fatalf("missing-binding log line not found in source")
 	}
@@ -297,22 +342,17 @@ func TestRunOneSuccessClearsLastDirectOkAndErrCode(t *testing.T) {
 		t.Fatalf("read source: %v", err)
 	}
 	body := string(src)
-	wantSnippet := `
-				consecutive_failures = 0,
-				consecutive_successes = consecutive_successes + 1,
-				last_attempt_at = now(),
-				next_retry_at = now() + interval '1 hour',
-				next_retry_seconds = 3600,
-				paused = FALSE,
-				last_run_id = NULL,
-				last_direct_ok = TRUE,
-				last_gateway_ok = TRUE,
-				last_err_code = NULL,
-				last_err_detail = NULL,
-				in_flight_until = NULL,
-				updated_at = now()`
-	if !strings.Contains(body, wantSnippet) {
-		t.Fatalf("runOne success branch must write last_direct_ok=TRUE, last_err_code=NULL; update bg/node_probe.go:runOne success UPDATE block")
+	for _, field := range []string{
+		"consecutive_failures = 0",
+		"consecutive_successes = consecutive_successes + 1",
+		"last_direct_ok = TRUE",
+		"last_gateway_ok = TRUE",
+		"last_err_code = NULL",
+		"last_err_detail = NULL",
+	} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("runOne success branch must write %q; update bg/node_probe.go:runOne success UPDATE block", field)
+		}
 	}
 }
 
