@@ -96,3 +96,19 @@ func TestLiveDetailAdapter_TenantMismatchBlocked(t *testing.T) {
 	require.ErrorIs(t, err, requestdetailNotFound(),
 		"cross-tenant live lookup must fail closed with ErrNotFound")
 }
+
+func TestLiveDetailAdapter_EmptyLoadedTenantBlockedForTenantScope(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	require.NoError(t, store.Record(ctx, LiveRequest{
+		RequestID: "req-empty-tenant",
+		Model:     "gpt-4o-mini",
+		Status:    "in_progress",
+	}, ""))
+
+	_, err := loadLiveDetailForStore(ctx, store, requestdetail.LookupScope{TenantID: "tenant-a"}, "req-empty-tenant")
+	require.ErrorIs(t, err, requestdetailNotFound(), "tenant-scoped reads must reject an unscoped live row")
+}

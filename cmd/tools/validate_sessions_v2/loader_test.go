@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,6 +156,26 @@ func TestV2SessionStructure(t *testing.T) {
 	}
 }
 
+func TestCanonicalQueryContracts(t *testing.T) {
+	data, err := os.ReadFile("loader.go")
+	if err != nil {
+		t.Fatalf("read loader.go: %v", err)
+	}
+	source := string(data)
+	for _, want := range []string{
+		"public.session_turns_with_current_month",
+		"public.session_bodies_with_current_month",
+		"gw_session_id",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("loader source missing canonical contract %q", want)
+		}
+	}
+	if strings.Contains(source, "FROM session_turns") || strings.Contains(source, "FROM session_bodies") {
+		t.Fatal("validator must not read V2 parent tables directly")
+	}
+}
+
 // Note: Integration tests for LoadV1Turns, LoadV2Turns, etc. require a real database
 // and are better suited for integration test suite. These unit tests verify struct
-// definitions and basic type safety.
+// definitions, basic type safety, and the read-only query contract.

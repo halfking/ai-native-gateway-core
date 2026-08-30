@@ -1,10 +1,12 @@
--- Migration: 615_session_bodies_hot_promote_function
--- Purpose: Create promote function for session_bodies_hot table
--- Related: Migration 614 (session_bodies_hot table creation)
--- Date: 2026-08-29
+-- Migration 626: repair Session V2 body promotion and view RLS semantics.
+--
+-- 615 is checksum-frozen in deployed installations. Replacing the function here
+-- makes conflict reconciliation apply to both fresh and already-upgraded DBs.
+-- 625's explicit view body is retained; ALTER VIEW makes security_invoker
+-- deterministic when upgrading an existing 614 SELECT-* view.
 
--- Function to promote old rows from session_bodies_hot to monthly partitions
--- Called by PartitionManager every hour to maintain 8-hour hot window
+BEGIN;
+
 CREATE OR REPLACE FUNCTION public.promote_session_bodies_hot_to_partition(
     retention_window interval DEFAULT '8 hours',
     batch_size integer DEFAULT 5000
@@ -15,12 +17,11 @@ DECLARE
 BEGIN
     cutoff_ts := now() - retention_window;
 
-    -- Transaction-scoped advisory lock so only one promote run can mutate
-    -- session_bodies_hot at a time, even across multiple instances.
-    PERFORM pg_advisory_xact_lock(hashtext('session_bodies_hot_promote'));
+    IF NOT pg_try_advisory_xact_lock(hashtext('public.promote_session_bodies_hot_to_partition')) THEN
+        RETURN QUERY SELECT 0::bigint;
+        RETURN;
+    END IF;
 
-    -- Move rows older than retention window to partition table
-    -- Use advisory lock to prevent concurrent promote from same/different instance
     WITH to_move AS (
         SELECT id, session_id, turn_no, tenant_id, request_id, ts,
                request_delta, response_delta, outbound_body,
@@ -45,15 +46,18 @@ BEGIN
         RETURNING id
     ),
     deleted AS (
-        DELETE FROM public.session_bodies_hot
-        WHERE id IN (SELECT id FROM inserted)
+        DELETE FROM public.session_bodies_hot h
+        USING to_move m
+        WHERE h.id = m.id
+          AND h.partition_date = m.partition_date
         RETURNING 1
     )
     SELECT count(*) INTO moved_count FROM deleted;
-    
+
     RETURN QUERY SELECT moved_count;
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION public.promote_session_bodies_hot_to_partition IS
-    'Atomically move old rows from session_bodies_hot to monthly partitions. Called by PartitionManager.';
+ALTER VIEW public.session_bodies_unified SET (security_invoker = true);
+
+COMMIT;

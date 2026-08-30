@@ -229,7 +229,7 @@ func (l *SessionLoader) LoadV1Turns(ctx context.Context, tenantID, sessionID str
 	return turns, nil
 }
 
-// LoadV2Turns loads all turns for a session from session_turns
+// LoadV2Turns loads all turns for a session from the canonical current-month view.
 func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID string) ([]V2Turn, error) {
 	query := `
 			SELECT 
@@ -255,7 +255,7 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 				COALESCE(error_kind, '') as error_kind,
 				source_kind,
 				quality
-			FROM session_turns
+			FROM public.session_turns_with_current_month
 			WHERE tenant_id = $1 AND session_id = $2
 			ORDER BY turn_no ASC
 		`
@@ -306,7 +306,12 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 	return turns, nil
 }
 
-// LoadV2Bodies loads all bodies for a session from session_bodies
+// CanonicalV2BodiesView is the only body relation accepted by the parity gate.
+// It is intentionally separate from the legacy session_bodies_unified view, whose
+// column and current-month semantics are not sufficient for release evidence.
+const CanonicalV2BodiesView = "public.session_bodies_with_current_month"
+
+// LoadV2Bodies loads all bodies for a session from the canonical body view.
 func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID string) ([]V2Body, error) {
 	query := `
 			SELECT 
@@ -320,9 +325,19 @@ func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID st
 				COALESCE(outbound_body, '[]'::jsonb) as outbound_body,
 				COALESCE(request_attachments, '[]'::jsonb) as request_attachments,
 				COALESCE(response_attachments, '[]'::jsonb) as response_attachments
-			FROM session_bodies
-			WHERE tenant_id = $1 AND session_id = $2
-			ORDER BY turn_no ASC
+				FROM public.session_bodies_with_current_month b
+				WHERE b.tenant_id = $1 AND b.session_id = $2
+				  AND EXISTS (
+					SELECT 1
+					FROM public.session_turns_with_current_month t
+					WHERE t.tenant_id = b.tenant_id
+					  AND t.session_id = b.session_id
+					  AND t.turn_no = b.turn_no
+					  AND t.request_id = b.request_id
+					  AND t.tenant_id = $1
+					  AND t.session_id = $2
+				  )
+				ORDER BY b.turn_no ASC
 		`
 
 	rows, err := l.db.Query(ctx, query, tenantID, sessionID)
