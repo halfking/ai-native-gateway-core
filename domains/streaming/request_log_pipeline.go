@@ -194,7 +194,7 @@ type RequestLogContext struct {
 	StreamCapture *audit.StreamCapture
 
 	meta     requestAttemptMeta
-	logged   bool
+	logged   atomic.Bool
 	terminal atomic.Bool
 }
 
@@ -697,11 +697,11 @@ func (c *RequestLogContext) MarkLogged() {
 		// transitions. In particular, an early placeholder or a safety-net
 		// marker must not win the terminal CAS and prevent the real outcome from
 		// being captured later.
-		c.logged = true
+		c.logged.Store(true)
 	}
 }
 func (c *RequestLogContext) IsLogged() bool {
-	return c != nil && c.logged
+	return c != nil && c.logged.Load()
 }
 
 // MarkProbeHoldStart is invoked by the executor when it enters the
@@ -1097,7 +1097,7 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 			c.handler.telemetryClient.EmitContextAttrs(attrs)
 		}
 	}
-	c.logged = true
+	c.logged.Store(true)
 }
 
 // EmitRateLimited records a gateway-side rate-limit rejection (RPM/concurrent
@@ -1133,7 +1133,7 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 			c.handler.telemetryClient.EmitContextAttrs(attrs)
 		}
 	}
-	c.logged = true
+	c.logged.Store(true)
 }
 
 // failAndMark emits a failure row immediately (explicit exit paths).

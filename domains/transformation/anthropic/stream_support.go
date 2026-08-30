@@ -461,6 +461,24 @@ func (sw *StreamWriter) Cancelled() bool {
 	return sw.cancelled || sw.ctx.Err() != nil
 }
 
+// legacyStreamWriterErr and legacyStreamWriterCancelled expose the concrete
+// writer's disconnect state without coupling the converter to StreamWriter.
+// Legacy callers may still pass a plain ResponseWriter, in which case the
+// absence of an error is the only available signal.
+func legacyStreamWriterErr(w http.ResponseWriter) error {
+	if sw, ok := w.(*StreamWriter); ok {
+		return sw.Err()
+	}
+	return nil
+}
+
+func legacyStreamWriterCancelled(w http.ResponseWriter) bool {
+	if sw, ok := w.(*StreamWriter); ok {
+		return sw.Cancelled()
+	}
+	return false
+}
+
 // DeriveStreamContext returns a context bounded by the effective stream
 // timeout from the runtime config. If ctx already carries a deadline (e.g. a
 // test injecting a short timeout, or an upstream deadline), it is returned
