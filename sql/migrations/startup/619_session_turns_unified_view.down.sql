@@ -11,4 +11,8 @@
 -- 删除统一视图
 DROP VIEW IF EXISTS session_turns_unified;
 
-RAISE NOTICE '✅ Migration 617 rolled back: session_turns_unified view removed';
+-- RAISE NOTICE must be inside a DO block to be valid standalone SQL.
+DO $$
+BEGIN
+    RAISE NOTICE '✅ Migration 617 rolled back: session_turns_unified view removed';
+END $$;
