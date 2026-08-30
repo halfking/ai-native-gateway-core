@@ -44,7 +44,7 @@ type BodyReader interface {
 // LoadLiveDetail returns ErrNotFound when Redis has no entry for the
 // request id; the Locator falls through to the DB layers in that case.
 type LiveDetailReader interface {
-	LoadLiveDetail(ctx context.Context, tenantID, requestID string) (Meta, error)
+	LoadLiveDetail(ctx context.Context, scope LookupScope, requestID string) (Meta, error)
 }
 
 // ErrNotFound means no layer could supply the request.
@@ -130,20 +130,18 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 		}
 	}
 
-	if l.Bodies == nil {
-		return nil, ErrNotFound
-	}
-
 	// 2026-08-30: live-stream Redis cache. Inserted between the local
 	// store and the DB readers so a click on a still-running swim lane
 	// returns metadata immediately instead of bouncing off the eventual
 	// request_logs write. Tenant gating is enforced by LoadLiveDetail.
 	// When the caller wants bodies, we treat the live hit as metadata
 	// only and fall through to the DB readers so the response still
-	// contains request/response bodies.
+	// contains request/response bodies. This branch intentionally runs
+	// before the Bodies nil check: Redis-backed metadata remains useful
+	// even when the database reader is unavailable.
 	if l.Live != nil && omitBody {
 		scope := LookupScopeFromContext(ctx)
-		if liveMeta, liveErr := l.Live.LoadLiveDetail(ctx, scope.TenantID, requestID); liveErr == nil {
+		if liveMeta, liveErr := l.Live.LoadLiveDetail(ctx, scope, requestID); liveErr == nil {
 			d := &Detail{
 				Source:      SourceLive,
 				Persistence: PersistenceInFlight,
@@ -156,6 +154,10 @@ func (l *Locator) Get(ctx context.Context, requestID string, omitBody bool) (*De
 			// also fails. Do NOT block the locator on Redis hiccups.
 			_ = liveErr
 		}
+	}
+
+	if l.Bodies == nil {
+		return nil, ErrNotFound
 	}
 
 	// L3 DB lookup. Wrap the first attempt in a bounded retry so that a read

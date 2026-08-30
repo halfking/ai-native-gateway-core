@@ -64,31 +64,41 @@ const leftWidth = ref(36) // percentage width of the left panel
 // case we fall back to deriving turns from the request_logs body.
 const v2Bodies = ref<SessionTurnBodiesResponse | null>(null)
 const v2Error = ref('')
+const treeHasMore = ref(false)
+let sessionLoadSeq = 0
 
 watch(
   () => props.sessionId,
   async (id) => {
+    const seq = ++sessionLoadSeq
     turns.value = []
     error.value = ''
     treeSelectedTurn.value = null
     v2Bodies.value = null
     v2Error.value = ''
+    treeHasMore.value = false
     if (!id) return
     loading.value = true
     try {
       const r = await fetchSessionTurnsTree(id, { limit: 50 })
+      if (seq !== sessionLoadSeq) return
       turns.value = r.turns
+      treeHasMore.value = r.has_more
       const match = r.turns.find((t) => t.request_id === props.activeRequestId)
       treeSelectedTurn.value = match?.turn_number ?? r.turns[0]?.turn_number ?? null
     } catch (e: unknown) {
+      if (seq !== sessionLoadSeq) return
       error.value = e instanceof Error ? e.message : String(e)
     } finally {
-      loading.value = false
+      if (seq === sessionLoadSeq) loading.value = false
     }
     // Best-effort: V2 bodies are optional until the cutover completes.
     try {
-      v2Bodies.value = await fetchSessionTurnsBodies(id, { limit: 200 })
+      const bodies = await fetchSessionTurnsBodies(id, { limit: 200 })
+      if (seq !== sessionLoadSeq) return
+      v2Bodies.value = bodies
     } catch (e: unknown) {
+      if (seq !== sessionLoadSeq) return
       v2Error.value = e instanceof Error ? e.message : String(e)
       v2Bodies.value = null
     }
@@ -109,6 +119,10 @@ const v2Turns = computed<ConversationTurn[]>(() => {
       t.response_delta,
       t.outbound_body,
     )
+    const deltaMessages = [
+      ...extractMessagesFromBody(t.request_delta),
+      ...responseMessages,
+    ]
     const summary = summarizeTurnUserInstruction(t.request_delta, t.outbound_body)
     const messages = [...requestMessages, ...responseMessages]
     return {
@@ -116,6 +130,9 @@ const v2Turns = computed<ConversationTurn[]>(() => {
       number: t.turn_no,
       turnNo: t.turn_no,
       requestId: typeof t.request_id === 'string' ? t.request_id : null,
+      requestMessages,
+      responseMessages,
+      allTurnMessages: deltaMessages.length ? deltaMessages : messages,
       messages,
       userPreview: summary.text,
       userPreviewFull: summary.full,
@@ -131,9 +148,22 @@ const derivedTurns = computed(() =>
 )
 
 // V2 bodies win when present; otherwise fall back to request_logs derivation.
-const displayTurns = computed<ConversationTurn[]>(() =>
-  v2Turns.value.length ? v2Turns.value : derivedTurns.value,
-)
+const displayTurns = computed<ConversationTurn[]>(() => {
+  if (!v2Turns.value.length) return derivedTurns.value
+  // Keep a usable card for V2 rows whose body was scrubbed/NULL by falling
+  // back to the corresponding request_logs-derived turn when available.
+  return v2Turns.value.map((turn, i) => {
+    if (turn.messages.length || !derivedTurns.value[i]) return turn
+    const fallback = derivedTurns.value[i]
+    return {
+      ...fallback,
+      index: turn.index,
+      number: turn.number,
+      turnNo: turn.turnNo,
+      requestId: turn.requestId,
+    }
+  })
+})
 
 // Reset selection when the displayed turn set changes.
 watch(
@@ -173,7 +203,11 @@ const selectedTurnNumber = computed(() => selectedTurn.value?.number ?? 0)
 const rightBody = computed(() => {
   if (showAllTurns.value) {
     if (v2Turns.value.length) {
-      return { messages: displayTurns.value.flatMap((t) => t.messages) }
+      // Use incremental request/response messages for the all-turn view.
+      // Each outbound_body is a full snapshot and would repeat the entire
+      // conversation once per later turn.
+      const messages = displayTurns.value.flatMap((t) => t.allTurnMessages || t.messages)
+      return { messages }
     }
     return props.requestBody
   }
@@ -182,6 +216,15 @@ const rightBody = computed(() => {
 
 const treeCurrent = computed(() =>
   turns.value.find((t) => t.turn_number === treeSelectedTurn.value) || null,
+)
+const hasMoreTurns = computed(() => treeHasMore.value || Boolean(v2Bodies.value?.has_more))
+
+watch(
+  () => props.activeRequestId,
+  (requestId) => {
+    const match = turns.value.find((t) => t.request_id === requestId)
+    if (match) treeSelectedTurn.value = match.turn_number
+  },
 )
 
 function latencyLabel(ms: number | null): string {
@@ -200,6 +243,9 @@ function selectChild(c: SessionChildRequest) {
 function selectDerived(i: number) {
   selectedIndex.value = i
   showAllTurns.value = false
+  const rid = displayTurns.value[i]?.requestId
+  const turnNo = displayTurns.value[i]?.turnNo ?? displayTurns.value[i]?.number ?? 0
+  if (rid) emit('selectRequest', rid, turnNo)
 }
 
 function toggleDerivedExpand(i: number) {
@@ -241,6 +287,13 @@ function onDividerUp() {
   window.removeEventListener('pointermove', onDividerMove)
   window.removeEventListener('pointerup', onDividerUp)
 }
+
+function onDividerKeydown(e: KeyboardEvent) {
+  if (e.key === 'ArrowLeft') leftWidth.value = Math.max(20, leftWidth.value - 2)
+  else if (e.key === 'ArrowRight') leftWidth.value = Math.min(62, leftWidth.value + 2)
+  else return
+  e.preventDefault()
+}
 </script>
 
 <template>
@@ -269,36 +322,51 @@ function onDividerUp() {
         :class="{ 'left--single': timelineOnly }"
         :style="timelineOnly ? undefined : { width: leftWidth + '%' }"
       >
+        <div v-if="hasMoreTurns" class="warn">仅显示部分轮次（数据量较大，当前列表已截断）</div>
         <div v-if="!displayTurns.length" class="muted">无对话数据</div>
         <div
           v-for="t in displayTurns"
           :key="t.index"
           class="turn-card"
           :class="{ active: selectedIndex === t.index }"
-          role="button"
-          tabindex="0"
-          :aria-pressed="selectedIndex === t.index"
-          @click="selectDerived(t.index)"
-          @keydown.enter.prevent="selectDerived(t.index)"
-          @keydown.space.prevent="selectDerived(t.index)"
+          role="group"
+          :aria-label="`轮次 #${t.number}`"
         >
-          <div class="turn-card-head">
-            <span class="tn">#{{ t.number }}</span>
-            <span v-if="t.assistantCount" class="badge">回复 {{ t.assistantCount }}</span>
-          </div>
-          <pre v-if="derivedExpanded.has(t.index)" class="turn-preview">{{ t.userPreviewFull }}</pre>
-          <pre v-else class="turn-preview">{{ t.userPreview }}</pre>
+          <button
+            type="button"
+            class="turn-card-select"
+            :class="{ active: selectedIndex === t.index }"
+            :aria-pressed="selectedIndex === t.index"
+            @click="selectDerived(t.index)"
+          >
+            <span class="turn-card-head">
+              <span class="tn">#{{ t.number }}</span>
+              <span v-if="t.assistantCount" class="badge">回复 {{ t.assistantCount }}</span>
+            </span>
+            <span v-if="derivedExpanded.has(t.index)" class="turn-preview">{{ t.userPreviewFull }}</span>
+            <span v-else class="turn-preview">{{ t.userPreview }}</span>
+          </button>
           <button
             v-if="t.truncated"
             type="button"
             class="btn btn-sm linkish"
-            @click.stop="toggleDerivedExpand(t.index)"
+            @click="toggleDerivedExpand(t.index)"
           >{{ derivedExpanded.has(t.index) ? '收起' : '展开' }}</button>
         </div>
       </aside>
 
       <template v-if="!timelineOnly">
-        <div class="divider" role="separator" @pointerdown="onDividerDown">
+        <div
+          class="divider"
+          role="separator"
+          tabindex="0"
+          :aria-valuenow="Math.round(leftWidth)"
+          aria-valuemin="20"
+          aria-valuemax="62"
+          aria-label="调整左右面板宽度"
+          @pointerdown="onDividerDown"
+          @keydown="onDividerKeydown"
+        >
           <span class="divider-grip" />
         </div>
 
@@ -351,7 +419,11 @@ function onDividerUp() {
             <li
               v-for="c in t.child_requests"
               :key="c.request_id"
+              tabindex="0"
+              role="button"
               @click.stop="selectChild(c)"
+              @keydown.enter.stop.prevent="selectChild(c)"
+              @keydown.space.stop.prevent="selectChild(c)"
             >
               {{ c.request_type }} ·
               <span class="pill pill--sm" :class="statusToneClass(c.status, 'pill')">{{ c.status }}</span>
@@ -444,9 +516,14 @@ function onDividerUp() {
 .turn-card {
   display: block; width: 100%; text-align: left;
   border: 1px solid var(--border); background: var(--bg-card, transparent);
-  border-radius: 6px; padding: 8px; margin-bottom: 6px; cursor: pointer; color: inherit;
+  border-radius: 6px; padding: 0; margin-bottom: 6px; color: inherit;
 }
 .turn-card.active { border-color: var(--accent, var(--kx-primary)); box-shadow: inset 3px 0 0 var(--accent, var(--kx-primary)); }
+.turn-card-select {
+  display: block; width: 100%; text-align: left; border: 0;
+  background: transparent; padding: 8px; cursor: pointer; color: inherit;
+}
+.turn-card-select.active { box-shadow: inset 3px 0 0 var(--accent, var(--kx-primary)); }
 .turn-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .turn-card .tn { font-weight: 600; }
 .turn-card .badge {

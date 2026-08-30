@@ -54,6 +54,10 @@ watch(() => route.query.tab, (t) => {
 watch(requestId, async (id) => {
   if (!id) return
   await loadMeta(id)
+  // The route may have changed while metadata was loading. Do not start a
+  // body/waterfall request for the stale id after loadMeta has been
+  // invalidated by the newer route watcher.
+  if (id !== requestId.value) return
   await onSectionNeed(id, viewMode.value === 'session-turns' ? 'chat' : section.value)
 }, { immediate: true })
 

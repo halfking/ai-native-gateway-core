@@ -348,6 +348,10 @@ type Handler struct {
 	// request cache. When non-nil, SetRequestDetailStore wires it as the
 	// Locator's LiveDetailReader so swim-lane clicks resolve immediately.
 	liveStreamRedisStore *LiveStreamRedisStore
+	// requestDetailRetry preserves the operator-supplied retry policy when
+	// the locator is rebuilt after live-stream wiring.
+	requestDetailRetry    LocatorRetryConfig
+	requestDetailRetrySet bool
 
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
@@ -517,8 +521,9 @@ func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
 // SetLiveStreamRedisStore wires the Redis-backed live-stream detail
 // cache so the unified request detail locator can answer swim-lane
 // clicks immediately, before the eventual request_logs write.
-// Pass nil to disable. Must be called BEFORE SetRequestDetailStore so
-// the locator sees the wired reader.
+// Pass nil to disable. It is safe to call before or after
+// SetRequestDetailStore; the existing retry policy is preserved when
+// the locator is rebuilt.
 func (h *Handler) SetLiveStreamRedisStore(store *LiveStreamRedisStore) {
 	h.liveStreamRedisStore = store
 	// Rebuild the locator if the request-detail store was already

@@ -19,7 +19,7 @@ import (
 
 // LocatorRetryConfig carries the L3 DB read-your-writes retry policy from
 // env into the admin Locator. Zero Count / zero Delay fall back to the
-// package defaults (1 / 100ms). Count==0 explicitly disables retry.
+// package defaults (2 / 100ms). Count==0 explicitly disables retry.
 type LocatorRetryConfig struct {
 	Count int
 	Delay time.Duration
@@ -43,7 +43,11 @@ func (h *Handler) SetRequestDetailStore(store *requestdetail.Store, retry ...Loc
 		if cfg.Delay < 0 {
 			cfg.Delay = 100 * time.Millisecond
 		}
+	} else if h.requestDetailRetrySet {
+		cfg = h.requestDetailRetry
 	}
+	h.requestDetailRetry = cfg
+	h.requestDetailRetrySet = true
 	locator := &requestdetail.Locator{
 		Store:        store,
 		DBRetryCount: cfg.Count,

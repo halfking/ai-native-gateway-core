@@ -89,8 +89,46 @@ func (api *SessionSummaryV2API) ServeHTTP(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
+	// 2026-08-30: enforce tenant isolation. The standalone summary endpoint
+	// is restricted to super_admin + tenant_admin. For tenant_admin, the
+	// tenant must be their own — any caller-supplied "tenant" field is
+	// ignored. For super_admin, the tenant is taken from the request body.
 	authTenant := GetTenantID(r)
-	summary, err := api.generateSummary(ctx, &req, authTenant)
+	isSuper := IsSuperAdminOrLegacy(r)
+	if !isSuper && !IsTenantAdmin(r) {
+		writeExportJSONError(w, http.StatusForbidden, "session summary requires super_admin or tenant_admin")
+		return
+	}
+
+	if !isSuper {
+		// tenant_admin: tenant MUST be their own. Ignore any caller-supplied tenant.
+		tenantID := authTenant
+		summary, err := api.generateSummary(ctx, &SessionSummaryRequest{
+			SessionID: req.SessionID,
+			Tenant:    tenantID,
+			UpToTurn:  req.UpToTurn,
+		}, tenantID)
+		if err != nil {
+			writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("summary failed: %v", err))
+			return
+		}
+		writeExportJSON(w, http.StatusOK, summary)
+		return
+	}
+
+	// super_admin: caller may specify tenant in body.
+	tenantID := req.Tenant
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	// Pass an empty authTenant for unrestricted callers so the explicit
+	// super-admin tenant selector is not overwritten by GetTenantID's
+	// legacy/default fallback value.
+	summary, err := api.generateSummary(ctx, &SessionSummaryRequest{
+		SessionID: req.SessionID,
+		Tenant:    tenantID,
+		UpToTurn:  req.UpToTurn,
+	}, "")
 	if err != nil {
 		writeExportJSONError(w, http.StatusInternalServerError, fmt.Sprintf("summary failed: %v", err))
 		return
@@ -105,10 +143,10 @@ func (api *SessionSummaryV2API) generateSummary(
 	authTenant string,
 ) (*SessionSummaryResponse, error) {
 	tenantID := req.Tenant
-	if authTenant != "" && (tenantID == "" || tenantID == "default") {
-		// Caller-supplied tenant wins only when the authenticated context does
-		// not pin a different tenant. This avoids a tenant admin being able
-		// to point the summary at another tenant's session.
+	if authTenant != "" {
+		// The authenticated tenant is authoritative. Never let a caller
+		// supplied JSON tenant override it; doing so would turn this
+		// summary endpoint into a cross-tenant IDOR for tenant_admins.
 		tenantID = authTenant
 	}
 
