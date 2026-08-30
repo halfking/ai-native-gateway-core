@@ -260,6 +260,27 @@ func StreamAnthropicSSEToOpenAI(
 			}
 			if err == io.EOF || readCtx.Err() != nil {
 				flushBufferedText()
+				if writeErr := legacyStreamWriterErr(w); writeErr != nil {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("client_write_failed")
+					}
+					if pc != nil {
+						pc.markInterrupted("client_write_failed")
+					}
+					return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
+				}
+				// Empty streams must be classified before writing usage or [DONE].
+				// Otherwise the executor can fail over after the client already saw
+				// a syntactically complete response.
+				if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, legacyStreamWriterCancelled(w)) {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("anthropic_empty_response")
+					}
+					if pc != nil {
+						pc.markInterrupted("anthropic_empty_response")
+					}
+					return EmptyResponseStreamOutcome(chunkCount)
+				}
 				// Emit usage if we have it
 				if inputTokens > 0 || outputTokens > 0 {
 					usageChunk := &ir.StreamChunk{
@@ -559,6 +580,26 @@ func StreamAnthropicSSEToOpenAI(
 				finishReason = &stop
 			}
 
+			if writeErr := legacyStreamWriterErr(w); writeErr != nil {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_write_failed")
+				}
+				if pc != nil {
+					pc.markInterrupted("client_write_failed")
+				}
+				return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
+			}
+			// Empty streams must be classified before writing terminal frames.
+			if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, legacyStreamWriterCancelled(w)) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("anthropic_empty_response")
+				}
+				if pc != nil {
+					pc.markInterrupted("anthropic_empty_response")
+				}
+				return EmptyResponseStreamOutcome(chunkCount)
+			}
+
 			// Emit final chunk with finish_reason
 			fr := "stop"
 			if finishReason != nil {
@@ -587,22 +628,9 @@ func StreamAnthropicSSEToOpenAI(
 				writeChunk(usageChunk)
 			}
 
-			// Emit [DONE]
+			// Emit [DONE] only after the semantic/empty decision above. The
+			// empty path must never expose a completed response before failover.
 			writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
-			// audit-24h-20260828-r3 P1-B parity (Q3): empty-response check
-			// at the message_stop terminal path. An Anthropic stream that
-			// closed cleanly via message_stop but emitted no semantic bytes
-			// and no usage tokens fails over to the next candidate instead
-			// of being recorded as a successful empty stream.
-			if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, false) {
-				if capture != nil {
-					capture.MarkInterruptedWithReason("anthropic_empty_response")
-				}
-				if pc != nil {
-					pc.markInterrupted("anthropic_empty_response")
-				}
-				return EmptyResponseStreamOutcome(chunkCount)
-			}
 			return StreamOutcome{ChunkCount: chunkCount}
 
 		case ir.ChunkTypeError:

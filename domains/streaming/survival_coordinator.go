@@ -551,7 +551,8 @@ func survivalRouteLogAttrs(requestID string, attempt int, decision TaskDecision)
 		"attempt", attempt,
 		"route_override", "none",
 		"fallback_reason", decision.Reason,
-		"effective_route_status", decision.Action.String(),
+		"effective_route_status", "normal",
+		"recovery_action", decision.Action.String(),
 	}
 }
 
