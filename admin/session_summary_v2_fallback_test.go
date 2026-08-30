@@ -5,37 +5,17 @@ import (
 	"testing"
 )
 
-// TestSessionSummaryV2_QueryTurnsTargetsUnifiedView pins that the V2
-// summary path now reads from public.session_bodies_unified (hot + partitions)
-// rather than the legacy public.session_bodies table. This matters because
-// bodies_writer has written only to session_bodies_hot since migration 614,
-// so a query against the legacy table would silently miss every recent turn.
-//
-// We assert against the SQL string rendered by queryTurnsForSummary. The
-// statement is built inside the function so we mirror its shape rather than
-// re-querying the database. A query against the legacy table is a hard
-// regression because hot-body rows will never reach it.
 func TestSessionSummaryV2_QueryTurnsTargetsUnifiedView(t *testing.T) {
-	// Build the SQL exactly the way queryTurnsForSummary does, then
-	// assert both halves: it LEFT JOINs session_bodies_unified and does
-	// NOT mention session_bodies directly (without the _unified suffix).
 	sql := renderQueryTurnsForSummarySQL()
 	if !strings.Contains(sql, "public.session_bodies_unified b") {
 		t.Fatalf("queryTurnsForSummary must LEFT JOIN public.session_bodies_unified, got:\n%s", sql)
 	}
-	// Substring guard: "session_bodies_unified" must not be replaced by
-	// a bare "session_bodies" reference; the substring without the
-	// "_unified" suffix must not appear as a qualified table.
 	if strings.Contains(sql, "FROM public.session_bodies ") ||
 		strings.Contains(sql, "JOIN public.session_bodies ") {
 		t.Fatalf("legacy public.session_bodies reference must not appear, got:\n%s", sql)
 	}
 }
 
-// renderQueryTurnsForSummarySQL mirrors the SQL rendered by
-// (*SessionSummaryV2API).queryTurnsForSummary so the test can assert against
-// the statement text. Keeping a single source of truth in the test prevents
-// drift between the production query and the assertion.
 func renderQueryTurnsForSummarySQL() string {
 	return `
 		SELECT
@@ -52,37 +32,38 @@ func renderQueryTurnsForSummarySQL() string {
 		ORDER BY t.turn_no ASC`
 }
 
-// TestSessionSummaryV2_RequestLogsFallbackShape pins that the fallback
-// path reads from request_logs_hot + request_logs_bodies_hot, then
-// falls back to request_logs_with_current_month. This is what lets a
-// V2-disabled session still surface a useful summary.
-func TestSessionSummaryV2_RequestLogsFallbackShape(t *testing.T) {
-	sql := `
-		SELECT rl.request_id,
-		       rl.ts,
-		       rb.request_body,
-		       rb.response_body
-		FROM request_logs_hot rl
-		LEFT JOIN request_logs_bodies_hot rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		UNION ALL
-		SELECT rl.request_id,
-		       rl.ts,
-		       rb.request_body,
-		       rb.response_body
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-		ORDER BY ts ASC`
+func TestSessionSummaryV2RequestLogsFallbackUsesUnifiedSourceWithoutDuplicates(t *testing.T) {
+	limit := 3
+	sql, args := buildRequestLogsFallbackQuery("session-1", "tenant-a", &limit)
 	for _, want := range []string{
-		"FROM request_logs_hot rl",
-		"LEFT JOIN request_logs_bodies_hot rb",
 		"FROM request_logs_with_current_month rl",
-		"LEFT JOIN request_logs_bodies_with_current_month rb",
-		"WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2",
+		"rb.request_id = rl.request_id",
+		"rb.ts = rl.ts",
+		"rl.gw_session_id = $1",
+		"rl.tenant_id = $2",
+		"ORDER BY rl.ts ASC",
+		"LIMIT $3",
 	} {
 		if !strings.Contains(sql, want) {
-			t.Fatalf("fallback SQL missing %q", want)
+			t.Fatalf("fallback SQL missing %q:\n%s", want, sql)
 		}
+	}
+	for _, forbidden := range []string{"FROM request_logs_hot rl", "UNION ALL"} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("fallback SQL must not contain %q:\n%s", forbidden, sql)
+		}
+	}
+	if len(args) != 3 || args[0] != "session-1" || args[1] != "tenant-a" || args[2] != limit {
+		t.Fatalf("unexpected fallback args: %#v", args)
+	}
+}
+
+func TestSessionSummaryV2RequestLogsFallbackPermitsSuperAdminScope(t *testing.T) {
+	sql, args := buildRequestLogsFallbackQuery("session-1", "", nil)
+	if strings.Contains(sql, "tenant_id") || strings.Contains(sql, "LIMIT $") {
+		t.Fatalf("unscoped fallback query must not add tenant or limit predicates:\n%s", sql)
+	}
+	if len(args) != 1 || args[0] != "session-1" {
+		t.Fatalf("unexpected fallback args: %#v", args)
 	}
 }

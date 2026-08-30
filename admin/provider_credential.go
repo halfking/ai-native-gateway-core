@@ -975,3 +975,162 @@ func (h *Handler) lookupSessionTitles(ctx context.Context, holders []string) map
 	}
 	return result
 }
+
+// getProviderErrorStats 返回指定 provider 的错误统计。
+// 审计修复 (2026-08-30)：P1-8 - Admin API 错误统计展示
+//
+// GET /admin/providers/{id}/error-stats?hours=24&limit=100
+//
+// 查询参数：
+//   - hours: 统计时间范围（小时），默认 24
+//   - limit: 返回记录数限制，默认 100
+//   - resolved: 是否只显示已解决的错误（true/false/all），默认 all
+func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, providerID int) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	// 解析查询参数（带边界校验）
+	hours := 24
+	if hoursStr := r.URL.Query().Get("hours"); hoursStr != "" {
+		if parsed, err := strconv.Atoi(hoursStr); err == nil && parsed > 0 && parsed <= 720 {
+			hours = parsed
+		} else {
+			slog.Debug("getProviderErrorStats: invalid hours, using default",
+				"input", hoursStr, "default", 24)
+		}
+	}
+
+	limit := 100
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		if parsed, err := strconv.Atoi(limitStr); err == nil && parsed > 0 && parsed <= 1000 {
+			limit = parsed
+		} else {
+			slog.Debug("getProviderErrorStats: invalid limit, using default",
+				"input", limitStr, "default", 100)
+		}
+	}
+
+	resolvedFilter := r.URL.Query().Get("resolved") // "true", "false", "all"
+	if resolvedFilter == "" {
+		resolvedFilter = "all"
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// 验证 provider 存在性（与 getProvider 保持一致语义）
+	var exists bool
+	if err := h.db.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM providers WHERE id = $1 AND tenant_id = 'default')`,
+		providerID).Scan(&exists); err != nil {
+		slog.Error("getProviderErrorStats: provider existence check failed",
+			"provider_id", providerID, "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
+
+	// 参数化 SQL：所有用户输入通过 $N 传递，无字符串拼接
+	query := `
+		SELECT 
+			model_name,
+			endpoint,
+			error_type,
+			error_code,
+			error_message,
+			aggregation_bucket,
+			occurrences,
+			first_seen_at,
+			last_seen_at,
+			resolved,
+			created_at,
+			updated_at
+		FROM provider_error_details
+		WHERE provider_id = $1
+		  AND aggregation_bucket >= NOW() - ($3 * INTERVAL '1 hour')
+		  AND ($4 = 'all' OR resolved = ($4 = 'true'))
+		ORDER BY last_seen_at DESC, occurrences DESC
+		LIMIT $2
+	`
+
+	rows, err := h.db.Query(ctx, query, providerID, limit, hours, resolvedFilter)
+	if err != nil {
+		slog.Error("getProviderErrorStats query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	defer rows.Close()
+
+	type errorStat struct {
+		ModelName         string     `json:"model_name"`
+		Endpoint          string     `json:"endpoint"`
+		ErrorType         string     `json:"error_type"`
+		ErrorCode         *string    `json:"error_code"`
+		ErrorMessage      string     `json:"error_message"`
+		AggregationBucket time.Time  `json:"aggregation_bucket"`
+		Occurrences       int        `json:"occurrences"`
+		FirstSeenAt       time.Time  `json:"first_seen_at"`
+		LastSeenAt        time.Time  `json:"last_seen_at"`
+		Resolved          bool       `json:"resolved"`
+		CreatedAt         time.Time  `json:"created_at"`
+		UpdatedAt         time.Time  `json:"updated_at"`
+	}
+
+	var stats []errorStat
+	for rows.Next() {
+		var s errorStat
+		if err := rows.Scan(
+			&s.ModelName,
+			&s.Endpoint,
+			&s.ErrorType,
+			&s.ErrorCode,
+			&s.ErrorMessage,
+			&s.AggregationBucket,
+			&s.Occurrences,
+			&s.FirstSeenAt,
+			&s.LastSeenAt,
+			&s.Resolved,
+			&s.CreatedAt,
+			&s.UpdatedAt,
+		); err != nil {
+			slog.Warn("getProviderErrorStats scan failed", "error", err)
+			continue
+		}
+		stats = append(stats, s)
+	}
+
+	// 审计修复 (2026-08-30)：检查迭代过程中的错误
+	if err := rows.Err(); err != nil {
+		slog.Warn("getProviderErrorStats rows iteration error",
+			"provider_id", providerID, "error", err)
+	}
+
+	if stats == nil {
+		stats = []errorStat{}
+	}
+
+	// 统计汇总
+	var totalOccurrences int64
+	resolvedCount := 0
+	for _, s := range stats {
+		totalOccurrences += int64(s.Occurrences)
+		if s.Resolved {
+			resolvedCount++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id":       providerID,
+		"time_range_hours":  hours,
+		"total_errors":      len(stats),
+		"total_occurrences": totalOccurrences,
+		"resolved_count":    resolvedCount,
+		"unresolved_count":  len(stats) - resolvedCount,
+		"errors":            stats,
+	})
+}
