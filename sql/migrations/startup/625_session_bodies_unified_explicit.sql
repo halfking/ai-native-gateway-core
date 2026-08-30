@@ -17,8 +17,7 @@ BEGIN;
 
 \set ON_ERROR_STOP on
 
-CREATE OR REPLACE VIEW public.session_bodies_unified
-WITH (security_invoker = true) AS
+CREATE OR REPLACE VIEW public.session_bodies_unified AS
 SELECT
     id,
     session_id,
@@ -49,6 +48,16 @@ SELECT
     partition_date
 FROM public.session_bodies
 WHERE partition_date <= CURRENT_DATE - INTERVAL '1 day';
+
+-- 2026-08-30 (audit follow-up): CREATE OR REPLACE VIEW cannot change the
+-- security_invoker flag of an existing view (the flag is an attribute, not
+-- part of the column list). Apply it explicitly with ALTER VIEW so a
+-- database that already has 614's SELECT * view is upgraded in place. If
+-- the view did not exist before this migration (e.g. 614 not yet applied),
+-- CREATE OR REPLACE above creates it WITHOUT security_invoker; the ALTER
+-- below promotes it to security_invoker=true. The defensive DO block at
+-- the bottom asserts the final shape.
+ALTER VIEW public.session_bodies_unified SET (security_invoker = true);
 
 COMMENT ON VIEW public.session_bodies_unified IS
     'Explicit-column union of session_bodies_hot (recent writes) and historical session_bodies partitions. Admin readers MUST use this view rather than public.session_bodies to avoid missing recent writes still in the hot window.';

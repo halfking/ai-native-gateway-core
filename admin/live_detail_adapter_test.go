@@ -32,7 +32,7 @@ func TestLiveDetailAdapter_HitReturnsMeta(t *testing.T) {
 	}, "")
 	require.NoError(t, err)
 
-	meta, err := loadLiveDetailForStore(ctx, store, "tenant-a", "req-live-01")
+	meta, err := loadLiveDetailForStore(ctx, store, requestdetail.LookupScope{TenantID: "tenant-a"}, "req-live-01")
 	require.NoError(t, err)
 	require.Equal(t, "req-live-01", meta.RequestID)
 	require.Equal(t, "tenant-a", meta.TenantID)
@@ -52,13 +52,32 @@ func TestLiveDetailAdapter_MissReturnsErrNotFound(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	store := NewLiveStreamRedisStore(rdb)
 
-	_, err := loadLiveDetailForStore(context.Background(), store, "tenant-a", "missing")
+	_, err := loadLiveDetailForStore(context.Background(), store, requestdetail.LookupScope{TenantID: "tenant-a"}, "missing")
 	require.ErrorIs(t, err, requestdetailNotFound())
 }
 
-// TestLiveDetailAdapter_TenantMismatchBlocked ensures a tenant_admin
-// cannot read another tenant's live entry through the adapter — same
-// fail-closed contract as the request_logs lookup.
+// TestLiveDetailAdapter_SuperAdminCanReadAnyTenant ensures an unrestricted
+// (super_admin / legacy admin-key) scope can read a live entry regardless
+// of its tenant.
+func TestLiveDetailAdapter_SuperAdminCanReadAnyTenant(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	err := store.Record(ctx, LiveRequest{
+		RequestID: "req-super-live",
+		TenantID:  "tenant-a",
+		Model:     "gpt-4o-mini",
+		Status:    "in_progress",
+	}, "")
+	require.NoError(t, err)
+
+	meta, err := loadLiveDetailForStore(ctx, store, requestdetail.LookupScope{Unrestricted: true}, "req-super-live")
+	require.NoError(t, err)
+	require.Equal(t, "tenant-a", meta.TenantID)
+}
+
 func TestLiveDetailAdapter_TenantMismatchBlocked(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -73,7 +92,7 @@ func TestLiveDetailAdapter_TenantMismatchBlocked(t *testing.T) {
 	}, "")
 	require.NoError(t, err)
 
-	_, err = loadLiveDetailForStore(ctx, store, "tenant-b", "req-cross-tenant")
+	_, err = loadLiveDetailForStore(ctx, store, requestdetail.LookupScope{TenantID: "tenant-b"}, "req-cross-tenant")
 	require.ErrorIs(t, err, requestdetailNotFound(),
 		"cross-tenant live lookup must fail closed with ErrNotFound")
 }
