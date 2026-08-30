@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"reflect"
 	"sync"
 	"time"
 
@@ -45,6 +46,14 @@ const (
 	// sessionOutboxMaxBackoff caps the exponential schedule so a misbehaving
 	// row does not push its next_retry_at years into the future.
 	sessionOutboxMaxBackoff = 1 * time.Hour
+	// sessionOutboxClaimLease bounds how long a 'claimed' row may stay in
+	// that state before another replica is allowed to re-claim it. This is
+	// the safety net for audit-data-closure-C-1: if a gateway is killed
+	// between marking a row 'claimed' and finishing the replay, the row
+	// would otherwise be orphaned forever because the claim SELECT only
+	// looked at status='pending'. With this lease, the next replica picks
+	// up stale 'claimed' rows after 5 minutes.
+	sessionOutboxClaimLease = 5 * time.Minute
 )
 
 // outboxDB is the minimal pool surface the reaper needs.
@@ -53,10 +62,19 @@ type outboxDB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+// sessionOutboxAggregator is the minimal SessionAggregator surface the reaper
+// needs. Declared as an interface so unit tests can inject a fake without
+// depending on the full *SessionAggregator (and its pgxmock-friendly
+// newSessionAggregator(db aggregatorDB) seam). Production wiring always
+// passes the concrete *SessionAggregator.
+type sessionOutboxAggregator interface {
+	UpdateSession(ctx context.Context, update SessionUpdate) error
+}
+
 // sessionAggregateOutboxReaper consumes session_aggregate_outbox rows.
 type sessionAggregateOutboxReaper struct {
 	db         outboxDB
-	aggregator *SessionAggregator
+	aggregator sessionOutboxAggregator
 	interval   time.Duration
 	batchSize  int
 	maxAtts    int
@@ -71,6 +89,31 @@ type sessionAggregateOutboxReaper struct {
 // and the public Start helper below. Production code wires it through
 // StartSessionAggregateOutboxReaper.
 func newSessionAggregateOutboxReaper(db *pgxpool.Pool, agg *SessionAggregator, interval time.Duration, batchSize, maxAtts int) *sessionAggregateOutboxReaper {
+	if interval <= 0 {
+		interval = sessionOutboxDefaultInterval
+	}
+	if batchSize <= 0 {
+		batchSize = sessionOutboxDefaultBatch
+	}
+	if maxAtts <= 0 {
+		maxAtts = sessionOutboxDefaultMaxAtts
+	}
+	return &sessionAggregateOutboxReaper{
+		db:         db,
+		aggregator: agg,
+		interval:   interval,
+		batchSize:  batchSize,
+		maxAtts:    maxAtts,
+		stopCh:     make(chan struct{}),
+		doneCh:     make(chan struct{}),
+	}
+}
+
+// newSessionAggregateOutboxReaperForTest is the interface-accepting seam
+// used by unit tests with pgxmock. Production callers must use
+// newSessionAggregateOutboxReaper (concrete types enforce compile-time
+// checks against the real pool / aggregator).
+func newSessionAggregateOutboxReaperForTest(db outboxDB, agg sessionOutboxAggregator, interval time.Duration, batchSize, maxAtts int) *sessionAggregateOutboxReaper {
 	if interval <= 0 {
 		interval = sessionOutboxDefaultInterval
 	}
@@ -138,10 +181,13 @@ func (r *sessionAggregateOutboxReaper) Stop() {
 
 func (r *sessionAggregateOutboxReaper) run(ctx context.Context) {
 	defer close(r.doneCh)
-	if r.db == nil || r.aggregator == nil {
+	if !isUsablePool(r.db) || r.aggregator == nil {
 		// Defensive: production must never start with a nil pool / aggregator;
-		// unit tests construct the struct directly. Returning silently avoids
-		// taking the gateway down when Start is wired before db is ready.
+		// unit tests construct the struct directly with a literal `nil`
+		// (which becomes a typed-nil interface that defeats a plain == nil
+		// check). isUsablePool below handles both cases. Returning silently
+		// avoids taking the gateway down when Start is wired before db is
+		// ready.
 		slog.Warn("session_aggregate_outbox: nil pool or aggregator, reaper not started")
 		return
 	}
@@ -187,25 +233,32 @@ func (r *sessionAggregateOutboxReaper) claimAndReplay(ctx context.Context) (bool
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Claim one pending row whose retry time has elapsed. SKIP LOCKED so
-	//    peer reapers skip the row rather than waiting.
+	// 1. Claim one row that is ready for replay. The status filter covers
+	//    BOTH fresh pending rows AND stale 'claimed' rows whose lease has
+	//    expired (audit-data-closure-C-1: a gateway kill between the claim
+	//    commit and the replay would otherwise leave the row stranded).
+	//    SKIP LOCKED so peer reapers skip the locked row rather than wait.
 	row := tx.QueryRow(ctx, `
 		SELECT id, tenant_id, session_id, partition_date, request_id,
 		       update_payload, attempts
 		FROM session_aggregate_outbox
-		WHERE status = 'pending' AND next_retry_at <= NOW()
+		WHERE status = 'pending'
+		   OR (status = 'claimed'
+		       AND claimed_at IS NOT NULL
+		       AND claimed_at < NOW() - ($1 || ' seconds')::interval)
 		ORDER BY next_retry_at ASC
 		FOR UPDATE SKIP LOCKED
-		LIMIT 1`)
+		LIMIT 1`,
+		int(sessionOutboxClaimLease.Seconds()))
 
 	var (
-		id             int64
-		tenantID       string
-		sessionID      string
-		partitionDate  time.Time
-		requestID      string
-		updatePayload  []byte
-		attempts       int
+		id            int64
+		tenantID      string
+		sessionID     string
+		partitionDate time.Time
+		requestID     string
+		updatePayload []byte
+		attempts      int
 	)
 	if err := row.Scan(&id, &tenantID, &sessionID, &partitionDate, &requestID, &updatePayload, &attempts); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -215,8 +268,14 @@ func (r *sessionAggregateOutboxReaper) claimAndReplay(ctx context.Context) (bool
 	}
 
 	// 2. Mark claimed so a peer observing the row knows it's in-flight.
+	//    The status guard guards against re-claiming a row that was
+	//    concurrently terminated by another path (impossible while the
+	//    SELECT row lock is held, but cheap insurance and matches the
+	//    guard on the terminal UPDATEs below).
 	if _, err := tx.Exec(ctx,
-		`UPDATE session_aggregate_outbox SET status='claimed', claimed_at=NOW() WHERE id=$1`, id); err != nil {
+		`UPDATE session_aggregate_outbox
+		 SET status='claimed', claimed_at=NOW(), attempts=attempts, updated_at=NOW()
+		 WHERE id=$1 AND status IN ('pending','claimed')`, id); err != nil {
 		return false, fmt.Errorf("mark claimed: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -243,17 +302,45 @@ func (r *sessionAggregateOutboxReaper) claimAndReplay(ctx context.Context) (bool
 	return true, nil
 }
 
+// markDone/markDead/scheduleRetry all carry `AND status='claimed'` so a row
+// that another replica already terminated (or whose lease expired and was
+// re-claimed mid-flight) cannot be silently overwritten. This is
+// audit-data-closure-C-2: without the guard, a peer racing through
+// markDone could be undone by a stale markDead from a different replica
+// that started before the peer finished. With the guard, the second
+// UPDATE matches zero rows and returns a no-op CommandTag.
+//
+// All three also receive the timeout-bounded ctx (audit-data-closure-W-2)
+// rather than the parent reaper ctx, so a stuck DB Exec cannot wedge the
+// goroutine past Stop's doneCh wait.
+
 func (r *sessionAggregateOutboxReaper) markDone(ctx context.Context, id int64) {
-	if _, err := r.db.Exec(ctx,
-		`UPDATE session_aggregate_outbox SET status='done', completed_at=NOW(), updated_at=NOW() WHERE id=$1`, id); err != nil {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE session_aggregate_outbox
+		 SET status='done', completed_at=NOW(), updated_at=NOW()
+		 WHERE id=$1 AND status='claimed'`, id)
+	if err != nil {
 		slog.Error("session_aggregate_outbox: mark done failed", "id", id, "error", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		slog.Warn("session_aggregate_outbox: mark done skipped (row not in claimed state)",
+			"id", id)
 	}
 }
 
 func (r *sessionAggregateOutboxReaper) markDead(ctx context.Context, id int64, reason string) {
-	if _, err := r.db.Exec(ctx,
-		`UPDATE session_aggregate_outbox SET status='dead', last_error=$2, updated_at=NOW() WHERE id=$1`, id, reason); err != nil {
+	tag, err := r.db.Exec(ctx,
+		`UPDATE session_aggregate_outbox
+		 SET status='dead', last_error=$2, updated_at=NOW()
+		 WHERE id=$1 AND status='claimed'`, id, reason)
+	if err != nil {
 		slog.Error("session_aggregate_outbox: mark dead failed", "id", id, "error", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		slog.Warn("session_aggregate_outbox: mark dead skipped (row not in claimed state)",
+			"id", id, "reason", reason)
 		return
 	}
 	slog.Error("session_aggregate_outbox: row exceeded max attempts, marked dead",
@@ -267,15 +354,21 @@ func (r *sessionAggregateOutboxReaper) scheduleRetry(ctx context.Context, id int
 	if backoff > sessionOutboxMaxBackoff {
 		backoff = sessionOutboxMaxBackoff
 	}
-	if _, err := r.db.Exec(ctx,
+	tag, err := r.db.Exec(ctx,
 		`UPDATE session_aggregate_outbox
 		 SET status='pending', attempts=$2, last_error=$3,
 		     next_retry_at=NOW() + ($4 || ' seconds')::interval,
 		     updated_at=NOW()
-		 WHERE id=$1`,
-		id, attempts, cause.Error(), int(backoff.Seconds())); err != nil {
+		 WHERE id=$1 AND status='claimed'`,
+		id, attempts, cause.Error(), int(backoff.Seconds()))
+	if err != nil {
 		slog.Error("session_aggregate_outbox: schedule retry failed",
 			"id", id, "attempts", attempts, "error", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		slog.Warn("session_aggregate_outbox: schedule retry skipped (row not in claimed state)",
+			"id", id, "attempts", attempts)
 	}
 }
 
@@ -385,3 +478,20 @@ var lockKeySessionOutbox = func() int64 {
 	_, _ = h.Write([]byte("llm-gateway:session_aggregate_outbox"))
 	return int64(h.Sum64())
 }()
+
+// isUsablePool returns true only when db is a non-nil interface AND not a
+// typed-nil pointer. outboxDB is an interface; passing *pgxpool.Pool(nil)
+// assigns a non-nil interface holding a nil pointer, which a plain `==nil`
+// check cannot detect. Reflect.IsNil on a non-pointer kind returns false
+// harmlessly (e.g. for pgxmock's value-receiver types).
+func isUsablePool(db outboxDB) bool {
+	if db == nil {
+		return false
+	}
+	v := reflect.ValueOf(db)
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Interface:
+		return !v.IsNil()
+	}
+	return true
+}
