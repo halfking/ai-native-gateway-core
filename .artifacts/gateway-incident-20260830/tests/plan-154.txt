@@ -1,0 +1,2 @@
+target: 154
+{"target":"154","support":"canonical","service_manager":"systemd","service_name":"llm-gateway-go.service","binary_path":"/opt/llm-gateway-go/llm-gateway-go","web_path":"/opt/llm-gateway-go/web","health_url":"http://127.0.0.1:8781/healthz","internal_https_health_url":"https://127.0.0.1/healthz","ssh_host":"root@47.97.111.154","ssh_key_env":"SSH_KEY_154","rollback_policy":"versioned","legacy_aliases":""}
