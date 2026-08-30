@@ -59,6 +59,8 @@ export default {
       performanceScore: 'Performance score',
       health: 'System health',
       status: 'Status',
+      // 2026-08-31: per-row provider actions column
+      actions: 'Actions',
     },
     channel: {
       official: 'Official',
@@ -91,6 +93,9 @@ export default {
     empty: 'No providers configured yet',
     manualDisabledBadge: 'Disabled',
     manualDisabledTooltip: 'This provider has been manually disabled by admin',
+    // 2026-08-31: row-level provider delete button
+    deleteProviderBtn: 'Delete',
+    deleteProviderTooltip: 'Soft-delete this provider. The provider and all of its credentials will be removed from every list and the route table. This cannot be undone.',
   },
   create: {
     title: 'Add provider',
@@ -216,7 +221,9 @@ export default {
       checkBtn: 'Check',
       checkTooltip: 'Run a health check on this credential',
       diagnose: 'Diagnose',
-      disable: 'Disable',
+      // 2026-08-31: credential delete is terminal (status='deleted'),
+      // not a soft disable.
+      disable: 'Delete',
     },
     addDialog: {
       title: 'Add credential — {name}',
@@ -234,12 +241,27 @@ export default {
     errors: {
       apiKeyRequired: 'Please enter API Key',
       addFailed: 'Add failed',
-      deleteConfirm: 'Disable this credential?',
+      // 2026-08-31: credential delete is terminal (status='deleted'),
+      // not a soft disable. The credential and every binding to it
+      // disappear from all lists and cannot be restored via UI.
+      deleteConfirm: 'Delete this credential? It will be removed from all lists and routing. This cannot be undone.',
       deleteFailed: 'Delete failed',
       loadFailed: 'Credential load failed',
       saveFailed: 'Save credential failed',
       toggleFailed: 'Operation failed',
     },
+  },
+  // 2026-08-31: provider soft delete (DELETE /api/providers/{id}).
+  // The row stays in the table but deleted_at is set, so the
+  // provider disappears from every list and the route table.
+  providerDelete: {
+    confirm: 'Delete this provider? All of its credentials will also be marked deleted and all related model routes will stop immediately. This cannot be undone.',
+    failed: 'Provider delete failed',
+    success: 'Provider deleted',
+  },
+  // 2026-08-31: provider-deleted toast.
+  toast: {
+    providerDeleted: 'Provider deleted',
   },
   check: {
     providerStarted: 'Check started',

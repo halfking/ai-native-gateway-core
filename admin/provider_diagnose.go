@@ -34,7 +34,7 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 	var enabled bool
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(code,''), COALESCE(base_url,''), COALESCE(protocol,''), enabled
-		FROM providers WHERE id = $1 AND tenant_id = 'default'
+		FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, providerID).Scan(&providerCode, &baseURL, &protocol, &enabled)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")

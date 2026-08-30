@@ -58,6 +58,7 @@ export default {
       performanceScore: '性能',
       health: '系統健康',
       status: '狀態',
+      actions: "操作"
     },
     channel: {
       official: '原廠',
@@ -90,6 +91,8 @@ export default {
     empty: '尚未設定任何提供商',
     manualDisabledBadge: '已停用',
     manualDisabledTooltip: '此供應商已被管理員手動停用，所有路由將跳過',
+    deleteProviderBtn: "刪除",
+    deleteProviderTooltip: "軟刪除該供應商。刪除後該供應商及其全部憑證將不再出現在任何列表與路由中，且無法撤銷。",
   },
   create: {
     title: '新增供應商',
@@ -215,7 +218,7 @@ export default {
       checkBtn: '偵測',
       checkTooltip: '對此憑證執行一次健康偵測',
       diagnose: '診斷',
-      disable: '停用',
+      disable: '刪除',
     },
     addDialog: {
       title: '新增憑證 — {name}',
@@ -325,5 +328,14 @@ export default {
     table: {
       actions: '操作',
     },
+  },
+  // 2026-08-31: provider soft delete
+  providerDelete: {
+    confirm: "確認刪除該供應商？該供應商下的所有憑證將一併標記為已刪除，所有相關模型路由將立即停止。該操作無法撤銷。",
+    failed: "供應商刪除失敗",
+    success: "供應商已刪除",
+  },
+  toast: {
+    providerDeleted: "供應商已刪除",
   },
 }

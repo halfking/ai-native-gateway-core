@@ -55,6 +55,7 @@ export default {
       performanceScore: 'Rendimiento',
       health: 'Salud del sistema',
       status: 'Estado',
+      actions: "Acciones"
     },
     channel: {
       official: 'Oficial',
@@ -87,6 +88,8 @@ export default {
     empty: 'Aún no hay proveedores configurados',
     manualDisabledBadge: 'Desactivado',
     manualDisabledTooltip: 'Este proveedor ha sido desactivado manualmente por el administrador',
+    deleteProviderBtn: "Eliminar",
+    deleteProviderTooltip: "Eliminar (borrado suave) este proveedor. El proveedor y todas sus credenciales se retirarán de todas las listas y del enrutado. No se puede deshacer.",
   },
   create: {
     title: 'Añadir proveedor',
@@ -212,7 +215,7 @@ export default {
       checkBtn: 'Comprobar',
       checkTooltip: 'Ejecutar una comprobación de salud en esta credencial',
       diagnose: 'Diagnosticar',
-      disable: 'Desactivar',
+      disable: 'Eliminar',
     },
     addDialog: {
       title: 'Añadir credencial — {name}',
@@ -322,5 +325,14 @@ export default {
     table: {
       actions: 'Actions',
     },
+  },
+  // 2026-08-31: provider soft delete
+  providerDelete: {
+    confirm: "¿Eliminar este proveedor? Todas sus credenciales se marcarán como eliminadas y todas las rutas de modelos relacionadas se detendrán de inmediato. No se puede deshacer.",
+    failed: "Error al eliminar el proveedor",
+    success: "Proveedor eliminado",
+  },
+  toast: {
+    providerDeleted: "Proveedor eliminado",
   },
 }

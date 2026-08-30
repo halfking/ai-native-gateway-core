@@ -60,4 +60,9 @@ export default {
   loadFailed: 'Load failed',
   operationFailed: 'Operation failed',
   diagFailed: 'Diagnosis failed',
+  // 2026-08-31: provider soft delete (terminal)
+  deleteBtn: 'Delete provider',
+  deleteTitle: 'Soft-delete this provider. The provider and all of its credentials will be removed from every list and the route table. This cannot be undone.',
+  deleteConfirm: 'Delete provider "{name}"? All of its credentials will be marked deleted and all related model routes will stop immediately. This cannot be undone.',
+  deleteFailed: 'Provider delete failed',
 }

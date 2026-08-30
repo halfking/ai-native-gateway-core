@@ -62,4 +62,9 @@ export default {
     failureCount: 'Failures',
     totalTokens: 'Total tokens',
   },
+  // 2026-08-31: provider soft delete (terminal)
+  deleteBtn: "Anbieter löschen",
+  deleteTitle: "Diesen Anbieter soft-löschen. Der Anbieter und alle seine Anmeldedaten werden aus allen Listen und dem Routing entfernt. Nicht rückgängig machbar.",
+  deleteConfirm: 'Anbieter "{name}" löschen? Alle zugehörigen Anmeldedaten werden ebenfalls als gelöscht markiert und alle zugehörigen Modellrouten stoppen sofort. Nicht rückgängig machbar.',
+  deleteFailed: "Löschen des Anbieters fehlgeschlagen",
 }
