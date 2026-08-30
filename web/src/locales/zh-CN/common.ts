@@ -134,6 +134,7 @@ export default {
   enabled: '启用',
   lastOccurred: '最后发生',
   loading: '加载中…',
+  never: '从未',
   module: '模块',
   no: '否',
   refresh: '刷新',

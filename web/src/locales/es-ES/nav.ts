@@ -46,6 +46,7 @@ export default {
     wechatBot: "Bot de WeChat",
     sessionContext: "Contexto de sesión",
     settings: "Ajustes del sistema",
+    proxy: "Gestión de proxies",
     dataLifecycle: "Ciclo de vida de datos",
     formatAnomalies: "Monitor de anomalías de formato",
     modelIntegrity: "Monitor de integridad del modelo",

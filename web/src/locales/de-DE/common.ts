@@ -133,6 +133,7 @@ export default {
   enabled: 'Aktiviert',
   lastOccurred: 'Zuletzt aufgetreten',
   loading: 'Wird geladen…',
+  never: 'Nie',
   module: 'Modul',
   no: 'Nein',
   refresh: 'Aktualisieren',

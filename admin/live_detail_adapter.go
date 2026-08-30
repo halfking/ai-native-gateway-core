@@ -48,7 +48,7 @@ func loadLiveDetailForStore(
 	// tenant must match the caller's scope (when the scope pins a
 	// non-empty tenant). Empty loaded tenant fails closed.
 	loadedTenant := req.TenantID
-	if loadedTenant != "" && tenantID != "" && loadedTenant != tenantID {
+	if tenantID != "" && loadedTenant != tenantID {
 		return requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
 	meta := requestdetail.Meta{

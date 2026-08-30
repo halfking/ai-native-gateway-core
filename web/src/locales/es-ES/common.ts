@@ -132,6 +132,7 @@ export default {
   enabled: 'Habilitado',
   lastOccurred: 'Última ocurrencia',
   loading: 'Cargando…',
+  never: 'Nunca',
   module: 'Módulo',
   no: 'No',
   refresh: 'Actualizar',

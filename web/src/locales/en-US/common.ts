@@ -134,6 +134,7 @@ export default {
   enabled: 'Enabled',
   lastOccurred: 'Last Occurred',
   loading: 'Loading…',
+  never: 'Never',
   module: 'Module',
   no: 'No',
   refresh: 'Refresh',

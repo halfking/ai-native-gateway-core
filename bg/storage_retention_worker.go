@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -43,8 +44,11 @@ type StorageRetentionWorker struct {
 	// 由调用方注入（从 settings_kv 读取）。返回 enabled=false 则 worker 空转。
 	ConfigProvider StorageRetentionConfigFunc
 
-	cancel context.CancelFunc
-	done   chan struct{}
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	started bool
+	stopped bool
 }
 
 // StorageRetentionConfigFunc 返回当前清理配置。
@@ -82,10 +86,25 @@ func (w *StorageRetentionWorker) attachmentDir() string {
 	return w.AttachmentStorage.BaseDir()
 }
 
-// Start 启动后台 goroutine。
+// Start 启动后台 goroutine。重复调用是幂等的；每个实例只拥有一个 run loop。
 func (w *StorageRetentionWorker) Start(ctx context.Context) {
+	if w == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	w.mu.Lock()
+	if w.started {
+		w.mu.Unlock()
+		return
+	}
 	cctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
+	w.started = true
+	w.stopped = false
+	w.done = make(chan struct{})
+	w.mu.Unlock()
 	go w.run(cctx)
 	slog.Info("storage retention worker started",
 		"interval", w.CheckInterval.String(),
@@ -93,12 +112,24 @@ func (w *StorageRetentionWorker) Start(ctx context.Context) {
 		"log_dir", w.LogDir)
 }
 
-// Stop 终止 goroutine 并等待退出。
+// Stop 终止 goroutine 并等待退出。未启动或重复 Stop 均安全返回。
 func (w *StorageRetentionWorker) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	if w == nil {
+		return
 	}
-	<-w.done
+	w.mu.Lock()
+	if !w.started || w.stopped {
+		w.mu.Unlock()
+		return
+	}
+	w.stopped = true
+	cancel := w.cancel
+	done := w.done
+	w.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	<-done
 }
 
 func (w *StorageRetentionWorker) run(ctx context.Context) {
