@@ -42,10 +42,18 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"569_candidate_binding_scope_revision_canonical.sql":               candidateBindingScopeRevisionCanonicalMigration569,
 		"570_model_offers_insert_priority_passthrough.sql":                 modelOffersInsertPriorityPassthroughMigration570,
 		"571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
-		"601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,	}
+		"600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
+		"601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
+		"602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
+		"618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
+	}
 
 	for name, embedded := range expected {
-		canonical, err := os.ReadFile(filepath.Join(canonicalDir, name))
+		canonicalPath := filepath.Join(canonicalDir, name)
+		if name == "600_outbound_body_to_bodies_hot.sql" {
+			canonicalPath = filepath.Join(canonicalDir, "up", name)
+		}
+		canonical, err := os.ReadFile(canonicalPath)
 		if err != nil {
 			t.Fatalf("read canonical migration %s: %v", name, err)
 		}
@@ -71,7 +79,6 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"546_stats_reconciliation_diffs_unique.sql",
 		"547_session_project_attribution.sql",
 		"548_stats_reconciliation_diffs_identity.sql",
-		"553_approval_resume_claim.sql",
 		"552_request_journey_durable_outbox.sql",
 		"553_approval_resume_claim.sql",
 		"554_goal_runs.sql",
@@ -88,7 +95,35 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"569_candidate_binding_scope_revision_canonical.sql",
 		"570_model_offers_insert_priority_passthrough.sql",
 		"571_candidate_binding_scope_revision_canonical_priority_hash.sql",
+		"600_outbound_body_to_bodies_hot.sql",
 		"601_request_logs_bodies_drop_metadata.sql",
+		"602_request_logs_promote_atomic.sql",
+		"618_request_journey_snapshot_receipts.sql",
+	}
+
+	seen := make(map[string]struct{}, len(expected))
+	for _, name := range expected {
+		if _, ok := seen[name]; ok {
+			t.Fatalf("duplicate installer migration %s", name)
+		}
+		seen[name] = struct{}{}
+	}
+	order := []string{
+		"552_request_journey_durable_outbox.sql",
+		"553_approval_resume_claim.sql",
+		"600_outbound_body_to_bodies_hot.sql",
+		"601_request_logs_bodies_drop_metadata.sql",
+		"602_request_logs_promote_atomic.sql",
+		"618_request_journey_snapshot_receipts.sql",
+	}
+	positions := make(map[string]int, len(expected))
+	for i, name := range expected {
+		positions[name] = i
+	}
+	for i := 1; i < len(order); i++ {
+		if positions[order[i-1]] >= positions[order[i]] {
+			t.Fatalf("installer migration order is invalid: %s before %s", order[i-1], order[i])
+		}
 	}
 
 	tmp := t.TempDir()

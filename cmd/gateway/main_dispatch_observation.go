@@ -95,14 +95,20 @@ type journalSnapshotReceiptKey struct {
 }
 
 type dispatchJourneyJournalAdapter struct {
-	recorder      *requestjourney.Recorder
-	instance      string
-	store         dispatch.JournalSnapshotStore
-	receipt       *requestjourney.JournalSnapshotReceiptStore
-	mu            sync.Mutex
-	receipts      map[journalSnapshotReceiptKey]journalSnapshotReceipt
-	cleanupTicker *time.Ticker
-	stopCleanup   chan struct{}
+	recorder *requestjourney.Recorder
+	instance string
+	store    dispatch.JournalSnapshotStore
+	receipt  *requestjourney.JournalSnapshotReceiptStore
+	mu       sync.Mutex
+	receipts map[journalSnapshotReceiptKey]journalSnapshotReceipt
+
+	lifecycleMu    sync.Mutex
+	closed         bool
+	cleanupStarted bool
+	cleanupTicker  *time.Ticker
+	stopCleanup    chan struct{}
+	cleanupDone    chan struct{}
+	applyWG        sync.WaitGroup
 }
 
 func newDispatchJourneyJournalAdapter(recorder *requestjourney.Recorder, instanceID string, stores ...dispatch.JournalSnapshotStore) dispatch.JournalSink {
@@ -150,6 +156,18 @@ func (a *dispatchJourneyJournalAdapter) ApplyJournalSnapshot(ctx context.Context
 	if a == nil || a.recorder == nil || !snap.CallerAuthorized {
 		return
 	}
+
+	// Admission is coordinated with Close so no new delivery starts after the
+	// adapter has been shut down, while Close waits for deliveries already in
+	// flight to finish.
+	a.lifecycleMu.Lock()
+	if a.closed {
+		a.lifecycleMu.Unlock()
+		return
+	}
+	a.applyWG.Add(1)
+	a.lifecycleMu.Unlock()
+	defer a.applyWG.Done()
 	if snap.CallerTenantID == "" || snap.CallerTenantID != snap.TenantID {
 		slog.Warn("dispatch journal sink rejected caller tenant", "request_id", snap.RequestID)
 		return
@@ -345,13 +363,32 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 // startCleanup initiates a background goroutine that periodically cleans up
 // old receipts from the in-memory map based on the provided TTL.
 func (a *dispatchJourneyJournalAdapter) startCleanup(ttl time.Duration) {
-	a.cleanupTicker = time.NewTicker(1 * time.Hour)
+	if a == nil {
+		return
+	}
+	a.lifecycleMu.Lock()
+	if a.closed || a.cleanupStarted {
+		a.lifecycleMu.Unlock()
+		return
+	}
+	if a.stopCleanup == nil {
+		a.stopCleanup = make(chan struct{})
+	}
+	ticker := time.NewTicker(1 * time.Hour)
+	a.cleanupTicker = ticker
+	a.cleanupDone = make(chan struct{})
+	a.cleanupStarted = true
+	stopCleanup := a.stopCleanup
+	cleanupDone := a.cleanupDone
+	a.lifecycleMu.Unlock()
+
 	go func() {
+		defer close(cleanupDone)
 		for {
 			select {
-			case <-a.cleanupTicker.C:
+			case <-ticker.C:
 				a.cleanupOldReceipts(ttl)
-			case <-a.stopCleanup:
+			case <-stopCleanup:
 				return
 			}
 		}
@@ -371,13 +408,38 @@ func (a *dispatchJourneyJournalAdapter) cleanupOldReceipts(ttl time.Duration) {
 	}
 }
 
-// Close stops the cleanup goroutine and releases resources.
+// Close stops the cleanup goroutine and releases resources. It is safe to call
+// repeatedly and concurrently; after the first call, new snapshot deliveries
+// are ignored.
 func (a *dispatchJourneyJournalAdapter) Close() error {
-	if a.cleanupTicker != nil {
-		a.cleanupTicker.Stop()
+	if a == nil {
+		return nil
 	}
-	if a.stopCleanup != nil {
-		close(a.stopCleanup)
+
+	a.lifecycleMu.Lock()
+	if a.closed {
+		cleanupDone := a.cleanupDone
+		a.lifecycleMu.Unlock()
+		if cleanupDone != nil {
+			<-cleanupDone
+		}
+		return nil
+	}
+	a.closed = true
+	ticker := a.cleanupTicker
+	stopCleanup := a.stopCleanup
+	cleanupDone := a.cleanupDone
+	a.lifecycleMu.Unlock()
+
+	if ticker != nil {
+		ticker.Stop()
+	}
+	if stopCleanup != nil {
+		close(stopCleanup)
+	}
+	a.applyWG.Wait()
+	if cleanupDone != nil {
+		<-cleanupDone
 	}
 	return nil
 }

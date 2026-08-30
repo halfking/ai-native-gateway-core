@@ -9,6 +9,8 @@ package admin
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -25,6 +27,10 @@ import (
 // 不可空列（int / string / time.Time）以裸值传入。这是 pgx Scan 的
 // `database/sql` 兼容规则 —— pgxmock 严格按 dest 类型做 NULL 检查。
 func makeSessionDetailMockRow(payload []byte) *pgxmock.Rows {
+	return makeSessionDetailMockRowForTenant(payload, "tenant-a")
+}
+
+func makeSessionDetailMockRowForTenant(payload []byte, tenant string) *pgxmock.Rows {
 	now := time.Now().UTC()
 	saUpdatedAt := now.Add(-30 * time.Second)
 	lastTurn := 3
@@ -52,7 +58,7 @@ func makeSessionDetailMockRow(payload []byte) *pgxmock.Rows {
 		"sa_status", "sa_schema_version", "sa_input_hash",
 		"sa_source_task_id", "sa_updated_at", "sa_payload",
 	}).AddRow(
-		int64(42), "gw_abc", "tenant-a",
+		int64(42), "gw_abc", tenant,
 		now.Add(-2*time.Hour), now, nil, "active",
 		3, 1024, 0.0123,
 		&lastTurn, &lastReq, &lastResp,
@@ -62,6 +68,97 @@ func makeSessionDetailMockRow(payload []byte) *pgxmock.Rows {
 		ptrStr("final"), ptrStr("session-analysis/v1"), ptrStr("hash-001"),
 		&sourceTask, &saUpdatedAt, payload,
 	)
+}
+
+func ptrBool(v bool) *bool { return &v }
+
+func makeSessionTurnMockRows() *pgxmock.Rows {
+	now := time.Now().UTC()
+	return pgxmock.NewRows([]string{
+		"id", "session_id", "turn_no", "tenant_id", "request_id", "ts",
+		"submit_mode", "compression_applied", "compression_strategy", "compression_meta", "compression_tokens_saved",
+		"injection_verdict", "output_verdict", "model", "provider", "credential_id",
+		"prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd", "latency_ms", "status_code", "success", "error_kind",
+		"source_kind", "quality", "request_delta", "response_delta", "outbound_body", "request_attachments", "response_attachments",
+	}).AddRow(
+		int64(1), "gw_abc", 3, "tenant-a", "req-1", now,
+		"chat", false, nil, []byte(`{}`), nil,
+		"pass", "pass", ptrStr("model"), ptrStr("provider"), ptrStr("cred"),
+		nil, nil, nil, nil, nil, nil, nil, ptrBool(true), nil,
+		"gateway", "good", []byte(`{}`), []byte(`{}`), []byte(`{}`), []byte(`[]`), []byte(`[]`),
+	)
+}
+
+func newSessionDetailAuthRequest(t *testing.T, target, role, tenant string) *http.Request {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodGet, target, nil)
+	return SetAuthContext(r, &AuthContext{TenantID: tenant, Role: role, IsJWT: true})
+}
+
+func TestSessionDetailServeHTTPPinsTenantAdminToAuthTenant(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery(`LEFT JOIN LATERAL`).WithArgs("gw_abc", "tenant-a").
+		WillReturnRows(makeSessionDetailMockRowForTenant(nil, "tenant-a"))
+	mock.ExpectQuery(`FROM public\.session_turns_with_current_month`).
+		WithArgs("gw_abc", "tenant-a", 20, 0).
+		WillReturnRows(makeSessionTurnMockRows())
+
+	api := newSessionDetailV2APIWithDB(mock)
+	req := newSessionDetailAuthRequest(t, "/api/admin/sessions/detail?session_id=gw_abc&tenant=tenant-b&limit=20", "tenant_admin", "tenant-a")
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionDetailServeHTTPAllowsSuperAdminTenantSelection(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	mock.ExpectQuery(`LEFT JOIN LATERAL`).WithArgs("gw_abc", "tenant-b").
+		WillReturnRows(makeSessionDetailMockRowForTenant(nil, "tenant-b"))
+	mock.ExpectQuery(`FROM public\.session_turns_with_current_month`).
+		WithArgs("gw_abc", "tenant-b", 50, 0).
+		WillReturnRows(makeSessionTurnMockRows())
+
+	api := newSessionDetailV2APIWithDB(mock)
+	req := newSessionDetailAuthRequest(t, "/api/admin/sessions/detail?session_id=gw_abc&tenant=tenant-b", "super_admin", "tenant-a")
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionDetailServeHTTPRejectsMissingAuthContext(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+	api := newSessionDetailV2APIWithDB(mock)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/sessions/detail?session_id=gw_abc&tenant=tenant-a", nil)
+	rr := httptest.NewRecorder()
+	api.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestQuerySession_PopulatesSessionAnalysis(t *testing.T) {
@@ -294,4 +391,3 @@ func TestSessionAnalysisView_RoundTripJSON(t *testing.T) {
 // sessionAnalysisStrPtr returns a pointer to the given string. Use instead of a
 // generic helper to avoid colliding with admin.ptrString / admin.strPtr.
 func sessionAnalysisStrPtr(s string) *string { return &s }
-

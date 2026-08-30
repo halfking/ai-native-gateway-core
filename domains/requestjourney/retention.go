@@ -11,7 +11,6 @@ package requestjourney
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -138,19 +137,15 @@ func (w *RetentionWorker) CleanupExpired(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Receipt cleanup is deliberately best-effort for mixed-version databases:
-	// older installations may not have migration 618 yet. The runtime migration
-	// creates the table before this worker starts; this guard preserves startup
-	// compatibility for operators running retention during an upgrade window.
-	receiptTag, receiptErr := tx.Exec(ctx, `
-		DELETE FROM journal_snapshot_receipts
-		WHERE updated_at < NOW() - $1::interval
-		  AND (status = 'completed' OR claim_until < NOW())`, w.retention.String())
-	if receiptErr != nil {
-		if !strings.Contains(receiptErr.Error(), "journal_snapshot_receipts") {
-			return 0, receiptErr
-		}
-		receiptTag = pgconn.NewCommandTag("DELETE 0")
+	// Migration 618 is a prerequisite for the receipt cleanup. Do not infer a
+	// missing table from error text: any PostgreSQL error aborts this transaction,
+	// so pretending the delete succeeded would also falsely report a commit.
+	receiptTag, err := tx.Exec(ctx, `
+			DELETE FROM journal_snapshot_receipts
+			WHERE updated_at < NOW() - $1::interval
+			  AND (status = 'completed' OR claim_until < NOW())`, w.retention.String())
+	if err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err

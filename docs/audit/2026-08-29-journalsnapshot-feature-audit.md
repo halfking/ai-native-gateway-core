@@ -51,27 +51,40 @@ receipt 表只保存 tenant/request/version、payload hash、状态、lease 和�
 8. 将 completed/过期 processing receipt 纳入 RequestJourney retention。
 9. 增加 receipt、授权、并发、LRU/TTL、migration registration 和 runtime schema 回归测试。
 
+## 本轮继续修复（2026-08-30，生命周期与部署回归）
+
+- `dispatchJourneyJournalAdapter` 的 cleanup worker 现在只允许启动一次，worker 捕获自己的 ticker；`Close` 对 nil、重复和并发调用均幂等，并等待 cleanup worker 与已进入的 snapshot Apply 完成；关闭后新 Apply 直接 no-op。
+- 独立 `GET /api/admin/sessions/detail` 统一复用 `tenantFromQueryOrContext`：非平台角色固定认证租户，只有 `super_admin`/`admin_key` 能显式选择 query tenant，缺失认证上下文 fail-closed；新增 handler 级 pgxmock 参数断言。
+- installer canonical/embed parity、backup/setup 输出、runner 顺序和 offline forward migration 测试均纳入 600/601/602/618；修复 parity 测试中的重复 553 条目，并锁定 `552 < 553 < 600 < 601 < 602 < 618`。
+- retention receipt cleanup 不再通过错误字符串吞掉数据库错误；receipt 删除失败（包括 PostgreSQL `42P01`）会回滚并返回错误，避免在事务已 aborted 时虚假报告成功；新增错误语义和已启动 worker 并发 Stop 回归测试。
+
 ## 残余风险
 
 - Snapshot entries 本身仍是 instance-local；PostgreSQL receipt 只保证幂等 metadata，不保证重启后恢复完整快照。
 - Recorder 的 `MaxSeq` 分配与普通 observation Apply 仍属于不同调用边界；更强的原子批量 snapshot event 写入可作为后续改进。
 - Receipt lease 仍是固定时长，超长 Apply 需要后续 heartbeat/claim token 演进。
-- RLS 目前有 SQL 静态和 mock 覆盖，真实 PostgreSQL tenant/super-admin matrix 仍建议纳入部署验证。
-- 真实生产数据库和离线升级包未在本机执行；本轮验证覆盖源码、静态注册、mock、包测试和脚本语法。
+- RLS 目前有 SQL 静态、mock 和可选 integration 覆盖，真实 PostgreSQL tenant/super-admin matrix 仍建议纳入部署验证。
+- 真实生产数据库和离线升级包未在本机执行；本轮验证覆盖源码、静态注册、mock、installer 包测试、race 测试和脚本语法，不能替代现场升级演练。
 
-## 验证证据
+## 验证证据（2026-08-30）
 
 ```text
 go test ./admin ./cmd/gateway ./domains/dispatch ./domains/requestjourney ./db -count=1
 # PASS
 
-go test -race ./cmd/gateway ./domains/dispatch ./domains/requestjourney \
-  -run 'TestJournalSnapshot|TestInMemoryJournalStore|TestDispatchJourneyJournalAdapter' \
+go test -race ./admin \
+  -run 'TestTenantFromRequestOrContext|TestSessionV2TenantResolvers|TestSessionDetailServeHTTP|TestExtractDialogueContent|TestBuildConversationText' \
   -count=1
 # PASS
 
+go test -race ./cmd/gateway ./domains/dispatch ./domains/requestjourney \
+  -run 'TestJournalSnapshot|TestInMemoryJournalStore|TestDispatchJourneyJournalAdapter|TestCleanup|TestRetention' \
+  -count=1
+# PASS
+(cd installer && go test ./internal/dbinit ./internal/upgrader ./cmd/llm-gw-installer -count=1)
+# PASS
 bash -n scripts/build-upgrade-package.sh
 # PASS
 ```
 
-审计结论：JournalSnapshot 的主要功能链路已闭环，生产部署执行面和租户授权阻断项已修复；剩余项属于真实 PostgreSQL 集成验证、跨实例 snapshot body 持久化和更强事件批量原子性的后续工作。
+审计结论：JournalSnapshot 的主要功能链路、adapter 生命周期边界、独立 Session Detail 租户授权和 618 多执行面静态回归已闭环；剩余项属于真实 PostgreSQL/RLS 与现场升级验证、跨实例 snapshot body 持久化和更强事件批量原子性的后续工作。
