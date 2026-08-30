@@ -56,11 +56,15 @@ func NewVacuumWorker(db *pgxpool.Pool) *VacuumWorker {
 
 // SetInterval 设置执行间隔（用于测试）。
 func (w *VacuumWorker) SetInterval(d time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.interval = d
 }
 
 // SetExecuteHour 设置执行时间（0-23 小时）。
 func (w *VacuumWorker) SetExecuteHour(hour int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if hour >= 0 && hour <= 23 {
 		w.executeHour = hour
 	}
@@ -131,20 +135,37 @@ func (w *VacuumWorker) checkAndExecute(ctx context.Context) {
 	// 检查是否到了执行时间
 	// 1. 必须是指定的小时
 	// 2. 距离上次执行至少超过了 interval
+	// 配置字段的读写都在 mu 内完成；vacuum 在锁外执行，避免 30 分钟级的
+	// VACUUM 长时间持锁阻塞 Stop/Start。
+	w.mu.Lock()
 	if now.Hour() != w.executeHour {
+		w.mu.Unlock()
 		return
 	}
 
 	if !w.lastExecuted.IsZero() && now.Sub(w.lastExecuted) < w.interval {
+		w.mu.Unlock()
 		return
 	}
+	w.mu.Unlock()
 
-	// 执行 VACUUM
+	// 执行 VACUUM；完成后才更新 lastExecuted（保持既有语义：执行失败时
+	// 同一小时内仍可重试）
 	w.vacuum(ctx)
+
+	w.mu.Lock()
 	w.lastExecuted = now
+	w.mu.Unlock()
 }
 
 func (w *VacuumWorker) vacuum(ctx context.Context) {
+	// nil-db 守卫：生产装配总是传入 pool，但测试与降级装配可能为 nil。
+	// 无守卫时这里会 nil-deref panic 并带崩整个进程。
+	if w.db == nil {
+		slog.Warn("vacuum worker: no database pool configured, skipping VACUUM")
+		return
+	}
+
 	start := time.Now()
 	slog.Info("vacuum worker: starting VACUUM FULL on request_logs_bodies")
 

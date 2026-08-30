@@ -500,12 +500,16 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			)
 			// 2026-08-30 P1: 记录 fpSlot 饱和降级到 candidate_failure_logs_hot
 			// 审计发现：fpSlot 饱和未被记录，运维无法看到哪些 credential 频繁触发限流降级
+			// 2026-08-31 复审改用 KindFpSlotSaturated（而非 KindRateLimit）：
+			// 此路径是降级继续（请求仍会执行并大概率成功），且是网关侧按指纹的
+			// 准入信号，与上游 429 的供应商质量问题不同桶，避免污染
+			// provider_error_details 的 rate_limit 统计与凭据质量评估。
 			logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
-				errDispatchFpSlotSaturated, errorsx.KindRateLimit,
+				errDispatchFpSlotSaturated, errorsx.KindFpSlotSaturated,
 				map[string]any{
-					"rate_limit_rejection": true,
-					"rejection_type":       "fp_slot_saturated",
-					"candidates_left":      len(dctx.candidates),
+					"degraded_continue":   true,
+					"rejection_type":      "fp_slot_saturated",
+					"candidates_left":     len(dctx.candidates),
 				},
 			)
 		} else {

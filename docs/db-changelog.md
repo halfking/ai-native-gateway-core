@@ -129,9 +129,30 @@
 | 624 | `624_candidate_failure_logs_promote_atomic_v2.sql` | `701601cbb4597af85f7b43ea3398beac0fe9e215be6be21c4385b5843ce27738` | applied+verified |
 | 625 | `625_session_bodies_unified_explicit.sql` | `5058cf367b9742d5cf5ddb9757e3879382743f0149f380ebfca8692900634a48` | applied+verified |
 
-## 2026-08-31T00:00:00Z — deploy 154 build_seq 1819 (manual fix)
+## 2026-08-31T02:00:00Z — local revision (NOT a deploy record)
+
+2026-08-31 follow-up audit: 626 was edited locally to fix a broken CTE
+(`inserted` RETURNING lacked `partition_date`, which the DELETE referenced —
+the function would have failed to CREATE on target databases). The checksum
+below reflects the corrected file. **626 has NOT been applied to any
+environment yet**; it must go through the normal deploy-seamless path.
+
+Also note for the operator: the checksums realigned above for
+542/614/615/617/619/620/622/625/623 describe the files on disk. The remote
+`llm_gateway_migration_checksums` ledgers on 252/245/154 still hold the
+checksums recorded at their original deploy times. Before the next
+deploy-seamless run, execute `scripts/repair-252-migration-ledger.sh` (or the
+per-env equivalent) so the remote ledger matches these files, otherwise the
+fail-closed check in `scripts/deploy-lib/db-changelog.sh` will reject the
+deploy. Version 623 additionally changed identity on disk
+(`623_journal_snapshot_receipts_projection_base.sql` replaced the deployed
+`623_candidate_failure_logs_hot_tenant_scope.sql`): on environments where the
+old 623 is recorded as applied, the new 623 file will be SKIPPED by version
+number — verify `journal_snapshot_receipts.projection_base_seq` exists there
+(the runtime `db.ensureJournalSnapshotReceiptSchema` compensates) before
+relying on it.
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 626 | `626_session_bodies_hot_promote_reconcile.sql` | `9139b773b2f18cc7d1113f6c363b0afeba1db3f3229de9c3d8447a32712689a3` | applied+verified |
+| 626 | `626_session_bodies_hot_promote_reconcile.sql` | `ecc3e07efe40c0f70a9af7863435c863191e23b5b4f704f91533c2dcdafe7e66` | pending-deploy |
 

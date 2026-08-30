@@ -223,15 +223,17 @@ func TestForwardForDispatch_LogsFpSlotSaturation(t *testing.T) {
 	// FpSlot saturation is a *degradation*, not a hard reject — the request
 	// must still proceed to the upstream call (which fails on the bogus URL).
 	// The contract we lock here is the audit-trail side effect: one insert
-	// with kind=rate_limit, rejection_type=fp_slot_saturated.
+	// with kind=fp_slot_saturated (a dedicated kind, NOT rate_limit, so the
+	// gateway-side admission event does not pollute the upstream-throttling
+	// bucket that feeds provider quality evaluation).
 	select {
 	case <-db.insertCh:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for fpslot LogFailure insert")
 	}
-	row, ok := db.findInsertByKind(string(errorsx.KindRateLimit))
+	row, ok := db.findInsertByKind(string(errorsx.KindFpSlotSaturated))
 	if !ok {
-		t.Fatalf("no insert with kind=rate_limit; recorded kinds = %v", db.insertKinds())
+		t.Fatalf("no insert with kind=fp_slot_saturated; recorded kinds = %v", db.insertKinds())
 	}
 	// Arg index 8 is error_message; arg 15 is the JSON context blob. We
 	// can decode the context if we want to verify rejection_type, but a
