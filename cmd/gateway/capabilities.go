@@ -59,6 +59,13 @@ func NewCapabilitiesHandler(version, listenAddr string) http.Handler {
 				"durable_outbox":       "partial",
 				"plugin_runtime":       "partial",
 				"webhook_subscription": "implemented",
+				// Native upstream Responses is gated by
+				// native_responses_upstream_enabled (default false). Do not flip on
+				// until the SSE extension-loss tests in
+				// internal/ir/serialize_responses_extension_loss_test.go and
+				// internal/ir/serialize_responses_stream_test.go document which
+				// Responses request/stream fields round-trip and which are dropped.
+				"native_responses_upstream": "off_until_extension_loss_pinned",
 			},
 			Ports: map[string]int{
 				"primary":         parseListenPort(listenAddr),

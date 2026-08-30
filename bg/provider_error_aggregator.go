@@ -136,6 +136,14 @@ func (a *ProviderErrorAggregator) aggregateErrors(ctx context.Context) {
 	// re-read and replace-upserted. Thus N rows plus one new row becomes N+1, and
 	// replaying the transaction leaves the bucket at N+1. The lock, aggregation,
 	// upsert, and watermark advance all commit atomically.
+	//
+	// Migration 627 added aggregation_id to the partitioned parent
+	// (candidate_failure_logs) and the unified view
+	// candidate_failure_logs_unified (hot UNION ALL historical). We read from
+	// the unified view so a row promoted between two aggregator ticks is still
+	// visible to the watermark predicate. The view is SECURITY INVOKER so
+	// pooled connections never retain elevated visibility beyond the bypass
+	// already applied via set_config above.
 	query := `
 WITH watermark AS (
  SELECT last_source_id
@@ -157,8 +165,9 @@ WITH watermark AS (
    floor(extract(minute FROM c.ts) / 10) * interval '10 minutes') AS aggregation_bucket,
   c.request_id,
   c.context,
-  c.ts
- FROM candidate_failure_logs_hot c
+  c.ts,
+  c.source
+ FROM candidate_failure_logs_unified c
 ), new_source_rows AS (
  SELECT s.*
  FROM all_source_rows s
