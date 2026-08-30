@@ -215,6 +215,9 @@ type HealthCheckResult struct {
 // 审计修复 (2026-08-29)：问题 4 - 增加 context 取消时的提前退出机制，避免
 // goroutine 泄漏。当调用方取消 context 时，立即停止派发新任务并关闭输出 channel。
 func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, concurrency int) <-chan HealthCheckResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	out := make(chan HealthCheckResult, len(nodes))
 	if concurrency <= 0 {
 		concurrency = 16
@@ -241,6 +244,21 @@ func (c *HTTPHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, 
 		default:
 		}
 
+		if node == nil {
+			select {
+			case out <- HealthCheckResult{
+				Err:       errors.New("proxy: health check on nil node"),
+				CheckedAt: time.Now(),
+			}:
+			case <-ctx.Done():
+				go func() {
+					wg.Wait()
+					close(out)
+				}()
+				return out
+			}
+			continue
+		}
 		if !node.Dialable() {
 			select {
 			case out <- HealthCheckResult{

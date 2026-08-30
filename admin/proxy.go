@@ -370,8 +370,12 @@ func (h *Handler) deleteProxySubscription(w http.ResponseWriter, r *http.Request
 		mgr.InvalidateTransport(id)
 	}
 	// 节点由外键 ON DELETE CASCADE 一并删除，缓存需同步失效。
+	if mgr == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
+		return
+	}
 	if err := mgr.ReloadCache(); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "cache_reload_error": err.Error()})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "cache_reload_error": proxy.SanitizeSecrets(err.Error())})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id})
@@ -379,6 +383,10 @@ func (h *Handler) deleteProxySubscription(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) refreshProxySubscription(w http.ResponseWriter, r *http.Request, id int) {
 	mgr, store := h.proxyRuntime()
+	if mgr == nil || store == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), proxyRefreshTimeout)
 	defer cancel()
@@ -588,6 +596,10 @@ func (h *Handler) deleteProxyNode(w http.ResponseWriter, r *http.Request, id int
 
 func (h *Handler) healthCheckProxyNode(w http.ResponseWriter, r *http.Request, id int) {
 	mgr, store := h.proxyRuntime()
+	if mgr == nil || store == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
 
 	node, err := store.GetNode(r.Context(), id)
 	if err != nil {
@@ -626,7 +638,7 @@ func (h *Handler) healthCheckProxyNode(w http.ResponseWriter, r *http.Request, i
 		"health_status":    updated.LastHealthCheckStatus,
 	}
 	if checkErr != nil {
-		resp["error"] = checkErr.Error()
+		resp["error"] = proxy.SanitizeSecrets(checkErr.Error())
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

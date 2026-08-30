@@ -193,12 +193,17 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 	}()
 
 	var candidates []*Node
+	var cachePresent bool
 	if subscriptionID != nil {
-		candidates, _ = m.getNodesFromCacheWithTTL(*subscriptionID, time.Now())
+		candidates, _, cachePresent = m.getNodesFromCacheWithTTL(*subscriptionID, time.Now())
 	} else {
-		candidates = m.getAllActiveCachedNodes(time.Now())
+		candidates, cachePresent = m.getAllActiveCachedNodes(time.Now())
 	}
-	if len(candidates) == 0 {
+	// A present-but-empty subscription snapshot is a valid negative cache. Only
+	// an absent snapshot should fall back to the store for a targeted selection.
+	// Global selection still falls back when its aggregate cache has no nodes,
+	// because a partially warmed cache cannot prove that the store is empty.
+	if (subscriptionID != nil && !cachePresent) || (subscriptionID == nil && len(candidates) == 0) {
 		candidates, err = m.store.ListNodes(ctx, subscriptionID)
 		if err != nil {
 			return nil, fmt.Errorf("list nodes: %w", err)
@@ -206,6 +211,9 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 		if subscriptionID != nil {
 			m.setCacheWithTTL(*subscriptionID, candidates, time.Now())
 		}
+		// Store implementations may reuse mutable objects; never expose those
+		// pointers to selection or load-balancer code on a cache miss.
+		candidates = cloneNodes(candidates)
 	}
 
 	m.selectionMu.Lock()
@@ -655,9 +663,10 @@ func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 
 	for _, node := range allNodes {
 		// 只检查 active 和 unhealthy 状态的节点
-		if node.Status != "active" && node.Status != "unhealthy" {
+		if node == nil || (node.Status != "active" && node.Status != "unhealthy") {
 			continue
 		}
+
 		totalNodes++
 
 		// 跳过不可拨号的节点
@@ -1002,24 +1011,25 @@ func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) bo
 
 // getNodesFromCache 已废弃，使用 getNodesFromCacheWithTTL 替代
 func (m *Manager) getNodesFromCache(subscriptionID int) []*Node {
-	nodes, _ := m.getNodesFromCacheWithTTL(subscriptionID, time.Now())
+	nodes, _, _ := m.getNodesFromCacheWithTTL(subscriptionID, time.Now())
 	return nodes
 }
 
-// getNodesFromCacheWithTTL returns a snapshot and whether it is still fresh.
-// Expired snapshots remain available for this request while one asynchronous
-// refresh is in flight, so callers neither block nor create a database thundering herd.
-func (m *Manager) getNodesFromCacheWithTTL(subscriptionID int, now time.Time) ([]*Node, bool) {
+// getNodesFromCacheWithTTL returns an isolated snapshot, freshness, and cache
+// presence. Expired snapshots remain available for this request while one
+// asynchronous refresh is in flight, so callers neither block nor create a
+// database thundering herd.
+func (m *Manager) getNodesFromCacheWithTTL(subscriptionID int, now time.Time) ([]*Node, bool, bool) {
 	value, ok := m.nodesCache.Load(subscriptionID)
 	if !ok {
-		return nil, false
+		return nil, false, false
 	}
 	entry := value.(*cacheEntry)
-	if now.Before(entry.expiresAt) {
-		return entry.nodes, true
+	fresh := now.Before(entry.expiresAt)
+	if !fresh {
+		m.refreshCacheAsync(subscriptionID)
 	}
-	m.refreshCacheAsync(subscriptionID)
-	return entry.nodes, false
+	return cloneNodes(entry.nodes), fresh, true
 }
 
 func (m *Manager) refreshCacheAsync(subscriptionID int) {
@@ -1037,27 +1047,78 @@ func (m *Manager) refreshCacheAsync(subscriptionID int) {
 // setCacheWithTTL 设置缓存，带 TTL（阶段 2 优化）
 func (m *Manager) setCacheWithTTL(subscriptionID int, nodes []*Node, now time.Time) {
 	entry := &cacheEntry{
-		nodes:     nodes,
+		nodes:     cloneNodes(nodes),
 		expiresAt: now.Add(m.cacheTTL),
 	}
 	m.nodesCache.Store(subscriptionID, entry)
 }
 
-func (m *Manager) getAllActiveCachedNodes(now time.Time) []*Node {
+func (m *Manager) getAllActiveCachedNodes(now time.Time) ([]*Node, bool) {
 	var allNodes []*Node
+	cachePresent := false
 	m.nodesCache.Range(func(key, value interface{}) bool {
 		subscriptionID, ok := key.(int)
 		if !ok {
 			return true
 		}
+		cachePresent = true
 		entry := value.(*cacheEntry)
 		if !now.Before(entry.expiresAt) {
 			m.refreshCacheAsync(subscriptionID)
 		}
-		allNodes = append(allNodes, entry.nodes...)
+		allNodes = append(allNodes, cloneNodes(entry.nodes)...)
 		return true
 	})
-	return allNodes
+	return allNodes, cachePresent
+}
+
+// cloneNodes returns a snapshot that shares no mutable Node or Config state
+// with the caller. Cache readers can therefore sort/filter while health checks
+// update their store-owned nodes concurrently.
+func cloneNodes(nodes []*Node) []*Node {
+	if nodes == nil {
+		return nil
+	}
+	cloned := make([]*Node, len(nodes))
+	for i, node := range nodes {
+		cloned[i] = cloneNode(node)
+	}
+	return cloned
+}
+
+func cloneNode(node *Node) *Node {
+	if node == nil {
+		return nil
+	}
+	cloned := *node
+	cloned.Config = cloneConfig(node.Config)
+	return &cloned
+}
+
+func cloneConfig(config map[string]interface{}) map[string]interface{} {
+	if config == nil {
+		return nil
+	}
+	cloned := make(map[string]interface{}, len(config))
+	for key, value := range config {
+		cloned[key] = cloneConfigValue(value)
+	}
+	return cloned
+}
+
+func cloneConfigValue(value interface{}) interface{} {
+	switch typed := value.(type) {
+	case map[string]interface{}:
+		return cloneConfig(typed)
+	case []interface{}:
+		cloned := make([]interface{}, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneConfigValue(item)
+		}
+		return cloned
+	default:
+		return value
+	}
 }
 
 // 审计修复 (2026-08-29)：问题 6 - 使用深拷贝避免 slice 竞态条件。
@@ -1078,8 +1139,8 @@ func (m *Manager) updateNodeInCache(node *Node) {
 
 	// 更新缓存中的节点
 	for i, n := range newNodes {
-		if n.ID == node.ID {
-			newNodes[i] = node
+		if n != nil && n.ID == node.ID {
+			newNodes[i] = cloneNode(node)
 			break
 		}
 	}

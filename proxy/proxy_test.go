@@ -508,6 +508,7 @@ type fakeStore struct {
 	nodes        []*Node
 	listErr      error
 	subscription *Subscription
+	listCalls    int
 }
 
 func (f *fakeStore) GetSubscription(_ context.Context, id int) (*Subscription, error) {
@@ -539,6 +540,7 @@ func (f *fakeStore) CreateNode(_ context.Context, node *Node) error {
 }
 
 func (f *fakeStore) ListNodes(_ context.Context, subscriptionID *int) ([]*Node, error) {
+	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -637,6 +639,96 @@ type staticParser struct {
 
 func (p staticParser) Parse(context.Context, string) ([]*Node, error) {
 	return p.nodes, nil
+}
+
+func TestManagerTargetedSelectionKeepsSubscriptionCachesIndependent(t *testing.T) {
+	store := &fakeStore{}
+	mgr := NewManager(store, nil, nil)
+	mgr.setCacheWithTTL(1, []*Node{{
+		ID: 101, SubscriptionID: 1, Name: "subscription-one", Protocol: ProtocolHTTP,
+		Server: "one.local", Port: 8080, Status: "active", ResponseTimeMs: 10,
+	}}, time.Now())
+	mgr.setCacheWithTTL(2, []*Node{{
+		ID: 202, SubscriptionID: 2, Name: "subscription-two", Protocol: ProtocolHTTP,
+		Server: "two.local", Port: 8081, Status: "active", ResponseTimeMs: 10,
+	}}, time.Now())
+
+	one, err := mgr.SelectBestNode(context.Background(), intPtr(1))
+	if err != nil || one.ID != 101 {
+		t.Fatalf("subscription one selection = node=%v err=%v", one, err)
+	}
+	two, err := mgr.SelectBestNode(context.Background(), intPtr(2))
+	if err != nil || two.ID != 202 {
+		t.Fatalf("subscription two selection = node=%v err=%v", two, err)
+	}
+	if store.listCalls != 0 {
+		t.Fatalf("targeted cache selections caused %d store lookups, want 0", store.listCalls)
+	}
+	cachedOne, _, present := mgr.getNodesFromCacheWithTTL(1, time.Now())
+	if !present || len(cachedOne) != 1 || cachedOne[0].ID != 101 {
+		t.Fatalf("subscription one cache was replaced: present=%v nodes=%+v", present, cachedOne)
+	}
+}
+
+func TestManagerCacheUsesEmptySnapshotAsNegativeCache(t *testing.T) {
+	store := &fakeStore{}
+	mgr := NewManager(store, nil, nil)
+	const subscriptionID = 11
+	mgr.setCacheWithTTL(subscriptionID, []*Node{}, time.Now())
+
+	if _, err := mgr.SelectBestNode(context.Background(), intPtr(subscriptionID)); err == nil {
+		t.Fatal("empty cached subscription should have no selectable node")
+	}
+	if store.listCalls != 0 {
+		t.Fatalf("empty cached subscription caused %d store lookups, want 0", store.listCalls)
+	}
+}
+
+func TestManagerCacheReturnsDeepIsolatedNodeSnapshot(t *testing.T) {
+	mgr := NewManager(&fakeStore{}, nil, nil)
+	original := &Node{
+		ID:       1,
+		Protocol: ProtocolHTTP,
+		Server:   "bridge.local",
+		Port:     7897,
+		Status:   "active",
+		Config: map[string]interface{}{
+			"nested": map[string]interface{}{"token": "secret"},
+			"items":  []interface{}{map[string]interface{}{"value": "one"}},
+		},
+	}
+	mgr.setCacheWithTTL(3, []*Node{original}, time.Now())
+
+	snapshot, _, present := mgr.getNodesFromCacheWithTTL(3, time.Now())
+	if !present || len(snapshot) != 1 {
+		t.Fatalf("cache snapshot present=%v len=%d", present, len(snapshot))
+	}
+	snapshot[0].Server = "mutated.local"
+	snapshot[0].Config["nested"].(map[string]interface{})["token"] = "mutated"
+	snapshot[0].Config["items"].([]interface{})[0].(map[string]interface{})["value"] = "mutated"
+
+	again, _, _ := mgr.getNodesFromCacheWithTTL(3, time.Now())
+	if again[0].Server != "bridge.local" {
+		t.Fatalf("cached server mutated through snapshot: %q", again[0].Server)
+	}
+	if got := again[0].Config["nested"].(map[string]interface{})["token"]; got != "secret" {
+		t.Fatalf("nested config mutated through snapshot: %v", got)
+	}
+	if got := again[0].Config["items"].([]interface{})[0].(map[string]interface{})["value"]; got != "one" {
+		t.Fatalf("slice config mutated through snapshot: %v", got)
+	}
+}
+
+func TestHTTPHealthCheckerCheckConcurrentAcceptsNilContext(t *testing.T) {
+	checker := NewHTTPHealthChecker(100 * time.Millisecond)
+	out := checker.CheckConcurrent(nil, []*Node{{ID: 7, Protocol: "trojan", Server: "node", Port: 443}}, 1)
+	results := make([]HealthCheckResult, 0, 1)
+	for result := range out {
+		results = append(results, result)
+	}
+	if len(results) != 1 || results[0].OK || results[0].Err == nil {
+		t.Fatalf("nil-context result = %+v, want one failed result", results)
+	}
 }
 
 func TestTransportFactoryCachesPerSubscription(t *testing.T) {
