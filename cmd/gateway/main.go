@@ -677,6 +677,11 @@ func main() {
 	// the DB pool is available; the persisted hook applies live feature flags.
 	var sessionV2Writer *v2.SessionWriterV2
 	var sessionCacheV2ForShutdown *v2.SessionCacheV2
+	// sessionAggregateOutboxReaperForShutdown — audit-data-closure-C
+	// (2026-08-31): durable retry for session aggregate snapshot updates.
+	// Started after dbConn is ready; stopped before pools.CloseAll so its
+	// final tick can still reach the DB.
+	var sessionAggregateOutboxReaperForShutdown any
 	if cfg.RedisAddr != "" {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2192,6 +2197,19 @@ func main() {
 			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer, sessionDimWriter))
 			slog.Info("session V2 shadow write hook registered (live feature-gated; public.sessions public.session_turns public.session_bodies public.session_turn_logs + session_dim)")
 
+		}
+
+		// audit-data-closure-C (2026-08-31): start the durable retry reaper
+		// for session aggregate snapshot updates. The writer enqueues outbox
+		// rows in the turn+bodies transaction; the reaper drains them with
+		// FOR UPDATE SKIP LOCKED and exponential backoff so a failed
+		// aggregate update (kill -9, DB blip, advisory-lock timeout) is
+		// eventually recovered instead of being permanently off-by-one.
+		// Bound to the gateway lifecycle context (the shutdown goroutine
+		// cancels it via Stop before the pool is closed).
+		sessionAggregateOutboxReaperForShutdown = startSessionAggregateOutboxReaper(context.Background(), dbConn.Pool())
+		if sessionAggregateOutboxReaperForShutdown != nil {
+			slog.Info("session aggregate outbox reaper started (FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
 		}
 	}
 
@@ -6398,6 +6416,11 @@ func main() {
 		// new aggregate work is enqueued. stopSessionV2Writer is nil-safe and
 		// idempotent (Stop is sync.Once-guarded).
 		stopSessionV2Writer(sessionV2Writer)
+		// audit-data-closure-C (2026-08-31): drain the session aggregate
+		// outbox reaper. Must run AFTER telemetryClient.Stop (so no new
+		// outbox rows are enqueued) and BEFORE pools.CloseAll (so the final
+		// tick's DB transaction can still reach the server).
+		stopSessionAggregateOutboxReaper(sessionAggregateOutboxReaperForShutdown)
 		lim.Stop()
 		pools.Stop()
 		pools.CloseAll()

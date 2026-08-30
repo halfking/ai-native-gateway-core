@@ -26,7 +26,7 @@ import (
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
 )
 
-// initSessionV2Writer 创建 SessionWriterV2 及其所有子 writer。
+// initSessionV2Writer creates SessionWriterV2 and all of its sub-writers.
 //
 // 返回 nil 当 pool 为 nil 时（no DB mode），调用方负责 nil-check。
 //
@@ -49,6 +49,41 @@ func initSessionV2Writer(pool *pgxpool.Pool) *v2.SessionWriterV2 {
 	writer := v2.NewSessionWriterV2(turnWriter, bodiesWriter, aggregator, turnLogsWriter)
 	slog.Info("session V2 writer initialized (shadow hook remains feature-gated)")
 	return writer
+}
+
+// startSessionAggregateOutboxReaper boots the durable retry queue for
+// session aggregate snapshot updates (audit-data-closure-C, 2026-08-31).
+//
+// The writer enqueues an outbox row in the SAME transaction as the turn
+// + bodies insert; this reaper drains it with FOR UPDATE SKIP LOCKED and
+// exponential backoff. Returning *v2.SessionAggregateOutboxReaper (the
+// concrete return of StartSessionAggregateOutboxReaper) is nil when the
+// pool is unavailable. The returned handle is what stopSessionAggregateOutboxReaper
+// uses to drain in-flight ticks before the DB pool is closed.
+func startSessionAggregateOutboxReaper(ctx context.Context, pool *pgxpool.Pool) any {
+	if pool == nil {
+		slog.Warn("session aggregate outbox reaper: nil pool, reaper disabled")
+		return nil
+	}
+	aggregator := v2.NewSessionAggregator(pool)
+	return v2.StartSessionAggregateOutboxReaper(ctx, pool, aggregator)
+}
+
+// stopSessionAggregateOutboxReaper drains the reaper's in-flight tick.
+// Nil-safe. Idempotent (Stop closes doneCh at most once).
+//
+// MUST be called BEFORE pools.CloseAll() and AFTER telemetryClient.Stop so
+// that (a) the DB connection is still usable while the final tick finishes
+// and (b) no new outbox rows are being enqueued concurrently.
+func stopSessionAggregateOutboxReaper(reaper any) {
+	if reaper == nil {
+		return
+	}
+	type stopper interface{ Stop() }
+	if s, ok := reaper.(stopper); ok {
+		s.Stop()
+		slog.Info("session aggregate outbox reaper stopped")
+	}
 }
 
 // stopSessionV2Writer drains the writer's lifecycle-managed aggregate
