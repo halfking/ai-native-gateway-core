@@ -15,7 +15,7 @@
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 542 | `542_request_logs_token_band.sql` | `2ed9d3e8c5b555774a6bb97757c8be73fa32e45a420c8118af036e387b2d079b` | applied+verified |
+| 542 | `542_request_logs_token_band.sql` | `318c7f342afed326cf6f44fbe092b11c06d7a24acbc5cf902bd6ab53fb032ab3` | applied+verified |
 
 ## 2026-08-19T10:11:23Z — deploy 154 build_seq 1629 (b310b700)
 
@@ -101,31 +101,37 @@
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 614 | `614_session_bodies_hot.sql` | `c4923c95840de66578b751d321ea7a53823813d00fd487481c71949aa1084a3b` | applied+verified |
-| 615 | `615_session_bodies_hot_promote_function.sql` | `0c892f4764f0fec9b61414b6ea11d14158fc107dd272fdfe85c5c3cee6ff18c5` | applied+verified |
+| 614 | `614_session_bodies_hot.sql` | `c79502c50906b221db76d7b545074901c56a086277bc2927c66383ca72580d25` | applied+verified |
+| 615 | `615_session_bodies_hot_promote_function.sql` | `716520628861fda58b31af00db20a6acd115cd954ddafca61812b6da1456aa5d` | applied+verified |
 | 616 | `616_provider_error_details_unique_constraint.sql` | `aafd7ecfcf3e916d18b575d1a8c390d3be922720658be9597daecf33aad306d5` | applied+verified |
-| 617 | `617_candidate_failure_logs_hot_contract.sql` | `9ecc6dbb2e07bb704dfeb8b6b8880b0a1930083a637092084d7f7d8cc66acd98` | applied+verified |
+| 617 | `617_candidate_failure_logs_hot_contract.sql` | `b0bd2d72250614d9c1f17d6926c3ee1bbb0ec649c42d8b35d45993d981759d53` | applied+verified |
 | 618 | `618_request_journey_snapshot_receipts.sql` | `6d4d9f44cd931641363e61c2c72a50c90b606830645e5ea375dae62dc26f21fb` | applied+verified |
-| 619 | `619_session_turns_unified_view.sql` | `6dc542c85761925ded3ed0ffe3d4d0556e62bbd96eb5208a428c7bde4ff4199b` | applied+verified |
+| 619 | `619_session_turns_unified_view.sql` | `3da375593e6d1abddb70205a69fdd674127f90d86ee42f6b5cb3cde5adf9c835` | applied+verified |
 
 ## 2026-08-29T14:14:39Z — deploy 154 build_seq 1806 (5e94de42)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 620 | `620_provider_error_details_tenant_scope.sql` | `03dcbe61d75378720d537db953f5aaf284252ebf3ae8a2dc4a80110fd1cbfaba` | applied+verified |
+| 620 | `620_provider_error_details_tenant_scope.sql` | `0d8da54b0af09d656be88b962d9a9f9ba3ade1dde17f9655c46471dae570826d` | applied+verified |
 | 621 | `621_provider_error_details_cleanup_index.sql` | `df5873c19a7b4baefc06f28ef04c8e24b354cec3bbd7af5b153fa7c2b41daefe` | applied+verified |
-| 622 | `622_provider_error_aggregator_state.sql` | `b9b46c389f4345a56eb0f6d179db8dc96507f59d4f14d60b8c73a4a660ad1ba0` | applied+verified |
+| 622 | `622_provider_error_aggregator_state.sql` | `4fe5e0fa0cb73ccf69cc292e499be28a493a8b9fe447acb2d5e8e1501af1db3d` | applied+verified |
 
 ## 2026-08-29T17:14:05Z — deploy 245 build_seq 1811 (c50f0376)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 623 | `623_candidate_failure_logs_hot_tenant_scope.sql` | `45f90eb7703c12ab476fa3b0e25181f2e4c33fd87919ece59eb7628e79681073` | applied+verified |
+| 623 | `623_journal_snapshot_receipts_projection_base.sql` | `f37fd429f1d0c5ebba03821e2df743f863e06e08809fefa7fcc077bfd5f4ec27` | applied+verified |
 
 ## 2026-08-29T19:07:20Z — deploy 245 build_seq 1818 (e10c8425)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 624 | `624_candidate_failure_logs_promote_atomic_v2.sql` | `701601cbb4597af85f7b43ea3398beac0fe9e215be6be21c4385b5843ce27738` | applied+verified |
-| 625 | `625_session_bodies_unified_explicit.sql` | `27fe0b23d1be8940d77a0fd876eec17831f9310c66f6638ee2da12aa68c45390` | applied+verified |
+| 625 | `625_session_bodies_unified_explicit.sql` | `5058cf367b9742d5cf5ddb9757e3879382743f0149f380ebfca8692900634a48` | applied+verified |
+
+## 2026-08-31T00:00:00Z — deploy 154 build_seq 1819 (manual fix)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 626 | `626_session_bodies_hot_promote_reconcile.sql` | `9139b773b2f18cc7d1113f6c363b0afeba1db3f3229de9c3d8447a32712689a3` | applied+verified |
 
