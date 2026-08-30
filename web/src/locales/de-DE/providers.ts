@@ -56,6 +56,7 @@ export default {
       performanceScore: 'Leistung',
       health: 'Systemzustand',
       status: 'Status',
+      actions: "Aktionen"
     },
     channel: {
       official: 'Original',
@@ -88,6 +89,8 @@ export default {
     empty: 'Noch keine Anbieter konfiguriert',
     manualDisabledBadge: 'Deaktiviert',
     manualDisabledTooltip: 'Dieser Anbieter wurde vom Administrator manuell deaktiviert',
+    deleteProviderBtn: "Löschen",
+    deleteProviderTooltip: "Diesen Anbieter soft-löschen. Der Anbieter und alle seine Anmeldedaten werden aus allen Listen und dem Routing entfernt. Nicht rückgängig machbar.",
   },
   create: {
     title: 'Anbieter hinzufügen',
@@ -213,7 +216,7 @@ export default {
       checkBtn: 'Prüfen',
       checkTooltip: 'Eine Zustandsprüfung für diese Anmeldedaten ausführen',
       diagnose: 'Diagnose',
-      disable: 'Deaktivieren',
+      disable: 'Löschen',
     },
     addDialog: {
       title: 'Anmeldedaten hinzufügen — {name}',
@@ -323,5 +326,14 @@ export default {
     table: {
       actions: 'Actions',
     },
+  },
+  // 2026-08-31: provider soft delete
+  providerDelete: {
+    confirm: "Diesen Anbieter löschen? Alle zugehörigen Anmeldedaten werden ebenfalls als gelöscht markiert und alle zugehörigen Modellrouten stoppen sofort. Nicht rückgängig machbar.",
+    failed: "Löschen des Anbieters fehlgeschlagen",
+    success: "Anbieter gelöscht",
+  },
+  toast: {
+    providerDeleted: "Anbieter gelöscht",
   },
 }

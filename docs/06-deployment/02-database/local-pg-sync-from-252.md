@@ -184,6 +184,20 @@ _usage_ledger_2026_07_col_archived
 
 **答**: Navicat 走 TCP，端口 5432 仍然开放。使用 `llm_gateway` 以及 envs loader 提供的当前凭据重新登录；不要把密码复制到文档或连接备注。
 
+### Q5: 把本地 feature 表 DDL 灌到 252 时报 `columnar_insert_only_parents() does not exist`？
+
+**答**: `pg_dump --schema-only` 会在导出 SQL 里写 `SELECT pg_catalog.set_config('search_path', '', false)`（安全考虑）。252 上有事件触发器 `enforce_columnar_trigger`，每当执行表 DDL 就会触发，并调用未加 schema 限定的函数 `columnar_insert_only_parents()`；`search_path=''` 下找不到该函数，于是**每张 CREATE/DROP TABLE 都失败**。
+
+修复：导出后先剔除这一行再执行（dump 里所有对象都已用 `public.` 显式限定，剔除无副作用）：
+
+```bash
+grep -vE "set_config\('search_path', '', false\)" feature.sql > feature.fixed.sql
+PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway -d llm_gateway \
+  -v ON_ERROR_STOP=1 -f feature.fixed.sql
+```
+
+另外注意：`pg_dump -t` 每张表要单独写一个 `-t`（`-t "a b c"` 会被当成单个表名而报 "too many command-line arguments"）；用 bash 数组 `"${args[@]}"` 传给 `docker exec ... pg_dump` 在 zsh 下也会塌缩，建议循环逐表 dump 再追加到文件。月度分区（如 `request_logs_bodies_2026_10`）命中 hot 表过滤，仅 252 有、本地无，属**预期差异**，不必回灌。
+
 ---
 
 ## 六、相关脚本与文档
@@ -192,6 +206,7 @@ _usage_ledger_2026_07_col_archived
 |------|------|
 | `scripts/pg-table-copy.sh` | 252 → local 同步入口（含 hot 表过滤、PGOPTIONS 透传） |
 | `scripts/local-dev/recreate-llm-gateway-pg.sh` | 用 envs 252 密码重建 docker 容器 |
+| `scripts/local-dev/verify-db-consistency.sh` | 252 ↔ local 表清单 + 列级结构一致性校验；含 gated `--reconcile` 回灌模式 |
 | `configs/env-252.sh` | 252 端连接配置 |
 | `configs/env-local.sh` | local 端连接配置 |
 | `docs/archive/process/changelogs/2026-08/2026-08-26-llm-gateway-pg-sync-from-252.md` | 同步执行 + 验证报告 |
@@ -203,3 +218,4 @@ _usage_ledger_2026_07_col_archived
 | 日期       | 版本 | 说明 |
 |------------|------|------|
 | 2026-08-27 | 1.0  | 初版（从 252 → local 完整同步流程 + `_` 前缀表规约 + recreate 脚本说明）|
+| 2026-08-31 | 1.1  | 新增 `verify-db-consistency.sh`（一致性校验 + 252←local feature 表回灌）；补充 `pg_dump` search_path 触发 columnar 事件触发器、`-t` 逐表、月度分区预期差异等踩坑点 |

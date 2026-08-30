@@ -57,6 +57,7 @@ export default {
       performanceScore: '性能',
       health: 'システム健全性',
       status: 'ステータス',
+      actions: "操作"
     },
     channel: {
       official: '公式',
@@ -89,6 +90,8 @@ export default {
     empty: 'プロバイダーがまだ設定されていません',
     manualDisabledBadge: '無効',
     manualDisabledTooltip: 'このプロバイダーは管理者によって手動で無効化されています',
+    deleteProviderBtn: "削除",
+    deleteProviderTooltip: "このプロバイダーをソフト削除します。削除後、このプロバイダーとそのすべての認証情報はすべてのリストとルーティングから除外され、元に戻せません。",
   },
   create: {
     title: 'プロバイダーを追加',
@@ -214,7 +217,7 @@ export default {
       checkBtn: 'チェック',
       checkTooltip: 'この認証情報に対してヘルスチェックを実行',
       diagnose: '診断',
-      disable: '無効化',
+      disable: '削除',
     },
     addDialog: {
       title: '認証情報を追加 — {name}',
@@ -324,5 +327,14 @@ export default {
     table: {
       actions: 'Actions',
     },
+  },
+  // 2026-08-31: provider soft delete
+  providerDelete: {
+    confirm: "このプロバイダーを削除しますか？配下のすべての認証情報も削除済みとなり、関連するモデルルートは直ちに停止します。この操作は取り消せません。",
+    failed: "プロバイダーの削除に失敗しました",
+    success: "プロバイダーを削除しました",
+  },
+  toast: {
+    providerDeleted: "プロバイダーを削除しました",
   },
 }

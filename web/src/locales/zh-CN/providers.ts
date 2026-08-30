@@ -59,6 +59,8 @@ export default {
       performanceScore: '性能',
       health: '系统健康',
       status: '状态',
+      // 2026-08-31: 行级供应商操作列
+      actions: '操作',
     },
     channel: {
       official: '原厂',
@@ -91,6 +93,9 @@ export default {
     empty: '尚未配置任何提供商',
     manualDisabledBadge: '已禁用',
     manualDisabledTooltip: '此供应商已被管理员手动禁用，所有路由将跳过',
+    // 2026-08-31: 行级供应商删除按钮
+    deleteProviderBtn: '删除',
+    deleteProviderTooltip: '软删除该供应商。删除后该供应商及其全部凭据将不再出现在任何列表与路由中，且无法撤销。',
   },
   create: {
     title: '添加供应商',
@@ -216,7 +221,8 @@ export default {
       checkBtn: '检测',
       checkTooltip: '对此凭据执行一次健康检测',
       diagnose: '诊断',
-      disable: '停用',
+      // 2026-08-31: 凭据删除为终态（status='deleted'），不可撤销。
+      disable: '删除',
     },
     addDialog: {
       title: '添加凭据 — {name}',
@@ -234,12 +240,24 @@ export default {
     errors: {
       apiKeyRequired: '请输入 API Key',
       addFailed: '添加失败',
-      deleteConfirm: '确认停用该凭据？',
+      // 2026-08-31: 凭据删除为终态（status='deleted'），不可恢复。
+      deleteConfirm: '确认删除该凭据？删除后该凭据及其绑定的所有路由将不再出现在任何列表中，且无法撤销。',
       deleteFailed: '删除失败',
       loadFailed: '凭据加载失败',
       saveFailed: '保存凭据失败',
       toggleFailed: '操作失败',
     },
+  },
+  // 2026-08-31: 供应商软删除（DELETE /api/providers/{id}）—— 行保留
+  // 在表里但 deleted_at 非空，所有列表/路由表均不再返回。
+  providerDelete: {
+    confirm: '确认删除该供应商？该供应商下的所有凭据将一并标记为已删除，所有相关模型路由将立即停止。该操作不可撤销。',
+    failed: '供应商删除失败',
+    success: '供应商已删除',
+  },
+  // 2026-08-31: 供应商已删除 toast。
+  toast: {
+    providerDeleted: '供应商已删除',
   },
   check: {
     providerStarted: '检测已启动',

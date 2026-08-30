@@ -47,7 +47,10 @@ func isCredentialLifecycleStatus(value string) bool {
 }
 
 func setCredentialLifecycleStatus(ctx context.Context, db dbExec, providerID, credID int, status string) (bool, error) {
-	tag, err := db.Exec(ctx, `UPDATE credentials SET lifecycle_status = $1 WHERE id = $2 AND provider_id = $3`, status, credID, providerID)
+	// 2026-08-31: status='deleted' 是终态，lifecycle 通道不允许再翻回
+	// active（UI 抽屉的 lifecycle 切换会走这里，不拦会削弱删除语义；
+	// status 过滤本身仍兜底，这里是双保险）。
+	tag, err := db.Exec(ctx, `UPDATE credentials SET lifecycle_status = $1 WHERE id = $2 AND provider_id = $3 AND status <> 'deleted'`, status, credID, providerID)
 	if err != nil {
 		return false, err
 	}
@@ -59,9 +62,11 @@ func (h *Handler) revealCredential(w http.ResponseWriter, r *http.Request, provi
 	defer cancel()
 
 	var ciphertext []byte
+	// 2026-08-31: 已删（deleted）凭据与已停用（disabled）一样不允许
+	// reveal —— 删除是终态，明文密钥不应再可被取出。
 	err := h.db.QueryRow(ctx, `
 		SELECT secret_ciphertext FROM credentials
-		WHERE id = $1 AND provider_id = $2 AND status <> 'disabled'
+		WHERE id = $1 AND provider_id = $2 AND status NOT IN ('disabled', 'deleted')
 	`, credID, providerID).Scan(&ciphertext)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "credential not found")
@@ -319,6 +324,8 @@ func (h *Handler) batchRecoverCredentials(w http.ResponseWriter, r *http.Request
 		WHERE provider_id = $1
 		  AND availability_state IN ('cooling','unreachable')
 		  AND lifecycle_status = 'active'
+		  -- 2026-08-31: 'deleted' 终态凭据不参与批量恢复
+		  AND status = 'active'
 	`, providerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "credential recovery failed")
@@ -334,6 +341,8 @@ func (h *Handler) batchRecoverCredentials(w http.ResponseWriter, r *http.Request
 		    SELECT id FROM credentials
 		    WHERE provider_id = $1 AND availability_state = 'ready'
 		      AND lifecycle_status = 'active'
+		      -- 2026-08-31: 已删凭据的 offer 不得被批量恢复复活
+		      AND status = 'active'
 		) AND unavailable_reason LIKE 'auto_%%'
 	`, providerID)
 	recoveredOffers := 0

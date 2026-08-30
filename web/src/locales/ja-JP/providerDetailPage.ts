@@ -62,4 +62,9 @@ export default {
     failureCount: '失敗数',
     totalTokens: '総トークン数',
   },
+  // 2026-08-31: provider soft delete (terminal)
+  deleteBtn: "プロバイダーを削除",
+  deleteTitle: "このプロバイダーをソフト削除します。プロバイダーとそのすべての認証情報はすべてのリストとルーティングから除外され、元に戻せません。",
+  deleteConfirm: "プロバイダー「{name}」を削除しますか？配下のすべての認証情報も削除済みとなり、関連するモデルルートは直ちに停止します。この操作は取り消せません。",
+  deleteFailed: "プロバイダーの削除に失敗しました",
 }

@@ -62,4 +62,9 @@ export default {
     failureCount: 'Failures',
     totalTokens: 'Total tokens',
   },
+  // 2026-08-31: provider soft delete (terminal)
+  deleteBtn: "حذف المزوّد",
+  deleteTitle: "حذف (حذف ناعم) هذا المزوّد. سيتم استبعاد المزوّد وجميع بيانات اعتماده من جميع القوائم والتوجيه ولا يمكن التراجع عن ذلك.",
+  deleteConfirm: 'تأكيد حذف المزوّد "{name}"؟ سيتم تعليم جميع بيانات اعتماده كمحذوفة وستتوقف جميع مسارات النماذج المرتبطة فورًا. لا يمكن التراجع عن هذا الإجراء.',
+  deleteFailed: "فشل حذف المزوّد",
 }

@@ -60,4 +60,9 @@ export default {
     failureCount: 'Failures',
     totalTokens: 'Total tokens',
   },
+  // 2026-08-31: provider soft delete (terminal)
+  deleteBtn: "Eliminar proveedor",
+  deleteTitle: "Eliminar (borrado suave) este proveedor. El proveedor y todas sus credenciales se retirarán de todas las listas y del enrutado. No se puede deshacer.",
+  deleteConfirm: '¿Eliminar el proveedor "{name}"? Todas sus credenciales se marcarán como eliminadas y todas las rutas de modelos relacionadas se detendrán de inmediato. No se puede deshacer.',
+  deleteFailed: "Error al eliminar el proveedor",
 }
