@@ -390,6 +390,31 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		return fmt.Errorf("write bodies: %w", err)
 	}
 
+	// audit-data-closure-C (2026-08-31): enqueue the aggregate snapshot update
+	// in the SAME transaction as the turn + bodies write so its durability
+	// matches the source-of-truth. The reaper (session_aggregate_outbox_reaper)
+	// drains the outbox with FOR UPDATE SKIP LOCKED and exponential backoff,
+	// closing the loop the original 3-attempt in-memory retry could not
+	// guarantee. partition_date uses the request's calendar date (UTC) so the
+	// unique key matches the session_turns partition the row will reconcile.
+	outboxUpdate := SessionUpdate{
+		SessionID:           req.SessionID,
+		TenantID:            req.TenantID,
+		RequestID:           req.RequestID,
+		LastTurnNo:          turnNo,
+		LastRequestSummary:  summarizeMessages(requestDelta),
+		LastResponseSummary: summarizeMessages(req.ResponseBody),
+		LastModel:           req.ClientModel,
+		LastProvider:        req.ProviderID,
+		TurnIncrement:       1,
+		TokensIncrement:     req.PromptTokens + req.CompletionTokens,
+		CostIncrement:       req.CostUSD,
+		UpdatedAt:           req.Timestamp,
+	}
+	if err := EnqueueSessionAggregateOutbox(lockCtx, tx, outboxUpdate, calendarDate(req.Timestamp)); err != nil {
+		return fmt.Errorf("enqueue session aggregate outbox: %w", err)
+	}
+
 	if err := tx.Commit(lockCtx); err != nil {
 		return fmt.Errorf("commit tx: %w", err)
 	}
@@ -432,6 +457,14 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// (spec §6.3). The goroutine is tracked by aggWg so Stop can await it,
 	// and bound to lifecycleCtx so a blocked aggregate is cancelled on
 	// shutdown instead of leaking.
+	//
+	// audit-data-closure-C (2026-08-31): a durable copy of this update is
+	// already enqueued in session_aggregate_outbox (see step above) inside
+	// the same transaction as the turn+bodies write. The reaper guarantees
+	// eventual delivery; this in-process call is the fast path so the
+	// snapshot is current within the same request lifecycle whenever the DB
+	// cooperates. On failure the outbox row is the fallback, so this
+	// goroutine no longer needs to be the only line of defense.
 	if w.sessionAggregator != nil {
 		w.ensureLifecycle()
 		w.lifecycleMu.Lock()

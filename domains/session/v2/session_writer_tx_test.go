@@ -112,6 +112,9 @@ func expectListAllBodiesEmpty(mock pgxmock.PgxPoolIface) {
 		}))
 }
 
+// expectSessionLock mocks the pg_advisory_xact_lock call so the regexp
+// matcher doesn't trip on either the main session lock or the per-request
+// lock (both call the same SQL fragment in production).
 func expectSessionLock(mock pgxmock.PgxPoolIface) {
 	mock.ExpectExec("session_turns_advisory_lock_key").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
@@ -122,6 +125,16 @@ func expectRequestLock(mock pgxmock.PgxPoolIface) {
 	mock.ExpectExec("session_turns_advisory_lock_key").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+}
+
+// expectOutboxEnqueue mocks the audit-data-closure-C outbox INSERT that the
+// writer emits in the same transaction as turn+bodies. The payload is JSONB
+// so we use AnyArg; the contract pin for the JSON shape lives in
+// session_aggregate_outbox_reaper_test.go (Encode/Decode round-trip).
+func expectOutboxEnqueue(mock pgxmock.PgxPoolIface) {
+	mock.ExpectExec("INSERT INTO session_aggregate_outbox").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 }
 
 // sampleRequest builds a minimal ProcessedRequest that is enough to drive the
@@ -179,6 +192,10 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(bodyArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	// audit-data-closure-C: outbox row enqueued in the same tx as the turn
+	// and bodies insert, so a future reaper (session_aggregate_outbox_reaper)
+	// can replay the snapshot update even if the fast-path goroutine dies.
+	expectOutboxEnqueue(mock)
 	mock.ExpectCommit()
 
 	require.NoError(t, w.Write(context.Background(), req))
@@ -253,6 +270,9 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(11)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	// 4b. audit-data-closure-C: outbox enqueue in the same tx.
+	expectOutboxEnqueue(mock)
 
 	// 5. Commit.
 	mock.ExpectCommit()
@@ -351,6 +371,8 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(11)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	// audit-data-closure-C: outbox enqueue in the same tx.
+	expectOutboxEnqueue(mock)
 	mock.ExpectCommit()
 
 	require.NoError(t, w.Write(context.Background(), sampleRequest()))
