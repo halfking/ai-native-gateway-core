@@ -1,8 +1,14 @@
 package modelcatalog
 
 import (
+	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 func TestPreserveManualDisable(t *testing.T) {
@@ -181,4 +187,190 @@ func TestUpsertSQL_AdminProtectedGuard(t *testing.T) {
 	if tail != "" {
 		t.Errorf("admin_protected guard must be the last clause of the ON CONFLICT branch, got trailing SQL: %q", tail)
 	}
+}
+
+// TestAutoFillDefaultProbeModel_SourceLabel pins the constant that the
+// daily DefaultProbePicker repick loop uses to recognise refresh-time
+// auto-fills. If this constant changes, the corresponding
+// DefaultProbePicker WHERE clause must change too — see
+// bg/default_probe_picker.go line 80.
+func TestAutoFillDefaultProbeModel_SourceLabel(t *testing.T) {
+	if DefaultProbeModelSourceRefreshLatest != "auto:refresh_latest" {
+		t.Errorf("DefaultProbeModelSourceRefreshLatest = %q, want %q (label is load-bearing for DefaultProbePicker overwrite rules)",
+			DefaultProbeModelSourceRefreshLatest, "auto:refresh_latest")
+	}
+}
+
+// TestAutoFillDefaultProbeModel_SQLContract pins the 2026-08-31 hzx-2
+// round-4 + round-6 SQL contract. If any future migration drops one of
+// these guarantees the auto-fill hook will silently misbehave — most
+// notably the provider-facing pick value (round-6: standardized_name
+// would 404 probes on NIM-style prefixed vendors), the "newest
+// created_at DESC" ordering (newest model wins), the "skip
+// admin_protected / unavailable cmb / pm" guards, and the
+// "default_probe_model IS NULL/empty AND source <> 'manual'" eligibility
+// predicate. The test is structural (string-match against the embedded
+// SQL inside AutoFillDefaultProbeModel) so it fails loudly when the SQL
+// regresses, even if no integration test happens to cover the path.
+func TestAutoFillDefaultProbeModel_SQLContract(t *testing.T) {
+	src, err := readSourceForTest("AutoFillDefaultProbeModel")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+
+	required := []string{
+		// Round-6: pick the PROVIDER-facing name. default_probe_model is
+		// sent verbatim to the upstream by the probe chat request, so a
+		// standardized_name value 404s on vendors whose raw name carries
+		// a prefix ("z-ai/glm-5.2"). Must match bg/shared_pick.go.
+		"COALESCE(pm.outbound_model_name, pm.raw_model_name)",
+		// And must NOT fall back to standardized_name anywhere in the pick.
+		// Pick target: most-recently-created routable model under this credential.
+		"ORDER BY pm.created_at DESC",
+		// Skip cmb rows the operator explicitly disabled / protected.
+		"COALESCE(cmb.available, FALSE) = TRUE",
+		"COALESCE(cmb.admin_protected, FALSE) = FALSE",
+		// Skip pm rows that are themselves unavailable (e.g. retired model).
+		"COALESCE(pm.available, FALSE) = TRUE",
+		// Only write when the operator never picked a value AND the source
+		// marker is not 'manual' (defensive — even if the model column is
+		// empty, never stomp a manual source marker).
+		"c.default_probe_model IS NULL OR c.default_probe_model = ''",
+		"COALESCE(c.default_probe_model_source, '') <> 'manual'",
+		// Stamp the source label so daily repicks can recognise the row.
+		"DefaultProbeModelSourceRefreshLatest",
+	}
+	for _, r := range required {
+		if !strings.Contains(body, r) {
+			t.Errorf("AutoFillDefaultProbeModel SQL is missing %q", r)
+		}
+	}
+	if strings.Contains(body, "sub.standardized_name") {
+		t.Error("AutoFillDefaultProbeModel must not write standardized_name — the probe sends the stored value verbatim to the upstream (round-6 audit)")
+	}
+	// Sanity: must be UPDATE ... RETURNING so the caller learns what was picked.
+	if !strings.Contains(body, "RETURNING") {
+		t.Error("AutoFillDefaultProbeModel must use UPDATE ... RETURNING so the caller can log the picked model")
+	}
+}
+
+// TestAutoFillDefaultProbeModel_NoRowsIsNotAnError verifies the helper
+// treats pgx.ErrNoRows as "no eligible pick" rather than a DB error.
+// The 0-row outcome covers three real cases:
+//   - default_probe_model already non-empty (operator set it),
+//   - default_probe_model_source = 'manual' (operator pinned it),
+//   - cmb has no routable binding yet (transient state right after
+//     credential creation, before the first refresh completes).
+// All three are normal operating conditions and must not surface as
+// errors to the discovery / admin refresh callers.
+func TestAutoFillDefaultProbeModel_NoRowsIsNotAnError(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	const credID = 42
+	mock.ExpectQuery("UPDATE credentials").
+		WithArgs(credID, DefaultProbeModelSourceRefreshLatest).
+		WillReturnError(pgx.ErrNoRows)
+
+	picked, err := AutoFillDefaultProbeModel(context.Background(), mock, credID)
+	if err != nil {
+		t.Fatalf("AutoFillDefaultProbeModel: unexpected error for pgx.ErrNoRows: %v", err)
+	}
+	if picked != "" {
+		t.Errorf("AutoFillDefaultProbeModel returned %q, want empty string when no eligible pick", picked)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestAutoFillDefaultProbeModel_DBErrorPropagates ensures real DB
+// failures (connection lost, schema drift, etc.) DO surface so callers
+// can log them. Auto-fill is best-effort but a silent failure is worse
+// than a logged one — operators need to know the hook is not firing.
+func TestAutoFillDefaultProbeModel_DBErrorPropagates(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	const credID = 99
+	dbErr := errors.New("connection reset by peer")
+	mock.ExpectQuery("UPDATE credentials").
+		WithArgs(credID, DefaultProbeModelSourceRefreshLatest).
+		WillReturnError(dbErr)
+
+	picked, err := AutoFillDefaultProbeModel(context.Background(), mock, credID)
+	if err == nil {
+		t.Fatal("AutoFillDefaultProbeModel: expected DB error to propagate, got nil")
+	}
+	if !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("AutoFillDefaultProbeModel error = %v, want one wrapping the original DB error", err)
+	}
+	if picked != "" {
+		t.Errorf("AutoFillDefaultProbeModel returned %q, want empty string on error", picked)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestAutoFillDefaultProbeModel_RejectsNonPositiveCredID guards against
+// the helper writing to row 0 / -1 when called with a stale credID.
+// Defensive — discovery / admin paths always pass a real ID, but
+// future callers might not.
+func TestAutoFillDefaultProbeModel_RejectsNonPositiveCredID(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	// No mock expectations — the helper must short-circuit before
+	// hitting the DB on a non-positive credID.
+	for _, id := range []int{0, -1, -42} {
+		picked, err := AutoFillDefaultProbeModel(context.Background(), mock, id)
+		if err != nil {
+			t.Errorf("AutoFillDefaultProbeModel(%d): unexpected error %v", id, err)
+		}
+		if picked != "" {
+			t.Errorf("AutoFillDefaultProbeModel(%d) returned %q, want empty string", id, picked)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("non-positive credID must not issue any DB queries, got: %v", err)
+	}
+}
+
+// readSourceForTest extracts the source bytes for a function whose body
+// is in the same file. Used by TestAutoFillDefaultProbeModel_SQLContract
+// so the test fails loudly if the SQL shape regresses — we mirror the
+// "test against the source" pattern used by the existing
+// TestUpsertSQL_* tests in this file (see e.g.
+// TestUpsertSQL_AdminProtectedGuard).
+func readSourceForTest(funcName string) ([]byte, error) {
+	const file = "upsert.go"
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Split(string(data), "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.Contains(line, "func AutoFillDefaultProbeModel(") {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		// Fallback: read the whole file. We don't want the test to depend
+		// on a fragile line-number grep — the SQL contract is what matters.
+		return data, nil
+	}
+	return []byte(strings.Join(lines[start:], "\n")), nil
 }

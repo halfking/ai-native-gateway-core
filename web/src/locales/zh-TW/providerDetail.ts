@@ -133,6 +133,14 @@ export default {
     probeModelUnset: "未設定",
     probeSetManual: "手工設定",
     probeRepick: "立即重選",
+    // 2026-08-31 hzx-2 round-5: 內嵌挑選器取代舊版原生 prompt()。當憑據
+    // 含有可路由綁定時用 <select>；cmb 為空時才允許手動輸入。
+    probeSave: "儲存",
+    probeClear: "清空",
+    probeModelNoneOption: "（未設定）",
+    probeModelManualPlaceholder: "此憑據下無模型，請手動輸入模型名稱…",
+    probeModelNoBindingsHint: "此憑據下沒有可路由的模型綁定；可手動輸入或先到「模型」頁籤刷新列表",
+    probeLoadingModels: "載入模型列表…",
     probeRunning: "正在探活…",
     probeCheckNow: "立即偵測",
     manualDisabledSuffix: "已停用",
@@ -184,6 +192,8 @@ export default {
       manual: "🔒 手工",
       autoRequestLog: "📊 請求記錄",
       autoDomestic: "🎲 國內隨機",
+      autoFeatured: "⭐ 精選模型",
+      autoRefreshLatest: "🆕 最新模型自動填",
       cleared: "— 已清"
     },
     resetAvailConfirm: "重設 {name} 的可用性狀態？",

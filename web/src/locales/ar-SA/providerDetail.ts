@@ -133,6 +133,15 @@ export default {
     probeModelUnset: "غير معين",
     probeSetManual: "تعيين يدوي",
     probeRepick: "إعادة الاختيار فورًا",
+    // 2026-08-31 hzx-2 round-5: استبدال prompt() الأصلي بأداة اختيار
+    // داخلية تستمد من روابط cmb القابلة للتوجيه، ويُسمح بالإدخال
+    // اليدوي فقط عندما تكون cmb فارغة.
+    probeSave: "حفظ",
+    probeClear: "مسح",
+    probeModelNoneOption: "(غير معين)",
+    probeModelManualPlaceholder: "لا توجد روابط لهذا الاعتماد؛ أدخل اسم النموذج يدويًا…",
+    probeModelNoBindingsHint: "لا توجد روابط قابلة للتوجيه. افتح علامة تبويب النماذج للتحديث، أو أدخل اسمًا يدويًا.",
+    probeLoadingModels: "جاري تحميل قائمة النماذج…",
     probeRunning: "جاري الفحص…",
     probeCheckNow: "فحص فوري",
     manualDisabledSuffix: "معطّل",
@@ -184,6 +193,8 @@ export default {
       manual: "🔒 يدوي",
       autoRequestLog: "📊 سجل الطلبات",
       autoDomestic: "🎲 عشوائي محلي",
+      autoFeatured: "⭐ نموذج مميز",
+      autoRefreshLatest: "🆕 أحدث نموذج تلقائي",
       cleared: "— تم المسح"
     },
     resetAvailConfirm: "إعادة تعيين حالة التوفر لـ {name}؟",
