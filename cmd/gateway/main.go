@@ -314,6 +314,9 @@ func main() {
 			slog.Info("config: loaded YAML file", "path", configFile)
 		}
 	}
+	if err := cfg.ValidateRuntimeRole(); err != nil {
+		panic(fmt.Sprintf("runtime role validation failed: %v", err))
+	}
 
 	// V2-P8: 主读切换标记 — only the banner, the routing switch itself is
 	// a follow-up PR so this commit stays a pure observable change.
@@ -346,7 +349,7 @@ func main() {
 
 	cfgStore := config.NewStore(cfg)
 	streaming.SetConfigStore(cfgStore)
-	slog.Info("gateway starting", "listen", cfg.Listen, "log_level", cfg.LogLevel)
+	slog.Info("gateway starting", "listen", cfg.Listen, "log_level", cfg.LogLevel, "runtime_role", cfg.RuntimeRole)
 
 	// ── Dependencies ──────────────────────────────────────────────────────
 	dbConn, err := db.Open(context.Background(), cfg.DatabaseURL)
@@ -624,6 +627,7 @@ func main() {
 		dbPinger = dbConn.Pool()
 	}
 	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy(), dbPinger, redisPinger)
+	healthHandler.SetRuntimeIdentity(cfg.RuntimeRole, cfg.Listen)
 
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)
@@ -2400,7 +2404,11 @@ func main() {
 	}
 
 	// ── Model Discovery ─────────────────────────────────────────────────
-	bgDataPlaneOnly := strings.EqualFold(cfg.BGMode, "data-plane")
+	// A traffic-only blue-green candidate must serve requests and readiness
+	// checks without claiming leases or starting background writers. Reuse
+	// the existing data-plane gates so this role remains compatible with
+	// the established worker ownership model.
+	bgDataPlaneOnly := strings.EqualFold(cfg.BGMode, "data-plane") || cfg.IsTrafficOnly()
 	var discoverySvc *discovery.Service
 	var fernetKey []byte
 	var keyring *secret.Keyring
@@ -3133,7 +3141,7 @@ func main() {
 	// "undefined: apihubSvc" scoping bug at line ~1346.
 	var apihubSvc *apihub.Service
 
-	if dbConn != nil && dbConn.Enabled() {
+	if dbConn != nil && dbConn.Enabled() && !cfg.IsTrafficOnly() {
 		slog.Info("CHECKPOINT: inside bg services enabled block")
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		// 会话优化 v4 (T5/R4.4): 36h 成功回看扫描 — 探测结果以 Recover(30)

@@ -8,14 +8,14 @@ case "$TARGET" in
   154)
     SSH_HOST="${LLM_GATEWAY_154_SSH:-root@47.97.111.154}"
     ENV_FILE="/etc/llm-gateway-go/env"
-    SERVICE_NAME="${LLM_GATEWAY_154_SERVICE:-llm-gateway-go}"
-    HEALTH_URL="http://127.0.0.1:8781/healthz"
+    SERVICE_NAME="${LLM_GATEWAY_ADMIN_SYNC_SERVICE:-${LLM_GATEWAY_154_SERVICE:-llm-gateway-go.service}}"
+    HEALTH_URL="http://127.0.0.1:${LLM_GATEWAY_ADMIN_SYNC_PORT:-8781}/healthz"
     ;;
   245)
     SSH_HOST="${LLM_GATEWAY_245_SSH:-root@8.136.114.245}"
     ENV_FILE="/opt/llm-gateway-go/.env"
-    SERVICE_NAME="${LLM_GATEWAY_245_SERVICE:-llmgo-245}"
-    HEALTH_URL="http://127.0.0.1:8781/healthz"
+    SERVICE_NAME="${LLM_GATEWAY_ADMIN_SYNC_SERVICE:-${LLM_GATEWAY_245_SERVICE:-llmgo-245.service}}"
+    HEALTH_URL="http://127.0.0.1:${LLM_GATEWAY_ADMIN_SYNC_PORT:-8781}/healthz"
     ;;
   *)
     echo "用法: $0 <154|245>" >&2
@@ -72,7 +72,7 @@ ssh_run "
 }
 
 echo "[sync-admin] 远端 pgcrypto 更新 users.password_hash ($TARGET)..."
-ssh_run "ENV_FILE='$ENV_FILE' TARGET='$TARGET' bash -s" <<'REMOTE'
+ssh_run "ENV_FILE='$ENV_FILE' TARGET='$TARGET' SYNC_PORT='${LLM_GATEWAY_ADMIN_SYNC_PORT:-8781}' bash -s" <<'REMOTE'
 set -euo pipefail
 python3 <<'PY'
 import json, os, subprocess, sys, urllib.error, urllib.request, uuid
@@ -108,7 +108,7 @@ if r.returncode != 0:
 
 body = json.dumps({'username': user, 'password': pw}).encode()
 req = urllib.request.Request(
-    'http://127.0.0.1:8781/api/auth/token',
+    'http://127.0.0.1:' + os.environ.get('SYNC_PORT', '8781') + '/api/auth/token',
     data=body,
     headers={'Content-Type': 'application/json'},
     method='POST',

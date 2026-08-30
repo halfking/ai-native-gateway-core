@@ -78,7 +78,13 @@ func TestHealthHandlerVersionDoesNotRequireDependencies(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("decode version response: %v", err)
 	}
-	for _, key := range []string{"version", "git_sha", "build_seq", "build_date", "module"} {
+	h.SetRuntimeIdentity("traffic-only", ":8782")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if !strings.Contains(w.Body.String(), `"runtime_role":"traffic-only"`) || !strings.Contains(w.Body.String(), `"listen":":8782"`) {
+		t.Fatalf("version response missing runtime identity: %s", w.Body.String())
+	}
+	for _, key := range []string{"version", "git_sha", "build_seq", "build_date", "module", "runtime_role", "listen"} {
 		if _, ok := body[key]; !ok {
 			t.Fatalf("version response missing %q: %s", key, w.Body.String())
 		}
