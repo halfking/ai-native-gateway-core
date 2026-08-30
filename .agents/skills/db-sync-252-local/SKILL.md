@@ -71,8 +71,10 @@ kill $(lsof -tiTCP:15432 -sTCP:LISTEN)
 
 ### Verify consistency (script)
 
-`scripts/local-dev/verify-db-consistency.sh` wraps the inventory + structure diff above
-and classifies every difference as either **expected** (hot/partition tables) or **real drift**:
+`scripts/local-dev/verify-db-consistency.sh` (v1.1) compares SIX dimensions —
+table inventory, column signatures (ALL tables), views (name+md5(definition)),
+index logical shape, constraints (normalized), sequences — and classifies every
+difference as either **expected** (hot/partition tables) or **real drift**:
 
 ```bash
 bash scripts/local-dev/verify-db-consistency.sh --verify   # read-only; sets up + tears down tunnel
@@ -81,6 +83,9 @@ bash scripts/local-dev/verify-db-consistency.sh --verify   # read-only; sets up 
 ```
 
 It also has a gated `--reconcile` mode (see §7) that pushes local feature-table DDL to 252.
+
+**Always run this after `pg-table-copy.sh`** — see pitfall 4.7 for why table-count
+checks alone are not enough.
 
 ---
 
@@ -201,6 +206,30 @@ hot-table filter `*_2026_*` and are excluded from the sync. They will show up in
 `comm -23 /tmp/252.txt /tmp/local.txt` and that is **correct** — do not try to copy them
 to local (local regenerates its own partitions). The verify script classifies these as
 "EXPECTED hot/partition" automatically.
+
+### 4.7 Migration-tracking tables can LIE after a sync — verify structure, not table counts
+
+**Symptom (2026-08-31 audit)**: `schema_migrations` identical on both sides (573/610
+recorded as applied), yet local's `request_logs` still had the body columns 573 was
+supposed to drop and lacked 610's CHECK constraint.
+
+**Root cause**: `pg-table-copy.sh` used to import schema with `-v ON_ERROR_STOP=off`
+and only inspected the log for ERROR lines when psql exited non-zero — which it never
+does with that setting. Combined with pitfall 4.4 (search_path='' breaking the columnar
+event trigger on EVERY table DDL), the 2026-08-26 schema import failed wholesale while
+reporting "Schema imported". Local kept its pre-sync schema; the tracking tables were
+copied as DATA and still claimed 573/610 were applied. Table-name-level comparison
+passed because the stale tables had the same names.
+
+**Fixed** (both in `pg-table-copy.sh`): the search_path guard is now stripped before
+import, and the import log is ALWAYS scanned for ERROR/FATAL lines regardless of exit
+code; the run exits 1 on schema-import errors.
+
+**Rule**: after any sync, run `scripts/local-dev/verify-db-consistency.sh` — column /
+view / constraint fingerprints, never table counts or tracking tables alone. Known
+benign variances the script already normalizes: physical column order (PG cannot
+reorder in place) and the two `ANY(ARRAY[...])` text renderings in CHECK constraints
+and partial-index defs.
 
 ---
 
