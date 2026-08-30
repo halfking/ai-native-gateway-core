@@ -43,9 +43,11 @@ logs_dir=$root/logs
 attachments_dir=$root/attachments
 raw_logs_dir=$root/raw-logs
 backups_dir=$root/backups
-run_dir=$root/run
-pid_file=$root/run/gateway.pid
-port_file=$root/run/gateway.port
+	run_dir=$root/run
+	pid_file=$root/run/gateway.pid
+	port_file=$root/run/gateway.port
+	active_upstream=$root/run/active-upstream.conf
+	proxy_command=$root/run/proxy-command
 EOF
 }
 

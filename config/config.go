@@ -40,8 +40,12 @@ type Config struct {
 	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs" env:"LLM_GATEWAY_TRUSTED_PROXY_CIDRS"`
 
 	// Server
-	Listen      string `yaml:"listen" env:"LLM_GATEWAY_LISTEN"`
-	LogLevel    string `yaml:"log_level" env:"LLM_GATEWAY_LOG_LEVEL"`
+	Listen   string `yaml:"listen" env:"LLM_GATEWAY_LISTEN"`
+	LogLevel string `yaml:"log_level" env:"LLM_GATEWAY_LOG_LEVEL"`
+	// RuntimeRole controls whether this process owns background workers. A
+	// traffic-only candidate may be warmed on the alternate port without
+	// competing with the active instance for leases, probes, or rollups.
+	RuntimeRole string `yaml:"runtime_role" env:"LLM_GATEWAY_RUNTIME_ROLE"`
 	APIKey      string `yaml:"api_key" env:"LLM_GATEWAY_API_KEY"`
 	CORSOrigins string `yaml:"cors_origins" env:"LLM_GATEWAY_CORS_ORIGINS"`
 	StaticDir   string `yaml:"static_dir" env:"LLM_GATEWAY_STATIC_DIR"`
@@ -427,6 +431,7 @@ func Load() *Config {
 		RedisPassword:           os.Getenv("LLM_GATEWAY_REDIS_PASSWORD"),
 		Listen:                  envOrDefault("LLM_GATEWAY_LISTEN", ":8781"),
 		LogLevel:                envOrDefault("LLM_GATEWAY_LOG_LEVEL", "info"),
+		RuntimeRole:             envOrDefault("LLM_GATEWAY_RUNTIME_ROLE", "active"),
 		APIKey:                  os.Getenv("LLM_GATEWAY_API_KEY"),
 		CORSOrigins:             os.Getenv("LLM_GATEWAY_CORS_ORIGINS"),
 		StaticDir:               envOrDefault("LLM_GATEWAY_STATIC_DIR", "web/dist"),
@@ -450,9 +455,9 @@ func Load() *Config {
 		// 7 天累计 23.6 万个 session hash keys 占用 91% 的 Redis 内存。
 		// 3 天足以覆盖 OpenCode/Cursor 用户的连续编辑场景。
 		// 如果需要更长可设 LLM_GATEWAY_SESSION_TTL_HOURS 环境变量。
-		SessionTTLHours:      72,
-		PendingTTLSeconds:    300,
-		SessionIDBodyKeys:    parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
+		SessionTTLHours:   72,
+		PendingTTLSeconds: 300,
+		SessionIDBodyKeys: parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
 		// TrustedProxyCIDRs (HIGH security, 2026-08-29): loopback-only default.
 		// Operators behind an LB / reverse proxy MUST extend this list,
 		// otherwise X-Forwarded-For / X-Real-IP will be ignored and every
@@ -740,6 +745,9 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if other.LogLevel != "" && os.Getenv("LLM_GATEWAY_LOG_LEVEL") == "" {
 		cfg.LogLevel = other.LogLevel
+	}
+	if other.RuntimeRole != "" && os.Getenv("LLM_GATEWAY_RUNTIME_ROLE") == "" {
+		cfg.RuntimeRole = other.RuntimeRole
 	}
 	if other.APIKey != "" && os.Getenv("LLM_GATEWAY_API_KEY") == "" {
 		cfg.APIKey = other.APIKey

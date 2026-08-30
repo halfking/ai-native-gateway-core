@@ -52,6 +52,8 @@ source "$SCRIPT_DIR/deploy-lib/host.sh"
 source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
 # shellcheck source=deploy-lib/db-changelog.sh
 source "$SCRIPT_DIR/deploy-lib/db-changelog.sh"
+# shellcheck source=deploy-lib/zero-downtime.sh
+source "$SCRIPT_DIR/deploy-lib/zero-downtime.sh"
 
 GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
 log()  { echo -e "${BLUE}[seamless]${NC} $*"; }
@@ -61,7 +63,7 @@ err()  { echo -e "${RED}  ✗${NC} $*" >&2; }
 
 # ── 参数解析 ────────────────────────────────────────────────────
 ACTION="${1:-}"; TARGET="${2:-}"
-SEQ_FLAG=""; SKIP_FRONTEND=false; FORCE=false
+SEQ_FLAG=""; SKIP_FRONTEND=false; FORCE=false; LEGACY_RESTART=false
 shift 2 2>/dev/null || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -69,6 +71,7 @@ while [[ $# -gt 0 ]]; do
     --no-frontend) SKIP_FRONTEND=true; shift ;;
     --force) FORCE=true; shift ;;
     --direct) export SSH_RETRY_DIRECT_MODE=1; shift ;;
+    --legacy-restart) LEGACY_RESTART=true; shift ;;
     --ssh-retries) export SSH_RETRY_MAX=$2; shift 2 ;;
     --ssh-verbose) export SSH_RETRY_VERBOSE=1; shift ;;
     -h|--help)
@@ -82,6 +85,11 @@ done
 [[ -n "$TARGET" ]] || { err "缺少目标 (245|154)"; exit 1; }
 if [[ "$FORCE" == true && "$ACTION" == status ]]; then
   err "--force 仅适用于 deploy 或 rollback，不适用于 status"
+  exit 64
+fi
+
+if [[ "$LEGACY_RESTART" == true && "$ACTION" != deploy ]]; then
+  err "--legacy-restart 仅适用于 deploy"
   exit 64
 fi
 
@@ -176,6 +184,12 @@ remote_ssh_pipe() {
 }
 SSH_CMD="remote_ssh"
 
+# Blue-green is opt-in until the candidate unit and Nginx include are installed
+# on the target. The canonical deployer fails closed rather than silently
+# reverting to the old stop/start path; operators may explicitly request the
+# legacy emergency flow with --legacy-restart.
+LEGACY_RESTART=false
+
 # 154 的公网 HTTPS 入口在 252 上终止 TLS 并代理到 154:8781。
 # 仅 154 部署需要同步保护 252 的公网 vhost；245 有自己的公网 vhost。
 public_252_ssh() {
@@ -261,8 +275,8 @@ _env_file_for_target() {
 
 # 确认 current、systemd MainPID 和运行二进制都属于目标 release。
 _verify_running_release() {
-  local expected_version=$1
-  remote_ssh "ROOT='$REMOTE_ROOT' SERVICE='$SERVICE_NAME' EXPECTED_VERSION='$expected_version' python3 - <<'PYVERIFY'
+  local expected_version=$1 service_name=${2:-$SERVICE_NAME}
+  remote_ssh "ROOT='$REMOTE_ROOT' SERVICE='$service_name' EXPECTED_VERSION='$expected_version' python3 - <<'PYVERIFY'
 import hashlib
 import os
 import subprocess
@@ -304,6 +318,17 @@ PYVERIFY"
 }
 
 # healthz 或 DB 校验失败时回滚到上一个 verified 版本
+_bluegreen_abort() {
+  local reason=$1 old_version=$2 old_port=$3 candidate_port=$4 candidate_service=$5 upstream_fragment=$6 old_service=${7:-$SERVICE_NAME}
+  err "$reason — restoring previous upstream"
+  zd_switch_upstream "$SSH_CMD" "$upstream_fragment" "$old_port" || true
+  if [[ -n "$old_version" ]]; then
+    remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\\n' '$old_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\\n' '$old_service' > '$REMOTE_ROOT/run/active-service'" || true
+  fi
+  zd_stop_candidate "$SSH_CMD" "$candidate_service"
+  remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
+}
+
 _seamless_auto_rollback() {
   local reason=$1 failed_version=$2
   err "$reason — 自动回滚..."
@@ -574,40 +599,103 @@ do_deploy() {
     ok "已采用 releases/ 布局"
   fi
 
-  # 8. atomic switch + restart（无感切换窗口 ≈ restart 耗时）
-  log "[8/9] 原子符号链接切换 + restart"
-  local switch_start switch_end switch_elapsed
-  switch_start=$(date +%s)
-  # 在 stop 前先让 nginx 接住全部请求。marker 会一直保留到 [9.x]
-  # 的所有业务门禁通过，避免只通过 healthz 就提前恢复真实首页。
-  # Mark the lifecycle active before the remote write so an interrupt during
-  # enablement is still handled by deploy_cleanup.
-  UPGRADE_BANNER_ACTIVE=1
-  if ! upgrade_show_all "$version"; then
-    err "升级静态页启用失败，中止部署（避免在停机期间暴露 502）"
+  # 8. candidate warm-up + atomic Nginx handoff
+  local switch_start_ns switch_end_ns switch_elapsed_ms active_port candidate_port upstream_fragment candidate_unit candidate_binary
+  local candidate_service active_service old_version expected_release_version
+  active_port=$(target_field "$TARGET" active_port)
+  candidate_port="$active_port"
+  candidate_service="$SERVICE_NAME"
+  active_service="$SERVICE_NAME"
+  old_version=$(remote_ssh "readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename" 2>/dev/null || true)
+  expected_release_version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
+  if [[ "$LEGACY_RESTART" == true ]]; then
+    log "[8/9] legacy stop/start emergency path"
+    host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'
+    local switch_elapsed=0
+    warn "legacy-restart used; 2-second blue-green SLO is not applicable"
+  else
+  log "[8/9] 候选预热 + Nginx 原子切流"
+  active_port=$(remote_ssh "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null || true)
+  active_port=${active_port:-$(target_field "$TARGET" active_port)}
+  candidate_port=$(target_field "$TARGET" candidate_port)
+  if [[ "$active_port" == "$candidate_port" ]]; then
+    candidate_port=$(target_field "$TARGET" active_port)
+  fi
+  upstream_fragment=$(target_field "$TARGET" upstream_fragment)
+  candidate_unit=$(target_field "$TARGET" candidate_unit)
+  candidate_service="${candidate_unit%@.service}@${candidate_port}.service"
+  if ! remote_ssh "test -f '$(target_field "$TARGET" candidate_unit_file)' && test -f '$upstream_fragment'"; then
+    err "目标未安装蓝绿候选 unit 或 upstream fragment，拒绝切换；如需应急请显式使用 --legacy-restart"
     exit 1
   fi
-  UPGRADE_SWITCH_STARTED=1
-  if ! host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
-    _seamless_auto_rollback "原子切换或 restart 失败" "$version" || true
+  if remote_ssh "test -f '$REMOTE_ROOT/run/active-service'"; then
+    active_service=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service'")
+  fi
+  local old_version
+  old_version=$(remote_ssh "readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename" 2>/dev/null || true)
+  local expected_release_version
+  expected_release_version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
+  switch_start_ns=$(zd_now_ns)
+  # Blue-green requires an independently addressed candidate. Stage a stable
+  # candidate symlink to the uploaded release and point the unit at that path;
+  # do not change current before warm-up.
+  remote_ssh "set -e; mkdir -p '$REMOTE_ROOT/run' '$REMOTE_ROOT/slots'; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$candidate_port'; printf '%s\\n' '$candidate_port' > '$REMOTE_ROOT/run/candidate-port'; printf '%s\\n' '$candidate_service' > '$REMOTE_ROOT/run/candidate-service'; systemctl daemon-reload"
+  if ! remote_ssh "systemctl start '$candidate_service'"; then
+    err "候选实例启动失败，旧实例保持服务"
     exit 1
   fi
-  switch_end=$(date +%s)
-  switch_elapsed=$((switch_end - switch_start))
-  ok "符号链接已切换 (${switch_elapsed}s 含 restart)"
+  if ! remote_ssh "systemctl is-active --quiet '$candidate_service'"; then
+    zd_stop_candidate "$SSH_CMD" "$candidate_service"
+    err "候选 unit 未保持 active，旧实例继续服务"
+    exit 1
+  fi
+  local candidate_health_url="http://127.0.0.1:${candidate_port}/healthz"
+  local candidate_ready_url="http://127.0.0.1:${candidate_port}/readyz"
+  local candidate_version_url="http://127.0.0.1:${candidate_port}/version"
+  if ! remote_ssh "deadline=\$((\$(date +%s)+30)); while [ \"\$(date +%s)\" -lt \"\$deadline\" ]; do curl -fsS --max-time 2 '$candidate_health_url' >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1" ||
+     ! remote_ssh "deadline=\$((\$(date +%s)+30)); while [ \"\$(date +%s)\" -lt \"\$deadline\" ]; do curl -fsS --max-time 2 '$candidate_ready_url' >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1" ||
+     ! remote_ssh "curl -fsS --max-time 5 '$candidate_version_url' 2>/dev/null | grep -F '\"version\":\"$expected_release_version\"' >/dev/null"; then
+    zd_stop_candidate "$SSH_CMD" "$candidate_service"
+    remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
+    err "候选实例未通过 healthz/readyz，旧实例保持服务"
+    exit 1
+  fi
+  if ! zd_switch_upstream "$SSH_CMD" "$upstream_fragment" "$candidate_port"; then
+    zd_stop_candidate "$SSH_CMD" "$candidate_service"
+    remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
+    err "Nginx 切流失败，旧 upstream 已恢复"
+    exit 1
+  fi
+  # Confirm the real Nginx path serves the candidate before changing the
+  # release pointer. This protects rollback selection from a false handoff.
+  if ! remote_ssh "curl -kfsS --max-time 5 https://127.0.0.1/version >/tmp/kx-candidate-version.json"; then
+    _bluegreen_abort "切流后 Nginx 版本探针失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
+    exit 1
+  fi
+  remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\\n' '$candidate_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\\n' '$candidate_service' > '$REMOTE_ROOT/run/active-service'"
+  switch_end_ns=$(zd_now_ns)
+  switch_elapsed_ms=$(( (switch_end_ns - switch_start_ns) / 1000000 ))
+  local switch_elapsed=$(( (switch_elapsed_ms + 999) / 1000 ))
+  ok "Nginx 已切到候选端口 ${candidate_port} (handoff=${switch_elapsed_ms}ms)"
+  if (( switch_elapsed_ms > 2000 )); then
+    warn "handoff 超过 2s（${switch_elapsed_ms}ms），仍保留旧实例用于回滚；不停止旧服务"
+  fi
+  # The old unit is deliberately stopped only after all post-switch gates.
 
-  # 9. wait liveness + strict readiness (失败自动回滚)
+  # 9. post-handoff liveness + strict readiness (失败时恢复旧 upstream)
+  # The candidate is probed by its own port above; these checks remain
+  # intentionally short and never stop the former active process first.
   # /healthz only proves that the process is alive. /readyz is the release gate:
   # it requires the database and Redis dependencies to be usable before the
   # release can be marked verified.
   # 2026-08-28: 90s → 120s, 启动时 license 验证 + 数据库迁移可能需要更长时间
   log "[9/9] 验证 /healthz + /readyz + DB + release identity"
-  if ! host_wait_healthy "$SSH_CMD" "$TARGET" 120 2>&1; then
-    _seamless_auto_rollback "healthz 超时" "$version" || true
+  if ! remote_ssh "curl -fsS --max-time 10 '$candidate_health_url' >/dev/null"; then
+    _bluegreen_abort "候选切流后 healthz 失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
-  if ! host_wait_readyz "$SSH_CMD" "$TARGET" 120 2>&1; then
-    _seamless_auto_rollback "readyz 超时或依赖未就绪" "$version" || true
+  if ! remote_ssh "curl -fsS --max-time 10 '$candidate_ready_url' >/dev/null"; then
+    _bluegreen_abort "候选切流后 readyz 失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
 
@@ -624,22 +712,22 @@ do_deploy() {
   # 先确认 DB 已就绪，再同步 admin 密码并验证登录。
   # 否则网关在 postgres disabled (db == nil) 时 handleLogin 返回 503 database not configured，
   # 会误触发自动回滚；与 deploy_verify_gateway_ready 的 503-tolerant 契约保持一致。
-  if ! deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90 "$(_env_file_for_target)"; then
-    _seamless_auto_rollback "DB 未就绪 (database not configured 风险)" "$version" || true
+  if ! deploy_verify_gateway_ready "$SSH_CMD" "$candidate_service" "$candidate_port" 90 "$(_env_file_for_target)"; then
+    _bluegreen_abort "DB 未就绪 (database not configured 风险)" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
 
   if [[ "${DEPLOY_SYNC_ADMIN_PASSWORD:-true}" == "true" ]]; then
     log "[9.1/9] 同步 admin 密码 (env → users)"
-    if ! bash "$SCRIPT_DIR/ops/sync-admin-password-from-env.sh" "$TARGET"; then
-      _seamless_auto_rollback "admin 密码同步或登录验证失败" "$version" || true
+    if ! LLM_GATEWAY_ADMIN_SYNC_PORT="$candidate_port" LLM_GATEWAY_ADMIN_SYNC_SERVICE="$candidate_service" bash "$SCRIPT_DIR/ops/sync-admin-password-from-env.sh" "$TARGET"; then
+      _bluegreen_abort "admin 密码同步或登录验证失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
       exit 1
     fi
     ok "admin 密码已同步"
   fi
 
-  if ! _verify_running_release "$version"; then
-    _seamless_auto_rollback "运行二进制与 release bundle 不一致" "$version" || true
+  if ! remote_ssh "curl -kfsS --max-time 10 https://127.0.0.1/version | grep -F '"version":"$expected_release_version"' >/dev/null"; then
+    _bluegreen_abort "公网入口版本身份校验失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
   if ! host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'; then
@@ -648,13 +736,18 @@ do_deploy() {
   fi
   ok "healthz + DB + running release 通过，标记 verified"
 
-  # 只有全部健康、nginx、DB、登录及 release identity 门禁通过后，
-  # 才删除 marker，让 nginx 把真实网站重新接回。
-  if ! upgrade_hide_all; then
-    err "升级静态页撤掉失败，保留 marker 以避免暴露未验证服务"
-    exit 1
+  # The candidate is now serving through nginx. Persist the active pointer and
+  # only then drain the former systemd unit; a failed drain never takes the
+  # new candidate out of service.
+  if ! remote_ssh "systemctl stop '$active_service'"; then
+    warn "旧实例停止失败；候选仍保持 active，需人工清理 $active_service"
+  else
+    ok "旧实例已进入 graceful drain"
   fi
+  remote_ssh "rm -f '$REMOTE_ROOT/slots/$active_port' '$REMOTE_ROOT/run/candidate-port' '$REMOTE_ROOT/run/candidate-service'" || true
   UPGRADE_BANNER_ACTIVE=0
+  ok "blue-green handoff complete (old=${old_version:-unknown}, new=$version, active_port=$candidate_port)"
+  fi
 
   # 9.6 安装日志轮转配置 (按 systemd unit 模式自动分支)
   # 必做：服务已 healthz OK，再装轮转即便失败也不影响 deploy。

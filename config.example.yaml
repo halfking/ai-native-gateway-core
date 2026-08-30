@@ -6,6 +6,8 @@ listen: ":8781"
 log_level: "info"
 static_dir: "web/dist"
 bg_mode: "full"
+# active owns background workers; traffic-only is for a warmed blue-green candidate.
+runtime_role: "active"
 deploy_env: "development"
 default_language: "en"
 session_ttl_hours: 168

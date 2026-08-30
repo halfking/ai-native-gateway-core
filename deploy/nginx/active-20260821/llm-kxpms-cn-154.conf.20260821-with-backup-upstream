@@ -10,7 +10,8 @@
 
 # upstream: local llm-gateway-go (native systemd-equivalent, port 8781)
 upstream llm_local {
-    server 127.0.0.1:8781 max_fails=3 fail_timeout=10s;
+    # Atomic blue-green fragment; deployer replaces this file and reloads nginx.
+    include /opt/llm-gateway-go/run/active-upstream.conf;
     keepalive 32;
     # 2026-08-21: Add 245 (172.16.2.241:8781) as backup gateway.
     # When 154 local gateway fails, nginx auto-shifts to 245.
