@@ -5475,7 +5475,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ErrorKind = strPtr("empty_response")
 				reqLog.FailureStage = strPtr("upstream_empty_response")
 				reqLog.FailureDetailCode = strPtr("zero_tokens_few_chunks")
-				
+
 				// Emit Prometheus metric (2026-08-29)
 				modelName := ""
 				if reqLog.OutboundModel != nil {
@@ -5525,7 +5525,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				} else if reqLog.ClientModel != nil {
 					modelName = *reqLog.ClientModel
 				}
-				
+
 				providerID := 0
 				if reqLog.ProviderID != nil {
 					providerID = *reqLog.ProviderID
@@ -6953,6 +6953,10 @@ type HealthHandler struct {
 	proxy   *upstreampkg.ProxyResolver
 	db      dbConnector
 	redis   redisConnector
+	// Runtime identity is included in /version so a proxy can prove that it
+	// switched to the warmed candidate rather than merely seeing a live port.
+	runtimeRole string
+	listen      string
 }
 
 // dbConnector interface for database ping check
@@ -6968,6 +6972,14 @@ type redisConnector interface {
 // NewHealthHandler creates a new health handler.
 func NewHealthHandler(cm *credential.Manager, l *credential.Limiter, proxy *upstreampkg.ProxyResolver, db dbConnector, redis redisConnector) *HealthHandler {
 	return &HealthHandler{circuit: cm, limiter: l, proxy: proxy, db: db, redis: redis}
+}
+
+// SetRuntimeIdentity attaches non-sensitive process identity to /version.
+// It is intentionally separate from the constructor because config and Redis
+// are initialized at different points in the gateway composition root.
+func (h *HealthHandler) SetRuntimeIdentity(role, listen string) {
+	h.runtimeRole = role
+	h.listen = listen
 }
 
 func healthResourceStatus(parent context.Context, connector interface{ Ping(context.Context) error }) *ResourceStatus {
@@ -7131,11 +7143,13 @@ func (h *HealthHandler) serveVersion(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusOK)
 	//nolint:errcheck
 	json.NewEncoder(w).Encode(map[string]any{
-		"version":    v.Version,
-		"git_sha":    v.GitSHA,
-		"build_seq":  v.BuildSeq,
-		"build_date": v.BuildDate,
-		"module":     "llm-gateway-go",
+		"version":      v.Version,
+		"git_sha":      v.GitSHA,
+		"build_seq":    v.BuildSeq,
+		"build_date":   v.BuildDate,
+		"module":       "llm-gateway-go",
+		"runtime_role": h.runtimeRole,
+		"listen":       h.listen,
 	})
 }
 

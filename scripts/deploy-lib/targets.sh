@@ -147,6 +147,8 @@ _ssh_host_for() {
 
 # Slice 1 / 5 target: 154 (production gateway, host-mode systemd).
 # Mirrors 245's release-bundle and verified versioned rollback contract.
+# Blue-green fields describe installed-but-not-started candidate resources;
+# deployment code must still fail closed when the target lacks them.
 target_154_contract() {
   # 2026-08-19 OOM 复盘: 154 同 245 一样, 公网 443 走 nginx → 8781 链路.
   # deploy 完成后 SSH 到目标机 curl 这个, 验证目标自身 nginx 是否 alive,
@@ -162,6 +164,12 @@ target_154_contract() {
     web_path "/opt/llm-gateway-go/web" \
     health_url "http://127.0.0.1:8781/healthz" \
     internal_https_health_url "https://127.0.0.1/healthz" \
+    active_port "8781" \
+    candidate_port "8782" \
+    upstream_fragment "/opt/llm-gateway-go/run/active-upstream.conf" \
+    candidate_unit "llm-gateway-go-canary@.service" \
+    candidate_binary "/opt/llm-gateway-go/candidate/llm-gateway-go" \
+    candidate_unit_file "/etc/systemd/system/llm-gateway-go-canary@.service" \
     ssh_host "$(_ssh_host_for 154)" \
     ssh_key_env "SSH_KEY_154" \
     rollback_policy "versioned" \
@@ -190,6 +198,12 @@ target_245_contract() {
     web_path "/opt/llm-gateway-go/web" \
     health_url "http://127.0.0.1:8781/healthz" \
     internal_https_health_url "https://127.0.0.1/healthz" \
+    active_port "8781" \
+    candidate_port "8782" \
+    upstream_fragment "/opt/llm-gateway-go/run/active-upstream.conf" \
+    candidate_unit "llmgo-245-canary@.service" \
+    candidate_binary "/opt/llm-gateway-go/candidate/gateway" \
+    candidate_unit_file "/etc/systemd/system/llmgo-245-canary@.service" \
     ssh_host "$(_ssh_host_for 245)" \
     ssh_key_env "SSH_KEY_245" \
     rollback_policy "versioned" \

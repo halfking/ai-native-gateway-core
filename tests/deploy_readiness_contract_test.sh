@@ -33,8 +33,8 @@ require "Kubernetes honors gateway drain budget" 'terminationGracePeriodSeconds:
 require "Host library exposes strict readyz gate" '^host_wait_readyz\(\)' "$HOST_LIB"
 require "Host metadata uses temporary file before rename" 'tmp=.*m\.tmp' "$HOST_LIB"
 require "Host metadata atomically replaces final file" 'mv -f.*tmp.*m' "$HOST_LIB"
-require "Seamless deployment calls readyz gate" 'host_wait_readyz "\$SSH_CMD" "\$TARGET" 120' "$SEAMLESS"
-ready_gate=$(grep -n 'host_wait_readyz' "$SEAMLESS" | cut -d: -f1 | head -1 || true)
+require "Seamless deployment calls candidate readyz gate" 'candidate_ready_url=.*readyz' "$SEAMLESS"
+ready_gate=$(grep -n 'candidate_ready_url' "$SEAMLESS" | cut -d: -f1 | head -1 || true)
 verified_gate=$(grep -n 'host_mark_verified' "$SEAMLESS" | cut -d: -f1 | tail -1 || true)
 if [[ -n "$ready_gate" && -n "$verified_gate" && "$ready_gate" -lt "$verified_gate" ]]; then
   pass "Readiness gate precedes verified metadata"
