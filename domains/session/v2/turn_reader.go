@@ -37,7 +37,7 @@ func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID
 	var raw []byte
 	err := r.db.QueryRow(ctx, `
 		SELECT outbound_body
-		FROM public.session_bodies
+		FROM public.session_bodies_unified
 		WHERE tenant_id = $1 AND session_id = $2
 		  AND outbound_body IS NOT NULL
 		ORDER BY turn_no DESC, ts DESC
@@ -70,7 +70,8 @@ func (r *TurnReader) LoadChain(ctx context.Context, tenantID, sessionID string, 
 	}
 	query := `
         SELECT b.turn_no, b.request_delta, b.response_delta
-        FROM public.session_bodies b
+		FROM public.session_bodies_unified b
+
         WHERE b.tenant_id = $1 AND b.session_id = $2
         ORDER BY b.turn_no ASC
     `

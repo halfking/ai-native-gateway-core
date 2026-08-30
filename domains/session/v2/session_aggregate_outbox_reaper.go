@@ -13,9 +13,9 @@
 //   - claim loop uses FOR UPDATE SKIP LOCKED so multiple gateway replicas can
 //     cooperate without coordination. Each replica claims up to batchSize rows
 //     per tick.
-//   - Claim and UpdateSession share a single transaction so the row is locked
-//     for the duration of the aggregate upsert; a concurrent replica will skip
-//     the locked row.
+//   - claiming and replay are deliberately separate transactions. The claim
+//     lease permits crash recovery between them; replay relies on the
+//     aggregator's request-level idempotency.
 //
 // Shutdown:
 //   - Start/Stop are idempotent and safe to call multiple times. On Stop, the
@@ -232,6 +232,12 @@ func (r *sessionAggregateOutboxReaper) claimAndReplay(ctx context.Context) (bool
 		return false, fmt.Errorf("begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_role', 'super_admin', true)"); err != nil {
+		return false, fmt.Errorf("set super-admin role GUC: %w", err)
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		return false, fmt.Errorf("set RLS bypass GUC: %w", err)
+	}
 
 	// 1. Claim one row that is ready for replay. The status filter covers
 	//    BOTH fresh pending rows AND stale 'claimed' rows whose lease has
@@ -242,8 +248,10 @@ func (r *sessionAggregateOutboxReaper) claimAndReplay(ctx context.Context) (bool
 		SELECT id, tenant_id, session_id, partition_date, request_id,
 		       update_payload, attempts
 		FROM session_aggregate_outbox
-		WHERE status = 'pending'
-		   OR (status = 'claimed'
+			WHERE (status = 'pending'
+			       AND (next_retry_at IS NULL OR next_retry_at <= NOW()))
+			   OR (status = 'claimed'
+
 		       AND claimed_at IS NOT NULL
 		       AND claimed_at < NOW() - ($1 || ' seconds')::interval)
 		ORDER BY next_retry_at ASC
@@ -403,6 +411,13 @@ func decodeUpdatePayload(raw []byte, dst *SessionUpdate) error {
 	if dst.SessionID == "" {
 		return errors.New("payload missing session_id")
 	}
+	if dst.TenantID == "" {
+		return errors.New("payload missing tenant_id")
+	}
+	if dst.RequestID == "" {
+		return errors.New("payload missing request_id")
+	}
+
 	return nil
 }
 

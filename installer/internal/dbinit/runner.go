@@ -72,6 +72,11 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"624_candidate_failure_logs_promote_atomic_v2.sql",
 			"625_session_bodies_unified_explicit.sql",
 			"626_session_bodies_hot_promote_reconcile.sql",
+			"627_candidate_failure_logs_aggregation_id_unified.sql",
+			"628_candidate_failure_logs_promote_atomic_v3.sql",
+			"629_audit_attachments_cleanup.sql",
+			"630_session_aggregate_outbox.sql",
+			"631_provider_credential_soft_delete.sql",
 		},
 	}
 }

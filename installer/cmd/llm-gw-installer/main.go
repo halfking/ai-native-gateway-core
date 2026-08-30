@@ -181,6 +181,21 @@ var sessionBodiesUnifiedExplicitMigration625 []byte
 //go:embed embeddata/startup/626_session_bodies_hot_promote_reconcile.sql
 var sessionBodiesHotPromoteReconcileMigration626 []byte
 
+//go:embed embeddata/startup/627_candidate_failure_logs_aggregation_id_unified.sql
+var candidateFailureLogsAggregationIDMigration627 []byte
+
+//go:embed embeddata/startup/628_candidate_failure_logs_promote_atomic_v3.sql
+var candidateFailureLogsPromoteAtomicV3Migration628 []byte
+
+//go:embed embeddata/startup/629_audit_attachments_cleanup.sql
+var auditAttachmentsCleanupMigration629 []byte
+
+//go:embed embeddata/startup/630_session_aggregate_outbox.sql
+var sessionAggregateOutboxMigration630 []byte
+
+//go:embed embeddata/startup/631_provider_credential_soft_delete.sql
+var providerCredentialSoftDeleteMigration631 []byte
+
 // 临时存放 embed SQL 的目录（运行时写入）
 
 // ── Cobra 入口 ──────────────────────────────────────────────────
@@ -892,6 +907,11 @@ func copySQLBackup(root string) error {
 		"startup/624_candidate_failure_logs_promote_atomic_v2.sql":                 candidateFailureLogsPromoteAtomicV2Migration624,
 		"startup/625_session_bodies_unified_explicit.sql":                          sessionBodiesUnifiedExplicitMigration625,
 		"startup/626_session_bodies_hot_promote_reconcile.sql":                     sessionBodiesHotPromoteReconcileMigration626,
+		"startup/627_candidate_failure_logs_aggregation_id_unified.sql":            candidateFailureLogsAggregationIDMigration627,
+		"startup/628_candidate_failure_logs_promote_atomic_v3.sql":                 candidateFailureLogsPromoteAtomicV3Migration628,
+		"startup/629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
+		"startup/630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
+		"startup/631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
 	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
@@ -1007,6 +1027,11 @@ func setupSQLDir() (string, func(), error) {
 		"startup/624_candidate_failure_logs_promote_atomic_v2.sql":                 candidateFailureLogsPromoteAtomicV2Migration624,
 		"startup/625_session_bodies_unified_explicit.sql":                          sessionBodiesUnifiedExplicitMigration625,
 		"startup/626_session_bodies_hot_promote_reconcile.sql":                     sessionBodiesHotPromoteReconcileMigration626,
+		"startup/627_candidate_failure_logs_aggregation_id_unified.sql":            candidateFailureLogsAggregationIDMigration627,
+		"startup/628_candidate_failure_logs_promote_atomic_v3.sql":                 candidateFailureLogsPromoteAtomicV3Migration628,
+		"startup/629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
+		"startup/630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
+		"startup/631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
 	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)

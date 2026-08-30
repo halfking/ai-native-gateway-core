@@ -4,6 +4,13 @@
 -- must follow the audit handoff's remediation (re-seed the watermark below
 -- the maximum historical aggregation_id BEFORE the next aggregator tick,
 -- otherwise promoted historical rows are lost again).
+--
+-- The watermark seed (last_source_id = bigint-min) applied by the up
+-- migration is NOT reverted here. Rolling it back to 0 would force a replay
+-- of every historical bucket once more after the down — but only if the
+-- deployment is then re-upped without other intervening migration work.
+-- Leaving the seed in place is the safe default: it over-advances the
+-- watermark only when the migration 627 column/view are also present.
 
 BEGIN;
 
