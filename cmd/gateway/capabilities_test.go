@@ -52,12 +52,17 @@ func TestCapabilitiesHandler_Get(t *testing.T) {
 	// （cmd/gateway/webhooks + POST /api/webhooks/quota/recharged 已上线，
 	//  HMAC-SHA256 验签 + bg/balance_quota_probe.OnQuotaRecharged 秒级恢复链）。
 	wantFeatures := map[string]string{
-		"data_plane":           "current",
-		"sticky_session":       "current",
-		"tenant_quota":         "current",
-		"durable_outbox":       "partial",
-		"plugin_runtime":       "partial",
-		"webhook_subscription": "implemented",
+		"data_plane":               "current",
+		"sticky_session":           "current",
+		"tenant_quota":             "current",
+		"durable_outbox":           "partial",
+		"plugin_runtime":           "partial",
+		"webhook_subscription":     "implemented",
+		// 2026-08-31 audit-data-closure-D: native Responses upstream stays
+		// off_until_extension_loss_pinned — the test pin (serialize_responses
+		// _extension_loss_test.go + serialize_responses_stream_test.go) is
+		// the gate, not a runtime check.
+		"native_responses_upstream": "off_until_extension_loss_pinned",
 	}
 	for feature, want := range wantFeatures {
 		if got, ok := body.Features[feature]; !ok {
