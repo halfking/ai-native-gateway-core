@@ -24,9 +24,17 @@ source configs/env-252.sh
 ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252 && sleep 2
 export PGPASSWORD="$COMMON_PG_SUPERUSER_PASS"
 
-# Full sync (schema + data, ~14GB, takes 10-30min)
+# Full sync (schema + data; exact replacement requires explicit --replace-data)
 export PGOPTIONS='-c statement_timeout=0'  # avoid 252's 30s server-side timeout
-scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh
+export PG_PASS_LOCAL="$COMMON_PG_SUPERUSER_PASS"
+scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh --replace-data
+
+# Safe default: no DROP and append-only data import; use for inspection only.
+# --clean-schema is destructive and must be explicitly requested.
+
+# Data-only exact replacement (does not copy hot/partition data)
+scripts/pg-table-copy.sh --data-only --replace-data \
+  --source configs/env-252.sh --target configs/env-local.sh
 
 # Schema-only (fast, ~2min)
 scripts/pg-table-copy.sh --schema-only --source configs/env-252.sh --target configs/env-local.sh
@@ -69,23 +77,18 @@ comm -13 /tmp/252.txt /tmp/local.txt   # local extras (should be empty after ren
 kill $(lsof -tiTCP:15432 -sTCP:LISTEN)
 ```
 
-### Verify consistency (script)
+### Verify consistency (scripts)
 
-`scripts/local-dev/verify-db-consistency.sh` (v1.1) compares SIX dimensions —
-table inventory, column signatures (ALL tables), views (name+md5(definition)),
-index logical shape, constraints (normalized), sequences — and classifies every
-difference as either **expected** (hot/partition tables) or **real drift**:
+`scripts/local-dev/verify-db-consistency.sh` (v1.1) compares SIX dimensions — table inventory, column signatures (ALL tables), views (name+md5(definition)), index logical shape, constraints (normalized), sequences — and classifies every difference as either **expected** (hot/partition tables) or **real drift**.
 
 ```bash
 bash scripts/local-dev/verify-db-consistency.sh --verify   # read-only; sets up + tears down tunnel
-# exit 0 = CONSISTENT (only expected hot/partition tables differ)
-# exit 1 = INCONSISTENT (real drift found)
+bash scripts/local-dev/verify-db-data-consistency.sh       # read-only ordinary-table count + content digest audit
+# structure exit 0 = CONSISTENT (only expected hot/partition tables differ)
+# data exit 0 = complete ordinary-table set, row counts, and content signatures match
 ```
 
-It also has a gated `--reconcile` mode (see §7) that pushes local feature-table DDL to 252.
-
-**Always run this after `pg-table-copy.sh`** — see pitfall 4.7 for why table-count
-checks alone are not enough.
+Both audits are required after every sync. The data audit deliberately excludes hot/partition relations; the structure audit must still verify their relation kind and partition/index metadata.
 
 ---
 
