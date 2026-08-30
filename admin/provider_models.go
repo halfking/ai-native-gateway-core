@@ -128,7 +128,7 @@ func (h *Handler) clearProviderModels(w http.ResponseWriter, r *http.Request, pr
 
 	var exists int
 	if err := h.db.QueryRow(ctx, `
-		SELECT 1 FROM providers WHERE id = $1 AND tenant_id = 'default'
+		SELECT 1 FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, providerID).Scan(&exists); err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")
 		return

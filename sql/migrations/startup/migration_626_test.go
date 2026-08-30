@@ -18,7 +18,10 @@ func TestMigration626ReconcilesSessionBodiesHotPromotion(t *testing.T) {
 		"FOR UPDATE SKIP LOCKED",
 		"ON CONFLICT (id, partition_date) DO NOTHING",
 		"DELETE FROM public.session_bodies_hot h",
-		"USING to_move m",
+		// 2026-08-31 f1ae3c71e 审计修正后：只删真正插入的行（匹配完整
+		// 主键 id+partition_date），被 ON CONFLICT 跳过的行留在热表等
+		// 下一轮。旧期望 "USING to_move m" 已不成立。
+		"USING inserted i",
 		"ALTER VIEW public.session_bodies_unified SET (security_invoker = true)",
 	} {
 		if !strings.Contains(body, want) {

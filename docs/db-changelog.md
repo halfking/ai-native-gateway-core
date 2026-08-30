@@ -156,3 +156,14 @@ relying on it.
 |-----------|------|---------|--------|
 | 626 | `626_session_bodies_hot_promote_reconcile.sql` | `ecc3e07efe40c0f70a9af7863435c863191e23b5b4f704f91533c2dcdafe7e66` | pending-deploy |
 
+
+## 2026-08-31 — local dev (pending deploy)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 627 | `627_provider_credential_soft_delete.sql` | `752cca46c944196a2ed26262329f16937eda1bad7ffa089fbcd858b075f9e00b` | pending deploy |
+
+> 627: credentials.status CHECK 增加 `'deleted'` 终态；providers 新增
+> `deleted_at` 软删除列 + 存活行部分索引 `idx_providers_live`。二进制
+> 启动时由 `db.ensureProviderSoftDelete`（db/db.go）幂等执行同一 DDL，
+> SQL 文件供 DBA 同步流程对账。

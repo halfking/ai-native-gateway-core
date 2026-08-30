@@ -217,6 +217,8 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       c.max_queue_wait_ms
 		FROM credentials c
 		WHERE c.provider_id = $1
+		  -- 2026-08-31: 软删除的凭据不在任何列表中返回
+		  AND c.status <> 'deleted'
 		ORDER BY c.id
 	`, providerID)
 	if err != nil {
@@ -450,17 +452,24 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	var currentConcurrency sql.NullInt32
 	var currentFpSlot sql.NullInt32
 	var previousPlan sql.NullString
+	var currentStatus string
 	var currentRevision int64
 	if err := tx.QueryRow(ctx, `
-		SELECT concurrency_limit, fp_slot_limit, plan_type, revision
+		SELECT concurrency_limit, fp_slot_limit, plan_type, status, revision
 		FROM credentials
 		WHERE id = $1 AND provider_id = $2
-		FOR UPDATE`, credID, providerID).Scan(&currentConcurrency, &currentFpSlot, &previousPlan, &currentRevision); err != nil {
+		FOR UPDATE`, credID, providerID).Scan(&currentConcurrency, &currentFpSlot, &previousPlan, &currentStatus, &currentRevision); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "credential not found")
 		} else {
 			writeError(w, http.StatusInternalServerError, "load credential failed: "+err.Error())
 		}
+		return
+	}
+	// 2026-08-31: 'deleted' 是终态。凭据抽屉的状态下拉可以 PATCH 任意
+	// status（含 active），不拦会把已删凭据复活回列表/路由。
+	if currentStatus == "deleted" {
+		writeError(w, http.StatusConflict, "credential is deleted (terminal state); re-create it instead")
 		return
 	}
 
@@ -760,16 +769,71 @@ func (h *Handler) queueCredentialRotationProbe(credID int, rawModelName string) 
 	return "queued"
 }
 
+// deleteCredential 软删除凭据（status → 'deleted'）。
+//
+// 2026-08-31 operator request: 凭据删除后将状态置为 'deleted'，在所有
+// 列表中不再出现。区别于 updateCredential 将 status 置为 'disabled'：
+// 'disabled' 仍可在 UI 的"已停用"分组内恢复；'deleted' 是终态，列表
+// 端点（listCredentials / listProviders / v_routable_credential_models）
+// 一律通过 status = 'active' 过滤自然排除它。model_offers、credential_keys
+// 等子表保留行以维持 FK 与历史日志完整。
+//
+// 同步失效候选缓存、清理 sticky 路由、并写一条 routing_audit_log 记录
+// 终态来源（管理员 / API key / 触发的具体路径）。
 func (h *Handler) deleteCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	_, err := h.db.Exec(ctx, `UPDATE credentials SET status = 'disabled' WHERE id = $1 AND provider_id = $2`, credID, providerID)
+
+	// 2026-08-31: 软删除 → status='deleted' + lifecycle_status='retired'。
+	// 只改 status 不够：domains/credential、providerprofile 等域代码以
+	// lifecycle_status='active' 为存活判据，batchRecover 等后台任务也按
+	// lifecycle 过滤。两轴同时置终态，任一过滤路径都不会再命中。
+	// 仅当当前 status 不是 'deleted' 时执行 UPDATE，避免重复点击产生
+	// 空 audit 行。
+	tag, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET status = 'deleted',
+		    lifecycle_status = 'retired',
+		    updated_at = NOW()
+		WHERE id = $1
+		  AND provider_id = $2
+		  AND status <> 'deleted'
+	`, credID, providerID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed")
+		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		// 已是 'deleted' 状态；幂等返回 200，避免前端重复点按钮报错。
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message":       "already deleted",
+			"credential_id": credID,
+		})
+		return
+	}
+
 	provider.InvalidateAllCandidateCache()
-	writeJSON(w, http.StatusOK, map[string]string{"message": "revoked"})
+	provider.InvalidateCredentialKeyCache(credID)
+	provider.ResetKeyRotatorForCredential(credID)
+	if h.stickyCache != nil {
+		if cleared, scErr := h.stickyCache.ClearForCredential(credID); scErr != nil {
+			slog.Warn("deleteCredential: clear sticky failed", "credential_id", credID, "error", scErr)
+		} else if cleared > 0 {
+			slog.Info("deleteCredential: cleared sticky bindings", "credential_id", credID, "cleared", cleared)
+		}
+	}
+
+	h.writeAuditLog(r, "credential.deleted", "credential", credID, map[string]any{
+		"provider_id":   providerID,
+		"soft_deleted":  true,
+		"new_status":    "deleted",
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":       "deleted",
+		"credential_id": credID,
+		"new_status":    "deleted",
+	})
 }
 
 // resetCredentialFpSlots clears all fingerprint slots for a credential.
@@ -1023,7 +1087,7 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	// 验证 provider 存在性（与 getProvider 保持一致语义）
 	var exists bool
 	if err := h.db.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM providers WHERE id = $1 AND tenant_id = 'default')`,
+		`SELECT EXISTS(SELECT 1 FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL)`,
 		providerID).Scan(&exists); err != nil {
 		slog.Error("getProviderErrorStats: provider existence check failed",
 			"provider_id", providerID, "error", err)
