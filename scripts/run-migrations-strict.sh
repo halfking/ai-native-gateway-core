@@ -112,9 +112,9 @@ migration_files() {
 
 record_migration() {
   local scope=$1 version=$2 name=$3 checksum=$4
-  "${psql_base[@]}" -v scope="$scope" -v version="$version" -v name="$name" -v checksum="$checksum" -c '
+  "${psql_base[@]}" -c "
 INSERT INTO public.repository_schema_migrations (scope, version, migration_name, checksum)
-VALUES (:'"'"'scope'"'"', :'"'"'version'"'"', :'"'"'name'"'"', :'"'"'checksum'"'"');' >/dev/null
+VALUES ('$scope', '$version', '$name', '$checksum');" >/dev/null
 }
 
 apply_scope() {
@@ -130,7 +130,7 @@ apply_scope() {
     fi
     version_number=${version%%[^0-9]*}
     checksum=$(file_checksum "$file")
-    stored_checksum=$("${psql_base[@]}" -Atq -v scope="$scope" -v name="$filename" -c "SELECT checksum FROM public.repository_schema_migrations WHERE scope = :'scope' AND migration_name = :'name';")
+    stored_checksum=$("${psql_base[@]}" -Atq -c "SELECT checksum FROM public.repository_schema_migrations WHERE scope = '$scope' AND migration_name = '$filename';")
 
     if [[ -n "$stored_checksum" ]]; then
       [[ "$stored_checksum" == "$checksum" ]] || {

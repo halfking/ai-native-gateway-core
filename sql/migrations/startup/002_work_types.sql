@@ -35,10 +35,16 @@ CREATE INDEX IF NOT EXISTS idx_wtmr_work_type ON work_type_model_route (work_typ
 COMMENT ON TABLE work_type_model_route IS 'Preferred model routes per work type (L1 selection hints)';
 
 -- Optional future column on request_logs (placeholder for work_type tracking)
-ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
-CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
-    ON request_logs (work_type, ts DESC)
-    WHERE work_type IS NOT NULL AND work_type <> '';
+-- Only add if request_logs already exists; this migration runs before the table is created.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'request_logs') THEN
+        ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
+        CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
+            ON request_logs (work_type, ts DESC)
+            WHERE work_type IS NOT NULL AND work_type <> '';
+    END IF;
+END $$;
 
 -- 22 seed work types (Phase 1)
 INSERT INTO work_type_config (key, label, category, l1_task_type, default_profile, tags, prompt_keywords, sort_order)
