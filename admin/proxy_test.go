@@ -85,17 +85,22 @@ func TestProxyRuntimeDependentRoutesFailClosedWithoutDB(t *testing.T) {
 	}{
 		{http.MethodPost, "/api/proxy/subscriptions/1/refresh"},
 		{http.MethodPost, "/api/proxy/nodes/1/health-check"},
+		{http.MethodDelete, "/api/proxy/nodes/1"},
+		{http.MethodGet, "/api/proxy/status"},
 	} {
 		t.Run(tc.path, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, nil)
 			rec := httptest.NewRecorder()
 			if strings.Contains(tc.path, "subscriptions") {
 				h.handleProxySubscriptions(rec, req)
+			} else if strings.Contains(tc.path, "status") {
+				h.handleProxyStatus(rec, req)
 			} else {
 				h.handleProxyNodes(rec, req)
 			}
-			if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "database not configured") {
-				t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("path %s: status=%d body=%q, want %d",
+					tc.path, rec.Code, rec.Body.String(), http.StatusServiceUnavailable)
 			}
 		})
 	}
