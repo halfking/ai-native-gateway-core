@@ -132,6 +132,7 @@ export default {
   enabled: 'مفعّل',
   lastOccurred: 'آخر حدوث',
   loading: 'جارٍ التحميل…',
+  never: 'مطلقًا',
   module: 'الوحدة',
   no: 'لا',
   refresh: 'تحديث',

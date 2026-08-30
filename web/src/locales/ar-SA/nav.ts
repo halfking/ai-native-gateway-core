@@ -46,6 +46,7 @@ export default {
     wechatBot: "بوت WeChat",
     sessionContext: "سياق الجلسة",
     settings: "إعدادات النظام",
+    proxy: "إدارة الوكيل",
     dataLifecycle: "دورة حياة البيانات",
     formatAnomalies: "مراقبة شذوذ التنسيق",
     modelIntegrity: "مراقبة سلامة النموذج",

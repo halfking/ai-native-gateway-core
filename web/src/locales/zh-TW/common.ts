@@ -133,6 +133,7 @@ export default {
   enabled: '啟用',
   lastOccurred: '最後發生',
   loading: '載入中…',
+  never: '從未',
   module: '模組',
   no: '否',
   refresh: '重新整理',

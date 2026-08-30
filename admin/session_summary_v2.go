@@ -151,44 +151,16 @@ func (api *SessionSummaryV2API) generateSummary(
 }
 
 // queryRequestLogsFallback derives turn-shaped conversation text from the
-// V1 request_logs store. request_logs_hot is the recent-write window;
-// older turns live in the monthly partitions accessible through
-// request_logs_with_current_month. We sort by ts so the summary reads in
-// chronological order, regardless of which store a turn lives in.
+// V1 request_logs store. request_logs_with_current_month already includes the
+// hot write window, so querying request_logs_hot separately would duplicate
+// every recent request. Bodies are paired by request identity and timestamp to
+// avoid attaching a reused request ID to the wrong turn.
 func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	ctx context.Context,
 	sessionID, tenantID string,
 	upToTurn *int,
 ) ([]turnForSummary, error) {
-	query := `
-		SELECT rl.request_id,
-		       rl.ts,
-		       rb.request_body,
-		       rb.response_body
-		FROM request_logs_hot rl
-		LEFT JOIN request_logs_bodies_hot rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1
-	`
-	args := []any{sessionID}
-	if tenantID != "" {
-		query += " AND rl.tenant_id = $2"
-		args = append(args, tenantID)
-	}
-	query += `
-		UNION ALL
-		SELECT rl.request_id,
-		       rl.ts,
-		       rb.request_body,
-		       rb.response_body
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1
-	`
-	if tenantID != "" {
-		query += " AND rl.tenant_id = $2"
-	}
-	query += " ORDER BY ts ASC"
-
+	query, args := buildRequestLogsFallbackQuery(sessionID, tenantID, upToTurn)
 	rows, err := api.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -199,23 +171,43 @@ func (api *SessionSummaryV2API) queryRequestLogsFallback(
 	turn := 0
 	for rows.Next() {
 		turn++
-		if upToTurn != nil && turn > *upToTurn {
-			break
-		}
 		var requestID string
 		var ts time.Time
 		var reqRaw, respRaw []byte
 		if err := rows.Scan(&requestID, &ts, &reqRaw, &respRaw); err != nil {
 			return nil, err
 		}
-		t := turnForSummary{
+		turns = append(turns, turnForSummary{
 			TurnNo:        turn,
 			RequestDelta:  decodeStoredJSON("request_body", requestID, reqRaw),
 			ResponseDelta: decodeStoredJSON("response_body", requestID, respRaw),
-		}
-		turns = append(turns, t)
+		})
 	}
 	return turns, rows.Err()
+}
+
+func buildRequestLogsFallbackQuery(sessionID, tenantID string, upToTurn *int) (string, []any) {
+	query := `
+		SELECT rl.request_id,
+		       rl.ts,
+		       rb.request_body,
+		       rb.response_body
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
+			ON rb.request_id = rl.request_id
+			AND rb.ts = rl.ts
+		WHERE rl.gw_session_id = $1`
+	args := []any{sessionID}
+	if tenantID != "" {
+		query += " AND rl.tenant_id = $2"
+		args = append(args, tenantID)
+	}
+	query += " ORDER BY rl.ts ASC"
+	if upToTurn != nil {
+		query += fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		args = append(args, *upToTurn)
+	}
+	return query, args
 }
 
 // turnForSummary 是用于总结的简化turn结构

@@ -133,6 +133,7 @@ export default {
   enabled: '有効',
   lastOccurred: '最終発生',
   loading: '読み込み中…',
+  never: '未実行',
   module: 'モジュール',
   no: 'いいえ',
   refresh: '更新',
