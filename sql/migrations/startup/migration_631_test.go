@@ -21,7 +21,7 @@ func stripSQLCommentsFor627(s string) string {
 	return b.String()
 }
 
-// TestMigration627AddsDeletedStatusAndProviderDeletedAt locks in the
+// TestMigration631AddsDeletedStatusAndProviderDeletedAt locks in the
 // two schema changes behind the 2026-08-31 soft-delete work:
 //
 //   - credentials.status CHECK gains the terminal 'deleted' value
@@ -29,8 +29,8 @@ func stripSQLCommentsFor627(s string) string {
 //
 // Future migrations that need to remove the constraint or column must
 // intentionally update this test (or write their own down-migration).
-func TestMigration627AddsDeletedStatusAndProviderDeletedAt(t *testing.T) {
-	data, err := os.ReadFile("627_provider_credential_soft_delete.sql")
+func TestMigration631AddsDeletedStatusAndProviderDeletedAt(t *testing.T) {
+	data, err := os.ReadFile("631_provider_credential_soft_delete.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,16 +53,16 @@ func TestMigration627AddsDeletedStatusAndProviderDeletedAt(t *testing.T) {
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
-			t.Errorf("migration 627 missing %q", want)
+			t.Errorf("migration 631 missing %q", want)
 		}
 	}
 
 	// 反向断言：迁移不应该改动 credentials 之外的 status 约束（即
 	// lifecycle_status、availability_state 等不受影响）。
 	if strings.Contains(body, "credentials_lifecycle_status_check") {
-		t.Errorf("migration 627 must not touch credentials_lifecycle_status_check")
+		t.Errorf("migration 631 must not touch credentials_lifecycle_status_check")
 	}
 	if strings.Contains(body, "DROP TABLE") {
-		t.Errorf("migration 627 must not drop any table")
+		t.Errorf("migration 631 must not drop any table")
 	}
 }
