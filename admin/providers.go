@@ -489,6 +489,13 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "error-stats":
+		// 审计修复 (2026-08-29)：P1-8 - Admin API 错误统计展示
+		if r.Method == http.MethodGet {
+			h.getProviderErrorStats(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	case "credentials":
 		h.handleProviderCredentials(w, r, providerID, "")
 	case "set-free-models":
