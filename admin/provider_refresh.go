@@ -127,7 +127,7 @@ func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Requ
 	)
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(code,''), COALESCE(display_name,''), enabled
-		FROM providers WHERE id = $1 AND tenant_id = 'default'
+		FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, providerID).Scan(&providerCode, &providerName, &providerEnabled)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")
