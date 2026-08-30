@@ -270,6 +270,10 @@ export const ACTIONS_PER_REQUEST_CAP = 50
 export const ACTIONS_GLOBAL_CAP = 2000
 export const CHILDREN_PER_PARENT_CAP = 50
 export const CHILDREN_GLOBAL_CAP = 2000
+// Per-lane merge cap (frontend). Backend admin/live_stream_redis_store.go
+// keeps a separate LiveStreamLaneVisibleLimit = 100 for the redis snapshot.
+// Raised from 20 to 50 to match the 24号 §3 wider swim-lane viewport.
+export const LANE_VISIBLE_LIMIT = 50
 
 let actionsTotal = 0
 let childrenTotal = 0
@@ -1232,7 +1236,7 @@ function mergeTilesById(
     const timestamp = (a.timestamp || '').localeCompare(b.timestamp || '')
     return timestamp || (a.request_id || '').localeCompare(b.request_id || '')
   })
-  existing.splice(0, existing.length, ...next.slice(-20))
+  existing.splice(0, existing.length, ...next.slice(-LANE_VISIBLE_LIMIT))
 }
 
 // mergeLegendsByKey is the same idea but for the legend strips —

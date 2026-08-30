@@ -184,6 +184,19 @@ const (
 	//     failure is (credential, model)-scoped and recoverable; handled by the
 	//     per-model state write + isTransientFailoverKind sibling failover.
 	KindNoAvailableChannel ErrorKind = "no_available_channel"
+	// KindCircuitOpen (2026-08-30): the per-credential circuit breaker
+	// rejected the request because it is OPEN / QUARANTINED / has no probe
+	// slot. Distinct from KindConcurrent (which is the limiter's "too many
+	// inflight requests" signal) so the candidate_failure_logs_hot dashboard
+	// can attribute rejections to "this credential's breaker is open" rather
+	// than collapsing it into a generic concurrent pool rejection. Also
+	// distinct from the various upstream error kinds (RateLimit, Auth,
+	// UpstreamDown) because the circuit is a gateway-side state, not an
+	// upstream response. Intentionally NOT in IsRetryable (the breaker
+	// timeout / half-open probe decides when to retry, not the kind) and
+	// NOT in IsCredentialFatal (a circuit-open is recoverable; the
+	// credential will auto-reset after cooling).
+	KindCircuitOpen ErrorKind = "circuit_open"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too

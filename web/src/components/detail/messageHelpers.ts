@@ -120,15 +120,7 @@ export function firstUserPrompt(body: unknown): string {
 }
 
 /** Last user message text from a chat body (current-turn user instruction). */
-export function lastUserPrompt(body: unknown): string {
-  const msgs = extractMessagesFromBody(body)
-  for (let i = msgs.length - 1; i >= 0; i--) {
-    if (String(msgs[i].role || '') === 'user') {
-      return contentToPlainText(msgs[i].content).trim()
-    }
-  }
-  return ''
-}
+export const lastUserPrompt = extractLastUserPrompt
 
 export interface TurnMessageSources {
   /** Request-side messages for the turn (system + user + tool). */
