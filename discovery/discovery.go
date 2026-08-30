@@ -412,6 +412,25 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		count++
 	}
 
+	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model so the
+	// periodic / balance / fast probe paths have a probe target even
+	// when the operator never set one. The pick is "newest model
+	// (provider_models.created_at DESC) under this credential that is
+	// still routable" — see modelcatalog.AutoFillDefaultProbeModel for
+	// the full contract and guard list. Best-effort: a DB error here
+	// is logged but does not abort the rest of the refresh.
+	if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, s.db, cred.ID); autoErr != nil {
+		slog.Warn("discovery: auto-fill default_probe_model failed",
+			"credential_id", cred.ID, "provider", cred.ProviderName, "error", autoErr)
+	} else if picked != "" {
+		slog.Info("discovery: auto-filled default_probe_model",
+			"credential_id", cred.ID,
+			"provider", cred.ProviderName,
+			"default_probe_model", picked,
+			"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+		)
+	}
+
 	s.updateCredentialHealth(ctx, cred.ID, "healthy", "")
 
 	if failed > 0 {
@@ -442,6 +461,22 @@ func (s *Service) discoverFromManifest(ctx context.Context, cred credential) ([]
 			continue
 		}
 		count++
+	}
+	// 2026-08-31 hzx-2 round-4: same auto-fill hook as the API path —
+	// see discoverForCredential. Manifest-only suppliers (e.g. azure-openai)
+	// must also get a default_probe_model the moment their first
+	// manifest comes through.
+	if count > 0 {
+		if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, s.db, cred.ID); autoErr != nil {
+			slog.Warn("discovery: manifest auto-fill default_probe_model failed",
+				"credential_id", cred.ID, "error", autoErr)
+		} else if picked != "" {
+			slog.Info("discovery: manifest auto-filled default_probe_model",
+				"credential_id", cred.ID,
+				"default_probe_model", picked,
+				"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+			)
+		}
 	}
 	return models, count, nil
 }

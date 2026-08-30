@@ -409,6 +409,26 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	}
 
 	upserted, failed = h.enrollCredentialModels(ctx, cred.id, models)
+
+	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model when the
+	// operator never set one. Mirrors the discovery worker so a manual
+	// admin refresh (POST /api/providers/{id}/refresh-models) has the
+	// same effect on operators who onboard a fresh credential mid-flight
+	// and immediately fire the refresh button — they should not have to
+	// wait for the next discovery tick to see a probe target written.
+	// Best-effort: a DB error here is logged but does not fail the
+	// refresh call.
+	if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, h.db, cred.id); autoErr != nil {
+		slog.Warn("admin refresh: auto-fill default_probe_model failed",
+			"credential_id", cred.id, "error", autoErr)
+	} else if picked != "" {
+		slog.Info("admin refresh: auto-filled default_probe_model",
+			"credential_id", cred.id,
+			"default_probe_model", picked,
+			"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+		)
+	}
+
 	h.updateCredHealth(ctx, cred.id, "healthy", "")
 	return upserted, failed, nil
 }

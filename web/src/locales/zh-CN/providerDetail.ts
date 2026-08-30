@@ -137,6 +137,15 @@ export default {
     probeModelUnset: '未设置',
     probeSetManual: '手工设置',
     probeRepick: '立即重选',
+    // 2026-08-31 hzx-2 round-5: inline picker replaces the legacy
+    // native prompt(). <select> when the credential has routable
+    // bindings; free-text input only when cmb is empty.
+    probeSave: '保存',
+    probeClear: '清空',
+    probeModelNoneOption: '（未设置）',
+    probeModelManualPlaceholder: '凭据下无模型，手工输入模型名…',
+    probeModelNoBindingsHint: '当前凭据下没有可用模型绑定；可手工输入或先去"模型"页刷新列表',
+    probeLoadingModels: '加载模型列表…',
     probeRunning: '正在探活…',
     probeCheckNow: '立即检测',
     manualDisabledSuffix: '已禁用',
@@ -197,6 +206,8 @@ export default {
       manual: '🔒 手工',
       autoRequestLog: '📊 请求日志',
       autoDomestic: '🎲 国内随机',
+      autoFeatured: '⭐ 精选模型',
+      autoRefreshLatest: '🆕 最新模型自动填',
       cleared: '— 已清',
     },
     resetAvailConfirm: '重置 {name} 的可用性状态？',

@@ -133,6 +133,15 @@ export default {
     probeModelUnset: "未設定",
     probeSetManual: "手動設定",
     probeRepick: "すぐに再選択",
+    // 2026-08-31 hzx-2 round-5: ネイティブ prompt() を廃止し、モデル
+    // タブと同じインライン UI に置き換え。<select> を cmb のルーティング
+    // 可能バインディングから出し、cmb が空のときだけ手動入力を許可。
+    probeSave: "保存",
+    probeClear: "クリア",
+    probeModelNoneOption: "（未設定）",
+    probeModelManualPlaceholder: "この資格情報にモデルがありません。手動でモデル名を入力…",
+    probeModelNoBindingsHint: "ルーティング可能なバインディングがありません。「モデル」タブで更新するか、手動で入力してください。",
+    probeLoadingModels: "モデル一覧を読み込み中…",
     probeRunning: "プローブ中…",
     probeCheckNow: "今すぐチェック",
     manualDisabledSuffix: "無効",
@@ -184,6 +193,8 @@ export default {
       manual: "🔒 手動",
       autoRequestLog: "📊 リクエストログ",
       autoDomestic: "🎲 国内ランダム",
+      autoFeatured: "⭐ 注目モデル",
+      autoRefreshLatest: "🆕 最新モデル自動設定",
       cleared: "— クリア済み"
     },
     resetAvailConfirm: "{name} の可用性ステータスをリセットしますか？",
