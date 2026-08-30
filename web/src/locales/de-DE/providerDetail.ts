@@ -133,6 +133,15 @@ export default {
     probeModelUnset: "Nicht gesetzt",
     probeSetManual: "Manuell setzen",
     probeRepick: "Jetzt neu auswählen",
+    // 2026-08-31 hzx-2 round-5: ersetzt das native prompt() durch eine
+    // Inline-Auswahl aus den routbaren cmb-Bindings; Freitexteingabe
+    // nur wenn keine cmb-Zeilen vorhanden sind.
+    probeSave: "Speichern",
+    probeClear: "Zurücksetzen",
+    probeModelNoneOption: "(nicht gesetzt)",
+    probeModelManualPlaceholder: "Keine Bindings vorhanden; Modellnamen manuell eingeben…",
+    probeModelNoBindingsHint: "Keine routbaren Bindings. Aktualisieren Sie den Tab Modelle oder geben Sie einen Namen manuell ein.",
+    probeLoadingModels: "Modellliste wird geladen…",
     probeRunning: "Wird geprüft…",
     probeCheckNow: "Jetzt prüfen",
     manualDisabledSuffix: "Deaktiviert",
@@ -184,6 +193,8 @@ export default {
       manual: "🔒 Manuell",
       autoRequestLog: "📊 Anfrage-Log",
       autoDomestic: "🎲 Inlands-Zufall",
+      autoFeatured: "⭐ Ausgewähltes Modell",
+      autoRefreshLatest: "🆕 Neuestes Modell automatisch",
       cleared: "— Geleert"
     },
     resetAvailConfirm: "Verfügbarkeitsstatus für {name} zurücksetzen?",
