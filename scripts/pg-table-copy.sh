@@ -58,6 +58,12 @@ while [[ $# -gt 0 ]]; do
       echo "  --data-only         Only copy data, no schema"
       echo "  --dry-run           Show what would be done"
       echo "  --verbose           Show detailed progress"
+      echo ""
+      echo "Environment:"
+      echo "  PGOPTIONS          Passed to psql (env var only). Recommended:"
+      echo "                       export PGOPTIONS='-c statement_timeout=0'"
+      echo "                     252 enforces a 30s server-side statement_timeout,"
+      echo "                     which trips count(*) and large COPY streams."
       exit 0
       ;;
     *) err "Unknown option: $1"; exit 1 ;;
@@ -118,30 +124,36 @@ fi
 
 # ── Helper functions ──────────────────────────────────────────────────────
 
-# Run psql on source (respect PGOPTIONS for statement_timeout overrides)
+# Run psql on source (respect PGOPTIONS for statement_timeout overrides).
+# Note: PGOPTIONS must be an environment variable — passing it on the psql CLI
+# line is parsed as a query and produces "syntax error at or near
+# statement_timeout". psql honors PGOPTIONS automatically.
 src_psql() {
-  PGPASSWORD="$SRC_PASS" psql ${PGOPTIONS:-} -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
+  PGOPTIONS="$PGOPTIONS" PGPASSWORD="$SRC_PASS" psql -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
 }
 
 # Run psql on target. Local docker → docker exec; remote → network psql.
 tgt_psql() {
   if $TGT_IS_LOCAL_DOCKER; then
-    PGPASSWORD="$TGT_PASS" docker exec -i -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
+    PGOPTIONS="$PGOPTIONS" PGPASSWORD="$TGT_PASS" docker exec -i \
+      -e PGOPTIONS="$PGOPTIONS" -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
       psql -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
   else
-    PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
+    PGOPTIONS="$PGOPTIONS" PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
   fi
 }
 
 # Import a SQL file into the target. Local docker pipes via stdin to docker exec.
+# Caller can pass extra psql args (e.g. --single-transaction) via $2.
 tgt_psql_file() {
   local f="$1"
+  local extra_args="${2:-}"
   if $TGT_IS_LOCAL_DOCKER; then
     docker exec -i -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
-      psql -U "$TGT_USER" -d "$TGT_DB" -v ON_ERROR_STOP=off < "$f"
+      psql -U "$TGT_USER" -d "$TGT_DB" -v ON_ERROR_STOP=off $extra_args < "$f"
   else
     PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" \
-      -v ON_ERROR_STOP=off -f "$f"
+      -v ON_ERROR_STOP=off $extra_args -f "$f"
   fi
 }
 
@@ -391,38 +403,60 @@ else
     IMPORTED=0
     FAILED=0
     SKIPPED=0
-    
+    PARTIAL=0
+    IMPORT_LOG="$WORK_DIR/$TIMESTAMP/data_import.log"
+
     info "Importing data..."
     echo ""
-    
+
     for data_file in "$DATA_DIR"/*.sql; do
       [[ ! -f "$data_file" ]] && continue
-      
+
       tbl_name=$(basename "$data_file" .sql)
       tbl_size=$(du -h "$data_file" | cut -f1)
-      
+
       schema=$(echo "$tbl_name" | cut -d_ -f1)
       tbl=$(echo "$tbl_name" | sed "s/^${schema}_//")
-      
+
       if [[ ! -s "$data_file" ]]; then
         dim "  SKIP: $schema.$tbl (empty)"
         SKIPPED=$((SKIPPED + 1))
         continue
       fi
-      
+
       printf "  %-45s %8s" "$schema.$tbl" "$tbl_size"
 
-      if tgt_psql_file "$data_file" &>/dev/null; then
-        echo -e " ${G}OK${N}"
-        IMPORTED=$((IMPORTED + 1))
+      # --single-transaction makes each table's COPY atomic: any error rolls
+      # back the whole COPY instead of leaving the table partially populated
+      # (which previously caused silent mismatches when stderr was discarded).
+      import_err="$WORK_DIR/$TIMESTAMP/.import_err.$$"
+      if tgt_psql_file "$data_file" "--single-transaction" 2>"$import_err"; then
+        # exit 0 — still need to verify against partial-import signals
+        if grep -qiE '^(ERROR:|ROLLBACK|FATAL:)' "$import_err" 2>/dev/null; then
+          echo -e " ${R}PARTIAL${N}"
+          printf "    [stderr] %s\n" "$(head -3 "$import_err" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
+          cat "$import_err" >> "$IMPORT_LOG"
+          PARTIAL=$((PARTIAL + 1))
+        else
+          echo -e " ${G}OK${N}"
+          IMPORTED=$((IMPORTED + 1))
+        fi
       else
         echo -e " ${R}FAILED${N}"
+        printf "    [stderr] %s\n" "$(head -3 "$import_err" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
+        cat "$import_err" >> "$IMPORT_LOG"
         FAILED=$((FAILED + 1))
       fi
+      rm -f "$import_err"
     done
-    
+
     echo ""
-    ok "Data imported: $IMPORTED succeeded, $FAILED failed, $SKIPPED skipped"
+    if [[ $PARTIAL -gt 0 ]]; then
+      warn "Data imported: $IMPORTED succeeded, $FAILED failed, $PARTIAL partial, $SKIPPED skipped"
+      warn "Partial-import errors logged to: $IMPORT_LOG"
+    else
+      ok "Data imported: $IMPORTED succeeded, $FAILED failed, $PARTIAL partial, $SKIPPED skipped"
+    fi
   fi
 fi
 
