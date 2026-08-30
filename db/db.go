@@ -123,6 +123,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureQualityFixModeSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureProviderSoftDelete(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureApplicationsTable(migCtx); err != nil {
 		return err
 	}
@@ -718,6 +721,45 @@ func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("quality_fix_mode + provider_quality_rollup schema ensured")
+	return nil
+}
+
+// ensureProviderSoftDelete mirrors sql/migrations/startup/627_provider_credential_soft_delete.sql.
+// 2026-08-31 凭据/供应商软删除：
+//   - providers.deleted_at（NULL = 存活行）+ 存活行部分索引
+//   - credentials.status CHECK 增加 'deleted' 终态值
+// 幂等：ADD COLUMN IF NOT EXISTS / 索引 IF NOT EXISTS / 约束先 DROP 再
+// ADD（PG 无法 IF NOT EXISTS 约束，重复执行等价重建，值集不变时无副作用）。
+// 编号 SQL 文件供 DBA 同步流程使用；本函数保证二进制启动即生效，
+// 否则 admin 的 listProviders（WHERE p.deleted_at IS NULL）会在未同步的
+// 库上直接 500。
+func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE providers
+		    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+		CREATE INDEX IF NOT EXISTS idx_providers_live
+		    ON providers (id)
+		    WHERE deleted_at IS NULL;
+
+		ALTER TABLE credentials
+		    DROP CONSTRAINT IF EXISTS credentials_status_check;
+
+		ALTER TABLE credentials
+		    ADD CONSTRAINT credentials_status_check
+		    CHECK (status = ANY (ARRAY[
+		        'active'::text, 'cooling'::text, 'degraded'::text,
+		        'quarantine'::text, 'quota_expired'::text,
+		        'disabled'::text, 'deleted'::text
+		    ]));
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("provider/credential soft-delete schema ensured (migration 627)")
 	return nil
 }
 

@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, type ProviderCredential, type DiagnoseProviderResponse, getProviderRecentProbeFailures } from '../api'
+import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, deleteProvider, type ProviderCredential, type DiagnoseProviderResponse, getProviderRecentProbeFailures } from '../api'
 import OverviewCards from './provider-detail/OverviewCards.vue'
 import CredsTab from './provider-detail/CredsTab.vue'
 import ModelsTab from './provider-detail/ModelsTab.vue'
@@ -134,6 +134,20 @@ async function toggleProviderManual() {
   }
 }
 
+// 2026-08-31: 软删除供应商。级联把该供应商下未删除的凭据置为
+// status='deleted'；服务端返回 200 后立刻回到列表页。
+async function delProvider() {
+  if (!provider.value) return
+  const name = provider.value.display_name
+  if (!confirm(pp('deleteConfirm', { name }))) return
+  try {
+    await deleteProvider(provider.value.id)
+    router.push('/providers')
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : pp('deleteFailed')
+  }
+}
+
 async function runDiagnose() {
   diagLoading.value = true
   diagError.value = ''
@@ -177,6 +191,14 @@ watch(providerId, () => {
         >{{ provider?.manual_disabled ? pp('manualToggle.release') : pp('manualToggle.set') }}</button>
         <button class="btn btn-ghost btn-sm" @click="toggle">{{ provider?.enabled ? pp('disable') : pp('enable') }}</button>
         <button class="btn btn-ghost btn-sm" @click="load">{{ pp('refresh') }}</button>
+        <!-- 2026-08-31: 软删除供应商。终态操作，单独用 danger 样式
+             区分"停用/启用"，避免误点。 -->
+        <button
+          class="btn btn-sm"
+          style="color:var(--danger);border-color:var(--danger)"
+          :title="pp('deleteTitle')"
+          @click="delProvider"
+        >{{ pp('deleteBtn') }}</button>
       </div>
     </div>
 

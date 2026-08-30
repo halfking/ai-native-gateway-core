@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
 import {
   getProviders, createProvider, updateProvider, toggleProvider,
-  addCredential, deleteCredential, getCatalog, getProviderCredentials,
+  addCredential, deleteCredential, deleteProvider, getCatalog, getProviderCredentials,
   updateCredential, checkProvider, checkCredential, diagnoseProvider,
   getBackgroundTasksStatus, probeURL, probeProviderURL,
   type Provider, type CatalogEntry, type ProviderCredential, type CredentialStatus,
@@ -598,6 +598,24 @@ async function toggle(p: Provider) {
   }
 }
 
+// 2026-08-31: 软删除供应商。级联把该供应商下未删除的凭据置为
+// status='deleted'；本地数组中直接剔除该行 + 该供应商下凭据。
+async function delProvider(p: Provider) {
+  if (!confirm(pm('providerDelete.confirm'))) return
+  try {
+    await deleteProvider(p.id)
+    // 从当前列表中移除
+    providers.value = providers.value.filter((row) => row.id !== p.id)
+    // 凭据缓存一并清理，避免引用悬空
+    delete credentialsByProvider.value[p.id]
+    delete credentialLoading.value[p.id]
+    delete credentialSaving.value[p.id]
+    delete credentialErrors.value[p.id]
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : pm('providerDelete.failed')
+  }
+}
+
 // ── Check single provider ────────────────────────────────────────────────────
 const checkingProvider = ref<Record<number, boolean>>({})
 const checkResults = ref<Record<number, string>>({})
@@ -909,6 +927,8 @@ onUnmounted(() => {
                  health_status now live on routability. -->
             <th>{{ pm('filter.routabilityChipGroup') }}</th>
             <th>{{ pm('list.table.status') }}</th>
+            <!-- 2026-08-31: 供应商操作列（行级删除入口） -->
+            <th>{{ pm('list.table.actions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -1014,6 +1034,15 @@ onUnmounted(() => {
               <span v-else class="badge" :class="p.enabled ? 'badge-green' : 'badge-gray'">
                 {{ p.enabled ? pm('list.enabledBadge') : pm('list.disabledBadge') }}
               </span>
+            </td>
+            <!-- 2026-08-31: 行级供应商删除入口。@click.stop 阻止冒泡
+                 触发外层 tr 的 router.push 跳转。 -->
+            <td @click.stop>
+              <button
+                class="btn btn-ghost btn-sm"
+                :title="pm('list.deleteProviderTooltip')"
+                @click="delProvider(p)"
+              >{{ pm('list.deleteProviderBtn') }}</button>
             </td>
           </tr>
         </tbody>

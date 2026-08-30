@@ -56,6 +56,7 @@ export default {
       performanceScore: 'Performance',
       health: 'Santé système',
       status: 'Statut',
+      actions: "Actions"
     },
     channel: {
       official: 'Officiel',
@@ -88,6 +89,8 @@ export default {
     empty: 'Aucun fournisseur configuré pour le moment',
     manualDisabledBadge: 'Désactivé',
     manualDisabledTooltip: 'Ce fournisseur a été désactivé manuellement par l admin',
+    deleteProviderBtn: "Supprimer",
+    deleteProviderTooltip: "Supprimer (soft-delete) ce fournisseur. Le fournisseur et tous ses identifiants seront retirés de toutes les listes et du routage. Action irréversible.",
   },
   create: {
     title: 'Ajouter un fournisseur',
@@ -213,7 +216,7 @@ export default {
       checkBtn: 'Vérifier',
       checkTooltip: 'Exécuter une vérification de santé sur cet identifiant',
       diagnose: 'Diagnostiquer',
-      disable: 'Désactiver',
+      disable: 'Supprimer',
     },
     addDialog: {
       title: 'Ajouter un identifiant — {name}',
@@ -323,5 +326,14 @@ export default {
     table: {
       actions: 'Actions',
     },
+  },
+  // 2026-08-31: provider soft delete
+  providerDelete: {
+    confirm: "Supprimer ce fournisseur ? Tous ses identifiants seront également marqués supprimés et toutes les routes de modèles associées s'arrêteront immédiatement. Action irréversible.",
+    failed: "Échec de la suppression du fournisseur",
+    success: "Fournisseur supprimé",
+  },
+  toast: {
+    providerDeleted: "Fournisseur supprimé",
   },
 }

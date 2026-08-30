@@ -145,6 +145,19 @@ export function toggleProvider(id: number) {
   return req<{ id: number; enabled: boolean }>('PATCH', `/api/providers/${id}/toggle`)
 }
 
+// 2026-08-31: 软删除供应商（DELETE /api/providers/{id}）。
+// 服务端级联将该供应商下所有未删除的凭据置为 status='deleted'，并在
+// providers.deleted_at 上打时间戳。行保留在表里供审计 / FK 完整。
+// 软删除后该供应商不会出现在任何列表与路由中。
+export function deleteProvider(id: number) {
+  return req<{
+    message: string
+    provider_id: number
+    deleted_at: string
+    cascaded_credential_cnt: number
+  }>('DELETE', `/api/providers/${id}`)
+}
+
 export function checkProvider(id: number) {
   return req<{ accepted: boolean; reason: string; run?: { id: number; status: string } }>('POST', `/api/providers/${id}/check`)
 }
@@ -167,7 +180,9 @@ export function probeProviderURL(providerId: number) {
   return req<ProbeURLResult>('POST', `/api/providers/${providerId}/probe-url`)
 }
 
-export type CredentialStatus = 'active' | 'cooling' | 'degraded' | 'quarantine' | 'quota_expired' | 'disabled'
+// 2026-08-31: 增加 'deleted' 终态（migration 627）。前端列表按 status
+// 过滤时不再展示 'deleted' 凭据（服务端 listCredentials 已自动过滤）。
+export type CredentialStatus = 'active' | 'cooling' | 'degraded' | 'quarantine' | 'quota_expired' | 'disabled' | 'deleted'
 
 export interface CredentialQuota {
   id: number
@@ -292,7 +307,12 @@ export function addCredential(
 }
 
 export function deleteCredential(providerId: number, credId: number) {
-  return req<void>('DELETE', `/api/providers/${providerId}/credentials/${credId}`)
+  // 2026-08-31: 软删除凭据 → 服务端把 status 翻转为 'deleted'。
+  // 该终态凭据在 listCredentials、listProviders、路由表等所有列表
+  // 中均不出现；model_offers / credential_keys 等子表保留行。
+  return req<{ message: string; credential_id: number; new_status: string }>(
+    'DELETE', `/api/providers/${providerId}/credentials/${credId}`
+  )
 }
 
 export function updateCredential(providerId: number, credId: number, data: Partial<{
