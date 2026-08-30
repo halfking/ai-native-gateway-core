@@ -47,9 +47,9 @@ BEGIN
     ),
     deleted AS (
         DELETE FROM public.session_bodies_hot h
-        USING to_move m
-        WHERE h.id = m.id
-          AND h.partition_date = m.partition_date
+        USING inserted i
+        WHERE h.id = i.id
+          AND h.partition_date = i.partition_date
         RETURNING 1
     )
     SELECT count(*) INTO moved_count FROM deleted;

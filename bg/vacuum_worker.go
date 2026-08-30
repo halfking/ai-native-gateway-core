@@ -22,6 +22,7 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -29,9 +30,14 @@ import (
 
 // VacuumWorker 定期对 request_logs_bodies 执行 VACUUM FULL。
 type VacuumWorker struct {
-	db     *pgxpool.Pool
-	cancel context.CancelFunc
-	done   chan struct{}
+	db *pgxpool.Pool
+
+	// lifecycle 由 mu 保护
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	started bool
+	stopped bool
 
 	// 配置
 	interval     time.Duration // 执行间隔（默认 7 天）
@@ -43,7 +49,6 @@ type VacuumWorker struct {
 func NewVacuumWorker(db *pgxpool.Pool) *VacuumWorker {
 	return &VacuumWorker{
 		db:          db,
-		done:        make(chan struct{}),
 		interval:    7 * 24 * time.Hour, // 默认每周一次
 		executeHour: 2,                  // 默认凌晨 2 点
 	}
@@ -63,8 +68,18 @@ func (w *VacuumWorker) SetExecuteHour(hour int) {
 
 // Start 启动后台 goroutine。Stop 之前不能重复 Start。
 func (w *VacuumWorker) Start(ctx context.Context) {
-	ctx, w.cancel = context.WithCancel(ctx)
-	go w.run(ctx)
+	w.mu.Lock()
+	if w.started {
+		w.mu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	w.cancel = cancel
+	w.done = make(chan struct{})
+	w.started = true
+	w.mu.Unlock()
+
+	go w.run(runCtx)
 	slog.Info("vacuum worker started",
 		"interval", w.interval,
 		"execute_hour", w.executeHour)
@@ -72,10 +87,22 @@ func (w *VacuumWorker) Start(ctx context.Context) {
 
 // Stop 取消并等待 goroutine 退出。
 func (w *VacuumWorker) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	w.mu.Lock()
+	if !w.started || w.stopped {
+		w.mu.Unlock()
+		return
 	}
-	<-w.done
+	cancel := w.cancel
+	done := w.done
+	w.stopped = true
+	w.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		<-done
+	}
 }
 
 func (w *VacuumWorker) run(ctx context.Context) {
