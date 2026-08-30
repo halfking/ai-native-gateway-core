@@ -589,7 +589,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					// stream right after the finish_reason chunk instead of
 					// emitting a terminal event).
 					if finishReason != "" {
-						if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
+						if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
 							if capture != nil {
 								capture.MarkInterruptedWithReason("anthropic_empty_response")
 							}
@@ -616,7 +616,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					}
 					return outcome
 				}
-				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
+				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
 					if capture != nil {
 						capture.MarkInterruptedWithReason("anthropic_empty_response")
 					}
@@ -625,19 +625,14 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 					}
 					return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
 				}
-				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
-				// audit-24h-20260828-r3 P1-B parity (Phase E): empty-response
-				// check at the normal message_stop terminal path. An
-				// Anthropic stream that closed cleanly but emitted no
-				// semantic bytes and no usage tokens fails over to the
-				// next candidate instead of being recorded as a successful
-				// empty stream.
-				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
+				// audit-24h-20260828-r3 P1-B parity (Phase E): classify a
+				// clean upstream with no semantic output before rendering
+				// response.completed. A pending capturer alone is not evidence
+				// of client disconnect; only an observed write failure enables
+				// completed replay.
+				if anthropic.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
 					if capture != nil {
 						capture.MarkInterruptedWithReason("anthropic_empty_response")
-					}
-					if pc != nil {
-						pc.markInterrupted("anthropic_empty_response")
 					}
 					return StreamOutcome{
 						Interrupted: true,
@@ -647,6 +642,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 						ChunkCount:  chunkCount,
 					}
 				}
+				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			failure := streamReadFailureOutcome(err, chunkCount)

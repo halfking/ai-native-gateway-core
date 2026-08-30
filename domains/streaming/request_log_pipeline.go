@@ -693,12 +693,15 @@ func (c *RequestLogContext) IsTerminal() bool {
 
 func (c *RequestLogContext) MarkLogged() {
 	if c != nil {
+		// Logging completion and request terminality are independent lifecycle
+		// transitions. In particular, an early placeholder or a safety-net
+		// marker must not win the terminal CAS and prevent the real outcome from
+		// being captured later.
 		c.logged = true
-		c.terminal.CompareAndSwap(false, true)
 	}
 }
 func (c *RequestLogContext) IsLogged() bool {
-	return c != nil && (c.logged || c.IsTerminal())
+	return c != nil && c.logged
 }
 
 // MarkProbeHoldStart is invoked by the executor when it enters the
@@ -1025,22 +1028,61 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	return reqLog
 }
 
+// recordTerminalEntryLoss makes a failed terminal-entry build observable. A
+// nil entry must never silently consume the terminal transition: operators need
+// to distinguish a terminal request-log metadata loss from an ordinary outcome.
+func (c *RequestLogContext) recordTerminalEntryLoss(kind, errCode string) {
+	if c == nil {
+		return
+	}
+	cause := errors.New("BuildFailureEntry returned nil")
+	c.recordMetadataLoss("terminal_request_log_entry", cause)
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	if c.handler != nil {
+		c.handler.recordDataLoss(ctx, "terminal_request_log_entry_missing", string(SeverityHigh), c.RequestID,
+			"terminal request log entry missing; outcome="+kind+" error_code="+errCode,
+			map[string]any{"outcome": kind, "error_code": errCode, "terminal": true})
+		return
+	}
+	slog.Error("terminal request log entry missing", "request_id", c.RequestID, "outcome", kind, "error_code", errCode)
+}
+
+// minimalTerminalEntry preserves a terminal row when the rich builder fails.
+// It intentionally contains only stable identity/outcome fields and is not a
+// substitute for the metadata-loss anomaly emitted by recordTerminalEntryLoss.
+func (c *RequestLogContext) minimalTerminalEntry(errCode, status string) *telemetry.RequestLogEntry {
+	if c == nil {
+		return nil
+	}
+	now := time.Now()
+	return &telemetry.RequestLogEntry{
+		RequestID:         c.RequestID,
+		EventAt:           &now,
+		TenantID:          "default",
+		Success:           false,
+		RequestStatus:     strPtr(status),
+		ErrorKind:         strPtr(errCode),
+		FailureDetailCode: strPtr("terminal_request_log_entry_missing"),
+	}
+}
+
 // EmitFailure writes/updates request_logs for a non-success exit.
 func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, credentialID *int) {
 	if c == nil || c.handler == nil {
 		return
 	}
 	markRequestJourneyFailure(c.Request, c.KeyInfo, errCode)
-	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
-	// disconnect three-way race has a single in-process winner. If
-	// another path already claimed the terminal transition, skip the
-	// emit entirely (the DB-level L-2 guard still prevents terminal
-	// regression, but this avoids a double telemetry emit in-process).
-	if !c.SetTerminal("failure", nil) {
-		return
-	}
+	// Build before claiming terminal so a nil entry cannot consume the terminal
+	// CAS. The winner captures the exact entry it emits.
 	reqLog := c.BuildFailureEntry(errCode, errMessage, providerID, credentialID)
 	if reqLog == nil {
+		c.recordTerminalEntryLoss("failure", errCode)
+		reqLog = c.minimalTerminalEntry(errCode, telemetry.RequestStatusFailure)
+	}
+	if !c.SetTerminal("failure", reqLog) {
 		return
 	}
 	if c.handler.requestLogHook != nil {
@@ -1070,13 +1112,14 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 		return
 	}
 	markRequestJourneyFailure(c.Request, c.KeyInfo, errCode)
-	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
-	// disconnect three-way race has a single in-process winner.
-	if !c.SetTerminal("rate_limited", nil) {
-		return
-	}
+	// Build before claiming terminal so a nil entry cannot consume the terminal
+	// CAS. The winner captures the exact entry it emits.
 	reqLog := c.buildEntry(errCode, errMessage, providerID, credentialID, telemetry.RequestStatusRateLimited)
 	if reqLog == nil {
+		c.recordTerminalEntryLoss("rate_limited", errCode)
+		reqLog = c.minimalTerminalEntry(errCode, telemetry.RequestStatusRateLimited)
+	}
+	if !c.SetTerminal("rate_limited", reqLog) {
 		return
 	}
 	if c.handler.requestLogHook != nil {
