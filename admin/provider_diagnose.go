@@ -346,7 +346,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
 		SELECT COALESCE(code,''), COALESCE(base_url,''), COALESCE(protocol,''), enabled
-		FROM providers WHERE id = $1 AND tenant_id = 'default'
+		FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, providerID).Scan(&providerCode, &baseURL, &protocol, &enabled)
 
 	type modelsProbe struct {
@@ -379,7 +379,7 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 		       COALESCE(c.circuit_state,'closed'), COALESCE(c.availability_state,'ready'),
 		       COALESCE(c.health_status,'unknown'), COALESCE(c.consecutive_failures,0),
 		       c.secret_ciphertext
-		FROM credentials c WHERE c.provider_id = $1 AND c.status = 'active' ORDER BY c.id
+		FROM credentials c JOIN providers p ON p.id = c.provider_id WHERE c.provider_id = $1 AND p.deleted_at IS NULL AND c.status = 'active' ORDER BY c.id
 	`, providerID)
 
 	var credDiags []credDiag
