@@ -35,6 +35,7 @@ DRY_RUN=false
 VERBOSE=false
 WORK_DIR="/tmp/pg-table-copy"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+SCHEMA_IMPORT_FAILED=false
 
 # ── Parse args ────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -368,23 +369,42 @@ else
     dim "  [DRY-RUN] Would import schema from $SCHEMA_FILE"
   else
     info "Importing schema to target (with --clean: existing objects are dropped then recreated)..."
-    
+
     tgt_psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$TGT_DB' AND pid<>pg_backend_pid();" &>/dev/null || true
-    
+
+    # pg_dump emits `SELECT pg_catalog.set_config('search_path', '', false)` for
+    # security. On databases carrying the columnar event trigger
+    # (enforce_columnar_trigger -> columnar_insert_only_parents()) — present on
+    # BOTH 252 and local — an empty search_path makes the trigger fail to resolve
+    # its function and EVERY CREATE/DROP TABLE errors out. All objects in the
+    # dump are already schema-qualified, so strip the guard before importing.
+    SCHEMA_IMPORT_FILE="$SCHEMA_FILE"
+    if grep -q "set_config('search_path', '', false)" "$SCHEMA_FILE" 2>/dev/null; then
+      SCHEMA_IMPORT_FILE="$SCHEMA_FILE.fixed"
+      grep -vE "set_config\('search_path', '', false\)" "$SCHEMA_FILE" > "$SCHEMA_IMPORT_FILE"
+      ok "Stripped pg_dump search_path='' guard (it breaks the columnar event trigger on import)"
+    fi
+
     # --clean mode emits per-object DROP IF EXISTS; "does not exist, skipping"
     # notices are expected. Capture full output for diagnosis, show tail + errors.
-    if tgt_psql_file "$SCHEMA_FILE" > "$WORK_DIR/$TIMESTAMP/schema_import.log" 2>&1; then
-      ok "Schema imported"
+    SCHEMA_IMPORT_LOG="$WORK_DIR/$TIMESTAMP/schema_import.log"
+    import_exit=0
+    tgt_psql_file "$SCHEMA_IMPORT_FILE" > "$SCHEMA_IMPORT_LOG" 2>&1 || import_exit=$?
+
+    # ALWAYS scan the log for real errors. With ON_ERROR_STOP=off psql exits 0
+    # even when statements fail, so the exit code alone proves nothing: the
+    # 2026-08-26 sync reported "Schema imported" while the DDL had actually
+    # failed on the columnar trigger, leaving stale schema behind (this hid
+    # migrations 573/610 and was only caught by the 2026-08-31 structure audit).
+    SCHEMA_ERRORS=$(grep -cE "(ERROR|FATAL):" "$SCHEMA_IMPORT_LOG" 2>/dev/null || true)
+    SCHEMA_ERRORS=${SCHEMA_ERRORS:-0}
+    if [ "$import_exit" -ne 0 ] || [ "$SCHEMA_ERRORS" -gt 0 ]; then
+      err "Schema import FAILED (psql exit=$import_exit, $SCHEMA_ERRORS error lines):"
+      grep -E "(ERROR|FATAL):" "$SCHEMA_IMPORT_LOG" | head -15
+      err "Full log: $SCHEMA_IMPORT_LOG"
+      SCHEMA_IMPORT_FAILED=true
     else
-      # psql may exit non-zero on dropped-object errors; surface real failures.
-      err_count=$(grep -ciE "error:|fatal" "$WORK_DIR/$TIMESTAMP/schema_import.log" 2>/dev/null || echo 0)
-      if [ "$err_count" -gt 0 ]; then
-        warn "Schema import reported $err_count errors (showing first 15):"
-        grep -iE "error:|fatal" "$WORK_DIR/$TIMESTAMP/schema_import.log" | head -15
-        warn "Full log: $WORK_DIR/$TIMESTAMP/schema_import.log"
-      else
-        ok "Schema imported (non-zero exit was only 'does not exist, skipping' notices)"
-      fi
+      ok "Schema imported (0 error lines; 'does not exist, skipping' notices are expected with --clean)"
     fi
   fi
 fi
@@ -546,4 +566,13 @@ echo "  Config:  $SOURCE_CONFIG → $TARGET_CONFIG"
 echo "  Tables:  ${#HOT_TABLES[@]} hot (schema-only) + ${#DATA_TABLES[@]} normal (schema+data)"
 echo "  Dump:    $WORK_DIR/$TIMESTAMP/"
 echo ""
+
+if $SCHEMA_IMPORT_FAILED; then
+  err "pg-table-copy completed WITH SCHEMA IMPORT ERRORS — target schema may be stale or partial."
+  err "Do NOT trust migration-tracking tables copied as data: they can claim migrations"
+  err "are applied while the DDL never landed. Fix the errors above and re-run, then"
+  err "verify with scripts/local-dev/verify-db-consistency.sh (252↔local)."
+  exit 1
+fi
+
 ok "pg-table-copy complete!"
