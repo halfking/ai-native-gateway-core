@@ -3991,6 +3991,27 @@ func main() {
 		slog.Info("CHECKPOINT: before partitionManager.Start")
 		partitionManager.Start(context.Background())
 		slog.Info("CHECKPOINT: after partitionManager.Start")
+
+		// 2026-08-30 审计修复 P1-7: VACUUM worker for request_logs_bodies
+		// Runs VACUUM FULL weekly (default: Sunday 2am) to reclaim TOAST space.
+		vacuumWorker := bg.NewVacuumWorker(dbConn.Pool())
+		// Allow environment override for testing or custom schedules
+		if intervalHours := os.Getenv("LLM_GATEWAY_VACUUM_INTERVAL_HOURS"); intervalHours != "" {
+			if h, err := strconv.Atoi(intervalHours); err == nil && h > 0 {
+				vacuumWorker.SetInterval(time.Duration(h) * time.Hour)
+				slog.Info("vacuum worker: interval overridden by env", "hours", h)
+			}
+		}
+		if executeHour := os.Getenv("LLM_GATEWAY_VACUUM_HOUR"); executeHour != "" {
+			if h, err := strconv.Atoi(executeHour); err == nil && h >= 0 && h <= 23 {
+				vacuumWorker.SetExecuteHour(h)
+				slog.Info("vacuum worker: execute hour overridden by env", "hour", h)
+			}
+		}
+		vacuumWorker.Start(context.Background())
+		defer vacuumWorker.Stop()
+		slog.Info("vacuum worker started", "default_schedule", "weekly Sunday 2am")
+
 		// 2026-08-07 OmniFree: free quota reset/cleanup background workers. 只有
 		// OMNIFREE_ENABLED=true 且 dbConn 可用时才启动; 与 chatHandler.SetOmniFree
 		// 协同工作 (records/校正 free_resource 配额窗口).
