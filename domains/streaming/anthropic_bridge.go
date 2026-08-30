@@ -439,14 +439,12 @@ func StreamAnthropicPassthroughWithDiagnostics(
 	// as non-empty would suppress fail-over and silently 200 an empty
 	// assistant turn.
 	//
-	// pc != nil means the caller has set up a pending replay buffer for
-	// client-disconnect recovery (cmd/gateway/main.go wires one in for
-	// captureable requests). The replay buffer MUST see a completed body
-	// even on empty streams, so we skip the empty-response interrupt and
-	// let pc.finalize() run with the captured-but-empty bytes — the executor
-	// downstream (executor_anthropic.go) is the authority on whether to
-	// re-attempt vs. surface the empty body to the client.
-	if pc == nil && semanticBlockCount == 0 && (capture == nil || (capture.OutputTokens == nil && capture.InputTokens == nil)) {
+	// A pending capturer alone is not evidence of a client disconnect: it is
+	// installed before the upstream starts and may be present on ordinary
+	// requests. Only an observed write failure enables completed replay.
+	// Therefore a clean upstream with zero semantic content remains an
+	// empty-response interruption even when pc != nil.
+	if !clientWriter.clientDisconnected && semanticBlockCount == 0 {
 		if capture != nil {
 			capture.MarkInterruptedWithReason("anthropic_empty_response")
 		}
@@ -934,94 +932,94 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			return outcome
 		}
 
-			if err != nil {
-				if errors.Is(err, io.EOF) {
-					// EOF without an Anthropic message_stop is an upstream
-					// interruption, not a successful completion. Only a stream
-					// that supplied its protocol terminal event may finalize.
-					if !messageStopReceived {
-						// 2026-08-29: Check if EOF happened during tool execution
-						if toolCallValidator.HasPendingToolUses() {
-							slog.Warn("anthropic_to_openai: EOF during tool execution",
-								"request_id", requestID,
-								"pending_tool_uses", toolCallValidator.PendingCount(),
-								"client_model", clientModel,
-							)
-							if capture != nil {
-								capture.MarkInterruptedWithReason("incomplete_tool_call_interrupted")
-							}
-							kind, resumable, reason := classifyIncompleteToolCall(false)
-							metrics.Global().RecordIncompleteToolCall(clientModel, reason)
-							outcome = StreamOutcome{
-								Interrupted: true,
-								Reason:      reason,
-								Kind:        kind,
-								Resumable:   resumable,
-								ChunkCount:  chunkCount,
-							}
-							return outcome
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				// EOF without an Anthropic message_stop is an upstream
+				// interruption, not a successful completion. Only a stream
+				// that supplied its protocol terminal event may finalize.
+				if !messageStopReceived {
+					// 2026-08-29: Check if EOF happened during tool execution
+					if toolCallValidator.HasPendingToolUses() {
+						slog.Warn("anthropic_to_openai: EOF during tool execution",
+							"request_id", requestID,
+							"pending_tool_uses", toolCallValidator.PendingCount(),
+							"client_model", clientModel,
+						)
+						if capture != nil {
+							capture.MarkInterruptedWithReason("incomplete_tool_call_interrupted")
 						}
+						kind, resumable, reason := classifyIncompleteToolCall(false)
+						metrics.Global().RecordIncompleteToolCall(clientModel, reason)
 						outcome = StreamOutcome{
 							Interrupted: true,
-							Reason:      "eof_without_done",
-							Kind:        errorsx.KindUpstreamDown,
-							Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+							Reason:      reason,
+							Kind:        kind,
+							Resumable:   resumable,
 							ChunkCount:  chunkCount,
-						}
-						if capture != nil {
-							capture.MarkInterruptedWithReason(outcome.Reason)
 						}
 						return outcome
 					}
-					// SR-W1: pending REAL text must still be delivered even while
-					// the gate holds an uncommitted attempt — delivering it
-					// commits the attempt and the closing usage/done chunks
-					// follow. An EOF with nothing delivered (empty stream) stays
-					// droppable: no completed stream is fabricated.
-					if gate.MayWriteTerminal() || bufferedText.Len() > 0 {
-						flushBufferedText()
-						// Incremental integrity breach on the flushed text: cut
-						// before emitting the closing usage/done chunks so the
-						// executor can failover. Mirrors stream.go.
-						if capture != nil && capture.IntegrityBreached() {
-							return integrityBreachOutcome(capture, chunkCount)
+					outcome = StreamOutcome{
+						Interrupted: true,
+						Reason:      "eof_without_done",
+						Kind:        errorsx.KindUpstreamDown,
+						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+						ChunkCount:  chunkCount,
+					}
+					if capture != nil {
+						capture.MarkInterruptedWithReason(outcome.Reason)
+					}
+					return outcome
+				}
+				// SR-W1: pending REAL text must still be delivered even while
+				// the gate holds an uncommitted attempt — delivering it
+				// commits the attempt and the closing usage/done chunks
+				// follow. An EOF with nothing delivered (empty stream) stays
+				// droppable: no completed stream is fabricated.
+				if gate.MayWriteTerminal() || bufferedText.Len() > 0 {
+					flushBufferedText()
+					// Incremental integrity breach on the flushed text: cut
+					// before emitting the closing usage/done chunks so the
+					// executor can failover. Mirrors stream.go.
+					if capture != nil && capture.IntegrityBreached() {
+						return integrityBreachOutcome(capture, chunkCount)
+					}
+					// 2026-08-29: Validate tool call completeness on clean EOF
+					if err := toolCallValidator.ValidateComplete(); err != nil {
+						slog.Warn("anthropic_to_openai: incomplete tool call on EOF",
+							"request_id", requestID,
+							"error", err.Error(),
+							"client_model", clientModel,
+						)
+						if capture != nil {
+							capture.MarkInterruptedWithReason("incomplete_tool_call")
 						}
-						// 2026-08-29: Validate tool call completeness on clean EOF
-						if err := toolCallValidator.ValidateComplete(); err != nil {
-							slog.Warn("anthropic_to_openai: incomplete tool call on EOF",
-								"request_id", requestID,
-								"error", err.Error(),
-								"client_model", clientModel,
-							)
-							if capture != nil {
-								capture.MarkInterruptedWithReason("incomplete_tool_call")
-							}
-							kind, resumable, reason := classifyIncompleteToolCall(true)
-							metrics.Global().RecordIncompleteToolCall(clientModel, reason)
-							return StreamOutcome{
-								Interrupted: true,
-								Reason:      reason,
-								Kind:        kind,
-								Resumable:   resumable,
-								ChunkCount:  chunkCount,
-							}
-						}
-						if gate.MayWriteTerminal() {
-							if inputTokens > 0 || outputTokens > 0 {
-								writeChunk(&ir.StreamChunk{
-									Type: ir.ChunkTypeUsage,
-									Usage: &ir.StreamUsage{
-										PromptTokens:     inputTokens,
-										CompletionTokens: outputTokens,
-										TotalTokens:      inputTokens + outputTokens,
-									},
-									FinishReason:   "stop",
-									SourceProtocol: ir.ProtocolAnthropicMessages,
-								})
-							}
-							writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
+						kind, resumable, reason := classifyIncompleteToolCall(true)
+						metrics.Global().RecordIncompleteToolCall(clientModel, reason)
+						return StreamOutcome{
+							Interrupted: true,
+							Reason:      reason,
+							Kind:        kind,
+							Resumable:   resumable,
+							ChunkCount:  chunkCount,
 						}
 					}
+					if gate.MayWriteTerminal() {
+						if inputTokens > 0 || outputTokens > 0 {
+							writeChunk(&ir.StreamChunk{
+								Type: ir.ChunkTypeUsage,
+								Usage: &ir.StreamUsage{
+									PromptTokens:     inputTokens,
+									CompletionTokens: outputTokens,
+									TotalTokens:      inputTokens + outputTokens,
+								},
+								FinishReason:   "stop",
+								SourceProtocol: ir.ProtocolAnthropicMessages,
+							})
+						}
+						writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
+					}
+				}
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			failure := streamReadFailureOutcome(err, chunkCount)
@@ -1242,60 +1240,60 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 			}
 
-			case ir.ChunkTypeDone:
-				messageStopReceived = true
-				flushBufferedText()
-				
-				// 2026-08-29: Validate tool call completeness before marking stream done
-				if err := toolCallValidator.ValidateComplete(); err != nil {
-					slog.Warn("anthropic_to_openai: incomplete tool call detected",
-						"request_id", requestID,
-						"error", err.Error(),
-						"pending_count", toolCallValidator.PendingCount(),
-						"client_model", clientModel,
-					)
-					if capture != nil {
-						capture.MarkInterruptedWithReason("incomplete_tool_call")
-					}
-					kind, resumable, reason := classifyIncompleteToolCall(true)
-					metrics.Global().RecordIncompleteToolCall(clientModel, reason)
-					return StreamOutcome{
-						Interrupted: true,
-						Reason:      reason,
-						Kind:        kind,
-						Resumable:   resumable,
-						ChunkCount:  chunkCount,
-					}
+		case ir.ChunkTypeDone:
+			messageStopReceived = true
+			flushBufferedText()
+
+			// 2026-08-29: Validate tool call completeness before marking stream done
+			if err := toolCallValidator.ValidateComplete(); err != nil {
+				slog.Warn("anthropic_to_openai: incomplete tool call detected",
+					"request_id", requestID,
+					"error", err.Error(),
+					"pending_count", toolCallValidator.PendingCount(),
+					"client_model", clientModel,
+				)
+				if capture != nil {
+					capture.MarkInterruptedWithReason("incomplete_tool_call")
 				}
-				
-				// Empty-response detection (audit-24h-20260828-r4 parity):
-				// surface Anthropic-compat streams that close cleanly but emit
-				// zero semantic bytes. The non-stream detector
-				// (executor_anthropic.go) already returns KindEmptyResponse for
-				// the parallel case; the live Q3 translator now mirrors it.
-				//
-				// Per the documented contract on anthropic.IsAnthropicStreamEmpty,
-				// an upstream that reports usage in message_start but no content
-				// IS empty (not just absence of usage). The r3 transformation
-				// path's stricter `inputTokens==0 && outputTokens==0` requirement
-				// was a regression — restored here so Q3 / Q-E / non-stream all
-				// agree on the same shape.
-				//
-				// hasPendingReplay (pc != nil) short-circuits the interrupt: the
-				// caller wired a pending replay buffer for client-disconnect
-				// recovery and MUST see a completed body even on empty streams.
-				// The downstream executor (executor_anthropic.go) decides whether
-				// to re-attempt or surface the empty body. Without this guard
-				// every pc-equipped empty fixture (e.g.
-				// TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer) was
-				// wrongly marked as empty_response and the [DONE] chunk was
-				// never written to the capturer.
-				if anthropictransform.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, pc != nil) {
-					if capture != nil {
-						capture.MarkInterruptedWithReason("anthropic_empty_response")
-					}
-					return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
+				kind, resumable, reason := classifyIncompleteToolCall(true)
+				metrics.Global().RecordIncompleteToolCall(clientModel, reason)
+				return StreamOutcome{
+					Interrupted: true,
+					Reason:      reason,
+					Kind:        kind,
+					Resumable:   resumable,
+					ChunkCount:  chunkCount,
 				}
+			}
+
+			// Empty-response detection (audit-24h-20260828-r4 parity):
+			// surface Anthropic-compat streams that close cleanly but emit
+			// zero semantic bytes. The non-stream detector
+			// (executor_anthropic.go) already returns KindEmptyResponse for
+			// the parallel case; the live Q3 translator now mirrors it.
+			//
+			// Per the documented contract on anthropic.IsAnthropicStreamEmpty,
+			// an upstream that reports usage in message_start but no content
+			// IS empty (not just absence of usage). The r3 transformation
+			// path's stricter `inputTokens==0 && outputTokens==0` requirement
+			// was a regression — restored here so Q3 / Q-E / non-stream all
+			// agree on the same shape.
+			//
+			// hasPendingReplay (pc != nil) short-circuits the interrupt: the
+			// caller wired a pending replay buffer for client-disconnect
+			// recovery and MUST see a completed body even on empty streams.
+			// The downstream executor (executor_anthropic.go) decides whether
+			// to re-attempt or surface the empty body. Without this guard
+			// every pc-equipped empty fixture (e.g.
+			// TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer) was
+			// wrongly marked as empty_response and the [DONE] chunk was
+			// never written to the capturer.
+			if anthropictransform.IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, clientWriter.clientDisconnected) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("anthropic_empty_response")
+				}
+				return StreamOutcome{Interrupted: true, Reason: "anthropic_empty_response", Kind: errorsx.KindEmptyResponse, Resumable: true, ChunkCount: chunkCount}
+			}
 			if finishReason != nil && *finishReason == "tool_calls" && !hasEmittedToolCalls {
 				slog.Warn("inconsistent_tool_calls_finish_reason",
 					"request_id", requestID,

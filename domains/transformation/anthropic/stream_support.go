@@ -94,39 +94,19 @@ type StreamOutcome struct {
 // matching the non-stream semantics in isEmptyAnthropicMessagesResponse
 // (which checks content array length, not usage token presence).
 //
-// hasPendingReplay (introduced 2026-08-29 post-merge audit): when the
-// caller has wired a pending replay buffer for client-disconnect
-// recovery, an empty-response interrupt MUST NOT fire — the executor
-// downstream (executor_anthropic.go) is the sole authority on whether
-// to re-attempt or surface the empty body. Without this guard every
-// pc-equipped empty fixture (TestStreamAnthropicSSEToResponses_DropsOpenAIFormatData,
-// TestStreamAnthropicPassthroughContinuesAfterClientDisconnect, …) was
-// wrongly marked as empty_response.
-func IsAnthropicStreamEmpty(emittedContent bool, inputTokens, outputTokens int, hasPendingReplay bool) bool {
-	if hasPendingReplay {
-		return false
-	}
-	if emittedContent {
-		return false
-	}
-	// Belt-and-suspenders (audit-24h-20260828-r3 P1-B legacy semantics):
-	// when usage tokens are present the upstream clearly executed a turn,
-	// so do not classify it as empty even if no content bytes reached the
-	// client. This preserves the r3 fixture contract (e.g.
-	// TestAnthropicToOpenAIStream_ToolCallIDFallback which sends a
-	// malformed content_block_delta that the IR parser drops, leaving
-	// only the message_start usage on the wire) while still flagging the
-	// dangerous "no content AND no usage" case as empty.
-	if inputTokens > 0 || outputTokens > 0 {
-		return false
-	}
-	// True-empty: no semantic bytes AND no usage tokens. Some
-	// Anthropic-compatibility relays (notably minimax via the Anthropic
-	// bridge) emit `usage` in `message_start` with zero output content;
-	// those were the r4 audit target. Here both signals are absent, so
-	// the upstream almost certainly failed mid-stream and the gateway
-	// must surface it as empty so the executor can fail over.
-	return true
+// clientDisconnectPending is deliberately distinct from merely having a
+// pending capturer. A capturer is also installed for ordinary requests so a
+// later client disconnect can be replayed; it must not turn a clean upstream
+// empty response into a success. Only a stream that actually observed a
+// client write failure may preserve completed-replay semantics.
+//
+// Usage tokens do not make a response semantically non-empty. Providers can
+// report prompt/output accounting while returning no assistant content; the
+// candidate loop must receive KindEmptyResponse for that shape as well.
+func IsAnthropicStreamEmpty(emittedContent bool, inputTokens, outputTokens int, clientDisconnectPending bool) bool {
+	_ = inputTokens
+	_ = outputTokens
+	return !emittedContent && !clientDisconnectPending
 }
 
 // EmptyResponseStreamOutcome builds the standard StreamOutcome returned
@@ -479,6 +459,24 @@ func (sw *StreamWriter) Cancelled() bool {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	return sw.cancelled || sw.ctx.Err() != nil
+}
+
+// legacyStreamWriterErr and legacyStreamWriterCancelled expose the concrete
+// writer's disconnect state without coupling the converter to StreamWriter.
+// Legacy callers may still pass a plain ResponseWriter, in which case the
+// absence of an error is the only available signal.
+func legacyStreamWriterErr(w http.ResponseWriter) error {
+	if sw, ok := w.(*StreamWriter); ok {
+		return sw.Err()
+	}
+	return nil
+}
+
+func legacyStreamWriterCancelled(w http.ResponseWriter) bool {
+	if sw, ok := w.(*StreamWriter); ok {
+		return sw.Cancelled()
+	}
+	return false
 }
 
 // DeriveStreamContext returns a context bounded by the effective stream

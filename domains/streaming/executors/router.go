@@ -437,6 +437,10 @@ func (r *Router) planCandidates(
 					"degraded_count", len(degradedCandidates),
 					"reasons", reasonCounts,
 					"state_backend", stateBackend.Name(),
+					"degraded_override", true,
+					"route_override", "degraded_override",
+					"fallback_reason", "transient_unavailable",
+					"effective_route_status", "degraded",
 				)
 				return degradedCandidates
 			}
@@ -477,9 +481,16 @@ func (r *Router) planCandidates(
 			fallback := r.chooseLeastCooledCandidate(candidates)
 			if fallback != nil {
 				slog.Warn("router: all candidates in cooldown, falling back to least-cooled",
+					"request_id", requestID,
 					"credential_id", fallback.CredentialID,
 					"model", fallback.RawModel,
-					"provider_id", fallback.ProviderID)
+					"provider_id", fallback.ProviderID,
+					"cooling_fallback", true,
+					"degraded_override", true,
+					"route_override", "cooling_fallback",
+					"fallback_reason", "all_candidates_cooling",
+					"effective_route_status", "degraded",
+				)
 				met.RoutingCoolingFallbackTotal.WithLabelValues("all_unusable").Inc()
 				available = []provider.Candidate{*fallback}
 			}
@@ -1646,7 +1657,12 @@ func (r *Router) tryDegradedMode(ctx context.Context, candidates []provider.Cand
 				"provider_id", c.ProviderID,
 				"model", c.RawModel,
 				"reason", reason,
+				"degraded_override", true,
+				"route_override", "degraded_override",
+				"fallback_reason", reason,
+				"effective_route_status", "degraded",
 			)
+
 			degradedCandidates = append(degradedCandidates, c)
 		}
 	}

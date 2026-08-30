@@ -122,3 +122,10 @@
 |-----------|------|---------|--------|
 | 623 | `623_candidate_failure_logs_hot_tenant_scope.sql` | `45f90eb7703c12ab476fa3b0e25181f2e4c33fd87919ece59eb7628e79681073` | applied+verified |
 
+## 2026-08-29T19:07:20Z — deploy 245 build_seq 1818 (e10c8425)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 624 | `624_candidate_failure_logs_promote_atomic_v2.sql` | `701601cbb4597af85f7b43ea3398beac0fe9e215be6be21c4385b5843ce27738` | applied+verified |
+| 625 | `625_session_bodies_unified_explicit.sql` | `27fe0b23d1be8940d77a0fd876eec17831f9310c66f6638ee2da12aa68c45390` | applied+verified |
+

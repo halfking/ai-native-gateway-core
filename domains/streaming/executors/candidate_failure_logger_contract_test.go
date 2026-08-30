@@ -16,7 +16,7 @@ func TestCandidateFailureWriterInsertContract(t *testing.T) {
 	t.Cleanup(mock.Close)
 
 	mock.ExpectExec(regexp.QuoteMeta(candidateFailureInsertSQL)).
-		WithArgs("req-1", "tenant-1", "sess-1", 7, 9, "model-1", 2, "network", "[network] boom: <nil>", pgxmock.AnyArg(), "", "", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), nil).
+		WithArgs("req-1", "tenant-1", "sess-1", 7, 9, "model-1", 2, "network", "[network] boom: <nil>", pgxmock.AnyArg(), "", "", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	w := &CandidateFailureWriter{pool: mock}

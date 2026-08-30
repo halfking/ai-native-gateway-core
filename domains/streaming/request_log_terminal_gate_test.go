@@ -128,3 +128,33 @@ func TestRequestLogContextTerminalGate_EmptyKindRejects(t *testing.T) {
 		t.Fatalf("TerminalKind() = %q, want \"\"", got)
 	}
 }
+
+// MarkLogged records only that telemetry was emitted. It must not claim the
+// terminal CAS: a later success/failure/disconnect outcome still needs to win.
+func TestRequestLogContextTerminalGate_MarkLoggedDoesNotTerminalize(t *testing.T) {
+	ctx := &RequestLogContext{}
+	ctx.MarkLogged()
+	if !ctx.IsLogged() {
+		t.Fatal("MarkLogged must set IsLogged")
+	}
+	if ctx.IsTerminal() {
+		t.Fatal("MarkLogged must not set IsTerminal")
+	}
+	if !ctx.SetTerminal("failure", nil) {
+		t.Fatal("terminal outcome must remain claimable after MarkLogged")
+	}
+}
+
+func TestRequestLogContext_MinimalTerminalEntry(t *testing.T) {
+	ctx := &RequestLogContext{RequestID: "req-minimal-terminal"}
+	entry := ctx.minimalTerminalEntry("serialization_error", "failure")
+	if entry == nil || entry.RequestID != ctx.RequestID || entry.Success {
+		t.Fatalf("minimal entry = %+v", entry)
+	}
+	if entry.RequestStatus == nil || *entry.RequestStatus != "failure" {
+		t.Fatalf("RequestStatus = %v, want failure", entry.RequestStatus)
+	}
+	if entry.FailureDetailCode == nil || *entry.FailureDetailCode != "terminal_request_log_entry_missing" {
+		t.Fatalf("FailureDetailCode = %v", entry.FailureDetailCode)
+	}
+}

@@ -40,10 +40,10 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 		results: []*executors.ExecuteResult{
 			nil,
 			{
-				LatencyMs:    42,
-				RequestBody:  []byte(`{"model":"glm-5.2"}`),
-				InboundBody:  []byte(`{"model":"glm-5.2"}`),
-				Candidate:    provider.Candidate{ProviderID: 12763, CredentialID: 36, RawModel: "glm-5.2"},
+				LatencyMs:      42,
+				RequestBody:    []byte(`{"model":"glm-5.2"}`),
+				InboundBody:    []byte(`{"model":"glm-5.2"}`),
+				Candidate:      provider.Candidate{ProviderID: 12763, CredentialID: 36, RawModel: "glm-5.2"},
 				RoutingTracker: executors.NewRoutingAttemptsTracker(),
 			},
 		},
@@ -81,6 +81,11 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 		switch rec["msg"] {
 		case "survival_attempt_outcome":
 			gotOutcome = true
+			for _, field := range []string{"request_id", "attempt_id", "attempt", "route_override", "fallback_reason", "effective_route_status"} {
+				if _, ok := rec[field]; !ok {
+					t.Errorf("survival_attempt_outcome missing stable field %q: %v", field, rec)
+				}
+			}
 			if rec["provider_id"] == nil {
 				t.Errorf("survival_attempt_outcome missing provider_id: %v", rec)
 			}
@@ -89,6 +94,11 @@ func TestSurvivalCoordinator_LogsCoverAttemptDiscardAndTerminal(t *testing.T) {
 			}
 		case "survival_attempt_discarded":
 			gotDiscarded = true
+			for _, field := range []string{"request_id", "attempt_id", "attempt", "route_override", "fallback_reason", "effective_route_status"} {
+				if _, ok := rec[field]; !ok {
+					t.Errorf("survival_attempt_discarded missing stable field %q: %v", field, rec)
+				}
+			}
 			if _, ok := rec["buffer_bytes"]; !ok {
 				t.Errorf("survival_attempt_discarded missing buffer_bytes: %v", rec)
 			}
@@ -134,7 +144,7 @@ func TestSurvivalCoordinator_LogsCaptureResumeBlocked(t *testing.T) {
 		credentialID: 21,
 	}
 	co := &SurvivalCoordinator{
-		Exec: executor,
+		Exec:     executor,
 		Protocol: ProtocolOpenAIChat,
 		Options: SurvivalOptions{
 			Deadline:   30 * time.Minute,
@@ -177,6 +187,11 @@ func TestSurvivalCoordinator_LogsCaptureResumeBlocked(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), `"raw_model":"minimax-m3"`) {
 		t.Errorf("survival_resume_blocked missing raw_model=minimax-m3: %s", buf.String())
+	}
+	for _, field := range []string{"request_id", "attempt_id", "attempt", "route_override", "fallback_reason", "effective_route_status"} {
+		if !strings.Contains(buf.String(), `"`+field+`"`) {
+			t.Errorf("survival_resume_blocked missing stable field %q: %s", field, buf.String())
+		}
 	}
 }
 
