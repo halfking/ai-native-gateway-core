@@ -4000,12 +4000,18 @@ func main() {
 			if h, err := strconv.Atoi(intervalHours); err == nil && h > 0 {
 				vacuumWorker.SetInterval(time.Duration(h) * time.Hour)
 				slog.Info("vacuum worker: interval overridden by env", "hours", h)
+			} else {
+				slog.Warn("vacuum worker: invalid LLM_GATEWAY_VACUUM_INTERVAL_HOURS, using default 168",
+					"value", intervalHours, "default_hours", 168)
 			}
 		}
 		if executeHour := os.Getenv("LLM_GATEWAY_VACUUM_HOUR"); executeHour != "" {
 			if h, err := strconv.Atoi(executeHour); err == nil && h >= 0 && h <= 23 {
 				vacuumWorker.SetExecuteHour(h)
 				slog.Info("vacuum worker: execute hour overridden by env", "hour", h)
+			} else {
+				slog.Warn("vacuum worker: invalid LLM_GATEWAY_VACUUM_HOUR, using default 2",
+					"value", executeHour, "default_hour", 2)
 			}
 		}
 		vacuumWorker.Start(context.Background())

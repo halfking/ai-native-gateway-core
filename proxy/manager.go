@@ -515,10 +515,12 @@ func (m *Manager) ReloadCache() error {
 	}
 
 	// 原子替换：先删除不存在的订阅，再更新/新增
+	// 审计修复 (2026-08-30)：同步清理 cacheLocks 中的孤儿锁，防止长期运行的内存泄漏
 	m.nodesCache.Range(func(key, _ interface{}) bool {
 		subID := key.(int)
 		if _, exists := nodesBySubscription[subID]; !exists {
 			m.nodesCache.Delete(subID)
+			m.cacheLocks.Delete(subID)
 		}
 		return true
 	})
@@ -1020,6 +1022,9 @@ func (m *Manager) getNodesFromCache(subscriptionID int) []*Node {
 // asynchronous refresh is in flight, so callers neither block nor create a
 // database thundering herd.
 func (m *Manager) getNodesFromCacheWithTTL(subscriptionID int, now time.Time) ([]*Node, bool, bool) {
+	mu := m.getCacheLock(subscriptionID)
+	mu.RLock()
+	defer mu.RUnlock()
 	value, ok := m.nodesCache.Load(subscriptionID)
 	if !ok {
 		return nil, false, false
@@ -1046,6 +1051,9 @@ func (m *Manager) refreshCacheAsync(subscriptionID int) {
 
 // setCacheWithTTL 设置缓存，带 TTL（阶段 2 优化）
 func (m *Manager) setCacheWithTTL(subscriptionID int, nodes []*Node, now time.Time) {
+	mu := m.getCacheLock(subscriptionID)
+	mu.Lock()
+	defer mu.Unlock()
 	entry := &cacheEntry{
 		nodes:     cloneNodes(nodes),
 		expiresAt: now.Add(m.cacheTTL),
