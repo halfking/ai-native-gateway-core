@@ -69,6 +69,19 @@ comm -13 /tmp/252.txt /tmp/local.txt   # local extras (should be empty after ren
 kill $(lsof -tiTCP:15432 -sTCP:LISTEN)
 ```
 
+### Verify consistency (script)
+
+`scripts/local-dev/verify-db-consistency.sh` wraps the inventory + structure diff above
+and classifies every difference as either **expected** (hot/partition tables) or **real drift**:
+
+```bash
+bash scripts/local-dev/verify-db-consistency.sh --verify   # read-only; sets up + tears down tunnel
+# exit 0 = CONSISTENT (only expected hot/partition tables differ)
+# exit 1 = INCONSISTENT (real drift found)
+```
+
+It also has a gated `--reconcile` mode (see §7) that pushes local feature-table DDL to 252.
+
 ---
 
 ## 2. Hot Table Filter (default behavior)
@@ -144,6 +157,51 @@ done < /tmp/local-only-tables.txt
 docker exec -i llm-gateway-pg psql -U llm_gateway -d llm_gateway < /tmp/rename.sql
 ```
 
+### 4.4 `pg_dump` emits `SET search_path=''` — breaks 252's columnar event trigger
+
+When you `pg_dump --schema-only` and pipe the SQL into 252, the dump sets
+`SELECT pg_catalog.set_config('search_path', '', false)` for security. 252 has an
+event trigger `enforce_columnar_trigger` that fires on every table DDL and calls the
+unqualified function `columnar_insert_only_parents()`. With `search_path=''` the trigger
+cannot resolve that function and **every CREATE/DROP TABLE fails**:
+
+```
+ERROR:  function columnar_insert_only_parents() does not exist
+CONTEXT:  PL/pgSQL function public.fn_enforce_columnar_event_trigger() line 12
+```
+
+**Fix**: strip the guard line before applying (everything in the dump is already
+schema-qualified as `public.*`, so dropping it is safe):
+
+```bash
+grep -vE "set_config\('search_path', '', false\)" dump.sql > dump.fixed.sql
+psql -h localhost -p 15432 -U llm_gateway -d llm_gateway -v ON_ERROR_STOP=1 -f dump.fixed.sql
+```
+
+### 4.5 `pg_dump -t` needs a repeated `-t` per table (not a space-separated list)
+
+`pg_dump -t "a b c"` treats the whole string as ONE table name → `too many command-line
+arguments`. Build a repeated `-t` (or loop per table). Note: passing a bash array
+`"${args[@]}"` into `docker exec ... pg_dump ...` also collapses incorrectly under zsh —
+loop and append to a file instead:
+
+```bash
+> /tmp/feature.sql
+for t in agent_discovery proxy_nodes proxy_subscriptions; do
+  docker exec -e PGPASSWORD="$PASS" llm-gateway-pg \
+    pg_dump -U llm_gateway -d llm_gateway --schema-only --clean --if-exists --no-owner --no-privileges -t "$t" \
+    >> /tmp/feature.sql 2>/tmp/dump.err
+done
+```
+
+### 4.6 A 252-only monthly partition is EXPECTED, not drift
+
+252 creates runtime monthly partitions (e.g. `request_logs_bodies_2026_10`) that match the
+hot-table filter `*_2026_*` and are excluded from the sync. They will show up in
+`comm -23 /tmp/252.txt /tmp/local.txt` and that is **correct** — do not try to copy them
+to local (local regenerates its own partitions). The verify script classifies these as
+"EXPECTED hot/partition" automatically.
+
 ---
 
 ## 5. Verification Checklist
@@ -155,6 +213,55 @@ After a sync:
 - [ ] 252 vs local `comm -23 /tmp/252.txt /tmp/local.txt` is empty (no tables missing in local)
 - [ ] `_` prefixed tables exist locally (if previously identified for cleanup)
 - [ ] Container `POSTGRES_PASSWORD` env matches envs SSOT
+
+---
+
+## 7. Reconcile 252 ← local (feature tables created by the app)
+
+**Symptom**: `comm -13 /tmp/252.txt /tmp/local.txt` lists tables that exist locally but
+not on 252 (e.g. `agent_discovery`, `agent_gateways`, `orchestration_sessions`,
+`provider_domains`, `proxy_nodes`, `proxy_subscriptions`). These are usually created by
+the app's runtime AutoMigrate / newer code, so they are **not** in the tracked
+`schema_migrations` baseline on either side. Local dev is simply ahead of 252's deployed
+app version.
+
+**Goal**: bring 252's schema up to match local so both sides are consistent, **without
+dropping anything** (the local app needs those tables).
+
+**Procedure** (gated — modifies 252; confirm before running):
+
+```bash
+# 1. The verify script's --reconcile mode does this safely (sets up tunnel,
+#    dumps local DDL with the search_path fix, applies to 252, re-verifies):
+bash scripts/local-dev/verify-db-consistency.sh --reconcile \
+  agent_discovery agent_gateways agent_migration_log gateway_run_bindings \
+  industry_registry orchestration_sessions provider_domains proxy_nodes proxy_subscriptions --yes
+
+# Manual equivalent (if you need to tweak the DDL first):
+source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go
+export PG_PASS_252="$COMMON_PG_SUPERUSER_PASS"
+export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
+source configs/env-252.sh
+ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252 && sleep 3
+
+# dump per table (loop — see pitfall 4.5), order FK parents before children
+> /tmp/feature.sql
+for t in proxy_subscriptions proxy_nodes provider_domains ...; do
+  docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg \
+    pg_dump -U llm_gateway -d llm_gateway --schema-only --clean --if-exists --no-owner --no-privileges -t "$t" \
+    >> /tmp/feature.sql
+done
+grep -vE "set_config\('search_path', '', false\)" /tmp/feature.sql > /tmp/feature.fixed.sql   # pitfall 4.4
+PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway -d llm_gateway \
+  -v ON_ERROR_STOP=1 -f /tmp/feature.fixed.sql
+kill $(lsof -tiTCP:15432 -sTCP:LISTEN)
+```
+
+**Notes**:
+- Order tables so FK parents precede children (`proxy_subscriptions` before `proxy_nodes`).
+- The dump uses `--clean --if-exists` → re-running is idempotent (DROP IF EXISTS + CREATE).
+- Data is NOT copied (these are empty feature tables); only structure. Copy rows separately
+  only if both sides need identical seed data.
 
 ---
 
