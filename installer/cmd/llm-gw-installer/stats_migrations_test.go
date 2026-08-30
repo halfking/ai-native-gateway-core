@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/installer/internal/dbinit"
 )
 
 func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
@@ -46,6 +48,16 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
 		"602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
 		"618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
+		"614_session_bodies_hot.sql":                                       sessionBodiesHotMigration614,
+		"615_session_bodies_hot_promote_function.sql":                      sessionBodiesHotPromoteMigration615,
+		"619_session_turns_unified_view.sql":                               sessionTurnsUnifiedViewMigration619,
+		"620_provider_error_details_tenant_scope.sql":                      providerErrorDetailsTenantScopeMigration620,
+		"621_provider_error_details_cleanup_index.sql":                     providerErrorDetailsCleanupIndexMigration621,
+		"622_provider_error_aggregator_state.sql":                          providerErrorAggregatorStateMigration622,
+		"623_journal_snapshot_receipts_projection_base.sql":                journalSnapshotProjectionBaseMigration623,
+		"624_candidate_failure_logs_promote_atomic_v2.sql":                 candidateFailureLogsPromoteAtomicV2Migration624,
+		"625_session_bodies_unified_explicit.sql":                          sessionBodiesUnifiedExplicitMigration625,
+		"626_session_bodies_hot_promote_reconcile.sql":                     sessionBodiesHotPromoteReconcileMigration626,
 	}
 
 	for name, embedded := range expected {
@@ -150,6 +162,32 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		}
 		if !bytes.Equal(backup, setup) {
 			t.Fatalf("installer migration %s differs between backup and setup directories", name)
+		}
+	}
+}
+
+// TestStartupFilesAreAllEmbedded guards against the 2026-08-31 audit gap:
+// dbinit.Runner.StartupFiles referenced migrations (614/615/619 and later
+// 620-626) that were never added to the embed maps, so a fresh install would
+// fail in applySQL with "file not found". This test fails whenever a
+// StartupFiles entry has no counterpart in the setupSQLDir output.
+func TestStartupFilesAreAllEmbedded(t *testing.T) {
+	t.Helper()
+
+	sqlDir, cleanup, err := setupSQLDir()
+	if err != nil {
+		t.Fatalf("set up SQL dir: %v", err)
+	}
+	defer cleanup()
+
+	runner := dbinit.NewRunner("", "", "", "")
+	if len(runner.StartupFiles) == 0 {
+		t.Fatal("dbinit.Runner.StartupFiles is empty")
+	}
+	for _, name := range runner.StartupFiles {
+		path := filepath.Join(sqlDir, "startup", name)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("StartupFiles entry %q is not provided by setupSQLDir — add the file to installer/cmd/llm-gw-installer/embeddata/startup/, the go:embed vars, and both embed maps in main.go: %v", name, err)
 		}
 	}
 }

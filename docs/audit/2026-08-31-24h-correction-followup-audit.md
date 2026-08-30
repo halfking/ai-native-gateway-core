@@ -258,6 +258,88 @@ scripts/verify-migration-checksums.sh                         (自动校验 chec
 
 ---
 
+## 七-B、复审补充 (2026-08-31 第二轮，对第一轮修复本身的审计)
+
+第一轮修复推送 (d558ec334) 后进行了逐 diff 复审，发现第一轮修复自身引入或
+遗漏了 4 个问题，本轮全部处理：
+
+### 复审-1 [P0] 626 修复引入 SQL 编译错误（第一轮 P0-1 修复本身的 bug）
+- **位置**: `sql/migrations/startup/626_session_bodies_hot_promote_reconcile.sql`
+- **问题**: 第一轮把 DELETE 改为 `USING inserted i ... AND h.partition_date = i.partition_date`，
+  但 `inserted` CTE 的 `RETURNING id` 只返回一列，`i.partition_date` 不存在。
+  PostgreSQL 解析函数体时会报 `column i.partition_date does not exist`，
+  `CREATE OR REPLACE FUNCTION` 失败 → 整个 626 迁移在目标库上必然失败。
+  即第一轮把"丢数风险"换成了"必然部署失败"。
+- **修正**: `RETURNING id` → `RETURNING id, partition_date`，并为 DELETE 补注释说明
+  为什么只删成功插入的行。修正后 checksum:
+  `ecc3e07efe40c0f70a9af7863435c863191e23b5b4f704f91533c2dcdafe7e66`。
+- **教训**: SQL 迁移的修改必须过一遍真实 PostgreSQL 解析（至少
+  `CREATE OR REPLACE FUNCTION` 的语法/列引用检查），本地无 PG 时应在
+  下一轮部署前用 testcontainers/隔离库验证。
+
+### 复审-2 [P0] installer 缺口比第一轮认定的更大，且第一轮修复反而扩大了它
+- **位置**: `installer/cmd/llm-gw-installer/main.go` (`setupSQLDir`/`copySQLBackup`
+  两个 embed map) 与 `embeddata/startup/`
+- **问题**: 第一轮只在 `dbinit/runner.go` 的 `StartupFiles` 加了 620-626，但
+  installer 是**逐文件 go:embed** 的：embeddata 目录与 main.go 的两个 map 里
+  连 614/615/619 都没有（只有 618）。也就是说 main 分支的全新安装**在此之前
+  就已经会失败**；第一轮的修改把"运行时找不到文件"的缺口从 3 个扩大到 10 个。
+- **修正**:
+  - 复制 614/615/619/620/621/622/623/624/625/626 共 10 个文件到
+    `embeddata/startup/`
+  - main.go 新增 10 个 `//go:embed` 声明，`setupSQLDir` 与 `copySQLBackup`
+    两个 map 各补 10 项
+  - `stats_migrations_test.go` 的 canonical-source 对比 map 补 10 项
+  - **新增契约测试 `TestStartupFilesAreAllEmbedded`**: 断言
+    `dbinit.NewRunner().StartupFiles` 的每一项都能在 `setupSQLDir()` 产物中
+    找到——永久防住"列表引用了但没嵌入"这一类回归
+- **教训**: "列表 + 嵌入资源"双清单结构必须有一致性守门测试，否则每次加迁移
+  都会静默漏一半。
+
+### 复审-3 [P1] fpSlot 饱和错用 KindRateLimit，污染供应商质量评估
+- **位置**: `errorsx/classify.go` + `domains/streaming/executors/executor_dispatch.go`
+- **问题**: 第一轮给 fpSlot 饱和降级路径用了 `KindRateLimit`。但该路径是
+  **降级继续**（请求仍会执行并大概率成功），且是网关侧按请求指纹的准入信号；
+  `bg/provider_error_aggregator.go` 把 `candidate_failure_logs_hot` 无差别聚合
+  进 `provider_error_details`（`error_type = error_kind`），fpSlot 事件会与
+  真正的上游 429 混进同一个 rate_limit 桶 → 凭据详情页的"供应商服务质量"
+  被网关侧事件污染，健康凭据失败率虚高。
+- **修正**: 新增 `KindFpSlotSaturated = "fp_slot_saturated"`（与 KindCircuitOpen
+  同族的网关侧信号，注释明确不进 IsRetryable/IsCredentialFatal）；
+  executor 的 fpSlot 分支改用该 kind，context 字段
+  `rate_limit_rejection` 改为 `degraded_continue`；测试断言同步更新。
+- **效果**: preflight 四类拒绝现在各有独立 kind：`circuit_open` /
+  `rate_limit`（真上游限流与并发限流）/ `fp_slot_saturated` /
+  `key_rotation_exhausted`(rejection_type)，dashboard 可独立过滤，
+  聚合桶不再互相污染。
+
+### 复审-4 [流程] db-changelog 的 checksum 对齐只解决了本地文档层
+- **问题**: 第一轮更新了 `docs/db-changelog.md` 的 checksum 并新增 626 记录，
+  但远端 252/245/154 的 `llm_gateway_migration_checksums` ledger 里仍是各自
+  部署时刻的旧值；deploy-seamless 的 fail-closed 检查对比的是**远端 ledger
+  vs 本地文件**，不改远端照样会拒绝部署。另外 623 在磁盘上换了身份
+  （`journal_snapshot_receipts_projection_base` 顶替了已部署的
+  `candidate_failure_logs_hot_tenant_scope`）：远端视 623 为已应用，新 623
+  文件会按版本号被跳过。
+- **修正**: 在 `docs/db-changelog.md` 的 626 块上方补 operator 注记：
+  部署前必须先跑 `scripts/repair-252-migration-ledger.sh`（或各环境等价物）
+  对齐远端 ledger；623 场景需核对 `journal_snapshot_receipts.projection_base_seq`
+  是否存在（runtime `ensureJournalSnapshotReceiptSchema` 会兜底补列）。
+  626 状态从第一轮误标的 `applied+verified` 改为 `pending-deploy`——
+  它从未部署过，changelog 不应伪装部署记录。
+- **遗留**: 623 版本号复用本身违反迁移唯一性约定，根治方案（新版本号重发）
+  需要与已部署环境协调，列入后续工作。
+
+### 复审确认无误的第一轮修复
+- `bg/vacuum_worker.go`: mu + started/stopped 实现正确；done 移到 Start 内
+  创建后，"Stop 先于 Start 调用永久阻塞"的旧问题也一并消除
+- `executor_dispatch.go` 的辅助函数 nil-safe，`failureLogged` 守卫正确抑制
+  key-rotation 路径的 post-block 双写
+- `messageHelpers.ts` 别名方式、`LANE_VISIBLE_LIMIT` 常量与测试同步正确
+- `errorsx.KindCircuitOpen` 注释明确了 IsRetryable/IsCredentialFatal 边界
+
+---
+
 ## 八、验证证据
 
 ### Go 后端
@@ -329,3 +411,25 @@ bash scripts/verify-migration-checksums.sh                     fail-closed 校�
 - **低风险**: 前端 i18n 化是渐进过程,本次未触及硬编码中文(留作后续 sprint)
 
 **生产环境部署**: GO_WITH_LIMITATIONS,本次修改通过本地验证,可推送到 origin/main。真实环境验证需要 245/154 canary + rollback drill。
+
+---
+
+## 十一、第二轮复审验证证据 (2026-08-31)
+
+```
+go build ./...                                                     BUILD OK
+go vet ./...                                                       OK
+go test -count=1 ./errorsx/                                        ok
+go test -count=1 ./domains/streaming/executors/ -run TestForwardForDispatch   ok
+cd installer && go build ./...                                     BUILD OK
+cd installer && go test -count=1 ./cmd/llm-gw-installer/ ./internal/dbinit/    ok
+    （含新增 TestStartupFilesAreAllEmbedded 契约测试）
+bash scripts/verify-migration-checksums.sh                         32 registered verified
+diff sql/.../626...sql installer/.../embeddata/startup/626...sql    IDENTICAL
+```
+
+**第二轮修正后仍为 manual_required 的事项**:
+1. 626 的 `CREATE OR REPLACE FUNCTION` 需在隔离 PostgreSQL 上完成一次真实
+   解析/执行验证（本轮修正了列引用错误，但本地无 PG 未能实测）
+2. 部署前对齐远端 migration ledger（`repair-252-migration-ledger.sh`）
+3. 623 版本号身份切换的目标库核对（projection_base_seq 列存在性）

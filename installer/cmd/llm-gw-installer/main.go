@@ -151,6 +151,36 @@ var requestLogsPromoteAtomicMigration602 []byte
 //go:embed embeddata/startup/618_request_journey_snapshot_receipts.sql
 var journalSnapshotReceiptsMigration618 []byte
 
+//go:embed embeddata/startup/614_session_bodies_hot.sql
+var sessionBodiesHotMigration614 []byte
+
+//go:embed embeddata/startup/615_session_bodies_hot_promote_function.sql
+var sessionBodiesHotPromoteMigration615 []byte
+
+//go:embed embeddata/startup/619_session_turns_unified_view.sql
+var sessionTurnsUnifiedViewMigration619 []byte
+
+//go:embed embeddata/startup/620_provider_error_details_tenant_scope.sql
+var providerErrorDetailsTenantScopeMigration620 []byte
+
+//go:embed embeddata/startup/621_provider_error_details_cleanup_index.sql
+var providerErrorDetailsCleanupIndexMigration621 []byte
+
+//go:embed embeddata/startup/622_provider_error_aggregator_state.sql
+var providerErrorAggregatorStateMigration622 []byte
+
+//go:embed embeddata/startup/623_journal_snapshot_receipts_projection_base.sql
+var journalSnapshotProjectionBaseMigration623 []byte
+
+//go:embed embeddata/startup/624_candidate_failure_logs_promote_atomic_v2.sql
+var candidateFailureLogsPromoteAtomicV2Migration624 []byte
+
+//go:embed embeddata/startup/625_session_bodies_unified_explicit.sql
+var sessionBodiesUnifiedExplicitMigration625 []byte
+
+//go:embed embeddata/startup/626_session_bodies_hot_promote_reconcile.sql
+var sessionBodiesHotPromoteReconcileMigration626 []byte
+
 // 临时存放 embed SQL 的目录（运行时写入）
 
 // ── Cobra 入口 ──────────────────────────────────────────────────
@@ -852,6 +882,16 @@ func copySQLBackup(root string) error {
 		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
 		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
 		"startup/618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
+		"startup/614_session_bodies_hot.sql":                                       sessionBodiesHotMigration614,
+		"startup/615_session_bodies_hot_promote_function.sql":                      sessionBodiesHotPromoteMigration615,
+		"startup/619_session_turns_unified_view.sql":                               sessionTurnsUnifiedViewMigration619,
+		"startup/620_provider_error_details_tenant_scope.sql":                      providerErrorDetailsTenantScopeMigration620,
+		"startup/621_provider_error_details_cleanup_index.sql":                     providerErrorDetailsCleanupIndexMigration621,
+		"startup/622_provider_error_aggregator_state.sql":                          providerErrorAggregatorStateMigration622,
+		"startup/623_journal_snapshot_receipts_projection_base.sql":                journalSnapshotProjectionBaseMigration623,
+		"startup/624_candidate_failure_logs_promote_atomic_v2.sql":                 candidateFailureLogsPromoteAtomicV2Migration624,
+		"startup/625_session_bodies_unified_explicit.sql":                          sessionBodiesUnifiedExplicitMigration625,
+		"startup/626_session_bodies_hot_promote_reconcile.sql":                     sessionBodiesHotPromoteReconcileMigration626,
 	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
@@ -957,6 +997,16 @@ func setupSQLDir() (string, func(), error) {
 		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
 		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
 		"startup/618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
+		"startup/614_session_bodies_hot.sql":                                       sessionBodiesHotMigration614,
+		"startup/615_session_bodies_hot_promote_function.sql":                      sessionBodiesHotPromoteMigration615,
+		"startup/619_session_turns_unified_view.sql":                               sessionTurnsUnifiedViewMigration619,
+		"startup/620_provider_error_details_tenant_scope.sql":                      providerErrorDetailsTenantScopeMigration620,
+		"startup/621_provider_error_details_cleanup_index.sql":                     providerErrorDetailsCleanupIndexMigration621,
+		"startup/622_provider_error_aggregator_state.sql":                          providerErrorAggregatorStateMigration622,
+		"startup/623_journal_snapshot_receipts_projection_base.sql":                journalSnapshotProjectionBaseMigration623,
+		"startup/624_candidate_failure_logs_promote_atomic_v2.sql":                 candidateFailureLogsPromoteAtomicV2Migration624,
+		"startup/625_session_bodies_unified_explicit.sql":                          sessionBodiesUnifiedExplicitMigration625,
+		"startup/626_session_bodies_hot_promote_reconcile.sql":                     sessionBodiesHotPromoteReconcileMigration626,
 	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)

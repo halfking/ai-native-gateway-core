@@ -197,6 +197,18 @@ const (
 	// NOT in IsCredentialFatal (a circuit-open is recoverable; the
 	// credential will auto-reset after cooling).
 	KindCircuitOpen ErrorKind = "circuit_open"
+	// KindFpSlotSaturated (2026-08-31): the per-fingerprint concurrency slot
+	// for this request was exhausted, so the attempt DEGRADED (it continues
+	// without the slot) rather than failed. Distinct from KindRateLimit
+	// because rate_limit means the UPSTREAM throttled the credential (a
+	// provider-quality signal that feeds provider_error_details), while an
+	// fp-slot saturation is a gateway-side admission event for the caller's
+	// own request fingerprint: the same request usually succeeds moments
+	// later on the same credential. Collapsing the two would inflate the
+	// rate_limit bucket on the credential detail page and penalize healthy
+	// providers in quality evaluation. Intentionally NOT in IsRetryable and
+	// NOT in IsCredentialFatal.
+	KindFpSlotSaturated ErrorKind = "fp_slot_saturated"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too
