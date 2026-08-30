@@ -39,11 +39,11 @@ func TestSessionV2MigrationContractDetector(t *testing.T) {
 func TestSessionV2MigrationContractHasKnownNoGoEvidence(t *testing.T) {
 	contract := loadSessionV2MigrationContract(t)
 	violations := detectSessionV2MigrationViolations(contract)
-	if len(violations) == 0 {
-		t.Fatal("expected current source to expose Session V2 No-Go evidence")
-	}
 	for _, violation := range violations {
 		t.Logf("NO-GO: %s", violation)
+	}
+	if len(violations) != 0 {
+		t.Fatalf("expected current source to have no Session V2 migration contract violations; got %d", len(violations))
 	}
 }
 
