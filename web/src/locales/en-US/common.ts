@@ -136,6 +136,7 @@ export default {
   loading: 'Loading…',
   module: 'Module',
   no: 'No',
+  never: 'Never',
   refresh: 'Refresh',
   send: 'Send',
   session: 'Session',

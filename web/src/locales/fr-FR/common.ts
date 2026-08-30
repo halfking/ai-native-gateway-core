@@ -135,6 +135,7 @@ export default {
   loading: 'Chargement…',
   module: 'Module',
   no: 'Non',
+  never: 'Jamais',
   refresh: 'Actualiser',
   send: 'Envoyer',
   session: 'Session',

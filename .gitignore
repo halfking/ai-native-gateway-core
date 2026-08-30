@@ -53,9 +53,6 @@ Dockerfile.local
 node_modules/
 dist/
 build/
-# Keep vendored Docker API packages whose import path includes a build directory.
-!vendor/github.com/docker/docker/api/types/build/
-!vendor/github.com/docker/docker/api/types/build/**
 out/
 __pycache__/
 *.pyc

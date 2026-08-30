@@ -134,6 +134,7 @@ export default {
   loading: 'Cargando…',
   module: 'Módulo',
   no: 'No',
+  never: 'Nunca',
   refresh: 'Actualizar',
   send: 'Enviar',
   session: 'Sesión',

@@ -135,6 +135,7 @@ export default {
   loading: 'Wird geladen…',
   module: 'Modul',
   no: 'Nein',
+  never: 'Nie',
   refresh: 'Aktualisieren',
   send: 'Senden',
   session: 'Sitzung',
