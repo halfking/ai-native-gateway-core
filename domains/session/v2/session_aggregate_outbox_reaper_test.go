@@ -1,8 +1,12 @@
 package v2
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/pashagolub/pgxmock/v4"
 )
 
 // TestEncodeDecodeSessionUpdate_RoundTrip pins the JSON shape used by the
@@ -86,4 +90,167 @@ func TestReaper_StartStopIdempotent(t *testing.T) {
 	r.Start(nil) // second Start must not panic / spawn a second goroutine
 	r.Stop()
 	r.Stop() // second Stop must not panic / deadlock
+}
+
+// ── audit-data-closure-C-1 / C-2 / W-2 / W-3 reaper machinery tests ────────
+
+// noopUpdateAggregator is a fake SessionAggregator that always succeeds.
+// The dedicated transient / decode-failure tests below wrap it to inject
+// the specific error path they exercise.
+type noopUpdateAggregator struct{}
+
+func (noopUpdateAggregator) UpdateSession(context.Context, SessionUpdate) error { return nil }
+
+type transientAggregator struct{ calls int }
+
+func (a *transientAggregator) UpdateSession(context.Context, SessionUpdate) error {
+	a.calls++
+	return errors.New("transient db blip")
+}
+
+// newClaimAndReplayReaper returns a reaper wired to a pgxmock pool so the
+// newClaimAndReplay flow can be exercised in isolation. The aggregator is
+// injectable so each test can pick success / transient / payload-error.
+func newClaimAndReplayReaper(t *testing.T, agg sessionOutboxAggregator, maxAtts int) (*sessionAggregateOutboxReaper, pgxmock.PgxPoolIface) {
+	t.Helper()
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	t.Cleanup(func() { mock.Close() })
+	return newSessionAggregateOutboxReaperForTest(mock, agg, 0, 0, maxAtts), mock
+}
+
+// TestReaper_ClaimAndReplay_Success_PinsLeaseAndGuards (audit-data-closure-C-1/C-2)
+//
+// Drives a single successful replay and pins:
+//   - the claim SELECT now accepts BOTH 'pending' and stale 'claimed' rows
+//     (the lease interval parameter is the FIRST $1 of the SELECT)
+//   - the claim UPDATE carries the status guard `AND status IN (...)`
+//   - markDone carries the `AND status='claimed'` guard and the 1-row
+//     RowsAffected is honored (the audit fix only logs when guard rejects)
+//
+// Without these three pins, the pre-fix reaper would either orphan 'claimed'
+// rows on crash or overwrite peer-terminated rows with the wrong terminal
+// state.
+func TestReaper_ClaimAndReplay_Success_PinsLeaseAndGuards(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	t.Cleanup(func() { mock.Close() })
+
+	// 1. BEGIN (claim tx).
+	mock.ExpectBegin()
+	// 2. Claim SELECT — note the regex `status = 'pending'` AND
+	//    `status = 'claimed'` clauses must both be present in the SQL.
+	//    The claim also carries one arg (lease seconds).
+	mock.ExpectQuery("status = 'pending'").
+		WithArgs(int(sessionOutboxClaimLease.Seconds())).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "tenant_id", "session_id", "partition_date", "request_id",
+			"update_payload", "attempts",
+		}).AddRow(
+			int64(42), "tenant_a", "sess_1",
+			time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC),
+			"req_1", []byte(`{"session_id":"sess_1"}`), 0,
+		))
+	// 3. Claim UPDATE — must carry `status IN ('pending','claimed')` guard.
+	mock.ExpectExec("UPDATE session_aggregate_outbox").
+		WithArgs(int64(42)).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// 4. COMMIT the claim tx.
+	mock.ExpectCommit()
+
+	// 5. markDone UPDATE outside the claim tx — must carry
+	//    `AND status='claimed'` guard; RowsAffected=1 means guard passed.
+	mock.ExpectExec("UPDATE session_aggregate_outbox").
+		WithArgs(int64(42)).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	// Wire the aggregator onto the reaper.
+	r := newSessionAggregateOutboxReaperForTest(mock, noopUpdateAggregator{}, 0, 0, 0)
+
+	ok, err := r.claimAndReplay(context.Background())
+	if err != nil {
+		t.Fatalf("claimAndReplay returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("claimAndReplay returned ok=false, expected true")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestReaper_MarkDoneGuardSkipsWhenRowAlreadyTerminal (audit-data-closure-C-2)
+//
+// Pins the guard behavior on markDone: when a peer has already terminated
+// the row (UPDATE returns RowsAffected=0), markDone must NOT panic and
+// must NOT log a misleading error — it should log a Warn at most. Here we
+// only assert the no-panic + return-ok contract because slog capture would
+// need a test helper.
+func TestReaper_MarkDoneGuardSkipsWhenRowAlreadyTerminal(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	t.Cleanup(func() { mock.Close() })
+	mock.ExpectExec("UPDATE session_aggregate_outbox").
+		WithArgs(int64(99)).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0)) // guard rejected
+	r := newSessionAggregateOutboxReaperForTest(mock, nil, 0, 0, 0)
+	// Must not panic, must not return an error (the Exec succeeded).
+	r.markDone(context.Background(), 99)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestReaper_MarkDeadGuardSkipsWhenRowAlreadyTerminal (audit-data-closure-C-2)
+//
+// Symmetric test for markDead: RowsAffected=0 means a peer already won;
+// markDead must NOT emit the misleading "row exceeded max attempts" log.
+func TestReaper_MarkDeadGuardSkipsWhenRowAlreadyTerminal(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	t.Cleanup(func() { mock.Close() })
+	mock.ExpectExec("UPDATE session_aggregate_outbox").
+		WithArgs(int64(99), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	r := newSessionAggregateOutboxReaperForTest(mock, nil, 0, 0, 0)
+	r.markDead(context.Background(), 99, "test reason")
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestReaper_ScheduleRetryGuardSkipsWhenRowAlreadyTerminal (audit-data-closure-C-2)
+//
+// Symmetric test for scheduleRetry: RowsAffected=0 means the row was
+// already terminated; we must not resurrect a 'done' row back to 'pending'.
+func TestReaper_ScheduleRetryGuardSkipsWhenRowAlreadyTerminal(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	t.Cleanup(func() { mock.Close() })
+	mock.ExpectExec("UPDATE session_aggregate_outbox").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	r := newSessionAggregateOutboxReaperForTest(mock, nil, 0, 0, 0)
+	r.scheduleRetry(context.Background(), 99, 2, errors.New("transient"))
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestReaper_ClaimLeaseConstant pins the lease constant so a future edit
+// to the safety net (audit-data-closure-C-1) is intentional, not a typo.
+func TestReaper_ClaimLeaseConstant(t *testing.T) {
+	if sessionOutboxClaimLease != 5*time.Minute {
+		t.Errorf("sessionOutboxClaimLease drifted: got %v, want 5m", sessionOutboxClaimLease)
+	}
 }

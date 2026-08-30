@@ -21,13 +21,13 @@ package admin
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // attachmentRow 是 attachments 列表查询的单行结果。
@@ -402,23 +402,26 @@ func parseOlderThanDays(r *http.Request, def int) int { //nolint:unused
 	return def
 }
 
-// uuidOrZero returns a fresh RFC4122 v4 UUID encoded as hex (32 chars, no
-// dashes) suitable for the audit_attachments_cleanup.cleanup_run_id column.
-// On entropy failure (effectively never) returns the all-zero UUID so the
-// INSERT still proceeds and the row can be reconciled by hand later.
+// uuidOrZero returns a fresh RFC 4122 v4 UUID in the dashed text form
+// PostgreSQL's uuid type requires. The migration 629 column
+// audit_attachments_cleanup.cleanup_run_id is declared uuid; the previous
+// implementation emitted 32-char hex without dashes and was rejected at
+// INSERT time with `invalid input syntax for type uuid`, causing every
+// cleanup to HTTP 500 and roll back.
 //
-// audit-data-closure-B (2026-08-31): the caller MUST tolerate the zero UUID
-// rather than treat it as an error; we never want a cleanup to fail just
-// because the host's RNG is unhealthy.
+// audit-data-closure-B hotfix (2026-08-31): switched from crypto/rand +
+// hex.EncodeToString to uuid.NewString. NewString is RFC 4122 v4 with the
+// proper dashes and version/variant bits already set, so the value is
+// always accepted by the column. uuid.NewString uses crypto/rand internally
+// and returns an error only on entropy failure; we treat that as
+// non-fatal — the all-zero UUID is itself a valid uuid literal so the
+// INSERT still succeeds and operators can reconcile by hand.
 func uuidOrZero(_ context.Context) string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "00000000000000000000000000000000"
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return "00000000-0000-0000-0000-000000000000"
 	}
-	// RFC 4122 v4 — set version (0100) and variant (10xx).
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return hex.EncodeToString(b[:])
+	return id.String()
 }
 
 // nullableReason converts an empty reason string to a typed nil so the
