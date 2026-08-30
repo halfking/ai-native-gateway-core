@@ -136,6 +136,7 @@ export default {
   loading: '加载中…',
   module: '模块',
   no: '否',
+  never: '从未',
   refresh: '刷新',
   send: '发送',
   session: '会话',

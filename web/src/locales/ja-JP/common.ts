@@ -135,6 +135,7 @@ export default {
   loading: '読み込み中…',
   module: 'モジュール',
   no: 'いいえ',
+  never: '未実行',
   refresh: '更新',
   send: '送信',
   session: 'セッション',

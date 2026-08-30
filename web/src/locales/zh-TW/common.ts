@@ -135,6 +135,7 @@ export default {
   loading: '載入中…',
   module: '模組',
   no: '否',
+  never: '從未',
   refresh: '重新整理',
   send: '傳送',
   session: '工作階段',

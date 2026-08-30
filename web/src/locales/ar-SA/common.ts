@@ -134,6 +134,7 @@ export default {
   loading: 'جارٍ التحميل…',
   module: 'الوحدة',
   no: 'لا',
+  never: 'مطلقًا',
   refresh: 'تحديث',
   send: 'إرسال',
   session: 'الجلسة',
