@@ -1,8 +1,12 @@
 // useFormat.test.ts — pin the format helpers used by detail panels.
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { useFormat } from './useFormat'
+import { localeRef } from './index'
 
 describe('useFormat', () => {
+  const originalLocale = localeRef.value
+  beforeEach(() => { localeRef.value = 'en-US' })
+  afterEach(() => { localeRef.value = originalLocale })
   it('fmtDateTimeWithSeconds renders seconds-precision timestamp', () => {
     const { fmtDateTimeWithSeconds } = useFormat()
     // Build the instant directly from local-time components so the test

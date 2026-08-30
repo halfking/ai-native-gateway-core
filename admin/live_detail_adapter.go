@@ -26,12 +26,13 @@ type liveStreamLiveDetailAdapter struct {
 func loadLiveDetailForStore(
 	ctx context.Context,
 	store *LiveStreamRedisStore,
-	tenantID, requestID string,
+	scope requestdetail.LookupScope,
+	requestID string,
 ) (requestdetail.Meta, error) {
 	if store == nil || requestID == "" {
 		return requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
-	req, err := store.LoadRequest(ctx, tenantID, requestID)
+	req, err := store.LoadRequest(ctx, scope.TenantID, requestID)
 	if err != nil {
 		// LoadRequest returns "request not found" via fmt.Errorf with a
 		// known sentinel message; treat that as ErrNotFound so the
@@ -44,13 +45,13 @@ func loadLiveDetailForStore(
 	if req.RequestID == "" || req.RequestID != requestID {
 		return requestdetail.Meta{}, requestdetail.ErrNotFound
 	}
-	// Tenant gating: super_admin sees all rows; otherwise the loaded
-	// tenant must match the caller's scope (when the scope pins a
-	// non-empty tenant). Empty loaded tenant fails closed.
+	// Tenant gating: unrestricted (super_admin / legacy admin key) sees
+	// all rows; a tenant-scoped caller must match the loaded tenant. Empty
+	// loaded tenant fails closed for restricted callers.
 	loadedTenant := req.TenantID
-	if tenantID != "" && loadedTenant != tenantID {
-		return requestdetail.Meta{}, requestdetail.ErrNotFound
-	}
+		if !scope.Unrestricted && (loadedTenant == "" || loadedTenant != scope.TenantID) {
+			return requestdetail.Meta{}, requestdetail.ErrNotFound
+		}
 	meta := requestdetail.Meta{
 		RequestID: req.RequestID,
 		TenantID:  loadedTenant,
@@ -75,9 +76,9 @@ func loadLiveDetailForStore(
 }
 
 func (a *liveStreamLiveDetailAdapter) LoadLiveDetail(
-	ctx context.Context, tenantID, requestID string,
+	ctx context.Context, scope requestdetail.LookupScope, requestID string,
 ) (requestdetail.Meta, error) {
-	return loadLiveDetailForStore(ctx, a.store, tenantID, requestID)
+	return loadLiveDetailForStore(ctx, a.store, scope, requestID)
 }
 
 // isLiveStoreMiss maps the LiveStreamRedisStore "request not found"

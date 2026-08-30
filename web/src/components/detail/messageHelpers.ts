@@ -72,7 +72,7 @@ export function previewText(content: unknown, lines = 3): { text: string; trunca
   return { text: parts.slice(0, lines).join('\n'), truncated: true }
 }
 
-function contentToPlain(content: unknown): string {
+export function contentToPlainText(content: unknown): string {
   if (content == null) return ''
   if (typeof content === 'string') return content
   if (Array.isArray(content)) {
@@ -102,7 +102,7 @@ export function extractLastUserPrompt(body: unknown): string {
   const msgs = extractMessagesFromBody(body)
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (String(msgs[i].role || '') === 'user') {
-      return contentToPlain(msgs[i].content).trim()
+      return contentToPlainText(msgs[i].content).trim()
     }
   }
   return ''
@@ -113,7 +113,7 @@ export function firstUserPrompt(body: unknown): string {
   const msgs = extractMessagesFromBody(body)
   for (const m of msgs) {
     if (String(m.role || '') === 'user') {
-      return contentToPlain(m.content).trim()
+      return contentToPlainText(m.content).trim()
     }
   }
   return ''
@@ -124,7 +124,7 @@ export function lastUserPrompt(body: unknown): string {
   const msgs = extractMessagesFromBody(body)
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (String(msgs[i].role || '') === 'user') {
-      return contentToPlain(msgs[i].content).trim()
+      return contentToPlainText(msgs[i].content).trim()
     }
   }
   return ''
@@ -192,7 +192,7 @@ export function summarizeTurnUserInstruction(
   const outboundMsgs = extractMessagesFromBody(outboundBody)
   for (let i = outboundMsgs.length - 1; i >= 0; i--) {
     if (String(outboundMsgs[i].role || '') === 'user') {
-      const full = contentToPlain(outboundMsgs[i].content).trim()
+      const full = contentToPlainText(outboundMsgs[i].content).trim()
       const { text, truncated } = previewText(full, 6)
       return { text, full, truncated }
     }
@@ -224,6 +224,12 @@ export interface ConversationTurn {
   /** V2 request_id; used to align the selected card with the current route. */
   requestId?: string | null
   messages: Record<string, unknown>[]
+  /** Request-side messages used to build the de-duplicated all-turn view. */
+  requestMessages?: Record<string, unknown>[]
+  /** Response-side messages used to build the de-duplicated all-turn view. */
+  responseMessages?: Record<string, unknown>[]
+  /** Incremental request + response messages for chronological all-turn view. */
+  allTurnMessages?: Record<string, unknown>[]
   /** Plain-text preview of the turn's leading user message (truncated). */
   userPreview: string
   /** Full plain-text of the turn's leading user message. */
@@ -252,7 +258,7 @@ export function deriveConversationTurns(
       return
     }
     const userMsg = slice.find((m) => String(m.role || '') === 'user')
-    const full = userMsg ? contentToPlain(userMsg.content) : ''
+    const full = userMsg ? contentToPlainText(userMsg.content) : ''
     const { text, truncated } = previewText(full, 6)
     turns.push({
       index: turns.length,
@@ -301,23 +307,23 @@ export function extractAssistantReply(body: unknown): string {
     const last = o.choices[o.choices.length - 1] as Record<string, unknown>
     const msg = (last.message || last.delta) as Record<string, unknown> | undefined
     if (msg) {
-      const t = contentToPlain(msg.content)
+      const t = contentToPlainText(msg.content)
       if (t.trim()) return t.trim()
     }
     if (typeof last.text === 'string') return last.text.trim()
   }
   if (o.message && typeof o.message === 'object') {
-    const t = contentToPlain((o.message as Record<string, unknown>).content)
+    const t = contentToPlainText((o.message as Record<string, unknown>).content)
     if (t.trim()) return t.trim()
   }
   if (Array.isArray(o.content)) {
-    const t = contentToPlain(o.content)
+    const t = contentToPlainText(o.content)
     if (t.trim()) return t.trim()
   }
   const msgs = extractMessagesFromBody(parsed)
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (String(msgs[i].role || '') === 'assistant') {
-      return contentToPlain(msgs[i].content).trim()
+      return contentToPlainText(msgs[i].content).trim()
     }
   }
   return ''

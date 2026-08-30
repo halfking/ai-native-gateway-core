@@ -79,6 +79,7 @@ export function clearRequestDetailCache() {
 
 export function useRequestDetailLoader() {
   const loadSeq = ref(0)
+  const activeRequestId = ref('')
   let abort: AbortController | null = null
 
   const metaLoading = ref(false)
@@ -130,6 +131,8 @@ export function useRequestDetailLoader() {
     waterfallSource.value = ''
     waterfallError.value = ''
     bodiesLoaded.value = false
+    bodiesLoading.value = false
+    waterfallLoading.value = false
   }
 
   function applyEntry(e: CacheEntry) {
@@ -148,6 +151,7 @@ export function useRequestDetailLoader() {
   }
 
   async function loadMeta(requestId: string) {
+    activeRequestId.value = requestId
     resetTransientState()
     const cached = cacheGet(requestId)
     if (cached?.log || cached?.unified) {
@@ -201,12 +205,13 @@ export function useRequestDetailLoader() {
   }
 
   async function ensureBodies(requestId: string) {
+    if (requestId !== activeRequestId.value) return
     if (bodiesLoaded.value || unified.value?.bodies) {
       bodiesLoaded.value = true
       return
     }
     const hit = cacheGet(requestId)
-    if (hit?.bodiesLoaded && hit.log) {
+    if (hit?.bodiesLoaded && hit.log && requestId === activeRequestId.value) {
       log.value = hit.log
       unified.value = hit.unified
       bodiesLoaded.value = true
@@ -215,12 +220,25 @@ export function useRequestDetailLoader() {
     const seq = loadSeq.value
     bodiesLoading.value = true
     try {
-      const full = await getRequestLogDetail(requestId)
-      if (seq !== loadSeq.value) return
-      const merged = log.value ? { ...log.value, ...full } : full
-      log.value = merged
-      bodiesLoaded.value = true
-      cachePut(requestId, { log: merged, unified: unified.value, bodiesLoaded: true })
+      // The unified endpoint is the only source for in-flight details and
+      // remains available when /api/logs/:id is denied or temporarily absent.
+      // Load both projections and merge whichever body-bearing response
+      // succeeds, rather than assuming the request-log endpoint is always
+      // authoritative.
+      const [fullLog, fullUnified] = await Promise.all([
+        getRequestLogDetail(requestId).catch(() => null),
+        getUnifiedRequestDetail(requestId).catch(() => null),
+      ])
+      if (seq !== loadSeq.value || requestId !== activeRequestId.value) return
+      const merged = fullLog
+        ? (log.value ? { ...log.value, ...fullLog } : fullLog)
+        : log.value
+      if (merged) log.value = merged
+      if (fullUnified) unified.value = fullUnified
+      if (merged || fullUnified) {
+        bodiesLoaded.value = true
+        cachePut(requestId, { log: merged, unified: fullUnified || unified.value, bodiesLoaded: true })
+      }
     } catch {
       /* meta-only ok */
     } finally {
@@ -229,6 +247,7 @@ export function useRequestDetailLoader() {
   }
 
   async function ensureWaterfall(requestId: string) {
+    if (requestId !== activeRequestId.value) return
     if (waterfall.value?.request_id === requestId) return
     const hit = cacheGet(requestId)
     if (hit?.waterfall?.request_id === requestId) {
