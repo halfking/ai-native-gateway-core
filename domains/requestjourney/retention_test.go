@@ -92,10 +92,12 @@ func TestLifecycleSequenceSeedingContinuesAcrossAttempts(t *testing.T) {
 
 // fakeRetentionDB captures the cleanup SQL and its transaction scoping.
 type fakeRetentionDB struct {
-	mu      sync.Mutex
-	begins  int
-	execSQL []string
-	commit  bool
+	mu             sync.Mutex
+	begins         int
+	execSQL        []string
+	commit         bool
+	receiptErr     error
+	transitionsErr error
 }
 
 type fakeRetentionTx struct {
@@ -109,7 +111,17 @@ func (tx *fakeRetentionTx) Exec(ctx context.Context, sql string, args ...any) (p
 	}
 	tx.db.mu.Lock()
 	tx.db.execSQL = append(tx.db.execSQL, sql)
+	var injected error
+	switch {
+	case strings.Contains(sql, "request_state_transitions"):
+		injected = tx.db.transitionsErr
+	case strings.Contains(sql, "journal_snapshot_receipts"):
+		injected = tx.db.receiptErr
+	}
 	tx.db.mu.Unlock()
+	if injected != nil {
+		return pgconn.CommandTag{}, injected
+	}
 	return pgconn.NewCommandTag("DELETE 3"), nil
 }
 
@@ -172,6 +184,51 @@ func TestRetentionWorkerNilDBIsNoOp(t *testing.T) {
 		t.Fatalf("CleanupExpired() error = %v, want nil no-op", err)
 	}
 	worker.Stop()
+}
+
+func TestRetentionCleanupReceiptErrorsAreReturned(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "undefined table", err: &pgconn.PgError{Code: "42P01", Message: "relation journal_snapshot_receipts does not exist"}},
+		{name: "permission denied", err: &pgconn.PgError{Code: "42501", Message: "permission denied for table journal_snapshot_receipts"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := &fakeRetentionDB{receiptErr: tt.err}
+			worker := NewRetentionWorker(nil)
+			worker.db = db
+			if _, err := worker.CleanupExpired(context.Background()); err == nil {
+				t.Fatal("CleanupExpired() error = nil, want receipt error")
+			}
+			if db.commit {
+				t.Fatal("cleanup committed after receipt delete error")
+			}
+		})
+	}
+}
+
+func TestRetentionWorkerStartedStopIsIdempotentAndConcurrentSafe(t *testing.T) {
+	db := &fakeRetentionDB{}
+	worker := NewRetentionWorker(nil)
+	worker.db = db
+	worker.Start()
+	worker.Start()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			worker.Stop()
+		}()
+	}
+	wg.Wait()
+	worker.Stop()
+	if db.begins == 0 {
+		t.Fatal("started worker did not perform initial cleanup")
+	}
 }
 
 func TestRetentionWorkerStopWithoutStartReturnsImmediately(t *testing.T) {

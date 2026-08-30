@@ -215,6 +215,88 @@ func TestStartCleanupAndClose(t *testing.T) {
 	}
 }
 
+func TestJournalAdapterCloseIsIdempotentAndNilSafe(t *testing.T) {
+	recorder := requestjourney.NewRecorder(requestjourney.NewProjection(requestjourney.DefaultConfig()), nil, nil)
+	adapter := &dispatchJourneyJournalAdapter{
+		recorder:    recorder,
+		receipts:    make(map[journalSnapshotReceiptKey]journalSnapshotReceipt),
+		stopCleanup: make(chan struct{}),
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	var nilAdapter *dispatchJourneyJournalAdapter
+	if err := nilAdapter.Close(); err != nil {
+		t.Fatalf("nil Close() error = %v", err)
+	}
+}
+
+func TestJournalAdapterCloseConcurrent(t *testing.T) {
+	recorder := requestjourney.NewRecorder(requestjourney.NewProjection(requestjourney.DefaultConfig()), nil, nil)
+	adapter := &dispatchJourneyJournalAdapter{
+		recorder:    recorder,
+		receipts:    make(map[journalSnapshotReceiptKey]journalSnapshotReceipt),
+		stopCleanup: make(chan struct{}),
+	}
+	adapter.startCleanup(time.Hour)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := adapter.Close(); err != nil {
+				t.Errorf("Close() error = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestJournalAdapterStartCleanupIsIdempotent(t *testing.T) {
+	recorder := requestjourney.NewRecorder(requestjourney.NewProjection(requestjourney.DefaultConfig()), nil, nil)
+	adapter := &dispatchJourneyJournalAdapter{
+		recorder:    recorder,
+		receipts:    make(map[journalSnapshotReceiptKey]journalSnapshotReceipt),
+		stopCleanup: make(chan struct{}),
+	}
+	adapter.startCleanup(time.Hour)
+	firstTicker := adapter.cleanupTicker
+	adapter.startCleanup(time.Hour)
+	if adapter.cleanupTicker != firstTicker {
+		t.Fatal("second startCleanup replaced the active ticker")
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}
+
+func TestJournalAdapterApplyAfterCloseIsNoop(t *testing.T) {
+	projection := requestjourney.NewProjection(requestjourney.DefaultConfig())
+	recorder := requestjourney.NewRecorder(projection, nil, nil)
+	adapter := &dispatchJourneyJournalAdapter{
+		recorder:    recorder,
+		receipts:    make(map[journalSnapshotReceiptKey]journalSnapshotReceipt),
+		stopCleanup: make(chan struct{}),
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	adapter.ApplyJournalSnapshot(context.Background(), dispatch.JournalSnapshot{
+		TenantID: "tenant-a", RequestID: "req-closed", SnapshotVersion: 1,
+		CallerAuthorized: true, CallerTenantID: "tenant-a",
+		Entries: []dispatch.JournalEntry{{Seq: 1, Action: dispatch.NextActionCompleted, At: time.Now()}},
+	})
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if len(adapter.receipts) != 0 {
+		t.Fatalf("receipts after Apply on closed adapter = %d, want 0", len(adapter.receipts))
+	}
+}
+
 func TestCleanupTickerExecution(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping ticker execution test in short mode")

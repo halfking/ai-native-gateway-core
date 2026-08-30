@@ -154,9 +154,18 @@ func (api *SessionDetailV2API) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant")
+	// Resolve tenant from the authenticated scope. Non-platform roles are
+	// pinned to their own tenant; only super/admin-key callers may select one.
+	// This standalone handler is also callable directly in tests and by custom
+	// muxes, so do not let GetTenantID's legacy default hide missing identity.
+	if GetAuthContext(r) == nil {
+		writeExportJSONError(w, http.StatusNotFound, "not found")
+		return
+	}
+	tenantID := tenantFromQueryOrContext(r)
 	if tenantID == "" {
-		tenantID = "default"
+		writeExportJSONError(w, http.StatusNotFound, "not found")
+		return
 	}
 
 	// Optional: turn_no for highlighting/scrolling
