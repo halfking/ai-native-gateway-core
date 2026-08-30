@@ -502,23 +502,23 @@ describe('mergeTilesById — deterministic ordering (no-jump invariants)', () =>
       .toEqual(['oldest', 'newest'])
   })
 
-  it('truncates to 20 keeping the NEWEST tiles when over capacity', () => {
+  it('truncates to 50 keeping the NEWEST tiles when over capacity', () => {
     const incoming: LiveStreamTile[] = []
-    // 25 tiles, oldest first in the authoritative sense
-    for (let i = 0; i < 25; i++) incoming.push({ ...tile(`r${i}`), timestamp: tsAt(i) })
+    // 60 tiles, oldest first in the authoritative sense
+    for (let i = 0; i < 60; i++) incoming.push({ ...tile(`r${i}`), timestamp: tsAt(i) })
     // backend delivers ASC (oldest first); reverse simulates legacy DESC wire order
     incoming.reverse()
     const existing: LiveStreamTile[] = []
     __testing.mergeTilesById(existing, incoming)
-    expect(existing).toHaveLength(20)
-    // tiles 5..24 survive (the 20 newest)
-    expect(existing[0].request_id).toBe('r5')
-    expect(existing[19].request_id).toBe('r24')
+    expect(existing).toHaveLength(50)
+    // tiles 10..59 survive (the 50 newest)
+    expect(existing[0].request_id).toBe('r10')
+    expect(existing[49].request_id).toBe('r59')
   })
 
   it('a new request always appears in the visible window (defect 1 regression)', () => {
-    // Pre-existing lane already at capacity (20 tiles)
-    const existing: LiveStreamTile[] = Array.from({ length: 20 }, (_, i) => ({
+    // Pre-existing lane already at capacity (50 tiles)
+    const existing: LiveStreamTile[] = Array.from({ length: 50 }, (_, i) => ({
       ...tile(`old${i}`),
       timestamp: tsAt(i),
     }))

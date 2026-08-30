@@ -498,6 +498,16 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				"credential_id", cand.CredentialID,
 				"provider_id", cand.ProviderID,
 			)
+			// 2026-08-30 P1: 记录 fpSlot 饱和降级到 candidate_failure_logs_hot
+			// 审计发现：fpSlot 饱和未被记录，运维无法看到哪些 credential 频繁触发限流降级
+			logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
+				errDispatchFpSlotSaturated, errorsx.KindRateLimit,
+				map[string]any{
+					"rate_limit_rejection": true,
+					"rejection_type":       "fp_slot_saturated",
+					"candidates_left":      len(dctx.candidates),
+				},
+			)
 		} else {
 			fpLease = lease
 		}
@@ -511,40 +521,23 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 	if circuitOpen && settings.IsEnabled("circuit_degradation") {
 		releaseFpLease(e.FpSlots, fpLease)
-		
+
 		// 2026-08-29 P1: 记录熔断拒绝到 candidate_failure_logs_hot
 		// 审计发现：circuit-open 错误未记录，运维无法看到哪些 credential 处于熔断状态
-		if e.FailureLogger != nil {
-			perAttemptMs := int(time.Since(startedAt).Milliseconds())
-			circuitErr := errDispatchCircuitOpen
-			extra := map[string]any{
-				"circuit_open":    true,
-				"rejection_type":  "circuit_breaker",
-				"candidates_left": len(dctx.candidates),
-			}
-			// 获取熔断器状态用于诊断
-			if e.Circuit != nil {
-				if breaker := e.Circuit.Get(cand.ProviderID, cand.CredentialID); breaker != nil {
-					extra["circuit_state"] = breaker.State().String()
-					extra["circuit_consecutive_failures"] = breaker.ConsecutiveFailures()
-				}
-			}
-			e.FailureLogger.LogFailureWithKind(
-				params.R.Header.Get("X-Request-Id"),
-				tenantFromCtx(params.R),
-				params.SessionID,
-				cand.CredentialID,
-				cand.ProviderID,
-				cand.RawModel,
-				params.AttemptNo,
-				circuitErr,
-				errorsx.KindConcurrent, // 使用 concurrent 作为 circuit-open 的错误类型
-				nil,
-				&perAttemptMs,
-				extra,
-			)
+		extra := map[string]any{
+			"circuit_open":   true,
+			"rejection_type": "circuit_breaker",
 		}
-		
+		// 获取熔断器状态用于诊断
+		if e.Circuit != nil {
+			if breaker := e.Circuit.Get(cand.ProviderID, cand.CredentialID); breaker != nil {
+				extra["circuit_state"] = breaker.State().String()
+				extra["circuit_consecutive_failures"] = breaker.ConsecutiveFailures()
+			}
+		}
+		logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
+			errDispatchCircuitOpen, errorsx.KindCircuitOpen, extra)
+
 		return dispatch.ForwardOutcome{Err: errDispatchCircuitOpen}
 	}
 
@@ -565,32 +558,17 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 			probeConsumed = false
 		}
-		
+
 		// 2026-08-29 P1: 记录并发限流拒绝到 candidate_failure_logs_hot
 		// 审计发现：并发限流拒绝未记录，无法统计因并发限流导致的失败
-		if e.FailureLogger != nil {
-			perAttemptMs := int(time.Since(startedAt).Milliseconds())
-			extra := map[string]any{
+		logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
+			acquireErr, errorsx.KindRateLimit,
+			map[string]any{
 				"rate_limit_rejection": true,
 				"rejection_type":       "concurrency_limiter",
 				"candidates_left":      len(dctx.candidates),
-			}
-			e.FailureLogger.LogFailureWithKind(
-				params.R.Header.Get("X-Request-Id"),
-				tenantFromCtx(params.R),
-				params.SessionID,
-				cand.CredentialID,
-				cand.ProviderID,
-				cand.RawModel,
-				params.AttemptNo,
-				acquireErr,
-				errorsx.KindConcurrent, // 并发限流使用 concurrent 错误类型
-				nil,
-				&perAttemptMs,
-				extra,
-			)
-		}
-		
+			})
+
 		return dispatch.ForwardOutcome{Err: acquireErr}
 	}
 
@@ -614,6 +592,17 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			idx := cand.KeyRotator.ResolveKey(cand.CredentialID, -1)
 			if idx < 0 {
 				execErr = errDispatchKeysExhausted
+				// 2026-08-30 P1: 记录 key 轮询耗尽到 candidate_failure_logs_hot
+				// 审计发现：所有 api key 都标记为不可用时，credential 仍会被选入
+				// 候选队列并最终在第一个请求处失败。运营需要看到这类"凭据已耗尽"
+				// 事件来诊断配额/欠费/封号场景。failureLogged=true 抑制 post-block
+				// 的通用 LogFailure（后者会用 KindTransient 替换分类）。
+				logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
+					errDispatchKeysExhausted, errorsx.KindRateLimit,
+					map[string]any{
+						"rejection_type": "key_rotation_exhausted",
+					})
+				failureLogged = true
 				return
 			} else if idx >= 1 && idx-1 < len(cand.APIKeys) {
 				cand.APIKey = cand.APIKeys[idx-1]
@@ -716,7 +705,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	// streamInterruptedError carries no *upstream.Error; pass the classified
 	// kind explicitly there — the message-based fallback would flatten e.g.
 	// KindNetwork to transient.
-	if e.FailureLogger != nil {
+	if e.FailureLogger != nil && !failureLogged {
 		perAttemptMs := int(time.Since(startedAt).Milliseconds())
 		extra := buildEnhancedErrorContext(params, kind, execErr, len(dctx.candidates), params.AttemptNo)
 		if extra == nil {
@@ -887,6 +876,61 @@ var (
 	errDispatchCircuitOpen     = newDispatchErr("dispatch: circuit open")
 	errDispatchKeysExhausted   = newDispatchErr("dispatch: all keys exhausted")
 )
+
+// logDispatchPreflightRejection is the shared writer for pre-upstream
+// admission rejections (fp-slot saturation, circuit-open, limiter rejection,
+// key-rotation exhaustion). Consolidates the boilerplate that was previously
+// inlined four times in forwardForDispatch and gives every preflight rejection
+// the same shape on candidate_failure_logs_hot:
+//
+//   - explicit kind so the dashboard can filter "circuit_open" /
+//     "rate_limit" / "fp_slot_saturated" independently of the upstream-error
+//     classifiers (which can't tell why an attempt was rejected before any
+//     HTTP call)
+//   - rejection_type + candidates_left in the JSON context so the operator
+//     can see how many siblings are still eligible
+//   - perAttemptLatencyMs only (no end-to-end latency), matching the legacy
+//     candidate-loop convention
+//
+// nil-safe: writer == nil is a no-op (mirrors LogFailure's own contract).
+func logDispatchPreflightRejection(
+	writer *CandidateFailureWriter,
+	params *ExecParams,
+	cand provider.Candidate,
+	dctx *dispatchCtx,
+	startedAt time.Time,
+	rejErr error,
+	kind errorsx.ErrorKind,
+	extra map[string]any,
+) {
+	if writer == nil {
+		return
+	}
+	if params == nil || dctx == nil || rejErr == nil {
+		return
+	}
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	if _, ok := extra["candidates_left"]; !ok {
+		extra["candidates_left"] = len(dctx.candidates)
+	}
+	perAttemptMs := int(time.Since(startedAt).Milliseconds())
+	writer.LogFailureWithKind(
+		params.R.Header.Get("X-Request-Id"),
+		tenantFromCtx(params.R),
+		params.SessionID,
+		cand.CredentialID,
+		cand.ProviderID,
+		cand.RawModel,
+		params.AttemptNo,
+		rejErr,
+		kind,
+		nil,
+		&perAttemptMs,
+		extra,
+	)
+}
 
 type dispatchErr struct{ msg string }
 
