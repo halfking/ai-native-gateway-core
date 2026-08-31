@@ -2,6 +2,7 @@ package sessiondigest
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -48,6 +49,36 @@ func TestBuildBoundsLongText(t *testing.T) {
 	}
 	if got := len([]rune(envelope.Payload.UserInput)); got != 260 {
 		t.Fatalf("bounded user input runes = %d, want 260", got)
+	}
+}
+
+func TestBuildExcludesToolArguments(t *testing.T) {
+	const secretArguments = `{"api_key":"do-not-persist","payload":"sensitive"}`
+	envelope := Build(
+		[]map[string]any{{"role": "user", "content": "run lookup"}},
+		[]map[string]any{{"role": "assistant", "tool_calls": []any{map[string]any{
+			"function": map[string]any{"name": "lookup", "arguments": secretArguments},
+		}}}},
+		nil, nil, time.Time{},
+	)
+	if envelope == nil || envelope.Payload.ToolUsage == nil {
+		t.Fatalf("Build did not retain tool name: %#v", envelope)
+	}
+	if got := envelope.Payload.ToolUsage.ToolsUsed; len(got) != 1 || got[0] != "lookup" {
+		t.Fatalf("unexpected tools: %#v", got)
+	}
+	raw, err := Marshal(envelope)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(raw) == secretArguments || strings.Contains(string(raw), secretArguments) {
+		t.Fatalf("digest leaked tool arguments: %s", raw)
+	}
+}
+
+func TestBuildReturnsNilWithoutUsefulContent(t *testing.T) {
+	if envelope := Build(nil, nil, nil, nil, time.Time{}); envelope != nil {
+		t.Fatalf("Build returned an empty envelope: %#v", envelope)
 	}
 }
 

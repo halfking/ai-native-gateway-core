@@ -141,7 +141,8 @@ func TestHandleTrigger_ProbeEnqueue(t *testing.T) {
 	}
 }
 
-// TestHandleTrigger_ProbeEnqueueError surfaces enqueue failures as 503.
+// TestHandleTrigger_ProbeEnqueueError reports individual enqueue failures in a
+// successful fan-out response, so callers receive every model's outcome.
 func TestHandleTrigger_ProbeEnqueueError(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
 	h := &SelfCheckHandler{}
@@ -155,8 +156,22 @@ func TestHandleTrigger_ProbeEnqueueError(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.handleTrigger(rr, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 (got %d)", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 (got %d, body=%s)", rr.Code, rr.Body.String())
+	}
+	var body struct {
+		OK       bool `json:"ok"`
+		Enqueued int  `json:"enqueued"`
+		Results  map[string]struct {
+			Error    string `json:"error"`
+			Enqueued int    `json:"enqueued"`
+		} `json:"results"`
+	}
+	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !body.OK || body.Enqueued != 0 || body.Results["glm-5.2"].Error != "db down" {
+		t.Fatalf("unexpected body: %+v", body)
 	}
 }
 
