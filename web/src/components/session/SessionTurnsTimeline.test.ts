@@ -30,6 +30,19 @@ const i18n = createI18n({
   messages: {
     'zh-CN': {
       turnDigest: { view: '查看摘要' },
+      sessionTimeline: {
+        latencyUnknown: '未知',
+        refresh: '刷新',
+        refreshing: '刷新中…',
+        retry: '重试',
+        empty: '该会话暂无轮次记录',
+        loading: '加载中…',
+        loadMore: '加载更多轮次',
+        allLoaded: '共 {n} 轮，已全部加载',
+        errors: {
+          network: '网络错误，请检查连接后重试',
+        },
+      },
     },
   },
 })
