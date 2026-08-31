@@ -1,8 +1,15 @@
 # 2026-08-31 数据库结构一致性审计报告（252 ↔ local llm-gateway-pg）
 
+> **重要说明**：本文记录 2026-08-31 一次审计运行的结论，**不是当前实时数据库状态**。仓库目标库 `llm-gateway-pg` 已在审计后重建或下线，且没有留下任何形式的 DDL dump。再次确认两端一致需要：
+> 1. 重新启动或恢复 `llm-gateway-pg` 容器；
+> 2. 跑 `scripts/local-dev/verify-db-consistency.sh --verify` 与 `scripts/local-dev/verify-db-data-consistency.sh`；
+> 3. 与本页第七章（LP2/PR3、PR4）引入的迁移、canonical view 变更重新校核。
+>
+> 把“修复后结构完全一致”当成当前结论是不安全的；后续修改（LP2、PR3、PR4 等）已对该假设做过调整。
+
 **审计人**: ZCode agent（用户指令：查文档→理需求→审计→修脚本→修问题→合并推送）
 **范围**: 252 测试库（172.16.2.210:5432，经 SSH 隧道）↔ 本地 docker `llm-gateway-pg`
-**结论**: 修复后两端**结构完全一致**（`verify-db-consistency.sh` 全部 7 个维度通过，唯一剩余差异为预期内的运行时月度分区）。
+**结论（历史运行）**: 修复后两端**结构完全一致**（`verify-db-consistency.sh` 全部 7 个维度通过，唯一剩余差异为预期内的运行时月度分区）。
 
 ---
 
@@ -93,9 +100,13 @@ F. 序列(173)   : identical
 | `archive_dashboard_events(retention_days integer)` | `383_dashboard_access_events.sql` | 未应用（表 `dashboard_access_events` 已存在，但 `schema_migrations` 无 383） |
 | `archive_session_module_executions(retention_days integer)` | `382_session_module_executions.sql` | 未应用（表已存在，但 `schema_migrations` 无 382） |
 | `get_system_snapshot(p_instance_id text, p_hours_ago integer)` | `433_system_metrics_local_ingest.sql` | **部分应用**：`schema_migrations` 记 433 已应用，但函数缺失 |
-| `handoff_logs_view_delete()` | `534_handoff_logs_hot_columnar.sql`（视图 INSTEAD OF 触发器函数） | 未应用 |
-| `handoff_logs_view_insert()` | 同上 | 未应用 |
-| `promote_handoff_logs_default_batch(p_retention interval, p_batch_size integer)` | 同上 | 未应用 |
+| `handoff_logs_view_delete()` | **无迁移源**（仓库全仓 grep 仅命中本审计报告）¹ | 已回灌（死函数）² |
+| `handoff_logs_view_insert()` | 同上 | 已回灌（死函数）² |
+| `promote_handoff_logs_default_batch(p_retention interval, p_batch_size integer)` | 同上 | 已回灌（死函数）² |
+
+> ¹ **勘误（2026-08-31 二次复验后修正）**：上表初版将这三个函数归因于 `534_handoff_logs_hot_columnar.sql`，**错误**。534 实际仅定义 `ensure_handoff_logs_partition(p_month)`、`handoff_logs_with_current_month` 视图、`promote_handoff_logs_hot_to_partition(p_retention, p_batch_size)`。对全仓（含 `.go`/`.ts`/`.disabled`）grep 这三个函数名，结果仅在审计报告本身出现，**仓库内无任何创建源**。它们引用已不存在的 `handoff_logs_parts` 表，且无任何 `INSTEAD OF` 触发器挂接，是 534 之前 heap 设计的**废弃残留（死函数）**。
+>
+> ² 三个死函数已由本回 gated reconcile 从 local 回灌 252（§6.3），故两端"都有但都死"。函数维度审计把它们当匹配是**假绿**。正确处置：在 252 与 local 两端 `DROP FUNCTION`（无调用方、无触发器，无害），并从一致性契约中排除——**不应**为它们新增迁移或期待 app 二进制重建（那会造出引用不存在表的坏函数）。详见 §6.5。
 
 **根因**：同步契约是 252→local（252 是源）。local 在同步后自行跑 startup 迁移（382/383/433/534）补齐了这些函数；252 测试库要么尚未部署这些迁移（`schema_migrations` 缺 382/383），要么部署部分失败（433 已记录但函数未落地）。两端 `schema_migrations` 均为 211 行，故迁移跟踪表再次"掩盖"了函数级漂移——印证 §三结论。
 
@@ -126,9 +137,18 @@ G. 函数(530)   : identical   ← 新增维度，此前为 6 行漂移
 DATA AUDIT     : 261 张普通表集合 / 行数 / 内容摘要全部 identical
 ```
 
+> ⚠️ **G 维度"全绿"为假性一致（2026-08-31 勘误）**：上述复验时，三个死函数 `handoff_logs_view_delete` / `handoff_logs_view_insert` / `promote_handoff_logs_default_batch` 在 252 与 local "都存在"，故函数维度 md5 比对 identical。但二者都是引用已删除表 `handoff_logs_parts` 的废弃残留（详见 §6.2 勘误脚注）。正确终态是两端**都不存在**这些函数——需在 252 与 local 执行 `DROP FUNCTION` 后复验仍 CONSISTENT 才是真绿。
+
+### 6.5 二次复验后的勘误（死函数 + 部署根因）
+
+- **死函数根因**：`handoff_logs_view_delete` / `handoff_logs_view_insert` / `promote_handoff_logs_default_batch` 并非来自迁移 534（§6.2 初版误归因）。全仓无任何创建源，引用不存在的 `handoff_logs_parts` 且无触发器挂接，属 534 前 heap 设计残留。本回 gated reconcile 把它们从 local 误回灌 252，制造了"双端都有但都死"的假绿。
+- **252 部署真实根因**：app 内嵌迁移集合 `installer/cmd/llm-gw-installer/embeddata/startup/` 为**硬编码精选子集**（50 个文件，范围 511–626），经 `main.go` 逐个 `//go:embed` 声明。**完全不含 382/383/433/534**（531 之后直接跳 536，且 300–500 区间文件本就不在内嵌集合内）。故正常 app 部署永远不应用这四笔——这才是 `repository_schema_migrations`（严格 runner 台账，startup scope 仅记 330/331）缺失它们的根因，而非"request_logs 创建顺序导致 ALTER 失败"（`97d5edb7a` 新增的 `000_base_tables.sql` 与 002/007/009 的 `DO $$` 守卫是良好加固，但非缺失原因，330/331 已落库即证明序列未中断）。
+- **权威修复**：对 252 精准重跑 382/383/433/534（`CREATE OR REPLACE` / `IF NOT EXISTS`，幂等）并写入 `repository_schema_migrations`(scope=startup)；对齐内嵌集合需改 `main.go` 的 embed 列表，属部署架构决策，单列待办（见 handoff）。
+
 ## 七、变更记录
 
 | 日期 | 说明 |
 |------|------|
 | 2026-08-31 | 初版：审计发现 4 类真实差异 + P0 脚本缺陷；修复 local 5 项 / 252 2 项 / 脚本 2 个；复验全绿 |
 | 2026-08-31 | 二次复验：结构审计升 v1.2（+函数维度）；发现并回灌 252 缺的 6 个函数（来自迁移 382/383/433/534）；七维结构 + 261 表数据双审计全绿；更新 SSOT v1.4 与 db-sync 技能 |
+| 2026-08-31 | 勘误：6 个函数中仅 3 个（382/383/433）来自迁移，另 3 个 handoff 函数为无源死函数（§6.2 初版误归因 534）；函数维度"全绿"为假绿；252 部署根因为内嵌迁移集合硬编码精选子集不含 382/383/433/534（非 request_logs 创建顺序）。已规划"删除 request_logs.outbound_body"路径（迁移 629/636 + 移除 db.go self-heal），但与 remote main LP9 schema rollback audit 保留列的设计冲突，已在合并中撤销；后续应作为单独 PR 重新评估。 |
