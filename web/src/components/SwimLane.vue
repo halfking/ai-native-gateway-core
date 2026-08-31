@@ -158,11 +158,13 @@ function handleTileClick(requestId: string) {
 // —— ResizeObserver 监听轨道宽度变化 ——
 let resizeObserver: ResizeObserver | null = null
 let rafPending = false
+let rafHandle: number | null = null
 
 function measureTrack() {
   if (rafPending) return
   rafPending = true
-  requestAnimationFrame(() => {
+  rafHandle = requestAnimationFrame(() => {
+    rafHandle = null
     rafPending = false
     if (trackRef.value) {
       const w = trackRef.value.getBoundingClientRect().width
@@ -187,6 +189,11 @@ onUnmounted(() => {
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
+  }
+  if (rafHandle !== null) {
+    cancelAnimationFrame(rafHandle)
+    rafHandle = null
+    rafPending = false
   }
 })
 
