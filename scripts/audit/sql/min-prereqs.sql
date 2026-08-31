@@ -113,7 +113,9 @@ CREATE TABLE IF NOT EXISTS public.sessions (
 -- scripts/audit/verify-promote-session-bodies-turns.sh exercises the
 -- same DELETE-RETURNING + INSERT pattern that 526 uses for the
 -- production column set.
-DROP TABLE IF EXISTS public.session_turns_hot;
+-- DROP CASCADE because 626's session_bodies_unified view references
+-- session_bodies_hot — the view is recreated by 625 below.
+DROP TABLE IF EXISTS public.session_turns_hot CASCADE;
 CREATE TABLE public.session_turns_hot (
     id bigserial PRIMARY KEY,
     session_id text NOT NULL,
@@ -128,6 +130,74 @@ CREATE TABLE public.session_turns_hot (
     prompt_tokens integer DEFAULT 0,
     completion_tokens integer DEFAULT 0
 );
+
+-- session_bodies_hot — required by promote_session_bodies_hot_to_partition
+-- (614/615/626). The promotion integration test seeds 50 rows here and
+-- asserts hot=0 / parent=50 / unified=50 after the promote. We register
+-- the production-shape 12-column schema (matches 614's CREATE TABLE).
+-- DROP CASCADE because session_bodies_unified (from 614/625) depends on
+-- this table; the view is re-created by 625 below.
+DROP TABLE IF EXISTS public.session_bodies_hot CASCADE;
+CREATE TABLE public.session_bodies_hot (
+    id bigserial PRIMARY KEY,
+    session_id text NOT NULL,
+    turn_no integer NOT NULL,
+    tenant_id text NOT NULL,
+    request_id text NOT NULL,
+    request_delta jsonb,
+    response_delta jsonb,
+    outbound_body jsonb,
+    request_attachments jsonb DEFAULT '[]'::jsonb,
+    response_attachments jsonb DEFAULT '[]'::jsonb,
+    ts timestamptz NOT NULL DEFAULT NOW(),
+    partition_date date NOT NULL DEFAULT CURRENT_DATE
+);
+
+-- session_bodies (partitioned parent) — required as a promote target
+-- by 614/615/626. Production schema has ~46 columns; the audit fixture
+-- carries the minimum column subset that promote_session_bodies_hot_to_partition
+-- INSERTs into. We PARTITION BY RANGE (partition_date) and create one
+-- catch-all default partition so any date is writable.
+-- DROP CASCADE because session_bodies_unified (from 614/625) depends on
+-- the parent table; 625 re-creates the view below.
+DROP TABLE IF EXISTS public.session_bodies CASCADE;
+CREATE TABLE public.session_bodies (
+    id bigint NOT NULL,
+    session_id text NOT NULL,
+    turn_no integer NOT NULL,
+    tenant_id text NOT NULL,
+    request_id text NOT NULL,
+    request_delta jsonb,
+    response_delta jsonb,
+    outbound_body jsonb,
+    request_attachments jsonb DEFAULT '[]'::jsonb,
+    response_attachments jsonb DEFAULT '[]'::jsonb,
+    ts timestamptz NOT NULL DEFAULT NOW(),
+    partition_date date NOT NULL DEFAULT CURRENT_DATE,
+    PRIMARY KEY (id, partition_date)
+) PARTITION BY RANGE (partition_date);
+CREATE TABLE public.session_bodies_default PARTITION OF public.session_bodies DEFAULT;
+
+-- session_turns (partitioned parent) — required as a promote target by
+-- 526 (and the audit-only promote helper). Same minimum-column pattern
+-- as session_bodies above.
+DROP TABLE IF EXISTS public.session_turns CASCADE;
+CREATE TABLE public.session_turns (
+    id bigint NOT NULL,
+    session_id text NOT NULL,
+    turn_no integer NOT NULL,
+    tenant_id text NOT NULL,
+    request_id text NOT NULL,
+    ts timestamptz NOT NULL DEFAULT NOW(),
+    partition_date date NOT NULL DEFAULT CURRENT_DATE,
+    submit_mode text NOT NULL DEFAULT 'full',
+    model text,
+    provider text,
+    prompt_tokens integer DEFAULT 0,
+    completion_tokens integer DEFAULT 0,
+    PRIMARY KEY (id, partition_date)
+) PARTITION BY RANGE (partition_date);
+CREATE TABLE public.session_turns_default PARTITION OF public.session_turns DEFAULT;
 
 -- request_logs_hot — required by attachment cleanup execute (migration 629).
 -- Production carries many more columns; the audit fixture only needs the

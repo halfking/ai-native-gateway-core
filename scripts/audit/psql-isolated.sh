@@ -21,13 +21,17 @@ fi
 
 # If -f is the first non-flag arg, read the file and pipe via stdin so the
 # docker exec wrapper can forward it to psql. Otherwise pass the args
-# through, including any piped stdin.
+# through, including any piped stdin. We intentionally run psql WITHOUT
+# -v ON_ERROR_STOP=1 so callers can choose to apply multiple statements
+# (e.g. min-prereqs + a follow-up CREATE VIEW) and have the first few
+# errors surface as warnings rather than aborting the whole apply.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "${1:-}" == "-f" && -n "${2:-}" ]]; then
+    shift
     exec docker exec -i -e PGPASSWORD="$AUDIT_PG_PASS" kx-citus \
         psql -U "$AUDIT_PG_USER" -d "$AUDIT_PG_DB" \
-        -v ON_ERROR_STOP=1 < "$2"
+        -v ON_ERROR_STOP=0 "$@" < "$1"
 fi
 
 exec docker exec -i -e PGPASSWORD="$AUDIT_PG_PASS" kx-citus \
-    psql -U "$AUDIT_PG_USER" -d "$AUDIT_PG_DB" "$@"
+    psql -U "$AUDIT_PG_USER" -d "$AUDIT_PG_DB" -v ON_ERROR_STOP=0 "$@"
