@@ -77,7 +77,6 @@ export function useDashboardBoard() {
   const operational = ref<BoardOperationalPayload | null>(null)
 
   let refreshTimer: number | undefined
-  let operationalTimer: number | undefined
   let refreshMs = DEFAULT_REFRESH_MS
   let unsubscribeTerminal: (() => void) | null = null
   let loadInFlight = false
@@ -180,17 +179,6 @@ export function useDashboardBoard() {
     return base
   }
 
-  function scheduleOperationalPoll() {
-    // operational is bundled into board; no separate poll needed
-  }
-
-  function stopOperationalPoll() {
-    if (operationalTimer) {
-      clearInterval(operationalTimer)
-      operationalTimer = undefined
-    }
-  }
-
   function schedulePoll() {
     if (refreshTimer) clearInterval(refreshTimer)
     refreshTimer = window.setInterval(() => {
@@ -225,7 +213,6 @@ export function useDashboardBoard() {
     if (!liveUpdatesEnabled.value) {
       refreshActive = false
       unwireLiveUpdates()
-      stopOperationalPoll()
       return
     }
     const resolvedMs = await resolvePollIntervalMs()
@@ -233,7 +220,7 @@ export function useDashboardBoard() {
     refreshMs = resolvedMs
     wireLiveUpdates()
     void loadOperational()
-    scheduleOperationalPoll()
+    schedulePoll()
     schedulePoll()
     document.addEventListener('visibilitychange', onVisibilityChange)
   }
@@ -249,7 +236,6 @@ export function useDashboardBoard() {
       clearInterval(refreshTimer)
       refreshTimer = undefined
     }
-    stopOperationalPoll()
     // Always remove the visibility listener when stopping
     document.removeEventListener('visibilitychange', onVisibilityChange)
     unwireLiveUpdates()

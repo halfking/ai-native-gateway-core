@@ -62,12 +62,20 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 // dashboards cost ~zero CPU. When the tab becomes visible again we clear the
 // (now stale) tiles and reconnect so the backend's authoritative
 // initial_data snapshot rebuilds the view instead of replaying a gap.
+//
+// 2026-09-01 (P1 audit fix): visibility listener is now installed on first
+// acquire (refCount 0→1) and removed on full release (refCount → 0). Previously
+// it was attached at module-load time and lived for the process lifetime,
+// leaking across HMR reloads and tests.
 const visibility = {
   hidden: typeof document !== 'undefined' ? document.hidden : false,
   missed: false,
 }
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
+let visibilityChangeHandler: (() => void) | null = null
+
+function installVisibilityListener() {
+  if (typeof document === 'undefined' || visibilityChangeHandler) return
+  visibilityChangeHandler = () => {
     if (!document.hidden && visibility.hidden) {
       visibility.hidden = false
       if (visibility.missed && refCount > 0) {
@@ -79,7 +87,14 @@ if (typeof document !== 'undefined') {
     } else if (document.hidden) {
       visibility.hidden = true
     }
-  })
+  }
+  document.addEventListener('visibilitychange', visibilityChangeHandler)
+}
+
+function removeVisibilityListener() {
+  if (typeof document === 'undefined' || !visibilityChangeHandler) return
+  document.removeEventListener('visibilitychange', visibilityChangeHandler)
+  visibilityChangeHandler = null
 }
 
 function buildUrl(): string {
@@ -135,6 +150,9 @@ function handleEvent(type: string, data: unknown) {
 
 function open() {
   if (es) return
+  // Install visibility listener when opening the connection so it lives
+  // alongside the SSE consumer count.
+  installVisibilityListener()
   connection.value = 'connecting'
   try {
     es = new EventSource(buildUrl(), { withCredentials: true })
@@ -194,6 +212,8 @@ export function releaseProbeStream() {
   if (refCount === 0) {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
     teardownEs()
+    // Tear down the visibility listener now that the last consumer is gone.
+    removeVisibilityListener()
     tiles.value = []
   }
 }
