@@ -266,19 +266,40 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	query, err := buildMatrixQuery(rowDim, metric)
-	if err != nil {
-		writeJSONErr(w, http.StatusBadRequest, err.Error())
-		return
+	var query string
+	var args []any
+
+	// Try to use materialized view for better performance
+	useMV := useMaterializedView(ctx, h.db, windowLabel)
+	if useMV {
+		query, err = buildMatrixQueryMaterialized(rowDim, metric)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 1)
+		args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			query = strings.Replace(query, "WHERE ", "WHERE tenant_id = $1 AND ", 1)
+			args = append(args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		query, err = buildMatrixQuery(rowDim, metric)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
+		args = []any{intervalStr}
+		if tenantFrag != "" {
+			query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
+			args = append(args, tenantArgs...)
+		}
 	}
 
-	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
-	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-	args := []any{intervalStr}
-	if tenantFrag != "" {
-		query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
-		args = append(args, tenantArgs...)
-	}
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -393,19 +414,33 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		return canon
 	}
 
-	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+	// Try to use materialized view for better performance
+	useMV := useMaterializedView(ctx, h.db, windowLabel)
+	
+	var l12Query string
+	var l12Args []any
 	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-	l12Args := []any{intervalStr}
-	if tenantFrag != "" { //nolint:staticcheck // placeholder, deferred injection happens after build*Query call
-		// (intentionally empty — reserved for future use)
+
+	if useMV {
+		// Use materialized view
+		l12Query = buildFlowL12QueryMaterialized()
+		l12Args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			l12Query = strings.Replace(l12Query, "WHERE ", "WHERE tenant_id = $1 AND ", 1)
+			l12Args = append(l12Args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		l12Args = []any{intervalStr}
+		l12Query = buildFlowL12Query()
+		if tenantFrag != "" {
+			l12Query = strings.Replace(l12Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
+			l12Args = append(l12Args, tenantArgs...)
+		}
 	}
 
-	// Layer 1→2: task_type → outbound_model (aggregated to canonical in Go)
-	l12Query := buildFlowL12Query()
-	if tenantFrag != "" {
-		l12Query = strings.Replace(l12Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
-		l12Args = append(l12Args, tenantArgs...)
-	}
 	l12Rows, err := h.db.Query(ctx, l12Query, l12Args...)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -457,12 +492,29 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	// Includes both auto requests and explicit-model requests; the latter
 	// use client_model as the model anchor and __specified__ as the task.
 	// NOTE: providers table column is display_name, NOT name.
-	l23Query := buildFlowL23Query()
-	l23Args := []any{intervalStr}
-	if tenantFrag != "" {
-		l23Query = strings.Replace(l23Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
-		l23Args = append(l23Args, tenantArgs...)
+	var l23Query string
+	var l23Args []any
+	
+	if useMV {
+		// Use materialized view
+		l23Query = buildFlowL23QueryMaterialized()
+		l23Args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			l23Query = strings.Replace(l23Query, "WHERE ", "WHERE mv.tenant_id = $1 AND ", 1)
+			l23Args = append(l23Args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		l23Query = buildFlowL23Query()
+		l23Args = []any{intervalStr}
+		if tenantFrag != "" {
+			l23Query = strings.Replace(l23Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
+			l23Args = append(l23Args, tenantArgs...)
+		}
 	}
+	
 	l23Rows, err := h.db.Query(ctx, l23Query, l23Args...)
 	if err != nil {
 		writeInternalErr(w, err)
