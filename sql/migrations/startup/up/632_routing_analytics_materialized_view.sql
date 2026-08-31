@@ -119,6 +119,7 @@ GROUP BY
 -- Unique index for CONCURRENTLY refresh support. is_auto_request needs no
 -- COALESCE here because the view normalizes it; the remaining nullable
 -- keys (provider, tenant) are coalesced so NULLs cannot collide.
+-- Note: tenant_id is text, so we use '' as the NULL placeholder, not -1.
 CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey
   ON routing_analytics_7d (
     time_bucket,
@@ -127,7 +128,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey
     effective_work_type,
     COALESCE(effective_provider_id, -1),
     is_auto_request,
-    COALESCE(tenant_id, -1)
+    COALESCE(tenant_id, '')
   );
 
 -- Covering indexes for common query patterns
@@ -176,7 +177,7 @@ WHERE ts >= NOW() - INTERVAL '7 days'
 GROUP BY tenant_id;
 
 CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_pkey
-  ON routing_audit_summary_7d (COALESCE(tenant_id, -1));
+  ON routing_audit_summary_7d (COALESCE(tenant_id, ''));
 
 COMMENT ON MATERIALIZED VIEW routing_audit_summary_7d IS
   'High-level audit summary for /api/admin/auto-route/audit endpoint. '
