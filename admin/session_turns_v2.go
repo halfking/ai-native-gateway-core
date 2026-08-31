@@ -82,14 +82,20 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 	}
 
 	rows, err := h.db.Query(r.Context(), `
-		SELECT turn_no, ts, COALESCE(title,''), COALESCE(summary,''),
-		       COALESCE(prompt_tokens,0), COALESCE(completion_tokens,0), COALESCE(cost_usd,0),
-		       COALESCE(model,''), COALESCE(provider,''), COALESCE(status_code,0),
-		       COALESCE(submit_mode,''), COALESCE(injection_verdict,''), COALESCE(output_verdict,''),
-		       COALESCE(attachment_count,0)
-		FROM public.session_turns_with_current_month
-		WHERE tenant_id=$1 AND session_id=$2 AND turn_no < $3
-		ORDER BY turn_no DESC LIMIT $4`, tenantID, sessionID, beforeTurnNo, limit+1)
+		SELECT t.turn_no, t.ts, COALESCE(t.title,''), COALESCE(t.summary,''),
+		       COALESCE(t.prompt_tokens,0), COALESCE(t.completion_tokens,0), COALESCE(t.cost_usd,0),
+		       COALESCE(t.model,''), COALESCE(t.provider,''), COALESCE(t.status_code,0),
+		       COALESCE(t.submit_mode,''), COALESCE(t.injection_verdict,''), COALESCE(t.output_verdict,''),
+		       COALESCE(t.attachment_count,0), t.request_id,
+		       COALESCE(t.cache_read_tokens,0), COALESCE(t.latency_ms,0), COALESCE(t.success,FALSE),
+		       t.error_kind, t.compression_applied, t.compression_tokens_saved,
+		       b.request_delta, b.response_delta
+		FROM public.session_turns_with_current_month t
+		LEFT JOIN public.session_bodies_unified b
+		  ON b.tenant_id=t.tenant_id AND b.session_id=t.session_id
+		 AND b.turn_no=t.turn_no AND b.request_id=t.request_id
+		WHERE t.tenant_id=$1 AND t.session_id=$2 AND t.turn_no < $3
+		ORDER BY t.turn_no DESC LIMIT $4`, tenantID, sessionID, beforeTurnNo, limit+1)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "serveSessionTurnsList query failed",
 			"session_id", sessionID, "tenant_id", tenantID,
@@ -101,13 +107,37 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 
 	items := make([]TurnListItem, 0, limit)
 	for rows.Next() {
-		var it TurnListItem
+		var (
+			it                          TurnListItem
+			requestID                   string
+			errorKind                   *string // nullable in DB (migration 526)
+			cacheReadTokens, latencyMs  int
+			success, compressionApplied bool
+			compressionTokensSaved      *int
+			requestRaw, responseRaw     []byte
+		)
 		if err := rows.Scan(&it.TurnNo, &it.Ts, &it.Title, &it.Summary, &it.RequestTokens,
 			&it.ResponseTokens, &it.CostUSD, &it.Model, &it.Provider, &it.StatusCode,
-			&it.SubmitMode, &it.InjectionVerdict, &it.OutputVerdict, &it.AttachmentCount); err != nil {
+			&it.SubmitMode, &it.InjectionVerdict, &it.OutputVerdict, &it.AttachmentCount,
+			&requestID, &cacheReadTokens, &latencyMs, &success, &errorKind,
+			&compressionApplied, &compressionTokensSaved, &requestRaw, &responseRaw); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
 		}
+		request := decodeStoredJSON("request_delta", requestID, requestRaw)
+		response := decodeStoredJSON("response_delta", requestID, responseRaw)
+		meta := map[string]any{
+			"prompt_tokens": it.RequestTokens, "completion_tokens": it.ResponseTokens,
+			"cost_usd": it.CostUSD, "cache_read_tokens": cacheReadTokens,
+			"latency_ms": latencyMs, "status_code": it.StatusCode,
+			"success": success, "error_kind": stringPtrValue(errorKind),
+		}
+		governance := map[string]any{
+			"submit_mode": it.SubmitMode, "injection_verdict": it.InjectionVerdict,
+			"output_verdict": it.OutputVerdict, "compression_applied": compressionApplied,
+			"compression_tokens_saved": intPtrValue(compressionTokensSaved),
+		}
+		it.Digest = buildTurnDigest(request, response, meta, governance)
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -140,6 +170,7 @@ type turnDetailV2Response struct {
 	Meta        map[string]any `json:"meta"`
 	Governance  map[string]any `json:"governance"`
 	Attachments []attachmentV2 `json:"attachments"`
+	Digest      *TurnDigest    `json:"digest,omitempty"`
 }
 
 // buildCompressionDiagnosticsV2 keeps gateway-derived outbound state separate
@@ -258,35 +289,43 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	request := decodeStoredJSON("request_delta", requestID, requestDeltaRaw)
+	response := decodeStoredJSON("response_delta", requestID, responseDeltaRaw)
+	meta := map[string]any{
+		"turn_no":            turnNoOut,
+		"request_id":         requestID,
+		"ts":                 ts,
+		"provider":           stringPtrValue(provider),
+		"prompt_tokens":      intPtrValue(promptTokens),
+		"completion_tokens":  intPtrValue(completionTokens),
+		"cache_read_tokens":  intPtrValue(cacheReadTokens),
+		"cache_write_tokens": intPtrValue(cacheWriteTokens),
+		"latency_ms":         intPtrValue(latencyMs),
+		"status_code":        intPtrValue(statusCode),
+		"success":            boolPtrValue(success),
+		"error_kind":         stringPtrValue(errorKind),
+		"source_kind":        sourceKind,
+		"quality":            quality,
+	}
+	if costUSD != nil {
+		meta["cost_usd"] = *costUSD
+	}
+	governance := map[string]any{
+		"submit_mode":              submitMode,
+		"compression_applied":      compressionApplied,
+		"compression_strategy":     stringPtrValue(compressionStrategy),
+		"compression_tokens_saved": intPtrValue(compressionTokensSaved),
+		"injection_verdict":        injectionVerdict,
+		"output_verdict":           outputVerdict,
+	}
 	resp := turnDetailV2Response{
-		Request:     decodeStoredJSON("request_delta", requestID, requestDeltaRaw),
-		Response:    decodeStoredJSON("response_delta", requestID, responseDeltaRaw),
+		Request:     request,
+		Response:    response,
 		Compression: buildCompressionDiagnosticsV2(requestID, compressionApplied, compressionStrategy, compressionTokensSaved, compressionMetaRaw, outboundBodyRaw),
-		Meta: map[string]any{
-			"turn_no":            turnNoOut,
-			"request_id":         requestID,
-			"ts":                 ts,
-			"provider":           stringPtrValue(provider),
-			"prompt_tokens":      intPtrValue(promptTokens),
-			"completion_tokens":  intPtrValue(completionTokens),
-			"cache_read_tokens":  intPtrValue(cacheReadTokens),
-			"cache_write_tokens": intPtrValue(cacheWriteTokens),
-			"latency_ms":         intPtrValue(latencyMs),
-			"status_code":        intPtrValue(statusCode),
-			"success":            boolPtrValue(success),
-			"error_kind":         stringPtrValue(errorKind),
-			"source_kind":        sourceKind,
-			"quality":            quality,
-		},
-		Governance: map[string]any{
-			"submit_mode":              submitMode,
-			"compression_applied":      compressionApplied,
-			"compression_strategy":     stringPtrValue(compressionStrategy),
-			"compression_tokens_saved": intPtrValue(compressionTokensSaved),
-			"injection_verdict":        injectionVerdict,
-			"output_verdict":           outputVerdict,
-		},
+		Meta:        meta,
+		Governance:  governance,
 		Attachments: buildTurnAttachments(requestID, requestAttachmentsRaw, responseAttachmentsRaw),
+		Digest:      buildTurnDigest(request, response, meta, governance),
 	}
 	if model != nil {
 		resp.Model = *model
