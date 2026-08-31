@@ -7,6 +7,55 @@
 
 import { req, type RequestOptions } from './_core'
 
+export interface TurnDigest {
+  user_input: string
+  assistant_output: string
+  metrics: TurnDigestMetrics
+  events?: TurnDigestEvent[]
+  tool_usage?: TurnDigestToolUsage
+}
+
+export interface TurnDigestMetrics {
+  tokens_used: number
+  cost: number
+  latency_ms: number
+  cache_hit_rate?: number
+  compression_rate?: number
+}
+
+export interface TurnDigestEvent {
+  type: 'error' | 'warning' | 'info' | string
+  category: string
+  message: string
+}
+
+export interface TurnDigestToolUsage {
+  tool_call_count: number
+  tools_used: string[]
+}
+
+export interface TurnAttachment {
+  att_id: string
+  name: string
+  size: number
+  mime?: string
+  object?: string
+}
+
+export interface TurnDetail {
+  request?: unknown
+  response?: unknown
+  compression?: Record<string, unknown>
+  meta?: Record<string, unknown>
+  governance?: Record<string, unknown>
+  attachments?: TurnAttachment[]
+  title?: string
+  summary?: string
+  digest?: TurnDigest | null
+  model?: string
+  cost_usd?: number
+}
+
 export interface TurnListItem {
   turn_no: number
   ts: string
@@ -78,9 +127,9 @@ export async function getSessionTurn(
   sessionId: string,
   turnNo: number,
   options?: RequestOptions
-) {
+): Promise<TurnDetail> {
   const path = `/api/admin/sessions/${encodeURIComponent(sessionId)}/turns/${turnNo}`
-  return req<Record<string, unknown>>('GET', path, undefined, options)
+  return req<TurnDetail>('GET', path, undefined, options)
 }
 
 export async function getSessionSnapshot(sessionId: string, options?: RequestOptions) {

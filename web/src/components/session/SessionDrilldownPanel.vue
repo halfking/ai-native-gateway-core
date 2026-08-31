@@ -13,20 +13,39 @@
 import { ref } from 'vue'
 import OnlineSessionsPanel from './OnlineSessionsPanel.vue'
 import SessionTurnsTimeline from './SessionTurnsTimeline.vue'
+import TurnDigestDrawer from './TurnDigestDrawer.vue'
 import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const selectedSessionId = ref<string | null>(null)
+const digestOpen = ref(false)
+const digestTurnNo = ref<number | null>(null)
+
+function clearDigestState() {
+  digestOpen.value = false
+  digestTurnNo.value = null
+}
 
 function openSession(sessionId: string) {
+  clearDigestState()
   selectedSessionId.value = sessionId
 }
 
 function backToList() {
+  clearDigestState()
   selectedSessionId.value = null
 }
 
 function openRequest(payload: { requestId: string }) {
   openRequestDetailPage(payload.requestId, { mode: 'session-turns' })
+}
+
+function showDigest(payload: { turnNumber: number }) {
+  digestTurnNo.value = payload.turnNumber
+  digestOpen.value = true
+}
+
+function closeDigest() {
+  clearDigestState()
 }
 </script>
 
@@ -46,6 +65,14 @@ function openRequest(payload: { requestId: string }) {
           :session-id="selectedSessionId"
           :key="selectedSessionId"
           @open-request="openRequest"
+          @show-digest="showDigest"
+        />
+        <TurnDigestDrawer
+          v-if="selectedSessionId"
+          v-model="digestOpen"
+          :session-id="selectedSessionId"
+          :turn-no="digestTurnNo"
+          @close="closeDigest"
         />
       </div>
     </template>
