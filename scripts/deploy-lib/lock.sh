@@ -305,12 +305,22 @@ lock_recover_remote() {
 # not pipe sensitive data into the lock. The caller is responsible for
 # staging the ssh command (the tests stub it via PATH).
 lock_acquire_remote() {
-  local ssh_cmd=$1 target=$2 lock_path=$3 metadata metadata_b64 lock_q metadata_q
+  local ssh_cmd=$1 target=$2 lock_path=$3 metadata metadata_b64 lock_q metadata_q owner_token owner_q
+  owner_token="${LOCK_REMOTE_OWNER_TOKEN:-}"
+  if [[ -z "$owner_token" ]]; then
+    if command -v openssl >/dev/null 2>&1; then
+      owner_token=$(openssl rand -hex 32)
+    else
+      owner_token=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+    fi
+  fi
+  LOCK_REMOTE_OWNER_TOKEN=$owner_token
   metadata=$(cat <<EOF
 target=$target
 source_user=${SOURCE_USER:-$(id -un 2>/dev/null || echo unknown)}
 source_host=${SOURCE_HOST:-$(hostname 2>/dev/null || echo unknown)}
 pid=$$
+owner_token=$owner_token
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 commit=${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || echo unknown)}
 version=${SOURCE_VERSION:-unknown}
@@ -319,8 +329,10 @@ EOF
   metadata_b64=$(printf '%s\n' "$metadata" | base64 | tr -d '\n')
   printf -v lock_q '%q' "$lock_path"
   printf -v metadata_q '%q' "$metadata_b64"
-  if ! "$ssh_cmd" "LOCK_PATH=$lock_q METADATA_B64=$metadata_q bash -s" <<'REMOTE_LOCK'
+  printf -v owner_q '%q' "$owner_token"
+  if ! "$ssh_cmd" "LOCK_PATH=$lock_q METADATA_B64=$metadata_q OWNER_TOKEN=$owner_q bash -s" <<'REMOTE_LOCK'
 set -euo pipefail
+umask 077
 # The lock parent dir (e.g. /var/lib/llm-gateway-go) must exist before the
 # atomic mkdir of the lock directory itself. Creating only the parent is
 # a benign race — two concurrent callers both succeed, only one wins the
@@ -347,8 +359,45 @@ REMOTE_LOCK
 }
 
 lock_release_remote() {
-  local ssh_cmd=$1 lock_path=$2
-  "$ssh_cmd" "rm -rf '$lock_path'"
+  local ssh_cmd=$1 lock_path=$2 owner_token=${LOCK_REMOTE_OWNER_TOKEN:-}
+  [[ -n "$owner_token" ]] || {
+    echo "ERROR: refusing remote lock release without owner token" >&2
+    return 64
+  }
+  local lock_q owner_q
+  printf -v lock_q '%q' "$lock_path"
+  printf -v owner_q '%q' "$owner_token"
+  "$ssh_cmd" "LOCK_PATH=$lock_q OWNER_TOKEN=$owner_q bash -s" <<'REMOTE_UNLOCK'
+set -euo pipefail
+[[ -d "$LOCK_PATH" ]] || exit 0
+metadata="$LOCK_PATH/metadata"
+[[ -f "$metadata" ]] || exit 0
+read_owner_token() {
+  awk -F= '$1=="owner_token" {sub($1 "=", ""); print; exit}' "$1" 2>/dev/null || true
+}
+# Fast path: the lock is not ours — touch nothing.
+[[ "$(read_owner_token "$metadata")" == "$OWNER_TOKEN" ]] || exit 0
+# Release race guard: a plain read→compare→rm lets an old holder delete a
+# replacement owner's fresh lock acquired between the read and the rm.
+# Rename the dir off the canonical path first (atomic), re-verify the
+# token on the renamed copy, and only then delete it.
+staging="$LOCK_PATH.releasing.$$.$RANDOM"
+mv "$LOCK_PATH" "$staging"
+if [[ "$(read_owner_token "$staging/metadata")" == "$OWNER_TOKEN" ]]; then
+  rm -rf "$staging"
+  exit 0
+fi
+# Ownership changed between the check and the rename. Restore the
+# replacement owner's lock; if the canonical path was re-acquired in the
+# meantime, keep the staged copy for inspection rather than delete data
+# that is no longer ours to remove.
+if [[ -e "$LOCK_PATH" ]]; then
+  echo "WARN: lock at $LOCK_PATH re-acquired during release; kept $staging for inspection" >&2
+else
+  mv "$staging" "$LOCK_PATH"
+  echo "WARN: lock at $LOCK_PATH changed owner before release; restored replacement lock" >&2
+fi
+REMOTE_UNLOCK
 }
 
 # Force-unlock — operator-driven remote lock removal. Only this entry

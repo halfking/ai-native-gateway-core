@@ -33,14 +33,15 @@
 #
 #   AC-L7  Given lock metadata, no secrets are written to the lock
 #          file/dir (target/user/host/pid/start/commit/version only).
-#   AC-L8  Given a 154 lock, a 245 lock can still be acquired because
+#   AC-L8  An old remote lock owner cannot remove a replacement owner's lock.
+#   AC-L9  Given a 154 lock, a 245 lock can still be acquired because
 #          deployment locks are isolated by target.
-#   AC-L9  The shared build lock serializes checkout mutations without
+#   AC-L10 The shared build lock serializes checkout mutations without
 #          conflating target lock ownership.
-#   AC-L10 Explicit unlock target selection wins over stale overrides.
-#   AC-L11 Forced recovery removes only dead, target-matching locks.
-#   AC-L12 Forced recovery clears stale target/build locks before reacquire.
-#   AC-L13 Force recovery rejects live/cross-target lock owners and remote
+#   AC-L11 Explicit unlock target selection wins over stale overrides.
+#   AC-L12 Forced recovery removes only dead, target-matching locks.
+#   AC-L13 Forced recovery clears stale target/build locks before reacquire.
+#   AC-L14 Force recovery rejects live/cross-target lock owners and remote
 #          read failures.
 # =====================================================================
 set -uo pipefail
@@ -353,7 +354,45 @@ EOF
   rm -rf "$tmp"
 }
 
-# --- AC-L8: lock metadata contains no secrets ---------------------
+# --- AC-L8: old remote owner cannot remove replacement lock --------
+test_remote_lock_owner_compare_and_delete() {
+  echo "── AC-L8: remote lock owner compare-and-delete ──"
+  local tmp; tmp=$(mktemp -d -t kx-remote-owner.XXXXXX)
+  local lock_path="$tmp/deploy.lock"
+  local owner_a="owner-a" owner_b="owner-b"
+  local fake_remote
+  fake_remote() { bash -c "$1"; }
+
+  LOCK_REMOTE_OWNER_TOKEN="$owner_a" lock_acquire_remote fake_remote 154 "$lock_path" 2>/dev/null
+  if [[ ! -f "$lock_path/metadata" ]] || ! grep -q "^owner_token=$owner_a$" "$lock_path/metadata"; then
+    log_fail "first remote owner metadata was not created"
+    rm -rf "$tmp"
+    return
+  fi
+  printf 'target=154\nowner_token=%s\n' "$owner_b" > "$lock_path/metadata"
+  LOCK_REMOTE_OWNER_TOKEN="$owner_a" lock_release_remote fake_remote "$lock_path"
+  if [[ -d "$lock_path" ]] && grep -q "^owner_token=$owner_b$" "$lock_path/metadata"; then
+    log_pass "old remote owner cannot delete replacement lock"
+  else
+    log_fail "old remote owner removed replacement lock"
+  fi
+  LOCK_REMOTE_OWNER_TOKEN="$owner_b" lock_release_remote fake_remote "$lock_path"
+  [[ ! -e "$lock_path" ]] && log_pass "current remote owner releases its lock" \
+    || log_fail "current remote owner did not release its lock"
+  # Release-race guard: a dangling staging dir must never be left behind,
+  # and a missing metadata file must be a no-op (not an error).
+  if compgen -G "$tmp/deploy.lock.releasing.*" >/dev/null; then
+    log_fail "lock release leaked a staging dir"
+  else
+    log_pass "lock release leaves no staging dir"
+  fi
+  mkdir -p "$lock_path"
+  LOCK_REMOTE_OWNER_TOKEN="$owner_b" lock_release_remote fake_remote "$lock_path" && \
+    log_pass "release on metadata-less lock is a no-op (rc=0)" \
+    || log_fail "release on metadata-less lock failed"
+  rm -rf "$tmp"
+}
+
 test_lock_metadata_no_secrets() {
   echo "── AC-L8: lock metadata contains no secrets ──"
   setup_lock_env
@@ -595,7 +634,7 @@ test_force_recovery_safety() {
   # RETURN trap guarantees the background sleep is reaped even if the
   # test bails out early (set -e, assertion failure, Ctrl+C). Otherwise
   # the 30s sleep leaks until the test process itself dies.
-  trap 'kill "$live_pid" 2>/dev/null || true; wait "$live_pid" 2>/dev/null || true; rm -rf "$tmp"' RETURN
+  trap 'kill "$live_pid" 2>/dev/null || true; wait "$live_pid" 2>/dev/null || true; rm -rf "$tmp" || true' RETURN
   printf 'target=245\npid=%s\n' "$live_pid" >"$target_lock/metadata"
   rc=0
   lock_recover_local 245 1 || rc=$?
@@ -611,6 +650,11 @@ test_force_recovery_safety() {
   lock_recover_remote remote_cmd 245 /var/lib/llm-gateway-go/deploy.lock 1 || rc=$?
   [[ $rc -eq 75 ]] && log_pass "remote lock read failure fails closed" \
     || log_fail "remote lock read failure returned rc=$rc"
+  trap - RETURN
+  kill "$live_pid" 2>/dev/null || true
+  wait "$live_pid" 2>/dev/null || true
+  rm -rf "$tmp" || true
+  return 0
 }
 
 # --- AC-L14: flock recovery path safety ----------------------------
@@ -685,6 +729,7 @@ EOF
     || log_fail "missing flock bin removal returned rc=$rc"
 
   rm -rf "$tmp"
+  return 0
 }
 
 # --- runner --------------------------------------------------------
@@ -698,6 +743,7 @@ run_all() {
   test_trap_release_on_crash
   test_force_unlock
   test_remote_metadata_failure_cleans_lock
+  test_remote_lock_owner_compare_and_delete
   test_lock_metadata_no_secrets
   test_target_lock_isolation
   test_shared_build_lock

@@ -237,7 +237,25 @@ func runEmptyStreamGateWithVendor(
 			return nil
 		}
 		consecutiveEmptyDeltas++
+		// 2026-09-01: the early-empty counter was invisible, so an
+		// empty_response verdict left no evidence of how many empty deltas
+		// preceded it or what they looked like. Debug level plus a truncated
+		// preview keeps production logs quiet while making the glm-5.2 /
+		// minimax-m3 empty-burst pattern reconstructible.
+		slog.Debug("early_empty_delta_detected",
+			"vendor_code", vendorCode,
+			"client_model", clientModel,
+			"consecutive", consecutiveEmptyDeltas,
+			"threshold", earlyEmptyChunks,
+			"payload_preview", truncateForLog(payload, 120),
+		)
 		if consecutiveEmptyDeltas >= earlyEmptyChunks {
+			slog.Warn("early_empty_threshold_reached",
+				"vendor_code", vendorCode,
+				"client_model", clientModel,
+				"consecutive", consecutiveEmptyDeltas,
+				"threshold", earlyEmptyChunks,
+			)
 			return earlyEmptyOutcome(capture)
 		}
 		return nil

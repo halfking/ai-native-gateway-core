@@ -17,7 +17,7 @@
 # 历史:
 #   - 2026-07-10 统一为 version.json 单一来源 (admin/misc.go 重构)
 #     * 废弃：.deploy_seq / build_seq / 分散的环境变量
-#     * 新增：env 变量 LLM_GATEWAY_VERSION_JSON 作为快速注入通道
+#     * 新增：env 变量 LLM_GATEWAY_VERSION_FILE 作为实例级 version.json 覆盖通道
 #
 # 计算规则:
 #   git tag → <tag>
