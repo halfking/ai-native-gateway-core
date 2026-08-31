@@ -2,9 +2,11 @@ package bg
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
 
@@ -33,7 +35,7 @@ func TestMaterializedViewRefresher(t *testing.T) {
 		err = pool.QueryRow(ctx, `
 			SELECT MAX(refreshed_at) FROM routing_analytics_7d
 		`).Scan(&refreshedAt)
-		
+
 		if err == nil {
 			// View exists and has data
 			age := time.Since(refreshedAt)
@@ -67,10 +69,19 @@ func TestMaterializedViewRefresher(t *testing.T) {
 	})
 }
 
-// getTestDBPool returns a test database connection pool.
-// This is a placeholder - actual implementation depends on test infrastructure.
-func getTestDBPool(t *testing.T) interface{} {
-	// TODO: implement based on existing test helpers
-	// For now, return nil to skip tests
-	return nil
+// getTestDBPool returns a pool over TEST_DATABASE_URL (the repo's standard
+// integration-test DSN, see cmd/license-authority tests), or nil so callers
+// skip when no test database is provisioned.
+func getTestDBPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		return nil
+	}
+	pool, err := pgxpool.New(context.Background(), dsn)
+	if err != nil {
+		t.Fatalf("pgxpool.New(TEST_DATABASE_URL): %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
 }
