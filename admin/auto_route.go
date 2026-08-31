@@ -482,17 +482,30 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// reads the NULL as FALSE instead of dropping it.
 	var total, successes, totalAuto, totalSpecified int64
 	auditTenantFrag, auditTenantArgs, _ := tenantLogsClause(r, 1)
-	
-	// 2026-08-31: Try materialized view first for performance
-	// (migration 632 routing_audit_summary_7d)
-	var tenantID *int
-	if auditTenantFrag != "" && len(auditTenantArgs) > 0 {
-		if tid, ok := auditTenantArgs[0].(int); ok {
-			tenantID = &tid
+
+	// 2026-08-31: try the audit-summary materialized view first (migration
+	// 632 routing_audit_summary_7d). Tenant isolation: the MV is grouped by
+	// tenant_id, and tenantLogsClause hands us the id as a *string* — if a
+	// tenant-scoped caller's id cannot be extracted we MUST NOT take the
+	// MV path (its nil-tenant branch sums every tenant); we fall back to
+	// the base query which carries auditTenantFrag verbatim.
+	var tenantID *string
+	mvEligible := true
+	if auditTenantFrag != "" {
+		mvEligible = false
+		if len(auditTenantArgs) > 0 {
+			if tid, ok := auditTenantArgs[0].(string); ok && tid != "" {
+				tenantID = &tid
+				mvEligible = true
+			}
 		}
 	}
-	
-	mvTotal, mvSuccesses, mvAuto, mvSpecified, mvFound := getAuditSummaryMaterialized(ctx, h.db, tenantID)
+
+	var mvTotal, mvSuccesses, mvAuto, mvSpecified int64
+	var mvFound bool
+	if mvEligible {
+		mvTotal, mvSuccesses, mvAuto, mvSpecified, mvFound = getAuditSummaryMaterialized(ctx, h.db, tenantID)
+	}
 	if mvFound {
 		total, successes, totalAuto, totalSpecified = mvTotal, mvSuccesses, mvAuto, mvSpecified
 	} else {

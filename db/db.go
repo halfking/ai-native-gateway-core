@@ -126,6 +126,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureProviderSoftDelete(migCtx); err != nil {
 		return err
 	}
+	// 2026-08-31 migration 632: routing analytics materialized views.
+	// Must run before the gateway serves /api/admin/auto-route/analytics/*
+	// traffic; on failure the views are absent and handlers fall back to
+	// the (slow but correct) base-view queries.
+	if err := db.ensureRoutingAnalyticsMaterializedViews(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureApplicationsTable(migCtx); err != nil {
 		return err
 	}
@@ -776,6 +783,146 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 		return err
 	}
 	slog.Info("provider/credential soft-delete schema ensured (migration 631)")
+	return nil
+}
+
+// routingAnalyticsMVSQL is the shared definition of the routing analytics
+// materialized views (migration 632). Kept as one statement batch because
+// CREATE MATERIALIZED VIEW cannot be re-run with CREATE OR REPLACE; the
+// IF NOT EXISTS guards make the batch idempotent.
+//
+// NULL-safety (2026-08-31 audit): is_auto_request is COALESCEd to FALSE in
+// the view. Historical rows carry NULL, and GROUP BY would keep NULL and
+// FALSE as separate buckets while the unique index's COALESCE(is_auto_request,
+// FALSE) expression maps both to the same key — CREATE UNIQUE INDEX would
+// then fail with a duplicate key and abort startup. Normalizing in the view
+// also matches the base queries, which read NULL as FALSE.
+//
+// effective_provider_id bakes in the same COALESCE(provider_id,
+// credential lookup) fallback that buildFlowL23Query (admin/analytics.go)
+// applies, so the L2→L3 Sankey shows the same 'unknown' provider share on
+// both the materialized and base paths.
+const routingAnalyticsMVSQL = `
+	CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
+	SELECT
+	  DATE_TRUNC('hour', ts) AS time_bucket,
+	  COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '__specified__' END) AS effective_task_type,
+	  COALESCE(NULLIF(outbound_model, ''), client_model) AS effective_model,
+	  COALESCE(NULLIF(work_type, ''), 'unknown') AS effective_work_type,
+	  COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr WHERE cr.id = credential_id LIMIT 1)) AS effective_provider_id,
+	  COALESCE(is_auto_request, FALSE) AS is_auto_request,
+	  tenant_id,
+	  COUNT(*) AS request_count,
+	  COUNT(*) FILTER (WHERE success) AS success_count,
+	  COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
+	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
+	  percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_latency_ms,
+	  percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
+	  percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
+	  COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+	  NOW() AS refreshed_at
+	FROM request_logs_with_current_month_without_customer_id
+	WHERE ts >= NOW() - INTERVAL '7 days'
+	  AND (
+	    is_auto_request = TRUE
+	    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+	  )
+	  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
+	GROUP BY
+	  time_bucket,
+	  effective_task_type,
+	  effective_model,
+	  effective_work_type,
+	  effective_provider_id,
+	  is_auto_request,
+	  tenant_id;
+
+	CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey
+	  ON routing_analytics_7d (
+	    time_bucket,
+	    effective_task_type,
+	    effective_model,
+	    effective_work_type,
+	    COALESCE(effective_provider_id, -1),
+	    is_auto_request,
+	    COALESCE(tenant_id, -1)
+	  );
+
+	CREATE INDEX IF NOT EXISTS routing_analytics_7d_task_model_idx
+	  ON routing_analytics_7d (effective_task_type, effective_model);
+
+	CREATE INDEX IF NOT EXISTS routing_analytics_7d_time_idx
+	  ON routing_analytics_7d (time_bucket DESC);
+
+	CREATE INDEX IF NOT EXISTS routing_analytics_7d_tenant_idx
+	  ON routing_analytics_7d (tenant_id)
+	  WHERE tenant_id IS NOT NULL;
+
+	CREATE MATERIALIZED VIEW IF NOT EXISTS routing_audit_summary_7d AS
+	SELECT
+	  tenant_id,
+	  COUNT(*) AS total_requests,
+	  COUNT(*) FILTER (WHERE success) AS success_count,
+	  COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
+	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
+	  NOW() AS refreshed_at
+	FROM request_logs_with_current_month_without_customer_id
+	WHERE ts >= NOW() - INTERVAL '7 days'
+	  AND (
+	    is_auto_request = TRUE
+	    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+	  )
+	GROUP BY tenant_id;
+
+	CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_pkey
+	  ON routing_audit_summary_7d (COALESCE(tenant_id, -1));
+`
+
+// ensureRoutingAnalyticsMaterializedViews mirrors
+// sql/migrations/startup/up/632_routing_analytics_materialized_view.sql.
+// 2026-08-31: pre-aggregates the 7-day window that the admin analytics
+// endpoints (matrix / flow / audit) aggregate on demand — those queries
+// Seq-Scan 314K+ rows and blew the 15s handler timeout. Views are refreshed
+// every 10 minutes by bg.MaterializedViewRefresher; admin handlers fall
+// back to the base-view queries whenever the views are missing or stale.
+//
+// CREATE MATERIALIZED VIEW populates the view as part of creation, so no
+// initial REFRESH is needed here. The statement can take tens of seconds
+// on the production dataset while the shared PG sets statement_timeout=30s,
+// so it runs on a pinned connection with the timeout raised and restored.
+func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+
+	// Fast idempotent path: both views already present → nothing to build.
+	var bothExist bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_analytics_7d')
+		   AND EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_audit_summary_7d')
+	`).Scan(&bothExist); err == nil && bothExist {
+		return nil
+	}
+
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+
+	// CREATE aggregates the full 7-day partition; the default 30s
+	// statement_timeout on prod would cancel it mid-boot.
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
+	}()
+
+	if _, err := conn.Exec(ctx, routingAnalyticsMVSQL); err != nil {
+		return err
+	}
+	slog.Info("routing analytics materialized views ensured (migration 632)")
 	return nil
 }
 

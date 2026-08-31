@@ -4,23 +4,41 @@
 --          to resolve timeout issues with request_logs_with_current_month_without_customer_id.
 --
 -- Root cause:
---   Analytics endpoints (flow, matrix, audit) query 314K+ rows with aggregations,
---   causing 15s timeouts. No index can solve GROUP BY performance on this scale.
+--   Analytics endpoints (flow, matrix, audit) aggregate 314K+ rows on every
+--   request, causing 15s timeouts. No index can fix GROUP BY cost at this scale.
 --
 -- Solution:
---   Create materialized views for 7d and 30d windows with pre-aggregated metrics.
---   Refresh every 10 minutes via background worker.
+--   Materialized views for the 7d window, refreshed every 10 minutes by
+--   bg.MaterializedViewRefresher (REFRESH ... CONCURRENTLY + advisory lock).
+--
+-- IMPORTANT — how this migration actually runs:
+--   The startup migration engine is Go-driven (db.applyMigrationsOnce);
+--   this file is the DBA-facing mirror of db.ensureRoutingAnalyticsMaterializedViews.
+--   Editing only this file does NOT change database behaviour; keep both in sync.
+--
+-- NULL-safety (2026-08-31 audit): is_auto_request is COALESCEd to FALSE in the
+-- view. GROUP BY keeps NULL and FALSE in separate buckets while the unique
+-- index maps both onto the same COALESCE key, which would make CREATE UNIQUE
+-- INDEX fail with a duplicate key and abort startup. Normalizing here also
+-- matches the base queries (`is_auto_request IS NOT TRUE` reads NULL as FALSE).
+--
+-- effective_provider_id bakes in the COALESCE(provider_id, credential lookup)
+-- fallback from buildFlowL23Query (admin/analytics.go) so the L2→L3 Sankey
+-- reports the same 'unknown' provider share on materialized and base paths.
 --
 -- Status: active
--- Idempotent: YES
+-- Idempotent: YES (IF NOT EXISTS throughout)
 -- Rollback: down/632_routing_analytics_materialized_view.down.sql
--- Related: admin/analytics.go, admin/auto_route.go (handleAudit)
+-- Related: db/db.go ensureRoutingAnalyticsMaterializedViews, bg/materialized_view_refresher.go,
+--          admin/analytics_materialized.go
 -- Changelog:
 --   2026-08-31  v1.0  Initial materialized view creation
+--   2026-08-31  v1.1  Audit fixes: NULL-safe is_auto_request, provider
+--                     credential fallback, plain-column unique index
 --
 -- Performance target:
 --   Query latency: 15s → <500ms
---   Refresh cost: ~5-10s per refresh (acceptable for 10min interval)
+--   Refresh cost: ~5-10s per refresh (every 10 minutes)
 
 BEGIN;
 
@@ -34,42 +52,46 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
 SELECT
   -- Time dimension (hourly buckets for granular drill-down)
   DATE_TRUNC('hour', ts) AS time_bucket,
-  
+
   -- Task dimension (L1 classification or __specified__ synthetic key)
   COALESCE(
     NULLIF(task_type, ''),
     CASE WHEN is_auto_request THEN 'unknown' ELSE '__specified__' END
   ) AS effective_task_type,
-  
+
   -- Model dimension (outbound for auto, client for explicit)
   COALESCE(NULLIF(outbound_model, ''), client_model) AS effective_model,
-  
+
   -- Work type dimension (for row=work_type matrix queries)
   COALESCE(NULLIF(work_type, ''), 'unknown') AS effective_work_type,
-  
-  -- Provider dimension (for L2→L3 flow)
-  provider_id,
-  
-  -- Request classification
-  is_auto_request,
-  
+
+  -- Provider dimension (for L2→L3 flow); credential fallback keeps parity
+  -- with buildFlowL23Query's COALESCE(rl.provider_id, credential lookup).
+  COALESCE(
+    provider_id,
+    (SELECT cr.provider_id FROM credentials cr WHERE cr.id = credential_id LIMIT 1)
+  ) AS effective_provider_id,
+
+  -- Request classification, NULL-normalized (see header note)
+  COALESCE(is_auto_request, FALSE) AS is_auto_request,
+
   -- Tenant scope (for multi-tenant filtering)
   tenant_id,
-  
+
   -- Aggregated metrics
   COUNT(*) AS request_count,
   COUNT(*) FILTER (WHERE success) AS success_count,
   COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
   COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
-  
+
   -- Latency metrics (percentiles)
   percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_latency_ms,
   percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
   percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
-  
+
   -- Cost metrics
   COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
-  
+
   -- Refresh metadata
   NOW() AS refreshed_at
 
@@ -90,23 +112,25 @@ GROUP BY
   effective_task_type,
   effective_model,
   effective_work_type,
-  provider_id,
+  effective_provider_id,
   is_auto_request,
   tenant_id;
 
--- Create unique index for CONCURRENTLY refresh support
+-- Unique index for CONCURRENTLY refresh support. is_auto_request needs no
+-- COALESCE here because the view normalizes it; the remaining nullable
+-- keys (provider, tenant) are coalesced so NULLs cannot collide.
 CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey
   ON routing_analytics_7d (
     time_bucket,
     effective_task_type,
     effective_model,
     effective_work_type,
-    COALESCE(provider_id, -1),
-    COALESCE(is_auto_request, FALSE),
+    COALESCE(effective_provider_id, -1),
+    is_auto_request,
     COALESCE(tenant_id, -1)
   );
 
--- Create covering indexes for common query patterns
+-- Covering indexes for common query patterns
 CREATE INDEX IF NOT EXISTS routing_analytics_7d_task_model_idx
   ON routing_analytics_7d (effective_task_type, effective_model);
 
@@ -119,21 +143,11 @@ CREATE INDEX IF NOT EXISTS routing_analytics_7d_tenant_idx
 
 COMMENT ON MATERIALIZED VIEW routing_analytics_7d IS
   'Pre-aggregated 7-day routing analytics for /api/admin/auto-route/analytics/* endpoints. '
-  'Refreshed every 10 minutes by background worker. '
+  'Refreshed every 10 minutes by bg.MaterializedViewRefresher. '
   'Created by migration 632 (2026-08-31).';
 
 -- =============================================================================
--- 2. Extended materialized view: 30-day window (optional, for future use)
--- =============================================================================
--- Uncomment when 30d window queries are added to the UI.
---
--- CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_30d AS
--- SELECT ... FROM request_logs_with_current_month_without_customer_id
--- WHERE ts >= NOW() - INTERVAL '30 days' ...
--- GROUP BY ...;
-
--- =============================================================================
--- 3. Audit summary view: simplified aggregates for /audit endpoint
+-- 2. Audit summary view: simplified aggregates for /audit endpoint
 -- =============================================================================
 -- The audit endpoint needs only high-level counts, not per-task/model breakdown.
 
@@ -141,13 +155,13 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS routing_audit_summary_7d AS
 SELECT
   -- Tenant scope
   tenant_id,
-  
+
   -- High-level counts
   COUNT(*) AS total_requests,
   COUNT(*) FILTER (WHERE success) AS success_count,
   COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
   COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
-  
+
   -- Refresh metadata
   NOW() AS refreshed_at
 
@@ -166,46 +180,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_pkey
 
 COMMENT ON MATERIALIZED VIEW routing_audit_summary_7d IS
   'High-level audit summary for /api/admin/auto-route/audit endpoint. '
-  'Refreshed every 10 minutes by background worker. '
+  'Refreshed every 10 minutes by bg.MaterializedViewRefresher. '
   'Created by migration 632 (2026-08-31).';
 
--- =============================================================================
--- 4. Initial population (may take 10-20s on large datasets)
--- =============================================================================
-
-REFRESH MATERIALIZED VIEW routing_analytics_7d;
-REFRESH MATERIALIZED VIEW routing_audit_summary_7d;
-
--- =============================================================================
--- 5. Verification
--- =============================================================================
-
-DO $$
-DECLARE
-  analytics_count bigint;
-  audit_count bigint;
-BEGIN
-  -- Check analytics view populated
-  SELECT COUNT(*) INTO analytics_count FROM routing_analytics_7d;
-  IF analytics_count = 0 THEN
-    RAISE WARNING '632: routing_analytics_7d is empty (normal if no recent requests)';
-  ELSE
-    RAISE NOTICE '632: routing_analytics_7d populated with % rows', analytics_count;
-  END IF;
-  
-  -- Check audit view populated
-  SELECT COUNT(*) INTO audit_count FROM routing_audit_summary_7d;
-  RAISE NOTICE '632: routing_audit_summary_7d populated with % rows', audit_count;
-  
-  -- Verify index created
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_indexes
-    WHERE indexname = 'routing_analytics_7d_pkey'
-  ) THEN
-    RAISE EXCEPTION '632: routing_analytics_7d_pkey index missing';
-  END IF;
-  
-  RAISE NOTICE 'Migration 632 completed successfully';
-END $$;
+-- NOTE: no initial REFRESH here — CREATE MATERIALIZED VIEW populates the
+-- view, and the background refresher keeps it current from then on.
 
 COMMIT;

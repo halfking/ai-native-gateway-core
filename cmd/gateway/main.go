@@ -4098,9 +4098,11 @@ func main() {
 		// 2026-08-31: Materialized view refresher for routing analytics performance.
 		// Refreshes routing_analytics_7d and routing_audit_summary_7d every 10 minutes
 		// to keep /api/admin/auto-route/analytics/* endpoints fast (<500ms).
-		// Related: migration 632, admin/analytics.go, admin/analytics_materialized.go
+		// Related: migration 632 (db.ensureRoutingAnalyticsMaterializedViews),
+		// admin/analytics.go, admin/analytics_materialized.go
 		mvRefresher := bg.NewMaterializedViewRefresher(dbConn.Pool())
 		mvRefresher.Start()
+		defer mvRefresher.Stop()
 		slog.Info("materialized_view_refresher started for routing analytics")
 
 		// settings-management: 7-day audit retention worker (Q6: C).
