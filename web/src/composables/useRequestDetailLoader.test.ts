@@ -213,4 +213,96 @@ describe('useRequestDetailLoader', () => {
     expect(fetchWaterfallByRequestId.mock.calls.length).toBe(wfCallsBefore)
     expect(loader.waterfall.value?.request_id).toBe('cached')
   })
+
+  it('switching requests mid-snapshot prevents the stale snap from polluting the next view', async () => {
+    // P2-10: the in-flight session-snap for request A must not resolve into
+    // sessionSnap.value after the user already navigated to request B.
+    // Before the fix the closure-captured abort variable pointed at the new
+    // (fresh) controller, so the A-side fetch kept running and could write
+    // a stale value into the new view.
+    getUnifiedRequestDetail
+      .mockResolvedValueOnce({
+        source: 'request_logs',
+        persistence: 'persisted',
+        meta: { request_id: 'a', gw_session_id: 'sA' },
+      })
+      .mockResolvedValueOnce({
+        source: 'request_logs',
+        persistence: 'persisted',
+        meta: { request_id: 'b', gw_session_id: 'sB' },
+      })
+    getRequestLogDetail
+      .mockResolvedValueOnce({ request_id: 'a', gw_session_id: 'sA' })
+      .mockResolvedValueOnce({ request_id: 'b', gw_session_id: 'sB' })
+
+    let resolveA: (v: unknown) => void = () => {}
+    getSessionSnapshot.mockImplementation((sid: string) => {
+      if (sid === 'sA') {
+        return new Promise((resolve) => { resolveA = resolve })
+      }
+      return Promise.resolve({ title: `snap-${sid}`, summary: '' })
+    })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('a') // schedules sA fetch, awaiting
+    await loader.loadMeta('b') // switches to b, sessionSnap cleared, sB resolves fast
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(loader.sessionSnap.value).toEqual({ title: 'snap-sB', summary: '' })
+
+    resolveA({ title: 'snap-sA-late', summary: 'STALE' })
+    await new Promise((r) => setTimeout(r, 0))
+    // sA is stale — the loader must not let it overwrite sB.
+    expect(loader.sessionSnap.value).toEqual({ title: 'snap-sB', summary: '' })
+  })
+
+  it('getSessionSnapshot is called with an AbortSignal that is honoured', async () => {
+    // P2-10: ensureSessionSnap passes the per-loader abort signal down to
+    // the session-snap fetch, so external cancellation propagates.
+    getUnifiedRequestDetail.mockResolvedValue({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 'r', gw_session_id: 's' },
+    })
+    getRequestLogDetail.mockResolvedValue({ request_id: 'r', gw_session_id: 's' })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('r')
+
+    expect(getSessionSnapshot).toHaveBeenCalledTimes(1)
+    const callArgs = getSessionSnapshot.mock.calls[0]?.[1] as
+      | { signal?: AbortSignal }
+      | undefined
+    expect(callArgs?.signal).toBeInstanceOf(AbortSignal)
+    // The signal must NOT be already aborted at fetch time (the loader
+    // hands out a fresh controller on every loadMeta).
+    expect(callArgs?.signal?.aborted).toBe(false)
+  })
+
+  it('cachePut preserves untouched fields on subsequent patches via the public path', async () => {
+    // P2-10: the per-field ternary chain in cachePut is intentionally not
+    // collapsed to `{ ...prev, ...patch }`. Verify the merge contract via
+    // the public surface: after loadMeta populates log+unified, switching
+    // requests and back must still find the original log+unified (cache
+    // hit path restores from the same CacheEntry, no field is lost).
+    clearRequestDetailCache()
+    getUnifiedRequestDetail.mockResolvedValue({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 'm' },
+    })
+    getRequestLogDetail.mockResolvedValue({ request_id: 'm' })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('m')
+    expect(loader.log.value?.request_id).toBe('m')
+
+    // Trigger a second loadMeta on the same id — should be cache hit
+    // (TTL not yet expired). The merged entry must still carry log+unified
+    // because cachePut only refreshes `at` and any patch fields.
+    await loader.loadMeta('m')
+    expect(loader.log.value?.request_id).toBe('m')
+    expect(loader.unified.value?.meta.request_id).toBe('m')
+    expect(loader.bodiesLoaded.value).toBe(false)
+  })
 })

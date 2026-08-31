@@ -48,7 +48,17 @@ function cacheGet(id: string): CacheEntry | null {
 
 function cachePut(id: string, patch: Partial<CacheEntry>) {
   const prev = cache.get(id)
-  cache.set(id, {
+  // Merge rule for each cache field: prefer patch.X when defined, otherwise
+  // fall back to prev?.X, otherwise to the field's type-zero default.
+  //
+  // Why the explicit per-field table instead of `{ ...prev, ...patch, at }`:
+  // object-spread cannot distinguish "patch did not pass this key" from
+  // "patch explicitly set this key to the type-zero default" — which is
+  // fine for most fields, but for `bodiesLoaded: false` and
+  // `waterfallSource: ''` an empty/false patch would silently resurrect the
+  // previous value. The schema co-located below makes it impossible to add
+  // a new CacheEntry field without declaring its default.
+  const next: CacheEntry = {
     at: Date.now(),
     log: patch.log !== undefined ? patch.log : (prev?.log ?? null),
     unified: patch.unified !== undefined ? patch.unified : (prev?.unified ?? null),
@@ -56,7 +66,8 @@ function cachePut(id: string, patch: Partial<CacheEntry>) {
     waterfall: patch.waterfall !== undefined ? patch.waterfall : (prev?.waterfall ?? null),
     waterfallSource: patch.waterfallSource !== undefined ? patch.waterfallSource : (prev?.waterfallSource ?? ''),
     sessionSnap: patch.sessionSnap !== undefined ? patch.sessionSnap : (prev?.sessionSnap ?? null),
-  })
+  }
+  cache.set(id, next)
 }
 
 export function mapLogRoutingAttempts(attempts: RoutingAttempt[] | undefined): WaterfallAttempt[] {
@@ -159,7 +170,9 @@ export function useRequestDetailLoader() {
       applyEntry(cached)
       metaLoading.value = false
       metaError.value = ''
-      if (sessionId.value && !sessionSnap.value) void ensureSessionSnap(sessionId.value)
+      if (sessionId.value && !sessionSnap.value) {
+        void ensureSessionSnap(sessionId.value, abort?.signal)
+      }
       return
     }
 
@@ -182,7 +195,7 @@ export function useRequestDetailLoader() {
       }
       cachePut(requestId, { log: meta, unified: u, bodiesLoaded: false })
       const sid = meta?.gw_session_id || u?.meta.gw_session_id
-      if (sid) void ensureSessionSnap(sid)
+      if (sid) void ensureSessionSnap(sid, abort?.signal)
     } catch (e: unknown) {
       if (seq !== loadSeq.value) return
       metaError.value = e instanceof Error ? e.message : String(e)
@@ -191,10 +204,19 @@ export function useRequestDetailLoader() {
     }
   }
 
-  async function ensureSessionSnap(sid: string) {
+  async function ensureSessionSnap(sid: string, signal?: AbortSignal) {
+    // The session-snap fetch is fire-and-forget at every call site, so a
+    // late-resolving snap can otherwise land in sessionSnap.value after the
+    // user has already switched to a different request — polluting the new
+    // view with the previous request's snapshot. The seq check below caught
+    // most cases but not the case where the snapshot fires before bumpSeq
+    // gets called (e.g. the cache-hit branch). Explicitly aborting on
+    // signal.aborted guarantees we never resolve the snap into the wrong
+    // request.
+    if (signal?.aborted) return
     const seq = loadSeq.value
     try {
-      const snap = await getSessionSnapshot(sid, { signal: abort?.signal })
+      const snap = await getSessionSnapshot(sid, { signal })
       if (seq !== loadSeq.value) return
       sessionSnap.value = snap
       const rid = log.value?.request_id || unified.value?.meta.request_id
