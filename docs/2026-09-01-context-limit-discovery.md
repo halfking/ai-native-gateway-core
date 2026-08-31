@@ -186,19 +186,26 @@ func (u *DBContextLimitUpdater) UpdateContextLimit(ctx context.Context, credenti
 
 ### P0 (立即)
 1. ✅ 修复重试预算消耗 bug (已完成)
-2. 添加 `ParseContextLimitFromError` 函数
-3. 在恢复中使用解析的实际限制
+2. ✅ 添加 `ParseContextLimitFromError` 函数 (已完成)
+3. ✅ 在恢复中使用解析的实际限制 (已完成)
 
 ### P1 (本周)
-1. 实现 `CompressMessagesAggressively` (60% 目标)
-2. 在 4xx 恢复场景使用激进压缩
-3. 添加压缩前后 token 估算日志
+1. ✅ 实现 `CompressMessagesAggressively` (60% 目标) (已完成)
+2. ✅ 在 4xx 恢复场景使用激进压缩 (已完成)
+3. ✅ 添加压缩前后 token 估算日志 (已完成)
 
-### P2 (下周)
-1. 实现 `ContextLimitUpdater` 接口
-2. 创建 `credential_model_overrides` 表
-3. 在发现限制不匹配时异步更新
-4. 添加监控指标: `context_limit_discovery_total`
+### P2 (已完成)
+1. ✅ 实现 `ContextLimitUpdater` 接口 (已完成, `internal/dbx/context_limit_updater.go`)
+2. ✅ 在 Executor 中注入 updater 实例 (已完成, `domains/streaming/executors/executor.go`)
+3. ✅ 添加 `context_limit_discovery_total` 指标 (已完成, Prometheus counter with labels)
+4. ✅ 异步写库逻辑 (已完成, fire-and-forget goroutine with 10s timeout)
+
+**注意**: P2 不需要创建新表。Migration 523 已经在 `credential_model_bindings` 上添加了 
+`context_window_override` / `context_window_source` / `context_window_updated_at` 列,
+优先级链为: `credential_model_bindings.context_window_override` → 
+`models_canonical.context_window_override` → `models_canonical.context_window`。
+发现的限制会写入凭据×模型级覆盖,粒度正确。Migration 524 已添加 NOTIFY 触发器,
+更新会自动扇出到所有网关实例的缓存。
 
 ## 预期效果
 
