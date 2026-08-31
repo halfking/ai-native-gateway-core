@@ -104,20 +104,17 @@ CREATE TABLE IF NOT EXISTS public.sessions (
     PRIMARY KEY (tenant_id, session_id, partition_date)
 );
 
--- session_turns_hot — used by reaper test 2 (source session present). The
--- real production schema includes many more columns; the audit fixture
--- only needs the rows the aggregator claims.
-CREATE TABLE IF NOT EXISTS public.session_turns_hot (
-    id bigserial PRIMARY KEY,
-    tenant_id text NOT NULL,
-    session_id text NOT NULL,
-    request_id text NOT NULL,
-    turn_no integer NOT NULL,
-    partition_date date NOT NULL DEFAULT CURRENT_DATE,
-    aggregate_applied_at timestamptz
-);
-CREATE INDEX IF NOT EXISTS idx_session_turns_hot_request
-    ON public.session_turns_hot (tenant_id, request_id, partition_date);
+-- session_turns_hot — used by reaper test 2 (source session present) AND
+-- by 526's promote-session_turns validation. We drop the audit-fixture
+-- placeholder so 526 can CREATE the production-grade schema; if 526 has
+-- already run (idempotent in fresh PG) the drop is a no-op against the
+-- real table and we just trust 526 to recreate constraints.
+DROP TABLE IF EXISTS public.session_turns_hot;
+-- session_turns_hot will be created by migration 526. The 526 helper
+-- itself enforces a hot/parent column-shape contract; if it ever
+-- breaks, the session_turns_hot smoke test in
+-- scripts/audit/verify-promote-session-bodies-turns.sh surfaces the
+-- failure (the integration test runs promote() against the real schema).
 
 -- request_logs_hot — required by attachment cleanup execute (migration 629).
 -- Production carries many more columns; the audit fixture only needs the
