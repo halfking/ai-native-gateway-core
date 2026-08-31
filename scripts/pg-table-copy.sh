@@ -5,6 +5,12 @@
 # Copies schema for ALL tables, data for non-hot/non-partition tables.
 # Hot tables (*_hot, *_2026_*, *_archived) get structure only.
 #
+# PHASE 8.5 (added 2026-09-01) auto-applies apply-routing-mv-fixup.sh when the
+# target is the local docker container — closes the matview drift gap (the
+# 252-only routing_analytics_7d / routing_audit_summary_7d matviews + the
+# columnar_insert_only_parents() helper). The fixup is idempotent; re-runs
+# during normal sync are no-ops. Override the path with --fixup-script.
+#
 # Usage:
 #   ./scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh
 #   ./scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-kaixuan1.sh
@@ -39,6 +45,7 @@ WORK_DIR="/tmp/pg-table-copy"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SCHEMA_IMPORT_FAILED=false
 DATA_IMPORT_FAILED=false
+FIXUP_FAILED=false
 PGOPTIONS="${PGOPTIONS:-}"
 
 # ── Parse args ────────────────────────────────────────────────────────────
@@ -54,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)       DRY_RUN=true; shift ;;
     --verbose)       VERBOSE=true; shift ;;
     --work-dir)      WORK_DIR="$2"; shift 2 ;;
+    --fixup-script)  FIXUP_SCRIPT_PATH="$2"; shift 2 ;;
     -h|--help)
       echo "Usage: $0 --source <env-file> --target <env-file> [options]"
       echo ""
@@ -68,6 +76,11 @@ while [[ $# -gt 0 ]]; do
       echo "                       (required for exact source→target replacement)"
       echo "  --dry-run           Show what would be done"
       echo "  --verbose           Show detailed progress"
+      echo "  --fixup-script <p>  Override the path to apply-routing-mv-fixup.sh"
+      echo "                       (default: scripts/local-dev/apply-routing-mv-fixup.sh)"
+      echo "                       The fixup runs automatically at PHASE 8.5 when"
+      echo "                       the target is a local docker container and the"
+      echo "                       run is not --dry-run / --data-only. Idempotent."
       echo ""
       echo "Environment:"
       echo "  PGOPTIONS          Passed to psql (env var only). Recommended:"
@@ -84,6 +97,11 @@ done
 if [[ -z "$SOURCE_CONFIG" || -z "$TARGET_CONFIG" ]]; then
   err "Both --source and --target are required"
   echo "Run with --help for usage"
+  exit 1
+fi
+
+if [[ "$SCHEMA_ONLY" == true && "$DATA_ONLY" == true ]]; then
+  err "--schema-only and --data-only cannot be used together"
   exit 1
 fi
 
@@ -105,6 +123,13 @@ SRC_PORT="$PG_PORT"
 SRC_USER="$PG_USER"
 SRC_PASS="$PG_PASS"
 SRC_DB="$PG_DB"
+SRC_PSQL_BIN="${PG_PSQL_BIN:-psql}"
+SRC_PG_DUMP_BIN="${PG_DUMP_BIN:-pg_dump}"
+if [[ ! -x "$SRC_PSQL_BIN" || ! -x "$SRC_PG_DUMP_BIN" ]]; then
+  err "source requires native PostgreSQL clients; PG_PSQL_BIN=$SRC_PSQL_BIN PG_DUMP_BIN=$SRC_PG_DUMP_BIN"
+  err "install Homebrew libpq or set both paths explicitly"
+  exit 1
+fi
 
 info "Loading target config: $TARGET_CONFIG"
 source "$TARGET_CONFIG"
@@ -139,7 +164,7 @@ fi
 # line is parsed as a query and produces "syntax error at or near
 # statement_timeout". psql honors PGOPTIONS automatically.
 src_psql() {
-  PGOPTIONS="$PGOPTIONS" PGPASSWORD="$SRC_PASS" psql -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
+  PGOPTIONS="$PGOPTIONS" PGPASSWORD="$SRC_PASS" "$SRC_PSQL_BIN" -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
 }
 
 # Run psql on target. Local docker → docker exec; remote → network psql.
@@ -307,7 +332,7 @@ else
     info "Safe schema mode: no DROP statements; existing target data is preserved"
   fi
   dump_err="$WORK_DIR/$TIMESTAMP/schema_dump.err"
-  if ! PGOPTIONS="${PGOPTIONS:-}" PGPASSWORD="$SRC_PASS" pg_dump \
+  if ! PGOPTIONS="${PGOPTIONS:-}" PGPASSWORD="$SRC_PASS" "$SRC_PG_DUMP_BIN" \
     -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" \
     --schema-only --no-owner --no-privileges \
     "${schema_clean_args[@]}" \
@@ -369,7 +394,7 @@ else
         SKIPPED=$((SKIPPED + 1))
       else
         dump_err="$DATA_FILE.err"
-        if ! PGOPTIONS="${PGOPTIONS:-}" PGPASSWORD="$SRC_PASS" pg_dump \
+        if ! PGOPTIONS="${PGOPTIONS:-}" PGPASSWORD="$SRC_PASS" "$SRC_PG_DUMP_BIN" \
           -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" \
           --data-only --table="$schema.$tbl" --no-owner --no-privileges \
           --disable-triggers -f "$DATA_FILE" 2>"$dump_err"; then
@@ -613,6 +638,46 @@ else
   fi
 fi
 
+# 6. Routing-MV fixup (PHASE 8.5). After schema+data import and before SUMMARY,
+# close the matview drift gap: pg_dump's plain import path drops 252's
+# `routing_analytics_7d` and `routing_audit_summary_7d` materialized views
+# and the `columnar_insert_only_parents()` helper they depend on (discovered
+# 2026-09-01). apply-routing-mv-fixup.sh is idempotent — re-runs are no-ops.
+# PHASE 8.5 lives OUTSIDE the `if ! $DRY_RUN` so dry-run still prints the
+# planned action without touching the target.
+phase "PHASE 8.5: ROUTING-MV FIXUP (local-docker only, idempotent)"
+if $DRY_RUN; then
+  dim "  [DRY-RUN] Would apply routing-mv fixup to $TGT_CONTAINER (skipped)"
+elif $DATA_ONLY; then
+  info "  skip: --data-only mode (fixup is a schema operation)"
+elif ! $TGT_IS_LOCAL_DOCKER; then
+  info "  skip: target is not a local docker container (fixup is local-only)"
+else
+  FIXUP_SCRIPT_PATH="${FIXUP_SCRIPT_PATH:-$(dirname "$0")/local-dev/apply-routing-mv-fixup.sh}"
+  if [[ ! -f "$FIXUP_SCRIPT_PATH" ]]; then
+    err "fixup script not found: $FIXUP_SCRIPT_PATH"
+    err "Re-run after restoring scripts/local-dev/apply-routing-mv-fixup.sh,"
+    err "or invoke it manually: bash scripts/local-dev/apply-routing-mv-fixup.sh"
+    FIXUP_FAILED=true
+  else
+    info "  invoking: $FIXUP_SCRIPT_PATH (PG_FIXUP_CONTAINER=$TGT_CONTAINER)"
+    # Pass credentials via env vars only on the subshell command line — they
+    # never leak into the main shell's environment, matching the
+    # local-host-sync-db.sh convention.
+    if PG_FIXUP_CONTAINER="$TGT_CONTAINER" \
+       PG_FIXUP_USER="$TGT_USER" \
+       PG_FIXUP_PASS="$TGT_PASS" \
+       PG_FIXUP_DB="$TGT_DB" \
+       bash "$FIXUP_SCRIPT_PATH"; then
+      ok "routing-mv fixup applied (idempotent — re-run is a no-op)"
+    else
+      err "routing-mv fixup FAILED — matview drift may remain on target"
+      err "Invoke manually: bash scripts/local-dev/apply-routing-mv-fixup.sh"
+      FIXUP_FAILED=true
+    fi
+  fi
+fi
+
 # ============================================================================
 # SUMMARY
 # ============================================================================
@@ -626,7 +691,7 @@ echo "  Tables:  ${#HOT_TABLES[@]} hot (schema-only) + ${#DATA_TABLES[@]} normal
 echo "  Dump:    $WORK_DIR/$TIMESTAMP/"
 echo ""
 
-if $SCHEMA_IMPORT_FAILED || $DATA_IMPORT_FAILED; then
+if $SCHEMA_IMPORT_FAILED || $DATA_IMPORT_FAILED || $FIXUP_FAILED; then
   if $SCHEMA_IMPORT_FAILED; then
     err "pg-table-copy completed WITH SCHEMA IMPORT ERRORS — target schema may be stale or partial."
     err "Do NOT trust migration-tracking tables copied as data: they can claim migrations"
@@ -635,6 +700,11 @@ if $SCHEMA_IMPORT_FAILED || $DATA_IMPORT_FAILED; then
   if $DATA_IMPORT_FAILED; then
     err "pg-table-copy completed WITH DATA IMPORT ERRORS — target data is partial or stale."
     err "Fix the errors above and re-run with --replace-data, then"
+  fi
+  if $FIXUP_FAILED; then
+    err "pg-table-copy completed WITH ROUTING-MV FIXUP ERRORS — matview drift may remain on target."
+    err "Re-run pg-table-copy.sh, or invoke the fixup manually:"
+    err "  bash scripts/local-dev/apply-routing-mv-fixup.sh, then"
   fi
   err "verify with scripts/local-dev/verify-db-consistency.sh and scripts/local-dev/verify-db-data-consistency.sh."
   exit 1

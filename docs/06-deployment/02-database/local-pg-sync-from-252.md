@@ -17,7 +17,7 @@
 
 > **端口布局（2026-08-31 起的稳定状态）**:
 > - `127.0.0.1:5432` = **本集群**（`llm-gateway-pg` 容器）。此前的占用者 Homebrew 原生 `postgresql@17`（及其遗留的 `postgresql@15` 数据目录）已于 2026-08-31 移除，移除前已做全量备份（`~/backups/homebrew-pg17-5432-final-20260831.sql`、`~/backups/homebrew-pg15-datadir-orphan-20260831.tar.gz`）。
-> - `127.0.0.1:15432` = **252 SSH 隧道专用**（`configs/env-252.sh` 的 `TUNNEL_LOCAL_PORT`）。容器不再映射该端口；隧道用完按精确 PID `kill`（勿用 `lsof -tiTCP:15432` 一把杀，防误杀）。
+> - `127.0.0.1:15432` = **252 SSH 隧道专用**（`configs/env-252.sh` 的 `TUNNEL_LOCAL_PORT`）。容器不再映射该端口；隧道用完必须通过本次创建的 SSH control socket 关闭，禁止按端口或 PID 扫描后 `kill`，以免误伤其他连接。
 > - 连接本地建议显式 `-h 127.0.0.1`，避免 `localhost` 解析歧义。
 
 > 当前唯一同步方向是：**252 → local**（单向）。**禁止从 RDS 同步到任何环境**。
@@ -26,7 +26,7 @@
 
 ## 二、凭据对齐
 
-**单一来源**: `~/workspace/ai-native-tools/envs/common/database.yaml`（`COMMON_PG_SUPERUSER_PASS`）
+**单一来源**: 通过 `~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go` 加载的 `COMMON_PG_SUPERUSER_PASS`。`configs/env-252.sh` 仅在内存中将它映射为兼容变量；不要保存第二份 252/local 密码或在脚本中写入密码。
 
 所有环境的 `llm_gateway` 用户必须使用**同一个密码**。不一致会导致应用层 `LLM_GATEWAY_DATABASE_URL` 解析失败 → 网关起不来。
 
@@ -39,19 +39,24 @@
 ### 2.1 验证当前密码是否一致
 
 ```bash
-# 1. 加载 env
+# 1. 加载运行时 env。SSH 认证由 ~/.ssh/config 的 252 host alias 和证书/密钥处理，
+#    不设置、不记录 SSH 密码或 SSH_PASS_* fallback。
 source ~/workspace/ai-native-tools/envs/loader.sh \
   --project llm-gateway-go
-export PG_PASS_252="$COMMON_PG_SUPERUSER_PASS"
-export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
 source configs/env-252.sh
 
-# 2. 252 侧。隧道目标从 configs/env-252.sh 获取，不能硬编码。
-ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252
-PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" \
-  psql -h localhost -p 15432 -U llm_gateway -d llm_gateway -c 'SELECT 1'
-TUNNEL_PID=$(lsof -tiTCP:15432 -sTCP:LISTEN)
-[[ -n "$TUNNEL_PID" ]] && kill "$TUNNEL_PID"
+# 2. Shared helper resolves pg-252-pg17's current Podman IP only at invocation
+#    time. It reuses only a healthy listener, refuses to replace an unknown
+#    process on 15432, and tears down only the listener it created.
+source scripts/lib/252-db-tunnel.sh
+trap db252_tunnel_teardown EXIT HUP INT TERM
+db252_tunnel_ensure
+
+# 3. Host `psql` may be a shim into llm-gateway-pg and therefore cannot see the
+#    host tunnel. Use the native libpq clients selected by configs/env-252.sh.
+PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" \
+  -h 127.0.0.1 -p "$TUNNEL_LOCAL_PORT" -U "$PG_USER" -d "$PG_DB" -c 'SELECT 1'
+"$PG_DUMP_BIN" --version
 
 # local 侧
 docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg psql -U llm_gateway -d llm_gateway -c 'SELECT 1'
@@ -80,7 +85,7 @@ docker exec -it llm-gateway-pg psql -U <超级用户> -d postgres \
 
 ## 三、同步流程（252 → local）
 
-### 3.1 同步脚本
+### 3.1 同步入口
 
 ```bash
 scripts/pg-table-copy.sh \
@@ -93,7 +98,10 @@ scripts/pg-table-copy.sh \
 - 默认导出 252 全 schema + 全数据（normal 表）
 - 自动识别并跳过 hot 表（模式: `*_hot`, `*_2025_*`/`*_2026_*`/`*_2027_*`/`*_2028_*`, `*_archive*`, parent partitions）
 - 仅导 schema，跳过 data（hot 表数据在 252 实时生产中，不拷贝）
-- 会用 `--clean --if-exists` 重建 local 对象；运行前先确认本地数据可覆盖
+- 默认不 DROP 或清空目标；精确数据替换必须显式使用 `--replace-data`，schema 重建必须显式使用 `--clean-schema`，并在运行前确认本地数据可覆盖
+- 隧道必须按 §2.1 在调用时动态解析 `pg-252-pg17` 的 Podman IP，并使用本次专属 SSH control socket 清理
+
+`scripts/sync-from-252.sh` 与 `scripts/sync-schema-to-252.sh` 已退休，禁止作为同步入口。分别使用 `scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh` 的 data/schema 模式；不得恢复或新建旧入口的自动化调用。
 
 ### 3.2 大表 `count(*)` 超时（踩坑点 #1）
 
@@ -132,6 +140,15 @@ docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg psql -U llm
   "SELECT count(*) FROM credentials"
 # 252 端相同命令应得到几乎一致的结果（差 1-2% 视为正常）
 ```
+
+### 3.5 同步完成门禁：结构与数据双审计
+
+每次同步（包括 schema-only 或 data-only）后，**必须**运行并通过以下两项只读审计，才可宣称同步完成：
+
+- `scripts/local-dev/verify-db-consistency.sh --verify`：表、列、视图、索引、约束、序列、函数及分区/热表结构契约
+- `scripts/local-dev/verify-db-data-consistency.sh`：普通表完整集合、逐表精确行数和顺序无关且重复敏感的内容摘要
+
+审计连接 252 时同样必须在隧道调用阶段动态解析容器 IP，并以专属 control socket 清理。迁移跟踪表和表名/行数抽样均不能代替这两项审计；热表和分区数据的明确排除只可由审计契约判定。
 
 ---
 
@@ -209,7 +226,8 @@ _usage_ledger_2026_07_col_archived
 
 ```bash
 grep -vE "set_config\('search_path', '', false\)" feature.sql > feature.fixed.sql
-PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway -d llm_gateway \
+# 在 §2.1 的动态解析且由 control socket 持有的隧道仍存活时执行。
+PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h 127.0.0.1 -p "$TUNNEL_LOCAL_PORT" -U llm_gateway -d llm_gateway \
   -v ON_ERROR_STOP=1 -f feature.fixed.sql
 ```
 
@@ -221,9 +239,12 @@ PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway
 
 | 文件 | 作用 |
 |------|------|
-| `scripts/pg-table-copy.sh` | 252 → local 同步入口；默认不 DROP/不清空目标，`--clean-schema` 与 `--replace-data` 均为显式危险选项；catalog 识别分区，manifest 驱动逐表导出/导入，导出/导入失败即 exit 1 || `scripts/local-dev/recreate-llm-gateway-pg.sh` | 重建 docker 容器（保留数据目录）；`POSTGRES_PASSWORD` 仅在全新数据目录首次 initdb 时生效，**不修改已有集群用户**（策略：只新增）|
+| `scripts/pg-table-copy.sh` | 252 → local 的唯一同步入口；默认不 DROP/不清空目标，`--clean-schema` 与 `--replace-data` 均为显式危险选项；catalog 识别分区，manifest 驱动逐表导出/导入，导出/导入失败即 exit 1 |
+| `scripts/sync-from-252.sh`、`scripts/sync-schema-to-252.sh` | **已退休**；不得执行或在新流程中引用，改用 `scripts/pg-table-copy.sh` |
+| `scripts/local-dev/recreate-llm-gateway-pg.sh` | 重建 docker 容器（保留数据目录）；`POSTGRES_PASSWORD` 仅在全新数据目录首次 initdb 时生效，**不修改已有集群用户**（策略：只新增）|
 | `scripts/local-dev/verify-db-consistency.sh` | 252 ↔ local 七维结构校验（表/列/视图/索引/约束/序列/函数）；含 gated `--reconcile` 回灌模式。**每次同步后必须执行**——迁移跟踪表随数据复制，不能反映真实结构 |
 | `scripts/local-dev/verify-db-data-consistency.sh` | 252 ↔ local 普通表数据校验；比较完整表集合、逐表精确行数和顺序无关/重复敏感内容摘要；hot/分区数据按契约跳过 |
+| `scripts/local-dev/apply-routing-mv-fixup.sh` | v1.1 补齐 252 三对象（matview ×2 + columnar helper）；**已被 `pg-table-copy.sh` PHASE 8.5 自动调用**（仅本地 docker 容器、非 dry-run / data-only 时执行），幂等；仍可独立手工调用 |
 | `docs/audit/2026-08-31-db-structure-consistency-audit.md` | 2026-08-31 结构一致性审计报告（P0 脚本静默失败根因 + 修复清单）|
 | `configs/env-252.sh` | 252 端连接配置 |
 | `configs/env-local.sh` | local 端连接配置 |
@@ -243,3 +264,5 @@ PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway
 | 2026-08-31 | 1.6  | **端口陷阱更正**：本地开发地址从 `127.0.0.1:5432` 更正为 `127.0.0.1:15432`（5432 是 Homebrew 原生 postgresql@17，非本集群）；记录 15432 与 252 SSH 隧道的 IPv4/IPv6 双栈冲突及 `-h 127.0.0.1` 规约；recreate 脚本对齐真实容器（数据目录 `~/.agents-cache/llm-gateway-pg-data`、端口 15432、网络 shared-infra） |
 | 2026-08-31 | 1.7  | **端口布局定稿**：移除 Homebrew 原生 `postgresql@17`（及遗留 `postgresql@15` 数据目录，移除前全量备份至 `~/backups/`）；`llm-gateway-pg` 容器直映宿主机 `5432`；`15432` 归还 252 隧道专用，双栈冲突消除；recreate 脚本 PORT_BIND 改为 `127.0.0.1:5432:5432`；6 账号经发布端口 5432 全部验证通过 |
 | 2026-08-31 | 1.8  | **本地库大合并**：容器成为唯一本地 PG（库：`llm_gateway`/`acc_db`/`kaixuan`/`pocket` + 从 Homebrew 备份恢复 `memora`/`redclaw_local`/`redclaw_test`/`smm_data`）。修复：acc_db 补迁移 105→121+184/185 并归正属主 acc_app；宿主机 acc-go 改指 acc_db 并重启；应用 V360（credential_probe_queue.automatic）与 request_logs.model_name 补列；GRANT fencing.lease_ledger→platform_app；补建 task_assigner_* / task_assignments / mcp_registry。例外：`kx-citus`(15433) 是 opencode-pocket 容器栈的活库（pocket 33 表），未合并，待该项目自行迁移 |
+| 2026-09-01 | 1.9 | 凭据改为仅通过 env loader 的 `COMMON_PG_SUPERUSER_PASS` alias 使用；SSH 改为 config/证书认证；隧道调用时动态解析 Podman IP 并以专属 control socket 清理；结构与数据审计均为完成门禁；退休两个旧同步入口 |
+| 2026-09-01 | 1.10 | **pg-table-copy.sh PHASE 8.5 自动调用 routing-mv fixup**：闭环 252-only 的 `routing_analytics_7d` / `routing_audit_summary_7d` 物化视图与 `columnar_insert_only_parents()` 函数漂移；fixup 脚本 v1.0 → v1.1，新增 `PG_FIXUP_DB` env（默认 `llm_gateway`）便于被主脚本通过 `PG_FIXUP_CONTAINER`/`USER`/`PASS`/`DB` 注入参数；同步流程不再需要手工跑 fixup（仍可独立调用，幂等）|
