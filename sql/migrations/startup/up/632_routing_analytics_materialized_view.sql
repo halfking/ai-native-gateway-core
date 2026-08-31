@@ -47,6 +47,9 @@
 --   2026-09-01  v1.2  Incident fix: unique-index tenant sentinel -1 → ''
 --                     (SQLSTATE 42804 on text tenant_id); aligned with the
 --                     in-place repair applied to production (252)
+--   2026-09-01  v1.3  Swap expression unique indexes (_pkey) for plain-column
+--                     _ukey: REFRESH ... CONCURRENTLY rejects expression
+--                     indexes (SQLSTATE 55000, prod PG17)
 --
 -- Performance target:
 --   Query latency: 15s → <500ms
@@ -128,19 +131,22 @@ GROUP BY
   is_auto_request,
   tenant_id;
 
--- Unique index for CONCURRENTLY refresh support. is_auto_request needs no
--- COALESCE here because the view normalizes it; the remaining nullable
--- keys (provider, tenant) are coalesced so NULLs cannot collide.
--- Note: tenant_id is text, so we use '' as the NULL placeholder, not -1.
-CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey
+-- Unique index for REFRESH ... CONCURRENTLY. PG rejects expression
+-- indexes for concurrent refresh (SQLSTATE 55000, verified on prod PG17
+-- 2026-09-01), so this must be plain columns. NULL keys are safe: GROUP BY
+-- collapses NULLs into a single row per key. The old expression index
+-- (_pkey) is dropped and replaced by _ukey; the rename makes the swap
+-- idempotent under IF [NOT] EXISTS.
+DROP INDEX IF EXISTS routing_analytics_7d_pkey;
+CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_ukey
   ON routing_analytics_7d (
     time_bucket,
     effective_task_type,
     effective_model,
     effective_work_type,
-    COALESCE(effective_provider_id, -1),
+    effective_provider_id,
     is_auto_request,
-    COALESCE(tenant_id, '')
+    tenant_id
   );
 
 -- Covering indexes for common query patterns
@@ -188,8 +194,9 @@ WHERE ts >= NOW() - INTERVAL '7 days'
 
 GROUP BY tenant_id;
 
-CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_pkey
-  ON routing_audit_summary_7d (COALESCE(tenant_id, ''));
+DROP INDEX IF EXISTS routing_audit_summary_7d_pkey;
+CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_ukey
+  ON routing_audit_summary_7d (tenant_id);
 
 COMMENT ON MATERIALIZED VIEW routing_audit_summary_7d IS
   'High-level audit summary for /api/admin/auto-route/audit endpoint. '

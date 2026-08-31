@@ -70,16 +70,20 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 	t.Run("creates_required_indexes", func(t *testing.T) {
 		upSQL := readUp(t)
 
-		// Unique index is required for REFRESH ... CONCURRENTLY.
+		// Unique index is required for REFRESH ... CONCURRENTLY and must
+		// be plain columns (PG rejects expression indexes for concurrent
+		// refresh, SQLSTATE 55000 — seen on prod 2026-09-01).
 		require.Contains(t, upSQL,
-			"CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey",
-			"should create unique index for CONCURRENTLY refresh")
+			"CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_ukey",
+			"should create plain-column unique index for CONCURRENTLY refresh")
+		require.Contains(t, upSQL, "DROP INDEX IF EXISTS routing_analytics_7d_pkey",
+			"should drop the old expression index")
 
 		for _, idx := range []string{
 			"routing_analytics_7d_task_model_idx",
 			"routing_analytics_7d_time_idx",
 			"routing_analytics_7d_tenant_idx",
-			"routing_audit_summary_7d_pkey",
+			"routing_audit_summary_7d_ukey",
 		} {
 			require.Contains(t, upSQL, idx, "should create index %s", idx)
 		}
@@ -98,20 +102,25 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 
 	t.Run("tenant_id_text_placeholder", func(t *testing.T) {
 		// Regression guard: tenant_id is TEXT in this schema (verified on
-		// prod 252 PG). The unique-index NULL placeholder must be '' —
-		// COALESCE(text, integer) is a type error that bricks
-		// ApplyMigrations on any fresh database. Both the SQL mirror and
+		// prod 252 PG). The unique indexes must use plain tenant_id columns:
+		// PG rejects expression indexes for REFRESH ... CONCURRENTLY
+		// (SQLSTATE 55000), and integer COALESCE placeholders are type
+		// errors against text. Plain columns are safe because GROUP BY
+		// collapses NULL keys into a single row. Both the SQL mirror and
 		// the Go ensure in db/db.go must stay in sync.
 		upSQL := readUp(t)
-		require.Contains(t, upSQL, "COALESCE(tenant_id, '')",
-			"tenant_id NULL placeholder must be '' (tenant_id is text)")
+		require.Contains(t, upSQL, "CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_ukey\n  ON routing_audit_summary_7d (tenant_id);",
+			"audit summary unique index must be the plain tenant_id column")
 
 		dbSrc, err := os.ReadFile("../../../db/db.go")
 		require.NoError(t, err)
-		require.Contains(t, string(dbSrc), "COALESCE(tenant_id, '')",
-			"db.go ensure SQL must use the '' placeholder, matching the mirror file and schema")
-		require.NotContains(t, string(dbSrc), "COALESCE(tenant_id, -1)",
-			"db.go must not use the integer placeholder for text tenant_id")
+		src := string(dbSrc)
+		require.Contains(t, src, "routing_analytics_7d_ukey",
+			"db.go must create the plain-column ukey index")
+		require.Contains(t, src, "routing_audit_summary_7d_ukey",
+			"db.go must create the plain-column audit ukey index")
+		require.NotContains(t, src, "COALESCE(tenant_id, -1)",
+			"db.go must not use integer placeholders for text tenant_id")
 	})
 
 	t.Run("provider_credential_fallback_parity", func(t *testing.T) {
