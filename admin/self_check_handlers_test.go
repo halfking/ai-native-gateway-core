@@ -141,13 +141,14 @@ func TestHandleTrigger_ProbeEnqueue(t *testing.T) {
 	}
 }
 
-// TestHandleTrigger_ProbeEnqueueError reports individual enqueue failures in a
-// successful fan-out response, so callers receive every model's outcome.
-//
-// 2026-09-01 sync update: the single-model probeEnqueue path now returns
-// 503 immediately on enqueue failure, preserving the original single-model
-// API contract (the response code reflects whether the requested model
-// was actually enqueued, rather than reporting a success envelope).
+// TestHandleTrigger_ProbeEnqueueError reports individual enqueue failures in
+// the unified fan-out response envelope. Both single-model and multi-model
+// callers receive the same shape: 200 OK with a per-model results map that
+// records which models failed and why. The single-model 503 fast-path that
+// earlier lived in handleTrigger was removed by f8bf429ec
+// (fix(admin): harden batch self-check model selection), so the handler now
+// treats a single named model as a one-element fan-out and reports the
+// failure inside results[model] while still returning 200.
 func TestHandleTrigger_ProbeEnqueueError(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_USE_NEW_PROBE_MODE", "true")
 	h := &SelfCheckHandler{}
@@ -161,18 +162,26 @@ func TestHandleTrigger_ProbeEnqueueError(t *testing.T) {
 	rr := httptest.NewRecorder()
 	h.handleTrigger(rr, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503 on enqueue failure (got %d, body=%s)", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 with per-model failure report (got %d, body=%s)", rr.Code, rr.Body.String())
 	}
 	var body struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
+		OK           bool `json:"ok"`
+		Enqueued     int  `json:"enqueued"`
+		ModelsFailed int  `json:"models_failed"`
+		Results      map[string]struct {
+			Error    string `json:"error"`
+			Enqueued int    `json:"enqueued"`
+		} `json:"results"`
 	}
 	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Message != "db down" {
-		t.Fatalf("unexpected message: %+v", body)
+	if !body.OK || body.Enqueued != 0 || body.ModelsFailed != 1 {
+		t.Fatalf("unexpected envelope: %+v", body)
+	}
+	if body.Results["glm-5.2"].Error != "db down" || body.Results["glm-5.2"].Enqueued != 0 {
+		t.Fatalf("unexpected per-model result: %+v", body.Results["glm-5.2"])
 	}
 }
 
