@@ -179,7 +179,7 @@ export default {
     diagram: {
       ariaLabel: 'Anfrageverarbeitungsablauf', trackLabel: 'Sequenz der Flow-Ereignisse',
       event: 'Flow-Ereignis', noData: 'Kein beobachtbarer Flow', noEvents: 'Keine Flow-Ereignisse',
-      stages: { received: 'Eingang', routing: 'Routenauflösung', model_queue: 'Modellwarteschlange', credential_queue: 'Credential-Warteschlange', node_selection: 'Knotenauswahl', upstream: 'Upstream-Anfrage', streaming: 'Stream-Antwort', terminal: 'Anfrage abgeschlossen' },
+      stages: { received: 'Eingang', routing: 'Routenauflösung', model_queue: 'Modellwarteschlange', credential_queue: 'Credential-Warteschlange', node_selection: 'Knotenauswahl', upstream: 'Upstream-Anfrage', streaming: 'Stream-Antwort', retrying: 'Wiederholung', terminal: 'Anfrage abgeschlossen' },
       status: { success: 'Erfolg', failed: 'Fehlgeschlagen', timeout: 'Timeout', skipped: 'Übersprungen' },
       flags: { compression: 'Komprimierung', retry: 'Wiederholung', nodeSwitch: 'Knotenwechsel', degraded: 'Beobachtung eingeschränkt' },
       evidenceLabel: 'Routing- und Waterfall-Nachweise', evidenceTitle: 'Beobachtete Versuche', waterfallAttempt: 'Waterfall-Versuch #{number}', noDetails: 'Keine weiteren Details', degraded: 'Beobachtung eingeschränkt',

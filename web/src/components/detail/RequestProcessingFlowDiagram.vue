@@ -49,12 +49,13 @@ function durationLabel(event: TraceEvent): string {
     : '—'
 }
 
-// Canonical stage set — keep in sync with admin/request_trace.go StageName
-// constants. Adding a new stage that should surface one of these flags here
-// also requires adding the locale string under requestDetail.flow.diagram.stages.
-const COMPRESSION_STAGES = new Set(['compression', 'compress', 'streaming'])
-const RETRY_STAGES = new Set(['retry', 'retrying'])
-const NODE_SWITCH_STAGES = new Set(['node_selection', 'node_switch'])
+// Canonical stage set — keep in sync with domains/requestjourney/contract.go
+// JourneyStage constants (and trace.internal/trace.Stage where the event was
+// lifted from trace.events). These strings appear in event.stage / event.stage_name;
+// the locale key under requestDetail.flow.diagram.stages must cover each one.
+const COMPRESSION_STAGES = new Set(['compression'])
+const RETRY_STAGES = new Set(['retrying'])
+const NODE_SWITCH_STAGES = new Set(['node_selection'])
 
 function detailsText(event: TraceEvent): string {
   const details = event.details || {}
