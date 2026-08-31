@@ -80,6 +80,15 @@ func TestDispatchJourneyJournalAdapterSerializesConcurrentRetry(t *testing.T) {
 }
 
 func TestDispatchJourneyJournalAdapterDurableRetryKeepsProjectionBase(t *testing.T) {
+	// 2026-08-31 P1-4 followup: the durable reclaim path now refuses to
+	// re-claim when the caller's projection_base_seq disagrees with the
+	// stored base (see journal_snapshot_receipt.go ClaimWithProjectionBase).
+	// This test pins the contract: a retry issued AFTER the lease expired
+	// but with a NEW projection_base_seq (MaxSeq has advanced because the
+	// first call already applied its snapshot events) must be rejected
+	// with ErrSnapshotReceiptLeaseLost, NOT silently re-apply the snapshot
+	// with the stored base. The stored base still survives on disk so a
+	// later retry that passes the matching base would replay deterministically.
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
@@ -107,8 +116,9 @@ func TestDispatchJourneyJournalAdapterDurableRetryKeepsProjectionBase(t *testing
 		t.Fatal(err)
 	}
 
-	// The first claim fixes base=50. Completion fails after both events have
-	// reached the local projection, leaving the durable receipt processing.
+	// First call: claim fixes base=50, completion fails (UPDATE 0)
+	// because the row's status is still 'processing' — this is fine,
+	// the projection events have already been applied in-memory.
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.bypass_rls', 'true', true)")).WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("INSERT INTO journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(100), snapshotHash, int64(50), "gateway-a", firstNow.Add(time.Minute), firstNow).WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -119,31 +129,31 @@ func TestDispatchJourneyJournalAdapterDurableRetryKeepsProjectionBase(t *testing
 	mock.ExpectRollback()
 	adapter.ApplyJournalSnapshot(context.Background(), snapshot)
 
-	// Reclaim reads the stored base rather than the now-advanced MaxSeq. The
-	// exact same event bytes/seqs are replayed and Projection treats them as no-op.
+	// Second call (retry, lease has expired). Caller-supplied base=52
+	// (MaxSeq after first call applied 2 events) does NOT match the
+	// stored base=50; the new P1-4 contract returns ErrLeaseLost and the
+	// adapter must NOT re-apply the snapshot to the projection.
 	receiptClock = firstNow.Add(2 * time.Minute)
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.bypass_rls', 'true', true)")).WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectExec("INSERT INTO journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(100), pgxmock.AnyArg(), int64(52), "gateway-a", receiptClock.Add(time.Minute), receiptClock).WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	mock.ExpectQuery("SELECT payload_hash, projection_base_seq, status, claim_owner, claim_until").WithArgs("tenant-a", "request-a", int64(100)).WillReturnRows(
 		pgxmock.NewRows([]string{"payload_hash", "projection_base_seq", "status", "claim_owner", "claim_until"}).AddRow(snapshotHash, int64(50), "processing", "gateway-a", pgtype.Timestamptz{Time: firstNow.Add(time.Minute), Valid: true}))
-	mock.ExpectExec("UPDATE journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(100), "gateway-a", receiptClock.Add(time.Minute), receiptClock).WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectCommit()
-	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.bypass_rls', 'true', true)")).WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectExec("UPDATE journal_snapshot_receipts").WithArgs("tenant-a", "request-a", int64(100), "gateway-a").WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectCommit()
+	mock.ExpectRollback()
 	adapter.ApplyJournalSnapshot(context.Background(), snapshot)
 
+	// Projection still holds the original 3 events from the first call:
+	// Seq 50 (preexisting observation) + Seq 51, 52 (snapshot entries).
+	// The retry must NOT have appended duplicate 53/54 events.
 	journey, err := projection.Detail("tenant-a", "request-a")
 	if err != nil || journey == nil {
 		t.Fatalf("journey detail: %v %+v", err, journey)
 	}
 	if got := len(journey.Events); got != 3 {
-		t.Fatalf("stable retry produced %d events, want preexisting + 2 snapshot events", got)
+		t.Fatalf("durable retry should not mutate projection: got %d events, want 3 (1 preexisting + 2 snapshot)", got)
 	}
-	if journey.Events[1].Seq != 51 || journey.Events[2].Seq != 52 {
-		t.Fatalf("retry drifted projection seqs: %+v", journey.Events)
+	if journey.Events[0].Seq != 50 || journey.Events[1].Seq != 51 || journey.Events[2].Seq != 52 {
+		t.Fatalf("projection seqs drifted after rejected retry: %+v", journey.Events)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
