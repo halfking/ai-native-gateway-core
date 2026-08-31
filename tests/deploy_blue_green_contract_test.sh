@@ -31,6 +31,15 @@ require 'canary unit follows active binary symlink' 'ExecStart=/opt/llm-gateway-
 require 'canary unit restarts on failure' 'Restart=on-failure' "$ROOT/deploy/llm-gateway-go-canary@.service"
 require 'installer backs up legacy unit' 'pre-blue-green-assets' "$ROOT/scripts/install-blue-green-assets.sh"
 require 'seamless surfaces per-probe failure' 'remote_probe' "$ROOT/scripts/deploy-seamless.sh"
+# 2026-08-31: pin the probe timeout default at 60s. env 154 takes 35-40s for
+# the first post-upgrade candidate to finish schema ensures on 8+ areas
+# (request_logs, quality_fix_mode, provider/credential soft-delete,
+# applications, fp_slot_limit, concurrency_mode, credential_governor,
+# routing recent_success_rate, unavailable_recover_at). The prior 30s
+# default killed the candidate mid-schema-ensure and the deploy failed
+# with a confusing "Connection refused" on /healthz. 60s leaves headroom
+# for cold-start migrations without giving up the blast-radius bound.
+require 'seamless probe timeout >= 60s' 'PROBE_TIMEOUT_SECS:-60' "$ROOT/scripts/deploy-seamless.sh"
 require 'local direct fallback is explicit' 'requires --proxy' "$ROOT/scripts/local-host-blue-green.sh"
 require 'install does not start traffic' 'never starts a candidate' "$ROOT/scripts/install-blue-green-assets.sh"
 (( fail == 0 ))
