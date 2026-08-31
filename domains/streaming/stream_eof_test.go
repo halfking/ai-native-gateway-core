@@ -253,6 +253,7 @@ func (c *countingRecorder) RecordSuccessEmptyResponse(_, _, _ string)           
 func (c *countingRecorder) RecordJournalSnapshotStored(_ string)                 {}
 func (c *countingRecorder) RecordJournalSnapshotApplied(_ string, _ bool)        {}
 func (c *countingRecorder) RecordJournalSnapshotDeduplicated(_, _ string)        {}
+func (c *countingRecorder) RecordLiveStreamRecordDropped(_ string)              {}
 
 // Compile-time check that countingRecorder satisfies metrics.Recorder.
 var _ metrics.Recorder = (*countingRecorder)(nil)

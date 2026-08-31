@@ -37,11 +37,36 @@ var (
 		Help: "URSM v2 observe-only shadow comparisons classified by outcome.",
 	}, []string{"type"})
 	outcomeCounts [len(allOutcomes)]atomic.Uint64
+
+	// shadowEnqueueTotal (2026-08-31, P2-3 observability): counts the result
+	// of every shadow enqueue attempt. Distinguishes the previously-silent
+	// "queue full" drop from the "sampled out" / "worker stopped" paths so
+	// operators can alert specifically on production-load back-pressure.
+	//
+	//   - result="enqueued"     : task accepted into the worker queue
+	//   - result="sampled_out"  : shadow sampler declined to observe this request
+	//   - result="queue_full"   : queue at capacity (128); request lost silently
+	//                             before this counter existed
+	//   - result="worker_stopped": the shadow worker is shut down (StopShadowWorker)
+	shadowEnqueueTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "ursm_shadow_enqueued_total",
+		Help: "URSM v2 shadow enqueue attempts classified by result. result=queue_full indicates queue-capacity drops that were previously silent.",
+	}, []string{"result"})
+)
+
+const (
+	enqueueResultEnqueued     = "enqueued"
+	enqueueResultSampledOut   = "sampled_out"
+	enqueueResultQueueFull    = "queue_full"
+	enqueueResultWorkerStopped = "worker_stopped"
 )
 
 func init() {
 	for _, outcome := range allOutcomes {
 		shadowDiffTotal.WithLabelValues(string(outcome)).Add(0)
+	}
+	for _, result := range []string{enqueueResultEnqueued, enqueueResultSampledOut, enqueueResultQueueFull, enqueueResultWorkerStopped} {
+		shadowEnqueueTotal.WithLabelValues(result).Add(0)
 	}
 }
 
@@ -52,6 +77,17 @@ func Record(outcome Outcome) {
 			shadowDiffTotal.WithLabelValues(string(outcome)).Inc()
 			return
 		}
+	}
+}
+
+// RecordEnqueueResult (2026-08-31, P2-3 observability): reports the result
+// of a single shadow enqueue attempt. Allowed results are the four
+// pre-initialised label values above; any other string is rejected to keep
+// Prometheus cardinality bounded.
+func RecordEnqueueResult(result string) {
+	switch result {
+	case enqueueResultEnqueued, enqueueResultSampledOut, enqueueResultQueueFull, enqueueResultWorkerStopped:
+		shadowEnqueueTotal.WithLabelValues(result).Inc()
 	}
 }
 
