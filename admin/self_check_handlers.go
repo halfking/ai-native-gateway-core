@@ -513,16 +513,140 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 		// worker was retired — during the 2026-08-18 glm-5.2 incident that
 		// left operators with no way to demand fresh evidence).
 		if h.probeEnqueue != nil {
-			ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 			defer cancel()
-			n, err := h.probeEnqueue(ctx, body.Model)
-			if err != nil {
-				writeJSON(w, 503, map[string]any{"error": "trigger failed", "message": err.Error()})
-				return
+
+			// When model is empty, trigger self-check for all models based on settings.
+			models := []string{}
+			if body.Model == "" {
+				// Load self-check settings to determine which models to test.
+				var settings struct {
+					Enabled        bool
+					ModelSource    string
+					MaxModels      int
+					FeaturedModels json.RawMessage
+				}
+				err := h.db.QueryRow(ctx, `
+					SELECT enabled, model_source, max_models, featured_model_ids
+					FROM self_check_settings WHERE id=1`,
+				).Scan(&settings.Enabled, &settings.ModelSource, &settings.MaxModels, &settings.FeaturedModels)
+				if err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						// Seed default settings if missing.
+						if seedErr := h.ensureSelfCheckSettingsRow(ctx); seedErr != nil {
+							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "settings not initialized: " + seedErr.Error()})
+							return
+						}
+						// Retry after seeding.
+						err = h.db.QueryRow(ctx, `
+							SELECT enabled, model_source, max_models, featured_model_ids
+							FROM self_check_settings WHERE id=1`,
+						).Scan(&settings.Enabled, &settings.ModelSource, &settings.MaxModels, &settings.FeaturedModels)
+					}
+					if err != nil {
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to load settings: " + err.Error()})
+						return
+					}
+				}
+
+				// Build model list based on model_source setting.
+				switch settings.ModelSource {
+				case "featured":
+					// Use only featured models from settings.
+					var featured []string
+					if err := json.Unmarshal(settings.FeaturedModels, &featured); err == nil {
+						models = featured
+					}
+				case "top10":
+					// Use top 10 models by request count in last 7 days.
+					rows, err := h.db.Query(ctx, `
+						SELECT model_name, COUNT(*) as req_count
+						FROM request_logs
+						WHERE created_at >= NOW() - INTERVAL '7 days'
+						  AND model_name IS NOT NULL
+						GROUP BY model_name
+						ORDER BY req_count DESC
+						LIMIT $1`, settings.MaxModels)
+					if err == nil {
+						defer rows.Close()
+						for rows.Next() {
+							var modelName string
+							var count int
+							if rows.Scan(&modelName, &count) == nil {
+								models = append(models, modelName)
+							}
+						}
+					}
+				case "both":
+					// Combine featured models + top models.
+					var featured []string
+					if err := json.Unmarshal(settings.FeaturedModels, &featured); err == nil {
+						models = append(models, featured...)
+					}
+					// Add top models up to max_models limit.
+					rows, err := h.db.Query(ctx, `
+						SELECT model_name, COUNT(*) as req_count
+						FROM request_logs
+						WHERE created_at >= NOW() - INTERVAL '7 days'
+						  AND model_name IS NOT NULL
+						GROUP BY model_name
+						ORDER BY req_count DESC
+						LIMIT $1`, settings.MaxModels)
+					if err == nil {
+						defer rows.Close()
+						for rows.Next() {
+							var modelName string
+							var count int
+							if rows.Scan(&modelName, &count) == nil {
+								// Avoid duplicates.
+								found := false
+								for _, m := range models {
+									if m == modelName {
+										found = true
+										break
+									}
+								}
+								if !found {
+									models = append(models, modelName)
+								}
+							}
+						}
+					}
+				default:
+					writeJSON(w, 400, map[string]any{"error": "trigger failed", "message": "invalid model_source in settings: " + settings.ModelSource})
+					return
+				}
+
+				if len(models) == 0 {
+					writeJSON(w, 400, map[string]any{"error": "trigger failed", "message": "no models to test based on current settings"})
+					return
+				}
+			} else {
+				// Single model specified.
+				models = []string{body.Model}
 			}
+
+			// Trigger self-check for each model.
+			totalEnqueued := 0
+			results := make(map[string]any)
+			for _, model := range models {
+				n, err := h.probeEnqueue(ctx, model)
+				if err != nil {
+					results[model] = map[string]any{"error": err.Error(), "enqueued": 0}
+				} else {
+					results[model] = map[string]any{"enqueued": n}
+					totalEnqueued += n
+				}
+			}
+
 			writeJSON(w, 200, map[string]any{
-				"ok": true, "mode": "probe_queue", "enqueued": n,
-				"message": "node_probe tasks enqueued", "model": body.Model,
+				"ok":             true,
+				"mode":           "probe_queue",
+				"enqueued":       totalEnqueued,
+				"models_tested":  len(models),
+				"message":        "node_probe tasks enqueued",
+				"models":         models,
+				"results":        results,
 			})
 			return
 		}

@@ -25,6 +25,17 @@ import (
 // response generation (max_tokens) plus the model's own internal overhead.
 const defaultSoftLimitFraction = 0.85
 
+// aggressiveSoftLimitFraction is used for 4xx context-length recovery scenarios.
+// We compress to 60% of the context window to:
+//  1. Leave sufficient space for response generation (max_tokens)
+//  2. Avoid boundary errors from token estimation inaccuracy
+//  3. Reserve growth headroom for subsequent conversation turns
+//
+// This aggressive target handles cases where requests exceed the limit by a
+// small margin (e.g. 0.4%) but the default 85% compression would still be
+// too close to the boundary.
+const aggressiveSoftLimitFraction = 0.60
+
 // charsPerToken is the heuristic used by the trim estimator. Calibrated to
 // be a touch conservative (over-estimate) so we err on the safe side and
 // never push past the upstream limit.
@@ -45,54 +56,7 @@ const charsPerToken = 3.5
 // prompt fits under contextWindow * defaultSoftLimitFraction. The system
 // field (string or array) is always preserved.
 func CompressAnthropicMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
-	if contextWindow <= 0 {
-		return bodyBytes
-	}
-
-	var req struct {
-		Messages []json.RawMessage `json:"messages"`
-		System   json.RawMessage   `json:"system"`
-	}
-	if err := json.Unmarshal(bodyBytes, &req); err != nil || len(req.Messages) == 0 {
-		return bodyBytes
-	}
-
-	softLimit := int(float64(contextWindow) * defaultSoftLimitFraction)
-	systemTokens := estimateMessageTokens(req.System)
-	estimated := estimatePromptTokens(bodyBytes)
-	if estimated <= softLimit {
-		return bodyBytes
-	}
-
-	trimmed := trimOldestPairs(req.Messages, softLimit-systemTokens)
-	if len(trimmed) == len(req.Messages) {
-		return bodyBytes
-	}
-
-	var generic map[string]json.RawMessage
-	if err := json.Unmarshal(bodyBytes, &generic); err != nil {
-		return bodyBytes
-	}
-	rawTrimmed, err := json.Marshal(trimmed)
-	if err != nil {
-		return bodyBytes
-	}
-	generic["messages"] = rawTrimmed
-
-	out, err := json.Marshal(generic)
-	if err != nil {
-		return bodyBytes
-	}
-
-	slog.Info("context_compress: trimmed anthropic messages",
-		"original_count", len(req.Messages),
-		"trimmed_count", len(trimmed),
-		"dropped_count", len(req.Messages)-len(trimmed),
-		"context_window", contextWindow,
-		"soft_limit", softLimit,
-		"estimated_tokens_before", estimated,
-	)
-	return out
+	return compressAnthropicMessagesWithTarget(bodyBytes, contextWindow, defaultSoftLimitFraction, "default")
 }
 
 func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
@@ -117,9 +81,9 @@ func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
 	// at the 50% soft limit prevents upstream 400 errors like
 	// "Your input exceeds the context window".
 	const largeRequestBytes = 1024 * 1024 // 1MB
-	const aggressiveSoftLimitFraction = 0.50
+	const largeRequestAggressiveFraction = 0.50
 	if len(bodyBytes) > largeRequestBytes {
-		aggressiveLimit := int(float64(contextWindow) * aggressiveSoftLimitFraction)
+		aggressiveLimit := int(float64(contextWindow) * largeRequestAggressiveFraction)
 		if estimated > aggressiveLimit || len(bodyBytes) > largeRequestBytes*2 {
 			slog.Info("context_compress: aggressive trim for large request",
 				"request_size_bytes", len(bodyBytes),
@@ -161,13 +125,18 @@ func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
 		return bodyBytes
 	}
 
+	estimatedAfter := estimatePromptTokens(out)
 	slog.Info("context_compress: trimmed messages",
+		"reason", "default",
 		"original_count", len(req.Messages),
 		"trimmed_count", len(trimmed),
 		"dropped_count", len(req.Messages)-len(trimmed),
 		"context_window", contextWindow,
 		"soft_limit", softLimit,
 		"estimated_tokens_before", estimated,
+		"estimated_tokens_after", estimatedAfter,
+		"bytes_before", len(bodyBytes),
+		"bytes_after", len(out),
 	)
 	return out
 }
@@ -533,4 +502,143 @@ func isSystemMessage(raw json.RawMessage) bool {
 		return false
 	}
 	return probe.Role == "system"
+}
+
+// CompressMessagesAggressively is an aggressive version of CompressMessagesIfNeeded,
+// used specifically for context-length 4xx recovery scenarios. It compresses to
+// contextWindow * 0.60 (instead of 0.85) to provide a larger safety margin for:
+//   - Response generation tokens (max_tokens parameter)
+//   - Token estimation inaccuracy (chars/3.5 is a heuristic)
+//   - Future conversation growth
+//
+// This handles cases where a request exceeds the context limit by a small margin
+// (e.g. 0.4%) and the default 85% compression would still be too close to the
+// boundary, risking another 4xx on retry.
+//
+// Use this for OpenAI chat-style bodies. For Anthropic Messages API, use
+// CompressAnthropicMessagesAggressively instead.
+func CompressMessagesAggressively(bodyBytes []byte, contextWindow int) []byte {
+	return compressMessagesWithTarget(bodyBytes, contextWindow, aggressiveSoftLimitFraction, "aggressive")
+}
+
+// CompressAnthropicMessagesAggressively is the aggressive version for Anthropic
+// Messages API bodies. Compresses to 60% of context window for 4xx recovery.
+func CompressAnthropicMessagesAggressively(bodyBytes []byte, contextWindow int) []byte {
+	return compressAnthropicMessagesWithTarget(bodyBytes, contextWindow, aggressiveSoftLimitFraction, "aggressive")
+}
+
+// compressMessagesWithTarget is the internal implementation used by both
+// CompressMessagesIfNeeded (85% target) and CompressMessagesAggressively (60% target).
+func compressMessagesWithTarget(bodyBytes []byte, contextWindow int, targetFraction float64, reason string) []byte {
+	if contextWindow <= 0 {
+		return bodyBytes
+	}
+
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil || len(req.Messages) == 0 {
+		return bodyBytes
+	}
+
+	softLimit := int(float64(contextWindow) * targetFraction)
+	estimated := estimatePromptTokens(bodyBytes)
+
+	if estimated <= softLimit {
+		return bodyBytes
+	}
+
+	trimmed := trimOldestPairs(req.Messages, softLimit)
+	if len(trimmed) == len(req.Messages) {
+		return bodyBytes
+	}
+
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &generic); err != nil {
+		return bodyBytes
+	}
+	rawTrimmed, err := json.Marshal(trimmed)
+	if err != nil {
+		return bodyBytes
+	}
+	generic["messages"] = rawTrimmed
+
+	out, err := json.Marshal(generic)
+	if err != nil {
+		return bodyBytes
+	}
+
+	estimatedAfter := estimatePromptTokens(out)
+	slog.Info("context_compress: trimmed messages",
+		"reason", reason,
+		"original_count", len(req.Messages),
+		"trimmed_count", len(trimmed),
+		"dropped_count", len(req.Messages)-len(trimmed),
+		"context_window", contextWindow,
+		"target_fraction", targetFraction,
+		"soft_limit", softLimit,
+		"estimated_tokens_before", estimated,
+		"estimated_tokens_after", estimatedAfter,
+		"bytes_before", len(bodyBytes),
+		"bytes_after", len(out),
+	)
+	return out
+}
+
+// compressAnthropicMessagesWithTarget is the Anthropic version of compressMessagesWithTarget.
+func compressAnthropicMessagesWithTarget(bodyBytes []byte, contextWindow int, targetFraction float64, reason string) []byte {
+	if contextWindow <= 0 {
+		return bodyBytes
+	}
+
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+		System   json.RawMessage   `json:"system"`
+	}
+	if err := json.Unmarshal(bodyBytes, &req); err != nil || len(req.Messages) == 0 {
+		return bodyBytes
+	}
+
+	softLimit := int(float64(contextWindow) * targetFraction)
+	systemTokens := estimateMessageTokens(req.System)
+	estimated := estimatePromptTokens(bodyBytes)
+	if estimated <= softLimit {
+		return bodyBytes
+	}
+
+	trimmed := trimOldestPairs(req.Messages, softLimit-systemTokens)
+	if len(trimmed) == len(req.Messages) {
+		return bodyBytes
+	}
+
+	var generic map[string]json.RawMessage
+	if err := json.Unmarshal(bodyBytes, &generic); err != nil {
+		return bodyBytes
+	}
+	rawTrimmed, err := json.Marshal(trimmed)
+	if err != nil {
+		return bodyBytes
+	}
+	generic["messages"] = rawTrimmed
+
+	out, err := json.Marshal(generic)
+	if err != nil {
+		return bodyBytes
+	}
+
+	estimatedAfter := estimatePromptTokens(out)
+	slog.Info("context_compress: trimmed anthropic messages",
+		"reason", reason,
+		"original_count", len(req.Messages),
+		"trimmed_count", len(trimmed),
+		"dropped_count", len(req.Messages)-len(trimmed),
+		"context_window", contextWindow,
+		"target_fraction", targetFraction,
+		"soft_limit", softLimit,
+		"estimated_tokens_before", estimated,
+		"estimated_tokens_after", estimatedAfter,
+		"bytes_before", len(bodyBytes),
+		"bytes_after", len(out),
+	)
+	return out
 }

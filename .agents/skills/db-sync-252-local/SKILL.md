@@ -1,6 +1,6 @@
 ---
 name: db-sync-252-local
-description: Sync PostgreSQL schema + data from 252 (test) to local Docker container (llm-gateway-pg). POLICY: users/passwords are CREATE-ONLY — never auto-modify an existing role or password (no ALTER ROLE/USER PASSWORD, no drop-and-recreate, no env-based reset); password changes are manual + envs SSOT update. Diagnose "no rows" / "table not found" issues that may be caused by hot-table filtering or password drift. Use when the user asks to "sync from 252", "refresh local DB", "recreate llm-gateway-pg", "password doesn't work after container restart", or asks about `_` prefixed tables.
+description: Sync PostgreSQL schema + data from 252 (test) to local Docker container (llm-gateway-pg). POLICY: users/passwords are CREATE-ONLY — never auto-modify an existing role or password (no ALTER ROLE/USER PASSWORD, no drop-and-recreate, no env-based reset); password changes are manual + envs SSOT update. Load only COMMON_PG_SUPERUSER_PASS through envs/loader.sh, authenticate SSH through the 252 SSH config/certificate, resolve the Podman PG IP at tunnel invocation, and require both structure and data audits after every sync. Diagnose "no rows" / "table not found" issues that may be caused by hot-table filtering or password drift. Use when the user asks to "sync from 252", "refresh local DB", "recreate llm-gateway-pg", "password doesn't work after container restart", or asks about `_` prefixed tables.
 ---
 
 # db-sync-252-local
@@ -16,17 +16,21 @@ description: Sync PostgreSQL schema + data from 252 (test) to local Docker conta
 ### Sync 252 → local
 
 ```bash
-# Tunnel target is defined by configs/env-252.sh; do not hardcode it in docs.
+# Use only the loader-provided credential. env-252.sh creates its compatibility
+# alias in memory; do not persist a second password or use an SSH-password fallback.
 source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go
-export PG_PASS_252="$COMMON_PG_SUPERUSER_PASS"
-export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
 source configs/env-252.sh
-ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252 && sleep 2
-export PGPASSWORD="$COMMON_PG_SUPERUSER_PASS"
+source scripts/lib/252-db-tunnel.sh
+
+# Resolve pg-252-pg17's runtime CNI address only within the helper. It never
+# stores that address, reuses only a healthy existing listener, and never kills
+# an unknown process occupying 15432.
+trap db252_tunnel_teardown EXIT HUP INT TERM
+db252_tunnel_ensure
+export PGPASSWORD="$PG_PASS"
 
 # Full sync (schema + data; exact replacement requires explicit --replace-data)
 export PGOPTIONS='-c statement_timeout=0'  # avoid 252's 30s server-side timeout
-export PG_PASS_LOCAL="$COMMON_PG_SUPERUSER_PASS"
 scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh --replace-data
 
 # Safe default: no DROP and append-only data import; use for inspection only.
@@ -36,10 +40,24 @@ scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.
 scripts/pg-table-copy.sh --data-only --replace-data \
   --source configs/env-252.sh --target configs/env-local.sh
 
-# Schema-only (fast, ~2min)
+# Schema-only
 scripts/pg-table-copy.sh --schema-only --source configs/env-252.sh --target configs/env-local.sh
 
-kill $(lsof -tiTCP:15432 -sTCP:LISTEN)  # cleanup tunnel
+# Completion gate: both audits are mandatory. They must use the same dynamic target
+# resolution and owned tunnel lifecycle when they establish their own connection.
+bash scripts/local-dev/verify-db-consistency.sh --verify
+bash scripts/local-dev/verify-db-data-consistency.sh
+# trap db252_tunnel_teardown EXIT closes only a listener created by this shell.
+# PG_PSQL_BIN and PG_DUMP_BIN must resolve to native libpq clients, not the
+# host psql shim that executes inside llm-gateway-pg.
+
+> **PHASE 8.5 (2026-09-01)** — `pg-table-copy.sh` 自动在末尾调用
+> `scripts/local-dev/apply-routing-mv-fixup.sh`（仅当 target 是本地 docker
+> 容器，且未传 `--dry-run` / `--data-only` 时）。该 fixup 补齐 252-only 的
+> `routing_analytics_7d` / `routing_audit_summary_7d` 物化视图与
+> `columnar_insert_only_parents()` 辅助函数；幂等、重复运行无副作用。
+> 不再需要手工调用 fixup 脚本；如需手动跑仍可：
+> `bash scripts/local-dev/apply-routing-mv-fixup.sh`。
 ```
 
 ### Recreate container
@@ -59,30 +77,6 @@ bash scripts/local-dev/recreate-llm-gateway-pg.sh
 # mechanism behind "password reverted after restart".
 ```
 
-### Verify sync result
-
-```bash
-source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go
-export PG_PASS_252="$COMMON_PG_SUPERUSER_PASS"
-export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
-source configs/env-252.sh
-ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252 && sleep 2
-export PGPASSWORD="$COMMON_PG_SUPERUSER_PASS"
-
-# 252 vs local table inventory
-psql -h localhost -p 15432 -U llm_gateway -d llm_gateway -tAc \
-  "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename" \
-  > /tmp/252.txt
-docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg \
-  psql -U llm_gateway -d llm_gateway -tAc \
-  "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename NOT LIKE '\_%' ESCAPE '\\' ORDER BY tablename" \
-  > /tmp/local.txt
-comm -23 /tmp/252.txt /tmp/local.txt   # tables in 252 but missing in local (should be empty)
-comm -13 /tmp/252.txt /tmp/local.txt   # local extras (should be empty after rename)
-
-kill $(lsof -tiTCP:15432 -sTCP:LISTEN)
-```
-
 ### Verify consistency (scripts)
 
 `scripts/local-dev/verify-db-consistency.sh` (v1.2) compares SEVEN dimensions — table inventory, column signatures (ALL tables), views (name+md5(definition)), index logical shape, constraints (normalized), sequences, and functions (name + arg-identity + md5(prosrc)) — and classifies every difference as either **expected** (hot/partition tables) or **real drift**. The functions dimension closes the blind spot that the original 6-object audit never compared function DDL, so migrations like 628 (function bodies) were invisible to the audit.
@@ -94,7 +88,7 @@ bash scripts/local-dev/verify-db-data-consistency.sh       # read-only ordinary-
 # data exit 0 = complete ordinary-table set, row counts, and content signatures match
 ```
 
-Both audits are required after every sync. The data audit deliberately excludes hot/partition relations; the structure audit must still verify their relation kind and partition/index metadata.
+Both audits are mandatory after every sync, including schema-only and data-only runs. Completion requires both exit statuses to be zero. The data audit deliberately excludes hot/partition relations; the structure audit must still verify their relation kind and partition/index metadata. Table inventories, sampled counts, and migration-tracking rows are diagnostic only and never replace either audit.
 
 ---
 
@@ -207,7 +201,8 @@ schema-qualified as `public.*`, so dropping it is safe):
 
 ```bash
 grep -vE "set_config\('search_path', '', false\)" dump.sql > dump.fixed.sql
-psql -h localhost -p 15432 -U llm_gateway -d llm_gateway -v ON_ERROR_STOP=1 -f dump.fixed.sql
+# Run only while the dynamically resolved, control-socket-owned tunnel is still active.
+psql -h 127.0.0.1 -p "$TUNNEL_LOCAL_PORT" -U llm_gateway -d llm_gateway -v ON_ERROR_STOP=1 -f dump.fixed.sql
 ```
 
 ### 4.5 `pg_dump -t` needs a repeated `-t` per table (not a space-separated list)
@@ -286,9 +281,10 @@ After a sync:
 
 - [ ] `docker ps | grep llm-gateway-pg` shows healthy
 - [ ] `docker exec llm-gateway-pg psql -U llm_gateway -c 'SELECT 1'` returns 1
-- [ ] 252 vs local `comm -23 /tmp/252.txt /tmp/local.txt` is empty (no tables missing in local)
+- [ ] `verify-db-consistency.sh --verify` exits 0
+- [ ] `verify-db-data-consistency.sh` exits 0
 - [ ] `_` prefixed tables exist locally (if previously identified for cleanup)
-- [ ] Container `POSTGRES_PASSWORD` env matches envs SSOT
+- [ ] Connection credentials came only from loader-provided `COMMON_PG_SUPERUSER_PASS`
 
 ---
 
@@ -313,24 +309,26 @@ bash scripts/local-dev/verify-db-consistency.sh --reconcile \
   agent_discovery agent_gateways agent_migration_log gateway_run_bindings \
   industry_registry orchestration_sessions provider_domains proxy_nodes proxy_subscriptions --yes
 
-# Manual equivalent (if you need to tweak the DDL first):
+# Manual equivalent (if you need to inspect the DDL first):
+# Use the same shared helper; never hand-resolve/store a Podman CNI address.
 source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go
-export PG_PASS_252="$COMMON_PG_SUPERUSER_PASS"
-export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
 source configs/env-252.sh
-ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252 && sleep 3
+source scripts/lib/252-db-tunnel.sh
+trap db252_tunnel_teardown EXIT HUP INT TERM
+db252_tunnel_ensure
 
 # dump per table (loop — see pitfall 4.5), order FK parents before children
 > /tmp/feature.sql
 for t in proxy_subscriptions proxy_nodes provider_domains ...; do
-  docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg \
+  docker exec -e PGPASSWORD="$PG_PASS" llm-gateway-pg \
     pg_dump -U llm_gateway -d llm_gateway --schema-only --clean --if-exists --no-owner --no-privileges -t "$t" \
     >> /tmp/feature.sql
 done
 grep -vE "set_config\('search_path', '', false\)" /tmp/feature.sql > /tmp/feature.fixed.sql   # pitfall 4.4
-PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway -d llm_gateway \
+PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h 127.0.0.1 -p "$TUNNEL_LOCAL_PORT" -U llm_gateway -d llm_gateway \
   -v ON_ERROR_STOP=1 -f /tmp/feature.fixed.sql
-kill $(lsof -tiTCP:15432 -sTCP:LISTEN)
+# trap db252_tunnel_teardown EXIT closes only a listener created by this shell.
+# PG_PSQL_BIN must resolve to a native libpq client, not the host psql shim.
 ```
 
 **Notes**:
@@ -347,3 +345,4 @@ kill $(lsof -tiTCP:15432 -sTCP:LISTEN)
 - `pg-table-copy` (global skill): schema + data copy — this skill extends it with 252-specific know-how
 - `docs/06-deployment/02-database/local-pg-sync-from-252.md`: full reference
 - `scripts/local-dev/recreate-llm-gateway-pg.sh`: container recreate script
+- `scripts/sync-from-252.sh` and `scripts/sync-schema-to-252.sh`: **retired**; do not invoke or reference them for new work. Use `scripts/pg-table-copy.sh` instead.
