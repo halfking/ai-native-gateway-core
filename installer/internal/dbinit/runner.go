@@ -64,7 +64,6 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"614_session_bodies_hot.sql",
 			"615_session_bodies_hot_promote_function.sql",
 			"618_request_journey_snapshot_receipts.sql",
-			"619_session_turns_unified_view.sql",
 			"620_provider_error_details_tenant_scope.sql",
 			"621_provider_error_details_cleanup_index.sql",
 			"622_provider_error_aggregator_state.sql",
@@ -77,6 +76,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"629_audit_attachments_cleanup.sql",
 			"630_session_aggregate_outbox.sql",
 			"631_provider_credential_soft_delete.sql",
+			"635_drop_session_turns_unified.sql",
 		},
 	}
 }

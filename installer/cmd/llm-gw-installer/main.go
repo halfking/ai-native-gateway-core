@@ -157,9 +157,6 @@ var sessionBodiesHotMigration614 []byte
 //go:embed embeddata/startup/615_session_bodies_hot_promote_function.sql
 var sessionBodiesHotPromoteMigration615 []byte
 
-//go:embed embeddata/startup/619_session_turns_unified_view.sql
-var sessionTurnsUnifiedViewMigration619 []byte
-
 //go:embed embeddata/startup/620_provider_error_details_tenant_scope.sql
 var providerErrorDetailsTenantScopeMigration620 []byte
 
@@ -195,6 +192,9 @@ var sessionAggregateOutboxMigration630 []byte
 
 //go:embed embeddata/startup/631_provider_credential_soft_delete.sql
 var providerCredentialSoftDeleteMigration631 []byte
+
+//go:embed embeddata/startup/635_drop_session_turns_unified.sql
+var dropSessionTurnsUnifiedMigration635 []byte
 
 // 临时存放 embed SQL 的目录（运行时写入）
 
@@ -899,7 +899,6 @@ func copySQLBackup(root string) error {
 		"startup/618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
 		"startup/614_session_bodies_hot.sql":                                       sessionBodiesHotMigration614,
 		"startup/615_session_bodies_hot_promote_function.sql":                      sessionBodiesHotPromoteMigration615,
-		"startup/619_session_turns_unified_view.sql":                               sessionTurnsUnifiedViewMigration619,
 		"startup/620_provider_error_details_tenant_scope.sql":                      providerErrorDetailsTenantScopeMigration620,
 		"startup/621_provider_error_details_cleanup_index.sql":                     providerErrorDetailsCleanupIndexMigration621,
 		"startup/622_provider_error_aggregator_state.sql":                          providerErrorAggregatorStateMigration622,
@@ -912,6 +911,7 @@ func copySQLBackup(root string) error {
 		"startup/629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
 		"startup/630_session_aggregate_outbox.sql":                               sessionAggregateOutboxMigration630,
 		"startup/631_provider_credential_soft_delete.sql":                         providerCredentialSoftDeleteMigration631,
+		"startup/635_drop_session_turns_unified.sql":                             dropSessionTurnsUnifiedMigration635,
 	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
@@ -1019,7 +1019,6 @@ func setupSQLDir() (string, func(), error) {
 		"startup/618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
 		"startup/614_session_bodies_hot.sql":                                       sessionBodiesHotMigration614,
 		"startup/615_session_bodies_hot_promote_function.sql":                      sessionBodiesHotPromoteMigration615,
-		"startup/619_session_turns_unified_view.sql":                               sessionTurnsUnifiedViewMigration619,
 		"startup/620_provider_error_details_tenant_scope.sql":                      providerErrorDetailsTenantScopeMigration620,
 		"startup/621_provider_error_details_cleanup_index.sql":                     providerErrorDetailsCleanupIndexMigration621,
 		"startup/622_provider_error_aggregator_state.sql":                          providerErrorAggregatorStateMigration622,
@@ -1032,6 +1031,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
 		"startup/630_session_aggregate_outbox.sql":                               sessionAggregateOutboxMigration630,
 		"startup/631_provider_credential_soft_delete.sql":                         providerCredentialSoftDeleteMigration631,
+		"startup/635_drop_session_turns_unified.sql":                             dropSessionTurnsUnifiedMigration635,
 	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)

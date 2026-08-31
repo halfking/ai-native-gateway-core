@@ -27,9 +27,10 @@ func TestSessionV2MigrationContractDetector(t *testing.T) {
 	compliant := sessionV2MigrationContract{
 		bodyMigration:    "ENABLE ROW LEVEL SECURITY; security_invoker=true; session_bodies_with_current_month; UNIQUE (tenant_id, request_id, partition_date);",
 		promoteMigration: "pg_advisory_xact_lock; FOR UPDATE SKIP LOCKED; DELETE ... RETURNING; INSERT INTO;",
-		turnsMigration:   "CREATE VIEW public.session_turns_with_current_month WITH (security_invoker=true) AS SELECT explicit_columns",
-		runnerSource:     "614_session_bodies_hot.sql 615_session_bodies_hot_promote_function.sql 619_session_turns_unified_view.sql",
-		embedSource:      "614_session_bodies_hot.sql 615_session_bodies_hot_promote_function.sql 619_session_turns_unified_view.sql",
+		turnsMigration:   "DROP VIEW IF EXISTS public.session_turns_unified",
+		turnsDown:        "CREATE VIEW public.session_turns_unified WITH (security_invoker=true)",
+		runnerSource:     "614_session_bodies_hot.sql 615_session_bodies_hot_promote_function.sql 635_drop_session_turns_unified.sql",
+		embedSource:      "614_session_bodies_hot.sql 615_session_bodies_hot_promote_function.sql 635_drop_session_turns_unified.sql",
 	}
 	if violations := detectSessionV2MigrationViolations(compliant); len(violations) != 0 {
 		t.Fatalf("compliant migration contract unexpectedly rejected: %v", violations)
@@ -75,11 +76,20 @@ func detectSessionV2MigrationViolations(c sessionV2MigrationContract) []string {
 			violations = append(violations, "615 promote migration missing "+want)
 		}
 	}
-	if strings.Contains(turns, "session_turns_unified") && !strings.Contains(turns, "security_invoker") {
-		violations = append(violations, "619 turns view is not a safe canonical view")
+	// 635 is the cleanup migration that drops the orphan session_turns_unified
+	// view (previously created by 619). The contract now requires the up
+	// migration to DROP VIEW IF EXISTS session_turns_unified and the down to
+	// recreate it WITH (security_invoker=true).
+	if !strings.Contains(turns, "DROP VIEW IF EXISTS public.session_turns_unified") &&
+		!strings.Contains(turns, "drop view if exists public.session_turns_unified") {
+		violations = append(violations, "635 turns cleanup must DROP VIEW IF EXISTS public.session_turns_unified")
 	}
-	if strings.Contains(strings.ToLower(c.turnsDown), "raise notice") && !strings.Contains(strings.ToLower(c.turnsDown), "do $$") {
-		violations = append(violations, "619 down migration has a top-level RAISE NOTICE")
+	if !strings.Contains(strings.ToLower(c.turnsDown), "session_turns_unified") {
+		violations = append(violations, "635 turns down must recreate session_turns_unified view")
+	}
+	if strings.Contains(strings.ToLower(c.turnsDown), "session_turns_unified") &&
+		!strings.Contains(strings.ToLower(c.turnsDown), "security_invoker") {
+		violations = append(violations, "635 turns down must recreate view WITH (security_invoker=true)")
 	}
 	if strings.Contains(strings.ToLower(c.schemaMigration), "schemaname = 'gateway'") {
 		violations = append(violations, "430 schema migration checks gateway instead of public")
@@ -87,7 +97,7 @@ func detectSessionV2MigrationViolations(c sessionV2MigrationContract) []string {
 	for _, name := range []string{
 		"614_session_bodies_hot.sql",
 		"615_session_bodies_hot_promote_function.sql",
-		"619_session_turns_unified_view.sql",
+		"635_drop_session_turns_unified.sql",
 	} {
 		if !strings.Contains(c.runnerSource, name) {
 			violations = append(violations, "startup runner does not register "+name)
@@ -104,8 +114,8 @@ func loadSessionV2MigrationContract(t *testing.T) sessionV2MigrationContract {
 	return sessionV2MigrationContract{
 		bodyMigration:    readMigrationContract(t, "614_session_bodies_hot.sql"),
 		promoteMigration: readMigrationContract(t, "615_session_bodies_hot_promote_function.sql"),
-		turnsMigration:   readMigrationContract(t, "619_session_turns_unified_view.sql"),
-		turnsDown:        readMigrationContract(t, "619_session_turns_unified_view.down.sql"),
+		turnsMigration:   readMigrationContract(t, "635_drop_session_turns_unified.sql"),
+		turnsDown:        readMigrationContract(t, "635_drop_session_turns_unified.down.sql"),
 		schemaMigration:  readMigrationContract(t, "430_sessions_v2_schema.sql"),
 		runnerSource:     readSourceContract(t, "../../../installer/internal/dbinit/runner.go"),
 		embedSource:      readEmbeddedStartupNames(t),
