@@ -196,6 +196,9 @@ var providerCredentialSoftDeleteMigration631 []byte
 //go:embed embeddata/startup/635_drop_session_turns_unified.sql
 var dropSessionTurnsUnifiedMigration635 []byte
 
+//go:embed embeddata/startup/session_turns_hot_bootstrap.sql
+var sessionTurnsHotBootstrap []byte
+
 // 临时存放 embed SQL 的目录（运行时写入）
 
 // ── Cobra 入口 ──────────────────────────────────────────────────
@@ -912,6 +915,7 @@ func copySQLBackup(root string) error {
 		"startup/630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
 		"startup/631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
 		"startup/635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
+		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
@@ -1032,6 +1036,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
 		"startup/631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
 		"startup/635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
+		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
