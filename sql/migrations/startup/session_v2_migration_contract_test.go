@@ -16,6 +16,7 @@ type sessionV2MigrationContract struct {
 	turnsMigration   string
 	turnsDown        string
 	schemaMigration  string
+	hotBootstrap     string
 	runnerSource     string
 	embedSource      string
 }
@@ -29,8 +30,9 @@ func TestSessionV2MigrationContractDetector(t *testing.T) {
 		promoteMigration: "pg_advisory_xact_lock; FOR UPDATE SKIP LOCKED; DELETE ... RETURNING; INSERT INTO;",
 		turnsMigration:   "DROP VIEW IF EXISTS public.session_turns_unified",
 		turnsDown:        "CREATE VIEW public.session_turns_unified WITH (security_invoker=true)",
-		runnerSource:     "614_session_bodies_hot.sql 615_session_bodies_hot_promote_function.sql 635_drop_session_turns_unified.sql",
-		embedSource:      "614_session_bodies_hot.sql 615_session_bodies_hot_promote_function.sql 635_drop_session_turns_unified.sql",
+		hotBootstrap:     "CREATE TABLE IF NOT EXISTS public.session_turns_hot; digest JSONB; CREATE VIEW public.session_turns_with_current_month WITH (security_invoker = true); CREATE OR REPLACE FUNCTION public.promote_session_turns_hot_to_partition",
+		runnerSource:     "614_session_bodies_hot.sql 615_session_bodies_hot_promote_function.sql 635_drop_session_turns_unified.sql session_turns_hot_bootstrap.sql",
+		embedSource:      "614_session_bodies_hot.sql 615_session_bodies_hot_promote_function.sql 635_drop_session_turns_unified.sql session_turns_hot_bootstrap.sql",
 	}
 	if violations := detectSessionV2MigrationViolations(compliant); len(violations) != 0 {
 		t.Fatalf("compliant migration contract unexpectedly rejected: %v", violations)
@@ -52,6 +54,7 @@ func detectSessionV2MigrationViolations(c sessionV2MigrationContract) []string {
 	body := strings.ToLower(c.bodyMigration)
 	promote := strings.ToLower(c.promoteMigration)
 	turns := strings.ToLower(c.turnsMigration)
+	hotBootstrap := strings.ToLower(c.hotBootstrap)
 	var violations []string
 
 	for _, want := range []string{
@@ -94,10 +97,22 @@ func detectSessionV2MigrationViolations(c sessionV2MigrationContract) []string {
 	if strings.Contains(strings.ToLower(c.schemaMigration), "schemaname = 'gateway'") {
 		violations = append(violations, "430 schema migration checks gateway instead of public")
 	}
+	for _, want := range []string{
+		"create table if not exists public.session_turns_hot",
+		"digest jsonb",
+		"create view public.session_turns_with_current_month",
+		"security_invoker = true",
+		"create or replace function public.promote_session_turns_hot_to_partition",
+	} {
+		if !strings.Contains(hotBootstrap, want) {
+			violations = append(violations, "installer session-turns hot bootstrap missing "+want)
+		}
+	}
 	for _, name := range []string{
 		"614_session_bodies_hot.sql",
 		"615_session_bodies_hot_promote_function.sql",
 		"635_drop_session_turns_unified.sql",
+		"session_turns_hot_bootstrap.sql",
 	} {
 		if !strings.Contains(c.runnerSource, name) {
 			violations = append(violations, "startup runner does not register "+name)
@@ -117,6 +132,7 @@ func loadSessionV2MigrationContract(t *testing.T) sessionV2MigrationContract {
 		turnsMigration:   readMigrationContract(t, "635_drop_session_turns_unified.sql"),
 		turnsDown:        readMigrationContract(t, "635_drop_session_turns_unified.down.sql"),
 		schemaMigration:  readMigrationContract(t, "430_sessions_v2_schema.sql"),
+		hotBootstrap:     readSourceContract(t, "../../../installer/cmd/llm-gw-installer/embeddata/startup/session_turns_hot_bootstrap.sql"),
 		runnerSource:     readSourceContract(t, "../../../installer/internal/dbinit/runner.go"),
 		embedSource:      readEmbeddedStartupNames(t),
 	}
