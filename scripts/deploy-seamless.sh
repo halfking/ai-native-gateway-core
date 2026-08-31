@@ -674,12 +674,29 @@ do_deploy() {
   # Blue-green requires an independently addressed candidate. Stage a stable
   # candidate symlink to the uploaded release and point the unit at that path;
   # do not change current before warm-up.
-  remote_ssh "set -e; mkdir -p '$REMOTE_ROOT/run' '$REMOTE_ROOT/slots'; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$candidate_port'; printf '%s\\n' '$candidate_port' > '$REMOTE_ROOT/run/candidate-port'; printf '%s\\n' '$candidate_service' > '$REMOTE_ROOT/run/candidate-service'; systemctl daemon-reload"
+  #
+  # 2026-08-31: the canary unit on env 154/245 follows /opt/llm-gateway-go/
+  # llm-gateway-go (a symlink to current/), NOT slots/%i/. The deploy must
+  # therefore swap `current` BEFORE starting the candidate, otherwise the
+  # candidate runs the old binary and the /version probe fails with
+  # "body did not contain expected version". On pre-cutover probe failure
+  # we restore `current` to old_version; post-cutover failures already roll
+  # back via _bluegreen_abort. The slots/ staging directory is kept as a
+  # no-op for any operator reading the script who expects it to exist.
+  remote_ssh "set -e; mkdir -p '$REMOTE_ROOT/run' '$REMOTE_ROOT/slots'; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$candidate_port'; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\\n' '$candidate_port' > '$REMOTE_ROOT/run/candidate-port'; printf '%s\\n' '$candidate_service' > '$REMOTE_ROOT/run/candidate-service'; systemctl daemon-reload"
   if ! remote_ssh "systemctl start '$candidate_service'"; then
+    # Restore current to the old release before aborting so the active (which
+    # also follows current/) keeps serving the previously verified binary.
+    if [[ -n "$old_version" ]]; then
+      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
+    fi
     err "候选实例启动失败，旧实例保持服务"
     exit 1
   fi
   if ! remote_ssh "systemctl is-active --quiet '$candidate_service'"; then
+    if [[ -n "$old_version" ]]; then
+      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
+    fi
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
     err "候选 unit 未保持 active，旧实例继续服务"
     exit 1
@@ -733,12 +750,20 @@ do_deploy() {
     remote_ssh "journalctl -u '$candidate_service' -n 30 --no-pager 2>&1 | tail -30" 2>&1 | sed 's/^/      /' || true
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
     remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
+    # Restore current to the old release so the active (which also follows
+    # current/) keeps serving the previously verified binary.
+    if [[ -n "$old_version" ]]; then
+      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
+    fi
     err "候选实例未通过 ${probe_failed}: ${probe_detail}，旧实例保持服务"
     exit 1
   fi
   if ! zd_switch_upstream "$SSH_CMD" "$upstream_fragment" "$candidate_port"; then
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
     remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
+    if [[ -n "$old_version" ]]; then
+      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
+    fi
     err "Nginx 切流失败，旧 upstream 已恢复"
     exit 1
   fi
@@ -813,7 +838,34 @@ do_deploy() {
     ok "admin 密码已同步"
   fi
 
-  if ! remote_ssh "curl -kfsS --max-time 10 https://127.0.0.1/version | grep -F '"version":"$expected_release_version"' >/dev/null"; then
+  # 2026-08-31: replaced `curl | grep -F` with python JSON parse. The grep
+  # variant failed silently on deploy when the body had trailing whitespace
+  # or an nginx error page was returned (502/504 with HTML) — both produced
+  # exit 1 from grep with no useful diagnostic. The JSON parse gives us a
+  # clean pass/fail and an explicit failure body when the upstream is wrong
+  # or unreachable.
+  #
+  # NB: we use double quotes around the remote command (not single) so the
+  # deployer's local shell expands $expected_release_version before sending
+  # to the remote. Single quotes would pass the literal `$expected_release_version`
+  # string to the remote, where it would never match the actual version.
+  if ! remote_ssh "EXPECTED_VERSION='$expected_release_version' python3 -c \"
+import json, sys, os
+try:
+    body = sys.stdin.read()
+except Exception:
+    raise SystemExit(1)
+try:
+    v = json.loads(body).get('version', '')
+except Exception:
+    sys.stderr.write('public /version returned non-JSON body: ' + body[:200] + chr(10))
+    raise SystemExit(1)
+if v != os.environ['EXPECTED_VERSION']:
+    sys.stderr.write('public /version mismatch: got=' + v + ' expected=' + os.environ['EXPECTED_VERSION'] + chr(10))
+    raise SystemExit(1)
+\" < <(curl -kfsS --max-time 10 https://127.0.0.1/version)" 2>&1 >/dev/null; then
+    warn "    public /version body (for diagnosis):"
+    remote_ssh "curl -kfsS --max-time 10 https://127.0.0.1/version 2>&1 | head -3" 2>&1 | sed 's/^/      /' || true
     _bluegreen_abort "公网入口版本身份校验失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi

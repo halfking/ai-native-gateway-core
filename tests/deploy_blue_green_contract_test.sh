@@ -14,6 +14,14 @@ require '245 has candidate unit' 'llmgo-245-canary@.service' "$ROOT/scripts/depl
 require 'nginx includes dynamic fragment' 'include /opt/llm-gateway-go/run/active-upstream.conf' "$ROOT/deploy/llmgo-245.nginx.conf"
 require 'seamless starts candidate before stop' 'systemctl start.*candidate_service' "$ROOT/scripts/deploy-seamless.sh"
 require 'seamless stops old service after gates' 'systemctl stop.*active_service' "$ROOT/scripts/deploy-seamless.sh"
+# 2026-08-31: contract pin — seamless MUST swap `current` BEFORE starting the
+# candidate, because the canary unit on env 154/245 follows the active binary
+# symlink (not slots/<port>/). A candidate that runs against stale current
+# passes healthz/readyz but fails /version (returns old build_seq). Restore
+# current to old_version on pre-cutover probe failure so the active keeps
+# serving the previously verified binary.
+require 'seamless swaps current before candidate start' "ln -sfn .*releases/\\\$version. .*current" "$ROOT/scripts/deploy-seamless.sh"
+require 'seamless restores current on probe failure' 'releases/\$old_version.*REMOTE_ROOT/current' "$ROOT/scripts/deploy-seamless.sh"
 # 2026-08-31: contract pin — the canonical canary unit MUST follow the active
 # binary symlink, NOT a per-port slot, AND restart on failure. Slot-based
 # units ship dead code on env 154/245 (slots/ is never populated, candidate
