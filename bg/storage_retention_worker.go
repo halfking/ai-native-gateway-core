@@ -174,7 +174,7 @@ func (w *StorageRetentionWorker) cleanupLogs(ctx context.Context) {
 	archiveDir := filepath.Join(w.LogDir, "archive")
 	if dirExistsBG(archiveDir) {
 		deleteCutoff := time.Now().AddDate(0, 0, -w.LogDeleteDays)
-		_ = filepath.WalkDir(archiveDir, func(p string, d fs.DirEntry, err error) error {
+		_ = walkDirSafe(archiveDir, func(p string, d fs.DirEntry, err error) error {
 			if err != nil || d.IsDir() {
 				return nil
 			}
@@ -197,7 +197,7 @@ func (w *StorageRetentionWorker) cleanupLogs(ctx context.Context) {
 		}
 	}
 	backupCutoff := time.Now().AddDate(0, 0, -w.LogDeleteDays)
-	_ = filepath.WalkDir(w.LogDir, func(p string, d fs.DirEntry, err error) error {
+	_ = walkDirSafe(w.LogDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -238,7 +238,7 @@ func (w *StorageRetentionWorker) cleanupAttachmentsLRU(ctx context.Context, atta
 		size  int64
 	}
 	var items []fileItem
-	_ = filepath.WalkDir(attachmentDir, func(p string, d fs.DirEntry, err error) error {
+	_ = walkDirSafe(attachmentDir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -291,4 +291,46 @@ func (w *StorageRetentionWorker) diskUsagePercent(path string) float64 {
 func dirExistsBG(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+// walkDirSafeRepeatedErrorThreshold is the number of consecutive identical
+// filepath.WalkDir errors after which we abort the walk. The audit (P2-7,
+// audit 2026-08-31) observed that callbacks silently returned nil on every
+// error, so a permission-denied subtree or a vanished symlink farm kept the
+// worker grinding through the same error per entry. Aborting after a small
+// run of repeated errors bounds the no-progress case without affecting the
+// normal "skip and continue" path where errors are interleaved with
+// successful entries.
+const walkDirSafeRepeatedErrorThreshold = 8
+
+// walkDirSafe wraps filepath.WalkDir so that a small number of consecutive
+// errors stops the traversal, while isolated errors (permission denied on
+// one file, transient lookup failure) still let the walk continue. Errors
+// are logged at warn level so operators can correlate with the metric in
+// bg/metrics.go.
+func walkDirSafe(root string, fn fs.WalkDirFunc) error {
+	if root == "" {
+		return nil
+	}
+	var lastErr error
+	consecutive := 0
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			consecutive++
+			if consecutive >= walkDirSafeRepeatedErrorThreshold && lastErr != nil && err.Error() == lastErr.Error() {
+				slog.Warn("storage retention: aborting walk after repeated identical errors",
+					"root", root, "path", p, "error", err.Error(),
+					"consecutive_count", consecutive)
+				return err
+			}
+			lastErr = err
+			slog.Debug("storage retention: walk skipped entry",
+				"root", root, "path", p, "error", err.Error())
+			return nil
+		}
+		consecutive = 0
+		lastErr = nil
+		return fn(p, d, nil)
+	})
+	return err
 }
