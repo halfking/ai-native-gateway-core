@@ -111,6 +111,23 @@ func (a *ProviderErrorAggregator) aggregateErrors(ctx context.Context) {
 		return
 	}
 
+	// 2026-08-31 (P2-4 audit-data-closure sanity): capture the existing
+	// watermark BEFORE the aggregation query so we can detect backwards
+	// movement of the high-water mark after the query. A backwards jump
+	// (new_last < old_last) means the watermark CTEs returned a value
+	// inconsistent with monotonic aggregation_id semantics, which would
+	// otherwise cause the next tick to re-process every historical row
+	// in the unified view (hot UNION ALL partitioned). With bigint-min
+	// seeding from migration 627, the first post-deploy tick legitimately
+	// jumps from very-negative to a positive sequence value — that's the
+	// expected forward movement, not a regression.
+	var preWatermark int64
+	if err := tx.QueryRow(timeoutCtx, "SELECT COALESCE(last_source_id, 0) FROM provider_error_aggregator_state WHERE id = 1").Scan(&preWatermark); err != nil {
+		// State row may not exist yet on the very first tick after migration
+		// 622/627 install. Treat missing as zero and continue.
+		preWatermark = 0
+	}
+
 	// Migration 622 adds aggregation_id, a dedicated monotonic key because the
 	// legacy candidate failure id is explicitly non-unique. Watermark rows first
 	// identify changed aggregate keys, then every source row in those buckets is
@@ -254,6 +271,33 @@ CROSS JOIN advanced`
 	if err := tx.Commit(timeoutCtx); err != nil {
 		slog.Error("provider_error_aggregator: commit failed", "error", err)
 		return
+	}
+	// 2026-08-31 (P2-4 audit-data-closure sanity): the watermark advanced
+	// must always be >= the watermark read at the start of this tick. A
+	// backwards jump is impossible under the monotonic aggregation_id
+	// contract (positive sequence values for hot rows, negative synthesized
+	// values for historical rows from migration 627's unified view) and
+	// would mean either the candidate_failure_logger wrote NULL / duplicate
+	// values, or the watermark CTE returned the wrong row. Log loudly so
+	// the operator can investigate before the next tick re-processes
+	// historical rows.
+	if newAggregationID < preWatermark {
+		slog.Error("provider_error_aggregator: watermark regressed",
+			"pre_watermark", preWatermark,
+			"post_watermark", newAggregationID,
+			"groups", groups,
+			"duration", fmt.Sprintf("%.2fs", time.Since(startedAt).Seconds()))
+	} else if newAggregationID == preWatermark && groups > 0 {
+		// 2026-08-31 (P2-4 audit-data-closure sanity): groups>0 but watermark
+		// did not advance means the aggregator inserted rows but failed to
+		// push the watermark forward, so the next tick will re-process the
+		// same buckets. The current SQL guarantees the watermark advances
+		// whenever new_source_rows is non-empty, so this branch indicates
+		// a query regression and warrants investigation.
+		slog.Warn("provider_error_aggregator: watermark did not advance despite new groups",
+			"watermark", preWatermark,
+			"groups", groups,
+			"duration", fmt.Sprintf("%.2fs", time.Since(startedAt).Seconds()))
 	}
 	if groups > 0 {
 		slog.Info("provider_error_aggregator: aggregation completed",
