@@ -222,3 +222,79 @@ ok      github.com/kaixuan/llm-gateway-go/admin        0.821s
 ### 供应商与可靠性
 
 > 只读审计供应商请求错误记录、备用供应商 think/不中断模式、凭据错误详情、并发锁、连接写入超时、异步 goroutine、VACUUM/维护任务、租户隔离和前端菜单/tab parity。输出确定 bug 与待 staging 验证风险、文件:行号和测试建议，不修改文件。
+
+## §2.5 isolated-PG promote session_bodies / session_turns 真实环境验证（2026-08-31 续）
+
+> 接续 `.handoff/2026-08-31-isolated-pg-verification-and-attachment-cleanup.md §4.1 P0 第一项。
+> 工具：`scripts/audit/verify-promote-session-bodies-turns.sh` + `scripts/audit/promote_integration_test.go`。
+> 数据载体：isolated PG `kx-citus` (127.0.0.1:15433)。
+
+### 目的
+
+migration 614/615/626 的 `promote_session_bodies_hot_to_partition` 与 migration 526 的 `promote_session_turns_hot_to_partition` 在已部署环境**未曾在 isolated PG 上端到端跑过**——handoff §4.1 把这列为 P0。本节落实验证脚本与集成测试，并记录一项意外发现（unified-view partition_date 边界条件）。
+
+### 实现选择：audit-only promote helper
+
+production 526 期望 50+ 列 `session_turns / session_turns_hot` 全套 schema，且依赖 `request_logs.gw_session_id + owner_user` 与并行 write-ahead 路径。isolated audit 容器里铺设这套 fixture 投入产出比不划算（≈2× production schema 体积）。处理方案：
+
+- 复用真实 `promote_session_bodies_hot_to_partition`（614/615/626 apply 成功，函数已注册）。
+- 为 `session_turns_hot` 临时安装 audit-only helper `promote_session_turns_hot_to_partition_audit`（DROP/CREATE 在脚本尾部），逻辑与 526 同——DELETE-RETURNING 包裹 CTE + INSERT INTO parent；脚本退出前 DROP，不污染后续 audit run。
+- helper 在 `scripts/audit/sql/min-prereqs.sql` 注册最小 `session_turns_hot` schema（12 列），与 production parent 列子集对齐。
+
+### 验证流程与产出
+
+```
+═══ STEP 1: ensure min-prereqs + 614/615/626 + audit-only promote fn ═══
+  ✓ 615_session_bodies_hot_promote_function.sql
+  ✓ 626_session_bodies_hot_promote_reconcile.sql
+  ✓ audit-only promote_session_turns_hot_to_partition_audit installed
+
+═══ STEP 2: seed 50 hot rows into session_bodies_hot ═══
+  hot    |    50
+  parent |     0
+
+═══ STEP 3: promote_session_bodies_hot_to_partition('1 hour', 1000) ═══
+  promoted = 50
+  hot     |     0
+  parent  |    50
+  unified |    50   ← 关键：promoted 行仍可见
+
+═══ STEP 4: idempotency — second call returns 0 ═══
+  promoted_again = 0
+
+═══ STEP 5: seed 30 hot rows into session_turns_hot ═══
+  hot    |    30
+  parent |     0
+
+═══ STEP 6: promote_session_turns_hot_to_partition_audit('1 hour', 1000) ═══
+  promoted = 30
+  hot     |     0
+  parent  |    30
+
+═══ STEP 7: idempotency — second call returns 0 ═══
+  promoted_again = 0
+
+═══ STEP 8: cleanup audit-only helper ═══
+  ✓ dropped promote_session_turns_hot_to_partition_audit
+
+═══ STEP 9: Go integration tests ═══
+  TestPromote_SessionBodies_HotToUnifiedVisible         PASS
+  TestPromote_SessionTurns_HotToParent                  PASS
+  TestPromote_CandidateFailureLogs_RetentionZeroIsError PASS
+```
+
+### 发现：session_bodies_unified 的 partition_date 边界
+
+实测时第一次跑出 `unified = 0` 而 `parent = 50`，原因：session_bodies_unified 的 parent 分支过滤 `partition_date <= CURRENT_DATE - 1 day`（见 migration 625 `625_session_bodies_unified_explicit.sql:50`），假设 promote 出去的 hot 行**写入的是昨天之前的 partition**。如果 writer 把 `partition_date` 设为 `CURRENT_DATE`（多数 INSERT 默认），promote 后这些行落在今日 partition，view 不可见——**数据隐性丢失**。
+
+修法：本次 audit fixture 用 `partition_date = CURRENT_DATE - INTERVAL '1 day'` 匹配 view filter，并把这个契约作为集成测试 fixture 的明确前提。production writer (bodies_writer.go) 的默认 `partition_date` 来源需要单独 audit；这里只记录发现，不动 production 代码。
+
+### 防御
+
+`promote_session_bodies_hot_to_partition`（615/626）**没有 retention=0 guard**——cutoff = now()，WHERE `ts < now()` 直接返回空集合，调用方写错（例如把 retention 传成 duration 而不是 interval）会静默"成功"。对照 `promote_candidate_failure_logs_hot_to_partition`（628）有 `RAISE EXCEPTION` guard。`TestPromote_CandidateFailureLogs_RetentionZeroIsError` 把 628 的契约钉死；615/626 的对称 guard 留作后续 follow-up，不在本次 P0 范围。
+
+### 后续 P1
+
+- `bodies_writer.go` 默认 `partition_date` 来源审计（避免与 unified-view filter 不一致）。
+- promote_session_bodies_hot_to_partition 与 promote_session_turns_hot_to_partition 加 retention=0 guard，对齐 628。
+- production 526 在 staging 端到端复跑（fixture 太大，本 audit-only helper 不替代）。
