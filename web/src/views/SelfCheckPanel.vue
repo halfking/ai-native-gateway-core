@@ -51,6 +51,11 @@ const range = ref<'1h' | '6h' | '24h' | '7d'>('24h')
 const probeHealth = ref<ProbeSystemHealth | null>(null)
 
 let pollTimer: number | undefined
+// 2026-09-01 (P2 audit fix): hold the trigger→reload debounce so we can
+// cancel it on unmount instead of letting it fire loadAll() against a
+// destroyed component when the user navigates away within the 1-second
+// window.
+let postTriggerReloadTimer: ReturnType<typeof setTimeout> | null = null
 
 // 2026-08-15 (OBS-FE4): 探测队列泳道改为三段式队列组件（待请求/正在请求/
 // 已完成），SSE 为主 + tri-state API 兜底，组件内部自管可见性门控与降级态。
@@ -193,7 +198,16 @@ async function onTrigger(model = '') {
   triggerBusy.value = true
   try {
     await triggerSelfCheck(model)
-    setTimeout(() => void loadAll(), 1000)
+    // 2026-09-01 (P2 audit fix): save the timer handle so we can cancel
+    // it on unmount; without this the user could switch tabs in <1s and
+    // loadAll() would still fire against a destroyed component.
+    if (postTriggerReloadTimer) {
+      clearTimeout(postTriggerReloadTimer)
+    }
+    postTriggerReloadTimer = setTimeout(() => {
+      postTriggerReloadTimer = null
+      void loadAll()
+    }, 1000)
   } catch (e: unknown) {
     // 410 Gone = server explicitly retired this endpoint (new probe mode).
     // Surface the friendly reason from the payload instead of the raw 410

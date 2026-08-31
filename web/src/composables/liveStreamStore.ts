@@ -287,9 +287,6 @@ const visibilityState = reactive({
 
 let needsFullRefresh = false
 
-// Forward declaration - actual implementation is below
-let _requestSnapshotRefresh: () => void = () => {}
-
 // Visibility change handler (stored so we can remove it properly)
 let visibilityChangeHandler: (() => void) | null = null
 
@@ -474,6 +471,12 @@ let resizeHandler: (() => void) | null = null
 
 let onEvictCb: ((id: string) => void) | null = null
 const terminalListeners = new Set<(req: LiveRequest) => void>()
+// 2026-09-01 (P1 audit fix): onEvictCb was a single-callback slot — every
+// component that called setOnRequestEvicted() silently overwrote the
+// previous one, leaving dangling "should be cleaned up" callbacks on
+// unmounted components. Promote to a Set so multiple consumers can
+// coexist and each useLiveStream() cleanup only removes its own callback.
+const evictListeners = new Set<(id: string) => void>()
 
 function notifyTerminalRequest(req: LiveRequest) {
   if (req.type === 'idle_marker' || !req.request_id) return
@@ -744,6 +747,7 @@ function trimOldest() {
   if (dropped.type !== 'idle_marker' && dropped.request_id) {
     idIndex.delete(dropped.request_id)
     if (onEvictCb) onEvictCb(dropped.request_id)
+    for (const fn of evictListeners) fn(dropped.request_id)
   }
 }
 
@@ -766,6 +770,7 @@ function pushOrQueue(item: LiveRequest) {
         if (d.type !== 'idle_marker' && d.request_id) {
           idIndex.delete(d.request_id)
           if (onEvictCb) onEvictCb(d.request_id)
+          for (const fn of evictListeners) fn(d.request_id)
         }
       }
     }
@@ -823,9 +828,12 @@ function applyInitialData(items: LiveRequest[]) {
   for (const r of kept) {
     if (r.type !== 'idle_marker' && r.request_id) newIds.add(r.request_id)
   }
-  if (onEvictCb) {
+  if (onEvictCb || evictListeners.size > 0) {
     for (const oldId of idIndex) {
-      if (!newIds.has(oldId)) onEvictCb(oldId)
+      if (!newIds.has(oldId)) {
+        if (onEvictCb) onEvictCb(oldId)
+        for (const fn of evictListeners) fn(oldId)
+      }
     }
   }
   idIndex.clear()
@@ -1402,8 +1410,10 @@ export function requestSnapshotRefresh() {
     })
 }
 
-// Set the forward reference so the visibility listener can call this
-_requestSnapshotRefresh = requestSnapshotRefresh
+// 2026-09-01 (P2 cleanup): removed _requestSnapshotRefresh forward declaration.
+// The visibility handler used to call this back-reference before the function
+// was defined below; the current implementation inlines closeConnection() +
+// openConnection() directly, so the indirection is dead code.
 
 export function pauseStream() {
   liveStreamState.paused = true
@@ -1436,8 +1446,21 @@ export function reconnectStream() {
   closeConnection()
   openConnection()
 }
-export function setOnRequestEvicted(cb: ((id: string) => void) | null) {
+/**
+ * Register a callback fired whenever a live request_id is evicted from the
+ * frontend replay buffer. Multiple consumers may register simultaneously —
+ * each `useLiveStream()` cleanup only removes its own callback.
+ */
+export function setOnRequestEvicted(cb: ((id: string) => void) | null): () => void {
+  if (!cb) return () => {}
+  evictListeners.add(cb)
+  // Preserve the legacy single-callback slot so existing code paths that read
+  // `onEvictCb` still see the most recent registration.
   onEvictCb = cb
+  return () => {
+    evictListeners.delete(cb)
+    if (onEvictCb === cb) onEvictCb = null
+  }
 }
 
 /** Subscribe to completed requests (success/failure) for board stat deltas. */
