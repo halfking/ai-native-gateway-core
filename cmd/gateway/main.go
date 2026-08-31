@@ -100,6 +100,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
+	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
@@ -664,6 +665,7 @@ func main() {
 	var redisClientForCache *session.RedisClient
 	var routingExec *executors.Executor
 	var routingRouter *executors.Router
+	var contextLimitUpdateQueue *executors.ContextLimitUpdateQueue
 	var stateManager *credentialstate.Manager // 2026-06-30: credential×model state manager
 	var lastSystemSession *session.LastSystemSessionIndex
 	var sessionPref *session.SessionPreference
@@ -1718,6 +1720,9 @@ func main() {
 			routingExec.State = credential.NewWriter(dbConn.Pool())
 			routingExec.DB = dbConn
 			routingExec.HeaderProfiles = executors.NewHeaderProfileCache(dbConn.Pool())
+			routingExec.ContextLimitUpdater = dbx.NewDBContextLimitUpdater(dbConn.Pool())
+			contextLimitUpdateQueue = executors.NewContextLimitUpdateQueue(routingExec.ContextLimitUpdater, 64)
+			routingExec.ContextLimitUpdateQueue = contextLimitUpdateQueue
 		}
 		routingExec.FpSlots = fpSlots
 
@@ -6311,6 +6316,11 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		// Drain discovered context-limit writes while the shared DB pool is
+		// still available. Stop is idempotent and waits for queued work.
+		if contextLimitUpdateQueue != nil {
+			contextLimitUpdateQueue.Stop()
+		}
 		if adminHandler != nil {
 			adminHandler.StopProxyRuntime()
 		}

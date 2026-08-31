@@ -2,6 +2,36 @@ package errorsx
 
 import "testing"
 
+func TestParseContextLimitResultEvidence(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		evidence ContextLimitEvidence
+		limit    int
+	}{
+		{
+			name:     "authoritative limit with usage",
+			body:     `{"error":{"message":"maximum context length is 262144 tokens; your messages resulted in 263247 tokens"}}`,
+			evidence: ContextLimitAuthoritative,
+			limit:    262144,
+		},
+		{
+			name:     "observed usage only",
+			body:     `{"error":{"message":"your messages resulted in 263247 tokens"}}`,
+			evidence: ContextLimitObservedUsage,
+			limit:    263247,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ParseContextLimitResult(tt.body)
+			if !got.Found || got.Limit != tt.limit || got.Evidence != tt.evidence {
+				t.Fatalf("got %+v, want limit=%d evidence=%q", got, tt.limit, tt.evidence)
+			}
+		})
+	}
+}
+
 func TestParseContextLimitFromError(t *testing.T) {
 	tests := []struct {
 		name      string
