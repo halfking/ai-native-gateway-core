@@ -362,13 +362,17 @@ func (r *sessionAggregateOutboxReaper) scheduleRetry(ctx context.Context, id int
 	if backoff > sessionOutboxMaxBackoff {
 		backoff = sessionOutboxMaxBackoff
 	}
+	// audit-data-closure-2 fix: pass the backoff seconds as text so the
+	// `($N || ' seconds')::interval` concatenation works. pgx rejects
+	// int args when the SQL casts the placeholder to text mid-statement
+	// (same fix as the claim SELECT in claimAndReplay).
 	tag, err := r.db.Exec(ctx,
 		`UPDATE session_aggregate_outbox
 		 SET status='pending', attempts=$2, last_error=$3,
 		     next_retry_at=NOW() + ($4 || ' seconds')::interval,
 		     updated_at=NOW()
 		 WHERE id=$1 AND status='claimed'`,
-		id, attempts, cause.Error(), int(backoff.Seconds()))
+		id, attempts, cause.Error(), fmt.Sprintf("%d", int(backoff.Seconds())))
 	if err != nil {
 		slog.Error("session_aggregate_outbox: schedule retry failed",
 			"id", id, "attempts", attempts, "error", err)

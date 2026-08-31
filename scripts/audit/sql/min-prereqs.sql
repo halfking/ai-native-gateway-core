@@ -119,6 +119,39 @@ CREATE TABLE IF NOT EXISTS public.session_turns_hot (
 CREATE INDEX IF NOT EXISTS idx_session_turns_hot_request
     ON public.session_turns_hot (tenant_id, request_id, partition_date);
 
+-- request_logs_hot — required by attachment cleanup execute (migration 629).
+-- Production carries many more columns; the audit fixture only needs the
+-- JSONB attachments column plus the ts/tenant_id/request_id columns the
+-- cleanup SQL filters on.
+CREATE TABLE IF NOT EXISTS public.request_logs_hot (
+    id bigserial PRIMARY KEY,
+    request_id text NOT NULL,
+    ts timestamptz NOT NULL DEFAULT NOW(),
+    tenant_id text NOT NULL DEFAULT 'default',
+    success boolean NOT NULL DEFAULT true,
+    attachments jsonb,
+    client_model text
+);
+
+-- audit_attachments_filesystem_cleanup — defined in 632, listed here for
+-- idempotent bootstrap so the attachment integration tests have it before
+-- 632's IF NOT EXISTS bootstrap runs.
+CREATE TABLE IF NOT EXISTS public.audit_attachments_filesystem_cleanup (
+    id              bigserial PRIMARY KEY,
+    cleanup_run_id  uuid        NOT NULL,
+    tenant_id       text        NOT NULL,
+    request_id      text        NOT NULL,
+    file_path       text        NOT NULL,
+    file_hash       text,
+    file_size       bigint,
+    file_mtime      timestamptz,
+    cleaned_at      timestamptz NOT NULL DEFAULT NOW(),
+    triggered_by_user text      NOT NULL,
+    reason          text,
+    CONSTRAINT audit_attachments_filesystem_cleanup_unique
+        UNIQUE (request_id, file_path, cleanup_run_id)
+);
+
 -- ensure_candidate_failure_logs_partition — required by 628's promote
 -- function. Copied verbatim from sql/migrations/startup/392 (the columnar
 -- helper that creates monthly columnar partitions on demand). DROP first

@@ -106,7 +106,6 @@
 | 616 | `616_provider_error_details_unique_constraint.sql` | `aafd7ecfcf3e916d18b575d1a8c390d3be922720658be9597daecf33aad306d5` | applied+verified |
 | 617 | `617_candidate_failure_logs_hot_contract.sql` | `b0bd2d72250614d9c1f17d6926c3ee1bbb0ec649c42d8b35d45993d981759d53` | applied+verified |
 | 618 | `618_request_journey_snapshot_receipts.sql` | `6d4d9f44cd931641363e61c2c72a50c90b606830645e5ea375dae62dc26f21fb` | applied+verified |
-| 619 | `619_session_turns_unified_view.sql` | `3da375593e6d1abddb70205a69fdd674127f90d86ee42f6b5cb3cde5adf9c835` | applied+verified |
 
 ## 2026-08-29T14:14:39Z — deploy 154 build_seq 1806 (5e94de42)
 
@@ -187,4 +186,10 @@ relying on it.
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 632 | `632_audit_attachments_filesystem_cleanup.sql` | `c2579be0062b8777715be363f0c5c9c91147ba419b7a7f2a94c5aadb767c7bc0` | applied+verified |
+
+## 2026-08-31T08:17:54Z — deploy 154 build_seq 1836 (493f7123)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 635 | `635_drop_session_turns_unified.sql` | `3715f276a65ba8b33fa85df028aee4d615da0ca6afc8968524784c7b1ff6d2f9` | applied+verified |
 
