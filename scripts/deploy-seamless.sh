@@ -184,6 +184,36 @@ remote_ssh_pipe() {
 }
 SSH_CMD="remote_ssh"
 
+# remote_probe <url> <timeout_secs>
+# Polls a single HTTP endpoint until it returns a 2xx within the deadline.
+# On success: prints the body on stdout (caller may ignore).
+# On failure: prints a single-line diagnostic on stdout (captured by the caller
+# via command substitution) explaining why the probe failed — curl exit code,
+# the last HTTP status seen, or a timeout marker. SSH transport failures are
+# reported as "ssh: <reason>". The function NEVER aborts the script; it is the
+# caller's job to inspect the captured diagnostic.
+remote_probe() {
+  local url="$1" timeout="${2:-30}"
+  local body
+  # Capture both the curl exit code and the HTTP body. We use -w to append
+  # the status line so a 5xx response surfaces distinctly from a connection
+  # refused / timeout. The final line of stdout is the curl exit marker so
+  # the caller can distinguish "transport failed" from "200 but wrong body"
+  # without re-parsing the body itself.
+  body=$(remote_ssh "deadline=\$((\$(date +%s)+${timeout})); while [ \"\$(date +%s)\" -lt \"\$deadline\" ]; do out=\$(curl -sS --max-time 2 -w '\n%{http_code}' '${url}' 2>&1); code=\$(printf '%s' \"\$out\" | tail -n1); body=\$(printf '%s' \"\$out\" | sed '\$d'); if printf '%s' \"\$code\" | grep -qE '^[0-9]+\$' && [ \"\$code\" -ge 200 ] && [ \"\$code\" -lt 400 ]; then printf '%s\n__CURL_OK__' \"\$body\"; exit 0; fi; sleep 1; done; printf 'probe timeout after ${timeout}s, last attempt: %s\n__CURL_FAIL__' \"\$out\"; exit 1" 2>&1) || {
+    printf 'ssh transport failed: %s' "$body"
+    return 1
+  }
+  local marker
+  marker=$(printf '%s' "$body" | tail -n1)
+  if [[ "$marker" == "__CURL_OK__" ]]; then
+    printf '%s' "$body" | sed '$d'
+    return 0
+  fi
+  printf '%s' "$body" | sed '$d'
+  return 1
+}
+
 # Blue-green is opt-in until the candidate unit and Nginx include are installed
 # on the target. The canonical deployer fails closed rather than silently
 # reverting to the old stop/start path; operators may explicitly request the
@@ -652,12 +682,53 @@ do_deploy() {
   local candidate_health_url="http://127.0.0.1:${candidate_port}/healthz"
   local candidate_ready_url="http://127.0.0.1:${candidate_port}/readyz"
   local candidate_version_url="http://127.0.0.1:${candidate_port}/version"
-  if ! remote_ssh "deadline=\$((\$(date +%s)+30)); while [ \"\$(date +%s)\" -lt \"\$deadline\" ]; do curl -fsS --max-time 2 '$candidate_health_url' >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1" ||
-     ! remote_ssh "deadline=\$((\$(date +%s)+30)); while [ \"\$(date +%s)\" -lt \"\$deadline\" ]; do curl -fsS --max-time 2 '$candidate_ready_url' >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1" ||
-     ! remote_ssh "curl -fsS --max-time 5 '$candidate_version_url' 2>/dev/null | grep -F '\"version\":\"$expected_release_version\"' >/dev/null"; then
+  # 2026-08-31: probe failures previously collapsed into a single
+  # "候选实例未通过 healthz/readyz" message with no per-probe diagnostics. Each
+  # candidate can fail for a different reason (process not bound yet vs DB/Redis
+  # not ready vs wrong binary on disk), and operators wasted an SSH round trip
+  # to read journalctl to disambiguate. We now run each probe under its own
+  # deadline, capture curl's exit code and HTTP body (when reachable), and print
+  # the exact failure before stopping the candidate.
+  local probe_timeout="${PROBE_TIMEOUT_SECS:-30}"
+  local probe_failed=""
+  local probe_detail=""
+  log "    probe /healthz (timeout=${probe_timeout}s)"
+  if ! probe_detail=$(remote_probe "$candidate_health_url" "$probe_timeout"); then
+    probe_failed="healthz"
+    warn "    /healthz failed: ${probe_detail}"
+  else
+    ok "    /healthz OK"
+  fi
+  if [[ -z "$probe_failed" ]]; then
+    log "    probe /readyz (timeout=${probe_timeout}s)"
+    if ! probe_detail=$(remote_probe "$candidate_ready_url" "$probe_timeout"); then
+      probe_failed="readyz"
+      warn "    /readyz failed: ${probe_detail}"
+    else
+      ok "    /readyz OK"
+    fi
+  fi
+  if [[ -z "$probe_failed" ]]; then
+    log "    probe /version (timeout=5s, expected=${expected_release_version})"
+    local version_body
+    if ! version_body=$(remote_ssh "curl -sS --max-time 5 '$candidate_version_url' 2>&1"); then
+      probe_failed="version"
+      probe_detail="curl exit non-zero: ${version_body}"
+      warn "    /version failed: ${probe_detail}"
+    elif ! echo "$version_body" | grep -qF "\"version\":\"${expected_release_version}\""; then
+      probe_failed="version"
+      probe_detail="body did not contain \"version\":\"${expected_release_version}\"; got: ${version_body}"
+      warn "    /version failed: ${probe_detail}"
+    else
+      ok "    /version OK (${expected_release_version})"
+    fi
+  fi
+  if [[ -n "$probe_failed" ]]; then
+    warn "    candidate probe failure tail (last 30 journal lines):"
+    remote_ssh "journalctl -u '$candidate_service' -n 30 --no-pager 2>&1 | tail -30" 2>&1 | sed 's/^/      /' || true
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
     remote_ssh "rm -f '$REMOTE_ROOT/slots/$candidate_port' '$REMOTE_ROOT/run/candidate-port'" || true
-    err "候选实例未通过 healthz/readyz，旧实例保持服务"
+    err "候选实例未通过 ${probe_failed}: ${probe_detail}，旧实例保持服务"
     exit 1
   fi
   if ! zd_switch_upstream "$SSH_CMD" "$upstream_fragment" "$candidate_port"; then
@@ -690,11 +761,22 @@ do_deploy() {
   # release can be marked verified.
   # 2026-08-28: 90s → 120s, 启动时 license 验证 + 数据库迁移可能需要更长时间
   log "[9/9] 验证 /healthz + /readyz + DB + release identity"
-  if ! remote_ssh "curl -fsS --max-time 10 '$candidate_health_url' >/dev/null"; then
+  # 2026-08-31: surface the failing probe + last journal lines instead of a
+  # bare "_bluegreen_abort" call. We deliberately do NOT auto-revert on these
+  # post-handoff failures — the candidate has already been promoted to the
+  # Nginx upstream and reversing is riskier than letting ops diagnose — but
+  # the diagnostic tail makes the abort actionable.
+  if ! post_handoff_detail=$(remote_probe "$candidate_health_url" 10); then
+    warn "    post-handoff /healthz: ${post_handoff_detail}"
+    warn "    journal tail:"
+    remote_ssh "journalctl -u '$candidate_service' -n 30 --no-pager 2>&1 | tail -30" 2>&1 | sed 's/^/      /' || true
     _bluegreen_abort "候选切流后 healthz 失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
-  if ! remote_ssh "curl -fsS --max-time 10 '$candidate_ready_url' >/dev/null"; then
+  if ! post_handoff_detail=$(remote_probe "$candidate_ready_url" 10); then
+    warn "    post-handoff /readyz: ${post_handoff_detail}"
+    warn "    journal tail:"
+    remote_ssh "journalctl -u '$candidate_service' -n 30 --no-pager 2>&1 | tail -30" 2>&1 | sed 's/^/      /' || true
     _bluegreen_abort "候选切流后 readyz 失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
