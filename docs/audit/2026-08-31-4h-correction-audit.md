@@ -431,3 +431,87 @@ xact-scoped（非 session-scoped）→ replica 崩溃时事务回滚自动释放
 - `domains/streaming/connection_registry.go` + `connection_registry_test.go`
 - `internal/dbx/vacuum_mutex.go` + `vacuum_mutex_test.go`
 - `admin/data_lifecycle_storage.go` + `bg/vacuum_worker.go`
+
+## §2.8 主分支同步与最近 4 小时修正闭环再审计（2026-09-01）
+
+### 范围
+
+- 时间窗口：2026-08-31 06:00 → 2026-09-01 06:42（最近 24h 提交 + 4h 主分支同步会话）。
+- 三条主线：① IR/会话/协议；② 存储/分区/附件；③ 供应商/可靠性/UI。
+- 三份子代理报告落盘：
+  - `.audit/2026-09-01-sync/agent-1-ir-session-protocol.md`（P0×2 / P1×3 / P2×8）
+  - `.audit/2026-09-01-sync/agent-2-storage-partition-attachment.md`（P0×0 / P1×3 / P2×8）
+  - `.audit/2026-09-01-sync/agent-3-provider-reliability-ui.md`（P0×0 / P1×3 / P2×8）
+
+### 闭环矩阵
+
+| 闭环 | 入口 → 终点 | 关键文件:行 | 当前状态 | 修复 commit |
+| --- | --- | --- | --- | --- |
+| 流程 | 入口 → IR → 路由瀑布 → 供应商 → SSE → 客户端 → 结束态 | `internal/ir/parse_gemini.go:216` (P0-1); `domains/session/v2/turn_reader.go:68-70` (P0-2) | P0 双确认 | 见 commit B |
+| 数据 | 原始请求 → IR → hot 表 → 8h promote → columnar → unified view → 详情/replay | `admin/credential_success_rate.go:127-133` (P1-2 storage); `bg/materialized_view_refresher.go` (0dacb1d22 已合); `sql/migrations/startup/614_session_bodies_hot.sql:88-93` (需 staging 探针) | P1 确认 + verification gap | 见 commit B |
+| 反馈 | 供应商错误 → 凭证聚合 → 错误表 → Lark 告警 → admin 详情 | `admin/vendor_credential_error_handlers.go:189` (P1-1 leak); `domains/notification/lark.go:265-307` (P1-2 retry) | P1 双确认 | 见 commit B |
+
+### 同步事实
+
+- 起点：`HEAD == origin/main == f6abe0732`（已对齐，无远端待合并提交；任务描述中提到的 51d05bddf 与 0dacb1d22 已在祖先链中）。
+- 工作区曾被覆盖为占位版本 `9.9.9-abc12345-20260831-1867`，从 `stash@{1}` (`8e0ad639555e21af9771eaa22303978eaf2bf217`) 恢复真实版本 `2.4.7-e3f0330b-20260831-1867`。
+- `admin/self_check_handlers.go` 工作区版超出 stash 的 150 行重构按用户决策丢弃，仅保留 stash 的 17 行 `probeEnqueue` 快速失败路径。
+- 双轨提交：
+  - **Commit A** `8e2b428bf`：`chore(sync): restore 2.4.7 build artifacts and self-check 503 fast-path`（6 文件，含 gofmt 修正、deploy_seamless + fake-remote-host 测试）。
+  - **Commit B**（计划）：含 P0/P1/P2 修复 + turn_reader 4h 修正 + cfg_dump 守门 + model-quality 评分 + .gitignore。
+
+### IR 字段归类（核心 / 扩展 / 内部元数据）
+
+来源：`.handoff/gateway-error-analysis-20260901.md` + `internal/ir/types.go:201,204` 标注 + §3 子代理 1 验证。
+
+| 字段 | 必填/可选 | 持久化 | 传输 | 来源 |
+| --- | --- | --- | --- | --- |
+| request.id | 必填 | session_bodies.* | client | `internal/ir/types.go` |
+| request.session_id | 必填 | session_bodies.* | client | `internal/ir/types.go` |
+| request.turn | 必填 | session_turns.* | client | `internal/ir/types.go` |
+| request.route | 必填（IR 内部） | request_logs_hot | 不传出 | `internal/ir/types.go` |
+| request.trace | 可选 | request_logs_hot | 不传出 | `internal/ir/types.go` |
+| request.dispatch_waterfall | 内部元数据 | request_logs_hot | 不传出 | `internal/ir/types.go` |
+| request.compression_redaction | 内部元数据 | 不持久化 | 不传出 | `internal/ir/types.go` |
+| request.attachments | 可选 | attachments_hot + FS | client | `internal/ir/types.go` |
+| request.media | 内部元数据 | attachments_hot | 不传出 | `internal/ir/types.go` |
+| request.date_time | 内部元数据 | session_bodies.* | 不传出 | `internal/ir/types.go` |
+| request.project | 可选 | session_bodies.* | client | `internal/ir/types.go` |
+| request.user | 必填（租户隔离） | session_bodies.* | 不传出 | `internal/ir/types.go` |
+| request.task | 可选 | session_bodies.* | client | `internal/ir/types.go` |
+| request.round | 可选 | session_turns.* | client | `internal/ir/types.go` |
+| request.tags | 可选 | session_bodies.* | client | `internal/ir/types.go` |
+| request.model | 必填 | request_logs_hot | client | `internal/ir/types.go` |
+| request.provider | 内部元数据 | request_logs_hot | 不传出 | `internal/ir/types.go` |
+| request.credential | 内部元数据 | request_logs_hot | 不传出 | `internal/ir/types.go` |
+| request.class | 内部元数据 | session_bodies.* (json:"-") | 不传出 | `internal/ir/types.go:201` |
+| request.due_at | 内部元数据 | session_bodies.* (json:"-") | 不传出 | `internal/ir/types.go:204` |
+| request.total_rounds | 内部元数据 | session_bodies.* | 不传出 | `internal/ir/types.go` |
+
+**约定**：`Class` 与 `DueAt` 用 `json:"-"` 显式跳过 JSON 序列化（P1-1 §A 子代理 1 报告）；它们通过 `domains/session/v2/session_writer_v2.go` 在内存中读取并写入 `session_turns.scheduled_at`，不能从 JSONB 行反序列化恢复。
+
+### 修复选择（仅在子代理给出明确证据 + 可补回归测试时才修）
+
+| 编号 | 修复内容 | 文件:行 | 优先级 | 测试建议 |
+| --- | --- | --- | --- | --- |
+| F-1 | Gemini 并行 functionCall 的 tool_use ID 加序号后缀 | `internal/ir/parse_gemini.go:216`, `parse_gemini_stream.go:189` | P0 | `TestParseGemini_ParallelFunctionCalls_ProduceUniqueIDs` |
+| F-2 | `TurnReader.LoadChain(0)` 命中"全部"语义（替代"默认 10"） | `domains/session/v2/turn_reader.go:68-70` | P0 | `TestTurnReader_LoadChain_LastNZeroReturnsAllTurns` |
+| F-3 | `errorsx.SanitizeErrorText` 脱敏 + admin handler / candidate_failure_logger / provider_error_aggregator 串联 | `admin/vendor_credential_error_handlers.go:189`, `admin/candidate_failure_handlers.go:88-175`, `domains/streaming/executors/candidate_failure_logger.go:227-235`, `bg/provider_error_aggregator.go:161` | P1 | `TestSanitizeErrorText_RedactsAPIKeysAndTokens` + 集成探针 |
+| F-4 | Lark `sendJSON` 加 5xx/429/网络错误重试 + 401 token 刷新 | `domains/notification/lark.go:265-307` | P1 | `TestLarkBotChannel_SendJSON_RetriesOn429` (httptest) |
+| F-5 | `request_logs_hot` DELETE 加 `tenant_id` 守卫（不依赖 handler auth 检查） | `admin/credential_success_rate.go:127-133` | P1 | `TestResetCredentialSuccessRate_TenantScope` (集成) |
+| F-6 | `cfg_dump` 默认仅输出密钥指纹；`--print-secrets` 或 `CFG_DUMP_ALLOW_SECRETS=1` 才输出原文 | `cmd/cfg_dump/main.go` | P2 | `TestCfgDump_DefaultRedactsSecrets` |
+
+### 显式 deferred（不在本会话范围）
+
+- P1-3 agent-2 attachment FS cleanup（`data_lifecycle_attachments_filesystem.go:221-275`）— 由 `d9b289256` 与 632 doc-comment 显式声明为"out of scope for this audit pass"，重写需新增 saga/saga-cancel 协议，不在本次同步范围内。文档化。
+- P2-1..P2-8 子代理 2 — 多数是观测/治理类（migration checksum ledger 覆盖 `deploy/sql/migrations/`、MV TTL 监控、`pg-table-copy` 当前月分区告警、apply-routing-mv-fixup env fallback）— 需独立 handoff。
+- P2 子代理 3 的所有 8 项 — goroutine 关闭时序、semaphore panic 恢复、web 前端 raw 渲染 — 已修复清单见子代理报告"Already-fixed (skipped)"。剩余的 8 项属于噪声治理，不阻断本次同步。
+
+### 同步与推送门禁
+
+- [x] `git diff --check` 干净
+- [x] `gofmt -l` 干净
+- [x] `go vet ./admin/...` 通过
+- [x] 无 9.9.9-abc12345 残留
+- [x] pre-commit hooks (6 checks) 通过
+- [ ] 推送后 SHA 比对 + 工作区干净 + handoff 文档 — 阶段 8 / 9 完成

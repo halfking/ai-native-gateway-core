@@ -201,7 +201,7 @@ func (w *CandidateFailureWriter) buildRow(
 		// also nil-receiver safe now, but this guard means the row
 		// renders cleanly even if a future refactor introduces a
 		// different Error type without that protection.
-		ErrorMessage:        safeErrorMessage(execErr),
+		ErrorMessage:        string(errorsx.SanitizeErrorText([]byte(safeErrorMessage(execErr)), 320)),
 		LatencyMs:           latencyMs,
 		PerAttemptLatencyMs: perAttemptLatencyMs,
 	}
@@ -225,7 +225,11 @@ func (w *CandidateFailureWriter) buildRow(
 			row.UpstreamStatusCode = &sc
 		}
 		if len(ue.Body) > 0 {
-			body := truncateUTF8(string(ue.Body), 1024)
+			// Sanitize the raw upstream body BEFORE truncation so that any
+			// credentials echoed by the vendor (Bearer tokens, sk-* API keys,
+			// api_key= query parameters) are redacted before they land in
+			// candidate_failure_logs_hot and the admin credential-detail UI.
+			body := string(errorsx.SanitizeErrorText(ue.Body, 1024))
 			row.UpstreamResponseBody = body
 
 			preview := truncateUTF8(body, 320)

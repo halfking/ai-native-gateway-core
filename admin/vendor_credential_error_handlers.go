@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 type vendorCredentialErrorDB interface {
@@ -207,6 +209,20 @@ func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Con
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate vendor recent failures failed: %w (credential_id=%d)", err, id)
+	}
+	// Defense in depth: rows written before errorsx.SanitizeErrorText was
+	// wired into buildRow may still carry credential echoes from the upstream
+	// body. Re-sanitize on read so the JSON response to admin callers can
+	// never expose a Bearer token or API key surface.
+	for i := range result {
+		if result[i].ErrorMessage != nil {
+			s := string(errorsx.SanitizeErrorText([]byte(*result[i].ErrorMessage), 320))
+			result[i].ErrorMessage = &s
+		}
+		if result[i].UpstreamResponsePreview != nil {
+			s := string(errorsx.SanitizeErrorText([]byte(*result[i].UpstreamResponsePreview), 320))
+			result[i].UpstreamResponsePreview = &s
+		}
 	}
 	return result, nil
 }

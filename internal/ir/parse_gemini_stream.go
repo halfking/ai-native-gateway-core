@@ -162,7 +162,7 @@ func ParseGeminiStreamChunk(line string) (*StreamChunk, error) {
 	}
 	chunk.Delta = &StreamDelta{}
 	var audioData []byte
-	for _, p := range cand.Content.Parts {
+	for partIdx, p := range cand.Content.Parts {
 		switch {
 		case p.Thought != "":
 			// Multiple parts from one candidate belong to the same delta.
@@ -186,7 +186,10 @@ func ParseGeminiStreamChunk(line string) (*StreamChunk, error) {
 				Arguments: string(fc.Args),
 			}
 			if fc.Name != "" {
-				toolCall.ID = "gemini_call_" + fc.Name
+				// Disambiguate parallel functionCall parts of the same Name within
+				// a single chunk by partIdx. The IR stream contract carries tool_call
+				// IDs across chunks; the caller stitches them via Index.
+				toolCall.ID = fmt.Sprintf("gemini_call_%s_%d", fc.Name, partIdx)
 			}
 			chunk.Delta.ToolCalls = append(chunk.Delta.ToolCalls, toolCall)
 		case len(p.InlineData) > 0 && string(p.InlineData) != "null":

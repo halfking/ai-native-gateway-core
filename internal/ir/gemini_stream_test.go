@@ -543,3 +543,33 @@ func TestGeminiStreamUsageChunkIndependent(t *testing.T) {
 		t.Errorf("PromptTokens = %d", chunk.Usage.PromptTokens)
 	}
 }
+
+// Regression: parallel functionCall parts in the same chunk must not collapse
+// Regression: parallel functionCall parts in the same chunk must not collapse
+// onto the same synthetic tool_call.id; disambiguated by partIdx within the
+// candidate's parts array.
+func TestParseGeminiStreamChunk_ParallelFunctionCalls_ProduceUniqueIDs(t *testing.T) {
+	line := `data: {"candidates":[{"index":0,"content":{"role":"model","parts":[
+		{"functionCall":{"name":"lookup","args":{"k":"A"}}},
+		{"functionCall":{"name":"lookup","args":{"k":"B"}}}
+	]}}]}`
+
+	chunk, err := ParseGeminiStreamChunk(line)
+	if err != nil {
+		t.Fatalf("ParseGeminiStreamChunk: %v", err)
+	}
+	if chunk.Delta == nil || len(chunk.Delta.ToolCalls) != 2 {
+		t.Fatalf("expected 2 tool calls in delta, got %d", len(chunk.Delta.ToolCalls))
+	}
+	idA := chunk.Delta.ToolCalls[0].ID
+	idB := chunk.Delta.ToolCalls[1].ID
+	if idA == "" || idB == "" {
+		t.Fatalf("missing tool_call id: %q %q", idA, idB)
+	}
+	if idA == idB {
+		t.Errorf("parallel functionCalls share id %q; want distinct", idA)
+	}
+	if idA != "gemini_call_lookup_0" || idB != "gemini_call_lookup_1" {
+		t.Errorf("ids = (%q,%q), want (gemini_call_lookup_0, gemini_call_lookup_1)", idA, idB)
+	}
+}

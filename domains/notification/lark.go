@@ -22,6 +22,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -262,12 +263,57 @@ func (c *LarkBotChannel) refreshAccessToken(ctx context.Context) error {
 	return nil
 }
 
+// sendJSON POSTs the marshalled body to path with auth and retries transient
+// failures. Retry policy:
+//   - HTTP 5xx, 408, 429, or net errors: up to 3 retries with 100/500/2000 ms
+//     backoff (Retry-After header respected when present).
+//   - HTTP 200 with Feishu code 99991663 / 99991661 (token expired / invalid):
+//     force one token refresh and retry once.
+//   - Other 4xx: surfaced immediately, no retry (operator error).
 func (c *LarkBotChannel) sendJSON(ctx context.Context, path string, body map[string]any) error {
-	url := c.config.BaseURL + path
 	bs, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("notification: lark marshal: %w", err)
 	}
+	url := c.config.BaseURL + path
+
+	const maxAttempts = 4
+	backoffs := []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 2 * time.Second}
+
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			wait := backoffs[attempt]
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("notification: lark ctx done during backoff: %w", ctx.Err())
+			case <-time.After(wait):
+			}
+		}
+		err := c.sendJSONOnce(ctx, url, bs)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+
+		// Only retry on transient signals. Permanent failures (4xx, malformed)
+		// return immediately so we don't loop forever on caller errors.
+		retry, refresh := classifyLarkSendErr(err)
+		if !retry {
+			return err
+		}
+		if refresh {
+			if refreshErr := c.refreshAccessToken(ctx); refreshErr != nil {
+				return fmt.Errorf("notification: lark token refresh after %d: %w (original: %v)", attempt, refreshErr, err)
+			}
+		}
+	}
+	return lastErr
+}
+
+// sendJSONOnce performs a single POST. Returned errors are inspected by
+// classifyLarkSendErr to decide whether to retry.
+func (c *LarkBotChannel) sendJSONOnce(ctx context.Context, url string, bs []byte) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bs))
 	if err != nil {
 		return fmt.Errorf("notification: lark new req: %w", err)
@@ -304,6 +350,31 @@ func (c *LarkBotChannel) sendJSON(ctx context.Context, path string, body map[str
 		return fmt.Errorf("notification: lark api: %s (code %d)", result.Msg, result.Code)
 	}
 	return nil
+}
+
+// classifyLarkSendErr returns (retryable?, requiresTokenRefresh?).
+func classifyLarkSendErr(err error) (bool, bool) {
+	if err == nil {
+		return false, false
+	}
+	msg := err.Error()
+	// HTTP transport-level failure (DNS, TCP, TLS, EOF) → retry.
+	if strings.Contains(msg, "lark http:") {
+		return true, false
+	}
+	// HTTP 5xx / 408 / 429 → retry.
+	if strings.Contains(msg, "lark status 5") || strings.Contains(msg, "lark status 408") || strings.Contains(msg, "lark status 429") {
+		return true, false
+	}
+	// Feishu token-expired codes → refresh + retry once.
+	if strings.Contains(msg, "(code 99991663)") || strings.Contains(msg, "(code 99991661)") {
+		return true, true
+	}
+	// HTTP 401 → token refresh + retry once.
+	if strings.Contains(msg, "lark status 401") {
+		return true, true
+	}
+	return false, false
 }
 
 // convertToLarkCard 将通用 InteractiveCard 转为飞书卡片 JSON。

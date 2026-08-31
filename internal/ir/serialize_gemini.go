@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // SerializeGemini serializes an InternalRequest into a Gemini generateContent request body.
@@ -580,13 +581,33 @@ func extractTextFromContent(blocks []ContentBlock) string {
 }
 
 // toolUseNameFromID extracts the function name from a synthetic tool_use_id
-// of the form "gemini_call_<name>". Falls back to the full ID.
+// of the form "gemini_call_<name>" or "gemini_call_<name>_<partIdx>".
+// The trailing "_<partIdx>" disambiguator (added in 2026-09-01 to fix P0-1
+// parallel functionCall ID collisions) is stripped so a round-trip
+// parse→serialize→parse yields the same function name.
 func toolUseNameFromID(id string) string {
 	const prefix = "gemini_call_"
-	if len(id) > len(prefix) && id[:len(prefix)] == prefix {
-		return id[len(prefix):]
+	if len(id) <= len(prefix) || id[:len(prefix)] != prefix {
+		return id
 	}
-	return id
+	rest := id[len(prefix):]
+	// Strip a single trailing "_<digits>" disambiguator if present.
+	if i := strings.LastIndex(rest, "_"); i > 0 {
+		tail := rest[i+1:]
+		if tail != "" {
+			allDigits := true
+			for _, r := range tail {
+				if r < '0' || r > '9' {
+					allDigits = false
+					break
+				}
+			}
+			if allDigits {
+				return rest[:i]
+			}
+		}
+	}
+	return rest
 }
 
 // buildGeminiTools converts IR Tools → Gemini functionDeclarations wrapper.
