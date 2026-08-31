@@ -74,6 +74,8 @@ docker exec -it llm-gateway-pg psql -U <超级用户> -d postgres \
 
 `scripts/local-dev/recreate-llm-gateway-pg.sh` 的 `POSTGRES_PASSWORD` env 只对**全新数据目录的首次初始化**生效，不会修改已存在集群的任何用户（见脚本内策略守卫）。
 
+> **本机连接角色（2026-09-01 勘误）**：`configs/env-local.sh` 的 `PG_USER` 现为 `llm_gateway`（即容器内唯一的登录角色）。早期文件曾标注 `(kxuser)` 与 `local_kxuser_pw`，那是历史残留 —— 实际 `kxuser` 角色从未在 `kx-citus-pg17` 镜像初始化时被创建。若之后再次出现 `FATAL: role "kxuser" does not exist`，请直接 grep `kxuser` 排除引用，不要回退 commit `3896f727d`。
+
 ---
 
 ## 三、同步流程（252 → local）
@@ -89,7 +91,7 @@ scripts/pg-table-copy.sh \
 行为：
 
 - 默认导出 252 全 schema + 全数据（normal 表）
-- 自动识别并跳过 91 张 hot 表（模式: `*_hot`, `*_2026_*`, `*_archive*`, parent partitions）
+- 自动识别并跳过 hot 表（模式: `*_hot`, `*_2025_*`/`*_2026_*`/`*_2027_*`/`*_2028_*`, `*_archive*`, parent partitions）
 - 仅导 schema，跳过 data（hot 表数据在 252 实时生产中，不拷贝）
 - 会用 `--clean --if-exists` 重建 local 对象；运行前先确认本地数据可覆盖
 
