@@ -659,9 +659,43 @@ do_deploy() {
   upstream_fragment=$(target_field "$TARGET" upstream_fragment)
   candidate_unit=$(target_field "$TARGET" candidate_unit)
   candidate_service="${candidate_unit%@.service}@${candidate_port}.service"
+  # 2026-08-31: env 245 has historically been deployed via the legacy stop/start
+  # path, so the canary unit and active-upstream.conf fragment were never
+  # installed on it. The first seamless run on a fresh / never-installed target
+  # therefore failed closed at this gate. We now attempt a one-shot self-install
+  # via scripts/install-blue-green-assets.sh when both assets are missing; if
+  # only one is present we still refuse (partial install = operator judgment).
   if ! remote_ssh "test -f '$(target_field "$TARGET" candidate_unit_file)' && test -f '$upstream_fragment'"; then
-    err "目标未安装蓝绿候选 unit 或 upstream fragment，拒绝切换；如需应急请显式使用 --legacy-restart"
-    exit 1
+    if remote_ssh "test -f '$(target_field "$TARGET" candidate_unit_file)' || test -f '$upstream_fragment'"; then
+      err "目标蓝绿资产部分缺失（unit 或 fragment 仅有一个存在），拒绝切换以免误修；如需应急请显式使用 --legacy-restart"
+      exit 1
+    fi
+    warn "目标未安装蓝绿候选 unit 与 upstream fragment，自动调用 install-blue-green-assets.sh 初始化"
+    if [[ ! -x "$SCRIPT_DIR/install-blue-green-assets.sh" ]]; then
+      err "缺少 scripts/install-blue-green-assets.sh，无法自愈；如需应急请显式使用 --legacy-restart"
+      exit 1
+    fi
+    # Stream the install output under a section header; installer is idempotent
+    # and only writes files + runs nginx -t (never starts a candidate). It MUST
+    # run on the target so that `install /etc/systemd/system` writes to the
+    # remote host, not the orchestrator. We pipe the installer body over ssh
+    # and let bash execute it with ROOT=REMOTE_ROOT and TARGET passed through.
+    log "    [self-heal] install-blue-green-assets.sh $REMOTE_ROOT $TARGET (on target)"
+    local installer_body
+    installer_body=$(cat "$SCRIPT_DIR/install-blue-green-assets.sh")
+    if ! remote_ssh "set -e
+ROOT=$REMOTE_ROOT
+TARGET=$TARGET
+$(printf '%s' "$installer_body")
+" 2>&1 | sed 's/^/      /'; then
+      err "install-blue-green-assets.sh 在目标机上失败，请检查目标 nginx / systemd 状态；如需应急请显式使用 --legacy-restart"
+      exit 1
+    fi
+    if ! remote_ssh "test -f '$(target_field "$TARGET" candidate_unit_file)' && test -f '$upstream_fragment'"; then
+      err "自愈后蓝绿资产仍未就位；如需应急请显式使用 --legacy-restart"
+      exit 1
+    fi
+    ok "    [self-heal] 蓝绿资产已就位，继续蓝绿切流"
   fi
   if remote_ssh "test -f '$REMOTE_ROOT/run/active-service'"; then
     active_service=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service'")
@@ -711,7 +745,18 @@ do_deploy() {
   # to read journalctl to disambiguate. We now run each probe under its own
   # deadline, capture curl's exit code and HTTP body (when reachable), and print
   # the exact failure before stopping the candidate.
-  local probe_timeout="${PROBE_TIMEOUT_SECS:-30}"
+  #
+  # 2026-08-31: default bumped 30 -> 60s. On env 154 a fresh candidate takes
+  # 35-40s to bind its listener while it walks schema ensures for 8+
+  # feature areas (request_logs, quality_fix_mode, provider/credential
+  # soft-delete, applications, fp_slot_limit, concurrency_mode,
+  # credential_governor_revision, routing recent_success_rate,
+  # unavailable_recover_at). With the prior 30s default the candidate
+  # got killed mid-schema-ensure, /healthz never came up, and the
+  # deploy aborted with a confusing "Connection refused". 60s still
+  # leaves enough headroom for cold-start migrations while bounding
+  # blast radius if the candidate truly is broken.
+  local probe_timeout="${PROBE_TIMEOUT_SECS:-60}"
   local probe_failed=""
   local probe_detail=""
   log "    probe /healthz (timeout=${probe_timeout}s)"
@@ -863,9 +908,9 @@ except Exception:
 if v != os.environ['EXPECTED_VERSION']:
     sys.stderr.write('public /version mismatch: got=' + v + ' expected=' + os.environ['EXPECTED_VERSION'] + chr(10))
     raise SystemExit(1)
-\" < <(curl -kfsS --max-time 10 https://127.0.0.1/version)" 2>&1 >/dev/null; then
+\" < <(curl -kfsS --max-time 10 --resolve llmgo.kxpms.cn:443:127.0.0.1 https://llmgo.kxpms.cn/version)" 2>&1 >/dev/null; then
     warn "    public /version body (for diagnosis):"
-    remote_ssh "curl -kfsS --max-time 10 https://127.0.0.1/version 2>&1 | head -3" 2>&1 | sed 's/^/      /' || true
+    remote_ssh "curl -kfsS --max-time 10 --resolve llmgo.kxpms.cn:443:127.0.0.1 https://llmgo.kxpms.cn/version 2>&1 | head -3" 2>&1 | sed 's/^/      /' || true
     _bluegreen_abort "公网入口版本身份校验失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
