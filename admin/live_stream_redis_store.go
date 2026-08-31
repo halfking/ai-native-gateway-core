@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -670,9 +671,15 @@ func (s *LiveStreamRedisStore) NotifyChange(ctx context.Context, tenantID, reque
 
 // LoadRequest reads the latest request detail from Redis. Used by the
 // pub/sub subscriber to rebuild the LiveRequest before SSE fan-out.
+//
+// Sentinel errors:
+//   - ErrLiveStreamStoreUnavailable — store not configured or nil receiver
+//   - ErrLiveStreamRequestNotFound  — request_id absent in Redis (wrapped with the id)
+//
+// Callers should use errors.Is to detect, never string-match on the message.
 func (s *LiveStreamRedisStore) LoadRequest(ctx context.Context, tenantID, requestID string) (LiveRequest, error) {
 	if s == nil || s.rdb == nil || requestID == "" {
-		return LiveRequest{}, fmt.Errorf("live stream store unavailable")
+		return LiveRequest{}, ErrLiveStreamStoreUnavailable
 	}
 	tenantID = normalizeLiveStreamTenant(tenantID)
 	data, err := s.rdb.Get(ctx, liveStreamGlobalRequestDetailKey(requestID)).Result()
@@ -680,13 +687,29 @@ func (s *LiveStreamRedisStore) LoadRequest(ctx context.Context, tenantID, reques
 		data, err = s.rdb.Get(ctx, liveStreamRequestDetailKey(tenantID, requestID)).Result()
 	}
 	if err == redis.Nil {
-		return LiveRequest{}, fmt.Errorf("request not found: %s", requestID)
+		return LiveRequest{}, fmt.Errorf("%w: %s", ErrLiveStreamRequestNotFound, requestID)
 	}
 	if err != nil {
 		return LiveRequest{}, err
 	}
 	return unmarshalLiveRequestRedisPayload(data)
 }
+
+// Sentinel errors returned by LoadRequest. Callers MUST use errors.Is
+// instead of string-matching on Error() output; the readable ": <id>"
+// suffix on ErrLiveStreamRequestNotFound is preserved for logs only.
+var (
+	// ErrLiveStreamStoreUnavailable indicates the live store is not configured
+	// or the caller passed a nil receiver / empty request id. Treated as a
+	// cache miss by adapters so they can fall through to DB-backed lookups.
+	ErrLiveStreamStoreUnavailable = errors.New("live stream store unavailable")
+
+	// ErrLiveStreamRequestNotFound indicates the request id was absent in
+	// Redis at lookup time (TTL expired, never written, or wrong tenant scope).
+	// Returned wrapped with the request id so slog can include it; callers
+	// detect via errors.Is(err, ErrLiveStreamRequestNotFound).
+	ErrLiveStreamRequestNotFound = errors.New("request not found")
+)
 
 func removeLiveRequestFromQueues(ctx context.Context, pipe redis.Pipeliner, tenantID string, req LiveRequest) {
 	// 2026-07-26: Remove from both main queues (by request_id) and dimension

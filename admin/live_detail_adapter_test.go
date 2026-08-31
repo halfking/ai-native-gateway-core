@@ -112,3 +112,51 @@ func TestLiveDetailAdapter_EmptyLoadedTenantBlockedForTenantScope(t *testing.T) 
 	_, err := loadLiveDetailForStore(ctx, store, requestdetail.LookupScope{TenantID: "tenant-a"}, "req-empty-tenant")
 	require.ErrorIs(t, err, requestdetailNotFound(), "tenant-scoped reads must reject an unscoped live row")
 }
+
+// TestLiveStreamRedisStore_LoadRequest_NotFoundSentinel pins the sentinel
+// contract added in 2026-08-31 audit P3-1 cleanup: callers must use
+// errors.Is(err, ErrLiveStreamRequestNotFound) instead of byte-prefix
+// matching on the wrapped "request not found: <id>" message.
+func TestLiveStreamRedisStore_LoadRequest_NotFoundSentinel(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := NewLiveStreamRedisStore(rdb)
+
+	_, err := store.LoadRequest(context.Background(), "tenant-a", "rid-missing")
+	require.ErrorIs(t, err, ErrLiveStreamRequestNotFound)
+	// Wrapped context (request id) must be preserved for logs.
+	require.Contains(t, err.Error(), "rid-missing")
+}
+
+// TestLiveStreamRedisStore_LoadRequest_StoreUnavailableSentinel covers
+// the nil-receiver / empty-id branch — adapter surfaces it as a miss so
+// the Locator falls through to DB-backed lookups.
+func TestLiveStreamRedisStore_LoadRequest_StoreUnavailableSentinel(t *testing.T) {
+	rdb := redis.NewClient(&redis.Options{Addr: "127.0.0.1:0"}) // unroutable, but rdb != nil
+	store := NewLiveStreamRedisStore(rdb)
+
+	_, err := store.LoadRequest(context.Background(), "tenant-a", "")
+	require.ErrorIs(t, err, ErrLiveStreamStoreUnavailable)
+
+	// nil receiver must also return the sentinel, not panic.
+	var nilStore *LiveStreamRedisStore
+	_, err = nilStore.LoadRequest(context.Background(), "tenant-a", "rid-x")
+	require.ErrorIs(t, err, ErrLiveStreamStoreUnavailable)
+}
+
+// TestLoadLiveDetailForStore_AdapterBridgesSentinels ensures the adapter
+// translates both LoadRequest sentinels to requestdetail.ErrNotFound so
+// the Locator's fall-through contract holds without string matching.
+func TestLoadLiveDetailForStore_AdapterBridgesSentinels(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := NewLiveStreamRedisStore(rdb)
+
+	// NotFound branch.
+	_, err := loadLiveDetailForStore(context.Background(), store, requestdetail.LookupScope{TenantID: "tenant-a"}, "rid-missing")
+	require.ErrorIs(t, err, requestdetail.ErrNotFound)
+
+	// Store-unavailable branch via nil store.
+	_, err = loadLiveDetailForStore(context.Background(), nil, requestdetail.LookupScope{TenantID: "tenant-a"}, "rid-x")
+	require.ErrorIs(t, err, requestdetail.ErrNotFound)
+}
