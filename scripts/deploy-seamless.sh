@@ -659,6 +659,11 @@ do_deploy() {
   # 2–3. 前端 + 后端串行构建（降低 2GB 主机峰值内存）
   log "[2/9] 前端 + 后端串行构建"
   local tmpbin="/tmp/__seamless_${TARGET}_binary"
+  # go build refuses to overwrite a path that already holds a non-object file
+  # (e.g. a leftover stub script from a previously interrupted run). Drop any
+  # stale artifact before invoking the toolchain so the build never trips the
+  # "already exists and is not an object file" guard.
+  rm -f "$tmpbin"
   if [[ "$SKIP_FRONTEND" == "false" ]]; then
     if [[ ! -d web/node_modules ]]; then
       log "web/node_modules 缺失，按 package-lock.json 安装依赖"
