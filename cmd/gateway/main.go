@@ -3180,9 +3180,48 @@ func main() {
 	// run on all instances: REFRESH ... CONCURRENTLY never blocks readers
 	// and a pg advisory lock dedupes concurrent instances.
 	if dbConn != nil && dbConn.Enabled() {
-		mvRefresher := bg.NewMaterializedViewRefresher(dbConn.Pool())
-		mvRefresher.Start()
-		defer mvRefresher.Stop()
+		// 2026-09-01: single shared instance — assigned to the outer-scope
+		// materializedViewRefresher variable (declared above at the top of
+		// this bg-services section) so the later !IsTrafficOnly() block does
+		// NOT construct a second one. Two independent refreshers previously
+		// existed here (one unconditional, one gLarkCh-alerting inside the
+		// full-role block); on a full-role instance both ran their own
+		// refreshLoop against the same views, doubling REFRESH churn and
+		// splitting the distlock/alert wiring across two objects whose
+		// Stop() calls didn't agree. Merged into one.
+		materializedViewRefresher = bg.NewMaterializedViewRefresher(dbConn.Pool())
+		// Prefer Redis-based leader election (token bucket) over the
+		// Postgres advisory lock for cross-instance refresh dedup — see
+		// bg/materialized_view_refresher.go doc comment. Reuses the same
+		// fpSlotRedis connection as session/pending-response caching; when
+		// Redis is not configured (fpSlotRedis == nil) distlock.NewRedisManager
+		// still returns a manager, but Enabled() reports false and the
+		// refresher transparently falls back to its Postgres advisory lock.
+		materializedViewRefresher.SetDistLock(distlock.NewRedisManager(fpSlotRedis))
+		// P1-B: alert via Lark on 2+ consecutive refresh failures. gLarkCh
+		// is assigned earlier during plugin init (~line 2761); nil on
+		// deployments without Lark configured, in which case SetAlertCallback
+		// is simply not called and refresh failures are still logged.
+		if gLarkCh != nil {
+			materializedViewRefresher.SetAlertCallback(func(viewName string, consecutiveFailures int, err error) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+
+				msg := &notification.Message{
+					ID:    fmt.Sprintf("mv-refresh-failure-%s-%d", viewName, time.Now().Unix()),
+					Title: "⚠️ 物化视图刷新告警",
+					Content: fmt.Sprintf("视图: %s\n连续失败次数: %d\n错误: %v\n时间: %s",
+						viewName, consecutiveFailures, err, time.Now().Format(time.RFC3339)),
+					Recipients: []string{os.Getenv("LARK_ALERT_RECIPIENT")},
+				}
+				if sendErr := gLarkCh.Send(ctx, msg); sendErr != nil {
+					slog.Error("failed to send MV refresh alert", "error", sendErr)
+				} else {
+					slog.Info("sent MV refresh alert", "view", viewName, "failures", consecutiveFailures)
+				}
+			})
+		}
+		materializedViewRefresher.Start()
 	}
 
 	if dbConn != nil && dbConn.Enabled() && !cfg.IsTrafficOnly() {
@@ -3467,36 +3506,10 @@ func main() {
 			}
 			slog.Info("CHECKPOINT: after modelProbe.Start")
 
-			// 2026-08-31: Materialized view refresher for routing analytics performance.
-			// Refreshes routing_analytics_7d and routing_audit_summary_7d every 10 minutes
-			// to keep analytics queries fast (<500ms instead of 15s timeout).
-			slog.Info("CHECKPOINT: before NewMaterializedViewRefresher")
-			materializedViewRefresher = bg.NewMaterializedViewRefresher(dbConn.Pool())
-			
-			// 2026-09-01 P1-B: Set up alert callback for refresh failures
-			if gLarkCh != nil {
-				materializedViewRefresher.SetAlertCallback(func(viewName string, consecutiveFailures int, err error) {
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer cancel()
-					
-					msg := &notification.Message{
-						ID:      fmt.Sprintf("mv-refresh-failure-%s-%d", viewName, time.Now().Unix()),
-						Title:   "⚠️ 物化视图刷新告警",
-						Content: fmt.Sprintf("视图: %s\n连续失败次数: %d\n错误: %v\n时间: %s", 
-							viewName, consecutiveFailures, err, time.Now().Format(time.RFC3339)),
-						Recipients: []string{os.Getenv("LARK_ALERT_RECIPIENT")}, // 从环境变量读取告警接收人
-					}
-					
-					if sendErr := gLarkCh.Send(ctx, msg); sendErr != nil {
-						slog.Error("failed to send MV refresh alert", "error", sendErr)
-					} else {
-						slog.Info("sent MV refresh alert", "view", viewName, "failures", consecutiveFailures)
-					}
-				})
-			}
-			
-			materializedViewRefresher.Start()
-			slog.Info("CHECKPOINT: after materializedViewRefresher.Start")
+			// materializedViewRefresher is initialized unconditionally
+			// earlier (outside this !IsTrafficOnly() block, alongside the
+			// distlock + Lark alert wiring) so it also runs on traffic-only
+			// instances. Nothing to do here.
 
 			// 2026-06-28 收口：当前 unified scheduler 与旧 probe 体系并行写
 			// model_probe_state，会导致重复探测和状态覆盖。默认关闭，待
