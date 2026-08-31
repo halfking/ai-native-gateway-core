@@ -7,7 +7,6 @@ package admin
 import (
 	"context"
 	"errors"
-	"log/slog"
 
 	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
 )
@@ -34,10 +33,13 @@ func loadLiveDetailForStore(
 	}
 	req, err := store.LoadRequest(ctx, scope.TenantID, requestID)
 	if err != nil {
-		// LoadRequest returns "request not found" via fmt.Errorf with a
-		// known sentinel message; treat that as ErrNotFound so the
-		// locator can fall through to the DB layer cleanly.
-		if isLiveStoreMiss(err) {
+		// LoadRequest signals "no live entry" via ErrLiveStreamRequestNotFound
+		// (wrapped with the request id) and "store offline" via
+		// ErrLiveStreamStoreUnavailable. Both are cache-miss conditions —
+		// surface them as ErrNotFound so the Locator falls through to the DB
+		// layers cleanly.
+		if errors.Is(err, ErrLiveStreamRequestNotFound) ||
+			errors.Is(err, ErrLiveStreamStoreUnavailable) {
 			return requestdetail.Meta{}, requestdetail.ErrNotFound
 		}
 		return requestdetail.Meta{}, err
@@ -79,27 +81,4 @@ func (a *liveStreamLiveDetailAdapter) LoadLiveDetail(
 	ctx context.Context, scope requestdetail.LookupScope, requestID string,
 ) (requestdetail.Meta, error) {
 	return loadLiveDetailForStore(ctx, a.store, scope, requestID)
-}
-
-// isLiveStoreMiss maps the LiveStreamRedisStore "request not found"
-// sentinel to requestdetail.ErrNotFound without leaking the store's
-// fmt.Errorf string into Locator-level error handling. The store's
-// sentinel is wrapped with the request id ("request not found: <id>"),
-// so a prefix match is enough.
-func isLiveStoreMiss(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, requestdetail.ErrNotFound) {
-		return true
-	}
-	msg := err.Error()
-	switch {
-	case msg == "request not found",
-		msg == "live stream store unavailable",
-		len(msg) >= 18 && msg[:18] == "request not found:":
-		return true
-	}
-	slog.Debug("live detail adapter: treating load error as miss", "error", msg)
-	return false
 }
