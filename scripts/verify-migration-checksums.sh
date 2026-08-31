@@ -12,6 +12,18 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MIG_DIR="$REPO_ROOT/sql/migrations/startup"
 CHANGELOG="$REPO_ROOT/docs/db-changelog.md"
 
+# --quiet suppresses per-file WARN lines (unregistered-on-disk). Useful in CI
+# where hundreds of historical startup files are expected to be absent from
+# the changelog and the warn spam drowns the real signal (MISMATCH / STALE /
+# summary). Exit code is unaffected.
+QUIET=false
+for arg in "$@"; do
+  case "$arg" in
+    --quiet|-q) QUIET=true ;;
+    *) echo "[verify-checksums] unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
 if [[ ! -d "$MIG_DIR" ]]; then
   echo "[verify-checksums] missing migrations dir: $MIG_DIR" >&2
   exit 2
@@ -73,7 +85,9 @@ while IFS= read -r -d '' f; do
   actual=$(_sha "$f")
   expected="${recorded[$base]:-}"
   if [[ -z "$expected" ]]; then
-    echo "[verify-checksums] WARN: missing-in-registry: $base (on disk but not in changelog)" >&2
+    if [[ "$QUIET" != true ]]; then
+      echo "[verify-checksums] WARN: missing-in-registry: $base (on disk but not in changelog)" >&2
+    fi
     missing_in_registry=$((missing_in_registry + 1))
     continue
   fi
