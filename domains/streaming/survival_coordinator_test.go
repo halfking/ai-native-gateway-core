@@ -485,3 +485,64 @@ func TestSurvivalCoordinatorStopsWhenSharedUpstreamBudgetIsExhausted(t *testing.
 		t.Fatalf("executor calls = %d, want 2", exec.calls)
 	}
 }
+
+// TestSurvivalCoordinatorHistoryBackingArrayDoesNotAliasAcrossCalls
+// (2026-08-31, P2-6 audit-data-closure) pins that a caller retaining the
+// SurvivalResult returned from Run A does not observe new entries from Run
+// B. The earlier nil-only reset on res.History.* was insufficient because
+// append() would silently reuse the capacity of any slice header the caller
+// still held; the fix is make([]T, 0, n) so every Run owns a fresh backing
+// array from the very first append.
+//
+// We exercise two scripted Run calls on independent harness instances
+// (fresh exec / flusher / params), capturing the A-side PriorAttempts
+// header before B starts and asserting it stays unchanged afterwards.
+func TestSurvivalCoordinatorHistoryBackingArrayDoesNotAliasAcrossCalls(t *testing.T) {
+	hA := newCoordHarness(&scriptedExecutor{
+		errs: []error{transientFailure(), nil},
+	})
+	cA := hA.coordinator()
+	resA := cA.Run(context.Background(), hA.sw, &executors.ExecParams{})
+
+	// Sanity: A must produce more than one history entry so the test
+	// actually exercises the aliasing path; if a future refactor breaks
+	// appendSurvivalHistory wiring we'd see A=1 and the assertion below
+	// would (correctly) flake.
+	if len(resA.History.PriorAttempts) < 2 {
+		t.Fatalf("Run A must produce multiple history entries to exercise aliasing, got %d",
+			len(resA.History.PriorAttempts))
+	}
+
+	// Snapshot the A-side slice header before any subsequent Run mutates
+	// History. We deliberately keep the slice (not a copy) so the aliasing
+	// would be observable if the underlying backing array were shared.
+	priorA := resA.History.PriorAttempts
+	seqA := resA.History.LastSeq
+	beforeA := append([]errorsx.PriorAttempt(nil), priorA...)
+
+	hB := newCoordHarness(&scriptedExecutor{
+		errs:    []error{transientFailure(), transientFailure(), transientFailure(), nil},
+		results: []*executors.ExecuteResult{nil, nil, nil, {}},
+	})
+	cB := hB.coordinator()
+	resB := cB.Run(context.Background(), hB.sw, &executors.ExecParams{})
+
+	if len(priorA) != len(beforeA) {
+		t.Fatalf("A.PriorAttempts length drifted: before=%d after Run B=%d", len(beforeA), len(priorA))
+	}
+	for i := range beforeA {
+		if priorA[i] != beforeA[i] {
+			t.Fatalf("A.PriorAttempts[%d] mutated across Run B: before=%+v after=%+v", i, beforeA[i], priorA[i])
+		}
+	}
+	if resA.History.LastSeq != seqA {
+		t.Fatalf("A.LastSeq drifted: before=%d after=%d", seqA, resA.History.LastSeq)
+	}
+	if len(resB.History.PriorAttempts) == 0 {
+		t.Fatalf("Run B must have produced entries, got 0")
+	}
+	if resB.History.LastSeq == resA.History.LastSeq {
+		t.Fatalf("Run B must have advanced LastSeq independently of A; both=%d",
+			resB.History.LastSeq)
+	}
+}
