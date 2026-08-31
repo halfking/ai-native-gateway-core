@@ -29,10 +29,13 @@ import {
   snapshotRef,
   getNodesForModel,
   getRequestsForCredential,
+  getRequestActions,
+  type ActionEvent,
   type LiveNodeStatus,
   type LiveRequest,
+  type LiveStreamTile,
 } from '../composables/liveStreamStore'
-import { recentTilesForGroup } from '../composables/useModelRecentStatusStrip'
+import { recentIOForGroup } from '../composables/useModelRecentStatusStrip'
 import { isSuperAdmin, isAuthenticated } from '../store'
 import { ApiError } from '../api/_core'
 import { readLiveStreamPreferences, writeLiveStreamPreferences, type QueueStatusBucket } from '../composables/liveStreamPreferences'
@@ -53,7 +56,7 @@ import { credentialDisplayName as credentialLabelById, useCredentialLabels } fro
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
-import ModelRecentStatusStrip from './ModelRecentStatusStrip.vue'
+import ModelIOStrips from './ModelIOStrips.vue'
 
 // 2026-08-28: 接收上层筛选条件（从 LiveRequestStreamV2 的 useLiveStreamFilters 传入）
 interface Props {
@@ -482,11 +485,51 @@ const modelGroups = computed<ModelGroup[]>(() => {
 /** 与「按模型」泳道同源：snapshot.dimensions.model */
 const modelDimensionLanes = computed(() => snapshotRef.value?.dimensions?.model ?? [])
 
-function recentStatusTilesForGroup(group: ModelGroup) {
-  return recentTilesForGroup(
+// ── 输入/输出双队列（2026-09-01） ─────────────────────────────────────────
+// 输入 = 当前在途请求（in_progress tile）；输出 = 客户端最终结果
+// （success/failure/rate_limited tile，后端 SetTerminal CAS 保证终态
+// 每请求只写一次，重试成功 → 最终绿）。「经重试后成功」标记来自
+// request_lifecycle 动作时间线（node_switch / retry 信号），动作回放
+// 窗口之外缺省不标记，不做假阳性。
+const rescuedMemo = new Map<string, { actionCount: number; verdict: boolean }>()
+
+function isRescuedRequest(requestId: string, actions: ActionEvent[]): boolean {
+  if (!requestId || actions.length === 0) return false
+  // memo 按 actionCount 失效：同长度不同内容的替换（同 seq last-write-wins）
+  // 极罕见，误标代价仅为一个装饰性角标，不值得每帧全量重扫。
+  const memo = rescuedMemo.get(requestId)
+  if (memo && memo.actionCount === actions.length) return memo.verdict
+  const verdict = actions.some(action =>
+    action.action === 'node_switch'
+    || action.retry === true
+    || (typeof action.retry_seq === 'number' && action.retry_seq > 1))
+  rescuedMemo.set(requestId, { actionCount: actions.length, verdict })
+  // 有界缓存：请求 id 无限增长，超限时按插入序淘汰最旧的一条。
+  if (rescuedMemo.size > 4000) {
+    const oldest = rescuedMemo.keys().next().value
+    if (oldest !== undefined) rescuedMemo.delete(oldest)
+  }
+  return verdict
+}
+
+function ioForGroup(group: ModelGroup): {
+  inflight: LiveStreamTile[]
+  terminal: LiveStreamTile[]
+  successRate: number | null
+  failed: number
+  rescuedIds: Set<string>
+} {
+  const io = recentIOForGroup(
     { model: group.model, displayName: group.displayName, aliases: group.aliases },
     modelDimensionLanes.value,
   )
+  const rescuedIds = new Set<string>()
+  for (const tile of io.terminal) {
+    if (tile.status === 'success' && isRescuedRequest(tile.request_id, getRequestActions(tile.request_id))) {
+      rescuedIds.add(tile.request_id)
+    }
+  }
+  return { inflight: io.inflight, terminal: io.terminal, successRate: io.successRate, failed: io.failed, rescuedIds }
 }
 
 // ── 节点状态过滤（在用 / 降级 / 人工禁用 / 配额耗尽） ─────────────────────
@@ -1191,7 +1234,7 @@ function formatTs(ts: string | undefined): string {
               <span class="qp-model-rq-count">{{ group.requestCount }}</span>
             </span>
             <span class="qp-pill qp-pill--hint" :title="dragDisabledHint(group)">{{ canReorder(group) ? '拖动调整优先级' : '优先级排序不可用' }}</span>
-            <ModelRecentStatusStrip :tiles="recentStatusTilesForGroup(group)" />
+            <ModelIOStrips v-bind="ioForGroup(group)" />
           </div>
           <div v-if="expandedModels.has(group.model)" class="qp-model-group-body">
             <div class="qp-model-nodes">
@@ -1495,7 +1538,7 @@ function formatTs(ts: string | undefined): string {
   color: var(--kx-text);
 }
 .qp-model-compact { display:flex; align-items:center; gap:7px; flex-wrap:nowrap; padding:7px 9px; min-width:0; }
-.qp-model-compact > .model-recent-status-strip { flex: 1 1 auto; }
+.qp-model-compact > .model-io-strips { flex: 1 1 auto; }
 .qp-model-tag { font-size:10px; padding:2px 6px; border-radius:999px; color:var(--kx-accent); background:color-mix(in srgb, var(--kx-accent) 12%, transparent); }
 .qp-model-tag--hot { color:var(--kx-warning); background:color-mix(in srgb, var(--kx-warning) 12%, transparent); }
 .qp-model-nodes { display:flex; gap:6px; flex-wrap:wrap; flex:1 1 100%; padding-left:18px; }
