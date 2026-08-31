@@ -83,10 +83,15 @@ func SnapshotPayloadHash(tenantID, requestID string, entries any, truncated bool
 	return hex.EncodeToString(hash[:]), nil
 }
 
-// Claim atomically inserts or inspects a receipt. A pending/processing receipt
-// held by another live owner is not stolen; an expired claim may be reclaimed.
-// The compatibility form uses zero as the projection base; durable adapters
-// should call ClaimWithProjectionBase with their first-attempt candidate base.
+// Claim is a legacy compat shim for adapters that have no projection history
+// yet. It is retained only so older callers do not crash on signature change.
+//
+// Deprecated: production adapters must call ClaimWithProjectionBase with the
+// first-attempt base derived from their event recorder so concurrent retries
+// that disagree on the base are surfaced as ErrSnapshotReceiptLeaseLost
+// instead of silently overwriting each other's lease. Callers that rely on
+// the default-zero base effectively run without any base-pinning and accept
+// the historical risk that two concurrent Claim calls cannot be told apart.
 func (s *JournalSnapshotReceiptStore) Claim(ctx context.Context, tenantID, requestID string, version int64, payloadHash string) (JournalSnapshotReceiptClaim, error) {
 	return s.ClaimWithProjectionBase(ctx, tenantID, requestID, version, payloadHash, 0)
 }
@@ -94,6 +99,14 @@ func (s *JournalSnapshotReceiptStore) Claim(ctx context.Context, tenantID, reque
 // ClaimWithProjectionBase fixes the event-sequence base on the first claim and
 // returns that same base on lease reclaim. The immutable base makes retry event
 // identities stable even after partial projection or a failed Complete call.
+//
+// Concurrency contract:
+//   - On INSERT path the base is stored as-is.
+//   - On reclaim UPDATE the WHERE clause re-checks projection_base_seq matches
+//     the value supplied by the caller (allowing the historical first-claim
+//     zero to overwrite only zero). A mismatched base is treated as a lease
+//     lost scenario so two concurrent retries cannot silently overwrite one
+//     another when they disagree on the projection history.
 func (s *JournalSnapshotReceiptStore) ClaimWithProjectionBase(ctx context.Context, tenantID, requestID string, version int64, payloadHash string, projectionBaseSeq int64) (JournalSnapshotReceiptClaim, error) {
 	if s == nil {
 		return JournalSnapshotReceiptClaim{TenantID: tenantID, RequestID: requestID, SnapshotVersion: version, ProjectionBaseSeq: projectionBaseSeq}, ErrSnapshotReceiptInvalid
@@ -154,12 +167,25 @@ func (s *JournalSnapshotReceiptStore) ClaimWithProjectionBase(ctx context.Contex
 	if until.Valid && until.Time.After(now) {
 		return claim, nil
 	}
-	if _, err := tx.Exec(ctx, `
+	// Reclaim guards: callers must pass the same base the existing row stores,
+	// unless this is the historical first-claim sentinel (both stored and
+	// supplied are zero). Without this guard a stale retry carrying base=0
+	// could silently overwrite a lease that was already advanced to a non-zero
+	// base by an earlier attempt, masking concurrent-retry conflicts.
+	if existingBase != projectionBaseSeq && !(existingBase == 0 && projectionBaseSeq == 0) {
+		return claim, ErrSnapshotReceiptLeaseLost
+	}
+	tag, err = tx.Exec(ctx, `
 		UPDATE journal_snapshot_receipts
 		SET status='processing', claim_owner=$4, claim_until=$5, updated_at=$6
-		WHERE tenant_id=$1 AND request_id=$2 AND snapshot_version=$3`,
-		tenantID, requestID, version, s.owner, claim.ClaimUntil, now); err != nil {
+		WHERE tenant_id=$1 AND request_id=$2 AND snapshot_version=$3
+		  AND projection_base_seq = $7`,
+		tenantID, requestID, version, s.owner, claim.ClaimUntil, now, existingBase)
+	if err != nil {
 		return claim, fmt.Errorf("reclaim journal snapshot receipt: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return claim, ErrSnapshotReceiptLeaseLost
 	}
 	claim.ProjectionBaseSeq = existingBase
 	if err := tx.Commit(ctx); err != nil {

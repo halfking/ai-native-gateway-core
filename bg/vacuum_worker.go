@@ -32,23 +32,21 @@ import (
 type VacuumWorker struct {
 	db *pgxpool.Pool
 
-	// lifecycle 由 mu 保护
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	done    chan struct{}
-	started bool
-	stopped bool
+	// lifecycle 由 BaseWorker 统一管理（审计报告 2026-08-31 模式 C）。
+	*BaseWorker
 
-	// 配置
-	interval     time.Duration // 执行间隔（默认 7 天）
-	executeHour  int           // 执行时间（小时，0-23，默认 2）
-	lastExecuted time.Time     // 上次执行时间
+	// 配置（业务字段，仍由本结构 mu 保护）
+	mu          sync.Mutex
+	interval    time.Duration // 执行间隔（默认 7 天）
+	executeHour int           // 执行时间（小时，0-23，默认 2）
+	lastExecuted time.Time    // 上次执行时间
 }
 
 // NewVacuumWorker 构造 worker。
 func NewVacuumWorker(db *pgxpool.Pool) *VacuumWorker {
 	return &VacuumWorker{
 		db:          db,
+		BaseWorker:  NewBaseWorker("vacuum-worker"),
 		interval:    7 * 24 * time.Hour, // 默认每周一次
 		executeHour: 2,                  // 默认凌晨 2 点
 	}
@@ -70,47 +68,32 @@ func (w *VacuumWorker) SetExecuteHour(hour int) {
 	}
 }
 
-// Start 启动后台 goroutine。Stop 之前不能重复 Start。
+// Start 启动后台 goroutine。重复调用幂等；调用 Stop 之前不会重复启动。
 func (w *VacuumWorker) Start(ctx context.Context) {
-	w.mu.Lock()
-	if w.started {
-		w.mu.Unlock()
+	if w == nil {
 		return
 	}
-	runCtx, cancel := context.WithCancel(ctx)
-	w.cancel = cancel
-	w.done = make(chan struct{})
-	w.started = true
+	if !w.BaseWorker.Start(ctx, w.run) {
+		return
+	}
+	w.mu.Lock()
+	interval, hour := w.interval, w.executeHour
 	w.mu.Unlock()
-
-	go w.run(runCtx)
 	slog.Info("vacuum worker started",
-		"interval", w.interval,
-		"execute_hour", w.executeHour)
+		"interval", interval,
+		"execute_hour", hour)
 }
 
 // Stop 取消并等待 goroutine 退出。
 func (w *VacuumWorker) Stop() {
-	w.mu.Lock()
-	if !w.started || w.stopped {
-		w.mu.Unlock()
+	if w == nil {
 		return
 	}
-	cancel := w.cancel
-	done := w.done
-	w.stopped = true
-	w.mu.Unlock()
-
-	if cancel != nil {
-		cancel()
-	}
-	if done != nil {
-		<-done
-	}
+	w.BaseWorker.Stop()
 }
 
 func (w *VacuumWorker) run(ctx context.Context) {
-	defer close(w.done)
+	defer w.BaseWorker.NotifyStopped()
 
 	// 每小时检查一次是否到了执行时间
 	ticker := time.NewTicker(1 * time.Hour)

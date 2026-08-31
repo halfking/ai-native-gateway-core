@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,18 +21,20 @@ const providerErrorAggregatorDefaultInterval = 10 * time.Minute
 type ProviderErrorAggregator struct {
 	db       *pgxpool.Pool
 	interval time.Duration
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	mu       sync.Mutex
-	started  bool
-	stopped  bool
+
+	// lifecycle 由 BaseWorker 统一管理（审计报告 2026-08-31 模式 C）。
+	*BaseWorker
 }
 
 func NewProviderErrorAggregator(db *pgxpool.Pool, interval time.Duration) *ProviderErrorAggregator {
 	if interval <= 0 {
 		interval = providerErrorAggregatorDefaultInterval
 	}
-	return &ProviderErrorAggregator{db: db, interval: interval, stopCh: make(chan struct{}), doneCh: make(chan struct{})}
+	return &ProviderErrorAggregator{
+		db:         db,
+		interval:   interval,
+		BaseWorker: NewBaseWorker("provider-error-aggregator"),
+	}
 }
 
 // Start 启动后台聚合任务；重复调用不会启动多个 worker。
@@ -41,17 +42,10 @@ func (a *ProviderErrorAggregator) Start(ctx context.Context) {
 	if a == nil {
 		return
 	}
-	a.mu.Lock()
-	if a.started || a.stopped {
-		a.mu.Unlock()
-		return
-	}
-	a.started = true
-	a.mu.Unlock()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	go a.run(ctx)
+	a.BaseWorker.Start(ctx, a.run)
 }
 
 // Stop 停止后台任务；重复调用及未 Start 都安全返回。
@@ -59,30 +53,17 @@ func (a *ProviderErrorAggregator) Stop() {
 	if a == nil {
 		return
 	}
-	a.mu.Lock()
-	if a.stopped {
-		a.mu.Unlock()
-		return
-	}
-	a.stopped = true
-	started := a.started
-	close(a.stopCh)
-	a.mu.Unlock()
-	if started {
-		<-a.doneCh
-	}
+	a.BaseWorker.Stop()
 }
 
 func (a *ProviderErrorAggregator) run(ctx context.Context) {
-	defer close(a.doneCh)
+	defer a.BaseWorker.NotifyStopped()
 	a.aggregateErrors(ctx)
 	ticker := time.NewTicker(a.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
-		case <-a.stopCh:
 			return
 		case <-ticker.C:
 			a.aggregateErrors(ctx)

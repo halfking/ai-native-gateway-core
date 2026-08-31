@@ -463,6 +463,13 @@ func (d *DB) ensureJournalSnapshotReceiptSchema(ctx context.Context) error {
 				status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
 			)
 		)`,
+		// projection_base_seq semantics:
+		//   * 0  : first-time projection (no prior receipt row) — legacy default.
+		//   * >0 : retry attempt pinned to an existing projection base so event
+		//          identities remain stable across partial projection failures.
+		// Concurrent retries that pass different base values must be rejected by
+		// the application layer (ClaimWithProjectionBase); the schema check below
+		// only enforces non-negative, leaving 0 as a legal first-claim marker.
 		`ALTER TABLE public.journal_snapshot_receipts
 			ADD COLUMN IF NOT EXISTS projection_base_seq BIGINT NOT NULL DEFAULT 0`,
 		`ALTER TABLE public.journal_snapshot_receipts

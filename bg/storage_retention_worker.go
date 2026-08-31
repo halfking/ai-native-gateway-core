@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
 	"syscall"
 	"time"
 )
@@ -44,11 +43,8 @@ type StorageRetentionWorker struct {
 	// 由调用方注入（从 settings_kv 读取）。返回 enabled=false 则 worker 空转。
 	ConfigProvider StorageRetentionConfigFunc
 
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	done    chan struct{}
-	started bool
-	stopped bool
+	// lifecycle 由 BaseWorker 统一管理（审计报告 2026-08-31 模式 C）。
+	*BaseWorker
 }
 
 // StorageRetentionConfigFunc 返回当前清理配置。
@@ -73,7 +69,7 @@ func NewStorageRetentionWorker(attachmentStorage AttachmentStorageService, logDi
 		LogArchiveDays:    7,
 		LogDeleteDays:     30,
 		ConfigProvider:    cfgProvider,
-		done:              make(chan struct{}),
+		BaseWorker:        NewBaseWorker("storage-retention"),
 	}
 }
 
@@ -94,18 +90,9 @@ func (w *StorageRetentionWorker) Start(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	w.mu.Lock()
-	if w.started {
-		w.mu.Unlock()
+	if !w.BaseWorker.Start(ctx, w.run) {
 		return
 	}
-	cctx, cancel := context.WithCancel(ctx)
-	w.cancel = cancel
-	w.started = true
-	w.stopped = false
-	w.done = make(chan struct{})
-	w.mu.Unlock()
-	go w.run(cctx)
 	slog.Info("storage retention worker started",
 		"interval", w.CheckInterval.String(),
 		"attachment_dir", w.attachmentDir(),
@@ -117,23 +104,11 @@ func (w *StorageRetentionWorker) Stop() {
 	if w == nil {
 		return
 	}
-	w.mu.Lock()
-	if !w.started || w.stopped {
-		w.mu.Unlock()
-		return
-	}
-	w.stopped = true
-	cancel := w.cancel
-	done := w.done
-	w.mu.Unlock()
-	if cancel != nil {
-		cancel()
-	}
-	<-done
+	w.BaseWorker.Stop()
 }
 
 func (w *StorageRetentionWorker) run(ctx context.Context) {
-	defer close(w.done)
+	defer w.BaseWorker.NotifyStopped()
 	t := time.NewTicker(w.CheckInterval)
 	defer t.Stop()
 	for {
