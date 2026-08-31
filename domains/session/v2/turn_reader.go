@@ -61,12 +61,17 @@ func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID
 
 // LoadChain 返回最近 N 轮拼接后的消息（用于 L3 冷启动）。
 // 不持久化 panorama；仅按需计算。
+//
+// lastN 语义：
+//   - lastN == 0：返回该 session 的所有轮（与 outbound_builder.go 注释一致）。
+//   - lastN  > 0：返回最后 N 轮。
+//   - lastN  < 0：视为非法输入，返回错误（避免静默退化为"全部"或"默认 10"）。
 func (r *TurnReader) LoadChain(ctx context.Context, tenantID, sessionID string, lastN int) ([]Message, error) {
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
-	if lastN <= 0 {
-		lastN = 10
+	if lastN < 0 {
+		return nil, fmt.Errorf("turn_reader.LoadChain: lastN must be >= 0, got %d", lastN)
 	}
 	query := `
         SELECT b.turn_no, b.request_delta, b.response_delta
@@ -95,7 +100,8 @@ func (r *TurnReader) LoadChain(ctx context.Context, tenantID, sessionID string, 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows: %w", err)
 	}
-	if len(turns) > lastN {
+	// lastN == 0 means "all turns" per the contract; only slice when lastN > 0.
+	if lastN > 0 && len(turns) > lastN {
 		turns = turns[len(turns)-lastN:]
 	}
 	var chain []Message

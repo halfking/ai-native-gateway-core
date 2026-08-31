@@ -245,6 +245,9 @@ quality-monitor
 demo-history/
 test-data/
 test-history-demo.sh
+# Runtime mmlu_lite score snapshots produced by cmd/calc_quality and friends;
+# commit the schema under data/model-quality/scores/ at most once, then ignore.
+data/model-quality/scores/
 
 # 全方面测试 run 产物（本地跑测试产生的大量 JSON 报告，不入仓）
 docs/全方面测试/results/runs/
@@ -252,6 +255,9 @@ docs/全方面测试/results/*.jsonl
 gui-test-screenshots/
 
 # Tool binaries (cmd/tools/)
+# cfg_dump built binary at the repo root (go build ./cmd/cfg_dump produces ./cfg_dump)
+/cfg_dump
+
 /backfill_session_bodies
 /backfill_sessions_v2_v2
 /validate_sessions_v2

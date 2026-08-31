@@ -121,15 +121,27 @@ func HandleResetCredentialSuccessRate(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		// Delete failed requests older than 10 minutes to allow immediate recovery
-		// 2026-07-05 migration 341: DELETE targets request_logs_hot (独立热表)。
+		// 2026-07-05 migration 341: DELETE targets request_logs_hot (独立热表).
 		// 数据迁移到月度分区后无法再编辑（只读），但 _hot 表中 0-7 天数据
 		// 可被删除以重置失败凭据的评估状态。
+		//
+		// Defense in depth (2026-09-01 audit): the SQL itself enforces a
+		// tenant scope using the per-session GUC set by apihub.withTenantTx
+		// (see apihub/pg_store.go). When app.current_tenant is unset the
+		// predicate requires app.current_role = 'super_admin'; otherwise the
+		// delete is a no-op. The handler still calls its existing auth check;
+		// this is a regression guard against a future caller wrapper that
+		// skips the auth boundary.
 		result, err := db.Exec(r.Context(), `
 		DELETE FROM request_logs_hot
 		WHERE credential_id = $1
 		  AND lower(COALESCE(outbound_model, client_model)) = lower($2)
 		  AND lower(COALESCE(request_status, '')) = 'failure'
 		  AND ts < NOW() - INTERVAL '10 minutes'
+		  AND (
+		    current_setting('app.current_role', true) = 'super_admin'
+		    OR tenant_id = current_setting('app.current_tenant', true)
+		  )
 	`, req.CredentialID, req.RawModel)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

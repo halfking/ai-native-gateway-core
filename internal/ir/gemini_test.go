@@ -210,6 +210,72 @@ func TestParseGemini_FunctionResponse(t *testing.T) {
 	}
 }
 
+// Regression: parallel functionCall parts sharing the same Name must not
+// collapse onto a single synthetic tool_use.id. Disambiguated by the part
+// position so two lookups with different args round-trip independently.
+func TestParseGemini_ParallelFunctionCalls_ProduceUniqueIDs(t *testing.T) {
+	body := []byte(`{
+		"contents": [{
+			"role": "model",
+			"parts": [
+				{"functionCall": {"name": "lookup", "args": {"k": "A"}}},
+				{"functionCall": {"name": "lookup", "args": {"k": "B"}}}
+			]
+		},{
+			"role": "function",
+			"parts": [
+				{"functionResponse": {"name": "lookup", "response": {"k": "A"}}},
+				{"functionResponse": {"name": "lookup", "response": {"k": "B"}}}
+			]
+		}]
+	}`)
+
+	ir, err := ParseGemini(body)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+
+	modelMsg := ir.Messages[0]
+	if modelMsg.Role != "assistant" {
+		t.Fatalf("modelMsg.Role = %q, want assistant", modelMsg.Role)
+	}
+	if got := len(modelMsg.Content); got != 2 {
+		t.Fatalf("modelMsg.Content blocks = %d, want 2", got)
+	}
+	idA := modelMsg.Content[0].ToolUse.ID
+	idB := modelMsg.Content[1].ToolUse.ID
+	if idA == "" || idB == "" {
+		t.Fatalf("missing tool_use id: %q %q", idA, idB)
+	}
+	if idA == idB {
+		t.Errorf("parallel functionCalls share id %q; want distinct", idA)
+	}
+	if idA != "gemini_call_lookup_0" || idB != "gemini_call_lookup_1" {
+		t.Errorf("ids = (%q,%q), want (gemini_call_lookup_0, gemini_call_lookup_1)", idA, idB)
+	}
+
+	toolMsg := ir.Messages[1]
+	if toolMsg.Role != "tool" {
+		t.Fatalf("toolMsg.Role = %q, want tool", toolMsg.Role)
+	}
+	if got := len(toolMsg.Content); got != 2 {
+		t.Fatalf("toolMsg.Content blocks = %d, want 2", got)
+	}
+	respA := toolMsg.Content[0].ToolResult.ToolUseID
+	respB := toolMsg.Content[1].ToolResult.ToolUseID
+	if respA == idA && respB == idB {
+		return
+	}
+	// The tool_response IDs must be the matching pair so the request can be
+	// serialized back to a downstream provider without orphan tool_use blocks.
+	if respA == "" || respB == "" {
+		t.Fatalf("missing tool_result id: %q %q", respA, respB)
+	}
+	if respA == respB {
+		t.Errorf("parallel functionResponses share id %q; want distinct", respA)
+	}
+}
+
 func TestGeminiFunctionResponseStructuredRoundTrip(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -242,7 +308,7 @@ func TestGeminiFunctionResponseStructuredRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Parse: %v", err)
 			}
-			result := requireGeminiToolResult(t, ir, "gemini_call_get_weather")
+			result := requireGeminiToolResult(t, ir, "gemini_call_get_weather_0")
 			if tt.responsePresent || tt.response != "" {
 				if result.GeminiResponse == nil {
 					t.Fatal("GeminiResponse missing")

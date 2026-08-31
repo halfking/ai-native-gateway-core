@@ -165,7 +165,7 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 		}
 
 		msg := Message{Role: role}
-		for _, p := range c.Parts {
+		for partIdx, p := range c.Parts {
 			// Gemini thinking part
 			if p.Thought != "" {
 				msg.Content = append(msg.Content, ContentBlock{
@@ -210,10 +210,14 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					if len(fc.Args) > 0 {
 						argsStr = string(fc.Args)
 					}
+					// Gemini does not assign tool_use IDs in the wire format, and parallel
+					// functionCall parts of the same Name would otherwise collapse onto a
+					// single ID. Disambiguate by the position within this content entry's
+					// parts array so parallel calls round-trip with distinct IDs.
 					msg.Content = append(msg.Content, ContentBlock{
 						Type: "tool_use",
 						ToolUse: &ToolUse{
-							ID:    "gemini_call_" + fc.Name,
+							ID:    fmt.Sprintf("gemini_call_%s_%d", fc.Name, partIdx),
 							Name:  fc.Name,
 							Input: fc.Args,
 						},
@@ -230,8 +234,11 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					Response json.RawMessage `json:"response"`
 				}
 				if err := json.Unmarshal(p.FunctionResponse, &fr); err == nil && fr.Name != "" {
+					// Mirror the disambiguator used on the function_call side: parallel
+					// functionResponse parts of the same Name get the same partIdx
+					// disambiguator so the tool_use_id round-trips correctly.
 					result := &ToolResult{
-						ToolUseID: "gemini_call_" + fr.Name,
+						ToolUseID: fmt.Sprintf("gemini_call_%s_%d", fr.Name, partIdx),
 						Content: []ContentBlock{
 							{Type: "text", Text: string(fr.Response)},
 						},
