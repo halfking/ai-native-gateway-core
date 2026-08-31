@@ -4,7 +4,7 @@
 **Git SHA**: c5618ba7e (已推送至 origin/main)  
 **分支**: main  
 **项目**: llm-gateway-go-3  
-**状态**: ✅ 实现完成；P0 本地真实升级环境验证通过；待生产部署后 7 天观测
+**状态**: ✅ 实现完成；fresh installer hot-path bootstrap 已接入并有 source-level / gated integration 覆盖；待在专用空 Citus 数据库执行真实 installer sequence gate，并待生产部署后 7 天观测
 
 ---
 
@@ -140,11 +140,13 @@ turnRec := TurnRecord{
 - `deploy/sql/schemas/baseline/01-schema.sql` — 同上
 - `sql/objects/tables/session_turns.sql` — canonical table DDL
 - `installer/cmd/llm-gw-installer/embeddata/01-schema.sql` — installer baseline 镜像
+- `installer/cmd/llm-gw-installer/embeddata/startup/session_turns_hot_bootstrap.sql` — fresh installer 专用的 Session V2 hot-path 最终态 bundle
 
-**Installer 边界**: 
-- 636 **未包含**在 `installer/internal/dbinit/runner.go` 的 `StartupFiles` 列表中
-- 原因: fresh installer baseline 不包含 526 创建的 `session_turns_hot` 表，636 若作为 startup migration 会在空 baseline 上失败
-- 升级路径: 已有 526 的环境可独立应用 canonical `sql/migrations/startup/636_session_turns_digest.sql`
+**Installer 边界**:
+- 历史 526/636 **仍不**加入 `installer/internal/dbinit/runner.go` 的 `StartupFiles`；baseline 已有 51 列 parent，而历史 526 创建 50 列 hot table，直接 replay 会触发 parity failure。
+- `session_turns_hot_bootstrap.sql` 在 baseline/seed 后由 Runner 执行，直接创建 526+636 的最终态 `session_turns_hot`、RLS/policies、`security_invoker` view、advisory-lock function 与 digest-preserving promotion function。
+- `installer/cmd/llm-gw-installer/fresh_installer_integration_test.go` 按真实 installer SQL 顺序验证最终对象、51 列 parity、RLS、view/function 与 digest；该 gate 仅在 `TEST_INSTALLER_FRESH_DB_URL` 指向**空的专用 Citus 数据库**时执行。
+- 升级路径不变：已有 526 的环境继续使用 canonical `sql/migrations/startup/636_session_turns_digest.sql`；不可回写已部署 migration。
 
 ---
 
