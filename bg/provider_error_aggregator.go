@@ -281,7 +281,15 @@ CROSS JOIN advanced`
 	// values, or the watermark CTE returned the wrong row. Log loudly so
 	// the operator can investigate before the next tick re-processes
 	// historical rows.
-	if newAggregationID < preWatermark {
+	//
+	// Guarded on groups > 0: the final SELECT uses
+	//   FROM inserted i CROSS JOIN advanced
+	// so when no rows were aggregated this tick, `inserted` is empty, the
+	// cross join yields zero rows, the Scan loop never runs, and
+	// newAggregationID keeps its zero value. Comparing zero against any
+	// non-zero preWatermark would otherwise log a false-positive "watermark
+	// regressed" error on every idle steady-state tick.
+	if groups > 0 && newAggregationID < preWatermark {
 		slog.Error("provider_error_aggregator: watermark regressed",
 			"pre_watermark", preWatermark,
 			"post_watermark", newAggregationID,

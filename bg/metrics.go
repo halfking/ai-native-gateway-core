@@ -124,16 +124,12 @@ var (
 	// many consecutive promote cycles have been skipped because the
 	// advisory lock is held. A persistently positive value indicates a
 	// zombie lock — the peer gateway that held the lock has crashed
-	// without releasing it (advisory_xact_lock is transaction-scoped so
-	// the lock SHOULD be released on PG connection close, but PG <13
-	// historically had edge cases, and any uncommitted xact left by a
-	// hard-killed backend takes a while for PG to reap). Operators
-	// should alert when this gauge stays > 0 for more than the
-	// promoteInterval itself (typically 10–60 minutes).
+	// without releasing it. Operators should alert when this gauge stays
+	// > 0 for longer than the promoteInterval itself.
 	hotTablePromoteZombieLockStreak = promauto.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "llm_gateway_hot_table_promote_zombie_lock_streak",
-			Help: "Consecutive promote cycles skipped because the advisory lock was held. Persists across cycles; resets to 0 when a cycle successfully acquires the lock.",
+			Help: "Consecutive promote cycles skipped because the advisory lock was held. Resets to 0 when a cycle successfully acquires the lock.",
 		},
 		[]string{"table"},
 	)
