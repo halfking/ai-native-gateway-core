@@ -370,3 +370,64 @@ post-migration shape：
 - `scripts/audit/fresh_schema_integration_test.go`
 - `scripts/audit/sql/min-prereqs.sql` (修订)
 - `scripts/audit/psql-isolated.sh` (修订)
+
+## §2.7 P1 守门测试 + 资源上限修复（2026-09-01）
+
+> 接续 §4.2 P1 #5（ConnectionRegistry 写超时 goroutine 资源上限 + VACUUM FULL 多副本互斥 + provider detail tab/menu parity 守门测试）。
+
+### 1. Provider detail tab/menu parity 守门测试（web）
+
+`web/src/views/ProviderDetailView.test.ts`（`vitest`）— 5 个测试钉住三个契约：
+1. `CANONICAL_TABS`（8 个 tab：creds / models / quality / logs / error-detail / diag / probe / settings）是 ProviderDetailView 的 SoT；`setTab('xxx')` 出现次数必须严格匹配。
+2. 每个 tab 都有匹配的 `tabXxx` i18n 键（zh-CN 是 SoT），覆盖 `ANCILLARY_TAB_KEYS`（tabProbeTitle 提示语）排除。
+3. 每个 tab 都有对应的 `<X>Tab.vue` 组件文件，alias map 钉住非默认命名（probe → ProbeHistoryTab、error-detail → ErrorDetailTab）。
+
+附加路由默认钉住：`route.query.tab` 回退 'creds'，`route.query.credential_id` 必传到 errorCredentialId。
+
+跑：5 PASS。
+
+### 2. ConnectionRegistry 写超时 goroutine 资源上限（domains/streaming）
+
+**问题**：`WriteFrame` 每次调用 spawn 一个 goroutine 跑 `entry.writer.WriteFrame`，用 buffered `done` channel + watchdog timer 解锁调用方。无 goroutine 上限 → 在 sustained slow-client 压力下，goroutine 数向 `capacity * (timeout / typical-frame-time)` 增长，hostile workload 下不可控。
+
+**修复**：`domains/streaming/connection_registry.go` 加 `writeSlots chan struct{}` 信号量，`DefaultMaxConcurrentWriteGoroutines = 2 * DefaultConnectionRegistryCapacity = 8192`。`WriteFrame` 在 spawn goroutine 之前 `select { case writeSlots <- struct{}{}: default: return ErrWriteSlotsExhausted }`。goroutine `defer func() { <-writeSlots }()` 在所有退出路径释放 slot。
+
+API 变更：`NewConnectionRegistry(capacity, writeTimeout)` → `NewConnectionRegistry(capacity, writeTimeout, maxWriteGoroutines)`（0 = 默认）。17 个 call site 全部更新。
+
+测试：
+- `TestConnectionRegistryWriteGoroutineCapBoundsResourceUse`：填满 cap → 验证 `(slotCount+1)` 写 `<100ms` 返回 `ErrWriteSlotsExhausted`；释放 → 全部 parents 返回 + 重填验证无 permanent leak；用两个独立 release channel 隔离 cap-fill 与 refill 两批验证 leak。
+- `TestConnectionRegistryMaxConcurrentWriteGoroutinesDefault`：钉 `0` → `cap(writeSlots) == DefaultMaxConcurrentWriteGoroutines`。
+
+跑：`go test ./domains/streaming/ ./admin/... ./cmd/gateway/...` 全绿（streaming 67s、admin 68s、gateway 8s）。
+
+### 3. VACUUM FULL 多副本互斥（internal/dbx + admin + bg）
+
+**问题**：两条路径跑 VACUUM FULL：
+- `bg/vacuum_worker.go` 周日 02:00 定时；
+- `admin/data_lifecycle_storage.go` 即席 UI 按钮。
+
+多副本部署时两个 replica 同时触发 → 都去抢 ACCESS EXCLUSIVE → 抢到的跑、抢不到的 `SET LOCAL lock_timeout = '5s'` 超时失败 → 报 generic "vacuum failed"，运维看不出是另一个 replica 在跑。
+
+**修复**：`internal/dbx/vacuum_mutex.go` — `VacuumFullMutex(ctx, pool, vacuumConn, acquireTimeout, fn)` 用固定 bigint key `0x56414355_4d5f4655` ("VACUUM_FULL" ASCII) 调 `pg_advisory_xact_lock`。两个 connection：
+- `vacuumConn`：跑 VACUUM FULL 本身；
+- `lockConn`：`BEGIN; pg_advisory_xact_lock(KEY); <等待>; COMMIT` — 整个 VACUUM 期间持有 cluster mutex。
+
+xact-scoped（非 session-scoped）→ replica 崩溃时事务回滚自动释放，无 stale lock。acquireTimeout 默认 = lockTimeout（admin 5s / bg 30s）→ 超时返回 `ErrVacuumFullMutexBusy`，运维看得出 "another replica is running"。
+
+放在 `internal/dbx` 而非 `admin`：admin 已 import bg，bg 再 import admin 成环。`internal/dbx` 现有 0 个调用方，无环风险。
+
+测试：
+- `TestIsLockNotAvailableRecognizesSQLState`：钉 55P03 子串匹配，40P01 必须 false-negative。
+- `TestErrContainsCodeWalksWrappedErrors`：钉错误链 walk 行为（pgx 用 `fmt.Errorf("%w")` 包，`errors.Is` 不够）。
+- `TestVacuumFullMutex_NilGuards`：nil pool/conn 不 panic。
+- `TestVacuumFullMutex_HappyPath` / `TestVacuumFullMutex_ReleasesOnError`：集成测，需要 `TEST_AUDIT_ISOLATED_DB_URL`（缺则 skip）。
+
+跑：unit 测 3 PASS；集成测 skip（无 isolated PG）。`go test ./admin/... ./bg/... ./internal/dbx/...` 全绿。
+
+### 引用
+
+- handoff §4.2 P1 #5（ConnectionRegistry + VACUUM FULL + provider tab/menu）
+- `web/src/views/ProviderDetailView.test.ts`
+- `domains/streaming/connection_registry.go` + `connection_registry_test.go`
+- `internal/dbx/vacuum_mutex.go` + `vacuum_mutex_test.go`
+- `admin/data_lifecycle_storage.go` + `bg/vacuum_worker.go`
