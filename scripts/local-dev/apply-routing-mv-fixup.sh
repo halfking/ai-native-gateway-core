@@ -31,10 +31,18 @@
 #
 # Status:        active
 # Changelog:
+#   2026-09-01  v1.1  + PG_FIXUP_DB env (default llm_gateway) so pg-table-copy.sh
+#                      PHASE 8.5 can invoke this script with a non-default DB
+#                      name. Behavior unchanged when env is unset. Auto-called
+#                      by pg-table-copy.sh after a successful sync — manual use
+#                      is still supported (idempotent).
 #   2026-09-01  v1.0  Initial — 3 objects extracted from 252 dump
 # -----------------------------------------------------------------------------
 # Usage:
 #   bash scripts/local-dev/apply-routing-mv-fixup.sh
+#   PG_FIXUP_DB=mydb bash scripts/local-dev/apply-routing-mv-fixup.sh
+#   # Auto-invoked by scripts/pg-table-copy.sh PHASE 8.5 (no manual step needed
+#   # after a sync). Manual invocation is still safe (idempotent).
 # -----------------------------------------------------------------------------
 # Preconditions:
 #   - llm-gateway-pg container running and reachable on 127.0.0.1:5432
@@ -45,6 +53,7 @@ set -euo pipefail
 
 CONTAINER="${PG_FIXUP_CONTAINER:-llm-gateway-pg}"
 PG_USER="${PG_FIXUP_USER:-llm_gateway}"
+PG_DB="${PG_FIXUP_DB:-llm_gateway}"
 
 ENVS_LOADER="$HOME/workspace/ai-native-tools/envs/loader.sh"
 if [[ -f "$ENVS_LOADER" ]]; then
@@ -69,7 +78,7 @@ fi
 # Pre-flight: log current state so a re-run is visibly a no-op
 echo "▶ pre-fixup state:"
 docker exec -e PGPASSWORD="$PGPASSWORD" "$CONTAINER" \
-  psql -U "$PG_USER" -d llm_gateway -tAc \
+  psql -U "$PG_USER" -d "$PG_DB" -tAc \
   "SELECT
      (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
        WHERE n.nspname='public' AND c.relkind='m'
@@ -194,7 +203,7 @@ SQL_EOF
 # Apply
 echo "▶ applying fixup to $CONTAINER..."
 if ! docker exec -i -e PGPASSWORD="$PGPASSWORD" "$CONTAINER" \
-    psql -U "$PG_USER" -d llm_gateway -v ON_ERROR_STOP=1 -tAq <<<"$SQL"; then
+    psql -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -tAq <<<"$SQL"; then
   echo "ERROR: fixup apply failed (see above)" >&2
   exit 1
 fi
@@ -202,7 +211,7 @@ fi
 # Post-flight
 echo "▶ post-fixup state:"
 docker exec -e PGPASSWORD="$PGPASSWORD" "$CONTAINER" \
-  psql -U "$PG_USER" -d llm_gateway -tAc \
+  psql -U "$PG_USER" -d "$PG_DB" -tAc \
   "SELECT
      (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
        WHERE n.nspname='public' AND c.relkind='m'
