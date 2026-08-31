@@ -175,13 +175,15 @@ export default {
     viewRoutingRetry: 'Voir la nouvelle tentative de routage',
     empty: 'Aucun événement de lien',
     noData: 'Aucune donnée de flux',
+    observationDegraded: 'Certaines observations du flux sont dégradées',
     diagram: {
       ariaLabel: 'Flux de traitement de la requête', trackLabel: 'Séquence des événements du flux',
       event: 'Événement de flux', noData: 'Aucun flux observable', noEvents: 'Aucun événement de flux',
       stages: { received: 'Entrée', routing: 'Résolution du routage', model_queue: 'File du modèle', credential_queue: 'File des identifiants', node_selection: 'Sélection du nœud', upstream: 'Requête amont', streaming: 'Réponse en flux', terminal: 'Requête terminée' },
       status: { success: 'Succès', failed: 'Échec', timeout: 'Délai dépassé', skipped: 'Ignoré' },
       flags: { compression: 'Compression', retry: 'Nouvel essai', nodeSwitch: 'Changement de nœud', degraded: 'Observation dégradée' },
-      legend: { success: 'Succès', failed: 'Échec/délai dépassé', special: 'Compression · nouvel essai · changement de nœud' },
+      evidenceLabel: 'Preuves de routage et de cascade', evidenceTitle: 'Tentatives observées', waterfallAttempt: 'Tentative de cascade n°{number}', noDetails: 'Aucun détail supplémentaire', degraded: 'Observation dégradée',
+      legend: { success: 'Succès', failed: 'Échec/délai dépassé', special: 'Compression · nouvel essai · changement de nœud' }
     },
   },
   // — espaces réservés communs —

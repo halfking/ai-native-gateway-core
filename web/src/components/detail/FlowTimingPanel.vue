@@ -3,6 +3,8 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getRequestTrace, type RequestTrace, type TraceEvent } from '../../api/trace'
+import { getRequestJourney, type RequestJourney } from '../../api/request-journeys'
+import { fetchWaterfallByRequestId, type WaterfallRequest } from '../../api/dispatch'
 import RequestProcessingFlowDiagram from './RequestProcessingFlowDiagram.vue'
 
 const props = defineProps<{ requestId: string | null }>()
@@ -13,6 +15,11 @@ const emit = defineEmits<{
 const loading = ref(false)
 const error = ref('')
 const trace = ref<RequestTrace | null>(null)
+const journey = ref<RequestJourney | null>(null)
+const waterfall = ref<WaterfallRequest | null>(null)
+const journeyError = ref('')
+const waterfallError = ref('')
+let loadSequence = 0
 
 const { t } = useI18n()
 
@@ -20,16 +27,28 @@ watch(
   () => props.requestId,
   async (id) => {
     trace.value = null
+    journey.value = null
+    waterfall.value = null
     error.value = ''
+    journeyError.value = ''
+    waterfallError.value = ''
     if (!id) return
+    const sequence = ++loadSequence
     loading.value = true
-    try {
-      trace.value = await getRequestTrace(id)
-    } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : String(e)
-    } finally {
-      loading.value = false
-    }
+    const results = await Promise.allSettled([
+      getRequestTrace(id),
+      getRequestJourney(id),
+      fetchWaterfallByRequestId(id),
+    ])
+    if (sequence !== loadSequence) return
+    const [traceResult, journeyResult, waterfallResult] = results
+    if (traceResult.status === 'fulfilled') trace.value = traceResult.value
+    else error.value = traceResult.reason instanceof Error ? traceResult.reason.message : String(traceResult.reason)
+    if (journeyResult.status === 'fulfilled') journey.value = journeyResult.value
+    else journeyError.value = journeyResult.reason instanceof Error ? journeyResult.reason.message : String(journeyResult.reason)
+    if (waterfallResult.status === 'fulfilled') waterfall.value = waterfallResult.value.request
+    else waterfallError.value = waterfallResult.reason instanceof Error ? waterfallResult.reason.message : String(waterfallResult.reason)
+    loading.value = false
   },
   { immediate: true },
 )
@@ -51,19 +70,24 @@ function statusClass(status: string): string {
 <template>
   <div class="flow-panel">
     <div v-if="loading" class="text-muted">{{ t('requestDetail.flow.loading') }}</div>
-    <div v-else-if="error" class="err" role="alert">{{ error }}</div>
-    <template v-else-if="trace">
+    <div v-else-if="error && !journey && !waterfall" class="err" role="alert">{{ error }}</div>
+    <template v-else-if="trace || journey || waterfall">
       <div class="flow-summary">
-        <span>{{ t('requestDetail.flow.total') }} <strong>{{
-          typeof trace.total_duration_ms === 'number' ? `${trace.total_duration_ms}ms` : '—'
-        }}</strong></span>
-        <span>{{ t('requestDetail.flow.status', { value: trace.final_status || t('requestDetail.flow.inProgress') }) }}</span>
-        <span v-if="trace.failed_at_stage" class="bad">{{ t('requestDetail.flow.failedAt', { stage: trace.failed_at_stage }) }}</span>
-        <span class="muted">{{ t('requestDetail.flow.source', { src: trace.source }) }}</span>
+        <template v-if="trace">
+          <span>{{ t('requestDetail.flow.total') }} <strong>{{
+            typeof trace.total_duration_ms === 'number' ? `${trace.total_duration_ms}ms` : '—'
+          }}</strong></span>
+          <span>{{ t('requestDetail.flow.status', { value: trace.final_status || t('requestDetail.flow.inProgress') }) }}</span>
+          <span v-if="trace.failed_at_stage" class="bad">{{ t('requestDetail.flow.failedAt', { stage: trace.failed_at_stage }) }}</span>
+          <span class="muted">{{ t('requestDetail.flow.source', { src: trace.source }) }}</span>
+        </template>
+        <span v-if="journey?.observation_status === 'observation_degraded' || journeyError || waterfallError" class="degraded" role="status">
+          {{ t('requestDetail.flow.observationDegraded') }}
+        </span>
         <button type="button" class="btn btn-sm link" @click="emit('goto', 'waterfall')">{{ t('requestDetail.flow.viewWaterfall') }}</button>
         <button type="button" class="btn btn-sm link" @click="emit('goto', 'attempts')">{{ t('requestDetail.flow.viewRoutingRetry') }}</button>
       </div>
-      <RequestProcessingFlowDiagram :trace="trace" />
+      <RequestProcessingFlowDiagram :trace="trace" :journey="journey" :waterfall="waterfall" />
       <ul class="flow-list">
         <li
           v-for="e in events"

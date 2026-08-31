@@ -8,14 +8,16 @@ const i18n = createI18n({
   locale: 'zh-CN',
   messages: {
     'zh-CN': {
+      requestJourneys: { event: { node_switched: '节点切换' } },
       requestDetail: {
         flow: {
-          diagram: {
+              diagram: {
             ariaLabel: '请求处理流程', trackLabel: '流程事件序列',
             event: '流程事件', noData: '暂无可观测流程', noEvents: '暂无流程事件',
             stages: { routing: '路由解析', upstream: '上游请求', retrying: '重试中' },
             status: { success: '成功', failed: '失败', timeout: '超时', skipped: '跳过' },
             flags: { compression: '压缩', retry: '重试', nodeSwitch: '节点切换', degraded: '观测降级' },
+            evidenceLabel: '路由与瀑布观测证据', evidenceTitle: '已观测尝试', waterfallAttempt: '瀑布尝试 #{number}', noDetails: '没有更多详情', degraded: '观测降级',
             legend: { success: '成功', failed: '失败/超时', special: '压缩 · 重试 · 节点切换' },
           },
         },
@@ -66,6 +68,25 @@ describe('RequestProcessingFlowDiagram', () => {
     expect(wrapper.text()).toContain('节点切换')
     expect(wrapper.text()).toContain('timeout')
     expect(wrapper.text()).toContain('—')
+  })
+
+  it('renders real journey and waterfall evidence without fabricating trace nodes', () => {
+    const wrapper = mount(RequestProcessingFlowDiagram, {
+      global: { plugins: [i18n] },
+      props: {
+        trace: null,
+        journey: {
+          observation_status: 'observation_degraded',
+          events: [{ seq: 1, event_type: 'node_switched', stage: 'node_selection', observation_status: 'observation_degraded', occurred_at: '', request_id: 'req-1', tenant_id: 't', gateway_instance_id: 'g', from_credential_id: 1, to_credential_id: 2 }],
+        },
+        waterfall: { attempts: [{ attempt_id: 'a-1', attempt_no: 1, credential_id: 2, model: 'model-a', outcome: 'failure' }] },
+      } as any,
+    })
+    expect(wrapper.find('.flow-node').exists()).toBe(false)
+    expect(wrapper.text()).toContain('已观测尝试')
+    expect(wrapper.text()).toContain('节点切换')
+    expect(wrapper.text()).toContain('瀑布尝试 #1')
+    expect(wrapper.text()).toContain('观测降级')
   })
 
   it('does not fabricate a flow when trace data is absent', () => {
