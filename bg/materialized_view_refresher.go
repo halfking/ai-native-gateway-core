@@ -8,10 +8,20 @@
 // Refresh strategy:
 //   - routing_analytics_7d / routing_audit_summary_7d:
 //     REFRESH MATERIALIZED VIEW CONCURRENTLY every RefreshInterval.
-//   - A session-level advisory lock guards each refresh: canary and prod
-//     gateway instances share one database, and stacked REFRESHes would
-//     serialize on the view lock and waste cycles. The instance that
-//     fails pg_try_advisory_lock simply skips that cycle.
+//   - Cross-instance coordination is a token-bucket: every RefreshInterval
+//     tick is one "token", and exactly one gateway instance should redeem
+//     it. Two lock backends implement that mutual exclusion:
+//       1. Redis (preferred) — admin/distlock SETNX-with-TTL leader
+//          election (2026-09-01). Works across any number of instances
+//          without touching Postgres, and self-heals if a leader dies
+//          mid-refresh (TTL expiry, no manual unlock needed).
+//       2. Postgres advisory lock (fallback) — used verbatim when the
+//          distlock manager is nil/disabled (dev/local without Redis, or
+//          Redis outage). Session-scoped pg_try_advisory_lock; canary and
+//          prod instances share one database, and stacked REFRESHes would
+//          otherwise serialize on the view lock and waste cycles.
+//     The instance that fails to acquire either lock simply skips that
+//     cycle — never blocks, never queues.
 //   - Freshness contract with admin/analytics_materialized.go: consumers
 //     only trust the views when refreshed_at is within 15 minutes, so one
 //     missed cycle is invisible while a dead refresher degrades callers
@@ -20,10 +30,13 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 )
 
 const (
@@ -44,6 +57,19 @@ const (
 	// gateway instances sharing one database. Arbitrary constant; only
 	// uniqueness matters.
 	mvRefreshLockKey int64 = 632_2026_08_31
+
+	// mvRefreshDistLockNamespace/Logical build the Redis key backing the
+	// token-bucket leader election (2026-09-01), via distlock.BuildKey so
+	// it lands in one Redis Cluster hash slot regardless of deployment.
+	mvRefreshDistLockNamespace = "bg"
+	mvRefreshDistLockLogical   = "materialized_view_refresh"
+
+	// mvRefreshDistLockTTL bounds how long a Redis-elected leader holds the
+	// token before the lease auto-expires. Must exceed RefreshTimeout so a
+	// slow-but-alive refresh never loses its lease mid-cycle; distlock
+	// auto-renews at ttl/3 while the process is alive, so this is really
+	// just the crash-recovery bound (dead leader → lock free within TTL).
+	mvRefreshDistLockTTL = 6 * time.Minute
 )
 
 // MaterializedViewRefresher manages periodic refresh of routing analytics
@@ -56,6 +82,11 @@ type MaterializedViewRefresher struct {
 	failureCount    int
 	lastFailureTime time.Time
 	alertCallback   func(viewName string, consecutiveFailures int, err error)
+
+	// distLock is the optional Redis-backed leader election manager
+	// (2026-09-01). Nil (or Enabled()==false) makes refreshView fall back
+	// to the Postgres advisory lock unconditionally.
+	distLock distlock.Manager
 }
 
 // NewMaterializedViewRefresher creates a new refresher instance.
@@ -64,6 +95,15 @@ func NewMaterializedViewRefresher(db *pgxpool.Pool) *MaterializedViewRefresher {
 		db:   db,
 		done: make(chan struct{}),
 	}
+}
+
+// SetDistLock wires the Redis-backed distributed lock manager used for
+// cross-instance leader election (2026-09-01 — token-bucket refresh
+// coordination). Optional: when never called, or called with a manager
+// whose Enabled() is false, refreshView transparently falls back to the
+// Postgres advisory lock. Safe to call before or after Start().
+func (r *MaterializedViewRefresher) SetDistLock(mgr distlock.Manager) {
+	r.distLock = mgr
 }
 
 // Start begins the refresh loop in the background.
@@ -124,12 +164,30 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	ctx, cancel := context.WithTimeout(parentCtx, RefreshTimeout)
 	defer cancel()
 
+	// 2026-09-01: token-bucket cross-instance coordination for the whole
+	// cycle (both views share one token — no reason to elect a leader
+	// twice per tick). Redis is preferred: it works for any instance
+	// count and self-heals on crash via TTL expiry with no manual unlock.
+	// When Redis is nil/disabled/unreachable, useAdvisoryLock stays true
+	// and refreshView falls back to its per-view Postgres advisory lock
+	// exactly as before this change.
+	useAdvisoryLock := true
+	if handle := r.acquireDistLock(ctx); handle != nil {
+		defer handle.Release(context.WithoutCancel(ctx))
+		if !handle.IsLeader() {
+			slog.Info("materialized view refresh skipped, redis token held by another instance")
+			return
+		}
+		useAdvisoryLock = false
+		slog.Info("materialized view refresh: redis leader token acquired")
+	}
+
 	var hasError bool
 	var lastErr error
 	var failedView string
 
 	start := time.Now()
-	if err := r.refreshView(ctx, "routing_analytics_7d"); err != nil {
+	if err := r.refreshView(ctx, "routing_analytics_7d", useAdvisoryLock); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_analytics_7d"
@@ -142,7 +200,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	}
 
 	auditStart := time.Now()
-	if err := r.refreshView(ctx, "routing_audit_summary_7d"); err != nil {
+	if err := r.refreshView(ctx, "routing_audit_summary_7d", useAdvisoryLock); err != nil {
 		hasError = true
 		lastErr = err
 		failedView = "routing_audit_summary_7d"
@@ -169,11 +227,50 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	}
 }
 
-// refreshView refreshes a single materialized view using CONCURRENTLY
-// under a cross-instance advisory lock. A missing view (e.g. migration
-// 632 not applied on this database) is a skip, not an error — callers
-// fall back to base-view queries anyway.
-func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string) error {
+// acquireDistLock attempts the Redis token-bucket leader election for one
+// refresh cycle. Returns nil whenever Redis coordination was not usable —
+// no manager wired, the manager reports Enabled()==false, or Acquire itself
+// errored (e.g. Redis outage) — so the caller falls back to the Postgres
+// advisory lock. Returns a non-nil handle (leader OR follower) whenever the
+// Redis round-trip succeeded; the caller must Release() it either way and
+// only proceeds with the refresh when handle.IsLeader() is true.
+//
+// Acquire is non-blocking for followers here: distlock's follower path
+// only performs a quick pubsub subscribe handshake (bounded by
+// handshakeTimeout, ~3s) and returns immediately — it does NOT wait for
+// the leader to finish. That "return fast, let the caller decide" shape is
+// exactly the token-bucket semantics: a follower redeems no token and
+// skips the cycle instead of queueing behind the leader.
+func (r *MaterializedViewRefresher) acquireDistLock(ctx context.Context) *distlock.Handle {
+	if r.distLock == nil || !r.distLock.Enabled() {
+		return nil
+	}
+	h, err := r.distLock.Acquire(ctx, distlock.AcquireOpts{
+		Key:   distlock.BuildKey(mvRefreshDistLockNamespace, mvRefreshDistLockLogical),
+		TTL:   mvRefreshDistLockTTL,
+		Mode:  distlock.ModeWaitFollower,
+		Scope: "mv_refresh",
+	})
+	if err != nil {
+		if !errors.Is(err, distlock.ErrNotEnabled) {
+			slog.Warn("materialized view refresh: redis lock acquire failed, falling back to postgres advisory lock",
+				"error", err)
+		}
+		return nil
+	}
+	return h
+}
+
+// refreshView refreshes a single materialized view using CONCURRENTLY.
+// A missing view (e.g. migration 632 not applied on this database) is a
+// skip, not an error — callers fall back to base-view queries anyway.
+//
+// useAdvisoryLock controls the Postgres pg_try_advisory_lock guard
+// (2026-09-01): the caller sets it to false when refreshAll already holds
+// the Redis leader token for this cycle, since a second lock layer would
+// only add latency. It stays true whenever Redis coordination is
+// unavailable, preserving the original single-database dedup behaviour.
+func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName string, useAdvisoryLock bool) error {
 	var exists bool
 	err := r.db.QueryRow(ctx, `
 		SELECT EXISTS (
@@ -189,6 +286,11 @@ func (r *MaterializedViewRefresher) refreshView(ctx context.Context, viewName st
 		slog.Warn("materialized view does not exist, skipping refresh",
 			"view", viewName)
 		return nil
+	}
+
+	if !useAdvisoryLock {
+		_, err = r.db.Exec(ctx, "REFRESH MATERIALIZED VIEW CONCURRENTLY "+viewName)
+		return err
 	}
 
 	// Pin one connection for the whole lock/refresh/unlock sequence:
