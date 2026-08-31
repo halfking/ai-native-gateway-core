@@ -175,6 +175,13 @@ export default {
     viewRoutingRetry: 'Ver reintento de enrutamiento',
     empty: 'Sin eventos de enlace',
     noData: 'Sin datos de flujo',
+    diagram: {
+      event: 'Evento de flujo', noData: 'Sin flujo observable', noEvents: 'Sin eventos de flujo',
+      stages: { received: 'Entrada', routing: 'Resolución de ruta', model_queue: 'Cola del modelo', credential_queue: 'Cola de credenciales', node_selection: 'Selección de nodo', upstream: 'Solicitud ascendente', streaming: 'Respuesta en streaming', terminal: 'Solicitud completada' },
+      status: { success: 'Éxito', failed: 'Fallido', timeout: 'Tiempo agotado', skipped: 'Omitido' },
+      flags: { compression: 'Compresión', retry: 'Reintento', nodeSwitch: 'Cambio de nodo', degraded: 'Observación degradada' },
+      legend: { success: 'Éxito', failed: 'Fallido/tiempo agotado', special: 'Compresión · reintento · cambio de nodo' },
+    },
   },
   // — marcadores comunes —
   common: {

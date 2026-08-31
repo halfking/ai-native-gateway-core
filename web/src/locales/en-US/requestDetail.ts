@@ -175,6 +175,13 @@ export default {
     viewRoutingRetry: 'View routing retry',
     empty: 'No link events',
     noData: 'No flow data',
+    diagram: {
+      event: 'Flow event', noData: 'No observable flow', noEvents: 'No flow events',
+      stages: { received: 'Ingress', routing: 'Route resolution', model_queue: 'Model queue', credential_queue: 'Credential queue', node_selection: 'Node selection', upstream: 'Upstream request', streaming: 'Streaming response', terminal: 'Request complete' },
+      status: { success: 'Success', failed: 'Failed', timeout: 'Timeout', skipped: 'Skipped' },
+      flags: { compression: 'Compression', retry: 'Retry', nodeSwitch: 'Node switch', degraded: 'Observation degraded' },
+      legend: { success: 'Success', failed: 'Failed/timeout', special: 'Compression · retry · node switch' },
+    },
   },
   // — shared placeholders —
   common: {
