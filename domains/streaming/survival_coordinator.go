@@ -260,6 +260,19 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	)
 
 	for {
+		// 2026-09-01: attempt-start line. Without it the log only shows the
+		// OUTCOME of each pass, so a request that ends in resume_blocked gives
+		// no way to tell whether the L1 holdback window was even active (the
+		// glm-5.2 / minimax-m3 failure class hinges on exactly that) nor how
+		// much of the interactive deadline remained.
+		log.Info("survival_attempt_start",
+			"request_id", params.RequestID,
+			"attempt", res.Attempts+1,
+			"holdback_window_ms", hbWindow.Milliseconds(),
+			"holdback_max_chunks", hbChunks,
+			"deadline_remaining_sec", int(deadline.Sub(c.now()).Seconds()),
+			"backoff_ms", backoff.Milliseconds(),
+		)
 		// P1-2 fix (2026-08-28): Pass ctx to gate for checkpoint context propagation.
 		gate := NewAttemptCommitGate(ctx, c.Protocol, sw, GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks, BeforeSemanticCommit: func(ctx context.Context, state CommitState) error {
 			if c.BeforeSemanticCommit == nil {
@@ -335,22 +348,48 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			// would wrongly swallow them and the client would see an empty
 			// body. FinishAttempt refuses a discarded gate, so this stays safe.
 			if err := gw.Finish(); err != nil {
+				finishBufBytes, finishHoldbackHeld, finishGateState := gate.Snapshot()
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				// 2026-09-01: the finish error itself was previously dropped, so a
+				// success-path attempt that died while releasing held frames was
+				// indistinguishable from a genuine client disconnect.
 				log.Warn("survival_task_ended",
 					"attempt", res.Attempts,
 					"action", res.Decision.Action.String(),
 					"reason", res.Decision.Reason,
 					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
 					"succeed", false,
+					"finish_error", err.Error(),
+					"buffer_bytes", finishBufBytes,
+					"holdback_held", finishHoldbackHeld,
+					"gate_state", finishGateState.String(),
+					"provider_id", lastProviderID,
+					"raw_model", lastRawModel,
 				)
 				return res
 			}
 			if err := gate.Commit(); err != nil {
+				commitBufBytes, commitHoldbackHeld, commitGateState := gate.Snapshot()
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				// 2026-09-01: this branch returned entirely silently, so a failed
+				// final commit left no trace at all in the logs.
+				log.Error("survival_task_ended",
+					"attempt", res.Attempts,
+					"action", res.Decision.Action.String(),
+					"reason", res.Decision.Reason,
+					"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+					"succeed", false,
+					"commit_error", err.Error(),
+					"buffer_bytes", commitBufBytes,
+					"holdback_held", commitHoldbackHeld,
+					"gate_state", commitGateState.String(),
+					"provider_id", lastProviderID,
+					"raw_model", lastRawModel,
+				)
 				return res
 			}
 			res.Succeed = true
