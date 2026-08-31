@@ -14,21 +14,20 @@ require '245 has candidate unit' 'llmgo-245-canary@.service' "$ROOT/scripts/depl
 require 'nginx includes dynamic fragment' 'include /opt/llm-gateway-go/run/active-upstream.conf' "$ROOT/deploy/llmgo-245.nginx.conf"
 require 'seamless starts candidate before stop' 'systemctl start.*candidate_service' "$ROOT/scripts/deploy-seamless.sh"
 require 'seamless stops old service after gates' 'systemctl stop.*active_service' "$ROOT/scripts/deploy-seamless.sh"
-# 2026-08-31: contract pin — seamless MUST swap `current` BEFORE starting the
-# candidate, because the canary unit on env 154/245 follows the active binary
-# symlink (not slots/<port>/). A candidate that runs against stale current
-# passes healthz/readyz but fails /version (returns old build_seq). Restore
-# current to old_version on pre-cutover probe failure so the active keeps
-# serving the previously verified binary.
-require 'seamless swaps current before candidate start' "ln -sfn .*releases/\\\$version. .*current" "$ROOT/scripts/deploy-seamless.sh"
-require 'seamless restores current on probe failure' 'releases/\$old_version.*REMOTE_ROOT/current' "$ROOT/scripts/deploy-seamless.sh"
-# 2026-08-31: contract pin — the canonical canary unit MUST follow the active
-# binary symlink, NOT a per-port slot, AND restart on failure. Slot-based
-# units ship dead code on env 154/245 (slots/ is never populated, candidate
-# fails to bind silently). Restart=no + ExecStart=.../slots/%i/... is the
-# shape that produced the 2026-08-31 incident.
-require 'canary unit follows active binary symlink' 'ExecStart=/opt/llm-gateway-go/llm-gateway-go' "$ROOT/deploy/llm-gateway-go-canary@.service"
+# Candidate pre-warm is isolated from the active release: the deployer stages
+# slots/<port> before start, while the unit pins both binary and version.json
+# to that slot. current is promoted only after the candidate has passed its
+# probes, so a failed pre-warm cannot change the serving release identity.
+require 'seamless stages slot before candidate start' 'REMOTE_ROOT/slots/\$candidate_port' "$ROOT/scripts/deploy-seamless.sh"
+require 'seamless probes candidate version before promotion' 'candidate_version_url' "$ROOT/scripts/deploy-seamless.sh"
+require 'seamless promotes current after candidate probes' 'ln -sfn .*releases/\$version.*REMOTE_ROOT/current' "$ROOT/scripts/deploy-seamless.sh"
+require '154 canary pins immutable slot binary' 'slots/%i/llm-gateway-go' "$ROOT/deploy/llm-gateway-go-canary@.service"
+require '154 canary pins immutable slot version' 'LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/slots/%i/version.json' "$ROOT/deploy/llm-gateway-go-canary@.service"
+require '245 canary pins immutable slot binary' 'slots/%i/gateway' "$ROOT/deploy/llmgo-245-canary@.service"
+require '245 canary pins immutable slot version' 'LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/slots/%i/version.json' "$ROOT/deploy/llmgo-245-canary@.service"
 require 'canary unit restarts on failure' 'Restart=on-failure' "$ROOT/deploy/llm-gateway-go-canary@.service"
+require 'version probe uses immutable staged identity' 'version_identity_matches.*expected_release_version.*expected_release_seq' "$ROOT/scripts/deploy-seamless.sh"
+
 require 'installer backs up legacy unit' 'pre-blue-green-assets' "$ROOT/scripts/install-blue-green-assets.sh"
 require 'seamless surfaces per-probe failure' 'remote_probe' "$ROOT/scripts/deploy-seamless.sh"
 # 2026-08-31: pin the probe timeout default at 60s. env 154 takes 35-40s for
@@ -42,4 +41,9 @@ require 'seamless surfaces per-probe failure' 'remote_probe' "$ROOT/scripts/depl
 require 'seamless probe timeout >= 60s' 'PROBE_TIMEOUT_SECS:-60' "$ROOT/scripts/deploy-seamless.sh"
 require 'local direct fallback is explicit' 'requires --proxy' "$ROOT/scripts/local-host-blue-green.sh"
 require 'install does not start traffic' 'never starts a candidate' "$ROOT/scripts/install-blue-green-assets.sh"
+# Crashed deploys can leave slots/<port> symlinks aimed at pruned releases;
+# the prune pass must remove those while sparing the active/candidate slots.
+require 'prune removes dangling slot symlinks' 'pruned dangling slot' "$ROOT/scripts/deploy-seamless.sh"
+require 'prune spares active and candidate slots' 'active_slot=...cat ..REMOTE_ROOT/run/active-port' "$ROOT/scripts/deploy-seamless.sh"
+require 'env file permissions converge to 0600' 'chmod 0600' "$ROOT/scripts/deploy-seamless.sh"
 (( fail == 0 ))

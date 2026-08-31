@@ -22,7 +22,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${SSH_WRAPPER_HOP_HOST:?run env-injector inject aliyun-gateway-154 first}"
 : "${SSH_WRAPPER_TARGET_IP:?run env-injector inject aliyun-gateway-154 first}"
 : "${SSH_WRAPPER_TARGET_HOST:?run env-injector inject aliyun-gateway-154 first}"
-: "${SSHPASS_154:?run env-injector inject aliyun-gateway-154 first}"
+if [[ -z "${SSH_WRAPPER_TARGET_KEY:-}" && -z "${SSHPASS_154:-}" && -z "${DEPLOY_SSH_PASS:-}" ]]; then
+  echo "run env-injector inject aliyun-gateway-154 or provide an explicit 154 password" >&2
+  exit 64
+fi
 
 HOST_154="$SSH_WRAPPER_TARGET_HOST"
 HOST_252="${HOST_252:-115.29.212.252}"
