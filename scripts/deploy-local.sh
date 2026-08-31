@@ -54,11 +54,76 @@ build_all() {
   (cd "$ROOT_DIR/web" && npm run build)
 }
 
+apply_schema_snapshot() {
+  # Empty database bootstrap: apply schema snapshot before strict migrations.
+  # 01-schema.sql is a pg_dump that contains forward references (functions
+  # referring to tables created later in the file). We must use
+  # ON_ERROR_STOP=0 with a "real error" filter so the whole snapshot applies
+  # without aborting on those forward references.
+  local schema_dir="$ROOT_DIR/sql/schema"
+  [[ -d "$schema_dir" ]] || die "schema snapshot directory missing: $schema_dir"
+  for f in 00-prereqs.sql 01-schema.sql 02-seed.sql; do
+    local path="$schema_dir/$f"
+    [[ -f "$path" ]] || die "schema snapshot file missing: $path"
+    printf 'Applying schema/%s\n' "$f"
+    local log="/tmp/llm-gateway-schema-$(basename "$f").log"
+    if ! psql -X -v ON_ERROR_STOP=0 -q "$LLM_GATEWAY_DATABASE_URL" -f "$path" >"$log" 2>&1; then
+      die "schema/$f failed; see $log"
+    fi
+    if grep -qiE "error|fatal" "$log" && ! grep -qiE "already exists|duplicate key|exists, skipping|does not exist, skipping" "$log"; then
+      die "schema/$f reported fatal errors; see $log"
+    fi
+  done
+}
+
+# Detect empty database (no ledger + no relations) so deploy works on a fresh PG.
+database_is_empty() {
+  local count
+  count=$(psql -X -Atqc "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r','p','v','m','S','f') AND relname <> 'repository_schema_migrations'" "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null) || return 1
+  [[ "$count" == "0" ]]
+}
+
 migrate() {
   need psql
+  if database_is_empty; then
+    printf 'Empty database detected; applying schema snapshot before migrations.\n'
+    apply_schema_snapshot
+    # After schema snapshot the strict migration runner would refuse because
+    # the ledger is empty while relations exist. Bootstrap mode is wrong here
+    # because snapshot already created most tables; baseline mode records
+    # ≤baseline_through as applied (no execution) so later migrations still run.
+    local baseline_through
+    baseline_through=$(latest_migration_version)
+    printf 'Baselining existing schema through version %s; later migrations will be applied.\n' "$baseline_through"
+    if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh" --baseline-through "$baseline_through"; then
+      die "baseline migration failed"
+    fi
+    # Now re-run in default mode to apply only new migrations (ledger non-empty).
+    if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh"; then
+      die "migrations failed; if repository_schema_migrations is empty on a populated database, rerun with --baseline-through <known-version> via scripts/run-migrations-strict.sh directly"
+    fi
+    return 0
+  fi
   if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh"; then
     die "migrations failed; if repository_schema_migrations is empty on a populated database, rerun with --baseline-through <known-version> via scripts/run-migrations-strict.sh directly"
   fi
+}
+
+latest_migration_version() {
+  # Highest numeric version prefix across startup/domain/ursm scopes (matches
+  # the parsing in run-migrations-strict.sh: leading digits before any '-_').
+  find "$ROOT_DIR/sql/migrations" -type f -name '[0-9]*-*.sql' -o -name '[0-9]*_*.sql' 2>/dev/null \
+    | while read -r f; do
+        base=$(basename "$f")
+        case "$base" in *.down.sql) continue;; esac
+        # strict's regex for ursm is "[0-9]*-*.sql" and for others "[0-9]*.sql"
+        if [[ "$base" == *-* ]]; then
+          v=${base%%-*}
+        else
+          v=${base%%_*}
+        fi
+        printf '%s\n' "${v%%[^0-9]*}"
+      done | sort -n | tail -1
 }
 
 start_service() {
