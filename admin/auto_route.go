@@ -550,34 +550,74 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// synthetic __specified__ key. Auto-only profile distribution
 	// follows below.
 	taskDist := map[string]int{}
-	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT %s AS task_type, COUNT(*)
-		FROM request_logs_with_current_month_without_customer_id
-		WHERE ts >= NOW() - INTERVAL '7 days'
-		  AND (
-		    is_auto_request = TRUE
-		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+auditTenantFrag+`
-		GROUP BY (%s)
-		ORDER BY COUNT(*) DESC
-		LIMIT 20
-	`, taskExpr, taskExpr), auditTenantArgs...)
-	if err == nil {
-		for rows.Next() {
-			var t string
-			var c int
-			if err := rows.Scan(&t, &c); err == nil {
-				taskDist[t] = c
-			}
+	
+	// 2026-09-01: use materialized view when eligible (same tenant logic as audit summary)
+	if mvFound {
+		// MV path: aggregate by effective_task_type
+		var taskQuery string
+		var taskArgs []interface{}
+		if tenantID != nil {
+			taskQuery = `
+				SELECT effective_task_type, SUM(request_count)::int AS count
+				FROM routing_analytics_7d
+				WHERE tenant_id = $1
+				GROUP BY effective_task_type
+				ORDER BY count DESC
+				LIMIT 20
+			`
+			taskArgs = []interface{}{*tenantID}
+		} else {
+			taskQuery = `
+				SELECT effective_task_type, SUM(request_count)::int AS count
+				FROM routing_analytics_7d
+				GROUP BY effective_task_type
+				ORDER BY count DESC
+				LIMIT 20
+			`
 		}
-		rows.Close()
-		out["task_distribution"] = taskDist
+		rows, err := h.db.Query(ctx, taskQuery, taskArgs...)
+		if err == nil {
+			for rows.Next() {
+				var t string
+				var c int
+				if err := rows.Scan(&t, &c); err == nil {
+					taskDist[t] = c
+				}
+			}
+			rows.Close()
+			out["task_distribution"] = taskDist
+		}
+	} else {
+		// Fallback to base view
+		taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
+		rows, err := h.db.Query(ctx, fmt.Sprintf(`
+			SELECT %s AS task_type, COUNT(*)
+			FROM request_logs_with_current_month_without_customer_id
+			WHERE ts >= NOW() - INTERVAL '7 days'
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+			  )`+auditTenantFrag+`
+			GROUP BY (%s)
+			ORDER BY COUNT(*) DESC
+			LIMIT 20
+		`, taskExpr, taskExpr), auditTenantArgs...)
+		if err == nil {
+			for rows.Next() {
+				var t string
+				var c int
+				if err := rows.Scan(&t, &c); err == nil {
+					taskDist[t] = c
+				}
+			}
+			rows.Close()
+			out["task_distribution"] = taskDist
+		}
 	}
 
 	// Profile distribution
 	profileDist := map[string]int{}
-	rows, err = h.db.Query(ctx, `
+	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(auto_profile, 'unknown') AS p, COUNT(*)
 		FROM request_logs_with_current_month_without_customer_id
 		WHERE is_auto_request = TRUE
@@ -600,33 +640,78 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 
 	// Top chosen models — union auto and specified so users can see
 	// which explicit models are consuming volume.
-	rows, err = h.db.Query(ctx, `
-		SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
-		FROM request_logs_with_current_month_without_customer_id
-		WHERE ts >= NOW() - INTERVAL '7 days'
-		  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
-		  AND (
-		    is_auto_request = TRUE
-		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+auditTenantFrag+`
-		GROUP BY m
-		ORDER BY c DESC
-		LIMIT 10
-	`, auditTenantArgs...)
-	if err == nil {
-		topModels := make([]map[string]interface{}, 0)
-		for rows.Next() {
-			var m string
-			var c int
-			if err := rows.Scan(&m, &c); err == nil {
-				topModels = append(topModels, map[string]interface{}{
-					"model": m,
-					"count": c,
-				})
-			}
+	// 2026-09-01: use materialized view when eligible
+	if mvFound {
+		// MV path: aggregate by effective_model
+		var topQuery string
+		var topArgs []interface{}
+		if tenantID != nil {
+			topQuery = `
+				SELECT effective_model, SUM(request_count)::int AS c
+				FROM routing_analytics_7d
+				WHERE tenant_id = $1
+				  AND effective_model IS NOT NULL
+				GROUP BY effective_model
+				ORDER BY c DESC
+				LIMIT 10
+			`
+			topArgs = []interface{}{*tenantID}
+		} else {
+			topQuery = `
+				SELECT effective_model, SUM(request_count)::int AS c
+				FROM routing_analytics_7d
+				WHERE effective_model IS NOT NULL
+				GROUP BY effective_model
+				ORDER BY c DESC
+				LIMIT 10
+			`
 		}
-		rows.Close()
-		out["top_chosen_models"] = topModels
+		rows, err := h.db.Query(ctx, topQuery, topArgs...)
+		if err == nil {
+			topModels := make([]map[string]interface{}, 0)
+			for rows.Next() {
+				var m string
+				var c int
+				if err := rows.Scan(&m, &c); err == nil {
+					topModels = append(topModels, map[string]interface{}{
+						"model": m,
+						"count": c,
+					})
+				}
+			}
+			rows.Close()
+			out["top_chosen_models"] = topModels
+		}
+	} else {
+		// Fallback to base view
+		rows, err := h.db.Query(ctx, `
+			SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
+			FROM request_logs_with_current_month_without_customer_id
+			WHERE ts >= NOW() - INTERVAL '7 days'
+			  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+			  )`+auditTenantFrag+`
+			GROUP BY m
+			ORDER BY c DESC
+			LIMIT 10
+		`, auditTenantArgs...)
+		if err == nil {
+			topModels := make([]map[string]interface{}, 0)
+			for rows.Next() {
+				var m string
+				var c int
+				if err := rows.Scan(&m, &c); err == nil {
+					topModels = append(topModels, map[string]interface{}{
+						"model": m,
+						"count": c,
+					})
+				}
+			}
+			rows.Close()
+			out["top_chosen_models"] = topModels
+		}
 	}
 
 	writeJSONOk(w, out)
