@@ -133,13 +133,14 @@ func TestMigration630SessionAggregateOutboxContract(t *testing.T) {
 // of truth the contract tests above guard.
 func TestMigrations627To630EmbeddedBytesMatchCanonicalSources(t *testing.T) {
 	cases := []struct {
-		key  string
+		key   string
 		embed []byte
 	}{
 		{"startup/627_candidate_failure_logs_aggregation_id_unified.sql", candidateFailureLogsAggregationIdUnifiedMigration627},
 		{"startup/628_candidate_failure_logs_promote_atomic_v3.sql", candidateFailureLogsPromoteAtomicV3Migration628},
 		{"startup/629_audit_attachments_cleanup.sql", auditAttachmentsCleanupMigration629},
 		{"startup/630_session_aggregate_outbox.sql", sessionAggregateOutboxMigration630},
+		{"startup/635_drop_session_turns_unified.sql", dropSessionTurnsUnifiedMigration635},
 	}
 	for _, c := range cases {
 		if len(c.embed) == 0 {
@@ -151,6 +152,26 @@ func TestMigrations627To630EmbeddedBytesMatchCanonicalSources(t *testing.T) {
 			t.Errorf("embed drift for %s: installer embed differs from canonical SQL", c.key)
 		}
 	}
+}
+
+// TestMigration635DropSessionTurnsUnifiedContract locks in the cleanup
+// shape introduced after migration 619 was deleted: every environment that
+// applied 619 must run 635 to drop the orphan view. A regression that flips
+// 635 to DROP a different view, or removes the IF EXISTS guard, breaks
+// idempotency on fresh installs.
+func TestMigration635DropSessionTurnsUnifiedContract(t *testing.T) {
+	src := canonicalMigration(t, "635_drop_session_turns_unified.sql")
+	mustContain(t, src,
+		"DROP VIEW IF EXISTS public.session_turns_unified",
+	)
+	// The down must symmetrically recreate the view so operators rolling back
+	// do not lose the contract; without it, dropping the 635 row would create
+	// a no-go state on rollback.
+	down := canonicalMigration(t, "635_drop_session_turns_unified.down.sql")
+	mustContain(t, down,
+		"CREATE OR REPLACE VIEW session_turns_unified",
+		"WITH (security_invoker=true)",
+	)
 }
 
 func canonicalMigration(t *testing.T, name string) string {

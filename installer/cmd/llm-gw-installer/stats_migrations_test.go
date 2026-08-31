@@ -50,7 +50,6 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
 		"614_session_bodies_hot.sql":                                       sessionBodiesHotMigration614,
 		"615_session_bodies_hot_promote_function.sql":                      sessionBodiesHotPromoteMigration615,
-		"619_session_turns_unified_view.sql":                               sessionTurnsUnifiedViewMigration619,
 		"620_provider_error_details_tenant_scope.sql":                      providerErrorDetailsTenantScopeMigration620,
 		"621_provider_error_details_cleanup_index.sql":                     providerErrorDetailsCleanupIndexMigration621,
 		"622_provider_error_aggregator_state.sql":                          providerErrorAggregatorStateMigration622,
@@ -63,6 +62,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
 		"630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
 		"631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
+		"635_drop_session_turns_unified.sql":                              dropSessionTurnsUnifiedMigration635,
 	}
 
 	for name, embedded := range expected {
