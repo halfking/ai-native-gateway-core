@@ -20,6 +20,22 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var (
+	// contextLimitDiscoveryTotal counts the number of times the gateway discovered
+	// a context limit from an upstream error message and persisted it to
+	// credential_model_bindings.context_window_override with source='discovery'.
+	// Labels: credential_id, model, status (discovered/persisted/failed).
+	contextLimitDiscoveryTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_context_limit_discovery_total",
+			Help: "Total context limit discoveries from upstream errors (2026-09-01 P2)",
+		},
+		[]string{"credential_id", "model", "status"},
+	)
 )
 
 const (
@@ -1008,6 +1024,46 @@ func (e *Executor) handleContextLengthRecovery(
 			)
 			discovered := limit
 			targetCand.ContextWindow = &discovered
+
+			// Increment discovery metric.
+			contextLimitDiscoveryTotal.WithLabelValues(
+				fmt.Sprintf("%d", targetCand.CredentialID),
+				targetCand.RawModel,
+				"discovered",
+			).Inc()
+
+			// P2 (2026-09-01): persist the discovered limit to
+			// credential_model_bindings.context_window_override with
+			// source='discovery' so future requests use the correct value
+			// without rediscovery. Fire-and-forget async: a slow DB write
+			// should not block the retry.
+			if e.ContextLimitUpdater != nil {
+				go func() {
+					credIDCopy := targetCand.CredentialID
+					modelCopy := targetCand.RawModel
+					limitCopy := limit
+
+					// Use a detached context with a 10s timeout so the write
+					// completes even if the request context is cancelled.
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+
+					err := e.ContextLimitUpdater.UpdateContextLimit(ctx, credIDCopy, modelCopy, limitCopy)
+					if err != nil {
+						contextLimitDiscoveryTotal.WithLabelValues(
+							fmt.Sprintf("%d", credIDCopy),
+							modelCopy,
+							"failed",
+						).Inc()
+					} else {
+						contextLimitDiscoveryTotal.WithLabelValues(
+							fmt.Sprintf("%d", credIDCopy),
+							modelCopy,
+							"persisted",
+						).Inc()
+					}
+				}()
+			}
 		}
 	}
 

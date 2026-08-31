@@ -203,6 +203,17 @@ type IntegrityCandidate struct {
 	StreamAborted bool
 }
 
+// ContextLimitUpdater (2026-09-01 P2) persists discovered context limits to
+// credential_model_bindings.context_window_override with source='discovery'.
+// Called by handleContextLengthRecovery when the upstream error body carries
+// the real limit and it differs from the configured value by >5%.
+//
+// The interface allows test doubles and no-op implementations. The concrete
+// *dbx.DBContextLimitUpdater writes to the database; nil disables the feature.
+type ContextLimitUpdater interface {
+	UpdateContextLimit(ctx context.Context, credentialID int, rawModel string, limit int) error
+}
+
 // UpstreamRequestLogger records the exact body sent to an upstream provider.
 // Implementations are optional so existing diagnostic fakes stay compatible.
 type UpstreamRequestLogger interface {
@@ -883,6 +894,14 @@ type Executor struct {
 	// 该字段是接口而不是具体类型，executors 包不依赖 integrity 子包，
 	// 注入的实例在底层是 *integrity.Detector 包装。
 	IntegrityDetector IntegrityDetector
+
+	// ContextLimitUpdater (2026-09-01 P2): async persistence of discovered
+	// context limits to credential_model_bindings.context_window_override with
+	// source='discovery'. Called by handleContextLengthRecovery when the
+	// upstream error body carries the real limit and it differs from the
+	// configured value by >5%. Nil disables the feature (no persistence;
+	// discovered limits are used for the current request only).
+	ContextLimitUpdater ContextLimitUpdater
 }
 
 // DefaultFallbackChain (Phase 2, 2026-07-19) returns a sensible default
