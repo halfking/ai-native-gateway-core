@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -978,9 +979,36 @@ func (e *Executor) handleContextLengthRecovery(
 	sourceBody *[]byte,
 	st *contextLengthRecoveryState,
 	status int,
+	errorBody []byte,
 ) ctxLenRecoveryAction {
 	if params == nil || sourceBody == nil || st == nil {
 		return ctxLenGiveUp
+	}
+
+	// 2026-09-01: the upstream is the authority on its own context window.
+	// When the rejection body carries the real limit ("This model's maximum
+	// context length is 262144 tokens"), trust it over the configured value,
+	// which may be unset or stale. The discovered limit drives every
+	// compression tier below via targetCand.ContextWindow.
+	if limit, ok := errorsx.ParseContextLimitFromError(string(errorBody)); ok && limit > 0 {
+		configured := 0
+		if targetCand.ContextWindow != nil {
+			configured = *targetCand.ContextWindow
+		}
+		// Only override when the configured value is missing or off by more
+		// than 5% — small differences are within estimator noise and
+		// rewriting them adds log churn without changing the trim outcome.
+		if configured == 0 || math.Abs(float64(limit-configured))/float64(limit) > 0.05 {
+			slog.Warn("context_limit_mismatch_detected",
+				"credential_id", targetCand.CredentialID,
+				"model", targetCand.RawModel,
+				"config_limit", configured,
+				"actual_limit", limit,
+				"status", status,
+			)
+			discovered := limit
+			targetCand.ContextWindow = &discovered
+		}
 	}
 
 	// Round 47 compression v7 T-NEW-1: capture bytes_before for compression_meta.
@@ -1096,11 +1124,16 @@ func (e *Executor) handleContextLengthRecovery(
 	// summarization does not depend on the target window size.
 	if targetCand.ContextWindow != nil && !st.mechanicalAttempted {
 		st.mechanicalAttempted = true
+		// 2026-09-01: use the aggressive (60%) target rather than the default
+		// 85%. We are here because the upstream already rejected this body, so
+		// trimming to just under the limit leaves no room for the response or
+		// for estimator error — a request that overshot by 0.4% would otherwise
+		// come back 4xx a second time.
 		mechanicalFn := func(b []byte) []byte {
 			if params.ClientProtocol == "anthropic-messages" {
-				return transformation.CompressAnthropicMessagesIfNeeded(b, *targetCand.ContextWindow)
+				return transformation.CompressAnthropicMessagesAggressively(b, *targetCand.ContextWindow)
 			}
-			return transformation.CompressMessagesIfNeeded(b, *targetCand.ContextWindow)
+			return transformation.CompressMessagesAggressively(b, *targetCand.ContextWindow)
 		}
 		trimmed := mechanicalFn(*sourceBody)
 		if len(trimmed) < len(*sourceBody) {
