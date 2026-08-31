@@ -34,6 +34,7 @@ import compression from './compression'
 import examples from './examples'
 import dataLifecycle from './dataLifecycle'
 import tuning from './tuning'
+import turnDigest from './turnDigest'
 import correlations from './correlations'
 import tenantModelPolicyPanel from './tenantModelPolicyPanel'
 import clientConfigDialog from './clientConfigDialog'
@@ -103,6 +104,7 @@ export default {
   examples,
   dataLifecycle,
   tuning,
+  turnDigest,
   correlations,
   tenantModelPolicyPanel,
   clientConfigDialog,
