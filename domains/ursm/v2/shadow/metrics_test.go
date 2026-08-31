@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
-	dto "github.com/prometheus/client_model/go"
 )
 
 func TestShadowDiffMetricHasStableLabels(t *testing.T) {
@@ -58,10 +57,9 @@ func TestShadowEnqueueTotal_ResultLabels(t *testing.T) {
 			if family.GetName() != "ursm_shadow_enqueued_total" {
 				continue
 			}
-			for _, metric := range family.Metric {
-				m := &dto.Metric{}
-				if err := metric.Write(m); err == nil {
-					total += m.GetCounter().GetValue()
+			for _, metric := range family.GetMetric() {
+				if c := metric.GetCounter(); c != nil {
+					total += c.GetValue()
 				}
 			}
 		}
