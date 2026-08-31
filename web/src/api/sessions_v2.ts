@@ -71,6 +71,8 @@ export interface TurnListItem {
   injection_verdict: string
   output_verdict: string
   attachment_count: number
+  /** 后端 buildTurnDigest 模板式生成；缺数据时为 null（前端走 fallback）。 */
+  digest?: TurnDigest | null
 }
 
 export interface TurnsResponse {
