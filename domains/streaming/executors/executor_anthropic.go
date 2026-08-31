@@ -821,7 +821,7 @@ func (e *Executor) executeAnthropic(
 			return result, nil
 		}
 		if cle, ok := tryErr.(*contextLengthHTTPError); ok {
-			switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, cle.status) {
+			switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, cle.status, cle.body) {
 			case ctxLenRetry:
 				bodyBytes, err = e.prepareAnthropicRequestBody(params, cand, sourceBody)
 				if err != nil {
