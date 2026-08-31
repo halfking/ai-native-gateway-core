@@ -269,6 +269,16 @@ func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr bo
 	if trendPointsCoverRange(tr, points) {
 		return points, nil
 	}
+	// 2026-08-31: skip the log fallback when the minute path already has
+	// ANY points. The fallback runs GROUP BY date_trunc on 175K rows of
+	// request_logs_with_current_month, which takes ~1.4s on days=7 — when
+	// added to other fallback work (summary, pies) it exhausts the 10s
+	// handler timeout. Returning the partial minute data is the lesser
+	// evil: the user sees a recent slice of trends instead of a 10s
+	// timeout that returns trends=null and pies via fallback.
+	if len(points) > 0 {
+		return points, nil
+	}
 	fallback, fbErr := h.fallbackBoardTrends(ctx, tenantID, tr, providerID)
 	if fbErr != nil {
 		if len(points) > 0 {
