@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   extractAssistantReply,
   extractMessagesFromBody,
@@ -25,6 +26,8 @@ const roleFilter = ref<RoleFilter>('all')
 const expanded = ref<Set<number>>(new Set())
 const replyExpanded = ref(false)
 
+const { t } = useI18n()
+
 watch(
   () => props.lockedRole,
   (r) => {
@@ -45,7 +48,7 @@ const replyText = computed(() =>
   props.responseBody == null ? '' : extractAssistantReply(props.responseBody),
 )
 
-const replyPreview = computed(() => previewText(replyText.value || '(无回复)'))
+const replyPreview = computed(() => previewText(replyText.value || t('requestDetail.conversation.noReply')))
 
 function mediaForMessage(i: number) {
   return allMedia.value.filter((m) => m.messageIndex === i)
@@ -95,12 +98,12 @@ function roleTone(role: unknown): string {
         :class="{ 'btn-primary': effectiveRole === f }"
         @click="roleFilter = f"
       >
-        {{ f === 'all' ? '全部' : f }}
+        {{ f === 'all' ? t('requestDetail.conversation.allFilter') : f }}
       </button>
-      <span v-if="allMedia.length" class="media-hint">含媒体 {{ allMedia.length }}</span>
+      <span v-if="allMedia.length" class="media-hint">{{ t('requestDetail.conversation.mediaHint', { count: allMedia.length }) }}</span>
     </div>
     <div v-else-if="allMedia.length" class="conv-filters">
-      <span class="media-hint">含媒体 {{ allMedia.length }}</span>
+      <span class="media-hint">{{ t('requestDetail.conversation.mediaHint', { count: allMedia.length }) }}</span>
     </div>
     <template v-if="messages.length">
       <div v-for="(msg, i) in messages" :key="i" class="msg-block" :class="roleTone(msg.role)">
@@ -122,10 +125,10 @@ function roleTone(role: unknown): string {
           class="btn btn-sm linkish"
           @click="toggle(i)"
         >
-          {{ expanded.has(i) ? '收起' : '展开' }}
+          {{ expanded.has(i) ? t('requestDetail.conversation.collapse') : t('requestDetail.conversation.expand') }}
         </button>
         <div v-if="msg.tool_calls" class="tool-block">
-          <div class="tool-label">工具调用:</div>
+          <div class="tool-label">{{ t('requestDetail.conversation.toolCall') }}</div>
           <pre
             v-for="(tc, j) in (msg.tool_calls as unknown[])"
             :key="j"
@@ -134,17 +137,17 @@ function roleTone(role: unknown): string {
         </div>
       </div>
     </template>
-    <div v-else class="text-muted">{{ emptyHint || '(无消息)' }}</div>
+    <div v-else class="text-muted">{{ emptyHint || t('requestDetail.conversation.noMessages') }}</div>
 
     <section v-if="responseBody !== undefined" class="reply-block msg-block--assistant" data-testid="chat-reply">
-      <div class="msg-role" :style="{ color: roleColor('assistant') }">[assistant 回复]</div>
-      <pre class="msg-pre" :class="{ 'msg-pre--expanded': replyExpanded }">{{ replyExpanded ? (replyText || '(无回复)') : replyPreview.text }}</pre>
+      <div class="msg-role" :style="{ color: roleColor('assistant') }">{{ t('requestDetail.conversation.assistantReply') }}</div>
+      <pre class="msg-pre" :class="{ 'msg-pre--expanded': replyExpanded }">{{ replyExpanded ? (replyText || t('requestDetail.conversation.noReply')) : replyPreview.text }}</pre>
       <button
         v-if="replyPreview.truncated || replyExpanded"
         type="button"
         class="btn btn-sm linkish"
         @click="replyExpanded = !replyExpanded"
-      >{{ replyExpanded ? '收起' : '展开' }}</button>
+      >{{ replyExpanded ? t('requestDetail.conversation.collapse') : t('requestDetail.conversation.expand') }}</button>
     </section>
   </div>
 </template>

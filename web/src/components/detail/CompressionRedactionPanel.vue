@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // CompressionRedactionPanel — original / compressed / secured + placeholder matches.
 import { computed, onUnmounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getSessionCompare, type TurnView } from '../../api/session'
 import {
   getSanitizeMatches,
@@ -21,6 +22,8 @@ const props = defineProps<{
   outboundBody: unknown
   responseBody: unknown
 }>()
+
+const { t } = useI18n()
 
 const loading = ref(false)
 const matchLoading = ref(false)
@@ -128,20 +131,20 @@ const displayMatches = computed(() => {
   <div class="cmp-panel">
     <section class="match-block" data-testid="sanitize-match-table">
       <div class="match-head">
-        <strong>敏感信息 / 占位符匹配</strong>
-        <span v-if="matchSource" class="text-muted">来源: {{ matchSource }}</span>
+        <strong>{{ t('requestDetail.compress.title') }}</strong>
+        <span v-if="matchSource" class="text-muted">{{ t('requestDetail.compress.source', { src: matchSource }) }}</span>
       </div>
-      <div v-if="matchLoading" class="text-muted">加载匹配数据…</div>
+      <div v-if="matchLoading" class="text-muted">{{ t('requestDetail.compress.loading') }}</div>
       <div v-else-if="matchError" class="err">{{ matchError }}</div>
-      <div v-else-if="!displayMatches.length" class="text-muted">本会话暂无占位符匹配记录（可能已过期或未触发脱敏）。</div>
+      <div v-else-if="!displayMatches.length" class="text-muted">{{ t('requestDetail.compress.empty') }}</div>
       <table v-else class="match-table">
         <thead>
           <tr>
-            <th>占位符</th>
-            <th>类型</th>
-            <th>索引</th>
-            <th>掩码值</th>
-            <th>本请求</th>
+            <th>{{ t('requestDetail.compress.headers.placeholder') }}</th>
+            <th>{{ t('requestDetail.compress.headers.kind') }}</th>
+            <th>{{ t('requestDetail.compress.headers.index') }}</th>
+            <th>{{ t('requestDetail.compress.headers.maskedValue') }}</th>
+            <th>{{ t('requestDetail.compress.headers.inRequest') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -150,43 +153,43 @@ const displayMatches = computed(() => {
             <td>{{ row.type }}</td>
             <td>{{ row.index }}</td>
             <td><code>{{ row.value_masked }}</code></td>
-            <td>{{ row.in_request ? '是' : '—' }}</td>
+            <td>{{ row.in_request ? t('requestDetail.compress.yes') : t('requestDetail.compress.dash') }}</td>
           </tr>
         </tbody>
       </table>
     </section>
 
-    <div v-if="loading" class="text-muted">加载压缩/脱敏对比…</div>
+    <div v-if="loading" class="text-muted">{{ t('requestDetail.compress.diffLoading') }}</div>
     <div v-else-if="error && !turn" class="err">{{ error }}</div>
     <div v-else class="cmp-grid">
       <TurnStageCard
         v-if="showOriginal"
-        stage-label="原始"
-        send-label="发送"
-        receive-label="接收"
+        :stage-label="t('requestDetail.compress.stageOriginal')"
+        :send-label="t('requestDetail.compress.sendLabel')"
+        :receive-label="t('requestDetail.compress.receiveLabel')"
         :send="turn?.original?.send || fallbackOriginal"
         :receive="turn?.original?.receive || '—'"
         :tokens="turn?.original?.tokens"
       />
       <div v-else class="gate">
-        <p>原始正文仅超级管理员可见。当前展示压缩转发与安全处理后的内容。</p>
+        <p>{{ t('requestDetail.compress.originalOnlyAdmin') }}</p>
       </div>
       <TurnStageCard
-        stage-label="压缩转发"
-        send-label="发送"
-        receive-label="接收"
+        :stage-label="t('requestDetail.compress.stageCompressed')"
+        :send-label="t('requestDetail.compress.sendLabel')"
+        :receive-label="t('requestDetail.compress.receiveLabel')"
         :send="turn?.compressed?.send || fallbackCompressed"
         :receive="turn?.compressed?.receive || '—'"
         :tokens="turn?.compressed?.tokens"
         :range="turn?.compressed?.range_start != null
-          ? `覆盖轮次 ${turn.compressed.range_start}–${turn.compressed.range_end}`
+          ? t('requestDetail.compress.coversRange', { start: turn.compressed.range_start, end: turn.compressed.range_end })
           : undefined"
         :tags="turn?.compressed?.applied_tags"
       />
       <TurnStageCard
-        stage-label="安全/脱敏"
-        send-label="发送"
-        receive-label="接收"
+        :stage-label="t('requestDetail.compress.stageRedacted')"
+        :send-label="t('requestDetail.compress.sendLabel')"
+        :receive-label="t('requestDetail.compress.receiveLabel')"
         :send="turn?.secured?.send || '—'"
         :receive="turn?.secured?.receive || fallbackSecured"
         :tokens="turn?.secured?.tokens"
@@ -194,7 +197,7 @@ const displayMatches = computed(() => {
         :pii-stripped="turn?.pii_stripped_this_turn"
       />
     </div>
-    <p v-if="!sessionId" class="text-muted">无会话 ID，仅展示本请求 request / outbound / response 回退内容。</p>
+    <p v-if="!sessionId" class="text-muted">{{ t('requestDetail.compress.noSessionId') }}</p>
   </div>
 </template>
 

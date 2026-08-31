@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // FlowTimingPanel — shows each trace stage with duration_ms (— when unknown).
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getRequestTrace, type RequestTrace, type TraceEvent } from '../../api/trace'
 
 const props = defineProps<{ requestId: string | null }>()
@@ -11,6 +12,8 @@ const emit = defineEmits<{
 const loading = ref(false)
 const error = ref('')
 const trace = ref<RequestTrace | null>(null)
+
+const { t } = useI18n()
 
 watch(
   () => props.requestId,
@@ -46,18 +49,18 @@ function statusClass(status: string): string {
 
 <template>
   <div class="flow-panel">
-    <div v-if="loading" class="text-muted">加载流程…</div>
+    <div v-if="loading" class="text-muted">{{ t('requestDetail.flow.loading') }}</div>
     <div v-else-if="error" class="err" role="alert">{{ error }}</div>
     <template v-else-if="trace">
       <div class="flow-summary">
-        <span>总计 <strong>{{
+        <span>{{ t('requestDetail.flow.total') }} <strong>{{
           typeof trace.total_duration_ms === 'number' ? `${trace.total_duration_ms}ms` : '—'
         }}</strong></span>
-        <span>状态 {{ trace.final_status || 'in_progress' }}</span>
-        <span v-if="trace.failed_at_stage" class="bad">失败于 {{ trace.failed_at_stage }}</span>
-        <span class="muted">来源 {{ trace.source }}</span>
-        <button type="button" class="btn btn-sm link" @click="emit('goto', 'waterfall')">查看调度瀑布</button>
-        <button type="button" class="btn btn-sm link" @click="emit('goto', 'attempts')">查看路由重试</button>
+        <span>{{ t('requestDetail.flow.status', { value: trace.final_status || t('requestDetail.flow.inProgress') }) }}</span>
+        <span v-if="trace.failed_at_stage" class="bad">{{ t('requestDetail.flow.failedAt', { stage: trace.failed_at_stage }) }}</span>
+        <span class="muted">{{ t('requestDetail.flow.source', { src: trace.source }) }}</span>
+        <button type="button" class="btn btn-sm link" @click="emit('goto', 'waterfall')">{{ t('requestDetail.flow.viewWaterfall') }}</button>
+        <button type="button" class="btn btn-sm link" @click="emit('goto', 'attempts')">{{ t('requestDetail.flow.viewRoutingRetry') }}</button>
       </div>
       <ul class="flow-list">
         <li
@@ -72,9 +75,9 @@ function statusClass(status: string): string {
           <span v-if="e.error" class="err-snip">{{ e.error }}</span>
         </li>
       </ul>
-      <p v-if="!events.length" class="text-muted">暂无链路事件</p>
+      <p v-if="!events.length" class="text-muted">{{ t('requestDetail.flow.empty') }}</p>
     </template>
-    <div v-else class="text-muted">无流程数据</div>
+    <div v-else class="text-muted">{{ t('requestDetail.flow.noData') }}</div>
   </div>
 </template>
 
