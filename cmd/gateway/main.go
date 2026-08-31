@@ -3135,6 +3135,8 @@ func main() {
 	var dailyProbeAudit *bg.DailyProbeAudit
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
+	// 2026-08-31: Materialized view refresher for routing analytics performance
+	var materializedViewRefresher *bg.MaterializedViewRefresher
 
 	// newProbeEmitter (2026-08-11) builds an ActiveProbeEmitter and wires the
 	// self-check SSE sink so every node-probe / integrity-probe completion is
@@ -3447,9 +3449,17 @@ func main() {
 			} else {
 				modelProbe.Start(context.Background())
 			}
-			slog.Info("CHECKPOINT: after modelProbe.Start")
+		slog.Info("CHECKPOINT: after modelProbe.Start")
 
-			// 2026-06-28 收口：当前 unified scheduler 与旧 probe 体系并行写
+		// 2026-08-31: Materialized view refresher for routing analytics performance.
+		// Refreshes routing_analytics_7d and routing_audit_summary_7d every 10 minutes
+		// to keep analytics queries fast (<500ms instead of 15s timeout).
+		slog.Info("CHECKPOINT: before NewMaterializedViewRefresher")
+		materializedViewRefresher = bg.NewMaterializedViewRefresher(dbConn.Pool())
+		materializedViewRefresher.Start()
+		slog.Info("CHECKPOINT: after materializedViewRefresher.Start")
+
+		// 2026-06-28 收口：当前 unified scheduler 与旧 probe 体系并行写
 			// model_probe_state，会导致重复探测和状态覆盖。默认关闭，待
 			// 单一 writer + Redis 状态层完全接管后再开启。
 			//
@@ -4084,6 +4094,14 @@ func main() {
 		}
 
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
+
+		// 2026-08-31: Materialized view refresher for routing analytics performance.
+		// Refreshes routing_analytics_7d and routing_audit_summary_7d every 10 minutes
+		// to keep /api/admin/auto-route/analytics/* endpoints fast (<500ms).
+		// Related: migration 632, admin/analytics.go, admin/analytics_materialized.go
+		mvRefresher := bg.NewMaterializedViewRefresher(dbConn.Pool())
+		mvRefresher.Start()
+		slog.Info("materialized_view_refresher started for routing analytics")
 
 		// settings-management: 7-day audit retention worker (Q6: C).
 		slog.Info("CHECKPOINT: before NewSettingsAuditCleaner")
@@ -6337,6 +6355,9 @@ func main() {
 		}
 		if systemHealthWorker != nil {
 			systemHealthWorker.Stop()
+		}
+		if materializedViewRefresher != nil {
+			materializedViewRefresher.Stop()
 		}
 		if modelQualityWorker != nil {
 			modelQualityWorker.Stop()
