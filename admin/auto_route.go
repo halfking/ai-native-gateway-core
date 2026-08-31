@@ -480,31 +480,50 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// are explicit-model requests, so they belong in totalSpecified and
 	// in total. Use `COALESCE(is_auto_request, FALSE)` so the arithmetic
 	// reads the NULL as FALSE instead of dropping it.
-	var total, successes, totalAuto, totalSpecified int
+	var total, successes, totalAuto, totalSpecified int64
 	auditTenantFrag, auditTenantArgs, _ := tenantLogsClause(r, 1)
-	// 2026-08-31: query the _without_customer_id view. The customer_id LATERAL
-	// join added by migration 575 makes every aggregation a 10s+ Seq Scan over
-	// 314K rows in the August 2026 columnar partition. None of the audit
-	// breakdowns (total, task_dist, profile_dist, top_models) consume
-	// customer_id, so we skip the LATERAL JOIN entirely. The renamed view
-	// was kept by migration 575 specifically for this purpose.
-	err := h.db.QueryRow(ctx, `
-		SELECT
-		  COUNT(*),
-		  COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) THEN 1 ELSE 0 END), 0)
-		FROM request_logs_with_current_month_without_customer_id
-		WHERE ts >= NOW() - INTERVAL '7 days'
-		  AND (
-		    is_auto_request = TRUE
-		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+auditTenantFrag+`
-	`, auditTenantArgs...).Scan(&total, &successes, &totalAuto, &totalSpecified)
-	if err != nil {
-		writeInternalErr(w, err)
-		return
+	
+	// 2026-08-31: Try materialized view first for performance
+	// (migration 632 routing_audit_summary_7d)
+	var tenantID *int
+	if auditTenantFrag != "" && len(auditTenantArgs) > 0 {
+		if tid, ok := auditTenantArgs[0].(int); ok {
+			tenantID = &tid
+		}
 	}
+	
+	mvTotal, mvSuccesses, mvAuto, mvSpecified, mvFound := getAuditSummaryMaterialized(ctx, h.db, tenantID)
+	if mvFound {
+		total, successes, totalAuto, totalSpecified = mvTotal, mvSuccesses, mvAuto, mvSpecified
+	} else {
+		// Fallback to base view
+		// 2026-08-31: query the _without_customer_id view. The customer_id LATERAL
+		// join added by migration 575 makes every aggregation a 10s+ Seq Scan over
+		// 314K rows in the August 2026 columnar partition. None of the audit
+		// breakdowns (total, task_dist, profile_dist, top_models) consume
+		// customer_id, so we skip the LATERAL JOIN entirely. The renamed view
+		// was kept by migration 575 specifically for this purpose.
+		var totalInt, successesInt, autoInt, specifiedInt int
+		err := h.db.QueryRow(ctx, `
+			SELECT
+			  COUNT(*),
+			  COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
+			  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
+			  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) THEN 1 ELSE 0 END), 0)
+			FROM request_logs_with_current_month_without_customer_id
+			WHERE ts >= NOW() - INTERVAL '7 days'
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+			  )`+auditTenantFrag+`
+		`, auditTenantArgs...).Scan(&totalInt, &successesInt, &autoInt, &specifiedInt)
+		if err != nil {
+			writeInternalErr(w, err)
+			return
+		}
+		total, successes, totalAuto, totalSpecified = int64(totalInt), int64(successesInt), int64(autoInt), int64(specifiedInt)
+	}
+	
 	out["total_requests"] = total
 	out["total_auto_requests"] = totalAuto
 	out["specified_model_requests"] = totalSpecified
