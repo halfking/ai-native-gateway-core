@@ -24,16 +24,12 @@ case "$TARGET" in
     nginx_fragment="$ROOT/run/active-upstream.conf"
     nginx_unit="llm-gateway-go-canary@.service"
     default_port=8781
-    candidate_port=8782
-    canary_env="$ROOT/canary.env"
     ;;
   245)
     unit="$SCRIPT_DIR/../deploy/llmgo-245-canary@.service"
     nginx_fragment="$ROOT/run/active-upstream.conf"
     nginx_unit="llmgo-245-canary@.service"
     default_port=8781
-    candidate_port=8782
-    canary_env="$ROOT/canary.env"
     ;;
   *) echo "unsupported target: $TARGET" >&2; exit 64 ;;
 esac
@@ -71,25 +67,15 @@ if [[ ! -s "$nginx_fragment" ]]; then
   printf 'server 127.0.0.1:%s max_fails=3 fail_timeout=10s;\n' "$default_port" >"$nginx_fragment"
   chmod 0644 "$nginx_fragment"
 fi
-# Canary env override file. The unit declares `EnvironmentFile=canary.env`
-# BEFORE the main .env file. systemd 239 (env 245) processes EnvironmentFile
-# in order and the LAST file wins, so canary.env must override only the keys
-# the active .env hard-codes (listen address, runtime role, log file,
-# transport-layer IR flag). Everything else (DB URL, secrets, Redis) is
-# inherited verbatim from .env. We never templatize the port here because
-# systemd EnvironmentFile does not support specifier expansion.
-if [[ ! -s "$canary_env" ]]; then
-  cat >"$canary_env" <<EOF_CANARY_ENV
-# 2026-08-31: installed by scripts/install-blue-green-assets.sh for $TARGET.
-# Values here MUST take precedence over /opt/llm-gateway-go/.env because the
-# canary listens on $candidate_port while the active keeps :$default_port.
-LLM_GATEWAY_LISTEN=:$candidate_port
-LLM_GATEWAY_RUNTIME_ROLE=traffic-only
-LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway-go/canary-$candidate_port.jsonl
-TRANSPORT_LAYER_IR_ENABLED=true
-EOF_CANARY_ENV
-  chmod 0644 "$canary_env"
-fi
+# No canary.env is written anymore. The per-port identity (listen address,
+# log file) lives on the unit's ExecStart via /usr/bin/env where systemd's %i
+# instance specifier expands; systemd EnvironmentFile does not support
+# specifier expansion, and the 2026-08-31 incident was caused exactly by a
+# hard-coded listen port in a canary.env file (the candidate port alternates
+# per deploy, so a frozen port made every second deploy fight the active for
+# the same port and die on "bind: address already in use"). The runtime role
+# is a plain Environment= directive in the unit. A stale canary.env left by
+# an older install is inert: no unit references it.
 systemctl daemon-reload
 if command -v nginx >/dev/null 2>&1; then
   nginx -t

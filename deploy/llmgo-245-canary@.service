@@ -21,22 +21,34 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/llm-gateway-go
-# Per-instance overrides: %i is the candidate port (8782). systemd merges
-# EnvironmentFile entries in declaration order, last-one-wins. .env MUST
-# come first so that canary.env's overrides (listen address, runtime role,
-# log file, transport-layer IR flag) take precedence; everything else (DB
-# URL, secrets, Redis) is inherited verbatim from .env. The canary.env file
-# is installed by scripts/install-blue-green-assets.sh and re-installed only
-# if missing — operators editing .env do not need to touch canary.env.
+# Shared configuration (DB URL, secrets, Redis) comes from the active .env;
+# operators editing .env never need to touch canary state. The runtime role
+# keys off a plain Environment= directive — .env does NOT set it, so systemd
+# merge order between Environment= and EnvironmentFile= is irrelevant here.
 EnvironmentFile=/opt/llm-gateway-go/.env
-EnvironmentFile=/opt/llm-gateway-go/canary.env
+Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
 
-# 2026-08-31: ExecStart follows the active binary symlink. The deployer
+# Per-instance identity, unified with env 154's llm-gateway-go-canary@.service:
+# %i is the candidate port and ALTERNATES between 8781 and 8782 on every
+# deploy (the deployer picks the port the active is NOT on). systemd cannot
+# expand %i inside EnvironmentFile=, and env 245's /opt/llm-gateway-go/.env
+# hard-codes LLM_GATEWAY_LISTEN=:8781, so the port must be pinned on
+# ExecStart: /usr/bin/env sets it directly in the exec environment, which
+# deterministically overrides both EnvironmentFile lines regardless of
+# systemd's Environment=/EnvironmentFile= merge order.
+#
+# 2026-08-31 incident: the port used to live in canary.env, written once at
+# install time with :8782. From the second blue-green deploy onward the
+# candidate ignored its instance port, fought the active for :8782, died on
+# "bind: address already in use", and the deploy aborted with a misleading
+# 60s /healthz "connection refused" probe timeout on the OTHER port.
+#
+# ExecStart follows the active binary symlink. The deployer
 # (scripts/deploy-seamless.sh) swaps the symlink, then restarts this unit.
 # Restart=on-failure re-binds the port on transient bind races; RestartSec=5s
-# keeps the restart-loop bounded so the deployer's 30s probe deadline still
+# keeps the restart-loop bounded so the deployer's probe deadline still
 # trips if the failure is structural (e.g. another process owns the port).
-ExecStart=/opt/llm-gateway-go/gateway
+ExecStart=/usr/bin/env LLM_GATEWAY_LISTEN=:%i LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway-go/canary-%i.jsonl /opt/llm-gateway-go/gateway
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=30s
@@ -44,9 +56,6 @@ TimeoutStopSec=25s
 KillSignal=SIGTERM
 StandardOutput=journal
 StandardError=journal
-
-# Drain 标记（与 llmgo-245.service 一致, 部署脚本读它判断旧实例是否退出）
-ExecStopPost=/bin/sh -c 'date +%s > /var/run/llm-gateway-go.drained 2>/dev/null || true'
 
 NoNewPrivileges=true
 PrivateTmp=true

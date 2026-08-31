@@ -219,6 +219,41 @@ remote_probe() {
   return 1
 }
 
+# Install the blue-green assets (canary unit template + nginx upstream
+# fragment bootstrap) on the target by shipping a minimal repo slice and
+# running scripts/install-blue-green-assets.sh there as a REAL script file.
+# The installer is file-only: it writes the canary unit (backing up any unit
+# it replaces), then runs daemon-reload + nginx -t. It never starts a
+# candidate or changes traffic, so re-running it mid-deploy for drift repair
+# is safe.
+#
+# 2026-08-31: the previous implementation piped the installer BODY into the
+# ssh command string. That is unrunnable: `bash -c` leaves BASH_SOURCE
+# unbound (set -u aborts at SCRIPT_DIR), the installer re-parses its
+# positional defaults and clobbers the injected TARGET=245 back to 154, and
+# $SCRIPT_DIR/../deploy/<unit> only exists in a repo checkout, which the
+# target does not have. Hence: tar the installer + deploy/<unit> into a temp
+# dir on the target (preserving the scripts/ + deploy/ layout so the
+# installer's own path resolution works), then execute it with ROOT/TARGET
+# as positional arguments and stream its output back.
+run_blue_green_assets_install() {
+  local canonical_unit tmpdir
+  canonical_unit="$SCRIPT_DIR/../deploy/$(target_field "$TARGET" candidate_unit)"
+  tmpdir="/tmp/kx-bg-assets-${TARGET}"
+  if [[ ! -f "$canonical_unit" ]]; then
+    err "run_blue_green_assets_install: missing canonical unit template $canonical_unit"
+    return 1
+  fi
+  log "    [blue-green-assets] install-blue-green-assets.sh $REMOTE_ROOT $TARGET (on target)"
+  if ! tar -C "$SCRIPT_DIR/.." -cf - scripts/install-blue-green-assets.sh \
+       "deploy/$(target_field "$TARGET" candidate_unit)" \
+       | remote_ssh_pipe "rm -rf '$tmpdir' && mkdir -p '$tmpdir' && tar -C '$tmpdir' -xf -"; then
+    err "run_blue_green_assets_install: 上传安装切片到目标机失败"
+    return 1
+  fi
+  remote_ssh "bash '$tmpdir/scripts/install-blue-green-assets.sh' '$REMOTE_ROOT' '$TARGET'; rc=\$?; rm -rf '$tmpdir'; exit \$rc" 2>&1 | sed 's/^/      /'
+}
+
 # Blue-green is opt-in until the candidate unit and Nginx include are installed
 # on the target. The canonical deployer fails closed rather than silently
 # reverting to the old stop/start path; operators may explicitly request the
@@ -675,19 +710,10 @@ do_deploy() {
       err "缺少 scripts/install-blue-green-assets.sh，无法自愈；如需应急请显式使用 --legacy-restart"
       exit 1
     fi
-    # Stream the install output under a section header; installer is idempotent
-    # and only writes files + runs nginx -t (never starts a candidate). It MUST
-    # run on the target so that `install /etc/systemd/system` writes to the
-    # remote host, not the orchestrator. We pipe the installer body over ssh
-    # and let bash execute it with ROOT=REMOTE_ROOT and TARGET passed through.
-    log "    [self-heal] install-blue-green-assets.sh $REMOTE_ROOT $TARGET (on target)"
-    local installer_body
-    installer_body=$(cat "$SCRIPT_DIR/install-blue-green-assets.sh")
-    if ! remote_ssh "set -e
-ROOT=$REMOTE_ROOT
-TARGET=$TARGET
-$(printf '%s' "$installer_body")
-" 2>&1 | sed 's/^/      /'; then
+    # The installer MUST run on the target so that `install /etc/systemd/system`
+    # writes to the remote host, not the orchestrator; it is idempotent and
+    # file-only (see run_blue_green_assets_install).
+    if ! run_blue_green_assets_install; then
       err "install-blue-green-assets.sh 在目标机上失败，请检查目标 nginx / systemd 状态；如需应急请显式使用 --legacy-restart"
       exit 1
     fi
@@ -696,6 +722,43 @@ $(printf '%s' "$installer_body")
       exit 1
     fi
     ok "    [self-heal] 蓝绿资产已就位，继续蓝绿切流"
+  else
+    # 2026-08-31: the canary unit is a deployer-owned contract, but the gate
+    # above only checked EXISTENCE. The original 245 unit pinned its listen
+    # port in canary.env (frozen at install time), which made every second
+    # blue-green deploy die on a port bind conflict; the fixed unit carries
+    # the port on ExecStart (%i). Without a drift check the broken unit
+    # installed by an earlier deploy would stay frozen forever. Re-install
+    # whenever the installed unit differs from the repo contract — the
+    # installer backs up the unit it replaces, and running instances are
+    # untouched until their next start.
+    local canonical_unit_file installed_unit_body
+    canonical_unit_file="$SCRIPT_DIR/../deploy/$(target_field "$TARGET" candidate_unit)"
+    installed_unit_body=$(remote_ssh "cat '$(target_field "$TARGET" candidate_unit_file)'" 2>/dev/null || true)
+    if [[ -f "$canonical_unit_file" && "$installed_unit_body" != "$(cat "$canonical_unit_file")" ]]; then
+      warn "目标 canary unit 与仓库契约不一致（端口契约等修复），重新安装（旧 unit 自动备份）"
+      if ! run_blue_green_assets_install; then
+        err "canary unit 漂移修复失败，请检查目标 nginx / systemd 状态；如需应急请显式使用 --legacy-restart"
+        exit 1
+      fi
+      installed_unit_body=$(remote_ssh "cat '$(target_field "$TARGET" candidate_unit_file)'" 2>/dev/null || true)
+      if [[ "$installed_unit_body" != "$(cat "$canonical_unit_file")" ]]; then
+        err "重装后 canary unit 仍与仓库契约不一致；如需应急请显式使用 --legacy-restart"
+        exit 1
+      fi
+      ok "    [drift-repair] canary unit 已同步为仓库契约"
+    fi
+  fi
+  # 2026-08-31 incident follow-up: a stale sibling process holding the
+  # candidate port made the candidate die instantly on "bind: address
+  # already in use", while the deploy only surfaced a 60s /healthz probe
+  # timeout on a port nothing would ever listen on. Refuse fast — and name
+  # the squatter — BEFORE any symlink is flipped, while aborting is still a
+  # traffic no-op.
+  if remote_ssh "ss -ltn | grep -q ':${candidate_port} '"; then
+    err "候选端口 ${candidate_port} 已被占用，拒绝切换；占用进程如下（需先人工处理）:"
+    remote_ssh "ss -ltnp | grep ':${candidate_port} '" 2>&1 | sed 's/^/      /' || true
+    exit 1
   fi
   if remote_ssh "test -f '$REMOTE_ROOT/run/active-service'"; then
     active_service=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service'")
