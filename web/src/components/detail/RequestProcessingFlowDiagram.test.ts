@@ -11,8 +11,9 @@ const i18n = createI18n({
       requestDetail: {
         flow: {
           diagram: {
+            ariaLabel: '请求处理流程', trackLabel: '流程事件序列',
             event: '流程事件', noData: '暂无可观测流程', noEvents: '暂无流程事件',
-            stages: { routing: '路由解析', upstream: '上游请求' },
+            stages: { routing: '路由解析', upstream: '上游请求', retrying: '重试中' },
             status: { success: '成功', failed: '失败', timeout: '超时', skipped: '跳过' },
             flags: { compression: '压缩', retry: '重试', nodeSwitch: '节点切换', degraded: '观测降级' },
             legend: { success: '成功', failed: '失败/超时', special: '压缩 · 重试 · 节点切换' },

@@ -12,6 +12,7 @@ import {
   truncateText,
 } from '../types/swimlane'
 import { errorKindLabel, statusBarColor, statusSemanticLabel } from '../composables/liveStreamDisplay'
+import { useReactiveStatusColor } from '../composables/useStatusColor'
 import {
   getRequestActions,
   getRequestChildren,
@@ -55,15 +56,10 @@ const statusLabel = computed(() =>
   statusSemanticLabel(props.tile.status, props.tile.error_kind),
 )
 
-const statusColor = computed(() => {
-  const s = props.tile.status
-  if (s === 'failure') return '#ef4444'
-  if (s === 'success') return '#22c55e'
-  if (s === 'in_progress') return '#3b82f6'
-  if (s === 'cancelled' || s === 'canceled') return '#9ca3af'
-  if (s === 'idle') return '#9ca3af'
-  return '#a1a1aa'
-})
+const statusColor = useReactiveStatusColor(
+  () => props.tile.status,
+  () => props.tile.error_kind,
+)
 
 const showStatusDot = computed(() => props.tile.status !== 'idle')
 

@@ -176,6 +176,7 @@ export default {
     empty: 'Keine Link-Ereignisse',
     noData: 'Keine Flow-Daten',
     diagram: {
+      ariaLabel: 'Anfrageverarbeitungsablauf', trackLabel: 'Sequenz der Flow-Ereignisse',
       event: 'Flow-Ereignis', noData: 'Kein beobachtbarer Flow', noEvents: 'Keine Flow-Ereignisse',
       stages: { received: 'Eingang', routing: 'Routenauflösung', model_queue: 'Modellwarteschlange', credential_queue: 'Credential-Warteschlange', node_selection: 'Knotenauswahl', upstream: 'Upstream-Anfrage', streaming: 'Stream-Antwort', terminal: 'Anfrage abgeschlossen' },
       status: { success: 'Erfolg', failed: 'Fehlgeschlagen', timeout: 'Timeout', skipped: 'Übersprungen' },

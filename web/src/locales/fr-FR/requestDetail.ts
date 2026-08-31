@@ -176,6 +176,7 @@ export default {
     empty: 'Aucun événement de lien',
     noData: 'Aucune donnée de flux',
     diagram: {
+      ariaLabel: 'Flux de traitement de la requête', trackLabel: 'Séquence des événements du flux',
       event: 'Événement de flux', noData: 'Aucun flux observable', noEvents: 'Aucun événement de flux',
       stages: { received: 'Entrée', routing: 'Résolution du routage', model_queue: 'File du modèle', credential_queue: 'File des identifiants', node_selection: 'Sélection du nœud', upstream: 'Requête amont', streaming: 'Réponse en flux', terminal: 'Requête terminée' },
       status: { success: 'Succès', failed: 'Échec', timeout: 'Délai dépassé', skipped: 'Ignoré' },

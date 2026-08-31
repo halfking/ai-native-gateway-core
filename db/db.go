@@ -463,10 +463,18 @@ func (d *DB) ensureJournalSnapshotReceiptSchema(ctx context.Context) error {
 				status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
 			)
 		)`,
-		// projection_base_seq semantics:
-		//   * 0  : first-time projection (no prior receipt row) — legacy default.
-		//   * >0 : retry attempt pinned to an existing projection base so event
-		//          identities remain stable across partial projection failures.
+		// projection_base_seq semantics (2026-08-31, audit P1-4 followup):
+		//   * 0  : first-time projection (no prior receipt row) — legacy
+		//          first-claim sentinel. Two replicas that both pass 0 are
+		//          not distinguishable to the durable store; callers MUST
+		//          serialise per-owner delivery before issuing a same-base
+		//          0 claim (see cmd/gateway/main_dispatch_observation.go).
+		//   * >0 : retry attempt pinned to an existing projection base so
+		//          event identities remain stable across partial projection
+		//          failures. ClaimWithProjectionBase rejects reclaim paths
+		//          that disagree on the stored base with
+		//          ErrSnapshotReceiptLeaseLost; non-zero bases are the
+		//          cross-process safe choice.
 		// Concurrent retries that pass different base values must be rejected by
 		// the application layer (ClaimWithProjectionBase); the schema check below
 		// only enforces non-negative, leaving 0 as a legal first-claim marker.
