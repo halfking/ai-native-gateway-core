@@ -14,6 +14,15 @@ require '245 has candidate unit' 'llmgo-245-canary@.service' "$ROOT/scripts/depl
 require 'nginx includes dynamic fragment' 'include /opt/llm-gateway-go/run/active-upstream.conf' "$ROOT/deploy/llmgo-245.nginx.conf"
 require 'seamless starts candidate before stop' 'systemctl start.*candidate_service' "$ROOT/scripts/deploy-seamless.sh"
 require 'seamless stops old service after gates' 'systemctl stop.*active_service' "$ROOT/scripts/deploy-seamless.sh"
+# 2026-08-31: contract pin — the canonical canary unit MUST follow the active
+# binary symlink, NOT a per-port slot, AND restart on failure. Slot-based
+# units ship dead code on env 154/245 (slots/ is never populated, candidate
+# fails to bind silently). Restart=no + ExecStart=.../slots/%i/... is the
+# shape that produced the 2026-08-31 incident.
+require 'canary unit follows active binary symlink' 'ExecStart=/opt/llm-gateway-go/llm-gateway-go' "$ROOT/deploy/llm-gateway-go-canary@.service"
+require 'canary unit restarts on failure' 'Restart=on-failure' "$ROOT/deploy/llm-gateway-go-canary@.service"
+require 'installer backs up legacy unit' 'pre-blue-green-assets' "$ROOT/scripts/install-blue-green-assets.sh"
+require 'seamless surfaces per-probe failure' 'remote_probe' "$ROOT/scripts/deploy-seamless.sh"
 require 'local direct fallback is explicit' 'requires --proxy' "$ROOT/scripts/local-host-blue-green.sh"
 require 'install does not start traffic' 'never starts a candidate' "$ROOT/scripts/install-blue-green-assets.sh"
 (( fail == 0 ))
