@@ -1,5 +1,18 @@
 [Unit]
-Description=LLM Gateway Go 245 blue-green candidate (%i)
+# 2026-08-31: this is the runtime contract for blue-green candidates on env 245.
+# We pin a unit that *follows the active binary symlink* (not a per-port slot)
+# because that is what env 245 currently runs and what scripts/deploy-seamless.sh
+# assumes on its swap path (line 686: `ln -sfn current/$BIN_NAME $BIN_NAME`).
+# 154's contract (deploy/llm-gateway-go-canary@.service) uses the same pattern.
+# The unit restarts on failure so a transient bind or DB blip does not leave
+# the candidate dead, and logs go to journald so probe failures can be
+# diagnosed without log scraping.
+#
+# Do NOT change ExecStart to a per-port slot (e.g. slots/%i/gateway) without
+# first wiring the seamless deployer to populate slots/, OR you will reproduce
+# the 2026-08-31 incident where the candidate silently failed to bind and the
+# deploy script could not surface which probe failed.
+Description=LLM Gateway Go 245 blue-green candidate (port %i)
 After=network-online.target
 Wants=network-online.target
 
@@ -8,18 +21,33 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/llm-gateway-go
+# Per-instance overrides: %i is the candidate port (8782). systemd merges
+# EnvironmentFile entries in declaration order, last-one-wins. .env MUST
+# come first so that canary.env's overrides (listen address, runtime role,
+# log file, transport-layer IR flag) take precedence; everything else (DB
+# URL, secrets, Redis) is inherited verbatim from .env. The canary.env file
+# is installed by scripts/install-blue-green-assets.sh and re-installed only
+# if missing — operators editing .env do not need to touch canary.env.
 EnvironmentFile=/opt/llm-gateway-go/.env
-Environment=LLM_GATEWAY_LISTEN=:%i
-Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
-Environment=LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway-go/canary-%i.jsonl
-Environment=TRANSPORT_LAYER_IR_ENABLED=true
-# Each port has a stable slot symlink. The deployer updates only the
-# inactive slot, so an active candidate never moves underneath systemd.
-ExecStart=/opt/llm-gateway-go/slots/%i/gateway
-Restart=no
+EnvironmentFile=/opt/llm-gateway-go/canary.env
+
+# 2026-08-31: ExecStart follows the active binary symlink. The deployer
+# (scripts/deploy-seamless.sh) swaps the symlink, then restarts this unit.
+# Restart=on-failure re-binds the port on transient bind races; RestartSec=5s
+# keeps the restart-loop bounded so the deployer's 30s probe deadline still
+# trips if the failure is structural (e.g. another process owns the port).
+ExecStart=/opt/llm-gateway-go/gateway
+Restart=on-failure
+RestartSec=5s
 TimeoutStartSec=30s
 TimeoutStopSec=25s
 KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+# Drain 标记（与 llmgo-245.service 一致, 部署脚本读它判断旧实例是否退出）
+ExecStopPost=/bin/sh -c 'date +%s > /var/run/llm-gateway-go.drained 2>/dev/null || true'
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
