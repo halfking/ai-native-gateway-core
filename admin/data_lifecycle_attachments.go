@@ -63,15 +63,24 @@ type attachmentRow struct { //nolint:unused
 // all rows. explicitTenantID, when non-empty, narrows a super_admin
 // request to a specific tenant (used by UI filters).
 //
-// The returned predicate uses $N where N is len(attachmentTenantScopeArgs)
-// + 1 so the caller can append further WHERE/ORDER BY args without
-// renumbering.
-func attachmentTenantScope(r *http.Request, explicitTenantID string) (string, []any) {
+// `alreadyAppended` is the number of positional args the caller has
+// already pushed into its args slice BEFORE this predicate. The helper
+// assumes the caller's next append is its own (older tenantIds/audit
+// rows/etc.), and emits ` AND tenant_id = $N` where N = alreadyAppended + 1.
+// This makes the placeholder numbering explicit and prevents the
+// silent $1/$2 collision that the previous "first-arg-is-tenant"
+// shape produced when other args (e.g. olderThanDays) appeared before
+// the tenant predicate in the WHERE clause (see audit-data-closure-2
+// P0 fix 2026-08-31).
+//
+// The returned args slice is meant to be appended to the caller's
+// own args slice after this call.
+func attachmentTenantScope(r *http.Request, explicitTenantID string, alreadyAppended int) (string, []any) {
 	if IsTenantAdmin(r) {
-		return " AND tenant_id = $1", []any{GetTenantID(r)}
+		return fmt.Sprintf(" AND tenant_id = $%d", alreadyAppended+1), []any{GetTenantID(r)}
 	}
 	if explicitTenantID != "" {
-		return " AND tenant_id = $1", []any{explicitTenantID}
+		return fmt.Sprintf(" AND tenant_id = $%d", alreadyAppended+1), []any{explicitTenantID}
 	}
 	return "", nil
 }
@@ -150,10 +159,11 @@ func (h *Handler) handleDataLifecycleAttachments(w http.ResponseWriter, r *http.
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	tenantPred, tenantArgs := attachmentTenantScope(r, explicitTenant)
+	tenantPred, tenantArgs := attachmentTenantScope(r, explicitTenant, 0)
 	args := append([]any{}, tenantArgs...)
 	// Args layout: [tenant_id?] then [limit, offset, since?, until?]
-	// We append limit/offset after the tenant predicate's $1.
+	// tenantPred occupies $1 (alreadyAppended=0 → N=1), limit → $2,
+	// offset → $3, since/until → $4/$5.
 	limitIdx := len(args) + 1
 	offsetIdx := len(args) + 2
 	args = append(args, limit, offset)
@@ -214,12 +224,20 @@ func (h *Handler) handleDataLifecycleAttachmentStats(w http.ResponseWriter, r *h
 	}
 	since, until := parseTimeRange(r)
 	explicitTenant := r.URL.Query().Get("tenant_id")
-	tenantPred, tenantArgs := attachmentTenantScope(r, explicitTenant)
+	tenantPred, tenantArgs := attachmentTenantScope(r, explicitTenant, 0)
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
 	args := append([]any{}, tenantArgs...)
 	where := "WHERE attachments IS NOT NULL" + tenantPred
+	if !since.IsZero() {
+		args = append(args, since)
+		where += " AND ts >= $" + strconv.Itoa(len(args))
+	}
+	if !until.IsZero() {
+		args = append(args, until)
+		where += " AND ts < $" + strconv.Itoa(len(args))
+	}
 	if !since.IsZero() {
 		args = append(args, since)
 		where += " AND ts >= $" + strconv.Itoa(len(args))
@@ -307,10 +325,12 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWri
 	}
 	olderThanDays := parseOlderThanDays(r, 30)
 	explicitTenant := r.URL.Query().Get("tenant_id")
-	tenantPred, tenantArgs := attachmentTenantScope(r, explicitTenant)
-	args := append([]any{}, tenantArgs...)
-	daysIdx := len(args) + 1
-	args = append(args, olderThanDays)
+	// Args layout: [olderThanDays, tenant_id?]. olderThanDays → $1, then
+	// the tenant predicate must reference $2 (alreadyAppended=1).
+	args := []any{olderThanDays}
+	tenantPred, tenantArgs := attachmentTenantScope(r, explicitTenant, len(args))
+	args = append(args, tenantArgs...)
+	daysIdx := 1
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
@@ -325,7 +345,8 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupPreview(w http.ResponseWri
 		FROM request_logs,
 		     LATERAL jsonb_array_elements(attachments) AS elem
 		WHERE attachments IS NOT NULL
-		  AND ts < NOW() - ($%d || ' days')::interval%s`,
+		  AND ts < NOW() - make_interval(days => $%d::int)
+		  %s`,
 		daysIdx, tenantPred,
 	), args...).Scan(&count, &totalSize)
 	if err != nil {
@@ -381,9 +402,12 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 	var req struct {
 		FilesystemPaths []string `json:"filesystem_paths"`
 	}
-	// The body is optional; readJSONRequired fails on empty bodies. Use a
-	// tolerant read so a JSON-less POST still works.
-	if r.Body != nil && r.ContentLength > 0 {
+	// The body is optional; readJSONRequired returns an error on empty
+	// bodies, which we discard so a JSON-less POST still works. We
+	// check `r.Body != nil` rather than `r.ContentLength > 0` so that
+	// test callers (and any chunked-encoded POSTs) with an explicit
+	// non-nil body but no advertised length still parse correctly.
+	if r.Body != nil {
 		_ = readJSONRequired(r, &req)
 	}
 
@@ -391,15 +415,23 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 	defer cancel()
 
 	cleanupRunID := uuidOrZero(ctx)
-	tenantPred, tenantArgs := attachmentTenantScope(r, explicitTenant)
+	// Args layout for ALL three SQL statements (insertion order). When
+	// a tenant predicate is in scope, tenant_id is $1 and olderThanDays
+	// is $2; otherwise olderThanDays is $1. We compute the indices
+	// dynamically so the same SQL works for both shapes.
+	tenantPred, tenantArgs := attachmentTenantScope(r, explicitTenant, 0)
+	tenantIdx := 0
+	if tenantPred != "" {
+		tenantIdx = 1
+	}
 	args := append([]any{}, tenantArgs...)
-	daysIdx := len(args) + 1
+	daysIdx := tenantIdx + 1
 	args = append(args, olderThanDays)
-	runIdx := len(args) + 1
+	runIdx := daysIdx + 1
 	args = append(args, cleanupRunID)
-	triggerIdx := len(args) + 1
+	triggerIdx := runIdx + 1
 	args = append(args, triggeredBy)
-	reasonIdx := len(args) + 1
+	reasonIdx := triggerIdx + 1
 	args = append(args, nullableReason(reason))
 
 	start := time.Now()
@@ -424,6 +456,13 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 		// Skipped elements are counted via a parallel SELECT that uses
 		// the same predicate but flipped (so the count is "how many
 		// would have been skipped if we hadn't filtered").
+		//
+		// Note on older_than_days column: schema declares integer; we
+		// pass $daysIdx directly (int) rather than the previous
+		// `($daysIdx || ' days')::interval` which assigned an interval
+		// to an integer column and HTTP 500'd (audit-data-closure-2
+		// P0 fix iteration 2). The retention-window filter on r.ts
+		// does still need the interval cast; we keep it only there.
 		insertSQL := fmt.Sprintf(`
 			WITH
 			  flagged AS (
@@ -433,7 +472,7 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 			    FROM request_logs_hot r,
 			         LATERAL jsonb_array_elements(r.attachments) AS att
 			    WHERE r.attachments IS NOT NULL
-			      AND r.ts < NOW() - ($%d || ' days')::interval
+			      AND r.ts < NOW() - make_interval(days => $%d::int)
 			      AND (att ? 'hash' OR att ? 'sha256' OR att ? 'id' OR att ? 'url')
 			      AND NULLIF(COALESCE(att->>'hash', att->>'sha256',
 			                          att->>'id', att->>'url'), '') IS NOT NULL
@@ -442,8 +481,8 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 			INSERT INTO audit_attachments_cleanup
 			    (cleanup_run_id, tenant_id, request_id, attachment_hash,
 			     older_than_days, triggered_by_user, reason)
-			SELECT $%d, tenant_id, request_id, hash,
-			       $%d, $%d, $%d
+			SELECT $%d::uuid, tenant_id, request_id, hash,
+			       $%d::int, $%d::text, $%d::text
 			FROM flagged`,
 			daysIdx, tenantPred, runIdx, daysIdx, triggerIdx, reasonIdx,
 		)
@@ -451,17 +490,17 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 			return err
 		}
 
-		// Update statement uses the same tenant + time predicate.
+		// Update statement uses the same tenant + time predicate. Its
+		// args slice is `[olderThanDays, tenant_id?]` so the make_interval
+		// parameter (daysIdx) is $1 when no tenant is in scope and $2 when
+		// tenant_id pre-occupies $1.
 		updateSQL := fmt.Sprintf(`
 			UPDATE request_logs_hot
 			SET attachments = NULL
 			WHERE attachments IS NOT NULL
-			  AND ts < NOW() - ($%d || ' days')::interval
+			  AND ts < NOW() - make_interval(days => $%d::int)
 			  %s`, daysIdx, tenantPred)
-		// Update uses a separate args slice because the audit insert
-		// already consumed the higher-numbered placeholders.
-		updateArgs := append([]any{}, tenantArgs...)
-		updateArgs = append(updateArgs, olderThanDays)
+		updateArgs := args[:1+len(tenantArgs)] // olderThanDays, tenant_id?
 		tag, err := tx.Exec(ctx, updateSQL, updateArgs...)
 		if err != nil {
 			return err
@@ -474,11 +513,10 @@ func (h *Handler) handleDataLifecycleAttachmentCleanupExecute(w http.ResponseWri
 			SELECT count(*) FROM request_logs_hot r,
 			    LATERAL jsonb_array_elements(r.attachments) AS att
 			WHERE r.attachments IS NOT NULL
-			  AND r.ts < NOW() - ($%d || ' days')::interval
+			  AND r.ts < NOW() - make_interval(days => $%d::int)
 			  AND NOT (att ? 'hash' OR att ? 'sha256' OR att ? 'id' OR att ? 'url')
 			  %s`, daysIdx, tenantPred)
-		skipArgs := append([]any{}, tenantArgs...)
-		skipArgs = append(skipArgs, olderThanDays)
+		skipArgs := args[:1+len(tenantArgs)] // olderThanDays, tenant_id?
 		if err := tx.QueryRow(ctx, skipSQL, skipArgs...).Scan(&skipped); err != nil {
 			return err
 		}
@@ -558,9 +596,8 @@ func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *ht
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	tenantPred, tenantArgs := attachmentTenantScope(r, "")
+	tenantPred, tenantArgs := attachmentTenantScope(r, "", 1)
 	args := append([]any{requestID}, tenantArgs...)
-	requestIDIdx := 1
 	tenantIdx := 2
 	_ = tenantIdx
 
@@ -572,9 +609,9 @@ func (h *Handler) handleDataLifecycleAttachmentItem(w http.ResponseWriter, r *ht
 		SELECT ts, tenant_id, COALESCE(client_model, ''), success,
 		       COALESCE(attachments::text, '[]')
 		FROM request_logs
-		WHERE request_id = $%d
+		WHERE request_id = $1
 		  %s
-		ORDER BY ts DESC LIMIT 1`, requestIDIdx, tenantPred)
+		ORDER BY ts DESC LIMIT 1`, tenantPred)
 	err := h.db.QueryRow(ctx, query, args...).Scan(&ts, &tenantID, &clientModel, &success, &attText)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "request not found")
@@ -624,9 +661,15 @@ func parseTimeRange(r *http.Request) (since, until time.Time) { //nolint:unused
 	return
 }
 
-// parseOlderThanDays 从 JSON 请求体解析 older_than_days，默认 def。
+// parseOlderThanDays 从查询参数或 JSON 请求体解析 older_than_days，
+// 默认 def。优先 query（避免 body 已被读取后再读取失败）。
 func parseOlderThanDays(r *http.Request, def int) int { //nolint:unused
-	if r.Body != nil {
+	if v := r.URL.Query().Get("older_than_days"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	if r.Body != nil && r.Body != http.NoBody && r.ContentLength != 0 {
 		var body struct {
 			OlderThanDays int `json:"older_than_days"`
 		}

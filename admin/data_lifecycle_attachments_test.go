@@ -65,16 +65,38 @@ func TestUUIDOrZero_EntropyFailureFallbackIsValidUUID(t *testing.T) {
 // attachmentTenantScope, the helper that the cleanup execute handler
 // (and its read-side siblings) use to derive a tenant predicate.
 //
-//   - tenant_admin gets ` AND tenant_id = $1` with their own tenant.
+//   - tenant_admin gets ` AND tenant_id = $N` with their own tenant.
 //   - super_admin without explicit tenant_id gets no predicate.
-//   - super_admin with `?tenant_id=...` gets ` AND tenant_id = $1`.
+//   - super_admin with `?tenant_id=...` gets ` AND tenant_id = $N`.
+//   - the placeholder index $N is `alreadyAppended + 1`, which lets the
+//     caller compose WHERE clauses with non-tenant args (e.g.
+//     olderThanDays, request_id) appearing BEFORE the tenant
+//     predicate without colliding $1/$2.
+//
+// This is the audit-data-closure-2 P0 fix: the previous version
+// hard-coded `$1` for the tenant and silently collided with other
+// args (olderThanDays at $1) when the caller appended them BEFORE
+// the tenant predicate, causing execute to HTTP 500 for tenant_admin
+// callers.
 func TestAttachmentCleanup_TenantScope_Helper(t *testing.T) {
-	t.Run("tenant_admin", func(t *testing.T) {
+	t.Run("tenant_admin_offset_0", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/x", nil)
 		req = SetAuthContext(req, &AuthContext{Role: "tenant_admin", TenantID: "tenant_x"})
-		pred, args := attachmentTenantScope(req, "")
+		pred, args := attachmentTenantScope(req, "", 0)
 		if pred != " AND tenant_id = $1" {
 			t.Errorf("pred = %q, want %q", pred, " AND tenant_id = $1")
+		}
+		if len(args) != 1 || args[0] != "tenant_x" {
+			t.Errorf("args = %v, want [tenant_x]", args)
+		}
+	})
+	t.Run("tenant_admin_offset_1", func(t *testing.T) {
+		// Used by Item handler: request_id is $1, tenant must be $2.
+		req := httptest.NewRequest("POST", "/x", nil)
+		req = SetAuthContext(req, &AuthContext{Role: "tenant_admin", TenantID: "tenant_x"})
+		pred, args := attachmentTenantScope(req, "", 1)
+		if pred != " AND tenant_id = $2" {
+			t.Errorf("pred = %q, want %q", pred, " AND tenant_id = $2")
 		}
 		if len(args) != 1 || args[0] != "tenant_x" {
 			t.Errorf("args = %v, want [tenant_x]", args)
@@ -83,7 +105,7 @@ func TestAttachmentCleanup_TenantScope_Helper(t *testing.T) {
 	t.Run("super_admin_no_filter", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/x", nil)
 		req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default"})
-		pred, args := attachmentTenantScope(req, "")
+		pred, args := attachmentTenantScope(req, "", 0)
 		if pred != "" {
 			t.Errorf("pred = %q, want empty", pred)
 		}
@@ -94,7 +116,7 @@ func TestAttachmentCleanup_TenantScope_Helper(t *testing.T) {
 	t.Run("super_admin_explicit_tenant", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/x?tenant_id=tenant_z", nil)
 		req = SetAuthContext(req, &AuthContext{Role: "super_admin", TenantID: "default"})
-		pred, args := attachmentTenantScope(req, "tenant_z")
+		pred, args := attachmentTenantScope(req, "tenant_z", 0)
 		if pred != " AND tenant_id = $1" {
 			t.Errorf("pred = %q, want %q", pred, " AND tenant_id = $1")
 		}
