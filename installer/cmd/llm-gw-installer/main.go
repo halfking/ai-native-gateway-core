@@ -909,9 +909,9 @@ func copySQLBackup(root string) error {
 		"startup/627_candidate_failure_logs_aggregation_id_unified.sql":            candidateFailureLogsAggregationIdUnifiedMigration627,
 		"startup/628_candidate_failure_logs_promote_atomic_v3.sql":                 candidateFailureLogsPromoteAtomicV3Migration628,
 		"startup/629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
-		"startup/630_session_aggregate_outbox.sql":                               sessionAggregateOutboxMigration630,
-		"startup/631_provider_credential_soft_delete.sql":                         providerCredentialSoftDeleteMigration631,
-		"startup/635_drop_session_turns_unified.sql":                             dropSessionTurnsUnifiedMigration635,
+		"startup/630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
+		"startup/631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
+		"startup/635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
 	}
 	for name, content := range files {
 		path := filepath.Join(initDir, name)
@@ -1029,9 +1029,9 @@ func setupSQLDir() (string, func(), error) {
 		"startup/627_candidate_failure_logs_aggregation_id_unified.sql":            candidateFailureLogsAggregationIdUnifiedMigration627,
 		"startup/628_candidate_failure_logs_promote_atomic_v3.sql":                 candidateFailureLogsPromoteAtomicV3Migration628,
 		"startup/629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
-		"startup/630_session_aggregate_outbox.sql":                               sessionAggregateOutboxMigration630,
-		"startup/631_provider_credential_soft_delete.sql":                         providerCredentialSoftDeleteMigration631,
-		"startup/635_drop_session_turns_unified.sql":                             dropSessionTurnsUnifiedMigration635,
+		"startup/630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
+		"startup/631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
+		"startup/635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
 	}
 	for name, content := range files {
 		path := filepath.Join(tmp, name)
