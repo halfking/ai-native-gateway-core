@@ -168,12 +168,19 @@ target_154_contract() {
     candidate_port "8782" \
     upstream_fragment "/opt/llm-gateway-go/run/active-upstream.conf" \
     candidate_unit "llm-gateway-go-canary@.service" \
-    candidate_binary "/opt/llm-gateway-go/candidate/llm-gateway-go" \
     candidate_unit_file "/etc/systemd/system/llm-gateway-go-canary@.service" \
     ssh_host "$(_ssh_host_for 154)" \
     ssh_key_env "SSH_KEY_154" \
     rollback_policy "versioned" \
     legacy_aliases ""
+  # 2026-08-31: candidate_binary field was removed. The canonical canary unit
+  # follows /opt/llm-gateway-go/llm-gateway-go (a symlink to current/), so the
+  # deployer swap path is: ln -sfn releases/$version current && systemctl
+  # restart canary@<port>. The slot-based design that motivated
+  # candidate_binary was never wired into deploy-seamless.sh, leaving the field
+  # as dead config that misleads future contributors. If a slot-based deploy
+  # is reintroduced, restore the field here AND wire deploy-seamless.sh to
+  # update slots/$candidate_port before starting the candidate.
 }
 
 # Slice 1 / 4 target: 245 (gateway server, full versioned rollback).
@@ -202,12 +209,12 @@ target_245_contract() {
     candidate_port "8782" \
     upstream_fragment "/opt/llm-gateway-go/run/active-upstream.conf" \
     candidate_unit "llmgo-245-canary@.service" \
-    candidate_binary "/opt/llm-gateway-go/candidate/gateway" \
     candidate_unit_file "/etc/systemd/system/llmgo-245-canary@.service" \
     ssh_host "$(_ssh_host_for 245)" \
     ssh_key_env "SSH_KEY_245" \
     rollback_policy "versioned" \
     legacy_aliases ""
+  # See target_154_contract for the 2026-08-31 candidate_binary removal note.
 }
 
 # Slice 1 retirement: 186 must fail with explicit guidance before any
