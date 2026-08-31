@@ -85,9 +85,11 @@ check_dependency() {
 
 check_migration_616() {
   info "Checking Migration 616 status in local database..."
-  
+
+  # llm-gateway-pg is provisioned with POSTGRES_USER=llm_gateway (SSOT:
+  # ai-native-tools/deploy/local-multi-stack/LOCAL_DEPLOYMENT_PLAN.md).
   local result
-  result=$(docker exec llm-gateway-pg psql -U postgres -d llm_gateway -tAc \
+  result=$(docker exec llm-gateway-pg psql -U llm_gateway -d llm_gateway -tAc \
     "SELECT COUNT(*) FROM pg_indexes WHERE tablename = 'provider_error_details' AND indexname = 'idx_provider_error_details_fingerprint';" 2>&1) || {
     fail "Failed to query database: $result"
     return 1

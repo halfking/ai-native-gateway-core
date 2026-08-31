@@ -37,6 +37,10 @@ PG_EXTERNAL_PORT="15432"
 
 # ── SSH Tunnel Config ──────────────────────────────────────────────────────
 # Forward local:15432 → 172.16.2.210:5432 via 252
+# NOTE (2026-08-31): 15432 is EXCLUSIVELY the tunnel port — the llm-gateway-pg
+# container maps host 5432 directly and no longer holds 15432, so the former
+# IPv4/IPv6 dual-stack conflict is gone. Still kill leftover tunnels by exact
+# PID (`kill <pid>` from lsof) and prefer -h 127.0.0.1 for local connections.
 TUNNEL_LOCAL_PORT="15432"
 TUNNEL_REMOTE_TARGET="172.16.2.210:5432"
 

@@ -141,7 +141,10 @@ apply_scope() {
       continue
     fi
 
-    if [[ "$mode" == "baseline" && "$version_number" -le "$baseline_through" ]]; then
+    # 10# forces base-10: bash otherwise parses leading-zero versions (008,
+    # 009, 018, ...) as invalid octal, silently failing the comparison and
+    # executing migrations that baseline mode must only record.
+    if [[ "$mode" == "baseline" && $((10#$version_number)) -le $((10#$baseline_through)) ]]; then
       printf 'Baselining %s/%s\n' "$scope" "$filename"
       record_migration "$scope" "$version" "$filename" "$checksum"
       continue
