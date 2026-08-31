@@ -119,6 +119,24 @@ var (
 		},
 		[]string{"table"},
 	)
+
+	// 2026-08-31 (P2-8 audit-data-closure): per-table gauge tracking how
+	// many consecutive promote cycles have been skipped because the
+	// advisory lock is held. A persistently positive value indicates a
+	// zombie lock — the peer gateway that held the lock has crashed
+	// without releasing it (advisory_xact_lock is transaction-scoped so
+	// the lock SHOULD be released on PG connection close, but PG <13
+	// historically had edge cases, and any uncommitted xact left by a
+	// hard-killed backend takes a while for PG to reap). Operators
+	// should alert when this gauge stays > 0 for more than the
+	// promoteInterval itself (typically 10–60 minutes).
+	hotTablePromoteZombieLockStreak = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "llm_gateway_hot_table_promote_zombie_lock_streak",
+			Help: "Consecutive promote cycles skipped because the advisory lock was held. Persists across cycles; resets to 0 when a cycle successfully acquires the lock.",
+		},
+		[]string{"table"},
+	)
 )
 
 // recordPromoteFailure increments the failure counter for a table.
@@ -140,4 +158,19 @@ func recordPromoteDuration(table string, seconds float64) {
 // recordPromoteSkipped increments the skipped counter for a table.
 func recordPromoteSkipped(table string) {
 	hotTablePromoteSkippedTotal.WithLabelValues(table).Inc()
+}
+
+// incPromoteZombieLockStreak (2026-08-31, P2-8) bumps the per-table
+// zombie-lock streak counter. Called from partition_manager whenever a
+// promote cycle failed to acquire the advisory lock.
+func incPromoteZombieLockStreak(table string) {
+	hotTablePromoteZombieLockStreak.WithLabelValues(table).Inc()
+}
+
+// resetPromoteZombieLockStreak (2026-08-31, P2-8) zeroes the per-table
+// streak counter. Called from partition_manager whenever a promote cycle
+// successfully acquires the advisory lock, so the gauge reflects
+// consecutive-skipped cycles (not lifetime skipped).
+func resetPromoteZombieLockStreak(table string) {
+	hotTablePromoteZombieLockStreak.WithLabelValues(table).Set(0)
 }

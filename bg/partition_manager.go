@@ -958,9 +958,15 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
 				slog.Debug("partition_manager: promote skipped (peer holds lock)",
 					"label", s.label)
-				recordPromoteSkipped(s.label) // 2026-08-29 P2: record skip
+				recordPromoteSkipped(s.label)      // 2026-08-29 P2: record skip
+				incPromoteZombieLockStreak(s.label) // 2026-08-31 P2-8: zombie-lock observability
 				break
 			}
+			// 2026-08-31 (P2-8): we just acquired the lock for this table, so
+			// any previously-recorded zombie-lock streak is cleared. This
+			// keeps the gauge semantically a "consecutive-skip" counter,
+			// not a lifetime counter.
+			resetPromoteZombieLockStreak(s.label)
 			var n int64
 			err = tx.QueryRow(timeoutCtx,
 				"SELECT "+s.fnName+"($1::interval, $2::int)",
