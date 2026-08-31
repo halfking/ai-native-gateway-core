@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -149,9 +150,11 @@ func TestReaper_ClaimAndReplay_Success_PinsLeaseAndGuards(t *testing.T) {
 
 	// 2. Claim SELECT — note the regex `status = 'pending'` AND
 	//    `status = 'claimed'` clauses must both be present in the SQL.
-	//    The claim also carries one arg (lease seconds).
+	//    The claim also carries one arg (lease seconds as TEXT, since
+	//    the SQL uses `($1 || ' seconds')::interval` and PostgreSQL
+	//    requires text for the concat).
 	mock.ExpectQuery("status = 'pending'").
-		WithArgs(int(sessionOutboxClaimLease.Seconds())).
+		WithArgs(fmt.Sprintf("%d", int(sessionOutboxClaimLease.Seconds()))).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"id", "tenant_id", "session_id", "partition_date", "request_id",
 			"update_payload", "attempts",

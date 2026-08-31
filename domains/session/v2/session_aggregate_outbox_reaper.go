@@ -257,7 +257,7 @@ func (r *sessionAggregateOutboxReaper) claimAndReplay(ctx context.Context) (bool
 		ORDER BY next_retry_at ASC
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1`,
-		int(sessionOutboxClaimLease.Seconds()))
+		fmt.Sprintf("%d", int(sessionOutboxClaimLease.Seconds())))
 
 	var (
 		id            int64

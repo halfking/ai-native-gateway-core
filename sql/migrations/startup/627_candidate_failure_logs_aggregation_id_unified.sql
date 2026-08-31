@@ -92,7 +92,11 @@ FROM public.candidate_failure_logs;
 -- session_bodies_unified). The underlying tables already carry RLS policies
 -- (tenant_isolation_candidate_failure_logs_hot, tenant_isolation_candidate_failure_logs);
 -- setting security_invoker=true ensures the view does not silently bypass them.
-ALTER VIEW public.candidate_failure_logs_unified SET SECURITY_INVOKER = true;
+-- Use the parenthesized SET (security_invoker = true) syntax for compatibility
+-- with PostgreSQL 14/15 (PG 15+ also accepts the shorthand
+-- `SET SECURITY_INVOKER = true` but env 154's Citus build rejects the
+-- shorthand — match 625/626's option-list form).
+ALTER VIEW public.candidate_failure_logs_unified SET (security_invoker = true);
 
 -- Seed the aggregator watermark to bigint-min so the first post-deploy tick
 -- replays every historical bucket. The view's COALESCE returns negative values

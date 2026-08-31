@@ -171,3 +171,20 @@ relying on it.
 > `deleted_at` 软删除列 + 存活行部分索引 `idx_providers_live`。二进制
 > 启动时由 `db.ensureProviderSoftDelete`（db/db.go）幂等执行同一 DDL，
 > SQL 文件供 DBA 同步流程对账。
+## 2026-08-31T05:15:03Z — deploy 154 build_seq 1833 (3b349793)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 627 | `627_candidate_failure_logs_aggregation_id_unified.sql` | `ed604aa5b2277ce92ab8c7f6fbc9ff82a48bcc909b61726af67e3ddae3a1eb3a` | applied+verified |
+| 628 | `628_candidate_failure_logs_promote_atomic_v3.sql` | `d9a30a29f0ac991e8e0d9b73e3a9b1943eb57e666cd604b24f3e1ba801f3a41c` | applied+verified |
+| 629 | `629_audit_attachments_cleanup.sql` | `ae462b3d4ef16d27d5c04f8799a7f15c93f140bbd575fa8769252a2acd442701` | applied+verified |
+| 630 | `630_session_aggregate_outbox.sql` | `da5c3cce36477be1a03dc64976e9384f37232fa83a48f34e577c7dcbb91da7f6` | applied+verified |
+| 631 | `631_provider_credential_soft_delete.sql` | `0fd2120475a78486e40d3fa2d082eade345aef74a952ccc030b95643db252804` | applied+verified |
+| 632 | `632_audit_attachments_filesystem_cleanup.sql` | `c2579be0062b8777715be363f0c5c9c91147ba419b7a7f2a94c5aadb767c7bc0` | applied+verified |
+
+## 2026-08-31T05:41:14Z — deploy 245 build_seq 1835 (3b349793)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 632 | `632_audit_attachments_filesystem_cleanup.sql` | `c2579be0062b8777715be363f0c5c9c91147ba419b7a7f2a94c5aadb767c7bc0` | applied+verified |
+

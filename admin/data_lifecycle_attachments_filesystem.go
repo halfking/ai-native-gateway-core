@@ -1,7 +1,9 @@
 package admin
 
 import (
+	"context"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,7 +25,7 @@ type AttachmentFilesystemStatsResponse struct {
 	TotalSizeHuman   string  `json:"total_size_human"`   // 人类可读大小
 	OldestFileTime   *string `json:"oldest_file_time"`   // 最早文件时间
 	DiskTotalBytes   uint64  `json:"disk_total_bytes"`   // 磁盘总容量
-	DiskUsedBytes    uint64  `json:"disk_used_bytes"`    // 磁盘已用
+	DiskUsedBytes    uint64  `json:"disk_used_bytes"`    // 磁盘已使用
 	DiskAvailBytes   uint64  `json:"disk_avail_bytes"`   // 磁盘可用
 	DiskUsagePercent float64 `json:"disk_usage_percent"` // 磁盘使用率
 	DiskWarningLevel string  `json:"disk_warning_level"` // safe | warning | danger
@@ -34,6 +36,14 @@ type AttachmentFilesystemCleanupRequest struct {
 	OlderThanDays int    `json:"older_than_days"` // 清理 N 天前的文件
 	DryRun        bool   `json:"dry_run"`         // 预览模式（不实际删除）
 	Reason        string `json:"reason"`          // 清理原因（审计用）
+	// CleanupRunID lets the operator correlate the FS deletion with a
+	// previous DB cleanup (data_lifecycle_attachments.handleDataLifecycle
+	// AttachmentCleanupExecute). If empty, the FS endpoint generates a
+	// fresh UUID so the audit row still exists for FS-only invocations.
+	CleanupRunID string `json:"cleanup_run_id"`
+	// TriggeredByUser is recorded in the audit row; defaults to the
+	// X-Admin-User header or "unknown".
+	TriggeredByUser string `json:"triggered_by_user"`
 }
 
 // AttachmentFilesystemCleanupResponse 文件清理响应
@@ -43,6 +53,8 @@ type AttachmentFilesystemCleanupResponse struct {
 	BytesFreed      int64    `json:"bytes_freed"`
 	BytesFreedHuman string   `json:"bytes_freed_human"`
 	DeletedPaths    []string `json:"deleted_paths,omitempty"` // 预览模式返回
+	CleanupRunID    string   `json:"cleanup_run_id"`
+	AuditRows       int      `json:"audit_rows"`
 	Error           string   `json:"error,omitempty"`
 }
 
@@ -136,6 +148,15 @@ func (h *Handler) handleAttachmentFilesystemStats(w http.ResponseWriter, r *http
 
 // handleAttachmentFilesystemCleanup 按时间清理附件文件
 // POST /api/admin/attachments/filesystem/cleanup
+//
+// audit-data-closure-2 (2026-08-31): when the database is available, every
+// file that the handler actually removes from disk is also recorded in
+// audit_attachments_filesystem_cleanup (migration 632) sharing the same
+// cleanup_run_id as the caller's DB cleanup. The handler is intentionally
+// tolerant of DB failures: a write that cannot reach the audit table is
+// logged at Warn level and the file removal is still performed (the
+// operator sees the missing audit row in the next reconciliation pass and
+// the success response carries audit_rows=0 so they can spot the gap).
 func (h *Handler) handleAttachmentFilesystemCleanup(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -162,10 +183,40 @@ func (h *Handler) handleAttachmentFilesystemCleanup(w http.ResponseWriter, r *ht
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+
+	cleanupRunID := req.CleanupRunID
+	if cleanupRunID == "" {
+		cleanupRunID = uuidOrZero(ctx)
+	}
+	triggeredBy := req.TriggeredByUser
+	if triggeredBy == "" {
+		triggeredBy = r.Header.Get("X-Admin-User")
+	}
+	if triggeredBy == "" {
+		triggeredBy = "unknown"
+	}
+	// tenant_id for the FS audit row. We don't have a per-file tenant
+	// mapping (files are content-addressed by hash) so we record the
+	// super_admin's effective tenant — typically "default" but can be
+	// narrowed by attaching a tenant_id query parameter in the future.
+	tenantID := EffectiveTenantID(r)
+
 	cutoffTime := time.Now().AddDate(0, 0, -req.OlderThanDays)
 	var filesDeleted int
 	var bytesFreed int64
 	var deletedPaths []string
+
+	// Track paths we successfully removed so the audit insert loop can
+	// write one row per path. We keep the audit write inside the walk
+	// callback so a partial failure leaves a consistent audit trail.
+	type removedFile struct {
+		path  string
+		size  int64
+		mtime time.Time
+	}
+	removed := make([]removedFile, 0, 64)
 
 	err = filepath.WalkDir(absDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -188,17 +239,59 @@ func (h *Handler) handleAttachmentFilesystemCleanup(w http.ResponseWriter, r *ht
 				if rmErr := os.Remove(path); rmErr == nil {
 					bytesFreed += info.Size()
 					filesDeleted++
+					removed = append(removed, removedFile{
+						path:  path,
+						size:  info.Size(),
+						mtime: info.ModTime(),
+					})
 				}
 			}
 		}
 		return nil
 	})
 
+	auditRows := 0
+	if !req.DryRun && h.db != nil && len(removed) > 0 {
+		// Write one audit row per file. We do this outside the WalkDir
+		// callback so a single bad row does not abort the loop. The
+		// cleanup_run_id + (request_id, file_path) UNIQUE constraint
+		// makes a partial retry safe.
+		for _, f := range removed {
+			if _, err := h.db.Exec(ctx, `
+				INSERT INTO audit_attachments_filesystem_cleanup
+				    (cleanup_run_id, tenant_id, request_id, file_path,
+				     file_size, file_mtime, triggered_by_user, reason)
+				VALUES ($1, $2, '__fs_only__', $3, $4, $5, $6, $7)
+				ON CONFLICT (request_id, file_path, cleanup_run_id) DO NOTHING`,
+				cleanupRunID, tenantID, f.path, f.size, f.mtime,
+				triggeredBy, nullableReason(req.Reason),
+			); err != nil {
+				slog.Warn("attachments: fs audit row insert failed",
+					"cleanup_run_id", cleanupRunID, "path", f.path, "error", err)
+				continue
+			}
+			auditRows++
+		}
+	}
+
+	if !req.DryRun {
+		slog.Info("attachments: fs cleanup complete",
+			"cleanup_run_id", cleanupRunID,
+			"older_than_days", req.OlderThanDays,
+			"files_deleted", filesDeleted,
+			"bytes_freed", bytesFreed,
+			"audit_rows", auditRows,
+			"triggered_by", triggeredBy,
+		)
+	}
+
 	resp := AttachmentFilesystemCleanupResponse{
 		DryRun:          req.DryRun,
 		FilesDeleted:    filesDeleted,
 		BytesFreed:      bytesFreed,
 		BytesFreedHuman: humanBytes(bytesFreed),
+		CleanupRunID:    cleanupRunID,
+		AuditRows:       auditRows,
 	}
 	if req.DryRun {
 		resp.DeletedPaths = deletedPaths
