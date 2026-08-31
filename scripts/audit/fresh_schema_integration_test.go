@@ -39,30 +39,24 @@ package promote
 
 import (
 	"context"
+	"fmt"
 	"os"
-	"strconv"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const freshSchemaAuditDBEnv = "TEST_AUDIT_ISOLATED_DB_URL"
+const (
+	freshSchemaAuditDBEnv  = "TEST_AUDIT_ISOLATED_DB_URL"
+	freshSchemaEndStateEnv = "TEST_AUDIT_FRESH_SCHEMA_DB_URL"
+)
 
-// TestFreshSchemaFromMigrations_KeyObjectsExist asserts the canonical
-// objects that the runtime expects are present after the
-// fresh-schema-from-migrations shell script has run. The script creates
-// and tears down llm_gateway_fresh itself; we read the production
-// (llm_gateway) DB that the script applied 511..635 against.
-//
-// To run end-to-end:
-//
-//	TEST_AUDIT_ISOLATED_DB_URL=$(grep AUDIT_PG_DSN /tmp/audit-pg.env | cut -d= -f2- | tr -d "'\"" ) \
-//	  bash scripts/audit/fresh-schema-from-migrations.sh
-//
-// then point this test at the post-migration state. In CI we run them
-// in the same job; locally the shell script is a prerequisite.
+// TestFreshSchemaFromMigrations_KeyObjectsExist checks the retained shell
+// end-state. Set KEEP_FRESH_DB=1 when running the shell script, then provide
+// its DSN in TEST_AUDIT_FRESH_SCHEMA_DB_URL. Throwaway tests below always use
+// TEST_AUDIT_ISOLATED_DB_URL and clean up their own databases.
 func TestFreshSchemaFromMigrations_KeyObjectsExist(t *testing.T) {
-	pool := openFreshPool(t)
+	pool := openPoolFromEnv(t, freshSchemaEndStateEnv)
 	ctx := context.Background()
 
 	type want struct {
@@ -107,33 +101,8 @@ func TestFreshSchemaFromMigrations_KeyObjectsExist(t *testing.T) {
 // (so that it also succeeds on a fresh DB), this test must be updated
 // alongside that change.
 func TestFreshSchemaFromMigrations_RepairMigrationsFailOnFreshDB(t *testing.T) {
-	pool := openFreshPool(t)
+	admin := openFreshPool(t)
 	ctx := context.Background()
-
-	// Throwaway DB so we don't pollute the main fixture.
-	throwaway := "llm_gateway_repair_probe"
-	if _, err := pool.Exec(ctx,
-		"DROP DATABASE IF EXISTS "+throwaway); err != nil {
-		t.Fatalf("drop: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		"CREATE DATABASE "+throwaway); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	t.Cleanup(func() {
-		// Force-disconnect any leftover connections so DROP succeeds.
-		_, _ = pool.Exec(context.Background(),
-			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1",
-			throwaway)
-		_, _ = pool.Exec(context.Background(), "DROP DATABASE IF EXISTS "+throwaway)
-	})
-
-	// Connect to the throwaway DB directly.
-	conn, err := pgxpool.New(ctx, deriveConnForDB(t, throwaway))
-	if err != nil {
-		t.Fatalf("connect throwaway: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
 
 	repairMigrations := []string{
 		"533_request_wal_bodies_unique_request_id.sql",
@@ -152,16 +121,27 @@ func TestFreshSchemaFromMigrations_RepairMigrationsFailOnFreshDB(t *testing.T) {
 		"616_provider_error_details_unique_constraint.sql",
 		"625_session_bodies_unified_explicit.sql",
 	}
-	for _, m := range repairMigrations {
-		path := "../../sql/migrations/startup/" + m
-		body, err := os.ReadFile(path)
+	expectedFailures := 0
+	unexpectedSuccesses := 0
+	for i, m := range repairMigrations {
+		body, err := os.ReadFile("../../sql/migrations/startup/" + m)
 		if err != nil {
-			t.Errorf("read %s: %v", m, err)
-			continue
+			t.Fatalf("read %s: %v", m, err)
 		}
-		if _, err := conn.Exec(ctx, string(body)); err == nil {
+		dbName := fmt.Sprintf("llm_gateway_repair_probe_%d", i)
+		err = withThrowawayDB(t, admin, dbName, func(conn *pgxpool.Pool) error {
+			_, execErr := conn.Exec(ctx, string(body))
+			return execErr
+		})
+		if err != nil {
+			expectedFailures++
+		} else {
+			unexpectedSuccesses++
 			t.Errorf("%s: expected error on fresh DB, got nil", m)
 		}
+	}
+	if expectedFailures != len(repairMigrations) || unexpectedSuccesses != 0 {
+		t.Fatalf("repair migration accounting: expected_failures=%d/%d unexpected_successes=%d", expectedFailures, len(repairMigrations), unexpectedSuccesses)
 	}
 }
 
@@ -172,79 +152,58 @@ func TestFreshSchemaFromMigrations_RepairMigrationsFailOnFreshDB(t *testing.T) {
 // appear in installer/internal/dbinit/runner.go's StartupFiles list and
 // applies each. If any fail, the fresh-DB baseline is broken.
 func TestFreshSchemaFromMigrations_BuildMigrationsSucceedOnFreshDB(t *testing.T) {
-	pool := openFreshPool(t)
+	admin := openFreshPool(t)
 	ctx := context.Background()
-
-	throwaway := "llm_gateway_build_probe"
-	if _, err := pool.Exec(ctx,
-		"DROP DATABASE IF EXISTS "+throwaway); err != nil {
-		t.Fatalf("drop: %v", err)
-	}
-	if _, err := pool.Exec(ctx,
-		"CREATE DATABASE "+throwaway); err != nil {
-		t.Fatalf("create: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1",
-			throwaway)
-		_, _ = pool.Exec(context.Background(), "DROP DATABASE IF EXISTS "+throwaway)
-	})
-
-	conn, err := pgxpool.New(ctx, deriveConnForDB(t, throwaway))
-	if err != nil {
-		t.Fatalf("connect throwaway: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-
 	buildMigrations := []string{
-		// Independent build-class migrations: each can apply on its own
-		// to an empty database. Anything that references another
-		// migration's output (e.g. 530_request_journey_contract.sql
-		// requires 511's request_state_transitions table) belongs to
-		// the full shell-script run, not this test.
 		"511_state_transitions_table.sql",
 		"515_state_transitions_seq_unique.sql",
 		"536_stats_analytics_foundation.sql",
 		"537_usage_facts.sql",
 	}
-	for _, m := range buildMigrations {
-		path := "../../sql/migrations/startup/" + m
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("read %s: %v", m, err)
-			continue
-		}
-		if _, err := conn.Exec(ctx, string(body)); err != nil {
-			t.Errorf("%s: build-class migration should succeed on fresh DB: %v", m, err)
-		}
-	}
 
-	// After all build migrations succeed, audit_attachments_filesystem_cleanup
-	// must exist (632 is the most recent one we test here).
-	var n int
-	if err := conn.QueryRow(ctx,
-		"SELECT count(*) FROM pg_class WHERE relname='audit_attachments_filesystem_cleanup'",
-	).Scan(&n); err != nil {
-		t.Errorf("post-apply probe failed: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("audit_attachments_filesystem_cleanup count=%d, want 1", n)
+	for i, name := range buildMigrations {
+		body, err := os.ReadFile("../../sql/migrations/startup/" + name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		dbName := fmt.Sprintf("llm_gateway_build_probe_%d", i)
+		if err := withThrowawayDB(t, admin, dbName, func(conn *pgxpool.Pool) error {
+			_, execErr := conn.Exec(ctx, string(body))
+			return execErr
+		}); err != nil {
+			t.Errorf("%s: build-class migration should succeed on fresh DB: %v", name, err)
+		}
 	}
 }
 
 // ----- helpers -----------------------------------------------------------
 
-func freshSchemaOpenPool(t *testing.T) *pgxpool.Pool { return openFreshPool(t) }
-
-// openFreshPool opens a pool to whatever the TEST_AUDIT_ISOLATED_DB_URL
-// points at. The caller may further narrow the database name with
-// cfg.ConnConfig.Database.
-func openFreshPool(t *testing.T) *pgxpool.Pool {
+func withThrowawayDB(t *testing.T, admin *pgxpool.Pool, dbName string, fn func(*pgxpool.Pool) error) error {
 	t.Helper()
-	dsn := os.Getenv(freshSchemaAuditDBEnv)
+	ctx := context.Background()
+	if _, err := admin.Exec(ctx, "DROP DATABASE IF EXISTS "+dbName); err != nil {
+		t.Fatalf("drop %s: %v", dbName, err)
+	}
+	if _, err := admin.Exec(ctx, "CREATE DATABASE "+dbName); err != nil {
+		t.Fatalf("create %s: %v", dbName, err)
+	}
+	defer func() {
+		_, _ = admin.Exec(context.Background(), "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1", dbName)
+		_, _ = admin.Exec(context.Background(), "DROP DATABASE IF EXISTS "+dbName)
+	}()
+	conn, err := pgxpool.New(ctx, deriveConnForDB(t, dbName))
+	if err != nil {
+		t.Fatalf("connect %s: %v", dbName, err)
+	}
+	defer conn.Close()
+	return fn(conn)
+}
+
+func openPoolFromEnv(t *testing.T, envName string) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv(envName)
 	if dsn == "" {
-		t.Skipf("%s not set; skipping integration test", freshSchemaAuditDBEnv)
+		t.Skipf("%s not set; skipping integration test", envName)
 	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -262,19 +221,23 @@ func openFreshPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+// openFreshPool opens a pool to the isolated audit database.
+func openFreshPool(t *testing.T) *pgxpool.Pool {
+	return openPoolFromEnv(t, freshSchemaAuditDBEnv)
+}
+
 // deriveConnForDB swaps the database name in the test DSN so we can
 // connect to a throwaway DB without rebuilding the connection config.
 // The test DSN is expected to be of the form
 // postgres://kxuser:pw@host:port/dbname?...
 func deriveConnForDB(t *testing.T, dbName string) string {
 	t.Helper()
-	dsn := os.Getenv(auditDBEnv)
+	dsn := os.Getenv(freshSchemaAuditDBEnv)
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
 		t.Fatalf("parse dsn: %v", err)
 	}
 	cfg.ConnConfig.Database = dbName
 	cfg.MaxConns = 2
-	_ = strconv.Itoa // keep strconv import for future host:port tweaks
 	return cfg.ConnString()
 }

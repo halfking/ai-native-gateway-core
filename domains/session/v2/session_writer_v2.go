@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 )
 
 const (
@@ -289,6 +291,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 
 	// 3. Build the turn record and bodies record (computed before the insert so
 	// marshalling errors fail fast while the lock remains held).
+	digestMeta := map[string]any{
+		"prompt_tokens": req.PromptTokens, "completion_tokens": req.CompletionTokens,
+		"cost_usd": req.CostUSD, "latency_ms": int(req.CompletedAt.Sub(req.StartedAt).Milliseconds()),
+		"status_code": req.StatusCode, "success": req.Success, "error_kind": req.ErrorKind,
+		"cache_read_tokens": req.CacheReadTokens, "cache_write_tokens": req.CacheWriteTokens,
+	}
+	digestGovernance := map[string]any{
+		"injection_verdict": req.InjectionVerdict, "output_verdict": req.OutputVerdict,
+		"compression_applied": req.CompressionApplied, "compression_tokens_saved": req.TokensSaved,
+	}
+	digestJSON, err := sessiondigest.Marshal(sessiondigest.Build(requestDelta, req.ResponseBody, digestMeta, digestGovernance, req.Timestamp))
+	if err != nil {
+		return fmt.Errorf("marshal turn digest: %w", err)
+	}
 
 	requestAttachments := extractRequestAttachments(req)
 	responseAttachments := extractResponseAttachments(req)
@@ -362,8 +378,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		// previews from the new messages in this turn so the admin turns-list
 		// UI shows something useful without waiting for the async LLM
 		// summarizer. summarizeMessages already produces a 200-char cap.
-		Title:   summarizeMessages(requestDelta),
-		Summary: summarizeMessages(req.ResponseBody),
+		Title:      summarizeMessages(requestDelta),
+		Summary:    summarizeMessages(req.ResponseBody),
+		DigestJSON: digestJSON,
 	}
 
 	// 4. Atomic turn + bodies write (spec §6.2). The transaction and lock were
