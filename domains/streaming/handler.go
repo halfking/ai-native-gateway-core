@@ -7196,13 +7196,17 @@ type healthVersionInfo struct {
 	BuildDate string
 }
 
-// resolveGatewayVersionInfo 复用 resolveGatewayVersion 的 version.json 解析路径，
-// 同时返回 git_sha / build_seq / build_date。原始解析仍只读 version.json（SSOT）。
+// resolveGatewayVersionInfo reads the same instance-local override used by the
+// gateway version loader, then falls back to the active release paths.
 func resolveGatewayVersionInfo() healthVersionInfo {
-	candidates := []string{
+	candidates := make([]string, 0, 3)
+	if path := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION_FILE")); path != "" {
+		candidates = append(candidates, path)
+	}
+	candidates = append(candidates,
 		"/opt/llm-gateway-go/version.json",
 		"version.json",
-	}
+	)
 	out := healthVersionInfo{
 		Version:   "dev",
 		GitSHA:    "unknown",

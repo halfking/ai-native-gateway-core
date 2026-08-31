@@ -602,6 +602,7 @@ func (g *AttemptCommitGate) flushHoldbackLocked() error {
 // class, reporting whether the state advanced. Unknown frames fail closed
 // as content.
 func (g *AttemptCommitGate) advanceStateLocked(class FrameClass) bool {
+	oldState := g.state
 	var next CommitState
 	switch class {
 	case FrameClassKeepalive:
@@ -623,6 +624,18 @@ func (g *AttemptCommitGate) advanceStateLocked(class FrameClass) bool {
 	}
 	if next > g.state {
 		g.state = next
+		// 2026-09-01: the state machine was previously only observable at its
+		// terminal verdict. The none→metadata→content transition is what decides
+		// whether an interrupted attempt can still be discarded, so log every
+		// advance to make the resume_blocked escalation reconstructible.
+		slog.Debug("gate_state_advanced",
+			"request_id", g.requestID,
+			"from", oldState.String(),
+			"to", next.String(),
+			"frame_class", int(class),
+			"buffer_bytes", g.bufferLen,
+			"committed", g.committed,
+		)
 		return true
 	}
 	return false
