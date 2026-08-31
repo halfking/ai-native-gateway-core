@@ -68,6 +68,7 @@ import requestJourneyDetail from './requestJourneyDetail'
 import connectionRegistry from './connectionRegistry'
 import nodeHealthTimeline from './nodeHealthTimeline'
 import proxy from './proxy'
+import requestDetail from './requestDetail'
 
 export default {
   common,
@@ -138,4 +139,5 @@ export default {
   connectionRegistry,
   nodeHealthTimeline,
   proxy,
+  requestDetail,
 }

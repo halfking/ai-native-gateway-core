@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // MultimodalAttachmentsPanel — preview image / audio / video from body + attachments.
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getRequestAttachments,
   type AttachmentInfo,
@@ -21,6 +22,8 @@ const props = defineProps<{
 const loading = ref(false)
 const error = ref('')
 const fetched = ref<AttachmentInfo[] | null>(null)
+
+const { t } = useI18n()
 
 watch(
   () => props.requestId,
@@ -61,16 +64,16 @@ const counts = computed(() => {
 
 <template>
   <div class="mm-panel" data-testid="multimodal-attachments">
-    <div v-if="loading" class="muted">加载附件元数据…</div>
+    <div v-if="loading" class="muted">{{ t('requestDetail.attachments.loading') }}</div>
     <p v-if="error" class="err">{{ error }}</p>
 
     <div class="toolbar">
       <span class="summary">
-        共 {{ media.length }} 项
-        · 图 {{ counts.image }}
-        · 音 {{ counts.audio }}
-        · 视 {{ counts.video }}
-        · 文件 {{ counts.file }}
+        {{ t('requestDetail.attachments.total', { count: media.length }) }}
+        {{ t('requestDetail.attachments.byType.image', { n: counts.image }) }}
+        {{ t('requestDetail.attachments.byType.audio', { n: counts.audio }) }}
+        {{ t('requestDetail.attachments.byType.video', { n: counts.video }) }}
+        {{ t('requestDetail.attachments.byType.file', { n: counts.file }) }}
       </span>
       <div class="filters">
         <button
@@ -80,12 +83,12 @@ const counts = computed(() => {
           class="btn btn-sm"
           :class="{ 'btn-primary': filter === f }"
           @click="filter = f"
-        >{{ f === 'all' ? '全部' : f }}</button>
+        >{{ f === 'all' ? t('requestDetail.attachments.allFilter') : f }}</button>
       </div>
     </div>
 
     <div v-if="!visible.length" class="muted">
-      未从请求正文或持久化附件中解析到图片 / 音频 / 视频。
+      {{ t('requestDetail.attachments.empty') }}
     </div>
 
     <ul v-else class="grid">
@@ -100,8 +103,8 @@ const counts = computed(() => {
           <img v-if="m.kind === 'image' && m.url" :src="m.url" :alt="m.label || 'image'" loading="lazy" />
           <audio v-else-if="m.kind === 'audio' && m.url" :src="m.url" controls preload="metadata" />
           <video v-else-if="m.kind === 'video' && m.url" :src="m.url" controls preload="metadata" />
-          <a v-else-if="m.url" :href="m.url" target="_blank" rel="noopener">打开 / 下载</a>
-          <span v-else class="muted">无可预览 URL</span>
+          <a v-else-if="m.url" :href="m.url" target="_blank" rel="noopener">{{ t('requestDetail.attachments.openOrDownload') }}</a>
+          <span v-else class="muted">{{ t('requestDetail.attachments.noPreviewUrl') }}</span>
         </div>
         <p v-if="m.detail || m.mime" class="detail">{{ m.mime }} · {{ m.detail }}</p>
       </li>

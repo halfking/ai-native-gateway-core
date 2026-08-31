@@ -15,6 +15,7 @@
 //     request_logs/session_turns）和 in_flight/persisted 持久化阶段。
 //   - getSessionSnapshot：会话级快照（标题、分析结果、最后模型/供应商）。
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { ApiError } from '../../api/_core'
 import { getRequestLogDetail, type RequestLogDetail } from '../../api/logs'
 import {
@@ -31,6 +32,8 @@ import { formatJson } from './messageHelpers'
 import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 export type DetailMode = 'request' | 'session-turns'
+
+const { t } = useI18n()
 
 const props = withDefaults(defineProps<{
   requestId: string | null
@@ -124,7 +127,7 @@ async function loadRequest(id: string) {
     unified.value = u
     log.value = meta
     if (!u && !meta) {
-      error.value = '请求详情未找到'
+      error.value = t('requestDetail.drawer.notFound')
       return
     }
     const sid = log.value?.gw_session_id || unified.value?.meta.gw_session_id
@@ -186,7 +189,7 @@ function mapDrawerTabToFullscreen(t: Tab): string {
 }
 
 const openFullscreenTitle = computed(() =>
-  activeRequestId.value ? `在独立页面打开请求 ${activeRequestId.value}` : '',
+  activeRequestId.value ? t('requestDetail.drawer.openInNewTab', { id: activeRequestId.value }) : '',
 )
 </script>
 
@@ -199,7 +202,7 @@ const openFullscreenTitle = computed(() =>
   >
     <div class="drawer-panel card drawer-panel-wide" @click.stop>
       <div class="drawer-header">
-        <h3>请求/会话详情</h3>
+        <h3>{{ t('requestDetail.drawer.title') }}</h3>
         <div class="mode-seg">
           <button
             type="button"
@@ -207,7 +210,7 @@ const openFullscreenTitle = computed(() =>
             :class="{ 'btn-primary': viewMode === 'request' }"
             @click="viewMode = 'request'"
           >
-            单请求
+            {{ t('requestDetail.drawer.single') }}
           </button>
           <button
             type="button"
@@ -216,7 +219,7 @@ const openFullscreenTitle = computed(() =>
             :disabled="!sessionId"
             @click="switchToSession"
           >
-            会话轮次
+            {{ t('requestDetail.drawer.turns') }}
           </button>
         </div>
         <!-- 2026-08-28: 抽屉内新增「打开全页」入口，跳到独立 /request-detail 页 -->
@@ -227,12 +230,12 @@ const openFullscreenTitle = computed(() =>
           :title="openFullscreenTitle"
           @click="openActiveInFullscreen"
         >
-          打开全页
+          {{ t('requestDetail.drawer.openFullPage') }}
         </button>
-        <button class="btn btn-sm" type="button" @click="emit('close')">关闭</button>
+        <button class="btn btn-sm" type="button" @click="emit('close')">{{ t('requestDetail.drawer.close') }}</button>
       </div>
 
-      <div v-if="loading" class="drawer-loading">加载中…</div>
+      <div v-if="loading" class="drawer-loading">{{ t('requestDetail.drawer.loading') }}</div>
       <div v-else-if="error && !log && !unified" class="drawer-error">{{ error }}</div>
 
       <template v-else>
@@ -257,22 +260,22 @@ const openFullscreenTitle = computed(() =>
         <template v-else>
           <div class="tab-row">
             <button
-              v-for="t in ([
-                ['overview', '概览'],
-                ['chat', '对话'],
-                ['flow', '流程'],
-                ['compress', '压缩与脱敏'],
-                ['routing', '路由'],
-                ['raw', '原始JSON'],
-              ] as [Tab, string][])"
-              :key="t[0]"
+              v-for="tabKey in ([
+                'overview',
+                'chat',
+                'flow',
+                'compress',
+                'routing',
+                'raw',
+              ] as Tab[])"
+              :key="tabKey"
               type="button"
               class="btn btn-sm"
-              :class="{ 'btn-primary': tab === t[0] }"
-              :disabled="t[0] === 'routing' && !hasRouting"
-              @click="tab = t[0]"
+              :class="{ 'btn-primary': tab === tabKey }"
+              :disabled="tabKey === 'routing' && !hasRouting"
+              @click="tab = tabKey"
             >
-              {{ t[1] }}
+              {{ t(`requestDetail.drawer.tabs.${tabKey}`) }}
             </button>
             <button
               v-if="sessionId"
@@ -280,7 +283,7 @@ const openFullscreenTitle = computed(() =>
               class="btn btn-sm"
               @click="emit('filterSession', sessionId!)"
             >
-              筛选会话
+              {{ t('requestDetail.drawer.filterSessions') }}
             </button>
           </div>
 
