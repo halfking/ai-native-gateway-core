@@ -2,11 +2,29 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RequestTrace, TraceEvent } from '../../api/trace'
+import type { RequestJourney } from '../../api/request-journeys'
+import type { WaterfallRequest } from '../../api/dispatch'
 
-const props = defineProps<{ trace: RequestTrace | null }>()
+const props = defineProps<{
+  trace: RequestTrace | null
+  journey?: RequestJourney | null
+  waterfall?: WaterfallRequest | null
+}>()
 const { t } = useI18n()
 
 const events = computed(() => [...(props.trace?.events ?? [])].sort((a, b) => a.seq - b.seq))
+const journeyEvents = computed(() => [...(props.journey?.events ?? [])].sort((a, b) => a.seq - b.seq))
+const waterfallAttempts = computed(() => props.waterfall?.attempts ?? [])
+
+function journeyDetail(event: (typeof journeyEvents.value)[number]): string {
+  const bits = [
+    event.attempt ? `attempt #${event.attempt.attempt_no}` : '',
+    event.provider || event.attempt?.provider || '',
+    event.model || event.resolved_model || '',
+    event.retry_reason || event.switch_reason || '',
+  ].filter(Boolean)
+  return bits.join(' · ')
+}
 
 function stageLabel(event: TraceEvent): string {
   const raw = (event.stage_name || event.stage || '').trim()
@@ -66,8 +84,8 @@ function eventTitle(event: TraceEvent): string {
 
 <template>
   <section class="rpf" data-testid="request-processing-flow" :aria-label="t('requestDetail.flow.diagram.ariaLabel')">
-    <div v-if="!trace" class="rpf-empty">{{ t('requestDetail.flow.diagram.noData') }}</div>
-    <div v-else-if="!events.length" class="rpf-empty">{{ t('requestDetail.flow.diagram.noEvents') }}</div>
+    <div v-if="!trace && !journey && !waterfall" class="rpf-empty">{{ t('requestDetail.flow.diagram.noData') }}</div>
+    <div v-else-if="!events.length && !journeyEvents.length && !waterfallAttempts.length" class="rpf-empty">{{ t('requestDetail.flow.diagram.noEvents') }}</div>
     <template v-else>
       <div class="rpf-track" role="list" :aria-label="t('requestDetail.flow.diagram.trackLabel')">
         <template v-for="(event, index) in events" :key="`${event.seq}-${event.stage}`">
@@ -86,6 +104,22 @@ function eventTitle(event: TraceEvent): string {
           </article>
         </template>
       </div>
+      <section v-if="journeyEvents.length || waterfallAttempts.length" class="rpf-evidence" :aria-label="t('requestDetail.flow.diagram.evidenceLabel')">
+        <h4>{{ t('requestDetail.flow.diagram.evidenceTitle') }}</h4>
+        <ul v-if="journeyEvents.length" class="evidence-list">
+          <li v-for="event in journeyEvents" :key="`journey-${event.seq}`" class="evidence-item">
+            <strong>{{ t(`requestJourneys.event.${event.event_type}`) }}</strong>
+            <span>{{ journeyDetail(event) || t('requestDetail.flow.diagram.noDetails') }}</span>
+            <span v-if="event.observation_status === 'observation_degraded'" class="degraded">{{ t('requestDetail.flow.diagram.degraded') }}</span>
+          </li>
+        </ul>
+        <ul v-if="waterfallAttempts.length" class="evidence-list">
+          <li v-for="attempt in waterfallAttempts" :key="`waterfall-${attempt.attempt_id || attempt.attempt_no}`" class="evidence-item">
+            <strong>{{ t('requestDetail.flow.diagram.waterfallAttempt', { number: attempt.attempt_no }) }}</strong>
+            <span>{{ [attempt.model, attempt.vendor, attempt.outcome, attempt.error_kind].filter(Boolean).join(' · ') || t('requestDetail.flow.diagram.noDetails') }}</span>
+          </li>
+        </ul>
+      </section>
       <div class="rpf-legend">
         <span><i class="legend-dot legend-dot--success" />{{ t('requestDetail.flow.diagram.legend.success') }}</span>
         <span><i class="legend-dot legend-dot--failed" />{{ t('requestDetail.flow.diagram.legend.failed') }}</span>
@@ -108,6 +142,12 @@ function eventTitle(event: TraceEvent): string {
 .flow-node__meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--muted); }
 .flow-node__flags { display: block; margin-top: 6px; color: var(--accent); font-size: 10px; line-height: 1.3; }
 .flow-node__error { display: block; margin-top: 5px; color: var(--danger); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rpf-evidence { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+.rpf-evidence h4 { margin: 0 0 6px; font-size: 12px; }
+.evidence-list { display: grid; gap: 5px; list-style: none; margin: 0; padding: 0; }
+.evidence-item { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--muted); }
+.evidence-item strong { color: var(--text-primary, var(--text)); }
+.degraded { color: var(--warning, var(--accent)); }
 .rpf-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; color: var(--muted); font-size: 10px; }
 .rpf-legend span { display: inline-flex; align-items: center; gap: 4px; }
 .legend-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }

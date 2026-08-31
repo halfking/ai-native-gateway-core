@@ -175,13 +175,15 @@ export default {
     viewRoutingRetry: '檢視路由重試',
     empty: '尚無鏈路事件',
     noData: '無流程資料',
+    observationDegraded: '部分流程觀測已降級',
     diagram: {
       ariaLabel: '請求處理流程', trackLabel: '流程事件序列',
       event: '流程事件', noData: '尚無可觀測流程', noEvents: '尚無流程事件',
       stages: { received: '進站', routing: '路由解析', model_queue: '模型佇列', credential_queue: '憑據佇列', node_selection: '節點選擇', upstream: '上游請求', streaming: '串流回應', terminal: '請求結束' },
       status: { success: '成功', failed: '失敗', timeout: '逾時', skipped: '略過' },
       flags: { compression: '壓縮', retry: '重試', nodeSwitch: '節點切換', degraded: '觀測降級' },
-      legend: { success: '成功', failed: '失敗/逾時', special: '壓縮 · 重試 · 節點切換' },
+      evidenceLabel: '路由與瀑布觀測證據', evidenceTitle: '已觀測嘗試', waterfallAttempt: '瀑布嘗試 #{number}', noDetails: '沒有更多詳情', degraded: '觀測降級',
+      legend: { success: '成功', failed: '失敗/逾時', special: '壓縮 · 重試 · 節點切換' }
     },
   },
   // — 通用佔位符 —

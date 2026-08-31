@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -230,6 +231,29 @@ func TestHandleSessionTurnsTree_MethodAndAuth(t *testing.T) {
 	mux.ServeHTTP(rr, r)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionTurnsRouteRegistration_PreservesTreeSpecificity(t *testing.T) {
+	h := &Handler{}
+	mux := http.NewServeMux()
+	// Keep this registration pair identical to RegisterRoutes: Go 1.22's
+	// method/path pattern must continue to win over the legacy subtree.
+	mux.HandleFunc("/api/admin/sessions/", h.handleSessionSubrouter)
+	mux.HandleFunc("/api/admin/sessions/{id}/turns", h.handleSessionTurnsTree)
+
+	r := newTurnsTreeAuthRequest(t, http.MethodGet, "/api/admin/sessions/gw_s1/turns?cursor=invalid", "tenant_admin", "acme")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, r)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "session.pagination_invalid_cursor") {
+		t.Fatalf("exact turns route was not handled by tree endpoint: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	r = newTurnsTreeAuthRequest(t, http.MethodGet, "/api/admin/sessions/gw_s1/turns/not-a-number", "tenant_admin", "acme")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, r)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid turn_no") {
+		t.Fatalf("turn detail did not remain on V2 subtree: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 
