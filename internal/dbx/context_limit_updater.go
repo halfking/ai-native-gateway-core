@@ -25,15 +25,10 @@ type DBExecutor interface {
 // ContextLimitUpdater persists discovered context limits to the database.
 // The interface allows test doubles and no-op implementations.
 type ContextLimitUpdater interface {
-	// UpdateContextLimit writes the discovered limit to credential_model_bindings
-	// .context_window_override with source='discovery'. This call should be async
-	// and non-blocking — the caller (handleContextLengthRecovery) fires it in a
-	// goroutine so a slow DB write doesn't block the retry.
-	//
-	// credentialID + rawModel must uniquely identify a credential_model_bindings
-	// row. If no such row exists, the update is a silent no-op (the binding was
-	// never created or has been removed).
-	UpdateContextLimit(ctx context.Context, credentialID int, rawModel string, limit int) error
+	// UpdateContextLimit writes a discovered limit and reports whether a row was
+	// actually updated. A false result with nil error means the binding was not
+	// eligible (missing or protected by a manual/probe source).
+	UpdateContextLimit(ctx context.Context, credentialID int, rawModel string, limit int) (bool, error)
 }
 
 // DBContextLimitUpdater writes discovered limits to credential_model_bindings.
@@ -50,17 +45,12 @@ func NewDBContextLimitUpdater(db DBExecutor) *DBContextLimitUpdater {
 // .context_window_override with source='discovery' and updated_at=NOW().
 //
 // The UPDATE is keyed by (credential_id, provider_model_id), where provider_model_id
-// is resolved from provider_models.raw_model_name = rawModel. If no matching row
-// exists in credential_model_bindings, the statement affects 0 rows (silent no-op).
-//
-// The NOTIFY trigger (trg_notify_auto_route_cmb_update, migration 524) fires on
-// context_window_override changes and invalidates all instances' candCaches, so
-// the next request picks up the discovered limit.
-func (u *DBContextLimitUpdater) UpdateContextLimit(ctx context.Context, credentialID int, rawModel string, limit int) error {
-	// Resolve provider_model_id from raw_model_name, then UPDATE the binding row.
-	// The WHERE clause ensures we only write when the binding exists (the model
-	// was seen on this credential and a binding was created by the discovery or
-	// offer sync process).
+// is resolved from provider_models.raw_model_name = rawModel. Manual and probe
+// sources are protected and are never overwritten by automatic discovery.
+func (u *DBContextLimitUpdater) UpdateContextLimit(ctx context.Context, credentialID int, rawModel string, limit int) (bool, error) {
+	if limit <= 0 || rawModel == "" {
+		return false, nil
+	}
 	const q = `
 		UPDATE credential_model_bindings cmb
 		SET context_window_override = $3,
@@ -70,36 +60,23 @@ func (u *DBContextLimitUpdater) UpdateContextLimit(ctx context.Context, credenti
 		WHERE cmb.provider_model_id = pm.id
 		  AND cmb.credential_id = $1
 		  AND pm.raw_model_name = $2
+		  AND COALESCE(cmb.context_window_source, 'catalog') IN ('catalog', 'discovery')
 	`
 	tag, err := u.db.Exec(ctx, q, credentialID, rawModel, limit)
 	if err != nil {
 		slog.ErrorContext(ctx, "failed to update discovered context limit",
-			"credential_id", credentialID,
-			"raw_model", rawModel,
-			"limit", limit,
-			"error", err,
-		)
-		return err
+			"credential_id", credentialID, "raw_model", rawModel, "limit", limit, "error", err)
+		return false, err
 	}
 
-	rowsAffected := tag.RowsAffected()
-	if rowsAffected == 0 {
-		// No matching binding found. This is not an error — the credential may
-		// have been removed, the model may not be bound, or the offer sync may
-		// not have created a binding yet. Log at Info level for observability.
-		slog.InfoContext(ctx, "context_limit_discovery: no binding found (silent no-op)",
-			"credential_id", credentialID,
-			"raw_model", rawModel,
-			"limit", limit,
-		)
-		return nil
+	updated := tag.RowsAffected() > 0
+	if !updated {
+		slog.InfoContext(ctx, "context_limit_discovery: no eligible binding (silent no-op)",
+			"credential_id", credentialID, "raw_model", rawModel, "limit", limit)
+		return false, nil
 	}
-
 	slog.InfoContext(ctx, "context_limit_discovery: updated credential_model_bindings",
-		"credential_id", credentialID,
-		"raw_model", rawModel,
-		"limit", limit,
-		"rows_affected", rowsAffected,
-	)
-	return nil
+		"credential_id", credentialID, "raw_model", rawModel, "limit", limit,
+		"rows_affected", tag.RowsAffected())
+	return true, nil
 }

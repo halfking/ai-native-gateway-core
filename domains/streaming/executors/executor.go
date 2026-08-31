@@ -211,7 +211,7 @@ type IntegrityCandidate struct {
 // The interface allows test doubles and no-op implementations. The concrete
 // *dbx.DBContextLimitUpdater writes to the database; nil disables the feature.
 type ContextLimitUpdater interface {
-	UpdateContextLimit(ctx context.Context, credentialID int, rawModel string, limit int) error
+	UpdateContextLimit(ctx context.Context, credentialID int, rawModel string, limit int) (bool, error)
 }
 
 // UpstreamRequestLogger records the exact body sent to an upstream provider.
@@ -902,6 +902,9 @@ type Executor struct {
 	// configured value by >5%. Nil disables the feature (no persistence;
 	// discovered limits are used for the current request only).
 	ContextLimitUpdater ContextLimitUpdater
+	// ContextLimitUpdateQueue is the bounded, owned async persistence worker.
+	// It must be stopped before the shared DB pool is closed.
+	ContextLimitUpdateQueue *ContextLimitUpdateQueue
 }
 
 // DefaultFallbackChain (Phase 2, 2026-07-19) returns a sensible default

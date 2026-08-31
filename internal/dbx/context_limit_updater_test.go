@@ -25,9 +25,12 @@ func TestDBContextLimitUpdater_UpdateContextLimit_Success(t *testing.T) {
 		WithArgs(credentialID, rawModel, limit).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
-	err = updater.UpdateContextLimit(context.Background(), credentialID, rawModel, limit)
+	updated, err := updater.UpdateContextLimit(context.Background(), credentialID, rawModel, limit)
 	if err != nil {
 		t.Fatalf("UpdateContextLimit failed: %v", err)
+	}
+	if !updated {
+		t.Fatal("expected a binding to be updated")
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -53,9 +56,12 @@ func TestDBContextLimitUpdater_UpdateContextLimit_NoBinding(t *testing.T) {
 		WithArgs(credentialID, rawModel, limit).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 
-	err = updater.UpdateContextLimit(context.Background(), credentialID, rawModel, limit)
+	updated, err := updater.UpdateContextLimit(context.Background(), credentialID, rawModel, limit)
 	if err != nil {
 		t.Fatalf("UpdateContextLimit should succeed with 0 rows: %v", err)
+	}
+	if updated {
+		t.Fatal("expected no binding to be updated")
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -80,7 +86,7 @@ func TestDBContextLimitUpdater_UpdateContextLimit_DBError(t *testing.T) {
 		WithArgs(credentialID, rawModel, limit).
 		WillReturnError(errors.New("database connection failed"))
 
-	err = updater.UpdateContextLimit(context.Background(), credentialID, rawModel, limit)
+	_, err = updater.UpdateContextLimit(context.Background(), credentialID, rawModel, limit)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}

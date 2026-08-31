@@ -36,42 +36,52 @@ var contextLimitPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)your\s+messages?\s+resulted\s+in\s+(\d+)\s+tokens?`),
 }
 
-// ParseContextLimitFromError extracts the actual context limit from an upstream
-// error message body. Returns (limit, true) when found, (0, false) otherwise.
-//
-// This function is called in two scenarios:
-//  1. Primary: extract the configured limit from "maximum context length is X"
-//  2. Fallback: extract actual usage from "your messages resulted in X tokens"
-//
-// When both patterns match, prefer the "maximum context length" value since
-// that's the authoritative limit; the "resulted in" value is just the request
-// size (may be larger than the limit).
-func ParseContextLimitFromError(body string) (limit int, found bool) {
-	var fallbackLimit int
-	var fallbackFound bool
+// ContextLimitEvidence describes how confidently a value extracted from an
+// upstream error can be treated as the model's context limit.
+type ContextLimitEvidence string
 
-	// Try all patterns; the last one is the "resulted in" fallback
-	resultedInPattern := contextLimitPatterns[len(contextLimitPatterns)-1]
+const (
+	ContextLimitAuthoritative ContextLimitEvidence = "authoritative_limit"
+	ContextLimitObservedUsage ContextLimitEvidence = "observed_usage"
+)
 
-	for _, re := range contextLimitPatterns {
+// ContextLimitParseResult is the structured result of parsing an upstream error.
+type ContextLimitParseResult struct {
+	Limit    int
+	Found    bool
+	Evidence ContextLimitEvidence
+}
+
+// ParseContextLimitResult extracts a context-related token count and records
+// whether the provider stated a model limit or only reported request usage.
+func ParseContextLimitResult(body string) ContextLimitParseResult {
+	var observed int
+	for i, re := range contextLimitPatterns {
 		matches := re.FindStringSubmatch(body)
-		if len(matches) > 1 {
-			if val, err := strconv.Atoi(matches[1]); err == nil && val > 0 {
-				// For "resulted in X tokens", treat it as a lower-priority match
-				if re == resultedInPattern {
-					// This is the "resulted in" pattern - save it as fallback
-					if !fallbackFound {
-						fallbackLimit = val
-						fallbackFound = true
-					}
-				} else {
-					// This is a primary pattern (maximum/window) - prefer it
-					return val, true
-				}
-			}
+		if len(matches) <= 1 {
+			continue
 		}
+		val, err := strconv.Atoi(matches[1])
+		if err != nil || val <= 0 {
+			continue
+		}
+		if i == len(contextLimitPatterns)-1 {
+			if observed == 0 {
+				observed = val
+			}
+			continue
+		}
+		return ContextLimitParseResult{Limit: val, Found: true, Evidence: ContextLimitAuthoritative}
 	}
+	if observed > 0 {
+		return ContextLimitParseResult{Limit: observed, Found: true, Evidence: ContextLimitObservedUsage}
+	}
+	return ContextLimitParseResult{}
+}
 
-	// Return fallback value if found (from "resulted in" pattern)
-	return fallbackLimit, fallbackFound
+// ParseContextLimitFromError preserves the original API. Callers that persist
+// a value should use ParseContextLimitResult and require authoritative evidence.
+func ParseContextLimitFromError(body string) (limit int, found bool) {
+	result := ParseContextLimitResult(body)
+	return result.Limit, result.Found
 }
