@@ -21,7 +21,7 @@ autovacuum 对 TOAST 的回收无法归还空间给 OS。同时 18.8w 次 UPDATE
 ## 1. 执行前置
 
 - [ ] 凭据已加载：`source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go`
-- [ ] SSH 隧道已建：`export PG_PASS_252="$COMMON_PG_SUPERUSER_PASS"; export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"; source configs/env-252.sh; ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252`
+- [ ] SSH 隧道已建：`source configs/env-252.sh; source scripts/lib/252-db-tunnel.sh; db252_tunnel_ensure`（helper 动态解析当前容器地址，只复用健康 listener；结束时执行 `db252_tunnel_teardown`）
 - [ ] 先跑只读诊断并留档：
   ```bash
   ./scripts/partition/bodies-hot-diagnose.sh --env=252 | tee /tmp/bodies-hot-before-$(date +%F-%H%M).log

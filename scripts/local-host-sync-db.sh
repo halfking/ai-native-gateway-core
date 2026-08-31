@@ -35,9 +35,10 @@ head() { echo -e "\n${BLUE}━━━ $* ━━━${NC}"; }
 MODE="full"
 BACKUP_ONLY=false
 VERIFY_ONLY=false
+SCHEMA_ONLY=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --schema-only) MODE="schema"; shift ;;
+    --schema-only) MODE="schema"; SCHEMA_ONLY=true; shift ;;
     --backup-only) BACKUP_ONLY=true; shift ;;
     --verify)      VERIFY_ONLY=true; shift ;;
     --root) LLM_GATEWAY_FILES_ROOT="$2"; export LLM_GATEWAY_FILES_ROOT; shift 2 ;;
@@ -49,18 +50,31 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$BACKUP_ONLY" == true && ("$VERIFY_ONLY" == true || "$SCHEMA_ONLY" == true) ]]; then
+  err "--backup-only cannot be combined with --verify or --schema-only"
+  exit 1
+fi
+if [[ "$VERIFY_ONLY" == true && "$SCHEMA_ONLY" == true ]]; then
+  err "--verify cannot be combined with --schema-only"
+  exit 1
+fi
+
 lh_require_root >/dev/null
 
 # ── 1. Load credentials ──────────────────────────────────────────────────
-head "load env-injector credentials"
+head "load environment credentials"
+# shellcheck disable=SC1090
 if ! source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server 115.29.212.252 2>/dev/null; then
   err "failed to load envs (need ~/workspace/ai-native-tools/envs/loader.sh)"
   exit 1
 fi
-export PG_PASS_252="$COMMON_PG_SUPERUSER_PASS"
-export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
-export PG_PASS_LOCAL="$COMMON_PG_SUPERUSER_PASS"
-ok "credentials loaded (COMMON_PG_SUPERUSER_PASS, COMMON_REDIS_PASSWORD_252)"
+export PG_PASS_252="${PG_PASS_252:-${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS not loaded}}"
+export PG_PASS_LOCAL="${PG_PASS_LOCAL:-$COMMON_PG_SUPERUSER_PASS}"
+# shellcheck disable=SC1091
+source configs/env-252.sh
+# shellcheck disable=SC1091
+source scripts/lib/252-db-tunnel.sh
+ok "credentials loaded from envs SSOT"
 
 # ── 2. Verify local Docker PG is up ───────────────────────────────────────
 head "verify local PG container"
@@ -81,55 +95,49 @@ LOCAL_TABLE_COUNT=$(docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-ga
   psql -U llm_gateway -d llm_gateway -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public';" 2>/dev/null | tail -1 || echo 0)
 ok "local llm_gateway has $LOCAL_TABLE_COUNT tables"
 
-# ── 3. Setup SSH tunnel ──────────────────────────────────────────────────
-TUNNEL_LOCAL_PORT="${TUNNEL_LOCAL_PORT:-15432}"
-TUNNEL_REMOTE_TARGET="${TUNNEL_REMOTE_TARGET:-172.16.2.210:5432}"
-
-head "SSH tunnel local:$TUNNEL_LOCAL_PORT → 252 → $TUNNEL_REMOTE_TARGET"
-if ! lsof -tiTCP:${TUNNEL_LOCAL_PORT} -sTCP:LISTEN >/dev/null 2>&1; then
-  log "starting tunnel..."
-  ssh -f -N -L "${TUNNEL_LOCAL_PORT}:${TUNNEL_REMOTE_TARGET}" \
-    -p 25022 root@115.29.212.252 \
-    -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ExitOnForwardFailure=yes
-  sleep 2
+# A backup-only run is intentionally local-only: do not require credentials or
+# open a remote tunnel when no source operation will be performed.
+if $BACKUP_ONLY; then
+  BACKUP_DIR=$(lh_layout_vars | sed -n 's/^backups_dir=//p')
+  BACKUP_FILE="$BACKUP_DIR/local-pre-sync-$(date +%Y%m%d-%H%M%S).sql.gz"
+  head "backup-only → $BACKUP_FILE"
+  docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg \
+    pg_dump -U llm_gateway -d llm_gateway --no-owner --no-privileges 2>/dev/null \
+    | gzip -c > "$BACKUP_FILE"
+  ok "local backup written ($(du -h "$BACKUP_FILE" | cut -f1))"
+  exit 0
 fi
-if lsof -tiTCP:${TUNNEL_LOCAL_PORT} -sTCP:LISTEN >/dev/null 2>&1; then
-  ok "tunnel up on :$TUNNEL_LOCAL_PORT"
-else
-  err "tunnel failed to start"
+
+# ── 3. Setup managed SSH tunnel ───────────────────────────────────────────
+head "managed SSH tunnel 127.0.0.1:$TUNNEL_LOCAL_PORT → 252 PostgreSQL"
+if ! db252_tunnel_ensure; then
+  err "failed to establish the managed 252 tunnel"
   exit 1
 fi
-trap 'ssh_pid=$(lsof -tiTCP:'"${TUNNEL_LOCAL_PORT}"' -sTCP:LISTEN 2>/dev/null); [[ -n "$ssh_pid" ]] && kill "$ssh_pid" 2>/dev/null || true' EXIT
+trap db252_tunnel_teardown EXIT
 
 # ── 4. Verify source reachable ───────────────────────────────────────────
-SRC_TABLES=$(PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h 127.0.0.1 -p "${TUNNEL_LOCAL_PORT}" -U llm_gateway -d llm_gateway -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public';" 2>/dev/null | tail -1 || echo 0)
-ok "source (252 → llm_gateway) has $SRC_TABLES tables"
+SRC_TABLES=$(PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -X -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public';" 2>/dev/null | tail -1 || echo 0)
+ok "source (252 → $PG_DB) has $SRC_TABLES tables"
 
 # ── 5. (optional) Verify-only mode ────────────────────────────────────────
 if $VERIFY_ONLY; then
-  head "verify table inventory (252 vs local)"
-  PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h 127.0.0.1 -p "${TUNNEL_LOCAL_PORT}" -U llm_gateway -d llm_gateway -tAc \
-    "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename" > /tmp/252.txt
-  docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg \
-    psql -U llm_gateway -d llm_gateway -tAc \
-    "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename" > /tmp/local.txt
-  log "tables in 252 but missing locally:"
-  comm -23 /tmp/252.txt /tmp/local.txt
-  log "local-only tables:"
-  comm -13 /tmp/252.txt /tmp/local.txt
+  head "verify 252 vs local structure"
+  bash scripts/local-dev/verify-db-consistency.sh --verify
+  head "verify 252 vs local ordinary-table data"
+  bash scripts/local-dev/verify-db-data-consistency.sh
+  ok "all required 252 → local audits passed"
   exit 0
 fi
 
 # ── 6. Pre-sync pg_dump backup ────────────────────────────────────────────
 BACKUP_DIR=$(lh_layout_vars | sed -n 's/^backups_dir=//p')
 BACKUP_FILE="$BACKUP_DIR/local-pre-sync-$(date +%Y%m%d-%H%M%S).sql.gz"
-if ! $BACKUP_ONLY; then
-  head "pre-sync backup → $BACKUP_FILE"
-  docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg \
-    pg_dump -U llm_gateway -d llm_gateway --no-owner --no-privileges 2>/dev/null \
-    | gzip -c > "$BACKUP_FILE"
-  ok "local backup written ($(du -h "$BACKUP_FILE" | cut -f1))"
-fi
+head "pre-sync backup → $BACKUP_FILE"
+docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg \
+  pg_dump -U llm_gateway -d llm_gateway --no-owner --no-privileges 2>/dev/null \
+  | gzip -c > "$BACKUP_FILE"
+ok "local backup written ($(du -h "$BACKUP_FILE" | cut -f1))"
 
 # ── 7. Run pg-table-copy ─────────────────────────────────────────────────
 head "pg-table-copy 252 → local (mode=$MODE)"
@@ -147,16 +155,13 @@ else
   exit 1
 fi
 
-# ── 8. Final verification ─────────────────────────────────────────────────
-head "post-sync verification"
-LOCAL_AFTER=$(docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg \
-  psql -U llm_gateway -d llm_gateway -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public';" 2>/dev/null | tail -1 || echo 0)
-log "tables before: $LOCAL_TABLE_COUNT, after: $LOCAL_AFTER (source: $SRC_TABLES)"
+# ── 8. Mandatory post-sync verification ───────────────────────────────────
+head "post-sync structure audit"
+bash scripts/local-dev/verify-db-consistency.sh --verify
 
-if [[ "$LOCAL_AFTER" -ge "$SRC_TABLES" ]]; then
-  ok "local table count matches or exceeds source"
-else
-  warn "local has FEWER tables than source — check missed migrations"
-fi
+head "post-sync ordinary-table data audit"
+bash scripts/local-dev/verify-db-data-consistency.sh
+
+ok "sync and both mandatory consistency audits passed"
 
 log "next step: bash scripts/local-host-deploy.sh deploy"

@@ -90,6 +90,8 @@ docker exec -e PGPASSWORD="$PGPASSWORD" "$CONTAINER" \
 
 # SQL body
 SQL=$(cat <<'SQL_EOF'
+BEGIN;
+
 -- ============================================================================
 -- Routing analytics matviews (migration 632 / 2026-08-31) +
 -- columnar_insert_only_parents helper.
@@ -158,13 +160,12 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS public.routing_audit_summary_7d AS
  SELECT tenant_id,
     count(*) AS total_requests,
     count(*) FILTER (WHERE success) AS success_count,
-    count(*) FILTER (WHERE (NOT success)) AS failure_count,
-    COALESCE(sum(cost_usd), (0)::numeric) AS total_cost_usd,
-    COALESCE(percentile_cont((0.5)::double precision) WITHIN GROUP (ORDER BY ((latency_ms)::double precision)), (0)::double precision) AS p50_latency_ms,
-    COALESCE(percentile_cont((0.95)::double precision) WITHIN GROUP (ORDER BY ((latency_ms)::double precision)), (0)::double precision) AS p95_latency_ms,
+    count(*) FILTER (WHERE (is_auto_request = true)) AS auto_request_count,
+    count(*) FILTER (WHERE (is_auto_request IS NOT TRUE)) AS specified_request_count,
     now() AS refreshed_at
    FROM public.request_logs_with_current_month_without_customer_id
-  WHERE (ts >= (now() - '7 days'::interval))
+  WHERE ((ts >= (now() - '7 days'::interval))
+         AND ((is_auto_request = true) OR ((is_auto_request IS NOT TRUE) AND (client_model IS NOT NULL) AND (client_model <> ''::text))))
   GROUP BY tenant_id
   WITH NO DATA;
 
@@ -197,6 +198,8 @@ BEGIN
       ON public.routing_audit_summary_7d USING btree (tenant_id);
   END IF;
 END$$;
+
+COMMIT;
 SQL_EOF
 )
 
@@ -208,17 +211,20 @@ if ! docker exec -i -e PGPASSWORD="$PGPASSWORD" "$CONTAINER" \
   exit 1
 fi
 
-# Post-flight
+# Post-flight: verify the canonical columns and required indexes exist.
 echo "▶ post-fixup state:"
-docker exec -e PGPASSWORD="$PGPASSWORD" "$CONTAINER" \
-  psql -U "$PG_USER" -d "$PG_DB" -tAc \
-  "SELECT
-     (SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
-       WHERE n.nspname='public' AND c.relkind='m'
-         AND c.relname IN ('routing_analytics_7d','routing_audit_summary_7d'))
-     AS matviews_present,
-     (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-       WHERE n.nspname='public' AND p.proname='columnar_insert_only_parents')
-     AS fn_present;"
+POSTCHECK_SQL="SELECT CASE WHEN
+  (SELECT count(*) FROM pg_matviews WHERE schemaname='public' AND matviewname IN ('routing_analytics_7d','routing_audit_summary_7d')) = 2
+  AND (SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname='columnar_insert_only_parents') >= 1
+  AND (SELECT count(*) FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+       WHERE n.nspname='public' AND c.relname='routing_audit_summary_7d' AND a.attname IN ('auto_request_count','specified_request_count') AND NOT a.attisdropped) = 2
+  AND (SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('routing_analytics_7d_ukey','routing_audit_summary_7d_ukey')) = 2
+  THEN 'ok' ELSE 'invalid' END;"
+POSTCHECK=$(docker exec -e PGPASSWORD="$PGPASSWORD" "$CONTAINER" \
+  psql -U "$PG_USER" -d "$PG_DB" -tAc "$POSTCHECK_SQL")
+if [[ "$POSTCHECK" != "ok" ]]; then
+  echo "ERROR: routing MV post-flight catalog check failed" >&2
+  exit 1
+fi
 
-echo "✓ fixup applied (idempotent — re-run is a no-op)"
+echo "✓ fixup applied and canonical routing MV contract verified"
