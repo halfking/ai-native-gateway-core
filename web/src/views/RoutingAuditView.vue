@@ -3,7 +3,7 @@
 
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateTime24h } from '../i18n/useFormat'
 import {
   getRoutingAudit,
   type RoutingAuditEntry,
@@ -59,11 +59,6 @@ function actionLabel(a: string): string {
 function shortModel(m?: string): string {
   if (!m) return '—'
   return m.length > 18 ? m.slice(0, 15) + '...' : m
-}
-
-function fmtDate(d?: string): string {
-  if (!d) return '—'
-  return new Date(d).toLocaleString(localeRef.value)
 }
 
 const summary = computed(() => {
@@ -166,7 +161,7 @@ onMounted(load)
         <tbody>
           <template v-for="e in entries" :key="e.id">
             <tr :class="['audit-row', actionClass(e.action)]">
-              <td class="mono">{{ fmtDate(e.ts) }}</td>
+              <td class="mono">{{ fmtDateTime24h(e.ts) }}</td>
               <td>
                 <span :class="['action-badge', actionClass(e.action)]">
                   {{ actionLabel(e.action) }}

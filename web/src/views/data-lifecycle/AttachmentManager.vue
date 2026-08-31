@@ -142,7 +142,7 @@
           </thead>
           <tbody>
             <tr v-for="it in items" :key="it.request_id">
-              <td>{{ formatDate(it.ts) }}</td>
+              <td>{{ fmtDateTime24h(it.ts) }}</td>
               <td>{{ it.tenant_id }}</td>
               <td><code class="code">{{ it.client_model || '—' }}</code></td>
               <td>
@@ -180,6 +180,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { localeRef } from '../../i18n'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   attachmentList,
   attachmentStats,
@@ -272,10 +273,6 @@ function humanBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`
 }
 function formatNumber(n: number): string { return n.toLocaleString(localeRef.value) }
-function formatDate(s: string): string {
-  if (!s) return '—'
-  return s.slice(0, 19).replace('T', ' ')
-}
 
 onMounted(load)
 </script>

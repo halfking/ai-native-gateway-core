@@ -3,6 +3,7 @@ import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
 import { listSettings, updateSetting, SettingItem } from '../api/settings'
 import { req } from '../api/_core'
+import { fmtDateTime24h } from '../i18n/useFormat'
 
 const { t } = useI18n({ useScope: 'global' })
 
@@ -261,15 +262,6 @@ async function saveConfig() {
 }
 
 // ========== 辅助函数 ==========
-function fmtDate(s: string) {
-  if (!s) return '-'
-  try {
-    return new Date(s).toLocaleString()
-  } catch {
-    return s
-  }
-}
-
 function changeRecordsPage(delta: number) {
   const next = recordsPage.value + delta
   if (next < 1 || next > totalPages.value) return
@@ -430,7 +422,7 @@ onMounted(() => {
                 </span>
               </td>
               <td class="content-preview">{{ rec.content_preview }}</td>
-              <td class="date-cell">{{ fmtDate(rec.created_at) }}</td>
+              <td class="date-cell">{{ fmtDateTime24h(rec.created_at) }}</td>
             </tr>
           </tbody>
         </table>

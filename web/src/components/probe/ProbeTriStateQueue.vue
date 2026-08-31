@@ -24,6 +24,7 @@ import {
 } from '../../api-selfcheck'
 import { acquireProbeStream, useProbeStream, type ProbeOrigin } from '../../composables/probeStreamStore'
 import { credentialDisplayName, loadCredentialLabels } from '../../composables/useCredentialLabels'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 
 // 前端 cap 与后端 probeCompletedWindow (=200) 同步。
 const MAX_COMPLETED = 200
@@ -112,13 +113,6 @@ function fmtMs(v?: number): string {
   if (v === undefined || v === null) return '—'
   if (v >= 1000) return (v / 1000).toFixed(2) + 's'
   return v + 'ms'
-}
-
-function fmtDateTime(iso?: string): string {
-  if (!iso) return '—'
-  const t = new Date(iso)
-  if (Number.isNaN(t.getTime())) return '—'
-  return t.toLocaleString('zh-CN', { hour12: false })
 }
 
 /** 距目标时刻的相对文案（“45s 后”/“已到”） */
@@ -604,7 +598,7 @@ function credentialTitle(c: ProbeCard): string {
                   <div class="probe-detail-row"><span class="probe-detail-label">延迟</span><span>{{ fmtMs(c.latency_ms) }}</span></div>
                   <div class="probe-detail-row"><span class="probe-detail-label">HTTP</span><span>{{ c.http_status ?? '—' }}</span></div>
                   <div class="probe-detail-row"><span class="probe-detail-label">错误码</span><span>{{ c.reason_code || '—' }}</span></div>
-                  <div class="probe-detail-row"><span class="probe-detail-label">观察时间</span><span>{{ fmtDateTime(c.finished_at) }}</span></div>
+                  <div class="probe-detail-row"><span class="probe-detail-label">观察时间</span><span>{{ fmtDateTime24h(c.finished_at) }}</span></div>
                   <div class="probe-detail-row"><span class="probe-detail-label">尝试</span><span>{{ c.attempt }}/{{ c.max_attempts }}</span></div>
                   <div class="probe-detail-row"><span class="probe-detail-label">命令</span><span>{{ c.command || '—' }}</span></div>
                 </div>

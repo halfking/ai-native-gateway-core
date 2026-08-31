@@ -9,6 +9,7 @@ import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
+import { fmtDateShort } from '../i18n/useFormat'
 import {
   getMaasUsageSummary,
   getMaasWallet,
@@ -94,13 +95,8 @@ const degradedHint = computed(() => {
 })
 const degradedView = computed(() => summary.value?.missing_view || '')
 
-function fmtDate(s: string | undefined) {
-  if (!s) return '—'
-  return new Date(s).toLocaleDateString(localeRef.value, { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
 function subscriptionPeriod(sub: NonNullable<MaasWallet['subscription']>) {
-  return `${fmtDate(sub.period_start)} — ${fmtDate(sub.period_end)}`
+  return `${fmtDateShort(sub.period_start)} — ${fmtDateShort(sub.period_end)}`
 }
 
 const maxModelRequests = computed(() => {
@@ -365,7 +361,7 @@ onUnmounted(() => {
         </div>
         <div class="sub-item">
           <span class="sub-label">{{ t('tenants.dashboard.labelExpiresAt') }}</span>
-          <span class="sub-value">{{ fmtDate(activeSubscription.period_end) }}</span>
+          <span class="sub-value">{{ fmtDateShort(activeSubscription.period_end) }}</span>
         </div>
       </div>
       <div v-else class="subscription-empty">
