@@ -219,6 +219,31 @@ remote_probe() {
   return 1
 }
 
+# version_identity_matches compares /version JSON with the immutable identity
+# read from the staged bundle. It prints a concise diagnostic on mismatch.
+version_identity_matches() {
+  local body=$1 expected_version=$2 expected_seq=$3 expected_sha=$4 expected_date=$5
+  VERSION_BODY="$body" EXPECTED_VERSION="$expected_version" EXPECTED_SEQ="$expected_seq" \
+    EXPECTED_SHA="$expected_sha" EXPECTED_DATE="$expected_date" python3 -c '
+import json, os, sys
+try:
+    actual = json.loads(os.environ["VERSION_BODY"])
+except Exception as exc:
+    print(f"invalid JSON: {exc}; body={os.environ['"'"'VERSION_BODY'"'"']}")
+    raise SystemExit(1)
+expected = {
+    "version": os.environ["EXPECTED_VERSION"],
+    "build_seq": int(os.environ["EXPECTED_SEQ"]),
+    "git_sha": os.environ["EXPECTED_SHA"],
+    "build_date": os.environ["EXPECTED_DATE"],
+}
+mismatches = [f"{key}: expected={value!r} got={actual.get(key)!r}" for key, value in expected.items() if actual.get(key) != value]
+if mismatches:
+    print("; ".join(mismatches) + f"; body={os.environ['"'"'VERSION_BODY'"'"']}")
+    raise SystemExit(1)
+'
+}
+
 # Install the blue-green assets (canary unit template + nginx upstream
 # fragment bootstrap) on the target by shipping a minimal repo slice and
 # running scripts/install-blue-green-assets.sh there as a REAL script file.
@@ -642,6 +667,15 @@ do_deploy() {
     exit 1
   fi
   ok "bundle: $bundle_dir"
+  local expected_release_version expected_release_seq expected_release_sha expected_release_date
+  read -r expected_release_version expected_release_seq expected_release_sha expected_release_date < <(
+    python3 -c 'import json, sys; d=json.load(open(sys.argv[1])); print(d["version"], d["build_seq"], d["git_sha"], d["build_date"])' "$bundle_dir/version.json"
+  )
+  [[ -n "$expected_release_version" && -n "$expected_release_seq" && -n "$expected_release_sha" && -n "$expected_release_date" ]] || {
+    err "staged bundle version.json 不完整，拒绝部署"
+    exit 1
+  }
+  ok "staged identity: ${expected_release_version} (seq=${expected_release_seq} sha=${expected_release_sha})"
   lock_release_build
   DEPLOY_BUILD_LOCK_HELD=0
   ok "共享构建锁已释放"
@@ -671,13 +705,12 @@ do_deploy() {
 
   # 8. candidate warm-up + atomic Nginx handoff
   local switch_start_ns switch_end_ns switch_elapsed_ms active_port candidate_port upstream_fragment candidate_unit candidate_binary
-  local candidate_service active_service old_version expected_release_version
+  local candidate_service active_service old_version
   active_port=$(target_field "$TARGET" active_port)
   candidate_port="$active_port"
   candidate_service="$SERVICE_NAME"
   active_service="$SERVICE_NAME"
   old_version=$(remote_ssh "readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename" 2>/dev/null || true)
-  expected_release_version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
   if [[ "$LEGACY_RESTART" == true ]]; then
     log "[8/9] legacy stop/start emergency path"
     host_atomic_switch "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /'
@@ -749,55 +782,25 @@ do_deploy() {
       ok "    [drift-repair] canary unit 已同步为仓库契约"
     fi
   fi
-  # 2026-08-31 incident follow-up: a stale sibling process holding the
-  # candidate port made the candidate die instantly on "bind: address
-  # already in use", while the deploy only surfaced a 60s /healthz probe
-  # timeout on a port nothing would ever listen on. Refuse fast — and name
-  # the squatter — BEFORE any symlink is flipped, while aborting is still a
-  # traffic no-op.
-  if remote_ssh "ss -ltn | grep -q ':${candidate_port} '"; then
-    err "候选端口 ${candidate_port} 已被占用，拒绝切换；占用进程如下（需先人工处理）:"
-    remote_ssh "ss -ltnp | grep ':${candidate_port} '" 2>&1 | sed 's/^/      /' || true
-    exit 1
-  fi
   if remote_ssh "test -f '$REMOTE_ROOT/run/active-service'"; then
     active_service=$(remote_ssh "cat '$REMOTE_ROOT/run/active-service'")
   fi
-  local old_version
   old_version=$(remote_ssh "readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename" 2>/dev/null || true)
-  local expected_release_version
-  expected_release_version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
   switch_start_ns=$(zd_now_ns)
-  # Blue-green requires an independently addressed candidate. Stage a stable
-  # candidate symlink to the uploaded release and point the unit at that path;
-  # do not change current before warm-up.
-  #
-  # 2026-08-31: the canary unit on env 154/245 follows /opt/llm-gateway-go/
-  # llm-gateway-go (a symlink to current/), NOT slots/%i/. The deploy must
-  # therefore swap `current` BEFORE starting the candidate, otherwise the
-  # candidate runs the old binary and the /version probe fails with
-  # "body did not contain expected version". On pre-cutover probe failure
-  # we restore `current` to old_version; post-cutover failures already roll
-  # back via _bluegreen_abort. The slots/ staging directory is kept as a
-  # no-op for any operator reading the script who expects it to exist.
-  remote_ssh "set -e; mkdir -p '$REMOTE_ROOT/run' '$REMOTE_ROOT/slots'; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$candidate_port'; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\\n' '$candidate_port' > '$REMOTE_ROOT/run/candidate-port'; printf '%s\\n' '$candidate_service' > '$REMOTE_ROOT/run/candidate-service'; systemctl daemon-reload"
+  # The canary unit executes its slot directly. Pre-warming therefore never
+  # mutates current, which remains the identity of the serving instance until
+  # Nginx has accepted the candidate.
+  remote_ssh "set -e; mkdir -p '$REMOTE_ROOT/run' '$REMOTE_ROOT/slots'; systemctl stop '$candidate_service' >/dev/null 2>&1 || true; deadline=\$((\$(date +%s)+45)); while systemctl is-active --quiet '$candidate_service'; do if [ \"\$(date +%s)\" -ge \"\$deadline\" ]; then echo 'candidate stop timed out after 45s' >&2; systemctl status '$candidate_service' --no-pager >&2 || true; journalctl -u '$candidate_service' -n 30 --no-pager >&2 || true; exit 1; fi; sleep 1; done; if ss -ltn | grep -q ':${candidate_port} '; then echo 'candidate port remains occupied after stop' >&2; ss -ltnp | grep ':${candidate_port} ' >&2 || true; exit 1; fi; ln -sfn '$REMOTE_ROOT/releases/$version' '$REMOTE_ROOT/slots/$candidate_port'; printf '%s\n' '$candidate_port' > '$REMOTE_ROOT/run/candidate-port'; printf '%s\n' '$candidate_service' > '$REMOTE_ROOT/run/candidate-service'; systemctl daemon-reload"
   if ! remote_ssh "systemctl start '$candidate_service'"; then
-    # Restore current to the old release before aborting so the active (which
-    # also follows current/) keeps serving the previously verified binary.
-    if [[ -n "$old_version" ]]; then
-      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
-    fi
     err "候选实例启动失败，旧实例保持服务"
     exit 1
   fi
   if ! remote_ssh "systemctl is-active --quiet '$candidate_service'"; then
-    if [[ -n "$old_version" ]]; then
-      remote_ssh "set -e; ln -sfn '$REMOTE_ROOT/releases/$old_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'" || true
-    fi
     zd_stop_candidate "$SSH_CMD" "$candidate_service"
     err "候选 unit 未保持 active，旧实例继续服务"
     exit 1
   fi
+
   local candidate_health_url="http://127.0.0.1:${candidate_port}/healthz"
   local candidate_ready_url="http://127.0.0.1:${candidate_port}/readyz"
   local candidate_version_url="http://127.0.0.1:${candidate_port}/version"
@@ -839,18 +842,17 @@ do_deploy() {
     fi
   fi
   if [[ -z "$probe_failed" ]]; then
-    log "    probe /version (timeout=5s, expected=${expected_release_version})"
+    log "    probe /version (timeout=5s, expected=${expected_release_version} seq=${expected_release_seq} sha=${expected_release_sha})"
     local version_body
     if ! version_body=$(remote_ssh "curl -sS --max-time 5 '$candidate_version_url' 2>&1"); then
       probe_failed="version"
       probe_detail="curl exit non-zero: ${version_body}"
       warn "    /version failed: ${probe_detail}"
-    elif ! echo "$version_body" | grep -qF "\"version\":\"${expected_release_version}\""; then
+    elif ! probe_detail=$(version_identity_matches "$version_body" "$expected_release_version" "$expected_release_seq" "$expected_release_sha" "$expected_release_date"); then
       probe_failed="version"
-      probe_detail="body did not contain \"version\":\"${expected_release_version}\"; got: ${version_body}"
       warn "    /version failed: ${probe_detail}"
     else
-      ok "    /version OK (${expected_release_version})"
+      ok "    /version OK (${expected_release_version}, seq=${expected_release_seq}, sha=${expected_release_sha})"
     fi
   fi
   if [[ -n "$probe_failed" ]]; then
@@ -946,34 +948,13 @@ do_deploy() {
     ok "admin 密码已同步"
   fi
 
-  # 2026-08-31: replaced `curl | grep -F` with python JSON parse. The grep
-  # variant failed silently on deploy when the body had trailing whitespace
-  # or an nginx error page was returned (502/504 with HTML) — both produced
-  # exit 1 from grep with no useful diagnostic. The JSON parse gives us a
-  # clean pass/fail and an explicit failure body when the upstream is wrong
-  # or unreachable.
-  #
-  # NB: we use double quotes around the remote command (not single) so the
-  # deployer's local shell expands $expected_release_version before sending
-  # to the remote. Single quotes would pass the literal `$expected_release_version`
-  # string to the remote, where it would never match the actual version.
-  if ! remote_ssh "EXPECTED_VERSION='$expected_release_version' python3 -c \"
-import json, sys, os
-try:
-    body = sys.stdin.read()
-except Exception:
-    raise SystemExit(1)
-try:
-    v = json.loads(body).get('version', '')
-except Exception:
-    sys.stderr.write('public /version returned non-JSON body: ' + body[:200] + chr(10))
-    raise SystemExit(1)
-if v != os.environ['EXPECTED_VERSION']:
-    sys.stderr.write('public /version mismatch: got=' + v + ' expected=' + os.environ['EXPECTED_VERSION'] + chr(10))
-    raise SystemExit(1)
-\" < <(curl -kfsS --max-time 10 --resolve llmgo.kxpms.cn:443:127.0.0.1 https://llmgo.kxpms.cn/version)" 2>&1 >/dev/null; then
-    warn "    public /version body (for diagnosis):"
-    remote_ssh "curl -kfsS --max-time 10 --resolve llmgo.kxpms.cn:443:127.0.0.1 https://llmgo.kxpms.cn/version 2>&1 | head -3" 2>&1 | sed 's/^/      /' || true
+  local public_version_body
+  if ! public_version_body=$(remote_ssh "curl -kfsS --max-time 10 --resolve llmgo.kxpms.cn:443:127.0.0.1 https://llmgo.kxpms.cn/version" 2>&1); then
+    warn "    public /version fetch failed: ${public_version_body}"
+    _bluegreen_abort "公网入口版本身份校验失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
+    exit 1
+  elif ! probe_detail=$(version_identity_matches "$public_version_body" "$expected_release_version" "$expected_release_seq" "$expected_release_sha" "$expected_release_date"); then
+    warn "    public /version failed: ${probe_detail}"
     _bluegreen_abort "公网入口版本身份校验失败" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
     exit 1
   fi
@@ -1104,9 +1085,41 @@ do_rollback() {
     $SSH_CMD "ls '$REMOTE_ROOT/releases/'" 2>/dev/null | sed 's/^/    /'
     exit 1
   fi
-  ok "回滚目标: $target_version"
+  local current_active_port current_active_service canonical_port
+  current_active_port=$($SSH_CMD "cat '$REMOTE_ROOT/run/active-port' 2>/dev/null" 2>/dev/null || true)
+  current_active_service=$($SSH_CMD "cat '$REMOTE_ROOT/run/active-service' 2>/dev/null" 2>/dev/null || true)
+  canonical_port=$(target_field "$TARGET" active_port)
+  if [[ -n "$current_active_port" && ( "$current_active_port" != "$canonical_port" || "$current_active_service" != "$SERVICE_NAME" ) ]]; then
+    # A previous blue-green deploy may leave a canary serving through Nginx
+    # while the canonical unit is stopped. Roll back on the alternate port,
+    # switch upstream, then update the release/state pointers atomically.
+    log "检测到 canary active (${current_active_service:-unknown}:${current_active_port})，使用 canonical ${SERVICE_NAME}:${canonical_port} 回滚"
+    if ! $SSH_CMD "set -e; systemctl stop '$SERVICE_NAME' >/dev/null 2>&1 || true; deadline=\$((\$(date +%s)+45)); while systemctl is-active --quiet '$SERVICE_NAME'; do if [ \"\$(date +%s)\" -ge \"\$deadline\" ]; then systemctl status '$SERVICE_NAME' --no-pager >&2 || true; exit 1; fi; sleep 1; done; ln -sfn '$REMOTE_ROOT/releases/$target_version' '$REMOTE_ROOT/slots/$canonical_port'; systemctl daemon-reload; systemctl start '$SERVICE_NAME'"; then
+      err "canonical rollback unit 启动失败，保持现有 canary 流量"
+      exit 1
+    fi
+    if ! remote_probe "http://127.0.0.1:${canonical_port}/healthz" 60 >/dev/null; then
+      err "canonical rollback healthz 失败，保持现有 canary 流量"
+      exit 1
+    fi
+    if ! zd_switch_upstream "$SSH_CMD" "$REMOTE_ROOT/run/active-upstream.conf" "$canonical_port"; then
+      err "回滚 upstream 切换失败，保持现有 canary 流量"
+      exit 1
+    fi
+    if ! $SSH_CMD "set -e; ln -sfn '$REMOTE_ROOT/releases/$target_version' '$REMOTE_ROOT/current'; ln -sfn '$REMOTE_ROOT/current/$BIN_NAME' '$REMOTE_ROOT/$BIN_NAME'; ln -sfn '$REMOTE_ROOT/current/web' '$REMOTE_ROOT/web'; ln -sfn '$REMOTE_ROOT/current/version.json' '$REMOTE_ROOT/version.json'; printf '%s\n' '$canonical_port' > '$REMOTE_ROOT/run/active-port'; printf '%s\n' '$SERVICE_NAME' > '$REMOTE_ROOT/run/active-service'; systemctl stop '$current_active_service' >/dev/null 2>&1 || true; rm -f '$REMOTE_ROOT/slots/$current_active_port'"; then
+      err "回滚状态指针更新失败；请检查 Nginx 与 systemd"
+      exit 1
+    fi
+    if _verify_running_release "$target_version" && deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)"; then
+      ok "蓝绿回滚完成 → $target_version (canonical active)"
+    else
+      err "蓝绿回滚后 running release/DB 校验失败"
+      exit 1
+    fi
+    if upgrade_hide_all >/dev/null 2>&1; then UPGRADE_BANNER_ACTIVE=0; else warn "回滚成功但升级静态页撤掉失败，保留 marker 保护流量"; exit 1; fi
+    return 0
+  fi
 
-  log "启用升级静态页..."
   UPGRADE_BANNER_ACTIVE=1
   if ! upgrade_show_all "$target_version"; then
     err "升级静态页启用失败，中止回滚"
