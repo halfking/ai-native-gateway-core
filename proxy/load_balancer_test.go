@@ -43,23 +43,91 @@ func TestLoadBalancer_RoundRobin(t *testing.T) {
 
 func TestLoadBalancer_WeightedRoundRobin(t *testing.T) {
 	lb := NewLoadBalancer(StrategyWeightedRoundRobin)
-	
+
 	nodes := []*Node{
 		{ID: 1, Name: "node1", ResponseTimeMs: 50},  // 高权重
 		{ID: 2, Name: "node2", ResponseTimeMs: 200}, // 低权重
 		{ID: 3, Name: "node3", ResponseTimeMs: 500}, // 更低权重
 	}
-	
+
 	// 选择多次，统计分布（响应时间短的应该被选中更多）
 	counts := make(map[int]int)
 	for i := 0; i < 100; i++ {
 		selected := lb.SelectNode(nodes, 1, "")
 		counts[selected.ID]++
 	}
-	
+
 	// node1 应该被选中最多（因为响应时间最短）
 	if counts[1] == 0 {
 		t.Error("node1 should be selected at least once")
+	}
+
+	// P2-1 (2026-08-31): 强断言命中分布与权重比例对齐。SWRR 已知误差 ≤
+	// O(max_weight)（Nginx 论文定理 4.1），故用 ±15% 相对容差覆盖小样本
+	// 抖动。任一节点长期偏离权重比例即视为累积偏差。
+	const sampleSize = 100
+	weights := map[int]int{}
+	totalWeight := 0
+	for _, n := range nodes {
+		w := nodeWeight(n)
+		weights[n.ID] = w
+		totalWeight += w
+	}
+	for _, n := range nodes {
+		got := counts[n.ID]
+		ratio := float64(got) / float64(sampleSize)
+		expected := float64(weights[n.ID]) / float64(totalWeight)
+		if expected == 0 {
+			continue
+		}
+		deviation := (ratio - expected) / expected
+		if deviation < 0 {
+			deviation = -deviation
+		}
+		if deviation > 0.15 {
+			t.Errorf("node %d hit rate %.3f deviates %.1f%% from expected %.3f (counts=%d, weight=%d)",
+				n.ID, ratio, deviation*100, expected, got, weights[n.ID])
+		}
+	}
+}
+
+// P2-1 (2026-08-31): 节点集合动态变化时（SWRR 的 weightedCurrent 应只保留
+// 当前 active 节点的累积值），验证 stale 节点 ID 被正确清理，counter 不会
+// 因残留而让旧 ID 持续"被选中"。
+func TestLoadBalancer_WeightedRoundRobin_DynamicNodeSet(t *testing.T) {
+	lb := NewLoadBalancer(StrategyWeightedRoundRobin)
+
+	// 第一轮：3 个节点，跑 50 次让 weightedCurrent 累积非零值。
+	nodes := []*Node{
+		{ID: 1, Name: "node1", ResponseTimeMs: 50},
+		{ID: 2, Name: "node2", ResponseTimeMs: 200},
+		{ID: 3, Name: "node3", ResponseTimeMs: 500},
+	}
+	for i := 0; i < 50; i++ {
+		if got := lb.SelectNode(nodes, 1, ""); got == nil {
+			t.Fatalf("round 1: unexpected nil at i=%d", i)
+		}
+	}
+
+	// 第二轮：移除 node3，counter 应只基于 {1, 2} 重置；
+	// 100 次选择后 counts[3] 必须为 0。
+	reduced := []*Node{
+		{ID: 1, Name: "node1", ResponseTimeMs: 50},
+		{ID: 2, Name: "node2", ResponseTimeMs: 200},
+	}
+	counts := map[int]int{1: 0, 2: 0, 3: 0}
+	for i := 0; i < 100; i++ {
+		got := lb.SelectNode(reduced, 1, "")
+		if got == nil {
+			t.Fatalf("round 2: unexpected nil at i=%d", i)
+		}
+		counts[got.ID]++
+	}
+	if counts[3] != 0 {
+		t.Errorf("stale node3 selected %d times after removal (must be 0)", counts[3])
+	}
+	if counts[1] == 0 || counts[2] == 0 {
+		t.Errorf("active nodes never selected: counts=%v", counts)
 	}
 }
 
