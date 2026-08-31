@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 )
 
 // VacuumWorker 定期对 request_logs_bodies 执行 VACUUM FULL。
@@ -156,12 +157,27 @@ func (w *VacuumWorker) vacuum(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
-	// VACUUM FULL 会锁表并重写整个表，回收所有空闲空间
-	// 对于 TOAST 表密集型的表特别有效
-	_, err := w.db.Exec(timeoutCtx, "VACUUM FULL request_logs_bodies")
-	
+	// 2026-09-01: cluster-wide VACUUM FULL mutex. With multiple
+	// gateway replicas, both would fire at Sunday 02:00 and race
+	// for ACCESS EXCLUSIVE — the loser fails with 55P03 and a
+	// generic error. Acquire a separate connection for the
+	// advisory lock so it can sit in pg_advisory_xact_lock for
+	// the full VACUUM FULL duration without blocking the actual
+	// vacuum connection.
+	vacuumConn, err := w.db.Acquire(timeoutCtx)
+	if err != nil {
+		slog.Error("vacuum worker: acquire vacuumConn failed", "error", err)
+		return
+	}
+	defer vacuumConn.Release()
+
+	err = dbx.VacuumFullMutex(timeoutCtx, w.db, vacuumConn, 30*time.Second,
+		func(ctx context.Context, c *pgxpool.Conn) error {
+			_, ierr := c.Exec(ctx, "VACUUM FULL request_logs_bodies")
+			return ierr
+		})
 	elapsed := time.Since(start)
-	
+
 	if err != nil {
 		slog.Error("vacuum worker: VACUUM FULL failed",
 			"error", err,
