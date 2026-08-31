@@ -565,6 +565,19 @@ prune_releases_safe() {
     [ -n \"\$unverified_list\" ] && echo \"\$unverified_list\" | while read v; do
       [ -n \"\$v\" ] && rm -rf \"\$v\" && echo \"pruned unverified: \$v\"
     done
+    # A crashed deploy can leave slots/<port> symlinks pointing at releases
+    # that no longer exist. Never touch the slot the run/ pointers currently
+    # reference, even if it dangles — that needs operator eyes, not a prune.
+    active_slot=\$(cat '$REMOTE_ROOT/run/active-port' 2>/dev/null || true)
+    cand_slot=\$(cat '$REMOTE_ROOT/run/candidate-port' 2>/dev/null || true)
+    cd '$REMOTE_ROOT/slots' 2>/dev/null || exit 0
+    for s in *; do
+      [ \"\$s\" = '*' ] && continue
+      [ -e \"\$s\" ] && continue
+      if [ \"\$s\" != \"\$active_slot\" ] && [ \"\$s\" != \"\$cand_slot\" ]; then
+        rm -f \"\$s\" && echo \"pruned dangling slot: \$s\"
+      fi
+    done
   " 2>&1 | sed 's/^/    /' || true
 }
 
@@ -589,6 +602,9 @@ do_deploy() {
   deploy_start=$(date +%s)
 
   log "[0/9] 部署前 PG 预检"
+  # The env file holds DB credentials; tighten a historically loose 0644
+  # to root-only so every deploy run converges it to 0600.
+  $SSH_CMD "chmod 0600 '$(_env_file_for_target)' 2>/dev/null || true; chown root:root '$(_env_file_for_target)' 2>/dev/null || true" || true
   deploy_preflight_pg_from_remote_env "$SSH_CMD" "$(_env_file_for_target)" || exit 2
 
   log "[0.5/9] 运维节点 env (OPS_NODE_REGION)"

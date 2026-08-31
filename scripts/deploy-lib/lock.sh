@@ -372,9 +372,31 @@ set -euo pipefail
 [[ -d "$LOCK_PATH" ]] || exit 0
 metadata="$LOCK_PATH/metadata"
 [[ -f "$metadata" ]] || exit 0
-current_token=$(awk -F= '$1=="owner_token" {sub($1 "=", ""); print; exit}' "$metadata")
-[[ "$current_token" == "$OWNER_TOKEN" ]] || exit 0
-rm -rf "$LOCK_PATH"
+read_owner_token() {
+  awk -F= '$1=="owner_token" {sub($1 "=", ""); print; exit}' "$1" 2>/dev/null || true
+}
+# Fast path: the lock is not ours — touch nothing.
+[[ "$(read_owner_token "$metadata")" == "$OWNER_TOKEN" ]] || exit 0
+# Release race guard: a plain read→compare→rm lets an old holder delete a
+# replacement owner's fresh lock acquired between the read and the rm.
+# Rename the dir off the canonical path first (atomic), re-verify the
+# token on the renamed copy, and only then delete it.
+staging="$LOCK_PATH.releasing.$$.$RANDOM"
+mv "$LOCK_PATH" "$staging"
+if [[ "$(read_owner_token "$staging/metadata")" == "$OWNER_TOKEN" ]]; then
+  rm -rf "$staging"
+  exit 0
+fi
+# Ownership changed between the check and the rename. Restore the
+# replacement owner's lock; if the canonical path was re-acquired in the
+# meantime, keep the staged copy for inspection rather than delete data
+# that is no longer ours to remove.
+if [[ -e "$LOCK_PATH" ]]; then
+  echo "WARN: lock at $LOCK_PATH re-acquired during release; kept $staging for inspection" >&2
+else
+  mv "$staging" "$LOCK_PATH"
+  echo "WARN: lock at $LOCK_PATH changed owner before release; restored replacement lock" >&2
+fi
 REMOTE_UNLOCK
 }
 
