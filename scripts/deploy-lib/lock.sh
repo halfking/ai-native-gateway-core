@@ -24,6 +24,48 @@
 #   `lock_remote` functions are invoked from scripts/deploy.sh via
 #   `with_local_lock` / `with_remote_lock` wrappers. The wrappers are
 #   defined here too so that any orchestrator can reuse them.
+#
+#   ─── Accepted design risk: force-recover has no age staleness check ───
+#
+#   lock_recover_remote intentionally validates ONLY the target field and
+#   the recorded source PID's liveness — there is NO age-based staleness
+#   check. The rationale (decided during the 2026-08 audit round and
+#   accepted as a deliberate design tradeoff, not an oversight):
+#
+#     * Fail-closed is already enforced for the two failure modes that
+#       age detection would also catch:
+#         - target mismatch (recorded target != requested target): refused
+#         - live source PID still owns the lock: refused
+#       Together these make "remove a lock that someone else needs"
+#       structurally impossible.
+#
+#     * Age alone is unreliable in production. A 24-hour-old deploy
+#       could be either a hung dplyer OR a multi-day canary soak that
+#       the operator is intentionally leaving in place. An automatic
+#       age threshold would happily remove the latter, killing the
+#       blue-green promotion it was supposed to protect.
+#
+#     * When force-recover IS the right action, the operator's flow is:
+#         bash scripts/deploy-lib/unlock-remote.sh <target> --force
+#       which prints the recorded metadata (target, source PID,
+#       started_at, hostname) and asks for explicit confirmation. The
+#       operator is the right authority to decide "this PID is dead,
+#       the lock is safe to remove" — not an age threshold.
+#
+#   Operational contract for `deploy-seamless.sh --force`:
+#
+#     1. The deploy prints the held lock's metadata (target, pid,
+#        started_at) before recovering. If the PID is still alive and
+#        matches a deploy-seamless process, the recovery refuses — the
+#        operator must either let the deploy finish or run
+#        unlock-remote.sh --force interactively.
+#     2. If the recorded PID is dead (or no PID is recorded), recovery
+#        proceeds without further confirmation. This is the gap that
+#        PID checks leave open: a deploy that crashed hard (SIGKILL,
+#        OOM kill) without running its EXIT trap may leave a stale
+#        lock with a recorded PID that's gone. Force-recover cleans
+#        this up; age staleness would NOT have helped here.
+#     3. The full operational checklist is in docs/deploy/lock-recovery.md.
 # =====================================================================
 
 if [[ -z "${BASH_VERSION:-}" ]]; then
