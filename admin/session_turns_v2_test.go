@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 )
 
 func TestBuildCompressionDiagnosticsV2_SeparatesOutboundSummary(t *testing.T) {
@@ -52,5 +55,27 @@ func TestBuildCompressionDiagnosticsV2_SeparatesOutboundSummary(t *testing.T) {
 func TestBuildCompressionDiagnosticsV2_EmptyTurnReturnsNil(t *testing.T) {
 	if got := buildCompressionDiagnosticsV2("req-1", false, nil, nil, nil, nil); got != nil {
 		t.Fatalf("empty diagnostics = %#v, want nil", got)
+	}
+}
+
+func TestPersistedDigestOrFallbackPrefersSupportedEnvelope(t *testing.T) {
+	raw, err := sessiondigest.Marshal(&sessiondigest.Envelope{
+		SchemaVersion: sessiondigest.SchemaVersion, AlgorithmVersion: sessiondigest.AlgorithmVersion,
+		GeneratedAt: time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC), Source: sessiondigest.Source,
+		Payload: sessiondigest.Digest{UserInput: "persisted user", AssistantOutput: "persisted assistant", Metrics: sessiondigest.Metrics{TokensUsed: 9}},
+	})
+	if err != nil {
+		t.Fatalf("marshal persisted digest: %v", err)
+	}
+	got := persistedDigestOrFallback(raw, []any{map[string]any{"role": "user", "content": "fallback"}}, nil, nil, nil)
+	if got == nil || got.UserInput != "persisted user" || got.AssistantOutput != "persisted assistant" || got.Metrics.TokensUsed != 9 {
+		t.Fatalf("persisted digest was not returned: %#v", got)
+	}
+}
+
+func TestPersistedDigestOrFallbackFallsBackForMalformedValue(t *testing.T) {
+	got := persistedDigestOrFallback([]byte(`{"schema_version":`), []any{map[string]any{"role": "user", "content": "fallback user"}}, []any{map[string]any{"role": "assistant", "content": "fallback assistant"}}, map[string]any{"prompt_tokens": 1}, nil)
+	if got == nil || got.UserInput != "fallback user" || got.AssistantOutput != "fallback assistant" {
+		t.Fatalf("malformed digest did not fall back: %#v", got)
 	}
 }

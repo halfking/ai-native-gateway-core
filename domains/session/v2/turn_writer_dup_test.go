@@ -136,7 +136,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 			rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
 			rec.SourceKind, rec.Quality,
 			rec.AttachmentCount, rec.AttachmentTotalBytes, multimodalArg,
-			rec.Title, rec.Summary,
+			rec.Title, rec.Summary, string(rec.DigestJSON),
 			rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
 			rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
 			rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
@@ -161,7 +161,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 		enrichmentArgs := []any{
 			rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
 			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
-			rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary,
+			rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary, string(rec.DigestJSON),
 			rec.ProjectID, rec.Namespace, rec.ParentRequestID, rec.TaskType,
 			rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
 			rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
@@ -213,7 +213,7 @@ func TestTurnWriterAppendTurnRejectsRequestOwnedByAnotherSession(t *testing.T) {
 		WithArgs(rec.TenantID, rec.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(46)...).
+		WithArgs(anyArgs(47)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
 		WithArgs(rec.TenantID, rec.RequestID).
@@ -257,7 +257,7 @@ func TestTurnWriterAppendTurnSameRequestDifferentPartitionIsRejected(t *testing.
 		WithArgs(secondRec.TenantID, secondRec.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
 	mock.ExpectExec("INSERT INTO public.session_turns_hot").
-		WithArgs(anyArgs(46)...).
+		WithArgs(anyArgs(47)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 0))
 	mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
 		WithArgs(secondRec.TenantID, secondRec.RequestID).

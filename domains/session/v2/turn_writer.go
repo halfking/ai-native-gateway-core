@@ -108,6 +108,10 @@ type TurnRecord struct {
 	Title   string
 	Summary string
 
+	// DigestJSON is the versioned, administrator-safe digest envelope persisted
+	// with the turn. It is nil for rows that cannot produce a useful digest.
+	DigestJSON []byte
+
 	// V3.1 dispatch 9-stage (10 timestamps) queue timestamps (migration 513).
 	// Mirrors the same columns on public.request_logs_hot so the session_turns
 	// table can answer timeline queries without joining request_logs. Populated
@@ -247,7 +251,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				latency_ms, status_code, success, error_kind,
 				source_kind, quality,
 				attachment_count, attachment_total_bytes, multimodal_types,
-				title, summary,
+				title, summary, digest,
 				t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
 				t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
 				t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
@@ -264,9 +268,9 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				$25, $26, $27, $28,
 				$29, $30,
 				$31, $32, $33,
-				$34, $35,
-				$36, $37, $38, $39, $40, $41, $42, $43, $44, $45,
-				$46
+				$34, $35, $36::text::jsonb,
+				$37, $38, $39, $40, $41, $42, $43, $44, $45, $46,
+				$47
 			WHERE NOT EXISTS (
 				SELECT 1
 				FROM public.session_turns_with_current_month
@@ -284,7 +288,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
 		rec.SourceKind, rec.Quality,
 		rec.AttachmentCount, rec.AttachmentTotalBytes, rec.MultimodalTypes,
-		rec.Title, rec.Summary,
+		rec.Title, rec.Summary, string(rec.DigestJSON),
 		rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
 		rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
 		rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
@@ -353,26 +357,27 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 						                          END,
 					       title                    = COALESCE(NULLIF($10, ''), title),
 					       summary                  = COALESCE(NULLIF($11, ''), summary),
-					       project_id               = COALESCE(NULLIF($12, ''), project_id),
-					       namespace                = COALESCE(NULLIF($13, ''), namespace),
-					       parent_request_id        = COALESCE(NULLIF($14, ''), parent_request_id),
-					       task_type                = COALESCE(NULLIF($15, ''), task_type),
-					       t0_arrived_at            = COALESCE($16, t0_arrived_at),
-					       t1_total_enqueued_at     = COALESCE($17, t1_total_enqueued_at),
-					       t2_total_dequeued_at     = COALESCE($18, t2_total_dequeued_at),
-					       t3_model_enqueued_at     = COALESCE($19, t3_model_enqueued_at),
-					       t4_model_dequeued_at     = COALESCE($20, t4_model_dequeued_at),
-					       t5_cred_enqueued_at      = COALESCE($21, t5_cred_enqueued_at),
-					       t6_cred_dequeued_at      = COALESCE($22, t6_cred_dequeued_at),
-					       t7_forward_start_at      = COALESCE($23, t7_forward_start_at),
-					       t8_response_start_at     = COALESCE($24, t8_response_start_at),
-					       t9_response_end_at       = COALESCE($25, t9_response_end_at)
+					       digest                   = CASE WHEN $12 <> '' AND $12 <> 'null' THEN $12::text::jsonb ELSE digest END,
+					       project_id               = COALESCE(NULLIF($13, ''), project_id),
+					       namespace                = COALESCE(NULLIF($14, ''), namespace),
+					       parent_request_id        = COALESCE(NULLIF($15, ''), parent_request_id),
+					       task_type                = COALESCE(NULLIF($16, ''), task_type),
+					       t0_arrived_at            = COALESCE($17, t0_arrived_at),
+					       t1_total_enqueued_at     = COALESCE($18, t1_total_enqueued_at),
+					       t2_total_dequeued_at     = COALESCE($19, t2_total_dequeued_at),
+					       t3_model_enqueued_at     = COALESCE($20, t3_model_enqueued_at),
+					       t4_model_dequeued_at     = COALESCE($21, t4_model_dequeued_at),
+					       t5_cred_enqueued_at      = COALESCE($22, t5_cred_enqueued_at),
+					       t6_cred_dequeued_at      = COALESCE($23, t6_cred_dequeued_at),
+					       t7_forward_start_at      = COALESCE($24, t7_forward_start_at),
+					       t8_response_start_at     = COALESCE($25, t8_response_start_at),
+					       t9_response_end_at       = COALESCE($26, t9_response_end_at)
 					 WHERE session_id = $1 AND tenant_id = $2
 					   AND request_id = $3 AND partition_date = $4
 				`,
 				rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
 				rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
-				rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary,
+				rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary, string(rec.DigestJSON),
 				rec.ProjectID, rec.Namespace, rec.ParentRequestID, rec.TaskType,
 				rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
 				rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,

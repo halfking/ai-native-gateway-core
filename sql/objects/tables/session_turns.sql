@@ -42,6 +42,7 @@ CREATE TABLE public.session_turns (
     tools jsonb DEFAULT '[]'::jsonb NOT NULL,
     title text,
     summary text,
+    digest jsonb,
     aggregate_applied_at timestamp with time zone,
     t0_arrived_at timestamp with time zone,
     t1_total_enqueued_at timestamp with time zone,
