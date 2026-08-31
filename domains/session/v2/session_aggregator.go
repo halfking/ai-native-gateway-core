@@ -204,6 +204,7 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			total_turns, total_tokens, total_cost_usd,
 			last_turn_no, last_request_summary, last_response_summary,
 			last_model, last_provider,
+			client_type,
 			partition_date
 		) VALUES (
 			$1, $2,
@@ -211,7 +212,8 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			$4, $5, $6,
 			$7, $8, $9,
 			$10, $11,
-			$12
+			$12,
+			$13
 		)
 		ON CONFLICT (session_id, partition_date)
 		DO UPDATE SET
@@ -223,13 +225,15 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			last_request_summary = EXCLUDED.last_request_summary,
 			last_response_summary = EXCLUDED.last_response_summary,
 			last_model = EXCLUDED.last_model,
-			last_provider = EXCLUDED.last_provider
+			last_provider = EXCLUDED.last_provider,
+			client_type = EXCLUDED.client_type
 	`,
 		update.SessionID, update.TenantID,
 		update.UpdatedAt,
 		update.TurnIncrement, update.TokensIncrement, update.CostIncrement,
 		update.LastTurnNo, update.LastRequestSummary, update.LastResponseSummary,
 		update.LastModel, update.LastProvider,
+		update.ClientType,
 		partitionDate,
 	)
 	if err != nil {
