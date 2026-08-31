@@ -52,6 +52,10 @@ type MaterializedViewRefresher struct {
 	db     *pgxpool.Pool
 	cancel context.CancelFunc
 	done   chan struct{}
+	// Failure tracking for alerting (2026-09-01 P1-B)
+	failureCount    int
+	lastFailureTime time.Time
+	alertCallback   func(viewName string, consecutiveFailures int, err error)
 }
 
 // NewMaterializedViewRefresher creates a new refresher instance.
@@ -81,6 +85,13 @@ func (r *MaterializedViewRefresher) Stop() {
 	}
 	<-r.done
 	slog.Info("materialized_view_refresher stopped")
+}
+
+// SetAlertCallback sets the callback function for refresh failure alerts.
+// The callback is invoked when consecutive failures reach 2 or more.
+// Safe to call before or after Start().
+func (r *MaterializedViewRefresher) SetAlertCallback(cb func(viewName string, consecutiveFailures int, err error)) {
+	r.alertCallback = cb
 }
 
 // refreshLoop runs the periodic refresh cycle.
@@ -113,8 +124,15 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	ctx, cancel := context.WithTimeout(parentCtx, RefreshTimeout)
 	defer cancel()
 
+	var hasError bool
+	var lastErr error
+	var failedView string
+
 	start := time.Now()
 	if err := r.refreshView(ctx, "routing_analytics_7d"); err != nil {
+		hasError = true
+		lastErr = err
+		failedView = "routing_analytics_7d"
 		slog.Error("failed to refresh routing_analytics_7d",
 			"error", err,
 			"elapsed", time.Since(start))
@@ -125,12 +143,29 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 
 	auditStart := time.Now()
 	if err := r.refreshView(ctx, "routing_audit_summary_7d"); err != nil {
+		hasError = true
+		lastErr = err
+		failedView = "routing_audit_summary_7d"
 		slog.Error("failed to refresh routing_audit_summary_7d",
 			"error", err,
 			"elapsed", time.Since(auditStart))
 	} else {
 		slog.Info("refreshed routing_audit_summary_7d",
 			"elapsed", time.Since(auditStart))
+	}
+
+	// 2026-09-01 P1-B: Track consecutive failures and alert on threshold
+	if hasError {
+		r.failureCount++
+		r.lastFailureTime = time.Now()
+		
+		// Alert on 2+ consecutive failures (交接文档建议)
+		if r.failureCount >= 2 && r.alertCallback != nil {
+			r.alertCallback(failedView, r.failureCount, lastErr)
+		}
+	} else {
+		// Reset on success
+		r.failureCount = 0
 	}
 }
 

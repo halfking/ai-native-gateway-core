@@ -3472,6 +3472,29 @@ func main() {
 			// to keep analytics queries fast (<500ms instead of 15s timeout).
 			slog.Info("CHECKPOINT: before NewMaterializedViewRefresher")
 			materializedViewRefresher = bg.NewMaterializedViewRefresher(dbConn.Pool())
+			
+			// 2026-09-01 P1-B: Set up alert callback for refresh failures
+			if gLarkCh != nil {
+				materializedViewRefresher.SetAlertCallback(func(viewName string, consecutiveFailures int, err error) {
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+					
+					msg := &notification.Message{
+						ID:      fmt.Sprintf("mv-refresh-failure-%s-%d", viewName, time.Now().Unix()),
+						Title:   "⚠️ 物化视图刷新告警",
+						Content: fmt.Sprintf("视图: %s\n连续失败次数: %d\n错误: %v\n时间: %s", 
+							viewName, consecutiveFailures, err, time.Now().Format(time.RFC3339)),
+						Recipients: []string{os.Getenv("LARK_ALERT_RECIPIENT")}, // 从环境变量读取告警接收人
+					}
+					
+					if sendErr := gLarkCh.Send(ctx, msg); sendErr != nil {
+						slog.Error("failed to send MV refresh alert", "error", sendErr)
+					} else {
+						slog.Info("sent MV refresh alert", "view", viewName, "failures", consecutiveFailures)
+					}
+				})
+			}
+			
 			materializedViewRefresher.Start()
 			slog.Info("CHECKPOINT: after materializedViewRefresher.Start")
 
