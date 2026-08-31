@@ -25,7 +25,21 @@ CREATE TABLE IF NOT EXISTS request_logs (
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_ts ON request_logs (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_request_logs_tenant_ts ON request_logs (tenant_id, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_request_logs_session ON request_logs (session_id, ts DESC);
+-- Guarded: a schema synced from 252 (or any pre-existing request_logs that
+-- predates the session_id column) lacks the column and would fail
+-- CREATE INDEX with "column does not exist". The strict runner normally
+-- skips 000 on a populated ledger, but keep the guard so partial replays
+-- never trip the index creation.
+DO $do$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'request_logs' AND column_name = 'session_id'
+  ) THEN
+    CREATE INDEX IF NOT EXISTS idx_request_logs_session ON request_logs (session_id, ts DESC);
+  END IF;
+END
+$do$;
 
 COMMENT ON TABLE request_logs IS 'Core request logging table (base structure, extended by later migrations)';
 

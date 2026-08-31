@@ -114,9 +114,115 @@ migrate() {
     baseline_ledger
     return 0
   fi
+  # Partial-ledger case: schema was synced from 252 (or another upstream) with
+  # only a slice of the migration ledger copied — typically mid-range entries
+  # (e.g. 044, 080-083, 330-358, 382+) while the early migrations 000..043 were
+  # never recorded. Running strict migrations forward would re-execute every
+  # absent migration against the already-populated schema, which trips errors
+  # like "column session_id does not exist" (the 252 schema diverged).
+  #
+  # We can't use --baseline-through here: run-migrations-strict.sh refuses to
+  # baseline a non-empty ledger. Instead, INSERT rows for the missing
+  # migrations directly into repository_schema_migrations so the strict runner
+  # considers them already applied. Detection: lowest recorded startup
+  # version > 000 indicates early migrations are missing.
+  if needs_partial_ledger_backfill; then
+    printf 'Partial migration ledger detected; backfilling missing rows before strict run.\n'
+    backfill_partial_ledger
+  fi
   if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh"; then
     die "migrations failed; if repository_schema_migrations is empty on a populated database, rerun with --baseline-through <known-version> via scripts/run-migrations-strict.sh directly"
   fi
+}
+
+# Returns 0 (true) iff the public.repository_schema_migrations ledger is
+# non-empty but missing early startup migrations (lowest recorded startup
+# version > 000). This is the signature of a schema synced from another
+# instance whose ledger copy was incomplete.
+needs_partial_ledger_backfill() {
+  local lowest_startup highest_recorded
+  lowest_startup=$(psql -X -Atqc \
+    "SELECT MIN(version) FROM public.repository_schema_migrations \
+     WHERE scope='startup' AND version ~ '^[0-9]+'" \
+    "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || true)
+  highest_recorded=$(psql -X -Atqc \
+    "SELECT COALESCE(MAX(version), '0') FROM public.repository_schema_migrations \
+     WHERE version ~ '^[0-9]+'" \
+    "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
+  # Only act when there is a startup ledger entry whose version is strictly
+  # greater than 000 (early migrations missing) and the ledger isn't empty.
+  [[ -n "$lowest_startup" && "$lowest_startup" != "000" && "$highest_recorded" != "0" ]]
+}
+
+# Backfill repository_schema_migrations with rows for any migration file
+# in the repo whose version (per the strict runner's parsing rules) is ≤ the
+# highest already-recorded version in that scope. Each row records the file's
+# actual sha256 (matching run-migrations-strict.sh:file_checksum) so the
+# runner's "already applied" check passes on subsequent runs. ON CONFLICT
+# DO UPDATE keeps re-runs idempotent and corrects any prior rows that were
+# backfilled with empty checksums. Each scope (startup/domain/ursm) is
+# processed independently; scopes with no recorded entries are skipped.
+backfill_partial_ledger() {
+  local scope migration_root scope_highest inserted_before inserted_after sql_file
+  for scope in startup domain ursm; do
+    migration_root="$ROOT_DIR/sql/migrations/$scope"
+    [[ -d "$migration_root" ]] || continue
+    scope_highest=$(psql -X -Atqc \
+      "SELECT COALESCE(MAX(version), '0') FROM public.repository_schema_migrations \
+       WHERE scope='$scope' AND version ~ '^[0-9]+'" \
+      "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
+    [[ "$scope_highest" != "0" ]] || continue
+    inserted_before=$(psql -X -Atqc \
+      "SELECT count(*) FROM public.repository_schema_migrations WHERE scope='$scope'" \
+      "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
+    # Generate a temp SQL file then apply it via psql -f. The find pipeline
+    # emits one INSERT ... ON CONFLICT DO NOTHING per migration whose
+    # parsed version is ≤ the recorded high-water mark, mirroring the
+    # strict runner's filename parsing so the backfill lines up.
+    #
+    # The strict runner decides "already applied" by comparing the stored
+    # checksum against the file's current sha256 — so we have to record
+    # the *actual* sha256 of every file, not an empty string; otherwise
+    # the runner would still try to re-apply the migration and trip the
+    # ledger PK or a "column already exists" error.
+    sql_file=$(mktemp -t llm-gw-backfill-XXXXXX.sql)
+    {
+      printf -- '-- auto-generated backfill for scope=%s baselined_through=%s\n' "$scope" "$scope_highest"
+      printf 'BEGIN;\n'
+      find "$migration_root" -maxdepth 1 -type f -name '[0-9]*.sql' \
+        ! -name '*.down.sql' 2>/dev/null | sort | while read -r file; do
+        filename=$(basename "$file")
+        if [[ "$scope" == "ursm" ]]; then
+          version=${filename%%-*}
+        else
+          version=${filename%%_*}
+        fi
+        version_number=${version%%[^0-9]*}
+        # Skip date-style prefixes whose leading digits parse as huge
+        # numbers; the recorded high-water mark is always a small integer
+        # (e.g. 602) so they'd never match anyway.
+        if [[ ! "$version_number" =~ ^[0-9]+$ ]]; then continue; fi
+        if (( 10#$version_number > 10#$scope_highest )); then continue; fi
+        # Match run-migrations-strict.sh:file_checksum — shasum -a 256.
+        checksum=$(shasum -a 256 "$file" 2>/dev/null | cut -d ' ' -f 1)
+        [[ -n "$checksum" ]] || checksum=''
+        printf "INSERT INTO public.repository_schema_migrations \
+(scope, version, migration_name, checksum) VALUES ('%s','%s','%s','%s') \
+ON CONFLICT (scope, migration_name) DO UPDATE SET checksum = EXCLUDED.checksum;\n" \
+          "$scope" "$version" "$filename" "$checksum"
+      done
+      printf 'COMMIT;\n'
+    } > "$sql_file"
+    if ! psql -X -v ON_ERROR_STOP=1 -q -f "$sql_file" "$LLM_GATEWAY_DATABASE_URL" >/dev/null 2>&1; then
+      die "partial-ledger backfill failed for scope=$scope; inspect $sql_file manually"
+    fi
+    rm -f "$sql_file"
+    inserted_after=$(psql -X -Atqc \
+      "SELECT count(*) FROM public.repository_schema_migrations WHERE scope='$scope'" \
+      "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
+    printf '  scope=%s baselined_through=%s inserted=%d\n' \
+      "$scope" "$scope_highest" "$(( inserted_after - inserted_before ))"
+  done
 }
 
 baseline_ledger() {
