@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 )
 
 // session_turns_v2.go — V2 会话详情端点实现（2026-08-07）。
@@ -88,8 +90,8 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		       COALESCE(t.submit_mode,''), COALESCE(t.injection_verdict,''), COALESCE(t.output_verdict,''),
 		       COALESCE(t.attachment_count,0), t.request_id,
 		       COALESCE(t.cache_read_tokens,0), COALESCE(t.latency_ms,0), COALESCE(t.success,FALSE),
-		       t.error_kind, t.compression_applied, t.compression_tokens_saved,
-		       b.request_delta, b.response_delta
+			   t.error_kind, t.compression_applied, t.compression_tokens_saved, t.digest,
+			   b.request_delta, b.response_delta
 		FROM public.session_turns_with_current_month t
 		LEFT JOIN public.session_bodies_unified b
 		  ON b.tenant_id=t.tenant_id AND b.session_id=t.session_id
@@ -114,13 +116,14 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 			cacheReadTokens, latencyMs  int
 			success, compressionApplied bool
 			compressionTokensSaved      *int
+			persistedDigestRaw          []byte
 			requestRaw, responseRaw     []byte
 		)
 		if err := rows.Scan(&it.TurnNo, &it.Ts, &it.Title, &it.Summary, &it.RequestTokens,
 			&it.ResponseTokens, &it.CostUSD, &it.Model, &it.Provider, &it.StatusCode,
 			&it.SubmitMode, &it.InjectionVerdict, &it.OutputVerdict, &it.AttachmentCount,
 			&requestID, &cacheReadTokens, &latencyMs, &success, &errorKind,
-			&compressionApplied, &compressionTokensSaved, &requestRaw, &responseRaw); err != nil {
+			&compressionApplied, &compressionTokensSaved, &persistedDigestRaw, &requestRaw, &responseRaw); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
 		}
@@ -137,7 +140,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 			"output_verdict": it.OutputVerdict, "compression_applied": compressionApplied,
 			"compression_tokens_saved": intPtrValue(compressionTokensSaved),
 		}
-		it.Digest = buildTurnDigest(request, response, meta, governance)
+		it.Digest = persistedDigestOrFallback(persistedDigestRaw, request, response, meta, governance)
 		items = append(items, it)
 	}
 	if err := rows.Err(); err != nil {
@@ -240,8 +243,8 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 			t.model, t.provider,
 			t.prompt_tokens, t.completion_tokens, t.cache_read_tokens, t.cache_write_tokens,
 			t.cost_usd, t.latency_ms, t.status_code, t.success, t.error_kind,
-			t.source_kind, t.quality,
-			b.request_delta, b.response_delta, b.outbound_body,
+				t.source_kind, t.quality, t.digest,
+				b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
 		FROM public.session_turns_with_current_month t
 			LEFT JOIN public.session_bodies_unified b
@@ -258,13 +261,15 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 		compressionApplied                                                          bool
 		compressionStrategy                                                         *string
 		compressionMetaRaw, requestDeltaRaw, responseDeltaRaw, outboundBodyRaw      []byte
+		persistedDigestRaw                                                          []byte
 		compressionTokensSaved                                                      *int
-		model, provider, errorKind                                                  *string
-		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens           *int
-		costUSD                                                                     *float64
-		latencyMs, statusCode                                                       *int
-		success                                                                     *bool
-		requestAttachmentsRaw, responseAttachmentsRaw                               []byte
+
+		model, provider, errorKind                                        *string
+		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens *int
+		costUSD                                                           *float64
+		latencyMs, statusCode                                             *int
+		success                                                           *bool
+		requestAttachmentsRaw, responseAttachmentsRaw                     []byte
 	)
 	err = h.db.QueryRow(r.Context(), query, sessionID, tenantID, turnNo).Scan(
 		&turnNoOut, &requestID, &ts,
@@ -274,7 +279,7 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 		&model, &provider,
 		&promptTokens, &completionTokens, &cacheReadTokens, &cacheWriteTokens,
 		&costUSD, &latencyMs, &statusCode, &success, &errorKind,
-		&sourceKind, &quality,
+		&sourceKind, &quality, &persistedDigestRaw,
 		&requestDeltaRaw, &responseDeltaRaw, &outboundBodyRaw,
 		&requestAttachmentsRaw, &responseAttachmentsRaw)
 	if err != nil {
@@ -325,7 +330,7 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 		Meta:        meta,
 		Governance:  governance,
 		Attachments: buildTurnAttachments(requestID, requestAttachmentsRaw, responseAttachmentsRaw),
-		Digest:      buildTurnDigest(request, response, meta, governance),
+		Digest:      persistedDigestOrFallback(persistedDigestRaw, request, response, meta, governance),
 	}
 	if model != nil {
 		resp.Model = *model
@@ -334,6 +339,31 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 		resp.CostUSD = *costUSD
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func persistedDigestOrFallback(raw []byte, request, response any, meta, governance map[string]any) *TurnDigest {
+	if persisted, err := sessiondigest.Unmarshal(raw); err == nil && persisted != nil {
+		return turnDigestFromPayload(persisted.Payload)
+	}
+	return buildTurnDigest(request, response, meta, governance)
+}
+
+func turnDigestFromPayload(d sessiondigest.Digest) *TurnDigest {
+	out := &TurnDigest{
+		UserInput:       d.UserInput,
+		AssistantOutput: d.AssistantOutput,
+		Metrics: TurnMetrics{
+			TokensUsed: d.Metrics.TokensUsed, Cost: d.Metrics.Cost, LatencyMs: d.Metrics.LatencyMs,
+			CacheHitRate: d.Metrics.CacheHitRate, CompressionRate: d.Metrics.CompressionRate,
+		},
+	}
+	for _, event := range d.Events {
+		out.Events = append(out.Events, TurnEvent{Type: event.Type, Category: event.Category, Message: event.Message})
+	}
+	if d.ToolUsage != nil {
+		out.ToolUsage = &ToolUsageSummary{ToolCallCount: d.ToolUsage.ToolCallCount, ToolsUsed: append([]string(nil), d.ToolUsage.ToolsUsed...)}
+	}
+	return out
 }
 
 // buildTurnAttachments 把 session_bodies 的 request/response_attachments jsonb 数组

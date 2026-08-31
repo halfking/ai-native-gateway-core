@@ -16,27 +16,58 @@
 #      runtime expects: pg_class table count, pg_proc function count,
 #      and the audit_attachments_cleanup / session_aggregate_outbox /
 #      promote_* functions all exist.
-#   3. The exact list of migrations that fail to apply (if any) is
-#      surfaced so the audit pass can fix them one at a time.
+#   3. The 15 known repair/fix migrations may fail on a clean DB; those
+#      expected failures are accounted for separately. Any other failure is
+#      fatal so a broken build migration cannot be masked.
 #
 # Usage:
 #   bash scripts/audit/fresh-schema-from-migrations.sh
 #
 # Side effects:
-#   Creates a database `llm_gateway_fresh` in the kx-citus container.
-#   Drops it at end of run.
+#   Creates a database `FRESH_DB` in the kx-citus container and drops it at
+#   end of run. Set KEEP_FRESH_DB=1 to retain it for the separate Go end-state
+#   check (TEST_AUDIT_FRESH_SCHEMA_DB_URL).
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-PSQL_DB()  { docker exec kx-citus psql -U kxuser -d llm_gateway_fresh -v ON_ERROR_STOP=0 "$@"; }
+FRESH_DB="${FRESH_DB:-llm_gateway_fresh}"
+KEEP_FRESH_DB="${KEEP_FRESH_DB:-0}"
+PSQL_DB()  { docker exec kx-citus psql -U kxuser -d "$FRESH_DB" "$@"; }
 PSQL_ADMIN() { docker exec kx-citus psql -U kxuser -d postgres "$@"; }
+
+# These are repair/fix migrations for already-deployed schemas. They are
+# expected to fail against a genuinely empty database; every other failure is
+# a baseline failure and must make this audit fail.
+expected_repair_count=15
+is_expected_repair() {
+  case "$1" in
+    533_request_wal_bodies_unique_request_id.sql|534_handoff_logs_hot_columnar.sql|\
+    538_node_probe_runs_trigger_kind_unified_queue.sql|579_dashboard_access_events_hot_promote.sql|\
+    580_session_module_executions_hot_promote.sql|601_request_logs_bodies_drop_metadata.sql|\
+    603_repair_request_logs_schema_consistency.sql|604_repair_request_logs_bodies_tenant_id.sql|\
+    605_fix_tool_calls_index_predicate.sql|606_session_summaries_agent_expert_tags.sql|\
+    607_repair_dashboard_access_events_promote_columns.sql|608_tenant_model_policies_add_pkey.sql|\
+    609_tenant_model_policies_audit_rekey_pkey.sql|616_provider_error_details_unique_constraint.sql|\
+    625_session_bodies_unified_explicit.sql) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+cleanup() {
+  if [[ "$KEEP_FRESH_DB" == "1" ]]; then
+    echo "  keeping $FRESH_DB (set TEST_AUDIT_FRESH_SCHEMA_DB_URL to its DSN for Go end-state checks)"
+  else
+    PSQL_ADMIN -c "DROP DATABASE IF EXISTS $FRESH_DB" >/dev/null || true
+  fi
+}
+trap cleanup EXIT
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-echo "═══ STEP 1: create fresh DB llm_gateway_fresh ═══"
-PSQL_ADMIN -c "DROP DATABASE IF EXISTS llm_gateway_fresh" >/dev/null
-PSQL_ADMIN -c "CREATE DATABASE llm_gateway_fresh" >/dev/null
+echo "═══ STEP 1: create fresh DB $FRESH_DB ═══"
+PSQL_ADMIN -c "DROP DATABASE IF EXISTS $FRESH_DB" >/dev/null
+PSQL_ADMIN -c "CREATE DATABASE $FRESH_DB" >/dev/null
 
 # Run 00-prereqs first (creates extensions the dump relied on). It is
 # tiny and idempotent. Read it from the host and pipe into docker exec
@@ -44,7 +75,7 @@ PSQL_ADMIN -c "CREATE DATABASE llm_gateway_fresh" >/dev/null
 # container can see (it cannot).
 if [[ -f sql/schema/00-prereqs.sql ]]; then
     echo "═══ STEP 2: apply 00-prereqs.sql (extensions) ═══"
-    cat sql/schema/00-prereqs.sql | docker exec -i kx-citus psql -U kxuser -d llm_gateway_fresh -v ON_ERROR_STOP=0 >/dev/null
+    cat sql/schema/00-prereqs.sql | docker exec -i kx-citus psql -U kxuser -d "$FRESH_DB" -v ON_ERROR_STOP=1 >/dev/null
     echo "  ✓ 00-prereqs.sql applied"
 else
     echo "═══ STEP 2: 00-prereqs.sql missing, skipping ═══"
@@ -60,7 +91,9 @@ mapfile -t mig_files < <(ls sql/migrations/startup/ 2>/dev/null \
     | sort)
 applied=0
 skipped=0
+expected_failed=0
 failed=0
+declare -a expected_failed_list=()
 declare -a failed_list=()
 for base in "${mig_files[@]}"; do
     f="sql/migrations/startup/${base}"
@@ -86,24 +119,34 @@ for base in "${mig_files[@]}"; do
             continue
         fi
     fi
-    if cat "$f" | docker exec -i kx-citus psql -U kxuser -d llm_gateway_fresh -v ON_ERROR_STOP=0 >/dev/null 2>&1; then
+    if cat "$f" | docker exec -i kx-citus psql -U kxuser -d "$FRESH_DB" -v ON_ERROR_STOP=1 >/dev/null 2>&1; then
         ((applied++)) || true
+    elif is_expected_repair "$base"; then
+        ((expected_failed++)) || true
+        expected_failed_list+=("$base")
     else
         ((failed++)) || true
         failed_list+=("$base")
     fi
 done
-echo "  applied=$applied skipped=$skipped failed=$failed"
+if (( expected_failed != expected_repair_count )); then
+    echo "ERROR: expected $expected_repair_count repair failures, observed $expected_failed" >&2
+    exit 1
+fi
+echo "  applied=$applied skipped=$skipped expected_repair_failures=$expected_failed failed=$failed"
+if (( expected_failed > 0 )); then
+    echo "  expected repair failures:"
+    printf '    - %s\n' "${expected_failed_list[@]}"
+fi
 if (( failed > 0 )); then
-    echo "  failed migrations:"
-    for m in "${failed_list[@]}"; do
-        echo "    - $m"
-    done
+    echo "  unexpected failed migrations:"
+    printf '    - %s\n' "${failed_list[@]}"
+    exit 1
 fi
 
 echo ""
 echo "═══ STEP 4: post-migration schema shape ═══"
-docker exec -i kx-citus psql -U kxuser -d llm_gateway_fresh <<'SQL'
+docker exec -i kx-citus psql -U kxuser -d "$FRESH_DB" -v ON_ERROR_STOP=1 <<'SQL'
 SELECT
     (SELECT count(*) FROM pg_class WHERE relkind='r' AND relnamespace='public'::regnamespace) AS tables,
     (SELECT count(*) FROM pg_class WHERE relkind='p' AND relnamespace='public'::regnamespace) AS partitioned_tables,
@@ -120,8 +163,9 @@ SQL
 
 echo ""
 echo "═══ STEP 5: cleanup ═══"
-PSQL_ADMIN -c "DROP DATABASE llm_gateway_fresh" >/dev/null
-echo "  ✓ dropped llm_gateway_fresh"
+if [[ "$KEEP_FRESH_DB" != "1" ]]; then
+    echo "  ✓ dropped $FRESH_DB"
+fi
 
 echo ""
 echo "═══ fresh-schema-from-migrations.sh complete ═══"
