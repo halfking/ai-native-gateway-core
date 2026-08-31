@@ -57,7 +57,21 @@ RECONCILE_YES=false
 
 # Hot-table patterns: 252-only objects matching these are EXPECTED drift
 # (runtime monthly partitions / hot windows), not a real inconsistency.
-HOT_PATTERNS='*_hot *_2026_* *_2027_* *_archived *_archive'
+# *_2025_* / *_2026_* / *_2027_* / *_2028_* cover the rolling monthly partition
+# windows for tables like candidate_failure_logs_YYYY_MM, request_wal_*, etc.
+# Hot windows / archive tables get their own explicit patterns so they remain
+# recognized even after 252 stops emitting them (e.g. _2024_* should already
+# be archived and is treated as drift if it shows up unexpectedly).
+HOT_PATTERNS='*_hot *_2025_* *_2026_* *_2027_* *_2028_* *_archived *_archive'
+
+# Tables whose PG parent-partition (`pg_inherits` chain rooted at a relkind=p
+# partitioned table) is on the other side are EXPECTED drift too. 252 archives
+# old monthly partitions out of `candidate_failure_logs_*` etc.; local keeps
+# them because they are not auto-rotated. Without this check the audit reports
+# them as "REAL DRIFT" on every sync.
+INHERITED_TABLES_252=$(mktemp)
+INHERITED_TABLES_LOC=$(mktemp)
+trap 'rm -f "$INHERITED_TABLES_252" "$INHERITED_TABLES_LOC"' EXIT
 
 mkdir -p "$WORK_DIR"
 
@@ -185,8 +199,17 @@ do_verify() {
   # Process substitution (not a pipe) so counter updates persist in this shell.
   if [[ -n "$only252" ]]; then
     while IFS= read -r t; do
-      if is_hot_pattern "$t"; then warn "252-only (EXPECTED hot/partition): $t"; expected=$((expected+1));
-      else err "252-only (REAL DRIFT): $t"; DRIFT=1; fi
+      if is_hot_pattern "$t"; then
+        warn "252-only (EXPECTED hot/partition): $t"; expected=$((expected+1))
+      elif grep -qx "$t" "$INHERITED_TABLES_LOC" 2>/dev/null; then
+        # 252 has this child partition; local has the SAME child too (it's in
+        # the inventory diff), so it's not a "252-only" case. Reached here only
+        # when 252's child and local's child differ in presence — local kept
+        # the partition, 252 archived it. Treat as expected rotation.
+        warn "252-only partition (EXPECTED rotation): $t"; expected=$((expected+1))
+      else
+        err "252-only (REAL DRIFT): $t"; DRIFT=1
+      fi
     done < <(printf '%s\n' "$only252")
   else
     ok "no 252-only tables"
@@ -197,7 +220,13 @@ do_verify() {
   else
     while IFS= read -r t; do
       [[ -z "$t" ]] && continue
-      err "local-only (REAL DRIFT): $t"; DRIFT=1
+      if is_hot_pattern "$t"; then
+        warn "local-only (EXPECTED hot/partition): $t"; expected=$((expected+1))
+      elif grep -qx "$t" "$INHERITED_TABLES_252" 2>/dev/null; then
+        warn "local-only partition (EXPECTED rotation): $t"; expected=$((expected+1))
+      else
+        err "local-only (REAL DRIFT): $t"; DRIFT=1
+      fi
     done < <(printf '%s\n' "$onlylocal")
   fi
 
@@ -284,6 +313,14 @@ pull_inventories() {
   p252 "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename" > "$WORK_DIR/tables252.txt"
   ploc "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename NOT LIKE '\_%' ESCAPE '\\' ORDER BY tablename" > "$WORK_DIR/tableslocal.txt"
   ok "252 tables: $(wc -l < "$WORK_DIR/tables252.txt") | local tables (excl _): $(wc -l < "$WORK_DIR/tableslocal.txt")"
+
+  # Collect every table that is a PG child partition (relkind=r + pg_inherits
+  # → relkind=p parent). When one side has a child and the other side has
+  # the same parent but no such child, that child is EXPECTED drift: the side
+  # without it simply rotated / archived the partition out. Used by the table
+  # inventory check below to suppress false-positive REAL DRIFT.
+  p252 "SELECT c.relname FROM pg_class c JOIN pg_inherits i ON i.inhrelid=c.oid JOIN pg_class p ON p.oid=i.inhparent WHERE c.relkind='r' AND p.relkind='p'" > "$INHERITED_TABLES_252"
+  ploc "SELECT c.relname FROM pg_class c JOIN pg_inherits i ON i.inhrelid=c.oid JOIN pg_class p ON p.oid=i.inhparent WHERE c.relkind='r' AND p.relkind='p'" > "$INHERITED_TABLES_LOC"
 }
 
 # ── Main ───────────────────────────────────────────────────────────────────
