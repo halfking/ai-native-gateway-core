@@ -31,6 +31,9 @@ done
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 
+echo "[verify] migration checksums (sql/migrations/startup vs docs/db-changelog.md)"
+./scripts/verify-migration-checksums.sh --quiet
+
 echo "[verify] full Go tests"
 go test ./... -count=1 -timeout=300s
 
