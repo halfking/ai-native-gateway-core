@@ -41,4 +41,9 @@ require 'seamless surfaces per-probe failure' 'remote_probe' "$ROOT/scripts/depl
 require 'seamless probe timeout >= 60s' 'PROBE_TIMEOUT_SECS:-60' "$ROOT/scripts/deploy-seamless.sh"
 require 'local direct fallback is explicit' 'requires --proxy' "$ROOT/scripts/local-host-blue-green.sh"
 require 'install does not start traffic' 'never starts a candidate' "$ROOT/scripts/install-blue-green-assets.sh"
+# Crashed deploys can leave slots/<port> symlinks aimed at pruned releases;
+# the prune pass must remove those while sparing the active/candidate slots.
+require 'prune removes dangling slot symlinks' 'pruned dangling slot' "$ROOT/scripts/deploy-seamless.sh"
+require 'prune spares active and candidate slots' 'active_slot=...cat ..REMOTE_ROOT/run/active-port' "$ROOT/scripts/deploy-seamless.sh"
+require 'env file permissions converge to 0600' 'chmod 0600' "$ROOT/scripts/deploy-seamless.sh"
 (( fail == 0 ))

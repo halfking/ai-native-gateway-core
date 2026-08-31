@@ -379,6 +379,17 @@ test_remote_lock_owner_compare_and_delete() {
   LOCK_REMOTE_OWNER_TOKEN="$owner_b" lock_release_remote fake_remote "$lock_path"
   [[ ! -e "$lock_path" ]] && log_pass "current remote owner releases its lock" \
     || log_fail "current remote owner did not release its lock"
+  # Release-race guard: a dangling staging dir must never be left behind,
+  # and a missing metadata file must be a no-op (not an error).
+  if compgen -G "$tmp/deploy.lock.releasing.*" >/dev/null; then
+    log_fail "lock release leaked a staging dir"
+  else
+    log_pass "lock release leaves no staging dir"
+  fi
+  mkdir -p "$lock_path"
+  LOCK_REMOTE_OWNER_TOKEN="$owner_b" lock_release_remote fake_remote "$lock_path" && \
+    log_pass "release on metadata-less lock is a no-op (rc=0)" \
+    || log_fail "release on metadata-less lock failed"
   rm -rf "$tmp"
 }
 
