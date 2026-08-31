@@ -123,6 +123,12 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopPoll()
+  // 2026-09-01 (P2 audit fix): cancel the post-trigger reload timer so
+  // loadAll() does not fire after the component is gone.
+  if (postTriggerReloadTimer) {
+    clearTimeout(postTriggerReloadTimer)
+    postTriggerReloadTimer = null
+  }
 })
 
 watch(range, () => {
