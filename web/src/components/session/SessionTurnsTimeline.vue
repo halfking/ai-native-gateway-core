@@ -99,7 +99,7 @@ function latencyClass(ms: number | null | undefined): string {
 
 function fmtLatency(ms: number | null | undefined): string {
   // null = 未知，禁止渲染成 0ms
-  if (ms === null || ms === undefined) return '未知'
+  if (ms === null || ms === undefined) return t('sessionTimeline.latencyUnknown')
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(2)}s`
 }
@@ -131,7 +131,7 @@ function errorText(e: SessionObsApiError | null): string {
     case 'unauthorized':
       return '未认证或登录已过期，请重新登录（401）'
     case 'network':
-      return '网络错误，请检查连接后重试'
+      return t('sessionTimeline.errors.network')
     default:
       return `加载失败（HTTP ${e.status}）：${e.message}`
   }
@@ -149,7 +149,7 @@ function errorText(e: SessionObsApiError | null): string {
         :disabled="loading"
         @click="load(true)"
       >
-        {{ loading ? '刷新中…' : '刷新' }}
+        {{ loading ? t('sessionTimeline.refreshing') : t('sessionTimeline.refresh') }}
       </button>
     </div>
 
@@ -167,13 +167,13 @@ function errorText(e: SessionObsApiError | null): string {
     >
       <span class="stt-error-text">{{ errorText(error) }}</span>
       <button type="button" class="stt-retry" :disabled="loading" @click="load(true)">
-        重试
+        {{ t('sessionTimeline.retry') }}
       </button>
     </div>
 
     <!-- 空态：200 但无轮次 -->
     <div v-else-if="loaded && turns.length === 0" class="stt-empty">
-      该会话暂无轮次记录
+      {{ t('sessionTimeline.empty') }}
     </div>
 
     <!-- 轮次时间线 -->
@@ -246,11 +246,11 @@ function errorText(e: SessionObsApiError | null): string {
           data-testid="stt-load-more"
           @click="load(false)"
         >
-          {{ loadingMore ? '加载中…' : '加载更多轮次' }}
+          {{ loadingMore ? t('sessionTimeline.loading') : t('sessionTimeline.loadMore') }}
         </button>
       </div>
       <div v-else-if="loaded && turns.length > 0" class="stt-end">
-        共 {{ turns.length }} 轮，已全部加载
+        {{ t('sessionTimeline.allLoaded', { n: turns.length }) }}
       </div>
     </div>
   </div>
