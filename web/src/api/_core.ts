@@ -31,7 +31,13 @@ export function headers(method: string, hasBody = false): Record<string, string>
   // so /healthz?full=true (and any admin endpoint called without a cookie
   // shell) returned 401 even when the user was authed via /api/auth/token.
   // See store.ts:authBearer for the source of truth.
-  const bearer = authBearer()
+  //
+  // Phase 1.4 follow-up: if store.userInfo is populated we know the JWT login
+  // succeeded and the backend set the HttpOnly `llmgw_session` cookie; let
+  // that cookie carry auth and skip the in-memory Bearer to avoid shadowing
+  // a fresher cookie from another tab. Legacy apiKey users (no userInfo, no
+  // cookie) still rely on the Authorization header.
+  const bearer = isAuthenticated() && store.userInfo ? '' : authBearer()
   if (bearer) h['Authorization'] = `Bearer ${bearer}`
   return h
 }
