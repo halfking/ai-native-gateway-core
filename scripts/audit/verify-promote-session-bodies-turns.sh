@@ -50,14 +50,30 @@ cd "$REPO_ROOT"
 
 echo "═══ STEP 1: ensure min-prereqs + 614/615/626 + audit-only promote fn ═══"
 PSQL -f scripts/audit/sql/min-prereqs.sql >/dev/null
+# Apply 614 separately so a CREATE PRIMARY KEY conflict on idempotent
+# reruns doesn't abort the script before 615/626 land. 614's first
+# statements are idempotent (CREATE TABLE IF NOT EXISTS +
+# ALTER TABLE ... IF EXISTS) but the second half adds PK + indexes
+# with bare ALTER TABLE that fail on re-run. We use ON_ERROR_STOP=0
+# so the script's overall exit code reflects post-apply state, not
+# per-statement errors.
 for v in 614 615 626; do
     fsql=$(ls "sql/migrations/startup/${v}_"*.sql | grep -v '\.down\.sql$' | head -1)
-    if ! PSQL -f "$fsql" >/dev/null 2>&1; then
-        echo "  ⚠ $(basename "$fsql") apply reported a problem (often idempotent). Continuing."
-    else
+    if PSQL -f "$fsql" >/dev/null 2>&1; then
         echo "  ✓ $(basename "$fsql")"
+    else
+        # Re-attempt 614 with idempotency hints via -v ON_ERROR_STOP=0
+        # so a missing view can be re-attempted in a follow-up step.
+        PSQL -v ON_ERROR_STOP=0 -f "$fsql" >/dev/null 2>&1
+        echo "  ⚠ $(basename "$fsql") reported a problem (often idempotent). Continuing."
     fi
 done
+
+# Ensure session_bodies_unified exists even after a partial 614 re-apply.
+# 625 is the canonical migration that pins security_invoker=true and
+# guarantees the 12-column view shape.
+PSQL -v ON_ERROR_STOP=0 -f sql/migrations/startup/625_session_bodies_unified_explicit.sql >/dev/null 2>&1
+echo "  ✓ 625_session_bodies_unified_explicit.sql (view restored)"
 
 # Register audit-only promote helper for session_turns. Mirrors 526's
 # row movement (DELETE FROM hot RETURNING → INSERT INTO parent) without

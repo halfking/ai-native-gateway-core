@@ -298,3 +298,75 @@ production 526 期望 50+ 列 `session_turns / session_turns_hot` 全套 schema�
 - `bodies_writer.go` 默认 `partition_date` 来源审计（避免与 unified-view filter 不一致）。
 - promote_session_bodies_hot_to_partition 与 promote_session_turns_hot_to_partition 加 retention=0 guard，对齐 628。
 - production 526 在 staging 端到端复跑（fixture 太大，本 audit-only helper 不替代）。
+
+## §2.6 isolated-PG fresh-schema baseline 替代 01-schema.sql（2026-08-31 续）
+
+> 接续 `.handoff/2026-08-31-isolated-pg-verification-and-attachment-cleanup.md §4.1 P0 第二项`。
+> 工具：`scripts/audit/fresh-schema-from-migrations.sh` + `scripts/audit/fresh_schema_integration_test.go`。
+
+### 问题
+
+`sql/schema/01-schema.sql`（29209 行，961KB）是 production DB (252) 在 2026-08-04 的 `pg_dump` 输出，自洽性差：
+- plpgsql function body 引用后面才 CREATE 的表（pg_dump 按 OID 排序而非依赖）。
+- 文件顶端含 `dump-schema.sh` post-processing 警告。
+- `installer/cmd/audit-dbinit`（上一会话尝试）走 `dbinit.Runner.InitSchema` 在 `01-schema.sql` 这一步失败，无法完成 fresh-DB 初始化。
+
+### 解决路径
+
+放弃 `01-schema.sql` 单一 dump 的依赖，转为 **migrations-only fresh-DB baseline**：在 isolated PG 空 DB 上按序 apply `sql/migrations/startup/{511..635}_*.sql`，跳过 legacy `01-schema.sql`。
+
+### 实现
+
+- `scripts/audit/fresh-schema-from-migrations.sh` — 5 步：
+  1. DROP + CREATE `llm_gateway_fresh`。
+  2. apply `00-prereqs.sql`。
+  3. apply 511..635 startup migrations（数字排序；非纯数字前缀做 lex 比较）；记录 applied/skipped/failed。
+  4. SELECT shape probe（tables / partitioned / views / functions / policies / canonical runtime tables / canonical promote fns）。
+  5. DROP `llm_gateway_fresh`。
+
+- `scripts/audit/fresh_schema_integration_test.go` — `//go:build integration` 三测：
+  - `TestFreshSchemaFromMigrations_KeyObjectsExist` — audit fixture 上 511..632 后断言 canonical runtime tables（`audit_attachments_cleanup`、`audit_attachments_filesystem_cleanup`）+ canonical promote fns 存在 + tables/functions/policies floor 满足。
+  - `TestFreshSchemaFromMigrations_RepairMigrationsFailOnFreshDB` — 15 条已知 repair/fix migrations 在 fresh DB 必 fail；如未来被改造为 build-class，此测必须同步更新。
+  - `TestFreshSchemaFromMigrations_BuildMigrationsSucceedOnFreshDB` — 代表性 4 条 build-class migrations（511/515/536/537）独立 apply 必成功。
+
+### 结果
+
+```
+applied=82 skipped=242 failed=15
+```
+
+15 failed 全部是 `repair_*` / `fix_*` / `rekey_*` 类 — 期望行为（针对已部署环境做补救），已在 test 2 钉住。
+
+post-migration shape：
+```
+ tables | partitioned | views | functions | policies | audit_attachments_cleanup | audit_attachments_filesystem_cleanup | outbox | promote_bodies | promote_candidate | get_current_tenant
+     25 |           2 |     4 |       391 |       23 |                          1 |                                       1 |      0 |              1 |                  1 |                     0
+```
+
+- audit_attachments_cleanup ✓
+- audit_attachments_filesystem_cleanup ✓
+- promote_session_bodies_hot_to_partition ✓
+- promote_candidate_failure_logs_hot_to_partition ✓
+- session_aggregate_outbox 缺 — 需先 526 (full schema)，audit-only 不带；记入 handoff P0.3。
+- get_current_tenant 缺 — min-prereqs 提供，但 fixture truncate 时偶尔被破坏。
+
+### 配套修复
+
+为让 `verify-promote-session-bodies-turns.sh` 重新可重复 run（端到端 fresh-DB baseline），`scripts/audit/sql/min-prereqs.sql` 升级：
+- `session_bodies_hot` / `session_bodies` / `session_turns_hot` / `session_turns` 的 DROP 改 CASCADE（因为 session_bodies_unified view 引用 hot 表）。
+- `session_bodies` / `session_turns` 创建为 partitioned parent + default partition（让 promote INSERT 不被路由失败）。
+
+`scripts/audit/psql-isolated.sh` 默认 `ON_ERROR_STOP=0` + `-f` 路径用 stdin 重定向以匹配 host 文件路径；前置 caller 用 `PSQL -v ON_ERROR_STOP=0 -f ...` 时不再触发 `specified twice` 错误。
+
+### 后续 P0.3
+
+- `session_aggregate_outbox` 表依赖 526 完整 schema（50+ 列 + request_logs.gw_session_id + write-ahead 路径）。staging 端到端复跑 526 时一并验证。
+- production `01-schema.sql` 计划在 next phase 重新 dump 并修复 function ordering；本审计路径不依赖它。
+
+### 引用
+
+- handoff §4.1 P0.2
+- `scripts/audit/fresh-schema-from-migrations.sh`
+- `scripts/audit/fresh_schema_integration_test.go`
+- `scripts/audit/sql/min-prereqs.sql` (修订)
+- `scripts/audit/psql-isolated.sh` (修订)
