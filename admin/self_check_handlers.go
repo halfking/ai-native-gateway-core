@@ -626,7 +626,22 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 				models = []string{body.Model}
 			}
 
-			// Trigger self-check for each model.
+			// Preserve the original single-model API contract: a failure to
+			// enqueue the requested model is returned as 503 immediately.
+			if body.Model != "" {
+				n, err := h.probeEnqueue(ctx, body.Model)
+				if err != nil {
+					writeJSON(w, 503, map[string]any{"error": "trigger failed", "message": err.Error()})
+					return
+				}
+				writeJSON(w, 200, map[string]any{
+					"ok": true, "mode": "probe_queue", "enqueued": n,
+					"message": "node_probe tasks enqueued", "model": body.Model,
+				})
+				return
+			}
+
+			// Trigger self-check for each selected model.
 			totalEnqueued := 0
 			results := make(map[string]any)
 			for _, model := range models {
@@ -640,13 +655,13 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 			}
 
 			writeJSON(w, 200, map[string]any{
-				"ok":             true,
-				"mode":           "probe_queue",
-				"enqueued":       totalEnqueued,
-				"models_tested":  len(models),
-				"message":        "node_probe tasks enqueued",
-				"models":         models,
-				"results":        results,
+				"ok":            true,
+				"mode":          "probe_queue",
+				"enqueued":      totalEnqueued,
+				"models_tested": len(models),
+				"message":       "node_probe tasks enqueued",
+				"models":        models,
+				"results":       results,
 			})
 			return
 		}
