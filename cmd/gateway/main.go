@@ -841,16 +841,17 @@ func main() {
 			return
 		}
 	}
-	if ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative {
-		if redisClientForCache == nil {
-			slog.Error("ursm.v2: authoritative mode requires reachable Redis")
-			return
+		// Shadow 模式也需要 PostgreSQL 进行影子写入，Authoritative 模式同样依赖
+		if ursmV2Cfg.Mode == ursmv2api.ModeShadow || ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative {
+			if redisClientForCache == nil {
+				slog.Error("ursm.v2: mode requires reachable Redis", "mode", ursmV2Cfg.Mode)
+				return
+			}
+			if dbConn == nil || !dbConn.Enabled() {
+				slog.Error("ursm.v2: mode requires reachable PostgreSQL", "mode", ursmV2Cfg.Mode)
+				return
+			}
 		}
-		if dbConn == nil || !dbConn.Enabled() {
-			slog.Error("ursm.v2: authoritative mode requires reachable PostgreSQL")
-			return
-		}
-	}
 	if redisClientForCache != nil {
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
 			Redis:  redisClientForCache.Client(),
