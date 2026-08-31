@@ -18,8 +18,8 @@
 #   ./scripts/partition/bodies-hot-diagnose.sh --env=252
 #   ./scripts/partition/bodies-hot-diagnose.sh --env=252 --table=request_logs_bodies_hot
 #
-# 全部查询只读（仅 [4] 尝试 CREATE EXTENSION IF NOT EXISTS pgstattuple，幂等），
-# 可在任意时间执行。依赖：psql；--env=252 需先建立 SSH 隧道（localhost:15432）。
+# 全部查询只读；pgstattuple 缺失时仅跳过，不会自动安装扩展。
+# 可在任意时间执行。依赖：psql；--env=252 会按需建立受控 SSH 隧道。
 
 set -euo pipefail
 
@@ -42,9 +42,17 @@ if [[ "$ENV_ARG" == "local" ]]; then
   run_sql() { docker exec -i llm-gateway-pg psql -X -U llm_gateway -d llm_gateway -v ON_ERROR_STOP=1 "$@"; }
 elif [[ "$ENV_ARG" == "252" ]]; then
   # shellcheck disable=SC1091
-  source "$HOME/workspace/ai-native-tools/envs/loader.sh" --all --project llm-gateway-go --server 115.29.212.252 --mode plain >/dev/null 2>&1 || {
+  source "$HOME/workspace/ai-native-tools/envs/loader.sh" --project llm-gateway-go >/dev/null 2>&1 || {
     echo "envs loader 失败（252 凭据）" >&2; exit 1; }
-  run_sql() { PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 "$@"; }
+  export PG_PASS_252="${PG_PASS_252:-${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS not loaded}}"
+  REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/configs/env-252.sh"
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/scripts/lib/252-db-tunnel.sh"
+  db252_tunnel_ensure || { echo "managed 252 tunnel unavailable" >&2; exit 1; }
+  trap db252_tunnel_teardown EXIT
+  run_sql() { PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -X -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 "$@"; }
 else
   echo "unknown --env: $ENV_ARG (local|252)" >&2; exit 1
 fi
@@ -73,7 +81,6 @@ FROM public.$TABLE GROUP BY request_id HAVING count(*) > 1
 ORDER BY dup DESC LIMIT 10;"
 
 echo; echo "=== [4] 死区粗估（pgstattuple_approx；扩展缺失则跳过） ==="
-run_sql -c "CREATE EXTENSION IF NOT EXISTS pgstattuple;" >/dev/null 2>&1 || true
 if run_sql -Atc "SELECT 1 FROM pg_extension WHERE extname='pgstattuple';" | grep -q 1; then
   run_sql -c "SELECT * FROM pgstattuple_approx('public.$TABLE'::regclass);"
 else

@@ -197,5 +197,5 @@ relying on it.
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 636 | `636_session_turns_digest.sql` | `375d376eb0970f181e7a4ae1247ba20ac1cae059ae063bb6a4c43bcf2c27bc98` | applied+verified |
+| 636 | `636_session_turns_digest.sql` | `a7e1909b0eb5fac03253c77fafb3cb029a688195c9666b41c739db24746e6af2` | applied+verified |
 

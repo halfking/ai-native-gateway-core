@@ -29,15 +29,15 @@
 # -----------------------------------------------------------------------------
 # Preconditions:
 #   - envs loader at ~/workspace/ai-native-tools/envs/loader.sh
-#   - configs/env-252.sh present (tunnel target + creds)
+#   - configs/env-252.sh and scripts/lib/252-db-tunnel.sh present
 #   - llm-gateway-pg docker container running locally
-#   - SSH access to 252 configured (ssh-config-auth or injected SSH_PASS_252)
+#   - SSH access to the `252` SSH-config alias using its configured key
 # -----------------------------------------------------------------------------
 
 set -euo pipefail
 
 # ── Colors ────────────────────────────────────────────────────────────────
-G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;34m'; C='\033[0;36m'; N='\033[0m'
+G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[0;34m'; N='\033[0m'
 ok()    { echo -e "${G}✓${N} $*"; }
 info()  { echo -e "${Y}▶${N} $*"; }
 warn()  { echo -e "${Y}⚠${N} $*"; }
@@ -93,10 +93,11 @@ load_envs() {
   if [[ ! -f "$ENVS_LOADER" ]]; then err "envs loader not found: $ENVS_LOADER"; exit 1; fi
   # shellcheck disable=SC1090
   source "$ENVS_LOADER" --project "$PROJECT" 2>/dev/null
-  export PG_PASS_252="${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS not loaded}"
-  export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
+  export PG_PASS_252="${PG_PASS_252:-${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS not loaded}}"
   # shellcheck disable=SC1090
   source configs/env-252.sh
+  # shellcheck disable=SC1091
+  source scripts/lib/252-db-tunnel.sh
   # Local docker container uses the SAME superuser password as 252 (SSOT:
   # envs/common/database.yaml; kept in sync by MANUAL changes only — scripts
   # never modify users/passwords, policy 2026-08-31); no need for
@@ -104,35 +105,26 @@ load_envs() {
 }
 
 # ── Query helpers ──────────────────────────────────────────────────────────
-p252() { PGPASSWORD="$PG_PASS_252" psql -h localhost -p "$TUNNEL_LOCAL_PORT" -U llm_gateway -d llm_gateway -tAc "$1"; }
-ploc() { docker exec -e PGPASSWORD="$PG_PASS_252" "$LOCAL_CONTAINER" psql -U "$LOCAL_USER" -d "$LOCAL_DB" -tAc "$1"; }
+p252() { PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -X -h 127.0.0.1 -p "$TUNNEL_LOCAL_PORT" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -tAc "$1"; }
+ploc() { docker exec -e PGPASSWORD="$PG_PASS" "$LOCAL_CONTAINER" psql -U "$LOCAL_USER" -d "$LOCAL_DB" -tAc "$1"; }
 
 # ── Tunnel management ──────────────────────────────────────────────────────
-TUNNEL_PID=""
 ensure_tunnel() {
-  if p252 'SELECT 1' >/dev/null 2>&1; then
-    info "reusing existing tunnel on localhost:$TUNNEL_LOCAL_PORT"
-    return 0
+  if ! db252_tunnel_ensure; then
+    err "cannot reach 252 through the managed tunnel"
+    exit 1
   fi
-  ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252 2>&1
-  sleep 3
-  if ! p252 'SELECT 1' >/dev/null 2>&1; then
-    err "cannot reach 252 via tunnel (localhost:$TUNNEL_LOCAL_PORT)"; exit 1
-  fi
-  TUNNEL_PID=$(lsof -tiTCP:"$TUNNEL_LOCAL_PORT" -sTCP:LISTEN 2>/dev/null | head -1)
-  ok "tunnel up (localhost:$TUNNEL_LOCAL_PORT -> $TUNNEL_REMOTE_TARGET)"
 }
 
 teardown_tunnel() {
-  if [[ -n "$TUNNEL_PID" ]]; then
-    kill "$TUNNEL_PID" 2>/dev/null && info "tunnel torn down ($TUNNEL_PID)"
-  fi
+  db252_tunnel_teardown
 }
 
 # ── Classification helpers ─────────────────────────────────────────────────
 is_hot_pattern() {
   local name="$1" p
   for p in $HOT_PATTERNS; do
+    # shellcheck disable=SC2254 # $p is intentionally a glob pattern.
     case "$name" in
       $p) return 0 ;;
     esac
@@ -286,7 +278,7 @@ do_reconcile() {
     fi
     # Loop per table: pg_dump -t needs a repeated -t per table, and passing a
     # bash array into `docker exec ... pg_dump` collapses under zsh.
-    docker exec -e PGPASSWORD="$PG_PASS_252" "$LOCAL_CONTAINER" \
+    docker exec -e PGPASSWORD="$PG_PASS" "$LOCAL_CONTAINER" \
       pg_dump -U "$LOCAL_USER" -d "$LOCAL_DB" --schema-only --clean --if-exists --no-owner --no-privileges -t "$t" \
       >> "$ddl" 2>"$WORK_DIR/reconcile.dumperr"
   done
@@ -297,7 +289,7 @@ do_reconcile() {
   grep -vE "set_config\('search_path', '', false\)" "$ddl" > "$ddl.fixed"
 
   info "applying $(wc -l < "$ddl.fixed" | tr -d ' ') lines of DDL to 252 (localhost:$TUNNEL_LOCAL_PORT)..."
-  if PGPASSWORD="$PG_PASS_252" psql -h localhost -p "$TUNNEL_LOCAL_PORT" -U llm_gateway -d llm_gateway \
+  if PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h 127.0.0.1 -p "$TUNNEL_LOCAL_PORT" -U "$PG_USER" -d "$PG_DB" \
        -v ON_ERROR_STOP=1 -f "$ddl.fixed" > "$WORK_DIR/reconcile.out" 2>"$WORK_DIR/reconcile.psqlerr"; then
     ok "DDL applied to 252"
   else

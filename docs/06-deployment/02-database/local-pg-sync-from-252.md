@@ -226,8 +226,12 @@ _usage_ledger_2026_07_col_archived
 
 ```bash
 grep -vE "set_config\('search_path', '', false\)" feature.sql > feature.fixed.sql
-# 在 §2.1 的动态解析且由 control socket 持有的隧道仍存活时执行。
-PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h 127.0.0.1 -p "$TUNNEL_LOCAL_PORT" -U llm_gateway -d llm_gateway \
+# 使用受控 helper 建立隧道；不要手工杀掉未知 listener。
+source configs/env-252.sh
+source scripts/lib/252-db-tunnel.sh
+db252_tunnel_ensure
+trap db252_tunnel_teardown EXIT
+PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" \
   -v ON_ERROR_STOP=1 -f feature.fixed.sql
 ```
 

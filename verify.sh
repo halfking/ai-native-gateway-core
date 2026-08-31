@@ -28,6 +28,9 @@ for arg in "$@"; do
   esac
 done
 
+echo "[verify] db252 tunnel and sync shell contracts"
+bash tests/db252_tunnel_test.sh
+
 echo "[verify] pre-commit checks"
 ./scripts/pre-commit-check.sh
 

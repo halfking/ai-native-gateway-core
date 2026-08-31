@@ -13,31 +13,34 @@ phase(){ echo -e "\n${B}══════════════════�
 ENVS_LOADER="$HOME/workspace/ai-native-tools/envs/loader.sh"
 PROJECT="llm-gateway-go"
 LOCAL_CONTAINER="llm-gateway-pg"
-LOCAL_DB="llm_gateway"
-LOCAL_USER="llm_gateway"
 WORK_DIR="/tmp/verify-db-data-consistency"
 PGOPTIONS="${PGOPTIONS:--c statement_timeout=0}"
 
 mkdir -p "$WORK_DIR"
+# shellcheck disable=SC1090
 source "$ENVS_LOADER" --project "$PROJECT" 2>/dev/null
-export PG_PASS_252="${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS not loaded}"
-export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
+export PG_PASS_252="${PG_PASS_252:-${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS not loaded}}"
 export PG_PASS_LOCAL="${PG_PASS_LOCAL:-$COMMON_PG_SUPERUSER_PASS}"
 source configs/env-252.sh
 SRC_DB_USER="$PG_USER"
 SRC_DB_NAME="$PG_DB"
+SRC_DB_PASS="$PG_PASS"
 source configs/env-local.sh
 LOCAL_DB_USER="$PG_USER"
 LOCAL_DB_NAME="$PG_DB"
+# The helper and source query path must keep the 252 connection after the local
+# target config has populated its own PG_* values.
+PG_USER="$SRC_DB_USER"
+PG_DB="$SRC_DB_NAME"
+PG_PASS="$SRC_DB_PASS"
+# shellcheck disable=SC1091
+source scripts/lib/252-db-tunnel.sh
 
-p252(){ PGOPTIONS="$PGOPTIONS" PGPASSWORD="$PG_PASS_252" psql -X -h localhost -p "$TUNNEL_LOCAL_PORT" -U "$SRC_DB_USER" -d "$SRC_DB_NAME" -v ON_ERROR_STOP=1 -tAq -c "$1"; }
+p252(){ PGOPTIONS="$PGOPTIONS" PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -X -h 127.0.0.1 -p "$TUNNEL_LOCAL_PORT" -U "$SRC_DB_USER" -d "$SRC_DB_NAME" -v ON_ERROR_STOP=1 -tAq -c "$1"; }
 ploc(){ docker exec -i -e PGOPTIONS="$PGOPTIONS" -e PGPASSWORD="$PG_PASS_LOCAL" "$LOCAL_CONTAINER" psql -X -U "$LOCAL_DB_USER" -d "$LOCAL_DB_NAME" -v ON_ERROR_STOP=1 -tAq -c "$1"; }
 
-if ! p252 'SELECT 1' >/dev/null 2>&1; then
-  ssh -f -N -L "$TUNNEL_LOCAL_PORT:$TUNNEL_REMOTE_TARGET" 252
-  sleep 3
-fi
-if ! p252 'SELECT 1' >/dev/null 2>&1; then err "cannot reach 252 via tunnel"; exit 1; fi
+trap db252_tunnel_teardown EXIT
+if ! db252_tunnel_ensure; then err "cannot reach 252 through the managed tunnel"; exit 1; fi
 if ! ploc 'SELECT 1' >/dev/null 2>&1; then err "cannot reach local docker PostgreSQL"; exit 1; fi
 
 HOT_SQL="(

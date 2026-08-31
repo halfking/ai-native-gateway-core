@@ -58,10 +58,17 @@ if [[ "$ENV_ARG" == "local" ]]; then
   run_sql_tx() { docker exec -i llm-gateway-pg psql -X -U llm_gateway -d llm_gateway -v ON_ERROR_STOP=1 -q; }
 elif [[ "$ENV_ARG" == "252" ]]; then
   # shellcheck disable=SC1091
-  source "$HOME/workspace/ai-native-tools/envs/loader.sh" --all --project llm-gateway-go --server 115.29.212.252 --mode plain >/dev/null 2>&1 || {
+  source "$HOME/workspace/ai-native-tools/envs/loader.sh" --project llm-gateway-go >/dev/null 2>&1 || {
     echo "envs loader 失败（252 凭据）" >&2; exit 1; }
-  run_sql()  { PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 "$@"; }
-  run_sql_tx() { PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -X -h 127.0.0.1 -p 15432 -U "$COMMON_PG_SUPERUSER" -d llm_gateway -v ON_ERROR_STOP=1 -q; }
+  export PG_PASS_252="${PG_PASS_252:-${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS not loaded}}"
+  # shellcheck disable=SC1091
+  source "$(cd "$(dirname "$0")/../.." && pwd)/configs/env-252.sh"
+  # shellcheck disable=SC1091
+  source "$(cd "$(dirname "$0")/../.." && pwd)/scripts/lib/252-db-tunnel.sh"
+  db252_tunnel_ensure || { echo "managed 252 tunnel unavailable" >&2; exit 1; }
+  trap db252_tunnel_teardown EXIT
+  run_sql()  { PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -X -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 "$@"; }
+  run_sql_tx() { PGOPTIONS='-c statement_timeout=0 -c idle_in_transaction_session_timeout=0' PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -X -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 -q; }
 else
   echo "unknown --env: $ENV_ARG (local|252)" >&2; exit 1
 fi
@@ -248,8 +255,8 @@ SQL
     if [[ "$ENV_ARG" == "local" ]]; then
       pg_repack -h 127.0.0.1 -p 5432 -U llm_gateway -d llm_gateway -t public.$TABLE
     else
-      PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" pg_repack -h 127.0.0.1 -p 15432 \
-        -U "$COMMON_PG_SUPERUSER" -d llm_gateway -t public.$TABLE
+      PGPASSWORD="$PG_PASS" pg_repack -h "$PG_HOST" -p "$PG_PORT" \
+        -U "$PG_USER" -d "$PG_DB" -t "public.$TABLE"
     fi
     ;;
 esac

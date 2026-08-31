@@ -33,14 +33,18 @@
 
 ---
 
-## 3. 标准管道失败 & 本次 workaround
+## 3. 历史标准管道失败 & 已完成的 workaround
+
+> 本节记录 2026-09-01 修复前的失败现象。当前标准入口已改用
+> `configs/env-252.sh` + `scripts/lib/252-db-tunnel.sh`，运行时解析容器地址；
+> 下方旧命令和固定地址仅作为历史根因记录，不应复制执行。
 
 ### 3.1 失败点
 
 - `bash scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh --schema-only --dry-run` 在加载 source config 时报错:`SSH_PASS_252: SSH_PASS_252 not set — run env-injector inject --target=252`
 - `bash scripts/local-dev/verify-db-consistency.sh --verify` 试图自己 `ssh -f -N -L 15432:172.16.2.210:5432 252` 开 tunnel,但 ssh 走通后 psql 连 15432 时 `Connection refused`
 
-### 3.2 根因分析
+### 3.2 根因分析（历史记录）
 
 排查发现三个独立问题:
 
