@@ -19,6 +19,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
@@ -1149,13 +1150,15 @@ func errString(err error) string {
 }
 
 // getGatewayEndpoint returns the gateway endpoint for auto-title LLM calls.
-// Matches the loopback convention used by bg/* internal callers
-// (http://127.0.0.1:8781). Override via LLM_GATEWAY_ENDPOINT if needed.
+// Override via LLM_GATEWAY_ENDPOINT if needed; otherwise the base follows
+// this instance's own LLM_GATEWAY_LISTEN port (blue-green instances
+// alternate between :8781 and :8782 — a fixed :8781 broke every auto-title
+// call whenever the active served on the other port).
 func (g *AutoTitleGenerator) getGatewayEndpoint() string {
 	if endpoint := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ENDPOINT")); endpoint != "" {
 		return endpoint
 	}
-	return "http://127.0.0.1:8781"
+	return loopback.GatewayBase()
 }
 
 // pickFirstAvailableAPIKeyForAuto picks the first available API key for auto title generation.

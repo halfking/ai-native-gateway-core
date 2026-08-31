@@ -104,6 +104,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
@@ -841,17 +842,17 @@ func main() {
 			return
 		}
 	}
-		// Shadow 模式也需要 PostgreSQL 进行影子写入，Authoritative 模式同样依赖
-		if ursmV2Cfg.Mode == ursmv2api.ModeShadow || ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative {
-			if redisClientForCache == nil {
-				slog.Error("ursm.v2: mode requires reachable Redis", "mode", ursmV2Cfg.Mode)
-				return
-			}
-			if dbConn == nil || !dbConn.Enabled() {
-				slog.Error("ursm.v2: mode requires reachable PostgreSQL", "mode", ursmV2Cfg.Mode)
-				return
-			}
+	// Shadow 模式也需要 PostgreSQL 进行影子写入，Authoritative 模式同样依赖
+	if ursmV2Cfg.Mode == ursmv2api.ModeShadow || ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative {
+		if redisClientForCache == nil {
+			slog.Error("ursm.v2: mode requires reachable Redis", "mode", ursmV2Cfg.Mode)
+			return
 		}
+		if dbConn == nil || !dbConn.Enabled() {
+			slog.Error("ursm.v2: mode requires reachable PostgreSQL", "mode", ursmV2Cfg.Mode)
+			return
+		}
+	}
 	if redisClientForCache != nil {
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
 			Redis:  redisClientForCache.Client(),
@@ -3464,17 +3465,17 @@ func main() {
 			} else {
 				modelProbe.Start(context.Background())
 			}
-		slog.Info("CHECKPOINT: after modelProbe.Start")
+			slog.Info("CHECKPOINT: after modelProbe.Start")
 
-		// 2026-08-31: Materialized view refresher for routing analytics performance.
-		// Refreshes routing_analytics_7d and routing_audit_summary_7d every 10 minutes
-		// to keep analytics queries fast (<500ms instead of 15s timeout).
-		slog.Info("CHECKPOINT: before NewMaterializedViewRefresher")
-		materializedViewRefresher = bg.NewMaterializedViewRefresher(dbConn.Pool())
-		materializedViewRefresher.Start()
-		slog.Info("CHECKPOINT: after materializedViewRefresher.Start")
+			// 2026-08-31: Materialized view refresher for routing analytics performance.
+			// Refreshes routing_analytics_7d and routing_audit_summary_7d every 10 minutes
+			// to keep analytics queries fast (<500ms instead of 15s timeout).
+			slog.Info("CHECKPOINT: before NewMaterializedViewRefresher")
+			materializedViewRefresher = bg.NewMaterializedViewRefresher(dbConn.Pool())
+			materializedViewRefresher.Start()
+			slog.Info("CHECKPOINT: after materializedViewRefresher.Start")
 
-		// 2026-06-28 收口：当前 unified scheduler 与旧 probe 体系并行写
+			// 2026-06-28 收口：当前 unified scheduler 与旧 probe 体系并行写
 			// model_probe_state，会导致重复探测和状态覆盖。默认关闭，待
 			// 单一 writer + Redis 状态层完全接管后再开启。
 			//
@@ -3722,7 +3723,7 @@ func main() {
 				if probeQueueWorker != nil && probeQueue != nil {
 					gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
 					if gatewayURL == "" {
-						gatewayURL = "http://127.0.0.1:8781/v1"
+						gatewayURL = loopback.GatewayBase() + "/v1"
 					}
 					if queueExecutor != nil {
 						queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
@@ -3880,7 +3881,7 @@ func main() {
 			if probeQueueWorker != nil && probeQueue != nil {
 				gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
 				if gatewayURL == "" {
-					gatewayURL = "http://127.0.0.1:8781/v1"
+					gatewayURL = loopback.GatewayBase() + "/v1"
 				}
 				if queueExecutor != nil {
 					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
