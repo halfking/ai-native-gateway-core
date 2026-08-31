@@ -1,6 +1,6 @@
 ---
 name: db-sync-252-local
-description: Sync PostgreSQL schema + data from 252 (test) to local Docker container (llm-gateway-pg). Recreate container with 252-aligned credentials. Diagnose "no rows" / "table not found" issues that may be caused by hot-table filtering or password drift. Use when the user asks to "sync from 252", "refresh local DB", "recreate llm-gateway-pg", "password doesn't work after container restart", or asks about `_` prefixed tables.
+description: Sync PostgreSQL schema + data from 252 (test) to local Docker container (llm-gateway-pg). POLICY: users/passwords are CREATE-ONLY — never auto-modify an existing role or password (no ALTER ROLE/USER PASSWORD, no drop-and-recreate, no env-based reset); password changes are manual + envs SSOT update. Diagnose "no rows" / "table not found" issues that may be caused by hot-table filtering or password drift. Use when the user asks to "sync from 252", "refresh local DB", "recreate llm-gateway-pg", "password doesn't work after container restart", or asks about `_` prefixed tables.
 ---
 
 # db-sync-252-local
@@ -42,15 +42,21 @@ scripts/pg-table-copy.sh --schema-only --source configs/env-252.sh --target conf
 kill $(lsof -tiTCP:15432 -sTCP:LISTEN)  # cleanup tunnel
 ```
 
-### Recreate container (password persistence)
+### Recreate container
+
+**POLICY (2026-08-31): create-only.** Never auto-modify existing users/passwords —
+no `ALTER ROLE/USER ... PASSWORD`, no drop-and-recreate, no resetting an existing
+cluster via `POSTGRES_PASSWORD` env. Automation may only CREATE a role when it
+does not exist. Password changes are manual (`ALTER ROLE` by hand) + update the
+envs SSOT.
 
 ```bash
 bash scripts/local-dev/recreate-llm-gateway-pg.sh
-# Loads COMMON_PG_SUPERUSER_PASS from envs, recreates container with same data dir.
-# Use when:
-#   - Password mismatch after container restart
-#   - POSTGRES_PASSWORD env still has old value
-#   - ALTER USER doesn't persist across restarts
+# Recreates the container preserving the data dir. POSTGRES_PASSWORD only takes
+# effect on FIRST-TIME initdb (empty data dir); an initialized cluster's users
+# and passwords are never touched by the entrypoint or this script.
+# Do NOT use this as a password-reset tool — see pitfall 4.2 for the real
+# mechanism behind "password reverted after restart".
 ```
 
 ### Verify sync result
@@ -137,11 +143,29 @@ If user queries a `_` table:
 
 **Fix**: `export PGOPTIONS='-c statement_timeout=0'` before running `pg-table-copy.sh`. The script supports `${PGOPTIONS:-}` passthrough.
 
-### 4.2 Password drift after restart
+### 4.2 "Password reverted after restart" — mechanism corrected (2026-08-31)
 
-PG `docker-entrypoint.sh` reads `POSTGRES_PASSWORD` env on every startup and re-`ALTER USER` if mismatch. In-container `ALTER USER` doesn't persist.
+**POLICY first**: automation must never modify an existing user or password
+(create-only). Password changes are manual `ALTER ROLE` + envs SSOT update.
 
-**Fix**: `recreate-llm-gateway-pg.sh` rebuilds the container with `POSTGRES_PASSWORD` env pre-loaded from envs. Data dir is preserved.
+**Corrected mechanism** (verified against this image's entrypoint): the password
+is written **only at first initdb** (empty data dir) via `--pwfile`. On an
+already-initialized data dir the entrypoint does NOT touch any role — an
+in-cluster `ALTER ROLE ... PASSWORD` persists across restarts. The old claim
+"entrypoint re-ALTER USERs from POSTGRES_PASSWORD on every startup" is wrong.
+
+What actually happened historically: the container was recreated against a
+**different (or wiped) data directory**, so a different cluster (or a fresh
+initdb) answered — e.g. the current container mounts `~/.agents-cache/llm-gateway-pg-data`
+while `recreate-llm-gateway-pg.sh` points at `~/data/docker/llm-gateway-pg17/data`.
+
+**Diagnosis** before touching anything:
+
+```bash
+docker inspect llm-gateway-pg --format '{{json .Mounts}}'   # which data dir is real?
+```
+
+Then fix the password **manually** on the correct cluster if needed.
 
 ### 4.3 zsh multi-line SQL bug
 
@@ -233,6 +257,26 @@ view / constraint fingerprints, never table counts or tracking tables alone. Kno
 benign variances the script already normalizes: physical column order (PG cannot
 reorder in place) and the two `ANY(ARRAY[...])` text renderings in CHECK constraints
 and partial-index defs.
+
+### 4.8 Port layout — 5432 = container, 15432 = 252 tunnel (settled 2026-08-31)
+
+Stable layout after the Homebrew PostgreSQL removal:
+
+- `127.0.0.1:5432` → **llm-gateway-pg container** (direct mapping, host port =
+  container port). The former occupant (Homebrew postgresql@17, plus an orphaned
+  postgresql@15 data dir) was removed 2026-08-31 with full backups in
+  `~/backups/` (`homebrew-pg17-5432-final-20260831.sql`,
+  `homebrew-pg15-datadir-orphan-20260831.tar.gz`).
+- `127.0.0.1:15432` → **252 SSH tunnel only** (`configs/env-252.sh`
+  `TUNNEL_LOCAL_PORT`). The container does NOT map 15432 anymore — never map it
+  there again: while it did, the tunnel fell back to IPv6 `[::1]:15432` and
+  `-h localhost` could silently land on the REMOTE 252 cluster.
+- Prefer `-h 127.0.0.1` explicitly. If `FATAL: role "llm_gateway" does not
+  exist` ever appears on 5432 again, something re-installed a local PG — check
+  `lsof -nP -iTCP:5432 -sTCP:LISTEN` and which cluster answers.
+- Note: uninstalling Homebrew postgresql also removed the host `psql` client;
+  use `docker exec llm-gateway-pg psql ...` or `brew install libpq` if a host
+  CLI is needed.
 
 ---
 

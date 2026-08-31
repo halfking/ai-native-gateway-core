@@ -11,7 +11,16 @@ BASE_URL="${BASE_URL:-http://127.0.0.1:${SERVICE_PORT}}"
 
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
-require_env() { [[ -n "${!1:-}" ]] || die "$1 must be explicitly set"; }
+require_env() { [[ -n "${!1:-}" ]] || die "$1 must be explicitly set (or create $ROOT_DIR/.env.local from .env.local.example)"; }
+
+# Auto-load local defaults so `./scripts/deploy-local.sh [deploy]` works without
+# manually sourcing anything: if the required vars are absent and a 0600
+# .env.local exists at the repo root, source it. Explicitly exported variables
+# always win — the file is only a fallback, never an override.
+if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -f "$ROOT_DIR/.env.local" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/.env.local" >/dev/null
+fi
 
 stop_service() {
   if [[ -f "$PID_FILE" ]]; then
@@ -44,6 +53,10 @@ write_env() {
     printf 'export LLM_GATEWAY_REDIS_ADDR=%q\n' "${LLM_GATEWAY_REDIS_ADDR:-}"
     printf 'export LLM_GATEWAY_CORS_ORIGINS=%q\n' "${LLM_GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${SERVICE_PORT}}"
     printf 'export LLM_GATEWAY_ENV=%q\n' "${LLM_GATEWAY_ENV:-development}"
+    printf 'export URSM_V2_MODE=%q\n' "${URSM_V2_MODE:-shadow}"
+    # Licensing center (ai-native-maintain) + RSA verify key for issued licenses.
+    printf 'export LLM_GATEWAY_CENTER_URL=%q\n' "${LLM_GATEWAY_CENTER_URL:-}"
+    printf 'export LLM_GATEWAY_LICENSE_PUBLIC_KEY=%q\n' "${LLM_GATEWAY_LICENSE_PUBLIC_KEY:-}"
   } > "$ENV_FILE"
   chmod 0600 "$ENV_FILE"
 }
@@ -88,22 +101,33 @@ migrate() {
   if database_is_empty; then
     printf 'Empty database detected; applying schema snapshot before migrations.\n'
     apply_schema_snapshot
-    # After schema snapshot the strict migration runner would refuse because
-    # the ledger is empty while relations exist. Bootstrap mode is wrong here
-    # because snapshot already created most tables; baseline mode records
-    # ≤baseline_through as applied (no execution) so later migrations still run.
-    local baseline_through
-    baseline_through=$(latest_migration_version)
-    printf 'Baselining existing schema through version %s; later migrations will be applied.\n' "$baseline_through"
-    if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh" --baseline-through "$baseline_through"; then
-      die "baseline migration failed"
-    fi
-    # Now re-run in default mode to apply only new migrations (ledger non-empty).
-    if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh"; then
-      die "migrations failed; if repository_schema_migrations is empty on a populated database, rerun with --baseline-through <known-version> via scripts/run-migrations-strict.sh directly"
-    fi
+    baseline_ledger
     return 0
   fi
+  # Synced-from-252 case: relations exist but repository_schema_migrations was
+  # not part of the sync, so the strict runner would refuse (exit 3). Baseline
+  # the repo's migrations as applied, then run strictly to apply anything newer.
+  local ledger_count
+  ledger_count=$(psql -X -Atqc 'SELECT count(*) FROM public.repository_schema_migrations' "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
+  if [[ "$ledger_count" == "0" ]]; then
+    printf 'Populated schema with empty migration ledger detected; baselining ledger first.\n'
+    baseline_ledger
+    return 0
+  fi
+  if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh"; then
+    die "migrations failed; if repository_schema_migrations is empty on a populated database, rerun with --baseline-through <known-version> via scripts/run-migrations-strict.sh directly"
+  fi
+}
+
+baseline_ledger() {
+  # Record ≤baseline_through as applied (no execution) so later migrations still run.
+  local baseline_through
+  baseline_through=$(latest_migration_version)
+  printf 'Baselining existing schema through version %s; later migrations will be applied.\n' "$baseline_through"
+  if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh" --baseline-through "$baseline_through"; then
+    die "baseline migration failed"
+  fi
+  # Re-run in default mode to apply only new migrations (ledger now non-empty).
   if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh"; then
     die "migrations failed; if repository_schema_migrations is empty on a populated database, rerun with --baseline-through <known-version> via scripts/run-migrations-strict.sh directly"
   fi
@@ -163,19 +187,77 @@ wait_healthy() {
   die "health check failed after ${timeout_s}s; inspect $LOG_FILE"
 }
 
+# POST /api/auth/token; prints HTTP status, body goes to $1.
+login_status() {
+  local body_file="$1" pass="$2"
+  curl -sS --max-time 5 -o "$body_file" -w '%{http_code}' \
+    -H 'Content-Type: application/json' -X POST "$BASE_URL/api/auth/token" \
+    --data "$(node -e 'process.stdout.write(JSON.stringify({username:process.env.LLM_GATEWAY_ADMIN_USER,password:process.argv[1]}))' "$pass")"
+}
+
+reset_admin_password_db() {
+  # Local-dev self-heal: .env.local generates a fresh random admin password per
+  # deploy while the seeded admin row persists with the previous one. Reset the
+  # row to the current env password (first-login state) via bcrypt.
+  local hash
+  hash=$(python3 -c 'import bcrypt,sys; print(bcrypt.hashpw(sys.argv[1].encode(), bcrypt.gensalt()).decode())' "$1") \
+    || die "python3 bcrypt unavailable; cannot reset admin password"
+  psql -X -Atqc "UPDATE users SET password_hash='$hash', must_change_password=TRUE, enabled=TRUE WHERE username='$LLM_GATEWAY_ADMIN_USER'" \
+    "$LLM_GATEWAY_DATABASE_URL" >/dev/null
+}
+
+persist_admin_password() {
+  # Rewrite the admin password lines in the 0600 ENV_FILE so later bare
+  # `verify`/`restart` invocations use the working credential.
+  local newpass="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  sed -i.bak \
+    -e "s|^export LLM_GATEWAY_ADMIN_PASSWORD=.*|export LLM_GATEWAY_ADMIN_PASSWORD=$newpass|" \
+    -e "s|^export LLM_GATEWAY_SEED_ADMIN_PASSWORD=.*|export LLM_GATEWAY_SEED_ADMIN_PASSWORD=$newpass|" \
+    "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+}
+
 verify_full() {
   need curl; need node
   wait_healthy
-  local login_file token
+  local login_file token code must_change pass
   login_file="$(mktemp)"
-  trap 'rm -f "$login_file"' RETURN
-  curl -fsS --max-time 5 -H 'Content-Type: application/json' -X POST "$BASE_URL/api/auth/token" \
-    --data "$(node -e 'process.stdout.write(JSON.stringify({username:process.env.LLM_GATEWAY_ADMIN_USER,password:process.env.LLM_GATEWAY_ADMIN_PASSWORD}))')" >"$login_file"
+  # NOTE: no RETURN trap here — under set -u a lingering RETURN trap fired at
+  # the caller's scope ("login_file: unbound variable"). Cleanup is explicit.
+  pass="$LLM_GATEWAY_ADMIN_PASSWORD"
+  code="$(login_status "$login_file" "$pass")"
+  if [[ "$code" != "200" ]]; then
+    printf 'admin login returned %s; resetting local admin password to the env value\n' "$code"
+    reset_admin_password_db "$pass"
+    code="$(login_status "$login_file" "$pass")"
+  fi
+  [[ "$code" == "200" ]] || die "admin login failed (HTTP $code)"
   token="$(node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1])); process.stdout.write(x.access_token||"")' "$login_file")"
   [[ -n "$token" ]] || die "login succeeded without an access token"
+  # Rule 20 §6.2: a must_change_password admin may only call me/change-password/
+  # logout. Complete the mandatory first-login change via the API so the
+  # dashboard gate below is reachable, then re-login with the new credential.
+  must_change="$(node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1])); process.stdout.write(String(!!(x.user&&x.user.must_change_password)))' "$login_file")"
+  if [[ "$must_change" == "true" ]]; then
+    local newpass="Local-$(openssl rand -hex 12)"
+    code="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+      -X PUT "$BASE_URL/api/auth/change-password" \
+      --data "$(node -e 'process.stdout.write(JSON.stringify({old_password:process.argv[1],new_password:process.argv[2]}))' "$pass" "$newpass")")"
+    [[ "$code" == "200" ]] || die "first-login password change failed (HTTP $code)"
+    persist_admin_password "$newpass"
+    export LLM_GATEWAY_ADMIN_PASSWORD="$newpass"
+    pass="$newpass"
+    code="$(login_status "$login_file" "$pass")"
+    [[ "$code" == "200" ]] || die "re-login after password change failed (HTTP $code)"
+    token="$(node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1])); process.stdout.write(x.access_token||"")' "$login_file")"
+  fi
   curl -fsS --max-time 5 -H "Authorization: Bearer $token" "$BASE_URL/api/auth/me" >/dev/null
   curl -fsS --max-time 5 -H "Authorization: Bearer $token" "$BASE_URL/api/admin/dashboard/session-overview" >/dev/null
-  curl -fsS --max-time 5 -H "Authorization: Bearer $LLM_GATEWAY_ADMIN_API_KEY" "$BASE_URL/metrics" | grep -q '^# TYPE'
+  curl -fsS --max-time 5 -H "Authorization: Bearer $LLM_GATEWAY_ADMIN_API_KEY" "$BASE_URL/metrics" -o "$login_file.metrics" \
+    || die "metrics endpoint failed"
+  grep -q '^# TYPE' "$login_file.metrics" || die "metrics output is not Prometheus format"
+  rm -f "$login_file" "$login_file.metrics"
   printf 'Deployment gates passed: health, login, auth-me, dashboard, metrics.\n'
 }
 
@@ -202,7 +284,16 @@ case "${1:-deploy}" in
       exit 1
     fi
     ;;
-  verify) for name in LLM_GATEWAY_ADMIN_API_KEY LLM_GATEWAY_ADMIN_USER LLM_GATEWAY_ADMIN_PASSWORD; do require_env "$name"; done; verify_full ;;
+  verify)
+    # Prefer the credentials captured at deploy time (ENV_FILE): random
+    # secrets generated per-source in .env.local would otherwise mismatch.
+    if [[ -f "$ENV_FILE" ]]; then
+      # shellcheck disable=SC1090
+      source "$ENV_FILE"
+    fi
+    for name in LLM_GATEWAY_ADMIN_API_KEY LLM_GATEWAY_ADMIN_USER LLM_GATEWAY_ADMIN_PASSWORD; do require_env "$name"; done
+    verify_full
+    ;;
   logs) exec tail -f "$LOG_FILE" ;;
   *) die "usage: $0 {deploy|start|stop|restart|status|verify|logs}" ;;
 esac

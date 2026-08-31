@@ -11,9 +11,14 @@
 
 | 环境       | 标识       | 地址                  | 用途                          |
 |------------|------------|-----------------------|-------------------------------|
-| **本地开发**  | `local`    | `127.0.0.1:5432`（Docker 容器 `llm-gateway-pg`） | 本地开发、smoke、debug  |
+| **本地开发**  | `local`    | `127.0.0.1:5432`（Docker 容器 `llm-gateway-pg`，容器内 5432 直映宿主机 5432） | 本地开发、smoke、debug  |
 | **252 测试**  | `test`     | `<env:HOST_252>`（经受控 SSH 隧道访问）         | 集成测试、staging 验证 |
 | **RDS 生产**  | `prod`     | RDS 实例（内部）                              | 真实生产流量             |
+
+> **端口布局（2026-08-31 起的稳定状态）**:
+> - `127.0.0.1:5432` = **本集群**（`llm-gateway-pg` 容器）。此前的占用者 Homebrew 原生 `postgresql@17`（及其遗留的 `postgresql@15` 数据目录）已于 2026-08-31 移除，移除前已做全量备份（`~/backups/homebrew-pg17-5432-final-20260831.sql`、`~/backups/homebrew-pg15-datadir-orphan-20260831.tar.gz`）。
+> - `127.0.0.1:15432` = **252 SSH 隧道专用**（`configs/env-252.sh` 的 `TUNNEL_LOCAL_PORT`）。容器不再映射该端口；隧道用完按精确 PID `kill`（勿用 `lsof -tiTCP:15432` 一把杀，防误杀）。
+> - 连接本地建议显式 `-h 127.0.0.1`，避免 `localhost` 解析歧义。
 
 > 当前唯一同步方向是：**252 → local**（单向）。**禁止从 RDS 同步到任何环境**。
 
@@ -23,10 +28,13 @@
 
 **单一来源**: `~/workspace/ai-native-tools/envs/common/database.yaml`（`COMMON_PG_SUPERUSER_PASS`）
 
-所有环境的 `llm_gateway` 用户必须使用**同一个密码**。不一致会导致：
+所有环境的 `llm_gateway` 用户必须使用**同一个密码**。不一致会导致应用层 `LLM_GATEWAY_DATABASE_URL` 解析失败 → 网关起不来。
 
-1. 应用层 `LLM_GATEWAY_DATABASE_URL` 解析失败 → 网关起不来
-2. `ALTER USER` 在 PG entrypoint 启动时被 `POSTGRES_PASSWORD` env 覆盖 → 改动不持久
+> **策略（2026-08-31 起强制）— 用户/密码只可新增，禁止自动化修改**
+> 任何脚本、技能、文档流程都**不允许自动修改已有用户或密码**，包括但不限于：
+> `ALTER ROLE/USER ... PASSWORD`、DROP 后重建同名用户、借容器 `POSTGRES_PASSWORD` env 重置已有集群密码。
+> 自动化只允许**新增**（角色不存在时 `CREATE ROLE`，幂等守卫 `IF NOT EXISTS`）。
+> 密码变更属于**人工操作**：人工执行 `ALTER ROLE` 后，必须同步更新 envs SSOT（`envs/common/database.yaml`）。
 
 ### 2.1 验证当前密码是否一致
 
@@ -49,15 +57,22 @@ TUNNEL_PID=$(lsof -tiTCP:15432 -sTCP:LISTEN)
 docker exec -e PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" llm-gateway-pg psql -U llm_gateway -d llm_gateway -c 'SELECT 1'
 ```
 
-### 2.2 凭据不一致时 → 重建容器
+### 2.2 凭据不一致时 → 人工修正（禁止脚本自动改密）
+
+**机制更正（2026-08-31 实测）**: 本镜像（`kx-citus-pg17`）的 entrypoint 只在**首次 initdb**（数据目录为空）时通过 `--pwfile` 写入 `POSTGRES_PASSWORD`；已初始化的数据目录在后续启动时**不会改写任何用户密码**。因此集群内 `ALTER ROLE ... PASSWORD` 是持久的。历史文档声称"entrypoint 每次启动会用 env 重新 ALTER USER"为错误结论——实际观察到的"密码被重置"是数据目录被清空重建（触发首次初始化）或换了另一个数据目录所致。
+
+人工修正流程（**不要写进任何脚本/自动化**）：
 
 ```bash
-# scripts/local-dev/recreate-llm-gateway-pg.sh
-# - 自动从 envs loader 拿密码
-# - 保留现有 data dir (/Users/xutaohuang/data/docker/llm-gateway-pg17/data)
-# - 重启容器时 POSTGRES_PASSWORD env 直接写入密码 → 不被 PG entrypoint 覆写
-bash scripts/local-dev/recreate-llm-gateway-pg.sh
+# 1. 确认目标密码（envs SSOT）
+source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go
+
+# 2. 人工执行改密，随后同步 envs/common/database.yaml
+docker exec -it llm-gateway-pg psql -U <超级用户> -d postgres \
+  -c "ALTER ROLE llm_gateway PASSWORD '<新密码>';"
 ```
+
+`scripts/local-dev/recreate-llm-gateway-pg.sh` 的 `POSTGRES_PASSWORD` env 只对**全新数据目录的首次初始化**生效，不会修改已存在集群的任何用户（见脚本内策略守卫）。
 
 ---
 
@@ -97,13 +112,13 @@ export PGOPTIONS='-c statement_timeout=0'
 bash scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh
 ```
 
-### 3.3 容器密码漂移（踩坑点 #2）
+### 3.3 "重启后密码变回去"（踩坑点 #2，2026-08-31 机制更正）
 
-**症状**: 本地刚改完密码 → 重启容器 → 密码回到旧值。
+**症状**: 本地改完密码 → 重启/重建容器 → 密码回到旧值。
 
-**原因**: PG `docker-entrypoint.sh` 在每次启动时都会拿 `POSTGRES_PASSWORD` env 重新 `ALTER USER`。在容器内 `ALTER USER` 不持久。
+**原因**: entrypoint **不会**在已有数据目录上改写密码（见 §2.2 机制更正）。出现该现象说明容器实际挂载的数据目录与预期不同（例如当前容器用 `~/.agents-cache/llm-gateway-pg-data`，而 `recreate-llm-gateway-pg.sh` 指向 `~/data/docker/llm-gateway-pg17/data`，两者是不同集群），或数据目录被清空后触发首次 initdb。
 
-**解决**: 见 §二.2.2，用 `recreate-llm-gateway-pg.sh` 重建容器。
+**解决**: 先 `docker inspect llm-gateway-pg --format '{{json .Mounts}}'` 确认实际数据目录；密码按 §2.2 人工修正，禁止用脚本自动重置。
 
 ### 3.4 同步后行数漂移
 
@@ -182,7 +197,7 @@ _usage_ledger_2026_07_col_archived
 
 ### Q4: 重建容器后 Navicat 连不上？
 
-**答**: Navicat 走 TCP，端口 5432 仍然开放。使用 `llm_gateway` 以及 envs loader 提供的当前凭据重新登录；不要把密码复制到文档或连接备注。
+**答**: Navicat 走 TCP，使用 `127.0.0.1:5432`（本集群容器直映，见 §一端口布局）。使用 `llm_gateway` 以及 envs loader 提供的当前凭据登录；不要把密码复制到文档或连接备注。
 
 ### Q5: 把本地 feature 表 DDL 灌到 252 时报 `columnar_insert_only_parents() does not exist`？
 
@@ -204,7 +219,7 @@ PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway
 
 | 文件 | 作用 |
 |------|------|
-| `scripts/pg-table-copy.sh` | 252 → local 同步入口；默认不 DROP/不清空目标，`--clean-schema` 与 `--replace-data` 均为显式危险选项；catalog 识别分区，manifest 驱动逐表导出/导入，导出/导入失败即 exit 1 || `scripts/local-dev/recreate-llm-gateway-pg.sh` | 用 envs 252 密码重建 docker 容器 |
+| `scripts/pg-table-copy.sh` | 252 → local 同步入口；默认不 DROP/不清空目标，`--clean-schema` 与 `--replace-data` 均为显式危险选项；catalog 识别分区，manifest 驱动逐表导出/导入，导出/导入失败即 exit 1 || `scripts/local-dev/recreate-llm-gateway-pg.sh` | 重建 docker 容器（保留数据目录）；`POSTGRES_PASSWORD` 仅在全新数据目录首次 initdb 时生效，**不修改已有集群用户**（策略：只新增）|
 | `scripts/local-dev/verify-db-consistency.sh` | 252 ↔ local 七维结构校验（表/列/视图/索引/约束/序列/函数）；含 gated `--reconcile` 回灌模式。**每次同步后必须执行**——迁移跟踪表随数据复制，不能反映真实结构 |
 | `scripts/local-dev/verify-db-data-consistency.sh` | 252 ↔ local 普通表数据校验；比较完整表集合、逐表精确行数和顺序无关/重复敏感内容摘要；hot/分区数据按契约跳过 |
 | `docs/audit/2026-08-31-db-structure-consistency-audit.md` | 2026-08-31 结构一致性审计报告（P0 脚本静默失败根因 + 修复清单）|
@@ -222,3 +237,7 @@ PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" psql -h localhost -p 15432 -U llm_gateway
 | 2026-08-31 | 1.1  | 新增 `verify-db-consistency.sh`（一致性校验 + 252←local feature 表回灌）；补充 `pg_dump` search_path 触发 columnar 事件触发器、`-t` 逐表、月度分区预期差异等踩坑点 |
 | 2026-08-30 | 1.3  | 数据同步安全修复：默认安全 schema 模式不 DROP，精确替换必须显式 `--replace-data`；catalog 识别分区并以 manifest 驱动数据导入；新增普通表数据签名审计；修复 local `request_logs_default` DEFAULT 分区关系及索引漂移；最终结构与数据双审计通过 |
 | 2026-08-31 | 1.4  | `verify-db-consistency.sh` 升至 v1.2：新增**函数维度**（name\|参数身份\|md5(prosrc)），闭环原六维审计不比较函数 DDL 的盲区（迁移 628 等函数迁移此前不可见）；复验发现 252 缺 6 个函数（来自已提交迁移 382/383/433/534，本地因自跑 startup 迁移而具备），已按 gated reconcile 思路回灌 252，七维结构 + 261 表数据双审计全绿 |
+| 2026-08-31 | 1.5  | **用户/密码策略**：自动化只允许新增用户，禁止自动修改已有用户或密码；更正 entrypoint 密码机制（仅首次 initdb 写入，已有集群不会被 env 覆写）；§2.2/§3.3 从"重建容器自动对齐密码"改为人工修正流程；recreate 脚本加入策略守卫 |
+| 2026-08-31 | 1.6  | **端口陷阱更正**：本地开发地址从 `127.0.0.1:5432` 更正为 `127.0.0.1:15432`（5432 是 Homebrew 原生 postgresql@17，非本集群）；记录 15432 与 252 SSH 隧道的 IPv4/IPv6 双栈冲突及 `-h 127.0.0.1` 规约；recreate 脚本对齐真实容器（数据目录 `~/.agents-cache/llm-gateway-pg-data`、端口 15432、网络 shared-infra） |
+| 2026-08-31 | 1.7  | **端口布局定稿**：移除 Homebrew 原生 `postgresql@17`（及遗留 `postgresql@15` 数据目录，移除前全量备份至 `~/backups/`）；`llm-gateway-pg` 容器直映宿主机 `5432`；`15432` 归还 252 隧道专用，双栈冲突消除；recreate 脚本 PORT_BIND 改为 `127.0.0.1:5432:5432`；6 账号经发布端口 5432 全部验证通过 |
+| 2026-08-31 | 1.8  | **本地库大合并**：容器成为唯一本地 PG（库：`llm_gateway`/`acc_db`/`kaixuan`/`pocket` + 从 Homebrew 备份恢复 `memora`/`redclaw_local`/`redclaw_test`/`smm_data`）。修复：acc_db 补迁移 105→121+184/185 并归正属主 acc_app；宿主机 acc-go 改指 acc_db 并重启；应用 V360（credential_probe_queue.automatic）与 request_logs.model_name 补列；GRANT fencing.lease_ledger→platform_app；补建 task_assigner_* / task_assignments / mcp_registry。例外：`kx-citus`(15433) 是 opencode-pocket 容器栈的活库（pocket 33 表），未合并，待该项目自行迁移 |

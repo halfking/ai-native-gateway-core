@@ -1,18 +1,28 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
 # File:          scripts/local-dev/recreate-llm-gateway-pg.sh
-# Purpose:       Recreate the local llm-gateway-pg Docker container with
-#                password synced to 252 (envs/common/database.yaml).
+# Purpose:       Recreate the local llm-gateway-pg Docker container, preserving
+#                the existing data dir. POSTGRES_PASSWORD applies ONLY to a
+#                first-time cluster initdb (empty data dir); this script never
+#                modifies users/passwords of an initialized cluster.
+# Policy:        CREATE-ONLY for users/passwords (2026-08-31). Never auto-run
+#                ALTER ROLE/USER ... PASSWORD, never drop-and-recreate a user,
+#                never use this script as a password-reset tool. Password
+#                changes are manual ALTER ROLE + envs SSOT update.
 # Status:        active
 # Changelog:
 #   2026-08-26  v1.0  Initial version
+#   2026-08-31  v1.1  Create-only password policy guard + corrected mechanism
+#                     notes (entrypoint writes password only at first initdb)
 # -----------------------------------------------------------------------------
 # Usage:
 #   bash scripts/local-dev/recreate-llm-gateway-pg.sh
 # -----------------------------------------------------------------------------
 # Preconditions:
-#   - Existing data dir /Users/xutaohuang/data/docker/llm-gateway-pg17/data
+#   - Existing data dir $HOME/.agents-cache/llm-gateway-pg-data (the LIVE
+#     container's dir — verified via docker inspect 2026-08-31)
 #   - Image kx-citus-pg17:offline-arm64 available locally
+#   - Docker network shared-infra exists
 #   - Source 252 credentials loaded via envs loader.sh
 # -----------------------------------------------------------------------------
 
@@ -23,8 +33,16 @@ PROJECT="llm-gateway-go"
 SERVER="115.29.212.252"
 CONTAINER_NAME="llm-gateway-pg"
 IMAGE="kx-citus-pg17:offline-arm64"
-DATA_DIR="/Users/xutaohuang/data/docker/llm-gateway-pg17/data"
+# 2026-08-31: aligned to the LIVE container (docker inspect llm-gateway-pg).
+# The previous values (~/data/docker/llm-gateway-pg17/data, port 5432, no
+# network) described an older container and would create a SECOND cluster.
+# 2026-08-31 (later): Homebrew postgresql@17 removed from host 5432; the
+# container now owns host 5432. Port 15432 is reserved EXCLUSIVELY for the
+# 252 SSH tunnel (configs/env-252.sh TUNNEL_LOCAL_PORT) — do not map the
+# container there again (IPv4/IPv6 dual-stack split caused wrong-cluster hits).
+DATA_DIR="$HOME/.agents-cache/llm-gateway-pg-data"
 PORT_BIND="127.0.0.1:5432:5432"
+NETWORK="shared-infra"
 
 # Load 252 password
 if ! source "$ENVS_LOADER" --project "$PROJECT" --server "$SERVER" 2>/dev/null; then
@@ -52,6 +70,16 @@ echo "Database:   $PG_DB"
 echo "Data dir:   $DATA_DIR (PRESERVED — data not erased)"
 echo ""
 
+# Policy guard (2026-08-31): this script must NEVER modify existing users or
+# passwords. POSTGRES_PASSWORD only takes effect on a FIRST-TIME initdb (empty
+# data dir). On an initialized data dir the entrypoint leaves all roles
+# untouched — do not treat this script as a password-reset tool.
+if [ -s "$DATA_DIR/PG_VERSION" ]; then
+  echo "NOTE: data dir already initialized — POSTGRES_PASSWORD env will NOT be applied;"
+  echo "      existing users/passwords are never modified (policy: create-only)."
+  echo "      Password changes are manual: ALTER ROLE by hand + update envs SSOT."
+fi
+
 # Stop + remove existing container (if any)
 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
   echo "Stopping existing container..."
@@ -59,11 +87,13 @@ if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
   docker rm "$CONTAINER_NAME" >/dev/null 2>&1 || true
 fi
 
-# Start fresh container with same data dir + 252 password
+# Start fresh container (data dir preserved; password env applies only to
+# first-time initdb of an empty data dir — never to an existing cluster)
 echo "Starting container with 252-aligned credentials..."
 docker run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
+  --network "$NETWORK" \
   -p "$PORT_BIND" \
   -v "$DATA_DIR:/var/lib/postgresql/data" \
   -e POSTGRES_USER="$PG_USER" \
@@ -93,10 +123,10 @@ echo ""
 echo "Verification:"
 echo "  public tables: $TABLE_COUNT"
 echo "  database size: $DB_SIZE"
-echo "  POSTGRES_PASSWORD: aligned to 252 (envs/common/database.yaml)"
+echo "  POSTGRES_PASSWORD: first-time-initdb only; existing users untouched (create-only policy)"
 echo ""
 echo "VERIFY_SCRIPT=recreate-llm-gateway-pg"
 echo "VERIFY_CONTAINER=$CONTAINER_NAME"
 echo "VERIFY_TABLES=$TABLE_COUNT"
 echo "VERIFY_DB_SIZE=$DB_SIZE"
-echo "VERIFY_PASSWORD_SYNC=aligned-to-252"
+echo "VERIFY_PASSWORD_POLICY=create-only"
