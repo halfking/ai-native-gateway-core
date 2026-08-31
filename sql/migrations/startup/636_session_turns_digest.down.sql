@@ -2,6 +2,13 @@
 
 BEGIN;
 
+CREATE TEMP TABLE session_turns_current_month_grants ON COMMIT DROP AS
+SELECT grantee, privilege_type
+FROM information_schema.role_table_grants
+WHERE table_schema = 'public'
+  AND table_name = 'session_turns_with_current_month'
+  AND privilege_type = 'SELECT';
+
 DROP VIEW IF EXISTS public.session_turns_with_current_month;
 DROP FUNCTION IF EXISTS public.promote_session_turns_hot_to_partition(INTERVAL, INTEGER);
 
@@ -45,6 +52,15 @@ SELECT
     t5_cred_enqueued_at, t6_cred_dequeued_at, t7_forward_start_at,
     t8_response_start_at, t9_response_end_at
 FROM public.session_turns;
+
+DO $$
+DECLARE
+    grant_row RECORD;
+BEGIN
+    FOR grant_row IN SELECT grantee FROM session_turns_current_month_grants LOOP
+        EXECUTE format('GRANT SELECT ON public.session_turns_with_current_month TO %I', grant_row.grantee);
+    END LOOP;
+END $$;
 
 CREATE OR REPLACE FUNCTION public.promote_session_turns_hot_to_partition(
     p_retention INTERVAL DEFAULT '7 days',
