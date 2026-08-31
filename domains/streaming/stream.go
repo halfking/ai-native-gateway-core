@@ -1028,20 +1028,55 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			switch readResult.state {
 			case streamReadEOF:
 				if !upstreamDoneReceived {
-					slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
-					if capture != nil {
-						capture.MarkInterruptedWithReason("eof_without_done")
-					}
 					terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
 					if terminalVisible {
+						// 2026-09-01 (P0 MiniMax-fix): MiniMax upstream
+						// (api.minimaxi.com) closes the HTTP body after
+						// sending 200 + valid SSE chunks but WITHOUT the
+						// final `data: [DONE]` line. The client already
+						// saw the complete response and we synthesize
+						// `data: [DONE]\n\n` for them, so this is
+						// protocol-level non-compliance, not a real
+						// business failure. Treat as completed so audit
+						// success=true, the circuit-breaker stays quiet,
+						// and credential health is unaffected. A distinct
+						// reason literal preserves operator visibility
+						// (SQL-filter by reason) without re-triggering
+						// the audit isInterruptionCode failure path
+						// (audit.go:90) which lists "eof_without_done".
+						slog.Info("upstream EOF without [DONE] but semantic output already committed; treating as completed (benign upstream non-compliance)",
+							"client_model", clientModel,
+							"chunk_count", chunkCount,
+						)
+						if capture != nil {
+							capture.ObserveChunk(&ir.StreamChunk{
+								Type:           ir.ChunkTypeDone,
+								SourceProtocol: ir.ProtocolOpenAIChat,
+							})
+						}
 						safeWriteSSE(w, "data: [DONE]\n\n")
 						safeFlush(flusher)
 						metrics.Global().RecordStreamSynthesizedDone()
+						outcome.Interrupted = false
+						outcome.Reason = "eof_without_done_after_commit"
+						outcome.Kind = ""
+						outcome.Resumable = false
+						outcome.ChunkCount = chunkCount
+					} else {
+						// No semantic output committed: this IS a real
+						// upstream failure. Preserve the pre-fix
+						// behavior so genuine failures still surface
+						// in error-rate metrics and trip the breaker.
+						slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
+						if capture != nil {
+							capture.MarkInterruptedWithReason("eof_without_done")
+						}
+						outcome.Interrupted = true
+						outcome.Reason = "eof_without_done"
+						outcome.Kind = errorsx.KindUpstreamDown
+						outcome.Resumable = true
+						outcome.ChunkCount = chunkCount
 					}
-					outcome.Interrupted = true
-					outcome.Reason = "eof_without_done"
-					outcome.Kind = errorsx.KindUpstreamDown
-					outcome.Resumable = !terminalVisible
 				}
 				// When the client has gone away but the capturer is
 				// still alive and the upstream DID send [DONE], do NOT
