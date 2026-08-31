@@ -31,14 +31,31 @@ function durationLabel(event: TraceEvent): string {
     : '—'
 }
 
+// Canonical stage set — keep in sync with admin/request_trace.go StageName
+// constants. Adding a new stage that should surface one of these flags here
+// also requires adding the locale string under requestDetail.flow.diagram.stages.
+const COMPRESSION_STAGES = new Set(['compression', 'compress', 'streaming'])
+const RETRY_STAGES = new Set(['retry', 'retrying'])
+const NODE_SWITCH_STAGES = new Set(['node_selection', 'node_switch'])
+
 function detailsText(event: TraceEvent): string {
   const details = event.details || {}
+  const stage = event.stage || ''
+  const stageName = event.stage_name || ''
   const flags: string[] = []
   const has = (key: string) => Object.prototype.hasOwnProperty.call(details, key)
-  if (has('compression_strategy') || has('compression_applied') || /compress/i.test(event.stage)) flags.push(t('requestDetail.flow.diagram.flags.compression'))
-  if (has('retry_reason') || has('retry') || /retry/i.test(event.stage)) flags.push(t('requestDetail.flow.diagram.flags.retry'))
-  if (has('switch_reason') || has('to_credential_id') || has('to_model') || /switch|node/i.test(event.stage)) flags.push(t('requestDetail.flow.diagram.flags.nodeSwitch'))
-  if (details.observation_status === 'observation_degraded' || has('observation_degraded')) flags.push(t('requestDetail.flow.diagram.flags.degraded'))
+  if (has('compression_strategy') || has('compression_applied') || COMPRESSION_STAGES.has(stage) || COMPRESSION_STAGES.has(stageName)) {
+    flags.push(t('requestDetail.flow.diagram.flags.compression'))
+  }
+  if (has('retry_reason') || has('retry') || RETRY_STAGES.has(stage) || RETRY_STAGES.has(stageName)) {
+    flags.push(t('requestDetail.flow.diagram.flags.retry'))
+  }
+  if (has('switch_reason') || has('to_credential_id') || has('to_model') || NODE_SWITCH_STAGES.has(stage) || NODE_SWITCH_STAGES.has(stageName)) {
+    flags.push(t('requestDetail.flow.diagram.flags.nodeSwitch'))
+  }
+  if (details.observation_status === 'observation_degraded' || has('observation_degraded')) {
+    flags.push(t('requestDetail.flow.diagram.flags.degraded'))
+  }
   return flags.join(' · ')
 }
 
