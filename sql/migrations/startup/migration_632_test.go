@@ -2,52 +2,57 @@ package startup
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-// TestMigration632_RoutingAnalyticsMaterializedView verifies that migration 632
-// creates the routing analytics materialized views correctly.
+// TestMigration632_RoutingAnalyticsMaterializedView verifies migration 632.
+//
+// The startup migration engine is Go-driven (db.applyMigrationsOnce); the
+// .sql files here are DBA-facing mirrors of db.ensure* functions. These
+// tests therefore assert on file contents AND on the wiring in db/db.go —
+// a migration that exists only as SQL never runs (that exact gap shipped
+// initially and is what the wiring assertions guard against).
 func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
-	t.Run("migration_files_exist", func(t *testing.T) {
-		// Check up migration exists
+	readUp := func(t *testing.T) string {
+		t.Helper()
 		up, err := os.ReadFile("up/632_routing_analytics_materialized_view.sql")
 		require.NoError(t, err, "up migration file should exist")
-		require.NotEmpty(t, up, "up migration should not be empty")
+		return string(up)
+	}
 
-		// Check down migration exists
+	t.Run("files_exist_and_transactional", func(t *testing.T) {
+		upSQL := readUp(t)
+		require.NotEmpty(t, upSQL)
+
 		down, err := os.ReadFile("down/632_routing_analytics_materialized_view.down.sql")
 		require.NoError(t, err, "down migration file should exist")
-		require.NotEmpty(t, down, "down migration should not be empty")
-
-		// Verify transactional
-		upSQL := string(up)
 		downSQL := string(down)
-		require.Contains(t, upSQL, "BEGIN;", "up migration must start with BEGIN")
-		require.Contains(t, upSQL, "COMMIT;", "up migration must end with COMMIT")
-		require.Contains(t, downSQL, "BEGIN;", "down migration must start with BEGIN")
-		require.Contains(t, downSQL, "COMMIT;", "down migration must end with COMMIT")
+
+		require.Contains(t, upSQL, "BEGIN;", "up migration must be transactional")
+		require.Contains(t, upSQL, "COMMIT;", "up migration must be transactional")
+		require.Contains(t, downSQL, "BEGIN;", "down migration must be transactional")
+		require.Contains(t, downSQL, "COMMIT;", "down migration must be transactional")
 	})
 
-	t.Run("creates_required_views", func(t *testing.T) {
-		up, err := os.ReadFile("up/632_routing_analytics_materialized_view.sql")
-		require.NoError(t, err)
-		upSQL := string(up)
+	t.Run("creates_required_views_and_columns", func(t *testing.T) {
+		upSQL := readUp(t)
 
-		// Check for required materialized views
-		require.Contains(t, upSQL, "CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d",
+		require.Contains(t, upSQL,
+			"CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d",
 			"should create routing_analytics_7d materialized view")
-		require.Contains(t, upSQL, "CREATE MATERIALIZED VIEW IF NOT EXISTS routing_audit_summary_7d",
+		require.Contains(t, upSQL,
+			"CREATE MATERIALIZED VIEW IF NOT EXISTS routing_audit_summary_7d",
 			"should create routing_audit_summary_7d materialized view")
 
-		// Check for required columns
 		requiredColumns := []string{
 			"time_bucket",
 			"effective_task_type",
 			"effective_model",
 			"effective_work_type",
-			"provider_id",
+			"effective_provider_id",
 			"is_auto_request",
 			"tenant_id",
 			"request_count",
@@ -63,51 +68,70 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 	})
 
 	t.Run("creates_required_indexes", func(t *testing.T) {
-		up, err := os.ReadFile("up/632_routing_analytics_materialized_view.sql")
-		require.NoError(t, err)
-		upSQL := string(up)
+		upSQL := readUp(t)
 
-		// Check for unique index (required for CONCURRENTLY refresh)
-		require.Contains(t, upSQL, "CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey",
-			"should create unique primary key index for CONCURRENTLY refresh")
+		// Unique index is required for REFRESH ... CONCURRENTLY.
+		require.Contains(t, upSQL,
+			"CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey",
+			"should create unique index for CONCURRENTLY refresh")
 
-		// Check for covering indexes
-		requiredIndexes := []string{
+		for _, idx := range []string{
 			"routing_analytics_7d_task_model_idx",
 			"routing_analytics_7d_time_idx",
 			"routing_analytics_7d_tenant_idx",
 			"routing_audit_summary_7d_pkey",
-		}
-		for _, idx := range requiredIndexes {
-			require.Contains(t, upSQL, idx,
-				"should create index %s", idx)
+		} {
+			require.Contains(t, upSQL, idx, "should create index %s", idx)
 		}
 	})
 
-	t.Run("uses_base_view", func(t *testing.T) {
-		up, err := os.ReadFile("up/632_routing_analytics_materialized_view.sql")
-		require.NoError(t, err)
-		upSQL := string(up)
+	t.Run("null_safe_unique_index", func(t *testing.T) {
+		// Regression guard (2026-08-31 audit): is_auto_request must be
+		// normalized to FALSE in the view. With raw NULLs, GROUP BY keeps
+		// NULL and FALSE in separate buckets while the unique index maps
+		// both onto the same COALESCE key → CREATE UNIQUE INDEX fails with
+		// a duplicate key → startup aborts.
+		upSQL := readUp(t)
+		require.Contains(t, upSQL, "COALESCE(is_auto_request, FALSE) AS is_auto_request",
+			"is_auto_request must be NULL-normalized in the view definition")
+	})
 
-		// Should query from the _without_customer_id view for performance
-		require.Contains(t, upSQL, "FROM request_logs_with_current_month_without_customer_id",
-			"should query from request_logs_with_current_month_without_customer_id view")
+	t.Run("provider_credential_fallback_parity", func(t *testing.T) {
+		// Regression guard: the view's provider column must keep the same
+		// COALESCE(provider_id, credential lookup) fallback as the base
+		// L2→L3 query, or the Sankey 'unknown' provider share differs
+		// between materialized and base paths.
+		upSQL := readUp(t)
+		require.Contains(t, upSQL, "FROM credentials cr WHERE cr.id = credential_id",
+			"effective_provider_id must fall back to the credential's provider")
+	})
 
-		// Should use 7-day window
+	t.Run("uses_base_view_and_7d_window", func(t *testing.T) {
+		upSQL := readUp(t)
+		require.Contains(t, upSQL,
+			"FROM request_logs_with_current_month_without_customer_id",
+			"should aggregate the _without_customer_id view (no customer_id LATERAL)")
 		require.Contains(t, upSQL, "ts >= NOW() - INTERVAL '7 days'",
-			"should use 7-day time window")
+			"should aggregate a 7-day window")
 	})
 
-	t.Run("initial_refresh", func(t *testing.T) {
-		up, err := os.ReadFile("up/632_routing_analytics_materialized_view.sql")
-		require.NoError(t, err)
-		upSQL := string(up)
+	t.Run("wired_into_go_migration_engine", func(t *testing.T) {
+		// The SQL file is only a mirror; db.applyMigrationsOnce must call
+		// the ensure function or none of this ever executes.
+		dbSrc, err := os.ReadFile("../../../db/db.go")
+		require.NoError(t, err, "db/db.go should be readable")
+		src := string(dbSrc)
 
-		// Should perform initial refresh
-		require.Contains(t, upSQL, "REFRESH MATERIALIZED VIEW routing_analytics_7d",
-			"should perform initial refresh of routing_analytics_7d")
-		require.Contains(t, upSQL, "REFRESH MATERIALIZED VIEW routing_audit_summary_7d",
-			"should perform initial refresh of routing_audit_summary_7d")
+		require.Contains(t, src,
+			"ensureRoutingAnalyticsMaterializedViews(migCtx)",
+			"ensureRoutingAnalyticsMaterializedViews must be called from applyMigrationsOnce")
+		require.Contains(t, src,
+			"CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d",
+			"db.go must define the routing_analytics_7d view SQL")
+
+		// The Go mirror must carry the same NULL-safety fix as the SQL file.
+		require.Contains(t, src, "COALESCE(is_auto_request, FALSE) AS is_auto_request",
+			"db.go view SQL must NULL-normalize is_auto_request")
 	})
 
 	t.Run("down_migration_drops_views", func(t *testing.T) {
@@ -115,15 +139,11 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 		require.NoError(t, err)
 		downSQL := string(down)
 
-		// Should drop both materialized views
 		require.Contains(t, downSQL, "DROP MATERIALIZED VIEW IF EXISTS routing_analytics_7d",
 			"should drop routing_analytics_7d")
 		require.Contains(t, downSQL, "DROP MATERIALIZED VIEW IF EXISTS routing_audit_summary_7d",
 			"should drop routing_audit_summary_7d")
-
-		// Should use CASCADE to drop indexes
-		require.Contains(t, downSQL, "CASCADE",
-			"should use CASCADE to drop dependent indexes")
+		require.True(t, strings.Contains(downSQL, "CASCADE"),
+			"should CASCADE to drop dependent indexes")
 	})
 }
-

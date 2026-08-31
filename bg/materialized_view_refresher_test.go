@@ -10,8 +10,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMaterializedViewRefresherConstants pins the timing contract the rest
+// of the system relies on: cycles must not overlap (timeout < interval),
+// and consumers (admin.mvFreshnessBudget = 15min) tolerate one missed
+// cycle, which requires interval < freshness budget.
+func TestMaterializedViewRefresherConstants(t *testing.T) {
+	require.Greater(t, RefreshInterval, time.Duration(0))
+	require.Greater(t, InitialDelay, time.Duration(0))
+	require.Less(t, RefreshTimeout, RefreshInterval,
+		"refresh timeout must stay below the interval so cycles cannot pile up")
+	require.LessOrEqual(t, RefreshInterval, 15*time.Minute,
+		"interval above 15min would exceed the admin freshness budget and force constant fallbacks")
+}
+
+// TestMaterializedViewRefresher_StopDuringInitialDelay verifies Stop()
+// returns promptly while the loop is still in its initial delay. The
+// original implementation used time.Sleep for the delay, hanging Stop()
+// (and therefore graceful shutdown) for up to InitialDelay.
+func TestMaterializedViewRefresher_StopDuringInitialDelay(t *testing.T) {
+	refresher := NewMaterializedViewRefresher(nil)
+	refresher.Start()
+
+	done := make(chan struct{})
+	go func() {
+		refresher.Stop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: cancelled during the initial delay.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop() did not complete within 5s during initial delay — initial delay is not interruptible")
+	}
+}
+
+// TestMaterializedViewRefresher_TriggerRefreshNilDB ensures the manual
+// trigger is safe without a database (wiring tests, disabled deployments).
+func TestMaterializedViewRefresher_TriggerRefreshNilDB(t *testing.T) {
+	refresher := NewMaterializedViewRefresher(nil)
+	require.NoError(t, refresher.TriggerRefresh(context.Background()))
+}
+
+// TestMaterializedViewRefresher is the integration variant: it exercises a
+// real refresh cycle when TEST_DATABASE_URL is provisioned, otherwise (and
+// in -short mode) it skips.
 func TestMaterializedViewRefresher(t *testing.T) {
-	// Integration test requires database connection
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
