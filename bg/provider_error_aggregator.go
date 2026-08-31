@@ -220,7 +220,7 @@ WITH watermark AS (
  WHERE id = 1
  RETURNING last_source_id
 )
-SELECT i.provider_id, i.error_type, i.occurrences
+SELECT i.provider_id, i.error_type, i.occurrences, advanced.last_source_id
 FROM inserted i
 CROSS JOIN advanced`
 
@@ -233,10 +233,14 @@ CROSS JOIN advanced`
 
 	groups := 0
 	var total int64
+	var newAggregationID int64
 	for rows.Next() {
 		var providerID, occurrences int
 		var errorType string
-		if err := rows.Scan(&providerID, &errorType, &occurrences); err != nil {
+		// last_source_id is constant across rows because `advanced` returns at most
+		// one row; we accept whatever value the last scan saw so the field tracks
+		// the watermark this tick committed.
+		if err := rows.Scan(&providerID, &errorType, &occurrences, &newAggregationID); err != nil {
 			slog.Warn("provider_error_aggregator: scan failed", "error", err)
 			continue
 		}
@@ -255,9 +259,11 @@ CROSS JOIN advanced`
 		slog.Info("provider_error_aggregator: aggregation completed",
 			"error_groups", groups,
 			"total_occurrences", total,
+			"aggregation_id", newAggregationID,
 			"duration", fmt.Sprintf("%.2fs", time.Since(startedAt).Seconds()))
 	} else {
 		slog.Debug("provider_error_aggregator: no new errors to aggregate",
+			"aggregation_id", newAggregationID,
 			"duration", fmt.Sprintf("%.2fs", time.Since(startedAt).Seconds()))
 	}
 }
