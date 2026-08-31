@@ -332,8 +332,17 @@ async function load() {
   const requestSeq = ++listRequestSeq
   loading.value = true
   try {
+    // 2026-08-31: pass mode: 'core' so the backend takes the fast path
+    // (skip request_logs_with_current_month + recent_success_rate() LATERAL
+    // JOIN). Without mode=core, the default detail path scans every
+    // credential's full request history and hits the 15s context deadline
+    // on env 154 (production data scale), returning HTTP 500 and leaving
+    // the table empty. The list view doesn't render per-(credential,
+    // model) rows; the detail drawer still uses the full mode for its
+    // models[] breakdown (loadSelectedCredential at line ~404).
     const res = await getCredentialMonitorSummary({
       provider_id: providerFilter.value || undefined,
+      mode: 'core',
     })
     if (requestSeq !== listRequestSeq) return
     credentials.value = res.credentials
