@@ -792,16 +792,17 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 // IF NOT EXISTS guards make the batch idempotent.
 //
 // NULL-safety (2026-08-31 audit): is_auto_request is COALESCEd to FALSE in
-// the view. Historical rows carry NULL, and GROUP BY would keep NULL and
-// FALSE as separate buckets while the unique index's COALESCE(is_auto_request,
-// FALSE) expression maps both to the same key — CREATE UNIQUE INDEX would
-// then fail with a duplicate key and abort startup. Normalizing in the view
-// also matches the base queries, which read NULL as FALSE.
+// the view. Historical rows carry NULL; without normalization the view
+// would split identical traffic into NULL and FALSE buckets (GROUP BY
+// treats them as distinct), diverging from the base queries, which read
+// NULL as FALSE everywhere (`is_auto_request IS NOT TRUE`).
 //
-// tenant_id is TEXT in this schema (not bigint): the unique-index NULL
-// placeholder must be '' (COALESCE(text, integer) is a type error that
-// bricks ApplyMigrations on any fresh database). Verified against prod
-// (252 PG): request_logs_hot.tenant_id → text.
+// tenant_id is TEXT in this schema (not bigint — verified on prod 252 PG:
+// request_logs_hot.tenant_id → text). The unique indexes therefore use
+// plain tenant_id columns with no COALESCE placeholder: PG rejects
+// expression indexes for REFRESH MATERIALIZED VIEW CONCURRENTLY
+// (SQLSTATE 55000, seen on prod 2026-09-01), and plain-column uniqueness
+// is safe because GROUP BY collapses NULL keys into a single row.
 //
 // effective_provider_id bakes in the same COALESCE(provider_id,
 // credential lookup) fallback that buildFlowL23Query (admin/analytics.go)
@@ -842,15 +843,23 @@ const routingAnalyticsMVSQL = `
 	  is_auto_request,
 	  tenant_id;
 
-	CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_pkey
+	-- Unique index for REFRESH ... CONCURRENTLY. PG rejects expression
+	-- indexes for concurrent refresh (SQLSTATE 55000, verified on prod
+	-- PG17), so this must be plain columns. NULL keys are safe: GROUP BY
+	-- collapses NULLs into a single row per key, so the btree's
+	-- "duplicate NULLs allowed" semantics never sees two rows with the
+	-- same key. The old expression index (_pkey) is dropped and replaced
+	-- by _ukey; the rename makes the swap idempotent under IF [NOT] EXISTS.
+	DROP INDEX IF EXISTS routing_analytics_7d_pkey;
+	CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_ukey
 	  ON routing_analytics_7d (
 	    time_bucket,
 	    effective_task_type,
 	    effective_model,
 	    effective_work_type,
-	    COALESCE(effective_provider_id, -1),
+	    effective_provider_id,
 	    is_auto_request,
-	    COALESCE(tenant_id, '')
+	    tenant_id
 	  );
 
 	CREATE INDEX IF NOT EXISTS routing_analytics_7d_task_model_idx
@@ -879,8 +888,9 @@ const routingAnalyticsMVSQL = `
 	  )
 	GROUP BY tenant_id;
 
-CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_pkey
-  ON routing_audit_summary_7d (COALESCE(tenant_id, ''));
+	DROP INDEX IF EXISTS routing_audit_summary_7d_pkey;
+	CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_ukey
+	  ON routing_audit_summary_7d (tenant_id);
 `
 
 // ensureRoutingAnalyticsMaterializedViews mirrors
@@ -900,12 +910,18 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		return nil
 	}
 
-	// Fast idempotent path: both views already present → nothing to build.
-	var bothExist bool
+	// Fast idempotent path: views present AND the plain-column unique
+	// indexes exist → nothing to build or repair. The index check is part
+	// of the gate because the original 632 deploy created expression
+	// indexes (…_pkey) that REFRESH ... CONCURRENTLY rejects; instances
+	// running this ensure must still swap them for …_ukey.
+	var upToDate bool
 	if err := d.pool.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_analytics_7d')
 		   AND EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_audit_summary_7d')
-	`).Scan(&bothExist); err == nil && bothExist {
+		   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_analytics_7d_ukey')
+		   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_audit_summary_7d_ukey')
+	`).Scan(&upToDate); err == nil && upToDate {
 		return nil
 	}
 
