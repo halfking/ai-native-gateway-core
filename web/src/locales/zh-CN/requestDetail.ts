@@ -179,7 +179,7 @@ export default {
     diagram: {
       ariaLabel: '请求处理流程', trackLabel: '流程事件序列',
       event: '流程事件', noData: '暂无可观测流程', noEvents: '暂无流程事件',
-      stages: { received: '入站', routing: '路由解析', model_queue: '模型排队', credential_queue: '凭据排队', node_selection: '节点选择', upstream: '上游请求', streaming: '流式响应', terminal: '请求结束' },
+      stages: { received: '入站', routing: '路由解析', model_queue: '模型排队', credential_queue: '凭据排队', node_selection: '节点选择', upstream: '上游请求', streaming: '流式响应', retrying: '重试中', terminal: '请求结束' },
       status: { success: '成功', failed: '失败', timeout: '超时', skipped: '跳过' },
       flags: { compression: '压缩', retry: '重试', nodeSwitch: '节点切换', degraded: '观测降级' },
       evidenceLabel: '路由与瀑布观测证据', evidenceTitle: '已观测尝试', waterfallAttempt: '瀑布尝试 #{number}', noDetails: '没有更多详情', degraded: '观测降级',

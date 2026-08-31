@@ -179,7 +179,7 @@ export default {
     diagram: {
       ariaLabel: 'リクエスト処理フロー', trackLabel: 'フローイベントの順序',
       event: 'フローイベント', noData: '観測可能なフローがありません', noEvents: 'フローイベントがありません',
-      stages: { received: '受信', routing: 'ルート解決', model_queue: 'モデルキュー', credential_queue: '認証情報キュー', node_selection: 'ノード選択', upstream: '上流リクエスト', streaming: 'ストリーミング応答', terminal: 'リクエスト完了' },
+      stages: { received: '受信', routing: 'ルート解決', model_queue: 'モデルキュー', credential_queue: '認証情報キュー', node_selection: 'ノード選択', upstream: '上流リクエスト', streaming: 'ストリーミング応答', retrying: '再試行中', terminal: 'リクエスト完了' },
       status: { success: '成功', failed: '失敗', timeout: 'タイムアウト', skipped: 'スキップ' },
       flags: { compression: '圧縮', retry: '再試行', nodeSwitch: 'ノード切替', degraded: '観測劣化' },
       evidenceLabel: 'ルーティングとウォーターフォールの証拠', evidenceTitle: '観測された試行', waterfallAttempt: 'ウォーターフォール試行 #{number}', noDetails: '追加詳細なし', degraded: '観測劣化',

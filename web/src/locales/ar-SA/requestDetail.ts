@@ -179,7 +179,7 @@ export default {
     diagram: {
       ariaLabel: 'تدفق معالجة الطلب', trackLabel: 'تسلسل أحداث التدفق',
       event: 'حدث تدفق', noData: 'لا يوجد تدفق قابل للمراقبة', noEvents: 'لا توجد أحداث تدفق',
-      stages: { received: 'الوصول', routing: 'حل المسار', model_queue: 'طابور النموذج', credential_queue: 'طابور بيانات الاعتماد', node_selection: 'اختيار العقدة', upstream: 'طلب المنبع', streaming: 'استجابة متدفقة', terminal: 'اكتمل الطلب' },
+      stages: { received: 'الوصول', routing: 'حل المسار', model_queue: 'طابور النموذج', credential_queue: 'طابور بيانات الاعتماد', node_selection: 'اختيار العقدة', upstream: 'طلب المنبع', streaming: 'استجابة متدفقة', retrying: 'إعادة المحاولة', terminal: 'اكتمل الطلب' },
       status: { success: 'نجاح', failed: 'فشل', timeout: 'انتهاء المهلة', skipped: 'تم التخطي' },
       flags: { compression: 'ضغط', retry: 'إعادة محاولة', nodeSwitch: 'تبديل العقدة', degraded: 'تدهور المراقبة' },
       evidenceLabel: 'أدلة التوجيه والشلال', evidenceTitle: 'المحاولات المرصودة', waterfallAttempt: 'محاولة الشلال رقم {number}', noDetails: 'لا توجد تفاصيل إضافية', degraded: 'تدهور المراقبة',

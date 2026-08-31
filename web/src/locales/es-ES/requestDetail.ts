@@ -179,7 +179,7 @@ export default {
     diagram: {
       ariaLabel: 'Flujo de procesamiento de solicitudes', trackLabel: 'Secuencia de eventos del flujo',
       event: 'Evento de flujo', noData: 'Sin flujo observable', noEvents: 'Sin eventos de flujo',
-      stages: { received: 'Entrada', routing: 'Resolución de ruta', model_queue: 'Cola del modelo', credential_queue: 'Cola de credenciales', node_selection: 'Selección de nodo', upstream: 'Solicitud ascendente', streaming: 'Respuesta en streaming', terminal: 'Solicitud completada' },
+      stages: { received: 'Entrada', routing: 'Resolución de ruta', model_queue: 'Cola del modelo', credential_queue: 'Cola de credenciales', node_selection: 'Selección de nodo', upstream: 'Solicitud ascendente', streaming: 'Respuesta en streaming', retrying: 'Reintentando', terminal: 'Solicitud completada' },
       status: { success: 'Éxito', failed: 'Fallido', timeout: 'Tiempo agotado', skipped: 'Omitido' },
       flags: { compression: 'Compresión', retry: 'Reintento', nodeSwitch: 'Cambio de nodo', degraded: 'Observación degradada' },
       evidenceLabel: 'Evidencia de enrutamiento y cascada', evidenceTitle: 'Intentos observados', waterfallAttempt: 'Intento de cascada #{number}', noDetails: 'Sin detalles adicionales', degraded: 'Observación degradada',

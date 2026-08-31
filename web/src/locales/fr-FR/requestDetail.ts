@@ -179,7 +179,7 @@ export default {
     diagram: {
       ariaLabel: 'Flux de traitement de la requête', trackLabel: 'Séquence des événements du flux',
       event: 'Événement de flux', noData: 'Aucun flux observable', noEvents: 'Aucun événement de flux',
-      stages: { received: 'Entrée', routing: 'Résolution du routage', model_queue: 'File du modèle', credential_queue: 'File des identifiants', node_selection: 'Sélection du nœud', upstream: 'Requête amont', streaming: 'Réponse en flux', terminal: 'Requête terminée' },
+      stages: { received: 'Entrée', routing: 'Résolution du routage', model_queue: 'File du modèle', credential_queue: 'File des identifiants', node_selection: 'Sélection du nœud', upstream: 'Requête amont', streaming: 'Réponse en flux', retrying: 'Nouvelle tentative', terminal: 'Requête terminée' },
       status: { success: 'Succès', failed: 'Échec', timeout: 'Délai dépassé', skipped: 'Ignoré' },
       flags: { compression: 'Compression', retry: 'Nouvel essai', nodeSwitch: 'Changement de nœud', degraded: 'Observation dégradée' },
       evidenceLabel: 'Preuves de routage et de cascade', evidenceTitle: 'Tentatives observées', waterfallAttempt: 'Tentative de cascade n°{number}', noDetails: 'Aucun détail supplémentaire', degraded: 'Observation dégradée',
