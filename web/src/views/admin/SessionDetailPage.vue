@@ -4,6 +4,8 @@
  *
  * Turn list uses SessionTurnsTimeline (GET …/turns → session_turns_tree.go).
  * Clicking a turn opens the fullscreen request detail in session-turns mode.
+ * The "view digest" button on each turn opens a side drawer showing the
+ * generated turn digest (user input, assistant output, metrics, events, tools).
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -11,6 +13,7 @@ import { getSessionSnapshot } from '../../api/sessions_v2'
 import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
+import TurnDigestDrawer from '../../components/session/TurnDigestDrawer.vue'
 import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const route = useRoute()
@@ -20,6 +23,22 @@ const sessionId = computed(() => String(route.params.id || ''))
 const snapshotError = ref('')
 const snapshot = ref<Record<string, unknown> | null>(null)
 let snapshotController: AbortController | null = null
+
+// Digest drawer state — opened from the inline "view digest" button on each
+// turn card. Reset on sessionId change / unmount so the drawer never points
+// at a stale turn after navigating between sessions.
+const digestOpen = ref(false)
+const digestTurnNo = ref<number | null>(null)
+
+function showDigest(payload: { turnNumber: number }) {
+  digestTurnNo.value = payload.turnNumber
+  digestOpen.value = true
+}
+
+function closeDigest() {
+  digestOpen.value = false
+  digestTurnNo.value = null
+}
 
 async function loadSnapshot() {
   const id = sessionId.value
@@ -45,10 +64,13 @@ function openTurn(payload: { requestId: string; turnNumber: number }) {
 onMounted(loadSnapshot)
 
 watch(sessionId, () => {
+  // Session navigation: drop any open drawer before loading the new snapshot.
+  closeDigest()
   loadSnapshot()
 })
 
 onBeforeUnmount(() => {
+  closeDigest()
   snapshotController?.abort()
 })
 </script>
@@ -73,6 +95,15 @@ onBeforeUnmount(() => {
         :key="sessionId"
         :session-id="sessionId"
         @open-request="openTurn"
+        @show-digest="showDigest"
+      />
+      <TurnDigestDrawer
+        v-if="sessionId"
+        :model-value="digestOpen"
+        :session-id="sessionId"
+        :turn-no="digestTurnNo"
+        @update:model-value="(value: boolean) => { if (!value) closeDigest() }"
+        @close="closeDigest"
       />
     </div>
   </div>

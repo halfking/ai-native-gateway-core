@@ -1,0 +1,43 @@
+// turnDigest.ts — ملخص الدورة (TurnDigestCard / TurnDigestDrawer) فضاء الأسماء
+// ملاحظة: اللغة العربية تُكتب من اليمين إلى اليسار؛ تم الاحتفاظ بالعناصر النائبة {n} كما هي.
+export default {
+  title: 'ملخص الدورة',
+  turn: 'الدورة',
+  loading: 'جارٍ تحميل الملخص…',
+  close: 'إغلاق',
+  fallback: 'جارٍ إنشاء الملخص',
+  empty: 'لا يوجد ملخص لهذه الدورة',
+  view: 'عرض الملخص',
+  userInput: 'إدخال المستخدم',
+  assistantOutput: 'مخرجات المساعد',
+  statusError: 'خطأ',
+  statusWarning: 'تحذير',
+  statusSuccess: 'نجاح',
+  metrics: {
+    tokens: 'الرموز',
+    cost: 'التكلفة',
+    latency: 'الكمون',
+    cacheHitRate: 'معدل إصابة ذاكرة التخزين المؤقت',
+    compressionRate: 'معدل الضغط',
+  },
+  events: {
+    header: 'الأحداث الرئيسية',
+    error: 'خطأ',
+    warning: 'تحذير',
+    info: 'معلومات',
+  },
+  toolUsage: 'استخدام الأدوات',
+  toolCount: '{n} مرة',
+  tabs: {
+    summary: 'الملخص',
+    request: 'الطلب',
+    response: 'الاستجابة',
+    compression: 'الضغط',
+    meta: 'البيانات الوصفية',
+    governance: 'الحوكمة',
+    attachments: 'المرفقات',
+  },
+  noAttachments: 'لا توجد مرفقات',
+  openAttachment: 'تنزيل',
+  openingAttachment: 'جارٍ الفتح…',
+}
