@@ -1494,6 +1494,25 @@ export const __testing = {
   clearRequestCredentialIndex,
   resetStream,
   refCount: () => refCount,
+  // Test-only: same as acquireLiveStream() but stubs out the network
+  // handshake so unit tests can exercise the refCount ↔ visibility
+  // listener wiring without spinning up EventSource.
+  acquireForTest: (): (() => void) => {
+    refCount += 1
+    if (refCount === 1) {
+      // Intentionally do NOT call openConnection() — the store keeps
+      // refCount-relative bookkeeping independent of the network state,
+      // which is exactly the property we want to assert here.
+      liveStreamState.connection = 'closed'
+    }
+    return () => {
+      refCount -= 1
+      if (refCount <= 0) {
+        refCount = 0
+        removeVisibilityListener()
+      }
+    }
+  },
   es: () => es,
   MAX_VISIBLE,
   maxSeenTs: () => maxSeenTs,

@@ -221,7 +221,6 @@ export function useDashboardBoard() {
     wireLiveUpdates()
     void loadOperational()
     schedulePoll()
-    schedulePoll()
     document.addEventListener('visibilitychange', onVisibilityChange)
   }
 

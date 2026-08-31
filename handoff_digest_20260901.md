@@ -25,7 +25,7 @@
 - 在 `public.session_turns` 和 `public.session_turns_hot` 新增 nullable `digest JSONB` 列
 - 重建 `session_turns_with_current_month` view，将 50 列扩展为 51 列（含 digest）
 - 更新 `promote_session_turns_hot_to_partition` function，在热表 promotion 时保留 digest
-- **权限保护**: 在 up/down 迁移中暂存并恢复 current-month view 的既有 `SELECT` grants，避免升级/回滚时撤销应用/报表角色的读取权限
+- 当前 migration 636 已于 **2026-08-31 21:06:37 UTC** 标记为 `applied+verified`；已部署 migration 不可变，故未将后续 view ACL 修复写回该文件。`DROP VIEW` 清除 ACL 的风险需要在目标环境审计现有角色后，以新的后续 migration 或部署权限脚本处理。
 
 **SQL 契约测试**: `sql/migrations/test/test_525_526.test.sql` 已扩展，验证:
 - Parent/hot 列数 = 51
@@ -33,7 +33,7 @@
 - Promotion 函数保留 digest 值
 - View 的 `security_invoker=true` 选项保持
 
-**Checksum**: `a7e1909b0eb5fac03253c77fafb3cb029a688195c9666b41c739db24746e6af2`  
+**Checksum**: `375d376eb0970f181e7a4ae1247ba20ac1cae059ae063bb6a4c43bcf2c27bc98`（已于 2026-08-31 21:06:37 UTC 标记 `applied+verified`）
 **Registry**: 已登记到 `docs/db-changelog.md:168`
 
 ---
@@ -171,22 +171,28 @@ turnRec := TurnRecord{
 ## 📋 待真实环境验证
 
 ### P0 — Migration 636 升级/回滚验证
-**状态**: ✅ 已于 2026-09-01 在本地 `llm-gateway-pg` PostgreSQL 17 容器完成（该环境已有 migration 526，未有 636）。
+**状态**: ⏳ 待在包含 migration 526 的 staging/dev PostgreSQL 环境执行。
 
-**验证结果**:
-- 636 up：成功，事务完整提交；`session_turns`/`session_turns_hot` 共 2 个 `digest JSONB` nullable 列。
-- current-month view：up 后 51 列，`security_invoker=true` 保持。
-- ACL：先向非 owner 角色 `acc_app` 授予 `SELECT`，up/down/up 三次 view 重建后 grant 均保留；确认修复了 `DROP VIEW` ACL 回归。
-- Digest：手工插入一条 schema v1 envelope，`schema_version=1`、`algorithm_version=deterministic-v1` 及 payload 文本可通过 SQL 解码。
-- Promotion：将测试 turn 调整为 10 天前后执行 `promote_session_turns_hot_to_partition('7 days', 100)`，返回移动 1 行，落入 `session_turns_2026_08`，digest 内容完整保留，hot 表对应行清零。
-- 636 down：成功；digest 列消失，view 恢复 50 列，promotion 函数恢复到无 digest 引用的 526 定义，`security_invoker=true` 和 `acc_app SELECT` 均保留。
-- 再次 636 up：成功；最终恢复 2 列/51 列 view，`acc_app SELECT` 仍保留，证明可重复应用。
-- 清理：已删除测试 turn、撤销临时 `acc_app` grant，并删除隔离测试数据库；最终 `session_turns` 与 `session_turns_hot` 均为 0 行。
+**执行步骤**:
+```bash
+# 1. 确认热表和 promotion function 已由 526 创建。
+psql "$TARGET_DSN" -c "SELECT to_regclass('public.session_turns_hot'), to_regprocedure('public.promote_session_turns_hot_to_partition(interval,integer)');"
 
-**限制与说明**:
-- `scripts/audit/fresh-schema-from-migrations.sh` 当前不能作为 636 fixture：它从空库跳过 `01-schema.sql`/430，而 migration 513 依赖 `public.session_turns` 等 430 创建对象；因此在 513 起出现级联失败。这是该 fresh-schema audit 路径的既有 bootstrap 范围问题，不影响本次使用已有 526 的升级验证。
+# 2. 运行已部署、不可变的 636 migration（SHA-256 375d376e...）。
+psql "$TARGET_DSN" -f sql/migrations/startup/636_session_turns_digest.sql
 
-**输出**: 本节即升级验证报告（通过；DDL、ACL、digest、promotion、回滚、幂等性均通过）。
+# 3. 验证 parent/hot 均有 nullable digest JSONB，view 有 51 列且 security_invoker=true。
+# 4. 通过 V2 writer 写入测试 turn，检查 schema_version=1 / algorithm_version=deterministic-v1。
+# 5. 执行 promote_session_turns_hot_to_partition('7 days', 100)，确认 digest 被带入分区。
+# 6. 如环境允许回滚，再执行 .down.sql，验证 50 列 view 和 526 promotion 定义恢复。
+```
+
+**ACL 风险**:
+- 636 使用 `DROP VIEW` 重建 `session_turns_with_current_month`，PostgreSQL 会清除该 view 的 ACL。
+- 在应用 636 前后，记录并对比 `information_schema.role_table_grants` 中该 view 的 `SELECT` grants。
+- 如发现角色权限丢失，不得修改已部署的 636；应为目标角色补回 grant，并单独设计新的 forward migration 或部署权限脚本。
+
+**输出**: 升级验证报告（DDL 耗时、锁等待、digest/promotion 结果、ACL 对比、回滚结果）。
 
 ### P1 — 生产部署后 Admin API 流量观测
 **时间**: 部署 c5618ba7e 后 7 天
@@ -333,7 +339,7 @@ LIMIT 10;
 
 - [x] Migration 636 up/down SQL 语法正确
 - [x] Parent/hot/view/promotion DDL 一致性
-- [x] View grant 保留逻辑（up/down 均恢复既有 SELECT）
+- [ ] current-month view ACL：636 已部署版本重建 view 时可能清除既有 `SELECT` grants；待在 staging 完成前后 grant 对比后，以新的 forward migration 或部署权限脚本处理。
 - [x] V2 writer 在原子事务内生成 digest
 - [x] Duplicate enrichment 不会用空 digest 覆盖首次值
 - [x] Admin V2 list/detail 持久化优先 + fallback
@@ -368,7 +374,7 @@ LIMIT 10;
 
 ## 🎓 经验总结
 
-1. **Migration 权限回归**: PostgreSQL `DROP VIEW` 会清除其 ACL，必须在 up/down 中显式保留并恢复既有 grants
+1. **Migration 权限回归**: PostgreSQL `DROP VIEW` 会清除其 ACL。对已部署 migration 不得回写；如 staging 对比发现 grant 丢失，应通过新的 forward migration 或部署权限脚本恢复。
 2. **Installer bootstrap 边界**: fresh baseline 不含所有 startup migrations 的对象；依赖 526 的 636 不能作为 fresh startup migration
 3. **Fresh-schema audit 范围**: 明确 baseline 上界（511–635），避免在不完整 bootstrap 上验证依赖后续对象的 migration
 4. **Digest 文本上限**: 无上限的 user/assistant text 会让 JSONB 随长请求增长；260-rune 上限兼顾可读性与存储效率
