@@ -308,3 +308,71 @@ func TestOmniFreeInfraFailureMetricContract(t *testing.T) {
 
 	t.Fatal("omnifree_infra_failure_total was not registered")
 }
+
+// TestPrometheusRecorder_LiveStreamRecordDropped (2026-08-31, P2-2) pins
+// that the silent-drop counter is registered with the expected label values
+// and that Inc() actually moves the underlying counter. Mirrors the
+// ShadowWrite counter test to keep the wiring contract from regressing
+// silently.
+func TestPrometheusRecorder_LiveStreamRecordDropped(t *testing.T) {
+	r := testRecorder
+
+	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
+		m := &dto.Metric{}
+		if err := counter.Write(m); err != nil {
+			t.Fatalf("counter.Write: %v", err)
+		}
+		return m.GetCounter().GetValue()
+	}
+
+	// Both known reason labels are pre-initialised at constructor time so
+	// that even when no Record() call has ever happened, the time series
+	// is observable in /metrics with value 0.
+	for _, reason := range []string{"store_unconfigured", "redis_unavailable"} {
+		before := readCounter(r.liveStreamRecordDroppedTotal.WithLabelValues(reason))
+		r.RecordLiveStreamRecordDropped(reason)
+		after := readCounter(r.liveStreamRecordDroppedTotal.WithLabelValues(reason))
+		assert.Equal(t, before+1, after,
+			"liveStreamRecordDroppedTotal{%s} must increment by 1", reason)
+	}
+
+	// Confirm the metric is registered under the expected name with
+	// exactly one label ("reason") and no tenant_id per GW-00.
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather Prometheus metrics: %v", err)
+	}
+	var found bool
+	for _, family := range families {
+		if family.GetName() != "gateway_live_stream_record_dropped_total" {
+			continue
+		}
+		found = true
+		metrics := family.GetMetric()
+		if len(metrics) < 2 {
+			t.Fatalf("expected at least 2 label series, got %d", len(metrics))
+		}
+		for _, m := range metrics {
+			var hasReason bool
+			for _, l := range m.GetLabel() {
+				if l.GetName() == "reason" {
+					hasReason = true
+				}
+				if l.GetName() == "tenant_id" {
+					t.Fatalf("tenant_id label forbidden per GW-00, got %+v", m.GetLabel())
+				}
+			}
+			assert.True(t, hasReason, "every series must have a reason label: %+v", m.GetLabel())
+		}
+	}
+	assert.True(t, found, "gateway_live_stream_record_dropped_total was not registered")
+}
+
+// TestNoopRecorder_LiveStreamRecordDropped pins that the NoopRecorder
+// satisfies the interface without panicking (mirrors the
+// TestNoopRecorder_ShadowWriteNoCrash contract).
+func TestNoopRecorder_LiveStreamRecordDropped(t *testing.T) {
+	n := NewNoopRecorder()
+	n.RecordLiveStreamRecordDropped("store_unconfigured")
+	n.RecordLiveStreamRecordDropped("redis_unavailable")
+}

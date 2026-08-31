@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // LiveStreamRedisStore backs the realtime request stream with Redis,
@@ -322,6 +324,10 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest, inst
 		slog.Warn("live stream record: store or Redis client is nil, skipping write",
 			"store_nil", s == nil, "rdb_nil", s != nil && s.rdb == nil,
 			"request_id", req.RequestID)
+		// 2026-08-31 (P2-2 observability): surface silent drops to Prometheus
+		// so operators can distinguish "Redis is down" from "Redis is fine
+		// and nothing is happening" on the live stream hub.
+		metrics.Global().RecordLiveStreamRecordDropped("store_unconfigured")
 		return nil
 	}
 	if req.RequestID == "" {
@@ -363,6 +369,11 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest, inst
 	if !locked {
 		slog.Warn("live stream record: lock not acquired, dropping request to preserve dedup",
 			"request_id", req.RequestID, "tenant_id", tenantID)
+		// 2026-08-31 (P2-2 observability): the per-request_id SETNX lock
+		// failed (Redis down OR contention exhausted). Without this counter,
+		// the operator cannot tell that tiles are being lost while the
+		// canonical record still lands in request_logs.
+		metrics.Global().RecordLiveStreamRecordDropped("redis_unavailable")
 		return nil
 	}
 	defer release()

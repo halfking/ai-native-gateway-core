@@ -130,6 +130,24 @@ type PrometheusRecorder struct {
 	// (already_completed|version_conflict|not_claimed). No tenant_id per GW-00.
 	journalSnapshotDeduplicatedTotal *prometheus.CounterVec
 
+	// liveStreamRecordDroppedTotal (2026-08-31, P2-2 observability): counts
+	// LiveStreamRedisStore.Record() invocations that returned nil WITHOUT
+	// writing to Redis. The audit flagged this as silent degradation; without
+	// a counter operators had no way to distinguish "Redis is down, the live
+	// stream is empty" from "Redis is fine and nothing is happening".
+	//
+	// Label: reason
+	//   - "store_unconfigured" : operator never wired the store (rdb == nil)
+	//   - "redis_unavailable"  : per-request_id lock acquisition failed
+	//                            (Redis down or the SETNX lock contended past
+	//                            the retry budget). This is the only path
+	//                            where tiles can be lost under steady-state
+	//                            load; alert on rate() > 0 over a 5-minute
+	//                            window.
+	//
+	// No tenant_id per GW-00.
+	liveStreamRecordDroppedTotal *prometheus.CounterVec
+
 	logger logger.Logger
 }
 
@@ -455,10 +473,22 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 			[]string{"reason"},
 		),
 
+		// 2026-08-31 (P2-2): live-stream Redis record silent-drop counter.
+		liveStreamRecordDroppedTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_live_stream_record_dropped_total",
+				Help: "LiveStreamRedisStore.Record() calls that returned nil without writing (graceful degradation). Label: reason (store_unconfigured|redis_unavailable).",
+			},
+			[]string{"reason"},
+		),
+
 		logger: logger.New("metrics"),
 	}
 	for _, result := range []string{"recorded", "skipped", "failed"} {
 		recorder.ursmv2ShadowResult.WithLabelValues(result).Add(0)
+	}
+	for _, reason := range []string{"store_unconfigured", "redis_unavailable"} {
+		recorder.liveStreamRecordDroppedTotal.WithLabelValues(reason).Add(0)
 	}
 	return recorder
 }
@@ -750,4 +780,19 @@ func (p *PrometheusRecorder) RecordJournalSnapshotApplied(tenantID string, succe
 //             "not_claimed" (failed to acquire lease)
 func (p *PrometheusRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string) {
 	p.journalSnapshotDeduplicatedTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordLiveStreamRecordDropped (2026-08-31, P2-2 observability) increments
+// the counter when LiveStreamRedisStore.Record() returns nil without
+// writing the tile to Redis.
+//
+// reason values are validated upstream in admin/live_stream_redis_store.go:
+//   - "store_unconfigured" — operator never wired the store (rdb == nil)
+//   - "redis_unavailable"  — per-request_id lock acquisition failed
+//
+// Unknown reasons will create new Prometheus time series, so keep this list
+// stable and aligned with the alerting rules in
+// deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml.
+func (p *PrometheusRecorder) RecordLiveStreamRecordDropped(reason string) {
+	p.liveStreamRecordDroppedTotal.WithLabelValues(reason).Inc()
 }
