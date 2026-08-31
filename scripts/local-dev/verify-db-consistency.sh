@@ -83,8 +83,10 @@ load_envs() {
   export SSH_PASS_252="${SSH_PASS_252:-ssh-config-auth}"
   # shellcheck disable=SC1090
   source configs/env-252.sh
-  # Local docker container uses the SAME superuser password as 252 (synced by
-  # recreate-llm-gateway-pg.sh); no need for configs/env-local.sh (PG_PASS_LOCAL).
+  # Local docker container uses the SAME superuser password as 252 (SSOT:
+  # envs/common/database.yaml; kept in sync by MANUAL changes only — scripts
+  # never modify users/passwords, policy 2026-08-31); no need for
+  # configs/env-local.sh (PG_PASS_LOCAL).
 }
 
 # ── Query helpers ──────────────────────────────────────────────────────────

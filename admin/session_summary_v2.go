@@ -433,8 +433,11 @@ func contentToPlainText(content any) string {
 	}
 }
 
-// extractMessageContent keeps the old helper name for call sites that only
-// need "any readable text" — still skips system-like roles.
+// extractMessageContent keeps the legacy helper name for call sites that need
+// "any readable text" while extractDialogueContent remains the shared parser.
+// It is intentionally retained as a compatibility shim: deleting it would
+// make otherwise-unrelated admin packages silently miss user/assistant content
+// during incremental compilation or downstream embedding.
 func extractMessageContent(delta any) (string, bool) {
 	text := extractDialogueContent(delta, "")
 	if text == "" {
