@@ -6,6 +6,26 @@ import (
 	"testing"
 )
 
+func TestMigration625KeepsHistoricalViewDefinitionForUpgradeCompatibility(t *testing.T) {
+	data, err := os.ReadFile("614_session_bodies_hot.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		"CREATE OR REPLACE VIEW public.session_bodies_unified",
+		"SELECT",
+		"FROM public.session_bodies",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("migration 614 missing historical view contract %q", want)
+		}
+	}
+	if strings.Contains(s, "security_invoker = true") {
+		t.Fatal("migration 614 must remain the original SELECT-* view; migration 625 applies security_invoker")
+	}
+}
+
 func TestMigration625BuildsExplicitSessionBodiesUnified(t *testing.T) {
 	data, err := os.ReadFile("625_session_bodies_unified_explicit.sql")
 	if err != nil {
