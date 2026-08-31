@@ -104,17 +104,30 @@ CREATE TABLE IF NOT EXISTS public.sessions (
     PRIMARY KEY (tenant_id, session_id, partition_date)
 );
 
--- session_turns_hot — used by reaper test 2 (source session present) AND
--- by 526's promote-session_turns validation. We drop the audit-fixture
--- placeholder so 526 can CREATE the production-grade schema; if 526 has
--- already run (idempotent in fresh PG) the drop is a no-op against the
--- real table and we just trust 526 to recreate constraints.
+-- session_turns_hot — used by the reaper integration tests AND by the
+-- audit-only promote-session-turns smoke test. Production migration 526
+-- creates a 50+ column schema that depends on request_logs.gw_session_id
+-- + a parallel session_turns write-ahead path which is too heavy to
+-- bootstrap in an isolated audit container. We register a minimum-viable
+-- audit-only hot table here; the audit-only promote helper in
+-- scripts/audit/verify-promote-session-bodies-turns.sh exercises the
+-- same DELETE-RETURNING + INSERT pattern that 526 uses for the
+-- production column set.
 DROP TABLE IF EXISTS public.session_turns_hot;
--- session_turns_hot will be created by migration 526. The 526 helper
--- itself enforces a hot/parent column-shape contract; if it ever
--- breaks, the session_turns_hot smoke test in
--- scripts/audit/verify-promote-session-bodies-turns.sh surfaces the
--- failure (the integration test runs promote() against the real schema).
+CREATE TABLE public.session_turns_hot (
+    id bigserial PRIMARY KEY,
+    session_id text NOT NULL,
+    turn_no integer NOT NULL,
+    tenant_id text NOT NULL,
+    request_id text NOT NULL,
+    ts timestamptz NOT NULL DEFAULT NOW(),
+    partition_date date NOT NULL DEFAULT CURRENT_DATE,
+    submit_mode text NOT NULL DEFAULT 'full',
+    model text,
+    provider text,
+    prompt_tokens integer DEFAULT 0,
+    completion_tokens integer DEFAULT 0
+);
 
 -- request_logs_hot — required by attachment cleanup execute (migration 629).
 -- Production carries many more columns; the audit fixture only needs the
