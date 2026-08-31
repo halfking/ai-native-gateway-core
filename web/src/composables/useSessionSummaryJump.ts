@@ -1,6 +1,6 @@
 // useSessionSummaryJump.ts — 详情抽屉「会话总结」按钮 → 请求日志页 session 预填跳转。
 //
-// 2026-08-06: 三个父视图（DashboardViewV2 / DashboardViewLegacy / TenantDashboardView）
+// 2026-08-06: 两个父视图（DashboardViewV2 / TenantDashboardView）
 // 此前都各自复制粘贴了 `openSessionSummary(sessionId)` 7 行函数：短路校验 + 关抽屉 +
 // router.push(预填 query)。本 composable 集中存放这条跳转逻辑，避免重复实现。
 //

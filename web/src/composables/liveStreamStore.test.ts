@@ -637,3 +637,56 @@ describe('request_lifecycle stage_category patch', () => {
     expect(patched.stage_category).toBe('llm')
   })
 })
+
+// 2026-09-01 regression guard: visibility listener lifecycle must follow
+// the refCount of active consumers. Before commit 82e324b79 the listener
+// was registered at module load and never removed, causing the
+// "dashboard 路由失效" bug — every navigation left a dangling
+// visibilitychange handler behind.
+describe('liveStreamStore visibility listener lifecycle', () => {
+  it('attaches the visibility listener only while at least one consumer holds a ref', () => {
+    // We can't directly enumerate jsdom listeners; instead we verify the
+    // store-side invariant that refCount drops to zero once all consumers
+    // release, and a re-acquire is symmetric (no leaked handler from a
+    // prior session).
+    expect(__testing.refCount()).toBe(0)
+
+    const releaseA = __testing.acquireForTest()
+    expect(__testing.refCount()).toBe(1)
+
+    const releaseB = __testing.acquireForTest()
+    expect(__testing.refCount()).toBe(2)
+
+    releaseA()
+    expect(__testing.refCount()).toBe(1)
+    // B is still alive — listener must remain attached.
+
+    releaseB()
+    expect(__testing.refCount()).toBe(0)
+    // Last consumer released — listener must detach.
+  })
+
+  it('does not leak visibility listeners across acquire/release cycles', () => {
+    // 100 acquire/release cycles; refCount must end at zero so the
+    // listener is fully detached before the next test runs.
+    for (let i = 0; i < 100; i++) {
+      const release = __testing.acquireForTest()
+      release()
+    }
+    expect(__testing.refCount()).toBe(0)
+  })
+
+  it('a fresh consumer after full release starts a new refCount from 1 (not 2)', () => {
+    // Defends against a subtle bug where releasing the last consumer
+    // forgot to reset refCount, causing the next acquire() to skip
+    // openConnection() because the cached count was still > 0.
+    const releaseA = __testing.acquireForTest()
+    releaseA()
+    expect(__testing.refCount()).toBe(0)
+
+    const releaseB = __testing.acquireForTest()
+    expect(__testing.refCount()).toBe(1)
+    releaseB()
+    expect(__testing.refCount()).toBe(0)
+  })
+})

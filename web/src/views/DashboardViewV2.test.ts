@@ -79,10 +79,12 @@ describe('dashboard board tab contract', () => {
     expect(drawer).toContain(':request-id="requestId"')
   })
 
-  it('opens request details in a new tab from live stream and request logs', async () => {
-    const [v2, legacy, logs, unified] = await Promise.all([
+  it('opens request details via the request log drawer from live stream and request logs', async () => {
+    // DashboardViewLegacy.vue was removed (P2-7 dead code, 2026-09-01):
+    // V2 实时流点击走 <RequestLogDrawer>，drawer header 提供「打开全页」按钮
+    // 接入全屏详情页（openRequestDetailPage）；请求日志列表直接跳全屏详情。
+    const [v2, logs, unified] = await Promise.all([
       readViewSource('DashboardViewV2.vue'),
-      readViewSource('DashboardViewLegacy.vue'),
       readViewSource('RequestLogsView.vue'),
       readFile(
         resolve(process.cwd(), 'web/src/components/detail/UnifiedRequestSessionDrawer.vue'),
@@ -90,14 +92,9 @@ describe('dashboard board tab contract', () => {
       ).catch(() => readFile(resolve(process.cwd(), 'src/components/detail/UnifiedRequestSessionDrawer.vue'), 'utf8')),
     ])
 
-    // 首页 V1 实时流点击仍直接新开全屏详情页（同窗不弹抽屉）；V2 实时流点击改回抽屉，
-    // 抽屉 header 内提供「打开全页」按钮接入全屏详情页（openRequestDetailPage）。
-    expect(legacy).toContain('openRequestDetailPage(id')
-    expect(legacy).not.toContain('<RequestLogDrawer')
     expect(v2).toContain('<RequestLogDrawer')
     expect(v2).toContain('@open-request="openDrawerRequestFullscreen"')
     expect(v2).not.toContain('/admin/request-trace')
-    expect(legacy).not.toContain('/admin/request-trace')
     expect(unified).toContain('openRequestDetailPage(')
     expect(unified).toContain('打开全页')
     // 请求日志列表同样新开全屏详情；抽屉可保留兼容其它入口，但列表点击不再写 activeRequestId。

@@ -19,9 +19,7 @@ import {
   type RequestLogRow,
 } from '../api'
 import { getCurrentTenantId } from '../store'
-import LiveRequestStream from '../components/LiveRequestStream.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
-import { useLiveStream } from '../composables/useLiveStream'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
@@ -207,7 +205,11 @@ async function showDateDetail(day: string) {
 }
 
 // 实时请求流：点击详情新开页
-const { requests: liveRequests } = useLiveStream()
+// 2026-09-01 (P2-4 fix): 不再在父视图直接调用 useLiveStream()，
+// LiveRequestStreamV2 内部已经 acquire/release；父视图再调一次会
+// 让 refCount 多 +1，visibility listener 多注册一份，并在卸载时
+// 多一次 release（实际并未触发 onBeforeUnmount 因为父视图从未 unmount
+// 该 composable 的绑定——liveRequests 一直未使用）。
 function openRequestDetail(id: string) {
   openRequestDetailPage(id, undefined, router)
 }
