@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -26,7 +27,27 @@ func TestClassifyStreamReadError_UnexpectedEOFIsFailure(t *testing.T) {
 	assert.True(t, outcome.Resumable)
 }
 
-func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterContentIsNotRetryable(t *testing.T) {
+// TestStreamChatWithPendingCapture_EOFWithoutDoneAfterCommitIsCompletedAndNotRetryable
+// (renamed from "...IsNotRetryable" on 2026-09-01 — the MiniMax fix
+// promoted this branch from Interrupted=true to Interrupted=false.)
+//
+// Pre-fix: upstream closes HTTP body after sending valid SSE chunks but
+// without `data: [DONE]`. We logged "eof_without_done", set
+// Interrupted=true, and the audit pipeline recorded success=false — even
+// though the client already saw the full response (we synthesized
+// `data: [DONE]\n\n`).
+//
+// Post-fix: when `attemptHasClientSemanticOutput(gate, chunkCount)` is
+// true, we treat this as a benign protocol-level non-compliance (MiniMax
+// upstream behavior), not a real upstream-down failure. The audit row is
+// recorded as success=true, the circuit breaker is not tripped, and
+// credential health is unaffected.
+//
+// The Resumable invariant from the pre-fix test ("committed content +
+// EOF + no [DONE] must NOT be transparently retried") is preserved — a
+// downstream supplier would duplicate committed bytes. Resumable stays
+// false; only Interrupted flips.
+func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterCommitIsCompletedAndNotRetryable(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(
 			"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
@@ -47,12 +68,16 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterContentIsNotRetryable(t
 		nil,
 	)
 
-	assert.True(t, outcome.Interrupted)
-	assert.Equal(t, "eof_without_done", outcome.Reason)
-	assert.False(t, outcome.Resumable)
+	assert.False(t, outcome.Interrupted,
+		"committed output + EOF without [DONE] is benign upstream non-compliance; must NOT be flagged as a failure")
+	assert.Equal(t, "eof_without_done_after_commit", outcome.Reason,
+		"distinct reason literal preserves operator SQL-filter visibility without re-triggering audit failure path")
+	assert.False(t, outcome.Resumable,
+		"Resumable invariant preserved: committed bytes cannot be transparently retried by another candidate")
 	assert.Greater(t, outcome.ChunkCount, 0)
 	assert.Contains(t, writer.Body.String(), `"content":"hello"`)
-	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
+	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"),
+		"synthesized [DONE] must still reach the client so OpenAI-compatible parsers finalize")
 }
 
 // TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks is the
@@ -259,9 +284,15 @@ func (c *countingRecorder) RecordLiveStreamRecordDropped(_ string)              
 var _ metrics.Recorder = (*countingRecorder)(nil)
 
 // TestStreamChatWithPendingCapture_SynthesizedDoneIncrementsMetric
-// (P1 hot-patch 2026-08-06) asserts the EOF branch in stream.go calls
-// RecordStreamSynthesizedDone at least once when the upstream closes
-// without [DONE]. Uses an inline counter Recorder wrapper.
+// (P1 hot-patch 2026-08-06; updated 2026-09-01 MiniMax-fix) asserts the
+// EOF branch in stream.go still calls RecordStreamSynthesizedDone at
+// least once when the upstream closes without [DONE] AFTER semantic
+// output has been committed. Uses an inline counter Recorder wrapper.
+//
+// 2026-09-01: the path is now benign (Interrupted=false,
+// Reason="eof_without_done_after_commit") — the synthesized-[DONE]
+// signal still fires for downstream observability, but the request is no
+// longer counted as a failure.
 func TestStreamChatWithPendingCapture_SynthesizedDoneIncrementsMetric(t *testing.T) {
 	counter := &countingRecorder{delegate: metrics.NewNoopRecorder()}
 
@@ -291,9 +322,11 @@ func TestStreamChatWithPendingCapture_SynthesizedDoneIncrementsMetric(t *testing
 		nil,
 	)
 
-	assert.True(t, outcome.Interrupted)
-	assert.Equal(t, "eof_without_done", outcome.Reason)
-	assert.Equal(t, 1, counter.synth)
+	assert.False(t, outcome.Interrupted,
+		"MiniMax-fix: committed output + EOF without [DONE] is benign, not a failure")
+	assert.Equal(t, "eof_without_done_after_commit", outcome.Reason)
+	assert.Equal(t, 1, counter.synth,
+		"synthesized-[DONE] signal must still fire for downstream observability even after the MiniMax fix")
 	assert.Contains(t, writer.Body.String(), `"content":"hello"`)
 	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
 }
@@ -380,4 +413,140 @@ func TestSplitCombinedDoneFrame_ExtractsCompleteJSONFromTransportGarbage(t *test
 			assert.Equal(t, tc.wantLine, got)
 		})
 	}
+}
+
+// TestStreamChatWithPendingCapture_EOFWithoutDoneAfterCommitIsSuccess
+// (added 2026-09-01, MiniMax-fix) is the end-to-end regression guard for
+// the production bug:
+//
+//	request 6cf5fa78ab25b26650753c1bdcdc6583 (and ~12 others in the same
+//	window) hit provider=14/credential=21/raw_model=MiniMax-M3 with HTTP
+//	200 + valid SSE chunks but no `data: [DONE]` terminator. Pre-fix, the
+//	gateway logged `executor: stream interrupted reason=eof_without_done`
+//	+ `executor failed: stream_interrupted: eof_without_done` and recorded
+//	audit success=false, inflating provider 14's error rate even though
+//	the client already received the full response.
+//
+// The fix: when `attemptHasClientSemanticOutput(gate, chunkCount)` is
+// true, treat this as benign protocol-level non-compliance — the request
+// is a normal completion, not an interruption. Specifically, the capture
+// must:
+//
+//   - NOT be marked interrupted (`stream_interrupted == false` in summary)
+//   - show `stream_done_received == true` (we ObserveChunk(ChunkTypeDone)
+//     mirroring the natural [DONE] path)
+//   - have a non-empty synthesized `data: [DONE]\n\n` trailer
+//   - have `outcome.Interrupted == false`
+//   - have `outcome.Reason == "eof_without_done_after_commit"` so
+//     operators can SQL-filter the benign pattern
+//   - have `outcome.Resumable == false` (committed bytes cannot be
+//     transparently retried — Resumable invariant preserved)
+//
+// Companion to TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks
+// which pins the OPPOSITE invariant (no committed content → still
+// Interrupted=true).
+func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterCommitIsSuccess(t *testing.T) {
+	counter := &countingRecorder{delegate: metrics.NewNoopRecorder()}
+	prev := metrics.Global()
+	metrics.SetGlobal(counter)
+	t.Cleanup(func() { metrics.SetGlobal(prev) })
+
+	capture := audit.NewStreamCapture()
+
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"id\":\"chunk-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n",
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	writer := httptest.NewRecorder()
+
+	outcome := StreamChatWithPendingCapture(context.Background(),
+		writer,
+		resp,
+		"minimax-m3",
+		"MiniMax-M3",
+		NewNormalizer(),
+		capture,
+		false,
+		nil,
+		nil,
+	)
+
+	// Outcome: benign completion, distinct reason, no retry.
+	assert.False(t, outcome.Interrupted,
+		"MiniMax-fix: committed output + EOF without [DONE] must NOT be reported as a failure")
+	assert.Equal(t, "eof_without_done_after_commit", outcome.Reason,
+		"distinct reason literal preserves operator visibility (SQL filter) without re-triggering audit failure path")
+	assert.False(t, outcome.Resumable,
+		"Resumable invariant preserved: a downstream supplier would duplicate committed bytes")
+	assert.Greater(t, outcome.ChunkCount, 0,
+		"at least one chunk was committed before the EOF (otherwise we'd be on the failure branch)")
+
+	// Synthesized [DONE] still reaches the client.
+	assert.Contains(t, writer.Body.String(), `"content":"hello"`)
+	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"),
+		"synthesized [DONE] must still reach the client so OpenAI-compatible parsers finalize")
+
+	// Metric still fires (downstream observability).
+	assert.Equal(t, 1, counter.synth,
+		"RecordStreamSynthesizedDone must still fire — it's the operator signal that the upstream is omitting [DONE]")
+
+	// Capture state — the load-bearing invariant for audit success.
+	summary := capture.SummaryAsMap()
+	assert.False(t, summary["stream_interrupted"].(bool),
+		"capture must NOT be marked interrupted; audit handler.go:5438 reads stream_interrupted and forces Success=false when true")
+	assert.True(t, summary["stream_done_received"].(bool),
+		"capture must show doneReceived=true (we ObserveChunk(ChunkTypeDone) to mirror natural [DONE])")
+}
+
+// TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunksRemainsFailure
+// (added 2026-09-01, MiniMax-fix) pins the OPPOSITE invariant from
+// TestStreamChatWithPendingCapture_EOFWithoutDoneAfterCommitIsSuccess:
+// when the upstream closes the HTTP body before any semantic chunk has
+// reached the gate (chunkCount == 0), this is a REAL upstream-down
+// failure — the fix must NOT promote it to a success.
+//
+// Symptom the regression guard watches: a pre-fix audit row that
+// legitimately had zero tokens / zero chunks / early EOF would, after
+// the fix, erroneously appear as success=true. This test makes that
+// regression loud.
+func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunksRemainsFailure(t *testing.T) {
+	capture := audit.NewStreamCapture()
+
+	// A non-SSE line: not parseable as a chunk, so chunkCount stays 0.
+	// EOF arrives without [DONE]. The terminalVisible gate predicate is
+	// false → the OLD failure branch must run.
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			"data: not-valid-json\n\n",
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	writer := httptest.NewRecorder()
+
+	outcome := StreamChatWithPendingCapture(context.Background(),
+		writer,
+		resp,
+		"minimax-m3",
+		"MiniMax-M3",
+		NewNormalizer(),
+		capture,
+		false,
+		nil,
+		nil,
+	)
+
+	assert.True(t, outcome.Interrupted,
+		"chunkCount=0 + EOF without [DONE] is a real upstream failure; the fix must NOT suppress it")
+	assert.Equal(t, "malformed_sse_frame", outcome.Reason)
+	assert.Equal(t, errorsx.KindUpstreamDown, outcome.Kind)
+	assert.True(t, outcome.Resumable)
+	assert.Empty(t, writer.Body.String(),
+		"no chunk reached the wire — the client got nothing")
+
+	// Capture must be marked interrupted for this branch (audit path).
+	summary := capture.SummaryAsMap()
+	assert.True(t, summary["stream_interrupted"].(bool),
+		"real upstream failure must propagate stream_interrupted=true so audit Success=false")
 }
