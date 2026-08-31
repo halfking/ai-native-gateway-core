@@ -37,12 +37,9 @@ Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
 # LLM_GATEWAY_LISTEN; one added line there would have silently broken every
 # candidate.)
 #
-# ExecStart follows the active binary symlink. The deployer
-# (scripts/deploy-seamless.sh) swaps the symlink, then restarts this unit.
-# Restart=on-failure re-binds the port on transient bind races; RestartSec=5s
-# keeps the restart-loop bounded so the deployer's probe deadline still
-# trips if the failure is structural (e.g. another process owns the port).
-ExecStart=/usr/bin/env LLM_GATEWAY_LISTEN=:%i LLM_GATEWAY_LOG_FILE=/opt/llm-gateway-go/logs/gateway-canary-%i.log /opt/llm-gateway-go/llm-gateway-go
+# The candidate is pinned to its immutable slot so pre-warm never mutates
+# current or changes the running service's binary/version identity.
+ExecStart=/usr/bin/env LLM_GATEWAY_LISTEN=:%i LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/slots/%i/version.json LLM_GATEWAY_LOG_FILE=/opt/llm-gateway-go/logs/gateway-canary-%i.log /opt/llm-gateway-go/slots/%i/llm-gateway-go
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=30s
