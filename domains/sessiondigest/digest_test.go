@@ -37,6 +37,20 @@ func TestBuildAndUnmarshalRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBuildBoundsLongText(t *testing.T) {
+	long := "a"
+	for range 400 {
+		long += "a"
+	}
+	envelope := Build([]map[string]any{{"role": "user", "content": long}}, nil, map[string]any{"prompt_tokens": 1}, nil, time.Time{})
+	if envelope == nil {
+		t.Fatal("Build returned nil")
+	}
+	if got := len([]rune(envelope.Payload.UserInput)); got != 260 {
+		t.Fatalf("bounded user input runes = %d, want 260", got)
+	}
+}
+
 func TestUnmarshalRejectsUnknownVersion(t *testing.T) {
 	raw, err := json.Marshal(Envelope{SchemaVersion: SchemaVersion + 1, AlgorithmVersion: AlgorithmVersion})
 	if err != nil {

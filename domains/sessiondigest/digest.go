@@ -346,4 +346,12 @@ func real(value any) float64 {
 	return 0
 }
 
-func compact(value string) string { return strings.Join(strings.Fields(strings.TrimSpace(value)), " ") }
+func compact(value string) string {
+	const maxRunes = 260
+	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes-1]) + "…"
+}

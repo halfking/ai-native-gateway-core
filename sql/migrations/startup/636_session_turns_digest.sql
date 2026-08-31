@@ -10,6 +10,14 @@ ALTER TABLE public.session_turns_hot
 
 -- The digest column is additive, so replace the explicit projection rather than
 -- relying on CREATE OR REPLACE VIEW (which cannot change a view's column count).
+-- Preserve existing reader grants because DROP VIEW clears its ACL.
+CREATE TEMP TABLE session_turns_current_month_grants ON COMMIT DROP AS
+SELECT grantee, privilege_type
+FROM information_schema.role_table_grants
+WHERE table_schema = 'public'
+  AND table_name = 'session_turns_with_current_month'
+  AND privilege_type = 'SELECT';
+
 DROP VIEW IF EXISTS public.session_turns_with_current_month;
 CREATE VIEW public.session_turns_with_current_month
 WITH (security_invoker = true) AS
@@ -53,6 +61,15 @@ FROM public.session_turns;
 
 COMMENT ON VIEW public.session_turns_with_current_month IS
     'Explicit-column union of recent session_turns_hot rows and all attached public.session_turns partitions, including nullable digest JSONB.';
+
+DO $$
+DECLARE
+    grant_row RECORD;
+BEGIN
+    FOR grant_row IN SELECT grantee FROM session_turns_current_month_grants LOOP
+        EXECUTE format('GRANT SELECT ON public.session_turns_with_current_month TO %I', grant_row.grantee);
+    END LOOP;
+END $$;
 
 CREATE OR REPLACE FUNCTION public.promote_session_turns_hot_to_partition(
     p_retention INTERVAL DEFAULT '7 days',
