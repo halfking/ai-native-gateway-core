@@ -52,6 +52,7 @@ func expectAggregateUpsert(mock pgxmock.PgxPoolIface, update SessionUpdate, part
 			update.TurnIncrement, update.TokensIncrement, update.CostIncrement,
 			update.LastTurnNo, update.LastRequestSummary, update.LastResponseSummary,
 			update.LastModel, update.LastProvider,
+			update.ClientType,
 			partitionDate,
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
@@ -145,6 +146,7 @@ func TestSessionAggregator_UpdateSessionClaimRollsBackOnFailure(t *testing.T) {
 			update.TurnIncrement, update.TokensIncrement, update.CostIncrement,
 			update.LastTurnNo, update.LastRequestSummary, update.LastResponseSummary,
 			update.LastModel, update.LastProvider,
+			update.ClientType,
 			partitionDate,
 		).
 		WillReturnError(errors.New("snapshot write failed"))
