@@ -28,9 +28,38 @@ vi.mock('../api/sessionTurnsTree', () => ({
 vi.mock('../store', () => ({
   isDefaultTenant: () => true,
   isSuperAdmin: () => true,
+  getLocale: () => 'zh-CN',
+  store: { locale: 'zh-CN', userInfo: null },
 }))
 
-const i18n = createI18n({ legacy: false, locale: 'zh-CN', messages: { 'zh-CN': {} } })
+const i18n = createI18n({
+  legacy: false,
+  locale: 'zh-CN',
+  messages: {
+    'zh-CN': {
+      requestDetail: {
+        drawer: {
+          title: '请求/会话详情', single: '单请求', turns: '会话轮次',
+          openFullPage: '打开全页', close: '关闭', filterSession: '筛选会话',
+          tabs: { overview: '概览', chat: '对话', flow: '流程', compress: '压缩与脱敏', routing: '路由', raw: '原始JSON' },
+        },
+        flow: {
+          total: '总计', status: '状态 {value}', source: '来源 {src}',
+          viewWaterfall: '调度瀑布', viewRoutingRetry: '路由与重试', inProgress: '处理中',
+        },
+        overview: {
+          thisTurn: '本轮问答', viewFullConversation: '查看完整对话', userLabel: '用户', assistantLabel: '模型回复',
+          labels: {
+            requestId: '请求ID', requestTime: '请求时间', status: '状态', latency: '延迟', tenant: 'Tenant', success: 'Success',
+            clientModel: '客户端模型', canonicalModel: '出站/规范模型', provider: '供应商', credential: '凭据', session: 'Session', sessionTitle: '会话标题',
+            taskId: '任务 ID', endUser: 'End User', token: 'Token', total: '总', cache: 'Cache', costCredits: 'Cost / Credits', finishReason: 'finish_reason',
+          },
+          persisted: '已落库',
+        },
+      },
+    },
+  },
+})
 
 describe('RequestLogDrawer compatibility shell', () => {
   beforeEach(() => {
