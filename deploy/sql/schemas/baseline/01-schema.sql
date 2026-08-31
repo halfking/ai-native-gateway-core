@@ -29122,5 +29122,5 @@ END $$;
 
 COMMIT;
 
--- Migration 526 owns session_turns_hot, its security-invoker view, advisory-lock key, and promotion function.
--- These startup-managed objects are intentionally omitted from the fresh-bootstrap schema.
+-- Migration 526 historically owns session_turns_hot, its security-invoker view, advisory-lock key, and promotion function.
+-- Fresh installer bootstrap supplies their current final-state form through session_turns_hot_bootstrap.sql.
