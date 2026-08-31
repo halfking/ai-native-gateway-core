@@ -78,14 +78,20 @@ onMounted(() => {
 
 function switchTab(tab: DashboardTabId) {
   const next = normalizeTab(tab) || 'stream'
+  if (activeTab.value === next) return // Avoid redundant switches
+  
+  // Clean up previous tab resources
   if (activeTab.value === 'board' && next !== 'board') {
     boardState.stopAutoRefresh()
   }
+  
   activeTab.value = next
   persistTab(next)
   if (route.query.tab !== next) {
     router.replace({ query: { ...route.query, tab: next } })
   }
+  
+  // Initialize new tab resources
   if (next === 'board') {
     void boardState.load()
     boardState.startAutoRefresh()
