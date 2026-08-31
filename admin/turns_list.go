@@ -157,6 +157,12 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
 		}
+		// Persisted-digest only: this endpoint deliberately does not join
+		// session_bodies_unified (that's the whole point of avoiding the
+		// cross-session body-read cost), so unlike the per-session
+		// list/detail endpoints there is no live-reconstruction fallback.
+		// Turns written before migration 636, or with a digest that fails
+		// to unmarshal, surface with Digest == nil rather than a body read.
 		if persisted, err := sessiondigest.Unmarshal(persistedDigestRaw); err == nil && persisted != nil {
 			it.Digest = turnDigestFromPayload(persisted.Payload)
 		}
