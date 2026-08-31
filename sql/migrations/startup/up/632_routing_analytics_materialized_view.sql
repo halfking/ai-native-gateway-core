@@ -16,11 +16,20 @@
 --   this file is the DBA-facing mirror of db.ensureRoutingAnalyticsMaterializedViews.
 --   Editing only this file does NOT change database behaviour; keep both in sync.
 --
--- NULL-safety (2026-08-31 audit): is_auto_request is COALESCEd to FALSE in the
--- view. GROUP BY keeps NULL and FALSE in separate buckets while the unique
+-- NULL-safety (2026-08-31 audit): is_auto_request is COALESCEd to FALSE in
+-- the view. GROUP BY keeps NULL and FALSE in separate buckets while the unique
 -- index maps both onto the same COALESCE key, which would make CREATE UNIQUE
 -- INDEX fail with a duplicate key and abort startup. Normalizing here also
 -- matches the base queries (`is_auto_request IS NOT TRUE` reads NULL as FALSE).
+--
+-- Tenant sentinel (2026-09-01 incident): tenant_id is TEXT; the unique
+-- indexes COALESCE to a text sentinel (''). The original -1 integer
+-- sentinel failed at analysis time with SQLSTATE 42804 ("COALESCE types
+-- text and integer cannot be matched") AFTER the matviews were created
+-- (autocommit batch), leaving every boot to fail migrations and exit in
+-- no-DB mode before binding the listener. Production (252) was repaired
+-- in place with ''-sentinel indexes; keep this file byte-compatible with
+-- db.ensureRoutingAnalyticsMaterializedViews.
 --
 -- effective_provider_id bakes in the COALESCE(provider_id, credential lookup)
 -- fallback from buildFlowL23Query (admin/analytics.go) so the L2→L3 Sankey
@@ -35,6 +44,9 @@
 --   2026-08-31  v1.0  Initial materialized view creation
 --   2026-08-31  v1.1  Audit fixes: NULL-safe is_auto_request, provider
 --                     credential fallback, plain-column unique index
+--   2026-09-01  v1.2  Incident fix: unique-index tenant sentinel -1 → ''
+--                     (SQLSTATE 42804 on text tenant_id); aligned with the
+--                     in-place repair applied to production (252)
 --
 -- Performance target:
 --   Query latency: 15s → <500ms

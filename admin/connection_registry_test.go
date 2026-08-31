@@ -17,7 +17,7 @@ import (
 // 新增的两个 handler 文件（其余 admin 测试不在本任务验收范围）。
 
 func TestAdminConnectionRegistryListAndGet(t *testing.T) {
-	reg := streaming.NewConnectionRegistry(4, time.Second)
+	reg := streaming.NewConnectionRegistry(4, time.Second, 0)
 	require.NoError(t, reg.Register("req-1", &streaming.FlushFrameWriter{W: &bytes.Buffer{}},
 		streaming.RegistrationMetadata{Protocol: "openai_chat", ClientType: "zcode", TenantID: "t1"}, nil))
 	require.NoError(t, reg.WriteFrame("req-1", "data: {}\n\n"))

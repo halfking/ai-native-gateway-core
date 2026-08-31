@@ -45,7 +45,7 @@ func bridgeTestEvent(action liveactions.Action, requestID string) liveactions.Ac
 // ── UT-SK-06 思考帧格式与运营开关 ────────────────────────────────────────
 
 func TestActionBridgeCommentFrameFormatMatchesHandler(t *testing.T) {
-	reg := NewConnectionRegistry(0, time.Second)
+	reg := NewConnectionRegistry(0, time.Second, 0)
 	rec := &frameRecorder{}
 	require.NoError(t, reg.Register("req-1", rec, RegistrationMetadata{
 		Protocol: "openai_chat", ClientType: "unknown",
@@ -75,7 +75,7 @@ func TestActionBridgeCommentFrameFormatMatchesHandler(t *testing.T) {
 }
 
 func TestActionBridgeDisabledSendsNothing(t *testing.T) {
-	reg := NewConnectionRegistry(0, time.Second)
+	reg := NewConnectionRegistry(0, time.Second, 0)
 	rec := &frameRecorder{}
 	require.NoError(t, reg.Register("req-1", rec, RegistrationMetadata{Protocol: "openai_chat"}, nil))
 
@@ -88,7 +88,7 @@ func TestActionBridgeDisabledSendsNothing(t *testing.T) {
 }
 
 func TestActionBridgeFiltersNonRequestScopedAndUnregistered(t *testing.T) {
-	reg := NewConnectionRegistry(0, time.Second)
+	reg := NewConnectionRegistry(0, time.Second, 0)
 	rec := &frameRecorder{}
 	require.NoError(t, reg.Register("req-1", rec, RegistrationMetadata{Protocol: "openai_chat"}, nil))
 
@@ -106,7 +106,7 @@ func TestActionBridgeFiltersNonRequestScopedAndUnregistered(t *testing.T) {
 }
 
 func TestActionBridgeSourcePumpConsumesTap(t *testing.T) {
-	reg := NewConnectionRegistry(0, time.Second)
+	reg := NewConnectionRegistry(0, time.Second, 0)
 	rec := &frameRecorder{}
 	require.NoError(t, reg.Register("req-1", rec, RegistrationMetadata{Protocol: "openai_chat"}, nil))
 
@@ -128,7 +128,7 @@ func TestActionBridgeSourcePumpConsumesTap(t *testing.T) {
 // ── UT-SK-07 语义帧白名单（unknown 回退注释） ────────────────────────────
 
 func TestActionBridgeSemanticWhitelistAndUnknownFallback(t *testing.T) {
-	reg := NewConnectionRegistry(0, time.Second)
+	reg := NewConnectionRegistry(0, time.Second, 0)
 	whitelisted := &frameRecorder{}
 	unknown := &frameRecorder{}
 	require.NoError(t, reg.Register("req-wl", whitelisted, RegistrationMetadata{
@@ -162,7 +162,7 @@ func TestActionBridgeSemanticWhitelistAndUnknownFallback(t *testing.T) {
 }
 
 func TestActionBridgeAnthropicSemanticFrame(t *testing.T) {
-	reg := NewConnectionRegistry(0, time.Second)
+	reg := NewConnectionRegistry(0, time.Second, 0)
 	rec := &frameRecorder{}
 	require.NoError(t, reg.Register("req-a", rec, RegistrationMetadata{
 		Protocol: "anthropic", ClientType: "claude-code",
@@ -191,7 +191,7 @@ func TestActionBridgeNeverPollutesAnswerStream(t *testing.T) {
 	// frame on whitelisted types — never a content delta.
 	answer := "data: {\"choices\":[{\"delta\":{\"content\":\"final answer\"}}]}\n\ndata: [DONE]\n\n"
 
-	reg := NewConnectionRegistry(0, time.Second)
+	reg := NewConnectionRegistry(0, time.Second, 0)
 	rec := &frameRecorder{}
 	require.NoError(t, reg.Register("req-1", rec, RegistrationMetadata{
 		Protocol: "openai_chat", ClientType: "unknown",
@@ -228,7 +228,7 @@ func TestActionBridgeNeverPollutesAnswerStream(t *testing.T) {
 
 func TestActionBridgeDropsWhenQueueFull(t *testing.T) {
 	// 旁路异步：有界 channel 满即丢弃并计数，不阻塞调用方。
-	reg := NewConnectionRegistry(0, 80*time.Millisecond)
+	reg := NewConnectionRegistry(0, 80*time.Millisecond, 0)
 	bw := &blockedWriter{release: make(chan struct{})}
 	require.NoError(t, reg.Register("req-1", bw, RegistrationMetadata{Protocol: "openai_chat"}, nil))
 

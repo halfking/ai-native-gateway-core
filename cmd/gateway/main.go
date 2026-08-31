@@ -592,7 +592,7 @@ func main() {
 	// and admin handler) and call SetConnectionRegistry on the chat
 	// handler. admin.SetConnectionRegistry below is updated in the same
 	// commit to use the shared instance instead of allocating a second.
-	connectionRegistry := streaming.NewConnectionRegistry(0, 0)
+	connectionRegistry := streaming.NewConnectionRegistry(0, 0, 0)
 	chatHandler.SetConnectionRegistry(connectionRegistry)
 
 	// ── Wave 2-D: unified orchestration plugin — GoalRun store + status handler ──
