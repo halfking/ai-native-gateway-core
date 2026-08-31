@@ -114,6 +114,25 @@ html[data-theme='light'] {
   /* 文本反白 */
   --on-primary:  var(--kx-text-on-primary);
   --radius:    8px;
+  /* === Pill / Chip 设计原语 (P1-8) === */
+  --pill-radius: 999px;
+  --pill-padding-y: 1px;
+  --pill-padding-x: 8px;
+  --pill-padding-x-sm: 7px;
+  --pill-padding-x-xs: 6px;
+  --pill-font-size: 11px;
+  --pill-font-size-sm: 10px;
+  --pill-font-weight: 600;
+  --chip-radius: 12px;
+  --chip-radius-tight: 5px;
+  --chip-padding-y: 3px;
+  --chip-padding-x: 9px;
+  --chip-font-size: 12px;
+  --tone-ok-bg:    color-mix(in srgb, var(--kx-success) 14%, transparent);
+  --tone-err-bg:   color-mix(in srgb, var(--kx-danger)  14%, transparent);
+  --tone-warn-bg:  color-mix(in srgb, var(--kx-warning) 16%, transparent);
+  --tone-info-bg:  color-mix(in srgb, var(--kx-primary) 14%, transparent);
+  --tone-muted-bg: var(--bg-subtle, var(--surface-secondary));
   color-scheme: light;
 }
 
@@ -220,6 +239,25 @@ html[data-theme='dark'] {
   --vendor-idle:       #374151;
   --on-primary:  var(--kx-text-on-primary);
   --radius:    8px;
+  /* === Pill / Chip 设计原语 (P1-8, dark) === */
+  --pill-radius: 999px;
+  --pill-padding-y: 1px;
+  --pill-padding-x: 8px;
+  --pill-padding-x-sm: 7px;
+  --pill-padding-x-xs: 6px;
+  --pill-font-size: 11px;
+  --pill-font-size-sm: 10px;
+  --pill-font-weight: 600;
+  --chip-radius: 12px;
+  --chip-radius-tight: 5px;
+  --chip-padding-y: 3px;
+  --chip-padding-x: 9px;
+  --chip-font-size: 12px;
+  --tone-ok-bg:    color-mix(in srgb, var(--kx-success) 14%, transparent);
+  --tone-err-bg:   color-mix(in srgb, var(--kx-danger)  14%, transparent);
+  --tone-warn-bg:  color-mix(in srgb, var(--kx-warning) 16%, transparent);
+  --tone-info-bg:  color-mix(in srgb, var(--kx-primary) 14%, transparent);
+  --tone-muted-bg: var(--bg-subtle, var(--surface-secondary));
   color-scheme: dark;
 }
 

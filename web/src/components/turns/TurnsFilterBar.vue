@@ -255,8 +255,10 @@ function onCustomRangeChange(range: [Date, Date] | null) {
 .filter-caret { display: inline-block; transition: transform .15s; font-size: 12px; }
 .filter-caret.open { transform: rotate(90deg); }
 .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
-.chip { border: 1px solid var(--border); background: var(--surface-secondary); color: var(--text-secondary); border-radius: 12px; padding: 2px 10px; font-size: 12px; cursor: pointer; }
-.chip:hover { border-color: var(--accent); color: var(--accent); }
+/* .chip / .chip:hover / .chip--button 从全局 styles/pill-chip.css 继承（P1-8）。
+ * 本组件原 padding 2px 10px 与全局 --chip-padding-y/x = 3px 9px 略有差异，
+ * scoped 内仅覆盖 padding。 */
+.chip { padding: 2px 10px; }
 @media (max-width: 760px) {
   .filter-topic, .filter-preset, .filter-date-range, .filter-select, .filter-select-short, .filter-select-tags { width: 100%; max-width: none; min-width: 0; flex-basis: 100%; }
 }

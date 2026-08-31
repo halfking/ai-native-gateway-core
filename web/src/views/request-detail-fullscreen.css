@@ -32,11 +32,7 @@
   font-size: 11px;
   font-weight: 600;
 }
-.pill--ok { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 14%, transparent); }
-.pill--err { color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 14%, transparent); }
-.pill--warn { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 16%, transparent); }
-.pill--info { color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 14%, transparent); }
-.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
+/* .pill--* 全部从全局 styles/pill-chip.css 继承（P1-8）。 */
 .mode-seg { display: flex; gap: 4px; }
 .banner { padding: 16px; flex-shrink: 0; }
 .banner.err { color: var(--danger); }

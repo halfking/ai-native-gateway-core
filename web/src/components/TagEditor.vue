@@ -125,11 +125,10 @@ onMounted(loadTags)
   padding: 6px; border: 1px solid var(--border); border-radius: 6px; min-height: 36px;
   background: var(--bg);
 }
-.chip {
-  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-  padding: 2px 8px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;
-}
-.chip-x { background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 14px; line-height: 1; }
+/* .chip / .chip-x 从全局 styles/pill-chip.css 继承（P1-8）。
+ * 注：本组件原 padding/border-radius 与全局 --chip-padding-y/x / --chip-radius
+ * 数值不同，scoped 内仅覆盖 padding 微调。 */
+.chip { padding: 2px 8px; }
 .tag-input { flex: 1; min-width: 160px; border: none; outline: none; background: transparent; font-size: 13px; color: var(--text); }
 .ns-hints { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .suggest {

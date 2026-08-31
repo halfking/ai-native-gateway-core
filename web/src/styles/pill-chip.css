@@ -1,0 +1,97 @@
+/* pill-chip.css — Status pill + chip 组件设计系统 (P1-8)
+ * Token 来源: style.css 的 :root / html[data-theme='dark'] (--pill-*, --chip-*, --tone-*-bg)
+ * 适用于 RequestOverviewPanel / RequestWaterfallPanel / SessionTurnsSyncPane /
+ * request-detail-fullscreen.css / DispatchWaterfallStatus / DispatchWaterfallLegend /
+ * UpdateActivateLicenseCard / TagEditor / TurnsFilterBar / PromptInjectionConfigPanel /
+ * CompressionConfigPanel / SessionTurnsPanel。
+ *
+ * 接入: web/src/main.ts 已 `import './styles/pill-chip.css'`。
+ *
+ * 注意: <style scoped> 中的同名 .pill / .chip / .chip--* 块需删除（避免 hash 后
+ * 选择器特异性胜过全局规则）。组件仅保留局部修饰规则。
+ */
+
+/* === Pill: 紧凑状态徽章（success/error/warn/info/muted） === */
+.pill {
+  display: inline-block;
+  width: fit-content;
+  padding: var(--pill-padding-y) var(--pill-padding-x);
+  border-radius: var(--pill-radius);
+  font-size: var(--pill-font-size);
+  font-weight: var(--pill-font-weight);
+}
+.pill--sm {
+  padding: 0 var(--pill-padding-x-xs);
+  font-size: var(--pill-font-size-sm);
+}
+.pill--ok    { color: var(--kx-success); background: var(--tone-ok-bg); }
+.pill--err   { color: var(--kx-danger);  background: var(--tone-err-bg); }
+.pill--warn  { color: var(--kx-warning); background: var(--tone-warn-bg); }
+.pill--info  { color: var(--kx-primary); background: var(--tone-info-bg); }
+.pill--muted { color: var(--muted);      background: var(--tone-muted-bg); }
+
+/* === Chip: 带边框+背景的标签/状态条 === */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: var(--chip-padding-y) var(--chip-padding-x);
+  border-radius: var(--chip-radius);
+  font-size: var(--chip-font-size);
+  border: 1px solid var(--kx-border);
+  background: var(--kx-surface);
+  color: var(--kx-text);
+}
+.chip--tight { border-radius: var(--chip-radius-tight); }
+.chip--muted { color: var(--kx-muted); }
+.chip--tier  { font-weight: 500; }
+
+.chip--ok {
+  border-color: color-mix(in srgb, var(--kx-success) 40%, var(--kx-border));
+  background: var(--kx-success-soft);
+  color: var(--kx-success);
+}
+.chip--warn {
+  border-color: color-mix(in srgb, var(--kx-warning) 50%, var(--kx-border));
+}
+.chip--danger {
+  border-color: color-mix(in srgb, var(--kx-danger) 50%, var(--kx-border));
+  color: var(--kx-danger);
+}
+
+/* === Legend chip (DispatchWaterfallLegend) === */
+.chip--legend { color: var(--kx-text); font-size: var(--pill-font-size); }
+.chip--legend i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+/* === Interactive chip (filter / button: TurnsFilterBar, PromptInjectionConfigPanel) === */
+.chip--button {
+  appearance: none;
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+.chip--button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.chip--button.active {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* === Tag close button (TagEditor) === */
+.chip-x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+}
