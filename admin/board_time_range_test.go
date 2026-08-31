@@ -40,7 +40,7 @@ func TestBoardPresetTimeRange(t *testing.T) {
 
 func TestBoardRequestLogsFromClause(t *testing.T) {
 	from, alias := boardRequestLogsFromClause()
-	if from != "request_logs_with_current_month AS r" {
+	if from != "request_logs_with_current_month_without_customer_id AS r" {
 		t.Fatalf("from = %q", from)
 	}
 	if alias != "r" {
