@@ -80,6 +80,21 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 	}
 }
 
+func TestSessionTurnsHotBootstrapIsFinalStateAsset(t *testing.T) {
+	for _, marker := range []string{
+		"CREATE TABLE IF NOT EXISTS public.session_turns_hot",
+		"digest JSONB",
+		"CREATE VIEW public.session_turns_with_current_month",
+		"security_invoker = true",
+		"CREATE OR REPLACE FUNCTION public.promote_session_turns_hot_to_partition",
+		"installer session-turns bootstrap requires nullable JSONB digest",
+	} {
+		if !bytes.Contains(sessionTurnsHotBootstrap, []byte(marker)) {
+			t.Fatalf("session turns hot bootstrap is missing final-state marker %q", marker)
+		}
+	}
+}
+
 func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 	expected := []string{
 		"511_state_transitions_table.sql",
@@ -116,6 +131,7 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"601_request_logs_bodies_drop_metadata.sql",
 		"602_request_logs_promote_atomic.sql",
 		"618_request_journey_snapshot_receipts.sql",
+		"session_turns_hot_bootstrap.sql",
 	}
 
 	seen := make(map[string]struct{}, len(expected))
