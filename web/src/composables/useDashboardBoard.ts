@@ -207,7 +207,8 @@ export function useDashboardBoard() {
       }
       return
     }
-    if (liveUpdatesEnabled.value) {
+    // Only restart polling if auto-refresh is still active
+    if (refreshActive && liveUpdatesEnabled.value) {
       void load({ silent: true })
       void loadOperational()
       schedulePoll()
@@ -217,8 +218,10 @@ export function useDashboardBoard() {
   async function startAutoRefresh() {
     const generation = ++refreshGeneration
     refreshActive = true
+    // Clean up any existing timers and listeners first
     if (refreshTimer) clearInterval(refreshTimer)
     document.removeEventListener('visibilitychange', onVisibilityChange)
+    
     if (!liveUpdatesEnabled.value) {
       refreshActive = false
       unwireLiveUpdates()
@@ -247,6 +250,7 @@ export function useDashboardBoard() {
       refreshTimer = undefined
     }
     stopOperationalPoll()
+    // Always remove the visibility listener when stopping
     document.removeEventListener('visibilitychange', onVisibilityChange)
     unwireLiveUpdates()
   }
@@ -258,7 +262,7 @@ export function useDashboardBoard() {
   }
 
   watch(liveUpdatesEnabled, (enabled) => {
-    if (enabled) {
+    if (enabled && refreshActive) {
       void startAutoRefresh()
     } else {
       if (refreshTimer) {

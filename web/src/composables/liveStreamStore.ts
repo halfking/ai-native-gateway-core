@@ -290,9 +290,14 @@ let needsFullRefresh = false
 // Forward declaration - actual implementation is below
 let _requestSnapshotRefresh: () => void = () => {}
 
+// Visibility change handler (stored so we can remove it properly)
+let visibilityChangeHandler: (() => void) | null = null
+
 // Track page visibility changes
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
+function installVisibilityListener() {
+  if (typeof document === 'undefined' || visibilityChangeHandler) return
+  
+  visibilityChangeHandler = () => {
     const wasHidden = !visibilityState.isVisible
     visibilityState.isVisible = !document.hidden
 
@@ -317,7 +322,15 @@ if (typeof document !== 'undefined') {
       visibilityState.lastVisibleAt = Date.now()
       console.log('[LiveStream] Page hidden, marking updates as missed')
     }
-  })
+  }
+  
+  document.addEventListener('visibilitychange', visibilityChangeHandler)
+}
+
+function removeVisibilityListener() {
+  if (typeof document === 'undefined' || !visibilityChangeHandler) return
+  document.removeEventListener('visibilitychange', visibilityChangeHandler)
+  visibilityChangeHandler = null
 }
 
 // Vue auto-unwraps `ref` and `reactive` proxies in templates.
@@ -1270,6 +1283,8 @@ function openConnection() {
   recomputeMaxVisible()
   resizeHandler = () => recomputeMaxVisible()
   window.addEventListener('resize', resizeHandler)
+  // Install visibility listener when opening connection
+  installVisibilityListener()
   // Browser EventSource cannot set Authorization headers, and the
   // project uses HttpOnly cookies that some reverse-proxy / dev
   // setups do not propagate to the EventSource request (e.g. a
@@ -1341,6 +1356,8 @@ function closeConnection() {
     window.removeEventListener('resize', resizeHandler)
     resizeHandler = null
   }
+  // Remove visibility listener when closing connection
+  removeVisibilityListener()
   liveStreamState.connection = 'closed'
 }
 
