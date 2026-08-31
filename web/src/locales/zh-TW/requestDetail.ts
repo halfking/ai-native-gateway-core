@@ -176,6 +176,7 @@ export default {
     empty: '尚無鏈路事件',
     noData: '無流程資料',
     diagram: {
+      ariaLabel: '請求處理流程', trackLabel: '流程事件序列',
       event: '流程事件', noData: '尚無可觀測流程', noEvents: '尚無流程事件',
       stages: { received: '進站', routing: '路由解析', model_queue: '模型佇列', credential_queue: '憑據佇列', node_selection: '節點選擇', upstream: '上游請求', streaming: '串流回應', terminal: '請求結束' },
       status: { success: '成功', failed: '失敗', timeout: '逾時', skipped: '略過' },

@@ -176,6 +176,7 @@ export default {
     empty: 'Sin eventos de enlace',
     noData: 'Sin datos de flujo',
     diagram: {
+      ariaLabel: 'Flujo de procesamiento de solicitudes', trackLabel: 'Secuencia de eventos del flujo',
       event: 'Evento de flujo', noData: 'Sin flujo observable', noEvents: 'Sin eventos de flujo',
       stages: { received: 'Entrada', routing: 'Resolución de ruta', model_queue: 'Cola del modelo', credential_queue: 'Cola de credenciales', node_selection: 'Selección de nodo', upstream: 'Solicitud ascendente', streaming: 'Respuesta en streaming', terminal: 'Solicitud completada' },
       status: { success: 'Éxito', failed: 'Fallido', timeout: 'Tiempo agotado', skipped: 'Omitido' },

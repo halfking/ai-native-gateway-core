@@ -167,11 +167,24 @@ func (s *JournalSnapshotReceiptStore) ClaimWithProjectionBase(ctx context.Contex
 	if until.Valid && until.Time.After(now) {
 		return claim, nil
 	}
-	// Reclaim guards: callers must pass the same base the existing row stores,
-	// unless this is the historical first-claim sentinel (both stored and
-	// supplied are zero). Without this guard a stale retry carrying base=0
-	// could silently overwrite a lease that was already advanced to a non-zero
-	// base by an earlier attempt, masking concurrent-retry conflicts.
+// Reclaim guards (P1-4 contract): callers must pass the same base the
+	// existing row stores, unless this is the historical first-claim sentinel
+	// where both stored and supplied are zero. The both-zero sentinel is the
+	// documented exception that lets adapters with no projection history yet
+	// still issue a reclaim.
+	//
+	// IMPORTANT concurrency caveat (2026-08-31, audit P1-4 followup):
+	// the both-zero path is NOT concurrency-safe across processes. Two
+	// gateway replicas each passing projection_base_seq=0 for the same
+	// (tenant, request, version) tuple will see the same stored row, the
+	// same in-store guard, and one will quietly reclaim the other's lease.
+	// Production safety relies on the dispatch adapter serialising per-owner
+	// delivery before calling ClaimWithProjectionBase (see
+	// cmd/gateway/main_dispatch_observation.go a.mu). Do not delete the
+	// both-zero exception without first guaranteeing that *every* production
+	// caller derives a strictly positive base; the legacy Claim shim and the
+	// recorder-fresh path at cmd/gateway/main_dispatch_observation.go:186
+	// rely on it.
 	if existingBase != projectionBaseSeq && !(existingBase == 0 && projectionBaseSeq == 0) {
 		return claim, ErrSnapshotReceiptLeaseLost
 	}

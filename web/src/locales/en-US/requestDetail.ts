@@ -176,6 +176,7 @@ export default {
     empty: 'No link events',
     noData: 'No flow data',
     diagram: {
+      ariaLabel: 'Request processing flow', trackLabel: 'Flow event sequence',
       event: 'Flow event', noData: 'No observable flow', noEvents: 'No flow events',
       stages: { received: 'Ingress', routing: 'Route resolution', model_queue: 'Model queue', credential_queue: 'Credential queue', node_selection: 'Node selection', upstream: 'Upstream request', streaming: 'Streaming response', terminal: 'Request complete' },
       status: { success: 'Success', failed: 'Failed', timeout: 'Timeout', skipped: 'Skipped' },
