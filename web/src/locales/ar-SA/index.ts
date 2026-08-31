@@ -35,6 +35,7 @@ import examples from './examples'
 import dataLifecycle from './dataLifecycle'
 import tuning from './tuning'
 import turnDigest from './turnDigest'
+import sessionTimeline from './sessionTimeline'
 import correlations from './correlations'
 import tenantModelPolicyPanel from './tenantModelPolicyPanel'
 import clientConfigDialog from './clientConfigDialog'
@@ -107,6 +108,7 @@ export default {
   dataLifecycle,
   tuning,
   turnDigest,
+  sessionTimeline,
   correlations,
   tenantModelPolicyPanel,
   clientConfigDialog,
