@@ -233,6 +233,20 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	hbWindow, hbChunks := RecoveryHoldbackFromEnv()
 
 	res := SurvivalResult{}
+	// 2026-08-31 (P2-6 audit-data-closure): allocate res.History with zero
+	// length and a fresh backing array so the append in
+	// appendSurvivalHistory never aliases storage carried over from a prior
+	// Run call. The earlier nil-only assignment was insufficient: append()
+	// would silently reuse the capacity of any slice header the caller had
+	// retained from a previous Run, causing new entries from Run B to
+	// appear in the A.History slice the caller still held. Using make with
+	// a small initial cap guarantees a fresh allocation and bounds the
+	// first few appends before any growth.
+	res.History.PriorAttempts = make([]errorsx.PriorAttempt, 0, 8)
+	res.History.TriedNodes = nil
+	res.History.TriedModels = nil
+	res.History.Terminal = false
+	res.History.LastSeq = 0
 	// recoveryStart anchors gateway_survival_recovery_latency_seconds: the
 	// instant the task saw its first recoverable failure.
 	var recoveryStart time.Time
