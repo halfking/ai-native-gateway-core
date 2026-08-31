@@ -31,7 +31,9 @@
 //
 // What is preserved
 // -----------------
-//   - main.go's init sequence (DB pool, Redis, Casdoor, executor, ...).
+//   - main.go's init sequence (DB pool, Redis, executor, ...). Auth uses the
+//     gateway's local HS256 JWT + HttpOnly cookie (admin/auth.go); Casdoor
+//     SSO is a planned optional integration, not yet wired in.
 //   - relay/ChatHandler.ServeHTTP is the source of truth for v1 auth,
 //     key verify, model policy, request WAL, telemetry, sticky cache.
 //   - routing/relay/compressor imports remain — the Pipeline internally
