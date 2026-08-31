@@ -990,7 +990,7 @@ func (e *Executor) executeOpenAI(
 					if (errorsx.IsContextLength(errKind) ||
 						shouldHeuristicCompact(resp.StatusCode, errKind, len(sourceBody), cand.ContextWindow)) &&
 						cand.Protocol != "anthropic-messages" {
-					switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode) {
+					switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode, body[:n]) {
 					case ctxLenRetry:
 						bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
 						if err != nil {
