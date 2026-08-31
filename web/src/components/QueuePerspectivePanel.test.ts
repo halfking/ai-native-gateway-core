@@ -449,13 +449,13 @@ describe('QueuePerspectivePanel', () => {
     expect(groups[1].findAll('.qp-model-group-requests')).toHaveLength(0)
   })
 
-  it('renders recent model-lane status strip on each model title row', async () => {
+  it('renders per-model input/output queue strips (client-final outcomes)', async () => {
     liveStreamState.nodes = [
       { credential_id: 1, provider_id: 2, provider_code: 'a', manual_disabled: false, circuit_state: 'closed', raw_models: ['gpt-4o'] },
       { credential_id: 3, provider_id: 4, provider_code: 'c', manual_disabled: false, circuit_state: 'closed', raw_models: ['claude-sonnet'] },
     ]
     liveStreamState.snapshot = {
-      summary: { total: 3, success: 2, failure: 0, in_progress: 1 },
+      summary: { total: 4, success: 2, failure: 1, in_progress: 1 },
       dimensions: {
         credential: [],
         vendor: [],
@@ -466,7 +466,7 @@ describe('QueuePerspectivePanel', () => {
             name: 'gpt-4o',
             dimension: 'model',
             isOthers: false,
-            stats: { total: 2, success: 1, failure: 0, in_progress: 1 },
+            stats: { total: 3, success: 1, failure: 1, in_progress: 1 },
             requests: [
               {
                 request_id: 'r-g1',
@@ -484,6 +484,15 @@ describe('QueuePerspectivePanel', () => {
                 provider: 'a',
                 status: 'in_progress',
               },
+              {
+                request_id: 'r-g3',
+                timestamp: '2026-08-27T00:00:03Z',
+                model: 'gpt-4o',
+                vendor: 'openai',
+                provider: 'a',
+                status: 'failure',
+                error_kind: 'upstream_5xx',
+              },
             ],
           },
           {
@@ -495,7 +504,7 @@ describe('QueuePerspectivePanel', () => {
             requests: [
               {
                 request_id: 'r-c1',
-                timestamp: '2026-08-27T00:00:03Z',
+                timestamp: '2026-08-27T00:00:04Z',
                 model: 'claude-sonnet',
                 vendor: 'anthropic',
                 provider: 'c',
@@ -508,14 +517,78 @@ describe('QueuePerspectivePanel', () => {
       dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
       status_legends: [],
     }
+    // r-g1 曾切换节点后重试成功：输出条应标记 rescued（上游有错、输出仍绿）。
+    __testing.handleEnvelope({
+      type: 'request_lifecycle',
+      ts: '2026-08-27T00:00:01Z',
+      action: [
+        { request_id: 'r-g1', seq: 1, action: 'upstream_request', credential_id: 1, retry: false, retry_seq: 1, ts: '2026-08-27T00:00:01Z' },
+        { request_id: 'r-g1', seq: 2, action: 'node_switch', from_credential_id: 1, to_credential_id: 2, ts: '2026-08-27T00:00:01Z' },
+      ],
+    })
 
     const wrapper = mountPanel()
     await flushPromises()
-    const strips = wrapper.findAll('.model-recent-status-strip')
+    const strips = wrapper.findAll('.model-io-strips')
     expect(strips).toHaveLength(2)
-    // 字母序：claude-sonnet 在前（1 cell），gpt-4o 在后（2 cells）
-    expect(strips[0].findAll('.model-recent-status-strip__cell')).toHaveLength(1)
-    expect(strips[1].findAll('.model-recent-status-strip__cell')).toHaveLength(2)
+
+    // 字母序：claude-sonnet 在前（1 条输出、全绿），gpt-4o 在后
+    // （输入 1 在途 + 输出 2 条：1 成功 1 失败 → ✓50% ✗1）。
+    const claudeIO = strips[0]
+    const gptIO = strips[1]
+    expect(claudeIO.text()).toContain('✓100%')
+    expect(claudeIO.findAll('.model-io-strips__cell')).toHaveLength(1)
+
+    expect(gptIO.text()).toContain('✓50%')
+    expect(gptIO.text()).toContain('✗1')
+    // 输入行 1 个在途格 + 输出行 2 个终态格
+    expect(gptIO.findAll('.model-io-strips__cell')).toHaveLength(3)
+    // r-g1（成功且发生过 node_switch）带「经重试后成功」角标
+    const rescued = gptIO.findAll('.model-io-strips__cell--rescued')
+    expect(rescued).toHaveLength(1)
+    expect(rescued[0].attributes('title')).toContain('经重试/切换节点后成功')
+  })
+
+  it('renders an em dash instead of a fake rate when a model has no terminal requests', async () => {
+    liveStreamState.nodes = [
+      { credential_id: 1, provider_id: 2, provider_code: 'a', manual_disabled: false, circuit_state: 'closed', raw_models: ['m-1'] },
+    ]
+    liveStreamState.snapshot = {
+      summary: { total: 1, success: 0, failure: 0, in_progress: 1 },
+      dimensions: {
+        credential: [],
+        vendor: [],
+        provider: [],
+        model: [
+          {
+            id: 'm-1',
+            name: 'm-1',
+            dimension: 'model',
+            isOthers: false,
+            stats: { total: 1, success: 0, failure: 0, in_progress: 1 },
+            requests: [
+              {
+                request_id: 'r-m1',
+                timestamp: '2026-08-27T00:00:01Z',
+                model: 'm-1',
+                vendor: 'other',
+                provider: 'a',
+                status: 'in_progress',
+              },
+            ],
+          },
+        ],
+      },
+      dimension_legends: { credential: [], vendor: [], provider: [], model: [] },
+      status_legends: [],
+    }
+
+    const wrapper = mountPanel()
+    await flushPromises()
+    const strips = wrapper.findAll('.model-io-strips')
+    expect(strips).toHaveLength(1)
+    expect(strips[0].text()).toContain('—')
+    expect(strips[0].text()).not.toMatch(/✓\d+%/)
   })
 
   it('expands a model to show requests routed to those nodes', async () => {
