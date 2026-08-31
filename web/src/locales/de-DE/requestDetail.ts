@@ -175,6 +175,13 @@ export default {
     viewRoutingRetry: 'Routing-Wiederholung anzeigen',
     empty: 'Keine Link-Ereignisse',
     noData: 'Keine Flow-Daten',
+    diagram: {
+      event: 'Flow-Ereignis', noData: 'Kein beobachtbarer Flow', noEvents: 'Keine Flow-Ereignisse',
+      stages: { received: 'Eingang', routing: 'Routenauflösung', model_queue: 'Modellwarteschlange', credential_queue: 'Credential-Warteschlange', node_selection: 'Knotenauswahl', upstream: 'Upstream-Anfrage', streaming: 'Stream-Antwort', terminal: 'Anfrage abgeschlossen' },
+      status: { success: 'Erfolg', failed: 'Fehlgeschlagen', timeout: 'Timeout', skipped: 'Übersprungen' },
+      flags: { compression: 'Komprimierung', retry: 'Wiederholung', nodeSwitch: 'Knotenwechsel', degraded: 'Beobachtung eingeschränkt' },
+      legend: { success: 'Erfolg', failed: 'Fehlgeschlagen/Timeout', special: 'Komprimierung · Wiederholung · Knotenwechsel' },
+    },
   },
   // — Allgemeine Platzhalter —
   common: {

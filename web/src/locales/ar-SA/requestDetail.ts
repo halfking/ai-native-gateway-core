@@ -175,6 +175,13 @@ export default {
     viewRoutingRetry: 'عرض إعادة محاولة التوجيه',
     empty: 'لا توجد أحداث ارتباط',
     noData: 'لا توجد بيانات تدفق',
+    diagram: {
+      event: 'حدث تدفق', noData: 'لا يوجد تدفق قابل للمراقبة', noEvents: 'لا توجد أحداث تدفق',
+      stages: { received: 'الوصول', routing: 'حل المسار', model_queue: 'طابور النموذج', credential_queue: 'طابور بيانات الاعتماد', node_selection: 'اختيار العقدة', upstream: 'طلب المنبع', streaming: 'استجابة متدفقة', terminal: 'اكتمل الطلب' },
+      status: { success: 'نجاح', failed: 'فشل', timeout: 'انتهاء المهلة', skipped: 'تم التخطي' },
+      flags: { compression: 'ضغط', retry: 'إعادة محاولة', nodeSwitch: 'تبديل العقدة', degraded: 'تدهور المراقبة' },
+      legend: { success: 'نجاح', failed: 'فشل/انتهاء المهلة', special: 'ضغط · إعادة محاولة · تبديل العقدة' },
+    },
   },
   // — عناصر نائبة مشتركة —
   common: {

@@ -3,6 +3,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getRequestTrace, type RequestTrace, type TraceEvent } from '../../api/trace'
+import RequestProcessingFlowDiagram from './RequestProcessingFlowDiagram.vue'
 
 const props = defineProps<{ requestId: string | null }>()
 const emit = defineEmits<{
@@ -62,6 +63,7 @@ function statusClass(status: string): string {
         <button type="button" class="btn btn-sm link" @click="emit('goto', 'waterfall')">{{ t('requestDetail.flow.viewWaterfall') }}</button>
         <button type="button" class="btn btn-sm link" @click="emit('goto', 'attempts')">{{ t('requestDetail.flow.viewRoutingRetry') }}</button>
       </div>
+      <RequestProcessingFlowDiagram :trace="trace" />
       <ul class="flow-list">
         <li
           v-for="e in events"
