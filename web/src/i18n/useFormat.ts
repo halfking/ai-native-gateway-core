@@ -1,4 +1,14 @@
 // useFormat.ts — locale-aware date and number formatting helpers.
+//
+// Locale coverage caveat (2026-08-31, audit P3-2):
+//   All `Intl.DateTimeFormat` calls below set `hour12: false`. V8 / ICU
+//   honours this for every locale we currently ship (zh-CN, zh-TW, en-US,
+//   en-GB, ja-JP, ko-KR, fr-FR, de-DE). If a future locale is added where
+//   24-hour notation is not the cultural default (e.g. en-US users who
+//   prefer "1:00 PM"), `hour12: false` may be silently overridden by the
+//   engine. Callers must NOT assume the rendered string is always 24-hour
+//   when the locale changes; pin to a specific option set if that contract
+//   matters for the surface.
 
 import { computed } from 'vue'
 import { localeRef } from './index'
@@ -9,6 +19,8 @@ export function useFormat() {
   /**
    * Format a date-time value in the current locale.
    * If value is missing, returns ''.
+   *
+   * See module-level locale caveat regarding `hour12: false`.
    */
   function fmtDateTime(value?: string | number | Date | null): string {
     if (value === undefined || value === null || value === '') return ''
@@ -80,7 +92,7 @@ export function useFormat() {
   return { fmtDateTime, fmtDateTimeWithSeconds, fmtDate, fmtNumber, locale: currentLocale }
 }
 
-/* === P1-7: locale-aware formatting helpers (P1-7 提偼)
+/* === P1-7: locale-aware formatting helpers (P1-7 提供)
  * 取代 24 个 Vue 文件中重复的本地 fmtDate / fmtDateTime 实现。语义保留:
  * - 空值/无效返回 '—' (替代原来分散的 '—' / '-')
  * - locale 始终跟随 i18n (替代原来硬锁 'zh-CN' 或 runtime default)
