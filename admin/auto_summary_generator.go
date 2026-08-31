@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -899,7 +900,7 @@ func (g *AutoSummaryGenerator) getGatewayEndpoint() string {
 	if endpoint := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ENDPOINT")); endpoint != "" {
 		return endpoint
 	}
-	return "http://127.0.0.1:8781"
+	return loopback.GatewayBase()
 }
 
 // errStringSummary is the nil-safe err → string helper used in slog fields.

@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/recentmodels"
 	"github.com/redis/go-redis/v9"
 )
@@ -121,7 +122,7 @@ func NewCredentialSelfcheckWorker(db *pgxpool.Pool, apiKey, baseURL string) *Cre
 		if envURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SELF_CHECK_BASE_URL")); envURL != "" {
 			baseURL = envURL
 		} else {
-			baseURL = "http://127.0.0.1:8781/v1"
+			baseURL = loopback.GatewayBase() + "/v1"
 		}
 	}
 	worker := &CredentialSelfcheckWorker{
