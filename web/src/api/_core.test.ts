@@ -65,7 +65,12 @@ describe('req', () => {
   })
 
   it('does not send the in-memory JWT when cookie auth is available', () => {
+    // Mirror a fresh JWT login: the backend sets the HttpOnly session
+    // cookie during /api/auth/token so once userInfo is populated the
+    // browser carries auth via cookie and headers() must NOT add a
+    // Bearer that would shadow a newer cookie from another tab.
     store.jwtToken = 'stale-jwt'
+    store.userInfo = { id: 1, tenant_id: 'default', username: 'a', display_name: 'a', email: '', role: 'super_admin', enabled: true }
     expect(headers('GET')).not.toHaveProperty('Authorization')
   })
 

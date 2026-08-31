@@ -48,11 +48,11 @@ function eventTitle(event: TraceEvent): string {
 </script>
 
 <template>
-  <section class="rpf" data-testid="request-processing-flow">
+  <section class="rpf" data-testid="request-processing-flow" :aria-label="t('requestDetail.flow.diagram.ariaLabel')">
     <div v-if="!trace" class="rpf-empty">{{ t('requestDetail.flow.diagram.noData') }}</div>
     <div v-else-if="!events.length" class="rpf-empty">{{ t('requestDetail.flow.diagram.noEvents') }}</div>
     <template v-else>
-      <div class="rpf-track" role="list" aria-label="请求处理流程">
+      <div class="rpf-track" role="list" :aria-label="t('requestDetail.flow.diagram.trackLabel')">
         <template v-for="(event, index) in events" :key="`${event.seq}-${event.stage}`">
           <span v-if="index" class="rpf-arrow" aria-hidden="true">→</span>
           <article class="flow-node" :class="statusClass(event.status)" role="listitem" :title="eventTitle(event)">
