@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // RequestWaterfallPanel — T0–T9 + Attempts using waterfallTimeline SSOT.
 import { computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { WaterfallAttempt, WaterfallRequest } from '../../api/dispatch'
 import {
   formatAxisMs,
@@ -26,6 +27,8 @@ const attemptList = computed(
   () => props.attempts?.length ? props.attempts : (props.selected?.attempts ?? []),
 )
 
+const { t } = useI18n()
+
 const { labelRevision } = useCredentialLabels()
 function credentialLabel(id: number): string {
   void labelRevision.value
@@ -35,10 +38,10 @@ function credentialLabel(id: number): string {
 
 <template>
   <div class="rwf">
-    <div v-if="loading" class="muted">加载调度瀑布…</div>
+    <div v-if="loading" class="muted">{{ t('requestDetail.waterfall.loading') }}</div>
     <div v-else-if="error && !selected" class="err">{{ error }}</div>
     <template v-else-if="selected">
-      <p v-if="source" class="src">数据源：{{ source }}</p>
+      <p v-if="source" class="src">{{ t('requestDetail.waterfall.source', { src: source }) }}</p>
       <section class="hero">
         <div class="hero-axis">
           <span>T0</span>
@@ -47,14 +50,14 @@ function credentialLabel(id: number): string {
         <DispatchWaterfallTrack :bars="heroBars" tall />
       </section>
       <section class="stage-table-wrap">
-        <h4>T0–T9 阶段</h4>
+        <h4>{{ t('requestDetail.waterfall.stageHeader') }}</h4>
         <table class="stage-table">
           <thead>
             <tr>
               <th scope="col" />
-              <th scope="col">阶段</th>
-              <th scope="col" class="num">耗时</th>
-              <th scope="col">来源</th>
+              <th scope="col">{{ t('requestDetail.waterfall.cols.stage') }}</th>
+              <th scope="col" class="num">{{ t('requestDetail.waterfall.cols.duration') }}</th>
+              <th scope="col">{{ t('requestDetail.waterfall.cols.source') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -70,15 +73,15 @@ function credentialLabel(id: number): string {
               <td class="num">{{ row.ms == null ? '—' : `${row.ms} ms` }}</td>
               <td>
                 <span v-if="!row.showBar">—</span>
-                <span v-else-if="row.synthesized" class="tag">合成</span>
-                <span v-else class="tag muted">实测</span>
+                <span v-else-if="row.synthesized" class="tag">{{ t('requestDetail.waterfall.syntheticTag') }}</span>
+                <span v-else class="tag muted">{{ t('requestDetail.waterfall.measuredTag') }}</span>
               </td>
             </tr>
           </tbody>
         </table>
       </section>
     </template>
-    <div v-else class="muted">暂无瀑布时间线（请求可能尚未进入调度环或 DB 无 T0）。</div>
+    <div v-else class="muted">{{ t('requestDetail.waterfall.empty') }}</div>
 
     <div v-if="attemptList.length" class="attempts">
       <h4>Attempts ({{ attemptList.length }})</h4>
@@ -97,7 +100,7 @@ function credentialLabel(id: number): string {
         </li>
       </ul>
     </div>
-    <p v-else-if="!loading" class="muted">无 Attempts 记录。</p>
+    <p v-else-if="!loading" class="muted">{{ t('requestDetail.waterfall.noAttempts') }}</p>
   </div>
 </template>
 
@@ -150,13 +153,5 @@ function credentialLabel(id: number): string {
 .attempt--err { border-left-color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 6%, transparent); }
 .attempt--warn { border-left-color: var(--kx-warning); }
 .attempt--info { border-left-color: var(--kx-primary); }
-.pill {
-  display: inline-block; width: fit-content; padding: 1px 7px; border-radius: 999px;
-  font-size: 11px; font-weight: 600;
-}
-.pill--ok { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 14%, transparent); }
-.pill--err { color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 14%, transparent); }
-.pill--warn { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 16%, transparent); }
-.pill--info { color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 14%, transparent); }
-.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
+/* .pill / .pill--* 全部从全局 styles/pill-chip.css 继承（P1-8）。 */
 </style>

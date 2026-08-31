@@ -47,17 +47,5 @@ const execStages = WATERFALL_STAGES.filter((s) => EXEC_STAGE_KEYS.includes(s.key
   color: var(--kx-muted);
   min-width: 28px;
 }
-.chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--kx-text);
-  font-size: 11px;
-}
-.chip i {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  display: inline-block;
-}
+/* .chip / .chip--legend 从全局 styles/pill-chip.css 继承（P1-8）。 */
 </style>

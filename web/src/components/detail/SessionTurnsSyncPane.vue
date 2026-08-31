@@ -327,14 +327,14 @@ function onDividerKeydown(e: KeyboardEvent) {
         :class="{ 'btn-primary': subView === 'turns' }"
         :disabled="timelineOnly"
         @click="subView = 'turns'"
-      >轮次视图</button>
+      >{{ t('requestDetail.turns.viewLabel') }}</button>
       <button
         type="button"
         class="btn btn-sm"
         :class="{ 'btn-primary': subView === 'tree' }"
         :disabled="timelineOnly"
         @click="subView = 'tree'"
-      >原始树</button>
+      >{{ t('requestDetail.turns.rawTree') }}</button>
     </div>
 
     <!-- 轮次视图：左=用户指令摘要，右=该轮消息，中间分隔条可拖动 -->
@@ -344,15 +344,15 @@ function onDividerKeydown(e: KeyboardEvent) {
         :class="{ 'left--single': timelineOnly }"
         :style="timelineOnly ? undefined : { width: leftWidth + '%' }"
       >
-        <div v-if="hasMoreTurns" class="warn">仅显示部分轮次（数据量较大，当前列表已截断）</div>
-        <div v-if="!displayTurns.length" class="muted">无对话数据</div>
+        <div v-if="hasMoreTurns" class="warn">{{ t('requestDetail.turns.truncatedHint') }}</div>
+        <div v-if="!displayTurns.length" class="muted">{{ t('requestDetail.turns.empty') }}</div>
         <div
           v-for="turn in displayTurns"
           :key="turn.index"
           class="turn-card"
           :class="{ active: selectedIndex === turn.index }"
           role="group"
-          :aria-label="`轮次 #${turn.number}`"
+          :aria-label="`${t('requestDetail.turns.viewLabel')} #${turn.number}`"
         >
           <button
             type="button"
@@ -363,7 +363,7 @@ function onDividerKeydown(e: KeyboardEvent) {
           >
             <span class="turn-card-head">
               <span class="tn">#{{ turn.number }}</span>
-              <span v-if="turn.assistantCount" class="badge">回复 {{ turn.assistantCount }}</span>
+              <span v-if="turn.assistantCount" class="badge">{{ t('requestDetail.turns.badgeReply', { count: turn.assistantCount }) }}</span>
             </span>
             <span v-if="derivedExpanded.has(turn.index)" class="turn-preview">{{ turn.userPreviewFull }}</span>
             <span v-else class="turn-preview">{{ turn.userPreview }}</span>
@@ -372,8 +372,8 @@ function onDividerKeydown(e: KeyboardEvent) {
             v-if="turn.truncated"
             type="button"
             class="btn btn-sm linkish"
-            @click="toggleDerivedExpand(turn.index)"
-          >{{ derivedExpanded.has(turn.index) ? '收起' : '展开' }}</button>
+@click="toggleDerivedExpand(turn.index)"
+        >{{ derivedExpanded.has(turn.index) ? t('requestDetail.turns.collapse') : t('requestDetail.turns.expand') }}</button>
           <button
             v-if="turn.turnNo != null"
             type="button"
@@ -394,7 +394,7 @@ function onDividerKeydown(e: KeyboardEvent) {
           :aria-valuenow="Math.round(leftWidth)"
           aria-valuemin="20"
           aria-valuemax="62"
-          aria-label="调整左右面板宽度"
+          aria-label="divider"
           @pointerdown="onDividerDown"
           @keydown="onDividerKeydown"
         >
@@ -408,18 +408,18 @@ function onDividerKeydown(e: KeyboardEvent) {
             class="btn btn-sm"
             :class="{ 'btn-primary': showAllTurns }"
             @click="showAllTurns = true"
-          >全部轮次</button>
+          >{{ t('requestDetail.turns.allTurns') }}</button>
           <button
             type="button"
             class="btn btn-sm"
             :class="{ 'btn-primary': !showAllTurns && selectedTurnNumber }"
             :disabled="!selectedTurnNumber"
             @click="showAllTurns = false"
-          >仅本轮 #{{ selectedTurnNumber || '—' }}</button>
+          >{{ t('requestDetail.turns.onlyThisTurn', { number: selectedTurnNumber || '—' }) }}</button>
         </div>
         <ConversationMessagesPanel
           :body="rightBody"
-          :empty-hint="'(无消息)'"
+          :empty-hint="t('requestDetail.turns.emptyHint')"
         />
         </section>
       </template>
@@ -428,7 +428,7 @@ function onDividerKeydown(e: KeyboardEvent) {
     <!-- 原始树：仅元数据，可下钻到 request_id -->
     <template v-else>
       <aside class="left">
-        <div v-if="loading" class="muted">加载轮次…</div>
+        <div v-if="loading" class="muted">{{ t('requestDetail.turns.loading') }}</div>
         <div v-else-if="error" class="err">{{ error }}</div>
         <div
           v-for="t in turns"
@@ -467,29 +467,29 @@ function onDividerKeydown(e: KeyboardEvent) {
         <div class="facet-row">
           <button
             v-for="f in ([
-              ['integrated', '整合'],
-              ['system', '系统'],
-              ['user', '用户'],
-              ['tool', '工具'],
-              ['assistant', '模型'],
-              ['children', '子请求'],
-              ['compress', '压缩'],
-              ['security', '安全脱敏'],
-            ] as [Facet, string][])"
-            :key="f[0]"
+              'integrated',
+              'system',
+              'user',
+              'tool',
+              'assistant',
+              'children',
+              'compress',
+              'security',
+            ] as Facet[])"
+            :key="f"
             type="button"
             class="btn btn-sm"
-            :class="{ 'btn-primary': facet === f[0] }"
-            @click="facet = f[0]"
+            :class="{ 'btn-primary': facet === f }"
+            @click="facet = f"
           >
-            {{ f[1] }}
+            {{ t(`requestDetail.turns.facet.${f}`) }}
           </button>
         </div>
         <div v-if="treeCurrent" class="sync-bar">
-          对应 request_logs:
+          {{ t('requestDetail.turns.mappedToLogs') }}
           <code>{{ treeCurrent.request_id }}</code>
           <button type="button" class="btn btn-sm" @click="emit('openAsRequest', treeCurrent.request_id)">
-            在单请求模式打开
+            {{ t('requestDetail.turns.openSingle') }}
           </button>
         </div>
         <template v-if="facet === 'children'">
@@ -500,17 +500,17 @@ function onDividerKeydown(e: KeyboardEvent) {
               </button>
             </li>
           </ul>
-          <p v-else class="muted">无子请求</p>
+          <p v-else class="muted">{{ t('requestDetail.turns.noChildren') }}</p>
         </template>
         <template v-else-if="facet === 'compress' || facet === 'security'">
-          <p class="muted">请切换到「单请求」模式的「压缩与脱敏」Tab 查看三阶段对比。</p>
+          <p class="muted">{{ t('requestDetail.turns.switchHint') }}</p>
         </template>
         <ConversationMessagesPanel
           v-else
           :body="facet === 'assistant' ? responseBody : requestBody"
           :response-body="facet === 'integrated' ? responseBody : undefined"
           :locked-role="facetRole"
-          :empty-hint="facet === 'integrated' ? '(无对话数据)' : `(无 ${facet} 消息)`"
+          :empty-hint="facet === 'integrated' ? t('requestDetail.turns.empty') : t('requestDetail.turns.noFacetMessages', { facet: t(`requestDetail.turns.facet.${facet}`) })"
         />
       </section>
     </template>
@@ -597,16 +597,7 @@ function onDividerKeydown(e: KeyboardEvent) {
 .turn--info { border-left: 3px solid var(--kx-primary); }
 .left .tn { font-weight: 600; margin-right: 6px; }
 .st, .lat, .mdl { font-size: 11px; color: var(--muted); margin-right: 6px; }
-.pill {
-  display: inline-block; padding: 1px 7px; border-radius: 999px;
-  font-size: 11px; font-weight: 600; color: inherit;
-}
-.pill--sm { padding: 0 6px; font-size: 10px; }
-.pill--ok { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 14%, transparent); }
-.pill--err { color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 14%, transparent); }
-.pill--warn { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 16%, transparent); }
-.pill--info { color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 14%, transparent); }
-.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
+/* .pill / .pill--* 全部从全局 styles/pill-chip.css 继承（P1-8）。 */
 .children { margin: 6px 0 0; padding-left: 14px; font-size: 11px; color: var(--muted); }
 .children li { cursor: pointer; }
 .children li:hover { color: var(--accent); }

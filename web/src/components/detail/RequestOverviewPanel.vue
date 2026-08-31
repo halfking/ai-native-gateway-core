@@ -11,6 +11,7 @@
 //     只读字段（latency_ms/client_model 等）使用 ?? 短路 fallback；嵌套
 //     结构（compression_meta 等）则保持 log-only，不污染类型。
 import { computed, ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import type { RequestLogDetail } from '../../api/logs'
 import type { UnifiedRequestDetail } from '../../api/requestDetail'
 import {
@@ -20,7 +21,8 @@ import {
 import { statusToneClass } from './statusTone'
 import { useFormat } from '../../i18n/useFormat'
 
-const { fmtDateTime, fmtDateTimeWithSeconds } = useFormat()
+const { t } = useI18n()
+const { fmtDateTimeWithSeconds } = useFormat()
 
 const props = defineProps<{
   log: RequestLogDetail | null
@@ -40,8 +42,8 @@ const sourceLabel = computed(() => {
   const s = props.unified?.source
   if (!s) return '—'
   const map: Record<string, string> = {
-    memory: '本机内存',
-    file: '本机文件',
+    memory: t('requestDetail.overview.source.memory'),
+    file: t('requestDetail.overview.source.file'),
     request_logs: 'request_logs',
     session_turns: 'session_turns',
   }
@@ -49,7 +51,9 @@ const sourceLabel = computed(() => {
 })
 
 const persistenceLabel = computed(() =>
-  props.unified?.persistence === 'in_flight' ? '在途' : '已落库',
+  props.unified?.persistence === 'in_flight'
+    ? t('requestDetail.overview.inFlight')
+    : t('requestDetail.overview.persisted'),
 )
 
 const log = computed(() => props.log)
@@ -154,10 +158,10 @@ const securityChips = computed(() => {
   if (!meta || typeof meta !== 'object') return [] as string[]
   const m = meta as Record<string, unknown>
   const chips: string[] = []
-  if (m.pii_strip === true || m.pii_strip === 'true') chips.push('PII 剥离')
-  if (m.pii_strip_turn === true || m.pii_strip_turn === 'true') chips.push('本轮 PII 剥离')
-  if (m.sen_det === true || m.sen_det === 'true') chips.push('敏感检测')
-  if (m.audit_score != null && m.audit_score !== '') chips.push(`审计 ${m.audit_score}`)
+  if (m.pii_strip === true || m.pii_strip === 'true') chips.push(t('requestDetail.overview.chips.piiScrubbed'))
+  if (m.pii_strip_turn === true || m.pii_strip_turn === 'true') chips.push(t('requestDetail.overview.chips.thisTurnPii'))
+  if (m.sen_det === true || m.sen_det === 'true') chips.push(t('requestDetail.overview.chips.sensitivity'))
+  if (m.audit_score != null && m.audit_score !== '') chips.push(t('requestDetail.overview.chips.auditScore', { score: m.audit_score }))
   return chips
 })
 
@@ -172,15 +176,15 @@ function clip(text: string, max = 480): string {
   <div class="overview">
     <section class="qa-card" data-testid="overview-turn-qa">
       <div class="qa-head">
-        <strong>本轮问答</strong>
-        <button type="button" class="btn btn-sm" @click="emit('goto', 'chat')">查看完整对话</button>
+        <strong>{{ t('requestDetail.overview.thisTurn') }}</strong>
+        <button type="button" class="btn btn-sm" @click="emit('goto', 'chat')">{{ t('requestDetail.overview.viewFullConversation') }}</button>
       </div>
       <div class="qa-block qa-block--user">
-        <span class="lbl">用户</span>
+        <span class="lbl">{{ t('requestDetail.overview.userLabel') }}</span>
         <pre class="qa-pre">{{ clip(userPrompt) }}</pre>
       </div>
       <div class="qa-block qa-block--assistant">
-        <span class="lbl">模型回复</span>
+        <span class="lbl">{{ t('requestDetail.overview.assistantLabel') }}</span>
         <pre class="qa-pre">{{ clip(assistantReply) }}</pre>
       </div>
       <button
@@ -188,52 +192,52 @@ function clip(text: string, max = 480): string {
         type="button"
         class="btn btn-sm linkish"
         @click="qaExpanded = true"
-      >展开全文</button>
+      >{{ t('requestDetail.overview.expand') }}</button>
     </section>
 
     <div class="grid">
-      <div class="cell"><span class="lbl">请求ID</span><code>{{ fmt(log?.request_id || um?.request_id) }}</code></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.requestId') }}</span><code>{{ fmt(log?.request_id || um?.request_id) }}</code></div>
       <!-- 请求时间：request_logs.ts，基础信息必备字段。精确到秒，方便与日志对照。 -->
       <div class="cell cell--emphasis" data-testid="overview-request-time">
-        <span class="lbl">请求时间</span>
+        <span class="lbl">{{ t('requestDetail.overview.labels.requestTime') }}</span>
         <span class="value-lg">{{ requestTime || '—' }}</span>
       </div>
       <div class="cell" :class="statusToneClass(requestStatus, 'cell')">
-        <span class="lbl">状态</span>
+        <span class="lbl">{{ t('requestDetail.overview.labels.status') }}</span>
         <span class="pill" :class="statusToneClass(requestStatus, 'pill')">{{ fmt(requestStatus) }}</span>
       </div>
-      <div class="cell"><span class="lbl">延迟</span><span>{{ fmt(log?.latency_ms ?? um?.latency_ms) }}ms</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.latency') }}</span><span>{{ fmt(log?.latency_ms ?? um?.latency_ms) }}ms</span></div>
       <!-- tenant_id: /api/logs/:id 不返回该字段（RequestLogDetail 类型无 tenant_id），
            仅在 unified meta 中存在（admin/request-detail 端点从 admin session 注入）。
            直接读 um.tenant_id 即可。 -->
-      <div class="cell"><span class="lbl">Tenant</span><code>{{ fmt(um?.tenant_id) }}</code></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.tenant') }}</span><code>{{ fmt(um?.tenant_id) }}</code></div>
       <!-- success: 两个端点都有；用 ?? 让 log?.success 为 null 时仍能回退到 um。 -->
-      <div class="cell"><span class="lbl">Success</span><span>{{ fmt(log?.success ?? um?.success) }}</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.success') }}</span><span>{{ fmt(log?.success ?? um?.success) }}</span></div>
       <!-- 模型字段放大展示，便于在概览中快速识别。 -->
       <div class="cell cell--emphasis" data-testid="overview-client-model">
-        <span class="lbl">客户端模型</span>
+        <span class="lbl">{{ t('requestDetail.overview.labels.clientModel') }}</span>
         <span class="value-lg">{{ fmt(log?.client_model ?? um?.client_model) }}</span>
       </div>
       <div class="cell cell--emphasis" data-testid="overview-canonical-model">
-        <span class="lbl">出站/规范模型</span>
+        <span class="lbl">{{ t('requestDetail.overview.labels.canonicalModel') }}</span>
         <span class="value-lg">{{ fmt(log?.outbound_model || log?.canonical_model) }}</span>
       </div>
-      <div class="cell"><span class="lbl">供应商</span><span>{{ fmt(log?.provider_name || log?.provider_code) }}</span></div>
-      <div class="cell"><span class="lbl">凭据</span><span>{{ fmt(log?.credential_label || log?.credential_id) }}</span></div>
-      <div class="cell"><span class="lbl">Session</span><code>{{ fmt(log?.gw_session_id ?? um?.gw_session_id) }}</code></div>
-      <div class="cell"><span class="lbl">会话标题</span><span>{{ sessionTitle || '—' }}</span></div>
-      <div class="cell"><span class="lbl">任务 ID</span><code>{{ fmt(log?.gw_task_id ?? um?.gw_task_id) }}</code></div>
-      <div class="cell"><span class="lbl">End User</span><code>{{ fmt(log?.end_user_id) }}</code></div>
-      <div class="cell"><span class="lbl">Token</span><span>{{ fmt(log?.prompt_tokens) }} / {{ fmt(log?.completion_tokens) }}（总 {{ fmt(log?.total_tokens) }}）</span></div>
-      <div class="cell"><span class="lbl">Cache</span><span>{{ fmt(log?.cache_read_tokens) }} / {{ fmt(log?.cache_write_tokens) }}</span></div>
-      <div class="cell"><span class="lbl">Cost / Credits</span><span>{{ fmt(log?.cost_usd) }} / {{ fmt(log?.credits_charged) }}</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.provider') }}</span><span>{{ fmt(log?.provider_name || log?.provider_code) }}</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.credential') }}</span><span>{{ fmt(log?.credential_label || log?.credential_id) }}</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.session') }}</span><code>{{ fmt(log?.gw_session_id ?? um?.gw_session_id) }}</code></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.sessionTitle') }}</span><span>{{ sessionTitle || '—' }}</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.taskId') }}</span><code>{{ fmt(log?.gw_task_id ?? um?.gw_task_id) }}</code></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.endUser') }}</span><code>{{ fmt(log?.end_user_id) }}</code></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.token') }}</span><span>{{ fmt(log?.prompt_tokens) }} / {{ fmt(log?.completion_tokens) }}（{{ t('requestDetail.overview.labels.total') }} {{ fmt(log?.total_tokens) }}）</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.cache') }}</span><span>{{ fmt(log?.cache_read_tokens) }} / {{ fmt(log?.cache_write_tokens) }}</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.costCredits') }}</span><span>{{ fmt(log?.cost_usd) }} / {{ fmt(log?.credits_charged) }}</span></div>
       <div v-if="securityChips.length" class="cell span2" data-testid="overview-security-chips">
-        <span class="lbl">安全/脱敏</span>
+        <span class="lbl">{{ t('requestDetail.overview.labels.security') }}</span>
         <span class="chip-row">
           <span v-for="c in securityChips" :key="c" class="sec-chip">{{ c }}</span>
         </span>
       </div>
-      <div class="cell"><span class="lbl">finish_reason</span><span>{{ fmt(log?.upstream_finish_reason) }}</span></div>
+      <div class="cell"><span class="lbl">{{ t('requestDetail.overview.labels.finishReason') }}</span><span>{{ fmt(log?.upstream_finish_reason) }}</span></div>
       <div class="cell" :class="{ 'cell--err': hasFailure }">
         <span class="lbl">failure</span>
         <span>{{ fmt(log?.failure_stage) }} · {{ fmt(log?.failure_detail_code || log?.error_kind) }}</span>
@@ -310,15 +314,7 @@ function clip(text: string, max = 480): string {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.01em;
 }
-.pill {
-  display: inline-block; width: fit-content; padding: 1px 8px; border-radius: 999px;
-  font-size: 11px; font-weight: 600;
-}
-.pill--ok { color: var(--kx-success); background: color-mix(in srgb, var(--kx-success) 14%, transparent); }
-.pill--err { color: var(--kx-error); background: color-mix(in srgb, var(--kx-error) 14%, transparent); }
-.pill--warn { color: var(--kx-warning); background: color-mix(in srgb, var(--kx-warning) 16%, transparent); }
-.pill--info { color: var(--kx-primary); background: color-mix(in srgb, var(--kx-primary) 14%, transparent); }
-.pill--muted { color: var(--muted); background: var(--bg-subtle, var(--surface-secondary)); }
+/* .pill / .pill--* 全部从全局 styles/pill-chip.css 继承（P1-8）。 */
 .lbl { color: var(--muted); font-size: 11px; }
 code { font-size: 11px; word-break: break-all; }
 .flow-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
