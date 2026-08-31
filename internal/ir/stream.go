@@ -19,31 +19,31 @@ import (
 // Complexity reduced from O(N²) to O(N): adding a new protocol only requires
 // one Parser + one Serializer.
 type StreamChunk struct {
-	Type ChunkType // "delta" | "usage" | "done" | "error"
+	Type ChunkType `json:"type"` // "delta" | "usage" | "done" | "error"
 
 	// Delta content (Type="delta")
-	Delta *StreamDelta
+	Delta *StreamDelta `json:"delta,omitempty"`
 
 	// Usage info (Type="usage")
-	Usage *StreamUsage
+	Usage *StreamUsage `json:"usage,omitempty"`
 
 	// Error info (Type="error")
-	Error *StreamError
+	Error *StreamError `json:"error,omitempty"`
 
 	// Metadata (present in all chunk types)
-	ID             string // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
-	Model          string // Model name
-	Created        int64  // Unix timestamp (OpenAI style; 0 if not available)
-	FinishReason   string // When stream ends: "stop" | "length" | "tool_calls" | etc.
-	CandidateIndex int    // Gemini candidate index (zero is the backward-compatible default)
+	ID             string `json:"id"`               // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
+	Model          string `json:"model"`            // Model name
+	Created        int64  `json:"created"`          // Unix timestamp (OpenAI style; 0 if not available)
+	FinishReason   string `json:"finish_reason"`    // When stream ends: "stop" | "length" | "tool_calls" | etc.
+	CandidateIndex int    `json:"candidate_index"`  // Gemini candidate index (zero is the backward-compatible default)
 
 	// Source protocol tracking (used by Serializer to determine output format)
-	SourceProtocol string // "openai-chat" | "anthropic-messages"
+	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages"
 
 	// Internal stream quality annotation. These fields are not serialized and
 	// preserve wire compatibility while exposing tool argument validation.
-	Quality             string // verified | partial | rejected
-	ArgumentsJSONReason string
+	Quality             string `json:"-"` // verified | partial | rejected
+	ArgumentsJSONReason string `json:"-"` //
 }
 
 // AnnotateArgumentsJSON validates completed streaming tool arguments without
@@ -83,22 +83,22 @@ const (
 // for audio output (OpenAI Realtime/gpt-4o-audio-preview) and thinking signature
 // propagation (Anthropic signature_delta).
 type StreamDelta struct {
-	Role             string                // "assistant" (first chunk only)
-	Content          string                // Text content delta
-	ReasoningContent string                // Thinking/reasoning delta (OpenAI: reasoning_content, Anthropic: thinking)
-	ToolCalls        []StreamToolCallDelta // Incremental tool calls
+	Role             string                `json:"role,omitempty"`              // "assistant" (first chunk only)
+	Content          string                `json:"content,omitempty"`           // Text content delta
+	ReasoningContent string                `json:"reasoning_content,omitempty"` // Thinking/reasoning delta (OpenAI: reasoning_content, Anthropic: thinking)
+	ToolCalls        []StreamToolCallDelta `json:"tool_calls,omitempty"`       // Incremental tool calls
 
 	// ThinkingSignature carries the Anthropic chain-of-thought verification
 	// token emitted at the end of a thinking block (signature_delta event).
 	// Critical for Anthropic multi-turn round-trip.
-	ThinkingSignature string
+	ThinkingSignature string `json:"thinking_signature,omitempty"`
 
 	// AudioDelta is the OpenAI audio output chunk (gpt-4o-audio-preview realtime).
-	AudioDelta *StreamAudioDelta
+	AudioDelta *StreamAudioDelta `json:"audio_delta,omitempty"`
 
 	// DeltaType is the explicit content type from the upstream provider:
 	//   "text" | "reasoning" | "audio" | "tool_call" | "signature" | ""
-	DeltaType string
+	DeltaType string `json:"delta_type,omitempty"`
 }
 
 // StreamAudioDelta carries incremental audio output (base64 PCM chunks +
@@ -111,11 +111,11 @@ type StreamAudioDelta struct {
 
 // StreamToolCallDelta represents incremental tool call data.
 type StreamToolCallDelta struct {
-	Index     int    // Tool call array index (OpenAI convention)
-	ID        string // Tool call ID (first chunk only)
-	Type      string // "function" (OpenAI), "tool_use" (Anthropic maps to function)
-	Name      string // Function name (first chunk only)
-	Arguments string // Incremental JSON arguments
+	Index     int    `json:"index"`              // Tool call array index (OpenAI convention)
+	ID        string `json:"id,omitempty"`       // Tool call ID (first chunk only)
+	Type      string `json:"type,omitempty"`     // "function" (OpenAI), "tool_use" (Anthropic maps to function)
+	Name      string `json:"name,omitempty"`     // Function name (first chunk only)
+	Arguments string `json:"arguments,omitempty"` // Incremental JSON arguments
 }
 
 // StreamUsage holds token usage statistics for a stream chunk.
@@ -123,28 +123,28 @@ type StreamToolCallDelta struct {
 // audit-stream-multimodal (2026-07-13): Extended with cache tokens, reasoning
 // tokens, and multimodal token breakdowns for parity with non-stream Usage.
 type StreamUsage struct {
-	PromptTokens     int // Input tokens (Anthropic: input_tokens)
-	CompletionTokens int // Output tokens (Anthropic: output_tokens)
-	TotalTokens      int // Sum of prompt + completion
+	PromptTokens     int `json:"prompt_tokens"`     // Input tokens (Anthropic: input_tokens)
+	CompletionTokens int `json:"completion_tokens"` // Output tokens (Anthropic: output_tokens)
+	TotalTokens      int `json:"total_tokens"`      // Sum of prompt + completion
 
 	// Cache tokens (Anthropic prompt caching, OpenAI prompt caching)
-	CacheReadTokens  *int
-	CacheWriteTokens *int
+	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"`
 
 	// Reasoning tokens (DeepSeek R1, OpenAI o1/o3)
-	ReasoningTokens *int
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 
 	// Multimodal token breakdowns
-	ImageTokens *int
-	AudioTokens *int
-	VideoTokens *int
+	ImageTokens *int `json:"image_tokens,omitempty"`
+	AudioTokens *int `json:"audio_tokens,omitempty"`
+	VideoTokens *int `json:"video_tokens,omitempty"`
 }
 
 // StreamError represents an error in the stream.
 type StreamError struct {
-	Type    string // "timeout" | "upstream_error" | "invalid_chunk" | etc.
-	Message string // Human-readable error message
-	Code    string // Error code for programmatic handling
+	Type    string `json:"type"`    // "timeout" | "upstream_error" | "invalid_chunk" | etc.
+	Message string `json:"message"` // Human-readable error message
+	Code    string `json:"code"`    // Error code for programmatic handling
 }
 
 // ─── Parsers ────────────────────────────────────────────────────────────────

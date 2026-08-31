@@ -38,125 +38,125 @@ const (
 // protocol requests. Its field set is the superset of OpenAI Chat Completions
 // and Anthropic Messages API fields.
 type InternalRequest struct {
-	Model string // Model identifier (passthrough)
+	Model string `json:"model"` // Model identifier (passthrough)
 
 	// Messages is the unified message list. Both OpenAI and Anthropic formats
 	// are normalized into this structure.
-	Messages []Message
+	Messages []Message `json:"messages"`
 
 	// System is the system prompt. In OpenAI it's part of messages with role=system;
 	// in Anthropic it's a top-level "system" field. We normalize to this field.
-	System *SystemPrompt
+	System *SystemPrompt `json:"system,omitempty"`
 
 	// Tools is the unified tool definitions. OpenAI tools[] and Anthropic tools[]
 	// are both normalized here.
-	Tools []ToolDefinition
+	Tools []ToolDefinition `json:"tools,omitempty"`
 
 	// ToolChoice controls which tool to call. OpenAI and Anthropic have compatible
 	// representations.
-	ToolChoice *ToolChoice
+	ToolChoice *ToolChoice `json:"tool_choice,omitempty"`
 
 	// Sampling parameters (shared)
-	MaxTokens         int      // OpenAI: max_tokens; Anthropic: max_tokens
-	Temperature       *float64 // OpenAI: temperature; Anthropic: temperature
-	TopP              *float64 // OpenAI: top_p; Anthropic: top_p
-	TopK              *int     // Anthropic-only (OpenAI has no equivalent)
-	Stop              []string // OpenAI: stop[]; Anthropic: stop_sequences[]
-	ParallelToolCalls *bool    // OpenAI-compatible providers
+	MaxTokens         int      `json:"max_tokens,omitempty"`    // OpenAI: max_tokens; Anthropic: max_tokens
+	Temperature       *float64 `json:"temperature,omitempty"`   // OpenAI: temperature; Anthropic: temperature
+	TopP              *float64 `json:"top_p,omitempty"`         // OpenAI: top_p; Anthropic: top_p
+	TopK              *int     `json:"top_k,omitempty"`         // Anthropic-only (OpenAI has no equivalent)
+	Stop              []string `json:"stop,omitempty"`          // OpenAI: stop[]; Anthropic: stop_sequences[]
+	ParallelToolCalls *bool    `json:"parallel_tool_calls,omitempty"` // OpenAI-compatible providers
 
-	Stream bool // Streaming flag (passthrough both directions)
+	Stream bool `json:"stream"` // Streaming flag (passthrough both directions)
 
 	// ─── Anthropic-specific fields (stored, serialized based on target protocol) ───
 
 	// Thinking enables Claude's extended thinking mode (Anthropic-only).
-	Thinking *ThinkingConfig
+	Thinking *ThinkingConfig `json:"thinking,omitempty"`
 
 	// CacheControl is the semantic caching hint (Anthropic-only).
 	// Serialized as cache_control object in Anthropic format.
-	CacheControl []CacheControl
+	CacheControl []CacheControl `json:"cache_control,omitempty"`
 
 	// Documents is the document search/prompt injection (Anthropic-only).
-	Documents []Document
+	Documents []Document `json:"documents,omitempty"`
 
 	// ─── OpenAI-specific fields (stored, serialized based on target protocol) ───
 
 	// FrequencyPenalty OpenAI-only
-	FrequencyPenalty *float64
+	FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
 	// PresencePenalty OpenAI-only
-	PresencePenalty *float64
+	PresencePenalty *float64 `json:"presence_penalty,omitempty"`
 	// Logprobs OpenAI-only
-	Logprobs *bool
+	Logprobs *bool `json:"logprobs,omitempty"`
 	// TopLogprobs OpenAI-only
-	TopLogprobs *int
+	TopLogprobs *int `json:"top_logprobs,omitempty"`
 	// Seed OpenAI-only (deterministic sampling)
-	Seed *int64
+	Seed *int64 `json:"seed,omitempty"`
 	// ResponseFormat OpenAI-only (json_schema / text)
-	ResponseFormat *ResponseFormat
+	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 	// N OpenAI-only (number of completions)
-	N int
+	N int `json:"n,omitempty"`
 	// User OpenAI-only (equivalent to Anthropic metadata.user_id)
-	User string
+	User string `json:"user,omitempty"`
 
 	// Metadata is the generic metadata container (Anthropic: metadata.user_id → User)
-	Metadata *Metadata
+	Metadata *Metadata `json:"metadata,omitempty"`
 
 	// ─── Multimodal & Personalized Provider Fields (audit-provider-multimodal, 2026-07-13) ───
 
 	// Reasoning enables extended reasoning mode across providers.
 	// (OpenAI o1/o3 → reasoning_effort; DeepSeek R1/GLM-Z1/MiniMax-M3/Qwen QwQ → effort/budget)
-	Reasoning *ReasoningConfig
+	Reasoning *ReasoningConfig `json:"reasoning,omitempty"`
 
 	// Modalities specifies desired output modalities (OpenAI TTS / Gemini responseModalities):
 	//   ["text"] / ["text","audio"] / ["image","text"]
-	Modalities []string
+	Modalities []string `json:"modalities,omitempty"`
 
 	// AudioConfig is the OpenAI/Gemini output audio configuration.
 	// OpenAI: { voice, format, speed }; Gemini: speech_config.
-	AudioConfig *AudioConfig
+	AudioConfig *AudioConfig `json:"audio_config,omitempty"`
 
 	// LogitBias OpenAI-only: maps token IDs (-100..100) to bias values.
-	LogitBias map[string]float64
+	LogitBias map[string]float64 `json:"logit_bias,omitempty"`
 
 	// Store OpenAI-only: whether to store the response for later retrieval.
-	Store *bool
+	Store *bool `json:"store,omitempty"`
 
 	// ServiceTier OpenAI-only: "auto" | "default" | "priority".
-	ServiceTier string
+	ServiceTier string `json:"service_tier,omitempty"`
 
 	// Prediction OpenAI: predicted content for speculative-decoding latency reduction.
-	Prediction *Prediction
+	Prediction *Prediction `json:"prediction,omitempty"`
 
 	// Verbosity OpenAI: "low" | "medium" | "high".
-	Verbosity string
+	Verbosity string `json:"verbosity,omitempty"`
 
 	// WebSearchOptions OpenAI: web_search_options.context_size = "low"/"medium"/"high".
-	WebSearchOptions *WebSearchOptions
+	WebSearchOptions *WebSearchOptions `json:"web_search_options,omitempty"`
 
 	// PromptCacheKey OpenAI Responses: cache routing key.
-	PromptCacheKey string
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 
 	// SafetyIdentifier OpenAI: abuse tracking identifier.
-	SafetyIdentifier string
+	SafetyIdentifier string `json:"safety_identifier,omitempty"`
 
 	// PreviousResponseID OpenAI Responses: chained response ID.
-	PreviousResponseID string
+	PreviousResponseID string `json:"previous_response_id,omitempty"`
 
 	// Truncation OpenAI: "auto" | "disabled".
-	Truncation string
+	Truncation string `json:"truncation,omitempty"`
 
 	// ─── Claude 4.5+ fields (audit-claude-4-5, 2026-07-13) ───
 
 	// MCPServers configures Model Context Protocol servers for Claude 4.5+.
 	// When set, the upstream Anthropic API exposes MCP tools to the model.
-	MCPServers []MCPServer
+	MCPServers []MCPServer `json:"mcp_servers,omitempty"`
 
 	// ContextManagement configures Claude 4.5+ automatic context cleanup.
 	// When set, the upstream applies edits to compress conversation history
 	// (typically when context window threshold is exceeded).
-	ContextManagement *ContextManagement
+	ContextManagement *ContextManagement `json:"context_management,omitempty"`
 
 	// Container describes an uploaded file container for Claude 4.5+ skills.
-	Container *Container
+	Container *Container `json:"container,omitempty"`
 
 	// ─── Gemini 专有（2026-08-11 P3 修复：此前静默丢失）───
 
@@ -165,14 +165,14 @@ type InternalRequest struct {
 	// 修复前：parse_gemini.go 把 safetySettings 列入 knownFields（因此不进
 	// Extensions），但从不赋值给 IR、从不序列化、也不上报 loss —— 完全静默。
 	// 安全语义参数被静默丢弃属于合规风险。
-	SafetySettings []SafetySetting
+	SafetySettings []SafetySetting `json:"safety_settings,omitempty"`
 
 	// CachedContent 是 Gemini 的 cachedContents/{id} 引用。
 	// 与 SafetySettings 同为此前的静默丢失字段。
-	CachedContent string
+	CachedContent string `json:"cached_content,omitempty"`
 
 	// ─── Source protocol (used by Serializer to determine output format) ───
-	SourceProtocol string // "openai-chat" | "anthropic-messages"
+	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages"
 
 	// Extensions carries non-standard top-level fields extracted by the
 	// transport layer (transport.IRExtensionExtractor) for lossless round-trip
@@ -182,7 +182,7 @@ type InternalRequest struct {
 	// Why: OpenAI↔Anthropic conversion via IR drops unknown fields (e.g.
 	// provider-private params, future API additions). Extensions preserves
 	// them so a round-trip is lossless.
-	Extensions map[string]json.RawMessage
+	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
 
 	// TargetProvider 是目标上游 provider 的 catalog code（来自
 	// provider.Candidate.CatalogCode），用于在序列化层处理 provider 特定的
@@ -191,32 +191,32 @@ type InternalRequest struct {
 	//
 	// 空字符串 = 未指定，序列化器按标准协议处理。
 	// 常见值: "minimax"、"anthropic"、"openai"。
-	TargetProvider string
+	TargetProvider string `json:"target_provider,omitempty"`
 
 	// ─── Gateway-internal metadata (V6-W1.6 R8, 定时请求) ───
 
 	// Class is the request type: immediate | scheduled. Stamped by
 	// TransportIRConverter.Parse* from the TransportContext the executor set;
 	// serializers never emit it (E10). Empty ≙ immediate.
-	Class RequestClass
+	Class RequestClass `json:"-"`
 	// DueAt is the scheduled execution time when Class == scheduled; the zero
 	// value for immediate requests.
-	DueAt time.Time
+	DueAt time.Time `json:"-"`
 }
 
 // SystemPrompt represents a normalized system prompt.
 type SystemPrompt struct {
-	Content   string         // Plain text content
-	Parts     []ContentBlock // Anthropic-style content blocks (for mixed content)
-	PDFs      []PDFDocument  // Anthropic PDF documents
-	Priority  *int           // Priority for system prompt (Anthropic)
-	CacheCtrl *CacheControl  // Cache control for system prompt
+	Content   string         `json:"content,omitempty"`  // Plain text content
+	Parts     []ContentBlock `json:"parts,omitempty"`    // Anthropic-style content blocks (for mixed content)
+	PDFs      []PDFDocument  `json:"pdfs,omitempty"`     // Anthropic PDF documents
+	Priority  *int           `json:"priority,omitempty"` // Priority for system prompt (Anthropic)
+	CacheCtrl *CacheControl  `json:"cache_control,omitempty"` // Cache control for system prompt
 }
 
 // PDFDocument represents a PDF document in Anthropic system prompt.
 type PDFDocument struct {
-	Type      string // "document"
-	Source    PDFSource
+	Type      string        `json:"type"` // "document"
+	Source    PDFSource     `json:"source"`
 	Title     string        `json:"title,omitempty"`
 	CacheCtrl *CacheControl `json:"cache_control,omitempty"`
 }
@@ -232,63 +232,63 @@ type PDFSource struct {
 // Message is the unified message structure. Role values:
 // "system" | "user" | "assistant" | "tool"
 type Message struct {
-	Role       string
-	Content    []ContentBlock // Main content (mixed blocks)
-	ToolCalls  []ToolCall     // OpenAI-style tool_calls from assistant
-	ToolCallID string         // OpenAI: tool role uses this; Anthropic uses content blocks
-	Name       string         // tool role: function name
+	Role       string         `json:"role"`                  // "system" | "user" | "assistant" | "tool"
+	Content    []ContentBlock `json:"content,omitempty"`     // Main content (mixed blocks)
+	ToolCalls  []ToolCall     `json:"tool_calls,omitempty"`  // OpenAI-style tool_calls from assistant
+	ToolCallID string         `json:"tool_call_id,omitempty"` // OpenAI: tool role uses this; Anthropic uses content blocks
+	Name       string         `json:"name,omitempty"`        // tool role: function name
 
 	// RawContent preserves the original content format when we need exact round-trip.
 	// Used for content that doesn't normalize cleanly (e.g., complex multimodal).
-	RawContent any
+	RawContent any `json:"raw_content,omitempty"`
 }
 
 // ContentBlock represents a single content element. Type values:
 // "text" | "image" | "audio" | "video" | "document" | "input_audio" | "tool_use" | "tool_result" | "thinking" | "redacted_thinking"
 type ContentBlock struct {
-	Type string // Discriminant
+	Type string `json:"type"` // Discriminant
 
 	// type=text
-	Text string
+	Text string `json:"text,omitempty"`
 
 	// type=image
-	Image *ImageSource
+	Image *ImageSource `json:"image,omitempty"`
 
 	// type=audio (OpenAI input_audio / Anthropic 4.6 audio / Qwen audio_url)
 	// audit-provider-multimodal (2026-07-13): unified multimodal audio abstraction
-	Audio *MediaSource
+	Audio *MediaSource `json:"audio,omitempty"`
 
 	// type=video (Gemini / Qwen video input)
-	Video *MediaSource
+	Video *MediaSource `json:"video,omitempty"`
 
 	// type=document (Anthropic message content document / OpenAI file)
 	// audit-provider-multimodal (2026-07-13): PDF/text/csv document support
-	Document *DocumentBlock
+	Document *DocumentBlock `json:"document,omitempty"`
 
 	// type=input_audio (OpenAI chat audio input block)
 	// Convenience alias for Audio with simplified structure
-	InputAudio *InputAudioBlock
+	InputAudio *InputAudioBlock `json:"input_audio,omitempty"`
 
 	// type=tool_use
-	ToolUse *ToolUse
+	ToolUse *ToolUse `json:"tool_use,omitempty"`
 
 	// type=tool_result
-	ToolResult *ToolResult
+	ToolResult *ToolResult `json:"tool_result,omitempty"`
 
 	// type=thinking
-	Thinking *ThinkingBlock
+	Thinking *ThinkingBlock `json:"thinking,omitempty"`
 
 	// type=redacted_thinking
-	RedactedThinking string
+	RedactedThinking string `json:"redacted_thinking,omitempty"`
 
 	// Cache control (can appear on any block in Anthropic)
-	CacheControl *CacheControl
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 
 	// Index for interleaved tool results (Anthropic)
 	Index *int `json:"index,omitempty"`
 
 	// RawContent preserves the original content format for unknown block types.
-	RawContent any
+	RawContent any `json:"raw_content,omitempty"`
 }
 
 // MediaSource is the unified multimedia input source (audio/video).
@@ -435,8 +435,8 @@ func (t ToolDefinition) IsFunction() bool {
 
 // ToolChoice controls automatic vs forced tool calling.
 type ToolChoice struct {
-	Type string // "auto" | "none" | "any" | "required" | "tool"
-	Name string // When Type="tool", this is the forced function name
+	Type string `json:"type"`   // "auto" | "none" | "any" | "required" | "tool"
+	Name string `json:"name,omitempty"` // When Type="tool", this is the forced function name
 }
 
 // ThinkingConfig enables/disables Claude's extended thinking mode.
