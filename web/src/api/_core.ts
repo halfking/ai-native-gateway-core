@@ -25,7 +25,13 @@ export function headers(method: string, hasBody = false): Record<string, string>
   // Same-origin admin calls use the HttpOnly session cookie. Do not let the
   // in-memory JWT shadow a newer cookie from another tab; legacy sk-* auth has
   // no session cookie and must still use Authorization.
-  const bearer = store.apiKey || ''
+  //
+  // 2026-08-31: read authBearer() (jwtToken || apiKey) instead of store.apiKey.
+  // Reading only store.apiKey broke every JWT login: apiKey was always empty,
+  // so /healthz?full=true (and any admin endpoint called without a cookie
+  // shell) returned 401 even when the user was authed via /api/auth/token.
+  // See store.ts:authBearer for the source of truth.
+  const bearer = authBearer()
   if (bearer) h['Authorization'] = `Bearer ${bearer}`
   return h
 }
