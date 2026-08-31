@@ -192,6 +192,11 @@ SSH_CMD="remote_ssh"
 # the last HTTP status seen, or a timeout marker. SSH transport failures are
 # reported as "ssh: <reason>". The function NEVER aborts the script; it is the
 # caller's job to inspect the captured diagnostic.
+#
+# URL is interpolated into a remote shell command. Callers MUST pass a
+# hardcoded path under the candidate's port (no user-supplied query string,
+# no single quotes). Current call sites pass http://127.0.0.1:<port>/{healthz,
+# readyz,version}, all of which are safe.
 remote_probe() {
   local url="$1" timeout="${2:-30}"
   local body
