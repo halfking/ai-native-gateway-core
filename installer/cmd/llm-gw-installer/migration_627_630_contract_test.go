@@ -42,7 +42,7 @@ func TestMigration627AggregationIDUnifiedContract(t *testing.T) {
 		"UNION ALL",
 	)
 	mustContain(t, src,
-		"ALTER VIEW public.candidate_failure_logs_unified SET SECURITY_INVOKER = true",
+		"ALTER VIEW public.candidate_failure_logs_unified SET (security_invoker = true)",
 	)
 	// The historical synthesize path must rely on negative values so the
 	// hot-sequence positive domain never overlaps. A regression that flips the

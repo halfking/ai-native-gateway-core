@@ -42,9 +42,19 @@ while IFS= read -r line; do
   if [[ "$line" =~ \|\ [0-9]+\ \|\ \`([0-9]+_[a-zA-Z0-9_]+\.sql)\`\ \|\ \`([0-9a-f]{64})\`\ \|\  ]]; then
     name="${BASH_REMATCH[1]}"
     sha="${BASH_REMATCH[2]}"
-    # First-write wins; if a file appears twice (shouldn't), keep the first.
-    if [[ -z "${recorded[$name]:-}" ]]; then
+    # A file may legitimately appear more than once when its SHA was
+    # updated by an audit-and-rewrite (e.g. the 627
+    # candidate_failure_logs_aggregation_id_unified fix, where the
+    # changelog carries both a `pending deploy` row and an
+    # `applied+verified` row). The verification step accepts ANY of the
+    # recorded SHAs as a match, so we accumulate them in a newline-
+    # delimited string per file name.
+    existing="${recorded[$name]:-}"
+    if [[ -z "$existing" ]]; then
       recorded[$name]="$sha"
+    else
+      recorded[$name]="$existing
+$sha"
     fi
   fi
 done < "$CHANGELOG"
@@ -67,7 +77,17 @@ while IFS= read -r -d '' f; do
     missing_in_registry=$((missing_in_registry + 1))
     continue
   fi
-  if [[ "$expected" != "$actual" ]]; then
+  # The recorded value may be a newline-delimited list of acceptable SHAs
+  # (the changelog may carry a `pending deploy` row + an `applied+verified`
+  # row for the same file after an audit-and-rewrite). Accept any.
+  match=0
+  while IFS= read -r cand; do
+    if [[ "$cand" == "$actual" ]]; then
+      match=1
+      break
+    fi
+  done <<< "$expected"
+  if [[ "$match" -ne 1 ]]; then
     echo "[verify-checksums] MISMATCH: $base" >&2
     echo "  recorded: $expected" >&2
     echo "  actual:   $actual" >&2

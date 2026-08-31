@@ -33,8 +33,11 @@ func TestMigration627CandidateFailureLogsAggregationIdUnified(t *testing.T) {
 		// View with synthesized historical aggregation_id.
 		"CREATE OR REPLACE VIEW public.candidate_failure_logs_unified",
 		"COALESCE(aggregation_id, -id) AS aggregation_id",
-		// View hardening matches 625's session_bodies_unified pattern.
-		"SECURITY_INVOKER = true",
+		// View hardening matches 625's session_bodies_unified pattern. Use the
+		// parenthesized option-list form so the migration is portable across
+		// PG 14/15/Citus builds (env 154's Citus rejects the PG 15 shorthand
+		// `SET SECURITY_INVOKER = true`).
+		"SET (security_invoker = true)",
 		// Index on aggregation_id for forward lookups (no UPDATE — index only
 		// covers rows that actually got a value via promote).
 		"idx_candidate_failure_logs_aggregation_id",
