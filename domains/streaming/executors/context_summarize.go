@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
 	"strings"
@@ -19,6 +20,22 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+var (
+	// contextLimitDiscoveryTotal counts the number of times the gateway discovered
+	// a context limit from an upstream error message and persisted it to
+	// credential_model_bindings.context_window_override with source='discovery'.
+	// Labels: credential_id, model, status (discovered/persisted/failed).
+	contextLimitDiscoveryTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_context_limit_discovery_total",
+			Help: "Total context limit discoveries from upstream errors (2026-09-01 P2)",
+		},
+		[]string{"credential_id", "model", "status"},
+	)
 )
 
 const (
@@ -978,9 +995,76 @@ func (e *Executor) handleContextLengthRecovery(
 	sourceBody *[]byte,
 	st *contextLengthRecoveryState,
 	status int,
+	errorBody []byte,
 ) ctxLenRecoveryAction {
 	if params == nil || sourceBody == nil || st == nil {
 		return ctxLenGiveUp
+	}
+
+	// 2026-09-01: the upstream is the authority on its own context window.
+	// When the rejection body carries the real limit ("This model's maximum
+	// context length is 262144 tokens"), trust it over the configured value,
+	// which may be unset or stale. The discovered limit drives every
+	// compression tier below via targetCand.ContextWindow.
+	if limit, ok := errorsx.ParseContextLimitFromError(string(errorBody)); ok && limit > 0 {
+		configured := 0
+		if targetCand.ContextWindow != nil {
+			configured = *targetCand.ContextWindow
+		}
+		// Only override when the configured value is missing or off by more
+		// than 5% — small differences are within estimator noise and
+		// rewriting them adds log churn without changing the trim outcome.
+		if configured == 0 || math.Abs(float64(limit-configured))/float64(limit) > 0.05 {
+			slog.Warn("context_limit_mismatch_detected",
+				"credential_id", targetCand.CredentialID,
+				"model", targetCand.RawModel,
+				"config_limit", configured,
+				"actual_limit", limit,
+				"status", status,
+			)
+			discovered := limit
+			targetCand.ContextWindow = &discovered
+
+			// Increment discovery metric.
+			contextLimitDiscoveryTotal.WithLabelValues(
+				fmt.Sprintf("%d", targetCand.CredentialID),
+				targetCand.RawModel,
+				"discovered",
+			).Inc()
+
+			// P2 (2026-09-01): persist the discovered limit to
+			// credential_model_bindings.context_window_override with
+			// source='discovery' so future requests use the correct value
+			// without rediscovery. Fire-and-forget async: a slow DB write
+			// should not block the retry.
+			if e.ContextLimitUpdater != nil {
+				go func() {
+					credIDCopy := targetCand.CredentialID
+					modelCopy := targetCand.RawModel
+					limitCopy := limit
+
+					// Use a detached context with a 10s timeout so the write
+					// completes even if the request context is cancelled.
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+
+					err := e.ContextLimitUpdater.UpdateContextLimit(ctx, credIDCopy, modelCopy, limitCopy)
+					if err != nil {
+						contextLimitDiscoveryTotal.WithLabelValues(
+							fmt.Sprintf("%d", credIDCopy),
+							modelCopy,
+							"failed",
+						).Inc()
+					} else {
+						contextLimitDiscoveryTotal.WithLabelValues(
+							fmt.Sprintf("%d", credIDCopy),
+							modelCopy,
+							"persisted",
+						).Inc()
+					}
+				}()
+			}
+		}
 	}
 
 	// Round 47 compression v7 T-NEW-1: capture bytes_before for compression_meta.
@@ -1096,11 +1180,16 @@ func (e *Executor) handleContextLengthRecovery(
 	// summarization does not depend on the target window size.
 	if targetCand.ContextWindow != nil && !st.mechanicalAttempted {
 		st.mechanicalAttempted = true
+		// 2026-09-01: use the aggressive (60%) target rather than the default
+		// 85%. We are here because the upstream already rejected this body, so
+		// trimming to just under the limit leaves no room for the response or
+		// for estimator error — a request that overshot by 0.4% would otherwise
+		// come back 4xx a second time.
 		mechanicalFn := func(b []byte) []byte {
 			if params.ClientProtocol == "anthropic-messages" {
-				return transformation.CompressAnthropicMessagesIfNeeded(b, *targetCand.ContextWindow)
+				return transformation.CompressAnthropicMessagesAggressively(b, *targetCand.ContextWindow)
 			}
-			return transformation.CompressMessagesIfNeeded(b, *targetCand.ContextWindow)
+			return transformation.CompressMessagesAggressively(b, *targetCand.ContextWindow)
 		}
 		trimmed := mechanicalFn(*sourceBody)
 		if len(trimmed) < len(*sourceBody) {
