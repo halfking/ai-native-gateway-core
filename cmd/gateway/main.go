@@ -3169,6 +3169,21 @@ func main() {
 	// "undefined: apihubSvc" scoping bug at line ~1346.
 	var apihubSvc *apihub.Service
 
+	// 2026-09-01: materialized view refresher for routing analytics
+	// (migration 632). Deliberately OUTSIDE the !IsTrafficOnly() bg block:
+	// blue-green units pin every candidate to traffic-only, and this
+	// cluster runs no full-role instance — yet the analytics endpoints it
+	// feeds are served by exactly those traffic-only instances. Without a
+	// refresher the views go stale inside the 15-minute freshness budget
+	// and every request falls back to the timing-out base query. Safe to
+	// run on all instances: REFRESH ... CONCURRENTLY never blocks readers
+	// and a pg advisory lock dedupes concurrent instances.
+	if dbConn != nil && dbConn.Enabled() {
+		mvRefresher := bg.NewMaterializedViewRefresher(dbConn.Pool())
+		mvRefresher.Start()
+		defer mvRefresher.Stop()
+	}
+
 	if dbConn != nil && dbConn.Enabled() && !cfg.IsTrafficOnly() {
 		slog.Info("CHECKPOINT: inside bg services enabled block")
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
@@ -4094,16 +4109,6 @@ func main() {
 		}
 
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
-
-		// 2026-08-31: Materialized view refresher for routing analytics performance.
-		// Refreshes routing_analytics_7d and routing_audit_summary_7d every 10 minutes
-		// to keep /api/admin/auto-route/analytics/* endpoints fast (<500ms).
-		// Related: migration 632 (db.ensureRoutingAnalyticsMaterializedViews),
-		// admin/analytics.go, admin/analytics_materialized.go
-		mvRefresher := bg.NewMaterializedViewRefresher(dbConn.Pool())
-		mvRefresher.Start()
-		defer mvRefresher.Stop()
-		slog.Info("materialized_view_refresher started for routing analytics")
 
 		// settings-management: 7-day audit retention worker (Q6: C).
 		slog.Info("CHECKPOINT: before NewSettingsAuditCleaner")
