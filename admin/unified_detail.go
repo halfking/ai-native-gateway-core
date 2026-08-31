@@ -329,12 +329,12 @@ func (r *pgBodyReader) ReadSessionTurnsBodies(ctx context.Context, requestID str
 	bodyJoin := ""
 	if !omitBody {
 		bodyColumns = "b.request_delta, b.response_delta, b.outbound_body"
-		bodyJoin = `
+		 bodyJoin = `
 		  LEFT JOIN public.session_bodies_unified b
 		    ON b.tenant_id = t.tenant_id
 		   AND b.session_id = t.session_id
 		   AND b.turn_no = t.turn_no
-		   AND b.partition_date = t.partition_date`
+		   AND b.request_id = t.request_id`
 	}
 	args := []any{requestID}
 	if !scope.Unrestricted {

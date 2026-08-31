@@ -346,7 +346,7 @@ func (api *SessionDetailV2API) queryTurns(
 			ON t.tenant_id = b.tenant_id
 			AND t.session_id = b.session_id
 			AND t.turn_no = b.turn_no
-			AND t.partition_date = b.partition_date
+			AND t.request_id = b.request_id
 		WHERE t.session_id = $1 AND t.tenant_id = $2
 		ORDER BY t.turn_no DESC
 		LIMIT $3 OFFSET $4

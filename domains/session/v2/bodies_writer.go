@@ -294,7 +294,7 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 			$9::text::jsonb, $10::text::jsonb,
 			$11
 		)
-		ON CONFLICT (tenant_id, session_id, turn_no, partition_date)
+		ON CONFLICT (tenant_id, request_id, partition_date)
 		DO UPDATE SET
 			response_delta = CASE
 				WHEN EXCLUDED.response_delta IS NULL OR EXCLUDED.response_delta = 'null'::jsonb
