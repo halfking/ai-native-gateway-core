@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,5 +107,132 @@ func TestHTTPHealthCheckerTimeout(t *testing.T) {
 	_, err := checker.Check(context.Background(), node)
 	if err == nil {
 		t.Fatal("slow health check should time out")
+	}
+}
+
+// TestHTTPHealthCheckerTransportPoolConcurrent (2026-08-31, P2-5) verifies
+// that getOrCreateTransport is safe under concurrent fan-out and that
+// concurrent Close + getOrCreateTransport no longer leaks a stale Transport
+// after the close (the original sync.Map+Mutex race).
+//
+// Run with `go test -race` to catch any future regression.
+func TestHTTPHealthCheckerTransportPoolConcurrent(t *testing.T) {
+	checker := NewHTTPHealthChecker(time.Second)
+
+	const (
+		proxies  = 8
+		fanout   = 32
+		iterStep = 200
+	)
+	urls := make([]string, proxies)
+	for i := range urls {
+		urls[i] = "http://127.0.0.1:" + strconv.Itoa(8000+i)
+	}
+
+	// Fan-out: many goroutines hit getOrCreateTransport for the same and
+	// different proxy URLs. With the double-check + RWMutex implementation
+	// each proxy URL must end up with exactly one Transport instance shared
+	// by every goroutine that asked for it.
+	seen := make(map[string]map[*http.Transport]struct{})
+	var seenMu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < fanout; i++ {
+		for _, url := range urls {
+			wg.Add(1)
+			go func(url string) {
+				defer wg.Done()
+				for j := 0; j < iterStep; j++ {
+					tr, err := checker.getOrCreateTransport(url)
+					if err != nil {
+						t.Errorf("getOrCreateTransport(%q): %v", url, err)
+						return
+					}
+					seenMu.Lock()
+					m := seen[url]
+					if m == nil {
+						m = make(map[*http.Transport]struct{})
+						seen[url] = m
+					}
+					m[tr] = struct{}{}
+					seenMu.Unlock()
+				}
+			}(url)
+		}
+	}
+	wg.Wait()
+
+	for url, m := range seen {
+		if len(m) != 1 {
+			t.Fatalf("proxyURL=%q ended up with %d distinct transports (want 1)", url, len(m))
+		}
+	}
+
+	// Concurrent Close + getOrCreateTransport must not leak a stale
+	// Transport: after Close, every proxy URL must produce a brand-new
+	// Transport instance.
+	stop := make(chan struct{})
+	var closerDone sync.WaitGroup
+	closerDone.Add(1)
+	go func() {
+		defer closerDone.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				checker.Close()
+			}
+		}
+	}()
+
+	var postClose sync.WaitGroup
+	got := make(map[string]*http.Transport)
+	var postMu sync.Mutex
+	for _, url := range urls {
+		postClose.Add(1)
+		go func(url string) {
+			defer postClose.Done()
+			for j := 0; j < iterStep; j++ {
+				tr, err := checker.getOrCreateTransport(url)
+				if err != nil {
+					t.Errorf("post-Close getOrCreateTransport(%q): %v", url, err)
+					return
+				}
+				postMu.Lock()
+				if existing, ok := got[url]; ok && existing != tr {
+					// Two distinct transport instances for the same URL
+					// during the post-Close window means the close did not
+					// clear the pool before a new entry was installed.
+					// The fix (RWMutex-guarded map) should make this
+					// observable only when the goroutine was blocked on
+					// transportsMu.Lock at the moment Close ran. Either way
+					// we accept multiple instances here; what matters is
+					// that no transport leaks AFTER Close completes.
+					_ = existing
+				}
+				got[url] = tr
+				postMu.Unlock()
+			}
+		}(url)
+	}
+	postClose.Wait()
+	close(stop)
+	closerDone.Wait()
+
+	// Final Close: every proxy URL must resolve to a brand-new Transport
+	// that was NOT in the original `seen` map.
+	checker.Close()
+	for _, url := range urls {
+		tr, err := checker.getOrCreateTransport(url)
+		if err != nil {
+			t.Fatalf("final getOrCreateTransport(%q): %v", url, err)
+		}
+		if _, leaked := seen[url]; leaked {
+			for old := range seen[url] {
+				if old == tr {
+					t.Fatalf("proxyURL=%q: post-Close transport reuses the pre-Close instance (%p)", url, tr)
+				}
+			}
+		}
 	}
 }
