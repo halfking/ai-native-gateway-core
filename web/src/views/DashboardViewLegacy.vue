@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateTimeShort } from '../i18n/useFormat'
 import { RouterLink, useRouter } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
@@ -125,11 +125,6 @@ function fmtCost(v: number | undefined) {
 function fmtPct(v: number | undefined) {
   if (v === undefined || v === null) return '—'
   return (Number(v) * 100).toFixed(1) + '%'
-}
-
-function fmtDate(v: string | null | undefined) {
-  if (!v) return '—'
-  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 async function loadHealth() {
@@ -335,8 +330,8 @@ scheduleStatsRecalibrate()
     >
       <strong>后台任务进行中</strong>
       <span>模型发现（{{ discoveryStatus.running.trigger }}）</span>
-      <span>开始 {{ fmtDate(discoveryStatus.running.started_at) }}</span>
-      <span>心跳 {{ fmtDate(discoveryStatus.running.heartbeat_at) }}</span>
+      <span>开始 {{ fmtDateTimeShort(discoveryStatus.running.started_at) }}</span>
+      <span>心跳 {{ fmtDateTimeShort(discoveryStatus.running.heartbeat_at) }}</span>
       <span class="background-tasks-hint">管理页可能变慢</span>
       <RouterLink to="/models">查看详情</RouterLink>
     </div>
@@ -345,7 +340,7 @@ scheduleStatsRecalibrate()
       class="background-tasks-banner"
     >
       <span>最近模型发现：{{ discoveryStatus.latest.status }}</span>
-      <span>{{ fmtDate(discoveryStatus.latest.finished_at || discoveryStatus.latest.started_at) }}</span>
+      <span>{{ fmtDateTimeShort(discoveryStatus.latest.finished_at || discoveryStatus.latest.started_at) }}</span>
       <RouterLink to="/models">模型页</RouterLink>
     </div>
 
@@ -366,7 +361,7 @@ scheduleStatsRecalibrate()
             <code class="mono-sm">{{ m.raw_model_name }}</code>
             <span class="probe-failures-meta">
               {{ m.total_failures }} 次 · 涉及 {{ m.creds_affected }} 个凭据 ·
-              最近 {{ fmtDate(m.last_failed_at) }} ·
+              最近 {{ fmtDateTimeShort(m.last_failed_at) }} ·
               错误 <code>{{ m.sample_error_code || '—' }}</code>
             </span>
           </li>
@@ -479,7 +474,7 @@ scheduleStatsRecalibrate()
             <td style="text-align:right">{{ fmt(k.request_count) }}</td>
             <td style="text-align:right">{{ fmt(k.total_tokens) }}</td>
             <td style="text-align:right">{{ fmtCost(k.total_cost_usd) }}</td>
-            <td>{{ fmtDate(k.last_used_at) }}</td>
+            <td>{{ fmtDateTimeShort(k.last_used_at) }}</td>
           </tr>
         </tbody>
       </table>

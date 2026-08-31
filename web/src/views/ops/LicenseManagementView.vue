@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getLicenses,
   createLicense,
@@ -79,11 +80,6 @@ function statusType(status: string) {
     revoked: 'danger',
   }
   return map[status] || 'info'
-}
-
-function formatDate(date?: string) {
-  if (!date) return ''
-  return new Date(date).toLocaleString()
 }
 
 async function load() {
@@ -430,7 +426,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="timestamp" :label="t('common.createdAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.timestamp) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.timestamp) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="180" fixed="right">
           <template #default="scope">
@@ -489,10 +485,10 @@ onMounted(() => {
                     </template>
                   </el-table-column>
                   <el-table-column prop="activated_at" :label="t('ops.license.activatedAt')">
-                    <template #default="deviceScope">{{ formatDate(deviceScope?.row?.activated_at) }}</template>
+                    <template #default="deviceScope">{{ fmtDateTime24h(deviceScope?.row?.activated_at) }}</template>
                   </el-table-column>
                   <el-table-column prop="last_heartbeat" :label="t('ops.license.lastSeen')">
-                    <template #default="deviceScope">{{ formatDate(deviceScope?.row?.last_heartbeat || '') }}</template>
+                    <template #default="deviceScope">{{ fmtDateTime24h(deviceScope?.row?.last_heartbeat || '') }}</template>
                   </el-table-column>
                   <el-table-column :label="t('common.actions')" width="100">
                     <template #default="deviceScope">
@@ -544,7 +540,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="expires_at" :label="t('ops.license.expiresAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.expires_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.expires_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.table.status')" width="100">
           <template #default="scope">
@@ -554,7 +550,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="240" fixed="right">
           <template #default="scope">
@@ -615,7 +611,7 @@ onMounted(() => {
               <template #default="scope">{{ formatDonation(scope?.row?.donation_total_cents) }}</template>
             </el-table-column>
             <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-              <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
+              <template #default="scope">{{ fmtDateTime24h(scope?.row?.created_at) }}</template>
             </el-table-column>
           </el-table>
           <div class="pagination-wrapper">

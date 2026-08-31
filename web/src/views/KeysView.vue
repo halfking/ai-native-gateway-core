@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateTimeShort } from '../i18n/useFormat'
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
@@ -326,11 +326,6 @@ async function revoke(k: ApiKey) {
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('keys.revokeFailed')
   }
-}
-
-function fmtDate(s: string | null | undefined) {
-  if (!s) return '—'
-  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 function fmtCost(n: number | string | null | undefined): string {
@@ -702,8 +697,8 @@ onBeforeUnmount(() => {
             <td style="font-size:12px;text-align:right" :class="{ 'has-cost': k.total_cost_usd > 0 }">
               {{ k.total_cost_usd > 0 ? fmtCost(k.total_cost_usd) : '—' }}
             </td>
-            <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.expires_at) }}</td>
-            <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.last_used_at) }}</td>
+            <td style="font-size:12px;color:var(--muted)">{{ fmtDateTimeShort(k.expires_at) }}</td>
+            <td style="font-size:12px;color:var(--muted)">{{ fmtDateTimeShort(k.last_used_at) }}</td>
             <td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="k.remark || ''">
               {{ k.remark || '—' }}
             </td>
@@ -748,7 +743,7 @@ onBeforeUnmount(() => {
                 </span>
                 <span class="dk">预算</span><span class="dv">{{ selectedKey.budget_usd != null ? fmtCost(selectedKey.budget_usd) : t('keys.unlimited') }}</span>
                 <span class="dk">速率限制</span><span class="dv">{{ rateLimitLabel(selectedKey) }}</span>
-                <span class="dk">到期</span><span class="dv">{{ fmtDate(selectedKey.expires_at) }}</span>
+                <span class="dk">到期</span><span class="dv">{{ fmtDateTimeShort(selectedKey.expires_at) }}</span>
                 <span class="dk">备注</span><span class="dv">{{ selectedKey.remark || '—' }}</span>
               </div>
             </div>
@@ -875,7 +870,7 @@ onBeforeUnmount(() => {
               class="conflict-meta"
             >
               <span v-if="newConflict.status">状态: <code>{{ newConflict.status }}</code></span>
-              <span v-if="newConflict.expiresAt">到期: <code>{{ fmtDate(newConflict.expiresAt) }}</code></span>
+              <span v-if="newConflict.expiresAt">到期: <code>{{ fmtDateTimeShort(newConflict.expiresAt) }}</code></span>
               <span v-if="newConflict.ownerUser">归属: <code>{{ newConflict.ownerUser }}</code></span>
             </div>
             <div v-if="serverConflictLoading" class="conflict-loading">正在向服务器确认…</div>

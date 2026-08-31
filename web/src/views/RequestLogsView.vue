@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { localeRef } from '../i18n'
+import { fmtDateCompact } from '../i18n/useFormat'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -833,10 +834,6 @@ function fmtTs(ts: string) {
   return new Date(ts).toLocaleString(localeRef.value, { hour12: false })
 }
 
-function fmtDate(ts: string) {
-  return new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
-}
-
 function fmtTime(ts: string) {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
@@ -1491,7 +1488,7 @@ onMounted(async () => {
               <span class="cell-line1">{{ r.trace_seq ?? t('requests.none') }}</span>
             </td>
             <td class="col-time" :title="`${r.request_id} · ${fmtTs(r.ts)}`">
-              <div class="cell-line1">{{ fmtDate(r.ts) }}</div>
+              <div class="cell-line1">{{ fmtDateCompact(r.ts) }}</div>
               <div class="cell-line2">{{ fmtTime(r.ts) }}</div>
             </td>
             <td class="col-trace" @click.stop="filterByTrace(r)">

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateCompact } from '../i18n/useFormat'
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -168,12 +168,6 @@ function fmtNum(n: number | undefined | null, decimals = 0): string {
 function fmtPct(v: number | undefined | null): string {
   if (v === undefined || v === null) return '—'
   return (Number(v) * 100).toFixed(1) + '%'
-}
-
-function fmtDate(v: string | null | undefined): string {
-  if (!v) return '—'
-  const d = new Date(v)
-  return d.toLocaleString(localeRef.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 
 const strategyLabels: Record<string, string> = {
@@ -439,7 +433,7 @@ watch(activeTab, loadAll)
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
-              <td>{{ fmtDate(s.last_ts) }}</td>
+              <td>{{ fmtDateCompact(s.last_ts) }}</td>
             </tr>
           </tbody>
         </table>

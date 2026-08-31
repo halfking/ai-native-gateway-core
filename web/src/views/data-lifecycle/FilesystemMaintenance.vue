@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../../i18n'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import { attachmentFilesystemStats, attachmentFilesystemCleanup } from '../../api'
 
 const { t } = useI18n()
@@ -128,11 +128,6 @@ function formatBytes(bytes: number): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString(localeRef.value)
-}
-
 onMounted(() => {
   load()
 })
@@ -171,7 +166,7 @@ defineExpose({ load })
 
       <div class="stat-card">
         <div class="stat-label">最早文件时间</div>
-        <div class="stat-value-small">{{ formatDate(stats.oldest_file_time) }}</div>
+        <div class="stat-value-small">{{ fmtDateTime24h(stats.oldest_file_time) }}</div>
       </div>
 
       <!-- 磁盘空间统计 -->

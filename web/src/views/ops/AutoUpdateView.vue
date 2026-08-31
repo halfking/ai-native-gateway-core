@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getReleases,
   createRelease,
@@ -315,11 +316,6 @@ function logStatusType(status: string) {
   return map[status] || 'info'
 }
 
-function formatDate(date?: string) {
-  if (!date) return '—'
-  return new Date(date).toLocaleString()
-}
-
 onMounted(() => {
   load()
   loadUpgradeLogs()
@@ -366,7 +362,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="published_at" :label="t('ops.autoupdate.publishedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.published_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.published_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="340" fixed="right">
           <template #default="scope">
@@ -427,10 +423,10 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="started_at" :label="t('ops.autoupdate.startedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.started_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.started_at) }}</template>
         </el-table-column>
         <el-table-column prop="completed_at" :label="t('ops.autoupdate.completedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.completed_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.completed_at) }}</template>
         </el-table-column>
         <el-table-column prop="error" :label="t('ops.autoupdate.errorMessage')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="retry_count" :label="t('ops.autoupdate.retryCount')" width="90" />

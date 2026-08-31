@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateMedium } from '../i18n/useFormat'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
 import PageBackLink from '../components/PageBackLink.vue'
@@ -70,18 +70,6 @@ function getStatusLabel(status: string): string {
     case 'timeout': return '已超时'
     default: return status
   }
-}
-
-function formatDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  return date.toLocaleString(localeRef.value, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
 }
 
 function formatCost(cost?: number): string {
@@ -259,13 +247,13 @@ onBeforeUnmount(() => {
 
           <div class="info-item">
             <div class="info-label">创建时间</div>
-            <div class="info-value">{{ formatDate(approval.created_at) }}</div>
+            <div class="info-value">{{ fmtDateMedium(approval.created_at) }}</div>
           </div>
 
           <div class="info-item">
             <div class="info-label">过期时间</div>
             <div class="info-value">
-              {{ formatDate(approval.expires_at) }}
+              {{ fmtDateMedium(approval.expires_at) }}
               <span v-if="approval.time_left && isPending" class="time-left">
                 (剩余: {{ approval.time_left }})
               </span>
@@ -279,7 +267,7 @@ onBeforeUnmount(() => {
 
           <div v-if="approval.approved_at" class="info-item">
             <div class="info-label">审批时间</div>
-            <div class="info-value">{{ formatDate(approval.approved_at) }}</div>
+            <div class="info-value">{{ fmtDateMedium(approval.approved_at) }}</div>
           </div>
 
           <div v-if="approval.reason" class="info-item info-item-full">
@@ -443,7 +431,7 @@ onBeforeUnmount(() => {
             <div class="timeline-dot timeline-dot-blue"></div>
             <div class="timeline-content">
               <div class="timeline-title">请求创建</div>
-              <div class="timeline-time">{{ formatDate(approval.created_at) }}</div>
+              <div class="timeline-time">{{ fmtDateMedium(approval.created_at) }}</div>
             </div>
           </div>
 
@@ -451,7 +439,7 @@ onBeforeUnmount(() => {
             <div class="timeline-dot" :class="`timeline-dot-${getStatusColor(approval.status)}`"></div>
             <div class="timeline-content">
               <div class="timeline-title">{{ getStatusLabel(approval.status) }}</div>
-              <div class="timeline-time">{{ formatDate(approval.approved_at) }}</div>
+              <div class="timeline-time">{{ fmtDateMedium(approval.approved_at) }}</div>
               <div v-if="approval.approved_by" class="timeline-detail">审批人: {{ approval.approved_by }}</div>
               <div v-if="approval.reason" class="timeline-detail">说明: {{ approval.reason }}</div>
             </div>

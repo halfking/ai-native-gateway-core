@@ -3,7 +3,7 @@
 // 2026-07-05: 将原本占用大量空间的表格移到抽屉中
 
 import { ref, computed } from 'vue'
-import { localeRef } from '../i18n'
+import { fmtDateTimeShort } from '../i18n/useFormat'
 import type { HotApiKeyEntry, ModelUsage } from '../api'
 
 const props = defineProps<{
@@ -35,11 +35,6 @@ function fmt(n: number | undefined, decimals = 0) {
 function fmtCost(v: number | undefined) {
   if (v === undefined || v === null) return '—'
   return '$' + Number(v).toFixed(4)
-}
-
-function fmtDate(v: string | null | undefined) {
-  if (!v) return '—'
-  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 defineExpose({ open, close })
@@ -101,7 +96,7 @@ defineExpose({ open, close })
                       <td style="text-align:right">{{ fmt(k.request_count) }}</td>
                       <td style="text-align:right">{{ fmt(k.total_tokens) }}</td>
                       <td style="text-align:right">{{ fmtCost(k.total_cost_usd) }}</td>
-                      <td>{{ fmtDate(k.last_used_at) }}</td>
+                      <td>{{ fmtDateTimeShort(k.last_used_at) }}</td>
                     </tr>
                   </tbody>
                 </table>

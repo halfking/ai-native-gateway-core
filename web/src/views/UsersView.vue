@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateTime24h } from '../i18n/useFormat'
 import { ref, computed, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin } from '../api'
 import type { Tenant } from '../api'
@@ -135,11 +135,6 @@ function roleLabel(r: string) {
   return r === 'super_admin' ? t('users.role.super_admin') : t('users.role.tenant_admin')
 }
 
-function fmtDate(s: string | null) {
-  if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
-}
-
 function closeCreateModal() {
   showCreate.value = false
   form.value = { username: '', password: '', tenant_id: 'default', display_name: '', email: '', role: 'tenant_admin' }
@@ -221,7 +216,7 @@ onMounted(() => { load(); loadTenants() })
               {{ u.enabled ? t('users.status.enabled') : t('users.status.disabled') }}
             </span>
           </td>
-          <td>{{ fmtDate(u.last_login_at) }}</td>
+          <td>{{ fmtDateTime24h(u.last_login_at) }}</td>
           <td>
             <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">{{ t('users.action.resetPassword') }}</button>
             <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">{{ t('users.action.delete') }}</button>

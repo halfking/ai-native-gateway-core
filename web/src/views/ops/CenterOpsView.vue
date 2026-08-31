@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getCenterInstances,
   getCenterStats,
@@ -198,11 +199,6 @@ function statusType(status: string) {
   return map[status] || 'info'
 }
 
-function formatDate(date: string) {
-  if (!date) return '-'
-  return new Date(date).toLocaleString()
-}
-
 const paginatedInstances = computed(() => {
   const start = (page.value - 1) * pageSize.value
   return instances.value.slice(start, start + pageSize.value)
@@ -286,7 +282,7 @@ onMounted(load)
         </el-table-column>
         <el-table-column prop="instance_id" :label="t('ops.center.instanceId')" width="180" />
         <el-table-column prop="detected_at" :label="t('ops.center.alerts.detectedAt')" width="170">
-          <template #default="scope">{{ formatDate(scope?.row?.detected_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.detected_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="220" fixed="right">
           <template #default="scope">
@@ -338,10 +334,10 @@ onMounted(load)
           </template>
         </el-table-column>
         <el-table-column prop="last_heartbeat" :label="t('ops.center.lastHeartbeat')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.last_heartbeat) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.last_heartbeat) }}</template>
         </el-table-column>
         <el-table-column prop="started_at" :label="t('ops.center.startedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.started_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.started_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
           <template #default="scope">

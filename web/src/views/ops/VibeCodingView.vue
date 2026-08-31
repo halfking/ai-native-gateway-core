@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getVibeCodingProjects,
   createVibeCodingProject,
@@ -163,10 +164,6 @@ function severityType(severity: string) {
   return map[severity] || 'info'
 }
 
-function formatDate(date: string) {
-  return new Date(date).toLocaleString()
-}
-
 onMounted(load)
 </script>
 
@@ -196,7 +193,7 @@ onMounted(load)
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('common.createdAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
           <template #default="scope">
@@ -232,10 +229,10 @@ onMounted(load)
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('ops.vibecoding.startedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.created_at) }}</template>
         </el-table-column>
         <el-table-column prop="completed_at" :label="t('ops.vibecoding.endedAt')" width="160">
-          <template #default="scope">{{ scope?.row?.completed_at ? formatDate(scope?.row?.completed_at) : '—' }}</template>
+          <template #default="scope">{{ scope?.row?.completed_at ? fmtDateTime24h(scope?.row?.completed_at) : '—' }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="140" fixed="right">
           <template #default="scope">
@@ -278,7 +275,7 @@ onMounted(load)
           </template>
         </el-table-column>
         <el-table-column prop="created_at" :label="t('ops.vibecoding.reviewedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.created_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.created_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="100" fixed="right">
           <template #default="scope">
@@ -354,7 +351,7 @@ onMounted(load)
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.vibecoding.reviewedAt')">
-            {{ formatDate(selectedReview.created_at) }}
+            {{ fmtDateTime24h(selectedReview.created_at) }}
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.vibecoding.summary')" :span="2">
             {{ selectedReview.review_result?.summary }}
