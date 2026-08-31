@@ -113,6 +113,19 @@ type Recorder interface {
 	// rejected due to deduplication. Label: reason (already_completed |
 	// version_conflict | not_claimed).
 	RecordJournalSnapshotDeduplicated(tenantID, reason string)
+
+	// LiveStreamRecordDropped (2026-08-31, P2-2 observability): increments
+	// when admin/live_stream_redis_store.Record() decides NOT to write the
+	// request to Redis (graceful degradation when Redis is unavailable or
+	// the per-request lock cannot be acquired). Without this counter the
+	// operator has no signal that the live stream hub is silently losing
+	// tiles while the canonical record still lands in request_logs.
+	//
+	// reason values (kept in sync with the alerting labels in
+	// deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml):
+	//   - "store_unconfigured" : store/Redis client is nil (operator never wired it)
+	//   - "redis_unavailable"  : lock acquisition failed (Redis down or contended)
+	RecordLiveStreamRecordDropped(reason string)
 }
 
 // NoopRecorder 是空实现，用于测试
@@ -175,6 +188,9 @@ func (n *NoopRecorder) RecordSuccessEmptyResponse(model, providerID, tenantID st
 func (n *NoopRecorder) RecordJournalSnapshotStored(tenantID string)                       {}
 func (n *NoopRecorder) RecordJournalSnapshotApplied(tenantID string, success bool)        {}
 func (n *NoopRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string)         {}
+
+// 2026-08-31 (P2-2): live-stream Redis-record silent-drop counter.
+func (n *NoopRecorder) RecordLiveStreamRecordDropped(reason string) {}
 
 // globalRecorder 保存全局默认 Recorder。
 //

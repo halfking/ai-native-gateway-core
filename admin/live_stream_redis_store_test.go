@@ -12,6 +12,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 func TestLiveStreamRedisStore_RecordAndReplay(t *testing.T) {
@@ -323,6 +325,38 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	}
 	if items != nil {
 		t.Errorf("Replay with nil client should return nil slice, got %v", items)
+	}
+}
+
+// countingRecorder is a minimal metrics.Recorder that only counts
+// RecordLiveStreamRecordDropped(reason) calls. All other methods are
+// no-ops so the test does not have to satisfy the full Recorder surface.
+type countingRecorder struct {
+	metrics.NoopRecorder
+	drops atomic.Int64
+}
+
+func (c *countingRecorder) RecordLiveStreamRecordDropped(reason string) {
+	c.drops.Add(1)
+}
+
+// TestLiveStreamRedisStore_RecordDroppedMetric_NilClient (2026-08-31, P2-2)
+// pins that Record() with a nil client emits the
+// "store_unconfigured" silent-drop metric. Without this contract test a
+// future refactor could remove the metric call site and the operator
+// dashboard would silently go dark.
+func TestLiveStreamRedisStore_RecordDroppedMetric_NilClient(t *testing.T) {
+	rec := &countingRecorder{}
+	prev := metrics.Global()
+	metrics.SetGlobal(rec)
+	t.Cleanup(func() { metrics.SetGlobal(prev) })
+
+	store := NewLiveStreamRedisStore(nil)
+	if err := store.Record(context.Background(), LiveRequest{RequestID: "test"}, ""); err != nil {
+		t.Fatalf("Record with nil client should return nil, got %v", err)
+	}
+	if got := rec.drops.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 silent-drop metric increment, got %d", got)
 	}
 }
 

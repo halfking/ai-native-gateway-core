@@ -32,10 +32,20 @@ const (
 // mihomo/xray 网桥暴露成 http/socks5 入口，再以该入口作为节点录入后才能探测。
 //
 // 审计修复 (2026-08-29)：问题 8 - 增加 Transport 池，复用连接提升探活性能。
+//
+// 审计修复 (2026-08-31, P2-5)：之前使用 sync.Map + 单独的 sync.Mutex。
+// Close() 内部的 Range/Delete 与 getOrCreateTransport 内部的 Load/Store
+// 没有统一的锁保护，在并发场景下新创建的 Transport 可能在 Close 之后仍
+// 残留在池中（Close 的 Range 看到的是旧状态，Store 在 Range 之后发生），
+// 同时 Range 内部对同一 transport 调用 CloseIdleConnections 与另一
+// goroutine 在 fast-path 中返回同一 transport 也存在竞态。改为
+// sync.RWMutex 守护一个普通 map，读路径使用 RLock（高频），写路径
+// （create 与 Close）使用 Lock。Map 的整体操作都在锁内，Close 与
+// getOrCreateTransport 之间是顺序的。
 type HTTPHealthChecker struct {
-	timeout    time.Duration
-	transports sync.Map // proxyURL -> *http.Transport
-	mu         sync.Mutex
+	timeout      time.Duration
+	transportsMu sync.RWMutex
+	transports   map[string]*http.Transport // guarded by transportsMu
 }
 
 // NewHTTPHealthChecker 创建健康检查器，timeout <= 0 时使用默认 10s。
@@ -43,7 +53,10 @@ func NewHTTPHealthChecker(timeout time.Duration) *HTTPHealthChecker {
 	if timeout <= 0 {
 		timeout = defaultHealthCheckTimeout
 	}
-	return &HTTPHealthChecker{timeout: timeout}
+	return &HTTPHealthChecker{
+		timeout:    timeout,
+		transports: make(map[string]*http.Transport),
+	}
 }
 
 // newTransportForProxy 为给定代理 URL 构造一个 http.Transport（包级共享实现，
@@ -73,17 +86,25 @@ func newTransportForProxy(proxyURL string, timeout time.Duration, disableKeepAli
 }
 
 // getOrCreateTransport 获取或创建可复用的 Transport（审计修复 2026-08-29 问题 8）。
+//
+// 2026-08-31 (P2-5): 使用 RWMutex 守护整个 map。fast-path 走 RLock；
+// 创建路径走 Lock 并在锁内再次检查（double-check），保证只有一个
+// goroutine 为同一个 proxyURL 构造新 Transport。
 func (c *HTTPHealthChecker) getOrCreateTransport(proxyURL string) (*http.Transport, error) {
-	if cached, ok := c.transports.Load(proxyURL); ok {
-		return cached.(*http.Transport), nil
+	c.transportsMu.RLock()
+	tr, ok := c.transports[proxyURL]
+	c.transportsMu.RUnlock()
+	if ok {
+		return tr, nil
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.transportsMu.Lock()
+	defer c.transportsMu.Unlock()
 
-	// 再次检查（double-check）
-	if cached, ok := c.transports.Load(proxyURL); ok {
-		return cached.(*http.Transport), nil
+	// 再次检查（double-check）：另一个 goroutine 可能在我们等 Lock 期间
+	// 已经把 Transport 放进去。
+	if tr, ok := c.transports[proxyURL]; ok {
+		return tr, nil
 	}
 
 	// 创建可复用的 Transport（disableKeepAlives=false）
@@ -96,19 +117,23 @@ func (c *HTTPHealthChecker) getOrCreateTransport(proxyURL string) (*http.Transpo
 	tr.MaxIdleConnsPerHost = 2
 	tr.IdleConnTimeout = 90 * time.Second
 
-	c.transports.Store(proxyURL, tr)
+	c.transports[proxyURL] = tr
 	return tr, nil
 }
 
 // Close 关闭所有缓存的 Transport（审计修复 2026-08-29 问题 8）。
+//
+// 2026-08-31 (P2-5): 整个 map 操作都在 Lock 下完成，保证与
+// getOrCreateTransport 的 Store 之间是顺序的。Close 之后再有
+// getOrCreateTransport 调用，会拿到一个干净的（新）Transport，
+// 而不会复用已经被关闭 idle connection 的旧 Transport。
 func (c *HTTPHealthChecker) Close() {
-	c.transports.Range(func(key, value interface{}) bool {
-		if tr, ok := value.(*http.Transport); ok {
-			tr.CloseIdleConnections()
-		}
-		c.transports.Delete(key)
-		return true
-	})
+	c.transportsMu.Lock()
+	defer c.transportsMu.Unlock()
+	for proxyURL, tr := range c.transports {
+		tr.CloseIdleConnections()
+		delete(c.transports, proxyURL)
+	}
 }
 
 // Check 探测节点健康状态，返回耗时（毫秒）。

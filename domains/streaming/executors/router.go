@@ -606,6 +606,7 @@ func (r *Router) enqueueURSMv2Shadow(candidates, legacyOrder []provider.Candidat
 	}
 	if !r.URSMv2.ShouldSampleShadow(tenant, canonical, requestID) {
 		shadow.Record(shadow.OutcomeSampledOut)
+		shadow.RecordEnqueueResult("sampled_out")
 		return
 	}
 
@@ -622,8 +623,25 @@ func (r *Router) enqueueURSMv2Shadow(candidates, legacyOrder []provider.Candidat
 		tenant: tenant, canonical: canonical, requestID: requestID,
 	}
 	worker := r.getOrStartShadowWorker()
-	if worker == nil || !worker.enqueue(task) {
+	switch {
+	case worker == nil:
+		// 2026-08-31 (P2-3): distinguish worker-stopped from queue-full so
+		// the operator can alert on production-load back-pressure without
+		// being distracted by clean shutdowns.
 		shadow.Record(shadow.OutcomeDropped)
+		shadow.RecordEnqueueResult("worker_stopped")
+	case !worker.enqueue(task):
+		// Queue at capacity (128). This is the silently-dropped path the
+		// audit flagged: under production load a saturated shadow queue
+		// skews the comparison set, so we surface it as a labelled metric
+		// in addition to the legacy OutcomeDropped aggregation.
+		shadow.Record(shadow.OutcomeDropped)
+		shadow.RecordEnqueueResult("queue_full")
+		slog.Warn("ursm v2 shadow queue full; dropping observation",
+			"tenant", tenant, "canonical", canonical, "request_id", requestID,
+			"queue_capacity", ursmShadowQueueSize)
+	default:
+		shadow.RecordEnqueueResult("enqueued")
 	}
 }
 
