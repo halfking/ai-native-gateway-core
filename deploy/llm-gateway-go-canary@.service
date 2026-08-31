@@ -1,5 +1,16 @@
 [Unit]
-Description=LLM Gateway Go 154 blue-green candidate (%i)
+# 2026-08-31: this is the runtime contract for blue-green candidates on env 154
+# and 245. We pin a unit that *follows the active binary symlink* (not a
+# per-port slot) because that is what production 154/245 currently run and
+# what the seamless deployer swap path assumes. The unit restarts on failure
+# so a transient bind or DB blip does not leave the candidate dead, and logs
+# go to journald so probe failures can be diagnosed without log scraping.
+#
+# Do NOT change ExecStart to a per-port slot (e.g. slots/%i/llm-gateway-go)
+# without first wiring the seamless deployer to populate slots/, OR you will
+# reproduce the 2026-08-31 incident where the candidate silently failed to
+# bind and the deploy script could not surface which probe failed.
+Description=LLM Gateway Go blue-green candidate (port %i)
 After=network-online.target
 Wants=network-online.target
 
@@ -9,17 +20,28 @@ User=root
 Group=root
 WorkingDirectory=/opt/llm-gateway-go
 EnvironmentFile=/etc/llm-gateway-go/env
+
+# Per-port identity. The candidate is a sibling of the active service; they
+# share DB / Redis / log destinations but bind different ports and use a
+# distinct runtime role so worker ownership never collides.
 Environment=LLM_GATEWAY_LISTEN=:%i
 Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
-Environment=LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway-go/canary-%i.jsonl
-Environment=TRANSPORT_LAYER_IR_ENABLED=true
-# Each port has a stable slot symlink. The deployer updates only the
-# inactive slot, so an active candidate never moves underneath systemd.
-ExecStart=/opt/llm-gateway-go/slots/%i/llm-gateway-go
-Restart=no
+Environment=LLM_GATEWAY_LOG_FILE=/opt/llm-gateway-go/logs/gateway-canary-%i.log
+
+# 2026-08-31: ExecStart follows the active binary symlink. The deployer
+# (scripts/deploy-seamless.sh) swaps the symlink, then restarts this unit.
+# Restart=on-failure re-binds the port on transient bind races; RestartSec=5s
+# keeps the restart-loop bounded so the deployer's 30s probe deadline still
+# trips if the failure is structural (e.g. another process owns the port).
+ExecStart=/opt/llm-gateway-go/llm-gateway-go
+Restart=on-failure
+RestartSec=5s
 TimeoutStartSec=30s
 TimeoutStopSec=25s
 KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
