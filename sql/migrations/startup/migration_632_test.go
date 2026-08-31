@@ -96,6 +96,24 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 			"is_auto_request must be NULL-normalized in the view definition")
 	})
 
+	t.Run("tenant_id_text_placeholder", func(t *testing.T) {
+		// Regression guard: tenant_id is TEXT in this schema (verified on
+		// prod 252 PG). The unique-index NULL placeholder must be '' —
+		// COALESCE(text, integer) is a type error that bricks
+		// ApplyMigrations on any fresh database. Both the SQL mirror and
+		// the Go ensure in db/db.go must stay in sync.
+		upSQL := readUp(t)
+		require.Contains(t, upSQL, "COALESCE(tenant_id, '')",
+			"tenant_id NULL placeholder must be '' (tenant_id is text)")
+
+		dbSrc, err := os.ReadFile("../../../db/db.go")
+		require.NoError(t, err)
+		require.Contains(t, string(dbSrc), "COALESCE(tenant_id, '')",
+			"db.go ensure SQL must use the '' placeholder, matching the mirror file and schema")
+		require.NotContains(t, string(dbSrc), "COALESCE(tenant_id, -1)",
+			"db.go must not use the integer placeholder for text tenant_id")
+	})
+
 	t.Run("provider_credential_fallback_parity", func(t *testing.T) {
 		// Regression guard: the view's provider column must keep the same
 		// COALESCE(provider_id, credential lookup) fallback as the base

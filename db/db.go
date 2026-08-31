@@ -798,6 +798,11 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 // then fail with a duplicate key and abort startup. Normalizing in the view
 // also matches the base queries, which read NULL as FALSE.
 //
+// tenant_id is TEXT in this schema (not bigint): the unique-index NULL
+// placeholder must be '' (COALESCE(text, integer) is a type error that
+// bricks ApplyMigrations on any fresh database). Verified against prod
+// (252 PG): request_logs_hot.tenant_id → text.
+//
 // effective_provider_id bakes in the same COALESCE(provider_id,
 // credential lookup) fallback that buildFlowL23Query (admin/analytics.go)
 // applies, so the L2→L3 Sankey shows the same 'unknown' provider share on
@@ -845,7 +850,7 @@ const routingAnalyticsMVSQL = `
 	    effective_work_type,
 	    COALESCE(effective_provider_id, -1),
 	    is_auto_request,
-	    COALESCE(tenant_id, -1)
+	    COALESCE(tenant_id, '')
 	  );
 
 	CREATE INDEX IF NOT EXISTS routing_analytics_7d_task_model_idx
@@ -874,8 +879,8 @@ const routingAnalyticsMVSQL = `
 	  )
 	GROUP BY tenant_id;
 
-	CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_pkey
-	  ON routing_audit_summary_7d (COALESCE(tenant_id, -1));
+CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_pkey
+  ON routing_audit_summary_7d (COALESCE(tenant_id, ''));
 `
 
 // ensureRoutingAnalyticsMaterializedViews mirrors
