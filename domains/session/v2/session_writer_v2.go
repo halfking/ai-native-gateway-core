@@ -137,6 +137,7 @@ type ProcessedRequest struct {
 	Namespace       string
 	ParentRequestID string
 	TaskType        string
+	ClientType      string // IDE/client type extracted from headers or system prompt
 
 	// Request content
 	RequestBody  []Message // Full request body from client
@@ -406,6 +407,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		LastResponseSummary: summarizeMessages(req.ResponseBody),
 		LastModel:           req.ClientModel,
 		LastProvider:        req.ProviderID,
+		ClientType:          req.ClientType,
 		TurnIncrement:       1,
 		TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 		CostIncrement:       req.CostUSD,
@@ -493,6 +495,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 				LastResponseSummary: summarizeMessages(req.ResponseBody),
 				LastModel:           req.ClientModel,
 				LastProvider:        req.ProviderID,
+				ClientType:          req.ClientType,
 				TurnIncrement:       1,
 				TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 				CostIncrement:       req.CostUSD,

@@ -74,6 +74,9 @@ type SessionUpdate struct {
 	LastModel           string
 	LastProvider        string
 
+	// Session metadata (set on first turn, preserved thereafter)
+	ClientType string
+
 	// Incremental counters (add to existing)
 	TurnIncrement   int
 	TokensIncrement int
