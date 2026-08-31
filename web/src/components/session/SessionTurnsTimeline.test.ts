@@ -4,6 +4,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
 import SessionTurnsTimeline from './SessionTurnsTimeline.vue'
 import {
   SessionObsApiError,
@@ -19,6 +20,18 @@ vi.mock('../../api/sessionTurnsTree', async (importOriginal) => {
     ...actual,
     fetchSessionTurnsTree: (...args: unknown[]) => fetchSessionTurnsTreeMock(...args),
   }
+})
+
+const i18n = createI18n({
+  legacy: false,
+  globalInjection: true,
+  locale: 'zh-CN',
+  fallbackLocale: 'en',
+  messages: {
+    'zh-CN': {
+      turnDigest: { view: '查看摘要' },
+    },
+  },
 })
 
 function page(over: Partial<SessionTurnsTreeResponse> = {}): SessionTurnsTreeResponse {
@@ -58,7 +71,10 @@ function page(over: Partial<SessionTurnsTreeResponse> = {}): SessionTurnsTreeRes
 }
 
 function mountTimeline(sessionId = 'sess-aaa') {
-  return mount(SessionTurnsTimeline, { props: { sessionId } })
+  return mount(SessionTurnsTimeline, {
+    props: { sessionId },
+    global: { plugins: [i18n] },
+  })
 }
 
 beforeEach(() => {

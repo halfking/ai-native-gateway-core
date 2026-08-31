@@ -9,6 +9,7 @@
 //   - "tree": the original request/child-request tree (metadata only) that
 //     syncs a turn to its request_id.
 import { computed, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   fetchSessionTurnsTree,
   type SessionChildRequest,
@@ -28,6 +29,7 @@ import {
   fetchSessionTurnsBodies,
   type SessionTurnBodiesResponse,
 } from '../../api/sessions_v2'
+import TurnDigestDrawer from '../session/TurnDigestDrawer.vue'
 
 const props = defineProps<{
   sessionId: string
@@ -42,6 +44,23 @@ const emit = defineEmits<{
   selectRequest: [requestId: string, turnNumber: number]
   openAsRequest: [requestId: string]
 }>()
+
+const { t } = useI18n()
+
+// Digest drawer state — opened from a left-rail turn card in the "turns" sub-view.
+const digestDrawerOpen = ref(false)
+const digestDrawerTurnNo = ref<number | null>(null)
+
+function showDigest(turnNo: number | null | undefined) {
+  if (turnNo == null) return
+  digestDrawerTurnNo.value = turnNo
+  digestDrawerOpen.value = true
+}
+
+function closeDigest() {
+  digestDrawerOpen.value = false
+  digestDrawerTurnNo.value = null
+}
 
 type Facet = 'integrated' | 'system' | 'user' | 'tool' | 'assistant' | 'children' | 'compress' | 'security'
 type SubView = 'turns' | 'tree'
@@ -71,6 +90,9 @@ watch(
   () => props.sessionId,
   async (id) => {
     const seq = ++sessionLoadSeq
+    // Session switched: close any open digest drawer so it doesn't leak the
+    // previous session's turnNo into the new session.
+    closeDigest()
     turns.value = []
     error.value = ''
     treeSelectedTurn.value = null
@@ -325,33 +347,42 @@ function onDividerKeydown(e: KeyboardEvent) {
         <div v-if="hasMoreTurns" class="warn">仅显示部分轮次（数据量较大，当前列表已截断）</div>
         <div v-if="!displayTurns.length" class="muted">无对话数据</div>
         <div
-          v-for="t in displayTurns"
-          :key="t.index"
+          v-for="turn in displayTurns"
+          :key="turn.index"
           class="turn-card"
-          :class="{ active: selectedIndex === t.index }"
+          :class="{ active: selectedIndex === turn.index }"
           role="group"
-          :aria-label="`轮次 #${t.number}`"
+          :aria-label="`轮次 #${turn.number}`"
         >
           <button
             type="button"
             class="turn-card-select"
-            :class="{ active: selectedIndex === t.index }"
-            :aria-pressed="selectedIndex === t.index"
-            @click="selectDerived(t.index)"
+            :class="{ active: selectedIndex === turn.index }"
+            :aria-pressed="selectedIndex === turn.index"
+            @click="selectDerived(turn.index)"
           >
             <span class="turn-card-head">
-              <span class="tn">#{{ t.number }}</span>
-              <span v-if="t.assistantCount" class="badge">回复 {{ t.assistantCount }}</span>
+              <span class="tn">#{{ turn.number }}</span>
+              <span v-if="turn.assistantCount" class="badge">回复 {{ turn.assistantCount }}</span>
             </span>
-            <span v-if="derivedExpanded.has(t.index)" class="turn-preview">{{ t.userPreviewFull }}</span>
-            <span v-else class="turn-preview">{{ t.userPreview }}</span>
+            <span v-if="derivedExpanded.has(turn.index)" class="turn-preview">{{ turn.userPreviewFull }}</span>
+            <span v-else class="turn-preview">{{ turn.userPreview }}</span>
           </button>
           <button
-            v-if="t.truncated"
+            v-if="turn.truncated"
             type="button"
             class="btn btn-sm linkish"
-            @click="toggleDerivedExpand(t.index)"
-          >{{ derivedExpanded.has(t.index) ? '收起' : '展开' }}</button>
+            @click="toggleDerivedExpand(turn.index)"
+          >{{ derivedExpanded.has(turn.index) ? '收起' : '展开' }}</button>
+          <button
+            v-if="turn.turnNo != null"
+            type="button"
+            class="btn btn-sm stsp-digest"
+            data-testid="stsp-show-digest"
+            :title="t('turnDigest.view')"
+            :aria-label="`${t('turnDigest.view')} #${turn.number}`"
+            @click.stop="showDigest(turn.turnNo)"
+          >{{ t('turnDigest.view') }}</button>
         </div>
       </aside>
 
@@ -483,6 +514,14 @@ function onDividerKeydown(e: KeyboardEvent) {
         />
       </section>
     </template>
+
+    <TurnDigestDrawer
+      :model-value="digestDrawerOpen"
+      :session-id="sessionId"
+      :turn-no="digestDrawerTurnNo"
+      @update:model-value="(value: boolean) => { if (!value) closeDigest() }"
+      @close="closeDigest"
+    />
   </div>
 </template>
 
@@ -537,6 +576,14 @@ function onDividerKeydown(e: KeyboardEvent) {
   max-height: 180px; overflow: auto; background: transparent;
 }
 .linkish { margin-top: 4px; }
+.stsp-digest {
+  margin-top: 6px;
+  border: 1px solid var(--border, var(--kx-border));
+  background: transparent;
+  color: var(--accent, var(--kx-primary));
+  font-size: 11px;
+}
+.stsp-digest:hover { border-color: var(--accent, var(--kx-primary)); }
 
 .turn-row {
   display: block; width: 100%; text-align: left;
