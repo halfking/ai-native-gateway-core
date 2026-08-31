@@ -19,21 +19,30 @@ Type=simple
 User=root
 Group=root
 WorkingDirectory=/opt/llm-gateway-go
+# Shared configuration (DB URL, secrets, Redis) comes from the active env
+# file. The runtime role keys off a plain Environment= directive — the env
+# file does NOT set it, so systemd merge order between Environment= and
+# EnvironmentFile= is irrelevant here.
 EnvironmentFile=/etc/llm-gateway-go/env
-
-# Per-port identity. The candidate is a sibling of the active service; they
-# share DB / Redis / log destinations but bind different ports and use a
-# distinct runtime role so worker ownership never collides.
-Environment=LLM_GATEWAY_LISTEN=:%i
 Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
-Environment=LLM_GATEWAY_LOG_FILE=/opt/llm-gateway-go/logs/gateway-canary-%i.log
 
-# 2026-08-31: ExecStart follows the active binary symlink. The deployer
+# Per-instance identity, unified with env 245's llmgo-245-canary@.service:
+# %i is the candidate port and ALTERNATES between 8781 and 8782 on every
+# deploy (the deployer picks the port the active is NOT on). systemd cannot
+# expand %i inside EnvironmentFile=, so the port is pinned on ExecStart —
+# /usr/bin/env sets it directly in the exec environment, which
+# deterministically overrides anything the EnvironmentFile/Environment lines
+# set, regardless of systemd's merge order. (The previous Environment=:%i
+# form only worked because /etc/llm-gateway-go/env happens not to set
+# LLM_GATEWAY_LISTEN; one added line there would have silently broken every
+# candidate.)
+#
+# ExecStart follows the active binary symlink. The deployer
 # (scripts/deploy-seamless.sh) swaps the symlink, then restarts this unit.
 # Restart=on-failure re-binds the port on transient bind races; RestartSec=5s
-# keeps the restart-loop bounded so the deployer's 30s probe deadline still
+# keeps the restart-loop bounded so the deployer's probe deadline still
 # trips if the failure is structural (e.g. another process owns the port).
-ExecStart=/opt/llm-gateway-go/llm-gateway-go
+ExecStart=/usr/bin/env LLM_GATEWAY_LISTEN=:%i LLM_GATEWAY_LOG_FILE=/opt/llm-gateway-go/logs/gateway-canary-%i.log /opt/llm-gateway-go/llm-gateway-go
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=30s
