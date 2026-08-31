@@ -19,6 +19,7 @@
  * 设计约束：颜色只用 var(--kx-*)；三态（Skeleton / Empty / Error 区分码）。
  */
 import { onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   fetchSessionTurnsTree,
   SessionObsApiError,
@@ -28,7 +29,10 @@ import {
 const props = defineProps<{ sessionId: string }>()
 const emit = defineEmits<{
   openRequest: [payload: { requestId: string; turnNumber: number }]
+  showDigest: [payload: { turnNumber: number }]
 }>()
+
+const { t } = useI18n()
 
 const turns = ref<SessionTurnTreeItem[]>([])
 const loading = ref(false)
@@ -175,34 +179,44 @@ function errorText(e: SessionObsApiError | null): string {
     <!-- 轮次时间线 -->
     <div v-else class="stt-timeline">
       <div
-        v-for="t in turns"
-        :key="t.request_id"
+        v-for="turn in turns"
+        :key="turn.request_id"
         class="stt-turn"
-        :data-turn-number="t.turn_number"
+        :data-turn-number="turn.turn_number"
       >
         <!-- 主请求卡 -->
         <button
           type="button"
           class="stt-turn-main stt-turn-main--clickable"
-          @click="emit('openRequest', { requestId: t.request_id, turnNumber: t.turn_number })"
+          @click="emit('openRequest', { requestId: turn.request_id, turnNumber: turn.turn_number })"
         >
-          <span class="stt-turn-no">#{{ t.turn_number }}</span>
-          <span class="stt-status" :class="statusClass(t.status)">{{ t.status }}</span>
-          <span v-if="t.model" class="stt-turn-model">{{ t.model }}</span>
-          <span class="stt-turn-latency" :class="latencyClass(t.latency)">
-            {{ fmtLatency(t.latency) }}
+          <span class="stt-turn-no">#{{ turn.turn_number }}</span>
+          <span class="stt-status" :class="statusClass(turn.status)">{{ turn.status }}</span>
+          <span v-if="turn.model" class="stt-turn-model">{{ turn.model }}</span>
+          <span class="stt-turn-latency" :class="latencyClass(turn.latency)">
+            {{ fmtLatency(turn.latency) }}
           </span>
-          <span class="stt-turn-rid" :title="t.request_id">{{ t.request_id }}</span>
+          <span class="stt-turn-rid" :title="turn.request_id">{{ turn.request_id }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="stt-digest-btn"
+          data-testid="stt-show-digest"
+          :aria-label="`${t('turnDigest.view')} #${turn.turn_number}`"
+          @click.stop="emit('showDigest', { turnNumber: turn.turn_number })"
+        >
+          {{ t('turnDigest.view') }}
         </button>
 
         <!-- 内联子请求树 -->
         <div
-          v-if="t.child_requests && t.child_requests.length > 0"
+          v-if="turn.child_requests && turn.child_requests.length > 0"
           class="stt-children"
-          :data-child-count="t.child_requests.length"
+          :data-child-count="turn.child_requests.length"
         >
           <div
-            v-for="c in t.child_requests"
+            v-for="c in turn.child_requests"
             :key="c.request_id"
             class="stt-child"
           >
@@ -368,6 +382,17 @@ function errorText(e: SessionObsApiError | null): string {
   color: var(--kx-primary, var(--accent));
   text-decoration: underline;
 }
+.stt-digest-btn {
+  margin-top: 6px;
+  border: 1px solid var(--kx-border);
+  border-radius: 10px;
+  background: var(--kx-surface);
+  color: var(--kx-primary);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.stt-digest-btn:hover { border-color: var(--kx-primary); }
 .stt-turn-no {
   font-weight: 600;
   color: var(--kx-primary);

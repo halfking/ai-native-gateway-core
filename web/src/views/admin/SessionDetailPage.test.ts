@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { reactive } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
 import SessionDetailPage from './SessionDetailPage.vue'
 
 const getSessionSnapshotMock = vi.fn()
@@ -28,12 +29,26 @@ vi.mock('vue-router', () => ({
   useRouter: () => ({ resolve: vi.fn(), push: vi.fn() }),
 }))
 
+const i18n = createI18n({
+  legacy: false,
+  globalInjection: true,
+  locale: 'zh-CN',
+  fallbackLocale: 'en',
+  messages: {
+    'zh-CN': {
+      turnDigest: { view: '查看摘要' },
+    },
+  },
+})
+
 function mountPage() {
   return mount(SessionDetailPage, {
     global: {
+      plugins: [i18n],
       stubs: {
         SessionSummaryBar: { template: '<div data-testid="summary-bar" />' },
         SessionTurnsTimeline: { props: ['sessionId'], template: '<div data-testid="turns-timeline">{{ sessionId }}</div>' },
+        TurnDigestDrawer: { props: ['modelValue', 'sessionId', 'turnNo'], template: '<div data-testid="digest-drawer" />' },
       },
     },
   })
