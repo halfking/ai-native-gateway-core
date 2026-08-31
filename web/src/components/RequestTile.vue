@@ -2,6 +2,7 @@
 // RequestTile.vue — 请求色块组件（80x60）
 // 2026-07-13 v5: 现代观测面板风格 — 玻璃质感卡片 + 左侧色带 + 状态圆点
 // 2026-07-14: 探测/idle tile 显示明确的错误原因（不再静默 "[空闲]"）
+// 2026-08-31 P3-3: line2Content 每个分支添加设计意图注释（消除"为什么这样分支"的猜测成本）
 
 import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -138,6 +139,13 @@ const latencyLabel = computed(() => {
 const modelFontSize = computed(() => calculateFontSize(props.tile.model, 80))
 
 const line2Content = computed(() => {
+  // 设计意图：tile 第二行承载"是什么请求"或"结局如何"，按场景分层覆盖：
+  //   - idle 状态显示模型（即使无流量也保留卡片可识别）
+  //   - 探测流量显示 origin+attempt（真实请求会被模型名淹没，探测必须可辨识）
+  //   - 按 vendor/provider/credential 分组时模型名是冗余信息（已在 lane header 显示），只保留短模型尾缀
+  //   - 终端状态 success/in_progress/cancelled 显示图例标签（i18n 跟随语言切换）
+  //   - error_kind 提供比 status 更细的失败归因（4xx/5xx/timeout/...），做 12 字符截断防止溢出
+  //   - 兜底 `—` 表达"无信号"，与 idle 字符串刻意区分（idle 是"显式空闲"，`—` 是"还没拿到信号"）
   if (isIdle.value) {
     return props.tile.model || t('dashboard.liveStream.tileIdle')
   }
