@@ -46,6 +46,13 @@ var (
 	// per-write deadline: the client is considered disconnected (N2/G7) and
 	// the entry is unregistered with reason write_deadline.
 	ErrClientWriteDeadline = errors.New("client write deadline exceeded")
+	// ErrWriteSlotsExhausted reports that the registry's in-flight write
+	// goroutine semaphore is full. Callers should NOT retry immediately:
+	// the cap exists to bound resource usage under sustained slow-client
+	// pressure, and a busy wait will just keep the pressure on. The
+	// upstream ActionBridge logs and drops the frame (admin projection
+	// still updates; the side channel is best-effort by design).
+	ErrWriteSlotsExhausted = errors.New("connection registry write slots exhausted")
 )
 
 const (
@@ -56,6 +63,19 @@ const (
 	// DefaultClosedHistoryDepth bounds the closed-connection audit ring
 	// surfaced through the admin connection-registry projection.
 	DefaultClosedHistoryDepth = 256
+	// DefaultMaxConcurrentWriteGoroutines bounds the number of WriteFrame
+	// goroutines the registry may have in flight at any moment.
+	//
+	// Without this cap, each WriteFrame spawns a goroutine that runs the
+	// underlying writer's WriteFrame and reports back via a buffered channel.
+	// Under sustained slow-client pressure (every live entry is at its
+	// 30s deadline, plus a second wave of registrations) the goroutine
+	// count could grow to capacity * (timeout / typical-frame-time), which
+	// is unbounded on a hostile workload. This cap pins the worst case
+	// to a fixed, deployer-tunable number (2 * capacity leaves room for
+	// one in-flight per registered entry plus a buffer for the action
+	// bridge racing ahead by one frame).
+	DefaultMaxConcurrentWriteGoroutines = 2 * DefaultConnectionRegistryCapacity
 )
 
 // FrameWriter is the unified client-frame write entry for the registry.
@@ -194,6 +214,13 @@ type ConnectionRegistry struct {
 	capacity      int
 	writeTimeout  time.Duration
 	closedHistory int
+	// writeSlots bounds the number of in-flight WriteFrame goroutines.
+	// Buffered-channel semaphore: a struct{} push acquires, a pop releases.
+	// Buffer length is the cap. Acquire before spawning the goroutine;
+	// the goroutine itself releases when the write returns (success,
+	// error, or deadline) so slots are freed even if the parent call has
+	// already returned ErrClientWriteDeadline.
+	writeSlots chan struct{}
 
 	// now is the clock seam (tests inject a fake clock).
 	now func() time.Time
@@ -201,19 +228,31 @@ type ConnectionRegistry struct {
 
 // NewConnectionRegistry builds a registry. capacity <= 0 →
 // DefaultConnectionRegistryCapacity; writeTimeout <= 0 →
-// DefaultClientWriteTimeout.
-func NewConnectionRegistry(capacity int, writeTimeout time.Duration) *ConnectionRegistry {
+// DefaultClientWriteTimeout; maxWriteGoroutines <= 0 →
+// DefaultMaxConcurrentWriteGoroutines.
+//
+// maxWriteGoroutines is the upper bound on concurrent WriteFrame
+// goroutines. Setting it to a very small value (e.g. capacity) is safe
+// — it just means more frames will be rejected with
+// ErrWriteSlotsExhausted under sustained slow-client load. The action
+// bridge logs and drops rejected frames; the side channel is
+// best-effort by design.
+func NewConnectionRegistry(capacity int, writeTimeout time.Duration, maxWriteGoroutines int) *ConnectionRegistry {
 	if capacity <= 0 {
 		capacity = DefaultConnectionRegistryCapacity
 	}
 	if writeTimeout <= 0 {
 		writeTimeout = DefaultClientWriteTimeout
 	}
+	if maxWriteGoroutines <= 0 {
+		maxWriteGoroutines = DefaultMaxConcurrentWriteGoroutines
+	}
 	return &ConnectionRegistry{
 		entries:       make(map[string]*registryEntry),
 		capacity:      capacity,
 		writeTimeout:  writeTimeout,
 		closedHistory: DefaultClosedHistoryDepth,
+		writeSlots:    make(chan struct{}, maxWriteGoroutines),
 		now:           time.Now,
 	}
 }
@@ -338,6 +377,7 @@ func (r *ConnectionRegistry) WriteFrame(requestID, frame string) error {
 	entry, ok := r.entries[requestID]
 	nowFn := r.now
 	timeout := r.writeTimeout
+	writeSlots := r.writeSlots
 	r.mu.RUnlock()
 	if !ok {
 		return ErrConnectionNotRegistered
@@ -352,8 +392,23 @@ func (r *ConnectionRegistry) WriteFrame(requestID, frame string) error {
 	// deadline-exceeded write is discarded (buffered channel) — a real
 	// net.Conn would unblock via SetWriteDeadline; arbitrary writers may
 	// simply finish late.
+	//
+	// Goroutine-cap gate: acquire a write slot before spawning. If the
+	// semaphore is full we fail fast with ErrWriteSlotsExhausted rather
+	// than queueing forever — the cap exists to bound resource usage
+	// under sustained slow-client pressure. The slot is released by the
+	// spawned goroutine on every exit path (success, error, deadline).
+	select {
+	case writeSlots <- struct{}{}:
+	default:
+		entry.mu.Unlock()
+		return ErrWriteSlotsExhausted
+	}
 	done := make(chan error, 1)
-	go func() { done <- entry.writer.WriteFrame(frame) }()
+	go func() {
+		defer func() { <-writeSlots }()
+		done <- entry.writer.WriteFrame(frame)
+	}()
 	var err error
 	timer := time.NewTimer(timeout)
 	select {
