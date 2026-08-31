@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { getHealth, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksStatus } from '../api/system'
+import { getHealth, getReadyz, getBackgroundTasksStatus, type HealthResponse, type BackgroundTasksStatus } from '../api/system'
 import { isAuthenticated } from '../store'
 
 const health = ref<HealthResponse | null>(null)
@@ -115,32 +115,22 @@ async function loadStatus() {
   error.value = null
 
   try {
-    // Load health. 2026-07-10: always use ?full=true so the SPA can render
-    // the database/redis sub-status (the basic /healthz only returns
-    // status/version). The /healthz?full=true endpoint requires an admin JWT,
-    // which the SPA auto-attaches via _core.ts headers() when store.jwtToken
-    // is set (authBearer() returns it). If the user is not logged in
-    // (no JWT, no cookie), the call returns 401 and we fall back to the
-    // public basic healthz for status/version display.
-    //
-    // 2026-08-24: when the SPA knows the visitor is unauthenticated, skip
-    // the authenticated calls entirely instead of firing guaranteed 401s
-    // every 30s — this indicator mounts on every page (incl. public
-    // /?login=1) and was a top source of the 96k/day /api 401 storm.
-    const authed = isAuthenticated()
-    if (authed) {
-      try {
-        health.value = await getHealth(true)
-      } catch (e) {
-        // 401 or network error → fall back to public basic /healthz
-        console.warn('full healthz unavailable, falling back to basic', e)
-        health.value = await getHealth()
-      }
-    } else {
-      health.value = await getHealth()
+    // Load basic health (public endpoint) - returns status, version, Ready flag
+    // Load readiness (public endpoint) - returns database/redis connectivity
+    const [healthRes, readyRes] = await Promise.all([
+      getHealth(),
+      getReadyz(),
+    ])
+
+    // Merge: use health for status/version, readyRes for database/redis details
+    health.value = {
+      ...healthRes,
+      database: readyRes.database,
+      redis: readyRes.redis,
     }
 
-    // Load background tasks (admin-only endpoint — authed visitors only)
+    // Load background tasks (admin endpoint — requires user JWT auth)
+    const authed = isAuthenticated()
     if (authed) {
       try {
         bgTasks.value = await getBackgroundTasksStatus()
