@@ -20,10 +20,35 @@ import (
 	"log/slog"
 )
 
-// defaultSoftLimitFraction is the fraction of context_window below which we
-// stop trimming. We pick 0.85 so there's headroom for the upstream's
-// response generation (max_tokens) plus the model's own internal overhead.
-const defaultSoftLimitFraction = 0.85
+// defaultTriggerFraction is the provider-context fraction that triggers
+// proactive compression. Compression then targets a lower limit (see
+// providerCompressionTargetTokens).
+const defaultTriggerFraction = 0.80
+
+// defaultSoftLimitFraction is retained as the public threshold fallback for
+// byte-threshold helpers. Provider-aware trimming uses a 60% target.
+const defaultSoftLimitFraction = defaultTriggerFraction
+
+// providerCompressionTargetTokens returns the target prompt size after a
+// provider-aware compression pass. Small-context models need a larger reserve:
+// for a 1M window, 200K is safer than the general 60% target.
+func providerCompressionTargetTokens(contextWindow int) int {
+	if contextWindow <= 0 {
+		return 0
+	}
+	target := int(float64(contextWindow) * 0.60)
+	if contextWindow <= 1_000_000 && target > 200_000 {
+		return 200_000
+	}
+	return target
+}
+
+func targetFractionForWindow(contextWindow int) float64 {
+	if contextWindow <= 0 {
+		return 0
+	}
+	return float64(providerCompressionTargetTokens(contextWindow)) / float64(contextWindow)
+}
 
 // aggressiveSoftLimitFraction is used for 4xx context-length recovery scenarios.
 // We compress to 60% of the context window to:
@@ -32,7 +57,7 @@ const defaultSoftLimitFraction = 0.85
 //  3. Reserve growth headroom for subsequent conversation turns
 //
 // This aggressive target handles cases where requests exceed the limit by a
-// small margin (e.g. 0.4%) but the default 85% compression would still be
+// small margin (e.g. 0.4%) but the default 80% compression would still be
 // too close to the boundary.
 const aggressiveSoftLimitFraction = 0.60
 
@@ -41,9 +66,9 @@ const aggressiveSoftLimitFraction = 0.60
 // never push past the upstream limit.
 const charsPerToken = 3.5
 
-// CompressMessagesIfNeeded trims messages from the oldest non-system pair
-// until the estimated prompt token count fits under
-// contextWindow * defaultSoftLimitFraction.
+// CompressMessagesIfNeeded trims messages from the oldest non-system pair when
+// the estimated prompt exceeds 80% of the provider window. The post-compression
+// target is 60% of that window, capped at 200K tokens for windows up to 1M.
 //
 // Returns the (possibly modified) body bytes. If bodyBytes is not a
 // recognisable chat-style body (e.g. not JSON, no "messages" array, or no
@@ -51,12 +76,14 @@ const charsPerToken = 3.5
 //
 // Q4 (anthropic-messages) must NEVER call this — pass cand.Protocol == "anthropic-messages"
 // upstream and skip the call.
-// CompressAnthropicMessagesIfNeeded trims Anthropic Messages API bodies
-// (Q4 passthrough) from the oldest user/assistant pairs until the estimated
-// prompt fits under contextWindow * defaultSoftLimitFraction. The system
+// CompressAnthropicMessagesIfNeeded applies the same provider-aware 80% trigger
+// and 60% (or 200K small-window) target to Anthropic Messages bodies. The system
 // field (string or array) is always preserved.
 func CompressAnthropicMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
-	return compressAnthropicMessagesWithTarget(bodyBytes, contextWindow, defaultSoftLimitFraction, "default")
+	if contextWindow <= 0 || estimatePromptTokens(bodyBytes) <= int(float64(contextWindow)*defaultTriggerFraction) {
+		return bodyBytes
+	}
+	return compressAnthropicMessagesWithTarget(bodyBytes, contextWindow, targetFractionForWindow(contextWindow), "provider_window")
 }
 
 func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
@@ -71,33 +98,12 @@ func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
 		return bodyBytes
 	}
 
-	softLimit := int(float64(contextWindow) * defaultSoftLimitFraction)
+	triggerLimit := int(float64(contextWindow) * defaultTriggerFraction)
 	estimated := estimatePromptTokens(bodyBytes)
-
-	// 2026-07-13: Force-compress large requests even when within soft limit.
-	// For requests > 1MB, the upstream's per-message processing overhead is
-	// significant and many providers (e.g. MiniMax via apiclaude) have strict
-	// per-request size limits independent of token count. Aggressive trimming
-	// at the 50% soft limit prevents upstream 400 errors like
-	// "Your input exceeds the context window".
-	const largeRequestBytes = 1024 * 1024 // 1MB
-	const largeRequestAggressiveFraction = 0.50
-	if len(bodyBytes) > largeRequestBytes {
-		aggressiveLimit := int(float64(contextWindow) * largeRequestAggressiveFraction)
-		if estimated > aggressiveLimit || len(bodyBytes) > largeRequestBytes*2 {
-			slog.Info("context_compress: aggressive trim for large request",
-				"request_size_bytes", len(bodyBytes),
-				"estimated_tokens", estimated,
-				"aggressive_limit", aggressiveLimit,
-				"original_messages", len(req.Messages),
-			)
-			softLimit = aggressiveLimit
-		}
-	}
-
-	if estimated <= softLimit {
+	if estimated <= triggerLimit {
 		return bodyBytes
 	}
+	softLimit := providerCompressionTargetTokens(contextWindow)
 
 	// Walk from the start, drop in pairs (user+assistant or assistant+user)
 	// until the body estimate fits under softLimit. We keep at least one
@@ -449,10 +455,8 @@ func EstimateTokens(bodyBytes []byte) int {
 // This is the inverse of the pre-request check: caller compares
 // len(bodyBytes) against threshold to decide whether to compress.
 //
-// Default fraction (0.85) matches defaultSoftLimitFraction for in-place
-// trim; compression callers should pass 0.8 (LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION)
-// to leave an extra 5% buffer for upstream response generation plus model
-// internal overhead — see v7 §2.
+// Default fraction (0.80) matches defaultSoftLimitFraction for in-place
+// pre-request trim; callers may pass a configured fraction when needed.
 //
 // Examples:
 //
@@ -506,13 +510,13 @@ func isSystemMessage(raw json.RawMessage) bool {
 
 // CompressMessagesAggressively is an aggressive version of CompressMessagesIfNeeded,
 // used specifically for context-length 4xx recovery scenarios. It compresses to
-// contextWindow * 0.60 (instead of 0.85) to provide a larger safety margin for:
+// contextWindow * 0.60 (instead of 0.80) to provide a larger safety margin for:
 //   - Response generation tokens (max_tokens parameter)
 //   - Token estimation inaccuracy (chars/3.5 is a heuristic)
 //   - Future conversation growth
 //
 // This handles cases where a request exceeds the context limit by a small margin
-// (e.g. 0.4%) and the default 85% compression would still be too close to the
+// (e.g. 0.4%) and the default 80% compression would still be too close to the
 // boundary, risking another 4xx on retry.
 //
 // Use this for OpenAI chat-style bodies. For Anthropic Messages API, use
@@ -528,7 +532,7 @@ func CompressAnthropicMessagesAggressively(bodyBytes []byte, contextWindow int) 
 }
 
 // compressMessagesWithTarget is the internal implementation used by both
-// CompressMessagesIfNeeded (85% target) and CompressMessagesAggressively (60% target).
+// CompressMessagesIfNeeded (80% target) and CompressMessagesAggressively (60% target).
 func compressMessagesWithTarget(bodyBytes []byte, contextWindow int, targetFraction float64, reason string) []byte {
 	if contextWindow <= 0 {
 		return bodyBytes

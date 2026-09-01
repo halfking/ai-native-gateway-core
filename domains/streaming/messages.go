@@ -262,7 +262,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "Request body too large")
 		return
 	}
-	// ── 1M–2M 软压缩 preflight (2026-09-01, audit §三 3.3) ────────────────
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Provider-aware compression runs later after candidate resolution.
 	if pb, applied, _ := preflightCompress(bodyBytes, "anthropic-messages"); applied {
 		bodyBytes = pb
 	}
