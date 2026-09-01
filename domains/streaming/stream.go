@@ -279,6 +279,13 @@ func runEmptyStreamGateWithVendor(
 		bufferedBytes += len(startingLine)
 		startingPayload := extractPayload(startingLine)
 		if startingPayload == "[DONE]" {
+			// 2026-09-01 P0 observability: log empty stream with available context.
+			// Detailed provider/credential/model context is logged by the executor
+			// when it classifies the outcome as empty_response.
+			streamLogFromContext(ctx, nil).Warn("stream_empty_on_first_chunk",
+				"first_chunk_content", startingPayload,
+				"reason", "immediate_done",
+			)
 			if capture != nil {
 				capture.MarkInterruptedWithReason("empty_stream_no_content")
 			}
@@ -417,6 +424,12 @@ func runEmptyStreamGateWithVendor(
 		}
 	}
 	if !sawContent {
+		// 2026-09-01 P0 observability: log empty stream detected after buffering.
+		// Detailed provider/credential context is logged by the executor.
+		streamLogFromContext(ctx, nil).Warn("stream_empty_after_buffering",
+			"buffered_chunks", len(buffered),
+			"reason", "no_content_before_done",
+		)
 		// Empty stream — signal Resumable failover. The executor will
 		// continue to the next candidate. We do NOT write [DONE] to the
 		// client, so the next candidate's stream begins cleanly.

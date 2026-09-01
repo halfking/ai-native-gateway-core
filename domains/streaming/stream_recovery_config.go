@@ -125,6 +125,79 @@ func RecoveryHoldbackFromEnv() (window time.Duration, maxChunks int) {
 	return time.Duration(windowMS) * time.Millisecond, maxChunks
 }
 
+// RecoveryHoldbackForModel returns the L1 revocable-window parameters tuned
+// for the specific model's stability characteristics. Unstable models (glm-5.2,
+// minimax-m3, minimax-text-01) that frequently drop connections in the first
+// few chunks receive extended holdback windows to convert those interruptions
+// into transparent retries rather than committed_output / resume_blocked errors.
+//
+// The model-specific configuration takes precedence over env vars; if a model
+// has no specific tuning, this falls back to RecoveryHoldbackFromEnv().
+//
+// Tuning rationale (2026-09-01 P0 fix):
+//   - glm-5.2 / minimax-m3: observed to interrupt frequently within first 5-10
+//     chunks, far more often than after stable output. Extended window (10s/50
+//     chunks) covers the unstable startup period while keeping latency impact
+//     bounded (10s is well under the 2h interactive deadline).
+//   - Other models: retain default 5s/20 chunks or env override.
+//
+// Operators can override via model-specific env vars:
+//   - LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS_<MODEL>
+//   - LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS_<MODEL>
+// where <MODEL> is the uppercase model name with hyphens replaced by underscores.
+func RecoveryHoldbackForModel(model string) (window time.Duration, maxChunks int) {
+	// Check model-specific env override first
+	modelEnvKey := "LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS_" + toEnvKey(model)
+	if os.Getenv(modelEnvKey) != "" {
+		windowMS := envInt64(modelEnvKey, 0)
+		if windowMS > 0 && windowMS <= maxRecoveryHoldbackWindowMS {
+			chunksKey := "LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS_" + toEnvKey(model)
+			maxChunks = envInt(chunksKey, DefaultHoldbackMaxChunks)
+			if maxChunks <= 0 {
+				maxChunks = DefaultHoldbackMaxChunks
+			}
+			return time.Duration(windowMS) * time.Millisecond, maxChunks
+		}
+	}
+
+	// Apply model-specific defaults for unstable models
+	if isUnstableModel(model) {
+		// Extended window for models that frequently interrupt in first few chunks
+		return 10 * time.Second, 50
+	}
+
+	// Fall back to global env or defaults
+	return RecoveryHoldbackFromEnv()
+}
+
+// isUnstableModel reports whether the model has known instability characteristics
+// that warrant an extended holdback window. This list is curated based on
+// production observations and can be extended as new unstable models are identified.
+func isUnstableModel(model string) bool {
+	switch model {
+	case "glm-5.2", "minimax-m3", "minimax-text-01":
+		return true
+	default:
+		return false
+	}
+}
+
+// toEnvKey converts a model name to an environment variable key suffix by
+// uppercasing and replacing hyphens with underscores (e.g., "glm-5.2" → "GLM_5_2").
+func toEnvKey(model string) string {
+	var result []rune
+	for _, r := range model {
+		if r == '-' || r == '.' {
+			result = append(result, '_')
+		} else if r >= 'a' && r <= 'z' {
+			result = append(result, r-'a'+'A')
+		} else {
+			result = append(result, r)
+		}
+	}
+	return string(result)
+}
+
 func (c StreamRecoveryConfig) withDefaults() StreamRecoveryConfig {
 	if c.MaxRecoveryAttempts <= 0 {
 		c.MaxRecoveryAttempts = DefaultStreamRecoveryMaxAttempts

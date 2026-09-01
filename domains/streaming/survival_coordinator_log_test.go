@@ -213,13 +213,16 @@ type committedAttemptExecutor struct {
 
 func (c committedAttemptExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
 	// params.W is the *GateWriter wrapped around the AttemptCommitGate by
-	// ExecuteAttempt. Writing a content chunk advances the gate to
+	// ExecuteAttempt. Writing content chunks advances the gate to
 	// CommitStateContent; the gate then refuses any subsequent Discard.
+	// 2026-09-01 fix: minimax-m3 now has a 50-chunk holdback window, so we
+	// must write enough chunks to exceed the holdback and trigger commit.
 	if params != nil && params.W != nil {
 		// OpenAI Chat protocol: data: {role:assistant, content:"hi"}\n\n
-		// The leading "data: " + closing blank line is what makes the gate
-		// classify it as semantic content (commit).
-		_, _ = params.W.Write([]byte(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n"))
+		// Write 51 chunks to exceed the minimax-m3 holdback of 50 chunks.
+		for i := 0; i < 51; i++ {
+			_, _ = params.W.Write([]byte(`data: {"choices":[{"delta":{"content":"hi"}}]}` + "\n\n"))
+		}
 	}
 	return nil, &executors.ExecuteError{
 		LastKind: errorsx.KindTransient,
