@@ -2176,6 +2176,13 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 		return
 	}
+	// ── 1M–2M 软压缩 preflight (2026-09-01, audit §三 3.3) ────────────────
+	// 客户端 body 落在 1M < tokens ≤ 2M 时，尝试 60% 激进压缩；压缩后若 ≤ budget
+	// 则继续走原路径，否则交回 promptBudgetExceeded 拒绝（413）。
+	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai"); applied {
+		logCtx.SetPreflightCompress(pbEst, len(pb))
+		bodyBytes = pb
+	}
 	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
 	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
 	if estTokens, over := promptBudgetExceeded(bodyBytes); over {

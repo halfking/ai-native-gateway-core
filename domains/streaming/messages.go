@@ -262,6 +262,10 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusRequestEntityTooLarge, "invalid_request", "Request body too large")
 		return
 	}
+	// ── 1M–2M 软压缩 preflight (2026-09-01, audit §三 3.3) ────────────────
+	if pb, applied, _ := preflightCompress(bodyBytes, "anthropic-messages"); applied {
+		bodyBytes = pb
+	}
 	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
 	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
 	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
