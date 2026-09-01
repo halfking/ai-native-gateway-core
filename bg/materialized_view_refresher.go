@@ -307,6 +307,9 @@ func (r *MaterializedViewRefresher) checkConsistency(ctx context.Context, viewNa
 		slog.Warn("materialized view consistency check failed", "view", viewName, "error", err)
 		return
 	}
+	if !result.ViewExists {
+		return
+	}
 	RecordMVConsistency(viewName, result)
 	// The operator alert is intentionally stricter than the metric: one noisy
 	// bucket should remain visible in Prometheus without paging the channel.
