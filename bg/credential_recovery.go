@@ -494,22 +494,29 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		  -- on cred-11/minimax-m3. The probe worker only re-marks a binding
 		  -- healthy_confirmed via a manual nudge (TriggerManual), so guarding
 		  -- here cannot strand a credential that has actually recovered.
-		  AND NOT EXISTS (
-		      SELECT 1
-		      FROM model_probe_state mps
-		      -- 2026-07-16: dropped dead "OR pm.standardized_name = mps.raw_model_name"
-		      -- branch. model_probe_state.raw_model_name stores the upstream
-		      -- vendor form (e.g. "z-ai/glm-5.2"); pm.standardized_name is
-		      -- lowercase+unprefixed (e.g. "glm-5.2") and can never match it,
-		      -- so the OR was dead code. Same defect removed from
-		      -- credentialhealth/checker.go (9e7eb23f1) and provider/client.go.
-		      JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
-		      JOIN credential_model_bindings cmb
-		           ON cmb.credential_id = mps.credential_id
-		          AND cmb.provider_model_id = pm.id
-		      WHERE mps.credential_id = credentials.id
-		        AND mps.state = 'broken_confirmed'
-		        AND cmb.available = FALSE
+		  --
+		  -- 2026-09-02 P0 fix (ANALYSIS_NODE_STATE_SYNC_GAP_20260902.md 根因#3):
+		  -- 放宽守卫粒度，从"任何模型broken就阻止整个凭据"改为"所有模型都broken
+		  -- 才阻止"。这样一个废弃模型不会阻止同凭据上其他健康模型的恢复。
+		  -- 守卫逻辑：COUNT(broken且不可用的模型) = COUNT(所有模型) 时才拒绝。
+		  AND NOT (
+		      -- 子查询1: 计算broken且不可用的模型数
+		      (SELECT COUNT(*)
+		       FROM model_probe_state mps
+		       JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
+		       JOIN credential_model_bindings cmb
+		            ON cmb.credential_id = mps.credential_id
+		           AND cmb.provider_model_id = pm.id
+		       WHERE mps.credential_id = credentials.id
+		         AND mps.state = 'broken_confirmed'
+		         AND cmb.available = FALSE)
+		      =
+		      -- 子查询2: 计算该凭据的总模型数
+		      (SELECT COUNT(*)
+		       FROM credential_model_bindings
+		       WHERE credential_id = credentials.id)
+		      -- 只有当所有模型都是broken_confirmed且不可用时，才阻止凭据恢复
+		      AND (SELECT COUNT(*) FROM credential_model_bindings WHERE credential_id = credentials.id) > 0
 		  )
 		  RETURNING id
 	`

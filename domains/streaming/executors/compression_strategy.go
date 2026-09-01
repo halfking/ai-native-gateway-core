@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/strategy"
 )
 
 func forceCompression(params *ExecParams) bool {
@@ -30,7 +31,14 @@ func (e *Executor) runCompressionStrategies(ctx context.Context, body []byte, co
 		return body, false
 	}
 
-	out, stats, err := e.Compressor.RunCompressStrategies(ctx, body, *contextWindow)
+	var out []byte
+	var stats strategy.RunStats
+	var err error
+	if strings.EqualFold(strings.TrimSpace(e.Compressor.RunnerMode()), "parallel") {
+		out, stats, err = e.Compressor.RunCompressStrategiesParallel(ctx, body, *contextWindow)
+	} else {
+		out, stats, err = e.Compressor.RunCompressStrategies(ctx, body, *contextWindow)
+	}
 	if err != nil {
 		slog.Warn("compression strategy runner failed open",
 			"mode", mode.String(), "error", err)
