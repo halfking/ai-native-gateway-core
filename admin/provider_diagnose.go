@@ -19,7 +19,6 @@ import (
 	"context"
 	"math"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
@@ -238,14 +237,18 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 			if ecRows.Scan(&kind, &cnt) != nil {
 				continue
 			}
+			// 2026-09-01 (P0-3 24h-audit round2): shared exact-match
+			// classification; see classifyDiagnoseErrorKind for the
+			// rationale (substring matching here was dead code + over-match).
+			auth, rateLimit, timeout, modelNotFound := classifyDiagnoseErrorKind(kind)
 			switch {
-			case strings.Contains(kind, "auth") || strings.Contains(kind, "401") || strings.Contains(kind, "403"):
+			case auth:
 				ec.AuthErrors += cnt
-			case strings.Contains(kind, "rate") || strings.Contains(kind, "429"):
+			case rateLimit:
 				ec.RateLimitErrors += cnt
-			case strings.Contains(kind, "timeout") || strings.Contains(kind, "deadline"):
+			case timeout:
 				ec.TimeoutErrors += cnt
-			case strings.Contains(kind, "model") || strings.Contains(kind, "404"):
+			case modelNotFound:
 				ec.ModelNotFoundErrors += cnt
 			default:
 				ec.OtherErrors += cnt
@@ -494,14 +497,18 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			if ecRows.Scan(&kind, &cnt) != nil {
 				continue
 			}
+			// 2026-09-01 (P0-3 24h-audit round2): same shared exact-match
+			// classification as diagnoseProvider above — the two aggregate
+			// loops must never diverge again.
+			auth, rateLimit, timeout, modelNotFound := classifyDiagnoseErrorKind(kind)
 			switch {
-			case strings.Contains(kind, "auth") || strings.Contains(kind, "401") || strings.Contains(kind, "403"):
+			case auth:
 				ec.AuthErrors += cnt
-			case strings.Contains(kind, "rate") || strings.Contains(kind, "429"):
+			case rateLimit:
 				ec.RateLimitErrors += cnt
-			case strings.Contains(kind, "timeout") || strings.Contains(kind, "deadline"):
+			case timeout:
 				ec.TimeoutErrors += cnt
-			case strings.Contains(kind, "model") || strings.Contains(kind, "404"):
+			case modelNotFound:
 				ec.ModelNotFoundErrors += cnt
 			default:
 				ec.OtherErrors += cnt
@@ -542,3 +549,35 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 		"error_classification": ec, "health_scores": scores,
 	}
 }
+
+// classifyDiagnoseErrorKind buckets one error_kind value (errorsx.ErrorKind
+// string, or the SQL-side COALESCE fallback "other") into the five
+// diagnose summary counters. Exact match only; unknown kinds fall to
+// OtherErrors so new classifier kinds surface instead of silently joining
+// a wrong bucket.
+func classifyDiagnoseErrorKind(kind string) (auth, rateLimit, timeout, modelNotFound bool) {
+	switch kind {
+	// Auth family: credential invalid / revoked / forbidden upstream.
+	case "auth", "auth_revoked":
+		return true, false, false, false
+	// Rate-limit family: quota windows and upstream 429-class signals.
+	// fp_slot_saturated / circuit_open are gateway-side admission signals
+	// logged by dispatch preflight (executor_dispatch.go) — grouping them
+	// here is deliberate: they correlate with the same credentials the
+	// operator is diagnosing for throttling, and they are definitively NOT
+	// auth / timeout / model errors.
+	case "rate_limit", "concurrent", "quota", "quota_periodic", "quota_balance",
+		"quota_permanent", "fp_slot_saturated", "circuit_open":
+		return false, true, false, false
+	// Timeout family: both stream-level and request-level deadlines.
+	case "timeout", "stream_timeout":
+		return false, false, true, false
+	// Model-family terminal rejections. model_deprecated stays in this
+	// bucket (the requested model does not exist upstream anymore).
+	case "model_not_found", "model_deprecated", "no_available_channel":
+		return false, false, false, true
+	default:
+		return false, false, false, false
+	}
+}
+

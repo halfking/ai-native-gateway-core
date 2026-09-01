@@ -249,3 +249,72 @@ func TestMaterializedViewRefresher_RefreshAllSkipsWhenFollower(t *testing.T) {
 		t.Fatal("refreshAll did not return promptly for a follower — expected an immediate skip")
 	}
 }
+
+// TestMaterializedViewRefresher_ConcurrentRefreshAllSerialized (2026-09-01
+// audit P2 race-fix regression guard): the periodic loop and TriggerRefresh
+// can enter refreshAll concurrently; before refreshMu existed that raced on
+// failureCount/lastFailureTime. TriggerRefresh on a nil-db refresher is a
+// documented no-op, so the goroutines here do not touch the pool — but the
+// mutex ordering is still exercised by concurrent entries. This test mainly
+// pins that (a) the mutex exists on the shared path and (b) no deadlock.
+func TestMaterializedViewRefresher_ConcurrentRefreshAllSerialized(t *testing.T) {
+	refresher := NewMaterializedViewRefresher(nil)
+	ctx := context.Background()
+
+	// Sanity: nil-db TriggerRefresh is a no-op (no nil-pool deref).
+	if err := refresher.TriggerRefresh(ctx); err != nil {
+		t.Fatalf("TriggerRefresh(nil db) = %v, want nil", err)
+	}
+
+	// Concurrent manual triggers must serialize on refreshMu without
+	// deadlocking and without racing the failure counters.
+	done := make(chan struct{})
+	for i := 0; i < 8; i++ {
+		go func() {
+			defer func() { done <- struct{}{} }()
+			if err := refresher.TriggerRefresh(ctx); err != nil {
+				t.Errorf("TriggerRefresh: %v", err)
+			}
+		}()
+	}
+	for i := 0; i < 8; i++ {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("concurrent refreshAll entries did not finish within 10s (mutex deadlock?)")
+		}
+	}
+
+	// refreshMu must actually guard refreshAll: hold it externally and verify
+	// a concurrent TriggerRefresh blocks until released (proves the lock is on
+	// the shared entry, not on some TriggerRefresh-local wrapper). A pool over
+	// an unreachable DSN bypasses TriggerRefresh's nil-db short-circuit while
+	// pgxpool.New's lazy connect keeps construction panic-free; once the mutex
+	// is released, refreshView's QueryRow just fails fast with a connection
+	// error, which refreshAll records as a failure (no crash).
+	badPool, err := pgxpool.New(ctx, "postgres://127.0.0.1:1/postgres?sslmode=disable&connect_timeout=1")
+	if err != nil {
+		t.Skipf("cannot construct unreachable pool: %v", err)
+	}
+	t.Cleanup(badPool.Close)
+	refresher.db = badPool
+	refresher.refreshMu.Lock()
+	finished := make(chan struct{})
+	go func() {
+		_ = refresher.TriggerRefresh(ctx)
+		close(finished)
+	}()
+	select {
+	case <-finished:
+		refresher.refreshMu.Unlock()
+		t.Fatal("TriggerRefresh completed while refreshMu was externally held — mutex not on the refreshAll path")
+	case <-time.After(150 * time.Millisecond):
+		// Still blocked: correct.
+	}
+	refresher.refreshMu.Unlock()
+	select {
+	case <-finished:
+	case <-time.After(10 * time.Second):
+		t.Fatal("TriggerRefresh did not finish after refreshMu release (mutex leak/deadlock?)")
+	}
+}

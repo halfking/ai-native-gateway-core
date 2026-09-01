@@ -85,3 +85,29 @@ func ParseContextLimitFromError(body string) (limit int, found bool) {
 	result := ParseContextLimitResult(body)
 	return result.Limit, result.Found
 }
+
+// ParseContextLimitPrimaryFromError is the authoritative-limit-only variant of
+// ParseContextLimitFromError. It returns (limit, true) only when one of the
+// PRIMARY patterns matched — i.e. the error body states the model's actual
+// ceiling ("maximum context length is 262144 tokens", "context window of
+// 200000"). The "your messages resulted in X tokens" fallback is deliberately
+// ignored here: that number is THIS request's token count, not the model
+// limit, so callers must never persist it as a discovered context window.
+//
+// Callers that only need an in-memory compression target may keep using
+// ParseContextLimitFromError (fallback included); callers that discover and
+// persist a limit (e.g. credential_model_bindings.context_window_override)
+// must gate on this function.
+func ParseContextLimitPrimaryFromError(body string) (limit int, found bool) {
+	// Every pattern except the trailing "resulted in" fallback is primary.
+	primaryPatterns := contextLimitPatterns[:len(contextLimitPatterns)-1]
+	for _, re := range primaryPatterns {
+		matches := re.FindStringSubmatch(body)
+		if len(matches) > 1 {
+			if val, err := strconv.Atoi(matches[1]); err == nil && val > 0 {
+				return val, true
+			}
+		}
+	}
+	return 0, false
+}

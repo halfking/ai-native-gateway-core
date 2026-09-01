@@ -243,7 +243,17 @@ func terminalActionKind(kind ErrorKind) bool {
 	case KindAuthRevoked, KindQuotaPermanent, KindModelNotFound,
 		KindModelDeprecated, KindContextLength, KindUnsupportedFeature,
 		KindContentFilter, KindConversion, KindUpstreamContextLoss,
-		KindToolCallIdMismatch, KindClientBug:
+		KindToolCallIdMismatch, KindClientBug,
+		// 2026-09-01 (P1-1 24h-audit round2): KindCircuitOpen /
+		// KindFpSlotSaturated are pure gateway-side admission signals
+		// written by dispatch preflight rejections (executor_dispatch.go
+		// logDispatchPreflightRejection). No upstream call was made, so an
+		// upstream retry (same node or sibling) must not be triggered from
+		// this policy layer — the dispatch governor already re-plans the
+		// next candidate when the breaker/slot rejects one. Mapping them
+		// terminal (fail-terminal with the kind as reason) keeps them out
+		// of the unmapped-kind fail-closed default.
+		KindCircuitOpen, KindFpSlotSaturated:
 		return true
 	default:
 		return false

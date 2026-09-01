@@ -37,6 +37,36 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// Outbox dead-letter observability (2026-09): a row that reaches status='dead'
+// is LOST aggregation data — the session snapshot permanently diverges from
+// session_turns until an operator replays it by hand. A slog.Error alone
+// scrolls away; these counters give the dead-letter queue a dashboard/rate-
+// alert surface symmetric with the reaper's retry path.
+//
+//   outboxDeadTotal   — rows transitioned claimed → dead (terminal loss)
+//   outboxRetriesTotal — rows scheduled for another retry attempt
+//
+// reason is a coarse bucket, not the raw error text, per GW-00 cardinality
+// rules ("decode" for payload failures, "exhausted" for max-attempts).
+var (
+	outboxDeadTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_session_outbox_dead_total",
+			Help: "session_aggregate_outbox rows transitioned to terminal status=dead (lost aggregate updates needing manual reconciliation)",
+		},
+		[]string{"reason"},
+	)
+	outboxRetriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_session_outbox_retries_total",
+			Help: "session_aggregate_outbox rows scheduled for a further replay attempt after a transient failure",
+		},
+		[]string{"attempt_bucket"},
+	)
 )
 
 const (
@@ -351,8 +381,19 @@ func (r *sessionAggregateOutboxReaper) markDead(ctx context.Context, id int64, r
 			"id", id, "reason", reason)
 		return
 	}
+	outboxDeadTotal.WithLabelValues(deadReasonBucket(reason)).Inc()
 	slog.Error("session_aggregate_outbox: row exceeded max attempts, marked dead",
 		"id", id, "reason", reason, "max_attempts", r.maxAtts)
+}
+
+// deadReasonBucket maps the human-readable markDead reason onto a stable,
+// low-cardinality label. Keep in sync with the two markDead call sites in
+// claimAndReplay (payload decode failure vs. attempts exhausted).
+func deadReasonBucket(reason string) string {
+	if len(reason) >= 7 && reason[:7] == "payload " {
+		return "decode"
+	}
+	return "exhausted"
 }
 
 func (r *sessionAggregateOutboxReaper) scheduleRetry(ctx context.Context, id int64, attempts int, cause error) {
@@ -381,6 +422,22 @@ func (r *sessionAggregateOutboxReaper) scheduleRetry(ctx context.Context, id int
 	if tag.RowsAffected() == 0 {
 		slog.Warn("session_aggregate_outbox: schedule retry skipped (row not in claimed state)",
 			"id", id, "attempts", attempts)
+		return
+	}
+	outboxRetriesTotal.WithLabelValues(retryAttemptBucket(attempts)).Inc()
+}
+
+// retryAttemptBucket collapses the attempt number into three buckets so the
+// retries counter stays low-cardinality while still separating "first
+// transient blip" from "persistently failing row close to dead-lettering".
+func retryAttemptBucket(attempts int) string {
+	switch {
+	case attempts <= 3:
+		return "early"
+	case attempts <= 7:
+		return "mid"
+	default:
+		return "late"
 	}
 }
 

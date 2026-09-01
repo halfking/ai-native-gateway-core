@@ -199,3 +199,26 @@ relying on it.
 |-----------|------|---------|--------|
 | 636 | `636_session_turns_digest.sql` | `a7e1909b0eb5fac03253c77fafb3cb029a688195c9666b41c739db24746e6af2` | applied+verified |
 
+
+## 2026-09-01 — local dev (pending deploy)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 637 | `637_session_bodies_unified_today_visible.sql` | `d200401f45e7099a8a90ccc6cdfe830be8b2c394127a606da91f755e30dbca05` | pending deploy |
+| 638 | `638_session_bodies_promote_guard.sql` | `8e4f86289d74db15c50d054e30404964034417d30fa79bb8f12a97d5c1a651e3` | pending deploy |
+
+> 637: `session_bodies_unified` 视图分区分支去掉 `partition_date <=
+> CURRENT_DATE - INTERVAL '1 day'` 过滤（24h-audit round2 P0）。writer 只写
+> hot 且 partition_date=当日，promote（615/626）按原 partition_date 插入父表
+> 并删 hot 行，导致当日写入且当日 promote 的行在次日零点前对该视图不可见
+> （增量 request_delta 去重基线断链）。promote 是 move 不是 copy，两分支
+> 不可能重叠，去掉过滤无重复风险。显式 12 列、hot-first UNION ALL、
+> security_invoker=true 与 DO 块断言全部保留；down 恢复 625 过滤版视图。
+>
+> 638: `promote_session_bodies_hot_to_partition` 以 628 的 guard 模式重装
+> （P1）：新增 retention_window NULL/<=0 与 batch_size NULL/<1 的
+> RAISE EXCEPTION guard，防止 retention=0 把整个 hot 表清进分区存储；保持
+> 626 幂等语义（ON CONFLICT (id, partition_date) DO NOTHING + 仅删实际
+> 插入行）。配套 Go 侧：admin 手动 promote 拒绝 retention_hours<=0，
+> hotPromoteTableMap 补 `session_bodies_hot`；sessionsummary 两处 V2 读
+> 改用 `session_bodies_unified` 视图。

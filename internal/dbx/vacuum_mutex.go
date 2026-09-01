@@ -122,15 +122,6 @@ func VacuumFullMutex(
 	}
 	defer lockConn.Release()
 
-	// Bound the wait with statement_timeout on the lock connection
-	// only — we don't want a runaway wait to block the caller
-	// indefinitely.
-	if _, err := lockConn.Exec(ctx,
-		fmt.Sprintf("SET LOCAL statement_timeout = %d", acquireTimeout.Milliseconds()),
-	); err != nil {
-		return fmt.Errorf("set lockConn statement_timeout: %w", err)
-	}
-
 	// Begin the lock-holding transaction. We use a plain Exec
 	// (auto-commit on the implicit txn) rather than an explicit
 	// BEGIN/COMMIT pair because pg_advisory_xact_lock is the only
@@ -141,6 +132,20 @@ func VacuumFullMutex(
 	tx, err := lockConn.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin lock txn: %w", err)
+	}
+
+	// 2026-09-01 fix (audit P2): SET LOCAL statement_timeout MUST run inside
+	// the transaction, after Begin and before the lock Exec. Previously it ran
+	// before Begin(): outside an explicit txn the SET executes in autocommit
+	// mode, where LOCAL is a no-op the server silently ignores — so the
+	// advisory-lock wait had NO timeout cap and a contended lock could park
+	// this replica forever (until ctx cancellation). Inside the txn, SET LOCAL
+	// scopes the timeout to this transaction only and is reset at COMMIT,
+	// leaving pooled-connection session state untouched.
+	if _, err := tx.Exec(ctx,
+		fmt.Sprintf("SET LOCAL statement_timeout = %d", acquireTimeout.Milliseconds()),
+	); err != nil {
+		return fmt.Errorf("set lockConn statement_timeout: %w", err)
 	}
 	// Defer-rollback is a safety net: if fn succeeds the COMMIT
 	// releases the lock; if fn fails we ROLLBACK which also releases

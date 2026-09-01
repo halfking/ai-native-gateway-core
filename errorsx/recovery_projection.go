@@ -42,6 +42,19 @@ func ProjectRecovery(kind ErrorKind) RecoveryProjection {
 		return projection
 	}
 
+	// 2026-09-01 (P1-1 24h-audit round2): circuit_open / fp_slot_saturated are
+	// gateway-side admission signals logged before any upstream call. They are
+	// not upstream quality problems: retrying the upstream from the generic
+	// retry loop would bypass the breaker / slot that just rejected the
+	// attempt. Project as terminal with an explicit reason so
+	// candidate_failure_logs context says "gateway admission" instead of the
+	// misleading default "not_recoverable" (which implies an upstream verdict).
+	if kind == KindCircuitOpen || kind == KindFpSlotSaturated {
+		projection.EffectiveAction = RecoveryActionTerminal
+		projection.Reason = "gateway_admission_rejection"
+		return projection
+	}
+
 	if projection.GenericRetryable {
 		projection.TransparentResume = true
 		projection.EffectiveAction = RecoveryActionGenericRetry

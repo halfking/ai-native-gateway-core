@@ -434,6 +434,13 @@ func addMediaMarkers(text string, c digestContent) string {
 // external LLM: at >100 bytes keep the opening sentence and sentences with
 // explicit conclusion/action markers; if there are no sentence boundaries,
 // keep both the beginning and the end so the result remains representative.
+//
+// All truncation caps are rune-based: CJK-heavy turns routinely exceed the
+// byte caps with 3-byte UTF-8 runes, and a byte cut would either produce an
+// invalid UTF-8 string (rejected by JSON encoders downstream) or, after the
+// safePrefix repair loop, a result materially shorter than the cap. The
+// persisted digest (sessiondigest.compact) uses the same 260-rune ceiling, so
+// the fallback projection and the persisted envelope agree on length.
 func summarizeDigestText(s string) string {
 	s = strings.Join(strings.Fields(strings.TrimSpace(s)), " ")
 	if len([]byte(s)) <= 100 {
@@ -454,12 +461,47 @@ func summarizeDigestText(s string) string {
 	}
 	if len(selected) > 0 {
 		result := strings.Join(selected, " … ")
-		if len([]byte(result)) <= 260 {
+		if utf8.RuneCountInString(result) <= digestMaxRunes {
 			return result
 		}
-		return safePrefix(result, 240) + "…"
+		return truncateRunes(result, digestMaxRunes-digestEllipsisRunes) + "…"
 	}
-	return safePrefix(s, 110) + " … " + safeSuffix(s, 90)
+	return truncateRunes(s, digestHeadRunes) + " … " + truncateTailRunes(s, digestTailRunes)
+}
+
+const (
+	digestMaxRunes       = 260 // overall ceiling, matches sessiondigest.compact
+	digestEllipsisRunes  = 1
+	digestHeadRunes      = 110
+	digestTailRunes      = 90
+	digestNoSentenceHead = 240 // head budget when only the prefix fits
+)
+
+// truncateRunes keeps the first max runes of s. Unlike the previous
+// byte-then-repair loop (safePrefix), it can never emit invalid UTF-8 and
+// never silently under-delivers on multi-byte content.
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
+}
+
+// truncateTailRunes keeps the last max runes of s (rune-safe mirror of
+// truncateRunes for the tail-preserving branch).
+func truncateTailRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[len(runes)-max:])
 }
 func splitDigestSentences(s string) []string {
 	var out []string
@@ -487,28 +529,9 @@ func containsKeyPoint(s string) bool {
 	}
 	return false
 }
-func safePrefix(s string, max int) string {
-	b := []byte(s)
-	if len(b) <= max {
-		return s
-	}
-	b = b[:max]
-	for len(b) > 0 && !utf8.Valid(b) {
-		b = b[:len(b)-1]
-	}
-	return string(b)
-}
-func safeSuffix(s string, max int) string {
-	b := []byte(s)
-	if len(b) <= max {
-		return s
-	}
-	b = b[len(b)-max:]
-	for len(b) > 0 && !utf8.Valid(b) {
-		b = b[1:]
-	}
-	return string(b)
-}
+// safePrefix / safeSuffix were removed when summarizeDigestText switched to
+// rune-based truncation (truncateRunes / truncateTailRunes). The byte-then-
+// repair approach could emit invalid UTF-8 or under-deliver on CJK content.
 
 func deduplicate(items []string) []string {
 	seen := make(map[string]bool, len(items))

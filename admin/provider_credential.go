@@ -1081,6 +1081,22 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 		resolvedFilter = "all"
 	}
 
+	// 2026-09-01 (P0-1 24h-audit round2): optional credential attribution
+	// filter. provider_error_details.credential_id was added by migration 639.
+	// Empty / invalid / "all" → aggregate every credential (previous
+	// behaviour). Valid ints narrow the result to that credential only, which
+	// is what the credential-detail panel needs ("this credential's errors").
+	credentialFilter := r.URL.Query().Get("credential_id")
+	if credentialFilter != "" && credentialFilter != "all" {
+		if parsed, err := strconv.Atoi(credentialFilter); err != nil || parsed <= 0 {
+			slog.Debug("getProviderErrorStats: invalid credential_id, aggregating all",
+				"input", credentialFilter)
+			credentialFilter = ""
+		}
+	} else {
+		credentialFilter = ""
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
@@ -1100,10 +1116,14 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	}
 
 	// 参数化 SQL：所有用户输入通过 $N 传递，无字符串拼接
+	// credential_id 过滤（2026-09-01 P0-1）：$5 为空时聚合全部凭据；非空时
+	// 按 provider_error_details.credential_id::text 精确匹配（迁移 639 新列，
+	// TEXT 类型，来源 candidate_failure_logs_hot.credential_id::text）。
 	query := `
-		SELECT 
+		SELECT
 			model_name,
 			endpoint,
+			credential_id::text,
 			error_type,
 			error_code,
 			error_message,
@@ -1118,11 +1138,12 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 		WHERE provider_id = $1
 		  AND aggregation_bucket >= NOW() - ($3 * INTERVAL '1 hour')
 		  AND ($4 = 'all' OR resolved = ($4 = 'true'))
+		  AND ($5 = '' OR credential_id::text = $5)
 		ORDER BY last_seen_at DESC, occurrences DESC
 		LIMIT $2
 	`
 
-	rows, err := h.db.Query(ctx, query, providerID, limit, hours, resolvedFilter)
+	rows, err := h.db.Query(ctx, query, providerID, limit, hours, resolvedFilter, credentialFilter)
 	if err != nil {
 		slog.Error("getProviderErrorStats query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "query failed")
@@ -1133,6 +1154,7 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	type errorStat struct {
 		ModelName         string     `json:"model_name"`
 		Endpoint          string     `json:"endpoint"`
+		CredentialID      *string    `json:"credential_id"` // 迁移639前的历史行为 NULL
 		ErrorType         string     `json:"error_type"`
 		ErrorCode         *string    `json:"error_code"`
 		ErrorMessage      string     `json:"error_message"`
@@ -1151,6 +1173,7 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 		if err := rows.Scan(
 			&s.ModelName,
 			&s.Endpoint,
+			&s.CredentialID,
 			&s.ErrorType,
 			&s.ErrorCode,
 			&s.ErrorMessage,
@@ -1191,6 +1214,7 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"provider_id":       providerID,
 		"time_range_hours":  hours,
+		"credential_id":     nilIfEmpty(credentialFilter),
 		"total_errors":      len(stats),
 		"total_occurrences": totalOccurrences,
 		"resolved_count":    resolvedCount,

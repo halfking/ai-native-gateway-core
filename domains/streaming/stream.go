@@ -1077,7 +1077,20 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						metrics.Global().RecordStreamSynthesizedDone()
 						outcome.Interrupted = false
 						outcome.Reason = "eof_without_done_after_commit"
-						outcome.Kind = ""
+						// 2026-09-01 (P0-2 24h-audit round2): benign EOF must
+						// carry an explicit non-failure Kind. A blank Kind
+						// leaking into classifyExecError / ClassifyError falls
+						// through to the default transient bucket, which would
+						// mis-report this completed request as a retryable
+						// failure. KindEmptyResponse is the closest existing
+						// non-failure semantics: HTTP 200, well-formed stream,
+						// upstream protocol non-compliance the gateway already
+						// papered over (synthesized [DONE]). It is NOT in
+						// IsRetryable (no retry: output is committed) and NOT
+						// credential-fatal. Downstream guards that read Kind
+						// only act when Interrupted=true, so this is
+						// observability-only attribution.
+						outcome.Kind = errorsx.KindEmptyResponse
 						outcome.Resumable = false
 						outcome.ChunkCount = chunkCount
 					} else {

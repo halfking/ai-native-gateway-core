@@ -252,3 +252,18 @@ func (lb *LoadBalancer) DecConnection(nodeID int) {
 	}
 	lb.mu.Unlock()
 }
+
+// ForgetSubscription drops the per-subscription strategy state (round-robin
+// cursor and smooth-WRR current map). 2026-09-01 fix (audit P2): these
+// per-subscriptionID maps previously only ever grew — a subscription that
+// lost all its nodes (deleted, or RefreshSubscription replaced the node set)
+// left its entries behind forever, leaking memory on long-running gateways.
+// The Manager calls this from the same places it already prunes its node
+// caches (ReloadCache orphan sweep, subscription node replacement), so the
+// lifecycle stays symmetric with the connectionCounts cleanup above.
+func (lb *LoadBalancer) ForgetSubscription(subscriptionID int) {
+	lb.mu.Lock()
+	delete(lb.roundRobinIndex, subscriptionID)
+	delete(lb.weightedCurrent, subscriptionID)
+	lb.mu.Unlock()
+}

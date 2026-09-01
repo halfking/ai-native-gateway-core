@@ -72,6 +72,11 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneAfterCommitIsCompletedAndNot
 		"committed output + EOF without [DONE] is benign upstream non-compliance; must NOT be flagged as a failure")
 	assert.Equal(t, "eof_without_done_after_commit", outcome.Reason,
 		"distinct reason literal preserves operator SQL-filter visibility without re-triggering audit failure path")
+	// 2026-09-01 (P0-2 24h-audit round2): benign EOF carries an explicit
+	// non-failure Kind. A blank Kind leaking into classifyExecError /
+	// ClassifyError would land in the default transient bucket.
+	assert.Equal(t, errorsx.KindEmptyResponse, outcome.Kind,
+		"benign EOF must carry an explicit non-failure kind, never blank")
 	assert.False(t, outcome.Resumable,
 		"Resumable invariant preserved: committed bytes cannot be transparently retried by another candidate")
 	assert.Greater(t, outcome.ChunkCount, 0)

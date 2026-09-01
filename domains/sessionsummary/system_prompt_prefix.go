@@ -186,7 +186,7 @@ func (m *pgRequestLogsSource) GetSystemPromptPrefix(ctx context.Context, tenantI
 	return systemPromptFromRequestBody(raw), nil
 }
 
-// --- V2 实现：session_bodies（首个 turn 的 request_delta） ---
+// --- V2 实现：session_bodies_unified（首个 turn 的 request_delta） ---
 
 // GetSystemPromptPrefix 从该会话首个 turn 的 request_delta 中提取系统提示
 // 词前缀（V2 增量存储里，系统提示词只在首个 turn 的 delta 中出现一次）。
@@ -195,9 +195,13 @@ func (m *v2SessionBodiesSource) GetSystemPromptPrefix(ctx context.Context, tenan
 		return "", fmt.Errorf("sessionsummary: v2 message source pool is nil")
 	}
 	var raw []byte
+	// 2026-09-01: 读 session_bodies_unified 视图（hot ∪ partition）——直接读
+	// public.session_bodies 父表会漏最近 8 小时仍在 hot 表的行，以及 promote
+	// 当天落进当日分区的行（迁移 625/637 的视图注释明确要求 admin 读方用该
+	// 视图）。与 message_source_v2.go 的同期修正保持一致。
 	err := m.pool.QueryRow(ctx, `
 		SELECT b.request_delta
-		FROM public.session_bodies b
+		FROM public.session_bodies_unified b
 		WHERE b.session_id = $1 AND b.tenant_id = $2
 		ORDER BY b.ts ASC
 		LIMIT 1

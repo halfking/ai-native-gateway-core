@@ -152,6 +152,10 @@ WITH watermark AS (
  SELECT c.aggregation_id,
   c.tenant_id,
   c.provider_id,
+  -- 2026-09-01 (P0-1 24h-audit round2): credential_id joins the
+  -- aggregation grain so per-credential error sets stay separable
+  -- (migration 639 added the column + rebuilt the unique index).
+  COALESCE(c.credential_id::text, '') AS credential_id,
   c.raw_model_name AS model_name,
   COALESCE(NULLIF(c.context->>'endpoint', ''),
            NULLIF(c.context->>'client_endpoint', ''),
@@ -172,7 +176,7 @@ WITH watermark AS (
  CROSS JOIN watermark w
  WHERE s.aggregation_id > w.last_source_id
 ), affected_buckets AS (
- SELECT DISTINCT tenant_id, provider_id, model_name, endpoint, error_type,
+ SELECT DISTINCT tenant_id, provider_id, credential_id, model_name, endpoint, error_type,
   error_code, error_message, aggregation_bucket
  FROM new_source_rows
 ), bucket_rows AS (
@@ -181,6 +185,7 @@ WITH watermark AS (
  JOIN affected_buckets b
   ON s.tenant_id IS NOT DISTINCT FROM b.tenant_id
  AND s.provider_id IS NOT DISTINCT FROM b.provider_id
+ AND s.credential_id IS NOT DISTINCT FROM b.credential_id
  AND s.model_name IS NOT DISTINCT FROM b.model_name
  AND s.endpoint IS NOT DISTINCT FROM b.endpoint
  AND s.error_type IS NOT DISTINCT FROM b.error_type
@@ -188,31 +193,32 @@ WITH watermark AS (
  AND s.error_message IS NOT DISTINCT FROM b.error_message
  AND s.aggregation_bucket IS NOT DISTINCT FROM b.aggregation_bucket
 ), aggregated AS (
- SELECT DISTINCT ON (tenant_id, provider_id, model_name, endpoint, error_type,
+ SELECT DISTINCT ON (tenant_id, provider_id, credential_id, model_name, endpoint, error_type,
                      error_code, error_message, aggregation_bucket)
-  tenant_id, provider_id, model_name, endpoint, error_type, error_code,
+  tenant_id, provider_id, credential_id, model_name, endpoint, error_type, error_code,
   error_message, aggregation_bucket, request_id, context,
-  min(ts) OVER (PARTITION BY tenant_id, provider_id, model_name, endpoint,
+  min(ts) OVER (PARTITION BY tenant_id, provider_id, credential_id, model_name, endpoint,
                 error_type, error_code, error_message, aggregation_bucket) AS first_seen_at,
-  max(ts) OVER (PARTITION BY tenant_id, provider_id, model_name, endpoint,
+  max(ts) OVER (PARTITION BY tenant_id, provider_id, credential_id, model_name, endpoint,
                 error_type, error_code, error_message, aggregation_bucket) AS last_seen_at,
-  count(*) OVER (PARTITION BY tenant_id, provider_id, model_name, endpoint,
+  count(*) OVER (PARTITION BY tenant_id, provider_id, credential_id, model_name, endpoint,
                  error_type, error_code, error_message, aggregation_bucket) AS occurrences
  FROM bucket_rows
- ORDER BY tenant_id, provider_id, model_name, endpoint, error_type, error_code,
+ ORDER BY tenant_id, provider_id, credential_id, model_name, endpoint, error_type, error_code,
           error_message, aggregation_bucket, ts DESC
 ), inserted AS (
  INSERT INTO provider_error_details (
   provider_id, model_name, endpoint, error_type, error_code, error_message,
   request_id, user_id, tenant_id, aggregation_bucket, context, occurrences,
-  first_seen_at, last_seen_at, resolved, created_at, updated_at
+  first_seen_at, last_seen_at, resolved, created_at, updated_at, credential_id
  )
  SELECT provider_id, model_name, endpoint, error_type, error_code, error_message,
   request_id, NULL, tenant_id, aggregation_bucket, context, occurrences,
-  first_seen_at, last_seen_at, FALSE, NOW(), NOW()
+  first_seen_at, last_seen_at, FALSE, NOW(), NOW(), credential_id
  FROM aggregated
  ON CONFLICT (
-  (COALESCE(tenant_id, '')), provider_id, (COALESCE(model_name, '')),
+  (COALESCE(tenant_id, '')), provider_id, (COALESCE(credential_id, '')),
+  (COALESCE(model_name, '')),
   (COALESCE(endpoint, '')), error_type, (COALESCE(error_code, '')),
   (COALESCE(LEFT(error_message, 200), '')),
   COALESCE(aggregation_bucket, TIMESTAMPTZ 'epoch')
@@ -227,7 +233,8 @@ WITH watermark AS (
   tenant_id = EXCLUDED.tenant_id,
   aggregation_bucket = EXCLUDED.aggregation_bucket,
   resolved = FALSE
- RETURNING provider_id, error_type, occurrences
+ RETURNING provider_id, error_type, occurrences,
+   (COALESCE(endpoint, '') = 'unknown') AS endpoint_unknown
 ), advanced AS (
  UPDATE provider_error_aggregator_state
  SET last_source_id = COALESCE(
@@ -237,7 +244,7 @@ WITH watermark AS (
  WHERE id = 1
  RETURNING last_source_id
 )
-SELECT i.provider_id, i.error_type, i.occurrences, advanced.last_source_id
+SELECT i.provider_id, i.error_type, i.occurrences, i.endpoint_unknown, advanced.last_source_id
 FROM inserted i
 CROSS JOIN advanced`
 

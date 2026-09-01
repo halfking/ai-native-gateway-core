@@ -140,6 +140,17 @@ func (cf *credForwarder) loop() {
 	defer cf.pipe.wg.Done()
 	defer cf.wg.Wait()
 	for {
+		// 2026-09-01 fix (queue/concurrency audit P1): reclaim before every
+		// select. replaceDepth's wakeCh send is non-blocking, so the wake can
+		// be lost when the loop is not parked on select at that instant (e.g.
+		// it is busy in the queue-receive branch) — previously nothing would
+		// ever trigger reclaimPendingOld again and a request that raced the
+		// channel swap into pendingOld was stranded forever. Checking the
+		// atomic pointer at the top of each iteration guarantees that ANY
+		// later event (queue send, ctx done, another grow's wake) collects
+		// the displaced channel. reclaimPendingOld is a cheap no-op when the
+		// pointer is nil.
+		cf.reclaimPendingOld()
 		select {
 		case qr, ok := <-*cf.queue.Load():
 			if !ok {
@@ -255,8 +266,9 @@ swapped:
 }
 
 // reclaimPendingOld moves any request that raced a grow and landed in the
-// displaced channel into the live channel. Called from the loop (on wake) and
-// from drainAndComplete (on shutdown) so a raced request is never stranded.
+// displaced channel into the live channel. Called at the top of every loop
+// iteration (see loop) and from drainAndComplete (on shutdown) so a raced
+// request is never stranded even if the non-blocking wakeCh send was lost.
 func (cf *credForwarder) reclaimPendingOld() {
 	po := cf.pendingOld.Load()
 	if po == nil {

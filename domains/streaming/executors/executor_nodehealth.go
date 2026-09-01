@@ -209,13 +209,9 @@ func (a executorNodeHealthAdapter) ApplyNodeHealthDecision(ctx context.Context, 
 		case nodehealth.EffectInvalidateCandidateCache:
 			provider.InvalidateCandidateCacheForCredential(int(decision.Node.CredentialID))
 		case nodehealth.EffectScheduleProbe:
-			if e.UnifiedProbeScheduler != nil {
-				e.UnifiedProbeScheduler.OnRealRequest(ctx, decision.Node.CredentialID, decision.Node.Model, false, decision.ErrorDetail)
-			}
+			// UnifiedProbeScheduler 已于 2026-09-01 作为死代码移除；
+			// 探测调度由 ProbeQueue/StateObserver 路径接管。
 		case nodehealth.EffectCancelProbeBackoff:
-			if e.UnifiedProbeScheduler != nil {
-				e.UnifiedProbeScheduler.OnRealRequest(ctx, decision.Node.CredentialID, decision.Node.Model, true, "")
-			}
 			if e.NodeProbeHealthy != nil {
 				if err := e.NodeProbeHealthy(ctx, int(decision.Node.CredentialID), decision.Node.Model); err != nil {
 					errs = append(errs, err)

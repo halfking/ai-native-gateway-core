@@ -39,6 +39,7 @@ var hotPromoteTableMap = map[string]string{
 	"tool_usage_stats_hot":          "promote_tool_usage_stats_hot_to_partition",
 	"candidate_failure_logs_hot":    "promote_candidate_failure_logs_hot_to_partition",
 	"session_turns_hot":             "promote_session_turns_hot_to_partition",
+	"session_bodies_hot":            "promote_session_bodies_hot_to_partition",
 	"handoff_logs_hot":              "promote_handoff_logs_hot_to_partition",
 	"session_module_executions_hot": "promote_session_module_executions_hot_to_partition",
 	"dashboard_access_events_hot":   "promote_dashboard_access_events_hot_to_partition",
@@ -253,8 +254,11 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 	if req.RetentionHours != nil {
 		retentionHours = *req.RetentionHours
 	}
-	if retentionHours < 0 {
-		writeError(w, http.StatusBadRequest, "retention_hours must be non-negative")
+	// 2026-09-01 审计修正：retention 0（乃至 NULL interval）会让 promote 以
+	// cutoff=now() 清空整个 hot 表（迁移 638 已在 SQL 侧加同样 guard），
+	// 这里提前拒绝，错误信息与语义保持一致：必须是正数。
+	if retentionHours <= 0 {
+		writeError(w, http.StatusBadRequest, "retention_hours must be positive")
 		return
 	}
 	if req.BatchSize <= 0 {
@@ -575,12 +579,14 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 	}
 
 	// 同步兼容接口与异步接口使用统一的 8 小时 hot 窗口默认值。
+	// retention 必须 > 0（与异步接口及迁移 638 的 SQL guard 一致），
+	// 否则 cutoff=now() 会把整个 hot 表清进分区存储。
 	retentionHours := defaultHotRetentionHours
 	if req.RetentionHours != nil {
 		retentionHours = *req.RetentionHours
 	}
-	if retentionHours < 0 {
-		writeError(w, http.StatusBadRequest, "retention_hours must be non-negative")
+	if retentionHours <= 0 {
+		writeError(w, http.StatusBadRequest, "retention_hours must be positive")
 		return
 	}
 	if req.BatchSize == 0 {

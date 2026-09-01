@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+
 	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 )
 
@@ -341,11 +344,90 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// digestFallbackReason classifies why persistedDigestOrFallback could not use
+// the persisted digest envelope. Used as a low-cardinality metric + log label.
+type digestFallbackReason string
+
+const (
+	digestFallbackMissing   digestFallbackReason = "missing"   // NULL column (pre-migration-456 turn)
+	digestFallbackMalformed digestFallbackReason = "malformed" // non-empty but invalid JSON
+	digestFallbackVersion   digestFallbackReason = "version"   // future/unsupported schema_version or algorithm_version
+)
+
+// digestFallbackTotal counts turns served through the on-the-fly digest
+// rebuild instead of the persisted session_turns.digest envelope. A
+// persistent non-zero rate means new writes are failing to persist digests
+// (see sessiondigest.Marshal in session_writer_v2.go) or rows pre-date
+// migration 456. Unlabeled by request/session per GW-00 cardinality rules.
+var digestFallbackTotal = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "llmgw_session_turn_digest_fallback_total",
+		Help: "Session turns whose admin digest was rebuilt on the fly instead of read from the persisted sessiondigest envelope (label = why)",
+	},
+	[]string{"reason"},
+)
+
+// persistedDigestOrFallback prefers the persisted, versioned digest envelope
+// and falls back to rebuilding one from the turn's stored bodies. The fallback
+// is not free: it re-parses request/response JSON on the request hot path and
+// silently masks rows whose persisted digest is corrupt or of an unsupported
+// schema version. Both outcomes are logged (request-scoped) and counted
+// (digestFallbackTotal) so operators can tell "old row, never had a digest"
+// apart from "writer bug producing unusable digests".
 func persistedDigestOrFallback(raw []byte, request, response any, meta, governance map[string]any) *TurnDigest {
-	if persisted, err := sessiondigest.Unmarshal(raw); err == nil && persisted != nil {
+	persisted, err := sessiondigest.Unmarshal(raw)
+	if err == nil && persisted != nil {
 		return turnDigestFromPayload(persisted.Payload)
 	}
+	reason := digestFallbackMissing
+	switch {
+	case err != nil && len(raw) > 0:
+		// Unmarshal distinguishes malformed JSON ("json: cannot ..." /
+		// "unexpected end of JSON input") from a version mismatch
+		// ("unsupported digest version"). Keep the buckets coarse.
+		if strings.Contains(err.Error(), "unsupported digest version") {
+			reason = digestFallbackVersion
+		} else {
+			reason = digestFallbackMalformed
+		}
+	case len(raw) > 0 && string(raw) == "null":
+		// Explicit JSON null: writers emit this when Build returns nil.
+		// Counted as missing — the envelope legitimately does not exist.
+		reason = digestFallbackMissing
+	}
+	digestFallbackTotal.WithLabelValues(string(reason)).Inc()
+	slog.Warn("session turn digest fallback to on-the-fly rebuild",
+		"reason", string(reason),
+		"request_id", firstStringValue(meta, "request_id"),
+		"turn_no", firstIntValue(meta, "turn_no"),
+		"raw_len", len(raw),
+		"unmarshal_error", errString(err))
 	return buildTurnDigest(request, response, meta, governance)
+}
+
+func firstStringValue(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func firstIntValue(m map[string]any, key string) int {
+	if m == nil {
+		return 0
+	}
+	switch v := m[key].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64:
+		return int(v)
+	}
+	return 0
 }
 
 func turnDigestFromPayload(d sessiondigest.Digest) *TurnDigest {

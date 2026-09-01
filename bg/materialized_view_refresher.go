@@ -32,6 +32,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -82,6 +83,16 @@ type MaterializedViewRefresher struct {
 	failureCount    int
 	lastFailureTime time.Time
 	alertCallback   func(viewName string, consecutiveFailures int, err error)
+
+	// refreshMu serializes refresh cycles (2026-09-01 P2 race fix). The
+	// periodic loop and TriggerRefresh (admin tools) can run concurrently;
+	// without this mutex failureCount/lastFailureTime were written from two
+	// goroutines — a data race that -race flags and that could also interleave
+	// two full REFRESH cycles. Redis token-bucket leader election and the
+	// Postgres advisory-lock fallback semantics are unchanged: the mutex only
+	// dedups refreshAll entries within THIS process; cross-instance mutual
+	// exclusion still rests on the distributed locks below.
+	refreshMu sync.Mutex
 
 	// distLock is the optional Redis-backed leader election manager
 	// (2026-09-01). Nil (or Enabled()==false) makes refreshView fall back
@@ -161,6 +172,12 @@ func (r *MaterializedViewRefresher) refreshLoop(ctx context.Context) {
 
 // refreshAll refreshes all materialized views.
 func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
+	// 2026-09-01 P2 race fix: TriggerRefresh (admin) and the periodic loop can
+	// enter refreshAll concurrently; serialize the whole cycle so the failure
+	// counters below have a single writer and cycles never interleave.
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+
 	ctx, cancel := context.WithTimeout(parentCtx, RefreshTimeout)
 	defer cancel()
 
@@ -216,7 +233,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	if hasError {
 		r.failureCount++
 		r.lastFailureTime = time.Now()
-		
+
 		// Alert on 2+ consecutive failures (交接文档建议)
 		if r.failureCount >= 2 && r.alertCallback != nil {
 			r.alertCallback(failedView, r.failureCount, lastErr)
