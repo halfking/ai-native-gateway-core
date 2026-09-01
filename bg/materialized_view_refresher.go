@@ -308,7 +308,9 @@ func (r *MaterializedViewRefresher) checkConsistency(ctx context.Context, viewNa
 		return
 	}
 	RecordMVConsistency(viewName, result)
-	if result.BreachCount == 0 || r.driftAlertCallback == nil || result.MaxAbs < 1000 {
+	// The operator alert is intentionally stricter than the metric: one noisy
+	// bucket should remain visible in Prometheus without paging the channel.
+	if result.BreachCount < 3 || r.driftAlertCallback == nil || result.MaxAbs < 1000 {
 		return
 	}
 	now := time.Now()
