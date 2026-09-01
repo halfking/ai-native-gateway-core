@@ -257,6 +257,22 @@ func TestMaterializedViewRefresher_RefreshAllSkipsWhenFollower(t *testing.T) {
 // documented no-op, so the goroutines here do not touch the pool — but the
 // mutex ordering is still exercised by concurrent entries. This test mainly
 // pins that (a) the mutex exists on the shared path and (b) no deadlock.
+func TestMaterializedViewRefresherDriftAlertThreshold(t *testing.T) {
+	// The callback is intentionally only exercised by checkConsistency after a
+	// real DB result; this unit-level guard pins the documented alert threshold.
+	if mvDriftAlertCooldown != 30*time.Minute {
+		t.Fatalf("drift alert cooldown = %s, want 30m", mvDriftAlertCooldown)
+	}
+	refresher := NewMaterializedViewRefresher(nil)
+	if refresher.driftAlertCallback != nil {
+		t.Fatal("new refresher unexpectedly has a drift callback")
+	}
+	refresher.SetDriftAlertCallback(func(string, int, float64, int64, string) {})
+	if refresher.driftAlertCallback == nil {
+		t.Fatal("SetDriftAlertCallback did not retain callback")
+	}
+}
+
 func TestMaterializedViewRefresher_ConcurrentRefreshAllSerialized(t *testing.T) {
 	refresher := NewMaterializedViewRefresher(nil)
 	ctx := context.Background()
