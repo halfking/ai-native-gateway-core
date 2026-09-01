@@ -93,6 +93,29 @@ func TestRunEmptyStreamGateToolsRequestedTransformsBufferedXML(t *testing.T) {
 	}
 }
 
+func TestRunEmptyStreamGateTransformsSplitXMLToolCall(t *testing.T) {
+	withEarlyEmptyThreshold(t, 0)
+	starting := `data: {"id":"start","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}` + "\n"
+	remaining := "data: {\"id\":\"tool-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"<tool_call><function=search>\"}}]}\n" +
+		"data: {\"id\":\"tool-2\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"<parameter=query>gateway</parameter></function></tool_call>\"}}]}\n" +
+		"data: [DONE]\n\n"
+	body := io.NopCloser(strings.NewReader(remaining))
+	recorder := httptest.NewRecorder()
+	lastSend := time.Now()
+	chunkCount := 0
+	lines, outcome := runEmptyStreamGateWithVendor(context.Background(), bufio.NewReader(body), body, recorder, recorder, nil, nil, nil, "minimax-m3", new(string), starting, time.Second, &lastSend, &chunkCount, nil, "minimax", StripMinimaxFieldsBody, true)
+	if outcome != nil {
+		t.Fatalf("unexpected gate outcome: %+v", outcome)
+	}
+	joined := strings.Join(lines, "")
+	if strings.Contains(joined, "<tool_call>") {
+		t.Fatalf("split XML tool call leaked as text: %q", joined)
+	}
+	if !strings.Contains(joined, `"tool_calls"`) || !strings.Contains(joined, `"name":"search"`) {
+		t.Fatalf("expected structured split tool call, got %q", joined)
+	}
+}
+
 func TestRunEmptyStreamGateEarlyEmptyDetection(t *testing.T) {
 	withEarlyEmptyThreshold(t, 3)
 
