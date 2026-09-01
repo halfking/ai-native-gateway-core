@@ -38,6 +38,8 @@
 package bg
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -169,4 +171,82 @@ func incPromoteZombieLockStreak(table string) {
 // consecutive-skipped cycles (not lifetime skipped).
 func resetPromoteZombieLockStreak(table string) {
 	hotTablePromoteZombieLockStreak.WithLabelValues(table).Set(0)
+}
+
+// 2026-09-01 P1-B: Materialized view refresh metrics for observability
+// of the routing analytics MV refresh cycle (bg/materialized_view_refresher.go).
+//
+// Label "view" is a closed enum: routing_analytics_7d | routing_audit_summary_7d
+// (the two views created by migration 632). No high-cardinality dimensions.
+var (
+	// mvRefreshTotal counts refresh attempts by view and outcome.
+	// outcome values: success | failed | skipped_no_lock | skipped_follower | skipped_missing_view
+	mvRefreshTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_mv_refresh_total",
+			Help: "Materialized view refresh attempts by view and outcome.",
+		},
+		[]string{"view", "outcome"},
+	)
+
+	// mvRefreshDurationSeconds observes the wall-clock time per refresh.
+	// Only observed when outcome=success (failed/skipped refreshes either
+	// error out early or skip the DB entirely, so their duration is not
+	// meaningful for capacity planning).
+	mvRefreshDurationSeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "gateway_mv_refresh_duration_seconds",
+			Help:    "Materialized view refresh duration (REFRESH CONCURRENTLY wall time).",
+			Buckets: []float64{0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300},
+		},
+		[]string{"view"},
+	)
+
+	// mvRefreshLastSuccessUnix is the unix timestamp of the last successful
+	// refresh per view. Paired with time() in Prometheus rules to alert on
+	// staleness (e.g., no refresh in >20 minutes = 2 missed cycles).
+	mvRefreshLastSuccessUnix = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "gateway_mv_refresh_last_success_unix",
+			Help: "Unix timestamp of the last successful materialized view refresh.",
+		},
+		[]string{"view"},
+	)
+
+	// mvRefreshCoordinationResult counts how the cross-instance coordination
+	// resolved for each refresh cycle: redis_leader (won Redis token),
+	// redis_follower (lost Redis race), redis_fallback (Redis unavailable,
+	// used Postgres advisory lock), postgres_lock_held (Postgres advisory
+	// lock was already taken by peer), postgres_lock_acquired (Postgres
+	// advisory lock successfully acquired).
+	mvRefreshCoordinationResult = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_mv_refresh_coordination_result_total",
+			Help: "Cross-instance coordination result for MV refresh cycles.",
+		},
+		[]string{"result"},
+	)
+)
+
+// recordMVRefreshSuccess records a successful MV refresh with its duration.
+func recordMVRefreshSuccess(view string, durationSeconds float64) {
+	mvRefreshTotal.WithLabelValues(view, "success").Inc()
+	mvRefreshDurationSeconds.WithLabelValues(view).Observe(durationSeconds)
+	mvRefreshLastSuccessUnix.WithLabelValues(view).Set(float64(time.Now().Unix()))
+}
+
+// recordMVRefreshFailure records a failed MV refresh attempt.
+func recordMVRefreshFailure(view string) {
+	mvRefreshTotal.WithLabelValues(view, "failed").Inc()
+}
+
+// recordMVRefreshSkipped records a skipped refresh with a reason.
+// reason should be one of: skipped_no_lock | skipped_follower | skipped_missing_view
+func recordMVRefreshSkipped(view, reason string) {
+	mvRefreshTotal.WithLabelValues(view, reason).Inc()
+}
+
+// recordMVCoordination records the coordination outcome for a refresh cycle.
+func recordMVCoordination(result string) {
+	mvRefreshCoordinationResult.WithLabelValues(result).Inc()
 }
