@@ -1,0 +1,175 @@
+# Routing Analytics Materialized View Consistency Monitoring
+#
+# Purpose: Monitor the refresh health and drift of routing analytics
+#          materialized views (migration 632, bg/materialized_view_refresher.go).
+#
+# Integration: Loaded by Prometheus via rule_files in prometheus.yml.
+# Maintenance: Keep thresholds aligned with bg/mv_consistency.go defaults
+#              (MVDriftAlertPct=5%, MVDriftAlertAbs=100).
+
+groups:
+  - name: routing_analytics_mv_consistency
+    interval: 60s
+    rules:
+      # ========================================
+      # Alert 1: Materialized view drift detected
+      # ========================================
+      
+      - alert: RoutingAnalyticsMVDriftHigh
+        expr: routing_analytics_mv_breach_count{view="routing_analytics_7d"} > 0
+        for: 20m
+        labels:
+          severity: warning
+          component: routing-analytics
+          team: infrastructure
+        annotations:
+          summary: "路由分析物化视图数据漂移"
+          description: |
+            物化视图 {{ $labels.view }} 检测到 {{ $value }} 个维度超过漂移阈值
+            (5% 且绝对差 > 100 请求)。
+            
+            **影响**：
+            - 管理后台分析接口可能展示不准确的数据
+            - 需要检查刷新逻辑或基表数据一致性
+            
+            **排查步骤**：
+            1. 检查 bg/materialized_view_refresher 日志
+            2. 运行 scripts/monitoring/verify-mv-consistency.sh 手动验证
+            3. 检查 gateway_mv_refresh_total{outcome="failed"} 指标
+            4. 如持续漂移，考虑手动触发 TriggerRefresh
+          runbook_url: "https://docs.example.com/mv-consistency#drift-detected"
+      
+      # ========================================
+      # Alert 2: Consistency check stale (checker broken)
+      # ========================================
+      
+      - alert: RoutingAnalyticsMVConsistencyCheckStale
+        expr: time() - routing_analytics_mv_consistency_last_unix{view="routing_analytics_7d"} > 3600
+        for: 15m
+        labels:
+          severity: warning
+          component: routing-analytics
+          team: infrastructure
+        annotations:
+          summary: "物化视图一致性检查停滞"
+          description: |
+            物化视图 {{ $labels.view }} 的一致性检查已超过 1 小时未运行。
+            
+            **影响**：
+            - 漂移检测信号失效，可能掩盖真实数据问题
+            
+            **排查步骤**：
+            1. 检查 gateway_mv_refresh_total 指标，确认刷新器是否正常
+            2. 检查 routing_analytics_mv_consistency_errors_total 计数
+            3. 查看 bg/materialized_view_refresher 日志中的错误
+            4. 验证数据库连接和 CheckMVConsistency SQL 查询
+          runbook_url: "https://docs.example.com/mv-consistency#check-stale"
+      
+      # ========================================
+      # Alert 3: Consistency check erroring
+      # ========================================
+      
+      - alert: RoutingAnalyticsMVConsistencyCheckErroring
+        expr: increase(routing_analytics_mv_consistency_errors_total{view="routing_analytics_7d"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: routing-analytics
+          team: infrastructure
+        annotations:
+          summary: "物化视图一致性检查持续失败"
+          description: |
+            物化视图 {{ $labels.view }} 的一致性检查在过去 15 分钟内报错。
+            
+            **常见原因**：
+            - SQL 查询超时
+            - 数据库连接丢失
+            - 基表或视图 schema 不匹配
+            
+            **紧急操作**：
+            1. 查看 PostgreSQL 日志
+            2. 检查 request_logs_with_current_month_without_customer_id 基表可用性
+            3. 验证 migration 632 是否完整应用
+          runbook_url: "https://docs.example.com/mv-consistency#check-errors"
+      
+      # ========================================
+      # Alert 4: Refresh failures
+      # ========================================
+      
+      - alert: RoutingAnalyticsMVRefreshFailing
+        expr: rate(gateway_mv_refresh_total{view="routing_analytics_7d",outcome="failed"}[10m]) > 0
+        for: 20m
+        labels:
+          severity: critical
+          component: routing-analytics
+          team: infrastructure
+        annotations:
+          summary: "物化视图刷新持续失败"
+          description: |
+            物化视图 {{ $labels.view }} 的 REFRESH CONCURRENTLY 在过去 20 分钟内持续失败。
+            
+            **影响**：
+            - 物化视图数据变陈旧
+            - admin.mvFreshnessBudget (15分钟) 超期后自动降级到基表查询，性能下降
+            
+            **排查步骤**：
+            1. 检查 PostgreSQL 日志中的 REFRESH 错误
+            2. 验证磁盘空间充足（CONCURRENTLY 需要额外空间）
+            3. 检查唯一索引冲突（migration 632 的 _ukey）
+            4. 查看 bg/materialized_view_refresher 日志
+          runbook_url: "https://docs.example.com/mv-consistency#refresh-failing"
+      
+      # ========================================
+      # Alert 5: Refresh stale (no refresh in 2+ cycles)
+      # ========================================
+      
+      - alert: RoutingAnalyticsMVRefreshStale
+        expr: time() - gateway_mv_refresh_last_success_unix{view="routing_analytics_7d"} > 1200
+        for: 5m
+        labels:
+          severity: critical
+          component: routing-analytics
+          team: infrastructure
+          page: "true"
+        annotations:
+          summary: "🚨 物化视图刷新停滞超过 20 分钟"
+          description: |
+            物化视图 {{ $labels.view }} 已超过 20 分钟未成功刷新（2 个周期）。
+            
+            **影响**：
+            - 数据已陈旧，超过 mvFreshnessBudget
+            - 分析接口降级到慢查询（Seq Scan 314K+ 行）
+            - 用户可见的延迟和超时
+            
+            **紧急操作**：
+            1. 检查 materializedViewRefresher 进程是否运行
+            2. 查看 gateway_mv_refresh_coordination_result_total 指标
+            3. 验证 Redis 和 PostgreSQL 连接
+            4. 手动调用 TriggerRefresh API（如果暴露）
+          runbook_url: "https://docs.example.com/mv-consistency#refresh-stale"
+
+# ========================================
+# Configuration Notes
+# ========================================
+#
+# 1. Integration:
+#    This file is loaded by deploy/prometheus/prometheus.yml via:
+#      rule_files:
+#        - /etc/prometheus/rules/*.yml
+#
+# 2. Metrics Source:
+#    - Runtime: bg/materialized_view_refresher.go emits to /metrics
+#    - Offline: scripts/monitoring/verify-mv-consistency.sh → textfile collector
+#
+# 3. Label Cardinality:
+#    All metrics use only "view" label (closed enum: routing_analytics_7d |
+#    routing_audit_summary_7d). No model/tenant/request_id high-cardinality labels.
+#
+# 4. Threshold Alignment:
+#    Keep alert thresholds in sync with:
+#      - bg/mv_consistency.go: MVDriftAlertPct=5%, MVDriftAlertAbs=100
+#      - scripts/monitoring/verify-mv-consistency.sh: --alert-pct=5, --min-abs-diff=100
+#
+# 5. Testing:
+#    Contract tests: deploy/prometheus/rules/routing_analytics_mv_consistency_test.go
+#    Syntax check: promtool check rules routing-analytics-mv-consistency.yml

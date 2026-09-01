@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { listTags, type TagInfo } from '../api'
 
 const props = defineProps<{
@@ -16,6 +16,7 @@ const emit = defineEmits<{
 const draft = ref('')
 const allTags = ref<TagInfo[]>([])
 const showSuggest = ref(false)
+let suggestCloseTimer: ReturnType<typeof setTimeout> | null = null
 
 const NAMESPACES = ['family', 'version', 'series', 'generation', 'variant', 'modality', 'cap', 'user']
 
@@ -69,7 +70,13 @@ function onBlur() {
   // Vue template inline expressions don't resolve the global setTimeout,
   // so the blur handler is wrapped in a script-defined function. 150ms
   // delay lets the user click a suggestion before the dropdown closes.
-  setTimeout(() => (showSuggest.value = false), 150)
+  // Track the handle so onUnmounted can cancel a pending close when the
+  // component is torn down between blur and the timeout fire.
+  if (suggestCloseTimer) clearTimeout(suggestCloseTimer)
+  suggestCloseTimer = setTimeout(() => {
+    showSuggest.value = false
+    suggestCloseTimer = null
+  }, 150)
 }
 
 function nsHint(ns: string) {
@@ -78,6 +85,13 @@ function nsHint(ns: string) {
 
 watch(() => props.suggestions, () => { loadTags() })
 onMounted(loadTags)
+
+onUnmounted(() => {
+  if (suggestCloseTimer) {
+    clearTimeout(suggestCloseTimer)
+    suggestCloseTimer = null
+  }
+})
 </script>
 
 <template>
