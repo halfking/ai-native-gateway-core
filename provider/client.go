@@ -253,6 +253,9 @@ func (c *Candidate) UnavailableReason() string {
 	if c.LifecycleStatus != "" && c.LifecycleStatus != "active" {
 		reasons = append(reasons, "lifecycle:"+c.LifecycleStatus)
 	}
+	if c.CircuitState == "open" {
+		reasons = append(reasons, "circuit:open")
+	}
 	switch c.AvailabilityState {
 	case "suspended":
 		reasons = append(reasons, "availability:suspended")

@@ -195,7 +195,7 @@ func runEmptyStreamGate(
 	chunkCount *int,
 	onRawLine func(string),
 ) (flushedLines []string, outcome *StreamOutcome) {
-	return runEmptyStreamGateWithVendor(ctx, reader, bodyCloser, w, flusher, norm, capture, pc, clientModel, discoveredUpstream, startingLine, firstByteTimeout, lastSend, chunkCount, onRawLine, "", nil)
+	return runEmptyStreamGateWithVendor(ctx, reader, bodyCloser, w, flusher, norm, capture, pc, clientModel, discoveredUpstream, startingLine, firstByteTimeout, lastSend, chunkCount, onRawLine, "", nil, false)
 }
 
 func runEmptyStreamGateWithVendor(
@@ -216,6 +216,7 @@ func runEmptyStreamGateWithVendor(
 	onRawLine func(string),
 	vendorCode string,
 	stripFn func([]byte) []byte,
+	toolsRequested bool,
 ) (flushedLines []string, outcome *StreamOutcome) {
 	buffered := make([]string, 0, emptyGateMaxChunks)
 	bufferedBytes := 0
@@ -382,7 +383,7 @@ func runEmptyStreamGateWithVendor(
 		// Apply the same line transforms the main loop would apply, so
 		// flushed chunks are byte-identical to what write-through would
 		// have produced (quality fix / XML coerce / model rewrite / norm).
-		line = applyGateLineTransforms(ctx, line, clientModel, discoveredUpstream, norm, capture)
+		line = applyGateLineTransforms(ctx, line, clientModel, discoveredUpstream, norm, capture, toolsRequested)
 
 		buffered = append(buffered, line)
 		bufferedBytes += len(line)
@@ -462,6 +463,7 @@ func applyGateLineTransforms(
 	discoveredUpstream *string,
 	norm *Normalizer,
 	capture *audit.StreamCapture,
+	toolsRequested bool,
 ) string {
 	qualityMode := qualityFixModeFromContext(ctx)
 	if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
@@ -477,7 +479,7 @@ func applyGateLineTransforms(
 			capture.SetQualitySeenToolCallIDs(newSeen)
 		}
 	}
-	line = coerceXMLToolCallsInStreamLine(line, false)
+	line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
 	if clientModel != "" && *discoveredUpstream == "" {
 		*discoveredUpstream = extractModelFromChunk(line)
 	}
@@ -978,7 +980,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 						reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(payload), parseErr, nil)
 					}
 				},
-				vendorCode, stripFn,
+				vendorCode, stripFn, toolsRequested,
 			)
 
 			if gateOutcome != nil {
