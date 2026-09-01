@@ -666,6 +666,19 @@ func (g *AttemptCommitGate) markFirstSemanticByteLocked(class FrameClass) {
 // original order and marks the attempt committed.
 func (g *AttemptCommitGate) commitLocked() error {
 	if len(g.buffer) > 0 {
+		// 2026-09-01 P0 observability: log the commit decision with holdback
+		// context so operators can confirm whether the L1 window was active
+		// (holdback_window_ms > 0) and how many chunks it held before commit.
+		// This is critical for diagnosing committed_output / resume_blocked
+		// failures on unstable models like glm-5.2 / minimax-m3.
+		streamLogFromContext(g.ctx, nil).Info("attempt_commit_gate_committing",
+			"buffer_bytes", len(g.buffer),
+			"holdback_window_ms", g.holdbackWindow.Milliseconds(),
+			"holdback_max_chunks", g.holdbackMaxChunks,
+			"holdback_held_chunks", g.holdbackHeld,
+			"holdback_opened", g.holdbackOpened,
+			"commit_state", g.state.String(),
+		)
 		// 2026-08-27 P0 fix: Clear buffer BEFORE writing to prevent duplicate
 		// writes if the caller retries after a write error. Once committed=true,
 		// the gate refuses further operations, so a partial write cannot be
