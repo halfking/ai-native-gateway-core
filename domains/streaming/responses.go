@@ -259,6 +259,11 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
 		return
 	}
+	// ── 1M–2M 软压缩 preflight (2026-09-01, audit §三 3.3) ────────────────
+	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai-responses"); applied {
+		_ = pbEst
+		bodyBytes = pb
+	}
 	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
 	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
 	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
