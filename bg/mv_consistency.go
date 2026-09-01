@@ -67,6 +67,10 @@ const (
 
 // MVConsistencyResult holds the drift summary for one materialized view.
 type MVConsistencyResult struct {
+	// ViewExists distinguishes a successful zero-drift check from a skipped
+	// check because migration 632 has not created the materialized view.
+	ViewExists bool
+
 	// MaxPct is the largest percentage drift across all (task_type, model)
 	// buckets. Range [0, 100+]; 0 means perfect consistency.
 	MaxPct float64
@@ -115,12 +119,14 @@ func CheckMVConsistency(ctx context.Context, pool mvConsistencyDB, viewName stri
 	}
 	if !exists {
 		// View not present — not an error, just a skip. Consumers (admin
-		// analytics endpoints) already fall back to base queries, so there's
-		// no user-visible outage. Log a warning but return zero drift.
+		// analytics endpoints) already fall back to base-view queries, so
+		// there's no user-visible outage. Keep ViewExists=false so callers
+		// do not publish a successful freshness timestamp for a skipped check.
 		slog.Warn("materialized view does not exist, skipping consistency check",
 			"view", viewName)
 		return result, nil
 	}
+	result.ViewExists = true
 
 	// Build the comparison SQL. The primary analytics view compares
 	// (task_type, model) buckets; the audit summary compares tenant buckets.
@@ -180,6 +186,9 @@ func CheckMVConsistency(ctx context.Context, pool mvConsistencyDB, viewName stri
 // result for the given view. Should be called immediately after CheckMVConsistency
 // when it returns without error.
 func RecordMVConsistency(viewName string, res MVConsistencyResult) {
+	if !res.ViewExists {
+		return
+	}
 	metrics.RoutingAnalyticsMVDriftPct.WithLabelValues(viewName).Set(res.MaxPct)
 	metrics.RoutingAnalyticsMVDriftAbs.WithLabelValues(viewName).Set(float64(res.MaxAbs))
 	metrics.RoutingAnalyticsMVBreachCount.WithLabelValues(viewName).Set(float64(res.BreachCount))

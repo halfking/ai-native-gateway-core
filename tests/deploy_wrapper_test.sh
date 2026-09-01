@@ -52,21 +52,19 @@ test_deploy_wrapper_plan_154() {
     'deploy/deploy.sh is deprecated' "$err"
 }
 
-test_rollback_wrapper_runbook() {
-  echo "── rollback_wrapper_runbook ──"
+test_rollback_wrapper_versioned() {
+  echo "── rollback_wrapper_versioned ──"
   local out err rc
   out=$("$WRAPPER_ROLLBACK" 154 2>/tmp/rollback_err.$$)
   rc=$?
   err=$(cat /tmp/rollback_err.$$)
   rm -f /tmp/rollback_err.$$
 
-  # 154 has rollback_policy=runbook; canonical CLI exits 64 with a
-  # runbook guidance message.
-  assert_rc "deploy/rollback.sh 154 exits 64 (runbook path)" "$rc" "64"
+  # 154 uses the canonical versioned rollback path. The wrapper must forward
+  # to the CLI without retaining the retired runbook-only contract.
+  assert_rc "deploy/rollback.sh 154 accepts versioned path" "$rc" "0"
   assert_match "deploy/rollback.sh 154 forwards to canonical CLI" \
     'canonical CLI' "$err"
-  assert_match "deploy/rollback.sh 154 prints runbook guidance" \
-    'runbook' "$err"
 }
 
 test_rollback_wrapper_186_retired() {
@@ -90,9 +88,9 @@ test_rollback_wrapper_alias_71() {
   err=$(cat /tmp/rollback_err.$$)
   rm -f /tmp/rollback_err.$$
 
-  assert_rc "deploy/rollback.sh 71 exits 64 (alias 71→154 → runbook)" "$rc" "64"
-  assert_match "deploy/rollback.sh 71 forwards runbook path" \
-    'runbook' "$err"
+  assert_rc "deploy/rollback.sh 71 accepts versioned path" "$rc" "0"
+  assert_match "deploy/rollback.sh 71 forwards versioned path" \
+    'canonical CLI' "$err"
 }
 
 test_wrapper_argv_forwarding() {
@@ -144,7 +142,7 @@ run_all() {
   echo " deploy_wrapper_test.sh — Slice 8 deprecation-wrapper tests"
   echo "═══════════════════════════════════════════════════════════════"
   test_deploy_wrapper_plan_154
-  test_rollback_wrapper_runbook
+  test_rollback_wrapper_versioned
   test_rollback_wrapper_186_retired
   test_rollback_wrapper_alias_71
   test_wrapper_argv_forwarding
@@ -164,7 +162,7 @@ run_all() {
 if [[ $# -gt 0 ]]; then
   case "$1" in
     deploy_plan)        test_deploy_wrapper_plan_154 ;;
-    rollback_runbook)   test_rollback_wrapper_runbook ;;
+    rollback_runbook)   test_rollback_wrapper_versioned ;;
     rollback_186)       test_rollback_wrapper_186_retired ;;
     rollback_alias)     test_rollback_wrapper_alias_71 ;;
     argv)               test_wrapper_argv_forwarding ;;

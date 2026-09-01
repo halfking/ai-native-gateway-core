@@ -24,7 +24,11 @@ func TestCheckMVConsistency_ViewMissing(t *testing.T) {
 
 	res, err := CheckMVConsistency(context.Background(), mock, "routing_analytics_7d")
 	require.NoError(t, err)
-	require.Equal(t, MVConsistencyResult{}, res, "missing view should return zero result")
+	require.False(t, res.ViewExists, "missing view must be marked skipped")
+	require.Equal(t, float64(0), res.MaxPct)
+	require.Equal(t, int64(0), res.MaxAbs)
+	require.Equal(t, 0, res.BreachCount)
+	require.Equal(t, 0, res.DiffRowCount)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -48,6 +52,7 @@ func TestCheckMVConsistency_NoDrift(t *testing.T) {
 
 	res, err := CheckMVConsistency(context.Background(), mock, "routing_analytics_7d")
 	require.NoError(t, err)
+	require.True(t, res.ViewExists)
 	require.Equal(t, 0.0, res.MaxPct)
 	require.Equal(t, int64(0), res.MaxAbs)
 	require.Equal(t, 0, res.BreachCount)
@@ -80,6 +85,7 @@ func TestCheckMVConsistency_SmallDrift(t *testing.T) {
 
 	res, err := CheckMVConsistency(context.Background(), mock, "routing_analytics_7d")
 	require.NoError(t, err)
+	require.True(t, res.ViewExists)
 	require.Equal(t, 20.0, res.MaxPct, "max_pct should be the largest diff_pct across all rows")
 	require.Equal(t, int64(800), res.MaxAbs, "max_abs should be the largest abs_diff")
 	require.Equal(t, 1, res.BreachCount, "only the glm-5 row exceeds both thresholds")
@@ -148,6 +154,7 @@ func TestCheckMVConsistency_AuditSummary(t *testing.T) {
 
 	res, err := CheckMVConsistency(context.Background(), mock, "routing_audit_summary_7d")
 	require.NoError(t, err)
+	require.True(t, res.ViewExists)
 	require.Equal(t, 9.91, res.MaxPct)
 	require.Equal(t, int64(550), res.MaxAbs)
 	require.Equal(t, 1, res.BreachCount, "only the tenant-abc row exceeds both thresholds")
