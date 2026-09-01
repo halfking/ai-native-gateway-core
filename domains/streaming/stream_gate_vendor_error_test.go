@@ -30,7 +30,7 @@ func TestRunEmptyStreamGateMiniMaxErrorIsClassifiedBeforeStrip(t *testing.T) {
 	lines, outcome := runEmptyStreamGateWithVendor(
 		context.Background(), bufio.NewReader(body), body, recorder, recorder,
 		nil, nil, nil, "gpt-test", new(string), starting, time.Second,
-		&lastSend, &chunkCount, nil, "minimax", StripMinimaxFieldsBody,
+		&lastSend, &chunkCount, nil, "minimax", StripMinimaxFieldsBody, false,
 	)
 	if lines != nil {
 		t.Fatalf("error frame must not be flushed: %v", lines)

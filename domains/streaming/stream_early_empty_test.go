@@ -62,13 +62,34 @@ func TestRunEmptyStreamGateVendorFieldsAreSanitized(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	lastSend := time.Now()
 	chunkCount := 0
-	lines, outcome := runEmptyStreamGateWithVendor(context.Background(), bufio.NewReader(body), body, recorder, recorder, nil, nil, nil, "gpt-test", new(string), starting, time.Second, &lastSend, &chunkCount, nil, "zhipu", StripZhipuFieldsBody)
+	lines, outcome := runEmptyStreamGateWithVendor(context.Background(), bufio.NewReader(body), body, recorder, recorder, nil, nil, nil, "gpt-test", new(string), starting, time.Second, &lastSend, &chunkCount, nil, "zhipu", StripZhipuFieldsBody, false)
 	if outcome != nil {
 		t.Fatalf("unexpected gate outcome: %+v", outcome)
 	}
 	joined := strings.Join(lines, "")
 	if strings.Contains(joined, "zhipu_request_id") || strings.Contains(joined, "web_search_results") {
 		t.Fatalf("vendor-private fields leaked from gate: %s", joined)
+	}
+}
+
+func TestRunEmptyStreamGateToolsRequestedTransformsBufferedXML(t *testing.T) {
+	withEarlyEmptyThreshold(t, 0)
+	starting := `data: {"id":"start","object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"}}]}` + "\n"
+	remaining := `data: {"id":"tool","object":"chat.completion.chunk","choices":[{"delta":{"content":"<tool_call><function=search><parameter=query>gateway</parameter></function></tool_call>"}}]}` + "\ndata: [DONE]\n\n"
+	body := io.NopCloser(strings.NewReader(remaining))
+	recorder := httptest.NewRecorder()
+	lastSend := time.Now()
+	chunkCount := 0
+	lines, outcome := runEmptyStreamGateWithVendor(context.Background(), bufio.NewReader(body), body, recorder, recorder, nil, nil, nil, "minimax-m3", new(string), starting, time.Second, &lastSend, &chunkCount, nil, "minimax", StripMinimaxFieldsBody, true)
+	if outcome != nil {
+		t.Fatalf("unexpected gate outcome: %+v", outcome)
+	}
+	joined := strings.Join(lines, "")
+	if strings.Contains(joined, "<tool_call>") {
+		t.Fatalf("buffered XML tool call leaked as text: %q", joined)
+	}
+	if !strings.Contains(joined, `"tool_calls"`) || !strings.Contains(joined, `"name":"search"`) {
+		t.Fatalf("expected structured tool call, got %q", joined)
 	}
 }
 

@@ -11,15 +11,15 @@
 //   - Cross-instance coordination is a token-bucket: every RefreshInterval
 //     tick is one "token", and exactly one gateway instance should redeem
 //     it. Two lock backends implement that mutual exclusion:
-//       1. Redis (preferred) — admin/distlock SETNX-with-TTL leader
-//          election (2026-09-01). Works across any number of instances
-//          without touching Postgres, and self-heals if a leader dies
-//          mid-refresh (TTL expiry, no manual unlock needed).
-//       2. Postgres advisory lock (fallback) — used verbatim when the
-//          distlock manager is nil/disabled (dev/local without Redis, or
-//          Redis outage). Session-scoped pg_try_advisory_lock; canary and
-//          prod instances share one database, and stacked REFRESHes would
-//          otherwise serialize on the view lock and waste cycles.
+//     1. Redis (preferred) — admin/distlock SETNX-with-TTL leader
+//     election (2026-09-01). Works across any number of instances
+//     without touching Postgres, and self-heals if a leader dies
+//     mid-refresh (TTL expiry, no manual unlock needed).
+//     2. Postgres advisory lock (fallback) — used verbatim when the
+//     distlock manager is nil/disabled (dev/local without Redis, or
+//     Redis outage). Session-scoped pg_try_advisory_lock; canary and
+//     prod instances share one database, and stacked REFRESHes would
+//     otherwise serialize on the view lock and waste cycles.
 //     The instance that fails to acquire either lock simply skips that
 //     cycle — never blocks, never queues.
 //   - Freshness contract with admin/analytics_materialized.go: consumers
@@ -31,6 +31,7 @@ package bg
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -66,11 +67,15 @@ const (
 	mvRefreshDistLockLogical   = "materialized_view_refresh"
 
 	// mvRefreshDistLockTTL bounds how long a Redis-elected leader holds the
-	// token before the lease auto-expires. Must exceed RefreshTimeout so a
+	// refresh token before the lease auto-expires. Must exceed RefreshTimeout so a
 	// slow-but-alive refresh never loses its lease mid-cycle; distlock
 	// auto-renews at ttl/3 while the process is alive, so this is really
 	// just the crash-recovery bound (dead leader → lock free within TTL).
 	mvRefreshDistLockTTL = 6 * time.Minute
+
+	// mvDriftAlertCooldown prevents a persistent drift from sending an alert on
+	// every ten-minute refresh cycle. Metrics remain updated on every check.
+	mvDriftAlertCooldown = 30 * time.Minute
 )
 
 // MaterializedViewRefresher manages periodic refresh of routing analytics
@@ -80,9 +85,11 @@ type MaterializedViewRefresher struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	// Failure tracking for alerting (2026-09-01 P1-B)
-	failureCount    int
-	lastFailureTime time.Time
-	alertCallback   func(viewName string, consecutiveFailures int, err error)
+	failureCount       int
+	lastFailureTime    time.Time
+	alertCallback      func(viewName string, consecutiveFailures int, err error)
+	driftAlertCallback func(viewName string, breaches int, maxPct float64, maxAbs int64, summary string)
+	lastDriftAlertTime time.Time
 
 	// refreshMu serializes refresh cycles (2026-09-01 P2 race fix). The
 	// periodic loop and TriggerRefresh (admin tools) can run concurrently;
@@ -143,6 +150,14 @@ func (r *MaterializedViewRefresher) Stop() {
 // Safe to call before or after Start().
 func (r *MaterializedViewRefresher) SetAlertCallback(cb func(viewName string, consecutiveFailures int, err error)) {
 	r.alertCallback = cb
+}
+
+// SetDriftAlertCallback wires the optional callback used when a consistency
+// check finds sustained materialized-view drift. It is kept separate from the
+// refresh-failure callback so operators can distinguish a successful refresh
+// that produced stale data from a refresh that failed outright.
+func (r *MaterializedViewRefresher) SetDriftAlertCallback(cb func(viewName string, breaches int, maxPct float64, maxAbs int64, summary string)) {
+	r.driftAlertCallback = cb
 }
 
 // refreshLoop runs the periodic refresh cycle.
@@ -214,6 +229,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	} else {
 		slog.Info("refreshed routing_analytics_7d",
 			"elapsed", time.Since(start))
+		r.checkConsistency(ctx, MVDriftViewRoutingAnalytics7d)
 	}
 
 	auditStart := time.Now()
@@ -227,6 +243,7 @@ func (r *MaterializedViewRefresher) refreshAll(parentCtx context.Context) {
 	} else {
 		slog.Info("refreshed routing_audit_summary_7d",
 			"elapsed", time.Since(auditStart))
+		r.checkConsistency(ctx, MVDriftViewRoutingAuditSummary7d)
 	}
 
 	// 2026-09-01 P1-B: Track consecutive failures and alert on threshold
@@ -276,6 +293,31 @@ func (r *MaterializedViewRefresher) acquireDistLock(ctx context.Context) *distlo
 		return nil
 	}
 	return h
+}
+
+// checkConsistency records drift metrics after a successful refresh and emits
+// a bounded operator alert when the same process observes material drift.
+func (r *MaterializedViewRefresher) checkConsistency(ctx context.Context, viewName string) {
+	if r == nil || r.db == nil {
+		return
+	}
+	result, err := CheckMVConsistency(ctx, r.db, viewName)
+	if err != nil {
+		RecordMVConsistencyError(viewName, "query_failed")
+		slog.Warn("materialized view consistency check failed", "view", viewName, "error", err)
+		return
+	}
+	RecordMVConsistency(viewName, result)
+	if result.BreachCount == 0 || r.driftAlertCallback == nil || result.MaxAbs < 1000 {
+		return
+	}
+	now := time.Now()
+	if !r.lastDriftAlertTime.IsZero() && now.Sub(r.lastDriftAlertTime) < mvDriftAlertCooldown {
+		return
+	}
+	r.lastDriftAlertTime = now
+	r.driftAlertCallback(viewName, result.BreachCount, result.MaxPct, result.MaxAbs,
+		fmt.Sprintf("视图 %s 检测到 %d 个漂移桶，最大百分比 %.2f%%，最大绝对差 %d", viewName, result.BreachCount, result.MaxPct, result.MaxAbs))
 }
 
 // refreshView refreshes a single materialized view using CONCURRENTLY.
