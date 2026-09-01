@@ -75,6 +75,13 @@ type RequestLogContext struct {
 	// body. It is telemetry-only: compression uses the assembled outbound body
 	// after session delta-append and prior summaries have been applied.
 	PromptTokensEstimate *int
+	// PreflightCompressedTokens records the receipt-time estimate that triggered
+	// the 1M-2M preflight 60% aggressive compression; nil when preflight did
+	// not fire. Paired with PreflightCompressedPostBytes (post-compress body
+	// length). 2026-09-01 (audit AUDIT_CONTEXT_COMPRESSION_AND_STREAMING_20260901
+	// §三 3.3).
+	PreflightCompressedTokens  *int
+	PreflightCompressedPostBytes *int
 	ClientModel          string
 	OutboundModel        string
 	EndUser              string
@@ -394,6 +401,18 @@ func (c *RequestLogContext) SetOutboundModel(model string) {
 func (c *RequestLogContext) SetRoute(providerID, credentialID *int) {
 	c.ProviderID = providerID
 	c.CredentialID = credentialID
+}
+
+// SetPreflightCompress records that preflight 1M-2M 60% compression actually fired.
+// estimatedTokens is the entry-time heuristic token count (before compress),
+// postBytes is the body length after compress (post). Telemetry-only; no behaviour
+// change. Empty/nil logCtx is a no-op so callers don't need nil-guard.
+func (c *RequestLogContext) SetPreflightCompress(estimatedTokens, postBytes int) {
+	if c == nil {
+		return
+	}
+	c.PreflightCompressedTokens = &estimatedTokens
+	c.PreflightCompressedPostBytes = &postBytes
 }
 
 // ApplyQueueTimestampsFromResult copies V3.1 T0–T9 from a successful ExecuteResult.
