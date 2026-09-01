@@ -2176,9 +2176,9 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 		return
 	}
-	// ── 1M–2M 软压缩 preflight (2026-09-01, audit §三 3.3) ────────────────
-	// 客户端 body 落在 1M < tokens ≤ 2M 时，尝试 60% 激进压缩；压缩后若 ≤ budget
-	// 则继续走原路径，否则交回 promptBudgetExceeded 拒绝（413）。
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Record the receipt-time estimate. Provider-aware compression runs later,
+	// after candidate resolution supplies the selected model context window.
 	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai"); applied {
 		logCtx.SetPreflightCompress(pbEst, len(pb))
 		bodyBytes = pb

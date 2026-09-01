@@ -15,11 +15,12 @@ func TestPromptBudgetLimit(t *testing.T) {
 		env  string
 		want int
 	}{
-		{"unset defaults to 1M", "", 1048576},
+		{"unset defaults to 2M", "", 2097152},
 		{"zero is off", "0", 0},
 		{"plain number", "262144", 262144},
-		{"negative defaults to 1M", "-5", 1048576},
-		{"garbage defaults to 1M", "huge", 1048576},
+		{"over 2M defaults to 2M", "3145728", 2097152},
+		{"negative defaults to 2M", "-5", 2097152},
+		{"garbage defaults to 2M", "huge", 2097152},
 	}
 	t.Setenv(key, "") // ensure defined for all cases
 	for _, tc := range cases {
@@ -68,6 +69,27 @@ func TestPromptBudgetExceeded(t *testing.T) {
 			t.Fatal("empty body must never exceed")
 		}
 	})
+}
+
+func TestPromptBudgetTwoMillionCeiling(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_MAX_PROMPT_TOKENS", "")
+	below := make([]byte, (2*1048576)*4)
+	if _, over := promptBudgetExceeded(below); over {
+		t.Fatal("body at the 2M gateway ceiling must not exceed the default limit")
+	}
+	above := make([]byte, (2*1048576+1)*4)
+	if est, over := promptBudgetExceeded(above); !over || est <= 2*1048576 {
+		t.Fatalf("body above the 2M gateway ceiling was not rejected: est=%d over=%v", est, over)
+	}
+}
+
+func TestPreflightDoesNotUseGatewayCeilingAsProviderWindow(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_MAX_PROMPT_TOKENS", "")
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hello"}]}`)
+	out, applied, est := preflightCompress(body, "openai")
+	if applied || est == 0 || string(out) != string(body) {
+		t.Fatalf("model-agnostic preflight changed body: applied=%v est=%d", applied, est)
+	}
 }
 
 // TestPromptBudgetHandlerRejection pins the /v1/chat/completions 413 path:

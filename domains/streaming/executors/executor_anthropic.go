@@ -592,14 +592,6 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
 	bodyBytes := append([]byte(nil), sourceBody...)
 
-	if cand.ContextWindow != nil {
-		if params.ClientProtocol == "anthropic-messages" {
-			bodyBytes = transformation.CompressAnthropicMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
-		} else {
-			bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
-		}
-	}
-
 	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
 	// FIX (2026-06-23): Only convert when upstream protocol is anthropic-messages.
 	// This prevents converting OpenAI→Anthropic when talking to OpenAI-compatible upstreams like MiniMax.
@@ -658,6 +650,12 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 }
 
 func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {
+	// Candidate-aware enforcement must run for both the IR and legacy paths.
+	// The gateway's 2M admission ceiling is not the provider context window;
+	// trim the serialized Anthropic body at the shared 80% provider threshold.
+	if cand.ContextWindow != nil {
+		bodyBytes = transformation.CompressAnthropicMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+	}
 	requestCtx := context.Background()
 	if params != nil && params.R != nil {
 		requestCtx = params.R.Context()
