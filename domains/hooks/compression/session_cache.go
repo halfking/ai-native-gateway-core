@@ -178,6 +178,11 @@ type SessionState struct {
 	CutStrategy    string `json:"cm_strat,omitempty"`
 	CutBytesBefore int    `json:"cm_bb,omitempty"`
 	CutBytesAfter  int    `json:"cm_ba,omitempty"`
+	// CutPreSanitizeStart / CutPreSanitizeEnd (2026-09-01, audit §五)：把压缩
+	// 覆盖的 message 在 sanitize 之前的 index 范围持久化到 Redis hash。
+	// 与 SessionState.SanitizeMapRef 配合可还原三层 offset 全貌。
+	CutPreSanitizeStart int `json:"cm_psor0,omitempty"`
+	CutPreSanitizeEnd   int `json:"cm_psor1,omitempty"`
 
 	// v6: Audited state (Cache 2 concept).
 	//
@@ -733,6 +738,12 @@ func encodeSessionStateFields(st *SessionState) []any {
 		if st.CutBytesAfter > 0 {
 			fields = append(fields, "cm_ba", fmt.Sprintf("%d", st.CutBytesAfter))
 		}
+		// v9 (2026-09-01, audit §五)：三层 offset 串接。CutPreSanitize* 仅有意义
+		// 在 HasCutMarker=true 时写入；omitempty 语义由"任一 > 0"判定。
+		if st.CutPreSanitizeStart > 0 || st.CutPreSanitizeEnd > 0 {
+			fields = append(fields, "cm_psor0", fmt.Sprintf("%d", st.CutPreSanitizeStart))
+			fields = append(fields, "cm_psor1", fmt.Sprintf("%d", st.CutPreSanitizeEnd))
+		}
 	}
 	if st.CompressedPrefixHash != "" {
 		fields = append(fields, "cmp_ph", st.CompressedPrefixHash)
@@ -833,6 +844,9 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.CutStrategy = fields["cm_strat"]
 	st.CutBytesBefore = int(parseInt(fields["cm_bb"]))
 	st.CutBytesAfter = int(parseInt(fields["cm_ba"]))
+	// v9 (2026-09-01, audit §五)：缺省即零值，旧 Redis hash 自动读为零。
+	st.CutPreSanitizeStart = int(parseInt(fields["cm_psor0"]))
+	st.CutPreSanitizeEnd = int(parseInt(fields["cm_psor1"]))
 	st.CompressedPrefixHash = fields["cmp_ph"]
 	// v6: Audited state — missing keys decode to zero value, which is the
 	// intended "no audit yet" semantic.
@@ -905,6 +919,8 @@ func (s *SessionState) SetCutMarker(cm CutMarker) {
 	s.CutBytesBefore = cm.BytesBefore
 	s.CutBytesAfter = cm.BytesAfter
 	s.SummaryMarker = cm.SummaryMarker
+	s.CutPreSanitizeStart = cm.PreSanitizeOffsetRange[0]
+	s.CutPreSanitizeEnd = cm.PreSanitizeOffsetRange[1]
 }
 
 // ToCutMarker reconstructs a CutMarker from SessionState fields.
@@ -915,16 +931,17 @@ func (s *SessionState) ToCutMarker(summaryText string) *CutMarker {
 		return nil
 	}
 	return &CutMarker{
-		Version:        cutMarkerSchemaVersion,
-		CreatedAt:      s.CutCreatedAt,
-		SourceMsgCount: s.CutSourceMsgs,
-		SystemMsgCount: s.CutSystemMsgs,
-		CutIndex:       s.CutIndex,
-		SummaryMarker:  s.SummaryMarker,
-		Strategy:       s.CutStrategy,
-		BytesBefore:    s.CutBytesBefore,
-		BytesAfter:     s.CutBytesAfter,
-		SummaryText:    summaryText,
+		Version:                cutMarkerSchemaVersion,
+		CreatedAt:              s.CutCreatedAt,
+		SourceMsgCount:         s.CutSourceMsgs,
+		SystemMsgCount:         s.CutSystemMsgs,
+		CutIndex:               s.CutIndex,
+		SummaryMarker:          s.SummaryMarker,
+		Strategy:               s.CutStrategy,
+		BytesBefore:            s.CutBytesBefore,
+		BytesAfter:             s.CutBytesAfter,
+		PreSanitizeOffsetRange: [2]int{s.CutPreSanitizeStart, s.CutPreSanitizeEnd},
+		SummaryText:            summaryText,
 	}
 }
 
@@ -938,6 +955,8 @@ func (s *SessionState) ClearCutMarker() {
 	s.CutStrategy = ""
 	s.CutBytesBefore = 0
 	s.CutBytesAfter = 0
+	// 与 SummaryMarker 现有对称处理一致：不主动清空 CutPreSanitize*，
+	// 让 HasCutMarker=false 即可让下游逻辑忽略它们。
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

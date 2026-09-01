@@ -209,7 +209,11 @@ func (rc *RecoveryCoordinator) Recover(
 	if strategy == "smart_window_llm" {
 		markerSummaryText = summaryText
 	}
-	marker := NewCutMarker(
+	// 2026-09-01 (audit §五)：在 compression 路径下 sanitize 阶段先于本压缩触发，
+	// 把 [0, len(messages)) 作为 PreSanitizeOffsetRange 占位（语义：所有
+	// messages 在压缩前都已被 sanitize 覆盖）。后续 smart_sani_guard.go 改造
+	// 后会替换为基于 usedCount 推导的精确 range。
+	marker := NewCutMarkerWithPreSanitize(
 		plan,
 		len(messages),
 		strategy,
@@ -217,6 +221,7 @@ func (rc *RecoveryCoordinator) Recover(
 		markerSummaryText,
 		len(body),
 		len(rebuilt),
+		[2]int{0, len(messages)},
 	)
 
 	if rc.deps.Cache != nil && gwSessionID != "" {
