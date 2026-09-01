@@ -241,3 +241,11 @@ relying on it.
 >   残留。**验证中发现并修复**：原 `CREATE UNIQUE INDEX` 缺 `IF NOT EXISTS`，
 >   重放报 already exists，与文件头 "Idempotent" 声明不符；已修复（本页
 >   SHA 为修复后 checksum），startup/embeddata/V368 三处同步。
+## 2026-09-01T08:30:17Z — deploy 245 build_seq 1871 (84ccb55c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 637 | `637_session_bodies_unified_today_visible.sql` | `d200401f45e7099a8a90ccc6cdfe830be8b2c394127a606da91f755e30dbca05` | applied+verified |
+| 638 | `638_session_bodies_promote_guard.sql` | `8e4f86289d74db15c50d054e30404964034417d30fa79bb8f12a97d5c1a651e3` | applied+verified |
+| 639 | `639_provider_error_details_credential.sql` | `8ea51936d82db62ef3cd644cfb4357461e03bcdcd4f782bfc097ab1ae042d42c` | applied+verified |
+
