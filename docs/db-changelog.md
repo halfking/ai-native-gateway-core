@@ -200,12 +200,13 @@ relying on it.
 | 636 | `636_session_turns_digest.sql` | `a7e1909b0eb5fac03253c77fafb3cb029a688195c9666b41c739db24746e6af2` | applied+verified |
 
 
-## 2026-09-01 — local dev (pending deploy)
+## 2026-09-01 — local dev (verified on 252 sync replica, pending deploy)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 637 | `637_session_bodies_unified_today_visible.sql` | `d200401f45e7099a8a90ccc6cdfe830be8b2c394127a606da91f755e30dbca05` | pending deploy |
-| 638 | `638_session_bodies_promote_guard.sql` | `8e4f86289d74db15c50d054e30404964034417d30fa79bb8f12a97d5c1a651e3` | pending deploy |
+| 637 | `637_session_bodies_unified_today_visible.sql` | `d200401f45e7099a8a90ccc6cdfe830be8b2c394127a606da91f755e30dbca05` | verified (local 252 replica), pending deploy |
+| 638 | `638_session_bodies_promote_guard.sql` | `8e4f86289d74db15c50d054e30404964034417d30fa79bb8f12a97d5c1a651e3` | verified (local 252 replica), pending deploy |
+| 639 | `639_provider_error_details_credential.sql` | `8ea51936d82db62ef3cd644cfb4357461e03bcdcd4f782bfc097ab1ae042d42c` | verified (local 252 replica), pending deploy |
 
 > 637: `session_bodies_unified` 视图分区分支去掉 `partition_date <=
 > CURRENT_DATE - INTERVAL '1 day'` 过滤（24h-audit round2 P0）。writer 只写
@@ -222,3 +223,21 @@ relying on it.
 > 插入行）。配套 Go 侧：admin 手动 promote 拒绝 retention_hours<=0，
 > hotPromoteTableMap 补 `session_bodies_hot`；sessionsummary 两处 V2 读
 > 改用 `session_bodies_unified` 视图。
+>
+> 639: `provider_error_details` 加 `credential_id TEXT NULL` 列并把 620
+> 租户指纹唯一索引重建为含 `COALESCE(credential_id,'')` 的新粒度（V368 镜像
+> 同步）。历史行 NULL 之间保持原 620 冲突语义；聚合器（bg/provider_error_
+> aggregator.go）GROUP BY/DISTINCT ON/conflict 目标同步加入 credential_id，
+> 凭据详情页错误集合按凭据独立。
+>
+> 验证（2026-09-01，本地 llm-gateway-pg = 252 同步副本，含 526/625/626/
+> 635/636，`scripts/local-dev/verify-migration-637-639.sh` 31/31 断言通过）：
+> - 637 up：当日写入+当日 promote 的行经 `session_bodies_unified` 立即可见
+>   （625 过滤版同场景不可见）；promote 后视图恰 1 行、hot 0 行（move 语义）。
+> - 638 up：`retention=0`/`retention NULL`/`batch_size=0` 三种调用均
+>   RAISE EXCEPTION；合法调用 moved 正常。down 恢复 626 无 guard 函数体。
+> - 639 up：新唯一索引含 credential_id 表达式；同指纹不同 credential 可
+>   并存、NULL credential 之间互相冲突（原语义保持）；down→up 循环无旧索引
+>   残留。**验证中发现并修复**：原 `CREATE UNIQUE INDEX` 缺 `IF NOT EXISTS`，
+>   重放报 already exists，与文件头 "Idempotent" 声明不符；已修复（本页
+>   SHA 为修复后 checksum），startup/embeddata/V368 三处同步。
