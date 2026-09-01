@@ -89,6 +89,92 @@ func coerceXMLToolCallsInChatResponse(body []byte, toolsRequested bool) []byte {
 	return out
 }
 
+const maxStreamXMLToolCallBytes = 64 * 1024
+
+// streamXMLToolCallCoercer buffers only a suspected XML tool-call fragment
+// between SSE deltas. The cap keeps malformed upstream output bounded.
+type streamXMLToolCallCoercer struct {
+	fragment string
+}
+
+func newStreamXMLToolCallCoercer() *streamXMLToolCallCoercer {
+	return &streamXMLToolCallCoercer{}
+}
+
+func (c *streamXMLToolCallCoercer) pending() bool {
+	return c != nil && c.fragment != ""
+}
+
+func (c *streamXMLToolCallCoercer) apply(line string, toolsRequested bool) string {
+	if c == nil || !toolsRequested || !strings.HasPrefix(line, "data: ") {
+		return coerceXMLToolCallsInStreamLine(line, toolsRequested)
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+	if payload == "[DONE]" {
+		// Never leak an unfinished tool fragment at stream termination.
+		c.fragment = ""
+		return line
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		return line
+	}
+	choices, ok := obj["choices"].([]any)
+	if !ok {
+		return line
+	}
+	modified := false
+	for _, rawChoice := range choices {
+		choice, ok := rawChoice.(map[string]any)
+		if !ok {
+			continue
+		}
+		delta, ok := choice["delta"].(map[string]any)
+		if !ok || delta["tool_calls"] != nil {
+			continue
+		}
+		content, ok := delta["content"].(string)
+		if !ok {
+			continue
+		}
+		candidate := c.fragment + content
+		if c.fragment == "" && !strings.Contains(content, "<tool_call>") && !strings.Contains(content, "<minimax:tool_call>") {
+			continue
+		}
+		if len(candidate) > maxStreamXMLToolCallBytes {
+			c.fragment = ""
+			continue
+		}
+		remaining, toolCalls := parseXMLToolCalls(candidate)
+		if len(toolCalls) == 0 {
+			c.fragment = candidate
+			delta["content"] = ""
+			modified = true
+			continue
+		}
+		c.fragment = ""
+		if remaining == "" {
+			delete(delta, "content")
+		} else {
+			delta["content"] = remaining
+		}
+		for idx, toolCall := range toolCalls {
+			toolCall["index"] = idx
+		}
+		delta["tool_calls"] = toolCalls
+		choice["finish_reason"] = "tool_calls"
+		modified = true
+	}
+	if !modified {
+		return coerceXMLToolCallsInStreamLine(line, toolsRequested)
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return line
+	}
+	return "data: " + string(out) + "\n"
+}
+
 func coerceXMLToolCallsInStreamLine(line string, toolsRequested bool) string {
 	if !toolsRequested || !strings.HasPrefix(line, "data: ") {
 		return line

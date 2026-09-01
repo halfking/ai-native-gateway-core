@@ -220,6 +220,7 @@ func runEmptyStreamGateWithVendor(
 ) (flushedLines []string, outcome *StreamOutcome) {
 	buffered := make([]string, 0, emptyGateMaxChunks)
 	bufferedBytes := 0
+	xmlToolCoercer := newStreamXMLToolCallCoercer()
 	earlyEmptyChunks := currentStreamRuntimeConfig().emptyStreamEarlyEmptyChunks
 	consecutiveEmptyDeltas := 0
 	observeEarlyEmptyDelta := func(payload string) *StreamOutcome {
@@ -383,27 +384,28 @@ func runEmptyStreamGateWithVendor(
 		// Apply the same line transforms the main loop would apply, so
 		// flushed chunks are byte-identical to what write-through would
 		// have produced (quality fix / XML coerce / model rewrite / norm).
-		line = applyGateLineTransforms(ctx, line, clientModel, discoveredUpstream, norm, capture, toolsRequested)
+		line = applyGateLineTransforms(ctx, line, clientModel, discoveredUpstream, norm, capture, toolsRequested, xmlToolCoercer)
 
 		buffered = append(buffered, line)
 		bufferedBytes += len(line)
+		transformedPayload := extractPayload(line)
 		if hasCombinedDone {
 			buffered = append(buffered, "data: [DONE]\n")
 			break
 		}
 
 		// [DONE] while buffering: classify and decide.
-		if payload == "[DONE]" {
+		if transformedPayload == "[DONE]" {
 			break
 		}
 
 		// Real content seen? Flush immediately. This is the common case
 		// for normal streams — first content chunk arrives, gate exits,
 		// caller writes flushed lines and continues write-through.
-		if chunkHasContent(payload) {
+		if chunkHasContent(transformedPayload) {
 			return buffered, nil
 		}
-		if outcome := observeEarlyEmptyDelta(payload); outcome != nil {
+		if outcome := observeEarlyEmptyDelta(transformedPayload); outcome != nil {
 			return nil, outcome
 		}
 
@@ -462,8 +464,9 @@ func applyGateLineTransforms(
 	clientModel string,
 	discoveredUpstream *string,
 	norm *Normalizer,
-	capture *audit.StreamCapture,
+	capture        *audit.StreamCapture,
 	toolsRequested bool,
+	xmlToolCoercer *streamXMLToolCallCoercer,
 ) string {
 	qualityMode := qualityFixModeFromContext(ctx)
 	if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
@@ -479,7 +482,11 @@ func applyGateLineTransforms(
 			capture.SetQualitySeenToolCallIDs(newSeen)
 		}
 	}
-	line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
+	if xmlToolCoercer != nil {
+		line = xmlToolCoercer.apply(line, toolsRequested)
+	} else {
+		line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
+	}
 	if clientModel != "" && *discoveredUpstream == "" {
 		*discoveredUpstream = extractModelFromChunk(line)
 	}
@@ -704,6 +711,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	discoveredUpstream := ""
 	lastSend := time.Now()
 	chunkCount := 0 // Track number of chunks sent
+	xmlToolCoercer := newStreamXMLToolCallCoercer()
 
 	if clientModel != "" && outboundModel != "" && clientModel != outboundModel {
 		slog.Debug("upstream model diff",
@@ -922,7 +930,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				capture.SetQualitySeenToolCallIDs(newSeen)
 			}
 		}
-		firstLine = coerceXMLToolCallsInStreamLine(firstLine, toolsRequested)
+		firstLine = xmlToolCoercer.apply(firstLine, toolsRequested)
 		if clientModel != "" && discoveredUpstream == "" {
 			discoveredUpstream = extractModelFromChunk(firstLine)
 		}
@@ -1266,7 +1274,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			}
 		}
 
-		line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
+		line = xmlToolCoercer.apply(line, toolsRequested)
 
 		if clientModel != "" && discoveredUpstream == "" {
 			discoveredUpstream = extractModelFromChunk(line)
