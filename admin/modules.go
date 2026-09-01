@@ -585,6 +585,32 @@ func allModuleDefinitions() []ModuleDefinition {
 					{Key: "session_analytics", Name: "会话全景分析", Icon: "📊", Required: false, Description: "提供会话总结、标签和意图分析的上游数据。"},
 				},
 			},
+			{
+				Key:         "maintain",
+				Name:        "维护后台",
+				Description: "独立的维护运维后台服务（ai-native-maintain），提供许可证管理、版本发布、故障监控、自动升级等运维功能。",
+				Capabilities: []string{
+					"许可证生命周期管理（颁发/续期/吊销/离线激活）",
+					"版本发布与制品分发（Cloudreve/本地存储）",
+					"故障事件监控与告警",
+					"自动升级策略（灰度/滚动/批次）",
+					"实例心跳与健康度追踪",
+					"运行时配置中心（热加载/加密存储）",
+					"支付集成（支付宝扫码/回调）",
+				},
+				Icon:        "🔧",
+				Category:    "integration",
+				SettingKey:  "", // no single toggle; status is runtime (MAINTAIN_SERVICE_URL)
+				DocsURL:     "/maintain/ops/overview",
+				DangerLevel: settings.Safe,
+				Integration: &ModuleIntegration{
+					Type:        "http",
+					Label:       "ai-native-maintain",
+					Description: "配置 MAINTAIN_SERVICE_URL 后启用，网关通过反向代理将 /maintain-api/* 请求转发到维护后台。前端页面挂载在 /maintain/* 路径。",
+					DocURL:      "https://github.com/halfking/ai-native-maintain",
+				},
+				Dependencies: []ModuleDependency{},
+			},
 		}
 
 		// Detect circular dependencies at initialization time
