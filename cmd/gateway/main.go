@@ -3219,6 +3219,31 @@ func main() {
 					slog.Info("sent MV refresh alert", "view", viewName, "failures", consecutiveFailures)
 				}
 			})
+			// P2-D (2026-09-01): drift alert — reuses the same Lark
+			// channel as refresh failures, so ops see both signals in one
+			// IM thread. The callback is gated inside checkConsistency
+			// (>= 3 breaches AND abs >= 1000) and has a 30-minute cooldown,
+			// so a steady drift pattern produces one IM every ~30 min
+			// instead of one per refresh cycle. Prometheus metrics always
+			// carry the live value.
+			materializedViewRefresher.SetDriftAlertCallback(func(viewName string, breaches int, maxPct float64, maxAbs int64, summary string) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+
+				msg := &notification.Message{
+					ID:    fmt.Sprintf("mv-drift-%s-%d", viewName, time.Now().Unix()),
+					Title: "⚠️ 物化视图数据一致性告警 (P2-D)",
+					Content: fmt.Sprintf("%s\n时间: %s\n建议: 检查刷新日志；如失败可手动触发 TriggerRefresh",
+						summary, time.Now().Format(time.RFC3339)),
+					Recipients: []string{os.Getenv("LARK_ALERT_RECIPIENT")},
+				}
+				if sendErr := gLarkCh.Send(ctx, msg); sendErr != nil {
+					slog.Error("failed to send MV drift alert", "error", sendErr)
+				} else {
+					slog.Info("sent MV drift alert",
+						"view", viewName, "breaches", breaches, "max_pct", maxPct, "max_abs", maxAbs)
+				}
+			})
 		}
 		materializedViewRefresher.Start()
 	}
