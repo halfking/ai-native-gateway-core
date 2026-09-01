@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,13 @@ import (
 
 type DB struct {
 	pool *pgxpool.Pool
+
+	// stdlibDBOnce lazily creates the shared *sql.DB bridge returned by
+	// Stdlib(). Exactly one bridge is constructed for the lifetime of *DB;
+	// all callers share the underlying pgxpool.Pool instead of spawning
+	// independent connection pools on every invocation.
+	stdlibDBOnce sync.Once
+	stdlibDB     *sql.DB
 }
 
 func Open(ctx context.Context, databaseURL string) (*DB, error) {
@@ -1141,16 +1149,58 @@ func (d *DB) Pool() *pgxpool.Pool {
 }
 
 // Stdlib 返回一个 database/sql.DB，用于需要 *sql.DB 接口的场景。
-// 注意：返回的 *sql.DB 与 Pool() 共享底层连接池，调用方不应关闭它。
+//
+// 2026-09-01 修复：之前通过 stdlib.OpenDB(*d.pool.Config().ConnConfig) 在每次
+// 调用时构造一个全新的 *sql.DB，会在 database/sql 层各自建立独立的连接池，
+// 导致：
+//   - 每条 dbConn.Stdlib() 调用站点都会泄漏一个连接池（11 处调用 → 11+ 个
+//     独立池，与主 pgxpool 互相争抢 PG 连接）；
+//   - 注释中"共享底层连接池"的承诺不成立；
+//   - 资源生命周期与 db.DB.Close() 不挂钩：调用方关闭 db.DB 时这些孤儿池
+//     不会被回收。
+//
+// 修复方案：使用 stdlib.OpenDBFromPool(d.pool) —— pgx 通过 connector 代理
+// 从主 pgxpool.Pool 借/还连接，*sql.DB 自身不持有物理连接（pgx 已强制
+// SetMaxIdleConns(0) 防止 database/sql 把池里的连接全部缓存走）。
+//
+// 所有权：返回的 *sql.DB 由 *DB 独占管理，调用方**不得**调用 Close。
+// *DB.Close() 会负责关闭它；重复调用 Close() 是幂等且安全的。
+//
+// 并发安全：sync.Once 保证整个进程生命周期内只创建一次 *sql.DB，多 goroutine
+// 同时调用 Stdlib() 会拿到同一个实例指针（database/sql 内部连接池本身支持并发）。
 func (d *DB) Stdlib() *sql.DB {
 	if d == nil || d.pool == nil {
 		return nil
 	}
-	return stdlib.OpenDB(*d.pool.Config().ConnConfig)
+	d.stdlibDBOnce.Do(func() {
+		// OpenDBFromPool 的副作用：
+		//   - 内部创建 *sql.DB 但不分配任何 PG 连接（连接全部从 pool 借）；
+		//   - 自动 SetMaxIdleConns(0)，避免 database/sql 缓存连接挤占 pgxpool；
+		//   - 关闭 *sql.DB 不会关闭 pgxpool（由我们手动管理）。
+		d.stdlibDB = stdlib.OpenDBFromPool(d.pool)
+	})
+	return d.stdlibDB
 }
 
+// Close 释放 *DB 持有的所有资源：主 pgxpool.Pool 以及由 Stdlib() 创建的共享
+// *sql.DB 桥接。幂等；二次调用是 no-op。
+//
+// 历史背景：早期实现只关闭 pool，导致 *sql.DB 桥接成为孤儿。本次修复后
+// Stdlib() 缓存到 *DB 上，Close() 必须同时释放它，避免在测试与短生命周期
+// 调用方中泄漏连接池。
 func (d *DB) Close() {
-	if d != nil && d.pool != nil {
+	if d == nil {
+		return
+	}
+	if d.stdlibDB != nil {
+		// *sql.DB.Close() 仅清空 database/sql 自己的连接队列，不会触碰底层
+		// pgxpool.Pool（pgx connector 解耦了这两层）。即便 pool 已经先关闭，
+		// 这一次 Close() 也是安全的：database/sql 会把残留请求直接返回
+		// driver.ErrBadConn。
+		_ = d.stdlibDB.Close()
+		d.stdlibDB = nil
+	}
+	if d.pool != nil {
 		d.pool.Close()
 	}
 }
