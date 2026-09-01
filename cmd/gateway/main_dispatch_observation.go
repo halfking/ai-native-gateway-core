@@ -310,6 +310,11 @@ func journalSnapshotHash(snap dispatch.JournalSnapshot) [sha256.Size]byte {
 // original journal Action for forensics. Action/Counts/Attempt are
 // informational and are dropped — the seq-monotonic invariant is what
 // preserves order in the journey store.
+//
+// 2026-09-01 P0 fix: switch events now populate From*/To* fields from the
+// journal entry so EventNodeSwitched / EventModelSwitched pass journey contract
+// validation. Missing from/to fields will cause the event to degrade to
+// ObservationDegraded rather than silently dropping the trace.
 func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq int64, offset int, entry dispatch.JournalEntry) (requestjourney.JourneyEvent, bool) {
 	var (
 		eventType requestjourney.EventType
@@ -326,9 +331,22 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 	case dispatch.NextActionRetrySameCred:
 		eventType, stage = requestjourney.EventRetryScheduled, requestjourney.StageRetrying
 	case dispatch.NextActionSwitchCred:
-		eventType, stage = requestjourney.EventNodeSwitched, requestjourney.StageCredentialQueue
+		// P0 fix: validate that from/to credential fields are present
+		if entry.FromCredentialID <= 0 || (entry.ToCredentialID <= 0 && entry.CredentialID <= 0) {
+			// Degrade rather than drop: emit observation_degraded so the trace
+			// isn't silently truncated, with a reason explaining the gap.
+			eventType, stage = requestjourney.EventObservationDegraded, requestjourney.StageUpstream
+		} else {
+			eventType, stage = requestjourney.EventNodeSwitched, requestjourney.StageCredentialQueue
+		}
 	case dispatch.NextActionSwitchModel:
-		eventType, stage = requestjourney.EventModelSwitched, requestjourney.StageRouting
+		// P0 fix: validate that from/to model fields are present
+		if entry.FromModel == "" || (entry.ToModel == "" && entry.Model == "") {
+			// Degrade rather than drop
+			eventType, stage = requestjourney.EventObservationDegraded, requestjourney.StageUpstream
+		} else {
+			eventType, stage = requestjourney.EventModelSwitched, requestjourney.StageRouting
+		}
 	case dispatch.NextActionCapacityWait, dispatch.NextActionScheduledWait:
 		eventType, stage = requestjourney.EventRetryScheduled, requestjourney.StageRetrying
 	default:
@@ -340,7 +358,9 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 	if occurredAt.IsZero() {
 		occurredAt = entry.At // recordDecision always fills; defensive against future zero-valued entries
 	}
-	return requestjourney.JourneyEvent{
+	
+	// Build base event
+	event := requestjourney.JourneyEvent{
 		TenantID:          tenantID,
 		GatewayInstanceID: instance,
 		RequestID:         requestID,
@@ -357,7 +377,39 @@ func journalEntryToJourneyEvent(instance, tenantID, requestID string, baseSeq in
 		RetryReason:       string(entry.Action),
 		ObservationStatus: requestjourney.ObservationComplete,
 		OccurredAt:        occurredAt,
-	}, true
+	}
+	
+	// When degraded due to missing switch fields, mark observation as degraded
+	if eventType == requestjourney.EventObservationDegraded {
+		event.ObservationStatus = requestjourney.ObservationDegraded
+	}
+	
+	// P0 fix: populate from/to fields for switch events
+	if entry.Action == dispatch.NextActionSwitchCred && eventType == requestjourney.EventNodeSwitched {
+		event.FromCredentialID = int64(entry.FromCredentialID)
+		event.ToCredentialID = int64(entry.ToCredentialID)
+		if event.ToCredentialID == 0 {
+			event.ToCredentialID = int64(entry.CredentialID)
+		}
+		// Note: FromProviderID/ToProviderID are tracked in journal for forensics
+		// but not required by journey contract, so we don't populate them here.
+	}
+	
+	if entry.Action == dispatch.NextActionSwitchModel && eventType == requestjourney.EventModelSwitched {
+		event.FromModel = entry.FromModel
+		event.ToModel = entry.ToModel
+		if event.ToModel == "" {
+			event.ToModel = entry.Model
+		}
+	}
+	
+	// When degraded due to missing switch fields, add context to RetryReason
+	if eventType == requestjourney.EventObservationDegraded && 
+	   (entry.Action == dispatch.NextActionSwitchCred || entry.Action == dispatch.NextActionSwitchModel) {
+		event.RetryReason = string(entry.Action) + "_missing_endpoints"
+	}
+	
+	return event, true
 }
 
 // startCleanup initiates a background goroutine that periodically cleans up
