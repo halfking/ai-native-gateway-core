@@ -91,31 +91,63 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 
 	// (2/3) Switch credential under the current model, honoring provider scope.
 	fromCredID := qr.SelectedCred.CredentialID
+	fromProviderID := qr.SelectedCred.ProviderID
 	qr.markTriedCredential(fromCredID)
 	p.invalidateSessionAffinity(qr, fromCredID)
 	qr.CredRetryCount = 0
+	
+	// 2026-09-01 P0 fix: plan the switch BEFORE journaling so we can record
+	// complete from/to endpoints in one entry. This preserves the journal
+	// contract that recordDecision updates LastFailover to the tail entry.
+	refs, _ := p.routeFunc(ctxOf(qr), qr)
+	next, scoped := PlanSwitchCred(qr, refs)
+	for _, id := range scoped {
+		qr.markTriedCredential(id)
+	}
+	
 	// v6 G-Ⅴ + W1.6 R9: the credential-exhaustion round is journaled before
 	// hunting for the sibling so the tail always reflects the LAST executed node.
-	qr.recordDecision(JournalEntry{
-		Model:        qr.ResolvedModel,
-		CredentialID: fromCredID,
-		ProviderID:   qr.SelectedCred.ProviderID,
-		Vendor:       qr.SelectedCred.Vendor,
-		Action:       NextActionSwitchCred,
-		ErrorKind:    firstNonEmpty(out.ErrorKind, classifyError(err)),
-		HTTPStatus:   out.HTTPStatus,
-		Attempt:      qr.AttemptCount,
-	})
-	refs, _ := p.routeFunc(ctxOf(qr), qr)
+	// 2026-09-01 P0 fix: populate FromCredentialID/ToCredentialID so the
+	// journal→journey bridge can emit valid EventNodeSwitched events.
+	journalEntry := JournalEntry{
+		Model:            qr.ResolvedModel,
+		CredentialID:     fromCredID,
+		ProviderID:       fromProviderID,
+		Vendor:           qr.SelectedCred.Vendor,
+		Action:           NextActionSwitchCred,
+		ErrorKind:        firstNonEmpty(out.ErrorKind, classifyError(err)),
+		HTTPStatus:       out.HTTPStatus,
+		Attempt:          qr.AttemptCount,
+		FromCredentialID: fromCredID,
+		FromProviderID:   fromProviderID,
+	}
+	if next != nil {
+		// Found a switch target: fill To fields
+		journalEntry.ToCredentialID = next.CredentialID
+		journalEntry.ToProviderID = next.ProviderID
+	}
+	qr.recordDecision(journalEntry)
+	
+	if next == nil {
+		// No sibling credential available under this model → model change.
+		p.tryModelChangeOutcome(qr, out)
+		return
+	}
+	
 	for {
-		next, scoped := PlanSwitchCred(qr, refs)
-		for _, id := range scoped {
-			qr.markTriedCredential(id)
-		}
+		// Already consumed next from the first plan above
 		if next == nil {
-			break
+			next, scoped = PlanSwitchCred(qr, refs)
+			for _, id := range scoped {
+				qr.markTriedCredential(id)
+			}
+			if next == nil {
+				break
+			}
 		}
 		ref := *next
+		next = nil // consume the planned switch
+		
 		// Continuation step: the attempt budget guards it (R12).
 		if AttemptBudgetLeft(qr) <= 0 {
 			p.terminateOnAttemptCap(qr, out)

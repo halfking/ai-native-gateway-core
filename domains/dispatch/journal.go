@@ -33,6 +33,26 @@ type JournalEntry struct {
 	Attempt int `json:"attempt"`
 	// Counts is the cumulative per-action counter snapshot after the event.
 	Counts ActionCounts `json:"counts"`
+	
+	// FromModel / ToModel (2026-09-01 P0 fix): for NextActionSwitchModel, the
+	// model being switched FROM and TO. ToModel typically matches Model; FromModel
+	// must be filled by the caller when recording a switch decision so the
+	// journal→journey bridge can emit valid EventModelSwitched with both endpoints.
+	FromModel string `json:"from_model,omitempty"`
+	ToModel   string `json:"to_model,omitempty"`
+	
+	// FromCredentialID / ToCredentialID (2026-09-01 P0 fix): for NextActionSwitchCred,
+	// the credential being switched FROM and TO. ToCredentialID typically matches
+	// CredentialID; FromCredentialID must be filled by the caller so the bridge can
+	// emit valid EventNodeSwitched with both endpoints.
+	FromCredentialID int `json:"from_credential_id,omitempty"`
+	ToCredentialID   int `json:"to_credential_id,omitempty"`
+	
+	// FromProviderID / ToProviderID (2026-09-01 P0 fix, optional): for switch actions,
+	// the provider being switched FROM and TO. Useful for cross-provider failover
+	// forensics but not required by the journey contract.
+	FromProviderID int `json:"from_provider_id,omitempty"`
+	ToProviderID   int `json:"to_provider_id,omitempty"`
 }
 
 // ActionCounts aggregates the decision types across the request lifetime.

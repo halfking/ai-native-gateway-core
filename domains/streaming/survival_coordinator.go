@@ -228,9 +228,10 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	// resume_blocked/committed_output. Unstable models (glm-5.2, minimax-m3)
 	// drop the connection a few chunks in far more often than they fail after a
 	// full response, so a real window converts most of those into invisible
-	// retries. Defaults match StreamRecoveryConfig; tunable via
-	// LLM_GATEWAY_RECOVERY_HOLDBACK_* env (window 0 disables).
-	hbWindow, hbChunks := RecoveryHoldbackFromEnv()
+	// retries. 2026-09-01 P0 fix: use model-specific holdback tuning to provide
+	// extended windows for unstable models while keeping stable models at the
+	// default 5s/20 chunks. Tunable via LLM_GATEWAY_RECOVERY_HOLDBACK_* env.
+	hbWindow, hbChunks := RecoveryHoldbackForModel(params.Model)
 
 	res := SurvivalResult{}
 	// 2026-08-31 (P2-6 audit-data-closure): allocate res.History with zero

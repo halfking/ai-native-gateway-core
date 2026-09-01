@@ -178,6 +178,8 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 	// 标志换道重进 Tier-1，客户端在同一连接上看到模型切换进度。
 	// W1.6 R9: journal 继承上一条的 ErrorKind/HTTPStatus/Vendor ——
 	// entry 构造先于 recordDecision（后者会重写 LastFailover 投影）。
+	// 2026-09-01 P0 fix: populate FromModel/ToModel so the journal→journey
+	// bridge can emit valid EventModelSwitched events.
 	now := time.Now()
 	qr.recordDecision(JournalEntry{
 		Model:      fromModel,
@@ -187,6 +189,8 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 		HTTPStatus: qr.LastFailover.HTTPStatus,
 		Attempt:    qr.AttemptCount,
 		At:         now,
+		FromModel:  fromModel,
+		ToModel:    chosen,
 	})
 	qr.notifyDispatch(DispatchNotice{
 		Kind:      NoticeKindModelSwitch,
