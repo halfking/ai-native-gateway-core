@@ -11,6 +11,9 @@
 //   - strategy 包不 import compression 包（避免 import cycle），因此自带
 //     defaultNeverWorse 复刻核心语义。Production 路径通过 SetGuard 注入
 //     compression.NeverWorse 即可拿到 Prometheus 计数。
+//
+// 2026-09-01：抽出 applyOne 共用于 RunWithBody（顺序链）与 RunParallelWithBody
+//（并行 fan-out，详见 runner_parallel.go）。RunWithBody 行为完全不变。
 package strategy
 
 import (
@@ -97,6 +100,12 @@ type RunStats struct {
 	// TruncatedBy 顺序：所有触发 NeverWorse 守卫的 strategy 名（输出 >= 输入，
 	// 被回退到原 body）。通常意味着该 strategy 异常，需要排查。
 	TruncatedBy []string
+	// CandidateCount 2026-09-01：本次选中的 strategy 数。仅 RunParallelWithBody
+	// 会写入；RunWithBody 顺序链保持 0（与 AppliedNames 长度一致即可推断）。
+	CandidateCount int
+	// WinnerName 2026-09-01：RunParallelWithBody 按信息量评分挑出的最终胜出
+	// strategy 名；顺序链时为空（语义上"链尾即胜出"，已在 current 字节中体现）。
+	WinnerName string
 }
 
 // RunWithBody 是实际的执行入口。返回最终 body + stats + error。
@@ -128,33 +137,13 @@ func (r *Runner) RunWithBody(ctx context.Context, sel Selector, body []byte) ([]
 	chosen := sel.Select(ctx, all, body)
 	current := body
 	for _, s := range chosen {
-		if s == nil || !s.Enabled() {
-			continue
-		}
-		out, applied, err := s.Apply(ctx, current)
-		if err != nil {
-			// Optional compression is fail-open: preserve the last known-good body
-			// and let the established fallback chain continue.
-			slog.Warn("strategy.Runner: strategy failed; skipping stage",
-				"strategy", s.Name(), "error", err)
-			stats.FailedNames = append(stats.FailedNames, s.Name())
-			continue
-		}
+		out, applied, _ := applyOne(ctx, s, current, guardFn, &stats)
+		// Optional compression is fail-open: err 已被 applyOne 记入 FailedNames，
+		// 这里不返回 err（与重构前 RunWithBody 语义完全一致）。applied=false
+		// 包括 err != nil / !applied / NeverWorse 触发，全部 swallow。
 		if !applied || len(out) == 0 {
-			stats.SkippedNames = append(stats.SkippedNames, s.Name())
 			continue
 		}
-		// NeverWorse 守卫：若 strategy 自带 GuardStage()，套统一守卫。
-		if stage := s.GuardStage(); stage != "" && guardFn != nil {
-			guarded, regressed := guardFn(current, out, stage)
-			if regressed {
-				stats.TruncatedBy = append(stats.TruncatedBy, s.Name())
-				stats.SkippedNames = append(stats.SkippedNames, s.Name())
-				continue
-			}
-			out = guarded
-		}
-		stats.AppliedNames = append(stats.AppliedNames, s.Name())
 		current = out
 	}
 	stats.BytesOut = len(current)
