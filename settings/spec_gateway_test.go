@@ -11,14 +11,14 @@ func TestGatewaySpecsPromptBudget(t *testing.T) {
 	if spec.Key != "gateway.max_prompt_tokens" {
 		t.Fatalf("key = %q", spec.Key)
 	}
-	if spec.Default != 1048576 {
-		t.Fatalf("default = %v, want 1048576", spec.Default)
+	if spec.Default != 2097152 {
+		t.Fatalf("default = %v, want 2097152", spec.Default)
 	}
 	if !spec.HotReload {
 		t.Fatal("prompt budget must be hot-reloadable")
 	}
-	if err := spec.Validate(1048576); err != nil {
-		t.Fatalf("1M should validate: %v", err)
+	if err := spec.Validate(2097152); err != nil {
+		t.Fatalf("2M should validate: %v", err)
 	}
 	if err := spec.Validate(-1); err == nil {
 		t.Fatal("negative budget should fail validation")

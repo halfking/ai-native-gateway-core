@@ -120,7 +120,7 @@ func TestHandleContextLengthRecovery_DiscoveredLimitOverridesStaleConfig(t *test
 }
 
 // TestHandleContextLengthRecovery_AggressiveTargetLeavesHeadroom proves the 4xx
-// recovery path trims to the aggressive 60% target, not the default 85%. The
+// recovery path trims to the aggressive 60% target, not the default 80%. The
 // 2026-09-01 Minimax-m3 case overshot the window by only 0.4%; trimming to just
 // under the limit would have come back 4xx a second time.
 func TestHandleContextLengthRecovery_AggressiveTargetLeavesHeadroom(t *testing.T) {

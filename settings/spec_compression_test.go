@@ -19,8 +19,8 @@ func TestCompressionSpecs_DefaultsEnableAutomaticCompression(t *testing.T) {
 		t.Fatalf("handoff.enabled must be owned by HandoffSpecs, got duplicate %#v", got)
 	}
 	fraction := byKey["compression.window_fraction"]
-	if fraction == nil || fraction.Default != 0.85 {
-		t.Fatalf("compression.window_fraction default = %#v, want 0.85", fraction)
+	if fraction == nil || fraction.Default != 0.80 {
+		t.Fatalf("compression.window_fraction default = %#v, want 0.80", fraction)
 	}
 	wantEnv := map[string]string{
 		"compression.strategy_runner_enabled": "LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED",
