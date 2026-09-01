@@ -342,7 +342,7 @@ router.beforeEach(async (to) => {
     const startedAt = Date.now()
     return new Promise<void>((resolve) => {
       const check = () => {
-        if (store.authHydrated) {
+        if (store.authHydrated && store.userInfo && store.userInfo.id) {
           resolve()
         } else if (Date.now() - startedAt >= AUTH_HYDRATE_MAX_WAIT_MS) {
           resolve()

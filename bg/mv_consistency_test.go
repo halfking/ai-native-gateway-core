@@ -127,7 +127,11 @@ func TestCheckMVConsistency_UnsupportedView(t *testing.T) {
 	// No further query expected — unsupported view short-circuits
 	res, err := CheckMVConsistency(context.Background(), mock, "unsupported_view")
 	require.NoError(t, err)
-	require.Equal(t, MVConsistencyResult{}, res)
+	require.True(t, res.ViewExists, "the unsupported view exists even though it is not checked")
+	require.Equal(t, 0.0, res.MaxPct)
+	require.Equal(t, int64(0), res.MaxAbs)
+	require.Equal(t, 0, res.BreachCount)
+	require.Equal(t, 0, res.DiffRowCount)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
