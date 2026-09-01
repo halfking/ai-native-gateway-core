@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, computed } from 'vue'
+import { ref, onMounted, onUnmounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getApprovalConfig, updateApprovalConfig, type ApprovalConfig } from '../api/approval'
 import ApproverManager from './ApproverManager.vue'
@@ -12,6 +12,14 @@ const loading = ref(false)
 const saving = ref(false)
 const error = ref<string | null>(null)
 const successMessage = ref<string | null>(null)
+const successMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+
+onUnmounted(() => {
+  if (successMessageTimer.value) {
+    clearTimeout(successMessageTimer.value)
+    successMessageTimer.value = null
+  }
+})
 
 const config = ref<ApprovalConfig>({
   enabled: false,
@@ -55,8 +63,12 @@ async function saveConfig() {
   try {
     await updateApprovalConfig(config.value)
     successMessage.value = t('sessions.config.saveSuccess')
-    setTimeout(() => {
+    if (successMessageTimer.value) {
+      clearTimeout(successMessageTimer.value)
+    }
+    successMessageTimer.value = setTimeout(() => {
       successMessage.value = null
+      successMessageTimer.value = null
     }, 3000)
   } catch (e: any) {
     error.value = e.message || t('sessions.config.saveError')
