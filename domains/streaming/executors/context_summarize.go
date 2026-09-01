@@ -1342,7 +1342,7 @@ func buildPreRequestTrimMeta(bytesBefore, bytesAfter int, contextWindow *int) []
 		"tokens_after":  tokensAfter,
 		"bytes_before":  bytesBefore,
 		"bytes_after":   bytesAfter,
-		"reason_detail": "pre-request trim (cand.ContextWindow × 0.85 × 3.5 threshold)",
+		"reason_detail": "pre-request trim (cand.ContextWindow × 0.80 × 3.5 threshold)",
 		"trim_phase":    "pre_request",
 	}
 	if contextWindow != nil {

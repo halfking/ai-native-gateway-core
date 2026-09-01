@@ -259,7 +259,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
 		return
 	}
-	// ── 1M–2M 软压缩 preflight (2026-09-01, audit §三 3.3) ────────────────
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Provider-aware compression runs later after candidate resolution.
 	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai-responses"); applied {
 		_ = pbEst
 		bodyBytes = pb

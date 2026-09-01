@@ -17,6 +17,40 @@ func TestCompressMessagesIfNeeded_NoOpWhenFits(t *testing.T) {
 	}
 }
 
+func TestCompressMessagesIfNeeded_UsesEightyPercentTriggerAndSixtyPercentTarget(t *testing.T) {
+	// A body between 80% and the old 85% threshold must be trimmed, and the
+	// result must target 60% rather than merely stopping at the trigger point.
+	contextWindow := 1000
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"` + strings.Repeat("x", 1400) + `"},{"role":"assistant","content":"` + strings.Repeat("y", 1400) + `"},{"role":"user","content":"latest"}]}`)
+	if EstimateTokens(body) <= int(float64(contextWindow)*0.80) {
+		t.Fatalf("test body is not above the 80%% threshold: %d", EstimateTokens(body))
+	}
+	out := CompressMessagesIfNeeded(body, contextWindow)
+	if len(out) >= len(body) {
+		t.Fatalf("expected body above 80%% provider window to be trimmed: before=%d after=%d", len(body), len(out))
+	}
+	if EstimateTokens(out) > int(float64(contextWindow)*0.60) {
+		t.Fatalf("compression stopped above 60%% target: estimated=%d target=%d", EstimateTokens(out), int(float64(contextWindow)*0.60))
+	}
+}
+
+func TestProviderCompressionTargetTokens_SmallWindow(t *testing.T) {
+	cases := []struct {
+		window int
+		want   int
+	}{
+		{1_000_000, 200_000},
+		{500_000, 200_000},
+		{1_000_001, 600_000},
+		{2_000_000, 1_200_000},
+	}
+	for _, tc := range cases {
+		if got := providerCompressionTargetTokens(tc.window); got != tc.want {
+			t.Errorf("providerCompressionTargetTokens(%d) = %d, want %d", tc.window, got, tc.want)
+		}
+	}
+}
+
 func TestCompressMessagesIfNeeded_TrimsWhenOver(t *testing.T) {
 	// Build a body whose messages add up to far more than 50 tokens.
 	// With 50 token context window, the soft limit is ~42 tokens. The
@@ -351,8 +385,8 @@ func TestThresholdBytes_DynamicByContextWindow(t *testing.T) {
 		{200000, 0.8, 560000},
 		// 256K models (Claude family top tier) → 716.8K
 		{256000, 0.8, 716800},
-		// fraction=0.85 matches in-place soft-limit trim default
-		{128000, 0.85, 380800},
+		// fraction=0.80 matches the in-place soft-limit trim default
+		{128000, 0.80, 358400},
 		// Zero window → 0 (caller falls through to 4xx path)
 		{0, 0.8, 0},
 		// Negative window → 0
@@ -368,7 +402,7 @@ func TestThresholdBytes_DynamicByContextWindow(t *testing.T) {
 }
 
 func TestThresholdBytes_ZeroFractionFallsBackToDefault(t *testing.T) {
-	// fraction ≤ 0 → use defaultSoftLimitFraction (0.85).
+	// fraction ≤ 0 → use defaultSoftLimitFraction (0.80).
 	got := ThresholdBytes(100000, 0)
 	want := ThresholdBytes(100000, defaultSoftLimitFraction)
 	if got != want {
