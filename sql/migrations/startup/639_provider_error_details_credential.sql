@@ -47,7 +47,10 @@ END
 $$;
 
 DROP INDEX IF EXISTS public.idx_provider_error_details_tenant_fingerprint;
-CREATE UNIQUE INDEX idx_provider_error_details_tenant_cred_fingerprint
+-- IF NOT EXISTS keeps the migration replayable (header contract: "Idempotent"):
+-- on a re-run the 620-shape index is already gone and the credential-scoped
+-- index is already in place, so the CREATE is skipped instead of erroring.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_error_details_tenant_cred_fingerprint
 ON public.provider_error_details (
     COALESCE(tenant_id, ''), provider_id, COALESCE(credential_id, ''),
     COALESCE(model_name, ''), COALESCE(endpoint, ''), error_type,

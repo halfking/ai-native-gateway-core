@@ -442,17 +442,33 @@ func (c *Compressor) NewSelector(ctx context.Context, contextWindow int) (strate
 }
 
 // RunCompressStrategies resolves the configured selector and executes only
-// stages already explicitly enabled on this compressor.
-func (c *Compressor) RunCompressStrategies(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
-	if c == nil {
-		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
+	// stages already explicitly enabled on this compressor.
+	func (c *Compressor) RunCompressStrategies(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
+		if c == nil {
+			return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
+		}
+		selector, err := c.NewSelector(ctx, contextWindow)
+		if err != nil {
+			return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
+		}
+		return c.strategyRunner().RunWithBody(ctx, selector, body)
 	}
-	selector, err := c.NewSelector(ctx, contextWindow)
-	if err != nil {
-		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
+
+	// RunCompressStrategiesParallel 与 RunCompressStrategies 共享 selector 解析，
+	// 但走 Runner.RunParallelWithBody：把各 strategy 并行 fan-out，按信息量评分
+	// 选最优输出。2026-09-01 审计 AUDIT_CONTEXT_COMPRESSION_AND_STREAMING_20260901
+	// §四 4.5 P0："多策略并行压缩 缺失"。调用方按 settings 中 compression.runner_mode
+	// 显式启用（sequential 默认不变，parallel 可灰度）。
+	func (c *Compressor) RunCompressStrategiesParallel(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
+		if c == nil {
+			return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
+		}
+		selector, err := c.NewSelector(ctx, contextWindow)
+		if err != nil {
+			return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
+		}
+		return c.strategyRunner().RunParallelWithBody(ctx, selector, body)
 	}
-	return c.strategyRunner().RunWithBody(ctx, selector, body)
-}
 
 // ParsePolicySpec 是 strategy.ResolvePolicy 的薄封装，main.go 用。
 // 这里暴露在 Compressor 命名空间方便直接 compressor.ParsePolicySpec(...) 调用，

@@ -115,7 +115,7 @@ INSERT INTO llm_gateway_migration_checksums
           NOW());
 ```
 
-**Checksum 修正**: handoff_digest_20260901.md 登记 `375d376e…`，但实际部署的是 `a7e1909b…`（来自 commit `c5618ba7e fix(session): preserve view grants and bound digest text in migration 636`）。handoff_digest_20260901.md 的 checksum 行应更新为 `a7e1909b…`（建议下一会话处理）。
+**Checksum 修正**: handoff_digest_20260901.md 登记 `375d376e…`，但实际部署的是 `a7e1909b…`（来自 commit `c5618ba7e fix(session): preserve view grants and bound digest text in migration 636`）。已在 2026-09-01 后续会话将 handoff_digest_20260901.md 的 checksum 行更新为 `a7e1909b…`。
 
 ## 5. 回归测试
 
