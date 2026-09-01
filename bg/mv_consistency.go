@@ -223,7 +223,12 @@ base_data AS (
       OR (COALESCE(is_auto_request, FALSE) = FALSE AND client_model IS NOT NULL AND client_model <> '')
     )
     AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
-  GROUP BY task_type, model
+	GROUP BY
+	  COALESCE(
+	    NULLIF(task_type, ''),
+	    CASE WHEN COALESCE(is_auto_request, FALSE) THEN 'unknown' ELSE '__specified__' END
+	  ),
+	  COALESCE(NULLIF(outbound_model, ''), client_model)
 )
 SELECT
   COALESCE(mv.effective_task_type, base.task_type) AS dim1,
@@ -249,7 +254,7 @@ LIMIT 200;
 // routingAuditSummaryConsistencySQL compares routing_audit_summary_7d against
 // the base view by tenant_id bucket. Same FULL OUTER JOIN shape as
 // routingAnalyticsConsistencySQL, but grouped by tenant instead of (task,model).
-// tenant_id is COALESCEd to '' (matching migration 632's unique-index text
+// tenant_id is COALESCEd to ” (matching migration 632's unique-index text
 // sentinel) so NULL-tenant rows on both sides join correctly instead of
 // producing a spurious "missing" diff.
 const routingAuditSummaryConsistencySQL = `
