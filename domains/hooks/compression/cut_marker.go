@@ -59,6 +59,13 @@ type CutMarker struct {
 	BytesBefore int `json:"bb"`
 	BytesAfter  int `json:"ba"`
 
+	// PreSanitizeOffsetRange (2026-09-01, audit §五) 记录"压缩覆盖的 message 在
+	// sanitize 之前的 index 范围 [Start, End)"。语义：原 messages[Start,End)
+	// 在 sanitize 之前已被压缩层覆盖（折叠进摘要或丢弃），sanitize 层在
+	// [End, SourceMsgCount) 范围内才生效。把三层 offset 串起来，便于跨请求续接。
+	// omitempty：旧数据自动读为零值。
+	PreSanitizeOffsetRange [2]int `json:"psor,omitempty"`
+
 	// SummaryText is the actual LLM-generated or mechanical summary text.
 	// This is what gets prepended on the next request's incremental build.
 	// Only stored in L1 (in-process) to avoid large blobs in Redis.
@@ -70,17 +77,25 @@ const cutMarkerSchemaVersion = 1
 
 // NewCutMarker creates a CutMarker from a CutPlan and additional context.
 func NewCutMarker(plan CutPlan, sourceMsgCount int, strategy string, summaryMarker, summaryText string, bytesBefore, bytesAfter int) CutMarker {
+	return NewCutMarkerWithPreSanitize(plan, sourceMsgCount, strategy, summaryMarker, summaryText, bytesBefore, bytesAfter, [2]int{0, 0})
+}
+
+// NewCutMarkerWithPreSanitize 在 NewCutMarker 基础上多接受一个 preSanitizeRange
+// 参数（[Start, End) 表示压缩覆盖的 message 在 sanitize 之前的 index 范围）。
+// 旧调用方继续使用 NewCutMarker；新调用方在知道 sanitize 层 index 时使用本函数。
+func NewCutMarkerWithPreSanitize(plan CutPlan, sourceMsgCount int, strategy string, summaryMarker, summaryText string, bytesBefore, bytesAfter int, preSanitizeRange [2]int) CutMarker {
 	return CutMarker{
-		Version:        cutMarkerSchemaVersion,
-		CreatedAt:      time.Now().Unix(),
-		SourceMsgCount: sourceMsgCount,
-		SystemMsgCount: plan.SystemCount,
-		CutIndex:       plan.CutIndex,
-		SummaryMarker:  summaryMarker,
-		Strategy:       strategy,
-		BytesBefore:    bytesBefore,
-		BytesAfter:     bytesAfter,
-		SummaryText:    summaryText,
+		Version:                cutMarkerSchemaVersion,
+		CreatedAt:              time.Now().Unix(),
+		SourceMsgCount:         sourceMsgCount,
+		SystemMsgCount:         plan.SystemCount,
+		CutIndex:               plan.CutIndex,
+		SummaryMarker:          summaryMarker,
+		Strategy:               strategy,
+		BytesBefore:            bytesBefore,
+		BytesAfter:             bytesAfter,
+		PreSanitizeOffsetRange: preSanitizeRange,
+		SummaryText:            summaryText,
 	}
 }
 
@@ -103,7 +118,7 @@ func (cm CutMarker) GlobalCutIndex() int {
 // MarshalForRedis serialises the CutMarker fields (excluding SummaryText) for
 // storage in Redis Hash. SummaryText is kept in-process (L1) only.
 func (cm CutMarker) MarshalForRedis() map[string]string {
-	return map[string]string{
+	out := map[string]string{
 		"cm_v":     fmt.Sprintf("%d", cm.Version),
 		"cm_ts":    fmt.Sprintf("%d", cm.CreatedAt),
 		"cm_src":   fmt.Sprintf("%d", cm.SourceMsgCount),
@@ -114,6 +129,12 @@ func (cm CutMarker) MarshalForRedis() map[string]string {
 		"cm_bb":    fmt.Sprintf("%d", cm.BytesBefore),
 		"cm_ba":    fmt.Sprintf("%d", cm.BytesAfter),
 	}
+	// PreSanitizeOffsetRange 仅在 Start 或 End 至少有一个非零时写入（omitempty 语义）。
+	if cm.PreSanitizeOffsetRange[0] > 0 || cm.PreSanitizeOffsetRange[1] > 0 {
+		out["cm_psor0"] = fmt.Sprintf("%d", cm.PreSanitizeOffsetRange[0])
+		out["cm_psor1"] = fmt.Sprintf("%d", cm.PreSanitizeOffsetRange[1])
+	}
+	return out
 }
 
 // UnmarshalFromRedis deserialises CutMarker fields from a Redis Hash.
@@ -131,28 +152,32 @@ func UnmarshalCutMarkerFromRedis(fields map[string]string) *CutMarker {
 	cm.Strategy = fields["cm_strat"]
 	parseInt(fields["cm_bb"], &cm.BytesBefore)
 	parseInt(fields["cm_ba"], &cm.BytesAfter)
+	parseInt(fields["cm_psor0"], &cm.PreSanitizeOffsetRange[0])
+	parseInt(fields["cm_psor1"], &cm.PreSanitizeOffsetRange[1])
 	cm.Version = cutMarkerSchemaVersion
 	return cm
 }
 
 // MarshalJSON serialises CutMarker for embedding in compression_meta JSONB.
 func (cm CutMarker) MarshalJSON() ([]byte, error) {
-	m := map[string]any{
-		"cut_marker": map[string]any{
-			"version":          cm.Version,
-			"created_at":       cm.CreatedAt,
-			"source_msg_count": cm.SourceMsgCount,
-			"system_msg_count": cm.SystemMsgCount,
-			"cut_index":        cm.CutIndex,
-			"strategy":         cm.Strategy,
-			"bytes_before":     cm.BytesBefore,
-			"bytes_after":      cm.BytesAfter,
-		},
+	inner := map[string]any{
+		"version":          cm.Version,
+		"created_at":       cm.CreatedAt,
+		"source_msg_count": cm.SourceMsgCount,
+		"system_msg_count": cm.SystemMsgCount,
+		"cut_index":        cm.CutIndex,
+		"strategy":         cm.Strategy,
+		"bytes_before":     cm.BytesBefore,
+		"bytes_after":      cm.BytesAfter,
 	}
 	if cm.SummaryMarker != "" {
-		m["cut_marker"].(map[string]any)["summary_marker"] = cm.SummaryMarker
+		inner["summary_marker"] = cm.SummaryMarker
 	}
-	return json.Marshal(m)
+	// PreSanitizeOffsetRange：omitted when both zero (back-compat with legacy JSONB).
+	if cm.PreSanitizeOffsetRange[0] > 0 || cm.PreSanitizeOffsetRange[1] > 0 {
+		inner["pre_sanitize_offset_range"] = []int{cm.PreSanitizeOffsetRange[0], cm.PreSanitizeOffsetRange[1]}
+	}
+	return json.Marshal(map[string]any{"cut_marker": inner})
 }
 
 // IncrementalBuild reconstructs the outbound body for the next request using
