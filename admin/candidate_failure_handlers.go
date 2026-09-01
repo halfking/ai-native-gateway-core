@@ -29,6 +29,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // candidateFailureHandlers bundles the read-only endpoints. nil-safe:
@@ -134,7 +135,13 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
 			return
 		}
+		x.ErrorMessage = string(errorsx.SanitizeErrorText([]byte(x.ErrorMessage), 320))
+		if x.UpstreamResponsePreview != nil {
+			s := string(errorsx.SanitizeErrorText([]byte(*x.UpstreamResponsePreview), 320))
+			x.UpstreamResponsePreview = &s
+		}
 		out = append(out, x)
+
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data":  out,

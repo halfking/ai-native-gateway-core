@@ -244,6 +244,8 @@ type Compressor struct {
 	AdaptiveTargetRatio float64
 	// StrategyRunnerEnabled is an explicit opt-in for live executor integration.
 	StrategyRunnerEnabled bool
+	// StrategyRunnerMode selects sequential (default) or parallel execution.
+	StrategyRunnerMode string
 }
 
 // NewCompressor builds a Compressor with the current env config.
@@ -273,7 +275,14 @@ func (c *Compressor) Estimator() *Estimator {
 	return c.est
 }
 
-// ShouldCompressPreRequest is the mode=1 (auto_threshold) pre-request gate.
+// StrategyRunnerMode returns the configured strategy runner mode.
+func (c *Compressor) RunnerMode() string {
+	if c == nil || c.StrategyRunnerMode == "" {
+		return "sequential"
+	}
+	return c.StrategyRunnerMode
+}
+
 // Returns true when the body exceeds the dynamic threshold AND mode is
 // ModeAutoThreshold. Returns false otherwise (including ModeOff and
 // ModeOn4xx - the latter is invoked AFTER the 4xx, not before).
@@ -391,6 +400,14 @@ func LoadAdaptiveTargetRatio() float64 {
 	return fallback
 }
 
+func LoadStrategyRunnerMode() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_RUNNER_MODE")))
+	if mode == "parallel" {
+		return mode
+	}
+	return "sequential"
+}
+
 func LoadStrategyRunnerEnabled() bool {
 	if settings.Global != nil {
 		if sp := settings.Global.Spec("compression.strategy_runner_enabled"); sp != nil {
@@ -415,6 +432,7 @@ func (c *Compressor) NormalizeSelectorConfig() {
 	c.SelectorSpec = LoadSelectorSpec()
 	c.AdaptiveTargetRatio = LoadAdaptiveTargetRatio()
 	c.StrategyRunnerEnabled = LoadStrategyRunnerEnabled()
+	c.StrategyRunnerMode = LoadStrategyRunnerMode()
 }
 
 func (c *Compressor) NewSelector(ctx context.Context, contextWindow int) (strategy.Selector, error) {
@@ -442,33 +460,33 @@ func (c *Compressor) NewSelector(ctx context.Context, contextWindow int) (strate
 }
 
 // RunCompressStrategies resolves the configured selector and executes only
-	// stages already explicitly enabled on this compressor.
-	func (c *Compressor) RunCompressStrategies(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
-		if c == nil {
-			return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
-		}
-		selector, err := c.NewSelector(ctx, contextWindow)
-		if err != nil {
-			return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
-		}
-		return c.strategyRunner().RunWithBody(ctx, selector, body)
+// stages already explicitly enabled on this compressor.
+func (c *Compressor) RunCompressStrategies(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
+	if c == nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
 	}
+	selector, err := c.NewSelector(ctx, contextWindow)
+	if err != nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
+	}
+	return c.strategyRunner().RunWithBody(ctx, selector, body)
+}
 
-	// RunCompressStrategiesParallel 与 RunCompressStrategies 共享 selector 解析，
-	// 但走 Runner.RunParallelWithBody：把各 strategy 并行 fan-out，按信息量评分
-	// 选最优输出。2026-09-01 审计 AUDIT_CONTEXT_COMPRESSION_AND_STREAMING_20260901
-	// §四 4.5 P0："多策略并行压缩 缺失"。调用方按 settings 中 compression.runner_mode
-	// 显式启用（sequential 默认不变，parallel 可灰度）。
-	func (c *Compressor) RunCompressStrategiesParallel(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
-		if c == nil {
-			return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
-		}
-		selector, err := c.NewSelector(ctx, contextWindow)
-		if err != nil {
-			return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
-		}
-		return c.strategyRunner().RunParallelWithBody(ctx, selector, body)
+// RunCompressStrategiesParallel 与 RunCompressStrategies 共享 selector 解析，
+// 但走 Runner.RunParallelWithBody：把各 strategy 并行 fan-out，按信息量评分
+// 选最优输出。2026-09-01 审计 AUDIT_CONTEXT_COMPRESSION_AND_STREAMING_20260901
+// §四 4.5 P0："多策略并行压缩 缺失"。调用方按 settings 中 compression.runner_mode
+// 显式启用（sequential 默认不变，parallel 可灰度）。
+func (c *Compressor) RunCompressStrategiesParallel(ctx context.Context, body []byte, contextWindow int) ([]byte, strategy.RunStats, error) {
+	if c == nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, nil
 	}
+	selector, err := c.NewSelector(ctx, contextWindow)
+	if err != nil {
+		return body, strategy.RunStats{BytesIn: len(body), BytesOut: len(body)}, err
+	}
+	return c.strategyRunner().RunParallelWithBody(ctx, selector, body)
+}
 
 // ParsePolicySpec 是 strategy.ResolvePolicy 的薄封装，main.go 用。
 // 这里暴露在 Compressor 命名空间方便直接 compressor.ParsePolicySpec(...) 调用，

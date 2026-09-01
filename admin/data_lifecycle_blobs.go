@@ -186,19 +186,21 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 	args := []interface{}{}
 	argIdx := 1
 	if isTenantAdmin || scope == "current" {
-		where += " AND tenant_id = $" + strconv.Itoa(argIdx)
+		where += " AND rl.tenant_id = $" + strconv.Itoa(argIdx)
 		args = append(args, GetTenantID(r))
 		argIdx++
 	}
 	if req.OlderThanDays > 0 {
-		where += " AND ts < NOW() - ($" + strconv.Itoa(argIdx) + " || ' days')::interval"
+		where += " AND rl.ts < NOW() - ($" + strconv.Itoa(argIdx) + " || ' days')::interval"
 		args = append(args, strconv.Itoa(req.OlderThanDays))
 		argIdx++
 	}
+
 	if req.LargerThanKB > 0 {
 		where += " AND (pg_column_size(rb.request_body) > $" + strconv.Itoa(argIdx) +
 			" * 1024 OR pg_column_size(rb.outbound_body) > $" + strconv.Itoa(argIdx) + " * 1024)"
 		args = append(args, req.LargerThanKB)
+		argIdx++
 	}
 
 	startedAt := time.Now().UTC()
@@ -240,17 +242,21 @@ func (h *Handler) handleBlobCleanup(w http.ResponseWriter, r *http.Request, exec
 		// 2026-07-05 migration 341: UPDATE targets request_logs_hot (独立热表)。
 		// Blob 清理仅针对热表中的 0-7 天数据，已迁移到月度分区的数据不受影响。
 		_, err := h.db.Exec(ctx, `
-			UPDATE request_logs_hot
-			SET request_body = NULL,
-			    outbound_body = NULL
-			`+where, args...)
+				UPDATE request_logs_bodies_hot rb
+				SET request_body = NULL,
+				    outbound_body = NULL
+				FROM request_logs_hot rl
+				`+where+`
+				  AND rb.request_id = rl.request_id`, args...)
+
 		if err != nil {
 			slog.Error("blob cleanup execute failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "执行失败: "+err.Error())
 			return
 		}
-		// VACUUM 释放空间
-		_, _ = h.db.Exec(ctx, `VACUUM (VERBOSE, ANALYZE) request_logs_hot`)
+		// VACUUM 释放 request body 热表空间。
+		_, _ = h.db.Exec(ctx, `VACUUM (VERBOSE, ANALYZE) request_logs_bodies_hot`)
+
 	}
 
 	resp.FinishedAt = time.Now().UTC().Format(time.RFC3339)

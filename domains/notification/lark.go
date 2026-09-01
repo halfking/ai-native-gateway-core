@@ -18,10 +18,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -263,7 +265,15 @@ func (c *LarkBotChannel) refreshAccessToken(ctx context.Context) error {
 	return nil
 }
 
-// sendJSON POSTs the marshalled body to path with auth and retries transient
+type larkHTTPError struct {
+	statusCode int
+	retryAfter time.Duration
+	err        error
+}
+
+func (e *larkHTTPError) Error() string { return e.err.Error() }
+func (e *larkHTTPError) Unwrap() error { return e.err }
+
 // failures. Retry policy:
 //   - HTTP 5xx, 408, 429, or net errors: up to 3 retries with 100/500/2000 ms
 //     backoff (Retry-After header respected when present).
@@ -284,12 +294,17 @@ func (c *LarkBotChannel) sendJSON(ctx context.Context, path string, body map[str
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
 			wait := backoffs[attempt]
+			var httpErr *larkHTTPError
+			if errors.As(lastErr, &httpErr) && httpErr.retryAfter > wait {
+				wait = httpErr.retryAfter
+			}
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("notification: lark ctx done during backoff: %w", ctx.Err())
 			case <-time.After(wait):
 			}
 		}
+
 		err := c.sendJSONOnce(ctx, url, bs)
 		if err == nil {
 			return nil
@@ -336,7 +351,11 @@ func (c *LarkBotChannel) sendJSONOnce(ctx context.Context, url string, bs []byte
 
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("notification: lark status %d: %s", resp.StatusCode, string(raw))
+		return &larkHTTPError{
+			statusCode: resp.StatusCode,
+			retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()),
+			err:        fmt.Errorf("notification: lark status %d: %s", resp.StatusCode, string(raw)),
+		}
 	}
 
 	var result struct {
@@ -350,6 +369,22 @@ func (c *LarkBotChannel) sendJSONOnce(ctx context.Context, url string, bs []byte
 		return fmt.Errorf("notification: lark api: %s (code %d)", result.Msg, result.Code)
 	}
 	return nil
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.Atoi(value); err == nil && seconds >= 0 {
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		if wait := when.Sub(now); wait > 0 {
+			return wait
+		}
+	}
+	return 0
 }
 
 // classifyLarkSendErr returns (retryable?, requiresTokenRefresh?).
