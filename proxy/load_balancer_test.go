@@ -351,3 +351,79 @@ func TestLoadBalancer_LocationAffinity_WithRoundRobin(t *testing.T) {
 		t.Error("round robin should select different nodes")
 	}
 }
+
+// TestLoadBalancer_ForgetSubscription (2026-09-01 audit P2 regression guard):
+// per-subscription strategy state must be reclaimable. roundRobinIndex and
+// weightedCurrent only ever grew before the fix — a subscription whose nodes
+// all went away leaked its entries forever. ForgetSubscription must drop both
+// maps' entries so long-running gateways keep constant memory per ACTIVE
+// subscription, not per EVER-SEEN subscription.
+func TestLoadBalancer_ForgetSubscription(t *testing.T) {
+	lb := NewLoadBalancer(StrategyRoundRobin)
+	nodes := []*Node{
+		{ID: 1, Name: "node1", ResponseTimeMs: 50},
+		{ID: 2, Name: "node2", ResponseTimeMs: 60},
+	}
+	for i := 0; i < 5; i++ {
+		if got := lb.SelectNode(nodes, 42, ""); got == nil {
+			t.Fatalf("unexpected nil selection at i=%d", i)
+		}
+	}
+	lb.mu.Lock()
+	rrLen := len(lb.roundRobinIndex)
+	lb.mu.Unlock()
+	if rrLen != 1 {
+		t.Fatalf("expected 1 round-robin cursor after selection, got %d", rrLen)
+	}
+
+	// Node set for subscription 42 went away entirely — forget it.
+	lb.ForgetSubscription(42)
+	lb.mu.Lock()
+	rrLen = len(lb.roundRobinIndex)
+	wrrLen := len(lb.weightedCurrent)
+	lb.mu.Unlock()
+	if rrLen != 0 {
+		t.Errorf("roundRobinIndex not cleaned: %d entries remain", rrLen)
+	}
+	if wrrLen != 0 {
+		t.Errorf("weightedCurrent not cleaned: %d entries remain", wrrLen)
+	}
+
+	// Forgetting an unknown subscription is a no-op (must not panic).
+	lb.ForgetSubscription(9999)
+
+	// The subscription can come back and start a fresh cursor at 0: the first
+	// selection after re-registration must be nodes[0] again.
+	if got := lb.SelectNode(nodes, 42, ""); got == nil || got.ID != nodes[0].ID {
+		t.Errorf("post-forget selection should restart at first node, got %+v", got)
+	}
+}
+
+// TestLoadBalancer_ForgetSubscription_Weighted pins the WRR variant of the
+// same cleanup: weightedCurrent entries must disappear with the subscription.
+func TestLoadBalancer_ForgetSubscription_Weighted(t *testing.T) {
+	lb := NewLoadBalancer(StrategyWeightedRoundRobin)
+	nodes := []*Node{
+		{ID: 1, Name: "node1", ResponseTimeMs: 50},
+		{ID: 2, Name: "node2", ResponseTimeMs: 200},
+	}
+	for i := 0; i < 20; i++ {
+		if got := lb.SelectNode(nodes, 7, ""); got == nil {
+			t.Fatalf("unexpected nil selection at i=%d", i)
+		}
+	}
+	lb.mu.Lock()
+	if _, ok := lb.weightedCurrent[7]; !ok {
+		lb.mu.Unlock()
+		t.Fatal("expected weightedCurrent entry for subscription 7 before forget")
+	}
+	lb.mu.Unlock()
+
+	lb.ForgetSubscription(7)
+	lb.mu.Lock()
+	_, ok := lb.weightedCurrent[7]
+	lb.mu.Unlock()
+	if ok {
+		t.Error("weightedCurrent entry for subscription 7 survived ForgetSubscription")
+	}
+}

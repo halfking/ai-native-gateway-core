@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // nullErrorKind exercises the audit P1-1 fix: NULL error_kind in the DB must
@@ -207,5 +208,78 @@ func TestBuildTurnDigest_ToolDedup(t *testing.T) {
 	}
 	if len(d.ToolUsage.ToolsUsed) != 2 {
 		t.Fatalf("tools_used length = %d, want 2 (deduped)", len(d.ToolUsage.ToolsUsed))
+	}
+}
+
+// ─── rune-safe truncation (P1-1b, 2026-09) ─────────────────────────────────
+
+// TestSummarizeDigestText_RuneSafeTruncation pins the P1-1b fix: CJK content
+// must be cut on rune boundaries. The previous byte-slice cut produced
+// invalid UTF-8 (or, after the repair loop, a materially shorter string).
+func TestSummarizeDigestText_RuneSafeTruncation(t *testing.T) {
+	// Punctuation-free input with no key-point markers: splitDigestSentences
+	// yields ONE part, selection = [part0] (len(selected)==1, len(parts)==1
+	// so no second part is appended) and the joined result exceeds 260 runes,
+	// exercising the truncateRunes(result, 259) + "…" path with 3-byte runes.
+	long := strings.Repeat("字", 300) // 900 bytes, 300 runes
+	got := summarizeDigestText(long)
+	if !utf8.ValidString(got) {
+		t.Fatalf("summarized text is not valid UTF-8: %q", got)
+	}
+	if n := utf8.RuneCountInString(got); n > digestMaxRunes {
+		t.Fatalf("result %d runes exceeds cap %d: %q", n, digestMaxRunes, got)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("expected trailing ellipsis on truncated result: %q", got)
+	}
+}
+
+// A run of sentences with no key-point markers keeps first+second sentence
+// only when short enough; force the head+tail branch instead via one huge
+// punctuation-free sentence plus a short key-point-free tail — the single
+// selected sentence overflows and takes the truncateRunes path. For the true
+// head+tail branch (selected empty) we use a >100-byte input whose ONLY
+// sentence boundary sits at the very end: parts = [whole], selected=[whole],
+// still the sentence path. The head+tail branch needs parts == 0 which
+// requires an empty sentence split — impossible for non-empty input — so it
+// is a defensive fallback; we simply assert it never produces invalid UTF-8
+// by calling the helpers directly.
+func TestSummarizeDigestText_TruncationHelpersRuneSafe(t *testing.T) {
+	long := strings.Repeat("字", 500)
+	for name, fn := range map[string]func(string, int) string{
+		"truncateRunes":     truncateRunes,
+		"truncateTailRunes": truncateTailRunes,
+	} {
+		for _, max := range []int{0, 1, 50, 110, 260} {
+			got := fn(long, max)
+			if !utf8.ValidString(got) {
+				t.Fatalf("%s(%d runes) produced invalid UTF-8: %q", name, max, got)
+			}
+			if n := utf8.RuneCountInString(got); n != max {
+				t.Fatalf("%s max=%d returned %d runes", name, max, n)
+			}
+		}
+	}
+}
+
+func TestSummarizeDigestText_SentenceSelectionCapIsRunes(t *testing.T) {
+	// Several sentences, all containing the key-point marker "结论" so every
+	// one is selected; the joined result exceeds the cap and must be cut to
+	// <=260 runes (matching the persisted sessiondigest.compact ceiling).
+	s := strings.Repeat("这是结论很重要的一句话。", 40) // 13 runes/sentence * 40
+	got := summarizeDigestText(s)
+	if !utf8.ValidString(got) {
+		t.Fatalf("result not valid UTF-8: %q", got)
+	}
+	if n := utf8.RuneCountInString(got); n > digestMaxRunes+1 {
+		t.Fatalf("result %d runes exceeds cap %d (+ellipsis): %q", n, digestMaxRunes, got)
+	}
+}
+
+func TestSummarizeDigestText_ShortTextUntouched(t *testing.T) {
+	for _, s := range []string{"", "短句", strings.Repeat("a", 100)} {
+		if got := summarizeDigestText(s); got != strings.Join(strings.Fields(s), " ") {
+			t.Fatalf("short input %q should pass through (whitespace-collapsed), got %q", s, got)
+		}
 	}
 }

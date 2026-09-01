@@ -138,6 +138,78 @@ func TestParseContextLimitFromError(t *testing.T) {
 	}
 }
 
+// TestParseContextLimitPrimaryFromError pins the 2026-09-01 audit P1 fix: the
+// primary-only variant must NEVER report the "your messages resulted in X
+// tokens" fallback, because that number is this request's size — persisting it
+// as a discovered context window would poison credential_model_bindings.
+func TestParseContextLimitPrimaryFromError(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantLimit int
+		wantFound bool
+	}{
+		{
+			name:      "Primary maximum context length",
+			body:      `{"error":{"message":"This model's maximum context length is 262144 tokens"}}`,
+			wantLimit: 262144,
+			wantFound: true,
+		},
+		{
+			name:      "Primary context window of",
+			body:      `{"error":"Your request exceeded the context window of 200000 tokens"}`,
+			wantLimit: 200000,
+			wantFound: true,
+		},
+		{
+			name:      "Primary Chinese format",
+			body:      `{"error":"上下文长度限制为 32768 个token"}`,
+			wantLimit: 32768,
+			wantFound: true,
+		},
+		{
+			name: "Fallback only — must NOT be reported",
+			body: `{"error":{"message":"Your messages resulted in 263247 tokens. Please reduce the length of the messages."}}`,
+			// 263247 is the request size, not the limit: primary must miss.
+			wantLimit: 0,
+			wantFound: false,
+		},
+		{
+			name:      "Both present — primary wins",
+			body:      `{"error":{"message":"This model's maximum context length is 262144 tokens. However, your messages resulted in 263247 tokens."}}`,
+			wantLimit: 262144,
+			wantFound: true,
+		},
+		{
+			name:      "No context info",
+			body:      `{"error":"Invalid API key"}`,
+			wantLimit: 0,
+			wantFound: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotLimit, gotFound := ParseContextLimitPrimaryFromError(tt.body)
+			if gotLimit != tt.wantLimit {
+				t.Errorf("ParseContextLimitPrimaryFromError() limit = %v, want %v", gotLimit, tt.wantLimit)
+			}
+			if gotFound != tt.wantFound {
+				t.Errorf("ParseContextLimitPrimaryFromError() found = %v, want %v", gotFound, tt.wantFound)
+			}
+		})
+	}
+}
+
+// TestParseContextLimitFromError_FallbackStillAvailable pins the other half of
+// the fix: the original two-return function keeps returning the fallback so
+// in-memory compression targets still work for "resulted in"-only bodies.
+func TestParseContextLimitFromError_FallbackStillAvailable(t *testing.T) {
+	limit, found := ParseContextLimitFromError(`{"error":"Your messages resulted in 263247 tokens."}`)
+	if !found || limit != 263247 {
+		t.Errorf("fallback parse changed: got (%d, %v), want (263247, true)", limit, found)
+	}
+}
+
 // TestParseContextLimitFromError_RealWorldCases tests with actual error messages
 // from production logs.
 func TestParseContextLimitFromError_RealWorldCases(t *testing.T) {

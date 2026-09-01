@@ -516,11 +516,14 @@ func (m *Manager) ReloadCache() error {
 
 	// 原子替换：先删除不存在的订阅，再更新/新增
 	// 审计修复 (2026-08-30)：同步清理 cacheLocks 中的孤儿锁，防止长期运行的内存泄漏
+	// 审计修复 (2026-09-01 P2)：同步清理负载均衡器的 per-subscription 游标，
+	// 否则 roundRobinIndex/weightedCurrent 只增不减，节点全下线的订阅永久泄漏条目。
 	m.nodesCache.Range(func(key, _ interface{}) bool {
 		subID := key.(int)
 		if _, exists := nodesBySubscription[subID]; !exists {
 			m.nodesCache.Delete(subID)
 			m.cacheLocks.Delete(subID)
+			m.forgetLoadBalancerState(subID)
 		}
 		return true
 	})
@@ -998,6 +1001,13 @@ func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) bo
 		return false
 	}
 
+	// 审计修复 (2026-09-01 P2)：订阅刷新后节点集为空（例如上游清空了节点列表）
+	// 时，同步丢弃该订阅的负载均衡游标。否则 roundRobinIndex/weightedCurrent
+	// 中该订阅的条目只增不减，长期运行下累积泄漏。
+	if len(nodes) == 0 {
+		m.forgetLoadBalancerState(subscriptionID)
+	}
+
 	// 检查密码解密失败并记录指标
 	if m.metrics != nil {
 		for _, node := range nodes {
@@ -1009,6 +1019,17 @@ func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) bo
 
 	m.setCacheWithTTL(subscriptionID, nodes, time.Now())
 	return true
+}
+
+// forgetLoadBalancerState 丢弃一个订阅在负载均衡器中的策略状态（轮询游标与
+// smooth-WRR current 表）。2026-09-01 审计 P2 修复：这些 per-subscription map
+// 此前只增不减，节点全下线的订阅会永久留下条目。
+func (m *Manager) forgetLoadBalancerState(subscriptionID int) {
+	m.selectionMu.Lock()
+	if m.loadBalancer != nil {
+		m.loadBalancer.ForgetSubscription(subscriptionID)
+	}
+	m.selectionMu.Unlock()
 }
 
 // getNodesFromCache 已废弃，使用 getNodesFromCacheWithTTL 替代

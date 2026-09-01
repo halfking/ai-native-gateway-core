@@ -154,3 +154,66 @@ func TestVacuumFullMutexReleasesOnError(t *testing.T) {
 		t.Fatalf("second call must succeed after error release, got %v", got)
 	}
 }
+
+// TestVacuumFullMutexStatementTimeoutInsideTxn (2026-09-01 audit P2 regression
+// guard): SET LOCAL statement_timeout must run INSIDE the lock transaction
+// (after Begin, before the advisory-lock Exec). Before the fix it ran in
+// autocommit mode where LOCAL is silently ignored, leaving the lock wait
+// unbounded. Against a real PG we assert the observable contract: a second
+// caller contending with a holder that never commits gets
+// ErrVacuumFullMutexBusy within roughly acquireTimeout (not forever, not
+// instantly).
+func TestVacuumFullMutexStatementTimeoutInsideTxn(t *testing.T) {
+	pool := withTestPool(t)
+	ctx := context.Background()
+
+	// Holder: acquires the mutex and blocks until released.
+	releaseHolder := make(chan struct{})
+	holderDone := make(chan error, 1)
+	vacuumConn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Skipf("acquire vacuum conn: %v", err)
+	}
+	defer vacuumConn.Release()
+	go func() {
+		holderDone <- VacuumFullMutex(ctx, pool, vacuumConn, 2*time.Second,
+			func(context.Context, *pgxpool.Conn) error {
+				<-releaseHolder
+				return nil
+			})
+	}()
+
+	// Give the holder a moment to take the advisory lock, then contend.
+	time.Sleep(300 * time.Millisecond)
+	acquireTimeout := 1 * time.Second
+	start := time.Now()
+	contenderVacuum, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Skipf("acquire contender conn: %v", err)
+	}
+	defer contenderVacuum.Release()
+	err = VacuumFullMutex(ctx, pool, contenderVacuum, acquireTimeout,
+		func(context.Context, *pgxpool.Conn) error { return nil })
+	elapsed := time.Since(start)
+
+	close(releaseHolder)
+	if errHolder := <-holderDone; errHolder != nil {
+		t.Fatalf("holder call failed: %v", errHolder)
+	}
+
+	if err == nil {
+		t.Fatalf("contender unexpectedly acquired the held lock")
+	}
+	if !errors.Is(err, ErrVacuumFullMutexBusy) {
+		t.Fatalf("contender error must be ErrVacuumFullMutexBusy, got %v", err)
+	}
+	// The timeout must actually bound the wait: not instant (lock round-trip
+	// takes some time) and not far past the budget (pre-fix it waited
+	// unboundedly until the holder released).
+	if elapsed < 200*time.Millisecond {
+		t.Fatalf("contender gave up suspiciously fast (%v) — lock may not have been held", elapsed)
+	}
+	if elapsed > acquireTimeout+2*time.Second {
+		t.Fatalf("contender waited %v, exceeding budget %v by >2s — SET LOCAL likely ignored (autocommit regression)", elapsed, acquireTimeout)
+	}
+}

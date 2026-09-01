@@ -196,6 +196,15 @@ var providerCredentialSoftDeleteMigration631 []byte
 //go:embed embeddata/startup/635_drop_session_turns_unified.sql
 var dropSessionTurnsUnifiedMigration635 []byte
 
+//go:embed embeddata/startup/637_session_bodies_unified_today_visible.sql
+var sessionBodiesUnifiedTodayVisibleMigration637 []byte
+
+//go:embed embeddata/startup/638_session_bodies_promote_guard.sql
+var sessionBodiesPromoteGuardMigration638 []byte
+
+//go:embed embeddata/startup/639_provider_error_details_credential.sql
+var providerErrorDetailsCredentialMigration639 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -915,6 +924,9 @@ func copySQLBackup(root string) error {
 		"startup/630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
 		"startup/631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
 		"startup/635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
+		"startup/637_session_bodies_unified_today_visible.sql":                     sessionBodiesUnifiedTodayVisibleMigration637,
+		"startup/638_session_bodies_promote_guard.sql":                             sessionBodiesPromoteGuardMigration638,
+		"startup/639_provider_error_details_credential.sql":                        providerErrorDetailsCredentialMigration639,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
@@ -1036,6 +1048,9 @@ func setupSQLDir() (string, func(), error) {
 		"startup/630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
 		"startup/631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
 		"startup/635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
+		"startup/637_session_bodies_unified_today_visible.sql":                     sessionBodiesUnifiedTodayVisibleMigration637,
+		"startup/638_session_bodies_promote_guard.sql":                             sessionBodiesPromoteGuardMigration638,
+		"startup/639_provider_error_details_credential.sql":                        providerErrorDetailsCredentialMigration639,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {

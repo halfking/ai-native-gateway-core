@@ -10,8 +10,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// v2SessionBodiesSource is the V2 MessageSource: it reads from
-// public.session_bodies (+ session_turns for the model name) instead of the V1
+// v2SessionBodiesSource is the V2 MessageSource: it reads from the
+// public.session_bodies_unified view (hot ∪ partition; see migration 625/637)
+// (+ session_turns for the model name) instead of the V1
 // request_logs / request_logs_bodies tables.
 //
 // It exists so the summarizer can keep working once V1 request bodies are
@@ -27,22 +28,24 @@ import (
 // skipped (mirroring V1, which simply has no row for a turn with no body).
 //
 // The model comes from session_turns.model via a join; ts and request_id come
-// straight off session_bodies. LIMIT 20 and ascending ts order match V1.
+// straight off session_bodies_unified. LIMIT 20 and ascending ts order match
+// V1.
 type v2SessionBodiesSource struct {
 	pool *pgxpool.Pool
 }
 
 // NewV2SessionBodiesSource constructs a MessageSource that reads from the V2
-// public.session_bodies (+ session_turns for the model) tables. Intended for
-// Summarizer.SetMessageSource when the sessions_v2_compression_read flag is on
-// (docs/omni-ref3 A1). A nil pool yields per-call errors rather than a panic,
-// matching the V1 source's nil-safety contract.
+// public.session_bodies_unified view (+ session_turns for the model).
+// Intended for Summarizer.SetMessageSource when the
+// sessions_v2_compression_read flag is on (docs/omni-ref3 A1). A nil pool
+// yields per-call errors rather than a panic, matching the V1 source's
+// nil-safety contract.
 func NewV2SessionBodiesSource(pool *pgxpool.Pool) MessageSource {
 	return &v2SessionBodiesSource{pool: pool}
 }
 
 // v2TurnRow is the per-turn projection decoded from the joined
-// session_turns/session_bodies query.
+// session_turns/session_bodies_unified query.
 type v2TurnRow struct {
 	RequestID    string
 	Model        string
@@ -58,13 +61,19 @@ type sessionMessageV2 struct {
 	Content string `json:"content"`
 }
 
+// v2SessionBodiesBaseQuery reads the unified hot∪partition view, NOT the
+// public.session_bodies parent table: fresh bodies_writer rows land in
+// session_bodies_hot (8-hour window) and rows promoted on their write day
+// live in today's partition, so the parent table alone misses both ends of
+// the recency window. The view's comment mandates exactly this for admin
+// readers (migrations 625/637).
 const v2SessionBodiesBaseQuery = `
 	SELECT
 		b.request_id,
 		COALESCE(t.model, '') AS model,
 		b.ts,
 		b.request_delta
-	FROM public.session_bodies b
+	FROM public.session_bodies_unified b
 		LEFT JOIN public.session_turns_with_current_month t
 		  ON t.tenant_id = b.tenant_id
 		 AND t.request_id = b.request_id

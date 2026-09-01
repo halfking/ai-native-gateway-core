@@ -10,7 +10,6 @@ import (
 	"math"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -33,18 +32,11 @@ var (
 	contextLimitDiscoveryTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "llmgw_context_limit_discovery_total",
-			Help: "Total authoritative context limit discoveries from upstream errors",
+			Help: "Total context limit discoveries from upstream errors (2026-09-01 P2)",
 		},
-		[]string{"provider_id", "model", "outcome"},
+		[]string{"credential_id", "model", "status"},
 	)
 )
-
-func contextLimitMetricProvider(providerID int) string {
-	if providerID <= 0 {
-		return "unknown"
-	}
-	return strconv.Itoa(providerID)
-}
 
 const (
 	defaultCompactionMinWindow        = 800_000
@@ -1014,25 +1006,27 @@ func (e *Executor) handleContextLengthRecovery(
 	// context length is 262144 tokens"), trust it over the configured value,
 	// which may be unset or stale. The discovered limit drives every
 	// compression tier below via targetCand.ContextWindow.
-	parseResult := errorsx.ParseContextLimitResult(string(errorBody))
-	if parseResult.Found && parseResult.Limit > 0 {
+	//
+	// 2026-09-01 fix (audit P1): only a PRIMARY pattern hit ("maximum context
+	// length is X") proves the model's real ceiling and may be persisted to
+	// credential_model_bindings.context_window_override. The "your messages
+	// resulted in X tokens" fallback returns THIS request's token count, which
+	// is not a limit — persisting it would permanently poison the override.
+	// The fallback value is still used in memory as the compression target
+	// (compress below the observed rejection size), just never written back.
+	primaryLimit, primaryHit := errorsx.ParseContextLimitPrimaryFromError(string(errorBody))
+	if limit, ok := errorsx.ParseContextLimitFromError(string(errorBody)); ok && limit > 0 {
 		configured := 0
 		if targetCand.ContextWindow != nil {
 			configured = *targetCand.ContextWindow
 		}
-		// Authoritative limits may update the effective window and be
-		// persisted. Observed usage is useful only as a conservative
-		// per-request hint; it must never be stored as a model limit.
-		limit := parseResult.Limit
-		if parseResult.Evidence == errorsx.ContextLimitObservedUsage && configured > 0 && limit >= configured {
-			limit = configured
-		}
-		mismatch := parseResult.Evidence == errorsx.ContextLimitAuthoritative &&
-			(configured == 0 || math.Abs(float64(limit-configured))/float64(limit) > 0.05)
-		if mismatch {
+		// Only override when the configured value is missing or off by more
+		// than 5% — small differences are within estimator noise and
+		// rewriting them adds log churn without changing the trim outcome.
+		if configured == 0 || math.Abs(float64(limit-configured))/float64(limit) > 0.05 {
 			slog.Warn("context_limit_mismatch_detected",
 				"credential_id", targetCand.CredentialID,
-				"model", targetCand.BindingRawModel(),
+				"model", targetCand.RawModel,
 				"config_limit", configured,
 				"actual_limit", limit,
 				"status", status,
@@ -1040,17 +1034,50 @@ func (e *Executor) handleContextLengthRecovery(
 			discovered := limit
 			targetCand.ContextWindow = &discovered
 
+			// Increment discovery metric.
 			contextLimitDiscoveryTotal.WithLabelValues(
-				contextLimitMetricProvider(targetCand.ProviderID), normalizeContextLimitMetricModel(targetCand.BindingRawModel()), "detected",
+				fmt.Sprintf("%d", targetCand.CredentialID),
+				targetCand.RawModel,
+				"discovered",
 			).Inc()
 
-			if e.ContextLimitUpdater != nil && e.ContextLimitUpdateQueue != nil {
-				e.ContextLimitUpdateQueue.Enqueue(targetCand.ProviderID, targetCand.CredentialID, targetCand.BindingRawModel(), limit)
+			// P2 (2026-09-01): persist the discovered limit to
+			// credential_model_bindings.context_window_override with
+			// source='discovery' so future requests use the correct value
+			// without rediscovery. Fire-and-forget async: a slow DB write
+			// should not block the retry.
+			// 2026-09-01 fix (audit P1): gate the write on primaryHit — a
+			// primary pattern proves the model's real limit, the fallback
+			// only reports this request's size.
+			if e.ContextLimitUpdater != nil && primaryHit && primaryLimit > 0 {
+				go func() {
+					credIDCopy := targetCand.CredentialID
+					modelCopy := targetCand.RawModel
+					// Persist the primary-proven limit, never the
+					// "resulted in" request size (which can exceed limit).
+					limitCopy := primaryLimit
+
+					// Use a detached context with a 10s timeout so the write
+					// completes even if the request context is cancelled.
+					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer cancel()
+
+					_, err := e.ContextLimitUpdater.UpdateContextLimit(ctx, credIDCopy, modelCopy, limitCopy)
+					if err != nil {
+						contextLimitDiscoveryTotal.WithLabelValues(
+							fmt.Sprintf("%d", credIDCopy),
+							modelCopy,
+							"failed",
+						).Inc()
+					} else {
+						contextLimitDiscoveryTotal.WithLabelValues(
+							fmt.Sprintf("%d", credIDCopy),
+							modelCopy,
+							"persisted",
+						).Inc()
+					}
+				}()
 			}
-		}
-		if parseResult.Evidence == errorsx.ContextLimitObservedUsage && targetCand.ContextWindow == nil {
-			discovered := limit
-			targetCand.ContextWindow = &discovered
 		}
 	}
 

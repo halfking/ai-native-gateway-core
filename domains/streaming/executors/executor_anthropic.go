@@ -788,8 +788,20 @@ func (e *Executor) executeAnthropic(
 
 	contextLenRecovery := contextLengthRecoveryState{}
 
+	// 2026-09-01 fix (queue/concurrency audit P1): context-length recovery
+	// success flag. When set, the next iteration should NOT consume the retry
+	// budget (attempt is decremented right after the loop increment), so the
+	// compressed body is actually sent even when maxRetries==0. Mirrors the
+	// executor_chat.go ctxLenRecoveryRetry mechanism.
+	ctxLenRecoveryRetry := false
 	var lastErr error // 2026-07-03 (Bug #N extension): preserve last error for "exhausted retries"
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// 2026-09-01 fix: if the previous iteration succeeded in context-length
+		// recovery, cancel the increment so the compressed retry is free.
+		if ctxLenRecoveryRetry {
+			ctxLenRecoveryRetry = false
+			attempt--
+		}
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
 			select {
@@ -827,6 +839,11 @@ func (e *Executor) executeAnthropic(
 				if err != nil {
 					return nil, err
 				}
+				// 2026-09-01 fix: recovery succeeded — the compressed body
+				// retry must not consume the retry budget, otherwise with
+				// maxRetries==0 the compressed payload is never sent and the
+				// loop falls through to the generic "exhausted 0 retries".
+				ctxLenRecoveryRetry = true
 				continue
 			case ctxLenGiveUp:
 				// Return a typed error so the outer Execute loop knows

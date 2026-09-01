@@ -77,6 +77,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"630_session_aggregate_outbox.sql",
 			"631_provider_credential_soft_delete.sql",
 			"635_drop_session_turns_unified.sql",
+			"637_session_bodies_unified_today_visible.sql",
+			"638_session_bodies_promote_guard.sql",
+			"639_provider_error_details_credential.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

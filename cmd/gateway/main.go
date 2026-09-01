@@ -1738,12 +1738,6 @@ func main() {
 			slog.Info("health_tracker initialized", "window", "1h", "max_size", 100)
 		}
 
-		// 2026-06-28: Wire UnifiedProbeScheduler for real-time request feedback.
-		// This enables <30s failure detection and adaptive health tracking.
-		// The unifiedProbe is initialized in the bg services block below.
-		// We set a placeholder here and update it after bg services start.
-		routingExec.UnifiedProbeScheduler = nil // will be set after bg services start
-
 		// 2026-06-23 Phase 2 (P1): per-candidate failure logger. Writes one
 		// row to candidate_failure_logs per failed (request, credential,
 		// model, attempt) tuple so operators can see WHICH credentials
@@ -3121,8 +3115,8 @@ func main() {
 	var concurrencyAutoScaleUp *bg.ConcurrencyAutoScaleUp
 	var healthAutoRecover *bg.HealthAutoRecover
 	var autoRouteListener *bg.AutoRouteRealtimeListener
-	// v7 (2026-06-28): Unified probe scheduler replaces modelProbe + suspiciousProbe
-	var unifiedProbe *bg.UnifiedProbeScheduler
+	// v7 (2026-06-28): UnifiedProbeScheduler 曾计划替换 modelProbe + suspiciousProbe，
+	// cutover 未完成已于 2026-09-01 作为死代码移除（见 docs/audit/2026-09-01-deadcode-cleanup-round2.md）。
 	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
 	var suspiciousProbe *bg.SuspiciousProbeRunner // TODO: remove after unifiedProbe validation
 	var modelAvailabilityCache *bg.ModelAvailabilityCache
@@ -6530,9 +6524,6 @@ func main() {
 		}
 		if suspiciousProbe != nil {
 			suspiciousProbe.Stop()
-		}
-		if unifiedProbe != nil {
-			unifiedProbe.Stop()
 		}
 		if passiveProbe != nil {
 			passiveProbe.Stop()

@@ -22,8 +22,13 @@ func TestProviderErrorAggregatorSQLIsTenantScopedAndBucketIdempotent(t *testing.
 		"all_source_rows AS NOT MATERIALIZED",
 		"bucket_rows AS",
 		"FROM bucket_rows",
-		"PARTITION BY tenant_id, provider_id",
-		"tenant_id, provider_id, model_name",
+		"PARTITION BY tenant_id, provider_id, credential_id",
+		// 2026-09-01 (P0-1 24h-audit round2): credential_id joined the
+		// aggregation grain (migration 639). Every DISTINCT ON / PARTITION BY /
+		// ON CONFLICT key list must carry it or per-credential rows collapse.
+		"tenant_id, provider_id, credential_id, model_name",
+		"COALESCE(c.credential_id::text, '')",
+		"COALESCE(credential_id, '')",
 		"AS aggregation_bucket",
 		"occurrences = EXCLUDED.occurrences",
 		"aggregation_bucket",
@@ -55,6 +60,12 @@ func TestProviderErrorAggregatorMigrationsFailClosedForLegacyDuplicates(t *testi
 		"../sql/migrations/startup/620_provider_error_details_tenant_scope.down.sql",
 		"../deploy/sql/migrations/V364__provider_error_details_tenant_scope.sql",
 		"../deploy/sql/migrations/V364__provider_error_details_tenant_scope.down.sql",
+		// 2026-09-01 (P0-1 24h-audit round2): 639/V368 rebuild the unique
+		// index with credential_id in the identity; same fail-closed contract.
+		"../sql/migrations/startup/639_provider_error_details_credential.sql",
+		"../sql/migrations/startup/639_provider_error_details_credential.down.sql",
+		"../deploy/sql/migrations/V368__provider_error_details_credential.sql",
+		"../deploy/sql/migrations/V368__provider_error_details_credential.down.sql",
 	} {
 		data, err := os.ReadFile(path)
 		if err != nil {

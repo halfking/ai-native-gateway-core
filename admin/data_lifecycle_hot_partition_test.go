@@ -176,6 +176,8 @@ func TestDefaultHotRetentionHours(t *testing.T) {
 func TestHotPromoteTableMap(t *testing.T) {
 	// 2026-07-14: model_probe_runs_hot 切换为纯 hot 表策略，
 	// 不再 promote，移除了对应的 map 项。
+	// 2026-09-01: 补上 session_bodies_hot（promote 函数由迁移 615/626/638
+	// 定义），此前手动 promote 无法触达该表。
 	expected := []string{
 		"request_logs_hot",
 		"usage_ledger_hot",
@@ -187,6 +189,7 @@ func TestHotPromoteTableMap(t *testing.T) {
 		"tool_usage_stats_hot",
 		"candidate_failure_logs_hot",
 		"session_turns_hot",
+		"session_bodies_hot",
 		"handoff_logs_hot",
 		"session_module_executions_hot",
 		"dashboard_access_events_hot",
@@ -195,6 +198,9 @@ func TestHotPromoteTableMap(t *testing.T) {
 		if _, ok := hotPromoteTableMap[name]; !ok {
 			t.Errorf("expected %s in hotPromoteTableMap", name)
 		}
+	}
+	if hotPromoteTableMap["session_bodies_hot"] != "promote_session_bodies_hot_to_partition" {
+		t.Errorf("session_bodies_hot must map to promote_session_bodies_hot_to_partition, got %s", hotPromoteTableMap["session_bodies_hot"])
 	}
 	if len(hotPromoteTableMap) != len(expected) {
 		t.Errorf("expected %d tables, got %d", len(expected), len(hotPromoteTableMap))

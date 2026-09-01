@@ -166,6 +166,14 @@ type ProcessedRequest struct {
 	ProviderID   string
 	CredentialID string
 
+	// Quality override for session_turns.quality ('verified' | 'inferred' |
+	// 'partial' | 'rejected'). Empty means deriveTurnQuality classifies the
+	// turn from Success/ErrorKind/ResponseBody. Reserved for callers that
+	// hold richer signals than the writer (e.g. the telemetry quality
+	// processor behind 017_quality_fix_mode.sql); the sessionv2mirror bridge
+	// does not populate it yet.
+	Quality string
+
 	// Usage & cost
 	PromptTokens     int
 	CompletionTokens int
@@ -367,7 +375,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		T9ResponseEndAt:   req.T9ResponseEndAt,
 
 		SourceKind: "live",
-		Quality:    "verified",
+		// Quality is derived from what this turn actually carries, not
+		// hardcoded: the CHECK constraint on session_turns.quality
+		// ('verified'|'inferred'|'partial'|'rejected') is only useful to
+		// operators if it reflects the row's content. Derivation rules
+		// (deriveTurnQuality):
+		//   rejected — terminal failure (Success=false / ErrorKind set)
+		//   partial  — success but zero captured response messages
+		//   verified — success with a non-empty response body
+		// Callers that DID capture richer signals (the telemetry entry
+		// carries QualityFlags/QualityScore from 017_quality_fix_mode.sql)
+		// cannot forward them today because the sessionv2mirror bridge
+		// does not copy them onto ProcessedRequest; when that bridge is
+		// extended, set req.Quality explicitly and it wins over derivation.
+		Quality: deriveTurnQuality(req),
 
 		// Attachment metadata
 		AttachmentCount:      attachmentCount,
@@ -598,13 +619,53 @@ func extractRequestDelta(req *ProcessedRequest, submitMode string) []Message {
 		}
 	}
 
-	// Fallback: if delta extraction found nothing, return full body
-	// (This can happen if client sent identical history but we don't detect it)
+	// Fallback: if delta extraction found nothing new, the previous turn's
+	// outbound already covers the entire client history. Returning the full
+	// body here is deliberate: every reader (turn_reader.LoadChain,
+	// outbound_builder.BuildFromDeltas, sessionsummary message_source_v2)
+	// ACCUMULATES request_delta across turns, so persisting an empty delta
+	// would silently drop this turn's user input from the reconstructed
+	// conversation. Full-body fallback re-sends messages the reader may
+	// already have, which the dedup-tolerant assembly paths handle, but never
+	// under-reports. (2026-09 fix: the previous code returned an empty slice
+	// whenever the client re-sent an identical history, e.g. a bare "retry"
+	// with no new user message or an idempotent re-submit.)
 	if len(delta) == 0 {
 		return req.RequestBody
 	}
 
 	return delta
+}
+
+// deriveTurnQuality classifies a turn for the session_turns.quality column
+// (CHECK constraint: 'verified' | 'inferred' | 'partial' | 'rejected',
+// migration 526). Values must reflect the row's content rather than a
+// constant, otherwise the column is dead weight for operators:
+//
+//	rejected — the turn records a terminal failure (Success=false, or an
+//	           ErrorKind survived onto the entry).
+//	partial  — the turn succeeded but we captured no response messages, so
+//	           the bodies row cannot reconstruct what the model said.
+//	verified — the turn succeeded and carries a response body.
+//
+// An explicit req.Quality (when a caller plumbs one through the mirror
+// bridge) always wins, so a future caller with richer signals (telemetry
+// QualityFlags/QualityScore from 017_quality_fix_mode.sql) can override
+// without touching this function.
+func deriveTurnQuality(req *ProcessedRequest) string {
+	if req == nil {
+		return "verified"
+	}
+	if req.Quality != "" {
+		return req.Quality
+	}
+	if !req.Success || req.ErrorKind != "" {
+		return "rejected"
+	}
+	if len(req.ResponseBody) == 0 {
+		return "partial"
+	}
+	return "verified"
 }
 
 // buildMessageSet creates a set of message keys for fast lookup

@@ -15,10 +15,55 @@ type RoutingAttempt struct {
 	CredentialID int64  `json:"credential_id"`
 	RawModel     string `json:"raw_model"`
 	UpstreamURL  string `json:"upstream_url"`
-	Result       string `json:"result"` // success/canceled/timeout/model_not_found/rate_limit/error
+	Result       string `json:"result"` // success/canceled/timeout/model_not_found/rate_limit/error/pending
 	LatencyMs    int64  `json:"latency_ms"`
 	HTTPStatus   int    `json:"http_status,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+// ResultPending is the placeholder Result used by the handler when it
+// pre-populates the tracker with the full candidate pool BEFORE execution
+// (streaming/handler.go, "candidate #N from routing"). Those entries are
+// book-keeping, not attempts: the executor appends a real record for every
+// candidate it actually calls, and the planned pool is independently
+// persisted as routing_decision_log.decision_trace (Trace.PlannedCandidates).
+const ResultPending = "pending"
+
+// compactForStorage drops candidate-pool placeholder entries (Result ==
+// ResultPending) once a real successful attempt exists.
+//
+// Why this matters beyond tidiness: request_logs.routing_attempts is consumed
+// arithmetically. bg/auto_route_settle_worker.go derives
+//
+//	retry_count = jsonb_array_length(routing_attempts) - 1
+//
+// so every surviving placeholder inflates the retry count of a request that
+// had ZERO failovers — a first-try success with a 10-candidate pool would
+// count as 10 retries and poison the auto-route tuning signal. Placeholders
+// also defeat the long-standing "single success → store nothing" storage
+// optimization below (len(attempts) is never 1 once the pool is loaded).
+//
+// Placeholders are kept when no attempt succeeded: on total failure the
+// untried-candidate tail is diagnostic signal operators do want in the log
+// detail view.
+func compactForStorage(attempts []RoutingAttempt) []RoutingAttempt {
+	hasSuccess := false
+	for _, a := range attempts {
+		if a.Result == "success" {
+			hasSuccess = true
+			break
+		}
+	}
+	if !hasSuccess {
+		return attempts
+	}
+	real := make([]RoutingAttempt, 0, len(attempts))
+	for _, a := range attempts {
+		if a.Result != ResultPending {
+			real = append(real, a)
+		}
+	}
+	return real
 }
 
 // RoutingAttemptsTracker 累积所有路由尝试，线程安全
@@ -57,7 +102,10 @@ func (t *RoutingAttemptsTracker) Count() int {
 }
 
 // ToJSONBytes 序列化为 JSONB 字节
-// 优化：仅在多次尝试或失败时才返回数据，单次成功返回 nil 节省存储
+// 优化：仅在多次尝试或失败时才返回数据，单次成功返回 nil 节省存储。
+// 序列化前会经过 compactForStorage 清理（见其注释）——候选池占位条目
+// 在成功后剔除，否则 request_logs.routing_attempts 的长度会污染
+// auto_route_settle_worker 的 retry_count 推导（长度-1 = 重试数）。
 func (t *RoutingAttemptsTracker) ToJSONBytes() ([]byte, error) {
 	if t == nil {
 		return nil, nil
@@ -66,17 +114,22 @@ func (t *RoutingAttemptsTracker) ToJSONBytes() ([]byte, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// 优化：单次成功不记录
-	if len(t.attempts) == 1 && t.attempts[0].Result == "success" {
-		return nil, nil
-	}
-
 	if len(t.attempts) == 0 {
 		return nil, nil
 	}
 
+	attempts := compactForStorage(t.attempts)
+
+	// 优化：单次成功不记录（清理占位条目后才是真实的尝试集合）
+	if len(attempts) == 1 && attempts[0].Result == "success" {
+		return nil, nil
+	}
+	if len(attempts) == 0 {
+		return nil, nil
+	}
+
 	data := map[string]interface{}{
-		"attempts": t.attempts,
+		"attempts": attempts,
 	}
 	return json.Marshal(data)
 }
@@ -92,6 +145,9 @@ func (t *RoutingAttemptsTracker) ToJSONString() string {
 
 // Summary 生成人类可读摘要
 // 格式: "候选1: 火山方舟(35) 模型未找到 1.5s → 候选2: NVIDIA(18) 取消 120s"
+//
+// 与 ToJSONBytes 一致：序列化前剔除成功后的候选池占位条目，单次成功
+// 不生成摘要（否则首试成功的请求会显示一长串从未真正执行的候选）。
 func (t *RoutingAttemptsTracker) Summary() string {
 	if t == nil {
 		return ""
@@ -104,13 +160,17 @@ func (t *RoutingAttemptsTracker) Summary() string {
 		return ""
 	}
 
+	attempts := compactForStorage(t.attempts)
+	if len(attempts) == 0 {
+		return ""
+	}
 	// 优化：单次成功不生成摘要
-	if len(t.attempts) == 1 && t.attempts[0].Result == "success" {
+	if len(attempts) == 1 && attempts[0].Result == "success" {
 		return ""
 	}
 
-	parts := make([]string, len(t.attempts))
-	for i, a := range t.attempts {
+	parts := make([]string, len(attempts))
+	for i, a := range attempts {
 		latency := formatLatency(a.LatencyMs)
 		providerDesc := fmt.Sprintf("%d", a.ProviderID)
 		if a.ProviderName != "" {

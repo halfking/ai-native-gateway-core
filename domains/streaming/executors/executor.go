@@ -828,15 +828,6 @@ type Executor struct {
 	// Nil disables route-node health recording.
 	Recorder RouteNodeRecorder
 
-	// UnifiedProbeScheduler (2026-06-28): intelligent probe scheduler that
-	// maintains accurate state for all credential×model combinations.
-	// When non-nil, real-time request feedback is sent via OnRealRequest
-	// to enable <30s failure detection and adaptive health tracking.
-	// Nil disables real-time feedback (preserves legacy behavior).
-	UnifiedProbeScheduler interface {
-		OnRealRequest(ctx context.Context, credID int64, rawModel string, success bool, errMsg string)
-	}
-
 	// StateObserver (2026-07-01 Phase 2.x): credential state manager that
 	// records real request outcomes (success/failure) and triggers adaptive
 	// probing. When non-nil, UpdateOnSuccess/UpdateOnFailure are called with

@@ -245,6 +245,12 @@ var nonRoutingFailureKinds = map[string]struct{}{
 	// 3-streak opens a spurious active incident and pollutes the swim lane.
 	"empty_response":          {},
 	"upstream_empty_response": {},
+	// 2026-09-01 (P1-1 24h-audit round2): 非上游故障 —— circuit_open /
+	// fp_slot_saturated 是网关侧准入信号（熔断器拒绝、指纹并发槽饱和
+	// 降级），请求根本没有到达上游，不属于路由未命中，也不应计入供应
+	// 商 route incident 的失败 streak。
+	"circuit_open":      {},
+	"fp_slot_saturated": {},
 }
 
 func isNonRoutingFailure(e *telemetry.RequestLogEntry) bool {

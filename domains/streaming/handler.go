@@ -3780,7 +3780,7 @@ func (h *ChatHandler) serveWithExecutor(
 			candTracker.Add(executors.RoutingAttempt{
 				ProviderName: fmt.Sprintf("... and %d more", len(candidates)-10),
 				RawModel:     clientModel,
-				Result:       "pending",
+				Result:       executors.ResultPending,
 				ErrorMessage: "truncated for payload size",
 			})
 			break
@@ -3795,7 +3795,7 @@ func (h *ChatHandler) serveWithExecutor(
 				return fmt.Sprintf("provider_%d", cand.ProviderID)
 			}(),
 			RawModel:     cand.RawModel,
-			Result:       "pending",
+			Result:       executors.ResultPending,
 			ErrorMessage: fmt.Sprintf("candidate #%d from routing", i+1),
 		})
 	}

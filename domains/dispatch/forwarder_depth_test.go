@@ -123,3 +123,82 @@ func TestApplyPolicyHotReloadsQueueDepth(t *testing.T) {
 		t.Fatalf("forwarder buffer after shrink = %d, want 12 (unchanged)", got)
 	}
 }
+
+// TestCredForwarderLoopReclaimsPendingOldEveryIteration (2026-09-01 audit P1
+// regression guard): replaceDepth's wakeCh send is non-blocking and can be
+// LOST when the loop is not parked on select at that instant. The fix makes
+// the loop check pendingOld at the top of every iteration, so ANY subsequent
+// event (here: a request landing in the live channel) collects the displaced
+// channel even with zero wakeCh deliveries. This test manufactures exactly
+// that lost-wake scenario: wakeCh is pre-saturated so the grow's wake is
+// dropped, and the raced request is only rescued by the per-iteration check.
+func TestCredForwarderLoopReclaimsPendingOldEveryIteration(t *testing.T) {
+	p := NewPipeline(Deps{})
+	defer p.Stop()
+
+	ref := CredentialRef{
+		CredentialID:    11,
+		ProviderID:      1,
+		ConcurrencyMode: ModeConcurrency,
+		ConcurrencyLimit: 1,
+		MaxQueueDepth:   2,
+	}
+	cf := p.getOrCreateForwarder(ref)
+	if cf == nil {
+		t.Fatal("getOrCreateForwarder returned nil")
+	}
+
+	// Saturate wakeCh so the grow below is GUARANTEED to drop its wake.
+	cf.wakeCh <- struct{}{}
+
+	// Grow: swaps in a larger channel and parks the old one in pendingOld.
+	cf.replaceDepth(8)
+	if cf.pendingOld.Load() == nil {
+		t.Fatal("replaceDepth(grow) did not set pendingOld")
+	}
+
+	// Simulate the micro-race: a producer that resolved the OLD channel
+	// pointer before the swap sends into it after the swap.
+	old := cf.pendingOld.Load()
+	*old <- &QueuedRequest{ID: "raced-req"}
+
+	// No wake will ever arrive (it was dropped). Deliver an unrelated event
+	// via the live channel — the loop's per-iteration reclaim must move the
+	// raced request out of pendingOld as part of processing this event.
+	live := cf.queue.Load()
+	*live <- &QueuedRequest{ID: "waker-req"}
+
+	// The loop must reclaim the raced request promptly: pendingOld cleared
+	// and the raced request re-queued into the live channel (or already
+	// dequeued and processed). Poll with a deadline instead of a fixed sleep.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cf.pendingOld.Load() == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if po := cf.pendingOld.Load(); po != nil {
+		t.Fatalf("pendingOld never reclaimed after unrelated wake event (lost-wake regression)")
+	}
+
+	// And the raced request must not be stranded: it either sits in live or
+	// was consumed by the loop. Drain non-blockingly and account for it.
+	found := false
+	for {
+		select {
+		case qr := <-*cf.queue.Load():
+			if qr.ID == "raced-req" {
+				found = true
+			}
+		default:
+			goto accounted
+		}
+	}
+accounted:
+	// Not finding it in live is also fine: the loop may have dequeued it into
+	// governor admission already. The invariant under test is pendingOld==nil
+	// (no stranded channel), asserted above. This check just documents that
+	// when it IS still buffered, it is the right request.
+	_ = found
+}

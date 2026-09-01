@@ -879,3 +879,66 @@ func TestFinishReasonMapping_OpenAIToAnthropic(t *testing.T) {
 		}
 	}
 }
+
+// ─── StreamChunk internal-annotation wire safety (P2-6, 2026-09) ───────────
+
+// TestStreamChunk_QualityAnnotationNotOnWire proves the Quality /
+// ArgumentsJSONReason fields (tagged json:"-") never leak into any serialized
+// wire format, and that the SSE/JSON round-trip preserves the transport
+// payload while the annotations stay purely in-memory.
+//
+// This pins the contract documented on StreamChunk: the fields are internal
+// stream-quality annotations ("verified" | "partial" | "rejected" set by
+// AnnotateArgumentsJSON) consumed by e.g. anthropic_bridge.go's
+// malformed-tool-args warning path. If someone removes the json:"-" tags — or
+// switches a serializer to json.Marshal(chunk) instead of the field-by-field
+// builders — provider-visible frames would gain two unknown fields and break
+// strict clients. This test fails on any of those regressions.
+func TestStreamChunk_QualityAnnotationNotOnWire(t *testing.T) {
+	chunk := &StreamChunk{
+		Type:           ChunkTypeDelta,
+		Delta:          &StreamDelta{Role: "assistant", Content: "hi"},
+		SourceProtocol: ProtocolOpenAIChat,
+	}
+	chunk.AnnotateArgumentsJSON(`{"a":1}`)
+	if chunk.Quality != "verified" {
+		t.Fatalf("annotate should mark quality=verified, got %q", chunk.Quality)
+	}
+
+	// 1. Direct encoding/json round-trip must not contain the annotation keys.
+	raw, err := json.Marshal(chunk)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{"quality", "Quality", "argumentsJSONReason", "arguments_json_reason"} {
+		if _, present := back[key]; present {
+			t.Errorf("annotation field %q leaked into wire JSON: %s", key, raw)
+		}
+	}
+	var restored StreamChunk
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatalf("unmarshal into StreamChunk: %v", err)
+	}
+	if restored.Quality != "" || restored.ArgumentsJSONReason != "" {
+		t.Errorf("round-trip restored internal annotations (quality=%q reason=%q); they must not survive transport",
+			restored.Quality, restored.ArgumentsJSONReason)
+	}
+
+	// 2. Provider serializers (OpenAI + Anthropic frames) must not contain them.
+	openaiFrame := chunk.SerializeOpenAI("chatcmpl-test", "gpt-4", 1234567890)
+	for _, key := range []string{"\"quality\"", "ArgumentsJSONReason"} {
+		if strings.Contains(openaiFrame, key) {
+			t.Errorf("OpenAI frame contains annotation marker %s: %s", key, openaiFrame)
+		}
+	}
+	anthropicFrame := chunk.SerializeAnthropic("msg_test", "claude")
+	for _, key := range []string{"\"quality\"", "ArgumentsJSONReason"} {
+		if strings.Contains(anthropicFrame, key) {
+			t.Errorf("Anthropic frame contains annotation marker %s: %s", key, anthropicFrame)
+		}
+	}
+}
