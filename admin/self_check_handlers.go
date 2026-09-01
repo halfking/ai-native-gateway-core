@@ -669,15 +669,37 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 			totalEnqueued := 0
 			failedModels := 0
 			results := make(map[string]any)
+			firstError := ""
 			for _, model := range models {
 				n, err := h.probeEnqueue(ctx, model)
 				if err != nil {
 					failedModels++
 					results[model] = map[string]any{"error": err.Error(), "enqueued": 0}
+					if firstError == "" {
+						firstError = err.Error()
+					}
 				} else {
 					results[model] = map[string]any{"enqueued": n}
 					totalEnqueued += n
 				}
+			}
+
+			// Per bc48559b4 audit contract: when every model fails to enqueue,
+			// surface 503 so the UI doesn't render a misleading 200 OK banner.
+			// Partial failures still return 200 with per-model details so callers
+			// see every outcome in one response.
+			if failedModels == len(models) {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+					"error":         "trigger failed",
+					"message":       firstError,
+					"mode":          "probe_queue",
+					"enqueued":      0,
+					"models_tested": len(models),
+					"models_failed": failedModels,
+					"models":        models,
+					"results":       results,
+				})
+				return
 			}
 
 			writeJSON(w, http.StatusOK, map[string]any{
