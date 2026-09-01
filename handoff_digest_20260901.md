@@ -33,7 +33,7 @@
 - Promotion 函数保留 digest 值
 - View 的 `security_invoker=true` 选项保持
 
-**Checksum**: `375d376eb0970f181e7a4ae1247ba20ac1cae059ae063bb6a4c43bcf2c27bc98`（已于 2026-08-31 21:06:37 UTC 标记 `applied+verified`）
+**Checksum**: `a7e1909b0eb5fac03253c77fafb3cb029a688195c9666b41c739db24746e6af2`（已于 2026-08-31 21:06:37 UTC 标记 `applied+verified`，由 `c5618ba7e fix(session): preserve view grants and bound digest text in migration 636` 修正 view ACL 保留逻辑后的最终版本）
 **Registry**: 已登记到 `docs/db-changelog.md:168`
 
 ---
@@ -180,7 +180,7 @@ turnRec := TurnRecord{
 # 1. 确认热表和 promotion function 已由 526 创建。
 psql "$TARGET_DSN" -c "SELECT to_regclass('public.session_turns_hot'), to_regprocedure('public.promote_session_turns_hot_to_partition(interval,integer)');"
 
-# 2. 运行已部署、不可变的 636 migration（SHA-256 375d376e...）。
+# 2. 运行已部署、不可变的 636 migration（SHA-256 a7e1909b...）。
 psql "$TARGET_DSN" -f sql/migrations/startup/636_session_turns_digest.sql
 
 # 3. 验证 parent/hot 均有 nullable digest JSONB，view 有 51 列且 security_invoker=true。
