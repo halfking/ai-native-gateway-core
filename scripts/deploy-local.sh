@@ -313,14 +313,27 @@ reset_admin_password_db() {
 }
 
 persist_admin_password() {
-  # Rewrite the admin password lines in the 0600 ENV_FILE so later bare
-  # `verify`/`restart` invocations use the working credential.
-  local newpass="$1"
+  # Rewrite the admin password lines in the 0600 ENV_FILE with shell-safe
+  # quoting so later bare `verify`/`restart` invocations preserve any password.
+  local newpass="$1" tmp line
   [[ -f "$ENV_FILE" ]] || return 0
-  sed -i.bak \
-    -e "s|^export LLM_GATEWAY_ADMIN_PASSWORD=.*|export LLM_GATEWAY_ADMIN_PASSWORD=$newpass|" \
-    -e "s|^export LLM_GATEWAY_SEED_ADMIN_PASSWORD=.*|export LLM_GATEWAY_SEED_ADMIN_PASSWORD=$newpass|" \
-    "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+  tmp="$(mktemp "${ENV_FILE}.tmp.XXXXXX")" || die "cannot create temporary environment file"
+  umask 077
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      'export LLM_GATEWAY_ADMIN_PASSWORD='*)
+        printf 'export LLM_GATEWAY_ADMIN_PASSWORD=%q\n' "$newpass" >>"$tmp"
+        ;;
+      'export LLM_GATEWAY_SEED_ADMIN_PASSWORD='*)
+        printf 'export LLM_GATEWAY_SEED_ADMIN_PASSWORD=%q\n' "$newpass" >>"$tmp"
+        ;;
+      *)
+        printf '%s\n' "$line" >>"$tmp"
+        ;;
+    esac
+  done <"$ENV_FILE"
+  chmod 600 "$tmp"
+  mv "$tmp" "$ENV_FILE"
 }
 
 verify_full() {
