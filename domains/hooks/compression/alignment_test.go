@@ -262,6 +262,22 @@ func TestUpdateCache_StampsAuditedAt_PersistsAlignmentMap(t *testing.T) {
 	}
 }
 
+func TestBuildAlignmentMap_DuplicateMessagesPreserveOccurrenceOrder(t *testing.T) {
+	before := []byte(`{"messages":[{"role":"user","content":"same"},{"role":"user","content":"same"}]}`)
+	after := []byte(`{"messages":[{"role":"user","content":"same"},{"role":"user","content":"same"}]}`)
+
+	align := buildAlignmentMap(before, after, -1)
+	if len(align) != 2 {
+		t.Fatalf("want two alignment entries, got %d", len(align))
+	}
+	if align[0].IsCompressed || align[0].CompressedIndex != 0 {
+		t.Fatalf("first duplicate mapped incorrectly: %+v", align[0])
+	}
+	if align[1].IsCompressed || align[1].CompressedIndex != 1 {
+		t.Fatalf("second duplicate mapped incorrectly: %+v", align[1])
+	}
+}
+
 func roleFor(i int) string {
 	if i%2 == 1 {
 		return "assistant"

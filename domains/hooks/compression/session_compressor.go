@@ -104,6 +104,10 @@ type PrepareResult struct {
 	// Nil when no rewrite was needed (forward clientBody as-is).
 	OutboundBody []byte
 
+	// RawSnapshot captures the client message snapshot before compression.
+	// It contains only a hash/counts and never the request body.
+	RawSnapshot MessageSnapshot
+
 	// MsgHashes is the per-message fingerprint array to persist in
 	// request_logs.outbound_msg_hashes.
 	MsgHashes json.RawMessage
@@ -211,7 +215,7 @@ func (sc *SessionCompressor) Prepare(
 	contextWindow int,
 	streamStarted bool,
 ) *PrepareResult {
-	res := &PrepareResult{}
+	res := &PrepareResult{RawSnapshot: SnapshotForBody(clientBody)}
 
 	if sc == nil || sc.deps.Disabled || gwSessionID == "" {
 		return sc.fallbackResult(clientBody, res)
@@ -855,6 +859,9 @@ func hydrateSanitizeInfo(ctx context.Context, state *SessionState) {
 	if info.Stats.PlaceholderCount > 0 || info.Stats.SanitizedAt > 0 {
 		state.SanitizeStats = info.Stats
 	}
+	if len(info.MessageRefs) > 0 {
+		state.SanitizeMessageRefs = append([]SanitizedMessageRef(nil), info.MessageRefs...)
+	}
 }
 
 // CommitFinal overwrites the compatible Prepare-time cache entry with the
@@ -909,8 +916,12 @@ func buildSessionState(prevState *SessionState, outboundBody []byte, res *Prepar
 	state.LastOutboundHash = sha256Hex(outboundBody)
 	state.MsgCount = res.MsgCount
 	state.TokenEstimate = res.TokenEst
-	state.RawMsgCount = countMessages(outboundBody)
-	state.RawTokenEstimate = estimateBodyTokens(outboundBody)
+	if !res.RawSnapshot.IsZero() {
+		state.RawSnapshot = res.RawSnapshot
+		state.RawMsgCount = res.RawSnapshot.MessageCount
+		state.RawTokenEstimate = res.RawSnapshot.TokenEstimate
+	}
+	state.CompressedSnapshot = SnapshotForBody(outboundBody)
 	state.CompressedMsgs = res.MsgCount
 	state.CompressedTokens = res.TokenEst
 	if res.CompressedPrefixHash != "" {

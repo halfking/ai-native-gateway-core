@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 func TestMode_String(t *testing.T) {
@@ -67,6 +69,87 @@ func TestNewCompressor_ReadsEnvMode(t *testing.T) {
 	}
 	if c.Estimator() == nil {
 		t.Error("Estimator should not be nil")
+	}
+}
+
+func TestLoadStrategyRunnerMode_DefaultAndEnv(t *testing.T) {
+	prevGlobal := settings.Global
+	t.Cleanup(func() { settings.Global = prevGlobal })
+	settings.Global = nil
+
+	for _, tc := range []struct {
+		env  string
+		want string
+	}{
+		{"", "sequential"},
+		{"parallel", "parallel"},
+		{" PARALLEL ", "parallel"},
+		{"invalid", "sequential"},
+	} {
+		t.Run(tc.env, func(t *testing.T) {
+			t.Setenv("LLM_GATEWAY_COMPRESSION_RUNNER_MODE", tc.env)
+			if got := LoadStrategyRunnerMode(); got != tc.want {
+				t.Fatalf("LoadStrategyRunnerMode(%q) = %q, want %q", tc.env, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadStrategyRunnerMode_DBBeatsEnv(t *testing.T) {
+	prevGlobal := settings.Global
+	t.Cleanup(func() { settings.Global = prevGlobal })
+
+	registry := settings.NewRegistry()
+	registry.RegisterBackend(settings.ScopePlatform, &fakeDBBackend{
+		store: map[string][]byte{"compression.runner_mode": []byte(`"parallel"`)},
+	})
+	registry.RegisterBackend(settings.EnvBackendScope, settings.NewStoreEnv())
+	registry.MustRegisterSpec(&settings.Spec{
+		Key:     "compression.runner_mode",
+		EnvName: "LLM_GATEWAY_COMPRESSION_RUNNER_MODE",
+		Type:    settings.TypeEnum,
+		Scope:   settings.ScopePlatform,
+		Options: []string{"sequential", "parallel"},
+		Default: "sequential",
+	})
+	settings.Global = registry
+	t.Setenv("LLM_GATEWAY_COMPRESSION_RUNNER_MODE", "sequential")
+
+	if got := LoadStrategyRunnerMode(); got != "parallel" {
+		t.Fatalf("LoadStrategyRunnerMode() = %q, want DB value parallel", got)
+	}
+}
+
+func TestLoadStrategyRunnerMode_SettingsDefault(t *testing.T) {
+	prevGlobal := settings.Global
+	t.Cleanup(func() { settings.Global = prevGlobal })
+
+	registry := settings.NewRegistry()
+	registry.RegisterBackend(settings.EnvBackendScope, settings.NewStoreEnv())
+	registry.MustRegisterSpec(&settings.Spec{
+		Key:     "compression.runner_mode",
+		EnvName: "LLM_GATEWAY_COMPRESSION_RUNNER_MODE",
+		Type:    settings.TypeEnum,
+		Scope:   settings.ScopePlatform,
+		Options: []string{"sequential", "parallel"},
+		Default: "sequential",
+	})
+	settings.Global = registry
+	t.Setenv("LLM_GATEWAY_COMPRESSION_RUNNER_MODE", "")
+
+	if got := LoadStrategyRunnerMode(); got != "sequential" {
+		t.Fatalf("LoadStrategyRunnerMode() = %q, want settings default sequential", got)
+	}
+}
+
+func TestLoadStrategyRunnerMode_DefaultWhenRegistrySpecAbsent(t *testing.T) {
+	prevGlobal := settings.Global
+	t.Cleanup(func() { settings.Global = prevGlobal })
+	settings.Global = settings.NewRegistry()
+	t.Setenv("LLM_GATEWAY_COMPRESSION_RUNNER_MODE", "parallel")
+
+	if got := LoadStrategyRunnerMode(); got != "parallel" {
+		t.Fatalf("LoadStrategyRunnerMode() = %q, want env fallback parallel", got)
 	}
 }
 

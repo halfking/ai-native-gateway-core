@@ -20,6 +20,8 @@ import (
 	"sync"
 )
 
+const maxParallelCandidates = 8
+
 // RunParallelWithBody 并行执行 chosen 中所有 strategy，从原始 body 出发
 // （非链式 current），按信息量评分选取输出。新增 WinnerName / CandidateCount
 // 字段便于观测；AppliedNames / FailedNames / SkippedNames / TruncatedBy
@@ -29,17 +31,27 @@ import (
 // 直接执行该 strategy 并返回（避免 goroutine 开销）。
 func (r *Runner) RunParallelWithBody(ctx context.Context, sel Selector, body []byte) ([]byte, RunStats, error) {
 	stats := RunStats{BytesIn: len(body), BytesOut: len(body)}
+	ctx = nonNilContext(ctx)
 	if r == nil || r.registry == nil {
 		return body, stats, errStrategyRunnerNilRegistry
 	}
 	if sel == nil {
 		return body, stats, nil
 	}
+	if err := ctx.Err(); err != nil {
+		return body, stats, err
+	}
 
 	guardFn, _ := r.guardNeverWorse.Load().(guardFuncType)
 
 	all := r.registry.Snapshot()
-	chosen := sel.Select(ctx, all, body)
+	if _, adaptive := sel.(*AdaptiveSelector); adaptive {
+		return r.RunWithBody(ctx, sel, body)
+	}
+	chosen, selectErr := safeSelect(ctx, sel, all, body)
+	if selectErr != nil {
+		return body, stats, nil
+	}
 	stats.CandidateCount = len(chosen)
 
 	// 0 strategy → noop
@@ -50,29 +62,43 @@ func (r *Runner) RunParallelWithBody(ctx context.Context, sel Selector, body []b
 	// 单 strategy → 退化为顺序执行（节省 goroutine）。
 	if len(chosen) == 1 {
 		s := chosen[0]
-		if s == nil || !s.Enabled() {
+		if isNilStrategy(s) || !safeEnabled(s) {
 			stats.SkippedNames = append(stats.SkippedNames, safeName(s))
 			return body, stats, nil
 		}
-		out, applied, err := s.Apply(ctx, body)
+		if err := ctx.Err(); err != nil {
+			return body, stats, err
+		}
+		out, applied, err := safeApply(ctx, s, body)
 		if err != nil {
-			stats.FailedNames = append(stats.FailedNames, s.Name())
+			stats.FailedNames = append(stats.FailedNames, safeName(s))
 			return body, stats, nil
 		}
-		if !applied || len(out) == 0 || len(out) > len(body) {
-			stats.SkippedNames = append(stats.SkippedNames, s.Name())
+		if !applied || len(out) == 0 {
+			stats.SkippedNames = append(stats.SkippedNames, safeName(s))
 			return body, stats, nil
 		}
-		if stage := s.GuardStage(); stage != "" && guardFn != nil {
-			if guarded, regressed := guardFn(body, out, stage); !regressed {
-				out = guarded
-			} else {
-				stats.TruncatedBy = append(stats.TruncatedBy, s.Name())
+		if len(out) > len(body) {
+			stats.TruncatedBy = append(stats.TruncatedBy, "aggregate")
+			return body, stats, nil
+		}
+		if stage := safeGuardStage(s); stage != "" && guardFn != nil {
+			guarded, regressed, guardErr := safeGuard(guardFn, body, out, stage)
+			if guardErr != nil {
+				stats.FailedNames = append(stats.FailedNames, safeName(s))
+			}
+			if regressed || guardErr != nil {
+				stats.TruncatedBy = append(stats.TruncatedBy, safeName(s))
 				return body, stats, nil
 			}
+			out = cloneBytes(guarded)
 		}
-		stats.AppliedNames = append(stats.AppliedNames, s.Name())
-		stats.WinnerName = s.Name()
+		if len(out) > len(body) {
+			stats.TruncatedBy = append(stats.TruncatedBy, "aggregate")
+			return body, stats, nil
+		}
+		stats.AppliedNames = append(stats.AppliedNames, safeName(s))
+		stats.WinnerName = safeName(s)
 		stats.BytesOut = len(out)
 		return out, stats, nil
 	}
@@ -83,22 +109,38 @@ func (r *Runner) RunParallelWithBody(ctx context.Context, sel Selector, body []b
 	applied := make([]bool, len(chosen))
 
 	var wg sync.WaitGroup
+	sem := make(chan struct{}, maxParallelCandidates)
 	for i, s := range chosen {
-		if s == nil || !s.Enabled() {
+		if isNilStrategy(s) || !safeEnabled(s) {
 			// 不为这种 case 启动 goroutine；统计为 SkippedNames。
 			stats.SkippedNames = append(stats.SkippedNames, safeName(s))
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			stats.FailedNames = append(stats.FailedNames, safeName(s))
 			continue
 		}
 		wg.Add(1)
 		go func(idx int, strat Strategy) {
 			defer wg.Done()
-			o, a, e := strat.Apply(ctx, body)
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				errs[idx] = ctx.Err()
+				return
+			}
+			defer func() { <-sem }()
+			o, a, e := safeApply(ctx, strat, body)
 			outs[idx] = o
 			errs[idx] = e
 			applied[idx] = a
 		}(i, s)
 	}
 	wg.Wait()
+
+	if err := ctx.Err(); err != nil {
+		return body, stats, err
+	}
 
 	// 评分 + 选最优。
 	type candidate struct {
@@ -109,31 +151,38 @@ func (r *Runner) RunParallelWithBody(ctx context.Context, sel Selector, body []b
 	}
 	var candidates []candidate
 	for i := range chosen {
+		s := chosen[i]
+		if s == nil {
+			continue
+		}
 		if errs[i] != nil {
-			stats.FailedNames = append(stats.FailedNames, chosen[i].Name())
+			stats.FailedNames = append(stats.FailedNames, safeName(s))
 			continue
 		}
 		if !applied[i] || len(outs[i]) == 0 {
-			stats.SkippedNames = append(stats.SkippedNames, chosen[i].Name())
+			stats.SkippedNames = append(stats.SkippedNames, safeName(s))
 			continue
 		}
 		// NeverWorse 守卫
-		stage := chosen[i].GuardStage()
+		stage := safeGuardStage(s)
 		var candidateOut = outs[i]
 		if stage != "" && guardFn != nil {
-			guarded, regressed := guardFn(body, candidateOut, stage)
-			if regressed {
-				stats.TruncatedBy = append(stats.TruncatedBy, chosen[i].Name())
-				stats.SkippedNames = append(stats.SkippedNames, chosen[i].Name())
+			guarded, regressed, guardErr := safeGuard(guardFn, body, candidateOut, stage)
+			if guardErr != nil {
+				stats.FailedNames = append(stats.FailedNames, safeName(s))
+			}
+			if regressed || guardErr != nil {
+				stats.TruncatedBy = append(stats.TruncatedBy, safeName(s))
+				stats.SkippedNames = append(stats.SkippedNames, safeName(s))
 				continue
 			}
-			candidateOut = guarded
+			candidateOut = cloneBytes(guarded)
 		}
 		if len(candidateOut) > len(body) {
 			stats.TruncatedBy = append(stats.TruncatedBy, "aggregate")
 			continue
 		}
-		stats.AppliedNames = append(stats.AppliedNames, chosen[i].Name())
+		stats.AppliedNames = append(stats.AppliedNames, safeName(s))
 		candidates = append(candidates, candidate{
 			idx:      i,
 			out:      candidateOut,
@@ -154,7 +203,7 @@ func (r *Runner) RunParallelWithBody(ctx context.Context, sel Selector, body []b
 			best = c
 		}
 	}
-	stats.WinnerName = chosen[best.idx].Name()
+	stats.WinnerName = safeName(chosen[best.idx])
 	stats.BytesOut = best.shortLen
 	return best.out, stats, nil
 }
@@ -164,37 +213,38 @@ func (r *Runner) RunParallelWithBody(ctx context.Context, sel Selector, body []b
 // 字段（AppliedNames/FailedNames/SkippedNames/TruncatedBy）在并行 fan-out 下
 // 的语义边界更清晰（每个候选独立计分，不与 winner 冲突）。
 func applyOne(ctx context.Context, s Strategy, in []byte, guardFn guardFuncType, stats *RunStats) ([]byte, bool, error) {
-	if s == nil || !s.Enabled() {
+	if isNilStrategy(s) || !safeEnabled(s) {
 		stats.SkippedNames = append(stats.SkippedNames, safeName(s))
 		return in, false, nil
 	}
-	out, a, e := s.Apply(ctx, in)
+	out, a, e := safeApply(ctx, s, in)
 	if e != nil {
-		stats.FailedNames = append(stats.FailedNames, s.Name())
+		stats.FailedNames = append(stats.FailedNames, safeName(s))
 		return in, false, e
 	}
 	if !a || len(out) == 0 {
-		stats.SkippedNames = append(stats.SkippedNames, s.Name())
+		stats.SkippedNames = append(stats.SkippedNames, safeName(s))
 		return in, false, nil
 	}
-	if stage := s.GuardStage(); stage != "" && guardFn != nil {
-		guarded, regressed := guardFn(in, out, stage)
-		if regressed {
-			stats.TruncatedBy = append(stats.TruncatedBy, s.Name())
-			stats.SkippedNames = append(stats.SkippedNames, s.Name())
+	if stage := safeGuardStage(s); stage != "" && guardFn != nil {
+		guarded, regressed, guardErr := safeGuard(guardFn, in, out, stage)
+		if guardErr != nil {
+			stats.FailedNames = append(stats.FailedNames, safeName(s))
+		}
+		if regressed || guardErr != nil {
+			stats.TruncatedBy = append(stats.TruncatedBy, safeName(s))
+			stats.SkippedNames = append(stats.SkippedNames, safeName(s))
+			return in, false, guardErr
+		}
+		if len(guarded) > len(in) {
+			stats.TruncatedBy = append(stats.TruncatedBy, "aggregate")
+			stats.SkippedNames = append(stats.SkippedNames, safeName(s))
 			return in, false, nil
 		}
 		out = guarded
 	}
-	stats.AppliedNames = append(stats.AppliedNames, s.Name())
-	return out, true, nil
-}
-
-func safeName(s Strategy) string {
-	if s == nil {
-		return "<nil>"
-	}
-	return s.Name()
+	stats.AppliedNames = append(stats.AppliedNames, safeName(s))
+	return cloneBytes(out), true, nil
 }
 
 // errStrategyRunnerNilRegistry 与 runner.go 中的 errors.New 字符串保持一致。

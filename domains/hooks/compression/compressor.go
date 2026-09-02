@@ -400,12 +400,43 @@ func LoadAdaptiveTargetRatio() float64 {
 	return fallback
 }
 
+// LoadStrategyRunnerMode resolves compression.runner_mode through the
+// canonical settings chain (DB > env > default). The direct environment
+// fallback keeps early-init and tests working before the registry is wired.
 func LoadStrategyRunnerMode() string {
-	mode := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_COMPRESSION_RUNNER_MODE")))
-	if mode == "parallel" {
+	const fallback = "sequential"
+	defaultMode := fallback
+	if settings.Global != nil {
+		if sp := settings.Global.Spec("compression.runner_mode"); sp != nil {
+			if value, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, ""); err == nil {
+				if mode := parseStrategyRunnerMode(value); mode != "" {
+					if source != "default" {
+						return mode
+					}
+					// Keep the registered default as the final fallback, but do
+					// not let it mask a direct env lookup when a test or early
+					// init registry has not wired the env backend yet.
+					defaultMode = mode
+				}
+			}
+		}
+	}
+	if mode := parseStrategyRunnerMode([]byte(os.Getenv("LLM_GATEWAY_COMPRESSION_RUNNER_MODE"))); mode != "" {
 		return mode
 	}
-	return "sequential"
+	return defaultMode
+}
+
+func parseStrategyRunnerMode(raw []byte) string {
+	var mode string
+	if json.Unmarshal(raw, &mode) != nil {
+		mode = string(raw)
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "sequential" || mode == "parallel" {
+		return mode
+	}
+	return ""
 }
 
 func LoadStrategyRunnerEnabled() bool {
