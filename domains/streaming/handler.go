@@ -3435,11 +3435,18 @@ func (h *ChatHandler) serveWithExecutor(
 		if isAnthropicMessagesPath(r.URL.Path) {
 			protocolForSC = "anthropic-messages"
 		}
-		// Resolve the target model context window from the first candidate.
-		// 0 when unknown (TOKEN trigger then relies on msg_count / idle only).
+		// Use the smallest known candidate window as a safe session-level
+		// baseline. Dispatch may reorder or fail over candidates after Prepare;
+		// a conservative baseline prevents a later small-window candidate from
+		// receiving an over-large session body.
 		ctxWindow := 0
-		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
-			ctxWindow = *candidates[0].ContextWindow
+		for _, candidate := range candidates {
+			if candidate.ContextWindow == nil || *candidate.ContextWindow <= 0 {
+				continue
+			}
+			if ctxWindow == 0 || *candidate.ContextWindow < ctxWindow {
+				ctxWindow = *candidate.ContextWindow
+			}
 		}
 		scPrepareStart := time.Now()
 		// SP-02: state machine — body compression has started.

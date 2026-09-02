@@ -2,6 +2,15 @@ package settings
 
 import "testing"
 
+func TestPlatformSpecsIncludesGatewayPromptBudget(t *testing.T) {
+	for _, spec := range PlatformSpecs() {
+		if spec.Key == "gateway.max_prompt_tokens" {
+			return
+		}
+	}
+	t.Fatal("PlatformSpecs() does not include gateway.max_prompt_tokens")
+}
+
 func TestGatewaySpecsPromptBudget(t *testing.T) {
 	specs := GatewaySpecs()
 	if len(specs) != 1 {

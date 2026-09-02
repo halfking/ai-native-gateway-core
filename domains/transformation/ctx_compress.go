@@ -232,6 +232,41 @@ func trimOldestPairs(messages []json.RawMessage, softLimit int) []json.RawMessag
 	return out
 }
 
+func countNonSystemMessages(messages []json.RawMessage) int {
+	count := 0
+	for _, message := range messages {
+		if !isSystemMessage(message) {
+			count++
+		}
+	}
+	return count
+}
+
+func dropOldestMessageUnit(messages []json.RawMessage) []json.RawMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	var system, rest []json.RawMessage
+	for _, message := range messages {
+		if isSystemMessage(message) {
+			system = append(system, message)
+		} else {
+			rest = append(rest, message)
+		}
+	}
+	if len(rest) <= 1 {
+		return messages
+	}
+	n := dropExtent(rest)
+	if n <= 0 || n >= len(rest) {
+		return messages
+	}
+	out := make([]json.RawMessage, 0, len(system)+len(rest)-n)
+	out = append(out, system...)
+	out = append(out, rest[n:]...)
+	return out
+}
+
 // dropExtent returns how many leading messages of `rest` should be dropped as
 // one atomic unit. The unit is:
 //
@@ -522,13 +557,20 @@ func isSystemMessage(raw json.RawMessage) bool {
 // Use this for OpenAI chat-style bodies. For Anthropic Messages API, use
 // CompressAnthropicMessagesAggressively instead.
 func CompressMessagesAggressively(bodyBytes []byte, contextWindow int) []byte {
-	return compressMessagesWithTarget(bodyBytes, contextWindow, aggressiveSoftLimitFraction, "aggressive")
+	return compressMessagesWithTarget(bodyBytes, contextWindow, aggressiveTargetFraction(contextWindow), "aggressive")
 }
 
 // CompressAnthropicMessagesAggressively is the aggressive version for Anthropic
 // Messages API bodies. Compresses to 60% of context window for 4xx recovery.
 func CompressAnthropicMessagesAggressively(bodyBytes []byte, contextWindow int) []byte {
-	return compressAnthropicMessagesWithTarget(bodyBytes, contextWindow, aggressiveSoftLimitFraction, "aggressive")
+	return compressAnthropicMessagesWithTarget(bodyBytes, contextWindow, aggressiveTargetFraction(contextWindow), "aggressive")
+}
+
+func aggressiveTargetFraction(contextWindow int) float64 {
+	if contextWindow <= 0 {
+		return aggressiveSoftLimitFraction
+	}
+	return float64(providerCompressionTargetTokens(contextWindow)) / float64(contextWindow)
 }
 
 // compressMessagesWithTarget is the internal implementation used by both
@@ -552,24 +594,53 @@ func compressMessagesWithTarget(bodyBytes []byte, contextWindow int, targetFract
 		return bodyBytes
 	}
 
-	trimmed := trimOldestPairs(req.Messages, softLimit)
-	if len(trimmed) == len(req.Messages) {
-		return bodyBytes
-	}
-
 	var generic map[string]json.RawMessage
 	if err := json.Unmarshal(bodyBytes, &generic); err != nil {
 		return bodyBytes
 	}
-	rawTrimmed, err := json.Marshal(trimmed)
+	buildBody := func(messages []json.RawMessage) ([]byte, error) {
+		rawTrimmed, err := json.Marshal(messages)
+		if err != nil {
+			return nil, err
+		}
+		generic["messages"] = rawTrimmed
+		return json.Marshal(generic)
+	}
+
+	// Reserve the serialized envelope and non-message fields before asking the
+	// message trimmer for a budget. This keeps large tools/response schemas from
+	// consuming the target after message-only trimming has already stopped.
+	emptyBody, err := buildBody(nil)
 	if err != nil {
 		return bodyBytes
 	}
-	generic["messages"] = rawTrimmed
+	messageBudget := softLimit - estimatePromptTokens(emptyBody)
+	if messageBudget < 0 {
+		messageBudget = 0
+	}
+	trimmed := trimOldestPairs(req.Messages, messageBudget)
+	if len(trimmed) == len(req.Messages) {
+		return bodyBytes
+	}
 
-	out, err := json.Marshal(generic)
+	out, err := buildBody(trimmed)
 	if err != nil {
 		return bodyBytes
+	}
+	// Message/tool atomicity can leave the estimate slightly above the target;
+	// continue dropping complete oldest units until the full reconstructed body
+	// fits or only the newest message remains.
+	for estimatePromptTokens(out) > softLimit && countNonSystemMessages(trimmed) > 1 {
+		next := dropOldestMessageUnit(trimmed)
+		if len(next) >= len(trimmed) {
+			break
+		}
+		trimmed = next
+		candidate, candidateErr := buildBody(trimmed)
+		if candidateErr != nil {
+			break
+		}
+		out = candidate
 	}
 
 	estimatedAfter := estimatePromptTokens(out)

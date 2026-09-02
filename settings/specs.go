@@ -47,6 +47,9 @@ func PlatformSpecs() []*Spec {
 	// out = append(out, CredentialClientQuotaSpecs()...)
 	// 2026-08-20: 项目归属（LLM 推断）平台级主开关，默认关闭。
 	out = append(out, ProjectAttributionSpecs()...)
+	// Gateway admission controls are platform-scoped and must be registered so
+	// settings_kv values can override the environment fallback.
+	out = append(out, GatewaySpecs()...)
 	return out
 }
 
