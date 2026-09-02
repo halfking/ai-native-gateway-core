@@ -25,8 +25,16 @@ func TestCompressionSpecs_DefaultsEnableAutomaticCompression(t *testing.T) {
 	wantEnv := map[string]string{
 		"compression.strategy_runner_enabled": "LLM_GATEWAY_COMPRESSION_STRATEGY_RUNNER_ENABLED",
 		"compression.selector_mode":           "LLM_GATEWAY_COMPRESSION_SELECTOR",
+		"compression.runner_mode":             "LLM_GATEWAY_COMPRESSION_RUNNER_MODE",
 		"compression.selector_spec":           "LLM_GATEWAY_COMPRESSION_SELECTOR_SPEC",
 		"compression.adaptive_target_ratio":   "LLM_GATEWAY_COMPRESSION_TARGET_RATIO",
+	}
+	runner := byKey["compression.runner_mode"]
+	if runner == nil || runner.Default != "sequential" {
+		t.Fatalf("compression.runner_mode default = %#v, want sequential", runner)
+	}
+	if runner == nil || len(runner.Options) != 2 || runner.Options[0] != "sequential" || runner.Options[1] != "parallel" {
+		t.Fatalf("compression.runner_mode options = %#v, want sequential/parallel", runner)
 	}
 	for key, want := range wantEnv {
 		if got := byKey[key]; got == nil || got.EnvName != want {
