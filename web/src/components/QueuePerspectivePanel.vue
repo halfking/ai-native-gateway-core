@@ -1089,6 +1089,44 @@ function formatTs(ts: string | undefined): string {
     return ts
   }
 }
+
+// ── 请求记录行可读性（2026-09-01）：行内展示请求 ID + 标题 ─────────────────
+// 请求 ID 全长很长，行内固定显示前 12 位（与泳道 tile tooltip 同口径），
+// 完整 ID 悬停可见。标题 = 子请求类型徽标 + 模型名 + 客户端（agent_name），
+// 与 RequestTile 的 CHILD_TYPE_SHORT 缩写保持一致，让操作员不看详情页
+// 也能分辨"是谁发的什么请求"。
+const REQUEST_TYPE_SHORT: Record<string, string> = {
+  title: '标题',
+  summary: '总结',
+  sensitive_word: '敏感词',
+  probe: '探测',
+  chat: '对话',
+  unknown: '未知',
+}
+
+function shortRequestId(requestId: string | undefined): string {
+  const id = (requestId ?? '').trim()
+  if (!id) return '—'
+  return id.length > 12 ? `${id.slice(0, 12)}…` : id
+}
+
+function requestDisplayTitle(request: LiveRequest): string {
+  const parts: string[] = []
+  if (request.requestType) parts.push(REQUEST_TYPE_SHORT[request.requestType] ?? request.requestType)
+  parts.push(request.model || '—')
+  const agent = (request.agent_name ?? '').trim()
+  if (agent) parts.push(`@${agent}`)
+  return parts.join(' ')
+}
+
+function requestTitleTooltip(request: LiveRequest): string {
+  const lines: string[] = [`请求ID: ${request.request_id || '—'}`]
+  if (request.requestType) lines.push(`类型: ${request.requestType}`)
+  if (request.model) lines.push(`模型: ${request.model}`)
+  if (request.agent_name) lines.push(`客户端: ${request.agent_name}`)
+  if (request.status) lines.push(`状态: ${request.status}`)
+  return lines.join('\n')
+}
 </script>
 
 <template>
@@ -1309,11 +1347,16 @@ function formatTs(ts: string | undefined): string {
                   class="qp-model-group-request qp-model-group-request--clickable"
                   role="button"
                   tabindex="0"
-                  :title="request.request_id"
+                  :title="requestTitleTooltip(request)"
                   @click="openRequestFromQueue(request.request_id)"
                   @keydown.enter="openRequestFromQueue(request.request_id)"
                 >
-                  <span class="qp-rq-node">{{ nodeCardTitle(node, group) }}</span><span class="qp-rq-model">{{ request.model || '—' }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
+                  <span
+                    v-if="request.request_id"
+                    class="qp-rq-id"
+                    :title="request.request_id"
+                    @click.stop
+                  >{{ shortRequestId(request.request_id) }}</span><span class="qp-rq-node">{{ nodeCardTitle(node, group) }}</span><span class="qp-rq-model">{{ requestDisplayTitle(request) }}</span><span class="qp-rq-status" :class="`qp-rq-status--${request.status}`">{{ request.status || '—' }}</span><span v-if="typeof request.latency_ms === 'number'" class="qp-rq-latency">{{ formatLatency(request.latency_ms) }}</span><span v-if="request.error_kind" class="qp-rq-err">{{ request.error_kind }}</span><span class="qp-rq-ts">{{ formatTs(request.ts) }}</span>
                 </li>
               </template>
             </ul>
@@ -1667,6 +1710,19 @@ function formatTs(ts: string | undefined): string {
 }
 .qp-model-group-request:first-child {
   border-top: none;
+}
+.qp-rq-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--kx-text-secondary, var(--kx-muted, var(--kx-text)));
+  background: var(--kx-bg, var(--kx-surface));
+  border: 1px solid var(--kx-border);
+  border-radius: 4px;
+  padding: 0 5px;
+  white-space: nowrap;
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .qp-rq-model {
   font-weight: 500;
