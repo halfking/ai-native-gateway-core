@@ -392,7 +392,12 @@ func (e *Executor) executeOpenAI(
 				StatusCode: http.StatusNotImplemented,
 			}
 		}
-		bodyBytes = append([]byte(nil), sourceBody...)
+		contextWindow := 0
+		if cand.ContextWindow != nil {
+			contextWindow = *cand.ContextWindow
+		}
+		bodyBytes = transformation.CompressResponsesIfNeeded(sourceBody, contextWindow)
+		bodyBytes = transformation.RewriteResponsesModel(bodyBytes, cand.RawModel)
 	} else {
 		bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
 		if err != nil {
@@ -990,29 +995,38 @@ func (e *Executor) executeOpenAI(
 					if (errorsx.IsContextLength(errKind) ||
 						shouldHeuristicCompact(resp.StatusCode, errKind, len(sourceBody), cand.ContextWindow)) &&
 						cand.Protocol != "anthropic-messages" {
-					switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode, body[:n]) {
-					case ctxLenRetry:
-						bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
-						if err != nil {
-							return nil, err
-						}
-						// 2026-09-01 fix: context-length recovery succeeded. Set the flag
-						// so the next iteration decrements attempt, allowing the compressed
-						// body to be retried without consuming the retry budget. This fixes
-						// the bug where recovery succeeded but the compressed payload was
-						// never sent because attempt >= effectiveMaxRetries on the next loop.
-						ctxLenRecoveryRetry = true
-						// 2026-07-03 (Bug #N extension): preserve errKind in the
-						// retryableError wrapper so if retries are exhausted, the
-						// outer tryCandidate returns lastErr with the precise Kind.
-						return nil, &retryableError{err: &upstreampkg.Error{
-							Kind:       errKind,
-							Message:    fmt.Sprintf("upstream %d (context-length recovery retry)", resp.StatusCode),
-							Body:       append([]byte(nil), body[:n]...),
-							StatusCode: resp.StatusCode,
-							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
-						}}
-					case ctxLenGiveUp:
+						switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode, body[:n]) {
+						case ctxLenRetry:
+							if nativeNonStream || nativeStream {
+								contextWindow := 0
+								if cand.ContextWindow != nil {
+									contextWindow = *cand.ContextWindow
+								}
+								sourceBody = transformation.CompressResponsesAggressively(sourceBody, contextWindow)
+								bodyBytes = append([]byte(nil), sourceBody...)
+							} else {
+								bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+							}
+							if err != nil {
+								return nil, err
+							}
+							// 2026-09-01 fix: context-length recovery succeeded. Set the flag
+							// so the next iteration decrements attempt, allowing the compressed
+							// body to be retried without consuming the retry budget. This fixes
+							// the bug where recovery succeeded but the compressed payload was
+							// never sent because attempt >= effectiveMaxRetries on the next loop.
+							ctxLenRecoveryRetry = true
+							// 2026-07-03 (Bug #N extension): preserve errKind in the
+							// retryableError wrapper so if retries are exhausted, the
+							// outer tryCandidate returns lastErr with the precise Kind.
+							return nil, &retryableError{err: &upstreampkg.Error{
+								Kind:       errKind,
+								Message:    fmt.Sprintf("upstream %d (context-length recovery retry)", resp.StatusCode),
+								Body:       append([]byte(nil), body[:n]...),
+								StatusCode: resp.StatusCode,
+								RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+							}}
+						case ctxLenGiveUp:
 							// Return a typed error so the outer Execute
 							// loop knows this is a context-length
 							// exhaustion (model-size limit, not a
