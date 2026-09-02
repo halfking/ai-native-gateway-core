@@ -206,6 +206,170 @@ func TestStubStrategy_ApplyIsGoroutineSafe(t *testing.T) {
 	}
 }
 
+func TestRunner_PanicFailsOpenSequentialAndParallel(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		t.Run(map[bool]string{false: "sequential", true: "parallel"}[parallel], func(t *testing.T) {
+			reg := NewRegistry()
+			panicker := &panicStrategy{name: "panic"}
+			good := &stubStrategy{name: "good", enabled: true, applied: true, out: []byte("ok")}
+			reg.MustRegister(panicker)
+			reg.MustRegister(good)
+			runner := NewRunner(reg)
+			sel := &staticSelector{chosen: []Strategy{panicker, good}}
+			var out []byte
+			var stats RunStats
+			var err error
+			if parallel {
+				out, stats, err = runner.RunParallelWithBody(context.Background(), sel, []byte("input"))
+			} else {
+				out, stats, err = runner.RunWithBody(context.Background(), sel, []byte("input"))
+			}
+			if err != nil {
+				t.Fatalf("panic must fail open, got %v", err)
+			}
+			if string(out) != "ok" {
+				t.Fatalf("panic should not abort siblings/chain, got %q", out)
+			}
+			if !contains(stats.FailedNames, "panic") {
+				t.Fatalf("FailedNames = %v, want panic", stats.FailedNames)
+			}
+		})
+	}
+}
+
+func TestRunParallel_NilCandidateIsSkipped(t *testing.T) {
+	reg := NewRegistry()
+	good := &stubStrategy{name: "good", enabled: true, applied: true, out: []byte("ok")}
+	reg.MustRegister(good)
+	runner := NewRunner(reg)
+	out, stats, err := runner.RunParallelWithBody(context.Background(),
+		&staticSelector{chosen: []Strategy{nil, good}}, []byte("input"))
+	if err != nil {
+		t.Fatalf("nil candidate should fail open, got %v", err)
+	}
+	if string(out) != "ok" || !contains(stats.SkippedNames, "<nil>") {
+		t.Fatalf("nil candidate handling: out=%q skipped=%v", out, stats.SkippedNames)
+	}
+}
+
+func TestRunParallel_ClonesCandidateInput(t *testing.T) {
+	reg := NewRegistry()
+	first := &mutatingStrategy{name: "first", marker: '1'}
+	second := &mutatingStrategy{name: "second", marker: '2'}
+	reg.MustRegister(first)
+	reg.MustRegister(second)
+	runner := NewRunner(reg)
+	body := []byte("abc")
+	out, _, err := runner.RunParallelWithBody(context.Background(),
+		&staticSelector{chosen: []Strategy{first, second}}, body)
+	if err != nil {
+		t.Fatalf("clone ownership run: %v", err)
+	}
+	if body[0] != 'a' {
+		t.Fatalf("runner exposed caller body to candidate mutation: %q", body)
+	}
+	if len(out) != 2 || (out[0] != '1' && out[0] != '2') {
+		t.Fatalf("unexpected cloned candidate output: %q", out)
+	}
+}
+
+func TestRunner_GuardGrowthIsRejectedAfterCustomGuard(t *testing.T) {
+	for _, parallel := range []bool{false, true} {
+		t.Run(map[bool]string{false: "sequential", true: "parallel"}[parallel], func(t *testing.T) {
+			reg := NewRegistry()
+			s := &stubStrategy{name: "grow", enabled: true, applied: true, out: []byte("ab"), guardStage: "grow"}
+			reg.MustRegister(s)
+			runner := NewRunner(reg)
+			runner.SetGuard(func(_, processed []byte, _ string) ([]byte, bool) {
+				return append(processed, []byte("expanded")...), false
+			})
+			var out []byte
+			var stats RunStats
+			if parallel {
+				out, stats, _ = runner.RunParallelWithBody(context.Background(),
+					&staticSelector{chosen: []Strategy{s}}, []byte("input"))
+			} else {
+				out, stats, _ = runner.RunWithBody(context.Background(),
+					&staticSelector{chosen: []Strategy{s}}, []byte("input"))
+			}
+			if string(out) != "input" || !contains(stats.TruncatedBy, "aggregate") {
+				t.Fatalf("custom guard growth must revert: out=%q truncated=%v", out, stats.TruncatedBy)
+			}
+		})
+	}
+}
+
+func TestRunner_CancellationStopsFurtherSequentialStages(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reg := NewRegistry()
+	first := &cancelStrategy{name: "first", cancel: cancel}
+	second := &stubStrategy{name: "second", enabled: true, applied: true, out: []byte("bad")}
+	reg.MustRegister(first)
+	reg.MustRegister(second)
+	runner := NewRunner(reg)
+	out, _, err := runner.RunWithBody(ctx, &staticSelector{chosen: []Strategy{first, second}}, []byte("input"))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error = %v, want context.Canceled", err)
+	}
+	if second.Calls() != 0 || string(out) != "input" {
+		t.Fatalf("cancellation should stop chain: second calls=%d out=%q", second.Calls(), out)
+	}
+}
+
+func TestRunParallel_PreCanceledSkipsCandidates(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	reg := NewRegistry()
+	s := &stubStrategy{name: "candidate", enabled: true, applied: true, out: []byte("ok")}
+	reg.MustRegister(s)
+	runner := NewRunner(reg)
+	out, _, err := runner.RunParallelWithBody(ctx, &staticSelector{chosen: []Strategy{s}}, []byte("input"))
+	if !errors.Is(err, context.Canceled) || s.Calls() != 0 || string(out) != "input" {
+		t.Fatalf("pre-cancel handling: err=%v calls=%d out=%q", err, s.Calls(), out)
+	}
+}
+
+type staticSelector struct{ chosen []Strategy }
+
+func (s *staticSelector) Select(context.Context, []Strategy, []byte) []Strategy { return s.chosen }
+
+type panicStrategy struct{ name string }
+
+func (s *panicStrategy) Name() string                                        { return s.name }
+func (s *panicStrategy) Description() string                                 { return "panic test strategy" }
+func (s *panicStrategy) Enabled() bool                                       { return true }
+func (s *panicStrategy) GuardStage() string                                  { return "" }
+func (s *panicStrategy) Apply(context.Context, []byte) ([]byte, bool, error) { panic("boom") }
+
+type mutatingStrategy struct {
+	name   string
+	marker byte
+}
+
+func (s *mutatingStrategy) Name() string        { return s.name }
+func (s *mutatingStrategy) Description() string { return "mutation test strategy" }
+func (s *mutatingStrategy) Enabled() bool       { return true }
+func (s *mutatingStrategy) GuardStage() string  { return "" }
+func (s *mutatingStrategy) Apply(_ context.Context, in []byte) ([]byte, bool, error) {
+	in[0] = s.marker
+	return in[:len(in)-1], true, nil
+}
+
+type cancelStrategy struct {
+	name   string
+	cancel context.CancelFunc
+}
+
+func (s *cancelStrategy) Name() string        { return s.name }
+func (s *cancelStrategy) Description() string { return "cancellation test strategy" }
+func (s *cancelStrategy) Enabled() bool       { return true }
+func (s *cancelStrategy) GuardStage() string  { return "" }
+func (s *cancelStrategy) Apply(_ context.Context, in []byte) ([]byte, bool, error) {
+	s.cancel()
+	return in, true, nil
+}
+
 func contains(ss []string, target string) bool {
 	for _, s := range ss {
 		if strings.EqualFold(s, target) {

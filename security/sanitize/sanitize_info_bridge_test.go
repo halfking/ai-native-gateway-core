@@ -64,6 +64,50 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	if gotInfo.Stats.SanitizedAt == 0 {
 		t.Fatal("SanitizedAt must be stamped")
 	}
+	if len(gotInfo.MessageRefs) != 1 {
+		t.Fatalf("MessageRefs len = %d, want 1", len(gotInfo.MessageRefs))
+	}
+	ref := gotInfo.MessageRefs[0]
+	if ref.RawIndex != 0 || ref.SanitizedIndex != 0 || !ref.Changed || ref.PlaceholderCount != 2 {
+		t.Errorf("message provenance = %+v, want index 0/0 changed with 2 placeholders", ref)
+	}
+	if ref.RawHash == "" || ref.SanitizedHash == "" || ref.RawHash == ref.SanitizedHash {
+		t.Errorf("message provenance hashes = raw:%q sanitized:%q, want distinct non-empty hashes", ref.RawHash, ref.SanitizedHash)
+	}
+	if strings.Contains(ref.RawHash, "13800138000") || strings.Contains(ref.RawHash, "a@b.com") {
+		t.Fatal("message provenance hash must not contain original PII")
+	}
+}
+
+func TestMiddlewarePublishesMessageLevelProvenanceForUnchangedMessages(t *testing.T) {
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	if err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
+
+	var got compression.SanitizeInfo
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = compression.SanitizeInfoFromContext(r.Context())
+	})
+	body := `{"model":"m","messages":[{"role":"system","content":"plain"},{"role":"user","content":"call 13800138000"},{"role":"assistant","content":"reply"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Gw-Session-Id", "sess-provenance")
+	mw.Wrap(next).ServeHTTP(httptest.NewRecorder(), req)
+
+	if len(got.MessageRefs) != 3 {
+		t.Fatalf("MessageRefs len = %d, want one ref per message", len(got.MessageRefs))
+	}
+	if got.MessageRefs[0].Changed || got.MessageRefs[2].Changed {
+		t.Fatalf("unchanged messages incorrectly marked changed: %+v", got.MessageRefs)
+	}
+	if !got.MessageRefs[1].Changed || got.MessageRefs[1].PlaceholderCount != 1 {
+		t.Fatalf("sanitized message provenance = %+v", got.MessageRefs[1])
+	}
+	for i, ref := range got.MessageRefs {
+		if ref.RawIndex != i || ref.SanitizedIndex != i || ref.RawHash == "" || ref.SanitizedHash == "" {
+			t.Errorf("ref[%d] = %+v, want aligned non-empty fingerprints", i, ref)
+		}
+	}
 }
 
 // TestMiddlewareNoInfoWithoutSanitization: clean requests carry no info, so

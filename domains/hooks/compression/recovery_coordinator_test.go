@@ -376,6 +376,30 @@ func makeRecoveryTestBody() []byte {
 	return body
 }
 
+func TestRecoveryCoordinator_CutMarkerUsesExactCompressionRange(t *testing.T) {
+	body := makeRecoveryTestBody()
+	rc := NewRecoveryCoordinator(RecoveryDeps{})
+	res := rc.Recover(context.Background(), body, "openai", 5000, "tenant", "exact-range", 0)
+	if !res.ShouldRetry || res.CutMarker == nil {
+		t.Fatalf("recovery failed: %+v", res)
+	}
+	messages, err := extractMessages(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := FindOptimalCutPoint(messages, 5000, 0.65)
+	if plan.CutIndex <= 0 {
+		t.Fatalf("test fixture did not produce a compression cut: %+v", plan)
+	}
+	want := [2]int{plan.SystemCount, plan.SystemCount + plan.CutIndex}
+	if got := res.CutMarker.PreSanitizeOffsetRange; got != want {
+		t.Fatalf("PSOR = %v, want exact CutPlan range %v (messages=%d, plan=%+v)", got, want, len(messages), plan)
+	}
+	if want[0] == 0 && want[1] == len(messages) {
+		t.Fatal("PSOR still covers the entire message array")
+	}
+}
+
 // We use a nil deps (→ ok=false) and assert the coordinator then degrades to
 // the mechanical strategy — proving the wiring path is exercised and the
 // fallback works end-to-end. A full LLM-call test lives behind compaction

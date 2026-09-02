@@ -190,15 +190,16 @@ func TestSmartCompress_BasicRebuild(t *testing.T) {
 
 func TestCutMarker_RoundTrip(t *testing.T) {
 	original := CutMarker{
-		Version:        cutMarkerSchemaVersion,
-		CreatedAt:      1719300000,
-		SourceMsgCount: 20,
-		SystemMsgCount: 2,
-		CutIndex:       8,
-		SummaryMarker:  "smm_v1:abcd1234]",
-		Strategy:       "smart_window_llm",
-		BytesBefore:    50000,
-		BytesAfter:     20000,
+		Version:                cutMarkerSchemaVersion,
+		CreatedAt:              1719300000,
+		SourceMsgCount:         20,
+		SystemMsgCount:         2,
+		CutIndex:               8,
+		SummaryMarker:          "smm_v1:abcd1234]",
+		Strategy:               "smart_window_llm",
+		BytesBefore:            50000,
+		BytesAfter:             20000,
+		PreSanitizeOffsetRange: [2]int{2, 10},
 	}
 
 	// Test SessionState round-trip
@@ -221,6 +222,9 @@ func TestCutMarker_RoundTrip(t *testing.T) {
 	if recovered.Strategy != original.Strategy {
 		t.Errorf("Strategy mismatch: %s vs %s", recovered.Strategy, original.Strategy)
 	}
+	if recovered.PreSanitizeOffsetRange != original.PreSanitizeOffsetRange {
+		t.Errorf("PSOR mismatch: %v vs %v", recovered.PreSanitizeOffsetRange, original.PreSanitizeOffsetRange)
+	}
 	if recovered.SummaryText != "test summary" {
 		t.Errorf("SummaryText mismatch: %s", recovered.SummaryText)
 	}
@@ -228,20 +232,24 @@ func TestCutMarker_RoundTrip(t *testing.T) {
 
 func TestCutMarker_RedisRoundTrip(t *testing.T) {
 	cm := CutMarker{
-		Version:        cutMarkerSchemaVersion,
-		CreatedAt:      1719300000,
-		SourceMsgCount: 15,
-		SystemMsgCount: 1,
-		CutIndex:       5,
-		SummaryMarker:  "smm_v1:1234abcd]",
-		Strategy:       "smart_window_mechanical",
-		BytesBefore:    30000,
-		BytesAfter:     12000,
+		Version:                cutMarkerSchemaVersion,
+		CreatedAt:              1719300000,
+		SourceMsgCount:         15,
+		SystemMsgCount:         1,
+		CutIndex:               5,
+		SummaryMarker:          "smm_v1:1234abcd]",
+		Strategy:               "smart_window_mechanical",
+		BytesBefore:            30000,
+		BytesAfter:             12000,
+		PreSanitizeOffsetRange: [2]int{1, 6},
 	}
 
 	fields := cm.MarshalForRedis()
 	if fields["cm_ci"] != "5" {
 		t.Errorf("expected cm_ci=5, got %s", fields["cm_ci"])
+	}
+	if fields["cm_psor0"] != "1" || fields["cm_psor1"] != "6" {
+		t.Errorf("expected PSOR fields [1,6], got [%s,%s]", fields["cm_psor0"], fields["cm_psor1"])
 	}
 
 	recovered := UnmarshalCutMarkerFromRedis(fields)
@@ -254,6 +262,9 @@ func TestCutMarker_RedisRoundTrip(t *testing.T) {
 	if recovered.Strategy != cm.Strategy {
 		t.Errorf("Strategy mismatch: %s vs %s", recovered.Strategy, cm.Strategy)
 	}
+	if recovered.PreSanitizeOffsetRange != cm.PreSanitizeOffsetRange {
+		t.Errorf("PSOR mismatch: %v vs %v", recovered.PreSanitizeOffsetRange, cm.PreSanitizeOffsetRange)
+	}
 }
 
 func TestCutMarker_GlobalCutIndex(t *testing.T) {
@@ -263,6 +274,34 @@ func TestCutMarker_GlobalCutIndex(t *testing.T) {
 	}
 	if cm.GlobalCutIndex() != 7 {
 		t.Errorf("expected GlobalCutIndex=7, got %d", cm.GlobalCutIndex())
+	}
+}
+
+func TestCutMarker_JSONRoundTripPreservesPSOR(t *testing.T) {
+	original := CutMarker{
+		Version:                cutMarkerSchemaVersion,
+		CreatedAt:              1719300000,
+		SourceMsgCount:         12,
+		SystemMsgCount:         2,
+		CutIndex:               5,
+		PreSanitizeOffsetRange: [2]int{2, 7},
+	}
+	encoded, err := original.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		CutMarker struct {
+			PreSanitizeOffsetRange []int `json:"pre_sanitize_offset_range"`
+		} `json:"cut_marker"`
+	}
+	if err := json.Unmarshal(encoded, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(envelope.CutMarker.PreSanitizeOffsetRange) != 2 ||
+		envelope.CutMarker.PreSanitizeOffsetRange[0] != 2 ||
+		envelope.CutMarker.PreSanitizeOffsetRange[1] != 7 {
+		t.Fatalf("JSON PSOR = %v, want [2 7]", envelope.CutMarker.PreSanitizeOffsetRange)
 	}
 }
 
@@ -367,4 +406,54 @@ func TestComputeInfoWeight(t *testing.T) {
 // unixNow returns the current unix timestamp for testing.
 func unixNow() int64 {
 	return time.Now().Unix()
+}
+
+func TestSmartCompress_InvalidCutPlanDoesNotPanic(t *testing.T) {
+	body := makeBodyAny(
+		makeMsg("system", "sys"),
+		makeMsg("user", "one"),
+	)
+	plans := []CutPlan{
+		{SystemCount: -1, CutIndex: 0},
+		{SystemCount: 3, CutIndex: 0},
+		{SystemCount: 1, CutIndex: 2},
+		{SystemCount: 1, CutIndex: 1, SummariseCount: 2, RetainCount: 0},
+	}
+	for _, plan := range plans {
+		if rebuilt, err := SmartCompress(body, plan, "openai", "summary"); err == nil || rebuilt != nil {
+			t.Errorf("SmartCompress(%+v) = (%q, %v), want nil body and error", plan, rebuilt, err)
+		}
+	}
+}
+
+func TestIncrementalBuild_RejectsMalformedMarkerBounds(t *testing.T) {
+	body := makeBodyAny(
+		makeMsg("system", "sys"),
+		makeMsg("user", "one"),
+		makeMsg("assistant", "two"),
+		makeMsg("user", "three"),
+	)
+	base := CutMarker{SystemMsgCount: 1, CutIndex: 1, SourceMsgCount: 4, SummaryText: "summary"}
+	tests := []struct {
+		name   string
+		mutate func(*CutMarker)
+	}{
+		{"negative system", func(m *CutMarker) { m.SystemMsgCount = -1 }},
+		{"system beyond body", func(m *CutMarker) { m.SystemMsgCount = 5 }},
+		{"cut beyond body", func(m *CutMarker) { m.CutIndex = 4 }},
+		{"source below cut", func(m *CutMarker) { m.SourceMsgCount = 1 }},
+		{"source beyond body", func(m *CutMarker) { m.SourceMsgCount = 5 }},
+		{"negative psor", func(m *CutMarker) { m.PreSanitizeOffsetRange = [2]int{-1, 2} }},
+		{"reversed psor", func(m *CutMarker) { m.PreSanitizeOffsetRange = [2]int{3, 2} }},
+		{"psor beyond source", func(m *CutMarker) { m.PreSanitizeOffsetRange = [2]int{1, 5} }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			marker := base
+			tt.mutate(&marker)
+			if rebuilt, ok := IncrementalBuild(body, marker, "openai"); ok || rebuilt != nil {
+				t.Fatalf("IncrementalBuild accepted malformed marker: body=%q ok=%v", rebuilt, ok)
+			}
+		})
+	}
 }

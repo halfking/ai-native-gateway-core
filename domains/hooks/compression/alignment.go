@@ -27,17 +27,16 @@ func buildAlignmentMap(before, after []byte, summaryIdx int) []AlignmentInfo {
 	if err != nil || len(beforeMsgs) == 0 {
 		return nil
 	}
-	afterByHash := make(map[string]int, len(beforeMsgs))
+	afterByHash := make(map[string][]int, len(beforeMsgs))
 	if afterMsgs, err := extractMessages(after); err == nil {
 		for i, m := range afterMsgs {
 			if h := msgHash(m); h != "" {
-				if _, seen := afterByHash[h]; !seen {
-					afterByHash[h] = i // first occurrence wins
-				}
+				afterByHash[h] = append(afterByHash[h], i)
 			}
 		}
 	}
 	align := make([]AlignmentInfo, 0, len(beforeMsgs))
+	usedAfter := make(map[string]int, len(afterByHash))
 	for i, m := range beforeMsgs {
 		h := msgHash(m)
 		info := AlignmentInfo{
@@ -48,9 +47,12 @@ func buildAlignmentMap(before, after []byte, summaryIdx int) []AlignmentInfo {
 			Hash:            h,
 		}
 		if h != "" {
-			if j, ok := afterByHash[h]; ok {
+			positions := afterByHash[h]
+			used := usedAfter[h]
+			if used < len(positions) {
 				info.IsCompressed = false
-				info.CompressedIndex = j
+				info.CompressedIndex = positions[used]
+				usedAfter[h] = used + 1
 			} else if summaryIdx >= 0 {
 				info.CompressedIndex = summaryIdx
 				info.CompressedInto = summaryIdx

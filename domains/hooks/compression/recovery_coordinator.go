@@ -209,10 +209,14 @@ func (rc *RecoveryCoordinator) Recover(
 	if strategy == "smart_window_llm" {
 		markerSummaryText = summaryText
 	}
-	// 2026-09-01 (audit §五)：在 compression 路径下 sanitize 阶段先于本压缩触发，
-	// 把 [0, len(messages)) 作为 PreSanitizeOffsetRange 占位（语义：所有
-	// messages 在压缩前都已被 sanitize 覆盖）。后续 smart_sani_guard.go 改造
-	// 后会替换为基于 usedCount 推导的精确 range。
+	// PSOR is expressed in the original, pre-sanitize message coordinates.
+	// The compression cut covers leading system messages plus the dropped
+	// non-system prefix; system messages are included because they are part
+	// of the exact source range replaced by the rebuilt representation.
+	preSanitizeRange := [2]int{plan.SystemCount, plan.SystemCount + plan.CutIndex}
+	if plan.CutIndex <= 0 || plan.SystemCount < 0 || preSanitizeRange[1] > len(messages) {
+		preSanitizeRange = [2]int{}
+	}
 	marker := NewCutMarkerWithPreSanitize(
 		plan,
 		len(messages),
@@ -221,7 +225,7 @@ func (rc *RecoveryCoordinator) Recover(
 		markerSummaryText,
 		len(body),
 		len(rebuilt),
-		[2]int{0, len(messages)},
+		preSanitizeRange,
 	)
 
 	if rc.deps.Cache != nil && gwSessionID != "" {

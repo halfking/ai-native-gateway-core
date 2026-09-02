@@ -24,6 +24,7 @@ package compression
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 )
@@ -304,6 +305,12 @@ func SmartCompress(body []byte, plan CutPlan, protocol string, summaryText strin
 	}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
+	}
+	if plan.SystemCount < 0 || plan.SystemCount > len(req.Messages) ||
+		plan.CutIndex < -1 || plan.CutIndex > len(req.Messages)-plan.SystemCount ||
+		plan.SummariseCount < 0 || plan.RetainCount < 0 ||
+		plan.SummariseCount+plan.RetainCount > len(req.Messages)-plan.SystemCount {
+		return nil, fmt.Errorf("invalid cut plan bounds")
 	}
 
 	systemMsgs := req.Messages[:plan.SystemCount]
