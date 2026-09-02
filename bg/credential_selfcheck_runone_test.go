@@ -49,7 +49,7 @@ func TestRunOne_NoRoutableModels_InsertsFailedPlaceholder(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(int64(42)))
 
 	// finalizeRun: UPDATE self_check_runs SET ... WHERE id=$1
-	mock.ExpectExec("UPDATE self_check_runs SET").
+	mock.ExpectExec("UPDATE self_check_runs SET[\\s\\S]*attempted_models = \\$13::text::jsonb").
 		WithArgs(
 			int64(42),           // run id
 			pgxmock.AnyArg(),    // completed_at
