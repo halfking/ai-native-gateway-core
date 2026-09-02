@@ -2,9 +2,51 @@ package transformation
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestRewriteResponsesModelPreservesEnvelope(t *testing.T) {
+	body := []byte(`{"model":"old","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]}],"metadata":{"trace":"keep"}}`)
+	out := RewriteResponsesModel(body, "new")
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(out, &envelope); err != nil {
+		t.Fatalf("invalid rewritten envelope: %v", err)
+	}
+	var model string
+	if err := json.Unmarshal(envelope["model"], &model); err != nil || model != "new" {
+		t.Fatalf("model = %q, want new", model)
+	}
+	if string(envelope["metadata"]) != `{"trace":"keep"}` {
+		t.Fatalf("metadata changed: %s", envelope["metadata"])
+	}
+	if string(RewriteResponsesModel(out, "new")) != string(out) {
+		t.Fatal("rewriting an already matching model should preserve bytes")
+	}
+}
+
+func TestCompressResponsesIfNeeded_PreservesEnvelopeAndTrimsStringInput(t *testing.T) {
+	body := []byte(`{"model":"m","instructions":"keep","input":"` + strings.Repeat("历史内容 ", 500) + `","metadata":{"keep":true}}`)
+	out := CompressResponsesIfNeeded(body, 1000)
+	if len(out) >= len(body) {
+		t.Fatalf("expected Responses input to shrink: before=%d after=%d", len(body), len(out))
+	}
+	var envelope struct {
+		Model        string `json:"model"`
+		Instructions string `json:"instructions"`
+		Input        string `json:"input"`
+		Metadata     struct {
+			Keep bool `json:"keep"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(out, &envelope); err != nil {
+		t.Fatalf("invalid compressed Responses envelope: %v", err)
+	}
+	if envelope.Model != "m" || envelope.Instructions != "keep" || !envelope.Metadata.Keep || envelope.Input == "" {
+		t.Fatalf("compressed envelope lost fields: %+v", envelope)
+	}
+}
 
 func TestCompressMessagesIfNeeded_NoOpWhenFits(t *testing.T) {
 	body := []byte(`{"model":"m","messages":[
@@ -31,6 +73,27 @@ func TestCompressMessagesIfNeeded_UsesEightyPercentTriggerAndSixtyPercentTarget(
 	}
 	if EstimateTokens(out) > int(float64(contextWindow)*0.60) {
 		t.Fatalf("compression stopped above 60%% target: estimated=%d target=%d", EstimateTokens(out), int(float64(contextWindow)*0.60))
+	}
+}
+
+func TestCompressMessagesAggressively_UsesSmallWindowCap(t *testing.T) {
+	long := strings.Repeat("x", 3000)
+	var b strings.Builder
+	b.WriteString(`{"model":"m","messages":[`)
+	for i := 0; i < 400; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"role":"user","content":"%s"},{"role":"assistant","content":"%s"}`, long, long)
+	}
+	b.WriteString(`]}`)
+	body := []byte(b.String())
+	out := CompressMessagesAggressively(body, 500_000)
+	if EstimateTokens(out) > 200_000 {
+		t.Fatalf("aggressive compression exceeded small-window cap: got=%d want<=200000", EstimateTokens(out))
+	}
+	if len(out) >= len(body) {
+		t.Fatalf("expected aggressive compression to shrink body: before=%d after=%d", len(body), len(out))
 	}
 }
 
