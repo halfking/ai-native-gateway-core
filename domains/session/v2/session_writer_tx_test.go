@@ -151,7 +151,7 @@ func expectRequestLock(mock pgxmock.PgxPoolIface) {
 // so we use AnyArg; the contract pin for the JSON shape lives in
 // session_aggregate_outbox_reaper_test.go (Encode/Decode round-trip).
 func expectOutboxEnqueue(mock pgxmock.PgxPoolIface) {
-	mock.ExpectExec("INSERT INTO session_aggregate_outbox").
+	mock.ExpectExec("INSERT INTO session_aggregate_outbox[\\s\\S]*\\$5::text::jsonb").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 }
