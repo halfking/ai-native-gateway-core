@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
 [![Multi-Tenant](https://img.shields.io/badge/Multi--Tenant-RLS%20enabled-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/Version-v2.4.8-green.svg)](VERSION)
+[![Version](https://img.shields.io/badge/Version-v2.4.7-green.svg)](VERSION)
 
 ---
 
@@ -117,7 +117,7 @@ cd ..
 
 # 健康检查
 curl http://localhost:8781/healthz
-# 返回: {"status":"ok","version":"v2.4.8"}
+# 返回: {"status":"ok","version":"v2.4.7"}
 ```
 
 ### 升级
