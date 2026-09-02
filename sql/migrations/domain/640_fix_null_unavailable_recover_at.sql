@@ -38,6 +38,16 @@ CREATE TABLE IF NOT EXISTS schema_migration_audit (
     note           TEXT NOT NULL DEFAULT ''
 );
 
+-- Older schema snapshots created this table without a unique constraint. Keep
+-- the newest row for each migration, then add the constraint required by the
+-- idempotent audit upsert below.
+DELETE FROM schema_migration_audit older
+USING schema_migration_audit newer
+WHERE older.migration_id = newer.migration_id
+  AND (older.applied_at, older.ctid) < (newer.applied_at, newer.ctid);
+CREATE UNIQUE INDEX IF NOT EXISTS schema_migration_audit_migration_id_uidx
+    ON schema_migration_audit (migration_id);
+
 WITH candidates AS (
     SELECT count(*)::bigint AS row_count
     FROM credential_model_bindings
