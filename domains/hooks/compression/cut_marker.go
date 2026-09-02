@@ -220,8 +220,32 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 		return nil, false
 	}
 
+	// Validate every marker-derived slice bound before slicing. SourceMsgCount
+	// was added after the first marker format, so zero remains a valid legacy
+	// value and is treated as "unknown". A non-zero PSOR is provenance for the
+	// original message array and must be a monotonic, in-range half-open range.
+	messageCount := len(req.Messages)
+	if marker.SourceMsgCount < 0 || marker.SystemMsgCount < 0 || marker.SystemMsgCount > messageCount ||
+		marker.CutIndex < 0 || marker.CutIndex > messageCount-marker.SystemMsgCount {
+		return nil, false
+	}
 	globalCut := marker.GlobalCutIndex()
-	if globalCut >= len(req.Messages) {
+	if globalCut < marker.SystemMsgCount || globalCut > messageCount {
+		return nil, false
+	}
+	if marker.SourceMsgCount > 0 {
+		if marker.SourceMsgCount < globalCut || marker.SourceMsgCount > messageCount {
+			return nil, false
+		}
+	}
+	psorStart, psorEnd := marker.PreSanitizeOffsetRange[0], marker.PreSanitizeOffsetRange[1]
+	if psorStart < 0 || psorEnd < 0 || psorStart > psorEnd {
+		return nil, false
+	}
+	if psorEnd > messageCount || (marker.SourceMsgCount > 0 && psorEnd > marker.SourceMsgCount) {
+		return nil, false
+	}
+	if globalCut >= messageCount {
 		// Incoming body is shorter than the cached cut point — stale marker.
 		return nil, false
 	}

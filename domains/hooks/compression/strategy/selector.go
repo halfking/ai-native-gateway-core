@@ -143,7 +143,14 @@ func (m *ManualSelector) Select(_ context.Context, all []Strategy, _ []byte) []S
 	// 这样 Selector 的输出是"声明意图"，Runner 才是"动态执行集合"。
 	index := make(map[string]Strategy, len(all))
 	for _, s := range all {
-		index[s.Name()] = s
+		if isNilStrategy(s) {
+			continue
+		}
+		name := safeName(s)
+		if name == "<invalid>" {
+			continue
+		}
+		index[name] = s
 	}
 	seen := make(map[string]bool, len(m.policy.Names))
 	out := make([]Strategy, 0, len(m.policy.Names))

@@ -47,22 +47,32 @@ type EscalationProfile interface {
 
 // ReductionFactorOf 安全读取策略的预估压缩率。未实现 EscalationProfile 时
 // 返回 1.0（无预期压缩）。值被钳制到 (0, 1.0]。
-func ReductionFactorOf(s Strategy) float64 {
-	if ep, ok := s.(EscalationProfile); ok {
-		f := ep.ReductionFactor()
-		if f <= 0 {
-			return 1.0
-		}
-		if f > 1.0 {
-			return 1.0
-		}
-		return f
+func ReductionFactorOf(s Strategy) (factor float64) {
+	factor = 1.0
+	if isNilStrategy(s) {
+		return factor
 	}
-	return 1.0
+	defer func() {
+		if recover() != nil || factor <= 0 || factor > 1 {
+			factor = 1.0
+		}
+	}()
+	if ep, ok := s.(EscalationProfile); ok {
+		factor = ep.ReductionFactor()
+	}
+	return factor
 }
 
 // CostTierOf 安全读取策略的成本档位。未实现 EscalationProfile 时返回 0。
-func CostTierOf(s Strategy) int {
+func CostTierOf(s Strategy) (tier int) {
+	if isNilStrategy(s) {
+		return 0
+	}
+	defer func() {
+		if recover() != nil {
+			tier = 0
+		}
+	}()
 	if ep, ok := s.(EscalationProfile); ok {
 		return ep.CostTier()
 	}
@@ -172,7 +182,7 @@ func (a *AdaptiveSelector) Select(_ context.Context, all []Strategy, body []byte
 	estSize := size
 	stages := 0
 	for _, s := range ordered {
-		if !s.Enabled() {
+		if !safeEnabled(s) {
 			continue
 		}
 		if a.cfg.MaxStages > 0 && stages >= a.cfg.MaxStages {
