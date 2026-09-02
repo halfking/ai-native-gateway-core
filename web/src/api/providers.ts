@@ -84,6 +84,12 @@ export interface CredentialCheckResult {
   models_endpoint_resolved: string | null
   models_endpoint_template: string | null
   discovery_strategy: string | null
+  // 2026-09-02: typed models-error kind + redacted preview. When the
+  // upstream returns HTML on /v1/models, this is "non_json_body" and the
+  // UI renders a tailored hint instead of leaking raw "<html>…" into
+  // the credential detail drawer.
+  models_error_kind?: string | null
+  models_error_preview?: string | null
 }
 
 export interface DiagnoseProviderResponse {
@@ -242,6 +248,11 @@ export interface ProviderCredential {
   health_source?: 'models' | 'probe' | 'mixed' | 'none' | null
   health_warning_code?: string | null
   health_error?: string | null
+  // 2026-09-02: typed health-error kind. Populated only by the live
+  // /check-health response (CredentialCheckResult) and not by the static
+  // listCredentials payload — operators must click "立即检测" once after a
+  // credential edit for the typed kind to appear next to health_error.
+  health_error_kind?: string | null
   health_latency_ms?: number | null
   health_probe_model?: string | null
   // v0.81: API model-list verification status (null = not yet probed)
@@ -337,6 +348,39 @@ export function getCredentialUsage(providerId: number, credId: number, days = 7)
 
 export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
+}
+
+// 2026-09-02: rotate a credential's primary secret without changing its
+// identity or model bindings. The backend (admin/provider_credential.go
+// rotateCredentialPrimaryKey) requires raw_model_name so it can validate
+// the binding before the swap and queue a probe afterwards.
+//
+// Probe status mirrors the queueCredentialRotationProbe return value:
+//   - "queued"             probe was queued for manual model probing
+//   - "queue_unavailable"  probe queue refused (warned to slog, surfaced to 0)
+//   - "not_configured"     modelProbe pipeline not configured
+// probe_queued is a strict boolean derived from probe_status === "queued".
+export interface RotateCredentialPrimaryKeyRequest {
+  api_key: string
+  raw_model_name: string
+}
+
+export interface RotateCredentialPrimaryKeyResponse {
+  message: string
+  probe_status: string
+  probe_queued: boolean
+}
+
+export function rotateCredentialPrimaryKey(
+  providerId: number,
+  credId: number,
+  body: RotateCredentialPrimaryKeyRequest,
+) {
+  return req<RotateCredentialPrimaryKeyResponse>(
+    'POST',
+    `/api/providers/${providerId}/credentials/${credId}/rotate-primary-key`,
+    body,
+  )
 }
 
 // ── GET helper (was: GET with POST fallback) ─────────────────────────────

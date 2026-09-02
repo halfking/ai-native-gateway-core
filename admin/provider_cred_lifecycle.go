@@ -24,12 +24,14 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -192,8 +194,14 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 	var probeError string
 	var probeHTTPStatus int
 	var probeLatencyMs int
+	// 2026-09-02: typed model-error kind + redacted preview so the admin UI
+	// can render a tailored hint instead of leaking the raw "<html>…"
+	// payload into the credential detail drawer (see CredsTab.vue
+	// health_error_kind branch).
+	var modelsErrorKind string
+	var modelsErrorPreview string
 
-	if decErr != nil {
+if decErr != nil {
 		healthStatus = "error"
 		healthError = "decrypt failed"
 		msg := healthError
@@ -206,9 +214,44 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 
 		if fetchErr != nil {
 			healthStatus = "unreachable"
-			healthError = fetchErr.Error()
-			msg := fetchErr.Error()
-			apiModelsErr = &msg
+			// 2026-09-02: previously we piped the raw modelresponse.Error
+			// string straight into health_error. When an upstream
+			// (e.g. sunyun-china2) returns an HTML error page on
+			// /v1/models, the string was "parse models response failed:
+			// invalid character '<' looking for beginning of value
+			// (context: body_bytes=1726)" — completely opaque to the
+			// operator and made the drawer look broken. Now we surface a
+			// short tag + a clean preview so the UI can render a
+			// tailored hint. The original error remains available via
+			// slog below for debugging.
+			var mrErr *modelresponse.Error
+			switch {
+			case errors.As(fetchErr, &mrErr) && mrErr.Kind == modelresponse.ErrorKindNonJSONBody:
+				healthError = "upstream_non_json"
+				preview := modelresponse.Preview(mrErr)
+				msg := "上游 /v1/models 返回了非 JSON 响应（疑似 HTML 错误页）"
+				if preview != "" {
+					msg = msg + "; preview=" + preview
+				}
+				apiModelsErr = &msg
+				modelsErrorKind = modelresponse.ErrorKindNonJSONBody
+				modelsErrorPreview = preview
+				slog.Warn("credential health: upstream returned non-JSON on /v1/models",
+					"credential_id", credID,
+					"provider_id", providerID,
+					"body_bytes", len(mrErr.Body),
+					"preview", preview,
+					"underlying", mrErr.Err,
+				)
+			default:
+				healthError = fetchErr.Error()
+				msg := healthError
+				apiModelsErr = &msg
+				if mrErr != nil {
+					modelsErrorKind = mrErr.Kind
+					modelsErrorPreview = modelresponse.Preview(mrErr)
+				}
+			}
 			modelsStatus = -1
 		} else if len(models) == 0 {
 			healthStatus = "unreachable"
@@ -298,6 +341,9 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 		"routing_models_upserted":  routingModelsUpserted,
 		"discovery_strategy":       cred.discoveryStrategy,
 		"models_endpoint_template": cred.modelsEndpointTpl,
+		// 2026-09-02: see modelsErrorKind / modelsErrorPreview above.
+		"models_error_kind":    modelsErrorKind,
+		"models_error_preview": modelsErrorPreview,
 	}, nil
 }
 
