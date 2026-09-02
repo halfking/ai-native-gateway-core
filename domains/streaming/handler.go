@@ -3425,7 +3425,11 @@ func (h *ChatHandler) serveWithExecutor(
 	// new turns to the compressed session history and, when the sliding
 	// window fires, produces a lossless LLM summary (or trims as fallback).
 	var scResult *compression.PrepareResult
-	if h.sessionCompressor != nil && gwSessionID != "" {
+	// SessionCompressor persists message hashes, summaries, and rebuild markers
+	// for Chat/Anthropic envelopes. Native Responses retains its input-shaped
+	// body through dispatch, where candidate-window and 4xx recovery use the
+	// Responses-specific compressor without corrupting session-cache state.
+	if h.sessionCompressor != nil && gwSessionID != "" && clientProtocolFromPath(r.URL.Path) != "openai-responses" {
 		// entering the compressing block — runtime transitioned EventRouted → EventCompressing below
 		tenantForSC := "default"
 		if keyInfo != nil {
@@ -3435,11 +3439,18 @@ func (h *ChatHandler) serveWithExecutor(
 		if isAnthropicMessagesPath(r.URL.Path) {
 			protocolForSC = "anthropic-messages"
 		}
-		// Resolve the target model context window from the first candidate.
-		// 0 when unknown (TOKEN trigger then relies on msg_count / idle only).
+		// Use the smallest known candidate window as a safe session-level
+		// baseline. Dispatch may reorder or fail over candidates after Prepare;
+		// a conservative baseline prevents a later small-window candidate from
+		// receiving an over-large session body.
 		ctxWindow := 0
-		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
-			ctxWindow = *candidates[0].ContextWindow
+		for _, candidate := range candidates {
+			if candidate.ContextWindow == nil || *candidate.ContextWindow <= 0 {
+				continue
+			}
+			if ctxWindow == 0 || *candidate.ContextWindow < ctxWindow {
+				ctxWindow = *candidate.ContextWindow
+			}
 		}
 		scPrepareStart := time.Now()
 		// SP-02: state machine — body compression has started.

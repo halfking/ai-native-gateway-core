@@ -244,7 +244,7 @@ type Compressor struct {
 	AdaptiveTargetRatio float64
 	// StrategyRunnerEnabled is an explicit opt-in for live executor integration.
 	StrategyRunnerEnabled bool
-	// StrategyRunnerMode selects sequential (default) or parallel execution.
+	// StrategyRunnerMode selects sequential (default) or parallel candidate execution.
 	StrategyRunnerMode string
 }
 
