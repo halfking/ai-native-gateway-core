@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
+import { ElMessage } from 'element-plus'
 import {
   updateCredential, deleteCredential, checkCredential,
   addCredential,
@@ -12,6 +13,8 @@ import {
   getCredentialFpSlotStats, type FpSlotStats,
   type CredentialLifecycleStatus, type ProviderCredential, type CredentialStatus,
   getCredentialModels, type ModelOffer,
+  revealCredentialKey,
+  rotateCredentialPrimaryKey,
 } from '../../api'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 import CredentialModelsPanel from './CredentialModelsPanel.vue'
@@ -306,6 +309,114 @@ function openDrawer(c: ProviderCredential) {
   loadDrawerModels()
 }
 
+// 2026-09-02: reveal / rotate state for the credential API Key. Lives
+// alongside the other drawer-bound refs so a close + reopen starts clean.
+// `revealedApiKey` is intentionally component-local (not on `selected`):
+// we never want it persisted in the cloned ProviderCredential, since the
+// copy is serialized for offline edits in some debug paths.
+const revealedApiKey = ref<string | null>(null)
+const revealing = ref(false)
+const rotateModalOpen = ref(false)
+const rotateRawModelName = ref('')
+const rotateNewApiKey = ref('')
+const rotateNewApiKeyConfirm = ref('')
+const rotateSubmitting = ref(false)
+const rotateErr = ref('')
+
+async function revealApiKey() {
+  const c = selected.value
+  if (!c) return
+  revealing.value = true
+  try {
+    const r = await revealCredentialKey(props.provider.id, c.id)
+    revealedApiKey.value = r.api_key
+  } catch (e: unknown) {
+    ElMessage.error(e instanceof Error ? e.message : pd('creds.apiKeyRotateFailed'))
+  } finally {
+    revealing.value = false
+  }
+}
+
+function hideApiKey() {
+  revealedApiKey.value = null
+}
+
+async function copyRevealed() {
+  if (!revealedApiKey.value) return
+  try {
+    await navigator.clipboard.writeText(revealedApiKey.value)
+    ElMessage.success(td('common.copied' as never, '已复制' as never))
+  } catch (e: unknown) {
+    // navigator.clipboard can refuse under insecure contexts; surface a
+    // friendly hint rather than letting the exception propagate.
+    ElMessage.warning(e instanceof Error ? e.message : pd('creds.apiKeyRotateFailed'))
+  }
+}
+
+function openRotateModal() {
+  if (!selected.value) return
+  if (!probeModelOptions.value.length) {
+    ElMessage.warning(pd('creds.apiKeyRotateHintNoBinding'))
+    return
+  }
+  rotateErr.value = ''
+  rotateNewApiKey.value = ''
+  rotateNewApiKeyConfirm.value = ''
+  // Default the model to the credential's currently pinned default probe
+  // model if it's bound, otherwise the first option.
+  const pinned = (selected.value.default_probe_model ?? '').trim()
+  const found = probeModelOptions.value.find(o => o.value === pinned)
+  rotateRawModelName.value = found ? found.value : probeModelOptions.value[0].value
+  rotateModalOpen.value = true
+}
+
+async function submitRotate() {
+  if (!selected.value) return
+  const k1 = rotateNewApiKey.value
+  const k2 = rotateNewApiKeyConfirm.value
+  if (!k1.trim()) {
+    rotateErr.value = pd('creds.apiKeyRotateMissing')
+    return
+  }
+  if (k1 !== k2) {
+    rotateErr.value = pd('creds.apiKeyRotateMismatch')
+    return
+  }
+  if (!rotateRawModelName.value) {
+    rotateErr.value = pd('creds.apiKeyRotateModelLabel')
+    return
+  }
+  rotateSubmitting.value = true
+  rotateErr.value = ''
+  try {
+    await rotateCredentialPrimaryKey(props.provider.id, selected.value.id, {
+      api_key: k1,
+      raw_model_name: rotateRawModelName.value,
+    })
+    rotateModalOpen.value = false
+    ElMessage.success(pd('creds.apiKeyRotateSuccess'))
+    // Drop any cached plaintext before closing — the new key replaces the
+    // old one and the drawer will re-fetch key_masked on next open.
+    revealedApiKey.value = null
+    emit('refresh')
+    closeDrawer()
+  } catch (e: unknown) {
+    rotateErr.value = e instanceof Error ? e.message : pd('creds.apiKeyRotateFailed')
+  } finally {
+    rotateSubmitting.value = false
+  }
+}
+
+// When the operator switches credentials inside the drawer, drop the
+// previously-revealed plaintext — otherwise A's key would be readable
+// through B's drawer. The reveal action is also disabled while `selected`
+// is null (button gating).
+watch(() => selected.value?.id, () => {
+  revealedApiKey.value = null
+  rotateModalOpen.value = false
+  rotateErr.value = ''
+})
+
 function closeDrawer() {
   drawerTab.value = 'info'
   selected.value = null
@@ -314,6 +425,9 @@ function closeDrawer() {
   saveMsgRejectCtx.value = null
   checkMsg.value = ''
   drawerModels.value = []
+  revealedApiKey.value = null
+  rotateModalOpen.value = false
+  rotateErr.value = ''
 }
 
 function openAddCred() {
@@ -516,6 +630,12 @@ async function checkSelected() {
       c.health_checked_at = new Date().toISOString()
       if (r.health_error != null) c.health_error = r.health_error
       if (r.health_probe_model != null) c.health_probe_model = r.health_probe_model
+    }
+    // 2026-09-02: surface the typed upstream-error kind so the drawer can
+    // render a tailored hint (e.g. upstreamNonJsonHint) below health_error
+    // instead of leaking the raw "<html>…body_bytes=1726" payload.
+    if (r.models_error_kind !== undefined) {
+      c.health_error_kind = r.models_error_kind ?? null
     }
     checkMsg.value = probeResultMsg(r)
     emit('silentRefresh')
@@ -872,7 +992,38 @@ function onTagsInput(ev: Event) {
             <div class="drawer-section-title">{{ pd('creds.drawerSectionBasic') }}</div>
             <label class="field-label">{{ pd('creds.drawerFieldLabel') }}</label>
             <input v-model="selected.label" class="field-input" />
-            <div class="key-fingerprint drawer-key">{{ selected.key_masked ?? '—' }}</div>
+            <label class="field-label" style="margin-top:6px">{{ pd('creds.drawerFieldApiKey') || 'API Key' }}</label>
+            <div class="drawer-key-wrap">
+              <div class="key-fingerprint drawer-key">
+                {{ revealedApiKey ?? selected.key_masked ?? '—' }}
+              </div>
+              <div class="btn-row" style="margin-top:6px">
+                <template v-if="revealedApiKey">
+                  <button class="btn btn-sm" type="button" @click="copyRevealed">{{ pd('creds.apiKeyCopy') }}</button>
+                  <button class="btn btn-sm btn-ghost" type="button" @click="hideApiKey">{{ pd('creds.apiKeyHide') }}</button>
+                </template>
+                <template v-else>
+                  <button class="btn btn-sm" type="button" :disabled="revealing" @click="revealApiKey">
+                    {{ revealing ? pd('creds.apiKeyRevealing') : pd('creds.apiKeyReveal') }}
+                  </button>
+                  <button
+                    class="btn btn-sm btn-ghost"
+                    type="button"
+                    :disabled="!probeModelOptions.length"
+                    @click="openRotateModal"
+                    :title="!probeModelOptions.length ? pd('creds.apiKeyRotateHintNoBinding') : ''"
+                  >
+                    {{ pd('creds.apiKeyRotateBtn') }}
+                  </button>
+                </template>
+              </div>
+              <div v-if="revealedApiKey" class="cell-sub cell-sub--warn" style="margin-top:4px">
+                {{ pd('creds.apiKeyWarningReveal') }}
+              </div>
+              <div v-else-if="!probeModelOptions.length" class="cell-sub" style="margin-top:4px">
+                {{ pd('creds.apiKeyRotateHintNoBinding') }}
+              </div>
+            </div>
           </div>
 
           <div class="drawer-section">
@@ -923,6 +1074,19 @@ function onTagsInput(ev: Event) {
             </div>
             <div v-if="selected.health_probe_model" class="cell-sub">probe: {{ selected.health_probe_model }}</div>
             <div v-if="selected.health_error" class="cell-sub cell-sub--danger">{{ selected.health_error }}</div>
+            <!-- 2026-09-02: typed upstream-error hint. When models_error_kind
+                 is "non_json_body" we know the upstream /v1/models returned
+                 HTML / XML rather than OpenAI-compatible JSON (typical
+                 reverse-proxy / gateway error page); show an actionable hint
+                 instead of leaving the operator guessing at "parse models
+                 response failed". -->
+            <div
+              v-if="selected.health_error_kind === 'non_json_body'"
+              class="cell-sub"
+              style="margin-top:4px"
+            >
+              {{ pd('creds.upstreamNonJsonHint') }}
+            </div>
             <div class="btn-row">
               <button class="btn btn-sm" :disabled="checking" @click="checkSelected">{{ pd('creds.probeCheckNow') }}</button>
             </div>
@@ -1162,6 +1326,42 @@ function onTagsInput(ev: Event) {
         </div>
       </div>
     </div>
+
+    <!-- Rotate API Key Modal — 2026-09-02.
+         Asks the operator for a new key plus a confirmation entry, and a
+         bound model for the post-commit verification probe. Submitting
+         delegates to rotateCredentialPrimaryKey; success closes both the
+         modal and the drawer and emits `refresh` so the list re-fetches
+         key_masked against the freshly rotated secret. -->
+    <div class="modal-overlay" v-if="rotateModalOpen" @click.self="rotateModalOpen = false">
+      <div class="modal" style="max-width:480px" @click.stop>
+        <h3>{{ pd('creds.apiKeyRotateTitle') }}</h3>
+        <div class="alert alert-warn" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+          <span>{{ pd('creds.apiKeyWarningRotate') }}</span>
+        </div>
+        <div v-if="rotateErr" class="alert alert-danger">{{ rotateErr }}</div>
+        <div class="form-group">
+          <label>{{ pd('creds.apiKeyRotateModelLabel') }}</label>
+          <select v-model="rotateRawModelName" class="field-input">
+            <option v-for="opt in probeModelOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>{{ pd('creds.apiKeyRotateNewKeyLabel') }}</label>
+          <input v-model="rotateNewApiKey" type="password" autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label>{{ pd('creds.apiKeyRotateConfirmLabel') }}</label>
+          <input v-model="rotateNewApiKeyConfirm" type="password" autocomplete="off" />
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn btn-ghost" type="button" @click="rotateModalOpen = false">{{ pd('creds.drawerCancel') }}</button>
+          <button class="btn btn-primary" type="button" @click="submitRotate" :disabled="rotateSubmitting">
+            {{ rotateSubmitting ? pd('creds.apiKeyRotating') : pd('creds.apiKeyRotateSubmit') }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -1199,6 +1399,12 @@ function onTagsInput(ev: Event) {
 }
 .cell-sub--danger {
   color: var(--danger);
+}
+.cell-sub--warn {
+  color: var(--warning);
+}
+.drawer-key-wrap {
+  margin-top: 4px;
 }
 .cell-muted {
   font-size: 11px;

@@ -31,22 +31,29 @@ import (
 )
 
 // probeURLResult is the response shape for both probe-url endpoints.
+// 2026-09-02: extended with ModelsErrorKind / ModelsErrorPreview so the admin
+// UI can render a tailored hint when an upstream returns HTML on /v1/models
+// instead of OpenAI-compatible JSON.
 type probeURLResult struct {
-	Reachable    bool     `json:"reachable"`
-	Protocol     string   `json:"protocol,omitempty"`
-	HTTPStatus   int      `json:"http_status,omitempty"`
-	ModelsCount  int      `json:"models_count,omitempty"`
-	SampleModels []string `json:"sample_models,omitempty"`
-	AuthOK       bool     `json:"auth_ok,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Reachable          bool     `json:"reachable"`
+	Protocol           string   `json:"protocol,omitempty"`
+	HTTPStatus         int      `json:"http_status,omitempty"`
+	ModelsCount        int      `json:"models_count,omitempty"`
+	SampleModels       []string `json:"sample_models,omitempty"`
+	AuthOK             bool     `json:"auth_ok,omitempty"`
+	Error              string   `json:"error,omitempty"`
+	ModelsErrorKind    string   `json:"models_error_kind,omitempty"`
+	ModelsErrorPreview string   `json:"models_error_preview,omitempty"`
 }
 
 type probeResult struct {
-	statusCode   int
-	modelCount   int
-	sampleModels []string
-	authOK       bool   // whether the credential is authoritative for this base
-	probeURL     string // which URL candidate succeeded
+	statusCode     int
+	modelCount     int
+	sampleModels   []string
+	authOK         bool   // whether the credential is authoritative for this base
+	probeURL       string // which URL candidate succeeded
+	modelsErrKind  string // 2026-09-02: error kind from modelresponse.ParseModelIDs ("non_json_body" / "invalid_models_format" / "")
+	modelsErrText  string // short, redacted snippet for diagnostics; safe for UI surfaces
 }
 
 // isAcceptableStatus mirrors the Python probe loop: 200/401/403 indicate
@@ -101,10 +108,23 @@ func doProbeRequest(ctx context.Context, urls []string, apiKey string) (*probeRe
 			probeURL:   u,
 		}
 		if resp.StatusCode == http.StatusOK {
-			if models, parseErr := modelresponse.ParseModelIDs(body); parseErr == nil {
+			// 2026-09-02: do NOT swallow ParseModelIDs errors. Previously
+			// the probe loop dropped the body into modelCount=0 silently,
+			// which leaked "parse models response failed: invalid character
+			// '<' looking for beginning of value (context: body_bytes=1726)"
+			// into the admin UI health_error field when an upstream
+			// (e.g. sunyun-china2) returned an HTML error page on
+			// /v1/models. Capture the structured kind here so callers can
+			// render a tailored hint without exposing raw HTML.
+			models, parseErr := modelresponse.ParseModelIDs(body)
+			switch {
+			case parseErr == nil:
 				result.modelCount = len(models)
 				limit := min(3, len(models))
 				result.sampleModels = append(result.sampleModels, models[:limit]...)
+			default:
+				result.modelsErrKind = modelresponse.Kind(parseErr)
+				result.modelsErrText = modelresponse.Preview(parseErr)
 			}
 		}
 

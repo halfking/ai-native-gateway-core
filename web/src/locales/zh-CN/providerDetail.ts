@@ -228,6 +228,31 @@ export default {
     checkFailed: '检测失败',
     lifecycleFailed: '设置失败',
     planTypeFailed: '设置 plan_type 失败',
+    // 2026-09-02: typed upstream-error hint shown under health_error in the
+    // credential detail drawer. Triggered when models_error_kind ===
+    // 'non_json_body' (the upstream /v1/models returned HTML / XML instead
+    // of OpenAI-compatible JSON, e.g. a reverse-proxy error page).
+    upstreamNonJsonHint: '上游 /v1/models 返回了非 JSON 响应（通常是中转/反代/网关拦截的 HTML 错误页）；请检查凭据的 base_url 与反代配置。',
+    // 2026-09-02: reveal / rotate UI for the credential detail drawer.
+    apiKeyReveal: '显示完整 API Key',
+    apiKeyRevealing: '正在显示…',
+    apiKeyHide: '隐藏',
+    apiKeyCopy: '复制',
+    apiKeyWarningReveal: '明文 API Key 出现在浏览器中，请妥善处理；关闭抽屉后自动隐藏。',
+    apiKeyRotateBtn: '修改',
+    apiKeyRotateTitle: '修改 API Key',
+    apiKeyRotateModelLabel: '绑定模型（用于自动探活验证新 key）',
+    apiKeyRotateNewKeyLabel: '新 API Key',
+    apiKeyRotateConfirmLabel: '再次输入新 API Key',
+    apiKeyRotateSubmit: '提交修改',
+    apiKeyRotating: '提交中…',
+    apiKeyRotateMismatch: '两次输入的新密钥不一致，请重新输入',
+    apiKeyRotateMissing: '请输入新 API Key',
+    apiKeyRotateSuccess: 'API Key 已修改',
+    apiKeyRotateFailed: '修改失败',
+    apiKeyWarningRotate: '修改会立刻覆盖当前密钥；后端将自动用所选模型探活一次以验证新 key 可用；操作会写入审计日志。',
+    apiKeyRotateHintNoBinding: '该凭据下没有可绑定的模型，请先去"模型"页刷新绑定。',
+    drawerFieldApiKey: 'API Key',
   },
   errorDetail: {
     title: '供应商错误明细', selectCredential: '请先从凭据列表选择凭据', windowTitle: '统计时间窗口',

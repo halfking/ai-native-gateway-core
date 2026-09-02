@@ -214,7 +214,32 @@ export default {
     expired: "Expired",
     checkFailed: "Check failed",
     lifecycleFailed: "Operation failed",
-    planTypeFailed: "Failed to set plan_type"
+    planTypeFailed: "Failed to set plan_type",
+    // 2026-09-02: typed upstream-error hint shown under health_error in the
+    // credential detail drawer. Triggered when models_error_kind ===
+    // 'non_json_body' (the upstream /v1/models returned HTML / XML instead
+    // of OpenAI-compatible JSON, e.g. a reverse-proxy error page).
+    upstreamNonJsonHint: "The upstream `/v1/models` returned a non-JSON response (likely an HTML error page from a proxy/reverse-proxy/gateway). Check the credential's `base_url` and the reverse-proxy configuration.",
+    // 2026-09-02: reveal / rotate UI for the credential detail drawer.
+    apiKeyReveal: "Reveal full API Key",
+    apiKeyRevealing: "Revealing…",
+    apiKeyHide: "Hide",
+    apiKeyCopy: "Copy",
+    apiKeyWarningReveal: "The plaintext API key is visible in the browser. Handle with care — it will be hidden once you close the drawer.",
+    apiKeyRotateBtn: "Rotate",
+    apiKeyRotateTitle: "Rotate API Key",
+    apiKeyRotateModelLabel: "Bound model (used to auto-probe the new key)",
+    apiKeyRotateNewKeyLabel: "New API Key",
+    apiKeyRotateConfirmLabel: "Confirm new API Key",
+    apiKeyRotateSubmit: "Submit",
+    apiKeyRotating: "Submitting…",
+    apiKeyRotateMismatch: "The two entries do not match — please re-enter.",
+    apiKeyRotateMissing: "Please enter a new API Key.",
+    apiKeyRotateSuccess: "API Key rotated",
+    apiKeyRotateFailed: "Rotation failed",
+    apiKeyWarningRotate: "Rotation overwrites the current key immediately; the backend will auto-probe the chosen model to verify the new key and writes an audit log entry.",
+    apiKeyRotateHintNoBinding: "This credential has no bound models. Refresh bindings on the Models tab first.",
+    drawerFieldApiKey: "API Key",
   },
   errorDetail: {
     title: "Vendor error detail", selectCredential: "Select a credential first", windowTitle: "Time window",
