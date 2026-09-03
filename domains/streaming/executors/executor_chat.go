@@ -1536,6 +1536,7 @@ func (e *Executor) executeOpenAI(
 						ResponseBody:       append([]byte(nil), respBody...),
 					})
 				}
+				respBody = e.redactClientResponse(params, respBody)
 				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
 				copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 				params.W.WriteHeader(resp.StatusCode)
