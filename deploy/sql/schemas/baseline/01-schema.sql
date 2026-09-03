@@ -7314,7 +7314,13 @@ CREATE TABLE public.goal_sessions (
     model_switch_count integer DEFAULT 0 NOT NULL,
     repeat_count integer DEFAULT 0 NOT NULL,
     last_response_hash character varying(64) DEFAULT ''::character varying,
-    current_model character varying(128) DEFAULT ''::character varying
+    current_model character varying(128) DEFAULT ''::character varying,
+    continue_attempt integer DEFAULT 0 NOT NULL,
+    last_completion_judgement character varying(32) DEFAULT ''::character varying,
+    sub_agents_total integer DEFAULT 0 NOT NULL,
+    sub_agents_completed integer DEFAULT 0 NOT NULL,
+    sub_agents_pending integer DEFAULT 0 NOT NULL,
+    last_sub_agents_report_at timestamp with time zone
 );
 
 
@@ -14886,6 +14892,8 @@ CREATE TABLE public.session_summaries (
     messages_at_trigger integer DEFAULT 0 NOT NULL,
     last_trigger_reason character varying(64),
     last_trigger_at timestamp with time zone,
+    parent_session_key character varying(255) DEFAULT ''::character varying,
+    handoff_reason character varying(64) DEFAULT ''::character varying,
     CONSTRAINT session_summaries_quality_score_check CHECK (((quality_score >= 0) AND (quality_score <= 10)))
 );
 
@@ -24528,6 +24536,8 @@ CREATE INDEX idx_session_summaries_quality ON public.session_summaries USING btr
 --
 -- Name: idx_session_summaries_tenant_time; Type: INDEX; Schema: public; Owner: -
 --
+
+CREATE INDEX idx_session_summaries_parent ON public.session_summaries USING btree (tenant_id, parent_session_key) WHERE ((parent_session_key)::text <> ''::text);
 
 CREATE INDEX idx_session_summaries_tenant_time ON public.session_summaries USING btree (tenant_id, last_request_at DESC);
 

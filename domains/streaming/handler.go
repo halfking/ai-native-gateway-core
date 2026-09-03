@@ -3,6 +3,7 @@ package streaming
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -299,6 +300,10 @@ type RequestIdentity struct {
 	ClientModel     string
 	SessionID       string
 	UserKey         string
+	// SubAgents (2026-09-03) — parsed snapshot from X-Gw-Sub-Agents header.
+	// Empty when the header is missing or malformed. Used by the goal hook
+	// (sub-agent gate) and the goal-mode continue payload builder.
+	SubAgents SubAgentSnapshot
 }
 
 // initializeRequestIdentity establishes one stable request and provisional
@@ -325,6 +330,7 @@ func initializeRequestIdentity(r *http.Request) RequestIdentity {
 		r.Header.Set("X-Gw-Session-Id", identity.SessionID)
 	}
 	identity.ClientType = strings.TrimSpace(r.Header.Get("X-Gw-Client-Type"))
+	identity.SubAgents = parseSubAgentsHeader(r.Header.Get(SubAgentHeader))
 	return identity
 }
 
@@ -934,6 +940,10 @@ type ChatHandler struct {
 	// known fixes before validation. nil disables format detection (strict validation only).
 	formatDetector *FormatDetector
 
+	// goalSubAgentRecorder (2026-09-03, gw-continue feature) persists the
+	// X-Gw-Sub-Agents client report into goal_sessions.
+	goalSubAgentRecorder GoalSubAgentRecorder
+
 	// formatFixer (2026-07-26) applies automatic fixes to common format issues.
 	// Works with formatDetector to repair malformed requests (empty objects, wrong types).
 	// nil disables auto-fix (requests must be valid on arrival).
@@ -1454,6 +1464,13 @@ func (h *ChatHandler) SetGoalRetryRecorder(recorder GoalRetryRecorder) {
 // SetGoalOutcomeObserver wires fail-open Goal lifecycle observations.
 func (h *ChatHandler) SetGoalOutcomeObserver(observer goal.OutcomeObserver) {
 	h.goalOutcomeObserver = observer
+}
+
+// SetGoalSubAgentRecorder (2026-09-03) wires the goal-sessions sub-agent
+// recorder. The handler calls RecordSubAgents for every request carrying
+// X-Gw-Sub-Agents. Fail-open: nil disables persistence silently.
+func (h *ChatHandler) SetGoalSubAgentRecorder(recorder GoalSubAgentRecorder) {
+	h.goalSubAgentRecorder = recorder
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
@@ -2774,6 +2791,12 @@ func (h *ChatHandler) serveWithExecutor(
 	// "v3 Session-level intelligent compression" block after GetCandidates.
 
 	isStream := reqBody.Stream
+	if !isStream {
+		// Declare trailers before the executor commits headers. Values are set
+		// only when a negotiated response hook returns a client signal.
+		w.Header().Add("Trailer", "X-Gw-Client-Signal")
+		w.Header().Add("Trailer", "X-Gw-Client-Signal-Payload-B64")
+	}
 	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, notifyRateLimitWait(w, isStream))
 	h.emitTrace(r.Context(), requestID,
 		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
@@ -4915,16 +4938,21 @@ goalRetryLoopDone:
 	if h.responseInterceptor != nil && result != nil {
 		// Calculate total message count from request body
 		msgCount := extractMessageCount(bodyBytes)
+		subAgents := parseSubAgentsHeader(r.Header.Get(SubAgentHeader))
+		tenantID := ""
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		if h.goalSubAgentRecorder != nil && tenantID != "" && gwSessionID != "" && subAgents.Total > 0 {
+			if err := h.goalSubAgentRecorder.RecordSubAgents(r.Context(), tenantID, gwSessionID, subAgents.Total, subAgents.Completed, subAgents.Pending); err != nil {
+				slog.Debug("goal_sub_agents_persist_failed", "session_id", gwSessionID, "error", err)
+			}
+		}
 
 		interceptReq := &ResponseInterceptRequest{
-			SessionID: gwSessionID,
-			RequestID: requestID,
-			TenantID: func() string {
-				if keyInfo != nil {
-					return keyInfo.TenantID
-				}
-				return ""
-			}(),
+			SessionID:    gwSessionID,
+			RequestID:    requestID,
+			TenantID:     tenantID,
 			ClientModel:  clientModel,
 			ResponseBody: result.ResponseBody,
 			TokensUsed:   extractTotalTokens(result.ResponseBody, streamCapture),
@@ -4934,10 +4962,15 @@ goalRetryLoopDone:
 				}
 				return 0
 			}(),
-			MessageCount:   msgCount,
-			FinishReason:   extractFinishReason(result.ResponseBody),
-			IsStreaming:    isStream,
-			FollowUpAction: strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
+			MessageCount:         msgCount,
+			FinishReason:         extractFinishReason(result.ResponseBody),
+			IsStreaming:          isStream,
+			FollowUpAction:       strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
+			ClientSignalAllowed:  ClientSignalRequested(r),
+			HandoffSignalAllowed: HandoffSignalRequested(r),
+			SubAgentsTotal:       subAgents.Total,
+			SubAgentsCompleted:   subAgents.Completed,
+			SubAgentsPending:     subAgents.Pending,
 		}
 
 		if isStream {
@@ -4949,29 +4982,41 @@ goalRetryLoopDone:
 			// gets. When no capture is available the fields stay empty and
 			// the goal hook falls back to its legacy length-based behaviour.
 			interceptMeta := &ResponseStreamMeta{
-				SessionID:      gwSessionID,
-				RequestID:      requestID,
-				TenantID:       interceptReq.TenantID,
-				ClientModel:    clientModel,
-				ContextWindow:  interceptReq.ContextWindow,
-				MessageCount:   msgCount,
-				TokensUsed:     interceptReq.TokensUsed,
-				ResponseBody:   reassembleStreamBody(streamCapture),
-				FinishReason:   reassembleFinishReason(streamCapture),
-				FollowUpAction: interceptReq.FollowUpAction,
+				SessionID:            gwSessionID,
+				RequestID:            requestID,
+				TenantID:             interceptReq.TenantID,
+				ClientModel:          clientModel,
+				ContextWindow:        interceptReq.ContextWindow,
+				MessageCount:         msgCount,
+				TokensUsed:           interceptReq.TokensUsed,
+				ResponseBody:         reassembleStreamBody(streamCapture),
+				FinishReason:         reassembleFinishReason(streamCapture),
+				FollowUpAction:       interceptReq.FollowUpAction,
+				ClientSignalAllowed:  interceptReq.ClientSignalAllowed,
+				HandoffSignalAllowed: interceptReq.HandoffSignalAllowed,
+				SubAgentsTotal:       interceptReq.SubAgentsTotal,
+				SubAgentsCompleted:   interceptReq.SubAgentsCompleted,
+				SubAgentsPending:     interceptReq.SubAgentsPending,
 			}
 
 			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {
 				slog.Warn("response_interceptor_stream_end_failed", "error", err, "session_id", gwSessionID)
-			} else if endResult != nil && len(endResult.InjectFollowUp) > 0 {
-				// Inject follow-up request asynchronously.
-				// Carry the follow-up depth from the request context so
-				// recursive follow-ups are bounded by MaxFollowUpDepth.
-				// Detach from r.Context() (Background) since the response
-				// is already complete and r.Context() may be canceled.
-				followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
-				parentAuthHeader := h.buildHandoffAuthHeader(r)
-				go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, parentAuthHeader)
+			} else if endResult != nil {
+				if frame := renderClientSignalFrame(endResult.ClientSignalKind, endResult.ClientSignalPayload); frame != "" {
+					if safeWriteSSE(w, frame) {
+						if flusher, ok := w.(http.Flusher); ok {
+							safeFlush(flusher)
+						}
+					} else {
+						slog.Warn("client_signal_stream_write_failed", "session_id", gwSessionID, "kind", endResult.ClientSignalKind)
+					}
+				} else if len(endResult.InjectFollowUp) > 0 {
+					// Legacy clients have not opted into a client signal, so retain
+					// the historical server-side follow-up behavior.
+					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
+					parentAuthHeader := h.buildHandoffAuthHeader(r)
+					go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, parentAuthHeader)
+				}
 			}
 		} else {
 			// For non-streaming, call InterceptNonStream
@@ -4983,9 +5028,12 @@ goalRetryLoopDone:
 					// Response was blocked, don't continue
 					return
 				}
-				if len(interceptResult.InjectFollowUp) > 0 {
-					// Inject follow-up request asynchronously.
-					// Carry the follow-up depth from the request context.
+				if interceptResult.ClientSignalKind != "" && len(interceptResult.ClientSignalPayload) > 0 {
+					w.Header().Set("X-Gw-Client-Signal", interceptResult.ClientSignalKind)
+					w.Header().Set("X-Gw-Client-Signal-Payload-B64", base64.StdEncoding.EncodeToString(interceptResult.ClientSignalPayload))
+				} else if len(interceptResult.InjectFollowUp) > 0 {
+					// Legacy clients have not opted into a client signal, so retain
+					// the historical server-side follow-up behavior.
 					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
 					parentAuthHeader := h.buildHandoffAuthHeader(r)
 					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action, parentAuthHeader)

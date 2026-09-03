@@ -32,13 +32,22 @@ func NewCompletionDetector(db GoalStore, llmCaller LLMCaller) *CompletionDetecto
 }
 
 // IsCompleted checks if the task is completed using hybrid detection.
-// minConfidence is the minimum LLM-verdict confidence that counts as "done"
-// for THIS request's tenant. Callers MUST look the threshold up per request
-// (mode_hook.go does this via loadFloat); caching it on the detector would
-// reintroduce the cross-tenant race that lived here before.
 func (d *CompletionDetector) IsCompleted(ctx context.Context, req *response.InterceptRequest, minConfidence float64) (bool, float64, string) {
+	return d.IsCompletedWithSubAgents(ctx, req, minConfidence, 0)
+}
+
+// IsCompletedWithSubAgents applies the sub-agent gate before heuristic/LLM
+// completion detection. A pending delegated agent always keeps the goal open.
+func (d *CompletionDetector) IsCompletedWithSubAgents(ctx context.Context, req *response.InterceptRequest, minConfidence float64, pending int) (bool, float64, string) {
 	if minConfidence <= 0 {
 		minConfidence = DefaultCompletionConfidence
+	}
+	// Strategy 0: a client-reported running sub-agent is a hard gate. The
+	// assistant may claim completion while delegated work is still running;
+	// never let keyword or LLM heuristics override that durable snapshot.
+	if pending > 0 {
+		d.recordJudgement(ctx, req, "subagent:pending")
+		return false, 0.0, "subagent:pending"
 	}
 	// Strategy 1: Check structured output
 	if completed, confidence, reason := d.checkStructuredOutput(req); completed {
@@ -58,7 +67,20 @@ func (d *CompletionDetector) IsCompleted(ctx context.Context, req *response.Inte
 	return false, 0.0, ""
 }
 
-// checkStructuredOutput looks for task_status field in function calling results.
+func (d *CompletionDetector) recordJudgement(ctx context.Context, req *response.InterceptRequest, judgement string) {
+	if d == nil || d.db == nil || req == nil {
+		return
+	}
+	if recorder, ok := d.db.(interface {
+		RecordLastCompletionJudgement(context.Context, string, string, string) error
+	}); ok {
+		if err := recorder.RecordLastCompletionJudgement(ctx, req.TenantID, req.SessionID, judgement); err != nil {
+			slog.Debug("completion_detection_judgement_persist_failed", "error", err,
+				"session_id", req.SessionID)
+		}
+	}
+}
+
 func (d *CompletionDetector) checkStructuredOutput(req *response.InterceptRequest) (bool, float64, string) {
 	var resp map[string]interface{}
 	if err := json.Unmarshal(req.ResponseBody, &resp); err != nil {

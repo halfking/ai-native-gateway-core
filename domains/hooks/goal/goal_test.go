@@ -167,7 +167,37 @@ func (s *fakeStore) AtomicAutoContinue(_ context.Context, tenantID, sessionID st
 	return true, nil
 }
 
-// stubLLMCaller returns canned responses keyed by an index, capturing the
+func (s *fakeStore) ClaimContinueAttempt(_ context.Context, tenantID, sessionID string, maxAllowed int) (int, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; !ok || sess.TenantID != tenantID {
+		return 0, false, errors.New("session not found")
+	} else if sess.ContinueAttempt >= maxAllowed {
+		return 0, false, nil
+	} else {
+		sess.ContinueAttempt++
+		return sess.ContinueAttempt, true, nil
+	}
+}
+
+func (s *fakeStore) RecordSubAgents(_ context.Context, tenantID, sessionID string, total, completed, pending int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
+		sess.SubAgentsTotal, sess.SubAgentsCompleted, sess.SubAgentsPending = total, completed, pending
+	}
+	return nil
+}
+
+func (s *fakeStore) RecordLastCompletionJudgement(_ context.Context, tenantID, sessionID, judgement string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
+		sess.LastCompletionJudgement = judgement
+	}
+	return nil
+}
+
 // messages it was called with.
 type stubLLMCaller struct {
 	mu        sync.Mutex
@@ -256,6 +286,73 @@ func TestInterceptNonStream_StopButIncomplete_InjectsContinue(t *testing.T) {
 	// The continue budget should have been consumed exactly once.
 	if got := store.autoContinueCount["s1"]; got != 1 {
 		t.Fatalf("autoContinueCount = %d, want 1", got)
+	}
+}
+
+func TestInterceptNonStream_ClientCapabilityReturnsContinueSignal(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "signal-continue", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalEnabled = true
+	hook.config.ClientSignalMode = "auto"
+
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "signal-continue", TenantID: "t1", FinishReason: "stop",
+		ResponseBody:        []byte(`{"choices":[{"message":{"role":"assistant","content":"still working"},"finish_reason":"stop"}]}`),
+		ClientSignalAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.ClientSignalKind != "gw-continue" {
+		t.Fatalf("result=%+v, want gw-continue", res)
+	}
+	if len(res.InjectFollowUp) != 0 {
+		t.Fatalf("signal response must not retain legacy follow-up: %s", res.InjectFollowUp)
+	}
+	if res.ClientSignalAttempts != 1 {
+		t.Fatalf("attempt=%d, want 1", res.ClientSignalAttempts)
+	}
+}
+
+func TestInterceptNonStream_ClientCapabilityReturnsHandoffSignal(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "signal-handoff", TenantID: "t1", State: StateActive, ContinueAttempt: 2})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalEnabled = true
+	hook.config.ClientSignalMode = "auto"
+	hook.config.HandoffSignalThresholdTokens = 100
+
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "signal-handoff", TenantID: "t1", FinishReason: "stop", TokensUsed: 100,
+		ResponseBody:         []byte(`{"choices":[{"message":{"role":"assistant","content":"still working"},"finish_reason":"stop"}]}`),
+		ClientSignalAllowed:  true,
+		HandoffSignalAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.ClientSignalKind != "gw-handoff" {
+		t.Fatalf("result=%+v, want gw-handoff", res)
+	}
+	if res.ClientSignalAttempts != 2 {
+		t.Fatalf("handoff must not consume continue budget, attempt=%d", res.ClientSignalAttempts)
+	}
+	if got := store.sessions["signal-handoff"].ContinueAttempt; got != 2 {
+		t.Fatalf("handoff changed continue attempt to %d", got)
+	}
+}
+
+func TestCompletionDetector_PendingSubAgentsBlocksCompletion(t *testing.T) {
+	store := newFakeStore()
+	detector := NewCompletionDetector(store, nil)
+	req := &response.InterceptRequest{
+		SessionID: "pending", TenantID: "t1",
+		ResponseBody: []byte(`{"choices":[{"message":{"role":"assistant","content":"任务完成，所有文件都已成功重构。"},"finish_reason":"stop"}]}`),
+	}
+	completed, confidence, reason := detector.IsCompletedWithSubAgents(context.Background(), req, DefaultCompletionConfidence, 1)
+	if completed || confidence != 0 || reason != "subagent:pending" {
+		t.Fatalf("completed=%t confidence=%v reason=%q, want pending gate", completed, confidence, reason)
 	}
 }
 
@@ -985,15 +1082,15 @@ func TestCompareAndSetState_ConcurrentRace(t *testing.T) {
 // how buildGoalConfig wires preset values into the hook at boot.
 func modeConfigFromPreset(preset ModePreset) ModeConfig {
 	return ModeConfig{
-		Enabled:                true,
-		DetectionMode:          ModeKeyword,
-		AutoContinueOnPause:    preset.AutoContinue,
-		MaxAutoContinueCount:   preset.MaxContinueCount,
-		ModelSwitchOnLoop:      preset.LoopDetectionEnabled,
-		MaxModelSwitchCount:    preset.MaxModelSwitch,
-		RepeatThreshold:        preset.LoopThreshold,
-		CompletionConfidence:   preset.CompletionConfidence,
-		FallbackModels:         []string{"gpt-4o", "claude-3-5-sonnet"},
+		Enabled:              true,
+		DetectionMode:        ModeKeyword,
+		AutoContinueOnPause:  preset.AutoContinue,
+		MaxAutoContinueCount: preset.MaxContinueCount,
+		ModelSwitchOnLoop:    preset.LoopDetectionEnabled,
+		MaxModelSwitchCount:  preset.MaxModelSwitch,
+		RepeatThreshold:      preset.LoopThreshold,
+		CompletionConfidence: preset.CompletionConfidence,
+		FallbackModels:       []string{"gpt-4o", "claude-3-5-sonnet"},
 		// MaxFollowUpDepth is left at zero (engine default) — this test
 		// exercises the hook directly, not the follow-up engine, so the
 		// boot-time invariant lifting that value is irrelevant here.
