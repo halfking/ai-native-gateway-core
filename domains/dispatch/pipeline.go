@@ -53,8 +53,8 @@ type Deps struct {
 	// RetryScheduler, when non-nil, defers same-credential retries until
 	// retry_at (v4 T3-8). nil keeps the legacy immediate-retry behavior.
 	// The caller owns the scheduler's lifecycle (pipeline does not Close it).
-	RetryScheduler       RetryScheduler
-	ObservationSink      ObservationSink
+	RetryScheduler  RetryScheduler
+	ObservationSink ObservationSink
 	// JournalSink (audit-24h-20260828-r3) receives the per-request attempt
 	// journal snapshot exactly once at terminal time. nil = disabled.
 	JournalSink          JournalSink
@@ -1684,16 +1684,15 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	// TestModelChange).
 	reqID, model, emitCtx := qr.ID, qr.ResolvedModel, ctxOf(qr)
 
-	// v6 G-Ⅳ: register membership under credential/provider dimensions while
-	// this goroutine still owns qr. If the send below hits a full lane, the
-	// entry is corrected by the next event (capacity-wait / next MarkNode /
-	// terminal) — the index is event-sourced, never an execution gate.
-	p.dimensionIndex.MarkNode(qr, cred, time.Now())
-
 	qr.journeyMu.Lock()
 	cf.handoffMu.Lock()
 	select {
 	case *cf.queue.Load() <- qr:
+		// The forwarder waits on handoffMu before reading the request, so this
+		// successful-send marker is published before its node-selected event.
+		// Keeping MarkNode after the send prevents the observation index from
+		// advertising a credential/provider lane that rejected the request.
+		p.dimensionIndex.MarkNode(qr, cred, time.Now())
 		depth := cf.depth.Load()
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
 		p.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cred.CredentialID, Mode: cred.ConcurrencyMode, Depth: depth, Delta: 1, AbsoluteDepth: true})

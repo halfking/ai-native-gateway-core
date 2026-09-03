@@ -47,8 +47,9 @@ type dispatchCtx struct {
 	stickyCredID   *int // session-affinity pin (honored on first attempt; excluded once tried)
 }
 
-// SetDispatchPipeline wires the V2 dispatch pipeline. When nil OR when the
-// dispatch_v2 gate is off, Execute uses the legacy synchronous loop.
+// SetDispatchPipeline wires the V2 dispatch pipeline. The pipeline is the
+// sole execution path; a nil pipeline is a startup wiring error and causes
+// Execute to fail explicitly rather than falling back to a legacy loop.
 func (e *Executor) SetDispatchPipeline(p *dispatch.Pipeline) { e.dispatchPipeline = p }
 
 // SetDispatchModelRecommender wires the autoroute decision service used after
@@ -83,7 +84,7 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 	// Once the sticky cred is tried-and-failed it is in qr.TriedCredentials
 	// and naturally excluded here, so failover is unaffected.
 	var sticky *int
-	if !qr.HasTriedCredential(0) && len(qr.TriedCredentials) == 0 {
+	if len(qr.TriedCredentials) == 0 {
 		sticky = dctx.stickyCredID
 	}
 	planned := e.Router.PlanCandidatesPinned(

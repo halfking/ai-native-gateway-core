@@ -1,6 +1,10 @@
 # 04-implementation/changes · 索引
 
-> 最后更新：2026-08-26 08:00:00
+> 最后更新：2026-09-04
+
+## 2026-09
+
+- [2026-09-04 · v6 调度装配与观察索引正确性](2026-09-04-v6-dispatch-composition-and-index-correctness.md) — 修正 Pipeline 启动前依赖装配顺序（RetryScheduler / QueueMirror / QueueBackend / GovernorBackend / snapshot observer / capacity-aware sort），移除 sticky 路由的 credential ID=0 哨兵，修复 DimensionIndex `MaxKeys` 孤立引用，并让节点归属只在 Tier-2 credential hand-off 成功后登记；恢复 autoroute treatment 归因实现，修正 Prometheus 告警契约；全仓测试、核心包 `-race` 与构建均通过。
 
 ## 2026-08
 
