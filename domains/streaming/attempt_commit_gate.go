@@ -1138,7 +1138,7 @@ func (g *AttemptCommitGate) finishShadow() {
 	if !st.decided && !st.overflow {
 		if len(st.norm) == 0 {
 			st.decided = true
-		} else {
+		} else if len(st.norm) >= st.committed.TotalBytes {
 			st.result = st.aligner.Align(st.committed, st.norm)
 			st.decided = true
 		}
@@ -1147,12 +1147,12 @@ func (g *AttemptCommitGate) finishShadow() {
 	switch {
 	case st.overflow:
 		result.Result = "buffer_overflow"
-	case !st.decided || len(st.norm) == 0:
+	case len(st.norm) == 0:
 		result.Result = "unavailable"
+	case !st.decided:
+		result.Result = "undecided"
 	case st.result.Aligned:
 		result.Result = "aligned"
-	case len(st.norm) < st.committed.TotalBytes:
-		result.Result = "undecided"
 	default:
 		result.Result = "miss"
 	}
@@ -1236,7 +1236,7 @@ func (g *AttemptCommitGate) observeShadowFrameLocked(class FrameClass, frame str
 // observed, otherwise a later aligned replay could re-forward the unobserved
 // tail (duplication — the dangerous direction).
 func (g *AttemptCommitGate) observeWrittenBytes(buf []byte) {
-	if g.prefixObserve == nil || len(buf) == 0 {
+	if (g.prefixObserve == nil && g.shadow == nil) || len(buf) == 0 {
 		return
 	}
 	g.mu.Lock()

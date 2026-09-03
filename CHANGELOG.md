@@ -3,7 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
-- **GLM-5.2 降级策略优化 (2026-08-29)**: 修复 sp1/spi-3 的 glm-5.2 模型频繁被网关降级的问题。直连供应商工作正常，但通过网关访问时经常被标记为 continuous_failure 导致不可用。
+- **Turn Digest/L2 集成审计修复 (2026-09-04)**：统一 Turn 列表延迟字段为 `latency_ms`，补强 dual 路由 shadow 对比可观测性与独立超时上下文；修复流式 L2 shadow 短流 verdict、flush 观测漏记和空缓存 panic，并恢复 autoroute treatment attribution 编译契约。
+
+ 修复 sp1/spi-3 的 glm-5.2 模型频繁被网关降级的问题。直连供应商工作正常，但通过网关访问时经常被标记为 continuous_failure 导致不可用。
   - **credentialhealth/checker.go**: 优化降级策略参数
     - `rate_limit` 阈值: 0.95 → 0.98 (+3% 容错，智谱 GLM/MiniMax 在高峰期 429 是正常流控信号)
     - 最小样本数: 8 → 15 (需要 15 样本中 14.7 个失败才触发，避免误判)

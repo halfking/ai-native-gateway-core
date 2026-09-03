@@ -1,425 +1,597 @@
 #!/usr/bin/env bash
+# Local deployment entry point. See .agents/skills/llm-gateway-deploy/SKILL.md.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-# Keep Gateway logs separate from the Memora host service logs. Operators can
-# still override via LLM_GATEWAY_LOG_DIR / LLM_GATEWAY_LOG_FILE.
-DEFAULT_LOG_DIR="$HOME/Downloads/kaixuan/llm-gateway/logs"
-LOG_DIR="${LLM_GATEWAY_LOG_DIR:-$DEFAULT_LOG_DIR}"
-mkdir -p "$LOG_DIR"
-ENV_FILE="${LLM_GATEWAY_ENV_FILE:-/tmp/llm-gateway-local.env}"
-LOG_FILE="${LLM_GATEWAY_LOG_FILE:-$LOG_DIR/llm-gateway-go.log}"
-PID_FILE="${LLM_GATEWAY_PID_FILE:-/tmp/llm-gateway.pid}"
-SERVICE_PORT="${SERVICE_PORT:-8781}"
-BASE_URL="${BASE_URL:-http://127.0.0.1:${SERVICE_PORT}}"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Config accepts DATABASE_URL as a compatibility fallback; normalize it once so
+# all local probes, migrations, and generated runtime env use one DSN.
+if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -n "${DATABASE_URL:-}" ]]; then
+  export LLM_GATEWAY_DATABASE_URL="$DATABASE_URL"
+fi
+# shellcheck source=deploy-local-lib.sh
+source "$SCRIPT_DIR/deploy-local-lib.sh"
+# shellcheck source=deploy-lib/lock.sh
+source "$SCRIPT_DIR/deploy-lib/lock.sh"
 
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
-need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required"; }
-require_env() { [[ -n "${!1:-}" ]] || die "$1 must be explicitly set (or create $ROOT_DIR/.env.local from .env.local.example)"; }
 
-# Auto-load local defaults so `./scripts/deploy-local.sh [deploy]` works without
-# manually sourcing anything: if the required vars are absent and a 0600
-# .env.local exists at the repo root, source it. Explicitly exported variables
-# always win — the file is only a fallback, never an override.
-if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -f "$ROOT_DIR/.env.local" ]]; then
-  # shellcheck disable=SC1091
-  source "$ROOT_DIR/.env.local" >/dev/null
+ACTION=deploy
+DRY_RUN=0
+SKIP_FRONTEND=0
+ROOT_OVERRIDE=
+HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
+KEEP_RELEASES="${KEEP_RELEASES:-3}"
+CLEANUP_DOWNLOADS=0
+DEPLOY_BUILD_LOCK_HELD=0
+LOCK_LOCAL_BUILD_DIR="${TMPDIR:-/tmp}/kx-llm-gateway-build.lock"
+LOCK_BUILD_TARGET=local
+
+# Reject legacy path overrides so a stray INSTALL_ROOT / LLM_GATEWAY_FILES_ROOT
+# from older scripts cannot repoint a deploy into ~/Downloads/kaixuan/llm-gateway.
+if [[ -n "${INSTALL_ROOT:-}" || -n "${LLM_GATEWAY_FILES_ROOT:-}" ]]; then
+  if [[ "${DEPLOY_LOCAL_ALLOW_LEGACY_ROOT:-0}" != 1 ]]; then
+    printf '[deploy-local] error: legacy INSTALL_ROOT/LLM_GATEWAY_FILES_ROOT is set; unset them and use --root to target the new project root explicitly\n' >&2
+    exit 64
+  fi
+  printf '[deploy-local] warning: DEPLOY_LOCAL_ALLOW_LEGACY_ROOT=1 — using legacy root variable; the shared ~/kaixuan layout will not be used\n' >&2
 fi
 
-stop_service() {
-  if [[ -f "$PID_FILE" ]]; then
-    local pid
-    pid="$(<"$PID_FILE")"
-    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-      # graceful wait (5s)
-      for _ in {1..20}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
-      # escalation: SIGKILL if still alive
-      if kill -0 "$pid" 2>/dev/null; then
-        kill -9 "$pid" 2>/dev/null || true
-        for _ in {1..20}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.25; done
+usage() {
+  cat <<'EOF'
+Usage: deploy-local.sh [deploy|status|verify|rollback|start|stop|logs] [options]
+
+Options:
+  --root PATH             install root (otherwise OS default)
+  --dry-run               print the plan without changing files, containers or processes
+  --no-frontend           reuse the existing web/dist output
+  --timeout SECS          health probe timeout (default: 60)
+  --cleanup-downloads     remove the obsolete ~/Downloads/llm-gateway-files copies
+                          (only after PG migration is verified). Off by default.
+  --help
+
+Project layout:
+  ~/kaixuan/llm-gateway-go/{bin,logs,raw-logs,run,backups,attachments}
+
+Shared services under ~/kaixuan:
+  ~/kaixuan/postgres/{logs,backups,run}    ← PostgreSQL data + service logs
+  ~/kaixuan/redis/{logs,run}                ← Redis data (existing volume)
+
+Active listen port is 8782 (candidate 8781). Override with LLM_GATEWAY_ACTIVE_PORT
+to repurpose a host port, or use --root to move the project.
+
+Existing PostgreSQL and Redis instances are reused; no data or password is reset
+automatically. A deploy allocates the next build sequence through
+scripts/bump-version.sh; --dry-run never changes version files.
+EOF
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      deploy|status|verify|rollback|start|stop|logs) ACTION=$1; shift ;;
+      --root) ROOT_OVERRIDE=${2:?--root requires a path}; shift 2 ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --no-frontend) SKIP_FRONTEND=1; shift ;;
+      --timeout) HEALTH_TIMEOUT=${2:?--timeout requires seconds}; shift 2 ;;
+      --cleanup-downloads) CLEANUP_DOWNLOADS=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) printf 'error: unknown argument: %s\n' "$1" >&2; usage >&2; exit 64 ;;
+    esac
+  done
+fi
+
+if [[ -n "$ROOT_OVERRIDE" ]]; then export LLM_GATEWAY_ROOT="$ROOT_OVERRIDE"; fi
+ROOT_DIR=$(dl_root)
+BIN_DIR="$ROOT_DIR/bin"
+RUN_DIR="$ROOT_DIR/run"
+LOG_DIR="$ROOT_DIR/logs"
+SHARED_ROOT=$(dl_shared_root)
+SHARED_PG_DIR=$(dl_shared_pg_dir)
+SHARED_REDIS_DIR=$(dl_shared_redis_dir)
+SHARED_PG_LOG_DIR=$(dl_pg_log_dir)
+SHARED_PG_BACKUP_DIR=$(dl_pg_backup_dir)
+SHARED_PG_RUN_DIR=$(dl_pg_run_dir)
+SHARED_REDIS_LOG_DIR=$(dl_redis_log_dir)
+SHARED_REDIS_RUN_DIR=$(dl_redis_run_dir)
+VERSION_JSON="$PROJECT_ROOT/version.json"
+VERSION_FILE="$PROJECT_ROOT/VERSION"
+
+log() { printf '[deploy-local] %s\n' "$*"; }
+warn() { printf '[deploy-local] warning: %s\n' "$*" >&2; }
+die() { printf '[deploy-local] error: %s\n' "$*" >&2; exit 1; }
+
+release_build_lock() {
+  if (( DEPLOY_BUILD_LOCK_HELD )); then
+    lock_release_build || true
+    DEPLOY_BUILD_LOCK_HELD=0
+  fi
+}
+
+cleanup_deploy() {
+  local status=$?
+  trap - EXIT INT TERM
+  release_build_lock
+  exit "$status"
+}
+trap cleanup_deploy EXIT INT TERM
+
+if ! [[ "$HEALTH_TIMEOUT" =~ ^[0-9]+$ ]] || (( HEALTH_TIMEOUT < 1 )); then die 'timeout must be a positive integer'; fi
+
+
+RELEASE_VERSION="$(dl_release_name "$VERSION_JSON")"
+
+plan() {
+  dl_detect_resources
+  printf 'ACTION=%s\nROOT=%s\nSHARED_ROOT=%s\nSHARED_PG_DIR=%s\nSHARED_REDIS_DIR=%s\nRELEASE=%s\nACTIVE=%s\nACTIVE_PORT=%s\nCANDIDATE_PORT=%s\nDOCKER=%s\nCOMPOSE=%s\nDATABASE_MODE=%s\nREDIS_MODE=%s\nPG_CONTAINER=%s\nREDIS_CONTAINER=%s\nCLEANUP_DOWNLOADS=%s\n' \
+    "$ACTION" "$ROOT_DIR" "$SHARED_ROOT" "$SHARED_PG_DIR" "$SHARED_REDIS_DIR" "$RELEASE_VERSION" \
+    "$(dl_active_version)" "$(dl_active_port)" "$(dl_candidate_port)" \
+    "$DL_DOCKER" "$DL_COMPOSE" "$DL_DB_MODE" "$DL_REDIS_MODE" "${DL_PG_CONTAINER:-none}" "${DL_REDIS_CONTAINER:-none}" "$CLEANUP_DOWNLOADS"
+  printf 'VERIFY_TOOL=deploy-local.sh\nVERIFY_DEVICE=local\nVERIFY_PASS=0\n'
+}
+
+if (( DRY_RUN )); then plan; exit 0; fi
+
+need_cmd() { _dl_have "$1" || die "$1 is required"; }
+compose_cmd() {
+  if (( DL_COMPOSE )); then docker compose "$@"; else docker-compose "$@"; fi
+}
+
+detect_existing_containers() {
+  DL_PG_CONTAINER=""; DL_REDIS_CONTAINER=""
+  if (( DL_DOCKER )); then
+    for c in llm-gateway-pg postgres kx-citus; do
+      if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_PG_CONTAINER=$c; break; fi
+    done
+    for c in llm-gateway-redis redis kx-redis nbjl-redis; do
+      if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_REDIS_CONTAINER=$c; break; fi
+    done
+    [[ -n "$DL_PG_CONTAINER" ]] && {
+      docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+      DL_DB_MODE=docker
+      DL_PG_SOURCE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' "$DL_PG_CONTAINER" 2>/dev/null || true)
+      local db_url
+      db_url=$(dl_container_env "$DL_PG_CONTAINER" LLM_GATEWAY_DATABASE_URL)
+      [[ -z "$db_url" ]] && db_url=$(dl_container_env "$DL_PG_CONTAINER" DATABASE_URL)
+      if [[ -n "$db_url" && "$db_url" =~ @((127\\.0\\.0\\.1)|(localhost))(:|/) ]]; then
+        export LLM_GATEWAY_DATABASE_URL="$db_url" DATABASE_URL="$db_url"
+      else
+        local db_user db_pass db_name db_port
+        db_user=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_USER); db_user=${db_user:-llm_gateway}
+        db_pass=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_PASSWORD)
+        db_name=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_DB); db_name=${db_name:-llm_gateway}
+        db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1); db_port=${db_port:-5432}
+        if [[ -n "$db_pass" ]]; then
+          export LLM_GATEWAY_PG_USER="$db_user" LLM_GATEWAY_PG_PASSWORD="$db_pass" LLM_GATEWAY_PG_DATABASE="$db_name"
+          export LLM_GATEWAY_DATABASE_URL="postgresql://${db_user}:${db_pass}@127.0.0.1:${db_port}/${db_name}?sslmode=disable"
+          export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+        fi
       fi
-    fi
-    rm -f "$PID_FILE"
-  fi
-}
-
-write_env() {
-  umask 077
-  {
-    printf 'export LLM_GATEWAY_DATABASE_URL=%q\n' "$LLM_GATEWAY_DATABASE_URL"
-    printf 'export LLM_GATEWAY_SECRET_KEY=%q\n' "$LLM_GATEWAY_SECRET_KEY"
-    printf 'export LLM_GATEWAY_ADMIN_API_KEY=%q\n' "$LLM_GATEWAY_ADMIN_API_KEY"
-    printf 'export LLM_GATEWAY_ADMIN_USER=%q\n' "$LLM_GATEWAY_ADMIN_USER"
-    printf 'export LLM_GATEWAY_ADMIN_PASSWORD=%q\n' "$LLM_GATEWAY_ADMIN_PASSWORD"
-    printf 'export LLM_GATEWAY_SEED_ADMIN_PASSWORD=%q\n' "$LLM_GATEWAY_ADMIN_PASSWORD"
-    printf 'export LLM_GATEWAY_LISTEN=%q\n' ":$SERVICE_PORT"
-    printf 'export LLM_GATEWAY_REDIS_ADDR=%q\n' "${LLM_GATEWAY_REDIS_ADDR:-}"
-    printf 'export LLM_GATEWAY_CORS_ORIGINS=%q\n' "${LLM_GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${SERVICE_PORT}}"
-    printf 'export LLM_GATEWAY_ENV=%q\n' "${LLM_GATEWAY_ENV:-development}"
-    printf 'export URSM_V2_MODE=%q\n' "${URSM_V2_MODE:-shadow}"
-    printf 'export LLM_GATEWAY_LOG_FILE=%q\n' "$LOG_FILE"
-    # Licensing center (ai-native-maintain) + RSA verify key for issued licenses.
-    printf 'export LLM_GATEWAY_CENTER_URL=%q\n' "${LLM_GATEWAY_CENTER_URL:-}"
-    printf 'export LLM_GATEWAY_LICENSE_PUBLIC_KEY=%q\n' "${LLM_GATEWAY_LICENSE_PUBLIC_KEY:-}"
-  } > "$ENV_FILE"
-  chmod 0600 "$ENV_FILE"
-}
-
-build_all() {
-  need go; need npm
-  (cd "$ROOT_DIR" && go build -o llm-gateway ./cmd/gateway)
-  (cd "$ROOT_DIR/web" && npm run build)
-}
-
-apply_schema_snapshot() {
-  # Empty database bootstrap: apply schema snapshot before strict migrations.
-  # 01-schema.sql is a pg_dump that contains forward references (functions
-  # referring to tables created later in the file). We must use
-  # ON_ERROR_STOP=0 with a "real error" filter so the whole snapshot applies
-  # without aborting on those forward references.
-  local schema_dir="$ROOT_DIR/sql/schema"
-  [[ -d "$schema_dir" ]] || die "schema snapshot directory missing: $schema_dir"
-  for f in 00-prereqs.sql 01-schema.sql 02-seed.sql; do
-    local path="$schema_dir/$f"
-    [[ -f "$path" ]] || die "schema snapshot file missing: $path"
-    printf 'Applying schema/%s\n' "$f"
-    local log="/tmp/llm-gateway-schema-$(basename "$f").log"
-    if ! psql -X -v ON_ERROR_STOP=0 -q "$LLM_GATEWAY_DATABASE_URL" -f "$path" >"$log" 2>&1; then
-      die "schema/$f failed; see $log"
-    fi
-    if grep -qiE "error|fatal" "$log" && ! grep -qiE "already exists|duplicate key|exists, skipping|does not exist, skipping" "$log"; then
-      die "schema/$f reported fatal errors; see $log"
-    fi
-  done
-}
-
-# Detect empty database (no ledger + no relations) so deploy works on a fresh PG.
-database_is_empty() {
-  local count
-  count=$(psql -X -Atqc "SELECT count(*) FROM pg_class WHERE relnamespace = 'public'::regnamespace AND relkind IN ('r','p','v','m','S','f') AND relname <> 'repository_schema_migrations'" "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null) || return 1
-  [[ "$count" == "0" ]]
-}
-
-migrate() {
-  need psql
-  if database_is_empty; then
-    printf 'Empty database detected; applying schema snapshot before migrations.\n'
-    apply_schema_snapshot
-    baseline_ledger
-    return 0
-  fi
-  # Synced-from-252 case: relations exist but repository_schema_migrations was
-  # not part of the sync, so the strict runner would refuse (exit 3). Baseline
-  # the repo's migrations as applied, then run strictly to apply anything newer.
-  local ledger_count
-  ledger_count=$(psql -X -Atqc 'SELECT count(*) FROM public.repository_schema_migrations' "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
-  if [[ "$ledger_count" == "0" ]]; then
-    printf 'Populated schema with empty migration ledger detected; baselining ledger first.\n'
-    baseline_ledger
-    return 0
-  fi
-  # Partial-ledger case: schema was synced from 252 (or another upstream) with
-  # only a slice of the migration ledger copied — typically mid-range entries
-  # (e.g. 044, 080-083, 330-358, 382+) while the early migrations 000..043 were
-  # never recorded. Running strict migrations forward would re-execute every
-  # absent migration against the already-populated schema, which trips errors
-  # like "column session_id does not exist" (the 252 schema diverged).
-  #
-  # We can't use --baseline-through here: run-migrations-strict.sh refuses to
-  # baseline a non-empty ledger. Instead, INSERT rows for the missing
-  # migrations directly into repository_schema_migrations so the strict runner
-  # considers them already applied. Detection: lowest recorded startup
-  # version > 000 indicates early migrations are missing.
-  if needs_partial_ledger_backfill; then
-    printf 'Partial migration ledger detected; backfilling missing rows before strict run.\n'
-    backfill_partial_ledger
-  fi
-  if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh"; then
-    die "migrations failed; if repository_schema_migrations is empty on a populated database, rerun with --baseline-through <known-version> via scripts/run-migrations-strict.sh directly"
-  fi
-}
-
-# Returns 0 (true) iff the public.repository_schema_migrations ledger is
-# non-empty but missing early startup migrations (lowest recorded startup
-# version > 000). This is the signature of a schema synced from another
-# instance whose ledger copy was incomplete.
-needs_partial_ledger_backfill() {
-  local lowest_startup highest_recorded
-  lowest_startup=$(psql -X -Atqc \
-    "SELECT MIN(version) FROM public.repository_schema_migrations \
-     WHERE scope='startup' AND version ~ '^[0-9]+'" \
-    "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || true)
-  highest_recorded=$(psql -X -Atqc \
-    "SELECT COALESCE(MAX(version), '0') FROM public.repository_schema_migrations \
-     WHERE version ~ '^[0-9]+'" \
-    "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
-  # Only act when there is a startup ledger entry whose version is strictly
-  # greater than 000 (early migrations missing) and the ledger isn't empty.
-  [[ -n "$lowest_startup" && "$lowest_startup" != "000" && "$highest_recorded" != "0" ]]
-}
-
-# Backfill repository_schema_migrations with rows for any migration file
-# in the repo whose version (per the strict runner's parsing rules) is ≤ the
-# highest already-recorded version in that scope. Each row records the file's
-# actual sha256 (matching run-migrations-strict.sh:file_checksum) so the
-# runner's "already applied" check passes on subsequent runs. ON CONFLICT
-# DO UPDATE keeps re-runs idempotent and corrects any prior rows that were
-# backfilled with empty checksums. Each scope (startup/domain/ursm) is
-# processed independently; scopes with no recorded entries are skipped.
-backfill_partial_ledger() {
-  local scope migration_root scope_highest inserted_before inserted_after sql_file
-  for scope in startup domain ursm; do
-    migration_root="$ROOT_DIR/sql/migrations/$scope"
-    [[ -d "$migration_root" ]] || continue
-    scope_highest=$(psql -X -Atqc \
-      "SELECT COALESCE(MAX(version), '0') FROM public.repository_schema_migrations \
-       WHERE scope='$scope' AND version ~ '^[0-9]+'" \
-      "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
-    [[ "$scope_highest" != "0" ]] || continue
-    inserted_before=$(psql -X -Atqc \
-      "SELECT count(*) FROM public.repository_schema_migrations WHERE scope='$scope'" \
-      "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
-    # Generate a temp SQL file then apply it via psql -f. The find pipeline
-    # emits one INSERT ... ON CONFLICT DO NOTHING per migration whose
-    # parsed version is ≤ the recorded high-water mark, mirroring the
-    # strict runner's filename parsing so the backfill lines up.
-    #
-    # The strict runner decides "already applied" by comparing the stored
-    # checksum against the file's current sha256 — so we have to record
-    # the *actual* sha256 of every file, not an empty string; otherwise
-    # the runner would still try to re-apply the migration and trip the
-    # ledger PK or a "column already exists" error.
-    sql_file=$(mktemp -t llm-gw-backfill-XXXXXX.sql)
-    {
-      printf -- '-- auto-generated backfill for scope=%s baselined_through=%s\n' "$scope" "$scope_highest"
-      printf 'BEGIN;\n'
-      find "$migration_root" -maxdepth 1 -type f -name '[0-9]*.sql' \
-        ! -name '*.down.sql' 2>/dev/null | sort | while read -r file; do
-        filename=$(basename "$file")
-        if [[ "$scope" == "ursm" ]]; then
-          version=${filename%%-*}
-        else
-          version=${filename%%_*}
+    }
+    [[ -n "$DL_REDIS_CONTAINER" ]] && {
+      docker start "$DL_REDIS_CONTAINER" >/dev/null 2>&1 || true
+      DL_REDIS_MODE=docker
+      local redis_addr
+      redis_addr=$(dl_container_env "$DL_REDIS_CONTAINER" LLM_GATEWAY_REDIS_ADDR)
+      if [[ -z "$redis_addr" ]]; then
+        local redis_port
+        redis_port=$(docker port "$DL_REDIS_CONTAINER" 6379/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+        redis_port=${redis_port:-6379}
+        if [[ "$redis_port" == "6379" && -n "${LLM_GATEWAY_REDIS_HOST_PORT:-}" ]]; then
+          redis_port="$LLM_GATEWAY_REDIS_HOST_PORT"
         fi
-        version_number=${version%%[^0-9]*}
-        # Skip date-style prefixes whose leading digits parse as huge
-        # numbers; the recorded high-water mark is always a small integer
-        # (e.g. 602) so they'd never match anyway.
-        if [[ ! "$version_number" =~ ^[0-9]+$ ]]; then continue; fi
-        if (( 10#$version_number > 10#$scope_highest )); then continue; fi
-        # Match run-migrations-strict.sh:file_checksum — shasum -a 256.
-        checksum=$(shasum -a 256 "$file" 2>/dev/null | cut -d ' ' -f 1)
-        [[ -n "$checksum" ]] || checksum=''
-        printf "INSERT INTO public.repository_schema_migrations \
-(scope, version, migration_name, checksum) VALUES ('%s','%s','%s','%s') \
-ON CONFLICT (scope, migration_name) DO UPDATE SET checksum = EXCLUDED.checksum;\n" \
-          "$scope" "$version" "$filename" "$checksum"
-      done
-      printf 'COMMIT;\n'
-    } > "$sql_file"
-    if ! psql -X -v ON_ERROR_STOP=1 -q -f "$sql_file" "$LLM_GATEWAY_DATABASE_URL" >/dev/null 2>&1; then
-      die "partial-ledger backfill failed for scope=$scope; inspect $sql_file manually"
-    fi
-    rm -f "$sql_file"
-    inserted_after=$(psql -X -Atqc \
-      "SELECT count(*) FROM public.repository_schema_migrations WHERE scope='$scope'" \
-      "$LLM_GATEWAY_DATABASE_URL" 2>/dev/null || echo 0)
-    printf '  scope=%s baselined_through=%s inserted=%d\n' \
-      "$scope" "$scope_highest" "$(( inserted_after - inserted_before ))"
-  done
-}
-
-baseline_ledger() {
-  # Record ≤baseline_through as applied (no execution) so later migrations still run.
-  local baseline_through
-  baseline_through=$(latest_migration_version)
-  printf 'Baselining existing schema through version %s; later migrations will be applied.\n' "$baseline_through"
-  if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh" --baseline-through "$baseline_through"; then
-    die "baseline migration failed"
-  fi
-  # Re-run in default mode to apply only new migrations (ledger now non-empty).
-  if ! DATABASE_URL="$LLM_GATEWAY_DATABASE_URL" "$SCRIPT_DIR/run-migrations-strict.sh"; then
-    die "migrations failed; if repository_schema_migrations is empty on a populated database, rerun with --baseline-through <known-version> via scripts/run-migrations-strict.sh directly"
+        redis_addr="127.0.0.1:${redis_port}"
+      fi
+      export LLM_GATEWAY_REDIS_ADDR="$redis_addr"
+    }
   fi
 }
 
-latest_migration_version() {
-  # Highest numeric version prefix across startup/domain/ursm scopes (matches
-  # the parsing in run-migrations-strict.sh: leading digits before any '-_').
-  find "$ROOT_DIR/sql/migrations" -type f -name '[0-9]*-*.sql' -o -name '[0-9]*_*.sql' 2>/dev/null \
-    | while read -r f; do
-        base=$(basename "$f")
-        case "$base" in *.down.sql) continue;; esac
-        # strict's regex for ursm is "[0-9]*-*.sql" and for others "[0-9]*.sql"
-        if [[ "$base" == *-* ]]; then
-          v=${base%%-*}
-        else
-          v=${base%%_*}
-        fi
-        printf '%s\n' "${v%%[^0-9]*}"
-      done | sort -n | tail -1
-}
-
-start_service() {
-  [[ -x "$ROOT_DIR/llm-gateway" ]] || die "backend is not built; run $0 deploy"
-  [[ -f "$ENV_FILE" ]] || die "secure environment file is missing; run $0 deploy"
-  stop_service
-  # shellcheck disable=SC1090
-  # Export LLM_GATEWAY_LOG_FILE so the gateway process uses lumberjack internally
-  export LLM_GATEWAY_LOG_FILE="$LOG_FILE"; source "$ENV_FILE"
-  nohup "$ROOT_DIR/llm-gateway" >"$LOG_FILE" 2>&1 &
-  local pid=$!
-  printf '%s\n' "$pid" > "$PID_FILE"
-  chmod 0600 "$PID_FILE"
-  # Self-check: pid must still be alive shortly after launch. If the binary
-  # exits immediately (missing env, port collision, DB unreachable), the
-  # PID file would otherwise mislead later steps.
-  sleep 0.5
-  if ! kill -0 "$pid" 2>/dev/null; then
-    rm -f "$PID_FILE"
-    die "service exited immediately after start; inspect $LOG_FILE"
+migrate_existing_pg_to_shared() {
+  [[ "$DL_DB_MODE" == docker && "$DL_PG_CONTAINER" == llm-gateway-pg ]] || return 0
+  [[ -n "$DL_PG_SOURCE" && "$DL_PG_SOURCE" == /* ]] || return 0
+  local shared="$SHARED_PG_DIR" project_copy="$ROOT_DIR/postgres" old_name pg_backup
+  old_name="llm-gateway-pg.pre-migrate.$(date -u +%Y%m%dT%H%M%SZ)"
+  dl_prepare_shared_service_dirs
+  [[ "$DL_PG_SOURCE" != "$shared" ]] || {
+    log "llm-gateway-pg already bound to shared $shared; no copy required"
+    return 0
+  }
+  log "migrating llm-gateway-pg data to $shared (source retained)"
+  docker stop "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+  mkdir -p "$SHARED_PG_BACKUP_DIR"
+  pg_backup="$SHARED_PG_BACKUP_DIR/llm-gateway-pg-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+  tar -C "$DL_PG_SOURCE" -czf "$pg_backup" .
+  tar -C "$DL_PG_SOURCE" -cf - . | tar -C "$shared" -xf -
+  if ! [[ -s "$shared/PG_VERSION" ]]; then
+    die "PostgreSQL migration produced no PG_VERSION; source retained at $DL_PG_SOURCE"
   fi
-}
-
-# Absolute-deadline health probe. Bounded by ${HEALTH_TIMEOUT:-60}s to keep
-# cutover within the 2-minute budget enforced by llm-gateway-deploy-test.
-# Uses --max-time so a single curl can never stall beyond its own budget.
-wait_healthy() {
-  local timeout_s=${HEALTH_TIMEOUT:-60} deadline elapsed
-  deadline=$(( $(date +%s) + timeout_s ))
-  while :; do
-    elapsed=$(( deadline - $(date +%s) ))
-    if (( elapsed <= 0 )); then break; fi
-    if curl -fsS --max-time 2 "$BASE_URL/healthz" >/dev/null 2>&1; then
-      return 0
+  local env_file="$SHARED_PG_RUN_DIR/llm-gateway-pg.env"
+  docker rename "$DL_PG_CONTAINER" "$old_name" || die "failed to rename $DL_PG_CONTAINER to $old_name"
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$old_name" > "$env_file"
+  chmod 0600 "$env_file"
+  local image network pg_user pg_db pg_pass
+  image=$(docker inspect -f '{{.Config.Image}}' "$old_name")
+  network=$(docker inspect -f '{{range $n, $cfg := .NetworkSettings.Networks}}{{println $n}}{{end}}' "$old_name" | head -n1)
+  pg_user=$(dl_container_env "$old_name" POSTGRES_USER); pg_user=${pg_user:-llm_gateway}
+  pg_db=$(dl_container_env "$old_name" POSTGRES_DB); pg_db=${pg_db:-llm_gateway}
+  pg_pass=$(dl_container_env "$old_name" POSTGRES_PASSWORD)
+  local -a run_args=(--name "$DL_PG_CONTAINER" --restart unless-stopped --env-file "$env_file" -v "$shared:/var/lib/postgresql/data" -p "127.0.0.1:5432:5432")
+  [[ -n "$network" ]] && run_args+=(--network "$network")
+  if ! docker run -d "${run_args[@]}" "$image" >/dev/null; then
+    warn "new llm-gateway-pg failed to start; restoring original container"
+    docker rm -f "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+    docker rename "$old_name" "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+    docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+    return 1
+  fi
+  local new_status=1
+  for _ in {1..60}; do
+    if [[ -n "$pg_pass" ]]; then
+      docker exec -e PGPASSWORD="$pg_pass" "$DL_PG_CONTAINER" pg_isready -U "$pg_user" -d "$pg_db" >/dev/null 2>&1 && { new_status=0; break; }
+    else
+      docker exec "$DL_PG_CONTAINER" pg_isready -U "$pg_user" -d "$pg_db" >/dev/null 2>&1 && { new_status=0; break; }
     fi
     sleep 1
   done
-  die "health check failed after ${timeout_s}s; inspect $LOG_FILE"
+  if (( new_status != 0 )); then
+    warn "migrated PostgreSQL did not become ready; restoring original container"
+    docker rm -f "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+    docker rename "$old_name" "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+    docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+    return 1
+  fi
+  docker rm "$old_name" >/dev/null 2>&1 || warn "old container retained as $old_name for manual cleanup"
+  DL_PG_SOURCE="$shared"
+  if [[ -d "$project_copy" && "$project_copy" != "$shared" ]]; then
+    if ! [[ -L "$project_copy" ]]; then
+      if dl_pg_clusters_equal "$shared" "$project_copy"; then
+        rm -rf "$project_copy"
+        log "removed legacy project-local copy at $project_copy"
+      else
+        warn "project-local copy at $project_copy differs from shared cluster; keeping for manual review"
+      fi
+    fi
+  fi
+  dl_link_existing_data
+  log "llm-gateway-pg ready at $shared; backup=$pg_backup"
 }
 
-# POST /api/auth/token; prints HTTP status, body goes to $1.
-login_status() {
-  local body_file="$1" pass="$2"
-  curl -sS --max-time 5 -o "$body_file" -w '%{http_code}' \
-    -H 'Content-Type: application/json' -X POST "$BASE_URL/api/auth/token" \
-    --data "$(node -e 'process.stdout.write(JSON.stringify({username:process.env.LLM_GATEWAY_ADMIN_USER,password:process.argv[1]}))' "$pass")"
-}
-
-reset_admin_password_db() {
-  # Local-dev self-heal: .env.local generates a fresh random admin password per
-  # deploy while the seeded admin row persists with the previous one. Reset the
-  # row to the current env password (first-login state) via bcrypt.
-  local hash
-  hash=$(python3 -c 'import bcrypt,sys; print(bcrypt.hashpw(sys.argv[1].encode(), bcrypt.gensalt()).decode())' "$1") \
-    || die "python3 bcrypt unavailable; cannot reset admin password"
-  psql -X -Atqc "UPDATE users SET password_hash='$hash', must_change_password=TRUE, enabled=TRUE WHERE username='$LLM_GATEWAY_ADMIN_USER'" \
-    "$LLM_GATEWAY_DATABASE_URL" >/dev/null
-}
-
-persist_admin_password() {
-  # Rewrite the admin password lines in the 0600 ENV_FILE with shell-safe
-  # quoting so later bare `verify`/`restart` invocations preserve any password.
-  local newpass="$1" tmp line
-  [[ -f "$ENV_FILE" ]] || return 0
-  tmp="$(mktemp "${ENV_FILE}.tmp.XXXXXX")" || die "cannot create temporary environment file"
+write_dependencies_compose() {
+  local file="$RUN_DIR/dependencies.compose.yml" env_file="$RUN_DIR/dependencies.env"
+  local pg_user="${LLM_GATEWAY_PG_USER:-llm_gateway}" pg_db="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}"
+  local pg_pass="${LLM_GATEWAY_PG_PASSWORD:-}" redis_pass="${LLM_GATEWAY_REDIS_PASSWORD:-}"
+  if [[ -z "$pg_pass" ]]; then pg_pass=$(openssl rand -hex 24); export LLM_GATEWAY_PG_PASSWORD="$pg_pass"; fi
   umask 077
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    case "$line" in
-      'export LLM_GATEWAY_ADMIN_PASSWORD='*)
-        printf 'export LLM_GATEWAY_ADMIN_PASSWORD=%q\n' "$newpass" >>"$tmp"
-        ;;
-      'export LLM_GATEWAY_SEED_ADMIN_PASSWORD='*)
-        printf 'export LLM_GATEWAY_SEED_ADMIN_PASSWORD=%q\n' "$newpass" >>"$tmp"
-        ;;
-      *)
-        printf '%s\n' "$line" >>"$tmp"
-        ;;
-    esac
-  done <"$ENV_FILE"
-  chmod 600 "$tmp"
-  mv "$tmp" "$ENV_FILE"
+  printf 'POSTGRES_USER=%s\nPOSTGRES_PASSWORD=%s\nPOSTGRES_DB=%s\nREDIS_PASSWORD=%s\n' "$pg_user" "$pg_pass" "$pg_db" "$redis_pass" > "$env_file"
+  chmod 0600 "$env_file"
+  local redis_command='["redis-server", "--appendonly", "yes"]'
+  if [[ -n "$redis_pass" ]]; then
+    redis_command='["redis-server", "--appendonly", "yes", "--requirepass", "'"$redis_pass"'"]'
+  fi
+  cat > "$file" <<EOF
+services:
+  postgres:
+    image: \${LLM_GATEWAY_PG_IMAGE:-postgres:17-alpine}
+    container_name: llm-gateway-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: \${POSTGRES_USER}
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD}
+      POSTGRES_DB: \${POSTGRES_DB}
+    volumes:
+      - ${SHARED_PG_DIR}:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:\${LLM_GATEWAY_PG_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \${POSTGRES_USER} -d \${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  redis:
+    image: \${LLM_GATEWAY_REDIS_IMAGE:-redis:7-alpine}
+    container_name: llm-gateway-redis
+    restart: unless-stopped
+    command: $redis_command
+    volumes:
+      - ${SHARED_REDIS_DIR}:/data
+    ports:
+      - "127.0.0.1:\${LLM_GATEWAY_REDIS_PORT:-6379}:6379"
+EOF
+  printf '%s\n' "$file"
 }
 
-verify_full() {
-  need curl; need node
-  wait_healthy
-  local login_file token code must_change pass
-  login_file="$(mktemp)"
-  # NOTE: no RETURN trap here — under set -u a lingering RETURN trap fired at
-  # the caller's scope ("login_file: unbound variable"). Cleanup is explicit.
-  pass="$LLM_GATEWAY_ADMIN_PASSWORD"
-  code="$(login_status "$login_file" "$pass")"
-  if [[ "$code" != "200" ]]; then
-    printf 'admin login returned %s; resetting local admin password to the env value\n' "$code"
-    reset_admin_password_db "$pass"
-    code="$(login_status "$login_file" "$pass")"
+wait_container() {
+  local name="$1"; for _ in {1..60}; do
+    [[ "$(docker inspect -f '{{.State.Health.Status}}' "$name" 2>/dev/null || true)" == healthy ]] && return 0
+    sleep 1
+  done
+  docker logs --tail=80 "$name" >&2 || true
+  return 1
+}
+
+ensure_resources() {
+  dl_detect_resources
+  detect_existing_containers
+  dl_prepare_shared_service_dirs
+  migrate_existing_pg_to_shared || die 'existing PostgreSQL data migration failed; no application was started'
+  local need_pg=0 need_redis=0
+  [[ "$DL_DB_MODE" == none ]] && need_pg=1
+  [[ "$DL_REDIS_MODE" == none && -n "${LLM_GATEWAY_REDIS_ADDR:-}" ]] && need_redis=1
+  dl_link_existing_data
+  dl_prepare_layout "$need_pg" "$need_redis"
+  if (( need_pg || need_redis )); then
+    (( DL_DOCKER && DL_COMPOSE )) || die 'no usable PostgreSQL/Redis and Docker Compose is unavailable'
+    local compose_file; compose_file=$(write_dependencies_compose)
+    local -a services=()
+    (( need_pg )) && services+=(postgres)
+    (( need_redis )) && services+=(redis)
+    compose_cmd --env-file "$RUN_DIR/dependencies.env" -f "$compose_file" up -d "${services[@]}"
+    (( need_pg )) && DL_PG_CONTAINER=llm-gateway-pg
+    (( need_redis )) && DL_REDIS_CONTAINER=llm-gateway-redis
+    if (( need_pg )); then wait_container llm-gateway-pg || die 'local PostgreSQL did not become healthy'; fi
+    if (( need_redis )); then wait_container llm-gateway-redis || die 'local Redis did not become healthy'; fi
+    if (( need_pg )); then
+      export LLM_GATEWAY_DATABASE_URL="postgresql://${LLM_GATEWAY_PG_USER:-llm_gateway}:${LLM_GATEWAY_PG_PASSWORD}@127.0.0.1:${LLM_GATEWAY_PG_PORT:-5432}/${LLM_GATEWAY_PG_DATABASE:-llm_gateway}?sslmode=disable"
+      export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+      DL_DB_MODE=new-docker
+    fi
+    if (( need_redis )); then
+      export LLM_GATEWAY_REDIS_ADDR="127.0.0.1:${LLM_GATEWAY_REDIS_PORT:-6379}"
+      DL_REDIS_MODE=new-docker
+    fi
   fi
-  [[ "$code" == "200" ]] || die "admin login failed (HTTP $code)"
-  token="$(node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1])); process.stdout.write(x.access_token||"")' "$login_file")"
-  [[ -n "$token" ]] || die "login succeeded without an access token"
-  # Rule 20 §6.2: a must_change_password admin may only call me/change-password/
-  # logout. Complete the mandatory first-login change via the API so the
-  # dashboard gate below is reachable, then re-login with the new credential.
-  must_change="$(node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1])); process.stdout.write(String(!!(x.user&&x.user.must_change_password)))' "$login_file")"
-  if [[ "$must_change" == "true" ]]; then
-    local newpass="Local-$(openssl rand -hex 12)"
-    code="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' \
-      -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
-      -X PUT "$BASE_URL/api/auth/change-password" \
-      --data "$(node -e 'process.stdout.write(JSON.stringify({old_password:process.argv[1],new_password:process.argv[2]}))' "$pass" "$newpass")")"
-    [[ "$code" == "200" ]] || die "first-login password change failed (HTTP $code)"
-    persist_admin_password "$newpass"
-    export LLM_GATEWAY_ADMIN_PASSWORD="$newpass"
-    pass="$newpass"
-    code="$(login_status "$login_file" "$pass")"
-    [[ "$code" == "200" ]] || die "re-login after password change failed (HTTP $code)"
-    token="$(node -e 'const fs=require("fs"); const x=JSON.parse(fs.readFileSync(process.argv[1])); process.stdout.write(x.access_token||"")' "$login_file")"
+  if [[ "$DL_DB_MODE" == none ]]; then die 'no PostgreSQL instance found; set LLM_GATEWAY_DATABASE_URL or enable Docker'; fi
+  export DL_DB_MODE DL_REDIS_MODE
+}
+
+psql_query() {
+  local sql="$1"
+  if _dl_have psql; then psql -X -v ON_ERROR_STOP=1 -Atqc "$sql" "$LLM_GATEWAY_DATABASE_URL"
+  elif [[ -n "${DL_PG_CONTAINER:-}" ]]; then
+    local u="${LLM_GATEWAY_PG_USER:-llm_gateway}" d="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}"
+    docker exec -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$DL_PG_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U "$u" -d "$d" -Atqc "$sql"
+  else die 'psql is required for database verification'; fi
+}
+
+apply_schema_if_empty() {
+  local count
+  count=$(psql_query "SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace AND relkind IN ('r','p','v','m','S','f') AND relname <> 'repository_schema_migrations';") || die 'cannot inspect PostgreSQL schema'
+  [[ "$count" == 0 ]] || return 0
+  log 'empty PostgreSQL detected; applying schema snapshot once'
+  local f log_file
+  for f in 00-prereqs.sql 01-schema.sql 02-seed.sql; do
+    log_file="$RUN_DIR/schema-${f}.log"
+    if _dl_have psql; then
+      psql -X -v ON_ERROR_STOP=0 -q "$LLM_GATEWAY_DATABASE_URL" -f "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1 || true
+    else
+      docker exec -i -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$DL_PG_CONTAINER" psql -X -v ON_ERROR_STOP=0 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" < "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1 || true
+    fi
+    if grep -qiE '(^|[[:space:]])(fatal|error):' "$log_file" && ! grep -qiE 'already exists|duplicate key|exists, skipping' "$log_file"; then
+      die "schema snapshot $f reported a fatal error; see $log_file"
+    fi
+  done
+}
+
+build_backend() {
+  need_cmd go
+  local out="$RUN_DIR/gateway.build"
+  local target_os="${GOOS:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
+  local target_arch="${GOARCH:-$(go env GOARCH)}"
+  (( DL_DOCKER )) && target_os=linux
+  (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/gateway)
+  printf '%s\n' "$out"
+}
+
+build_frontend() {
+  (( SKIP_FRONTEND )) && return 0
+  need_cmd node
+  if [[ -f "$PROJECT_ROOT/web/package.json" ]]; then
+    if [[ -x "$PROJECT_ROOT/web/node_modules/.bin/vite" ]]; then (cd "$PROJECT_ROOT/web" && npm run build) >/dev/null; else warn 'web/node_modules is missing; retaining existing web/dist'; fi
   fi
-  curl -fsS --max-time 5 -H "Authorization: Bearer $token" "$BASE_URL/api/auth/me" >/dev/null
-  curl -fsS --max-time 5 -H "Authorization: Bearer $token" "$BASE_URL/api/admin/dashboard/session-overview" >/dev/null
-  curl -fsS --max-time 5 -H "Authorization: Bearer $LLM_GATEWAY_ADMIN_API_KEY" "$BASE_URL/metrics" -o "$login_file.metrics" \
-    || die "metrics endpoint failed"
-  grep -q '^# TYPE' "$login_file.metrics" || die "metrics output is not Prometheus format"
-  rm -f "$login_file" "$login_file.metrics"
-  printf 'Deployment gates passed: health, login, auth-me, dashboard, metrics.\n'
+}
+
+bump_local_version() {
+  [[ -f "$SCRIPT_DIR/bump-version.sh" ]] || die "version bump script not found: $SCRIPT_DIR/bump-version.sh"
+  LOCK_BUILD_TARGET=local
+  lock_acquire_build || die 'shared build lock is held; retry local deployment later'
+  DEPLOY_BUILD_LOCK_HELD=1
+  log 'bump version (auto +1)'
+  if ! bash "$SCRIPT_DIR/bump-version.sh" 2>&1 | sed 's/^/    /'; then
+    die 'version bump failed'
+  fi
+  RELEASE_VERSION="$(dl_release_name "$VERSION_JSON")"
+  log "release allocated: $RELEASE_VERSION"
+}
+
+ensure_release_available() {
+  local bundle="${1:-$BIN_DIR/$RELEASE_VERSION}"
+  [[ ! -e "$bundle" && ! -L "$bundle" ]] || die "release already exists: $bundle (use a new version/build)"
+}
+
+
+stage_release() {
+  local binary="$1" bundle="$BIN_DIR/$RELEASE_VERSION"
+  ensure_release_available "$bundle"
+  dl_stage_release "$bundle" "$binary" "$PROJECT_ROOT/web/dist" "$VERSION_JSON" "$VERSION_FILE" "$RELEASE_VERSION"
+  dl_verify_release "$bundle" || die 'release checksum verification failed'
+  printf '%s\n' "$bundle"
+}
+
+write_instance_env() {
+  local bundle="$1" port="$2"; export LLM_GATEWAY_VERSION_FILE="$bundle/version.json"
+  dl_write_env "$bundle/env" "$port"
+}
+
+instance_name() { printf 'llm-gateway-local-%s\n' "$1"; }
+pid_file() { printf '%s/gateway-%s.pid\n' "$RUN_DIR" "$1"; }
+
+stop_instance() {
+  local port="$1" name; name=$(instance_name "$port")
+  if (( DL_DOCKER )) && docker ps -a --format '{{.Names}}' | grep -Fxq "$name"; then docker rm -f "$name" >/dev/null 2>&1 || true; fi
+  local pf; pf=$(pid_file "$port")
+  if [[ -f "$pf" ]]; then kill "$(cat "$pf")" 2>/dev/null || true; rm -f "$pf"; fi
+}
+
+start_instance() {
+  local bundle="$1" port="$2" name; name=$(instance_name "$port")
+  stop_instance "$port"
+  write_instance_env "$bundle" "$port"
+  if (( DL_DOCKER )); then
+    local image="${LLM_GATEWAY_RUNTIME_IMAGE:-alpine:3.22}" image_file="$RUN_DIR/runtime.Dockerfile"
+    docker image inspect "$image" >/dev/null 2>&1 || die "Docker runtime image $image is not available (set LLM_GATEWAY_RUNTIME_IMAGE)"
+    cat > "$image_file" <<'EOF'
+ARG BASE_IMAGE=alpine:3.22
+FROM ${BASE_IMAGE}
+COPY gateway /opt/llm-gateway-go/gateway
+COPY web /opt/llm-gateway-go/web
+COPY version.json /opt/llm-gateway-go/version.json
+WORKDIR /opt/llm-gateway-go
+ENTRYPOINT ["/opt/llm-gateway-go/gateway"]
+EOF
+    docker build -q --build-arg "BASE_IMAGE=$image" -f "$image_file" -t "kx-llm-gateway-local:${RELEASE_VERSION}" "$bundle" >/dev/null
+    local runtime_env="$RUN_DIR/${name}.env"
+    cp "$bundle/env" "$runtime_env"; chmod 0600 "$runtime_env"
+    sed -i.bak -E \
+      -e 's#@(127\.0\.0\.1|localhost):#@host.docker.internal:#g' \
+      -e 's#^(LLM_GATEWAY_REDIS_ADDR=)(127\.0\.0\.1|localhost):#\1host.docker.internal:#g' \
+      "$runtime_env"
+    rm -f "$runtime_env.bak"
+    local gateway_net_args=(--add-host host.docker.internal:host-gateway)
+    local redis_network=""
+    if [[ -n "${DL_REDIS_CONTAINER:-}" ]]; then
+      for net in shared-infra nbjl_default; do
+        if docker network inspect "$net" >/dev/null 2>&1 \
+          && docker network inspect "$net" --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null | grep -qw "$DL_REDIS_CONTAINER"; then
+          redis_network="$net"; break
+        fi
+      done
+    fi
+    if [[ -n "$redis_network" ]]; then
+      gateway_net_args+=(--network "$redis_network")
+      sed -i.bak -E 's#^LLM_GATEWAY_REDIS_ADDR=.*#LLM_GATEWAY_REDIS_ADDR='"${DL_REDIS_CONTAINER}"':6379#' "$runtime_env"
+      rm -f "$runtime_env.bak"
+    fi
+    docker run -d --name "$name" --restart unless-stopped "${gateway_net_args[@]}" --env-file "$runtime_env" -e "LLM_GATEWAY_LISTEN=:${port}" -e "LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/version.json" -p "127.0.0.1:${port}:${port}" "kx-llm-gateway-local:${RELEASE_VERSION}" >/dev/null
+  else
+    local pf; pf=$(pid_file "$port"); mkdir -p "$RUN_DIR" "$LOG_DIR"
+    source "$bundle/env"
+    LLM_GATEWAY_VERSION_FILE="$bundle/version.json" LLM_GATEWAY_LISTEN=":$port" \
+      nohup "$bundle/gateway" >>"$LOG_DIR/gateway-${port}.log" 2>&1 &
+    printf '%s\n' "$!" > "$pf"; chmod 0600 "$pf"
+  fi
+}
+
+verify_instance() {
+  local port="$1" bundle="$2" body expected expected_seq
+  expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' "$bundle/version.json")
+  expected_seq=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("build_seq", ""))' "$bundle/version.json")
+  dl_wait_http "http://127.0.0.1:${port}/healthz" "$HEALTH_TIMEOUT" || return 1
+  dl_wait_http "http://127.0.0.1:${port}/readyz" "$HEALTH_TIMEOUT" || return 1
+  body=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/version") || return 1
+  VERSION_BODY="$body" EXPECTED="$expected" EXPECTED_BUILD_SEQ="$expected_seq" python3 - <<'PY'
+import json, os, sys
+x=json.loads(os.environ['VERSION_BODY'])
+if x.get('version') != os.environ['EXPECTED']:
+    print('version mismatch', x, os.environ['EXPECTED'], file=sys.stderr); raise SystemExit(1)
+if str(x.get('build_seq')) != os.environ['EXPECTED_BUILD_SEQ']:
+    print('build_seq mismatch', x, file=sys.stderr); raise SystemExit(1)
+PY
+}
+
+record_success() { dl_record_verify "$ROOT_DIR" "$DL_DB_MODE" "$DL_REDIS_MODE" "$RELEASE_VERSION" "$(dl_active_port)"; }
+
+migrate_database() {
+  apply_schema_if_empty
+  export LLM_GATEWAY_DATABASE_URL DATABASE_URL
+  if [[ "${DL_DOCKER:-0}" == 1 ]]; then
+    (cd "$PROJECT_ROOT" && go run ./cmd/gateway migrate >/dev/null)
+  else
+    "$1" migrate >/dev/null
+  fi
 }
 
 deploy() {
-  for name in LLM_GATEWAY_DATABASE_URL LLM_GATEWAY_SECRET_KEY LLM_GATEWAY_ADMIN_API_KEY LLM_GATEWAY_ADMIN_USER LLM_GATEWAY_ADMIN_PASSWORD; do require_env "$name"; done
-  write_env
-  migrate
-  build_all
-  start_service
-  verify_full
-  printf 'Gateway is running at %s; secrets are stored only in %s (0600).\n' "$BASE_URL" "$ENV_FILE"
+  bump_local_version
+  ensure_release_available
+  ensure_resources
+  if [[ "${CLEANUP_DOWNLOADS}" == 1 ]]; then
+    DL_CLEANUP_DOWNLOADS=1 dl_cleanup_legacy_downloads
+  else
+    DL_CLEANUP_DOWNLOADS=0 dl_cleanup_legacy_downloads
+  fi
+  local binary bundle active_port candidate_port active_bundle
+  binary=$(build_backend)
+  build_frontend
+  migrate_database "$binary"
+  bundle=$(stage_release "$binary")
+  release_build_lock
+  active_port=$(dl_active_port); candidate_port=$(dl_candidate_port)
+  active_bundle="$BIN_DIR/current"
+  start_instance "$bundle" "$candidate_port"
+  if ! verify_instance "$candidate_port" "$bundle"; then
+    stop_instance "$candidate_port"; die "candidate failed health/readiness/version gates; active release was preserved"
+  fi
+  if [[ -n "${LLM_GATEWAY_UPSTREAM_FILE:-}" && -f "$LLM_GATEWAY_UPSTREAM_FILE" ]]; then
+    printf 'server 127.0.0.1:%s;\n' "$candidate_port" > "$LLM_GATEWAY_UPSTREAM_FILE"
+    cp "$LLM_GATEWAY_UPSTREAM_FILE" "$RUN_DIR/active-upstream.conf"
+  else
+    warn 'no local proxy configured; using controlled restart (not zero-downtime)'
+    stop_instance "$active_port"
+    start_instance "$bundle" "$active_port"
+    verify_instance "$active_port" "$bundle" || { stop_instance "$active_port"; [[ -e "$active_bundle" ]] && start_instance "$active_bundle" "$active_port"; die 'active cutover failed; previous release was restarted'; }
+    stop_instance "$candidate_port"
+    candidate_port="$active_port"
+  fi
+  dl_atomic_switch "$RELEASE_VERSION"
+  printf '%s\n' "$candidate_port" > "$RUN_DIR/active-port"
+  chmod 0600 "$RUN_DIR/active-port"
+  dl_mark_verified "$bundle"
+  printf 'active=%s\n' "$RELEASE_VERSION" > "$RUN_DIR/deployment-state"
+  record_success
 }
 
-case "${1:-deploy}" in
+verify() {
+  ensure_resources
+  local port; port=$(dl_active_port); [[ -L "$BIN_DIR/current" ]] || die 'no active release'
+  verify_instance "$port" "$BIN_DIR/current" || die 'active release failed verification'
+  record_success
+}
+
+status() {
+  dl_detect_resources
+  printf 'root=%s\nactive=%s\nactive_port=%s\ndocker=%s\ndatabase=%s\nredis=%s\n' "$ROOT_DIR" "$(dl_active_version)" "$(dl_active_port)" "$DL_DOCKER" "$DL_DB_MODE" "$DL_REDIS_MODE"
+  if (( DL_DOCKER )); then docker ps --filter 'name=llm-gateway-local-' --format 'container={{.Names}} status={{.Status}}' || true; fi
+}
+
+rollback() {
+  ensure_resources
+  local current target bundle port
+  current=$(dl_active_version); target="${1:-}"
+  if [[ -z "$target" ]]; then
+    for bundle in "$BIN_DIR"/*; do
+      [[ -d "$bundle" && -f "$bundle/deployment.json" ]] || continue
+      grep -q '"verified"[[:space:]]*:[[:space:]]*true' "$bundle/deployment.json" || continue
+      [[ "$(basename "$bundle")" == "$current" ]] && continue
+      target=$(basename "$bundle"); break
+    done
+  fi
+  [[ -n "$target" ]] || die 'no verified rollback release available'
+  bundle="$BIN_DIR/$target"; [[ -d "$bundle" ]] || die "rollback release not found: $target"
+  grep -q '"verified"[[:space:]]*:[[:space:]]*true' "$bundle/deployment.json" || die 'rollback target is not verified'
+  port=$(dl_active_port); start_instance "$bundle" "$port"; verify_instance "$port" "$bundle" || die 'rollback target failed verification'
+  dl_atomic_switch "$target"; printf '%s\n' "$port" > "$RUN_DIR/active-port"; printf 'rollback=%s\n' "$target" > "$RUN_DIR/deployment-state"; record_success
+}
+
+start() { ensure_resources; local b="$BIN_DIR/current"; [[ -d "$b" ]] || die 'no active release'; start_instance "$b" "$(dl_active_port)"; verify; }
+stop() { dl_detect_resources; stop_instance 8782; stop_instance 8781; stop_instance 8783; }
+logs() { exec tail -f "$LOG_DIR/gateway-$(dl_active_port).log"; }
+
+case "$ACTION" in
   deploy) deploy ;;
-  start) start_service; wait_healthy ;;
-  stop) stop_service ;;
-  restart) start_service; wait_healthy ;;
-  status)
-    if [[ -f "$PID_FILE" ]] && kill -0 "$(<"$PID_FILE")" 2>/dev/null; then
-      printf 'gateway running pid=%s port=%s url=%s\n' "$(<"$PID_FILE")" "$SERVICE_PORT" "$BASE_URL"
-    else
-      printf 'gateway not running (pid_file=%s)\n' "$PID_FILE"
-      exit 1
-    fi
-    ;;
-  verify)
-    # Prefer the credentials captured at deploy time (ENV_FILE): random
-    # secrets generated per-source in .env.local would otherwise mismatch.
-    if [[ -f "$ENV_FILE" ]]; then
-      # shellcheck disable=SC1090
-      source "$ENV_FILE"
-    fi
-    for name in LLM_GATEWAY_ADMIN_API_KEY LLM_GATEWAY_ADMIN_USER LLM_GATEWAY_ADMIN_PASSWORD; do require_env "$name"; done
-    verify_full
-    ;;
-  logs) exec tail -f "$LOG_FILE" ;;
-  *) die "usage: $0 {deploy|start|stop|restart|status|verify|logs}" ;;
+  status) status ;;
+  verify) verify ;;
+  rollback) rollback "${1:-}" ;;
+  start) start ;;
+  stop) stop ;;
+  logs) logs ;;
 esac
