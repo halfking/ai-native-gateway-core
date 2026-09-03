@@ -23,8 +23,8 @@ import (
 // pass, AggregateTaskOutcome for the task-level verdict.
 //
 //   - retry-now: discard the uncommitted attempt, refresh candidates,
-//     back off (base), retry immediately after;
-//   - wait-recovery: emit a keepalive comment, sleep the backoff window,
+//     wait for the configured recovery cadence, then retry;
+//   - wait-recovery: emit a keepalive comment, sleep the recovery window,
 //     refresh candidates, retry;
 //   - resume-blocked / fail-terminal / fail-closed: hand the final
 //     protocol rendering to the Terminal seam and stop.
@@ -36,16 +36,16 @@ import (
 // SurvivalOptions bounds the coordinator loop (doc 18 §5.1 interactive
 // deadline, §8.4 retry delay, §8.5 storm prevention).
 //
-// Termination priority (会话优化 v4 §8-14 / R2.4, T3): 组合穷尽 > 2h 时限 >
-// 100 次预算 — the deadline is the STRONGER stop condition versus the retry
-// budget (worst-case 100 × 120s backoff ≈ 3.2h exceeds it).
+// Termination priority: candidate exhaustion > the interactive deadline >
+// the retry budget. The deadline is the stronger stop condition for a
+// long-lived in-connection request.
 type SurvivalOptions struct {
-	// Deadline is the total in-connection budget. 0 → 2 hours (v4 T3:
-	// 24h → 2h, aligned with the 2h request-cache TTL; env override
-	// LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS still wins
-	// through the config wiring in cmd/gateway/main.go).
+	// Deadline is the total in-connection budget. Zero defaults to five
+	// hours, matching the interactive recovery policy.
+
 	Deadline time.Duration
-	// RetryBase is the first backoff step. 0 → 2s.
+	// RetryBase is the first backoff step. Zero defaults to 30 seconds.
+
 	RetryBase time.Duration
 	// RetryMax caps the backoff growth. 0 or values above 120s → 120s.
 	RetryMax time.Duration
@@ -66,7 +66,8 @@ type SurvivalOptions struct {
 
 func (o SurvivalOptions) withDefaults() SurvivalOptions {
 	if o.Deadline <= 0 {
-		o.Deadline = 2 * time.Hour
+		o.Deadline = 5 * time.Hour
+
 	}
 	if o.RetryBase <= 0 {
 		o.RetryBase = 30 * time.Second
