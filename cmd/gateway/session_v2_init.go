@@ -86,6 +86,51 @@ func stopSessionAggregateOutboxReaper(reaper any) {
 	}
 }
 
+// startSessionDigestBackfill boots the turn-digest jsonb backfill job
+// (turn-digest 第二阶段, 2026-09-04). The job rebuilds sessiondigest
+// envelopes for session_turns rows whose digest column is still NULL
+// (pre-migration-456 turns) so the admin read path serves them from the
+// persisted column instead of an on-the-fly rebuild.
+//
+// Config (env, hot-reload not required for a bounded one-time drain):
+//
+//	SESSIONS_V2_DIGEST_BACKFILL_ENABLED (default true) — kill switch
+//	SESSIONS_V2_DIGEST_BACKFILL_RATE     (default 100)  — writes/second cap
+//	SESSIONS_V2_DIGEST_BACKFILL_BATCH    (default 100)  — rows per tx batch
+//
+// Like the outbox reaper, the returned handle is what stopSessionDigestBackfill
+// uses to drain the in-flight batch before the DB pool is closed. Returning
+// `any` keeps main.go decoupled from the concrete type (same pattern as
+// startSessionAggregateOutboxReaper).
+func startSessionDigestBackfill(ctx context.Context, pool *pgxpool.Pool) any {
+	if pool == nil {
+		slog.Warn("session digest backfill: nil pool, backfill disabled")
+		return nil
+	}
+	if !envBool("SESSIONS_V2_DIGEST_BACKFILL_ENABLED", true) {
+		slog.Info("session digest backfill disabled via SESSIONS_V2_DIGEST_BACKFILL_ENABLED")
+		return nil
+	}
+	rate := envInt("SESSIONS_V2_DIGEST_BACKFILL_RATE", 100)
+	batch := envInt("SESSIONS_V2_DIGEST_BACKFILL_BATCH", 100)
+	slog.Info("session digest backfill starting",
+		"rate_per_sec", rate, "batch", batch)
+	return v2.StartSessionDigestBackfill(ctx, pool, batch, rate)
+}
+
+// stopSessionDigestBackfill drains the backfill job's in-flight batch.
+// Nil-safe. Idempotent. MUST run before pools.CloseAll().
+func stopSessionDigestBackfill(job any) {
+	if job == nil {
+		return
+	}
+	type stopper interface{ Stop() }
+	if s, ok := job.(stopper); ok {
+		s.Stop()
+		slog.Info("session digest backfill stopped")
+	}
+}
+
 // stopSessionV2Writer drains the writer's lifecycle-managed aggregate
 // goroutine (spec §6.3). Nil-safe. Idempotent (writer.Stop is itself
 // sync.Once-guarded).

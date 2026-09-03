@@ -12,6 +12,12 @@ export type NavItem = {
   super?: boolean
   /** super_admin + default tenant (platform ops) */
   platformOps?: boolean
+  /**
+   * 2026-09-04: 供应商控制台 —— super_admin 或 default 租户 tenant_admin。
+   * 后端 ProviderConsoleMiddleware 对 tenant_admin 放行只读 + 凭据
+   * API Key 轮换，其余写操作仍 super_admin 专属。
+   */
+  providerConsole?: boolean
   /** Non-default tenant portal only */
   tenantOnly?: boolean
   /** Hidden when logged in as non-default tenant (tenant_admin) */
@@ -130,7 +136,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
       { path: '/probe-health', label: '探测健康度', labelKey: 'nav.item.probeHealth', icon: '🔍', super: true, hideForTenant: true },
       { path: '/dashboard?tab=selfcheck', label: '系统自检', labelKey: 'nav.item.systemMonitor', icon: '📈', super: true, hideForTenant: true },
-      { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', super: true, hideForTenant: true },
+      { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
@@ -214,30 +220,31 @@ export const NAV_GROUPS: NavGroup[] = [
   },
 ]
 
-export function canShowNavItem(
-  item: NavItem,
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
-): boolean {
+type NavVisibilityOpts = {
+  isSuperAdmin: boolean
+  isPlatformOps: boolean
+  isTenantPortal: boolean
+  /** super_admin 或 default 租户 tenant_admin（2026-09-04 供应商控制台） */
+  isProviderConsole?: boolean
+  isActivated?: boolean
+}
+
+export function canShowNavItem(item: NavItem, opts: NavVisibilityOpts): boolean {
   if (item.opsPlatform && !showOpsPlatform()) return false
   if (item.super && !opts.isSuperAdmin) return false
   if (item.platformOps && !opts.isPlatformOps) return false
+  if (item.providerConsole && !opts.isProviderConsole) return false
   if (item.tenantOnly && !opts.isTenantPortal) return false
   if (item.hideForTenant && opts.isTenantPortal) return false
   if (item.notActivatedOnly && opts.isActivated) return false
   return true
 }
 
-export function visibleNavItems(
-  items: NavItem[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
-): NavItem[] {
+export function visibleNavItems(items: NavItem[], opts: NavVisibilityOpts): NavItem[] {
   return items.filter((item) => canShowNavItem(item, opts))
 }
 
-export function visibleNavGroups(
-  groups: NavGroup[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
-): NavGroup[] {
+export function visibleNavGroups(groups: NavGroup[], opts: NavVisibilityOpts): NavGroup[] {
   return groups
     .map((g) => ({
       ...g,
@@ -296,7 +303,7 @@ export type TopbarNavGroup = {
 export function mergeNav(
   primary: NavItem[],
   groups: NavGroup[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isProviderConsole?: boolean },
 ): TopbarNavGroup[] {
   const visiblePrimary = primary.filter((it) => canShowNavItem(it, opts))
   const visibleGroups = visibleNavGroups(groups, opts)
