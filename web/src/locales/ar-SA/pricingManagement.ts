@@ -107,6 +107,7 @@ export default {
     cacheReadPrice: 'سعر قراءة ذاكرة التخزين المؤقت (لكل مليون)',
     cacheWritePrice: 'سعر كتابة ذاكرة التخزين المؤقت (لكل مليون)',
     currency: 'العملة',
+    unset: 'غير محدد',
     billingMode: 'وضع الفوترة',
     billingPerToken: 'حسب Token',
     billingPerRequest: 'حسب الطلب',

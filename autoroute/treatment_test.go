@@ -1,8 +1,55 @@
 package autoroute
 
 import (
+	"context"
 	"testing"
 )
+
+func TestDeciderAnnotateTreatmentUsesOverrideAndPreservesRoutingFields(t *testing.T) {
+	d := NewDecider(nil, nil, nil, nil)
+	d.SetTenantResolver(func(apiKeyID int) string {
+		if apiKeyID != 42 {
+			t.Fatalf("api key id = %d, want 42", apiKeyID)
+		}
+		return "tenant-42"
+	})
+	d.SetTreatmentRollout(&RolloutConfig{
+		Experiment:     "dispatch-v3",
+		Version:        "v1",
+		Enabled:        true,
+		VariantPercent: 100,
+		Scope:          TreatmentScopeRequest,
+	})
+
+	ctx := WithRequestID(context.Background(), "request-42")
+	decision := &Decision{ChosenModel: "gpt-4.1", ChosenCredentialID: 7}
+	d.annotateTreatment(ctx, 42, decision)
+
+	want := AssignTreatment(*d.treatmentRollout, "tenant-42", "request-42")
+	if decision.ExperimentID != want.Experiment || decision.AssignmentVersion != want.Version ||
+		decision.AssignmentKeyHash != want.AssignmentHash || decision.Treatment != want.Treatment {
+		t.Fatalf("treatment annotation = %+v, want %+v", decision, want)
+	}
+	if decision.ChosenModel != "gpt-4.1" || decision.ChosenCredentialID != 7 {
+		t.Fatalf("annotation changed routing fields: %+v", decision)
+	}
+}
+
+func TestDeciderAnnotateTreatmentFailsClosedWithoutIdentity(t *testing.T) {
+	d := NewDecider(nil, nil, nil, nil)
+	d.SetTreatmentRollout(&RolloutConfig{
+		Experiment:     "dispatch-v3",
+		Version:        "v1",
+		Enabled:        true,
+		VariantPercent: 100,
+		Scope:          TreatmentScopeRequest,
+	})
+	decision := &Decision{ChosenModel: "gpt-4.1"}
+	d.annotateTreatment(context.Background(), 0, decision)
+	if decision.ExperimentID != "" || decision.AssignmentKeyHash != "" || decision.Treatment != "" {
+		t.Fatalf("missing identity must remain unenrolled: %+v", decision)
+	}
+}
 
 func TestDeciderSetTreatmentRolloutOverride(t *testing.T) {
 	d := NewDecider(nil, nil, nil, nil)

@@ -1,8 +1,8 @@
 # v6-W1.5/W1.7 · 调度装配与观察索引正确性修正
 
-**日期**：2026-09-04
-**分支**：main（工作树）
-**证据等级**：`LOCAL_VERIFIED`（`go test ./...`、`go build ./...`、核心包 `-race` 均通过；真实多机 staging 负载与 PostgreSQL/Redis 外部依赖验证仍未完成）
+**日期**：2026-09-04  
+**分支**：main（工作树）  
+**证据等级**：`LOCAL_VERIFIED`（`go test ./...`、`go build ./...`、核心包 `-race` 均通过；真实多机 staging 负载与 PostgreSQL/Redis 外部依赖验证仍未完成）  
 **Commit / Migration / Flag**：
 - commit：本轮工作树修改，尚未提交
 - migration：N/A
@@ -173,13 +173,12 @@ d.annotateTreatment undefined
 
 - 移除 `autoroute/decision.go` 中重复的 `annotateTreatment`；
 - 保留 `Decider.SetTreatmentRollout`（公共覆写入口，便于受控测试与嵌入式部署）与内部 `treatmentConfig()` helper（`treatment_decision.go` 当前的实现是内联展开，未引用 helper，二者并存无冲突）；
-- `autoroute/treatment_test.go` 同步改写：用 `TestDeciderSetTreatmentRolloutOverride` 验证 setter 的副本语义与 nil 复位；`annotateTreatment` 的语义契约由远程 `treatment_decision_test.go` 覆盖。
+- `autoroute/treatment_test.go` 同步覆盖 setter 的副本语义与 nil 复位、override 归因且不修改路由字段、缺少身份时 fail-closed；归因基础语义仍由 `treatment_decision_test.go` 覆盖。
 
 涉及：
 
 - `autoroute/decision.go`
 - `autoroute/treatment_test.go`
-
 ## 3. 当前运行契约
 
 1. CPU 数只决定 dispatcher / failover 决策 worker 数；供应商实际并发、RPM、TPM 继续由 credential Governor 控制。
@@ -204,6 +203,7 @@ gofmt -w autoroute/decision.go autoroute/treatment_test.go \
 go test ./internal/ir
 go test ./domains/transformation
 go test -race ./internal/ir ./domains/transformation
+
 go test ./autoroute
 go test ./domains/dispatch
 go test -race ./domains/dispatch
