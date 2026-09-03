@@ -29,6 +29,28 @@ func TestRawCacheV2_PutGet(t *testing.T) {
 	}
 }
 
+func TestRawCacheV2_PutGetIsolatedFromCaller(t *testing.T) {
+	c := NewRawCacheV2(2)
+	entry := &RawEntry{
+		RequestDelta: []Message{{Role: "user", Content: "original", ToolCalls: []map[string]interface{}{{"id": "call-1"}}}},
+		Attachments:  []AttachmentRef{{ObjectKey: "attachment-1"}},
+	}
+	c.Put(context.Background(), "tenant", "session", entry)
+	entry.RequestDelta[0].Content = "mutated"
+	entry.RequestDelta[0].ToolCalls[0]["id"] = "mutated-call"
+	entry.Attachments[0].ObjectKey = "mutated-attachment"
+
+	got, ok := c.Get(context.Background(), "tenant", "session")
+	if !ok || got.RequestDelta[0].Content != "original" || got.RequestDelta[0].ToolCalls[0]["id"] != "call-1" || got.Attachments[0].ObjectKey != "attachment-1" {
+		t.Fatalf("cache retained caller-owned mutable data: %+v", got)
+	}
+	got.RequestDelta[0].Content = "get-mutated"
+	again, ok := c.Get(context.Background(), "tenant", "session")
+	if !ok || again.RequestDelta[0].Content != "original" {
+		t.Fatalf("Get exposed cache-owned mutable data: %+v", again)
+	}
+}
+
 func TestRawCacheV2_LRUEviction(t *testing.T) {
 	c := NewRawCacheV2(2)
 	defer c.Close()
