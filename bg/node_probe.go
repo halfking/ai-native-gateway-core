@@ -902,8 +902,7 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 		// either way the queue now owns the task — so we keep the P1.2
 		// behaviour: any non-error advance the next_retry_at by 10 minutes
 		// so the next tick doesn't re-pump before the queue can claim the row.
-		_, err := w.submitViaQueueSource(r.credID, r.model, r.tenant, "", "periodic")
-		if err != nil {
+		if _, err := w.submitViaQueueSource(r.credID, r.model, r.tenant, "", "periodic"); err != nil {
 			slog.Warn("node_probe_worker: pump submit failed, will retry in next cycle",
 				"credential_id", r.credID, "model", r.model, "error", err)
 			continue
