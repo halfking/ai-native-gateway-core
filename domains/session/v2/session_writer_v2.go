@@ -73,11 +73,16 @@ type SessionWriterV2 struct {
 // in tests) instead of NewSessionWriterV2. Idempotent.
 func (w *SessionWriterV2) ensureLifecycle() {
 	w.lifecycleInit.Do(func() {
-		if w.lifecycleCtx == nil {
-			ctx, cancel := context.WithCancel(context.Background())
-			w.lifecycleCtx = ctx
-			w.lifecycleCancel = cancel
+		if w.lifecycleCtx != nil && w.lifecycleCancel != nil {
+			return
 		}
+		parent := w.lifecycleCtx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithCancel(parent)
+		w.lifecycleCtx = ctx
+		w.lifecycleCancel = cancel
 	})
 }
 
