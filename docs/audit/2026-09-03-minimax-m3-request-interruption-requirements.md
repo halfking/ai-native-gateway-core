@@ -1,6 +1,6 @@
 # MiniMax-M3 Request Interruption: Requirements and Source Audit
 
-**Audit date:** 2026-09-03  
+**Audit date:** 2026-09-03
 **Scope:** Anthropic/OpenAI-compatible streaming requests routed to MiniMax-M3, related URSM candidate ordering, timeout hot reload, dashboard evidence, and incident documentation.
 
 ## User-facing requirements
