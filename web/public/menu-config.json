@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-03T16:40:22.613Z",
+  "exported_at": "2026-09-03T19:43:09.393Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -234,6 +234,18 @@
           "hideForTenant": true,
           "tenantScope": "default",
           "pluginScope": "*"
+        },
+        {
+          "path": "/plugins/ai-session-manager/sessions",
+          "label": "会话列表",
+          "labelKey": "nav.item.pluginSessions",
+          "icon": "💬",
+          "super": true,
+          "hideForTenant": true,
+          "external": true,
+          "plugin": "ai-session-manager",
+          "tenantScope": "default",
+          "pluginScope": "plugin"
         }
       ],
       "tenantScope": "mixed",

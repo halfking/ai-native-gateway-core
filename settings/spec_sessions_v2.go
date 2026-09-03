@@ -143,6 +143,18 @@ func SessionsV2Specs() []*Spec {
 			Max:             floatPtr(168), // 7天
 		},
 		{
+			Key:             "sessions_v2.turns_list_routing",
+			Type:            TypeEnum,
+			Scope:           ScopePlatform,
+			Category:        CategorySession,
+			Default:         "tree",
+			Options:         []string{"tree", "dual", "v2"},
+			Description:     "会话轮次列表路由模式",
+			DescriptionLong: "控制 /api/admin/sessions/{id}/turns 使用 tree、dual 对账或统一 V2 metadata 契约。",
+			DangerLevel:     Warning,
+			HotReload:       true,
+		},
+		{
 			// CO-5 (docs/修订0811/19 §3): sessions_v2.enabled 时
 			// 兼容保留的旧开关。新请求始终保存完整请求/响应体；历史 false
 			// 值不再启用摘要信封，避免大请求的唯一审计副本被截断。
