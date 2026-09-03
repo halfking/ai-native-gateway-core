@@ -134,6 +134,9 @@ type CredentialRecovery struct {
 	probeSubmitterImmediate func(credID int)
 	cancel                  context.CancelFunc
 	done                    chan struct{}
+	probeDispatchMu         sync.Mutex
+	probeDispatchWG         sync.WaitGroup
+	probeDispatchSem        chan struct{}
 	// lookbackDone signals the 36h lookback scan loop exited (Stop waits on
 	// both). Constructed together with done.
 	lookbackDone     chan struct{}
@@ -284,6 +287,37 @@ func (r *CredentialRecovery) Stop() {
 	if r.lookbackDone != nil {
 		<-r.lookbackDone
 	}
+	r.waitProbeDispatch()
+}
+
+const maxRecoveryProbeDispatch = 8
+
+// dispatchProbe runs a recovery callback asynchronously while bounding the
+// number of callbacks in flight. Recovery callbacks may perform database I/O;
+// tracking them also lets Stop drain work before the worker exits.
+func (r *CredentialRecovery) dispatchProbe(fn func()) {
+	if r == nil || fn == nil {
+		return
+	}
+	r.probeDispatchMu.Lock()
+	if r.probeDispatchSem == nil {
+		r.probeDispatchSem = make(chan struct{}, maxRecoveryProbeDispatch)
+	}
+	sem := r.probeDispatchSem
+	r.probeDispatchWG.Add(1)
+	r.probeDispatchMu.Unlock()
+	go func() {
+		defer r.probeDispatchWG.Done()
+		sem <- struct{}{}
+		defer func() { <-sem }()
+		fn()
+	}()
+}
+
+func (r *CredentialRecovery) waitProbeDispatch() {
+	if r != nil {
+		r.probeDispatchWG.Wait()
+	}
 }
 
 func (r *CredentialRecovery) run(ctx context.Context) {
@@ -360,6 +394,10 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	// recoverFreshDegradedBindings / reconcileStaleNodeProbeStates.
 	//
 	// Returns (affectedRowCount, err) — same shape as r.db.Exec.
+	//
+	// 2026-09-03 P1.1 fix: probe submissions are now async (via goroutines)
+	// to prevent blocking the 30s recovery tick. The seen map is collected
+	// first, then submissions fire concurrently after the SQL completes.
 	dispatchRecoveryHooks := func(sqlKind, sqlText string, args ...any) (int, error) {
 		if r.invalidateCandidateCache == nil && r.probeSubmitter == nil && r.probeSubmitterImmediate == nil {
 			// All hooks nil: cheap Exec path so the outcome counter /
@@ -388,37 +426,54 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 				continue
 			}
 			seen[id] = struct{}{}
-			if r.invalidateCandidateCache != nil {
-				r.invalidateCandidateCache(id)
-				met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "invalidate").Inc()
-			}
-			if r.probeSubmitter != nil {
-				// Empty model → NodeProbeWorker.Submit picks the credential's
-				// default_probe_model (its existing "let the worker decide"
-				// sentinel — see main.go:3504 where expired-binding-recovery
-				// uses the same shape).
-				r.probeSubmitter(id, "")
-				met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_submit").Inc()
-			}
 		}
 		if err := rows.Err(); err != nil {
 			return len(seen), err
 		}
-		// 2026-08-26 P1-4 (landing point D): for recovery-flip actions
-		// (quota_periodic_recover / availability_recover) bypass the
-		// fastReprobeQueue's 30s delay (P1-2 default) by firing an immediate
-		// probe per unique credential that just flipped. The local `seen`
-		// map already dedupes RETURNING ids within this UPDATE block.
-		// nil probeSubmitterImmediate is silently skipped — falls back
-		// to the delayed probeSubmitter path. Observability bump lets
-		// operators confirm the immediate path actually fires (otherwise
-		// it would be invisible).
-		if r.probeSubmitterImmediate != nil && len(seen) > 0 &&
-			(sqlKind == "quota_periodic_recover" || sqlKind == "availability_recover") {
+
+		// Async dispatch: invalidate cache and submit probes in background
+		// goroutines so the recovery tick is not blocked. Each credential
+		// gets its own goroutine to prevent one slow submission from
+		// delaying others.
+		if len(seen) > 0 {
 			for id := range seen {
-				r.probeSubmitterImmediate(id)
+				credID := id // capture loop variable
+				// Cache invalidation: fast local operation, run inline
+				if r.invalidateCandidateCache != nil {
+					r.invalidateCandidateCache(credID)
+					met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "invalidate").Inc()
+				}
+				// Probe submission: may involve DB I/O, run async
+				if r.probeSubmitter != nil {
+					r.dispatchProbe(func() {
+						// Empty model → NodeProbeWorker.Submit picks the credential's
+						// default_probe_model (its existing "let the worker decide"
+						// sentinel — see main.go:3504 where expired-binding-recovery
+						// uses the same shape).
+						r.probeSubmitter(credID, "")
+						met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_submit").Inc()
+					})
+				}
 			}
-			met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_immediate").Inc()
+			// 2026-08-26 P1-4 (landing point D): for recovery-flip actions
+			// (quota_periodic_recover / availability_recover) bypass the
+			// fastReprobeQueue's 30s delay (P1-2 default) by firing an immediate
+			// probe per unique credential that just flipped. The local `seen`
+			// map already dedupes RETURNING ids within this UPDATE block.
+			// nil probeSubmitterImmediate is silently skipped — falls back
+			// to the delayed probeSubmitter path. Observability bump lets
+			// operators confirm the immediate path actually fires (otherwise
+			// it would be invisible).
+			if r.probeSubmitterImmediate != nil &&
+				(sqlKind == "quota_periodic_recover" || sqlKind == "availability_recover") {
+				for id := range seen {
+					credID := id // capture loop variable
+					r.dispatchProbe(func() {
+						r.probeSubmitterImmediate(credID)
+					})
+				}
+				met.RoutingCredentialRecoveryNotifyTotal.WithLabelValues(sqlKind, "probe_immediate").Inc()
+			}
 		}
 		return len(seen), nil
 	}
@@ -1063,7 +1118,6 @@ func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 		}
 		seen = append(seen, p)
 		invalidSet[p.credID] = struct{}{}
-		r.probeSubmitter(p.credID, p.model)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate expired cmb bindings: %w", err)
@@ -1071,10 +1125,19 @@ func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 	if len(seen) == 0 {
 		return nil
 	}
+	// Cache invalidation first (fast local operation)
 	if r.invalidateCandidateCache != nil {
 		for credID := range invalidSet {
 			r.invalidateCandidateCache(credID)
 		}
+	}
+	// 2026-09-03 P1.1 fix: async probe submission to avoid blocking
+	// the recovery tick. Each (cred, model) pair gets its own goroutine.
+	for _, p := range seen {
+		pair := p // capture loop variable
+		r.dispatchProbe(func() {
+			r.probeSubmitter(pair.credID, pair.model)
+		})
 	}
 	slog.Info("expired-binding probe recovery queued",
 		"pairs", len(seen),
@@ -1174,10 +1237,6 @@ func (r *CredentialRecovery) recoverFreshDegradedBindings(ctx context.Context) e
 		}
 		seen = append(seen, p)
 		invalidSet[p.credID] = struct{}{}
-		// parentReqID labels the probe tile in the live stream so operators
-		// can see at a glance that this probe was triggered by the new
-		// fresh-degraded self-check, not by a real upstream failure.
-		r.probeSubmitter(p.credID, p.model)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate fresh-degraded cmb bindings: %w", err)
@@ -1185,10 +1244,22 @@ func (r *CredentialRecovery) recoverFreshDegradedBindings(ctx context.Context) e
 	if len(seen) == 0 {
 		return nil
 	}
+	// Cache invalidation first (fast local operation)
 	if r.invalidateCandidateCache != nil {
 		for credID := range invalidSet {
 			r.invalidateCandidateCache(credID)
 		}
+	}
+	// 2026-09-03 P1.1 fix: async probe submission to avoid blocking
+	// the recovery tick. Each (cred, model) pair gets its own goroutine.
+	for _, p := range seen {
+		pair := p // capture loop variable
+		r.dispatchProbe(func() {
+			// parentReqID labels the probe tile in the live stream so operators
+			// can see at a glance that this probe was triggered by the new
+			// fresh-degraded self-check, not by a real upstream failure.
+			r.probeSubmitter(pair.credID, pair.model)
+		})
 	}
 	slog.Info("credential_recovery: fresh-degraded (in-cooldown) probe queued",
 		"pairs", len(seen),
@@ -1321,7 +1392,6 @@ func (r *CredentialRecovery) reconcileStaleNodeProbeStates(ctx context.Context) 
 		}
 		seen = append(seen, p)
 		invalidSet[p.credID] = struct{}{}
-		r.probeSubmitter(p.credID, p.model)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate stale node_probe_state rows: %w", err)
@@ -1329,10 +1399,19 @@ func (r *CredentialRecovery) reconcileStaleNodeProbeStates(ctx context.Context) 
 	if len(seen) == 0 {
 		return nil
 	}
+	// Cache invalidation first (fast local operation)
 	if r.invalidateCandidateCache != nil {
 		for credID := range invalidSet {
 			r.invalidateCandidateCache(credID)
 		}
+	}
+	// 2026-09-03 P1.1 fix: async probe submission to avoid blocking
+	// the recovery tick. Each (cred, model) pair gets its own goroutine.
+	for _, p := range seen {
+		pair := p // capture loop variable
+		r.dispatchProbe(func() {
+			r.probeSubmitter(pair.credID, pair.model)
+		})
 	}
 	slog.Info("credential_recovery: stale node_probe_state rows handed to probe queue",
 		"pairs", len(seen),
@@ -1739,11 +1818,17 @@ func (r *CredentialRecovery) scanLookbackRecoveries(ctx context.Context) {
 			}
 			writeCancel()
 		}
-		// Dual-round probe through the existing NodeProbeWorker entry. The
-		// probe path owns cmb.available and all failure/backoff reporting.
+		// 2026-09-03 P1.1 fix: async probe submission to avoid blocking
+		// the lookback scan tick. Each candidate gets its own goroutine.
 		if r.probeSubmitter != nil {
-			r.probeSubmitter(c.credID, c.model)
+			cand := c // capture loop variable
+			r.dispatchProbe(func() {
+				// Dual-round probe through the existing NodeProbeWorker entry. The
+				// probe path owns cmb.available and all failure/backoff reporting.
+				r.probeSubmitter(cand.credID, cand.model)
+			})
 		}
+		// Cache invalidation: fast local operation, run inline
 		if r.invalidateCandidateCache != nil {
 			r.invalidateCandidateCache(c.credID)
 		}

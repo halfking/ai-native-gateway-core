@@ -1374,7 +1374,8 @@ func (e *Executor) executeOpenAI(
 					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
 					copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 					params.W.WriteHeader(resp.StatusCode)
-					_, _ = params.W.Write(respBody)
+					_, _ = params.W.Write(e.redactClientResponse(params, respBody))
+
 				}
 				recordAttemptSuccess(0)
 				return &ExecuteResult{

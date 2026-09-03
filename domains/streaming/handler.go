@@ -3194,6 +3194,7 @@ func (h *ChatHandler) serveWithExecutor(
 		writeErrorJSON(w, rc.httpStatus, requestID, rc.message, "server_error", rc.code)
 		return
 	}
+	survivalEligible := isStream && (durableStream != nil || h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID))
 	if len(candidates) == 0 {
 		// 2026-07-14: Distinguish "model not recognized anywhere" (400
 		// invalid_model) from "model recognized but no routable provider right
@@ -3237,20 +3238,23 @@ func (h *ChatHandler) serveWithExecutor(
 				"blocked_reason": noCandReason,
 			},
 		})
-		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		logCtx.failAndMark("no_candidate",
-			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
-		markLogged()
-		// 2026-08-09: the requested model has no routable node, but other
-		// models often do. Offer them so the caller can switch instead of
-		// polling a dead model. Task-type-aware when the session's type is
-		// known (header → autoroute session cache → inline heuristic), else
-		// ordered featured-then-popular. Availability is judged by
-		// v_routable_credential_models.is_routable — the same gate the router
-		// uses — so a suggested model is genuinely reachable right now.
-		alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
-		writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
-		return
+		if !survivalEligible {
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
+			logCtx.failAndMark("no_candidate",
+				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
+			markLogged()
+			// 2026-08-09: the requested model has no routable node, but other
+			// models often do. Offer them so the caller can switch instead of
+			// polling a dead model. Task-type-aware when the session's type is
+			// known (header → autoroute session cache → inline heuristic), else
+			// ordered featured-then-popular. Availability is judged by
+			// v_routable_credential_models.is_routable — the same gate the router
+			// uses — so a suggested model is genuinely reachable right now.
+			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
+			writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
+			return
+		}
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		// Stash the first candidate so the safety net can attribute
@@ -3291,7 +3295,10 @@ func (h *ChatHandler) serveWithExecutor(
 		explicitOutbound = renderOutboundFromTransform(txResult, candidates[0], tCtx.CanonicalName)
 	}
 
-	auditBuilder.OutboundModel(explicitOutbound).Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)
+	auditBuilder.OutboundModel(explicitOutbound)
+	if len(candidates) > 0 {
+		auditBuilder.Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)
+	}
 	if modelResolution != nil {
 		auditBuilder.ResolutionPath(modelResolution.ResolutionPath)
 		if modelResolution.CanonicalName != nil {

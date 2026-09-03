@@ -316,6 +316,13 @@ func main() {
 			slog.Info("config: loaded YAML file", "path", configFile)
 		}
 	}
+	// YAML is merged after Load(), so apply survival invariants again to the
+	// final effective configuration before any retry owner is constructed.
+	cfg.NormalizeRequestSurvival()
+	if cfg.RequestSurvivalEnabled && cfg.StreamRetryEnabled {
+		slog.Error("request_survival and stream_retry are both enabled; disabling stream_retry wrapper")
+		cfg.StreamRetryEnabled = false
+	}
 	if err := cfg.ValidateRuntimeRole(); err != nil {
 		panic(fmt.Sprintf("runtime role validation failed: %v", err))
 	}
@@ -1828,7 +1835,10 @@ func main() {
 				Deadline:          time.Duration(cfg.RequestSurvivalInteractiveDeadlineSeconds) * time.Second,
 				RetryBase:         time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
 				RetryMax:          time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
+				RetryInterval:     time.Duration(cfg.RequestSurvivalRetryIntervalSeconds) * time.Second,
 				MaxRetries:        cfg.RequestSurvivalMaxAttempts,
+				NightMaxRetries:   cfg.RequestSurvivalNightMaxAttempts,
+				NightStartHour:    cfg.RequestSurvivalNightStartHour,
 				KeepaliveInterval: time.Duration(cfg.KeepaliveInterval) * time.Second,
 			})
 			slog.Info("request_survival_armed",

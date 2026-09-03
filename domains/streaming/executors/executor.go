@@ -1098,6 +1098,16 @@ func (e *Executor) logUpstreamResponse(params *ExecParams, protocol string, body
 	}
 }
 
+func (e *Executor) redactClientResponse(params *ExecParams, body []byte) []byte {
+	if e == nil || e.RedactBodyFn == nil || len(body) == 0 {
+		return body
+	}
+	if params == nil {
+		return e.RedactBodyFn(body, "", "")
+	}
+	return e.RedactBodyFn(body, params.SessionID, params.TenantID)
+}
+
 func (e *Executor) logClientResponse(params *ExecParams, protocol string, body []byte) {
 	if e.RawDataLogger == nil {
 		return

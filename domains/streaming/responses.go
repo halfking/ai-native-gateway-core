@@ -528,16 +528,20 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeResponsesError(w, http.StatusBadRequest, attemptErrMsg, "invalid_request_error", "invalid_model")
 			return
 		}
-		// This is the real no_candidate case - no database error, just no matching providers
-		attemptErrCode = "no_candidate"
-		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
-		latency := int(time.Since(startTime).Milliseconds())
-		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
-			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
-		*attemptLogged = true
-		releaseDurableBeforeSurvival(durableStream, "no_candidate")
-		writeResponsesError(w, http.StatusServiceUnavailable, attemptErrMsg, "server_error", "no_candidate")
-		return
+		survivalEligible := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
+		if !survivalEligible {
+			// This is the real no_candidate case - no database error, just no matching providers
+			attemptErrCode = "no_candidate"
+			attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			releaseDurableBeforeSurvival(durableStream, "no_candidate")
+			writeResponsesError(w, http.StatusServiceUnavailable, attemptErrMsg, "server_error", "no_candidate")
+			return
+		}
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		pid := candidates[0].ProviderID

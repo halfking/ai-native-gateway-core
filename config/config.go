@@ -127,9 +127,16 @@ type Config struct {
 	RequestSurvivalDurableEnabled bool `yaml:"request_survival_durable_enabled" env:"LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED"`
 
 	// RequestSurvivalInteractiveDeadlineSeconds: max in-connection wait for
-	// ordinary streaming requests. Default 7200 (2h, 会话优化 v4 T3 — 与请求
-	// 缓存 TTL 2h 对齐；终止优先级 组合穷尽 > 2h 时限 > 100 次预算).
+	// ordinary streaming requests. Default 18000 (5h).
 	RequestSurvivalInteractiveDeadlineSeconds int `yaml:"request_survival_interactive_deadline_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS"`
+
+	// RequestSurvivalRetryIntervalSeconds is the ordinary fixed recovery
+	// cadence. Default 30 seconds; zero retains legacy exponential pacing.
+	RequestSurvivalRetryIntervalSeconds int `yaml:"request_survival_retry_interval_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_INTERVAL_SECONDS"`
+	// RequestSurvivalNightMaxAttempts applies from NightStartHour (inclusive)
+	// until midnight in Asia/Shanghai. It counts retries after the initial call.
+	RequestSurvivalNightMaxAttempts int `yaml:"request_survival_night_max_attempts" env:"LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_MAX_ATTEMPTS"`
+	RequestSurvivalNightStartHour   int `yaml:"request_survival_night_start_hour" env:"LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_START_HOUR"`
 
 	// RequestSurvivalDurableDeadlineSeconds: max total wait for durable
 	// tasks (client disconnect / gateway restart included). Default 86400.
@@ -283,8 +290,8 @@ func (cfg *Config) IsProduction() bool {
 // alone also enables the in-connection coordinator, which is its Phase 1
 // prerequisite.
 func (cfg *Config) NormalizeRequestSurvival() {
-	if cfg.RequestSurvivalInteractiveDeadlineSeconds <= 0 {
-		cfg.RequestSurvivalInteractiveDeadlineSeconds = 7200
+	if cfg.RequestSurvivalInteractiveDeadlineSeconds <= 0 || cfg.RequestSurvivalInteractiveDeadlineSeconds > 5*60*60 {
+		cfg.RequestSurvivalInteractiveDeadlineSeconds = 5 * 60 * 60
 	}
 	if cfg.RequestSurvivalDurableDeadlineSeconds <= 0 {
 		cfg.RequestSurvivalDurableDeadlineSeconds = 86400
@@ -292,8 +299,11 @@ func (cfg *Config) NormalizeRequestSurvival() {
 	if cfg.RequestSurvivalStatusIntervalSeconds <= 0 {
 		cfg.RequestSurvivalStatusIntervalSeconds = 60
 	}
+	if cfg.RequestSurvivalRetryIntervalSeconds <= 0 {
+		cfg.RequestSurvivalRetryIntervalSeconds = 30
+	}
 	if cfg.RequestSurvivalRetryBaseSeconds <= 0 {
-		cfg.RequestSurvivalRetryBaseSeconds = 2
+		cfg.RequestSurvivalRetryBaseSeconds = 30
 	}
 	if cfg.RequestSurvivalRetryMaxSeconds <= 0 || cfg.RequestSurvivalRetryMaxSeconds > 120 {
 		cfg.RequestSurvivalRetryMaxSeconds = 120
@@ -304,8 +314,14 @@ func (cfg *Config) NormalizeRequestSurvival() {
 	if cfg.RequestSurvivalWorkerLeaseSecs <= 0 {
 		cfg.RequestSurvivalWorkerLeaseSecs = 60
 	}
-	if cfg.RequestSurvivalMaxAttempts <= 0 || cfg.RequestSurvivalMaxAttempts > 100 {
+	if cfg.RequestSurvivalMaxAttempts <= 0 || cfg.RequestSurvivalMaxAttempts > 600 {
 		cfg.RequestSurvivalMaxAttempts = 100
+	}
+	if cfg.RequestSurvivalNightMaxAttempts <= 0 || cfg.RequestSurvivalNightMaxAttempts > 600 {
+		cfg.RequestSurvivalNightMaxAttempts = 600
+	}
+	if cfg.RequestSurvivalNightStartHour <= 0 || cfg.RequestSurvivalNightStartHour > 23 {
+		cfg.RequestSurvivalNightStartHour = 20
 	}
 	if cfg.RequestSurvivalMaxActiveTasksPerTenant <= 0 {
 		cfg.RequestSurvivalMaxActiveTasksPerTenant = 100
@@ -478,10 +494,13 @@ func Load() *Config {
 		// mutually exclusive with StreamRetryEnabled (startup check).
 		RequestSurvivalEnabled:                    false,
 		RequestSurvivalDurableEnabled:             false,
-		RequestSurvivalInteractiveDeadlineSeconds: 7200,
+		RequestSurvivalInteractiveDeadlineSeconds: 18000,
+		RequestSurvivalRetryIntervalSeconds:       30,
+		RequestSurvivalNightMaxAttempts:           600,
+		RequestSurvivalNightStartHour:             20,
 		RequestSurvivalDurableDeadlineSeconds:     86400,
 		RequestSurvivalStatusIntervalSeconds:      60,
-		RequestSurvivalRetryBaseSeconds:           2,
+		RequestSurvivalRetryBaseSeconds:           30,
 		RequestSurvivalRetryMaxSeconds:            120,
 		RequestSurvivalWorkerCount:                4,
 		RequestSurvivalWorkerLeaseSecs:            60,
@@ -627,6 +646,9 @@ func Load() *Config {
 		cfg.RequestSurvivalDurableEnabled = v == "true" || v == "1"
 	}
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS", &cfg.RequestSurvivalInteractiveDeadlineSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_INTERVAL_SECONDS", &cfg.RequestSurvivalRetryIntervalSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_MAX_ATTEMPTS", &cfg.RequestSurvivalNightMaxAttempts)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_START_HOUR", &cfg.RequestSurvivalNightStartHour)
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_DEADLINE_SECONDS", &cfg.RequestSurvivalDurableDeadlineSeconds)
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_STATUS_INTERVAL_SECONDS", &cfg.RequestSurvivalStatusIntervalSeconds)
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS", &cfg.RequestSurvivalRetryBaseSeconds)
@@ -851,14 +873,23 @@ func (cfg *Config) mergeFrom(other *Config) {
 
 	// Request survival file overrides (env wins, same pattern as above).
 
-	if other.RequestSurvivalEnabled && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED") == "" {
-		cfg.RequestSurvivalEnabled = true
+	if configValueConfigured(other, "request_survival_enabled") && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED") == "" {
+		cfg.RequestSurvivalEnabled = other.RequestSurvivalEnabled
 	}
-	if other.RequestSurvivalDurableEnabled && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED") == "" {
-		cfg.RequestSurvivalDurableEnabled = true
+	if configValueConfigured(other, "request_survival_durable_enabled") && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED") == "" {
+		cfg.RequestSurvivalDurableEnabled = other.RequestSurvivalDurableEnabled
 	}
 	if other.RequestSurvivalInteractiveDeadlineSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS") == "" {
 		cfg.RequestSurvivalInteractiveDeadlineSeconds = other.RequestSurvivalInteractiveDeadlineSeconds
+	}
+	if other.RequestSurvivalRetryIntervalSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_INTERVAL_SECONDS") == "" {
+		cfg.RequestSurvivalRetryIntervalSeconds = other.RequestSurvivalRetryIntervalSeconds
+	}
+	if other.RequestSurvivalNightMaxAttempts != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_MAX_ATTEMPTS") == "" {
+		cfg.RequestSurvivalNightMaxAttempts = other.RequestSurvivalNightMaxAttempts
+	}
+	if other.RequestSurvivalNightStartHour != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_START_HOUR") == "" {
+		cfg.RequestSurvivalNightStartHour = other.RequestSurvivalNightStartHour
 	}
 	if other.RequestSurvivalDurableDeadlineSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_DEADLINE_SECONDS") == "" {
 		cfg.RequestSurvivalDurableDeadlineSeconds = other.RequestSurvivalDurableDeadlineSeconds
