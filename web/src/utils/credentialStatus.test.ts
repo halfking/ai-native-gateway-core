@@ -11,7 +11,8 @@ describe('credentialDisplayState', () => {
     expect(credentialDisplayState({ manual_disabled: true, availability_state: 'ready' })).toBe('disabled')
   })
 
-  it('normalizes quota, availability, health, and unknown fallbacks', () => {
+  it('normalizes quarantine, quota, availability, health, and unknown fallbacks', () => {
+    expect(credentialDisplayState({ status: 'quarantine', availability_state: 'ready', health_status: 'healthy' })).toBe('suspended')
     expect(credentialDisplayState({ quota_state: 'balance_exhausted' })).toBe('quota_exhausted')
     expect(credentialDisplayState({ availability_state: 'auth_failed' })).toBe('auth_failed')
     expect(credentialDisplayState({ health_status: 'warning' })).toBe('degraded')

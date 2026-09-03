@@ -101,9 +101,9 @@
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 614 | `614_session_bodies_hot.sql` | `c79502c50906b221db76d7b545074901c56a086277bc2927c66383ca72580d25` | applied+verified |
+| 614 | `614_session_bodies_hot.sql` | `71a3bdf922d44754e510e44aa6b021ad35b76c1577b9e793d8ef1fd1cc396ec0` | applied+verified |
 | 615 | `615_session_bodies_hot_promote_function.sql` | `716520628861fda58b31af00db20a6acd115cd954ddafca61812b6da1456aa5d` | applied+verified |
-| 616 | `616_provider_error_details_unique_constraint.sql` | `aafd7ecfcf3e916d18b575d1a8c390d3be922720658be9597daecf33aad306d5` | applied+verified |
+| 616 | `616_provider_error_details_unique_constraint.sql` | `c07248ef2f23adca9e8a1fc1ba80f01ed5106ee1d081addbe8e8002c3f74c824` | applied+verified |
 | 617 | `617_candidate_failure_logs_hot_contract.sql` | `b0bd2d72250614d9c1f17d6926c3ee1bbb0ec649c42d8b35d45993d981759d53` | applied+verified |
 | 618 | `618_request_journey_snapshot_receipts.sql` | `6d4d9f44cd931641363e61c2c72a50c90b606830645e5ea375dae62dc26f21fb` | applied+verified |
 
