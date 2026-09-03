@@ -224,4 +224,5 @@ export default {
   unknown: '未探测',
   unreachable: '不可达',
   warning: '警示',
+  nameMappingDeleteConfirm: '确定要删除这条映射吗？',
 }

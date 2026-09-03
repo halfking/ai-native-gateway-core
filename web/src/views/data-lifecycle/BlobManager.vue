@@ -112,6 +112,10 @@ import {
   type BlobCleanupRequest,
   type BlobCleanupResponse,
 } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const rows = ref<BlobRow[]>([])
 const preview = ref<BlobCleanupResponse | null>(null)
@@ -152,7 +156,7 @@ async function onPreview() {
 
 async function onExecute() {
   if (!preview.value) return
-  if (!confirm(`确认清理？\n影响 ${formatNumber(preview.value.affected_rows)} 行\n释放约 ${preview.value.estimated_freed_human}\n（仅置 NULL request_body / outbound_body，保留元数据）`)) return
+  if (!(await confirmDialog(t('dataLifecycle.confirmBlobCleanup', { rows: formatNumber(preview.value.affected_rows), size: preview.value.estimated_freed_human })))) return
   loading.value = true
   try {
     const r = await dataLifecycleBlobCleanupExecute(form.value)

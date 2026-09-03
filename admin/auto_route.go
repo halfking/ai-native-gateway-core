@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
@@ -940,9 +941,10 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 }
 
 // writeJSONOk serialises v as JSON and writes 200. Errors are swallowed.
+// 薄委托 internal/httpx（2026-09-04 writeJSON 收敛）。
 func writeJSONOk(w http.ResponseWriter, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, http.StatusOK, "application/json", v)
 }
 
 // writeJSONErr serialises an error envelope and writes the given status.
@@ -954,9 +956,8 @@ func writeJSONOk(w http.ResponseWriter, v interface{}) {
 //
 // DEPRECATED: prefer writeJSONErrCtx for i18n-aware responses.
 func writeJSONErr(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, status, "application/json", map[string]interface{}{
 		"error": map[string]string{
 			"message": msg,
 			"type":    "admin_error",
@@ -972,9 +973,8 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 // pass templateData as the optional 4th argument.
 func writeJSONErrCtx(w http.ResponseWriter, r *http.Request, status int, messageKey string, templateData ...map[string]any) {
 	msg := i18n.T(r.Context(), messageKey, templateData...)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, status, "application/json", map[string]interface{}{
 		"error": map[string]string{
 			"message": msg,
 			"code":    messageKey, // stable machine-readable token

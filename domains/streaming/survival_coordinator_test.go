@@ -665,3 +665,39 @@ func TestSurvivalCoordinatorHistoryBackingArrayDoesNotAliasAcrossCalls(t *testin
 			resB.History.LastSeq)
 	}
 }
+
+// The night policy is an execution contract, not just arithmetic on
+// retriesFor: a request that starts after 20:00 Asia/Shanghai with
+// NightMaxRetries=600 must run exactly 601 upstream calls (the initial
+// attempt plus 600 retries) before stopping, at the fixed 30-second cadence,
+// without the 5h deadline or the shared budget cutting it short. The fake
+// clock keeps this fast despite simulating five hours of waiting.
+func TestSurvivalCoordinatorNightBudgetStopsAtExactlySixHundredRetries(t *testing.T) {
+	exec := &alwaysTransientExecutor{}
+	h := newCoordHarness(nil)
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	h.clock = time.Date(2026, 9, 3, 21, 0, 0, 0, loc)
+	c := h.coordinator()
+	c.Exec = exec
+	c.Options.Deadline = 6 * time.Hour
+	c.Options.MaxRetries = 100
+	c.Options.NightMaxRetries = 600
+	c.Options.RetryInterval = 30 * time.Second
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	// The coordinator-owned budget is maxRetries+1 = 601 calls; the
+	// exhausted-budget check fires on the same pass as the retry-count check.
+	if exec.calls != 601 {
+		t.Fatalf("upstream calls = %d, want 601 (initial + 600 night retries)", exec.calls)
+	}
+	if res.Attempts != 601 {
+		t.Fatalf("attempts = %d, want 601", res.Attempts)
+	}
+	if res.Decision.Reason != "attempt_limit_exceeded" && res.Decision.Reason != "retry_limit_exceeded" {
+		t.Fatalf("decision reason = %q, want a budget/retry limit terminal", res.Decision.Reason)
+	}
+	if len(h.sleeps) != 600 || h.sleeps[0] != 30*time.Second || h.sleeps[599] != 30*time.Second {
+		t.Fatalf("recovery cadence broken: %d sleeps, first=%v last=%v", len(h.sleeps), h.sleeps[0], h.sleeps[599])
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
@@ -159,12 +160,11 @@ func (h *TelemetryFallbackBufferHandler) handleReplay(w http.ResponseWriter, r *
 	})
 }
 
+// writeJSON 薄委托 internal/httpx（2026-09-04 writeJSON 收敛）。
 func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
-		// Body already partly written; best effort logging.
-		// Caller can't do anything useful with this error.
-		_ = err
-	}
+	// Best-effort: marshal failures are returned before the status is
+	// committed but the payload shapes here (maps/structs of scalars)
+	// cannot fail to marshal; write failures after commit are
+	// unrecoverable, matching the previous streaming helper.
+	_ = httpx.WriteJSON(w, status, "application/json", body)
 }

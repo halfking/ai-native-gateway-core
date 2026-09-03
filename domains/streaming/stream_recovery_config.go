@@ -3,6 +3,8 @@ package streaming
 import (
 	"os"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 )
 
@@ -144,6 +146,7 @@ func RecoveryHoldbackFromEnv() (window time.Duration, maxChunks int) {
 // Operators can override via model-specific env vars:
 //   - LLM_GATEWAY_RECOVERY_HOLDBACK_WINDOW_MS_<MODEL>
 //   - LLM_GATEWAY_RECOVERY_HOLDBACK_MAX_CHUNKS_<MODEL>
+//
 // where <MODEL> is the uppercase model name with hyphens replaced by underscores.
 func RecoveryHoldbackForModel(model string) (window time.Duration, maxChunks int) {
 	// Check model-specific env override first
@@ -221,4 +224,82 @@ func (c StreamRecoveryConfig) withDefaults() StreamRecoveryConfig {
 		c.CommittedPrefixCacheCapacity = DefaultCommittedPrefixCacheCapacity
 	}
 	return c
+}
+
+// ── L2 committed-prefix aligned continuation wiring (design
+// resume-blocked-long-stream-recovery §3.3 point 5) ─────────────────────────
+//
+// The whole L2 path is OFF by default: LLM_GATEWAY_RECOVERY_L2_ENABLED is
+// unset/false → recoveryL2RuntimeFromEnv returns a disabled snapshot and the
+// survival coordinator never arms the prefix observer, never consults the
+// ladder for aligned continuation and never builds a replay-aligning gate.
+// With the switch closed the only code that executes on the hot path is a
+// nil/bool check per gate construction, so L1 holdback behavior and the wire
+// bytes are byte-identical to the pre-L2 build.
+
+// maxL2ReplayCommittedBytes bounds the committed prefix size an aligned
+// replay attempt may buffer for verification (hash-only mode must fold the
+// FULL committed byte count). Beyond it the tail cannot be verified, so the
+// coordinator does not arm a replay (miss-degrade to the existing
+// resume_blocked envelope). Generous against the observed population
+// (27–5568 chunks ≈ tens of KB..a few MB of SSE payload).
+const maxL2ReplayCommittedBytes = 8 * 1024 * 1024
+
+// RecoveryL2EnabledFromEnv reports whether the L2 committed-prefix aligned
+// continuation is enabled (LLM_GATEWAY_RECOVERY_L2_ENABLED=1/true/yes/on).
+// Default false — see the design doc §3.3 point 5 (灰度开关).
+func RecoveryL2EnabledFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_RECOVERY_L2_ENABLED"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+var (
+	recoveryL2CacheOnce sync.Once
+	recoveryL2Cache     *CommittedPrefixCache
+)
+
+// CommittedPrefixCacheShared returns the process-wide L2 CommittedPrefixCache
+// the survival coordinator observes into (capacity/window env-overridable,
+// spec defaults 1024 requests × 64KiB head window). Built lazily so the
+// disabled-by-default deployment never allocates it.
+func CommittedPrefixCacheShared() *CommittedPrefixCache {
+	recoveryL2CacheOnce.Do(func() {
+		recoveryL2Cache = NewCommittedPrefixCache(
+			envInt("LLM_GATEWAY_RECOVERY_L2_CACHE_CAPACITY", DefaultCommittedPrefixCacheCapacity),
+			envInt("LLM_GATEWAY_RECOVERY_L2_WINDOW_BYTES", DefaultCommittedPrefixWindowBytes),
+		)
+	})
+	return recoveryL2Cache
+}
+
+// recoveryL2Runtime is the per-Run L2 wiring snapshot (env read once per
+// request so tests and operators can toggle without restart races).
+type recoveryL2Runtime struct {
+	enabled bool
+	cfg     StreamRecoveryConfig
+	cache   *CommittedPrefixCache
+}
+
+// recoveryL2RuntimeFromEnv snapshots the L2 knobs; enabled=false leaves the
+// cache pointer nil so no caller can touch it by accident.
+func recoveryL2RuntimeFromEnv() recoveryL2Runtime {
+	if !RecoveryL2EnabledFromEnv() {
+		return recoveryL2Runtime{}
+	}
+	return recoveryL2Runtime{
+		enabled: true,
+		cfg:     DefaultStreamRecoveryConfig(),
+		cache:   CommittedPrefixCacheShared(),
+	}
+}
+
+// resetRecoveryL2CacheForTest drops the shared-cache singleton so tests that
+// change the capacity/window env vars get a fresh instance (tests only).
+func resetRecoveryL2CacheForTest() {
+	recoveryL2CacheOnce = sync.Once{}
+	recoveryL2Cache = nil
 }

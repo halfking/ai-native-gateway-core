@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getFaultEvents,
@@ -16,6 +16,7 @@ import {
   type FaultRule,
   type FaultStats,
 } from '../../api/ops'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -138,20 +139,17 @@ async function handleSaveRule() {
 }
 
 async function handleDeleteRule(rule: FaultRule) {
+  if (!(await confirmDialog(
+    t('ops.fault.deleteRuleConfirm', { name: rule.name }),
+    { title: t('common.warning') },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.fault.deleteRuleConfirm', { name: rule.name }),
-      t('common.warning'),
-      { type: 'warning' }
-    )
     await deleteFaultRule(rule.id)
     ElMessage.success(t('ops.fault.deleteSuccess'))
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.fault.deleteFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.fault.deleteFailed'))
+    console.error(error)
   }
 }
 
@@ -167,20 +165,14 @@ async function handleAcknowledge(event: FaultEvent) {
 }
 
 async function handleResolve(event: FaultEvent) {
+  if (!(await confirmDialog(t('ops.fault.fixConfirm'), { title: t('common.confirm'), type: 'info' }))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.fault.fixConfirm'),
-      t('common.confirm'),
-      { type: 'info' }
-    )
     await resolveFaultEvent(event.id)
     ElMessage.success('Event resolved')
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.fault.fixFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.fault.fixFailed'))
+    console.error(error)
   }
 }
 

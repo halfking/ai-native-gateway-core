@@ -225,4 +225,5 @@ export default {
   unknown: '未探测',
   unreachable: '不可达',
   warning: '警示',
+  nameMappingDeleteConfirm: 'Delete this mapping?',
 }

@@ -48,6 +48,8 @@ export default {
     errorRate24h: '24h 错误率',
   },
   creds: {
+    forceRecoverModalConfirm: '确认强制恢复凭据 {name}？\n此操作将重置凭据状态、清空所有 binding 的不可用标记、重置探测状态。',
+
     listTitle: '凭据列表',
     addBtn: '+ 添加凭据',
     table: {

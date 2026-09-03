@@ -154,4 +154,7 @@ export default {
     reactivate: '重新激活',
     loadFailed: '查询 License 信息失败: {msg}',
   },
+  versionsUpgradeConfirmBody: '即将把服务升级到 {version}（{label}）。过程中服务会短暂不可用，请确认无重要任务正在进行。',
+  versionsUpgradeConfirmTitle: '确认升级',
+  versionsUpgradeConfirmStart: '开始升级',
 }

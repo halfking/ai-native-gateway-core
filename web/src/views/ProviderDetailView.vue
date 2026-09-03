@@ -13,6 +13,7 @@ import SettingsTab from './provider-detail/SettingsTab.vue'
 import ProbeHistoryTab from './provider-detail/ProbeHistoryTab.vue'
 import QualityTab from './provider-detail/QualityTab.vue'
 import ErrorDetailTab from './provider-detail/ErrorDetailTab.vue'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const route = useRoute()
 const router = useRouter()
@@ -146,7 +147,7 @@ async function toggleProviderManual() {
 async function delProvider() {
   if (!provider.value) return
   const name = provider.value.display_name
-  if (!confirm(pp('deleteConfirm', { name }))) return
+  if (!(await confirmDialog(pp('deleteConfirm', { name })))) return
   try {
     await deleteProvider(provider.value.id)
     router.push('/providers')

@@ -6,6 +6,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
 import { store, clearApiKey, setApiKey, setPreferredChatKeyId, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import FilterInput from '../components/FilterInput.vue'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -319,7 +320,7 @@ async function submitNew() {
 }
 
 async function revoke(k: ApiKey) {
-  if (!confirm(`确认吊销密钥 ${k.key_prefix}***？此操作不可撤销。`)) return
+  if (!(await confirmDialog(t('keys.list.confirm.revoke', { prefix: k.key_prefix })))) return
   try {
     await revokeKey(k.id)
     keys.value = keys.value.filter(x => x.id !== k.id)
@@ -434,7 +435,7 @@ async function disableSelected() {
     error.value = t('keys.systemKeyCannotDisable')
     return
   }
-  if (!confirm(`确认禁用密钥 ${k.key_prefix}？可通过"启用"恢复。`)) return
+  if (!(await confirmDialog(t('keys.list.confirm.disable', { prefix: k.key_prefix })))) return
   try {
     await disableKey(k.id)
     const currentKeyPrefix = store.apiKey ? store.apiKey.substring(0, 12) : ''

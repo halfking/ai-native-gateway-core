@@ -12,6 +12,7 @@ import {
   type ProviderDetail,
   type ProviderSetting,
 } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t: td } = useI18n()
 const ps = (k: string, params?: Record<string, unknown>): string =>
@@ -179,7 +180,7 @@ async function save() {
 }
 
 async function batchRecover() {
-  if (!confirm(ps('batchRecoverConfirm'))) return
+  if (!(await confirmDialog(ps('batchRecoverConfirm')))) return
   batchLoading.value = true
   batchMsg.value = ''
   try {

@@ -44,6 +44,8 @@ export default {
     errorRate24h: "Tasa de error 24h"
   },
   creds: {
+    forceRecoverModalConfirm: '¿Forzar la recuperación de la credencial {name}?\nEsto restablece el estado de la credencial, borra las marcas de no disponible de todos los vínculos y reinicia el estado del sondeo.',
+
     listTitle: "Credenciales",
     addBtn: "+ Añadir credencial",
     table: {

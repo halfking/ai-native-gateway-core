@@ -20,12 +20,21 @@ const fallbackText = computed(() => {
   return title || t('turnDigest.empty')
 })
 
-const status = computed(() => {
+type StatusType = 'danger' | 'warning' | 'success'
+const status = computed<{ type: StatusType; text: string } | null>(() => {
   const events = props.digest?.events ?? []
   if (events.some((event) => event.type === 'error')) return { type: 'danger', text: t('turnDigest.statusError') }
   if (events.some((event) => event.type === 'warning')) return { type: 'warning', text: t('turnDigest.statusWarning') }
   return props.digest ? { type: 'success', text: t('turnDigest.statusSuccess') } : null
 })
+
+// 状态/事件 chip 统一走全局 pill-chip 设计系统（styles/pill-chip.css）。
+const STATUS_PILL: Record<StatusType, string> = {
+  danger: 'pill--err',
+  warning: 'pill--warn',
+  success: 'pill--ok',
+}
+const statusPill = computed(() => (status.value ? STATUS_PILL[status.value.type] : ''))
 
 function formatTokens(value?: number) {
   if (value == null) return '-'
@@ -42,13 +51,21 @@ function formatRate(value?: number) { return value == null ? '-' : `${(value * 1
 function eventType(event: TurnDigestEvent): 'danger' | 'warning' | 'info' {
   return event.type === 'error' ? 'danger' : event.type === 'warning' ? 'warning' : 'info'
 }
+const EVENT_PILL: Record<'danger' | 'warning' | 'info', string> = {
+  danger: 'pill--err',
+  warning: 'pill--warn',
+  info: 'pill--info',
+}
+function eventPillClass(event: TurnDigestEvent): string {
+  return EVENT_PILL[eventType(event)]
+}
 </script>
 
 <template>
   <div class="tdc" data-testid="turn-digest-card">
     <div class="tdc-meta">
       <span v-if="turnIndex !== undefined" class="tdc-turn-no">#{{ turnIndex }}</span>
-      <el-tag v-if="status" :type="status.type" size="small">{{ status.text }}</el-tag>
+      <span v-if="status" class="pill pill--sm" :class="statusPill" data-testid="tdc-status">{{ status.text }}</span>
       <template v-if="digest">
         <span class="tdc-stat" data-testid="tdc-tokens"><strong>{{ t('turnDigest.metrics.tokens') }}:</strong> {{ formatTokens(digest.metrics.tokens_used) }}</span>
         <span class="tdc-stat" data-testid="tdc-cost"><strong>{{ t('turnDigest.metrics.cost') }}:</strong> {{ formatCost(digest.metrics.cost) }}</span>
@@ -74,13 +91,13 @@ function eventType(event: TurnDigestEvent): 'danger' | 'warning' | 'info' {
       <section v-if="digest.tool_usage?.tools_used?.length" class="tdc-section" data-testid="tdc-tool-usage">
         <div class="tdc-section-label">{{ t('turnDigest.toolUsage') }}</div>
         <div class="tdc-tags">
-          <el-tag v-for="tool in digest.tool_usage.tools_used" :key="tool" size="small" effect="plain">{{ tool }}</el-tag>
+          <span v-for="tool in digest.tool_usage.tools_used" :key="tool" class="chip chip--tight">{{ tool }}</span>
           <span>{{ t('turnDigest.toolCount', { n: digest.tool_usage.tool_call_count }) }}</span>
         </div>
       </section>
       <section v-if="digest.events?.length" class="tdc-section" data-testid="tdc-events">
         <div class="tdc-section-label">{{ t('turnDigest.events.header') }}</div>
-        <ul class="tdc-events"><li v-for="(event, index) in digest.events" :key="index"><el-tag :type="eventType(event)" size="small">{{ event.category }}</el-tag><span>{{ event.message }}</span></li></ul>
+        <ul class="tdc-events"><li v-for="(event, index) in digest.events" :key="index"><span class="pill pill--sm" :class="eventPillClass(event)">{{ event.category }}</span><span>{{ event.message }}</span></li></ul>
       </section>
     </template>
   </div>

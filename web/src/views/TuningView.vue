@@ -25,6 +25,7 @@ import {
   type StrategyBreakdownRow,
   type StrategyResponse,
 } from '../api'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -53,7 +54,7 @@ async function loadProposals() {
 }
 
 async function approve(p: TuningProposal) {
-  if (!confirm(`Approve proposal #${p.id} (${p.category} for ${p.task_type ?? 'global'})?`)) return
+  if (!(await confirmDialog(`Approve proposal #${p.id} (${p.category} for ${p.task_type ?? 'global'})?`))) return
   try {
     await approveTuningProposal(p.id)
     await loadProposals()
@@ -123,7 +124,7 @@ const analyzeResult = ref<string | null>(null)
 const analyzeLoading = ref(false)
 
 async function triggerAnalyze() {
-  if (!confirm('Run the feedback analyzer on demand? May take 30-60s.')) return
+  if (!(await confirmDialog('Run the feedback analyzer on demand? May take 30-60s.'))) return
   analyzeLoading.value = true
   analyzeResult.value = null
   try {

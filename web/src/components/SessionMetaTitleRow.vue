@@ -7,6 +7,7 @@ import {
   deleteSessionTitle,
   summarizeSessionTitle,
 } from '../api/memora'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const props = defineProps<{
   taskId: string | null | undefined
@@ -102,7 +103,8 @@ async function regenerateTitle() {
 }
 
 async function clearTitle() {
-  if (!props.taskId || !confirm('确认清空此会话的标题？')) return
+  if (!props.taskId) return
+  if (!(await confirmDialog(t('sessions.metaTitleClearConfirm')))) return
   const taskId = props.taskId
   const sessionId = props.sessionId
   titleSaving.value = true

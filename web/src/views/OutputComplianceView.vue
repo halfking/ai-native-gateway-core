@@ -4,6 +4,7 @@ import { ref, onMounted, computed } from 'vue'
 import { listSettings, updateSetting, SettingItem } from '../api/settings'
 import { req } from '../api/_core'
 import { fmtDateTime24h } from '../i18n/useFormat'
+import AppSpinner from '../components/AppSpinner.vue'
 
 const { t } = useI18n({ useScope: 'global' })
 
@@ -318,10 +319,7 @@ onMounted(() => {
 
     <!-- 概览标签页 -->
     <div v-if="activeTab === 'overview'">
-      <div v-if="statsLoading" class="loading-state">
-        <span class="spinner"></span>
-        {{ t('outputCompliance.loading') }}
-      </div>
+      <AppSpinner v-if="statsLoading" :label="t('outputCompliance.loading')" />
       <div v-else-if="statsError" class="error-banner">⚠️ {{ statsError }}</div>
       <div v-else-if="stats" class="stats-grid">
         <div class="stat-card">
@@ -392,8 +390,7 @@ onMounted(() => {
           <tbody v-if="recordsLoading">
             <tr>
               <td colspan="9" class="loading-cell">
-                <span class="spinner"></span>
-                {{ t('outputCompliance.loading') }}
+                <AppSpinner inline :label="t('outputCompliance.loading')" />
               </td>
             </tr>
           </tbody>
@@ -444,10 +441,7 @@ onMounted(() => {
 
     <!-- 配置标签页 -->
     <div v-if="activeTab === 'config'" class="config-panel">
-      <div v-if="configLoading" class="loading-state">
-        <span class="spinner"></span>
-        {{ t('outputCompliance.config.loading') }}
-      </div>
+      <AppSpinner v-if="configLoading" :label="t('outputCompliance.config.loading')" />
       <div v-else-if="configError" class="error-banner">⚠️ {{ configError }}</div>
       <div v-else class="config-form">
         <div v-if="configSuccess" class="success-banner">✅ {{ configSuccess }}</div>

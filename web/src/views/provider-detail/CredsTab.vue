@@ -19,6 +19,7 @@ import {
 import { isSuperAdmin } from '../../store'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 import CredentialModelsPanel from './CredentialModelsPanel.vue'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t: td } = useI18n()
 const pd = (k: string, params?: Record<string, unknown>): string =>
@@ -654,7 +655,7 @@ async function checkSelected() {
 
 async function delSelected() {
   const c = selected.value
-  if (!c || !confirm(pd('creds.deleteConfirm'))) return
+  if (!c || !(await confirmDialog(pd('creds.deleteConfirm')))) return
   try {
     await deleteCredential(props.provider.id, c.id)
     closeDrawer()
@@ -734,7 +735,7 @@ async function setPlanType(value: string) {
 
 async function resetAvailability() {
   const c = selected.value
-  if (!c || !confirm(pd('creds.resetAvailConfirm', { name: c.label }))) return
+  if (!c || !(await confirmDialog(pd('creds.resetAvailConfirm', { name: c.label })))) return
   try {
     await resetCredentialAvailability(props.provider.id, c.id)
     emit('silentRefresh')
@@ -745,7 +746,7 @@ async function resetAvailability() {
 
 async function resetQuota() {
   const c = selected.value
-  if (!c || !confirm(pd('creds.resetQuotaConfirm', { name: c.label }))) return
+  if (!c || !(await confirmDialog(pd('creds.resetQuotaConfirm', { name: c.label })))) return
   try {
     await resetCredentialQuota(props.provider.id, c.id)
     emit('silentRefresh')
@@ -756,7 +757,7 @@ async function resetQuota() {
 
 async function forceRecover() {
   const c = selected.value
-  if (!c || !confirm(pd('creds.forceRecoverConfirm', { name: c.label }))) return
+  if (!c || !(await confirmDialog(pd('creds.forceRecoverConfirm', { name: c.label })))) return
   try {
     await forceRecoverCredential(c.id)
     emit('silentRefresh')
@@ -833,7 +834,7 @@ async function repickDefault() {
 
 async function resetFpSlots() {
   const c = selected.value
-  if (!c || !confirm(pd('creds.resetFpSlotsConfirm', { name: c.label }))) return
+  if (!c || !(await confirmDialog(pd('creds.resetFpSlotsConfirm', { name: c.label })))) return
   try {
     const r = await resetCredentialFpSlots(props.provider.id, c.id)
     alert(pd('creds.resetFpSlotsOk', { slots: r.deleted_slots, pins: r.deleted_pins }))

@@ -54,6 +54,8 @@ export default {
     },
   },
   editor: {
+    rollbackConfirm: 'إرجاع {key} إلى قيمته السابقة؟',
+
     newValueLabel: 'القيمة الجديدة',
     enabledText: 'مفعّل',
     disabledText: 'معطّل',

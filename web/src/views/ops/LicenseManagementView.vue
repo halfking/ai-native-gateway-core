@@ -23,6 +23,7 @@ import {
   type LicenseModuleOverride,
 } from '../../api/ops'
 import { getLicenseHolders, type LicenseHolder } from '../../api/public'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -197,20 +198,17 @@ async function handleSaveEdit() {
 }
 
 async function handleRevoke(license: License) {
+  if (!(await confirmDialog(
+    t('ops.license.revokeConfirm', { customer: license.customer_name }),
+    { title: t('common.warning') },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.license.revokeConfirm', { customer: license.customer_name }),
-      t('common.warning'),
-      { type: 'warning' }
-    )
     await revokeLicense(license.id)
     ElMessage.success(t('ops.license.revokeSuccess'))
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.license.revokeFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.license.revokeFailed'))
+    console.error(error)
   }
 }
 

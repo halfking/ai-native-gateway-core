@@ -123,6 +123,7 @@ export default {
   cancel: 'Cancel',
   close: 'Close',
   confirm: 'Confirm',
+  confirmTitle: 'Please confirm',
   count: 'Count',
   create: 'New',
   createdAt: 'Created',

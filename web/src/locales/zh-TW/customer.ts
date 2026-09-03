@@ -167,4 +167,7 @@ export default {
     reactivate: '重新激活',
     loadFailed: '查询 License 信息失败: {msg}',
   },
+  versionsUpgradeConfirmBody: '即將把服務升級到 {version}（{label}）。過程中服務會短暫不可用，請確認無重要任務正在進行。',
+  versionsUpgradeConfirmTitle: '確認升級',
+  versionsUpgradeConfirmStart: '開始升級',
 }

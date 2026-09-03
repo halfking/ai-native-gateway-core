@@ -44,6 +44,8 @@ export default {
     errorRate24h: "24h 錯誤率"
   },
   creds: {
+    forceRecoverModalConfirm: '確認強制恢復憑證 {name}？\n此操作將重置憑證狀態、清空所有 binding 的不可用標記、重置探測狀態。',
+
     listTitle: "憑證清單",
     addBtn: "+ 新增憑證",
     table: {

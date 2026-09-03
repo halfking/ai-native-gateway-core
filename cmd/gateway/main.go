@@ -2496,18 +2496,25 @@ func main() {
 				if routingExec != nil {
 					routingExec.PendingStore = pendingStore
 				}
+				durableRunner := streaming.NewDurableAttemptRunner(routingExec, providerClient, keyVerifier)
 				durableWorker = streaming.NewDurableRecoveryWorker(durableStore, pendingStore,
-					streaming.NewDurableAttemptRunner(routingExec, providerClient, keyVerifier),
+					durableRunner,
 					streaming.DurableWorkerOptions{
-						Lease:      time.Duration(cfg.RequestSurvivalWorkerLeaseSecs) * time.Second,
-						MaxRetries: cfg.RequestSurvivalMaxAttempts,
-						RetryBase:  time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
-						RetryMax:   time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
+						Lease:       time.Duration(cfg.RequestSurvivalWorkerLeaseSecs) * time.Second,
+						MaxRetries:  cfg.RequestSurvivalMaxAttempts,
+						RetryBase:   time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
+						RetryMax:    time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
+						WorkerCount: cfg.RequestSurvivalWorkerCount,
 					})
+				// Every detached execution of one durable task shares the
+				// worker-owned budget, mirroring the foreground coordinator's
+				// request-wide UpstreamAttemptBudget.
+				durableRunner.BudgetProvider = durableWorker.BudgetForTask
 				durableWorker.Start(context.Background())
 				slog.Info("durable_recovery_worker_started",
 					"durable_deadline_sec", cfg.RequestSurvivalDurableDeadlineSeconds,
 					"worker_lease_sec", cfg.RequestSurvivalWorkerLeaseSecs,
+					"worker_count", cfg.RequestSurvivalWorkerCount,
 				)
 			}
 		}
@@ -3139,8 +3146,10 @@ func main() {
 	var autoRouteListener *bg.AutoRouteRealtimeListener
 	// v7 (2026-06-28): UnifiedProbeScheduler 曾计划替换 modelProbe + suspiciousProbe，
 	// cutover 未完成已于 2026-09-01 作为死代码移除（见 docs/audit/2026-09-01-deadcode-cleanup-round2.md）。
-	var modelProbe *bg.ModelProbeRunner           // TODO: remove after unifiedProbe validation
-	var suspiciousProbe *bg.SuspiciousProbeRunner // TODO: remove after unifiedProbe validation
+	// modelProbe 是当前唯一的 model_probe_state writer（另有 admin 手动探测端点与
+	// credentialstate 提交回调消费），保留；suspiciousProbe 从未被构造（NewSuspiciousProbeRunner
+	// 零调用方），已于 2026-09-04 随死代码清理第二批删除。
+	var modelProbe *bg.ModelProbeRunner
 	var modelAvailabilityCache *bg.ModelAvailabilityCache
 	var modelAvailabilityReader *bg.ModelAvailabilityReader
 	var modelAvailabilityBackfill *bg.AvailabilityCacheBackfill
@@ -3580,10 +3589,11 @@ func main() {
 				slog.Info("unified probe scheduler is disabled (DEPRECATED — see bg/unified_probe_scheduler.go header)")
 			}
 
-			// TODO: After validation, remove the old probe runners:
-			// - modelProbe (bg.NewModelProbeRunner)
-			// - suspiciousProbe (bg.NewSuspiciousProbeRunner)
-			// Keep them for now for comparison/rollback safety.
+			// 2026-09-04: 原 "TODO: After validation, remove the old probe runners"
+			// 前提（unifiedProbe 验证收编）已随 unifiedProbe 一并移除，注释作废。
+			// modelProbe 保留：它是 model_probe_state 的单一 writer，并被 admin
+			// 手动探测端点与 credentialstate 提交回调消费；suspiciousProbe 因
+			// 从未被构造已删除（bg/model_probe_suspicious.go）。
 
 			// v6 (2026-06-22): Layer 5 passive probe observer.
 			// Scans request_logs every 30s for failures, promotes to
@@ -6571,9 +6581,6 @@ func main() {
 		}
 		if modelProbe != nil {
 			modelProbe.Stop()
-		}
-		if suspiciousProbe != nil {
-			suspiciousProbe.Stop()
 		}
 		if passiveProbe != nil {
 			passiveProbe.Stop()

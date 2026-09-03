@@ -5,6 +5,7 @@ import { fmtDateMedium } from '../i18n/useFormat'
 import { useRouter, useRoute } from 'vue-router'
 import { getApprovalDetail, approveApproval, rejectApproval, type ApprovalDetail } from '../api/approval'
 import PageBackLink from '../components/PageBackLink.vue'
+import AppSpinner from '../components/AppSpinner.vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -195,9 +196,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="loading-container">
-      <div class="loading-spinner">加载中...</div>
-    </div>
+    <AppSpinner v-if="loading" label="加载中..." />
 
     <!-- Content -->
     <div v-else-if="approval" class="content">
@@ -524,10 +523,6 @@ onBeforeUnmount(() => {
   padding: 64px;
 }
 
-.loading-spinner {
-  font-size: 16px;
-  color: var(--text-secondary);
-}
 
 .content {
   display: flex;
