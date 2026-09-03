@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/durable"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -65,6 +66,10 @@ type DurableWorkerOptions struct {
 	// RetryMax bounds locally calculated exponential retry delays. An upstream
 	// RetryAfter remains the authoritative schedule when present. 0 → 120s.
 	RetryMax time.Duration
+	// WorkerCount bounds how many claimed tasks execute concurrently. The
+	// claim loop stays single-owner; execution fans out under this semaphore.
+	// 0 → 1; values above 32 clamp to 32.
+	WorkerCount int
 }
 
 func (o DurableWorkerOptions) withDefaults() DurableWorkerOptions {
@@ -95,6 +100,12 @@ func (o DurableWorkerOptions) withDefaults() DurableWorkerOptions {
 	if o.RetryMax <= 0 {
 		o.RetryMax = 120 * time.Second
 	}
+	if o.WorkerCount <= 0 {
+		o.WorkerCount = 1
+	}
+	if o.WorkerCount > 32 {
+		o.WorkerCount = 32
+	}
 	return o
 }
 
@@ -113,10 +124,59 @@ type DurableRecoveryWorker struct {
 	done        chan struct{}
 	start       bool
 	lastTenants map[string]struct{}
+
+	// budgets holds the process-lifetime upstream attempt budget per durable
+	// task so every detached execution of one task shares a single call
+	// ceiling (the durable analogue of the foreground coordinator's
+	// request-wide budget). Entries are dropped on terminal settlement and
+	// when the reapers take a task over; the map is also hard-capped so a
+	// pathological claim stream cannot grow it without bound. Budgets do not
+	// survive process restarts — that requires persisting the used count on
+	// the task row and stays a documented follow-up.
+	budgetMu sync.Mutex
+	budgets  map[string]*executors.UpstreamAttemptBudget
 }
 
+// durableTaskBudgetCap bounds the per-task budget registry. Reaching it
+// resets the registry: worst case a still-retrying task regains a fresh
+// budget, which only widens the ceiling back toward the pre-fix behavior.
+const durableTaskBudgetCap = 4096
+
 func NewDurableRecoveryWorker(store DurableWorkerStore, redis *pending.Store, runner DurableAttemptRunner, opts DurableWorkerOptions) *DurableRecoveryWorker {
-	return &DurableRecoveryWorker{store: store, redis: redis, runner: runner, opts: opts.withDefaults()}
+	return &DurableRecoveryWorker{store: store, redis: redis, runner: runner, opts: opts.withDefaults(), budgets: make(map[string]*executors.UpstreamAttemptBudget)}
+}
+
+// BudgetForTask returns the shared upstream attempt budget for one durable
+// task, creating it on first use with the worker's retry ceiling. It is the
+// producer side of DurableAttemptRunnerImpl.BudgetProvider.
+func (w *DurableRecoveryWorker) BudgetForTask(taskID string) *executors.UpstreamAttemptBudget {
+	if taskID == "" {
+		return nil
+	}
+	w.budgetMu.Lock()
+	defer w.budgetMu.Unlock()
+	if w.budgets == nil {
+		w.budgets = make(map[string]*executors.UpstreamAttemptBudget)
+	}
+	b, ok := w.budgets[taskID]
+	if !ok {
+		if len(w.budgets) >= durableTaskBudgetCap {
+			w.budgets = make(map[string]*executors.UpstreamAttemptBudget)
+		}
+		limit := w.opts.MaxRetries + 1
+		if limit > executors.MaxUpstreamAttemptLimit {
+			limit = executors.MaxUpstreamAttemptLimit
+		}
+		b = executors.NewUpstreamAttemptBudget(limit)
+		w.budgets[taskID] = b
+	}
+	return b
+}
+
+func (w *DurableRecoveryWorker) forgetBudget(taskID string) {
+	w.budgetMu.Lock()
+	defer w.budgetMu.Unlock()
+	delete(w.budgets, taskID)
 }
 
 func (w *DurableRecoveryWorker) clock() time.Time {
@@ -193,11 +253,19 @@ func (w *DurableRecoveryWorker) Stop() {
 func (w *DurableRecoveryWorker) runOnce(ctx context.Context) {
 	now := w.clock()
 	w.drainSettlementIntents(ctx, now)
-	if _, err := w.store.ReapDeadlines(ctx, w.opts.ReapLimit, now); err != nil {
+	if reaped, err := w.store.ReapDeadlines(ctx, w.opts.ReapLimit, now); err != nil {
 		slog.Warn("durable deadline reaper failed", "error", err)
+	} else {
+		for _, rt := range reaped {
+			w.forgetBudget(rt.ID)
+		}
 	}
-	if _, err := w.store.ReapUnsafeCheckpointed(ctx, w.opts.ReapLimit, now); err != nil {
+	if unsafe, err := w.store.ReapUnsafeCheckpointed(ctx, w.opts.ReapLimit, now); err != nil {
 		slog.Warn("durable safety reaper failed", "error", err)
+	} else {
+		for _, t := range unsafe {
+			w.forgetBudget(t.ID)
+		}
 	}
 	if w.redis != nil && w.redis.Enabled() {
 		if _, err := w.store.ProjectPendingOutbox(ctx, w.redis, w.opts.ReapLimit, now); err != nil && !errors.Is(err, context.Canceled) {
@@ -220,9 +288,21 @@ func (w *DurableRecoveryWorker) runOnce(ctx context.Context) {
 	} else {
 		metrics.DurableRecoveryRunsTotal.WithLabelValues("claimed").Inc()
 	}
+	// Fan claimed tasks out under the WorkerCount semaphore: the claim loop
+	// stays single-owner while detached executions overlap. With the default
+	// count of 1 this is exactly the previous serial behavior.
+	sem := make(chan struct{}, w.opts.WorkerCount)
+	var wg sync.WaitGroup
 	for _, task := range tasks {
-		w.runTask(ctx, task)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(t *durable.Task) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			w.runTask(ctx, t)
+		}(task)
 	}
+	wg.Wait()
 }
 
 func (w *DurableRecoveryWorker) drainSettlementIntents(ctx context.Context, now time.Time) {
@@ -350,6 +430,17 @@ attemptFinished:
 	}
 	decision := AggregateTaskOutcome(attempt.Result)
 	if decision.Action == TaskActionSucceed {
+		if len(attempt.Body) == 0 {
+			// The durable store rejects completed terminals without a body.
+			// Mirror the foreground settlement: record an honest failure
+			// instead of leaving the task running until lease reclaim.
+			w.settleTerminal(ctx, durable.TerminalCommit{
+				Task: task, Outcome: durable.StatusFailed,
+				ReasonCode: "durable_result_unavailable", ErrorKind: "durable_result",
+				Attempt: attempt.Attempt,
+			})
+			return
+		}
 		w.settleTerminal(ctx, durable.TerminalCommit{Task: task, Outcome: durable.StatusCompleted, Body: attempt.Body, ContentType: attempt.ContentType, Attempt: attempt.Attempt, ErrorKind: attempt.ErrorKind})
 		return
 	}
@@ -427,14 +518,25 @@ func waitAttemptDone(done <-chan struct{}, grace time.Duration) bool {
 }
 
 func (w *DurableRecoveryWorker) settleTerminal(ctx context.Context, c durable.TerminalCommit) {
+	// The task will not execute again; its shared budget can be released even
+	// when the settlement write below fails (the intent drain / lease expiry
+	// owns the retry from here).
+	w.forgetBudget(c.Task.ID)
 	if err := w.store.PersistSettlementIntent(ctx, c); err != nil {
 		if errors.Is(err, durable.ErrLeaseLost) {
 			w.noteLeaseLost()
+			return
 		}
+		metrics.DurableSettlementStageFailuresTotal.WithLabelValues("worker_persist_intent").Inc()
+		slog.Warn("durable worker settlement persist failed; intent drain or lease expiry owns the task",
+			"task_id", c.Task.ID, "error", err)
 		return
 	}
 	claim, err := w.store.ClaimSettlementIntent(ctx, c.Task.ID, w.opts.Owner, w.opts.Lease, w.clock())
 	if err != nil || claim == nil {
+		if err != nil {
+			slog.Warn("durable worker settlement claim failed", "task_id", c.Task.ID, "error", err)
+		}
 		return
 	}
 	if _, err := w.store.FinalizeSettlement(ctx, *claim); err != nil {

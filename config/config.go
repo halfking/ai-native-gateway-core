@@ -149,7 +149,9 @@ type Config struct {
 	// RequestSurvivalRetryBaseSeconds / RetryMaxSeconds: exponential backoff
 	// base and cap for the fallback delay when no authoritative recovery time
 	// exists. Authoritative Retry-After / recover_at is NOT truncated by the
-	// cap. Defaults 2s / 120s.
+	// cap. Defaults 30s / 120s. A configured retry interval
+	// (RequestSurvivalRetryIntervalSeconds) replaces this exponential pacing
+	// with an exact fixed cadence.
 	RequestSurvivalRetryBaseSeconds int `yaml:"request_survival_retry_base_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS"`
 	RequestSurvivalRetryMaxSeconds  int `yaml:"request_survival_retry_max_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_MAX_SECONDS"`
 

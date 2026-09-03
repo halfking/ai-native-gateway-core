@@ -26,6 +26,7 @@ type workerFakeStore struct {
 	leaseErr                                              error
 	commitErr                                             error
 	lastOutcome                                           durable.Status
+	lastReason                                            string
 	lastReschedule                                        durable.RescheduleParams
 }
 
@@ -34,6 +35,7 @@ func (f *workerFakeStore) PersistSettlementIntent(_ context.Context, c durable.T
 	defer f.mu.Unlock()
 	f.commitCalls++
 	f.lastOutcome = c.Outcome
+	f.lastReason = c.ReasonCode
 	return f.commitErr
 }
 
@@ -593,4 +595,80 @@ type panickingRunnerOnce struct {
 
 func (r panickingRunnerOnce) Run(context.Context, *durable.Task, *durable.Snapshot) (*DurableAttempt, error) {
 	panic(r.msg)
+}
+
+// A successful detached execution with no extractable body must settle as an
+// honest failed terminal (the durable store rejects completed terminals
+// without a body), mirroring the foreground settlement semantics.
+func TestDurableRecoveryWorkerSuccessWithoutBodyFailsTerminalHonestly(t *testing.T) {
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	attempt := &DurableAttempt{Result: &AttemptResult{Success: true}, Attempt: 1}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: attempt}, DurableWorkerOptions{Owner: "worker"})
+
+	worker.runOnce(context.Background())
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.commitCalls != 1 || store.lastOutcome != durable.StatusFailed {
+		t.Fatalf("commit=%d outcome=%v, want 1 failed terminal", store.commitCalls, store.lastOutcome)
+	}
+	if store.lastReason != "durable_result_unavailable" {
+		t.Fatalf("reason = %q, want durable_result_unavailable", store.lastReason)
+	}
+	if store.rescheduleCalls != 0 {
+		t.Fatalf("reschedules = %d, want 0", store.rescheduleCalls)
+	}
+}
+
+// The per-task budget registry returns one shared instance per task and is
+// released once the task settles or is reaped.
+func TestDurableRecoveryWorkerBudgetForTaskSharedAndForgotten(t *testing.T) {
+	worker := NewDurableRecoveryWorker(&workerFakeStore{}, nil, workerFakeRunner{}, DurableWorkerOptions{})
+	if worker.BudgetForTask("") != nil {
+		t.Fatal("empty task id must not allocate a budget")
+	}
+	b1 := worker.BudgetForTask("task-1")
+	if b1 == nil {
+		t.Fatal("budget must be allocated")
+	}
+	if b2 := worker.BudgetForTask("task-1"); b2 != b1 {
+		t.Fatal("same task must share one budget instance")
+	}
+	if b3 := worker.BudgetForTask("task-2"); b3 == b1 {
+		t.Fatal("different tasks must not share a budget")
+	}
+	worker.forgetBudget("task-1")
+	if b4 := worker.BudgetForTask("task-1"); b4 == b1 {
+		t.Fatal("budget must be recreated after forget")
+	}
+}
+
+func TestDurableWorkerOptionsClampWorkerCount(t *testing.T) {
+	if got := (DurableWorkerOptions{}).withDefaults().WorkerCount; got != 1 {
+		t.Fatalf("default worker count = %d, want 1", got)
+	}
+	if got := (DurableWorkerOptions{WorkerCount: -3}).withDefaults().WorkerCount; got != 1 {
+		t.Fatalf("negative worker count = %d, want 1", got)
+	}
+	if got := (DurableWorkerOptions{WorkerCount: 64}).withDefaults().WorkerCount; got != 32 {
+		t.Fatalf("oversized worker count = %d, want clamp to 32", got)
+	}
+}
+
+// A persist failure during worker settlement must be observable through the
+// stage-failure metric instead of leaving the task silently stuck in
+// running with no trace.
+func TestDurableRecoveryWorkerSettlementPersistFailureObserved(t *testing.T) {
+	before := gatherMetricValue(t, "durable_settlement_stage_failures_total")
+	store := &workerFakeStore{
+		task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"},
+		commitErr: errors.New("settlement store unavailable"),
+	}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: successAttempt()}, DurableWorkerOptions{Owner: "worker"})
+
+	worker.runOnce(context.Background())
+
+	if got := gatherMetricValue(t, "durable_settlement_stage_failures_total"); got < before+1 {
+		t.Fatalf("stage failure metric delta = %v, want >= 1 (before=%v after=%v)", got-before, before, got)
+	}
 }
