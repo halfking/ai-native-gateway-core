@@ -23,7 +23,7 @@ const props = withDefaults(defineProps<{
   offer: ModelOffer | null
   siblingOffers?: ModelOffer[]
   canEdit?: boolean
-}>(), { canEdit: true })
+}>(), { canEdit: false })
 
 const emit = defineEmits<{ close: []; updated: [ModelOffer]; iqTested: [] }>()
 const router = useRouter()
@@ -183,7 +183,8 @@ async function saveNode() {
 }
 
 async function saveCanonical() {
-  if (!props.canEdit || !props.offer?.canonical_id) {
+  const offer = props.offer
+  if (!props.canEdit || !offer || !draft.canonical_id) {
     saveErr.value = '未关联标准模型，请先选择 canonical'
     return
   }
@@ -193,12 +194,12 @@ async function saveCanonical() {
     const reasoning_caps = draft.thinking_supported
       ? { supported: true, dialect: draft.thinking_dialect || undefined }
       : { supported: false }
-    await updateModel(props.offer.canonical_id, {
+    await updateModel(draft.canonical_id, {
       modality: draft.modality,
       reasoning_caps,
     })
     emit('updated', {
-      ...props.offer,
+      ...offer,
       modality: draft.modality,
       reasoning_caps,
     })

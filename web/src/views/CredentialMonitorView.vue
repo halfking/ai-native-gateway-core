@@ -9,12 +9,14 @@ import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import CredentialStatusBar from '../components/CredentialStatusBar.vue'
 import { credentialDisplayState } from '../utils/credentialStatus'
+import { isSuperAdmin } from '../store'
 
 Chart.register(...registerables)
 
 const { t } = useI18n()
 
 const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
+const canManageMonitor = computed(() => isSuperAdmin())
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -202,12 +204,13 @@ const setManualDisabledTargetValue = ref(false)
 const setManualDisabledReason = ref('')
 
 function openClearDisabledDialog() {
+  if (!canManageMonitor.value) return
   clearDisabledDialogOpen.value = true
   clearDisabledReason.value = ''
 }
 
 async function submitClearDisabled() {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   try {
     await clearManualDisabled(selectedCred.value.id, clearDisabledReason.value)
     clearDisabledDialogOpen.value = false
@@ -219,13 +222,14 @@ async function submitClearDisabled() {
 
 // Set manual_disabled (2026-06-23)
 function openSetManualDisabledDialog(targetValue: boolean) {
+  if (!canManageMonitor.value) return
   setManualDisabledTargetValue.value = targetValue
   setManualDisabledReason.value = ''
   setManualDisabledDialogOpen.value = true
 }
 
 async function submitSetManualDisabled() {
-  if (!selectedCred.value || !setManualDisabledReason.value.trim()) return
+  if (!canManageMonitor.value || !selectedCred.value || !setManualDisabledReason.value.trim()) return
   try {
     await setManualDisabled(selectedCred.value.id, setManualDisabledTargetValue.value, setManualDisabledReason.value)
     setManualDisabledDialogOpen.value = false
@@ -539,6 +543,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
 }
 
 function onClickManualControl() {
+  if (!canManageMonitor.value) return
   const m = selectedModelObj.value
   if (!m) return
   const state = manualControlState.value
@@ -631,6 +636,7 @@ function toggleAutoRefresh() {
 }
 
 function openBatchDialog(action: 'promote' | 'demote') {
+  if (!canManageMonitor.value) return
   if (selectedIds.value.size === 0) {
     alert(t('credentialMonitor.error.selectFirst'))
     return
@@ -642,6 +648,7 @@ function openBatchDialog(action: 'promote' | 'demote') {
 }
 
 async function submitBatch() {
+  if (!canManageMonitor.value) return
   const ids = Array.from(selectedIds.value)
   const promises = ids.map(id =>
     batchAction.value === 'promote'
@@ -659,13 +666,14 @@ async function submitBatch() {
 }
 
 function openDemoteDialog() {
+  if (!canManageMonitor.value) return
   demoteDialogOpen.value = true
   demoteReason.value = ''
   demoteHours.value = 2
 }
 
 async function submitDemote() {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   try {
     await demoteCredential(selectedCred.value.id, demoteReason.value, demoteHours.value)
     demoteDialogOpen.value = false
@@ -677,12 +685,13 @@ async function submitDemote() {
 }
 
 function openPromoteDialog() {
+  if (!canManageMonitor.value) return
   promoteDialogOpen.value = true
   promoteReason.value = ''
 }
 
 async function submitPromote() {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   try {
     await promoteCredential(selectedCred.value.id, promoteReason.value)
     promoteDialogOpen.value = false
@@ -694,13 +703,14 @@ async function submitPromote() {
 }
 
 function openConcurrencyDialog() {
+  if (!canManageMonitor.value) return
   concurrencyDialogOpen.value = true
   concurrencyValue.value = selectedCred.value?.concurrency_limit_auto || selectedCred.value?.effective_concurrency || 5
   concurrencyReason.value = ''
 }
 
 async function submitConcurrency() {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   try {
     await setConcurrencyAuto(selectedCred.value.id, concurrencyValue.value, concurrencyReason.value)
     concurrencyDialogOpen.value = false
@@ -712,7 +722,7 @@ async function submitConcurrency() {
 
 // ── 2026-06-23: per-model toggle + history helpers ────────────────────────
 function openToggleDialog(m: CredentialModelStatus, action: ModelToggleAction) {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   toggleTarget.value = {
     credId: selectedCred.value.id,
     rawModel: m.raw_model_name,
@@ -724,7 +734,7 @@ function openToggleDialog(m: CredentialModelStatus, action: ModelToggleAction) {
 }
 
 async function submitToggle() {
-  if (!toggleTarget.value || !toggleReason.value.trim()) return
+  if (!canManageMonitor.value || !toggleTarget.value || !toggleReason.value.trim()) return
   const t = toggleTarget.value
   const key = `${t.credId}|${t.rawModel}`
   toggleBusy.value[key] = true
@@ -904,10 +914,10 @@ onUnmounted(() => {
           <button class="btn btn-sm btn-ghost" :class="quickFilter === 'low-rate' ? 'qf-active qf-warn' : ''" @click="quickFilter = 'low-rate'">成功率&lt;50%</button>
         </div>
         <span class="spacer"></span>
-        <button class="btn btn-sm btn-success" :disabled="selectedIds.size === 0" @click="openBatchDialog('promote')">
+        <button class="btn btn-sm btn-success" :disabled="!canManageMonitor || selectedIds.size === 0" @click="openBatchDialog('promote')">
           批量恢复 ({{ selectedIds.size }})
         </button>
-        <button class="btn btn-sm btn-danger" :disabled="selectedIds.size === 0" @click="openBatchDialog('demote')">
+        <button class="btn btn-sm btn-danger" :disabled="!canManageMonitor || selectedIds.size === 0" @click="openBatchDialog('demote')">
           批量降级 ({{ selectedIds.size }})
         </button>
       </div>
@@ -1013,12 +1023,14 @@ onUnmounted(() => {
             <button
               v-if="selectedCred.manual_disabled"
               class="btn btn-xs btn-warning"
+              :disabled="!canManageMonitor"
               title="解除整凭据禁用"
               @click="openClearDisabledDialog"
             >🔓 解除禁用</button>
             <button
               v-else
               class="btn btn-xs btn-danger"
+              :disabled="!canManageMonitor"
               title="手动禁用此凭据 (路由时将不被选中)"
               @click="openSetManualDisabledDialog(true)"
             >⛔ 手动禁用</button>
@@ -1071,6 +1083,10 @@ onUnmounted(() => {
             <div class="drawer-section">
               <div class="drawer-section-title">状态概览</div>
               <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
+                <div>
+                  <label class="field-label">有效状态</label>
+                  <CredentialStatusBar :credential="selectedCred" :reason="effectiveCredentialReason(selectedCred)" />
+                </div>
                 <div>
                   <label class="field-label">可用性</label>
                   <span class="badge" :class="statusBadge(selectedCred.availability_state)">{{ selectedCred.availability_state }}</span>
@@ -1253,14 +1269,14 @@ onUnmounted(() => {
                           <button
                             v-if="m.binding_available && m.binding_unavailable_reason !== 'manual_offline'"
                             class="btn btn-xs btn-ghost"
-                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                            :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
                             :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
                             @click="openToggleDialog(m, 'offline')"
                           >🔴 下线</button>
                           <button
                             v-else-if="m.binding_unavailable_reason === 'manual_offline'"
                             class="btn btn-xs btn-ghost"
-                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                            :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
                             title="恢复后下一轮自动探测（~10 min）会重新评估"
                             @click="openToggleDialog(m, 'online')"
                           >🟢 上线</button>
@@ -1319,7 +1335,7 @@ onUnmounted(() => {
                             color: manualControlMeta(manualControlState).color,
                           }"
                           :title="manualControlMeta(manualControlState).tooltip"
-                          :disabled="toggleBusy[selectedCred.id + '|' + selectedModel]"
+                          :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + selectedModel]"
                           @click="onClickManualControl"
                         >
                           <span class="status-icon-emoji">{{ manualControlMeta(manualControlState).emoji }}</span>
