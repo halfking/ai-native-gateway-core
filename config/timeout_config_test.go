@@ -270,6 +270,44 @@ func TestTimeoutConfig_ReloadFromDBAppliesValidatedSnapshot(t *testing.T) {
 		t.Fatalf("query expectations: %v", err)
 	}
 }
+func TestTimeoutConfig_ReloadFromDBAllowsZeroRetryAttempts(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("new sqlmock: %v", err)
+	}
+	defer db.Close()
+
+	tc := &TimeoutConfig{
+		db:                     &sqlDBAdapter{db: db},
+		logger:                 slog.New(slog.NewTextHandler(os.Stdout, nil)),
+		clientDefaultSeconds:   60,
+		upstreamBaseSeconds:    90,
+		upstreamMinSeconds:     20,
+		upstreamMaxSeconds:     180,
+		contextThresholdTokens: 20000,
+		contextBonusSeconds:    45,
+		mode:                   TimeoutModeAdaptive,
+		maxRetryAttempts:       3,
+		baseDelayMS:            1000,
+		maxDelayMS:             10000,
+		keepaliveIntervalSecs:  15,
+		lastNodeWaitSeconds:    5,
+	}
+
+	mock.ExpectQuery("SELECT key, value").WillReturnRows(sqlmock.NewRows([]string{"key", "value_text"}).
+		AddRow("retry.max_attempts", "0"))
+
+	if err := tc.ReloadFromDB(context.Background()); err != nil {
+		t.Fatalf("ReloadFromDB rejected valid zero retry attempts: %v", err)
+	}
+	if tc.maxRetryAttempts != 0 {
+		t.Fatalf("maxRetryAttempts = %d, want 0", tc.maxRetryAttempts)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("query expectations: %v", err)
+	}
+}
+
 func TestTimeoutConfig_ReloadFromDB_Fallback(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
