@@ -58,6 +58,9 @@ func deriveCredentialDisplayState(in credentialStateInput) credentialDisplayStat
 	if in.QuotaState == "balance_exhausted" || in.QuotaState == "permanently_exhausted" || in.QuotaState == "periodic_exhausted" || in.Status == "quota_expired" {
 		return credentialDisplayState{CredentialStateQuotaExhausted, in.QuotaState}
 	}
+	if in.Status == "quarantine" {
+		return credentialDisplayState{CredentialStateSuspended, "quarantine"}
+	}
 	if in.Availability == "suspended" {
 		return credentialDisplayState{CredentialStateSuspended, "suspended"}
 	}

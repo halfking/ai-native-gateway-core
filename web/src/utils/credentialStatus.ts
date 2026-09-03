@@ -23,6 +23,7 @@ export function credentialDisplayState(value: CredentialStatusLike): CredentialD
   if (value.manual_disabled || value.status === 'disabled' || value.lifecycle_status === 'disabled') return 'disabled'
   if (value.availability_state === 'auth_failed') return 'auth_failed'
   if (['balance_exhausted', 'permanently_exhausted', 'periodic_exhausted'].includes(value.quota_state ?? '')) return 'quota_exhausted'
+  if (value.status === 'quarantine') return 'suspended'
   if (value.availability_state === 'suspended') return 'suspended'
   if (value.availability_state === 'rate_limited') return 'rate_limited'
   if (value.availability_state === 'unreachable' || value.health_status === 'unreachable') return 'unreachable'
