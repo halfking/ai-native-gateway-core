@@ -173,10 +173,36 @@ type GateOptions struct {
 	// alignment proves no duplication NOTHING but transport keepalives
 	// reaches the client. Never set on the default (L2 disabled) path.
 	ReplayAlignment *ReplayAlignmentOptions
+	// ShadowAlignment observes semantic frames after their normal write+flush.
+	// It cannot suppress, buffer, replay, or otherwise affect this gate.
+	ShadowAlignment       *ShadowAlignmentOptions
+	ShadowAlignmentResult func(ShadowAlignmentResult)
+}
+
+// ShadowAlignmentResult is a content-free shadow verdict and callback seam.
+type ShadowAlignmentResult struct {
+	Result                    string
+	ScoreBP                   uint16
+	CommonBytes               int
+	HashOnly                  bool
+	Aligned                   bool
+	Applied                   bool
+	ClientBytesUnchanged      bool
+	RecoveryBehaviorUnchanged bool
+	L2Mode                    RecoveryL2Mode
+}
+
+// ShadowAlignmentOptions installs a read-only L2 evaluator. It observes only
+// semantic frames that the normal gate already wrote and flushed, and never
+// changes buffering, writes, commit state, errors, or recovery control flow.
+type ShadowAlignmentOptions struct {
+	Committed CommittedPrefix
+	Aligner   *PrefixAligner
 }
 
 // ReplayAlignmentOptions arms an AttemptCommitGate as an L2 aligned-
 // continuation replay gate (design §3.3 point 3).
+
 type ReplayAlignmentOptions struct {
 	// Committed is the request's committed-prefix snapshot (a deep copy —
 	// the gate never aliases the cache).
@@ -211,6 +237,18 @@ type replayAlignmentState struct {
 	result    PrefixAlignment
 }
 
+type shadowAlignmentState struct {
+	aligner   *PrefixAligner
+	committed CommittedPrefix
+	norm      []byte
+	rawLen    int
+	maxRaw    int
+	overflow  bool
+	result    PrefixAlignment
+	decided   bool
+	reported  bool
+}
+
 // AttemptCommitGate is the per-attempt protocol-aware buffer sink.
 type AttemptCommitGate struct {
 	mu                   sync.Mutex
@@ -239,6 +277,8 @@ type AttemptCommitGate struct {
 	// align carries the replay-alignment machine (nil for normal attempts).
 	prefixObserve func(requestID string, semantic []byte)
 	align         *replayAlignmentState
+	shadow        *shadowAlignmentState
+	shadowResult  func(ShadowAlignmentResult)
 
 	state     CommitState
 	committed bool
@@ -290,7 +330,19 @@ func NewAttemptCommitGate(ctx context.Context, protocol ClientProtocol, writer *
 		holdbackWindow:       opts.HoldbackWindow,
 		holdbackMaxChunks:    opts.HoldbackMaxChunks,
 		prefixObserve:        opts.PrefixObserve,
+		shadowResult:         opts.ShadowAlignmentResult,
 		ctx:                  ctx,
+	}
+	if opts.ShadowAlignment != nil {
+		aligner := opts.ShadowAlignment.Aligner
+		if aligner == nil {
+			aligner = NewPrefixAligner(0)
+		}
+		committed := opts.ShadowAlignment.Committed
+		g.shadow = &shadowAlignmentState{aligner: aligner, committed: committed, maxRaw: committed.TotalBytes*2 + DefaultMaxMetadataBufferBytes}
+		if committed.TotalBytes == 0 {
+			g.shadow.decided = true
+		}
 	}
 	if opts.ReplayAlignment != nil {
 		aligner := opts.ReplayAlignment.Aligner
@@ -1053,25 +1105,127 @@ func l2SemanticObservation(class FrameClass, frame string) []byte {
 	return obs
 }
 
-// observeFrame folds one wire-proven frame into the committed-prefix cache.
-// Nil observer (L2 disabled — the default) is a no-op: the disabled hot path
-// pays exactly one branch check per frame.
-func (g *AttemptCommitGate) observeFrame(class FrameClass, frame string) {
-	if g.prefixObserve == nil {
+func (g *AttemptCommitGate) observeShadowFrame(class FrameClass, frame string) {
+	if g.shadow == nil {
+		return
+	}
+	obs := l2SemanticObservation(class, frame)
+	if len(obs) == 0 || g.shadow.decided || g.shadow.overflow {
+		return
+	}
+	if g.shadow.rawLen+len(frame) > g.shadow.maxRaw {
+		g.shadow.overflow = true
+		return
+	}
+	g.shadow.norm = append(g.shadow.norm, obs...)
+	g.shadow.rawLen += len(frame)
+	if len(g.shadow.norm) >= g.shadow.committed.TotalBytes {
+		g.shadow.result = g.shadow.aligner.Align(g.shadow.committed, g.shadow.norm)
+		g.shadow.decided = true
+	}
+}
+
+func (g *AttemptCommitGate) finishShadow() {
+	if g == nil || g.shadow == nil {
 		return
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	st := g.shadow
+	if st.reported {
+		return
+	}
+	if !st.decided && !st.overflow {
+		if len(st.norm) == 0 {
+			st.decided = true
+		} else {
+			st.result = st.aligner.Align(st.committed, st.norm)
+			st.decided = true
+		}
+	}
+	result := ShadowAlignmentResult{Applied: false, ClientBytesUnchanged: true, RecoveryBehaviorUnchanged: true, L2Mode: RecoveryL2ModeShadow}
+	switch {
+	case st.overflow:
+		result.Result = "buffer_overflow"
+	case !st.decided || len(st.norm) == 0:
+		result.Result = "unavailable"
+	case st.result.Aligned:
+		result.Result = "aligned"
+	case len(st.norm) < st.committed.TotalBytes:
+		result.Result = "undecided"
+	default:
+		result.Result = "miss"
+	}
+	result.ScoreBP = st.result.ScoreBP
+	result.CommonBytes = st.result.CommonBytes
+	result.HashOnly = st.result.HashOnly
+	result.Aligned = st.result.Aligned
+	st.reported = true
+	if result.Result == "undecided" {
+		result.Result = "undecided"
+	}
+	logL2Shadow(g.ctx, g.requestID, result)
+	if g.shadowResult != nil {
+		g.shadowResult(result)
+	}
+}
+
+// FinishShadowObservation settles and reports the shadow verdict. It is
+// deliberately separate from FinishAttempt so callers can invoke it after the
+// legacy finish/flush path without altering that path.
+func (g *AttemptCommitGate) FinishShadowObservation() {
+	g.finishShadow()
+}
+
+func logL2Shadow(ctx context.Context, requestID string, result ShadowAlignmentResult) {
+	streamLogFromContext(ctx, nil).Info("survival_l2_shadow",
+		"request_id", requestID, "result", result.Result, "score_bp", int(result.ScoreBP),
+		"common_bytes", result.CommonBytes, "hash_only", result.HashOnly, "aligned", result.Aligned,
+		"applied", false, "client_bytes_unchanged", true, "recovery_behavior_unchanged", true,
+		"l2_mode", string(RecoveryL2ModeShadow))
+}
+
+// Nil observer (L2 disabled — the default) is a no-op: the disabled hot path
+// pays exactly one branch check per frame.
+func (g *AttemptCommitGate) observeFrame(class FrameClass, frame string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.prefixObserve == nil && g.shadow == nil {
+		return
+	}
 	g.observeFrameLocked(class, frame)
 }
 
 // observeFrameLocked is observeFrame with g.mu held.
 func (g *AttemptCommitGate) observeFrameLocked(class FrameClass, frame string) {
-	if g.prefixObserve == nil {
+	if g.prefixObserve == nil && g.shadow == nil {
 		return
 	}
-	if obs := l2SemanticObservation(class, frame); len(obs) > 0 {
-		g.prefixObserve(g.requestID, obs)
+	g.observeShadowFrameLocked(class, frame)
+	if g.prefixObserve != nil {
+		if obs := l2SemanticObservation(class, frame); len(obs) > 0 {
+			g.prefixObserve(g.requestID, obs)
+		}
+	}
+}
+
+func (g *AttemptCommitGate) observeShadowFrameLocked(class FrameClass, frame string) {
+	if g.shadow == nil || g.shadow.decided || g.shadow.overflow {
+		return
+	}
+	obs := l2SemanticObservation(class, frame)
+	if len(obs) == 0 {
+		return
+	}
+	if g.shadow.rawLen+len(frame) > g.shadow.maxRaw {
+		g.shadow.overflow = true
+		return
+	}
+	g.shadow.norm = append(g.shadow.norm, obs...)
+	g.shadow.rawLen += len(frame)
+	if len(g.shadow.norm) >= g.shadow.committed.TotalBytes {
+		g.shadow.result = g.shadow.aligner.Align(g.shadow.committed, g.shadow.norm)
+		g.shadow.decided = true
 	}
 }
 
@@ -1092,7 +1246,7 @@ func (g *AttemptCommitGate) observeWrittenBytes(buf []byte) {
 
 // observeWrittenBytesLocked is observeWrittenBytes with g.mu held.
 func (g *AttemptCommitGate) observeWrittenBytesLocked(buf []byte) {
-	if g.prefixObserve == nil {
+	if g.prefixObserve == nil && g.shadow == nil {
 		return
 	}
 	for len(buf) > 0 {
