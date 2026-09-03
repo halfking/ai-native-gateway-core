@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -409,5 +410,108 @@ func TestParseResponses_UnknownFieldPreserved(t *testing.T) {
 	// Value is the raw JSON string token including quotes.
 	if string(raw) != `"keep-me"` {
 		t.Errorf("custom_vendor_flag raw = %s, want \"keep-me\"", raw)
+	}
+}
+
+// ─── negative schema gate ─────────────────────────────────────────────────
+
+func TestParseResponses_RejectsInvalidSchemaKinds(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{name: "null body", body: `null`, wantErr: "responses body must be a JSON object, got null"},
+		{name: "array body", body: `[]`, wantErr: "responses body must be a JSON object, got array"},
+		{name: "string body", body: `"request"`, wantErr: "responses body must be a JSON object, got string"},
+		{name: "number body", body: `42`, wantErr: "responses body must be a JSON object, got number"},
+		{name: "bool body", body: `true`, wantErr: "responses body must be a JSON object, got bool"},
+		{name: "input object", body: `{"input":{}}`, wantErr: "input must be string or array, got object"},
+		{name: "input number", body: `{"input":42}`, wantErr: "input must be string or array, got number"},
+		{name: "tools object", body: `{"tools":{}}`, wantErr: "tools must be array, got object"},
+		{name: "tools string element", body: `{"tools":["bad"]}`, wantErr: "tools[0] must be object, got string"},
+		{name: "tools null element", body: `{"tools":[null]}`, wantErr: "tools[0] must be object, got null"},
+		{name: "tool choice array", body: `{"tool_choice":[]}`, wantErr: "tool_choice must be string or object, got array"},
+		{name: "stop object", body: `{"stop":{}}`, wantErr: "stop must be string or array, got object"},
+		{name: "metadata array", body: `{"metadata":[]}`, wantErr: "metadata must be object, got array"},
+		{name: "reasoning string", body: `{"reasoning":"high"}`, wantErr: "reasoning must be object, got string"},
+		{name: "text array", body: `{"text":[]}`, wantErr: "text must be object, got array"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, err := ParseResponses([]byte(tt.body))
+			if err == nil {
+				t.Fatalf("ParseResponses returned req=%+v, want error", req)
+			}
+			if req != nil {
+				t.Errorf("ParseResponses returned non-nil request on error: %+v", req)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error = %q, want substring %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParseResponses_SchemaGateAcceptsSupportedKinds(t *testing.T) {
+	body := []byte(`{
+  "input": "hello",
+  "tools": [{"type":"function","name":"f","parameters":{"type":"object"}}],
+  "tool_choice": {"type":"function","name":"f"},
+  "stop": ["END"],
+  "metadata": {"user_id":"u1"},
+  "reasoning": {"effort":"medium"},
+  "text": {"format":{"type":"text"}}
+}`)
+	req, err := ParseResponses(body)
+	if err != nil {
+		t.Fatalf("ParseResponses: %v", err)
+	}
+	if len(req.Messages) != 1 || len(req.Tools) != 1 || req.ToolChoice == nil {
+		t.Fatalf("supported kinds were not parsed: %+v", req)
+	}
+	if len(req.Stop) != 1 || req.Stop[0] != "END" {
+		t.Errorf("Stop = %+v, want [END]", req.Stop)
+	}
+	if req.Metadata == nil || req.Metadata.UserID != "u1" {
+		t.Errorf("Metadata = %+v, want user_id u1", req.Metadata)
+	}
+	if req.Reasoning == nil {
+		t.Error("Reasoning is nil")
+	}
+}
+
+func TestParseResponses_SchemaGatePreservesExplicitNulls(t *testing.T) {
+	body := []byte(`{
+  "input": null,
+  "tools": null,
+  "tool_choice": null,
+  "stop": null,
+  "metadata": null,
+  "reasoning": null,
+  "text": null
+}`)
+	if _, err := ParseResponses(body); err != nil {
+		t.Fatalf("ParseResponses: %v", err)
+	}
+}
+
+func TestJSONKind(t *testing.T) {
+	tests := []struct {
+		body string
+		want string
+	}{
+		{body: ` {}`, want: jsonObject},
+		{body: `[]`, want: jsonArray},
+		{body: `"x"`, want: jsonString},
+		{body: `-1.5`, want: jsonNumber},
+		{body: `true`, want: jsonBool},
+		{body: `null`, want: jsonNull},
+	}
+	for _, tt := range tests {
+		if got := jsonKind([]byte(tt.body)); got != tt.want {
+			t.Errorf("jsonKind(%q) = %q, want %q", tt.body, got, tt.want)
+		}
 	}
 }
