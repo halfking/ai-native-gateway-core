@@ -148,6 +148,19 @@ func parsePositiveSetting(settings map[string]string, key string, target *int) (
 	return true, nil
 }
 
+func parseNonNegativeSetting(settings map[string]string, key string, target *int) (bool, error) {
+	val, ok := settings[key]
+	if !ok {
+		return false, nil
+	}
+	v, err := strconv.Atoi(strings.Trim(val, "\""))
+	if err != nil || v < 0 {
+		return false, fmt.Errorf("%s must be a non-negative integer", key)
+	}
+	*target = v
+	return true, nil
+}
+
 func parseBoolSetting(settings map[string]string, key string, target *bool) (bool, error) {
 	val, ok := settings[key]
 	if !ok {
@@ -492,6 +505,9 @@ func (tc *TimeoutConfig) ReloadFromDB(ctx context.Context) error {
 		{"retry.last_node_wait_seconds", &candidate.lastNodeWaitSeconds},
 	} {
 		changed, err := parsePositiveSetting(settings, field.key, field.target)
+		if field.key == "retry.max_attempts" {
+			changed, err = parseNonNegativeSetting(settings, field.key, field.target)
+		}
 		if err != nil {
 			return err
 		}
