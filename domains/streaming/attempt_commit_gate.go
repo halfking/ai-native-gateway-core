@@ -96,6 +96,12 @@ var (
 	// checkpoint hook fails. The gate latches this error and refuses all
 	// subsequent writes to prevent sending uncheckpointed semantic bytes.
 	ErrAttemptCheckpointFailed = errors.New("attempt_checkpoint_failed")
+	// ErrL2AlignmentMiss is returned by an L2 replay gate (FR-12 R12.2 L2,
+	// GateOptions.ReplayAlignment) when the fresh replay stream failed to
+	// reproduce the committed prefix below the suppression threshold. The
+	// attempt is void — nothing client-visible was emitted — and the
+	// coordinator degrades to the existing resume_blocked envelope path.
+	ErrL2AlignmentMiss = errors.New("l2_alignment_miss")
 )
 
 // DefaultMaxMetadataBufferBytes bounds the attempt-local metadata buffer.
@@ -149,6 +155,60 @@ type GateOptions struct {
 	HoldbackMaxChunks int
 	// Now is the clock seam for the holdback window (tests). nil → time.Now.
 	Now func() time.Time
+
+	// PrefixObserve (FR-12 L2 wiring, design resume-blocked-long-stream-
+	// recovery §3.3 point 1): when non-nil, every semantic frame that
+	// successfully reaches the wire is folded into the committed-prefix
+	// cache (CommittedPrefixCache.Observe semantics: requestID + normalized
+	// semantic bytes — SSE data payloads only, never transport
+	// keepalives/comments). nil (L2 disabled — the default) keeps the gate
+	// byte-identical to the legacy behavior: the observer is consulted only
+	// AFTER a successful write+flush, so discarded attempts never feed the
+	// cache.
+	PrefixObserve func(requestID string, semantic []byte)
+	// ReplayAlignment (FR-12 L2 wiring, §3.3 point 3): when non-nil this gate
+	// is an aligned-continuation REPLAY gate. The replay stream's first
+	// CommittedPrefix.TotalBytes normalized semantic bytes buffer while the
+	// PrefixAligner compares them against the committed prefix; until
+	// alignment proves no duplication NOTHING but transport keepalives
+	// reaches the client. Never set on the default (L2 disabled) path.
+	ReplayAlignment *ReplayAlignmentOptions
+}
+
+// ReplayAlignmentOptions arms an AttemptCommitGate as an L2 aligned-
+// continuation replay gate (design §3.3 point 3).
+type ReplayAlignmentOptions struct {
+	// Committed is the request's committed-prefix snapshot (a deep copy —
+	// the gate never aliases the cache).
+	Committed CommittedPrefix
+	// Aligner grades the replay stream against Committed; nil → the default
+	// 9000bp aligner.
+	Aligner *PrefixAligner
+}
+
+// replayBufferedFrame is one raw replay frame with the normalized-semantic-
+// byte range it contributed ([normStart, normEnd); zero-width for metadata /
+// keepalive-class frames, which carry no alignment evidence).
+type replayBufferedFrame struct {
+	raw       string
+	normStart int
+	normEnd   int
+}
+
+// replayAlignmentState is the per-replay-gate L2 machine (all fields guarded
+// by the gate's mu; wire writes additionally serialized by writeMu).
+type replayAlignmentState struct {
+	aligner   *PrefixAligner
+	committed CommittedPrefix
+	needBytes int // normalized bytes needed before the verdict (== TotalBytes)
+	maxRaw    int // raw buffering bound (frame overhead over needBytes)
+	frames    []replayBufferedFrame
+	norm      []byte
+	rawLen    int
+	decided   bool
+	aligned   bool
+	missed    bool
+	result    PrefixAlignment
 }
 
 // AttemptCommitGate is the per-attempt protocol-aware buffer sink.
@@ -173,6 +233,12 @@ type AttemptCommitGate struct {
 	holdbackOpened    bool
 	holdbackOpenAt    time.Time
 	holdbackHeld      int
+
+	// FR-12 L2 wiring: prefixObserve folds wire-proven semantic frames into
+	// the committed-prefix cache (nil — L2 disabled — is a pure no-op);
+	// align carries the replay-alignment machine (nil for normal attempts).
+	prefixObserve func(requestID string, semantic []byte)
+	align         *replayAlignmentState
 
 	state     CommitState
 	committed bool
@@ -211,7 +277,7 @@ func NewAttemptCommitGate(ctx context.Context, protocol ClientProtocol, writer *
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return &AttemptCommitGate{
+	g := &AttemptCommitGate{
 		protocol:             protocol,
 		writer:               writer,
 		mode:                 opts.Mode,
@@ -223,8 +289,26 @@ func NewAttemptCommitGate(ctx context.Context, protocol ClientProtocol, writer *
 		nowFn:                opts.Now,
 		holdbackWindow:       opts.HoldbackWindow,
 		holdbackMaxChunks:    opts.HoldbackMaxChunks,
+		prefixObserve:        opts.PrefixObserve,
 		ctx:                  ctx,
 	}
+	if opts.ReplayAlignment != nil {
+		aligner := opts.ReplayAlignment.Aligner
+		if aligner == nil {
+			aligner = NewPrefixAligner(0)
+		}
+		need := opts.ReplayAlignment.Committed.TotalBytes
+		g.align = &replayAlignmentState{
+			aligner:   aligner,
+			committed: opts.ReplayAlignment.Committed,
+			needBytes: need,
+			// Raw frames carry SSE framing overhead over the folded data
+			// payloads; bound the buffer generously so the verdict can always
+			// form before memory becomes the constraint.
+			maxRaw: need*2 + DefaultMaxMetadataBufferBytes,
+		}
+	}
+	return g
 }
 
 // protocolMetricLabel renders the client protocol as a metric label value.
@@ -346,6 +430,19 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		return g.writer.FlushError()
 	}
 
+	// FR-12 L2 aligned-continuation replay (ReplayAlignment armed): frames
+	// buffer suppressed while PrefixAligner decides whether the replay
+	// reproduces the committed prefix; only the keepalives handled above may
+	// reach the client meanwhile. Never armed on the default (L2 disabled)
+	// path, so the check costs one nil branch there. It precedes the L1
+	// holdback on purpose: a replay gate must never hold frames in the
+	// attempt-local holdback buffer (its suppression window is the aligner).
+	if g.align != nil {
+		err := g.writeFrameReplayAlignedLocked(frame, class)
+		g.mu.Unlock()
+		return err
+	}
+
 	// FR-12 L1 holdback (HoldbackWindow > 0): while the window is open,
 	// semantic frames buffer WITHOUT advancing commit state — Discard stays
 	// legal and an in-window interruption replays invisibly. The first
@@ -378,6 +475,9 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 			return err
 		}
 		g.markFirstSemanticByte(class)
+		// L2 wiring point 1: the frame is wire-proven — fold its semantic
+		// payload into the committed-prefix cache (no-op when L2 is off).
+		g.observeFrame(class, frame)
 		return nil
 	}
 
@@ -413,6 +513,11 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 			return err
 		}
 		g.markFirstSemanticByte(class)
+		// L2 wiring point 1: fold exactly the bytes that reached the wire —
+		// the flushed attempt buffer first (wire order; it may hold L1
+		// holdback chunks), then the triggering semantic frame.
+		g.observeWrittenBytes(buffer)
+		g.observeFrame(class, frame)
 		return nil
 	}
 
@@ -690,6 +795,11 @@ func (g *AttemptCommitGate) commitLocked() error {
 		if _, err := g.writer.Write(bufCopy); err != nil {
 			return err
 		}
+		// L2 wiring point 1 (single choke point for every buffered flush —
+		// semantic commit, holdback release, terminal partial commit): the
+		// bytes are wire-proven, fold their semantic payloads in wire order.
+		// No-op when L2 is disabled.
+		g.observeWrittenBytesLocked(bufCopy)
 	} else {
 		g.committed = true
 	}
@@ -763,6 +873,12 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 	if g.discarded {
 		return ErrAttemptDiscarded
 	}
+	// L2 replay gate: the trailing partial folds into the alignment buffers
+	// like any frame, and an undecided alignment is settled NOW (the stream
+	// will produce no further evidence).
+	if g.align != nil {
+		return g.finishReplayAttemptLocked(partial)
+	}
 	if partial == "" {
 		if g.mode == GateModeImmediate || g.committed {
 			return g.writer.FlushError()
@@ -792,6 +908,10 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 			g.committed = true
 		}
 		g.markFirstSemanticByteLocked(class)
+		// L2 wiring point 1: wire-proven trailing bytes fold too (under-
+		// observation is the dangerous direction — an unobserved tail could
+		// be re-forwarded by a later aligned replay).
+		g.observeFrameLocked(class, partial)
 		return nil
 	}
 	if !terminal {
@@ -804,6 +924,7 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 		return err
 	}
 	g.markFirstSemanticByteLocked(class)
+	g.observeFrameLocked(class, partial)
 	return g.writer.FlushError()
 }
 
@@ -898,4 +1019,310 @@ func (g *AttemptCommitGate) Snapshot() (bufferBytes, holdbackHeld int, state Com
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.bufferLen, g.holdbackHeld, g.state
+}
+
+// ── FR-12 L2 wiring: committed-prefix observation + aligned replay ─────────
+//
+// Design: docs/design/resume-blocked-long-stream-recovery.md §3.3 points 1/3.
+// Red line (doc 18 §10.3): 绝不透明重试已提交内容 — a replay gate forwards a
+// single byte only after PrefixAligner proved the fresh stream reproduces the
+// client-visible committed prefix, and only from a whole-frame boundary at or
+// after the suffix offset (never mid-frame, never a straddling frame).
+
+// l2SemanticObservation extracts the normalized semantic bytes of one
+// client-bound frame (design §3.3 point 1: "SSE data 载荷或等价规范化"):
+// the data-payload lines of semantic-class frames (content / tool-call /
+// terminal / unknown). Transport keepalives, SSE comments and attempt
+// metadata (per-attempt openings — message_start, role frames, block starts —
+// which are regenerated and never byte-stable across replays) fold nothing.
+// Pure and deterministic so the replay gate's alignment folding reproduces
+// the identical normalization byte for byte.
+func l2SemanticObservation(class FrameClass, frame string) []byte {
+	if !isSemanticClass(class) {
+		return nil
+	}
+	var obs []byte
+	for _, line := range strings.Split(frame, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		obs = append(obs, strings.TrimSpace(strings.TrimPrefix(line, "data:"))...)
+		obs = append(obs, '\n')
+	}
+	return obs
+}
+
+// observeFrame folds one wire-proven frame into the committed-prefix cache.
+// Nil observer (L2 disabled — the default) is a no-op: the disabled hot path
+// pays exactly one branch check per frame.
+func (g *AttemptCommitGate) observeFrame(class FrameClass, frame string) {
+	if g.prefixObserve == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.observeFrameLocked(class, frame)
+}
+
+// observeFrameLocked is observeFrame with g.mu held.
+func (g *AttemptCommitGate) observeFrameLocked(class FrameClass, frame string) {
+	if g.prefixObserve == nil {
+		return
+	}
+	if obs := l2SemanticObservation(class, frame); len(obs) > 0 {
+		g.prefixObserve(g.requestID, obs)
+	}
+}
+
+// observeWrittenBytes re-splits a flushed byte blob (the attempt buffer:
+// metadata, L1-holdback chunks, order-queued keepalives, trailing partials)
+// and folds every semantic frame in wire order. The trailing unterminated
+// remainder folds whole: every semantic byte that reached the wire must be
+// observed, otherwise a later aligned replay could re-forward the unobserved
+// tail (duplication — the dangerous direction).
+func (g *AttemptCommitGate) observeWrittenBytes(buf []byte) {
+	if g.prefixObserve == nil || len(buf) == 0 {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.observeWrittenBytesLocked(buf)
+}
+
+// observeWrittenBytesLocked is observeWrittenBytes with g.mu held.
+func (g *AttemptCommitGate) observeWrittenBytesLocked(buf []byte) {
+	if g.prefixObserve == nil {
+		return
+	}
+	for len(buf) > 0 {
+		n := frameBoundary(buf)
+		var frame []byte
+		if n < 0 {
+			frame = buf
+			buf = nil
+		} else {
+			frame = buf[:n]
+			buf = buf[n:]
+		}
+		cls := ClassifyClientFrame(g.protocol, string(frame))
+		g.observeFrameLocked(cls, string(frame))
+	}
+}
+
+// errL2ReplayBufferOverflow guards the replay raw buffer (hash-only mode must
+// fold the full committed byte count before the verdict).
+var errL2ReplayBufferOverflow = errors.New("l2_replay_buffer_overflow")
+
+// writeFrameReplayAlignedLocked handles one frame for an L2 replay gate.
+// Caller holds writeMu and g.mu; returns with g.mu held.
+func (g *AttemptCommitGate) writeFrameReplayAlignedLocked(frame string, class FrameClass) error {
+	st := g.align
+	if st.decided {
+		if !st.aligned {
+			// Miss already latched: the attempt is void; refuse further
+			// frames so the bridge stops feeding this gate.
+			return ErrL2AlignmentMiss
+		}
+		return g.forwardReplayPassthroughLocked(frame, class)
+	}
+	if err := st.bufferLocked(class, frame); err != nil {
+		st.decided = true
+		st.missed = true
+		logL2Alignment(g.ctx, g.requestID, st.committed, PrefixAlignment{}, "replay_buffer_overflow")
+		recordAlignmentMiss()
+		return ErrL2AlignmentMiss
+	}
+	if len(st.norm) >= st.needBytes {
+		return g.decideReplayAlignmentLocked()
+	}
+	// Suppressed silently: the bridge keeps streaming; only keepalives
+	// (handled in WriteFrame before this branch) keep the client connection
+	// warm during the alignment window.
+	return nil
+}
+
+// bufferLocked appends one frame (raw bytes + its normalized-semantic
+// contribution) to the replay buffers.
+func (st *replayAlignmentState) bufferLocked(class FrameClass, frame string) error {
+	if st.rawLen+len(frame) > st.maxRaw {
+		return errL2ReplayBufferOverflow
+	}
+	obs := l2SemanticObservation(class, frame)
+	st.frames = append(st.frames, replayBufferedFrame{
+		raw:       frame,
+		normStart: len(st.norm),
+		normEnd:   len(st.norm) + len(obs),
+	})
+	st.norm = append(st.norm, obs...)
+	st.rawLen += len(frame)
+	return nil
+}
+
+// decideReplayAlignmentLocked grades the buffered replay stream against the
+// committed prefix. Aligned → the write-ahead checkpoint fires for the
+// content rank (the decision is the commit moment) and the suffix is
+// forwarded from a frame boundary. Miss → the attempt is void.
+func (g *AttemptCommitGate) decideReplayAlignmentLocked() error {
+	st := g.align
+	res := st.aligner.Align(st.committed, st.norm)
+	st.decided = true
+	st.result = res
+	logL2Alignment(g.ctx, g.requestID, st.committed, res, "")
+	if !res.Aligned {
+		st.missed = true
+		recordAlignmentMiss()
+		return ErrL2AlignmentMiss
+	}
+	st.aligned = true
+	// Write-ahead checkpoint (doc 18 §11.3): the first suffix byte is a
+	// semantic commit — fire the hook for the content rank BEFORE any
+	// suppressed-prefix-lifted byte may reach the network (mirrors "the
+	// first semantic commit's checkpoint covers the metadata rank").
+	if err := g.checkpointStateAdvanceUnderWriteLock(FrameClassContent); err != nil {
+		return err
+	}
+	return g.forwardReplaySuffixLocked(res)
+}
+
+// forwardReplaySuffixLocked releases the suppression: every buffered frame
+// whose normalized contribution lies ENTIRELY at/after the suffix offset is
+// forwarded; frames fully before it stay suppressed (client already has
+// them); a frame STRADDLING the offset is suppressed whole — forwarding it
+// would re-send client-visible bytes (绝不变换出重复内容), dropping it loses
+// at most one frame of fresh bytes. Zero-contribution frames (replay opening
+// metadata) stay suppressed: the client already received the original
+// attempt's openings.
+func (g *AttemptCommitGate) forwardReplaySuffixLocked(res PrefixAlignment) error {
+	st := g.align
+	first := len(st.frames)
+	for i := range st.frames {
+		if f := &st.frames[i]; f.normEnd > f.normStart && f.normStart >= res.SuffixOffset {
+			first = i
+			break
+		}
+	}
+	suffix := st.frames[first:]
+	st.frames = nil
+	st.norm = nil
+	st.rawLen = 0
+	if len(suffix) == 0 {
+		return nil
+	}
+	// Mark committed before the first byte reaches the wire so Discard can
+	// never win after the suppression lifts (2026-08-27 P0 fix idiom).
+	g.committed = true
+	for i := range suffix {
+		cls := ClassifyClientFrame(g.protocol, suffix[i].raw)
+		if err := g.checkpointStateAdvanceUnderWriteLock(cls); err != nil {
+			return err
+		}
+		if _, err := g.writer.Write([]byte(suffix[i].raw)); err != nil {
+			return err
+		}
+		g.observeFrameLocked(cls, suffix[i].raw)
+		g.markFirstSemanticByteLocked(cls)
+	}
+	return g.writer.FlushError()
+}
+
+// forwardReplayPassthroughLocked writes one post-decision frame straight
+// through (alignment already proved no duplication for everything before it).
+func (g *AttemptCommitGate) forwardReplayPassthroughLocked(frame string, class FrameClass) error {
+	if err := g.checkpointStateAdvanceUnderWriteLock(class); err != nil {
+		return err
+	}
+	g.committed = true
+	if _, err := g.writer.Write([]byte(frame)); err != nil {
+		return err
+	}
+	if err := g.writer.FlushError(); err != nil {
+		return err
+	}
+	g.observeFrameLocked(class, frame)
+	g.markFirstSemanticByteLocked(class)
+	return nil
+}
+
+// finishReplayAttemptLocked is FinishAttempt's L2 replay branch. A trailing
+// partial frame folds into the alignment buffers like any frame; a still
+// undecided alignment (stream ended before the window filled) is decided NOW
+// — the attempt can never end with the client waiting behind an unresolved
+// verdict.
+func (g *AttemptCommitGate) finishReplayAttemptLocked(partial string) error {
+	st := g.align
+	if st.missed {
+		return ErrL2AlignmentMiss
+	}
+	if !st.decided {
+		if partial != "" {
+			class := ClassifyClientFrame(g.protocol, partial)
+			if err := st.bufferLocked(class, partial); err != nil {
+				st.decided = true
+				st.missed = true
+				logL2Alignment(g.ctx, g.requestID, st.committed, PrefixAlignment{}, "replay_buffer_overflow")
+				recordAlignmentMiss()
+				return ErrL2AlignmentMiss
+			}
+		}
+		if len(st.norm) == 0 {
+			// The replay produced no observable semantic bytes at all
+			// (instant upstream death): void the attempt — nothing was or
+			// will be client-visible from it.
+			st.decided = true
+			st.missed = true
+			logL2Alignment(g.ctx, g.requestID, st.committed, PrefixAlignment{}, "replay_no_semantic_bytes")
+			recordAlignmentMiss()
+			return ErrL2AlignmentMiss
+		}
+		if err := g.decideReplayAlignmentLocked(); err != nil {
+			return err
+		}
+		return g.writer.FlushError()
+	}
+	if !st.aligned {
+		return ErrL2AlignmentMiss
+	}
+	if partial == "" {
+		return g.writer.FlushError()
+	}
+	class := ClassifyClientFrame(g.protocol, partial)
+	return g.forwardReplayPassthroughLocked(partial, class)
+}
+
+// AlignmentOutcome reports the L2 replay alignment verdict (design §3.3
+// point 4 observability; the survival coordinator folds it into the task
+// decision). decided=false means the stream ended before a verdict formed —
+// callers treat that as a miss. Nil-safe for non-replay gates.
+func (g *AttemptCommitGate) AlignmentOutcome() (decided bool, result PrefixAlignment) {
+	if g == nil || g.align == nil {
+		return false, PrefixAlignment{}
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.align.decided, g.align.result
+}
+
+// logL2Alignment emits the L2 decision event (design §3.3 point 4 / §五
+// metrics): survival_l2_alignment{score_bp, common_bytes, hash_only,
+// aligned}. reason carries the degenerate verdicts that have no score
+// (buffer overflow, empty replay).
+func logL2Alignment(ctx context.Context, requestID string, committed CommittedPrefix, res PrefixAlignment, reason string) {
+	attrs := []any{
+		"request_id", requestID,
+		"score_bp", int(res.ScoreBP),
+		"common_bytes", res.CommonBytes,
+		"hash_only", res.HashOnly,
+		"aligned", res.Aligned,
+		"committed_bytes", committed.TotalBytes,
+		"suffix_offset", res.SuffixOffset,
+	}
+	if reason != "" {
+		attrs = append(attrs, "reason", reason)
+	}
+	if res.Aligned {
+		streamLogFromContext(ctx, nil).Info("survival_l2_alignment", attrs...)
+		return
+	}
+	streamLogFromContext(ctx, nil).Warn("survival_l2_alignment", attrs...)
 }
