@@ -551,7 +551,7 @@ function statusLabel(entry: FreePoolEntry): string {
   if (entry.availability_state === 'rate_limited') return t('freePool.rateLimited')
   if (entry.availability_state === 'cooling') return t('freePool.cooling')
   if (entry.availability_state === 'unreachable') return t('freePool.unreachable')
-  if (entry.quota_state === 'exhausted') return t('freePool.quotaExhausted')
+  if (entry.quota_state === 'exhausted' || entry.quota_state === 'balance_exhausted') return t('freePool.quotaExhausted')
   return t('freePool.availableUnit')
 }
 

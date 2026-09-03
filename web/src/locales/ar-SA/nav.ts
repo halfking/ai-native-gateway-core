@@ -87,6 +87,7 @@ export default {
     licenseOffline: 'Offline Activation',
 
     telemetryScope: 'Data Collection Scope',
+    supportDonate: 'الرعاية والتبرع',
   },
 
   mainAria: 'التنقل الرئيسي',

@@ -87,6 +87,7 @@ export default {
     licenseOffline: '离线激活',
 
     telemetryScope: '数据采集范围',
+    supportDonate: 'スポンサーと寄付',
   },
 
   mainAria: 'メインナビゲーション',

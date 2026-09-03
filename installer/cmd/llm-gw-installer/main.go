@@ -49,6 +49,9 @@ var sqlSchema []byte
 //go:embed embeddata/02-seed.sql
 var sqlSeed []byte
 
+//go:embed embeddata/startup/478_auto_route_affinity.sql
+var autoRouteAffinityMigration478 []byte
+
 //go:embed embeddata/startup/511_state_transitions_table.sql
 var requestJourneyMigration511 []byte
 
@@ -213,6 +216,9 @@ var proxyManagementCanonicalMigration646 []byte
 
 //go:embed embeddata/startup/647_goal_client_signal.sql
 var goalClientSignalMigration647 []byte
+
+//go:embed embeddata/startup/650_auto_route_selection_treatment_attribution.sql
+var autoRouteSelectionTreatmentAttributionMigration650 []byte
 
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
@@ -881,9 +887,10 @@ func copySQLBackup(root string) error {
 	}
 
 	files := map[string][]byte{
-		"00-prereqs.sql": sqlPrereqs,
-		"01-schema.sql":  sqlSchema,
-		"02-seed.sql":    sqlSeed,
+		"00-prereqs.sql":                                                           sqlPrereqs,
+		"01-schema.sql":                                                            sqlSchema,
+		"02-seed.sql":                                                              sqlSeed,
+		"startup/478_auto_route_affinity.sql":                                      autoRouteAffinityMigration478,
 		"startup/511_state_transitions_table.sql":                                  requestJourneyMigration511,
 		"startup/515_state_transitions_seq_unique.sql":                             requestJourneyMigration515,
 		"startup/521_repair_state_transitions_tenant.sql":                          requestJourneyMigration521,
@@ -939,6 +946,7 @@ func copySQLBackup(root string) error {
 		"startup/645_session_bodies_hot_request_unique_repair.sql":                 sessionBodiesHotRequestUniqueRepairMigration645,
 		"startup/646_proxy_management_canonical.sql":                               proxyManagementCanonicalMigration646,
 		"startup/647_goal_client_signal.sql":                                       goalClientSignalMigration647,
+		"startup/650_auto_route_selection_treatment_attribution.sql":               autoRouteSelectionTreatmentAttributionMigration650,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
@@ -1008,9 +1016,10 @@ func setupSQLDir() (string, func(), error) {
 	cleanup := func() { _ = os.RemoveAll(tmp) }
 
 	files := map[string][]byte{
-		"00-prereqs.sql": sqlPrereqs,
-		"01-schema.sql":  sqlSchema,
-		"02-seed.sql":    sqlSeed,
+		"00-prereqs.sql":                                                           sqlPrereqs,
+		"01-schema.sql":                                                            sqlSchema,
+		"02-seed.sql":                                                              sqlSeed,
+		"startup/478_auto_route_affinity.sql":                                      autoRouteAffinityMigration478,
 		"startup/511_state_transitions_table.sql":                                  requestJourneyMigration511,
 		"startup/515_state_transitions_seq_unique.sql":                             requestJourneyMigration515,
 		"startup/521_repair_state_transitions_tenant.sql":                          requestJourneyMigration521,
@@ -1066,6 +1075,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/645_session_bodies_hot_request_unique_repair.sql":                 sessionBodiesHotRequestUniqueRepairMigration645,
 		"startup/646_proxy_management_canonical.sql":                               proxyManagementCanonicalMigration646,
 		"startup/647_goal_client_signal.sql":                                       goalClientSignalMigration647,
+		"startup/650_auto_route_selection_treatment_attribution.sql":               autoRouteSelectionTreatmentAttributionMigration650,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {

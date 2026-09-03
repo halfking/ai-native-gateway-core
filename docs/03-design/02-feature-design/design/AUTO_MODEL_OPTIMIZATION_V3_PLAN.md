@@ -1,8 +1,8 @@
 # AUTO_MODEL Optimization V3 - Comprehensive Implementation Plan
 
-**Version**: 3.0  
-**Date**: 2026-09-02  
-**Status**: Planning  
+**Version**: 3.0
+**Date**: 2026-09-02
+**Status**: V3 implementation in progress
 **Target Cost Reduction**: 30-40%
 
 ---
@@ -472,12 +472,12 @@ SELECT COUNT(*) FROM request_logs WHERE ts >= NOW() - INTERVAL '1 day';
 **After (Separated Data):**
 ```sql
 -- Clear client request count
-SELECT COUNT(*) FROM request_logs 
+SELECT COUNT(*) FROM request_logs
 WHERE request_type = 'client' AND ts >= NOW() - INTERVAL '1 day';
 -- Result: 70,000 ✓ (true client volume)
 
 -- Retry rate analysis
-SELECT 
+SELECT
   parent_request_id,
   COUNT(*) as retry_count
 FROM request_logs
@@ -487,7 +487,7 @@ HAVING COUNT(*) > 1;
 -- Shows: req_client_001 had 2 retries, req_client_005 had 3 retries
 
 -- Cost per tier
-SELECT 
+SELECT
   task_tier,
   SUM(total_tokens * unit_price_in) as total_cost
 FROM request_logs
@@ -651,13 +651,13 @@ groups:
         for: 5m
         annotations:
           summary: "Client queue at 80% capacity"
-          
+
       - alert: HighRetryRatio
         expr: dispatch_retry_ratio > 0.25
         for: 10m
         annotations:
           summary: "Retry ratio > 25%, investigate credential health"
-          
+
       - alert: TierCostSpike
         expr: rate(dispatch_tier_cost_usd{tier="tier-a"}[5m]) > 100
         for: 3m
@@ -898,7 +898,7 @@ groups:
 BEGIN;
 
 -- Add request classification fields
-ALTER TABLE request_logs 
+ALTER TABLE request_logs
     ADD COLUMN IF NOT EXISTS request_type TEXT DEFAULT 'outbound',
     ADD COLUMN IF NOT EXISTS parent_request_id TEXT,
     ADD COLUMN IF NOT EXISTS request_depth INTEGER DEFAULT 0,
@@ -908,37 +908,37 @@ ALTER TABLE request_logs
     ADD COLUMN IF NOT EXISTS escalation_count INTEGER DEFAULT 0;
 
 -- Add comments
-COMMENT ON COLUMN request_logs.request_type IS 
+COMMENT ON COLUMN request_logs.request_type IS
     'Request type: ''client'' (entry from client) or ''outbound'' (to provider)';
-COMMENT ON COLUMN request_logs.parent_request_id IS 
+COMMENT ON COLUMN request_logs.parent_request_id IS
     'Parent request ID for sub-agents and retries';
-COMMENT ON COLUMN request_logs.request_depth IS 
+COMMENT ON COLUMN request_logs.request_depth IS
     '0=client entry, 1=first-level sub-agent, 2+=nested sub-agents';
-COMMENT ON COLUMN request_logs.is_terminal IS 
+COMMENT ON COLUMN request_logs.is_terminal IS
     'TRUE if this is the final successful/failed attempt (stores response_body)';
-COMMENT ON COLUMN request_logs.task_tier IS 
+COMMENT ON COLUMN request_logs.task_tier IS
     'Tier classification: ''tier-a'', ''tier-b'', or ''tier-c''';
-COMMENT ON COLUMN request_logs.auto_decision IS 
+COMMENT ON COLUMN request_logs.auto_decision IS
     'Full auto-route decision metadata: candidates, scores, reasoning';
-COMMENT ON COLUMN request_logs.escalation_count IS 
+COMMENT ON COLUMN request_logs.escalation_count IS
     'Number of tier escalations for this request (quality gate failures)';
 
 -- Create indexes for new query patterns
-CREATE INDEX IF NOT EXISTS idx_request_logs_request_type_ts 
+CREATE INDEX IF NOT EXISTS idx_request_logs_request_type_ts
     ON request_logs(request_type, ts DESC);
-CREATE INDEX IF NOT EXISTS idx_request_logs_parent_request_id 
-    ON request_logs(parent_request_id) 
+CREATE INDEX IF NOT EXISTS idx_request_logs_parent_request_id
+    ON request_logs(parent_request_id)
     WHERE parent_request_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_request_logs_task_tier_ts 
-    ON request_logs(task_tier, ts DESC) 
+CREATE INDEX IF NOT EXISTS idx_request_logs_task_tier_ts
+    ON request_logs(task_tier, ts DESC)
     WHERE task_tier IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_request_logs_terminal 
-    ON request_logs(is_terminal, ts DESC) 
+CREATE INDEX IF NOT EXISTS idx_request_logs_terminal
+    ON request_logs(is_terminal, ts DESC)
     WHERE is_terminal = TRUE;
 
 -- Backfill existing data (mark as outbound, terminal by default)
-UPDATE request_logs 
-SET 
+UPDATE request_logs
+SET
     request_type = 'outbound',
     is_terminal = TRUE,
     request_depth = 0
@@ -967,10 +967,10 @@ CREATE TABLE IF NOT EXISTS task_type_tier_config (
     UNIQUE(task_type, COALESCE(tenant_id, ''))
 );
 
-CREATE INDEX idx_task_type_tier_config_lookup 
+CREATE INDEX idx_task_type_tier_config_lookup
     ON task_type_tier_config(task_type, tenant_id, enabled);
 
-COMMENT ON TABLE task_type_tier_config IS 
+COMMENT ON TABLE task_type_tier_config IS
     'Maps task types to preferred model tiers with fallback options';
 
 -- Insert default configuration
@@ -998,26 +998,26 @@ COMMIT;
 BEGIN;
 
 -- Add tier field to provider_models
-ALTER TABLE provider_models 
+ALTER TABLE provider_models
     ADD COLUMN IF NOT EXISTS tier TEXT CHECK (tier IN ('tier-a', 'tier-b', 'tier-c'));
 
-CREATE INDEX IF NOT EXISTS idx_provider_models_tier 
-    ON provider_models(tier) 
+CREATE INDEX IF NOT EXISTS idx_provider_models_tier
+    ON provider_models(tier)
     WHERE tier IS NOT NULL;
 
-COMMENT ON COLUMN provider_models.tier IS 
+COMMENT ON COLUMN provider_models.tier IS
     'Model tier classification: tier-a (high-perf), tier-b (standard), tier-c (economy)';
 
 -- Classify existing models (adjust based on actual canonical names)
-UPDATE provider_models SET tier = 'tier-a' 
+UPDATE provider_models SET tier = 'tier-a'
 WHERE canonical_name IN (
-    'claude-opus-5', 
-    'gpt-5.6-sol', 
-    'glm-5.3', 
+    'claude-opus-5',
+    'gpt-5.6-sol',
+    'glm-5.3',
     'kimi-m3'
 );
 
-UPDATE provider_models SET tier = 'tier-b' 
+UPDATE provider_models SET tier = 'tier-b'
 WHERE canonical_name IN (
     'claude-opus-4.8',
     'gpt-4.9',
@@ -1026,7 +1026,7 @@ WHERE canonical_name IN (
     'minimax-m3'
 );
 
-UPDATE provider_models SET tier = 'tier-c' 
+UPDATE provider_models SET tier = 'tier-c'
 WHERE canonical_name IN (
     'minimax-m2.7',
     'glm-5.2-flash',
@@ -1041,7 +1041,7 @@ COMMIT;
 
 ```sql
 -- Verify request type separation
-SELECT 
+SELECT
     request_type,
     COUNT(*) as count,
     COUNT(DISTINCT session_id) as unique_sessions
@@ -1055,7 +1055,7 @@ GROUP BY request_type;
 -- outbound     | 95000  | 0 (outbound doesn't have unique sessions)
 
 -- Verify tier distribution
-SELECT 
+SELECT
     task_tier,
     COUNT(*) as count,
     SUM(total_tokens)::BIGINT as total_tokens,
@@ -1066,12 +1066,12 @@ GROUP BY task_tier
 ORDER BY task_tier;
 
 -- Verify parent-child relationships
-SELECT 
+SELECT
     parent_request_id,
     COUNT(*) as retry_count,
     ARRAY_AGG(upstream_model ORDER BY created_at) as models_tried
 FROM request_logs
-WHERE request_type = 'outbound' 
+WHERE request_type = 'outbound'
   AND parent_request_id IS NOT NULL
   AND ts >= NOW() - INTERVAL '1 day'
 GROUP BY parent_request_id
@@ -1082,6 +1082,13 @@ LIMIT 10;
 ---
 
 ## 8. Implementation Roadmap
+
+### V3 delivered foundation (September 3, 2026)
+- Added bounded classification cache, feedback aggregation, treatment gating, and V3 metrics.
+- Added nullable treatment attribution to `auto_route_selections` via migration 646, with installer parity and rollback.
+- Persisted attribution in request-log auto decisions and selection telemetry for chat, messages, responses, and other auto-route paths.
+- Added unit and contract coverage for treatment assignment, wire round trips, batched selection inserts, and installer asset parity.
+
 
 ### Phase 1: Database Foundation (Week 1)
 **Goal: Prepare data layer for new architecture**
@@ -1418,7 +1425,7 @@ LIMIT 10;
 
 ### Risk 1: Task Misclassification → Quality Degradation
 
-**Risk Level:** HIGH  
+**Risk Level:** HIGH
 **Impact:** User dissatisfaction, increased support tickets
 
 **Mitigation Strategies:**
@@ -1445,7 +1452,7 @@ LIMIT 10;
 
 ### Risk 2: Schema Migration Disrupts Production
 
-**Risk Level:** MEDIUM  
+**Risk Level:** MEDIUM
 **Impact:** Downtime, data loss, query performance degradation
 
 **Mitigation Strategies:**
@@ -1474,7 +1481,7 @@ LIMIT 10;
 
 ### Risk 3: Queue Segmentation → Starvation
 
-**Risk Level:** MEDIUM  
+**Risk Level:** MEDIUM
 **Impact:** Some tiers/tasks experience high latency
 
 **Mitigation Strategies:**
@@ -1500,7 +1507,7 @@ LIMIT 10;
 
 ### Risk 4: Cost Increase (Escalation Overhead)
 
-**Risk Level:** LOW  
+**Risk Level:** LOW
 **Impact:** Unexpected cost increase from frequent escalations
 
 **Mitigation Strategies:**
@@ -1526,7 +1533,7 @@ LIMIT 10;
 
 ### Risk 5: Storage Growth (Full Request Body Storage)
 
-**Risk Level:** LOW  
+**Risk Level:** LOW
 **Impact:** Increased storage costs
 
 **Mitigation Strategies:**
@@ -1574,7 +1581,7 @@ optimized AS (
   WHERE ts >= '2026-09-01' AND ts < '2026-10-01'
     AND is_terminal = TRUE
 )
-SELECT 
+SELECT
   baseline.cost as baseline_cost,
   optimized.cost as optimized_cost,
   ROUND((1 - optimized.cost / baseline.cost) * 100, 2) as savings_pct
@@ -1596,22 +1603,22 @@ FROM baseline, optimized;
 
 ```sql
 -- Session continuation rate
-SELECT 
+SELECT
   task_tier,
   COUNT(DISTINCT session_id) as total_sessions,
   COUNT(DISTINCT CASE WHEN message_count > 1 THEN session_id END) as continued_sessions,
   ROUND(
-    COUNT(DISTINCT CASE WHEN message_count > 1 THEN session_id END)::NUMERIC / 
-    COUNT(DISTINCT session_id) * 100, 
+    COUNT(DISTINCT CASE WHEN message_count > 1 THEN session_id END)::NUMERIC /
+    COUNT(DISTINCT session_id) * 100,
     2
   ) as continuation_rate_pct
 FROM (
-  SELECT 
+  SELECT
     session_id,
     task_tier,
     COUNT(*) as message_count
   FROM request_logs
-  WHERE request_type = 'client' 
+  WHERE request_type = 'client'
     AND ts >= NOW() - INTERVAL '7 days'
   GROUP BY session_id, task_tier
 ) subq
@@ -1628,7 +1635,7 @@ GROUP BY task_tier;
 
 **Measurement:**
 ```prometheus
-histogram_quantile(0.95, 
+histogram_quantile(0.95,
   rate(dispatch_client_wait_time_seconds_bucket[5m])
 ) < 2
 ```
@@ -1658,12 +1665,12 @@ histogram_quantile(0.95,
 
 **Measurement:**
 ```sql
-SELECT 
+SELECT
   task_tier,
   COUNT(*) as count,
   ROUND(COUNT(*)::NUMERIC / SUM(COUNT(*)) OVER () * 100, 2) as pct
 FROM request_logs
-WHERE is_terminal = TRUE 
+WHERE is_terminal = TRUE
   AND ts >= NOW() - INTERVAL '7 days'
 GROUP BY task_tier;
 ```
@@ -1678,12 +1685,12 @@ GROUP BY task_tier;
 
 **Measurement:**
 ```sql
-SELECT 
+SELECT
   COUNT(*) FILTER (WHERE escalation_count > 0) as escalated_requests,
   COUNT(*) as total_requests,
   ROUND(
-    COUNT(*) FILTER (WHERE escalation_count > 0)::NUMERIC / 
-    COUNT(*) * 100, 
+    COUNT(*) FILTER (WHERE escalation_count > 0)::NUMERIC /
+    COUNT(*) * 100,
     2
   ) as escalation_rate_pct
 FROM request_logs
@@ -1701,7 +1708,7 @@ WHERE request_type = 'client'
 
 **Measurement:**
 ```sql
-SELECT 
+SELECT
   task_tier,
   ROUND(AVG(unit_price_in / 1000000)::NUMERIC, 2) as avg_cost_per_1m_tokens,
   SUM(total_tokens) as total_tokens,
@@ -1883,6 +1890,6 @@ This comprehensive plan provides a structured approach to optimizing AUTO_MODEL 
 
 ---
 
-**Document Version:** 3.0  
-**Last Updated:** 2026-09-02  
+**Document Version:** 3.0
+**Last Updated:** 2026-09-02
 **Status:** Ready for Implementation Approval

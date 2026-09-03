@@ -669,18 +669,16 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 				models = []string{body.Model}
 			}
 
-			// Trigger self-check for each selected model.
+			// Trigger self-check for each selected model. Single-model requests
+			// intentionally use the same fan-out envelope as multi-model requests
+			// so callers can rely on one response contract.
 			totalEnqueued := 0
 			failedModels := 0
-			firstFailure := ""
 			results := make(map[string]any)
 			for _, model := range models {
 				n, err := h.probeEnqueue(ctx, model)
 				if err != nil {
 					failedModels++
-					if firstFailure == "" {
-						firstFailure = err.Error()
-					}
 					results[model] = map[string]any{"error": err.Error(), "enqueued": 0}
 				} else {
 					results[model] = map[string]any{"enqueued": n}
@@ -689,20 +687,32 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 			}
 
 			status := http.StatusOK
+			message := "node_probe tasks enqueued"
+			var topLevelError string
+			if failedModels == len(models) {
+				status = http.StatusServiceUnavailable
+				topLevelError = "trigger failed"
+				for _, model := range models {
+					if result, ok := results[model].(map[string]any); ok {
+						if errMessage, ok := result["error"].(string); ok && errMessage != "" {
+							message = errMessage
+							break
+						}
+					}
+				}
+			}
 			response := map[string]any{
 				"ok":            failedModels == 0,
 				"mode":          "probe_queue",
 				"enqueued":      totalEnqueued,
 				"models_tested": len(models),
 				"models_failed": failedModels,
-				"message":       "node_probe tasks enqueued",
+				"message":       message,
 				"models":        models,
 				"results":       results,
 			}
-			if failedModels == len(models) {
-				status = http.StatusServiceUnavailable
-				response["error"] = "trigger failed"
-				response["message"] = firstFailure
+			if topLevelError != "" {
+				response["error"] = topLevelError
 			}
 			writeJSON(w, status, response)
 			return
