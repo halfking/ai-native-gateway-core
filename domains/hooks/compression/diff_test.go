@@ -186,6 +186,58 @@ func TestBuildOutbound_SummaryMarkerPreserved(t *testing.T) {
 	}
 }
 
+func TestBuildOutbound_DuplicateOccurrenceIsPreserved(t *testing.T) {
+	last := makeBody([]map[string]string{userMsg("A")})
+	client := makeBody([]map[string]string{userMsg("A"), userMsg("A"), userMsg("new")})
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := extractMessages(res.Body)
+	if err != nil || len(msgs) != 3 || res.DeltaCount != 2 {
+		t.Fatalf("new duplicate occurrence was lost: %+v", res)
+	}
+}
+
+func TestBuildOutbound_CompressedDuplicateAnchorFailsOpen(t *testing.T) {
+	last := makeBody([]map[string]string{summaryMsg("prior"), userMsg("A")})
+	client := makeBody([]map[string]string{userMsg("A"), assistantMsg("middle"), userMsg("A"), userMsg("new")})
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("ambiguous compressed suffix must fail open: %+v", res)
+	}
+}
+
+func TestBuildOutbound_ModifiedPrefixFailsOpen(t *testing.T) {
+	last := makeBody([]map[string]string{userMsg("original"), assistantMsg("answer")})
+	client := makeBody([]map[string]string{userMsg("changed"), assistantMsg("answer"), userMsg("new")})
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("modified uncompressed prefix must reset lineage: %+v", res)
+	}
+}
+
+func TestMsgHash_UsesCompleteMessage(t *testing.T) {
+	prefix := strings.Repeat("x", 512)
+	a := json.RawMessage(`{"role":"user","content":"` + prefix + `A"}`)
+	b := json.RawMessage(`{"role":"user","content":"` + prefix + `B"}`)
+	if msgHash(a) == msgHash(b) {
+		t.Fatal("message hash ignored content after byte 512")
+	}
+
+	toolA := json.RawMessage(`{"role":"assistant","content":null,"tool_calls":[{"id":"call_a","type":"function","function":{"name":"f","arguments":"{}"}}]}`)
+	toolB := json.RawMessage(`{"role":"assistant","content":null,"tool_calls":[{"id":"call_b","type":"function","function":{"name":"f","arguments":"{}"}}]}`)
+	if msgHash(toolA) == msgHash(toolB) {
+		t.Fatal("message hash ignored assistant tool_calls")
+	}
+}
+
 func TestMsgHash_Stable(t *testing.T) {
 	m := json.RawMessage(`{"role":"user","content":"hello"}`)
 	h1 := msgHash(m)
