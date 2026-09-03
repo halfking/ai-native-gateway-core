@@ -20,6 +20,32 @@ func newJournalQR(id string) *QueuedRequest {
 	return qr
 }
 
+func TestDimensionIndexMaxKeysDoesNotRetainOrphanRequest(t *testing.T) {
+	ix := NewDimensionIndex(DimensionIndexConfig{TTL: time.Minute, PerKeyCapacity: 8, MaxKeys: 1})
+	now := time.Now()
+
+	first := newJournalQR("dimension-first")
+	ix.Track(first, now)
+	if got := ix.Snapshot(DimensionModel, "gpt4", 10).Total; got != 1 {
+		t.Fatalf("first ring total = %d, want 1", got)
+	}
+
+	second := NewQueuedRequest("dimension-second", "t", "other-model", context.Background(), "payload")
+	second.ResolvedModel = "other-model"
+	ix.Track(second, now)
+
+	if _, ok := ix.EntriesByRequest(second.ID); ok {
+		t.Fatal("request rejected by MaxKeys must not remain in byReq")
+	}
+	if got := ix.Snapshot(DimensionModel, "other-model", 10).Total; got != 0 {
+		t.Fatalf("rejected ring total = %d, want 0", got)
+	}
+	_, _, byReq := ix.Stats()
+	if byReq != 1 {
+		t.Fatalf("byReq cardinality = %d, want 1", byReq)
+	}
+}
+
 func TestDimensionEntryCarriesClass(t *testing.T) {
 	ix := NewDimensionIndex(DimensionIndexConfig{TTL: time.Minute, PerKeyCapacity: 8, MaxKeys: 16})
 	qr := newJournalQR("dc1")

@@ -292,16 +292,20 @@ func (ix *DimensionIndex) insertLocked(entry *DimensionEntry, key string) {
 		// authoritative view. Drop tracking for brand-new requests only.
 		return
 	}
+	if _, exists := ix.rings[key]; !exists && len(ix.rings) >= ix.cfg.MaxKeys {
+		// Do not retain a request-only reference when its dimension cannot be
+		// indexed: Complete/UpdateWait operate through byReq, so an orphan here
+		// would retain the request until unrelated eviction without appearing in
+		// any admin-visible ring.
+		return
+	}
 	entry.LastUpdated = time.Now()
 	ix.byReq[entry.RequestID] = append(ix.byReq[entry.RequestID], entry)
 	ix.tracked++
 	metricDimensionTracked.Inc()
 
-	ring, ok := ix.rings[key]
-	if !ok {
-		if len(ix.rings) >= ix.cfg.MaxKeys {
-			return // dimension cardinality bound; request entry stays in byReq
-		}
+	ring := ix.rings[key]
+	if ring == nil {
 		ring = &dimensionRing{}
 		ix.rings[key] = ring
 	}
