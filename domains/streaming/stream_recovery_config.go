@@ -245,9 +245,39 @@ func (c StreamRecoveryConfig) withDefaults() StreamRecoveryConfig {
 // (27–5568 chunks ≈ tens of KB..a few MB of SSE payload).
 const maxL2ReplayCommittedBytes = 8 * 1024 * 1024
 
-// RecoveryL2EnabledFromEnv reports whether the L2 committed-prefix aligned
-// continuation is enabled (LLM_GATEWAY_RECOVERY_L2_ENABLED=1/true/yes/on).
-// Default false — see the design doc §3.3 point 5 (灰度开关).
+// RecoveryL2Mode selects the L2 behavior contract.
+type RecoveryL2Mode string
+
+const (
+	RecoveryL2ModeOff     RecoveryL2Mode = "off"
+	RecoveryL2ModeShadow  RecoveryL2Mode = "shadow"
+	RecoveryL2ModeEnforce RecoveryL2Mode = "enforce"
+)
+
+// RecoveryL2ModeFromEnv parses the new mode switch. Empty/invalid values are
+// deliberately safe: they disable L2 rather than guessing at enforcement.
+// The legacy boolean is consulted only when MODE is unset.
+func RecoveryL2ModeFromEnv() RecoveryL2Mode {
+	raw, ok := os.LookupEnv("LLM_GATEWAY_RECOVERY_L2_MODE")
+	if ok {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "off":
+			return RecoveryL2ModeOff
+		case "shadow":
+			return RecoveryL2ModeShadow
+		case "enforce":
+			return RecoveryL2ModeEnforce
+		default:
+			return RecoveryL2ModeOff
+		}
+	}
+	if RecoveryL2EnabledFromEnv() {
+		return RecoveryL2ModeEnforce
+	}
+	return RecoveryL2ModeOff
+}
+
+// RecoveryL2EnabledFromEnv reports whether the legacy boolean switch is true.
 func RecoveryL2EnabledFromEnv() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_RECOVERY_L2_ENABLED"))) {
 	case "1", "true", "yes", "on":
@@ -276,24 +306,27 @@ func CommittedPrefixCacheShared() *CommittedPrefixCache {
 	return recoveryL2Cache
 }
 
-// recoveryL2Runtime is the per-Run L2 wiring snapshot (env read once per
-// request so tests and operators can toggle without restart races).
 type recoveryL2Runtime struct {
-	enabled bool
-	cfg     StreamRecoveryConfig
-	cache   *CommittedPrefixCache
+	mode  RecoveryL2Mode
+	cfg   StreamRecoveryConfig
+	cache *CommittedPrefixCache
 }
 
-// recoveryL2RuntimeFromEnv snapshots the L2 knobs; enabled=false leaves the
-// cache pointer nil so no caller can touch it by accident.
+func (r recoveryL2Runtime) observeEnabled() bool { return r.mode != RecoveryL2ModeOff }
+func (r recoveryL2Runtime) enforceEnabled() bool { return r.mode == RecoveryL2ModeEnforce }
+func (r recoveryL2Runtime) shadowEnabled() bool  { return r.mode == RecoveryL2ModeShadow }
+
+// recoveryL2RuntimeFromEnv snapshots the L2 knobs; off leaves the cache pointer
+// nil so no caller can touch it by accident.
 func recoveryL2RuntimeFromEnv() recoveryL2Runtime {
-	if !RecoveryL2EnabledFromEnv() {
-		return recoveryL2Runtime{}
+	mode := RecoveryL2ModeFromEnv()
+	if mode == RecoveryL2ModeOff {
+		return recoveryL2Runtime{mode: mode}
 	}
 	return recoveryL2Runtime{
-		enabled: true,
-		cfg:     DefaultStreamRecoveryConfig(),
-		cache:   CommittedPrefixCacheShared(),
+		mode:  mode,
+		cfg:   DefaultStreamRecoveryConfig(),
+		cache: CommittedPrefixCacheShared(),
 	}
 }
 
