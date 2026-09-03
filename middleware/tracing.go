@@ -79,6 +79,12 @@ func (w *statusRecordingWriter) Flush() {
 		f.Flush()
 	}
 }
+func (w *statusRecordingWriter) FlushError() error {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
 func (w *statusRecordingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	h, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
