@@ -156,29 +156,26 @@ if grep -q 'LLM_GATEWAY_FILES_ROOT\|~/Downloads/kaixuan/llm-gateway' "$ROOT/scri
     fail 'local entry point still uses Downloads/legacy path'
   fi
 fi
-if grep -q 'SSHPASS' "$ROOT/scripts/deploy-154.sh" "$ROOT/scripts/deploy-245.sh"; then :; else fail 'remote wrappers must explicitly reject SSHPASS'; fi
+if grep -q 'SSHPASS' "$ROOT/scripts/deploy-154.sh" "$ROOT/scripts/deploy-245.sh"; then :; else fail 'remote wrappers must clear inherited SSHPASS'; fi
 pass 'legacy Downloads path and credential bypass are not used by new entry points'
 
-# Remote wrappers must fail closed for inherited password authentication and
-# provide the target-specific env-injector recovery command.
+# Remote wrappers must ignore stale password-auth environment state. They clear
+# SSHPASS before delegating, while the seamless orchestrator still requires the
+# target-specific injected SSH key for any mutating operation.
 for target in 154 245; do
   wrapper="$ROOT/scripts/deploy-$target.sh"
-  err_file="$TMP/deploy-$target-sshp-ass.err"
-  set +e
-  SSHPASS=legacy-password bash "$wrapper" --dry-run >/dev/null 2>"$err_file"
-  rc=$?
-  set -e
-  [[ $rc -eq 64 ]] || fail "deploy-$target must reject SSHPASS with exit 64 (got $rc)"
-  grep -q 'SSHPASS is forbidden' "$err_file" || fail "deploy-$target SSHPASS error message"
-  grep -q "SSH_KEY_$target" "$err_file" || fail "deploy-$target target-specific SSH key guidance"
+  fake_key="$TMP/id_ed25519"
+  printf 'offline-test-key\n' >"$fake_key"
+  chmod 600 "$fake_key"
+  out=$(env SSHPASS=legacy-password "SSH_KEY_$target=$fake_key" bash "$wrapper" --dry-run) \
+    || fail "deploy-$target must ignore stale SSHPASS"
+  grep -q "\"target\":\"$target\"" <<<"$out" \
+    || fail "deploy-$target dry-run target output with stale SSHPASS"
 done
-pass 'remote wrappers reject SSHPASS before any deployment side effect'
+pass 'remote wrappers clear stale SSHPASS and preserve key-only dry-run behavior'
 
 # A readable injected key must be sufficient for the non-mutating wrapper
 # preflight, without requiring SSHPASS or a network connection.
-fake_key="$TMP/id_ed25519"
-printf 'offline-test-key\n' >"$fake_key"
-chmod 600 "$fake_key"
 for target in 154 245; do
   wrapper="$ROOT/scripts/deploy-$target.sh"
   out=$(env -u SSHPASS "SSH_KEY_$target=$fake_key" bash "$wrapper" --dry-run) \

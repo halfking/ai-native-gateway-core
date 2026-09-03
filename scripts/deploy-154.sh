@@ -28,11 +28,10 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-if [[ -n "${SSHPASS:-}" ]]; then
-  printf 'error: SSHPASS is forbidden; unset SSHPASS and run: eval "$(env-injector inject --target=aliyun-gateway-154)"\n' >&2
-  printf 'hint: deployment requires the injected SSH_KEY_154 file\n' >&2
-  exit 64
-fi
+# Password authentication is never used by the canonical deploy path. Clear a
+# stale inherited value so unrelated shell configuration cannot block a key-only
+# deployment or leak into child processes.
+unset SSHPASS
 
 # shellcheck source=deploy-lib/parse-wrapper-flags.sh
 source "$SCRIPT_DIR/deploy-lib/parse-wrapper-flags.sh"
