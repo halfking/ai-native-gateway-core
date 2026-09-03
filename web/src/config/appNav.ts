@@ -210,7 +210,11 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'guide',
     label: '接入指南',
     labelKey: 'nav.group.guide',
-    items: [{ path: '/examples', label: '接入示例', labelKey: 'nav.item.examples', icon: '📝' }],
+    items: [
+      { path: '/examples', label: '接入示例', labelKey: 'nav.item.examples', icon: '📝' },
+      { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', external: true, opsPlatform: true, activateWhenNotActivated: true },
+      { path: '/maintain/donate', label: '赞助与捐赠', labelKey: 'nav.item.supportDonate', icon: '💖', external: true },
+    ],
   },
   {
     id: 'chat',
