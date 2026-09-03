@@ -115,13 +115,13 @@ const (
 	// inspectable. The retry budget is small on purpose: queue submission
 	// is a single INSERT round-trip, so 3 attempts cover transient
 	// connection blips without blocking recovery loops for seconds.
-	nodeProbeQueueSubmitMaxAttempts  = 3
-	nodeProbeQueueSubmitBaseBackoff  = 100 * time.Millisecond
-	nodeProbeQueueSubmitBackoffMult  = 2.5
-	nodeProbeQueueSubmitMaxBackoff   = 500 * time.Millisecond
+	nodeProbeQueueSubmitMaxAttempts    = 3
+	nodeProbeQueueSubmitBaseBackoff    = 100 * time.Millisecond
+	nodeProbeQueueSubmitBackoffMult    = 2.5
+	nodeProbeQueueSubmitMaxBackoff     = 500 * time.Millisecond
 	nodeProbeQueueSubmitFailureHoldoff = 30 * time.Second
-	nodeProbeQueueSubmitErrCode      = "queue_submit_failed"
-	nodeProbeQueueSubmitErrDetailMax = 256
+	nodeProbeQueueSubmitErrCode        = "queue_submit_failed"
+	nodeProbeQueueSubmitErrDetailMax   = 256
 )
 
 type NodeProbeStateSink interface {
@@ -912,11 +912,11 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 		// next tick doesn't re-pump it before the queue has a chance to
 		// execute/claim it. Real outcomes (success reset / failure backoff)
 		// overwrite this via mirrorNodeProbeState.
-			if _, err := w.db.Exec(qCtx, `
+		if _, err := w.db.Exec(qCtx, `
 				UPDATE node_probe_state
 				SET next_retry_at = now() + $3::interval, updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2 AND next_retry_at <= now()`,
-				r.credID, r.model, fmt.Sprintf("%d seconds", int(nodeProbeQueuePumpHoldoff.Seconds()))); err != nil {
+			r.credID, r.model, fmt.Sprintf("%d seconds", int(nodeProbeQueuePumpHoldoff.Seconds()))); err != nil {
 			slog.Warn("node_probe_worker: pump holdoff update failed",
 				"credential_id", r.credID, "model", r.model, "error", err)
 		}
