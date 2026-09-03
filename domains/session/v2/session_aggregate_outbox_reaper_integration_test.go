@@ -56,6 +56,7 @@ func openAuditPool(t *testing.T) *pgxpool.Pool {
 		t.Fatalf("parse dsn: %v", err)
 	}
 	cfg.MaxConns = 4
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("open pool: %v", err)
@@ -341,26 +342,10 @@ func TestReaper_ReEnqueueResurrects(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	payload, _ := json.Marshal(map[string]any{
-		"session_id": "sess_re_1", "tenant_id": "tenant_a", "request_id": "req_re_1",
-	})
 	if err := EnqueueSessionAggregateOutbox(ctx, tx, SessionUpdate{
 		SessionID: "sess_re_1", TenantID: "tenant_a", RequestID: "req_re_1",
 	}, time.Now().UTC()); err != nil {
-		// Build the payload from a real call; the helper uses the same
-		// encoder. Substitute raw INSERT for the same ON CONFLICT clause.
-		_ = payload
-		if _, err2 := tx.Exec(ctx, `
-			INSERT INTO public.session_aggregate_outbox
-			  (tenant_id, session_id, partition_date, request_id, update_payload)
-			VALUES ('tenant_a', 'sess_re_1', CURRENT_DATE, 'req_re_1', $1::jsonb)
-			ON CONFLICT (tenant_id, session_id, partition_date, request_id)
-			DO UPDATE SET update_payload = EXCLUDED.update_payload,
-			              status='pending', attempts=0, last_error=NULL,
-			              next_retry_at=NOW(), updated_at=NOW()
-		`, []byte(`{"session_id":"sess_re_1","tenant_id":"tenant_a","request_id":"req_re_1"}`)); err2 != nil {
-			t.Fatalf("re-enqueue: %v", err2)
-		}
+		t.Fatalf("re-enqueue: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -368,10 +353,11 @@ func TestReaper_ReEnqueueResurrects(t *testing.T) {
 
 	var secondStatus string
 	var attempts int
+	var payloadJSON []byte
 	if err := pool.QueryRow(ctx, `
-		SELECT status, attempts FROM public.session_aggregate_outbox
+		SELECT status, attempts, update_payload FROM public.session_aggregate_outbox
 		WHERE tenant_id='tenant_a' AND request_id='req_re_1'
-	`).Scan(&secondStatus, &attempts); err != nil {
+	`).Scan(&secondStatus, &attempts, &payloadJSON); err != nil {
 		t.Fatalf("query second: %v", err)
 	}
 	if secondStatus != "pending" {
@@ -379,6 +365,13 @@ func TestReaper_ReEnqueueResurrects(t *testing.T) {
 	}
 	if attempts != 0 {
 		t.Errorf("expected attempts=0 after re-enqueue, got %d", attempts)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(payloadJSON, &payload); err != nil {
+		t.Fatalf("re-enqueued payload is not valid JSON: %v", err)
+	}
+	if payload["session_id"] != "sess_re_1" || payload["tenant_id"] != "tenant_a" || payload["request_id"] != "req_re_1" {
+		t.Errorf("unexpected re-enqueued payload: %#v", payload)
 	}
 }
 

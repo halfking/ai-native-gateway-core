@@ -541,7 +541,8 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, rc.httpStatus, "api_error", rc.message)
 		return
 	}
-	if len(candidates) == 0 {
+	survivalEligible := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
+	if len(candidates) == 0 && !survivalEligible {
 		// This is the real no_candidate case - no database error, just no matching providers
 		attemptErrCode = "no_candidate"
 		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
@@ -552,6 +553,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		releaseDurableBeforeSurvival(durableStream, "no_candidate")
 		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", attemptErrMsg)
 		return
+	}
+	if len(candidates) == 0 {
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		pid := candidates[0].ProviderID

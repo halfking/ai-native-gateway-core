@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
@@ -96,14 +97,26 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		Protocol:           protocol,
 		Options:            h.survivalOptions,
 		TransportHeartbeat: params.OnStreamHeartbeat,
+		RetryNotice: func(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) error {
+			if params.OnNodeJump == nil {
+				return nil
+			}
+			params.OnNodeJump(fmt.Sprintf("正在等待可用节点并重试（第 %d 次，原因=%s，等待 %s）", attempt, decision.Reason, wait.Round(time.Second)))
+			return nil
+		},
 		Refresh: func(ctx context.Context) {
-			cands, _, _, err := resolveCandidatesForRequest(
+			cands, policy, _, err := resolveCandidatesForRequest(
 				ctx, h.provider, params.ClientModel, params.ClientID.Fingerprint.ClientProfile,
 				tenantID, params.BodyBytes,
 			)
-			if err == nil && len(cands) > 0 {
-				params.Candidates = cands
+			if err != nil {
+				slog.Warn("survival candidate refresh failed", "request_id", params.RequestID, "error", err)
+				return
 			}
+			// A successful empty refresh is meaningful: it prevents retrying a
+			// stale route while the coordinator keeps the client connection alive.
+			params.Candidates = cands
+			params.Policy = policy
 		},
 		// NOTE: the coordinator's durable Reschedule seam stays unwired
 		// here: store.Reschedule clears the lease while the coordinator

@@ -31,10 +31,13 @@ credential_fp_slot_reclaim_idle_seconds: 1800
 # LLM_GATEWAY_STREAM_RETRY_ENABLED (survival wins at startup).
 request_survival_enabled: false
 request_survival_durable_enabled: false
-request_survival_interactive_deadline_seconds: 86400
+request_survival_interactive_deadline_seconds: 18000
+request_survival_retry_interval_seconds: 30
+request_survival_night_max_attempts: 600
+request_survival_night_start_hour: 20
 request_survival_durable_deadline_seconds: 86400
 request_survival_status_interval_seconds: 60
-request_survival_retry_base_seconds: 2
+request_survival_retry_base_seconds: 30
 request_survival_retry_max_seconds: 120
 request_survival_worker_count: 4
 request_survival_worker_lease_seconds: 60

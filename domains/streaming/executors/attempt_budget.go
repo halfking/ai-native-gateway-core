@@ -5,7 +5,13 @@ import (
 	"sync/atomic"
 )
 
-const DefaultUpstreamAttemptLimit = 100
+const (
+	// DefaultUpstreamAttemptLimit is the ordinary daytime request budget.
+	DefaultUpstreamAttemptLimit = 100
+	// MaxUpstreamAttemptLimit is the hard safety ceiling used by the night
+	// recovery policy: one initial attempt plus at most 600 retries.
+	MaxUpstreamAttemptLimit = 601
+)
 
 var ErrUpstreamAttemptLimit = errors.New("upstream attempt limit exceeded")
 
@@ -17,7 +23,7 @@ type UpstreamAttemptBudget struct {
 }
 
 func NewUpstreamAttemptBudget(limit int) *UpstreamAttemptBudget {
-	if limit <= 0 || limit > DefaultUpstreamAttemptLimit {
+	if limit <= 0 || limit > MaxUpstreamAttemptLimit {
 		limit = DefaultUpstreamAttemptLimit
 	}
 	return &UpstreamAttemptBudget{limit: int64(limit)}
