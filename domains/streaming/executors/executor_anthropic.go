@@ -661,8 +661,13 @@ func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provide
 	if params != nil && params.R != nil {
 		requestCtx = params.R.Context()
 	}
-	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+	if out, applied, runnerMeta := e.runCompressionStrategiesWithMeta(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
 		bodyBytes = out
+		if params != nil {
+			params.CompressionRunnerMeta = runnerMeta
+		}
+	} else if params != nil && len(runnerMeta) > 0 {
+		params.CompressionRunnerMeta = runnerMeta
 	}
 	return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic)
 }

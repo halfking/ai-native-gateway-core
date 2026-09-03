@@ -111,6 +111,18 @@ var sessionIDHeaderPriority = []string{
 	"X-Thread-Id",
 }
 
+// envelopeSessionID reads only the top-level session_id field. It never scans
+// message content, so a user mentioning "session_id" cannot change ownership.
+func envelopeSessionID(body []byte) string {
+	var envelope struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.SessionID)
+}
+
 // Wrap 返回一个 http.Handler 包装器。
 // 在真实 handler 之前执行脱敏；脱敏失败时降级放行（不阻断请求）。
 func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
@@ -138,6 +150,9 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 				"error", err, "session_id", sessionID)
 			next.ServeHTTP(w, r)
 			return
+		}
+		if bodySessionID := envelopeSessionID(body); bodySessionID != "" {
+			sessionID = bodySessionID
 		}
 
 		// 解析并脱敏

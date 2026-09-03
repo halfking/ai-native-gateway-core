@@ -80,6 +80,43 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	}
 }
 
+func TestMiddlewareUsesBodySessionIDForSanitizeOwnership(t *testing.T) {
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	if err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
+	var got compression.SanitizeInfo
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = compression.SanitizeInfoFromContext(r.Context())
+	})
+	body := `{"session_id":"body-session","messages":[{"role":"user","content":"call 13800138000"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	mw.Wrap(next).ServeHTTP(httptest.NewRecorder(), req)
+	want := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "body-session")
+	if got.MapRef != want {
+		t.Fatalf("body session MapRef = %q, want %q", got.MapRef, want)
+	}
+}
+
+func TestMiddlewareBodySessionIDOverridesConflictingHeader(t *testing.T) {
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	if err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
+	var got compression.SanitizeInfo
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = compression.SanitizeInfoFromContext(r.Context())
+	})
+	body := `{"session_id":"body-session","messages":[{"role":"user","content":"mail a@b.com"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Gw-Session-Id", "header-session")
+	mw.Wrap(next).ServeHTTP(httptest.NewRecorder(), req)
+	want := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "body-session")
+	if got.MapRef != want {
+		t.Fatalf("conflicting session MapRef = %q, want %q", got.MapRef, want)
+	}
+}
+
 func TestMiddlewarePublishesMessageLevelProvenanceForUnchangedMessages(t *testing.T) {
 	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
 	if err != nil {
