@@ -118,7 +118,40 @@ func TestBuildAlignmentMap_MechanicalTrim(t *testing.T) {
 	}
 }
 
-// TestBuildAlignmentMap_EmptyInput verifies the defensive nil return when the
+func TestBuildAlignmentMap_AnthropicSystemSummary(t *testing.T) {
+	before := []byte(`{"system":"old system","messages":[{"role":"user","content":"old"},{"role":"assistant","content":"old answer"},{"role":"user","content":"latest"}]}`)
+	after, err := json.Marshal(map[string]any{
+		"system":   AnthropicSystemSummaryPrefix + "prior turns",
+		"messages": []map[string]string{{"role": "user", "content": "latest"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	align := buildAlignmentMapForProtocol(before, after, -1, "anthropic-messages")
+	if len(align) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(align))
+	}
+	for i := 0; i < 2; i++ {
+		if align[i].TargetKind != "summary" || align[i].TargetSpace != "top_level_system" || align[i].CompressedIndex != -1 {
+			t.Fatalf("orig %d system summary target = %+v", i, align[i])
+		}
+	}
+	if align[2].TargetKind != "retained" || align[2].TargetSpace != "messages" || align[2].CompressedIndex != 0 {
+		t.Fatalf("latest message target = %+v", align[2])
+	}
+}
+
+func TestBuildAlignmentMap_InvalidSummaryIndexFailsSafe(t *testing.T) {
+	before := messagesBody(2)
+	after := messagesBody(2)
+	align := buildAlignmentMap(before, after, 99)
+	for _, item := range align {
+		if item.TargetKind == "summary" || item.CompressedIndex == 99 {
+			t.Fatalf("out-of-range summary index leaked into alignment: %+v", align)
+		}
+	}
+}
+
 // original body has no parseable messages.
 func TestBuildAlignmentMap_EmptyInput(t *testing.T) {
 	if got := buildAlignmentMap(nil, []byte(`{"messages":[]}`), -1); got != nil {
@@ -163,8 +196,8 @@ func TestSessionState_AlignmentMapRoundTrip(t *testing.T) {
 		SummaryMarker:    "smm_v1:abc",
 		AuditedAt:        1750000000,
 		AlignmentMap: []AlignmentInfo{
-			{OriginalIndex: 0, CompressedIndex: 0, IsCompressed: true, CompressedInto: 0, Hash: "h0"},
-			{OriginalIndex: 1, CompressedIndex: 1, IsCompressed: false, CompressedInto: -1, Hash: "h1"},
+			{OriginalIndex: 0, CompressedIndex: 0, IsCompressed: true, CompressedInto: 0, Hash: "h0", Occurrence: 0, TargetKind: "summary", TargetSpace: "messages"},
+			{OriginalIndex: 1, CompressedIndex: 1, IsCompressed: false, CompressedInto: -1, Hash: "h1", Occurrence: 0, TargetKind: "retained", TargetSpace: "messages"},
 		},
 	}
 	fields := encodeSessionStateFields(st)
