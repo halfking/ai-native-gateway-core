@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
@@ -37,6 +38,15 @@ const (
 	maxTurnsListLimit     = 200
 )
 
+// sessionTurnsDB 是轮次读路径实际需要的数据库方法子集（与
+// sessionDetailV2DB 同款接口缝模式）：*pgxpool.Pool 在生产隐式满足，
+// pgxmock.PgxPoolIface 在集成测试（turn_digest_integration_test.go）注入。
+// 只暴露 Query/QueryRow —— 读路径没有副作用，接口收缩让越界调用编译失败。
+type sessionTurnsDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // serveSessionTurnSubroute 处理 action 以 "turns/" 开头的子路径：
 //
 //	turns/<turnNo>                          → 单轮详情
@@ -61,7 +71,13 @@ func (h *Handler) serveSessionTurnSubroute(w http.ResponseWriter, r *http.Reques
 
 // serveSessionTurnsList 返回会话轮次列表（按 turn_no 倒序，cursor 分页）。
 func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, sessionID string) {
-	if h.db == nil {
+	serveSessionTurnsListDB(h.db, h.secret, w, r, sessionID)
+}
+
+// serveSessionTurnsListDB 是 serveSessionTurnsList 的接口缝版本：db 与
+// cursor 签名 key 显式传入，集成测试用 pgxmock 注入而不构造完整 Handler。
+func serveSessionTurnsListDB(db sessionTurnsDB, secret string, w http.ResponseWriter, r *http.Request, sessionID string) {
+	if db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -74,7 +90,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 	}
 	beforeTurnNo := int(^uint(0) >> 1)
 	if encoded := r.URL.Query().Get("cursor"); encoded != "" {
-		decoded, err := validateCursor(encoded, []byte(h.secret), tenantID, sessionID)
+		decoded, err := validateCursor(encoded, []byte(secret), tenantID, sessionID)
 		if err != nil {
 			if errors.Is(err, errCursorMismatch) {
 				writeError(w, http.StatusBadRequest, "cursor mismatch")
@@ -86,7 +102,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		beforeTurnNo = decoded.TurnNo
 	}
 
-	rows, err := h.db.Query(r.Context(), `
+	rows, err := db.Query(r.Context(), `
 		SELECT t.turn_no, t.ts, COALESCE(t.title,''), COALESCE(t.summary,''),
 		       COALESCE(t.prompt_tokens,0), COALESCE(t.completion_tokens,0), COALESCE(t.cost_usd,0),
 		       COALESCE(t.model,''), COALESCE(t.provider,''), COALESCE(t.status_code,0),
@@ -158,7 +174,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		nextCursor, _ = encodeCursor(cursorPayload{
 			TenantID: tenantID, SessionID: sessionID,
 			TurnNo: items[len(items)-1].TurnNo, TS: time.Now(),
-		}, []byte(h.secret))
+		}, []byte(secret))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"session_id": sessionID, "turns": items, "has_more": hasMore, "next_cursor": nextCursor,
@@ -226,12 +242,19 @@ type attachmentV2 struct {
 // serveSessionTurnDetail 返回单轮详情（session_turns + session_bodies JOIN），
 // 输出嵌套结构供前端 SessionTurnDrawer 五 tab 消费。
 func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request, sessionID, turnNoStr string) {
+	serveSessionTurnDetailDB(h.db, w, r, sessionID, turnNoStr)
+}
+
+// serveSessionTurnDetailDB 是 serveSessionTurnDetail 的接口缝版本：集成测试
+// 用 pgxmock 注入（见 turn_digest_integration_test.go），生产路径经 Handler
+// 包装调用，行为完全一致。
+func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.Request, sessionID, turnNoStr string) {
 	turnNo, err := strconv.Atoi(turnNoStr)
 	if err != nil || turnNo <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid turn_no")
 		return
 	}
-	if h.db == nil {
+	if db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -274,7 +297,7 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 		success                                                           *bool
 		requestAttachmentsRaw, responseAttachmentsRaw                     []byte
 	)
-	err = h.db.QueryRow(r.Context(), query, sessionID, tenantID, turnNo).Scan(
+	err = db.QueryRow(r.Context(), query, sessionID, tenantID, turnNo).Scan(
 		&turnNoOut, &requestID, &ts,
 		&submitMode, &compressionApplied, &compressionStrategy,
 		&compressionMetaRaw, &compressionTokensSaved,
