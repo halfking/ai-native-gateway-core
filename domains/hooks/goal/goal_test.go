@@ -343,6 +343,28 @@ func TestInterceptNonStream_ClientCapabilityReturnsHandoffSignal(t *testing.T) {
 	}
 }
 
+func TestInterceptNonStream_ClientCapabilityReturnsHandoffOnly(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "signal-handoff-only", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalEnabled = true
+	hook.config.ClientSignalMode = "auto"
+	hook.config.HandoffSignalThresholdTokens = 100
+
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "signal-handoff-only", TenantID: "t1", FinishReason: "stop", TokensUsed: 100,
+		ResponseBody:         []byte(`{"choices":[{"message":{"role":"assistant","content":"still working"},"finish_reason":"stop"}]}`),
+		ClientSignalAllowed:  false,
+		HandoffSignalAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.ClientSignalKind != "gw-handoff" {
+		t.Fatalf("result=%+v, want gw-handoff", res)
+	}
+}
+
 func TestCompletionDetector_PendingSubAgentsBlocksCompletion(t *testing.T) {
 	store := newFakeStore()
 	detector := NewCompletionDetector(store, nil)

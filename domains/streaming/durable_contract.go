@@ -178,3 +178,17 @@ func HandoffSignalRequested(r *http.Request) bool {
 	}
 	return ParseClientCapabilities(r.Header.Get(GatewayCapabilitiesHeader)).Has(CapabilityHandoffSignal)
 }
+
+// clientSignalKindAllowed verifies that a hook result may be emitted for the
+// current request. The HTTP-boundary check prevents a future interceptor from
+// accidentally leaking a signal to a client that did not negotiate it.
+func clientSignalKindAllowed(r *http.Request, kind string) bool {
+	switch kind {
+	case "gw-continue":
+		return ClientSignalRequested(r)
+	case "gw-handoff":
+		return HandoffSignalRequested(r)
+	default:
+		return false
+	}
+}

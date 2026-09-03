@@ -462,7 +462,7 @@ func (h *ModeHook) tryAtomicContinue(ctx context.Context, req *response.Intercep
 }
 
 func (h *ModeHook) tryBuildClientSignal(ctx context.Context, req *response.InterceptRequest, sess *Session) *response.InterceptResult {
-	if !h.clientSignalEnabled(req.TenantID) || !req.ClientSignalAllowed {
+	if !h.clientSignalEnabled(req.TenantID) {
 		return nil
 	}
 	mode := h.loadString(req.TenantID, "goal.client_signal_mode", h.config.ClientSignalMode)
@@ -472,8 +472,10 @@ func (h *ModeHook) tryBuildClientSignal(ctx context.Context, req *response.Inter
 	} else if mode == "handoff" {
 		return nil
 	}
-	if kind == "gw-continue" && !(mode == "" || mode == "auto" || mode == "continue" || mode == "both") {
-		return nil
+	if kind == "gw-continue" {
+		if !req.ClientSignalAllowed || !(mode == "" || mode == "auto" || mode == "continue" || mode == "both") {
+			return nil
+		}
 	}
 	max := h.loadInt(req.TenantID, "goal.max_auto_continue_count", h.config.MaxAutoContinueCount)
 	attempt := sess.ContinueAttempt
