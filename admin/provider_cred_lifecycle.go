@@ -201,7 +201,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 	var modelsErrorKind string
 	var modelsErrorPreview string
 
-if decErr != nil {
+	if decErr != nil {
 		healthStatus = "error"
 		healthError = "decrypt failed"
 		msg := healthError

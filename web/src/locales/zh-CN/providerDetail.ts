@@ -564,6 +564,7 @@ export default {
     credColChat: 'Chat 探测',
     probeFailed: '失败',
     probeMetaModels: '{status} · {count} 模型 · {latency}ms',
+    probeNonJson: '{status} · 非JSON响应',
     probeMetaChat: '{status} · {latency}ms',
   },
   probe: {
