@@ -173,11 +173,19 @@ describe('QueuePerspectivePanel', () => {
   it('shows the latest request processing path', () => {
     liveStreamState.requests = [{
       ts: '2026-08-14T08:00:00Z',
-      request_id: 'req-12345678',
+      request_id: 'req-1234567890-abcd',
+      requestType: 'chat',
       model: 'claude-sonnet',
       provider_code: 'anthropic',
-      status: 'success',
       latency_ms: 820,
+    }]
+    liveStreamState.nodes = [{
+      credential_id: 1,
+      provider_id: 1,
+      provider_code: 'anthropic',
+      manual_disabled: false,
+      circuit_state: 'closed',
+      raw_models: ['claude-sonnet'],
     }]
 
     const wrapper = mountPanel()
@@ -599,11 +607,11 @@ describe('QueuePerspectivePanel', () => {
       type: 'request_lifecycle',
       ts: '2026-08-17T00:00:00Z',
       action: [
-        { request_id: 'r-A', seq: 1, action: 'credential_selected', credential_id: 5 },
+        { request_id: 'r-A-1234567890', seq: 1, action: 'credential_selected', credential_id: 5 },
       ],
     })
     liveStreamState.requests = [
-      { ts: '2026-08-17T00:00:01Z', request_id: 'r-A', model: 'm-1', status: 'success', latency_ms: 410 },
+      { ts: '2026-08-17T00:00:00Z', request_id: 'r-A-1234567890', requestType: 'chat', agent_name: 'zcode', model: 'm-1', status: 'success', latency_ms: 410 },
     ]
 
     const wrapper = mountPanel()
@@ -618,7 +626,10 @@ describe('QueuePerspectivePanel', () => {
     expect(reqList.exists()).toBe(true)
     // 请求行的节点标示同样使用 供应商 / 凭据ID（无标签时 fallback）
     expect(reqList.text()).toContain('p/#5')
-    expect(reqList.text()).toContain('m-1')
+    expect(reqList.text()).toContain('r-A-12345678…')
+    expect(reqList.find('.qp-rq-id').attributes('title')).toBe('r-A-1234567890')
+    expect(reqList.find('.qp-model-group-request').attributes('title')).toContain('请求ID: r-A-1234567890')
+    expect(reqList.text()).toContain('对话 m-1 @zcode')
     expect(reqList.text()).toContain('success')
     expect(reqList.text()).toContain('410ms')
   })
