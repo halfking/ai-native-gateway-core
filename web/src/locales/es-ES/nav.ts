@@ -9,6 +9,7 @@ export default {
     dataOps: "Operaciones de datos",
     guide: "Guía de integración",
     chat: "Chat",
+    plugins: "Complementos",
     opsplatform: "运维平台"
   },
   item: {
