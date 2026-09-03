@@ -149,6 +149,36 @@ d.annotateTreatment undefined
 
 - `deploy/prometheus/rules/alerts_test.go`
 
+### 2.8 Responses 请求负向 schema 门禁
+
+继续执行第 5 节“请求转换可靠性”的本地可验证切片，对 OpenAI Responses 请求入口增加结构校验：
+
+- 顶层 JSON 必须是 object；显式拒绝 `null`、array、string、number 等合法但错误的 JSON 形状；
+- 对解析器已消费的字段校验其支持的 JSON 类型，例如 `input` 仅接受 string/array，`tools` 仅接受 array，`tool_choice` 仅接受 string/object；
+- `tools[]` 中的元素必须是 object，不再静默跳过数字、字符串等无效元素；
+- 保留既有兼容语义：nil/空字节仍降级为空 IR，`{}` 仍可解析，已知可选字段显式为 `null` 时仍忽略，未知顶层字段仍进入 `Extensions`。
+
+本切片没有新增 model、input 等必填字段约束，也没有扩展到 OpenAI Chat、Anthropic Messages、响应方向或流式 idle watchdog，避免一次修改扩大多协议兼容面。
+
+涉及：
+
+- `internal/ir/parse_responses.go`
+- `internal/ir/parse_responses_test.go`
+
+### 2.9 二次合并：去除与 9c20a6e51 的 treatment 重复声明
+
+将本轮 commit rebase 到远程 `9c20a6e51`（credential lifecycle 与 autoroute rollout hardening）后，远程已经在 `autoroute/treatment_decision.go` 恢复 `Decider.annotateTreatment`。本轮在 `autoroute/decision.go` 添加的同名方法造成 `method Decider.annotateTreatment already declared` 构建错误。
+
+二次调整：
+
+- 移除 `autoroute/decision.go` 中重复的 `annotateTreatment`；
+- 保留 `Decider.SetTreatmentRollout`（公共覆写入口，便于受控测试与嵌入式部署）与内部 `treatmentConfig()` helper（`treatment_decision.go` 当前的实现是内联展开，未引用 helper，二者并存无冲突）；
+- `autoroute/treatment_test.go` 同步覆盖 setter 的副本语义与 nil 复位、override 归因且不修改路由字段、缺少身份时 fail-closed；归因基础语义仍由 `treatment_decision_test.go` 覆盖。
+
+涉及：
+
+- `autoroute/decision.go`
+- `autoroute/treatment_test.go`
 ## 3. 当前运行契约
 
 1. CPU 数只决定 dispatcher / failover 决策 worker 数；供应商实际并发、RPM、TPM 继续由 credential Governor 控制。
@@ -167,7 +197,12 @@ gofmt -w autoroute/decision.go autoroute/treatment_test.go \
   deploy/prometheus/rules/alerts_test.go \
   domains/dispatch/pipeline.go domains/dispatch/dimension_index.go \
   domains/dispatch/dimension_journal_test.go \
-  domains/streaming/executors/executor_dispatch.go
+  domains/streaming/executors/executor_dispatch.go \
+  internal/ir/parse_responses.go internal/ir/parse_responses_test.go
+
+go test ./internal/ir
+go test ./domains/transformation
+go test -race ./internal/ir ./domains/transformation
 
 go test ./autoroute
 go test ./domains/dispatch

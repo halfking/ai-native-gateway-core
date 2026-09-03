@@ -225,7 +225,9 @@ func (h *Handler) handleSessionTurnsDual(w http.ResponseWriter, r *http.Request)
 	}
 
 	v2Recorder := httptest.NewRecorder()
-	h.serveSessionTurnsUnified(v2Recorder, r, r.PathValue("id"))
+	shadowCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 500*time.Millisecond)
+	defer cancel()
+	h.serveSessionTurnsUnified(v2Recorder, r.Clone(shadowCtx), r.PathValue("id"))
 	shadow := buildTurnsV2Shadow(treeRecorder.Body.Bytes(), v2Recorder.Body.Bytes(), v2Recorder.Code)
 
 	var payload map[string]any
@@ -233,6 +235,7 @@ func (h *Handler) handleSessionTurnsDual(w http.ResponseWriter, r *http.Request)
 		copyRecordedResponse(w, treeRecorder)
 		return
 	}
+	payload["v2_shadow"] = shadow
 	applyTurnsV2Shadow(payload, v2Recorder.Body.Bytes(), shadow)
 	for key, values := range treeRecorder.Header() {
 		for _, value := range values {

@@ -31,7 +31,7 @@ type TurnListItem struct {
 	Model            string                 `json:"model"`
 	Provider         string                 `json:"provider"`
 	StatusCode       int                    `json:"status_code"`
-	LatencyMs        *int                   `json:"latency,omitempty"`
+	LatencyMs        *int                   `json:"latency_ms,omitempty"`
 	SubmitMode       string                 `json:"submit_mode"`
 	InjectionVerdict string                 `json:"injection_verdict"`
 	OutputVerdict    string                 `json:"output_verdict"`
