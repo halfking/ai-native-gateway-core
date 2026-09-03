@@ -183,6 +183,7 @@ export default {
       status: { success: 'Éxito', failed: 'Fallido', timeout: 'Tiempo agotado', skipped: 'Omitido' },
       flags: { compression: 'Compresión', retry: 'Reintento', nodeSwitch: 'Cambio de nodo', degraded: 'Observación degradada' },
       evidenceLabel: 'Evidencia de enrutamiento y cascada', evidenceTitle: 'Intentos observados', waterfallAttempt: 'Intento de cascada #{number}', noDetails: 'Sin detalles adicionales', degraded: 'Observación degradada',
+      lanesLabel: 'Carriles de intentos', lanesTitle: 'Intentos de journey observados', attemptLane: 'Intento #{number}', sourceJourney: 'Fuente journey', waterfallLabel: 'Barras de etapas waterfall', waterfallTitle: 'Barras de etapas waterfall', lastAttemptSemantics: 'Tiempo de la solicitud; T5–T9 puede reflejar el último intento', synthesizedBars: 'Las etapas sintetizadas indican marcas de tiempo ausentes (observación degradada).', requestTimeline: 'Línea temporal de la solicitud',
       legend: { success: 'Éxito', failed: 'Fallido/tiempo agotado', special: 'Compresión · reintento · cambio de nodo' }
     },
   },

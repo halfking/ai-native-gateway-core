@@ -183,6 +183,7 @@ export default {
       status: { success: '成功', failed: '失败', timeout: '超时', skipped: '跳过' },
       flags: { compression: '压缩', retry: '重试', nodeSwitch: '节点切换', degraded: '观测降级' },
       evidenceLabel: '路由与瀑布观测证据', evidenceTitle: '已观测尝试', waterfallAttempt: '瀑布尝试 #{number}', noDetails: '没有更多详情', degraded: '观测降级',
+      lanesLabel: '请求尝试泳道', lanesTitle: '已观测旅程尝试', attemptLane: '尝试 #{number}', sourceJourney: 'Journey 来源', waterfallLabel: '瀑布阶段条', waterfallTitle: '瀑布阶段条', lastAttemptSemantics: '请求级时间；T5–T9 可能反映末次尝试', synthesizedBars: '合成阶段表示缺少时间戳（观测降级）。', requestTimeline: '请求时间线',
       legend: { success: '成功', failed: '失败/超时', special: '压缩 · 重试 · 节点切换' },
     },
   },
