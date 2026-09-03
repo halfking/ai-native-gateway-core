@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"testing"
 	"time"
 
@@ -16,8 +17,27 @@ func (timeoutErr) Error() string   { return "timeout" }
 func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
 
+func TestRetryAfterUsesPolicyClock(t *testing.T) {
+	p := New(Config{Enabled: true, MaxRetries: 2, BaseDelay: time.Second, MaxDelay: 10 * time.Second})
+	now := time.Date(2026, time.September, 4, 12, 0, 0, 0, time.UTC)
+	p.SetClock(func() time.Time { return now })
+	err := &streamretry.HTTPError{
+		StatusCode: 429,
+		RetryAfter: now.Add(3 * time.Second).Format(http.TimeFormat),
+		Err:        errors.New("busy"),
+	}
+	gotRetry, gotDelay := p.ShouldRetry(context.Background(), "provider", 0, err)
+	if !gotRetry {
+		t.Fatal("ShouldRetry() = false, want true")
+	}
+	if gotDelay != 3*time.Second {
+		t.Fatalf("delay = %v, want 3s", gotDelay)
+	}
+}
+
 func TestShouldRetryClassifiesErrors(t *testing.T) {
 	p := New(Config{Enabled: true, MaxRetries: 3, BaseDelay: time.Millisecond, MaxDelay: 10 * time.Millisecond})
+
 	cases := []struct {
 		name string
 		err  error
