@@ -3,6 +3,7 @@ package executors
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1096,6 +1097,14 @@ func (e *Executor) logUpstreamResponse(params *ExecParams, protocol string, body
 	if err := e.RawDataLogger.LogResponse(diagnosticRequestID(params), protocol, body, false); err != nil {
 		slog.Warn("executor diagnostics: upstream response logging failed", "request_id", diagnosticRequestID(params), "error", err)
 	}
+}
+
+func safeUpstreamBodyDigest(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest[:8])
 }
 
 func (e *Executor) redactClientResponse(params *ExecParams, body []byte) []byte {
