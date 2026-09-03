@@ -16,19 +16,18 @@ Both defects are addressed in commit `f4313a00a` on branch
 
 ### 1. Dashboard — `request_id` + `title` rendering
 
-- `web/src/components/dashboard/QueuePerspectivePanel.vue`
+- `web/src/components/QueuePerspectivePanel.vue`
   - Added a new `qp-rq-id` column that renders `shortRequestId(request.request_id)`
-    with a `title` tooltip containing the full UUID. The truncation length uses the
-    existing `shortRequestId` helper (first 8 chars + ellipsis), keeping the row tight
-    without losing access to the full id.
-  - Added `title` rendering for the prompt-style row so users can identify what was
-    being asked without expanding each row.
-  - Adjusted the row grid CSS to fit the new column without displacing the existing
-    `qp-time`, `qp-model`, `qp-provider`, and `qp-status` cells.
-- `web/src/components/dashboard/QueuePerspectivePanel.test.ts`
-  - New test asserts that a request with a `request_id` renders the shortened id and
-    that the tooltip carries the full id. Another test asserts the `title` line is
-    visible when present.
+    with a `title` tooltip containing the full request ID. The truncation length uses the
+    existing `shortRequestId` helper, keeping the row tight without losing access to the
+    full ID.
+  - Added composed request rendering (`type`, model, optional agent) so users can identify
+    the request without expanding each row.
+  - Adjusted the row grid CSS to fit the new column without displacing the existing cells.
+- `web/src/components/QueuePerspectivePanel.test.ts`
+  - The component test is present in the repository. The original shipping commit did not
+    add coverage for this behavior; that coverage must be tracked separately from the
+    historical commit.
 
 ### 2. Provider selection — sibling-aware load balancing
 
@@ -111,9 +110,15 @@ already prefers healthy siblings via the standard round-robin/weighted path.
 ## Files Touched (commit `f4313a00a`)
 
 ```
-internal/gateway/spec_gateway.go
-internal/gateway/spec_gateway_test.go
 sql/migrations/domain/640_fix_null_unavailable_recover_at.sql
-web/src/components/dashboard/QueuePerspectivePanel.vue
-web/src/components/dashboard/QueuePerspectivePanel.test.ts
+web/src/components/QueuePerspectivePanel.vue
 ```
+
+## Validation Status (corrected 2026-09-03)
+
+The historical commit was verified by its two-file diff. At the time of this audit,
+there is no recorded evidence that the migration ran in production, that the dashboard
+was browser-smoke-tested in staging, or that live traffic became distributed across
+MiniMax siblings. Those are deployment validations, not facts established by the code
+change. A later source-level regression test may validate the UI rendering behavior,
+but it does not retroactively validate staging or production.
