@@ -3,8 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Default log directory: prefer ~/Downloads/kaixuan/memora/logs (matches memora start.sh)
+DEFAULT_LOG_DIR="$HOME/Downloads/kaixuan/memora/logs"
+LOG_DIR="${LLM_GATEWAY_LOG_DIR:-$DEFAULT_LOG_DIR}"
+mkdir -p "$LOG_DIR"
 ENV_FILE="${LLM_GATEWAY_ENV_FILE:-/tmp/llm-gateway-local.env}"
-LOG_FILE="${LLM_GATEWAY_LOG_FILE:-/tmp/llm-gateway.log}"
+LOG_FILE="${LLM_GATEWAY_LOG_FILE:-$LOG_DIR/memora.log}"
 PID_FILE="${LLM_GATEWAY_PID_FILE:-/tmp/llm-gateway.pid}"
 SERVICE_PORT="${SERVICE_PORT:-8781}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:${SERVICE_PORT}}"
@@ -54,6 +58,7 @@ write_env() {
     printf 'export LLM_GATEWAY_CORS_ORIGINS=%q\n' "${LLM_GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${SERVICE_PORT}}"
     printf 'export LLM_GATEWAY_ENV=%q\n' "${LLM_GATEWAY_ENV:-development}"
     printf 'export URSM_V2_MODE=%q\n' "${URSM_V2_MODE:-shadow}"
+    printf 'export LLM_GATEWAY_LOG_FILE=%q\n' "$LOG_FILE"
     # Licensing center (ai-native-maintain) + RSA verify key for issued licenses.
     printf 'export LLM_GATEWAY_CENTER_URL=%q\n' "${LLM_GATEWAY_CENTER_URL:-}"
     printf 'export LLM_GATEWAY_LICENSE_PUBLIC_KEY=%q\n' "${LLM_GATEWAY_LICENSE_PUBLIC_KEY:-}"
@@ -261,7 +266,8 @@ start_service() {
   [[ -f "$ENV_FILE" ]] || die "secure environment file is missing; run $0 deploy"
   stop_service
   # shellcheck disable=SC1090
-  source "$ENV_FILE"
+  # Export LLM_GATEWAY_LOG_FILE so the gateway process uses lumberjack internally
+  export LLM_GATEWAY_LOG_FILE="$LOG_FILE"; source "$ENV_FILE"
   nohup "$ROOT_DIR/llm-gateway" >"$LOG_FILE" 2>&1 &
   local pid=$!
   printf '%s\n' "$pid" > "$PID_FILE"
