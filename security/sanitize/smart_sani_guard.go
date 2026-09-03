@@ -164,7 +164,7 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			// SC-1 (docs/修订0811/19): 同时把脱敏桥接信息放入 ctx，供
 			// session compressor 写入 SessionState v8 的 SanitizeMapRef /
 			// SanitizeStats，使三层缓存的 L3 脱敏字段不再悬空。
-			info := buildSanitizeInfoForSession(rawTenantID, sessionID, sm)
+			info := buildSanitizeInfoForSession(tenantID, sessionID, sm)
 			info.MessageRefs = messageRefs
 			*r = *r.WithContext(compression.WithSanitizeInfo(r.Context(), info))
 		}

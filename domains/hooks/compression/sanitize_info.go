@@ -22,7 +22,7 @@ import (
 // can derive the same hash as the writer.
 func hashTenantForSanitizeKey(tenantID string) string {
 	if tenantID == "" {
-		return ""
+		tenantID = "_unknown"
 	}
 	sum := sha256.Sum256([]byte(tenantID))
 	return hex.EncodeToString(sum[:8])

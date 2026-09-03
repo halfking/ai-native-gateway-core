@@ -52,8 +52,9 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	if !infoOK {
 		t.Fatal("SanitizeInfo missing from context after sanitization")
 	}
-	if gotInfo.MapRef != compression.SessionSanitizeRedisKey("sess-sc1") {
-		t.Fatalf("MapRef = %q, want session:sess-sc1:sanitize", gotInfo.MapRef)
+	wantMapRef := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "sess-sc1")
+	if gotInfo.MapRef != wantMapRef {
+		t.Fatalf("MapRef = %q, want %q", gotInfo.MapRef, wantMapRef)
 	}
 	if gotInfo.Stats.PlaceholderCount != 2 {
 		t.Fatalf("PlaceholderCount = %d, want 2 (phone + email)", gotInfo.Stats.PlaceholderCount)
