@@ -1,9 +1,19 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
+)
+
+const (
+	jsonObject = "object"
+	jsonArray  = "array"
+	jsonString = "string"
+	jsonNumber = "number"
+	jsonBool   = "bool"
+	jsonNull   = "null"
 )
 
 // ParseResponses parses an OpenAI Responses API request body
@@ -35,6 +45,10 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 	// nil/empty body: degrade safely into an empty IR with the protocol set.
 	if len(body) == 0 {
 		return &InternalRequest{SourceProtocol: ProtocolOpenAIResponses}, nil
+	}
+
+	if kind := jsonKind(body); kind != jsonObject {
+		return nil, fmt.Errorf("responses body must be a JSON object, got %s", kind)
 	}
 
 	// Phase 1: decode into a raw map so unknown fields can be captured.
@@ -118,6 +132,9 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 		req.TopP = src.TopP
 	}
 	if src.Stop != nil && string(src.Stop) != "null" {
+		if err := requireJSONKind("stop", src.Stop, jsonString, jsonArray); err != nil {
+			return nil, err
+		}
 		req.Stop = parseStringArray(src.Stop)
 	}
 	if src.Stream != nil {
@@ -126,6 +143,9 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 
 	// input → Messages.
 	if src.Input != nil && string(src.Input) != "null" {
+		if err := requireJSONKind("input", src.Input, jsonString, jsonArray); err != nil {
+			return nil, err
+		}
 		messages, systemFromInput, err := parseResponsesInput(src.Input)
 		if err != nil {
 			return nil, fmt.Errorf("parse input: %w", err)
@@ -147,6 +167,9 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 
 	// tools → req.Tools (flat Responses shape).
 	if src.Tools != nil && string(src.Tools) != "null" {
+		if err := requireJSONKind("tools", src.Tools, jsonArray); err != nil {
+			return nil, err
+		}
 		tools, err := parseResponsesTools(src.Tools)
 		if err != nil {
 			return nil, fmt.Errorf("parse tools: %w", err)
@@ -156,6 +179,9 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 
 	// tool_choice → req.ToolChoice.
 	if src.ToolChoice != nil && string(src.ToolChoice) != "null" {
+		if err := requireJSONKind("tool_choice", src.ToolChoice, jsonString, jsonObject); err != nil {
+			return nil, err
+		}
 		tc, err := parseResponsesToolChoice(src.ToolChoice)
 		if err != nil {
 			return nil, fmt.Errorf("parse tool_choice: %w", err)
@@ -165,6 +191,9 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 
 	// metadata → req.Metadata (flat {key:value} map).
 	if src.Metadata != nil && string(src.Metadata) != "null" {
+		if err := requireJSONKind("metadata", src.Metadata, jsonObject); err != nil {
+			return nil, err
+		}
 		if md := parseResponsesMetadata(src.Metadata); md != nil {
 			req.Metadata = md
 		}
@@ -172,15 +201,52 @@ func ParseResponses(body []byte) (*InternalRequest, error) {
 
 	// reasoning → req.Reasoning ({effort:...} or {summary:...}).
 	if src.Reasoning != nil && string(src.Reasoning) != "null" {
+		if err := requireJSONKind("reasoning", src.Reasoning, jsonObject); err != nil {
+			return nil, err
+		}
 		req.Reasoning = parseResponsesReasoning(src.Reasoning)
 	}
 
 	// text.format → req.ResponseFormat (Responses nests format under "text").
 	if src.Text != nil && string(src.Text) != "null" {
+		if err := requireJSONKind("text", src.Text, jsonObject); err != nil {
+			return nil, err
+		}
 		req.ResponseFormat = parseResponsesTextFormat(src.Text)
 	}
 
 	return req, nil
+}
+
+func jsonKind(raw []byte) string {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return "empty"
+	}
+	switch trimmed[0] {
+	case '{':
+		return jsonObject
+	case '[':
+		return jsonArray
+	case '"':
+		return jsonString
+	case 't', 'f':
+		return jsonBool
+	case 'n':
+		return jsonNull
+	default:
+		return jsonNumber
+	}
+}
+
+func requireJSONKind(field string, raw json.RawMessage, allowed ...string) error {
+	kind := jsonKind(raw)
+	for _, candidate := range allowed {
+		if kind == candidate {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s must be %s, got %s", field, strings.Join(allowed, " or "), kind)
 }
 
 // parseResponsesInput converts the Responses "input" field into IR Messages.
@@ -478,16 +544,22 @@ func extractItemText(item map[string]any) string {
 // Provider-specific tool types (web_search, file_search, ...) are captured
 // verbatim into Raw.
 func parseResponsesTools(raw json.RawMessage) ([]ToolDefinition, error) {
-	var tools []any
-	if err := json.Unmarshal(raw, &tools); err != nil {
+	// Decode each tool element as a raw message first so we can give a
+	// precise error for non-object elements (the previous implementation
+	// silently skipped strings/numbers — which masked malformed clients).
+	var rawTools []json.RawMessage
+	if err := json.Unmarshal(raw, &rawTools); err != nil {
 		return nil, fmt.Errorf("unmarshal tools: %w", err)
 	}
 
-	result := make([]ToolDefinition, 0, len(tools))
-	for _, t := range tools {
-		tool, ok := t.(map[string]any)
-		if !ok {
-			continue
+	result := make([]ToolDefinition, 0, len(rawTools))
+	for i, item := range rawTools {
+		if jsonKind(item) != jsonObject {
+			return nil, fmt.Errorf("tools[%d] must be object, got %s", i, jsonKind(item))
+		}
+		var tool map[string]any
+		if err := json.Unmarshal(item, &tool); err != nil {
+			return nil, fmt.Errorf("unmarshal tools[%d]: %w", i, err)
 		}
 		toolType, _ := tool["type"].(string)
 
