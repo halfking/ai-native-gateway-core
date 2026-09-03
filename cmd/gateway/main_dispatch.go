@@ -63,11 +63,11 @@ func journalSnapshotReceiptOwner(instanceID string) string {
 	return instanceID + ":" + strconv.FormatInt(time.Now().UnixNano(), 36)
 }
 
-// wireDispatchPipeline builds the V2 dispatch pipeline from the executor,
-// starts its worker pools, injects it into the executor, and returns it. If
-// routingExec is nil the pipeline is skipped — and since AUDIT_24H B2b
-// (2026-08-17) the executor has no fallback path, so a nil routingExec means
-// every request fails with "dispatch pipeline not wired" (a wiring bug).
+// wireDispatchPipeline builds the V2 dispatch pipeline from the executor and
+// injects all request-independent projections. The composition root must wire
+// QueueBackend, GovernorBackend, snapshot observation, and capacity-aware
+// routing before calling Pipeline.Start so the first lazily-created
+// credential forwarder sees the live policy backend.
 func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	if routingExec == nil {
 		slog.Warn("dispatch: routingExec nil, V2 pipeline not wired")
@@ -85,11 +85,7 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	// V3.3-OBS OBS-B1 (2026-08-15): 动作事件发射器注入 dispatch pipeline。
 	// nil 安全（发射点全部 no-op），发射器本身旁路异步、满即丢。
 	p.SetLiveActions(gatewayLiveActionsEmitter)
-	p.Start()
-	routingExec.SetDispatchPipeline(p)
 	gatewayDispatchPipeline = p
-	slog.Info("dispatch_v2 pipeline wired (only execute path, AUDIT_24H B2b)",
-		"allow_model_change", dispatch.IsModelChangeEnabled())
 	return p
 }
 

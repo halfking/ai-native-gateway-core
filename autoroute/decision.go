@@ -252,6 +252,17 @@ func (d *Decider) SetTenantResolver(fn func(apiKeyID int) string) {
 	d.TenantResolver = fn
 }
 
+// SetTreatmentRollout overrides the process-wide V3 rollout for this decider.
+// Passing nil restores the global feature-flag configuration.
+func (d *Decider) SetTreatmentRollout(cfg *RolloutConfig) {
+	if cfg == nil {
+		d.treatmentRollout = nil
+		return
+	}
+	copy := *cfg
+	d.treatmentRollout = &copy
+}
+
 func (d *Decider) treatmentConfig() RolloutConfig {
 	if d != nil && d.treatmentRollout != nil {
 		return *d.treatmentRollout
@@ -292,6 +303,8 @@ func (d *Decider) annotateTreatment(ctx context.Context, apiKeyID int, decision 
 	decision.Treatment = assignment.Treatment
 }
 
+// effectiveLLMThreshold returns the dynamic threshold from the tuning
+// store, or the static field when no store is wired.
 func (d *Decider) effectiveLLMThreshold() float64 {
 	if d.tuningStore != nil {
 		return d.tuningStore.LLMConfidenceThreshold()
