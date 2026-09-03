@@ -54,6 +54,8 @@ export default {
     },
   },
   editor: {
+    rollbackConfirm: '確認回滾 {key} 到上次的值？',
+
     newValueLabel: '新值',
     enabledText: '啟用',
     disabledText: '停用',

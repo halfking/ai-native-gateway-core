@@ -16,6 +16,8 @@
 
 import { ref, onMounted } from 'vue'
 import { localeRef } from '../i18n'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
 import {
   listTenantModelPolicies,
   createTenantModelPolicy,
@@ -31,6 +33,8 @@ import type {
 } from '../api'
 
 const props = defineProps<{ tenantCode: string }>()
+
+const { t } = useI18n()
 
 const policies = ref<TenantModelPolicy[]>([])
 const audit = ref<TenantModelPolicyAuditEntry[]>([])
@@ -98,7 +102,7 @@ async function submitAdd() {
 }
 
 async function softDelete(p: TenantModelPolicy) {
-  if (!confirm(`确认软删除策略 ${p.canonical_name}？(可恢复)`)) return
+  if (!(await confirmDialog(t('tenantModelPolicyPanel.softDeleteConfirm', { name: p.canonical_name })))) return
   try {
     await deleteTenantModelPolicy(props.tenantCode, p.id)
     await load()

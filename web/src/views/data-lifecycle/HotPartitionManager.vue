@@ -383,7 +383,8 @@
 
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, computed } from 'vue'
-import { ElMessage, ElMessageBox, ElRadioGroup, ElRadioButton } from 'element-plus'
+import { ElMessage, ElRadioGroup, ElRadioButton } from 'element-plus'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '@/i18n'
 import { req } from '@/api/_core'
@@ -585,19 +586,15 @@ async function promoteTable(table: HotTable) {
     table.retentionDays === 0
       ? t('dataLifecycle.hotPartition.promoteAll')
       : t('dataLifecycle.hotPartition.days', { n: table.retentionDays })
-  try {
-    await ElMessageBox.confirm(
-      t('dataLifecycle.hotPartition.promoteConfirm', { label: hotTableLabel(table.name), hours: hoursLabel }),
-      t('dataLifecycle.hotPartition.hotTableTitle'),
-      {
-        type: 'warning',
-        confirmButtonText: t('dataLifecycle.hotPartition.startMigrate'),
-        cancelButtonText: t('dataLifecycle.hotPartition.deleteModal.cancel'),
-      }
-    )
-  } catch {
-    return
-  }
+  const confirmed = await confirmDialog(
+    t('dataLifecycle.hotPartition.promoteConfirm', { label: hotTableLabel(table.name), hours: hoursLabel }),
+    {
+      title: t('dataLifecycle.hotPartition.hotTableTitle'),
+      confirmButtonText: t('dataLifecycle.hotPartition.startMigrate'),
+      cancelButtonText: t('dataLifecycle.hotPartition.deleteModal.cancel'),
+    },
+  )
+  if (!confirmed) return
 
   // retentionDays=0 → 立即迁移全部（retention_hours=0）
   // 否则 days × 24 = hours

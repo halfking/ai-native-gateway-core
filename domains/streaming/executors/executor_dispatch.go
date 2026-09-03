@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -305,13 +306,8 @@ func (e *Executor) executeViaDispatch(
 	// v6 G-Ⅲ: bridge structured dispatch notices to the handler's thinking
 	// writer (params.OnNodeJump → preStream `: thinking:` SSE comment). The
 	// callback must stay non-blocking — handler.go writes through the
-	// serialized stream writer and detaches on failure. Non-streaming
-	// requests have no OnNodeJump (nil) and are no-ops.
-	qr.OnDispatchNotice = func(notice dispatch.DispatchNotice) {
-		if params.OnNodeJump != nil {
-			params.OnNodeJump(notice.Message)
-		}
-	}
+	// serialized stream writer and detaches on failure.
+	qr.OnDispatchNotice = bridgeDispatchNotice(params)
 
 	result, err := e.dispatchPipeline.Submit(dispatchCtx, qr)
 	if err != nil {
@@ -333,6 +329,51 @@ func (e *Executor) executeViaDispatch(
 	ee := &ExecuteError{LastErr: errDispatchBadResult, Exhausted: true, LastKind: errorsx.KindTransient}
 	copyQueueTimestampsToError(ee, qr)
 	return nil, ee
+}
+
+// bridgeDispatchNotice builds the QueuedRequest.OnDispatchNotice transport
+// bridge for one request's ExecParams (v6 G-Ⅲ). Two drop situations on this
+// path were previously invisible:
+//
+//   - non-streaming responses have no `: thinking:` SSE channel, so the
+//     notice is never surfaced: params.OnNodeJump is nil here (nothing to
+//     call), or the handler-side closure discards it because preStream is
+//     nil (preStream is only ever initialized for streaming requests);
+//   - a streaming request whose preStream keepalive was never initialized
+//     (feature disabled / startPreStreamKeepalive failed) silently swallows
+//     the notice inside the handler's `if preStream != nil` guard.
+//     params.PreStreamPrepared mirrors exactly that condition — all three
+//     protocol entries (handler.go / messages.go / responses.go) set it
+//     together with the preStream writer.
+//
+// Both drops are now counted in metrics.DispatchNoticeDroppedTotal. The
+// recording is side-effect free: the bridge runs the exact same calls as the
+// previous inline closure, so transport behaviour is bit-for-bit unchanged.
+func bridgeDispatchNotice(params *ExecParams) func(dispatch.DispatchNotice) {
+	return func(notice dispatch.DispatchNotice) {
+		if params == nil || params.OnNodeJump == nil {
+			metrics.RecordDispatchNoticeDropped(string(notice.Kind), dispatchNoticeDropReason(params))
+			return
+		}
+		if !params.PreStreamPrepared {
+			// Still invoke the callback — the handler closure itself decides
+			// (and drops) when preStream is nil; we only observe the fact so
+			// the drop rate is measurable.
+			metrics.RecordDispatchNoticeDropped(string(notice.Kind), dispatchNoticeDropReason(params))
+		}
+		params.OnNodeJump(notice.Message)
+	}
+}
+
+// dispatchNoticeDropReason maps a dropped notice onto the closed reason enum:
+// a non-streaming request can never surface notices (no SSE channel exists),
+// while any other drop means a streaming request's preStream channel was not
+// initialized.
+func dispatchNoticeDropReason(params *ExecParams) string {
+	if params == nil || !params.IsStream {
+		return metrics.DispatchNoticeDropReasonNonStreaming
+	}
+	return metrics.DispatchNoticeDropReasonPreStreamUninit
 }
 
 // dispatchErrToExecuteError maps a dispatch.Pipeline error to *ExecuteError
@@ -507,9 +548,9 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			logDispatchPreflightRejection(e.FailureLogger, params, cand, dctx, startedAt,
 				errDispatchFpSlotSaturated, errorsx.KindFpSlotSaturated,
 				map[string]any{
-					"degraded_continue":   true,
-					"rejection_type":      "fp_slot_saturated",
-					"candidates_left":     len(dctx.candidates),
+					"degraded_continue": true,
+					"rejection_type":    "fp_slot_saturated",
+					"candidates_left":   len(dctx.candidates),
 				},
 			)
 		} else {

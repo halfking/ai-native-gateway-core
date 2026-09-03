@@ -44,6 +44,8 @@ export default {
     errorRate24h: "Taux d'erreur 24h"
   },
   creds: {
+    forceRecoverModalConfirm: 'Forcer la récupération du credential {name} ?\nCela réinitialise l\'état du credential, efface les indicateurs d\'indisponibilité de toutes les liaisons et réinitialise l\'état des sondes.',
+
     listTitle: "Identifiants",
     addBtn: "+ Ajouter un identifiant",
     table: {

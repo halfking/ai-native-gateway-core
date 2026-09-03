@@ -967,4 +967,5 @@ export default {
     statWindow: '聚合窗',
     subtitle: 'Memora L1 会话记忆与对话线索',
   },
+  metaTitleClearConfirm: '确认清空此会话的标题？',
 }

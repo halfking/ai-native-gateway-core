@@ -21,6 +21,7 @@ import {
   type RoutingOverride,
   type RoutingOverrideCreate,
 } from '../api'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -99,12 +100,12 @@ async function submitCreate() {
 
 // ── Delete action ───────────────────────────────────────────────
 async function deleteOverride(o: RoutingOverride) {
-  if (!confirm(t('routingOverride.table.deleteConfirm', {
+  if (!(await confirmDialog(t('routingOverride.table.deleteConfirm', {
     id: o.id,
     mode: o.mode,
     model: o.model_chosen ?? '*',
     task: o.task_type,
-  }))) {
+  })))) {
     return
   }
   try {

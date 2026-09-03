@@ -7,6 +7,7 @@ import {
   logArchive, logCleanup, logArchiveList,
   type LogConfig, type LogFile, type LogStats, type LogOpResult,
 } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 const config = ref<LogConfig | null>(null)
@@ -146,7 +147,7 @@ async function doArchive() {
 
 async function doCleanup() {
   if (!cleanupForm.value.dry_run) {
-    if (!confirm(`确认删除 ${cleanupForm.value.older_than_days} 天前的日志文件？此操作不可恢复。`)) return
+    if (!(await confirmDialog(t('dataLifecycle.confirmLogCleanup', { days: cleanupForm.value.older_than_days })))) return
   }
   opLoading.value = true
   opResult.value = null

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   listIPBlocklist,
   createIPBlocklist,
@@ -10,6 +10,7 @@ import {
   reloadIPBlocklist,
   type IPBlocklistEntry,
 } from '../../api/security'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -58,8 +59,8 @@ async function toggleEnabled(row: IPBlocklistEntry) {
 }
 
 async function onDelete(row: IPBlocklistEntry) {
+  if (!(await confirmDialog(t('ops.blocklist.deleteConfirm', { ip: row.ip_or_cidr }), { title: t('common.confirm') }))) return
   try {
-    await ElMessageBox.confirm(t('ops.blocklist.deleteConfirm', { ip: row.ip_or_cidr }), t('common.confirm'))
     await deleteIPBlocklist(row.id)
     ElMessage.success(t('ops.blocklist.deleteSuccess'))
     await load()

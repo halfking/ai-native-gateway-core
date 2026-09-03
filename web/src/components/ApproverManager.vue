@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { Approver } from '../api/approval'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   modelValue: Approver[]
@@ -9,6 +11,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: Approver[]]
 }>()
+
+const { t } = useI18n()
 
 const showDialog = ref(false)
 const editingIndex = ref<number | null>(null)
@@ -85,14 +89,13 @@ function saveApprover() {
   showDialog.value = false
 }
 
-function removeApprover(index: number) {
-  if (confirm('确认删除该审批人？')) {
-    const list = [...approvers.value]
-    list.splice(index, 1)
-    // Reorder priorities
-    list.forEach((a, i) => a.priority = i)
-    approvers.value = list
-  }
+async function removeApprover(index: number) {
+  if (!(await confirmDialog(t('approval.approversDeleteConfirm')))) return
+  const list = [...approvers.value]
+  list.splice(index, 1)
+  // Reorder priorities
+  list.forEach((a, i) => a.priority = i)
+  approvers.value = list
 }
 
 function toggleEnabled(index: number) {

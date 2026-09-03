@@ -1432,4 +1432,5 @@ promptInjectionCategories: {
     promptInjectionCategoryLegacy: '兼容旧分类',
     promptInjectionCategoryUnknown: '其他',
   },
+  metaTitleClearConfirm: '確認清空此會話的標題？',
 }

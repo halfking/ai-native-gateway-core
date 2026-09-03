@@ -44,6 +44,8 @@ export default {
     errorRate24h: "24h error rate"
   },
   creds: {
+    forceRecoverModalConfirm: 'Force-recover credential {name}?\nThis resets the credential state, clears unavailable flags on all bindings, and resets probe state.',
+
     listTitle: "Credentials",
     addBtn: "+ Add credential",
     table: {

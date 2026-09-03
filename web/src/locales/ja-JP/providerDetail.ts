@@ -44,6 +44,8 @@ export default {
     errorRate24h: "24時間のエラー率"
   },
   creds: {
+    forceRecoverModalConfirm: '認証情報 {name} を強制復元しますか？\n認証情報の状態をリセットし、全 binding の不可フラグをクリアし、プローブ状態をリセットします。',
+
     listTitle: "認証情報一覧",
     addBtn: "+ 認証情報を追加",
     table: {

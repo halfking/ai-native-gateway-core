@@ -191,6 +191,10 @@ import {
   type AttachmentStatsResponse,
   type AttachmentPolicyResponse,
 } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const items = ref<AttachmentListItem[]>([])
 const stats = ref<AttachmentStatsResponse | null>(null)
@@ -238,7 +242,7 @@ async function onPreview() {
 
 async function onExecute() {
   if (!lastResult.value) return
-  if (!confirm(`确认执行？\n将置 NULL ${formatNumber(lastResult.value.affected_records)} 个 elements\n累计 ${humanBytes(lastResult.value.total_bytes)}\n（不会删除文件系统实体文件）`)) return
+  if (!(await confirmDialog(t('dataLifecycle.confirmAttachmentNullify', { n: formatNumber(lastResult.value.affected_records), size: humanBytes(lastResult.value.total_bytes) })))) return
   loading.value = true
   try {
     const r = await attachmentCleanupExecute({ older_than_days: cleanup.older_than_days })

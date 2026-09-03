@@ -216,8 +216,7 @@
                   >{{ t('dataLifecycle.storageOverview.buttons.reindex') }}</button>
                 </div>
                 <div v-if="busy[tRow.table]" class="row-status">
-                  <span class="spinner"></span>
-                  <span class="status-text">{{ busy[tRow.table] }}</span>
+                  <AppSpinner inline :label="busy[tRow.table]" />
                 </div>
                 <div v-else-if="lastResult[tRow.table]" class="row-result" :class="lastResult[tRow.table]!.success ? 'ok' : 'err'">
                   <span v-if="lastResult[tRow.table]!.success">
@@ -311,6 +310,7 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
+import AppSpinner from '../../components/AppSpinner.vue'
 import {
   dataLifecycleStorage,
   dataLifecycleTableSizes,

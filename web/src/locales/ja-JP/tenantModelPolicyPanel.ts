@@ -66,4 +66,5 @@ export default {
     deleteFailed: '削除に失敗しました',
     restoreFailed: '復元に失敗しました',
   },
+  softDeleteConfirm: 'ポリシー {name} をソフト削除しますか？（復元可能）',
 }

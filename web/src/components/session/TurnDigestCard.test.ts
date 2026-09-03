@@ -56,9 +56,6 @@ function mountCard(props: Record<string, unknown> = {}) {
     props,
     global: {
       plugins: [i18n],
-      stubs: {
-        'el-tag': { template: '<span class="el-tag"><slot /></span>' },
-      },
     },
   })
 }
@@ -145,6 +142,11 @@ describe('TurnDigestCard', () => {
     }
     const w = mountCard({ digest })
     expect(w.text()).toContain('出错')
+    // 状态 chip 走全局 pill-chip 设计系统
+    const pill = w.find('[data-testid="tdc-status"]')
+    expect(pill.exists()).toBe(true)
+    expect(pill.classes()).toContain('pill')
+    expect(pill.classes()).toContain('pill--err')
   })
 
   it('does not render user_input / assistant_output sections when empty', () => {
@@ -158,11 +160,11 @@ describe('TurnDigestCard', () => {
     expect(w.find('[data-testid="tdc-assistant-output"]').exists()).toBe(false)
   })
 
-  it('renders every tool in tools_used as a tag', () => {
+  it('renders every tool in tools_used as a chip', () => {
     const w = mountCard({ digest: fullDigest() })
-    const tags = w.findAll('[data-testid="tdc-tool-usage"] .el-tag')
+    const chips = w.findAll('[data-testid="tdc-tool-usage"] .chip')
     // tools_used = ['web_search', 'calculator']
-    expect(tags.length).toBeGreaterThanOrEqual(2)
+    expect(chips.length).toBeGreaterThanOrEqual(2)
     expect(w.text()).toContain('web_search')
     expect(w.text()).toContain('calculator')
     expect(w.text()).toContain('3 次')

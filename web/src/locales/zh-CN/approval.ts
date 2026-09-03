@@ -147,4 +147,6 @@ export default {
       hours: '{n} 小时',
     },
   },
+  rulesDeleteConfirm: '确认删除该规则？',
+  approversDeleteConfirm: '确认删除该审批人？',
 }

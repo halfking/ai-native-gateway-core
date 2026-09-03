@@ -9,6 +9,7 @@ import {
   type SettingItem,
   type SettingSpec,
 } from '../api'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -226,7 +227,7 @@ function getSettingDocs(key: string): { title: string; content: string } | null 
 
 async function rollback() {
   if (!selectedKey.value) return
-  if (!confirm(`确认回滚 ${selectedKey.value} 到上次的值？`)) return
+  if (!(await confirmDialog(t('settings.editor.rollbackConfirm', { key: selectedKey.value })))) return
   try {
     await rollbackSetting(selectedKey.value)
     await loadList()

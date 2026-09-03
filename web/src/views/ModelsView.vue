@@ -21,6 +21,7 @@ import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useDynamicNamespaceFilters } from '../composables/useDynamicNamespaceFilters'
 import { isReadOnlyMode, isPlatformOpsView } from '../store'
 import { normalizeTags, resolveVendor, matchesModelCatalogSearch } from '../utils/modelCatalog'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -337,7 +338,7 @@ async function saveNameMapping() {
 }
 
 async function removeNameMapping(id: number) {
-  if (!confirm('确定要删除这条映射吗？')) return
+  if (!(await confirmDialog(t('models.nameMappingDeleteConfirm')))) return
   try {
     await deleteModelNameMapping(id)
     await loadNameMappings()

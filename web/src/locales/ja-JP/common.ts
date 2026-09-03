@@ -122,6 +122,7 @@ export default {
   cancel: 'キャンセル',
   close: '閉じる',
   confirm: '確認',
+  confirmTitle: '確認',
   count: '数',
   create: '新規作成',
   createdAt: '作成日時',

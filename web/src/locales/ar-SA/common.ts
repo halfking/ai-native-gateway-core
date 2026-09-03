@@ -121,6 +121,7 @@ export default {
   cancel: 'إلغاء',
   close: 'إغلاق',
   confirm: 'تأكيد',
+  confirmTitle: 'يرجى التأكيد',
   count: 'العدد',
   create: 'إنشاء',
   createdAt: 'تاريخ الإنشاء',

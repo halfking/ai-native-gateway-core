@@ -123,6 +123,7 @@ export default {
   cancel: '取消',
   close: '关闭',
   confirm: '确认',
+  confirmTitle: '请确认',
   count: '数量',
   create: '新建',
   createdAt: '创建时间',

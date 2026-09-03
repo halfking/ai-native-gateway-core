@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getReleases,
@@ -22,6 +22,7 @@ import {
 } from '../../api/ops'
 
 import { useEnumLabel } from '../../composables/useEnumLabel'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 const enumLabel = useEnumLabel()
@@ -140,38 +141,32 @@ async function handleCreate() {
 }
 
 async function handlePublish(release: Release) {
+  if (!(await confirmDialog(
+    t('ops.autoupdate.publishConfirm', { version: release.version }),
+    { title: t('common.confirm'), type: 'info' },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.autoupdate.publishConfirm', { version: release.version }),
-      t('common.confirm'),
-      { type: 'info' }
-    )
     await publishRelease(release.version)
     ElMessage.success(t('ops.autoupdate.publishSuccess'))
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.autoupdate.publishFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.autoupdate.publishFailed'))
+    console.error(error)
   }
 }
 
 async function handleUnpublish(release: Release) {
+  if (!(await confirmDialog(
+    t('ops.autoupdate.unpublishConfirm', { version: release.version }),
+    { title: t('common.warning') },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.autoupdate.unpublishConfirm', { version: release.version }),
-      t('common.warning'),
-      { type: 'warning' }
-    )
     await unpublishRelease(release.version)
     ElMessage.success(t('ops.autoupdate.unpublishSuccess'))
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.autoupdate.unpublishFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.autoupdate.unpublishFailed'))
+    console.error(error)
   }
 }
 
@@ -276,21 +271,18 @@ async function handleRollback() {
     return
   }
 
+  if (!(await confirmDialog(
+    t('ops.autoupdate.rollbackConfirm', { version: rollbackTarget.value }),
+    { title: t('common.warning') },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.autoupdate.rollbackConfirm', { version: rollbackTarget.value }),
-      t('common.warning'),
-      { type: 'warning' }
-    )
     await rollbackRelease(rollbackTarget.value)
     ElMessage.success(t('ops.autoupdate.rollbackSuccess'))
     showRollbackDialog.value = false
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.autoupdate.rollbackFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.autoupdate.rollbackFailed'))
+    console.error(error)
   }
 }
 

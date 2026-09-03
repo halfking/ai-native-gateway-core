@@ -13,12 +13,12 @@
 package logsearch
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
 
@@ -135,8 +135,8 @@ func isTruthy(v string) bool {
 	return false
 }
 
+// writeJSON 薄委托 internal/httpx（2026-09-04 writeJSON 收敛）。
 func writeJSON(w http.ResponseWriter, status int, body interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, status, "application/json", body)
 }
