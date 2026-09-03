@@ -5439,13 +5439,13 @@ func main() {
 			}
 			StartV2DispatchAnalysisLoop(v2Deps)
 			defer v2ShutdownPipeline(v2Deps)
-			mux.Handle("/v1/chat/completions", v2DispatchHandler(v2Deps, chatHandler))
-			mux.Handle("/v1/completions", v2DispatchHandler(v2Deps, chatHandler))
+			mux.Handle("/v1/chat/completions", v2DispatchHandler(v2Deps, chatRouteHandler))
+			mux.Handle("/v1/completions", v2DispatchHandler(v2Deps, chatRouteHandler))
 			// /v1/messages and /v1/responses internally call
-			// chatHandler.ServeHTTP, so wrapping chatHandler is
-			// enough to put the Pipeline in front of all 4.
-			mux.Handle("/v1/messages", v2DispatchHandler(v2Deps, messagesHandler))
-			mux.Handle("/v1/responses", v2DispatchHandler(v2Deps, responsesHandler))
+			// chatHandler.ServeHTTP, so the selected route handlers retain
+			// stream-retry wrapping when enabled.
+			mux.Handle("/v1/messages", v2DispatchHandler(v2Deps, messagesRouteHandler))
+			mux.Handle("/v1/responses", v2DispatchHandler(v2Deps, responsesRouteHandler))
 			slog.Info("v2 pipeline: 4 v1 endpoints overridden with Pipeline wrappers")
 		}
 	}
@@ -6209,6 +6209,7 @@ func main() {
 		Add(middleware.NewLocaleMiddleware(cfg.DefaultLanguage)). // i18n: before auth so auth errors localize too
 		Add(middleware.NewCORSMiddleware(cfg.CORSOrigins)).
 		Add(middleware.NewPrometheusMiddleware()).
+		Add(middleware.NewTracingMiddleware()).
 		Add(middleware.NewAuthMiddleware(cfg.APIKey)).
 		Add(middleware.NewOriginMiddlewareWithTrustedProxies(
 			middleware.ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs))).
