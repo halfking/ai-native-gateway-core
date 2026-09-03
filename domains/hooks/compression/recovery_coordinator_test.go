@@ -32,6 +32,55 @@ func TestRecoveryCoordinator_V2MetadataColdStartRecovery(t *testing.T) {
 	}
 }
 
+func TestRecoveryCoordinator_V2MetadataAcceptsReaderTypedProvenance(t *testing.T) {
+	body := makeBodyAny(
+		makeMsg("system", "sys"),
+		makeMsg("user", strings.Repeat("old ", 100)),
+		makeMsg("assistant", strings.Repeat("old ", 100)),
+		makeMsg("user", "latest"),
+	)
+	cached := []byte(`[{"role":"system","content":"sys"},{"role":"user","content":"latest"}]`)
+	meta := map[string]any{
+		"pre_sanitize_offset_range": []int{1, 3},
+		"cut_marker": map[string]interface{}{
+			"version": 1, "created_at": float64(time.Now().Unix()), "source_msg_count": 4,
+			"system_msg_count": 1, "cut_index": 2, "strategy": "mechanical_trim",
+			"pre_sanitize_offset_range": []int{1, 3},
+		},
+		"sanitize_message_refs": []map[string]interface{}{
+			{"raw_index": 0, "sanitized_index": 0},
+		},
+		"alignment_map": []map[string]interface{}{
+			{"original_index": 0, "compressed_index": 0},
+		},
+	}
+	res := NewRecoveryCoordinator(RecoveryDeps{
+		V2Meta:    stubV2RecoveryMeta{meta: meta},
+		V2Builder: stubV2RecoveryBuilder{body: cached},
+	}).Recover(context.Background(), body, "openai", 1000, "tenant", "session", 0)
+	if !res.ShouldRetry || res.Strategy != "incremental_v2_metadata" {
+		t.Fatalf("typed V2 metadata = %+v, want accepted incremental recovery", res)
+	}
+	if res.CutMarker == nil || res.CutMarker.PreSanitizeOffsetRange != [2]int{1, 3} {
+		t.Fatalf("typed PSOR = %+v, want [1 3]", res.CutMarker)
+	}
+}
+
+func TestRecoveryCoordinator_V2MetadataRejectsNestedPSORMismatch(t *testing.T) {
+	meta := map[string]any{
+		"pre_sanitize_offset_range": []int{1, 3},
+		"cut_marker": map[string]interface{}{
+			"version": 1, "created_at": float64(time.Now().Unix()), "source_msg_count": 4,
+			"system_msg_count": 1, "cut_index": 2, "strategy": "mechanical_trim",
+			"pre_sanitize_offset_range": []int{1, 2},
+		},
+	}
+	marker, ok := cutMarkerFromMetadata(meta["cut_marker"].(map[string]interface{}))
+	if !ok || validatePersistedProvenance(meta, marker) {
+		t.Fatal("nested/top-level PSOR mismatch must be rejected")
+	}
+}
+
 type stubV2RecoveryMeta struct{ meta map[string]any }
 
 func (s stubV2RecoveryMeta) CompressionMetadata(context.Context, string, string) (map[string]any, error) {

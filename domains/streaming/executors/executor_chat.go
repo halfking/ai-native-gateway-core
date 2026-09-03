@@ -1003,8 +1003,9 @@ func (e *Executor) executeOpenAI(
 								if cand.ContextWindow != nil {
 									contextWindow = *cand.ContextWindow
 								}
-								sourceBody = transformation.CompressResponsesAggressively(sourceBody, contextWindow)
-								bodyBytes = append([]byte(nil), sourceBody...)
+								reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
+								sourceBody = transformation.CompressResponsesInputAggressively(sourceBody, contextWindow, reserve)
+								bodyBytes = transformation.RewriteResponsesModel(sourceBody, cand.RawModel)
 							} else {
 								bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
 							}

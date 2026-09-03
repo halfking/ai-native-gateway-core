@@ -23,6 +23,7 @@ package compression
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -103,10 +104,16 @@ func NewCutMarkerWithPreSanitize(plan CutPlan, sourceMsgCount int, strategy stri
 // IsExpired returns true if the cut marker is older than the given TTL.
 // Used to decide whether to reuse a cached compression or re-compress.
 func (cm CutMarker) IsExpired(ttl time.Duration) bool {
-	if cm.CreatedAt == 0 {
+	if cm.CreatedAt <= 0 || ttl <= 0 {
 		return true
 	}
-	return time.Since(time.Unix(cm.CreatedAt, 0)) > ttl
+	created := time.Unix(cm.CreatedAt, 0)
+	// A future marker cannot be trusted: accepting it would let a stale or
+	// replayed cache entry bypass the intended TTL window.
+	if created.After(time.Now().Add(5 * time.Minute)) {
+		return true
+	}
+	return time.Since(created) > ttl
 }
 
 // GlobalCutIndex returns the absolute message index (counting system messages)
@@ -141,21 +148,47 @@ func (cm CutMarker) MarshalForRedis() map[string]string {
 // UnmarshalFromRedis deserialises CutMarker fields from a Redis Hash.
 // Returns nil if no cut marker data is present.
 func UnmarshalCutMarkerFromRedis(fields map[string]string) *CutMarker {
-	if _, ok := fields["cm_v"]; !ok {
+	version, err := strconv.Atoi(fields["cm_v"])
+	if err != nil || version != cutMarkerSchemaVersion {
 		return nil
 	}
-	cm := &CutMarker{}
-	parseInt64(fields["cm_ts"], &cm.CreatedAt)
-	parseInt(fields["cm_src"], &cm.SourceMsgCount)
-	parseInt(fields["cm_sys"], &cm.SystemMsgCount)
-	parseInt(fields["cm_ci"], &cm.CutIndex)
-	cm.SummaryMarker = fields["cm_smm"]
-	cm.Strategy = fields["cm_strat"]
-	parseInt(fields["cm_bb"], &cm.BytesBefore)
-	parseInt(fields["cm_ba"], &cm.BytesAfter)
-	parseInt(fields["cm_psor0"], &cm.PreSanitizeOffsetRange[0])
-	parseInt(fields["cm_psor1"], &cm.PreSanitizeOffsetRange[1])
-	cm.Version = cutMarkerSchemaVersion
+	created, err1 := strconv.ParseInt(fields["cm_ts"], 10, 64)
+	source, err2 := strconv.Atoi(fields["cm_src"])
+	system, err3 := strconv.Atoi(fields["cm_sys"])
+	cut, err4 := strconv.Atoi(fields["cm_ci"])
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || created <= 0 ||
+		source <= 0 || system < 0 || cut <= 0 || system+cut > source {
+		return nil
+	}
+	cm := &CutMarker{
+		Version: cutMarkerSchemaVersion, CreatedAt: created, SourceMsgCount: source,
+		SystemMsgCount: system, CutIndex: cut, SummaryMarker: fields["cm_smm"],
+		Strategy: fields["cm_strat"],
+	}
+	if !isPersistedCutStrategy(cm.Strategy) {
+		return nil
+	}
+	if value, present := fields["cm_psor0"]; present {
+		start, err := strconv.Atoi(value)
+		if err != nil {
+			return nil
+		}
+		end, err := strconv.Atoi(fields["cm_psor1"])
+		if err != nil || start < 0 || start > end || end > source {
+			return nil
+		}
+		cm.PreSanitizeOffsetRange = [2]int{start, end}
+	}
+	if value, present := fields["cm_bb"]; present {
+		if cm.BytesBefore, err = strconv.Atoi(value); err != nil || cm.BytesBefore < 0 {
+			return nil
+		}
+	}
+	if value, present := fields["cm_ba"]; present {
+		if cm.BytesAfter, err = strconv.Atoi(value); err != nil || cm.BytesAfter < 0 {
+			return nil
+		}
+	}
 	return cm
 }
 
@@ -185,7 +218,10 @@ func (cm CutMarker) MarshalJSON() ([]byte, error) {
 // It never invents summary text, so it is safe after L1 eviction. LLM summary
 // markers are deliberately rejected when their plaintext is unavailable.
 func IncrementalBuildTail(incomingBody []byte, marker CutMarker, protocol string) ([]byte, bool) {
-	if marker.CutIndex < 0 || !isTailRecoveryStrategy(marker.Strategy) {
+	if marker.CutIndex <= 0 || !isTailRecoveryStrategy(marker.Strategy) {
+		return nil, false
+	}
+	if marker.CreatedAt > 0 && marker.IsExpired(sessionCacheRedisTTL()) {
 		return nil, false
 	}
 	var generic map[string]json.RawMessage
@@ -254,7 +290,7 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 	// recovery_coordinator.go), but validating here too protects against
 	// call sites that forget the check or reuse a marker across sessions.
 	// Only check if CreatedAt is set; tests may create markers without timestamps.
-	if marker.CreatedAt > 0 && marker.IsExpired(30*time.Minute) {
+	if marker.CreatedAt > 0 && marker.IsExpired(sessionCacheRedisTTL()) {
 		return nil, false
 	}
 
@@ -323,16 +359,4 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 		return nil, false
 	}
 	return result, true
-}
-
-func parseInt64(s string, dst *int64) {
-	var v int64
-	_, _ = fmt.Sscanf(s, "%d", &v)
-	*dst = v
-}
-
-func parseInt(s string, dst *int) {
-	var v int
-	_, _ = fmt.Sscanf(s, "%d", &v)
-	*dst = v
 }

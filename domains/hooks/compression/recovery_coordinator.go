@@ -208,7 +208,6 @@ func (rc *RecoveryCoordinator) Recover(
 		res.Reason = fmt.Sprintf("smart compress failed: %v", err)
 		return res
 	}
-
 	// ── Phase 3: Build CutMarker and persist to cache ────────────────────
 	// IMPORTANT: only attach an smm_v1 marker when an LLM summary was actually
 	// produced. Mechanical fallback text is deterministic-but-unstable (its
@@ -320,8 +319,18 @@ func cutMarkerFromMetadata(meta map[string]interface{}) (CutMarker, bool) {
 			return int(n), n >= 0 && n == float64(int(n))
 		case int:
 			return n, n >= 0
+		case int64:
+			return int(n), n >= 0 && int64(int(n)) == n
 		default:
 			return 0, false
+		}
+	}
+	version, versionOK := toInt(firstMetadataValue(meta, "version", "v"))
+	// Older JSONB markers did not carry an explicit version; retain their
+	// backward-compatible read semantics while rejecting an explicit mismatch.
+	if _, present := meta["version"]; !present {
+		if _, present := meta["v"]; !present {
+			version, versionOK = cutMarkerSchemaVersion, true
 		}
 	}
 	created, ok1 := toInt(meta["created_at"])
@@ -329,10 +338,10 @@ func cutMarkerFromMetadata(meta map[string]interface{}) (CutMarker, bool) {
 	system, ok3 := toInt(meta["system_msg_count"])
 	cut, ok4 := toInt(meta["cut_index"])
 	strategy, ok5 := meta["strategy"].(string)
-	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || created <= 0 || source <= 0 || cut <= 0 || system+cut > source {
+	if !versionOK || version != cutMarkerSchemaVersion || !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || created <= 0 || source <= 0 || cut <= 0 || system+cut > source {
 		return CutMarker{}, false
 	}
-	marker := CutMarker{Version: cutMarkerSchemaVersion, CreatedAt: int64(created), SourceMsgCount: source, SystemMsgCount: system, CutIndex: cut, Strategy: strategy}
+	marker := CutMarker{Version: version, CreatedAt: int64(created), SourceMsgCount: source, SystemMsgCount: system, CutIndex: cut, Strategy: strategy}
 	if summary, ok := meta["summary_marker"].(string); ok {
 		marker.SummaryMarker = summary
 	}
@@ -358,50 +367,117 @@ func cutMarkerFromMetadata(meta map[string]interface{}) (CutMarker, bool) {
 }
 
 func validatePersistedProvenance(meta map[string]interface{}, marker CutMarker) bool {
+	if marker.Version != cutMarkerSchemaVersion || !isPersistedCutStrategy(marker.Strategy) || marker.CutIndex <= 0 {
+		return false
+	}
+	if marker.CreatedAt <= 0 || marker.CreatedAt > time.Now().Add(5*time.Minute).Unix() {
+		return false
+	}
+	if marker.SystemMsgCount < 0 || marker.GlobalCutIndex() > marker.SourceMsgCount {
+		return false
+	}
+
+	var topPSOR [2]int
 	if psor := meta["pre_sanitize_offset_range"]; psor != nil {
 		pair, ok := metadataIntPair(psor)
-		if !ok || pair[0] != marker.SystemMsgCount || pair[1] != marker.GlobalCutIndex() {
+		if !ok {
+			return false
+		}
+		topPSOR = pair
+		if pair[0] != marker.SystemMsgCount || pair[1] != marker.GlobalCutIndex() {
 			return false
 		}
 	}
-	if refs, ok := meta["sanitize_message_refs"].([]interface{}); ok {
-		if len(refs) > marker.SourceMsgCount {
-			return false
-		}
-		for i, raw := range refs {
-			ref, ok := raw.(map[string]interface{})
-			if !ok {
+	if nested, ok := meta["cut_marker"].(map[string]interface{}); ok {
+		if raw := firstMetadataValue(nested, "pre_sanitize_offset_range", "psor"); raw != nil {
+			pair, valid := metadataIntPair(raw)
+			if !valid || pair[0] != marker.SystemMsgCount || pair[1] != marker.GlobalCutIndex() {
 				return false
 			}
+			if topPSOR != [2]int{} && pair != topPSOR {
+				return false
+			}
+		}
+	}
+	if rawValue, exists := meta["sanitize_message_refs"]; exists {
+		rawRefs, valid := metadataRecords(rawValue)
+		if !valid || len(rawRefs) > marker.SourceMsgCount {
+			return false
+		}
+		for i, ref := range rawRefs {
 			rawIndex, ok1 := metadataNonNegativeInt(ref["raw_index"])
 			sanitizedIndex, ok2 := metadataNonNegativeInt(ref["sanitized_index"])
-			if !ok1 || !ok2 || rawIndex != i || sanitizedIndex != rawIndex {
+			if !ok1 || !ok2 || rawIndex != i || sanitizedIndex < 0 {
 				return false
 			}
 		}
 	}
-	if alignment, ok := meta["alignment_map"].([]interface{}); ok {
-		if len(alignment) > marker.SourceMsgCount {
+	if rawValue, exists := meta["alignment_map"]; exists {
+		rawAlignment, valid := metadataRecords(rawValue)
+		if !valid || len(rawAlignment) > marker.SourceMsgCount {
 			return false
 		}
-		for i, raw := range alignment {
-			record, ok := raw.(map[string]interface{})
-			if !ok {
-				return false
-			}
+		last := -1
+		for _, record := range rawAlignment {
 			index, ok := metadataNonNegativeInt(record["original_index"])
-			if !ok || index != i {
+			if !ok || index <= last || index >= marker.SourceMsgCount {
 				return false
 			}
+			last = index
 		}
 	}
 	return true
 }
 
+func isPersistedCutStrategy(strategy string) bool {
+	return strategy == "mechanical_trim" || strategy == "smart_window_mechanical" ||
+		strategy == "smart_window_llm" || strategy == "incremental_cache" ||
+		strings.HasPrefix(strategy, "sliding_window_")
+}
+
+func firstMetadataValue(meta map[string]interface{}, keys ...string) interface{} {
+	for _, key := range keys {
+		if value, ok := meta[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func metadataRecords(value interface{}) ([]map[string]interface{}, bool) {
+	switch records := value.(type) {
+	case []map[string]interface{}:
+		return records, true
+	case []interface{}:
+		out := make([]map[string]interface{}, len(records))
+		for i, raw := range records {
+			record, ok := raw.(map[string]interface{})
+			if !ok {
+				return nil, false
+			}
+			out[i] = record
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
 func metadataIntPair(value interface{}) ([2]int, bool) {
 	var out [2]int
-	items, ok := value.([]interface{})
-	if !ok || len(items) != 2 {
+	var items []interface{}
+	switch typed := value.(type) {
+	case []interface{}:
+		items = typed
+	case []int:
+		if len(typed) == 2 {
+			return [2]int{typed[0], typed[1]}, typed[0] >= 0 && typed[0] <= typed[1]
+		}
+		return out, false
+	default:
+		return out, false
+	}
+	if len(items) != 2 {
 		return out, false
 	}
 	start, ok1 := metadataNonNegativeInt(items[0])
@@ -413,8 +489,16 @@ func metadataIntPair(value interface{}) ([2]int, bool) {
 }
 
 func metadataNonNegativeInt(value interface{}) (int, bool) {
-	n, ok := value.(float64)
-	return int(n), ok && n >= 0 && n <= 1<<53 && n == float64(int(n))
+	switch n := value.(type) {
+	case int:
+		return n, n >= 0
+	case int64:
+		return int(n), n >= 0 && int64(int(n)) == n
+	case float64:
+		return int(n), n >= 0 && n <= 1<<53 && n == float64(int(n))
+	default:
+		return 0, false
+	}
 }
 
 // extractSummaryText generates a brief summary from the messages that will

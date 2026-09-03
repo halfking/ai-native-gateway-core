@@ -447,15 +447,29 @@ func (l *lruList) remove(node *lruNode) {
 // L3: SessionTurnsReader (cold start from database)
 // ─────────────────────────────────────────────────────────────
 
-// SessionTurnsReader loads session state from session_turns table
-//
-// This replaces the legacy reader which loaded from request_logs.
-type SessionTurnsReader struct {
-	db *pgxpool.Pool
+// sessionTurnsDB is the narrow database seam used by the cold-start reader.
+// Keeping it separate from *pgxpool.Pool makes the latest-marker query
+// testable without requiring a live database.
+type sessionTurnsDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// NewSessionTurnsReader creates a new database reader
+// SessionTurnsReader loads session state from session_turns table
+//
+// This replaces the legacy reader which reads from request_logs.
+type SessionTurnsReader struct {
+	db sessionTurnsDB
+}
+
+// NewSessionTurnsReader creates a new database reader.
 func NewSessionTurnsReader(db *pgxpool.Pool) *SessionTurnsReader {
+	if db == nil {
+		return &SessionTurnsReader{}
+	}
+	return newSessionTurnsReader(db)
+}
+
+func newSessionTurnsReader(db sessionTurnsDB) *SessionTurnsReader {
 	return &SessionTurnsReader{db: db}
 }
 
@@ -464,17 +478,37 @@ func (r *SessionTurnsReader) LoadState(ctx context.Context, tenantID, sessionID 
 	if r == nil || r.db == nil {
 		return nil, nil
 	}
+	// Governance/token fields come from the latest turn, while compression
+	// metadata comes from the latest turn that still carries a cut marker.
+	// A later ordinary turn must not erase the durable recovery descriptor on
+	// a cold restart; the latest outbound body is read independently by V2.
 	query := `
-		SELECT 
-			turn_no, ts,
-			compression_strategy, compression_meta,
-			COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0),
-			COALESCE(injection_verdict, 'skip'),
-			COALESCE(output_verdict, 'skip')
-		FROM public.session_turns_with_current_month
-		WHERE tenant_id = $1 AND session_id = $2
-		ORDER BY turn_no DESC
-		LIMIT 1
+		WITH latest AS (
+			SELECT turn_no, ts, compression_strategy, compression_meta,
+			       COALESCE(prompt_tokens, 0) AS prompt_tokens,
+			       COALESCE(completion_tokens, 0) AS completion_tokens,
+			       COALESCE(injection_verdict, 'skip') AS injection_verdict,
+			       COALESCE(output_verdict, 'skip') AS output_verdict
+			FROM public.session_turns_with_current_month
+			WHERE tenant_id = $1 AND session_id = $2
+			ORDER BY turn_no DESC, ts DESC
+			LIMIT 1
+		), marker_turn AS (
+			SELECT compression_meta
+			FROM public.session_turns_with_current_month
+			WHERE tenant_id = $1 AND session_id = $2
+			  AND compression_meta IS NOT NULL
+			  AND compression_meta ? 'cut_marker'
+			ORDER BY turn_no DESC, ts DESC
+			LIMIT 1
+		)
+		SELECT latest.turn_no, latest.ts,
+		       latest.compression_strategy,
+		       COALESCE(marker_turn.compression_meta, latest.compression_meta),
+		       latest.prompt_tokens, latest.completion_tokens,
+		       latest.injection_verdict, latest.output_verdict
+		FROM latest
+		LEFT JOIN marker_turn ON TRUE
 	`
 
 	var state SessionStateV2

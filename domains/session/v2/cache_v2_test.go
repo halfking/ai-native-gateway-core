@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +21,31 @@ func TestSessionTurnsReader_LoadState_NilDBIsColdMiss(t *testing.T) {
 	}
 	if state != nil {
 		t.Fatalf("nil DB should return no state, got %+v", state)
+	}
+}
+
+func TestSessionTurnsReader_LoadStateUsesLatestCutMarkerMetadata(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	markerMeta := []byte(`{"cut_marker":{"version":1,"created_at":1719300000,"source_msg_count":4,"system_msg_count":1,"cut_index":2,"strategy":"mechanical_trim"}}`)
+	mock.ExpectQuery(`WITH latest AS \(`).
+		WithArgs("tenant", "session").
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no", "ts", "compression_strategy", "compression_meta", "prompt_tokens", "completion_tokens", "injection_verdict", "output_verdict"}).
+			AddRow(2, time.Now(), "", markerMeta, 10, 2, "skip", "skip"))
+
+	state, err := newSessionTurnsReader(mock).LoadState(context.Background(), "tenant", "session")
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	if state == nil || state.CompressionMeta.CutMarker["cut_index"] != float64(2) {
+		t.Fatalf("marker metadata was not restored from latest valid marker turn: %+v", state)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
