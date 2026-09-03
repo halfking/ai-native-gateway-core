@@ -37,7 +37,7 @@ import (
 // Fixtures
 // ─────────────────────────────────────────────────────────────────────────────
 
-// digestDetailColumns 是 serveSessionTurnDetailDB SELECT 投影的列序（29 列）。
+// digestDetailColumns 是 serveSessionTurnDetailDB SELECT 投影的列序（39 列）。
 var digestDetailColumns = []string{
 	"turn_no", "request_id", "ts",
 	"submit_mode", "compression_applied", "compression_strategy",
@@ -47,6 +47,9 @@ var digestDetailColumns = []string{
 	"prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens",
 	"cost_usd", "latency_ms", "status_code", "success", "error_kind",
 	"source_kind", "quality", "digest",
+	"t0_arrived_at", "t1_total_enqueued_at", "t2_total_dequeued_at",
+	"t3_model_enqueued_at", "t4_model_dequeued_at", "t5_cred_enqueued_at",
+	"t6_cred_dequeued_at", "t7_forward_start_at", "t8_response_start_at", "t9_response_end_at",
 	"request_delta", "response_delta", "outbound_body",
 	"request_attachments", "response_attachments",
 }
@@ -54,6 +57,8 @@ var digestDetailColumns = []string{
 // seedTurnDetail 构造 serveSessionTurnDetailDB 期望的单行。可空列以 nil /
 // 指针值传入（pgx Scan 的 database/sql 兼容规则），与既有
 // makeSessionTurnMockRows（session_detail_v2_test.go）同款写法。
+func turnTimePtr(t time.Time) *time.Time { return &t }
+
 func seedTurnDetail(prompt, response string, persistedDigest []byte) *pgxmock.Rows {
 	now := time.Now().UTC()
 	promptTokens, completionTokens := 100, 50
@@ -72,6 +77,8 @@ func seedTurnDetail(prompt, response string, persistedDigest []byte) *pgxmock.Ro
 		&promptTokens, &completionTokens, &cacheRead, nil,
 		&costUSD, &latencyMs, &statusCode, &success, nil,
 		"gateway", "good", persistedDigest,
+		turnTimePtr(now), turnTimePtr(now.Add(10*time.Millisecond)), turnTimePtr(now.Add(20*time.Millisecond)), turnTimePtr(now.Add(30*time.Millisecond)), turnTimePtr(now.Add(40*time.Millisecond)),
+		turnTimePtr(now.Add(50*time.Millisecond)), turnTimePtr(now.Add(60*time.Millisecond)), turnTimePtr(now.Add(70*time.Millisecond)), turnTimePtr(now.Add(80*time.Millisecond)), turnTimePtr(now.Add(90*time.Millisecond)),
 		[]byte(`{"messages":[{"role":"user","content":"`+prompt+`"}]}`),
 		[]byte(`{"choices":[{"message":{"role":"assistant","content":"`+response+`"}}]}`),
 		nil, []byte(`[]`), []byte(`[]`),
@@ -94,6 +101,7 @@ func seedTurnDetailNullBodies(persistedDigest []byte) *pgxmock.Rows {
 		&promptTokens, nil, nil, nil,
 		nil, &latencyMs, nil, nil, nil,
 		"gateway", "good", persistedDigest,
+		turnTimePtr(now), nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		[]byte("null"), []byte("null"),
 		nil, []byte(`[]`), []byte(`[]`),
 	)
@@ -224,6 +232,7 @@ func TestTurnDigest_UniqueKeyCollision(t *testing.T) {
 			1, "req-1", now, "chat", false, nil, nil, nil, "pass", "pass",
 			&model, &provider, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 			"gateway", "good", nil,
+			turnTimePtr(now), nil, nil, nil, nil, nil, nil, nil, nil, nil,
 			[]byte(`{"messages":[{"role":"user","content":"row"}]}`),
 			[]byte(`{"choices":[{"message":{"role":"assistant","content":"row"}}]}`),
 			nil, []byte(`[]`), []byte(`[]`),

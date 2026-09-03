@@ -7,7 +7,12 @@ import type { WaterfallRequest } from '../../api/dispatch'
 import { formatAxisMs, layoutRows, type LaidOutRow } from '../../utils/waterfallTimeline'
 import { traceStageToJourney } from '../../utils/journeyStageMap'
 
-const props = defineProps<{ trace: RequestTrace | null; journey?: RequestJourney | null; waterfall?: WaterfallRequest | null }>()
+const props = defineProps<{
+  trace: RequestTrace | null
+  journey?: RequestJourney | null
+  waterfall?: WaterfallRequest | null
+  waterfallSource?: string
+}>()
 const { t } = useI18n()
 const events = computed(() => [...(props.trace?.events ?? [])].sort((a, b) => a.seq - b.seq))
 const journeyEvents = computed(() => [...(props.journey?.events ?? [])].sort((a, b) => a.seq - b.seq))
@@ -15,7 +20,8 @@ const waterfallAttempts = computed(() => props.waterfall?.attempts ?? [])
 const journeyLanes = computed(() => {
   const grouped = new Map<number, RequestJourneyEvent[]>()
   for (const event of journeyEvents.value) {
-    const attempt = event.attempt?.attempt_no ?? 1
+    if (!event.attempt) continue
+    const attempt = event.attempt.attempt_no
     grouped.set(attempt, [...(grouped.get(attempt) ?? []), event])
   }
   return [...grouped.entries()].sort(([a], [b]) => a - b).map(([attempt, laneEvents]) => ({ attempt, events: laneEvents }))
@@ -48,7 +54,7 @@ function switchDetail(event: RequestJourneyEvent): string { return [event.from_m
         <template v-for="(event, index) in events" :key="`${event.seq}-${event.stage}`"><span v-if="index" class="rpf-arrow" aria-hidden="true">→</span><article class="flow-node" :class="statusClass(event.status)" role="listitem" :title="eventTitle(event)"><div class="flow-node__top"><span class="flow-node__seq">{{ event.seq }}</span><strong>{{ stageLabel(event) }}</strong></div><div class="flow-node__meta"><span>{{ statusLabel(event.status) }}</span><span>{{ durationLabel(event) }}</span></div><span v-if="detailsText(event)" class="flow-node__flags">{{ detailsText(event) }}</span><span v-if="event.error" class="flow-node__error">{{ event.error }}</span></article></template>
       </div>
       <section v-if="journeyLanes.length" class="rpf-lanes" data-testid="journey-attempt-lanes" :aria-label="t('requestDetail.flow.diagram.lanesLabel')"><h4>{{ t('requestDetail.flow.diagram.lanesTitle') }}</h4><div v-for="lane in journeyLanes" :key="lane.attempt" class="attempt-lane" :data-testid="`journey-attempt-lane-${lane.attempt}`"><strong class="attempt-lane__label">{{ t('requestDetail.flow.diagram.attemptLane', { number: lane.attempt }) }}</strong><div class="attempt-lane__events"><article v-for="event in lane.events" :key="`lane-${event.seq}`" class="journey-node"><strong>{{ journeyStageLabel(event) }}</strong><span>{{ journeyDetail(event) || t('requestDetail.flow.diagram.noDetails') }}</span><span v-if="switchDetail(event)" class="journey-node__switch">{{ switchDetail(event) }}</span><span class="journey-node__source">{{ t('requestDetail.flow.diagram.sourceJourney') }}</span><span v-if="event.observation_status === 'observation_degraded'" class="degraded">{{ t('requestDetail.flow.diagram.degraded') }}</span></article></div></div></section>
-      <section v-if="waterfallLayout.row" class="rpf-waterfall" data-testid="waterfall-stage-bars" :aria-label="t('requestDetail.flow.diagram.waterfallLabel')"><div class="waterfall-heading"><h4>{{ t('requestDetail.flow.diagram.waterfallTitle') }}</h4><span>{{ t('requestDetail.flow.diagram.lastAttemptSemantics') }}</span></div><div class="waterfall-axis"><span>0</span><span>{{ formatAxisMs(waterfallLayout.axisMax) }}</span></div><div class="waterfall-row"><span class="waterfall-row__label">{{ t('requestDetail.flow.diagram.requestTimeline') }}</span><div class="waterfall-track"><span v-for="bar in waterfallLayout.row.bars" :key="bar.key" class="stage-bar" :class="{ 'stage-bar--synthesized': bar.synthesized }" :style="{ left: `${bar.leftPct}%`, width: `${bar.widthPct}%`, background: bar.color }" :title="`${bar.label}: ${formatAxisMs(bar.ms)}`"><small>{{ bar.label }}</small></span></div></div><p v-if="hasSynthesizedBars" class="waterfall-degraded">{{ t('requestDetail.flow.diagram.synthesizedBars') }}</p></section>
+      <section v-if="waterfallLayout.row" class="rpf-waterfall" data-testid="waterfall-stage-bars" :aria-label="t('requestDetail.flow.diagram.waterfallLabel')"><div class="waterfall-heading"><h4>{{ t('requestDetail.flow.diagram.waterfallTitle') }}</h4><span>{{ t('requestDetail.flow.diagram.lastAttemptSemantics') }}</span><span v-if="waterfallSource">source={{ waterfallSource }}</span></div><div class="waterfall-axis"><span>0</span><span>{{ formatAxisMs(waterfallLayout.axisMax) }}</span></div><div class="waterfall-row"><span class="waterfall-row__label">{{ t('requestDetail.flow.diagram.requestTimeline') }}</span><div class="waterfall-track"><span v-for="bar in waterfallLayout.row.bars" :key="bar.key" class="stage-bar" :class="{ 'stage-bar--synthesized': bar.synthesized }" :style="{ left: `${bar.leftPct}%`, width: `${bar.widthPct}%`, background: bar.color }" :title="`${bar.label}: ${formatAxisMs(bar.ms)}`"><small>{{ bar.label }}</small></span></div></div><p v-if="hasSynthesizedBars" class="waterfall-degraded">{{ t('requestDetail.flow.diagram.synthesizedBars') }}</p></section>
       <section v-if="journeyEvents.length || waterfallAttempts.length" class="rpf-evidence" :aria-label="t('requestDetail.flow.diagram.evidenceLabel')"><h4>{{ t('requestDetail.flow.diagram.evidenceTitle') }}</h4><ul v-if="waterfallAttempts.length" class="evidence-list"><li v-for="attempt in waterfallAttempts" :key="`waterfall-${attempt.attempt_id || attempt.attempt_no}`" class="evidence-item"><strong>{{ t('requestDetail.flow.diagram.waterfallAttempt', { number: attempt.attempt_no }) }}</strong><span>{{ [attempt.model, attempt.vendor, attempt.outcome, attempt.error_kind].filter(Boolean).join(' · ') || t('requestDetail.flow.diagram.noDetails') }}</span></li></ul></section>
       <p v-if="degraded" class="waterfall-degraded">{{ t('requestDetail.flow.diagram.degraded') }}</p><div class="rpf-legend"><span><i class="legend-dot legend-dot--success" />{{ t('requestDetail.flow.diagram.legend.success') }}</span><span><i class="legend-dot legend-dot--failed" />{{ t('requestDetail.flow.diagram.legend.failed') }}</span><span><i class="legend-dot legend-dot--special" />{{ t('requestDetail.flow.diagram.legend.special') }}</span></div>
     </template>
