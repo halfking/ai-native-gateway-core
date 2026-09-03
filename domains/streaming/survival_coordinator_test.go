@@ -497,6 +497,107 @@ func TestSurvivalCoordinatorStopsWhenSharedUpstreamBudgetIsExhausted(t *testing.
 // We exercise two scripted Run calls on independent harness instances
 // (fresh exec / flusher / params), capturing the A-side PriorAttempts
 // header before B starts and asserting it stays unchanged afterwards.
+func TestSurvivalCoordinatorRetryNoticeIsEmittedOncePerDiscard(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{rateLimitFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+	c := h.coordinator()
+	c.Options.RetryInterval = 30 * time.Second
+	var notices []struct {
+		attempt int
+		wait    time.Duration
+	}
+	c.RetryNotice = func(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) error {
+		notices = append(notices, struct {
+			attempt int
+			wait    time.Duration
+		}{attempt, wait})
+		return nil
+	}
+
+	if res := c.Run(context.Background(), h.sw, &executors.ExecParams{}); !res.Succeed {
+		t.Fatalf("expected recovery, decision=%v", res.Decision)
+	}
+	if len(notices) != 1 || notices[0].attempt != 1 || notices[0].wait != 30*time.Second {
+		t.Fatalf("retry notices = %+v, want one 30s notice for attempt 1", notices)
+	}
+}
+
+func TestSurvivalCoordinatorRetryNoticeFailureDoesNotStopRecovery(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{rateLimitFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+	c := h.coordinator()
+	c.RetryNotice = func(context.Context, int, TaskDecision, time.Duration) error {
+		return errors.New("client notice write failed")
+	}
+	if res := c.Run(context.Background(), h.sw, &executors.ExecParams{}); !res.Succeed {
+		t.Fatalf("notice failure must not block recovery, decision=%v", res.Decision)
+	}
+}
+
+func TestSurvivalCoordinatorCancellationBeforeAttemptDoesNotExecute(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{results: []*executors.ExecuteResult{{}}})
+	c := h.coordinator()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	res := c.Run(ctx, h.sw, &executors.ExecParams{})
+	if res.Decision.Reason != "client_disconnected" || h.exec.calls != 0 {
+		t.Fatalf("cancelled request = decision %v, executor calls %d; want disconnected/0", res.Decision, h.exec.calls)
+	}
+}
+
+func TestSurvivalCoordinatorCancellationDuringAttemptDoesNotRefreshOrCommit(t *testing.T) {
+	h := newCoordHarness(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	canceling := &cancelingExecutor{cancel: cancel}
+	c := h.coordinator()
+	c.Exec = canceling
+	res := c.Run(ctx, h.sw, &executors.ExecParams{})
+	if res.Decision.Reason != "client_disconnected" || canceling.calls != 1 || h.refreshes != 0 || len(h.terminals) != 0 {
+		t.Fatalf("cancel during attempt = %+v, calls=%d refreshes=%d terminals=%v", res.Decision, canceling.calls, h.refreshes, h.terminals)
+	}
+}
+
+type cancelingExecutor struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (e *cancelingExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	e.calls++
+	e.cancel()
+	return nil, rateLimitFailure()
+}
+
+func TestSurvivalOptionsUseNightRetryBudget(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	opts := (SurvivalOptions{
+		MaxRetries:      100,
+		NightMaxRetries: 600,
+		NightStartHour:  20,
+		NightLocation:   loc,
+	}).withDefaults()
+	if got := opts.retriesFor(time.Date(2026, 9, 3, 19, 59, 0, 0, loc)); got != 100 {
+		t.Fatalf("day retry budget = %d, want 100", got)
+	}
+	if got := opts.retriesFor(time.Date(2026, 9, 3, 20, 0, 0, 0, loc)); got != 600 {
+		t.Fatalf("night retry budget = %d, want 600", got)
+	}
+	if got := opts.retriesFor(time.Date(2026, 9, 3, 23, 59, 0, 0, loc)); got != 600 {
+		t.Fatalf("late-night retry budget = %d, want 600", got)
+	}
+}
+
+func TestSurvivalOptionsDefaultToFiveHourThirtySecondRecovery(t *testing.T) {
+	opts := (SurvivalOptions{}).withDefaults()
+	if opts.Deadline != 5*time.Hour || opts.RetryBase != 30*time.Second || opts.RetryInterval != 30*time.Second {
+		t.Fatalf("defaults = deadline %v/base %v/interval %v, want 5h/30s/30s", opts.Deadline, opts.RetryBase, opts.RetryInterval)
+	}
+}
+
 func TestSurvivalCoordinatorHistoryBackingArrayDoesNotAliasAcrossCalls(t *testing.T) {
 	hA := newCoordHarness(&scriptedExecutor{
 		errs: []error{transientFailure(), nil},
