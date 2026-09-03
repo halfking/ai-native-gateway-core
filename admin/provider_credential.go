@@ -749,7 +749,9 @@ func (h *Handler) rotateCredentialPrimaryKeyWithOptions(w http.ResponseWriter, r
 	tag, err := tx.Exec(ctx, `
 		UPDATE credentials
 		SET secret_ciphertext = $1, updated_at = NOW()
-		WHERE id = $2 AND provider_id = $3`, encrypted, credID, providerID)
+		WHERE id = $2
+		  AND provider_id = $3
+		  AND status NOT IN ('deleted', 'disabled')`, encrypted, credID, providerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "rotate primary key failed")
 		return

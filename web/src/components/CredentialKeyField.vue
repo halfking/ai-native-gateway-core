@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { revealCredentialKey } from '../api/providers'
 
 const props = withDefaults(defineProps<{
@@ -32,6 +32,11 @@ const revealed = ref<string | null>(null)
 const loading = ref(false)
 const error = ref('')
 const display = computed(() => revealed.value ?? props.masked ?? '—')
+
+watch(() => [props.providerId, props.credentialId], () => {
+  revealed.value = null
+  error.value = ''
+})
 
 async function reveal() {
   if (!props.canReveal || loading.value) return
@@ -66,6 +71,7 @@ async function copy() {
 function hide() {
   revealed.value = null
   error.value = ''
+  emit('hidden')
 }
 </script>
 

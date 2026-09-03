@@ -13,6 +13,7 @@ func TestDeriveCredentialDisplayState(t *testing.T) {
 		{"manual disabled wins", credentialStateInput{Status: "active", ManualDisabled: true, Availability: "auth_failed"}, CredentialStateDisabled},
 		{"auth failed", credentialStateInput{Availability: "auth_failed"}, CredentialStateAuthFailed},
 		{"quota wins transient", credentialStateInput{QuotaState: "balance_exhausted", Availability: "cooling"}, CredentialStateQuotaExhausted},
+		{"quarantine is suspended", credentialStateInput{Status: "quarantine", Availability: "ready", HealthStatus: "healthy"}, CredentialStateSuspended},
 		{"suspended", credentialStateInput{Availability: "suspended"}, CredentialStateSuspended},
 		{"rate limited", credentialStateInput{Availability: "rate_limited"}, CredentialStateRateLimited},
 		{"unreachable", credentialStateInput{HealthStatus: "unreachable"}, CredentialStateUnreachable},

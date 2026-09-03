@@ -67,15 +67,19 @@ func EvaluateTreatmentGate(control, treatment TreatmentOutcome, cfg TreatmentGat
 	}
 	result.Observed.Samples = minUint64(control.Samples, treatment.Samples)
 	result.Observed.CostRegression = relativeRegression(control.ActualCost, treatment.ActualCost)
-	result.Observed.LatencyRegression = relativeRegression(control.P95Latency(), treatment.P95Latency())
+	if cfg.MaxLatencyRegression >= 0 && (len(control.LatencySamples) == 0 || len(treatment.LatencySamples) == 0) {
+		result.Reasons = append(result.Reasons, "latency_unavailable")
+	} else {
+		result.Observed.LatencyRegression = relativeRegression(control.P95Latency(), treatment.P95Latency())
+		if cfg.MaxLatencyRegression >= 0 && result.Observed.LatencyRegression > cfg.MaxLatencyRegression {
+			result.Reasons = append(result.Reasons, "latency_regression_exceeded")
+		}
+	}
 	result.Observed.FailureRateRegression = treatment.FailureRate() - control.FailureRate()
 	result.Observed.FeedbackAccuracy = treatment.FeedbackAccuracy()
 
 	if cfg.MaxCostRegression >= 0 && result.Observed.CostRegression > cfg.MaxCostRegression {
 		result.Reasons = append(result.Reasons, "cost_regression_exceeded")
-	}
-	if cfg.MaxLatencyRegression >= 0 && result.Observed.LatencyRegression > cfg.MaxLatencyRegression {
-		result.Reasons = append(result.Reasons, "latency_regression_exceeded")
 	}
 	if cfg.MaxFailureRateRegression >= 0 && result.Observed.FailureRateRegression > cfg.MaxFailureRateRegression {
 		result.Reasons = append(result.Reasons, "failure_rate_regression_exceeded")
