@@ -598,6 +598,24 @@ func TestSurvivalOptionsDefaultToFiveHourThirtySecondRecovery(t *testing.T) {
 	}
 }
 
+func TestSurvivalCoordinatorFixedRetryIntervalIgnoresJitter(t *testing.T) {
+	c := &SurvivalCoordinator{JitterRand: func() float64 { return 0 }}
+	opts := SurvivalOptions{RetryInterval: 30 * time.Second}.withDefaults()
+	got := c.recoveryWait(opts, TaskDecision{Action: TaskActionWaitRecovery}, 2*time.Minute)
+	if got != 30*time.Second {
+		t.Fatalf("fixed retry interval = %v, want exactly 30s", got)
+	}
+}
+
+func TestSurvivalCoordinatorRetryAfterOverridesFixedInterval(t *testing.T) {
+	c := &SurvivalCoordinator{JitterRand: func() float64 { return 0 }}
+	opts := SurvivalOptions{RetryInterval: 30 * time.Second}.withDefaults()
+	got := c.recoveryWait(opts, TaskDecision{Action: TaskActionWaitRecovery, NextRetryAfter: 45 * time.Second}, 2*time.Minute)
+	if got != 45*time.Second {
+		t.Fatalf("retry-after = %v, want 45s", got)
+	}
+}
+
 func TestSurvivalCoordinatorHistoryBackingArrayDoesNotAliasAcrossCalls(t *testing.T) {
 	hA := newCoordHarness(&scriptedExecutor{
 		errs: []error{transientFailure(), nil},
