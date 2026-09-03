@@ -208,6 +208,9 @@ var providerErrorDetailsCredentialMigration639 []byte
 //go:embed embeddata/startup/645_session_bodies_hot_request_unique_repair.sql
 var sessionBodiesHotRequestUniqueRepairMigration645 []byte
 
+//go:embed embeddata/startup/645_goal_client_signal.sql
+var goalClientSignalMigration645 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -931,6 +934,7 @@ func copySQLBackup(root string) error {
 		"startup/638_session_bodies_promote_guard.sql":                             sessionBodiesPromoteGuardMigration638,
 		"startup/639_provider_error_details_credential.sql":                        providerErrorDetailsCredentialMigration639,
 		"startup/645_session_bodies_hot_request_unique_repair.sql":                 sessionBodiesHotRequestUniqueRepairMigration645,
+		"startup/645_goal_client_signal.sql":                                       goalClientSignalMigration645,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
@@ -1056,6 +1060,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/638_session_bodies_promote_guard.sql":                             sessionBodiesPromoteGuardMigration638,
 		"startup/639_provider_error_details_credential.sql":                        providerErrorDetailsCredentialMigration639,
 		"startup/645_session_bodies_hot_request_unique_repair.sql":                 sessionBodiesHotRequestUniqueRepairMigration645,
+		"startup/645_goal_client_signal.sql":                                       goalClientSignalMigration645,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
