@@ -556,11 +556,12 @@ var lockKeySessionOutbox = func() int64 {
 }()
 
 // isUsablePool returns true only when db is a non-nil interface AND not a
-// typed-nil pointer. outboxDB is an interface; passing *pgxpool.Pool(nil)
-// assigns a non-nil interface holding a nil pointer, which a plain `==nil`
-// check cannot detect. Reflect.IsNil on a non-pointer kind returns false
-// harmlessly (e.g. for pgxmock's value-receiver types).
-func isUsablePool(db outboxDB) bool {
+// typed-nil pointer. It accepts any so both outboxDB and digestBackfillDB
+// (Begin-only) seams can share the guard; passing *pgxpool.Pool(nil) assigns
+// a non-nil interface holding a nil pointer, which a plain `==nil` check
+// cannot detect. Reflect.IsNil on a non-pointer kind returns false harmlessly
+// (e.g. for pgxmock's value-receiver types).
+func isUsablePool(db any) bool {
 	if db == nil {
 		return false
 	}

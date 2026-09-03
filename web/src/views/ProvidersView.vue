@@ -22,10 +22,15 @@ import {
   type QualityGrade,
 } from '../types/quality-api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { isSuperAdmin } from '../store'
 
 const { t } = useI18n()
-const pm = (k: string, params?: Record<string, unknown>): string =>
+const pm = (k: string, params?: Record<string,unknown>): string =>
   t(`providers.${k}` as never, params as never)
+
+// 2026-09-04: default 租户 tenant_admin 可浏览列表（只读），新增/删除
+// 供应商仍 super_admin 专属（与后端 ProviderConsoleMiddleware 同口径）。
+const canManageProviders = computed(() => isSuperAdmin())
 
 const providers = ref<Provider[]>([])
 const catalog   = ref<CatalogEntry[]>([])
@@ -804,7 +809,7 @@ onUnmounted(() => {
   <div>
     <div class="page-header">
       <h2>{{ pm('page.title') }}</h2>
-      <button class="btn btn-primary" @click="openAdd">{{ pm('page.addBtn') }}</button>
+      <button v-if="canManageProviders" class="btn btn-primary" @click="openAdd">{{ pm('page.addBtn') }}</button>
     </div>
 
     <div class="bg-status-bar" v-if="bgStatus">
@@ -1036,8 +1041,8 @@ onUnmounted(() => {
               </span>
             </td>
             <!-- 2026-08-31: 行级供应商删除入口。@click.stop 阻止冒泡
-                 触发外层 tr 的 router.push 跳转。 -->
-            <td @click.stop>
+                 触发外层 tr 的 router.push 跳转。仅 super_admin。 -->
+            <td v-if="canManageProviders" @click.stop>
               <button
                 class="btn btn-ghost btn-sm"
                 :title="pm('list.deleteProviderTooltip')"

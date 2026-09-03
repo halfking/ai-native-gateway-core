@@ -71,6 +71,9 @@ export default {
     tenantAutoUpdate: "Mis Actualizaciones"
 ,
     updateActivate: 'Update & Activate',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
+    activateAction: 'Activar',
+    activateActionTip: 'Haz clic para activar esta instancia',
 
     licenseActivate: 'License Activation',
 

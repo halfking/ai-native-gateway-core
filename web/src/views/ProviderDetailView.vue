@@ -3,6 +3,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getProviderDetail, getProviderCredentials, diagnoseProvider, toggleProvider, setProviderManualDisabled, deleteProvider, type ProviderCredential, type DiagnoseProviderResponse, getProviderRecentProbeFailures } from '../api'
+import { isSuperAdmin } from '../store'
 import OverviewCards from './provider-detail/OverviewCards.vue'
 import CredsTab from './provider-detail/CredsTab.vue'
 import ModelsTab from './provider-detail/ModelsTab.vue'
@@ -19,6 +20,12 @@ const { t: td } = useI18n()
 const pp = (k: string, params?: Record<string, unknown>): string => td(`providerDetailPage.${k}` as never, params as never)
 
 const providerId = computed(() => Number(route.params.id))
+
+// 2026-09-04: default 租户 tenant_admin 可进入本页（只读 + 凭据 API Key
+// 轮换）。页面级写操作（启停 / 手工禁用 / 删除 / 诊断 / 模型绑定 /
+// 探测触发 / 设置编辑）仍 super_admin 专属，与后端 ProviderConsoleMiddleware
+// 的写白名单保持一致。
+const canManageProvider = computed(() => isSuperAdmin())
 
 const provider = ref<any>(null)
 const creds = ref<ProviderCredential[]>([])
@@ -183,17 +190,20 @@ watch(providerId, () => {
         <span v-else-if="!provider?.enabled" class="badge badge-gray">{{ pp('disabledBadge') }}</span>
       </div>
       <div style="display:flex;gap:8px">
-        <button
-          class="btn btn-ghost btn-sm"
-          :style="provider?.manual_disabled ? 'color:var(--danger);border-color:var(--danger)' : ''"
-          @click="toggleProviderManual"
-          :title="provider?.manual_disabled ? pp('manualToggle.releaseTitle') : pp('manualToggle.setTitle')"
-        >{{ provider?.manual_disabled ? pp('manualToggle.release') : pp('manualToggle.set') }}</button>
-        <button class="btn btn-ghost btn-sm" @click="toggle">{{ provider?.enabled ? pp('disable') : pp('enable') }}</button>
+        <template v-if="canManageProvider">
+          <button
+            class="btn btn-ghost btn-sm"
+            :style="provider?.manual_disabled ? 'color:var(--danger);border-color:var(--danger)' : ''"
+            @click="toggleProviderManual"
+            :title="provider?.manual_disabled ? pp('manualToggle.releaseTitle') : pp('manualToggle.setTitle')"
+          >{{ provider?.manual_disabled ? pp('manualToggle.release') : pp('manualToggle.set') }}</button>
+          <button class="btn btn-ghost btn-sm" @click="toggle">{{ provider?.enabled ? pp('disable') : pp('enable') }}</button>
+        </template>
         <button class="btn btn-ghost btn-sm" @click="load">{{ pp('refresh') }}</button>
         <!-- 2026-08-31: 软删除供应商。终态操作，单独用 danger 样式
              区分"停用/启用"，避免误点。 -->
         <button
+          v-if="canManageProvider"
           class="btn btn-sm"
           style="color:var(--danger);border-color:var(--danger)"
           :title="pp('deleteTitle')"
@@ -210,12 +220,16 @@ watch(providerId, () => {
 
       <div class="tabs">
         <button type="button" class="tab-btn" :class="{ active: tab === 'creds' }" @click="setTab('creds')">{{ pp('tabCreds', { n: creds.length }) }}</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="setTab('models')">{{ pp('tabModels') }}</button>
+        <!-- 2026-09-04: 模型 / 诊断 / 探测 / 设置四个 tab 含写操作或触发型
+             操作（绑定管理、诊断、probe 触发、settings 写入），仅
+             super_admin 可见；tenant_admin 保持只读浏览 + 凭据 API Key 轮换。 -->
+        <button v-if="canManageProvider" type="button" class="tab-btn" :class="{ active: tab === 'models' }" @click="setTab('models')">{{ pp('tabModels') }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'quality' }" @click="setTab('quality')">{{ pp('tabQuality') }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'logs' }" @click="setTab('logs')">{{ pp('tabLogs') }}</button>
         <button type="button" class="tab-btn" :class="{ active: tab === 'error-detail' }" @click="setTab('error-detail')">{{ pp('tabErrorDetail') }}</button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="setTab('diag')">{{ pp('tabDiag') }}</button>
+        <button v-if="canManageProvider" type="button" class="tab-btn" :class="{ active: tab === 'diag' }" @click="setTab('diag')">{{ pp('tabDiag') }}</button>
         <button
+          v-if="canManageProvider"
           type="button"
           class="tab-btn"
           :class="{ active: tab === 'probe' }"
@@ -225,7 +239,7 @@ watch(providerId, () => {
           {{ pp('tabProbe') }}
           <span v-if="probeFailureCount > 0" class="tab-badge tab-badge-red">{{ probeFailureCount }}</span>
         </button>
-        <button type="button" class="tab-btn" :class="{ active: tab === 'settings' }" @click="setTab('settings')">{{ pp('tabSettings') }}</button>
+        <button v-if="canManageProvider" type="button" class="tab-btn" :class="{ active: tab === 'settings' }" @click="setTab('settings')">{{ pp('tabSettings') }}</button>
       </div>
 
       <!-- 2026-07-03: `@silent-refresh` lets inline drawer edits (plan
@@ -241,16 +255,16 @@ watch(providerId, () => {
         @open-error-detail="onOpenErrorDetail"
       />
       <ModelsTab
-        v-if="tab==='models'"
+        v-if="tab==='models' && canManageProvider"
         :provider-id="providerId"
         :focus-offer="modelsFocusOffer"
       />
       <QualityTab v-if="tab==='quality'" :provider-id="providerId" />
       <LogsTab v-if="tab==='logs'" :provider-id="providerId" />
       <ErrorDetailTab v-if="tab==='error-detail'" :credential-id="errorCredentialId" />
-      <DiagTab v-if="tab==='diag'" :provider-id="providerId" />
-      <ProbeHistoryTab v-if="tab==='probe'" :provider-id="providerId" @open-models-tab="onOpenModelsTab" />
-      <SettingsTab v-if="tab==='settings'" :provider="provider" @refresh="load" />
+      <DiagTab v-if="tab==='diag' && canManageProvider" :provider-id="providerId" />
+      <ProbeHistoryTab v-if="tab==='probe' && canManageProvider" :provider-id="providerId" @open-models-tab="onOpenModelsTab" />
+      <SettingsTab v-if="tab==='settings' && canManageProvider" :provider="provider" @refresh="load" />
     </template>
   </div>
 </template>

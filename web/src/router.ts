@@ -142,6 +142,23 @@ function isPlatformOpsView(): boolean {
   return isSuperAdmin() && isDefaultTenant()
 }
 
+// 2026-09-04: 供应商控制台 —— super_admin，或 default 租户的 tenant_admin
+// （凭据 API Key 修改对该角色开放，见 store.isProviderConsoleView）。
+// 与 isSuperAdmin 一样带 localStorage 兜底，防深链进入时 userInfo 未水合。
+function isProviderConsoleView(): boolean {
+  if (isSuperAdmin()) return true
+  let info = store.userInfo
+  if (!info?.role) {
+    try {
+      const raw = typeof localStorage !== 'undefined'
+        ? localStorage.getItem('llmgw_user_info')
+        : null
+      if (raw) info = JSON.parse(raw)
+    } catch { /* corrupt cache */ }
+  }
+  return info?.role === 'tenant_admin' && info?.tenant_id === 'default'
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -152,8 +169,10 @@ export const router = createRouter({
     { path: '/',                   component: HomeView, meta: { public: true } },
 
     // super_admin only — providers, catalog, free pool, tenants, audit logs
-    { path: '/providers',          component: ProvidersView,       meta: { requiresSuper: true } },
-    { path: '/providers/:id',      component: ProviderDetailView,  meta: { requiresSuper: true } },
+    // 2026-09-04: 供应商列表/详情改挂 providerConsole —— super_admin，或
+    // default 租户 tenant_admin（凭据 API Key 修改对其开放）。
+    { path: '/providers',          component: ProvidersView,       meta: { requiresProviderConsole: true } },
+    { path: '/providers/:id',      component: ProviderDetailView,  meta: { requiresProviderConsole: true } },
     { path: '/key-applications',   component: KeyApplicationsView, meta: { requiresSuper: true } },
     { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
@@ -363,6 +382,11 @@ router.beforeEach(async (to) => {
   }
   // 3. Super-admin role check
   if (to.meta.requiresSuper && !isSuperAdmin()) {
+    return { path: '/forbidden' }
+  }
+  // 3a. Provider console (super_admin 或 default 租户 tenant_admin —
+  // 凭据 API Key 修改 2026-09-04)
+  if (to.meta.requiresProviderConsole && !isProviderConsoleView()) {
     return { path: '/forbidden' }
   }
   // 3b. Ops-center routes only when Maintain is available (or forced on)

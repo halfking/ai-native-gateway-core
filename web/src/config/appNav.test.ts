@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mergeNav, NAV_GROUPS, NAV_PRIMARY_ITEMS, resolveNavItemActivation, ACTIVATE_REDIRECT_PATH } from './appNav'
+import { canShowNavItem, mergeNav, NAV_GROUPS, NAV_PRIMARY_ITEMS, resolveNavItemActivation, ACTIVATE_REDIRECT_PATH } from './appNav'
 
 describe('mergeNav', () => {
   it('preserves visible primary and grouped navigation', () => {
@@ -21,8 +21,38 @@ describe('mergeNav', () => {
   })
 })
 
-describe('opsplatform maintain external links', () => {
-  const ops = NAV_GROUPS.find((g) => g.id === 'opsplatform')!
+// 2026-09-04: 供应商菜单用 providerConsole 标记 —— super_admin 或 default
+// 租户 tenant_admin 可见（凭据 API Key 轮换对该角色开放），其余不可见。
+describe('providerConsole nav visibility', () => {
+  const providersItem = NAV_GROUPS
+    .find((g) => g.id === 'models-routing')!
+    .items.find((i) => i.path === '/providers')!
+
+  it('marks /providers with providerConsole (not super)', () => {
+    expect(providersItem.providerConsole).toBe(true)
+    expect(providersItem.super).toBeFalsy()
+  })
+
+  it('shows providers for super_admin regardless of tenant view opts', () => {
+    expect(canShowNavItem(providersItem, {
+      isSuperAdmin: true, isPlatformOps: false, isTenantPortal: true, isProviderConsole: true,
+    })).toBe(true)
+  })
+
+  it('shows providers for default-tenant tenant_admin (provider console)', () => {
+    expect(canShowNavItem(providersItem, {
+      isSuperAdmin: false, isPlatformOps: false, isTenantPortal: true, isProviderConsole: true,
+    })).toBe(true)
+  })
+
+  it('hides providers for non-default tenant_admin and plain users', () => {
+    expect(canShowNavItem(providersItem, {
+      isSuperAdmin: false, isPlatformOps: false, isTenantPortal: true, isProviderConsole: false,
+    })).toBe(false)
+  })
+})
+
+describe('opsplatform maintain external links', () => {  const ops = NAV_GROUPS.find((g) => g.id === 'opsplatform')!
 
   it('marks migrated ops items as external /maintain/* paths', () => {
     const migrated = ops.items.filter((i) => i.path.startsWith('/maintain/'))
