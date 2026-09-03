@@ -140,24 +140,29 @@ func (rc *RecoveryCoordinator) Recover(
 					// non-system user message with smartWindowSummaryPrefix).
 					marker.SummaryText = extractSummaryFromCachedBody(l1Body)
 				}
-				if marker.SummaryText != "" {
-					if rebuilt, ok := IncrementalBuild(body, *marker, protocol); ok {
-						newTokens := estimateBodyTokens(rebuilt)
-						if newTokens < res.EstTokensBefore {
-							res.NewBody = rebuilt
-							res.Strategy = "incremental_cache"
-							res.CutMarker = marker
-							res.Reason = "reused cached cut marker from prior compression"
-							res.EstTokensAfter = newTokens
-							res.ShouldRetry = true
-							slog.Info("recovery: incremental cache hit",
-								"session", gwSessionID,
-								"cut_index", marker.CutIndex,
-								"tokens_before", res.EstTokensBefore,
-								"tokens_after", newTokens,
-							)
-							return res
-						}
+				var rebuilt []byte
+				var ok bool
+				if marker.Strategy == "smart_window_llm" && marker.SummaryMarker != "" {
+					rebuilt, ok = IncrementalBuild(body, *marker, protocol)
+				} else {
+					rebuilt, ok = IncrementalBuildTail(body, *marker, protocol)
+				}
+				if ok {
+					newTokens := estimateBodyTokens(rebuilt)
+					if newTokens < res.EstTokensBefore {
+						res.NewBody = rebuilt
+						res.Strategy = "incremental_cache"
+						res.CutMarker = marker
+						res.Reason = "reused cached cut marker from prior compression"
+						res.EstTokensAfter = newTokens
+						res.ShouldRetry = true
+						slog.Info("recovery: incremental cache hit",
+							"session", gwSessionID,
+							"cut_index", marker.CutIndex,
+							"tokens_before", res.EstTokensBefore,
+							"tokens_after", newTokens,
+						)
+						return res
 					}
 				}
 			}

@@ -218,10 +218,7 @@ func (cm CutMarker) MarshalJSON() ([]byte, error) {
 // It never invents summary text, so it is safe after L1 eviction. LLM summary
 // markers are deliberately rejected when their plaintext is unavailable.
 func IncrementalBuildTail(incomingBody []byte, marker CutMarker, protocol string) ([]byte, bool) {
-	if marker.CutIndex <= 0 || !isTailRecoveryStrategy(marker.Strategy) {
-		return nil, false
-	}
-	if marker.CreatedAt > 0 && marker.IsExpired(sessionCacheRedisTTL()) {
+	if !validIncrementalMarker(marker, false) {
 		return nil, false
 	}
 	var generic map[string]json.RawMessage
@@ -265,6 +262,38 @@ func isTailRecoveryStrategy(strategy string) bool {
 		strings.HasPrefix(strategy, "sliding_window_") && strategy != "sliding_window_llm"
 }
 
+func validIncrementalMarker(marker CutMarker, summary bool) bool {
+	if marker.Version != 0 && marker.Version != cutMarkerSchemaVersion {
+		return false
+	}
+	if marker.CutIndex <= 0 || marker.SystemMsgCount < 0 {
+		return false
+	}
+	legacy := marker.CreatedAt == 0 && marker.SourceMsgCount == 0
+	if summary {
+		if marker.SummaryText == "" || (!legacy && marker.Strategy != "smart_window_llm") {
+			return false
+		}
+	} else if !legacy && !isTailRecoveryStrategy(marker.Strategy) {
+		return false
+	}
+	if marker.CreatedAt > 0 && marker.IsExpired(sessionCacheRedisTTL()) {
+		return false
+	}
+	globalCut := marker.GlobalCutIndex()
+	if globalCut <= marker.SystemMsgCount {
+		return false
+	}
+	if marker.SourceMsgCount > 0 && globalCut > marker.SourceMsgCount {
+		return false
+	}
+	psorStart, psorEnd := marker.PreSanitizeOffsetRange[0], marker.PreSanitizeOffsetRange[1]
+	if psorStart < 0 || psorEnd < psorStart || (psorStart != 0 || psorEnd != 0) && (psorStart != marker.SystemMsgCount || psorEnd != globalCut) {
+		return false
+	}
+	return true
+}
+
 // IncrementalBuild reconstructs the outbound body for the next request using
 // a cached CutMarker. The result is:
 //
@@ -281,16 +310,7 @@ func isTailRecoveryStrategy(strategy string) bool {
 // Returns (rebuiltBody, true) on success, or (nil, false) if the marker is
 // stale (e.g. incoming body has fewer messages than the marker's source).
 func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([]byte, bool) {
-	if marker.CutIndex < 0 || marker.SummaryText == "" {
-		return nil, false
-	}
-
-	// P1-11 fix (2026-08-28): Defense-in-depth expiry check. Callers are
-	// expected to check IsExpired before invoking this function (see
-	// recovery_coordinator.go), but validating here too protects against
-	// call sites that forget the check or reuse a marker across sessions.
-	// Only check if CreatedAt is set; tests may create markers without timestamps.
-	if marker.CreatedAt > 0 && marker.IsExpired(sessionCacheRedisTTL()) {
+	if !validIncrementalMarker(marker, true) || marker.SummaryText == "" {
 		return nil, false
 	}
 
