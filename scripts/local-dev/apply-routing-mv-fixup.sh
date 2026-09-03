@@ -143,6 +143,9 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS public.routing_analytics_7d AS
     now() AS refreshed_at
    FROM public.request_logs_with_current_month_without_customer_id
   WHERE ((ts >= (now() - '7 days'::interval))
+         AND (COALESCE(origin_stage, ''::text) NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual'))
+         AND (COALESCE(task_type, ''::text) <> 'probe_triggered'::text)
+         AND (COALESCE(request_id, ''::text) NOT LIKE 'probe-'::text || '%')
          AND ((is_auto_request = true) OR ((is_auto_request IS NOT TRUE) AND (client_model IS NOT NULL) AND (client_model <> ''::text)))
          AND (COALESCE(NULLIF(outbound_model, ''::text), client_model) IS NOT NULL))
   GROUP BY (date_trunc('hour'::text, ts)),
@@ -171,6 +174,9 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS public.routing_audit_summary_7d AS
     now() AS refreshed_at
    FROM public.request_logs_with_current_month_without_customer_id
   WHERE ((ts >= (now() - '7 days'::interval))
+         AND (COALESCE(origin_stage, ''::text) NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual'))
+         AND (COALESCE(task_type, ''::text) <> 'probe_triggered'::text)
+         AND (COALESCE(request_id, ''::text) NOT LIKE 'probe-'::text || '%')
          AND ((is_auto_request = true) OR ((is_auto_request IS NOT TRUE) AND (client_model IS NOT NULL) AND (client_model <> ''::text))))
   GROUP BY tenant_id
   WITH NO DATA;
