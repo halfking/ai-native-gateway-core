@@ -217,8 +217,23 @@ var proxyManagementCanonicalMigration646 []byte
 //go:embed embeddata/startup/647_goal_client_signal.sql
 var goalClientSignalMigration647 []byte
 
+//go:embed embeddata/startup/649_routing_analytics_probe_filter.sql
+var routingAnalyticsProbeFilterMigration649 []byte
+
 //go:embed embeddata/startup/650_auto_route_selection_treatment_attribution.sql
 var autoRouteSelectionTreatmentAttributionMigration650 []byte
+
+//go:embed embeddata/startup/651_provider_quality_hot_rollup.sql
+var providerQualityHotRollupMigration651 []byte
+
+//go:embed embeddata/startup/652_system_monitor_fallback_queue.sql
+var systemMonitorFallbackQueueMigration652 []byte
+
+//go:embed embeddata/startup/653_archive_credential_model_index_canonical_return.sql
+var archiveCredentialModelIndexCanonicalReturnMigration653 []byte
+
+//go:embed embeddata/startup/654_archive_credential_model_index_detach_drop.sql
+var archiveCredentialModelIndexDetachDropMigration654 []byte
 
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
@@ -946,7 +961,12 @@ func copySQLBackup(root string) error {
 		"startup/645_session_bodies_hot_request_unique_repair.sql":                 sessionBodiesHotRequestUniqueRepairMigration645,
 		"startup/646_proxy_management_canonical.sql":                               proxyManagementCanonicalMigration646,
 		"startup/647_goal_client_signal.sql":                                       goalClientSignalMigration647,
+		"startup/649_routing_analytics_probe_filter.sql":                           routingAnalyticsProbeFilterMigration649,
 		"startup/650_auto_route_selection_treatment_attribution.sql":               autoRouteSelectionTreatmentAttributionMigration650,
+		"startup/651_provider_quality_hot_rollup.sql":                              providerQualityHotRollupMigration651,
+		"startup/652_system_monitor_fallback_queue.sql":                            systemMonitorFallbackQueueMigration652,
+		"startup/653_archive_credential_model_index_canonical_return.sql":          archiveCredentialModelIndexCanonicalReturnMigration653,
+		"startup/654_archive_credential_model_index_detach_drop.sql":               archiveCredentialModelIndexDetachDropMigration654,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
@@ -1075,7 +1095,12 @@ func setupSQLDir() (string, func(), error) {
 		"startup/645_session_bodies_hot_request_unique_repair.sql":                 sessionBodiesHotRequestUniqueRepairMigration645,
 		"startup/646_proxy_management_canonical.sql":                               proxyManagementCanonicalMigration646,
 		"startup/647_goal_client_signal.sql":                                       goalClientSignalMigration647,
+		"startup/649_routing_analytics_probe_filter.sql":                           routingAnalyticsProbeFilterMigration649,
 		"startup/650_auto_route_selection_treatment_attribution.sql":               autoRouteSelectionTreatmentAttributionMigration650,
+		"startup/651_provider_quality_hot_rollup.sql":                              providerQualityHotRollupMigration651,
+		"startup/652_system_monitor_fallback_queue.sql":                            systemMonitorFallbackQueueMigration652,
+		"startup/653_archive_credential_model_index_canonical_return.sql":          archiveCredentialModelIndexCanonicalReturnMigration653,
+		"startup/654_archive_credential_model_index_detach_drop.sql":               archiveCredentialModelIndexDetachDropMigration654,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {

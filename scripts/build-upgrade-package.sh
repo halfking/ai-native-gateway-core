@@ -90,6 +90,12 @@ startup_migrations=(
 	618_request_journey_snapshot_receipts.sql
 	646_proxy_management_canonical.sql
 	647_goal_client_signal.sql
+	649_routing_analytics_probe_filter.sql
+	650_auto_route_selection_treatment_attribution.sql
+	651_provider_quality_hot_rollup.sql
+	652_system_monitor_fallback_queue.sql
+	653_archive_credential_model_index_canonical_return.sql
+	654_archive_credential_model_index_detach_drop.sql
 )
 for name in "${startup_migrations[@]}"; do
   source="sql/migrations/startup/$name"

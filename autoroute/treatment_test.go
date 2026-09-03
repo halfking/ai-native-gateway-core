@@ -25,7 +25,7 @@ func TestDeciderAnnotateTreatmentUsesOverrideAndPreservesRoutingFields(t *testin
 	decision := &Decision{ChosenModel: "gpt-4.1", ChosenCredentialID: 7}
 	d.annotateTreatment(ctx, 42, decision)
 
-	want := AssignTreatment(d.treatmentConfig(), "tenant-42", "request-42")
+	want := AssignTreatment(*d.treatmentRollout, "tenant-42", "request-42")
 	if decision.ExperimentID != want.Experiment || decision.AssignmentVersion != want.Version ||
 		decision.AssignmentKeyHash != want.AssignmentHash || decision.Treatment != want.Treatment {
 		t.Fatalf("treatment annotation = %+v, want %+v", decision, want)
@@ -48,6 +48,32 @@ func TestDeciderAnnotateTreatmentFailsClosedWithoutIdentity(t *testing.T) {
 	d.annotateTreatment(context.Background(), 0, decision)
 	if decision.ExperimentID != "" || decision.AssignmentKeyHash != "" || decision.Treatment != "" {
 		t.Fatalf("missing identity must remain unenrolled: %+v", decision)
+	}
+}
+
+func TestDeciderSetTreatmentRolloutOverride(t *testing.T) {
+	d := NewDecider(nil, nil, nil, nil)
+	override := &RolloutConfig{
+		Experiment:     "dispatch-v3",
+		Version:        "v1",
+		Enabled:        true,
+		VariantPercent: 100,
+		Scope:          TreatmentScopeRequest,
+	}
+	d.SetTreatmentRollout(override)
+	got := d.treatmentConfig()
+	if got.Experiment != override.Experiment || got.Version != override.Version ||
+		got.Enabled != override.Enabled || got.VariantPercent != override.VariantPercent ||
+		got.Scope != override.Scope {
+		t.Fatalf("treatmentConfig = %+v, want override %+v", got, override)
+	}
+	if d.treatmentRollout == override {
+		t.Fatal("SetTreatmentRollout must store a defensive copy, not the caller's pointer")
+	}
+
+	d.SetTreatmentRollout(nil)
+	if d.treatmentRollout != nil {
+		t.Fatal("SetTreatmentRollout(nil) must restore global configuration")
 	}
 }
 

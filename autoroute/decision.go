@@ -282,27 +282,6 @@ func (d *Decider) treatmentConfig() RolloutConfig {
 	}
 }
 
-// annotateTreatment records a decision-time assignment without changing any
-// control routing fields. Missing identities and invalid rollout config fail
-// closed to an unenrolled control decision.
-func (d *Decider) annotateTreatment(ctx context.Context, apiKeyID int, decision *Decision) {
-	if d == nil || decision == nil {
-		return
-	}
-	tenantID := ""
-	if d.TenantResolver != nil {
-		tenantID = d.TenantResolver(apiKeyID)
-	}
-	assignment := AssignTreatment(d.treatmentConfig(), tenantID, requestIDFromContext(ctx))
-	if assignment.Experiment == "" || assignment.AssignmentHash == "" {
-		return
-	}
-	decision.ExperimentID = assignment.Experiment
-	decision.AssignmentVersion = assignment.Version
-	decision.AssignmentKeyHash = assignment.AssignmentHash
-	decision.Treatment = assignment.Treatment
-}
-
 // effectiveLLMThreshold returns the dynamic threshold from the tuning
 // store, or the static field when no store is wired.
 func (d *Decider) effectiveLLMThreshold() float64 {
