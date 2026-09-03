@@ -787,14 +787,14 @@ alerts:
 - [x] 审计降级告警
 
 ### Week 3-4: 体验优化
-- [ ] 心跳机制明确化
-- [ ] 客户端断开快速检测
-- [ ] Graceful Shutdown智能化
+- [x] 心跳机制明确化（SSE comment `: keep-alive\\n\\n`，已有生命周期测试；仍需客户端/线上验收）
+- [x] 客户端断开快速检测（ConnectionMonitor 组件与流式写入接入；仍需真实 HTTP/客户端延迟验收）
+- [x] Graceful Shutdown智能化（流/非流分阶段管理器；仍需 gateway 进程级演练）
 
 ### Week 5-8: 架构优化
-- [ ] per-tenant资源配额
-- [ ] 分布式追踪集成
-- [ ] 智能重试策略
+- [x] per-tenant资源配额（进程内动态 P95 调整与 QPS/token/concurrency 限制；Redis/多实例一致性仍待验收）
+- [ ] 分布式追踪集成（现有 OTLP plumbing 可复用；本次未新增请求级 span 接入）
+- [x] 智能重试策略（provider 统计驱动策略组件；实际 failover 接线与压测仍待完成）
 
 ---
 
@@ -837,6 +837,6 @@ alerts:
 ---
 
 **文档版本**: v1.0
-**最后更新**: 2026-09-02
+**最后更新**: 2026-09-03
 **负责团队**: Gateway Core Team
 **审核人**: Tech Lead
