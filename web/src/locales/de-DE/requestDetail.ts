@@ -183,6 +183,7 @@ export default {
       status: { success: 'Erfolg', failed: 'Fehlgeschlagen', timeout: 'Timeout', skipped: 'Übersprungen' },
       flags: { compression: 'Komprimierung', retry: 'Wiederholung', nodeSwitch: 'Knotenwechsel', degraded: 'Beobachtung eingeschränkt' },
       evidenceLabel: 'Routing- und Waterfall-Nachweise', evidenceTitle: 'Beobachtete Versuche', waterfallAttempt: 'Waterfall-Versuch #{number}', noDetails: 'Keine weiteren Details', degraded: 'Beobachtung eingeschränkt',
+      lanesLabel: 'Anfrageversuch-Spuren', lanesTitle: 'Beobachtete Journey-Versuche', attemptLane: 'Versuch #{number}', sourceJourney: 'Journey-Quelle', waterfallLabel: 'Waterfall-Phasenbalken', waterfallTitle: 'Waterfall-Phasenbalken', lastAttemptSemantics: 'Anfrageweite Zeit; T5–T9 können den letzten Versuch widerspiegeln', synthesizedBars: 'Synthetische Phasen zeigen fehlende Zeitstempel (eingeschränkte Beobachtung).', requestTimeline: 'Anfragezeitachse',
       legend: { success: 'Erfolg', failed: 'Fehlgeschlagen/Timeout', special: 'Komprimierung · Wiederholung · Knotenwechsel' }
     },
   },

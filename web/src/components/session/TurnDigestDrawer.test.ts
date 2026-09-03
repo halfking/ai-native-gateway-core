@@ -92,7 +92,7 @@ const detail: TurnDetail = {
   cost_usd: 0.0123,
   request: { prompt: 'hi there' },
   response: { content: 'hello back' },
-  meta: { trace_id: 'trace-abc' },
+  meta: { trace_id: 'trace-abc', t0_arrived_at: '2026-09-03T10:00:00Z', t9_response_end_at: '2026-09-03T10:00:02Z' },
   governance: { verdict: 'pass' },
   digest: {
     user_input: 'hi there',
@@ -121,6 +121,14 @@ describe('TurnDigestDrawer', () => {
     expect(w.text()).toContain('glm-4.7')
   })
 
+  it('renders t0-t9 waterfall timing from meta', async () => {
+    getSessionTurnMock.mockResolvedValue(detail)
+    const w = mountDrawer()
+    await flushPromises()
+    expect(w.text()).toContain('Arrived')
+    expect(w.text()).toContain('Response end')
+    expect(w.find('[data-testid="turn-waterfall"]').exists()).toBe(true)
+  })
   it('does not call getSessionTurn when turnNo is null', async () => {
     const w = mountDrawer({ turnNo: null })
     await flushPromises()

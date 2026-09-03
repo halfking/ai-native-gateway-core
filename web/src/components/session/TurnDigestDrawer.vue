@@ -28,7 +28,7 @@ const { t } = useI18n()
 const detail = ref<TurnDetail | null>(null)
 const loading = ref(false)
 const error = ref('')
-const activeTab = ref<'summary' | 'request' | 'response' | 'compression' | 'meta' | 'governance' | 'attachments'>('summary')
+const activeTab = ref<'summary' | 'request' | 'response' | 'compression' | 'meta' | 'waterfall' | 'governance' | 'attachments'>('summary')
 const openingAttachment = ref<string | null>(null)
 let requestSeq = 0
 let controller: AbortController | null = null
@@ -40,6 +40,31 @@ const headerTitle = computed(() => {
 
 const fallbackTitle = computed(() => detail.value?.title?.trim() || props.title?.trim() || '')
 const fallbackSummary = computed(() => detail.value?.summary?.trim() || props.summary?.trim() || '')
+
+const waterfallStages = computed(() => {
+  const meta = detail.value?.meta
+  if (!meta || typeof meta !== 'object') return []
+  const labels = [
+    ['t0_arrived_at', 'Arrived'],
+    ['t1_total_enqueued_at', 'Total queue'],
+    ['t2_total_dequeued_at', 'Total dequeue'],
+    ['t3_model_enqueued_at', 'Model queue'],
+    ['t4_model_dequeued_at', 'Model dequeue'],
+    ['t5_cred_enqueued_at', 'Credential queue'],
+    ['t6_cred_dequeued_at', 'Credential dequeue'],
+    ['t7_forward_start_at', 'Forward start'],
+    ['t8_response_start_at', 'Response start'],
+    ['t9_response_end_at', 'Response end'],
+  ] as const
+  return labels
+    .map(([key, label]) => ({ key, label, value: meta[key] }))
+    .filter((stage) => stage.value != null && stage.value !== '')
+})
+
+function waterfallValue(value: unknown): string {
+  if (typeof value !== 'string' && typeof value !== 'number') return '—'
+  return String(value)
+}
 
 function stringify(value: unknown): string {
   if (value == null) return ''
@@ -168,6 +193,15 @@ onBeforeUnmount(() => {
       <el-tab-pane :label="t('turnDigest.tabs.request')" name="request"><pre>{{ stringify(detail?.request) }}</pre></el-tab-pane>
       <el-tab-pane :label="t('turnDigest.tabs.response')" name="response"><pre>{{ stringify(detail?.response) }}</pre></el-tab-pane>
       <el-tab-pane :label="t('turnDigest.tabs.compression')" name="compression"><pre>{{ stringify(detail?.compression) }}</pre></el-tab-pane>
+      <el-tab-pane :label="t('turnDigest.tabs.waterfall')" name="waterfall">
+        <div v-if="waterfallStages.length" class="tdd-waterfall" data-testid="turn-waterfall">
+          <div v-for="stage in waterfallStages" :key="stage.key" class="tdd-waterfall-row">
+            <strong>{{ stage.label }}</strong>
+            <code>{{ waterfallValue(stage.value) }}</code>
+          </div>
+        </div>
+        <p v-else class="tdd-state">{{ t('turnDigest.noWaterfall') }}</p>
+      </el-tab-pane>
       <el-tab-pane :label="t('turnDigest.tabs.meta')" name="meta"><pre>{{ stringify(detail?.meta) }}</pre></el-tab-pane>
       <el-tab-pane :label="t('turnDigest.tabs.governance')" name="governance"><pre>{{ stringify(detail?.governance) }}</pre></el-tab-pane>
       <el-tab-pane :label="t('turnDigest.tabs.attachments')" name="attachments">
@@ -189,7 +223,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.tdd-header { display: flex; flex-direction: column; gap: 3px; }
+.tdd-waterfall { display: grid; gap: 6px; }
+.tdd-waterfall-row { display: flex; justify-content: space-between; gap: 12px; padding: 8px 10px; border: 1px solid var(--kx-border); border-radius: 6px; }
+.tdd-waterfall-row code { color: var(--kx-muted); font-size: 12px; }
 .tdd-sub { color: var(--kx-muted); font-size: 12px; }
 .tdd-state { padding: 24px; text-align: center; color: var(--kx-muted); }
 .tdd-error { padding: 10px 12px; color: var(--kx-danger); background: var(--kx-danger-soft); border: 1px solid var(--kx-danger); border-radius: 6px; }

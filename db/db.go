@@ -332,6 +332,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureApprovalResumeClaimSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureGoalClientSignalSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureProxyManagementCanonicalSchema(migCtx); err != nil {
 		return err
 	}
