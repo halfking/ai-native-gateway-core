@@ -110,48 +110,19 @@ func BuildOutboundMessages(
 		}, nil
 	}
 
-	// ── Build LCS index from last outbound ───────────────────────────────
-	// Index: hash → bool (present in last outbound, non-summary messages only).
-	// Summary marker messages are excluded from the index so they are never
-	// mistaken for client-sent messages.
-	lastHashSet := make(map[string]bool, len(lastMsgs))
-	for _, m := range lastMsgs {
-		if isSummaryMarkerMsg(m) {
-			continue // preserve as-is, skip from diff
-		}
-		h := msgHash(m)
-		if h != "" {
-			lastHashSet[h] = true
-		}
+	// ── Establish one unambiguous ordered lineage anchor ─────────────────
+	// Uncompressed sessions require the complete prior sequence to be the
+	// client's prefix. Compressed sessions retain gateway-only summary markers;
+	// for those, match the non-summary outbound suffix against one unique client
+	// range. Ambiguous duplicate occurrences fail open rather than dropping a
+	// client message by choosing the wrong anchor.
+	anchorEnd, ok := findDeltaAnchor(clientMsgs, lastMsgs)
+	if !ok {
+		return newSessionResult(clientBody, clientMsgs), nil
 	}
 
-	// ── Find the last client message that exists in last outbound ────────
-	lastSharedIdx := -1
-	for i := len(clientMsgs) - 1; i >= 0; i-- {
-		if isSummaryMarkerMsg(clientMsgs[i]) {
-			continue
-		}
-		h := msgHash(clientMsgs[i])
-		if h != "" && lastHashSet[h] {
-			lastSharedIdx = i
-			break
-		}
-	}
-
-	// ── No shared message: session reset (client sent completely different history) ──
-	if lastSharedIdx == -1 {
-		hashes := computeHashes(clientMsgs)
-		return &OutboundResult{
-			Body:      clientBody,
-			MsgHashes: hashes,
-			MsgCount:  len(clientMsgs),
-			TokenEst:  estimateBodyTokens(clientBody),
-			IsNewSess: true,
-		}, nil
-	}
-
-	// ── Delta tail: client messages after lastSharedIdx ─────────────────
-	deltaTail := clientMsgs[lastSharedIdx+1:]
+	// ── Delta tail: client messages after the proven anchor ─────────────
+	deltaTail := clientMsgs[anchorEnd:]
 
 	if len(deltaTail) == 0 {
 		// Client body is a subset or equal to last outbound — return last.
@@ -212,6 +183,60 @@ func BuildOutboundMessages(
 // Internal helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+func newSessionResult(body []byte, messages []rawMsg) *OutboundResult {
+	return &OutboundResult{
+		Body: body, MsgHashes: computeHashes(messages), MsgCount: len(messages),
+		TokenEst: estimateBodyTokens(body), IsNewSess: true,
+	}
+}
+
+func findDeltaAnchor(clientMsgs, lastMsgs []rawMsg) (int, bool) {
+	lastComparable := make([]rawMsg, 0, len(lastMsgs))
+	hasGatewaySummary := false
+	for _, message := range lastMsgs {
+		if isSummaryMarkerMsg(message) {
+			hasGatewaySummary = true
+			continue
+		}
+		lastComparable = append(lastComparable, message)
+	}
+	if len(lastComparable) == 0 {
+		return 0, false
+	}
+
+	if !hasGatewaySummary {
+		if len(clientMsgs) < len(lastComparable) || !sameMessageSequence(clientMsgs[:len(lastComparable)], lastComparable) {
+			return 0, false
+		}
+		return len(lastComparable), true
+	}
+
+	// A compressed outbound contains only a retained suffix from the original
+	// client history. Require the whole retained suffix to occur exactly once.
+	matches := 0
+	end := 0
+	for start := 0; start+len(lastComparable) <= len(clientMsgs); start++ {
+		if sameMessageSequence(clientMsgs[start:start+len(lastComparable)], lastComparable) {
+			matches++
+			end = start + len(lastComparable)
+		}
+	}
+	return end, matches == 1
+}
+
+func sameMessageSequence(a, b []rawMsg) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		left, right := msgHash(a[i]), msgHash(b[i])
+		if left == "" || right == "" || left != right {
+			return false
+		}
+	}
+	return true
+}
+
 // extractMessages parses the "messages" array from an OpenAI or Anthropic body.
 // V2OutboundBuilder returns the persisted message array directly, so accept
 // that shape as well. Keeping the compatibility here makes the builder/cache
@@ -231,25 +256,21 @@ func extractMessages(body []byte) ([]rawMsg, error) {
 	return messages, nil
 }
 
-// msgHash computes sha256(role + \x00 + contentKey + \x00 + toolID).
-// contentKey is the first 512 bytes of the string-normalised content.
-// Returns "" on parse error (caller skips the message in the hash set).
+// msgHash computes a canonical fingerprint of the complete message object.
+// It includes tool calls and the full content, so suffix-only edits and distinct
+// assistant tool calls cannot collapse to the same identity. JSON object key
+// ordering is normalized by re-marshalling the decoded value.
 func msgHash(raw rawMsg) string {
-	var m struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
-		// OpenAI tool result identifier
-		ToolCallID string `json:"tool_call_id"`
-	}
-	if err := json.Unmarshal(raw, &m); err != nil {
+	var message interface{}
+	if err := json.Unmarshal(raw, &message); err != nil || message == nil {
 		return ""
 	}
-	contentKey := contentFingerprint(m.Content)
-	if contentKey == "" && m.Role == "" {
+	canonical, err := json.Marshal(message)
+	if err != nil {
 		return ""
 	}
-	h := sha256.Sum256([]byte(m.Role + "\x00" + contentKey + "\x00" + m.ToolCallID))
-	return fmt.Sprintf("%x", h[:16]) // 16 bytes = 32 hex chars is plenty
+	h := sha256.Sum256(canonical)
+	return fmt.Sprintf("%x", h[:16])
 }
 
 // contentFingerprint extracts the first 512 bytes of meaningful content
@@ -404,7 +425,7 @@ func preserveAnthropicSystem(lastBody, newBody []byte) []byte {
 	if !ok || len(system) == 0 || string(system) == "null" {
 		return newBody
 	}
-	
+
 	// P1-12 fix (2026-08-28): Validate system field is well-formed JSON before
 	// copying it to the new body. Corrupted cache data could otherwise produce
 	// invalid requests that fail at the provider.
@@ -413,7 +434,7 @@ func preserveAnthropicSystem(lastBody, newBody []byte) []byte {
 		// system field is not valid JSON; do not copy it
 		return newBody
 	}
-	
+
 	current["system"] = system
 	out, err := json.Marshal(current)
 	if err != nil {
