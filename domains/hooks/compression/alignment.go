@@ -23,16 +23,26 @@ import "encoding/json"
 // summaryIdx is the index of the summary message in `after`, or -1 when the
 // rewrite did not produce a summary (mechanical trim / degraded path).
 func buildAlignmentMap(before, after []byte, summaryIdx int) []AlignmentInfo {
+	return buildAlignmentMapForProtocol(before, after, summaryIdx, "openai")
+}
+
+func buildAlignmentMapForProtocol(before, after []byte, summaryIdx int, protocol string) []AlignmentInfo {
 	beforeMsgs, err := extractMessages(before)
 	if err != nil || len(beforeMsgs) == 0 {
 		return nil
 	}
+	afterMsgs, err := extractMessages(after)
+	if err != nil {
+		afterMsgs = nil
+	}
+	if summaryIdx >= len(afterMsgs) {
+		summaryIdx = -1
+	}
+	summaryInSystem := protocol == "anthropic-messages" && hasAnthropicSystemSummary(after)
 	afterByHash := make(map[string][]int, len(beforeMsgs))
-	if afterMsgs, err := extractMessages(after); err == nil {
-		for i, m := range afterMsgs {
-			if h := msgHash(m); h != "" && !isSummaryMarkerMsg(m) {
-				afterByHash[h] = append(afterByHash[h], i)
-			}
+	for i, m := range afterMsgs {
+		if h := msgHash(m); h != "" && !isSummaryMarkerMsg(m) {
+			afterByHash[h] = append(afterByHash[h], i)
 		}
 	}
 	align := make([]AlignmentInfo, 0, len(beforeMsgs))
@@ -61,6 +71,9 @@ func buildAlignmentMap(before, after []byte, summaryIdx int) []AlignmentInfo {
 				info.CompressedInto = summaryIdx
 				info.TargetKind = "summary"
 				info.TargetSpace = "messages"
+			} else if summaryInSystem {
+				info.TargetKind = "summary"
+				info.TargetSpace = "top_level_system"
 			}
 		}
 		align = append(align, info)
@@ -68,7 +81,32 @@ func buildAlignmentMap(before, after []byte, summaryIdx int) []AlignmentInfo {
 	return align
 }
 
-// firstAssistantIndex returns the index of the first assistant message in
+func hasAnthropicSystemSummary(body []byte) bool {
+	var top struct {
+		System json.RawMessage `json:"system"`
+	}
+	if err := json.Unmarshal(body, &top); err != nil || len(top.System) == 0 || string(top.System) == "null" {
+		return false
+	}
+	var content string
+	if json.Unmarshal(top.System, &content) == nil {
+		return isAnthropicSummaryContent(content)
+	}
+	var blocks []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(top.System, &blocks) != nil {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type == "text" && isAnthropicSummaryContent(block.Text) {
+			return true
+		}
+	}
+	return false
+}
+
 // body, or -1 when none exists. Mirrors the lookup used by
 // injectSummaryMarker so the summary message index stays consistent with the
 // injected smm_v1 marker.
