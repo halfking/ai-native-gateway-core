@@ -183,6 +183,7 @@ export default {
       status: { success: '成功', failed: '失敗', timeout: '逾時', skipped: '略過' },
       flags: { compression: '壓縮', retry: '重試', nodeSwitch: '節點切換', degraded: '觀測降級' },
       evidenceLabel: '路由與瀑布觀測證據', evidenceTitle: '已觀測嘗試', waterfallAttempt: '瀑布嘗試 #{number}', noDetails: '沒有更多詳情', degraded: '觀測降級',
+      lanesLabel: '請求嘗試泳道', lanesTitle: '已觀測旅程嘗試', attemptLane: '嘗試 #{number}', sourceJourney: 'Journey 來源', waterfallLabel: '瀑布階段條', waterfallTitle: '瀑布階段條', lastAttemptSemantics: '請求級時間；T5–T9 可能反映末次嘗試', synthesizedBars: '合成階段表示缺少時間戳（觀測降級）。', requestTimeline: '請求時間線',
       legend: { success: '成功', failed: '失敗/逾時', special: '壓縮 · 重試 · 節點切換' }
     },
   },

@@ -34,7 +34,9 @@ export interface SessionChildRequest {
 }
 
 export interface SessionTurnTreeItem {
+  /** Unified V2 uses turn_no; tree uses turn_number. API boundary normalizes both. */
   turn_number: number
+  turn_no?: number
   request_id: string
   status: string
   model?: string
@@ -43,12 +45,75 @@ export interface SessionTurnTreeItem {
   child_requests: SessionChildRequest[]
 }
 
+type SessionTurnTreeWireItem = Omit<Partial<SessionTurnTreeItem>, 'turn_number' | 'latency' | 'child_requests'> & {
+  turn_number?: unknown
+  turn_no?: unknown
+  status_code?: unknown
+  success?: unknown
+  latency?: unknown
+  latency_ms?: unknown
+  child_requests?: unknown
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function normalizeChildRequest(raw: unknown): SessionChildRequest | null {
+  if (!raw || typeof raw !== 'object') return null
+  const item = raw as Record<string, unknown>
+  const requestId = typeof item.request_id === 'string' ? item.request_id : ''
+  if (!requestId) return null
+  return {
+    request_id: requestId,
+    request_type: typeof item.request_type === 'string' ? item.request_type : 'other',
+    status: typeof item.status === 'string' ? item.status : '',
+    latency: finiteNumber(item.latency ?? item.latency_ms) ?? null,
+  }
+}
+
+/** Normalize tree and unified-V2 wire shapes at the API boundary. */
+export function normalizeSessionTurnTreeItem(raw: SessionTurnTreeWireItem): SessionTurnTreeItem | null {
+  const turnNumber = finiteNumber(raw.turn_number) ?? finiteNumber(raw.turn_no)
+  const requestId = typeof raw.request_id === 'string' ? raw.request_id : ''
+  if (turnNumber === undefined || !requestId) return null
+  const status = typeof raw.status === 'string'
+    ? raw.status
+    : typeof raw.status_code === 'number'
+      ? ((raw.success === true || (raw.status_code >= 200 && raw.status_code < 300)) ? 'success' : String(raw.status_code))
+      : ''
+  const children = Array.isArray(raw.child_requests)
+    ? raw.child_requests.map(normalizeChildRequest).filter((item): item is SessionChildRequest => item !== null)
+    : []
+  const turnNo = finiteNumber(raw.turn_no)
+  return {
+    turn_number: turnNumber,
+    ...(turnNo === undefined ? {} : { turn_no: turnNo }),
+    request_id: requestId,
+    status,
+    ...(typeof raw.model === 'string' ? { model: raw.model } : {}),
+    latency: finiteNumber(raw.latency ?? raw.latency_ms) ?? null,
+    child_requests: children,
+  }
+}
+
+function normalizeSessionTurnsTreeResponse(raw: SessionTurnsTreeResponse): SessionTurnsTreeResponse {
+  const turns = Array.isArray(raw.turns)
+    ? raw.turns
+      .map((item) => normalizeSessionTurnTreeItem(item as unknown as SessionTurnTreeWireItem))
+      .filter((item): item is SessionTurnTreeItem => item !== null)
+    : []
+  return { ...raw, turns, count: typeof raw.count === 'number' ? raw.count : turns.length }
+}
+
 export interface SessionTurnsTreeResponse {
   session_id: string
   turns: SessionTurnTreeItem[]
   count: number
   has_more: boolean
   next_cursor: string
+  source?: 'tree' | 'v2' | 'tree_fallback' | string
+  v2_shadow?: Record<string, unknown>
 }
 
 export interface OnlineSessionFreshness {
@@ -159,5 +224,6 @@ export async function fetchSessionTurnsTree(
   const qs = q.toString()
   const path =
     `/api/admin/sessions/${encodeURIComponent(sessionId)}/turns${qs ? `?${qs}` : ''}`
-  return getJson<SessionTurnsTreeResponse>(path)
+  const response = await getJson<SessionTurnsTreeResponse>(path)
+  return normalizeSessionTurnsTreeResponse(response)
 }

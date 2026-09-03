@@ -11,6 +11,7 @@ import {
   type WaterfallRequest,
 } from '../api/dispatch'
 import { getSessionSnapshot } from '../api/sessions_v2'
+import { getRequestJourney, type RequestJourney, type RequestJourneyEvent } from '../api/request-journeys'
 
 export type DetailSection =
   | 'overview'
@@ -24,6 +25,10 @@ export type DetailSection =
 
 const CACHE_TTL_MS = 45_000
 
+export type RequestDetailAttempt = WaterfallAttempt & {
+  source?: 'journey' | 'waterfall' | 'synthesized'
+}
+
 interface CacheEntry {
   at: number
   log: RequestLogDetail | null
@@ -31,6 +36,7 @@ interface CacheEntry {
   bodiesLoaded: boolean
   waterfall: WaterfallRequest | null
   waterfallSource: string
+  journey: RequestJourney | null
   sessionSnap: Record<string, unknown> | null
 }
 
@@ -65,12 +71,13 @@ function cachePut(id: string, patch: Partial<CacheEntry>) {
     bodiesLoaded: patch.bodiesLoaded !== undefined ? patch.bodiesLoaded : (prev?.bodiesLoaded ?? false),
     waterfall: patch.waterfall !== undefined ? patch.waterfall : (prev?.waterfall ?? null),
     waterfallSource: patch.waterfallSource !== undefined ? patch.waterfallSource : (prev?.waterfallSource ?? ''),
+    journey: patch.journey !== undefined ? patch.journey : (prev?.journey ?? null),
     sessionSnap: patch.sessionSnap !== undefined ? patch.sessionSnap : (prev?.sessionSnap ?? null),
   }
   cache.set(id, next)
 }
 
-export function mapLogRoutingAttempts(attempts: RoutingAttempt[] | undefined): WaterfallAttempt[] {
+export function mapLogRoutingAttempts(attempts: RoutingAttempt[] | undefined): RequestDetailAttempt[] {
   if (!attempts?.length) return []
   return attempts.map((a, i) => ({
     attempt_id: `log-${a.seq ?? i}`,
@@ -80,7 +87,77 @@ export function mapLogRoutingAttempts(attempts: RoutingAttempt[] | undefined): W
     credential_id: a.credential_id,
     outcome: a.result,
     error_kind: a.error_message || undefined,
+    source: 'synthesized',
   }))
+}
+
+function journeyAttemptEvents(events: RequestJourneyEvent[] | undefined): RequestDetailAttempt[] {
+  const byAttempt = new Map<string, WaterfallAttempt>()
+  for (const event of [...(events ?? [])].sort((a, b) => a.seq - b.seq)) {
+    const ref = event.attempt
+    if (!ref) continue
+    const key = ref.attempt_id || `attempt-${ref.attempt_no}`
+    const current: RequestDetailAttempt = byAttempt.get(key) ?? {
+      attempt_id: ref.attempt_id || key,
+      attempt_no: ref.attempt_no,
+      credential_id: ref.credential_id ?? 0,
+      source: 'journey',
+    }
+    current.model ||= ref.model || event.model || event.resolved_model
+    current.provider_id ??= ref.provider_id ?? event.provider_id
+    if (current.credential_id === 0) current.credential_id = ref.credential_id ?? event.credential_id ?? 0
+    if (event.event_type === 'attempt_started') current.started_at ||= event.occurred_at
+    if (event.event_type === 'first_byte') current.first_byte_at ||= event.occurred_at
+    if (event.event_type === 'attempt_succeeded' || event.event_type === 'attempt_failed') {
+      current.ended_at ||= event.occurred_at
+      current.outcome ||= event.outcome || (event.event_type === 'attempt_succeeded' ? 'success' : 'failure')
+    }
+    current.error_kind ||= event.error_kind
+    byAttempt.set(key, current)
+  }
+  return [...byAttempt.values()].sort((a, b) => a.attempt_no - b.attempt_no)
+}
+
+export function mergeRequestAttempts(
+  journey: Pick<RequestJourney, 'events'> | null | undefined,
+  waterfallAttempts: WaterfallAttempt[] | undefined,
+  routingAttempts: RoutingAttempt[] | undefined,
+): RequestDetailAttempt[] {
+  const merged = new Map<number, RequestDetailAttempt>()
+  const sourceRank = (source?: RequestDetailAttempt['source']) =>
+    source === 'journey' ? 3 : source === 'waterfall' ? 2 : 1
+  const add = (attempt: RequestDetailAttempt) => {
+    if (!Number.isFinite(attempt.attempt_no)) return
+    const existing = merged.get(attempt.attempt_no)
+    if (!existing) {
+      merged.set(attempt.attempt_no, attempt)
+      return
+    }
+    const preferred = sourceRank(attempt.source) >= sourceRank(existing.source) ? attempt : existing
+    const fallback = preferred === attempt ? existing : attempt
+    merged.set(attempt.attempt_no, {
+      ...fallback,
+      ...preferred,
+      attempt_id: preferred.attempt_id || fallback.attempt_id,
+      attempt_no: preferred.attempt_no,
+      model: preferred.model ?? fallback.model,
+      provider_id: preferred.provider_id ?? fallback.provider_id,
+      credential_id: preferred.credential_id ?? fallback.credential_id,
+      started_at: preferred.started_at ?? fallback.started_at,
+      first_byte_at: preferred.first_byte_at ?? fallback.first_byte_at,
+      ended_at: preferred.ended_at ?? fallback.ended_at,
+      outcome: preferred.outcome ?? fallback.outcome,
+      error_kind: preferred.error_kind ?? fallback.error_kind,
+      source: preferred.source || fallback.source,
+    })
+  }
+  for (const attempt of mapLogRoutingAttempts(routingAttempts)) add(attempt)
+  for (const attempt of waterfallAttempts ?? []) {
+    const detailAttempt = attempt as RequestDetailAttempt
+    add({ ...detailAttempt, source: detailAttempt.source || 'waterfall' })
+  }
+  for (const attempt of journeyAttemptEvents(journey?.events)) add(attempt)
+  return [...merged.values()].sort((a, b) => a.attempt_no - b.attempt_no)
 }
 
 /** Test helper — clear module cache between tests. */
@@ -98,6 +175,7 @@ export function useRequestDetailLoader() {
   const log = ref<RequestLogDetail | null>(null)
   const unified = ref<UnifiedRequestDetail | null>(null)
   const sessionSnap = ref<Record<string, unknown> | null>(null)
+  const journey = shallowRef<RequestJourney | null>(null)
 
   const bodiesLoading = ref(false)
   const waterfallLoading = ref(false)
@@ -118,10 +196,11 @@ export function useRequestDetailLoader() {
   const outboundBody = computed(
     () => unified.value?.bodies?.outbound_body ?? log.value?.outbound_body ?? null,
   )
-  const attempts = computed((): WaterfallAttempt[] => {
-    if (waterfall.value?.attempts?.length) return waterfall.value.attempts
-    return mapLogRoutingAttempts(log.value?.routing_attempts?.attempts)
-  })
+  const attempts = computed((): RequestDetailAttempt[] => mergeRequestAttempts(
+    journey.value,
+    waterfall.value?.attempts,
+    log.value?.routing_attempts?.attempts,
+  ))
 
   function bumpSeq(): number {
     abort?.abort()
@@ -138,6 +217,7 @@ export function useRequestDetailLoader() {
     // navigation still hits the in-memory entry, but drop every
     // section-specific signal so the UI doesn't show "加载失败" for a
     // request that hasn't even started loading yet.
+    journey.value = null
     waterfall.value = null
     waterfallSource.value = ''
     waterfallError.value = ''
@@ -149,6 +229,8 @@ export function useRequestDetailLoader() {
   function applyEntry(e: CacheEntry) {
     log.value = e.log
     unified.value = e.unified
+    if (e.journey) journey.value = e.journey
+    else journey.value = null
     bodiesLoaded.value = e.bodiesLoaded
     if (e.waterfall) {
       waterfall.value = e.waterfall
@@ -182,18 +264,20 @@ export function useRequestDetailLoader() {
     sessionSnap.value = null
     metaLoading.value = true
     try {
-      const [u, meta] = await Promise.all([
+      const [u, meta, durableJourney] = await Promise.all([
         getUnifiedRequestDetail(requestId, { omitBody: true }).catch(() => null),
         getRequestLogDetail(requestId, { omitBody: true }).catch(() => null),
+        getRequestJourney(requestId).catch(() => null),
       ])
       if (seq !== loadSeq.value) return
       unified.value = u
       log.value = meta
+      journey.value = durableJourney
       if (!u && !meta) {
         metaError.value = '请求详情未找到'
         return
       }
-      cachePut(requestId, { log: meta, unified: u, bodiesLoaded: false })
+      cachePut(requestId, { log: meta, unified: u, journey: durableJourney, bodiesLoaded: false })
       const sid = meta?.gw_session_id || u?.meta.gw_session_id
       if (sid) void ensureSessionSnap(sid, abort?.signal)
     } catch (e: unknown) {
