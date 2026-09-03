@@ -1,5 +1,5 @@
 {
   "metric": "CJK runs per non-comment code line; src/**/*.{vue,ts,tsx,js,mjs}; excludes src/locales, src/i18n, *.test/spec",
-  "count": 6855,
+  "count": 6857,
   "updated": "2026-09-03"
 }

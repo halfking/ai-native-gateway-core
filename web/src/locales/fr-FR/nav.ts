@@ -86,6 +86,7 @@ export default {
     licenseOffline: 'Offline Activation',
 
     telemetryScope: 'Data Collection Scope',
+    supportDonate: 'Parrainage & Don',
   },
 
   mainAria: 'Navigation principale',

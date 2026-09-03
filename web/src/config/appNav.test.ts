@@ -109,6 +109,46 @@ describe('resolveNavItemActivation', () => {
 })
 
 /**
+ * 2026-09-04: 接入指南(guide)子菜单回归保护。
+ * 验证从 ai-native-maintain 迁移过来的「自动更新」与「赞助与捐赠」菜单项
+ * 配置正确：均为 external 跳转,且 donate 不带 opsPlatform 门控(所有登录用户可见)。
+ */
+describe('guide group migrated items', () => {
+  const guide = NAV_GROUPS.find((g) => g.id === 'guide')!
+
+  it('contains the migrated 自动更新 entry pointing to maintain', () => {
+    const autoUpdate = guide.items.find((i) => i.path === '/maintain/ops/autoupdate')
+    expect(autoUpdate).toBeTruthy()
+    expect(autoUpdate!.labelKey).toBe('nav.item.opsAutoUpdate')
+    expect(autoUpdate!.external).toBe(true)
+    expect(autoUpdate!.opsPlatform).toBe(true)
+    expect(autoUpdate!.activateWhenNotActivated).toBe(true)
+  })
+
+  it('contains the migrated 赞助与捐赠 entry pointing to maintain', () => {
+    const donate = guide.items.find((i) => i.path === '/maintain/donate')
+    expect(donate).toBeTruthy()
+    expect(donate!.labelKey).toBe('nav.item.supportDonate')
+    expect(donate!.external).toBe(true)
+    // 捐赠页对所有登录用户开放,不设置 opsPlatform 门控
+    expect(donate!.opsPlatform).toBeFalsy()
+  })
+
+  it('keeps the original 接入示例 entry as the first item', () => {
+    expect(guide.items.length).toBeGreaterThanOrEqual(3)
+    expect(guide.items[0].path).toBe('/examples')
+  })
+
+  it('redirects guide 自动更新 to ACTIVATE_REDIRECT_PATH when not activated', () => {
+    const autoUpdate = guide.items.find((i) => i.path === '/maintain/ops/autoupdate')!
+    const resolved = resolveNavItemActivation(autoUpdate, { isActivated: false })
+    expect(resolved.path).toBe('/customer/update-activate')
+    expect(resolved.activateAction).toBe(true)
+    expect(resolved.originalPath).toBe('/maintain/ops/autoupdate')
+  })
+})
+
+/**
  * 2026-07-22: 回归保护 — 防止 PUBLIC_NAV_LINKS 指向不存在的路由，
  * 否则路由守卫会重定向到 /?login=1，导致导航栏错位。
  */
