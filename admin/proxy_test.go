@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/proxy"
 )
@@ -53,6 +54,108 @@ func TestProxyNodeViewNeverExposesPassword(t *testing.T) {
 	}
 }
 
+func TestProxyNodeViewIncludesFrontendFields(t *testing.T) {
+	createdAt := time.Date(2026, 9, 3, 10, 11, 12, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Hour)
+	node := &proxy.Node{ID: 1, Protocol: proxy.ProtocolHTTP, Server: "127.0.0.1", Port: 8080, CreatedAt: createdAt, UpdatedAt: updatedAt}
+	view := toProxyNodeView(node)
+	if view.LastHealthCheckAt != nil {
+		t.Fatalf("zero last_health_check_at = %v, want nil", view.LastHealthCheckAt)
+	}
+	if !view.CreatedAt.Equal(createdAt) || !view.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("timestamps = %v/%v, want %v/%v", view.CreatedAt, view.UpdatedAt, createdAt, updatedAt)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	if !strings.Contains(body, `"last_health_check_at":null`) || !strings.Contains(body, `"created_at":"2026-09-03T10:11:12Z"`) {
+		t.Fatalf("node view fields = %s", body)
+	}
+}
+func TestProxySubscriptionViewRedactsSensitiveURLParts(t *testing.T) {
+	sub := &proxy.Subscription{
+		ID:           9,
+		Name:         "private feed",
+		SubscribeURL: "https://alice:secret@example.com/path-token/feed?token=opaque&key=another#fragment",
+		Status:       "active",
+	}
+	view := toProxySubscriptionView(sub)
+	if view.SubscribeURL != "https://example.com/redacted" {
+		t.Fatalf("sanitized URL = %q, want https://example.com/redacted", view.SubscribeURL)
+	}
+	if view.LastFetchAt != nil {
+		t.Fatalf("zero last_fetch_at = %v, want nil", view.LastFetchAt)
+	}
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	for _, secret := range []string{"alice", "secret", "path-token", "opaque", "another", "fragment"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("subscription view leaked %q: %s", secret, body)
+		}
+	}
+	if !strings.Contains(body, `"last_fetch_at":null`) {
+		t.Fatalf("subscription view zero last_fetch_at = %s, want null", body)
+	}
+}
+
+func TestProxySubscriptionViewRedactsLastError(t *testing.T) {
+	sub := &proxy.Subscription{
+		SubscribeURL: "https://example.com/path-token/feed?token=query-secret",
+		LastError:    "fetch https://example.com/path-token/feed?token=query-secret failed password=body-secret",
+	}
+	view := toProxySubscriptionView(sub)
+	encoded, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	for _, secret := range []string{"path-token", "query-secret", "body-secret"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("subscription last_error leaked %q: %s", secret, body)
+		}
+	}
+	if !strings.Contains(body, "https://example.com/redacted") || !strings.Contains(body, "[REDACTED]") {
+		t.Fatalf("sanitized last_error = %s", body)
+	}
+}
+func TestProxySubscriptionViewsEmptyIsJSONArray(t *testing.T) {
+	views := toProxySubscriptionViews(nil)
+	encoded, err := json.Marshal(views)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != "[]" {
+		t.Fatalf("empty subscription views = %s, want []", encoded)
+	}
+}
+
+func TestProxySubscriptionResponseEnvelope(t *testing.T) {
+	views := toProxySubscriptionViews([]*proxy.Subscription{{ID: 1, SubscribeURL: "https://example.com/feed?token=secret"}})
+	body := map[string]any{"items": views, "total": len(views)}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		Items []json.RawMessage `json:"items"`
+		Total int               `json:"total"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Items == nil || len(decoded.Items) != 1 || decoded.Total != 1 {
+		t.Fatalf("envelope = %s, want one-item array and total 1", encoded)
+	}
+	if strings.Contains(string(encoded), "secret") {
+		t.Fatalf("envelope leaked URL query credential: %s", encoded)
+	}
+}
+
 func TestProxyHelpersValidateSafeBoundaries(t *testing.T) {
 	for _, raw := range []string{
 		"", "ftp://example.com/feed", "https:///missing-host", "relative/path",
@@ -65,6 +168,22 @@ func TestProxyHelpersValidateSafeBoundaries(t *testing.T) {
 		if err := validateSubscribeURL(raw); err != nil {
 			t.Errorf("validateSubscribeURL(%q) = %v", raw, err)
 		}
+	}
+	for _, status := range []string{"active", "disabled", "error"} {
+		if !isValidSubscriptionStatus(status) {
+			t.Errorf("subscription status %q should be valid", status)
+		}
+	}
+	if isValidSubscriptionStatus("unhealthy") {
+		t.Error("subscription status unhealthy should be invalid")
+	}
+	for _, status := range []string{"active", "disabled", "unhealthy"} {
+		if !isValidNodeStatus(status) {
+			t.Errorf("node status %q should be valid", status)
+		}
+	}
+	if isValidNodeStatus("error") {
+		t.Error("node status error should be invalid")
 	}
 	if got := undialableWarning(0, 0); got != "" {
 		t.Fatalf("empty warning = %q", got)

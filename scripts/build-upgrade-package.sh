@@ -88,6 +88,7 @@ startup_migrations=(
 	553_approval_resume_claim.sql
 	552_request_journey_durable_outbox.sql
 	618_request_journey_snapshot_receipts.sql
+	646_proxy_management_canonical.sql
 )
 for name in "${startup_migrations[@]}"; do
   source="sql/migrations/startup/$name"
