@@ -303,9 +303,13 @@ func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID str
 	// (key absent) is collapsed into the existing nil-map return below;
 	// TypedError (WRONGTYPE) and other errors also fall through to nil
 	// because this method's contract is "no offsets is fine, we start at 1".
-	vals, err := redissafe.SafeHGetAll(ctx, m.redis, sanitizeOffsetKey(firstSanitizeTenant(tenantIDs), sessionID))
-	if err != nil || len(vals) == 0 {
+	tenantID := firstSanitizeTenant(tenantIDs)
+	vals, err := redissafe.SafeHGetAll(ctx, m.redis, sanitizeOffsetKey(tenantID, sessionID))
+	if err != nil {
 		return nil
+	}
+	if len(vals) == 0 {
+		return m.recoverOffsetsFromMapFields(ctx, sessionID, tenantID)
 	}
 	maxIdx := make(map[SensitiveType]int, len(vals))
 	for tStr, v := range vals {
@@ -314,6 +318,31 @@ func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID str
 			continue
 		}
 		maxIdx[SensitiveType(tStr)] = idx
+	}
+	if len(maxIdx) > 0 {
+		return maxIdx
+	}
+	return m.recoverOffsetsFromMapFields(ctx, sessionID, firstSanitizeTenant(tenantIDs))
+}
+
+// recoverOffsetsFromMapFields prevents placeholder reuse when the compact
+// offsets hash expired before the primary sanitize map. It inspects only Redis
+// field names (placeholders), never the mapped plaintext values.
+func (m *SanitizeInputMiddleware) recoverOffsetsFromMapFields(ctx context.Context, sessionID, tenantID string) map[SensitiveType]int {
+	if m.redis == nil || sessionID == "" {
+		return nil
+	}
+	fields, err := m.redis.HKeys(ctx, sanitizeMapKey(tenantID, sessionID)).Result()
+	if err != nil || len(fields) == 0 {
+		return nil
+	}
+	maxIdx := make(map[SensitiveType]int)
+	for _, field := range fields {
+		placeholder, ok := ParsePlaceholder(field)
+		if !ok || placeholder.Index <= maxIdx[placeholder.Type] {
+			continue
+		}
+		maxIdx[placeholder.Type] = placeholder.Index
 	}
 	return maxIdx
 }
@@ -778,8 +807,13 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 	for ph, val := range vals {
 		sm[ph] = val
 	}
-	// 每次还原都刷新 TTL（用户继续会话）
-	_ = it.redis.Expire(ctx, key, it.ttl).Err()
+	// 每次还原都刷新 TTL（用户继续会话）。刷新主 map 与 offset hash
+	// 一起进行；否则 offset 可能先过期，下一轮输入会从 1 重编号并覆盖
+	// 仍存活的 placeholder 映射。
+	if err := it.redis.Expire(ctx, key, it.ttl).Err(); err != nil {
+		return nil, err
+	}
+	_ = it.redis.Expire(ctx, sanitizeOffsetKey(tenant, sessionID), it.ttl).Err()
 	return sm, nil
 }
 
