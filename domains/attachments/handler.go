@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 )
 
 // Handler 提供附件下载和查询的 HTTP 接口。
@@ -180,16 +181,16 @@ func (h *Handler) ListByRequest(w http.ResponseWriter, r *http.Request, requestI
 
 // ─── 响应辅助 ───────────────────────────────────────────────────
 
+// writeJSONOK / writeJSONError 薄委托 internal/httpx（2026-09-04 writeJSON
+// 收敛）；charset 差异保留在本地。
 func writeJSONOK(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(v)
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, http.StatusOK, "application/json; charset=utf-8", v)
 }
 
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, status, "application/json; charset=utf-8", map[string]any{
 		"error": map[string]any{
 			"code":    code,
 			"message": message,

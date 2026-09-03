@@ -85,8 +85,7 @@ func registerAvailabilityMetrics() {
 		// availability_write_duration_seconds measures the HSET + EXPIRE
 		// pipeline round-trip. Probe workers call this on every state
 		// transition, so a p99 above 50ms here directly slows the probe
-		// loop and can back-pressure SuspiciousProbe / PassiveProbe
-		// workers.
+		// loop and can back-pressure PassiveProbe workers.
 		availabilityWriteDuration = prometheus.NewHistogram(
 			prometheus.HistogramOpts{
 				Name: availabilityMetricPrefix + "write_duration_seconds",

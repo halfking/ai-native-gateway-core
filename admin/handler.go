@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,6 +32,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
@@ -1358,9 +1358,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	}
 }
 
+// writeJSON 写 JSON 响应；marshal 失败时记日志并返回 500 兜底体。
+// 薄委托 internal/httpx（2026-09-04 writeJSON 收敛），错误分支语义保留在本地。
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	data, err := json.Marshal(v)
-	if err != nil {
+	if err := httpx.WriteJSON(w, status, "application/json", v); err != nil {
 		slog.Error("json marshal failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -1368,12 +1369,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		w.Write([]byte(`{"error":{"detail":"json marshal failed"}}`))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write(data)
-	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write([]byte("\n"))
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
