@@ -338,6 +338,27 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 	systemMsgs := req.Messages[:marker.SystemMsgCount]
 	tailMsgs := req.Messages[globalCut:]
 
+	if protocol == "anthropic-messages" {
+		// Anthropic summaries belong in the top-level system field, matching
+		// proactive compression and SmartCompress's protocol adapter. Never
+		// fabricate a user message carrying the summary on this wire format.
+		newSystem, err := rebuildAnthropicSystemField(generic["system"], marker.SummaryText)
+		if err != nil {
+			return nil, false
+		}
+		raw, err := json.Marshal(tailMsgs)
+		if err != nil {
+			return nil, false
+		}
+		generic["system"] = newSystem
+		generic["messages"] = raw
+		result, err := json.Marshal(generic)
+		if err != nil {
+			return nil, false
+		}
+		return result, true
+	}
+
 	summaryContent := smartWindowSummaryPrefix + marker.SummaryText
 	summaryMsg, _ := json.Marshal(map[string]string{
 		"role":    "user",

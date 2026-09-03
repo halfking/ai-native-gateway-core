@@ -425,6 +425,25 @@ func TestIncrementalBuild_Basic(t *testing.T) {
 	}
 }
 
+func TestIncrementalBuild_AnthropicPlacesSummaryInSystem(t *testing.T) {
+	body := []byte(`{"model":"claude","system":"You are helpful.","messages":[{"role":"user","content":"old"},{"role":"assistant","content":"old answer"},{"role":"user","content":"latest"}]}`)
+	marker := CutMarker{Version: cutMarkerSchemaVersion, SystemMsgCount: 0, CutIndex: 2, SourceMsgCount: 3, SummaryText: "prior turns"}
+	rebuilt, ok := IncrementalBuild(body, marker, "anthropic-messages")
+	if !ok {
+		t.Fatal("expected Anthropic incremental build to succeed")
+	}
+	var got struct {
+		System   string            `json:"system"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rebuilt, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) != 1 || !strings.Contains(got.System, AnthropicSystemSummaryPrefix) {
+		t.Fatalf("Anthropic incremental output = %s", rebuilt)
+	}
+}
+
 func TestIncrementalBuild_StaleMarker(t *testing.T) {
 	body := makeBodyAny(
 		makeMsg("user", "Only message"),
