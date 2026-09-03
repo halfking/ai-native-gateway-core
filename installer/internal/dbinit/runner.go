@@ -80,6 +80,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"637_session_bodies_unified_today_visible.sql",
 			"638_session_bodies_promote_guard.sql",
 			"639_provider_error_details_credential.sql",
+			"645_goal_client_signal.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

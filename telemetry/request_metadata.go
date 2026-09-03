@@ -80,12 +80,19 @@ func defaultAgentPatterns() []agentPatternEntry {
 //
 //	telemetry.RegisterAgentPattern("my-custom-agent", "my agent", "custom cli")
 func RegisterAgentPattern(name string, patterns ...string) {
+	name = strings.TrimSpace(name)
 	if name == "" || len(patterns) == 0 {
 		return
 	}
-	lower := make([]string, len(patterns))
-	for i, p := range patterns {
-		lower[i] = strings.ToLower(p)
+	lower := make([]string, 0, len(patterns))
+	for _, p := range patterns {
+		p = strings.TrimSpace(strings.ToLower(p))
+		if p != "" {
+			lower = append(lower, p)
+		}
+	}
+	if len(lower) == 0 {
+		return
 	}
 	agentPatternsMu.Lock()
 	defer agentPatternsMu.Unlock()
