@@ -234,18 +234,6 @@
           "hideForTenant": true,
           "tenantScope": "default",
           "pluginScope": "*"
-        },
-        {
-          "path": "/plugins/ai-session-manager/sessions",
-          "label": "会话列表",
-          "labelKey": "nav.item.pluginSessions",
-          "icon": "💬",
-          "super": true,
-          "hideForTenant": true,
-          "external": true,
-          "plugin": "ai-session-manager",
-          "tenantScope": "default",
-          "pluginScope": "plugin"
         }
       ],
       "tenantScope": "mixed",
