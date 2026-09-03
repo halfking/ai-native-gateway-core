@@ -4412,27 +4412,11 @@ func main() {
 			tuningRefresher := bg.NewTuningStoreRefresher(tuningStore, dbConn.Pool())
 			tuningRefresher.Start(context.Background())
 
-			// V3: classification-result cache. Keys are signal fingerprints
-			// (not session IDs), so repeated identical requests skip
-			// re-classification. TTL defaults to the tuning-store refresh
-			// cadence so stale results from a mid-cycle tuning change are
-			// bounded. Size 0 disables the cache entirely.
-			classificationCache := autoroute.NewClassificationCache(
-				envInt("LLM_GATEWAY_AUTO_CLASSIFICATION_CACHE_SIZE", 512),
-				envDuration("LLM_GATEWAY_AUTO_CLASSIFICATION_CACHE_TTL", 5*time.Minute),
+			classifier := autoroute.NewHeuristicClassifierWithTuning(
+				autoroute.DefaultHeuristicThresholds(),
+				autoroute.DefaultKeywords(),
+				tuningStore,
 			)
-			classifier := autoroute.NewCachedClassifier(
-				autoroute.NewHeuristicClassifierWithTuning(
-					autoroute.DefaultHeuristicThresholds(),
-					autoroute.DefaultKeywords(),
-					tuningStore,
-				),
-				classificationCache,
-				autoroute.ClassificationCacheVersion,
-			)
-			// The LLM fallback classifier is deliberately NOT wrapped: in the
-			// default deployment it uses DisabledCaller (no latency to save),
-			// and LLM outputs are not guaranteed stable enough to reuse.
 			decider := autoroute.NewDecider(
 				classifier,
 				// v2.1: LLM fallback classifier. Default uses
@@ -5197,7 +5181,9 @@ func main() {
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
 		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
-		for _, manifest := range pluginManifests { pluginCapabilities.RegisterManifest(manifest) }
+		for _, manifest := range pluginManifests {
+			pluginCapabilities.RegisterManifest(manifest)
+		}
 		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
 		for _, manifest := range pluginManifests {
 			if manifest != nil {
@@ -5218,8 +5204,7 @@ func main() {
 				return "", false
 			}
 			return activation.ModuleKey, activation.LicenseRequired
-			}, entitlementAuthorizer, dbConn.Pool(), cfg.SecretKey, pluginCapabilities)
-
+		}, entitlementAuthorizer, dbConn.Pool(), cfg.SecretKey, pluginCapabilities)
 
 		// P6: health loop — precise HTTP health check as the liveness signal.
 		// Each tick GETs manifest.Runtime.HealthPath over the plugin's unix
