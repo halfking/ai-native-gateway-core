@@ -120,22 +120,22 @@ func DefaultCheckerConfig() CheckerConfig {
 // degradedCooldown (the legacy behaviour).
 func defaultKindThresholds() map[string]KindThreshold {
 	return map[string]KindThreshold{
-		"timeout":            {FailureThreshold: 0.70, MinSampleSize: 5, DegradedCooldown: 20 * time.Minute},
-		"stream_timeout":     {FailureThreshold: 0.70, MinSampleSize: 5, DegradedCooldown: 20 * time.Minute},
+		"timeout":        {FailureThreshold: 0.70, MinSampleSize: 5, DegradedCooldown: 20 * time.Minute},
+		"stream_timeout": {FailureThreshold: 0.70, MinSampleSize: 5, DegradedCooldown: 20 * time.Minute},
 		// 2026-08-29 fix: rate_limit 阈值从 0.95 提升到 0.98，最小样本从 8 提升到 15，
 		// 冷却从 1 分钟缩短到 30 秒。智谱 GLM/MiniMax 等国内模型在高峰期会返回较多
 		// 429，但这些是正常的流控信号，不应触发长时间降级。提升阈值需要更多证据
 		// (15 样本中有 14.7 个失败才触发)，缩短冷却让恢复更快。
-		"rate_limit":         {FailureThreshold: 0.98, MinSampleSize: 15, DegradedCooldown: 30 * time.Second},
+		"rate_limit": {FailureThreshold: 0.98, MinSampleSize: 15, DegradedCooldown: 30 * time.Second},
 		// 2026-08-29 fix: concurrent 并发过载也应更宽容。智谱/MiniMax 的 503 "engine busy"
 		// 是瞬态信号，提升阈值到 0.95 避免误判，增加样本到 12 保证统计意义。
-		"concurrent":         {FailureThreshold: 0.95, MinSampleSize: 12, DegradedCooldown: 2 * time.Minute},
+		"concurrent":            {FailureThreshold: 0.95, MinSampleSize: 12, DegradedCooldown: 2 * time.Minute},
 		"upstream_context_loss": {FailureThreshold: 0.50, MinSampleSize: 3, DegradedCooldown: 30 * time.Minute},
-		"upstream_down":      {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
-		"upstream_overloaded": {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
-		"model_not_found":    {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
-		"model_deprecated":   {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
-		"unsupported_feature": {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
+		"upstream_down":         {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
+		"upstream_overloaded":   {FailureThreshold: 0.90, MinSampleSize: 8, DegradedCooldown: 15 * time.Minute},
+		"model_not_found":       {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
+		"model_deprecated":      {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
+		"unsupported_feature":   {FailureThreshold: 1.0, MinSampleSize: 1, DegradedCooldown: 24 * time.Hour},
 	}
 }
 
@@ -614,22 +614,27 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 		      OR COALESCE(quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  )
 		  AND lifecycle_status = 'active'
-		  AND NOT EXISTS (
-		      SELECT 1
-		      FROM model_probe_state mps
-		      -- model_probe_state.raw_model_name stores the upstream raw name
-		      -- (the probe must send a name the upstream recognises), so match
-		      -- against pm.raw_model_name. The previous "OR standardized_name"
-		      -- was dead: standardized_name is lowercase+unprefixed and can
-		      -- never equal a vendor-prefixed raw value.
-		      JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
-		      JOIN credential_model_bindings cmb
-		           ON cmb.credential_id = mps.credential_id
-		          AND cmb.provider_model_id = pm.id
-		      WHERE mps.credential_id = credentials.id
-		        AND mps.state = 'broken_confirmed'
-		        AND cmb.available = FALSE
-		  )
+			AND NOT (
+			    -- Match bg/credential_recovery.go: only block credential-level
+			    -- recovery when every bound model is broken and unavailable.
+			    (SELECT COUNT(*)
+			     FROM model_probe_state mps
+			     JOIN provider_models pm ON pm.raw_model_name = mps.raw_model_name
+			     JOIN credential_model_bindings cmb
+			          ON cmb.credential_id = mps.credential_id
+			         AND cmb.provider_model_id = pm.id
+			     WHERE mps.credential_id = credentials.id
+			       AND mps.state = 'broken_confirmed'
+			       AND cmb.available = FALSE)
+			    =
+			    (SELECT COUNT(*)
+			     FROM credential_model_bindings
+			     WHERE credential_id = credentials.id)
+			    AND (SELECT COUNT(*)
+			         FROM credential_model_bindings
+			         WHERE credential_id = credentials.id) > 0
+			)
+
 	`)
 	if err != nil {
 		slog.Warn("availability_state recovery in RecoverExpired failed", "error", err)

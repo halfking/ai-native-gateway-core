@@ -201,3 +201,40 @@ func TestStdlib_SharesUnderlyingPool(t *testing.T) {
 	// 不应有任何 goroutine 残留：Close 必须幂等。
 	d.Close()
 }
+
+// TestStdlib_CloseConcurrent verifies the shutdown contract under the race
+// detector: callers may observe a live bridge before shutdown or nil after it,
+// but never race with Close or receive a newly-created bridge after Close.
+func TestStdlib_CloseConcurrent(t *testing.T) {
+	d := &DB{pool: newClosedTestPool(t)}
+	const readers = 64
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(readers + 1)
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			for j := 0; j < 100; j++ {
+				_ = d.Stdlib()
+				_ = d.Enabled()
+				_ = d.Pool()
+			}
+		}()
+	}
+	go func() {
+		defer wg.Done()
+		<-start
+		d.Close()
+	}()
+	close(start)
+	wg.Wait()
+
+	if got := d.Stdlib(); got != nil {
+		t.Errorf("Stdlib() after concurrent Close = %p, want nil", got)
+	}
+	if d.Enabled() || d.Pool() != nil {
+		t.Fatal("closed DB must not expose an enabled pool")
+	}
+}

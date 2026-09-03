@@ -111,6 +111,18 @@ var sessionIDHeaderPriority = []string{
 	"X-Thread-Id",
 }
 
+// envelopeSessionID reads only the top-level session_id field. It never scans
+// message content, so a user mentioning "session_id" cannot change ownership.
+func envelopeSessionID(body []byte) string {
+	var envelope struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.SessionID)
+}
+
 // Wrap 返回一个 http.Handler 包装器。
 // 在真实 handler 之前执行脱敏；脱敏失败时降级放行（不阻断请求）。
 func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
@@ -139,10 +151,13 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
+		if bodySessionID := envelopeSessionID(body); bodySessionID != "" {
+			sessionID = bodySessionID
+		}
 
 		// 解析并脱敏
 		m.stateMu.Lock()
-		sanitizedBody, sm, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID)
+		sanitizedBody, sm, messageRefs, err := m.sanitizeRequestBody(r.Context(), body, sessionID, tenantID)
 		m.stateMu.Unlock()
 		if err != nil {
 			m.logger.Warn("sanitize_middleware: sanitize failed, passthrough",
@@ -164,7 +179,9 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			// SC-1 (docs/修订0811/19): 同时把脱敏桥接信息放入 ctx，供
 			// session compressor 写入 SessionState v8 的 SanitizeMapRef /
 			// SanitizeStats，使三层缓存的 L3 脱敏字段不再悬空。
-			*r = *r.WithContext(compression.WithSanitizeInfo(r.Context(), buildSanitizeInfoForSession(rawTenantID, sessionID, sm)))
+			info := buildSanitizeInfoForSession(tenantID, sessionID, sm)
+			info.MessageRefs = messageRefs
+			*r = *r.WithContext(compression.WithSanitizeInfo(r.Context(), info))
 		}
 
 		next.ServeHTTP(w, r)
@@ -173,67 +190,101 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 
 // sanitizeRequestBody 解析 OpenAI 请求体并脱敏 messages。
 // 返回 (脱敏后的请求体, SanitizeMap)。无敏感信息时返回 (nil, 空map)。
-func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string, tenantIDs ...string) ([]byte, SanitizeMap, error) {
+func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body []byte, sessionID string, tenantIDs ...string) ([]byte, SanitizeMap, []compression.SanitizedMessageRef, error) {
 	// 解析请求体为通用结构
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	messagesRaw, ok := raw["messages"]
 	if !ok {
-		return nil, nil, nil // 无 messages 字段，跳过
+		return nil, nil, nil, nil // 无 messages 字段，跳过
 	}
 	messages, ok := messagesRaw.([]any)
 	if !ok {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// 会话级偏移量（记录每类已用最大编号，保证跨轮次不撞号）
 	tenantID := firstSanitizeTenant(tenantIDs)
 	offset := m.loadOffsets(ctx, sessionID, tenantID)
+	// loadOffsets legitimately returns nil on a cache miss or when Redis is
+	// disabled. Keep a local map so allocating placeholder indexes below is
+	// safe in both modes.
+	if offset == nil {
+		offset = make(map[SensitiveType]int)
+	}
 	changed := false
 	sm := make(SanitizeMap)
 	usedCount := make(map[string]int) // 每类本轮新用计数（用于更新 offset）
+	// Keep one ref per message, not only for messages containing PII. This is
+	// the positional contract consumed by compression: unchanged messages are
+	// still needed to prove that raw and sanitized coordinates stayed aligned.
+	messageRefs := make([]compression.SanitizedMessageRef, 0, len(messages))
 
 	for i, msgAny := range messages {
+		originalMessage, marshalErr := json.Marshal(msgAny)
+		if marshalErr != nil {
+			return nil, nil, nil, marshalErr
+		}
+		ref := compression.SanitizedMessageRef{
+			RawIndex: i, SanitizedIndex: i,
+			RawHash:       compression.MessageFingerprint(originalMessage),
+			SanitizedHash: compression.MessageFingerprint(originalMessage),
+		}
+
 		msg, ok := msgAny.(map[string]any)
 		if !ok {
+			messageRefs = append(messageRefs, ref)
 			continue
 		}
-		content, ok := msg["content"].(string)
-		if !ok {
-			continue
-		}
-		// 只脱敏 user 和 system 消息（assistant 消息是上游生成，不应改动）
+		content, hasStringContent := msg["content"].(string)
 		role, _ := msg["role"].(string)
-		if role != "user" && role != "system" {
+		// 只脱敏 user 和 system 消息（assistant 消息是上游生成，不应改动）
+		if !hasStringContent || (role != "user" && role != "system") {
+			messageRefs = append(messageRefs, ref)
 			continue
 		}
 
 		result, err := m.sanitizer.sanitizeInput(ctx, content, offset)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if len(result.SanitizeMap) == 0 {
+			messageRefs = append(messageRefs, ref)
 			continue
 		}
 
 		msg["content"] = result.SanitizedText
 		messages[i] = msg
+		sanitizedMessage, marshalErr := json.Marshal(msg)
+		if marshalErr != nil {
+			return nil, nil, nil, marshalErr
+		}
+		ref.SanitizedHash = compression.MessageFingerprint(sanitizedMessage)
+		ref.Changed = true
+		ref.PlaceholderCount = len(result.SanitizeMap)
+		messageRefs = append(messageRefs, ref)
 		changed = true
 
 		// 合并映射表 + 更新每类计数
 		for ph, val := range result.SanitizeMap {
 			sm[ph] = val
 			if p, ok := ParsePlaceholder(ph); ok {
-				usedCount[string(p.Type)] = p.Index
+				typ := string(p.Type)
+				if p.Index > usedCount[typ] {
+					usedCount[typ] = p.Index
+				}
+				if offset[p.Type] < p.Index {
+					offset[p.Type] = p.Index
+				}
 			}
 		}
 	}
 
 	if !changed {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 
 	// 持久化映射表到 Redis（同时把每类本轮最大编号刷回 offset key）
@@ -247,10 +298,10 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 	// 重新序列化
 	newBody, err := json.Marshal(raw)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
-	return newBody, sm, nil
+	return newBody, sm, messageRefs, nil
 }
 
 // loadOffsets 从 Redis 加载每类已用最大编号作为偏移量。
@@ -267,9 +318,13 @@ func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID str
 	// (key absent) is collapsed into the existing nil-map return below;
 	// TypedError (WRONGTYPE) and other errors also fall through to nil
 	// because this method's contract is "no offsets is fine, we start at 1".
-	vals, err := redissafe.SafeHGetAll(ctx, m.redis, sanitizeOffsetKey(firstSanitizeTenant(tenantIDs), sessionID))
-	if err != nil || len(vals) == 0 {
+	tenantID := firstSanitizeTenant(tenantIDs)
+	vals, err := redissafe.SafeHGetAll(ctx, m.redis, sanitizeOffsetKey(tenantID, sessionID))
+	if err != nil {
 		return nil
+	}
+	if len(vals) == 0 {
+		return m.recoverOffsetsFromMapFields(ctx, sessionID, tenantID)
 	}
 	maxIdx := make(map[SensitiveType]int, len(vals))
 	for tStr, v := range vals {
@@ -278,6 +333,31 @@ func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID str
 			continue
 		}
 		maxIdx[SensitiveType(tStr)] = idx
+	}
+	if len(maxIdx) > 0 {
+		return maxIdx
+	}
+	return m.recoverOffsetsFromMapFields(ctx, sessionID, firstSanitizeTenant(tenantIDs))
+}
+
+// recoverOffsetsFromMapFields prevents placeholder reuse when the compact
+// offsets hash expired before the primary sanitize map. It inspects only Redis
+// field names (placeholders), never the mapped plaintext values.
+func (m *SanitizeInputMiddleware) recoverOffsetsFromMapFields(ctx context.Context, sessionID, tenantID string) map[SensitiveType]int {
+	if m.redis == nil || sessionID == "" {
+		return nil
+	}
+	fields, err := m.redis.HKeys(ctx, sanitizeMapKey(tenantID, sessionID)).Result()
+	if err != nil || len(fields) == 0 {
+		return nil
+	}
+	maxIdx := make(map[SensitiveType]int)
+	for _, field := range fields {
+		placeholder, ok := ParsePlaceholder(field)
+		if !ok || placeholder.Index <= maxIdx[placeholder.Type] {
+			continue
+		}
+		maxIdx[placeholder.Type] = placeholder.Index
 	}
 	return maxIdx
 }
@@ -742,8 +822,13 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 	for ph, val := range vals {
 		sm[ph] = val
 	}
-	// 每次还原都刷新 TTL（用户继续会话）
-	_ = it.redis.Expire(ctx, key, it.ttl).Err()
+	// 每次还原都刷新 TTL（用户继续会话）。刷新主 map 与 offset hash
+	// 一起进行；否则 offset 可能先过期，下一轮输入会从 1 重编号并覆盖
+	// 仍存活的 placeholder 映射。
+	if err := it.redis.Expire(ctx, key, it.ttl).Err(); err != nil {
+		return nil, err
+	}
+	_ = it.redis.Expire(ctx, sanitizeOffsetKey(tenant, sessionID), it.ttl).Err()
 	return sm, nil
 }
 

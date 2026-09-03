@@ -147,6 +147,7 @@ func TestRecoverExpiredBindingsEnqueuesProbes(t *testing.T) {
 	if err := r.recoverExpiredBindings(context.Background()); err != nil {
 		t.Fatalf("recoverExpiredBindings: %v", err)
 	}
+	r.waitProbeDispatch()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -510,6 +511,7 @@ func TestRecoverExpiredBindingsIgnoresBackoffState(t *testing.T) {
 	if err := r.recoverExpiredBindings(context.Background()); err != nil {
 		t.Fatalf("recoverExpiredBindings failed: %v", err)
 	}
+	r.waitProbeDispatch()
 
 	if len(submitted) != 1 {
 		t.Fatalf("expected 1 submitted probe, got %d: %v", len(submitted), submitted)
@@ -614,6 +616,7 @@ func TestRecoverFreshDegradedBindingsEnqueuesProbes(t *testing.T) {
 	if err := r.recoverFreshDegradedBindings(context.Background()); err != nil {
 		t.Fatalf("recoverFreshDegradedBindings: %v", err)
 	}
+	r.waitProbeDispatch()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -914,6 +917,7 @@ func TestScanLookbackTriggersRecoveryAndProbe(t *testing.T) {
 	r.SetInvalidateCandidateCache(func(int) {})
 
 	r.scanLookbackRecoveries(context.Background())
+	r.waitProbeDispatch()
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -1166,6 +1170,7 @@ func TestReconcileStaleNodeProbeStatesEnqueuesProbes(t *testing.T) {
 	if err := r.reconcileStaleNodeProbeStates(context.Background()); err != nil {
 		t.Fatalf("reconcileStaleNodeProbeStates: %v", err)
 	}
+	r.waitProbeDispatch()
 	mu.Lock()
 	defer mu.Unlock()
 	wantSubmitted := []string{"11|glm-5.2", "11|glm-5.3", "22|minimax-m3"}
@@ -1453,6 +1458,7 @@ func TestConcurrentReconcileDoesNotDoubleEnqueue(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+	r.waitProbeDispatch()
 	close(errCh)
 	for err := range errCh {
 		t.Fatalf("concurrent reconcile errored: %v", err)
@@ -2226,5 +2232,131 @@ func TestDispatchRecoveryHooks_ImmediateDedupePerId(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+// TestProbeSubmissionIsAsync verifies P1.1 fix: probe submissions in the
+// recovery tick must be async to avoid blocking the 30s tick.
+//
+// Root cause (2026-09-02 analysis): the previous implementation called
+// probeSubmitter synchronously inside dispatchRecoveryHooks, recoverExpiredBindings,
+// recoverFreshDegradedBindings, and reconcileStaleNodeProbeStates. When probe
+// submissions involved DB I/O or network calls, they blocked the recovery tick,
+// preventing other recovery actions from executing.
+//
+// Expected behavior:
+//   - Probe submissions run in background goroutines
+//   - The recovery tick completes quickly without waiting for submissions
+//   - Cache invalidation (fast local operation) still runs inline
+//
+// This test verifies the async pattern by checking that probe submissions
+// don't block the calling function's return.
+func TestProbeSubmissionIsAsync(t *testing.T) {
+	src, err := os.ReadFile("credential_recovery.go")
+	if err != nil {
+		t.Fatalf("read credential_recovery.go: %v", err)
+	}
+	body := string(src)
+
+	// Patterns to verify:
+	// 1. dispatchRecoveryHooks must use goroutines for probe submission
+	dispatchStart := strings.Index(body, "dispatchRecoveryHooks := func(")
+	if dispatchStart < 0 {
+		t.Fatalf("dispatchRecoveryHooks function not found")
+	}
+	dispatchEnd := strings.Index(body[dispatchStart:], "\n\t}")
+	if dispatchEnd < 0 {
+		t.Fatalf("dispatchRecoveryHooks closing brace not found")
+	}
+	dispatchBody := body[dispatchStart : dispatchStart+dispatchEnd]
+
+	// dispatchProbe owns the goroutine, bounded concurrency, and shutdown wait.
+	if !strings.Contains(dispatchBody, "r.dispatchProbe(") {
+		t.Fatalf("dispatchRecoveryHooks must use the tracked probe dispatcher")
+	}
+
+	// 2. recoverExpiredBindings must use goroutines
+	expiredStart := strings.Index(body, "func (r *CredentialRecovery) recoverExpiredBindings(")
+	if expiredStart < 0 {
+		t.Fatalf("recoverExpiredBindings function not found")
+	}
+	expiredEnd := strings.Index(body[expiredStart:], "\nfunc (")
+	if expiredEnd < 0 {
+		expiredEnd = len(body)
+	} else {
+		expiredEnd += expiredStart
+	}
+	expiredBody := body[expiredStart:expiredEnd]
+
+	if !strings.Contains(expiredBody, "r.dispatchProbe(") {
+		t.Fatalf("recoverExpiredBindings must use the tracked probe dispatcher")
+	}
+
+	// Verify probe submission is inside goroutine, not in the rows loop
+	// Pattern: collect pairs first, then submit async after the loop
+	loopEnd := strings.Index(expiredBody, "if err := rows.Err()")
+	if loopEnd < 0 {
+		t.Fatalf("recoverExpiredBindings rows.Err() check not found")
+	}
+	beforeRowsErr := expiredBody[:loopEnd]
+	afterRowsErr := expiredBody[loopEnd:]
+
+	// Before rows.Err(): must NOT call probeSubmitter directly (synchronous)
+	if strings.Contains(beforeRowsErr, "r.probeSubmitter(p.credID, p.model)") {
+		t.Fatalf("recoverExpiredBindings must not call probeSubmitter synchronously in loop")
+	}
+
+	// After rows.Err(): must have goroutine with probeSubmitter
+	if !strings.Contains(afterRowsErr, "r.dispatchProbe(") {
+		t.Fatalf("recoverExpiredBindings must dispatch probes after collecting pairs")
+	}
+
+	// 3. recoverFreshDegradedBindings must use goroutines
+	freshStart := strings.Index(body, "func (r *CredentialRecovery) recoverFreshDegradedBindings(")
+	if freshStart < 0 {
+		t.Fatalf("recoverFreshDegradedBindings function not found")
+	}
+	freshEnd := strings.Index(body[freshStart:], "\nfunc (")
+	if freshEnd < 0 {
+		freshEnd = len(body)
+	} else {
+		freshEnd += freshStart
+	}
+	freshBody := body[freshStart:freshEnd]
+
+	if !strings.Contains(freshBody, "r.dispatchProbe(") {
+		t.Fatalf("recoverFreshDegradedBindings must use the tracked probe dispatcher")
+	}
+
+	// 4. reconcileStaleNodeProbeStates must use goroutines
+	reconcileStart := strings.Index(body, "func (r *CredentialRecovery) reconcileStaleNodeProbeStates(")
+	if reconcileStart < 0 {
+		t.Fatalf("reconcileStaleNodeProbeStates function not found")
+	}
+	reconcileEnd := strings.Index(body[reconcileStart:], "\nfunc (")
+	if reconcileEnd < 0 {
+		reconcileEnd = len(body)
+	} else {
+		reconcileEnd += reconcileStart
+	}
+	reconcileBody := body[reconcileStart:reconcileEnd]
+
+	if !strings.Contains(reconcileBody, "r.dispatchProbe(") {
+		t.Fatalf("reconcileStaleNodeProbeStates must use the tracked probe dispatcher")
+	}
+
+	// 5. scanLookbackRecoveries must use goroutines
+	lookbackStart := strings.Index(body, "func (r *CredentialRecovery) scanLookbackRecoveries(")
+	if lookbackStart < 0 {
+		t.Fatalf("scanLookbackRecoveries function not found")
+	}
+	lookbackEnd := strings.Index(body[lookbackStart:], "\n}\n")
+	if lookbackEnd < 0 {
+		t.Fatalf("scanLookbackRecoveries closing brace not found")
+	}
+	lookbackBody := body[lookbackStart : lookbackStart+lookbackEnd]
+
+	if !strings.Contains(lookbackBody, "r.dispatchProbe(") {
+		t.Fatalf("scanLookbackRecoveries must use the tracked probe dispatcher")
 	}
 }

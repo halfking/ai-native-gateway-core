@@ -466,6 +466,9 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 // endpoint hard-disabled the button, which left operators with no manual
 // self-check exactly when the automated pipeline was dead.
 //
+// 2026-09-03: reason 字段改成中文友好版，便于 UI 直接显示在 tooltip 上。
+// error_code 保持稳定，UI 用它决定"未启用 vs 异常"的按钮文案。
+//
 // Route: GET /api/self-check/trigger/availability (admin).
 func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -484,7 +487,9 @@ func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *h
 	}
 	if !available {
 		if scNewProbeMode() {
-			resp["reason"] = "no probe path wired (worker retired in new probe mode and probe queue unavailable)"
+			// 新探测模式下 trigger 已迁移到节点探测队列，UI 触发按钮有意禁用；
+			// 这不是故障，运维需要知道"为什么禁用"而不是"触发挂了"。
+			resp["reason"] = "自检触发已迁移到节点探测队列（probe queue），手动触发按钮已禁用。如需手动触发，请走节点操作 API 或重启用 legacy selfcheck。"
 			resp["error_code"] = "self_check.trigger.no_probe_path"
 		} else {
 			resp["reason"] = "self-check worker is not initialized (server may still be starting)"

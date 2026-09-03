@@ -20,14 +20,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 )
 
 // RecoveryDeps holds the external dependencies for the recovery coordinator.
 type RecoveryDeps struct {
-	// Cache is the session state cache. May be nil (recovery still works,
-	// just without incremental compression on the next request).
+	// Cache is the legacy session state cache. May be nil; V2 metadata can
+	// provide the cold-start recovery path when the legacy cache is absent.
 	Cache *SessionCache
+
+	// V2Meta and V2Builder are optional V2 cold-start recovery dependencies.
+	// They carry only body-free metadata plus the latest outbound snapshot.
+	V2Meta    V2CompressionMetadataReader
+	V2Builder V2OutboundBuilder
 
 	// Summarizer is the LLM summarization callback. When nil, the coordinator
 	// falls back to mechanical trim only.
@@ -118,6 +124,11 @@ func (rc *RecoveryCoordinator) Recover(
 	// ── Phase 0: Try incremental cache path ──────────────────────────────
 	// On attempt 0, if the session cache already has a CutMarker from a
 	// prior request, we can skip the already-compressed portion.
+	if attempt == 0 && gwSessionID != "" {
+		if recovered, ok := rc.recoverFromV2Metadata(ctx, body, protocol, tenantID, gwSessionID); ok {
+			return recovered
+		}
+	}
 	if attempt == 0 && rc.deps.Cache != nil && gwSessionID != "" {
 		if state, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID); state != nil && state.HasCutMarker {
 			marker := state.ToCutMarker("")
@@ -129,24 +140,29 @@ func (rc *RecoveryCoordinator) Recover(
 					// non-system user message with smartWindowSummaryPrefix).
 					marker.SummaryText = extractSummaryFromCachedBody(l1Body)
 				}
-				if marker.SummaryText != "" {
-					if rebuilt, ok := IncrementalBuild(body, *marker, protocol); ok {
-						newTokens := estimateBodyTokens(rebuilt)
-						if newTokens < res.EstTokensBefore {
-							res.NewBody = rebuilt
-							res.Strategy = "incremental_cache"
-							res.CutMarker = marker
-							res.Reason = "reused cached cut marker from prior compression"
-							res.EstTokensAfter = newTokens
-							res.ShouldRetry = true
-							slog.Info("recovery: incremental cache hit",
-								"session", gwSessionID,
-								"cut_index", marker.CutIndex,
-								"tokens_before", res.EstTokensBefore,
-								"tokens_after", newTokens,
-							)
-							return res
-						}
+				var rebuilt []byte
+				var ok bool
+				if marker.Strategy == "smart_window_llm" && marker.SummaryMarker != "" {
+					rebuilt, ok = IncrementalBuild(body, *marker, protocol)
+				} else {
+					rebuilt, ok = IncrementalBuildTail(body, *marker, protocol)
+				}
+				if ok {
+					newTokens := estimateBodyTokens(rebuilt)
+					if newTokens < res.EstTokensBefore {
+						res.NewBody = rebuilt
+						res.Strategy = "incremental_cache"
+						res.CutMarker = marker
+						res.Reason = "reused cached cut marker from prior compression"
+						res.EstTokensAfter = newTokens
+						res.ShouldRetry = true
+						slog.Info("recovery: incremental cache hit",
+							"session", gwSessionID,
+							"cut_index", marker.CutIndex,
+							"tokens_before", res.EstTokensBefore,
+							"tokens_after", newTokens,
+						)
+						return res
 					}
 				}
 			}
@@ -197,7 +213,6 @@ func (rc *RecoveryCoordinator) Recover(
 		res.Reason = fmt.Sprintf("smart compress failed: %v", err)
 		return res
 	}
-
 	// ── Phase 3: Build CutMarker and persist to cache ────────────────────
 	// IMPORTANT: only attach an smm_v1 marker when an LLM summary was actually
 	// produced. Mechanical fallback text is deterministic-but-unstable (its
@@ -209,10 +224,14 @@ func (rc *RecoveryCoordinator) Recover(
 	if strategy == "smart_window_llm" {
 		markerSummaryText = summaryText
 	}
-	// 2026-09-01 (audit §五)：在 compression 路径下 sanitize 阶段先于本压缩触发，
-	// 把 [0, len(messages)) 作为 PreSanitizeOffsetRange 占位（语义：所有
-	// messages 在压缩前都已被 sanitize 覆盖）。后续 smart_sani_guard.go 改造
-	// 后会替换为基于 usedCount 推导的精确 range。
+	// PSOR is expressed in the original, pre-sanitize message coordinates.
+	// The compression cut covers leading system messages plus the dropped
+	// non-system prefix; system messages are included because they are part
+	// of the exact source range replaced by the rebuilt representation.
+	preSanitizeRange := [2]int{plan.SystemCount, plan.SystemCount + plan.CutIndex}
+	if plan.CutIndex <= 0 || plan.SystemCount < 0 || preSanitizeRange[1] > len(messages) {
+		preSanitizeRange = [2]int{}
+	}
 	marker := NewCutMarkerWithPreSanitize(
 		plan,
 		len(messages),
@@ -221,7 +240,7 @@ func (rc *RecoveryCoordinator) Recover(
 		markerSummaryText,
 		len(body),
 		len(rebuilt),
-		[2]int{0, len(messages)},
+		preSanitizeRange,
 	)
 
 	if rc.deps.Cache != nil && gwSessionID != "" {
@@ -257,6 +276,234 @@ func (rc *RecoveryCoordinator) Recover(
 	)
 
 	return res
+}
+
+func (rc *RecoveryCoordinator) recoverFromV2Metadata(ctx context.Context, body []byte, protocol, tenantID, sessionID string) (RecoveryResult, bool) {
+	if rc == nil || rc.deps.V2Meta == nil || rc.deps.V2Builder == nil {
+		return RecoveryResult{}, false
+	}
+	meta, err := rc.deps.V2Meta.CompressionMetadata(ctx, tenantID, sessionID)
+	if err != nil || len(meta) == 0 {
+		return RecoveryResult{}, false
+	}
+	cut, ok := meta["cut_marker"].(map[string]interface{})
+	if !ok || len(cut) == 0 {
+		return RecoveryResult{}, false
+	}
+	marker, ok := cutMarkerFromMetadata(cut)
+	if !ok || marker.IsExpired(sessionCacheRedisTTL()) || !validatePersistedProvenance(meta, marker) {
+		return RecoveryResult{}, false
+	}
+	cachedBody, err := rc.deps.V2Builder.BuildLatestOutbound(ctx, tenantID, sessionID)
+	if err != nil || len(cachedBody) == 0 {
+		return RecoveryResult{}, false
+	}
+	if marker.SummaryMarker != "" {
+		marker.SummaryText = extractSummaryFromCachedBodyForMarker(cachedBody, marker.SummaryMarker)
+	}
+	var rebuilt []byte
+	if marker.SummaryText != "" {
+		rebuilt, ok = IncrementalBuild(body, marker, protocol)
+	} else {
+		rebuilt, ok = IncrementalBuildTail(body, marker, protocol)
+	}
+	if !ok || len(rebuilt) >= len(body) {
+		return RecoveryResult{}, false
+	}
+	return RecoveryResult{
+		NewBody: rebuilt, Strategy: "incremental_v2_metadata", CutMarker: &marker,
+		Reason: "reused persisted V2 cut marker", EstTokensBefore: estimateBodyTokens(body),
+		EstTokensAfter: estimateBodyTokens(rebuilt), ShouldRetry: true,
+	}, true
+}
+
+func cutMarkerFromMetadata(meta map[string]interface{}) (CutMarker, bool) {
+	toInt := func(value interface{}) (int, bool) {
+		switch n := value.(type) {
+		case float64:
+			return int(n), n >= 0 && n == float64(int(n))
+		case int:
+			return n, n >= 0
+		case int64:
+			return int(n), n >= 0 && int64(int(n)) == n
+		default:
+			return 0, false
+		}
+	}
+	version, versionOK := toInt(firstMetadataValue(meta, "version", "v"))
+	// Older JSONB markers did not carry an explicit version; retain their
+	// backward-compatible read semantics while rejecting an explicit mismatch.
+	if _, present := meta["version"]; !present {
+		if _, present := meta["v"]; !present {
+			version, versionOK = cutMarkerSchemaVersion, true
+		}
+	}
+	created, ok1 := toInt(meta["created_at"])
+	source, ok2 := toInt(meta["source_msg_count"])
+	system, ok3 := toInt(meta["system_msg_count"])
+	cut, ok4 := toInt(meta["cut_index"])
+	strategy, ok5 := meta["strategy"].(string)
+	if !versionOK || version != cutMarkerSchemaVersion || !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || created <= 0 || source <= 0 || cut <= 0 || system+cut > source {
+		return CutMarker{}, false
+	}
+	marker := CutMarker{Version: version, CreatedAt: int64(created), SourceMsgCount: source, SystemMsgCount: system, CutIndex: cut, Strategy: strategy}
+	if summary, ok := meta["summary_marker"].(string); ok {
+		marker.SummaryMarker = summary
+	}
+	psorValue := meta["pre_sanitize_offset_range"]
+	if psorValue == nil {
+		psorValue = meta["psor"]
+	}
+	switch pair := psorValue.(type) {
+	case []interface{}:
+		if len(pair) == 2 {
+			start, a := toInt(pair[0])
+			end, b := toInt(pair[1])
+			if a && b && start <= end && end <= source {
+				marker.PreSanitizeOffsetRange = [2]int{start, end}
+			}
+		}
+	case []int:
+		if len(pair) == 2 && pair[0] >= 0 && pair[0] <= pair[1] && pair[1] <= source {
+			marker.PreSanitizeOffsetRange = [2]int{pair[0], pair[1]}
+		}
+	}
+	return marker, true
+}
+
+func validatePersistedProvenance(meta map[string]interface{}, marker CutMarker) bool {
+	if marker.Version != cutMarkerSchemaVersion || !isPersistedCutStrategy(marker.Strategy) || marker.CutIndex <= 0 {
+		return false
+	}
+	if marker.CreatedAt <= 0 || marker.CreatedAt > time.Now().Add(5*time.Minute).Unix() {
+		return false
+	}
+	if marker.SystemMsgCount < 0 || marker.GlobalCutIndex() > marker.SourceMsgCount {
+		return false
+	}
+
+	var topPSOR [2]int
+	if psor := meta["pre_sanitize_offset_range"]; psor != nil {
+		pair, ok := metadataIntPair(psor)
+		if !ok {
+			return false
+		}
+		topPSOR = pair
+		if pair[0] != marker.SystemMsgCount || pair[1] != marker.GlobalCutIndex() {
+			return false
+		}
+	}
+	if nested, ok := meta["cut_marker"].(map[string]interface{}); ok {
+		if raw := firstMetadataValue(nested, "pre_sanitize_offset_range", "psor"); raw != nil {
+			pair, valid := metadataIntPair(raw)
+			if !valid || pair[0] != marker.SystemMsgCount || pair[1] != marker.GlobalCutIndex() {
+				return false
+			}
+			if topPSOR != [2]int{} && pair != topPSOR {
+				return false
+			}
+		}
+	}
+	if rawValue, exists := meta["sanitize_message_refs"]; exists {
+		rawRefs, valid := metadataRecords(rawValue)
+		if !valid || len(rawRefs) > marker.SourceMsgCount {
+			return false
+		}
+		for i, ref := range rawRefs {
+			rawIndex, ok1 := metadataNonNegativeInt(ref["raw_index"])
+			sanitizedIndex, ok2 := metadataNonNegativeInt(ref["sanitized_index"])
+			if !ok1 || !ok2 || rawIndex != i || sanitizedIndex < 0 {
+				return false
+			}
+		}
+	}
+	if rawValue, exists := meta["alignment_map"]; exists {
+		rawAlignment, valid := metadataRecords(rawValue)
+		if !valid || len(rawAlignment) > marker.SourceMsgCount {
+			return false
+		}
+		last := -1
+		for _, record := range rawAlignment {
+			index, ok := metadataNonNegativeInt(record["original_index"])
+			if !ok || index <= last || index >= marker.SourceMsgCount {
+				return false
+			}
+			last = index
+		}
+	}
+	return true
+}
+
+func isPersistedCutStrategy(strategy string) bool {
+	return strategy == "mechanical_trim" || strategy == "smart_window_mechanical" ||
+		strategy == "smart_window_llm" || strategy == "incremental_cache" ||
+		strings.HasPrefix(strategy, "sliding_window_")
+}
+
+func firstMetadataValue(meta map[string]interface{}, keys ...string) interface{} {
+	for _, key := range keys {
+		if value, ok := meta[key]; ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func metadataRecords(value interface{}) ([]map[string]interface{}, bool) {
+	switch records := value.(type) {
+	case []map[string]interface{}:
+		return records, true
+	case []interface{}:
+		out := make([]map[string]interface{}, len(records))
+		for i, raw := range records {
+			record, ok := raw.(map[string]interface{})
+			if !ok {
+				return nil, false
+			}
+			out[i] = record
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func metadataIntPair(value interface{}) ([2]int, bool) {
+	var out [2]int
+	var items []interface{}
+	switch typed := value.(type) {
+	case []interface{}:
+		items = typed
+	case []int:
+		if len(typed) == 2 {
+			return [2]int{typed[0], typed[1]}, typed[0] >= 0 && typed[0] <= typed[1]
+		}
+		return out, false
+	default:
+		return out, false
+	}
+	if len(items) != 2 {
+		return out, false
+	}
+	start, ok1 := metadataNonNegativeInt(items[0])
+	end, ok2 := metadataNonNegativeInt(items[1])
+	if !ok1 || !ok2 || start > end {
+		return out, false
+	}
+	return [2]int{start, end}, true
+}
+
+func metadataNonNegativeInt(value interface{}) (int, bool) {
+	switch n := value.(type) {
+	case int:
+		return n, n >= 0
+	case int64:
+		return int(n), n >= 0 && int64(int(n)) == n
+	case float64:
+		return int(n), n >= 0 && n <= 1<<53 && n == float64(int(n))
+	default:
+		return 0, false
+	}
 }
 
 // extractSummaryText generates a brief summary from the messages that will
@@ -372,6 +619,56 @@ func extractSummaryFromCachedBody(body []byte) string {
 		}
 	}
 	return ""
+}
+
+func extractSummaryFromCachedBodyForMarker(body []byte, expectedMarker string) string {
+	messages, err := extractMessages(body)
+	if err != nil {
+		return ""
+	}
+	for _, raw := range messages {
+		var msg struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(raw, &msg) != nil {
+			continue
+		}
+		var content string
+		if json.Unmarshal(msg.Content, &content) != nil {
+			continue
+		}
+		if expectedMarker != "" && strings.HasPrefix(content, CompactionMarkerPrefix) {
+			lineEnd := strings.IndexByte(content, '\n')
+			if lineEnd < 0 || content[:lineEnd] != expectedMarker {
+				continue
+			}
+		}
+		if summary, ok := cachedSummaryText(content); ok {
+			return summary
+		}
+	}
+	return ""
+}
+
+func cachedSummaryText(content string) (string, bool) {
+	if startsWithPrefix(content, smartWindowSummaryPrefix) {
+		return trimPrefix(content, smartWindowSummaryPrefix), true
+	}
+	if !startsWithPrefix(content, CompactionMarkerPrefix) {
+		return "", false
+	}
+	lineEnd := strings.IndexByte(content, '\n')
+	if lineEnd < 0 {
+		return "", false
+	}
+	withoutMarker := content[lineEnd+1:]
+	if startsWithPrefix(withoutMarker, smartWindowSummaryPrefix) {
+		return trimPrefix(withoutMarker, smartWindowSummaryPrefix), true
+	}
+	if startsWithPrefix(withoutMarker, CompressionSummaryPrefix) {
+		return trimPrefix(withoutMarker, CompressionSummaryPrefix), true
+	}
+	return "", false
 }
 
 func startsWithPrefix(s, prefix string) bool {

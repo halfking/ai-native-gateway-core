@@ -10,8 +10,9 @@
 #
 #                The container is named `kx-citus` (matching the installer
 #                hard-coded expectations in `dbinit.NewRunner` and
-#                `dockerutil.NewHealthChecker`) and bound to host port 15432
-#                so it cannot collide with the local llm-gateway-pg on 5432.
+#                `dockerutil.NewHealthChecker`) and bound to host port 15433
+#                so it cannot collide with the local llm-gateway-pg on 5432
+#                or the 252 SSH tunnel on 15432.
 #
 # Status:        audit-only (not for installer embed or runtime)
 # -----------------------------------------------------------------------------
@@ -20,7 +21,7 @@
 #   bash scripts/audit/start-isolated-pg.sh --recreate   # destroy data first
 #
 # Outputs:
-#   - Container kx-citus running on 127.0.0.1:15432
+#   - Container kx-citus running on 127.0.0.1:15433
 #   - Env file at /tmp/audit-pg.env with DSN env vars for downstream scripts
 # -----------------------------------------------------------------------------
 

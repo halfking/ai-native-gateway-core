@@ -270,6 +270,19 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 		}, "", nil
 	}
 
+	// Roleless Responses input items are client input, not assistant output.
+	// Normalize the documented shorthand forms before the unknown-item fallback
+	// so their text survives protocol conversion and multi-turn compression.
+	if role == "" {
+		switch itemType {
+		case "input_text", "text":
+			text, _ := item["text"].(string)
+			return &Message{Role: "user", Content: []ContentBlock{{Type: "text", Text: text}}}, "", nil
+		case "message":
+			role = "user"
+		}
+	}
+
 	// "message"-typed items carry a normal {role, content}. Unknown typed
 	// items are preserved as raw assistant content rather than dropped.
 	if itemType != "" && itemType != "message" && role == "" {

@@ -518,6 +518,10 @@ func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain
 			"upstream", tc.UpstreamProtocol,
 			"pending_event", *pendingEvent,
 			"err", parseErr)
+		// 审计修复 (2026-08-29)：IR P1-1 - 记录失败的 chunk 到 RawDataLogger
+		if t.rawLogger != nil {
+			t.rawLogger.LogConversionError(env.RequestID, tc.UpstreamProtocol, "upstream_response", "stream_parse", trimmedSpace, parseErr)
+		}
 		// 解析错误：记录到熔断器但继续
 		if t.cb != nil {
 			t.cb.RecordError()

@@ -71,11 +71,22 @@ func NewRegistry() *Registry {
 }
 
 // Register 注册一个 strategy。已存在同名时返回 error（不覆盖）。
-func (r *Registry) Register(s Strategy) error {
-	if s == nil {
+func (r *Registry) Register(s Strategy) (err error) {
+	if r == nil {
+		return fmt.Errorf("strategy: nil registry")
+	}
+	if isNilStrategy(s) {
 		return fmt.Errorf("strategy: nil")
 	}
-	name := s.Name()
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("strategy: metadata panic: %v", recovered)
+		}
+	}()
+	name := safeName(s)
+	if name == "<invalid>" {
+		return fmt.Errorf("strategy: invalid Name()")
+	}
 	if name == "" {
 		return fmt.Errorf("strategy: empty Name()")
 	}

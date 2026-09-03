@@ -3,8 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Keep Gateway logs separate from the Memora host service logs. Operators can
+# still override via LLM_GATEWAY_LOG_DIR / LLM_GATEWAY_LOG_FILE.
+DEFAULT_LOG_DIR="$HOME/Downloads/kaixuan/llm-gateway/logs"
+LOG_DIR="${LLM_GATEWAY_LOG_DIR:-$DEFAULT_LOG_DIR}"
+mkdir -p "$LOG_DIR"
 ENV_FILE="${LLM_GATEWAY_ENV_FILE:-/tmp/llm-gateway-local.env}"
-LOG_FILE="${LLM_GATEWAY_LOG_FILE:-/tmp/llm-gateway.log}"
+LOG_FILE="${LLM_GATEWAY_LOG_FILE:-$LOG_DIR/llm-gateway-go.log}"
 PID_FILE="${LLM_GATEWAY_PID_FILE:-/tmp/llm-gateway.pid}"
 SERVICE_PORT="${SERVICE_PORT:-8781}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:${SERVICE_PORT}}"
@@ -54,6 +59,7 @@ write_env() {
     printf 'export LLM_GATEWAY_CORS_ORIGINS=%q\n' "${LLM_GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${SERVICE_PORT}}"
     printf 'export LLM_GATEWAY_ENV=%q\n' "${LLM_GATEWAY_ENV:-development}"
     printf 'export URSM_V2_MODE=%q\n' "${URSM_V2_MODE:-shadow}"
+    printf 'export LLM_GATEWAY_LOG_FILE=%q\n' "$LOG_FILE"
     # Licensing center (ai-native-maintain) + RSA verify key for issued licenses.
     printf 'export LLM_GATEWAY_CENTER_URL=%q\n' "${LLM_GATEWAY_CENTER_URL:-}"
     printf 'export LLM_GATEWAY_LICENSE_PUBLIC_KEY=%q\n' "${LLM_GATEWAY_LICENSE_PUBLIC_KEY:-}"
@@ -261,7 +267,8 @@ start_service() {
   [[ -f "$ENV_FILE" ]] || die "secure environment file is missing; run $0 deploy"
   stop_service
   # shellcheck disable=SC1090
-  source "$ENV_FILE"
+  # Export LLM_GATEWAY_LOG_FILE so the gateway process uses lumberjack internally
+  export LLM_GATEWAY_LOG_FILE="$LOG_FILE"; source "$ENV_FILE"
   nohup "$ROOT_DIR/llm-gateway" >"$LOG_FILE" 2>&1 &
   local pid=$!
   printf '%s\n' "$pid" > "$PID_FILE"
@@ -313,14 +320,27 @@ reset_admin_password_db() {
 }
 
 persist_admin_password() {
-  # Rewrite the admin password lines in the 0600 ENV_FILE so later bare
-  # `verify`/`restart` invocations use the working credential.
-  local newpass="$1"
+  # Rewrite the admin password lines in the 0600 ENV_FILE with shell-safe
+  # quoting so later bare `verify`/`restart` invocations preserve any password.
+  local newpass="$1" tmp line
   [[ -f "$ENV_FILE" ]] || return 0
-  sed -i.bak \
-    -e "s|^export LLM_GATEWAY_ADMIN_PASSWORD=.*|export LLM_GATEWAY_ADMIN_PASSWORD=$newpass|" \
-    -e "s|^export LLM_GATEWAY_SEED_ADMIN_PASSWORD=.*|export LLM_GATEWAY_SEED_ADMIN_PASSWORD=$newpass|" \
-    "$ENV_FILE" && rm -f "$ENV_FILE.bak"
+  tmp="$(mktemp "${ENV_FILE}.tmp.XXXXXX")" || die "cannot create temporary environment file"
+  umask 077
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      'export LLM_GATEWAY_ADMIN_PASSWORD='*)
+        printf 'export LLM_GATEWAY_ADMIN_PASSWORD=%q\n' "$newpass" >>"$tmp"
+        ;;
+      'export LLM_GATEWAY_SEED_ADMIN_PASSWORD='*)
+        printf 'export LLM_GATEWAY_SEED_ADMIN_PASSWORD=%q\n' "$newpass" >>"$tmp"
+        ;;
+      *)
+        printf '%s\n' "$line" >>"$tmp"
+        ;;
+    esac
+  done <"$ENV_FILE"
+  chmod 600 "$tmp"
+  mv "$tmp" "$ENV_FILE"
 }
 
 verify_full() {

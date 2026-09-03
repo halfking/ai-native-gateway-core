@@ -9,6 +9,7 @@ package v2
 import (
 	"container/list"
 	"context"
+	"encoding/json"
 	"sync"
 	"time"
 )
@@ -28,6 +29,61 @@ type RawEntry struct {
 type rawEntry struct {
 	key   string
 	entry *RawEntry
+}
+
+func cloneRawEntry(entry *RawEntry) *RawEntry {
+	if entry == nil {
+		return nil
+	}
+	clone := *entry
+	clone.RequestDelta = cloneMessages(entry.RequestDelta)
+	clone.ResponseDelta = cloneMessages(entry.ResponseDelta)
+	clone.Attachments = append([]AttachmentRef(nil), entry.Attachments...)
+	for i := range clone.RequestDelta {
+		clone.RequestDelta[i].ToolCalls = cloneRawMapSlice(entry.RequestDelta[i].ToolCalls)
+		clone.RequestDelta[i].ContentRaw = append(json.RawMessage(nil), entry.RequestDelta[i].ContentRaw...)
+		clone.RequestDelta[i].RawContent = cloneRawValue(entry.RequestDelta[i].RawContent)
+	}
+	for i := range clone.ResponseDelta {
+		clone.ResponseDelta[i].ToolCalls = cloneRawMapSlice(entry.ResponseDelta[i].ToolCalls)
+		clone.ResponseDelta[i].ContentRaw = append(json.RawMessage(nil), entry.ResponseDelta[i].ContentRaw...)
+		clone.ResponseDelta[i].RawContent = cloneRawValue(entry.ResponseDelta[i].RawContent)
+	}
+	return &clone
+}
+
+func cloneMessages(messages []Message) []Message {
+	return append([]Message(nil), messages...)
+}
+
+func cloneRawValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var clone interface{}
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return nil
+	}
+	return clone
+}
+
+func cloneRawMapSlice(src []map[string]interface{}) []map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	out := make([]map[string]interface{}, len(src))
+	for i, item := range src {
+		raw, err := json.Marshal(item)
+		if err != nil {
+			continue
+		}
+		_ = json.Unmarshal(raw, &out[i])
+	}
+	return out
 }
 
 // RawCacheV2 是 L0 原始缓存：
@@ -67,10 +123,10 @@ func (c *RawCacheV2) Put(_ context.Context, tenant, session string, e *RawEntry)
 	k := rawCacheKey(tenant, session)
 	if el, ok := c.index[k]; ok {
 		c.ll.MoveToFront(el)
-		el.Value.(*rawEntry).entry = e
+		el.Value.(*rawEntry).entry = cloneRawEntry(e)
 		return
 	}
-	el := c.ll.PushFront(&rawEntry{key: k, entry: e})
+	el := c.ll.PushFront(&rawEntry{key: k, entry: cloneRawEntry(e)})
 	c.index[k] = el
 	if c.ll.Len() > c.capacity {
 		oldest := c.ll.Back()
@@ -91,7 +147,7 @@ func (c *RawCacheV2) Get(_ context.Context, tenant, session string) (*RawEntry, 
 		return nil, false
 	}
 	c.ll.MoveToFront(el)
-	return el.Value.(*rawEntry).entry, true
+	return cloneRawEntry(el.Value.(*rawEntry).entry), true
 }
 
 // Invalidate 从 L0 缓存中移除 (tenant, session) 对应条目。

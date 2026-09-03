@@ -64,6 +64,13 @@ func (digestArgument) Match(value interface{}) bool {
 		envelope.Payload.AssistantOutput == "hello"
 }
 
+type outboxJSONTextArgument struct{}
+
+func (outboxJSONTextArgument) Match(value interface{}) bool {
+	text, ok := value.(string)
+	return ok && json.Valid([]byte(text))
+}
+
 type flakyAggregator struct {
 	calls   int
 	failFor int
@@ -147,12 +154,12 @@ func expectRequestLock(mock pgxmock.PgxPoolIface) {
 }
 
 // expectOutboxEnqueue mocks the audit-data-closure-C outbox INSERT that the
-// writer emits in the same transaction as turn+bodies. The payload is JSONB
-// so we use AnyArg; the contract pin for the JSON shape lives in
-// session_aggregate_outbox_reaper_test.go (Encode/Decode round-trip).
+// writer emits in the same transaction as turn+bodies. The fifth argument
+// must stay a string: []byte is encoded as bytea by pgx's Simple Protocol and
+// is not valid JSON text for a jsonb column.
 func expectOutboxEnqueue(mock pgxmock.PgxPoolIface) {
-	mock.ExpectExec("INSERT INTO session_aggregate_outbox").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+	mock.ExpectExec("INSERT INTO session_aggregate_outbox[\\s\\S]*\\$5::text::jsonb").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), outboxJSONTextArgument{}).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 }
 
@@ -352,6 +359,7 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 type recordingAggregator struct {
 	mu       sync.Mutex
 	calls    int32
+	last     SessionUpdate
 	started  chan struct{}
 	release  chan struct{}
 	returned chan struct{}
@@ -365,8 +373,11 @@ func newRecordingAggregator() *recordingAggregator {
 	}
 }
 
-func (r *recordingAggregator) UpdateSession(ctx context.Context, _ SessionUpdate) error {
+func (r *recordingAggregator) UpdateSession(ctx context.Context, update SessionUpdate) error {
 	atomic.AddInt32(&r.calls, 1)
+	r.mu.Lock()
+	r.last = update
+	r.mu.Unlock()
 	select {
 	case r.started <- struct{}{}:
 	default:
@@ -382,6 +393,12 @@ func (r *recordingAggregator) UpdateSession(ctx context.Context, _ SessionUpdate
 }
 
 func (r *recordingAggregator) callCount() int32 { return atomic.LoadInt32(&r.calls) }
+
+func (r *recordingAggregator) lastUpdate() SessionUpdate {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.last
+}
 
 // TestWrite_AggregateGoroutineManagedByLifecycle (spec §6.3)
 //
@@ -399,6 +416,57 @@ func TestStop_ContextDeadline(t *testing.T) {
 	defer cancel()
 	if err := w.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Stop error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestWrite_AggregateSnapshotIsIndependentOfCaller(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	defer func() { _ = mock.ExpectationsWereMet(); mock.Close() }()
+
+	agg := newRecordingAggregator()
+	w := &SessionWriterV2{
+		turnWriter:        newTurnWriter(mock),
+		bodiesWriter:      newSessionBodiesWriter(bodiesPoolShim{mock}),
+		sessionAggregator: agg,
+	}
+	mock.ExpectBegin()
+	expectSessionLock(mock)
+	expectListAllBodiesEmpty(mock)
+	expectRequestLock(mock)
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(47)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO public.session_bodies").
+		WithArgs(anyArgs(11)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	expectOutboxEnqueue(mock)
+	mock.ExpectCommit()
+
+	req := sampleRequest()
+	req.SessionID, req.TenantID, req.RequestID = "stable-session", "stable-tenant", "stable-request"
+	req.ClientModel, req.ProviderID = "stable-model", "stable-provider"
+	req.ResponseBody = []Message{{Role: "assistant", Content: "stable-response"}}
+	req.RequestBody = []Message{{Role: "user", Content: "stable-request-body"}}
+	req.Timestamp = time.Unix(123, 0)
+	require.NoError(t, w.Write(context.Background(), req))
+	// Mutate caller-owned fields immediately after Write returns. The async
+	// updater must observe the copied snapshot, not these replacements.
+	req.SessionID, req.TenantID, req.RequestID = "mutated-session", "mutated-tenant", "mutated-request"
+	req.ClientModel, req.ProviderID = "mutated-model", "mutated-provider"
+	req.ResponseBody[0].Content = "mutated-response"
+	select {
+	case <-agg.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("aggregate goroutine never started")
+	}
+	close(agg.release)
+	require.NoError(t, w.Stop(context.Background()))
+	update := agg.lastUpdate()
+	if update.SessionID != "stable-session" || update.TenantID != "stable-tenant" || update.RequestID != "stable-request" ||
+		update.LastModel != "stable-model" || update.LastProvider != "stable-provider" || update.LastResponseSummary == "" {
+		t.Fatalf("aggregate captured mutated request: %+v", update)
 	}
 }
 

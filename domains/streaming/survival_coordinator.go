@@ -2,7 +2,9 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"strings"
 	"time"
@@ -21,8 +23,8 @@ import (
 // pass, AggregateTaskOutcome for the task-level verdict.
 //
 //   - retry-now: discard the uncommitted attempt, refresh candidates,
-//     back off (base), retry immediately after;
-//   - wait-recovery: emit a keepalive comment, sleep the backoff window,
+//     wait for the configured recovery cadence, then retry;
+//   - wait-recovery: emit a keepalive comment, sleep the recovery window,
 //     refresh candidates, retry;
 //   - resume-blocked / fail-terminal / fail-closed: hand the final
 //     protocol rendering to the Terminal seam and stop.
@@ -34,16 +36,16 @@ import (
 // SurvivalOptions bounds the coordinator loop (doc 18 §5.1 interactive
 // deadline, §8.4 retry delay, §8.5 storm prevention).
 //
-// Termination priority (会话优化 v4 §8-14 / R2.4, T3): 组合穷尽 > 2h 时限 >
-// 100 次预算 — the deadline is the STRONGER stop condition versus the retry
-// budget (worst-case 100 × 120s backoff ≈ 3.2h exceeds it).
+// Termination priority: candidate exhaustion > the interactive deadline >
+// the retry budget. The deadline is the stronger stop condition for a
+// long-lived in-connection request.
 type SurvivalOptions struct {
-	// Deadline is the total in-connection budget. 0 → 2 hours (v4 T3:
-	// 24h → 2h, aligned with the 2h request-cache TTL; env override
-	// LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS still wins
-	// through the config wiring in cmd/gateway/main.go).
+	// Deadline is the total in-connection budget. Zero defaults to five
+	// hours, matching the interactive recovery policy.
+
 	Deadline time.Duration
-	// RetryBase is the first backoff step. 0 → 2s.
+	// RetryBase is the first backoff step. Zero defaults to 30 seconds.
+
 	RetryBase time.Duration
 	// RetryMax caps the backoff growth. 0 or values above 120s → 120s.
 	RetryMax time.Duration
@@ -51,25 +53,65 @@ type SurvivalOptions struct {
 	MaxRetries int
 	// KeepaliveInterval controls connection heartbeats while waiting. 0 → 15s.
 	KeepaliveInterval time.Duration
+	// RetryInterval makes recovery pacing fixed instead of exponential when set.
+	// It is intended for long-lived no-capacity recovery and is jittered by the
+	// same bounded jitter policy as the legacy backoff.
+	RetryInterval time.Duration
+	// NightMaxRetries overrides MaxRetries from NightStartHour (inclusive) until
+	// midnight in NightLocation. Zero keeps the ordinary MaxRetries value.
+	NightMaxRetries int
+	NightStartHour  int
+	NightLocation   *time.Location
 }
 
 func (o SurvivalOptions) withDefaults() SurvivalOptions {
 	if o.Deadline <= 0 {
-		o.Deadline = 2 * time.Hour
+		o.Deadline = 5 * time.Hour
+
 	}
 	if o.RetryBase <= 0 {
-		o.RetryBase = 2 * time.Second
+		o.RetryBase = 30 * time.Second
+		// A zero-value options struct opts into the current long-lived recovery
+		// cadence. Explicit RetryBase values retain the historical exponential
+		// behavior unless RetryInterval is also supplied.
+		o.RetryInterval = 30 * time.Second
 	}
 	if o.RetryMax <= 0 || o.RetryMax > 2*time.Minute {
 		o.RetryMax = 2 * time.Minute
 	}
-	if o.MaxRetries <= 0 || o.MaxRetries > executors.DefaultUpstreamAttemptLimit {
+	if o.RetryBase > o.RetryMax && o.RetryInterval <= 0 {
+		o.RetryBase = o.RetryMax
+	}
+	if o.RetryInterval < 0 {
+		o.RetryInterval = 0
+	}
+	if o.MaxRetries <= 0 || o.MaxRetries > executors.MaxUpstreamAttemptLimit-1 {
 		o.MaxRetries = executors.DefaultUpstreamAttemptLimit
+	}
+	if o.NightMaxRetries <= 0 || o.NightMaxRetries > executors.MaxUpstreamAttemptLimit-1 {
+		o.NightMaxRetries = 600
+	}
+	if o.NightStartHour < 0 || o.NightStartHour > 23 {
+		o.NightStartHour = 20
+	}
+	if o.NightLocation == nil {
+		o.NightLocation = time.FixedZone("Asia/Shanghai", 8*60*60)
 	}
 	if o.KeepaliveInterval <= 0 {
 		o.KeepaliveInterval = 15 * time.Second
 	}
 	return o
+}
+
+func (o SurvivalOptions) retriesFor(now time.Time) int {
+	if o.NightMaxRetries <= 0 {
+		return o.MaxRetries
+	}
+	local := now.In(o.NightLocation)
+	if local.Hour() >= o.NightStartHour {
+		return o.NightMaxRetries
+	}
+	return o.MaxRetries
 }
 
 // SurvivalResult is the coordinator's final verdict for the task.
@@ -118,6 +160,10 @@ type SurvivalCoordinator struct {
 	// the HTTP session. It bypasses semantic/durable capture while sharing the
 	// connection's serialized writer.
 	TransportHeartbeat func() error
+	// RetryNotice reports one discarded recoverable attempt. It must use a
+	// transport-only frame and never include upstream bodies or credentials.
+	// Notice failures are observable but do not change the retry decision.
+	RetryNotice func(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) error
 	// Terminal renders the final protocol frame(s) once the task ends.
 	// committed reports whether the client already saw semantic output
 	// (resume-blocked) and therefore needs a well-formed stream ending
@@ -185,6 +231,9 @@ func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) error {
 }
 
 func (c *SurvivalCoordinator) waitWithKeepalive(ctx context.Context, sw *SerializedStreamWriter, wait, interval time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := c.keepalive(sw); err != nil {
 		return err
 	}
@@ -209,15 +258,57 @@ func (c *SurvivalCoordinator) waitWithKeepalive(ctx context.Context, sw *Seriali
 	}
 }
 
+func (c *SurvivalCoordinator) recoveryWait(opts SurvivalOptions, decision TaskDecision, backoff time.Duration) time.Duration {
+	// An explicit upstream recovery time is authoritative. It is constrained by
+	// the request deadline in Run rather than silently replaced with RetryMax.
+	if decision.NextRetryAfter > 0 {
+		return decision.NextRetryAfter
+	}
+	if opts.RetryInterval > 0 {
+		// RetryInterval is an operator-selected cadence, not a backoff seed. Keep
+		// it exact so a configured 30-second policy remains 30 seconds.
+		return opts.RetryInterval
+	}
+	return applyBackoffJitter(backoff, c.JitterRand)
+}
+
+func (c *SurvivalCoordinator) notifyRetry(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) {
+	if c.RetryNotice == nil {
+		return
+	}
+	if err := c.RetryNotice(ctx, attempt, decision, wait); err != nil {
+		slog.Warn("survival retry notice failed", "attempt", attempt, "action", decision.Action.String(), "reason", decision.Reason, "error", err)
+	}
+}
+
+func survivalCancellationDecision(err error) TaskDecision {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+	}
+	return TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+}
+
 // Run drives the recovery loop until the task reaches a terminal state,
 // the deadline expires or ctx is cancelled. sw is the shared serialized
 // writer over the real connection; the caller owns its construction.
 func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWriter, params *executors.ExecParams) SurvivalResult {
-	opts := c.Options.withDefaults()
-	if params.UpstreamAttempts == nil {
-		params.UpstreamAttempts = executors.NewUpstreamAttemptBudget(opts.MaxRetries)
+	if params == nil || c.Exec == nil {
+		return SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "survival_unavailable"}}
 	}
-	deadline := c.now().Add(opts.Deadline)
+	if err := ctx.Err(); err != nil {
+		return SurvivalResult{Decision: survivalCancellationDecision(err)}
+	}
+
+	opts := c.Options.withDefaults()
+	startedAt := c.now()
+	maxRetries := opts.retriesFor(startedAt)
+	// MaxRetries is retries after the initial attempt, while the shared budget
+	// counts actual upstream calls. Allocate room for both when coordinator owns
+	// the budget; a caller-provided budget remains the stricter authority.
+	if params.UpstreamAttempts == nil {
+		params.UpstreamAttempts = executors.NewUpstreamAttemptBudget(maxRetries + 1)
+	}
+	deadline := startedAt.Add(opts.Deadline)
 	backoff := opts.RetryBase
 
 	// FR-12 L1 revocable window: hold the first HoldbackMaxChunks semantic
@@ -261,6 +352,16 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	)
 
 	for {
+		if err := ctx.Err(); err != nil {
+			res.Decision = survivalCancellationDecision(err)
+			return res
+		}
+		if !c.now().Before(deadline) {
+			res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+			c.renderTerminal(res.Decision, nil)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
 		// 2026-09-01: attempt-start line. Without it the log only shows the
 		// OUTCOME of each pass, so a request that ends in resume_blocked gives
 		// no way to tell whether the L1 holdback window was even active (the
@@ -287,6 +388,23 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		attemptParams.W = gw
 		res.FinalAttempt = ExecuteAttempt(ctx, c.Exec, gate, &attemptParams)
 		res.Attempts++
+		if err := ctx.Err(); err != nil {
+			if gate.State() < CommitStateContent {
+				_ = gate.Discard()
+			}
+			res.Decision = survivalCancellationDecision(err)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
+		if !c.now().Before(deadline) {
+			if gate.State() < CommitStateContent {
+				_ = gate.Discard()
+			}
+			res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+			c.renderTerminal(res.Decision, gate)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			return res
+		}
 		recordSurvivalAttempt(res.FinalAttempt)
 		res.Decision = AggregateTaskOutcomeWithHistory(res.FinalAttempt, res.History)
 		appendSurvivalHistory(&res.History, res.FinalAttempt, res.Attempts, res.Decision)
@@ -425,7 +543,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
-			if res.Attempts-1 >= opts.MaxRetries {
+			if res.Attempts-1 >= maxRetries {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "retry_limit_exceeded"}
 				c.renderTerminal(res.Decision, gate)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
@@ -486,7 +604,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 					DecisionReason: res.Decision.Reason,
 				})
 			}
-			if c.now().After(deadline) {
+			if !c.now().Before(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
 				c.renderTerminal(res.Decision, gate)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
@@ -502,14 +620,18 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
-			wait := backoff
-			if res.Decision.Action == TaskActionWaitRecovery &&
-				res.Decision.NextRetryAfter > wait && res.Decision.NextRetryAfter <= opts.RetryMax {
-				wait = res.Decision.NextRetryAfter
+			wait := c.recoveryWait(opts, res.Decision, backoff)
+			remaining := deadline.Sub(c.now())
+			if wait > remaining {
+				wait = remaining
 			}
-			// ±20% jitter on the final backoff (Retry-After adopted values
-			// included) spreads retry storms across clients (T3).
-			wait = applyBackoffJitter(wait, c.JitterRand)
+			if wait <= 0 {
+				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+				c.renderTerminal(res.Decision, gate)
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
 			if recoveryStart.IsZero() {
 				recoveryStart = c.now()
 			}
@@ -517,6 +639,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if res.Decision.Action == TaskActionWaitRecovery {
 				waitState = survivalStateWaiting
 			}
+			c.notifyRetry(ctx, res.Attempts, res.Decision, wait)
 			if c.Reschedule != nil {
 				if err := c.Reschedule(ctx, c.now().Add(wait), res.Decision.Reason); err != nil {
 					res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "durable_reschedule_failed"}
@@ -537,7 +660,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			}
 			recordSurvivalTransition(survivalStateRunning, waitState, res.Decision.Reason)
 			if err := c.waitWithKeepalive(ctx, sw, wait, opts.KeepaliveInterval); err != nil {
-				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+				res.Decision = survivalCancellationDecision(err)
 				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Warn("survival_task_ended",
@@ -549,6 +672,19 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				)
 				return res
 			}
+			if err := ctx.Err(); err != nil {
+				res.Decision = survivalCancellationDecision(err)
+				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
+			if !c.now().Before(deadline) {
+				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
+				c.renderTerminal(res.Decision, gate)
+				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
 			if res.Decision.Action == TaskActionWaitRecovery && res.FinalAttempt != nil {
 				observeSurvivalWait(res.FinalAttempt.LastKind(), wait)
 			}
@@ -556,9 +692,11 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if c.Refresh != nil {
 				c.Refresh(ctx)
 			}
-			backoff *= 2
-			if backoff > opts.RetryMax {
-				backoff = opts.RetryMax
+			if opts.RetryInterval <= 0 {
+				backoff *= 2
+				if backoff > opts.RetryMax {
+					backoff = opts.RetryMax
+				}
 			}
 			log.Debug("survival_attempt_recovery_resumed",
 				"attempt", res.Attempts,

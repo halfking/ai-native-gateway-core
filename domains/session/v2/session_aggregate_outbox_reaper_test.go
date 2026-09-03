@@ -245,8 +245,8 @@ func TestReaper_ScheduleRetryGuardSkipsWhenRowAlreadyTerminal(t *testing.T) {
 		t.Fatalf("pgxmock.NewPool: %v", err)
 	}
 	t.Cleanup(func() { mock.Close() })
-	mock.ExpectExec("UPDATE session_aggregate_outbox").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+	mock.ExpectExec("UPDATE session_aggregate_outbox[\\s\\S]*\\(\\$4 \\|\\| ' seconds'\\)::interval").
+		WithArgs(int64(99), 2, "transient", "4").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	r := newSessionAggregateOutboxReaperForTest(mock, nil, 0, 0, 0)
 	r.scheduleRetry(context.Background(), 99, 2, errors.New("transient"))

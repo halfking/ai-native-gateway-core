@@ -199,8 +199,12 @@ func piesEmpty(pies map[string]any) bool {
 }
 
 func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
+	// 2026-09-03 (audit closure): the "clients" pie now aggregates by
+	// agent_name (the canonical client-type identifier persisted on
+	// request_logs_hot.agent_name) instead of client_profile (the legacy
+	// device-fingerprint column).
 	types := map[string]string{
-		"clients":         "client_profile",
+		"clients":         "agent_name",
 		"virtual_ips":     "virtual_ip",
 		"identity_hashes": "identity_hash",
 		"models":          "model",

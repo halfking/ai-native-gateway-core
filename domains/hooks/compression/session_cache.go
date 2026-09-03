@@ -215,18 +215,21 @@ type SessionState struct {
 	// observability and quality scoring.
 	//
 	// L1 fields (raw session, true values):
-	RawTokenEstimate int `json:"raw_te,omitempty"` // token count before sanitization/compression
-	RawMsgCount      int `json:"raw_mc,omitempty"` // message count before compression
+	RawSnapshot      MessageSnapshot `json:"raw_snapshot,omitempty"`
+	RawTokenEstimate int             `json:"raw_te,omitempty"` // token count before sanitization/compression
+	RawMsgCount      int             `json:"raw_mc,omitempty"` // message count before compression
 
 	// L2 fields (compressed session, placeholders):
+	CompressedSnapshot   MessageSnapshot         `json:"compressed_snapshot,omitempty"`
 	CompressedTokens     int                     `json:"cmp_te,omitempty"`      // token count after compression
 	CompressedMsgs       int                     `json:"cmp_mc,omitempty"`      // message count after compression
 	CompressedPrefixHash string                  `json:"cmp_ph,omitempty"`      // stable compressed prefix fingerprint
 	CompressionQuality   CompressionQualityScore `json:"cmp_quality,omitempty"` // quality metrics
 
 	// L3 fields (audited session, sanitize map):
-	SanitizeMapRef string        `json:"sanitize_ref,omitempty"` // Redis key: session:{id}:sanitize
-	SanitizeStats  SanitizeStats `json:"sanitize_stats,omitempty"`
+	SanitizeMapRef      string                `json:"sanitize_ref,omitempty"` // Redis key: session:{id}:sanitize
+	SanitizeStats       SanitizeStats         `json:"sanitize_stats,omitempty"`
+	SanitizeMessageRefs []SanitizedMessageRef `json:"sanitize_message_refs,omitempty"`
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
@@ -524,6 +527,7 @@ func cloneSessionState(state *SessionState) *SessionState {
 	}
 	clone := *state
 	clone.AlignmentMap = append([]AlignmentInfo(nil), state.AlignmentMap...)
+	clone.SanitizeMessageRefs = append([]SanitizedMessageRef(nil), state.SanitizeMessageRefs...)
 	return &clone
 }
 
@@ -808,6 +812,21 @@ func encodeSessionStateFields(st *SessionState) []any {
 			fields = append(fields, "san_stats", string(b))
 		}
 	}
+	if !st.RawSnapshot.IsZero() {
+		if b, err := json.Marshal(st.RawSnapshot); err == nil {
+			fields = append(fields, "raw_snap", string(b))
+		}
+	}
+	if !st.CompressedSnapshot.IsZero() {
+		if b, err := json.Marshal(st.CompressedSnapshot); err == nil {
+			fields = append(fields, "cmp_snap", string(b))
+		}
+	}
+	if len(st.SanitizeMessageRefs) > 0 {
+		if b, err := json.Marshal(st.SanitizeMessageRefs); err == nil {
+			fields = append(fields, "san_msg_refs", string(b))
+		}
+	}
 	return fields
 }
 
@@ -876,6 +895,17 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	}
 	if raw := fields["san_stats"]; raw != "" {
 		_ = json.Unmarshal([]byte(raw), &st.SanitizeStats)
+	}
+	if raw := fields["raw_snap"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st.RawSnapshot)
+	}
+	if raw := fields["cmp_snap"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st.CompressedSnapshot)
+	}
+	if raw := fields["san_msg_refs"]; raw != "" {
+		if err := json.Unmarshal([]byte(raw), &st.SanitizeMessageRefs); err != nil {
+			st.SanitizeMessageRefs = nil
+		}
 	}
 	return nil
 }
@@ -947,6 +977,9 @@ func (s *SessionState) ToCutMarker(summaryText string) *CutMarker {
 
 // ClearCutMarker removes any cached cut marker state.
 func (s *SessionState) ClearCutMarker() {
+	if s == nil {
+		return
+	}
 	s.HasCutMarker = false
 	s.CutCreatedAt = 0
 	s.CutSourceMsgs = 0
@@ -955,8 +988,9 @@ func (s *SessionState) ClearCutMarker() {
 	s.CutStrategy = ""
 	s.CutBytesBefore = 0
 	s.CutBytesAfter = 0
-	// 与 SummaryMarker 现有对称处理一致：不主动清空 CutPreSanitize*，
-	// 让 HasCutMarker=false 即可让下游逻辑忽略它们。
+	s.CutPreSanitizeStart = 0
+	s.CutPreSanitizeEnd = 0
+	s.SummaryMarker = ""
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

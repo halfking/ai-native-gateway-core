@@ -29,6 +29,9 @@
 
 BEGIN;
 
+-- 单条 UPDATE 不能在同一 SET 列表中既有标量子查询又有 NOW()。
+-- 把更新拆成两步：先用数组表达式合并 featured_models，再用一条独立的 UPDATE
+-- 戳 updated_at。
 UPDATE routing_policy
 SET featured_models = (
     SELECT ARRAY(
@@ -37,13 +40,18 @@ SET featured_models = (
             ARRAY['grok-4.6', 'kimi-k3', 'kimi-k2.6',
                   'gemini-3.5-flash', 'gemini-3-flash-preview']
         )
-    ),
-    updated_at = NOW()
+    )
 )
 WHERE id = 1
   AND NOT (featured_models @> ARRAY['grok-4.6','kimi-k3','kimi-k2.6',
                                     'gemini-3.5-flash','gemini-3-flash-preview']::text[]);
 -- @> "contains" 检查：5 个 name 全在才跳过；只要缺任意一个就重新追加。
 -- 重复 name 由 SELECT DISTINCT 去重。
+
+UPDATE routing_policy
+SET updated_at = NOW()
+WHERE id = 1
+  AND NOT (featured_models @> ARRAY['grok-4.6','kimi-k3','kimi-k2.6',
+                                    'gemini-3.5-flash','gemini-3-flash-preview']::text[]);
 
 COMMIT;

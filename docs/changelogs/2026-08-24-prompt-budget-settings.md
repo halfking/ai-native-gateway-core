@@ -2,12 +2,14 @@
 
 ## Change
 
-`prompt_too_large` 的默认估算上限从 256k 调整为 1M tokens，并从固定环境变量升级为平台级系统配置：
+`prompt_too_large` 的网关接收上限从 256k 调整为 2M tokens，并从固定环境变量升级为平台级系统配置：
 
 - Key: `gateway.max_prompt_tokens`
-- Default: `1048576`
-- Range: `0..10485760`
-- `0` 表示关闭限制
+- Default: `2097152`
+- Range: `0..2097152`
+- `0` 表示关闭网关接收上限
+
+该设置只定义网关最多接收的 prompt 大小，不作为供应商模型的上下文窗口。候选解析后，按实际供应商模型 context window 的 80% 触发消息级压缩；压缩后的 outbound prompt 必须低于供应商上下文窗口。
 - `HotReload: true`
 
 管理员可通过以下接口更新：

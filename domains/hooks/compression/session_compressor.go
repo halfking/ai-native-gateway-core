@@ -104,6 +104,10 @@ type PrepareResult struct {
 	// Nil when no rewrite was needed (forward clientBody as-is).
 	OutboundBody []byte
 
+	// RawSnapshot captures the client message snapshot before compression.
+	// It contains only a hash/counts and never the request body.
+	RawSnapshot MessageSnapshot
+
 	// MsgHashes is the per-message fingerprint array to persist in
 	// request_logs.outbound_msg_hashes.
 	MsgHashes json.RawMessage
@@ -211,7 +215,7 @@ func (sc *SessionCompressor) Prepare(
 	contextWindow int,
 	streamStarted bool,
 ) *PrepareResult {
-	res := &PrepareResult{}
+	res := &PrepareResult{RawSnapshot: SnapshotForBody(clientBody)}
 
 	if sc == nil || sc.deps.Disabled || gwSessionID == "" {
 		return sc.fallbackResult(clientBody, res)
@@ -855,6 +859,9 @@ func hydrateSanitizeInfo(ctx context.Context, state *SessionState) {
 	if info.Stats.PlaceholderCount > 0 || info.Stats.SanitizedAt > 0 {
 		state.SanitizeStats = info.Stats
 	}
+	if len(info.MessageRefs) > 0 {
+		state.SanitizeMessageRefs = append([]SanitizedMessageRef(nil), info.MessageRefs...)
+	}
 }
 
 // CommitFinal overwrites the compatible Prepare-time cache entry with the
@@ -909,8 +916,12 @@ func buildSessionState(prevState *SessionState, outboundBody []byte, res *Prepar
 	state.LastOutboundHash = sha256Hex(outboundBody)
 	state.MsgCount = res.MsgCount
 	state.TokenEstimate = res.TokenEst
-	state.RawMsgCount = countMessages(outboundBody)
-	state.RawTokenEstimate = estimateBodyTokens(outboundBody)
+	if !res.RawSnapshot.IsZero() {
+		state.RawSnapshot = res.RawSnapshot
+		state.RawMsgCount = res.RawSnapshot.MessageCount
+		state.RawTokenEstimate = res.RawSnapshot.TokenEstimate
+	}
+	state.CompressedSnapshot = SnapshotForBody(outboundBody)
 	state.CompressedMsgs = res.MsgCount
 	state.CompressedTokens = res.TokenEst
 	if res.CompressedPrefixHash != "" {
@@ -1309,6 +1320,30 @@ func (sc *SessionCompressor) loadV2CompressionState(ctx context.Context, tenantI
 	state.MsgCount = intMeta(meta["msg_count"])
 	state.LastCompressedAt = unixMeta(meta["last_compressed_at"])
 	state.RecentlyCompressedAt = unixMeta(meta["recently_compressed_at"])
+	if cut, ok := meta["cut_marker"].(map[string]interface{}); ok && len(cut) > 0 {
+		state.CutStrategy, _ = cut["strategy"].(string)
+		state.CutCreatedAt = int64Meta(cut["created_at"])
+		state.CutSourceMsgs = intMeta(cut["source_msg_count"])
+		state.CutSystemMsgs = intMeta(cut["system_msg_count"])
+		state.CutIndex = intMeta(cut["cut_index"])
+		state.CutBytesBefore = intMeta(cut["bytes_before"])
+		state.CutBytesAfter = intMeta(cut["bytes_after"])
+		if marker, ok := cut["summary_marker"].(string); ok && marker != "" {
+			state.SummaryMarker = marker
+		}
+		if psor := intPairMeta(cut["pre_sanitize_offset_range"]); psor != nil {
+			state.CutPreSanitizeStart, state.CutPreSanitizeEnd = psor[0], psor[1]
+		}
+		state.HasCutMarker = state.CutIndex > 0 && state.CutSourceMsgs >= state.CutSystemMsgs+state.CutIndex
+	}
+	if psor := intPairMeta(meta["pre_sanitize_offset_range"]); psor != nil {
+		state.CutPreSanitizeStart, state.CutPreSanitizeEnd = psor[0], psor[1]
+	}
+	if ref, ok := meta["sanitize_map_ref"].(string); ok {
+		state.SanitizeMapRef = ref
+	}
+	decodeMetaRecords(meta["alignment_map"], &state.AlignmentMap)
+	decodeMetaRecords(meta["sanitize_message_refs"], &state.SanitizeMessageRefs)
 	return state
 }
 
@@ -1316,10 +1351,72 @@ func intMeta(v any) int {
 	switch n := v.(type) {
 	case int:
 		return n
+	case int8:
+		return int(n)
+	case int16:
+		return int(n)
+	case int32:
+		return int(n)
 	case int64:
+		return int(n)
+	case uint:
+		return int(n)
+	case uint8:
+		return int(n)
+	case uint16:
+		return int(n)
+	case uint32:
+		return int(n)
+	case uint64:
+		return int(n)
+	case float32:
 		return int(n)
 	case float64:
 		return int(n)
+	default:
+		return 0
+	}
+}
+
+func intPairMeta(v any) []int {
+	switch values := v.(type) {
+	case []int:
+		if len(values) == 2 {
+			return []int{values[0], values[1]}
+		}
+	case []interface{}:
+		if len(values) == 2 {
+			return []int{intMeta(values[0]), intMeta(values[1])}
+		}
+	}
+	return nil
+}
+
+func decodeMetaRecords[T any](value any, dst *[]T) {
+	if dst == nil || value == nil {
+		return
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	_ = json.Unmarshal(raw, dst)
+}
+
+func int64Meta(v any) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case uint:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case float32:
+		return int64(n)
 	default:
 		return 0
 	}

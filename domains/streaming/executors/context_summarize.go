@@ -1200,10 +1200,14 @@ func (e *Executor) handleContextLengthRecovery(
 		// for estimator error — a request that overshot by 0.4% would otherwise
 		// come back 4xx a second time.
 		mechanicalFn := func(b []byte) []byte {
-			if params.ClientProtocol == "anthropic-messages" {
-				return transformation.CompressAnthropicMessagesAggressively(b, *targetCand.ContextWindow)
+			reserve := transformation.OutputTokenReserve(b, params.ClientProtocol)
+			if params.ClientProtocol == "openai-responses" {
+				return transformation.CompressResponsesInputAggressively(b, *targetCand.ContextWindow, reserve)
 			}
-			return transformation.CompressMessagesAggressively(b, *targetCand.ContextWindow)
+			if params.ClientProtocol == "anthropic-messages" {
+				return transformation.CompressAnthropicMessagesAggressivelyWithReserve(b, *targetCand.ContextWindow, reserve)
+			}
+			return transformation.CompressMessagesAggressivelyWithReserve(b, *targetCand.ContextWindow, reserve)
 		}
 		trimmed := mechanicalFn(*sourceBody)
 		if len(trimmed) < len(*sourceBody) {
@@ -1342,7 +1346,7 @@ func buildPreRequestTrimMeta(bytesBefore, bytesAfter int, contextWindow *int) []
 		"tokens_after":  tokensAfter,
 		"bytes_before":  bytesBefore,
 		"bytes_after":   bytesAfter,
-		"reason_detail": "pre-request trim (cand.ContextWindow × 0.85 × 3.5 threshold)",
+		"reason_detail": "pre-request trim (cand.ContextWindow × 0.80 × 3.5 threshold)",
 		"trim_phase":    "pre_request",
 	}
 	if contextWindow != nil {

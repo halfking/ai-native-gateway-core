@@ -3,10 +3,12 @@ package executors
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,6 +86,51 @@ func TestExecuteOpenAI_NativeResponsesStreamUsesNativeHandlerAndBody(t *testing.
 	}
 	if rec.Body.String() != streamBody {
 		t.Fatalf("client stream changed: got %q want %q", rec.Body.String(), streamBody)
+	}
+}
+
+func TestExecuteOpenAI_NativeResponsesCompressesInputItemsForCandidateWindow(t *testing.T) {
+	var items []string
+	for i := 0; i < 6; i++ {
+		items = append(items, `{"type":"message","role":"user","content":"`+strings.Repeat("history-", 100)+`"}`)
+	}
+	requestBody := []byte(`{"model":"gpt-responses","instructions":"keep","input":[` + strings.Join(items, `,`) + `]}`)
+	responseBody := []byte(`{"id":"resp_compressed","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
+	var gotBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(responseBody)
+	}))
+	defer upstream.Close()
+
+	window := 1000
+	result, err := newOverloadTestExecutor().executeOpenAI(&ExecParams{
+		W: httptest.NewRecorder(), R: httptest.NewRequest(http.MethodPost, "/v1/responses", nil),
+		BodyBytes: []byte(`{"model":"gpt-responses","messages":[]}`), ResponsesBodyBytes: requestBody,
+		ClientProtocol: "openai-responses", ClientModel: "gpt-responses", OutboundModel: "gpt-responses",
+		ClientID: identity.ClientIdentity{IdentityHash: "native-compression-test"},
+	}, func() provider.Candidate {
+		c := nativeResponsesCandidate(upstream.URL, true)
+		c.ContextWindow = &window
+		return c
+	}(), 0, time.Now(), nil)
+	if err != nil || result == nil {
+		t.Fatalf("executeOpenAI() = (%#v, %v)", result, err)
+	}
+	if len(gotBody) >= len(requestBody) {
+		t.Fatalf("native Responses body was not compressed: before=%d after=%d", len(requestBody), len(gotBody))
+	}
+	var envelope struct {
+		Model        string            `json:"model"`
+		Instructions string            `json:"instructions"`
+		Input        []json.RawMessage `json:"input"`
+	}
+	if err := json.Unmarshal(gotBody, &envelope); err != nil {
+		t.Fatalf("invalid compressed Responses body: %v", err)
+	}
+	if envelope.Model != "gpt-responses" || envelope.Instructions != "keep" || len(envelope.Input) == 0 {
+		t.Fatalf("compressed envelope lost fields: %+v", envelope)
 	}
 }
 

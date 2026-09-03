@@ -23,6 +23,8 @@ package compression
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -102,10 +104,16 @@ func NewCutMarkerWithPreSanitize(plan CutPlan, sourceMsgCount int, strategy stri
 // IsExpired returns true if the cut marker is older than the given TTL.
 // Used to decide whether to reuse a cached compression or re-compress.
 func (cm CutMarker) IsExpired(ttl time.Duration) bool {
-	if cm.CreatedAt == 0 {
+	if cm.CreatedAt <= 0 || ttl <= 0 {
 		return true
 	}
-	return time.Since(time.Unix(cm.CreatedAt, 0)) > ttl
+	created := time.Unix(cm.CreatedAt, 0)
+	// A future marker cannot be trusted: accepting it would let a stale or
+	// replayed cache entry bypass the intended TTL window.
+	if created.After(time.Now().Add(5 * time.Minute)) {
+		return true
+	}
+	return time.Since(created) > ttl
 }
 
 // GlobalCutIndex returns the absolute message index (counting system messages)
@@ -140,21 +148,47 @@ func (cm CutMarker) MarshalForRedis() map[string]string {
 // UnmarshalFromRedis deserialises CutMarker fields from a Redis Hash.
 // Returns nil if no cut marker data is present.
 func UnmarshalCutMarkerFromRedis(fields map[string]string) *CutMarker {
-	if _, ok := fields["cm_v"]; !ok {
+	version, err := strconv.Atoi(fields["cm_v"])
+	if err != nil || version != cutMarkerSchemaVersion {
 		return nil
 	}
-	cm := &CutMarker{}
-	parseInt64(fields["cm_ts"], &cm.CreatedAt)
-	parseInt(fields["cm_src"], &cm.SourceMsgCount)
-	parseInt(fields["cm_sys"], &cm.SystemMsgCount)
-	parseInt(fields["cm_ci"], &cm.CutIndex)
-	cm.SummaryMarker = fields["cm_smm"]
-	cm.Strategy = fields["cm_strat"]
-	parseInt(fields["cm_bb"], &cm.BytesBefore)
-	parseInt(fields["cm_ba"], &cm.BytesAfter)
-	parseInt(fields["cm_psor0"], &cm.PreSanitizeOffsetRange[0])
-	parseInt(fields["cm_psor1"], &cm.PreSanitizeOffsetRange[1])
-	cm.Version = cutMarkerSchemaVersion
+	created, err1 := strconv.ParseInt(fields["cm_ts"], 10, 64)
+	source, err2 := strconv.Atoi(fields["cm_src"])
+	system, err3 := strconv.Atoi(fields["cm_sys"])
+	cut, err4 := strconv.Atoi(fields["cm_ci"])
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil || created <= 0 ||
+		source <= 0 || system < 0 || cut <= 0 || system+cut > source {
+		return nil
+	}
+	cm := &CutMarker{
+		Version: cutMarkerSchemaVersion, CreatedAt: created, SourceMsgCount: source,
+		SystemMsgCount: system, CutIndex: cut, SummaryMarker: fields["cm_smm"],
+		Strategy: fields["cm_strat"],
+	}
+	if !isPersistedCutStrategy(cm.Strategy) {
+		return nil
+	}
+	if value, present := fields["cm_psor0"]; present {
+		start, err := strconv.Atoi(value)
+		if err != nil {
+			return nil
+		}
+		end, err := strconv.Atoi(fields["cm_psor1"])
+		if err != nil || start < 0 || start > end || end > source {
+			return nil
+		}
+		cm.PreSanitizeOffsetRange = [2]int{start, end}
+	}
+	if value, present := fields["cm_bb"]; present {
+		if cm.BytesBefore, err = strconv.Atoi(value); err != nil || cm.BytesBefore < 0 {
+			return nil
+		}
+	}
+	if value, present := fields["cm_ba"]; present {
+		if cm.BytesAfter, err = strconv.Atoi(value); err != nil || cm.BytesAfter < 0 {
+			return nil
+		}
+	}
 	return cm
 }
 
@@ -180,6 +214,86 @@ func (cm CutMarker) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]any{"cut_marker": inner})
 }
 
+// IncrementalBuildTail rebuilds only the retained tail for a mechanical cut.
+// It never invents summary text, so it is safe after L1 eviction. LLM summary
+// markers are deliberately rejected when their plaintext is unavailable.
+func IncrementalBuildTail(incomingBody []byte, marker CutMarker, protocol string) ([]byte, bool) {
+	if !validIncrementalMarker(marker, false) {
+		return nil, false
+	}
+	var generic map[string]json.RawMessage
+	if json.Unmarshal(incomingBody, &generic) != nil {
+		return nil, false
+	}
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if json.Unmarshal(incomingBody, &req) != nil || len(req.Messages) == 0 {
+		return nil, false
+	}
+	if marker.SystemMsgCount < 0 || marker.SystemMsgCount > len(req.Messages) ||
+		marker.CutIndex > len(req.Messages)-marker.SystemMsgCount {
+		return nil, false
+	}
+	globalCut := marker.GlobalCutIndex()
+	if globalCut < marker.SystemMsgCount || globalCut >= len(req.Messages) {
+		return nil, false
+	}
+	if marker.SourceMsgCount > 0 && (marker.SourceMsgCount < globalCut || marker.SourceMsgCount > len(req.Messages)) {
+		return nil, false
+	}
+	psor := marker.PreSanitizeOffsetRange
+	if psor[0] < 0 || psor[1] < psor[0] || psor[1] > len(req.Messages) {
+		return nil, false
+	}
+	out := append([]json.RawMessage(nil), req.Messages[:marker.SystemMsgCount]...)
+	out = append(out, req.Messages[globalCut:]...)
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	generic["messages"] = raw
+	result, err := json.Marshal(generic)
+	return result, err == nil
+}
+
+func isTailRecoveryStrategy(strategy string) bool {
+	return strategy == "mechanical_trim" || strategy == "smart_window_mechanical" ||
+		strings.HasPrefix(strategy, "sliding_window_") && strategy != "sliding_window_llm"
+}
+
+func validIncrementalMarker(marker CutMarker, summary bool) bool {
+	if marker.Version != 0 && marker.Version != cutMarkerSchemaVersion {
+		return false
+	}
+	if marker.CutIndex <= 0 || marker.SystemMsgCount < 0 {
+		return false
+	}
+	legacy := marker.CreatedAt == 0 && marker.SourceMsgCount == 0
+	if summary {
+		if marker.SummaryText == "" || (!legacy && marker.Strategy != "smart_window_llm") {
+			return false
+		}
+	} else if !legacy && !isTailRecoveryStrategy(marker.Strategy) {
+		return false
+	}
+	if marker.CreatedAt > 0 && marker.IsExpired(sessionCacheRedisTTL()) {
+		return false
+	}
+	globalCut := marker.GlobalCutIndex()
+	if globalCut <= marker.SystemMsgCount {
+		return false
+	}
+	if marker.SourceMsgCount > 0 && globalCut > marker.SourceMsgCount {
+		return false
+	}
+	psorStart, psorEnd := marker.PreSanitizeOffsetRange[0], marker.PreSanitizeOffsetRange[1]
+	if psorStart < 0 || psorEnd < psorStart || (psorStart != 0 || psorEnd != 0) && (psorStart != marker.SystemMsgCount || psorEnd != globalCut) {
+		return false
+	}
+	return true
+}
+
 // IncrementalBuild reconstructs the outbound body for the next request using
 // a cached CutMarker. The result is:
 //
@@ -196,16 +310,7 @@ func (cm CutMarker) MarshalJSON() ([]byte, error) {
 // Returns (rebuiltBody, true) on success, or (nil, false) if the marker is
 // stale (e.g. incoming body has fewer messages than the marker's source).
 func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([]byte, bool) {
-	if marker.CutIndex < 0 || marker.SummaryText == "" {
-		return nil, false
-	}
-
-	// P1-11 fix (2026-08-28): Defense-in-depth expiry check. Callers are
-	// expected to check IsExpired before invoking this function (see
-	// recovery_coordinator.go), but validating here too protects against
-	// call sites that forget the check or reuse a marker across sessions.
-	// Only check if CreatedAt is set; tests may create markers without timestamps.
-	if marker.CreatedAt > 0 && marker.IsExpired(30*time.Minute) {
+	if !validIncrementalMarker(marker, true) || marker.SummaryText == "" {
 		return nil, false
 	}
 
@@ -220,14 +325,59 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 		return nil, false
 	}
 
+	// Validate every marker-derived slice bound before slicing. SourceMsgCount
+	// was added after the first marker format, so zero remains a valid legacy
+	// value and is treated as "unknown". A non-zero PSOR is provenance for the
+	// original message array and must be a monotonic, in-range half-open range.
+	messageCount := len(req.Messages)
+	if marker.SourceMsgCount < 0 || marker.SystemMsgCount < 0 || marker.SystemMsgCount > messageCount ||
+		marker.CutIndex < 0 || marker.CutIndex > messageCount-marker.SystemMsgCount {
+		return nil, false
+	}
 	globalCut := marker.GlobalCutIndex()
-	if globalCut >= len(req.Messages) {
+	if globalCut < marker.SystemMsgCount || globalCut > messageCount {
+		return nil, false
+	}
+	if marker.SourceMsgCount > 0 {
+		if marker.SourceMsgCount < globalCut || marker.SourceMsgCount > messageCount {
+			return nil, false
+		}
+	}
+	psorStart, psorEnd := marker.PreSanitizeOffsetRange[0], marker.PreSanitizeOffsetRange[1]
+	if psorStart < 0 || psorEnd < 0 || psorStart > psorEnd {
+		return nil, false
+	}
+	if psorEnd > messageCount || (marker.SourceMsgCount > 0 && psorEnd > marker.SourceMsgCount) {
+		return nil, false
+	}
+	if globalCut >= messageCount {
 		// Incoming body is shorter than the cached cut point — stale marker.
 		return nil, false
 	}
 
 	systemMsgs := req.Messages[:marker.SystemMsgCount]
 	tailMsgs := req.Messages[globalCut:]
+
+	if protocol == "anthropic-messages" {
+		// Anthropic summaries belong in the top-level system field, matching
+		// proactive compression and SmartCompress's protocol adapter. Never
+		// fabricate a user message carrying the summary on this wire format.
+		newSystem, err := rebuildAnthropicSystemField(generic["system"], marker.SummaryText)
+		if err != nil {
+			return nil, false
+		}
+		raw, err := json.Marshal(tailMsgs)
+		if err != nil {
+			return nil, false
+		}
+		generic["system"] = newSystem
+		generic["messages"] = raw
+		result, err := json.Marshal(generic)
+		if err != nil {
+			return nil, false
+		}
+		return result, true
+	}
 
 	summaryContent := smartWindowSummaryPrefix + marker.SummaryText
 	summaryMsg, _ := json.Marshal(map[string]string{
@@ -250,16 +400,4 @@ func IncrementalBuild(incomingBody []byte, marker CutMarker, protocol string) ([
 		return nil, false
 	}
 	return result, true
-}
-
-func parseInt64(s string, dst *int64) {
-	var v int64
-	_, _ = fmt.Sscanf(s, "%d", &v)
-	*dst = v
-}
-
-func parseInt(s string, dst *int) {
-	var v int
-	_, _ = fmt.Sscanf(s, "%d", &v)
-	*dst = v
 }

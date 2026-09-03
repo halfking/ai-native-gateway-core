@@ -17,6 +17,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/middleware"                                        //nolint:depguard // origin trust-list resolved IP context
+	"github.com/kaixuan/llm-gateway-go/pkg/georesolve"                                    //nolint:depguard // IP→country/region/city classifier
 	"github.com/kaixuan/llm-gateway-go/settings"                                          //nolint:depguard // hot-reloadable prompt budget
 	"github.com/kaixuan/llm-gateway-go/telemetry"                                         //nolint:depguard // canonical IP / agent / protocol extractors
 )
@@ -25,27 +26,33 @@ var errBodyTooLarge = errors.New("request body too large")
 
 // ── Prompt budget guard (2026-08-24, 245 memcg OOM) ────────────────────────
 //
-// 245 预发环境在长上下文流量下被 memcg OOM-kill 53 次（anon 1.95G 撑满
-// MemoryMax=2G，单请求 max prompt_tokens=920179 —— 一份 ~4MB JSON 在
-// 解析/转发/审计路径上被复制多份，数个并发即可把 2G 堆顶穿）。
-// gateway.max_prompt_tokens 让网关在入口处拒绝超预算 prompt：
-//
-//	=0          → 不限制
-//	>0           → estimateTokens(body) 超过即 413 prompt_too_large
-//
-// 默认值为 1048576（1M）。读取侧 5s TTL 缓存，系统配置 DB > env > default。
-// 拒绝发生在 JSON 解析与上游转发之前。
+// gateway.max_prompt_tokens is the gateway admission ceiling, not a provider
+// context window. The gateway accepts prompts up to 2M estimated tokens; after
+// model candidates are resolved, provider-aware compression keeps the outbound
+// body below the selected model's context window. A value of 0 disables this
+// gateway ceiling. Reads use a 5s TTL cache, with settings DB > env > default.
+// Rejection still happens before JSON parsing and upstream dispatch.
 
-const promptBudgetDefaultTokens = 1048576
+const (
+	promptBudgetDefaultTokens = 2 * 1048576
+	promptBudgetMaxTokens     = 2 * 1048576
+)
 
 // promptBudgetLimit resolves the hot-reloadable system setting. The env
 // fallback keeps DB-less deployments and tests usable before settings specs
 // are registered by the gateway composition root.
 func promptBudgetLimit() int {
 	if settings.Global != nil && settings.Global.Spec("gateway.max_prompt_tokens") != nil {
-		return settings.CachedPlatformInt("gateway.max_prompt_tokens", promptBudgetDefaultTokens)
+		return clampPromptBudget(settings.CachedPlatformInt("gateway.max_prompt_tokens", promptBudgetDefaultTokens))
 	}
 	return promptBudgetLimitFromEnv()
+}
+
+func clampPromptBudget(n int) int {
+	if n < 0 || n > promptBudgetMaxTokens {
+		return promptBudgetDefaultTokens
+	}
+	return n
 }
 
 func promptBudgetLimitFromEnv() int {
@@ -58,10 +65,10 @@ func promptBudgetLimitFromEnv() int {
 		return 0
 	}
 	n, err := strconv.Atoi(v)
-	if err != nil || n < 0 {
+	if err != nil {
 		return promptBudgetDefaultTokens
 	}
-	return n
+	return clampPromptBudget(n)
 }
 
 // promptBudgetExceeded estimates prompt tokens for the buffered body and
@@ -115,6 +122,17 @@ type requestAttemptMeta struct {
 	// Claude Code / OpenCode / Codex / Cursor / RooCode / Windsurf / Zed /
 	// Copilot / Cline / Aider / Continue / Kiro / ZCode 等智能体。
 	SystemPrompt string
+
+	// ─── 客户端地域（2026-09-03，audit closure）───
+	// 由 fillAttemptMeta 在 ClientIP 解析后调用 georesolve.Resolve 填充，
+	// 内部 IP 仅记录字面 IP，外部 IP 解析为国家/省/市/ISP。
+	// 结果会落到 fingerprint_raw 的 "geo" 字段，供 Dashboard
+	// "client_locations" 饼图与按地域分桶使用。
+	ClientIPType string // "internal" | "external" | ""（未解析）
+	GeoCountry   string // ISO 3166-1 alpha-2；空表示未知
+	GeoRegion    string // 省/州；空表示未知
+	GeoCity      string // 城市；空表示未知
+	GeoISP       string // ISP 名称；空表示未知
 }
 
 // bufferRequestBody reads the body into memory and replaces r.Body so later
@@ -317,6 +335,23 @@ func (h *ChatHandler) fillAttemptMeta(r *http.Request, keyInfo *authentication.K
 			meta.ClientIP = telemetry.ExtractClientIP(r)
 		}
 	}
+	// 2026-09-03 (audit closure): classify the client IP for the dashboard's
+	// "client_locations" pie. Internal IPs (RFC1918 / loopback / link-local /
+	// CGNAT) are displayed as the literal IP; external IPs are bucketed into
+	// a coarse country/region/city/ISP label by pkg/georesolve. The resolver
+	// is allocation-light (one net.ParseIP + a linear scan over a small static
+	// table) so it's safe to call on every request — no caching needed at the
+	// per-request volume we serve (a few hundred RPS).
+	if meta.ClientIP != "" {
+		res := georesolve.Resolve(meta.ClientIP)
+		meta.ClientIPType = string(res.IPType)
+		if !res.Internal && res.IPType == georesolve.IPTypeExternal {
+			meta.GeoCountry = res.Location.Country
+			meta.GeoRegion = res.Location.Region
+			meta.GeoCity = res.Location.City
+			meta.GeoISP = res.Location.ISP
+		}
+	}
 	if meta.ForwardedFor == "" {
 		meta.ForwardedFor = middleware.ContextClientForwardedFor(r.Context())
 		if meta.ForwardedFor == "" {
@@ -337,7 +372,7 @@ func (h *ChatHandler) fillAttemptMeta(r *http.Request, keyInfo *authentication.K
 		meta.SourceChannel = sourceChannelFromRequest(r)
 	}
 	if meta.FingerprintRaw == nil {
-		meta.FingerprintRaw = fingerprintRawMap(clientID.Fingerprint)
+		meta.FingerprintRaw = fingerprintRawMap(clientID.Fingerprint, geoSnapshotFromMeta(meta))
 	}
 }
 
@@ -429,8 +464,14 @@ func sourceChannelFromRequest(r *http.Request) string {
 
 // fingerprintRawMap serialises the raw identity.ClientFingerprint into a
 // map for the side table's fingerprint_raw JSONB column (forensic material).
-func fingerprintRawMap(fp identity.ClientFingerprint) map[string]any {
-	return map[string]any{
+//
+// 2026-09-03 (audit closure): the geo sub-object is added so the
+// dashboard "client_locations" pie and per-request inspection both have
+// a single source of truth. Internal IPs leave Country/Region/City empty
+// (the IP itself is recorded as client_ip on the side table); external
+// IPs carry the resolved country/region/city/ISP.
+func fingerprintRawMap(fp identity.ClientFingerprint, geo GeoSnapshot) map[string]any {
+	m := map[string]any{
 		"device_seed":     fp.DeviceSeed,
 		"machine_id":      fp.MachineID,
 		"runtime_name":    fp.RuntimeName,
@@ -439,6 +480,56 @@ func fingerprintRawMap(fp identity.ClientFingerprint) map[string]any {
 		"os_arch":         fp.OSArch,
 		"user_agent":      fp.UserAgent,
 		"client_profile":  fp.ClientProfile,
+	}
+	// Always include the geo block so downstream consumers can rely on
+	// the shape; empty fields are deliberately omitted so internal IPs
+	// don't claim a country they don't have.
+	if geo.IPType != "" || geo.Country != "" || geo.Region != "" || geo.City != "" || geo.ISP != "" {
+		g := map[string]any{}
+		if geo.IPType != "" {
+			g["ip_type"] = geo.IPType
+		}
+		if geo.Country != "" {
+			g["country"] = geo.Country
+		}
+		if geo.Region != "" {
+			g["region"] = geo.Region
+		}
+		if geo.City != "" {
+			g["city"] = geo.City
+		}
+		if geo.ISP != "" {
+			g["isp"] = geo.ISP
+		}
+		m["geo"] = g
+	}
+	return m
+}
+
+// GeoSnapshot is the fingerprint-raw friendly view of georesolve.Result.
+// Defined as a struct (rather than reused directly) so the fingerprint
+// payload stays stable even if georesolve.Result grows new fields.
+type GeoSnapshot struct {
+	IPType  string
+	Country string
+	Region  string
+	City    string
+	ISP     string
+}
+
+// geoSnapshotFromMeta captures the geo fields from a requestAttemptMeta
+// into a GeoSnapshot. When ClientIPType is empty (geo not yet resolved),
+// the snapshot is empty so fingerprintRawMap emits no geo block.
+func geoSnapshotFromMeta(meta *requestAttemptMeta) GeoSnapshot {
+	if meta == nil {
+		return GeoSnapshot{}
+	}
+	return GeoSnapshot{
+		IPType:  meta.ClientIPType,
+		Country: meta.GeoCountry,
+		Region:  meta.GeoRegion,
+		City:    meta.GeoCity,
+		ISP:     meta.GeoISP,
 	}
 }
 

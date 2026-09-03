@@ -44,6 +44,12 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 		StatusCode   int      `json:"status_code"`
 		LatencyMs    int      `json:"latency_ms"`
 		Error        string   `json:"error,omitempty"`
+		// 2026-09-02: error kind / preview surface so the UI can render a
+		// tailored message instead of leaking raw "<html>…" into the admin
+		// health panel when the upstream returns a non-JSON body on
+		// /v1/models (e.g. a reverse-proxy / gateway error page).
+		ErrorKind    string   `json:"error_kind,omitempty"`
+		ErrorPreview string   `json:"error_preview,omitempty"`
 		ModelsCount  int      `json:"models_count"`
 		SampleModels []string `json:"sample_models"`
 	}
@@ -123,12 +129,17 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 				Error:     modelsErr.Error(),
 			}
 		} else {
-			cd.ModelsProbe = modelsProbe{
+			mp := modelsProbe{
 				StatusCode:   modelsResp.statusCode,
 				LatencyMs:    modelsLatency,
 				ModelsCount:  modelsResp.modelCount,
 				SampleModels: modelsResp.sampleModels,
 			}
+			if modelsResp.modelsErrKind != "" {
+				mp.ErrorKind = modelsResp.modelsErrKind
+				mp.ErrorPreview = modelsResp.modelsErrText
+			}
+			cd.ModelsProbe = mp
 		}
 
 		var testModel string
@@ -356,6 +367,9 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 		StatusCode   int      `json:"status_code"`
 		LatencyMs    int      `json:"latency_ms"`
 		Error        string   `json:"error,omitempty"`
+		// 2026-09-02: see struct definition above.
+		ErrorKind    string   `json:"error_kind,omitempty"`
+		ErrorPreview string   `json:"error_preview,omitempty"`
 		ModelsCount  int      `json:"models_count"`
 		SampleModels []string `json:"sample_models"`
 	}
@@ -419,7 +433,12 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 			if modelsErr != nil {
 				cd.ModelsProbe = modelsProbe{LatencyMs: modelsLatency, Error: modelsErr.Error()}
 			} else {
-				cd.ModelsProbe = modelsProbe{StatusCode: modelsResp.statusCode, LatencyMs: modelsLatency, ModelsCount: modelsResp.modelCount, SampleModels: modelsResp.sampleModels}
+				mp := modelsProbe{StatusCode: modelsResp.statusCode, LatencyMs: modelsLatency, ModelsCount: modelsResp.modelCount, SampleModels: modelsResp.sampleModels}
+				if modelsResp.modelsErrKind != "" {
+					mp.ErrorKind = modelsResp.modelsErrKind
+					mp.ErrorPreview = modelsResp.modelsErrText
+				}
+				cd.ModelsProbe = mp
 			}
 
 			var testModel string
