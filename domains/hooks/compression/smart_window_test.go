@@ -425,6 +425,39 @@ func TestIncrementalBuild_Basic(t *testing.T) {
 	}
 }
 
+func TestIncrementalBuild_AnthropicPlacesSummaryInSystem(t *testing.T) {
+	body := []byte(`{"model":"claude","system":"You are helpful.","messages":[{"role":"user","content":"old"},{"role":"assistant","content":"old answer"},{"role":"user","content":"latest"}]}`)
+	marker := CutMarker{Version: cutMarkerSchemaVersion, SystemMsgCount: 0, CutIndex: 2, SourceMsgCount: 3, Strategy: "smart_window_llm", SummaryText: "prior turns"}
+	rebuilt, ok := IncrementalBuild(body, marker, "anthropic-messages")
+	if !ok {
+		t.Fatal("expected Anthropic incremental build to succeed")
+	}
+	var got struct {
+		System   string            `json:"system"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(rebuilt, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) != 1 || !strings.Contains(got.System, AnthropicSystemSummaryPrefix) {
+		t.Fatalf("Anthropic incremental output = %s", rebuilt)
+	}
+}
+
+func TestIncrementalBuildTail_RejectsInvalidMarker(t *testing.T) {
+	body := makeBodyAny(makeMsg("system", "sys"), makeMsg("user", "latest"))
+	cases := []CutMarker{
+		{Version: cutMarkerSchemaVersion, SystemMsgCount: 0, CutIndex: 0, SourceMsgCount: 2, Strategy: "mechanical_trim"},
+		{Version: cutMarkerSchemaVersion, SystemMsgCount: 0, CutIndex: 1, SourceMsgCount: 2, Strategy: "unknown_strategy"},
+		{Version: cutMarkerSchemaVersion, SystemMsgCount: 0, CutIndex: 1, SourceMsgCount: 2, Strategy: "mechanical_trim", PreSanitizeOffsetRange: [2]int{0, 2}},
+	}
+	for i, marker := range cases {
+		if _, ok := IncrementalBuildTail(body, marker, "openai"); ok {
+			t.Fatalf("case %d: invalid marker was accepted: %+v", i, marker)
+		}
+	}
+}
+
 func TestIncrementalBuild_StaleMarker(t *testing.T) {
 	body := makeBodyAny(
 		makeMsg("user", "Only message"),

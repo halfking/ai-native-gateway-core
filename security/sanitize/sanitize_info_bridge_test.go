@@ -52,8 +52,9 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	if !infoOK {
 		t.Fatal("SanitizeInfo missing from context after sanitization")
 	}
-	if gotInfo.MapRef != compression.SessionSanitizeRedisKey("sess-sc1") {
-		t.Fatalf("MapRef = %q, want session:sess-sc1:sanitize", gotInfo.MapRef)
+	wantMapRef := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "sess-sc1")
+	if gotInfo.MapRef != wantMapRef {
+		t.Fatalf("MapRef = %q, want %q", gotInfo.MapRef, wantMapRef)
 	}
 	if gotInfo.Stats.PlaceholderCount != 2 {
 		t.Fatalf("PlaceholderCount = %d, want 2 (phone + email)", gotInfo.Stats.PlaceholderCount)
@@ -76,6 +77,43 @@ func TestMiddlewarePublishesSanitizeInfo(t *testing.T) {
 	}
 	if strings.Contains(ref.RawHash, "13800138000") || strings.Contains(ref.RawHash, "a@b.com") {
 		t.Fatal("message provenance hash must not contain original PII")
+	}
+}
+
+func TestMiddlewareUsesBodySessionIDForSanitizeOwnership(t *testing.T) {
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	if err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
+	var got compression.SanitizeInfo
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = compression.SanitizeInfoFromContext(r.Context())
+	})
+	body := `{"session_id":"body-session","messages":[{"role":"user","content":"call 13800138000"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	mw.Wrap(next).ServeHTTP(httptest.NewRecorder(), req)
+	want := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "body-session")
+	if got.MapRef != want {
+		t.Fatalf("body session MapRef = %q, want %q", got.MapRef, want)
+	}
+}
+
+func TestMiddlewareBodySessionIDOverridesConflictingHeader(t *testing.T) {
+	mw, err := NewSanitizeInputMiddleware(mustSanitizer(t), nil, 0)
+	if err != nil {
+		t.Fatalf("middleware: %v", err)
+	}
+	var got compression.SanitizeInfo
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = compression.SanitizeInfoFromContext(r.Context())
+	})
+	body := `{"session_id":"body-session","messages":[{"role":"user","content":"mail a@b.com"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("X-Gw-Session-Id", "header-session")
+	mw.Wrap(next).ServeHTTP(httptest.NewRecorder(), req)
+	want := compression.SessionSanitizeRedisKey(HashTenant("_unknown"), "body-session")
+	if got.MapRef != want {
+		t.Fatalf("conflicting session MapRef = %q, want %q", got.MapRef, want)
 	}
 }
 

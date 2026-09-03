@@ -69,6 +69,11 @@ func (h *ChatHandler) runSurvivalCoordinator(
 
 	params := buildExecParams(w)
 	params.R = frozenReq
+	// The legacy handler factory pre-allocates its 100-call budget for the
+	// goal-retry owner. Survival chooses the effective day/night retry budget
+	// from its start-time snapshot, so let the coordinator allocate the shared
+	// request-survival budget before the first upstream call.
+	params.UpstreamAttempts = nil
 
 	// The handler-owned StreamSession stays active through terminal completion.
 	// OnStreamReady is retained for compatibility but no longer stops heartbeat;
@@ -178,8 +183,10 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		if capture != nil {
 			body, contentType = capture.result()
 		}
-		settleDurableStream(frozenCtx, durable, res, body, contentType, frozenCtx.Err() != nil)
+		clientDisconnected := res.Decision.Reason == "client_disconnected"
+		settleDurableStream(frozenCtx, durable, res, body, contentType, clientDisconnected)
 	}
+
 	if res.Succeed {
 		return res.FinalAttempt.ExecResult, nil
 	}
@@ -202,7 +209,9 @@ func durableBeforeSemanticCommit(durable *DurableStreamBinding) func(context.Con
 		return nil
 	}
 	return func(ctx context.Context, state CommitState) error {
-		return durable.CheckpointContext(ctx, state)
+		// Durable ownership outlives the client connection; fencing and the
+		// binding's own timeout still bound this write.
+		return durable.CheckpointContext(context.WithoutCancel(ctx), state)
 	}
 }
 

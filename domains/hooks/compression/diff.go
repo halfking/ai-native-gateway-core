@@ -100,14 +100,16 @@ func BuildOutboundMessages(
 	lastMsgs, err := extractMessages(lastOutboundBody)
 	if err != nil || len(lastMsgs) == 0 {
 		// Can't parse last outbound — treat as new session.
-		hashes := computeHashes(clientMsgs)
-		return &OutboundResult{
-			Body:      clientBody,
-			MsgHashes: hashes,
-			MsgCount:  len(clientMsgs),
-			TokenEst:  estimateBodyTokens(clientBody),
-			IsNewSess: true,
-		}, nil
+		return newSessionResult(clientBody, clientMsgs), nil
+	}
+	// A durable body hash is the session lineage guard. If it is present, the
+	// cached body must match exactly; otherwise another session/lifecycle or a
+	// stale cache entry could be merged with this request.
+	if lastState.LastOutboundHash != "" && sha256Hex(lastOutboundBody) != lastState.LastOutboundHash {
+		return newSessionResult(clientBody, clientMsgs), nil
+	}
+	if lastState.MsgCount > 0 && lastState.MsgCount != len(lastMsgs) {
+		return newSessionResult(clientBody, clientMsgs), nil
 	}
 
 	// ── Establish one unambiguous ordered lineage anchor ─────────────────

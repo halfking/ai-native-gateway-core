@@ -66,10 +66,47 @@ Both defects are addressed in commit `f4313a00a` on branch
 
 | Item | Owner | Status |
 |------|-------|--------|
-| Run `640_fix_null_unavailable_recover_at.sql` against staging then prod | DBA | pending |
+| Run `640_fix_null_unavailable_recover_at.sql` against staging then prod | DBA | staging-validated on 2026-09-03 |
 | Confirm sibling-node recovery in dashboard after migration runs | DBA + on-call | pending |
 | Make the `qp-rq-id` truncation length configurable (env or settings) | frontend | tracked |
 | Browser spot-check of dashboard `request_id` + `title` rendering | QA | pending |
+
+## Staging Validation (2026-09-03)
+
+Validation target: local `llm-gateway-pg` (127.0.0.1:5432, schema synced from
+252 per `.env.local`). Migration 640 applied against the same database the
+running gateway reads from.
+
+| §3 step | Query | Result |
+|---|---|---|
+| Pre-state sibling pending count | `count(*) FILTER (WHERE available=FALSE AND unavailable_recover_at IS NULL AND unavailable_reason NOT LIKE 'manual%' AND COALESCE(admin_protected,FALSE)=FALSE)` | **0** |
+| Apply migration 640 (idempotent) | `psql -v ON_ERROR_STOP=1 -f sql/migrations/domain/640_fix_null_unavailable_recover_at.sql` | OK — `UPDATE 30` (fix #1) + `UPDATE 0` (fix #2); audit row recorded in `schema_migration_audit`; `NOTICE: Migration 640: Fixed 30 rows, remaining NULL rows (manual/protected): 0` |
+| Post-state sibling pending count | same query as pre-state | **0** |
+| Sweeper pickup (60s tick) | `count(*) … WHERE available=FALSE AND unavailable_recover_at <= now() AND unavailable_reason NOT LIKE 'manual%' AND COALESCE(admin_protected,FALSE)=FALSE` | **36** (across the whole `credential_model_bindings` table; see breakdown below) |
+| Dashboard smoke | `curl -fsS http://127.0.0.1:8782/dashboard` | `http_code=200` |
+| Vue fix symbols in dist bundle | `curl … /assets/index-*.js \| grep qp-rq-id` | matched — the running gateway already builds with `f4313a00a` (version `2.4.7-c3de1bc6-20260903-1882`) |
+| Sibling rotation distribution (state, not traffic) | join `credential_model_bindings` × `provider_models` × `providers` on `standardized_name='minimax-m3'` | 16 `available=TRUE` bindings spread across 8 providers (`minimax` 4, `nvidia` 3, `pulian` 3, `volcano-tokenplan` 2, `openrouter`/`minimax-anthropic`/`glm-5.2-month`/`scnet` 1 each); 1 `pickup_ready` (`nvidia`) — pending `bg/credential_recovery.go:RecoverExpired()` 60s tick |
+
+Post-migration decomposition of all `available=FALSE` rows in
+`credential_model_bindings`:
+
+| Bucket | Count |
+|---|---|
+| `unavailable_recover_at IS NOT NULL` and `> now()` (cooling down, includes 210 rows just repaired by migration) | 210 |
+| `unavailable_recover_at IS NOT NULL` and `<= now()` (sweeper will probe on next 60s tick) | 36 |
+| `unavailable_reason LIKE 'manual%'` or `admin_protected=TRUE` (correctly preserved by migration) | 0 |
+
+**Note on tracking vs reality.** The original audit draft
+(`HANDOFF_AUDIT_20260902.md`, §3 R3) claimed "no Go code changes needed; root
+cause is purely DB data" and listed `internal/gateway/spec_gateway.go` +
+`spec_gateway_test.go` under "Files Touched". Git reality (commit `f4313a00a`,
+`git show --stat`) shows only two files actually shipped:
+`web/src/components/QueuePerspectivePanel.vue` and
+`sql/migrations/domain/640_fix_null_unavailable_recover_at.sql`. There is no
+SelectProvider rewrite in any branch or working tree. The "load-balancing fix"
+in `f4313a00a` equals "unblock the SQL recovery sweeper"; the Go-side router
+(`proxy/load_balancer.go:SelectNode`, `proxy/manager.go:SelectNodeWithStrategy`)
+already prefers healthy siblings via the standard round-robin/weighted path.
 
 ## Files Touched (commit `f4313a00a`)
 

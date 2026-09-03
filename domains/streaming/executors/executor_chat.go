@@ -1936,8 +1936,13 @@ func (e *Executor) applyOptionalOpenAIStrategies(params *ExecParams, cand provid
 	if params != nil && params.R != nil {
 		requestCtx = params.R.Context()
 	}
-	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+	if out, applied, runnerMeta := e.runCompressionStrategiesWithMeta(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+		if params != nil {
+			params.CompressionRunnerMeta = runnerMeta
+		}
 		return out
+	} else if params != nil && len(runnerMeta) > 0 {
+		params.CompressionRunnerMeta = runnerMeta
 	}
 	return bodyBytes
 }
