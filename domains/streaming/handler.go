@@ -7056,36 +7056,6 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		BuildDate: vInfo.BuildDate,
 	}
 
-	// /readyz is a strict dependency gate. Unlike /healthz (liveness), it must
-	// return 503 when either required backing service is unavailable.
-	if r.URL.Path == "/readyz" {
-		ready := true
-		resp.Database = healthResourceStatus(r.Context(), h.db)
-		resp.Redis = healthResourceStatus(r.Context(), h.redis)
-		if resp.Database == nil || !resp.Database.Connected || resp.Redis == nil || !resp.Redis.Connected {
-			ready = false
-		}
-		if !ready {
-			resp.Status = "not_ready"
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if !ready {
-			w.WriteHeader(http.StatusServiceUnavailable)
-		} else {
-			w.WriteHeader(http.StatusOK)
-		}
-		// Do not expose backend error strings on an anonymous readiness endpoint.
-		if resp.Database != nil {
-			resp.Database.Error = ""
-		}
-		if resp.Redis != nil {
-			resp.Redis.Error = ""
-		}
-		//nolint:errcheck // HTTP write error non-recoverable
-		json.NewEncoder(w).Encode(resp)
-		return
-	}
-
 	// NET-007 fix: ?full=true 必须 admin token（完整的 LLM_GATEWAY_ADMIN_API_KEY
 	// 校验由外层 AdminTokenMiddleware 完成；这里只拒绝"完全无 token"的情形）。
 	//
