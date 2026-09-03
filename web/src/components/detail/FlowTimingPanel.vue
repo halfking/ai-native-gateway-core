@@ -18,6 +18,7 @@ const error = ref('')
 const trace = ref<RequestTrace | null>(null)
 const journey = ref<RequestJourney | null>(null)
 const waterfall = ref<WaterfallRequest | null>(null)
+const waterfallResultSource = ref('')
 const journal = ref<DispatchJournalSnapshot | null>(null)
 const journeyError = ref('')
 const waterfallError = ref('')
@@ -32,6 +33,7 @@ watch(
     trace.value = null
     journey.value = null
     waterfall.value = null
+    waterfallResultSource.value = ''
     journal.value = null
     error.value = ''
     journeyError.value = ''
@@ -51,13 +53,18 @@ watch(
     else error.value = traceResult.reason instanceof Error ? traceResult.reason.message : String(traceResult.reason)
     if (journeyResult.status === 'fulfilled') journey.value = journeyResult.value
     else journeyError.value = journeyResult.reason instanceof Error ? journeyResult.reason.message : String(journeyResult.reason)
-    if (waterfallResult.status === 'fulfilled') waterfall.value = waterfallResult.value.request
-    else waterfallError.value = waterfallResult.reason instanceof Error ? waterfallResult.reason.message : String(waterfallResult.reason)
+    if (waterfallResult.status === 'fulfilled') {
+      waterfall.value = waterfallResult.value.request
+      waterfallResultSource.value = waterfallResult.value.source || ''
+    } else {
+      waterfallError.value = waterfallResult.reason instanceof Error ? waterfallResult.reason.message : String(waterfallResult.reason)
+    }
     if (journeyResult.status === 'fulfilled' && journeyResult.value.tenant_id) {
       try {
-        journal.value = await fetchDispatchJournal(journeyResult.value.tenant_id, id)
+        const nextJournal = await fetchDispatchJournal(journeyResult.value.tenant_id, id)
+        if (sequence === loadSequence) journal.value = nextJournal
       } catch (e: unknown) {
-        journalError.value = e instanceof Error ? e.message : String(e)
+        if (sequence === loadSequence) journalError.value = e instanceof Error ? e.message : String(e)
       }
     }
     if (sequence !== loadSequence) return
@@ -112,7 +119,12 @@ function statusClass(status: string): string {
 
         <button type="button" class="btn btn-sm link" @click="emit('goto', 'attempts')">{{ t('requestDetail.flow.viewRoutingRetry') }}</button>
       </div>
-      <RequestProcessingFlowDiagram :trace="trace" :journey="journey" :waterfall="waterfall" />
+      <RequestProcessingFlowDiagram
+        :trace="trace"
+        :journey="journey"
+        :waterfall="waterfall"
+        :waterfall-source="waterfallResultSource"
+      />
       <ul class="flow-list">
         <li
           v-for="e in events"

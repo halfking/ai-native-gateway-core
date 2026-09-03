@@ -51,7 +51,7 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
                COALESCE(t.model,''), COALESCE(t.provider,''), COALESCE(t.status_code,0),
                COALESCE(t.submit_mode,''), COALESCE(t.injection_verdict,''), COALESCE(t.output_verdict,''),
                COALESCE(t.attachment_count,0), t.request_id,
-               COALESCE(t.cache_read_tokens,0), COALESCE(t.latency_ms,0), COALESCE(t.success,FALSE),
+			   COALESCE(t.cache_read_tokens,0), t.latency_ms, COALESCE(t.success,FALSE),
                t.error_kind, t.compression_applied, t.compression_tokens_saved, t.digest,
                NULL::jsonb, NULL::jsonb
         FROM public.session_turns_with_current_month t
@@ -67,7 +67,8 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		var it TurnListItem
 		var requestID string
 		var errorKind *string
-		var cacheRead, latency int
+		var cacheRead int
+		var latency *int
 		var success, compression bool
 		var saved *int
 		var digestRaw, requestRaw, responseRaw []byte
@@ -80,9 +81,10 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 		}
 		reqBody := decodeStoredJSON("request_delta", requestID, requestRaw)
 		respBody := decodeStoredJSON("response_delta", requestID, responseRaw)
-		meta := map[string]any{"prompt_tokens": it.RequestTokens, "completion_tokens": it.ResponseTokens, "cost_usd": it.CostUSD, "cache_read_tokens": cacheRead, "latency_ms": latency, "status_code": it.StatusCode, "success": success, "error_kind": stringPtrValue(errorKind)}
+		meta := map[string]any{"prompt_tokens": it.RequestTokens, "completion_tokens": it.ResponseTokens, "cost_usd": it.CostUSD, "latency_ms": intPtrValue(latency), "status_code": it.StatusCode, "success": success, "error_kind": stringPtrValue(errorKind)}
 		gov := map[string]any{"submit_mode": it.SubmitMode, "injection_verdict": it.InjectionVerdict, "output_verdict": it.OutputVerdict, "compression_applied": compression, "compression_tokens_saved": intPtrValue(saved)}
 		it.RequestID = requestID
+		it.LatencyMs = latency
 		it.Digest = persistedDigestOrFallback(digestRaw, reqBody, respBody, meta, gov)
 		it.ChildRequests = []*SessionChildRequest{}
 		items = append(items, it)
@@ -231,7 +233,7 @@ func (h *Handler) handleSessionTurnsDual(w http.ResponseWriter, r *http.Request)
 		copyRecordedResponse(w, treeRecorder)
 		return
 	}
-	payload["v2_shadow"] = shadow
+	applyTurnsV2Shadow(payload, v2Recorder.Body.Bytes(), shadow)
 	for key, values := range treeRecorder.Header() {
 		for _, value := range values {
 			w.Header().Add(key, value)
@@ -257,6 +259,44 @@ type turnsV2Shadow struct {
 	MissingInV2 []string `json:"missing_in_v2,omitempty"`
 	ExtraInV2   []string `json:"extra_in_v2,omitempty"`
 	StatusCode  int      `json:"v2_status_code"`
+}
+
+func applyTurnsV2Shadow(payload map[string]any, v2Raw []byte, summary turnsV2Shadow) {
+	// The comparison is attached to each tree turn so consumers can reconcile
+	// durable turn numbers and digest availability without parsing aggregate IDs.
+	var v2 struct {
+		Turns []struct {
+			RequestID string          `json:"request_id"`
+			TurnNo    int             `json:"turn_no"`
+			Digest    json.RawMessage `json:"digest"`
+		} `json:"turns"`
+	}
+	if summary.Status == "unavailable" || json.Unmarshal(v2Raw, &v2) != nil {
+		return
+	}
+	byID := make(map[string]SessionTurnV2Shadow, len(v2.Turns))
+	for _, turn := range v2.Turns {
+		byID[turn.RequestID] = SessionTurnV2Shadow{
+			TurnNo:          turn.TurnNo,
+			DigestAvailable: len(turn.Digest) > 0 && string(turn.Digest) != "null",
+		}
+	}
+	rawTurns, ok := payload["turns"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range rawTurns {
+		turn, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		requestID, _ := turn["request_id"].(string)
+		if shadow, exists := byID[requestID]; exists {
+			turn["v2_shadow"] = shadow
+		} else {
+			turn["v2_shadow"] = nil
+		}
+	}
 }
 
 func buildTurnsV2Shadow(treeRaw, v2Raw []byte, v2Status int) turnsV2Shadow {

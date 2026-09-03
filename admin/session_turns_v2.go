@@ -270,8 +270,12 @@ func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.
 			t.prompt_tokens, t.completion_tokens, t.cache_read_tokens, t.cache_write_tokens,
 			t.cost_usd, t.latency_ms, t.status_code, t.success, t.error_kind,
 				t.source_kind, t.quality, t.digest,
+				t.t0_arrived_at, t.t1_total_enqueued_at, t.t2_total_dequeued_at,
+				t.t3_model_enqueued_at, t.t4_model_dequeued_at, t.t5_cred_enqueued_at,
+				t.t6_cred_dequeued_at, t.t7_forward_start_at, t.t8_response_start_at,
+				t.t9_response_end_at,
 				b.request_delta, b.response_delta, b.outbound_body,
-			b.request_attachments, b.response_attachments
+				b.request_attachments, b.response_attachments
 		FROM public.session_turns_with_current_month t
 			LEFT JOIN public.session_bodies_unified b
 				ON t.tenant_id = b.tenant_id
@@ -290,12 +294,14 @@ func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.
 		persistedDigestRaw                                                          []byte
 		compressionTokensSaved                                                      *int
 
-		model, provider, errorKind                                        *string
-		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens *int
-		costUSD                                                           *float64
-		latencyMs, statusCode                                             *int
-		success                                                           *bool
-		requestAttachmentsRaw, responseAttachmentsRaw                     []byte
+		model, provider, errorKind                                                               *string
+		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens                        *int
+		costUSD                                                                                  *float64
+		latencyMs, statusCode                                                                    *int
+		success                                                                                  *bool
+		requestAttachmentsRaw, responseAttachmentsRaw                                            []byte
+		t0ArrivedAt, t1TotalEnqueuedAt, t2TotalDequeuedAt, t3ModelEnqueuedAt, t4ModelDequeuedAt  *time.Time
+		t5CredEnqueuedAt, t6CredDequeuedAt, t7ForwardStartAt, t8ResponseStartAt, t9ResponseEndAt *time.Time
 	)
 	err = db.QueryRow(r.Context(), query, sessionID, tenantID, turnNo).Scan(
 		&turnNoOut, &requestID, &ts,
@@ -306,6 +312,10 @@ func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.
 		&promptTokens, &completionTokens, &cacheReadTokens, &cacheWriteTokens,
 		&costUSD, &latencyMs, &statusCode, &success, &errorKind,
 		&sourceKind, &quality, &persistedDigestRaw,
+		&t0ArrivedAt, &t1TotalEnqueuedAt, &t2TotalDequeuedAt,
+		&t3ModelEnqueuedAt, &t4ModelDequeuedAt, &t5CredEnqueuedAt,
+		&t6CredDequeuedAt, &t7ForwardStartAt, &t8ResponseStartAt,
+		&t9ResponseEndAt,
 		&requestDeltaRaw, &responseDeltaRaw, &outboundBodyRaw,
 		&requestAttachmentsRaw, &responseAttachmentsRaw)
 	if err != nil {
@@ -341,6 +351,18 @@ func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.
 	if costUSD != nil {
 		meta["cost_usd"] = *costUSD
 	}
+	for key, value := range map[string]*time.Time{
+		"t0_arrived_at": t0ArrivedAt, "t1_total_enqueued_at": t1TotalEnqueuedAt,
+		"t2_total_dequeued_at": t2TotalDequeuedAt, "t3_model_enqueued_at": t3ModelEnqueuedAt,
+		"t4_model_dequeued_at": t4ModelDequeuedAt, "t5_cred_enqueued_at": t5CredEnqueuedAt,
+		"t6_cred_dequeued_at": t6CredDequeuedAt, "t7_forward_start_at": t7ForwardStartAt,
+		"t8_response_start_at": t8ResponseStartAt, "t9_response_end_at": t9ResponseEndAt,
+	} {
+		if value != nil {
+			meta[key] = value
+		}
+	}
+	meta["timing_semantics"] = "request_level_last_write"
 	governance := map[string]any{
 		"submit_mode":              submitMode,
 		"compression_applied":      compressionApplied,

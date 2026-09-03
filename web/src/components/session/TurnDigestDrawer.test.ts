@@ -49,8 +49,10 @@ const i18n = createI18n({
         toolCount: '{n} 次',
         tabs: {
           summary: '摘要', request: '请求', response: '回复', compression: '压缩诊断',
+          waterfall: '瀑布时间',
           meta: '元数据', governance: '治理', attachments: '附件',
         },
+        noWaterfall: '暂无瀑布时间数据',
         noAttachments: '无附件',
         openAttachment: '下载附件',
         openingAttachment: '正在打开…',
@@ -129,6 +131,7 @@ describe('TurnDigestDrawer', () => {
     expect(w.text()).toContain('Response end')
     expect(w.find('[data-testid="turn-waterfall"]').exists()).toBe(true)
   })
+
   it('does not call getSessionTurn when turnNo is null', async () => {
     const w = mountDrawer({ turnNo: null })
     await flushPromises()
