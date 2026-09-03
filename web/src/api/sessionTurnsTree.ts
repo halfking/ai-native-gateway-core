@@ -216,11 +216,12 @@ export async function fetchOnlineSessions(
 /** GET /api/admin/sessions/{id}/turns?limit=&cursor= 轮次-子请求树（OBS-BE6）。 */
 export async function fetchSessionTurnsTree(
   sessionId: string,
-  params: { limit?: number; cursor?: string } = {}
+  params: { limit?: number; cursor?: string; source?: 'v2' } = {}
 ): Promise<SessionTurnsTreeResponse> {
   const q = new URLSearchParams()
   if (params.limit) q.set('limit', String(params.limit))
   if (params.cursor) q.set('cursor', params.cursor)
+  if (params.source) q.set('source', params.source)
   const qs = q.toString()
   const path =
     `/api/admin/sessions/${encodeURIComponent(sessionId)}/turns${qs ? `?${qs}` : ''}`
