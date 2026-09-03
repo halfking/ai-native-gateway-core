@@ -1,8 +1,17 @@
 # Credential Console Follow-up Handoff
 
-**Prepared:** September 3, 2026
+**Prepared:** September 4, 2026
 
 ## Scope completed in this session
+
+### Provider-detail credential-model console
+
+- Added `web/src/utils/modelOfferPricing.ts` as the shared pricing contract for the five accepted billing modes, non-negative finite price validation, and compact 1M-price summaries.
+- `CredentialModelsPanel.vue` now displays a four-price plus billing-mode summary for every credential-model binding. `null` is rendered as “Unset”; explicit `0` remains visibly distinct and `billing_mode=free` is rendered as “Free”.
+- Reused `ModelOfferDetailDrawer.vue` as the sole binding-level price editor; it consumes the shared validation so list presentation and PATCH input obey the same rules.
+- Added an explicit `canManage` / `canEdit` boundary from `CredsTab.vue` through the model panel to the offer drawer. Read-only users can inspect the binding and its prices but cannot trigger discovery, add/clear bindings, toggle availability, or submit offer/canonical mutations.
+- Kept manual model enrollment unchanged: the backend creation contract does not currently support price/billing fields, so prices remain editable after enrollment through the existing offer PATCH endpoint instead of extending a separate create payload.
+- Added `web/src/utils/modelOfferPricing.test.ts` covering explicit zero versus unset, price/billing validation, and free-price summary behavior.
 
 ### Backend credential state
 
@@ -37,7 +46,8 @@
 - Added `web/src/utils/credentialStatus.ts`.
 - Added `web/src/components/CredentialStatusBar.vue`.
 - Added `web/src/components/CredentialKeyField.vue`.
-- These are intentionally not yet wired into page-level UIs.
+- Wired both primitives into `CredsTab.vue` and `CredentialMonitorView.vue` while preserving separate health/model-level semantics.
+- Added focused Vitest coverage for status normalization and key reveal/copy/hide behavior.
 
 ## Remaining implementation plan
 

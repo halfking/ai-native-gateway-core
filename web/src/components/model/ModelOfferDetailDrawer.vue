@@ -10,12 +10,20 @@ import { updateModel } from '../../api/models'
 import ModelIdentityChip from './ModelIdentityChip.vue'
 import ModelOfferExtrasPanel from './ModelOfferExtrasPanel.vue'
 import { useCredentialLabels } from '../../composables/useCredentialLabels'
+import {
+  BILLING_MODES,
+  PRICE_FIELDS,
+  normalizePrice,
+  validatePricing,
+  type PriceField,
+} from '../../utils/modelOfferPricing'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   providerId: number
   offer: ModelOffer | null
   siblingOffers?: ModelOffer[]
-}>()
+  canEdit?: boolean
+}>(), { canEdit: true })
 
 const emit = defineEmits<{ close: []; updated: [ModelOffer]; iqTested: [] }>()
 const router = useRouter()
@@ -37,13 +45,7 @@ const initialPrices = reactive({
   billing_mode: null as string | null,
 })
 
-const BILLING_MODES = [
-  { value: 'per_token', label: 'per_token' },
-  { value: 'free', label: 'free' },
-  { value: 'token_plan', label: 'token_plan' },
-  { value: 'code_plan', label: 'code_plan' },
-  { value: 'agent_plan', label: 'agent_plan' },
-] as const
+const BILLING_MODE_OPTIONS = BILLING_MODES.map(value => ({ value, label: value }))
 
 const draft = reactive({
   standardized_name: '',
@@ -106,41 +108,21 @@ function applyRuleBased() {
   draft.canonical_id = match ? match.id : null
 }
 
-const PRICE_FIELDS = [
-  'unit_price_in_per_1m',
-  'unit_price_out_per_1m',
-  'cache_read_price_per_1m',
-  'cache_write_price_per_1m',
-] as const
-
-type PriceField = typeof PRICE_FIELDS[number]
-
-function normalizePrice(value: number | '' | null): number | null {
-  if (value === '' || value == null) return null
-  const n = Number(value)
-  return Number.isFinite(n) && n >= 0 ? n : null
-}
-
 function priceChanged(field: PriceField): boolean {
   return normalizePrice(draft[field]) !== initialPrices[field]
 }
 
 function validatePrices(): string | null {
-  for (const field of PRICE_FIELDS) {
-    const value = draft[field]
-    if (value !== '' && value != null) {
-      const n = Number(value)
-      if (!Number.isFinite(n) || n < 0) return `${field} must be a non-negative finite number`
-    }
-  }
-  if (!BILLING_MODES.some(mode => mode.value === draft.billing_mode)) {
-    return 'Invalid billing mode'
-  }
-  return null
+  return validatePricing({
+    unit_price_in_per_1m: draft.unit_price_in_per_1m,
+    unit_price_out_per_1m: draft.unit_price_out_per_1m,
+    cache_read_price_per_1m: draft.cache_read_price_per_1m,
+    cache_write_price_per_1m: draft.cache_write_price_per_1m,
+  }, draft.billing_mode)
 }
 
 async function saveNode() {
-  if (!props.offer) return
+  if (!props.canEdit || !props.offer) return
   const validationError = validatePrices()
   if (validationError) {
     saveErr.value = validationError
@@ -201,7 +183,7 @@ async function saveNode() {
 }
 
 async function saveCanonical() {
-  if (!props.offer?.canonical_id) {
+  if (!props.canEdit || !props.offer?.canonical_id) {
     saveErr.value = '未关联标准模型，请先选择 canonical'
     return
   }
@@ -228,7 +210,7 @@ async function saveCanonical() {
 }
 
 async function toggleAvail() {
-  if (!props.offer) return
+  if (!props.canEdit || !props.offer) return
   toggling.value = true
   try {
     const res = await toggleModelOfferState(props.providerId, props.offer.id, {
@@ -274,7 +256,7 @@ function goCanonical() {
           <label class="field-label">状态</label>
           <div class="cell-sub">{{ offer.canonical_status || '—' }}</div>
           <label class="field-label">模态</label>
-          <select v-model="draft.modality" class="field-input">
+          <select v-model="draft.modality" class="field-input" :disabled="!canEdit">
             <option value="text">text</option>
             <option value="vision">vision</option>
             <option value="audio">audio</option>
@@ -284,17 +266,18 @@ function goCanonical() {
           </select>
           <label class="field-label">思考能力</label>
           <label class="manual-toggle">
-            <input v-model="draft.thinking_supported" type="checkbox" />
+            <input v-model="draft.thinking_supported" type="checkbox" :disabled="!canEdit" />
             <span>支持 thinking / reasoning</span>
           </label>
           <input
             v-if="draft.thinking_supported"
             v-model="draft.thinking_dialect"
             class="field-input"
+            :disabled="!canEdit"
             placeholder="dialect: openai / anthropic / glm …"
           />
           <div class="btn-row" style="margin-top:10px">
-            <button class="btn btn-sm btn-primary" :disabled="saving || !offer.canonical_id" @click="saveCanonical">
+            <button class="btn btn-sm btn-primary" :disabled="!canEdit || saving || !offer.canonical_id" @click="saveCanonical">
               保存标准能力
             </button>
           </div>
@@ -309,12 +292,12 @@ function goCanonical() {
             <span class="avail-badge" :class="offer.available ? 'on' : 'off'">
               {{ offer.available ? '可用' : '不可用' }}
             </span>
-            <button class="btn btn-sm" :disabled="toggling" @click="toggleAvail">
+            <button class="btn btn-sm" :disabled="!canEdit || toggling" @click="toggleAvail">
               {{ offer.available ? '停用' : '启用' }}
             </button>
           </div>
           <label class="field-label">标准化名</label>
-          <input v-model="draft.standardized_name" class="field-input" />
+          <input v-model="draft.standardized_name" class="field-input" :disabled="!canEdit" />
           <div v-if="suggest?.rule_based" class="cell-sub" style="margin-top:4px">
             规则建议
             <button type="button" class="btn btn-sm btn-ghost" @click="applyRuleBased">{{ suggest.rule_based }}</button>
@@ -322,6 +305,7 @@ function goCanonical() {
           <label class="field-label">关联 canonical</label>
           <select
             class="field-input"
+            :disabled="!canEdit"
             :value="draft.canonical_id ?? ''"
             @change="(e: Event) => {
               const v = (e.target as HTMLSelectElement).value
@@ -336,9 +320,9 @@ function goCanonical() {
             >{{ c.canonical_name }}</option>
           </select>
           <label class="field-label">出站名 (outbound)</label>
-          <input v-model="draft.outbound_model_name" class="field-input" :placeholder="offer.raw_model_name" />
+          <input v-model="draft.outbound_model_name" class="field-input" :disabled="!canEdit" :placeholder="offer.raw_model_name" />
           <label class="field-label">上下文窗口覆盖</label>
-          <input v-model.number="draft.context_window" type="number" min="0" class="field-input" placeholder="空=继承标准" />
+          <input v-model.number="draft.context_window" type="number" min="0" class="field-input" :disabled="!canEdit" placeholder="空=继承标准" />
           <div class="cell-sub">
             生效:
             <code>{{ offer.context_window ?? '—' }}</code>
@@ -347,28 +331,28 @@ function goCanonical() {
           <div class="price-grid">
             <div>
               <label class="field-label">输入价格 / 1M tokens</label>
-              <input v-model.number="draft.unit_price_in_per_1m" type="number" min="0" step="0.001" class="field-input" placeholder="保持现值" />
+              <input v-model.number="draft.unit_price_in_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" placeholder="保持现值" />
             </div>
             <div>
               <label class="field-label">输出价格 / 1M tokens</label>
-              <input v-model.number="draft.unit_price_out_per_1m" type="number" min="0" step="0.001" class="field-input" placeholder="保持现值" />
+              <input v-model.number="draft.unit_price_out_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" placeholder="保持现值" />
             </div>
             <div>
               <label class="field-label">缓存读取价格 / 1M tokens</label>
-              <input v-model.number="draft.cache_read_price_per_1m" type="number" min="0" step="0.001" class="field-input" placeholder="保持现值" />
+              <input v-model.number="draft.cache_read_price_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" placeholder="保持现值" />
             </div>
             <div>
               <label class="field-label">缓存写入价格 / 1M tokens</label>
-              <input v-model.number="draft.cache_write_price_per_1m" type="number" min="0" step="0.001" class="field-input" placeholder="保持现值" />
+              <input v-model.number="draft.cache_write_price_per_1m" type="number" min="0" step="0.001" class="field-input" :disabled="!canEdit" placeholder="保持现值" />
             </div>
           </div>
           <label class="field-label">计费模式</label>
-          <select v-model="draft.billing_mode" class="field-input">
-            <option v-for="mode in BILLING_MODES" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
-          </select>
+            <select v-model="draft.billing_mode" class="field-input" :disabled="!canEdit">
+              <option v-for="mode in BILLING_MODE_OPTIONS" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+            </select>
           <div class="cell-sub">价格留空表示保持现值；显式 0 表示免费。</div>
           <div class="btn-row" style="margin-top:10px">
-            <button class="btn btn-sm btn-primary" :disabled="saving" @click="saveNode">保存节点</button>
+            <button class="btn btn-sm btn-primary" :disabled="!canEdit || saving" @click="saveNode">保存节点</button>
           </div>
         </section>
       </div>
@@ -378,6 +362,7 @@ function goCanonical() {
           :provider-id="providerId"
           :offer="offer"
           :sibling-offers="siblingOffers ?? []"
+          :can-edit="canEdit"
           @iq-tested="emit('iqTested')"
         />
       </div>

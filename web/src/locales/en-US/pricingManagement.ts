@@ -106,6 +106,7 @@ export default {
     cacheReadPrice: 'Cache read price (per 1M)',
     cacheWritePrice: 'Cache write price (per 1M)',
     currency: 'Currency',
+    unset: 'Unset',
     billingMode: 'Billing mode',
     billingPerToken: 'Per token',
     billingPerRequest: 'Per request',

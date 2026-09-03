@@ -991,15 +991,18 @@ function onTagsInput(ev: Event) {
             <div class="drawer-sub">{{ pd('creds.rowMeta', { id: selected.id, trust: selected.trust_level }) }}</div>
             <div class="drawer-tabs" style="margin-top:10px;display:flex;gap:6px">
               <button type="button" class="btn btn-sm" :class="drawerTab === 'info' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'info'">信息</button>
-              <!-- 模型 tab 为绑定管理（写操作），仅 super_admin -->
-              <button v-if="canManageCreds" type="button" class="btn btn-sm" :class="drawerTab === 'models' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'models'">模型</button>
+              <button type="button" class="btn btn-sm" :class="drawerTab === 'models' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'models'">模型</button>
             </div>
           </div>
           <button type="button" class="btn btn-ghost btn-sm" @click="closeDrawer">{{ pd('creds.drawerClose') }}</button>
         </div>
 
-        <div v-if="drawerTab === 'models' && canManageCreds" class="drawer-body">
-          <CredentialModelsPanel :provider-id="provider.id" :credential-id="selected.id" />
+        <div v-if="drawerTab === 'models'" class="drawer-body">
+          <CredentialModelsPanel
+            :provider-id="provider.id"
+            :credential-id="selected.id"
+            :can-manage="canManageCreds"
+          />
         </div>
 
         <div v-else class="drawer-body">

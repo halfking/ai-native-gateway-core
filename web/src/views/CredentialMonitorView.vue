@@ -798,7 +798,7 @@ function effectiveCredentialReason(c: CredentialMonitorSummary) {
   return c.effective_reason || c.state_reason_detail || c.state_reason_code || undefined
 }
 
-
+function statusBadge(state: string) {
   if (state === 'ready') return 'badge-green'
   if (['degraded', 'cooling', 'rate_limited'].includes(state)) return 'badge-amber'
   if (['unreachable', 'auth_failed', 'suspended'].includes(state)) return 'badge-red'
