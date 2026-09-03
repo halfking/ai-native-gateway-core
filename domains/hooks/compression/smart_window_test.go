@@ -2,6 +2,7 @@ package compression
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,6 +140,29 @@ func TestFindOptimalCutPoint_ToolIntegrityPreserved(t *testing.T) {
 	}
 }
 
+func TestSmartCompress_AnthropicPlacesSummaryInSystem(t *testing.T) {
+	body := []byte(`{"model":"claude","system":"You are helpful.","messages":[{"role":"user","content":"old"},{"role":"assistant","content":"old answer"},{"role":"user","content":"latest"}]}`)
+	plan := CutPlan{SystemCount: 0, CutIndex: 2, SummariseCount: 2, RetainCount: 1}
+	out, err := SmartCompress(body, plan, "anthropic-messages", "prior turns")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		System   json.RawMessage   `json:"system"`
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Messages) != 1 {
+		t.Fatalf("messages = %d, want only retained tail", len(got.Messages))
+	}
+	var systemText string
+	if err := json.Unmarshal(got.System, &systemText); err != nil || !strings.Contains(systemText, AnthropicSystemSummaryPrefix) {
+		t.Fatalf("summary was not placed in Anthropic system field: %s", out)
+	}
+}
+
 func TestSmartCompress_BasicRebuild(t *testing.T) {
 	body := makeBodyAny(
 		makeMsg("system", "You are helpful."),
@@ -264,6 +288,40 @@ func TestCutMarker_RedisRoundTrip(t *testing.T) {
 	}
 	if recovered.PreSanitizeOffsetRange != cm.PreSanitizeOffsetRange {
 		t.Errorf("PSOR mismatch: %v vs %v", recovered.PreSanitizeOffsetRange, cm.PreSanitizeOffsetRange)
+	}
+}
+
+func TestCutMarker_RedisRejectsMalformedOrUnknownVersion(t *testing.T) {
+	base := map[string]string{
+		"cm_v": "1", "cm_ts": "1719300000", "cm_src": "4",
+		"cm_sys": "1", "cm_ci": "2", "cm_strat": "mechanical_trim",
+	}
+	if got := UnmarshalCutMarkerFromRedis(base); got == nil {
+		t.Fatal("valid marker should decode")
+	}
+	for name, mutate := range map[string]func(map[string]string){
+		"version":   func(fields map[string]string) { fields["cm_v"] = "99" },
+		"timestamp": func(fields map[string]string) { fields["cm_ts"] = "not-a-timestamp" },
+		"cut":       func(fields map[string]string) { fields["cm_ci"] = "0" },
+		"psor":      func(fields map[string]string) { fields["cm_psor0"] = "x"; fields["cm_psor1"] = "2" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			fields := make(map[string]string, len(base))
+			for key, value := range base {
+				fields[key] = value
+			}
+			mutate(fields)
+			if got := UnmarshalCutMarkerFromRedis(fields); got != nil {
+				t.Fatalf("malformed marker decoded: %+v", got)
+			}
+		})
+	}
+}
+
+func TestCutMarker_IsExpiredRejectsFutureTimestamp(t *testing.T) {
+	future := CutMarker{CreatedAt: time.Now().Add(10 * time.Minute).Unix()}
+	if !future.IsExpired(redisKeyTTL) {
+		t.Fatal("future marker must be treated as expired")
 	}
 }
 

@@ -98,6 +98,18 @@ func TestCompressResponsesInputIfNeededPreservesMultimodalItems(t *testing.T) {
 	}
 }
 
+func TestCompressResponsesInputAggressivelyRespectsOutputReserve(t *testing.T) {
+	body := []byte(`{"model":"gpt-5","max_output_tokens":80,"input":[{"type":"message","role":"user","content":"old xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},{"type":"message","role":"user","content":"latest"}]}`)
+	withoutReserve := CompressResponsesInputAggressively(body, 40, 0)
+	withReserve := CompressResponsesInputAggressively(body, 40, 80)
+	if string(withReserve) != string(body) {
+		t.Fatalf("reserve that consumes the window must fail open: got %s", withReserve)
+	}
+	if string(withoutReserve) == string(body) {
+		t.Fatal("without reserve should trim this oversized input")
+	}
+}
+
 func TestCompressResponsesInputIfNeededRespectsOutputReserveAndLatest(t *testing.T) {
 	body := []byte(`{"model":"gpt-5","input":[{"type":"message","role":"user","content":"old xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"},{"type":"message","role":"user","content":"latest"}]}`)
 	if got := CompressResponsesInputIfNeeded(body, 100000, 100001); string(got) != string(body) {
