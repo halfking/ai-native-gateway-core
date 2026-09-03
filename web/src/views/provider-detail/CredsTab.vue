@@ -13,10 +13,10 @@ import {
   getCredentialFpSlotStats, type FpSlotStats,
   type CredentialLifecycleStatus, type ProviderCredential, type CredentialStatus,
   getCredentialModels, type ModelOffer,
-  revealCredentialKey,
-  rotateCredentialPrimaryKey,
+  revealUnifiedCredentialKey,
+  setUnifiedCredentialKey,
 } from '../../api'
-import { isSuperAdmin } from '../../store'
+import { isSuperAdmin, isProviderConsoleView } from '../../store'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 import CredentialStatusBar from '../../components/CredentialStatusBar.vue'
 import CredentialKeyField from '../../components/CredentialKeyField.vue'
@@ -44,6 +44,7 @@ const emit = defineEmits<{ refresh: []; silentRefresh: []; openErrorDetail: [cre
 // 轮换（后端 ProviderConsoleMiddleware 同口径）：除「修改」API Key 外，
 // 抽屉内全部编辑控件禁用/隐藏，写接口对其 403。
 const canManageCreds = computed(() => isSuperAdmin())
+const canManageCredentialSecrets = computed(() => isProviderConsoleView())
 
 const selected = ref<ProviderCredential | null>(null)
 const drawerTab = ref<'info' | 'models'>('info')
@@ -339,53 +340,27 @@ function openDrawer(c: ProviderCredential) {
 // copy is serialized for offline edits in some debug paths.
 const revealedApiKey = ref<string | null>(null)
 const rotateModalOpen = ref(false)
-const rotateRawModelName = ref('')
 const rotateNewApiKey = ref('')
 const rotateNewApiKeyConfirm = ref('')
 const rotateSubmitting = ref(false)
 const rotateErr = ref('')
 
-async function revealApiKeyForField(credentialId: number, providerId?: number): Promise<string> {
-  const r = await revealCredentialKey(providerId ?? props.provider.id, credentialId)
+async function revealApiKeyForField(credentialId: number): Promise<string> {
+  const r = await revealUnifiedCredentialKey(credentialId)
   revealedApiKey.value = r.api_key
   return r.api_key
 }
 
-function hideApiKey() {
-  revealedApiKey.value = null
-}
-
-async function copyRevealed() {
-  if (!revealedApiKey.value) return
-  try {
-    await navigator.clipboard.writeText(revealedApiKey.value)
-    ElMessage.success(td('common.copied' as never, '已复制' as never))
-  } catch (e: unknown) {
-    // navigator.clipboard can refuse under insecure contexts; surface a
-    // friendly hint rather than letting the exception propagate.
-    ElMessage.warning(e instanceof Error ? e.message : pd('creds.apiKeyRotateFailed'))
-  }
-}
-
 function openRotateModal() {
-  if (!selected.value) return
-  if (!probeModelOptions.value.length) {
-    ElMessage.warning(pd('creds.apiKeyRotateHintNoBinding'))
-    return
-  }
+  if (!selected.value || !canManageCredentialSecrets.value) return
   rotateErr.value = ''
   rotateNewApiKey.value = ''
   rotateNewApiKeyConfirm.value = ''
-  // Default the model to the credential's currently pinned default probe
-  // model if it's bound, otherwise the first option.
-  const pinned = (selected.value.default_probe_model ?? '').trim()
-  const found = probeModelOptions.value.find(o => o.value === pinned)
-  rotateRawModelName.value = found ? found.value : probeModelOptions.value[0].value
   rotateModalOpen.value = true
 }
 
 async function submitRotate() {
-  if (!selected.value) return
+  if (!selected.value || !canManageCredentialSecrets.value) return
   const k1 = rotateNewApiKey.value
   const k2 = rotateNewApiKeyConfirm.value
   if (!k1.trim()) {
@@ -396,21 +371,12 @@ async function submitRotate() {
     rotateErr.value = pd('creds.apiKeyRotateMismatch')
     return
   }
-  if (!rotateRawModelName.value) {
-    rotateErr.value = pd('creds.apiKeyRotateModelLabel')
-    return
-  }
   rotateSubmitting.value = true
   rotateErr.value = ''
   try {
-    await rotateCredentialPrimaryKey(props.provider.id, selected.value.id, {
-      api_key: k1,
-      raw_model_name: rotateRawModelName.value,
-    })
+    await setUnifiedCredentialKey(selected.value.id, { api_key: k1 })
     rotateModalOpen.value = false
     ElMessage.success(pd('creds.apiKeyRotateSuccess'))
-    // Drop any cached plaintext before closing — the new key replaces the
-    // old one and the drawer will re-fetch key_masked on next open.
     revealedApiKey.value = null
     emit('refresh')
     closeDrawer()
@@ -1016,7 +982,7 @@ function onTagsInput(ev: Event) {
                 :provider-id="provider.id"
                 :credential-id="selected.id"
                 :masked="selected.key_masked"
-                :can-reveal="canManageCreds"
+                :can-reveal="canManageCredentialSecrets"
                 :reveal-key="revealApiKeyForField"
                 :reveal-label="pd('creds.apiKeyReveal')"
                 :revealing-label="pd('creds.apiKeyRevealing')"
@@ -1036,9 +1002,9 @@ function onTagsInput(ev: Event) {
                 <button
                   class="btn btn-sm btn-ghost"
                   type="button"
-                  :disabled="!probeModelOptions.length"
+                  :disabled="!canManageCredentialSecrets || rotateSubmitting"
                   @click="openRotateModal"
-                  :title="!probeModelOptions.length ? pd('creds.apiKeyRotateHintNoBinding') : ''"
+                  :title="!canManageCredentialSecrets ? pd('creds.apiKeyRotateFailed') : ''"
                 >
                   {{ pd('creds.apiKeyRotateBtn') }}
                 </button>
@@ -1359,12 +1325,7 @@ function onTagsInput(ev: Event) {
       </div>
     </div>
 
-    <!-- Rotate API Key Modal — 2026-09-02.
-         Asks the operator for a new key plus a confirmation entry, and a
-         bound model for the post-commit verification probe. Submitting
-         delegates to rotateCredentialPrimaryKey; success closes both the
-         modal and the drawer and emits `refresh` so the list re-fetches
-         key_masked against the freshly rotated secret. -->
+    <!-- Rotate API Key Modal — unified credential secret route. -->
     <div class="modal-overlay" v-if="rotateModalOpen" @click.self="rotateModalOpen = false">
       <div class="modal" style="max-width:480px" @click.stop>
         <h3>{{ pd('creds.apiKeyRotateTitle') }}</h3>
@@ -1372,12 +1333,6 @@ function onTagsInput(ev: Event) {
           <span>{{ pd('creds.apiKeyWarningRotate') }}</span>
         </div>
         <div v-if="rotateErr" class="alert alert-danger">{{ rotateErr }}</div>
-        <div class="form-group">
-          <label>{{ pd('creds.apiKeyRotateModelLabel') }}</label>
-          <select v-model="rotateRawModelName" class="field-input">
-            <option v-for="opt in probeModelOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
-          </select>
-        </div>
         <div class="form-group">
           <label>{{ pd('creds.apiKeyRotateNewKeyLabel') }}</label>
           <input v-model="rotateNewApiKey" type="password" autocomplete="off" />
