@@ -80,6 +80,7 @@ export default {
     opsOverview: '运维总览',
     opsDownloads: '发布与下载',
     opsProductEntry: '产品入口',
+    supportDonate: '赞助与捐赠',
   },
 
   // 2026-07-21: 顶部水平导航 + 未登录公开页导航

@@ -521,7 +521,7 @@ func (s *Service) fetchModels(ctx context.Context, url, apiKey string) ([]string
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("models endpoint returned %d: %s", resp.StatusCode, string(body))
+		return nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit

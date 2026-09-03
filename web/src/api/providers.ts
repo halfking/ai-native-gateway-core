@@ -350,6 +350,22 @@ export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
 }
 
+export function revealUnifiedCredentialKey(credId: number) {
+  return req<{ credential_id: number; api_key: string }>('POST', `/api/credentials/${credId}/reveal`)
+}
+
+export interface SetUnifiedCredentialKeyRequest {
+  api_key: string
+}
+
+export function setUnifiedCredentialKey(credId: number, body: SetUnifiedCredentialKeyRequest) {
+  return req<RotateCredentialPrimaryKeyResponse>(
+    'POST',
+    `/api/credentials/${credId}/set-key`,
+    body,
+  )
+}
+
 // 2026-09-02: rotate a credential's primary secret without changing its
 // identity or model bindings. The backend (admin/provider_credential.go
 // rotateCredentialPrimaryKey) requires raw_model_name so it can validate
@@ -482,6 +498,11 @@ export interface ModelOffer {
   success_rate: number | null
   input_price: number | null
   output_price: number | null
+  unit_price_in_per_1m?: number | null
+  unit_price_out_per_1m?: number | null
+  cache_read_price_per_1m?: number | null
+  cache_write_price_per_1m?: number | null
+  billing_mode?: string | null
   last_seen_at: string | null
   routing_tier: string
   availability_source: string
@@ -667,6 +688,11 @@ export function updateModelOffer(
     // The backend writes directly to credential_model_bindings
     // (skipping the model_offers view INSTEAD OF UPDATE trigger).
     context_window?: number | null
+    unit_price_in_per_1m?: number | null
+    unit_price_out_per_1m?: number | null
+    cache_read_price_per_1m?: number | null
+    cache_write_price_per_1m?: number | null
+    billing_mode?: string | null
   }
 ) {
   return req<{
@@ -679,6 +705,11 @@ export function updateModelOffer(
     outbound_model_name: string | null
     context_window: number | null
     context_window_override: number | null
+    unit_price_in_per_1m: number | null
+    unit_price_out_per_1m: number | null
+    cache_read_price_per_1m: number | null
+    cache_write_price_per_1m: number | null
+    billing_mode: string | null
   }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, body)
 }
 

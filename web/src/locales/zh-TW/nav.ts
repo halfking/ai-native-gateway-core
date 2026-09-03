@@ -87,6 +87,7 @@ export default {
     licenseOffline: '离线激活',
 
     telemetryScope: '数据采集范围',
+    supportDonate: '贊助與捐贈',
   },
 
   mainAria: '主導航',

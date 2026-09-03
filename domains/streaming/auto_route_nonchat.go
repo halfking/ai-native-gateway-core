@@ -141,7 +141,7 @@ func (h *MessagesHandler) maybeResolveAutoForMessages(reqBody *messagesRequestBo
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
-	reqCtx := r.Context()
+	reqCtx := autoroute.WithRequestID(r.Context(), r.Header.Get("X-Request-Id"))
 	if workType := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); workType != "" {
 		if l1, ok := decider.ResolveWorkType(workType); ok {
 			taskHint = l1
@@ -182,7 +182,7 @@ func (h *ResponsesHandler) maybeResolveAutoForResponses(reqBody *responsesReques
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
-	reqCtx := r.Context()
+	reqCtx := autoroute.WithRequestID(r.Context(), r.Header.Get("X-Request-Id"))
 	if workType := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); workType != "" {
 		if l1, ok := decider.ResolveWorkType(workType); ok {
 			taskHint = l1

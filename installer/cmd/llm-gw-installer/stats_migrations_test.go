@@ -131,6 +131,7 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"601_request_logs_bodies_drop_metadata.sql",
 		"602_request_logs_promote_atomic.sql",
 		"618_request_journey_snapshot_receipts.sql",
+		"650_auto_route_selection_treatment_attribution.sql",
 		"session_turns_hot_bootstrap.sql",
 	}
 

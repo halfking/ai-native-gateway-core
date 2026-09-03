@@ -79,6 +79,7 @@ export default {
     opsOverview: 'Ops Overview',
     opsDownloads: 'Releases & Downloads',
     opsProductEntry: 'Product Entry',
+    supportDonate: 'Sponsorship & Donation',
   },
 
   // 2026-07-21: top-bar & public nav
