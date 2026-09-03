@@ -12,6 +12,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // survival_coordinator.go — SR-06 (doc 18 §5.1, §7, §8, §9.1)
@@ -331,21 +332,20 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	hbWindow, hbChunks := RecoveryHoldbackForModel(params.Model)
 
 	// FR-12 L2 committed-prefix aligned continuation (design
-	// resume-blocked-long-stream-recovery §3.3 points 1/2): INERT unless
-	// LLM_GATEWAY_RECOVERY_L2_ENABLED is set — with the switch closed (the
-	// default) no gate observes, the cache is never consulted and the loop
-	// below is byte-identical to the pre-L2 build. When enabled every gate
-	// folds its wire-proven semantic frames into the committed-prefix cache
-	// (request-scoped entry), and a committed_output resume_blocked verdict
-	// first asks the recovery ladder for an aligned continuation replay
-	// before falling to the error envelope. The entry is dropped when Run
-	// returns (succeed / error / envelope — every Run exit is request
-	// terminal).
+	// resume-blocked-long-stream-recovery §3.3 points 1/2): the default
+	// LLM_GATEWAY_RECOVERY_L2_MODE=off leaves every gate, cache and recovery
+	// decision byte-identical to the pre-L2 build. shadow folds only
+	// wire-proven semantic frames into a request-scoped prefix cache and
+	// observes naturally occurring follow-up attempts; it never starts a replay
+	// or changes bytes, retry budget, ladder decisions or terminal rendering.
+	// enforce additionally asks the recovery ladder for an aligned continuation
+	// after committed_output. The entry is dropped when Run returns (succeed /
+	// error / envelope — every Run exit is request terminal).
 	l2 := recoveryL2RuntimeFromEnv()
-	if l2.enabled && c.PrefixCache != nil {
+	if l2.observeEnabled() && c.PrefixCache != nil {
 		l2.cache = c.PrefixCache
 	}
-	if l2.enabled {
+	if l2.observeEnabled() {
 		defer l2.cache.Remove(params.RequestID)
 	}
 	// l2Replay arms the NEXT attempt as an L2 aligned replay; l2RecoveryNo /
@@ -415,11 +415,19 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			}
 			return c.BeforeSemanticCommit(ctx, state)
 		}}
-		if l2.enabled {
+		if l2.observeEnabled() {
 			// L2 wiring point 1: fold every wire-proven semantic frame into
 			// the committed-prefix cache (Observe is only armed while L2 is
 			// enabled — the default-off hot path never touches the cache).
 			gateOpts.PrefixObserve = l2.cache.Observe
+		}
+		if l2.shadowEnabled() && res.Attempts > 0 {
+			if committed, ok := l2.cache.Snapshot(params.RequestID); ok {
+				gateOpts.ShadowAlignment = &ShadowAlignmentOptions{Committed: committed, Aligner: NewPrefixAligner(l2.cfg.AlignmentThresholdBP)}
+				gateOpts.ShadowAlignmentResult = func(result ShadowAlignmentResult) {
+					metrics.RecordStreamRecoveryL2Shadow(c.Protocol.String(), result.Result)
+				}
+			}
 		}
 		l2ReplayThisAttempt := l2Replay != nil
 		if l2ReplayThisAttempt {
@@ -437,6 +445,11 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		attemptParams := *params
 		attemptParams.W = gw
 		res.FinalAttempt = ExecuteAttempt(ctx, c.Exec, gate, &attemptParams)
+		// Shadow evaluation settles only after the ordinary attempt completed.
+		// It never feeds a result back into the recovery ladder or gate state.
+		if l2.shadowEnabled() {
+			gate.FinishShadowObservation()
+		}
 		res.Attempts++
 		if err := ctx.Err(); err != nil {
 			if gate.State() < CommitStateContent {
@@ -471,6 +484,29 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			} else {
 				res.Decision = TaskDecision{Action: TaskActionResumeBlocked, Reason: "l2_alignment_miss"}
 			}
+		}
+
+		if l2.shadowEnabled() && res.Decision.Action == TaskActionResumeBlocked && gateOpts.ShadowAlignment == nil {
+			shadowUnavailable := ShadowAlignmentResult{
+				Result:                    "unavailable",
+				Applied:                   false,
+				ClientBytesUnchanged:      true,
+				RecoveryBehaviorUnchanged: true,
+				L2Mode:                    RecoveryL2ModeShadow,
+			}
+			log.Info("survival_l2_shadow",
+				"request_id", params.RequestID,
+				"result", shadowUnavailable.Result,
+				"score_bp", 0,
+				"common_bytes", 0,
+				"hash_only", false,
+				"aligned", false,
+				"applied", false,
+				"client_bytes_unchanged", true,
+				"recovery_behavior_unchanged", true,
+				"l2_mode", string(RecoveryL2ModeShadow),
+			)
+			metrics.RecordStreamRecoveryL2Shadow(c.Protocol.String(), shadowUnavailable.Result)
 		}
 
 		// 2026-08-19: log the per-attempt verdict right after aggregation so
@@ -784,7 +820,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			// path below run. Inert while L2 is disabled (the default):
 			// resume_blocked keeps its exact pre-L2 behavior. A replay that
 			// already missed (reason l2_alignment_miss) never re-asks.
-			if l2.enabled && res.Decision.Action == TaskActionResumeBlocked && res.Decision.Reason != "l2_alignment_miss" {
+			if l2.enforceEnabled() && res.Decision.Action == TaskActionResumeBlocked && res.Decision.Reason != "l2_alignment_miss" {
 				if plan := c.l2AlignedReplayPlan(ctx, log, params, res, l2, l2RecoveryNo, l2LastScoreBP, deadline, maxRetries); plan != nil {
 					// Keep the interrupted attempt's trailing partial bytes
 					// on the wire (and observed) exactly as the envelope path
