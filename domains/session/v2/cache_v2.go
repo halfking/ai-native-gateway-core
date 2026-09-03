@@ -228,13 +228,15 @@ func (c *SessionCacheV2) HasState(ctx context.Context, tenantID, sessionID strin
 type CompressionMetaCache struct {
 	mu       sync.RWMutex
 	capacity int
+	ttl      time.Duration
 	items    map[string]*cacheEntry
 	lru      *lruList
 }
 
 type cacheEntry struct {
-	state *SessionStateV2
-	node  *lruNode
+	state     *SessionStateV2
+	node      *lruNode
+	expiresAt time.Time
 }
 
 type lruNode struct {
@@ -253,6 +255,13 @@ type lruList struct {
 // 2026-08-06 FIX (P2-3): Initialize LRU list head/tail pointers eagerly
 // to avoid race condition in concurrent addToFront calls.
 func NewCompressionMetaCache(capacity int) *CompressionMetaCache {
+	return newCompressionMetaCache(capacity, defaultGovernanceTTL)
+}
+
+func newCompressionMetaCache(capacity int, ttl time.Duration) *CompressionMetaCache {
+	if ttl <= 0 {
+		ttl = defaultGovernanceTTL
+	}
 	lru := &lruList{
 		head: &lruNode{},
 		tail: &lruNode{},
@@ -263,6 +272,7 @@ func NewCompressionMetaCache(capacity int) *CompressionMetaCache {
 
 	return &CompressionMetaCache{
 		capacity: capacity,
+		ttl:      ttl,
 		items:    make(map[string]*cacheEntry),
 		lru:      lru,
 	}
@@ -326,6 +336,11 @@ func (c *CompressionMetaCache) Get(tenantID, sessionID string) *SessionStateV2 {
 	if !ok {
 		return nil
 	}
+	if !entry.expiresAt.IsZero() && !time.Now().Before(entry.expiresAt) {
+		c.lru.remove(entry.node)
+		delete(c.items, key)
+		return nil
+	}
 
 	// Move to front (most recently used)
 	c.lru.moveToFront(entry.node)
@@ -356,6 +371,7 @@ func (c *CompressionMetaCache) Set(state *SessionStateV2) {
 	// Update existing entry
 	if entry, ok := c.items[key]; ok {
 		entry.state = cp
+		entry.expiresAt = time.Now().Add(c.ttl)
 		c.lru.moveToFront(entry.node)
 		return
 	}
@@ -370,8 +386,9 @@ func (c *CompressionMetaCache) Set(state *SessionStateV2) {
 	c.lru.addToFront(node)
 
 	c.items[key] = &cacheEntry{
-		state: cp,
-		node:  node,
+		state:     cp,
+		node:      node,
+		expiresAt: time.Now().Add(c.ttl),
 	}
 }
 
