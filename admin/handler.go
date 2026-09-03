@@ -869,6 +869,14 @@ func (h *Handler) superAdmin(fn http.HandlerFunc) http.HandlerFunc {
 	return SuperAdminMiddleware(fn, h.db, h.secret)
 }
 
+// providerConsole wraps the provider console tree with
+// ProviderConsoleMiddleware: super_admin keeps full access, and a
+// default-tenant tenant_admin gets read-only access plus credential API
+// key rotation (2026-09-04). Everything else is unchanged.
+func (h *Handler) providerConsole(fn http.HandlerFunc) http.HandlerFunc {
+	return ProviderConsoleMiddleware(fn, h.db, h.secret)
+}
+
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
@@ -1165,8 +1173,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/telemetry/decision-log", admin(h.handleTelemetryDecisionLog))
 	mux.HandleFunc("/api/telemetry/request-log", admin(h.handleTelemetryRequestLog))
 	mux.HandleFunc("/api/telemetry/batch", admin(h.handleTelemetryBatch))
-	mux.HandleFunc("/api/providers", h.superAdmin(h.handleProvidersRoot))
-	mux.HandleFunc("/api/providers/", h.superAdmin(h.handleProviders))
+	// 2026-09-04: 供应商列表/详情树改挂 providerConsole —— super_admin 行为
+	// 不变；default 租户 tenant_admin 获得只读 + 凭据 API Key 轮换。
+	// seed-from-catalog 与 /credentials/ 强制恢复仍为 super_admin 专属。
+	mux.HandleFunc("/api/providers", h.providerConsole(h.handleProvidersRoot))
+	mux.HandleFunc("/api/providers/", h.providerConsole(h.handleProviders))
 	mux.HandleFunc("/api/providers/seed-from-catalog", h.superAdmin(h.handleSeedFromCatalog))
 	mux.HandleFunc("/api/providers/credentials/", h.superAdmin(h.handleForceRecover))
 

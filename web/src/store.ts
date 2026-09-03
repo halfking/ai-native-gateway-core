@@ -247,6 +247,15 @@ export function isPlatformOpsView(): boolean {
   return isSuperAdmin() && isDefaultTenant()
 }
 
+// 2026-09-04: 供应商控制台视图 —— super_admin，或 default 租户的
+// tenant_admin。凭据详情里的 API Key 修改（轮换）对 default 租户管理员
+// 开放；页面其余写操作仍由后端 ProviderConsoleMiddleware 限定为
+// super_admin 专属（default 租户 tenant_admin 为只读 + rotate）。
+export function isProviderConsoleView(): boolean {
+  if (isSuperAdmin()) return true
+  return isTenantAdmin() && isDefaultTenant()
+}
+
 // Can access maintain service: only default tenant can see maintain/ops menu
 // Maintain service is for platform operators only (not for other tenants)
 export function canAccessMaintain(): boolean {

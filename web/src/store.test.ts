@@ -90,3 +90,25 @@ describe('P1-7 localStorage credential hygiene', () => {
     expect(store.jwtToken).toBe('')
   })
 })
+
+// 2026-09-04: 供应商控制台视图 —— super_admin，或 default 租户的
+// tenant_admin（凭据 API Key 轮换对该角色开放）。
+describe('isProviderConsoleView', () => {
+  it('returns true for super_admin', async () => {
+    const { isProviderConsoleView } = await import('./store')
+    store.userInfo = { id: 1, role: 'super_admin', tenant_id: 'hansi' } as never
+    expect(isProviderConsoleView()).toBe(true)
+  })
+
+  it('returns true for default-tenant tenant_admin', async () => {
+    const { isProviderConsoleView } = await import('./store')
+    store.userInfo = { id: 2, role: 'tenant_admin', tenant_id: 'default' } as never
+    expect(isProviderConsoleView()).toBe(true)
+  })
+
+  it('returns false for non-default tenant_admin', async () => {
+    const { isProviderConsoleView } = await import('./store')
+    store.userInfo = { id: 3, role: 'tenant_admin', tenant_id: 'hansi' } as never
+    expect(isProviderConsoleView()).toBe(false)
+  })
+})
