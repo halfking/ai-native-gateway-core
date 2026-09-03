@@ -27,8 +27,9 @@
   - `POST /api/credentials/{id}/reveal`
   - `POST /api/credentials/{id}/set-key`
 - `super_admin` and legacy `admin_key` have access. `tenant_admin` access is limited to the default tenant and live default-tenant providers.
-- Added audit logging for secret reveal.
-- Kept the legacy provider-scoped rotate endpoint contract unchanged: its `raw_model_name` remains required. The new unified `set-key` route permits no model name.
+- The provider-detail UI keeps ordinary credential/model mutations super-admin-only, but exposes unified secret reveal and set-key to the same provider-console roles. Unified `set-key` does not require a model binding; the legacy provider-scoped rotation endpoint still requires `raw_model_name` for compatibility.
+- Credential monitor mutations remain super-admin-only in the UI; default-tenant `tenant_admin` is read-only there.
+- Secret reveal is audit logged; plaintext is held only in component memory and cleared when the credential drawer closes or selection changes.
 
 ### Credential-model pricing
 
@@ -38,7 +39,7 @@
   - `cache_read_price_per_1m`
   - `cache_write_price_per_1m`
   - `billing_mode`
-- Added `admin/billing_mode.go` validation and routing-cache invalidation when these fields change.
+- Price PATCH fields are optional: omitted fields remain unchanged; explicit numeric `0` is stored and displayed as zero. The current endpoint does not provide a clear-to-NULL operation for an existing price, so an empty editor value means “keep current value,” not “unset.” Billing mode changes are validated against the five accepted modes and invalidate routing cache.
 - Updated `web/src/api/providers.ts` request/response and `ModelOffer` typings.
 
 ### Frontend shared primitives
