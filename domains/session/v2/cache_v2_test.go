@@ -96,6 +96,15 @@ func TestCompressionMetaCache_RecoveryMetadataIsDeepCopied(t *testing.T) {
 	}
 }
 
+func TestCompressionMetaCache_ExpiresEntries(t *testing.T) {
+	cache := newCompressionMetaCache(2, time.Millisecond)
+	cache.Set(&SessionStateV2{TenantID: "tenant", SessionID: "session"})
+	time.Sleep(5 * time.Millisecond)
+	if got := cache.Get("tenant", "session"); got != nil {
+		t.Fatalf("expired L1 entry was returned: %+v", got)
+	}
+}
+
 func TestCompressionMetaCache_GetSet(t *testing.T) {
 	cache := NewCompressionMetaCache(10)
 
