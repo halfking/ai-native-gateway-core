@@ -558,7 +558,7 @@ func (sc *SessionCompressor) Prepare(
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
-				res.AlignmentMap = buildAlignmentMap(before, outboundBody, summaryMessageIndex(outboundBody, protocol))
+				res.AlignmentMap = buildAlignmentMapForProtocol(before, outboundBody, summaryMessageIndex(outboundBody, protocol), protocol)
 			} else {
 				// LLM summary failed or didn't shrink — fall back to mechanical trim.
 				slog.Info("session_compressor: LLM summary failed/no-op, falling back to mechanical trim",
