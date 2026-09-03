@@ -345,6 +345,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	if l2.observeEnabled() && c.PrefixCache != nil {
 		l2.cache = c.PrefixCache
 	}
+	if l2.observeEnabled() && l2.cache == nil {
+		l2.mode = RecoveryL2ModeOff
+	}
 	if l2.observeEnabled() {
 		defer l2.cache.Remove(params.RequestID)
 	}
