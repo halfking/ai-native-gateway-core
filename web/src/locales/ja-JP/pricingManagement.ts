@@ -107,6 +107,7 @@ export default {
     cacheReadPrice: 'キャッシュ読み取り価格 (百万あたり)',
     cacheWritePrice: 'キャッシュ書き込み価格 (百万あたり)',
     currency: '通貨',
+    unset: '未設定',
     billingMode: '課金モード',
     billingPerToken: 'トークン単位',
     billingPerRequest: 'リクエスト単位',

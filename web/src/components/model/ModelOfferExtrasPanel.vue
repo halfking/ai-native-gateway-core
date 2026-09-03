@@ -8,11 +8,12 @@ import type { ModelOffer } from '../../api/providers'
 import { getProviderCredentials, checkCredential } from '../../api/providers'
 import { getModelIQHistory, triggerModelIQTest, type IQHistoryPoint } from '../../api/model-iq'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   providerId: number
   offer: ModelOffer
   siblingOffers: ModelOffer[]
-}>()
+  canEdit?: boolean
+}>(), { canEdit: true })
 
 const emit = defineEmits<{ iqTested: [] }>()
 
@@ -100,6 +101,7 @@ async function loadIQ() {
 }
 
 async function runIQTest() {
+  if (!props.canEdit) return
   if (iqTestLoading.value) return
   iqTestLoading.value = true
   iqTestError.value = ''
@@ -115,6 +117,7 @@ async function runIQTest() {
 }
 
 async function checkAcross() {
+  if (!props.canEdit) return
   checking.value = true
   checkResults.value = null
   const modelName = props.offer.raw_model_name
@@ -197,7 +200,7 @@ async function checkAcross() {
   <section class="extras">
     <div class="extras-head">
       <h4>{{ pm('drawerSectionIq') }}</h4>
-      <button type="button" class="btn btn-sm" :disabled="iqTestLoading" :title="pm('iqTestBtnTitle')" @click="runIQTest">
+      <button type="button" class="btn btn-sm" :disabled="!canEdit || iqTestLoading" :title="pm('iqTestBtnTitle')" @click="runIQTest">
         {{ iqTestLoading ? pm('iqTestRunning') : pm('iqTestBtn') }}
       </button>
     </div>
@@ -213,7 +216,7 @@ async function checkAcross() {
 
     <div class="extras-head" style="margin-top:14px">
       <h4>{{ pm('drawerSectionCheck') }}</h4>
-      <button type="button" class="btn btn-sm" :disabled="checking" @click="checkAcross">
+      <button type="button" class="btn btn-sm" :disabled="!canEdit || checking" @click="checkAcross">
         {{ checking ? pm('drawCheckAllLoading') : pm('drawCheckAllBtn') }}
       </button>
     </div>

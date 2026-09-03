@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   getCredentialModels, createCredentialModel, clearCredentialModels, refreshCredentialModels,
   type ModelOffer, type CredentialModelCreateBody,
@@ -7,11 +8,16 @@ import {
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
 import ModelIdentityChip from '../../components/model/ModelIdentityChip.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import { pricingSummary } from '../../utils/modelOfferPricing'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   providerId: number
   credentialId: number
-}>()
+  canManage?: boolean
+}>(), { canManage: true })
+
+const { t } = useI18n()
+const priceText = (key: string): string => String(t(`pricingManagement.detail.${key}` as never))
 
 const offers = ref<ModelOffer[]>([])
 const loading = ref(false)
@@ -32,6 +38,14 @@ const addForm = ref<CredentialModelCreateBody>({
 })
 
 const empty = computed(() => !loading.value && offers.value.length === 0)
+
+function offerPricing(o: ModelOffer): string {
+  return pricingSummary(o, {
+    unset: priceText('unset'),
+    free: priceText('billingFree'),
+    billingMode: priceText('billingMode'),
+  })
+}
 
 async function load() {
   loading.value = true
@@ -55,6 +69,7 @@ async function onRefreshDb() {
 }
 
 async function onFetchUpstream() {
+  if (!props.canManage) return
   busy.value = true
   msg.value = '正在从上游拉取…'
   msgKind.value = ''
@@ -72,6 +87,7 @@ async function onFetchUpstream() {
 }
 
 async function onClear() {
+  if (!props.canManage) return
   const tip = includeProtected.value
     ? '确定清空该凭据全部模型（含手工保护）？'
     : '确定清空该凭据非保护模型？（手工保护将保留）'
@@ -91,6 +107,7 @@ async function onClear() {
 }
 
 async function onAdd() {
+  if (!props.canManage) return
   if (!addForm.value.raw_model_name.trim()) {
     msg.value = '请填写上游原名'
     msgKind.value = 'err'
@@ -128,8 +145,6 @@ async function onAdd() {
 function onUpdated(o: ModelOffer) {
   const i = offers.value.findIndex(x => x.id === o.id)
   if (i >= 0) offers.value[i] = { ...offers.value[i], ...o }
-  // After a delete-then-update race the row may be gone from the offers
-  // list. Avoid spreading `undefined` into `selected`; just clear it.
   const base = i >= 0 ? offers.value[i] : null
   selected.value = base ? { ...base, ...o } : null
 }
@@ -145,9 +160,9 @@ function thinkingLabel(o: ModelOffer) {
   <div class="cred-models">
     <div class="toolbar">
       <button class="btn btn-sm" :disabled="loading || busy" @click="onRefreshDb">刷新</button>
-      <button class="btn btn-sm btn-primary" :disabled="busy" @click="onFetchUpstream">从上游拉取</button>
-      <button class="btn btn-sm" :disabled="busy" @click="showAdd = true">手工加入</button>
-      <button class="btn btn-sm btn-danger-outline" :disabled="busy || empty" @click="onClear">清空</button>
+      <button class="btn btn-sm btn-primary" :disabled="!canManage || busy" @click="onFetchUpstream">从上游拉取</button>
+      <button class="btn btn-sm" :disabled="!canManage || busy" @click="showAdd = true">手工加入</button>
+      <button class="btn btn-sm btn-danger-outline" :disabled="!canManage || busy || empty" @click="onClear">清空</button>
       <label class="protect-opt">
         <input v-model="includeProtected" type="checkbox" />
         清空含手工保护
@@ -158,8 +173,8 @@ function thinkingLabel(o: ModelOffer) {
     <div v-if="empty" class="empty">
       <p>该凭据下还没有模型。</p>
       <div class="btn-row">
-        <button class="btn btn-primary" :disabled="busy" @click="onFetchUpstream">从上游拉取</button>
-        <button class="btn" @click="showAdd = true">手工加入</button>
+        <button class="btn btn-primary" :disabled="!canManage || busy" @click="onFetchUpstream">从上游拉取</button>
+        <button class="btn" :disabled="!canManage" @click="showAdd = true">手工加入</button>
       </div>
       <p class="hint">若上游拉取失败，请检查 API Key、discovery 策略或 catalog manifest。</p>
     </div>
@@ -173,11 +188,12 @@ function thinkingLabel(o: ModelOffer) {
           <th>模态</th>
           <th>思考</th>
           <th>Context</th>
+          <th>Pricing / 1M</th>
           <th>P95</th>
         </tr>
       </thead>
       <tbody>
-        <tr v-if="loading"><td colspan="7">加载中…</td></tr>
+        <tr v-if="loading"><td colspan="8">加载中…</td></tr>
         <tr
           v-for="o in offers"
           :key="o.id"
@@ -204,6 +220,9 @@ function thinkingLabel(o: ModelOffer) {
             <span v-else>—</span>
             <span v-if="o.context_window_override != null" class="tag">覆盖</span>
           </td>
+          <td>
+            <span class="pricing-summary">{{ offerPricing(o) }}</span>
+          </td>
           <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
         </tr>
       </tbody>
@@ -214,6 +233,7 @@ function thinkingLabel(o: ModelOffer) {
       :provider-id="providerId"
       :offer="selected"
       :sibling-offers="offers"
+      :can-edit="canManage"
       @close="selected = null"
       @updated="onUpdated"
     />
@@ -278,5 +298,6 @@ function thinkingLabel(o: ModelOffer) {
 .empty .hint { font-size: 12px; margin-top: 8px; }
 .row-click { cursor: pointer; }
 .row-click:hover { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.pricing-summary { display: block; max-width: 19rem; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tag { margin-left: 6px; font-size: 10px; padding: 1px 5px; border-radius: 4px; background: color-mix(in srgb, var(--warning-dark) 18%, transparent); }
 </style>

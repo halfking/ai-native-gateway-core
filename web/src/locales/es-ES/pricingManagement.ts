@@ -105,6 +105,7 @@ export default {
     cacheReadPrice: 'Precio de lectura de caché (por 1M)',
     cacheWritePrice: 'Precio de escritura de caché (por 1M)',
     currency: 'Moneda',
+    unset: 'Sin configurar',
     billingMode: 'Modo de facturación',
     billingPerToken: 'Por token',
     billingPerRequest: 'Por solicitud',
