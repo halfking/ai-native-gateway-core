@@ -6,6 +6,9 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -43,6 +46,7 @@ type Policy struct {
 	mu    sync.RWMutex
 	cfg   Config
 	stats map[string]*ProviderStats
+	now   func() time.Time
 }
 
 func New(cfg Config) *Policy {
@@ -61,9 +65,17 @@ func New(cfg Config) *Policy {
 	if cfg.HighErrorRate5xx <= 0 {
 		cfg.HighErrorRate5xx = .50
 	}
-	return &Policy{cfg: cfg, stats: make(map[string]*ProviderStats)}
+	return &Policy{cfg: cfg, stats: make(map[string]*ProviderStats), now: time.Now}
 }
 func NewDefault() *Policy { return New(DefaultConfig()) }
+
+func (p *Policy) SetClock(now func() time.Time) {
+	if now != nil {
+		p.mu.Lock()
+		p.now = now
+		p.mu.Unlock()
+	}
+}
 
 func (p *Policy) RecordSuccess(provider string, latency time.Duration) {
 	p.mu.Lock()
@@ -74,6 +86,8 @@ func (p *Policy) RecordSuccess(provider string, latency time.Duration) {
 	s.latencyTotal += latency
 	s.SuccessRate = float64(s.successes) / float64(s.requests)
 	s.AvgLatency = s.latencyTotal / time.Duration(s.requests)
+	s.TimeoutRate = rollingRate(s.TimeoutRate, s.requests, false)
+	s.ErrorRate5xx = rollingRate(s.ErrorRate5xx, s.requests, false)
 	s.ConsecutiveErrors = 0
 }
 func (p *Policy) RecordFailure(provider string, err error, latency time.Duration) {
@@ -85,13 +99,9 @@ func (p *Policy) RecordFailure(provider string, err error, latency time.Duration
 	s.SuccessRate = float64(s.successes) / float64(s.requests)
 	s.AvgLatency = s.latencyTotal / time.Duration(s.requests)
 	s.ConsecutiveErrors++
-	s.LastErrorTime = time.Now()
-	if isTimeout(err) {
-		s.TimeoutRate = rollingRate(s.TimeoutRate, s.requests, true)
-	}
-	if is5xx(err) {
-		s.ErrorRate5xx = rollingRate(s.ErrorRate5xx, s.requests, true)
-	}
+	s.LastErrorTime = p.now()
+	s.TimeoutRate = rollingRate(s.TimeoutRate, s.requests, isTimeout(err))
+	s.ErrorRate5xx = rollingRate(s.ErrorRate5xx, s.requests, is5xx(err))
 }
 func (p *Policy) Stats(provider string) ProviderStats {
 	p.mu.RLock()
@@ -129,7 +139,7 @@ func (p *Policy) ShouldRetry(ctx context.Context, provider string, attempt int, 
 	if attempt >= max {
 		return false, 0
 	}
-	return true, retryAfterOrBackoff(err, attempt, p.cfg)
+	return true, retryAfterOrBackoff(err, attempt, p.cfg, p.now)
 }
 
 func (p *Policy) getLocked(provider string) *ProviderStats {
@@ -168,12 +178,49 @@ func classifiableRetriable(err error) bool {
 	}
 	return false
 }
-func retryAfterOrBackoff(err error, attempt int, cfg Config) time.Duration {
+func retryAfterOrBackoff(err error, attempt int, cfg Config, now func() time.Time) time.Duration {
 	var h *streamretry.HTTPError
-	_ = h
+	if errors.As(err, &h) && h.RetryAfter != "" {
+		clock := time.Now
+		if now != nil {
+			clock = now
+		}
+		if delay, ok := parseRetryAfter(h.RetryAfter, clock(), cfg.MaxDelay); ok {
+			return delay
+		}
+	}
 	d := float64(cfg.BaseDelay) * math.Pow(2, float64(attempt))
 	if d > float64(cfg.MaxDelay) {
 		d = float64(cfg.MaxDelay)
 	}
 	return time.Duration(d)
+}
+
+func parseRetryAfter(value string, now time.Time, max time.Duration) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, false
+		}
+		delay := time.Duration(seconds) * time.Second
+		if delay > max {
+			delay = max
+		}
+		return delay, true
+	}
+	at, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	delay := at.Sub(now)
+	if delay < 0 {
+		return 0, true
+	}
+	if delay > max {
+		delay = max
+	}
+	return delay, true
 }

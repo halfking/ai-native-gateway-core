@@ -293,6 +293,7 @@ func WrapHTTPError(resp *http.Response, baseErr error) error {
 		return &HTTPError{
 			StatusCode: resp.StatusCode,
 			Err:        baseErr,
+			RetryAfter: resp.Header.Get("Retry-After"),
 		}
 	}
 
@@ -503,7 +504,9 @@ func (r *errorRecorder) WriteHeader(statusCode int) {
 		r.err = &HTTPError{
 			StatusCode: statusCode,
 			Err:        fmt.Errorf("HTTP %d", statusCode),
+			RetryAfter: r.Header().Get("Retry-After"),
 		}
+
 	}
 	r.ResponseWriter.WriteHeader(statusCode)
 }

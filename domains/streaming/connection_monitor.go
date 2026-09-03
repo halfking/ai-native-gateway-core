@@ -1,11 +1,24 @@
 package streaming
 
 import (
+	"bufio"
 	"context"
+	"io"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
+)
+
+type DisconnectReason string
+
+const (
+	DisconnectNone         DisconnectReason = ""
+	DisconnectClientCancel DisconnectReason = "client_cancel"
+	DisconnectCloseNotify  DisconnectReason = "close_notify"
+	DisconnectProbeFailure DisconnectReason = "probe_failure"
+	DisconnectWriteFailure DisconnectReason = "write_failure"
 )
 
 // ConnectionMonitor watches a streaming client's request context and optional
@@ -14,11 +27,11 @@ import (
 type ConnectionMonitor struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
+	reason       atomic.Value
 	interval     time.Duration
 	idleTimeout  time.Duration
 	now          func() time.Time
 	probe        func() bool
-	ticker       *time.Ticker
 	lastActiveNS atomic.Int64
 	stopOnce     sync.Once
 	done         chan struct{}
@@ -65,8 +78,10 @@ func NewConnectionMonitor(parent context.Context, w http.ResponseWriter, opts ..
 	ctx, cancel := context.WithCancel(parent)
 	m := &ConnectionMonitor{
 		ctx: ctx, cancel: cancel, interval: time.Second, idleTimeout: 10 * time.Second,
-		now: time.Now, probe: func() bool { return true }, done: make(chan struct{}),
+		now: time.Now, done: make(chan struct{}),
+		probe: nil,
 	}
+	m.reason.Store(string(DisconnectNone))
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -75,7 +90,7 @@ func NewConnectionMonitor(parent context.Context, w http.ResponseWriter, opts ..
 		go func() {
 			select {
 			case <-n.CloseNotify():
-				m.cancel()
+				m.cancelWithReason(DisconnectCloseNotify)
 			case <-m.done:
 			case <-ctx.Done():
 			}
@@ -92,6 +107,7 @@ func (m *ConnectionMonitor) run() {
 	for {
 		select {
 		case <-m.ctx.Done():
+			m.setReasonIfEmpty(DisconnectClientCancel)
 			return
 		case now := <-ticker.C:
 			last := time.Unix(0, m.lastActiveNS.Load())
@@ -99,11 +115,36 @@ func (m *ConnectionMonitor) run() {
 				continue
 			}
 			if m.probe != nil && !m.probe() {
-				m.cancel()
+				m.cancelWithReason(DisconnectProbeFailure)
 				return
 			}
 		}
 	}
+}
+
+func (m *ConnectionMonitor) cancelWithReason(reason DisconnectReason) {
+	if m == nil {
+		return
+	}
+	m.setReasonIfEmpty(reason)
+	m.cancel()
+}
+
+func (m *ConnectionMonitor) setReasonIfEmpty(reason DisconnectReason) {
+	if m == nil || reason == DisconnectNone {
+		return
+	}
+	m.reason.CompareAndSwap(string(DisconnectNone), string(reason))
+}
+
+func (m *ConnectionMonitor) Reason() DisconnectReason {
+	if m == nil {
+		return DisconnectNone
+	}
+	if reason, ok := m.reason.Load().(string); ok {
+		return DisconnectReason(reason)
+	}
+	return DisconnectNone
 }
 
 func (m *ConnectionMonitor) Touch() {
@@ -126,10 +167,14 @@ type monitoredResponseWriter struct {
 	monitor  *ConnectionMonitor
 }
 
-func (w *monitoredResponseWriter) Header() http.Header    { return w.delegate.Header() }
-func (w *monitoredResponseWriter) WriteHeader(status int) { w.delegate.WriteHeader(status) }
+func (w *monitoredResponseWriter) Header() http.Header         { return w.delegate.Header() }
+func (w *monitoredResponseWriter) WriteHeader(status int)      { w.delegate.WriteHeader(status) }
+func (w *monitoredResponseWriter) Unwrap() http.ResponseWriter { return w.delegate }
 func (w *monitoredResponseWriter) Write(p []byte) (int, error) {
 	n, err := w.delegate.Write(p)
+	if err != nil {
+		w.monitor.setReasonIfEmpty(DisconnectWriteFailure)
+	}
 	if err == nil && n == len(p) {
 		w.monitor.Touch()
 	}
@@ -144,11 +189,41 @@ func (w *monitoredResponseWriter) Flush() {
 func (w *monitoredResponseWriter) FlushError() error {
 	if f, ok := w.delegate.(interface{ FlushError() error }); ok {
 		err := f.FlushError()
-		if err == nil {
-			w.monitor.Touch()
+		if err != nil {
+			w.monitor.setReasonIfEmpty(DisconnectWriteFailure)
+			return err
 		}
-		return err
+		w.monitor.Touch()
+		return nil
 	}
 	w.Flush()
 	return nil
+}
+
+func (w *monitoredResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	if rf, ok := w.delegate.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(r)
+		if err != nil {
+			w.monitor.setReasonIfEmpty(DisconnectWriteFailure)
+		} else {
+			w.monitor.Touch()
+		}
+		return n, err
+	}
+	return io.Copy(struct{ io.Writer }{w}, r)
+}
+
+func (w *monitoredResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.delegate.(http.Hijacker)
+	if !ok {
+		return nil, nil, http.ErrNotSupported
+	}
+	return h.Hijack()
+}
+
+func (w *monitoredResponseWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.delegate.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }
