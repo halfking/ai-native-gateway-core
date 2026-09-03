@@ -848,6 +848,9 @@ const routingAnalyticsMVSQL = `
 	  NOW() AS refreshed_at
 	FROM request_logs_with_current_month_without_customer_id
 	WHERE ts >= NOW() - INTERVAL '7 days'
+	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
+	  AND COALESCE(task_type, '') <> 'probe_triggered'
+	  AND COALESCE(request_id, '') NOT LIKE 'probe-%'
 	  AND (
 	    is_auto_request = TRUE
 	    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
@@ -901,6 +904,9 @@ const routingAnalyticsMVSQL = `
 	  NOW() AS refreshed_at
 	FROM request_logs_with_current_month_without_customer_id
 	WHERE ts >= NOW() - INTERVAL '7 days'
+	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
+	  AND COALESCE(task_type, '') <> 'probe_triggered'
+	  AND COALESCE(request_id, '') NOT LIKE 'probe-%'
 	  AND (
 	    is_auto_request = TRUE
 	    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
@@ -940,6 +946,8 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		   AND EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_audit_summary_7d')
 		   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_analytics_7d_ukey')
 		   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_audit_summary_7d_ukey')
+		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
+		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
 	`).Scan(&upToDate); err == nil && upToDate {
 		return nil
 	}
@@ -959,6 +967,31 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
 	}()
 
+	var staleDefinition bool
+	if err := conn.QueryRow(ctx, `
+		SELECT CASE
+			WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
+			 AND to_regclass('public.routing_audit_summary_7d') IS NOT NULL
+			THEN NOT (
+				POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
+				AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
+			)
+			ELSE FALSE
+		END
+	`).Scan(&staleDefinition); err != nil {
+		return err
+	}
+	if staleDefinition {
+		if _, err := conn.Exec(ctx, `
+			DROP MATERIALIZED VIEW IF EXISTS routing_analytics_7d CASCADE;
+			DROP MATERIALIZED VIEW IF EXISTS routing_audit_summary_7d CASCADE;
+		`); err != nil {
+			return err
+		}
+	}
+
+	// Migration 649 performs the same one-time rebuild for SQL-driven
+	// deployments; this ensure path covers Go-driven startup upgrades.
 	if _, err := conn.Exec(ctx, routingAnalyticsMVSQL); err != nil {
 		return err
 	}
