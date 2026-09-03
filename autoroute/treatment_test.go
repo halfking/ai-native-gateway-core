@@ -1,6 +1,34 @@
 package autoroute
 
-import "testing"
+import (
+	"testing"
+)
+
+func TestDeciderSetTreatmentRolloutOverride(t *testing.T) {
+	d := NewDecider(nil, nil, nil, nil)
+	override := &RolloutConfig{
+		Experiment:     "dispatch-v3",
+		Version:        "v1",
+		Enabled:        true,
+		VariantPercent: 100,
+		Scope:          TreatmentScopeRequest,
+	}
+	d.SetTreatmentRollout(override)
+	got := d.treatmentConfig()
+	if got.Experiment != override.Experiment || got.Version != override.Version ||
+		got.Enabled != override.Enabled || got.VariantPercent != override.VariantPercent ||
+		got.Scope != override.Scope {
+		t.Fatalf("treatmentConfig = %+v, want override %+v", got, override)
+	}
+	if d.treatmentRollout == override {
+		t.Fatal("SetTreatmentRollout must store a defensive copy, not the caller's pointer")
+	}
+
+	d.SetTreatmentRollout(nil)
+	if d.treatmentRollout != nil {
+		t.Fatal("SetTreatmentRollout(nil) must restore global configuration")
+	}
+}
 
 func TestAssignTreatmentDisabledAndZeroPercentStayUnenrolled(t *testing.T) {
 	cfg := RolloutConfig{
