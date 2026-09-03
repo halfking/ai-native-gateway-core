@@ -1200,13 +1200,14 @@ func (e *Executor) handleContextLengthRecovery(
 		// for estimator error — a request that overshot by 0.4% would otherwise
 		// come back 4xx a second time.
 		mechanicalFn := func(b []byte) []byte {
+			reserve := transformation.OutputTokenReserve(b, params.ClientProtocol)
 			if params.ClientProtocol == "openai-responses" {
-				return transformation.CompressResponsesAggressively(b, *targetCand.ContextWindow)
+				return transformation.CompressResponsesInputAggressively(b, *targetCand.ContextWindow, reserve)
 			}
 			if params.ClientProtocol == "anthropic-messages" {
-				return transformation.CompressAnthropicMessagesAggressively(b, *targetCand.ContextWindow)
+				return transformation.CompressAnthropicMessagesAggressivelyWithReserve(b, *targetCand.ContextWindow, reserve)
 			}
-			return transformation.CompressMessagesAggressively(b, *targetCand.ContextWindow)
+			return transformation.CompressMessagesAggressivelyWithReserve(b, *targetCand.ContextWindow, reserve)
 		}
 		trimmed := mechanicalFn(*sourceBody)
 		if len(trimmed) < len(*sourceBody) {

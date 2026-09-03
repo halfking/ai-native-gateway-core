@@ -2300,6 +2300,8 @@ func main() {
 		if routingExec != nil {
 			rcDeps := compression.RecoveryDeps{
 				Cache:      scCache,
+				V2Meta:     sessionCacheV2,
+				V2Builder:  outboundBuilder,
 				Summarizer: compression.NewSummaryFunc(compactionDeps),
 			}
 

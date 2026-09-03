@@ -35,6 +35,41 @@ func TestApplyCompressionMeta_RestoresWindowState(t *testing.T) {
 	}
 }
 
+func TestApplyCompressionMeta_RestoresRecoveryMetadata(t *testing.T) {
+	var meta CompressionMeta
+	raw := []byte(`{"summary_marker":"[smm_v1:abc]","cut_marker":{"version":1,"created_at":123,"source_msg_count":10,"system_msg_count":1,"cut_index":4,"strategy":"smart_window_llm","summary_marker":"[smm_v1:abc]"},"pre_sanitize_offset_range":[1,5],"alignment_map":[{"original_index":2,"compressed_index":1,"hash":"abc"}],"sanitize_map_ref":"session:tenant:session:sanitize","sanitize_message_refs":[{"raw_index":2,"sanitized_index":2,"raw_hash":"a","sanitized_hash":"b","changed":true}]}`)
+	applyCompressionMeta(&meta, raw)
+	if meta.CutMarker["cut_index"] != float64(4) || len(meta.PreSanitizeOffsetRange) != 2 {
+		t.Fatalf("cut metadata was not restored: %+v", meta)
+	}
+	if len(meta.AlignmentMap) != 1 || len(meta.SanitizeMessageRefs) != 1 || meta.SanitizeMapRef == "" {
+		t.Fatalf("provenance metadata was not restored: %+v", meta)
+	}
+}
+
+func TestCompressionMetaCache_RecoveryMetadataIsDeepCopied(t *testing.T) {
+	cache := NewCompressionMetaCache(2)
+	state := &SessionStateV2{SessionID: "s", TenantID: "t", CompressionMeta: CompressionMeta{
+		CutMarker:              map[string]interface{}{"cut_index": float64(2)},
+		AlignmentMap:           []map[string]interface{}{{"original_index": float64(1)}},
+		PreSanitizeOffsetRange: []int{1, 3},
+	}}
+	cache.Set(state)
+	state.CompressionMeta.CutMarker["cut_index"] = float64(99)
+	state.CompressionMeta.AlignmentMap[0]["original_index"] = float64(99)
+	state.CompressionMeta.PreSanitizeOffsetRange[0] = 99
+	got := cache.Get("t", "s")
+	if got.CompressionMeta.CutMarker["cut_index"] != float64(2) ||
+		got.CompressionMeta.AlignmentMap[0]["original_index"] != float64(1) ||
+		got.CompressionMeta.PreSanitizeOffsetRange[0] != 1 {
+		t.Fatalf("Set exposed nested metadata: %+v", got.CompressionMeta)
+	}
+	got.CompressionMeta.CutMarker["cut_index"] = float64(88)
+	if again := cache.Get("t", "s"); again.CompressionMeta.CutMarker["cut_index"] != float64(2) {
+		t.Fatalf("Get exposed nested metadata: %+v", again.CompressionMeta)
+	}
+}
+
 func TestCompressionMetaCache_GetSet(t *testing.T) {
 	cache := NewCompressionMetaCache(10)
 

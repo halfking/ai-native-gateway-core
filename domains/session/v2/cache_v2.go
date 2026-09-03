@@ -86,6 +86,14 @@ type CompressionMeta struct {
 	MsgCount             int
 	Strategy             string
 	ToolsHash            string
+	// Recovery metadata is body-free and schema-tolerant. These fields carry
+	// coordinates and opaque hash/ref records only; summary plaintext is never
+	// persisted in V2.
+	CutMarker              map[string]interface{}
+	PreSanitizeOffsetRange []int
+	AlignmentMap           []map[string]interface{}
+	SanitizeMapRef         string
+	SanitizeMessageRefs    []map[string]interface{}
 }
 
 // GovernanceMeta stores governance-related metadata
@@ -181,14 +189,19 @@ func (c *SessionCacheV2) CompressionMetadata(ctx context.Context, tenantID, sess
 	}
 	meta := state.CompressionMeta
 	return map[string]any{
-		"last_compressed_at":     meta.LastCompressedAt,
-		"recently_compressed_at": meta.RecentlyCompressedAt,
-		"summary_marker":         meta.SummaryMarker,
-		"compressed_prefix_hash": meta.CompressedPrefixHash,
-		"token_estimate":         meta.TokenEstimate,
-		"msg_count":              meta.MsgCount,
-		"strategy":               meta.Strategy,
-		"tools_hash":             meta.ToolsHash,
+		"last_compressed_at":        meta.LastCompressedAt,
+		"recently_compressed_at":    meta.RecentlyCompressedAt,
+		"summary_marker":            meta.SummaryMarker,
+		"compressed_prefix_hash":    meta.CompressedPrefixHash,
+		"token_estimate":            meta.TokenEstimate,
+		"msg_count":                 meta.MsgCount,
+		"strategy":                  meta.Strategy,
+		"tools_hash":                meta.ToolsHash,
+		"cut_marker":                meta.CutMarker,
+		"pre_sanitize_offset_range": meta.PreSanitizeOffsetRange,
+		"alignment_map":             meta.AlignmentMap,
+		"sanitize_map_ref":          meta.SanitizeMapRef,
+		"sanitize_message_refs":     meta.SanitizeMessageRefs,
 	}, nil
 }
 
@@ -255,12 +268,54 @@ func NewCompressionMetaCache(capacity int) *CompressionMetaCache {
 	}
 }
 
+func cloneSessionStateV2(state *SessionStateV2) *SessionStateV2 {
+	if state == nil {
+		return nil
+	}
+	clone := *state
+	meta := state.CompressionMeta
+	clone.CompressionMeta = meta
+	clone.CompressionMeta.PreSanitizeOffsetRange = append([]int(nil), meta.PreSanitizeOffsetRange...)
+	clone.CompressionMeta.AlignmentMap = cloneMapSlice(meta.AlignmentMap)
+	clone.CompressionMeta.SanitizeMessageRefs = cloneMapSlice(meta.SanitizeMessageRefs)
+	clone.CompressionMeta.CutMarker = cloneMap(meta.CutMarker)
+	return &clone
+}
+
+func cloneMap(src map[string]interface{}) map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	// Compression metadata is JSON-shaped and may contain nested arrays/maps.
+	// Round-tripping it gives callers an actually independent value tree instead
+	// of the shallow copy that previously aliased nested provenance records.
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return nil
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func cloneMapSlice(src []map[string]interface{}) []map[string]interface{} {
+	if src == nil {
+		return nil
+	}
+	out := make([]map[string]interface{}, len(src))
+	for i, value := range src {
+		out[i] = cloneMap(value)
+	}
+	return out
+}
+
 // Get retrieves state from L1 cache.
 //
-// Always returns a shallow copy of the cached SessionStateV2 so callers
-// cannot mutate the L1 entry. All fields in SessionStateV2/CompressionMeta/
-// GovernanceMeta are value types (no slices or maps), so a struct copy is a
-// true deep copy.
+// Always returns an independent copy of the cached SessionStateV2 so callers
+// cannot mutate the L1 entry. Compression metadata contains maps/slices, so
+// those nested values are cloned as well.
 func (c *CompressionMetaCache) Get(tenantID, sessionID string) *SessionStateV2 {
 	key := cacheKey(tenantID, sessionID)
 
@@ -275,9 +330,8 @@ func (c *CompressionMetaCache) Get(tenantID, sessionID string) *SessionStateV2 {
 	// Move to front (most recently used)
 	c.lru.moveToFront(entry.node)
 
-	// Return a copy; never expose the internal pointer.
-	cp := *entry.state
-	return &cp
+	// Return a copy; never expose the internal pointer or nested metadata.
+	return cloneSessionStateV2(entry.state)
 }
 
 // Set stores state in L1 cache. A nil state is ignored: LoadState returns
@@ -294,14 +348,14 @@ func (c *CompressionMetaCache) Set(state *SessionStateV2) {
 	key := cacheKey(state.TenantID, state.SessionID)
 
 	// Copy before locking so the closure is short.
-	cp := *state
+	cp := cloneSessionStateV2(state)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Update existing entry
 	if entry, ok := c.items[key]; ok {
-		entry.state = &cp
+		entry.state = cp
 		c.lru.moveToFront(entry.node)
 		return
 	}
@@ -316,7 +370,7 @@ func (c *CompressionMetaCache) Set(state *SessionStateV2) {
 	c.lru.addToFront(node)
 
 	c.items[key] = &cacheEntry{
-		state: &cp,
+		state: cp,
 		node:  node,
 	}
 }
@@ -351,7 +405,9 @@ func (c *CompressionMetaCache) evictLRU() {
 }
 
 func cacheKey(tenantID, sessionID string) string {
-	return tenantID + ":" + sessionID
+	// Length-prefix the tenant component so delimiter-containing identifiers
+	// cannot collide across tenant/session tuples.
+	return fmt.Sprintf("%d:%s%s", len(tenantID), tenantID, sessionID)
 }
 
 // LRU list operations
@@ -466,14 +522,19 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 		return
 	}
 	var meta struct {
-		LastCompressedAt     time.Time `json:"last_compressed_at"`
-		RecentlyCompressedAt time.Time `json:"recently_compressed_at"`
-		SummaryMarker        string    `json:"summary_marker"`
-		CompressedPrefixHash string    `json:"compressed_prefix_hash"`
-		TokenEstimate        int       `json:"token_estimate"`
-		MsgCount             int       `json:"msg_count"`
-		Strategy             string    `json:"strategy"`
-		ToolsHash            string    `json:"tools_hash"`
+		LastCompressedAt       time.Time                `json:"last_compressed_at"`
+		RecentlyCompressedAt   time.Time                `json:"recently_compressed_at"`
+		SummaryMarker          string                   `json:"summary_marker"`
+		CompressedPrefixHash   string                   `json:"compressed_prefix_hash"`
+		TokenEstimate          int                      `json:"token_estimate"`
+		MsgCount               int                      `json:"msg_count"`
+		Strategy               string                   `json:"strategy"`
+		ToolsHash              string                   `json:"tools_hash"`
+		CutMarker              map[string]interface{}   `json:"cut_marker"`
+		PreSanitizeOffsetRange []int                    `json:"pre_sanitize_offset_range"`
+		AlignmentMap           []map[string]interface{} `json:"alignment_map"`
+		SanitizeMapRef         string                   `json:"sanitize_map_ref"`
+		SanitizeMessageRefs    []map[string]interface{} `json:"sanitize_message_refs"`
 	}
 	if err := json.Unmarshal(raw, &meta); err != nil {
 		return
@@ -491,5 +552,27 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 	}
 	if meta.Strategy != "" {
 		dst.Strategy = meta.Strategy
+	}
+	if len(meta.CutMarker) > 0 {
+		dst.CutMarker = meta.CutMarker
+		if len(meta.PreSanitizeOffsetRange) != 2 {
+			if rawPair, ok := meta.CutMarker["pre_sanitize_offset_range"]; ok {
+				if encoded, err := json.Marshal(rawPair); err == nil {
+					_ = json.Unmarshal(encoded, &meta.PreSanitizeOffsetRange)
+				}
+			}
+		}
+	}
+	if len(meta.PreSanitizeOffsetRange) == 2 {
+		dst.PreSanitizeOffsetRange = append([]int(nil), meta.PreSanitizeOffsetRange...)
+	}
+	if len(meta.AlignmentMap) > 0 {
+		dst.AlignmentMap = meta.AlignmentMap
+	}
+	if meta.SanitizeMapRef != "" {
+		dst.SanitizeMapRef = meta.SanitizeMapRef
+	}
+	if len(meta.SanitizeMessageRefs) > 0 {
+		dst.SanitizeMessageRefs = meta.SanitizeMessageRefs
 	}
 }
