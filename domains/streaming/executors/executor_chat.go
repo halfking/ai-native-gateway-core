@@ -744,7 +744,7 @@ func (e *Executor) executeOpenAI(
 					attrs = append(attrs, "err_kind", errKind)
 				}
 				if bodyPreview != "" {
-					attrs = append(attrs, "body_preview", bodyPreview)
+					attrs = append(attrs, "body_bytes", len(bodyPreview), "body_digest", safeUpstreamBodyDigest([]byte(bodyPreview)))
 				}
 				if uErr != nil {
 					attrs = append(attrs, "err_message", uErr.Message)
@@ -891,7 +891,7 @@ func (e *Executor) executeOpenAI(
 							"model", cand.RawModel,
 							"status", resp.StatusCode,
 							"upstream_latency_ms", upstreamLatency.Milliseconds(),
-							"body_preview", string(body[:min(n, 120)]),
+							"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 						)
 						// Give the upstream time to recover before retrying.
 						// recover. Abort early if the client disconnects.
@@ -927,7 +927,7 @@ func (e *Executor) executeOpenAI(
 						"status", resp.StatusCode,
 						"kind", bodyKind,
 						"upstream_latency_ms", upstreamLatency.Milliseconds(),
-						"body_preview", string(body[:min(n, 120)]),
+						"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 					)
 					return nil, &modelNotFoundError{
 						credentialID: cand.CredentialID,
@@ -951,7 +951,7 @@ func (e *Executor) executeOpenAI(
 							"provider_id", cand.ProviderID,
 							"status", resp.StatusCode,
 							"kind", errKind,
-							"body_preview", string(body[:min(n, 200)]),
+							"body_digest", safeUpstreamBodyDigest(body[:min(n, 200)]), "body_bytes", min(n, 200),
 						)
 					}
 				} else if errKind == errorsx.KindRateLimit {
@@ -970,7 +970,7 @@ func (e *Executor) executeOpenAI(
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"status", resp.StatusCode,
-						"body_preview", string(body[:min(n, 120)]),
+						"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 					)
 				}
 				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {

@@ -1106,7 +1106,7 @@ func (e *Executor) executeAnthropicOnce(
 				"status", resp.StatusCode,
 				"kind", bodyKind,
 				"upstream_latency_ms", upstreamLatency.Milliseconds(),
-				"body_preview", string(body[:min(len(body), 120)]),
+				"body_digest", safeUpstreamBodyDigest(body[:min(len(body), 120)]), "body_bytes", min(len(body), 120),
 			)
 			return nil, &modelNotFoundError{
 				credentialID: cand.CredentialID,
