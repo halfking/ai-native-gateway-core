@@ -8,6 +8,8 @@ export interface CredentialMonitorSummary {
   provider_name: string
   label: string
   status: string
+  effective_state?: string | null
+  effective_reason?: string | null
   availability_state: string
   health_status: string
   quota_state: string

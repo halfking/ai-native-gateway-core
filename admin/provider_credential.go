@@ -176,7 +176,7 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 
 	rows, err := h.db.Query(ctx, `
 		SELECT c.id, c.provider_id, COALESCE(c.label,''), COALESCE(c.status,'active'),
-		       COALESCE(c.trust_level,'standard'), c.concurrency_limit,
+		       COALESCE(c.trust_level,'trusted'), c.concurrency_limit,
 		       COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
 		       c.balance_usd::float8,
 		       COALESCE(c.plan_type,'per_token') AS plan_type,
@@ -269,6 +269,8 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		FpSlotsFree            *int       `json:"fp_slots_free"`
 		EffectiveFpSlotLimit   *int       `json:"effective_fp_slot_limit"`
 		ManualDisabled         bool       `json:"manual_disabled"`
+		EffectiveState         string     `json:"effective_state"`
+		EffectiveReason        string     `json:"effective_reason,omitempty"`
 		CreatedAt              *time.Time `json:"created_at"`
 		UpdatedAt              *time.Time `json:"updated_at"`
 		ConcurrencyMode        string     `json:"concurrency_mode"`
@@ -336,6 +338,16 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		}
 
 		c.Tags = parseTags(tagsStr)
+		state := deriveCredentialDisplayState(credentialStateInput{
+			Status:          c.Status,
+			LifecycleStatus: c.LifecycleStatus,
+			Availability:    c.AvailabilityState,
+			QuotaState:      c.QuotaState,
+			HealthStatus:    c.HealthStatus,
+			ManualDisabled:  c.ManualDisabled,
+		})
+		c.EffectiveState = string(state.State)
+		c.EffectiveReason = state.Reason
 		if len(ciphertext) > 0 {
 			if plaintext, decErr := h.decryptCredStr(string(ciphertext)); decErr != nil {
 				errCode := "decrypt_failed"
@@ -417,6 +429,10 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	var req updateCredentialRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Status != nil && !isCredentialStatus(strings.TrimSpace(*req.Status)) {
+		writeError(w, http.StatusBadRequest, "invalid status; allowed: active, cooling, degraded, quarantine, quota_expired, disabled, deleted")
 		return
 	}
 	if req.ConcurrencyMode != nil && *req.ConcurrencyMode != "" && !isValidConcurrencyMode(*req.ConcurrencyMode) {
@@ -657,6 +673,10 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 // changing its identity or model bindings. The selected bound model is probed
 // after commit so operators get immediate recovery evidence.
 func (h *Handler) rotateCredentialPrimaryKey(w http.ResponseWriter, r *http.Request, providerID, credID int) {
+	h.rotateCredentialPrimaryKeyWithOptions(w, r, providerID, credID, false)
+}
+
+func (h *Handler) rotateCredentialPrimaryKeyWithOptions(w http.ResponseWriter, r *http.Request, providerID, credID int, allowEmptyModel bool) {
 	var req struct {
 		APIKey       string `json:"api_key"`
 		RawModelName string `json:"raw_model_name"`
@@ -674,8 +694,12 @@ func (h *Handler) rotateCredentialPrimaryKey(w http.ResponseWriter, r *http.Requ
 	}
 	apiKeyBlank := strings.TrimSpace(req.APIKey) == ""
 	req.RawModelName = strings.TrimSpace(req.RawModelName)
-	if apiKeyBlank || req.RawModelName == "" {
-		writeError(w, http.StatusBadRequest, "api_key and raw_model_name required")
+	if apiKeyBlank || (!allowEmptyModel && req.RawModelName == "") {
+		if apiKeyBlank {
+			writeError(w, http.StatusBadRequest, "api_key required")
+		} else {
+			writeError(w, http.StatusBadRequest, "api_key and raw_model_name required")
+		}
 		return
 	}
 
@@ -698,26 +722,28 @@ func (h *Handler) rotateCredentialPrimaryKey(w http.ResponseWriter, r *http.Requ
 		}
 	}()
 
-	var bindingExists bool
-	err = tx.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1
-			FROM credentials c
-			JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
-			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			WHERE c.id = $1
-			  AND c.provider_id = $2
-			  AND pm.provider_id = c.provider_id
-			  AND pm.raw_model_name = $3
-			FOR UPDATE OF c, cmb, pm
-		)`, credID, providerID, req.RawModelName).Scan(&bindingExists)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "validate model binding failed")
-		return
-	}
-	if !bindingExists {
-		writeError(w, http.StatusBadRequest, "raw_model_name is not bound to credential")
-		return
+	if req.RawModelName != "" {
+		var bindingExists bool
+		err = tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1
+				FROM credentials c
+				JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+				JOIN provider_models pm ON pm.id = cmb.provider_model_id
+				WHERE c.id = $1
+				  AND c.provider_id = $2
+				  AND pm.provider_id = c.provider_id
+				  AND pm.raw_model_name = $3
+				FOR UPDATE OF c, cmb, pm
+			)`, credID, providerID, req.RawModelName).Scan(&bindingExists)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "validate model binding failed")
+			return
+		}
+		if !bindingExists {
+			writeError(w, http.StatusBadRequest, "raw_model_name is not bound to credential")
+			return
+		}
 	}
 
 	tag, err := tx.Exec(ctx, `
@@ -824,9 +850,9 @@ func (h *Handler) deleteCredential(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	h.writeAuditLog(r, "credential.deleted", "credential", credID, map[string]any{
-		"provider_id":   providerID,
-		"soft_deleted":  true,
-		"new_status":    "deleted",
+		"provider_id":  providerID,
+		"soft_deleted": true,
+		"new_status":   "deleted",
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1152,19 +1178,19 @@ func (h *Handler) getProviderErrorStats(w http.ResponseWriter, r *http.Request, 
 	defer rows.Close()
 
 	type errorStat struct {
-		ModelName         string     `json:"model_name"`
-		Endpoint          string     `json:"endpoint"`
-		CredentialID      *string    `json:"credential_id"` // 迁移639前的历史行为 NULL
-		ErrorType         string     `json:"error_type"`
-		ErrorCode         *string    `json:"error_code"`
-		ErrorMessage      string     `json:"error_message"`
-		AggregationBucket time.Time  `json:"aggregation_bucket"`
-		Occurrences       int        `json:"occurrences"`
-		FirstSeenAt       time.Time  `json:"first_seen_at"`
-		LastSeenAt        time.Time  `json:"last_seen_at"`
-		Resolved          bool       `json:"resolved"`
-		CreatedAt         time.Time  `json:"created_at"`
-		UpdatedAt         time.Time  `json:"updated_at"`
+		ModelName         string    `json:"model_name"`
+		Endpoint          string    `json:"endpoint"`
+		CredentialID      *string   `json:"credential_id"` // 迁移639前的历史行为 NULL
+		ErrorType         string    `json:"error_type"`
+		ErrorCode         *string   `json:"error_code"`
+		ErrorMessage      string    `json:"error_message"`
+		AggregationBucket time.Time `json:"aggregation_bucket"`
+		Occurrences       int       `json:"occurrences"`
+		FirstSeenAt       time.Time `json:"first_seen_at"`
+		LastSeenAt        time.Time `json:"last_seen_at"`
+		Resolved          bool      `json:"resolved"`
+		CreatedAt         time.Time `json:"created_at"`
+		UpdatedAt         time.Time `json:"updated_at"`
 	}
 
 	var stats []errorStat

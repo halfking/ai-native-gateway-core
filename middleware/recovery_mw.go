@@ -5,7 +5,15 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
+
+var panicRecoveredTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	Name: "panic_recovered_total",
+	Help: "Total recovered panics by request path.",
+}, []string{"path"})
 
 // RecoveryMiddleware catches any panic in downstream handlers
 // and converts it into a 500 response. The panic, the request
@@ -34,12 +42,17 @@ func NewRecoveryMiddleware() *RecoveryMiddleware {
 
 func (m *RecoveryMiddleware) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		stack := NewCleanupStack()
+		r = r.WithContext(WithCleanupStack(r.Context(), stack))
+		defer stack.RunAll()
 		defer func() {
 			rec := recover()
 			if rec == nil {
 				return
 			}
+			panicRecoveredTotal.WithLabelValues(r.URL.Path).Inc()
 			slog.ErrorContext(r.Context(), "panic_recovered",
+
 				"error.kind", "panic",
 				"error.message", panicString(rec),
 				"stack", string(debug.Stack()),

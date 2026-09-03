@@ -469,7 +469,21 @@ func (e *Executor) executeOpenAI(
 	// be retried immediately without consuming the retry budget.
 	ctxLenRecoveryRetry := false
 	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
+		// Candidate-attempt boundary is intentionally logged once per attempt,
+		// rather than once per streamed frame, so a retry/failover can be
+		// reconstructed without logging request content or secrets.
+		slog.Debug("candidate_attempt_start",
+			"request_id", params.RequestID,
+			"attempt", attempt,
+			"provider_id", cand.ProviderID,
+			"credential_id", cand.CredentialID,
+			"raw_model", cand.RawModel,
+			"client_model", params.Model,
+			"is_stream", params.IsStream,
+			"max_retries", effectiveMaxRetries+mnfBonus,
+		)
 		// 2026-09-01 fix: if the previous iteration succeeded in context-length
+
 		// recovery, decrement attempt so the compressed body retry doesn't consume
 		// the retry budget. This allows the recovery to actually be retried.
 		if ctxLenRecoveryRetry {

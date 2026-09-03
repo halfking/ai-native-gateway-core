@@ -328,14 +328,15 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 		// 更新订阅错误状态
 		sub.LastFetchAt = time.Now()
 		sub.LastFetchStatus = "failed"
-		sub.LastError = err.Error()
+		sub.LastError = SanitizeSubscriptionError(err.Error(), sub.SubscribeURL)
 		_ = m.store.UpdateSubscription(ctx, sub)
 
 		// 记录失败指标
 		if m.metrics != nil {
 			m.metrics.ObserveSubscriptionRefresh("failed", time.Since(startTime).Seconds())
 		}
-		return fmt.Errorf("parse subscription: %w", err)
+		return fmt.Errorf("parse subscription: %s", SanitizeSubscriptionError(err.Error(), sub.SubscribeURL))
+
 	}
 
 	// 3. 更新数据库（事务保护，审计修复 2026-08-29 问题 1）
@@ -349,7 +350,9 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 			sub.NodeCount = 0
 			sub.LastFetchAt = time.Now()
 			sub.LastFetchStatus = "failed"
-			sub.LastError = fmt.Sprintf("transaction failed: %v", err)
+			sub.LastError = SanitizeSubscriptionError(
+				fmt.Sprintf("transaction failed: %v", err), sub.SubscribeURL)
+
 			_ = m.store.UpdateSubscription(ctx, sub)
 
 			// 记录失败指标
@@ -374,8 +377,10 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 			sub.NodeCount = len(nodes) - len(createErrs)
 			sub.LastFetchAt = time.Now()
 			sub.LastFetchStatus = "failed"
-			sub.LastError = fmt.Sprintf("persisted %d/%d nodes; %d failed: %s",
-				len(nodes)-len(createErrs), len(nodes), len(createErrs), strings.Join(createErrs, "; "))
+			sub.LastError = SanitizeSubscriptionError(
+				fmt.Sprintf("persisted %d/%d nodes; %d failed: %s",
+					len(nodes)-len(createErrs), len(nodes), len(createErrs), strings.Join(createErrs, "; ")), sub.SubscribeURL)
+
 			_ = m.store.UpdateSubscription(ctx, sub)
 
 			// 记录失败指标
@@ -960,7 +965,26 @@ func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID in
 	return summary, nil
 }
 
-// redactErr 去掉错误里可能泄露的代理凭据（ProxyURL 出现在错误信息中）。
+// SanitizeSubscriptionError removes the complete subscription URL, including
+// path tokens, and then applies the general credential redaction rules.
+func SanitizeSubscriptionError(message, subscribeURL string) string {
+	if subscribeURL != "" {
+		if u, err := url.Parse(subscribeURL); err == nil && u.Scheme != "" && u.Host != "" {
+			u.User = nil
+			u.Path = "/redacted"
+			u.RawPath = ""
+			u.RawQuery = ""
+			u.ForceQuery = false
+			u.Fragment = ""
+			u.RawFragment = ""
+			redactedURL := u.String()
+			message = strings.ReplaceAll(message, subscribeURL, redactedURL)
+			message = strings.ReplaceAll(message, url.QueryEscape(subscribeURL), url.QueryEscape(redactedURL))
+		}
+	}
+	return SanitizeSecrets(message)
+}
+
 // 审计修复 (2026-08-29)：密钥安全 - 实际调用 sanitizeSecrets 进行脱敏。
 // 二次审计修复 (2026-08-29)：调用 parser.SanitizeSecrets 公开包装，覆盖
 // key=value / password=xxx / token=xxx 等键值对形式，避免日志里泄露凭据。

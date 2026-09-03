@@ -49,8 +49,10 @@ const i18n = createI18n({
         toolCount: '{n} 次',
         tabs: {
           summary: '摘要', request: '请求', response: '回复', compression: '压缩诊断',
+          waterfall: '瀑布时间',
           meta: '元数据', governance: '治理', attachments: '附件',
         },
+        noWaterfall: '暂无瀑布时间数据',
         noAttachments: '无附件',
         openAttachment: '下载附件',
         openingAttachment: '正在打开…',
@@ -92,7 +94,7 @@ const detail: TurnDetail = {
   cost_usd: 0.0123,
   request: { prompt: 'hi there' },
   response: { content: 'hello back' },
-  meta: { trace_id: 'trace-abc' },
+  meta: { trace_id: 'trace-abc', t0_arrived_at: '2026-09-03T10:00:00Z', t9_response_end_at: '2026-09-03T10:00:02Z' },
   governance: { verdict: 'pass' },
   digest: {
     user_input: 'hi there',
@@ -119,6 +121,15 @@ describe('TurnDigestDrawer', () => {
     )
     expect(w.text()).toContain('hi there')
     expect(w.text()).toContain('glm-4.7')
+  })
+
+  it('renders t0-t9 waterfall timing from meta', async () => {
+    getSessionTurnMock.mockResolvedValue(detail)
+    const w = mountDrawer()
+    await flushPromises()
+    expect(w.text()).toContain('Arrived')
+    expect(w.text()).toContain('Response end')
+    expect(w.find('[data-testid="turn-waterfall"]').exists()).toBe(true)
   })
 
   it('does not call getSessionTurn when turnNo is null', async () => {

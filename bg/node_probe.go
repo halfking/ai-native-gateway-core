@@ -104,13 +104,24 @@ const (
 	// produce.
 	nodeProbeSyncFanout = 8
 
-	// 2026-09-03 P1.3: bounded queue submission retry policy.
-	nodeProbeQueueSubmitMaxAttempts  = 3
-	nodeProbeQueueSubmitBaseBackoff  = 100 * time.Millisecond
-	nodeProbeQueueSubmitBackoffMult  = 2.5
-	nodeProbeQueueSubmitMaxBackoff   = 500 * time.Millisecond
-	nodeProbeQueueSubmitErrCode      = "queue_submit_failed"
-	nodeProbeQueueSubmitErrDetailMax = 256
+	// 2026-09-03 P1.3: bounded retry + persistent failure for
+	// submitViaQueueSource. ProbeQueue.Enqueue can fail with transient DB
+	// pressure; one-shot failures used to be silently logged (Submit) or
+	// delayed until the next pump tick (pumpDueStatesToQueue), so operators
+	// had no signal and Submit callers observed no recovery. We now retry
+	// up to nodeProbeQueueSubmitMaxAttempts with a small exponential
+	// backoff (100ms / 250ms / 500ms) bounded by the caller's ctx, and
+	// persist the final error to node_probe_state so the row stays
+	// inspectable. The retry budget is small on purpose: queue submission
+	// is a single INSERT round-trip, so 3 attempts cover transient
+	// connection blips without blocking recovery loops for seconds.
+	nodeProbeQueueSubmitMaxAttempts    = 3
+	nodeProbeQueueSubmitBaseBackoff    = 100 * time.Millisecond
+	nodeProbeQueueSubmitBackoffMult    = 2.5
+	nodeProbeQueueSubmitMaxBackoff     = 500 * time.Millisecond
+	nodeProbeQueueSubmitFailureHoldoff = 30 * time.Second
+	nodeProbeQueueSubmitErrCode        = "queue_submit_failed"
+	nodeProbeQueueSubmitErrDetailMax   = 256
 )
 
 type NodeProbeStateSink interface {
@@ -605,18 +616,41 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 
 // submitViaQueue is the unified-queue path for Submit. It enqueues a node_probe
 // task into credential_probe_queue; the ProbeQueueWorker + ProbeService execute
-// it. Best-effort on DB error (matches the legacy path which ignores UPSERT err).
+// it. Best-effort on DB error: the source-parameterized helper
+// submitViaQueueSource already retries + persists failures (P1.3), so this
+// wrapper only logs at Warn when the helper ultimately fails.
 func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqID string) {
 	if _, err := w.submitViaQueueSource(credID, model, tenantID, parentReqID, "request_failure"); err != nil {
 		slog.Warn("node_probe_worker: submit via queue failed",
-			"credential_id", credID, "model", model, "error", err)
+			"credential_id", credID, "model", model, "source", "request_failure", "error", err)
 	}
 }
 
 // submitViaQueueSource is the source-parameterized enqueue used by Submit
-// ("request_failure") and the scheduled pump ("periodic"). It retries
-// transient queue failures with a bounded exponential backoff and persists
-// the final failure on node_probe_state for operator visibility.
+// ("request_failure") and the scheduled pump ("periodic"). The source feeds
+// the 自检 stream's origin badge and must stay inside the
+// credential_probe_queue.source CHECK constraint.
+//
+// 2026-09-03 P1.3: bounded retry (default 3 attempts, 100ms / 250ms /
+// 500ms backoff) plus persistent failure record. Behaviour:
+//   - Each attempt runs under a 1s sub-context; the outer ctx
+//     (caller-provided or 5s fallback) bounds total wall time.
+//   - Duplicate dedup_keys are treated as success (peer or earlier attempt
+//     already enqueued the same task) and recorded under outcome="duplicate".
+//   - If all attempts fail, the final error is persisted to
+//     node_probe_state (UPDATE existing row or INSERT a placeholder row)
+//     so operators have a queryable trail and Submit callers observe
+//     non-nil error. We do NOT modify consecutive_failures /
+//     next_retry_at / paused: those belong to the probe execution layer
+//     (runOne) and must not be polluted by infrastructure flakiness.
+//   - Every attempt and the final outcome are reflected in
+//     llmgw_node_probe_queue_submission_total{source,outcome} and the
+//     matching duration histogram so dashboards can alert on sustained
+//     outcome=failed rates.
+//
+// Returns (inserted, err): inserted=true iff this call produced a
+// new credential_probe_queue row. False on duplicate or error. The
+// boolean is what pumpDueStatesToQueue's P1.2 holdoff branch consults.
 func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, parentReqID, source string) (bool, error) {
 	if w == nil || w.probeQueue == nil {
 		err := fmt.Errorf("probe queue not initialized")
@@ -631,46 +665,65 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+
 	task := ProbeQueueTask{
 		CredentialID: int64(credID),
 		TenantID:     tenantID,
 		RawModel:     model,
 		Command:      "node_probe",
 		Mode:         "multi_round",
-		Priority:     FeaturedQueuePriority(model, 60),
-		MaxAttempts:  nodeProbeMaxAttempts,
-		NextRunAt:    time.Now().Add(5 * time.Second),
-		Automatic:    source != "admin",
-		Source:       source,
-		ParentReqID:  parentReqID,
-		DedupKey:     buildNodeProbeTaskID(credID, model),
+		// 2026-08-13: 常用模型更高优先级（默认 80），抢占式先执行；非常用 60。
+		Priority:    FeaturedQueuePriority(model, 60),
+		MaxAttempts: nodeProbeMaxAttempts,
+		NextRunAt:   time.Now().Add(5 * time.Second),
+		Automatic:   source != "admin",
+		Source:      source,
+		ParentReqID: parentReqID,
+		DedupKey:    buildNodeProbeTaskID(credID, model),
 	}
 
-	started := time.Now()
-	var firstErr, lastErr error
+	start := time.Now()
+	var (
+		inserted        bool
+		lastErr         error
+		firstAttemptErr error
+	)
 	for attempt := 1; attempt <= nodeProbeQueueSubmitMaxAttempts; attempt++ {
 		attemptCtx, attemptCancel := context.WithTimeout(ctx, time.Second)
-		_, inserted, err := w.probeQueue.Enqueue(attemptCtx, task)
+		_, ins, err := w.probeQueue.Enqueue(attemptCtx, task)
 		attemptCancel()
 		if err == nil {
+			inserted = ins
 			outcome := "success"
-			if !inserted {
+			if !ins {
 				outcome = "duplicate"
 			}
 			nodeProbeQueueSubmissionTotal.WithLabelValues(source, outcome).Inc()
-			nodeProbeQueueSubmissionDuration.WithLabelValues(source, outcome).Observe(time.Since(started).Seconds())
+			nodeProbeQueueSubmissionDuration.WithLabelValues(source, outcome).Observe(time.Since(start).Seconds())
+			if attempt > 1 {
+				slog.Info("node_probe_worker: submit via queue succeeded after retry",
+					"credential_id", credID, "model", model, "source", source,
+					"attempts", attempt, "inserted", ins)
+			} else {
+				slog.Info("node_probe_worker: submit via queue",
+					"credential_id", credID, "model", model, "source", source, "inserted", ins)
+			}
 			return inserted, nil
 		}
 		if attempt == 1 {
-			firstErr = err
+			firstAttemptErr = err
 		}
 		lastErr = err
+		slog.Warn("node_probe_worker: enqueue via queue failed, retrying",
+			"credential_id", credID, "model", model, "source", source,
+			"attempt", attempt, "max_attempts", nodeProbeQueueSubmitMaxAttempts,
+			"error", err)
 		if attempt < nodeProbeQueueSubmitMaxAttempts {
 			nodeProbeQueueSubmissionRetriesTotal.WithLabelValues(source).Inc()
 			backoff := nodeProbeQueueSubmitBaseBackoff
 			for i := 1; i < attempt; i++ {
 				backoff = time.Duration(float64(backoff) * nodeProbeQueueSubmitBackoffMult)
-				if backoff >= nodeProbeQueueSubmitMaxBackoff {
+				if backoff > nodeProbeQueueSubmitMaxBackoff {
 					backoff = nodeProbeQueueSubmitMaxBackoff
 					break
 				}
@@ -680,56 +733,109 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 			case <-ctx.Done():
 				timer.Stop()
 				nodeProbeQueueSubmissionTotal.WithLabelValues(source, "failed").Inc()
-				nodeProbeQueueSubmissionDuration.WithLabelValues(source, "failed").Observe(time.Since(started).Seconds())
-				return false, fmt.Errorf("enqueue probe task: retry context ended: %w", ctx.Err())
+				nodeProbeQueueSubmissionDuration.WithLabelValues(source, "failed").Observe(time.Since(start).Seconds())
+				return false, fmt.Errorf("enqueue probe task: ctx cancelled mid-retry: %w", ctx.Err())
 			case <-timer.C:
 			}
 		}
 	}
 
+	// All attempts exhausted. Persist the failure so operators and the
+	// next pump tick can both see it (best-effort: persistence failure
+	// must not mask the original enqueue error).
 	if w.db != nil {
-		w.persistSubmitFailure(credID, model, firstErr, lastErr)
+		w.persistSubmitFailure(credID, model, firstAttemptErr, lastErr)
 	}
 	nodeProbeQueueSubmissionTotal.WithLabelValues(source, "failed").Inc()
-	nodeProbeQueueSubmissionDuration.WithLabelValues(source, "failed").Observe(time.Since(started).Seconds())
-	return false, fmt.Errorf("enqueue probe task: exhausted %d attempts: %w", nodeProbeQueueSubmitMaxAttempts, lastErr)
+	nodeProbeQueueSubmissionDuration.WithLabelValues(source, "failed").Observe(time.Since(start).Seconds())
+	slog.Error("node_probe_worker: enqueue via queue exhausted retries",
+		"credential_id", credID, "model", model, "source", source,
+		"attempts", nodeProbeQueueSubmitMaxAttempts,
+		"last_error", lastErr,
+	)
+	return false, fmt.Errorf("enqueue probe task: exhausted %d attempts: %w",
+		nodeProbeQueueSubmitMaxAttempts, lastErr)
 }
 
+// persistSubmitFailure records the final submission error onto
+// node_probe_state. It must NOT modify consecutive_failures /
+// next_retry_at / next_retry_seconds / paused — those columns are owned
+// by the probe-execution layer (runOne) and pollution here would skew
+// the 5s→30s→60s→5m→1h→2h→6h backoff ladder for transient DB blips
+// that have nothing to do with upstream health.
+//
+// We update last_err_code / last_err_detail / updated_at for an existing
+// row, or INSERT a placeholder row (next_retry_at=now() so the next
+// pump tick picks it up; paused=FALSE; in_flight_until=NULL) so the
+// failure is queryable even on a credential that has not yet produced a
+// real probe run. The error detail is truncated to
+// nodeProbeQueueSubmitErrDetailMax bytes to stay within TEXT bounds.
 func (w *NodeProbeWorker) persistSubmitFailure(credID int, model string, firstErr, lastErr error) {
-	if w == nil || w.db == nil || (firstErr == nil && lastErr == nil) {
+	if w.db == nil || (firstErr == nil && lastErr == nil) {
 		return
 	}
 	detail := lastErr
 	if detail == nil {
 		detail = firstErr
 	}
-	detailText := detail.Error()
-	if len(detailText) > nodeProbeQueueSubmitErrDetailMax {
-		detailText = detailText[:nodeProbeQueueSubmitErrDetailMax] + "…(truncated)"
+	detailStr := detail.Error()
+	if len(detailStr) > nodeProbeQueueSubmitErrDetailMax {
+		detailStr = detailStr[:nodeProbeQueueSubmitErrDetailMax] + "…(truncated)"
 	}
+	firstStr := ""
+	if firstErr != nil {
+		firstStr = firstErr.Error()
+		if len(firstStr) > nodeProbeQueueSubmitErrDetailMax {
+			firstStr = firstStr[:nodeProbeQueueSubmitErrDetailMax] + "…(truncated)"
+		}
+	}
+	// Use a short independent ctx so a caller-cancelled ctx cannot stop us
+	// from recording the failure.
 	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	result, err := w.db.Exec(persistCtx, `
+
+	if _, err := w.db.Exec(persistCtx, `
 		UPDATE node_probe_state
-		SET last_err_code = $3, last_err_detail = $4, updated_at = now()
+		SET last_err_code  = $3,
+		    last_err_detail = $4,
+		    updated_at      = now()
 		WHERE credential_id = $1 AND raw_model_name = $2
-	`, credID, model, nodeProbeQueueSubmitErrCode, detailText)
-	if err != nil {
-		slog.Warn("node_probe_worker: persist submit failure update failed", "credential_id", credID, "model", model, "error", err)
+	`, credID, model, nodeProbeQueueSubmitErrCode, detailStr); err != nil {
+		slog.Warn("node_probe_worker: persist submit failure (update) failed",
+			"credential_id", credID, "model", model, "error", err)
 		return
 	}
-	if result.RowsAffected() == 0 {
-		if _, err := w.db.Exec(persistCtx, `
-			INSERT INTO node_probe_state (
-				credential_id, raw_model_name, consecutive_failures,
-				consecutive_successes, last_attempt_at, next_retry_at,
-				next_retry_seconds, paused, in_flight_until, last_direct_ok,
-				last_gateway_ok, last_err_code, last_err_detail, updated_at
-			) VALUES ($1, $2, 0, 0, NULL, now(), 5, FALSE, NULL, NULL, NULL, $3, $4, now())
-			ON CONFLICT (credential_id, raw_model_name) DO NOTHING
-		`, credID, model, nodeProbeQueueSubmitErrCode, detailText); err != nil {
-			slog.Warn("node_probe_worker: persist submit failure insert failed", "credential_id", credID, "model", model, "error", err)
-		}
+	// INSERT path uses ON CONFLICT DO NOTHING so we never overwrite a row
+	// that the probe worker has already started managing. Keep the normal
+	// probe backoff untouched; this timestamp only rate-limits infrastructure
+	// submission failures while the queue/database is unavailable.
+	if _, err := w.db.Exec(persistCtx, `
+		INSERT INTO node_probe_state (
+			credential_id, raw_model_name,
+			consecutive_failures, consecutive_successes,
+			last_attempt_at, next_retry_at, next_retry_seconds,
+			paused, in_flight_until,
+			last_direct_ok, last_gateway_ok,
+			last_err_code, last_err_detail,
+			updated_at
+		) VALUES (
+			$1, $2, 0, 0,
+			NULL, now() + $5::interval, 5,
+			FALSE, NULL,
+			NULL, NULL,
+			$3, $4,
+			now()
+		)
+		ON CONFLICT (credential_id, raw_model_name) DO NOTHING
+	`, credID, model, nodeProbeQueueSubmitErrCode, detailStr,
+		fmt.Sprintf("%d seconds", int(nodeProbeQueueSubmitFailureHoldoff.Seconds()))); err != nil {
+		slog.Warn("node_probe_worker: persist submit failure (insert) failed",
+			"credential_id", credID, "model", model, "error", err)
+	}
+	if firstStr != "" && firstStr != detailStr {
+		slog.Warn("node_probe_worker: enqueue retries did not improve the error",
+			"credential_id", credID, "model", model,
+			"first_error", firstStr, "last_error", detailStr)
 	}
 }
 
@@ -788,19 +894,28 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 		// recovery cycle can retry. This ensures the backoff ladder actually
 		// executes probes instead of silently advancing the schedule without
 		// doing any work.
+		//
+		// 2026-09-03 P1.3 follow-on: submitViaQueueSource returns
+		// (inserted, error). The `inserted` flag tells us whether THIS call
+		// produced a new row in credential_probe_queue (vs. dedup-collapsing
+		// an existing one). For the holdoff branch it does not matter —
+		// either way the queue now owns the task — so we keep the P1.2
+		// behaviour: any non-error advance the next_retry_at by 10 minutes
+		// so the next tick doesn't re-pump before the queue can claim the row.
 		if _, err := w.submitViaQueueSource(r.credID, r.model, r.tenant, "", "periodic"); err != nil {
 			slog.Warn("node_probe_worker: pump submit failed, will retry in next cycle",
 				"credential_id", r.credID, "model", r.model, "error", err)
 			continue
 		}
-		// Submission succeeded: advance the row so the next tick doesn't re-pump
-		// it before the queue has a chance to execute/claim it. Real outcomes
-		// (success reset / failure backoff) overwrite this via mirrorNodeProbeState.
+		// Submission succeeded (or dedup-collapsed): advance the row so the
+		// next tick doesn't re-pump it before the queue has a chance to
+		// execute/claim it. Real outcomes (success reset / failure backoff)
+		// overwrite this via mirrorNodeProbeState.
 		if _, err := w.db.Exec(qCtx, `
-			UPDATE node_probe_state
-			SET next_retry_at = now() + $3, updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2 AND next_retry_at <= now()`,
-			r.credID, r.model, nodeProbeQueuePumpHoldoff); err != nil {
+				UPDATE node_probe_state
+				SET next_retry_at = now() + $3::interval, updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2 AND next_retry_at <= now()`,
+			r.credID, r.model, fmt.Sprintf("%d seconds", int(nodeProbeQueuePumpHoldoff.Seconds()))); err != nil {
 			slog.Warn("node_probe_worker: pump holdoff update failed",
 				"credential_id", r.credID, "model", r.model, "error", err)
 		}

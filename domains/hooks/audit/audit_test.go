@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -94,6 +95,106 @@ func TestBatchWriter_CloseFlushes(t *testing.T) {
 	}
 	if got := len(sink.Events()); got != 1 {
 		t.Errorf("expected 1 flushed on close, got %d", got)
+	}
+}
+
+type batchTestSink struct {
+	mu       sync.Mutex
+	failures int
+	writes   int
+	events   []*Event
+	closed   int
+}
+
+func (s *batchTestSink) Emit(_ context.Context, event Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, &event)
+}
+func (s *batchTestSink) Write(events []*Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writes++
+	if s.failures > 0 {
+		s.failures--
+		return errors.New("transient sink failure")
+	}
+	s.events = append(s.events, events...)
+	return nil
+}
+func (s *batchTestSink) Close() error    { s.mu.Lock(); s.closed++; s.mu.Unlock(); return nil }
+func (s *batchTestSink) eventCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.events) }
+
+func TestBatchWriter_RetriesTransientWriteFailure(t *testing.T) {
+	sink := &batchTestSink{failures: 1}
+	w := NewBatchWriter(sink, 1, 10*time.Millisecond)
+	w.Append(&Event{RequestID: "retry"})
+	deadline := time.Now().Add(time.Second)
+	for sink.eventCount() != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := sink.eventCount(); got != 1 {
+		t.Fatalf("expected transient failure to recover, got %d events", got)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close failed after recovery: %v", err)
+	}
+}
+
+func TestBatchWriter_PersistentFailureIsBoundedAndReported(t *testing.T) {
+	sink := &batchTestSink{failures: 100000}
+	w := NewBatchWriter(sink, 1, time.Millisecond)
+	for i := 0; i < defaultPendingCapacity+250; i++ {
+		w.Append(&Event{RequestID: "event"})
+	}
+	// Allow at least one failed flush, then verify the pending queue is bounded.
+	time.Sleep(20 * time.Millisecond)
+	if got := w.BufferedCount(); got > defaultPendingCapacity {
+		t.Fatalf("pending queue exceeded bound: %d", got)
+	}
+	if err := w.Close(); err == nil {
+		t.Fatal("expected Close to report persistent write failure/pending events")
+	}
+	if got := w.BufferedCount(); got > defaultPendingCapacity {
+		t.Fatalf("pending queue exceeded bound after Close: %d", got)
+	}
+}
+
+func TestBatchWriter_CloseIsIdempotent(t *testing.T) {
+	sink := &batchTestSink{}
+	w := NewBatchWriter(sink, 10, time.Hour)
+	w.Append(&Event{RequestID: "once"})
+	first := w.Close()
+	second := w.Close()
+	if first != nil || second != nil {
+		t.Fatalf("expected idempotent successful Close, got %v and %v", first, second)
+	}
+	sink.mu.Lock()
+	closed := sink.closed
+	sink.mu.Unlock()
+	if closed != 1 {
+		t.Fatalf("expected sink Close once, got %d", closed)
+	}
+}
+
+func TestBatchWriter_ConcurrentAppendFlushClose(t *testing.T) {
+	sink := &batchTestSink{}
+	w := NewBatchWriter(sink, 8, time.Millisecond)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				w.Append(&Event{RequestID: "concurrent"})
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); time.Sleep(2 * time.Millisecond); _ = w.Close() }()
+	wg.Wait()
+	if err := w.Close(); err != nil {
+		t.Fatalf("second Close failed: %v", err)
 	}
 }
 

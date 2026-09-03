@@ -144,11 +144,36 @@ groups:
           summary: "热表 promote 批次耗时过高（{{ $labels.table }}）"
           description: "表 {{ $labels.table }} 的 promote 批次 P95 耗时超过 30 秒，请检查数据库负载和 hot 表积压。"
 
-  # 2026-08-12: node-probe 同步路径 + 路由状态源告警。
-  # 覆盖范围说明：仅覆盖请求热路径上的 ProbeSync（no_candidates 触发）
-  # 与 routing_state_source 外层标签。后台 NodeProbeWorker 的探测结果只
-  # 写 node_probe_runs 表、不进 Prometheus，故此处不含其告警——需后台
-  # 探测告警时请基于该表另配 SQL/exporter，不要在此处伪造指标。
+      # 后台 NodeProbeWorker 队列提交持续失败。该指标按 source/outcome 聚合，
+      # 不携带 credential/model 高基数标签；具体节点通过 node_probe_state 的
+      # last_err_code=queue_submit_failed 与管理查询进一步定位。
+      - alert: NodeProbeQueueSubmissionFailuresHigh
+        expr: increase(llmgw_node_probe_queue_submission_total{outcome="failed"}[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: node-probe
+        annotations:
+          summary: "后台节点探测队列提交持续失败"
+          description: "近 10 分钟 NodeProbeWorker 队列提交失败 {{ $value }} 次（source={{ $labels.source }}）。请检查数据库连接池、credential_probe_queue 和 node_probe_state.last_err_code。"
+
+      # 队列提交重试次数异常升高，通常表示数据库短暂抖动或队列锁竞争。
+      - alert: NodeProbeQueueSubmissionRetriesHigh
+        expr: increase(llmgw_node_probe_queue_submission_retries_total[10m]) > 20
+        for: 5m
+        labels:
+          severity: info
+          component: node-probe
+        annotations:
+          summary: "后台节点探测队列提交重试次数偏高"
+          description: "近 10 分钟 NodeProbeWorker 发生 {{ $value }} 次重试（source={{ $labels.source }}），请观察失败告警是否同步升高。"
+
+      # 2026-08-12: node-probe 同步路径 + 路由状态源告警。
+      # 覆盖范围说明：仅覆盖请求热路径上的 ProbeSync（no_candidates 触发）
+      # 与 routing_state_source 外层标签。后台 NodeProbeWorker 的探测结果只
+      # 写 node_probe_runs 表、不进 Prometheus，故此处不含其告警——需后台
+      # 探测告警时请基于该表另配 SQL/exporter，不要在此处伪造指标。
+
   - name: node_probe_and_routing_alerts
     interval: 30s
     rules:

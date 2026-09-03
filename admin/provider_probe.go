@@ -194,10 +194,7 @@ func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, e
 		result.errorCode = probeutil.EndpointIDRequiredErrCode
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		result.errorMessage = strings.TrimSpace(string(respBody))
-		if len(result.errorMessage) > 500 {
-			result.errorMessage = result.errorMessage[:500]
-		}
+		result.errorMessage = modelresponse.SanitizeBodySnippet(respBody, 500)
 	}
 
 	return result, nil

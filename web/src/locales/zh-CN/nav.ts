@@ -13,6 +13,7 @@ export default {
     opsplatform: '运维中心',
     guide: '接入指南',
     chat: '对话',
+    plugins: '插件',
   },
 
   item: {
