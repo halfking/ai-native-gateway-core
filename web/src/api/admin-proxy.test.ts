@@ -24,20 +24,32 @@ afterEach(() => {
 })
 
 describe('proxy API client', () => {
-  it('getProxySubscriptions calls GET /api/proxy/subscriptions', async () => {
-    const mockData = [{ id: 1, name: 'test-sub', node_count: 5 }]
+  it('getProxySubscriptions unwraps {items,total} envelope and calls GET /api/proxy/subscriptions', async () => {
+    const mockItems = [{ id: 1, name: 'test-sub', node_count: 5 }]
     ;(globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify(mockData),
+      text: async () => JSON.stringify({ items: mockItems, total: mockItems.length }),
     })
 
     const result = await getProxySubscriptions()
-    expect(result).toEqual(mockData)
+    expect(result).toEqual(mockItems)
     expect(globalThis.fetch).toHaveBeenCalledWith(
       '/api/proxy/subscriptions',
       expect.objectContaining({ method: 'GET' })
     )
+  })
+
+  it('getProxySubscriptions tolerates bare-array responses (legacy)', async () => {
+    const mockItems = [{ id: 1, name: 'test-sub', node_count: 5 }]
+    ;(globalThis.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify(mockItems),
+    })
+
+    const result = await getProxySubscriptions()
+    expect(result).toEqual(mockItems)
   })
 
   it('createProxySubscription calls POST /api/proxy/subscriptions', async () => {
@@ -91,16 +103,16 @@ describe('proxy API client', () => {
     )
   })
 
-  it('getProxyNodes with query params', async () => {
-    const mockData = [{ id: 1, name: 'node1', dialable: true }]
+  it('getProxyNodes with query params unwraps {items,total} envelope', async () => {
+    const mockItems = [{ id: 1, name: 'node1', dialable: true }]
     ;(globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify(mockData),
+      text: async () => JSON.stringify({ items: mockItems, total: mockItems.length }),
     })
 
     const result = await getProxyNodes(2, true)
-    expect(result).toEqual(mockData)
+    expect(result).toEqual(mockItems)
     expect(globalThis.fetch).toHaveBeenCalledWith(
       '/api/proxy/nodes?subscription_id=2&dialable=true',
       expect.objectContaining({ method: 'GET' })

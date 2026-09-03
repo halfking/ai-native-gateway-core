@@ -58,8 +58,19 @@ export interface ProxyHealthCheckResult {
   error?: string
 }
 
+// 后端列表端点统一返回 { items: [...], total: N } 信封（与 /api/admin/center/* 等一致），
+// 这里统一解包为裸数组；返回 null / 非对象时兜底为空数组，
+// 避免前端拿到 {items: ...} 对象后被当作数组迭代、读到 .id 触发 null 崩溃。
+function unwrapItems<T>(body: unknown): T[] {
+  if (Array.isArray(body)) return body as T[]
+  if (body && typeof body === 'object' && Array.isArray((body as { items?: unknown }).items)) {
+    return ((body as { items: T[] }).items ?? []) as T[]
+  }
+  return []
+}
+
 export function getProxySubscriptions(): Promise<ProxySubscription[]> {
-  return req<ProxySubscription[]>('GET', '/api/proxy/subscriptions')
+  return req<unknown>('GET', '/api/proxy/subscriptions').then(unwrapItems<ProxySubscription>)
 }
 
 export function createProxySubscription(data: {
@@ -83,7 +94,7 @@ export function getProxyNodes(subscriptionID?: number, dialable?: boolean): Prom
   if (subscriptionID !== undefined) qs.set('subscription_id', String(subscriptionID))
   if (dialable !== undefined) qs.set('dialable', dialable ? 'true' : 'false')
   const q = qs.toString()
-  return req<ProxyNode[]>('GET', `/api/proxy/nodes${q ? `?${q}` : ''}`)
+  return req<unknown>('GET', `/api/proxy/nodes${q ? `?${q}` : ''}`).then(unwrapItems<ProxyNode>)
 }
 
 export function createProxyNode(data: {
