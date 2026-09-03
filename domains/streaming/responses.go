@@ -116,6 +116,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptProviderID   *int
 		attemptCredentialID *int
 		attemptRequestBody  []byte
+		autoWire            *autoRouteDecision
 	)
 	attemptLogged := &attemptLoggedFlag
 	// 2026-06-26: ALWAYS generate a server-side UUID. The
@@ -313,6 +314,10 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptClientModel = reqBody.Model
 		if wire != nil {
 			writeAutoDecisionHeader(w, wire)
+			logCtx.SetAutoDecision(wire)
+			autoWire = wire
+		} else {
+			logCtx.IsAutoRequest = true
 		}
 	}
 
@@ -418,6 +423,9 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
 	logCtx.SetSession(sessionInfo)
+	if autoWire != nil {
+		recordAutoSelectionFromWire(r, sessionID, autoWire)
+	}
 	if h.chatHandler.requestLogger != nil {
 		tenantID := "default"
 		if keyInfo != nil {

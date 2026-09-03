@@ -54,6 +54,13 @@ type AutoSelection struct {
 	AffinityApplied bool
 	Explore         bool
 	FallbackUsed    bool
+
+	// Treatment attribution is recorded only when the request enrolled in the
+	// enabled rollout. Empty values represent an unenrolled request.
+	ExperimentID      string
+	Treatment         string
+	AssignmentVersion string
+	AssignmentKeyHash string
 }
 
 type selectionWriter struct {
@@ -186,7 +193,7 @@ func (w *selectionWriter) flush(batch []AutoSelection) {
 	}
 }
 
-const selectionColumnCount = 16
+const selectionColumnCount = 20
 
 func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection) error {
 	values := make([]string, 0, len(sels))
@@ -195,9 +202,10 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
 	for i, s := range sels {
 		base := i * selectionColumnCount
 		values = append(values, fmt.Sprintf(
-			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
+			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
 			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8,
 			base+9, base+10, base+11, base+12, base+13, base+14, base+15, base+16,
+			base+17, base+18, base+19, base+20,
 		))
 
 		profile := s.Profile
@@ -230,7 +238,12 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
 			s.AffinityApplied,
 			s.Explore,
 			s.FallbackUsed,
+			nullableString(s.ExperimentID),
+			nullableString(s.Treatment),
+			nullableString(s.AssignmentVersion),
+			nullableString(s.AssignmentKeyHash),
 		)
+
 	}
 
 	// ON CONFLICT DO NOTHING pairs with uq_ars_request (request_id,
@@ -243,7 +256,8 @@ INSERT INTO auto_route_selections (
     task_type, profile, classifier, confidence,
     canonical_id, chosen_model, candidate_rank,
     composite_score, affinity_score, affinity_applied, explore,
-    fallback_used
+    fallback_used, experiment_id, treatment, assignment_version,
+    assignment_key_hash
 ) VALUES ` + joinStrings(values, ",") + `
 ON CONFLICT DO NOTHING`
 

@@ -84,6 +84,13 @@ type Decision struct {
 	// Embedding shadow fields are populated only when a sampled shadow call succeeds.
 	EmbeddingShadowTask       string  `json:"embedding_shadow_task,omitempty"`
 	EmbeddingShadowSimilarity float64 `json:"embedding_shadow_similarity,omitempty"`
+
+	// V3 treatment attribution is populated only for requests that participate
+	// in an enabled rollout. Empty values mean the request was not enrolled.
+	ExperimentID      string    `json:"experiment,omitempty"`
+	Treatment         Treatment `json:"treatment,omitempty"`
+	AssignmentVersion string    `json:"assignment_version,omitempty"`
+	AssignmentKeyHash string    `json:"assignment_key_hash,omitempty"`
 }
 
 // IndexAccessor is the minimal interface Decider needs from autoroute.Index.
@@ -117,7 +124,12 @@ type Decider struct {
 	tuningStore         *TuningStore         // optional dynamic params (v2.1)
 	overrideStore       *OverrideStore       // optional admin ban/pin overrides (P7.6)
 	defaultRoutingStore *DefaultRoutingStore // optional explicit default routing (M2)
-	workTypeRouteStore  *WorkTypeRouteStore  // optional work_type_model_route strict tiers (V2 bridge)
+	// workTypeRouteStore  // optional work_type_model_route strict tiers (V2 bridge)
+	workTypeRouteStore *WorkTypeRouteStore // optional work_type_model_route strict tiers (V2 bridge)
+
+	// treatmentRollout overrides the process-wide V3 flag snapshot when set.
+	// It is primarily useful for controlled tests and embedded deployments.
+	treatmentRollout *RolloutConfig
 
 	// DefaultProfile is used when no header AND no sticky entry exists.
 	DefaultProfile Profile
@@ -302,6 +314,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 					DecidedAt:          time.Now(),
 					RoutingSource:      "session_cache",
 				}
+				d.annotateTreatment(ctx, apiKeyID, decision)
 				d.populateShadow(ctx, sigs, decision)
 				return decision, nil
 			}
@@ -402,6 +415,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 	}
+	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 
 	// Step 4: cache the intent for this session

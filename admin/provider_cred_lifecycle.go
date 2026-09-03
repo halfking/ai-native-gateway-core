@@ -89,6 +89,9 @@ func (h *Handler) revealCredential(w http.ResponseWriter, r *http.Request, provi
 		"credential_id": credID,
 		"api_key":       plaintext,
 	})
+	h.writeAuditLog(r, "credential.secret_revealed", "credential", credID, map[string]any{
+		"provider_id": providerID,
+	})
 }
 
 func (h *Handler) updateCredentialLifecycle(w http.ResponseWriter, r *http.Request, providerID, credID int) {
@@ -202,8 +205,11 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 	var modelsErrorPreview string
 
 	if decErr != nil {
-		healthStatus = "error"
-		healthError = "decrypt failed"
+		// health_status is constrained to unknown/healthy/warning/unreachable;
+		// keep decryption failures in the reachable operator-facing bucket.
+		healthStatus = "unreachable"
+		healthError = "credential decrypt failed"
+
 		msg := healthError
 		apiModelsErr = &msg
 	} else {
@@ -244,13 +250,25 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 					"underlying", mrErr.Err,
 				)
 			default:
-				healthError = fetchErr.Error()
-				msg := healthError
-				apiModelsErr = &msg
 				if mrErr != nil {
 					modelsErrorKind = mrErr.Kind
 					modelsErrorPreview = modelresponse.Preview(mrErr)
+					healthError = fmt.Sprintf("models endpoint returned %s", mrErr.Kind)
+					if modelsErrorPreview != "" {
+						healthError += ": " + modelsErrorPreview
+					}
+				} else {
+					var httpErr *modelresponse.HTTPBodyError
+					if errors.As(fetchErr, &httpErr) {
+						healthError = httpErr.Error()
+						modelsErrorKind = "http_error"
+						modelsErrorPreview = httpErr.Preview()
+					} else {
+						healthError = fetchErr.Error()
+					}
 				}
+				msg := healthError
+				apiModelsErr = &msg
 			}
 			modelsStatus = -1
 		} else if len(models) == 0 {
@@ -302,9 +320,10 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 						healthError = "chat succeeded; models endpoint format was not recognized"
 					}
 				} else {
-					healthStatus = "degraded"
+					healthStatus = "warning"
 					probeError = fmt.Sprintf("chat endpoint returned %d: %s", chatResult.statusCode, chatResult.errorMessage)
 				}
+
 			}
 		}
 	}

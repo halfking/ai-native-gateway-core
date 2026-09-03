@@ -102,6 +102,16 @@ type FeatureFlags struct {
 	// FeaturedBonus is the additive points for models listed in
 	// routing_policy.featured_models. Default 5.
 	FeaturedBonus float64
+
+	// AutoOptimizationV3 controls the opt-in shadow/treatment rollout. All
+	// fields default to a disabled, control-only configuration.
+	AutoOptimizationV3Enabled      bool
+	AutoOptimizationV3ShadowOnly   bool
+	AutoOptimizationV3VariantPct   int
+	AutoOptimizationV3Experiment   string
+	AutoOptimizationV3Version      string
+	AutoOptimizationV3Scope        TreatmentScope
+	AutoOptimizationV3AutoRollback bool
 }
 
 // DefaultFeatureFlags returns the default flags.
@@ -134,9 +144,14 @@ func DefaultFeatureFlags() *FeatureFlags {
 		UseStandardIQGate: false,
 		MinStandardIQ:     0,
 		// RT-3 popularity/featured weighting: default off (same requirement).
-		UsePopularityWeight: false,
-		PopularityWeight:   5,
-		FeaturedBonus:      5,
+		UsePopularityWeight:            false,
+		PopularityWeight:               5,
+		FeaturedBonus:                  5,
+		AutoOptimizationV3Enabled:      false,
+		AutoOptimizationV3ShadowOnly:   true,
+		AutoOptimizationV3VariantPct:   0,
+		AutoOptimizationV3Scope:        TreatmentScopeTenant,
+		AutoOptimizationV3AutoRollback: false,
 	}
 }
 
@@ -168,9 +183,16 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		MinStandardIQ:     getEnvFloat("AUTO_MIN_STANDARD_IQ", 0),
 		// RT-3: AUTO_USE_POPULARITY_WEIGHT (default off) +
 		// AUTO_POPULARITY_WEIGHT / AUTO_FEATURED_BONUS (defaults 5 / 5).
-		UsePopularityWeight: getEnvBool("AUTO_USE_POPULARITY_WEIGHT", false),
-		PopularityWeight:   getEnvFloat("AUTO_POPULARITY_WEIGHT", 5),
-		FeaturedBonus:      getEnvFloat("AUTO_FEATURED_BONUS", 5),
+		UsePopularityWeight:            getEnvBool("AUTO_USE_POPULARITY_WEIGHT", false),
+		PopularityWeight:               getEnvFloat("AUTO_POPULARITY_WEIGHT", 5),
+		FeaturedBonus:                  getEnvFloat("AUTO_FEATURED_BONUS", 5),
+		AutoOptimizationV3Enabled:      getEnvBool("AUTO_OPTIMIZATION_V3_ENABLED", false),
+		AutoOptimizationV3ShadowOnly:   getEnvBool("AUTO_OPTIMIZATION_V3_SHADOW_ONLY", true),
+		AutoOptimizationV3VariantPct:   clampPercent(getEnvInt("AUTO_OPTIMIZATION_V3_VARIANT_PCT", 0)),
+		AutoOptimizationV3Experiment:   os.Getenv("AUTO_OPTIMIZATION_V3_EXPERIMENT"),
+		AutoOptimizationV3Version:      os.Getenv("AUTO_OPTIMIZATION_V3_VERSION"),
+		AutoOptimizationV3Scope:        parseTreatmentScope(os.Getenv("AUTO_OPTIMIZATION_V3_SCOPE")),
+		AutoOptimizationV3AutoRollback: getEnvBool("AUTO_OPTIMIZATION_V3_AUTO_ROLLBACK", false),
 	}
 
 	if flags.EnableV2Logic {
@@ -195,6 +217,36 @@ func getEnvBool(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return b
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultValue
+	}
+	n, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultValue
+	}
+	return n
+}
+
+func clampPercent(n int) int {
+	if n < 0 || n > 100 {
+		return 0
+	}
+	return n
+}
+
+func parseTreatmentScope(raw string) TreatmentScope {
+	switch TreatmentScope(raw) {
+	case TreatmentScopeTenant:
+		return TreatmentScopeTenant
+	case TreatmentScopeRequest:
+		return TreatmentScopeRequest
+	default:
+		return TreatmentScopeTenant
+	}
 }
 
 // getEnvFloat reads a float env var, falling back to defaultValue when unset
