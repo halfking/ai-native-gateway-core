@@ -60,8 +60,14 @@ type AlignmentInfo struct {
 	IsCompressed bool `json:"is_compressed"`
 	// CompressedInto 该消息被压缩进的目标消息下标；-1 表示无替代（机械裁剪丢弃）。
 	CompressedInto int `json:"compressed_into"`
-	// Hash 该消息的内容指纹（msgHash 的 32 位 hex）。
+	// Hash 该消息的内容指纹（完整 canonical message fingerprint 的短 hex）。
 	Hash string `json:"hash,omitempty"`
+	// Occurrence is the zero-based occurrence of Hash in the source sequence.
+	Occurrence int `json:"occurrence,omitempty"`
+	// TargetKind distinguishes retained, summary-folded, and dropped messages.
+	TargetKind string `json:"target_kind,omitempty"`
+	// TargetSpace identifies the coordinate space of the compressed target.
+	TargetSpace string `json:"target_space,omitempty"`
 }
 
 // Context 压缩器输入上下文。

@@ -31,10 +31,15 @@
 #
 # Status:        active
 # Changelog:
+#   2026-09-01  v1.2  Comment accuracy: PHASE 8.5 runs whenever the target is a
+#                      local docker container (not dry-run/data-only), even if
+#                      earlier schema/data import phases failed (idempotency
+#                      makes that safe); precondition is docker exec reachability,
+#                      not a TCP check on 5432.
 #   2026-09-01  v1.1  + PG_FIXUP_DB env (default llm_gateway) so pg-table-copy.sh
 #                      PHASE 8.5 can invoke this script with a non-default DB
 #                      name. Behavior unchanged when env is unset. Auto-called
-#                      by pg-table-copy.sh after a successful sync — manual use
+#                      by pg-table-copy.sh during sync finalization — manual use
 #                      is still supported (idempotent).
 #   2026-09-01  v1.0  Initial — 3 objects extracted from 252 dump
 # -----------------------------------------------------------------------------
@@ -45,7 +50,8 @@
 #   # after a sync). Manual invocation is still safe (idempotent).
 # -----------------------------------------------------------------------------
 # Preconditions:
-#   - llm-gateway-pg container running and reachable on 127.0.0.1:5432
+#   - llm-gateway-pg container running (executed via docker exec; no direct
+#     TCP reachability on 127.0.0.1:5432 is required)
 #   - docker available on PATH
 # -----------------------------------------------------------------------------
 

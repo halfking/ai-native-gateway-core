@@ -6,7 +6,7 @@
 #   bash scripts/local-host-sync-db.sh            # full (schema + cold data)
 #   bash scripts/local-host-sync-db.sh --schema-only
 #   bash scripts/local-host-sync-db.sh --backup-only
-#   bash scripts/local-host-sync-db.sh --verify   # 仅校验 252 vs local 表清单
+#   bash scripts/local-host-sync-db.sh --verify   # 仅跑双审计（结构 + 数据一致性）
 #
 # 前置: env-injector (~/workspace/ai-native-tools/envs/loader.sh) + SSH tunnel
 # 参考: docs/06-deployment/02-database/local-pg-sync-from-252.md
@@ -81,7 +81,7 @@ head "verify local PG container"
 if ! docker ps --format '{{.Names}}' | grep -q '^llm-gateway-pg$'; then
   err "PG container llm-gateway-pg is not running"
   echo "  start it with:"
-  echo "    bash scripts/local-host-sync-db.sh (will recreate from bind-mount)"
+  echo "    bash scripts/local-dev/recreate-llm-gateway-pg.sh"
   exit 1
 fi
 

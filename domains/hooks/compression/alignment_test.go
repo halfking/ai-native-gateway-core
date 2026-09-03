@@ -50,6 +50,9 @@ func TestBuildAlignmentMap_LLMSummary(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		a := align[i]
+		if a.TargetKind != "summary" || a.TargetSpace != "messages" {
+			t.Fatalf("orig %d target = %s/%s, want summary/messages", i, a.TargetKind, a.TargetSpace)
+		}
 		if !a.IsCompressed {
 			t.Fatalf("orig %d should be folded into summary", i)
 		}
@@ -98,6 +101,9 @@ func TestBuildAlignmentMap_MechanicalTrim(t *testing.T) {
 	}
 	for i := 0; i < 6; i++ {
 		a := align[i]
+		if a.TargetKind != "dropped" || a.TargetSpace != "none" {
+			t.Fatalf("orig %d target = %s/%s, want dropped/none", i, a.TargetKind, a.TargetSpace)
+		}
 		if !a.IsCompressed || a.CompressedIndex != -1 || a.CompressedInto != -1 {
 			t.Fatalf("orig %d want dropped (-1/-1, compressed), got compressed=%v idx=%d into=%d",
 				i, a.IsCompressed, a.CompressedIndex, a.CompressedInto)
@@ -275,6 +281,18 @@ func TestBuildAlignmentMap_DuplicateMessagesPreserveOccurrenceOrder(t *testing.T
 	}
 	if align[1].IsCompressed || align[1].CompressedIndex != 1 {
 		t.Fatalf("second duplicate mapped incorrectly: %+v", align[1])
+	}
+}
+
+func TestBuildAlignmentMap_RecordsDuplicateOccurrences(t *testing.T) {
+	before := []byte(`{"messages":[{"role":"user","content":"same"},{"role":"user","content":"same"}]}`)
+	after := []byte(`{"messages":[{"role":"user","content":"same"}]}`)
+	align := buildAlignmentMap(before, after, -1)
+	if len(align) != 2 || align[0].Occurrence != 0 || align[1].Occurrence != 1 {
+		t.Fatalf("occurrences = %+v", align)
+	}
+	if align[0].TargetKind != "retained" || align[1].TargetKind != "dropped" {
+		t.Fatalf("target kinds = %+v", align)
 	}
 }
 

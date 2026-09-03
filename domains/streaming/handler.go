@@ -7181,18 +7181,36 @@ func (h *HealthHandler) serveVersion(w http.ResponseWriter) {
 // serveReadyz — /readyz 端点：DB + Redis 都通才 200，否则 503。
 // 严格门：与 /healthz 的 anon 路径区分——healthz 在 K8s liveness 中应 fail-open，
 // readyz 在 readiness 中应 fail-closed（依赖故障时摘流量）。
+//
+// 2026-09-03: 返回结构同时包含 `database` 与 `redis` ResourceStatus 字段，
+// 让前端 SystemStatusIndicator 的 D/R 徽章可以从这个匿名端点拿到真实
+// 连通性，而不必依赖 /healthz?full=true (需要 admin token)。Error 字段
+// 继续 strip，避免向匿名端点泄漏后端错误字符串。
 func (h *HealthHandler) serveReadyz(w http.ResponseWriter, r *http.Request) {
-	ready := h.dependenciesReady(r)
 	w.Header().Set("Content-Type", "application/json")
-	if ready {
-		w.WriteHeader(http.StatusOK)
-		//nolint:errcheck
-		json.NewEncoder(w).Encode(map[string]any{"status": "ready"})
-		return
+	dbStatus := healthResourceStatus(r.Context(), h.db)
+	redisStatus := healthResourceStatus(r.Context(), h.redis)
+	if dbStatus != nil {
+		dbStatus.Error = "" // 不要向匿名端点泄漏 ping 错误细节
 	}
-	w.WriteHeader(http.StatusServiceUnavailable)
+	if redisStatus != nil {
+		redisStatus.Error = ""
+	}
+	resp := map[string]any{
+		"database": dbStatus,
+		"redis":    redisStatus,
+	}
+	allReady := dbStatus != nil && dbStatus.Connected &&
+		redisStatus != nil && redisStatus.Connected
+	if allReady {
+		resp["status"] = "ready"
+		w.WriteHeader(http.StatusOK)
+	} else {
+		resp["status"] = "not_ready"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
 	//nolint:errcheck
-	json.NewEncoder(w).Encode(map[string]any{"status": "not_ready"})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // dependenciesReady — 内部 helper：DB ping + Redis ping（任一失败返回 false）。
