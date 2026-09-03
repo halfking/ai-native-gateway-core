@@ -793,8 +793,8 @@ alerts:
 
 ### Week 5-8: 架构优化
 - [x] per-tenant资源配额（进程内动态 P95 调整与 QPS/token/concurrency 限制；Redis/多实例一致性仍待验收）
-- [ ] 分布式追踪集成（现有 OTLP plumbing 可复用；本次未新增请求级 span 接入）
-- [x] 智能重试策略（provider 统计驱动策略组件；实际 failover 接线与压测仍待完成）
+- [x] 分布式追踪集成（请求级 HTTP root span 已接入 middleware，复用现有 OTLP plumbing；provider/dispatch 细粒度 span 与线上 exporter 验收仍待完成）
+- [x] 智能重试策略（统计修正与 Retry-After 解析已完成；实际 failover 接线与压测仍待完成）
 
 ---
 
@@ -837,6 +837,6 @@ alerts:
 ---
 
 **文档版本**: v1.0
-**最后更新**: 2026-09-03
+**最后更新**: 2026-09-04
 **负责团队**: Gateway Core Team
 **审核人**: Tech Lead

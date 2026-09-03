@@ -50,7 +50,7 @@ func (m *RecoveryMiddleware) Wrap(next http.Handler) http.Handler {
 			if rec == nil {
 				return
 			}
-			panicRecoveredTotal.WithLabelValues(r.URL.Path).Inc()
+			panicRecoveredTotal.WithLabelValues(recoveryRouteLabel(r)).Inc()
 			slog.ErrorContext(r.Context(), "panic_recovered",
 
 				"error.kind", "panic",
@@ -72,7 +72,30 @@ func (m *RecoveryMiddleware) Wrap(next http.Handler) http.Handler {
 	})
 }
 
-// panicString coerces a recovered value to a printable string.
+func recoveryRouteLabel(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return "unknown"
+	}
+	if route := r.Pattern; route != "" {
+		return route
+	}
+	path := r.URL.Path
+	switch {
+	case path == "":
+		return "unknown"
+	case path == "/healthz" || path == "/readyz" || path == "/metrics":
+		return path
+	case len(path) >= 4 && path[:4] == "/v1/":
+		return "/v1/*"
+	case len(path) >= 5 && path[:5] == "/api/":
+		return "/api/*"
+	case len(path) >= 8 && path[:8] == "/admin/":
+		return "/admin/*"
+	default:
+		return "other"
+	}
+}
+
 // `recover()` returns `any`; the underlying value is most often
 // an error or a string, but a misbehaving library might panic
 // with a struct or an int. fmt.Sprint handles all of these

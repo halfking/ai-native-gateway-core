@@ -989,6 +989,11 @@ func (s *Store) ReloadFile(path string) error {
 	if err := cfg.LoadFile(path); err != nil {
 		return err
 	}
+	cfg.NormalizeRequestSurvival()
+	if cfg.RequestSurvivalEnabled && cfg.StreamRetryEnabled {
+		slog.Warn("config: hot reload enabled mutually exclusive retry owners; disabling stream_retry", "path", path)
+		cfg.StreamRetryEnabled = false
+	}
 	s.Swap(cfg)
 	slog.Info("config: hot-reloaded from file", "path", path)
 	return nil

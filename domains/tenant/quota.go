@@ -91,7 +91,12 @@ func (c *QuotaChecker) GetQuota(tenantID string) (*TenantQuota, error) {
 	return &copyQuota, nil
 }
 
+// CheckQuota validates and accounts a request against QPS, minute-token, and
+// daily-token limits. A nil context is treated as Background for compatibility.
 func (c *QuotaChecker) CheckQuota(ctx context.Context, tenantID string, tokensRequested int64) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -100,12 +105,20 @@ func (c *QuotaChecker) CheckQuota(ctx context.Context, tenantID string, tokensRe
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	quota, ok := c.quotas[tenantID]
 	if !ok {
 		return nil
 	}
-	_, err := c.checkQuotaLocked(quota, c.usageWindowLocked(tenantID), tenantID, tokensRequested, c.now())
-	return err
+	u := c.usageWindowLocked(tenantID)
+	now := c.now()
+	if err := checkQuotaLocked(quota, u, tenantID, tokensRequested, now); err != nil {
+		return err
+	}
+	commitUsage(u, now, tokensRequested)
+	return nil
 }
 
 func (c *QuotaChecker) usageWindowLocked(tenantID string) *usageWindow {
@@ -117,27 +130,37 @@ func (c *QuotaChecker) usageWindowLocked(tenantID string) *usageWindow {
 	return u
 }
 
-func (c *QuotaChecker) checkQuotaLocked(quota *TenantQuota, u *usageWindow, tenantID string, tokensRequested int64, now time.Time) (*usageWindow, error) {
+func checkQuotaLocked(quota *TenantQuota, u *usageWindow, tenantID string, tokensRequested int64, now time.Time) error {
 	trimUsage(u, now)
 	burst := quota.BurstMultiplier
 	if burst <= 0 {
 		burst = 1
 	}
 	if quota.MaxQPS > 0 && float64(len(u.requests)+1) > float64(quota.MaxQPS)*burst {
-		return u, &QuotaError{TenantID: tenantID, Kind: "qps", RetryAfter: time.Second}
+		return &QuotaError{TenantID: tenantID, Kind: "qps", RetryAfter: time.Second}
 	}
-	if quota.MaxTokensPerMin > 0 && tokensInWindow(u.tokens)+tokensRequested > int64(float64(quota.MaxTokensPerMin)*burst) {
-		return u, &QuotaError{TenantID: tenantID, Kind: "tokens_per_minute", RetryAfter: time.Second}
+	if quota.MaxTokensPerMin > 0 && tokensInWindow(u.tokens, now, time.Minute)+tokensRequested > int64(float64(quota.MaxTokensPerMin)*burst) {
+		return &QuotaError{TenantID: tenantID, Kind: "tokens_per_minute", RetryAfter: time.Second}
 	}
+	if quota.MaxTokensPerDay > 0 && tokensInWindow(u.tokens, now, 24*time.Hour)+tokensRequested > int64(float64(quota.MaxTokensPerDay)*burst) {
+		return &QuotaError{TenantID: tenantID, Kind: "tokens_per_day", RetryAfter: time.Minute}
+	}
+	return nil
+}
+
+func commitUsage(u *usageWindow, now time.Time, tokensRequested int64) {
 	u.requests = append(u.requests, now)
 	if tokensRequested > 0 {
 		u.tokens = append(u.tokens, tokenUse{at: now, count: tokensRequested})
 	}
-	return u, nil
 }
 
-// Acquire reserves one concurrent slot and returns a release function.
+// Acquire atomically reserves one concurrent slot and accounts all request
+// usage. A failed admission does not consume QPS or token quota.
 func (c *QuotaChecker) Acquire(ctx context.Context, tenantID string, tokensRequested int64) (func(), error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -146,13 +169,17 @@ func (c *QuotaChecker) Acquire(ctx context.Context, tenantID string, tokensReque
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	quota, ok := c.quotas[tenantID]
 	if !ok {
 		return func() {}, nil
 	}
 	u := c.usageWindowLocked(tenantID)
+	now := c.now()
+	trimUsage(u, now)
 	if quota.MaxConcurrent > 0 {
-		trimUsage(u, c.now())
 		burst := quota.BurstMultiplier
 		if burst <= 0 {
 			burst = 1
@@ -162,9 +189,10 @@ func (c *QuotaChecker) Acquire(ctx context.Context, tenantID string, tokensReque
 			return nil, &QuotaError{TenantID: tenantID, Kind: "concurrent", RetryAfter: time.Second}
 		}
 	}
-	if _, err := c.checkQuotaLocked(quota, u, tenantID, tokensRequested, c.now()); err != nil {
+	if err := checkQuotaLocked(quota, u, tenantID, tokensRequested, now); err != nil {
 		return nil, err
 	}
+	commitUsage(u, now, tokensRequested)
 	if quota.MaxConcurrent <= 0 {
 		return func() {}, nil
 	}
@@ -210,9 +238,9 @@ func (c *QuotaChecker) AdjustQuota(ctx context.Context, tenantID string) error {
 }
 
 func trimUsage(u *usageWindow, now time.Time) {
-	cut := now.Add(-time.Minute)
+	cut := now.Add(-24 * time.Hour)
 	i := 0
-	for i < len(u.requests) && u.requests[i].Before(cut) {
+	for i < len(u.requests) && u.requests[i].Before(now.Add(-time.Minute)) {
 		i++
 	}
 	u.requests = u.requests[i:]
@@ -222,10 +250,13 @@ func trimUsage(u *usageWindow, now time.Time) {
 	}
 	u.tokens = u.tokens[j:]
 }
-func tokensInWindow(tokens []tokenUse) int64 {
+func tokensInWindow(tokens []tokenUse, now time.Time, window time.Duration) int64 {
+	cut := now.Add(-window)
 	var n int64
 	for _, t := range tokens {
-		n += t.count
+		if !t.at.Before(cut) {
+			n += t.count
+		}
 	}
 	return n
 }
