@@ -64,6 +64,49 @@ var (
 		Help: "Number of request goroutines currently blocked on an in-flight background probe (dedup reuse).",
 	})
 
+	// 2026-09-03 P1.3: ProbeQueue submission observability.
+	//
+	// The node_probe submission path (bg/node_probe.go::submitViaQueueSource)
+	// now retries bounded (default 3 attempts) with backoff and persists
+	// the final error into node_probe_state. These metrics let operators
+	// tell apart:
+	//   - outcome=success   — task inserted into credential_probe_queue
+	//   - outcome=duplicate — peer or earlier attempt already enqueued
+	//                          the same dedup_key (normal, not a failure)
+	//   - outcome=failed    — all retries exhausted; row of node_probe_state
+	//                          now carries last_err_code=queue_submit_failed
+	//
+	// Operators should alert on sustained rate(failed) > 0 because that
+	// means the durable probe queue is not draining requests that came
+	// from real failures (credential_recovery cannot recover what never
+	// reached the queue).
+	//
+	// source values: request_failure (Submit path) | periodic (pump path).
+	nodeProbeQueueSubmissionTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_node_probe_queue_submission_total",
+			Help: "Outcomes of ProbeQueue.Enqueue from the node_probe submission path, by source and outcome.",
+		},
+		[]string{"source", "outcome"},
+	)
+
+	nodeProbeQueueSubmissionRetriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_node_probe_queue_submission_retries_total",
+			Help: "Retry attempts (attempts > 1) issued by submitViaQueueSource.",
+		},
+		[]string{"source"},
+	)
+
+	nodeProbeQueueSubmissionDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "llmgw_node_probe_queue_submission_duration_seconds",
+			Help:    "Wall-clock duration of submitViaQueueSource including all retry attempts.",
+			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		},
+		[]string{"source", "outcome"},
+	)
+
 	// 2026-08-29 P2: Hot table promote metrics for monitoring partition migration health.
 	//
 	// hotTablePromoteFailuresTotal counts promote failures by table label.
