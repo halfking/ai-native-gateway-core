@@ -1,4 +1,4 @@
--- Migration 646: add treatment attribution to auto-route selections.
+-- Migration 650: add treatment attribution to auto-route selections.
 --
 -- The selection writer records rollout metadata only for enrolled requests.
 -- Values are nullable so unenrolled rows remain NULL rather than being
@@ -15,7 +15,7 @@ ALTER TABLE public.auto_route_selections
 
 INSERT INTO public.schema_migrations (version, description)
 VALUES (
-    '646',
+    '650',
     'auto_route_selections: treatment attribution fields for AUTO_MODEL V3'
 )
 ON CONFLICT (version) DO NOTHING;

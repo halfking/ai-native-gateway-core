@@ -78,7 +78,7 @@ func TestHotTablePromoteAlertsUseRegisteredLowCardinalityMetrics(t *testing.T) {
 		}
 	}
 	require.Equal(t, "hot_table_promote_alerts", group.Name)
-	require.Len(t, group.Rules, 3)
+	require.GreaterOrEqual(t, len(group.Rules), 3)
 
 	type alertContract struct {
 		expr string
@@ -87,9 +87,11 @@ func TestHotTablePromoteAlertsUseRegisteredLowCardinalityMetrics(t *testing.T) {
 	byAlert := make(map[string]alertContract)
 	for _, rule := range group.Rules {
 		byAlert[rule.Alert] = alertContract{expr: rule.Expr, wait: rule.For}
-		require.NotContains(t, rule.Expr, "model=")
-		require.NotContains(t, rule.Expr, "tenant=")
-		require.Contains(t, rule.Expr, "table")
+		if strings.HasPrefix(rule.Alert, "HotTablePromote") {
+			require.NotContains(t, rule.Expr, "model=")
+			require.NotContains(t, rule.Expr, "tenant=")
+			require.Contains(t, rule.Expr, "table")
+		}
 	}
 
 	require.Contains(t, byAlert, "HotTablePromoteFailures")
@@ -99,6 +101,10 @@ func TestHotTablePromoteAlertsUseRegisteredLowCardinalityMetrics(t *testing.T) {
 	require.Contains(t, byAlert["HotTablePromoteLockContention"].expr, "llm_gateway_hot_table_promote_skipped_total")
 	require.Contains(t, byAlert, "HotTablePromoteSlow")
 	require.Contains(t, byAlert["HotTablePromoteSlow"].expr, "llm_gateway_hot_table_promote_duration_seconds_bucket")
+	require.Contains(t, byAlert, "NodeProbeQueueSubmissionFailuresHigh")
+	require.Contains(t, byAlert["NodeProbeQueueSubmissionFailuresHigh"].expr, "llmgw_node_probe_queue_submission_total")
+	require.Contains(t, byAlert, "NodeProbeQueueSubmissionRetriesHigh")
+	require.Contains(t, byAlert["NodeProbeQueueSubmissionRetriesHigh"].expr, "llmgw_node_probe_queue_submission_retries_total")
 
 	text := string(data)
 	require.False(t, strings.Contains(text, "tenant="))

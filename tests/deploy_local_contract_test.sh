@@ -145,6 +145,50 @@ dl_mark_verified "$TMP/install/bin/2.4.7.9"
 grep -q '"verified": true' "$TMP/install/bin/2.4.7.9/deployment.json" || fail 'verified metadata'
 pass 'release bundle, checksum, atomic pointer, and verification metadata'
 
+# Local deploys allocate a new immutable release by bumping the shared version
+# metadata before the collision check. Use an isolated temporary checkout so the
+# contract test never changes this repository's version files.
+version_project="$TMP/version-project"
+version_install="$TMP/version-install"
+version_tmp="$TMP/version-tmp"
+mkdir -p "$version_project/scripts/deploy-lib" "$version_project/web/public" "$version_project/web/dist" "$version_tmp"
+cp "$ROOT/scripts/deploy-local.sh" "$version_project/scripts/deploy-local.sh"
+cp "$ROOT/scripts/deploy-local-lib.sh" "$version_project/scripts/deploy-local-lib.sh"
+cp "$ROOT/scripts/deploy-lib/lock.sh" "$version_project/scripts/deploy-lib/lock.sh"
+cp "$ROOT/scripts/bump-version.sh" "$version_project/scripts/bump-version.sh"
+printf '{\n  "version": "2.4.7-test",\n  "git_tag": "2.4.7",\n  "git_sha": "deadbeef",\n  "build_seq": 10,\n  "build_date": "20260903",\n  "module": "llm-gateway-go"\n}\n' > "$version_project/version.json"
+printf '2.4.7-test\n' > "$version_project/VERSION"
+cp "$version_project/version.json" "$version_project/web/public/version.json"
+cp "$version_project/version.json" "$version_project/web/dist/version.json"
+git -C "$version_project" init -q
+git -C "$version_project" config user.email contract-test@example.invalid
+git -C "$version_project" config user.name contract-test
+git -C "$version_project" add .
+git -C "$version_project" commit -qm 'contract fixture'
+git -C "$version_project" tag v2.4.7
+collision_bundle="$version_install/bin/2.4.7.11"
+mkdir -p "$collision_bundle"
+printf 'keep-me\n' > "$collision_bundle/sentinel"
+set +e
+HOME="$TMP/version-home" TMPDIR="$version_tmp" LLM_GATEWAY_ROOT="$version_install" \
+  bash "$version_project/scripts/deploy-local.sh" deploy --no-frontend >"$TMP/release-collision.out" 2>&1
+collision_rc=$?
+set -e
+[[ $collision_rc -eq 1 ]] || fail "duplicate release should fail after automatic bump (got $collision_rc)"
+grep -Fq 'release allocated: 2.4.7.11' "$TMP/release-collision.out" || fail 'local deploy should allocate the next build sequence'
+grep -Fq "release already exists: $collision_bundle" "$TMP/release-collision.out" || fail 'duplicate release error should identify the bumped bundle'
+python3 - "$version_project/version.json" "$version_project/web/public/version.json" "$version_project/web/dist/version.json" <<'PY'
+import json, sys
+files = [json.load(open(path)) for path in sys.argv[1:]]
+if any(item.get('build_seq') != 11 for item in files) or len({json.dumps(item, sort_keys=True) for item in files}) != 1:
+    raise SystemExit('version metadata did not stay in lockstep at build_seq 11')
+PY
+[[ "$(<"$version_project/VERSION")" == *-11 ]] || fail 'VERSION did not receive the bumped sequence'
+[[ "$(<"$collision_bundle/sentinel")" == 'keep-me' ]] || fail 'duplicate release check modified the existing bundle'
+[[ ! -e "$version_install/run" ]] || fail 'duplicate release check should run before resource setup'
+[[ ! -e "$version_tmp/kx-llm-gateway-build.lock" ]] || fail 'build lock was not released after the early collision'
+pass 'local deploy automatically bumps build_seq and rejects the bumped collision before side effects'
+
 for f in scripts/deploy-local-lib.sh scripts/deploy-local.sh scripts/deploy-154.sh scripts/deploy-245.sh; do
   bash -n "$ROOT/$f" || fail "bash syntax: $f"
 done

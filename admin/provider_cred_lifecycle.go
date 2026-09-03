@@ -125,13 +125,20 @@ func (h *Handler) updateCredentialLifecycle(w http.ResponseWriter, r *http.Reque
 func (h *Handler) resetCredentialAvailability(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
+	tag, err := h.db.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state = 'ready', availability_recover_at = NULL,
 		    state_reason_code = NULL, state_reason_detail = NULL, state_updated_at = now()
-		WHERE id = $1 AND provider_id = $2
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 	`, credID, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reset availability failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
@@ -139,11 +146,19 @@ func (h *Handler) resetCredentialAvailability(w http.ResponseWriter, r *http.Req
 func (h *Handler) resetCredentialQuota(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
-		UPDATE credentials SET quota_state = 'ok', quota_recover_at = NULL
-		WHERE id = $1 AND provider_id = $2
+	tag, err := h.db.Exec(ctx, `
+		UPDATE credentials
+		SET quota_state = 'ok', quota_recover_at = NULL
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 	`, credID, providerID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reset quota failed")
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "reset"})
 }
