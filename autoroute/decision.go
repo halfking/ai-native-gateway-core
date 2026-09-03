@@ -252,8 +252,46 @@ func (d *Decider) SetTenantResolver(fn func(apiKeyID int) string) {
 	d.TenantResolver = fn
 }
 
-// effectiveLLMThreshold returns the dynamic threshold from the tuning
-// store, or the static field when no store is wired.
+func (d *Decider) treatmentConfig() RolloutConfig {
+	if d != nil && d.treatmentRollout != nil {
+		return *d.treatmentRollout
+	}
+	flags := GetFeatureFlags()
+	if flags == nil {
+		return RolloutConfig{}
+	}
+	return RolloutConfig{
+		Experiment:     flags.AutoOptimizationV3Experiment,
+		Version:        flags.AutoOptimizationV3Version,
+		Enabled:        flags.AutoOptimizationV3Enabled,
+		ShadowOnly:     flags.AutoOptimizationV3ShadowOnly,
+		VariantPercent: flags.AutoOptimizationV3VariantPct,
+		Scope:          flags.AutoOptimizationV3Scope,
+		AutoRollback:   flags.AutoOptimizationV3AutoRollback,
+	}
+}
+
+// annotateTreatment records a decision-time assignment without changing any
+// control routing fields. Missing identities and invalid rollout config fail
+// closed to an unenrolled control decision.
+func (d *Decider) annotateTreatment(ctx context.Context, apiKeyID int, decision *Decision) {
+	if d == nil || decision == nil {
+		return
+	}
+	tenantID := ""
+	if d.TenantResolver != nil {
+		tenantID = d.TenantResolver(apiKeyID)
+	}
+	assignment := AssignTreatment(d.treatmentConfig(), tenantID, requestIDFromContext(ctx))
+	if assignment.Experiment == "" || assignment.AssignmentHash == "" {
+		return
+	}
+	decision.ExperimentID = assignment.Experiment
+	decision.AssignmentVersion = assignment.Version
+	decision.AssignmentKeyHash = assignment.AssignmentHash
+	decision.Treatment = assignment.Treatment
+}
+
 func (d *Decider) effectiveLLMThreshold() float64 {
 	if d.tuningStore != nil {
 		return d.tuningStore.LLMConfidenceThreshold()
