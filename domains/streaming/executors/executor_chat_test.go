@@ -29,6 +29,19 @@ func (s stubTimeoutCalculator) Calculate(_ AdaptiveTimeoutInput) time.Duration {
 	return s.value
 }
 
+func TestExecutor_RedactClientResponsePreservesOwnerContext(t *testing.T) {
+	var gotSession, gotTenant string
+	e := &Executor{RedactBodyFn: func(body []byte, sessionID, tenantID string) []byte {
+		gotSession, gotTenant = sessionID, tenantID
+		return append(body, []byte("-redacted")...)
+	}}
+	params := &ExecParams{SessionID: "session-owner", TenantID: "tenant-owner"}
+	got := e.redactClientResponse(params, []byte("body"))
+	if string(got) != "body-redacted" || gotSession != "session-owner" || gotTenant != "tenant-owner" {
+		t.Fatalf("redaction = %q owner=(%q,%q)", got, gotSession, gotTenant)
+	}
+}
+
 func TestChatExecutor_BuildRequest(t *testing.T) {
 	ce := &ChatExecutor{}
 	cand := provider.Candidate{
