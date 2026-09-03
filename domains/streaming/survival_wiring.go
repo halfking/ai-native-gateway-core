@@ -69,6 +69,11 @@ func (h *ChatHandler) runSurvivalCoordinator(
 
 	params := buildExecParams(w)
 	params.R = frozenReq
+	// The legacy handler factory pre-allocates its 100-call budget for the
+	// goal-retry owner. Survival chooses the effective day/night retry budget
+	// from its start-time snapshot, so let the coordinator allocate the shared
+	// request-survival budget before the first upstream call.
+	params.UpstreamAttempts = nil
 
 	// The handler-owned StreamSession stays active through terminal completion.
 	// OnStreamReady is retained for compatibility but no longer stops heartbeat;
