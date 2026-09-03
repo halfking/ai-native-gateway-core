@@ -920,7 +920,6 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 			slog.Warn("node_probe_worker: pump holdoff update failed",
 				"credential_id", r.credID, "model", r.model, "error", err)
 		}
-		_ = inserted // reserved for future P2.6 lifecycle logging
 	}
 	if len(due) > 0 {
 		slog.Info("node_probe_worker: pumped due states to queue", "count", len(due))
