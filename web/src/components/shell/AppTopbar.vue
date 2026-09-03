@@ -16,7 +16,7 @@ import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from '../../config/brand'
-import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from '../../store'
+import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, isProviderConsoleView as checkProviderConsole } from '../../store'
 import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, resolveNavItemActivation, visibleNavGroups, visibleNavItems, type NavGroup } from '../../config/appNav'
 import {
   LOCAL_OPS_MENU,
@@ -75,6 +75,8 @@ onBeforeUnmount(() => {
 const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
+// 2026-09-04: 供应商控制台（super_admin 或 default 租户 tenant_admin）
+const isProviderConsole = computed(() => checkProviderConsole())
 
 const isActivated = ref(false)
 
@@ -95,6 +97,7 @@ const navPrimaryItems = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, {
   isSuperAdmin: isSuperAdmin.value,
   isPlatformOps: isPlatformOps.value,
   isTenantPortal: isTenantPortal.value,
+  isProviderConsole: isProviderConsole.value,
   isActivated: isActivated.value,
 }))
 
@@ -140,6 +143,7 @@ const navGroups = computed(() => {
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
+    isProviderConsole: isProviderConsole.value,
     isActivated: isActivated.value,
   })
   const base = opsMenuOverrides.value ? mergeRemoteOps(local, opsMenuOverrides.value) : local

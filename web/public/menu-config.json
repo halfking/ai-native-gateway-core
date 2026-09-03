@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-03T16:22:07.806Z",
+  "exported_at": "2026-09-03T16:40:22.613Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -119,8 +119,7 @@
           "label": "供应商",
           "labelKey": "nav.item.providers",
           "icon": "🔌",
-          "super": true,
-          "hideForTenant": true,
+          "providerConsole": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },

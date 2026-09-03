@@ -16,6 +16,7 @@ import {
   revealCredentialKey,
   rotateCredentialPrimaryKey,
 } from '../../api'
+import { isSuperAdmin } from '../../store'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 import CredentialModelsPanel from './CredentialModelsPanel.vue'
 
@@ -35,6 +36,11 @@ const props = defineProps<{
 // change, default probe model pick — so the operator can keep working
 // without losing context or half-typed fields.
 const emit = defineEmits<{ refresh: []; silentRefresh: []; openErrorDetail: [credentialId: number] }>()
+
+// 2026-09-04: default 租户 tenant_admin 进入本页时为只读 + 凭据 API Key
+// 轮换（后端 ProviderConsoleMiddleware 同口径）：除「修改」API Key 外，
+// 抽屉内全部编辑控件禁用/隐藏，写接口对其 403。
+const canManageCreds = computed(() => isSuperAdmin())
 
 const selected = ref<ProviderCredential | null>(null)
 const drawerTab = ref<'info' | 'models'>('info')
@@ -907,7 +913,7 @@ function onTagsInput(ev: Event) {
   <div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <h3 style="margin:0">{{ pd('creds.listTitle') }}</h3>
-      <button class="btn btn-primary btn-sm" @click="openAddCred">{{ pd('creds.addBtn') }}</button>
+      <button v-if="canManageCreds" class="btn btn-primary btn-sm" @click="openAddCred">{{ pd('creds.addBtn') }}</button>
     </div>
 
     <div class="card" style="overflow-x:auto">
@@ -977,13 +983,14 @@ function onTagsInput(ev: Event) {
             <div class="drawer-sub">{{ pd('creds.rowMeta', { id: selected.id, trust: selected.trust_level }) }}</div>
             <div class="drawer-tabs" style="margin-top:10px;display:flex;gap:6px">
               <button type="button" class="btn btn-sm" :class="drawerTab === 'info' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'info'">信息</button>
-              <button type="button" class="btn btn-sm" :class="drawerTab === 'models' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'models'">模型</button>
+              <!-- 模型 tab 为绑定管理（写操作），仅 super_admin -->
+              <button v-if="canManageCreds" type="button" class="btn btn-sm" :class="drawerTab === 'models' ? 'btn-primary' : 'btn-ghost'" @click="drawerTab = 'models'">模型</button>
             </div>
           </div>
           <button type="button" class="btn btn-ghost btn-sm" @click="closeDrawer">{{ pd('creds.drawerClose') }}</button>
         </div>
 
-        <div v-if="drawerTab === 'models'" class="drawer-body">
+        <div v-if="drawerTab === 'models' && canManageCreds" class="drawer-body">
           <CredentialModelsPanel :provider-id="provider.id" :credential-id="selected.id" />
         </div>
 
@@ -991,7 +998,7 @@ function onTagsInput(ev: Event) {
           <div class="drawer-section">
             <div class="drawer-section-title">{{ pd('creds.drawerSectionBasic') }}</div>
             <label class="field-label">{{ pd('creds.drawerFieldLabel') }}</label>
-            <input v-model="selected.label" class="field-input" />
+            <input v-model="selected.label" class="field-input" :disabled="!canManageCreds" />
             <label class="field-label" style="margin-top:6px">{{ pd('creds.drawerFieldApiKey') || 'API Key' }}</label>
             <div class="drawer-key-wrap">
               <div class="key-fingerprint drawer-key">
@@ -1003,7 +1010,15 @@ function onTagsInput(ev: Event) {
                   <button class="btn btn-sm btn-ghost" type="button" @click="hideApiKey">{{ pd('creds.apiKeyHide') }}</button>
                 </template>
                 <template v-else>
-                  <button class="btn btn-sm" type="button" :disabled="revealing" @click="revealApiKey">
+                  <!-- 显示完整 API Key 仅 super_admin；「修改」（轮换）对
+                       default 租户 tenant_admin 同样开放（2026-09-04）。 -->
+                  <button
+                    v-if="canManageCreds"
+                    class="btn btn-sm"
+                    type="button"
+                    :disabled="revealing"
+                    @click="revealApiKey"
+                  >
                     {{ revealing ? pd('creds.apiKeyRevealing') : pd('creds.apiKeyReveal') }}
                   </button>
                   <button
@@ -1031,7 +1046,7 @@ function onTagsInput(ev: Event) {
             <div class="field-grid">
               <div>
                 <label class="field-label">{{ pd('creds.drawerFieldStatus') }}</label>
-                <select v-model="selected.status" class="field-input">
+                <select v-model="selected.status" class="field-input" :disabled="!canManageCreds">
                   <option v-for="s in statuses" :key="s.value" :value="s.value">{{ s.label }}</option>
                 </select>
               </div>
@@ -1040,6 +1055,7 @@ function onTagsInput(ev: Event) {
                 <select
                   :value="selected.lifecycle_status"
                   class="field-input"
+                  :disabled="!canManageCreds"
                   @change="handleLifecycleChange"
                 >
                   <option v-for="s in lifecycleStatuses" :key="s.value" :value="s.value">{{ s.label }}</option>
@@ -1051,6 +1067,7 @@ function onTagsInput(ev: Event) {
               <select
                 :value="selected.plan_type ?? ''"
                 class="field-input"
+                :disabled="!canManageCreds"
                 @change="(e: Event) => setPlanType((e.target as HTMLSelectElement).value)"
               >
                 <option v-for="p in planTypes" :key="p.value" :value="p.value">{{ p.label }}</option>
@@ -1058,7 +1075,7 @@ function onTagsInput(ev: Event) {
               <div class="cell-sub">{{ pd('creds.planTypeHint') }}</div>
             </div>
             <label class="manual-toggle">
-              <input type="checkbox" :checked="!!selected.manual_disabled" @change="toggleManualDisabled" />
+              <input type="checkbox" :checked="!!selected.manual_disabled" :disabled="!canManageCreds" @change="toggleManualDisabled" />
               <span>手工{{ selected.manual_disabled ? pd('creds.manualDisabledSuffix') : pd('creds.manualEnabledSuffix') }} 🔒</span>
             </label>
             <div v-if="selected.state_reason_code" class="cell-sub" :title="selected.state_reason_detail || ''">
@@ -1087,7 +1104,7 @@ function onTagsInput(ev: Event) {
             >
               {{ pd('creds.upstreamNonJsonHint') }}
             </div>
-            <div class="btn-row">
+            <div v-if="canManageCreds" class="btn-row">
               <button class="btn btn-sm" :disabled="checking" @click="checkSelected">{{ pd('creds.probeCheckNow') }}</button>
             </div>
             <div v-if="checking" class="probe-status probe-status--loading" role="status" aria-live="polite">
@@ -1114,6 +1131,7 @@ function onTagsInput(ev: Event) {
                 v-if="probeModelHasOptions"
                 v-model="selectedDefaultModel"
                 class="field-input"
+                :disabled="!canManageCreds"
                 :aria-label="pd('creds.drawerSectionDefaultProbeModel')"
               >
                 <option value="">{{ pd('creds.probeModelNoneOption') }}</option>
@@ -1124,6 +1142,7 @@ function onTagsInput(ev: Event) {
                 v-model="selectedDefaultModel"
                 type="text"
                 class="field-input"
+                :disabled="!canManageCreds"
                 :placeholder="pd('creds.probeModelManualPlaceholder')"
                 :aria-label="pd('creds.drawerSectionDefaultProbeModel')"
               />
@@ -1132,7 +1151,7 @@ function onTagsInput(ev: Event) {
             <code v-if="selected.default_probe_model" class="mono-sm" style="margin-top:6px;display:block">{{ selected.default_probe_model }}</code>
             <span v-else class="cell-muted">{{ pd('creds.probeModelUnset') }}</span>
             <div class="cell-sub">{{ sourceLabel(selected.default_probe_model_source) }}</div>
-            <div class="btn-row">
+            <div v-if="canManageCreds" class="btn-row">
               <button class="btn btn-sm btn-primary" @click="setDefaultModel">{{ pd('creds.probeSave') }}</button>
               <button class="btn btn-sm" :disabled="selectedDefaultModel === ''" @click="clearDefaultModel">{{ pd('creds.probeClear') }}</button>
               <button class="btn btn-sm" @click="repickDefault">{{ pd('creds.probeRepick') }}</button>
@@ -1144,7 +1163,7 @@ function onTagsInput(ev: Event) {
             <div class="field-grid">
               <div>
                 <label class="field-label">{{ pd('creds.drawerConcurrency') }}</label>
-                <input v-model.number="selected.concurrency_limit" type="number" min="0" class="field-input" />
+                <input v-model.number="selected.concurrency_limit" type="number" min="0" class="field-input" :disabled="!canManageCreds" />
               </div>
               <div>
                 <label class="field-label">{{ pd('creds.drawerFpSlot') }}</label>
@@ -1159,6 +1178,7 @@ function onTagsInput(ev: Event) {
                   v-model.number="selected.fp_slot_limit"
                   type="number"
                   min="1"
+                  :disabled="!canManageCreds"
                   :max="selected.concurrency_limit && selected.concurrency_limit > 0 ? selected.concurrency_limit : 10000"
                   class="field-input"
                   :placeholder="`${pd('creds.drawerFpSlotSuggestPrefix')}${selectedFpSlotHint}`"
@@ -1178,7 +1198,7 @@ function onTagsInput(ev: Event) {
                     :title="pd('creds.drawerFpSlotResetTitle')"
                   >{{ pd('creds.drawerFpSlotReset') }}</button>
                 </div>
-                <div v-if="selected.fp_slot_limit != null" class="btn-row" style="margin-top:4px">
+                <div v-if="selected.fp_slot_limit != null && canManageCreds" class="btn-row" style="margin-top:4px">
                   <button class="btn btn-sm btn-warning-outline" @click="resetFpSlots" :title="pd('creds.drawerFpSlotResetTitle')">
                     {{ pd('creds.drawerFpSlotResetBtn') }}
                   </button>
@@ -1204,6 +1224,7 @@ function onTagsInput(ev: Event) {
                   :value="asDateInput(selected.effective_at)"
                   type="datetime-local"
                   class="field-input"
+                  :disabled="!canManageCreds"
                   @input="onEffectiveInput"
                 />
               </div>
@@ -1213,6 +1234,7 @@ function onTagsInput(ev: Event) {
                   :value="asDateInput(selected.expires_at)"
                   type="datetime-local"
                   class="field-input"
+                  :disabled="!canManageCreds"
                   @input="onExpiresInput"
                 />
               </div>
@@ -1230,6 +1252,7 @@ function onTagsInput(ev: Event) {
             <input
               :value="(selected.tags ?? []).join(', ')"
               class="field-input"
+              :disabled="!canManageCreds"
               :placeholder="pd('creds.drawerTagsPlaceholder')"
               @input="onTagsInput"
             />
@@ -1247,7 +1270,7 @@ function onTagsInput(ev: Event) {
             <div v-else-if="fpSlotStats.details" class="cell-muted">{{ pd('creds.drawerFpSlotsEmpty') }}</div>
           </div>
 
-          <div class="drawer-section drawer-section--danger">
+          <div v-if="canManageCreds" class="drawer-section drawer-section--danger">
             <div class="drawer-section-title">{{ pd('creds.drawerSectionDanger') }}</div>
             <div class="btn-row">
               <button class="btn btn-sm" @click="resetAvailability">{{ pd('creds.drawerResetAvail') }}</button>
@@ -1262,7 +1285,7 @@ function onTagsInput(ev: Event) {
           <div v-if="saveMsg" class="cell-sub cell-sub--danger">{{ saveMsg }}</div>
           <div class="btn-row btn-row--end">
             <button class="btn btn-ghost" @click="closeDrawer">{{ pd('creds.drawerCancel') }}</button>
-            <button class="btn btn-primary" :disabled="saving" @click="saveSelected">
+            <button v-if="canManageCreds" class="btn btn-primary" :disabled="saving" @click="saveSelected">
               {{ saving ? pd('creds.drawerSaving') : pd('creds.drawerSave') }}
             </button>
           </div>

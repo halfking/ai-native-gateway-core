@@ -22,12 +22,13 @@ const __dirname = path.dirname(__filename)
  * 根据菜单项的权限标记计算 tenantScope
  * - super: true → 'default' (仅超级管理员)
  * - platformOps: true → 'default' (仅平台运维)
+ * - providerConsole: true → 'default' (default 租户 + super_admin，2026-09-04)
  * - hideForTenant: true → 'default' (对租户隐藏)
  * - tenantOnly: true → 'tenant' (仅租户门户)
  * - 其余 → '*'
  */
 function computeTenantScope(item) {
-  if (item.super || item.platformOps || item.hideForTenant) return 'default'
+  if (item.super || item.platformOps || item.providerConsole || item.hideForTenant) return 'default'
   if (item.tenantOnly) return 'tenant'
   return '*'
 }
@@ -72,7 +73,7 @@ const NAV_GROUPS = [
       { path: '/routing-v2', label: '路由全景', labelKey: 'nav.item.routingOverview', icon: '🗺️', super: true, hideForTenant: true, exact: true },
       { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
       { path: '/probe-health', label: '探测健康度', labelKey: 'nav.item.probeHealth', icon: '🔍', super: true, hideForTenant: true },
-      { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', super: true, hideForTenant: true },
+      { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
