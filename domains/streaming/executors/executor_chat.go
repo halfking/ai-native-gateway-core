@@ -747,7 +747,7 @@ func (e *Executor) executeOpenAI(
 					attrs = append(attrs, "body_bytes", len(bodyPreview), "body_digest", safeUpstreamBodyDigest([]byte(bodyPreview)))
 				}
 				if uErr != nil {
-					attrs = append(attrs, "err_message", uErr.Message)
+					attrs = append(attrs, "err_message_bytes", len(uErr.Message), "err_message_digest", safeUpstreamBodyDigest([]byte(uErr.Message)))
 				}
 				slog.Info("upstream_http_attempt", attrs...)
 			}
