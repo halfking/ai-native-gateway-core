@@ -33,6 +33,62 @@ func TestLoadReadsCursorHMACSecret(t *testing.T) {
 	}
 }
 
+func TestDefaultStaticDirPrefersBuiltDist(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "web", "dist"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "web", "dist", "index.html"), []byte("dist"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "web", "index.html"), []byte("flat"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	if got := defaultStaticDir(); got != "web/dist" {
+		t.Fatalf("defaultStaticDir() = %q, want web/dist", got)
+	}
+}
+
+func TestDefaultStaticDirFallsBackToPackagedWeb(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "web"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "web", "index.html"), []byte("flat"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWD) })
+
+	if got := defaultStaticDir(); got != "web" {
+		t.Fatalf("defaultStaticDir() = %q, want web", got)
+	}
+}
+
+func TestLoadStaticDirEnvironmentOverridesDiscovery(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_STATIC_DIR", "/custom/static")
+	if got := Load().StaticDir; got != "/custom/static" {
+		t.Fatalf("Load().StaticDir = %q, want /custom/static", got)
+	}
+}
+
 func TestLoad_TimeoutAndPendingTTLEnvironmentOverrides(t *testing.T) {
 	for _, tc := range []struct {
 		name string

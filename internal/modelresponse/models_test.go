@@ -5,9 +5,42 @@ import (
 	"testing"
 )
 
+func TestSanitizeBodySnippet(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		max  int
+		want string
+	}{
+		{name: "flattens HTML controls", body: []byte("<html>\n\tdenied\r</html>"), max: 200, want: "<html>  denied </html>"},
+		{name: "truncates", body: []byte("abcdef"), max: 4, want: "abcd…(truncated)"},
+		{name: "handles non utf8", body: []byte{'<', 0xff, 0xfe, '>'}, max: 200, want: string([]byte{'<', 0xff, 0xfe, '>'})},
+		{name: "zero maximum", body: []byte("ignored"), max: 0, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SanitizeBodySnippet(tt.body, tt.max); got != tt.want {
+				t.Fatalf("SanitizeBodySnippet() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHTTPBodyErrorDoesNotExposeFullBody(t *testing.T) {
+	body := []byte("<html>" + strings.Repeat("x", 1000) + "</html>")
+	err := (&HTTPBodyError{StatusCode: 502, Body: body}).Error()
+	if !strings.Contains(err, "HTTP 502") || !strings.Contains(err, "…(truncated)") {
+		t.Fatalf("HTTPBodyError.Error() = %q, want status and truncation marker", err)
+	}
+	if strings.Contains(err, strings.Repeat("x", 300)) {
+		t.Fatalf("HTTPBodyError.Error() leaked unbounded upstream body: %q", err)
+	}
+}
+
 func TestParseModelIDs(t *testing.T) {
 	tests := []struct {
-		name    string
+		name string
+
 		body    string
 		want    []string
 		wantErr bool

@@ -165,9 +165,9 @@ export const NAV_GROUPS: NavGroup[] = [
       // T9 — 请求注册表 + 连接注册台（mock stage）
       { path: '/admin/request-registry', label: '请求注册表', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
       { path: '/admin/connection-registry', label: '连接注册台', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },
-      // 2026-07-23: ai-session-manager plugin 入口
-      // Plugin 模式：完整页面跳转（同 opsPlatform 的 external 机制）
-      { path: '/plugins/ai-session-manager/sessions', label: '会话列表', labelKey: 'nav.item.pluginSessions', icon: '💬', super: true, hideForTenant: true, external: true, plugin: 'ai-session-manager' },
+      // V5.1: plugin-runtime nav (ai-session-manager etc.) is now injected
+      // dynamically via /api/v1/plugin-nav. See mergeRemotePluginNav in
+      // AppTopbar.vue — the request-sessions group above is the merge target.
     ],
   },
   {
@@ -297,6 +297,101 @@ export type TopbarNavGroup = {
   items: NavItem[]
   /** Topbar 上的"展开所有子项"按钮（用于 chat / guide 等只有 1 个 item 的 group 折叠显示） */
   primaryPath?: string
+}
+
+/**
+ * V5.1: adapter from the plugin-runtime NavEntry[] (fetched via
+ * /api/v1/plugin-nav) into our local NavItem shape.
+ *
+ * Notes:
+ *  - Plugin entries are always rendered as full-page external `<a>` links
+ *    (same as opsPlatform / maintain entries), because the plugin's web
+ *    bundle lives at /plugins/<plugin_id>/<page_path> — outside the Gateway
+ *    SPA's router. external:true triggers the <a href> branch in AppTopbar.
+ *  - role/tenant flags come straight from the manifest (super, platform_ops,
+ *    tenant_only). hideForTenant is the inverse of platform_ops for symmetry
+ *    with the static items.
+ *  - Unknown nav_group values fall back to 'plugins' so the entry still
+ *    shows up under a discoverable group instead of being silently dropped.
+ *  - i18n: label_key is forwarded; AppTopbar's `t()` resolves it against the
+ *    active locale (zh-CN, en-US, ...). The hard-coded `label` is only the
+ *    fallback when the key is missing.
+ */
+export interface RemoteNavEntry {
+  plugin_id: string
+  plugin_version: string
+  page_path: string
+  page_type: 'settings' | 'data'
+  nav_group: string
+  label_key: string
+  icon?: string
+  super: boolean
+  platform_ops: boolean
+  tenant_only: boolean
+  order: number
+  route_url: string
+}
+
+export function remoteNavToNavItems(entries: RemoteNavEntry[]): NavItem[] {
+  if (!entries || entries.length === 0) return []
+  return entries.map((e) => ({
+    path: e.route_url,
+    label: e.label_key,
+    labelKey: e.label_key || undefined,
+    icon: e.icon || '🧩',
+    super: e.super,
+    platformOps: e.platform_ops,
+    tenantOnly: e.tenant_only,
+    hideForTenant: e.platform_ops, // mirrors static convention
+    external: true,
+    plugin: e.plugin_id,
+  }))
+}
+
+/**
+ * V5.1: merge plugin nav entries into the static NAV_GROUPS.
+ *
+ * - Entries whose nav_group matches an existing group are appended to that
+ *   group's items (and re-sorted by `order`).
+ * - Entries with an unknown nav_group are gathered into a synthetic
+ *   'plugins' group, kept at the end so it never displaces the curated
+ *   layout.
+ *
+ * The result is consumed by visibleNavGroups → mergeNav, so all
+ * role/tenant filters apply uniformly.
+ */
+export function mergeRemotePluginNav(groups: NavGroup[], entries: RemoteNavEntry[]): NavGroup[] {
+  if (!entries || entries.length === 0) return groups
+  const items = remoteNavToNavItems(entries)
+  const knownIds = new Set(groups.map((g) => g.id))
+  const buckets = new Map<string, NavItem[]>()
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]
+    const it = items[i]
+    const gid = e.nav_group && knownIds.has(e.nav_group) ? e.nav_group : 'plugins'
+    if (!buckets.has(gid)) buckets.set(gid, [])
+    buckets.get(gid)!.push(it)
+  }
+  const out: NavGroup[] = []
+  for (const g of groups) {
+    const add = buckets.get(g.id)
+    if (add && add.length > 0) {
+      out.push({ ...g, items: [...g.items, ...add] })
+      buckets.delete(g.id)
+    } else {
+      out.push(g)
+    }
+  }
+  const synthetic = buckets.get('plugins')
+  if (synthetic && synthetic.length > 0) {
+    out.push({
+      id: 'plugins',
+      label: '插件',
+      labelKey: 'nav.group.plugins',
+      items: synthetic,
+    })
+  }
+  return out
 }
 
 /**

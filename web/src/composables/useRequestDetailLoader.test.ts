@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import {
   clearRequestDetailCache,
   mapLogRoutingAttempts,
+  mergeRequestAttempts,
   useRequestDetailLoader,
 } from './useRequestDetailLoader'
 
@@ -10,17 +11,20 @@ const {
   getRequestLogDetail,
   fetchWaterfallByRequestId,
   getSessionSnapshot,
+  getRequestJourney,
 } = vi.hoisted(() => ({
   getUnifiedRequestDetail: vi.fn(),
   getRequestLogDetail: vi.fn(),
   fetchWaterfallByRequestId: vi.fn(),
   getSessionSnapshot: vi.fn(),
+  getRequestJourney: vi.fn(),
 }))
 
 vi.mock('../api/requestDetail', () => ({ getUnifiedRequestDetail }))
 vi.mock('../api/logs', () => ({ getRequestLogDetail }))
 vi.mock('../api/dispatch', () => ({ fetchWaterfallByRequestId }))
 vi.mock('../api/sessions_v2', () => ({ getSessionSnapshot }))
+vi.mock('../api/request-journeys', () => ({ getRequestJourney }))
 
 describe('mapLogRoutingAttempts', () => {
   it('maps log attempts to waterfall shape', () => {
@@ -43,6 +47,70 @@ describe('mapLogRoutingAttempts', () => {
   })
 })
 
+describe('mergeRequestAttempts', () => {
+  it('uses durable journey refs over waterfall and synthesized routing attempts', () => {
+    const out = mergeRequestAttempts(
+      {
+        events: [
+          {
+            tenant_id: 't', gateway_instance_id: 'g', request_id: 'r', stage: 'upstream', observation_status: 'complete',
+            seq: 2,
+            event_type: 'attempt_started',
+            occurred_at: '2026-09-03T00:00:01Z',
+            attempt: { attempt_id: 'j-1', attempt_no: 1, model: 'journey-model', provider_id: 7, credential_id: 8 },
+          },
+          {
+            tenant_id: 't', gateway_instance_id: 'g', request_id: 'r', stage: 'retrying', observation_status: 'complete',
+            seq: 3,
+            event_type: 'attempt_failed',
+            occurred_at: '2026-09-03T00:00:02Z',
+            error_kind: 'timeout',
+            outcome: 'failure',
+            attempt: { attempt_id: 'j-1', attempt_no: 1 },
+          },
+        ],
+      },
+      [{ attempt_id: 'wf-1', attempt_no: 1, credential_id: 99, model: 'waterfall-model', outcome: 'success' }],
+      [{ seq: 1, provider_id: 10, credential_id: 11, raw_model: 'routing-model', upstream_url: 'u', result: 'fail', latency_ms: 3 }],
+    )
+
+    expect(out).toEqual([{
+      attempt_id: 'j-1',
+      attempt_no: 1,
+      model: 'journey-model',
+      provider_id: 7,
+      credential_id: 8,
+      started_at: '2026-09-03T00:00:01Z',
+      ended_at: '2026-09-03T00:00:02Z',
+      outcome: 'failure',
+      error_kind: 'timeout',
+      source: 'journey',
+    }])
+  })
+
+  it('keeps distinct attempts from lower-priority sources and marks their source', () => {
+    const out = mergeRequestAttempts(
+      { events: [{ tenant_id: 't', gateway_instance_id: 'g', request_id: 'r', stage: 'upstream', observation_status: 'complete', seq: 1, event_type: 'attempt_started', occurred_at: 't', attempt: { attempt_id: 'j-2', attempt_no: 2 } }] },
+      [{ attempt_id: 'wf-3', attempt_no: 3, credential_id: 4 }],
+      [{ seq: 4, provider_id: 5, credential_id: 6, raw_model: 'm', upstream_url: 'u', result: 'fail', latency_ms: 1 }],
+    )
+
+    expect(out.map((a) => [a.attempt_no, a.source])).toEqual([
+      [2, 'journey'],
+      [3, 'waterfall'],
+      [4, 'synthesized'],
+    ])
+  })
+
+  it('does not interpret request-level timing fields as per-attempt timing', () => {
+    const out = mergeRequestAttempts(null, [], [{ seq: 1, provider_id: 1, credential_id: 2, raw_model: 'm', upstream_url: 'u', result: 'success', latency_ms: 1 }])
+    expect(out[0]).not.toHaveProperty('started_at')
+    expect(out[0]).not.toHaveProperty('first_byte_at')
+    expect(out[0]).not.toHaveProperty('ended_at')
+  })
+})
+
+
 describe('useRequestDetailLoader', () => {
   beforeEach(() => {
     clearRequestDetailCache()
@@ -50,7 +118,9 @@ describe('useRequestDetailLoader', () => {
     getRequestLogDetail.mockReset()
     fetchWaterfallByRequestId.mockReset()
     getSessionSnapshot.mockReset()
+    getRequestJourney.mockReset()
     getSessionSnapshot.mockResolvedValue({ title: 'T', summary: 'S' })
+    getRequestJourney.mockRejectedValue(new Error('journey unavailable'))
   })
 
   it('Phase A loads omit_body only and does not fetch waterfall', async () => {

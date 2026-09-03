@@ -5159,6 +5159,7 @@ func main() {
 	// nav is admin-auth-gated; viewer is derived from the real auth context
 	// (replaces the P0 super-admin placeholder).
 	pluginRegistry := pluginruntime.NewRegistry()
+	pluginCapabilities := pluginruntime.NewCapabilityRegistry()
 	pluginsDir := os.Getenv("LLM_GATEWAY_PLUGINS_DIR")
 	var sup *pluginruntime.Supervisor // P12: hoisted so the install handler can use it when plugins are enabled
 	var pluginManifests []*pluginruntime.Manifest
@@ -5180,6 +5181,9 @@ func main() {
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
 		pluginBases := ScanAndStartPluginsWithRegistry(sup, pluginRegistry, pluginManifests)
+		for _, manifest := range pluginManifests {
+			pluginCapabilities.RegisterManifest(manifest)
+		}
 		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
 		for _, manifest := range pluginManifests {
 			if manifest != nil {
@@ -5192,7 +5196,7 @@ func main() {
 		if maintainServiceURL != "" && jwtSecret != "" {
 			entitlementAuthorizer = pluginruntime.NewEntitlementClient(maintainServiceURL, jwtSecret, "ai-native-gateway")
 		}
-		registerPluginAPIProxy(mux, []byte(cfg.SecretKey), func(pluginID string) string {
+		registerPluginAPIProxyWithCapabilities(mux, []byte(cfg.SecretKey), func(pluginID string) string {
 			return pluginBases[pluginID] // "" if not running → apiproxy returns 502
 		}, func(pluginID string) (string, bool) {
 			activation, ok := pluginActivations[pluginID]
@@ -5200,7 +5204,7 @@ func main() {
 				return "", false
 			}
 			return activation.ModuleKey, activation.LicenseRequired
-		}, entitlementAuthorizer, dbConn.Pool(), cfg.SecretKey)
+		}, entitlementAuthorizer, dbConn.Pool(), cfg.SecretKey, pluginCapabilities)
 
 		// P6: health loop — precise HTTP health check as the liveness signal.
 		// Each tick GETs manifest.Runtime.HealthPath over the plugin's unix
@@ -5257,6 +5261,25 @@ func main() {
 	}
 	mux.Handle("POST /api/v1/plugins/install", admin.AdminMiddleware(
 		makePluginInstallHandler(installer),
+		dbConn.Pool(), cfg.SecretKey,
+	))
+
+	// plugin-runtime: lifecycle admin API (activate/deactivate/uninstall).
+	// V5.1 minimum-viable: dispatches into the supervisor when plugins are
+	// wired, otherwise 503s with a stable error code. DB-truth (catalog rows)
+	// is not yet consulted — the catalog side will fold in under the same
+	// handler when ready.
+	lifecycle := resolveLifecycle(sup, pluginsDir)
+	mux.Handle("POST /api/v1/plugins/{id}/activate", admin.AdminMiddleware(
+		makePluginActivateHandler(lifecycle),
+		dbConn.Pool(), cfg.SecretKey,
+	))
+	mux.Handle("POST /api/v1/plugins/{id}/deactivate", admin.AdminMiddleware(
+		makePluginDeactivateHandler(lifecycle),
+		dbConn.Pool(), cfg.SecretKey,
+	))
+	mux.Handle("POST /api/v1/plugins/{id}/uninstall", admin.AdminMiddleware(
+		makePluginUninstallHandler(lifecycle),
 		dbConn.Pool(), cfg.SecretKey,
 	))
 

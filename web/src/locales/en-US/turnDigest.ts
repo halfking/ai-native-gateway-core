@@ -32,11 +32,13 @@ export default {
     request: 'Request',
     response: 'Response',
     compression: 'Compression',
+    waterfall: 'Waterfall',
     meta: 'Meta',
     governance: 'Governance',
     attachments: 'Attachments',
   },
   noAttachments: 'No attachments',
+  noWaterfall: 'No waterfall timing available',
   openAttachment: 'Download',
   openingAttachment: 'Opening…',
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { canShowNavItem, mergeNav, NAV_GROUPS, NAV_PRIMARY_ITEMS, resolveNavItemActivation, ACTIVATE_REDIRECT_PATH } from './appNav'
+import { canShowNavItem, mergeNav, mergeRemotePluginNav, remoteNavToNavItems, NAV_GROUPS, NAV_PRIMARY_ITEMS, resolveNavItemActivation, ACTIVATE_REDIRECT_PATH, type RemoteNavEntry } from './appNav'
 
 describe('mergeNav', () => {
   it('preserves visible primary and grouped navigation', () => {
@@ -173,5 +173,56 @@ describe('PUBLIC_NAV_LINKS regression guard', () => {
         `PUBLIC_NAV_LINKS entry "${link.path}" (${link.labelKey}) is not in the set of public routes — this will trigger a redirect to /?login=1`,
       ).toBe(true)
     }
+  })
+})
+
+describe('V5.1 plugin nav (remote merge)', () => {
+  const asmEntry: RemoteNavEntry = {
+    plugin_id: 'ai-session-manager',
+    plugin_version: '0.1.1',
+    page_path: 'sessions',
+    page_type: 'data',
+    nav_group: 'requests-sessions',
+    label_key: 'nav.item.pluginSessions',
+    icon: '💬',
+    super: true,
+    platform_ops: false,
+    tenant_only: false,
+    order: 100,
+    route_url: '/plugins/ai-session-manager/sessions',
+  }
+
+  it('appends plugin entry to the matching static group', () => {
+    const merged = mergeRemotePluginNav(NAV_GROUPS, [asmEntry])
+    const target = merged.find((g) => g.id === 'requests-sessions')!
+    const hasPlugin = target.items.some((it) => it.path === '/plugins/ai-session-manager/sessions')
+    expect(hasPlugin).toBe(true)
+  })
+
+  it('marks plugin nav items external so AppTopbar renders <a>', () => {
+    const items = remoteNavToNavItems([asmEntry])
+    expect(items[0].external).toBe(true)
+    expect(items[0].plugin).toBe('ai-session-manager')
+  })
+
+  it('routes entries with an unknown nav_group into a synthetic plugins group', () => {
+    const odd: RemoteNavEntry = { ...asmEntry, nav_group: 'mystery-group', route_url: '/plugins/x/foo', page_path: 'foo' }
+    const merged = mergeRemotePluginNav(NAV_GROUPS, [odd])
+    const synthetic = merged.find((g) => g.id === 'plugins')
+    expect(synthetic).toBeTruthy()
+    expect(synthetic!.items.some((it) => it.path === '/plugins/x/foo')).toBe(true)
+  })
+
+  it('returns the original groups unchanged when no entries are provided', () => {
+    const merged = mergeRemotePluginNav(NAV_GROUPS, [])
+    expect(merged).toEqual(NAV_GROUPS)
+  })
+
+  it('does NOT inject a hardcoded ai-session-manager entry into NAV_GROUPS', () => {
+    // Regression: V5.1 removed the static {path: "/plugins/ai-session-manager/sessions"}
+    // entry; ASM nav now flows through the dynamic /api/v1/plugin-nav path.
+    const all = NAV_GROUPS.flatMap((g) => g.items)
+    const legacy = all.find((it) => it.path === '/plugins/ai-session-manager/sessions' && it.plugin === 'ai-session-manager')
+    expect(legacy).toBeUndefined()
   })
 })

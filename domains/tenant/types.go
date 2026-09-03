@@ -11,6 +11,11 @@ type TenantQuota struct {
 	MaxTokensPerDay   int64
 	MaxConcurrent     int
 	MaxModels         int
+	MaxQPS            int
+	MaxTokensPerMin   int64
+	Priority          int
+	BurstMultiplier   float64
+	HistoricalAvgQPS  float64
 }
 
 // TenantPolicy represents access control policies for a tenant.

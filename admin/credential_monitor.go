@@ -170,6 +170,8 @@ type CredentialMonitorSummary struct {
 	ModelTotal            int     `json:"model_total,omitempty"`
 	ModelAvailable        int     `json:"model_available,omitempty"`
 	BrokenModelCount      int     `json:"broken_model_count,omitempty"`
+	EffectiveState        string  `json:"effective_state"`
+	EffectiveReason       string  `json:"effective_reason,omitempty"`
 	// Models is the per-(credential, model) availability breakdown. Replaces the
 	// single-model recent_window_stats field (2026-06-22). Each entry carries
 	// the probe state, offer/binding availability and the live last-N success
@@ -524,6 +526,17 @@ func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLPa
 			r := successRate.Float64
 			s.AggregatedSuccessRate = &r
 		}
+
+		state := deriveCredentialDisplayState(credentialStateInput{
+			Status:          s.Status,
+			LifecycleStatus: "active", // monitor SQL does not select lifecycle_status; status/manual gates remain authoritative here.
+			Availability:    s.AvailabilityState,
+			QuotaState:      s.QuotaState,
+			HealthStatus:    s.HealthStatus,
+			ManualDisabled:  s.ManualDisabled,
+		})
+		s.EffectiveState = string(state.State)
+		s.EffectiveReason = state.Reason
 
 		if detailMode || coreMode {
 			models := make([]CredentialModelStatus, 0)

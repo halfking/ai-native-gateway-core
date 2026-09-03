@@ -133,6 +133,20 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 			"effective_provider_id must fall back to the credential's provider")
 	})
 
+	t.Run("excludes_probe_and_self_check_rows", func(t *testing.T) {
+		upSQL := readUp(t)
+		for _, fragment := range []string{
+			"COALESCE(origin_stage, '') NOT IN",
+			"COALESCE(task_type, '') <> 'probe_triggered'",
+			"COALESCE(request_id, '') NOT LIKE 'probe-%'",
+		} {
+			require.Contains(t, upSQL, fragment, "routing materialized views must exclude probe traffic")
+		}
+		for _, stage := range []string{"self_check", "node_probe", "system_health", "probe_direct", "probe_v2", "model_probe", "passive_probe", "manual"} {
+			require.Contains(t, upSQL, stage, "probe stage %s must be excluded", stage)
+		}
+	})
+
 	t.Run("uses_base_view_and_7d_window", func(t *testing.T) {
 		upSQL := readUp(t)
 		require.Contains(t, upSQL,

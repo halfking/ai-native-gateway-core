@@ -101,3 +101,27 @@ PASS
 ```bash
 go test ./admin/ -bench 'BenchmarkBuildTurnDigest|BenchmarkTurnDigestJSONMarshal' -benchmem -count=5 -run '^$'
 ```
+
+## 复跑记录（2026-09-04）
+
+本次在后续提交引入的 `autoroute` 编译回归后，当前 `HEAD`（`34d4e3f5f`）无法直接执行该命令：`autoroute/decision.go` 引用了未定义的 `RolloutConfig`、`Decider.treatmentRollout` 及 AUTO_MODEL V3 `FeatureFlags` 字段。为避免修改用户工作树，使用临时 detached worktree 在最后一个已知可编译且包含 backfill 实现的快照 `0f1a6f63e` 上执行了相同命令；原始输出保存在 `/tmp/turn-digest-benchmark-XXXXXX.txt`（临时文件名由 shell 生成）。
+
+### 复跑中位数（5 次运行取中位）
+
+| Benchmark | ns/op（中位） | B/op | allocs/op |
+|---|---:|---:|---:|
+| TextShapes/short | 1,178 | 176 | 7 |
+| TextShapes/long_zh | 6,113 | 1,456 | 15 |
+| TextShapes/long_en | 3,919 | 1,648 | 11 |
+| TextShapes/no_sentence_boundary | 2,954 | 976 | 11 |
+| Batch/1 | 1,332 | 720 | 9 |
+| Batch/10 | 11,845 | 12,112 | 38 |
+| Batch/50 | 68,279 | 133,472 | 88 |
+| Batch/200 | 425,984 | 1,681,890 | 246 |
+| JSONMarshal | 494.8 | 352 | 1 |
+
+`domains/session/v2` 的 backfill 测试同时通过：`go test ./domains/session/v2`。
+
+### 可比性说明
+
+本次复跑与文档前一版基线的代码快照不同（前一版记录为 `b55d0883e`，本次为 `0f1a6f63e`），且当前主线在 `2c0726566` 引入的 autoroute 代码后无法构建。因此这些数值应作为“backfill 落地后的独立复跑记录”，不应直接解释为 turn-digest 算法退化；需要在修复 autoroute 构建回归后，于同一完整主线快照重新跑基准，才能做严格回归比较。

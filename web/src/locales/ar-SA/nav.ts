@@ -9,6 +9,7 @@ export default {
     dataOps: "عمليات البيانات",
     guide: "دليل التكامل",
     chat: "محادثة",
+    plugins: "الإضافات",
     opsplatform: "运维平台"
   },
   item: {

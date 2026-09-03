@@ -43,6 +43,11 @@ const error = ref<SessionObsApiError | null>(null)
 const loaded = ref(false)
 
 const PAGE_LIMIT = 20
+const unifiedTurnsEnabled = String(import.meta.env.VITE_SESSION_TURNS_UNIFIED || '').toLowerCase() === 'true'
+
+function turnNumber(turn: SessionTurnTreeItem): number {
+  return turn.turn_no ?? turn.turn_number
+}
 
 async function load(reset = true) {
   if (reset) {
@@ -52,10 +57,12 @@ async function load(reset = true) {
     loadingMore.value = true
   }
   try {
-    const r = await fetchSessionTurnsTree(props.sessionId, {
+    const params: { limit: number; cursor?: string; source?: 'v2' } = {
       limit: PAGE_LIMIT,
       cursor: reset ? undefined : nextCursor.value || undefined,
-    })
+    }
+    if (unifiedTurnsEnabled) params.source = 'v2'
+    const r = await fetchSessionTurnsTree(props.sessionId, params)
     turns.value = reset ? r.turns : [...turns.value, ...r.turns]
     hasMore.value = r.has_more
     nextCursor.value = r.next_cursor || ''
@@ -182,15 +189,15 @@ function errorText(e: SessionObsApiError | null): string {
         v-for="turn in turns"
         :key="turn.request_id"
         class="stt-turn"
-        :data-turn-number="turn.turn_number"
+        :data-turn-number="turnNumber(turn)"
       >
         <!-- 主请求卡 -->
         <button
           type="button"
           class="stt-turn-main stt-turn-main--clickable"
-          @click="emit('openRequest', { requestId: turn.request_id, turnNumber: turn.turn_number })"
+          @click="emit('openRequest', { requestId: turn.request_id, turnNumber: turnNumber(turn) })"
         >
-          <span class="stt-turn-no">#{{ turn.turn_number }}</span>
+          <span class="stt-turn-no">#{{ turnNumber(turn) }}</span>
           <span class="stt-status" :class="statusClass(turn.status)">{{ turn.status }}</span>
           <span v-if="turn.model" class="stt-turn-model">{{ turn.model }}</span>
           <span class="stt-turn-latency" :class="latencyClass(turn.latency)">
@@ -203,8 +210,8 @@ function errorText(e: SessionObsApiError | null): string {
           type="button"
           class="stt-digest-btn"
           data-testid="stt-show-digest"
-          :aria-label="`${t('turnDigest.view')} #${turn.turn_number}`"
-          @click.stop="emit('showDigest', { turnNumber: turn.turn_number })"
+          :aria-label="`${t('turnDigest.view')} #${turnNumber(turn)}`"
+          @click.stop="emit('showDigest', { turnNumber: turnNumber(turn) })"
         >
           {{ t('turnDigest.view') }}
         </button>

@@ -92,7 +92,9 @@ func providerTenantAdminAllowed(r *http.Request, db *pgxpool.Pool) bool {
 	case http.MethodGet, http.MethodHead:
 		// read path — falls through to the provider tenant-scope check below
 	case http.MethodPost:
-		if !strings.HasSuffix(r.URL.Path, "/rotate-primary-key") {
+		if !strings.HasSuffix(r.URL.Path, "/rotate-primary-key") &&
+			!strings.HasSuffix(r.URL.Path, "/reveal") &&
+			!strings.HasSuffix(r.URL.Path, "/set-key") {
 			return false
 		}
 	default:

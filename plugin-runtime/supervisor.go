@@ -142,9 +142,13 @@ func (s *Supervisor) Restart(pluginID string) error {
 
 // Upgrade stops the currently running plugin (if any) and starts the new
 // manifest. If the new Start fails, the supervisor restores the previous
-// manifest in its index so the caller and health-loop see the canonical
-// version. The old process is already stopped by this point; callers that
-// need the old version running again must call Restart after a failed Upgrade.
+// manifest in its index AND best-effort re-runs the previous version, so the
+// plugin returns to a ready state without caller intervention. Caller-level
+// recovery (e.g. upgrade admin API) should still treat the error as a failed
+// upgrade and surface it; the rollback is a safety net so that callers like
+// the lifecycle admin API don't leave a plugin half-stopped.
+//
+// If there was no previous version, the new failure simply clears state.
 // Returns nil on success.
 func (s *Supervisor) Upgrade(ctx context.Context, newManifest *Manifest) error {
 	s.mu.Lock()
@@ -162,9 +166,8 @@ func (s *Supervisor) Upgrade(ctx context.Context, newManifest *Manifest) error {
 
 	// 2. start new
 	if _, err := s.Start(ctx, newManifest); err != nil {
-		// rollback: restore old manifest in index so health-loop/caller see
-		// the canonical version. We do NOT auto-restart old here — if old
-		// must keep running, caller calls Restart after failed Upgrade.
+		// rollback: restore old manifest, then auto-restart old so plugin is
+		// ready (spec §3.4: upgrade failure must restore ready state).
 		s.mu.Lock()
 		if oldManifest != nil {
 			s.manifests[newManifest.PluginID] = oldManifest
@@ -173,8 +176,35 @@ func (s *Supervisor) Upgrade(ctx context.Context, newManifest *Manifest) error {
 			delete(s.states, newManifest.PluginID)
 		}
 		s.mu.Unlock()
+		if oldManifest != nil {
+			if _, restartErr := s.Start(ctx, oldManifest); restartErr != nil {
+				// even rollback Start failed — old process cannot be revived.
+				// Best we can do is report both errors; caller may need to
+				// deactivate / retry.
+				return fmt.Errorf("upgrade plugin %s: %w (rollback start failed: %v)", newManifest.PluginID, err, restartErr)
+			}
+		}
 		return fmt.Errorf("upgrade plugin %s: %w", newManifest.PluginID, err)
 	}
+	return nil
+}
+
+// Uninstall stops the plugin process if running and removes all per-plugin
+// state from the supervisor in-memory index (procs/states/manifests). It does
+// NOT touch on-disk bundles; the caller (lifecycle admin API or installer)
+// is responsible for deleting files and catalog rows after a successful
+// Uninstall.
+//
+// pluginID must match the supervisor's plugin_id regex (validated upstream);
+// Uninstall never resolves paths so the directory traversal check in the
+// lifecycle layer stays the single source of truth.
+func (s *Supervisor) Uninstall(pluginID string) error {
+	// Stop first to release the unix socket and the process; ignore
+	// "not running" so a Stop-then-Uninstall from the admin API is idempotent.
+	_ = s.Stop(pluginID)
+	s.mu.Lock()
+	delete(s.manifests, pluginID)
+	s.mu.Unlock()
 	return nil
 }
 
