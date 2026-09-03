@@ -3,6 +3,7 @@ package sessionv2mirror
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -308,6 +309,54 @@ func TestEntryToProcessedRequest_CompressionSkipped(t *testing.T) {
 	}
 	if req.CompressionMeta != nil {
 		t.Error("expected CompressionMeta=nil when no compression reason")
+	}
+}
+
+func TestEntryToProcessedRequest_CompressionMetaWhitelist(t *testing.T) {
+	strategy := "smart_window_llm"
+	reason := "token_threshold_forced_absolute"
+	ref := sanitizeMapRef("tenant", "sess_comp_meta")
+	meta := jsonRaw(fmt.Sprintf(`{
+			"strategy":"smart_window_llm",
+			"summary_marker":"[smm_v1:0123456789abcdef]",
+			"compressed_prefix_hash":"0123456789abcdef0123456789abcdef",
+			"tokens_before":2000000,
+			"cut_marker":{"version":1,"created_at":123,"source_msg_count":10,"system_msg_count":1,"cut_index":4,"strategy":"smart_window_llm","summary_marker":"[smm_v1:0123456789abcdef]","pre_sanitize_offset_range":[1,5],"summary_text":"must-not-mirror"},
+			"alignment_map":[{"original_index":2,"compressed_index":1,"is_compressed":true,"compressed_into":1,"hash":"0123456789abcdef0123456789abcdef","raw_content":"must-not-mirror"}],
+			"sanitize_map_ref":%q,
+			"sanitize_message_refs":[{"raw_index":2,"sanitized_index":2,"raw_hash":"0123456789abcdef0123456789abcdef","sanitized_hash":"fedcba9876543210fedcba9876543210","changed":true,"plaintext":"must-not-mirror"}],
+			"request_body":"must-not-mirror",
+			"pii":"must-not-mirror"
+		}`, ref))
+	entry := &telemetry.RequestLogEntry{
+		RequestID:           "req_comp_meta",
+		TenantID:            "tenant",
+		GwSessionID:         gwSessionPtr("sess_comp_meta"),
+		CompressionStrategy: &strategy,
+		CompressionReason:   &reason,
+		CompressionMeta:     meta,
+		Success:             true,
+	}
+	req := entryToProcessedRequest(entry)
+	if req.CompressionMeta["summary_marker"] != "[smm_v1:0123456789abcdef]" {
+		t.Fatalf("summary marker not preserved: %#v", req.CompressionMeta)
+	}
+	cut, ok := req.CompressionMeta["cut_marker"].(map[string]interface{})
+	if !ok || cut["cut_index"] != float64(4) || cut["summary_text"] != nil {
+		t.Fatalf("cut marker filtering failed: %#v", req.CompressionMeta["cut_marker"])
+	}
+	if got := req.CompressionMeta["sanitize_map_ref"]; got != ref {
+		t.Fatalf("sanitize ref = %v, want %s", got, ref)
+	}
+	alignment := req.CompressionMeta["alignment_map"].([]map[string]interface{})
+	refs := req.CompressionMeta["sanitize_message_refs"].([]map[string]interface{})
+	if alignment[0]["raw_content"] != nil || refs[0]["plaintext"] != nil {
+		t.Fatalf("nested plaintext leaked: alignment=%#v refs=%#v", alignment, refs)
+	}
+	for _, forbidden := range []string{"request_body", "pii"} {
+		if _, ok := req.CompressionMeta[forbidden]; ok {
+			t.Fatalf("forbidden metadata %q was mirrored", forbidden)
+		}
 	}
 }
 

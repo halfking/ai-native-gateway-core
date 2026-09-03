@@ -654,7 +654,8 @@ func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provide
 	// The gateway's 2M admission ceiling is not the provider context window;
 	// trim the serialized Anthropic body at the shared 80% provider threshold.
 	if cand.ContextWindow != nil {
-		bodyBytes = transformation.CompressAnthropicMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+		reserve := transformation.OutputTokenReserve(bodyBytes, "anthropic-messages")
+		bodyBytes = transformation.CompressAnthropicMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
 	}
 	requestCtx := context.Background()
 	if params != nil && params.R != nil {

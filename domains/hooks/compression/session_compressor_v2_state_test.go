@@ -31,6 +31,35 @@ func (s stubOutboundBuilder) BuildLatestOutbound(_ context.Context, _, _ string)
 	return s.body, s.err
 }
 
+func TestLoadV2CompressionState_RestoresRecoveryMetadata(t *testing.T) {
+	sc := &SessionCompressor{deps: SessionCompressorDeps{CacheV2: stubStateReader{
+		meta: map[string]any{
+			"summary_marker": "[smm_v1:abc]",
+			"cut_marker": map[string]interface{}{
+				"created_at": float64(123), "source_msg_count": float64(10),
+				"system_msg_count": float64(1), "cut_index": float64(4),
+				"strategy": "smart_window_llm", "summary_marker": "[smm_v1:abc]",
+			},
+			"pre_sanitize_offset_range": []int{1, 5},
+			"alignment_map": []map[string]interface{}{{
+				"original_index": float64(2), "compressed_index": float64(1), "hash": "abc",
+			}},
+			"sanitize_map_ref": "session:tenant:session:sanitize",
+			"sanitize_message_refs": []map[string]interface{}{{
+				"raw_index": float64(2), "sanitized_index": float64(2),
+				"raw_hash": "a", "sanitized_hash": "b", "changed": true,
+			}},
+		},
+	}}}
+	state := sc.loadV2CompressionState(context.Background(), "tenant", "session")
+	if state == nil || !state.HasCutMarker || state.CutIndex != 4 || state.CutPreSanitizeEnd != 5 {
+		t.Fatalf("cut metadata not restored: %+v", state)
+	}
+	if len(state.AlignmentMap) != 1 || len(state.SanitizeMessageRefs) != 1 || state.SanitizeMapRef == "" {
+		t.Fatalf("provenance metadata not restored: %+v", state)
+	}
+}
+
 // TestTryLoadV2State_Success covers the happy path: prior state exists
 // and the builder returns a body → (body, true). This is the branch the
 // real SessionCacheV2 + OutboundBuilder will hit in production, and it

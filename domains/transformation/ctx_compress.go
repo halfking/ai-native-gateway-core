@@ -80,13 +80,35 @@ const charsPerToken = 3.5
 // and 60% (or 200K small-window) target to Anthropic Messages bodies. The system
 // field (string or array) is always preserved.
 func CompressAnthropicMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
-	if contextWindow <= 0 || estimatePromptTokens(bodyBytes) <= int(float64(contextWindow)*defaultTriggerFraction) {
+	return CompressAnthropicMessagesIfNeededWithReserve(bodyBytes, contextWindow, 0)
+}
+
+// CompressAnthropicMessagesIfNeededWithReserve applies the provider window
+// policy after reserving the requested output budget. A non-positive or
+// malformed reserve is treated as zero for backward compatibility.
+func CompressAnthropicMessagesIfNeededWithReserve(bodyBytes []byte, contextWindow, outputReserve int) []byte {
+	if outputReserve < 0 {
+		outputReserve = 0
+	}
+	usable := contextWindow - outputReserve
+	if usable <= 0 || estimatePromptTokens(bodyBytes) <= int(float64(usable)*defaultTriggerFraction) {
 		return bodyBytes
 	}
-	return compressAnthropicMessagesWithTarget(bodyBytes, contextWindow, targetFractionForWindow(contextWindow), "provider_window")
+	return compressAnthropicMessagesWithTarget(bodyBytes, usable, targetFractionForWindow(usable), "provider_window")
 }
 
 func CompressMessagesIfNeeded(bodyBytes []byte, contextWindow int) []byte {
+	return CompressMessagesIfNeededWithReserve(bodyBytes, contextWindow, 0)
+}
+
+func CompressMessagesIfNeededWithReserve(bodyBytes []byte, contextWindow, outputReserve int) []byte {
+	if contextWindow <= 0 {
+		return bodyBytes
+	}
+	if outputReserve < 0 {
+		outputReserve = 0
+	}
+	contextWindow -= outputReserve
 	if contextWindow <= 0 {
 		return bodyBytes
 	}
@@ -481,6 +503,26 @@ func EstimateTokens(bodyBytes []byte) int {
 	return estimatePromptTokens(bodyBytes)
 }
 
+// OutputTokenReserve extracts the protocol-specific requested output budget.
+// Invalid, absent, or negative values fail open as zero.
+func OutputTokenReserve(bodyBytes []byte, protocol string) int {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(bodyBytes, &fields) != nil {
+		return 0
+	}
+	keys := []string{"max_tokens", "max_completion_tokens"}
+	if protocol == "openai-responses" {
+		keys = []string{"max_output_tokens"}
+	}
+	for _, key := range keys {
+		var value int
+		if json.Unmarshal(fields[key], &value) == nil && value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
 // ThresholdBytes converts a model context window into the body-byte size
 // that triggers compression. Returns 0 when window is non-positive
 // (caller is expected to skip compression for unknown / unset windows).
@@ -557,12 +599,26 @@ func isSystemMessage(raw json.RawMessage) bool {
 // Use this for OpenAI chat-style bodies. For Anthropic Messages API, use
 // CompressAnthropicMessagesAggressively instead.
 func CompressMessagesAggressively(bodyBytes []byte, contextWindow int) []byte {
+	return CompressMessagesAggressivelyWithReserve(bodyBytes, contextWindow, 0)
+}
+
+func CompressMessagesAggressivelyWithReserve(bodyBytes []byte, contextWindow, outputReserve int) []byte {
+	if outputReserve > 0 {
+		contextWindow -= outputReserve
+	}
 	return compressMessagesWithTarget(bodyBytes, contextWindow, aggressiveTargetFraction(contextWindow), "aggressive")
 }
 
 // CompressAnthropicMessagesAggressively is the aggressive version for Anthropic
 // Messages API bodies. Compresses to 60% of context window for 4xx recovery.
 func CompressAnthropicMessagesAggressively(bodyBytes []byte, contextWindow int) []byte {
+	return CompressAnthropicMessagesAggressivelyWithReserve(bodyBytes, contextWindow, 0)
+}
+
+func CompressAnthropicMessagesAggressivelyWithReserve(bodyBytes []byte, contextWindow, outputReserve int) []byte {
+	if outputReserve > 0 {
+		contextWindow -= outputReserve
+	}
 	return compressAnthropicMessagesWithTarget(bodyBytes, contextWindow, aggressiveTargetFraction(contextWindow), "aggressive")
 }
 

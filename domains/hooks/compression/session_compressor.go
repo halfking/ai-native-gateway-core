@@ -1320,6 +1320,30 @@ func (sc *SessionCompressor) loadV2CompressionState(ctx context.Context, tenantI
 	state.MsgCount = intMeta(meta["msg_count"])
 	state.LastCompressedAt = unixMeta(meta["last_compressed_at"])
 	state.RecentlyCompressedAt = unixMeta(meta["recently_compressed_at"])
+	if cut, ok := meta["cut_marker"].(map[string]interface{}); ok && len(cut) > 0 {
+		state.CutStrategy, _ = cut["strategy"].(string)
+		state.CutCreatedAt = int64Meta(cut["created_at"])
+		state.CutSourceMsgs = intMeta(cut["source_msg_count"])
+		state.CutSystemMsgs = intMeta(cut["system_msg_count"])
+		state.CutIndex = intMeta(cut["cut_index"])
+		state.CutBytesBefore = intMeta(cut["bytes_before"])
+		state.CutBytesAfter = intMeta(cut["bytes_after"])
+		if marker, ok := cut["summary_marker"].(string); ok && marker != "" {
+			state.SummaryMarker = marker
+		}
+		if psor := intPairMeta(cut["pre_sanitize_offset_range"]); psor != nil {
+			state.CutPreSanitizeStart, state.CutPreSanitizeEnd = psor[0], psor[1]
+		}
+		state.HasCutMarker = state.CutIndex > 0 && state.CutSourceMsgs >= state.CutSystemMsgs+state.CutIndex
+	}
+	if psor := intPairMeta(meta["pre_sanitize_offset_range"]); psor != nil {
+		state.CutPreSanitizeStart, state.CutPreSanitizeEnd = psor[0], psor[1]
+	}
+	if ref, ok := meta["sanitize_map_ref"].(string); ok {
+		state.SanitizeMapRef = ref
+	}
+	decodeMetaRecords(meta["alignment_map"], &state.AlignmentMap)
+	decodeMetaRecords(meta["sanitize_message_refs"], &state.SanitizeMessageRefs)
 	return state
 }
 
@@ -1327,10 +1351,72 @@ func intMeta(v any) int {
 	switch n := v.(type) {
 	case int:
 		return n
+	case int8:
+		return int(n)
+	case int16:
+		return int(n)
+	case int32:
+		return int(n)
 	case int64:
+		return int(n)
+	case uint:
+		return int(n)
+	case uint8:
+		return int(n)
+	case uint16:
+		return int(n)
+	case uint32:
+		return int(n)
+	case uint64:
+		return int(n)
+	case float32:
 		return int(n)
 	case float64:
 		return int(n)
+	default:
+		return 0
+	}
+}
+
+func intPairMeta(v any) []int {
+	switch values := v.(type) {
+	case []int:
+		if len(values) == 2 {
+			return []int{values[0], values[1]}
+		}
+	case []interface{}:
+		if len(values) == 2 {
+			return []int{intMeta(values[0]), intMeta(values[1])}
+		}
+	}
+	return nil
+}
+
+func decodeMetaRecords[T any](value any, dst *[]T) {
+	if dst == nil || value == nil {
+		return
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	_ = json.Unmarshal(raw, dst)
+}
+
+func int64Meta(v any) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case uint:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case float32:
+		return int64(n)
 	default:
 		return 0
 	}

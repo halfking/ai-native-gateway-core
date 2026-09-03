@@ -396,7 +396,8 @@ func (e *Executor) executeOpenAI(
 		if cand.ContextWindow != nil {
 			contextWindow = *cand.ContextWindow
 		}
-		bodyBytes = transformation.CompressResponsesIfNeeded(sourceBody, contextWindow)
+		reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
+		bodyBytes = transformation.CompressResponsesInputIfNeeded(sourceBody, contextWindow, reserve)
 		bodyBytes = transformation.RewriteResponsesModel(bodyBytes, cand.RawModel)
 	} else {
 		bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
@@ -2054,7 +2055,8 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	// upstreams like minimax trim server-side on direct calls, but proxy
 	// clients must trim at the gateway.
 	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
-		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+		reserve := transformation.OutputTokenReserve(bodyBytes, params.ClientProtocol)
+		bodyBytes = transformation.CompressMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
 	}
 	return bodyBytes
 }

@@ -977,6 +977,9 @@ func (s *SessionState) ToCutMarker(summaryText string) *CutMarker {
 
 // ClearCutMarker removes any cached cut marker state.
 func (s *SessionState) ClearCutMarker() {
+	if s == nil {
+		return
+	}
 	s.HasCutMarker = false
 	s.CutCreatedAt = 0
 	s.CutSourceMsgs = 0
@@ -987,6 +990,7 @@ func (s *SessionState) ClearCutMarker() {
 	s.CutBytesAfter = 0
 	s.CutPreSanitizeStart = 0
 	s.CutPreSanitizeEnd = 0
+	s.SummaryMarker = ""
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

@@ -23,6 +23,7 @@ package compression
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -178,6 +179,54 @@ func (cm CutMarker) MarshalJSON() ([]byte, error) {
 		inner["pre_sanitize_offset_range"] = []int{cm.PreSanitizeOffsetRange[0], cm.PreSanitizeOffsetRange[1]}
 	}
 	return json.Marshal(map[string]any{"cut_marker": inner})
+}
+
+// IncrementalBuildTail rebuilds only the retained tail for a mechanical cut.
+// It never invents summary text, so it is safe after L1 eviction. LLM summary
+// markers are deliberately rejected when their plaintext is unavailable.
+func IncrementalBuildTail(incomingBody []byte, marker CutMarker, protocol string) ([]byte, bool) {
+	if marker.CutIndex < 0 || !isTailRecoveryStrategy(marker.Strategy) {
+		return nil, false
+	}
+	var generic map[string]json.RawMessage
+	if json.Unmarshal(incomingBody, &generic) != nil {
+		return nil, false
+	}
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if json.Unmarshal(incomingBody, &req) != nil || len(req.Messages) == 0 {
+		return nil, false
+	}
+	if marker.SystemMsgCount < 0 || marker.SystemMsgCount > len(req.Messages) ||
+		marker.CutIndex > len(req.Messages)-marker.SystemMsgCount {
+		return nil, false
+	}
+	globalCut := marker.GlobalCutIndex()
+	if globalCut < marker.SystemMsgCount || globalCut >= len(req.Messages) {
+		return nil, false
+	}
+	if marker.SourceMsgCount > 0 && (marker.SourceMsgCount < globalCut || marker.SourceMsgCount > len(req.Messages)) {
+		return nil, false
+	}
+	psor := marker.PreSanitizeOffsetRange
+	if psor[0] < 0 || psor[1] < psor[0] || psor[1] > len(req.Messages) {
+		return nil, false
+	}
+	out := append([]json.RawMessage(nil), req.Messages[:marker.SystemMsgCount]...)
+	out = append(out, req.Messages[globalCut:]...)
+	raw, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	generic["messages"] = raw
+	result, err := json.Marshal(generic)
+	return result, err == nil
+}
+
+func isTailRecoveryStrategy(strategy string) bool {
+	return strategy == "mechanical_trim" || strategy == "smart_window_mechanical" ||
+		strings.HasPrefix(strategy, "sliding_window_") && strategy != "sliding_window_llm"
 }
 
 // IncrementalBuild reconstructs the outbound body for the next request using

@@ -5,7 +5,44 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestRecoveryCoordinator_V2MetadataColdStartRecovery(t *testing.T) {
+	large := strings.Repeat("long context ", 80)
+	body := makeBodyAny(
+		makeMsg("system", "sys"),
+		makeMsg("user", large), makeMsg("assistant", large),
+		makeMsg("user", "latest"),
+	)
+	cached := []byte(`[{"role":"system","content":"sys"},{"role":"user","content":"latest"}]`)
+	rc := NewRecoveryCoordinator(RecoveryDeps{
+		V2Meta: stubV2RecoveryMeta{meta: map[string]any{
+			"cut_marker": map[string]interface{}{
+				"created_at": float64(time.Now().Unix()), "source_msg_count": float64(4),
+				"system_msg_count": float64(1), "cut_index": float64(2),
+				"strategy": "mechanical_trim",
+			},
+		}},
+		V2Builder: stubV2RecoveryBuilder{body: cached},
+	})
+	res := rc.Recover(context.Background(), body, "openai", 1000, "tenant", "session", 0)
+	if !res.ShouldRetry || res.Strategy != "incremental_v2_metadata" {
+		t.Fatalf("V2 recovery = %+v, want retry via metadata", res)
+	}
+}
+
+type stubV2RecoveryMeta struct{ meta map[string]any }
+
+func (s stubV2RecoveryMeta) CompressionMetadata(context.Context, string, string) (map[string]any, error) {
+	return s.meta, nil
+}
+
+type stubV2RecoveryBuilder struct{ body []byte }
+
+func (s stubV2RecoveryBuilder) BuildLatestOutbound(context.Context, string, string) ([]byte, error) {
+	return s.body, nil
+}
 
 func TestRecoveryCoordinator_MechanicalFallback(t *testing.T) {
 	// Build a large body that needs compression.
