@@ -611,6 +611,131 @@ func TestUTSRL2EnabledEnvParsing(t *testing.T) {
 	}
 }
 
+func TestUTSRL2ShadowKeepsCommittedOutputBehaviorByteIdentical(t *testing.T) {
+	l2UnsetHoldbackEnv(t)
+	os.Unsetenv("LLM_GATEWAY_RECOVERY_L2_ENABLED")
+
+	type runResult struct {
+		wire     string
+		calls    int
+		attempts int
+		decision TaskDecision
+	}
+	run := func(mode RecoveryL2Mode) runResult {
+		t.Setenv("LLM_GATEWAY_RECOVERY_L2_MODE", string(mode))
+		exec := &l2StreamExecutor{attempts: []l2ScriptedAttempt{{
+			frames: []string{anthropicDeltaFrame("committed bytes")}, err: l2NetworkStreamFailure(),
+		}}}
+		h := newCoordHarness(nil)
+		c := h.coordinator()
+		c.Exec = exec
+		c.PrefixCache = NewCommittedPrefixCache(4, 64*1024)
+		res := c.Run(context.Background(), h.sw, &executors.ExecParams{RequestID: "l2-shadow-equivalence-" + string(mode), IsStream: true})
+		return runResult{wire: h.flusher.buf.String(), calls: exec.calls, attempts: res.Attempts, decision: res.Decision}
+	}
+
+	off := run(RecoveryL2ModeOff)
+	shadow := run(RecoveryL2ModeShadow)
+	if off.wire != shadow.wire {
+		t.Fatalf("shadow changed wire bytes:\noff=%q\nshadow=%q", off.wire, shadow.wire)
+	}
+	if off.calls != 1 || shadow.calls != 1 {
+		t.Fatalf("executor calls off/shadow = %d/%d, want 1/1 (no speculative replay)", off.calls, shadow.calls)
+	}
+	if off.attempts != shadow.attempts || off.decision != shadow.decision {
+		t.Fatalf("shadow changed recovery outcome: off=%+v/%d shadow=%+v/%d", off.decision, off.attempts, shadow.decision, shadow.attempts)
+	}
+	if shadow.decision.Reason == "l2_alignment_miss" {
+		t.Fatal("shadow must not convert a legacy resume_blocked outcome into l2_alignment_miss")
+	}
+}
+
+func TestUTSRL2ShadowAlignedNeverSuppressesFrames(t *testing.T) {
+	reqID := "l2-shadow-aligned"
+	cache := NewCommittedPrefixCache(4, 64*1024)
+	_, _, producer := l2ProducerGate(t, reqID, cache)
+	f1 := anthropicDeltaFrame("already committed ")
+	f2 := anthropicDeltaFrame("prefix")
+	for _, frame := range []string{f1, f2} {
+		if _, err := producer.Write([]byte(frame)); err != nil {
+			t.Fatalf("producer write: %v", err)
+		}
+	}
+	prefix, ok := cache.Snapshot(reqID)
+	if !ok {
+		t.Fatal("expected committed prefix")
+	}
+
+	flusher := &trackingFlusher{}
+	var results []ShadowAlignmentResult
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(flusher), GateOptions{
+		Mode:            GateModeBuffered,
+		RequestID:       reqID,
+		ShadowAlignment: &ShadowAlignmentOptions{Committed: prefix},
+		ShadowAlignmentResult: func(result ShadowAlignmentResult) {
+			results = append(results, result)
+		},
+	})
+	writer := NewGateWriter(gate)
+	for _, frame := range []string{f1, f2} {
+		if _, err := writer.Write([]byte(frame)); err != nil {
+			t.Fatalf("shadow write: %v", err)
+		}
+	}
+	gate.FinishShadowObservation()
+	gate.FinishShadowObservation()
+
+	if got, want := flusher.buf.String(), f1+f2; got != want {
+		t.Fatalf("shadow suppressed or changed wire bytes: got %q, want %q", got, want)
+	}
+	if len(results) != 1 {
+		t.Fatalf("shadow result callback count = %d, want 1", len(results))
+	}
+	if got := results[0]; got.Result != "aligned" || !got.Aligned || got.Applied || !got.ClientBytesUnchanged || !got.RecoveryBehaviorUnchanged {
+		t.Fatalf("shadow result = %+v, want aligned and purely observational", got)
+	}
+}
+
+// TestUTSRL2ModeParsingAndLegacyCompatibility pins the three-state rollout
+// contract. MODE is authoritative whenever present; the old boolean only
+// maps to enforce when MODE is absent, so a persisted shadow/off value cannot
+// accidentally be overridden by a stale legacy setting.
+func TestUTSRL2ModeParsingAndLegacyCompatibility(t *testing.T) {
+	tests := []struct {
+		name    string
+		modeSet bool
+		mode    string
+		legacy  string
+		want    RecoveryL2Mode
+	}{
+		{name: "default off", want: RecoveryL2ModeOff},
+		{name: "legacy true maps enforce", legacy: "true", want: RecoveryL2ModeEnforce},
+		{name: "legacy false maps off", legacy: "false", want: RecoveryL2ModeOff},
+		{name: "explicit shadow wins legacy true", modeSet: true, mode: " shadow ", legacy: "true", want: RecoveryL2ModeShadow},
+		{name: "explicit off wins legacy true", modeSet: true, mode: "off", legacy: "true", want: RecoveryL2ModeOff},
+		{name: "explicit enforce", modeSet: true, mode: "ENFORCE", legacy: "false", want: RecoveryL2ModeEnforce},
+		{name: "explicit empty is safe off", modeSet: true, mode: "", legacy: "true", want: RecoveryL2ModeOff},
+		{name: "invalid is safe off", modeSet: true, mode: "replay-everything", legacy: "true", want: RecoveryL2ModeOff},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.modeSet {
+				t.Setenv("LLM_GATEWAY_RECOVERY_L2_MODE", tc.mode)
+			} else {
+				os.Unsetenv("LLM_GATEWAY_RECOVERY_L2_MODE")
+			}
+			if tc.legacy == "" {
+				os.Unsetenv("LLM_GATEWAY_RECOVERY_L2_ENABLED")
+			} else {
+				t.Setenv("LLM_GATEWAY_RECOVERY_L2_ENABLED", tc.legacy)
+			}
+			if got := RecoveryL2ModeFromEnv(); got != tc.want {
+				t.Fatalf("mode = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // ── coordinator end-to-end (wiring points 2 + 3) ──────────────────────────
 
 // TestUTSRL2CoordinatorAlignedReplayContinuesStream verifies the full happy

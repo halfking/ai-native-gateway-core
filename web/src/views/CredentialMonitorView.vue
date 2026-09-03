@@ -7,6 +7,8 @@ import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import CredentialStatusBar from '../components/CredentialStatusBar.vue'
+import { credentialDisplayState } from '../utils/credentialStatus'
 
 Chart.register(...registerables)
 
@@ -788,8 +790,15 @@ function formatCacheMeta(meta: CredentialMonitorMeta | null): string {
   return `${meta.cache_hit ? '缓存命中' : '实时生成'} · 服务端 ${meta.server_duration_ms}ms · 过期 ${formatTs(meta.expires_at)}`
 }
 
-// ── Badge / color helpers ──────────────────────────────────────────────
-function statusBadge(state: string) {
+function effectiveCredentialState(c: CredentialMonitorSummary) {
+  return c.effective_state || credentialDisplayState(c)
+}
+
+function effectiveCredentialReason(c: CredentialMonitorSummary) {
+  return c.effective_reason || c.state_reason_detail || c.state_reason_code || undefined
+}
+
+
   if (state === 'ready') return 'badge-green'
   if (['degraded', 'cooling', 'rate_limited'].includes(state)) return 'badge-amber'
   if (['unreachable', 'auth_failed', 'suspended'].includes(state)) return 'badge-red'
@@ -957,7 +966,11 @@ onUnmounted(() => {
             </td>
             <td>{{ c.provider_name }}</td>
             <td>
-              <span class="badge" :class="statusBadge(c.availability_state)">{{ c.availability_state }}</span>
+              <CredentialStatusBar
+                :credential="c"
+                :labels="{ active: 'ready', cooling: 'cooling', degraded: 'degraded', rate_limited: 'rate_limited', unreachable: 'unreachable', auth_failed: 'auth_failed', suspended: 'suspended', quota_exhausted: 'quota_exhausted', disabled: 'disabled', deleted: 'deleted', unknown: 'unknown' }"
+                :reason="effectiveCredentialReason(c)"
+              />
               <div v-if="c.state_reason_code" class="cell-sub">{{ c.state_reason_code }}</div>
             </td>
             <td>

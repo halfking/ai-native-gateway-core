@@ -25,6 +25,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -32,10 +33,29 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 )
 
 func bgPickProbeModel(ctx context.Context, db *pgxpool.Pool, credID int) (pickProbeResult, error) {
 	return pickProbeModelForCredentialAdapter(ctx, db, credID)
+}
+
+func summarizeProviderRefreshError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var httpErr *modelresponse.HTTPBodyError
+	if errors.As(err, &httpErr) {
+		return httpErr.Error()
+	}
+	var modelErr *modelresponse.Error
+	if errors.As(err, &modelErr) {
+		if preview := modelresponse.Preview(modelErr); preview != "" {
+			return fmt.Sprintf("models response %s: %s", modelErr.Kind, preview)
+		}
+		return fmt.Sprintf("models response %s", modelErr.Kind)
+	}
+	return modelresponse.SanitizeBodySnippet([]byte(err.Error()), 500)
 }
 
 // ── Per-provider model list refresh (force fetch from vendor API) ───────
@@ -179,7 +199,8 @@ func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Requ
 			upserted, failed, err := h.discoverAndUpsertForCredential(bgCtx, cred)
 			if err != nil {
 				totalFailed++
-				errs = append(errs, fmt.Sprintf("credential #%d %s: %s", cred.id, cred.label, err.Error()))
+				errs = append(errs, fmt.Sprintf("credential #%d %s: %s", cred.id, cred.label, summarizeProviderRefreshError(err)))
+
 				slog.Warn("provider refresh: credential failed",
 					"run_id", runID,
 					"provider_id", providerID,

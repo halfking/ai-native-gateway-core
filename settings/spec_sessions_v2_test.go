@@ -20,6 +20,7 @@ func TestSessionsV2FeatureFlags(t *testing.T) {
 		"sessions_v2.compression_enabled",
 		"sessions_v2.turn_logs_retention_hours",
 		"sessions_v2.request_bodies_full",
+		"sessions_v2.turns_list_routing",
 	}
 
 	if len(specs) != len(expectedKeys) {
@@ -75,6 +76,22 @@ func TestSessionsV2FeatureFlags(t *testing.T) {
 	}
 	if bodiesFullSpec.Default != true {
 		t.Errorf("request_bodies_full: expected default true, got %v", bodiesFullSpec.Default)
+	}
+
+	// The list routing flag is a platform-scoped hot-reload enum and must
+	// default to the legacy tree path until operators explicitly opt in.
+	routingSpec := findSpec(specs, "sessions_v2.turns_list_routing")
+	if routingSpec == nil {
+		t.Fatal("turns_list_routing spec not found")
+	}
+	if routingSpec.Type != TypeEnum || routingSpec.Scope != ScopePlatform || !routingSpec.HotReload {
+		t.Fatalf("turns_list_routing metadata mismatch: type=%v scope=%v hot_reload=%v", routingSpec.Type, routingSpec.Scope, routingSpec.HotReload)
+	}
+	if routingSpec.Default != "tree" {
+		t.Errorf("turns_list_routing: expected default tree, got %v", routingSpec.Default)
+	}
+	if len(routingSpec.Options) != 3 || routingSpec.Options[0] != "tree" || routingSpec.Options[1] != "dual" || routingSpec.Options[2] != "v2" {
+		t.Errorf("turns_list_routing: unexpected options %#v", routingSpec.Options)
 	}
 
 	// Test hot reload flag

@@ -147,13 +147,30 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		FROM request_logs_with_current_month
 		WHERE ts >= NOW() - $1::interval
 		  AND %s
-		  AND %s IS NOT NULL
-		  AND (
-		    is_auto_request = TRUE
-		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )
-		GROUP BY (%s), (%s)
-	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, rowExpr, colExpr), nil
+			  AND %s IS NOT NULL
+			  AND %s
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+			  )
+			GROUP BY (%s), (%s)
+		`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, businessRequestFilter(""), rowExpr, colExpr), nil
+
+}
+
+const businessRequestFilterStages = "'self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual'"
+
+// businessRequestFilter returns the shared predicate used by routing analytics
+// to exclude self-check/probe traffic while retaining historical rows whose
+// origin_stage was not populated yet. alias is optional (for joined queries).
+func businessRequestFilter(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(`COALESCE(%sorigin_stage, '') NOT IN (%s)
+			  AND COALESCE(%stask_type, '') <> 'probe_triggered'
+			  AND COALESCE(%srequest_id, '') NOT LIKE 'probe-%%'`, prefix, businessRequestFilterStages, prefix, prefix)
 }
 
 // effectiveTaskExpr returns the SQL expression that produces the row
@@ -189,13 +206,15 @@ func buildFlowL12Query() string {
 		       COUNT(*)::float8 AS val
 		FROM request_logs_with_current_month
 		WHERE ts >= NOW() - $1::interval
-		  AND %s IS NOT NULL
-		  AND (
-		    is_auto_request = TRUE
-		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )
-		GROUP BY (%s), (%s)
-	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
+			  AND %s IS NOT NULL
+			  AND %s
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+			  )
+			GROUP BY (%s), (%s)
+		`, taskExpr, modelExpr, taskExpr, businessRequestFilter(""), taskExpr, modelExpr)
+
 }
 
 // buildFlowL23Query assembles the L2→L3 (model × task → provider)
@@ -219,13 +238,15 @@ func buildFlowL23Query() string {
 		    SELECT cr.provider_id FROM credentials cr WHERE cr.id = rl.credential_id LIMIT 1
 		))
 		WHERE rl.ts >= NOW() - $1::interval
-		  AND %s IS NOT NULL
-		  AND (
-		    rl.is_auto_request = TRUE
-		    OR (rl.is_auto_request IS NOT TRUE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
-		  )
-		GROUP BY (%s), (%s), p.display_name
-	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
+			  AND %s IS NOT NULL
+			  AND %s
+			  AND (
+			    rl.is_auto_request = TRUE
+			    OR (rl.is_auto_request IS NOT TRUE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
+			  )
+			GROUP BY (%s), (%s), p.display_name
+		`, taskExpr, modelExpr, taskExpr, businessRequestFilter("rl"), taskExpr, modelExpr)
+
 }
 
 // handleMatrix returns a canonical_model × row_dim heatmap.
@@ -416,7 +437,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 
 	// Try to use materialized view for better performance
 	useMV := useMaterializedView(ctx, h.db, windowLabel)
-	
+
 	var l12Query string
 	var l12Args []any
 	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
@@ -494,7 +515,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	// NOTE: providers table column is display_name, NOT name.
 	var l23Query string
 	var l23Args []any
-	
+
 	if useMV {
 		// Use materialized view
 		l23Query = buildFlowL23QueryMaterialized()
@@ -514,7 +535,7 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 			l23Args = append(l23Args, tenantArgs...)
 		}
 	}
-	
+
 	l23Rows, err := h.db.Query(ctx, l23Query, l23Args...)
 	if err != nil {
 		writeInternalErr(w, err)

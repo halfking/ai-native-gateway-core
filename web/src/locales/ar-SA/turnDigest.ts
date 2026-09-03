@@ -33,11 +33,13 @@ export default {
     request: 'الطلب',
     response: 'الاستجابة',
     compression: 'الضغط',
+    waterfall: 'التوقيت',
     meta: 'البيانات الوصفية',
     governance: 'الحوكمة',
     attachments: 'المرفقات',
   },
   noAttachments: 'لا توجد مرفقات',
+  noWaterfall: 'لا تتوفر بيانات توقيت',
   openAttachment: 'تنزيل',
   openingAttachment: 'جارٍ الفتح…',
 }

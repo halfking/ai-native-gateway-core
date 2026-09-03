@@ -534,7 +534,7 @@ func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred creden
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("models endpoint returned %d: %s", resp.StatusCode, string(body))
+		return nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
