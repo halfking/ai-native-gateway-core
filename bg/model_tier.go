@@ -14,6 +14,7 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,11 +47,12 @@ type ModelTierConfig struct {
 
 // ModelTier caches the featured set and answers IsFeaturedModel.
 type ModelTier struct {
-	db    *pgxpool.Pool
-	cfg   ModelTierConfig
-	cur   atomic.Pointer[featuredSet]
-	done  chan struct{}
-	once  atomic.Bool
+	db   *pgxpool.Pool
+	cfg  ModelTierConfig
+	cur  atomic.Pointer[featuredSet]
+	done chan struct{}
+	once atomic.Bool
+	stop sync.Once
 }
 
 // NewModelTier constructs the tier cache. nil db ⇒ a no-op tier (IsFeaturedModel
@@ -85,9 +87,10 @@ func (m *ModelTier) loop(ctx context.Context) {
 		case <-m.done:
 			return
 		case <-ticker.C:
-			refreshCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			m.refresh(refreshCtx)
 			cancel()
+
 		}
 	}
 }
@@ -98,11 +101,7 @@ func (m *ModelTier) Stop() {
 		return
 	}
 	if m.once.Load() {
-		select {
-		case <-m.done:
-		default:
-			close(m.done)
-		}
+		m.stop.Do(func() { close(m.done) })
 	}
 }
 
