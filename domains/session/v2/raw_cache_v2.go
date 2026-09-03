@@ -42,16 +42,33 @@ func cloneRawEntry(entry *RawEntry) *RawEntry {
 	for i := range clone.RequestDelta {
 		clone.RequestDelta[i].ToolCalls = cloneRawMapSlice(entry.RequestDelta[i].ToolCalls)
 		clone.RequestDelta[i].ContentRaw = append(json.RawMessage(nil), entry.RequestDelta[i].ContentRaw...)
+		clone.RequestDelta[i].RawContent = cloneRawValue(entry.RequestDelta[i].RawContent)
 	}
 	for i := range clone.ResponseDelta {
 		clone.ResponseDelta[i].ToolCalls = cloneRawMapSlice(entry.ResponseDelta[i].ToolCalls)
 		clone.ResponseDelta[i].ContentRaw = append(json.RawMessage(nil), entry.ResponseDelta[i].ContentRaw...)
+		clone.ResponseDelta[i].RawContent = cloneRawValue(entry.ResponseDelta[i].RawContent)
 	}
 	return &clone
 }
 
 func cloneMessages(messages []Message) []Message {
 	return append([]Message(nil), messages...)
+}
+
+func cloneRawValue(value interface{}) interface{} {
+	if value == nil {
+		return nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var clone interface{}
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return nil
+	}
+	return clone
 }
 
 func cloneRawMapSlice(src []map[string]interface{}) []map[string]interface{} {
