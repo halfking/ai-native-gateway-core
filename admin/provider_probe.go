@@ -47,13 +47,13 @@ type probeURLResult struct {
 }
 
 type probeResult struct {
-	statusCode     int
-	modelCount     int
-	sampleModels   []string
-	authOK         bool   // whether the credential is authoritative for this base
-	probeURL       string // which URL candidate succeeded
-	modelsErrKind  string // 2026-09-02: error kind from modelresponse.ParseModelIDs ("non_json_body" / "invalid_models_format" / "")
-	modelsErrText  string // short, redacted snippet for diagnostics; safe for UI surfaces
+	statusCode    int
+	modelCount    int
+	sampleModels  []string
+	authOK        bool   // whether the credential is authoritative for this base
+	probeURL      string // which URL candidate succeeded
+	modelsErrKind string // 2026-09-02: error kind from modelresponse.ParseModelIDs ("non_json_body" / "invalid_models_format" / "")
+	modelsErrText string // short, redacted snippet for diagnostics; safe for UI surfaces
 }
 
 // isAcceptableStatus mirrors the Python probe loop: 200/401/403 indicate

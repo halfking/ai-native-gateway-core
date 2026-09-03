@@ -548,6 +548,7 @@ export default {
     credColChat: "Chat probe",
     probeFailed: "Failed",
     probeMetaModels: "{status} · {count} models · {latency}ms",
+    probeNonJson: "{status} · non-JSON body",
     probeMetaChat: "{status} · {latency}ms"
   },
   probe: {

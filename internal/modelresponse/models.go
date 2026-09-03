@@ -15,11 +15,11 @@ import (
 // we could not recognize the model-list shape". The two have very different
 // operator-facing fixes:
 //   - non_json_body       → base_url / reverse-proxy misconfiguration;
-//                           the upstream gateway/proxy intercepts and
-//                           returns an HTML login/error page on 200 OK.
+//     the upstream gateway/proxy intercepts and
+//     returns an HTML login/error page on 200 OK.
 //   - invalid_models_format → the body is JSON but uses an undocumented
-//                           vendor wrapper that collectModelIDs did not
-//                           recognize; needs code-side support.
+//     vendor wrapper that collectModelIDs did not
+//     recognize; needs code-side support.
 //
 // Surface this as a typed error so admins / UI can render a tailored hint
 // instead of leaking "<html>…" into the admin health_error field.

@@ -41,9 +41,9 @@ func (h *Handler) diagnoseProvider(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	type modelsProbe struct {
-		StatusCode   int      `json:"status_code"`
-		LatencyMs    int      `json:"latency_ms"`
-		Error        string   `json:"error,omitempty"`
+		StatusCode int    `json:"status_code"`
+		LatencyMs  int    `json:"latency_ms"`
+		Error      string `json:"error,omitempty"`
 		// 2026-09-02: error kind / preview surface so the UI can render a
 		// tailored message instead of leaking raw "<html>…" into the admin
 		// health panel when the upstream returns a non-JSON body on
@@ -364,9 +364,9 @@ func (h *Handler) doDiagnose(ctx context.Context, providerID int) map[string]any
 	`, providerID).Scan(&providerCode, &baseURL, &protocol, &enabled)
 
 	type modelsProbe struct {
-		StatusCode   int      `json:"status_code"`
-		LatencyMs    int      `json:"latency_ms"`
-		Error        string   `json:"error,omitempty"`
+		StatusCode int    `json:"status_code"`
+		LatencyMs  int    `json:"latency_ms"`
+		Error      string `json:"error,omitempty"`
 		// 2026-09-02: see struct definition above.
 		ErrorKind    string   `json:"error_kind,omitempty"`
 		ErrorPreview string   `json:"error_preview,omitempty"`
@@ -599,4 +599,3 @@ func classifyDiagnoseErrorKind(kind string) (auth, rateLimit, timeout, modelNotF
 		return false, false, false, false
 	}
 }
-
