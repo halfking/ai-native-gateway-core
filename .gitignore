@@ -249,6 +249,11 @@ test-history-demo.sh
 # commit the schema under data/model-quality/scores/ at most once, then ignore.
 data/model-quality/scores/
 
+# 2026-09-03: attachment extractor 写出的文件必须落到
+# ~/Downloads/llm-gateway-files/attachments，源码目录下的 data/attachments/
+# 视为历史遗留 / 误启动产物，永远不入仓。
+data/attachments/
+
 # 全方面测试 run 产物（本地跑测试产生的大量 JSON 报告，不入仓）
 docs/全方面测试/results/runs/
 docs/全方面测试/results/*.jsonl

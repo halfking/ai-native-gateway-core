@@ -3,12 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-# Default log directory: prefer ~/Downloads/kaixuan/memora/logs (matches memora start.sh)
-DEFAULT_LOG_DIR="$HOME/Downloads/kaixuan/memora/logs"
+# Keep Gateway logs separate from the Memora host service logs. Operators can
+# still override via LLM_GATEWAY_LOG_DIR / LLM_GATEWAY_LOG_FILE.
+DEFAULT_LOG_DIR="$HOME/Downloads/kaixuan/llm-gateway/logs"
 LOG_DIR="${LLM_GATEWAY_LOG_DIR:-$DEFAULT_LOG_DIR}"
 mkdir -p "$LOG_DIR"
 ENV_FILE="${LLM_GATEWAY_ENV_FILE:-/tmp/llm-gateway-local.env}"
-LOG_FILE="${LLM_GATEWAY_LOG_FILE:-$LOG_DIR/memora.log}"
+LOG_FILE="${LLM_GATEWAY_LOG_FILE:-$LOG_DIR/llm-gateway-go.log}"
 PID_FILE="${LLM_GATEWAY_PID_FILE:-/tmp/llm-gateway.pid}"
 SERVICE_PORT="${SERVICE_PORT:-8781}"
 BASE_URL="${BASE_URL:-http://127.0.0.1:${SERVICE_PORT}}"
