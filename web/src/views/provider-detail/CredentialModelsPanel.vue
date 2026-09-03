@@ -14,7 +14,7 @@ const props = withDefaults(defineProps<{
   providerId: number
   credentialId: number
   canManage?: boolean
-}>(), { canManage: true })
+}>(), { canManage: false })
 
 const { t } = useI18n()
 const priceText = (key: string): string => String(t(`pricingManagement.detail.${key}` as never))
@@ -164,7 +164,7 @@ function thinkingLabel(o: ModelOffer) {
       <button class="btn btn-sm" :disabled="!canManage || busy" @click="showAdd = true">手工加入</button>
       <button class="btn btn-sm btn-danger-outline" :disabled="!canManage || busy || empty" @click="onClear">清空</button>
       <label class="protect-opt">
-        <input v-model="includeProtected" type="checkbox" />
+        <input v-model="includeProtected" type="checkbox" :disabled="!canManage" />
         清空含手工保护
       </label>
     </div>
