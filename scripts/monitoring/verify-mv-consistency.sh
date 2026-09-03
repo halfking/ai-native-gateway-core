@@ -147,6 +147,9 @@ base_data AS (
     COUNT(*)::bigint AS base_count
   FROM request_logs_with_current_month_without_customer_id
   WHERE ts >= NOW() - INTERVAL '7 days'
+    AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
+    AND COALESCE(task_type, '') <> 'probe_triggered'
+    AND COALESCE(request_id, '') NOT LIKE 'probe-%'
     AND (
       COALESCE(is_auto_request, FALSE) = TRUE
       OR (COALESCE(is_auto_request, FALSE) = FALSE AND client_model IS NOT NULL AND client_model <> '')

@@ -24,8 +24,28 @@ afterEach(() => {
 })
 
 describe('proxy API client', () => {
+  const subscriptionItem = {
+    id: 1,
+    name: 'test-sub',
+    subscribe_url: 'https://example.com/sub',
+    status: 'active',
+    node_count: 5,
+    last_fetch_at: null,
+  }
+  const nodeItem = {
+    id: 1,
+    name: 'node1',
+    protocol: 'http',
+    server: '127.0.0.1',
+    port: 8080,
+    dialable: true,
+    status: 'active',
+    response_time_ms: 12,
+    consecutive_failures: 0,
+  }
+
   it('getProxySubscriptions unwraps {items,total} envelope and calls GET /api/proxy/subscriptions', async () => {
-    const mockItems = [{ id: 1, name: 'test-sub', node_count: 5 }]
+    const mockItems = [subscriptionItem]
     ;(globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -41,7 +61,7 @@ describe('proxy API client', () => {
   })
 
   it('getProxySubscriptions tolerates bare-array responses (legacy)', async () => {
-    const mockItems = [{ id: 1, name: 'test-sub', node_count: 5 }]
+    const mockItems = [subscriptionItem]
     ;(globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
       status: 200,
@@ -52,6 +72,56 @@ describe('proxy API client', () => {
     expect(result).toEqual(mockItems)
   })
 
+  it('filters list items missing fields or field types required by the page', async () => {
+    ;(globalThis.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        items: [
+          null,
+          { ...subscriptionItem, name: 42 },
+          { ...subscriptionItem, subscribe_url: null },
+          { ...subscriptionItem, node_count: '5' },
+          subscriptionItem,
+        ],
+      }),
+    })
+
+    await expect(getProxySubscriptions()).resolves.toEqual([subscriptionItem])
+
+    ;(globalThis.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({
+        items: [
+          { ...nodeItem, server: null },
+          { ...nodeItem, port: '8080' },
+          { ...nodeItem, dialable: 1 },
+          { ...nodeItem, consecutive_failures: null },
+          nodeItem,
+        ],
+      }),
+    })
+
+    await expect(getProxyNodes()).resolves.toEqual([nodeItem])
+
+    ;(globalThis.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ total: 0 }),
+    })
+    await expect(getProxySubscriptions()).resolves.toEqual([])
+  })
+
+  it('surfaces malformed successful response bodies as parse errors', async () => {
+    ;(globalThis.fetch as any).mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      text: async () => 'not-json',
+    })
+
+    await expect(getProxySubscriptions()).rejects.toBeInstanceOf(SyntaxError)
+  })
   it('createProxySubscription calls POST /api/proxy/subscriptions', async () => {
     const mockResp = { id: 2, name: 'new-sub', node_count: 0 }
     ;(globalThis.fetch as any).mockResolvedValueOnce({
@@ -104,7 +174,7 @@ describe('proxy API client', () => {
   })
 
   it('getProxyNodes with query params unwraps {items,total} envelope', async () => {
-    const mockItems = [{ id: 1, name: 'node1', dialable: true }]
+    const mockItems = [nodeItem]
     ;(globalThis.fetch as any).mockResolvedValueOnce({
       ok: true,
       status: 200,

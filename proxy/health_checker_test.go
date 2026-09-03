@@ -96,15 +96,31 @@ func TestHTTPHealthCheckerCheckConcurrentNilContextAndEmpty(t *testing.T) {
 }
 
 func TestHTTPHealthCheckerTimeout(t *testing.T) {
-	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	delayedProxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(150 * time.Millisecond)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer target.Close()
+	defer delayedProxy.Close()
+
+	proxyURL, err := url.Parse(delayedProxy.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxyPort, err := strconv.Atoi(proxyURL.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	checker := NewHTTPHealthChecker(20 * time.Millisecond)
-	node := &Node{ID: 1, Name: "slow", Protocol: ProtocolHTTP, Server: "127.0.0.1", Port: 8080, HealthCheckURL: target.URL}
-	_, err := checker.Check(context.Background(), node)
+	node := &Node{
+		ID:             1,
+		Name:           "slow",
+		Protocol:       ProtocolHTTP,
+		Server:         proxyURL.Hostname(),
+		Port:           proxyPort,
+		HealthCheckURL: "http://health-check.invalid/probe",
+	}
+	_, err = checker.Check(context.Background(), node)
 	if err == nil {
 		t.Fatal("slow health check should time out")
 	}

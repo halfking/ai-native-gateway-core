@@ -61,16 +61,52 @@ export interface ProxyHealthCheckResult {
 // 后端列表端点统一返回 { items: [...], total: N } 信封（与 /api/admin/center/* 等一致），
 // 这里统一解包为裸数组；返回 null / 非对象时兜底为空数组，
 // 避免前端拿到 {items: ...} 对象后被当作数组迭代、读到 .id 触发 null 崩溃。
-function unwrapItems<T>(body: unknown): T[] {
-  if (Array.isArray(body)) return body as T[]
-  if (body && typeof body === 'object' && Array.isArray((body as { items?: unknown }).items)) {
-    return ((body as { items: T[] }).items ?? []) as T[]
-  }
-  return []
+function unwrapItems<T>(body: unknown, isItem: (item: unknown) => item is T): T[] {
+  const items = Array.isArray(body)
+    ? body
+    : body && typeof body === 'object' && Array.isArray((body as { items?: unknown }).items)
+      ? (body as { items: unknown[] }).items
+      : []
+  return items.filter(isItem)
+}
+
+function isRecord(item: unknown): item is Record<string, unknown> {
+  return !!item && typeof item === 'object'
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string'
+}
+
+function isProxySubscription(item: unknown): item is ProxySubscription {
+  return isRecord(item)
+    && typeof item.id === 'number'
+    && typeof item.name === 'string'
+    && typeof item.subscribe_url === 'string'
+    && typeof item.status === 'string'
+    && typeof item.node_count === 'number'
+    && isNullableString(item.last_fetch_at)
+}
+
+function isProxyNode(item: unknown): item is ProxyNode {
+  return isRecord(item)
+    && typeof item.id === 'number'
+    && typeof item.name === 'string'
+    && typeof item.protocol === 'string'
+    && typeof item.server === 'string'
+    && typeof item.port === 'number'
+    && typeof item.dialable === 'boolean'
+    && typeof item.status === 'string'
+    && typeof item.response_time_ms === 'number'
+    && typeof item.consecutive_failures === 'number'
+}
+
+function listRequest<T>(path: string, isItem: (item: unknown) => item is T): Promise<T[]> {
+  return req<unknown>('GET', path).then((body) => unwrapItems(body, isItem))
 }
 
 export function getProxySubscriptions(): Promise<ProxySubscription[]> {
-  return req<unknown>('GET', '/api/proxy/subscriptions').then(unwrapItems<ProxySubscription>)
+  return listRequest('/api/proxy/subscriptions', isProxySubscription)
 }
 
 export function createProxySubscription(data: {
@@ -94,7 +130,7 @@ export function getProxyNodes(subscriptionID?: number, dialable?: boolean): Prom
   if (subscriptionID !== undefined) qs.set('subscription_id', String(subscriptionID))
   if (dialable !== undefined) qs.set('dialable', dialable ? 'true' : 'false')
   const q = qs.toString()
-  return req<unknown>('GET', `/api/proxy/nodes${q ? `?${q}` : ''}`).then(unwrapItems<ProxyNode>)
+  return listRequest(`/api/proxy/nodes${q ? `?${q}` : ''}`, isProxyNode)
 }
 
 export function createProxyNode(data: {
