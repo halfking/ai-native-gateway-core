@@ -6233,8 +6233,9 @@ func main() {
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
 	pipeline := wireDispatchPipeline(routingExec)
-	// 会话优化 v4 (T2): 定时重试调度器（retry_at 到点拾取再入队）与调度
-	// 队列状态 Redis 镜像（仅观测/元数据重建，不赋予重启执行能力，R1.3）。
+	// Wire every dependency that affects lazily-created forwarders before
+	// starting the worker pool. This guarantees the first credential lane
+	// observes Redis/local Governor policy and the optional snapshot observer.
 	if pipeline != nil {
 		if sched := pipeline.NewDefaultRetryScheduler(); sched != nil {
 			pipeline.SetRetryScheduler(sched)
@@ -6243,14 +6244,17 @@ func main() {
 		if redisClientForCache != nil {
 			pipeline.SetQueueMirror(dispatch.NewQueueMirror(redisClientForCache.Client()))
 		}
-		// V6-W1.7 (2026-08-27): 集群队列准入双后端（auto|local|redis，
-		// LLM_GATEWAY_DISPATCH_QUEUE_BACKEND）。准入/容量 fail-open 回退 local
-		// （保可用）；执行仍在本实例（连接亲和），跨实例只共享准入/容量/定时可见。
 		var queueBackendRedis *redis.Client
 		if redisClientForCache != nil {
 			queueBackendRedis = redisClientForCache.Client()
 		}
 		wireDispatchQueueBackend(pipeline, queueBackendRedis, stableGatewayInstanceID())
+		wireDispatchGovernorBackend(pipeline, queueBackendRedis, stableGatewayInstanceID())
+		wireDispatchCapacityAwareSort(routingExec, pipeline)
+		pipeline.Start()
+		routingExec.SetDispatchPipeline(pipeline)
+		slog.Info("dispatch_v2 pipeline wired (only execute path, AUDIT_24H B2b)",
+			"allow_model_change", dispatch.IsModelChangeEnabled())
 	}
 	if liveStreamHub != nil {
 		projection := gatewayQueueProjection.Load()
