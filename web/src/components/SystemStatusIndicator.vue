@@ -316,11 +316,14 @@ onUnmounted(() => {
   border-color: var(--success);
 }
 
-/* 2026-09-03: 三态徽章（ok/warning/unknown），替代之前 `unknown === grey` 的视觉缺陷。 */
+/* 2026-09-03: 三态徽章（ok/warning/unknown），替代之前 `unknown === grey` 的视觉缺陷。
+   设计 token（--warning / --warning-bg / --bg-hover）已在 web/src/style.css 全局定义，
+   这里不带 hex fallback — 否则会被 src/components/color-token-compliance.test.ts
+   抓到硬编码颜色（在 light/dark 切换时也会漏出"不一致的"色块）。 */
 .compact-indicator.warning {
   background: var(--warning-bg, var(--bg-hover));
-  color: var(--warning, #d29922);
-  border-color: var(--warning, #d29922);
+  color: var(--warning);
+  border-color: var(--warning);
 }
 
 .compact-indicator.unknown {
