@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -400,6 +401,17 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+func defaultStaticDir() string {
+	candidates := []string{"web/dist", "web"}
+	for _, dir := range candidates {
+		info, err := os.Stat(filepath.Join(dir, "index.html"))
+		if err == nil && !info.IsDir() {
+			return dir
+		}
+	}
+	return candidates[0]
+}
+
 func modelAliasPrefixFromEnv() string {
 	if value, ok := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX"); ok {
 		return value
@@ -452,7 +464,7 @@ func Load() *Config {
 		RuntimeRole:             envOrDefault("LLM_GATEWAY_RUNTIME_ROLE", "active"),
 		APIKey:                  os.Getenv("LLM_GATEWAY_API_KEY"),
 		CORSOrigins:             os.Getenv("LLM_GATEWAY_CORS_ORIGINS"),
-		StaticDir:               envOrDefault("LLM_GATEWAY_STATIC_DIR", "web/dist"),
+		StaticDir:               envOrDefault("LLM_GATEWAY_STATIC_DIR", defaultStaticDir()),
 		PythonEndpoint:          os.Getenv("LLM_GATEWAY_PYTHON_ENDPOINT"),
 		AdminAPIKey:             os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
 		UpstreamURL:             envOrDefault("LLM_GATEWAY_UPSTREAM", "http://127.0.0.1:8780"),

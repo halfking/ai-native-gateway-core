@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -635,10 +636,37 @@ func mustParseURL(t *testing.T, raw string) *url.URL {
 
 type staticParser struct {
 	nodes []*Node
+	err   error
 }
 
 func (p staticParser) Parse(context.Context, string) ([]*Node, error) {
-	return p.nodes, nil
+	return p.nodes, p.err
+}
+
+func TestRefreshSubscriptionPersistsSanitizedLastError(t *testing.T) {
+	const subscriptionID = 8
+	subscribeURL := "https://user:password@subscription.example/path-token/feed?token=query-secret"
+	store := &fakeStore{subscription: &Subscription{
+		ID:           subscriptionID,
+		Name:         "test",
+		SubscribeURL: subscribeURL,
+		Status:       "active",
+	}}
+	parserErr := fmt.Errorf("GET %s failed: password=body-secret", subscribeURL)
+	mgr := NewManager(store, staticParser{err: parserErr}, nil)
+
+	if err := mgr.RefreshSubscription(context.Background(), subscriptionID); err == nil {
+		t.Fatal("RefreshSubscription unexpectedly succeeded")
+	}
+	for _, secret := range []string{"user:password", "path-token", "query-secret", "body-secret"} {
+		if strings.Contains(store.subscription.LastError, secret) {
+			t.Fatalf("persisted LastError leaked %q: %s", secret, store.subscription.LastError)
+		}
+	}
+	if !strings.Contains(store.subscription.LastError, "https://subscription.example/redacted") ||
+		!strings.Contains(store.subscription.LastError, "[REDACTED]") {
+		t.Fatalf("persisted LastError = %q, want sanitized URL and credentials", store.subscription.LastError)
+	}
 }
 
 func TestManagerTargetedSelectionKeepsSubscriptionCachesIndependent(t *testing.T) {
