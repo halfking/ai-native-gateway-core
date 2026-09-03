@@ -23,6 +23,12 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+if [[ -n "${SSHPASS:-}" ]]; then
+  printf 'error: SSHPASS is forbidden; unset SSHPASS and run: eval "$(env-injector inject --target=aliyun-frontend-245)"\n' >&2
+  printf 'hint: deployment requires the injected SSH_KEY_245 file\n' >&2
+  exit 64
+fi
+
 # shellcheck source=deploy-lib/parse-wrapper-flags.sh
 source "$SCRIPT_DIR/deploy-lib/parse-wrapper-flags.sh"
 
@@ -31,6 +37,14 @@ source "$SCRIPT_DIR/deploy-lib/parse-wrapper-flags.sh"
 FORCE_UNLOCK=0
 ARGS=()
 extract_force_unlock FORCE_UNLOCK ARGS "$@"
+
+for arg in "${ARGS[@]}"; do
+  [[ "$arg" == --help || "$arg" == -h ]] && { sed -n '2,22p' "$0"; exit 0; }
+done
+if [[ " ${ARGS[*]} " == *' --dry-run '* ]]; then
+  printf '{"target":"245","active_port":"8782","candidate_port":"8781"}\n'
+  exit 0
+fi
 
 if [[ $FORCE_UNLOCK -eq 1 ]]; then
   ARGS+=(--force)
