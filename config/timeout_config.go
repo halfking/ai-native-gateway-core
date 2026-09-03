@@ -85,7 +85,104 @@ const (
 	TimeoutModeAdaptive     TimeoutMode = "adaptive"
 )
 
-// TimeoutConfig manages dynamic timeout calculation and hot-reloading
+type timeoutConfigSnapshot struct {
+	clientDefaultSeconds   int
+	upstreamBaseSeconds    int
+	upstreamMinSeconds     int
+	upstreamMaxSeconds     int
+	contextThresholdTokens int
+	contextBonusSeconds    int
+	mode                   TimeoutMode
+	maxRetryAttempts       int
+	baseDelayMS            int
+	maxDelayMS             int
+	exponentialBackoff     bool
+	keepaliveIntervalSecs  int
+	lastNodeWaitSeconds    int
+}
+
+func (tc *TimeoutConfig) snapshotLocked() timeoutConfigSnapshot {
+	return timeoutConfigSnapshot{
+		clientDefaultSeconds:   tc.clientDefaultSeconds,
+		upstreamBaseSeconds:    tc.upstreamBaseSeconds,
+		upstreamMinSeconds:     tc.upstreamMinSeconds,
+		upstreamMaxSeconds:     tc.upstreamMaxSeconds,
+		contextThresholdTokens: tc.contextThresholdTokens,
+		contextBonusSeconds:    tc.contextBonusSeconds,
+		mode:                   tc.mode,
+		maxRetryAttempts:       tc.maxRetryAttempts,
+		baseDelayMS:            tc.baseDelayMS,
+		maxDelayMS:             tc.maxDelayMS,
+		exponentialBackoff:     tc.exponentialBackoff,
+		keepaliveIntervalSecs:  tc.keepaliveIntervalSecs,
+		lastNodeWaitSeconds:    tc.lastNodeWaitSeconds,
+	}
+}
+
+func (tc *TimeoutConfig) applySnapshotLocked(s timeoutConfigSnapshot) {
+	tc.clientDefaultSeconds = s.clientDefaultSeconds
+	tc.upstreamBaseSeconds = s.upstreamBaseSeconds
+	tc.upstreamMinSeconds = s.upstreamMinSeconds
+	tc.upstreamMaxSeconds = s.upstreamMaxSeconds
+	tc.contextThresholdTokens = s.contextThresholdTokens
+	tc.contextBonusSeconds = s.contextBonusSeconds
+	tc.mode = s.mode
+	tc.maxRetryAttempts = s.maxRetryAttempts
+	tc.baseDelayMS = s.baseDelayMS
+	tc.maxDelayMS = s.maxDelayMS
+	tc.exponentialBackoff = s.exponentialBackoff
+	tc.keepaliveIntervalSecs = s.keepaliveIntervalSecs
+	tc.lastNodeWaitSeconds = s.lastNodeWaitSeconds
+}
+
+func parsePositiveSetting(settings map[string]string, key string, target *int) (bool, error) {
+	val, ok := settings[key]
+	if !ok {
+		return false, nil
+	}
+	v, err := strconv.Atoi(strings.Trim(val, "\""))
+	if err != nil || v <= 0 {
+		return false, fmt.Errorf("%s must be a positive integer", key)
+	}
+	*target = v
+	return true, nil
+}
+
+func parseBoolSetting(settings map[string]string, key string, target *bool) (bool, error) {
+	val, ok := settings[key]
+	if !ok {
+		return false, nil
+	}
+	v, err := strconv.ParseBool(strings.Trim(val, "\""))
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean", key)
+	}
+	*target = v
+	return true, nil
+}
+
+func validTimeoutMode(mode TimeoutMode) bool {
+	switch mode {
+	case TimeoutModeStatic, TimeoutModeContextAware, TimeoutModeNetworkAware, TimeoutModeAdaptive:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateTimeoutSnapshot(s timeoutConfigSnapshot) error {
+	if s.upstreamMinSeconds > s.upstreamBaseSeconds || s.upstreamBaseSeconds > s.upstreamMaxSeconds {
+		return fmt.Errorf("timeout bounds must satisfy min <= base <= max")
+	}
+	if s.baseDelayMS > s.maxDelayMS {
+		return fmt.Errorf("retry delays must satisfy base <= max")
+	}
+	if !validTimeoutMode(s.mode) {
+		return fmt.Errorf("timeout.dynamic_mode %q is invalid", s.mode)
+	}
+	return nil
+}
+
 type TimeoutConfig struct {
 	mu sync.RWMutex
 
@@ -371,95 +468,59 @@ func (tc *TimeoutConfig) ReloadFromDB(ctx context.Context) error {
 		return fmt.Errorf("iterate settings: %w", err)
 	}
 
-	// Apply settings with lock
-	tc.mu.Lock()
-	defer tc.mu.Unlock()
+	// Build and validate a complete candidate snapshot before taking the write
+	// lock. Invalid DB rows must never partially replace a live configuration.
+	tc.mu.RLock()
+	candidate := tc.snapshotLocked()
+	tc.mu.RUnlock()
 
 	updated := 0
-	if val, ok := settings["timeout.client_default_seconds"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.clientDefaultSeconds = v
-			updated++
+	for _, field := range []struct {
+		key    string
+		target *int
+	}{
+		{"timeout.client_default_seconds", &candidate.clientDefaultSeconds},
+		{"timeout.upstream_base_seconds", &candidate.upstreamBaseSeconds},
+		{"timeout.upstream_min_seconds", &candidate.upstreamMinSeconds},
+		{"timeout.upstream_max_seconds", &candidate.upstreamMaxSeconds},
+		{"timeout.context_threshold_tokens", &candidate.contextThresholdTokens},
+		{"timeout.context_bonus_seconds", &candidate.contextBonusSeconds},
+		{"retry.max_attempts", &candidate.maxRetryAttempts},
+		{"retry.base_delay_ms", &candidate.baseDelayMS},
+		{"retry.max_delay_ms", &candidate.maxDelayMS},
+		{"retry.keepalive_interval_seconds", &candidate.keepaliveIntervalSecs},
+		{"retry.last_node_wait_seconds", &candidate.lastNodeWaitSeconds},
+	} {
+		changed, err := parsePositiveSetting(settings, field.key, field.target)
+		if err != nil {
+			return err
 		}
-	}
-	if val, ok := settings["timeout.upstream_base_seconds"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.upstreamBaseSeconds = v
-			updated++
-		}
-	}
-	if val, ok := settings["timeout.upstream_min_seconds"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.upstreamMinSeconds = v
-			updated++
-		}
-	}
-	if val, ok := settings["timeout.upstream_max_seconds"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.upstreamMaxSeconds = v
-			updated++
-		}
-	}
-	if val, ok := settings["timeout.context_threshold_tokens"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.contextThresholdTokens = v
-			updated++
-		}
-	}
-	if val, ok := settings["timeout.context_bonus_seconds"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.contextBonusSeconds = v
+		if changed {
 			updated++
 		}
 	}
 	if val, ok := settings["timeout.dynamic_mode"]; ok {
-		// Remove quotes if present
-		val = strings.Trim(val, "\"")
-		tc.mode = TimeoutMode(val)
+		candidate.mode = TimeoutMode(strings.Trim(val, "\""))
 		updated++
+	}
+	if changed, err := parseBoolSetting(settings, "retry.exponential_backoff", &candidate.exponentialBackoff); err != nil {
+		return err
+	} else if changed {
+		updated++
+	}
+	if err := validateTimeoutSnapshot(candidate); err != nil {
+		return fmt.Errorf("validate timeout config: %w", err)
 	}
 
-	// Retry settings
-	if val, ok := settings["retry.max_attempts"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.maxRetryAttempts = v
-			updated++
-		}
-	}
-	if val, ok := settings["retry.base_delay_ms"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.baseDelayMS = v
-			updated++
-		}
-	}
-	if val, ok := settings["retry.max_delay_ms"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.maxDelayMS = v
-			updated++
-		}
-	}
-	if val, ok := settings["retry.exponential_backoff"]; ok {
-		tc.exponentialBackoff = (val == "true")
-		updated++
-	}
-	if val, ok := settings["retry.keepalive_interval_seconds"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.keepaliveIntervalSecs = v
-			updated++
-		}
-	}
-	if val, ok := settings["retry.last_node_wait_seconds"]; ok {
-		if v, err := strconv.Atoi(val); err == nil {
-			tc.lastNodeWaitSeconds = v
-			updated++
-		}
-	}
+	tc.mu.Lock()
+	tc.applySnapshotLocked(candidate)
+	tc.mu.Unlock()
 
 	tc.logger.Info("timeout config reloaded from DB",
 		"updated", updated,
-		"mode", tc.mode,
-		"base_timeout", tc.upstreamBaseSeconds,
-		"context_threshold", tc.contextThresholdTokens)
+		"mode", candidate.mode,
+		"base_timeout", candidate.upstreamBaseSeconds,
+		"context_threshold", candidate.contextThresholdTokens)
 
 	return nil
 }

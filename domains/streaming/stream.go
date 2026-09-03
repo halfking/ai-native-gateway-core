@@ -190,12 +190,12 @@ func runEmptyStreamGate(
 	clientModel string,
 	discoveredUpstream *string,
 	startingLine string,
-	firstByteTimeout time.Duration,
+	_ time.Duration,
 	lastSend *time.Time,
 	chunkCount *int,
 	onRawLine func(string),
 ) (flushedLines []string, outcome *StreamOutcome) {
-	return runEmptyStreamGateWithVendor(ctx, reader, bodyCloser, w, flusher, norm, capture, pc, clientModel, discoveredUpstream, startingLine, firstByteTimeout, lastSend, chunkCount, onRawLine, "", nil, false)
+	return runEmptyStreamGateWithVendor(ctx, reader, bodyCloser, w, flusher, norm, capture, pc, clientModel, discoveredUpstream, startingLine, currentStreamRuntimeConfig().streamChunkTimeout, lastSend, chunkCount, onRawLine, "", nil, false)
 }
 
 func runEmptyStreamGateWithVendor(
@@ -210,7 +210,7 @@ func runEmptyStreamGateWithVendor(
 	clientModel string,
 	discoveredUpstream *string,
 	startingLine string,
-	firstByteTimeout time.Duration,
+	streamChunkTimeout time.Duration,
 	lastSend *time.Time,
 	chunkCount *int,
 	onRawLine func(string),
@@ -308,7 +308,7 @@ func runEmptyStreamGateWithVendor(
 	for {
 		// Read the next upstream line, with the same first-byte / inter-chunk
 		// timeout semantics as the main loop.
-		line, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, firstByteTimeout)
+		line, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, streamChunkTimeout)
 		if err != nil {
 			// Nothing buffered by the gate has reached the client yet. Preserve
 			// the read classification so the executor can fail over instead of
@@ -464,7 +464,7 @@ func applyGateLineTransforms(
 	clientModel string,
 	discoveredUpstream *string,
 	norm *Normalizer,
-	capture        *audit.StreamCapture,
+	capture *audit.StreamCapture,
 	toolsRequested bool,
 	xmlToolCoercer *streamXMLToolCallCoercer,
 ) string {
@@ -763,26 +763,46 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 
 	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
+		state := classifyStreamReadError(ctx, err)
+		var firstFailure StreamOutcome
+		switch state {
+		case streamReadCanceled:
+			firstFailure = StreamOutcome{
+				Interrupted: true,
+				Reason:      "client_cancel",
+				Kind:        errorsx.KindCanceled,
+				Resumable:   false,
+			}
+		case streamReadEOF:
+			firstFailure = StreamOutcome{
+				Interrupted: true,
+				Reason:      "eof_without_done",
+				Kind:        errorsx.KindUpstreamDown,
+				Resumable:   true,
+			}
+		case streamReadTimeout:
+			firstFailure = StreamOutcome{
+				Interrupted: true,
+				Reason:      "first_byte_timeout",
+				Kind:        errorsx.KindStreamTimeout,
+				Resumable:   true,
+			}
+		default:
+			firstFailure = streamReadFailureOutcome(err, 0)
+		}
 		if capture != nil {
-			capture.MarkInterruptedWithReason("first_byte_timeout")
+			capture.MarkInterruptedWithReason(firstFailure.Reason)
 		}
-		slog.Warn("stream first-byte timeout",
-			"error", err,
-			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
-			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
-		)
-		terminalVisible := attemptHasClientSemanticOutput(gate, 0)
-		if terminalVisible {
-			safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream first-byte timeout\",\"type\":\"timeout\",\"code\":\"first_byte_timeout\"}}\n\n")
-			safeFlush(flusher)
+		if firstFailure.Reason == "first_byte_timeout" {
+			slog.Warn("stream first-byte timeout",
+				"error", err,
+				"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
+				"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
+			)
+		} else {
+			slog.Warn("stream first read failed", "error", err, "state", state, "reason", firstFailure.Reason)
 		}
-		outcome.Interrupted = true
-		outcome.Reason = "first_byte_timeout"
-		outcome.Kind = errorsx.KindStreamTimeout
-		outcome.Resumable = !terminalVisible
-
-		outcome.ChunkCount = 0
-		return outcome
+		return firstFailure
 	}
 	normalizedFirstLine, hasCombinedDone := splitCombinedDoneFrame(firstLine)
 	firstLine = normalizedFirstLine
@@ -894,20 +914,20 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				ChunkCount:  0,
 			}
 		}
-			if payload := extractPayload(firstLine); payload != "" && payload != "[DONE]" {
-				if _, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr != nil {
-					slog.Warn("stream: invalid first SSE chunk", "error", parseErr, "client_model", clientModel)
-					if capture != nil {
-						capture.MarkInterruptedWithReason("invalid_chunk")
-					}
-					return StreamOutcome{
-						Interrupted: true,
-						Reason:      "invalid_chunk",
-						Kind:        errorsx.KindUpstreamDown,
-						Resumable:   true,
-					}
+		if payload := extractPayload(firstLine); payload != "" && payload != "[DONE]" {
+			if _, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr != nil {
+				slog.Warn("stream: invalid first SSE chunk", "error", parseErr, "client_model", clientModel)
+				if capture != nil {
+					capture.MarkInterruptedWithReason("invalid_chunk")
+				}
+				return StreamOutcome{
+					Interrupted: true,
+					Reason:      "invalid_chunk",
+					Kind:        errorsx.KindUpstreamDown,
+					Resumable:   true,
 				}
 			}
+		}
 
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). Run
 
@@ -974,7 +994,7 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 
 				ctx, reader, bodyCloser, w, flusher, norm, capture, pc,
 				clientModel, &discoveredUpstream, firstLine,
-				runtimeCfg.firstByteTimeout, &lastSend, &chunkCount,
+				runtimeCfg.streamChunkTimeout, &lastSend, &chunkCount,
 				func(line string) {
 					logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
 					payload := extractPayload(line)
@@ -1203,14 +1223,14 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			return outcome
 		}
 
-			line := readResult.line
-			normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
-			line = normalizedLine
-			if hasCombinedDone {
-				reader = prependDoneFrame(reader)
-			}
-			logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
-			
+		line := readResult.line
+		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
+		line = normalizedLine
+		if hasCombinedDone {
+			reader = prependDoneFrame(reader)
+		}
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
+
 		// 2026-08-29: Validate SSE frame before processing. If the frame is malformed
 		// (incomplete JSON) and we haven't committed semantic output yet, fail the
 		// attempt as resumable so the survival coordinator can retry. If already
@@ -1244,16 +1264,16 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			// (better to have a partial response than to break the stream)
 			continue
 		}
-			
-			rawPayload := extractPayload(line)
-			if rawPayload != "" && rawPayload != "[DONE]" {
-				diagnosticCollector.observeRaw([]byte(rawPayload))
-				if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
-					diagnosticCollector.observeChunk(chunk)
-				} else {
-					reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(rawPayload), parseErr, nil)
-				}
+
+		rawPayload := extractPayload(line)
+		if rawPayload != "" && rawPayload != "[DONE]" {
+			diagnosticCollector.observeRaw([]byte(rawPayload))
+			if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
+				diagnosticCollector.observeChunk(chunk)
+			} else {
+				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(rawPayload), parseErr, nil)
 			}
+		}
 
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). See
 		// the first-line equivalent above for the rationale. We run
