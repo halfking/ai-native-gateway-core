@@ -650,7 +650,7 @@ func safeSR5m(sr float64, samples int) float64 {
 
 // mirrorToAPIView expands a cached NodeView (the score-relevant subset) into
 // an api.NodeView for the scoring loop. Fields not held in the cache (SR1m,
-// Samples*, LatP50/P95) are left zero — they are not read by the scorer,
+// other Samples*, LatP50/P95) are left zero — they are not read by the scorer,
 // only by observers, and a soft-expired entry would have missed the LRU
 // anyway (so we never score off a stale entry).
 //
@@ -673,6 +673,7 @@ func mirrorToAPIView(mv cache.NodeView, s CandidateSeed) api.NodeView {
 		CoolUntil:     mv.CoolUntil,
 		LatEWMA:       mv.LatEWMA,
 		SR5m:          mv.SR5m,
+		Samples5m:     mv.Samples5m,
 	}
 }
 
