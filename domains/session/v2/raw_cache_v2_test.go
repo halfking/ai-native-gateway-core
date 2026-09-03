@@ -31,17 +31,23 @@ func TestRawCacheV2_PutGet(t *testing.T) {
 
 func TestRawCacheV2_PutGetIsolatedFromCaller(t *testing.T) {
 	c := NewRawCacheV2(2)
+	rawPayload := map[string]interface{}{"blocks": []interface{}{map[string]interface{}{"text": "original"}}}
 	entry := &RawEntry{
-		RequestDelta: []Message{{Role: "user", Content: "original", ToolCalls: []map[string]interface{}{{"id": "call-1"}}}},
+		RequestDelta: []Message{{Role: "user", Content: "original", RawContent: rawPayload, ToolCalls: []map[string]interface{}{{"id": "call-1"}}}},
 		Attachments:  []AttachmentRef{{ObjectKey: "attachment-1"}},
 	}
 	c.Put(context.Background(), "tenant", "session", entry)
 	entry.RequestDelta[0].Content = "mutated"
 	entry.RequestDelta[0].ToolCalls[0]["id"] = "mutated-call"
+	entry.RequestDelta[0].RawContent.(map[string]interface{})["blocks"].([]interface{})[0].(map[string]interface{})["text"] = "mutated-raw"
 	entry.Attachments[0].ObjectKey = "mutated-attachment"
 
 	got, ok := c.Get(context.Background(), "tenant", "session")
-	if !ok || got.RequestDelta[0].Content != "original" || got.RequestDelta[0].ToolCalls[0]["id"] != "call-1" || got.Attachments[0].ObjectKey != "attachment-1" {
+	if !ok || got == nil {
+		t.Fatalf("expected isolated cache hit, got ok=%v entry=%+v", ok, got)
+	}
+	rawGot := got.RequestDelta[0].RawContent.(map[string]interface{})["blocks"].([]interface{})[0].(map[string]interface{})["text"]
+	if got.RequestDelta[0].Content != "original" || rawGot != "original" || got.RequestDelta[0].ToolCalls[0]["id"] != "call-1" || got.Attachments[0].ObjectKey != "attachment-1" {
 		t.Fatalf("cache retained caller-owned mutable data: %+v", got)
 	}
 	got.RequestDelta[0].Content = "get-mutated"
