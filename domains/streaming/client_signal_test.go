@@ -60,6 +60,14 @@ func TestRenderClientSignalFrame(t *testing.T) {
 		})
 		assert.Empty(t, got, "empty EventName must NOT emit a malformed frame")
 	})
+
+	t.Run("unknown event name returns empty string", func(t *testing.T) {
+		got := RenderClientSignalFrame(ClientSignalRenderOptions{
+			EventName: "gw-arbitrary",
+			Payload:   map[string]interface{}{"x": 1},
+		})
+		assert.Empty(t, got, "only gateway-owned signal events may be emitted")
+	})
 }
 
 // TestParseSubAgentsHeader covers the four documented cases:

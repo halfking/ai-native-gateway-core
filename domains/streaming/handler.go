@@ -5002,6 +5002,11 @@ goalRetryLoopDone:
 			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {
 				slog.Warn("response_interceptor_stream_end_failed", "error", err, "session_id", gwSessionID)
 			} else if endResult != nil {
+				if endResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, endResult.ClientSignalKind) {
+					slog.Warn("client_signal_capability_mismatch", "session_id", gwSessionID, "kind", endResult.ClientSignalKind)
+					endResult.ClientSignalKind = ""
+					endResult.ClientSignalPayload = nil
+				}
 				if frame := renderClientSignalFrame(endResult.ClientSignalKind, endResult.ClientSignalPayload); frame != "" {
 					if safeWriteSSE(w, frame) {
 						if flusher, ok := w.(http.Flusher); ok {
@@ -5027,6 +5032,11 @@ goalRetryLoopDone:
 					slog.Info("response_interceptor_blocked", "session_id", gwSessionID, "action", interceptResult.Action)
 					// Response was blocked, don't continue
 					return
+				}
+				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
+					slog.Warn("client_signal_capability_mismatch", "session_id", gwSessionID, "kind", interceptResult.ClientSignalKind)
+					interceptResult.ClientSignalKind = ""
+					interceptResult.ClientSignalPayload = nil
 				}
 				if interceptResult.ClientSignalKind != "" && len(interceptResult.ClientSignalPayload) > 0 {
 					w.Header().Set("X-Gw-Client-Signal", interceptResult.ClientSignalKind)

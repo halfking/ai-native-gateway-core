@@ -895,8 +895,13 @@ type ClientSignalRenderOptions struct {
 //
 // Returns "" when EventName is empty or when payload marshaling fails; callers
 // should log-and-skip rather than write a malformed frame.
+var allowedClientSignalEvents = map[string]struct{}{
+	"gw-continue": {},
+	"gw-handoff":  {},
+}
+
 func RenderClientSignalFrame(opts ClientSignalRenderOptions) string {
-	if opts.EventName == "" {
+	if _, ok := allowedClientSignalEvents[opts.EventName]; !ok {
 		return ""
 	}
 	payload, err := json.Marshal(opts.Payload)
@@ -912,7 +917,7 @@ func RenderClientSignalFrame(opts ClientSignalRenderOptions) string {
 // decoding and re-encoding it in the handler could alter numbers or omit
 // future extension fields.
 func renderClientSignalFrame(eventName string, payload []byte) string {
-	if eventName == "" || len(payload) == 0 || !json.Valid(payload) {
+	if _, ok := allowedClientSignalEvents[eventName]; !ok || len(payload) == 0 || !json.Valid(payload) {
 		return ""
 	}
 	return "event: " + eventName + "\ndata: " + string(payload) + "\n\n"
