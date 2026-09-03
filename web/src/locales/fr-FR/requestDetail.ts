@@ -183,6 +183,7 @@ export default {
       status: { success: 'Succès', failed: 'Échec', timeout: 'Délai dépassé', skipped: 'Ignoré' },
       flags: { compression: 'Compression', retry: 'Nouvel essai', nodeSwitch: 'Changement de nœud', degraded: 'Observation dégradée' },
       evidenceLabel: 'Preuves de routage et de cascade', evidenceTitle: 'Tentatives observées', waterfallAttempt: 'Tentative de cascade n°{number}', noDetails: 'Aucun détail supplémentaire', degraded: 'Observation dégradée',
+      lanesLabel: 'Voies des tentatives', lanesTitle: 'Tentatives de parcours observées', attemptLane: 'Tentative n°{number}', sourceJourney: 'Source Journey', waterfallLabel: 'Barres des étapes waterfall', waterfallTitle: 'Barres des étapes waterfall', lastAttemptSemantics: 'Chronologie de la requête ; T5–T9 peuvent refléter la dernière tentative', synthesizedBars: 'Les étapes synthétiques indiquent des horodatages manquants (observation dégradée).', requestTimeline: 'Chronologie de la requête',
       legend: { success: 'Succès', failed: 'Échec/délai dépassé', special: 'Compression · nouvel essai · changement de nœud' }
     },
   },

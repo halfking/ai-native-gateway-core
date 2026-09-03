@@ -28,6 +28,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		DBName:         dbName,
 		SQLDir:         sqlDir,
 		StartupFiles: []string{
+			"478_auto_route_affinity.sql",
 			"511_state_transitions_table.sql",
 			"515_state_transitions_seq_unique.sql",
 			"521_repair_state_transitions_tenant.sql",
@@ -80,6 +81,9 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"637_session_bodies_unified_today_visible.sql",
 			"638_session_bodies_promote_guard.sql",
 			"639_provider_error_details_credential.sql",
+			"646_proxy_management_canonical.sql",
+			"647_goal_client_signal.sql",
+			"650_auto_route_selection_treatment_attribution.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

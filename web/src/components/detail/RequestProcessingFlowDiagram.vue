@@ -2,157 +2,65 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RequestTrace, TraceEvent } from '../../api/trace'
-import type { RequestJourney } from '../../api/request-journeys'
+import type { RequestJourney, RequestJourneyEvent } from '../../api/request-journeys'
 import type { WaterfallRequest } from '../../api/dispatch'
+import { formatAxisMs, layoutRows, type LaidOutRow } from '../../utils/waterfallTimeline'
+import { traceStageToJourney } from '../../utils/journeyStageMap'
 
 const props = defineProps<{
   trace: RequestTrace | null
   journey?: RequestJourney | null
   waterfall?: WaterfallRequest | null
+  waterfallSource?: string
 }>()
 const { t } = useI18n()
-
 const events = computed(() => [...(props.trace?.events ?? [])].sort((a, b) => a.seq - b.seq))
 const journeyEvents = computed(() => [...(props.journey?.events ?? [])].sort((a, b) => a.seq - b.seq))
 const waterfallAttempts = computed(() => props.waterfall?.attempts ?? [])
-
-function journeyDetail(event: (typeof journeyEvents.value)[number]): string {
-  const bits = [
-    event.attempt ? `attempt #${event.attempt.attempt_no}` : '',
-    event.provider || event.attempt?.provider || '',
-    event.model || event.resolved_model || '',
-    event.retry_reason || event.switch_reason || '',
-  ].filter(Boolean)
-  return bits.join(' · ')
-}
-
-function stageLabel(event: TraceEvent): string {
-  const raw = (event.stage_name || event.stage || '').trim()
-  const key = `requestDetail.flow.diagram.stages.${raw}`
-  const translated = t(key)
-  return translated === key ? raw || t('requestDetail.flow.diagram.event') : translated
-}
-
-function statusLabel(status: TraceEvent['status']): string {
-  const key = `requestDetail.flow.diagram.status.${status}`
-  const translated = t(key)
-  return translated === key ? status : translated
-}
-
-function statusClass(status: TraceEvent['status']): string {
-  return `flow-node--${status || 'unknown'}`
-}
-
-function durationLabel(event: TraceEvent): string {
-  return typeof event.duration_ms === 'number' && Number.isFinite(event.duration_ms) && event.duration_ms > 0
-    ? `${event.duration_ms}ms`
-    : '—'
-}
-
-// Canonical stage set — keep in sync with domains/requestjourney/contract.go
-// JourneyStage constants (and trace.internal/trace.Stage where the event was
-// lifted from trace.events). These strings appear in event.stage / event.stage_name;
-// the locale key under requestDetail.flow.diagram.stages must cover each one.
-const COMPRESSION_STAGES = new Set(['compression'])
-const RETRY_STAGES = new Set(['retrying'])
-const NODE_SWITCH_STAGES = new Set(['node_selection'])
-
-function detailsText(event: TraceEvent): string {
-  const details = event.details || {}
-  const stage = event.stage || ''
-  const stageName = event.stage_name || ''
-  const flags: string[] = []
-  const has = (key: string) => Object.prototype.hasOwnProperty.call(details, key)
-  if (has('compression_strategy') || has('compression_applied') || COMPRESSION_STAGES.has(stage) || COMPRESSION_STAGES.has(stageName)) {
-    flags.push(t('requestDetail.flow.diagram.flags.compression'))
+const journeyLanes = computed(() => {
+  const grouped = new Map<number, RequestJourneyEvent[]>()
+  for (const event of journeyEvents.value) {
+    if (!event.attempt) continue
+    const attempt = event.attempt.attempt_no
+    grouped.set(attempt, [...(grouped.get(attempt) ?? []), event])
   }
-  if (has('retry_reason') || has('retry') || RETRY_STAGES.has(stage) || RETRY_STAGES.has(stageName)) {
-    flags.push(t('requestDetail.flow.diagram.flags.retry'))
-  }
-  if (has('switch_reason') || has('to_credential_id') || has('to_model') || NODE_SWITCH_STAGES.has(stage) || NODE_SWITCH_STAGES.has(stageName)) {
-    flags.push(t('requestDetail.flow.diagram.flags.nodeSwitch'))
-  }
-  if (details.observation_status === 'observation_degraded' || has('observation_degraded')) {
-    flags.push(t('requestDetail.flow.diagram.flags.degraded'))
-  }
-  return flags.join(' · ')
-}
+  return [...grouped.entries()].sort(([a], [b]) => a - b).map(([attempt, laneEvents]) => ({ attempt, events: laneEvents }))
+})
+const waterfallLayout = computed<{ row: LaidOutRow | null; axisMax: number }>(() => {
+  if (!props.waterfall) return { row: null, axisMax: 0 }
+  const laid = layoutRows([props.waterfall])
+  return { row: laid.rows[0] ?? null, axisMax: laid.axisMax }
+})
+const hasSynthesizedBars = computed(() => waterfallLayout.value.row?.bars.some((bar) => bar.synthesized) ?? false)
+const degraded = computed(() => props.journey?.observation_status === 'observation_degraded' || journeyEvents.value.some((event) => event.observation_status === 'observation_degraded'))
 
-function eventTitle(event: TraceEvent): string {
-  return [event.module, event.error, JSON.stringify(event.details || {})].filter(Boolean).join(' · ')
-}
+function journeyDetail(event: RequestJourneyEvent): string { return [event.attempt && `attempt #${event.attempt.attempt_no}`, event.provider || event.attempt?.provider, event.model || event.resolved_model, event.retry_reason || event.switch_reason].filter(Boolean).join(' · ') }
+function stageLabel(event: TraceEvent): string { const raw = (event.stage_name || event.stage || '').trim(); const mapped = traceStageToJourney(raw)?.labelKey; const key = `requestDetail.flow.diagram.stages.${mapped || raw}`; const translated = t(key); return translated === key ? raw || t('requestDetail.flow.diagram.event') : translated }
+function journeyStageLabel(event: RequestJourneyEvent): string { const key = `requestDetail.flow.diagram.stages.${event.stage}`; const translated = t(key); return translated === key ? event.stage : translated }
+function statusLabel(status: TraceEvent['status']): string { const key = `requestDetail.flow.diagram.status.${status}`; const translated = t(key); return translated === key ? status : translated }
+function statusClass(status: TraceEvent['status']): string { return `flow-node--${status || 'unknown'}` }
+function durationLabel(event: TraceEvent): string { return typeof event.duration_ms === 'number' && Number.isFinite(event.duration_ms) && event.duration_ms > 0 ? `${event.duration_ms}ms` : '—' }
+function detailsText(event: TraceEvent): string { const details = event.details || {}; const flags: string[] = []; const has = (key: string) => Object.prototype.hasOwnProperty.call(details, key); if (has('compression_strategy') || has('compression_applied') || event.stage === 'compression') flags.push(t('requestDetail.flow.diagram.flags.compression')); if (has('retry_reason') || has('retry') || event.stage === 'retrying') flags.push(t('requestDetail.flow.diagram.flags.retry')); if (has('switch_reason') || has('to_credential_id') || has('to_model') || event.stage === 'node_selection') flags.push(t('requestDetail.flow.diagram.flags.nodeSwitch')); if (details.observation_status === 'observation_degraded' || has('observation_degraded')) flags.push(t('requestDetail.flow.diagram.flags.degraded')); return flags.join(' · ') }
+function eventTitle(event: TraceEvent): string { return [event.module, event.error, JSON.stringify(event.details || {})].filter(Boolean).join(' · ') }
+function switchDetail(event: RequestJourneyEvent): string { return [event.from_model && `${event.from_model} → ${event.to_model || '?'}`, event.from_credential_id != null && `${event.from_credential_id} → ${event.to_credential_id ?? '?'}`, event.retry_reason || event.switch_reason].filter(Boolean).join(' · ') }
 </script>
 
 <template>
   <section class="rpf" data-testid="request-processing-flow" :aria-label="t('requestDetail.flow.diagram.ariaLabel')">
     <div v-if="!trace && !journey && !waterfall" class="rpf-empty">{{ t('requestDetail.flow.diagram.noData') }}</div>
-    <div v-else-if="!events.length && !journeyEvents.length && !waterfallAttempts.length" class="rpf-empty">{{ t('requestDetail.flow.diagram.noEvents') }}</div>
+    <div v-else-if="!events.length && !journeyEvents.length && !waterfallAttempts.length && !waterfallLayout.row" class="rpf-empty">{{ t('requestDetail.flow.diagram.noEvents') }}</div>
     <template v-else>
-      <div class="rpf-track" role="list" :aria-label="t('requestDetail.flow.diagram.trackLabel')">
-        <template v-for="(event, index) in events" :key="`${event.seq}-${event.stage}`">
-          <span v-if="index" class="rpf-arrow" aria-hidden="true">→</span>
-          <article class="flow-node" :class="statusClass(event.status)" role="listitem" :title="eventTitle(event)">
-            <div class="flow-node__top">
-              <span class="flow-node__seq">{{ event.seq }}</span>
-              <strong>{{ stageLabel(event) }}</strong>
-            </div>
-            <div class="flow-node__meta">
-              <span>{{ statusLabel(event.status) }}</span>
-              <span>{{ durationLabel(event) }}</span>
-            </div>
-            <span v-if="detailsText(event)" class="flow-node__flags">{{ detailsText(event) }}</span>
-            <span v-if="event.error" class="flow-node__error">{{ event.error }}</span>
-          </article>
-        </template>
+      <div v-if="events.length" class="rpf-track" role="list" :aria-label="t('requestDetail.flow.diagram.trackLabel')">
+        <template v-for="(event, index) in events" :key="`${event.seq}-${event.stage}`"><span v-if="index" class="rpf-arrow" aria-hidden="true">→</span><article class="flow-node" :class="statusClass(event.status)" role="listitem" :title="eventTitle(event)"><div class="flow-node__top"><span class="flow-node__seq">{{ event.seq }}</span><strong>{{ stageLabel(event) }}</strong></div><div class="flow-node__meta"><span>{{ statusLabel(event.status) }}</span><span>{{ durationLabel(event) }}</span></div><span v-if="detailsText(event)" class="flow-node__flags">{{ detailsText(event) }}</span><span v-if="event.error" class="flow-node__error">{{ event.error }}</span></article></template>
       </div>
-      <section v-if="journeyEvents.length || waterfallAttempts.length" class="rpf-evidence" :aria-label="t('requestDetail.flow.diagram.evidenceLabel')">
-        <h4>{{ t('requestDetail.flow.diagram.evidenceTitle') }}</h4>
-        <ul v-if="journeyEvents.length" class="evidence-list">
-          <li v-for="event in journeyEvents" :key="`journey-${event.seq}`" class="evidence-item">
-            <strong>{{ t(`requestJourneys.event.${event.event_type}`) }}</strong>
-            <span>{{ journeyDetail(event) || t('requestDetail.flow.diagram.noDetails') }}</span>
-            <span v-if="event.observation_status === 'observation_degraded'" class="degraded">{{ t('requestDetail.flow.diagram.degraded') }}</span>
-          </li>
-        </ul>
-        <ul v-if="waterfallAttempts.length" class="evidence-list">
-          <li v-for="attempt in waterfallAttempts" :key="`waterfall-${attempt.attempt_id || attempt.attempt_no}`" class="evidence-item">
-            <strong>{{ t('requestDetail.flow.diagram.waterfallAttempt', { number: attempt.attempt_no }) }}</strong>
-            <span>{{ [attempt.model, attempt.vendor, attempt.outcome, attempt.error_kind].filter(Boolean).join(' · ') || t('requestDetail.flow.diagram.noDetails') }}</span>
-          </li>
-        </ul>
-      </section>
-      <div class="rpf-legend">
-        <span><i class="legend-dot legend-dot--success" />{{ t('requestDetail.flow.diagram.legend.success') }}</span>
-        <span><i class="legend-dot legend-dot--failed" />{{ t('requestDetail.flow.diagram.legend.failed') }}</span>
-        <span><i class="legend-dot legend-dot--special" />{{ t('requestDetail.flow.diagram.legend.special') }}</span>
-      </div>
+      <section v-if="journeyLanes.length" class="rpf-lanes" data-testid="journey-attempt-lanes" :aria-label="t('requestDetail.flow.diagram.lanesLabel')"><h4>{{ t('requestDetail.flow.diagram.lanesTitle') }}</h4><div v-for="lane in journeyLanes" :key="lane.attempt" class="attempt-lane" :data-testid="`journey-attempt-lane-${lane.attempt}`"><strong class="attempt-lane__label">{{ t('requestDetail.flow.diagram.attemptLane', { number: lane.attempt }) }}</strong><div class="attempt-lane__events"><article v-for="event in lane.events" :key="`lane-${event.seq}`" class="journey-node"><strong>{{ journeyStageLabel(event) }}</strong><span>{{ journeyDetail(event) || t('requestDetail.flow.diagram.noDetails') }}</span><span v-if="switchDetail(event)" class="journey-node__switch">{{ switchDetail(event) }}</span><span class="journey-node__source">{{ t('requestDetail.flow.diagram.sourceJourney') }}</span><span v-if="event.observation_status === 'observation_degraded'" class="degraded">{{ t('requestDetail.flow.diagram.degraded') }}</span></article></div></div></section>
+      <section v-if="waterfallLayout.row" class="rpf-waterfall" data-testid="waterfall-stage-bars" :aria-label="t('requestDetail.flow.diagram.waterfallLabel')"><div class="waterfall-heading"><h4>{{ t('requestDetail.flow.diagram.waterfallTitle') }}</h4><span>{{ t('requestDetail.flow.diagram.lastAttemptSemantics') }}</span><span v-if="waterfallSource">source={{ waterfallSource }}</span></div><div class="waterfall-axis"><span>0</span><span>{{ formatAxisMs(waterfallLayout.axisMax) }}</span></div><div class="waterfall-row"><span class="waterfall-row__label">{{ t('requestDetail.flow.diagram.requestTimeline') }}</span><div class="waterfall-track"><span v-for="bar in waterfallLayout.row.bars" :key="bar.key" class="stage-bar" :class="{ 'stage-bar--synthesized': bar.synthesized }" :style="{ left: `${bar.leftPct}%`, width: `${bar.widthPct}%`, background: bar.color }" :title="`${bar.label}: ${formatAxisMs(bar.ms)}`"><small>{{ bar.label }}</small></span></div></div><p v-if="hasSynthesizedBars" class="waterfall-degraded">{{ t('requestDetail.flow.diagram.synthesizedBars') }}</p></section>
+      <section v-if="journeyEvents.length || waterfallAttempts.length" class="rpf-evidence" :aria-label="t('requestDetail.flow.diagram.evidenceLabel')"><h4>{{ t('requestDetail.flow.diagram.evidenceTitle') }}</h4><ul v-if="waterfallAttempts.length" class="evidence-list"><li v-for="attempt in waterfallAttempts" :key="`waterfall-${attempt.attempt_id || attempt.attempt_no}`" class="evidence-item"><strong>{{ t('requestDetail.flow.diagram.waterfallAttempt', { number: attempt.attempt_no }) }}</strong><span>{{ [attempt.model, attempt.vendor, attempt.outcome, attempt.error_kind].filter(Boolean).join(' · ') || t('requestDetail.flow.diagram.noDetails') }}</span></li></ul></section>
+      <p v-if="degraded" class="waterfall-degraded">{{ t('requestDetail.flow.diagram.degraded') }}</p><div class="rpf-legend"><span><i class="legend-dot legend-dot--success" />{{ t('requestDetail.flow.diagram.legend.success') }}</span><span><i class="legend-dot legend-dot--failed" />{{ t('requestDetail.flow.diagram.legend.failed') }}</span><span><i class="legend-dot legend-dot--special" />{{ t('requestDetail.flow.diagram.legend.special') }}</span></div>
     </template>
   </section>
 </template>
 
 <style scoped>
-.rpf { margin: 0 0 12px; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-subtle, var(--surface-secondary)); }
-.rpf-track { display: flex; align-items: stretch; gap: 8px; overflow-x: auto; padding: 2px 2px 8px; }
-.rpf-arrow { align-self: center; color: var(--muted); font-size: 18px; flex: 0 0 auto; }
-.flow-node { min-width: 128px; max-width: 190px; padding: 8px 9px; border: 1px solid var(--border); border-top: 3px solid var(--muted); border-radius: 7px; background: var(--surface-primary, var(--card)); color: var(--text-primary, var(--text)); }
-.flow-node--success { border-top-color: var(--success); }
-.flow-node--failed, .flow-node--timeout { border-top-color: var(--danger); background: color-mix(in srgb, var(--danger) 5%, var(--surface-primary, var(--card))); }
-.flow-node--skipped { opacity: .65; }
-.flow-node__top { display: flex; gap: 6px; align-items: baseline; font-size: 12px; }
-.flow-node__seq { color: var(--muted); font-variant-numeric: tabular-nums; }
-.flow-node__meta { display: flex; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 11px; color: var(--muted); }
-.flow-node__flags { display: block; margin-top: 6px; color: var(--accent); font-size: 10px; line-height: 1.3; }
-.flow-node__error { display: block; margin-top: 5px; color: var(--danger); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rpf-evidence { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
-.rpf-evidence h4 { margin: 0 0 6px; font-size: 12px; }
-.evidence-list { display: grid; gap: 5px; list-style: none; margin: 0; padding: 0; }
-.evidence-item { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--muted); }
-.evidence-item strong { color: var(--text-primary, var(--text)); }
-.degraded { color: var(--warning, var(--accent)); }
-.rpf-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; color: var(--muted); font-size: 10px; }
-.rpf-legend span { display: inline-flex; align-items: center; gap: 4px; }
-.legend-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-.legend-dot--success { background: var(--success); } .legend-dot--failed { background: var(--danger); } .legend-dot--special { background: var(--accent); }
-.rpf-empty { padding: 16px; color: var(--muted); text-align: center; font-size: 12px; }
-@media (max-width: 680px) { .rpf-track { display: grid; grid-template-columns: 1fr; overflow-x: visible; } .rpf-arrow { transform: rotate(90deg); justify-self: center; height: 16px; } .flow-node { max-width: none; } }
+.rpf{margin:0 0 12px;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-subtle,var(--surface-secondary))}.rpf-track,.attempt-lane__events{display:flex;align-items:stretch;gap:8px;overflow-x:auto;padding:2px 2px 8px}.rpf-arrow{align-self:center;color:var(--muted);font-size:18px;flex:0 0 auto}.flow-node{min-width:128px;max-width:190px;padding:8px 9px;border:1px solid var(--border);border-top:3px solid var(--muted);border-radius:7px;background:var(--surface-primary,var(--card));color:var(--text-primary,var(--text))}.flow-node--success{border-top-color:var(--success)}.flow-node--failed,.flow-node--timeout{border-top-color:var(--danger);background:color-mix(in srgb,var(--danger) 5%,var(--surface-primary,var(--card)))}.flow-node--skipped{opacity:.65}.flow-node__top{display:flex;gap:6px;align-items:baseline;font-size:12px}.flow-node__seq{color:var(--muted);font-variant-numeric:tabular-nums}.flow-node__meta{display:flex;justify-content:space-between;gap:8px;margin-top:6px;font-size:11px;color:var(--muted)}.flow-node__flags,.journey-node__switch{display:block;margin-top:6px;color:var(--accent);font-size:10px;line-height:1.3}.flow-node__error{display:block;margin-top:5px;color:var(--danger);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rpf-lanes,.rpf-waterfall,.rpf-evidence{margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}.rpf-lanes h4,.rpf-evidence h4{margin:0 0 6px;font-size:12px}.attempt-lane{display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:start;margin:6px 0}.attempt-lane__label{font-size:11px;color:var(--text-primary,var(--text));padding-top:8px}.journey-node{min-width:150px;padding:7px;border:1px solid var(--border);border-radius:6px;background:var(--surface-primary,var(--card));font-size:11px}.journey-node>*{display:block}.journey-node span{color:var(--muted);margin-top:3px}.journey-node__source{color:var(--accent)!important;font-size:10px}.waterfall-heading{display:flex;justify-content:space-between;gap:8px;font-size:11px}.waterfall-heading h4{margin:0;font-size:12px}.waterfall-heading span{color:var(--muted)}.waterfall-axis{display:flex;justify-content:space-between;margin:6px 0 2px 112px;color:var(--muted);font-size:10px}.waterfall-row{display:grid;grid-template-columns:104px 1fr;gap:8px;align-items:center}.waterfall-row__label{font-size:11px;color:var(--muted)}.waterfall-track{position:relative;height:28px;border-radius:5px;background:color-mix(in srgb,var(--muted) 10%,transparent)}.stage-bar{position:absolute;top:3px;height:22px;min-width:3px;border-radius:3px;overflow:hidden;color:var(--text-primary,var(--text));font-size:9px}.stage-bar small{padding:0 3px;white-space:nowrap}.stage-bar--synthesized{background-image:repeating-linear-gradient(-45deg,rgba(255,255,255,.35) 0 3px,transparent 3px 6px)!important}.waterfall-degraded,.degraded{color:var(--warning,var(--accent));font-size:10px}.evidence-list{display:grid;gap:5px;list-style:none;margin:0;padding:0}.evidence-item{display:flex;flex-wrap:wrap;gap:6px;font-size:11px;color:var(--muted)}.evidence-item strong{color:var(--text-primary,var(--text))}.rpf-legend{display:flex;flex-wrap:wrap;gap:8px 14px;color:var(--muted);font-size:10px}.rpf-legend span{display:inline-flex;align-items:center;gap:4px}.legend-dot{width:7px;height:7px;border-radius:50%;background:var(--muted)}.legend-dot--success{background:var(--success)}.legend-dot--failed{background:var(--danger)}.legend-dot--special{background:var(--accent)}.rpf-empty{padding:16px;color:var(--muted);text-align:center;font-size:12px}@media (max-width:680px){.rpf-track{display:grid;grid-template-columns:1fr;overflow-x:visible}.attempt-lane{grid-template-columns:1fr}.rpf-arrow{transform:rotate(90deg);justify-self:center;height:16px}.flow-node{max-width:none}}
 </style>

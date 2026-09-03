@@ -483,6 +483,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// reads the NULL as FALSE instead of dropping it.
 	var total, successes, totalAuto, totalSpecified int64
 	auditTenantFrag, auditTenantArgs, _ := tenantLogsClause(r, 1)
+	auditBusinessFrag := " AND " + businessRequestFilter("")
 
 	// 2026-08-31: try the audit-summary materialized view first (migration
 	// 632 routing_audit_summary_7d). Tenant isolation: the MV is grouped by
@@ -529,7 +530,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 			  AND (
 			    is_auto_request = TRUE
 			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-			  )`+auditTenantFrag+`
+			  )`+auditBusinessFrag+auditTenantFrag+`
 		`, auditTenantArgs...).Scan(&totalInt, &successesInt, &autoInt, &specifiedInt)
 		if err != nil {
 			writeInternalErr(w, err)
@@ -537,7 +538,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		}
 		total, successes, totalAuto, totalSpecified = int64(totalInt), int64(successesInt), int64(autoInt), int64(specifiedInt)
 	}
-	
+
 	out["total_requests"] = total
 	out["total_auto_requests"] = totalAuto
 	out["specified_model_requests"] = totalSpecified
@@ -551,7 +552,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// synthetic __specified__ key. Auto-only profile distribution
 	// follows below.
 	taskDist := map[string]int{}
-	
+
 	// 2026-09-01: use materialized view when eligible (same tenant logic as audit summary)
 	if mvFound {
 		// MV path: aggregate by effective_task_type
@@ -598,7 +599,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 			  AND (
 			    is_auto_request = TRUE
 			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-			  )`+auditTenantFrag+`
+			  )`+auditBusinessFrag+auditTenantFrag+`
 			GROUP BY (%s)
 			ORDER BY COUNT(*) DESC
 			LIMIT 20
@@ -622,7 +623,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		SELECT COALESCE(auto_profile, 'unknown') AS p, COUNT(*)
 		FROM request_logs_with_current_month_without_customer_id
 		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '7 days'`+auditTenantFrag+`
+		  AND ts >= NOW() - INTERVAL '7 days'`+auditBusinessFrag+auditTenantFrag+`
 		GROUP BY p
 		ORDER BY COUNT(*) DESC
 		LIMIT 10
@@ -693,7 +694,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 			  AND (
 			    is_auto_request = TRUE
 			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-			  )`+auditTenantFrag+`
+			  )`+auditBusinessFrag+auditTenantFrag+`
 			GROUP BY m
 			ORDER BY c DESC
 			LIMIT 10

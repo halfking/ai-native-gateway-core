@@ -98,6 +98,10 @@ type autoRouteDecision struct {
 	FilterReasons             []string             `json:"filter_reasons,omitempty"`
 	CacheReused               bool                 `json:"cache_reused"`
 	FallbackUsed              bool                 `json:"fallback_used"`
+	ExperimentID              string               `json:"experiment,omitempty"`
+	Treatment                 autoroute.Treatment  `json:"treatment,omitempty"`
+	AssignmentVersion         string               `json:"assignment_version,omitempty"`
+	AssignmentKeyHash         string               `json:"assignment_key_hash,omitempty"`
 	EmbeddingShadowTask       string               `json:"embedding_shadow_task,omitempty"`
 	EmbeddingShadowSimilarity *float64             `json:"embedding_shadow_similarity,omitempty"`
 	CandidatesTop3            []autoRouteCandidate `json:"candidates_top3"`
@@ -106,6 +110,16 @@ type autoRouteDecision struct {
 	// serialized into the response header or audit JSON.
 	failoverModels []string
 	signals        autoroute.ClassificationSignals
+
+	// Process-local selection snapshot fields. The wire candidate list is an
+	// intentionally small audit view; these values preserve the exact winner
+	// metrics needed by auto_route_selections without retaining the full
+	// autoroute.Decision in protocol handlers.
+	selectionCandidateRank   int
+	selectionCompositeScore  float64
+	selectionAffinityScore   float64
+	selectionAffinityApplied bool
+	selectionExplore         bool
 }
 
 // autoRouteCandidate is one row of the top-N audit list.
@@ -408,41 +422,48 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 // them from request_logs_hot (see CRITICAL-2 Fix A). Storing the canonical
 // *name* now keeps the row useful even if the id is never resolved.
 func recordAutoSelection(r *http.Request, sessionID string, decision *autoroute.Decision) {
-	requestID := r.Header.Get("X-Request-Id")
-
-	var composite, affinity float64
-	var affinityApplied, explore bool
-	winnerRank := 1
-	for i, c := range decision.CandidatesTopN {
-		if c.Candidate.CanonicalName == decision.ChosenModel {
-			winnerRank = i + 1
-			composite = c.Breakdown.Composite
-			affinity = c.Breakdown.Affinity
-			affinityApplied = c.Breakdown.AffinityApplied
-			explore = c.Breakdown.Explore
-			break
-		}
+	if decision == nil {
+		return
 	}
-	// If the winner is not in CandidatesTopN (pin/promote / cache-reuse path),
-	// composite stays 0 and the row records what actually happened via
-	// candidate_rank>1 and fallback_used.
+	recordAutoSelectionFromWire(r, sessionID, decisionToWire(decision))
+}
+
+// recordAutoSelectionFromWire is the protocol-neutral selection sink used by
+// non-chat handlers after their final gateway session has been resolved. The
+// wire carries the same IDs, decision snapshot, and process-local winner
+// metrics as the originating Decision, without retaining prompt content.
+func recordAutoSelectionFromWire(r *http.Request, sessionID string, wire *autoRouteDecision) {
+	if r == nil || wire == nil {
+		return
+	}
 
 	telemetry.WriteAutoSelection(telemetry.AutoSelection{
-		RequestID:       requestID,
-		SessionID:       sessionID,
-		TaskID:          sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id")),
-		TaskType:        string(decision.TaskType),
-		Profile:         string(decision.Profile),
-		Classifier:      decision.Classifier,
-		Confidence:      decision.Confidence,
-		ChosenModel:     decision.ChosenModel,
-		CandidateRank:   winnerRank,
-		CompositeScore:  composite,
-		AffinityScore:   affinity,
-		AffinityApplied: affinityApplied,
-		Explore:         explore,
-		FallbackUsed:    decision.FallbackUsed,
+		RequestID:         r.Header.Get("X-Request-Id"),
+		SessionID:         sessionID,
+		TaskID:            sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id")),
+		TaskType:          wire.TaskType,
+		Profile:           wire.Profile,
+		Classifier:        wire.Classifier,
+		Confidence:        wire.Confidence,
+		ChosenModel:       wire.ChosenModel,
+		CandidateRank:     maxInt(wire.selectionCandidateRank, 1),
+		CompositeScore:    wire.selectionCompositeScore,
+		AffinityScore:     wire.selectionAffinityScore,
+		AffinityApplied:   wire.selectionAffinityApplied,
+		Explore:           wire.selectionExplore,
+		FallbackUsed:      wire.FallbackUsed,
+		ExperimentID:      wire.ExperimentID,
+		Treatment:         string(wire.Treatment),
+		AssignmentVersion: wire.AssignmentVersion,
+		AssignmentKeyHash: wire.AssignmentKeyHash,
 	})
+}
+
+func maxInt(value, fallback int) int {
+	if value < 1 {
+		return fallback
+	}
+	return value
 }
 
 // rewriteBodyWithModel produces a copy of the body with the model field
@@ -482,13 +503,17 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		FilterReasons:       d.FilterReasons,
 		CacheReused:         d.CacheReused,
 		FallbackUsed:        d.FallbackUsed,
+		ExperimentID:        d.ExperimentID,
+		Treatment:           d.Treatment,
+		AssignmentVersion:   d.AssignmentVersion,
+		AssignmentKeyHash:   d.AssignmentKeyHash,
 		EmbeddingShadowTask: d.EmbeddingShadowTask,
 	}
 	if d.EmbeddingShadowTask != "" {
 		similarity := d.EmbeddingShadowSimilarity
 		wire.EmbeddingShadowSimilarity = &similarity
 	}
-	for _, c := range d.CandidatesTopN {
+	for i, c := range d.CandidatesTopN {
 		wire.CandidatesTop3 = append(wire.CandidatesTop3, autoRouteCandidate{
 			Model:          c.Candidate.CanonicalName,
 			Score:          c.Breakdown.Composite,
@@ -502,6 +527,13 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 			Reliability:    c.Breakdown.Reliability,
 			RouteTier:      c.Breakdown.RouteTier,
 		})
+		if c.Candidate.CanonicalName == d.ChosenModel {
+			wire.selectionCandidateRank = i + 1
+			wire.selectionCompositeScore = c.Breakdown.Composite
+			wire.selectionAffinityScore = c.Breakdown.Affinity
+			wire.selectionAffinityApplied = c.Breakdown.AffinityApplied
+			wire.selectionExplore = c.Breakdown.Explore
+		}
 	}
 	return wire
 }

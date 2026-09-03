@@ -20,97 +20,142 @@ import { confirmDialog } from '../composables/useConfirmDialog'
 const { t } = useI18n()
 
 const activeTab = ref<'status' | 'subscriptions' | 'nodes'>('status')
-const loading = ref(false)
-const error = ref('')
+type ProxyTab = typeof activeTab.value
+const loadingCountByTab = ref<Record<ProxyTab, number>>({
+  status: 0,
+  subscriptions: 0,
+  nodes: 0,
+})
+const errorByTab = ref<Record<ProxyTab, string>>({
+  status: '',
+  subscriptions: '',
+  nodes: '',
+})
+const loading = computed(() => loadingCountByTab.value[activeTab.value] > 0)
+const error = computed(() => errorByTab.value[activeTab.value])
+
+function setError(tab: ProxyTab, message: string) {
+  errorByTab.value[tab] = message
+}
+
+function beginLoading(tab: ProxyTab) {
+  loadingCountByTab.value[tab] += 1
+}
+
+function endLoading(tab: ProxyTab) {
+  loadingCountByTab.value[tab] = Math.max(0, loadingCountByTab.value[tab] - 1)
+}
+
+async function loadForTab(tab: ProxyTab, load: () => Promise<void>, fallbackError: string) {
+  beginLoading(tab)
+  setError(tab, '')
+  try {
+    await load()
+  } catch (e: unknown) {
+    setError(tab, e instanceof Error ? e.message : fallbackError)
+  } finally {
+    endLoading(tab)
+  }
+}
 
 // ── 状态 ──
 const status = ref<ProxyStatus | null>(null)
 
 async function loadStatus() {
-  loading.value = true
-  error.value = ''
-  try {
+  await loadForTab('status', async () => {
     status.value = await getProxyStatus()
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.loadStatusFailed')
-  } finally {
-    loading.value = false
-  }
+  }, t('proxy.error.loadStatusFailed'))
 }
 
 // ── 订阅 ──
 const subscriptions = ref<ProxySubscription[]>([])
+const safeSubscriptions = computed(() => subscriptions.value.filter(
+  (sub): sub is ProxySubscription => !!sub
+    && typeof sub === 'object'
+    && typeof sub.id === 'number'
+    && typeof sub.name === 'string'
+    && typeof sub.subscribe_url === 'string'
+    && typeof sub.status === 'string'
+    && typeof sub.node_count === 'number'
+    && (sub.last_fetch_at === null || typeof sub.last_fetch_at === 'string'),
+))
 const showCreateSub = ref(false)
 const subForm = ref({ name: '', subscribe_url: '', notes: '' })
 
 async function loadSubscriptions() {
-  loading.value = true
-  error.value = ''
-  try {
-    const list = await getProxySubscriptions()
-    subscriptions.value = Array.isArray(list) ? list : []
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.loadSubsFailed')
-  } finally {
-    loading.value = false
-  }
+  await loadForTab('subscriptions', async () => {
+    subscriptions.value = await getProxySubscriptions()
+  }, t('proxy.error.loadSubsFailed'))
 }
 
 async function handleCreateSub() {
   if (!subForm.value.name || !subForm.value.subscribe_url) {
-    error.value = t('proxy.error.nameUrlRequired')
+    setError('subscriptions', t('proxy.error.nameUrlRequired'))
     return
   }
   // 校验订阅 URL 必须为 http/https
   const urlLower = subForm.value.subscribe_url.toLowerCase()
   if (!urlLower.startsWith('http://') && !urlLower.startsWith('https://')) {
-    error.value = t('proxy.error.subscribeUrlMustHttp')
+    setError('subscriptions', t('proxy.error.subscribeUrlMustHttp'))
     return
   }
-  loading.value = true
-  error.value = ''
+  beginLoading('subscriptions')
+  setError('subscriptions', '')
   try {
     await createProxySubscription(subForm.value)
     showCreateSub.value = false
     subForm.value = { name: '', subscribe_url: '', notes: '' }
     await loadSubscriptions()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.createSubFailed')
+    setError('subscriptions', e instanceof Error ? e.message : t('proxy.error.createSubFailed'))
   } finally {
-    loading.value = false
+    endLoading('subscriptions')
   }
 }
 
 async function handleRefreshSub(id: number, name: string) {
   if (!(await confirmDialog(t('proxy.confirmRefresh', { name })))) return
-  loading.value = true
-  error.value = ''
+  beginLoading('subscriptions')
+  setError('subscriptions', '')
   try {
     await refreshProxySubscription(id)
     await loadSubscriptions()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.refreshSubFailed')
+    setError('subscriptions', e instanceof Error ? e.message : t('proxy.error.refreshSubFailed'))
   } finally {
-    loading.value = false
+    endLoading('subscriptions')
   }
 }
 
 async function handleDeleteSub(id: number, name: string) {
   if (!(await confirmDialog(t('proxy.confirmDeleteSub', { name })))) return
-  loading.value = true
-  error.value = ''
+  beginLoading('subscriptions')
+  setError('subscriptions', '')
   try {
     await deleteProxySubscription(id)
     await loadSubscriptions()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.deleteSubFailed')
+    setError('subscriptions', e instanceof Error ? e.message : t('proxy.error.deleteSubFailed'))
   } finally {
-    loading.value = false
+    endLoading('subscriptions')
   }
 }
 
 // ── 节点 ──
 const nodes = ref<ProxyNode[]>([])
+const safeNodes = computed(() => nodes.value.filter(
+  (node): node is ProxyNode => !!node
+    && typeof node === 'object'
+    && typeof node.id === 'number'
+    && typeof node.name === 'string'
+    && typeof node.protocol === 'string'
+    && typeof node.server === 'string'
+    && typeof node.port === 'number'
+    && typeof node.dialable === 'boolean'
+    && typeof node.status === 'string'
+    && typeof node.response_time_ms === 'number'
+    && typeof node.consecutive_failures === 'number',
+))
 const showCreateNode = ref(false)
 const nodeForm = ref({
   subscription_id: 0,
@@ -125,31 +170,24 @@ const nodeForm = ref({
 })
 
 async function loadNodes() {
-  loading.value = true
-  error.value = ''
-  try {
-    const list = await getProxyNodes()
-    nodes.value = Array.isArray(list) ? list : []
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.loadNodesFailed')
-  } finally {
-    loading.value = false
-  }
+  await loadForTab('nodes', async () => {
+    nodes.value = await getProxyNodes()
+  }, t('proxy.error.loadNodesFailed'))
 }
 
 async function handleCreateNode() {
   if (!nodeForm.value.name || !nodeForm.value.server || nodeForm.value.subscription_id <= 0) {
-    error.value = t('proxy.error.nodeFieldsRequired')
+    setError('nodes', t('proxy.error.nodeFieldsRequired'))
     return
   }
   // 协议白名单校验：只能创建可拨号节点（http/https/socks5）
   const allowed = ['http', 'https', 'socks5']
   if (!allowed.includes(nodeForm.value.protocol)) {
-    error.value = t('proxy.error.protocolNotDialable')
+    setError('nodes', t('proxy.error.protocolNotDialable'))
     return
   }
-  loading.value = true
-  error.value = ''
+  beginLoading('nodes')
+  setError('nodes', '')
   try {
     await createProxyNode(nodeForm.value)
     showCreateNode.value = false
@@ -166,37 +204,37 @@ async function handleCreateNode() {
     }
     await loadNodes()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.createNodeFailed')
+    setError('nodes', e instanceof Error ? e.message : t('proxy.error.createNodeFailed'))
   } finally {
-    loading.value = false
+    endLoading('nodes')
   }
 }
 
 async function handleHealthCheckNode(id: number, name: string) {
   if (!(await confirmDialog(t('proxy.confirmHealthCheck', { name })))) return
-  loading.value = true
-  error.value = ''
+  beginLoading('nodes')
+  setError('nodes', '')
   try {
     await healthCheckProxyNode(id)
     await loadNodes()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.healthCheckFailed')
+    setError('nodes', e instanceof Error ? e.message : t('proxy.error.healthCheckFailed'))
   } finally {
-    loading.value = false
+    endLoading('nodes')
   }
 }
 
 async function handleDeleteNode(id: number, name: string) {
   if (!(await confirmDialog(t('proxy.confirmDeleteNode', { name })))) return
-  loading.value = true
-  error.value = ''
+  beginLoading('nodes')
+  setError('nodes', '')
   try {
     await deleteProxyNode(id)
     await loadNodes()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('proxy.error.deleteNodeFailed')
+    setError('nodes', e instanceof Error ? e.message : t('proxy.error.deleteNodeFailed'))
   } finally {
-    loading.value = false
+    endLoading('nodes')
   }
 }
 
@@ -208,7 +246,6 @@ onMounted(() => {
 
 function switchTab(tab: 'status' | 'subscriptions' | 'nodes') {
   activeTab.value = tab
-  error.value = ''
 }
 
 const subOptions = computed(() => {
@@ -296,7 +333,7 @@ const subOptions = computed(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="sub in subscriptions" :key="sub.id">
+          <tr v-for="sub in safeSubscriptions" :key="sub.id">
             <td>{{ sub.id }}</td>
             <td>{{ sub.name }}</td>
             <td class="url-cell">{{ sub.subscribe_url }}</td>
@@ -310,7 +347,7 @@ const subOptions = computed(() => {
               <button @click="handleDeleteSub(sub.id, sub.name)" class="btn-small btn-danger">{{ t('common.delete') }}</button>
             </td>
           </tr>
-          <tr v-if="subscriptions.length === 0">
+          <tr v-if="safeSubscriptions.length === 0">
             <td colspan="7" class="empty-state">{{ t('proxy.subscriptions.empty') }}</td>
           </tr>
         </tbody>
@@ -365,7 +402,7 @@ const subOptions = computed(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="node in nodes" :key="node.id">
+          <tr v-for="node in safeNodes" :key="node.id">
             <td>{{ node.id }}</td>
             <td>{{ node.name }}</td>
             <td>{{ node.protocol }}</td>
@@ -383,7 +420,7 @@ const subOptions = computed(() => {
               <button @click="handleDeleteNode(node.id, node.name)" class="btn-small btn-danger">{{ t('common.delete') }}</button>
             </td>
           </tr>
-          <tr v-if="nodes.length === 0">
+          <tr v-if="safeNodes.length === 0">
             <td colspan="9" class="empty-state">{{ t('proxy.nodes.empty') }}</td>
           </tr>
         </tbody>

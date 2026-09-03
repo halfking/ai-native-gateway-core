@@ -20,21 +20,24 @@ import (
 )
 
 type TurnListItem struct {
-	TurnNo           int         `json:"turn_no"`
-	Ts               time.Time   `json:"ts"`
-	Title            string      `json:"title,omitempty"`
-	Summary          string      `json:"summary,omitempty"`
-	RequestTokens    int         `json:"request_tokens"`
-	ResponseTokens   int         `json:"response_tokens"`
-	CostUSD          float64     `json:"cost_usd"`
-	Model            string      `json:"model"`
-	Provider         string      `json:"provider"`
-	StatusCode       int         `json:"status_code"`
-	SubmitMode       string      `json:"submit_mode"`
-	InjectionVerdict string      `json:"injection_verdict"`
-	OutputVerdict    string      `json:"output_verdict"`
-	AttachmentCount  int         `json:"attachment_count"`
-	Digest           *TurnDigest `json:"digest,omitempty"`
+	TurnNo           int                    `json:"turn_no"`
+	Ts               time.Time              `json:"ts"`
+	RequestID        string                 `json:"request_id"`
+	Title            string                 `json:"title,omitempty"`
+	Summary          string                 `json:"summary,omitempty"`
+	RequestTokens    int                    `json:"request_tokens"`
+	ResponseTokens   int                    `json:"response_tokens"`
+	CostUSD          float64                `json:"cost_usd"`
+	Model            string                 `json:"model"`
+	Provider         string                 `json:"provider"`
+	StatusCode       int                    `json:"status_code"`
+	LatencyMs        *int                   `json:"latency,omitempty"`
+	SubmitMode       string                 `json:"submit_mode"`
+	InjectionVerdict string                 `json:"injection_verdict"`
+	OutputVerdict    string                 `json:"output_verdict"`
+	AttachmentCount  int                    `json:"attachment_count"`
+	ChildRequests    []*SessionChildRequest `json:"child_requests"`
+	Digest           *TurnDigest            `json:"digest,omitempty"`
 }
 
 const (

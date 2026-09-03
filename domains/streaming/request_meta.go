@@ -203,8 +203,10 @@ func readRequestBody(ctx context.Context, body io.ReadCloser, limit int) ([]byte
 		return result.data, result.err
 	case <-ctx.Done():
 		_ = body.Close()
-		result := <-resultCh
-		return result.data, ctx.Err()
+		// Do not wait for the reader after cancellation. A body backed by a
+		// socket or a misbehaving custom reader may ignore Close and never
+		// publish a result; the caller must return at the timeout boundary.
+		return nil, ctx.Err()
 	}
 }
 

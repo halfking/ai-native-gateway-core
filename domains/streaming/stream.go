@@ -632,6 +632,13 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 		diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-completions", outcome.Interrupted)
 	}()
 
+	// Monitor the client transport without emitting probe bytes. The derived
+	// context lets blocked upstream reads and provider calls observe a client
+	// disconnect while normal writes keep the idle timer fresh.
+	ctx, monitor := NewConnectionMonitor(ctx, w)
+	defer monitor.Stop()
+	w = &monitoredResponseWriter{delegate: w, monitor: monitor}
+
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
 	// audit emit in the caller and lose the request_logs row entirely.

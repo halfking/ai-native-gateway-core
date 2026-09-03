@@ -4,6 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getRequestTrace, type RequestTrace, type TraceEvent } from '../../api/trace'
 import { getRequestJourney, type RequestJourney } from '../../api/request-journeys'
+import { fetchDispatchJournal, type DispatchJournalSnapshot } from '../../api/dispatchJournal'
 import { fetchWaterfallByRequestId, type WaterfallRequest } from '../../api/dispatch'
 import RequestProcessingFlowDiagram from './RequestProcessingFlowDiagram.vue'
 
@@ -17,8 +18,11 @@ const error = ref('')
 const trace = ref<RequestTrace | null>(null)
 const journey = ref<RequestJourney | null>(null)
 const waterfall = ref<WaterfallRequest | null>(null)
+const waterfallResultSource = ref('')
+const journal = ref<DispatchJournalSnapshot | null>(null)
 const journeyError = ref('')
 const waterfallError = ref('')
+const journalError = ref('')
 let loadSequence = 0
 
 const { t } = useI18n()
@@ -29,9 +33,12 @@ watch(
     trace.value = null
     journey.value = null
     waterfall.value = null
+    waterfallResultSource.value = ''
+    journal.value = null
     error.value = ''
     journeyError.value = ''
     waterfallError.value = ''
+    journalError.value = ''
     if (!id) return
     const sequence = ++loadSequence
     loading.value = true
@@ -46,8 +53,21 @@ watch(
     else error.value = traceResult.reason instanceof Error ? traceResult.reason.message : String(traceResult.reason)
     if (journeyResult.status === 'fulfilled') journey.value = journeyResult.value
     else journeyError.value = journeyResult.reason instanceof Error ? journeyResult.reason.message : String(journeyResult.reason)
-    if (waterfallResult.status === 'fulfilled') waterfall.value = waterfallResult.value.request
-    else waterfallError.value = waterfallResult.reason instanceof Error ? waterfallResult.reason.message : String(waterfallResult.reason)
+    if (waterfallResult.status === 'fulfilled') {
+      waterfall.value = waterfallResult.value.request
+      waterfallResultSource.value = waterfallResult.value.source || ''
+    } else {
+      waterfallError.value = waterfallResult.reason instanceof Error ? waterfallResult.reason.message : String(waterfallResult.reason)
+    }
+    if (journeyResult.status === 'fulfilled' && journeyResult.value.tenant_id) {
+      try {
+        const nextJournal = await fetchDispatchJournal(journeyResult.value.tenant_id, id)
+        if (sequence === loadSequence) journal.value = nextJournal
+      } catch (e: unknown) {
+        if (sequence === loadSequence) journalError.value = e instanceof Error ? e.message : String(e)
+      }
+    }
+    if (sequence !== loadSequence) return
     loading.value = false
   },
   { immediate: true },
@@ -84,10 +104,27 @@ function statusClass(status: string): string {
         <span v-if="journey?.observation_status === 'observation_degraded' || journeyError || waterfallError" class="degraded" role="status">
           {{ t('requestDetail.flow.observationDegraded') }}
         </span>
+        <span v-if="journal" class="muted" data-testid="journal-summary">
+          Journal {{ journal.entries.length }} decisions<span v-if="journal.truncated"> ({{ journal.truncated_count }} truncated)</span>
+        </span>
+        <span v-if="journalError" class="degraded" role="status" data-testid="journal-degraded">
+          Journal unavailable
+        </span>
+        <span v-if="journal?.entries?.length" class="journal-actions" aria-label="Journal decisions">
+          <span v-for="entry in journal.entries.slice(-4)" :key="entry.seq" class="journal-chip">
+            #{{ entry.seq }} {{ entry.action }}<span v-if="entry.model"> · {{ entry.model }}</span>
+          </span>
+        </span>
         <button type="button" class="btn btn-sm link" @click="emit('goto', 'waterfall')">{{ t('requestDetail.flow.viewWaterfall') }}</button>
+
         <button type="button" class="btn btn-sm link" @click="emit('goto', 'attempts')">{{ t('requestDetail.flow.viewRoutingRetry') }}</button>
       </div>
-      <RequestProcessingFlowDiagram :trace="trace" :journey="journey" :waterfall="waterfall" />
+      <RequestProcessingFlowDiagram
+        :trace="trace"
+        :journey="journey"
+        :waterfall="waterfall"
+        :waterfall-source="waterfallResultSource"
+      />
       <ul class="flow-list">
         <li
           v-for="e in events"
@@ -112,6 +149,9 @@ function statusClass(status: string): string {
   display: flex; flex-wrap: wrap; gap: 12px;
   font-size: 12px; margin-bottom: 10px; color: var(--text-secondary);
 }
+.journal-actions { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.journal-chip { border: 1px solid var(--border); border-radius: 999px; padding: 1px 6px; font-size: 10px; color: var(--text-secondary); }
+.degraded { color: var(--warning, #d97706); }
 .flow-list { list-style: none; margin: 0; padding: 0; }
 .flow-row {
   display: grid;

@@ -45,6 +45,14 @@ type SessionTurnTreeItem struct {
 	Model         string                 `json:"model,omitempty"`
 	LatencyMs     *int                   `json:"latency"` // 毫秒；NULL 未知
 	ChildRequests []*SessionChildRequest `json:"child_requests"`
+	V2Shadow      *SessionTurnV2Shadow   `json:"v2_shadow,omitempty"`
+}
+
+// SessionTurnV2Shadow is the per-turn, metadata-only dual-read comparison.
+// It intentionally contains no body or digest payload.
+type SessionTurnV2Shadow struct {
+	TurnNo          int  `json:"turn_no"`
+	DigestAvailable bool `json:"digest_available"`
 }
 
 // SessionChildRequest 是挂在主请求下的扩展请求（仅元数据）。

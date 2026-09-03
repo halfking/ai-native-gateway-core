@@ -18,6 +18,8 @@ import {
 } from '../../api'
 import { isSuperAdmin } from '../../store'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
+import CredentialStatusBar from '../../components/CredentialStatusBar.vue'
+import CredentialKeyField from '../../components/CredentialKeyField.vue'
 import CredentialModelsPanel from './CredentialModelsPanel.vue'
 import { confirmDialog } from '../../composables/useConfirmDialog'
 
@@ -259,6 +261,20 @@ function healthLabel(s?: string | null) {
   return pd('creds.health.untested')
 }
 
+const credentialStatusLabels = computed(() => ({
+  active: pd('creds.statuses.active'),
+  cooling: pd('creds.statuses.cooling'),
+  degraded: pd('creds.statuses.degraded'),
+  rate_limited: pd('creds.statuses.cooling'),
+  unreachable: pd('creds.health.unreachable'),
+  auth_failed: pd('creds.health.error'),
+  suspended: pd('creds.statuses.quarantine'),
+  quota_exhausted: pd('creds.statuses.quotaExpired'),
+  disabled: pd('creds.statuses.disabled'),
+  deleted: pd('creds.statuses.disabled'),
+  unknown: pd('creds.health.untested'),
+}))
+
 function probeResultMsg(r: { health_status?: string | null; probe_ok?: boolean; health_source?: string | null }) {
   const status = healthLabel(r.health_status)
   const detail = r.health_source === 'models'
@@ -322,7 +338,6 @@ function openDrawer(c: ProviderCredential) {
 // we never want it persisted in the cloned ProviderCredential, since the
 // copy is serialized for offline edits in some debug paths.
 const revealedApiKey = ref<string | null>(null)
-const revealing = ref(false)
 const rotateModalOpen = ref(false)
 const rotateRawModelName = ref('')
 const rotateNewApiKey = ref('')
@@ -330,18 +345,10 @@ const rotateNewApiKeyConfirm = ref('')
 const rotateSubmitting = ref(false)
 const rotateErr = ref('')
 
-async function revealApiKey() {
-  const c = selected.value
-  if (!c) return
-  revealing.value = true
-  try {
-    const r = await revealCredentialKey(props.provider.id, c.id)
-    revealedApiKey.value = r.api_key
-  } catch (e: unknown) {
-    ElMessage.error(e instanceof Error ? e.message : pd('creds.apiKeyRotateFailed'))
-  } finally {
-    revealing.value = false
-  }
+async function revealApiKeyForField(credentialId: number, providerId?: number): Promise<string> {
+  const r = await revealCredentialKey(providerId ?? props.provider.id, credentialId)
+  revealedApiKey.value = r.api_key
+  return r.api_key
 }
 
 function hideApiKey() {
@@ -948,7 +955,7 @@ function onTagsInput(ev: Event) {
               <div class="cred-meta">{{ pd('creds.rowMeta', { id: c.id, trust: c.trust_level }) }}</div>
             </td>
             <td>
-              <span class="badge" :class="statusBadge(c.status, c.manual_disabled)">{{ statusLabel(c.status, c.manual_disabled) }}</span>
+              <CredentialStatusBar :credential="c" :labels="credentialStatusLabels" />
               <div class="cell-sub">{{ c.lifecycle_status }}</div>
             </td>
             <td>
@@ -1002,48 +1009,46 @@ function onTagsInput(ev: Event) {
             <input v-model="selected.label" class="field-input" :disabled="!canManageCreds" />
             <label class="field-label" style="margin-top:6px">{{ pd('creds.drawerFieldApiKey') || 'API Key' }}</label>
             <div class="drawer-key-wrap">
-              <div class="key-fingerprint drawer-key">
-                {{ revealedApiKey ?? selected.key_masked ?? '—' }}
-              </div>
-              <div class="btn-row" style="margin-top:6px">
-                <template v-if="revealedApiKey">
-                  <button class="btn btn-sm" type="button" @click="copyRevealed">{{ pd('creds.apiKeyCopy') }}</button>
-                  <button class="btn btn-sm btn-ghost" type="button" @click="hideApiKey">{{ pd('creds.apiKeyHide') }}</button>
-                </template>
-                <template v-else>
-                  <!-- 显示完整 API Key 仅 super_admin；「修改」（轮换）对
-                       default 租户 tenant_admin 同样开放（2026-09-04）。 -->
-                  <button
-                    v-if="canManageCreds"
-                    class="btn btn-sm"
-                    type="button"
-                    :disabled="revealing"
-                    @click="revealApiKey"
-                  >
-                    {{ revealing ? pd('creds.apiKeyRevealing') : pd('creds.apiKeyReveal') }}
-                  </button>
-                  <button
-                    class="btn btn-sm btn-ghost"
-                    type="button"
-                    :disabled="!probeModelOptions.length"
-                    @click="openRotateModal"
-                    :title="!probeModelOptions.length ? pd('creds.apiKeyRotateHintNoBinding') : ''"
-                  >
-                    {{ pd('creds.apiKeyRotateBtn') }}
-                  </button>
-                </template>
-              </div>
+              <CredentialKeyField
+                :provider-id="provider.id"
+                :credential-id="selected.id"
+                :masked="selected.key_masked"
+                :can-reveal="canManageCreds"
+                :reveal-key="revealApiKeyForField"
+                :reveal-label="pd('creds.apiKeyReveal')"
+                :revealing-label="pd('creds.apiKeyRevealing')"
+                :hide-label="pd('creds.apiKeyHide')"
+                :copy-label="pd('creds.apiKeyCopy')"
+                :error-label="pd('creds.apiKeyRotateFailed')"
+                @revealed="revealedApiKey = $event"
+                @hidden="revealedApiKey = null"
+              />
               <div v-if="revealedApiKey" class="cell-sub cell-sub--warn" style="margin-top:4px">
                 {{ pd('creds.apiKeyWarningReveal') }}
               </div>
               <div v-else-if="!probeModelOptions.length" class="cell-sub" style="margin-top:4px">
                 {{ pd('creds.apiKeyRotateHintNoBinding') }}
               </div>
+              <div class="btn-row" style="margin-top:6px">
+                <button
+                  class="btn btn-sm btn-ghost"
+                  type="button"
+                  :disabled="!probeModelOptions.length"
+                  @click="openRotateModal"
+                  :title="!probeModelOptions.length ? pd('creds.apiKeyRotateHintNoBinding') : ''"
+                >
+                  {{ pd('creds.apiKeyRotateBtn') }}
+                </button>
+              </div>
             </div>
           </div>
 
           <div class="drawer-section">
             <div class="drawer-section-title">{{ pd('creds.drawerSectionStatus') }}</div>
+            <div class="info-row">
+              <CredentialStatusBar :credential="selected" :labels="credentialStatusLabels" />
+              <span class="cell-muted">{{ selected.lifecycle_status }}</span>
+            </div>
             <div class="field-grid">
               <div>
                 <label class="field-label">{{ pd('creds.drawerFieldStatus') }}</label>

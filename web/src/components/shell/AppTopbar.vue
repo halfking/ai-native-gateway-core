@@ -17,7 +17,8 @@ import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from '../../config/brand'
 import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, isProviderConsoleView as checkProviderConsole } from '../../store'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, resolveNavItemActivation, visibleNavGroups, visibleNavItems, type NavGroup } from '../../config/appNav'
+import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, resolveNavItemActivation, visibleNavGroups, visibleNavItems, mergeRemotePluginNav, type NavGroup } from '../../config/appNav'
+import { usePluginNav } from '../../composables/usePluginNav'
 import {
   LOCAL_OPS_MENU,
   onMaintainAvailabilityChange,
@@ -112,6 +113,13 @@ const navPrimaryResolved = computed(() =>
 
 const opsMenuOverrides = ref<OpsMenuGroup[] | null>(null)
 
+// V5.1: dynamic plugin nav (plugin-runtime /api/v1/plugin-nav). Loaded once
+// per mount; failures silently keep the static layout. The merge step runs
+// after the opsPlatform override so a plugin can't displace the maintain
+// nav, but plugin entries land inside the matching static group (e.g.
+// 'requests-sessions') or in a synthetic 'plugins' group if no match.
+const { pluginNav } = usePluginNav()
+
 function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] | null): NavGroup[] {
   if (!remote || !remote.length) return localGroups
   const merged: NavGroup[] = []
@@ -139,13 +147,14 @@ function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] | null):
 }
 
 const navGroups = computed(() => {
-  const local = visibleNavGroups(NAV_GROUPS, {
+  let local = visibleNavGroups(NAV_GROUPS, {
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
     isProviderConsole: isProviderConsole.value,
     isActivated: isActivated.value,
   })
+  local = mergeRemotePluginNav(local, pluginNav.value)
   const base = opsMenuOverrides.value ? mergeRemoteOps(local, opsMenuOverrides.value) : local
   // 2026-09-02: 每个 item 都附带上「按激活状态解析后的 path / 是否为激活动作」,
   // 模板直接读 resolved.path 渲染即可。

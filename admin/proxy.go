@@ -64,27 +64,98 @@ func (h *Handler) StopProxyRuntime() {
 
 // ── 响应视图 ──────────────────────────────────────────────────────────────
 
+// proxySubscriptionView 是订阅的对外视图：保留现有响应字段，但订阅地址只返回
+// scheme、host 与固定脱敏路径。完整地址仍仅用于创建/更新与后台刷新。
+type proxySubscriptionView struct {
+	ID              int        `json:"id"`
+	Name            string     `json:"name"`
+	SubscribeURL    string     `json:"subscribe_url"`
+	Status          string     `json:"status"`
+	LastFetchAt     *time.Time `json:"last_fetch_at"`
+	LastFetchStatus string     `json:"last_fetch_status"`
+	LastError       string     `json:"last_error"`
+	NodeCount       int        `json:"node_count"`
+	Priority        int        `json:"priority"`
+	Notes           string     `json:"notes"`
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
+}
+
+func sanitizeSubscribeURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		// Persisted URLs are validated on write; do not echo malformed legacy data.
+		return "[redacted]"
+	}
+	u.User = nil
+	u.Path = "/redacted"
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
+}
+
+func toProxySubscriptionView(s *proxy.Subscription) proxySubscriptionView {
+	var lastFetchAt *time.Time
+	if !s.LastFetchAt.IsZero() {
+		lastFetchAt = &s.LastFetchAt
+	}
+	return proxySubscriptionView{
+		ID:              s.ID,
+		Name:            s.Name,
+		SubscribeURL:    sanitizeSubscribeURL(s.SubscribeURL),
+		Status:          s.Status,
+		LastFetchAt:     lastFetchAt,
+		LastFetchStatus: s.LastFetchStatus,
+		LastError:       proxy.SanitizeSubscriptionError(s.LastError, s.SubscribeURL),
+		NodeCount:       s.NodeCount,
+		Priority:        s.Priority,
+		Notes:           s.Notes,
+		CreatedAt:       s.CreatedAt,
+		UpdatedAt:       s.UpdatedAt,
+	}
+}
+
+func toProxySubscriptionViews(subs []*proxy.Subscription) []proxySubscriptionView {
+	views := make([]proxySubscriptionView, 0, len(subs))
+	for _, sub := range subs {
+		if sub != nil {
+			views = append(views, toProxySubscriptionView(sub))
+		}
+	}
+	return views
+}
+
 // proxyNodeView 是节点的对外视图：绝不泄露密码明文。
 type proxyNodeView struct {
-	ID                    int     `json:"id"`
-	SubscriptionID        int     `json:"subscription_id"`
-	Name                  string  `json:"name"`
-	Protocol              string  `json:"protocol"`
-	Server                string  `json:"server"`
-	Port                  int     `json:"port"`
-	Username              string  `json:"username,omitempty"`
-	HasPassword           bool    `json:"has_password"`
-	Dialable              bool    `json:"dialable"`
-	Location              string  `json:"location,omitempty"`
-	Status                string  `json:"status"`
-	HealthCheckURL        string  `json:"health_check_url,omitempty"`
-	LastHealthCheckStatus string  `json:"last_health_check_status,omitempty"`
-	ResponseTimeMs        int     `json:"response_time_ms"`
-	SuccessRate           float64 `json:"success_rate"`
-	ConsecutiveFailures   int     `json:"consecutive_failures"`
+	ID                    int        `json:"id"`
+	SubscriptionID        int        `json:"subscription_id"`
+	Name                  string     `json:"name"`
+	Protocol              string     `json:"protocol"`
+	Server                string     `json:"server"`
+	Port                  int        `json:"port"`
+	Username              string     `json:"username,omitempty"`
+	HasPassword           bool       `json:"has_password"`
+	Dialable              bool       `json:"dialable"`
+	Location              string     `json:"location,omitempty"`
+	Status                string     `json:"status"`
+	HealthCheckURL        string     `json:"health_check_url,omitempty"`
+	LastHealthCheckAt     *time.Time `json:"last_health_check_at"`
+	LastHealthCheckStatus string     `json:"last_health_check_status,omitempty"`
+	ResponseTimeMs        int        `json:"response_time_ms"`
+	SuccessRate           float64    `json:"success_rate"`
+	ConsecutiveFailures   int        `json:"consecutive_failures"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 func toProxyNodeView(n *proxy.Node) proxyNodeView {
+	var lastHealthCheckAt *time.Time
+	if !n.LastHealthCheckAt.IsZero() {
+		lastHealthCheckAt = &n.LastHealthCheckAt
+	}
 	return proxyNodeView{
 		ID:                    n.ID,
 		SubscriptionID:        n.SubscriptionID,
@@ -98,10 +169,13 @@ func toProxyNodeView(n *proxy.Node) proxyNodeView {
 		Location:              n.Location,
 		Status:                n.Status,
 		HealthCheckURL:        n.HealthCheckURL,
+		LastHealthCheckAt:     lastHealthCheckAt,
 		LastHealthCheckStatus: n.LastHealthCheckStatus,
 		ResponseTimeMs:        n.ResponseTimeMs,
 		SuccessRate:           n.SuccessRate,
 		ConsecutiveFailures:   n.ConsecutiveFailures,
+		CreatedAt:             n.CreatedAt,
+		UpdatedAt:             n.UpdatedAt,
 	}
 }
 
@@ -242,7 +316,8 @@ func (h *Handler) listProxySubscriptions(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusInternalServerError, "list subscriptions: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": subs, "total": len(subs)})
+	items := toProxySubscriptionViews(subs)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 }
 
 func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request) {
@@ -271,7 +346,7 @@ func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request
 	if status == "" {
 		status = "active"
 	}
-	if !isValidProxyStatus(status) {
+	if !isValidSubscriptionStatus(status) {
 		writeError(w, http.StatusBadRequest, "status must be one of active/disabled/error")
 		return
 	}
@@ -288,7 +363,7 @@ func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "create subscription: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, sub)
+	writeJSON(w, http.StatusCreated, toProxySubscriptionView(sub))
 }
 
 func (h *Handler) getProxySubscription(w http.ResponseWriter, r *http.Request, id int) {
@@ -298,7 +373,7 @@ func (h *Handler) getProxySubscription(w http.ResponseWriter, r *http.Request, i
 		writeProxyLookupError(w, err, "subscription")
 		return
 	}
-	writeJSON(w, http.StatusOK, sub)
+	writeJSON(w, http.StatusOK, toProxySubscriptionView(sub))
 }
 
 func (h *Handler) updateProxySubscription(w http.ResponseWriter, r *http.Request, id int) {
@@ -339,7 +414,7 @@ func (h *Handler) updateProxySubscription(w http.ResponseWriter, r *http.Request
 	}
 	if req.Status != nil {
 		st := strings.TrimSpace(*req.Status)
-		if !isValidProxyStatus(st) {
+		if !isValidSubscriptionStatus(st) {
 			writeError(w, http.StatusBadRequest, "status must be one of active/disabled/error")
 			return
 		}
@@ -356,7 +431,7 @@ func (h *Handler) updateProxySubscription(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusInternalServerError, "update subscription: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sub)
+	writeJSON(w, http.StatusOK, toProxySubscriptionView(sub))
 }
 
 func (h *Handler) deleteProxySubscription(w http.ResponseWriter, r *http.Request, id int) {
@@ -391,8 +466,16 @@ func (h *Handler) refreshProxySubscription(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), proxyRefreshTimeout)
 	defer cancel()
 
+	var subscribeURL string
+	if sub, err := store.GetSubscription(ctx, id); err == nil && sub != nil {
+		subscribeURL = sub.SubscribeURL
+	}
 	if err := mgr.RefreshSubscription(ctx, id); err != nil {
-		writeError(w, http.StatusBadGateway, "refresh subscription: "+err.Error())
+		message := proxy.SanitizeSecrets(err.Error())
+		if subscribeURL != "" {
+			message = proxy.SanitizeSubscriptionError(message, subscribeURL)
+		}
+		writeError(w, http.StatusBadGateway, "refresh subscription: "+message)
 		return
 	}
 
@@ -533,9 +616,13 @@ func (h *Handler) createProxyNode(w http.ResponseWriter, r *http.Request) {
 	if status == "" {
 		status = "active"
 	}
-	if !isValidProxyStatus(status) && status != "unhealthy" {
-		writeError(w, http.StatusBadRequest, "status must be one of active/disabled/error/unhealthy")
+	if !isValidNodeStatus(status) {
+		writeError(w, http.StatusBadRequest, "status must be one of active/disabled/unhealthy")
 		return
+	}
+	healthCheckURL := strings.TrimSpace(req.HealthCheckURL)
+	if healthCheckURL == "" {
+		healthCheckURL = "https://www.google.com/generate_204"
 	}
 
 	mgr, store := h.proxyRuntime()
@@ -548,7 +635,7 @@ func (h *Handler) createProxyNode(w http.ResponseWriter, r *http.Request) {
 		Username:       req.Username,
 		Password:       req.Password,
 		Location:       req.Location,
-		HealthCheckURL: strings.TrimSpace(req.HealthCheckURL),
+		HealthCheckURL: healthCheckURL,
 		Status:         status,
 	}
 	if err := store.CreateNode(r.Context(), node); err != nil {
@@ -735,9 +822,18 @@ func parsePositiveID(raw string) (int, error) {
 	return id, nil
 }
 
-func isValidProxyStatus(status string) bool {
+func isValidSubscriptionStatus(status string) bool {
 	switch status {
 	case "active", "disabled", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidNodeStatus(status string) bool {
+	switch status {
+	case "active", "disabled", "unhealthy":
 		return true
 	default:
 		return false

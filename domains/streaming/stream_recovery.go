@@ -875,6 +875,54 @@ func RenderStreamRestartFrames(opts RestartRenderOptions) RestartRenderResult {
 	}
 }
 
+// ── Client signal frames (2026-09-03) ───────────────────────────────────────
+
+// ClientSignalRenderOptions parameterizes a gw-* control frame emission at
+// stream tail. The handler writes this AFTER `data: [DONE]\n\n` so the
+// signal rides on the same HTTP connection as the assistant turn.
+//
+// Protocol: a custom SSE event type whose `data:` line carries a versioned
+// JSON payload. Standard OpenAI/Anthropic/Responses clients ignore unknown
+// event types per the SSE spec; gateway-aware clients parse the payload.
+type ClientSignalRenderOptions struct {
+	EventName string                 // e.g. "gw-continue", "gw-handoff"
+	Payload   map[string]interface{} // marshaled as the data: line JSON
+}
+
+// RenderClientSignalFrame builds a single SSE frame string for emission at
+// stream tail. The frame is terminated by `\n\n` per SSE spec so it can be
+// written directly via safeWriteSSE without further framing.
+//
+// Returns "" when EventName is empty or when payload marshaling fails; callers
+// should log-and-skip rather than write a malformed frame.
+var allowedClientSignalEvents = map[string]struct{}{
+	"gw-continue": {},
+	"gw-handoff":  {},
+}
+
+func RenderClientSignalFrame(opts ClientSignalRenderOptions) string {
+	if _, ok := allowedClientSignalEvents[opts.EventName]; !ok {
+		return ""
+	}
+	payload, err := json.Marshal(opts.Payload)
+	if err != nil {
+		slog.Warn("client_signal_render_marshal_failed", "event", opts.EventName, "error", err)
+		return ""
+	}
+	return renderClientSignalFrame(opts.EventName, payload)
+}
+
+// renderClientSignalFrame preserves a hook-provided JSON payload verbatim.
+// ModeHook serializes the versioned contract before its atomic budget claim;
+// decoding and re-encoding it in the handler could alter numbers or omit
+// future extension fields.
+func renderClientSignalFrame(eventName string, payload []byte) string {
+	if _, ok := allowedClientSignalEvents[eventName]; !ok || len(payload) == 0 || !json.Valid(payload) {
+		return ""
+	}
+	return "event: " + eventName + "\ndata: " + string(payload) + "\n\n"
+}
+
 // ── R12.9 metrics ──────────────────────────────────────────────────────────
 
 type streamRecoveryMetricsStruct struct {

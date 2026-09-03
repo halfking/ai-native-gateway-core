@@ -610,6 +610,13 @@ func (h *Handler) encryptCred(plaintext []byte) (string, error) {
 // a legacy Fernet token.  Returns (plaintext, isLegacy, error).
 // When isLegacy=true the caller MAY re-encrypt and update the DB row.
 func (h *Handler) decryptCred(ciphertext string) (string, bool, error) {
+	if strings.HasPrefix(ciphertext, "v1:legacy:") {
+		if len(h.encKey) != 32 {
+			return "", false, errorf("legacy encryption key not configured")
+		}
+		pt, err := decryptFernet([]byte(strings.TrimPrefix(ciphertext, "v1:legacy:")), h.encKey)
+		return pt, err == nil, err
+	}
 	if secret.IsV1Envelope(ciphertext) {
 		if h.keyring == nil {
 			return "", false, errorf("AES-GCM keyring not configured")
@@ -1145,7 +1152,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-08-15 V3.3-OBS (OBS-BE6): 会话轮次-子请求树（仅元数据，分页）。
 	// 主请求按 ts 排序派生 turn_number，子请求经 parent_request_id 关联，
 	// request_type 优先 510 迁移列、缺失回退 origin_actor（X-Gw-Source-Actor 落库）。
-	mux.HandleFunc("/api/admin/sessions/{id}/turns", admin(h.handleSessionTurnsTree))
+	mux.HandleFunc("/api/admin/sessions/{id}/turns", admin(h.handleSessionTurnsListRouted))
 
 	// Public polling endpoint (no auth) — clients poll this to learn whether
 	// their pending approval was approved/rejected/timeout. Cross-tenant
@@ -1176,6 +1183,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-09-04: 供应商列表/详情树改挂 providerConsole —— super_admin 行为
 	// 不变；default 租户 tenant_admin 获得只读 + 凭据 API Key 轮换。
 	// seed-from-catalog 与 /credentials/ 强制恢复仍为 super_admin 专属。
+	mux.HandleFunc("/api/credentials/", h.admin(h.handleUnifiedCredentialSecrets))
 	mux.HandleFunc("/api/providers", h.providerConsole(h.handleProvidersRoot))
 	mux.HandleFunc("/api/providers/", h.providerConsole(h.handleProviders))
 	mux.HandleFunc("/api/providers/seed-from-catalog", h.superAdmin(h.handleSeedFromCatalog))

@@ -183,6 +183,7 @@ export default {
       status: { success: '成功', failed: '失敗', timeout: 'タイムアウト', skipped: 'スキップ' },
       flags: { compression: '圧縮', retry: '再試行', nodeSwitch: 'ノード切替', degraded: '観測劣化' },
       evidenceLabel: 'ルーティングとウォーターフォールの証拠', evidenceTitle: '観測された試行', waterfallAttempt: 'ウォーターフォール試行 #{number}', noDetails: '追加詳細なし', degraded: '観測劣化',
+      lanesLabel: 'リクエスト試行レーン', lanesTitle: '観測されたジャーニー試行', attemptLane: '試行 #{number}', sourceJourney: 'Journey ソース', waterfallLabel: 'ウォーターフォール段階バー', waterfallTitle: 'ウォーターフォール段階バー', lastAttemptSemantics: 'リクエスト単位の時間；T5–T9 は最後の試行を反映する場合があります', synthesizedBars: '合成段階はタイムスタンプ欠落（観測劣化）を示します。', requestTimeline: 'リクエストタイムライン',
       legend: { success: '成功', failed: '失敗/タイムアウト', special: '圧縮 · 再試行 · ノード切替' }
     },
   },

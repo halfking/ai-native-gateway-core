@@ -78,6 +78,58 @@ const maxCollectDepth = 64
 // the entire upstream payload into admin surfaces or audit logs.
 const bodyPreviewSize = 200
 
+// SanitizeBodySnippet returns a single-line, bounded preview suitable for
+// operator-facing errors. It never returns the complete upstream response.
+func SanitizeBodySnippet(body []byte, max int) string {
+	if max <= 0 || len(body) == 0 {
+		return ""
+	}
+	limit := len(body)
+	if limit > max {
+		limit = max
+	}
+	var b strings.Builder
+	b.Grow(limit)
+	for i := 0; i < limit; i++ {
+		c := body[i]
+		if c == '\n' || c == '\r' || c == '\t' || c < 0x20 {
+			b.WriteByte(' ')
+			continue
+		}
+		b.WriteByte(c)
+	}
+	result := strings.TrimSpace(b.String())
+	if len(body) > max {
+		result += "…(truncated)"
+	}
+	return result
+}
+
+// HTTPBodyError describes a non-success upstream response without retaining
+// or exposing the complete response body in its Error string.
+type HTTPBodyError struct {
+	StatusCode int
+	Body       []byte
+}
+
+func (e *HTTPBodyError) Error() string {
+	if e == nil {
+		return "upstream models request failed"
+	}
+	preview := SanitizeBodySnippet(e.Body, bodyPreviewSize)
+	if preview == "" {
+		return fmt.Sprintf("models endpoint returned HTTP %d", e.StatusCode)
+	}
+	return fmt.Sprintf("models endpoint returned HTTP %d: %s", e.StatusCode, preview)
+}
+
+func (e *HTTPBodyError) Preview() string {
+	if e == nil {
+		return ""
+	}
+	return SanitizeBodySnippet(e.Body, bodyPreviewSize)
+}
+
 // ParseModelIDs accepts common OpenAI-compatible and vendor-wrapped model lists.
 func ParseModelIDs(data []byte) ([]string, error) {
 	trimmed := bytes.TrimLeftFunc(data, unicode.IsSpace)
