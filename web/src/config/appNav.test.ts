@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mergeNav, NAV_GROUPS, NAV_PRIMARY_ITEMS } from './appNav'
+import { mergeNav, NAV_GROUPS, NAV_PRIMARY_ITEMS, resolveNavItemActivation, ACTIVATE_REDIRECT_PATH } from './appNav'
 
 describe('mergeNav', () => {
   it('preserves visible primary and grouped navigation', () => {
@@ -36,6 +36,45 @@ describe('opsplatform maintain external links', () => {
     const vibe = ops.items.find((i) => i.path === '/ops/vibecoding')
     expect(vibe).toBeTruthy()
     expect(vibe!.external).toBeFalsy()
+  })
+})
+
+describe('resolveNavItemActivation', () => {
+  it('redirects autoupdate to ACTIVATE_REDIRECT_PATH when not activated', () => {
+    const autoUpdate = NAV_GROUPS.find((g) => g.id === 'opsplatform')!.items.find(
+      (i) => i.path === '/maintain/ops/autoupdate',
+    )!
+    const resolved = resolveNavItemActivation(autoUpdate, { isActivated: false })
+    expect(resolved.path).toBe('/customer/update-activate')
+    expect(resolved.activateAction).toBe(true)
+    expect(resolved.originalPath).toBe('/maintain/ops/autoupdate')
+  })
+
+  it('keeps original path when isActivated is true', () => {
+    const autoUpdate = NAV_GROUPS.find((g) => g.id === 'opsplatform')!.items.find(
+      (i) => i.path === '/maintain/ops/autoupdate',
+    )!
+    const resolved = resolveNavItemActivation(autoUpdate, { isActivated: true })
+    expect(resolved.path).toBe('/maintain/ops/autoupdate')
+    expect(resolved.activateAction).toBe(false)
+  })
+
+  it('returns original path for items without activateWhenNotActivated', () => {
+    const overview = NAV_GROUPS.find((g) => g.id === 'opsplatform')!.items.find(
+      (i) => i.path === '/maintain/ops/overview',
+    )!
+    const resolved = resolveNavItemActivation(overview, { isActivated: false })
+    expect(resolved.path).toBe('/maintain/ops/overview')
+    expect(resolved.activateAction).toBe(false)
+  })
+
+  it('does not redirect when isActivated is undefined (treats undefined as not false)', () => {
+    const autoUpdate = NAV_GROUPS.find((g) => g.id === 'opsplatform')!.items.find(
+      (i) => i.path === '/maintain/ops/autoupdate',
+    )!
+    const resolved = resolveNavItemActivation(autoUpdate, {})
+    expect(resolved.path).toBe('/maintain/ops/autoupdate')
+    expect(resolved.activateAction).toBe(false)
   })
 })
 

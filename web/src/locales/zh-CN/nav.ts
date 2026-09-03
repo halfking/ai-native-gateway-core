@@ -63,6 +63,9 @@ export default {
     chat: '对话',
     updateActivate: '更新与激活',
     licenseActivate: '许可激活',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案
+    activateAction: '激活',
+    activateActionTip: '点击前往激活本机',
     siteInfo: '站点信息',
     licenseStatus: '许可状态',
     licenseAgreement: '用户许可协议',

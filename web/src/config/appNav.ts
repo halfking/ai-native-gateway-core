@@ -39,6 +39,13 @@ export type NavItem = {
   exact?: boolean
   /** Only show when system is not activated (for activation-related pages) */
   notActivatedOnly?: boolean
+  /**
+   * 2026-09-02: 当系统未激活时,该菜单项会被渲染成「前往激活」的按钮,
+   * 目标路径替换为 /customer/update-activate;激活后恢复为正常菜单项。
+   * 用于: 自动升级、License 管理等需要 License 的运维入口,
+   * 避免未激活用户点进去看不到 license / 升级通道。
+   */
+  activateWhenNotActivated?: boolean
 }
 
 export type NavGroup = {
@@ -52,6 +59,54 @@ export type NavGroup = {
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
   { path: '/dashboard', label: '总览', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]
+
+/**
+ * 2026-09-02: 当一个菜单项被 `activateWhenNotActivated` 标记且系统未激活时,
+ * 点击该菜单项会被路由到本路径。它是激活向导页面的统一入口。
+ */
+export const ACTIVATE_REDIRECT_PATH = '/customer/update-activate'
+
+/**
+ * 2026-09-02: 根据当前激活状态决定一个菜单项最终渲染的路径与样式。
+ * 返回值供 AppTopbar 等渲染层直接使用:
+ *   - `path`: 跳转目标(未激活时替换为 ACTIVATE_REDIRECT_PATH)
+ *   - `activateAction`: 是否以「激活」CTA 形式渲染(粗体 / 强调色 / 右上角角标)
+ *   - `originalPath`: 原始路径(只在 activateAction=true 时有意义,用于 tooltip 提示)
+ */
+export function resolveNavItemActivation(
+  item: NavItem,
+  opts: { isActivated?: boolean },
+): {
+  path: string
+  labelKey?: string
+  label: string
+  icon: string
+  external?: boolean
+  exact?: boolean
+  activateAction: boolean
+  originalPath: string
+} {
+  const base = {
+    labelKey: item.labelKey,
+    label: item.label,
+    icon: item.icon,
+    external: item.external,
+    exact: item.exact,
+    originalPath: item.path,
+  }
+  if (item.activateWhenNotActivated && opts.isActivated === false) {
+    return {
+      ...base,
+      path: ACTIVATE_REDIRECT_PATH,
+      activateAction: true,
+    }
+  }
+  return {
+    ...base,
+    path: item.path,
+    activateAction: false,
+  }
+}
 
 export const NAV_GROUPS: NavGroup[] = [
   {
@@ -141,7 +196,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/maintain/ops/downloads', label: '发布与下载', labelKey: 'nav.item.opsDownloads', icon: '📦', super: true, hideForTenant: true, opsPlatform: true, external: true },
       { path: '/maintain/ops/licenses', label: 'License管理', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true, opsPlatform: true, external: true },
       { path: '/maintain/ops/faults', label: '故障管理', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true, opsPlatform: true, external: true },
+      { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true, opsPlatform: true, external: true, activateWhenNotActivated: true },
       { path: '/ops/vibecoding', label: 'VibeCoding', labelKey: 'nav.item.opsVibeCoding', icon: '💻', super: true, hideForTenant: true, opsPlatform: true },
     ],
   },
