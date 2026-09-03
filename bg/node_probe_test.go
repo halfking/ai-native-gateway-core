@@ -492,9 +492,9 @@ func TestTriggerManualSuccessCallsMarkNodeProbeHealthy(t *testing.T) {
 // "ready probes on dashboard but zero executing" symptom.
 //
 // Expected behavior:
-//  - submitViaQueueSource returns error when enqueue fails
-//  - pumpDueStatesToQueue only updates next_retry_at on success (no error)
-//  - Failed submissions preserve the original next_retry_at for retry
+//   - submitViaQueueSource returns error when enqueue fails
+//   - pumpDueStatesToQueue only updates next_retry_at on success (no error)
+//   - Failed submissions preserve the original next_retry_at for retry
 func TestPumpDueStatesOnlyUpdatesNextRetryAtOnSuccess(t *testing.T) {
 	src, err := os.ReadFile("node_probe.go")
 	if err != nil {
@@ -502,7 +502,7 @@ func TestPumpDueStatesOnlyUpdatesNextRetryAtOnSuccess(t *testing.T) {
 	}
 	body := string(src)
 
-	// 1. submitViaQueueSource must return error
+	// submitViaQueueSource now returns (inserted, error).
 	submitStart := strings.Index(body, "func (w *NodeProbeWorker) submitViaQueueSource(")
 	if submitStart < 0 {
 		t.Fatalf("submitViaQueueSource function not found")
@@ -515,14 +515,13 @@ func TestPumpDueStatesOnlyUpdatesNextRetryAtOnSuccess(t *testing.T) {
 	}
 	submitBody := body[submitStart:submitEnd]
 
-	// Must return error type
-	if !strings.Contains(submitBody, ") error {") {
-		t.Fatalf("submitViaQueueSource must return error (found: %s)",
+	if !strings.Contains(submitBody, ") (bool, error) {") {
+		t.Fatalf("submitViaQueueSource must return (bool, error) (found: %s)",
 			body[submitStart:submitStart+200])
 	}
 
-	// Must return error on enqueue failure
-	if !strings.Contains(submitBody, "return fmt.Errorf(") && !strings.Contains(submitBody, "return err") {
+	// Must return an error after enqueue retries are exhausted.
+	if !strings.Contains(submitBody, "return false, fmt.Errorf(") {
 		t.Fatalf("submitViaQueueSource must return error on enqueue failure")
 	}
 
@@ -538,7 +537,10 @@ func TestPumpDueStatesOnlyUpdatesNextRetryAtOnSuccess(t *testing.T) {
 	pumpBody := body[pumpStart : pumpStart+pumpEnd]
 
 	// Must call submitViaQueueSource with error check
-	if !strings.Contains(pumpBody, "if err := w.submitViaQueueSource(") {
+	if !strings.Contains(pumpBody, "if _, err := w.submitViaQueueSource(") {
+		t.Fatalf("pumpDueStatesToQueue must check submitViaQueueSource result")
+	}
+	if !strings.Contains(pumpBody, "if err != nil {") {
 		t.Fatalf("pumpDueStatesToQueue must check submitViaQueueSource error")
 	}
 
@@ -556,7 +558,7 @@ func TestPumpDueStatesOnlyUpdatesNextRetryAtOnSuccess(t *testing.T) {
 	loopBody := pumpBody[forLoopStart:]
 
 	// Find positions: error check, continue, and UPDATE
-	errCheckPos := strings.Index(loopBody, "if err := w.submitViaQueueSource(")
+	errCheckPos := strings.Index(loopBody, "if _, err := w.submitViaQueueSource(")
 	continuePos := strings.Index(loopBody, "continue")
 	updatePos := strings.Index(loopBody, "UPDATE node_probe_state")
 

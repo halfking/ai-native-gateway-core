@@ -64,6 +64,19 @@ var (
 		Help: "Number of request goroutines currently blocked on an in-flight background probe (dedup reuse).",
 	})
 
+	nodeProbeQueueSubmissionTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmgw_node_probe_queue_submission_total", Help: "Node probe queue submission outcomes by source and outcome."},
+		[]string{"source", "outcome"},
+	)
+	nodeProbeQueueSubmissionRetriesTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmgw_node_probe_queue_submission_retries_total", Help: "Node probe queue submission retry attempts by source."},
+		[]string{"source"},
+	)
+	nodeProbeQueueSubmissionDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "llmgw_node_probe_queue_submission_duration_seconds", Help: "Node probe queue submission duration by source and outcome."},
+		[]string{"source", "outcome"},
+	)
+
 	// 2026-08-29 P2: Hot table promote metrics for monitoring partition migration health.
 	//
 	// hotTablePromoteFailuresTotal counts promote failures by table label.
