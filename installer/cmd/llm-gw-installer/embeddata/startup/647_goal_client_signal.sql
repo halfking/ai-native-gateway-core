@@ -1,4 +1,4 @@
--- Migration 645: goal client-signal state and session handoff lineage.
+-- Migration 647: goal client-signal state and session handoff lineage.
 -- Mirrors db/migrations/365_goal_client_signal.sql for startup migration delivery.
 BEGIN;
 

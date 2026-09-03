@@ -113,6 +113,9 @@ SELECT
 FROM request_logs_with_current_month_without_customer_id
 
 WHERE ts >= NOW() - INTERVAL '7 days'
+  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
+  AND COALESCE(task_type, '') <> 'probe_triggered'
+  AND COALESCE(request_id, '') NOT LIKE 'probe-%'
   AND (
     -- Include auto-routing requests
     is_auto_request = TRUE
@@ -187,6 +190,9 @@ SELECT
 FROM request_logs_with_current_month_without_customer_id
 
 WHERE ts >= NOW() - INTERVAL '7 days'
+  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
+  AND COALESCE(task_type, '') <> 'probe_triggered'
+  AND COALESCE(request_id, '') NOT LIKE 'probe-%'
   AND (
     is_auto_request = TRUE
     OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')

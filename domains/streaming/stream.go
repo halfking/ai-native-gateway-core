@@ -464,7 +464,7 @@ func applyGateLineTransforms(
 	clientModel string,
 	discoveredUpstream *string,
 	norm *Normalizer,
-	capture        *audit.StreamCapture,
+	capture *audit.StreamCapture,
 	toolsRequested bool,
 	xmlToolCoercer *streamXMLToolCallCoercer,
 ) string {
@@ -631,6 +631,13 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 	defer func() {
 		diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-completions", outcome.Interrupted)
 	}()
+
+	// Monitor the client transport without emitting probe bytes. The derived
+	// context lets blocked upstream reads and provider calls observe a client
+	// disconnect while normal writes keep the idle timer fresh.
+	ctx, monitor := NewConnectionMonitor(ctx, w)
+	defer monitor.Stop()
+	w = &monitoredResponseWriter{delegate: w, monitor: monitor}
 
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
@@ -894,20 +901,20 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 				ChunkCount:  0,
 			}
 		}
-			if payload := extractPayload(firstLine); payload != "" && payload != "[DONE]" {
-				if _, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr != nil {
-					slog.Warn("stream: invalid first SSE chunk", "error", parseErr, "client_model", clientModel)
-					if capture != nil {
-						capture.MarkInterruptedWithReason("invalid_chunk")
-					}
-					return StreamOutcome{
-						Interrupted: true,
-						Reason:      "invalid_chunk",
-						Kind:        errorsx.KindUpstreamDown,
-						Resumable:   true,
-					}
+		if payload := extractPayload(firstLine); payload != "" && payload != "[DONE]" {
+			if _, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr != nil {
+				slog.Warn("stream: invalid first SSE chunk", "error", parseErr, "client_model", clientModel)
+				if capture != nil {
+					capture.MarkInterruptedWithReason("invalid_chunk")
+				}
+				return StreamOutcome{
+					Interrupted: true,
+					Reason:      "invalid_chunk",
+					Kind:        errorsx.KindUpstreamDown,
+					Resumable:   true,
 				}
 			}
+		}
 
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). Run
 
@@ -1203,14 +1210,14 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			return outcome
 		}
 
-			line := readResult.line
-			normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
-			line = normalizedLine
-			if hasCombinedDone {
-				reader = prependDoneFrame(reader)
-			}
-			logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
-			
+		line := readResult.line
+		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
+		line = normalizedLine
+		if hasCombinedDone {
+			reader = prependDoneFrame(reader)
+		}
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
+
 		// 2026-08-29: Validate SSE frame before processing. If the frame is malformed
 		// (incomplete JSON) and we haven't committed semantic output yet, fail the
 		// attempt as resumable so the survival coordinator can retry. If already
@@ -1244,16 +1251,16 @@ func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
 			// (better to have a partial response than to break the stream)
 			continue
 		}
-			
-			rawPayload := extractPayload(line)
-			if rawPayload != "" && rawPayload != "[DONE]" {
-				diagnosticCollector.observeRaw([]byte(rawPayload))
-				if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
-					diagnosticCollector.observeChunk(chunk)
-				} else {
-					reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(rawPayload), parseErr, nil)
-				}
+
+		rawPayload := extractPayload(line)
+		if rawPayload != "" && rawPayload != "[DONE]" {
+			diagnosticCollector.observeRaw([]byte(rawPayload))
+			if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
+				diagnosticCollector.observeChunk(chunk)
+			} else {
+				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(rawPayload), parseErr, nil)
 			}
+		}
 
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). See
 		// the first-line equivalent above for the rationale. We run
