@@ -12,6 +12,7 @@ export default {
     opsplatform: 'Ops Center',
     guide: 'Integration Guide',
     chat: 'Chat',
+    plugins: 'Plugins',
   },
 
   item: {
