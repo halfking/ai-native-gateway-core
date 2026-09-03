@@ -16,6 +16,7 @@ import {
 import { probeModel, type ProbeResult } from '../api'
 import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import ModelPicker from '../components/ModelPicker.vue'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -375,7 +376,7 @@ async function toggleEnabled() {
   if (!detail.value || !detailKey.value) return
   const next = !detail.value.enabled
   const action = next ? t('workTypes.detail.errors.confirmEnable') : t('workTypes.detail.errors.confirmDisable')
-  if (!next && !confirm(t('workTypes.detail.errors.toggleConfirm', { action, name: detail.value.label }))) return
+  if (!next && !(await confirmDialog(t('workTypes.detail.errors.toggleConfirm', { action, name: detail.value.label })))) return
   try {
     if (next) {
       await updateWorkType(detailKey.value, { enabled: true })

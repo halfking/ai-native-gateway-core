@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 import type { CatalogResponse, Release, CatalogItem, UpgradeStatus } from '../../api/updateActivate'
+import { useI18n } from 'vue-i18n'
 
 /** UpdateActivateVersionsCard — 系统版本列表（最新 5 个）+ 升级→下载→安装→启动切换流程。
  *  复用 maintain /maintain/download + /maintain/upgrade 的视觉规范。 */
@@ -31,6 +33,8 @@ const emit = defineEmits<{
   (e: 'switch', payload: { version: string }): void
   (e: 'refresh'): void
 }>()
+
+const { t } = useI18n()
 
 const latestVersion = computed(() => props.upgradeStatus?.latest_version || props.currentVersion)
 const installedSet = computed(() => new Set([props.currentVersion, props.upgradeStatus?.current_version].filter(Boolean) as string[]))
@@ -96,15 +100,11 @@ async function startUpgrade() {
     ElMessage.error('未在版本目录中找到可下载的安装包')
     return
   }
-  try {
-    await ElMessageBox.confirm(
-      `即将把服务升级到 ${targetVersion}（${item.label}）。过程中服务会短暂不可用，请确认无重要任务正在进行。`,
-      '确认升级',
-      { confirmButtonText: '开始升级', cancelButtonText: '取消', type: 'warning' },
-    )
-  } catch {
-    return
-  }
+  const confirmed = await confirmDialog(
+    t('customer.versionsUpgradeConfirmBody', { version: targetVersion, label: item.label }),
+    { title: t('customer.versionsUpgradeConfirmTitle'), confirmButtonText: t('customer.versionsUpgradeConfirmStart') },
+  )
+  if (!confirmed) return
   upgrading.value = targetVersion
   resetSteps()
   await runUpgradeFlow(targetVersion, item)

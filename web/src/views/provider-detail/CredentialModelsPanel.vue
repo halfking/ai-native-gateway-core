@@ -6,6 +6,7 @@ import {
 } from '../../api/providers'
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
 import ModelIdentityChip from '../../components/model/ModelIdentityChip.vue'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const props = defineProps<{
   providerId: number
@@ -74,7 +75,7 @@ async function onClear() {
   const tip = includeProtected.value
     ? '确定清空该凭据全部模型（含手工保护）？'
     : '确定清空该凭据非保护模型？（手工保护将保留）'
-  if (!confirm(tip)) return
+  if (!(await confirmDialog(tip))) return
   busy.value = true
   try {
     const res = await clearCredentialModels(props.providerId, props.credentialId, includeProtected.value)

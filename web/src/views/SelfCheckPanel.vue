@@ -24,6 +24,7 @@ import {
 import ProbeTriStateQueue from '../components/probe/ProbeTriStateQueue.vue'
 import { getFeaturedModelsDynamic } from '../api/system'
 import type { FeaturedModel } from '../api/system'
+import EmptyState from '../components/EmptyState.vue'
 import {
   displaySyntheticCredentialModel,
 } from '../composables/useCredentialLabels'
@@ -481,7 +482,7 @@ const probeSummaryCards = computed(() => {
           }}
         </button>
       </div>
-      <div v-if="models.length === 0" class="empty-state">暂无模型</div>
+      <EmptyState v-if="models.length === 0" text="暂无模型" padding="24px" />
     </div>
 
     <!-- 错误分类 -->
@@ -576,7 +577,7 @@ const probeSummaryCards = computed(() => {
           </table>
         </div>
       </div>
-      <div v-if="recentRuns.length === 0" class="empty-state">暂无运行记录</div>
+      <EmptyState v-if="recentRuns.length === 0" text="暂无运行记录" padding="24px" />
     </div>
 
     <!-- 设置弹窗 -->

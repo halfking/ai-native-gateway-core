@@ -127,6 +127,11 @@ async function loadNodes() {
 
 // ── Tab: 路由路径 ─────────────────────────────────────────────────────────
 import type { RoutingResolveResponse } from '../api/routing'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import EmptyState from '../components/EmptyState.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 const routingResult = ref<RoutingResolveResponse | null>(null)
 
 async function loadRouting() {
@@ -280,7 +285,7 @@ async function triggerProbe(node: ModelNode) {
 }
 
 async function triggerAllProbes() {
-  if (!confirm(`对模型 ${modelName.value} 的全部 ${nodes.value.length} 个凭据触发探活?`)) return
+  if (!(await confirmDialog(t('probeHealth.probeAllConfirm', { model: modelName.value, n: nodes.value.length })))) return
   for (const node of nodes.value) {
     await triggerProbe(node)
   }
@@ -435,10 +440,10 @@ onMounted(() => {
     <div v-if="flashMsg" class="flash">{{ flashMsg }}</div>
 
     <div class="tab-content card">
-      <div v-if="loading" class="empty-state">加载中...</div>
+      <EmptyState v-if="loading" text="加载中..." />
 
       <div v-else-if="activeTab === 'nodes'">
-        <div v-if="nodes.length === 0" class="empty-state">暂无节点数据</div>
+        <EmptyState v-if="nodes.length === 0" text="暂无节点数据" />
         <div v-else class="node-list">
           <div v-for="node in nodes" :key="node.credential_id" class="node-card">
             <div class="node-header">
@@ -476,7 +481,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'routing'">
-        <div v-if="!routingResult" class="empty-state">暂无路由数据</div>
+        <EmptyState v-if="!routingResult" text="暂无路由数据" />
         <div v-else>
           <div class="info-grid">
             <div class="info-row"><span class="info-label">客户端模型</span><span>{{ routingResult.client_model }}</span></div>
@@ -486,7 +491,7 @@ onMounted(() => {
             <div class="info-row"><span class="info-label">可路由凭据</span><span>{{ routingResult.candidates?.filter(c => c.routable).length || 0 }} / {{ routingResult.candidates?.length || 0 }}</span></div>
           </div>
           <h3 style="margin-top:16px">候选凭据</h3>
-          <div v-if="!routingResult.candidates || routingResult.candidates.length === 0" class="empty-state">无可用候选</div>
+          <EmptyState v-if="!routingResult.candidates || routingResult.candidates.length === 0" text="无可用候选" />
           <table v-else class="data-table">
             <thead>
               <tr>
@@ -524,7 +529,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'decisions'">
-        <div v-if="decisions.length === 0" class="empty-state">近 7 天无决策记录</div>
+        <EmptyState v-if="decisions.length === 0" text="近 7 天无决策记录" />
         <table v-else class="data-table">
           <thead>
             <tr>
@@ -581,7 +586,7 @@ onMounted(() => {
           <span class="muted-text small">错误分类:</span>
           <span v-for="(count, kind) in monitorStats.error_kinds" :key="kind" class="badge badge-red">{{ kind }}: {{ count }}</span>
         </div>
-        <div v-if="monitorEntries.length === 0" class="empty-state">暂无监控数据</div>
+        <EmptyState v-if="monitorEntries.length === 0" text="暂无监控数据" />
         <table v-else class="data-table">
           <thead>
             <tr>
@@ -607,7 +612,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'logs'">
-        <div v-if="requestLogs.length === 0" class="empty-state">暂无请求记录</div>
+        <EmptyState v-if="requestLogs.length === 0" text="暂无请求记录" />
         <table v-else class="data-table">
           <thead>
             <tr>
@@ -654,7 +659,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'probe'">
-        <div v-if="nodes.length === 0" class="empty-state">请先在「节点概览」标签页加载数据</div>
+        <EmptyState v-if="nodes.length === 0" text="请先在「节点概览」标签页加载数据" />
         <div v-else>
           <div class="probe-toolbar">
             <p class="muted-text">点击「触发探活」手动对指定凭据发起探测：</p>
@@ -683,9 +688,9 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'pricing'">
-        <div v-if="!isAdmin" class="empty-state">仅超级管理员可查看价格</div>
-        <div v-else-if="tabErrors.pricing" class="empty-state">{{ tabErrors.pricing }}</div>
-        <div v-else-if="pricingData.length === 0" class="empty-state">暂无价格数据</div>
+        <EmptyState v-if="!isAdmin" text="仅超级管理员可查看价格" />
+        <EmptyState v-else-if="tabErrors.pricing" text="{{ tabErrors.pricing }}" />
+        <EmptyState v-else-if="pricingData.length === 0" text="暂无价格数据" />
         <table v-else class="data-table">
           <thead>
             <tr>

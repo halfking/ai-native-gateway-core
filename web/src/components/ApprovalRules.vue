@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { ApprovalRule } from '../api/approval'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   modelValue: ApprovalRule[]
@@ -9,6 +11,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   'update:modelValue': [value: ApprovalRule[]]
 }>()
+
+const { t } = useI18n()
 
 const showDialog = ref(false)
 const editingIndex = ref<number | null>(null)
@@ -93,13 +97,12 @@ function saveRule() {
   showDialog.value = false
 }
 
-function removeRule(index: number) {
-  if (confirm('确认删除该规则？')) {
-    const list = [...rules.value]
-    list.splice(index, 1)
-    list.forEach((r, i) => r.priority = i)
-    rules.value = list
-  }
+async function removeRule(index: number) {
+  if (!(await confirmDialog(t('approval.rulesDeleteConfirm')))) return
+  const list = [...rules.value]
+  list.splice(index, 1)
+  list.forEach((r, i) => r.priority = i)
+  rules.value = list
 }
 
 function toggleEnabled(index: number) {

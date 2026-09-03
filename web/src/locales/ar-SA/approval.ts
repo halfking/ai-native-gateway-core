@@ -149,5 +149,7 @@ export default {
       minutes: '{n} د',
       hours: '{n} س',
     },
-  }
+  },
+  rulesDeleteConfirm: 'حذف هذه القاعدة؟',
+  approversDeleteConfirm: 'حذف هذا المعتمد؟',
 }

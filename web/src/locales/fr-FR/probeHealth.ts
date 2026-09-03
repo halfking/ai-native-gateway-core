@@ -47,4 +47,9 @@ export default {
     critical: 'critical',
     unknown: 'unknown',
   },
+  probeAllConfirm: 'Lancer des sondes pour les {n} credentials du modèle {model} ?',
+  systemStartAllConfirm: 'Démarrer toutes les tâches de sonde ? Cela analyse les liaisons de tous les credentials actifs.',
+  systemStopAllConfirm: 'Arrêter toutes les tâches de sonde ? Les tâches déjà réclamées (claimed) se termineront.',
+  systemTriggeredToast: '{n} tâches déclenchées, {failed} en échec',
+  systemStoppedToast: '{n} tâches retirées de la file',
 }

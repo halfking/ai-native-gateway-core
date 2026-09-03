@@ -5,6 +5,7 @@ import { getApprovalConfig, updateApprovalConfig, type ApprovalConfig } from '..
 import ApproverManager from '../components/ApproverManager.vue'
 import NotificationChannels from '../components/NotificationChannels.vue'
 import ApprovalRules from '../components/ApprovalRules.vue'
+import AppSpinner from '../components/AppSpinner.vue'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -111,9 +112,7 @@ onMounted(() => {
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="loading-container">
-      <div class="loading-spinner">{{ t('approval.config.loading') }}</div>
-    </div>
+    <AppSpinner v-if="loading" :label="t('approval.config.loading')" />
 
     <!-- Content -->
     <div v-else class="content">
@@ -286,10 +285,6 @@ onMounted(() => {
   padding: 64px;
 }
 
-.loading-spinner {
-  font-size: 16px;
-  color: var(--text-secondary);
-}
 
 .content {
   display: flex;

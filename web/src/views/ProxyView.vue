@@ -15,6 +15,7 @@ import {
   type ProxyNode,
   type ProxyStatus,
 } from '../api'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -81,7 +82,7 @@ async function handleCreateSub() {
 }
 
 async function handleRefreshSub(id: number, name: string) {
-  if (!confirm(t('proxy.confirmRefresh', { name }))) return
+  if (!(await confirmDialog(t('proxy.confirmRefresh', { name })))) return
   loading.value = true
   error.value = ''
   try {
@@ -95,7 +96,7 @@ async function handleRefreshSub(id: number, name: string) {
 }
 
 async function handleDeleteSub(id: number, name: string) {
-  if (!confirm(t('proxy.confirmDeleteSub', { name }))) return
+  if (!(await confirmDialog(t('proxy.confirmDeleteSub', { name })))) return
   loading.value = true
   error.value = ''
   try {
@@ -172,7 +173,7 @@ async function handleCreateNode() {
 }
 
 async function handleHealthCheckNode(id: number, name: string) {
-  if (!confirm(t('proxy.confirmHealthCheck', { name }))) return
+  if (!(await confirmDialog(t('proxy.confirmHealthCheck', { name })))) return
   loading.value = true
   error.value = ''
   try {
@@ -186,7 +187,7 @@ async function handleHealthCheckNode(id: number, name: string) {
 }
 
 async function handleDeleteNode(id: number, name: string) {
-  if (!confirm(t('proxy.confirmDeleteNode', { name }))) return
+  if (!(await confirmDialog(t('proxy.confirmDeleteNode', { name })))) return
   loading.value = true
   error.value = ''
   try {

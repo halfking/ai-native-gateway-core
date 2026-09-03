@@ -17,6 +17,7 @@ import {
 } from '../api'
 import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -254,7 +255,7 @@ async function saveEdit() {
 
 async function resetAll(row: AdminMaasModelRate) {
   if (!row.is_custom) return
-  if (!confirm(`${t('standardModelPricing.editModal.resetConfirm').replace('{name}', row.display_name)}`)) return
+  if (!(await confirmDialog(`${t('standardModelPricing.editModal.resetConfirm').replace('{name}', row.display_name)}`))) return
   error.value = ''
   try {
     await deleteAdminMaasModelRate(row.canonical_id)
@@ -446,7 +447,7 @@ async function applyBatch() {
 async function batchResetAll() {
   const ids = Array.from(selectedRows.value)
   if (ids.length === 0) return
-  if (!confirm(t('standardModelPricing.batch.resetAllConfirm').replace('{n}', String(ids.length)))) return
+  if (!(await confirmDialog(t('standardModelPricing.batch.resetAllConfirm').replace('{n}', String(ids.length))))) return
   savingBatch.value = true
   batchMsg.value = ''
   try {
@@ -464,7 +465,7 @@ async function batchResetAll() {
 async function batchFillGlobal() {
   const ids = Array.from(selectedRows.value)
   if (ids.length === 0) return
-  if (!confirm(t('standardModelPricing.batch.fillGlobalConfirm').replace('{n}', String(ids.length)))) return
+  if (!(await confirmDialog(t('standardModelPricing.batch.fillGlobalConfirm').replace('{n}', String(ids.length))))) return
   savingBatch.value = true
   batchMsg.value = ''
   try {

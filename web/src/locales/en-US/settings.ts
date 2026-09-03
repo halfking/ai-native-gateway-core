@@ -52,6 +52,8 @@ export default {
     },
   },
   editor: {
+    rollbackConfirm: 'Roll back {key} to its previous value?',
+
     newValueLabel: 'New value',
     enabledText: 'Enabled',
     disabledText: 'Disabled',

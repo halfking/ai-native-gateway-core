@@ -6,6 +6,7 @@ import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTen
 import type { Tenant } from '../api'
 import { store, isReadOnlyMode, isTenantAdmin } from '../store'
 import { checkPasswordPolicy, passwordsMatch } from '../utils/passwordPolicy'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -104,7 +105,7 @@ async function handleToggle(u: User) {
 }
 
 async function handleDelete(u: User) {
-  if (!confirm(t('users.confirmDelete', { name: u.username }))) return
+  if (!(await confirmDialog(t('users.confirmDelete', { name: u.username })))) return
   try {
     await deleteUser(u.id)
     await load()

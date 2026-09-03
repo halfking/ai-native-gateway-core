@@ -145,7 +145,9 @@ onBeforeUnmount(() => {
     <template #header>
       <div class="tdd-header">
         <strong>{{ headerTitle }}</strong>
-        <span v-if="detail?.model" class="tdd-sub">{{ detail.model }}<template v-if="detail.cost_usd != null"> · ${{ detail.cost_usd.toFixed(4) }}</template></span>
+        <span v-if="detail?.model" class="tdd-sub">
+          <span class="chip chip--tight">{{ detail.model }}</span><template v-if="detail.cost_usd != null"> · ${{ detail.cost_usd.toFixed(4) }}</template>
+        </span>
       </div>
     </template>
 
