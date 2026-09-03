@@ -204,6 +204,13 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		MaxAutoContinueCount: getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", preset.MaxContinueCount),
 		CompletionConfidence: getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", preset.CompletionConfidence),
 
+		// Client-driven control signals remain opt-in on both sides: the
+		// tenant setting / env default enables production behavior, while
+		// X-Gw-Capabilities authorizes it per request.
+		ClientSignalEnabled:          getEnvBool("LLM_GATEWAY_GOAL_CLIENT_DRIVEN", false),
+		ClientSignalMode:             getEnv("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_MODE", "auto"),
+		HandoffSignalThresholdTokens: getEnvInt("LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD", 200000),
+
 		// Audit/Fix settings from preset
 		UseAudit:             getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", preset.UseAudit),
 		UseAutorouteForAudit: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", preset.UseAutorouteAudit),
