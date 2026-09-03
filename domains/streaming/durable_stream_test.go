@@ -23,6 +23,7 @@ type fakeForegroundStore struct {
 	fakeDurableHandlerStore
 	renews          []durableRenewCall
 	checks          []durable.CheckpointParams
+	checkpointErrs  []error
 	terminals       []durable.TerminalCommit
 	renewErr        error
 	renewStarted    chan struct{}
@@ -75,7 +76,8 @@ func (f *fakeForegroundStore) Reschedule(_ context.Context, p durable.Reschedule
 	return nil
 }
 
-func (f *fakeForegroundStore) CheckpointCommitState(_ context.Context, p durable.CheckpointParams) error {
+func (f *fakeForegroundStore) CheckpointCommitState(ctx context.Context, p durable.CheckpointParams) error {
+	f.checkpointErrs = append(f.checkpointErrs, ctx.Err())
 	if f.checkErr != nil {
 		return f.checkErr
 	}
@@ -321,6 +323,35 @@ func TestSettleDurableStreamLeaseLossCountsBothMetricFamilies(t *testing.T) {
 	}
 	if got := gatherMetricValue(t, "durable_lease_lost_total"); got < beforeDurable+1 {
 		t.Fatalf("durable lease lost = %v, want >= %v", got, beforeDurable+1)
+	}
+}
+
+func TestDurableBeforeSemanticCommitSurvivesCanceledClientContext(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	hook := durableBeforeSemanticCommit(b)
+	if err := hook(ctx, CommitStateMetadata); err != nil {
+		t.Fatalf("canceled client context must not cancel durable checkpoint: %v", err)
+	}
+	if len(store.checks) != 1 || len(store.checkpointErrs) != 1 || store.checkpointErrs[0] != nil {
+		t.Fatalf("checkpoint context errors = %v, checks = %+v; want detached successful write", store.checkpointErrs, store.checks)
+	}
+}
+
+func TestSettleDurableStreamDeadlineDoesNotReleaseToWorker(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}},
+		nil, "", false)
+	if len(store.resched) != 0 {
+		t.Fatalf("deadline settlement must not reschedule to worker: %+v", store.resched)
+	}
+	if len(store.terminals) != 1 || store.terminals[0].ReasonCode != "deadline_exceeded" {
+		t.Fatalf("deadline settlement terminals = %+v, want one terminal deadline_exceeded", store.terminals)
 	}
 }
 

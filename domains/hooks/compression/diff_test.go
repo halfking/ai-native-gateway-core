@@ -211,6 +211,32 @@ func TestBuildOutbound_CompressedDuplicateAnchorFailsOpen(t *testing.T) {
 	}
 }
 
+func TestBuildOutbound_RejectsStaleCachedBodyHash(t *testing.T) {
+	last := makeBody([]map[string]string{userMsg("cached")})
+	client := makeBody([]map[string]string{userMsg("cached"), userMsg("new")})
+	state := &SessionState{SchemaVersion: 1, LastOutboundHash: sha256Hex([]byte(`{"messages":[]}`)), MsgCount: 1}
+	res, err := BuildOutboundMessages(client, state, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("stale cached body must fail open: %+v", res)
+	}
+}
+
+func TestBuildOutbound_RejectsCachedMessageCountMismatch(t *testing.T) {
+	last := makeBody([]map[string]string{userMsg("cached")})
+	client := makeBody([]map[string]string{userMsg("cached"), userMsg("new")})
+	state := &SessionState{SchemaVersion: 1, MsgCount: 99}
+	res, err := BuildOutboundMessages(client, state, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("cached message count mismatch must fail open: %+v", res)
+	}
+}
+
 func TestBuildOutbound_ModifiedPrefixFailsOpen(t *testing.T) {
 	last := makeBody([]map[string]string{userMsg("original"), assistantMsg("answer")})
 	client := makeBody([]map[string]string{userMsg("changed"), assistantMsg("answer"), userMsg("new")})

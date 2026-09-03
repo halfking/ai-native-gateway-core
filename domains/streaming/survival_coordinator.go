@@ -259,16 +259,17 @@ func (c *SurvivalCoordinator) waitWithKeepalive(ctx context.Context, sw *Seriali
 }
 
 func (c *SurvivalCoordinator) recoveryWait(opts SurvivalOptions, decision TaskDecision, backoff time.Duration) time.Duration {
-	wait := backoff
-	if opts.RetryInterval > 0 {
-		wait = opts.RetryInterval
-	}
-	// An explicit upstream recovery time is authoritative; it is constrained by
-	// the request deadline below rather than silently replaced with RetryMax.
+	// An explicit upstream recovery time is authoritative. It is constrained by
+	// the request deadline in Run rather than silently replaced with RetryMax.
 	if decision.NextRetryAfter > 0 {
-		wait = decision.NextRetryAfter
+		return decision.NextRetryAfter
 	}
-	return applyBackoffJitter(wait, c.JitterRand)
+	if opts.RetryInterval > 0 {
+		// RetryInterval is an operator-selected cadence, not a backoff seed. Keep
+		// it exact so a configured 30-second policy remains 30 seconds.
+		return opts.RetryInterval
+	}
+	return applyBackoffJitter(backoff, c.JitterRand)
 }
 
 func (c *SurvivalCoordinator) notifyRetry(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) {
