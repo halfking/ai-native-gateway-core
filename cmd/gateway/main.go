@@ -692,6 +692,10 @@ func main() {
 	// Started after dbConn is ready; stopped before pools.CloseAll so its
 	// final tick can still reach the DB.
 	var sessionAggregateOutboxReaperForShutdown any
+	// sessionDigestBackfillForShutdown — turn-digest 第二阶段 (2026-09-04):
+	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
+	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
+	var sessionDigestBackfillForShutdown any
 	if cfg.RedisAddr != "" {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -2222,6 +2226,12 @@ func main() {
 		if sessionAggregateOutboxReaperForShutdown != nil {
 			slog.Info("session aggregate outbox reaper started (FOR UPDATE SKIP LOCKED, 30s tick, batch=100, max_attempts=10)")
 		}
+
+		// turn-digest 第二阶段 (2026-09-04): 回填存量 session_turns.digest
+		// NULL 行的 jsonb envelope。限速默认 100 rows/s、幂等（digest IS NULL
+		// 守卫）、空闲指数退避；可通过 SESSIONS_V2_DIGEST_BACKFILL_ENABLED=false
+		// 关闭。与 reaper 同样绑定网关生命周期。
+		sessionDigestBackfillForShutdown = startSessionDigestBackfill(context.Background(), dbConn.Pool())
 	}
 
 	// v3 (2026-06-19) session-level intelligent compression.
@@ -6528,6 +6538,9 @@ func main() {
 		// outbox rows are enqueued) and BEFORE pools.CloseAll (so the final
 		// tick's DB transaction can still reach the server).
 		stopSessionAggregateOutboxReaper(sessionAggregateOutboxReaperForShutdown)
+		// turn-digest 第二阶段: 排空回填批。同样必须在 pools.CloseAll 之前，
+		// 让 in-flight 批的事务还能到达数据库。
+		stopSessionDigestBackfill(sessionDigestBackfillForShutdown)
 		lim.Stop()
 		pools.Stop()
 		pools.CloseAll()
