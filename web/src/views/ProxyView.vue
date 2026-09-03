@@ -46,7 +46,8 @@ async function loadSubscriptions() {
   loading.value = true
   error.value = ''
   try {
-    subscriptions.value = await getProxySubscriptions()
+    const list = await getProxySubscriptions()
+    subscriptions.value = Array.isArray(list) ? list : []
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('proxy.error.loadSubsFailed')
   } finally {
@@ -126,7 +127,8 @@ async function loadNodes() {
   loading.value = true
   error.value = ''
   try {
-    nodes.value = await getProxyNodes()
+    const list = await getProxyNodes()
+    nodes.value = Array.isArray(list) ? list : []
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('proxy.error.loadNodesFailed')
   } finally {
@@ -209,8 +211,8 @@ function switchTab(tab: 'status' | 'subscriptions' | 'nodes') {
 }
 
 const subOptions = computed(() => {
-  return subscriptions.value
-    .filter((s: ProxySubscription) => s.status === 'active')
+  return (subscriptions.value ?? [])
+    .filter((s: ProxySubscription | null): s is ProxySubscription => !!s && s.status === 'active')
     .map((s: ProxySubscription) => ({ value: s.id, label: `${s.name} (${s.node_count} nodes)` }))
 })
 </script>
