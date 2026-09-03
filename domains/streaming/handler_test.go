@@ -48,6 +48,131 @@ func TestHealthHandlerReadyzRequiresBothDependencies(t *testing.T) {
 	}
 }
 
+// TestHealthHandlerReadyzJSONContract locks down the /readyz response shape
+// so the frontend SystemStatusIndicator.vue can keep relying on the public
+// fields without having to fall back to admin-only /healthz?full=true.
+//
+// Contract (audit 2026-09-03, follow-up to commit 9d21f671c):
+//   - status field is always "ready" or "not_ready"
+//   - database and redis fields are always present (may be null when connector is nil)
+//   - when present, the inner ResourceStatus.error field MUST be empty string
+//     (anonymous endpoint must not leak backend ping error strings)
+//   - frontend uses .connected and .latency; never reads .error
+func TestHealthHandlerReadyzJSONContract(t *testing.T) {
+	cases := []struct {
+		name           string
+		db             dbConnector
+		redis          redisConnector
+		wantStatus     string
+		wantHTTPCode   int
+		wantDBConn     bool
+		wantRedisConn  bool
+	}{
+		{
+			name:          "all healthy",
+			db:            healthTestConnector{},
+			redis:         healthTestConnector{},
+			wantStatus:    "ready",
+			wantHTTPCode:  http.StatusOK,
+			wantDBConn:    true,
+			wantRedisConn: true,
+		},
+		{
+			name:          "db connector nil",
+			redis:         healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    false,
+			wantRedisConn: true,
+		},
+		{
+			name:          "redis connector nil",
+			db:            healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    true,
+			wantRedisConn: false,
+		},
+		{
+			name:          "db ping fails with private error",
+			db:            healthTestConnector{err: errors.New("private db error")},
+			redis:         healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    false,
+			wantRedisConn: true,
+		},
+		{
+			name:          "redis ping fails with private error",
+			db:            healthTestConnector{},
+			redis:         healthTestConnector{err: errors.New("private redis error")},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    true,
+			wantRedisConn: false,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHealthHandler(nil, nil, nil, tt.db, tt.redis)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+			if w.Code != tt.wantHTTPCode {
+				t.Fatalf("http status = %d, want %d; body=%s", w.Code, tt.wantHTTPCode, w.Body.String())
+			}
+
+			var body struct {
+				Status   string          `json:"status"`
+				Database *ResourceStatus `json:"database"`
+				Redis    *ResourceStatus `json:"redis"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode /readyz body: %v (body=%s)", err, w.Body.String())
+			}
+
+			if body.Status != tt.wantStatus {
+				t.Errorf("status field = %q, want %q", body.Status, tt.wantStatus)
+			}
+
+			// database / redis fields must be present (even when nil connectors
+			// give nil status); pointer-not-nil distinguishes "field absent"
+			// from "field present with nil value", but since the handler
+			// always emits these fields we only require pointer values.
+			// When connector is nil, healthResourceStatus returns nil so the
+			// JSON value will be null. When connector pings OK or errors,
+			// healthResourceStatus returns a non-nil *ResourceStatus with
+			// Error stripped.
+			if tt.db != nil && body.Database == nil {
+				t.Errorf("database field missing despite non-nil connector (body=%s)", w.Body.String())
+			}
+			if tt.redis != nil && body.Redis == nil {
+				t.Errorf("redis field missing despite non-nil connector (body=%s)", w.Body.String())
+			}
+
+			// Lock down the privacy contract: Error must always be empty in
+			// the anonymous response. If a future refactor renames ResourceStatus.Error,
+			// the strip block in serveReadyz will fail to compile (Go won't
+			// silently no-op), but this test catches drift if the strip is
+			// removed entirely.
+			if body.Database != nil && body.Database.Error != "" {
+				t.Errorf("database.error leaked to anonymous endpoint: %q", body.Database.Error)
+			}
+			if body.Redis != nil && body.Redis.Error != "" {
+				t.Errorf("redis.error leaked to anonymous endpoint: %q", body.Redis.Error)
+			}
+
+			if body.Database != nil && body.Database.Connected != tt.wantDBConn {
+				t.Errorf("database.connected = %v, want %v", body.Database.Connected, tt.wantDBConn)
+			}
+			if body.Redis != nil && body.Redis.Connected != tt.wantRedisConn {
+				t.Errorf("redis.connected = %v, want %v", body.Redis.Connected, tt.wantRedisConn)
+			}
+		})
+	}
+}
+
 func TestHealthHandlerHealthzIsLivenessWhenDependencyFails(t *testing.T) {
 	h := NewHealthHandler(nil, nil, nil, healthTestConnector{}, healthTestConnector{err: errors.New("private redis error")})
 	w := httptest.NewRecorder()

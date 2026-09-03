@@ -47,8 +47,8 @@ import (
 // scrolls away; these counters give the dead-letter queue a dashboard/rate-
 // alert surface symmetric with the reaper's retry path.
 //
-//   outboxDeadTotal   — rows transitioned claimed → dead (terminal loss)
-//   outboxRetriesTotal — rows scheduled for another retry attempt
+//	outboxDeadTotal   — rows transitioned claimed → dead (terminal loss)
+//	outboxRetriesTotal — rows scheduled for another retry attempt
 //
 // reason is a coarse bucket, not the raw error text, per GW-00 cardinality
 // rules ("decode" for payload failures, "exhausted" for max-attempts).
@@ -537,12 +537,12 @@ func EnqueueSessionAggregateOutbox(ctx context.Context, tx pgx.Tx, u SessionUpda
 	_, err = tx.Exec(ctx, `
 		INSERT INTO session_aggregate_outbox
 			(tenant_id, session_id, partition_date, request_id, update_payload)
-		VALUES ($1, $2, $3, $4, $5)
+		VALUES ($1, $2, $3, $4, $5::text::jsonb)
 		ON CONFLICT (tenant_id, session_id, partition_date, request_id)
 		DO UPDATE SET update_payload = EXCLUDED.update_payload,
 		              status='pending', attempts=0, last_error=NULL,
 		              next_retry_at=NOW(), updated_at=NOW()`,
-		u.TenantID, u.SessionID, partitionDate, u.RequestID, payload)
+		u.TenantID, u.SessionID, partitionDate, u.RequestID, string(payload))
 	return err
 }
 

@@ -392,7 +392,13 @@ func (e *Executor) executeOpenAI(
 				StatusCode: http.StatusNotImplemented,
 			}
 		}
-		bodyBytes = append([]byte(nil), sourceBody...)
+		contextWindow := 0
+		if cand.ContextWindow != nil {
+			contextWindow = *cand.ContextWindow
+		}
+		reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
+		bodyBytes = transformation.CompressResponsesInputIfNeeded(sourceBody, contextWindow, reserve)
+		bodyBytes = transformation.RewriteResponsesModel(bodyBytes, cand.RawModel)
 	} else {
 		bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
 		if err != nil {
@@ -738,10 +744,10 @@ func (e *Executor) executeOpenAI(
 					attrs = append(attrs, "err_kind", errKind)
 				}
 				if bodyPreview != "" {
-					attrs = append(attrs, "body_preview", bodyPreview)
+					attrs = append(attrs, "body_bytes", len(bodyPreview), "body_digest", safeUpstreamBodyDigest([]byte(bodyPreview)))
 				}
 				if uErr != nil {
-					attrs = append(attrs, "err_message", uErr.Message)
+					attrs = append(attrs, "err_message_bytes", len(uErr.Message), "err_message_digest", safeUpstreamBodyDigest([]byte(uErr.Message)))
 				}
 				slog.Info("upstream_http_attempt", attrs...)
 			}
@@ -885,7 +891,7 @@ func (e *Executor) executeOpenAI(
 							"model", cand.RawModel,
 							"status", resp.StatusCode,
 							"upstream_latency_ms", upstreamLatency.Milliseconds(),
-							"body_preview", string(body[:min(n, 120)]),
+							"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 						)
 						// Give the upstream time to recover before retrying.
 						// recover. Abort early if the client disconnects.
@@ -921,7 +927,7 @@ func (e *Executor) executeOpenAI(
 						"status", resp.StatusCode,
 						"kind", bodyKind,
 						"upstream_latency_ms", upstreamLatency.Milliseconds(),
-						"body_preview", string(body[:min(n, 120)]),
+						"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 					)
 					return nil, &modelNotFoundError{
 						credentialID: cand.CredentialID,
@@ -945,7 +951,7 @@ func (e *Executor) executeOpenAI(
 							"provider_id", cand.ProviderID,
 							"status", resp.StatusCode,
 							"kind", errKind,
-							"body_preview", string(body[:min(n, 200)]),
+							"body_digest", safeUpstreamBodyDigest(body[:min(n, 200)]), "body_bytes", min(n, 200),
 						)
 					}
 				} else if errKind == errorsx.KindRateLimit {
@@ -964,7 +970,7 @@ func (e *Executor) executeOpenAI(
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"status", resp.StatusCode,
-						"body_preview", string(body[:min(n, 120)]),
+						"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 					)
 				}
 				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
@@ -990,29 +996,39 @@ func (e *Executor) executeOpenAI(
 					if (errorsx.IsContextLength(errKind) ||
 						shouldHeuristicCompact(resp.StatusCode, errKind, len(sourceBody), cand.ContextWindow)) &&
 						cand.Protocol != "anthropic-messages" {
-					switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode, body[:n]) {
-					case ctxLenRetry:
-						bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
-						if err != nil {
-							return nil, err
-						}
-						// 2026-09-01 fix: context-length recovery succeeded. Set the flag
-						// so the next iteration decrements attempt, allowing the compressed
-						// body to be retried without consuming the retry budget. This fixes
-						// the bug where recovery succeeded but the compressed payload was
-						// never sent because attempt >= effectiveMaxRetries on the next loop.
-						ctxLenRecoveryRetry = true
-						// 2026-07-03 (Bug #N extension): preserve errKind in the
-						// retryableError wrapper so if retries are exhausted, the
-						// outer tryCandidate returns lastErr with the precise Kind.
-						return nil, &retryableError{err: &upstreampkg.Error{
-							Kind:       errKind,
-							Message:    fmt.Sprintf("upstream %d (context-length recovery retry)", resp.StatusCode),
-							Body:       append([]byte(nil), body[:n]...),
-							StatusCode: resp.StatusCode,
-							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
-						}}
-					case ctxLenGiveUp:
+						switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode, body[:n]) {
+						case ctxLenRetry:
+							if nativeNonStream || nativeStream {
+								contextWindow := 0
+								if cand.ContextWindow != nil {
+									contextWindow = *cand.ContextWindow
+								}
+								reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
+								sourceBody = transformation.CompressResponsesInputAggressively(sourceBody, contextWindow, reserve)
+								bodyBytes = transformation.RewriteResponsesModel(sourceBody, cand.RawModel)
+							} else {
+								bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+							}
+							if err != nil {
+								return nil, err
+							}
+							// 2026-09-01 fix: context-length recovery succeeded. Set the flag
+							// so the next iteration decrements attempt, allowing the compressed
+							// body to be retried without consuming the retry budget. This fixes
+							// the bug where recovery succeeded but the compressed payload was
+							// never sent because attempt >= effectiveMaxRetries on the next loop.
+							ctxLenRecoveryRetry = true
+							// 2026-07-03 (Bug #N extension): preserve errKind in the
+							// retryableError wrapper so if retries are exhausted, the
+							// outer tryCandidate returns lastErr with the precise Kind.
+							return nil, &retryableError{err: &upstreampkg.Error{
+								Kind:       errKind,
+								Message:    fmt.Sprintf("upstream %d (context-length recovery retry)", resp.StatusCode),
+								Body:       append([]byte(nil), body[:n]...),
+								StatusCode: resp.StatusCode,
+								RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+							}}
+						case ctxLenGiveUp:
 							// Return a typed error so the outer Execute
 							// loop knows this is a context-length
 							// exhaustion (model-size limit, not a
@@ -1358,7 +1374,8 @@ func (e *Executor) executeOpenAI(
 					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
 					copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 					params.W.WriteHeader(resp.StatusCode)
-					_, _ = params.W.Write(respBody)
+					_, _ = params.W.Write(e.redactClientResponse(params, respBody))
+
 				}
 				recordAttemptSuccess(0)
 				return &ExecuteResult{
@@ -1519,6 +1536,7 @@ func (e *Executor) executeOpenAI(
 						ResponseBody:       append([]byte(nil), respBody...),
 					})
 				}
+				respBody = e.redactClientResponse(params, respBody)
 				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
 				copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 				params.W.WriteHeader(resp.StatusCode)
@@ -1918,8 +1936,13 @@ func (e *Executor) applyOptionalOpenAIStrategies(params *ExecParams, cand provid
 	if params != nil && params.R != nil {
 		requestCtx = params.R.Context()
 	}
-	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+	if out, applied, runnerMeta := e.runCompressionStrategiesWithMeta(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+		if params != nil {
+			params.CompressionRunnerMeta = runnerMeta
+		}
 		return out
+	} else if params != nil && len(runnerMeta) > 0 {
+		params.CompressionRunnerMeta = runnerMeta
 	}
 	return bodyBytes
 }
@@ -2040,7 +2063,8 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	// upstreams like minimax trim server-side on direct calls, but proxy
 	// clients must trim at the gateway.
 	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
-		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+		reserve := transformation.OutputTokenReserve(bodyBytes, params.ClientProtocol)
+		bodyBytes = transformation.CompressMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
 	}
 	return bodyBytes
 }

@@ -17,6 +17,11 @@ import (
 type DB struct {
 	pool *pgxpool.Pool
 
+	// lifecycleMu serializes the lazy stdlib bridge creation with shutdown so
+	// callers never receive a bridge after its owning DB has been closed.
+	lifecycleMu sync.Mutex
+	closed      bool
+
 	// stdlibDBOnce lazily creates the shared *sql.DB bridge returned by
 	// Stdlib(). Exactly one bridge is constructed for the lifetime of *DB;
 	// all callers share the underlying pgxpool.Pool instead of spawning
@@ -1138,11 +1143,21 @@ ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
 `
 
 func (d *DB) Enabled() bool {
-	return d != nil && d.pool != nil
+	if d == nil {
+		return false
+	}
+	d.lifecycleMu.Lock()
+	defer d.lifecycleMu.Unlock()
+	return !d.closed && d.pool != nil
 }
 
 func (d *DB) Pool() *pgxpool.Pool {
 	if d == nil {
+		return nil
+	}
+	d.lifecycleMu.Lock()
+	defer d.lifecycleMu.Unlock()
+	if d.closed {
 		return nil
 	}
 	return d.pool
@@ -1169,7 +1184,12 @@ func (d *DB) Pool() *pgxpool.Pool {
 // 并发安全：sync.Once 保证整个进程生命周期内只创建一次 *sql.DB，多 goroutine
 // 同时调用 Stdlib() 会拿到同一个实例指针（database/sql 内部连接池本身支持并发）。
 func (d *DB) Stdlib() *sql.DB {
-	if d == nil || d.pool == nil {
+	if d == nil {
+		return nil
+	}
+	d.lifecycleMu.Lock()
+	defer d.lifecycleMu.Unlock()
+	if d.closed || d.pool == nil {
 		return nil
 	}
 	d.stdlibDBOnce.Do(func() {
@@ -1192,16 +1212,27 @@ func (d *DB) Close() {
 	if d == nil {
 		return
 	}
-	if d.stdlibDB != nil {
+	d.lifecycleMu.Lock()
+	if d.closed {
+		d.lifecycleMu.Unlock()
+		return
+	}
+	d.closed = true
+	stdlibDB := d.stdlibDB
+	pool := d.pool
+	d.stdlibDB = nil
+	d.pool = nil
+	d.lifecycleMu.Unlock()
+
+	if stdlibDB != nil {
 		// *sql.DB.Close() 仅清空 database/sql 自己的连接队列，不会触碰底层
 		// pgxpool.Pool（pgx connector 解耦了这两层）。即便 pool 已经先关闭，
 		// 这一次 Close() 也是安全的：database/sql 会把残留请求直接返回
 		// driver.ErrBadConn。
-		_ = d.stdlibDB.Close()
-		d.stdlibDB = nil
+		_ = stdlibDB.Close()
 	}
-	if d.pool != nil {
-		d.pool.Close()
+	if pool != nil {
+		pool.Close()
 	}
 }
 

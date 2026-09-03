@@ -27,33 +27,40 @@ func buildAlignmentMap(before, after []byte, summaryIdx int) []AlignmentInfo {
 	if err != nil || len(beforeMsgs) == 0 {
 		return nil
 	}
-	afterByHash := make(map[string]int, len(beforeMsgs))
+	afterByHash := make(map[string][]int, len(beforeMsgs))
 	if afterMsgs, err := extractMessages(after); err == nil {
 		for i, m := range afterMsgs {
-			if h := msgHash(m); h != "" {
-				if _, seen := afterByHash[h]; !seen {
-					afterByHash[h] = i // first occurrence wins
-				}
+			if h := msgHash(m); h != "" && !isSummaryMarkerMsg(m) {
+				afterByHash[h] = append(afterByHash[h], i)
 			}
 		}
 	}
 	align := make([]AlignmentInfo, 0, len(beforeMsgs))
+	usedAfter := make(map[string]int, len(afterByHash))
+	occurrences := make(map[string]int, len(beforeMsgs))
 	for i, m := range beforeMsgs {
 		h := msgHash(m)
+		occurrence := occurrences[h]
+		occurrences[h] = occurrence + 1
 		info := AlignmentInfo{
-			OriginalIndex:   i,
-			CompressedIndex: -1,
-			IsCompressed:    true,
-			CompressedInto:  -1,
-			Hash:            h,
+			OriginalIndex: i, CompressedIndex: -1, IsCompressed: true,
+			CompressedInto: -1, Hash: h, Occurrence: occurrence,
+			TargetKind: "dropped", TargetSpace: "none",
 		}
 		if h != "" {
-			if j, ok := afterByHash[h]; ok {
+			positions := afterByHash[h]
+			used := usedAfter[h]
+			if used < len(positions) {
 				info.IsCompressed = false
-				info.CompressedIndex = j
+				info.CompressedIndex = positions[used]
+				info.TargetKind = "retained"
+				info.TargetSpace = "messages"
+				usedAfter[h] = used + 1
 			} else if summaryIdx >= 0 {
 				info.CompressedIndex = summaryIdx
 				info.CompressedInto = summaryIdx
+				info.TargetKind = "summary"
+				info.TargetSpace = "messages"
 			}
 		}
 		align = append(align, info)

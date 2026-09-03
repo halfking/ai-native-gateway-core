@@ -71,7 +71,20 @@ HOT_PATTERNS='*_hot *_2025_* *_2026_* *_2027_* *_2028_* *_archived *_archive'
 # them as "REAL DRIFT" on every sync.
 INHERITED_TABLES_252=$(mktemp)
 INHERITED_TABLES_LOC=$(mktemp)
-trap 'rm -f "$INHERITED_TABLES_252" "$INHERITED_TABLES_LOC"' EXIT
+# Single EXIT trap: later tunnel setup must extend, not replace, this cleanup
+# (a bare second `trap ... EXIT` would silently drop the temp-file removal).
+cleanup() {
+  rm -f "$INHERITED_TABLES_252" "$INHERITED_TABLES_LOC"
+  # teardown_tunnel is defined further down; guard so an early exit (e.g. bad
+  # args) before that definition does not turn cleanup into a command-not-found.
+  # Must be an `if`, not `command -v ... && ...`: a short-circuited && returns 1,
+  # and as the trap's last status it overrides the script's real exit code
+  # (e.g. --help's exit 0 became 1).
+  if command -v teardown_tunnel >/dev/null 2>&1; then
+    teardown_tunnel
+  fi
+}
+trap cleanup EXIT
 
 mkdir -p "$WORK_DIR"
 
@@ -316,7 +329,8 @@ pull_inventories() {
 }
 
 # ── Main ───────────────────────────────────────────────────────────────────
-trap teardown_tunnel EXIT
+# The EXIT trap set near the mktemp calls above already covers both temp-file
+# removal and teardown_tunnel (see cleanup()); do not install another trap here.
 load_envs
 ensure_tunnel
 pull_inventories

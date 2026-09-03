@@ -73,11 +73,16 @@ type SessionWriterV2 struct {
 // in tests) instead of NewSessionWriterV2. Idempotent.
 func (w *SessionWriterV2) ensureLifecycle() {
 	w.lifecycleInit.Do(func() {
-		if w.lifecycleCtx == nil {
-			ctx, cancel := context.WithCancel(context.Background())
-			w.lifecycleCtx = ctx
-			w.lifecycleCancel = cancel
+		if w.lifecycleCtx != nil && w.lifecycleCancel != nil {
+			return
 		}
+		parent := w.lifecycleCtx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithCancel(parent)
+		w.lifecycleCtx = ctx
+		w.lifecycleCancel = cancel
 	})
 }
 
@@ -507,6 +512,28 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// goroutine no longer needs to be the only line of defense.
 	if w.sessionAggregator != nil {
 		w.ensureLifecycle()
+		// Snapshot every caller-owned field before launching the asynchronous
+		// aggregate update. The telemetry pipeline may reuse or mutate req and
+		// its message slices as soon as Write returns; the goroutine must only
+		// capture this immutable value.
+		update := SessionUpdate{
+			SessionID: req.SessionID,
+			TenantID:  req.TenantID,
+			// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
+			// the aggregator can claim this turn exactly once and never
+			// double-accumulate token/turn/cost on a replay.
+			RequestID:           req.RequestID,
+			LastTurnNo:          turnNo,
+			LastRequestSummary:  summarizeMessages(requestDelta),
+			LastResponseSummary: summarizeMessages(req.ResponseBody),
+			LastModel:           req.ClientModel,
+			LastProvider:        req.ProviderID,
+			ClientType:          req.ClientType,
+			TurnIncrement:       1,
+			TokensIncrement:     req.PromptTokens + req.CompletionTokens,
+			CostIncrement:       req.CostUSD,
+			UpdatedAt:           req.Timestamp,
+		}
 		w.lifecycleMu.Lock()
 		if w.stopped {
 			w.lifecycleMu.Unlock()
@@ -514,38 +541,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		}
 		w.aggWg.Add(1)
 		w.lifecycleMu.Unlock()
-		go func() {
+		go func(update SessionUpdate) {
 			defer w.aggWg.Done()
 			// lifecycleCtx gates the goroutine on shutdown. A small timeout
 			// bounds it so a slow DB can't stall Stop indefinitely even if
 			// the ctx isn't yet cancelled.
 			aggCtx, cancel := context.WithTimeout(w.lifecycleCtx, 30*time.Second)
 			defer cancel()
-			update := SessionUpdate{
-				SessionID: req.SessionID,
-				TenantID:  req.TenantID,
-				// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
-				// the aggregator can claim this turn exactly once and never
-				// double-accumulate token/turn/cost on a replay.
-				RequestID:           req.RequestID,
-				LastTurnNo:          turnNo,
-				LastRequestSummary:  summarizeMessages(requestDelta),
-				LastResponseSummary: summarizeMessages(req.ResponseBody),
-				LastModel:           req.ClientModel,
-				LastProvider:        req.ProviderID,
-				ClientType:          req.ClientType,
-				TurnIncrement:       1,
-				TokensIncrement:     req.PromptTokens + req.CompletionTokens,
-				CostIncrement:       req.CostUSD,
-				UpdatedAt:           req.Timestamp,
-			}
 			if err := w.updateSessionAggregate(aggCtx, update); err != nil {
 				slog.Error("update session snapshot failed after retries",
-					"session_id", req.SessionID,
-					"request_id", req.RequestID,
+					"session_id", update.SessionID,
+					"request_id", update.RequestID,
 					"error", err)
 			}
-		}()
+		}(update)
 	}
 
 	return nil

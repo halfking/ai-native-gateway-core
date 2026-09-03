@@ -19,8 +19,8 @@
 #   bash scripts/local-dev/recreate-llm-gateway-pg.sh
 # -----------------------------------------------------------------------------
 # Preconditions:
-#   - Existing data dir $HOME/.agents-cache/llm-gateway-pg-data (the LIVE
-#     container's dir — verified via docker inspect 2026-08-31)
+#   - Existing data dir $HOME/Downloads/llm-gateway-files/postgres/data
+#     (canonical local PG17 data source selected 2026-09-03)
 #   - Image kx-citus-pg17:offline-arm64 available locally
 #   - Docker network shared-infra exists
 #   - Source 252 credentials loaded via envs loader.sh
@@ -33,14 +33,11 @@ PROJECT="llm-gateway-go"
 SERVER="115.29.212.252"
 CONTAINER_NAME="llm-gateway-pg"
 IMAGE="kx-citus-pg17:offline-arm64"
-# 2026-08-31: aligned to the LIVE container (docker inspect llm-gateway-pg).
-# The previous values (~/data/docker/llm-gateway-pg17/data, port 5432, no
-# network) described an older container and would create a SECOND cluster.
-# 2026-08-31 (later): Homebrew postgresql@17 removed from host 5432; the
-# container now owns host 5432. Port 15432 is reserved EXCLUSIVELY for the
-# 252 SSH tunnel (configs/env-252.sh TUNNEL_LOCAL_PORT) — do not map the
-# container there again (IPv4/IPv6 dual-stack split caused wrong-cluster hits).
-DATA_DIR="$HOME/.agents-cache/llm-gateway-pg-data"
+# 2026-09-03: canonical local recovery source selected by operator. The
+# previous .agents-cache directory remains untouched as a rollback copy.
+# Port 15432 is reserved exclusively for the 252 SSH tunnel; local PG owns
+# host loopback port 5432.
+DATA_DIR="$HOME/Downloads/llm-gateway-files/postgres/data"
 PORT_BIND="127.0.0.1:5432:5432"
 NETWORK="shared-infra"
 

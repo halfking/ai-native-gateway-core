@@ -24,6 +24,7 @@ package compression
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"strings"
 )
@@ -305,6 +306,12 @@ func SmartCompress(body []byte, plan CutPlan, protocol string, summaryText strin
 	if err := json.Unmarshal(body, &req); err != nil {
 		return nil, err
 	}
+	if plan.SystemCount < 0 || plan.SystemCount > len(req.Messages) ||
+		plan.CutIndex < -1 || plan.CutIndex > len(req.Messages)-plan.SystemCount ||
+		plan.SummariseCount < 0 || plan.RetainCount < 0 ||
+		plan.SummariseCount+plan.RetainCount > len(req.Messages)-plan.SystemCount {
+		return nil, fmt.Errorf("invalid cut plan bounds")
+	}
 
 	systemMsgs := req.Messages[:plan.SystemCount]
 	nonSystem := req.Messages[plan.SystemCount:]
@@ -317,22 +324,32 @@ func SmartCompress(body []byte, plan CutPlan, protocol string, summaryText strin
 		tail = nonSystem
 	}
 
-	// Build summary message.
-	summaryContent := smartWindowSummaryPrefix + summaryText
-	var summaryMsg json.RawMessage
+	// Anthropic's system prompt is a top-level field, not a messages[] role.
+	// Keep the summary in that field so reactive recovery has the same wire
+	// contract as the proactive rebuilder and never fabricates a user turn.
 	if protocol == "anthropic-messages" {
-		summaryMsg, _ = json.Marshal(map[string]string{
-			"role":    "user",
-			"content": summaryContent,
-		})
-	} else {
-		summaryMsg, _ = json.Marshal(map[string]string{
-			"role":    "user",
-			"content": summaryContent,
-		})
+		if summaryText == "" {
+			return nil, fmt.Errorf("empty Anthropic summary")
+		}
+		newSystem, err := rebuildAnthropicSystemField(generic["system"], summaryText)
+		if err != nil {
+			return nil, err
+		}
+		generic["system"] = newSystem
+		out, err := json.Marshal(tail)
+		if err != nil {
+			return nil, err
+		}
+		generic["messages"] = out
+		return json.Marshal(generic)
 	}
 
-	// Assemble: [system...] + [summary] + [tail...]
+	// Assemble OpenAI Chat as [system...] + [summary] + [tail...].
+	summaryContent := smartWindowSummaryPrefix + summaryText
+	summaryMsg, _ := json.Marshal(map[string]string{
+		"role":    "user",
+		"content": summaryContent,
+	})
 	out := make([]json.RawMessage, 0, len(systemMsgs)+1+len(tail))
 	out = append(out, systemMsgs...)
 	out = append(out, summaryMsg)

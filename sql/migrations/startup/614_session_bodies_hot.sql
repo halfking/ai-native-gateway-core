@@ -46,9 +46,10 @@ CREATE INDEX idx_session_bodies_hot_lookup
 CREATE INDEX idx_session_bodies_hot_request
     ON public.session_bodies_hot(request_id, tenant_id);
 
+-- PostgreSQL partial-index predicates must be immutable; now() is not.
+-- Retention is enforced by the promotion worker, so use stable indexes here.
 CREATE INDEX idx_session_bodies_hot_ts
-    ON public.session_bodies_hot(ts)
-    WHERE ts > now() - interval '8 hours';
+    ON public.session_bodies_hot(ts);
 
 CREATE INDEX idx_session_bodies_hot_partition_date
     ON public.session_bodies_hot(partition_date);

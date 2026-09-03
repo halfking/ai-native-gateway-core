@@ -592,14 +592,6 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
 	bodyBytes := append([]byte(nil), sourceBody...)
 
-	if cand.ContextWindow != nil {
-		if params.ClientProtocol == "anthropic-messages" {
-			bodyBytes = transformation.CompressAnthropicMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
-		} else {
-			bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
-		}
-	}
-
 	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
 	// FIX (2026-06-23): Only convert when upstream protocol is anthropic-messages.
 	// This prevents converting OpenAI→Anthropic when talking to OpenAI-compatible upstreams like MiniMax.
@@ -658,12 +650,24 @@ func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candida
 }
 
 func (e *Executor) finalizeAnthropicRequestBody(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {
+	// Candidate-aware enforcement must run for both the IR and legacy paths.
+	// The gateway's 2M admission ceiling is not the provider context window;
+	// trim the serialized Anthropic body at the shared 80% provider threshold.
+	if cand.ContextWindow != nil {
+		reserve := transformation.OutputTokenReserve(bodyBytes, "anthropic-messages")
+		bodyBytes = transformation.CompressAnthropicMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
+	}
 	requestCtx := context.Background()
 	if params != nil && params.R != nil {
 		requestCtx = params.R.Context()
 	}
-	if out, applied := e.runCompressionStrategies(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+	if out, applied, runnerMeta := e.runCompressionStrategiesWithMeta(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
 		bodyBytes = out
+		if params != nil {
+			params.CompressionRunnerMeta = runnerMeta
+		}
+	} else if params != nil && len(runnerMeta) > 0 {
+		params.CompressionRunnerMeta = runnerMeta
 	}
 	return paramguard.Apply(bodyBytes, paramreg.DialectAnthropic)
 }
@@ -1047,7 +1051,7 @@ func (e *Executor) executeAnthropicOnce(
 		"latency_ms", upstreamLatency.Milliseconds(),
 	}
 	if uErr != nil {
-		attemptAttrs = append(attemptAttrs, "err_kind", uErr.Kind, "err_message", uErr.Message)
+		attemptAttrs = append(attemptAttrs, "err_kind", uErr.Kind, "err_message_bytes", len(uErr.Message), "err_message_digest", safeUpstreamBodyDigest([]byte(uErr.Message)))
 	}
 	if resp != nil {
 		attemptAttrs = append(attemptAttrs, "upstream_status", resp.StatusCode)
@@ -1107,7 +1111,7 @@ func (e *Executor) executeAnthropicOnce(
 				"status", resp.StatusCode,
 				"kind", bodyKind,
 				"upstream_latency_ms", upstreamLatency.Milliseconds(),
-				"body_preview", string(body[:min(len(body), 120)]),
+				"body_digest", safeUpstreamBodyDigest(body[:min(len(body), 120)]), "body_bytes", min(len(body), 120),
 			)
 			return nil, &modelNotFoundError{
 				credentialID: cand.CredentialID,

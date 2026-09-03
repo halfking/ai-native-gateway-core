@@ -3,6 +3,7 @@ package executors
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1098,6 +1099,24 @@ func (e *Executor) logUpstreamResponse(params *ExecParams, protocol string, body
 	}
 }
 
+func safeUpstreamBodyDigest(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	digest := sha256.Sum256(body)
+	return fmt.Sprintf("%x", digest[:8])
+}
+
+func (e *Executor) redactClientResponse(params *ExecParams, body []byte) []byte {
+	if e == nil || e.RedactBodyFn == nil || len(body) == 0 {
+		return body
+	}
+	if params == nil {
+		return e.RedactBodyFn(body, "", "")
+	}
+	return e.RedactBodyFn(body, params.SessionID, params.TenantID)
+}
+
 func (e *Executor) logClientResponse(params *ExecParams, protocol string, body []byte) {
 	if e.RawDataLogger == nil {
 		return
@@ -1225,8 +1244,11 @@ type ExecParams struct {
 	// Empty defaults to "openai-completions". Used by executeAnthropic to
 	// decide whether the body needs Q3 conversion (openai->anthropic).
 	ClientProtocol string
-	SessionKey     string
-	StickyKey      string
+	// CompressionRunnerMeta carries body-free strategy runner stats into
+	// ExecuteResult/request telemetry. It is request-scoped and optional.
+	CompressionRunnerMeta []byte
+	SessionKey            string
+	StickyKey             string
 	// SessionID is the X-Gw-Session-Id from the request (may be empty for non-session requests).
 	// 2026-06-25: Used by multi-level sticky routing (L1: session+model).
 	SessionID string
@@ -1578,9 +1600,10 @@ type ExecuteResult struct {
 	// into request_logs.compression_reason / compression_strategy /
 	// compression_meta so operators can SQL-trace the parent-child chain
 	// per v7 §6.
-	CompressionReason   *string
-	CompressionStrategy *string
-	CompressionMeta     []byte // JSON-encoded v7 §3.2 schema
+	CompressionReason     *string
+	CompressionStrategy   *string
+	CompressionMeta       []byte // JSON-encoded v7 §3.2 schema
+	CompressionRunnerMeta []byte // metadata-only strategy runner stats
 	// V3.1 dispatch queue timestamps (from QueuedRequest after Pipeline.Submit).
 	// Nil when dispatch path is off or stage was never reached.
 	T0ArrivedAt       *time.Time
@@ -1917,6 +1940,12 @@ func ensureFpReleaseWorker() {
 func init() { ensureFpReleaseWorker() }
 
 func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error) {
+	defer func() {
+		if result != nil && len(params.CompressionRunnerMeta) > 0 {
+			result.CompressionRunnerMeta = append([]byte(nil), params.CompressionRunnerMeta...)
+			result.CompressionMeta = mergeCompressionMeta(result.CompressionMeta, params.CompressionRunnerMeta)
+		}
+	}()
 	if params.UpstreamAttempts == nil {
 		params.UpstreamAttempts = NewUpstreamAttemptBudget(DefaultUpstreamAttemptLimit)
 	}

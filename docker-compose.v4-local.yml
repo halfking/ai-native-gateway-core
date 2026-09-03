@@ -8,8 +8,8 @@
 # 依赖的宿主实例（均已在运行，不重建）:
 #   - llm-gateway-pg   (kx-citus-pg17:offline-arm64, 127.0.0.1:5432,
 #                       citus 13.3 + citus_columnar, DB=llm_gateway,
-#                       user=llm_gateway; password follows the local shared credential manifest)
-#   - nbjl-redis       (kx-redis:7.4.9-arm64, acc-local-net 容器名可达)
+#                       data source: $HOME/Downloads/llm-gateway-files/postgres/data)
+#   - nbjl-redis       (redis:7-alpine / Redis 7.4.11, shared-infra 容器名可达)
 #
 # 已评估弃用: kxmemory-rls-pg17 (pgvector:pg17) 无 citus/columnar 支持，
 # 不满足 columnar 归档要求（2026-08-18 对比结论）。
@@ -27,9 +27,9 @@ services:
       - "127.0.0.1:18781:8781"
     volumes:
       # 持久化到宿主机，避免容器重启丢失附件、原始帧与文件日志。
-      - "${HOME}/Downloads/llm-gateway-files/attachments:/var/lib/llm-gateway/attachments"
-      - "${HOME}/Downloads/llm-gateway-files/raw-logs:/var/lib/llm-gateway/raw-logs"
-      - "${HOME}/Downloads/llm-gateway-files/logs:/var/log/llm-gateway"
+      - "${HOME}/Downloads/kaixuan/llm-gateway/attachments:/var/lib/llm-gateway/attachments"
+      - "${HOME}/Downloads/kaixuan/llm-gateway/raw-logs:/var/lib/llm-gateway/raw-logs"
+      - "${HOME}/Downloads/kaixuan/llm-gateway/logs:/var/log/llm-gateway"
     environment:
       # ── 存储（复用宿主实例）────────────────────────────────────
       # 中心 PG 与本服务同在 shared-infra，通过容器 DNS 访问。

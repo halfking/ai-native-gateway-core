@@ -43,8 +43,8 @@ func TestHandleTriggerAvailability_NoWorker(t *testing.T) {
 	if body.ErrorCode != "self_check.trigger.no_probe_path" {
 		t.Fatalf("unexpected error_code: %q", body.ErrorCode)
 	}
-	if !strings.Contains(body.Reason, "new probe mode") {
-		t.Fatalf("reason should mention new probe mode, got: %q", body.Reason)
+	if !strings.Contains(body.Reason, "节点探测队列") {
+		t.Fatalf("reason should mention probe queue migration (cn text), got: %q", body.Reason)
 	}
 }
 

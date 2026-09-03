@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
@@ -68,6 +69,11 @@ func (h *ChatHandler) runSurvivalCoordinator(
 
 	params := buildExecParams(w)
 	params.R = frozenReq
+	// The legacy handler factory pre-allocates its 100-call budget for the
+	// goal-retry owner. Survival chooses the effective day/night retry budget
+	// from its start-time snapshot, so let the coordinator allocate the shared
+	// request-survival budget before the first upstream call.
+	params.UpstreamAttempts = nil
 
 	// The handler-owned StreamSession stays active through terminal completion.
 	// OnStreamReady is retained for compatibility but no longer stops heartbeat;
@@ -96,14 +102,26 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		Protocol:           protocol,
 		Options:            h.survivalOptions,
 		TransportHeartbeat: params.OnStreamHeartbeat,
+		RetryNotice: func(ctx context.Context, attempt int, decision TaskDecision, wait time.Duration) error {
+			if params.OnNodeJump == nil {
+				return nil
+			}
+			params.OnNodeJump(fmt.Sprintf("正在等待可用节点并重试（第 %d 次，原因=%s，等待 %s）", attempt, decision.Reason, wait.Round(time.Second)))
+			return nil
+		},
 		Refresh: func(ctx context.Context) {
-			cands, _, _, err := resolveCandidatesForRequest(
+			cands, policy, _, err := resolveCandidatesForRequest(
 				ctx, h.provider, params.ClientModel, params.ClientID.Fingerprint.ClientProfile,
 				tenantID, params.BodyBytes,
 			)
-			if err == nil && len(cands) > 0 {
-				params.Candidates = cands
+			if err != nil {
+				slog.Warn("survival candidate refresh failed", "request_id", params.RequestID, "error", err)
+				return
 			}
+			// A successful empty refresh is meaningful: it prevents retrying a
+			// stale route while the coordinator keeps the client connection alive.
+			params.Candidates = cands
+			params.Policy = policy
 		},
 		// NOTE: the coordinator's durable Reschedule seam stays unwired
 		// here: store.Reschedule clears the lease while the coordinator
@@ -165,8 +183,10 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		if capture != nil {
 			body, contentType = capture.result()
 		}
-		settleDurableStream(frozenCtx, durable, res, body, contentType, frozenCtx.Err() != nil)
+		clientDisconnected := res.Decision.Reason == "client_disconnected"
+		settleDurableStream(frozenCtx, durable, res, body, contentType, clientDisconnected)
 	}
+
 	if res.Succeed {
 		return res.FinalAttempt.ExecResult, nil
 	}
@@ -189,7 +209,9 @@ func durableBeforeSemanticCommit(durable *DurableStreamBinding) func(context.Con
 		return nil
 	}
 	return func(ctx context.Context, state CommitState) error {
-		return durable.CheckpointContext(ctx, state)
+		// Durable ownership outlives the client connection; fencing and the
+		// binding's own timeout still bound this write.
+		return durable.CheckpointContext(context.WithoutCancel(ctx), state)
 	}
 }
 

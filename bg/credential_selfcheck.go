@@ -669,8 +669,8 @@ func (w *CredentialSelfcheckWorker) finalizeRun(ctx context.Context, runID int64
 		UPDATE self_check_runs SET completed_at = $2, duration_ms = $3, status = $4,
 			rounds_total = $5, rounds_success = $6, had_tool_call = $7, total_tokens = $8,
 			avg_latency_ms = $9, error_type = $10, error_detail = $11,
-			selection_strategy = $12, attempted_models = $13::jsonb WHERE id = $1`,
-		runID, completedAt, int(completedAt.Sub(startedAt).Milliseconds()), status, roundsTotal, roundsSuccess, hadToolCall, totalTokens, avgLatency, errType, errDetail, strategy, attemptedJSON)
+			selection_strategy = $12, attempted_models = $13::text::jsonb WHERE id = $1`,
+		runID, completedAt, int(completedAt.Sub(startedAt).Milliseconds()), status, roundsTotal, roundsSuccess, hadToolCall, totalTokens, avgLatency, errType, errDetail, strategy, string(attemptedJSON))
 	return err
 }
 

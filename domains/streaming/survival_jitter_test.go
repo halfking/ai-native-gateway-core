@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// survival_jitter_test.go — T3 survival 部分：±20% 退避抖动 + Deadline 2h。
+// survival_jitter_test.go — survival jitter and interactive recovery deadline.
 
 func TestApplyBackoffJitterBoundaries(t *testing.T) {
 	d := 10 * time.Second
@@ -30,10 +30,10 @@ func TestApplyBackoffJitterBoundaries(t *testing.T) {
 	assert.Equal(t, -time.Second, applyBackoffJitter(-time.Second, nil))
 }
 
-func TestSurvivalOptionsDeadlineDefaultTwoHours(t *testing.T) {
-	// T3: 任务总时限 24h → 2h（终止优先级：组合穷尽 > 2h 时限 > 100 次预算）。
+func TestSurvivalOptionsDeadlineDefaultFiveHours(t *testing.T) {
+	// Interactive recovery remains available for up to five hours by default.
 	opts := SurvivalOptions{}.withDefaults()
-	assert.Equal(t, 2*time.Hour, opts.Deadline)
+	assert.Equal(t, 5*time.Hour, opts.Deadline)
 	// Explicit values still win (env/config override path).
 	opts = SurvivalOptions{Deadline: 42 * time.Minute}.withDefaults()
 	assert.Equal(t, 42*time.Minute, opts.Deadline)

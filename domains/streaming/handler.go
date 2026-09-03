@@ -2176,9 +2176,9 @@ func (h *ChatHandler) serveWithExecutor(
 		})
 		return
 	}
-	// ── 1M–2M 软压缩 preflight (2026-09-01, audit §三 3.3) ────────────────
-	// 客户端 body 落在 1M < tokens ≤ 2M 时，尝试 60% 激进压缩；压缩后若 ≤ budget
-	// 则继续走原路径，否则交回 promptBudgetExceeded 拒绝（413）。
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Record the receipt-time estimate. Provider-aware compression runs later,
+	// after candidate resolution supplies the selected model context window.
 	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai"); applied {
 		logCtx.SetPreflightCompress(pbEst, len(pb))
 		bodyBytes = pb
@@ -3194,6 +3194,7 @@ func (h *ChatHandler) serveWithExecutor(
 		writeErrorJSON(w, rc.httpStatus, requestID, rc.message, "server_error", rc.code)
 		return
 	}
+	survivalEligible := isStream && (durableStream != nil || h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID))
 	if len(candidates) == 0 {
 		// 2026-07-14: Distinguish "model not recognized anywhere" (400
 		// invalid_model) from "model recognized but no routable provider right
@@ -3237,20 +3238,23 @@ func (h *ChatHandler) serveWithExecutor(
 				"blocked_reason": noCandReason,
 			},
 		})
-		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		logCtx.failAndMark("no_candidate",
-			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
-		markLogged()
-		// 2026-08-09: the requested model has no routable node, but other
-		// models often do. Offer them so the caller can switch instead of
-		// polling a dead model. Task-type-aware when the session's type is
-		// known (header → autoroute session cache → inline heuristic), else
-		// ordered featured-then-popular. Availability is judged by
-		// v_routable_credential_models.is_routable — the same gate the router
-		// uses — so a suggested model is genuinely reachable right now.
-		alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
-		writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
-		return
+		if !survivalEligible {
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
+			logCtx.failAndMark("no_candidate",
+				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
+			markLogged()
+			// 2026-08-09: the requested model has no routable node, but other
+			// models often do. Offer them so the caller can switch instead of
+			// polling a dead model. Task-type-aware when the session's type is
+			// known (header → autoroute session cache → inline heuristic), else
+			// ordered featured-then-popular. Availability is judged by
+			// v_routable_credential_models.is_routable — the same gate the router
+			// uses — so a suggested model is genuinely reachable right now.
+			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
+			writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
+			return
+		}
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		// Stash the first candidate so the safety net can attribute
@@ -3291,7 +3295,10 @@ func (h *ChatHandler) serveWithExecutor(
 		explicitOutbound = renderOutboundFromTransform(txResult, candidates[0], tCtx.CanonicalName)
 	}
 
-	auditBuilder.OutboundModel(explicitOutbound).Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)
+	auditBuilder.OutboundModel(explicitOutbound)
+	if len(candidates) > 0 {
+		auditBuilder.Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)
+	}
 	if modelResolution != nil {
 		auditBuilder.ResolutionPath(modelResolution.ResolutionPath)
 		if modelResolution.CanonicalName != nil {
@@ -3425,7 +3432,11 @@ func (h *ChatHandler) serveWithExecutor(
 	// new turns to the compressed session history and, when the sliding
 	// window fires, produces a lossless LLM summary (or trims as fallback).
 	var scResult *compression.PrepareResult
-	if h.sessionCompressor != nil && gwSessionID != "" {
+	// SessionCompressor persists message hashes, summaries, and rebuild markers
+	// for Chat/Anthropic envelopes. Native Responses retains its input-shaped
+	// body through dispatch, where candidate-window and 4xx recovery use the
+	// Responses-specific compressor without corrupting session-cache state.
+	if h.sessionCompressor != nil && gwSessionID != "" && clientProtocolFromPath(r.URL.Path) != "openai-responses" {
 		// entering the compressing block — runtime transitioned EventRouted → EventCompressing below
 		tenantForSC := "default"
 		if keyInfo != nil {
@@ -3435,11 +3446,18 @@ func (h *ChatHandler) serveWithExecutor(
 		if isAnthropicMessagesPath(r.URL.Path) {
 			protocolForSC = "anthropic-messages"
 		}
-		// Resolve the target model context window from the first candidate.
-		// 0 when unknown (TOKEN trigger then relies on msg_count / idle only).
+		// Use the smallest known candidate window as a safe session-level
+		// baseline. Dispatch may reorder or fail over candidates after Prepare;
+		// a conservative baseline prevents a later small-window candidate from
+		// receiving an over-large session body.
 		ctxWindow := 0
-		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
-			ctxWindow = *candidates[0].ContextWindow
+		for _, candidate := range candidates {
+			if candidate.ContextWindow == nil || *candidate.ContextWindow <= 0 {
+				continue
+			}
+			if ctxWindow == 0 || *candidate.ContextWindow < ctxWindow {
+				ctxWindow = *candidate.ContextWindow
+			}
 		}
 		scPrepareStart := time.Now()
 		// SP-02: state machine — body compression has started.
@@ -7163,18 +7181,36 @@ func (h *HealthHandler) serveVersion(w http.ResponseWriter) {
 // serveReadyz — /readyz 端点：DB + Redis 都通才 200，否则 503。
 // 严格门：与 /healthz 的 anon 路径区分——healthz 在 K8s liveness 中应 fail-open，
 // readyz 在 readiness 中应 fail-closed（依赖故障时摘流量）。
+//
+// 2026-09-03: 返回结构同时包含 `database` 与 `redis` ResourceStatus 字段，
+// 让前端 SystemStatusIndicator 的 D/R 徽章可以从这个匿名端点拿到真实
+// 连通性，而不必依赖 /healthz?full=true (需要 admin token)。Error 字段
+// 继续 strip，避免向匿名端点泄漏后端错误字符串。
 func (h *HealthHandler) serveReadyz(w http.ResponseWriter, r *http.Request) {
-	ready := h.dependenciesReady(r)
 	w.Header().Set("Content-Type", "application/json")
-	if ready {
-		w.WriteHeader(http.StatusOK)
-		//nolint:errcheck
-		json.NewEncoder(w).Encode(map[string]any{"status": "ready"})
-		return
+	dbStatus := healthResourceStatus(r.Context(), h.db)
+	redisStatus := healthResourceStatus(r.Context(), h.redis)
+	if dbStatus != nil {
+		dbStatus.Error = "" // 不要向匿名端点泄漏 ping 错误细节
 	}
-	w.WriteHeader(http.StatusServiceUnavailable)
+	if redisStatus != nil {
+		redisStatus.Error = ""
+	}
+	resp := map[string]any{
+		"database": dbStatus,
+		"redis":    redisStatus,
+	}
+	allReady := dbStatus != nil && dbStatus.Connected &&
+		redisStatus != nil && redisStatus.Connected
+	if allReady {
+		resp["status"] = "ready"
+		w.WriteHeader(http.StatusOK)
+	} else {
+		resp["status"] = "not_ready"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
 	//nolint:errcheck
-	json.NewEncoder(w).Encode(map[string]any{"status": "not_ready"})
+	json.NewEncoder(w).Encode(resp)
 }
 
 // dependenciesReady — 内部 helper：DB ping + Redis ping（任一失败返回 false）。

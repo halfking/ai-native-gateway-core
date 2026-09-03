@@ -599,16 +599,21 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 // task into credential_probe_queue; the ProbeQueueWorker + ProbeService execute
 // it. Best-effort on DB error (matches the legacy path which ignores UPSERT err).
 func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqID string) {
-	w.submitViaQueueSource(credID, model, tenantID, parentReqID, "request_failure")
+	if err := w.submitViaQueueSource(credID, model, tenantID, parentReqID, "request_failure"); err != nil {
+		slog.Warn("node_probe_worker: submit via queue failed",
+			"credential_id", credID, "model", model, "error", err)
+	}
 }
 
 // submitViaQueueSource is the source-parameterized enqueue used by Submit
 // ("request_failure") and the scheduled pump ("periodic"). The source feeds
 // the 自检 stream's origin badge and must stay inside the
 // credential_probe_queue.source CHECK constraint.
-func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, parentReqID, source string) {
+//
+// Returns error if enqueue fails, nil if successful (including dedup no-ops).
+func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, parentReqID, source string) error {
 	if w.probeQueue == nil {
-		return
+		return fmt.Errorf("probe queue not initialized")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -633,15 +638,17 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 		ParentReqID: parentReqID,
 		DedupKey:    buildNodeProbeTaskID(credID, model),
 	}
-	if _, inserted, err := w.probeQueue.Enqueue(ctx, task); err != nil {
+	_, inserted, err := w.probeQueue.Enqueue(ctx, task)
+	if err != nil {
 		slog.Warn("node_probe_worker: enqueue via queue failed",
 			"credential_id", credID, "model", model, "error", err)
-	} else {
-		slog.Info("node_probe_worker: submit via queue",
-			"credential_id", credID, "model", model, "inserted", inserted)
+		return fmt.Errorf("enqueue probe task: %w", err)
 	}
+	slog.Info("node_probe_worker: submit via queue",
+		"credential_id", credID, "model", model, "inserted", inserted)
 	// publishProbeTask (called inside Enqueue) emits the pending tile using
 	// task.Command as TaskType, so it shows as node_probe on the 自检 stream.
+	return nil
 }
 
 // pumpDueStatesToQueue feeds due node_probe_state rows into the unified
@@ -693,10 +700,20 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 		// 'periodic' (not 'request_failure'): these are scheduled re-probes,
 		// and the CHECK constraint on credential_probe_queue.source rejects
 		// anything outside its enum anyway.
-		w.submitViaQueueSource(r.credID, r.model, r.tenant, "", "periodic")
-		// Advance the row so the next tick doesn't re-pump it before the
-		// queue has a chance to execute/claim it. Real outcomes (success
-		// reset / failure backoff) overwrite this via mirrorNodeProbeState.
+		//
+		// 2026-09-03 P1.2 fix: only update next_retry_at when probe submission
+		// succeeds. If submission fails, keep the old next_retry_at so the next
+		// recovery cycle can retry. This ensures the backoff ladder actually
+		// executes probes instead of silently advancing the schedule without
+		// doing any work.
+		if err := w.submitViaQueueSource(r.credID, r.model, r.tenant, "", "periodic"); err != nil {
+			slog.Warn("node_probe_worker: pump submit failed, will retry in next cycle",
+				"credential_id", r.credID, "model", r.model, "error", err)
+			continue
+		}
+		// Submission succeeded: advance the row so the next tick doesn't re-pump
+		// it before the queue has a chance to execute/claim it. Real outcomes
+		// (success reset / failure backoff) overwrite this via mirrorNodeProbeState.
 		if _, err := w.db.Exec(qCtx, `
 			UPDATE node_probe_state
 			SET next_retry_at = now() + $3, updated_at = now()
