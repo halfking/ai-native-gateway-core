@@ -35,12 +35,20 @@ func defaultAgentPatterns() []agentPatternEntry {
 		// + 增加 roocode/windsurf/zed/copilot/cline/aider/continue/kiro 模式
 		// + 增加 bare "you are claude" 兜底。
 		//
+		// 2026-09-03 (audit closure): tightened the bare-substring patterns
+		// for zcode/opencode to "you are ..." and explicit token variants.
+		// The bare tokens "zcode" and "opencode" would also fire on any
+		// sentence that happens to mention the project name (e.g. "running
+		// inside ZCode CLI" inside a Cursor session), causing the registry
+		// to mis-rank Cursor as ZCode. The "you are" prefix is the canonical
+		// self-description shape that all three top-tier agents emit.
+		//
 		// Order matters: more-specific patterns first. Generic phrases like
 		// "you are claude" can co-occur with "you are claude code" / "you are
 		// opencode" / "you are claude in zcode", so concrete agent names go
 		// before generic ones. Each pattern is lower-cased at match time.
-		{"zcode", []string{"zcode"}},
-		{"opencode", []string{"opencode"}},
+		{"zcode", []string{"you are zcode", "zcode cli", "zcode-interactive"}},
+		{"opencode", []string{"you are opencode", "opencode cli"}},
 		{"codex", []string{"openai codex", "codex cli", "you are codex"}},
 		{"claude-code", []string{"claude code", "claude-code", "you are claude code"}},
 		{"roocode", []string{"roocode", "roo-code", "you are roo code", "you are roocode"}},
