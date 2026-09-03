@@ -552,18 +552,18 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to load settings: " + err.Error()})
 						return
 					}
-				}
-				if !settings.Enabled {
-					writeJSON(w, http.StatusConflict, map[string]any{"error": "trigger failed", "message": "self-check is disabled in current settings"})
-					return
-				}
-				if settings.MaxModels <= 0 {
-					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trigger failed", "message": "max_models must be greater than zero"})
-					return
-				}
-				if settings.ModelSource != "featured" && settings.ModelSource != "top10" && settings.ModelSource != "both" {
-					writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trigger failed", "message": "invalid model_source in settings: " + settings.ModelSource})
-					return
+					if !settings.Enabled {
+						writeJSON(w, http.StatusConflict, map[string]any{"error": "trigger failed", "message": "self-check is disabled in current settings"})
+						return
+					}
+					if settings.MaxModels <= 0 {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trigger failed", "message": "max_models must be greater than zero"})
+						return
+					}
+					if settings.ModelSource != "featured" && settings.ModelSource != "top10" && settings.ModelSource != "both" {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trigger failed", "message": "invalid model_source in settings: " + settings.ModelSource})
+						return
+					}
 				}
 
 				// Build candidates using the same eligibility gates as the actual
@@ -669,46 +669,42 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 				models = []string{body.Model}
 			}
 
-			// Trigger self-check for each selected model.
+			// Preserve the original single-model API contract: a failure to
+			// enqueue the requested model is returned as 503 immediately.
+			if body.Model != "" {
+				n, err := h.probeEnqueue(ctx, body.Model)
+				if err != nil {
+					writeJSON(w, 503, map[string]any{"error": "trigger failed", "message": err.Error()})
+					return
+				}
+				writeJSON(w, 200, map[string]any{
+					"ok": true, "mode": "probe_queue", "enqueued": n,
+					"message": "node_probe tasks enqueued", "model": body.Model,
+				})
+				return
+			}
 
+			// Trigger self-check for each selected model.
 			totalEnqueued := 0
 			failedModels := 0
 			results := make(map[string]any)
-			firstError := ""
 			for _, model := range models {
 				n, err := h.probeEnqueue(ctx, model)
 				if err != nil {
 					failedModels++
 					results[model] = map[string]any{"error": err.Error(), "enqueued": 0}
-					if firstError == "" {
-						firstError = err.Error()
-					}
 				} else {
 					results[model] = map[string]any{"enqueued": n}
 					totalEnqueued += n
 				}
 			}
 
-			// Per bc48559b4 audit contract: when every model fails to enqueue,
-			// surface 503 so the UI doesn't render a misleading 200 OK banner.
-			// Partial failures still return 200 with per-model details so callers
-			// see every outcome in one response.
+			status := http.StatusOK
 			if failedModels == len(models) {
-				writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-					"error":         "trigger failed",
-					"message":       firstError,
-					"mode":          "probe_queue",
-					"enqueued":      0,
-					"models_tested": len(models),
-					"models_failed": failedModels,
-					"models":        models,
-					"results":       results,
-				})
-				return
+				status = http.StatusServiceUnavailable
 			}
-
-			writeJSON(w, http.StatusOK, map[string]any{
-				"ok":            true,
+			writeJSON(w, status, map[string]any{
+				"ok":            failedModels == 0,
 				"mode":          "probe_queue",
 				"enqueued":      totalEnqueued,
 				"models_tested": len(models),
