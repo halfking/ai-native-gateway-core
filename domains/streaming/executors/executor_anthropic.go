@@ -1051,7 +1051,7 @@ func (e *Executor) executeAnthropicOnce(
 		"latency_ms", upstreamLatency.Milliseconds(),
 	}
 	if uErr != nil {
-		attemptAttrs = append(attemptAttrs, "err_kind", uErr.Kind, "err_message", uErr.Message)
+		attemptAttrs = append(attemptAttrs, "err_kind", uErr.Kind, "err_message_bytes", len(uErr.Message), "err_message_digest", safeUpstreamBodyDigest([]byte(uErr.Message)))
 	}
 	if resp != nil {
 		attemptAttrs = append(attemptAttrs, "upstream_status", resp.StatusCode)
