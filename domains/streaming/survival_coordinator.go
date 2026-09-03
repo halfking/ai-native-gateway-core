@@ -142,6 +142,12 @@ type SurvivalCoordinator struct {
 	Protocol ClientProtocol
 	// Options bound the loop.
 	Options SurvivalOptions
+	// PrefixCache (FR-12 L2 wiring, design resume-blocked-long-stream-recovery
+	// §3.3 point 1): overrides the process-wide CommittedPrefixCache the
+	// gates observe committed semantic bytes into. nil (production wiring —
+	// the field is not set by survival_wiring) falls back to the package
+	// singleton; tests inject a bounded instance.
+	PrefixCache *CommittedPrefixCache
 
 	// Now / Sleep are the clock seams. Sleep must honor ctx cancellation.
 	Now   func() time.Time
@@ -324,6 +330,32 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	// default 5s/20 chunks. Tunable via LLM_GATEWAY_RECOVERY_HOLDBACK_* env.
 	hbWindow, hbChunks := RecoveryHoldbackForModel(params.Model)
 
+	// FR-12 L2 committed-prefix aligned continuation (design
+	// resume-blocked-long-stream-recovery §3.3 points 1/2): INERT unless
+	// LLM_GATEWAY_RECOVERY_L2_ENABLED is set — with the switch closed (the
+	// default) no gate observes, the cache is never consulted and the loop
+	// below is byte-identical to the pre-L2 build. When enabled every gate
+	// folds its wire-proven semantic frames into the committed-prefix cache
+	// (request-scoped entry), and a committed_output resume_blocked verdict
+	// first asks the recovery ladder for an aligned continuation replay
+	// before falling to the error envelope. The entry is dropped when Run
+	// returns (succeed / error / envelope — every Run exit is request
+	// terminal).
+	l2 := recoveryL2RuntimeFromEnv()
+	if l2.enabled && c.PrefixCache != nil {
+		l2.cache = c.PrefixCache
+	}
+	if l2.enabled {
+		defer l2.cache.Remove(params.RequestID)
+	}
+	// l2Replay arms the NEXT attempt as an L2 aligned replay; l2RecoveryNo /
+	// l2LastScoreBP feed the ladder's budget and miss-escalation semantics;
+	// l2Used records that a replay's suffix actually reached the client.
+	var l2Replay *ReplayAlignmentOptions
+	var l2RecoveryNo int
+	var l2LastScoreBP uint16
+	var l2Used bool
+
 	res := SurvivalResult{}
 	// 2026-08-31 (P2-6 audit-data-closure): allocate res.History with zero
 	// length and a fresh backing array so the append in
@@ -358,7 +390,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		}
 		if !c.now().Before(deadline) {
 			res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
-			c.renderTerminal(res.Decision, nil)
+			c.renderTerminal(res.Decision, nil, false)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
 		}
@@ -372,16 +404,34 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			"attempt", res.Attempts+1,
 			"holdback_window_ms", hbWindow.Milliseconds(),
 			"holdback_max_chunks", hbChunks,
+			"l2_aligned_replay", l2Replay != nil,
 			"deadline_remaining_sec", int(deadline.Sub(c.now()).Seconds()),
 			"backoff_ms", backoff.Milliseconds(),
 		)
 		// P1-2 fix (2026-08-28): Pass ctx to gate for checkpoint context propagation.
-		gate := NewAttemptCommitGate(ctx, c.Protocol, sw, GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks, BeforeSemanticCommit: func(ctx context.Context, state CommitState) error {
+		gateOpts := GateOptions{Mode: GateModeBuffered, RequestID: params.RequestID, HoldbackWindow: hbWindow, HoldbackMaxChunks: hbChunks, BeforeSemanticCommit: func(ctx context.Context, state CommitState) error {
 			if c.BeforeSemanticCommit == nil {
 				return nil
 			}
 			return c.BeforeSemanticCommit(ctx, state)
-		}})
+		}}
+		if l2.enabled {
+			// L2 wiring point 1: fold every wire-proven semantic frame into
+			// the committed-prefix cache (Observe is only armed while L2 is
+			// enabled — the default-off hot path never touches the cache).
+			gateOpts.PrefixObserve = l2.cache.Observe
+		}
+		l2ReplayThisAttempt := l2Replay != nil
+		if l2ReplayThisAttempt {
+			// L2 aligned replay (design §3.3 point 3): the aligner's
+			// suppression window replaces the L1 holdback — frames stay
+			// discardable until prefix alignment proves no duplication.
+			gateOpts.HoldbackWindow = 0
+			gateOpts.HoldbackMaxChunks = 0
+			gateOpts.ReplayAlignment = l2Replay
+			l2Replay = nil
+		}
+		gate := NewAttemptCommitGate(ctx, c.Protocol, sw, gateOpts)
 
 		gw := NewGateWriterWithResponse(gate, params.W)
 		attemptParams := *params
@@ -401,13 +451,27 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				_ = gate.Discard()
 			}
 			res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
-			c.renderTerminal(res.Decision, gate)
+			c.renderTerminal(res.Decision, gate, false)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
 		}
 		recordSurvivalAttempt(res.FinalAttempt)
 		res.Decision = AggregateTaskOutcomeWithHistory(res.FinalAttempt, res.History)
 		appendSurvivalHistory(&res.History, res.FinalAttempt, res.Attempts, res.Decision)
+		if l2ReplayThisAttempt {
+			// L2 replay verdict (design §3.3 point 3): an alignment miss —
+			// or a stream that ended before a verdict could form — voids the
+			// replay attempt (nothing client-visible was emitted from it)
+			// and degrades to the existing resume_blocked envelope path
+			// below; L3/L4 stay at their current default-off state.
+			decided, alignment := gate.AlignmentOutcome()
+			l2LastScoreBP = alignment.ScoreBP
+			if decided && alignment.Aligned {
+				l2Used = true
+			} else {
+				res.Decision = TaskDecision{Action: TaskActionResumeBlocked, Reason: "l2_alignment_miss"}
+			}
+		}
 
 		// 2026-08-19: log the per-attempt verdict right after aggregation so
 		// the committed/resume-blocked transition is visible regardless of
@@ -512,6 +576,11 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				return res
 			}
 			res.Succeed = true
+			if l2Used {
+				// R12.9: the request completed through at least one L2
+				// aligned-continuation replay whose suffix reached the client.
+				RecordStreamRecoverySuccess(RecoveryModeAligned)
+			}
 
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
@@ -530,7 +599,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		case TaskActionRetryNow, TaskActionWaitRecovery:
 			if params.UpstreamAttempts != nil && params.UpstreamAttempts.Exhausted() {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "attempt_limit_exceeded"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Warn("survival_task_ended",
 					"attempt", res.Attempts,
@@ -545,7 +614,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			}
 			if res.Attempts-1 >= maxRetries {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "retry_limit_exceeded"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Warn("survival_task_ended",
@@ -566,7 +635,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			gateStateStr := gateState.String()
 			if err := gate.Discard(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "discard_refused"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Error("survival_discard_refused",
@@ -606,7 +675,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			}
 			if !c.now().Before(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				log.Warn("survival_task_ended",
@@ -627,7 +696,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			}
 			if wait <= 0 {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
@@ -643,7 +712,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if c.Reschedule != nil {
 				if err := c.Reschedule(ctx, c.now().Add(wait), res.Decision.Reason); err != nil {
 					res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "durable_reschedule_failed"}
-					c.renderTerminal(res.Decision, gate)
+					c.renderTerminal(res.Decision, gate, false)
 					recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 					recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 					log.Error("survival_task_ended",
@@ -680,7 +749,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			}
 			if !c.now().Before(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
-				c.renderTerminal(res.Decision, gate)
+				c.renderTerminal(res.Decision, gate, false)
 				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
@@ -707,8 +776,32 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			continue
 
 		default: // ResumeBlocked / FailTerminal / FailClosed
+			// L2 wiring point 2 (design §3.3): a committed_output
+			// resume_blocked verdict first asks the FR-12 recovery ladder
+			// (NextRecoveryActionCtx — emits survival_recovery_action with the
+			// request correlation attrs) for an aligned continuation; only
+			// when the ladder cannot offer one does the existing envelope
+			// path below run. Inert while L2 is disabled (the default):
+			// resume_blocked keeps its exact pre-L2 behavior. A replay that
+			// already missed (reason l2_alignment_miss) never re-asks.
+			if l2.enabled && res.Decision.Action == TaskActionResumeBlocked && res.Decision.Reason != "l2_alignment_miss" {
+				if plan := c.l2AlignedReplayPlan(ctx, log, params, res, l2, l2RecoveryNo, l2LastScoreBP, deadline, maxRetries); plan != nil {
+					// Keep the interrupted attempt's trailing partial bytes
+					// on the wire (and observed) exactly as the envelope path
+					// below would, then arm the aligned replay. The next loop
+					// iteration re-checks ctx/deadline before executing it.
+					_ = finishGateWriter(gw, gate)
+					l2Replay = plan
+					l2RecoveryNo++
+					continue
+				}
+			}
 			_ = finishGateWriter(gw, gate)
-			c.renderTerminal(res.Decision, gate)
+			// An L2 replay that missed leaves the LAST gate uncommitted (the
+			// replay was voided), but the client already saw the interrupted
+			// attempt's bytes — the terminal must render as committed so the
+			// stream ends well-formed instead of hanging.
+			c.renderTerminal(res.Decision, gate, res.Decision.Reason == "l2_alignment_miss")
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalResumeSafetyBlocked(res.Decision, res.FinalAttempt)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
@@ -720,7 +813,10 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			// request-correlation context the envelope cannot.
 			log.Warn("survival_resume_blocked", append(survivalRouteLogAttrs(params.RequestID, res.Attempts, res.Decision),
 				"action", res.Decision.Action.String(),
-				"committed", res.FinalAttempt.CommitState >= CommitStateContent,
+				// An L2 miss voids the replay gate, but the interrupted
+				// attempt's bytes are client-visible — keep the flag true to
+				// what the client actually saw.
+				"committed", res.FinalAttempt.CommitState >= CommitStateContent || res.Decision.Reason == "l2_alignment_miss",
 				"commit_state", res.FinalAttempt.CommitState.String(),
 				"kinds", strings.Join(attemptKinds, ","),
 				"provider_id", lastProviderID,
@@ -728,6 +824,74 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			)...)
 			return res
 		}
+	}
+}
+
+// l2AlignedReplayPlan consults the FR-12 ladder (NextRecoveryActionCtx — the
+// ctx-aware variant, so the survival_recovery_action log line carries the
+// request correlation attrs) for a committed_output resume_blocked verdict
+// (design resume-blocked-long-stream-recovery §3.3 point 2). It returns a
+// ReplayAlignmentOptions when an aligned-continuation replay may run NOW;
+// nil keeps the existing resume_blocked envelope path (no committed-prefix
+// entry, prefix beyond the replay buffer bound, upstream-attempt/retry
+// budget or deadline exhausted, or the ladder's verdict is not aligned
+// continuation — e.g. recovery budget exhausted, which with the default
+// config already degrades to the error envelope).
+func (c *SurvivalCoordinator) l2AlignedReplayPlan(
+	ctx context.Context,
+	log *streamLogger,
+	params *executors.ExecParams,
+	res SurvivalResult,
+	l2 recoveryL2Runtime,
+	recoveryNo int,
+	lastScoreBP uint16,
+	deadline time.Time,
+	maxRetries int,
+) *ReplayAlignmentOptions {
+	if res.FinalAttempt == nil || res.FinalAttempt.FinalError == nil {
+		return nil
+	}
+	if params.UpstreamAttempts != nil && params.UpstreamAttempts.Exhausted() {
+		return nil
+	}
+	if res.Attempts-1 >= maxRetries {
+		return nil
+	}
+	if !c.now().Before(deadline) {
+		return nil
+	}
+	prefix, ok := l2.cache.Snapshot(params.RequestID)
+	if !ok || prefix.TotalBytes <= 0 || prefix.TotalBytes > maxL2ReplayCommittedBytes {
+		return nil
+	}
+	// The coordinator's own retry loop already consumed the same-node resend
+	// budget, so report L0 exhausted to the ladder; CommittedChunks > 0 skips
+	// the L1 branch; RecoveryMode/AlignmentScoreBP carry the previous replay's
+	// verdict so a re-ask after an aligned replay that failed mid-suffix
+	// keeps the ladder's miss-escalation semantics intact.
+	state := &StreamRecoveryState{
+		RecoveryNo:       uint16(recoveryNo),
+		SameNodeRetries:  uint8(max(1, l2.cfg.SameNodeStreamRetries)),
+		CommittedChunks:  1,
+		CommittedBytes:   uint32(prefix.TotalBytes),
+		AlignmentScoreBP: lastScoreBP,
+	}
+	if recoveryNo > 0 {
+		state.RecoveryMode = RecoveryModeAligned
+	}
+	act := NextRecoveryActionCtx(ctx, state, l2.cfg, res.FinalAttempt.FinalError)
+	if act.Kind != RecoveryActionAlignedContinuation {
+		return nil
+	}
+	log.Info("survival_l2_replay_armed",
+		"request_id", params.RequestID,
+		"attempt", res.Attempts,
+		"recovery_no", recoveryNo,
+		"committed_bytes", prefix.TotalBytes,
+	)
+	return &ReplayAlignmentOptions{
+		Committed: prefix,
+		Aligner:   NewPrefixAligner(l2.cfg.AlignmentThresholdBP),
 	}
 }
 
@@ -783,10 +947,14 @@ func finishGateWriter(w interface{ Finish() error }, gate *AttemptCommitGate) er
 	return nil
 }
 
-func (c *SurvivalCoordinator) renderTerminal(decision TaskDecision, gate *AttemptCommitGate) {
+// renderTerminal hands the final protocol rendering to the Terminal seam.
+// clientCommitted ORs in an out-of-band committed signal: an L2 replay miss
+// voids the last gate (uncommitted by design) even though an earlier attempt
+// of the same request already put bytes on the wire.
+func (c *SurvivalCoordinator) renderTerminal(decision TaskDecision, gate *AttemptCommitGate, clientCommitted bool) {
 	if c.Terminal == nil {
 		return
 	}
-	committed := gate != nil && gate.Committed()
+	committed := clientCommitted || (gate != nil && gate.Committed())
 	c.Terminal(decision, committed)
 }
