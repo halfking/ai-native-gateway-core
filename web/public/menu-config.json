@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-03T16:20:19.422Z",
+  "exported_at": "2026-09-03T16:22:07.806Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -461,6 +461,7 @@
           "hideForTenant": true,
           "opsPlatform": true,
           "external": true,
+          "activateWhenNotActivated": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
