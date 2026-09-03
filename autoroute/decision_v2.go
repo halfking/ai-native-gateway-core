@@ -87,6 +87,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 							DecidedAt:          time.Now(),
 							RoutingSource:      "session_cache",
 						}
+						d.annotateTreatment(ctx, apiKeyID, decision)
 						d.populateShadow(ctx, sigs, decision)
 						return decision, nil
 					}
@@ -245,6 +246,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 	}
+	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 
 	slog.Info("autoroute.v2: decision made",

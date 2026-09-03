@@ -84,8 +84,14 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		// clears it (falls back to models_canonical). This is the per-credential
 		// lever the operator needs when a provider's real context window
 		// diverges from the standardized catalog value.
-		ContextWindow *int `json:"context_window"`
+		ContextWindow        *int     `json:"context_window"`
+		UnitPriceInPer1M     *float64 `json:"unit_price_in_per_1m"`
+		UnitPriceOutPer1M    *float64 `json:"unit_price_out_per_1m"`
+		CacheReadPricePer1M  *float64 `json:"cache_read_price_per_1m"`
+		CacheWritePricePer1M *float64 `json:"cache_write_price_per_1m"`
+		BillingMode          *string  `json:"billing_mode"`
 	}
+
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
@@ -180,7 +186,26 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		)
 	}
 
-	// 522: per-credential×model context window calibration. We write the
+	if req.UnitPriceInPer1M != nil || req.UnitPriceOutPer1M != nil || req.CacheReadPricePer1M != nil || req.CacheWritePricePer1M != nil || req.BillingMode != nil {
+		if req.BillingMode != nil && *req.BillingMode != "" && !isValidBillingMode(*req.BillingMode) {
+			writeError(w, http.StatusBadRequest, "invalid billing_mode")
+			return
+		}
+		if _, err := h.db.Exec(ctx, `
+				UPDATE credential_model_bindings
+				SET unit_price_in_per_1m = COALESCE($1, unit_price_in_per_1m),
+				    unit_price_out_per_1m = COALESCE($2, unit_price_out_per_1m),
+				    cache_read_price_per_1m = COALESCE($3, cache_read_price_per_1m),
+				    cache_write_price_per_1m = COALESCE($4, cache_write_price_per_1m),
+				    billing_mode = COALESCE(NULLIF($5, ''), billing_mode), updated_at = now()
+				WHERE id = $6
+			`, req.UnitPriceInPer1M, req.UnitPriceOutPer1M, req.CacheReadPricePer1M, req.CacheWritePricePer1M, req.BillingMode, offerID); err != nil {
+			writeError(w, http.StatusInternalServerError, "update pricing failed")
+			return
+		}
+		invalidateRoutingCaches(r.Context(), h.db, "credential_model_bindings", offerID)
+	}
+
 	// credential_model_bindings row directly (not via the model_offers view)
 	// because the INSTEAD OF UPDATE trigger uses COALESCE() and cannot express
 	// "clear the override to NULL" — the only way to fall back to the canonical
@@ -233,27 +258,36 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	}
 
 	var result struct {
-		ID                    int     `json:"id"`
-		RawModelName          string  `json:"raw_model_name"`
-		StandardizedName      *string `json:"standardized_name"`
-		CanonicalID           *int    `json:"canonical_id"`
-		CanonicalName         *string `json:"canonical_name"`
-		OutboundModelName     *string `json:"outbound_model_name"`
-		ContextWindow         *int    `json:"context_window"`
-		ContextWindowOverride *int    `json:"context_window_override"`
+		ID                    int      `json:"id"`
+		RawModelName          string   `json:"raw_model_name"`
+		StandardizedName      *string  `json:"standardized_name"`
+		CanonicalID           *int     `json:"canonical_id"`
+		CanonicalName         *string  `json:"canonical_name"`
+		OutboundModelName     *string  `json:"outbound_model_name"`
+		ContextWindow         *int     `json:"context_window"`
+		ContextWindowOverride *int     `json:"context_window_override"`
+		UnitPriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
+		UnitPriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
+		CacheReadPricePer1M   *float64 `json:"cache_read_price_per_1m"`
+		CacheWritePricePer1M  *float64 `json:"cache_write_price_per_1m"`
+		BillingMode           *string  `json:"billing_mode"`
 	}
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name, mo.standardized_name, mo.canonical_id,
 		       mc.canonical_name, mo.outbound_model_name,
 		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
-		       mo.context_window_override
+		       mo.context_window_override, cmb.unit_price_in_per_1m, cmb.unit_price_out_per_1m,
+		       cmb.cache_read_price_per_1m, cmb.cache_write_price_per_1m, cmb.billing_mode
 		FROM model_offers mo
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
+		LEFT JOIN credential_model_bindings cmb ON cmb.id = mo.id
 		WHERE mo.id = $1
 	`, offerID).Scan(&result.ID, &result.RawModelName, &result.StandardizedName,
 		&result.CanonicalID, &result.CanonicalName, &result.OutboundModelName,
-		&result.ContextWindow, &result.ContextWindowOverride)
+		&result.ContextWindow, &result.ContextWindowOverride, &result.UnitPriceInPer1M,
+		&result.UnitPriceOutPer1M, &result.CacheReadPricePer1M, &result.CacheWritePricePer1M,
+		&result.BillingMode)
 
 	// 2026-06-19 audit: any PATCH that touches standardized_name /
 	// canonical_id / outbound_model_name can change the data

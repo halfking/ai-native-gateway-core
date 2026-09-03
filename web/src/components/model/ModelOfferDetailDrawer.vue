@@ -29,12 +29,32 @@ const saveErr = ref('')
 const toggling = ref(false)
 const suggest = ref<ModelOfferSuggestion | null>(null)
 const initialContextWindow = ref<number | null>(null)
+const initialPrices = reactive({
+  unit_price_in_per_1m: null as number | null,
+  unit_price_out_per_1m: null as number | null,
+  cache_read_price_per_1m: null as number | null,
+  cache_write_price_per_1m: null as number | null,
+  billing_mode: null as string | null,
+})
+
+const BILLING_MODES = [
+  { value: 'per_token', label: 'per_token' },
+  { value: 'free', label: 'free' },
+  { value: 'token_plan', label: 'token_plan' },
+  { value: 'code_plan', label: 'code_plan' },
+  { value: 'agent_plan', label: 'agent_plan' },
+] as const
 
 const draft = reactive({
   standardized_name: '',
   canonical_id: null as number | null,
   outbound_model_name: '',
   context_window: null as number | '' | null,
+  unit_price_in_per_1m: null as number | '' | null,
+  unit_price_out_per_1m: null as number | '' | null,
+  cache_read_price_per_1m: null as number | '' | null,
+  cache_write_price_per_1m: null as number | '' | null,
+  billing_mode: 'per_token',
   modality: 'text',
   thinking_supported: false,
   thinking_dialect: '',
@@ -50,6 +70,16 @@ watch(() => props.offer, (o) => {
   draft.outbound_model_name = o.outbound_model_name ?? ''
   draft.context_window = o.context_window_override ?? null
   initialContextWindow.value = o.context_window_override ?? null
+  draft.unit_price_in_per_1m = o.unit_price_in_per_1m ?? null
+  draft.unit_price_out_per_1m = o.unit_price_out_per_1m ?? null
+  draft.cache_read_price_per_1m = o.cache_read_price_per_1m ?? null
+  draft.cache_write_price_per_1m = o.cache_write_price_per_1m ?? null
+  draft.billing_mode = o.billing_mode || 'per_token'
+  initialPrices.unit_price_in_per_1m = o.unit_price_in_per_1m ?? null
+  initialPrices.unit_price_out_per_1m = o.unit_price_out_per_1m ?? null
+  initialPrices.cache_read_price_per_1m = o.cache_read_price_per_1m ?? null
+  initialPrices.cache_write_price_per_1m = o.cache_write_price_per_1m ?? null
+  initialPrices.billing_mode = o.billing_mode ?? null
   draft.modality = o.modality || 'text'
   const caps = o.reasoning_caps as { supported?: boolean; dialect?: string } | null | undefined
   draft.thinking_supported = !!caps?.supported
@@ -76,8 +106,46 @@ function applyRuleBased() {
   draft.canonical_id = match ? match.id : null
 }
 
+const PRICE_FIELDS = [
+  'unit_price_in_per_1m',
+  'unit_price_out_per_1m',
+  'cache_read_price_per_1m',
+  'cache_write_price_per_1m',
+] as const
+
+type PriceField = typeof PRICE_FIELDS[number]
+
+function normalizePrice(value: number | '' | null): number | null {
+  if (value === '' || value == null) return null
+  const n = Number(value)
+  return Number.isFinite(n) && n >= 0 ? n : null
+}
+
+function priceChanged(field: PriceField): boolean {
+  return normalizePrice(draft[field]) !== initialPrices[field]
+}
+
+function validatePrices(): string | null {
+  for (const field of PRICE_FIELDS) {
+    const value = draft[field]
+    if (value !== '' && value != null) {
+      const n = Number(value)
+      if (!Number.isFinite(n) || n < 0) return `${field} must be a non-negative finite number`
+    }
+  }
+  if (!BILLING_MODES.some(mode => mode.value === draft.billing_mode)) {
+    return 'Invalid billing mode'
+  }
+  return null
+}
+
 async function saveNode() {
   if (!props.offer) return
+  const validationError = validatePrices()
+  if (validationError) {
+    saveErr.value = validationError
+    return
+  }
   saving.value = true
   saveErr.value = ''
   try {
@@ -91,8 +159,27 @@ async function saveNode() {
       body.context_window =
         rawCw == null || rawCw === '' || (typeof rawCw === 'number' && rawCw <= 0) ? 0 : Number(rawCw)
     }
+    for (const field of PRICE_FIELDS) {
+      if (priceChanged(field)) {
+        const value = normalizePrice(draft[field])
+        if (value != null) body[field] = value
+      }
+    }
+    const billingMode = draft.billing_mode || null
+    if (billingMode !== initialPrices.billing_mode) body.billing_mode = billingMode
+
     const updated = await updateModelOffer(props.providerId, props.offer.id, body)
     initialContextWindow.value = updated.context_window_override ?? null
+    initialPrices.unit_price_in_per_1m = updated.unit_price_in_per_1m ?? null
+    initialPrices.unit_price_out_per_1m = updated.unit_price_out_per_1m ?? null
+    initialPrices.cache_read_price_per_1m = updated.cache_read_price_per_1m ?? null
+    initialPrices.cache_write_price_per_1m = updated.cache_write_price_per_1m ?? null
+    initialPrices.billing_mode = updated.billing_mode ?? null
+    draft.unit_price_in_per_1m = updated.unit_price_in_per_1m ?? null
+    draft.unit_price_out_per_1m = updated.unit_price_out_per_1m ?? null
+    draft.cache_read_price_per_1m = updated.cache_read_price_per_1m ?? null
+    draft.cache_write_price_per_1m = updated.cache_write_price_per_1m ?? null
+    draft.billing_mode = updated.billing_mode || 'per_token'
     emit('updated', {
       ...props.offer,
       standardized_name: updated.standardized_name,
@@ -100,6 +187,11 @@ async function saveNode() {
       outbound_model_name: updated.outbound_model_name ?? '',
       context_window: updated.context_window,
       context_window_override: updated.context_window_override,
+      unit_price_in_per_1m: updated.unit_price_in_per_1m,
+      unit_price_out_per_1m: updated.unit_price_out_per_1m,
+      cache_read_price_per_1m: updated.cache_read_price_per_1m,
+      cache_write_price_per_1m: updated.cache_write_price_per_1m,
+      billing_mode: updated.billing_mode,
     })
   } catch (e: unknown) {
     saveErr.value = e instanceof Error ? e.message : String(e)
@@ -252,6 +344,29 @@ function goCanonical() {
             <code>{{ offer.context_window ?? '—' }}</code>
             <template v-if="offer.context_window_override != null">（本节点 {{ offer.context_window_override }}）</template>
           </div>
+          <div class="price-grid">
+            <div>
+              <label class="field-label">输入价格 / 1M tokens</label>
+              <input v-model.number="draft.unit_price_in_per_1m" type="number" min="0" step="0.001" class="field-input" placeholder="保持现值" />
+            </div>
+            <div>
+              <label class="field-label">输出价格 / 1M tokens</label>
+              <input v-model.number="draft.unit_price_out_per_1m" type="number" min="0" step="0.001" class="field-input" placeholder="保持现值" />
+            </div>
+            <div>
+              <label class="field-label">缓存读取价格 / 1M tokens</label>
+              <input v-model.number="draft.cache_read_price_per_1m" type="number" min="0" step="0.001" class="field-input" placeholder="保持现值" />
+            </div>
+            <div>
+              <label class="field-label">缓存写入价格 / 1M tokens</label>
+              <input v-model.number="draft.cache_write_price_per_1m" type="number" min="0" step="0.001" class="field-input" placeholder="保持现值" />
+            </div>
+          </div>
+          <label class="field-label">计费模式</label>
+          <select v-model="draft.billing_mode" class="field-input">
+            <option v-for="mode in BILLING_MODES" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
+          </select>
+          <div class="cell-sub">价格留空表示保持现值；显式 0 表示免费。</div>
           <div class="btn-row" style="margin-top:10px">
             <button class="btn btn-sm btn-primary" :disabled="saving" @click="saveNode">保存节点</button>
           </div>
@@ -284,4 +399,6 @@ function goCanonical() {
 .avail-badge.off { background: color-mix(in srgb, var(--danger) 20%, transparent); }
 .field-label { display: block; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .field-input { width: 100%; margin-top: 4px; }
+.price-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 520px) { .price-grid { grid-template-columns: 1fr; } }
 </style>

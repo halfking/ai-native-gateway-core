@@ -1183,6 +1183,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-09-04: 供应商列表/详情树改挂 providerConsole —— super_admin 行为
 	// 不变；default 租户 tenant_admin 获得只读 + 凭据 API Key 轮换。
 	// seed-from-catalog 与 /credentials/ 强制恢复仍为 super_admin 专属。
+	mux.HandleFunc("/api/credentials/", h.admin(h.handleUnifiedCredentialSecrets))
 	mux.HandleFunc("/api/providers", h.providerConsole(h.handleProvidersRoot))
 	mux.HandleFunc("/api/providers/", h.providerConsole(h.handleProviders))
 	mux.HandleFunc("/api/providers/seed-from-catalog", h.superAdmin(h.handleSeedFromCatalog))

@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -249,28 +249,17 @@ func (h *Handler) doProbeURL(ctx context.Context, baseURL, apiKey string) probeU
 				AuthOK:     resp.StatusCode == http.StatusOK || !hasKey,
 			}
 			if hasKey && resp.StatusCode == http.StatusOK {
-				var modelsData []map[string]any
-				var mResp struct {
-					Data   []map[string]any `json:"data"`
-					Models []map[string]any `json:"models"`
-				}
-				if json.Unmarshal(body, &mResp) == nil {
-					modelsData = mResp.Data
-					if len(modelsData) == 0 {
-						modelsData = mResp.Models
+				models, parseErr := modelresponse.ParseModelIDs(body)
+				if parseErr != nil {
+					result.ModelsErrorKind = modelresponse.Kind(parseErr)
+					result.ModelsErrorPreview = modelresponse.Preview(parseErr)
+				} else {
+					result.ModelsCount = len(models)
+					limit := 3
+					if len(models) < limit {
+						limit = len(models)
 					}
-				}
-				result.ModelsCount = len(modelsData)
-				limit := 3
-				if len(modelsData) < limit {
-					limit = len(modelsData)
-				}
-				for i := 0; i < limit; i++ {
-					if id, ok := modelsData[i]["id"].(string); ok {
-						result.SampleModels = append(result.SampleModels, id)
-					} else if name, ok := modelsData[i]["name"].(string); ok {
-						result.SampleModels = append(result.SampleModels, name)
-					}
+					result.SampleModels = append(result.SampleModels, models[:limit]...)
 				}
 				if result.SampleModels == nil {
 					result.SampleModels = []string{}
