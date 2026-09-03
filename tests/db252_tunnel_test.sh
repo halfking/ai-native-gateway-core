@@ -154,8 +154,15 @@ test_p1_scripts_use_managed_tunnel() {
     "$REPO_ROOT/scripts/partition/bodies-hot-repack-rollback.sh"
     "$REPO_ROOT/scripts/partition/index-drift-align.sh"
   )
-  if grep -lq 'scripts/lib/252-db-tunnel.sh' "${files[@]}" 2>/dev/null \
-    && ! grep -nE '172\\.16\\.2\\.210|COMMON_PG_SUPERUSER[^_]|(^|[[:space:]])psql([[:space:]]|$).*15432' "${files[@]}" >/dev/null 2>&1; then
+  local f missing_tunnel stale
+  missing_tunnel=0
+  for f in "${files[@]}"; do
+    grep -q 'scripts/lib/252-db-tunnel.sh' "$f" || missing_tunnel=1
+  done
+  # NOTE: ERE dot must be escaped as '\.', never '\\' — in single quotes '\\.'
+  # matches a literal backslash, so the stale-endpoint guard would never fire.
+  if [[ "$missing_tunnel" -eq 0 ]] \
+    && ! grep -nE '172\.16\.2\.210|COMMON_PG_SUPERUSER[^_]|(^|[[:space:]])psql([[:space:]]|$).*15432' "${files[@]}" >/dev/null 2>&1; then
     log_pass "P1 partition scripts use managed tunnel without stale endpoint"
   else
     log_fail "P1 partition scripts must use managed tunnel and native clients"
