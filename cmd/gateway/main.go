@@ -2496,18 +2496,25 @@ func main() {
 				if routingExec != nil {
 					routingExec.PendingStore = pendingStore
 				}
+				durableRunner := streaming.NewDurableAttemptRunner(routingExec, providerClient, keyVerifier)
 				durableWorker = streaming.NewDurableRecoveryWorker(durableStore, pendingStore,
-					streaming.NewDurableAttemptRunner(routingExec, providerClient, keyVerifier),
+					durableRunner,
 					streaming.DurableWorkerOptions{
-						Lease:      time.Duration(cfg.RequestSurvivalWorkerLeaseSecs) * time.Second,
-						MaxRetries: cfg.RequestSurvivalMaxAttempts,
-						RetryBase:  time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
-						RetryMax:   time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
+						Lease:       time.Duration(cfg.RequestSurvivalWorkerLeaseSecs) * time.Second,
+						MaxRetries:  cfg.RequestSurvivalMaxAttempts,
+						RetryBase:   time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
+						RetryMax:    time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
+						WorkerCount: cfg.RequestSurvivalWorkerCount,
 					})
+				// Every detached execution of one durable task shares the
+				// worker-owned budget, mirroring the foreground coordinator's
+				// request-wide UpstreamAttemptBudget.
+				durableRunner.BudgetProvider = durableWorker.BudgetForTask
 				durableWorker.Start(context.Background())
 				slog.Info("durable_recovery_worker_started",
 					"durable_deadline_sec", cfg.RequestSurvivalDurableDeadlineSeconds,
 					"worker_lease_sec", cfg.RequestSurvivalWorkerLeaseSecs,
+					"worker_count", cfg.RequestSurvivalWorkerCount,
 				)
 			}
 		}

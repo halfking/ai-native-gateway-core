@@ -29,6 +29,7 @@ type DurableRequestSnapshotV1 struct {
 	ApplicationID        int             `json:"application_id"`
 	SessionID            string          `json:"session_id"`
 	SessionSource        string          `json:"session_source"`
+	ClientProfile        string          `json:"client_profile,omitempty"`
 	ClientIdentityHash   string          `json:"client_identity_hash"`
 	ToolsRequested       bool            `json:"tools_requested"`
 	ResponseFormat       string          `json:"response_format,omitempty"`
