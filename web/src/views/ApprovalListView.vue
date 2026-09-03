@@ -5,6 +5,9 @@ import { localeRef } from '../i18n'
 import { useRouter } from 'vue-router'
 import { getApprovalList, approveApproval, rejectApproval, getApprovalStats, type ApprovalItem, type ApprovalStats } from '../api/approval'
 import { isSuperAdmin } from '../store'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import AppSpinner from '../components/AppSpinner.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -172,7 +175,7 @@ async function loadStats() {
 }
 
 async function quickApprove(item: ApprovalItem) {
-  if (!confirm(t('approval.list.confirm.approve', { id: item.request_id }))) {
+  if (!(await confirmDialog(t('approval.list.confirm.approve', { id: item.request_id })))) {
     return
   }
 
@@ -352,13 +355,11 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
     <!-- Table -->
     <div class="table-container">
-      <div v-if="loading && approvals.length === 0" class="loading-state">
-        <div class="loading-spinner">{{ t('approval.list.loading') }}</div>
-      </div>
+      <AppSpinner v-if="loading && approvals.length === 0" :label="t('approval.list.loading')" />
 
-      <div v-else-if="filteredApprovals.length === 0" class="empty-state">
+      <EmptyState v-else-if="filteredApprovals.length === 0" padding="64px">
         <p>{{ t('approval.list.empty') }}</p>
-      </div>
+      </EmptyState>
 
       <table v-else class="data-table">
         <thead>

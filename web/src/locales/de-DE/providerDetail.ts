@@ -44,6 +44,8 @@ export default {
     errorRate24h: "24-Std.-Fehlerrate"
   },
   creds: {
+    forceRecoverModalConfirm: 'Credential {name} zwangsweise wiederherstellen?\nDies setzt den Credential-Status zurück, löscht die Nicht-verfügbar-Flags aller Bindings und setzt den Probe-Status zurück.',
+
     listTitle: "Anmeldedaten",
     addBtn: "+ Anmeldedaten hinzufügen",
     table: {

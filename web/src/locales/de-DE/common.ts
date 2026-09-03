@@ -122,6 +122,7 @@ export default {
   cancel: 'Abbrechen',
   close: 'Schließen',
   confirm: 'Bestätigen',
+  confirmTitle: 'Bitte bestätigen',
   count: 'Anzahl',
   create: 'Neu erstellen',
   createdAt: 'Erstellt',

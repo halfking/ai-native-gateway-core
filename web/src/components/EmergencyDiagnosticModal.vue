@@ -5,6 +5,8 @@
 import { ref, computed, watch } from 'vue'
 import { authBearer } from '../store'
 import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   visible: boolean
@@ -17,6 +19,8 @@ const emit = defineEmits<{
   close: []
   recovered: []
 }>()
+
+const { t } = useI18n()
 
 interface DiagFailure {
   request_id: string
@@ -105,9 +109,10 @@ async function handleForceRecover() {
   if (!props.credentialId || recovering.value) return
 
   const confirmName = diagnosticData.value?.label || credentialDisplayName(props.credentialId)
-  if (!confirm(`确认强制恢复凭据 ${confirmName}？\n此操作将重置凭据状态、清空所有 binding 的不可用标记、重置探测状态。`)) {
-    return
-  }
+  const confirmed = await confirmDialog(
+    t('providerDetail.creds.forceRecoverModalConfirm', { name: confirmName }),
+  )
+  if (!confirmed) return
 
   recovering.value = true
   error.value = null

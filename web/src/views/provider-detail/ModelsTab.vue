@@ -19,6 +19,7 @@ import {
   type RoutingBlockedDiagnostic,
 } from '../../api'
 import ModelOfferDetailDrawer from '../../components/model/ModelOfferDetailDrawer.vue'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t: td } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -119,7 +120,7 @@ async function loadRoutingDiagnostics() {
 }
 
 async function handleFixBlocked() {
-  if (!confirm('确定强制恢复该供应商所有被阻断的绑定？这将重置所有凭据状态、模型绑定和探测状态。')) return
+  if (!(await confirmDialog('确定强制恢复该供应商所有被阻断的绑定？这将重置所有凭据状态、模型绑定和探测状态。'))) return
   routingDiagFixing.value = true
   routingDiagErr.value = ''
   try {
@@ -166,7 +167,7 @@ async function pollRefreshStatus() {
 
 async function clearModels() {
   if (clearing.value || refreshing.value) return
-  if (!confirm(pm('clearConfirm'))) return
+  if (!(await confirmDialog(pm('clearConfirm')))) return
   clearing.value = true
   refreshError.value = ''
   try {
@@ -275,7 +276,7 @@ const probeAllHint = ref('')
 // failed rows still block routing.
 async function resetFailedNodeProbes() {
   if (resetNodeProbeLoading.value) return
-  if (!confirm(pm('resetNodeProbeConfirm'))) return
+  if (!(await confirmDialog(pm('resetNodeProbeConfirm')))) return
   resetNodeProbeLoading.value = true
   try {
     const r = await resetNodeProbeState(props.providerId)

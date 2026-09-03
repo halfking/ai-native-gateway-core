@@ -23,6 +23,7 @@ import {
 } from '../types/quality-api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { isSuperAdmin } from '../store'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 const pm = (k: string, params?: Record<string,unknown>): string =>
@@ -452,7 +453,7 @@ async function submitCred() {
 }
 
 async function delCred(p: Provider, credId: number) {
-  if (!confirm(pm('credential.errors.deleteConfirm'))) return
+  if (!(await confirmDialog(pm('credential.errors.deleteConfirm')))) return
   try {
     await deleteCredential(p.id, credId)
     await loadCredentials(p.id)
@@ -606,7 +607,7 @@ async function toggle(p: Provider) {
 // 2026-08-31: 软删除供应商。级联把该供应商下未删除的凭据置为
 // status='deleted'；本地数组中直接剔除该行 + 该供应商下凭据。
 async function delProvider(p: Provider) {
-  if (!confirm(pm('providerDelete.confirm'))) return
+  if (!(await confirmDialog(pm('providerDelete.confirm')))) return
   try {
     await deleteProvider(p.id)
     // 从当前列表中移除

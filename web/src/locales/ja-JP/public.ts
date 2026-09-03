@@ -122,6 +122,13 @@ export default {
     subtitle: 'View bound license status, expiry, and device quotas for this instance',
   },
   upgrade: {
+    contactAdminButton: '管理者に連絡してアップグレードを適用',
+
+    notifyAdminBody: '管理者に連絡し、/admin/autoupdate 経由でこのアップグレードを適用してください。カスタマーポータルから直接実行できません。',
+    notifyAdminTitle: '管理者の操作が必要です',
+    notifyAdminOk: '了解しました',
+    notifyAdminCopy: 'バージョンをコピー',
+
     title: 'Software upgrade',
     subtitle: 'Check for updates; download offline packages from the download page',
   },

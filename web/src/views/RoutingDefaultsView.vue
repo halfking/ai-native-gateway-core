@@ -29,6 +29,7 @@ import {
   type RoutingDefaultCreate,
   type RoutingDefaultAuditRow,
 } from '../api/tuning'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -178,9 +179,9 @@ async function submitCreate() {
 
 // ── Delete ───────────────────────────────────────────────────────
 async function deleteDefault(d: RoutingDefault) {
-  if (!confirm(t('routingDefault.table.deleteConfirm', {
+  if (!(await confirmDialog(t('routingDefault.table.deleteConfirm', {
     id: d.id, model: d.canonical_model, task: d.task_type,
-  }))) {
+  })))) {
     return
   }
   try {

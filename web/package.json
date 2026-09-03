@@ -9,8 +9,10 @@
     "dev": "vite",
     "build": "node scripts/export-menu-config.mjs && vite build",
     "preview": "vite preview",
-    "i18n:check": "node scripts/i18n-audit.mjs",
-    "i18n:check:strict": "I18N_STRICT=1 vitest run src/i18n/keys_referenced.test.ts",
+    "i18n:check": "node scripts/i18n-audit.mjs && node scripts/i18n-cjk-count.mjs",
+    "i18n:check:strict": "I18N_STRICT=1 vitest run src/i18n/keys_referenced.test.ts && vitest run src/i18n/hardcoded_cjk.baseline.test.ts",
+    "i18n:cjk:check": "node scripts/i18n-cjk-count.mjs",
+    "i18n:cjk:update-baseline": "node scripts/i18n-cjk-count.mjs --update-baseline",
     "i18n:check:json": "node scripts/i18n-audit.mjs --json --out=reports/i18n-audit.json",
     "i18n:fix:dry": "node scripts/i18n-fix.mjs --dry-run",
     "i18n:fix": "node scripts/i18n-fix.mjs --apply --yes"

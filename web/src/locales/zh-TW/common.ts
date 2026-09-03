@@ -122,6 +122,7 @@ export default {
   cancel: '取消',
   close: '關閉',
   confirm: '確認',
+  confirmTitle: '請確認',
   count: '數量',
   create: '新建',
   createdAt: '建立時間',

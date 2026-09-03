@@ -12,6 +12,8 @@ export default {
     opsplatform: "运维平台"
   },
   item: {
+    activateAction: 'Activer',
+    activateActionTip: 'Cliquez pour activer cette instance',
     overview: "Aperçu",
     tenantModels: "Modèles standards",
     tenantAccount: "Mon compte",
@@ -72,8 +74,6 @@ export default {
 ,
     updateActivate: 'Update & Activate',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
-    activateAction: 'Activer',
-    activateActionTip: 'Cliquez pour activer cette instance',
 
     licenseActivate: 'License Activation',
 

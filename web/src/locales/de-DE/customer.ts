@@ -167,4 +167,7 @@ export default {
     reactivate: 'Re-activate',
     loadFailed: 'Failed to load license info: {msg}',
   },
+  versionsUpgradeConfirmBody: 'Der Dienst wird auf {version} ({label}) aktualisiert. Dabei ist er kurzzeitig nicht verfügbar — stellen Sie sicher, dass keine wichtigen Aufgaben laufen.',
+  versionsUpgradeConfirmTitle: 'Upgrade bestätigen',
+  versionsUpgradeConfirmStart: 'Upgrade starten',
 }

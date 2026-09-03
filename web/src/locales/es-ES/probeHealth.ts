@@ -47,4 +47,9 @@ export default {
     critical: 'critical',
     unknown: 'unknown',
   },
+  probeAllConfirm: '¿Disparar sondeos para las {n} credenciales del modelo {model}?',
+  systemStartAllConfirm: '¿Iniciar todas las tareas de sondeo? Se examinarán los vínculos de todas las credenciales activas.',
+  systemStopAllConfirm: '¿Detener todas las tareas de sondeo? Las tareas ya reclamadas (claimed) terminarán de todos modos.',
+  systemTriggeredToast: '{n} tareas disparadas, {failed} fallidas',
+  systemStoppedToast: 'Se vaciaron {n} tareas de la cola',
 }

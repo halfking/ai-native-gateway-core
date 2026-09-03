@@ -12,6 +12,8 @@ export default {
     opsplatform: "运维平台"
   },
   item: {
+    activateAction: '啟用',
+    activateActionTip: '點擊前往啟用本機',
     overview: "總覽",
     tenantModels: "標準模型",
     tenantAccount: "我的帳號",
@@ -72,8 +74,6 @@ export default {
 ,
     updateActivate: '更新与激活',
     // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
-    activateAction: '啟用',
-    activateActionTip: '點擊前往啟用本機',
 
     licenseActivate: '许可激活',
 

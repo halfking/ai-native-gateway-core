@@ -47,4 +47,9 @@ export default {
     critical: 'critical',
     unknown: 'unknown',
   },
+  probeAllConfirm: 'Trigger probes for all {n} credentials of model {model}?',
+  systemStartAllConfirm: 'Start all probe tasks? This scans bindings of all active credentials.',
+  systemStopAllConfirm: 'Stop all probe tasks? Already-claimed tasks will still finish.',
+  systemTriggeredToast: '{n} tasks triggered, {failed} failed',
+  systemStoppedToast: 'Cleared {n} queued tasks',
 }

@@ -1079,4 +1079,5 @@ promptInjectionCategories: {
   config_healthMetricOutcomeHint: 'View persisted health scores in the analytics center.',
   config_healthSource: 'Source: session_inspector module status',
   config_healthViewAnalytics: 'Open session analytics',
+  metaTitleClearConfirm: 'Clear the title of this session?',
 }

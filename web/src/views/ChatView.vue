@@ -30,6 +30,7 @@ import ChatComposer from '../components/chat/ChatComposer.vue'
 import ChatMessageList from '../components/chat/ChatMessageList.vue'
 import ChatParamsDrawer from '../components/chat/ChatParamsDrawer.vue'
 import GatewayApiKeyPicker from '../components/GatewayApiKeyPicker.vue'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -379,7 +380,7 @@ async function removeSession(id: string, e?: Event) {
   if (sending.value || summarizing.value) return
   const s = sessions.value.find((x) => x.id === id)
   if (!s) return
-  if (s.messages.length > 0 && !window.confirm(t('chat.sidebar.confirmDelete', { title: s.title }))) return
+  if (s.messages.length > 0 && !(await confirmDialog(t('chat.sidebar.confirmDelete', { title: s.title })))) return
   const removed = deleteSession(id)
   if (!removed) return
   if (removed.gwSessionId) {

@@ -5,7 +5,7 @@
 // execution is performed by the admin via /api/admin/releases/*.
 
 import { ref, onMounted, onBeforeUnmount, computed } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 import {
@@ -13,6 +13,7 @@ import {
   checkForUpgrade,
   type UpgradeStatus,
 } from '../api/customer'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -60,16 +61,18 @@ async function manualCheck() {
   }
 }
 
-function notifyAdmin() {
-  ElMessageBox.confirm(
-    '请联系管理员通过 /admin/autoupdate 应用此升级。客户门户无法直接执行升级。',
-    '需要管理员介入',
-    { confirmButtonText: '我知道了', cancelButtonText: '复制版本号' },
-  ).catch(() => {
+async function notifyAdmin() {
+  const confirmed = await confirmDialog(t('public.upgrade.notifyAdminBody'), {
+    title: t('public.upgrade.notifyAdminTitle'),
+    confirmButtonText: t('public.upgrade.notifyAdminOk'),
+    cancelButtonText: t('public.upgrade.notifyAdminCopy'),
+  })
+  if (!confirmed) {
+    // 「复制版本号」/关闭：复制版本号方便用户联系管理员时报修
     if (status.value?.latest_version) {
       navigator.clipboard.writeText(status.value.latest_version)
     }
-  })
+  }
 }
 
 onMounted(() => {
@@ -145,7 +148,7 @@ onBeforeUnmount(() => {
           </div>
           <div class="cta-row">
             <el-button type="primary" @click="notifyAdmin">
-              联系管理员应用升级
+              {{ t('public.upgrade.contactAdminButton') }}
             </el-button>
           </div>
         </template>

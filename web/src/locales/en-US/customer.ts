@@ -154,4 +154,7 @@ export default {
     reactivate: 'Re-activate',
     loadFailed: 'Failed to load license info: {msg}',
   },
+  versionsUpgradeConfirmBody: 'The service will be upgraded to {version} ({label}). It will be briefly unavailable — make sure no important tasks are running.',
+  versionsUpgradeConfirmTitle: 'Confirm upgrade',
+  versionsUpgradeConfirmStart: 'Start upgrade',
 }

@@ -46,6 +46,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { req } from '@/api/_core'
+import { confirmDialog } from '../../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const status = ref<any>({})
 const task = ref<any>(null)
@@ -63,7 +67,7 @@ async function control(action: 'enter' | 'exit') {
   const text = action === 'enter'
     ? '确认进入降级写入？LLM 服务继续运行，但会话和日志将写入备份文件。'
     : '确认恢复数据库写入？请确保数据库已稳定可用。'
-  if (!window.confirm(text)) return
+  if (!(await confirmDialog(text))) return
   busy.value = true
   try {
     await req('POST', '/api/admin/data-lifecycle/degradation/control', { action })
@@ -72,7 +76,7 @@ async function control(action: 'enter' | 'exit') {
 }
 
 async function recover(filename: string, archive: boolean) {
-  if (!window.confirm(archive ? `确认回放并归档 ${filename}？` : `确认回放 ${filename}？`)) return
+  if (!(await confirmDialog(t(archive ? 'dataLifecycle.confirmReplayArchive' : 'dataLifecycle.confirmReplay', { filename })))) return
   busy.value = true
   try {
     const res = await req<any>('POST', '/api/admin/data-lifecycle/degradation/recover', { filename, archive })

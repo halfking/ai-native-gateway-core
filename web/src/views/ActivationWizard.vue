@@ -10,7 +10,7 @@
 // designed to be reachable when state === 'none' from any other page.
 
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 import OperationAgreementDialog from '../components/OperationAgreementDialog.vue'
@@ -23,6 +23,7 @@ import {
   type CustomerLicenseStatus,
   type ActivationResult,
 } from '../api/customer'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -130,11 +131,10 @@ async function handleActivationResult(result: ActivationResult) {
     return
   }
   if (result.need_deactivate || result.error_code === 'device_limit_exceeded') {
-    await ElMessageBox.confirm(
-      deviceLimitBody(),
-      t('customer.wizard.messages.deviceLimitTitle'),
-      { confirmButtonText: t('customer.wizard.messages.deviceLimitOk') },
-    )
+    await confirmDialog(deviceLimitBody(), {
+      title: t('customer.wizard.messages.deviceLimitTitle'),
+      confirmButtonText: t('customer.wizard.messages.deviceLimitOk'),
+    })
     return
   }
   ElMessage.error(activationErrorMessage(result))
