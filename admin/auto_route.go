@@ -1143,8 +1143,8 @@ func (h *AutoRouteHandlers) handleAffinitySelections(w http.ResponseWriter, r *h
 			       fallback_used,
 			       success, latency_ms, cost_usd, reward, reward_source,
 			       ts::text, settled_at::text
-			FROM auto_route_selections
-			WHERE session_id = $1
+				FROM auto_route_selections_all
+				WHERE session_id = $1
 			ORDER BY ts DESC
 			LIMIT $2
 		`, sessionID, limit)

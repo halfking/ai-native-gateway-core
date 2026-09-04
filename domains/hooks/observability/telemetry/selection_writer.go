@@ -251,7 +251,7 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
 	// duplicate sample, which matters because duplicates would inflate
 	// sample_count and skew the learned ranking.
 	query := `
-INSERT INTO auto_route_selections (
+	INSERT INTO auto_route_selections_hot (
     request_id, session_id, task_id, tenant_id,
     task_type, profile, classifier, confidence,
     canonical_id, chosen_model, candidate_rank,

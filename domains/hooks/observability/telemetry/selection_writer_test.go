@@ -70,6 +70,9 @@ func TestSelectionWriter_InsertBatchShape(t *testing.T) {
 	if n := strings.Count(call.sql, "($"); n != len(sels) {
 		t.Errorf("placeholder groups = %d, want %d", n, len(sels))
 	}
+	if !strings.Contains(call.sql, "INSERT INTO auto_route_selections_hot") {
+		t.Error("selection writer must insert into the independent hot heap")
+	}
 	if !strings.Contains(call.sql, "ON CONFLICT DO NOTHING") {
 		t.Error("insert must be replay-safe via ON CONFLICT DO NOTHING")
 	}
