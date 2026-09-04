@@ -1,4 +1,4 @@
--- Migration 655 rollback: restore parent-table writes without losing hot rows.
+-- Migration 656 rollback: restore parent-table writes without losing hot rows.
 -- Copy hot rows into the parent before dropping the hot heap. The INSERT is
 -- explicit and conflict-safe; rows remain queryable through the parent.
 \set ON_ERROR_STOP on
@@ -33,5 +33,5 @@ DROP VIEW IF EXISTS public.auto_route_selections_all;
 DROP FUNCTION IF EXISTS public.promote_auto_route_selections_hot_to_partition(interval, integer);
 DROP FUNCTION IF EXISTS public.ensure_auto_route_selections_partition(date);
 DROP TABLE IF EXISTS public.auto_route_selections_hot;
-DELETE FROM public.schema_migrations WHERE version = '655';
+DELETE FROM public.schema_migrations WHERE version = '656';
 COMMIT;

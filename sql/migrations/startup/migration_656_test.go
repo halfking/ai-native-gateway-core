@@ -8,8 +8,8 @@ import (
 )
 
 func TestMigration655AutoRouteSelectionsHotContract(t *testing.T) {
-	upPath := filepath.Join("655_auto_route_selections_hot.sql")
-	downPath := filepath.Join("655_auto_route_selections_hot.down.sql")
+	upPath := filepath.Join("656_auto_route_selections_hot.sql")
+	downPath := filepath.Join("656_auto_route_selections_hot.down.sql")
 	upBytes, err := os.ReadFile(upPath)
 	if err != nil {
 		t.Fatal(err)
@@ -39,14 +39,14 @@ func TestMigration655AutoRouteSelectionsHotContract(t *testing.T) {
 		"ATTACH PARTITION public.auto_route_selections_default DEFAULT",
 	} {
 		if !strings.Contains(up, want) {
-			t.Errorf("migration 655 missing %q", want)
+			t.Errorf("migration 656 missing %q", want)
 		}
 	}
 	if strings.Contains(strings.ToUpper(up), "SELECT *") {
-		t.Error("migration 655 must use explicit columns, not SELECT *")
+		t.Error("migration 656 must use explicit columns, not SELECT *")
 	}
 	if strings.Contains(strings.ToUpper(up), "EXCEPTION WHEN") {
-		t.Error("migration 655 promote must propagate errors")
+		t.Error("migration 656 promote must propagate errors")
 	}
 	copyPos := strings.Index(down, "INSERT INTO public.auto_route_selections (")
 	dropPos := strings.Index(down, "DROP TABLE IF EXISTS public.auto_route_selections_hot")

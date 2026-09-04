@@ -1,4 +1,4 @@
--- Migration 655: auto_route_selections independent hot heap and all view.
+-- Migration 656: auto_route_selections independent hot heap and all view.
 -- New selections land in the heap for low-latency settlement; historical rows
 -- remain in the partitioned parent. Promotion is one atomic data-modifying CTE.
 \set ON_ERROR_STOP on
@@ -162,5 +162,5 @@ SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, c
   partition_date, experiment_id, treatment, assignment_version, assignment_key_hash, 'parent'::text AS storage_tier
 FROM public.auto_route_selections;
 
-INSERT INTO public.schema_migrations (version, description) VALUES ('655', 'auto_route_selections hot heap, all view, ensure/promote') ON CONFLICT (version) DO NOTHING;
+INSERT INTO public.schema_migrations (version, description) VALUES ('656', 'auto_route_selections hot heap, all view, ensure/promote') ON CONFLICT (version) DO NOTHING;
 COMMIT;
