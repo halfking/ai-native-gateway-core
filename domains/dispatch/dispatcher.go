@@ -199,7 +199,7 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 		ToModel:   chosen,
 		Attempt:   qr.AttemptCount,
 	})
-	qr.ResolvedModel = chosen
+	qr.setResolvedModel(chosen)
 	qr.TriedCredentials = make(map[int]struct{})
 	qr.CredRetryCount = 0
 	qr.InitialProviderID = 0
@@ -246,15 +246,16 @@ func (p *Pipeline) modelChangeCandidates(qr *QueuedRequest) []string {
 
 func (p *Pipeline) selectCredential(qr *QueuedRequest, ref CredentialRef) {
 	qr.setSelectedCredential(ref)
-	qr.vendor = ref.Vendor
+	qr.setVendor(ref.Vendor)
 	if qr.InitialProviderID == 0 {
 		qr.InitialProviderID = ref.ProviderID
 	}
+	resolvedModel := qr.resolvedModel()
 	qr.emitObservation(Observation{
 		Type:          ObservationCredentialSelected,
 		Stage:         StageNodeSelection,
-		ResolvedModel: qr.ResolvedModel,
-		Model:         qr.ResolvedModel,
+		ResolvedModel: resolvedModel,
+		Model:         resolvedModel,
 		ProviderID:    int64(ref.ProviderID),
 		Provider:      ref.Vendor,
 		CredentialID:  int64(ref.CredentialID),
