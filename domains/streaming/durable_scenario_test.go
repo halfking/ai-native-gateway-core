@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -39,6 +40,20 @@ type memDurableStore struct {
 	claimed     bool
 	finalizeErr error
 	createErr   error
+	history     json.RawMessage
+}
+
+func (s *memDurableStore) LoadDecisionHistory(_ context.Context, _ string) (json.RawMessage, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.history, nil
+}
+
+func (s *memDurableStore) SaveDecisionHistory(_ context.Context, _ string, _ string, _ int64, h json.RawMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = h
+	return nil
 }
 
 func (s *memDurableStore) snapshotTask() durable.Task {
