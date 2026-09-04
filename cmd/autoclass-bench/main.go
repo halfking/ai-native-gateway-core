@@ -60,7 +60,8 @@ type chatRequest struct {
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
-			Content string `json:"content"`
+			Content          string `json:"content"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"message"`
 	} `json:"choices"`
 }
@@ -75,6 +76,7 @@ func main() {
 		conc        = flag.Int("c", 4, "concurrent in-flight requests")
 		timeout     = flag.Duration("timeout", 20*time.Second, "per-request timeout")
 		limit       = flag.Int("limit", 0, "evaluate at most N samples (0 = all)")
+		maxTokens   = flag.Int("max-tokens", 512, "per-request max_tokens; reasoning models spend tokens on hidden reasoning before the label, so keep this well above 1 label")
 	)
 	flag.Parse()
 
@@ -109,7 +111,7 @@ func main() {
 
 	start := time.Now()
 	runWorkers(*conc, samples, func(s sample) {
-		predicted, errKind, latencyMS := classify(*endpoint, apiKey, *model, labels, s.Text, *timeout)
+		predicted, errKind, latencyMS := classify(*endpoint, apiKey, *model, labels, s.Text, *timeout, *maxTokens)
 		rep.add(s.Label, predicted, errKind, latencyMS)
 		fmt.Fprint(os.Stderr, ".")
 	})
@@ -184,7 +186,7 @@ func deriveLabels(samples []sample) []string {
 // classify sends one classification request and returns
 // (predicted label, error kind, latency ms). errKind "" means the endpoint
 // answered with a parseable completion (even if the label itself is invalid).
-func classify(endpoint, apiKey, model string, labels []string, text string, timeout time.Duration) (string, string, float64) {
+func classify(endpoint, apiKey, model string, labels []string, text string, timeout time.Duration, maxTokens int) (string, string, float64) {
 	prompt := buildPrompt(labels, text)
 	reqBody, _ := json.Marshal(chatRequest{
 		Model: model,
@@ -193,7 +195,7 @@ func classify(endpoint, apiKey, model string, labels []string, text string, time
 			{Role: "user", Content: text},
 		},
 		Temperature: 0,
-		MaxTokens:   8,
+		MaxTokens:   maxTokens,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -231,10 +233,23 @@ func classify(endpoint, apiKey, model string, labels []string, text string, time
 	}
 
 	var parsed chatResponse
-	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Choices) == 0 {
+	var content, reasoning string
+	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("data:")) {
+		// Some gateway protocol-conversion paths answer a non-stream request
+		// with an SSE body (HTTP 200). Reassemble the deltas instead of
+		// failing the sample as unparseable.
+		content, reasoning = parseSSE(body)
+	} else if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Choices) == 0 {
 		return "", "parse", latencyMS
+	} else {
+		msg := parsed.Choices[0].Message
+		content, reasoning = msg.Content, msg.ReasoningContent
 	}
-	label, _ := extractLabel(parsed.Choices[0].Message.Content, func(s string) bool {
+	// Primary answer is content; reasoning-style models (GLM-5.x, R1-class)
+	// can return the label only after their hidden reasoning, or spend the
+	// whole budget there — fall back to reasoning_content, stripping any
+	// inline <think> blocks either field may carry.
+	label, _ := extractLabel(stripThink(content), func(s string) bool {
 		for _, l := range labels {
 			if s == l {
 				return true
@@ -242,7 +257,59 @@ func classify(endpoint, apiKey, model string, labels []string, text string, time
 		}
 		return false
 	})
+	if label == "" {
+		label, _ = extractLabel(stripThink(reasoning), func(s string) bool {
+			for _, l := range labels {
+				if s == l {
+					return true
+				}
+			}
+			return false
+		})
+	}
 	return label, "", latencyMS
+}
+
+// parseSSE reassembles an OpenAI-style "data: {...}" stream into the final
+// (content, reasoning_content) pair. Non-JSON keep-alive lines and the
+// terminal [DONE] sentinel are skipped.
+func parseSSE(body []byte) (string, string) {
+	var content, reasoning strings.Builder
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(payload), &chunk) != nil {
+			continue
+		}
+		for _, c := range chunk.Choices {
+			content.WriteString(c.Delta.Content)
+			reasoning.WriteString(c.Delta.ReasoningContent)
+		}
+	}
+	return content.String(), reasoning.String()
+}
+
+// stripThink removes inline <think>...</think> reasoning blocks some models
+// embed in content before the final answer.
+func stripThink(s string) string {
+	if i := strings.Index(s, "</think>"); i >= 0 {
+		return strings.TrimSpace(s[i+len("</think>"):])
+	}
+	return s
 }
 
 // buildPrompt keeps the system side minimal and enumerates the label set;
@@ -285,7 +352,38 @@ func extractLabel(content string, valid func(string) bool) (string, bool) {
 		s = s[:i]
 	}
 	s = strings.Trim(strings.ToLower(strings.TrimSpace(s)), "\"'` .")
+	if valid(s) {
+		return s, true
+	}
+	// Reasoning-style answers often bury the label in the last few lines
+	// ("3. **选择最佳类别：** `code`"). Scan the tail for an exact label
+	// match after stripping markdown emphasis; anything that is not an
+	// exact label stays invalid so the gate is not softened.
+	lines := strings.Split(strings.TrimSpace(content), "\n")
+	tail := lines
+	if len(tail) > 10 {
+		tail = tail[len(tail)-10:]
+	}
+	for i := len(tail) - 1; i >= 0; i-- {
+		cand := stripMarkdownEmphasis(tail[i])
+		cand = strings.Trim(strings.ToLower(strings.TrimSpace(cand)), "\"'` .*:：#-")
+		if cand != "" && valid(cand) {
+			return cand, true
+		}
+	}
 	return s, valid(s)
+}
+
+// stripMarkdownEmphasis removes common markdown wrappers (**bold**, *em*,
+// `code`, leading list markers) around an answer line.
+func stripMarkdownEmphasis(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "-")
+	s = strings.TrimPrefix(s, "*")
+	s = strings.TrimSpace(s)
+	s = strings.ReplaceAll(s, "**", "")
+	s = strings.ReplaceAll(s, "`", "")
+	return s
 }
 
 func runWorkers(conc int, samples []sample, fn func(sample)) {
