@@ -19,6 +19,13 @@ type RoutingAttempt struct {
 	LatencyMs    int64  `json:"latency_ms"`
 	HTTPStatus   int    `json:"http_status,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+	// 2026-09-05 审计闭环2：结构化错误维度。ErrorMessage 是自由文本，
+	// 这三个字段是低基数/布尔维度，供前端结构化展示与 SQL 聚合使用，
+	// 不再 forcing UI 解析 message。JSONB 追加列 omitempty 向后兼容。
+	ErrorKind string `json:"error_kind,omitempty"` // errorsx.ErrorKind
+	Stage     string `json:"stage,omitempty"`      // preflight/connect/upstream/stream
+	// Retryable 三态：nil=未知（旧数据/未分类），false=不可重试，true=可重试。
+	Retryable *bool `json:"retryable,omitempty"`
 }
 
 // ResultPending is the placeholder Result used by the handler when it
@@ -99,6 +106,29 @@ func (t *RoutingAttemptsTracker) Count() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.attempts)
+}
+
+// FailedAttempts 返回真实失败尝试（排除 pending 占位与 success）的拷贝，
+// 供 ExecuteAttempt 在 execErr.Attempts 为空的 dispatch 路径上合成
+// per-candidate CandidateOutcome（2026-09-05 审计：dispatch 路径从不填充
+// ExecuteError.Attempts，导致聚合器只看到 no_candidate_outcomes）。
+func (t *RoutingAttemptsTracker) FailedAttempts() []RoutingAttempt {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]RoutingAttempt, 0, len(t.attempts))
+	for _, a := range t.attempts {
+		if a.Result == ResultPending || a.Result == "success" {
+			continue
+		}
+		out = append(out, a)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ToJSONBytes 序列化为 JSONB 字节

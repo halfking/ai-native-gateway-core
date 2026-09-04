@@ -507,6 +507,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 					extra = map[string]any{}
 				}
 				extra["failure_stage"], extra["preflight_reason"] = dispatchFailureStage(out.Err)
+				extra["supplier"] = cand.CatalogCode
 				e.FailureLogger.LogFailureWithKind(
 					params.R.Header.Get("X-Request-Id"), tenantFromCtx(params.R), params.SessionID,
 					cand.CredentialID, cand.ProviderID, cand.RawModel, params.AttemptNo,
@@ -757,6 +758,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		if extra == nil {
 			extra = map[string]any{}
 		}
+		extra["supplier"] = cand.CatalogCode
 		var sie *streamInterruptedError
 		if errors.As(execErr, &sie) && sie != nil {
 			extra["stream_reason"] = sie.reason
@@ -962,6 +964,7 @@ func logDispatchPreflightRejection(
 	if _, ok := extra["candidates_left"]; !ok {
 		extra["candidates_left"] = len(dctx.candidates)
 	}
+	extra["supplier"] = cand.CatalogCode
 	perAttemptMs := int(time.Since(startedAt).Milliseconds())
 	writer.LogFailureWithKind(
 		params.R.Header.Get("X-Request-Id"),

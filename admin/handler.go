@@ -108,6 +108,9 @@ type Handler struct {
 	// /alerts can read live data from the CandidateFailureMonitor.
 	cfHandlers  *candidateFailureHandlers
 	vceHandlers *vendorCredentialErrorHandlers
+	// 2026-09-05 审计闭环1: backs GET /api/errors/trend（supplier_error_stats
+	// 预聚合读端 + supplier_errors_unified 明细兜底）。
+	errorsTrendHandlers *errorsTrendHandlers
 	fpSlots     *credentialfpslot.Manager
 	// pendingStore (Track C C7, 2026-06-18) is the durable cache
 	// for client reconnect and vendor async retry. nil disables
@@ -1188,6 +1191,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.vceHandlers == nil {
 		h.vceHandlers = &vendorCredentialErrorHandlers{db: h.db}
 	}
+	if h.errorsTrendHandlers == nil {
+		h.errorsTrendHandlers = &errorsTrendHandlers{db: h.db}
+	}
+	mux.HandleFunc("/api/errors/trend", admin(h.errorsTrendHandlers.getErrorsTrend))
 	mux.HandleFunc("/api/candidate-failures", admin(h.cfHandlers.listCandidateFailures))
 	mux.HandleFunc("/api/candidate-failures/stats", admin(h.cfHandlers.getCandidateFailureStats))
 	mux.HandleFunc("/api/candidate-failures/credential/{id}", admin(h.cfHandlers.getCandidateFailuresByCredential))

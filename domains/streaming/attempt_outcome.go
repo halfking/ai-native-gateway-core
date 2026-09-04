@@ -52,6 +52,25 @@ type CandidateOutcome struct {
 	Kind       errorsx.ErrorKind
 	Err        error
 	RetryAfter time.Duration
+
+	// —— 2026-09-05 审计闭环2：诊断维度补齐 ——
+	// 以下字段从 fold 阶段的请求上下文与路由追踪器填充；合成路径
+	// （durable runner / no-candidate）可以全部为零值。它们驱动
+	// supplier_errors_hot 持久化投影与前端结构化展示。
+	// RequestID 是本次请求 id（候选级冗余，方便日志与表行互查）。
+	RequestID string
+	// AttemptSeq 是该候选在本请求内的序号（1 起；按 fold 顺序）。
+	AttemptSeq int
+	// Supplier 是 provider catalog code（低基数；未知为空）。
+	Supplier string
+	// HTTPStatus 是上游 HTTP 状态（0 = 纯网络错误）。
+	HTTPStatus int
+	// Retryable 三态：nil=未分类。
+	Retryable *bool
+	// LatencyMs 是该候选的尝试耗时（0 = 未知）。
+	LatencyMs int64
+	// Stage 是失败阶段枚举（preflight/connect/upstream/stream；空=未知）。
+	Stage string
 }
 
 // AttemptResult is the structured result of one bounded attempt.

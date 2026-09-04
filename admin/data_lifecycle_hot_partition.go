@@ -38,6 +38,7 @@ var hotPromoteTableMap = map[string]string{
 	"credit_ledger_hot":             "promote_credit_ledger_hot_to_partition",
 	"tool_usage_stats_hot":          "promote_tool_usage_stats_hot_to_partition",
 	"candidate_failure_logs_hot":    "promote_candidate_failure_logs_hot_to_partition",
+	"supplier_errors_hot":           "promote_supplier_errors_hot_to_partition",
 	"session_turns_hot":             "promote_session_turns_hot_to_partition",
 	"session_bodies_hot":            "promote_session_bodies_hot_to_partition",
 	"handoff_logs_hot":              "promote_handoff_logs_hot_to_partition",

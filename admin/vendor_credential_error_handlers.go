@@ -58,6 +58,12 @@ type vendorRecentFailure struct {
 	UpstreamStatusCode      *int      `json:"upstream_status_code"`
 	UpstreamResponsePreview *string   `json:"upstream_response_preview"`
 	LatencyMs               *int      `json:"latency_ms"`
+	// 2026-09-05 审计闭环1/2：结构化诊断维度（事实源列透传），
+	// 前端以此做徽标展示，不再解析 error_message 自由文本。
+	Supplier   *string `json:"supplier,omitempty"`
+	ErrorCode  *string `json:"error_code,omitempty"`
+	Retryable  *bool   `json:"retryable,omitempty"`
+	Stage      *string `json:"stage,omitempty"`
 }
 
 type vendorQualityScore struct {
@@ -161,12 +167,16 @@ func (h *vendorCredentialErrorHandlers) loadVendorCredentialMeta(ctx context.Con
 	return c, nil
 }
 
+// loadVendorErrorSummary 读 supplier_errors_unified（V371 事实源：hot 8h +
+// columnar 历史分区），按 error_type 聚合。旧读源
+// candidate_failure_logs_with_current_month 保留给双写过渡期的直接 SQL 消费者，
+// admin 读端已统一切换。
 func (h *vendorCredentialErrorHandlers) loadVendorErrorSummary(ctx context.Context, id int64, tenantID string, since time.Time) ([]vendorErrorKindStat, error) {
 	rows, err := h.db.Query(ctx, `
-		SELECT error_kind, COUNT(*)::int, MAX(ts), COUNT(DISTINCT upstream_status_code)::int
-		FROM candidate_failure_logs_with_current_month
-			WHERE credential_id = $1 AND ($2 = '' OR tenant_id = $2) AND ts >= $3
-			GROUP BY error_kind ORDER BY COUNT(*) DESC
+		SELECT error_type, COUNT(*)::int, MAX(occurred_at), COUNT(DISTINCT http_status)::int
+		FROM supplier_errors_unified
+			WHERE credential_id = $1 AND ($2 = '' OR tenant_id = $2) AND occurred_at >= $3
+			GROUP BY error_type ORDER BY COUNT(*) DESC
 		`, id, tenantID, since)
 	if err != nil {
 		return nil, fmt.Errorf("query vendor error summary failed: %w (credential_id=%d)", err, id)
@@ -186,13 +196,38 @@ func (h *vendorCredentialErrorHandlers) loadVendorErrorSummary(ctx context.Conte
 	return result, nil
 }
 
+// vendorRecentFailureRow 是 loadVendorRecentFailures 的行投影：
+// 结构化维度来自 supplier_errors_unified；响应体预览（上游 body 片段）
+// 不入事实源表（保持其精简），从 candidate_failure_logs_unified 按定位键
+// LEFT JOIN 回补，双写过渡期内行总能在 hot 侧命中。
+type vendorRecentFailureRow struct {
+	Ts           time.Time
+	RequestID    string
+	Model        string
+	AttemptSeq   int
+	ErrorKind    string
+	ErrorMessage *string
+	HTTPStatus   *int
+	Retryable    *bool
+	Stage        *string
+	Supplier     *string
+	ErrorCode    *string
+	LatencyMs    *int
+	Preview      *string
+}
+
 func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Context, id int64, tenantID string, since time.Time) ([]vendorRecentFailure, error) {
 	rows, err := h.db.Query(ctx, `
-		SELECT ts, request_id, raw_model_name, attempt_index, error_kind, error_message,
-		       upstream_status_code, upstream_response_preview, latency_ms
-			FROM candidate_failure_logs_with_current_month
-			WHERE credential_id = $1 AND ($2 = '' OR tenant_id = $2) AND ts >= $3
-			ORDER BY ts DESC LIMIT 10
+		SELECT u.occurred_at, u.request_id, u.model, u.attempt_seq, u.error_type, u.error_message,
+		       u.http_status, u.is_retryable, u.stage, u.supplier, u.error_code, u.latency_ms,
+		       c.upstream_response_preview
+			FROM supplier_errors_unified u
+			LEFT JOIN candidate_failure_logs_unified c
+			       ON c.request_id = u.request_id
+			      AND c.credential_id = u.credential_id
+			      AND c.attempt_index = u.attempt_seq
+			WHERE u.credential_id = $1 AND ($2 = '' OR u.tenant_id = $2) AND u.occurred_at >= $3
+			ORDER BY u.occurred_at DESC LIMIT 10
 		`, id, tenantID, since)
 	if err != nil {
 		return nil, fmt.Errorf("query vendor recent failures failed: %w (credential_id=%d)", err, id)
@@ -200,10 +235,27 @@ func (h *vendorCredentialErrorHandlers) loadVendorRecentFailures(ctx context.Con
 	defer rows.Close()
 	result := make([]vendorRecentFailure, 0, 10)
 	for rows.Next() {
+		var row vendorRecentFailureRow
 		var item vendorRecentFailure
-		if err := rows.Scan(&item.Ts, &item.RequestID, &item.RawModelName, &item.AttemptIndex, &item.ErrorKind,
-			&item.ErrorMessage, &item.UpstreamStatusCode, &item.UpstreamResponsePreview, &item.LatencyMs); err != nil {
+		if err := rows.Scan(&row.Ts, &row.RequestID, &row.Model, &row.AttemptSeq, &row.ErrorKind,
+			&row.ErrorMessage, &row.HTTPStatus, &row.Retryable, &row.Stage, &row.Supplier, &row.ErrorCode,
+			&row.LatencyMs, &row.Preview); err != nil {
 			return nil, fmt.Errorf("scan vendor recent failure failed: %w (credential_id=%d)", err, id)
+		}
+		item = vendorRecentFailure{
+			Ts:                      row.Ts,
+			RequestID:               row.RequestID,
+			RawModelName:            row.Model,
+			AttemptIndex:            row.AttemptSeq,
+			ErrorKind:               row.ErrorKind,
+			ErrorMessage:            row.ErrorMessage,
+			UpstreamStatusCode:      row.HTTPStatus,
+			UpstreamResponsePreview: row.Preview,
+			LatencyMs:               row.LatencyMs,
+			Supplier:                row.Supplier,
+			ErrorCode:               row.ErrorCode,
+			Retryable:               row.Retryable,
+			Stage:                   row.Stage,
 		}
 		result = append(result, item)
 	}

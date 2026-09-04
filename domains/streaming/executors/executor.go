@@ -1646,6 +1646,11 @@ type AttemptRecord struct {
 	RawModel     string            `json:"raw_model"`
 	Kind         errorsx.ErrorKind `json:"kind"`
 	Reason       string            `json:"reason,omitempty"`
+	// 2026-09-05 审计闭环2：诊断维度（全为 omitempty，旧 JSON 消费者兼容）。
+	Supplier   string `json:"supplier,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+	LatencyMs  int64  `json:"latency_ms,omitempty"`
+	Stage      string `json:"stage,omitempty"`
 }
 
 type ExecuteError struct {
