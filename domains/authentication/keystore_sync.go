@@ -22,15 +22,20 @@ package authentication
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 const (
+	sha256HexLength = sha256.Size * 2
+
 	// defaultKeyStoreSyncInterval is the delta-sync period (2026-09-04
 	// design: 5 minutes). Env-tunable via LLM_GATEWAY_KEYSTORE_SYNC_INTERVAL;
 	// 0 disables the whole feature (pure lazy verification as before).
@@ -260,6 +265,14 @@ type keyStoreRow struct {
 	info    *KeyInfo
 }
 
+func isHexHash(value string) bool {
+	if len(value) != sha256HexLength || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
 func scanKeyStoreRow(rows interface{ Scan(dest ...any) error }) (keyStoreRow, error) {
 	var appID int64
 	var hash string
@@ -300,10 +313,7 @@ func (kv *KeyVerifier) lookupStore(keyHash string) *KeyInfo {
 	kv.storeMu.RLock()
 	info, ok := kv.keyStore[keyHash]
 	kv.storeMu.RUnlock()
-	if !ok || info == nil {
-		return nil
-	}
-	if info.ExpiresAt != nil && !info.ExpiresAt.After(time.Now()) {
+	if !ok || info == nil || !keyInfoCurrentlyValid(info, time.Now()) {
 		return nil
 	}
 	return info
@@ -442,18 +452,30 @@ func (kv *KeyVerifier) LoadSnapshot(dir string) (int, error) {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return 0, err
 	}
-	if snap.SavedAt.IsZero() || time.Since(snap.SavedAt) > maxSnapshotAge {
-		return 0, fmt.Errorf("snapshot too old (saved_at %s, max age %s)", snap.SavedAt.Format(time.RFC3339), maxSnapshotAge)
+	now := time.Now()
+	age := now.Sub(snap.SavedAt)
+	if snap.SavedAt.IsZero() || age < 0 || age > maxSnapshotAge {
+		return 0, fmt.Errorf("snapshot outside allowed age (saved_at %s, max age %s)", snap.SavedAt.Format(time.RFC3339), maxSnapshotAge)
 	}
 	if len(snap.Entries) == 0 {
 		return 0, fmt.Errorf("snapshot has no entries")
 	}
+	valid := make(map[string]*KeyInfo, len(snap.Entries))
+	for hash, info := range snap.Entries {
+		if !isHexHash(hash) || !keyInfoCurrentlyValid(info, now) {
+			continue
+		}
+		valid[hash] = info
+	}
+	if len(valid) == 0 {
+		return 0, fmt.Errorf("snapshot has no valid entries")
+	}
 	kv.storeMu.Lock()
-	kv.keyStore = snap.Entries
+	kv.keyStore = valid
 	kv.storeMu.Unlock()
 	kv.keyStoreLoaded.Store(true)
 	kv.keyStoreFromSnapshot.Store(true)
-	return len(snap.Entries), nil
+	return len(valid), nil
 }
 
 // tryLoadSnapshot is LoadSnapshot with logging only on success; used by

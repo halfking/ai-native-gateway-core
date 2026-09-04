@@ -107,6 +107,13 @@ type KeyInfo struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
+func (ki *KeyInfo) StatusValid() bool {
+	if ki == nil {
+		return false
+	}
+	return ki.Status == "" || (ki.Status != "revoked" && ki.Status != "disabled")
+}
+
 // EffectiveRPM returns the applicable RPM limit (per-key or tier default).
 // A per-key value of 0 means "unlimited" (CheckRPM treats limit<=0 as no cap).
 // Negative values (should not exist in DB) fall through to the tier default.
@@ -257,8 +264,12 @@ func (kv *KeyVerifier) SetSecretKey(secretKey string) {
 
 // SetDB 注入数据库连接池与 HMAC 密钥。
 func (kv *KeyVerifier) SetDB(pool *pgxpool.Pool, secretKey string) {
-	kv.dbPool = &pgxPoolAdapter{pool: pool}
 	kv.secretKey = secretKey
+	if pool == nil {
+		kv.dbPool = nil
+	} else {
+		kv.dbPool = &pgxPoolAdapter{pool: pool}
+	}
 	if kv.keyStore == nil {
 		kv.keyStore = make(map[string]*KeyInfo)
 	}
@@ -278,13 +289,28 @@ type pgxPoolAdapter struct {
 	pool *pgxpool.Pool
 }
 
+// errorRow keeps DB-only callers on a controlled error path when a typed nil
+// pool is supplied during degraded startup.
+type errorRow struct{ err error }
+
+func (r errorRow) Scan(_ ...any) error { return r.err }
+
 func (a *pgxPoolAdapter) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if a == nil || a.pool == nil {
+		return errorRow{err: fmt.Errorf("database unavailable")}
+	}
 	return a.pool.QueryRow(ctx, sql, args...)
 }
 func (a *pgxPoolAdapter) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	if a == nil || a.pool == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
 	return a.pool.Query(ctx, sql, args...)
 }
 func (a *pgxPoolAdapter) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
+	if a == nil || a.pool == nil {
+		return 0, fmt.Errorf("database unavailable")
+	}
 	tag, err := a.pool.Exec(ctx, sql, args...)
 	if err != nil {
 		return 0, err
@@ -363,11 +389,35 @@ type KeyLookupMeta struct {
 	CustomerID *int64
 }
 
+func keyLookupMetaFromInfo(info *KeyInfo) *KeyLookupMeta {
+	if info == nil {
+		return nil
+	}
+	return &KeyLookupMeta{
+		ID:                   info.ID,
+		KeyPrefix:            info.KeyPrefix,
+		OwnerUser:            info.OwnerUser,
+		Status:               info.Status,
+		Enabled:              true,
+		ApplicationCode:      info.ApplicationCode,
+		DefaultClientProfile: info.DefaultClientProfile,
+		TenantID:             info.TenantID,
+		ApplicationID:        info.ApplicationID,
+		CustomerID:           info.CustomerID,
+	}
+}
+
 func (kv *KeyVerifier) LookupKeyMeta(ctx context.Context, rawKey string) (*KeyLookupMeta, error) {
 	if !kv.Enabled() || strings.TrimSpace(rawKey) == "" {
 		return nil, nil
 	}
 	keyHash := hashAPIKey(kv.secretKey, rawKey)
+	if info := kv.lookupStore(keyHash); info != nil {
+		return keyLookupMetaFromInfo(info), nil
+	}
+	if kv.dbPool == nil {
+		return nil, fmt.Errorf("database unavailable")
+	}
 	var appID int64
 	var meta KeyLookupMeta
 	err := kv.dbPool.QueryRow(ctx, `
@@ -459,9 +509,11 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			// Reconcile the store against hard deletes: a row that vanished
-			// from the DB must not keep authorizing from the replica.
+			// Reconcile every local authorization copy: a row that vanished
+			// or became invalid in the DB must not be resurrected by a later
+			// outage stale-cache read.
 			kv.removeFromStore(keyHash)
+			kv.removeCache(rawKey)
 			return nil, &InvalidKeyError{Message: "Invalid or expired API key"}
 		}
 		return nil, err
@@ -492,6 +544,9 @@ func (kv *KeyVerifier) VerifyByID(ctx context.Context, id int) (*KeyInfo, error)
 	}
 	if id <= 0 {
 		return nil, fmt.Errorf("VerifyByID: invalid api key id %d", id)
+	}
+	if kv.dbPool == nil {
+		return nil, fmt.Errorf("database unavailable")
 	}
 	var appID int64
 	var info KeyInfo
@@ -564,13 +619,33 @@ func (kv *KeyVerifier) getCache(key string) *KeyInfo {
 	kv.mu.RLock()
 	defer kv.mu.RUnlock()
 	entry, ok := kv.cache[key]
-	if !ok {
+	if !ok || entry.info == nil {
 		return nil
 	}
-	if time.Now().After(entry.expiresAt) {
+	now := time.Now()
+	if now.After(entry.expiresAt) || !keyInfoCurrentlyValid(entry.info, now) {
 		return nil
 	}
 	return entry.info
+}
+
+func (kv *KeyVerifier) removeCache(key string) {
+	if strings.TrimSpace(key) == "" {
+		return
+	}
+	kv.mu.Lock()
+	delete(kv.cache, key)
+	kv.mu.Unlock()
+}
+
+func keyInfoCurrentlyValid(info *KeyInfo, now time.Time) bool {
+	if info == nil || info.ID <= 0 || !info.StatusValid() {
+		return false
+	}
+	if info.ExpiresAt != nil && !info.ExpiresAt.After(now) {
+		return false
+	}
+	return true
 }
 
 // getStaleCache returns the cached KeyInfo for key when the entry exists,
@@ -586,7 +661,11 @@ func (kv *KeyVerifier) getStaleCache(key string) (*KeyInfo, time.Duration) {
 	if !ok || entry.info == nil {
 		return nil, 0
 	}
-	age := time.Since(entry.expiresAt)
+	now := time.Now()
+	if !keyInfoCurrentlyValid(entry.info, now) {
+		return nil, 0
+	}
+	age := now.Sub(entry.expiresAt)
 	if kv.staleGrace <= 0 || age <= 0 || age > kv.staleGrace {
 		return nil, 0
 	}
@@ -675,13 +754,19 @@ func (e *BudgetExceededError) Error() string {
 }
 
 func (kv *KeyVerifier) CheckBudget(ctx context.Context, keyID int) error {
-	if !kv.Enabled() {
+	if !kv.Enabled() || kv.dbPool == nil {
+		// A snapshot-only verifier has no spend ledger to consult. Keep the
+		// availability path alive; callers already treat budget errors as
+		// best-effort and the key itself was validated by the snapshot.
 		return nil
 	}
 	return kv.checkBudgetDB(ctx, keyID)
 }
 
 func (kv *KeyVerifier) checkBudgetDB(ctx context.Context, keyID int) error {
+	if kv.dbPool == nil {
+		return fmt.Errorf("database unavailable")
+	}
 	var budget *float64
 	err := kv.dbPool.QueryRow(ctx, "SELECT budget_usd::float8 FROM api_keys WHERE id = $1 AND COALESCE(status, 'active') <> 'revoked'", keyID).Scan(&budget)
 	if err != nil {

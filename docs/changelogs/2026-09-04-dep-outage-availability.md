@@ -172,3 +172,53 @@ authoritative 读路径因 Redis 不可达而拒绝时，router 改为从进程�
   立即重试被限速。
 - 全部受影响包（authentication 含 `-race`、executors、cmd/gateway、
   systemmonitor、ursm/v2 全树）回归通过。
+
+## 第四批：审计修复（2026-09-05）
+
+对上述三批实现的独立审计发现并修复以下问题（回归测试同步补充）：
+
+- **认证 nil-DB panic（P0）**：snapshot-only 模式下 `Enabled()==true` 但
+  `dbPool==nil`，`LookupKeyMeta`/`VerifyByID`/`CheckBudget` 直接解引用
+  nil 接口会 panic。现在 `SetDB(nil,…)` 不再误置 enabled；无 DB 时
+  `LookupKeyMeta` 优先从内存副本取元数据（miss 时返回受控错误）、
+  `VerifyByID` 受控 fail-closed（durable runner 可重试）、`CheckBudget`
+  明确 no-op（副本无消费流水可查，与既有 view-missing fail-open 语义一致）。
+- **撤销/过期 key 经旧缓存复活**：`getCache`/`getStaleCache`/store 读取
+  统一校验 `expires_at` 与 revoked/disabled 状态；DB 查询返回 ErrNoRows
+  时同步清除 raw-key 缓存与 store 副本——DB 已证实无效的 key 不再因
+  随后的基础设施故障被 stale 兜底重新授权。
+- **快照完整性加固**：`LoadSnapshot` 拒绝未来 `saved_at`（时钟回拨绕过
+  7 天上限）、非法 key_hash（非 64 位小写 hex）、无 ID / revoked /
+  disabled / 已过期条目；全部条目无效时拒绝加载。
+- **outage mirror 误判收紧**：PING 失败不再一律视为 Redis 宕机——
+  context 取消/超时、认证/ACL/协议类错误保持 fail-closed；仅明确的
+  传输不可达（connection refused/reset、网络不可达、EOF、内部
+  ErrRedisUnavailable）才允许降级。同时补齐空 tenant 校验与
+  LRU 禁用（`URSM_V2_LRU_SIZE=0`）下的 nil-mirror 防护。
+- **coverage 恢复竞态**：`WarmupFromCoverage` 复用 `open_if_epoch`
+  条件开门——旧的恢复流程无法再覆盖恢复期间发生的新故障（新 epoch）
+  而误开 gate。coverage manifest 非空但节点缺失/不完整时返回可识别的
+  `ErrCoverageIncomplete`，adapter 同样触发 PG 重建（此前只有完全空清单
+  才会重建，部分丢数据型重启会永久卡死）。
+- **rebuild 并发限速**：adapter 的 5 分钟限速检查改为互斥串行，
+  transition 与周期重试两条路径并发触达时不会同时执行 bootstrap.Apply。
+- **MarkClosedDebounced 失败回滚**：`EnterRecovery` 失败时删除已获取的
+  debounce claim，避免后续最长一个 TTL 内的关门重试被静默抑制。
+- **`/v1/models` 截断污染**：行扫描错误与 `rows.Err()` 不再把部分结果
+  写入 last-good——保留上一份完整列表（或无缓存时 503），不再出现
+  DB 断连中截断列表覆盖完整目录并被 stale 窗口放大的情况。
+- **启动重试预算硬界**：`openDBWithBootRetry` 的每次 `db.Open` 尝试
+  继承剩余预算的 context，迁移（最长 3 分钟）不再突破
+  `LLM_GATEWAY_DB_BOOT_RETRY_SECONDS` 总预算与 systemd 启动窗口；
+  `URSM_V2_OUTAGE_GRACE_SECONDS` 非法值现在通过 `Validate()`
+  fail-fast（与配置拼写错误语义一致）。
+
+### 第四批测试
+
+- snapshot-only 下 `LookupKeyMeta`/`CheckBudget`/`VerifyByID` 不 panic、
+  语义符合上述矩阵；`SetDB(nil,…)` 保持 disabled。
+- 过期 `KeyInfo` 不经 legacy cache 复活；快照拒绝未来时间戳与非法条目。
+- outage gear 在零 tenant/cold mirror 部分命中等既有用例保持通过；
+  malformed outage grace 配置 fail-fast。
+- 受影响包（authentication、streaming、ursm/v2 全树、cmd/gateway、
+  provider、bg/systemmonitor）`-race` 回归通过。
