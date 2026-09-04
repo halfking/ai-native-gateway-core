@@ -36,6 +36,10 @@ import (
 const (
 	defaultTurnsListLimit = 50
 	maxTurnsListLimit     = 200
+	// Child requests are metadata-only and bounded so a single pathological
+	// parent cannot expand one page without limit.
+	maxChildRequestsPerParent = 100
+	maxChildRequestsPerPage   = 1000
 )
 
 // sessionTurnsDB 是轮次读路径实际需要的数据库方法子集（与

@@ -281,16 +281,25 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 			index[t.RequestID] = t
 		}
 		childSQL := `
-			SELECT parent_request_id, request_id, COALESCE(request_status, ''),
-			       latency_ms, COALESCE(request_type, 'main'), COALESCE(origin_actor, '')
-			FROM request_logs_with_current_month
-			WHERE parent_request_id = ANY($1)`
+				WITH ranked_children AS (
+					SELECT parent_request_id, request_id, COALESCE(request_status, '') AS request_status,
+					       latency_ms, COALESCE(request_type, 'main') AS request_type,
+					       COALESCE(origin_actor, '') AS origin_actor,
+					       ROW_NUMBER() OVER (PARTITION BY parent_request_id ORDER BY ts ASC, request_id ASC) AS child_no
+					FROM request_logs_with_current_month
+					WHERE parent_request_id = ANY($1)`
 		childArgs := []any{ids}
 		if p.TenantID != "" {
 			childSQL += " AND tenant_id = $2"
 			childArgs = append(childArgs, p.TenantID)
 		}
-		childSQL += " ORDER BY ts ASC, request_id ASC"
+		childSQL += fmt.Sprintf(`
+				)
+				SELECT parent_request_id, request_id, request_status, latency_ms, request_type, origin_actor
+				FROM ranked_children
+				WHERE child_no <= %d
+				ORDER BY parent_request_id ASC, request_id ASC
+				LIMIT %d`, maxChildRequestsPerParent, maxChildRequestsPerPage+1)
 
 		crows, err := db.Query(ctx, childSQL, childArgs...)
 		if err != nil {

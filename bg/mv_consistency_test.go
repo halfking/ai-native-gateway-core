@@ -8,7 +8,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCheckMVConsistency_ViewMissing verifies that CheckMVConsistency returns
+func TestCheckMVConsistency_UsesCanonicalAnalyticsSource(t *testing.T) {
+	require.Contains(t, routingAnalyticsConsistencySQL, "FROM routing_analytics_source")
+	require.NotContains(t, routingAnalyticsConsistencySQL, "FROM request_logs_with_current_month_without_customer_id")
+	require.Contains(t, routingAuditSummaryConsistencySQL, "FROM routing_analytics_source")
+	require.NotContains(t, routingAuditSummaryConsistencySQL, "FROM request_logs_with_current_month_without_customer_id")
+}
+
 // a zero result (no error) when the view doesn't exist (migration 632 not
 // applied, or traffic-only role without database). Consumers already fall back
 // to base queries, so this is a skip, not a failure.

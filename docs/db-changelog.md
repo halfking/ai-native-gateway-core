@@ -249,3 +249,14 @@ relying on it.
 | 638 | `638_session_bodies_promote_guard.sql` | `8e4f86289d74db15c50d054e30404964034417d30fa79bb8f12a97d5c1a651e3` | applied+verified |
 | 639 | `639_provider_error_details_credential.sql` | `8ea51936d82db62ef3cd644cfb4357461e03bcdcd4f782bfc097ab1ae042d42c` | applied+verified |
 
+## 2026-09-03T23:41:51Z — deploy 245 build_seq 1907 (f64b17ae)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 649 | `649_routing_analytics_probe_filter.sql` | `a5b9fcb8b49e4c4fdff8e670bdf46152587fe3ce20ad01332f5f8b669cb669de` | applied+verified |
+| 650 | `650_auto_route_selection_treatment_attribution.sql` | `1336af5e613ac12e909e6a2ac66de58cdbc4237fc5657786a2e61dbbe21af976` | applied+verified |
+| 651 | `651_provider_quality_hot_rollup.sql` | `01450ef91e3d912851921c089d7b87cff6ec7cd689983e563c5d8b33dd7134a0` | applied+verified |
+| 652 | `652_system_monitor_fallback_queue.sql` | `aa5a942707a2e22658d3a5bb3dd245de402f9a374f1ee7efe162a85a2434cf30` | applied+verified |
+| 653 | `653_archive_credential_model_index_canonical_return.sql` | `48a9a8c1f16a941da4321e24d7189c802f821086e6683b6a419271a59432a479` | applied+verified |
+| 654 | `654_archive_credential_model_index_detach_drop.sql` | `ef5914f20ee53600ca7d2da0c56275133f606c73fabebb42183897028cff1e8b` | applied+verified |
+

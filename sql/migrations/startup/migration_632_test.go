@@ -169,10 +169,18 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 		require.Contains(t, src,
 			"CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d",
 			"db.go must define the routing_analytics_7d view SQL")
-
-		// The Go mirror must carry the same NULL-safety fix as the SQL file.
 		require.Contains(t, src, "COALESCE(is_auto_request, FALSE) AS is_auto_request",
 			"db.go view SQL must NULL-normalize is_auto_request")
+
+		columnsAt := strings.Index(src, "ensureRoutingAnalyticsColumns(migCtx)")
+		viewsAt := strings.Index(src, "ensureRoutingAnalyticsMaterializedViews(migCtx)")
+		require.GreaterOrEqual(t, columnsAt, 0, "runtime must ensure analytics columns")
+		require.Greater(t, viewsAt, columnsAt,
+			"origin_stage/task_type columns must be ensured before analytics views")
+		require.Contains(t, src, "ALTER TABLE IF EXISTS request_logs_hot",
+			"runtime prerequisite must cover request_logs_hot")
+		require.Contains(t, src, "ALTER TABLE IF EXISTS request_logs",
+			"runtime prerequisite must cover request_logs")
 	})
 
 	t.Run("down_migration_drops_views", func(t *testing.T) {

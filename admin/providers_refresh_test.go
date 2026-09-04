@@ -2,10 +2,13 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // ── parseVendorModelsBody — covers all four recognised shapes ──────────────
@@ -267,6 +270,47 @@ func TestProviderRefresh_RecordAndGetCopy(t *testing.T) {
 	}
 }
 
+func TestProviderRefresh_RecordAndGetDeepCopy(t *testing.T) {
+	h := &Handler{}
+	finished, heartbeat := time.Now(), time.Now().Add(-time.Minute)
+	run := &providerRefreshRun{
+		RunID:       "deep-copy",
+		ProviderID:  9,
+		Status:      providerRefreshRunning,
+		FinishedAt:  &finished,
+		HeartbeatAt: &heartbeat,
+		Errors:      []string{"first"},
+	}
+	h.recordProviderRefresh(9, run)
+	run.Errors[0] = "mutated"
+	*run.FinishedAt = time.Time{}
+	got := h.getProviderRefresh(9)
+	if got == nil || got.Errors[0] != "first" || got.FinishedAt.IsZero() {
+		t.Fatalf("stored refresh state was not deeply copied: %+v", got)
+	}
+	got.Errors[0] = "returned mutation"
+	*got.HeartbeatAt = time.Time{}
+	got2 := h.getProviderRefresh(9)
+	if got2.Errors[0] != "first" || got2.HeartbeatAt.IsZero() {
+		t.Fatalf("returned refresh state aliases stored fields: %+v", got2)
+	}
+}
+
+func TestProviderRefresh_ConcurrentRecordAndGet(t *testing.T) {
+	h := &Handler{}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 200; j++ {
+				h.recordProviderRefresh(i, &providerRefreshRun{RunID: fmt.Sprintf("%d-%d", i, j), ProviderID: i, Errors: []string{"x"}})
+				_ = h.getProviderRefresh(i)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
 func TestProviderRefresh_UnknownProviderReturnsNil(t *testing.T) {
 	h := &Handler{}
 	// Force lazy init even when we never recorded anything for the id.

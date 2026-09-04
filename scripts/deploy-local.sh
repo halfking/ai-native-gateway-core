@@ -362,12 +362,13 @@ apply_schema_if_empty() {
   for f in 00-prereqs.sql 01-schema.sql 02-seed.sql; do
     log_file="$RUN_DIR/schema-${f}.log"
     if _dl_have psql; then
-      psql -X -v ON_ERROR_STOP=0 -q "$LLM_GATEWAY_DATABASE_URL" -f "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1 || true
+      if ! psql -X -v ON_ERROR_STOP=1 -q "$LLM_GATEWAY_DATABASE_URL" -f "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1; then
+        die "schema snapshot $f failed; see $log_file"
+      fi
     else
-      docker exec -i -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$DL_PG_CONTAINER" psql -X -v ON_ERROR_STOP=0 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" < "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1 || true
-    fi
-    if grep -qiE '(^|[[:space:]])(fatal|error):' "$log_file" && ! grep -qiE 'already exists|duplicate key|exists, skipping' "$log_file"; then
-      die "schema snapshot $f reported a fatal error; see $log_file"
+      if ! docker exec -i -e PGPASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" "$DL_PG_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U "${LLM_GATEWAY_PG_USER:-llm_gateway}" -d "${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" < "$PROJECT_ROOT/sql/schema/$f" >"$log_file" 2>&1; then
+        die "schema snapshot $f failed; see $log_file"
+      fi
     fi
   done
 }
@@ -503,11 +504,22 @@ record_success() { dl_record_verify "$ROOT_DIR" "$DL_DB_MODE" "$DL_REDIS_MODE" "
 migrate_database() {
   apply_schema_if_empty
   export LLM_GATEWAY_DATABASE_URL DATABASE_URL
+  local migrate_log="$RUN_DIR/gateway-migrate.log"
+  mkdir -p "$RUN_DIR"
   if [[ "${DL_DOCKER:-0}" == 1 ]]; then
-    (cd "$PROJECT_ROOT" && go run ./cmd/gateway migrate >/dev/null)
+    if (cd "$PROJECT_ROOT" && go run ./cmd/gateway migrate >"$migrate_log"); then
+      return 0
+    fi
   else
-    "$1" migrate >/dev/null
+    if "$1" migrate >"$migrate_log"; then
+      return 0
+    fi
   fi
+  printf '[deploy-local] error: database migration failed; structured report follows (full output: %s)\n' "$migrate_log" >&2
+  if [[ -s "$migrate_log" ]]; then
+    sed 's/^/    /' "$migrate_log" >&2
+  fi
+  return 1
 }
 
 deploy() {

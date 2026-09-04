@@ -145,7 +145,7 @@ base_data AS (
     COALESCE(NULLIF(task_type, ''), CASE WHEN COALESCE(is_auto_request, FALSE) THEN 'unknown' ELSE '__specified__' END) AS task_type,
     COALESCE(NULLIF(outbound_model, ''), client_model) AS model,
     COUNT(*)::bigint AS base_count
-  FROM request_logs_with_current_month_without_customer_id
+  FROM routing_analytics_source
   WHERE ts >= NOW() - INTERVAL '7 days'
     AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
     AND COALESCE(task_type, '') <> 'probe_triggered'

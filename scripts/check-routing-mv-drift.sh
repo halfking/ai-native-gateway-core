@@ -89,7 +89,7 @@ log_info "对比总请求数..."
 COUNTS=$(psql "$DB_URL" -tAc "
 SELECT 
     (SELECT SUM(request_count) FROM routing_analytics_7d) AS mv_total,
-    (SELECT COUNT(*) FROM request_logs_with_current_month_without_customer_id
+    (SELECT COUNT(*) FROM routing_analytics_source
      WHERE ts >= NOW() - INTERVAL '7 days'
        AND (is_auto_request = TRUE
             OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> ''))) AS base_total
@@ -152,7 +152,7 @@ base_stats AS (
             CASE WHEN is_auto_request THEN 'unknown' ELSE '__specified__' END
         ) AS effective_task_type,
         COUNT(*) AS base_count
-    FROM request_logs_with_current_month_without_customer_id
+    FROM routing_analytics_source
     WHERE ts >= NOW() - INTERVAL '7 days'
       AND (is_auto_request = TRUE
            OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> ''))
