@@ -43,6 +43,8 @@ export async function confirmDialog(
       confirmButtonText: options.confirmButtonText ?? t('common.confirm'),
       cancelButtonText: options.cancelButtonText ?? t('common.cancel'),
       type: options.type ?? 'warning',
+      closeOnClickModal: false,
+      closeOnPressEscape: true,
     })
     return true
   } catch {
