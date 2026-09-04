@@ -85,6 +85,7 @@ type QueuedRequest struct {
 	SessionID      string
 	RequestedModel string // client model (may be "auto")
 	ResolvedModel  string // set by the dispatcher after auto-resolution
+	modelMu        sync.RWMutex
 
 	// Ctx is the request context. Used by governors/forwarders for pacing
 	// waits and to observe client disconnect.
@@ -112,7 +113,8 @@ type QueuedRequest struct {
 
 	// SelectedCred is the credential the dispatcher/mover chose for the
 	// current attempt. Set before enqueueing into a Tier-2 credential queue.
-	SelectedCred CredentialRef
+	SelectedCred   CredentialRef
+	selectedCredMu sync.RWMutex
 
 	// OnNodeSwitchSummary reports a provider-neutral failover summary to the
 	// request's transport. It is called only after a sibling credential has
@@ -205,6 +207,7 @@ type QueuedRequest struct {
 	// the array, because failover re-enqueue rewrites earlier slots.
 	stages   [reqStageCount]time.Time
 	stageSet uint16
+	stageMu  sync.RWMutex
 
 	// Legacy fields (kept for backward compatibility, map to new timestamps)
 	EnqueuedAt     time.Time // Deprecated: use ReqStageTotalEnqueued
@@ -255,7 +258,32 @@ func NewQueuedRequest(id, tenantID, model string, ctx context.Context, payload a
 	return qr
 }
 
-// markTriedCredential records a credential as exhausted for this request.
+func (qr *QueuedRequest) resolvedModel() string {
+	qr.modelMu.RLock()
+	model := qr.ResolvedModel
+	qr.modelMu.RUnlock()
+	return model
+}
+
+func (qr *QueuedRequest) setResolvedModel(model string) {
+	qr.modelMu.Lock()
+	qr.ResolvedModel = model
+	qr.modelMu.Unlock()
+}
+
+func (qr *QueuedRequest) selectedCredential() CredentialRef {
+	qr.selectedCredMu.RLock()
+	ref := qr.SelectedCred
+	qr.selectedCredMu.RUnlock()
+	return ref
+}
+
+func (qr *QueuedRequest) setSelectedCredential(ref CredentialRef) {
+	qr.selectedCredMu.Lock()
+	qr.SelectedCred = ref
+	qr.selectedCredMu.Unlock()
+}
+
 func (qr *QueuedRequest) markTriedCredential(id int) {
 	qr.TriedCredentials[id] = struct{}{}
 }
@@ -308,14 +336,19 @@ var _ [0]struct{} = [stageSetBit >> 16]struct{}{}
 // invariant (ReqStageForwardStart / ReqStageResponseStart are written under
 // attemptMu by journey.go).
 func (qr *QueuedRequest) setStage(s ReqStage, t time.Time) {
+	qr.stageMu.Lock()
 	qr.stages[s] = t
 	qr.stageSet |= 1 << s
+	qr.stageMu.Unlock()
 }
 
 // ReqStageTime returns the recorded timestamp for the stage; the zero time
 // when the stage has not been recorded yet.
 func (qr *QueuedRequest) ReqStageTime(s ReqStage) time.Time {
-	return qr.stages[s]
+	qr.stageMu.RLock()
+	t := qr.stages[s]
+	qr.stageMu.RUnlock()
+	return t
 }
 
 // SetReqStageTime installs an explicit timestamp for the stage. Production
@@ -331,38 +364,41 @@ func (qr *QueuedRequest) SetReqStageTime(s ReqStage, t time.Time) {
 // Returned pointers never alias request state, so later rewrites (failover
 // re-enqueue) cannot mutate previously extracted values.
 func (qr *QueuedRequest) StageTimestamps() (t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 *time.Time) {
-	if qr.stageSet == 0 {
+	qr.stageMu.RLock()
+	stageSet := qr.stageSet
+	box := qr.stages
+	qr.stageMu.RUnlock()
+	if stageSet == 0 {
 		return
 	}
-	box := qr.stages
-	if qr.stageSet&(1<<ReqStageArrived) != 0 {
+	if stageSet&(1<<ReqStageArrived) != 0 {
 		t0 = &box[ReqStageArrived]
 	}
-	if qr.stageSet&(1<<ReqStageTotalEnqueued) != 0 {
+	if stageSet&(1<<ReqStageTotalEnqueued) != 0 {
 		t1 = &box[ReqStageTotalEnqueued]
 	}
-	if qr.stageSet&(1<<ReqStageTotalDequeued) != 0 {
+	if stageSet&(1<<ReqStageTotalDequeued) != 0 {
 		t2 = &box[ReqStageTotalDequeued]
 	}
-	if qr.stageSet&(1<<ReqStageModelEnqueued) != 0 {
+	if stageSet&(1<<ReqStageModelEnqueued) != 0 {
 		t3 = &box[ReqStageModelEnqueued]
 	}
-	if qr.stageSet&(1<<ReqStageModelDequeued) != 0 {
+	if stageSet&(1<<ReqStageModelDequeued) != 0 {
 		t4 = &box[ReqStageModelDequeued]
 	}
-	if qr.stageSet&(1<<ReqStageCredEnqueued) != 0 {
+	if stageSet&(1<<ReqStageCredEnqueued) != 0 {
 		t5 = &box[ReqStageCredEnqueued]
 	}
-	if qr.stageSet&(1<<ReqStageCredDequeued) != 0 {
+	if stageSet&(1<<ReqStageCredDequeued) != 0 {
 		t6 = &box[ReqStageCredDequeued]
 	}
-	if qr.stageSet&(1<<ReqStageForwardStart) != 0 {
+	if stageSet&(1<<ReqStageForwardStart) != 0 {
 		t7 = &box[ReqStageForwardStart]
 	}
-	if qr.stageSet&(1<<ReqStageResponseStart) != 0 {
+	if stageSet&(1<<ReqStageResponseStart) != 0 {
 		t8 = &box[ReqStageResponseStart]
 	}
-	if qr.stageSet&(1<<ReqStageResponseEnd) != 0 {
+	if stageSet&(1<<ReqStageResponseEnd) != 0 {
 		t9 = &box[ReqStageResponseEnd]
 	}
 	return
@@ -423,16 +459,20 @@ func (qr *QueuedRequest) SetT9_ResponseEnd() {
 
 // GetQueueWaitDuration returns total time spent waiting in queues (T0→T6)
 func (qr *QueuedRequest) GetQueueWaitDuration() time.Duration {
-	t6 := qr.stages[ReqStageCredDequeued]
+	qr.stageMu.RLock()
+	t0, t6 := qr.stages[ReqStageArrived], qr.stages[ReqStageCredDequeued]
+	qr.stageMu.RUnlock()
 	if t6.IsZero() {
 		return 0
 	}
-	return t6.Sub(qr.stages[ReqStageArrived])
+	return t6.Sub(t0)
 }
 
 // GetUpstreamLatency returns time from forward start to first byte (T7→T8)
 func (qr *QueuedRequest) GetUpstreamLatency() time.Duration {
+	qr.stageMu.RLock()
 	t7, t8 := qr.stages[ReqStageForwardStart], qr.stages[ReqStageResponseStart]
+	qr.stageMu.RUnlock()
 	if t7.IsZero() || t8.IsZero() {
 		return 0
 	}
@@ -441,7 +481,9 @@ func (qr *QueuedRequest) GetUpstreamLatency() time.Duration {
 
 // GetStreamingDuration returns response body transfer time (T8→T9)
 func (qr *QueuedRequest) GetStreamingDuration() time.Duration {
+	qr.stageMu.RLock()
 	t8, t9 := qr.stages[ReqStageResponseStart], qr.stages[ReqStageResponseEnd]
+	qr.stageMu.RUnlock()
 	if t8.IsZero() || t9.IsZero() {
 		return 0
 	}
@@ -450,11 +492,13 @@ func (qr *QueuedRequest) GetStreamingDuration() time.Duration {
 
 // GetTotalDuration returns end-to-end time (T0→T9)
 func (qr *QueuedRequest) GetTotalDuration() time.Duration {
-	t9 := qr.stages[ReqStageResponseEnd]
+	qr.stageMu.RLock()
+	t0, t9 := qr.stages[ReqStageArrived], qr.stages[ReqStageResponseEnd]
+	qr.stageMu.RUnlock()
 	if t9.IsZero() {
 		return 0
 	}
-	return t9.Sub(qr.stages[ReqStageArrived])
+	return t9.Sub(t0)
 }
 
 // stageSeconds returns end.Sub(start) in seconds when both timestamps are

@@ -78,7 +78,15 @@ func buildForwarderGovernor(pipe *Pipeline, cred CredentialRef) Governor {
 	if err == nil {
 		return gov
 	}
-	slog.Warn("dispatch: cold-start governor fell back to in-process impl; redis backend unavailable",
+	if backend := pipe.GovernorBackend(); backend != nil && backend.Kind() == BackendRedisEnforce {
+		slog.Error("dispatch: cold-start governor unavailable; strict backend remains fail-closed",
+			"credential_id", cred.CredentialID,
+			"provider_id", cred.ProviderID,
+			"mode", cred.ConcurrencyMode,
+			"error", err)
+		return unavailableGovernor{}
+	}
+	slog.Warn("dispatch: cold-start governor fell back to in-process impl",
 		"credential_id", cred.CredentialID,
 		"provider_id", cred.ProviderID,
 		"mode", cred.ConcurrencyMode,

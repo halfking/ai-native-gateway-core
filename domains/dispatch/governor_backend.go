@@ -1,6 +1,10 @@
 package dispatch
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"time"
+)
 
 // GovernorBackendKind names the concrete implementation of GovernorBackend.
 // It is the closed-enum identifier used by Stage C metrics labels and the
@@ -61,3 +65,39 @@ type GovernorBackend interface {
 	// returned from the Governor's own Acquire method, not from New).
 	New(ctx context.Context, spec GovernorSpec) (Governor, error)
 }
+
+// unavailableGovernorBackend preserves strict backend selection when Redis is
+// unavailable. It deliberately never falls back to an in-process governor.
+type unavailableGovernorBackend struct {
+	name  string
+	cause error
+}
+
+func NewUnavailableGovernorBackend(name string, cause error) GovernorBackend {
+	if name == "" {
+		name = "redis-enforce-unavailable"
+	}
+	if cause == nil {
+		cause = ErrGovernorUnavailable
+	}
+	return &unavailableGovernorBackend{name: name, cause: cause}
+}
+
+func (b *unavailableGovernorBackend) Kind() GovernorBackendKind   { return BackendRedisEnforce }
+func (b *unavailableGovernorBackend) Name() string                { return b.name }
+func (b *unavailableGovernorBackend) Open(context.Context) error  { return nil }
+func (b *unavailableGovernorBackend) Close(context.Context) error { return nil }
+func (b *unavailableGovernorBackend) NotifyRevisions(context.Context, uint64) error {
+	return fmt.Errorf("%w: %v", ErrGovernorUnavailable, b.cause)
+}
+func (b *unavailableGovernorBackend) New(context.Context, GovernorSpec) (Governor, error) {
+	return nil, fmt.Errorf("%w: %v", ErrGovernorUnavailable, b.cause)
+}
+
+type unavailableGovernor struct{}
+
+func (unavailableGovernor) Mode() string { return ModeConcurrency }
+func (unavailableGovernor) Acquire(context.Context, *QueuedRequest, time.Time) error {
+	return ErrGovernorUnavailable
+}
+func (unavailableGovernor) Release(*QueuedRequest) {}

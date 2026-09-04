@@ -1061,13 +1061,7 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 		default:
 		}
 		qr.abandoned.Store(true)
-		// Clean up Registry to prevent unfinishedCount leak (P0 fix)
-		if !qr.completed.CompareAndSwap(false, true) {
-			return nil, ctx.Err()
-		}
-		p.releaseTotal(qr)
-		p.releaseAllClusterAdmissions(qr)
-		p.registry.MarkCompleted(qr.ID, time.Now())
+		p.complete(qr, ForwardOutcome{Err: ctx.Err()})
 		return nil, ctx.Err()
 	}
 }
@@ -1433,11 +1427,12 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	if terminalKind == "" && out.Err != nil {
 		terminalKind = classifyError(out.Err)
 	}
+	cred := qr.selectedCredential()
 	qr.recordDecision(JournalEntry{
-		Model:        qr.ResolvedModel,
-		CredentialID: qr.SelectedCred.CredentialID,
-		ProviderID:   qr.SelectedCred.ProviderID,
-		Vendor:       qr.SelectedCred.Vendor,
+		Model:        qr.resolvedModel(),
+		CredentialID: cred.CredentialID,
+		ProviderID:   cred.ProviderID,
+		Vendor:       cred.Vendor,
 		Action:       terminalActionOf(out),
 		ErrorKind:    terminalKind,
 		HTTPStatus:   out.HTTPStatus,
@@ -1599,32 +1594,40 @@ func (p *Pipeline) recordStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 // a full Pipeline).
 func observeStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 	result := resultLabel(out)
+	t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 := qr.StageTimestamps()
+	stage := func(t *time.Time) time.Time {
+		if t == nil {
+			return time.Time{}
+		}
+		return *t
+	}
+	stages := [10]time.Time{stage(t0), stage(t1), stage(t2), stage(t3), stage(t4), stage(t5), stage(t6), stage(t7), stage(t8), stage(t9)}
 
-	if s, ok := stageSeconds(qr.stages[ReqStageArrived], qr.stages[ReqStageCredDequeued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageArrived], stages[ReqStageCredDequeued]); ok {
 		metricStageQueueWaitT0T6.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageTotalEnqueued], qr.stages[ReqStageTotalDequeued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageTotalEnqueued], stages[ReqStageTotalDequeued]); ok {
 		metricStageTotalQueueT1T2.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageModelEnqueued], qr.stages[ReqStageModelDequeued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageModelEnqueued], stages[ReqStageModelDequeued]); ok {
 		metricStageModelQueueT3T4.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageCredEnqueued], qr.stages[ReqStageCredDequeued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageCredEnqueued], stages[ReqStageCredDequeued]); ok {
 		metricStageCredQueueT5T6.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageTotalDequeued], qr.stages[ReqStageCredEnqueued]); ok {
+	if s, ok := stageSeconds(stages[ReqStageTotalDequeued], stages[ReqStageCredEnqueued]); ok {
 		metricStageRoutingT2T5.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageCredDequeued], qr.stages[ReqStageForwardStart]); ok {
+	if s, ok := stageSeconds(stages[ReqStageCredDequeued], stages[ReqStageForwardStart]); ok {
 		metricStageAcquireT6T7.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageForwardStart], qr.stages[ReqStageResponseStart]); ok {
+	if s, ok := stageSeconds(stages[ReqStageForwardStart], stages[ReqStageResponseStart]); ok {
 		metricStageUpstreamT7T8.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageResponseStart], qr.stages[ReqStageResponseEnd]); ok {
+	if s, ok := stageSeconds(stages[ReqStageResponseStart], stages[ReqStageResponseEnd]); ok {
 		metricStageStreamingT8T9.WithLabelValues(result).Observe(s)
 	}
-	if s, ok := stageSeconds(qr.stages[ReqStageArrived], qr.stages[ReqStageResponseEnd]); ok {
+	if s, ok := stageSeconds(stages[ReqStageArrived], stages[ReqStageResponseEnd]); ok {
 		metricStageTotalT0T9.WithLabelValues(result).Observe(s)
 	}
 }
@@ -1772,7 +1775,7 @@ func (p *Pipeline) getForwarderIfExists(credentialID int) *credForwarder {
 // governor fails over immediately instead of parking the request. The old
 // 30s hard floor was deliberately REMOVED — see UT-DQ-02.
 func (p *Pipeline) queueWaitBudget(qr *QueuedRequest) time.Duration {
-	ms := qr.SelectedCred.MaxQueueWaitMS
+	ms := qr.selectedCredential().MaxQueueWaitMS
 	if ms <= 0 {
 		ms = p.config().MaxQueueWaitMS
 	}

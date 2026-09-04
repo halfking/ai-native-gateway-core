@@ -1,8 +1,8 @@
 # v6-W1.5/W1.7 · 调度装配与观察索引正确性修正
 
-**日期**：2026-09-04  
-**分支**：main（工作树）  
-**证据等级**：`LOCAL_VERIFIED`（`go test ./...`、`go build ./...`、核心包 `-race` 均通过；真实多机 staging 负载与 PostgreSQL/Redis 外部依赖验证仍未完成）  
+**日期**：2026-09-04
+**分支**：main（工作树）
+**证据等级**：`LOCAL_VERIFIED_WITH_RACE_GAP`（`go test ./...`、`go build ./...` 通过；核心包 `go test -race ./domains/dispatch ./internal/ir ./domains/streaming/executors` 仍报告 `TestSubmitModelQueueFullWaitsInTotalQueue` 相关的请求状态并发竞态，真实多机 staging 负载与 PostgreSQL/Redis 外部依赖验证仍未完成）
 **Commit / Migration / Flag**：
 - commit：本轮工作树修改，尚未提交
 - migration：N/A
