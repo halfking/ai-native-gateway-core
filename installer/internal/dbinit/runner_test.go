@@ -37,12 +37,15 @@ func TestStartupFilesIncludeRequestJourneyOutboxPrerequisites(t *testing.T) {
 func TestStartupFilesIncludeSessionSummaryAndCacheRepairs(t *testing.T) {
 	runner := NewRunner("citus", "user", "db", "/tmp/sql")
 	want := []string{
+		"655_session_summaries_schema_reconcile.sql",
+		"560_session_summaries_tenant_uniqueness.sql",
 		"563_session_summary_trigger_on_hot.sql",
 		"564_session_summary_backfill_safe.sql",
 		"572_session_summary_large_token_ratio.sql",
 		"606_session_summaries_agent_expert_tags.sql",
 		"627_candidate_failure_logs_aggregation_id_unified.sql",
 		"644_tuning_views_selfcheck_and_candidate_failure_cache.sql",
+		"645_session_bodies_hot_request_unique_repair.sql",
 	}
 	positions := make(map[string]int, len(runner.StartupFiles))
 	for i, name := range runner.StartupFiles {
