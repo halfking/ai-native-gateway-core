@@ -27,8 +27,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,16 +48,49 @@ func summarizeProviderRefreshError(err error) string {
 	}
 	var httpErr *modelresponse.HTTPBodyError
 	if errors.As(err, &httpErr) {
-		return httpErr.Error()
+		switch {
+		case httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden:
+			return fmt.Sprintf("models endpoint returned HTTP %d (authentication failed)", httpErr.StatusCode)
+		case httpErr.StatusCode == http.StatusTooManyRequests:
+			return "models endpoint returned HTTP 429 (rate limited or quota exhausted)"
+		case httpErr.StatusCode >= 500:
+			return fmt.Sprintf("models endpoint returned HTTP %d (upstream unavailable)", httpErr.StatusCode)
+		default:
+			return fmt.Sprintf("models endpoint returned HTTP %d", httpErr.StatusCode)
+		}
 	}
 	var modelErr *modelresponse.Error
 	if errors.As(err, &modelErr) {
-		if preview := modelresponse.Preview(modelErr); preview != "" {
-			return fmt.Sprintf("models response %s: %s", modelErr.Kind, preview)
+		switch modelErr.Kind {
+		case modelresponse.ErrorKindNonJSONBody:
+			return "models response was not JSON"
+		case modelresponse.ErrorKindInvalidModelsFmt:
+			return "models response JSON format was invalid"
+		case modelresponse.ErrorKindUnrecognizedShape:
+			return "models response shape was unrecognized"
+		default:
+			return "models response could not be parsed"
 		}
-		return fmt.Sprintf("models response %s", modelErr.Kind)
 	}
-	return modelresponse.SanitizeBodySnippet([]byte(err.Error()), 500)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "models request timed out or was canceled"
+	}
+	if errors.Is(err, io.EOF) {
+		return "models response was empty"
+	}
+	// Keep only a small, stable category derived from the error class. Never
+	// expose arbitrary vendor text, which may contain credentials or secrets.
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "timeout"):
+		return "models request timed out"
+	case strings.Contains(lower, "rate limit"), strings.Contains(lower, "too many requests"):
+		return "models request was rate limited"
+	case strings.Contains(lower, "unauthorized"), strings.Contains(lower, "forbidden"), strings.Contains(lower, "api key"):
+		return "models request authentication failed"
+	default:
+		return "models request failed"
+	}
 }
 
 // ── Per-provider model list refresh (force fetch from vendor API) ───────
@@ -117,18 +152,33 @@ func (h *Handler) recordProviderRefresh(providerID int, run *providerRefreshRun)
 	st := h.getProviderRefreshState()
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.latest[providerID] = run
+	st.latest[providerID] = cloneProviderRefreshRun(run)
+}
+
+func cloneProviderRefreshRun(run *providerRefreshRun) *providerRefreshRun {
+	if run == nil {
+		return nil
+	}
+	copy := *run
+	if run.FinishedAt != nil {
+		finishedAt := *run.FinishedAt
+		copy.FinishedAt = &finishedAt
+	}
+	if run.HeartbeatAt != nil {
+		heartbeatAt := *run.HeartbeatAt
+		copy.HeartbeatAt = &heartbeatAt
+	}
+	if run.Errors != nil {
+		copy.Errors = append([]string(nil), run.Errors...)
+	}
+	return &copy
 }
 
 func (h *Handler) getProviderRefresh(providerID int) *providerRefreshRun {
 	st := h.getProviderRefreshState()
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if run, ok := st.latest[providerID]; ok {
-		copy := *run
-		return &copy
-	}
-	return nil
+	return cloneProviderRefreshRun(st.latest[providerID])
 }
 
 func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
@@ -247,7 +297,7 @@ func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"accepted": true,
 		"reason":   "started",
-		"run":      run,
+		"run":      cloneProviderRefreshRun(run),
 	})
 }
 

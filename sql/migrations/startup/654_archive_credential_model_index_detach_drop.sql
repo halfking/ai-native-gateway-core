@@ -38,8 +38,16 @@ CREATE OR REPLACE FUNCTION public.archive_credential_model_index(archive_month d
             src_part    text := 'credential_model_index_' || to_char(month_start, 'YYYY_MM');
             dst_part    text := 'credential_model_index_archive_' || to_char(month_start, 'YYYY_MM');
             row_count   bigint;
+            source_count bigint;
+            target_count bigint;
             col_list    text;
+            rows_match  boolean;
+            target_exists boolean;
         BEGIN
+            -- Serialize retries for one month so two schedulers cannot both copy
+            -- the same source partition before either one detaches it.
+            PERFORM pg_advisory_xact_lock(hashtext('archive_credential_model_index:' || to_char(month_start, 'YYYY-MM')));
+
             IF NOT EXISTS (SELECT 1 FROM pg_class
                            WHERE relname = src_part AND relnamespace = 'public'::regnamespace) THEN
                 RETURN QUERY SELECT 'skipped'::text, 0::bigint, false;
@@ -52,6 +60,9 @@ CREATE OR REPLACE FUNCTION public.archive_credential_model_index(archive_month d
                     'CREATE TABLE %I PARTITION OF credential_model_index_archive FOR VALUES FROM (%L) TO (%L) USING columnar',
                     dst_part, month_start, month_end
                 );
+                target_exists := false;
+            ELSE
+                target_exists := true;
             END IF;
 
             -- Build a column list from the intersection of source partition and
@@ -72,11 +83,34 @@ CREATE OR REPLACE FUNCTION public.archive_credential_model_index(archive_month d
                 RAISE EXCEPTION 'No common columns between % and credential_model_index_archive', src_part;
             END IF;
 
-            EXECUTE format(
-                'INSERT INTO %I (%s) SELECT %s FROM %I',
-                dst_part, col_list, col_list, src_part
-            );
-            GET DIAGNOSTICS row_count = ROW_COUNT;
+            IF target_exists THEN
+                EXECUTE format('SELECT count(*) FROM %I', src_part) INTO source_count;
+                EXECUTE format('SELECT count(*) FROM %I', dst_part) INTO target_count;
+                IF target_count = 0 THEN
+                    EXECUTE format(
+                        'INSERT INTO %I (%s) SELECT %s FROM %I',
+                        dst_part, col_list, col_list, src_part
+                    );
+                    GET DIAGNOSTICS row_count = ROW_COUNT;
+                ELSE
+                    EXECUTE format(
+                        'SELECT NOT EXISTS ((SELECT %s FROM %I EXCEPT ALL SELECT %s FROM %I) UNION ALL (SELECT %s FROM %I EXCEPT ALL SELECT %s FROM %I))',
+                        col_list, src_part, col_list, dst_part,
+                        col_list, dst_part, col_list, src_part
+                    ) INTO rows_match;
+                    IF NOT rows_match THEN
+                        RAISE EXCEPTION 'archive target % contains partial or mismatched rows (source %, target %)',
+                            dst_part, source_count, target_count;
+                    END IF;
+                    row_count := 0;
+                END IF;
+            ELSE
+                EXECUTE format(
+                    'INSERT INTO %I (%s) SELECT %s FROM %I',
+                    dst_part, col_list, col_list, src_part
+                );
+                GET DIAGNOSTICS row_count = ROW_COUNT;
+            END IF;
 
             EXECUTE format('ALTER TABLE credential_model_index DETACH PARTITION %I', src_part);
             EXECUTE format('DROP TABLE %I', src_part);

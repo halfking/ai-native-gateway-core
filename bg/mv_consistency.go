@@ -204,9 +204,9 @@ func RecordMVConsistencyError(viewName, reason string) {
 }
 
 // routingAnalyticsConsistencySQL compares routing_analytics_7d against the
-// base view by (task_type, model) bucket. FULL OUTER JOIN keeps both sides'
+// canonical narrow analytics source view by (task_type, model) bucket. FULL OUTER JOIN keeps both sides'
 // rows; the query returns only buckets with non-zero drift, ordered by
-// abs_diff DESC. Mirrors migration 632's WHERE + GROUP BY logic.
+// abs_diff DESC. Mirrors migration 649's WHERE + GROUP BY logic.
 const routingAnalyticsConsistencySQL = `
 WITH mv_data AS (
   SELECT
@@ -225,7 +225,7 @@ base_data AS (
     ) AS task_type,
     COALESCE(NULLIF(outbound_model, ''), client_model) AS model,
     COUNT(*)::bigint AS base_count
-  FROM request_logs_with_current_month_without_customer_id
+  FROM routing_analytics_source
   WHERE ts >= NOW() - INTERVAL '7 days'
     AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
     AND COALESCE(task_type, '') <> 'probe_triggered'
@@ -280,7 +280,7 @@ base_data AS (
   SELECT
     COALESCE(tenant_id, '') AS tenant_key,
     COUNT(*)::bigint AS base_count
-  FROM request_logs_with_current_month_without_customer_id
+  FROM routing_analytics_source
   WHERE ts >= NOW() - INTERVAL '7 days'
     AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
     AND COALESCE(task_type, '') <> 'probe_triggered'

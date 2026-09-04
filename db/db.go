@@ -139,6 +139,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureProviderSoftDelete(migCtx); err != nil {
 		return err
 	}
+	// Routing analytics reads these columns while creating its source view.
+	// Keep this small table-only ensure ahead of the analytics materialized
+	// views; the broader recent-success-rate ensure runs later because it
+	// also updates credential binding state.
+	if err := db.ensureRoutingAnalyticsColumns(migCtx); err != nil {
+		return err
+	}
 	// 2026-08-31 migration 632: routing analytics materialized views.
 	// Must run before the gateway serves /api/admin/auto-route/analytics/*
 	// traffic; on failure the views are absent and handlers fall back to
@@ -167,6 +174,7 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureUnavailableRecoverAtSchema(migCtx); err != nil {
 		return err
 	}
+
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
 		return err
 	}
@@ -805,10 +813,35 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 	return nil
 }
 
+// ensureRoutingAnalyticsColumns provides the small, dependency-free schema
+// prerequisite for migration 632/649. It must run before the analytics source
+// view is created because older databases may predate the probe-origin fields.
+func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE IF EXISTS request_logs_hot
+		    ADD COLUMN IF NOT EXISTS task_type TEXT,
+		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32),
+		    ADD COLUMN IF NOT EXISTS origin_actor VARCHAR(255);
+
+		ALTER TABLE IF EXISTS request_logs
+		    ADD COLUMN IF NOT EXISTS task_type TEXT,
+		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32),
+		    ADD COLUMN IF NOT EXISTS origin_actor VARCHAR(255);
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure routing analytics columns: %w", err)
+	}
+	return nil
+}
+
 // routingAnalyticsMVSQL is the shared definition of the routing analytics
-// materialized views (migration 632). Kept as one statement batch because
-// CREATE MATERIALIZED VIEW cannot be re-run with CREATE OR REPLACE; the
-// IF NOT EXISTS guards make the batch idempotent.
+// materialized views (migration 632/649). It owns a narrow source view so
+// analytics does not depend on the frozen request-log wrapper column contract.
+// Kept as one statement batch because CREATE MATERIALIZED VIEW cannot be
+// re-run with CREATE OR REPLACE; the IF NOT EXISTS guards make the batch idempotent.
 //
 // NULL-safety (2026-08-31 audit): is_auto_request is COALESCEd to FALSE in
 // the view. Historical rows carry NULL; without normalization the view
@@ -828,7 +861,46 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 // applies, so the L2→L3 Sankey shows the same 'unknown' provider share on
 // both the materialized and base paths.
 const routingAnalyticsMVSQL = `
-	CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
+		-- Keep analytics isolated from the frozen request-log wrapper view. The
+		-- narrow source has stable types across hot and parent partitions and
+		-- explicitly exposes origin_stage for probe filtering.
+		DROP VIEW IF EXISTS routing_analytics_source;
+		CREATE VIEW routing_analytics_source AS
+		SELECT
+		  ts,
+		  task_type::text AS task_type,
+		  outbound_model::text AS outbound_model,
+		  client_model::text AS client_model,
+		  work_type::text AS work_type,
+		  provider_id::bigint AS provider_id,
+		  credential_id::bigint AS credential_id,
+		  is_auto_request::boolean AS is_auto_request,
+		  tenant_id::text AS tenant_id,
+		  request_id::text AS request_id,
+		  success::boolean AS success,
+		  latency_ms::numeric AS latency_ms,
+		  cost_usd::numeric AS cost_usd,
+		  origin_stage::text AS origin_stage
+		FROM request_logs_hot
+		UNION ALL
+		SELECT
+		  ts,
+		  task_type::text AS task_type,
+		  outbound_model::text AS outbound_model,
+		  client_model::text AS client_model,
+		  work_type::text AS work_type,
+		  provider_id::bigint AS provider_id,
+		  credential_id::bigint AS credential_id,
+		  is_auto_request::boolean AS is_auto_request,
+		  tenant_id::text AS tenant_id,
+		  request_id::text AS request_id,
+		  success::boolean AS success,
+		  latency_ms::numeric AS latency_ms,
+		  cost_usd::numeric AS cost_usd,
+		  origin_stage::text AS origin_stage
+		FROM request_logs;
+
+		CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
 	SELECT
 	  DATE_TRUNC('hour', ts) AS time_bucket,
 	  COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '__specified__' END) AS effective_task_type,
@@ -846,7 +918,7 @@ const routingAnalyticsMVSQL = `
 	  percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
 	  COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
 	  NOW() AS refreshed_at
-	FROM request_logs_with_current_month_without_customer_id
+	FROM routing_analytics_source
 	WHERE ts >= NOW() - INTERVAL '7 days'
 	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
 	  AND COALESCE(task_type, '') <> 'probe_triggered'
@@ -902,7 +974,7 @@ const routingAnalyticsMVSQL = `
 	  COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
 	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
 	  NOW() AS refreshed_at
-	FROM request_logs_with_current_month_without_customer_id
+	FROM routing_analytics_source
 	WHERE ts >= NOW() - INTERVAL '7 days'
 	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
 	  AND COALESCE(task_type, '') <> 'probe_triggered'
@@ -945,8 +1017,9 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		SELECT EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_analytics_7d')
 		   AND EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_audit_summary_7d')
 		   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_analytics_7d_ukey')
-		   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_audit_summary_7d_ukey')
-		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
+			   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_audit_summary_7d_ukey')
+			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
 		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
 	`).Scan(&upToDate); err == nil && upToDate {
 		return nil
@@ -970,14 +1043,20 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 	var staleDefinition bool
 	if err := conn.QueryRow(ctx, `
 		SELECT CASE
-			WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
-			 AND to_regclass('public.routing_audit_summary_7d') IS NOT NULL
-			THEN NOT (
-				POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
-				AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
-			)
-			ELSE FALSE
-		END
+				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
+				 AND to_regclass('public.routing_audit_summary_7d') IS NOT NULL
+				 AND to_regclass('public.routing_analytics_source') IS NOT NULL
+				THEN NOT (
+					POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+					AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
+					AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
+				)
+				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
+				  OR to_regclass('public.routing_audit_summary_7d') IS NOT NULL
+				  OR to_regclass('public.routing_analytics_source') IS NOT NULL
+				THEN TRUE
+				ELSE FALSE
+			END
 	`).Scan(&staleDefinition); err != nil {
 		return err
 	}

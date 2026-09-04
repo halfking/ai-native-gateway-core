@@ -353,3 +353,9 @@ LLM_GATEWAY_ROOT="$project_b" dl_write_env "$project_b/run/b.env" 8782
 [[ -f "$project_b/run/b.env" && ! -e "$project_b/run/a.env" ]] || fail 'project B contains project A runtime state'
 [[ ! -e "$TMP/home/kaixuan/bin" && ! -e "$TMP/home/kaixuan/logs" ]] || fail 'shared parent received project deployment files'
 pass 'independent project roots do not share deployment state'
+
+# Migration failures must remain diagnosable and bootstrap must fail closed.
+grep -Fq 'ON_ERROR_STOP=1' "$ROOT/scripts/deploy-local.sh" || fail 'schema bootstrap must stop on SQL errors'
+grep -Fq 'gateway-migrate.log' "$ROOT/scripts/deploy-local.sh" || fail 'gateway migrate output must be persisted'
+grep -Fq 'structured report follows' "$ROOT/scripts/deploy-local.sh" || fail 'migration failure must print structured report'
+pass 'local migration failures preserve structured diagnostics and fail closed'

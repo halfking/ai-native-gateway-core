@@ -10,6 +10,46 @@ BEGIN;
 DROP MATERIALIZED VIEW IF EXISTS public.routing_analytics_7d CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS public.routing_audit_summary_7d CASCADE;
 
+-- Keep the historical request-log wrappers untouched. Their frozen column
+-- contracts include columns and casts that are not present in both base tables.
+-- Analytics gets its own narrow, stable source view instead.
+DROP VIEW IF EXISTS public.routing_analytics_source;
+
+CREATE VIEW public.routing_analytics_source AS
+SELECT
+  ts,
+  task_type::text AS task_type,
+  outbound_model::text AS outbound_model,
+  client_model::text AS client_model,
+  work_type::text AS work_type,
+  provider_id::bigint AS provider_id,
+  credential_id::bigint AS credential_id,
+  is_auto_request::boolean AS is_auto_request,
+  tenant_id::text AS tenant_id,
+  request_id::text AS request_id,
+  success::boolean AS success,
+  latency_ms::numeric AS latency_ms,
+  cost_usd::numeric AS cost_usd,
+  origin_stage::text AS origin_stage
+FROM public.request_logs_hot
+UNION ALL
+SELECT
+  ts,
+  task_type::text AS task_type,
+  outbound_model::text AS outbound_model,
+  client_model::text AS client_model,
+  work_type::text AS work_type,
+  provider_id::bigint AS provider_id,
+  credential_id::bigint AS credential_id,
+  is_auto_request::boolean AS is_auto_request,
+  tenant_id::text AS tenant_id,
+  request_id::text AS request_id,
+  success::boolean AS success,
+  latency_ms::numeric AS latency_ms,
+  cost_usd::numeric AS cost_usd,
+  origin_stage::text AS origin_stage
+FROM public.request_logs;
+
 CREATE MATERIALIZED VIEW public.routing_analytics_7d AS
 SELECT
   DATE_TRUNC('hour', ts) AS time_bucket,
@@ -28,7 +68,7 @@ SELECT
   percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
   COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
   NOW() AS refreshed_at
-FROM request_logs_with_current_month_without_customer_id
+FROM public.routing_analytics_source
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
   AND COALESCE(task_type, '') <> 'probe_triggered'
@@ -57,7 +97,7 @@ SELECT
   COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
   COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
   NOW() AS refreshed_at
-FROM request_logs_with_current_month_without_customer_id
+FROM public.routing_analytics_source
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
   AND COALESCE(task_type, '') <> 'probe_triggered'

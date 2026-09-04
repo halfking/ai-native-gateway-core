@@ -63,6 +63,9 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
 		"631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
 		"635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
+		"647_goal_client_signal.sql":                                       goalClientSignalMigration647,
+		"649_routing_analytics_probe_filter.sql":                           routingAnalyticsProbeFilterMigration649,
+		"650_auto_route_selection_treatment_attribution.sql":               autoRouteSelectionTreatmentAttributionMigration650,
 	}
 
 	for name, embedded := range expected {
@@ -131,6 +134,7 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 		"601_request_logs_bodies_drop_metadata.sql",
 		"602_request_logs_promote_atomic.sql",
 		"618_request_journey_snapshot_receipts.sql",
+		"649_routing_analytics_probe_filter.sql",
 		"650_auto_route_selection_treatment_attribution.sql",
 		"session_turns_hot_bootstrap.sql",
 	}

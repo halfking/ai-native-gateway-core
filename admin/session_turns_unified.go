@@ -112,7 +112,19 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 			ids = append(ids, items[i].RequestID)
 			index[items[i].RequestID] = &items[i]
 		}
-		crows, err := db.Query(r.Context(), `SELECT parent_request_id, request_id, COALESCE(request_status,''), latency_ms, COALESCE(request_type,'main'), COALESCE(origin_actor,'') FROM request_logs_with_current_month WHERE tenant_id=$1 AND parent_request_id = ANY($2) ORDER BY ts ASC, request_id ASC`, tenantID, ids)
+		crows, err := db.Query(r.Context(), `
+			WITH ranked_children AS (
+				SELECT parent_request_id, request_id, COALESCE(request_status,'') AS request_status, latency_ms,
+				       COALESCE(request_type,'main') AS request_type, COALESCE(origin_actor,'') AS origin_actor,
+				       ROW_NUMBER() OVER (PARTITION BY parent_request_id ORDER BY ts ASC, request_id ASC) AS child_no
+				FROM request_logs_with_current_month
+				WHERE tenant_id=$1 AND parent_request_id = ANY($2)
+			)
+			SELECT parent_request_id, request_id, request_status, latency_ms, request_type, origin_actor
+			FROM ranked_children
+			WHERE child_no <= `+strconv.Itoa(maxChildRequestsPerParent)+`
+			ORDER BY parent_request_id ASC, request_id ASC
+			LIMIT `+strconv.Itoa(maxChildRequestsPerPage+1), tenantID, ids)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "query child requests failed")
 			return
@@ -127,20 +139,32 @@ func serveSessionTurnsUnifiedDB(db sessionTurnsDB, secret string, w http.Respons
 				return
 			}
 			c.RequestType = normalizeChildRequestType(typ, actor)
-			if p := index[parent]; p != nil {
-				p.ChildRequests = append(p.ChildRequests, &c)
+			if parentItem := index[parent]; parentItem != nil && len(parentItem.ChildRequests) < maxChildRequestsPerParent {
+				if totalChildRequests(items) >= maxChildRequestsPerPage {
+					break
+				}
+				parentItem.ChildRequests = append(parentItem.ChildRequests, &c)
 			}
 		}
 		if err := crows.Err(); err != nil {
 			writeError(w, http.StatusInternalServerError, "iterate child requests failed")
 			return
 		}
+
 	}
 	next := ""
 	if hasMore && len(items) > 0 {
 		next, _ = encodeCursor(cursorPayload{TenantID: tenantID, SessionID: sessionID, TurnNo: items[len(items)-1].TurnNo, TS: time.Now()}, []byte(secret))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "turns": items, "count": len(items), "has_more": hasMore, "next_cursor": next, "source": "v2"})
+}
+
+func totalChildRequests(items []TurnListItem) int {
+	total := 0
+	for i := range items {
+		total += len(items[i].ChildRequests)
+	}
+	return total
 }
 
 func latencyValue(value *int) *int {
