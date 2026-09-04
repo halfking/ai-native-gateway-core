@@ -969,6 +969,17 @@ do_deploy() {
     ok "admin 密码已同步"
   fi
 
+  # 9.2 2026-09-04 245 凭据解密事故固化: DB 就绪 ≠ 解密链路可用。
+  # 当天 245 跑了缺 DecryptAny 修复的 binary, healthz / background-tasks /
+  # admin 登录全绿, 但 providers 页面所有凭据「无法解析」、用户 apikey
+  # reveal 报 invalid fernet token。此检查真实拉取凭据列表统计
+  # decrypt_failed, 系统性失败 = 回滚, 不允许带病切流。
+  log "[9.2/9] 凭据解密冒烟 (providers → credentials, 全败则回滚)"
+  if ! deploy_verify_credential_decrypt "$SSH_CMD" "$candidate_port" "$(_env_file_for_target)"; then
+    _bluegreen_abort "凭据解密冒烟失败 (keyring 与 DB 密文不匹配或解密路径回归)" "$old_version" "$active_port" "$candidate_port" "$candidate_service" "$upstream_fragment" "$active_service"
+    exit 1
+  fi
+
   local public_version_body
   if ! public_version_body=$(remote_ssh "curl -kfsS --max-time 10 --resolve llmgo.kxpms.cn:443:127.0.0.1 https://llmgo.kxpms.cn/version" 2>&1); then
     warn "    public /version fetch failed: ${public_version_body}"
