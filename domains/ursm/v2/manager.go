@@ -6,11 +6,14 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
 	stdsync "sync"
+	"syscall"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -519,7 +522,7 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 			// protective rejection (wraps store.ErrRedisUnavailable so
 			// callers can errors.Is it exactly like the pipeline path).
 			if err := m.verifyRedisForMirrorServe(ctx); err != nil {
-				return nil, "", fmt.Errorf("ursm.v2: mirror serve rejected, redis unavailable: %w", err)
+				return nil, "", fmt.Errorf("ursm.v2: mirror serve rejected, redis unavailable: %w: %v", store.ErrRedisUnavailable, err)
 			}
 		}
 		// Grace gear skips the verify: entries served here are within the
@@ -586,18 +589,42 @@ const mirrorServeVerifyTimeout = 100 * time.Millisecond
 
 // verifyRedisForMirrorServe implements the §14.3 target-gear check: before
 // a mirror-only answer may be served, Redis must be demonstrably
-// reachable. The error wraps store.ErrRedisUnavailable so callers can
-// errors.Is it identically to the pipeline-read failure path.
+// reachable. Internal PING timeouts are classified as Redis unavailable;
+// caller cancellation and server-side errors retain their original type.
 func (m *Manager) verifyRedisForMirrorServe(ctx context.Context) error {
-	if m == nil || m.store == nil {
+	if m == nil || m.store == nil || m.store.RawClient() == nil {
 		return store.ErrRedisUnavailable
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, mirrorServeVerifyTimeout)
 	defer cancel()
 	if err := m.store.RawClient().Ping(pingCtx).Err(); err != nil {
-		return fmt.Errorf("%w: mirror liveness ping: %v", store.ErrRedisUnavailable, err)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		// A deadline from the short, internally-owned PING budget means Redis
+		// did not answer in time and is unavailable for this decision. Keep
+		// ACL/protocol/configuration errors unclassified so they fail closed.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: mirror liveness ping: %v", store.ErrRedisUnavailable, err)
+		}
+		return fmt.Errorf("mirror liveness ping: %w", err)
 	}
 	return nil
+}
+
+func isRedisTransportUnavailable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, store.ErrRedisUnavailable) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
+		return true
+	}
+	return false
 }
 
 // FilterAndScoreOutageFallback serves a degraded read-only routing decision
@@ -630,8 +657,26 @@ func (m *Manager) FilterAndScoreOutageFallback(ctx context.Context, seeds []Cand
 	if grace <= 0 {
 		return nil, fmt.Errorf("ursm.v2: outage fallback disabled (URSM_V2_OUTAGE_GRACE_SECONDS<=0): %w", store.ErrRedisUnavailable)
 	}
-	if err := m.verifyRedisForMirrorServe(ctx); err == nil {
+	if len(seeds) == 0 {
+		return nil, fmt.Errorf("ursm.v2: outage fallback requires candidates")
+	}
+	for _, s := range seeds {
+		if s.TenantID == "" {
+			return nil, fmt.Errorf("ursm.v2: outage fallback requires tenant_id")
+		}
+	}
+	if err := m.verifyRedisForMirrorServe(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !isRedisTransportUnavailable(err) {
+			return nil, fmt.Errorf("ursm.v2: redis liveness check failed: %w", err)
+		}
+	} else {
 		return nil, fmt.Errorf("ursm.v2: redis reachable, outage fallback not applicable")
+	}
+	if m.nodeMirror == nil {
+		return nil, fmt.Errorf("ursm.v2: outage fallback unavailable without node mirror: %w", store.ErrRedisUnavailable)
 	}
 	views := make([]api.NodeView, 0, len(seeds))
 	kept := make([]CandidateSeed, 0, len(seeds))

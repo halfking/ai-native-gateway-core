@@ -25,6 +25,10 @@ var transitionRecoveryScript = redis.NewScript(transitionRecoverySrc)
 // remedy before retrying the reopen (2026-09-04 availability work).
 var ErrCoverageManifestEmpty = errors.New("coverage manifest empty")
 
+// ErrCoverageIncomplete reports a non-empty manifest with missing or malformed
+// node state, which is also recoverable by rebuilding from PostgreSQL.
+var ErrCoverageIncomplete = errors.New("coverage manifest incomplete")
+
 type Manager struct {
 	rdb    *redis.Client
 	prefix string
@@ -130,8 +134,14 @@ func (m *Manager) MarkClosedDebounced(ctx context.Context, reason string, deboun
 		return false, nil
 	}
 	if err := m.EnterRecovery(ctx, reason); err != nil {
-		// EnterRecovery already recorded the error; bubble up.
-		return true, err
+		// Do not leave a successful debounce claim behind when the actual
+		// gate close failed; that would suppress every retry until the TTL.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = m.rdb.Del(cleanupCtx, store.RecoveryDebounceKey(m.prefix)).Err()
+		cancel()
+		// EnterRecovery already recorded the error; bubble up. The claim did
+		// not produce a closed gate, so report that this caller did not win.
+		return false, err
 	}
 	m.clearError()
 	return true, nil
@@ -267,11 +277,11 @@ func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
 			return 0, fmt.Errorf("ursm.v2: coverage key is not canonical: %s", key)
 		}
 		if exists[i].Val() != 1 {
-			return 0, fmt.Errorf("ursm.v2: coverage key missing: %s", key)
+			return 0, fmt.Errorf("ursm.v2: coverage key missing: %s: %w", key, ErrCoverageIncomplete)
 		}
 		values, err := fields[i].Result()
 		if err != nil || len(values) < 2 || values[0] == nil || values[1] == nil {
-			return 0, fmt.Errorf("ursm.v2: coverage hash incomplete: %s", key)
+			return 0, fmt.Errorf("ursm.v2: coverage hash incomplete: %s: %w", key, ErrCoverageIncomplete)
 		}
 	}
 	return len(keys), nil
@@ -280,6 +290,14 @@ func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
 // WarmupFromCoverage validates the migration manifest and atomically opens the
 // gate only after every expected node is present.
 func (m *Manager) WarmupFromCoverage(ctx context.Context) (int, error) {
+	observedEpoch, err := m.rdb.HGet(ctx, store.EpochKey(m.prefix), "counter").Result()
+	if err != nil && err != redis.Nil {
+		m.recordError(err)
+		return 0, fmt.Errorf("ursm.v2: read recovery epoch: %w", err)
+	}
+	if err == redis.Nil {
+		observedEpoch = ""
+	}
 	if err := m.SetReady(ctx, false); err != nil {
 		return 0, err
 	}
@@ -288,7 +306,17 @@ func (m *Manager) WarmupFromCoverage(ctx context.Context) (int, error) {
 		m.recordError(err)
 		return 0, err
 	}
-	if err := m.SetReady(ctx, true); err != nil {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := transitionRecoveryScript.Run(ctx, m.rdb,
+		[]string{store.ReadyKey(m.prefix), store.EpochKey(m.prefix)},
+		"open_if_epoch", "", now, observedEpoch, intToString(count)).Text()
+	if err != nil {
+		m.recordError(err)
+		return 0, fmt.Errorf("ursm.v2: coverage warmup transition: %w", err)
+	}
+	if result == "superseded" {
+		err := fmt.Errorf("ursm.v2: coverage warmup superseded by newer recovery close")
+		m.recordError(err)
 		return 0, err
 	}
 	m.recordRecovery(count)

@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -138,7 +139,8 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 		var name, family, modality string
 		var contextWindow *int
 		if err := rows.Scan(&name, &family, &modality, &contextWindow); err != nil {
-			continue
+			h.writeDBFailure(w, fmt.Errorf("scan models: %w", err))
+			return
 		}
 		models = append(models, modelEntry{
 			ID:            name,
@@ -148,8 +150,27 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 			ContextWindow: contextWindow,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		h.writeDBFailure(w, fmt.Errorf("iterate models: %w", err))
+		return
+	}
 	h.rememberGoodEntries(models)
 	h.writeEntries(w, models)
+}
+
+func (h *ModelsHandler) writeDBFailure(w http.ResponseWriter, err error) {
+	slog.Error("models: db rows failed", "error", err)
+	if entries, ok := h.lastGoodEntries(); ok {
+		h.writeEntries(w, entries)
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]any{
+		"error": map[string]string{
+			"message": "Failed to query models from database",
+			"type":    "server_error",
+			"code":    "database_query_error",
+		},
+	})
 }
 
 func (h *ModelsHandler) staleSnapshotAt() time.Time {

@@ -39,6 +39,21 @@ func TestFilterAndScoreOutageFallback_ServesSoftExpiredMirror(t *testing.T) {
 	assert.Equal(t, 7, views[0].CredentialID)
 }
 
+func TestFilterAndScoreOutageFallback_RejectsCanceledContext(t *testing.T) {
+	mgr, mr, _ := newMirrorManager(t)
+	seedNode(t, mr, 7, "gpt-x", 1, true, 120, 0.95)
+	seeds := []CandidateSeed{{ProviderID: 1, CredentialID: 7, RawModel: "gpt-x", TenantID: "t"}}
+	if _, err := mgr.FilterAndScore(context.Background(), seeds); err != nil {
+		t.Fatalf("warm-up: %v", err)
+	}
+	mr.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := mgr.FilterAndScoreOutageFallback(ctx, seeds); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled context error = %v, want context.Canceled", err)
+	}
+}
+
 // TestFilterAndScoreOutageFallback_RefusesWhenRedisAlive ensures the gear
 // can never paper over a DELIBERATE recovery-gate closure: with Redis
 // reachable the fallback must refuse so the router keeps failing closed.
@@ -120,6 +135,6 @@ func TestConfigOutageGraceEnv(t *testing.T) {
 	t.Setenv("URSM_V2_OUTAGE_GRACE_SECONDS", "not-a-number")
 	cfg = LoadFromEnv()
 	assert.Equal(t, DefaultConfig().OutageGrace, cfg.OutageGrace, "malformed value keeps the default")
-	require.NoError(t, cfg.Validate())
+	require.Error(t, cfg.Validate(), "malformed outage grace must fail validation")
 	_ = api.ModeAuthoritative // keep the api import meaningful for mode context
 }
