@@ -131,8 +131,9 @@ export interface RequestLogDetail extends RequestLogRow {
 	// request_logs_bodies；详情接口（/api/logs/:id）在 metadata SELECT 之后
 	// 单独走 admin/logs.go 的 fetchRequestBodies / fetchRequestOutboundBody
 	// 二阶段读取（hot heap → columnar 月分区），最终落到下面三个字段。
-	// 后端不识别 ?omit_body=1（与 /api/admin/request-detail 不同），所以
-	// 前端拿到的是已经包含 body 的完整 payload。
+	// 2026-09-05: 后端识别 ?omit_body=1（admin/logs.go 跳过 body 二阶段抓取），
+	// 此时 request_body/response_body 为 null；抽屉首包用 omitBody 拉轻量
+	// metadata，对话/压缩/原始 JSON tab 再由 ensureBodies 不带参数补拉完整正文。
 	request_body: any | null
 	response_body: any | null
   // 2026-07-01: 完整附件元数据数组。仅详情接口返回；为空/undefined 表示无附件。
