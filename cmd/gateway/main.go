@@ -118,6 +118,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/pending"
+	"github.com/kaixuan/llm-gateway-go/pkg/logger"
+	"github.com/kaixuan/llm-gateway-go/pkg/monitor"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -255,6 +257,13 @@ func main() {
 	var journeyObservationOutbox *requestjourney.ObservationOutbox
 	var journeyRetentionWorker *requestjourney.RetentionWorker
 
+	// ── Persistent Logger & Resource Monitor ──────────────────────────────
+	// 2026-09-04: Initialize persistent logger for critical events (startup,
+	// shutdown, panics, errors) that must survive restarts, and resource
+	// monitor to track memory/goroutine/FD usage for leak detection.
+	var persistentLogger *logger.PersistentLogger
+	var resourceMonitor *monitor.ResourceMonitor
+
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
 	// Request survival (docs/修订0811/18+19): normalize knobs after load and
@@ -299,6 +308,47 @@ func main() {
 		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 			Level: level,
 		})))
+	}
+
+	// ── Initialize Persistent Logger ──────────────────────────────────────
+	// 2026-09-04: Initialize persistent logger early so critical startup
+	// errors and abnormal exits are captured to dedicated log files that
+	// survive restarts. Log directory defaults to ./logs or can be overridden
+	// via LLM_GATEWAY_PERSISTENT_LOG_DIR.
+	persistentLogDir := os.Getenv("LLM_GATEWAY_PERSISTENT_LOG_DIR")
+	if persistentLogDir == "" {
+		persistentLogDir = "./logs"
+	}
+	hostname, _ := os.Hostname()
+	instanceID := fmt.Sprintf("%s-%d-%d", hostname, os.Getpid(), time.Now().Unix())
+
+	persistentLoggerCfg := logger.PersistentLoggerConfig{
+		LogDir:     persistentLogDir,
+		MaxSize:    100, // 100MB per file
+		MaxBackups: 10,
+		MaxAge:     30, // 30 days
+		Compress:   true,
+		InstanceID: instanceID,
+	}
+
+	var err error
+	persistentLogger, err = logger.InitPersistentLogger(persistentLoggerCfg)
+	if err != nil {
+		slog.Error("failed to initialize persistent logger", "error", err)
+		// Non-fatal: continue without persistent logging
+	} else {
+		slog.Info("persistent logger initialized", "log_dir", persistentLogDir, "instance_id", instanceID)
+		// Install panic handler to capture panics to persistent log
+		defer func() {
+			if r := recover(); r != nil {
+				stackTrace := string(debug.Stack())
+				if persistentLogger != nil {
+					persistentLogger.LogPanic(fmt.Sprintf("panic recovered in main: %v", r), stackTrace)
+				}
+				slog.Error("panic in main", "panic", r, "stack", stackTrace)
+				panic(r) // re-panic after logging
+			}
+		}()
 	}
 
 	// ── Optional YAML config file ─────────────────────────────────────────
@@ -366,7 +416,15 @@ func main() {
 	dbConn := openDBWithBootRetry(context.Background(), cfg.DatabaseURL)
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("main: panic during startup", "panic", fmt.Sprintf("%v", r), "stack", string(debug.Stack()))
+			panicMsg := fmt.Sprintf("%v", r)
+			stackTrace := string(debug.Stack())
+			slog.Error("main: panic during startup", "panic", panicMsg, "stack", stackTrace)
+
+			// Log to persistent logger if available
+			if persistentLogger != nil {
+				persistentLogger.LogPanic("panic during startup", stackTrace, "panic", panicMsg)
+			}
+
 			if dbConn != nil {
 				dbConn.Close()
 			}
@@ -376,6 +434,44 @@ func main() {
 			dbConn.Close()
 		}
 	}()
+
+	// ── Initialize Resource Monitor ───────────────────────────────────────
+	// 2026-09-04: Start resource monitor to track memory, goroutines, file
+	// descriptors, and detect potential leaks. Logs to resource_monitor.log
+	// for offline analysis. Interval and thresholds can be tuned via env vars.
+	resourceMonitorInterval := positiveDurationEnv("LLM_GATEWAY_RESOURCE_MONITOR_INTERVAL", 30*time.Second)
+	memGrowthThreshold := float64(positiveIntEnv("LLM_GATEWAY_MEM_GROWTH_THRESHOLD_MB", 10))
+	goroutineThreshold := positiveIntEnv("LLM_GATEWAY_GOROUTINE_THRESHOLD", 10000)
+	fdGrowthThreshold := float64(positiveIntEnv("LLM_GATEWAY_FD_GROWTH_THRESHOLD", 100))
+
+	resourceMonitorCfg := monitor.ResourceMonitorConfig{
+		LogDir:             persistentLogDir,
+		Interval:           resourceMonitorInterval,
+		MaxSize:            100, // 100MB per file
+		MaxBackups:         30,  // keep 30 files
+		MaxAge:             90,  // 90 days
+		Compress:           true,
+		InstanceID:         instanceID,
+		MemGrowthThreshold: memGrowthThreshold,
+		GoroutineThreshold: goroutineThreshold,
+		FDGrowthThreshold:  fdGrowthThreshold,
+	}
+
+	resourceMonitor, err = monitor.InitResourceMonitor(resourceMonitorCfg)
+	if err != nil {
+		slog.Error("failed to initialize resource monitor", "error", err)
+		if persistentLogger != nil {
+			persistentLogger.LogError("failed to initialize resource monitor", "error", err)
+		}
+		// Non-fatal: continue without resource monitoring
+	} else {
+		resourceMonitor.Start()
+		slog.Info("resource monitor started",
+			"interval", resourceMonitorInterval,
+			"mem_growth_threshold_mb_per_min", memGrowthThreshold,
+			"goroutine_threshold", goroutineThreshold,
+			"fd_growth_threshold_per_min", fdGrowthThreshold)
+	}
 
 	// ── Columnar invariant check (Phase 23 / 03, 2026-07-02) ────────
 	// Run once at startup. Surfaces drift between expected and actual
@@ -6439,12 +6535,18 @@ func main() {
 		slog.Info("gateway listening", "listen", cfg.Listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("gateway listen failed", "error", err)
+			if persistentLogger != nil {
+				persistentLogger.LogAbnormalExit("listen_error", err.Error())
+			}
 			os.Exit(1)
 		}
 	}()
 
 	<-ctx.Done()
 	slog.Info("gateway shutting down")
+	if persistentLogger != nil {
+		persistentLogger.LogShutdown("termination_signal", true, "signal", "SIGINT/SIGTERM")
+	}
 
 	// 1. Stop accepting new connections — in-flight requests drain naturally
 	// 2026-08-19: 30s→23s. systemd TimeoutStopSec=35s (drop-in), srv.Shutdown 必须 ≤ 23s
@@ -6771,6 +6873,20 @@ func main() {
 		slog.Info("background services stopped cleanly")
 	case <-stopCtx.Done():
 		slog.Warn("background service stop timed out, forcing shutdown")
+	}
+
+	// Flush + close the persistent resource and critical-event logs before
+	// the normal rotated logger, so shutdown diagnostics survive process exit.
+	if resourceMonitor != nil {
+		if err := resourceMonitor.Stop(); err != nil {
+			fmt.Fprintf(os.Stderr, "resource monitor shutdown error: %v\n", err)
+		}
+	}
+	if persistentLogger != nil {
+		persistentLogger.LogShutdown("shutdown_complete", true)
+		if err := persistentLogger.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "persistent logger shutdown error: %v\n", err)
+		}
 	}
 
 	// Flush + close the rotated log file last so the final
