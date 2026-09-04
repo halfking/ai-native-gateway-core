@@ -67,7 +67,7 @@ func ExecuteAttempt(ctx context.Context, exec AttemptExecutor, gate *AttemptComm
 
 	res := &AttemptResult{
 		Success:           false,
-		CandidateOutcomes: foldCandidateOutcomes(err),
+		CandidateOutcomes: foldCandidateOutcomes(err, params.RequestID),
 		CommitState:       state,
 		FinalError:        err,
 	}
@@ -93,7 +93,9 @@ func gateCommitted(gate *AttemptCommitGate) bool {
 // walk that never started (no candidates planned) synthesizes the single
 // no_available_channel outcome so the task aggregator sees a wait-recovery
 // signal instead of an empty result (which fail-closes).
-func foldCandidateOutcomes(err error) []CandidateOutcome {
+//
+// 2026-09-05: Enhanced with request_id propagation for chain traceability.
+func foldCandidateOutcomes(err error, requestID string) []CandidateOutcome {
 	execErr, ok := err.(*executors.ExecuteError)
 	if !ok {
 		kind := errorsx.ClassifyError(err, nil)
@@ -105,9 +107,9 @@ func foldCandidateOutcomes(err error) []CandidateOutcome {
 		)
 		return []CandidateOutcome{{Kind: kind, Err: err}}
 	}
-	
+
 	outcomes := make([]CandidateOutcome, 0, len(execErr.Attempts))
-	
+
 	// Enhanced logging: record all attempted candidates for observability
 	attemptSummary := make([]map[string]any, 0, len(execErr.Attempts))
 	for _, a := range execErr.Attempts {
@@ -119,7 +121,7 @@ func foldCandidateOutcomes(err error) []CandidateOutcome {
 			Kind:         a.Kind,
 			Err:          execErr.LastErr,
 		})
-		
+
 		attemptSummary = append(attemptSummary, map[string]any{
 			"provider_id":   a.ProviderID,
 			"credential_id": a.CredentialID,
@@ -127,15 +129,15 @@ func foldCandidateOutcomes(err error) []CandidateOutcome {
 			"kind":          string(a.Kind),
 		})
 	}
-	
+
 	if len(outcomes) == 0 {
 		kind := execErr.LastKind
 		if kind == "" {
 			kind = errorsx.KindNoAvailableChannel
 		}
-		
+
 		// Log when no candidates were attempted
-		slog.Warn("fold_candidate_outcomes_no_attempts",
+		logAttrs := []any{
 			"last_kind", string(execErr.LastKind),
 			"synthesized_kind", string(kind),
 			"last_error", func() string {
@@ -144,18 +146,26 @@ func foldCandidateOutcomes(err error) []CandidateOutcome {
 				}
 				return "nil"
 			}(),
-		)
-		
+		}
+		if requestID != "" {
+			logAttrs = append(logAttrs, "request_id", requestID)
+		}
+		slog.Warn("fold_candidate_outcomes_no_attempts", logAttrs...)
+
 		return []CandidateOutcome{{Kind: kind, Err: execErr.LastErr}}
 	}
-	
+
 	// Log the complete candidate outcome fold for debugging
-	slog.Info("fold_candidate_outcomes_complete",
+	logAttrs := []any{
 		"attempt_count", len(execErr.Attempts),
 		"outcome_count", len(outcomes),
 		"attempts", attemptSummary,
 		"last_kind", string(execErr.LastKind),
-	)
-	
+	}
+	if requestID != "" {
+		logAttrs = append(logAttrs, "request_id", requestID)
+	}
+	slog.Info("fold_candidate_outcomes_complete", logAttrs...)
+
 	return outcomes
 }

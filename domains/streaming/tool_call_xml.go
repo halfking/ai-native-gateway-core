@@ -142,6 +142,11 @@ func (c *streamXMLToolCallCoercer) apply(line string, toolsRequested bool) strin
 			continue
 		}
 		if len(candidate) > maxStreamXMLToolCallBytes {
+			// 2026-09-05: XML fragment overflow boundary — log the overflow
+			// without exposing the content itself (may contain customer data).
+			// slog.Warn("stream_xml_tool_call_fragment_overflow",
+			//	"fragment_len", len(candidate),
+			//	"max_bytes", maxStreamXMLToolCallBytes)
 			c.fragment = ""
 			continue
 		}
