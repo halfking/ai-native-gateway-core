@@ -12,7 +12,7 @@
 **❌ 禁止操作**：
 ```bash
 # 禁止手动编译 + scp
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/gateway ./cmd/gateway
+CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o /tmp/gateway ./cmd/gateway
 scp /tmp/gateway root@245:/opt/llm-gateway-go/gateway
 systemctl restart llm-gateway-go
 

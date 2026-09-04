@@ -408,6 +408,16 @@ func main() {
 			"hint", "rotate to ops_-prefixed value at next maintenance window")
 	}
 
+	// ── 双模式存储装配（Task 4.2）─────────────────────────────────────────
+	// LLM_GATEWAY_STORAGE_MODE 未设置或为 full 时 storageRt 为 nil，以下全部
+	// 走既有装配路径（行为零变化）；lite 模式在此初始化存储工厂、L1.5 文件
+	// 缓存与后台清理任务，Shutdown 挂在优雅关闭段末尾。
+	storageRt, storageInitErr := initStorageMode(cfg, loadStorageConfig(configFile))
+	if storageInitErr != nil {
+		slog.Error("storage mode init failed", "error", storageInitErr)
+		os.Exit(1)
+	}
+
 	cfgStore := config.NewStore(cfg)
 	streaming.SetConfigStore(cfgStore)
 	slog.Info("gateway starting", "listen", cfg.Listen, "log_level", cfg.LogLevel, "runtime_role", cfg.RuntimeRole)
@@ -416,7 +426,16 @@ func main() {
 	// 2026-09-04 availability: an unreachable DB at boot is retried within a
 	// bounded budget (LLM_GATEWAY_DB_BOOT_RETRY_SECONDS) instead of dropping
 	// the process into permanent no-DB mode; see openDBWithBootRetry.
-	dbConn := openDBWithBootRetry(context.Background(), cfg.DatabaseURL)
+	// Task 4.2: lite 模式持久化由 SQLite + 本地目录承担，显式传空 URL 跳过
+	// PostgreSQL 初始化（openDBWithBootRetry 对空 URL 返回 nil，即既有 no-DB
+	// 降级路径），避免无谓的连接重试拖慢启动。
+	bootDatabaseURL := cfg.DatabaseURL
+	if storageRt != nil {
+		slog.Warn("storage lite mode: PostgreSQL disabled, using SQLite + local dirs",
+			"database_url_configured", cfg.DatabaseURL != "")
+		bootDatabaseURL = ""
+	}
+	dbConn := openDBWithBootRetry(context.Background(), bootDatabaseURL)
 	defer func() {
 		if r := recover(); r != nil {
 			panicMsg := fmt.Sprintf("%v", r)
@@ -2428,13 +2447,22 @@ func main() {
 			// Use cfg.RedisAddr + cfg.RedisDB from outer scope (2026-08-25:
 			// session:v2 governance cache must respect db isolation, no longer
 			// hardcoded to db=0).
-			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr, cfg.RedisDB)
+			// Task 4.2: lite 模式走 mode-aware 装配（摘除 L2、注入 L1.5 文件缓存）；
+			// full/未启用模式（storageRt == nil）保持历史构造行为不变。
+			sessionCacheV2 = storageRt.newSessionCacheV2(dbConn.Pool(), cfg.RedisAddr, cfg.RedisDB)
 			sessionCacheV2ForShutdown = sessionCacheV2
 
 			slog.Info("v2 session components initialized",
 				"outbound_builder", outboundBuilder != nil,
 				"session_cache_v2", sessionCacheV2 != nil,
 				"redis_addr", cfg.RedisAddr)
+		} else if storageRt != nil {
+			// Task 4.2: lite 模式且 PG 被跳过时仍装配 V2 缓存（L1 + L1.5 文件
+			// 两层，L3 无 db 时等价于永远 miss），保证压缩链路不依赖 PostgreSQL。
+			sessionCacheV2 = storageRt.newSessionCacheV2(nil, "", 0)
+			sessionCacheV2ForShutdown = sessionCacheV2
+			slog.Info("v2 session components initialized (lite, no PostgreSQL)",
+				"session_cache_v2", sessionCacheV2 != nil)
 		}
 		// Shared LLM-compaction dependencies: used by both the proactive
 		// SessionCompressor and the reactive RecoveryCoordinator so both
@@ -5298,6 +5326,7 @@ func main() {
 	// 指标含 provider / credential 等敏感标签）。使用
 	// LLM_GATEWAY_ADMIN_API_KEY 静态 token（与 AdminTokenMiddleware 配合）。
 	mux.Handle("/metrics", middleware.NewAdminTokenMiddleware(cfg.AdminAPIKey).Wrap(middleware.MetricsHandler()))
+	registerStorageMetricsHandler(mux, storageRt, cfg.AdminAPIKey) // Task 5.3: 存储分层指标端点，鉴权与 /metrics 一致
 
 	// 2026-07-20: telemetry fallback ring buffer 暴露面。
 	// 路径: /internal/telemetry/fallback-buffer/{stats,dump,clear,replay}
@@ -6864,6 +6893,11 @@ func main() {
 				slog.Warn("raw_data_logger: shutdown failed", "error", err)
 			}
 		}
+
+		// Task 4.2: 双模式存储运行时收尾。lite 模式：停 cache/bodies trimmers
+		// 并关闭存储工厂（排空 bodies 异步写队列保证落盘）；full/未启用时
+		// storageRt 为 nil，Shutdown 是 no-op。nil-safe 且幂等。
+		storageRt.Shutdown()
 
 		close(stopDone)
 	}()
