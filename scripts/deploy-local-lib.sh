@@ -282,15 +282,34 @@ dl_write_env() {
   # unless they contain whitespace, in which case they are rejected because
   # DSNs and secret keys must not contain whitespace.
   local file="$1" port="$2"; umask 077
+  local version_file log_file log_dir raw_log_dir attachment_dir backup_dir persistent_log_dir
+  if [[ "${DL_DOCKER:-0}" == 1 ]]; then
+    version_file=/opt/llm-gateway-go/version.json
+    log_file=/opt/llm-gateway-go/logs/gateway.log
+    log_dir=/opt/llm-gateway-go/logs
+    raw_log_dir=/opt/llm-gateway-go/raw-logs
+    attachment_dir=/opt/llm-gateway-go/attachments
+    backup_dir=/opt/llm-gateway-go/backups
+    persistent_log_dir=/opt/llm-gateway-go/logs
+  else
+    version_file="${LLM_GATEWAY_VERSION_FILE:-}"
+    log_file="$(dl_root)/logs/gateway-${port}.log"
+    log_dir="$(dl_root)/logs"
+    raw_log_dir="$(dl_root)/raw-logs"
+    attachment_dir="$(dl_root)/attachments"
+    backup_dir="$(dl_root)/backups"
+    persistent_log_dir="$log_dir"
+  fi
   {
     printf 'LLM_GATEWAY_LISTEN=:%s\n' "$port"
     dl_emit_env_line LLM_GATEWAY_CORS_ORIGINS "${LLM_GATEWAY_CORS_ORIGINS:-http://127.0.0.1:${port}}"
-    dl_emit_env_line LLM_GATEWAY_VERSION_FILE "${LLM_GATEWAY_VERSION_FILE:-}"
-    dl_emit_env_line LLM_GATEWAY_LOG_FILE "$(dl_root)/logs/gateway-${port}.log"
-    dl_emit_env_line LLM_GATEWAY_LOG_DIR "$(dl_root)/logs"
-    dl_emit_env_line LLM_GATEWAY_RAW_LOG_DIR "$(dl_root)/raw-logs"
-    dl_emit_env_line LLM_GATEWAY_ATTACHMENT_DIR "$(dl_root)/attachments"
-    dl_emit_env_line LLM_GATEWAY_BACKUP_DIR "$(dl_root)/backups"
+    dl_emit_env_line LLM_GATEWAY_VERSION_FILE "$version_file"
+    dl_emit_env_line LLM_GATEWAY_LOG_FILE "$log_file"
+    dl_emit_env_line LLM_GATEWAY_LOG_DIR "$log_dir"
+    dl_emit_env_line LLM_GATEWAY_RAW_LOG_DIR "$raw_log_dir"
+    dl_emit_env_line LLM_GATEWAY_ATTACHMENT_DIR "$attachment_dir"
+    dl_emit_env_line LLM_GATEWAY_BACKUP_DIR "$backup_dir"
+    dl_emit_env_line LLM_GATEWAY_PERSISTENT_LOG_DIR "$persistent_log_dir"
     dl_emit_env_line LLM_GATEWAY_DATABASE_URL "${LLM_GATEWAY_DATABASE_URL:-}"
     dl_emit_env_line DATABASE_URL "${DATABASE_URL:-${LLM_GATEWAY_DATABASE_URL:-}}"
     dl_emit_env_line LLM_GATEWAY_PG_DATA_DIR "$(dl_shared_pg_dir)"
