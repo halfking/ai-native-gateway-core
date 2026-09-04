@@ -10,7 +10,7 @@ AUTO 路由选择、决策快照和结算结果只以现有 `auto_route_selectio
 
 - **热窗口**：最近 8 小时，服务于结算、近期监控和待分析样本查询。
 - **月分区**：`auto_route_selections` 依据 `partition_date` 按月分区；月分区是历史存储布局，不是新的事实表。
-- **统一 all view**：提供 `v_auto_route_selections_all`（或仓库最终约定的等价名称）作为跨热窗口与历史分区的统一读取入口。view 只做 `UNION ALL`/父表透传，不复制行、不保存内容。
+- **统一 all view**：提供 `auto_route_selections_all`（migration 656）作为跨热窗口与历史分区的统一读取入口。view 只做 `UNION ALL`/父表透传，不复制行、不保存内容。
 - **默认分区**：继续作为月分区未及时创建时的写入保护；它不是长期热存储替代品。
 
 所有查询应优先通过事实表父表或 all view，并带时间范围；不要求业务代码自行拼接分区。
