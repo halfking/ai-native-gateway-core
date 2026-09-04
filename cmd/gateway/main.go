@@ -344,6 +344,7 @@ func main() {
 				stackTrace := string(debug.Stack())
 				if persistentLogger != nil {
 					persistentLogger.LogPanic(fmt.Sprintf("panic recovered in main: %v", r), stackTrace)
+					_ = persistentLogger.Close()
 				}
 				slog.Error("panic in main", "panic", r, "stack", stackTrace)
 				panic(r) // re-panic after logging
@@ -420,9 +421,14 @@ func main() {
 			stackTrace := string(debug.Stack())
 			slog.Error("main: panic during startup", "panic", panicMsg, "stack", stackTrace)
 
-			// Log to persistent logger if available
+			// Flush the final resource snapshot, persist the panic record, and
+			// close both writers so the abnormal exit leaves a durable trail.
+			if resourceMonitor != nil {
+				_ = resourceMonitor.Stop()
+			}
 			if persistentLogger != nil {
 				persistentLogger.LogPanic("panic during startup", stackTrace, "panic", panicMsg)
+				_ = persistentLogger.Close()
 			}
 
 			if dbConn != nil {
@@ -6478,6 +6484,13 @@ func main() {
 		pprofSrv, enabled = newPprofServer(pprofAddr)
 		if !enabled {
 			slog.Error("LLM_GATEWAY_PPROF_LISTEN must be a loopback address", "listen", pprofAddr)
+			if resourceMonitor != nil {
+				_ = resourceMonitor.Stop()
+			}
+			if persistentLogger != nil {
+				persistentLogger.LogAbnormalExit("config_error", "LLM_GATEWAY_PPROF_LISTEN must be a loopback address: "+pprofAddr)
+				_ = persistentLogger.Close()
+			}
 			os.Exit(2)
 		}
 		go func() {
@@ -6535,8 +6548,12 @@ func main() {
 		slog.Info("gateway listening", "listen", cfg.Listen)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("gateway listen failed", "error", err)
+			if resourceMonitor != nil {
+				_ = resourceMonitor.Stop()
+			}
 			if persistentLogger != nil {
 				persistentLogger.LogAbnormalExit("listen_error", err.Error())
+				_ = persistentLogger.Close()
 			}
 			os.Exit(1)
 		}
