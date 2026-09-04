@@ -62,6 +62,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
 		"630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
 		"631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
+		"655_session_summaries_schema_reconcile.sql":                       sessionSummariesSchemaReconcileMigration655,
 		"635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
 		"647_goal_client_signal.sql":                                       goalClientSignalMigration647,
 		"649_routing_analytics_probe_filter.sql":                           routingAnalyticsProbeFilterMigration649,

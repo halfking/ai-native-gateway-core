@@ -111,7 +111,7 @@ func (r *PoolRecorder) Record(parent context.Context, ev Event) error {
 	defer cancel()
 
 	ev.Sample = TruncateForSample(ev.Sample, 1024)
-	var contextJSON []byte
+	var contextJSON string
 	if len(ev.Context) > 0 {
 		b, err := json.Marshal(ev.Context)
 		if err != nil {
@@ -120,7 +120,13 @@ func (r *PoolRecorder) Record(parent context.Context, ev Event) error {
 			r.dropped.Add(1)
 			return nil
 		}
-		contextJSON = b
+		if !json.Valid(b) {
+			slog.Warn("integrity recorder: context marshal produced invalid JSON; dropping",
+				"anomaly_type", ev.AnomalyType)
+			r.dropped.Add(1)
+			return nil
+		}
+		contextJSON = string(b)
 	}
 
 	const query = `
@@ -132,9 +138,9 @@ func (r *PoolRecorder) Record(parent context.Context, ev Event) error {
 			expected_value, actual_value, sample, context
 		) VALUES (
 			now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-			$11, $12,
-			$13, $14, $15, $16
-		)
+				$11, $12,
+				$13, $14, $15, $16::text::jsonb
+			)
 	`
 	if _, err := r.pool.Exec(writeCtx, query,
 		nullString(ev.RequestID),

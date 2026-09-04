@@ -3,6 +3,12 @@
 部署时在 **切换前** 于 252 PG 应用的 `sql/migrations/startup/` 变更。
 其它环境请按时间倒序手工同步，或使用 `deploy-seamless.sh` 自动 apply。
 
+## 2026-09-05 — database revision sequence 655
+
+本次数据库修订整合为 `scripts/apply-db-revision-sequence.sh`，由 `scripts/deploy-local.sh deploy` 在 Gateway 应用迁移前调用。固定顺序为 `655 → 560 → 572 → 606 → 563 → 564 → 644 → 645`；序列使用 `gateway_db_revision_sequences` 做幂等完成标记。655 只增量补齐被 Memora 最小 schema 覆盖的 `session_summaries` canonical 列，保留 `session_id/summary_json`，不删除或重建表。
+
+执行前必须完成 PG 备份/快照和 DSN/schema 预检。发现 `session_summaries` 缺失、底层对象不匹配、重复唯一 key 或 645 热表重复 key 时停止；不自动重命名、删除、清理重复业务数据，也不创建 ACC 的 `employees`/`employee_agent_configs` 等外部表。JSONB 由 Go writer 以合法 JSON 字符串绑定，644 不再安装无效的 PostgreSQL regex sanitizer。
+
 ---
 
 ## 2026-08-18T18:59:33Z — deploy 154 build_seq 1622 (884ee9e1)

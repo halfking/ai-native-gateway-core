@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // newPGTestStore wires a PGStore onto a sqlmock-backed *sql.DB. The caller
@@ -23,7 +24,30 @@ func newPGTestStore(t *testing.T) (*PGStore, sqlmock.Sqlmock, func()) {
 	return store, mock, func() { _ = db.Close() }
 }
 
-// proposalFor returns a fully-populated ConfirmationProposal suitable for
+func TestPGStoreCooldownSchemaMismatchDegradesSafely(t *testing.T) {
+	store, mock, cleanup := newPGTestStore(t)
+	defer cleanup()
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT EXISTS (
+				SELECT 1 FROM session_summaries
+				 WHERE session_key = $1
+				   AND last_handoff_at IS NOT NULL
+				   AND NOW() - last_handoff_at < ($2 || ' seconds')::interval
+			)`)).
+		WithArgs("gw_schema_mismatch", "60").
+		WillReturnError(&pgconn.PgError{Code: "42703", Message: `column "session_key" does not exist`})
+
+	active, err := store.IsHandoffCooldownActive(context.Background(), "gw_schema_mismatch", 60)
+	if err != nil {
+		t.Fatalf("schema mismatch should degrade without error, got %v", err)
+	}
+	if active {
+		t.Fatal("schema mismatch should not report an active cooldown")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // SavePending / Confirm exercises. Proposal IDs and tenants are parameterised
 // so each test can isolate its data.
 func proposalFor(id, tenant string) *ConfirmationProposal {
