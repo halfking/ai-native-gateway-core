@@ -338,19 +338,21 @@ func main() {
 		// Non-fatal: continue without persistent logging
 	} else {
 		slog.Info("persistent logger initialized", "log_dir", persistentLogDir, "instance_id", instanceID)
-		// Install panic handler to capture panics to persistent log
-		defer func() {
-			if r := recover(); r != nil {
-				stackTrace := string(debug.Stack())
-				if persistentLogger != nil {
-					persistentLogger.LogPanic(fmt.Sprintf("panic recovered in main: %v", r), stackTrace)
-					_ = persistentLogger.Close()
-				}
-				slog.Error("panic in main", "panic", r, "stack", stackTrace)
-				panic(r) // re-panic after logging
-			}
-		}()
 	}
+	// Panic 兜底必须无条件安装：后续的 cfg.ValidateRuntimeRole / auth
+	// fail-closed panic 都发生在 dbConn defer 之前，若只在初始化成功分支
+	// 安装，初始化失败时这些 panic 将没有持久化记录。
+	defer func() {
+		if r := recover(); r != nil {
+			stackTrace := string(debug.Stack())
+			if persistentLogger != nil {
+				persistentLogger.LogPanic(fmt.Sprintf("panic recovered in main: %v", r), stackTrace)
+				_ = persistentLogger.Close()
+			}
+			slog.Error("panic in main", "panic", r, "stack", stackTrace)
+			panic(r) // re-panic after logging
+		}
+	}()
 
 	// ── Optional YAML config file ─────────────────────────────────────────
 	configFile := os.Getenv("LLM_GATEWAY_CONFIG_FILE")

@@ -54,15 +54,18 @@ type PersistentLoggerConfig struct {
 var (
 	globalPersistentLogger *PersistentLogger
 	persistentLoggerOnce   sync.Once
+	persistentInitErr      error
 )
 
 // InitPersistentLogger 初始化全局持久化日志记录器
+//
+// 失败语义：首次失败后 sync.Once 已消费，后续调用必须继续返回 (nil, 首次错误)。
+// 若用局部 err 变量，第二次调用会错误地返回 (nil, nil)，调用方会按成功分支使用 nil 实例。
 func InitPersistentLogger(config PersistentLoggerConfig) (*PersistentLogger, error) {
-	var err error
 	persistentLoggerOnce.Do(func() {
-		globalPersistentLogger, err = NewPersistentLogger(config)
+		globalPersistentLogger, persistentInitErr = NewPersistentLogger(config)
 	})
-	return globalPersistentLogger, err
+	return globalPersistentLogger, persistentInitErr
 }
 
 // GetPersistentLogger 获取全局持久化日志记录器
