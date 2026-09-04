@@ -6,11 +6,19 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
 	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+// withFields 复制调用方变参并追加固定字段，避免 append 原地改写 args 的底层数组。
+func withFields(args []any, extra ...any) []any {
+	out := make([]any, 0, len(args)+len(extra))
+	out = append(out, args...)
+	return append(out, extra...)
+}
 
 // PersistentLogger 持久化日志记录器，确保关键日志不会在重启后丢失
 type PersistentLogger struct {
@@ -151,7 +159,9 @@ func (pl *PersistentLogger) LogCritical(msg string, args ...any) {
 	pl.mu.RLock()
 	defer pl.mu.RUnlock()
 	if pl.criticalLogger != nil {
-		pl.criticalLogger.Error(msg, append(args, "severity", "critical", "timestamp", time.Now().Format(time.RFC3339Nano))...)
+		pl.criticalLogger.Error(msg, withFields(args,
+			"severity", "critical",
+			"timestamp", time.Now().Format(time.RFC3339Nano))...)
 	}
 }
 
@@ -160,7 +170,8 @@ func (pl *PersistentLogger) LogError(msg string, args ...any) {
 	pl.mu.RLock()
 	defer pl.mu.RUnlock()
 	if pl.errorLogger != nil {
-		pl.errorLogger.Error(msg, append(args, "timestamp", time.Now().Format(time.RFC3339Nano))...)
+		pl.errorLogger.Error(msg, withFields(args,
+			"timestamp", time.Now().Format(time.RFC3339Nano))...)
 	}
 }
 
@@ -169,7 +180,7 @@ func (pl *PersistentLogger) LogPanic(msg string, stackTrace string, args ...any)
 	pl.mu.RLock()
 	defer pl.mu.RUnlock()
 	if pl.panicLogger != nil {
-		pl.panicLogger.Error(msg, append(args,
+		pl.panicLogger.Error(msg, withFields(args,
 			"stack_trace", stackTrace,
 			"severity", "panic",
 			"timestamp", time.Now().Format(time.RFC3339Nano))...)
@@ -182,7 +193,7 @@ func (pl *PersistentLogger) LogShutdown(reason string, graceful bool, args ...an
 	defer pl.mu.RUnlock()
 	if pl.shutdownLogger != nil {
 		pl.shutdownLogger.Info("service_shutdown",
-			append(args,
+			withFields(args,
 				"reason", reason,
 				"graceful", graceful,
 				"timestamp", time.Now().Format(time.RFC3339Nano))...)
@@ -196,7 +207,7 @@ func (pl *PersistentLogger) LogStartup() {
 	if pl.shutdownLogger != nil {
 		pl.shutdownLogger.Info("service_startup",
 			"timestamp", time.Now().Format(time.RFC3339Nano),
-			"go_version", os.Getenv("GO_VERSION"),
+			"go_version", runtime.Version(),
 		)
 	}
 }
@@ -219,7 +230,8 @@ func (pl *PersistentLogger) LogAudit(action string, args ...any) {
 	pl.mu.RLock()
 	defer pl.mu.RUnlock()
 	if pl.auditLogger != nil {
-		pl.auditLogger.Info(action, append(args, "timestamp", time.Now().Format(time.RFC3339Nano))...)
+		pl.auditLogger.Info(action, withFields(args,
+			"timestamp", time.Now().Format(time.RFC3339Nano))...)
 	}
 }
 

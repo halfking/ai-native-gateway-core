@@ -84,6 +84,35 @@ func TestResourceMonitor(t *testing.T) {
 	}
 }
 
+// 回归：Stop 先于 Start 调用后，Start 必须是 no-op；重复 Stop 安全。
+// 旧实现会在未启动的 Stop 里关闭 stopDone，Start 后的采集循环退出时
+// 再次 close 同一通道会 panic，且该循环永不退出（goroutine 泄漏）。
+func TestStopBeforeStartThenStart(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	monitor, err := NewResourceMonitor(ResourceMonitorConfig{
+		LogDir:   tmpDir,
+		Interval: time.Hour,
+	})
+	if err != nil {
+		t.Fatalf("Failed to create resource monitor: %v", err)
+	}
+
+	if err := monitor.Stop(); err != nil {
+		t.Fatalf("Stop before Start failed: %v", err)
+	}
+	if err := monitor.Stop(); err != nil {
+		t.Fatalf("Second Stop failed: %v", err)
+	}
+
+	monitor.Start() // 必须保持 no-op，不得启动采集循环
+	monitor.Start()
+
+	if snapshot := monitor.GetLastSnapshot(); snapshot != nil {
+		t.Error("No snapshot should be collected after Stop-before-Start lifecycle")
+	}
+}
+
 func TestLeakDetection(t *testing.T) {
 	tmpDir := t.TempDir()
 

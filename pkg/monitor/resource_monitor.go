@@ -94,6 +94,7 @@ type ResourceMonitor struct {
 	lastSnapshot *ResourceSnapshot
 	leakDetector *LeakDetector
 	started      bool
+	stopped      bool
 	stopOnce     sync.Once
 	stopDone     chan struct{}
 }
@@ -229,7 +230,9 @@ func NewResourceMonitor(config ResourceMonitorConfig) (*ResourceMonitor, error) 
 // Start 启动资源监控
 func (rm *ResourceMonitor) Start() {
 	rm.mu.Lock()
-	if rm.started {
+	// stopped 后不允许重启：stopOnce 已消费且 stopDone 语义唯一，重启会导致
+	// 采集循环泄漏或重复关闭通道。
+	if rm.started || rm.stopped {
 		rm.mu.Unlock()
 		return
 	}
@@ -242,20 +245,19 @@ func (rm *ResourceMonitor) Start() {
 // Stop 停止资源监控
 func (rm *ResourceMonitor) Stop() error {
 	rm.stopOnce.Do(func() {
-		rm.mu.RLock()
+		rm.mu.Lock()
 		started := rm.started
-		rm.mu.RUnlock()
-		if !started {
-			close(rm.stopDone)
-			return
-		}
+		rm.stopped = true
+		rm.mu.Unlock()
 
-		rm.cancel()
-		<-rm.stopDone
+		if started {
+			rm.cancel()
+			<-rm.stopDone
 
-		// 记录最终快照，确保停止前的资源状态落盘。
-		if snapshot, err := rm.collectSnapshot(); err == nil {
-			rm.writeSnapshot(snapshot)
+			// 记录最终快照，确保停止前的资源状态落盘。
+			if snapshot, err := rm.collectSnapshot(); err == nil {
+				rm.writeSnapshot(snapshot)
+			}
 		}
 	})
 
