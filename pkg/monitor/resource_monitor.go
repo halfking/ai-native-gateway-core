@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -133,17 +134,20 @@ type ResourceMonitorConfig struct {
 }
 
 var (
-	globalResourceMonitor *ResourceMonitor
-	resourceMonitorOnce   sync.Once
+	globalResourceMonitor  *ResourceMonitor
+	resourceMonitorOnce    sync.Once
+	resourceMonitorInitErr error
 )
 
 // InitResourceMonitor 初始化全局资源监控器
+//
+// 失败语义：与 logger.InitPersistentLogger 一致，首次失败后后续调用
+// 必须返回 (nil, 首次错误)，避免 (nil, nil) 让调用方误判初始化成功。
 func InitResourceMonitor(config ResourceMonitorConfig) (*ResourceMonitor, error) {
-	var err error
 	resourceMonitorOnce.Do(func() {
-		globalResourceMonitor, err = NewResourceMonitor(config)
+		globalResourceMonitor, resourceMonitorInitErr = NewResourceMonitor(config)
 	})
-	return globalResourceMonitor, err
+	return globalResourceMonitor, resourceMonitorInitErr
 }
 
 // GetResourceMonitor 获取全局资源监控器
@@ -359,7 +363,7 @@ func (rm *ResourceMonitor) collectSnapshot() (*ResourceSnapshot, error) {
 		snapshot.FileDescriptors.OpenFDs = numFDs
 		if rlimit, err := rm.proc.Rlimit(); err == nil {
 			for _, limit := range rlimit {
-				if limit.Resource == 7 { // RLIMIT_NOFILE
+				if rlimitNOFile != 0 && limit.Resource == int32(rlimitNOFile) {
 					snapshot.FileDescriptors.MaxFDs = int64(limit.Soft)
 					if limit.Soft > 0 {
 						snapshot.FileDescriptors.UsedRatio = float64(numFDs) / float64(limit.Soft)
@@ -387,7 +391,11 @@ func (rm *ResourceMonitor) collectSnapshot() (*ResourceSnapshot, error) {
 func (rm *ResourceMonitor) writeSnapshot(snapshot *ResourceSnapshot) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
-	rm.jsonEncoder.Encode(snapshot)
+	if err := rm.jsonEncoder.Encode(snapshot); err != nil {
+		// 磁盘满/权限等故障下快照会丢失，至少要在默认日志里留痕；
+		// slog 输出到 stderr/主日志，不经过 rm.logWriter，无递归风险。
+		slog.Warn("resource monitor: failed to write snapshot", "error", err)
+	}
 }
 
 // updateLastSnapshot 更新最后一次快照
@@ -464,7 +472,9 @@ func (rm *ResourceMonitor) writeAlert(alert LeakAlert) {
 		"type":  "leak_alert",
 		"alert": alert,
 	}
-	rm.jsonEncoder.Encode(alertLog)
+	if err := rm.jsonEncoder.Encode(alertLog); err != nil {
+		slog.Warn("resource monitor: failed to write leak alert", "error", err, "alert_type", alert.AlertType)
+	}
 }
 
 // addAlert 添加告警
