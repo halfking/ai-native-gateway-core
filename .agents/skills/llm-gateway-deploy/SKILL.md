@@ -150,6 +150,25 @@ Remote deployment uses the canary units and atomic upstream handoff in
 `rollback` only to a verified release. Binary rollback never rolls back database
 schema.
 
+### Credential decryption gate (step 9.2)
+
+DB readiness is not key-material readiness. On 2026-09-04, 245 served a
+candidate whose binary regressed credential decryption while `/healthz`,
+`/readyz`, and authenticated `background-tasks` all stayed green — every
+provider credential showed `key_mask_error=decrypt_failed` and user apikey
+reveal failed with `invalid fernet token` (245/154 share one PG, so the env
+keys were identical; only the binary differed).
+
+`deploy-seamless.sh` step 9.2 therefore runs
+`deploy_verify_credential_decrypt` (in `scripts/deploy-lib/post-deploy-verify.sh`)
+after DB-ready: it logs into the admin API, fetches the credentials of the
+providers with the most active credentials, and counts `key_mask_error`
+rows. All-failed is treated as a systemic keyring/decrypt regression and
+aborts with rollback; partial failures or an empty credential store only
+WARN. Pin the audited providers with `LLM_GATEWAY_DECRYPT_SMOKE_PROVIDER_ID`
+(comma-separated ids) in the target env file. Offline coverage:
+`tests/deploy_credential_decrypt_verify_test.sh`.
+
 ## Verification contract
 
 A successful local verify/deploy prints:
@@ -170,4 +189,5 @@ bash -n scripts/deploy-local-lib.sh scripts/deploy-local.sh scripts/deploy-245.s
 bash tests/deploy_blue_green_contract_test.sh
 bash tests/deploy_host_test.sh
 bash tests/deploy_wrapper_test.sh
+bash tests/deploy_credential_decrypt_verify_test.sh
 ```
