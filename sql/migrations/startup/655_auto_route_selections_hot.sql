@@ -21,6 +21,9 @@ ALTER TABLE public.auto_route_selections_hot ALTER COLUMN ts SET DEFAULT NOW();
 ALTER TABLE public.auto_route_selections_hot ALTER COLUMN profile SET DEFAULT 'smart';
 ALTER TABLE public.auto_route_selections_hot ALTER COLUMN classifier SET DEFAULT 'heuristic';
 ALTER TABLE public.auto_route_selections_hot ALTER COLUMN candidate_rank SET DEFAULT 1;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN affinity_applied SET DEFAULT FALSE;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN explore SET DEFAULT FALSE;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN fallback_used SET DEFAULT FALSE;
 ALTER TABLE public.auto_route_selections_hot ALTER COLUMN partition_date SET DEFAULT CURRENT_DATE;
 DO $$
 BEGIN
