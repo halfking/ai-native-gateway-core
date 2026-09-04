@@ -589,8 +589,8 @@ const mirrorServeVerifyTimeout = 100 * time.Millisecond
 
 // verifyRedisForMirrorServe implements the §14.3 target-gear check: before
 // a mirror-only answer may be served, Redis must be demonstrably
-// reachable. The error wraps store.ErrRedisUnavailable so callers can
-// errors.Is it identically to the pipeline-read failure path.
+// reachable. Internal PING timeouts are classified as Redis unavailable;
+// caller cancellation and server-side errors retain their original type.
 func (m *Manager) verifyRedisForMirrorServe(ctx context.Context) error {
 	if m == nil || m.store == nil || m.store.RawClient() == nil {
 		return store.ErrRedisUnavailable
@@ -601,7 +601,13 @@ func (m *Manager) verifyRedisForMirrorServe(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return fmt.Errorf("%w: mirror liveness ping: %v", store.ErrRedisUnavailable, err)
+		// A deadline from the short, internally-owned PING budget means Redis
+		// did not answer in time and is unavailable for this decision. Keep
+		// ACL/protocol/configuration errors unclassified so they fail closed.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: mirror liveness ping: %v", store.ErrRedisUnavailable, err)
+		}
+		return fmt.Errorf("mirror liveness ping: %w", err)
 	}
 	return nil
 }
@@ -613,8 +619,7 @@ func isRedisTransportUnavailable(err error) bool {
 	if errors.Is(err, store.ErrRedisUnavailable) {
 		return true
 	}
-	if errors.Is(err, context.Canceled) ||
-		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH) {
 		return true
