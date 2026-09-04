@@ -358,4 +358,8 @@ pass 'independent project roots do not share deployment state'
 grep -Fq 'ON_ERROR_STOP=1' "$ROOT/scripts/deploy-local.sh" || fail 'schema bootstrap must stop on SQL errors'
 grep -Fq 'gateway-migrate.log' "$ROOT/scripts/deploy-local.sh" || fail 'gateway migrate output must be persisted'
 grep -Fq 'structured report follows' "$ROOT/scripts/deploy-local.sh" || fail 'migration failure must print structured report'
+grep -Fq 'source "$PROJECT_ROOT/.env.local"' "$ROOT/scripts/deploy-local.sh" || fail 'local deployment must auto-load project .env.local'
+if grep -Fq 'db_port=${db_port:-5432}' "$ROOT/scripts/deploy-local.sh"; then
+  fail 'deployment must not fake an unpublished PostgreSQL host port'
+fi
 pass 'local migration failures preserve structured diagnostics and fail closed'
