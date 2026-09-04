@@ -44,6 +44,13 @@ spec:
               value: /opt/llm-gateway-go/web/dist
             - name: LLM_GATEWAY_CORS_ORIGINS
               value: https://llm.itestu.cn
+            # 附件与持久化诊断日志必须指向下方 volumes 挂载的容器路径
+            # （storage-pvc.yaml 的 PVC），否则写入容器临时层、Pod 重建即丢失。
+            # 主 slog 保持 stdout，供 kubectl logs 采集。
+            - name: LLM_GATEWAY_ATTACHMENT_DIR
+              value: /var/lib/llm-gateway/attachments
+            - name: LLM_GATEWAY_PERSISTENT_LOG_DIR
+              value: /var/log/llm-gateway
             - name: LLM_GATEWAY_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -85,6 +92,18 @@ spec:
             limits:
               cpu: "2"
               memory: 2Gi
+          volumeMounts:
+            - name: attachments
+              mountPath: /var/lib/llm-gateway/attachments
+            - name: persistent-logs
+              mountPath: /var/log/llm-gateway
+      volumes:
+        - name: attachments
+          persistentVolumeClaim:
+            claimName: llm-gateway-attachments-pvc
+        - name: persistent-logs
+          persistentVolumeClaim:
+            claimName: llm-gateway-logs-pvc
 ---
 apiVersion: v1
 kind: Service
