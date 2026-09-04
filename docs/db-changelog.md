@@ -5,7 +5,7 @@
 
 ## 2026-09-05 — database revision sequence 655
 
-本次数据库修订整合为 `scripts/apply-db-revision-sequence.sh`，由 `scripts/deploy-local.sh deploy` 在 Gateway 应用迁移前调用。固定顺序为 `655 → 560 → 572 → 606 → 563 → 564 → 644 → 645`；序列使用 `gateway_db_revision_sequences` 做幂等完成标记。655 只增量补齐被 Memora 最小 schema 覆盖的 `session_summaries` canonical 列，保留 `session_id/summary_json`，不删除或重建表。
+本次数据库修订整合为 `scripts/apply-db-revision-sequence.sh`，由 `scripts/deploy-local.sh deploy` 在 Gateway 应用迁移前调用。固定顺序为 `655 → 560 → 572 → 606 → 563 → 564 → 644 → 645 → 656`；序列使用 `gateway_db_revision_sequences` 做幂等完成标记。655 只增量补齐被 Memora 最小 schema 覆盖的 `session_summaries` canonical 列，保留 `session_id/summary_json`，不删除或重建表。656 补齐 auto_route_selections 热表（`db.go` ensure 链无该补偿，存量部署由此步骤落地）。644 的 self-check CHECK 重建使用定义感知守卫，已是 canonical 定义时跳过，避免部署期重复全表验证锁。
 
 执行前必须完成 PG 备份/快照和 DSN/schema 预检。发现 `session_summaries` 缺失、底层对象不匹配、重复唯一 key 或 645 热表重复 key 时停止；不自动重命名、删除、清理重复业务数据，也不创建 ACC 的 `employees`/`employee_agent_configs` 等外部表。JSONB 由 Go writer 以合法 JSON 字符串绑定，644 不再安装无效的 PostgreSQL regex sanitizer。
 
