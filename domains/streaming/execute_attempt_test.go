@@ -140,7 +140,7 @@ func TestExecuteAttemptNoCandidatesSynthesizesOutcome(t *testing.T) {
 
 func TestFoldCandidateOutcomesPreservesTypedRetryableKinds(t *testing.T) {
 	err := &executors.ExecuteError{LastKind: errorsx.KindEmptyResponse, LastErr: errors.New("empty upstream response")}
-	outcomes := foldCandidateOutcomes(err)
+	outcomes := foldCandidateOutcomes(err, "test-request-id")
 	if len(outcomes) != 1 || outcomes[0].Kind != errorsx.KindEmptyResponse {
 		t.Fatalf("outcomes = %+v, want one empty_response outcome", outcomes)
 	}
