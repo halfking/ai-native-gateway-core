@@ -41,6 +41,7 @@ type MemoryStateStore struct {
 	items         map[string]*item
 	sweepInterval time.Duration // 后台清理扫描间隔
 	stopCh        chan struct{} // 关闭以通知清理协程退出
+	doneCh        chan struct{} // 清理协程退出后关闭，供 Close 等待
 	closeOnce     sync.Once     // 保证 Close 幂等
 	closed        bool          // 是否已关闭（由 mu 保护）
 }
@@ -63,6 +64,7 @@ func NewMemoryStateStoreWithInterval(interval time.Duration) *MemoryStateStore {
 		items:         make(map[string]*item),
 		sweepInterval: interval,
 		stopCh:        make(chan struct{}),
+		doneCh:        make(chan struct{}),
 	}
 	go s.janitor()
 	return s
@@ -70,6 +72,7 @@ func NewMemoryStateStoreWithInterval(interval time.Duration) *MemoryStateStore {
 
 // janitor 后台清理协程：按 sweepInterval 周期扫描并删除过期条目，Close 后退出。
 func (s *MemoryStateStore) janitor() {
+	defer close(s.doneCh)
 	ticker := time.NewTicker(s.sweepInterval)
 	defer ticker.Stop()
 	for {
@@ -166,6 +169,7 @@ func (s *MemoryStateStore) Close() error {
 		s.closed = true
 		s.mu.Unlock()
 		close(s.stopCh)
+		<-s.doneCh
 	})
 	return nil
 }

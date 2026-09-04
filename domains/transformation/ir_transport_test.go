@@ -137,6 +137,19 @@ func TestIRTransport_ConvertResponse_Q3_OpenAIClient_AnthropicUpstream(t *testin
 	}
 }
 
+func TestIRTransport_ConvertResponse_GeminiClient(t *testing.T) {
+	tr := NewIRTransport()
+	env := newEnvelope("gemini-generate", "gemini-generate", openaiBody, "gemini-2.5-pro")
+
+	out, err := tr.ConvertResponse(context.Background(), env, []byte(geminiResponse))
+	if err != nil {
+		t.Fatalf("ConvertResponse: %v", err)
+	}
+	if !contains(out, `"candidates"`) || !contains(out, `"text":"hi"`) {
+		t.Fatalf("Gemini response should remain Gemini-native: %s", out)
+	}
+}
+
 func TestIRTransport_ConvertResponse_GeminiUpstream(t *testing.T) {
 	tr := NewIRTransport()
 	env := newEnvelope("openai-chat", "gemini-generate", openaiBody, "gpt-4o")

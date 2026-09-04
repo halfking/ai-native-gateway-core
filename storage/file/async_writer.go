@@ -196,8 +196,8 @@ func (w *AsyncFileWriter) execute(task *WriteTask) {
 	err = w.writeAtomic(task.Path, task.Data)
 }
 
-// writeAtomic 原子写入：先确保父目录存在，再写 <path>.tmp 临时文件，
-// 最后同目录 rename 保证原子性；任一步失败都会清理临时文件。
+// writeAtomic 原子写入：先确保父目录存在，再写同目录唯一临时文件，
+// 最后 rename 保证原子性；任一步失败都会清理临时文件。
 func (w *AsyncFileWriter) writeAtomic(path string, data []byte) error {
 	if path == "" {
 		return errors.New("async file writer: path is empty")
@@ -206,16 +206,34 @@ func (w *AsyncFileWriter) writeAtomic(path string, data []byte) error {
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("async file writer: mkdir %s: %w", dir, err)
 	}
-	tmp := path + tmpSuffix
-	if err := os.WriteFile(tmp, data, filePerm); err != nil {
-		_ = os.Remove(tmp) // 失败时清理临时文件
+	base := filepath.Base(path)
+	tmpFile, err := os.CreateTemp(dir, "."+base+"-*"+tmpSuffix)
+	if err != nil {
+		return fmt.Errorf("async file writer: create tmp in %s: %w", dir, err)
+	}
+	tmp := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmp)
+		}
+	}()
+	if err := tmpFile.Chmod(filePerm); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("async file writer: chmod tmp %s: %w", tmp, err)
+	}
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
 		return fmt.Errorf("async file writer: write tmp %s: %w", tmp, err)
 	}
-	// 同目录 rename，保证原子替换
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("async file writer: close tmp %s: %w", tmp, err)
+	}
+	// 同目录 rename，保证原子替换；唯一临时文件允许同一目标并发写入而不互相覆盖。
 	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
 		return fmt.Errorf("async file writer: rename %s -> %s: %w", tmp, path, err)
 	}
+	cleanup = false
 	return nil
 }
 

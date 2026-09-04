@@ -692,6 +692,8 @@ func serializeResponse(protocol string, resp *ir.InternalResponse, clientModel s
 		return ir.SerializeAnthropicResponse(resp, clientModel)
 	case "openai-responses", "responses":
 		return ir.SerializeResponsesResponse(resp, clientModel)
+	case "gemini-generate", "gemini":
+		return ir.SerializeGeminiResponse(resp, clientModel)
 	default:
 		return nil, fmt.Errorf("unsupported client protocol: %s", protocol)
 	}

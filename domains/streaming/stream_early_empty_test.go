@@ -116,6 +116,23 @@ func TestRunEmptyStreamGateTransformsSplitXMLToolCall(t *testing.T) {
 	}
 }
 
+func TestStreamXMLToolCallOverflowIsDroppedAndBounded(t *testing.T) {
+	c := newStreamXMLToolCallCoercer()
+	content := "<tool_call><function=search>" + strings.Repeat("x", maxStreamXMLToolCallBytes) + "</function></tool_call>"
+	line := `data: {"id":"overflow","choices":[{"delta":{"content":"` + content + `"}}]}` + "\n"
+
+	got := c.apply(line, true)
+	if c.pending() {
+		t.Fatal("overflow must clear the buffered fragment")
+	}
+	if strings.Contains(got, content) {
+		t.Fatalf("overflow content leaked to output: %q", got)
+	}
+	if !strings.Contains(got, `"delta":{}`) {
+		t.Fatalf("overflow should emit a bounded empty delta, got %q", got)
+	}
+}
+
 func TestRunEmptyStreamGateEarlyEmptyDetection(t *testing.T) {
 	withEarlyEmptyThreshold(t, 3)
 
