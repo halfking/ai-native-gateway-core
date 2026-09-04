@@ -97,11 +97,10 @@ func buildMatrixQueryMaterialized(rowDim, metric string) (string, error) {
 		       %s AS col_key,
 		       %s AS val
 		FROM routing_analytics_7d
-			WHERE effective_model IS NOT NULL
-			  AND %s IS NOT NULL
-			GROUP BY %s, %s
-		`, rowExpr, colExpr, metricExpr, colExpr, rowExpr, colExpr), nil
-
+		WHERE effective_model IS NOT NULL
+		  AND %s IS NOT NULL
+		GROUP BY %s, %s
+	`, rowExpr, colExpr, metricExpr, colExpr, rowExpr, colExpr), nil
 }
 
 // buildFlowL12QueryMaterialized builds the L1→L2 (task → model) Sankey

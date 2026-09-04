@@ -75,7 +75,7 @@ func TestBuildMatrixQuery_AllMetrics(t *testing.T) {
 			t.Errorf("metric=%s: %v", m, err)
 			continue
 		}
-		if !strings.Contains(q, "SELECT") || !strings.Contains(q, "FROM request_logs") {
+		if !strings.Contains(q, "SELECT") || !strings.Contains(q, "FROM routing_analytics_source") {
 			t.Errorf("metric=%s: malformed query:\n%s", m, q)
 		}
 	}

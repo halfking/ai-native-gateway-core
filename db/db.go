@@ -864,8 +864,10 @@ const routingAnalyticsMVSQL = `
 		-- Keep analytics isolated from the frozen request-log wrapper view. The
 		-- narrow source has stable types across hot and parent partitions and
 		-- explicitly exposes origin_stage for probe filtering.
-		DROP VIEW IF EXISTS routing_analytics_source;
-		CREATE VIEW routing_analytics_source AS
+		-- CREATE OR REPLACE (not DROP+CREATE): the routing matviews depend on
+		-- this view, so a plain DROP fails with SQLSTATE 2BP01 whenever this
+		-- batch runs on the index-repair path (views current, ukey missing).
+		CREATE OR REPLACE VIEW routing_analytics_source AS
 		SELECT
 		  ts,
 		  task_type::text AS task_type,

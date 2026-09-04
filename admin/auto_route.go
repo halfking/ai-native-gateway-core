@@ -511,13 +511,12 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	if mvFound {
 		total, successes, totalAuto, totalSpecified = mvTotal, mvSuccesses, mvAuto, mvSpecified
 	} else {
-		// Fallback to base view
-		// 2026-08-31: query the _without_customer_id view. The customer_id LATERAL
-		// join added by migration 575 makes every aggregation a 10s+ Seq Scan over
-		// 314K rows in the August 2026 columnar partition. None of the audit
-		// breakdowns (total, task_dist, profile_dist, top_models) consume
-		// customer_id, so we skip the LATERAL JOIN entirely. The renamed view
-		// was kept by migration 575 specifically for this purpose.
+		// Fallback to the canonical analytics source view (migration 649).
+		// It spans request_logs_hot + request_logs without the customer_id
+		// LATERAL (a 10s+ Seq Scan over 314K rows) and matches the source
+		// the routing_audit_summary_7d materialized view aggregates, so the
+		// fallback numbers stay identical to the MV path across month
+		// partition boundaries.
 		var totalInt, successesInt, autoInt, specifiedInt int
 		err := h.db.QueryRow(ctx, `
 			SELECT
@@ -525,7 +524,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 			  COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
 			  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
 			  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) THEN 1 ELSE 0 END), 0)
-			FROM request_logs_with_current_month_without_customer_id
+			FROM routing_analytics_source
 			WHERE ts >= NOW() - INTERVAL '7 days'
 			  AND (
 			    is_auto_request = TRUE
@@ -594,7 +593,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
 		rows, err := h.db.Query(ctx, fmt.Sprintf(`
 			SELECT %s AS task_type, COUNT(*)
-			FROM request_logs_with_current_month_without_customer_id
+			FROM routing_analytics_source
 			WHERE ts >= NOW() - INTERVAL '7 days'
 			  AND (
 			    is_auto_request = TRUE
@@ -621,7 +620,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	profileDist := map[string]int{}
 	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(auto_profile, 'unknown') AS p, COUNT(*)
-		FROM request_logs_with_current_month_without_customer_id
+		FROM routing_analytics_source
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - INTERVAL '7 days'`+auditBusinessFrag+auditTenantFrag+`
 		GROUP BY p
@@ -688,7 +687,7 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 		// Fallback to base view
 		rows, err := h.db.Query(ctx, `
 			SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
-			FROM request_logs_with_current_month_without_customer_id
+			FROM routing_analytics_source
 			WHERE ts >= NOW() - INTERVAL '7 days'
 			  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
 			  AND (
