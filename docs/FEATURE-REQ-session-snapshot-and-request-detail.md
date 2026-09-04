@@ -71,6 +71,7 @@ turns_sessions / session_management_api / 会话健康 worker / auto-route worke
 | A4 | （上轮已修）installer 未嵌入 655；`TestStartupFilesAreAllEmbedded` 无法发现漏登记 | 高 | embed/映射/测试清单齐备，本轮复核通过 |
 | A5 | （上轮已修）655 假设 `tenant_id` 存在，最小 shape 下整事务回滚 | 高 | 前置幂等补列，本轮复核通过 |
 | A6 | （上轮已修）baseline 三处镜像仍是 310 旧触发器（`NEW.session_key`/`created_at`/`total_cost`） | 高 | 已同步 563 版本，本轮复核通过 |
+| A7 | （2026-09-05 复核补修）`web/src/api/logs.ts` 仍残留"后端不识别 ?omit_body=1"过时注释（A3 同类漏网点），与 `admin/logs.go:836` 实际识别矛盾 | 低 | 注释已更新为 omitBody 分阶段加载语义 |
 
 说明：仓库中不存在 `legacy_session_summaries` 表及引用；此前报告中的"读写分裂"为本地库
 瞬态状态，非代码事实。
