@@ -85,6 +85,14 @@ turns_sessions / session_management_api / 会话健康 worker / auto-route worke
 - `vue-tsc --noEmit` 抽屉相关错误清零
 - `vitest`：RequestLogDrawer / useRequestDetailLoader / appNav 共 38 用例通过
 - `gateway migrate` 本地库幂等执行通过
+- **2026-09-05 环境侧端到端复验（真 main 二进制 2.5.0.1935 / vcs.revision=b08ea0607）全部通过**：
+  全新业务流量实测 `GET /api/logs/:id` 200（FR-3 落库恢复；写侧为 `request_logs_hot` 热表，
+  父表 `request_logs` 看不到新行属正常拓扑）、`?omit_body=1` 首包 200 且 `outbound_body`
+  正确省略（FR-4）、`GET /api/admin/sessions/:id/snapshot` 200 无 42703（FR-1/FR-2；
+  `public.sessions` 无行的会话按设计回退 2 字段 200）。复验过程发现并修复本地部署链路
+  「编译失败被静默吞掉 → 复用陈旧二进制」隐患（CGO=0 构建断裂 + set -e 赋值语境吞错），
+  详见 `docs/audit/2026-09-05-stale-binary-deploy.md` 与
+  `docs/06-deployment/01-environments/local-8782-env-state-20260905.md`。
 
 ## 5. 相关文档索引
 
