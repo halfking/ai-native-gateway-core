@@ -148,3 +148,138 @@ deploy_preflight_pg_from_remote_env() {
   fi
   _deploy_verify_log "✓ 远端 PG 连通"
 }
+
+# 凭据解密冒烟（2026-09-04 245 事故固化）。
+#
+# 事故：245 与 154 共享 252 PG，密钥 env 完全一致，但 245 跑了缺
+# DecryptAny 修复的旧 binary（decryptCred 把 v1:legacy: 前缀的 AES-GCM
+# 密文一律送进 Fernet 路径）。结果 /providers/{id} 页面所有凭据
+# 「无法解析」、用户 apikey reveal 报 invalid fernet token — 而
+# healthz / background-tasks / admin 登录全绿。DB 就绪 ≠ 解密链路可用。
+#
+# 本检查登录 admin API，抓取有凭据的 provider 的凭据列表，统计
+# key_mask_error=decrypt_failed：
+#   - 扫描的所有凭据全部失败 = 系统性 keyring/解密回归 → FAIL (return 1)
+#   - 部分失败 / 空库 = WARN (return 0，可能是历史脏数据，不阻断部署)
+#   - 至少一条 key_masked 成功 = OK
+# 可用远端 env 的 LLM_GATEWAY_DECRYPT_SMOKE_PROVIDER_ID=587[,id...] 固定
+# 抽检对象（默认按 active_credential_count 降序取前 3 家）。
+deploy_verify_credential_decrypt() {
+  local ssh_cmd=$1 port=${2:-8781} env_file=${3:-/etc/llm-gateway-go/env}
+  local base="http://127.0.0.1:${port}"
+  _deploy_verify_log "凭据解密冒烟: ${base} (admin 登录 → providers → credentials)..."
+  local verdict
+  verdict=$(_deploy_verify_ssh "$ssh_cmd" "ENV_FILE='$env_file' BASE='$base' python3 - <<'PY'
+import json
+import os
+import urllib.request
+
+env = {}
+try:
+    with open(os.environ['ENV_FILE'], encoding='utf-8') as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            key, value = line.split('=', 1)
+            env[key] = value
+except OSError:
+    print('VERDICT=FAIL reason=env_file_unreadable')
+    raise SystemExit
+
+def get(url, token=None):
+    headers = {}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    request = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.status, json.load(response)
+
+payload = json.dumps({
+    'username': env.get('LLM_GATEWAY_ADMIN_USER', ''),
+    'password': env.get('LLM_GATEWAY_ADMIN_PASSWORD', ''),
+}).encode()
+try:
+    login_request = urllib.request.Request(
+        os.environ['BASE'] + '/api/auth/token',
+        data=payload,
+        headers={'Content-Type': 'application/json'},
+        method='POST',
+    )
+    with urllib.request.urlopen(login_request, timeout=10) as response:
+        token = json.load(response).get('access_token', '')
+    if not token:
+        raise RuntimeError('no access_token')
+except Exception as error:
+    print('VERDICT=FAIL reason=admin_login_failed:%s' % error)
+    raise SystemExit
+
+pinned = [p for p in env.get('LLM_GATEWAY_DECRYPT_SMOKE_PROVIDER_ID', '').split(',') if p.strip()]
+try:
+    _, providers = get(os.environ['BASE'] + '/api/providers', token)
+except Exception as error:
+    print('VERDICT=FAIL reason=providers_fetch_failed:%s' % error)
+    raise SystemExit
+rows = providers if isinstance(providers, list) else providers.get('providers', providers.get('data', []))
+
+if pinned:
+    order = []
+    for pid in pinned:
+        for row in rows:
+            if str(row.get('id')) == pid.strip():
+                order.append(row)
+                break
+    candidates = order
+else:
+    with_creds = [r for r in rows if int(r.get('active_credential_count') or 0) > 0]
+    with_creds.sort(key=lambda r: int(r.get('active_credential_count') or 0), reverse=True)
+    candidates = with_creds[:3]
+
+total = 0
+failed = 0
+scanned = []
+for row in candidates:
+    pid = row.get('id')
+    try:
+        _, creds = get(os.environ['BASE'] + '/api/providers/%s/credentials' % pid, token)
+    except Exception as error:
+        print('VERDICT=FAIL reason=credentials_fetch_failed:provider=%s:%s' % (pid, error))
+        raise SystemExit
+    creds = creds if isinstance(creds, list) else creds.get('credentials', creds.get('data', []))
+    if not creds:
+        continue
+    scanned.append(pid)
+    total += len(creds)
+    failed += sum(1 for c in creds if c.get('key_mask_error'))
+
+if not scanned or total == 0:
+    print('VERDICT=WARN reason=no_credentials_to_scan')
+    raise SystemExit
+
+summary = 'providers=%s creds=%d failed=%d' % (','.join(str(p) for p in scanned), total, failed)
+if failed == 0:
+    print('VERDICT=OK %s' % summary)
+elif failed >= total:
+    print('VERDICT=FAIL %s reason=all_credentials_undecryptable' % summary)
+else:
+    print('VERDICT=WARN %s reason=partial_failures_likely_legacy_rows' % summary)
+PY" 2>/dev/null | tail -n1) || verdict="VERDICT=FAIL reason=ssh_or_python_error"
+
+  case "$verdict" in
+    VERDICT=OK*)
+      _deploy_verify_log "✓ ${verdict#VERDICT=OK }"
+      return 0
+      ;;
+    VERDICT=FAIL*)
+      _deploy_verify_err "${verdict}"
+      _deploy_verify_err "系统性解密失败 — keyring env 与 DB 不一致, 或 binary 回归了解密路径"
+      _deploy_verify_err "对照: 245/154 共享 252 PG, LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY 必须一致"
+      _deploy_verify_err "诊断: journalctl -u <unit> | grep -iE 'decrypt|fernet' + 手工 GET /api/providers/<id>/credentials"
+      return 1
+      ;;
+    *)
+      _deploy_verify_warn "${verdict}（不阻断, 人工确认）"
+      return 0
+      ;;
+  esac
+}

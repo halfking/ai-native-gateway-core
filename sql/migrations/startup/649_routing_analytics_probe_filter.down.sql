@@ -3,4 +3,5 @@
 BEGIN;
 DROP MATERIALIZED VIEW IF EXISTS public.routing_analytics_7d CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS public.routing_audit_summary_7d CASCADE;
+DROP VIEW IF EXISTS public.routing_analytics_source;
 COMMIT;
