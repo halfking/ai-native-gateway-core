@@ -23,7 +23,7 @@ TEST_BUILD_DIR="/tmp/e2e-build-$$"
 mkdir -p "$TEST_BUILD_DIR/bin"
 
 run_test_case "后端编译-linux-amd64" \
-    "cd $PROJECT_ROOT && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags '-X main.Version=$TEST_VERSION' -o $TEST_BUILD_DIR/bin/test-binary ./cmd/gateway 2>&1 | head -10"
+    "cd $PROJECT_ROOT && CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -ldflags '-X main.Version=$TEST_VERSION' -o $TEST_BUILD_DIR/bin/test-binary ./cmd/gateway 2>&1 | head -10"
 
 # 验证二进制存在
 if [ -f "$TEST_BUILD_DIR/bin/test-binary" ]; then
