@@ -410,11 +410,28 @@ func (d *DB) ensureRequestJourneyObservationSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_state_transitions_journey_retry_at
 			ON request_state_transitions (tenant_id, retry_at)
 			WHERE event_type = 'retry_scheduled' AND retry_at IS NOT NULL`,
-		`ALTER TABLE request_state_transitions
-			DROP CONSTRAINT IF EXISTS request_state_transitions_retry_at_event_chk,
-			ADD CONSTRAINT request_state_transitions_retry_at_event_chk CHECK (
-				retry_at IS NULL OR event_type = 'retry_scheduled'
-			)`,
+		// 2026-09-05: definition-guarded. The previous unconditional DROP+ADD
+		// re-validated the whole table (ACCESS EXCLUSIVE for the scan) on every
+		// boot; on the shared 252 DB this grew past the 20s boot budget (5×
+		// 245 deploy aborts on 2026-09-05, live INSERTs queued behind it).
+		// If the definition ever changes, update the expected pg_get_constraintdef
+		// string in the same commit so the guard still self-heals drift.
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'request_state_transitions_retry_at_event_chk'
+				  AND conrelid = 'request_state_transitions'::regclass
+				  AND pg_get_constraintdef(oid) = 'CHECK (((retry_at IS NULL) OR (event_type = ''retry_scheduled''::text)))'
+			) THEN
+				ALTER TABLE request_state_transitions
+					DROP CONSTRAINT IF EXISTS request_state_transitions_retry_at_event_chk;
+				ALTER TABLE request_state_transitions
+					ADD CONSTRAINT request_state_transitions_retry_at_event_chk CHECK (
+						retry_at IS NULL OR event_type = 'retry_scheduled'
+					);
+			END IF;
+		END $$`,
 		`CREATE TABLE IF NOT EXISTS request_journey_observation_outbox (
 			id BIGSERIAL PRIMARY KEY,
 			tenant_id TEXT NOT NULL,
@@ -442,13 +459,37 @@ func (d *DB) ensureRequestJourneyObservationSchema(ctx context.Context) error {
 		)`,
 		`ALTER TABLE request_journey_observation_outbox
 			ADD COLUMN IF NOT EXISTS claim_fencing_token BIGINT NOT NULL DEFAULT 0`,
-		`ALTER TABLE request_journey_observation_outbox
-			DROP CONSTRAINT IF EXISTS request_journey_observation_outbox_claim_fence_chk,
-			ADD CONSTRAINT request_journey_observation_outbox_claim_fence_chk CHECK (claim_fencing_token >= 0),
-			DROP CONSTRAINT IF EXISTS request_journey_observation_outbox_processing_lease_chk,
-			ADD CONSTRAINT request_journey_observation_outbox_processing_lease_chk CHECK (
-				status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
-			)`,
+		// Definition-guarded (see request_state_transitions_retry_at_event_chk
+		// above): the outbox takes per-request writes on the shared DB, so
+		// re-adding these CHECKs every boot is not acceptable.
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'request_journey_observation_outbox_claim_fence_chk'
+				  AND conrelid = 'request_journey_observation_outbox'::regclass
+				  AND pg_get_constraintdef(oid) = 'CHECK ((claim_fencing_token >= 0))'
+			) THEN
+				ALTER TABLE request_journey_observation_outbox
+					DROP CONSTRAINT IF EXISTS request_journey_observation_outbox_claim_fence_chk;
+				ALTER TABLE request_journey_observation_outbox
+					ADD CONSTRAINT request_journey_observation_outbox_claim_fence_chk
+					CHECK (claim_fencing_token >= 0);
+			END IF;
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'request_journey_observation_outbox_processing_lease_chk'
+				  AND conrelid = 'request_journey_observation_outbox'::regclass
+				  AND pg_get_constraintdef(oid) = 'CHECK (((status <> ''processing''::text) OR ((claim_owner IS NOT NULL) AND (claim_until IS NOT NULL))))'
+			) THEN
+				ALTER TABLE request_journey_observation_outbox
+					DROP CONSTRAINT IF EXISTS request_journey_observation_outbox_processing_lease_chk;
+				ALTER TABLE request_journey_observation_outbox
+					ADD CONSTRAINT request_journey_observation_outbox_processing_lease_chk CHECK (
+						status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
+					);
+			END IF;
+		END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_request_journey_observation_outbox_due
 			ON request_journey_observation_outbox (next_retry_at, created_at)
 			WHERE status IN ('pending', 'failed')`,
@@ -521,9 +562,23 @@ func (d *DB) ensureJournalSnapshotReceiptSchema(ctx context.Context) error {
 		// only enforces non-negative, leaving 0 as a legal first-claim marker.
 		`ALTER TABLE public.journal_snapshot_receipts
 			ADD COLUMN IF NOT EXISTS projection_base_seq BIGINT NOT NULL DEFAULT 0`,
-		`ALTER TABLE public.journal_snapshot_receipts
-			DROP CONSTRAINT IF EXISTS journal_snapshot_receipts_projection_base_seq_chk,
-			ADD CONSTRAINT journal_snapshot_receipts_projection_base_seq_chk CHECK (projection_base_seq >= 0)`,
+		// Definition-guarded (see ensureRequestJourneyObservationSchema): receipts
+		// are written on the hot path of the shared DB.
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'journal_snapshot_receipts_projection_base_seq_chk'
+				  AND conrelid = 'public.journal_snapshot_receipts'::regclass
+				  AND pg_get_constraintdef(oid) = 'CHECK ((projection_base_seq >= 0))'
+			) THEN
+				ALTER TABLE public.journal_snapshot_receipts
+					DROP CONSTRAINT IF EXISTS journal_snapshot_receipts_projection_base_seq_chk;
+				ALTER TABLE public.journal_snapshot_receipts
+					ADD CONSTRAINT journal_snapshot_receipts_projection_base_seq_chk
+					CHECK (projection_base_seq >= 0);
+			END IF;
+		END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_journal_snapshot_receipts_claim
 			ON public.journal_snapshot_receipts (claim_until, updated_at)
 			WHERE status = 'processing'`,
@@ -802,16 +857,28 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 		    ON providers (id)
 		    WHERE deleted_at IS NULL;
 
-		ALTER TABLE credentials
-		    DROP CONSTRAINT IF EXISTS credentials_status_check;
-
-		ALTER TABLE credentials
-		    ADD CONSTRAINT credentials_status_check
-		    CHECK (status = ANY (ARRAY[
-		        'active'::text, 'cooling'::text, 'degraded'::text,
-		        'quarantine'::text, 'quota_expired'::text,
-		        'disabled'::text, 'deleted'::text
-		    ]));
+		-- 2026-09-05: credentials 是共享库最热表，此前这里的无条件 DROP+ADD 每次
+		-- 启动都对全表做验证扫描并持 ACCESS EXCLUSIVE。守卫：约束存在且定义一致
+		-- 则跳过；状态列表变更时同步更新期望的 pg_get_constraintdef 串即可自愈。
+		DO $$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1 FROM pg_constraint
+		        WHERE conname = 'credentials_status_check'
+		          AND conrelid = 'credentials'::regclass
+		          AND pg_get_constraintdef(oid) = 'CHECK ((status = ANY (ARRAY[''active''::text, ''cooling''::text, ''degraded''::text, ''quarantine''::text, ''quota_expired''::text, ''disabled''::text, ''deleted''::text])))'
+		    ) THEN
+		        ALTER TABLE credentials
+		            DROP CONSTRAINT IF EXISTS credentials_status_check;
+		        ALTER TABLE credentials
+		            ADD CONSTRAINT credentials_status_check
+		            CHECK (status = ANY (ARRAY[
+		                'active'::text, 'cooling'::text, 'degraded'::text,
+		                'quarantine'::text, 'quota_expired'::text,
+		                'disabled'::text, 'deleted'::text
+		            ]));
+		    END IF;
+		END $$;
 	`)
 	if err != nil {
 		return err
