@@ -4,16 +4,16 @@
 //
 // 数据来源（与 request_logs body 列已迁移到 request_logs_bodies 一致）：
 //   - getRequestLogDetail (/api/logs/:id)：metadata 全量（token/cost/provider/
-//     session_id/task_id/...）+ request_body/response_body/outbound_body
-//     由 admin/logs.go 的 fetchRequestBodies/fetchRequestOutboundBody
-//     从 request_logs_bodies_hot (heap) → request_logs_bodies (columnar)
-//     二阶段读取。后端不识别 omit_body，因此前端 Phase A/Phase B
-//     拆分不再有意义，一次调用即可拿到完整 payload。
+//     session_id/task_id/...）；首屏 omitBody 只取 metadata，对话/压缩/原始
+//     JSON tab 切入时由 ensureBodies 按需补拉完整 request/response/outbound
+//     body（后端 fetchRequestBodies 从 request_logs_bodies_hot (heap) →
+//     request_logs_bodies (columnar) 二阶段读取）。
 //   - getUnifiedRequestDetail (/api/admin/request-detail/:id)：memory/file
 //     → request_logs → session_turns 多层回退的 unified facade。
 //     与 /api/logs/:id 数据重复，主要用作 source 标签（memory/file/
 //     request_logs/session_turns）和 in_flight/persisted 持久化阶段。
-//   - getSessionSnapshot：会话级快照（标题、分析结果、最后模型/供应商）。
+//   - getSessionSnapshot：会话级快照（标题、分析结果、最后模型/供应商），
+//     fire-and-forget，带 loadSeq + AbortSignal 防止快速切换时串写。
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ApiError } from '../../api/_core'
@@ -87,8 +87,13 @@ const outboundBody = computed(
 
 const hasRouting = computed(() => !!log.value?.routing_attempts?.attempts?.length)
 
+// loadSeq：请求切换序号。快照/正文都是 fire-and-forget 异步，快速切换
+// A→B 时，A 的晚到响应不得写入 B 的视图（与 useRequestDetailLoader 同款守卫）。
 let loadSeq = 0
 let snapshotAbortController: AbortController | null = null
+// bodiesLoadedFor 记录哪个请求已拿到完整 body，切 tab 不重复拉取。
+let bodiesLoadedFor = ''
+const bodiesLoading = ref(false)
 
 watch(
   () => props.requestId,
@@ -99,6 +104,7 @@ watch(
       snapshotAbortController.abort()
       snapshotAbortController = null
     }
+    bodiesLoadedFor = ''
     log.value = null
     unified.value = null
     sessionSnap.value = null
@@ -118,17 +124,17 @@ async function loadRequest(id: string) {
   warnings.value = []
   const currentSeq = loadSeq
   try {
-    // 单次请求拿到 metadata + body（两个端点都无视 omit_body），
-    // Promise.all 并行拉取，失败一方降级（catch → null），由另一方兜底。
-    // 收集每个端点的失败原因到 warnings 让 UI 显式提示，便于排查
-    // （如 245 上 /api/logs/:id 已知 500 — request_logs body 列迁移后
-    // getLog scan 数与 SELECT 列数不匹配，commit e3d569ed6 已修）。
+    // 首屏 metadata-only（omitBody）：抽屉默认停在概览，QA 卡片用
+    // request_preview/response_preview 兜底；对话/压缩/原始JSON tab 切入时
+    // 再由 ensureBodies 按需拉完整正文，避免每次点击色块都打列存冷路径。
+    // 两端点并行拉取，失败一方降级（catch → null）由另一方兜底，
+    // 失败原因收集到 warnings 显式提示。
     const [u, meta] = await Promise.all([
-      getUnifiedRequestDetail(id).catch((e: unknown) => {
+      getUnifiedRequestDetail(id, { omitBody: true }).catch((e: unknown) => {
         recordEndpointFailure('admin/request-detail', e)
         return null
       }),
-      getRequestLogDetail(id, { omit_body: true }).catch((e: unknown) => {
+      getRequestLogDetail(id, { omitBody: true }).catch((e: unknown) => {
         recordEndpointFailure('/api/logs/:id', e)
         return null
       }),
@@ -144,17 +150,16 @@ async function loadRequest(id: string) {
     if (sid) {
       snapshotAbortController = new AbortController()
       const signal = snapshotAbortController.signal
-      void getSessionSnapshot(sid)
+      void getSessionSnapshot(sid, { signal })
         .then((snap) => {
           if (currentSeq === loadSeq && !signal.aborted) {
             sessionSnap.value = snap as Record<string, unknown>
           }
         })
         .catch((e: unknown) => {
-          if (!signal.aborted) {
-            recordEndpointFailure('sessions/:id/snapshot', e)
-            sessionSnap.value = null
-          }
+          if (signal.aborted) return
+          recordEndpointFailure('sessions/:id/snapshot', e)
+          sessionSnap.value = null
         })
     }
   } catch (e: unknown) {
@@ -162,9 +167,40 @@ async function loadRequest(id: string) {
       error.value = e instanceof Error ? e.message : String(e)
     }
   } finally {
-    loading.value = false
+    if (currentSeq === loadSeq) loading.value = false
   }
 }
+
+// ensureBodies 按需加载完整正文（不带 omitBody），供对话/压缩/原始JSON tab。
+async function ensureBodies(id: string) {
+  if (!id || bodiesLoadedFor === id) return
+  if (unified.value?.bodies || log.value?.request_body) {
+    bodiesLoadedFor = id
+    return
+  }
+  const seq = loadSeq
+  bodiesLoading.value = true
+  try {
+    const [fullLog, fullUnified] = await Promise.all([
+      getRequestLogDetail(id).catch(() => null),
+      getUnifiedRequestDetail(id).catch(() => null),
+    ])
+    if (seq !== loadSeq || id !== activeRequestId.value) return
+    if (fullLog) log.value = fullLog
+    if (fullUnified) unified.value = fullUnified
+    if (fullLog || fullUnified) bodiesLoadedFor = id
+  } finally {
+    if (seq === loadSeq) bodiesLoading.value = false
+  }
+}
+
+// 切到需要正文的 tab 时按需加载（概览用 preview 兜底，不触发）。
+watch([tab, activeRequestId], () => {
+  if (tab.value === 'chat' || tab.value === 'compress' || tab.value === 'raw') {
+    const id = activeRequestId.value
+    if (id) void ensureBodies(id)
+  }
+})
 
 function recordEndpointFailure(endpoint: string, e: unknown) {
   const detail = e instanceof ApiError
@@ -308,6 +344,9 @@ const openFullscreenTitle = computed(() =>
           </div>
 
           <div class="drawer-body-scroll">
+            <div v-if="bodiesLoading" class="drawer-loading">
+              {{ t('requestDetail.drawer.loading') }}
+            </div>
             <RequestOverviewPanel
               v-if="tab === 'overview'"
               :log="log"
