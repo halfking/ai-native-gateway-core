@@ -7,6 +7,11 @@
 \set ON_ERROR_STOP on
 BEGIN;
 
+-- 252's shared PG sets statement_timeout=30s; rebuilding the 7-day
+-- aggregation can take longer on the production dataset. Raise it for this
+-- transaction only (same budget as the Go ensure path in db/db.go).
+SET LOCAL statement_timeout = '10min';
+
 DROP MATERIALIZED VIEW IF EXISTS public.routing_analytics_7d CASCADE;
 DROP MATERIALIZED VIEW IF EXISTS public.routing_audit_summary_7d CASCADE;
 

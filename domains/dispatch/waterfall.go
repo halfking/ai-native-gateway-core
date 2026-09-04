@@ -261,14 +261,16 @@ func buildWaterfallRequest(qr *QueuedRequest, out ForwardOutcome) WaterfallReque
 	}
 	stages := [10]time.Time{stage(t0), stage(t1), stage(t2), stage(t3), stage(t4), stage(t5), stage(t6), stage(t7), stage(t8), stage(t9)}
 	cred := qr.selectedCredential()
+	resolvedModel := qr.resolvedModel()
+	vendor := qr.selectedVendor()
 	item := WaterfallRequest{
 		RequestID:  qr.ID,
 		TenantID:   qr.TenantID,
 		SessionID:  qr.SessionID,
-		Model:      firstNonEmpty(qr.ResolvedModel, qr.RequestedModel),
+		Model:      firstNonEmpty(resolvedModel, qr.RequestedModel),
 		Credential: cred.CredentialID,
 		Result:     resultLabel(out),
-		Vendor:     firstNonEmpty(qr.vendor, cred.Vendor),
+		Vendor:     firstNonEmpty(vendor, cred.Vendor),
 		Attempts:   qr.waterfallAttempts(),
 		ArrivedAt:  formatTS(stages[ReqStageArrived]),
 	}

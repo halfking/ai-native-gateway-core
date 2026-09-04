@@ -227,3 +227,28 @@ jobs:
 
       - name: Run identity unit tests (race detector)
         run: go test -race -count=1 ./admin -run 'Test(SignToken|MultiIssuer|ResolveToken|Identity|Authenticate)' ./domains/identity/...
+
+  core-quality:
+    # Keep this scope limited to the pure Go core packages. The repository's
+    # full test graph contains DB/network integration suites and must not be
+    # blanket-raced in this PR job.
+    name: Core quality (vet + race + fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run core vet checks
+        run: make vet-core
+
+      - name: Run core tests with race detector
+        run: make test-race-core
+
+      - name: Run IR fuzz smoke
+        run: go test ./internal/ir -run '^$' -fuzz '^FuzzIRParsersNeverPanic$' -fuzztime=5s -count=1
