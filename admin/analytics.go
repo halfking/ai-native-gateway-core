@@ -144,33 +144,38 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		SELECT %s AS row_key,
 		       %s AS col_key,
 		       %s AS val
-		FROM request_logs_with_current_month
+		FROM routing_analytics_source
 		WHERE ts >= NOW() - $1::interval
 		  AND %s
-			  AND %s IS NOT NULL
-			  AND %s
-			  AND (
-			    is_auto_request = TRUE
-			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-			  )
-			GROUP BY (%s), (%s)
-		`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, businessRequestFilter(""), rowExpr, colExpr), nil
-
+		  AND %s IS NOT NULL
+		  AND %s
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+		GROUP BY (%s), (%s)
+	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, businessRequestFilter(""), rowExpr, colExpr), nil
 }
 
+// businessRequestFilterStages lists every origin_stage value that marks a
+// synthetic (non-business) request: the three current workers plus the legacy
+// probe stages kept valid by the additive CHECK constraint. Keep in sync with
+// domains/streaming/context_attrs.go isProbeOriginStage and the
+// routingAnalyticsMVSQL WHERE clause in db/db.go.
 const businessRequestFilterStages = "'self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual'"
 
-// businessRequestFilter returns the shared predicate used by routing analytics
-// to exclude self-check/probe traffic while retaining historical rows whose
-// origin_stage was not populated yet. alias is optional (for joined queries).
+// businessRequestFilter returns the shared predicate used by routing
+// analytics to exclude self-check/probe traffic while retaining historical
+// rows whose origin_stage was never populated. alias is optional (for joined
+// queries, e.g. "rl").
 func businessRequestFilter(alias string) string {
 	prefix := ""
 	if alias != "" {
 		prefix = alias + "."
 	}
 	return fmt.Sprintf(`COALESCE(%sorigin_stage, '') NOT IN (%s)
-			  AND COALESCE(%stask_type, '') <> 'probe_triggered'
-			  AND COALESCE(%srequest_id, '') NOT LIKE 'probe-%%'`, prefix, businessRequestFilterStages, prefix, prefix)
+		  AND COALESCE(%stask_type, '') <> 'probe_triggered'
+		  AND COALESCE(%srequest_id, '') NOT LIKE 'probe-%%'`, prefix, businessRequestFilterStages, prefix, prefix)
 }
 
 // effectiveTaskExpr returns the SQL expression that produces the row
@@ -204,17 +209,16 @@ func buildFlowL12Query() string {
 		SELECT %s AS src,
 		       %s AS dst,
 		       COUNT(*)::float8 AS val
-		FROM request_logs_with_current_month
+		FROM routing_analytics_source
 		WHERE ts >= NOW() - $1::interval
-			  AND %s IS NOT NULL
-			  AND %s
-			  AND (
-			    is_auto_request = TRUE
-			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-			  )
-			GROUP BY (%s), (%s)
-		`, taskExpr, modelExpr, taskExpr, businessRequestFilter(""), taskExpr, modelExpr)
-
+		  AND %s IS NOT NULL
+		  AND %s
+		  AND (
+		    is_auto_request = TRUE
+		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+		  )
+		GROUP BY (%s), (%s)
+	`, taskExpr, modelExpr, taskExpr, businessRequestFilter(""), taskExpr, modelExpr)
 }
 
 // buildFlowL23Query assembles the L2→L3 (model × task → provider)
@@ -233,20 +237,19 @@ func buildFlowL23Query() string {
 		       %s AS src,
 		       COALESCE(p.display_name, 'unknown') AS dst,
 		       COUNT(*)::float8 AS val
-		FROM request_logs_with_current_month rl
+		FROM routing_analytics_source rl
 		LEFT JOIN providers p ON p.id = COALESCE(rl.provider_id, (
 		    SELECT cr.provider_id FROM credentials cr WHERE cr.id = rl.credential_id LIMIT 1
 		))
 		WHERE rl.ts >= NOW() - $1::interval
-			  AND %s IS NOT NULL
-			  AND %s
-			  AND (
-			    rl.is_auto_request = TRUE
-			    OR (rl.is_auto_request IS NOT TRUE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
-			  )
-			GROUP BY (%s), (%s), p.display_name
-		`, taskExpr, modelExpr, taskExpr, businessRequestFilter("rl"), taskExpr, modelExpr)
-
+		  AND %s IS NOT NULL
+		  AND %s
+		  AND (
+		    rl.is_auto_request = TRUE
+		    OR (rl.is_auto_request IS NOT TRUE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
+		  )
+		GROUP BY (%s), (%s), p.display_name
+	`, taskExpr, modelExpr, taskExpr, businessRequestFilter("rl"), taskExpr, modelExpr)
 }
 
 // handleMatrix returns a canonical_model × row_dim heatmap.
