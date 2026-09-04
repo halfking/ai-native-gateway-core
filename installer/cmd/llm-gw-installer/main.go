@@ -235,8 +235,8 @@ var archiveCredentialModelIndexCanonicalReturnMigration653 []byte
 //go:embed embeddata/startup/654_archive_credential_model_index_detach_drop.sql
 var archiveCredentialModelIndexDetachDropMigration654 []byte
 
-//go:embed embeddata/startup/655_auto_route_selections_hot.sql
-var autoRouteSelectionsHotMigration655 []byte
+//go:embed embeddata/startup/656_auto_route_selections_hot.sql
+var autoRouteSelectionsHotMigration656 []byte
 
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
@@ -970,7 +970,7 @@ func copySQLBackup(root string) error {
 		"startup/652_system_monitor_fallback_queue.sql":                            systemMonitorFallbackQueueMigration652,
 		"startup/653_archive_credential_model_index_canonical_return.sql":          archiveCredentialModelIndexCanonicalReturnMigration653,
 		"startup/654_archive_credential_model_index_detach_drop.sql":               archiveCredentialModelIndexDetachDropMigration654,
-		"startup/655_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration655,
+		"startup/656_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration656,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
@@ -1105,7 +1105,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/652_system_monitor_fallback_queue.sql":                            systemMonitorFallbackQueueMigration652,
 		"startup/653_archive_credential_model_index_canonical_return.sql":          archiveCredentialModelIndexCanonicalReturnMigration653,
 		"startup/654_archive_credential_model_index_detach_drop.sql":               archiveCredentialModelIndexDetachDropMigration654,
-		"startup/655_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration655,
+		"startup/656_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration656,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {

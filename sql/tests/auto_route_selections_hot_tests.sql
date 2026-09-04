@@ -1,11 +1,11 @@
--- auto_route_selections hot heap behavioural tests (migration 655)
+-- auto_route_selections hot heap behavioural tests (migration 656)
 -- AUTO 路由选择热表行为验证
 --
--- Purpose: 验证 migration 655 的热表写入默认值、统一视图、promote 原子迁移、
+-- Purpose: 验证 migration 656 的热表写入默认值、统一视图、promote 原子迁移、
 --          DEFAULT 分区安全搬迁、唯一冲突跳过与回滚数据保全。
 -- Author: llm-gateway-ops (2026-09-05)
 --
--- 前置: 478 / 650 / 655 已应用。
+-- 前置: 478 / 650 / 656 已应用。
 -- 运行方式:
 --   psql -h localhost -U postgres -d llm_gateway \
 --     -v ON_ERROR_STOP=1 -f auto_route_selections_hot_tests.sql
@@ -23,7 +23,7 @@ BEGIN;
 
 -- 测试数据使用统一前缀，便于断言与排查。
 CREATE TEMP TABLE test_ctx (tag text);
-INSERT INTO test_ctx VALUES ('auto655t_' || extract(epoch from now())::bigint::text);
+INSERT INTO test_ctx VALUES ('auto656t_' || extract(epoch from now())::bigint::text);
 
 -- ============================================================
 -- 1. 默认值：不传 ts/partition_date/布尔列可写入
@@ -187,7 +187,7 @@ END $$;
 DO $$ BEGIN
   BEGIN
     INSERT INTO auto_route_selections_hot (request_id, task_type, chosen_model, profile)
-    VALUES ('auto655t_bad_profile', 'code', 'm', 'bogus');
+    VALUES ('auto656t_bad_profile', 'code', 'm', 'bogus');
     RAISE EXCEPTION 'profile check not enforced on hot';
   EXCEPTION WHEN check_violation THEN NULL; -- 预期路径
   END;
