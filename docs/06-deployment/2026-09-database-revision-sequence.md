@@ -13,22 +13,24 @@
 执行顺序固定为：
 
 ```text
-655 -> 560 -> 572 -> 606 -> 563 -> 564 -> 644 -> 645
+655 -> 560 -> 572 -> 606 -> 563 -> 564 -> 644 -> 645 -> 656
 ```
 
 序列脚本使用 `gateway_db_revision_sequences` 记录完成标记；重复部署在已完成时直接退出。每个 SQL 文件本身也必须保持幂等。
 
 ## 修订说明
 
-| 顺序 | 文件 | 作用 | 安全边界 |
+| 步骤 | 文件 | 作用 | 安全边界 |
 |---|---|---|---|
-| 655 | `655_session_summaries_schema_reconcile.sql` | 保留 Memora 的 `session_id/summary_json`，增量补齐 Gateway canonical session 字段和索引 | 不删除、不重命名、不重建 `session_summaries`；不存在该表时拒绝执行 |
-| 563 | `563_session_summary_trigger_on_hot.sql` | 将 session 聚合触发器绑定到 `request_logs_hot`，使用 `gw_session_id/ts/cost_usd` | 依赖 655 已提供 canonical 列 |
-| 564 | `564_session_summary_backfill_safe.sql` | 安全回填 session 聚合数据，避免覆盖较大的累计值 | 失败即停止，不自动删除重复业务数据 |
-| 572 | `572_session_summary_large_token_ratio.sql` | 用无界 `numeric` 计算 token 比例，避免长上下文溢出 | 只替换函数定义 |
-| 606 | `606_session_summaries_agent_expert_tags.sql` | 增加 summary 的 agent/expert/tags 字段 | `ADD COLUMN IF NOT EXISTS`，带安全默认值 |
-| 644 | `644_tuning_views_selfcheck_and_candidate_failure_cache.sql` | 修复 routing/tuning 物化视图和 candidate failure unified view；更新 self-check taxonomy | 仅在对象存在且 schema 满足前提时操作；不创建猜测性的外部表；JSON `context` 由 Go writer 校验，迁移不使用 PostgreSQL 不支持的正则 lookahead |
-| 645 | `645_session_bodies_hot_request_unique_repair.sql` | 补齐 `session_bodies_hot` 的 request 唯一仲裁器 | 发现重复 key 时失败并保留数据，不自动选删记录 |
+| 1 | `655_session_summaries_schema_reconcile.sql` | 保留 Memora 的 `session_id/summary_json`，增量补齐 Gateway canonical session 字段和索引 | 不删除、不重命名、不重建 `session_summaries`；不存在该表时拒绝执行 |
+| 2 | `560_session_summaries_tenant_uniqueness.sql` | 增加 `(tenant_id, session_key)` 跨租户碰撞防御 | 约束已存在或基础表缺失时跳过 |
+| 3 | `572_session_summary_large_token_ratio.sql` | 用无界 `numeric` 计算 token 比例，避免长上下文溢出 | 只替换函数定义；必须先于 563 回填执行 |
+| 4 | `606_session_summaries_agent_expert_tags.sql` | 增加 summary 的 agent/expert/tags 字段 | `ADD COLUMN IF NOT EXISTS`，带安全默认值 |
+| 5 | `563_session_summary_trigger_on_hot.sql` | 将 session 聚合触发器绑定到 `request_logs_hot`，使用 `gw_session_id/ts/cost_usd` | 依赖 655 已提供 canonical 列 |
+| 6 | `564_session_summary_backfill_safe.sql` | 安全回填 session 聚合数据，避免覆盖较大的累计值 | 失败即停止，不自动删除重复业务数据 |
+| 7 | `644_tuning_views_selfcheck_and_candidate_failure_cache.sql` | 修复 routing/tuning 物化视图和 candidate failure unified view；更新 self-check taxonomy | 仅在对象存在且 schema 满足前提时操作；CHECK 重建使用定义感知守卫，已是 canonical 定义时跳过，避免重复全表验证锁 |
+| 8 | `645_session_bodies_hot_request_unique_repair.sql` | 补齐 `session_bodies_hot` 的 request 唯一仲裁器 | 发现重复 key 时失败并保留数据，不自动选删记录 |
+| 9 | `656_auto_route_selections_hot.sql` | 创建 auto_route_selections 独立热表与 promote 函数 | `db.go` ensure 链无补偿，存量部署由本步骤补齐；幂等建表，无破坏性 DDL |
 
 `649_routing_analytics_probe_filter.sql` 与 `632_routing_analytics_materialized_view.sql` 的身份不能只按数字判断。632 analytics 文件位于 `sql/migrations/startup/up/`，当前 Gateway 由 `db.go` 的 `ensureRoutingAnalyticsMaterializedViews` 负责；部署前应按环境 ledger 核对，不得把两个 632 文件当成同一迁移。
 

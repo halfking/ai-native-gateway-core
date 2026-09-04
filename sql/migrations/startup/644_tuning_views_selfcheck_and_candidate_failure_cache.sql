@@ -95,25 +95,40 @@ $$;
 DO $$
 BEGIN
     IF to_regclass('public.self_check_runs') IS NOT NULL THEN
-        ALTER TABLE public.self_check_runs DROP CONSTRAINT IF EXISTS self_check_runs_selection_strategy_check;
+        -- Definition-aware guard (mirrors db.go's 2026-09-05 CHECK ensures):
+        -- the pre-644 constraint only admits most_used/random/fallback_%, so
+        -- its definition never mentions the canonical 'no_eligible_model'
+        -- value. Skip the validated ADD (which takes ACCESS EXCLUSIVE and
+        -- scans the whole table) when the extended taxonomy is already in
+        -- place; rebuild only on definition drift.
+        IF EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid = 'public.self_check_runs'::regclass
+              AND conname = 'self_check_runs_selection_strategy_check'
+              AND position('no_eligible_model' in pg_get_constraintdef(oid)) > 0
+        ) THEN
+            RAISE NOTICE 'Migration 644: self_check_runs_selection_strategy_check already canonical, skipping';
+        ELSE
+            ALTER TABLE public.self_check_runs DROP CONSTRAINT IF EXISTS self_check_runs_selection_strategy_check;
 
-        ALTER TABLE public.self_check_runs
-            ADD CONSTRAINT self_check_runs_selection_strategy_check CHECK (
-        selection_strategy IS NULL
-        OR selection_strategy LIKE 'fallback_%'
-        OR selection_strategy = ANY (ARRAY[
-            'most_used',
-            'random',
-            'featured',
-            'recent',
-            'common_7d',
-            'failed_model',
-            'no_eligible_model'
-        ])
-    );
+            ALTER TABLE public.self_check_runs
+                ADD CONSTRAINT self_check_runs_selection_strategy_check CHECK (
+            selection_strategy IS NULL
+            OR selection_strategy LIKE 'fallback_%'
+            OR selection_strategy = ANY (ARRAY[
+                'most_used',
+                'random',
+                'featured',
+                'recent',
+                'common_7d',
+                'failed_model',
+                'no_eligible_model'
+            ])
+        );
 
-COMMENT ON CONSTRAINT self_check_runs_selection_strategy_check ON public.self_check_runs IS
-'Canonical taxonomy per deploy/sql/migrations/V361__self_check_runs_canonical_taxonomy.sql. NULL is reserved for legacy rows. Migration 644 aligns the runtime CHECK with the canonical list.';
+        COMMENT ON CONSTRAINT self_check_runs_selection_strategy_check ON public.self_check_runs IS
+        'Canonical taxonomy per deploy/sql/migrations/V361__self_check_runs_canonical_taxonomy.sql. NULL is reserved for legacy rows. Migration 644 aligns the runtime CHECK with the canonical list.';
+        END IF;
     END IF;
 END
 $$;
