@@ -146,10 +146,11 @@ services:
     volumes:
       # Mount configs directory for sensitive_words.json
       - ./configs:/configs:ro
-      # 附件/备份目录用命名卷持久化：容器 up -d 重建后仍保留
-      # （容器内 /tmp 写在可写层，docker rm 即丢失 — incident 2026-09-05）
-      - r112_attachments:/tmp/attachments
-      - r112_gateway_backups:/tmp/llm-gateway-backups
+      # 附件/备份/raw-logs 必须绑定到宿主机外部目录，便于检查、备份与跨容器重建保留。
+      # 可通过 HOST_ATTACHMENT_DIR / HOST_BACKUP_DIR / HOST_RAW_LOG_DIR 覆盖，默认落在 compose 项目下 data/。
+      - ${HOST_ATTACHMENT_DIR:-./data/attachments}:/tmp/attachments
+      - ${HOST_BACKUP_DIR:-./data/backups}:/tmp/llm-gateway-backups
+      - ${HOST_RAW_LOG_DIR:-./data/raw-logs}:/tmp/raw-logs
     environment:
       # ── 监听与运行环境 ──
       LLM_GATEWAY_LISTEN: ":8781"
@@ -172,9 +173,10 @@ services:
       # LLM_GATEWAY_ADMIN_API_KEY: <from .env.dev-research>
       # ── CORS (v1 启动时 panic 若未设; 本地用通配) ──
       LLM_GATEWAY_CORS_ORIGINS: "*"
-      # ── 附件目录 (容器内可写, 避免启动时 mkdir 失败) ──
+      # ── 附件/备份/raw-logs ──
       LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
       LLM_GATEWAY_BACKUP_DIR: "/tmp/llm-gateway-backups"
+      LLM_GATEWAY_RAW_LOG_DIR: "/tmp/raw-logs"
       # ── 指向真 mock upstream (仅用于无 credential 命中时的兜底) ──
       LLM_GATEWAY_UPSTREAM: "http://llm-mock-upstream:18080"
       # ── Seed admin password (.env.dev-research 注入) ──
@@ -260,10 +262,6 @@ services:
 volumes:
   r112_redis_data:
     name: r112_redis_data
-  r112_attachments:
-    name: r112_attachments
-  r112_gateway_backups:
-    name: r112_gateway_backups
 
 networks:
   r112_net:

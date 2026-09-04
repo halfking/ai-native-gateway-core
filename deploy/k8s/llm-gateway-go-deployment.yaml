@@ -17,15 +17,17 @@ spec:
     matchLabels:
       app: llm-gateway-go
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+    type: Recreate
   template:
     metadata:
       labels:
         app: llm-gateway-go
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: kaixuan-1
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
       terminationGracePeriodSeconds: 35
       containers:
         - name: llm-gateway-go
@@ -51,6 +53,10 @@ spec:
               value: /var/lib/llm-gateway/attachments
             - name: LLM_GATEWAY_PERSISTENT_LOG_DIR
               value: /var/log/llm-gateway
+            - name: LLM_GATEWAY_RAW_LOG_DIR
+              value: /var/lib/llm-gateway/raw-logs
+            - name: LLM_GATEWAY_BACKUP_DIR
+              value: /var/lib/llm-gateway/backups
             - name: LLM_GATEWAY_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -97,6 +103,10 @@ spec:
               mountPath: /var/lib/llm-gateway/attachments
             - name: persistent-logs
               mountPath: /var/log/llm-gateway
+            - name: raw-logs
+              mountPath: /var/lib/llm-gateway/raw-logs
+            - name: backups
+              mountPath: /var/lib/llm-gateway/backups
       volumes:
         - name: attachments
           persistentVolumeClaim:
@@ -104,6 +114,12 @@ spec:
         - name: persistent-logs
           persistentVolumeClaim:
             claimName: llm-gateway-logs-pvc
+        - name: raw-logs
+          persistentVolumeClaim:
+            claimName: llm-gateway-raw-logs-pvc
+        - name: backups
+          persistentVolumeClaim:
+            claimName: llm-gateway-backups-pvc
 ---
 apiVersion: v1
 kind: Service

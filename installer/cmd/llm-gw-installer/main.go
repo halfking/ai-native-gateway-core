@@ -779,10 +779,11 @@ func readAppImageTag() string {
 //	│   └── 02-seed.sql
 //	├── redis/                 Redis
 //	│   └── data/              bind-mount → /data
-//	├── attachments/           bind-mount → /opt/llm-gateway-go/data/attachments
-//	├── backups/               备份根目录
-//	│   ├── daily/
-//	│   └── manual/
+	//	├── attachments/           bind-mount → /opt/llm-gateway-go/data/attachments
+	//	├── raw-logs/              bind-mount → /opt/llm-gateway-go/data/raw-logs
+	//	├── backups/               bind-mount → /opt/llm-gateway-go/data/backups
+	//	│   ├── daily/
+	//	│   └── manual/
 //	└── reports/               部署/运行报告
 //	    └── install-report.md
 type DirectoryLayout struct {
@@ -805,6 +806,7 @@ func createDirectoryLayout(root string) error {
 		"redis",
 		"redis/data",
 		"attachments",
+		"raw-logs",
 		"backups",
 		"backups/daily",
 		"backups/manual",
@@ -851,7 +853,8 @@ func (l DirectoryLayout) GenerateReadme() string {
 | ` + "`./db/init/`" + ` | SQL 初始化文件备份 | - |
 | ` + "`./redis/data/`" + ` | ⭐ Redis 数据 | /data |
 | ` + "`./attachments/`" + ` | ⭐ 应用附件 | /opt/llm-gateway-go/data/attachments |
-| ` + "`./backups/`" + ` | 全栈备份（pg_dump 等） | - |
+| ` + "`./raw-logs/`" + ` | ⭐ 原始请求/响应日志 | /opt/llm-gateway-go/data/raw-logs |
+| ` + "`./backups/`" + ` | ⭐ 数据库降级/全栈备份 | /opt/llm-gateway-go/data/backups |
 | ` + "`./reports/`" + ` | 部署报告 | - |
 
 ⭐ = bind-mount，容器重启数据不丢失
