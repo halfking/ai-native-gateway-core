@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"html"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -142,12 +143,14 @@ func (c *streamXMLToolCallCoercer) apply(line string, toolsRequested bool) strin
 			continue
 		}
 		if len(candidate) > maxStreamXMLToolCallBytes {
-			// 2026-09-04: XML fragment overflow boundary — log the overflow
-			// without exposing the content itself (may contain customer data).
-			// slog.Warn("stream_xml_tool_call_fragment_overflow",
-			//	"fragment_len", len(candidate),
-			//	"max_bytes", maxStreamXMLToolCallBytes)
+			// The fragment may include customer tool arguments, so keep the event
+			// observable without logging any upstream content or request metadata.
+			slog.Warn("stream_xml_tool_call_fragment_overflow",
+				"fragment_len", len(candidate),
+				"max_bytes", maxStreamXMLToolCallBytes)
 			c.fragment = ""
+			delete(delta, "content")
+			modified = true
 			continue
 		}
 		remaining, toolCalls := parseXMLToolCalls(candidate)
