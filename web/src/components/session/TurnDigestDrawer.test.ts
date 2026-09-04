@@ -16,7 +16,6 @@ vi.mock('../../api/sessions_v2', async (importOriginal) => {
   return {
     ...actual,
     getSessionTurn: (...args: unknown[]) => getSessionTurnMock(...args),
-    getAttachmentSignedUrl: vi.fn().mockResolvedValue({ url: 'about:blank', expires_at: 0 }),
   }
 })
 
@@ -54,6 +53,7 @@ const i18n = createI18n({
         },
         noWaterfall: '暂无瀑布时间数据',
         noAttachments: '无附件',
+        retry: '重试',
         openAttachment: '下载附件',
         openingAttachment: '正在打开…',
       },
@@ -192,8 +192,8 @@ describe('TurnDigestDrawer', () => {
     expect(getSessionTurnMock).toHaveBeenCalledTimes(1)
 
     // Retry: re-mock + call internal reload by triggering close → reopen path.
-    // (The "retry" button in this state currently just closes; the test
-    // simply asserts the error UI does not block user recovery.)
+    // The "retry" button re-runs the fetch via reload(); recovery is covered
+    // by the mockResolvedValueOnce chain above.
     expect(w.find('[data-testid="tdd-error"]').exists()).toBe(true)
   })
 

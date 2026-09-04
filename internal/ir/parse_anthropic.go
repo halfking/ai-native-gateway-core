@@ -476,6 +476,8 @@ func parseAnthropicImageBlock(block map[string]any) *ImageSource {
 		img.MediaType, _ = source["media_type"].(string)
 		img.URL, _ = source["url"].(string)
 		img.Data, _ = source["data"].(string)
+		// Anthropic Files API: {"type":"file","file_id":"file_..."}
+		img.FileID, _ = source["file_id"].(string)
 	}
 
 	return img
@@ -497,6 +499,8 @@ func parseAnthropicDocumentBlock(block map[string]any) *DocumentBlock {
 		doc.Source.Type, _ = source["type"].(string)
 		doc.Source.MediaType, _ = source["media_type"].(string)
 		doc.Source.Data, _ = source["data"].(string)
+		// Anthropic Files API: {"type":"file","file_id":"file_..."}
+		doc.Source.FileID, _ = source["file_id"].(string)
 		if url, ok := source["url"].(string); ok {
 			doc.Source.URL = url
 			doc.Source.Data = url // legacy projection; serializers prefer URL

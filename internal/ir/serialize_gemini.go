@@ -697,6 +697,16 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 		gc["candidateCount"] = req.N
 		hasAny = true
 	}
+	// 2026-09-05 audit A-#3: penalty params were parsed into IR but never
+	// serialized back, silently dropping them on the Gemini round trip.
+	if req.PresencePenalty != nil {
+		gc["presencePenalty"] = *req.PresencePenalty
+		hasAny = true
+	}
+	if req.FrequencyPenalty != nil {
+		gc["frequencyPenalty"] = *req.FrequencyPenalty
+		hasAny = true
+	}
 
 	// Map response_format → responseMimeType/Schema
 	if req.ResponseFormat != nil {
