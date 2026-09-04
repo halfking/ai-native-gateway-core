@@ -87,10 +87,18 @@ const outboundBody = computed(
 
 const hasRouting = computed(() => !!log.value?.routing_attempts?.attempts?.length)
 
+let loadSeq = 0
+let snapshotAbortController: AbortController | null = null
+
 watch(
   () => props.requestId,
   async (id) => {
     activeRequestId.value = id
+    loadSeq++
+    if (snapshotAbortController) {
+      snapshotAbortController.abort()
+      snapshotAbortController = null
+    }
     log.value = null
     unified.value = null
     sessionSnap.value = null
@@ -108,6 +116,7 @@ async function loadRequest(id: string) {
   loading.value = true
   error.value = ''
   warnings.value = []
+  const currentSeq = loadSeq
   try {
     // 单次请求拿到 metadata + body（两个端点都无视 omit_body），
     // Promise.all 并行拉取，失败一方降级（catch → null），由另一方兜底。
@@ -119,11 +128,12 @@ async function loadRequest(id: string) {
         recordEndpointFailure('admin/request-detail', e)
         return null
       }),
-      getRequestLogDetail(id).catch((e: unknown) => {
+      getRequestLogDetail(id, { omit_body: true }).catch((e: unknown) => {
         recordEndpointFailure('/api/logs/:id', e)
         return null
       }),
     ])
+    if (currentSeq !== loadSeq) return
     unified.value = u
     log.value = meta
     if (!u && !meta) {
@@ -132,15 +142,25 @@ async function loadRequest(id: string) {
     }
     const sid = log.value?.gw_session_id || unified.value?.meta.gw_session_id
     if (sid) {
+      snapshotAbortController = new AbortController()
+      const signal = snapshotAbortController.signal
       void getSessionSnapshot(sid)
-        .then((snap) => { sessionSnap.value = snap as Record<string, unknown> })
+        .then((snap) => {
+          if (currentSeq === loadSeq && !signal.aborted) {
+            sessionSnap.value = snap as Record<string, unknown>
+          }
+        })
         .catch((e: unknown) => {
-          recordEndpointFailure('sessions/:id/snapshot', e)
-          sessionSnap.value = null
+          if (!signal.aborted) {
+            recordEndpointFailure('sessions/:id/snapshot', e)
+            sessionSnap.value = null
+          }
         })
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    if (currentSeq === loadSeq) {
+      error.value = e instanceof Error ? e.message : String(e)
+    }
   } finally {
     loading.value = false
   }

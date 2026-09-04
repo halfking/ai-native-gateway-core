@@ -266,3 +266,10 @@ relying on it.
 | 653 | `653_archive_credential_model_index_canonical_return.sql` | `48a9a8c1f16a941da4321e24d7189c802f821086e6683b6a419271a59432a479` | applied+verified |
 | 654 | `654_archive_credential_model_index_detach_drop.sql` | `ef5914f20ee53600ca7d2da0c56275133f606c73fabebb42183897028cff1e8b` | applied+verified |
 
+## 2026-09-04T19:12:53Z — deploy 245 build_seq 1931 (32cdf547)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 655 | `655_session_summaries_schema_reconcile.sql` | `b3e04d12647f89fc94e7e2901d381bcd2186b45a3b071d4314932552edfbde34` | applied+verified |
+| 656 | `656_auto_route_selections_hot.sql` | `5261ec209a5d5f89a3a745c742a9e815c9086305d73ed13c06213cbfa3ab1322` | applied+verified |
+
