@@ -3640,28 +3640,9 @@ func main() {
 			// distlock + Lark alert wiring) so it also runs on traffic-only
 			// instances. Nothing to do here.
 
-			// 2026-06-28 收口：当前 unified scheduler 与旧 probe 体系并行写
-			// model_probe_state，会导致重复探测和状态覆盖。默认关闭，待
-			// 单一 writer + Redis 状态层完全接管后再开启。
-			//
-			// 2026-06-29 状态更新：bg/unified_probe_scheduler.go 顶部已标记为
-			// DEPRECATED / DEAD BRANCH。这个分支的实现：
-			//   - 用 "healthy/failing/probing" 状态名（与系统其他地方的
-			//     "healthy_confirmed/broken_confirmed/recovering/unknown/suspicious"
-			//     冲突，迁移过程会损坏其他 reader）
-			//   - 单次失败就标 binding 不可用，与 consensus 三次失败语义冲突
-			//   - 写 binding 时 raw_model_name + LIMIT 1 会跨 provider 写错
-			//   - 多 worker 并行写同一行
-			// 在以上问题全部修复、并且有迁移计划把现有 state 名字对齐之前，
-			// 不要打开这个分支。当前的 ModelProbeRunner + CredentialProbeV2 +
-			// PassiveProbeListener 已经是单一 writer（见 bg/model_probe.go
-			// 顶部状态机说明），Redis availability cache 已经在多个 admin
-			// 端点消费。
-			if os.Getenv("LLM_GATEWAY_ENABLE_UNIFIED_PROBE_SCHEDULER") == "true" {
-				slog.Warn("LLM_GATEWAY_ENABLE_UNIFIED_PROBE_SCHEDULER is set but the scheduler is DEPRECATED; ignoring")
-			} else {
-				slog.Info("unified probe scheduler is disabled (DEPRECATED — see bg/unified_probe_scheduler.go header)")
-			}
+			// 2026-09-04: unified_probe_scheduler 已完全移除。
+			// ModelProbeRunner + CredentialProbeV2 + PassiveProbeListener
+			// 是 model_probe_state 的单一 writer（见 bg/model_probe.go）。
 
 			// 2026-09-04: 原 "TODO: After validation, remove the old probe runners"
 			// 前提（unifiedProbe 验证收编）已随 unifiedProbe 一并移除，注释作废。
