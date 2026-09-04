@@ -1,7 +1,7 @@
 # 特性需求与任务总结：会话快照增强 + 请求详情修复 + schema 655 对账
 
 > 状态：已完成并合入 main（本文档为 2026-09-05 审计轮的最终汇总）
-> 关联提交：`fc28e27b8` → `2b0384d64` → `2b0384d64`（rebase 后）→ 本次审计修复
+> 关联提交：`fc28e27b8`（FR-1）→ `2b0384d64`（FR-2/FR-4 + 审计 A4/A5/A6）→ `6d79a2863`（审计 A1/A2/A3）→ `f27e412b9`（审计 A7）→ 本轮审计修正（字段计数守卫等）
 
 ## 1. 任务背景
 
@@ -14,7 +14,7 @@
 
 ### FR-1 会话快照端点字段增强（已完成 · fc28e27b8）
 
-`GET /api/admin/sessions/<id>/snapshot` 从 10 个字段扩展到 24 个：
+`GET /api/admin/sessions/<id>/snapshot` 从 10 个字段扩展到 23 个（fc28e27b8 新增 13 个）：
 
 | 类别 | 字段 |
 |------|------|
@@ -72,6 +72,7 @@ turns_sessions / session_management_api / 会话健康 worker / auto-route worke
 | A5 | （上轮已修）655 假设 `tenant_id` 存在，最小 shape 下整事务回滚 | 高 | 前置幂等补列，本轮复核通过 |
 | A6 | （上轮已修）baseline 三处镜像仍是 310 旧触发器（`NEW.session_key`/`created_at`/`total_cost`） | 高 | 已同步 563 版本，本轮复核通过 |
 | A7 | （2026-09-05 复核补修）`web/src/api/logs.ts` 仍残留"后端不识别 ?omit_body=1"过时注释（A3 同类漏网点），与 `admin/logs.go:836` 实际识别矛盾 | 低 | 注释已更新为 omitBody 分阶段加载语义 |
+| A8 | （2026-09-05 二轮审计修正）文档与测试注释将快照字段数误记为 24（实际 23 = 10+13）；字段计数测试未真正断言数量；关联提交链重复且未落哈希；根目录 SNAPSHOT 文档索引写法会误导；logs.ts 新注释未点名 outbound_body 同被 omitBody 跳过 | 低 | 全部修正：字段数改 23 并以 reflect 断言固化（TestSessionSnapshotV2FieldCount）、提交链去重补哈希、索引标注路径、注释补全字段级影响 |
 
 说明：仓库中不存在 `legacy_session_summaries` 表及引用；此前报告中的"读写分裂"为本地库
 瞬态状态，非代码事实。
@@ -87,7 +88,7 @@ turns_sessions / session_management_api / 会话健康 worker / auto-route worke
 
 ## 5. 相关文档索引
 
-- `SNAPSHOT_ENDPOINT_ENHANCEMENT.md` / `SNAPSHOT_API_QUICK_REF.md` —— FR-1 字段清单与示例
+- `SNAPSHOT_ENDPOINT_ENHANCEMENT.md` / `SNAPSHOT_API_QUICK_REF.md`（仓库根目录，非 docs/）—— FR-1 字段清单与示例
 - `docs/db-changelog.md` —— 655/656 部署记录
 - `docs/COMPLETION-REPORT-20260904.md` —— 事故复盘与部署结论
 - `sql/objects/functions/update_session_summary.sql` —— 触发器 canonical 版本（勿回退 310 形态）

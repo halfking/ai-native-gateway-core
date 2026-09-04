@@ -2,6 +2,7 @@ package admin
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -152,10 +153,16 @@ func TestSessionSnapshotV2JSONMarshaling(t *testing.T) {
 // TestSessionSnapshotV2FieldCount ensures we don't accidentally remove fields.
 // If this test fails after adding new fields, update the expected count.
 func TestSessionSnapshotV2FieldCount(t *testing.T) {
-	// As of this implementation, sessionSnapshotV2 has 24 fields (not counting embedded structs)
+	// sessionSnapshotV2 has 23 fields (10 original + 13 added in fc28e27b8),
+	// not counting embedded structs (there are none today).
+	const wantFields = 23
+	if got := reflect.TypeOf(sessionSnapshotV2{}).NumField(); got != wantFields {
+		t.Errorf("sessionSnapshotV2 has %d fields, want %d — update wantFields if the change is intentional", got, wantFields)
+	}
+
 	snapshot := sessionSnapshotV2{}
 	data, _ := json.Marshal(snapshot)
-	
+
 	var m map[string]interface{}
 	json.Unmarshal(data, &m)
 	
