@@ -238,7 +238,7 @@ async function handleApproveOffline(request: OfflineActivationRequest) {
     ElMessageBox.alert(
       `${t('ops.license.activationCode')}: ${result.activation_code}`,
       t('ops.license.offlineActivation'),
-      { type: 'success', closeOnClickModal: false }
+      { type: 'success' }
     )
     await loadOfflineRequests()
   } catch (error) {
@@ -254,7 +254,7 @@ async function handleRejectOffline(request: OfflineActivationRequest) {
     const { value: reason } = await ElMessageBox.prompt(
       t('ops.license.rejectReason'),
       t('ops.license.rejectTitle'),
-      { inputType: 'textarea', closeOnClickModal: false }
+      { inputType: 'textarea' }
     )
     await rejectOfflineActivation(request.request_id, reason)
     ElMessage.success(t('ops.license.rejectSuccess'))
@@ -344,7 +344,7 @@ async function handleDeactivateDevice(row: License, device: LicenseDevice) {
     const { value: reason } = await ElMessageBox.prompt(
       t('ops.license.deactivateReason'),
       t('ops.license.deactivateConfirm'),
-      { inputType: 'textarea', closeOnClickModal: false }
+      { inputType: 'textarea' }
     )
     await deactivateDevice(row.id, device.hardware_hash, reason)
     ElMessage.success(t('ops.license.deactivateSuccess'))
