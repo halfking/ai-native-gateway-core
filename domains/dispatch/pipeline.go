@@ -1634,6 +1634,12 @@ func observeStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 
 // routeFailover hands a pre-firstbyte failure to the ③ mover.
 func (p *Pipeline) routeFailover(qr *QueuedRequest, out ForwardOutcome) {
+	// Terminal race (audit 2026-09-05 C-#1): if the caller's ctx.Done path
+	// already CAS-won complete(), handoff to the mover would race its
+	// unsynchronized journal/count mutations — drop instead.
+	if qr.completed.Load() || qr.abandoned.Load() {
+		return
+	}
 	select {
 	case p.failoverCh <- failoverItem{qr: qr, out: out}:
 	case <-p.stopCh:

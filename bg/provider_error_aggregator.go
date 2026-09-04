@@ -258,18 +258,26 @@ CROSS JOIN advanced`
 	groups := 0
 	var total int64
 	var newAggregationID int64
+	var unknownEndpointGroups int64
 	for rows.Next() {
 		var providerID, occurrences int
 		var errorType string
+		var endpointUnknown bool
 		// last_source_id is constant across rows because `advanced` returns at most
 		// one row; we accept whatever value the last scan saw so the field tracks
-		// the watermark this tick committed.
-		if err := rows.Scan(&providerID, &errorType, &occurrences, &newAggregationID); err != nil {
+		// the watermark this tick committed. Scan must consume all five SELECT
+		// columns — a dest/column mismatch makes pgx fail every row, which once
+		// silently zeroed groups/total and disabled the watermark sanity checks
+		// below (2026-09-05 audit E-#1).
+		if err := rows.Scan(&providerID, &errorType, &occurrences, &endpointUnknown, &newAggregationID); err != nil {
 			slog.Warn("provider_error_aggregator: scan failed", "error", err)
 			continue
 		}
 		groups++
 		total += int64(occurrences)
+		if endpointUnknown {
+			unknownEndpointGroups++
+		}
 	}
 	if err := rows.Err(); err != nil {
 		slog.Error("provider_error_aggregator: rows iteration failed", "error", err)
@@ -318,6 +326,7 @@ CROSS JOIN advanced`
 		slog.Info("provider_error_aggregator: aggregation completed",
 			"error_groups", groups,
 			"total_occurrences", total,
+			"unknown_endpoint_groups", unknownEndpointGroups,
 			"aggregation_id", newAggregationID,
 			"duration", fmt.Sprintf("%.2fs", time.Since(startedAt).Seconds()))
 	} else {

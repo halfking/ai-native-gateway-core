@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -34,6 +35,22 @@ import (
 // 编号 SQL 文件供 DBA 同步流程使用；本函数保证二进制启动即生效。
 func (d *DB) ensureSessionSummariesCanonical(ctx context.Context) error {
 	if d == nil || d.pool == nil {
+		return nil
+	}
+	// 2026-09-05 audit D-#5: the bare ALTER TABLE below assumes the table
+	// exists. A deployment that DROPped public.session_summaries outright
+	// (rather than overwriting its shape) would fail gateway startup here,
+	// defeating the self-heal intent. Skip with a pointer to the reconcile
+	// SQL instead — the same degraded posture as before this ensure existed.
+	var tableExists bool
+	if err := d.pool.QueryRow(ctx,
+		`SELECT to_regclass('public.session_summaries') IS NOT NULL`,
+	).Scan(&tableExists); err != nil {
+		return fmt.Errorf("probe session_summaries existence: %w", err)
+	}
+	if !tableExists {
+		slog.Warn("session_summaries table missing; skipping canonical schema reconcile " +
+			"(run sql/migrations/startup/655_session_summaries_schema_reconcile.sql to restore)")
 		return nil
 	}
 	_, err := d.pool.Exec(ctx, `
