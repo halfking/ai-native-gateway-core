@@ -1175,7 +1175,7 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 						"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
 					},
 				})
-				qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.ResolvedModel})
+				qr.emitObservation(Observation{Type: ObservationModelEnqueued, Stage: StageModelQueue, Model: name, ResolvedModel: qr.resolvedModel()})
 				mq.mu.Unlock()
 				return true
 			default:
@@ -1218,7 +1218,7 @@ func (p *Pipeline) parkScheduledRequest(qr *QueuedRequest) bool {
 		Type:          ObservationRetryScheduled,
 		Stage:         StageRetrying,
 		Model:         qr.RequestedModel,
-		ResolvedModel: qr.ResolvedModel,
+		ResolvedModel: qr.resolvedModel(),
 		RetryReason:   "scheduled_wait",
 		RetryAt:       &at,
 	})
@@ -1232,7 +1232,7 @@ func (p *Pipeline) parkScheduledRequest(qr *QueuedRequest) bool {
 		_ = p.queueBackend.ParkDue(context.WithoutCancel(ctxOf(qr)), qr.ID, dueAt)
 	}
 	qr.recordDecision(JournalEntry{
-		Model:   qr.ResolvedModel,
+		Model:   qr.resolvedModel(),
 		Action:  NextActionScheduledWait,
 		Attempt: qr.AttemptCount,
 		At:      now,
@@ -1298,7 +1298,7 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	if !p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
 		return false
 	}
-	resolvedModel := qr.ResolvedModel
+	resolvedModel := qr.resolvedModel()
 	qr.journeyMu.Lock()
 	enqueuedAt := time.Now()
 	mq.mu.Lock()
@@ -1489,8 +1489,8 @@ func (p *Pipeline) emitRequestTerminal(qr *QueuedRequest, out ForwardOutcome) {
 	event := Observation{
 		Type:          ObservationRequestSucceeded,
 		Stage:         StageTerminal,
-		ResolvedModel: qr.ResolvedModel,
-		Model:         qr.ResolvedModel,
+		ResolvedModel: qr.resolvedModel(),
+		Model:         qr.resolvedModel(),
 		Outcome:       OutcomeSuccess,
 	}
 	if out.Err != nil {
@@ -1685,7 +1685,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	// ResolvedModel (tryModelChange) while this goroutine is still emitting —
 	// same bug class as the T5 ordering above (caught by go test -race,
 	// TestModelChange).
-	reqID, model, emitCtx := qr.ID, qr.ResolvedModel, ctxOf(qr)
+	reqID, model, emitCtx := qr.ID, qr.resolvedModel(), ctxOf(qr)
 
 	qr.journeyMu.Lock()
 	cf.handoffMu.Lock()

@@ -36,7 +36,7 @@ func (p *Pipeline) recordSessionAffinity(qr *QueuedRequest, out ForwardOutcome) 
 		return
 	}
 	if out.Err == nil {
-		if err := sink.RecordSuccess(context.WithoutCancel(ctxOf(qr)), qr.SessionID, qr.SelectedCred, qr.ResolvedModel); err != nil {
+		if err := sink.RecordSuccess(context.WithoutCancel(ctxOf(qr)), qr.SessionID, qr.selectedCredential(), qr.resolvedModel()); err != nil {
 			slog.Warn("dispatch: record session affinity failed", "request_id", qr.ID, "error", err)
 		}
 	}
@@ -69,7 +69,7 @@ func (p *Pipeline) recordMinuteStats(qr *QueuedRequest, out ForwardOutcome) {
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctxOf(qr)), 100*time.Millisecond)
 	defer cancel()
-	if err := sink.Record(ctx, qr.SelectedCred, qr.ResolvedModel, qr.EstimatedTokens, out); err != nil {
+	if err := sink.Record(ctx, qr.selectedCredential(), qr.resolvedModel(), qr.EstimatedTokens, out); err != nil {
 		slog.Warn("dispatch: record minute stats failed", "request_id", qr.ID, "error", err)
 	}
 }

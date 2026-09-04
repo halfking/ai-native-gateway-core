@@ -49,6 +49,8 @@ func (p *Pipeline) runFailover() {
 // (UT-FO-05).
 func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	err := out.Err
+	cred := qr.selectedCredential()
+	model := qr.resolvedModel()
 	// (1) Same-credential retry — planner decision: skipped for
 	// credential-fatal errors (retrying a quota-exhausted / auth-revoked
 	// credential deterministically re-yields the same upstream rejection,
@@ -64,10 +66,10 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		// next action before the request parks back into the pending set.
 		// recordDecision refreshes LastFailover as the journal-tail projection.
 		qr.recordDecision(JournalEntry{
-			Model:        qr.ResolvedModel,
-			CredentialID: qr.SelectedCred.CredentialID,
-			ProviderID:   qr.SelectedCred.ProviderID,
-			Vendor:       qr.SelectedCred.Vendor,
+			Model:        model,
+			CredentialID: cred.CredentialID,
+			ProviderID:   cred.ProviderID,
+			Vendor:       cred.Vendor,
 			Action:       NextActionRetrySameCred,
 			ErrorKind:    firstNonEmpty(out.ErrorKind, classifyError(err)),
 			HTTPStatus:   out.HTTPStatus,
@@ -78,7 +80,7 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 		}
 		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件，retry=true、
 		// retry_seq 递增时前端打特别标（24 号 §1）。
-		p.emitNodeSwitch(qr, qr.SelectedCred.CredentialID, qr.SelectedCred.CredentialID, "cred_retry", true, qr.CredRetryCount)
+		p.emitNodeSwitch(qr, cred.CredentialID, cred.CredentialID, "cred_retry", true, qr.CredRetryCount)
 		if p.scheduleSameCredRetry(qr, out, err) {
 			return
 		}
@@ -90,8 +92,8 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	}
 
 	// (2/3) Switch credential under the current model, honoring provider scope.
-	fromCredID := qr.SelectedCred.CredentialID
-	fromProviderID := qr.SelectedCred.ProviderID
+	fromCredID := cred.CredentialID
+	fromProviderID := cred.ProviderID
 	qr.markTriedCredential(fromCredID)
 	p.invalidateSessionAffinity(qr, fromCredID)
 	qr.CredRetryCount = 0
@@ -110,10 +112,10 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	// 2026-09-01 P0 fix: populate FromCredentialID/ToCredentialID so the
 	// journal→journey bridge can emit valid EventNodeSwitched events.
 	journalEntry := JournalEntry{
-		Model:            qr.ResolvedModel,
+		Model:            model,
 		CredentialID:     fromCredID,
 		ProviderID:       fromProviderID,
-		Vendor:           qr.SelectedCred.Vendor,
+		Vendor:           cred.Vendor,
 		Action:           NextActionSwitchCred,
 		ErrorKind:        firstNonEmpty(out.ErrorKind, classifyError(err)),
 		HTTPStatus:       out.HTTPStatus,
@@ -153,8 +155,8 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 			p.terminateOnAttemptCap(qr, out)
 			return
 		}
-		fromCred := qr.SelectedCred.CredentialID
-		fromModel := qr.ResolvedModel
+		fromCred := qr.selectedCredential().CredentialID
+		fromModel := qr.resolvedModel()
 		p.selectCredential(qr, ref)
 		metricFailover.WithLabelValues("cred_switch").Inc()
 		// Prepare the switch notice while this goroutine still owns qr; it
@@ -166,7 +168,7 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 			FromCredentialID: fromCred,
 			ToCredentialID:   ref.CredentialID,
 			FromModel:        fromModel,
-			ToModel:          qr.ResolvedModel,
+			ToModel:          qr.resolvedModel(),
 			Vendor:           ref.Vendor,
 			Attempt:          qr.AttemptCount,
 		})
@@ -202,7 +204,7 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 
 	// (4) All credentials under this model exhausted → model-change.
 	slog.Info("dispatch: all credentials exhausted under model, trying model-change",
-		"request_id", qr.ID, "model", qr.ResolvedModel,
+		"request_id", qr.ID, "model", qr.resolvedModel(),
 		"tried_creds", len(qr.TriedCredentials))
 	p.tryModelChangeOutcome(qr, out)
 }
@@ -237,14 +239,15 @@ func isQuotaErrorKind(errorKind string) bool {
 // re-enqueues immediately (legacy behavior). Returns true when the request
 // left the mover (scheduled or enqueued).
 func (p *Pipeline) scheduleSameCredRetry(qr *QueuedRequest, out ForwardOutcome, err error) bool {
+	cred := qr.selectedCredential()
 	observation := Observation{
 		Type:          ObservationRetryScheduled,
 		Stage:         StageRetrying,
-		ResolvedModel: qr.ResolvedModel,
-		Model:         qr.ResolvedModel,
-		ProviderID:    int64(qr.SelectedCred.ProviderID),
-		Provider:      qr.SelectedCred.Vendor,
-		CredentialID:  int64(qr.SelectedCred.CredentialID),
+		ResolvedModel: qr.resolvedModel(),
+		Model:         qr.resolvedModel(),
+		ProviderID:    int64(cred.ProviderID),
+		Provider:      cred.Vendor,
+		CredentialID:  int64(cred.CredentialID),
 		Attempt:       qr.lastAttemptRef(),
 		RetryReason:   firstNonEmpty(out.ErrorKind, classifyError(err)),
 	}
@@ -268,24 +271,26 @@ func (p *Pipeline) scheduleSameCredRetry(qr *QueuedRequest, out ForwardOutcome, 
 		// Scheduler refused (closed) → fall back to the immediate enqueue
 		// without re-emitting the event above.
 		qr.notifyDispatch(p.retryNotice(qr, out, err, time.Time{}, errorKind))
-		return p.tryEnqueueCred(qr.SelectedCred, qr)
+		return p.tryEnqueueCred(cred, qr)
 	}
 	qr.emitObservation(observation)
 	qr.notifyDispatch(p.retryNotice(qr, out, err, time.Time{}, errorKind))
-	return p.tryEnqueueCred(qr.SelectedCred, qr)
+	return p.tryEnqueueCred(cred, qr)
 }
 
 // retryNotice builds the same-credential retry notice (v6 G-Ⅲ).
 func (p *Pipeline) retryNotice(qr *QueuedRequest, out ForwardOutcome, err error, retryAt time.Time, errorKind string) DispatchNotice {
+	cred := qr.selectedCredential()
+	model := qr.resolvedModel()
 	notice := DispatchNotice{
 		Kind:             NoticeKindRetry,
 		Message:          failoverSummary(out.ErrorKind, out.HTTPStatus, "retry"),
 		ErrorKind:        errorKind,
-		FromCredentialID: qr.SelectedCred.CredentialID,
-		ToCredentialID:   qr.SelectedCred.CredentialID,
-		FromModel:        qr.ResolvedModel,
-		ToModel:          qr.ResolvedModel,
-		Vendor:           qr.SelectedCred.Vendor,
+		FromCredentialID: cred.CredentialID,
+		ToCredentialID:   cred.CredentialID,
+		FromModel:        model,
+		ToModel:          model,
+		Vendor:           cred.Vendor,
 		Attempt:          qr.CredRetryCount,
 	}
 	if !retryAt.IsZero() {
@@ -320,7 +325,7 @@ func (p *Pipeline) onRetryDue(qr *QueuedRequest, retryAt time.Time) {
 		p.dispatch(qr)
 	} else {
 		// Error retry → re-enqueue to the same credential
-		if !p.tryEnqueueCred(qr.SelectedCred, qr) {
+		if !p.tryEnqueueCred(qr.selectedCredential(), qr) {
 			// R1.3: admission refused at re-enqueue → immediate overflow.
 			p.complete(qr, ForwardOutcome{Err: &OverflowError{Reason: "cred_queue_full", RetryAfter: DefaultOverflowRetryAfter}})
 		}
@@ -361,7 +366,7 @@ func (p *Pipeline) emitNodeSwitch(qr *QueuedRequest, fromCred, toCred int, reaso
 	p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 		RequestID:    qr.ID,
 		Action:       liveactions.ActionNodeSwitch,
-		Model:        qr.ResolvedModel,
+		Model:        qr.resolvedModel(),
 		CredentialID: toCred,
 		Retry:        retry,
 		RetrySeq:     retrySeq,
