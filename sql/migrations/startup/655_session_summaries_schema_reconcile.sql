@@ -33,6 +33,14 @@
 BEGIN;
 
 -- ---------------------------------------------------------------
+-- 0. 前置：确保 tenant_id 存在
+-- ---------------------------------------------------------------
+-- memora 最小 shape 仅 session_id PK + summary_json，未必有 tenant_id；
+-- 但后续 UNIQUE(tenant_id, session_key) 需要它。
+ALTER TABLE public.session_summaries
+    ADD COLUMN IF NOT EXISTS tenant_id character varying(255);
+
+-- ---------------------------------------------------------------
 -- 1. canonical 基线列（deploy/sql/schemas/baseline/01-schema.sql）
 -- ---------------------------------------------------------------
 ALTER TABLE public.session_summaries
