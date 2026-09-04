@@ -867,7 +867,12 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
-	cacheKey := funnelCacheKey(model, windowLabel)
+		scope := EffectiveTenantIDAll(r)
+		if scope == "" {
+			scope = "*"
+		}
+		cacheKey := funnelCacheKey(scope, model, windowLabel)
+
 	if cached, ok := globalFunnelCache.get(cacheKey); ok {
 		writeJSONOk(w, cached)
 		return
@@ -917,8 +922,14 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		  AND (
 		    outbound_model = ANY($2) OR canonical_model = ANY($2)
 		    OR client_model = ANY($2) OR model = ANY($2)
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM routing_analytics_source probe
+		    WHERE probe.request_id = routing_decision_log.request_id::text
+		      AND NOT (`+businessRequestFilter("probe")+`)
 		  )` + rdlTenantWhere + `
-	`
+		`
 	_ = h.db.QueryRow(ctx, rdlQuery, rdlArgs...).Scan(
 		&fr.requests, &fr.traceRows, &fr.totalPlanned, &fr.totalBlocked,
 		&fr.routable, &fr.chosen, &fr.success,
@@ -931,16 +942,17 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			approxArgs = append(approxArgs, rdlTenantArgs...)
 		}
-		if err := h.db.QueryRow(ctx, `
-			SELECT
-				COUNT(*)::int,
-				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
-				COUNT(*) FILTER (WHERE success IS TRUE)::int
-			FROM request_logs
-			WHERE is_auto_request = TRUE
-			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)`+rdlTenantWhere+`
-		`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
+			if err := h.db.QueryRow(ctx, `
+				SELECT
+					COUNT(*)::int,
+					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
+					COUNT(*) FILTER (WHERE success IS TRUE)::int
+				FROM routing_analytics_source
+				WHERE is_auto_request = TRUE
+				  AND ts >= NOW() - $1::interval
+				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
+				  AND `+businessRequestFilter("")+rdlTenantWhere+`
+			`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
 			writeInternalErr(w, err)
 			return
 		}
@@ -962,16 +974,17 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			mixedArgs = append(mixedArgs, rdlTenantArgs...)
 		}
-		_ = h.db.QueryRow(ctx, `
-			SELECT
-				COUNT(*)::int,
-				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
-				COUNT(*) FILTER (WHERE success IS TRUE)::int
-			FROM request_logs
-			WHERE is_auto_request = TRUE
-			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)`+rdlTenantWhere+`
-		`, mixedArgs...).Scan(&autoReq, &routed, &ok)
+			_ = h.db.QueryRow(ctx, `
+				SELECT
+					COUNT(*)::int,
+					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
+					COUNT(*) FILTER (WHERE success IS TRUE)::int
+				FROM routing_analytics_source
+				WHERE is_auto_request = TRUE
+				  AND ts >= NOW() - $1::interval
+				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
+				  AND `+businessRequestFilter("")+rdlTenantWhere+`
+			`, mixedArgs...).Scan(&autoReq, &routed, &ok)
 		if fr.requests == 0 {
 			fr.requests = autoReq
 		}
