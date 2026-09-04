@@ -136,9 +136,12 @@ func (m *Manager) MarkClosedDebounced(ctx context.Context, reason string, deboun
 	if err := m.EnterRecovery(ctx, reason); err != nil {
 		// Do not leave a successful debounce claim behind when the actual
 		// gate close failed; that would suppress every retry until the TTL.
-		_ = m.rdb.Del(ctx, store.RecoveryDebounceKey(m.prefix)).Err()
-		// EnterRecovery already recorded the error; bubble up.
-		return true, err
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = m.rdb.Del(cleanupCtx, store.RecoveryDebounceKey(m.prefix)).Err()
+		cancel()
+		// EnterRecovery already recorded the error; bubble up. The claim did
+		// not produce a closed gate, so report that this caller did not win.
+		return false, err
 	}
 	m.clearError()
 	return true, nil
