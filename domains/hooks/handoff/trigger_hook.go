@@ -837,6 +837,9 @@ func (s *PGStore) IsHandoffCooldownActive(ctx context.Context, sessionKey string
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
+	if handoffSchemaMismatch(err) {
+		return false, nil
+	}
 	return active, err
 }
 

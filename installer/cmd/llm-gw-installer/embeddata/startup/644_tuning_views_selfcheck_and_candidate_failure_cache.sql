@@ -252,48 +252,29 @@ END
 $$;
 
 -- ── D. model_integrity_events JSON sanitizer trigger ─────────────────────
--- Sanitize the two JSON-bearing columns (request_payload,
--- response_payload) on BEFORE INSERT so a stray backslash in the
--- upstream JSON does not fail the entire audit row. The sanitizer
--- only fixes the most common failure mode (literal backslash that
--- breaks the jsonb typecast); truly malformed JSON (e.g. unbalanced
--- quotes) still raises, which is the right behavior — we want
--- operators to see those errors instead of silently swallowing
--- bad data.
+-- The table stores one JSON-bearing column, context. Keep the sanitizer
+-- aligned with the canonical schema; request_payload/response_payload belong
+-- to other tables and must not be dereferenced from this trigger.
 CREATE OR REPLACE FUNCTION public.sanitize_model_integrity_jsonb()
 RETURNS TRIGGER AS $$
 DECLARE
     v_text text;
 BEGIN
-    IF NEW.request_payload IS NOT NULL
-       AND NEW.request_payload::text !~ '^[0-9]+'
-       AND NEW.request_payload::text ~ '\\(?![bfnrtu"/\\])' THEN
-        v_text := NEW.request_payload::text;
-        v_text := regexp_replace(v_text, '\\(?![bfnrtu"/\\])', '\\u005c', 'g');
-        BEGIN
-            NEW.request_payload := v_text::jsonb;
-        EXCEPTION WHEN others THEN
-            -- Leave as-is; the INSERT will fail with the original
-            -- jsonb syntax error so operators see the row in logs.
-            NEW.request_payload := NULL;
-        END;
+    IF NEW.context IS NOT NULL THEN
+        v_text := NEW.context::text;
+        IF v_text ~ '\\(?![bfnrtu"/\\])' THEN
+            v_text := regexp_replace(v_text, '\\(?![bfnrtu"/\\])', '\\u005c', 'g');
+            BEGIN
+                NEW.context := v_text::jsonb;
+            EXCEPTION WHEN others THEN
+                RAISE NOTICE 'Migration 644: invalid context JSON left unchanged';
+            END;
+        END IF;
     END IF;
-
-    IF NEW.response_payload IS NOT NULL
-       AND NEW.response_payload::text !~ '^[0-9]+'
-       AND NEW.response_payload::text ~ '\\(?![bfnrtu"/\\])' THEN
-        v_text := NEW.response_payload::text;
-        v_text := regexp_replace(v_text, '\\(?![bfnrtu"/\\])', '\\u005c', 'g');
-        BEGIN
-            NEW.response_payload := v_text::jsonb;
-        EXCEPTION WHEN others THEN
-            NEW.response_payload := NULL;
-        END;
-    END IF;
-
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
+
 
 DROP TRIGGER IF EXISTS trg_model_integrity_events_sanitize_jsonb
     ON public.model_integrity_events;
