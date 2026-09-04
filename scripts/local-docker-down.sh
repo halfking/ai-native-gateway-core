@@ -25,6 +25,8 @@ err()  { echo -e "${RED}  ✗${NC} $*" >&2; }
 
 INSTALL_ROOT="${INSTALL_ROOT:-${LLM_GATEWAY_HOME:-$(lh_root)}}"
 COMPOSE_FILE="$INSTALL_ROOT/compose.yml"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-llm-gateway-go-local}"
+ENV_FILE="$INSTALL_ROOT/.env"
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
   err "未找到 $COMPOSE_FILE（先跑 scripts/local-docker-up.sh）"
@@ -32,15 +34,15 @@ if [[ ! -f "$COMPOSE_FILE" ]]; then
 fi
 
 log "停止容器 (保留数据) ..."
-docker compose -f "$COMPOSE_FILE" down
+docker compose --project-directory "$INSTALL_ROOT" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down
 
 if [[ "${1:-}" == "--purge" ]]; then
   warn "--purge 模式: 同时删除数据卷 (postgres/data + redis/data)"
-  docker compose -f "$COMPOSE_FILE" down -v
+  docker compose --project-directory "$INSTALL_ROOT" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" down -v
   rm -rf "$INSTALL_ROOT/postgres" "$INSTALL_ROOT/redis"
   ok "数据卷已清理"
 fi
 
-ok "已停机。数据保留在 $INSTALL_ROOT/{attachments,backups,logs,raw-logs}"
+ok "已停机。数据保留在 $INSTALL_ROOT/{attachments,app/logs,raw-logs,backups}"
 echo ""
 echo "重新启动: bash scripts/local-docker-up.sh"

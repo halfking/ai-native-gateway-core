@@ -46,7 +46,7 @@ log "INSTALL_ROOT=$INSTALL_ROOT"
 mkdir -p \
   "$INSTALL_ROOT/attachments" \
   "$INSTALL_ROOT/backups" \
-  "$INSTALL_ROOT/logs" \
+  "$INSTALL_ROOT/app/logs" \
   "$INSTALL_ROOT/raw-logs" \
   "$INSTALL_ROOT/run" \
   "$INSTALL_ROOT/postgres/data" \
@@ -66,6 +66,7 @@ fi
 
 # ── 生成 compose.yml 与 .env（如未存在） ────────────────────────────────
 COMPOSE_FILE="$INSTALL_ROOT/compose.yml"
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-llm-gateway-go-local}"
 ENV_FILE="$INSTALL_ROOT/.env"
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
@@ -93,7 +94,7 @@ fi
 
 # ── 启动 ──────────────────────────────────────────────────────────────────
 log "docker compose up -d ..."
-docker compose -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
+docker compose --project-directory "$INSTALL_ROOT" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" up -d
 
 # ── 健康检查 ──────────────────────────────────────────────────────────────
 APP_PORT="${APP_PORT:-8781}"
@@ -106,7 +107,7 @@ for i in {1..60}; do
   sleep 1
   if [[ $i -eq 60 ]]; then
     err "healthz 60s 内未响应"
-    docker compose -f "$COMPOSE_FILE" ps
+    docker compose --project-directory "$INSTALL_ROOT" -p "$COMPOSE_PROJECT_NAME" -f "$COMPOSE_FILE" --env-file "$ENV_FILE" ps
     exit 1
   fi
 done

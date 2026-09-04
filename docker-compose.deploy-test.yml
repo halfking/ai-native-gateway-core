@@ -102,12 +102,14 @@ services:
       LLM_GATEWAY_SEED_ADMIN_PASSWORD: "${LLM_GATEWAY_SEED_ADMIN_PASSWORD:?required in .env.deploy-test}"
       LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
       LLM_GATEWAY_BACKUP_DIR: "/tmp/llm-gateway-backups"
+      LLM_GATEWAY_RAW_LOG_DIR: "/tmp/raw-logs"
       OPS_NODE_REGION: "deploy-test"
     volumes:
       - ./configs:/configs:ro
-      # 附件/备份目录用命名卷持久化：容器重建后仍保留
-      - attachments_data:/tmp/attachments
-      - gateway_backups_data:/tmp/llm-gateway-backups
+      # 附件/备份/raw-logs 使用宿主机目录，便于测试产物检查与清理。
+      - ${HOST_ATTACHMENT_DIR:-./data/attachments}:/tmp/attachments
+      - ${HOST_BACKUP_DIR:-./data/backups}:/tmp/llm-gateway-backups
+      - ${HOST_RAW_LOG_DIR:-./data/raw-logs}:/tmp/raw-logs
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8781/healthz | grep -q ok || exit 1"]
       interval: 5s
@@ -120,7 +122,3 @@ volumes:
     name: deploy_test_citus_data
   redis_test_data:
     name: deploy_test_redis_data
-  attachments_data:
-    name: deploy_test_attachments
-  gateway_backups_data:
-    name: deploy_test_gateway_backups
