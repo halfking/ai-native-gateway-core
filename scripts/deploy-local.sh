@@ -4,10 +4,26 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Load the project-local configuration when the caller did not provide a
+# database configuration explicitly.  Keep caller-provided values authoritative
+# so CI and production wrappers can inject their own DSN without being replaced.
+if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" && -f "$PROJECT_ROOT/.env.local" ]]; then
+  # .env.local prints a friendly summary when sourced; suppress it here because
+  # deploy-local owns its own redacted diagnostics and must not leak secrets.
+  source "$PROJECT_ROOT/.env.local" >/dev/null
+  DL_DATABASE_CONFIG_SOURCE=project-env
+else
+  DL_DATABASE_CONFIG_SOURCE=caller
+fi
+
 # Config accepts DATABASE_URL as a compatibility fallback; normalize it once so
 # all local probes, migrations, and generated runtime env use one DSN.
 if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -n "${DATABASE_URL:-}" ]]; then
   export LLM_GATEWAY_DATABASE_URL="$DATABASE_URL"
+fi
+if [[ -z "${DATABASE_URL:-}" && -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
+  export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
 fi
 # shellcheck source=deploy-local-lib.sh
 source "$SCRIPT_DIR/deploy-local-lib.sh"
@@ -152,18 +168,28 @@ detect_existing_containers() {
       local db_url
       db_url=$(dl_container_env "$DL_PG_CONTAINER" LLM_GATEWAY_DATABASE_URL)
       [[ -z "$db_url" ]] && db_url=$(dl_container_env "$DL_PG_CONTAINER" DATABASE_URL)
-      if [[ -n "$db_url" && "$db_url" =~ @((127\\.0\\.0\\.1)|(localhost))(:|/) ]]; then
-        export LLM_GATEWAY_DATABASE_URL="$db_url" DATABASE_URL="$db_url"
-      else
-        local db_user db_pass db_name db_port
-        db_user=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_USER); db_user=${db_user:-llm_gateway}
-        db_pass=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_PASSWORD)
-        db_name=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_DB); db_name=${db_name:-llm_gateway}
-        db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1); db_port=${db_port:-5432}
-        if [[ -n "$db_pass" ]]; then
-          export LLM_GATEWAY_PG_USER="$db_user" LLM_GATEWAY_PG_PASSWORD="$db_pass" LLM_GATEWAY_PG_DATABASE="$db_name"
-          export LLM_GATEWAY_DATABASE_URL="postgresql://${db_user}:${db_pass}@127.0.0.1:${db_port}/${db_name}?sslmode=disable"
-          export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+      if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
+        if [[ -n "$db_url" && "$db_url" =~ @((127\\.0\\.0\\.1)|(localhost))(:|/) ]]; then
+          local db_port
+          db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+          if [[ -z "$db_port" ]]; then
+            die "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; publish a host port or set LLM_GATEWAY_DATABASE_URL to a reachable PostgreSQL DSN"
+          fi
+          export LLM_GATEWAY_DATABASE_URL="$db_url" DATABASE_URL="$db_url"
+        else
+          local db_user db_pass db_name db_port
+          db_user=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_USER); db_user=${db_user:-llm_gateway}
+          db_pass=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_PASSWORD)
+          db_name=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_DB); db_name=${db_name:-llm_gateway}
+          db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+          if [[ -z "$db_port" ]]; then
+            die "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; publish a host port or set LLM_GATEWAY_DATABASE_URL to a reachable PostgreSQL DSN"
+          fi
+          if [[ -n "$db_pass" ]]; then
+            export LLM_GATEWAY_PG_USER="$db_user" LLM_GATEWAY_PG_PASSWORD="$db_pass" LLM_GATEWAY_PG_DATABASE="$db_name"
+            export LLM_GATEWAY_DATABASE_URL="postgresql://${db_user}:${db_pass}@127.0.0.1:${db_port}/${db_name}?sslmode=disable"
+            export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+          fi
         fi
       fi
     }
