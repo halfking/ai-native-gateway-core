@@ -106,7 +106,7 @@ const costPerToken = snapshot.total_cost_usd / snapshot.total_tokens;
   - Validates JSON output format
   - Ensures backward compatibility
 
-- **Documentation**: `SNAPSHOT_ENDPOINT_ENHANCEMENT.md`
+- **Documentation**: `docs/SNAPSHOT_ENDPOINT_ENHANCEMENT.md`（同目录 docs/）
   - Complete technical reference
   - Before/after API examples
   - Integration notes
