@@ -505,7 +505,20 @@ EOF
       sed -i.bak -E 's#^LLM_GATEWAY_REDIS_ADDR=.*#LLM_GATEWAY_REDIS_ADDR='"${DL_REDIS_CONTAINER}"':6379#' "$runtime_env"
       rm -f "$runtime_env.bak"
     fi
-    docker run -d --name "$name" --restart unless-stopped "${gateway_net_args[@]}" --env-file "$runtime_env" -e "LLM_GATEWAY_LISTEN=:${port}" -e "LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/version.json" -p "127.0.0.1:${port}:${port}" "kx-llm-gateway-local:${RELEASE_VERSION}" >/dev/null
+    # In Docker mode dl_write_env points LOG_DIR/RAW_LOG_DIR/ATTACHMENT_DIR/
+    # BACKUP_DIR at /opt/llm-gateway-go/<dir> inside the container. Without
+    # bind mounts those writes land in the container's ephemeral writable
+    # layer: invisible on the host and wiped by the next deploy (docker rm -f
+    # in stop_instance). Mount the host runtime-root state dirs at the exact
+    # container paths the env references (incident 2026-09-05: attachments
+    # persisted only inside the container and ~/kaixuan/llm-gateway-go/
+    # attachments stayed empty).
+    local gateway_bind_args=() state_dir
+    for state_dir in attachments logs raw-logs backups; do
+      mkdir -p "$ROOT_DIR/$state_dir"
+      gateway_bind_args+=(-v "$ROOT_DIR/$state_dir:/opt/llm-gateway-go/$state_dir")
+    done
+    docker run -d --name "$name" --restart unless-stopped "${gateway_net_args[@]}" "${gateway_bind_args[@]}" --env-file "$runtime_env" -e "LLM_GATEWAY_LISTEN=:${port}" -e "LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/version.json" -p "127.0.0.1:${port}:${port}" "kx-llm-gateway-local:${RELEASE_VERSION}" >/dev/null
   else
     local pf; pf=$(pid_file "$port"); mkdir -p "$RUN_DIR" "$LOG_DIR"
     source "$bundle/env"
