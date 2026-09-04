@@ -1,0 +1,112 @@
+c20c7e8dc3c4d5d3c4b34c3735ccc196e5d2adcb|Revert "fix(web): 优化弹窗关闭行为，仅点击外部区域时关闭"|2026-09-04 17:56:35 +0800
+e730b613a12e1e7920e8b7a1376e8a5a83d116a9|fix(web): 优化弹窗关闭行为，仅点击外部区域时关闭|2026-09-04 17:24:07 +0800
+84a00a9ce28ced713df28d129f1b1a25ccde97da|Merge branch 'main' of https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go|2026-09-04 17:24:53 +0800
+cb160f2f6c4137eea359bc6b9aeee9fd7bf436b8|chore(version): bump to 2.4.7-81182445-20260904-1922|2026-09-04 16:20:04 +0800
+a046f7739cc4a2d90cd304a113747dcef220b5d6|fix(analytics): tenant-scope funnel cache and exclude probe traffic|2026-09-04 16:19:36 +0800
+51a86eafe72d496e5e3132f406d5ef8bc737a15b|fix(web): include Element Plus global styles|2026-09-04 12:39:58 +0800
+8118244534cd8b9d9c6bd10b78b18deb713d1bac|feat(deploy): gate blue-green handoff on credential decrypt smoke|2026-09-04 10:09:40 +0800
+b31c227de054774c788833eef6bcb0f875615b75|feat(availability): keep serving through Redis/DB outages|2026-09-04 10:01:27 +0800
+be41877b1272848ee5e8a7c5e77a84b5b88d209f|chore(version): bump to 2.4.7-7189ccac-20260904-1920|2026-09-04 09:42:29 +0800
+524240125318316707a029c7c4f0a000844e24e3|fix(deploy-local): auto-load .env.local and fail closed on unpublished PG port|2026-09-04 09:42:24 +0800
+8a27d7daaa4fdbfa0ff190fb413376cee871a5ae|fix(secret): unwrap v1:legacy fernet envelopes and keep ErrDecrypt|2026-09-04 09:42:17 +0800
+2e1ccfb5fe6abbfc6b34fc7844e9c2163cacb767|fix(analytics): align routing stats source and harden MV rebuild|2026-09-04 09:38:26 +0800
+7189ccac77b9fed21d8d66650d66b08beb309543|merge: dispatch composition lifecycle fixes|2026-09-04 08:16:26 +0800
+e5476c2cbd5c902eb35dc21d83c55b353c405b42|fix(dispatch): close backend and lifecycle edge cases|2026-09-04 08:10:28 +0800
+be4bd0f4803b7daf0c37929ae7434c6d68196b7d|fix(mv-consistency): use routing_analytics_source for MV drift checks|2026-09-04 08:09:36 +0800
+d83614e26b20291625cddb35a8f11952eb07a843|Merge remote-tracking branch 'origin/main'|2026-09-04 07:48:26 +0800
+8fb5014c0c8f8969db000bbe6e4e995a275673ec|merge: sync origin main before push|2026-09-04 07:23:50 +0800
+4a43f922f29c123c23b76a7574a2340b82b55b3a|merge: credential console audit fixes|2026-09-04 07:23:30 +0800
+127d8c2f5e121f447136f711c5355779bb491772|fix(credential-console): align secret permissions and readonly controls|2026-09-04 07:22:58 +0800
+b76f9f2d4493a8a7323714de1aa9858d304559c5|fix(ir): reject invalid Responses request shapes|2026-09-04 07:01:45 +0800
+f96ddac440d85b345b3f463316557f588836e340|feat(web): improve credential model pricing console|2026-09-04 07:01:23 +0800
+37500e7bc21bfa904a5eb02d7b97129d8a7f1494|Merge remote-tracking branch 'origin/main'|2026-09-04 06:52:03 +0800
+7ee4776fa18409b27020487307b2e5e832067544|merge: sync latest main and resolve dispatch conflicts|2026-09-04 06:51:50 +0800
+f64b17ae7de9c58651e0283d5fd436fd738df1b5|fix(audit): close model tier lifecycle and archive 4h audit|2026-09-04 06:28:04 +0800
+ca2b02976ae2a28c7b3be8b9799f5ad286941f68|fix(release): package startup migration rollouts|2026-09-04 06:20:09 +0800
+0c82b391310ebbfef9a3554459f8ff2ef0d34835|fix(installer): embed startup migration rollouts|2026-09-04 06:18:34 +0800
+31211eb0af589b4f4088055f0edbe6231ccfb3c1|merge: sync origin main before audit push|2026-09-04 06:15:09 +0800
+7bf5bd7539b48933aad5c8ec85c5bc312109d585|merge: integration audit hardening|2026-09-04 06:13:30 +0800
+5d40372672c4c3c267001df02872672f8ae4f7c8|fix(audit): harden integration rollout contracts|2026-09-04 06:13:28 +0800
+f8af3a0cf1bf0c291cf44882c676259458577a05|fix(dispatch): composition-root ordering, DimensionIndex correctness, treatment attribution|2026-09-04 05:57:08 +0800
+ff8b1eb0008c4e822d90aa40449df8a0f85a26f5|merge: sync latest main before integration audit|2026-09-04 06:02:27 +0800
+4b266f47699d5ddb323ab8f806f4e6b9dcf710c3|fix(dispatch): composition-root ordering, DimensionIndex correctness, treatment attribution|2026-09-04 05:57:08 +0800
+9c20a6e518a9d0f18d01d45e4be73dbd8edecb03|fix: harden credential lifecycle and autoroute rollout|2026-09-04 05:54:49 +0800
+74f5159ad6931bc26ef691bbcae9e64e5c1decb6|Merge branch 'fix/remaining-optimization-audit'|2026-09-04 05:37:47 +0800
+930d073eae4333173a97166fa8ecdfd92716c331|Merge remote-tracking branch 'origin/main' into fix/remaining-optimization-audit|2026-09-04 05:35:48 +0800
+aa0c8eeb344f79fcb5f7cd0264a0d65112827e40|docs(audit): remove trailing whitespace|2026-09-04 05:33:57 +0800
+133fb4079cde99067a0e09b2d7726a02b99db2bb|Merge branch 'zcode/merge-minimax-20260904'|2026-09-04 05:33:18 +0800
+48720dfd8757eb0fe6fd30511a1920f5ec347fc7|fix(config): allow zero retry attempts on reload|2026-09-04 05:32:46 +0800
+4b22414adf243478c46cdb6d03160f3218d5f167|test: close remaining reliability audit gaps|2026-09-04 05:30:47 +0800
+141f78b3a674382487c3ae91c46fdd286d4c79d0|fix(autoroute): restore treatment attribution helper|2026-09-04 05:28:52 +0800
+698b5f4e9c94963b4aa4ae86c7a3b0793d2e570f|Merge remote-tracking branch 'origin/main' into zcode/merge-minimax-20260904|2026-09-04 05:24:20 +0800
+91c65a39dc354e5d5845fa22924757ce9c218da7|Merge remote-tracking branch 'origin/main' into zcode/merge-guide-20260904|2026-09-04 05:23:38 +0800
+5de4bb96a953e7cb85cedcc0d446418dd5f0e463|fix: harden gateway reliability and observability|2026-09-04 05:19:00 +0800
+422c28b329df235cf5ab3d90b51bfffe64e438de|wip: preserve local credential and autoroute changes|2026-09-04 05:01:56 +0800
+c9b93ab2024cbdf74c2884ee55344e790a3b8c74|Merge remote-tracking branch 'origin/main'|2026-09-04 04:55:12 +0800
+449b917a42a499cd4ba403134d4b5bd2f0fbd7b7|merge: audit turn digest phase two|2026-09-04 04:54:15 +0800
+fa21a467b0ae250d99d267825a28deb9de79a362|fix(audit): harden turn digest routing and timing contracts|2026-09-04 04:53:48 +0800
+04215679fbfe6fe942f4c72094302271bf98c63f|Merge remote-tracking branch 'origin/main' into merge/integrate-requested-20260904|2026-09-04 04:38:42 +0800
+dbaa58a6608d87eeaafa18c34c4a4100de3468b2|feat(streaming): add zero-behavior L2 shadow mode|2026-09-04 04:37:44 +0800
+1ff3cccbed2713e1813d4c7510e61a6778439b22|fix(bg): preserve queue pump source contract|2026-09-04 04:37:11 +0800
+5dae62332b123801d92c816fa08416464d17cb83|fix(bg): remove stale pump result reference|2026-09-04 04:30:27 +0800
+51ff24fe00f7510edfc32dbc5ca4f371d898e1c3|fix(bg): honor queue submission result in pump|2026-09-04 04:27:16 +0800
+fbe685aaf94ba1c9570275d91b631a195352200a|Merge remote-tracking branch 'origin/main' into merge/integrate-requested-20260904|2026-09-04 04:22:08 +0800
+b575b9616c995807167964987fae0ff29628903a|feat: harden streaming lifecycle and tenant controls|2026-09-04 04:20:49 +0800
+033dbfb85bfbb3841c891e33827ac8828408ca52|style(bg): format node probe recovery|2026-09-04 04:19:20 +0800
+61bc2a6d3e067f37679704d19d4c3be70905e140|Merge remote-tracking branch 'origin/main' into fix/proxy-subscription-admin-audit-20260903|2026-09-04 04:17:43 +0800
+6295e3d76590f1b66b23069f458c2d175a575d57|Merge remote-tracking branch 'origin/main' into fix/proxy-subscription-admin-audit-20260903|2026-09-04 04:16:53 +0800
+efd6b0134508f3c96c24ae72b45c1ab7da6dc220|fix(analytics): exclude self-check traffic from routing heatmap|2026-09-04 04:14:23 +0800
+1bc4e5b9da7ffaf86f6b19d2de5db67dcfcb02f5|Merge fix/node-state-sync-20260903: harden probe queue recovery|2026-09-04 04:13:30 +0800
+7891dc6642dbaeefe6967a41a8bd0d3e54e41c48|Merge remote-tracking branch 'origin/feature/admin-credential-models-rescue' into merge/integrate-requested-20260904|2026-09-04 04:09:25 +0800
+cef956478fbe656c430d296ec95278ff2532edb5|Merge branch 'integration/v1-legacy-session-ping' into merge/integrate-requested-20260904|2026-09-04 04:09:00 +0800
+72d17f928fbb89a3e98e8052f17f2a317ccd948d|Merge remote-tracking branch 'origin/fix/provider-context-compression-audit' into merge/integrate-requested-20260904|2026-09-04 04:06:19 +0800
+bcd5b918847fe8c3de785098c60ab324afde43d9|fix(main): repair incomplete runtime integrations|2026-09-04 04:05:14 +0800
+d77cb92db0c480003472ac306abc21bd2fb95b9a|feat: complete turn digest phase two routing|2026-09-04 03:54:18 +0800
+4c9e72578daf087573956d2306bd229999c6030f|merge: integrate goal client signal and request-flow hardening|2026-09-04 03:42:11 +0800
+ff78de31168fe028157082d686ef4d688b68236b|Merge remote-tracking branch 'origin/main' into fix/proxy-subscription-admin-audit-20260903|2026-09-04 03:32:25 +0800
+be04a0e468df5c5926f628533958029e3bdb0c8d|fix(proxy): close subscription admin audit gaps|2026-09-04 03:31:14 +0800
+eb72d9533fa716d5bf626cbaf8d1b158db349158|feat(web): migrate 自动更新 / 赞助与捐赠 into 接入指南 submenu|2026-09-04 03:14:23 +0800
+2f5fe858b016158e7fecd5363c5a5484a2e2e0c0|fix(audit): harden batch writes and request metadata|2026-09-04 03:11:39 +0800
+de37ad9790f2c89467128318aba1053b0d8a991e|fix: harden minimax stream interruption handling|2026-09-04 02:55:34 +0800
+ecebfab0400a34307a544d37a52abc4c72dddce0|fix(goal): harden client signal capability routing|2026-09-04 02:39:52 +0800
+34d4e3f5f1d3daa969c96345046a74b5033d42a5|fix(deploy): ignore stale SSHPASS in key-only wrappers|2026-09-04 02:39:00 +0800
+e88a37e77d038af460fbd294f95d67702e3761ac|docs(adr): plugin-runtime v2 + capability + lifecycle ADR|2026-09-04 02:34:36 +0800
+2c07265663757c05f0c3eb9e973a484fca617805|feat(web): dynamic plugin nav injection + remove ASM hardcoded entry (V5.1 F-H3)|2026-09-04 02:34:33 +0800
+6290c7e4c9b90aa7c9a0cae5c817dbf3814ed3e7|feat(plugin-runtime): capability 三入口鉴权 + lifecycle admin + upgrade rollback + Uninstall bundle cleanup|2026-09-04 02:34:22 +0800
+63a91afb3791b60e30770cec46855457b5ffedc0|feat(plugin-runtime): manifest v2 schema + strict SemVer compare|2026-09-04 02:34:08 +0800
+18a86ce43e02668ba7be08cb507b5b7d602c6431|fix(deploy): require injected SSH keys for remote wrappers|2026-09-04 02:28:11 +0800
+dfe8a4e223148cd898c06bb1e801084d22b7f3de|feat(goal): add comprehensive client signal testing|2026-09-04 02:15:54 +0800
+476c3814eb00d0d9521df4557739467ac89a5f68|fix(node-probe): harden queue submission recovery|2026-09-04 02:08:54 +0800
+cb7c6fb6efafc76a443bcdea4cb64df0be75faeb|merge: sync latest main after provenance audit|2026-09-04 01:49:47 +0800
+ea367d4e63120d9cd3d9552ce15cb8f8e61d9f97|feat(web): i18n CJK ratchet gate, confirm-dialog convergence, shared EmptyState/AppSpinner, pill-chip on turn-digest|2026-09-04 01:12:08 +0800
+9132dec0526bd7a8315e33852db9199ad5eb1b31|refactor(cleanup): dead-code round 2 — internal/release, suspiciousProbe, writeJSON convergence|2026-09-04 01:11:59 +0800
+715cfd0a61184f4840b563c687d39ba8153568d7|feat(metrics): count silently dropped dispatch notices (non-streaming / prestream-uninit)|2026-09-04 01:11:59 +0800
+4dd6a668bb94680b945147943339bbb52346bd3d|fix(db): migration 645 repairs missing session_bodies_hot unique constraint on 252|2026-09-04 01:11:50 +0800
+06d9d31a316f796a33dfaff07d8054a83917988b|feat(streaming): wire L2 committed-prefix aligned continuation into survival recovery|2026-09-04 01:11:44 +0800
+0cd6807dfbb67b3aeacc251fa32dc2ef0b664b5e|merge: sync remote main for survival audit push|2026-09-04 01:06:58 +0800
+8dcb12f3ac33b869611b0207dba31f53863f7d9a|Merge remote-tracking branch 'origin/main'|2026-09-04 01:06:06 +0800
+44bc6723d4d173b26544eed7b118b36349593841|fix(node-probe): retry and persist queue submissions|2026-09-04 01:05:39 +0800
+8b352610fe48b3eb3802568bdb958611a60918da|merge: close durable recovery survival audit gaps|2026-09-04 01:02:59 +0800
+324e16566fb05a7d078f024d5d211de66f899bee|fix(streaming): align durable recovery with survival budget contract|2026-09-04 01:02:46 +0800
+13a2bf48c47725f15505dac6b6a825cc34bbbb6d|merge: sync latest main before provenance push|2026-09-04 00:51:36 +0800
+9182856c750b33931dc3e2e037df1451f3af5991|merge: close survival provenance audit gaps|2026-09-04 00:50:46 +0800
+0f1a6f63e4dafd25ab558134837edf6c34daecf2|feat(session): turn-digest jsonb backfill job + perf baseline + phase-2 plans|2026-09-04 00:44:41 +0800
+7d4893ac74491516be43eb86143315927ead3470|feat(admin+web): open provider console + credential API key rotation to default-tenant tenant_admin|2026-09-04 00:41:14 +0800
+2650813ee6c290426326bb56f11e51f40c467df9|fix(compression): close provenance audit gaps|2026-09-04 00:39:13 +0800
+6d5633ba60d840308ce1989234f17775c9f93b02|fix(web): unwrap proxy list envelope and harden RequestTracePanel copy timer|2026-09-04 00:36:16 +0800
+cef1f86d92ce134e8f0cf24e381709b21282fd7d|chore(nav): sync activateWhenNotActivated into menu-config export|2026-09-04 00:34:46 +0800
+e218a27e3820652d5792503f223be1d1aa7f2594|fix(admin+web): close credential-audit findings from 6f734bc1a review|2026-09-04 00:27:53 +0800
+268b776afc661877b265d200ba525cff476a2138|chore(version): bump to 2.5.0-b55d0883-20260903-1899 (deploy 154)|2026-09-04 00:22:50 +0800
+b55d0883edb40d747cb5bb35980fe8d5ecb6b40e|refactor(streaming): remove unreachable /readyz branch in HealthHandler.ServeHTTP|2026-09-04 00:16:18 +0800
+1777d8fe4aae5d52b63e496d9cb7aa745402ae22|chore(handoff): archive 2026-09-01/09-03 session handoff docs|2026-09-04 00:10:48 +0800
+e5891bcb6a066a565507debc0c8ccb42a0900110|test(admin): turn-digest integration tests via sessionTurnsDB seam|2026-09-04 00:09:11 +0800
+20ac13836cb294e148ec04f43e66a0a7e74fdc8c|Merge remote-tracking branch 'origin/main'|2026-09-04 00:08:11 +0800
+113d3e0a62a2430a0031ec3d113cdfd377496173|feat(nav): gate auto-update entry behind activation with Activate CTA|2026-09-04 00:08:02 +0800
+1b352c1b94aaf29668356fc23f7caac4c0a502ab|Merge branch 'main' into fix/db-stdlib-pool-lifecycle|2026-09-03 23:39:46 +0800
+c2c89f620091fc46281574a79f5b53d70cab8b39|feat(compression): label alignment targets|2026-09-03 20:00:54 +0800
+a0750cf5d1f92d688d3a9f8d044313dd7bcb9976|fix(web): drop hardcoded #d29922 fallback in SystemStatusIndicator warning chip|2026-09-03 23:00:58 +0800
+0aaf2cca9b324b2c24e2b7230691123c2e808462|test(readyz): lock down JSON contract — database/redis fields + Error stripped|2026-09-03 22:57:56 +0800
+aad1379e7a5c93b59ad8db9589bad5f29d398b34|chore(web): auto-export refresh of menu-config.json timestamp|2026-09-03 22:55:02 +0800
+82a18e05b65654448e12344b2bf0e75fd3d64d37|chore(docs+scripts): sync doc/code parity findings for db252 sync flow|2026-09-03 22:54:52 +0800
+85f2730953e971847debddffb4c64ee4b923a98a|fix(web): D/R/T 徽章三态 + 自检触发按钮三态文案|2026-09-03 22:38:26 +0800
+9d21f671c779126c9cb5f30b5ee3f6be8ebaa645|fix(backend): /readyz returns database/redis fields; cn-friendly trigger reason|2026-09-03 22:38:00 +0800
