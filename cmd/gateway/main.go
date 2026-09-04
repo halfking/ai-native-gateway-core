@@ -47,7 +47,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/cmd/gateway/webhooks" //nolint:depguard // 充值回调 webhook 模块 (落点 B, 2026-08-26)
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
-	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
 	"github.com/kaixuan/llm-gateway-go/domains/analysis"                            //nolint:depguard // M3 embedding shadow adapter
@@ -361,11 +360,10 @@ func main() {
 	slog.Info("gateway starting", "listen", cfg.Listen, "log_level", cfg.LogLevel, "runtime_role", cfg.RuntimeRole)
 
 	// ── Dependencies ──────────────────────────────────────────────────────
-	dbConn, err := db.Open(context.Background(), cfg.DatabaseURL)
-	if err != nil {
-		slog.Warn("postgres disabled", "error", err)
-		dbConn = nil // Prevent using closed connection pool
-	}
+	// 2026-09-04 availability: an unreachable DB at boot is retried within a
+	// bounded budget (LLM_GATEWAY_DB_BOOT_RETRY_SECONDS) instead of dropping
+	// the process into permanent no-DB mode; see openDBWithBootRetry.
+	dbConn := openDBWithBootRetry(context.Background(), cfg.DatabaseURL)
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("main: panic during startup", "panic", fmt.Sprintf("%v", r), "stack", string(debug.Stack()))
@@ -698,9 +696,11 @@ func main() {
 	var sessionDigestBackfillForShutdown any
 	if cfg.RedisAddr != "" {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
-		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		pingErr := redisClient.Ping(pingCtx)
-		pingCancel()
+		// 2026-09-04 availability: bounded boot-ping retry so a Redis that
+		// comes up slightly after the gateway (container ordering, short
+		// failover) does not disable sessions/URSM for the process lifetime.
+		pingErr := pingRedisWithBootRetry(redisClient,
+			bootRetryBudgetEnv("LLM_GATEWAY_REDIS_BOOT_RETRY_SECONDS", 30*time.Second))
 		if pingErr == nil {
 			sessionTTL := time.Duration(cfg.SessionTTLHours) * time.Hour
 			pendingTTL := time.Duration(cfg.PendingTTLSeconds) * time.Second
@@ -835,36 +835,58 @@ func main() {
 	// URSM v2 starts authoritative by default. The ready gate remains closed
 	// until legacy state bootstrap and full coverage validation complete; off,
 	// shadow, and canary remain explicit diagnostic or rollback modes.
+	//
+	// 2026-09-04 availability policy: when a mode that requires Redis or
+	// PostgreSQL boots without them (or its synchronous bootstrap fails), the
+	// gateway degrades URSM v2 to ModeOff — the legacy routing path, i.e. the
+	// documented rollback — and keeps serving instead of aborting the process.
+	// Set URSM_V2_STRICT_DEPS=true to restore the pre-2026-09 fail-fast
+	// behaviour for operators who prefer the process to die (and be restarted
+	// elsewhere by the orchestrator) rather than serve legacy routing.
 	var ursmV2Mgr *ursmv2.Manager
 	ursmV2Cfg := ursmv2.LoadFromEnv()
 	if err := ursmV2Cfg.Validate(); err != nil {
 		slog.Error("ursm.v2: invalid startup configuration", "error", err)
 		return
 	}
+	ursmStrictDeps := envBool("URSM_V2_STRICT_DEPS", false)
+	ursmDepsRefused := ""
 	if ursmV2Cfg.StrictCanary {
-		if redisClientForCache == nil {
-			slog.Error("ursm.v2: strict canary requires reachable isolated Redis")
-			return
-		}
-		if dbConn == nil || !dbConn.Enabled() {
-			slog.Error("ursm.v2: strict canary requires reachable isolated PostgreSQL")
-			return
-		}
-		if envBoolOff("LLM_GATEWAY_PROBE_QUEUE_ENABLED") || !useNewProbeMode() {
-			slog.Error("ursm.v2: strict canary requires durable probe queue and LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
-			return
+		switch {
+		case redisClientForCache == nil:
+			ursmDepsRefused = "strict canary requires reachable isolated Redis"
+		case dbConn == nil || !dbConn.Enabled():
+			ursmDepsRefused = "strict canary requires reachable isolated PostgreSQL"
+		case envBoolOff("LLM_GATEWAY_PROBE_QUEUE_ENABLED") || !useNewProbeMode():
+			ursmDepsRefused = "strict canary requires durable probe queue and LLM_GATEWAY_USE_NEW_PROBE_MODE=true"
 		}
 	}
 	// Shadow 模式也需要 PostgreSQL 进行影子写入，Authoritative 模式同样依赖
-	if ursmV2Cfg.Mode == ursmv2api.ModeShadow || ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative {
-		if redisClientForCache == nil {
-			slog.Error("ursm.v2: mode requires reachable Redis", "mode", ursmV2Cfg.Mode)
+	if ursmDepsRefused == "" && (ursmV2Cfg.Mode == ursmv2api.ModeShadow || ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative) {
+		switch {
+		case redisClientForCache == nil:
+			ursmDepsRefused = fmt.Sprintf("mode %s requires reachable Redis", ursmV2Cfg.Mode)
+		case dbConn == nil || !dbConn.Enabled():
+			ursmDepsRefused = fmt.Sprintf("mode %s requires reachable PostgreSQL", ursmV2Cfg.Mode)
+		}
+	}
+	// Authoritative cutover must be recoverable by systemmonitor; without the
+	// monitor the process would serve a full cutover with no automatic gate
+	// close/reopen support, so it is treated as a failed dependency too.
+	if ursmDepsRefused == "" && ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative && os.Getenv("LLM_GATEWAY_SYSTEM_MONITOR_ENABLED") != "true" {
+		ursmDepsRefused = "authoritative mode requires LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true"
+	}
+	if ursmDepsRefused != "" {
+		if ursmStrictDeps {
+			slog.Error("ursm.v2: refusing to start (URSM_V2_STRICT_DEPS set)", "reason", ursmDepsRefused)
 			return
 		}
-		if dbConn == nil || !dbConn.Enabled() {
-			slog.Error("ursm.v2: mode requires reachable PostgreSQL", "mode", ursmV2Cfg.Mode)
-			return
-		}
+		slog.Error("ursm.v2: dependency unavailable, degrading to ModeOff and continuing on legacy routing",
+			"requested_mode", ursmV2Cfg.Mode,
+			"reason", ursmDepsRefused,
+			"hint", "set URSM_V2_STRICT_DEPS=true to fail fast instead of serving degraded",
+		)
+		ursmV2Cfg.Mode = ursmv2api.ModeOff
 	}
 	if redisClientForCache != nil {
 		ursmV2Mgr = ursmv2.New(ursmv2.Dependencies{
@@ -898,14 +920,6 @@ func main() {
 		slog.Info("ursm.v2 manager disabled (no redis client)")
 	}
 
-	// Authoritative cutover must be recoverable by systemmonitor. Refuse the
-	// process before it listens rather than silently serving a full cutover
-	// without automatic gate close/reopen support.
-	if ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative && os.Getenv("LLM_GATEWAY_SYSTEM_MONITOR_ENABLED") != "true" {
-		slog.Error("ursm.v2: authoritative mode requires LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true")
-		return
-	}
-
 	// Startup migration is asynchronous only for non-authoritative compatibility
 	// modes. A full cutover verifies coverage synchronously before the server can
 	// begin accepting traffic.
@@ -921,20 +935,38 @@ func main() {
 			})
 			if bootstrapErr != nil {
 				cancel()
-				slog.Error("ursm.v2: authoritative startup refused; legacy bootstrap failed", "error", bootstrapErr)
-				return
+				if ursmStrictDeps {
+					slog.Error("ursm.v2: authoritative startup refused; legacy bootstrap failed", "error", bootstrapErr)
+					return
+				}
+				slog.Error("ursm.v2: authoritative bootstrap failed, degrading to ModeOff and continuing on legacy routing",
+					"error", bootstrapErr,
+					"hint", "set URSM_V2_STRICT_DEPS=true to fail fast instead of serving degraded",
+				)
+				ursmV2Cfg.Mode = ursmv2api.ModeOff
+				ursmV2Mgr = nil
+			} else {
+				count, warmupErr := ursmV2Mgr.WarmupFromCoverage(ctx)
+				cancel()
+				if warmupErr != nil {
+					if ursmStrictDeps {
+						slog.Error("ursm.v2: authoritative startup refused; coverage validation failed", "error", warmupErr)
+						return
+					}
+					slog.Error("ursm.v2: coverage validation failed, degrading to ModeOff and continuing on legacy routing",
+						"error", warmupErr,
+						"hint", "set URSM_V2_STRICT_DEPS=true to fail fast instead of serving degraded",
+					)
+					ursmV2Cfg.Mode = ursmv2api.ModeOff
+					ursmV2Mgr = nil
+				} else {
+					slog.Info("ursm.v2: authoritative gate opened after bootstrap and coverage validation",
+						"node_count", count,
+						"bootstrap_total", result.Total,
+						"bootstrap_written", result.Written,
+						"bootstrap_skipped", result.Skipped)
+				}
 			}
-			count, warmupErr := ursmV2Mgr.WarmupFromCoverage(ctx)
-			cancel()
-			if warmupErr != nil {
-				slog.Error("ursm.v2: authoritative startup refused; coverage validation failed", "error", warmupErr)
-				return
-			}
-			slog.Info("ursm.v2: authoritative gate opened after bootstrap and coverage validation",
-				"node_count", count,
-				"bootstrap_total", result.Total,
-				"bootstrap_written", result.Written,
-				"bootstrap_skipped", result.Skipped)
 		} else {
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -1957,6 +1989,34 @@ func main() {
 	keyVerifier := authentication.NewKeyVerifier()
 	if dbConn != nil && dbConn.Enabled() {
 		keyVerifier.SetDB(dbConn.Pool(), cfg.SecretKey)
+		// 2026-09-04 availability: full api_keys replica in memory. Startup
+		// full load + 5-minute delta sync (last_used_at watermark + invalid
+		// set); a DB outage freezes the replica at its last state and
+		// keeps authorizing instead of 503-ing. The periodic local snapshot
+		// additionally lets a future cold boot authorize while the DB is
+		// unreachable. LLM_GATEWAY_KEYSTORE_SYNC_INTERVAL=0 disables (pure
+		// lazy verification as before). The deferred cancel is
+		// function-scoped and runs before the dbConn close deferred earlier
+		// in main (LIFO), so the sync never races pool shutdown.
+		keyVerifier.SetSnapshotDir(keyStoreSnapshotDirFromEnv())
+		if syncInterval := keyStoreSyncIntervalFromEnv(); syncInterval > 0 {
+			keyStoreSyncCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			keyVerifier.StartKeyStoreSync(keyStoreSyncCtx, syncInterval)
+			slog.Info("api key store sync enabled", "interval", syncInterval.String())
+		}
+	} else if snapshotDir := keyStoreSnapshotDirFromEnv(); snapshotDir != "" {
+		// 2026-09-04 cold-start gear: database unreachable at boot. The
+		// local snapshot (HMAC hashes + metadata, no key material) lets
+		// authentication keep working until the database returns.
+		keyVerifier.SetSecretKey(cfg.SecretKey)
+		if n, err := keyVerifier.LoadSnapshot(snapshotDir); err != nil {
+			slog.Warn("api key auth: no usable local snapshot, authentication store unavailable",
+				"error", err, "snapshot_dir", snapshotDir)
+		} else {
+			slog.Warn("api key auth: database unavailable at boot, serving from local snapshot",
+				"keys", n, "snapshot_dir", snapshotDir)
+		}
 	}
 	if keyVerifier.Enabled() {
 		slidingRL := ratelimit.NewRedisLimiterFromEnv()
@@ -2945,7 +3005,21 @@ func main() {
 			// does the typed field-by-field conversion at wire time.
 			var recoveryGate systemmonitor.RecoveryGate
 			if ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
-				recoveryGate = newV2RecoveryGateAdapter(ursmV2Mgr)
+				adapter := newV2RecoveryGateAdapter(ursmV2Mgr)
+				// 2026-09-04 availability: authoritative 模式下接入空命名空间
+				// 自愈 —— Redis 丢数据重启后从 PostgreSQL 重建 v2 状态并重开
+				// gate，而不是永久 503 直到进程重启。
+				if ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative &&
+					dbConn != nil && dbConn.Enabled() && redisClientForCache != nil {
+					adapter.withRebuild(rebuildOptions{
+						pool:        dbConn.Pool(),
+						rdb:         redisClientForCache.Client(),
+						keyPrefix:   ursmV2Cfg.RedisKeyPrefix,
+						coolSeconds: ursmV2Cfg.CoolSeconds,
+						schemaMode:  ursmV2Cfg.KeySchemaMode,
+					})
+				}
+				recoveryGate = adapter
 			}
 			sm, smErr := systemmonitor.NewSystemMonitor(systemmonitor.Config{
 				DB:          dbConn.Pool(),

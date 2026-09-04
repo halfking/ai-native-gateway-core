@@ -18,6 +18,13 @@ var transitionRecoverySrc string
 
 var transitionRecoveryScript = redis.NewScript(transitionRecoverySrc)
 
+// ErrCoverageManifestEmpty reports that the coverage manifest set holds no
+// members — the signature of a Redis namespace wiped by a restart without
+// persistence (or an incomplete bootstrap). Callers may errors.Is this to
+// decide whether a rebuild-from-PostgreSQL (bootstrap.Apply) is the right
+// remedy before retrying the reopen (2026-09-04 availability work).
+var ErrCoverageManifestEmpty = errors.New("coverage manifest empty")
+
 type Manager struct {
 	rdb    *redis.Client
 	prefix string
@@ -237,7 +244,7 @@ func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("ursm.v2: read coverage manifest: %w", err)
 	}
 	if len(keys) == 0 {
-		return 0, fmt.Errorf("ursm.v2: coverage manifest is empty")
+		return 0, fmt.Errorf("ursm.v2: coverage manifest is empty: %w", ErrCoverageManifestEmpty)
 	}
 	pipe := m.rdb.Pipeline()
 	exists := make([]*redis.IntCmd, len(keys))

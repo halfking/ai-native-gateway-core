@@ -170,8 +170,13 @@ type Router struct {
 	// 对比，不改变实际选中候选。nil = 现状（P2C/bandit 行为零变化）。
 	// 非 nil 时，planByTier 在每个 tier bucket 用 ShadowStrategy 独立评分，
 	// 记录 agreed/disagreed metric（llmgw_routing_shadow_strategy_outcomes_total）。
-	// 通过环境变量 LLM_GATEWAY_ROUTING_SHADOW_STRATEGY 选择策略名构造。
+	// 通过环境变量 LLM_GATEWAY_ROUTING_SHADOW_STRATEGY 选择策略构造。
 	ShadowStrategy Strategy
+
+	// outageFallbackActive (2026-09-04 availability gear) tracks whether the
+	// URSM v2 outage fallback is currently serving so engage/disengage are
+	// logged once per transition instead of once per request.
+	outageFallbackActive atomic.Bool
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
@@ -300,9 +305,14 @@ func (r *Router) planCandidates(
 		readySnapshot = &ready
 	}
 
-	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && readySnapshot != nil && *readySnapshot {
-		ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
-		defer cancel()
+	// outageServed (2026-09-04 availability gear): set when the authoritative
+	// v2 read path was unavailable because Redis is unreachable and the router
+	// served a degraded read-only decision from the URSM node mirror instead.
+	// The Manager owns the reachability proof — a reachable Redis (deliberate
+	// gate closure, recovery race) always refuses the fallback — so this gear
+	// can never bypass a recovery-gate closure.
+	var outageServed bool
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
 		seeds := make([]ursmv2.CandidateSeed, 0, len(candidates))
 		for _, c := range candidates {
 			seeds = append(seeds, ursmv2.CandidateSeed{
@@ -318,44 +328,73 @@ func (r *Router) planCandidates(
 				BaseURLMs:    c.P50LatencyMs,
 			})
 		}
-		// Use the S-3 variant so the inner NodeMirror source is
-		// recorded into the shared counter. The returned enum is
-		// intentionally not consulted here — the router records the
-		// OUTER label, not the inner one.
-		views, _, err := r.URSMv2.FilterAndScoreReadyWithSource(ctx, seeds, *readySnapshot)
-		if err != nil {
-			slog.Warn("router: URSM v2 FilterAndScore failed, rejecting authoritative route",
-				"error", err,
-				"seed_count", len(seeds),
-				"mode", r.URSMv2.Mode(),
-			)
-			recordOuterSource(statesource.StateSourceFallback)
-			return nil
+		filteredByViews := func(views []ursmv2api.NodeView) []provider.Candidate {
+			allow := make(map[string]bool, len(views))
+			for _, v := range views {
+				if v.Available {
+					allow[seedLookupKey(v.ProviderID, v.CredentialID, v.RawModel)] = true
+				}
+			}
+			filtered := make([]provider.Candidate, 0, len(candidates))
+			for i, c := range candidates {
+				if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.BindingRawModel())] ||
+					(probePin != nil && c.CredentialID == *probePin) {
+					filtered = append(filtered, c)
+				}
+			}
+			return filtered
 		}
-		recordOuterSource(statesource.StateSourceAuthoritative)
-		allow := make(map[string]bool, len(views))
-		for _, v := range views {
-			if v.Available {
-				allow[seedLookupKey(v.ProviderID, v.CredentialID, v.RawModel)] = true
+
+		if readySnapshot != nil && *readySnapshot {
+			ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
+			// Use the S-3 variant so the inner NodeMirror source is
+			// recorded into the shared counter. The returned enum is
+			// intentionally not consulted here — the router records the
+			// OUTER label, not the inner one.
+			views, _, err := r.URSMv2.FilterAndScoreReadyWithSource(ctx, seeds, *readySnapshot)
+			cancel()
+			if err != nil {
+				slog.Warn("router: URSM v2 FilterAndScore failed, rejecting authoritative route",
+					"error", err,
+					"seed_count", len(seeds),
+					"mode", r.URSMv2.Mode(),
+				)
+				if kept := r.tryURSMOutageFallback(requestCtx, candidates, seeds, probePin); len(kept) > 0 {
+					candidates = kept
+					outageServed = true
+					recordOuterSource(statesource.StateSourceOutageMirror)
+				} else {
+					recordOuterSource(statesource.StateSourceFallback)
+					return nil
+				}
+			} else {
+				recordOuterSource(statesource.StateSourceAuthoritative)
+				if r.outageFallbackActive.CompareAndSwap(true, false) {
+					slog.Info("router: URSM v2 outage fallback disengaged (authoritative read path healthy again)")
+				}
+				candidates = filteredByViews(views)
+				if len(candidates) == 0 {
+					return nil
+				}
+			}
+		} else {
+			// Strict authoritative mode never substitutes DB-only or legacy state
+			// while the recovery gate is closed. A route may resume only after v2
+			// coverage has been revalidated and the gate has reopened.
+			//
+			// 2026-09-04 availability exception: when the Ready read failed
+			// because Redis itself is unreachable (as opposed to the gate being
+			// deliberately closed), the outage gear may serve read-only routing
+			// from the node mirror, bounded by URSM_V2_OUTAGE_GRACE_SECONDS.
+			if kept := r.tryURSMOutageFallback(requestCtx, candidates, seeds, probePin); len(kept) > 0 {
+				candidates = kept
+				outageServed = true
+				recordOuterSource(statesource.StateSourceOutageMirror)
+			} else {
+				recordOuterSource(statesource.StateSourceFallback)
+				return nil
 			}
 		}
-		filtered := make([]provider.Candidate, 0, len(candidates))
-		for i, c := range candidates {
-			if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.BindingRawModel())] ||
-				(probePin != nil && c.CredentialID == *probePin) {
-				filtered = append(filtered, c)
-			}
-		}
-		candidates = filtered
-		if len(candidates) == 0 {
-			return nil
-		}
-	} else if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
-		// Strict authoritative mode never substitutes DB-only or legacy state
-		// while the recovery gate is closed. A route may resume only after v2
-		// coverage has been revalidated and the gate has reopened.
-		recordOuterSource(statesource.StateSourceFallback)
-		return nil
 	}
 
 	// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
@@ -366,7 +405,16 @@ func (r *Router) planCandidates(
 	// 一次性决定使用 URSM v2 / StateManager / DB-only 哪套系统。
 	ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
 	defer cancel()
-	stateBackend := selectStateBackendWithReady(r.URSMv2, r.StateManager, ctx, readySnapshot)
+	var stateBackend StateBackend
+	if outageServed {
+		// Outage gear: candidates were already availability-filtered by the
+		// node mirror above; selectStateBackendWithReady would return the
+		// rejecting backend because the ready snapshot is false against a
+		// dead Redis.
+		stateBackend = &OutageMirrorStateBackend{}
+	} else {
+		stateBackend = selectStateBackendWithReady(r.URSMv2, r.StateManager, ctx, readySnapshot)
+	}
 	available := stateBackend.FilterAvailable(ctx, candidates)
 
 	// Probe-pin rescue: a pinned self-check probe must survive runtime
@@ -578,6 +626,49 @@ func (r *Router) planCandidates(
 	}
 
 	return ordered
+}
+
+// tryURSMOutageFallback attempts the URSM v2 Redis-outage availability gear
+// (2026-09-04). It returns the availability-filtered candidate list, or nil
+// when the gear cannot serve — disabled via URSM_V2_OUTAGE_GRACE_SECONDS=0,
+// Redis actually reachable (deliberate gate closure / recovery race — the
+// Manager PING refuses, so this gear can never bypass the recovery gate),
+// or the node mirror holds no entries inside the outage window. The caller
+// falls back to its normal rejection path in that case.
+func (r *Router) tryURSMOutageFallback(
+	ctx context.Context,
+	candidates []provider.Candidate,
+	seeds []ursmv2.CandidateSeed,
+	probePin *int,
+) []provider.Candidate {
+	views, err := r.URSMv2.FilterAndScoreOutageFallback(ctx, seeds)
+	if err != nil {
+		return nil
+	}
+	allow := make(map[string]bool, len(views))
+	for _, v := range views {
+		if v.Available {
+			allow[seedLookupKey(v.ProviderID, v.CredentialID, v.RawModel)] = true
+		}
+	}
+	filtered := make([]provider.Candidate, 0, len(candidates))
+	for i, c := range candidates {
+		if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.BindingRawModel())] ||
+			(probePin != nil && c.CredentialID == *probePin) {
+			filtered = append(filtered, c)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	if r.outageFallbackActive.CompareAndSwap(false, true) {
+		slog.Warn("router: URSM v2 outage fallback ENGAGED — serving read-only routing from the node mirror while Redis is unreachable",
+			"candidates", len(candidates),
+			"kept", len(filtered),
+			"hint", "window bounded by URSM_V2_OUTAGE_GRACE_SECONDS; routing state is frozen at the outage moment",
+		)
+	}
+	return filtered
 }
 
 // classifyPrioritySelection maps the final ordered candidate list to the

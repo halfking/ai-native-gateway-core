@@ -671,27 +671,47 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 			continue
 		}
 		if err != nil {
-			// Stale fallback is limited to retryable failures, live contexts, and
-			// non-empty entries that are still inside the fresh TTL plus grace.
+			// Stale fallback is limited to retryable failures, live contexts,
+			// and non-empty entries. Two windows (2026-09-04 availability
+			// work): the original 30s grace past expiry, then the wider
+			// candidateOutageGrace for a DB that stays down — without the
+			// second window every request fails ~60s into a DB outage.
 			c.mu.RLock()
 			staleEntry, ok := c.candCache[key]
 			c.mu.RUnlock()
-			if !ok || !canServeStaleCandidateCache(ctx, err, staleEntry, time.Now()) {
+			now := time.Now()
+			serveStale := ok && canServeStaleCandidateCache(ctx, err, staleEntry, now)
+			serveOutage := !serveStale && ok && canServeCandidateCacheDuringOutage(ctx, err, staleEntry, now)
+			if !serveStale && !serveOutage {
 				return nil, DefaultPolicy(), err
 			}
 
 			cacheAge := time.Since(staleEntry.expires)
-			recordCandidateDiagnostic("db_unavailable")
-			slog.Warn("[candidate_diag] database unavailable, serving stale cache",
-				"model", routeModel,
-				"profile", profile,
-				"tenant_id", tenantID,
-				"cache_key", key,
-				"cache_age", cacheAge,
-				"plan_count", planCount(staleEntry.value),
-				"candidate_count", candidateCount(staleEntry.value),
-				"db_error", err.Error(),
-			)
+			if serveOutage {
+				recordCandidateDiagnostic("db_outage_stale")
+				slog.Warn("[candidate_diag] database outage, serving expired cache beyond grace",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"cache_age", cacheAge,
+					"plan_count", planCount(staleEntry.value),
+					"candidate_count", candidateCount(staleEntry.value),
+					"db_error", err.Error(),
+				)
+			} else {
+				recordCandidateDiagnostic("db_unavailable")
+				slog.Warn("[candidate_diag] database unavailable, serving stale cache",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"cache_age", cacheAge,
+					"plan_count", planCount(staleEntry.value),
+					"candidate_count", candidateCount(staleEntry.value),
+					"db_error", err.Error(),
+				)
+			}
 
 			cands := c.enrichWithAPIKeys(ctx, staleEntry.value)
 			if !c.candidateGenerationIsCurrent(queryGeneration) {
@@ -819,6 +839,27 @@ func staleCandidateCacheUsable(entry cacheEntry[*resolveResponse], now time.Time
 
 func canServeStaleCandidateCache(ctx context.Context, err error, entry cacheEntry[*resolveResponse], now time.Time) bool {
 	return ctx != nil && ctx.Err() == nil && isRetryableDBError(err) && staleCandidateCacheUsable(entry, now)
+}
+
+// candidateOutageGrace bounds how long an expired-but-present candidate
+// cache entry may still serve while the DB query fails with a retryable
+// infrastructure error (2026-09-04 availability work). The original
+// staleCandidateCacheUsable window (TTL 30s + 30s grace) covers blips;
+// without this wider window every relay request fails ~60s into a real DB
+// outage because getCandidates is a hard prerequisite of routing.
+const candidateOutageGrace = time.Hour
+
+// canServeCandidateCacheDuringOutage reports whether the expired entry may
+// be served past the ordinary stale grace because the DB has been down for
+// an extended period. Same preconditions as canServeStaleCandidateCache
+// (live context, retryable error, non-empty entry) but with the outage
+// window; the db_empty_fallback path in fetchCandidateGeneration
+// deliberately keeps the SHORT window so a healthy-but-changed DB is never
+// masked by hour-old cache.
+func canServeCandidateCacheDuringOutage(ctx context.Context, err error, entry cacheEntry[*resolveResponse], now time.Time) bool {
+	return ctx != nil && ctx.Err() == nil && isRetryableDBError(err) &&
+		candidateResponseNonEmpty(entry.value) &&
+		!entry.expires.IsZero() && now.Before(entry.expires.Add(candidateOutageGrace))
 }
 
 func logCandidateDiagnostic(event string, args ...any) {
@@ -1893,6 +1934,22 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 			continue
 		}
 		if err != nil {
+			// DB-outage availability gear (2026-09-04): an infrastructure
+			// error must not strip routing of credentials whose plaintext
+			// this process revealed recently. Serve the expired positive
+			// entry within revealOutageGrace. Generation-bumped (rotated)
+			// credentials are exempt — their entry was deleted and must
+			// NOT resurface.
+			if isRetryableDBError(err) {
+				if key, ok := c.getStaleRevealedKey(credentialID); ok {
+					slog.Warn("reveal: db unavailable, serving stale key cache",
+						"credential_id", credentialID,
+						"provider_id", providerID,
+						"db_error", err.Error(),
+					)
+					return key, nil
+				}
+			}
 			return "", err
 		}
 		return v.(string), nil
@@ -1900,7 +1957,39 @@ func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int)
 	return "", fmt.Errorf("%w (credential_id=%d)", secret.ErrRevealRotation, credentialID)
 }
 
+// revealOutageGrace bounds how long an expired positive keyCache entry may
+// serve while reveal fetches fail with retryable DB errors. Without it every
+// relay request through a cached credential fails 5 minutes into a DB
+// outage (the positive TTL), which defeats the candidate-cache outage
+// window above. One hour aligns with candidateOutageGrace.
+const revealOutageGrace = time.Hour
+
+// getStaleRevealedKey returns the expired-but-present positive entry for a
+// credential when its age past expiry is within revealOutageGrace. Only the
+// generation-checked positive cache is consulted; negative entries never
+// yield a key.
+func (c *Client) getStaleRevealedKey(credentialID int) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.keyCache[credentialID]
+	if !ok || entry.value == "" {
+		return "", false
+	}
+	if time.Since(entry.expires) > revealOutageGrace {
+		return "", false
+	}
+	return entry.value, true
+}
+
 func (c *Client) cacheRevealFailureIfCurrent(credentialID int, generation uint64, fetchErr error) {
+	if isRetryableDBError(fetchErr) {
+		// DB-outage guard (2026-09-04): an unreachable database is not a
+		// broken credential. Negative-caching it would flip every reveal to
+		// a cached failure for decryptFailureCacheTTL even after the DB
+		// recovers, and blocks the stale-serve path above from being tried
+		// on the next request.
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.keyGeneration[credentialID] == generation {

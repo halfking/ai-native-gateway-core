@@ -14,6 +14,7 @@ var (
 		"db_empty_fallback",
 		"cache_empty",
 		"db_unavailable",
+		"db_outage_stale",
 		"stale_cache_empty",
 		"enrich_empty",
 		"db_query_retry",

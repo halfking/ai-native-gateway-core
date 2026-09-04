@@ -19,6 +19,10 @@
 //     but the read path errored (Redis down, recovery gate flipped,
 //     FilterAndScore returned an error). The router failed-open to
 //     the legacy state source / DB-only path.
+//   - StateSourceOutageMirror    — URSM v2 authoritative served a
+//     degraded read-only decision from soft-expired NodeMirror entries
+//     because Redis was unreachable (availability gear, 2026-09-04;
+//     window bounded by URSM_V2_OUTAGE_GRACE_SECONDS).
 //   - StateSourceOff             — URSM v2 was not configured (nil
 //     manager) or ModeOff / ModeShadow. No v2 evaluation attempted.
 //   - StateSourceCanary          — URSM v2 canary mode used v2
@@ -52,14 +56,15 @@ import (
 type RoutingStateSource string
 
 const (
-	StateSourceNodeMirrorHit  RoutingStateSource = "node_mirror_hit"
-	StateSourceNodeMirrorMiss RoutingStateSource = "node_mirror_miss"
+	StateSourceNodeMirrorHit   RoutingStateSource = "node_mirror_hit"
+	StateSourceNodeMirrorMiss  RoutingStateSource = "node_mirror_miss"
 	StateSourceNodeMirrorStale RoutingStateSource = "node_mirror_stale"
-	StateSourceFallback       RoutingStateSource = "fallback"
-	StateSourceOff            RoutingStateSource = "off"
-	StateSourceCanary         RoutingStateSource = "canary"
-	StateSourceAuthoritative  RoutingStateSource = "authoritative"
-	StateSourceSkipped        RoutingStateSource = "skipped"
+	StateSourceFallback        RoutingStateSource = "fallback"
+	StateSourceOutageMirror    RoutingStateSource = "outage_mirror"
+	StateSourceOff             RoutingStateSource = "off"
+	StateSourceCanary          RoutingStateSource = "canary"
+	StateSourceAuthoritative   RoutingStateSource = "authoritative"
+	StateSourceSkipped         RoutingStateSource = "skipped"
 )
 
 // allSources is the exhaustive set of RoutingStateSource values the
@@ -72,6 +77,7 @@ var allSources = []RoutingStateSource{
 	StateSourceNodeMirrorMiss,
 	StateSourceNodeMirrorStale,
 	StateSourceFallback,
+	StateSourceOutageMirror,
 	StateSourceOff,
 	StateSourceCanary,
 	StateSourceAuthoritative,

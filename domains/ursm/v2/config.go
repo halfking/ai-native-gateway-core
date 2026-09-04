@@ -83,6 +83,15 @@ type Config struct {
 	// the Redis read path (and are rejected if that fails). Runtime override:
 	// settings_kv llmgw_ursm_mirror_grace_enabled.
 	MirrorGraceEnabled bool
+	// OutageGrace bounds how long FilterAndScoreOutageFallback may serve
+	// read-only routing from soft-expired NodeMirror entries after Redis
+	// becomes unreachable (availability gear, 2026-09-04). Default 30m.
+	// 0 disables the gear: an unreachable Redis rejects authoritative
+	// routes (the pre-2026-09 fail-closed contract). Unlike
+	// MirrorGraceEnabled this is boot-only (URSM_V2_OUTAGE_GRACE_SECONDS)
+	// because it trades routing-state freshness for availability and ops
+	// should size the window to their Redis HA budget deliberately.
+	OutageGrace time.Duration
 	// ShadowDoubleWrite opts shadow mode into writing sidecar records to
 	// the v2 store. Default false. P0-3 (audit §7.1) flips this true during
 	// the 7-day cutover comparison window. Routing stays on legacy
@@ -133,6 +142,11 @@ func DefaultConfig() Config {
 		// §14.3 target gear: mirror never bypasses a dead Redis. The grace
 		// gear is opt-in per deployment via settings_kv.
 		MirrorGraceEnabled: false,
+		// 2026-09-04 availability gear: a hard Redis outage may serve
+		// soft-expired mirror entries read-only for up to this window
+		// instead of 503-ing every request. Sized well past a sentinel
+		// failover; 0 opts back into strict fail-closed.
+		OutageGrace: 30 * time.Minute,
 		// P0-3: shadow double-write is opt-in. Operators must explicitly
 		// flip URSM_V2_SHADOW_DOUBLE_WRITE=1 for the cutover comparison
 		// window. Default off keeps v2 Redis namespace clean.
@@ -232,6 +246,21 @@ func LoadFromEnv() Config {
 	if v := strings.ToLower(strings.TrimSpace(os.Getenv("URSM_V2_SHADOW_DOUBLE_WRITE"))); v != "" {
 		if v == "1" || v == "true" || v == "yes" {
 			c.ShadowDoubleWrite = true
+		}
+	}
+	// 2026-09-04 availability gear: URSM_V2_OUTAGE_GRACE_SECONDS bounds the
+	// read-only mirror-serving window during a hard Redis outage. 0 or
+	// negative disables the gear (strict fail-closed); the value is capped
+	// at 24h so a typo cannot pin stale routing state forever.
+	if v := os.Getenv("URSM_V2_OUTAGE_GRACE_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n <= 0 {
+				c.OutageGrace = 0
+			} else if n > 86400 {
+				c.OutageGrace = 24 * time.Hour
+			} else {
+				c.OutageGrace = time.Duration(n) * time.Second
+			}
 		}
 	}
 	// Boot-only key schema mode (doc 14 §3). Fail closed on a typo: the

@@ -196,6 +196,27 @@ func (m *NodeMirror) Peek(credID int, raw string) (NodeView, bool) {
 	return m.PeekForTenant("", credID, raw)
 }
 
+// GetForTenantWithinOutageWindow returns a tenant-scoped entry regardless of
+// the soft TTL, as long as it was populated within maxAge of now. It exists
+// for the Redis-outage availability gear (2026-09-04): when Redis is
+// unreachable the manager may serve read-only routing from soft-expired
+// entries, bounded by the operator-configured outage window instead of the
+// 30s soft TTL. maxAge <= 0 always misses.
+func (m *NodeMirror) GetForTenantWithinOutageWindow(tenant string, credID int, raw string, maxAge time.Duration) (NodeView, bool) {
+	if m == nil || maxAge <= 0 {
+		return NodeView{}, false
+	}
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, tenant, credID, raw)
+	v, ok := m.shard(key).Peek(key)
+	if !ok {
+		return NodeView{}, false
+	}
+	if v.CachedAt.IsZero() || time.Since(v.CachedAt) > maxAge {
+		return NodeView{}, false
+	}
+	return v, true
+}
+
 // PeekForTenant 是 GetForTenant 的不提升顺序对应物.
 func (m *NodeMirror) PeekForTenant(tenant string, credID int, raw string) (NodeView, bool) {
 	if m == nil {
