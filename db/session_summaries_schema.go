@@ -37,6 +37,10 @@ func (d *DB) ensureSessionSummariesCanonical(ctx context.Context) error {
 		return nil
 	}
 	_, err := d.pool.Exec(ctx, `
+		-- 先确保 tenant_id 存在（memora 最小 shape 可能缺失）
+		ALTER TABLE public.session_summaries
+		    ADD COLUMN IF NOT EXISTS tenant_id character varying(255);
+
 		ALTER TABLE public.session_summaries
 		    ADD COLUMN IF NOT EXISTS session_key character varying(255),
 		    ADD COLUMN IF NOT EXISTS first_request_at timestamp with time zone,
