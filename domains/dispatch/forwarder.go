@@ -383,7 +383,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) (Governor, bool) {
 	cf.pipe.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 		RequestID:    qr.ID,
 		Action:       liveactions.ActionNodeSelected,
-		Model:        qr.ResolvedModel,
+		Model:        qr.resolvedModel(),
 		CredentialID: cf.cred.CredentialID,
 		Detail: map[string]string{
 			"attempt": itoa(attempt.AttemptNo),
@@ -392,7 +392,7 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) (Governor, bool) {
 	qr.emitObservation(Observation{
 		Type:          ObservationNodeSelected,
 		Stage:         StageNodeSelection,
-		ResolvedModel: qr.ResolvedModel,
+		ResolvedModel: qr.resolvedModel(),
 		Model:         attempt.Model,
 		ProviderID:    attempt.ProviderID,
 		Provider:      attempt.Provider,
@@ -423,7 +423,7 @@ func (cf *credForwarder) attempt(qr *QueuedRequest, gov Governor) {
 	qr.emitObservation(Observation{
 		Type:          ObservationAttemptStarted,
 		Stage:         StageUpstream,
-		ResolvedModel: qr.ResolvedModel,
+		ResolvedModel: qr.resolvedModel(),
 		Model:         attempt.Model,
 		ProviderID:    attempt.ProviderID,
 		Provider:      attempt.Provider,
@@ -499,7 +499,7 @@ func (p *Pipeline) emitAttemptFinished(qr *QueuedRequest, attemptID string, out 
 	event := Observation{
 		Type:          ObservationAttemptSucceeded,
 		Stage:         StageUpstream,
-		ResolvedModel: qr.ResolvedModel,
+		ResolvedModel: qr.resolvedModel(),
 		Model:         attempt.Model,
 		ProviderID:    attempt.ProviderID,
 		Provider:      attempt.Provider,

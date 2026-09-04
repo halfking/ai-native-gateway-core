@@ -203,7 +203,7 @@ func (ix *DimensionIndex) MarkNode(qr *QueuedRequest, cred CredentialRef, now ti
 	}
 	node := &DimensionEntry{
 		RequestID: qr.ID, TenantID: qr.TenantID, SessionID: qr.SessionID,
-		Model: qr.ResolvedModel, CredentialID: cred.CredentialID, ProviderID: cred.ProviderID,
+		Model: qr.resolvedModel(), CredentialID: cred.CredentialID, ProviderID: cred.ProviderID,
 		Vendor: cred.Vendor, State: DimensionStateInFlight, Attempts: qr.AttemptCount,
 		Class: qr.requestClass(), EnqueuedAt: now, StartedAt: now,
 	}
@@ -235,7 +235,7 @@ func (ix *DimensionIndex) Complete(qr *QueuedRequest, out ForwardOutcome, now ti
 		}
 		cred := qr.selectedCredential()
 		qr.recordDecision(JournalEntry{
-			Model:        qr.ResolvedModel,
+			Model:        qr.resolvedModel(),
 			CredentialID: cred.CredentialID,
 			ProviderID:   cred.ProviderID,
 			Vendor:       cred.Vendor,

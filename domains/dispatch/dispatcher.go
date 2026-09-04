@@ -138,7 +138,7 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 		completeCause()
 		return
 	}
-	qr.markTriedModel(qr.ResolvedModel)
+	qr.markTriedModel(qr.resolvedModel())
 	d := PlanModelChange(qr, p.modelChangeCandidates(qr))
 	if d.Action != NextActionSwitchModel {
 		p.emitNoRouteIfCause(qr, cause)
@@ -155,7 +155,7 @@ func (p *Pipeline) tryModelChangeOutcome(qr *QueuedRequest, outcome ForwardOutco
 	}
 	// V3.3-OBS OBS-B1 (2026-08-15): model_switch 动作事件（24 号 §2：
 	// from/to/reason；不产生新 request_id）。
-	fromModel := qr.ResolvedModel
+	fromModel := qr.resolvedModel()
 	p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
 		RequestID: qr.ID,
 		Action:    liveactions.ActionModelSwitch,
@@ -292,7 +292,7 @@ func (p *Pipeline) emitNoRouteIfCause(qr *QueuedRequest, cause error) {
 		return
 	}
 	if cause == ErrNoRoute || errors.Is(cause, ErrNoRoute) {
-		p.emitNoRoute(qr, qr.ResolvedModel, "all_credentials_exhausted")
+		p.emitNoRoute(qr, qr.resolvedModel(), "all_credentials_exhausted")
 	}
 }
 
@@ -316,8 +316,8 @@ func (p *Pipeline) scheduleCapacityRetry(qr *QueuedRequest) {
 		observation := Observation{
 			Type:          ObservationRetryScheduled,
 			Stage:         StageRetrying,
-			ResolvedModel: qr.ResolvedModel,
-			Model:         qr.ResolvedModel,
+			ResolvedModel: qr.resolvedModel(),
+			Model:         qr.resolvedModel(),
 			RetryReason:   "capacity_saturated",
 		}
 		at := retryAt
@@ -332,7 +332,7 @@ func (p *Pipeline) scheduleCapacityRetry(qr *QueuedRequest) {
 			// 不影响会话）+ 回队打标。凭据不标记 tried（队列满是暂态）。
 			now := time.Now()
 			qr.recordDecision(JournalEntry{
-				Model:   qr.ResolvedModel,
+				Model:   qr.resolvedModel(),
 				Action:  NextActionCapacityWait,
 				Attempt: qr.AttemptCount,
 				At:      now,
@@ -343,7 +343,7 @@ func (p *Pipeline) scheduleCapacityRetry(qr *QueuedRequest) {
 				Message:  fmt.Sprintf("所有节点并发/限流已满，排队等待中（第 %d/%d 轮，%s 后重试）…", qr.CapacityRetryCount, maxCapacityRetries, waitHint(capacityRetryDelay)),
 				RetryAt:  retryAt,
 				WaitHint: waitHint(capacityRetryDelay),
-				ToModel:  qr.ResolvedModel,
+				ToModel:  qr.resolvedModel(),
 				Attempt:  qr.AttemptCount,
 			})
 			return

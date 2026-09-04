@@ -85,9 +85,11 @@ func decisionHistoryOf(qr *QueuedRequest) errorsx.DecisionHistory {
 			Kind: errorsx.ErrorKind(entry.ErrorKind), Action: centralAction(entry.Action),
 		})
 	}
+	cred := qr.selectedCredential()
+	resolvedModel := qr.resolvedModel()
 	for credentialID := range qr.TriedCredentials {
 		history.TriedNodes = append(history.TriedNodes, errorsx.ActionNode{
-			Model: qr.ResolvedModel, ProviderID: qr.SelectedCred.ProviderID, CredentialID: credentialID,
+			Model: resolvedModel, ProviderID: cred.ProviderID, CredentialID: credentialID,
 		})
 	}
 	for model := range qr.TriedModels {
@@ -183,6 +185,7 @@ func PlanAfterFailure(qr *QueuedRequest, out ForwardOutcome, cfg Config) Decisio
 			kind = errorsx.ClassifyError(out.Err, nil)
 		}
 	}
+	cred := qr.selectedCredential()
 	action := errorsx.DecideNextAction(errorsx.DecisionContext{
 		RequestID:          qr.ID,
 		TenantID:           qr.TenantID,
@@ -192,9 +195,9 @@ func PlanAfterFailure(qr *QueuedRequest, out ForwardOutcome, cfg Config) Decisio
 		SameNodeRetryCount: qr.CredRetryCount,
 		MaxSameNodeRetries: retryBudgetOf(qr, cfg),
 		RemainingAttempts:  AttemptBudgetLeft(qr),
-		ProviderID:         qr.SelectedCred.ProviderID,
-		CredentialID:       qr.SelectedCred.CredentialID,
-		ResolvedModel:      qr.ResolvedModel,
+		ProviderID:         cred.ProviderID,
+		CredentialID:       cred.CredentialID,
+		ResolvedModel:      qr.resolvedModel(),
 		// The planner is invoked before it queries sibling candidates. Treat
 		// the route ladder as potentially available here; PlanSwitchCred and
 		// the model ladder remain responsible for proving a concrete target.
