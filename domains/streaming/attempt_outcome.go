@@ -303,8 +303,21 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 	var hasRetry, hasWait, hasTerminal, hasUnknown, hasBlocked bool
 	var maxRetryAfter time.Duration
 	var unknownKind errorsx.ErrorKind
+	
+	// Enhanced logging for debugging retry decisions
+	candidateSummary := make([]map[string]any, 0, len(r.CandidateOutcomes))
 	for _, co := range r.CandidateOutcomes {
 		central := centralActionForTaskWithHistory(co.Kind, committed, co.RetryAfter, history)
+		
+		// Log each candidate outcome for observability
+		candidateSummary = append(candidateSummary, map[string]any{
+			"provider_id":   co.ProviderID,
+			"credential_id": co.CredentialID,
+			"kind":          string(co.Kind),
+			"action":        central.Action.String(),
+			"retry_after":   co.RetryAfter.String(),
+		})
+		
 		switch central.Action {
 		case TaskActionResumeBlocked:
 			hasBlocked = true
@@ -327,25 +340,43 @@ func AggregateTaskOutcomeWithHistory(r *AttemptResult, history errorsx.DecisionH
 			maxRetryAfter = co.RetryAfter
 		}
 	}
+	
+	// Determine final decision
+	var decision TaskDecision
 	if hasUnknown {
-		return TaskDecision{Action: TaskActionFailClosed, Reason: fmt.Sprintf("unmapped_kind:%s", unknownKind)}
+		decision = TaskDecision{Action: TaskActionFailClosed, Reason: fmt.Sprintf("unmapped_kind:%s", unknownKind)}
+	} else if hasTerminal {
+		decision = TaskDecision{Action: TaskActionFailTerminal, Reason: "terminal_candidate"}
+	} else if hasBlocked {
+		decision = TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+	} else if committed && (hasRetry || hasWait) {
+		decision = TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
+	} else if hasRetry {
+		decision = TaskDecision{Action: TaskActionRetryNow, Reason: "recoverable_candidate", NextRetryAfter: maxRetryAfter}
+	} else if hasWait {
+		decision = TaskDecision{Action: TaskActionWaitRecovery, Reason: "wait_recovery_window", NextRetryAfter: maxRetryAfter}
+	} else {
+		decision = TaskDecision{Action: TaskActionFailClosed, Reason: "no_candidate_outcomes"}
 	}
-	if hasTerminal {
-		return TaskDecision{Action: TaskActionFailTerminal, Reason: "terminal_candidate"}
-	}
-	if hasBlocked {
-		return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
-	}
-	if committed && (hasRetry || hasWait) {
-		return TaskDecision{Action: TaskActionResumeBlocked, Reason: "committed_output"}
-	}
-	if hasRetry {
-		return TaskDecision{Action: TaskActionRetryNow, Reason: "recoverable_candidate", NextRetryAfter: maxRetryAfter}
-	}
-	if hasWait {
-		return TaskDecision{Action: TaskActionWaitRecovery, Reason: "wait_recovery_window", NextRetryAfter: maxRetryAfter}
-	}
-	return TaskDecision{Action: TaskActionFailClosed, Reason: "no_candidate_outcomes"}
+	
+	// Enhanced structured logging for observability
+	slog.Info("survival_decision_aggregate",
+		"commit_state", r.CommitState.String(),
+		"committed", committed,
+		"candidate_count", len(r.CandidateOutcomes),
+		"candidates", candidateSummary,
+		"decision_action", decision.Action.String(),
+		"decision_reason", decision.Reason,
+		"retry_after", decision.NextRetryAfter.String(),
+		"has_retry", hasRetry,
+		"has_wait", hasWait,
+		"has_terminal", hasTerminal,
+		"has_blocked", hasBlocked,
+		"has_unknown", hasUnknown,
+		"history_prior_attempts", len(history.PriorAttempts),
+	)
+	
+	return decision
 }
 
 // centralActionForTaskWithHistory folds the legacy per-kind task action
@@ -397,6 +428,13 @@ func centralActionForTaskWithHistory(kind errorsx.ErrorKind, committed bool, ret
 	}
 }
 
+// AggregateTaskOutcome folds one AttemptResult into a TaskDecision WITHOUT
+// history-based loop detection. This is the legacy entry point retained for
+// durable_recovery_worker.go compatibility; new callers should use
+// AggregateTaskOutcomeWithHistory for the history-aware policy.
+//
+// DEPRECATED: Callers should migrate to AggregateTaskOutcomeWithHistory to
+// benefit from loop detection and consistent central policy application.
 func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 	if r == nil {
 		return TaskDecision{Action: TaskActionFailClosed, Reason: "nil_attempt_result"}
@@ -412,6 +450,14 @@ func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 		maxRetryAfter                              time.Duration
 		unknownKind                                errorsx.ErrorKind
 	)
+	
+	// Log deprecation warning in debug builds
+	slog.Debug("using_deprecated_aggregate_task_outcome",
+		"note", "caller should migrate to AggregateTaskOutcomeWithHistory",
+		"committed", committed,
+		"candidate_count", len(r.CandidateOutcomes),
+	)
+	
 	for _, co := range r.CandidateOutcomes {
 		central := centralActionForTask(co.Kind, false, co.RetryAfter)
 		switch central.Action {
@@ -432,42 +478,54 @@ func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 		}
 	}
 
+	var decision TaskDecision
 	switch {
 	case hasUnknown:
 		// Fail closed: never guess the recoverability of an unmapped kind.
-		return TaskDecision{
+		decision = TaskDecision{
 			Action: TaskActionFailClosed,
 			Reason: fmt.Sprintf("unmapped_kind:%s", unknownKind),
 		}
 	case hasTerminal:
-		return TaskDecision{
+		decision = TaskDecision{
 			Action: TaskActionFailTerminal,
 			Reason: "terminal_candidate",
 		}
 	case committed && (hasRetry || hasWait):
 		// Recoverable failure, but client-visible output was already
 		// committed — a transparent restart would duplicate it.
-		return TaskDecision{
+		decision = TaskDecision{
 			Action: TaskActionResumeBlocked,
 			Reason: "committed_output",
 		}
 	case hasRetry:
-		return TaskDecision{
+		decision = TaskDecision{
 			Action:         TaskActionRetryNow,
 			Reason:         "recoverable_candidate",
 			NextRetryAfter: maxRetryAfter,
 		}
 	case hasWait:
-		return TaskDecision{
+		decision = TaskDecision{
 			Action:         TaskActionWaitRecovery,
 			Reason:         "wait_recovery_window",
 			NextRetryAfter: maxRetryAfter,
 		}
 	default:
 		// No outcomes at all and not successful — treat as fail closed.
-		return TaskDecision{
+		decision = TaskDecision{
 			Action: TaskActionFailClosed,
 			Reason: "no_candidate_outcomes",
 		}
 	}
+	
+	// Log decision for consistency with WithHistory version
+	slog.Debug("survival_decision_aggregate_nohistory",
+		"committed", committed,
+		"decision_action", decision.Action.String(),
+		"decision_reason", decision.Reason,
+		"has_retry", hasRetry,
+		"has_wait", hasWait,
+	)
+	
+	return decision
 }

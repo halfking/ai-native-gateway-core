@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -96,24 +97,65 @@ func foldCandidateOutcomes(err error) []CandidateOutcome {
 	execErr, ok := err.(*executors.ExecuteError)
 	if !ok {
 		kind := errorsx.ClassifyError(err, nil)
+		// Log non-ExecuteError failures for debugging
+		slog.Warn("fold_candidate_outcomes_non_exec_error",
+			"error_type", fmt.Sprintf("%T", err),
+			"error", err.Error(),
+			"classified_kind", string(kind),
+		)
 		return []CandidateOutcome{{Kind: kind, Err: err}}
 	}
+	
 	outcomes := make([]CandidateOutcome, 0, len(execErr.Attempts))
+	
+	// Enhanced logging: record all attempted candidates for observability
+	attemptSummary := make([]map[string]any, 0, len(execErr.Attempts))
 	for _, a := range execErr.Attempts {
+		candidateID := "provider:" + strconv.Itoa(a.ProviderID) + "/model:" + a.RawModel
 		outcomes = append(outcomes, CandidateOutcome{
-			CandidateID:  "provider:" + strconv.Itoa(a.ProviderID) + "/model:" + a.RawModel,
+			CandidateID:  candidateID,
 			CredentialID: strconv.Itoa(a.CredentialID),
 			ProviderID:   a.ProviderID,
 			Kind:         a.Kind,
 			Err:          execErr.LastErr,
 		})
+		
+		attemptSummary = append(attemptSummary, map[string]any{
+			"provider_id":   a.ProviderID,
+			"credential_id": a.CredentialID,
+			"raw_model":     a.RawModel,
+			"kind":          string(a.Kind),
+		})
 	}
+	
 	if len(outcomes) == 0 {
 		kind := execErr.LastKind
 		if kind == "" {
 			kind = errorsx.KindNoAvailableChannel
 		}
+		
+		// Log when no candidates were attempted
+		slog.Warn("fold_candidate_outcomes_no_attempts",
+			"last_kind", string(execErr.LastKind),
+			"synthesized_kind", string(kind),
+			"last_error", func() string {
+				if execErr.LastErr != nil {
+					return execErr.LastErr.Error()
+				}
+				return "nil"
+			}(),
+		)
+		
 		return []CandidateOutcome{{Kind: kind, Err: execErr.LastErr}}
 	}
+	
+	// Log the complete candidate outcome fold for debugging
+	slog.Info("fold_candidate_outcomes_complete",
+		"attempt_count", len(execErr.Attempts),
+		"outcome_count", len(outcomes),
+		"attempts", attemptSummary,
+		"last_kind", string(execErr.LastKind),
+	)
+	
 	return outcomes
 }
