@@ -94,7 +94,7 @@ func gateCommitted(gate *AttemptCommitGate) bool {
 // no_available_channel outcome so the task aggregator sees a wait-recovery
 // signal instead of an empty result (which fail-closes).
 //
-// 2026-09-05: Enhanced with request_id propagation for chain traceability.
+// 2026-09-04: Enhanced with request_id propagation for chain traceability.
 func foldCandidateOutcomes(err error, requestID string) []CandidateOutcome {
 	execErr, ok := err.(*executors.ExecuteError)
 	if !ok {
