@@ -11,14 +11,10 @@ package sqlite
 import (
 	"database/sql"
 	"fmt"
-	"hash/fnv"
 	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
-
-	sqlite3 "github.com/mattn/go-sqlite3"
 )
 
 // SchemaSQL 建表语句（全部使用 IF NOT EXISTS，幂等可重复执行）。
@@ -107,15 +103,11 @@ var dsnPragmas = map[string]bool{
 	"cache_size":   true,
 }
 
-const (
-	driverNameSQLite3 = "sqlite3"        // go-sqlite3 的默认注册名
-	driverNamePrefix  = "sqlite3-llmgw-" // 带 ConnectHook 的自定义驱动名前缀
-)
-
-var (
-	driverMu      sync.Mutex
-	registeredDrv = map[string]bool{} // 已注册的自定义驱动名，防止 sql.Register 重复注册 panic
-)
+// driverNameUnavailable 是 !cgo 构建（CGO_ENABLED=0）下 driverFor 返回的
+// 哨兵驱动名。mattn/go-sqlite3 依赖 CGO，纯静态二进制无法编入该驱动；
+// full 模式（PG+Redis）不经过本包，lite 模式在运行期会收到 OpenSQLite
+// 的显式错误而非 "unknown driver" 的隐式失败（实现见 driver_nocgo.go）。
+const driverNameUnavailable = "llmgw-sqlite-nocgo"
 
 // mergePragmas 合并 PRAGMA 列表，extra 中的同名项按顺序覆盖 base。
 func mergePragmas(base, extra []Pragma) []Pragma {
@@ -164,42 +156,8 @@ func pragmaValue(v string) string {
 }
 
 // driverFor 根据需要逐连接执行的 PRAGMA 返回驱动名：
-// 无额外参数时直接复用 go-sqlite3 默认驱动；否则按 PRAGMA 集合的指纹
-// 注册（进程内仅一次）一个带 ConnectHook 的驱动，保证池中每个连接
-// 建立时都执行同一组 PRAGMA。
-func driverFor(hookPragmas []Pragma) string {
-	if len(hookPragmas) == 0 {
-		return driverNameSQLite3
-	}
-	// 以 PRAGMA 集合的 FNV 指纹作为驱动名，不同集合互不冲突。
-	h := fnv.New64a()
-	for _, p := range hookPragmas {
-		_, _ = h.Write([]byte(p.Name))
-		_, _ = h.Write([]byte{0})
-		_, _ = h.Write([]byte(p.Value))
-	}
-	name := driverNamePrefix + strconv.FormatUint(h.Sum64(), 16)
-
-	driverMu.Lock()
-	defer driverMu.Unlock()
-	if registeredDrv[name] {
-		return name
-	}
-	pragmas := append([]Pragma(nil), hookPragmas...)
-	sql.Register(name, &sqlite3.SQLiteDriver{
-		ConnectHook: func(conn *sqlite3.SQLiteConn) error {
-			for _, p := range pragmas {
-				stmt := "PRAGMA " + p.Name + " = " + pragmaValue(p.Value) + ";"
-				if _, err := conn.Exec(stmt, nil); err != nil {
-					return fmt.Errorf("sqlite: 执行 %s 失败: %w", stmt, err)
-				}
-			}
-			return nil
-		},
-	})
-	registeredDrv[name] = true
-	return name
-}
+// cgo 构建下注册（进程内仅一次）带 ConnectHook 的 go-sqlite3 自定义驱动
+// （见 driver_cgo.go）；!cgo 构建下返回不可用哨兵（见 driver_nocgo.go）。
 
 // InitSchema 在数据库上执行 SchemaSQL，创建全部表与索引（幂等）。
 func InitSchema(db *sql.DB) error {
@@ -247,7 +205,12 @@ func OpenSQLite(path string, pragmas ...Pragma) (*sql.DB, error) {
 	merged := mergePragmas(DefaultPragmas(), pragmas)
 	dsn, hookPragmas := buildDSN(path, merged)
 
-	db, err := sql.Open(driverFor(hookPragmas), dsn)
+	name := driverFor(hookPragmas)
+	if name == driverNameUnavailable {
+		return nil, fmt.Errorf("sqlite: 当前二进制以 CGO_ENABLED=0 构建，SQLite 驱动不可用（lite 存储模式需 CGO 构建；full 模式不受影响）")
+	}
+
+	db, err := sql.Open(name, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: 打开数据库 %s 失败: %w", path, err)
 	}
