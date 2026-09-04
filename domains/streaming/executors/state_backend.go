@@ -89,6 +89,26 @@ func (b *RejectingStateBackend) Name() string {
 	return "ursm_v2_not_ready"
 }
 
+// OutageMirrorStateBackend backs the 2026-09-04 Redis-outage availability
+// gear: the router already availability-filtered the candidate list through
+// the URSM node mirror (FilterAndScoreOutageFallback), so this backend only
+// passes the list through. It reports IsAuthoritative so the downstream
+// FpSlots/degraded-mode branches keep authoritative semantics (skip the
+// legacy health filter, fail closed when everything was filtered).
+type OutageMirrorStateBackend struct{}
+
+func (b *OutageMirrorStateBackend) FilterAvailable(ctx context.Context, candidates []provider.Candidate) []provider.Candidate {
+	return candidates
+}
+
+func (b *OutageMirrorStateBackend) IsAuthoritative() bool {
+	return true
+}
+
+func (b *OutageMirrorStateBackend) Name() string {
+	return "ursm_v2_outage_mirror"
+}
+
 // 用于 URSM v2 未启用或处于 shadow/canary 模式时的降级路径。
 type LegacyStateBackend struct {
 	sm credentialstate.StateProvider

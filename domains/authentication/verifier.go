@@ -8,9 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -95,6 +98,13 @@ type KeyInfo struct {
 	// 2026-07-15: 客户/组织归属。来源 applications.customer_id（迁移 407 新增），
 	// 用于 request_context_attrs.customer_id 的派生。无映射时为 nil。
 	CustomerID *int64 `json:"customer_id,omitempty"`
+
+	// ExpiresAt carries api_keys.expires_at for the in-memory key store
+	// (keystore_sync.go, 2026-09-04). The store validates expiry at READ
+	// time so a key whose expires_at crosses "now" between syncs stops
+	// authorizing without a DB round-trip. Serialized for the local
+	// snapshot round-trip (HMAC hash + metadata only, no key material).
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // EffectiveRPM returns the applicable RPM limit (per-key or tier default).
@@ -142,9 +152,11 @@ func (ki *KeyInfo) EffectiveConcurrent() int {
 }
 
 // DBQuerier 是 KeyVerifier 用于查询 api_keys 表的最小化接口。
-// 真实实现是 *pgxpool.Pool；测试可以用 mock。
+// 真实实现是 *pgxpool.Pool；测试可以用 mock（pgxmock.PgxPoolIface 天然满足）。
+// Query (2026-09-04) 支撑 keystore_sync.go 的全量/增量加载。
 type DBQuerier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	Exec(ctx context.Context, sql string, args ...any) (int64, error)
 }
 
@@ -157,6 +169,38 @@ type KeyVerifier struct {
 	sfGroup singleflight.Group
 
 	ttl time.Duration
+	// staleGrace bounds how long an EXPIRED cache entry may still authorize
+	// requests while the verify query itself fails with an infrastructure
+	// (non-InvalidKeyError) error — the DB-outage availability gear
+	// (2026-09-04). Without it every key 503s 60s after the DB dies.
+	// Default 10 minutes, env-tunable via LLM_GATEWAY_AUTH_STALE_GRACE_SECONDS
+	// (0 disables stale serving and restores the strict behaviour).
+	staleGrace time.Duration
+
+	// keyStore (keystore_sync.go, 2026-09-04) is the full in-memory api_keys
+	// replica keyed by key_hash. Once loaded, Verify() answers from it with
+	// zero DB IO; a DB outage stops the delta sync but keeps the replica
+	// serving for as long as the process lives. Guarded by storeMu.
+	keyStore       map[string]*KeyInfo
+	keyStoreLoaded atomic.Bool
+	// keyStoreFromSnapshot marks a store populated from the LOCAL snapshot
+	// file rather than a successful DB full load. Snapshot state is
+	// untrusted: the sync loop keeps retrying the full load (instead of
+	// deltas) until it succeeds, then clears the flag.
+	keyStoreFromSnapshot atomic.Bool
+	storeMu              sync.RWMutex
+
+	// snapshotDir, when set, receives the periodic local snapshot that
+	// lets a process boot WITH authentication even when PostgreSQL is
+	// unreachable at startup (2026-09-04 cold-start availability gear).
+	snapshotDir string
+
+	// lastUsedTouch throttles the fire-and-forget UPDATE api_keys SET
+	// last_used_at to at most one write per key per touchInterval (60s) —
+	// the store fast path would otherwise fire it on every request. Those
+	// writes also act as the delta-sync watermark (see keystore_sync.go).
+	lastUsedTouch   map[int]time.Time
+	lastUsedTouchMu sync.Mutex
 }
 
 type keyCacheEntry struct {
@@ -164,21 +208,63 @@ type keyCacheEntry struct {
 	expiresAt time.Time
 }
 
+const lastUsedTouchInterval = 60 * time.Second
+
 func NewKeyVerifier() *KeyVerifier {
 	return &KeyVerifier{
-		cache: make(map[string]*keyCacheEntry),
-		ttl:   60 * time.Second,
+		cache:         make(map[string]*keyCacheEntry),
+		ttl:           60 * time.Second,
+		staleGrace:    authStaleGraceFromEnv(),
+		keyStore:      make(map[string]*KeyInfo),
+		lastUsedTouch: make(map[int]time.Time),
 	}
 }
 
+// authStaleGraceFromEnv reads LLM_GATEWAY_AUTH_STALE_GRACE_SECONDS.
+// Missing/malformed/negative values fall back to the 10-minute default;
+// an explicit 0 disables DB-outage stale serving.
+func authStaleGraceFromEnv() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_AUTH_STALE_GRACE_SECONDS"))
+	if raw == "" {
+		return 10 * time.Minute
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		slog.Warn("key verifier: invalid LLM_GATEWAY_AUTH_STALE_GRACE_SECONDS, using default",
+			"value", raw, "default", "600s")
+		return 10 * time.Minute
+	}
+	return time.Duration(n) * time.Second
+}
+
+// Enabled reports whether the verifier can authorize requests. That is the
+// case with a DB pool configured, OR — the 2026-09-04 cold-start gear —
+// with a loaded key store (DB pool may be nil when the process booted from
+// the local snapshot while PostgreSQL was unreachable).
 func (kv *KeyVerifier) Enabled() bool {
-	return kv.dbPool != nil && kv.secretKey != ""
+	if kv.secretKey == "" {
+		return false
+	}
+	return kv.dbPool != nil || kv.keyStoreLoaded.Load()
+}
+
+// SetSecretKey configures the HMAC secret WITHOUT a DB pool: snapshot-only
+// mode for processes that boot while PostgreSQL is unreachable. Store hits
+// authorize; store misses fail closed (callVerifyDB has no pool).
+func (kv *KeyVerifier) SetSecretKey(secretKey string) {
+	kv.secretKey = secretKey
 }
 
 // SetDB 注入数据库连接池与 HMAC 密钥。
 func (kv *KeyVerifier) SetDB(pool *pgxpool.Pool, secretKey string) {
 	kv.dbPool = &pgxPoolAdapter{pool: pool}
 	kv.secretKey = secretKey
+	if kv.keyStore == nil {
+		kv.keyStore = make(map[string]*KeyInfo)
+	}
+	if kv.lastUsedTouch == nil {
+		kv.lastUsedTouch = make(map[int]time.Time)
+	}
 }
 
 // setDBQuerier (测试用) 注入 DBQuerier mock。
@@ -194,6 +280,9 @@ type pgxPoolAdapter struct {
 
 func (a *pgxPoolAdapter) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	return a.pool.QueryRow(ctx, sql, args...)
+}
+func (a *pgxPoolAdapter) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
+	return a.pool.Query(ctx, sql, args...)
 }
 func (a *pgxPoolAdapter) Exec(ctx context.Context, sql string, args ...any) (int64, error) {
 	tag, err := a.pool.Exec(ctx, sql, args...)
@@ -213,6 +302,16 @@ func (kv *KeyVerifier) Verify(ctx context.Context, rawKey string) (*KeyInfo, err
 		return nil, &InvalidKeyError{Message: "Invalid API key"}
 	}
 
+	// Key-store fast path (keystore_sync.go, 2026-09-04): once the full
+	// replica is loaded, answer with zero DB IO. During a DB outage the
+	// sync simply stops refreshing — the replica keeps authorizing for the
+	// life of the process, which is the availability posture this store
+	// exists for.
+	if info := kv.lookupStore(hashAPIKey(kv.secretKey, rawKey)); info != nil {
+		kv.touchLastUsedThrottled(info.ID)
+		return info, nil
+	}
+
 	if info := kv.getCache(rawKey); info != nil {
 		// Stale cache entries from before key_prefix was populated must refresh.
 		if strings.TrimSpace(info.KeyPrefix) != "" {
@@ -223,6 +322,21 @@ func (kv *KeyVerifier) Verify(ctx context.Context, rawKey string) (*KeyInfo, err
 	v, err, _ := kv.sfGroup.Do("key:"+rawKey, func() (any, error) {
 		info, verifyErr := kv.callVerifyDB(ctx, rawKey)
 		if verifyErr != nil {
+			// DB-outage availability gear (2026-09-04): an infrastructure
+			// error (pool exhausted, connection refused, timeout) must not
+			// lock out keys this process authenticated recently. Serve the
+			// expired-but-present cache entry within staleGrace. A genuine
+			// InvalidKeyError is NEVER substituted — unknown keys keep
+			// failing 401 while the DB is down.
+			var invalid *InvalidKeyError
+			if !errors.As(verifyErr, &invalid) {
+				if stale, staleAge := kv.getStaleCache(rawKey); stale != nil {
+					slog.Warn("key verify: db unavailable, serving stale cache entry",
+						"error", verifyErr,
+						"stale_for", staleAge.Round(time.Second).String())
+					return stale, nil
+				}
+			}
 			return nil, verifyErr
 		}
 		kv.setCache(rawKey, info)
@@ -317,7 +431,8 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 			ak.budget_usd::float8,
 			COALESCE(ak.status, 'active') AS status,
 			ak.key_alias,
-			app.customer_id
+			app.customer_id,
+			ak.expires_at
 		FROM api_keys ak
 		JOIN applications app ON app.id = ak.application_id
 		WHERE ak.key_hash = $1
@@ -340,14 +455,21 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 		&info.Status,
 		&info.KeyAlias,
 		&info.CustomerID,
+		&info.ExpiresAt,
 	)
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			// Reconcile the store against hard deletes: a row that vanished
+			// from the DB must not keep authorizing from the replica.
+			kv.removeFromStore(keyHash)
 			return nil, &InvalidKeyError{Message: "Invalid or expired API key"}
 		}
 		return nil, err
 	}
 	info.ApplicationID = int(appID)
+	// Lazy misses converge into the store so the next request for this key
+	// needs no DB IO (also covers keys created between delta syncs).
+	kv.upsertStore(keyHash, &info)
 	// Throttled keys are allowed through (rate-limit enforced downstream)
 	// but we surface the status so the relay handler can set appropriate headers.
 	go func() {
@@ -451,6 +573,26 @@ func (kv *KeyVerifier) getCache(key string) *KeyInfo {
 	return entry.info
 }
 
+// getStaleCache returns the cached KeyInfo for key when the entry exists,
+// is already expired, and its age past expiry is within the stale grace
+// window (DB-outage availability gear, 2026-09-04). Expired entries survive
+// in the map until the opportunistic cap-based eviction inside setCache, so
+// this is best-effort: an evicted key simply fails as before. Returns the
+// info and its age past expiry (for logging); (nil, 0) when not servable.
+func (kv *KeyVerifier) getStaleCache(key string) (*KeyInfo, time.Duration) {
+	kv.mu.RLock()
+	defer kv.mu.RUnlock()
+	entry, ok := kv.cache[key]
+	if !ok || entry.info == nil {
+		return nil, 0
+	}
+	age := time.Since(entry.expiresAt)
+	if kv.staleGrace <= 0 || age <= 0 || age > kv.staleGrace {
+		return nil, 0
+	}
+	return entry.info, age
+}
+
 func (kv *KeyVerifier) setCache(key string, info *KeyInfo) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
@@ -477,17 +619,28 @@ func (kv *KeyVerifier) setCache(key string, info *KeyInfo) {
 // After invalidation, the next Verify() reloads from DB and picks up the new
 // rate_limit_rpm / rate_limit_concurrent / status immediately, rather than
 // serving a stale entry for up to ttl (60s).
+//
+// 2026-09-04: also drops the matching in-memory key-store entry (the store
+// is keyed by hash and carries no raw key, so the same scan applies) —
+// same-process revocations stay immediate despite the 5-minute delta sync.
 func (kv *KeyVerifier) InvalidateKeyID(id int) {
 	if id <= 0 {
 		return
 	}
 	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	for k, e := range kv.cache {
 		if e.info != nil && e.info.ID == id {
 			delete(kv.cache, k)
 		}
 	}
+	kv.mu.Unlock()
+	kv.storeMu.Lock()
+	for h, info := range kv.keyStore {
+		if info != nil && info.ID == id {
+			delete(kv.keyStore, h)
+		}
+	}
+	kv.storeMu.Unlock()
 }
 
 // InvalidateAll drops every cached KeyInfo. Useful for tests and as a coarse
@@ -495,8 +648,12 @@ func (kv *KeyVerifier) InvalidateKeyID(id int) {
 // the DB.
 func (kv *KeyVerifier) InvalidateAll() {
 	kv.mu.Lock()
-	defer kv.mu.Unlock()
 	clear(kv.cache)
+	kv.mu.Unlock()
+	kv.storeMu.Lock()
+	clear(kv.keyStore)
+	kv.storeMu.Unlock()
+	kv.keyStoreLoaded.Store(false)
 }
 
 type InvalidKeyError struct {

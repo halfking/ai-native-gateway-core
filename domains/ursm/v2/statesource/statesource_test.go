@@ -76,6 +76,7 @@ func TestRecordRoutingStateSource_AllEnumConstants(t *testing.T) {
 		statesource.StateSourceNodeMirrorMiss,
 		statesource.StateSourceNodeMirrorStale,
 		statesource.StateSourceFallback,
+		statesource.StateSourceOutageMirror,
 		statesource.StateSourceOff,
 		statesource.StateSourceCanary,
 		statesource.StateSourceAuthoritative,

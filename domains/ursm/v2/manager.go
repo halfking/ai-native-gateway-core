@@ -600,6 +600,56 @@ func (m *Manager) verifyRedisForMirrorServe(ctx context.Context) error {
 	return nil
 }
 
+// FilterAndScoreOutageFallback serves a degraded read-only routing decision
+// from the process-local NodeMirror when Redis is unreachable (availability
+// gear, 2026-09-04). It is the router's last resort in ModeAuthoritative:
+// the normal paths either rejected via ErrRedisUnavailable (pipeline read /
+// mirror-serve PING) or observed Ready==false because the gate read itself
+// errored against a dead Redis. Without this gear every request 503s for the
+// duration of a Redis outage, which is the exact availability hole this
+// method closes.
+//
+// Contract:
+//   - Redis must be demonstrably unreachable (PING). A reachable Redis
+//     returns an error instead: a deliberate gate closure must never be
+//     bypassed by this gear, and a recovery race should let the next request
+//     take the normal path.
+//   - Entries are served regardless of the mirror soft TTL but must be
+//     within the boot-configured OutageGrace window
+//     (URSM_V2_OUTAGE_GRACE_SECONDS, default 30m, 0 disables this gear).
+//   - PARTIAL service: seeds without a usable mirror entry are dropped from
+//     the result; the router filters the candidate list against the returned
+//     views. A completely cold mirror errors out (no worse than today).
+//   - Read-only: no state writes happen here; RecordRequest remains
+//     best-effort against Redis and simply logs during the outage.
+func (m *Manager) FilterAndScoreOutageFallback(ctx context.Context, seeds []CandidateSeed) ([]api.NodeView, error) {
+	if m == nil || m.store == nil {
+		return nil, store.ErrRedisUnavailable
+	}
+	grace := m.effectiveConfig().OutageGrace
+	if grace <= 0 {
+		return nil, fmt.Errorf("ursm.v2: outage fallback disabled (URSM_V2_OUTAGE_GRACE_SECONDS<=0): %w", store.ErrRedisUnavailable)
+	}
+	if err := m.verifyRedisForMirrorServe(ctx); err == nil {
+		return nil, fmt.Errorf("ursm.v2: redis reachable, outage fallback not applicable")
+	}
+	views := make([]api.NodeView, 0, len(seeds))
+	kept := make([]CandidateSeed, 0, len(seeds))
+	for _, s := range seeds {
+		mv, ok := m.nodeMirror.GetForTenantWithinOutageWindow(s.TenantID, s.CredentialID, s.RawModel, grace)
+		if !ok {
+			continue
+		}
+		views = append(views, mirrorToAPIView(mv, s))
+		kept = append(kept, s)
+	}
+	if len(views) == 0 {
+		return nil, fmt.Errorf("ursm.v2: outage fallback has no mirror entries within %s: %w", grace, store.ErrRedisUnavailable)
+	}
+	scoreAndSort(views, kept, m.cfg.ScoringWeights)
+	return views, nil
+}
+
 func backfillSeedIdentity(v *api.NodeView, s CandidateSeed) {
 	v.ProviderID = s.ProviderID
 	v.CredentialID = s.CredentialID

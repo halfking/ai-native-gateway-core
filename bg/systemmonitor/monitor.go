@@ -63,6 +63,11 @@ type SystemMonitor struct {
 	recoveryDebounceTTL   time.Duration // debounce window for cluster-wide MarkClosedDebounced; default 5m
 	healthMu              sync.Mutex
 	consecutiveFailures   int // protected by healthMu; never hold it across gate/Redis I/O
+	// restoreRetryTicks counts healthy ticks (protected by healthMu) to
+	// pace the periodic closed-gate restore retry (2026-09-04): a closed
+	// gate previously received exactly ONE restore attempt, on the
+	// fallback→healthy transition.
+	restoreRetryTicks int64
 
 	// pingFn is an optional test seam that overrides the production
 	// dedup.Ping. nil in production; tests inject a stub here to drive
@@ -915,6 +920,20 @@ func (sm *SystemMonitor) checkRedisHealthOnce(ctx context.Context) {
 		// Healthy and not in fallback — nothing to do, but reset the
 		// failure counter so the next failure event starts from 0.
 		sm.resetConsecutiveFailures()
+		// 2026-09-04 availability: retry the (self-guarding) gate restore
+		// once a minute while healthy. Previously a closed gate got
+		// exactly one restore attempt, on the fallback→healthy
+		// transition; if that single attempt failed — e.g. Redis came
+		// back EMPTY after a persistence-less restart — the gate stayed
+		// closed forever. RestoreIfClosed is a no-op-when-open Redis GET,
+		// so the steady-state cost is one GET per minute.
+		sm.healthMu.Lock()
+		sm.restoreRetryTicks++
+		retry := sm.restoreRetryTicks%4 == 0
+		sm.healthMu.Unlock()
+		if retry {
+			sm.maybeAutoRestoreRecoveryGate(ctx)
+		}
 	case pingErr != nil && !sm.IsFallback():
 		slog.Warn("system_monitor: redis unhealthy, entering fallback mode",
 			"error", pingErr)
