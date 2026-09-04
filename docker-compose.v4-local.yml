@@ -30,6 +30,8 @@ services:
       - "${HOME}/Downloads/kaixuan/llm-gateway/attachments:/var/lib/llm-gateway/attachments"
       - "${HOME}/Downloads/kaixuan/llm-gateway/raw-logs:/var/lib/llm-gateway/raw-logs"
       - "${HOME}/Downloads/kaixuan/llm-gateway/logs:/var/log/llm-gateway"
+      # 数据库降级备份（LLM_GATEWAY_BACKUP_DIR 缺省 ./data/backups 同样易失）
+      - "${HOME}/Downloads/kaixuan/llm-gateway/backups:/var/lib/llm-gateway/backups"
     environment:
       # ── 存储（复用宿主实例）────────────────────────────────────
       # 中心 PG 与本服务同在 shared-infra，通过容器 DNS 访问。
@@ -53,6 +55,7 @@ services:
       LLM_GATEWAY_LOG_FILE: "/var/log/llm-gateway/gateway.log"
       LLM_GATEWAY_ATTACHMENT_DIR: "/var/lib/llm-gateway/attachments"
       LLM_GATEWAY_RAW_LOG_DIR: "/var/lib/llm-gateway/raw-logs"
+      LLM_GATEWAY_BACKUP_DIR: "/var/lib/llm-gateway/backups"
       # URSM v2 authoritative 模式启动门控（main.go:705 要求）
       LLM_GATEWAY_SYSTEM_MONITOR_ENABLED: "true"
       # v4 保活默认 15s（会话优化 v4 FR-3）

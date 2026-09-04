@@ -22,6 +22,10 @@ services:
       - ${HOST_ATTACHMENT_DIR:-./data/attachments}:/opt/llm-gateway-go/data/attachments
       # 日志存储：挂载到宿主机
       - ${HOST_LOG_DIR:-./data/logs}:/var/log/llm-gateway
+      # 原始帧日志：挂载到宿主机
+      - ${HOST_RAW_LOG_DIR:-./data/raw-logs}:/opt/llm-gateway-go/data/raw-logs
+      # 数据库降级备份：挂载到宿主机
+      - ${HOST_BACKUP_DIR:-./data/backups}:/opt/llm-gateway-go/data/backups
     
     environment:
       # ── 基础配置 ──────────────────────────────────────────────────
@@ -49,6 +53,8 @@ services:
       # 附件和持久化诊断日志均对应 volume 挂载点。
       LLM_GATEWAY_ATTACHMENT_DIR: /opt/llm-gateway-go/data/attachments
       LLM_GATEWAY_PERSISTENT_LOG_DIR: /var/log/llm-gateway
+      LLM_GATEWAY_RAW_LOG_DIR: /opt/llm-gateway-go/data/raw-logs
+      LLM_GATEWAY_BACKUP_DIR: /opt/llm-gateway-go/data/backups
       
       # ── 日志配置 ──────────────────────────────────────────────────
       LLM_GATEWAY_LOG_LEVEL: ${LLM_GATEWAY_LOG_LEVEL:-info}
