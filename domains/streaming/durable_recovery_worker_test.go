@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -28,6 +29,35 @@ type workerFakeStore struct {
 	lastOutcome                                           durable.Status
 	lastReason                                            string
 	lastReschedule                                        durable.RescheduleParams
+	// 审计闭环3：DecisionHistory 持久化契约 fake。
+	history        json.RawMessage
+	historySaves   int
+	historyLoadErr error
+	historySaveErr error
+}
+
+func (f *workerFakeStore) LoadDecisionHistory(_ context.Context, taskID string) (json.RawMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_ = taskID
+	if f.historyLoadErr != nil {
+		return nil, f.historyLoadErr
+	}
+	return f.history, nil
+}
+
+func (f *workerFakeStore) SaveDecisionHistory(_ context.Context, taskID, owner string, fencing int64, h json.RawMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_ = taskID
+	_ = owner
+	_ = fencing
+	if f.historySaveErr != nil {
+		return f.historySaveErr
+	}
+	f.history = h
+	f.historySaves++
+	return nil
 }
 
 func (f *workerFakeStore) PersistSettlementIntent(_ context.Context, c durable.TerminalCommit) error {
@@ -462,6 +492,14 @@ type rearmingWorkerFakeStore struct {
 	lastOutcome     durable.Status
 }
 
+func (f *rearmingWorkerFakeStore) LoadDecisionHistory(context.Context, string) (json.RawMessage, error) {
+	return nil, nil
+}
+
+func (f *rearmingWorkerFakeStore) SaveDecisionHistory(context.Context, string, string, int64, json.RawMessage) error {
+	return nil
+}
+
 func (f *rearmingWorkerFakeStore) PersistSettlementIntent(context.Context, durable.TerminalCommit) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -670,5 +708,113 @@ func TestDurableRecoveryWorkerSettlementPersistFailureObserved(t *testing.T) {
 
 	if got := gatherMetricValue(t, "durable_settlement_stage_failures_total"); got < before+1 {
 		t.Fatalf("stage failure metric delta = %v, want >= 1 (before=%v after=%v)", got-before, before, got)
+	}
+}
+
+// 2026-09-05 审计闭环3回归：durable worker 的 DecisionHistory 持久化契约。
+//
+// 迁移前：worker 只有 AggregateTaskOutcome（无历史、无循环检测），且存储
+// 层没有任何历史载体——「伪迁移」掩盖契约缺口。迁移后：
+//  1. 每次 detached attempt 结束后，追加后的有界历史以 fencing 条件写回；
+//  2. 下一次（可能在重启后的）接管先读回历史，续写 LastSeq，
+//     证明循环检测输入跨进程存活。
+func TestDurableWorkerPersistsDecisionHistoryAfterAttempt(t *testing.T) {
+	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{
+		{CandidateID: "provider:7/model:glm-5.2", CredentialID: "7", ProviderID: 7, Kind: errorsx.KindTransient},
+	}}
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: result, Attempt: 2}}, DurableWorkerOptions{Owner: "worker"})
+
+	worker.runOnce(context.Background())
+
+	store.mu.Lock()
+	saved := store.history
+	saves := store.historySaves
+	store.mu.Unlock()
+	if saves != 1 {
+		t.Fatalf("history saves = %d, want 1", saves)
+	}
+	var history errorsx.DecisionHistory
+	if err := json.Unmarshal(saved, &history); err != nil {
+		t.Fatalf("saved history is not valid JSON: %v", err)
+	}
+	if len(history.PriorAttempts) != 1 {
+		t.Fatalf("prior attempts = %d, want 1", len(history.PriorAttempts))
+	}
+	entry := history.PriorAttempts[0]
+	if entry.Kind != errorsx.KindTransient || entry.ProviderID != 7 || entry.CredentialID != 7 {
+		t.Fatalf("prior attempt = %+v", entry)
+	}
+	if entry.AttemptNo != 2 {
+		t.Fatalf("attempt_no = %d, want 2 (task.AttemptCount+1)", entry.AttemptNo)
+	}
+	if entry.Seq <= 0 {
+		t.Fatalf("seq = %d, want positive (monotonic)", entry.Seq)
+	}
+}
+
+func TestDurableWorkerHistorySurvivesRestart(t *testing.T) {
+	// 第一次接管（进程 A）：transient 失败 → 历史落 1 条。
+	resultA := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{
+		{CandidateID: "provider:7/model:glm-5.2", CredentialID: "7", ProviderID: 7, Kind: errorsx.KindTransient},
+	}}
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	workerA := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: resultA, Attempt: 2}}, DurableWorkerOptions{Owner: "worker-a"})
+	workerA.runOnce(context.Background())
+
+	store.mu.Lock()
+	seeded := store.history
+	store.mu.Unlock()
+	var afterFirst errorsx.DecisionHistory
+	if err := json.Unmarshal(seeded, &afterFirst); err != nil {
+		t.Fatalf("first history invalid: %v", err)
+	}
+
+	// 第二次接管（进程 B，新 worker 实例模拟重启）：同一个 store（任务行）
+	// 读回历史并续写。fake 的 ClaimRunnable 是一次性的（领取后清空），
+	// 重置任务模拟重排到期后再次可运行。
+	store.mu.Lock()
+	store.task = runnableTask()
+	store.mu.Unlock()
+	resultB := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{
+		{CandidateID: "provider:8/model:glm-5.2", CredentialID: "8", ProviderID: 8, Kind: errorsx.KindTransient},
+	}}
+	workerB := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: resultB, Attempt: 3}}, DurableWorkerOptions{Owner: "worker-b"})
+	workerB.runOnce(context.Background())
+
+	store.mu.Lock()
+	final := store.history
+	store.mu.Unlock()
+	var afterSecond errorsx.DecisionHistory
+	if err := json.Unmarshal(final, &afterSecond); err != nil {
+		t.Fatalf("second history invalid: %v", err)
+	}
+	if len(afterSecond.PriorAttempts) != len(afterFirst.PriorAttempts)+1 {
+		t.Fatalf("prior attempts after restart = %d, want %d (seeded + this attempt)",
+			len(afterSecond.PriorAttempts), len(afterFirst.PriorAttempts)+1)
+	}
+	if afterSecond.LastSeq <= afterFirst.LastSeq {
+		t.Fatalf("LastSeq did not advance across restart: %d -> %d", afterFirst.LastSeq, afterSecond.LastSeq)
+	}
+	kindB := afterSecond.PriorAttempts[len(afterSecond.PriorAttempts)-1].Kind
+	if kindB != errorsx.KindTransient {
+		t.Fatalf("appended kind = %s", kindB)
+	}
+}
+
+// 历史保存失败（含 lease 被抢）不得改变本判定：判定来自读回的历史，
+// 写回只服务下一轮。
+func TestDurableWorkerHistorySaveFailureDoesNotAffectDecision(t *testing.T) {
+	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{
+		{CandidateID: "provider:7/model:glm-5.2", CredentialID: "7", ProviderID: 7, Kind: errorsx.KindTransient},
+	}}
+	store := &workerFakeStore{
+		task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"},
+		historySaveErr: durable.ErrLeaseLost,
+	}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: result, Attempt: 2}}, DurableWorkerOptions{Owner: "worker"})
+	worker.runOnce(context.Background())
+	if store.rescheduleCalls != 1 || store.commitCalls != 0 {
+		t.Fatalf("save-failure changed the decision: commit=%d reschedule=%d", store.commitCalls, store.rescheduleCalls)
 	}
 }

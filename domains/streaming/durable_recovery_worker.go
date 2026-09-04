@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/durable"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/pending"
 )
@@ -21,6 +23,11 @@ import (
 type DurableWorkerStore interface {
 	ClaimRunnable(context.Context, durable.ClaimOptions) ([]*durable.Task, error)
 	LoadSnapshot(context.Context, string) (*durable.Snapshot, error)
+	// LoadDecisionHistory / SaveDecisionHistory 是审计闭环3的持久化契约：
+	// 跨重启的有界决策历史（循环检测输入）。读写 best-effort，失败退化为
+	// 空历史（等价迁移前行为）。
+	LoadDecisionHistory(context.Context, string) (json.RawMessage, error)
+	SaveDecisionHistory(context.Context, string, string, int64, json.RawMessage) error
 	RenewLease(context.Context, string, string, int64, time.Time) error
 	Reschedule(context.Context, durable.RescheduleParams) error
 	CommitTerminal(context.Context, durable.TerminalCommit) (*durable.TerminalProjection, error)
@@ -355,6 +362,9 @@ func (w *DurableRecoveryWorker) runTask(ctx context.Context, task *durable.Task)
 		w.rescheduleWithError(ctx, task, "durable_snapshot_unavailable")
 		return
 	}
+	// 审计闭环3：接管时读回上一进程遗留的有界决策历史（循环检测输入）。
+	// 读取失败按空历史继续——历史是策略优化输入，不是正确性门。
+	persistedHistory := w.loadHistory(ctx, task.ID)
 	leaseUntil := w.clock().Add(w.opts.Lease)
 	if err := w.store.RenewLease(ctx, task.ID, task.LeaseOwner, task.FencingToken, leaseUntil); err != nil {
 		if errors.Is(err, durable.ErrLeaseLost) {
@@ -423,12 +433,15 @@ attemptFinished:
 	if err != nil || attempt == nil || attempt.Result == nil {
 		// runner 级错误（重建失败/上游基础设施异常）无法区分类别时不做
 		// 永久终态——重排重试，deadline reaper 兜底。任务级永久判定只能
-		// 来自 AggregateTaskOutcome（下方 fallthrough）。
+		// 来自 AggregateTaskOutcomeWithHistory（下方 fallthrough）。
 		slog.Warn("durable attempt runner failed; rescheduling", "task_id", task.ID, "error", err)
 		w.rescheduleWithError(ctx, task, "durable_runner_error")
 		return
 	}
-	decision := AggregateTaskOutcome(attempt.Result)
+	// 审计闭环3：迁移到历史感知聚合入口。历史来源是任务行持久化的
+	// bounded DecisionHistory（跨重启），本 attempt 结束后把追加结果
+	// fenced 写回，供下一次接管使用。
+	decision := w.aggregateAndPersistHistory(ctx, task, attempt.Result, persistedHistory)
 	if decision.Action == TaskActionSucceed {
 		if len(attempt.Body) == 0 {
 			// The durable store rejects completed terminals without a body.
@@ -456,6 +469,47 @@ attemptFinished:
 		return
 	}
 	w.failTask(ctx, task, fmt.Errorf("durable task terminal: %s", decision.Reason))
+}
+
+// loadHistory 读回任务行持久化的有界决策历史。任何失败都按空历史继续
+// 并只记日志：历史是 WithHistory 循环检测的输入，不是正确性门——
+// 空历史恰好等于迁移前 AggregateTaskOutcome 的行为。
+func (w *DurableRecoveryWorker) loadHistory(ctx context.Context, taskID string) errorsx.DecisionHistory {
+	raw, err := w.store.LoadDecisionHistory(ctx, taskID)
+	if err != nil {
+		slog.Warn("durable decision history load failed; using empty history", "task_id", taskID, "error", err)
+		return errorsx.DecisionHistory{}
+	}
+	if len(raw) == 0 {
+		return errorsx.DecisionHistory{}
+	}
+	var history errorsx.DecisionHistory
+	if err := json.Unmarshal(raw, &history); err != nil {
+		slog.Warn("durable decision history corrupt; using empty history", "task_id", taskID, "error", err)
+		return errorsx.DecisionHistory{}
+	}
+	return history
+}
+
+// aggregateAndPersistHistory 用读回的历史聚合本 attempt 的结果，把追加后
+// 的有界历史 fenced 写回任务行，供下一次（可能在重启后的）接管使用。
+// 写回失败（含 lease 被抢）只影响下一轮的循环检测输入，不改变本判定。
+func (w *DurableRecoveryWorker) aggregateAndPersistHistory(ctx context.Context, task *durable.Task, result *AttemptResult, persisted errorsx.DecisionHistory) TaskDecision {
+	history := persisted.Clone()
+	decision := AggregateTaskOutcomeWithHistory(result, history)
+
+	attemptNo := task.AttemptCount + 1
+	appendSurvivalHistory(&history, result, attemptNo, decision)
+	if encoded, err := json.Marshal(history); err == nil && len(encoded) > 0 {
+		if err := w.store.SaveDecisionHistory(ctx, task.ID, task.LeaseOwner, task.FencingToken, encoded); err != nil {
+			if errors.Is(err, durable.ErrLeaseLost) {
+				w.noteLeaseLost()
+			} else {
+				slog.Warn("durable decision history save failed", "task_id", task.ID, "error", err)
+			}
+		}
+	}
+	return decision
 }
 
 // noteLeaseLost records one fenced-off write in both observability families:

@@ -448,12 +448,13 @@ func centralActionForTaskWithHistory(kind errorsx.ErrorKind, committed bool, ret
 }
 
 // AggregateTaskOutcome folds one AttemptResult into a TaskDecision WITHOUT
-// history-based loop detection. This is the legacy entry point retained for
-// durable_recovery_worker.go compatibility; new callers should use
-// AggregateTaskOutcomeWithHistory for the history-aware policy.
+// history-based loop detection.
 //
-// DEPRECATED: Callers should migrate to AggregateTaskOutcomeWithHistory to
-// benefit from loop detection and consistent central policy application.
+// 2026-09-05 审计闭环3：最后一个生产调用方 durable_recovery_worker 已迁移到
+// AggregateTaskOutcomeWithHistory（durable_llm_tasks.decision_history 持久化
+// 契约，startup 迁移 657）。本入口保留为兼容 API 与 kind 决策矩阵测试
+// （task_outcome_aggregator_test.go）的固定基线；新调用方一律使用
+// AggregateTaskOutcomeWithHistory。
 func AggregateTaskOutcome(r *AttemptResult) TaskDecision {
 	if r == nil {
 		return TaskDecision{Action: TaskActionFailClosed, Reason: "nil_attempt_result"}
