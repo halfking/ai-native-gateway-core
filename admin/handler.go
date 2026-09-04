@@ -610,29 +610,11 @@ func (h *Handler) encryptCred(plaintext []byte) (string, error) {
 // a legacy Fernet token.  Returns (plaintext, isLegacy, error).
 // When isLegacy=true the caller MAY re-encrypt and update the DB row.
 func (h *Handler) decryptCred(ciphertext string) (string, bool, error) {
-	if strings.HasPrefix(ciphertext, "v1:legacy:") {
-		if len(h.encKey) != 32 {
-			return "", false, errorf("legacy encryption key not configured")
-		}
-		pt, err := decryptFernet([]byte(strings.TrimPrefix(ciphertext, "v1:legacy:")), h.encKey)
-		return pt, err == nil, err
+	pt, isLegacy, err := secret.DecryptAny(ciphertext, h.keyring, h.encKey)
+	if err != nil {
+		return "", false, err
 	}
-	if secret.IsV1Envelope(ciphertext) {
-		if h.keyring == nil {
-			return "", false, errorf("AES-GCM keyring not configured")
-		}
-		pt, err := secret.DecryptAESGCM([]byte(ciphertext), h.keyring)
-		if err != nil {
-			return "", false, err
-		}
-		return string(pt), false, nil
-	}
-	// Legacy Fernet path
-	if len(h.encKey) != 32 {
-		return "", false, errorf("legacy encryption key not configured")
-	}
-	pt, err := decryptFernet([]byte(ciphertext), h.encKey)
-	return pt, err == nil, err
+	return string(pt), isLegacy, nil
 }
 
 // decryptCredStr is a convenience wrapper over decryptCred that returns only
