@@ -146,6 +146,10 @@ services:
     volumes:
       # Mount configs directory for sensitive_words.json
       - ./configs:/configs:ro
+      # 附件/备份目录用命名卷持久化：容器 up -d 重建后仍保留
+      # （容器内 /tmp 写在可写层，docker rm 即丢失 — incident 2026-09-05）
+      - r112_attachments:/tmp/attachments
+      - r112_gateway_backups:/tmp/llm-gateway-backups
     environment:
       # ── 监听与运行环境 ──
       LLM_GATEWAY_LISTEN: ":8781"
@@ -256,6 +260,10 @@ services:
 volumes:
   r112_redis_data:
     name: r112_redis_data
+  r112_attachments:
+    name: r112_attachments
+  r112_gateway_backups:
+    name: r112_gateway_backups
 
 networks:
   r112_net:

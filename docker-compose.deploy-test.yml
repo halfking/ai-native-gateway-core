@@ -105,6 +105,9 @@ services:
       OPS_NODE_REGION: "deploy-test"
     volumes:
       - ./configs:/configs:ro
+      # 附件/备份目录用命名卷持久化：容器重建后仍保留
+      - attachments_data:/tmp/attachments
+      - gateway_backups_data:/tmp/llm-gateway-backups
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://localhost:8781/healthz | grep -q ok || exit 1"]
       interval: 5s
@@ -117,3 +120,7 @@ volumes:
     name: deploy_test_citus_data
   redis_test_data:
     name: deploy_test_redis_data
+  attachments_data:
+    name: deploy_test_attachments
+  gateway_backups_data:
+    name: deploy_test_gateway_backups

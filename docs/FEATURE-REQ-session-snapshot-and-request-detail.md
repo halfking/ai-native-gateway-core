@@ -88,7 +88,7 @@ turns_sessions / session_management_api / 会话健康 worker / auto-route worke
 
 ## 5. 相关文档索引
 
-- `SNAPSHOT_ENDPOINT_ENHANCEMENT.md` / `SNAPSHOT_API_QUICK_REF.md`（仓库根目录，非 docs/）—— FR-1 字段清单与示例
+- `docs/SNAPSHOT_ENDPOINT_ENHANCEMENT.md` / `docs/SNAPSHOT_API_QUICK_REF.md` —— FR-1 字段清单与示例（2026-09-05 自仓库根目录移入 docs/）
 - `docs/db-changelog.md` —— 655/656 部署记录
 - `docs/COMPLETION-REPORT-20260904.md` —— 事故复盘与部署结论
 - `sql/objects/functions/update_session_summary.sql` —— 触发器 canonical 版本（勿回退 310 形态）
