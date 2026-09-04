@@ -297,18 +297,17 @@ func TestKeyVerifier_CheckBudget_OK(t *testing.T) {
 	}
 }
 
-func TestSetDB_EnablesVerifier(t *testing.T) {
+func TestSetDB_NilPoolKeepsVerifierDisabled(t *testing.T) {
 	kv := NewKeyVerifier()
-	if kv.Enabled() {
-		t.Fatal("should be disabled before SetDB")
-	}
-	// 用一个真实 *pgxpool.Pool 适配器（nil pool 即可测试 Enabled）
 	kv.SetDB(nil, "secret")
-	// dbPool is non-nil interface holding nil pool
-	// Enabled() returns true if dbPool != nil && secretKey != ""
-	// We cannot easily construct a *pgxpool.Pool with pgxmock, so check secretKey path:
-	if !kv.Enabled() {
-		t.Fatal("should be enabled after SetDB")
+	if kv.Enabled() {
+		t.Fatal("nil DB pool must not enable the verifier")
+	}
+	if _, err := kv.VerifyByID(context.Background(), 1); err == nil {
+		t.Fatal("VerifyByID with nil DB must return an error")
+	}
+	if err := kv.CheckBudget(context.Background(), 1); err != nil {
+		t.Fatalf("disabled CheckBudget should be a no-op, got %v", err)
 	}
 }
 

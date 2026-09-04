@@ -120,6 +120,6 @@ func TestConfigOutageGraceEnv(t *testing.T) {
 	t.Setenv("URSM_V2_OUTAGE_GRACE_SECONDS", "not-a-number")
 	cfg = LoadFromEnv()
 	assert.Equal(t, DefaultConfig().OutageGrace, cfg.OutageGrace, "malformed value keeps the default")
-	require.NoError(t, cfg.Validate())
+	require.Error(t, cfg.Validate(), "malformed outage grace must fail validation")
 	_ = api.ModeAuthoritative // keep the api import meaningful for mode context
 }

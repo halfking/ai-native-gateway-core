@@ -2,10 +2,12 @@ package authentication
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // seedSnapshotStore builds a verifier with a populated store (no DB) and
@@ -68,11 +70,48 @@ func TestKeyStore_SnapshotRoundTripColdBoot(t *testing.T) {
 	if info.ID != 77 {
 		t.Fatalf("info = %+v, want ID 77", info)
 	}
+	if _, err := cold.LookupKeyMeta(context.Background(), raw); err != nil {
+		t.Fatalf("snapshot LookupKeyMeta must not require DB: %v", err)
+	}
+	if err := cold.CheckBudget(context.Background(), info.ID); err != nil {
+		t.Fatalf("snapshot CheckBudget must not panic or fail: %v", err)
+	}
+	if _, err := cold.VerifyByID(context.Background(), info.ID); err == nil {
+		t.Fatal("snapshot VerifyByID must fail closed without DB")
+	}
 	_ = hash
 }
 
 // TestKeyStore_SnapshotRefusesTooOld pins the freshness bound: a snapshot
 // older than maxSnapshotAge must not be served.
+func TestKeyStore_SnapshotRefusesFutureTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	hash := hashAPIKey("snap-secret", "sk-snapshot-key")
+	data := []byte(fmt.Sprintf(`{"saved_at":%q,"entries":{%q:{"id":77,"status":"active"}}}`, future, hash))
+	if err := os.WriteFile(filepath.Join(dir, snapshotFileName), data, 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+	kv := NewKeyVerifier()
+	kv.SetSecretKey("snap-secret")
+	if n, err := kv.LoadSnapshot(dir); err == nil || n != 0 {
+		t.Fatalf("future snapshot = (%d, %v), want rejection", n, err)
+	}
+}
+
+func TestKeyStore_SnapshotRefusesMalformedEntries(t *testing.T) {
+	dir := t.TempDir()
+	savedAt := time.Now().UTC().Format(time.RFC3339)
+	data := []byte(fmt.Sprintf(`{"saved_at":%q,"entries":{"not-a-hash":{"id":1,"status":"active"}}}`, savedAt))
+	if err := os.WriteFile(filepath.Join(dir, snapshotFileName), data, 0o600); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+	kv := NewKeyVerifier()
+	if n, err := kv.LoadSnapshot(dir); err == nil || n != 0 {
+		t.Fatalf("malformed snapshot = (%d, %v), want rejection", n, err)
+	}
+}
+
 func TestKeyStore_SnapshotRefusesTooOld(t *testing.T) {
 	kv, _, _ := seedSnapshotStore(t)
 	dir := t.TempDir()

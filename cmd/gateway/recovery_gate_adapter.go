@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,6 +49,9 @@ type v2RecoveryGateAdapter struct {
 	// lastRebuildNanos (UnixNano) rate-limits rebuild attempts so a
 	// pathological failure loop cannot hammer PostgreSQL. Zero = never.
 	lastRebuildNanos atomic.Int64
+	// rebuildMu serializes the check-and-claim with bootstrap.Apply. The
+	// monitor can request recovery from both the transition and periodic paths.
+	rebuildMu sync.Mutex
 }
 
 // rebuildOptions carries the bootstrap.Apply dependencies (PostgreSQL pool
@@ -102,9 +106,11 @@ func (a *v2RecoveryGateAdapter) RestoreIfClosed(ctx context.Context) (int, error
 	if err == nil {
 		return n, nil
 	}
-	if a.rebuild == nil || !errors.Is(err, recovery.ErrCoverageManifestEmpty) {
+	if a.rebuild == nil || (!errors.Is(err, recovery.ErrCoverageManifestEmpty) && !errors.Is(err, recovery.ErrCoverageIncomplete)) {
 		return n, err
 	}
+	a.rebuildMu.Lock()
+	defer a.rebuildMu.Unlock()
 	if last := a.lastRebuildNanos.Load(); last != 0 && time.Since(time.Unix(0, last)) < rebuildMinInterval {
 		return n, err
 	}

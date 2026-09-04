@@ -74,6 +74,19 @@ func TestKeyVerifier_Verify_InvalidKeyNeverStaleServed(t *testing.T) {
 
 // TestKeyVerifier_Verify_StaleBeyondGraceRefused pins the grace bound: an
 // entry older than staleGrace must NOT be served.
+func TestKeyVerifier_Verify_ExpiredKeyInfoNeverServedFromCache(t *testing.T) {
+	mp := newMockPool(t)
+	defer mp.Close()
+	kv := NewKeyVerifier()
+	kv.setDBQuerier(mp, "secret")
+	expired := time.Now().Add(-time.Minute)
+	kv.setCache("sk-expired", &KeyInfo{ID: 4, TenantID: "t", KeyPrefix: "sk-4", ExpiresAt: &expired})
+	mp.ExpectQuery(`SELECT`).WithArgs(pgxmock.AnyArg()).WillReturnError(errors.New("connection refused"))
+	if _, err := kv.Verify(context.Background(), "sk-expired"); err == nil {
+		t.Fatal("expired KeyInfo must not be served from cache during outage")
+	}
+}
+
 func TestKeyVerifier_Verify_StaleBeyondGraceRefused(t *testing.T) {
 	mp := newMockPool(t)
 	defer mp.Close()
