@@ -662,9 +662,22 @@ type sessionSnapshotV2 struct {
 	Summary            string     `json:"summary"`
 	SummaryGeneratedAt *time.Time `json:"summary_generated_at,omitempty"`
 	TotalTurns         int        `json:"total_turns"`
+	TotalTokens        int        `json:"total_tokens"`
 	TotalCostUSD       float64    `json:"total_cost_usd"`
+	LastTurnNo         int        `json:"last_turn_no"`
 	LastModel          *string    `json:"last_model,omitempty"`
 	LastProvider       *string    `json:"last_provider,omitempty"`
+	LastRequestSummary string     `json:"last_request_summary,omitempty"`
+	LastResponseSummary string    `json:"last_response_summary,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	ClosedAt           *time.Time `json:"closed_at,omitempty"`
+	Status             string     `json:"status"`
+	TaskType           string     `json:"task_type,omitempty"`
+	ClientType         string     `json:"client_type,omitempty"`
+	Topic              string     `json:"topic,omitempty"`
+	Intent             string     `json:"intent,omitempty"`
+	UserTags           []string   `json:"user_tags,omitempty"`
 	// SessionAnalysis 是 migration 567 的 session_analysis_metadata 读侧投影
 	// （LEFT JOIN LATERAL 命中时非空）。与 turns_sessions / session_detail_v2
 	// 的 SessionAnalysis 字段保持同一形状，前端 SessionSummaryBar 可直接复用。
@@ -692,8 +705,16 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 			       CASE WHEN tstate.tenant_id IS NOT NULL THEN COALESCE(tstate.title, '')
 			            ELSE COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') END AS title,
 			       COALESCE(NULLIF(s.summary, ''), ss.summary, '') AS summary,
-			       s.summary_generated_at, s.total_turns, s.total_cost_usd,
-			       s.last_model, s.last_provider,
+			       s.summary_generated_at, s.total_turns, s.total_tokens, s.total_cost_usd,
+			       s.last_turn_no, s.last_model, s.last_provider,
+			       COALESCE(s.last_request_summary, '') AS last_request_summary,
+			       COALESCE(s.last_response_summary, '') AS last_response_summary,
+			       s.created_at, s.updated_at, s.closed_at, COALESCE(s.status, 'active') AS status,
+			       COALESCE(s.task_type, '') AS task_type,
+			       COALESCE(s.client_type, '') AS client_type,
+			       COALESCE(s.topic, '') AS topic,
+			       COALESCE(s.intent, '') AS intent,
+			       COALESCE(s.user_tags, ARRAY[]::text[]) AS user_tags,
 			       sam.status, sam.schema_version, sam.input_hash,
 			       sam.source_task_id, sam.updated_at, sam.payload
 			FROM public.sessions s
@@ -715,12 +736,16 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 		saSourceTaskID                         *string
 		saUpdatedAt                            *time.Time
 		saPayloadRaw                           []byte
+		userTags                               []string
 	)
 	err := h.db.QueryRow(r.Context(), query,
 		sessionID, tenantID).Scan(
 		&snap.SessionID, &snap.TenantID, &snap.Title, &snap.Summary,
-		&snap.SummaryGeneratedAt, &snap.TotalTurns, &snap.TotalCostUSD,
-		&snap.LastModel, &snap.LastProvider,
+		&snap.SummaryGeneratedAt, &snap.TotalTurns, &snap.TotalTokens, &snap.TotalCostUSD,
+		&snap.LastTurnNo, &snap.LastModel, &snap.LastProvider,
+		&snap.LastRequestSummary, &snap.LastResponseSummary,
+		&snap.CreatedAt, &snap.UpdatedAt, &snap.ClosedAt, &snap.Status,
+		&snap.TaskType, &snap.ClientType, &snap.Topic, &snap.Intent, &userTags,
 		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw)
 	if err != nil {
 		if err.Error() == "no rows in result set" {
@@ -750,6 +775,7 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 		scanSessionAnalysis(&view, saStatusVal, saSchemaVal, saHashVal, saSourceTaskID, saUpdatedAt, saPayloadRaw)
 		snap.SessionAnalysis = &view
 	}
+	snap.UserTags = userTags
 	writeJSON(w, http.StatusOK, snap)
 }
 
