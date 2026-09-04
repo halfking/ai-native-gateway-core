@@ -266,6 +266,14 @@ func (qr *QueuedRequest) resolvedModel() string {
 	return model
 }
 
+// ResolvedModelSnapshot is the cross-package read path for ResolvedModel.
+// Model changes during failover (tryModelChange) happen under modelMu, so
+// readers outside domains/dispatch (e.g. the executor RouteFunc/ForwardFunc
+// adapters) must not read the bare field.
+func (qr *QueuedRequest) ResolvedModelSnapshot() string {
+	return qr.resolvedModel()
+}
+
 func (qr *QueuedRequest) setResolvedModel(model string) {
 	qr.modelMu.Lock()
 	qr.ResolvedModel = model

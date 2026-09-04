@@ -88,7 +88,7 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		sticky = dctx.stickyCredID
 	}
 	planned := e.Router.PlanCandidatesPinned(
-		ctx, e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModel), sticky, dctx.params.PinCredentialID, dctx.params.Policy, nil,
+		ctx, e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModelSnapshot()), sticky, dctx.params.PinCredentialID, dctx.params.Policy, nil,
 		dctx.params.TenantID, dctx.params.ClientModel, dctx.params.RequestID,
 	)
 	refs := make([]dispatch.CredentialRef, 0, len(planned))
@@ -123,7 +123,7 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		e.liveActions.Emit(ctx, liveactions.ActionEvent{
 			RequestID:    qr.ID,
 			Action:       liveactions.ActionCredentialSelected,
-			Model:        qr.ResolvedModel,
+			Model:        qr.ResolvedModelSnapshot(),
 			CredentialID: refs[0].CredentialID,
 			Detail: map[string]string{
 				"candidates": strconv.Itoa(len(refs)),
@@ -184,7 +184,7 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 		return dispatch.ForwardOutcome{Err: errDispatchBadPayload}
 	}
 	var cand provider.Candidate
-	for _, c := range e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModel) {
+	for _, c := range e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModelSnapshot()) {
 		if c.CredentialID == ref.CredentialID {
 			cand = c
 			break

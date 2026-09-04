@@ -196,6 +196,13 @@ exit code 0
 
 已知遗留（超出本轮范围）：`domains/dispatch` 中仍有约 25 处对 `ResolvedModel` / `SelectedCred` 的直读，依赖单一所有者约定；与非所有者 goroutine 的带锁写入在内存模型意义上仍可能构成竞态，race 检测在现有测试路径下未命中。建议后续工作包将这些读点统一迁移到 accessor。
 
+> **2026-09-05 后续工作包已清除该遗留**：dispatch 域内 8 文件约 32 处直读已全部迁移为
+> `resolvedModel()` / `selectedCredential()` accessor（commit `1eb00d411`）；审计另发现
+> executor 适配层（`domains/streaming/executors/executor_dispatch.go`）3 处跨域直读，
+> 通过新增导出读路径 `QueuedRequest.ResolvedModelSnapshot()` 迁移。dispatch 测试文件中
+> 构造期（交付给 pipeline 前、单 goroutine）的直写保持不变，属测试 fixture 语义，
+> 与锁保护无并发交集。
+
 ## 工作区说明
 
 以下改动在本轮开始前已经存在，本轮未覆盖、回滚或重写：
