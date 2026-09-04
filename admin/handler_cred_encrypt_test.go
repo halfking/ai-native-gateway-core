@@ -121,7 +121,7 @@ func TestDecryptCred_V1LegacyFernetEnvelope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encryptFernet: %v", err)
 	}
-	envelope := "v1:legacy:" + string(token)
+	envelope := "v1:legacy:" + base64.RawURLEncoding.EncodeToString(token)
 
 	pt, isLegacy, err := h.decryptCred(envelope)
 	if err != nil {
@@ -132,6 +132,9 @@ func TestDecryptCred_V1LegacyFernetEnvelope(t *testing.T) {
 	}
 	if pt != plaintext {
 		t.Fatalf("decrypt mismatch: got %q want %q", pt, plaintext)
+	}
+	if _, _, err := h.decryptCred("v1:legacy:not-base64"); err == nil {
+		t.Fatal("decryptCred must reject malformed v1:legacy payload")
 	}
 }
 
