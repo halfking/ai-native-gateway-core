@@ -142,6 +142,9 @@ var modelOffersInsertPriorityPassthroughMigration570 []byte
 //go:embed embeddata/startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql
 var candidateBindingScopeRevisionCanonicalPriorityHashMigration571 []byte
 
+//go:embed embeddata/startup/572_session_summary_large_token_ratio.sql
+var sessionSummaryLargeTokenRatioMigration572 []byte
+
 //go:embed embeddata/startup/600_outbound_body_to_bodies_hot.sql
 var outboundBodyToBodiesHotMigration600 []byte
 
@@ -150,6 +153,9 @@ var requestLogsBodiesDropMetadataMigration601 []byte
 
 //go:embed embeddata/startup/602_request_logs_promote_atomic.sql
 var requestLogsPromoteAtomicMigration602 []byte
+
+//go:embed embeddata/startup/606_session_summaries_agent_expert_tags.sql
+var sessionSummariesAgentExpertTagsMigration606 []byte
 
 //go:embed embeddata/startup/618_request_journey_snapshot_receipts.sql
 var journalSnapshotReceiptsMigration618 []byte
@@ -207,6 +213,9 @@ var sessionBodiesPromoteGuardMigration638 []byte
 
 //go:embed embeddata/startup/639_provider_error_details_credential.sql
 var providerErrorDetailsCredentialMigration639 []byte
+
+//go:embed embeddata/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql
+var tuningViewsSelfcheckCandidateFailureCacheMigration644 []byte
 
 //go:embed embeddata/startup/645_session_bodies_hot_request_unique_repair.sql
 var sessionBodiesHotRequestUniqueRepairMigration645 []byte
@@ -936,9 +945,11 @@ func copySQLBackup(root string) error {
 		"startup/569_candidate_binding_scope_revision_canonical.sql":               candidateBindingScopeRevisionCanonicalMigration569,
 		"startup/570_model_offers_insert_priority_passthrough.sql":                 modelOffersInsertPriorityPassthroughMigration570,
 		"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
+		"startup/572_session_summary_large_token_ratio.sql":                        sessionSummaryLargeTokenRatioMigration572,
 		"startup/600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
 		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
 		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
+		"startup/606_session_summaries_agent_expert_tags.sql":                      sessionSummariesAgentExpertTagsMigration606,
 		"startup/618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
 		"startup/614_session_bodies_hot.sql":                                       sessionBodiesHotMigration614,
 		"startup/615_session_bodies_hot_promote_function.sql":                      sessionBodiesHotPromoteMigration615,
@@ -958,6 +969,7 @@ func copySQLBackup(root string) error {
 		"startup/637_session_bodies_unified_today_visible.sql":                     sessionBodiesUnifiedTodayVisibleMigration637,
 		"startup/638_session_bodies_promote_guard.sql":                             sessionBodiesPromoteGuardMigration638,
 		"startup/639_provider_error_details_credential.sql":                        providerErrorDetailsCredentialMigration639,
+		"startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql":       tuningViewsSelfcheckCandidateFailureCacheMigration644,
 		"startup/645_session_bodies_hot_request_unique_repair.sql":                 sessionBodiesHotRequestUniqueRepairMigration645,
 		"startup/646_proxy_management_canonical.sql":                               proxyManagementCanonicalMigration646,
 		"startup/647_goal_client_signal.sql":                                       goalClientSignalMigration647,
@@ -1070,9 +1082,11 @@ func setupSQLDir() (string, func(), error) {
 		"startup/569_candidate_binding_scope_revision_canonical.sql":               candidateBindingScopeRevisionCanonicalMigration569,
 		"startup/570_model_offers_insert_priority_passthrough.sql":                 modelOffersInsertPriorityPassthroughMigration570,
 		"startup/571_candidate_binding_scope_revision_canonical_priority_hash.sql": candidateBindingScopeRevisionCanonicalPriorityHashMigration571,
+		"startup/572_session_summary_large_token_ratio.sql":                        sessionSummaryLargeTokenRatioMigration572,
 		"startup/600_outbound_body_to_bodies_hot.sql":                              outboundBodyToBodiesHotMigration600,
 		"startup/601_request_logs_bodies_drop_metadata.sql":                        requestLogsBodiesDropMetadataMigration601,
 		"startup/602_request_logs_promote_atomic.sql":                              requestLogsPromoteAtomicMigration602,
+		"startup/606_session_summaries_agent_expert_tags.sql":                      sessionSummariesAgentExpertTagsMigration606,
 		"startup/618_request_journey_snapshot_receipts.sql":                        journalSnapshotReceiptsMigration618,
 		"startup/614_session_bodies_hot.sql":                                       sessionBodiesHotMigration614,
 		"startup/615_session_bodies_hot_promote_function.sql":                      sessionBodiesHotPromoteMigration615,
@@ -1092,6 +1106,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/637_session_bodies_unified_today_visible.sql":                     sessionBodiesUnifiedTodayVisibleMigration637,
 		"startup/638_session_bodies_promote_guard.sql":                             sessionBodiesPromoteGuardMigration638,
 		"startup/639_provider_error_details_credential.sql":                        providerErrorDetailsCredentialMigration639,
+		"startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql":       tuningViewsSelfcheckCandidateFailureCacheMigration644,
 		"startup/645_session_bodies_hot_request_unique_repair.sql":                 sessionBodiesHotRequestUniqueRepairMigration645,
 		"startup/646_proxy_management_canonical.sql":                               proxyManagementCanonicalMigration646,
 		"startup/647_goal_client_signal.sql":                                       goalClientSignalMigration647,
