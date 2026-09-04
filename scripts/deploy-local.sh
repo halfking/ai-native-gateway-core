@@ -405,7 +405,14 @@ build_backend() {
   local target_os="${GOOS:-$(uname -s | tr '[:upper:]' '[:lower:]')}"
   local target_arch="${GOARCH:-$(go env GOARCH)}"
   (( DL_DOCKER )) && target_os=linux
-  (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/gateway)
+  # 先删除旧产物：go build 失败时绝不能把陈旧 gateway.build 留给后续
+  # step_release 打包（2026-09-05 事故：编译失败被赋值语境的 set -e 怪癖
+  # 静默吞掉，两个新版本号打包了同一个 4 小时前的旧二进制）。
+  rm -f "$out"
+  if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/gateway); then
+    die "backend build failed (CGO_ENABLED=0 GOOS=$target_os GOARCH=$target_arch); refusing to continue with stale binary"
+  fi
+  [[ -s "$out" ]] || die "backend build produced no output at $out"
   printf '%s\n' "$out"
 }
 
