@@ -234,7 +234,8 @@ type QueuedRequest struct {
 	abandoned atomic.Bool
 
 	// vendor snapshot for stats labels (from SelectedCred at enqueue time).
-	vendor string
+	vendor   string
+	vendorMu sync.RWMutex
 }
 
 // NewQueuedRequest constructs a QueuedRequest ready for Pipeline.Submit.
@@ -282,6 +283,19 @@ func (qr *QueuedRequest) setSelectedCredential(ref CredentialRef) {
 	qr.selectedCredMu.Lock()
 	qr.SelectedCred = ref
 	qr.selectedCredMu.Unlock()
+}
+
+func (qr *QueuedRequest) selectedVendor() string {
+	qr.vendorMu.RLock()
+	vendor := qr.vendor
+	qr.vendorMu.RUnlock()
+	return vendor
+}
+
+func (qr *QueuedRequest) setVendor(vendor string) {
+	qr.vendorMu.Lock()
+	qr.vendor = vendor
+	qr.vendorMu.Unlock()
 }
 
 func (qr *QueuedRequest) markTriedCredential(id int) {
