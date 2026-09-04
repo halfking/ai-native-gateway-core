@@ -15,8 +15,13 @@ services:
       # 2026-08-04 (spec §10.4.1): IR as default protocol conversion path.
       # Emergency rollback: set to "false" or remove this line.
       - TRANSPORT_LAYER_IR_ENABLED=true
+      # 附件与日志目录必须指向下方 volumes 挂载的容器路径，
+      # 否则写入容器临时层、容器重建即丢失（incident 2026-09-05）。
+      - LLM_GATEWAY_ATTACHMENT_DIR=/app/data/attachments
+      - LLM_GATEWAY_LOG_FILE=/app/logs/gateway.log
     volumes:
       - ./logs:/app/logs
+      - ${HOST_ATTACHMENT_DIR:-./data/attachments}:/app/data/attachments
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8781/healthz"]

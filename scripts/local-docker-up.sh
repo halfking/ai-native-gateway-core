@@ -82,6 +82,10 @@ POSTGRES_PASSWORD=changeme
 REDIS_PASSWORD=
 APP_PORT=8781
 APP_IMAGE_TAG=local
+# 存储路径必须指向 compose.yml（installer/templates/compose.yml）挂载的
+# 容器路径；缺省值会写进容器临时层、容器重建即丢失（incident 2026-09-05）。
+LLM_GATEWAY_ATTACHMENT_DIR=/opt/llm-gateway-go/data/attachments
+LLM_GATEWAY_PERSISTENT_LOG_DIR=/var/log/llm-gateway
 ENVEOF
   chmod 0600 "$ENV_FILE"
   warn ".env 已生成，请编辑设置 POSTGRES_PASSWORD 后再次执行"

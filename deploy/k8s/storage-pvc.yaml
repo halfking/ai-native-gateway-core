@@ -27,11 +27,13 @@ spec:
 
 ---
 # ── 附件存储 PVC ─────────────────────────────────────────────────
+# namespace 必须与 llm-gateway-go-deployment.yaml（pms-test）一致，
+# PVC 与 Pod 跨 namespace 无法绑定。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: llm-gateway-attachments-pvc
-  namespace: default
+  namespace: pms-test
   labels:
     app: llm-gateway-go
     type: attachments
@@ -73,7 +75,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: llm-gateway-logs-pvc
-  namespace: default
+  namespace: pms-test
   labels:
     app: llm-gateway-go
     type: logs
