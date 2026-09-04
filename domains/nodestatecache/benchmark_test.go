@@ -3,6 +3,7 @@ package nodestatecache
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sort"
 	"sync"
 	"testing"
@@ -144,6 +145,10 @@ func BenchmarkTryAcquireRelease(b *testing.B) {
 
 // UT-NS-12：单次 Select P99 < 1ms 性能门禁（10k 节点宇宙，4096 次采样）。
 // race detector 插桩延迟不代表生产口径，-race 下跳过。
+//
+// 稳态测量口径（门禁阈值 1ms 不变）：先 512 次预热让 scratch 池达到稳态
+// 容量、页缓存与分支预测就位；runtime.GC() 清掉 benchCache 构造期垃圾，
+// 避免采样窗口被构造期 GC 债务污染；随后才开始计时采样。
 func TestSelectP99Under1ms(t *testing.T) {
 	if testing.Short() || raceEnabled {
 		t.Skip("perf gate skipped in -short / -race")
@@ -153,6 +158,14 @@ func TestSelectP99Under1ms(t *testing.T) {
 	ctx := context.Background()
 	used := []NodeUseRecord{{Seq: 1, NodeID: ids[1]}}
 	q := SelectQuery{Model: "m-bench", Used: used}
+
+	const warmup = 512
+	for i := 0; i < warmup; i++ {
+		if res := c.Select(ctx, q); res.Exhausted {
+			t.Fatal("unexpected exhausted during warmup")
+		}
+	}
+	runtime.GC()
 
 	const samples = 4096
 	latencies := make([]time.Duration, 0, samples)
@@ -171,4 +184,33 @@ func TestSelectP99Under1ms(t *testing.T) {
 	t.Logf("Select 10k-node universe: p50=%v p99=%v max=%v (gate: p99 < 1ms)", p50, p99, latencies[samples-1])
 	assert.Less(t, p99, time.Millisecond, "R10.6: single Select p99 must stay under 1ms")
 	fmt.Printf("UT-NS-12 gate: p50=%v p99=%v max=%v over %d samples\n", p50, p99, latencies[samples-1], samples)
+}
+
+// UT-NS-12b：Select 热路径分配门禁——每次 Select 允许的堆分配次数上限
+// （Alternatives 结果切片归调用方所有，无法池化；其余热路径缓冲必须复用）。
+// 该门禁防止 p99 抖动的根因（GC 压力）回潮。
+func TestSelectAllocationsBounded(t *testing.T) {
+	if testing.Short() || raceEnabled {
+		t.Skip("alloc gate skipped in -short / -race")
+	}
+	c, ids := benchCache(t, 10000)
+	defer c.Close()
+	ctx := context.Background()
+	used := []NodeUseRecord{{Seq: 1, NodeID: ids[1]}}
+	q := SelectQuery{Model: "m-bench", Used: used}
+
+	for i := 0; i < 64; i++ {
+		c.Select(ctx, q) // 预热 scratch 池
+	}
+	allocs := testing.AllocsPerRun(200, func() {
+		if res := c.Select(ctx, q); res.Exhausted {
+			t.Fatal("unexpected exhausted")
+		}
+	})
+	// 预算：Alternatives 100 条 1 次分配 + 少量常数开销。评分器输出的
+	// 分配属 Scorer 实现方（passthroughScorer 自行分配，不计入本门禁）。
+	const budget = 6
+	t.Logf("Select 10k-node universe: %.1f allocs/op (budget: %d)", allocs, budget)
+	assert.LessOrEqual(t, allocs, float64(budget),
+		"R10.6: Select hot path must not allocate per-survivor buffers")
 }

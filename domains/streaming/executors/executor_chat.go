@@ -786,16 +786,26 @@ func (e *Executor) executeOpenAI(
 
 				result := ClassifyResult(uErr, statusCode)
 
-				params.RoutingTracker.Add(RoutingAttempt{
+				attempt := RoutingAttempt{
 					ProviderID:   int64(cand.ProviderID),
 					CredentialID: int64(cand.CredentialID),
+					ProviderName: cand.CatalogCode,
 					RawModel:     cand.RawModel,
 					UpstreamURL:  req.URL.String(),
 					Result:       result,
 					LatencyMs:    upstreamLatency.Milliseconds(),
 					HTTPStatus:   statusCode,
 					ErrorMessage: errMsg,
-				})
+					Stage:        "upstream",
+				}
+				if uErr != nil {
+					// 2026-09-05 审计闭环2：结构化错误维度（低基数 kind +
+					// 三态 retryable），前端不再解析自由文本 message。
+					attempt.ErrorKind = string(uErr.Kind)
+					retryable := errorsx.ProjectRecovery(uErr.Kind).GenericRetryable
+					attempt.Retryable = &retryable
+				}
+				params.RoutingTracker.Add(attempt)
 			}
 
 			// Continue with original logic

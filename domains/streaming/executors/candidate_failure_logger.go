@@ -171,6 +171,11 @@ func (w *CandidateFailureWriter) logFailure(
 			"raw_model", rawModelName,
 		)
 	}
+
+	// 供应商错误唯一事实源（V371）：同一行数据投影写入 supplier_errors_hot。
+	// 共用同一 3s 独立超时上下文；读端（趋势 API、凭据详情、供应商统计）
+	// 统一走 supplier_errors_unified / supplier_error_stats。
+	w.persistSupplierError(ctx, row)
 }
 
 // buildRow extracts fields from the error chain. Walks errors.Unwrap to

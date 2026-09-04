@@ -83,6 +83,7 @@ type PartitionManager struct {
 	interval        time.Duration
 	promoteInterval time.Duration
 	errorAggregator *ProviderErrorAggregator // 2026-08-29: provider error aggregation
+	supplierStats   *SupplierErrorStatsAggregator // 2026-09-05: supplier_errors_hot → stats 预聚合（审计闭环1）
 
 	mu            sync.Mutex
 	cancel        context.CancelFunc
@@ -123,6 +124,7 @@ func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionMan
 		interval:        interval,
 		promoteInterval: DefaultPromoteInterval,
 		errorAggregator: NewProviderErrorAggregator(db, 10*time.Minute),
+		supplierStats:   NewSupplierErrorStatsAggregator(db, 5*time.Minute),
 		done:            make(chan struct{}),
 		promoteDone:     make(chan struct{}),
 		cleanupDone:     make(chan struct{}),
@@ -162,6 +164,9 @@ func (pm *PartitionManager) Start(ctx context.Context) {
 	if pm.errorAggregator != nil {
 		pm.errorAggregator.Start(ctx)
 	}
+	if pm.supplierStats != nil {
+		pm.supplierStats.Start(ctx)
+	}
 	slog.Info("partition_manager started", "interval", pm.interval)
 }
 
@@ -183,6 +188,9 @@ func (pm *PartitionManager) Stop() {
 	}
 	if pm.errorAggregator != nil {
 		pm.errorAggregator.Stop()
+	}
+	if pm.supplierStats != nil {
+		pm.supplierStats.Stop()
 	}
 	<-pm.done
 	<-pm.promoteDone

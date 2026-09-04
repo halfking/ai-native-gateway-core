@@ -1,6 +1,9 @@
 package nodestatecache
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // SelectQuery 选择闭包入参（R10.2，签名照抄规格）。
 type SelectQuery struct {
@@ -115,6 +118,67 @@ type ModelFallback interface {
 	FallbackModels(taskType, currentModel string) []string
 }
 
+// smallUsedLinearLimit 已试记录线性扫描上限：不超过该值时 excluded 判断
+// 走切片线性比较，避免热路径每次 Select 分配 map（10k 宇宙 p99 门禁 R10.6）。
+const smallUsedLinearLimit = 8
+
+// scratch pools：Select 每次调用在 10k 节点宇宙下会产生 ~9.5k 元素的幸存集
+// 与评分输出；不复用的话每调用 ~190KB 垃圾会带来 GC 抖动，使 p99 门禁对
+// 同机负载不鲁棒。两池均为「取用→归还」语义，缓冲不跨 Select 存活。
+var (
+	survivorsPool sync.Pool // []int32
+	scoredPool    sync.Pool // []ScoredNode
+)
+
+func getSurvivorsScratch() []int32 {
+	if v := survivorsPool.Get(); v != nil {
+		return v.([]int32)[:0]
+	}
+	return make([]int32, 0, 1024)
+}
+
+func putSurvivorsScratch(buf []int32) {
+	survivorsPool.Put(buf)
+}
+
+func getScoredScratch() []ScoredNode {
+	if v := scoredPool.Get(); v != nil {
+		return v.([]ScoredNode)[:0]
+	}
+	return make([]ScoredNode, 0, 1024)
+}
+
+func putScoredScratch(buf []ScoredNode) {
+	scoredPool.Put(buf)
+}
+
+// excluded 返回本请求已试节点判断函数：小 Used 走线性比较，大 Used 建 map。
+func excluded(used []NodeUseRecord) func(int32) bool {
+	if len(used) == 0 {
+		return func(int32) bool { return false }
+	}
+	if len(used) <= smallUsedLinearLimit {
+		return func(id int32) bool {
+			for i := range used {
+				if u := used[i].NodeID; u > 0 && u == id {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	m := make(map[int32]struct{}, len(used))
+	for _, u := range used {
+		if u.NodeID > 0 {
+			m[u.NodeID] = struct{}{}
+		}
+	}
+	return func(id int32) bool {
+		_, ok := m[id]
+		return ok
+	}
+}
+
 // Select 是 R10.2 选择闭包的实现：位图 O(1) 预过滤（剔除不可用/冷却 =
 // Avail 位 0、已试 Used 表、满载 = Full 位 1）→ 幸存集交 Scorer 排序 →
 // 取第一；AllowModelSwitch 且当前模型幸存为空 → 经 ModelFallback 换模型
@@ -122,29 +186,27 @@ type ModelFallback interface {
 //
 // Selector / Updater / NeedProbe 三闭包单一责任、互不调用。
 func (c *Cache) Select(ctx context.Context, q SelectQuery) SelectResult {
-	tried := make(map[int32]struct{}, len(q.Used))
-	for _, u := range q.Used {
-		if u.NodeID > 0 {
-			tried[u.NodeID] = struct{}{}
-		}
-	}
+	isTried := excluded(q.Used)
 
 	// Flags bit0 sticky 优先：绑定节点健康（Avail）、未满载、未试过 → 直接复用。
 	if q.Flags&FlagSticky != 0 && c.sticky != nil {
 		if ref, ok := c.sticky.StickyNode(ctx, q.Model, q.TaskType); ok {
 			if id := c.reg.Get(ref); id > 0 && c.bitmap.TestAvail(id) &&
-				!c.bitmap.TestFull(id) && !seen(tried, id) {
+				!c.bitmap.TestFull(id) && !isTried(id) {
 				return SelectResult{NodeID: id, ModelID: c.reg.ModelID(q.Model)}
 			}
 		}
 	}
 
 	// 位图 O(1) 预过滤：Avail=1 且 Full=0 且未试，再按 Flags 精筛状态。
-	survivors := c.prefilter(tried, q.Flags)
+	// 幸存集缓冲池化复用，Select 返回前归还（Scorer 契约：survivors 仅
+	// 本次调用有效，不得保留引用）。
+	survivors := getSurvivorsScratch()
+	survivors = c.prefilter(isTried, q.Flags, survivors)
 
-	// 当前模型评分取第一。
-	if res, scored := c.scoreAndPick(ctx, q.Model, q.TaskType, survivors, q); scored != nil {
-		return res
+	if res := c.scoreAndPick(ctx, q.Model, q.TaskType, survivors, q); res.picked {
+		putSurvivorsScratch(survivors)
+		return res.result
 	}
 
 	// AllowModelSwitch 且当前模型幸存为空 → 品质档位换模型再选。
@@ -153,33 +215,30 @@ func (c *Cache) Select(ctx context.Context, q SelectQuery) SelectResult {
 			if alt == "" || alt == q.Model {
 				continue
 			}
-			if res, scored := c.scoreAndPick(ctx, alt, q.TaskType, survivors, q); scored != nil {
-				res.SwitchedModel = true
-				for i := range res.Alternatives {
-					res.Alternatives[i].Packed |= packedBitSwitched
+			if res := c.scoreAndPick(ctx, alt, q.TaskType, survivors, q); res.picked {
+				res.result.SwitchedModel = true
+				for i := range res.result.Alternatives {
+					res.result.Alternatives[i].Packed |= packedBitSwitched
 				}
-				return res
+				putSurvivorsScratch(survivors)
+				return res.result
 			}
 		}
 	}
 
+	putSurvivorsScratch(survivors)
 	// 全空：组合穷尽。
 	return SelectResult{ModelID: c.reg.ModelID(q.Model), Exhausted: true}
-}
-
-func seen(tried map[int32]struct{}, id int32) bool {
-	_, ok := tried[id]
-	return ok
 }
 
 // prefilter 位图预过滤：剔除不可用/冷却（Avail=0）、满载（Full=1）、已试；
 // FlagExcludeCooling 额外要求 State=available；FlagFreeTolerant 容忍
 // State=degraded（缺省容忍 available+degraded；probing/offline/unknown 恒剔除）。
-func (c *Cache) prefilter(tried map[int32]struct{}, flags uint32) []int32 {
-	var out []int32
+// 结果追加进调用方提供的 dst 缓冲（池化复用）。
+func (c *Cache) prefilter(isTried func(int32) bool, flags uint32, dst []int32) []int32 {
 	strict := flags&FlagExcludeCooling != 0 // tolerant（bit1）语义：degraded 仍可路由，与缺省一致
 	c.bitmap.foreachSet(planeAvail, func(id int32) {
-		if seen(tried, id) || c.bitmap.TestFull(id) {
+		if isTried(id) || c.bitmap.TestFull(id) {
 			return
 		}
 		st := c.stats.get(id).State
@@ -191,27 +250,40 @@ func (c *Cache) prefilter(tried map[int32]struct{}, flags uint32) []int32 {
 		if !strict && st != StateAvailable && st != StateDegraded {
 			return
 		}
-		out = append(out, id)
+		dst = append(dst, id)
 	})
-	return out
+	return dst
 }
 
-// scoreAndPick 对一个候选模型完成评分与取第一。第二返回值非 nil 表示选中。
-func (c *Cache) scoreAndPick(ctx context.Context, model, taskType string, survivors []int32, q SelectQuery) (SelectResult, []ScoredNode) {
+// pickOutcome 折叠 scoreAndPick 的选中状态与结果，避免把池化评分切片
+// 泄漏到调用方。
+type pickOutcome struct {
+	result SelectResult
+	picked bool
+}
+
+// scoreAndPick 对一个候选模型完成评分与取第一。picked=false 表示该模型
+// 无可服务幸存节点。仅对本次自行分配的评分缓冲做池化归还；Scorer 返回的
+// 切片归实现方所有（可能内部复用），不得入池。
+func (c *Cache) scoreAndPick(ctx context.Context, model, taskType string, survivors []int32, q SelectQuery) pickOutcome {
 	if len(survivors) == 0 {
-		return SelectResult{}, nil
+		return pickOutcome{}
 	}
-	var scored []ScoredNode
+	scored := getScoredScratch()
+	poolOwned := true
 	if c.scorer != nil {
+		poolOwned = false
 		scored = c.scorer.Score(ctx, model, taskType, survivors)
 	} else {
-		scored = make([]ScoredNode, len(survivors))
-		for i, id := range survivors {
-			scored[i] = ScoredNode{NodeID: id}
+		for _, id := range survivors {
+			scored = append(scored, ScoredNode{NodeID: id})
 		}
 	}
 	if len(scored) == 0 {
-		return SelectResult{}, nil
+		if poolOwned {
+			putScoredScratch(scored)
+		}
+		return pickOutcome{}
 	}
 	res := SelectResult{
 		NodeID:  scored[0].NodeID,
@@ -233,5 +305,8 @@ func (c *Cache) scoreAndPick(ctx context.Context, model, taskType string, surviv
 			Packed:  PackUseRecord(slot.State, 0, q.RetryCount > 0, false, false),
 		}
 	}
-	return res, scored
+	if poolOwned {
+		putScoredScratch(scored)
+	}
+	return pickOutcome{result: res, picked: true}
 }

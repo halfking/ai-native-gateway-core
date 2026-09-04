@@ -77,12 +77,22 @@ func vendorSummaryRows(closeErr error) *pgxmock.Rows {
 	return rows
 }
 
+// 2026-09-05 审计闭环1：recent failures 行形状 = supplier_errors_unified
+// 13 列（末列 upstream_response_preview 来自 candidate_failure_logs_unified
+// LEFT JOIN 回补）。
 func vendorRecentRows(closeErr error) *pgxmock.Rows {
 	ts := time.Date(2026, 8, 29, 9, 0, 0, 0, time.UTC)
 	message := "upstream failed"
 	preview := "{\"error\":\"busy\"}"
-	rows := pgxmock.NewRows([]string{"ts", "request_id", "raw_model_name", "attempt_index", "error_kind", "error_message", "upstream_status_code", "upstream_response_preview", "latency_ms"}).
-		AddRow(ts, "req-1", "model-a", 1, "transient", &message, nil, &preview, nil)
+	stage := "upstream"
+	supplier := "zhipu"
+	errorCode := "1210"
+	retryable := true
+	rows := pgxmock.NewRows([]string{
+		"occurred_at", "request_id", "model", "attempt_seq", "error_type", "error_message",
+		"http_status", "is_retryable", "stage", "supplier", "error_code", "latency_ms",
+		"upstream_response_preview",
+	}).AddRow(ts, "req-1", "model-a", 1, "transient", &message, nil, &retryable, &stage, &supplier, &errorCode, nil, &preview)
 	if closeErr != nil {
 		rows.CloseError(closeErr)
 	}
@@ -122,8 +132,8 @@ func TestGetVendorCredentialErrorDetail200AndScope(t *testing.T) {
 			}
 			defer mock.Close()
 			mock.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), tt.tenantID).WillReturnRows(vendorCredentialMetaRows())
-			mock.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), tt.tenantID, pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
-			mock.ExpectQuery("SELECT ts, request_id, raw_model_name").WithArgs(int64(42), tt.tenantID, pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(nil))
+			mock.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), tt.tenantID, pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
+			mock.ExpectQuery("SELECT u.occurred_at, u.request_id").WithArgs(int64(42), tt.tenantID, pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(nil))
 			mock.ExpectQuery("SELECT p.profile_date, p.total_score").WithArgs(int64(42), tt.tenantID).WillReturnRows(vendorQualityRows(nil))
 
 			rec := httptest.NewRecorder()
@@ -235,47 +245,47 @@ func TestGetVendorCredentialErrorDetailQueryScanAndRowsErrors(t *testing.T) {
 		}, wantCode: "credential_query_failed"},
 		{name: "summary query", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnError(errors.New("query failed"))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnError(errors.New("query failed"))
 		}, wantCode: "error_summary_query_failed"},
 		{name: "summary scan", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(pgxmock.NewRows([]string{"error_kind", "count", "last_seen", "distinct_status_codes"}).AddRow("bad", "not-int", time.Now(), 1))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(pgxmock.NewRows([]string{"error_kind", "count", "last_seen", "distinct_status_codes"}).AddRow("bad", "not-int", time.Now(), 1))
 		}, wantCode: "error_summary_query_failed"},
 		{name: "summary rows", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(errors.New("rows failed")))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(errors.New("rows failed")))
 		}, wantCode: "error_summary_query_failed"},
 		{name: "recent query", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
-			m.ExpectQuery("SELECT ts, request_id, raw_model_name").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnError(errors.New("query failed"))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
+			m.ExpectQuery("SELECT u.occurred_at, u.request_id").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnError(errors.New("query failed"))
 		}, wantCode: "recent_failures_query_failed"},
 		{name: "recent scan", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
-			m.ExpectQuery("SELECT ts, request_id, raw_model_name").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(pgxmock.NewRows([]string{"ts", "request_id", "raw_model_name", "attempt_index", "error_kind", "error_message", "upstream_status_code", "upstream_response_preview", "latency_ms"}).AddRow("bad", "req", "model", 1, "kind", nil, nil, nil, nil))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
+			m.ExpectQuery("SELECT u.occurred_at, u.request_id").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(pgxmock.NewRows([]string{"occurred_at", "request_id", "model", "attempt_seq", "error_type", "error_message", "http_status", "is_retryable", "stage", "supplier", "error_code", "latency_ms", "upstream_response_preview"}).AddRow("bad", "req", "model", 1, "kind", nil, nil, nil, nil, nil, nil, nil, nil))
 		}, wantCode: "recent_failures_query_failed"},
 		{name: "recent rows", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
-			m.ExpectQuery("SELECT ts, request_id, raw_model_name").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(errors.New("rows failed")))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
+			m.ExpectQuery("SELECT u.occurred_at, u.request_id").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(errors.New("rows failed")))
 		}, wantCode: "recent_failures_query_failed"},
 		{name: "quality query", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
-			m.ExpectQuery("SELECT ts, request_id, raw_model_name").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(nil))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
+			m.ExpectQuery("SELECT u.occurred_at, u.request_id").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(nil))
 			m.ExpectQuery("SELECT p.profile_date, p.total_score").WithArgs(int64(42), "").WillReturnError(errors.New("query failed"))
 		}, wantCode: "quality_scores_query_failed"},
 		{name: "quality scan", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
-			m.ExpectQuery("SELECT ts, request_id, raw_model_name").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(nil))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
+			m.ExpectQuery("SELECT u.occurred_at, u.request_id").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(nil))
 			m.ExpectQuery("SELECT p.profile_date, p.total_score").WithArgs(int64(42), "").WillReturnRows(pgxmock.NewRows([]string{"profile_date", "total_score", "availability_score", "stability_score"}).AddRow("bad", 1.0, 1.0, 1.0))
 		}, wantCode: "quality_scores_query_failed"},
 		{name: "quality rows", configure: func(m pgxmock.PgxPoolIface) {
 			m.ExpectQuery("SELECT id, label, provider_id, health_status").WithArgs(int64(42), "").WillReturnRows(vendorCredentialMetaRows())
-			m.ExpectQuery("SELECT error_kind, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
-			m.ExpectQuery("SELECT ts, request_id, raw_model_name").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(nil))
+			m.ExpectQuery("SELECT error_type, COUNT").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorSummaryRows(nil))
+			m.ExpectQuery("SELECT u.occurred_at, u.request_id").WithArgs(int64(42), "", pgxmock.AnyArg()).WillReturnRows(vendorRecentRows(nil))
 			m.ExpectQuery("SELECT p.profile_date, p.total_score").WithArgs(int64(42), "").WillReturnRows(vendorQualityRows(errors.New("rows failed")))
 		}, wantCode: "quality_scores_query_failed"},
 	}
