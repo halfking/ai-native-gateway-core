@@ -32,7 +32,7 @@ AUTO 优化器围绕现有路由链路提供分类、候选排序和反馈闭环
 
 ## 存储布局
 
-`auto_route_selections` 是唯一事实表：最近 8 小时作为热查询窗口，历史按 `partition_date` 月分区；通过统一 `v_auto_route_selections_all`（或仓库最终约定的等价 all view）读取全量语义。all view 不复制数据，也不产生第二事实源。
+`auto_route_selections` 是唯一事实表：最近 8 小时作为热查询窗口，历史按 `partition_date` 月分区；通过统一 `auto_route_selections_all`（migration 656）读取全量语义。all view 不复制数据，也不产生第二事实源。
 
 ## 反馈与标注
 
