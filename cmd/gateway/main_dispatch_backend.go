@@ -89,9 +89,13 @@ func wireDispatchGovernorBackend(p *dispatch.Pipeline, redisClient *redis.Client
 	backend := resolveGovernorBackend(envGovernorBackend(), redisClient, instanceID)
 
 	if err := backend.Open(context.Background()); err != nil {
-		slog.Warn("dispatch: governor backend Open failed; backend not wired",
+		slog.Warn("dispatch: governor backend Open failed",
 			"backend", backend.Kind(), "error", err)
-		return
+		if backend.Kind() == dispatch.BackendRedisEnforce {
+			backend = dispatch.NewUnavailableGovernorBackend(instanceID, err)
+		} else {
+			return
+		}
 	}
 	p.SetGovernorBackend(backend)
 	slog.Info("dispatch: governor backend wired",
@@ -123,8 +127,8 @@ func resolveGovernorBackend(mode string, redisClient *redis.Client, instanceID s
 		return dispatch.NewRedisShadowBackend(redisClient, instanceID)
 	case "redis_enforce":
 		if redisClient == nil {
-			slog.Warn("dispatch: LLM_GATEWAY_DISPATCH_GOVERNOR_BACKEND=redis_enforce but Redis is disabled; falling back to local")
-			return dispatch.NewLocalBackend(instanceID)
+			slog.Error("dispatch: redis_enforce requires Redis; installing fail-closed backend")
+			return dispatch.NewUnavailableGovernorBackend(instanceID, fmt.Errorf("redis client is nil"))
 		}
 		return dispatch.NewRedisEnforceBackend(redisClient, instanceID)
 	default:
@@ -171,9 +175,9 @@ func envQueueBackend() string {
 // resolveGovernorBackend so the flag table is unit-testable):
 //
 //   - "" / "auto"  → redis when a client is configured, else local + WARN
-//                    (用户口径：没有 Redis 才回退本机内存)
+//     (用户口径：没有 Redis 才回退本机内存)
 //   - "local"      → pass-through local backend (in-process primitives stay
-//                    the sole admission authority — bit-equivalent)
+//     the sole admission authority — bit-equivalent)
 //   - "redis"      → cluster backend; without a client → local + WARN
 //   - other        → error log + local
 func resolveQueueBackend(mode string, redisClient *redis.Client, instanceID string) dispatch.QueueBackend {

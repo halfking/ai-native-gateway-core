@@ -269,7 +269,7 @@ func (e *Executor) executeViaDispatch(
 	stickyCredID *int,
 ) (*ExecuteResult, error) {
 	if e.dispatchPipeline == nil {
-		return nil, nil
+		return nil, errDispatchPipelineNotWired
 	}
 	requestedModel := params.Model
 	if requestedModel == "" {
@@ -914,13 +914,14 @@ func extractQueueTimestamps(qr *dispatch.QueuedRequest) (
 
 // sentinel errors for the dispatch forward path.
 var (
-	errDispatchNoCandidate     = newDispatchErr("dispatch: candidate not found in planned list")
-	errDispatchMissingAttempt  = newDispatchErr("dispatch: missing active attempt")
-	errDispatchBadResult       = newDispatchErr("dispatch: unexpected result type")
-	errDispatchBadPayload      = newDispatchErr("dispatch: payload is not *dispatchCtx")
-	errDispatchFpSlotSaturated = newDispatchErr("dispatch: fp slot saturated")
-	errDispatchCircuitOpen     = newDispatchErr("dispatch: circuit open")
-	errDispatchKeysExhausted   = newDispatchErr("dispatch: all keys exhausted")
+	errDispatchPipelineNotWired = newDispatchErr("dispatch: pipeline not wired")
+	errDispatchNoCandidate      = newDispatchErr("dispatch: candidate not found in planned list")
+	errDispatchMissingAttempt   = newDispatchErr("dispatch: missing active attempt")
+	errDispatchBadResult        = newDispatchErr("dispatch: unexpected result type")
+	errDispatchBadPayload       = newDispatchErr("dispatch: payload is not *dispatchCtx")
+	errDispatchFpSlotSaturated  = newDispatchErr("dispatch: fp slot saturated")
+	errDispatchCircuitOpen      = newDispatchErr("dispatch: circuit open")
+	errDispatchKeysExhausted    = newDispatchErr("dispatch: all keys exhausted")
 )
 
 // logDispatchPreflightRejection is the shared writer for pre-upstream

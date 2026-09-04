@@ -169,6 +169,32 @@ func (ix *DimensionIndex) MarkNode(qr *QueuedRequest, cred CredentialRef, now ti
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	entries := ix.byReq[qr.ID]
+	credentialKey := dimensionKey(DimensionCredential, strconv.Itoa(cred.CredentialID))
+	providerKey := ""
+	if cred.ProviderID > 0 {
+		providerKey = dimensionKey(DimensionProvider, strconv.Itoa(cred.ProviderID))
+	}
+	keys := []string{credentialKey}
+	if providerKey != "" {
+		keys = append(keys, providerKey)
+	}
+	missing := 0
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if _, ok := ix.rings[key]; !ok {
+			missing++
+		}
+	}
+	if len(ix.rings)+missing > ix.cfg.MaxKeys {
+		return
+	}
+	if len(entries) == 0 && len(ix.byReq) >= ix.cfg.MaxKeys*4 {
+		return
+	}
 	for _, e := range entries {
 		e.State = DimensionStateInFlight
 		e.StartedAt = now
@@ -176,35 +202,15 @@ func (ix *DimensionIndex) MarkNode(qr *QueuedRequest, cred CredentialRef, now ti
 		e.Attempts = qr.AttemptCount
 	}
 	node := &DimensionEntry{
-		RequestID:    qr.ID,
-		TenantID:     qr.TenantID,
-		SessionID:    qr.SessionID,
-		Model:        qr.ResolvedModel,
-		CredentialID: cred.CredentialID,
-		ProviderID:   cred.ProviderID,
-		Vendor:       cred.Vendor,
-		State:        DimensionStateInFlight,
-		Attempts:     qr.AttemptCount,
-		Class:        qr.requestClass(),
-		EnqueuedAt:   now,
-		StartedAt:    now,
+		RequestID: qr.ID, TenantID: qr.TenantID, SessionID: qr.SessionID,
+		Model: qr.ResolvedModel, CredentialID: cred.CredentialID, ProviderID: cred.ProviderID,
+		Vendor: cred.Vendor, State: DimensionStateInFlight, Attempts: qr.AttemptCount,
+		Class: qr.requestClass(), EnqueuedAt: now, StartedAt: now,
 	}
-	ix.insertLocked(node, dimensionKey(DimensionCredential, strconv.Itoa(cred.CredentialID)))
-	if cred.ProviderID > 0 {
-		ix.insertLocked(&DimensionEntry{
-			RequestID:    qr.ID,
-			TenantID:     qr.TenantID,
-			SessionID:    qr.SessionID,
-			Model:        qr.ResolvedModel,
-			CredentialID: cred.CredentialID,
-			ProviderID:   cred.ProviderID,
-			Vendor:       cred.Vendor,
-			State:        DimensionStateInFlight,
-			Attempts:     qr.AttemptCount,
-			Class:        qr.requestClass(),
-			EnqueuedAt:   now,
-			StartedAt:    now,
-		}, dimensionKey(DimensionProvider, strconv.Itoa(cred.ProviderID)))
+	ix.insertLocked(node, credentialKey)
+	if providerKey != "" {
+		providerEntry := *node
+		ix.insertLocked(&providerEntry, providerKey)
 	}
 }
 
@@ -227,11 +233,12 @@ func (ix *DimensionIndex) Complete(qr *QueuedRequest, out ForwardOutcome, now ti
 		if terminalKind == "" && out.Err != nil {
 			terminalKind = classifyError(out.Err)
 		}
+		cred := qr.selectedCredential()
 		qr.recordDecision(JournalEntry{
 			Model:        qr.ResolvedModel,
-			CredentialID: qr.SelectedCred.CredentialID,
-			ProviderID:   qr.SelectedCred.ProviderID,
-			Vendor:       qr.SelectedCred.Vendor,
+			CredentialID: cred.CredentialID,
+			ProviderID:   cred.ProviderID,
+			Vendor:       cred.Vendor,
 			Action:       terminalActionOf(out),
 			ErrorKind:    terminalKind,
 			HTTPStatus:   out.HTTPStatus,
@@ -242,12 +249,16 @@ func (ix *DimensionIndex) Complete(qr *QueuedRequest, out ForwardOutcome, now ti
 	if out.Err != nil {
 		outcome = "failure"
 	}
+	terminalKind := out.ErrorKind
+	if terminalKind == "" && out.Err != nil {
+		terminalKind = classifyError(out.Err)
+	}
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	for _, e := range ix.byReq[qr.ID] {
 		e.State = DimensionStateCompleted
 		e.Outcome = outcome
-		e.ErrorKind = out.ErrorKind
+		e.ErrorKind = terminalKind
 		e.Attempts = qr.AttemptCount
 		e.CompletedAt = now
 		e.LastUpdated = now
@@ -318,17 +329,16 @@ func (ix *DimensionIndex) trimRingLocked(key string, ring *dimensionRing) {
 	now := time.Now()
 	limit := ix.cfg.PerKeyCapacity
 	evicted := 0
-	// First pass: drop expired heads (they are the oldest).
-	for len(ring.entries) > 0 {
-		e := ring.entries[0]
+	kept := ring.entries[:0]
+	for _, e := range ring.entries {
 		if !e.ExpiresAt.IsZero() && now.After(e.ExpiresAt) {
 			ix.dropEntryLocked(e)
-			ring.entries = ring.entries[1:]
 			evicted++
 			continue
 		}
-		break
+		kept = append(kept, e)
 	}
+	ring.entries = kept
 	for len(ring.entries) > limit {
 		ix.dropEntryLocked(ring.entries[0])
 		ring.entries = ring.entries[1:]
