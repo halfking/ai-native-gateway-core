@@ -439,7 +439,7 @@ async function save() {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.28);
-  z-index: 1100;
+  z-index: 9999;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -467,11 +467,17 @@ async function save() {
   color: var(--kx-text);
 }
 .cs-confirm-panel {
-  margin-bottom: 14px;
-  padding: 12px;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 10000;
+  width: min(420px, 88vw);
+  padding: 16px;
   border-radius: 8px;
   border: 1px solid var(--kx-danger);
-  background: rgba(220, 38, 38, 0.08);
+  background: var(--kx-surface);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
 }
 .cs-confirm-title {
   margin: 0 0 6px;
