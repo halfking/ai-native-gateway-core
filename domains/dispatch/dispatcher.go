@@ -37,7 +37,7 @@ func (p *Pipeline) dispatch(qr *QueuedRequest) {
 	qr.SetT4_ModelDequeued()
 
 	// Resolve model (auto / empty → concrete).
-	if qr.ResolvedModel == "" {
+	if qr.resolvedModel() == "" {
 		resolved, alts, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, nil)
 		if err != nil || resolved == "" {
 			slog.Debug("dispatch: model resolve failed",
@@ -47,7 +47,7 @@ func (p *Pipeline) dispatch(qr *QueuedRequest) {
 			p.complete(qr, ForwardOutcome{Err: ErrNoRoute})
 			return
 		}
-		qr.ResolvedModel = resolved
+		qr.setResolvedModel(resolved)
 		if len(qr.ModelAlternatives) == 0 && len(alts) > 0 {
 			qr.ModelAlternatives = append([]string(nil), alts...)
 		}
@@ -245,7 +245,7 @@ func (p *Pipeline) modelChangeCandidates(qr *QueuedRequest) []string {
 }
 
 func (p *Pipeline) selectCredential(qr *QueuedRequest, ref CredentialRef) {
-	qr.SelectedCred = ref
+	qr.setSelectedCredential(ref)
 	qr.vendor = ref.Vendor
 	if qr.InitialProviderID == 0 {
 		qr.InitialProviderID = ref.ProviderID
