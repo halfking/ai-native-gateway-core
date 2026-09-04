@@ -11,22 +11,39 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/monitoring"
+	"github.com/kaixuan/llm-gateway-go/storage"
 )
 
 // SessionCacheV2 is the V2 cache architecture that reads from session_turns
 //
-// Cache Levels:
+// 层级链路（Task 3.1 双模式存储架构，读路径 L1 → L1.5 → L2 → L3）：
 //
-//	L0: Turn delta storage (incremental messages in session_bodies)
-//	L1: Compression metadata cache (in-memory LRU, no full body)
-//	L2: Governance cache (Redis, verdicts only)
-//	L3: Cold start (read from session_turns, not request_logs)
+//	L0:   Turn delta storage (incremental messages in session_bodies)
+//	L1:   CompressionMetaCache — 进程内 LRU，只存压缩元数据（无完整 body）
+//	L1.5: FileCache — 本地磁盘上的 SessionStateV2 快照，进程重启后仍可命中；
+//	      仅 lite 模式在读路径上使用（full 模式即使注入了 l1_5 也不读它）
+//	L2:   RedisGovernanceCache — Redis 治理元数据（verdicts only）；
+//	      仅 full 模式使用，lite 模式跳过（lite = SQLite + File + Memory，无 Redis）
+//	L3:   SessionTurnsReader — 冷启动回源（读 session_turns，不是 request_logs）
+//
+// 存储模式（storage.StorageMode，经 effectiveMode 归一化）：
+//   - full（默认；零值与未知值都归一化为 full）：读 L1→L2→L3，写 L1+L2，
+//     L3 命中后回填 L1 与 L2。与历史 NewSessionCacheV2 行为等价。
+//   - lite：读 L1→L1.5→L3，写 L1+L1.5，L3 命中后回填 L1 与 L1.5，不触碰 L2。
+//
+// Invalidate/Delete 与模式无关：只要对应层非空就逐层失效（L1、L1.5、L2），
+// 保证模式切换后不会有任何一层残留脏数据。
 //
 // This replaces the legacy SessionCache which reads from request_logs.
 type SessionCacheV2 struct {
-	l1 *CompressionMetaCache
-	l2 *RedisGovernanceCache
-	l3 *SessionTurnsReader
+	l1   *CompressionMetaCache
+	l1_5 *FileCache            // L1.5 本地文件缓存（lite 模式），nil 表示未装配
+	l2   *RedisGovernanceCache // L2 Redis 治理缓存（full 模式），nil 表示未装配
+	l3   *SessionTurnsReader
+
+	mode storage.StorageMode // 零值视为 full（见 effectiveMode）
 
 	db *pgxpool.Pool
 }
@@ -46,6 +63,46 @@ func NewSessionCacheV2(db *pgxpool.Pool, redisAddr string, redisDB int) *Session
 		l3: NewSessionTurnsReader(db),
 		db: db,
 	}
+}
+
+// NewSessionCacheV2WithMode is the mode-aware assembly entry point for the
+// dual-mode storage architecture (Task 3.1). It reuses NewSessionCacheV2 and
+// then applies mode + L1.5 wiring, so the legacy constructor stays untouched.
+//
+//   - mode == StorageModeLite：l2 置空（lite 部署无 Redis），l1_5 使用 fileCache
+//     （可为 nil，此时 lite 退化为 L1 → L3）。
+//   - mode == StorageModeFull 或零值：行为与 NewSessionCacheV2 等价；fileCache
+//     可为 nil（full 模式不使用 L1.5）。
+func NewSessionCacheV2WithMode(db *pgxpool.Pool, redisAddr string, redisDB int, mode storage.StorageMode, fileCache *FileCache) *SessionCacheV2 {
+	c := NewSessionCacheV2(db, redisAddr, redisDB)
+	if c == nil {
+		return nil
+	}
+	c.SetFileCache(fileCache, mode)
+	return c
+}
+
+// SetFileCache 装配（或替换）L1.5 文件缓存并切换存储模式。仅供启动装配阶段
+// 调用：它不加锁地改写 c 的字段，不能与在途请求并发。
+// lite 模式会同时摘除 L2（Redis），保证 lite 部署不产生任何 Redis 访问。
+func (c *SessionCacheV2) SetFileCache(fc *FileCache, mode storage.StorageMode) {
+	if c == nil {
+		return
+	}
+	c.mode = mode
+	c.l1_5 = fc
+	if c.effectiveMode() == storage.StorageModeLite {
+		c.l2 = nil
+	}
+}
+
+// effectiveMode 归一化存储模式：零值与未知值都视为 full，保证由
+// NewSessionCacheV2 构造（mode 未设置）的缓存保持历史 full 语义。
+func (c *SessionCacheV2) effectiveMode() storage.StorageMode {
+	if c == nil || c.mode != storage.StorageModeLite {
+		return storage.StorageModeFull
+	}
+	return c.mode
 }
 
 // Close releases the underlying L2 Redis connection pool. Safe to call on a
@@ -104,22 +161,50 @@ type GovernanceMeta struct {
 	SensitiveDetected    bool
 }
 
-// Get retrieves session state from cache hierarchy (L1 → L2 → L3)
+// Get retrieves session state from cache hierarchy
+// (L1 → [lite: L1.5] → [full: L2] → L3, backfills warmer tiers on L3 hit)
 func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*SessionStateV2, error) {
 	if c == nil {
 		return nil, nil
 	}
 	if c.l1 != nil {
 		if state := c.l1.Get(tenantID, sessionID); state != nil {
+			monitoring.Default().RecordL1Hit()
 			slog.DebugContext(ctx, "cache v2 l1 hit", "session_id", sessionID)
 			return state, nil
 		}
+		monitoring.Default().RecordL1Miss()
 	}
 
+	// L1.5 (local file snapshot, lite mode only). 未命中/过期/损坏统一返回包装
+	// errCacheMiss 的错误，按缓存未命中继续回源；其他错误记日志后同样放行
+	// （缓存层 fail-open，绝不阻断主链路）。
+	if c.effectiveMode() == storage.StorageModeLite && c.l1_5 != nil {
+		if state, err := c.l1_5.Get(tenantID, sessionID); err == nil && state != nil {
+			monitoring.Default().RecordL15Hit()
+			if c.l1 != nil {
+				c.l1.Set(state)
+			}
+			slog.DebugContext(ctx, "cache v2 l1.5 hit", "session_id", sessionID)
+			return state, nil
+		} else {
+			monitoring.Default().RecordL15Miss()
+			if err != nil && !errors.Is(err, errCacheMiss) {
+				slog.WarnContext(ctx, "cache v2 l1.5 get failed", "session_id", sessionID, "error", err)
+			}
+		}
+	}
+
+	// L2 (Redis governance metadata, full mode only; lite skips Redis entirely).
 	var govMeta *GovernanceMeta
-	if c.l2 != nil {
+	if c.effectiveMode() == storage.StorageModeFull && c.l2 != nil {
 		var err error
 		govMeta, err = c.l2.Get(ctx, tenantID, sessionID)
+		if govMeta != nil {
+			monitoring.Default().RecordL2Hit()
+		} else {
+			monitoring.Default().RecordL2Miss()
+		}
 		if err != nil {
 			slog.WarnContext(ctx, "cache v2 l2 miss", "session_id", sessionID, "error", err)
 		}
@@ -128,7 +213,9 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		return nil, nil
 	}
 
+	l3Start := time.Now()
 	state, err := c.l3.LoadState(ctx, tenantID, sessionID)
+	monitoring.Default().RecordL3Query(time.Since(l3Start))
 	if err != nil {
 		return nil, fmt.Errorf("cache v2 l3 load failed: %w", err)
 	}
@@ -142,18 +229,40 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 	if c.l1 != nil {
 		c.l1.Set(state)
 	}
+	// 回填更热的层，让下一个请求不必再冷启动：
+	//   lite + l1_5 → 回填 L1.5；full + l2 → 回填 L2。
+	if c.effectiveMode() == storage.StorageModeLite && c.l1_5 != nil {
+		if err := c.l1_5.Set(state); err != nil {
+			slog.WarnContext(ctx, "cache v2 l1.5 backfill failed", "session_id", sessionID, "error", err)
+		}
+	}
+	if c.effectiveMode() == storage.StorageModeFull && c.l2 != nil {
+		if err := c.l2.Set(ctx, state.TenantID, state.SessionID, &state.GovernanceMeta); err != nil {
+			slog.WarnContext(ctx, "cache v2 l2 backfill failed", "session_id", sessionID, "error", err)
+		}
+	}
 	slog.DebugContext(ctx, "cache v2 l3 loaded", "session_id", sessionID)
 	return state, nil
 }
 
-// Set updates cache at all levels. A nil state is a no-op (see
-// CompressionMetaCache.Set) rather than a nil-deref on state.TenantID.
+// Set updates the cache at the tiers selected by mode:
+// full → L1 + L2(Redis 治理元数据)；lite → L1 + L1.5(文件快照)。
+// A nil state is a no-op (see CompressionMetaCache.Set) rather than a
+// nil-deref on state.TenantID. 缓存层 fail-open：下层写失败只记日志。
 func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
 	if c == nil || state == nil {
 		return nil
 	}
 	if c.l1 != nil {
 		c.l1.Set(state)
+	}
+	if c.effectiveMode() == storage.StorageModeLite {
+		if c.l1_5 != nil {
+			if err := c.l1_5.Set(state); err != nil {
+				slog.WarnContext(ctx, "cache v2 l1.5 set failed", "session_id", state.SessionID, "error", err)
+			}
+		}
+		return nil
 	}
 	if c.l2 == nil {
 		return nil
@@ -165,13 +274,20 @@ func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
 	return nil
 }
 
-// Invalidate removes session from all cache levels
+// Invalidate removes the session from every non-nil cache tier (L1, L1.5, L2).
+// 失效与 mode 无关：残留任何一层都会让下一次 Get 读到已被删除的状态，
+// 因此逐层尽力失效；L1.5 失败只记日志（fail-open），L2 的错误照历史语义返回。
 func (c *SessionCacheV2) Invalidate(ctx context.Context, tenantID, sessionID string) error {
 	if c == nil {
 		return nil
 	}
 	if c.l1 != nil {
 		c.l1.Delete(tenantID, sessionID)
+	}
+	if c.l1_5 != nil {
+		if err := c.l1_5.Delete(tenantID, sessionID); err != nil {
+			slog.WarnContext(ctx, "cache v2 l1.5 delete failed", "session_id", sessionID, "error", err)
+		}
 	}
 	if c.l2 == nil {
 		return nil

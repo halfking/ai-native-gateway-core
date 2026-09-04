@@ -32,7 +32,14 @@ RUN go mod download
 COPY . .
 
 # 编译
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=mod -o /app/bin/llm-gateway ./cmd/gateway
+# 2026-09-05: 双模式存储架构引入 mattn/go-sqlite3（CGO 包，lite 模式必需）。
+#   - 显式安装 gcc/musl-dev 保证 C 工具链存在（部分精简 golang-alpine 镜像不含）；
+#   - CGO_ENABLED=1：CGO_ENABLED=0 构建会在编译期直接失败（go-sqlite3 无 cgo 存根
+#     不含 SQLiteConn.Exec 等）。sqlite3.c 由 go-sqlite3 静态编入二进制，
+#     运行时仅动态依赖 musl libc，与 alpine:3.22 运行时兼容。
+#   - full 模式行为不受影响（SQLite 驱动不会被打开）。
+RUN apk --no-cache add gcc musl-dev \
+    && CGO_ENABLED=1 GOOS=linux go build -mod=mod -o /app/bin/llm-gateway ./cmd/gateway
 
 # 运行阶段
 # Compose the digest-pinned reference when the CI-provided digest is

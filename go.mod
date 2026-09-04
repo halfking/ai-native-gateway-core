@@ -19,6 +19,7 @@ require (
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/labstack/echo/v4 v4.15.4
 	github.com/lib/pq v1.12.3
+	github.com/mattn/go-sqlite3 v1.14.22
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
 	github.com/pashagolub/pgxmock/v4 v4.9.0
 	github.com/prometheus/client_golang v1.20.5

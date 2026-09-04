@@ -46,3 +46,49 @@ request_survival_max_active_tasks_per_tenant: 100
 # Empty allowlist = all tenants once enabled; set tenants for canary rollout.
 # request_survival_tenant_allowlist:
 #   - "alpha"
+
+# ── 双模式存储架构（storage）─────────────────────────────────────────────
+# 网关支持两种存储后端，通过 storage_mode 切换：
+#
+#   1. full 模式（生产/多实例部署）：PostgreSQL + Redis，全部状态落外部
+#      数据库，支持水平扩展与蓝绿发布。明细配置在 full_storage 段，
+#      postgres_url 与 redis_url 为必填项。
+#   2. lite 模式（单机/轻量部署）：SQLite 数据库 + 本地文件目录，零外部
+#      依赖，开箱即用。明细配置在 lite_storage 段，sqlite_path 为必填项，
+#      其余字段缺省时自动采用下列默认值。
+#
+# 切换方法：修改本文件的 storage_mode，或设置环境变量
+# LLM_GATEWAY_STORAGE_MODE=full|lite（各明细字段也有对应的
+# LLM_GATEWAY_* 环境变量，见 config/storage.go 的 env tag）。
+# 模式切换后需重启网关进程生效；从 lite 迁移到 full 时请先完成
+# 数据迁移（sqlite → postgres），详见现有部署文档。
+# 默认 full（生产安全默认值）：本文件会被复制为镜像内的 config.yaml，
+# 误设为 lite 会静默禁用 PostgreSQL。本地开发请显式改为 "lite"
+# 或设置 LLM_GATEWAY_STORAGE_MODE=lite。
+storage_mode: "full"
+
+# full 模式明细（storage_mode=full 时必填 postgres_url 与 redis_url）。
+full_storage:
+  postgres_url: "postgres://user:password@127.0.0.1:5432/llm_gateway?sslmode=disable"
+  redis_url: "redis://127.0.0.1:6379/2"
+  # 连接池上限；<=0 时默认 100。
+  max_connections: 100
+
+# lite 模式明细（storage_mode=lite 时必填 sqlite_path，其余为默认值示例）。
+lite_storage:
+  sqlite_path: "./data/llm-gateway.db"
+  bodies_dir: "./data/session_bodies"
+  cache_dir: "./data/cache"
+  logs_dir: "./data/request_logs"
+  sqlite_pragmas:
+    journal_mode: "WAL"
+    cache_size_kb: 64000
+    synchronous: "NORMAL"
+    busy_timeout_ms: 5000
+  cache_ttl_hours: 24
+  cache_max_size_gb: 10
+  async_writers: 4
+  retention:
+    session_bodies_days: 30
+    request_logs_days: 7
+    cache_hours: 24
