@@ -262,6 +262,8 @@ type pendingSelection struct {
 	canonicalID   *int64 // as written at decision time; nil on cache-reuse path
 	ts            time.Time
 
+	storageTier string
+
 	// From request_logs_hot; nil when the request was never logged.
 	success   *bool
 	latencyMs *int
@@ -301,30 +303,43 @@ func (w *AutoRouteSettleWorker) settleBatch(
 	// sequential calls is N requests, not N-1 retries. Earlier code made that
 	// mistake and penalised healthy conversation flows.
 	rows, qErr := w.db.Query(ctx, `
-		SELECT s.id, s.partition_date, s.request_id, s.task_type, s.canonical_id, s.ts,
-		       rl.success, rl.latency_ms, rl.cost_usd,
-		       rl.canonical_id        AS rl_canonical_id,
-		       LEFT(rl.tenant_id, 64) AS rl_tenant_id,
-		       ss.health_score, ss.error_count, ss.request_count,
-		       mr.model_reqs, mr.retry_count
-		FROM auto_route_selections s
-		LEFT JOIN request_logs_hot rl
-		       ON rl.request_id = s.request_id
-		LEFT JOIN session_summaries ss
-		       ON ss.session_key = s.session_id
-		LEFT JOIN LATERAL (
-		       SELECT COUNT(*)::int AS model_reqs,
-		              SUM(GREATEST(COALESCE(jsonb_array_length(r2.routing_attempts), 1) - 1, 0))::int AS retry_count
-		       FROM request_logs_hot r2
-		       WHERE s.session_id IS NOT NULL
-		         AND r2.gw_session_id = s.session_id
-		         AND s.canonical_id IS NOT NULL
-		         AND r2.canonical_id = s.canonical_id
-		) mr ON TRUE
-		WHERE s.settled_at IS NULL
-		  AND s.ts < NOW() - $1::interval
-		ORDER BY s.ts
-		LIMIT $2
+			SELECT s.id, s.partition_date, s.request_id, s.task_type, s.canonical_id, s.ts,
+			       rl.success, rl.latency_ms, rl.cost_usd,
+			       rl.canonical_id        AS rl_canonical_id,
+			       LEFT(rl.tenant_id, 64) AS rl_tenant_id,
+			       ss.health_score, ss.error_count, ss.request_count,
+			       mr.model_reqs, mr.retry_count, s.storage_tier
+			FROM (
+				SELECT id, partition_date, request_id, task_type, canonical_id, ts, session_id, storage_tier
+				FROM (
+					SELECT id, partition_date, request_id, task_type, canonical_id, ts, session_id, 'hot'::text AS storage_tier
+					FROM auto_route_selections_hot
+					WHERE settled_at IS NULL AND ts < NOW() - $1::interval
+					UNION ALL
+					SELECT p.id, p.partition_date, p.request_id, p.task_type, p.canonical_id, p.ts, p.session_id, 'parent'::text AS storage_tier
+					FROM auto_route_selections p
+					WHERE p.settled_at IS NULL AND p.ts < NOW() - $1::interval
+					  AND NOT EXISTS (
+						SELECT 1 FROM auto_route_selections_hot h
+						WHERE h.id = p.id AND h.partition_date = p.partition_date
+					  )
+				) pending
+				ORDER BY CASE WHEN storage_tier = 'hot' THEN 0 ELSE 1 END, ts
+				LIMIT $2
+			) s
+			LEFT JOIN request_logs_hot rl
+			       ON rl.request_id = s.request_id
+			LEFT JOIN session_summaries ss
+			       ON ss.session_key = s.session_id
+			LEFT JOIN LATERAL (
+			       SELECT COUNT(*)::int AS model_reqs,
+			              SUM(GREATEST(COALESCE(jsonb_array_length(r2.routing_attempts), 1) - 1, 0))::int AS retry_count
+			       FROM request_logs_hot r2
+			       WHERE s.session_id IS NOT NULL
+			         AND r2.gw_session_id = s.session_id
+			         AND s.canonical_id IS NOT NULL
+			         AND r2.canonical_id = s.canonical_id
+			) mr ON TRUE
 	`, settleDelay.String(), settleBatchSize)
 	if qErr != nil {
 		return 0, 0, qErr
@@ -340,7 +355,7 @@ func (w *AutoRouteSettleWorker) settleBatch(
 			&p.success, &p.latencyMs, &p.costUSD,
 			&p.rlCanonicalID, &p.rlTenantID,
 			&p.sessionHealth, &p.sessionErrors, &p.sessionReqs,
-			&p.modelReqsInSes, &p.retryCount,
+			&p.modelReqsInSes, &p.retryCount, &p.storageTier,
 		); scanErr != nil {
 			return 0, 0, scanErr
 		}
@@ -457,8 +472,12 @@ func (w *AutoRouteSettleWorker) writeReward(
 	// later write from a non-null decision never gets overwritten by a NULL
 	// from request_logs_hot (e.g. legacy rows written before canonical_id was
 	// a populated column).
+	table := "auto_route_selections"
+	if p.storageTier == "hot" {
+		table = "auto_route_selections_hot"
+	}
 	_, err := w.db.Exec(ctx, `
-		UPDATE auto_route_selections
+		UPDATE `+table+`
 		SET success       = $1,
 		    latency_ms    = $2,
 		    cost_usd      = $3,
@@ -477,8 +496,12 @@ func (w *AutoRouteSettleWorker) writeReward(
 // abandon stamps a row settled with no reward, so it stops being scanned and is
 // excluded from learning (the affinity rollup requires reward IS NOT NULL).
 func (w *AutoRouteSettleWorker) abandon(ctx context.Context, p pendingSelection) error {
+	table := "auto_route_selections"
+	if p.storageTier == "hot" {
+		table = "auto_route_selections_hot"
+	}
 	_, err := w.db.Exec(ctx, `
-		UPDATE auto_route_selections
+		UPDATE `+table+`
 		SET settled_at = NOW(), reward_source = 'request'
 		WHERE id = $1 AND partition_date = $2 AND settled_at IS NULL
 	`, p.id, p.partitionDate)

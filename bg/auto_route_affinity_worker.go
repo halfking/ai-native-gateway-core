@@ -201,7 +201,7 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		       COALESCE(AVG(s.cost_usd), 0),
 		       COALESCE(AVG(ss.health_score), 0),
 		       AVG(s.reward)
-		FROM auto_route_selections s
+		FROM auto_route_selections_all s
 		LEFT JOIN session_summaries ss
 		       ON ss.session_key = s.session_id
 		WHERE s.reward IS NOT NULL

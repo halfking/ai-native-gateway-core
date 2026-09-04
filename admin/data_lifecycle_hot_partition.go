@@ -43,6 +43,7 @@ var hotPromoteTableMap = map[string]string{
 	"handoff_logs_hot":              "promote_handoff_logs_hot_to_partition",
 	"session_module_executions_hot": "promote_session_module_executions_hot_to_partition",
 	"dashboard_access_events_hot":   "promote_dashboard_access_events_hot_to_partition",
+	"auto_route_selections_hot":     "promote_auto_route_selections_hot_to_partition",
 }
 
 // HotJobStatus 状态枚举

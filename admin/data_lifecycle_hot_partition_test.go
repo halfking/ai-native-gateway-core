@@ -193,6 +193,7 @@ func TestHotPromoteTableMap(t *testing.T) {
 		"handoff_logs_hot",
 		"session_module_executions_hot",
 		"dashboard_access_events_hot",
+		"auto_route_selections_hot",
 	}
 	for _, name := range expected {
 		if _, ok := hotPromoteTableMap[name]; !ok {

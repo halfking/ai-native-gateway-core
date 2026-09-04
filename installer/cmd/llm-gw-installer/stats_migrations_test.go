@@ -66,6 +66,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"647_goal_client_signal.sql":                                       goalClientSignalMigration647,
 		"649_routing_analytics_probe_filter.sql":                           routingAnalyticsProbeFilterMigration649,
 		"650_auto_route_selection_treatment_attribution.sql":               autoRouteSelectionTreatmentAttributionMigration650,
+		"655_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration655,
 	}
 
 	for name, embedded := range expected {
