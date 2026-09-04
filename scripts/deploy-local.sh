@@ -531,7 +531,22 @@ migrate_database() {
   apply_schema_if_empty
   export LLM_GATEWAY_DATABASE_URL DATABASE_URL
   local migrate_log="$RUN_DIR/gateway-migrate.log"
+  local revision_log="$RUN_DIR/db-revision-sequence.log"
   mkdir -p "$RUN_DIR"
+
+  # Apply the explicitly scoped repair set before the application migration
+  # path. This covers SQL files that db.Open() does not scan, while preserving
+  # the existing Go ensure chain for startup compatibility.
+  if ! LLM_GATEWAY_PG_CONTAINER="${DL_PG_CONTAINER:-}" \
+       LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}" \
+       LLM_GATEWAY_PG_PASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" \
+       LLM_GATEWAY_PG_DATABASE="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" \
+       bash "$PROJECT_ROOT/scripts/apply-db-revision-sequence.sh" >"$revision_log" 2>&1; then
+    printf '[deploy-local] error: database revision sequence failed; full output: %s\n' "$revision_log" >&2
+    sed 's/^/    /' "$revision_log" >&2 || true
+    return 1
+  fi
+
   if [[ "${DL_DOCKER:-0}" == 1 ]]; then
     if (cd "$PROJECT_ROOT" && go run ./cmd/gateway migrate >"$migrate_log"); then
       return 0

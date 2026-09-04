@@ -2,10 +2,10 @@
 -- in pg log on 2026-09-03 across the local + 252 paths.
 --
 -- Each section below fixes one (or a closely related family of) ERROR
--- lines from the live pg log. None of these changes require a Go
--- code update; they are additive DDL or one-time data refreshes and
--- are safe to run on every deployment that already has migration 642
--- applied.
+-- lines from the live pg log. The migration is safe to retry after its
+-- object and data preconditions pass; it does not create unrelated tables.
+-- It is intended for databases that already have the candidate-failure and
+-- self-check foundations used by the Gateway.
 --
 -- Sections covered:
 --   A. Re-populate the four materialized views that
@@ -43,16 +43,11 @@
 --      its plan cache and pg_class dependencies are rebuilt against
 --      the current columnar metadata.
 --
---   D. Sanitize malformed JSON before insert into
---      model_integrity_events. Upstream clients occasionally send
---      payloads containing a literal backslash that fails the jsonb
---      typecast. Rather than rejecting the row (which would lose
---      audit signal), a BEFORE INSERT trigger rewrites the
---      payload columns so the literal-backslash case is escaped
---      to a valid JSON string and the row lands. Real corruption is
---      still possible (e.g. unbalanced quotes); the trigger is a
---      last-resort sanitizer, not a substitute for upstream
---      validation.
+--   D. Align model_integrity_events JSON handling with the canonical writer.
+--      The table stores JSONB in context; Go writers validate and bind JSON
+--      as text before casting. A BEFORE INSERT trigger cannot repair a cast
+--      that fails before trigger execution, so this migration does not add a
+--      regex sanitizer or dereference non-existent payload columns.
 
 BEGIN;
 
@@ -97,10 +92,13 @@ $$;
 --
 -- Note: 'fallback_%' is preserved via LIKE; the explicit list and
 -- LIKE are joined by OR. NULL is still allowed (legacy rows).
-ALTER TABLE public.self_check_runs DROP CONSTRAINT IF EXISTS self_check_runs_selection_strategy_check;
+DO $$
+BEGIN
+    IF to_regclass('public.self_check_runs') IS NOT NULL THEN
+        ALTER TABLE public.self_check_runs DROP CONSTRAINT IF EXISTS self_check_runs_selection_strategy_check;
 
-ALTER TABLE public.self_check_runs
-    ADD CONSTRAINT self_check_runs_selection_strategy_check CHECK (
+        ALTER TABLE public.self_check_runs
+            ADD CONSTRAINT self_check_runs_selection_strategy_check CHECK (
         selection_strategy IS NULL
         OR selection_strategy LIKE 'fallback_%'
         OR selection_strategy = ANY (ARRAY[
@@ -116,6 +114,9 @@ ALTER TABLE public.self_check_runs
 
 COMMENT ON CONSTRAINT self_check_runs_selection_strategy_check ON public.self_check_runs IS
 'Canonical taxonomy per deploy/sql/migrations/V361__self_check_runs_canonical_taxonomy.sql. NULL is reserved for legacy rows. Migration 644 aligns the runtime CHECK with the canonical list.';
+    END IF;
+END
+$$;
 
 -- ── C. Recreate candidate_failure_logs_unified ─────────────────────────────
 -- The view UNION ALLs the hot window with the partitioned parent.
@@ -251,53 +252,31 @@ EXCEPTION WHEN OTHERS THEN
 END
 $$;
 
--- ── D. model_integrity_events JSON sanitizer trigger ─────────────────────
--- The table stores one JSON-bearing column, context. Keep the sanitizer
--- aligned with the canonical schema; request_payload/response_payload belong
--- to other tables and must not be dereferenced from this trigger.
-CREATE OR REPLACE FUNCTION public.sanitize_model_integrity_jsonb()
-RETURNS TRIGGER AS $$
-DECLARE
-    v_text text;
-BEGIN
-    IF NEW.context IS NOT NULL THEN
-        v_text := NEW.context::text;
-        IF v_text ~ '\\(?![bfnrtu"/\\])' THEN
-            v_text := regexp_replace(v_text, '\\(?![bfnrtu"/\\])', '\\u005c', 'g');
-            BEGIN
-                NEW.context := v_text::jsonb;
-            EXCEPTION WHEN others THEN
-                RAISE NOTICE 'Migration 644: invalid context JSON left unchanged';
-            END;
-        END IF;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-
-DROP TRIGGER IF EXISTS trg_model_integrity_events_sanitize_jsonb
-    ON public.model_integrity_events;
-
--- Only attach the trigger if the table actually has jsonb columns.
+-- ── D. model_integrity_events JSON contract ──────────────────────────────
+-- The table stores one JSON-bearing column, context. JSON is validated and
+-- bound as text by the Go writers before the cast; a BEFORE trigger cannot
+-- repair a cast that fails before trigger execution. Do not add a regex-based
+-- sanitizer here: PostgreSQL ARE does not support PCRE lookahead and the old
+-- request_payload/response_payload references were not columns of this table.
+-- Keep this migration limited to an idempotent trigger cleanup on installations
+-- where the table exists; no trigger is installed when the canonical table is
+-- absent or has no context column.
 DO $$
 BEGIN
-    IF EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'model_integrity_events'
-          AND data_type = 'jsonb'
-    ) THEN
-        EXECUTE $SQL$
-            CREATE TRIGGER trg_model_integrity_events_sanitize_jsonb
-                BEFORE INSERT ON public.model_integrity_events
-                FOR EACH ROW
-                EXECUTE FUNCTION public.sanitize_model_integrity_jsonb()
-        $SQL$;
-        RAISE NOTICE 'Migration 644: attached sanitize trigger to model_integrity_events';
+    IF to_regclass('public.model_integrity_events') IS NOT NULL
+       AND EXISTS (
+           SELECT 1
+           FROM information_schema.columns
+           WHERE table_schema = 'public'
+             AND table_name = 'model_integrity_events'
+             AND column_name = 'context'
+             AND data_type = 'jsonb'
+       ) THEN
+        DROP TRIGGER IF EXISTS trg_model_integrity_events_sanitize_jsonb
+            ON public.model_integrity_events;
+        RAISE NOTICE 'Migration 644: model_integrity_events context JSON is validated by writers';
     ELSE
-        RAISE NOTICE 'Migration 644: model_integrity_events has no jsonb columns, skipping trigger';
+        RAISE NOTICE 'Migration 644: model_integrity_events context column absent, skipping JSON trigger';
     END IF;
 END
 $$;
