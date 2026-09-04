@@ -461,6 +461,8 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 		ResponseMimeType string                `json:"responseMimeType,omitempty"`
 		ResponseSchema   json.RawMessage       `json:"responseSchema,omitempty"`
 		CandidateCount   *int                  `json:"candidateCount,omitempty"`
+		PresencePenalty  *float64              `json:"presencePenalty,omitempty"`
+		FrequencyPenalty *float64              `json:"frequencyPenalty,omitempty"`
 		Seed             *int64                `json:"seed,omitempty"`
 		ThinkingConfig   *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
 	}
@@ -482,6 +484,32 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 	}
 	if gc.CandidateCount != nil {
 		ir.N = *gc.CandidateCount
+	}
+	// 2026-09-05 audit A-#3: GenerationConfig declared these fields but the
+	// parse struct never read them, so they vanished on the Gemini round trip
+	// (same silent-loss shape as the safetySettings fix above).
+	ir.PresencePenalty = gc.PresencePenalty
+	ir.FrequencyPenalty = gc.FrequencyPenalty
+
+	// Unknown generationConfig subfields must not disappear silently: the
+	// top-level whitelist already pulled "generationConfig" out of Extensions,
+	// so without this anomaly the only trace was the raw payload.
+	knownSubfields := map[string]bool{
+		"temperature": true, "topP": true, "topK": true, "maxOutputTokens": true,
+		"stopSequences": true, "responseMimeType": true, "responseSchema": true,
+		"candidateCount": true, "presencePenalty": true, "frequencyPenalty": true,
+		"seed": true, "thinkingConfig": true,
+		// Gemini also documents responseLogprobs / logprobs — parsed upstream
+		// is not wired yet, but they are known fields, not anomalies.
+		"responseLogprobs": true, "logprobs": true,
+	}
+	var rawSubfields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawSubfields); err == nil {
+		for key := range rawSubfields {
+			if !knownSubfields[key] {
+				ReportUnknownField("", ProtocolGeminiGenerate, "generationConfig."+key, nil)
+			}
+		}
 	}
 
 	// Map Gemini responseMimeType/Schema to IR ResponseFormat

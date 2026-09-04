@@ -76,6 +76,14 @@ func (kv *KeyVerifier) SetSnapshotDir(dir string) {
 }
 
 func (kv *KeyVerifier) keyStoreSyncLoop(ctx context.Context, interval time.Duration) {
+	// Panic guard (audit 2026-09-05 G-#1): the sync loop runs for the life of
+	// the process; a panic here would kill the gateway with no persistence
+	// trail (main's recover defer does not cover child goroutines).
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("key store sync loop panic", "recover", rec)
+		}
+	}()
 	if err := kv.keyStoreFullLoad(ctx); err != nil {
 		if ctx.Err() != nil {
 			return
@@ -212,22 +220,30 @@ func (kv *KeyVerifier) keyStoreSyncDelta(ctx context.Context, interval time.Dura
 		return err
 	}
 	removed := 0
-	kv.storeMu.Lock()
+	// Collect DB rows BEFORE taking the write lock (audit 2026-09-05 G-#2):
+	// iterating rows under storeMu serialised every per-request lookupStore
+	// RLock behind a query that can block for up to keyStoreQueryTimeout.
+	// keyStoreFullLoad's collect-then-swap is the house pattern.
+	invalid := make([]string, 0, 64)
 	for invRows.Next() {
 		var hash string
 		if err := invRows.Scan(&hash); err != nil {
 			continue
 		}
+		invalid = append(invalid, hash)
+	}
+	invRows.Close()
+	if err := invRows.Err(); err != nil {
+		return err
+	}
+	kv.storeMu.Lock()
+	for _, hash := range invalid {
 		if _, ok := kv.keyStore[hash]; ok {
 			delete(kv.keyStore, hash)
 			removed++
 		}
 	}
 	kv.storeMu.Unlock()
-	invRows.Close()
-	if err := invRows.Err(); err != nil {
-		return err
-	}
 	if upserted > 0 || removed > 0 {
 		slog.Debug("key store: delta sync", "upserted", upserted, "removed", removed, "total", kv.keyStoreLen())
 	}

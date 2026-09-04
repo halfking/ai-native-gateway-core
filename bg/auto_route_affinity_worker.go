@@ -129,6 +129,13 @@ func (w *AutoRouteAffinityWorker) Stop() {
 }
 
 func (w *AutoRouteAffinityWorker) run(ctx context.Context) {
+	// Panic guard (audit 2026-09-05 G-#1): a sweep panic must not kill the
+	// process; it would also skip close(w.done) below and hang Stop forever.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("auto-route affinity worker panic", "recover", rec)
+		}
+	}()
 	defer close(w.done)
 
 	ticker := time.NewTicker(affinityInterval)

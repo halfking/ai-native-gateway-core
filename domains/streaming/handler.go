@@ -7007,6 +7007,10 @@ type ResourceStatus struct {
 	Connected bool   `json:"connected"`
 	Latency   string `json:"latency,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Mode explains the readiness semantics when the connector is not a live
+	// external dependency: "local" (lite storage: SQLite + local dirs carry
+	// persistence) or "not_required" (optional in this runtime mode).
+	Mode string `json:"mode,omitempty"`
 }
 
 // HealthResponse represents the health check response.
@@ -7036,6 +7040,10 @@ type HealthHandler struct {
 	proxy   *upstreampkg.ProxyResolver
 	db      dbConnector
 	redis   redisConnector
+	// depsOptional marks the lite storage runtime: PostgreSQL is intentionally
+	// bypassed (SQLite + local dirs), so h.db == nil is a configuration fact
+	// rather than an init failure and must not fail readiness forever.
+	depsOptional bool
 	// Runtime identity is included in /version so a proxy can prove that it
 	// switched to the warmed candidate rather than merely seeing a live port.
 	runtimeRole string
@@ -7063,6 +7071,13 @@ func NewHealthHandler(cm *credential.Manager, l *credential.Limiter, proxy *upst
 func (h *HealthHandler) SetRuntimeIdentity(role, listen string) {
 	h.runtimeRole = role
 	h.listen = listen
+}
+
+// SetDepsOptional marks the runtime as lite storage mode (PostgreSQL bypassed).
+// Full mode keeps the historical fail-closed semantics; only the composition
+// root may call this, exactly once at startup.
+func (h *HealthHandler) SetDepsOptional(optional bool) {
+	h.depsOptional = optional
 }
 
 func healthResourceStatus(parent context.Context, connector interface{ Ping(context.Context) error }) *ResourceStatus {
@@ -7216,6 +7231,37 @@ func (h *HealthHandler) serveVersion(w http.ResponseWriter) {
 // 继续 strip，避免向匿名端点泄漏后端错误字符串。
 func (h *HealthHandler) serveReadyz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	// lite storage mode: PostgreSQL is bypassed by design, so readiness is
+	// governed by the optional Redis dependency only (2026-09-05 audit B1 —
+	// previously lite reported not_ready 503 forever).
+	if h.depsOptional {
+		resp := map[string]any{
+			"status":   "ready",
+			"mode":     "lite",
+			"database": &ResourceStatus{Connected: true, Mode: "local"},
+		}
+		if h.redis != nil {
+			redisStatus := healthResourceStatus(r.Context(), h.redis)
+			if redisStatus != nil {
+				redisStatus.Error = ""
+			}
+			resp["redis"] = redisStatus
+			if redisStatus == nil || !redisStatus.Connected {
+				resp["status"] = "not_ready"
+				w.WriteHeader(http.StatusServiceUnavailable)
+				//nolint:errcheck
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+		} else {
+			resp["redis"] = &ResourceStatus{Connected: true, Mode: "not_required"}
+		}
+		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
 	dbStatus := healthResourceStatus(r.Context(), h.db)
 	redisStatus := healthResourceStatus(r.Context(), h.redis)
 	if dbStatus != nil {
@@ -7243,6 +7289,16 @@ func (h *HealthHandler) serveReadyz(w http.ResponseWriter, r *http.Request) {
 
 // dependenciesReady — 内部 helper：DB ping + Redis ping（任一失败返回 false）。
 func (h *HealthHandler) dependenciesReady(r *http.Request) bool {
+	// lite storage mode: the DB is intentionally nil (SQLite + local dirs);
+	// only a configured-but-unreachable Redis blocks readiness (audit B1).
+	if h.depsOptional {
+		if h.redis == nil {
+			return true
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		return h.redis.Ping(ctx) == nil
+	}
 	// DB and Redis are mandatory runtime dependencies. A nil connector means
 	// initialization did not complete and must never be reported as ready.
 	if h.db == nil || h.redis == nil {

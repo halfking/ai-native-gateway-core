@@ -144,6 +144,11 @@ export async function triggerInstantSummary(sessionId: string) {
   return req<Record<string, unknown>>('POST', path, {})
 }
 
+// 2026-09-05 audit F-#1: the backend route behind this call
+// (/api/admin/sessions/<id>/turns/<n>/attachments/<attId>/url) is a hardcoded
+// 404 stub — the HMAC signing link was never wired up. TurnDigestDrawer now
+// streams attachments through GET /api/attachments/{object} instead. Keep this
+// export only until the signing endpoint ships or the stub is removed.
 export async function getAttachmentSignedUrl(
   sessionId: string,
   turnNo: number,
