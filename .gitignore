@@ -266,3 +266,6 @@ gui-test-screenshots/
 /backfill_session_bodies
 /backfill_sessions_v2_v2
 /validate_sessions_v2
+
+# local benchmark build artifacts (cmd/autoclass-bench output)
+/autoclass-bench
