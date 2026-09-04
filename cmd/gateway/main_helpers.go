@@ -120,7 +120,17 @@ func openDBWithBootRetry(ctx context.Context, databaseURL string) *db.DB {
 	deadline := time.Now().Add(budget)
 	var lastErr error
 	for attempt := 1; ; attempt++ {
-		conn, err := db.Open(ctx, databaseURL)
+		remaining := time.Until(deadline)
+		if attempt > 1 && remaining <= 0 {
+			break
+		}
+		attemptCtx := ctx
+		cancel := func() {}
+		if budget > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, remaining)
+		}
+		conn, err := db.Open(attemptCtx, databaseURL)
+		cancel()
 		if err == nil {
 			if attempt > 1 {
 				slog.Info("postgres connected after boot retry", "attempts", attempt)
@@ -128,7 +138,7 @@ func openDBWithBootRetry(ctx context.Context, databaseURL string) *db.DB {
 			return conn
 		}
 		lastErr = err
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) || budget == 0 {
 			break
 		}
 		slog.Warn("postgres unreachable at boot, retrying",

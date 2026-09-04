@@ -253,14 +253,15 @@ func LoadFromEnv() Config {
 	// negative disables the gear (strict fail-closed); the value is capped
 	// at 24h so a typo cannot pin stale routing state forever.
 	if v := os.Getenv("URSM_V2_OUTAGE_GRACE_SECONDS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			if n <= 0 {
-				c.OutageGrace = 0
-			} else if n > 86400 {
-				c.OutageGrace = 24 * time.Hour
-			} else {
-				c.OutageGrace = time.Duration(n) * time.Second
-			}
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			c.loadErr = fmt.Errorf("URSM_V2_OUTAGE_GRACE_SECONDS must be an integer: %w", err)
+		} else if n <= 0 {
+			c.OutageGrace = 0
+		} else if n > 86400 {
+			c.OutageGrace = 24 * time.Hour
+		} else {
+			c.OutageGrace = time.Duration(n) * time.Second
 		}
 	}
 	// Boot-only key schema mode (doc 14 §3). Fail closed on a typo: the

@@ -139,6 +139,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureProviderSoftDelete(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-05 migration 655: session_summaries 表结构对账（memora 覆盖事件
+	// 修复）。触发器 trg_update_session_summary 与 admin 读路径都按 canonical
+	// 列访问该表，缺列时请求日志写入与 /api/admin/sessions/:id/snapshot 等
+	// 端点整体 42703。幂等补列，必须先于任何会话读路径生效。
+	if err := db.ensureSessionSummariesCanonical(migCtx); err != nil {
+		return err
+	}
 	// Routing analytics reads these columns while creating its source view.
 	// Keep this small table-only ensure ahead of the analytics materialized
 	// views; the broader recent-success-rate ensure runs later because it
