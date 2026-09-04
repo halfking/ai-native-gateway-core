@@ -758,6 +758,11 @@ func main() {
 	}
 	healthHandler := streaming.NewHealthHandler(cm, lim, upClient.Proxy(), dbPinger, redisPinger)
 	healthHandler.SetRuntimeIdentity(cfg.RuntimeRole, cfg.Listen)
+	// lite storage mode: PostgreSQL is bypassed by design — nil dbPinger must
+	// not pin /healthz ready=false and /readyz 503 forever (audit B1).
+	if storageRt != nil {
+		healthHandler.SetDepsOptional(true)
+	}
 
 	modelsHandler := streaming.NewModelsHandler()
 	messagesHandler := streaming.NewMessagesHandler(chatHandler)

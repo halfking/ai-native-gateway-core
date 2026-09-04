@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ApiError } from '../../api/_core'
 import {
-  getAttachmentSignedUrl,
   getSessionTurn,
   type TurnAttachment,
   type TurnDetail,
@@ -75,18 +74,32 @@ function attachmentKey(attachment: TurnAttachment): string {
   return attachment.att_id || attachment.object || attachment.name
 }
 
-async function openAttachment(attachment: TurnAttachment) {
-  if (props.turnNo == null || !attachment.att_id) return
+// 2026-09-05 audit F-#1: the per-turn signed-URL endpoint
+// (/turns/<n>/attachments/<id>/url) is a hardcoded 404 stub on the backend, so
+// the "open attachment" button never worked. Stream through the existing
+// admin-authenticated channel GET /api/attachments/{path...} instead; the
+// session cookie carries auth for window.open. Slashes in the storage object
+// key are path structure (wildcard route), so only encode per segment.
+function attachmentDownloadUrl(attachment: TurnAttachment): string | null {
+  const key = attachment.object || attachment.att_id
+  if (!key) return null
+  return '/api/attachments/' + key.split('/').map(encodeURIComponent).join('/')
+}
+
+function openAttachment(attachment: TurnAttachment) {
+  if (props.turnNo == null) return
+  const url = attachmentDownloadUrl(attachment)
+  if (!url) {
+    error.value = t('turnDigest.noAttachments')
+    return
+  }
   const key = attachmentKey(attachment)
   openingAttachment.value = key
-  try {
-    const result = await getAttachmentSignedUrl(props.sessionId, props.turnNo, attachment.att_id)
-    window.open(result.url, '_blank', 'noopener,noreferrer')
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : String(cause)
-  } finally {
+  // Let the browser stream the download; the flag only guards double clicks.
+  window.setTimeout(() => {
     if (openingAttachment.value === key) openingAttachment.value = null
-  }
+  }, 800)
+  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 function close() {
@@ -179,7 +192,7 @@ onBeforeUnmount(() => {
     <div v-if="loading" class="tdd-state">{{ t('turnDigest.loading') }}</div>
     <div v-else-if="error" class="tdd-error" role="alert" data-testid="tdd-error">
       <el-empty :description="error" />
-      <el-button size="small" @click="reload">{{ t('turnDigest.close') }}</el-button>
+      <el-button size="small" @click="reload">{{ t('turnDigest.retry') }}</el-button>
     </div>
     <el-tabs v-else v-model="activeTab" class="tdd-tabs">
       <el-tab-pane :label="t('turnDigest.tabs.summary')" name="summary">

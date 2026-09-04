@@ -189,8 +189,10 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 		oldSize = fi.Size()
 	}
 
-	// 腾空间；excludePath = 即将写入的目标文件，绝不被淘汰
-	fc.ensureSpaceLocked(int64(len(data)), path)
+	// 腾空间；excludePath = 即将写入的目标文件，绝不被淘汰。
+	// healed = 本次触发了记账自愈（sizeUsed 已重置为不含 excludePath 的
+	// 磁盘实况），调用方须按「新增文件」口径累加而非按差额。
+	healed := fc.ensureSpaceLocked(int64(len(data)), path)
 
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, fileCacheDirPerm); err != nil {
@@ -221,8 +223,15 @@ func (fc *FileCache) Set(state *SessionStateV2) error {
 		return fmt.Errorf("file cache: rename %s -> %s: %w", tmpPath, path, err)
 	}
 
-	// 写成功才记账：先减被覆盖的旧文件，再加新文件
-	fc.sizeUsed += int64(len(data)) - oldSize
+	// 写成功才记账：先减被覆盖的旧文件，再加新文件。
+	// ensureSpaceLocked 返回 healed：自愈路径已把 sizeUsed 重置为「不含
+	// excludePath」的磁盘实况，此时再减 oldSize 会把从未计入的体积重复扣减
+	// （2026-09-05 审计 B3 负漂移），直接按新值累加即可。
+	if healed {
+		fc.sizeUsed += int64(len(data))
+	} else {
+		fc.sizeUsed += int64(len(data)) - oldSize
+	}
 	if fc.sizeUsed < 0 {
 		fc.sizeUsed = 0
 	}
@@ -261,11 +270,14 @@ func (fc *FileCache) Delete(tenantID, sessionID string) error {
 // 空间足够直接返回；否则按 mtime 从旧到新删除文件直到空间足够。
 // excludePath 是即将写入的目标文件，绝不会被淘汰。
 //
+// 返回 healed：是否执行了记账自愈（sizeUsed 以磁盘实况重置，且不含
+// excludePath —— 它是即将被本次写入覆盖的旧值，落盘后由调用方按新值累加）。
+//
 // 要求调用方已持有 fc.mu（对应文件头「锁策略」：不在内部重复加锁，避免重入
 // 死锁，同时保证记账与淘汰的原子性）。
 // 尽力而为：若淘汰完全部候选仍腾不出空间（例如单条数据超过 maxSize），放行
 // 写入，缓存层不做拒绝服务（与包内 fail-open 风格一致）。
-func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) {
+func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) (healed bool) {
 	if fc.sizeUsed+needed <= fc.maxSize {
 		return
 	}
@@ -290,7 +302,8 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) {
 	// 记账自愈：外部清理者（bg.CacheTrimmer 按 mtime 删文件）不经过本结构，
 	// sizeUsed 会单调虚高；溢出时本就全树遍历了一次，顺手以磁盘实况重置记账，
 	// 否则虚高的 sizeUsed 会让每次 Set 都触发全树 Walk 并误删仍活跃的新文件。
-	// excludePath 的体积不在此列（是即将被本次写入覆盖的旧值，落盘后按新值累加）。
+	// excludePath 的体积不在此列（是即将被本次写入覆盖的旧值，落盘后由
+	// 调用方按新值累加）。
 	fc.sizeUsed = onDisk
 	// mtime 从旧到新排序（最旧先删）
 	sort.Slice(items, func(i, j int) bool { return items[i].mod.Before(items[j].mod) })
@@ -307,6 +320,7 @@ func (fc *FileCache) ensureSpaceLocked(needed int64, excludePath string) {
 			}
 		}
 	}
+	return true
 }
 
 // removeExpired 在锁内复检 mtime 后删除过期文件并扣减 sizeUsed。
