@@ -71,9 +71,15 @@ CURRENT_VERSION=$(python3 -c "import json; print(json.load(open('$VERSION_JSON')
   || echo "v0.0.0")
 
 # git tag (e.g. "v2.4.1") — 这是 NEW_VERSION 的 tag 部分
-# 跳过 archive/* / sr-* / release/* 等工作分支 tag；只有 semver 风格的 vX.Y.Z
-# 才应当出现在 git_tag 字段。其余情况回落到 v0.0.0，脚本仍能正常 bump。
+# 跳过 archive/* / sr-* / release/* 等工作分支 tag；只有 semver 风格的
+# X.Y.Z 才应当出现在 git_tag 字段。优先匹配 v 前缀标签（v2.4.1），仓库改用
+# 不带 v 前缀的标签后（2026-09 的 2.5.x 系列）回落匹配裸 semver —— 此前只
+# 匹配 v 前缀，无前缀仓库会静默回落 v0.0.0 且随每次 bump 自我延续，导航
+# 版本一直显示 v0.0.0。两种都缺失时仍回落 v0.0.0，脚本照常 bump。
 GIT_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+if [[ -z "$GIT_TAG" ]]; then
+  GIT_TAG=$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+fi
 if [[ -z "$GIT_TAG" ]]; then
   GIT_TAG="v0.0.0"
 fi

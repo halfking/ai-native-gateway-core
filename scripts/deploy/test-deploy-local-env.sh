@@ -133,6 +133,28 @@ else
     report "空 secret 拒绝部署 + rollback/start 守卫存在" 1
 fi
 
+echo ""
+echo "✅ 测试 6: bump-version.sh 能解析不带 v 前缀的 git 标签（导航显示 v0.0.0 的根因）"
+# 仓库 2026-09 起使用不带 v 前缀的 semver 标签（2.5.x）；bump-version.sh 曾只
+# 匹配 v 前缀模式，匹配为空后回落 v0.0.0 并随每次 bump 自我延续。镜像脚本的
+# 两段式解析取最新标签，断言 dry-run 输出的 target 版本以其开头。
+latest_tag="$(git -C "$PROJECT_ROOT" tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+if [[ -z "$latest_tag" ]]; then
+    latest_tag="$(git -C "$PROJECT_ROOT" tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)"
+fi
+target_tag="$(bash "$PROJECT_ROOT/scripts/bump-version.sh" --dry-run 2>/dev/null \
+    | sed -n 's/.*target:.*version=\([0-9v][0-9.]*\)-.*/\1/p' | head -n 1)"
+if [[ -n "$latest_tag" && "$target_tag" == "${latest_tag#v}" ]]; then
+    report "bump 标签解析 = 最新 semver 标签 [$target_tag]" 0
+else
+    report "bump 标签解析 = 最新 semver 标签 [latest=$latest_tag target=$target_tag]" 1
+fi
+if grep -q "git tag --list '\[0-9\]\*\.\[0-9\]\*" "$PROJECT_ROOT/scripts/bump-version.sh"; then
+    report "裸 semver 回退模式存在" 0
+else
+    report "裸 semver 回退模式存在" 1
+fi
+
 # ---------------------------------------------------------------------------
 echo ""
 echo "========================================="
