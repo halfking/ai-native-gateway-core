@@ -269,3 +269,8 @@ gui-test-screenshots/
 
 # local benchmark build artifacts (cmd/autoclass-bench output)
 /autoclass-bench
+
+# 2026-09-05: benchmark 每次运行的原始输出与容量采集报告（机器本地归档，不入仓；
+# 只提交 docs/perf/bench-baseline.txt 基线文件与整理后的容量基线文档）
+docs/perf/bench-history/
+scripts/capacity-baseline/reports/
