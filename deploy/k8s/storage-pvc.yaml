@@ -2,11 +2,20 @@
 # llm-gateway-go 持久化存储配置（Kubernetes PVC/PV）
 # ====================================================================
 # 用法: kubectl apply -f deploy/k8s/storage-pvc.yaml
-# 说明: 为附件和日志创建持久化存储卷
+# 说明: 为附件、运行日志、raw-logs 和降级备份创建节点本地持久化卷。
+# hostPath 数据位于 kaixuan-1，PV nodeAffinity 与 Deployment 必须保持一致。
 # ====================================================================
 
 ---
-# ── 附件存储 PV（使用 hostPath） ──────────────────────────────────
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-storage
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+
+---
+# ── 附件存储 PV ───────────────────────────────────────────────────
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -21,14 +30,19 @@ spec:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: local-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [kaixuan-1]
   hostPath:
     path: /data/llm-gateway/attachments
     type: DirectoryOrCreate
 
 ---
 # ── 附件存储 PVC ─────────────────────────────────────────────────
-# namespace 必须与 llm-gateway-go-deployment.yaml（pms-test）一致，
-# PVC 与 Pod 跨 namespace 无法绑定。
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -50,7 +64,7 @@ spec:
       type: attachments
 
 ---
-# ── 日志存储 PV（使用 hostPath） ──────────────────────────────────
+# ── 运行日志 PV ───────────────────────────────────────────────────
 apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -65,12 +79,19 @@ spec:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
   storageClassName: local-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [kaixuan-1]
   hostPath:
     path: /data/llm-gateway/logs
     type: DirectoryOrCreate
 
 ---
-# ── 日志存储 PVC ─────────────────────────────────────────────────
+# ── 运行日志 PVC ─────────────────────────────────────────────────
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -90,3 +111,99 @@ spec:
     matchLabels:
       app: llm-gateway-go
       type: logs
+
+---
+# ── Raw logs PV ────────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: llm-gateway-raw-logs-pv
+  labels:
+    app: llm-gateway-go
+    type: raw-logs
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [kaixuan-1]
+  hostPath:
+    path: /data/llm-gateway/raw-logs
+    type: DirectoryOrCreate
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llm-gateway-raw-logs-pvc
+  namespace: pms-test
+  labels:
+    app: llm-gateway-go
+    type: raw-logs
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 20Gi
+  selector:
+    matchLabels:
+      app: llm-gateway-go
+      type: raw-logs
+
+---
+# ── 降级备份 PV ───────────────────────────────────────────────────
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: llm-gateway-backups-pv
+  labels:
+    app: llm-gateway-go
+    type: backups
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-storage
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [kaixuan-1]
+  hostPath:
+    path: /data/llm-gateway/backups
+    type: DirectoryOrCreate
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: llm-gateway-backups-pvc
+  namespace: pms-test
+  labels:
+    app: llm-gateway-go
+    type: backups
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-storage
+  resources:
+    requests:
+      storage: 20Gi
+  selector:
+    matchLabels:
+      app: llm-gateway-go
+      type: backups

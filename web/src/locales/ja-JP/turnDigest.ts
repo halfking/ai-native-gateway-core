@@ -40,5 +40,6 @@ export default {
   noWaterfall: 'No waterfall timing available',
   noAttachments: '添付ファイルはありません',
   openAttachment: 'ダウンロード',
+  retry: '再試行',
   openingAttachment: '開いています…',
 }

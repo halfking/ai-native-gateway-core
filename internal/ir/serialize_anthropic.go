@@ -525,14 +525,22 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 		// 或 url 类型误带 data。Anthropic API 要求：
 		//   type=base64 → media_type + data
 		//   type=url    → url
+		//   type=file   → file_id（Files API 预上传文件引用）
 		srcType := block.Image.Type
 		if srcType == "" {
-			// 兼容旧数据：有 Data 视为 base64，否则视为 url
-			if block.Image.Data != "" {
+			// 兼容旧数据：有 Data 视为 base64，有 FileID 视为 file，否则视为 url
+			switch {
+			case block.Image.Data != "":
 				srcType = "base64"
-			} else {
+			case block.Image.FileID != "":
+				srcType = "file"
+			default:
 				srcType = "url"
 			}
+		}
+		// IR 内部以 "file_id" 标注文件引用，Anthropic 线上协议类型名为 "file"
+		if srcType == "file_id" {
+			srcType = "file"
 		}
 		source := map[string]any{"type": srcType}
 		switch srcType {
@@ -547,6 +555,10 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			if block.Image.URL != "" {
 				source["url"] = block.Image.URL
 			}
+		case "file":
+			if block.Image.FileID != "" {
+				source["file_id"] = block.Image.FileID
+			}
 		default:
 			// 未知类型：尽量保留信息
 			if block.Image.MediaType != "" {
@@ -557,6 +569,9 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			}
 			if block.Image.Data != "" {
 				source["data"] = block.Image.Data
+			}
+			if block.Image.FileID != "" {
+				source["file_id"] = block.Image.FileID
 			}
 		}
 		out["source"] = source
@@ -584,7 +599,10 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 			out[fieldName] = block.ToolResult.ToolUseID
 			out["is_error"] = block.ToolResult.IsError
 
-			// Serialize content - can be text blocks
+			// Serialize content - blocks of any supported type (text, image,
+			// document, ...). Anthropic tool_result content accepts the same
+			// block shapes as user messages, so non-text blocks must survive
+			// the round trip instead of being silently dropped.
 			if len(block.ToolResult.Content) > 0 {
 				content := make([]map[string]any, 0, len(block.ToolResult.Content))
 				for _, cb := range block.ToolResult.Content {
@@ -593,9 +611,12 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 							"type": "text",
 							"text": cb.Text,
 						})
+					} else {
+						content = append(content, serializeAnthropicContentBlock(cb, targetProvider, modelName))
 					}
 				}
-				if len(content) == 1 {
+				// 单一 text 块保持字符串简写形态（既有线上的契约行为）
+				if len(content) == 1 && len(block.ToolResult.Content) == 1 && block.ToolResult.Content[0].Type == "text" {
 					out["content"] = content[0]["text"]
 				} else {
 					out["content"] = content
@@ -630,9 +651,16 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 				if block.Document.Source.MediaType != "" {
 					source["media_type"] = block.Document.Source.MediaType
 				}
-				if block.Document.Source.Type == "base64" && block.Document.Source.Data != "" {
+				switch {
+				case block.Document.Source.Type == "file" || block.Document.Source.FileID != "":
+					// Files API 预上传文档：{"type":"file","file_id":"file_..."}
+					source["type"] = "file"
+					if block.Document.Source.FileID != "" {
+						source["file_id"] = block.Document.Source.FileID
+					}
+				case block.Document.Source.Type == "base64" && block.Document.Source.Data != "":
 					source["data"] = block.Document.Source.Data
-				} else if block.Document.Source.Type == "url" {
+				case block.Document.Source.Type == "url":
 					url := block.Document.Source.URL
 					if url == "" { // compatibility with pre-canonical IR rows
 						url = block.Document.Source.Data
