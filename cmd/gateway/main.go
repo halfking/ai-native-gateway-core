@@ -2164,6 +2164,14 @@ func main() {
 	// on every persisted request_logs row. Wired at process start so the
 	// hook sees every INSERT/UPDATE that survives persistRequestLog.
 	telemetry.RegisterEmptyResponseGate(telemetryClient)
+	// 2026-09-05 审计 B2 接线：lite 模式（无 PG，telemetry Enabled 恒 false、
+	// 请求日志不落盘）把 telemetry 持久化管道桥接到存储工厂——SQLite
+	// request_logs/sessions/session_turns + FileBodies 原文文件。full/未启用
+	// 模式（storageRt == nil）不注册 sink，全部路径行为零变化。
+	if storageRt != nil {
+		telemetryClient.SetRequestLogSink(storageRt.newLiteRequestLogSink())
+		slog.Info("storage lite mode: telemetry request log sink wired (SQLite request_logs + session journal + file bodies)")
+	}
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
 

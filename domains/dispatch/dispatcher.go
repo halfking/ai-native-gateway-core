@@ -13,6 +13,12 @@ import (
 // runDispatcher is a ① Model Dispatcher worker. It consumes from dispatchIn,
 // resolves the model, picks a credential (RouteFunc), and enqueues into the
 // credential's Tier-2 queue. On exhaustion it triggers model-change.
+//
+// Shutdown (audit 2026-09-05 C-#2): every request still buffered in dispatchIn
+// when stopCh fires is completed with ErrShutdown instead of being orphaned —
+// a dropped qr means its Submit caller blocks on qr.ResultCh until ctx expiry
+// (2h for survival streams). Mirrors runModelDrainer's stopCh handling and
+// runTotalDrainer's stopCh drain. See TestStopDrainsDispatchInResidue.
 func (p *Pipeline) runDispatcher() {
 	defer p.wg.Done()
 	for {
@@ -21,8 +27,43 @@ func (p *Pipeline) runDispatcher() {
 			if !ok {
 				return
 			}
+			if p.shutdown.Load() {
+				// stopCh is already closed and the select randomly picked the
+				// receive branch: this is buffered residue. Complete it
+				// directly — do NOT run executor callbacks (model resolve /
+				// route) on a stopped pipeline.
+				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+				continue
+			}
 			p.dispatch(qr)
 		case <-p.stopCh:
+			p.shutdownDrainDispatchIn()
+			return
+		}
+	}
+}
+
+// shutdownDrainDispatchIn completes every request still buffered in
+// dispatchIn with ErrShutdown (audit 2026-09-05 C-#2).
+//
+// Ordering guarantee (why the drain is lossless): the sole producers of
+// dispatchIn are the per-model runModelDrainer goroutines. Waiting for them
+// FIRST — after a modelMu barrier that makes the producer set final
+// (getOrCreateModelQueue spawns drainers only under modelMu with a shutdown
+// guard, so after the barrier no new drainer can join) — guarantees nothing
+// is sent into dispatchIn after the drain loop observes it empty. Without
+// this wait, a drainer whose inner select randomly picked the send branch
+// (both branches ready once stopCh closed) could land a qr AFTER the drain
+// exited, with no consumer left.
+func (p *Pipeline) shutdownDrainDispatchIn() {
+	p.modelMu.Lock()
+	p.modelMu.Unlock() // barrier: producer set is now final (no new drainers)
+	p.drainerWg.Wait() // every runModelDrainer has exited
+	for {
+		select {
+		case qr := <-p.dispatchIn:
+			p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		default:
 			return
 		}
 	}

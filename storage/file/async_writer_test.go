@@ -1,10 +1,12 @@
 package file
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -193,7 +195,7 @@ func TestWriteAsyncDoneChannelClosed(t *testing.T) {
 	}
 }
 
-// TestAtomicWriteNoTmpResidue 验证原子写入后目标路径不留 .tmp 残留。
+// TestAtomicWriteNoTmpResidue 验证原子写入后目标目录不留 tmp 残留。
 func TestAtomicWriteNoTmpResidue(t *testing.T) {
 	dir := t.TempDir()
 	w := newTestWriter(t, 2)
@@ -202,8 +204,93 @@ func TestAtomicWriteNoTmpResidue(t *testing.T) {
 	if err := w.Write(path, []byte("payload")); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
+	// 旧实现残留固定名 path+".tmp"；现行实现用 CreateTemp 唯一名，两种都不得残留。
 	if _, err := os.Stat(path + tmpSuffix); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("存在 .tmp 残留: %v", err)
+	}
+	residue, err := filepath.Glob(filepath.Join(dir, "*"+tmpSuffix))
+	if err != nil {
+		t.Fatalf("Glob 失败: %v", err)
+	}
+	if len(residue) != 0 {
+		t.Errorf("存在 tmp 残留文件: %v", residue)
+	}
+}
+
+// TestConcurrentWritesSamePath 回归 B5：多 worker 并发覆盖写同一路径。
+//
+// 旧实现共用固定临时名 path+".tmp"：两个 worker 同时写同一路径时
+// 互相截断交错，先完成者 rename 出混合内容并返回 nil，后者 rename
+// 报 ENOENT——静默丢数据。唯一临时名 + rename 后必须满足：
+//  1. 所有写入都成功（无 ENOENT/部分写失败）；
+//  2. 最终文件内容恰好等于某一次写入的完整 payload（无撕裂混合）。
+func TestConcurrentWritesSamePath(t *testing.T) {
+	const (
+		writers  = 8
+		perWrite = 50
+	)
+	dir := t.TempDir()
+	w := newTestWriter(t, 4) // 4 worker 并发消费，制造同路径竞争窗口
+	path := filepath.Join(dir, "same", "target.json.gz")
+
+	// 每个 writer 用可区分且足够长的 payload（多倍填充放大撕裂窗口）
+	payloads := make([][]byte, writers)
+	for i := range payloads {
+		payloads[i] = []byte(strings.Repeat(fmt.Sprintf("<writer-%d>", i), 128))
+	}
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, writers*perWrite)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < perWrite; j++ {
+				if err := w.Write(path, payloads[i]); err != nil {
+					errCh <- fmt.Errorf("writer%d 第%d次: %w", i, j, err)
+					return
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Errorf("并发同路径写入失败: %v", err)
+	}
+
+	// 最终内容必须与某个 payload 完全一致（原子替换，无撕裂）
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取目标文件失败: %v", err)
+	}
+	intact := false
+	for _, p := range payloads {
+		if bytes.Equal(got, p) {
+			intact = true
+			break
+		}
+	}
+	if !intact {
+		t.Errorf("最终内容非任何一次写入的完整 payload（疑似撕裂），len=%d", len(got))
+	}
+
+	// 成功语义下统计必须完整：全部写入成功、无失败
+	stats := w.Stats()
+	if stats["total_writes"] != writers*perWrite {
+		t.Errorf("total_writes = %d, want %d", stats["total_writes"], writers*perWrite)
+	}
+	if stats["failed_writes"] != 0 {
+		t.Errorf("failed_writes = %d, want 0", stats["failed_writes"])
+	}
+
+	// 排空后不得残留任何 tmp 文件
+	residue, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*"+tmpSuffix))
+	if err != nil {
+		t.Fatalf("Glob 失败: %v", err)
+	}
+	if len(residue) != 0 {
+		t.Errorf("存在 tmp 残留文件: %v", residue)
 	}
 }
 

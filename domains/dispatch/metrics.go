@@ -110,6 +110,16 @@ var (
 		Help: "Tier-3 stats events dropped because the event bus was full.",
 	})
 
+	// metricJournalSnapshotDropped (audit 2026-09-05 C-#4) counts terminal
+	// journal snapshots dropped before delivery to the JournalSink: the
+	// bounded delivery queue was full (queue_full) or the pipeline was
+	// already stopped when complete() ran (stopped). Terminal journal
+	// delivery is best-effort by contract, same as observations.
+	metricJournalSnapshotDropped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "dispatch_journal_snapshot_dropped_total",
+		Help: "Terminal journal snapshots dropped before JournalSink delivery.",
+	}, []string{"reason"}) // reason: queue_full|stopped
+
 	// ===== v6 G-Ⅳ: per-dimension membership index (分维队列) counters =====
 	metricDimensionTracked = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "dispatch_dimension_tracked_total",
