@@ -442,6 +442,9 @@ func recordAutoSelectionFromWire(r *http.Request, sessionID string, wire *autoRo
 		return
 	}
 
+	// Extract structured features v1 from signals (non-reversible, privacy-safe)
+	features := autoroute.ExtractStructuredFeatures(wire.signals, wire.Profile)
+
 	telemetry.WriteAutoSelection(telemetry.AutoSelection{
 		RequestID:         r.Header.Get("X-Request-Id"),
 		SessionID:         sessionID,
@@ -461,6 +464,22 @@ func recordAutoSelectionFromWire(r *http.Request, sessionID string, wire *autoRo
 		Treatment:         string(wire.Treatment),
 		AssignmentVersion: wire.AssignmentVersion,
 		AssignmentKeyHash: wire.AssignmentKeyHash,
+		// Structured features v1 (privacy-safe, non-reversible)
+		DetectedLanguage:       features.DetectedLanguage,
+		PromptLengthBucket:     features.PromptLengthBucket,
+		ContextLengthBucket:    features.ContextLengthBucket,
+		TurnCountBucket:        features.TurnCountBucket,
+		HasCodeIndicator:       features.HasCodeIndicator,
+		HasMathIndicator:       features.HasMathIndicator,
+		HasTableIndicator:      features.HasTableIndicator,
+		HasMultimediaIndicator: features.HasMultimediaIndicator,
+		IntentCategory:         features.IntentCategory,
+		DomainHint:             features.DomainHint,
+		ComplexityBucket:       features.ComplexityBucket,
+		LatencySensitive:       features.LatencySensitive,
+		CostSensitive:          features.CostSensitive,
+		FeatureVersion:         features.FeatureVersion,
+		ContentHash:            features.ContentHash,
 	})
 }
 
