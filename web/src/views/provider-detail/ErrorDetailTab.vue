@@ -116,9 +116,20 @@ onBeforeUnmount(() => {
         <section class="section-block">
           <h3>{{ pd('recentFailures') }}</h3>
           <table v-if="data.recent_failures.length" class="data-table failures-table">
-            <thead><tr><th>{{ pd('time') }}</th><th>{{ pd('model') }}</th><th>{{ pd('kind') }}</th><th>{{ pd('httpStatus') }}</th><th>{{ pd('message') }}</th><th>{{ pd('upstreamPreview') }}</th></tr></thead>
+            <thead><tr><th>{{ pd('time') }}</th><th>{{ pd('model') }}</th><th>{{ pd('kind') }}</th><th>{{ pd('httpStatus') }}</th><th>阶段</th><th>重试</th><th>耗时</th><th>{{ pd('message') }}</th><th>{{ pd('upstreamPreview') }}</th></tr></thead>
             <tbody><tr v-for="item in data.recent_failures" :key="`${item.request_id}-${item.attempt_index}-${item.ts}`">
-              <td>{{ formatTime(item.ts) }}</td><td>{{ item.raw_model_name }}</td><td>{{ item.error_kind }}</td><td>{{ item.upstream_status_code ?? '—' }}</td>
+              <td>{{ formatTime(item.ts) }}</td><td>{{ item.raw_model_name }}</td>
+              <td>
+                <span class="badge badge-red">{{ item.error_kind }}</span>
+                <span v-if="item.stage" class="badge badge-gray">{{ item.stage }}</span>
+              </td>
+              <td>{{ item.upstream_status_code ?? '—' }}</td>
+              <td>{{ item.stage ?? '—' }}</td>
+              <td>
+                <span v-if="item.retryable != null" class="badge" :class="item.retryable ? 'badge-orange' : 'badge-gray'">{{ item.retryable ? '可重试' : '不可重试' }}</span>
+                <span v-else>—</span>
+              </td>
+              <td>{{ item.latency_ms != null ? `${item.latency_ms}ms` : '—' }}</td>
               <td class="message-cell">{{ item.error_message ?? '—' }}</td><td class="preview-cell">{{ item.upstream_response_preview ?? '—' }}</td>
             </tr></tbody>
           </table>
@@ -139,6 +150,8 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.badge-orange { background: var(--warning-bg); color: var(--warning); }
+
 .error-detail-tab { font-size: 12px; }
 .toolbar, .status-grid { display: flex; gap: 12px; align-items: center; }
 .toolbar { justify-content: space-between; margin-bottom: 12px; }

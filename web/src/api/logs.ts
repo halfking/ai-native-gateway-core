@@ -158,6 +158,10 @@ export interface RoutingAttempt {
 	latency_ms: number
 	http_status?: number
 	error_message?: string
+	/** 2026-09-05 审计闭环2：结构化错误维度（后端 omitempty，旧数据缺省）。 */
+	error_kind?: string
+	stage?: string
+	retryable?: boolean
 }
 
 // RequestLogsAggregate carries totals over the rows matching the listLogs

@@ -39,6 +39,11 @@ export interface VendorRecentFailure {
   upstream_status_code: number | null
   upstream_response_preview: string | null
   latency_ms: number | null
+  /** 2026-09-05 审计闭环1：supplier_errors_unified 结构化维度透传。 */
+  supplier?: string | null
+  error_code?: string | null
+  retryable?: boolean | null
+  stage?: string | null
 }
 
 export interface VendorQualityScore {

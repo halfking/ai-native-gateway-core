@@ -178,6 +178,8 @@ func TestHotPromoteTableMap(t *testing.T) {
 	// 不再 promote，移除了对应的 map 项。
 	// 2026-09-01: 补上 session_bodies_hot（promote 函数由迁移 615/626/638
 	// 定义），此前手动 promote 无法触达该表。
+	// 2026-09-05: 补上 supplier_errors_hot（promote 函数由迁移 V371 定义，
+	// 供应商错误唯一事实源的 8h 保留/批量迁移入口，审计闭环1/5）。
 	expected := []string{
 		"request_logs_hot",
 		"usage_ledger_hot",
@@ -188,6 +190,7 @@ func TestHotPromoteTableMap(t *testing.T) {
 		"credit_ledger_hot",
 		"tool_usage_stats_hot",
 		"candidate_failure_logs_hot",
+		"supplier_errors_hot",
 		"session_turns_hot",
 		"session_bodies_hot",
 		"handoff_logs_hot",

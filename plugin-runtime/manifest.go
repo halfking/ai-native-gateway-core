@@ -85,6 +85,11 @@ func (m *Manifest) validate() error {
 			return err
 		}
 	}
+	// 2026-09-05 审计闭环8：远程插件菜单的 schema/裁剪校验（路径注入、
+	// 自由文本 group、无界 order、tenant/platform 矛盾位）。
+	if err := validateNavPages(m.PluginID, m.Pages); err != nil {
+		return fmt.Errorf("invalid pages: %w", err)
+	}
 	for _, version := range []string{m.GatewayCompatibility.MinVersion, m.GatewayCompatibility.MaxVersion} {
 		if version != "" && !validSemVer(version) {
 			return fmt.Errorf("gateway compatibility version %q must be strict SemVer", version)
