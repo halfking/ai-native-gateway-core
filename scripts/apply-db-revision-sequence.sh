@@ -89,6 +89,17 @@ psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (seq
 # (supplier_errors family) and 42P10 on the weekly peak rollup
 # (ON CONFLICT target missing). Both are idempotent and safe to re-run;
 # they append after 654 like the other independent repairs.
+#
+# 2026-09-05 evening audit (22003 numeric field overflow): the sequence
+# order runs 572 (token-ratio fix) BEFORE 563, but both CREATE OR REPLACE
+# the same update_session_summary() — 563's older body re-clobbered the
+# fix one second after 572 applied, so every ≥10K-token request failed its
+# request-log persist with 22003 (insert + RowsAffected==0 update
+# fallback). 661 re-asserts the fixed body AFTER 563 and validates the
+# function source; 563's file was also corrected for fresh installs.
+# (2026-09-05 evening renumber: the first-cut 657/658 prefixes collided
+# with origin/main's 657_durable_llm_tasks / 658_auto_route_structured_features,
+# so the weekly-peak repair moved to 660 and the reassert to 661.)
 files=(
   "$ROOT_DIR/sql/migrations/startup/655_session_summaries_schema_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/560_session_summaries_tenant_uniqueness.sql"
@@ -105,6 +116,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/653_archive_credential_model_index_canonical_return.sql"
   "$ROOT_DIR/sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql"
   "$ROOT_DIR/sql/migrations/startup/660_credential_model_weekly_peak_unique.sql"
+  "$ROOT_DIR/sql/migrations/startup/661_session_summary_token_ratio_reassert.sql"
   "$ROOT_DIR/deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql"
 )
 for file in "${files[@]}"; do
