@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"model\":\"gpt-4o\",\"max_tokens\":99999999999999999999999,\"temperature\":1e999,\"messages\":[]}")

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import type { RoutingCandidate } from '../api/routing'
 import type { LiveNodeStatus } from '../composables/liveStreamStore'
 import { statusClass } from '../utils/nodeDetailFormat'
@@ -47,7 +48,7 @@ const {
 
 const {
   openRequestDetail,
-  testNow, saveSettings, onEmergencyApplied, setCredentialDisabled, toggleSelectedModel,
+  testNow, saveSettings, changeLifecycle, onEmergencyApplied, setCredentialDisabled, toggleSelectedModel,
 } = useNodeDetailDrawerActions({
   emit, canEdit, currentNode, candidate, selectedModel, selectedModelStatus,
   saving, actionMessage, actionError, pingResult, lifecycle, manualPriority, priorityFlag, routingTier, weight,
@@ -55,6 +56,14 @@ const {
 })
 
 const node = currentNode
+// 2026-09-05: 人工禁用状态（设置与维护 tab 展示 + 解禁入口）。
+// monitor.summary 的 manual_disabled 是权威来源；实时流节点作为兜底，
+// state_reason_detail 用于在禁用时展示原因说明。
+const manualDisabled = computed(() => monitor.value?.manual_disabled || currentNode.value?.manual_disabled || false)
+const manualStateDetail = computed(() => {
+  if (!manualDisabled.value) return ''
+  return monitor.value?.state_reason_detail || monitor.value?.state_reason_code || ''
+})
 </script>
 
 <template>
@@ -153,7 +162,9 @@ const node = currentNode
               :ping-result="pingResult"
               :candidate="candidate"
               :candidate-loading="candidateLoading"
-              v-model:lifecycle="lifecycle"
+              :lifecycle="lifecycle"
+              :manual-disabled="manualDisabled"
+              :manual-state-detail="manualStateDetail"
               v-model:manual-priority="manualPriority"
               v-model:priority-flag="priorityFlag"
               v-model:routing-tier="routingTier"
@@ -162,6 +173,7 @@ const node = currentNode
               :selected-model-status="selectedModelStatus"
               @test-now="testNow"
               @save-settings="saveSettings"
+              @lifecycle-change="changeLifecycle"
               @set-credential-disabled="setCredentialDisabled"
               @toggle-selected-model="toggleSelectedModel"
             >
