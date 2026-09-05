@@ -586,6 +586,21 @@ upload_release() {
   local bundle_dir=$1 version=$2
   local release_dir="$REMOTE_ROOT/releases/$version"
   log "[upload] tar pipe bundle → $TARGET:$release_dir"
+  # 陈旧产物防线（远端侧，同 bc6e696b3）：同一 version 重跑（--seq 复用、
+  # 上次上传中断）时 releases/<version>/ 可能残留半截/陈旧文件；tar 解包
+  # 只覆盖同名文件，残留的旧 web 资产等会被原样带进新 release。先删再传。
+  # 若该 version 正是 current 指向的活跃 release 则拒绝覆盖（对照
+  # deploy-local.sh ensure_release_available 的 fail-closed 语义），
+  # 防止删掉正在服务、可能还是回滚目标的 bundle。
+  if remote_ssh "test -e '$release_dir'"; then
+    local live_version
+    live_version=$(remote_ssh "readlink '$REMOTE_ROOT/current' 2>/dev/null | xargs basename 2>/dev/null" 2>/dev/null || true)
+    if [[ "$live_version" == "$version" ]]; then
+      err "releases/$version 已存在且是当前活跃 release，拒绝覆盖；请使用新的 build_seq"
+      return 1
+    fi
+    remote_ssh "rm -rf '$release_dir'" || { err "清理旧 releases/$version 失败"; return 1; }
+  fi
   # 远端先建目录 (避免锁竞争)
   remote_ssh "mkdir -p '$release_dir'" || { err "mkdir releases 失败"; return 1; }
   # tar 管道上传整个 bundle (单 ssh 连道，--no-xattrs 抑制 macOS xattr 警告)
@@ -652,8 +667,18 @@ do_deploy() {
     bash "$SCRIPT_DIR/bump-version.sh" 2>&1 | sed 's/^/    /'
   fi
   version=$(python3 -c "import json;d=json.load(open('version.json'));print(f\"{d['build_seq']}-{d['git_sha'][:8]}\")")
-  local full_version="v$(python3 -c "import json;print(json.load(open('version.json'))['version'])")"
-  local seq_val=$(python3 -c "import json;print(json.load(open('version.json'))['build_seq'])")
+  # 陈旧产物防线（同 bc6e696b3）：`local x=$(...)` 声明即赋值会把命令替换
+  # 的失败状态整个吞掉（bash 实证：该语境 set -e 不触发），空 version/seq
+  # 会混进 release 目录名与后续身份校验。拆成声明+赋值并显式检查。
+  local full_version seq_val
+  full_version="v$(python3 -c "import json;print(json.load(open('version.json'))['version'])")" \
+    || { err "读取 version.json 的 version 字段失败; refusing to continue"; exit 1; }
+  seq_val=$(python3 -c "import json;print(json.load(open('version.json'))['build_seq'])") \
+    || { err "读取 version.json 的 build_seq 字段失败; refusing to continue"; exit 1; }
+  [[ -n "$full_version" && "$seq_val" =~ ^[0-9]+$ ]] || {
+    err "version.json 身份字段不完整 (version='$full_version' build_seq='$seq_val'); refusing to continue"
+    exit 1
+  }
   ok "version=$full_version seq=$seq_val"
 
   # 2–3. 前端 + 后端串行构建（降低 2GB 主机峰值内存）
@@ -674,8 +699,17 @@ do_deploy() {
   else
     warn "跳过前端 (--no-frontend)，仅更新二进制"
   fi
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-    -o "$tmpbin" ./cmd/gateway
+  # 陈旧二进制三重防线（同 deploy-local.sh build_backend，bc6e696b3）：
+  # 1) 构建前 rm -f 旧产物（见上）2) 显式检查 go build 退出码，失败立即
+  # 终止 3) 产物非空校验。do_deploy 目前由顶层 case 直接调用、set -e 可
+  # 兜底，但防线必须内建而不能依赖调用语境——一旦未来被包进 if/$( ) 赋值
+  # 语境，函数内失败命令不再触发 set -e（2026-09-05 陈旧二进制事故根因）。
+  if ! CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+    -o "$tmpbin" ./cmd/gateway; then
+    err "backend build failed (CGO_ENABLED=0 GOOS=linux GOARCH=amd64); refusing to continue with stale binary"
+    exit 1
+  fi
+  [[ -s "$tmpbin" ]] || { err "backend build produced no output at $tmpbin"; exit 1; }
   ok "编译完成 ($(du -h "$tmpbin" | cut -f1))"
 
   # 4. stage bundle (本地)

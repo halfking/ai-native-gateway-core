@@ -259,9 +259,14 @@ PY
 
 dl_release_name() {
   local f="$1" tag seq
-  tag=$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); print(x.get("git_tag") or x.get("version") or "dev")' "$f")
-  seq=$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); print(x.get("build_seq",0))' "$f")
+  # 消费端是 RELEASE_VERSION="$(dl_release_name ...)" 赋值语境：函数内失败
+  # 命令不触发 set -e（2026-09-05 陈旧二进制事故的 bash 怪癖），若静默继续
+  # 到末尾 printf 会产出 ".0" 这类残缺版本号。此处把失败转成函数非零返回，
+  # 让赋值语境的 set -e 在消费端触发。
+  tag=$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); print(x.get("git_tag") or x.get("version") or "dev")' "$f") || return 1
+  seq=$(python3 -c 'import json,sys; x=json.load(open(sys.argv[1])); print(x.get("build_seq",0))' "$f") || return 1
   if [[ -z "$seq" ]]; then seq=0; fi
+  [[ -n "$tag" && "$seq" =~ ^[0-9]+$ ]] || return 1
   printf '%s.%s\n' "$tag" "$seq"
 }
 
@@ -358,16 +363,27 @@ dl_emit_env_line() {
 
 dl_stage_release() {
   local bundle="$1" binary="$2" web="$3" version_json="$4" version_file="$5" name="$6"
-  mkdir -p "$bundle"
-  install -m 0755 "$binary" "$bundle/gateway"
-  if [[ -d "$web" ]]; then cp -R "$web" "$bundle/web"; else mkdir -p "$bundle/web"; fi
-  cp "$version_json" "$bundle/version.json"
+  # 本函数经 deploy-local.sh 的 var=$(stage_release ...) 赋值语境调用：
+  # 该语境下 bash 不因函数内失败命令中断（2026-09-05 陈旧二进制事故的
+  # set -e 怪癖），必须逐项显式检查。SHA256SUMS 放在最后生成——任一关键
+  # 步骤失败都 return 1 且不留 SHA256SUMS，保证消费端 dl_verify_release
+  # （|| die）对残缺 bundle 必然 fail-closed。
+  mkdir -p "$bundle" || return 1
+  install -m 0755 "$binary" "$bundle/gateway" || return 1
+  [[ -s "$bundle/gateway" ]] || return 1
+  if [[ -d "$web" ]]; then
+    cp -R "$web" "$bundle/web" || return 1
+  else
+    mkdir -p "$bundle/web" || return 1
+  fi
+  cp "$version_json" "$bundle/version.json" || return 1
   cp "$version_file" "$bundle/VERSION" 2>/dev/null || true
-  (cd "$bundle"; find . -type f ! -name SHA256SUMS ! -name deployment.json -print0 | sort -z | while IFS= read -r -d '' f; do dl_sha256 "$f"; done) > "$bundle/SHA256SUMS"
-  python3 - "$bundle/deployment.json" "$name" <<'PY'
+  python3 - "$bundle/deployment.json" "$name" <<'PY' || return 1
 import json,sys,datetime
 json.dump({'target':'local','version':sys.argv[2],'verified':False,'created_at':datetime.datetime.now(datetime.timezone.utc).isoformat()},open(sys.argv[1],'w'),indent=2); open(sys.argv[1],'a').write('\n')
 PY
+  (cd "$bundle"; find . -type f ! -name SHA256SUMS ! -name deployment.json -print0 | sort -z | while IFS= read -r -d '' f; do dl_sha256 "$f"; done) > "$bundle/SHA256SUMS" || { rm -f "$bundle/SHA256SUMS"; return 1; }
+  [[ -s "$bundle/SHA256SUMS" ]] || { rm -f "$bundle/SHA256SUMS"; return 1; }
 }
 
 dl_verify_release() {

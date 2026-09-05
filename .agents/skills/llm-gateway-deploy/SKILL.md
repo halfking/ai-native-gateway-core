@@ -190,4 +190,19 @@ bash tests/deploy_blue_green_contract_test.sh
 bash tests/deploy_host_test.sh
 bash tests/deploy_wrapper_test.sh
 bash tests/deploy_credential_decrypt_verify_test.sh
+bash tests/deploy_nocgo_build_test.sh
 ```
+
+### Post-promotion identity check
+
+The version number alone is not evidence of code identity: it comes from
+`version.json`, not from the binary. After every promotion, verify:
+
+1. `go version -m <project install root>/bin/<release>/gateway | grep vcs.revision`
+   must equal the `git_sha` recorded in that release bundle's `version.json`.
+2. The mtime of `run/gateway.build` must be the time of this deployment. An
+   older mtime means the build step silently reused a stale binary (see
+   `docs/audit/2026-09-05-stale-binary-deploy.md`).
+
+If either check fails, treat the release as unverified and do not promote it
+further along the `local -> 245 -> 154` order.

@@ -71,12 +71,20 @@ credential_decrypt）全过；修复后真实部署 2.5.0.1935 的 bundle
 
 ## 5. 遗留与防复发（下一阶段输入）
 
-- [ ] **同源漏洞排查**：`deploy-245.sh` / `deploy-154.sh` / `deploy-seamless.sh` /
+- [x] **同源漏洞排查**：`deploy-245.sh` / `deploy-154.sh` / `deploy-seamless.sh` /
   `deploy-local-lib.sh` 是否存在同类「函数内失败 + 命令替换赋值」吞错模式与
   CGO=0 构建断裂（245/154 构建路径在 252 远端，构建方式未审计）。
-- [ ] **回归测试固化**：将 `CGO_ENABLED=0 go build ./cmd/gateway` 纳入 deploy
+  → 已由本轮同源漏洞审计修复完成，覆盖 deploy-245/154/seamless/local-lib 四个入口
+  （吞错模式 + CGO=0 断裂 + 远端旧产物复用窗口），见提交说明。
+- [x] **回归测试固化**：将 `CGO_ENABLED=0 go build ./cmd/gateway` 纳入 deploy
   测试组合（如 `tests/deploy_nocgo_build_test.sh`），防止依赖图再次引入 cgo-only 包。
-- [ ] **部署后身份核验步骤**：晋升后以 `go version -m bin/<release>/gateway` 的
+  → 已落地 `tests/deploy_nocgo_build_test.sh`（CGO_ENABLED=0 交叉构建正向用例 +
+  反向回归用例 + `go list -deps` 静态检查）。
+- [x] **部署后身份核验步骤**：晋升后以 `go version -m bin/<release>/gateway` 的
   vcs.revision 与 version.json 的 git_sha 比对，作为部署验证合同的一部分
   （可写入 llm-gateway-deploy skill）。
+  → 已写入 `.agents/skills/llm-gateway-deploy/SKILL.md` 的 Verification contract
+  （Post-promotion identity check 小节）。
 - [ ] 多 clone 并行开发时的构建来源纪律：仅在与 origin/main 同步的 clone 中构建发布。
+  （流程约定，本轮无代码/流程落地，见环境状态文档
+  `docs/06-deployment/01-environments/local-8782-env-state-20260905.md` §5 条目 5。）
