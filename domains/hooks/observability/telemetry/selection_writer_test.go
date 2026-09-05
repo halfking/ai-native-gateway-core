@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,9 @@ func (f *fakeSelectionPool) lastCall() (fakeSelectionCall, bool) {
 	}
 	return f.calls[len(f.calls)-1], true
 }
+
+// identifierRe extracts SQL identifiers for the IDs-only column guard.
+var identifierRe = regexp.MustCompile(`[a-z_][a-z0-9_]*`)
 
 func TestSelectionWriter_InsertBatchShape(t *testing.T) {
 	fake := &fakeSelectionPool{}
@@ -77,10 +81,24 @@ func TestSelectionWriter_InsertBatchShape(t *testing.T) {
 		t.Error("insert must be replay-safe via ON CONFLICT DO NOTHING")
 	}
 
-	// The row must never carry conversation content — only IDs and numbers.
-	for _, forbidden := range []string{"prompt", "message", "content", "body"} {
-		if strings.Contains(strings.ToLower(call.sql), forbidden) {
-			t.Errorf("SQL references %q; selection rows must stay IDs-only", forbidden)
+	// The row must never carry conversation content — only IDs, numbers and
+	// the privacy-compliant derived feature columns from structured features
+	// v1 (length buckets, indicator booleans, content_hash). The check is
+	// identifier-exact so those derived columns stay allowed while a raw
+	// prompt/content/message/body column stays banned.
+	identifiers := map[string]bool{}
+	for _, id := range identifierRe.FindAllString(strings.ToLower(call.sql), -1) {
+		identifiers[id] = true
+	}
+	derivedFeatureColumns := map[string]bool{
+		"prompt_length_bucket": true,
+		"content_hash":         true,
+	}
+	for id := range identifiers {
+		for _, forbidden := range []string{"prompt", "message", "content", "body"} {
+			if strings.Contains(id, forbidden) && !derivedFeatureColumns[id] {
+				t.Errorf("SQL identifier %q references %q; selection rows must stay IDs-only (+ derived features)", id, forbidden)
+			}
 		}
 	}
 
