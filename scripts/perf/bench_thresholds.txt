@@ -1,0 +1,5 @@
+# benchmark ns/op 阈值覆盖表（仅覆盖 ns/op；B/op 与 allocs/op 阈值固定）
+# 格式: Benchmark名=容忍度（如 0.30 表示 30%）
+# 适用：本机噪声大、亚微秒级、或已知抖动大的基准。
+# 示例:
+# BenchmarkCalculatePressurePenalty=0.30
