@@ -5206,38 +5206,99 @@ BEGIN
     ALTER TABLE public.auto_route_selections_hot ADD CONSTRAINT ars_hot_reward_source_check CHECK (reward_source IS NULL OR reward_source IN ('request', 'session'));
   END IF;
 END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'detected_language') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN detected_language TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'prompt_length_bucket') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN prompt_length_bucket TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'context_length_bucket') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN context_length_bucket TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'turn_count_bucket') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN turn_count_bucket TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'has_code_indicator') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN has_code_indicator BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'has_math_indicator') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN has_math_indicator BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'has_table_indicator') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN has_table_indicator BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'has_multimedia_indicator') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN has_multimedia_indicator BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'intent_category') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN intent_category TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'domain_hint') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN domain_hint TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'complexity_bucket') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN complexity_bucket TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'latency_sensitive') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN latency_sensitive BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'cost_sensitive') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN cost_sensitive BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'feature_version') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN feature_version TEXT DEFAULT 'v1';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'content_hash') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN content_hash TEXT;
+  END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ars_hot_request ON public.auto_route_selections_hot (request_id, partition_date);
 CREATE INDEX IF NOT EXISTS idx_ars_hot_task_profile_ts ON public.auto_route_selections_hot (task_type, profile, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_ars_hot_session ON public.auto_route_selections_hot (session_id, ts DESC) WHERE session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_ars_hot_unsettled ON public.auto_route_selections_hot (ts) WHERE settled_at IS NULL;
-CREATE OR REPLACE VIEW public.auto_route_selections_all AS
+DROP VIEW IF EXISTS public.auto_route_selections_all;
+CREATE VIEW public.auto_route_selections_all AS
 SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
   canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
   explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,
-  partition_date, experiment_id, treatment, assignment_version, assignment_key_hash, 'hot'::text AS storage_tier
+  partition_date, experiment_id, treatment, assignment_version, assignment_key_hash,
+  detected_language, prompt_length_bucket, context_length_bucket, turn_count_bucket,
+  has_code_indicator, has_math_indicator, has_table_indicator, has_multimedia_indicator,
+  intent_category, domain_hint, complexity_bucket, latency_sensitive, cost_sensitive,
+  feature_version, content_hash, 'hot'::text AS storage_tier
 FROM public.auto_route_selections_hot
 UNION ALL
 SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
   canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
   explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,
-  partition_date, experiment_id, treatment, assignment_version, assignment_key_hash, 'parent'::text AS storage_tier
+  partition_date, experiment_id, treatment, assignment_version, assignment_key_hash,
+  detected_language, prompt_length_bucket, context_length_bucket, turn_count_bucket,
+  has_code_indicator, has_math_indicator, has_table_indicator, has_multimedia_indicator,
+  intent_category, domain_hint, complexity_bucket, latency_sensitive, cost_sensitive,
+  feature_version, content_hash, 'parent'::text AS storage_tier
 FROM public.auto_route_selections;
 `
 
 // ensureAutoRouteSelectionsHotSchema mirrors the hot-table DDL of
-// sql/migrations/startup/656_auto_route_selections_hot.sql (audit 2026-09-05
-// D-2#4 / H-2). On a deployment that upgraded the binary without re-running
-// the 656 migration, every telemetry selection-writer batch INSERT failed
-// and was dropped (dropped counter + one WARN), the settle worker failed
-// each sweep, and the AUTO routing learning loop silently did nothing.
+// sql/migrations/startup/656_auto_route_selections_hot.sql + 658_auto_route_structured_features.sql
+// (audit 2026-09-05 D-2#4 / H-2 + 2026-09-06 view schema mismatch fix). On a deployment that upgraded
+// the binary without re-running the 656/658 migrations, every telemetry selection-writer batch INSERT
+// failed and was dropped (dropped counter + one WARN), the settle worker failed each sweep, and the
+// AUTO routing learning loop silently did nothing.
 //
-// Error handling matches ensureSessionSummariesCanonical: a missing parent
-// table (fresh empty database where 478/650 have not run yet) is a degraded
-// skip with a pointer to the migration SQL, not a fatal — the hot DDL
-// references auto_route_selections_id_seq (owned by the parent's BIGSERIAL)
-// and the view unions the parent, so both require the parent to exist.
-// Everything else is CREATE IF NOT EXISTS / OR REPLACE idempotent and any
-// execution error is returned to ApplyMigrations.
+// 2026-09-06 fix: Migration 658 added 15 structured feature columns and updated the
+// auto_route_selections_all view with DROP VIEW + CREATE VIEW (because CREATE OR REPLACE VIEW cannot
+// change column positions). This ensure function must match that schema to avoid
+// "ERROR: cannot drop columns from view (SQLSTATE 42P16)" when the view already has the 658 columns
+// but the ensure tries to replace it with the old 656 definition.
+//
+// Error handling matches ensureSessionSummariesCanonical: a missing parent table (fresh empty database
+// where 478/650 have not run yet) is a degraded skip with a pointer to the migration SQL, not a fatal
+// — the hot DDL references auto_route_selections_id_seq (owned by the parent's BIGSERIAL) and the view
+// unions the parent, so both require the parent to exist. Everything else is CREATE IF NOT EXISTS /
+// DROP+CREATE idempotent and any execution error is returned to ApplyMigrations.
 func (d *DB) ensureAutoRouteSelectionsHotSchema(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
