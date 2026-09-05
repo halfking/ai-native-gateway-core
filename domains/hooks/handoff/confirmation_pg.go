@@ -21,11 +21,25 @@ func (s *PGStore) SavePending(ctx context.Context, p *ConfirmationProposal) erro
 	}
 	_, err = s.db.ExecContext(ctx, `
 	INSERT INTO handoff_pending_confirmations (id,tenant_id,api_key_id,previous_session_id,token_hash,status,expires_at,trigger_mode,trigger_reason,tokens_at_trigger,context_window,messages_at_trigger,tokens_in_session,summary_engine,summary_text,handoff_prompt,skill_name,duration_ms,proposal_created_at,goal_state,goal_state_version,restore_status)
-	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::jsonb,$21,$22)
+	VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20::text::jsonb,$21,$22)
 	ON CONFLICT (tenant_id,previous_session_id) WHERE status='pending' DO UPDATE SET
 	id=EXCLUDED.id,api_key_id=EXCLUDED.api_key_id,token_hash=EXCLUDED.token_hash,expires_at=EXCLUDED.expires_at,trigger_mode=EXCLUDED.trigger_mode,trigger_reason=EXCLUDED.trigger_reason,tokens_at_trigger=EXCLUDED.tokens_at_trigger,context_window=EXCLUDED.context_window,messages_at_trigger=EXCLUDED.messages_at_trigger,tokens_in_session=EXCLUDED.tokens_in_session,summary_engine=EXCLUDED.summary_engine,summary_text=EXCLUDED.summary_text,handoff_prompt=EXCLUDED.handoff_prompt,skill_name=EXCLUDED.skill_name,duration_ms=EXCLUDED.duration_ms,proposal_created_at=EXCLUDED.proposal_created_at,goal_state=EXCLUDED.goal_state,goal_state_version=EXCLUDED.goal_state_version,restore_status=EXCLUDED.restore_status,restore_error=NULL,restore_attempted_at=NULL,restored_at=NULL,updated_at=NOW()`,
-		p.ID, p.TenantID, p.APIKeyID, p.PreviousSessionID, p.TokenHash, confirmationStatusPending, p.ExpiresAt, p.Record.TriggerMode, p.Record.TriggerReason, p.Record.TokensAtTrigger, p.Record.ContextWindow, p.Record.MessagesAtTrigger, p.Record.TokensInSession, p.Record.SummaryEngine, p.Record.SummaryText, p.Record.HandoffPrompt, p.Record.SkillName, p.Record.DurationMs, p.Record.CreatedAt, goalState, goalVersion, restoreStatus)
+		p.ID, p.TenantID, p.APIKeyID, p.PreviousSessionID, p.TokenHash, confirmationStatusPending, p.ExpiresAt, p.Record.TriggerMode, p.Record.TriggerReason, p.Record.TokensAtTrigger, p.Record.ContextWindow, p.Record.MessagesAtTrigger, p.Record.TokensInSession, p.Record.SummaryEngine, p.Record.SummaryText, p.Record.HandoffPrompt, p.Record.SkillName, p.Record.DurationMs, p.Record.CreatedAt, jsonbBindArg(goalState), goalVersion, restoreStatus)
 	return err
+}
+
+// jsonbBindArg converts a []byte JSON payload into the binding form required by
+// the gateway pool's pgx QueryExecModeSimpleProtocol: []byte would be inlined
+// as bytea hex and any jsonb cast then fails with 22P02
+// ("invalid input syntax for type json"; doc §3.2, internal/dbx/jsonb.go).
+// The string form flows through $N::text::jsonb; an empty payload stays SQL
+// NULL so the `goal_state jsonb` column keeps its historical NULL semantics
+// for proposals without a goal state.
+func jsonbBindArg(b []byte) any {
+	if len(b) == 0 {
+		return nil
+	}
+	return string(b)
 }
 
 func (s *PGStore) Confirm(ctx context.Context, in ConfirmationInput) (*ConfirmationResult, error) {
