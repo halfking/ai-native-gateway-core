@@ -280,8 +280,11 @@ func (w *ReconciliationWorker) finishRun(ctx context.Context, runID, status stri
 func (w *ReconciliationWorker) reconcileDailyOnce(ctx context.Context, runID string, start, end time.Time) (int64, int64, int64, bool, error) {
 	// Build ground-truth from usage_facts
 	factRows, err := w.db.Query(ctx, `
+		-- 2026-09-05 PG log audit: occurred_at 在 usage_facts 与
+		-- stats_event_dedup 上都存在，必须限定 f. 前缀，否则日对账
+		-- 报 "column reference occurred_at is ambiguous"（SQLSTATE 42702）。
 		SELECT
-			(occurred_at AT TIME ZONE 'UTC')::date AS day_utc,
+			(f.occurred_at AT TIME ZONE 'UTC')::date AS day_utc,
 			tenant_id,
 			COALESCE(provider_id, 0) AS provider_id,
 			COALESCE(credential_id, 0) AS credential_id,

@@ -26,6 +26,35 @@ import (
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
 
+// pgErrorDiagnostics extracts the server-side error fields that err.Error()
+// omits (Detail/Hint/Table/Column/Constraint). 2026-09-05 PG log audit:
+// request-log persists failing with bare "numeric field overflow
+// (SQLSTATE 22003)" carry the offending precision/scale only in Detail —
+// without it the overflowing column cannot be located from gateway logs.
+func pgErrorDiagnostics(err error) string {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return ""
+	}
+	fields := make([]string, 0, 5)
+	if pgErr.Detail != "" {
+		fields = append(fields, "detail="+pgErr.Detail)
+	}
+	if pgErr.Hint != "" {
+		fields = append(fields, "hint="+pgErr.Hint)
+	}
+	if pgErr.TableName != "" {
+		fields = append(fields, "table="+pgErr.TableName)
+	}
+	if pgErr.ColumnName != "" {
+		fields = append(fields, "column="+pgErr.ColumnName)
+	}
+	if pgErr.ConstraintName != "" {
+		fields = append(fields, "constraint="+pgErr.ConstraintName)
+	}
+	return strings.Join(fields, "; ")
+}
+
 // heapPartitionNameRE 白名单: request_logs_<YYYY>_<MM>, 仅允许数字+下划线.
 var heapPartitionNameRE = regexp.MustCompile(`^request_logs_[0-9]{4}_[0-9]{2}$`)
 
@@ -704,6 +733,9 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 		// Request logs power /request-logs — never silently drop on backpressure.
 		if err := c.persistRequestLog(entry); err != nil {
 			atomic.AddUint64(&c.failPermanent, 1)
+			if diag := pgErrorDiagnostics(err); diag != "" {
+				slog.Warn("telemetry pg error diagnostics", "request_id", entry.RequestID, "op", entry.Op, "diagnostics", diag)
+			}
 			if c.fallback != nil {
 				if fallbackErr := c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry); fallbackErr != nil {
 					slog.Warn("telemetry request sync fallback failed", "request_id", entry.RequestID, "db_error", err, "fallback_error", fallbackErr)
@@ -838,6 +870,9 @@ func (c *Client) flush(batch []any) {
 		case *RequestLogEntry:
 			if err := c.persistRequestLog(v); err != nil {
 				atomic.AddUint64(&c.failPermanent, 1)
+				if diag := pgErrorDiagnostics(err); diag != "" {
+					slog.Warn("telemetry pg error diagnostics", "request_id", v.RequestID, "op", v.Op, "diagnostics", diag)
+				}
 				if c.fallback != nil {
 					if fallbackErr := c.fallback.WriteRequestLog(context.Background(), v.RequestID+":"+string(v.Op), v); fallbackErr != nil {
 						slog.Warn("telemetry request fallback failed", "request_id", v.RequestID, "db_error", err, "fallback_error", fallbackErr)

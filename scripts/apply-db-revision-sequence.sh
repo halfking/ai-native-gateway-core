@@ -79,6 +79,16 @@ psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (seq
 # DETACH PARTITION + DROP path (matching the installer's runner order);
 # all four are idempotent (IF NOT EXISTS / DROP FUNCTION IF EXISTS +
 # CREATE OR REPLACE).
+#
+# 2026-09-05 PG log audit (deploy gap): V371 (deploy/sql/migrations —
+# supplier_errors_hot + monthly columnar partitions + promote/ensure
+# functions + unified view + supplier_error_stats) and the
+# credential_model_weekly_peak unique bucket index were shipped as repo
+# files but no deployment track applied them on upgraded databases, so the
+# gateway logged 42P01/42883 on every insert / rollup / partition cron
+# (supplier_errors family) and 42P10 on the weekly peak rollup
+# (ON CONFLICT target missing). Both are idempotent and safe to re-run;
+# they append after 654 like the other independent repairs.
 files=(
   "$ROOT_DIR/sql/migrations/startup/655_session_summaries_schema_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/560_session_summaries_tenant_uniqueness.sql"
@@ -94,6 +104,8 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/652_system_monitor_fallback_queue.sql"
   "$ROOT_DIR/sql/migrations/startup/653_archive_credential_model_index_canonical_return.sql"
   "$ROOT_DIR/sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql"
+  "$ROOT_DIR/sql/migrations/startup/657_credential_model_weekly_peak_unique.sql"
+  "$ROOT_DIR/deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql"
 )
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
