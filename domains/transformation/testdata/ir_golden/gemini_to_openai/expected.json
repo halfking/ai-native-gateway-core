@@ -2,6 +2,10 @@
   "max_tokens": 256,
   "messages": [
     {
+      "content": "You are a helpful assistant.",
+      "role": "system"
+    },
+    {
       "content": "What is the weather in Tokyo?",
       "role": "user"
     }

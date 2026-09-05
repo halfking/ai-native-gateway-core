@@ -31,7 +31,12 @@ func TestResponsesBridges_PostCommitUpstreamErrorFinishesIncomplete(t *testing.T
 		},
 		{
 			name:       "openai",
-			wantReason: "eof_without_done",
+			// A-#14: in-band {"error":{...}} frames now parse as
+			// ir.ChunkTypeError, so the bridge classifies them as
+			// upstream_error (matching the anthropic case) instead of
+			// falling through to a generic eof_without_done. Failover
+			// gating depends on this classification.
+			wantReason: "upstream_error",
 
 			body: "data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n" +
 				"data: {\"error\":{\"message\":\"upstream failed\"}}\n\n",

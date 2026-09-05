@@ -253,6 +253,9 @@ var autoRouteSelectionsHotMigration656 []byte
 //go:embed embeddata/startup/657_durable_llm_tasks_decision_history.sql
 var durableTasksDecisionHistoryMigration657 []byte
 
+//go:embed embeddata/startup/658_auto_route_structured_features.sql
+var autoRouteStructuredFeaturesMigration658 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -782,11 +785,11 @@ func readAppImageTag() string {
 //	│   └── 02-seed.sql
 //	├── redis/                 Redis
 //	│   └── data/              bind-mount → /data
-	//	├── attachments/           bind-mount → /opt/llm-gateway-go/data/attachments
-	//	├── raw-logs/              bind-mount → /opt/llm-gateway-go/data/raw-logs
-	//	├── backups/               bind-mount → /opt/llm-gateway-go/data/backups
-	//	│   ├── daily/
-	//	│   └── manual/
+//	├── attachments/           bind-mount → /opt/llm-gateway-go/data/attachments
+//	├── raw-logs/              bind-mount → /opt/llm-gateway-go/data/raw-logs
+//	├── backups/               bind-mount → /opt/llm-gateway-go/data/backups
+//	│   ├── daily/
+//	│   └── manual/
 //	└── reports/               部署/运行报告
 //	    └── install-report.md
 type DirectoryLayout struct {
@@ -994,6 +997,7 @@ func copySQLBackup(root string) error {
 		"startup/655_session_summaries_schema_reconcile.sql":                       sessionSummariesSchemaReconcileMigration655,
 		"startup/656_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration656,
 		"startup/657_durable_llm_tasks_decision_history.sql":                       durableTasksDecisionHistoryMigration657,
+		"startup/658_auto_route_structured_features.sql":                           autoRouteStructuredFeaturesMigration658,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
@@ -1134,6 +1138,7 @@ func setupSQLDir() (string, func(), error) {
 		"startup/655_session_summaries_schema_reconcile.sql":                       sessionSummariesSchemaReconcileMigration655,
 		"startup/656_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration656,
 		"startup/657_durable_llm_tasks_decision_history.sql":                       durableTasksDecisionHistoryMigration657,
+		"startup/658_auto_route_structured_features.sql":                           autoRouteStructuredFeaturesMigration658,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {

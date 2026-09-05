@@ -22,9 +22,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 VERBOSE=false
+GO_TEST_FLAGS=()
 for arg in "$@"; do
   case "$arg" in
-    --verbose|-v) VERBOSE=true ;;
+    --verbose|-v) VERBOSE=true; GO_TEST_FLAGS+=(-v) ;;
     -h|--help)
       sed -n '2,14p' "$0"
       exit 0
@@ -41,49 +42,29 @@ echo "[privacy-compliance] Running AUTO route privacy tests..."
 FAILED=0
 
 # Test 1: Structured features do not leak content
-echo "[privacy-compliance] Test 1/3: Structured features content leakage protection"
-if [[ "$VERBOSE" == true ]]; then
-  go test ./autoroute -run TestStructuredFeaturesNoContentLeakage -v
-else
-  go test ./autoroute -run TestStructuredFeaturesNoContentLeakage
-fi
-if [[ $? -ne 0 ]]; then
+echo "[privacy-compliance] Test 1/4: Structured features content leakage protection"
+if ! go test "${GO_TEST_FLAGS[@]}" ./autoroute -run TestStructuredFeaturesNoContentLeakage ; then
   echo "[privacy-compliance] FAIL: Structured features leaked content" >&2
   FAILED=$((FAILED + 1))
 fi
 
 # Test 2: Content hash is non-reversible
-echo "[privacy-compliance] Test 2/3: Content hash non-reversibility"
-if [[ "$VERBOSE" == true ]]; then
-  go test ./autoroute -run TestContentHashNonReversibility -v
-else
-  go test ./autoroute -run TestContentHashNonReversibility
-fi
-if [[ $? -ne 0 ]]; then
+echo "[privacy-compliance] Test 2/4: Content hash non-reversibility"
+if ! go test "${GO_TEST_FLAGS[@]}" ./autoroute -run TestContentHashNonReversibility ; then
   echo "[privacy-compliance] FAIL: Content hash reversibility vulnerability" >&2
   FAILED=$((FAILED + 1))
 fi
 
 # Test 3: ClassificationSignals sanitization
-echo "[privacy-compliance] Test 3/3: ClassificationSignals log sanitization"
-if [[ "$VERBOSE" == true ]]; then
-  go test ./autoroute -run TestClassificationSignals -v
-else
-  go test ./autoroute -run TestClassificationSignals
-fi
-if [[ $? -ne 0 ]]; then
+echo "[privacy-compliance] Test 3/4: ClassificationSignals log sanitization"
+if ! go test "${GO_TEST_FLAGS[@]}" ./autoroute -run TestClassificationSignals ; then
   echo "[privacy-compliance] FAIL: ClassificationSignals leaked content in logs" >&2
   FAILED=$((FAILED + 1))
 fi
 
 # Test 4: Audit log sanitization
 echo "[privacy-compliance] Test 4/4: Audit log sanitization"
-if [[ "$VERBOSE" == true ]]; then
-  go test ./autoroute -run TestSanitizeForAudit -v
-else
-  go test ./autoroute -run TestSanitizeForAudit
-fi
-if [[ $? -ne 0 ]]; then
+if ! go test "${GO_TEST_FLAGS[@]}" ./autoroute -run TestSanitizeForAudit ; then
   echo "[privacy-compliance] FAIL: Audit log sanitization failed" >&2
   FAILED=$((FAILED + 1))
 fi
