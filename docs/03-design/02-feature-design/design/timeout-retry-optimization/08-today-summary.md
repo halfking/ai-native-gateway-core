@@ -248,7 +248,7 @@ ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go -f"
 
 # 连接数据库
 ssh root@47.97.111.154 -p 25022
-export PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg'
+export PGPASSWORD='***REDACTED***'
 psql -h 172.16.2.210 -U llm_gateway -d llm_gateway
 
 # 查看配置

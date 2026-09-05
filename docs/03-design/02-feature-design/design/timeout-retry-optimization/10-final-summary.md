@@ -390,7 +390,7 @@ Host: 172.16.2.210
 Port: 5432
 Database: llm_gateway
 User: llm_gateway
-Password: 4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg
+Password: ***REDACTED***
 ```
 
 ### 常用命令
@@ -403,7 +403,7 @@ ssh root@47.97.111.154 -p 25022 "systemctl status llm-gateway-go"
 ssh root@47.97.111.154 -p 25022 "cat /etc/llm-gateway-go/env | grep TIMEOUT"
 
 # 连接数据库
-export PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg'
+export PGPASSWORD='***REDACTED***'
 psql -h 172.16.2.210 -U llm_gateway -d llm_gateway
 
 # 查询超时配置

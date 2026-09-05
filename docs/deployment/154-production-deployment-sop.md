@@ -45,7 +45,7 @@
   预期: 至少 1GB 可用空间
 
 # 2.1.4 检查数据库连接
-□ ssh root@<154-IP> 'PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -c "SELECT 1;"'
+□ ssh root@<154-IP> 'PGPASSWORD="***REDACTED***" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -c "SELECT 1;"'
   预期: 返回 1
 ```
 
@@ -237,7 +237,7 @@ ssh root@<154-IP> "journalctl -u llmgo-154.service -f"
 ### 4.2 数据库监控
 ```bash
 # 查询最近 10 分钟的请求统计
-ssh root@<154-IP> 'PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway' <<EOF
+ssh root@<154-IP> 'PGPASSWORD="***REDACTED***" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway' <<EOF
 SELECT 
     COUNT(*) AS total_requests,
     COUNT(*) FILTER (WHERE success = true) AS success_count,
