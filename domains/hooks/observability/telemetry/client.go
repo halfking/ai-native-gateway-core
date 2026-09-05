@@ -73,13 +73,39 @@ type execQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+// RequestLogSink 是 lite 存储模式（无 PostgreSQL）下的请求日志持久化 sink。
+//
+// 背景（2026-09-05 审计 B2）：lite 模式跳过 PG 初始化后 dbPool 为 nil，
+// Enabled() 恒 false，整条 EmitRequestLog → worker → persist 管道惰性化，
+// 请求日志完全不落盘。SetRequestLogSink 注入本接口后：
+//   - Enabled() 视为已启用，请求日志照常入队（决策日志 / context_attrs
+//     侧表仍依赖 PG，lite 下继续跳过，不受影响）；
+//   - persistRequestLog 在 requestLogDatabase() 为 nil 时改走 sink，
+//     成功后与 PG 路径同样触发 onPersisted hooks 与 releaseBodies。
+//
+// full 模式从不注入 sink，所有路径行为零变化。
+type RequestLogSink interface {
+	// PersistRequestLog 持久化一条请求日志（INSERT 与 UPDATE 两类 op 都
+	// 经此入口，实现方需对同一 request_id 幂等/UPSERT）。返回错误时由
+	// telemetry flush 侧记 failPermanent 并告警，不阻塞请求热路径。
+	PersistRequestLog(ctx context.Context, entry *RequestLogEntry) error
+}
+
+// requestLogSinkHolder 是 atomic.Value 的装载类型（要求 Load 端类型断言稳定）。
+type requestLogSinkHolder struct {
+	sink RequestLogSink
+}
+
 type Client struct {
 	dbPool       *pgxpool.Pool
 	requestLogDB requestLogDB
 
-	queue chan any
-	done  chan struct{}
-	wg    sync.WaitGroup
+	// requestLogSinkStore 持有 lite 存储模式注入的非 PG 请求日志 sink
+	// （atomic.Value 一致性要求包装为同一具体类型）。
+	requestLogSinkStore atomic.Value // requestLogSinkHolder
+	queue               chan any
+	done                chan struct{}
+	wg                  sync.WaitGroup
 
 	lifecycleMu sync.RWMutex
 	stopped     atomic.Bool
@@ -462,6 +488,13 @@ func newClientWithBufSize(bufSize int) *Client {
 }
 
 func (c *Client) Enabled() bool {
+	return c != nil && (c.pgEnabled() || c.requestSink() != nil)
+}
+
+// pgEnabled 报告是否配置了 PostgreSQL 持久化后端（历史 Enabled 语义）。
+// 决策日志与 context_attrs 侧表只有 PG 实现，其发射门槛继续用本方法，
+// 注入 lite sink 不会让这两类条目进入队列后在 flush 侧反复失败告警。
+func (c *Client) pgEnabled() bool {
 	return c != nil && (c.dbPool != nil || c.requestLogDB != nil)
 }
 
@@ -502,6 +535,27 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 func (c *Client) SetDB(pool *pgxpool.Pool) {
 	c.dbPool = pool
 	c.requestLogDB = pool
+}
+
+// SetRequestLogSink 注入 lite 存储模式的请求日志 sink（见 RequestLogSink 文档）。
+// 传入 nil 等价于摘除 sink，Client 回到纯 PG 行为。可在任意时刻调用
+// （内部 atomic.Value 存储，与运行中的 worker 并发安全）。
+func (c *Client) SetRequestLogSink(sink RequestLogSink) {
+	if c == nil {
+		return
+	}
+	c.requestLogSinkStore.Store(requestLogSinkHolder{sink: sink})
+}
+
+// requestSink 返回当前注入的 sink（未注入时 nil）。atomic 读，热路径安全。
+func (c *Client) requestSink() RequestLogSink {
+	if c == nil {
+		return nil
+	}
+	if h, ok := c.requestLogSinkStore.Load().(requestLogSinkHolder); ok {
+		return h.sink
+	}
+	return nil
 }
 
 func (c *Client) requestLogDatabase() requestLogDB {
@@ -601,7 +655,10 @@ func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
 	}
 	c.lifecycleMu.RLock()
 	defer c.lifecycleMu.RUnlock()
-	if c.stopped.Load() || !c.Enabled() {
+	// 决策日志只有 PG 表（routing_decision_log_hot），无 lite sink；
+	// 注入 lite sink 时（Enabled()==true）也必须保持跳过，避免入队后
+	// 在 flush 侧以 errNoTelemetryDB 反复告警。
+	if c.stopped.Load() || !c.pgEnabled() {
 		return
 	}
 	select {
@@ -889,7 +946,14 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 		return c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry)
 	}
 	var err error
-	if entry.Op == RequestLogUpdate {
+	// lite 存储模式（2026-09-05 审计 B2）：无 PG 后端但注入了 sink 时，
+	// INSERT/UPDATE 两类 op 统一交给 sink（实现方负责按 request_id 幂等），
+	// 成功后走与 PG 路径完全相同的 onPersisted hooks / releaseBodies 收尾。
+	if sink := c.requestSink(); sink != nil && c.requestLogDatabase() == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err = sink.PersistRequestLog(ctx, entry)
+		cancel()
+	} else if entry.Op == RequestLogUpdate {
 		err = c.updateRequestLog(entry)
 	} else {
 		err = c.insertRequestLog(entry)

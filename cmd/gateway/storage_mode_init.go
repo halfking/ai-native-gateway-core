@@ -6,9 +6,10 @@
 //   - 本文件持有全部 lite 模式装配逻辑：加载存储配置（YAML + LLM_GATEWAY_* env）、
 //     初始化存储工厂（SQLite 三 store + FileBodies/Memory 单例）、L1.5 FileCache
 //     与后台清理任务（bg.CacheTrimmer / bg.BodiesTrimmer）；
-//   - main.go 仅在四个位置做最小插入：config 加载后调用 initStorageMode、
-//     lite 模式跳过 PG 初始化、SessionCacheV2 构造点走 mode-aware 装配、
-//     优雅关闭段末尾调用 storageRuntime.Shutdown。
+//   - main.go 仅在五个位置做最小插入：config 加载后调用 initStorageMode、
+//     lite 模式跳过 PG 初始化、telemetryClient 构造后注入 lite sink
+//     （见 lite_telemetry_sink.go，审计 B2）、SessionCacheV2 构造点走
+//     mode-aware 装配、优雅关闭段末尾调用 storageRuntime.Shutdown。
 //
 // 行为兼容性：LLM_GATEWAY_STORAGE_MODE 未设置或为 "full" 时 initStorageMode
 // 返回 nil runtime，调用方全部走既有装配路径，行为零变化。
