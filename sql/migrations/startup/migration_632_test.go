@@ -40,11 +40,21 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 	t.Run("creates_required_views_and_columns", func(t *testing.T) {
 		upSQL := readUp(t)
 
+		// Replayable rewrite (2026-09-05): the SQL mirror drops and recreates
+		// both matviews so a direct replay always converges (same discipline
+		// as migration 658 — a stale CREATE OR REPLACE cannot change columns).
+		// Runtime behaviour stays owned by db.go's IF NOT EXISTS ensure path.
 		require.Contains(t, upSQL,
-			"CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d",
+			"DROP MATERIALIZED VIEW IF EXISTS public.routing_analytics_7d CASCADE;",
+			"should drop routing_analytics_7d for replayable recreation")
+		require.Contains(t, upSQL,
+			"CREATE MATERIALIZED VIEW public.routing_analytics_7d AS",
 			"should create routing_analytics_7d materialized view")
 		require.Contains(t, upSQL,
-			"CREATE MATERIALIZED VIEW IF NOT EXISTS routing_audit_summary_7d",
+			"DROP MATERIALIZED VIEW IF EXISTS public.routing_audit_summary_7d CASCADE;",
+			"should drop routing_audit_summary_7d for replayable recreation")
+		require.Contains(t, upSQL,
+			"CREATE MATERIALIZED VIEW public.routing_audit_summary_7d AS",
 			"should create routing_audit_summary_7d materialized view")
 
 		requiredColumns := []string{
@@ -70,14 +80,18 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 	t.Run("creates_required_indexes", func(t *testing.T) {
 		upSQL := readUp(t)
 
-		// Unique index is required for REFRESH ... CONCURRENTLY and must
-		// be plain columns (PG rejects expression indexes for concurrent
-		// refresh, SQLSTATE 55000 — seen on prod 2026-09-01).
+		// Plain-column unique index is required for REFRESH ... CONCURRENTLY
+		// (PG rejects expression indexes, SQLSTATE 55000 — seen on prod
+		// 2026-09-01). The mirror needs no IF NOT EXISTS: the matviews are
+		// dropped and recreated in the same replay, and the legacy _pkey
+		// expression indexes die with the DROP ... CASCADE above (db.go keeps
+		// the explicit `DROP INDEX IF EXISTS routing_analytics_7d_pkey` for
+		// its no-drop in-place repair path).
 		require.Contains(t, upSQL,
-			"CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_ukey",
+			"CREATE UNIQUE INDEX routing_analytics_7d_ukey\n  ON public.routing_analytics_7d (",
 			"should create plain-column unique index for CONCURRENTLY refresh")
-		require.Contains(t, upSQL, "DROP INDEX IF EXISTS routing_analytics_7d_pkey",
-			"should drop the old expression index")
+		require.NotContains(t, upSQL, "routing_analytics_7d_pkey",
+			"legacy expression index must not be recreated by the replay")
 
 		for _, idx := range []string{
 			"routing_analytics_7d_task_model_idx",
@@ -109,7 +123,7 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 		// collapses NULL keys into a single row. Both the SQL mirror and
 		// the Go ensure in db/db.go must stay in sync.
 		upSQL := readUp(t)
-		require.Contains(t, upSQL, "CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_ukey\n  ON routing_audit_summary_7d (tenant_id);",
+		require.Contains(t, upSQL, "CREATE UNIQUE INDEX routing_audit_summary_7d_ukey\n  ON public.routing_audit_summary_7d (tenant_id);",
 			"audit summary unique index must be the plain tenant_id column")
 
 		dbSrc, err := os.ReadFile("../../../db/db.go")
@@ -147,11 +161,25 @@ func TestMigration632_RoutingAnalyticsMaterializedView(t *testing.T) {
 		}
 	})
 
-	t.Run("uses_base_view_and_7d_window", func(t *testing.T) {
+	t.Run("uses_narrow_source_view_and_7d_window", func(t *testing.T) {
 		upSQL := readUp(t)
+		// Replayable rewrite (2026-09-05): analytics aggregates the narrow
+		// routing_analytics_source view (request_logs_hot UNION ALL
+		// request_logs). The old frozen wrapper
+		// request_logs_with_current_month_without_customer_id never gained
+		// origin_stage, so replaying a wrapper-based definition fails with
+		// SQLSTATE 42703 on any current database (observed 2026-09-04).
 		require.Contains(t, upSQL,
-			"FROM request_logs_with_current_month_without_customer_id",
-			"should aggregate the _without_customer_id view (no customer_id LATERAL)")
+			"CREATE VIEW public.routing_analytics_source AS",
+			"should define the narrow routing_analytics_source view")
+		require.Contains(t, upSQL, "FROM public.request_logs_hot\nUNION ALL",
+			"source view must union the hot table with the parent")
+		require.Contains(t, upSQL, "FROM public.request_logs;",
+			"source view must include the parent request_logs table")
+		require.Contains(t, upSQL, "FROM public.routing_analytics_source",
+			"matviews must aggregate the narrow source view")
+		require.NotContains(t, upSQL, "FROM request_logs_with_current_month_without_customer_id",
+			"must not aggregate the frozen request-log wrapper (SQLSTATE 42703 on replay)")
 		require.Contains(t, upSQL, "ts >= NOW() - INTERVAL '7 days'",
 			"should aggregate a 7-day window")
 	})
