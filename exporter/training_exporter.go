@@ -108,6 +108,15 @@ func (e *TrainingExporter) Export(ctx context.Context, configID int, outputPath 
 	rowCountRaw := len(records)
 	slog.Info("query completed", "row_count_raw", rowCountRaw)
 
+	// 边界条件检查：空数据集
+	if rowCountRaw == 0 {
+		err := fmt.Errorf("no records found in time range %s to %s",
+			config.TimeRangeStart.Format("2006-01-02"),
+			config.TimeRangeEnd.Format("2006-01-02"))
+		e.updateExportStatus(ctx, exportID, "failed", err)
+		return nil, err
+	}
+
 	// 4. 质量过滤
 	filtered := e.filterRecords(records, config.QualityFilters)
 	rowCountFiltered := len(filtered)
@@ -122,6 +131,14 @@ func (e *TrainingExporter) Export(ctx context.Context, configID int, outputPath 
 		"row_count_deduped", rowCountDeduped,
 		"duplicates_removed", rowCountFiltered-rowCountDeduped,
 		"dedup_strategy", config.DedupStrategy)
+
+	// 边界条件检查：过滤/去重后为空
+	if rowCountDeduped == 0 {
+		err := fmt.Errorf("no records after quality filtering and deduplication (raw: %d, filtered: %d, deduped: %d)",
+			rowCountRaw, rowCountFiltered, rowCountDeduped)
+		e.updateExportStatus(ctx, exportID, "failed", err)
+		return nil, err
+	}
 
 	// 6. 写入Parquet文件
 	fileSizeBytes, err := e.writeParquetFile(deduped, outputPath, config.Compression)
@@ -458,6 +475,11 @@ func (e *TrainingExporter) writeParquetFile(records []*TrainingDataRecord, outpu
 	if err != nil {
 		return 0, fmt.Errorf("create parquet writer failed: %w", err)
 	}
+	defer func() {
+		if err := pw.WriteStop(); err != nil {
+			slog.Error("failed to stop parquet writer during cleanup", "error", err)
+		}
+	}()
 
 	// 设置压缩
 	switch compression {
@@ -472,14 +494,29 @@ func (e *TrainingExporter) writeParquetFile(records []*TrainingDataRecord, outpu
 	}
 
 	// 写入记录
-	for _, rec := range records {
+	const progressInterval = 100000 // 每10万行输出一次进度
+	totalRecords := len(records)
+	
+	for i, rec := range records {
 		if err := pw.Write(rec); err != nil {
-			pw.WriteStop()
 			return 0, fmt.Errorf("write record failed: %w", err)
 		}
+		
+		// 进度日志（改善大数据集导出体验）
+		if totalRecords > progressInterval && (i+1)%progressInterval == 0 {
+			percent := float64(i+1) / float64(totalRecords) * 100
+			slog.Info("export progress",
+				"written", i+1,
+				"total", totalRecords,
+				"percent", fmt.Sprintf("%.1f%%", percent))
+		}
+	}
+	
+	if totalRecords > progressInterval {
+		slog.Info("export progress - completed", "written", totalRecords, "total", totalRecords, "percent", "100.0%")
 	}
 
-	// 关闭writer
+	// 显式调用WriteStop以捕获错误（defer会在失败时再次调用，但会被忽略）
 	if err := pw.WriteStop(); err != nil {
 		return 0, fmt.Errorf("write stop failed: %w", err)
 	}
