@@ -22,15 +22,12 @@ type CredentialRef struct {
 	CredentialID     int
 	ProviderID       int
 	ConcurrencyMode  string
-	ConcurrencyLimit int // in-flight cap (concurrency mode); 0 = unlimited
-	RPMLimit         int // req/min (rpm mode); 0 = unlimited
-	TPMLimit         int // tokens/min (tpm mode); 0 = unlimited
-	MaxQueueDepth    int // 0 = use global Config.MaxQueueDepth
-	MaxQueueWaitMS   int // 0 = use global Config.MaxQueueWaitMS
-	// PriorityCluster is a closed, caller-derived rank. Lower clusters are
-	// preferred before capacity-aware soft ranking is applied.
-	PriorityCluster int
-	Vendor          string // 原厂/供应商, for stats labels
+	ConcurrencyLimit int    // in-flight cap (concurrency mode); 0 = unlimited
+	RPMLimit         int    // req/min (rpm mode); 0 = unlimited
+	TPMLimit         int    // tokens/min (tpm mode); 0 = unlimited
+	MaxQueueDepth    int    // 0 = use global Config.MaxQueueDepth
+	MaxQueueWaitMS   int    // 0 = use global Config.MaxQueueWaitMS
+	Vendor           string // 原厂/供应商, for stats labels
 }
 
 // ForwardOutcome is what ForwardFunc returns.

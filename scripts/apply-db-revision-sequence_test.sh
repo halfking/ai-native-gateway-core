@@ -21,8 +21,8 @@ done
 
 # Keep the migration sequence explicit in the executable so deployment cannot
 # silently fall back to numeric directory ordering.
-sequence=$(grep -A20 '^files=(' "$SCRIPT")
-for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 660 661 V371; do
+sequence=$(grep -A40 '^files=(' "$SCRIPT")
+for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 656 659 660 661 662 663 664 V371; do
   printf '%s\n' "$sequence" | grep -q "${required}_" || {
     printf 'missing sequence entry: %s\n' "$required" >&2
     exit 1

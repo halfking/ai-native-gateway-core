@@ -148,7 +148,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 		for j, block := range msg.Content {
 			if block.Thinking != nil && block.Thinking.Signature != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "thinking.signature"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolGeminiGenerate,
@@ -159,7 +159,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 			}
 			if block.RedactedThinking != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "redacted_thinking"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolGeminiGenerate,
@@ -172,7 +172,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 	}
 	if req.PreviousResponseID != "" {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"previous_response_id",
 			ifaceNonEmpty(src, ProtocolOpenAIChat),
 			ProtocolGeminiGenerate,
@@ -183,7 +183,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 	}
 	if len(req.CacheControl) > 0 {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"cache_control",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolGeminiGenerate,
@@ -194,7 +194,7 @@ func reportSerializeGeminiLosses(req *InternalRequest) {
 	}
 	if len(req.Documents) > 0 {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"documents",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolGeminiGenerate,

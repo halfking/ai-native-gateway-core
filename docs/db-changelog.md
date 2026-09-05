@@ -291,3 +291,46 @@ relying on it.
 |-----------|------|---------|--------|
 | 659 | `659_legacy_promote_atomic_cte.sql` | `ac7794c4b7982cb88b5fb8912516c27eec3ef76c0b39bd672a0e0135a119e472` | applied+verified |
 
+
+## 2026-09-05T15:56:45Z — round2 audit pkg4 (local, uncommitted)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+## 2026-09-05T16:10:18Z — deploy 245 build_seq 1954 (26d9b34a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 660 | `660_credential_model_weekly_peak_unique.sql` | `ba4b3bb85c14a505088292d5b287b6e3242d49900eba9e0daefeed17a9aea2d6` | applied+verified |
+| 661 | `661_session_summary_token_ratio_reassert.sql` | `025a40459f66735a627f2c7062ca596272f5328091b7d3016291e25413574e75` | applied+verified |
+| 662 | `662_provider_error_details_agg_key_dedup.sql` | `d0dbe5c44869c69633ac2eb2fa6a146c8055d663da4c1a1a773854507579cfde` | applied+verified（改号前应用；该文件次日改号 663，内容除编号外逐字一致，幂等重放等价，见下方 round2-followup 节） |
+
+## 2026-09-05T19:30 — audit round2 followup（662 编号让位改号 663 + 662_feature 轨道接线）
+
+origin/main c1fd9f4c9（feat p2.3）将 662 分配给 feature_distribution_stats，与本会话未提交的
+provider_error_details 聚合键修复撞号且其 canonical 副本被并行清理。处置：agg_key 迁移改号 663
+（内容除编号外与 deploy-245 已应用的 662 逐字一致，幂等重放等价）；662_feature_distribution_stats
+补齐 installer runner + 升级轨道接线（原提交两条轨道均未注册，fresh/升级库会 42P01）。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 663 | `663_provider_error_details_agg_key_dedup.sql` | `4e17973cdac7896fc7aee2aacedb28f637cb7a1be7139412d644faaa888efb3f` | file-ready（必须与 provider_error_aggregator 新 ON CONFLICT 目标同版本发布；误序任意一侧聚合 tick 报 42P10） |
+| 662 | `662_feature_distribution_stats.sql` | `6d951835aa98fcc22502f2739c629442adf39b87e5bbf8fb4304636d2ef4eea2` | registered（本地与 245 尚未应用，随下次部署走升级轨道） |
+## 2026-09-05T17:16:03Z — deploy 245 build_seq 1957 (c1fd9f4c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 663 | `663_provider_error_details_agg_key_dedup.sql` | `4e17973cdac7896fc7aee2aacedb28f637cb7a1be7139412d644faaa888efb3f` | applied+verified（该文件改号 664，内容除编号字面量外逐字一致，见下方 2026-09-06 节） |
+
+## 2026-09-06T01:40 — 合并冲突处置：agg_key 663 撞 663_training_export 改号 664
+
+main 合并（62d05ff74，含 feat/m3-sr-w3c 与 origin 新提交两侧）后发现 p2.2 训练数据导出管道
+（5ef9fa679）已把 663 分配给 `663_training_export.sql`，与本会话未提交的 agg_key 迁移再撞号
+（前次 662→663 改号发生在 p2.2 落库可见之前，未感知 663 已被占）。处置沿用本仓库撞号惯例
+（657→660、662→663 先例）：agg_key 改号 664，内容除编号字面量外逐字一致，幂等重放等价
+（245 已以 663 编号应用同内容，重放 no-op）。同步更新：canonical + installer embed 副本、
+apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregator contract test 断言。
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 664 | `664_provider_error_details_agg_key_dedup.sql` | `41b9a661e454b34201d5e92dc7543d1a63524aaa9ddec6243cba74eb2bd71a17` | file-ready（必须与 provider_error_aggregator 新 ON CONFLICT 目标同版本发布；误序任意一侧聚合 tick 报 42P10） |
+

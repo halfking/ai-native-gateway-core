@@ -255,12 +255,12 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 func (w *AutoRouteAffinityWorker) upsertAggregates(ctx context.Context, aggs []affinityAggregate) (platformRows, tenantRows int) {
 	for _, a := range aggs {
 		// Look up the existing EMA so it can be blended.
-		var prevEMA, prevAvgReward float64
+		var prevEMA float64
 		_ = w.db.QueryRow(ctx, `
-			SELECT COALESCE(ema_reward, 0), COALESCE(avg_reward, 0)
+			SELECT COALESCE(ema_reward, 0)
 			FROM task_model_affinity
 			WHERE task_type = $1 AND profile = $2 AND canonical_id = $3 AND tenant_id = $4
-		`, a.taskType, a.profile, a.canonicalID, a.tenantID).Scan(&prevEMA, &prevAvgReward)
+		`, a.taskType, a.profile, a.canonicalID, a.tenantID).Scan(&prevEMA)
 
 		// Fold this window's average reward into the running EMA. The EMA is the
 		// signal shrinkage pulls toward (via avg_reward); a single bad window

@@ -266,7 +266,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 				continue
 			}
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				f.field,
 				ifaceNonEmpty(src, ProtocolOpenAIChat),
 				ProtocolAnthropicMessages,
@@ -283,7 +283,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 	// kept for symmetry with other same-protocol guards).
 	if req.PreviousResponseID != "" && src != ProtocolAnthropicMessages {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"previous_response_id",
 			ifaceNonEmpty(src, ProtocolOpenAIChat),
 			ProtocolAnthropicMessages,
@@ -296,7 +296,7 @@ func reportSerializeAnthropicLosses(req *InternalRequest) {
 	// semantically. (When SourceProtocol is Anthropic this is normal usage.)
 	if req.TopK != nil && *req.TopK == 0 && src == ProtocolOpenAIChat {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"top_k",
 			ProtocolOpenAIChat,
 			ProtocolAnthropicMessages,
@@ -356,9 +356,6 @@ func serializeAnthropicSystem(system *SystemPrompt) any {
 	return system.Content
 }
 
-// serializeAnthropicMessages converts IR messages to Anthropic format.
-// targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
-// 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
 // serializeAnthropicMessages converts IR messages to Anthropic format.
 // targetProvider 是目标上游 provider 的 catalog code，用于处理 provider 特定的
 // 协议变体（如 MiniMax 的 tool_call_id 而非 tool_use_id）。空值表示标准 Anthropic。
@@ -1032,20 +1029,6 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 	}
 
 	return nil
-}
-
-// mapEffortToBudget maps OpenAI-style reasoning effort level to Anthropic thinking
-// budget_tokens.
-//
-// Deprecated: new code should call reasonnormEffortToBudget directly; this
-// wrapper remains for any callers that haven't been migrated yet.
-// audit-provider-multimodal (2026-07-13): Cross-protocol reasoning effort → budget mapping.
-func mapEffortToBudget(effort string) int {
-	b, ok := reasonnormEffortToBudget(effort)
-	if !ok || b == 0 {
-		return 8192
-	}
-	return b
 }
 
 // reasonnormEffortToBudget delegates to the canonical effort→budget table from

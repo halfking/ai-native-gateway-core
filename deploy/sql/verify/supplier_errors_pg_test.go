@@ -23,7 +23,10 @@ package verify
 //      且批次上限生效（批量迁移语义）；
 //   E. 迁移后 unified 视图跨 hot+historical 可读；
 //   F. RLS：app.tenant_id 隔离生效；
-//   G. supplier_error_stats 唯一键 UPSERT 幂等。
+//   G. supplier_error_stats 唯一键 UPSERT 幂等；
+//   H. supplier_error_stats 分桶列（2026-09-05 审计 E-#6）：
+//      retryable_count 计数 + stage_counts jsonb 分桶 + hour 二次
+//      rollup 合并 + 重复聚合幂等。
 
 import (
 	"context"
@@ -322,4 +325,182 @@ func TestSupplierErrorsMigrationIdempotent(t *testing.T) {
 	_, err = conn.Exec(ctx, stripPSQLMeta(v371))
 	require.NoError(t, err, "V371 replay must be idempotent")
 	require.False(t, strings.Contains(string(v371), "ON_ERROR_STOP 2"), "sanity")
+}
+
+// insertSupplierErrorBucketed 是带 is_retryable/stage 的 hot 行写入 helper
+// （E-#6 分桶语义验证用）。
+func insertSupplierErrorBucketed(t *testing.T, ctx context.Context, conn *pgx.Conn, occurredAt time.Time, reqID string, retryable bool, stage string) {
+	t.Helper()
+	_, err := conn.Exec(ctx, `
+		INSERT INTO supplier_errors_hot (
+			occurred_at, request_id, tenant_id, provider_id, supplier,
+			credential_id, model, attempt_seq, error_type, is_retryable, stage
+		) VALUES ($1, $2, 'tenant-a', 9, 'zhipu', 42, 'glm-5.2', 1, 'rate_limit', $3, $4)`,
+		occurredAt, reqID, retryable, stage)
+	require.NoError(t, err)
+}
+
+// TestSupplierErrorStatsRetryableStageBuckets H（审计 E-#6）：分桶列在真实
+// PG 上的语义。minute rollup 逐字镜像 bg/supplier_error_stats_aggregator.go
+// 的 supplierErrorStatsRollupSQL（未导出；字面漂移由 bg 包的
+// TestSupplierErrorStatsRollupSQLContract 契约测试钳制）。
+func TestSupplierErrorStatsRetryableStageBuckets(t *testing.T) {
+	conn, done := openSupplierPG(t)
+	defer done()
+	ctx := context.Background()
+	bootstrapSupplierSchema(t, ctx, conn)
+
+	now := time.Now()
+	occurred := now.Add(-5 * time.Minute)
+	insertSupplierErrorBucketed(t, ctx, conn, occurred, "req-bkt-1", true, "upstream")
+	insertSupplierErrorBucketed(t, ctx, conn, occurred, "req-bkt-2", true, "upstream")
+	insertSupplierErrorBucketed(t, ctx, conn, occurred, "req-bkt-3", true, "connect")
+	insertSupplierErrorBucketed(t, ctx, conn, occurred, "req-bkt-4", false, "upstream")
+	insertSupplierErrorBucketed(t, ctx, conn, occurred, "req-bkt-5", false, "")
+
+	// 与聚合器相同的分钟 rollup（minute 级，pgx 传 interval 文本）。
+	minuteRollup := `
+WITH base AS (
+    SELECT date_bin($1::interval, occurred_at, '2000-01-01'::timestamptz) AS stat_time,
+           supplier, credential_id, error_type, model,
+           request_id, affected_users, is_retryable, stage
+    FROM supplier_errors_hot
+    WHERE occurred_at >= $3 AND occurred_at < $4
+), bucket_totals AS (
+    SELECT stat_time, supplier, credential_id, error_type, model,
+           COUNT(*)::int AS error_count,
+           COUNT(DISTINCT request_id)::int AS unique_requests,
+           SUM(affected_users)::int AS affected_users,
+           SUM(CASE WHEN is_retryable THEN 1 ELSE 0 END)::int AS retryable_count
+    FROM base
+    GROUP BY 1, 2, 3, 4, 5
+), bucket_stages AS (
+    SELECT stat_time, supplier, credential_id, error_type, model,
+           jsonb_object_agg(stage, n) AS stage_counts
+    FROM (
+        SELECT stat_time, supplier, credential_id, error_type, model, stage,
+               COUNT(*)::int AS n
+        FROM base
+        GROUP BY 1, 2, 3, 4, 5, 6
+    ) per_stage
+    GROUP BY 1, 2, 3, 4, 5
+)
+INSERT INTO supplier_error_stats (
+    stat_time, granularity, supplier, credential_id, error_type, model,
+    error_count, unique_requests, affected_users, success_count, total_requests,
+    retryable_count, stage_counts
+)
+SELECT
+    b.stat_time, $2, b.supplier, b.credential_id, b.error_type, b.model,
+    b.error_count, b.unique_requests, b.affected_users, 0, b.error_count,
+    b.retryable_count, COALESCE(s.stage_counts, '{}'::jsonb)
+FROM bucket_totals b
+LEFT JOIN bucket_stages s
+       ON b.stat_time = s.stat_time
+      AND b.supplier = s.supplier
+      AND b.credential_id = s.credential_id
+      AND b.error_type = s.error_type
+      AND b.model = s.model
+ON CONFLICT (stat_time, granularity, supplier, credential_id, error_type, model)
+DO UPDATE SET
+    error_count     = EXCLUDED.error_count,
+    unique_requests = EXCLUDED.unique_requests,
+    affected_users  = EXCLUDED.affected_users,
+    total_requests  = EXCLUDED.total_requests,
+    retryable_count = EXCLUDED.retryable_count,
+    stage_counts    = EXCLUDED.stage_counts,
+    aggregated_at   = NOW()`
+
+	from := now.Add(-time.Hour)
+	to := now.Add(time.Minute)
+	rollupArgs := []any{"1 minute", "minute", from, to}
+	_, err := conn.Exec(ctx, minuteRollup, rollupArgs...)
+	require.NoError(t, err, "minute rollup with bucket columns must execute on real PG")
+
+	var errCount, retryableCount int
+	var stageCounts map[string]int
+	require.NoError(t, conn.QueryRow(ctx, `
+		SELECT error_count, retryable_count, stage_counts::jsonb FROM supplier_error_stats
+		WHERE granularity = 'minute' AND supplier = 'zhipu' AND credential_id = 42`,
+	).Scan(&errCount, &retryableCount, &stageCounts))
+	assert.Equal(t, 5, errCount)
+	assert.Equal(t, 3, retryableCount, "retryable_count must count is_retryable=true rows")
+	assert.Equal(t, map[string]int{"upstream": 3, "connect": 1, "": 1}, stageCounts,
+		"stage_counts must bucket per stage (empty stage kept losslessly)")
+
+	// 重复聚合（覆盖式 UPSERT）幂等：计数不翻倍。
+	_, err = conn.Exec(ctx, minuteRollup, rollupArgs...)
+	require.NoError(t, err)
+	var buckets int
+	require.NoError(t, conn.QueryRow(ctx, `
+		SELECT COUNT(*) FROM supplier_error_stats
+		WHERE granularity = 'minute' AND supplier = 'zhipu'`).Scan(&buckets))
+	assert.Equal(t, 1, buckets, "repeat aggregation must upsert, not duplicate")
+
+	// hour 二次 rollup 合并分桶（镜像 supplierErrorStatsHourRollupSQL）。
+	hourRollup := `
+WITH bucket_totals AS (
+    SELECT date_trunc('hour', stat_time) AS stat_time,
+           supplier, credential_id, error_type, model,
+           SUM(error_count)::int AS error_count,
+           SUM(unique_requests)::int AS unique_requests,
+           SUM(affected_users)::int AS affected_users,
+           SUM(success_count)::int AS success_count,
+           SUM(total_requests)::int AS total_requests,
+           SUM(retryable_count)::int AS retryable_count
+    FROM supplier_error_stats
+    WHERE granularity = 'minute'
+      AND stat_time >= date_trunc('hour', $1::timestamptz)
+      AND stat_time < $2
+    GROUP BY 1, 2, 3, 4, 5
+), bucket_stages AS (
+    SELECT stat_time, supplier, credential_id, error_type, model,
+           jsonb_object_agg(stage, n) AS stage_counts
+    FROM (
+        SELECT date_trunc('hour', stat_time) AS stat_time,
+               supplier, credential_id, error_type, model,
+               e.key AS stage, SUM((e.value)::bigint)::int AS n
+        FROM supplier_error_stats src
+        CROSS JOIN LATERAL jsonb_each(src.stage_counts) e(key, value)
+        WHERE src.granularity = 'minute'
+          AND src.stat_time >= date_trunc('hour', $1::timestamptz)
+          AND src.stat_time < $2
+        GROUP BY 1, 2, 3, 4, 5, 6
+    ) per_stage
+    GROUP BY 1, 2, 3, 4, 5
+)
+INSERT INTO supplier_error_stats (
+    stat_time, granularity, supplier, credential_id, error_type, model,
+    error_count, unique_requests, affected_users, success_count, total_requests,
+    retryable_count, stage_counts
+)
+SELECT
+    b.stat_time, 'hour', b.supplier, b.credential_id, b.error_type, b.model,
+    b.error_count, b.unique_requests, b.affected_users, b.success_count, b.total_requests,
+    b.retryable_count, COALESCE(s.stage_counts, '{}'::jsonb)
+FROM bucket_totals b
+LEFT JOIN bucket_stages s
+       ON b.stat_time = s.stat_time
+      AND b.supplier = s.supplier
+      AND b.credential_id = s.credential_id
+      AND b.error_type = s.error_type
+      AND b.model = s.model
+ON CONFLICT (stat_time, granularity, supplier, credential_id, error_type, model)
+DO UPDATE SET
+    error_count     = EXCLUDED.error_count,
+    retryable_count = EXCLUDED.retryable_count,
+    stage_counts    = EXCLUDED.stage_counts,
+    aggregated_at   = NOW()`
+	_, err = conn.Exec(ctx, hourRollup, from, to)
+	require.NoError(t, err, "hour rollup must merge bucket columns")
+
+	var hourRetryable int
+	var hourStages map[string]int
+	require.NoError(t, conn.QueryRow(ctx, `
+		SELECT retryable_count, stage_counts::jsonb FROM supplier_error_stats
+		WHERE granularity = 'hour' AND supplier = 'zhipu' AND credential_id = 42`,
+	).Scan(&hourRetryable, &hourStages))
+	assert.Equal(t, 3, hourRetryable)
+	assert.Equal(t, map[string]int{"upstream": 3, "connect": 1, "": 1}, hourStages,
+		"hour bucket must merge minute stage_counts via jsonb_each")
 }

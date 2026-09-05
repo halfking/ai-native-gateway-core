@@ -110,6 +110,11 @@ func TestSupplierErrorStatsRollupSQLContract(t *testing.T) {
 		"DATE_BIN",
 		conflictKey,
 		"DO UPDATE SET",
+		// E-#6 quality-of-service buckets.
+		"RETRYABLE_COUNT",
+		"STAGE_COUNTS",
+		"JSONB_OBJECT_AGG",
+		"SUM(CASE WHEN IS_RETRYABLE THEN 1 ELSE 0 END)",
 	} {
 		if !strings.Contains(minute, want) {
 			t.Errorf("minute rollup SQL missing %q", want)
@@ -123,6 +128,10 @@ func TestSupplierErrorStatsRollupSQLContract(t *testing.T) {
 		"DATE_TRUNC('HOUR', $1::TIMESTAMPTZ)",
 		"'HOUR'",
 		conflictKey,
+		// E-#6: bucket counts roll up from the finer granularity.
+		"SUM(RETRYABLE_COUNT)::INT",
+		"JSONB_EACH",
+		"EXCLUDED.STAGE_COUNTS",
 	} {
 		if !strings.Contains(hour, want) {
 			t.Errorf("hour rollup SQL missing %q", want)
@@ -136,9 +145,19 @@ func TestSupplierErrorStatsRollupSQLContract(t *testing.T) {
 		"DATE_TRUNC('DAY', $1::TIMESTAMPTZ)",
 		"'DAY'",
 		conflictKey,
+		"SUM(RETRYABLE_COUNT)::INT",
+		"JSONB_EACH",
+		"EXCLUDED.STAGE_COUNTS",
 	} {
 		if !strings.Contains(day, want) {
 			t.Errorf("day rollup SQL missing %q", want)
 		}
+	}
+
+	// E-#6: the UPSERT key stays on the V371 dimensions — retryable/stage are
+	// bucket payloads, not key parts (keying on them would multiply rows and
+	// change the hour/day rollup grouping semantics).
+	if strings.Contains(minute, "RETRYABLE_COUNT,") && strings.Contains(minute, "ON CONFLICT (STAT_TIME, GRANULARITY, SUPPLIER, CREDENTIAL_ID, ERROR_TYPE, MODEL, RETRYABLE_COUNT") {
+		t.Error("retryable_count must not join the UPSERT key")
 	}
 }

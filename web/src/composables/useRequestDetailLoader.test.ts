@@ -375,4 +375,268 @@ describe('useRequestDetailLoader', () => {
     expect(loader.unified.value?.meta.request_id).toBe('m')
     expect(loader.bodiesLoaded.value).toBe(false)
   })
+
+  // ------------------------------------------------------------------
+  // F2-#5 regression suite (drawer migration, 2026-09-05). The drawer
+  // previously self-managed loading and hit three defect classes; these
+  // tests pin the composable guarantees the migrated drawer relies on.
+  // ------------------------------------------------------------------
+
+  it('F2-#5 concurrent override: a later meta-only reload must not clobber fetched bodies', async () => {
+    getUnifiedRequestDetail
+      .mockResolvedValueOnce({ source: 'request_logs', persistence: 'persisted', meta: { request_id: 'c1' } })
+      .mockResolvedValueOnce({ source: 'request_logs', persistence: 'persisted', meta: { request_id: 'c1' }, bodies: { request_body: { messages: ['full'] } } })
+      .mockResolvedValue({ source: 'request_logs', persistence: 'persisted', meta: { request_id: 'c1' } })
+    getRequestLogDetail
+      .mockResolvedValueOnce({ request_id: 'c1' })
+      .mockResolvedValueOnce({ request_id: 'c1', request_body: { messages: ['full'] } })
+      .mockResolvedValue({ request_id: 'c1' })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('c1')
+    await loader.ensureBodies('c1')
+    expect(loader.requestBody.value).toEqual({ messages: ['full'] })
+
+    // Re-entering loadMeta for the same request (drawer: re-selecting the
+    // turn / requestId watcher re-fire) must restore the cached full-body
+    // entry — the bodyless meta projection of the reload must not overwrite
+    // the already-fetched bodies (old drawer bug: bodyless `unified` landed
+    // after ensureBodies and the chat tab never re-fetched).
+    await loader.loadMeta('c1')
+    expect(loader.requestBody.value).toEqual({ messages: ['full'] })
+    expect(loader.bodiesLoaded.value).toBe(true)
+  })
+
+  it('F2-#5 concurrency: an in-flight body fetch is discarded after the meta reload re-enters', async () => {
+    getUnifiedRequestDetail
+      .mockResolvedValueOnce({ source: 'request_logs', persistence: 'persisted', meta: { request_id: 'c2' } })
+    getRequestLogDetail
+      .mockResolvedValueOnce({ request_id: 'c2' })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('c2')
+
+    let resolveLog: (v: unknown) => void = () => {}
+    let resolveUnified: (v: unknown) => void = () => {}
+    getRequestLogDetail.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveLog = resolve }),
+    )
+    getUnifiedRequestDetail.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveUnified = resolve }),
+    )
+
+    const pending = loader.ensureBodies('c2')
+    // Meta-only reload for the same request re-enters (bumps seq) while the
+    // body fetch is still in flight.
+    await loader.loadMeta('c2')
+
+    resolveLog({ request_id: 'c2', request_body: { stale: true } })
+    resolveUnified({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 'c2' },
+      bodies: { request_body: { stale: true } },
+    })
+    await pending
+
+    // The stale fetch (captured pre-bump seq) must not write into the
+    // reloaded view; bodies stay unloaded so the active section re-requests.
+    expect(loader.requestBody.value).toBeNull()
+    expect(loader.bodiesLoaded.value).toBe(false)
+  })
+
+  it('F2-#5 switch residue: switching requests never shows the previous request bodies', async () => {
+    getUnifiedRequestDetail.mockImplementation((id: string, opts?: { omitBody?: boolean }) => {
+      const meta = { source: 'request_logs', persistence: 'persisted', meta: { request_id: id } }
+      if (opts?.omitBody) return Promise.resolve(meta)
+      return Promise.resolve({ ...meta, bodies: { request_body: { owner: id } } })
+    })
+    getRequestLogDetail.mockImplementation((id: string, opts?: { omitBody?: boolean }) => {
+      const meta = { request_id: id }
+      if (opts?.omitBody) return Promise.resolve(meta)
+      return Promise.resolve({ ...meta, request_body: { owner: id } })
+    })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('req-a')
+    await loader.ensureBodies('req-a')
+    expect(loader.requestBody.value).toEqual({ owner: 'req-a' })
+
+    // Switch to req-b: shared state must be cleared immediately — req-a's
+    // body must not be visible under req-b, and ensureBodies('req-b') must
+    // actually fetch req-b's own body instead of early-returning on the
+    // residue (old drawer guard `unified?.bodies || log?.request_body` saw
+    // the previous turn's body and marked the new turn as loaded).
+    await loader.loadMeta('req-b')
+    expect(loader.requestBody.value).toBeNull()
+    expect(loader.bodiesLoaded.value).toBe(false)
+
+    await loader.ensureBodies('req-b')
+    expect(loader.requestBody.value).toEqual({ owner: 'req-b' })
+  })
+
+  it('F2-#5 sticky loading: bodiesLoading resets when the request switches mid-fetch', async () => {
+    let resolveBodyLog: (v: unknown) => void = () => {}
+    let resolveBodyUnified: (v: unknown) => void = () => {}
+    getUnifiedRequestDetail
+      .mockResolvedValueOnce({ source: 'request_logs', persistence: 'persisted', meta: { request_id: 's1' } })
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveBodyUnified = resolve }))
+      .mockResolvedValue({ source: 'request_logs', persistence: 'persisted', meta: { request_id: 's2' } })
+    getRequestLogDetail
+      .mockResolvedValueOnce({ request_id: 's1' })
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveBodyLog = resolve }))
+      .mockResolvedValue({ request_id: 's2' })
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('s1')
+    const pending = loader.ensureBodies('s1')
+    expect(loader.bodiesLoading.value).toBe(true)
+
+    // Switch requests while the body fetch is in flight: bodiesLoading must
+    // reset immediately (old drawer: the finally block only reset it when
+    // `seq === loadSeq`, so after the switch bumped the seq it stayed true
+    // forever and the chat tab showed a perpetual loading state).
+    await loader.loadMeta('s2')
+    expect(loader.bodiesLoading.value).toBe(false)
+
+    resolveBodyLog({ request_id: 's1', request_body: { stale: true } })
+    resolveBodyUnified({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 's1' },
+      bodies: { request_body: { stale: true } },
+    })
+    await pending
+    expect(loader.bodiesLoading.value).toBe(false)
+    expect(loader.requestBody.value).toBeNull()
+  })
+
+  // ------------------------------------------------------------------
+  // round2-followup audit (pkg5, 2026-09-05) regression suite.
+  // ------------------------------------------------------------------
+
+  it('round2 P2-1: a stale endpoint failure after switching requests does not leak into the new warnings', async () => {
+    let rejectAUnified: (e: unknown) => void = () => {}
+    getUnifiedRequestDetail.mockImplementation((id: string) => {
+      if (id === 'warn-a') {
+        return new Promise((_resolve, reject) => { rejectAUnified = reject })
+      }
+      return Promise.resolve({ source: 'request_logs', persistence: 'persisted', meta: { request_id: id } })
+    })
+    getRequestLogDetail.mockImplementation((id: string) => Promise.resolve({ request_id: id }))
+
+    const loader = useRequestDetailLoader()
+    const pendingA = loader.loadMeta('warn-a')
+    // Switch to B while A's omitBody unified fetch is still in flight:
+    // B's loadMeta has already cleared the warnings list.
+    await loader.loadMeta('warn-b')
+    expect(loader.metaWarnings.value).toEqual([])
+    expect(loader.log.value?.request_id).toBe('warn-b')
+
+    // A's endpoint now fails — the stale failure must not be recorded
+    // against B's freshly-loaded view.
+    rejectAUnified(new Error('boom'))
+    await pendingA
+    await new Promise((r) => setTimeout(r, 0))
+    expect(loader.metaWarnings.value).toEqual([])
+    expect(loader.log.value?.request_id).toBe('warn-b')
+  })
+
+  it('round2 P2-2: same-seq parallel loadMeta + ensureBodies keeps bodies when ensureBodies lands first', async () => {
+    // Fullscreen fan-out race: the requestId watcher's loadMeta (omitBody,
+    // pending below) and the viewMode watcher's ensureBodies run in the
+    // same-seq window, and ensureBodies resolves first.
+    let resolveMetaLog: (v: unknown) => void = () => {}
+    let resolveMetaUnified: (v: unknown) => void = () => {}
+    getUnifiedRequestDetail.mockImplementation((_id: string, opts?: { omitBody?: boolean }) => {
+      if (opts?.omitBody) {
+        return new Promise((resolve) => { resolveMetaUnified = resolve })
+      }
+      return Promise.resolve({
+        source: 'request_logs',
+        persistence: 'persisted',
+        meta: { request_id: 'par' },
+        bodies: { request_body: { full: true } },
+      })
+    })
+    getRequestLogDetail.mockImplementation((_id: string, opts?: { omitBody?: boolean }) => {
+      if (opts?.omitBody) {
+        return new Promise((resolve) => { resolveMetaLog = resolve })
+      }
+      return Promise.resolve({ request_id: 'par', request_body: { full: true } })
+    })
+
+    const loader = useRequestDetailLoader()
+    const metaPending = loader.loadMeta('par')
+    // Same seq: ensureBodies starts inside loadMeta's in-flight window.
+    const bodiesPending = loader.ensureBodies('par')
+    await bodiesPending
+    expect(loader.requestBody.value).toEqual({ full: true })
+
+    // The bodyless meta landing must not clobber the bodies ensureBodies
+    // just delivered (view state) nor reset the cached bodiesLoaded entry.
+    resolveMetaLog({ request_id: 'par' })
+    resolveMetaUnified({ source: 'request_logs', persistence: 'persisted', meta: { request_id: 'par' } })
+    await metaPending
+    expect(loader.requestBody.value).toEqual({ full: true })
+    expect(loader.bodiesLoaded.value).toBe(true)
+
+    // The cache entry keeps the bodies too — a re-entry restores them.
+    await loader.loadMeta('par')
+    expect(loader.requestBody.value).toEqual({ full: true })
+  })
+
+  it('round2 P3-3: a slow journey does not delay meta first paint and lands out-of-band', async () => {
+    getUnifiedRequestDetail.mockResolvedValue({ source: 'request_logs', persistence: 'persisted', meta: { request_id: 'j1' } })
+    getRequestLogDetail.mockResolvedValue({ request_id: 'j1' })
+    let resolveJourney: (v: unknown) => void = () => {}
+    getRequestJourney.mockImplementationOnce(() => new Promise((resolve) => { resolveJourney = resolve }))
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('j1')
+    // Meta first paint must not wait on the journey cold path.
+    expect(loader.metaLoading.value).toBe(false)
+    expect(loader.log.value?.request_id).toBe('j1')
+    expect(loader.attempts.value).toEqual([])
+
+    resolveJourney({
+      events: [{
+        tenant_id: 't', gateway_instance_id: 'g', request_id: 'j1', stage: 'upstream', observation_status: 'complete',
+        seq: 1,
+        event_type: 'attempt_started',
+        occurred_at: '2026-09-05T00:00:00Z',
+        attempt: { attempt_id: 'j-9', attempt_no: 1, model: 'journey-model' },
+      }],
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    // The out-of-band journey feeds the merged attempts once resolved.
+    expect(loader.attempts.value.map((a) => a.attempt_id)).toEqual(['j-9'])
+    expect(loader.attempts.value[0]?.source).toBe('journey')
+  })
+
+  it('round2 P3-3: a stale journey landing after a request switch is discarded', async () => {
+    getUnifiedRequestDetail.mockResolvedValue({
+      source: 'request_logs',
+      persistence: 'persisted',
+      meta: { request_id: 'jr-b' },
+    })
+    getRequestLogDetail.mockResolvedValue({ request_id: 'jr-b' })
+    let resolveAJourney: (v: unknown) => void = () => {}
+    getRequestJourney.mockImplementationOnce(() => new Promise((resolve) => { resolveAJourney = resolve }))
+
+    const loader = useRequestDetailLoader()
+    await loader.loadMeta('jr-a') // jr-a journey fetch stays pending
+    await loader.loadMeta('jr-b') // switch: journey cleared, seq bumped
+
+    resolveAJourney({
+      events: [{
+        tenant_id: 't', gateway_instance_id: 'g', request_id: 'jr-a', stage: 'upstream', observation_status: 'complete',
+        seq: 1, event_type: 'attempt_started', occurred_at: 't',
+        attempt: { attempt_id: 'stale', attempt_no: 1 },
+      }],
+    })
+    await new Promise((r) => setTimeout(r, 0))
+    // The stale journey must not bleed into jr-b's view.
+    expect(loader.attempts.value).toEqual([])
+  })
 })

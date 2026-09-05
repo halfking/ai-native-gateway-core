@@ -695,7 +695,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	// top_k: Anthropic-native; Responses has no top_k.
 	if req.TopK != nil {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"top_k",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIResponses,
@@ -717,7 +717,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 				(block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id") &&
 				block.Document.Source.FileID == "" && block.Document.Source.Data == "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "document.file_id"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIResponses,
@@ -728,7 +728,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 			}
 			if block.Thinking != nil && block.Thinking.Signature != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "thinking.signature"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIResponses,
@@ -739,7 +739,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 			}
 			if block.RedactedThinking != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "redacted_thinking"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIResponses,
@@ -754,7 +754,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	// Anthropic-only top-level fields.
 	if len(req.CacheControl) > 0 {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"cache_control",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIResponses,
@@ -765,7 +765,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	}
 	if len(req.Documents) > 0 {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"documents",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIResponses,
@@ -776,7 +776,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	}
 	if req.Thinking != nil {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"thinking",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIResponses,
@@ -787,7 +787,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	}
 	if len(req.MCPServers) > 0 {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"mcp_servers",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIResponses,
@@ -798,7 +798,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	}
 	if req.ContextManagement != nil {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"context_management",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIResponses,
@@ -809,7 +809,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	}
 	if req.Container != nil {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"container",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIResponses,
@@ -841,7 +841,7 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 			continue
 		}
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			f.field,
 			ifaceNonEmpty(src, ProtocolOpenAIChat),
 			ProtocolOpenAIResponses,

@@ -15,6 +15,7 @@ package bg
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -330,12 +331,20 @@ func TestFeatureStatsWorkerDedupRate(t *testing.T) {
 
 // setupTestDB 创建测试数据库连接（需要真实的 PostgreSQL 实例）。
 func setupTestDB(t *testing.T) *pgxpool.Pool {
-	// 使用环境变量或默认测试数据库连接
-	dsn := "postgres://localhost/llm_gateway_test?sslmode=disable"
-	
+	// 使用环境变量或默认测试数据库连接。pgxpool.New 是懒连接，构造不报错，
+	// 必须 Ping 一次让无库/拒认证环境走 Skip（否则首个 Exec 才炸出连接错误）。
+	dsn := os.Getenv("LLM_GATEWAY_FEATURE_STATS_TEST_DSN")
+	if dsn == "" {
+		dsn = "postgres://localhost/llm_gateway_test?sslmode=disable"
+	}
+
 	db, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Skipf("skipping test: cannot connect to test database: %v", err)
+	}
+	if err := db.Ping(context.Background()); err != nil {
+		db.Close()
+		t.Skipf("skipping test: test database unreachable: %v", err)
 	}
 
 	// 清理测试表

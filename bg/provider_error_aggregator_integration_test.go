@@ -58,6 +58,10 @@ func requireProviderErrorSchema(t *testing.T, pool *pgxpool.Pool) {
 		{"provider_error_aggregator_state", `SELECT to_regclass('public.provider_error_aggregator_state') IS NOT NULL`},
 		{"provider_error_aggregator_state.singleton", `SELECT EXISTS (SELECT 1 FROM public.provider_error_aggregator_state WHERE id=1)`},
 		{"tenant fingerprint index", `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='idx_provider_error_details_tenant_fingerprint')`},
+		// Migration 663 rebuilt the credential fingerprint without
+		// error_message; the aggregator's ON CONFLICT target must match it or
+		// every tick fails with SQLSTATE 42P10.
+		{"credential fingerprint index", `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='idx_provider_error_details_tenant_cred_fingerprint')`},
 		{"cleanup index", `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='idx_ped_resolved_updated_at')`},
 	}
 	for _, check := range checks {
@@ -66,7 +70,7 @@ func requireProviderErrorSchema(t *testing.T, pool *pgxpool.Pool) {
 			t.Fatalf("%s schema probe: %v", check.name, err)
 		}
 		if !ok {
-			t.Fatalf("%s is missing; apply migrations 617, 620, 621, 622 and 623 to the isolated database", check.name)
+			t.Fatalf("%s is missing; apply migrations 617, 620, 621, 622, 623 and 663 to the isolated database", check.name)
 		}
 	}
 	var enabled, forced bool
@@ -203,6 +207,16 @@ func TestProviderErrorAggregatorRealPG(t *testing.T) {
 		t.Fatalf("endpoints network=%q fallback=%q, want chat/unknown", endpoint, fallbackEndpoint)
 	}
 
+	// F-4 baseline for the cross-tick assertions below: the bucket's original
+	// onset and its latest sighting right after the first tick.
+	var firstSeen, lastSeen time.Time
+	if err := pool.QueryRow(ctx, `SELECT first_seen_at, last_seen_at FROM provider_error_details WHERE tenant_id=$1 AND provider_id=$2 AND model_name=$3 AND error_type='network' AND aggregation_bucket=$4`, alphaTenant, providerID, model, firstBucket).Scan(&firstSeen, &lastSeen); err != nil {
+		t.Fatalf("alpha bucket first/last seen: %v", err)
+	}
+	if !firstSeen.Equal(bucket) || !lastSeen.Equal(bucket.Add(20*time.Second)) {
+		t.Fatalf("first/last seen = %s/%s, want %s/%s", firstSeen, lastSeen, bucket, bucket.Add(20*time.Second))
+	}
+
 	var watermark int64
 	if err := pool.QueryRow(ctx, `SELECT last_source_id FROM provider_error_aggregator_state WHERE id=1`).Scan(&watermark); err != nil {
 		t.Fatalf("read watermark: %v", err)
@@ -242,6 +256,22 @@ func TestProviderErrorAggregatorRealPG(t *testing.T) {
 	if sameBucketOccurrences != 3 {
 		t.Fatalf("same bucket occurrences=%d, want 3 after incremental source row", sameBucketOccurrences)
 	}
+	// F-4 cross-tick accumulation: the second tick must re-read the COMPLETE
+	// bucket and replace it exactly — first_seen keeps the original onset,
+	// last_seen advances to the newest row, occurrences accumulate (2+1).
+	// With commit 3344f3f17's watermark-bounded staging the replace saw only
+	// the new increment: occurrences collapsed to 1 and first_seen drifted to
+	// the new row's ts.
+	var crossFirstSeen, crossLastSeen time.Time
+	if err := pool.QueryRow(ctx, `SELECT first_seen_at, last_seen_at FROM provider_error_details WHERE tenant_id=$1 AND provider_id=$2 AND model_name=$3 AND error_type='network' AND aggregation_bucket=$4`, alphaTenant, providerID, model, firstBucket).Scan(&crossFirstSeen, &crossLastSeen); err != nil {
+		t.Fatalf("cross-tick bucket first/last seen: %v", err)
+	}
+	if !crossFirstSeen.Equal(firstSeen) {
+		t.Fatalf("cross-tick first_seen drifted %s -> %s, want unchanged (audit F-4)", firstSeen, crossFirstSeen)
+	}
+	if !crossLastSeen.Equal(bucket.Add(45*time.Second)) {
+		t.Fatalf("cross-tick last_seen = %s, want %s", crossLastSeen, bucket.Add(45*time.Second))
+	}
 
 	insertSource(alphaRequestPrefix+"-next", alphaTenant, "network", bucket.Add(10*time.Minute), true)
 	agg.aggregateErrors(ctx)
@@ -254,6 +284,47 @@ func TestProviderErrorAggregatorRealPG(t *testing.T) {
 	}
 	if nextRows != 3 || nextOccurrences != 1 {
 		t.Fatalf("next bucket rows=%d occurrences=%d, want 3/1", nextRows, nextOccurrences)
+	}
+
+	// F-4 same-bucket idempotency under a full re-process: roll the watermark
+	// back so every fixture row stages again as "new" and both affected
+	// buckets are re-read and replace-upserted from scratch. Replacement over
+	// complete buckets must land on the identical rows — occurrences stay 3
+	// and 1 (not 6 and 2), first/last_seen keep their values, row count
+	// unchanged. A cumulative DO UPDATE (audit fix option 2) would
+	// double-count on exactly this reprocess; complete-bucket replacement is
+	// what makes it safe.
+	var watermarkBeforeReset int64
+	if err := pool.QueryRow(ctx, `SELECT last_source_id FROM provider_error_aggregator_state WHERE id=1`).Scan(&watermarkBeforeReset); err != nil {
+		t.Fatalf("read watermark before reset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE provider_error_aggregator_state SET last_source_id = 0, updated_at = now() WHERE id = 1`); err != nil {
+		t.Fatalf("reset watermark for reprocess: %v", err)
+	}
+	agg.aggregateErrors(ctx)
+	var replayRows, replayFirstOccurrences, replayNextOccurrences int
+	var replayFirstSeen, replayLastSeen time.Time
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM provider_error_details WHERE tenant_id=$1 AND provider_id=$2 AND model_name=$3`, alphaTenant, providerID, model).Scan(&replayRows); err != nil {
+		t.Fatalf("count after reprocess: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT occurrences, first_seen_at, last_seen_at FROM provider_error_details WHERE tenant_id=$1 AND provider_id=$2 AND model_name=$3 AND error_type='network' AND aggregation_bucket=$4`, alphaTenant, providerID, model, firstBucket).Scan(&replayFirstOccurrences, &replayFirstSeen, &replayLastSeen); err != nil {
+		t.Fatalf("reprocessed first bucket: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT occurrences FROM provider_error_details WHERE tenant_id=$1 AND provider_id=$2 AND model_name=$3 AND error_type='network' AND aggregation_bucket=$4`, alphaTenant, providerID, model, firstBucket.Add(10*time.Minute)).Scan(&replayNextOccurrences); err != nil {
+		t.Fatalf("reprocessed next bucket: %v", err)
+	}
+	if replayRows != nextRows || replayFirstOccurrences != 3 || replayNextOccurrences != nextOccurrences ||
+		!replayFirstSeen.Equal(firstSeen) || !replayLastSeen.Equal(bucket.Add(45*time.Second)) {
+		t.Fatalf("full re-process changed buckets: rows=%d occurrences=%d/%d first=%s last=%s, want rows=%d 3/%d %s/%s",
+			replayRows, replayFirstOccurrences, replayNextOccurrences, replayFirstSeen, replayLastSeen,
+			nextRows, nextOccurrences, firstSeen, bucket.Add(45*time.Second))
+	}
+	var watermarkAfterReset int64
+	if err := pool.QueryRow(ctx, `SELECT last_source_id FROM provider_error_aggregator_state WHERE id=1`).Scan(&watermarkAfterReset); err != nil {
+		t.Fatalf("read watermark after reprocess: %v", err)
+	}
+	if watermarkAfterReset != watermarkBeforeReset {
+		t.Fatalf("reprocess watermark %d, want restored %d", watermarkAfterReset, watermarkBeforeReset)
 	}
 
 	verifyProviderErrorTargetRLS(t, alphaTenant, betaTenant, providerID, model)

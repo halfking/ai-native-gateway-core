@@ -982,29 +982,9 @@ func deduplicateCandidates(candidates []provider.Candidate) []provider.Candidate
 
 // planWithURSM 已删除 2026-07-26 (URSM v1→v2 统一)
 // v1 入口 (r.URSM) 在 main.go 中从未 wire，运行时恒为 nil，该函数为死代码。
-
-// planLegacy 保留旧逻辑（向后兼容）
-// planLegacy 保留旧逻辑（向后兼容） — REMOVED 2026-07-26 (URSM v1→v2 统一)
 //
-// 唯一调用方 planWithURSM 已删除，planLegacy 本身也成死代码。
-// 函数体替换为 deprecated 占位返回 nil，避免任何意外调用导致 nil deref。
-// 新代码不应再调用本方法，PlanCandidates 走 selectStateBackend() 统一入口。
-//
-// DEPRECATED: 2026-07-26 之后将删除此函数（确认无外部引用后）。
-func (r *Router) planLegacy(
-	candidates []provider.Candidate,
-	stickyCredentialID *int,
-	policy *provider.Policy,
-	egressPreference []string,
-) []provider.Candidate {
-	_ = candidates
-	_ = stickyCredentialID
-	_ = policy
-	_ = egressPreference
-	slog.Warn("planLegacy called after URSM v1→v2 统一 deprecated; returning nil",
-		"hint", "PlanCandidates now goes through selectStateBackend() exclusively")
-	return nil
-}
+// planLegacy 已删除 2026-09-05（round2 审计 C 轴清理清单）：
+// 唯一调用方 planWithURSM 删除后 planLegacy 一直为 deprecated 占位，全仓零引用。
 
 func splitByBillingRound(cands []provider.Candidate) (round1, round2 []provider.Candidate) {
 	for _, c := range cands {

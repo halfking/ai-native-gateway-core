@@ -27,21 +27,6 @@ func (r *affinityRecorder) Invalidate(_ context.Context, _ string, credentialID 
 	return nil
 }
 
-func TestPriorityClusterSortPreservesOrderWithinCluster(t *testing.T) {
-	refs := sortPriorityClusters([]CredentialRef{
-		{CredentialID: 3, PriorityCluster: 2},
-		{CredentialID: 1, PriorityCluster: 1},
-		{CredentialID: 2, PriorityCluster: 1},
-	})
-	got := []int{refs[0].CredentialID, refs[1].CredentialID, refs[2].CredentialID}
-	want := []int{1, 2, 3}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("sorted credential ids = %v, want %v", got, want)
-		}
-	}
-}
-
 func TestPipelineUpdatesAffinityOnlyAfterSuccess(t *testing.T) {
 	recorder := &affinityRecorder{}
 	p := NewPipeline(Deps{SessionAffinitySink: recorder})

@@ -22,7 +22,9 @@
 --   4. supplier_error_stats：预聚合表，UNIQUE(stat_time, granularity,
 --      supplier, credential_id, error_type, model) 防重复聚合；
 --      维度列 NOT NULL DEFAULT '' 使唯一约束在"未知维度"下仍然成立
---      （PostgreSQL UNIQUE 对 NULL 不去重）。
+--      （PostgreSQL UNIQUE 对 NULL 不去重）；
+--      2026-09-05 审计 E-#6 增 retryable_count / stage_counts 分桶列
+--      （服务质量载体：可重试率 + 阶段分布），UPSERT 键不变、纯 additive。
 --
 -- 部署：低峰窗口，不停写（本迁移为新建表，无历史数据迁移）。
 -- =============================================================================
@@ -335,6 +337,19 @@ CREATE TABLE IF NOT EXISTS supplier_error_stats (
     affected_users  integer NOT NULL,
     success_count   integer NOT NULL DEFAULT 0,
     total_requests  integer NOT NULL,
+    -- 2026-09-05 审计 E-#6：服务质量评估载体。UPSERT 键刻意保持
+    -- (stat_time, granularity, supplier, credential_id, error_type, model)
+    -- 不变——把 is_retryable/stage 提为维度键会把行数乘上
+    -- retryable×stage 组合、并改变 hour/day 二次 rollup 的分组语义；
+    -- 分桶计数随键行覆盖写（覆盖式 UPSERT 语义下无重复累计风险）。
+    -- retryable_count：桶内 is_retryable=true 行数（可重试率 =
+    -- retryable_count/error_count）。
+    retryable_count integer NOT NULL DEFAULT 0,
+    -- stage_counts：桶内 stage→计数 map（stage 为低基数受控词表
+    -- preflight/connect/upstream/stream，''=未知在读端映射为 unknown；
+    -- jsonb 而非固定列：新增 stage 不需要 DDL）。hour/day rollup 按
+    -- jsonb_each 合并求和（见 bg/supplier_error_stats_aggregator.go）。
+    stage_counts    jsonb NOT NULL DEFAULT '{}'::jsonb,
     error_rate      numeric(7, 4) GENERATED ALWAYS AS (
         CASE WHEN total_requests > 0
              THEN (error_count::numeric / total_requests) * 100
@@ -345,6 +360,17 @@ CREATE TABLE IF NOT EXISTS supplier_error_stats (
     CONSTRAINT uq_supplier_error_stats_bucket
         UNIQUE (stat_time, granularity, supplier, credential_id, error_type, model)
 );
+
+-- E-#6 增列的自愈守卫：若某库已应用过增列前的 V371（CREATE TABLE IF NOT
+-- EXISTS 会整段跳过），重放本文件时由此补齐两列。NOT NULL DEFAULT 对既有
+-- 行回填 0/'{}'（= 未知桶，读端按 0 呈现），不改写历史语义。
+ALTER TABLE supplier_error_stats ADD COLUMN IF NOT EXISTS retryable_count integer NOT NULL DEFAULT 0;
+ALTER TABLE supplier_error_stats ADD COLUMN IF NOT EXISTS stage_counts jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+COMMENT ON COLUMN supplier_error_stats.retryable_count IS
+'桶内 is_retryable=true 行数（E-#6；可重试率 = retryable_count/error_count）';
+COMMENT ON COLUMN supplier_error_stats.stage_counts IS
+'桶内 stage→计数 jsonb map（E-#6；低基数词表，''''=未知由读端映射 unknown）';
 
 CREATE INDEX IF NOT EXISTS idx_supplier_error_stats_time_granularity
     ON supplier_error_stats (stat_time DESC, granularity);
@@ -381,6 +407,7 @@ DECLARE
     has_stats    boolean;
     has_uq       boolean;
     has_policy   boolean;
+    has_cols     boolean;
 BEGIN
     SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'supplier_errors_hot') INTO has_hot;
     SELECT EXISTS (SELECT 1 FROM pg_partitioned_table WHERE partrelid = 'supplier_errors'::regclass) INTO has_part;
@@ -397,6 +424,11 @@ BEGIN
         WHERE schemaname='public' AND tablename='supplier_errors_hot'
           AND policyname='tenant_isolation_supplier_errors_hot'
     ) INTO has_policy;
+    -- E-#6：分桶列必须在位（覆盖"表已存在但缺列"的旧版重放场景）。
+    SELECT COUNT(*) = 2 INTO has_cols
+    FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'supplier_error_stats'
+      AND column_name IN ('retryable_count', 'stage_counts');
 
     IF NOT has_hot    THEN RAISE EXCEPTION 'V371 VALIDATION FAIL: supplier_errors_hot missing'; END IF;
     IF NOT has_part   THEN RAISE EXCEPTION 'V371 VALIDATION FAIL: supplier_errors not partitioned'; END IF;
@@ -405,8 +437,9 @@ BEGIN
     IF NOT has_stats  THEN RAISE EXCEPTION 'V371 VALIDATION FAIL: supplier_error_stats missing'; END IF;
     IF NOT has_uq     THEN RAISE EXCEPTION 'V371 VALIDATION FAIL: stats unique constraint missing'; END IF;
     IF NOT has_policy THEN RAISE EXCEPTION 'V371 VALIDATION FAIL: RLS policy missing'; END IF;
+    IF NOT has_cols   THEN RAISE EXCEPTION 'V371 VALIDATION FAIL: stats retryable_count/stage_counts missing'; END IF;
 
-    RAISE NOTICE 'V371 VALIDATION OK: hot=%, partitioned=%, view=%, promote_fn=%, stats=%, uq=%, rls=%',
-        has_hot, has_part, has_view, has_fn, has_stats, has_uq, has_policy;
+    RAISE NOTICE 'V371 VALIDATION OK: hot=%, partitioned=%, view=%, promote_fn=%, stats=%, uq=%, rls=%, buckets=%',
+        has_hot, has_part, has_view, has_fn, has_stats, has_uq, has_policy, has_cols;
 END
 $do$;

@@ -292,12 +292,6 @@ func parseAnthropicMessage(msg map[string]any) (*Message, error) {
 		irMsg.ToolCallID = toolCallID
 	}
 
-	// Handle source (for tool role results that aren't in content blocks)
-	if source, ok := msg["source"].(string); ok {
-		// This is a special case for some Anthropic responses
-		_ = source
-	}
-
 	return irMsg, nil
 }
 

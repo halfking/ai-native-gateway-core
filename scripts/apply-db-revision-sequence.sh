@@ -111,12 +111,16 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/645_session_bodies_hot_request_unique_repair.sql"
   "$ROOT_DIR/sql/migrations/startup/650_auto_route_selection_treatment_attribution.sql"
   "$ROOT_DIR/sql/migrations/startup/656_auto_route_selections_hot.sql"
+  "$ROOT_DIR/sql/migrations/startup/659_legacy_promote_atomic_cte.sql"
   "$ROOT_DIR/sql/migrations/startup/651_provider_quality_hot_rollup.sql"
   "$ROOT_DIR/sql/migrations/startup/652_system_monitor_fallback_queue.sql"
   "$ROOT_DIR/sql/migrations/startup/653_archive_credential_model_index_canonical_return.sql"
   "$ROOT_DIR/sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql"
   "$ROOT_DIR/sql/migrations/startup/660_credential_model_weekly_peak_unique.sql"
   "$ROOT_DIR/sql/migrations/startup/661_session_summary_token_ratio_reassert.sql"
+  "$ROOT_DIR/sql/migrations/startup/662_feature_distribution_stats.sql"
+  "$ROOT_DIR/sql/migrations/startup/663_training_export.sql"
+  "$ROOT_DIR/sql/migrations/startup/664_provider_error_details_agg_key_dedup.sql"
   "$ROOT_DIR/deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql"
 )
 

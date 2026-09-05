@@ -96,6 +96,12 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"654_archive_credential_model_index_detach_drop.sql",
 			"656_auto_route_selections_hot.sql",
 			"657_durable_llm_tasks_decision_history.sql",
+			"658_auto_route_structured_features.sql",
+			"659_legacy_promote_atomic_cte.sql",
+			"660_credential_model_weekly_peak_unique.sql",
+			"662_feature_distribution_stats.sql",
+			"663_training_export.sql",
+			"664_provider_error_details_agg_key_dedup.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

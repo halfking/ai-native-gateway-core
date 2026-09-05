@@ -69,6 +69,12 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"650_auto_route_selection_treatment_attribution.sql":               autoRouteSelectionTreatmentAttributionMigration650,
 		"656_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration656,
 		"657_durable_llm_tasks_decision_history.sql":                       durableTasksDecisionHistoryMigration657,
+		"658_auto_route_structured_features.sql":                           autoRouteStructuredFeaturesMigration658,
+		"659_legacy_promote_atomic_cte.sql":                                legacyPromoteAtomicCTEMigration659,
+		"660_credential_model_weekly_peak_unique.sql":                      credentialModelWeeklyPeakUniqueMigration660,
+		"662_feature_distribution_stats.sql":                               featureDistributionStatsMigration662,
+		"663_training_export.sql":                                          trainingExportMigration663,
+		"664_provider_error_details_agg_key_dedup.sql":                     providerErrorDetailsAggKeyDedupMigration664,
 	}
 
 	for name, embedded := range expected {
