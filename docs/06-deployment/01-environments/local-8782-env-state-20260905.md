@@ -64,11 +64,16 @@
 
 1. **本地收敛**：8782 当前为 f27e412b9 系构建，待与并行会话协调后从同步 origin/main
    的本仓库重部署一次，消除多 clone 漂移。
-2. **同源漏洞排查**：`deploy-245.sh`/`deploy-154.sh`/`deploy-seamless.sh`/
-   `deploy-local-lib.sh` 的吞错模式与 CGO=0 断裂排查（见事故文档 §5）。
-3. **回归测试固化**：`CGO_ENABLED=0 go build ./cmd/gateway` 进 deploy 测试组合。
-4. **晋升 245 预发**：特性已在 local `LOCAL_VERIFIED`；245 需 env-injector 注入
+   （状态：未完成，本轮 Phase B 执行中；B1 完成后更新 §4 运行版本。）
+2. **同源漏洞排查**（已完成，2026-09-05）：`deploy-245.sh`/`deploy-154.sh`/`deploy-seamless.sh`/
+   `deploy-local-lib.sh` 的吞错模式与 CGO=0 断裂排查已完成修复（含远端旧产物复用
+   窗口），落地产物见事故文档 `docs/audit/2026-09-05-stale-binary-deploy.md` §5
+   与提交说明。
+3. **回归测试固化**（已完成，2026-09-05）：`CGO_ENABLED=0 go build ./cmd/gateway` 已进
+   deploy 测试组合：`tests/deploy_nocgo_build_test.sh`（正向构建 + 反向回归 +
+   `go list -deps` 静态检查）。
+4. **晋升 245 预发**（未完成，待执行）：特性已在 local `LOCAL_VERIFIED`；245 需 env-injector 注入
    `aliyun-frontend-245` 凭据 + `scripts/deploy-245.sh --dry-run` + 步骤 9.2 凭据解密门。
    154 生产不自动晋升，需人工放行。
-5. **多 clone 纪律**：`llm-gateway-go-2` 等 clone HEAD 落后；发布构建一律在已
+5. **多 clone 纪律**（未完成，流程约定）：`llm-gateway-go-2` 等 clone HEAD 落后；发布构建一律在已
    `pull --ff-only` 同步的 clone 进行。
