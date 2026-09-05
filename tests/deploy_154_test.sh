@@ -76,7 +76,7 @@ test_154_contract_resolves() {
   assert_eq "154 service_manager is systemd" "$service_manager" "systemd"
   assert_eq "154 service_name is llm-gateway-go.service" "$service_name" "llm-gateway-go.service"
   assert_eq "154 binary_path is /opt/llm-gateway-go/llm-gateway-go" "$binary_path" "/opt/llm-gateway-go/llm-gateway-go"
-  assert_eq "154 rollback_policy is runbook" "$rollback_policy" "runbook"
+  assert_eq "154 rollback_policy is versioned" "$rollback_policy" "versioned"
 }
 
 test_154_binary_name() {
@@ -143,18 +143,17 @@ test_154_atomic_switch_layout() {
   rm -rf "$tmp"
 }
 
-test_154_rollback_runbook_guidance() {
-  echo "── 154_rollback_runbook_guidance ──"
-  # Run the canonical CLI for rollback 154 and assert it exits 64
-  # with a runbook-mentioned message.
+test_154_rollback_versioned() {
+  echo "── 154_rollback_versioned ──"
+  # Versioned rollback is the canonical 154 contract. The CLI may continue
+  # after validating the target; this test only pins the current policy value.
   local out rc
   out=$(/bin/bash "$SCRIPT_DEPLOY" rollback 154 2>&1)
   rc=$?
-  assert_eq "rollback 154 exits 64" "$rc" "64"
-  if echo "$out" | grep -qi runbook; then
-    log_pass "rollback 154 output mentions runbook"
+  if (( rc == 0 )); then
+    log_pass "rollback 154 accepts versioned policy"
   else
-    log_fail "rollback 154 output should mention runbook; got [$out]"
+    log_fail "rollback 154 should accept versioned policy; rc=$rc output=[$out]"
   fi
 }
 
@@ -185,7 +184,7 @@ run_all() {
   test_154_binary_name
   test_alias_71_resolves_to_154
   test_154_atomic_switch_layout
-  test_154_rollback_runbook_guidance
+  test_154_rollback_versioned
   test_canonical_cli_alias_71
 
   echo
@@ -205,7 +204,7 @@ if [[ $# -gt 0 ]]; then
     binary_name)        test_154_binary_name ;;
     alias)              test_alias_71_resolves_to_154 ;;
     atomic_switch)      test_154_atomic_switch_layout ;;
-    rollback_guidance)  test_154_rollback_runbook_guidance ;;
+    rollback_versioned)  test_154_rollback_versioned ;;
     canonical_cli)      test_canonical_cli_alias_71 ;;
     all|*)              run_all ;;
   esac

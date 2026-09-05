@@ -24,11 +24,16 @@ import (
 //
 // Skip unless LLM_GATEWAY_PG_TEST_URL is set (the variable name is
 // intentionally gateway-specific so we don't accidentally point at
-// the wrong database in CI).
+// the wrong database in CI). Falls back to TEST_DATABASE_URL — the
+// KEY actually registered in the envs loader — so a local run does
+// not require duplicating credentials under a second name.
 func TestRequestLogInsertParamCount(t *testing.T) {
 	dsn := os.Getenv("LLM_GATEWAY_PG_TEST_URL")
 	if dsn == "" {
-		t.Skip("LLM_GATEWAY_PG_TEST_URL not set; skipping live DB test")
+		dsn = os.Getenv("TEST_DATABASE_URL")
+	}
+	if dsn == "" {
+		t.Skip("LLM_GATEWAY_PG_TEST_URL / TEST_DATABASE_URL not set; skipping live DB test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

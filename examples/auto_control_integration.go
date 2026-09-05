@@ -127,7 +127,9 @@ func IntegrateAutoControlSystem(db *sql.DB, chatHandler interface {
 		AutoContinueOnPause:   getEnvBool("LLM_GATEWAY_GOAL_AUTO_CONTINUE", true),
 		MaxRetryCount:         getEnvInt("LLM_GATEWAY_GOAL_MAX_RETRY", 3),
 		MaxAutoContinueCount:  getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", 3),
+		UseAudit:              getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", false),
 		UseAutorouteForAudit:  getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", true),
+
 		UseAutorouteForIntent: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_INTENT", true),
 		FallbackAuditModel:    getEnv("LLM_GATEWAY_GOAL_FALLBACK_AUDIT_MODEL", "auto"),
 		AutoFixEnabled:        getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", false),

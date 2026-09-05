@@ -146,9 +146,15 @@ _ssh_host_for() {
 # ---- canonical target contracts -----------------------------------------
 
 # Slice 1 / 5 target: 154 (production gateway, host-mode systemd).
-# Mirrors the same contract as 245 (release bundle + versioned rollback)
-# but rollback stays on the existing runbook for this slice.
+# Mirrors 245's release-bundle and verified versioned rollback contract.
+# Blue-green fields describe installed-but-not-started candidate resources;
+# deployment code must still fail closed when the target lacks them.
 target_154_contract() {
+  # 2026-08-19 OOM 复盘: 154 同 245 一样, 公网 443 走 nginx → 8781 链路.
+  # deploy 完成后 SSH 到目标机 curl 这个, 验证目标自身 nginx 是否 alive,
+  # 失败 → 自动 rollback (因 154/245 nginx failed = deploy 目标机链路断).
+  # 注意: 公网 https://llm.kxpms.cn/healthz 走 252 → 154 内网 IP,
+  # 不归 deploy-154 责任 (252 由 252 部署脚本管理).
   _json_object \
     target "154" \
     support "canonical" \
@@ -157,29 +163,58 @@ target_154_contract() {
     binary_path "/opt/llm-gateway-go/llm-gateway-go" \
     web_path "/opt/llm-gateway-go/web" \
     health_url "http://127.0.0.1:8781/healthz" \
+    internal_https_health_url "https://127.0.0.1/healthz" \
+    active_port "8781" \
+    candidate_port "8782" \
+    upstream_fragment "/opt/llm-gateway-go/run/active-upstream.conf" \
+    candidate_unit "llm-gateway-go-canary@.service" \
+    candidate_unit_file "/etc/systemd/system/llm-gateway-go-canary@.service" \
     ssh_host "$(_ssh_host_for 154)" \
     ssh_key_env "SSH_KEY_154" \
-    rollback_policy "runbook" \
+    rollback_policy "versioned" \
     legacy_aliases ""
+  # 2026-08-31: candidate_binary field was removed. The canonical canary unit
+  # follows /opt/llm-gateway-go/llm-gateway-go (a symlink to current/), so the
+  # deployer swap path is: ln -sfn releases/$version current && systemctl
+  # restart canary@<port>. The slot-based design that motivated
+  # candidate_binary was never wired into deploy-seamless.sh, leaving the field
+  # as dead config that misleads future contributors. If a slot-based deploy
+  # is reintroduced, restore the field here AND wire deploy-seamless.sh to
+  # update slots/$candidate_port before starting the candidate.
 }
 
 # Slice 1 / 4 target: 245 (gateway server, full versioned rollback).
-# 245 uses the same canonical gateway unit as production. The deployment gate
-# validates this contract before any apply so legacy template names cannot
-# silently route a release to the wrong service.
+# 245 has its own pre-production unit name so deployment and verification
+# cannot accidentally target the production service contract.
 target_245_contract() {
+  # 2026-08-19 OOM 复盘: 245 自身 nginx (443) 反代到 8781. 如果 245 nginx
+  # failed 但 gateway 还在跑, internal healthz 仍然 OK — 这是 OOM 现场.
+  # 新增 internal_https_health_url 让 deploy step 9.5 在 245 自身跑
+  # `curl -k https://127.0.0.1/healthz` 验证 nginx→gateway 链路,
+  # 失败 → 自动 rollback.
+  #
+  # 注意: 公网 https://llmgo.kxpms.cn/healthz 走的是 252 nginx → 245 内网 IP,
+  # 不归 deploy-245 责任 (252 由 252 部署脚本管理). 部署后应在发起机器跑
+  # `curl -fsS https://llmgo.kxpms.cn/healthz` 做 L4 业务真实门禁 (WARN 不 rollback).
   _json_object \
     target "245" \
     support "canonical" \
     service_manager "systemd" \
-    service_name "llm-gateway-go.service" \
+    service_name "llmgo-245.service" \
     binary_path "/opt/llm-gateway-go/gateway" \
     web_path "/opt/llm-gateway-go/web" \
     health_url "http://127.0.0.1:8781/healthz" \
+    internal_https_health_url "https://127.0.0.1/healthz" \
+    active_port "8781" \
+    candidate_port "8782" \
+    upstream_fragment "/opt/llm-gateway-go/run/active-upstream.conf" \
+    candidate_unit "llmgo-245-canary@.service" \
+    candidate_unit_file "/etc/systemd/system/llmgo-245-canary@.service" \
     ssh_host "$(_ssh_host_for 245)" \
     ssh_key_env "SSH_KEY_245" \
     rollback_policy "versioned" \
     legacy_aliases ""
+  # See target_154_contract for the 2026-08-31 candidate_binary removal note.
 }
 
 # Slice 1 retirement: 186 must fail with explicit guidance before any

@@ -97,7 +97,7 @@ case "$ENV" in
     PGUSER="${PGUSER:-kxuser}"
     PGDATABASE="${PGDATABASE:-llm_gateway}"
     ;;
-  # 71/184 removed — servers decommissioned
+  # 71/184 removed — servers decommissioned (154 = 生产网关, 252 = DB/中间层)
   *)
     echo "错误：未知环境 '$ENV'" >&2
     echo "用法：$0 [local]" >&2
@@ -536,7 +536,7 @@ else
   echo ""
   echo "✨ 下一步："
   echo "  - 定期运行本脚本（建议每天）"
-  echo "  - 配置 Prometheus 告警（observability/alerts/partition_health.yml）"
+  echo "  - 配置 Prometheus 告警（deploy/prometheus/rules/partition-health.yml）"
   echo "  - 检查 bg/partition_manager.go 日志确认 promote 正常执行"
   exit 0
 fi

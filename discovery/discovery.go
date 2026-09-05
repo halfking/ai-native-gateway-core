@@ -5,7 +5,6 @@ package discovery
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -412,6 +412,25 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 		count++
 	}
 
+	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model so the
+	// periodic / balance / fast probe paths have a probe target even
+	// when the operator never set one. The pick is "newest model
+	// (provider_models.created_at DESC) under this credential that is
+	// still routable" — see modelcatalog.AutoFillDefaultProbeModel for
+	// the full contract and guard list. Best-effort: a DB error here
+	// is logged but does not abort the rest of the refresh.
+	if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, s.db, cred.ID); autoErr != nil {
+		slog.Warn("discovery: auto-fill default_probe_model failed",
+			"credential_id", cred.ID, "provider", cred.ProviderName, "error", autoErr)
+	} else if picked != "" {
+		slog.Info("discovery: auto-filled default_probe_model",
+			"credential_id", cred.ID,
+			"provider", cred.ProviderName,
+			"default_probe_model", picked,
+			"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+		)
+	}
+
 	s.updateCredentialHealth(ctx, cred.ID, "healthy", "")
 
 	if failed > 0 {
@@ -442,6 +461,22 @@ func (s *Service) discoverFromManifest(ctx context.Context, cred credential) ([]
 			continue
 		}
 		count++
+	}
+	// 2026-08-31 hzx-2 round-4: same auto-fill hook as the API path —
+	// see discoverForCredential. Manifest-only suppliers (e.g. azure-openai)
+	// must also get a default_probe_model the moment their first
+	// manifest comes through.
+	if count > 0 {
+		if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, s.db, cred.ID); autoErr != nil {
+			slog.Warn("discovery: manifest auto-fill default_probe_model failed",
+				"credential_id", cred.ID, "error", autoErr)
+		} else if picked != "" {
+			slog.Info("discovery: manifest auto-filled default_probe_model",
+				"credential_id", cred.ID,
+				"default_probe_model", picked,
+				"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+			)
+		}
 	}
 	return models, count, nil
 }
@@ -486,7 +521,7 @@ func (s *Service) fetchModels(ctx context.Context, url, apiKey string) ([]string
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("models endpoint returned %d: %s", resp.StatusCode, string(body))
+		return nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
@@ -517,65 +552,7 @@ func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey
 // extractModelIDs parses various /v1/models response formats.
 // Returns a slice of discovered models with ID and inferred modality.
 func extractModelIDs(data []byte) ([]string, error) {
-	// Try standard OpenAI format: {"data": [{"id": "...", "capabilities": {...}}]}
-	var openai struct {
-		Data []struct {
-			ID           string `json:"id"`
-			Capabilities *struct {
-				Vision bool `json:"vision"`
-				Audio  bool `json:"audio"`
-			} `json:"capabilities"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &openai); err == nil && len(openai.Data) > 0 {
-		var ids []string
-		for _, m := range openai.Data {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		return ids, nil
-	}
-
-	// Try alternative format: {"models": [{"id": "..."}]}
-	var alt struct {
-		Models []struct {
-			ID string `json:"id"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(data, &alt); err == nil && len(alt.Models) > 0 {
-		var ids []string
-		for _, m := range alt.Models {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		return ids, nil
-	}
-
-	// Try bare array: ["model1", "model2"]
-	var bare []string
-	if err := json.Unmarshal(data, &bare); err == nil && len(bare) > 0 {
-		return bare, nil
-	}
-
-	// Try array of objects: [{"id": "model1"}, {"name": "model2"}]
-	var objArray []map[string]any
-	if err := json.Unmarshal(data, &objArray); err == nil && len(objArray) > 0 {
-		var ids []string
-		for _, m := range objArray {
-			if id, ok := m["id"].(string); ok && id != "" {
-				ids = append(ids, id)
-			} else if name, ok := m["name"].(string); ok && name != "" {
-				ids = append(ids, name)
-			} else if model, ok := m["model"].(string); ok && model != "" {
-				ids = append(ids, model)
-			}
-		}
-		return ids, nil
-	}
-
-	return nil, fmt.Errorf("unrecognized models response format")
+	return modelresponse.ParseModelIDs(data)
 }
 
 // mergeManifestModels appends manifest-registered model ids that the live
@@ -735,14 +712,14 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 			continue
 		}
 		_, err := s.db.Exec(ctx, `
-			INSERT INTO model_aliases (raw_name, canonical_id, status)
-			VALUES ($1, $2, 'active')
-			ON CONFLICT (raw_name) DO UPDATE SET
-				canonical_id = EXCLUDED.canonical_id,
-				status = 'active'
-		`, normalizedAlias, canonicalID)
+				INSERT INTO model_aliases (canonical_id, raw_name, status)
+				VALUES ($1, $2, 'active')
+				ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+					status = 'active',
+					updated_at = NOW()
+			`, canonicalID, normalizedAlias)
 		if err != nil {
-			slog.Debug("failed to upsert alias", "alias", normalizedAlias, "error", err)
+			return fmt.Errorf("upsert model alias %q: %w", normalizedAlias, err)
 		}
 	}
 
@@ -768,6 +745,108 @@ func (s *Service) updateCredentialHealth(ctx context.Context, credentialID int, 
 	if err != nil {
 		slog.Debug("failed to update credential health", "error", err)
 	}
+}
+
+// EnsureCanonicalAndAliases is the shared "seed the standard-model row +
+// alias rows" path used by both the periodic discovery worker and the manual
+// POST /api/providers/{id}/refresh-models handler.
+//
+// It mirrors Service.upsertModel so refresh and discovery agree on what a
+// freshly observed model name produces in models_canonical and
+// model_aliases:
+//
+//   - models_canonical is upserted with the same family/modality/tags
+//     logic as the periodic worker (modality upgrade-only; admin-edited
+//     families preserved; split-family tokens normalized to canonical).
+//   - model_aliases rows are seeded for every variant produced by
+//     GenerateAliases, ensuring ResolveRawBinding can find the binding
+//     from the client-side model name the first time it is requested.
+//
+// The source tag distinguishes callers: pass "discovery" for the periodic
+// worker, "provider_refresh" for the manual admin handler.
+//
+// 2026-08-22: takes a modelcatalog.Querier (small interface) so refresh-time
+// tests can drive the upsert path via pgxmock without a real database.
+// Production callers pass *pgxpool.Pool, which already satisfies the
+// interface.
+func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, rawName, source string) (canonicalID int, canonicalName string, err error) {
+	if db == nil {
+		return 0, "", fmt.Errorf("database not configured")
+	}
+	canonicalName = NormalizeModelName(rawName)
+	family := InferFamily(canonicalName)
+	inferredModality := modelname.InferModality(rawName)
+	if source == "" {
+		source = "discovery"
+	}
+
+	err = db.QueryRow(ctx, `
+		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
+		VALUES ($1, $2, ARRAY['family:' || $2]::text[], $4, 'active', $5)
+		ON CONFLICT (canonical_name) DO UPDATE SET
+			family = CASE
+				WHEN models_canonical.family = $2
+				THEN models_canonical.family
+				WHEN models_canonical.family = ANY($3::text[])
+				THEN $2
+				ELSE models_canonical.family
+			END,
+			tags = CASE
+				WHEN models_canonical.family = $2
+				THEN (
+					SELECT array_agg(DISTINCT t)
+					FROM unnest(models_canonical.tags || ARRAY['family:' || $2]) AS t
+				)
+				WHEN models_canonical.family = ANY($3::text[])
+				THEN (
+					SELECT array_agg(DISTINCT t)
+					FROM unnest(
+						array_remove(
+							array_remove(
+								models_canonical.tags,
+								'family:' || models_canonical.family
+							),
+							'family:' || $2
+						) || ARRAY['family:' || $2]
+					) AS t
+				)
+				ELSE models_canonical.tags
+			END,
+			status = 'active',
+			modality = CASE
+				WHEN models_canonical.modality = 'text' AND $5 <> 'text'
+				THEN $5
+				ELSE models_canonical.modality
+			END
+		RETURNING id
+	`, canonicalName, family, splitFamilyIDs, source, inferredModality).Scan(&canonicalID)
+	if err != nil {
+		return 0, "", fmt.Errorf("upsert models_canonical for %q: %w", canonicalName, err)
+	}
+
+	aliases := GenerateAliases(rawName, canonicalName)
+	seenAliases := make(map[string]struct{}, len(aliases))
+	for _, alias := range aliases {
+		normalizedAlias := modelname.CanonicalizeClientModel(alias)
+		if normalizedAlias == "" {
+			continue
+		}
+		if _, seen := seenAliases[normalizedAlias]; seen {
+			continue
+		}
+		seenAliases[normalizedAlias] = struct{}{}
+		if _, execErr := db.Exec(ctx, `
+			INSERT INTO model_aliases (canonical_id, raw_name, status)
+			VALUES ($1, $2, 'active')
+			ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+				status = 'active',
+				updated_at = NOW()
+		`, canonicalID, normalizedAlias); execErr != nil {
+			return 0, "", fmt.Errorf("upsert model_alias %q: %w", normalizedAlias, execErr)
+		}
+	}
+
+	return canonicalID, canonicalName, nil
 }
 
 // expireStaleModels marks any model_offers row that wasn't returned by the

@@ -16,19 +16,19 @@ import {
 import { probeModel, type ProbeResult } from '../api'
 import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import ModelPicker from '../components/ModelPicker.vue'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
 
-// Per-layer cap. Two layers (primary/secondary) × 5 models = 10 routes max
+// Per-layer cap. Three tiers (primary/secondary/fallback) × 5 models = 15 routes max
 // per work type, which is well below the historical 3-row hard limit but
 // generous enough for operators to build a real priority sequence.
 const MAX_ROUTES_PER_LAYER = 5
 
-// Tiers exposed in the UI. The DB also has 'fallback' (reserved for future
-// tertiary routes / emergency degradations), but the editor only manages
-// the two primary layers operators interact with day-to-day.
-const EDITABLE_TIERS: ModelRouteTier[] = ['primary', 'secondary']
+// Keep all configured tiers editable. The backend replaces the complete route
+// set on save, so omitting a tier would delete routes that were not rendered.
+const EDITABLE_TIERS: ModelRouteTier[] = ['primary', 'secondary', 'fallback']
 
 const route = useRoute()
 const router = useRouter()
@@ -194,8 +194,8 @@ const testErrors = ref<Record<string, string>>({})
 const testingModel = ref<string | null>(null)
 const testingAll = ref(false)
 
-// Drag state — one shared "from" index per tier so two layers can be
-// re-ordered independently without colliding.
+// Drag state — one shared "from" index per tier so all three layers can be
+// re-ordered independently without cross-layer bookkeeping.
 const dragState = ref<{ tier: ModelRouteTier | null; index: number | null }>({
   tier: null,
   index: null,
@@ -244,11 +244,10 @@ function addRouteRow(tier: ModelRouteTier) {
 
 function removeRouteRow(tier: ModelRouteTier, index: number) {
   const list = [...routesDraft.value[tier]]
-  list.splice(index, 1)
+  const [removed] = list.splice(index, 1)
   routesDraft.value = { ...routesDraft.value, [tier]: list }
   // Clear any stale test result for the removed model so a future row
   // picking the same canonical_name does not show a misleading ✔.
-  const removed = routesDraft.value[tier][index]
   if (removed?.canonical_name) {
     delete testResults.value[removed.canonical_name]
     delete testErrors.value[removed.canonical_name]
@@ -256,10 +255,12 @@ function removeRouteRow(tier: ModelRouteTier, index: number) {
 }
 
 function totalRouteCount(): number {
-  return (
-    routesDraft.value.primary.length +
-    routesDraft.value.secondary.length
-  )
+  return EDITABLE_TIERS.reduce((total, tier) => total + routesDraft.value[tier].length, 0)
+}
+
+function tierTextKey(tier: ModelRouteTier, kind: 'add' | 'empty'): string {
+  const suffix = tier[0].toUpperCase() + tier.slice(1)
+  return `workTypes.layers.${kind}${suffix}`
 }
 
 function syncDetailForm(wt: WorkTypeConfig) {
@@ -289,9 +290,6 @@ async function loadSettings() {
       routesDraft.value = {
         primary: grouped.primary.map(r => ({ ...r })),
         secondary: grouped.secondary.map(r => ({ ...r })),
-        // Defensive: if someone wrote a fallback row via API directly,
-        // surface it in the secondary layer's bucket so the operator can
-        // see and move it. This shouldn't normally happen.
         fallback: grouped.fallback.map(r => ({ ...r })),
       }
       testResults.value = {}
@@ -378,7 +376,7 @@ async function toggleEnabled() {
   if (!detail.value || !detailKey.value) return
   const next = !detail.value.enabled
   const action = next ? t('workTypes.detail.errors.confirmEnable') : t('workTypes.detail.errors.confirmDisable')
-  if (!next && !confirm(t('workTypes.detail.errors.toggleConfirm', { action, name: detail.value.label }))) return
+  if (!next && !(await confirmDialog(t('workTypes.detail.errors.toggleConfirm', { action, name: detail.value.label })))) return
   try {
     if (next) {
       await updateWorkType(detailKey.value, { enabled: true })
@@ -391,12 +389,9 @@ async function toggleEnabled() {
   }
 }
 
-// saveRoutes flattens the two-tier draft back into a single ordered
-// ModelRoute[] payload. Within each tier, list order is the priority
-// (top = highest) and we materialise that ordering into `weight` so the
-// DB's ORDER BY weight DESC reproduces the operator's drag-and-drop
-// intent across a page reload. We also drop half-filled rows that have
-// no canonical_name yet.
+// saveRoutes flattens all three tier drafts back into a single ordered
+// ModelRoute[] payload. Within each tier, list order is the priority (top =
+// highest) and we materialise that ordering into `weight`.
 async function saveRoutes() {
   if (!detailKey.value) return
   const payload: ModelRoute[] = []
@@ -748,11 +743,11 @@ watch(activeTab, (tab) => {
                   class="btn btn-ghost btn-sm"
                   :disabled="routesDraft[tier].length >= MAX_ROUTES_PER_LAYER"
                   @click="addRouteRow(tier)"
-                >{{ t(`workTypes.layers.add${tier === 'primary' ? 'Primary' : 'Secondary'}`) }}</button>
+                >{{ t(tierTextKey(tier, 'add')) }}</button>
               </header>
 
               <div v-if="!routesDraft[tier].length" class="layer-empty">
-                {{ t(`workTypes.layers.empty${tier === 'primary' ? 'Primary' : 'Secondary'}`) }}
+                {{ t(tierTextKey(tier, 'empty')) }}
               </div>
 
               <ol class="route-cards">
@@ -980,7 +975,7 @@ watch(activeTab, (tab) => {
   background: var(--card);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  box-shadow: 0 1px 2px var(--overlay-faint);
 }
 
 .hero-stats { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -1020,8 +1015,8 @@ watch(activeTab, (tab) => {
   font-size: 8px; font-weight: 700;
 }
 .layer-tag.l1 { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent-h); }
-.layer-tag.l2 { background: rgba(63,185,80,.22); color: var(--success); }
-.layer-tag.intent-tag { background: rgba(210,153,34,.22); color: var(--warning); width: 26px; }
+.layer-tag.l2 { background: var(--success-bd); color: var(--success); }
+.layer-tag.intent-tag { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); width: 26px; }
 
 .detail-section--intent { display: flex; flex-direction: column; gap: 8px; }
 .intent-hint { margin: 0; font-size: 11px; line-height: 1.4; }
@@ -1041,8 +1036,8 @@ watch(activeTab, (tab) => {
   align-items: center;
   gap: 4px;
   padding: 2px 4px 2px 8px;
-  background: rgba(210,153,34,.15);
-  border: 1px solid rgba(210,153,34,.4);
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bd);
   border-radius: 99px;
   font-size: 11px;
   color: var(--warning);
@@ -1064,7 +1059,7 @@ watch(activeTab, (tab) => {
   line-height: 1;
   cursor: pointer;
 }
-.kw-chip-x:hover { background: rgba(210,153,34,.3); }
+.kw-chip-x:hover { background: var(--warning-bd); }
 .kw-input {
   flex: 1;
   min-width: 160px;
@@ -1113,7 +1108,7 @@ watch(activeTab, (tab) => {
 .list-table tbody td { padding: 8px 6px; }
 .model-name { font-weight: 500; font-size: 11px; }
 .model-row { cursor: pointer; }
-.model-row:hover { background: rgba(255,255,255,.04); }
+.model-row:hover { background: var(--row-hover); }
 .model-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .model-row.disabled { opacity: 0.55; }
 
@@ -1221,9 +1216,9 @@ watch(activeTab, (tab) => {
   text-transform: uppercase;
 }
 .layer-pill--primary {
-  background: rgba(63,185,80,.18);
+  background: var(--success-bd);
   color: var(--success);
-  border: 1px solid rgba(63,185,80,.4);
+  border: 1px solid var(--success-bd);
 }
 .layer-pill--secondary {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
@@ -1338,9 +1333,9 @@ watch(activeTab, (tab) => {
   border: 1px solid var(--border);
 }
 .route-tier-summary__pill--primary {
-  background: rgba(63,185,80,.12);
+  background: var(--success-bg);
   color: var(--success);
-  border-color: rgba(63,185,80,.35);
+  border-color: var(--success-bd);
 }
 .route-tier-summary__pill--secondary {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
@@ -1369,20 +1364,20 @@ watch(activeTab, (tab) => {
   align-items: center;
 }
 .test-result--ok {
-  background: rgba(63,185,80,.12);
-  border: 1px solid rgba(63,185,80,.35);
+  background: var(--success-bg);
+  border: 1px solid var(--success-bd);
   color: var(--success);
 }
 .test-result--fail {
-  background: rgba(248,81,73,.1);
-  border: 1px solid rgba(248,81,73,.35);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
   color: var(--danger);
 }
 .test-err { flex: 1 1 100%; word-break: break-word; }
 
 .modal-overlay {
   position: fixed; inset: 0;
-  background: rgba(0,0,0,.5);
+  background: var(--overlay-strong);
   display: flex; align-items: center; justify-content: center;
   z-index: 1000;
 }

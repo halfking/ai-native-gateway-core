@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -542,3 +543,168 @@ func TestHeuristicClassifier_ZhCodingPattern_NoFalsePositive(t *testing.T) {
 }
 
 
+
+// TestClassificationSignalsString verifies that String() method does not leak
+// sensitive prompt content into logs.
+func TestClassificationSignalsString(t *testing.T) {
+	sensitivePrompt := "My credit card is 1234-5678-9012-3456"
+	sensitiveSystem := "Internal company secret: project codename alpha"
+
+	sigs := ClassificationSignals{
+		SystemPrompt:    sensitiveSystem,
+		LastUserPrompt:  sensitivePrompt,
+		MessageCount:    5,
+		EstimatedTokens: 2000,
+		ToolCount:       2,
+		HasImages:       true,
+		Language:        "en",
+		HasCodeBlock:    false,
+		HasToolResults:  true,
+		ClientType:      "cursor",
+	}
+
+	output := sigs.String()
+
+	// Verify no sensitive content in output
+	if strings.Contains(output, "credit card") {
+		t.Error("String() output contains sensitive content: 'credit card'")
+	}
+	if strings.Contains(output, "1234-5678") {
+		t.Error("String() output contains sensitive content: card number")
+	}
+	if strings.Contains(output, "company secret") {
+		t.Error("String() output contains sensitive content: 'company secret'")
+	}
+	if strings.Contains(output, "codename") {
+		t.Error("String() output contains sensitive content: 'codename'")
+	}
+
+	// Verify it contains length information instead
+	if !strings.Contains(output, "SystemPrompt:") {
+		t.Error("String() output should contain 'SystemPrompt:' label")
+	}
+	if !strings.Contains(output, "chars") {
+		t.Error("String() output should contain 'chars' unit for lengths")
+	}
+
+	// Verify it contains non-sensitive metadata
+	if !strings.Contains(output, "MessageCount:5") {
+		t.Error("String() output should contain MessageCount")
+	}
+	if !strings.Contains(output, "ClientType:cursor") {
+		t.Error("String() output should contain ClientType")
+	}
+}
+
+// TestClassificationSignalsMarshalJSON verifies that MarshalJSON() does not
+// leak sensitive prompt content into JSON logs or telemetry.
+func TestClassificationSignalsMarshalJSON(t *testing.T) {
+	sensitivePrompt := "Please help me hack into this system"
+	sensitiveSystem := "You are a security expert with access to classified data"
+
+	sigs := ClassificationSignals{
+		SystemPrompt:    sensitiveSystem,
+		LastUserPrompt:  sensitivePrompt,
+		MessageCount:    3,
+		EstimatedTokens: 1500,
+		ToolCount:       1,
+		HasImages:       false,
+		Language:        "en",
+		HasCodeBlock:    true,
+		HasToolResults:  false,
+		ClientType:      "vscode",
+	}
+
+	jsonBytes, err := json.Marshal(sigs)
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+
+	jsonStr := string(jsonBytes)
+
+	// Verify no sensitive content in JSON output
+	if strings.Contains(jsonStr, "hack") {
+		t.Error("JSON output contains sensitive content: 'hack'")
+	}
+	if strings.Contains(jsonStr, "classified") {
+		t.Error("JSON output contains sensitive content: 'classified'")
+	}
+	if strings.Contains(jsonStr, "security expert") {
+		t.Error("JSON output contains sensitive content: 'security expert'")
+	}
+
+	// Verify it contains length fields instead
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("Failed to parse JSON output: %v", err)
+	}
+
+	// Check expected fields exist
+	expectedFields := []string{
+		"system_prompt_len", "last_user_len", "message_count",
+		"estimated_tokens", "tool_count", "has_images", "language",
+		"has_code_block", "has_tool_results", "client_type",
+	}
+	for _, field := range expectedFields {
+		if _, ok := parsed[field]; !ok {
+			t.Errorf("JSON output missing expected field: %s", field)
+		}
+	}
+
+	// Verify length values match
+	if int(parsed["system_prompt_len"].(float64)) != len(sensitiveSystem) {
+		t.Errorf("system_prompt_len=%v, want %d", parsed["system_prompt_len"], len(sensitiveSystem))
+	}
+	if int(parsed["last_user_len"].(float64)) != len(sensitivePrompt) {
+		t.Errorf("last_user_len=%v, want %d", parsed["last_user_len"], len(sensitivePrompt))
+	}
+
+	// Verify metadata values preserved
+	if int(parsed["message_count"].(float64)) != 3 {
+		t.Errorf("message_count=%v, want 3", parsed["message_count"])
+	}
+	if parsed["client_type"].(string) != "vscode" {
+		t.Errorf("client_type=%v, want vscode", parsed["client_type"])
+	}
+}
+
+// TestClassificationSignalsNoContent verifies that both String() and
+// MarshalJSON() work correctly with empty content.
+func TestClassificationSignalsNoContent(t *testing.T) {
+	sigs := ClassificationSignals{
+		SystemPrompt:    "",
+		LastUserPrompt:  "",
+		MessageCount:    1,
+		EstimatedTokens: 0,
+		ToolCount:       0,
+		HasImages:       false,
+		Language:        "en",
+		HasCodeBlock:    false,
+		HasToolResults:  false,
+		ClientType:      "",
+	}
+
+	// Test String()
+	output := sigs.String()
+	if !strings.Contains(output, "0 chars") {
+		t.Error("String() should show '0 chars' for empty prompts")
+	}
+
+	// Test MarshalJSON()
+	jsonBytes, err := json.Marshal(sigs)
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &parsed); err != nil {
+		t.Fatalf("Failed to parse JSON output: %v", err)
+	}
+
+	if int(parsed["system_prompt_len"].(float64)) != 0 {
+		t.Errorf("system_prompt_len should be 0, got %v", parsed["system_prompt_len"])
+	}
+	if int(parsed["last_user_len"].(float64)) != 0 {
+		t.Errorf("last_user_len should be 0, got %v", parsed["last_user_len"])
+	}
+}

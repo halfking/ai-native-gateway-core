@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,7 +87,7 @@ func TestSerializedResponseWriterConcurrentProducersNeverInterleave(t *testing.T
 // its bytes intact and ordered after the prewarm comment.
 func TestPreStreamKeepaliveWriterSharesSerializedChannel(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-1")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-1")
 	require.True(t, ok)
 	w := psk.Writer()
 
@@ -111,7 +112,7 @@ func TestPreStreamKeepaliveWriterSharesSerializedChannel(t *testing.T) {
 // intact no matter how the two producers overlap.
 func TestPreStreamKeepaliveCommentsAndFramesNeverInterleave(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-2")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-2")
 	require.True(t, ok)
 	w := psk.Writer()
 

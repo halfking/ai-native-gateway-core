@@ -16,8 +16,9 @@ import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from '../../config/brand'
-import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from '../../store'
-import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, visibleNavGroups, visibleNavItems, type NavGroup } from '../../config/appNav'
+import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps, isProviderConsoleView as checkProviderConsole } from '../../store'
+import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, resolveNavItemActivation, visibleNavGroups, visibleNavItems, mergeRemotePluginNav, type NavGroup } from '../../config/appNav'
+import { usePluginNav } from '../../composables/usePluginNav'
 import {
   LOCAL_OPS_MENU,
   onMaintainAvailabilityChange,
@@ -75,6 +76,8 @@ onBeforeUnmount(() => {
 const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
+// 2026-09-04: 供应商控制台（super_admin 或 default 租户 tenant_admin）
+const isProviderConsole = computed(() => checkProviderConsole())
 
 const isActivated = ref(false)
 
@@ -95,10 +98,27 @@ const navPrimaryItems = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, {
   isSuperAdmin: isSuperAdmin.value,
   isPlatformOps: isPlatformOps.value,
   isTenantPortal: isTenantPortal.value,
+  isProviderConsole: isProviderConsole.value,
   isActivated: isActivated.value,
 }))
 
+// 2026-09-02: 在渲染前一次性把每个菜单项解析成最终 path / 是否为激活动作,
+// 避免模板内反复调用 resolveNavItemActivation。
+const navPrimaryResolved = computed(() =>
+  navPrimaryItems.value.map((item) => ({
+    item,
+    resolved: resolveNavItemActivation(item, { isActivated: isActivated.value }),
+  })),
+)
+
 const opsMenuOverrides = ref<OpsMenuGroup[] | null>(null)
+
+// V5.1: dynamic plugin nav (plugin-runtime /api/v1/plugin-nav). Loaded once
+// per mount; failures silently keep the static layout. The merge step runs
+// after the opsPlatform override so a plugin can't displace the maintain
+// nav, but plugin entries land inside the matching static group (e.g.
+// 'requests-sessions') or in a synthetic 'plugins' group if no match.
+const { pluginNav } = usePluginNav()
 
 function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] | null): NavGroup[] {
   if (!remote || !remote.length) return localGroups
@@ -127,14 +147,24 @@ function mergeRemoteOps(localGroups: NavGroup[], remote: OpsMenuGroup[] | null):
 }
 
 const navGroups = computed(() => {
-  const local = visibleNavGroups(NAV_GROUPS, {
+  let local = visibleNavGroups(NAV_GROUPS, {
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
+    isProviderConsole: isProviderConsole.value,
     isActivated: isActivated.value,
   })
-  if (!opsMenuOverrides.value) return local
-  return mergeRemoteOps(local, opsMenuOverrides.value)
+  local = mergeRemotePluginNav(local, pluginNav.value)
+  const base = opsMenuOverrides.value ? mergeRemoteOps(local, opsMenuOverrides.value) : local
+  // 2026-09-02: 每个 item 都附带上「按激活状态解析后的 path / 是否为激活动作」,
+  // 模板直接读 resolved.path 渲染即可。
+  return base.map((g) => ({
+    ...g,
+    items: g.items.map((item) => ({
+      item,
+      resolved: resolveNavItemActivation(item, { isActivated: isActivated.value }),
+    })),
+  }))
 })
 
 async function refreshOpsMenu() {
@@ -225,7 +255,9 @@ const activeGroup = computed(() =>
 function groupActive(id: string): boolean {
   return navGroups.value
     .find((g) => g.id === id)?.items
-    .some((it) => isNavItemActive(it.path, route.path, it.exact)) ?? false
+    // items 现在是 { item, resolved } 包装；分组高亮按原始 path 匹配，
+    // 因为未激活时 resolved.path 会重定向到激活页，不应点亮所属分组。
+    .some(({ item }) => isNavItemActive(item.path, route.path, item.exact)) ?? false
 }
 
 function navLabel(labelKey: string | undefined, fallback: string): string {
@@ -251,19 +283,25 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
     </a>
 
     <nav class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
-      <template v-for="item in navPrimaryItems" :key="item.path + item.label">
+      <template v-for="{ item, resolved } in navPrimaryResolved" :key="item.path + item.label">
         <a
-          v-if="item.external"
-          :href="item.path"
+          v-if="resolved.external"
+          :href="resolved.path"
           class="app-topbar__link app-topbar__link--primary"
-          :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-        >{{ navLabel(item.labelKey, item.label) }}</a>
+          :class="{
+            active: isNavItemActive(resolved.path, route.path, item.exact),
+            'app-topbar__link--activate': resolved.activateAction,
+          }"
+        >{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</a>
         <router-link
           v-else
-          :to="item.path"
+          :to="resolved.path"
           class="app-topbar__link app-topbar__link--primary"
-          :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-        >{{ navLabel(item.labelKey, item.label) }}</router-link>
+          :class="{
+            active: isNavItemActive(resolved.path, route.path, item.exact),
+            'app-topbar__link--activate': resolved.activateAction,
+          }"
+        >{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</router-link>
       </template>
 
       <div
@@ -296,29 +334,35 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
         @mouseenter="cancelLeave"
         @mouseleave="closeAll()"
       >
-        <template v-for="item in activeGroup.items" :key="item.path + item.label">
+        <template v-for="{ item, resolved } in activeGroup.items" :key="item.path + item.label">
           <a
-            v-if="item.external"
-            :href="item.path"
+            v-if="resolved.external"
+            :href="resolved.path"
             class="app-topbar__dropdown-item"
+            :class="{ 'app-topbar__dropdown-item--activate': resolved.activateAction }"
+            :title="resolved.activateAction ? t('nav.item.activateActionTip', '点击前往激活本机') : undefined"
             role="menuitem"
-            :target="item.path.startsWith('http') ? '_blank' : undefined"
-            :rel="item.path.startsWith('http') ? 'noopener' : undefined"
+            :target="resolved.path.startsWith('http') ? '_blank' : undefined"
+            :rel="resolved.path.startsWith('http') ? 'noopener' : undefined"
             @click="closeAll()"
           >
             <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
-            <span>{{ navLabel(item.labelKey, item.label) }}</span>
+            <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</span>
           </a>
           <router-link
             v-else
-            :to="item.path"
+            :to="resolved.path"
             class="app-topbar__dropdown-item"
-            :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
+            :class="{
+              active: isNavItemActive(resolved.path, route.path, item.exact),
+              'app-topbar__dropdown-item--activate': resolved.activateAction,
+            }"
+            :title="resolved.activateAction ? t('nav.item.activateActionTip', '点击前往激活本机') : undefined"
             role="menuitem"
             @click="closeAll()"
           >
             <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
-            <span>{{ navLabel(item.labelKey, item.label) }}</span>
+            <span>{{ navLabel(item.labelKey, resolved.activateAction ? t('nav.item.activateAction', '激活') : item.label) }}</span>
           </router-link>
         </template>
       </div>
@@ -435,6 +479,17 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
 }
 .app-topbar__link--primary {
   color: var(--kx-text, var(--text));
+  font-weight: 700;
+}
+
+/* 2026-09-04: 未激活时「激活」CTA — 强调色 + 加粗，引导用户先完成激活。
+   与 .active 状态共用主题 token，保证明暗主题一致。 */
+.app-topbar__link--activate {
+  color: var(--kx-primary, var(--accent));
+  font-weight: 700;
+}
+.app-topbar__dropdown-item--activate {
+  color: var(--kx-primary, var(--accent));
   font-weight: 700;
 }
 

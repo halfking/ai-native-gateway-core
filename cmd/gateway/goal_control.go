@@ -204,9 +204,18 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		MaxAutoContinueCount: getEnvInt("LLM_GATEWAY_GOAL_MAX_AUTO_CONTINUE", preset.MaxContinueCount),
 		CompletionConfidence: getEnvFloat("LLM_GATEWAY_GOAL_COMPLETION_CONFIDENCE", preset.CompletionConfidence),
 
+		// Client-driven control signals remain opt-in on both sides: the
+		// tenant setting / env default enables production behavior, while
+		// X-Gw-Capabilities authorizes it per request.
+		ClientSignalEnabled:          getEnvBool("LLM_GATEWAY_GOAL_CLIENT_DRIVEN", false),
+		ClientSignalMode:             getEnv("LLM_GATEWAY_GOAL_CLIENT_SIGNAL_MODE", "auto"),
+		HandoffSignalThresholdTokens: getEnvInt("LLM_GATEWAY_GOAL_HANDOFF_SIGNAL_THRESHOLD", 200000),
+
 		// Audit/Fix settings from preset
+		UseAudit:             getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", preset.UseAudit),
 		UseAutorouteForAudit: getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", preset.UseAutorouteAudit),
-		AutoFixEnabled:       getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", preset.AutoFixEnabled),
+
+		AutoFixEnabled: getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", preset.AutoFixEnabled),
 
 		// Loop detection from preset
 		ModelSwitchOnLoop:      getEnvBool("LLM_GATEWAY_GOAL_MODEL_SWITCH_ON_LOOP", preset.LoopDetectionEnabled),
@@ -241,6 +250,16 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		"monthly_limit", goalCfg.MonthlyTokenLimit,
 	)
 
+	// Enforce the budget-exhaustion invariant: the loop detector's
+	// budgetExhausted branch only fires when MaxFollowUpDepth can accommodate
+	// MaxAutoContinueCount × (MaxModelSwitchCount + 1). Otherwise the
+	// depth-guardrail truncates the loop before budget exhaustion, and the
+	// model-switch fallback never fires (see 903dc8b4d follow-up audit).
+	//
+	// The adjustment mutates a copy so per-tenant runtime overrides remain
+	// authoritative inside the hook; the boot value is only the baseline.
+	enforceFollowUpDepthBudgetInvariant(&goalCfg)
+
 	// Apply the follow-up engine limits so the loop guardrails honour the
 	// goal config from boot. Per-tenant runtime overrides still apply inside
 	// the hook via settings; this just sets a sane process-wide default.
@@ -251,10 +270,10 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// 6. Audit hook: runs after completion, uses the full conversation
 	//    transcript (historyStore) and a separate audit model.
 	auditCfg := goal.AuditConfig{
-		Enabled:        getEnvBool("LLM_GATEWAY_GOAL_AUDIT_ENABLED", false),
-		UseAutoroute:   getEnvBool("LLM_GATEWAY_GOAL_USE_AUTOROUTE_AUDIT", true),
-		FallbackModel:  getEnv("LLM_GATEWAY_GOAL_AUDIT_MODEL", "auto"),
-		AutoFixEnabled: getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", false),
+		Enabled:        goalCfg.UseAudit,
+		UseAutoroute:   goalCfg.UseAutorouteForAudit,
+		FallbackModel:  goalCfg.FallbackAuditModel,
+		AutoFixEnabled: goalCfg.AutoFixEnabled,
 		MinConfidence:  0.7,
 		SettingsGetter: adapter,
 	}
@@ -274,6 +293,9 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// table. The replacement uses session_summaries + adds 8 new tunable
 	// settings (summary engine, model, cooldown, max_per_session, etc.).
 	handoffStore := handoff.NewPGStore(db)
+	goalHandoffTrigger := handoff.NewMemoryHandoffTrigger(5*time.Minute, goalStore)
+	goalStateSerializer := handoff.NewMemoryGoalStateSerializer(goalStore)
+	goalHook.SetOutcomeObserver(goalHandoffTrigger)
 	handoffCfg := handoff.TriggerConfig{
 		Enabled:             getEnvBool("LLM_GATEWAY_HANDOFF_ENABLED", false),
 		TriggerMode:         handoff.TriggerMode(getEnv("LLM_GATEWAY_HANDOFF_TRIGGER_MODE", "auto")),
@@ -295,7 +317,14 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		NotifyLevel:         handoff.NotifyLevel(getEnv("LLM_GATEWAY_HANDOFF_NOTIFY_LEVEL", "warn")),
 		NotifyWebhook:       getEnv("LLM_GATEWAY_HANDOFF_NOTIFY_WEBHOOK", ""),
 		ContinueHintTpl:     getEnv("LLM_GATEWAY_HANDOFF_CONTINUE_HINT_TPL", ""),
-		SettingsGetter:      adapter,
+		ContextMonitor:      handoff.NewMemoryContextMonitor(0, 0),
+		GoalStateSerializer: goalStateSerializer,
+		GoalTrigger:         goalHandoffTrigger,
+		MessageBuilder:      handoff.NewMemoryHandoffMessageBuilder(0),
+		GoalCostMode: func(tenantID string) string {
+			return adapter.GetString(tenantID, "goal.cost_mode", string(inferredCostMode))
+		},
+		SettingsGetter: adapter,
 		// LLMCaller shared with goal mode — reuses LLMGatewayAutoLLM* env vars
 		// via the same HTTPLlmCallerConfig. When no endpoint is configured,
 		// the hook auto-degrades to rule-based extraction.
@@ -332,6 +361,7 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// 7b. Wire Goal retry policy resolver and recorder (2026-07-23)
 	chatHandler.SetGoalRetryPolicyResolver(retryResolver)
 	chatHandler.SetGoalRetryRecorder(goalStore)
+	chatHandler.SetGoalOutcomeObserver(goalHandoffTrigger)
 
 	handoffEnabled := handoffCfg.Enabled
 	ocEnabled := len(interceptors) > 3
@@ -350,6 +380,60 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		"completion_confidence", goalCfg.CompletionConfidence,
 		"llm_caller_configured", llmCallerConfigured(),
 	)
+}
+
+// minBudgetExhaustionMargin is the slack added on top of the strict
+// max-auto-continue × (max-model-switch + 1) bound when the boot invariant
+// lifts MaxFollowUpDepth. It guarantees a small buffer for follow-up
+// messages that aren't continue-budget events (e.g. handoff follow-ups),
+// so the depth guardrail still terminates deterministically after at most
+// (continue slots + margin) iterations.
+const minBudgetExhaustionMargin = 3
+
+// enforceFollowUpDepthBudgetInvariant adjusts cfg.MaxFollowUpDepth upward
+// when it is strictly less than MaxAutoContinueCount × (MaxModelSwitchCount+1).
+//
+// Why this exists:
+//   - loop_detector.go declares budgetExhausted=true once the continue counter
+//     reaches MaxAutoContinueCount, then triggers applyModelSwitch.
+//   - Each model-switch resets the continue counter to zero and rolls forward
+//     to the next fallback model. The full chain therefore consumes up to
+//     MaxAutoContinueCount × (MaxModelSwitchCount + 1) follow-up slots.
+//   - If MaxFollowUpDepth is below that product, the depth guardrail aborts
+//     the loop before budgetExhausted can fire — silently disabling the
+//     budget-exhaustion model-switch path.
+//
+// When the invariant is violated (typically under the cost_mode `balanced`
+// or `aggressive` presets whose MaxAutoContinueCount=5/10 was chosen
+// before 903dc8b4d tightened the depth default), this helper lifts the
+// depth so the user gets the documented behaviour. A warning is logged at
+// boot so operators can diagnose the lifting without surprise.
+//
+// Negative or zero values disable the check (treat as "inactive path");
+// the depth at zero or below is not a valid config in practice.
+func enforceFollowUpDepthBudgetInvariant(cfg *goal.ModeConfig) {
+	if cfg == nil {
+		return
+	}
+	if cfg.MaxAutoContinueCount <= 0 || cfg.MaxModelSwitchCount < 0 {
+		// Auto-continue off or model-switch disabled: invariant does not
+		// apply. Nothing to adjust.
+		return
+	}
+	required := cfg.MaxAutoContinueCount * (cfg.MaxModelSwitchCount + 1)
+	if cfg.MaxFollowUpDepth >= required {
+		// Invariant already satisfied.
+		return
+	}
+	oldDepth := cfg.MaxFollowUpDepth
+	cfg.MaxFollowUpDepth = required + minBudgetExhaustionMargin
+	slog.Warn("goal_control: follow_up_depth_below_budget_invariant; auto-lifting",
+		"old_depth", oldDepth,
+		"max_auto_continue", cfg.MaxAutoContinueCount,
+		"max_model_switch", cfg.MaxModelSwitchCount,
+		"required_minimum", required,
+		"new_depth", cfg.MaxFollowUpDepth,
+		"reason", "without this lift, the depth guardrail truncates the loop before budgetExhausted can fire (903dc8b4d audit-fix followup)")
 }
 
 // buildHandoffLLMCaller builds the LLMCaller used by the handoff hook's

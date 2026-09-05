@@ -9,14 +9,15 @@ import (
 )
 
 type ProbeQueueWorkerConfig struct {
-	Queue        *ProbeQueue
-	Executor     *ActiveProbeExecutor
-	Emitter      *ActiveProbeEmitter
-	ResultSink   IntegrityProbeResultSink
+	Queue      *ProbeQueue
+	Executor   *ActiveProbeExecutor
+	Emitter    *ActiveProbeEmitter
+	ResultSink IntegrityProbeResultSink
 	// ProbeService (2026-08-13, 需求 6) owns execution of node_probe tasks
 	// (two-round direct+gateway, side-effects, audit). When nil, node_probe
 	// tasks fall back to the executor's direct-only RunCommand.
 	ProbeService *ProbeService
+	Scope        ProbeScope
 	BatchSize    int
 	Workers      int
 	Lease        time.Duration
@@ -29,6 +30,23 @@ type ProbeQueueWorker struct {
 	cfg    ProbeQueueWorkerConfig
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// reviveMu/reviveAt throttle ReviveExpiredReady (every 30s, not every
+	// 250ms poll) — it is a maintenance sweep, not a hot-path step.
+	reviveMu sync.Mutex
+	reviveAt time.Time
+
+	// onQuotaRecovered is the dispatcher-facing notification fired from
+	// processTask's success branch (the legacy executor path AND the
+	// ProbeService path) once a credential's quota / availability state
+	// has been flipped back to healthy. Wired from main.go via
+	// SetOnQuotaRecovered; nil → processTask stays silent (the routing
+	// layer falls back to candCache TTL).
+	//
+	// 2026-08-26 quota-recovery-notify fix: closes the "DB says ready but
+	// cache still excludes credential" gap on the fast_probe path
+	// (ProbeQueueWorker + ProbeService + NodeProbeWorker.Submit).
+	onQuotaRecovered func(credID int, source string)
 }
 
 // SetProbeService injects the node-probe execution owner after construction
@@ -41,6 +59,24 @@ func (w *ProbeQueueWorker) SetProbeService(ps *ProbeService) {
 	}
 }
 
+// SetOnQuotaRecovered wires the dispatcher-facing notification fired from
+// processTask's success branch. The (credID, source) signature lets the
+// integrator route the label + invalidator from a single closure. Safe to
+// call multiple times; the latest non-nil setter wins. nil → processTask
+// stays silent (the routing layer falls back to candCache TTL).
+//
+// 2026-08-26 quota-recovery-notify fix: without this hook the durable
+// probe queue's success path would complete the queue row but the routing
+// layer's candidate cache would still exclude the credential until TTL
+// elapses, so the first chat request after a recharge still picks a
+// fallback node.
+func (w *ProbeQueueWorker) SetOnQuotaRecovered(fn func(credID int, source string)) {
+	if w == nil || fn == nil {
+		return
+	}
+	w.onQuotaRecovered = fn
+}
+
 func NewProbeQueueWorker(cfg ProbeQueueWorkerConfig) *ProbeQueueWorker {
 	if cfg.BatchSize <= 0 {
 		// A worker claims one task at a time. Claiming a batch then executing it
@@ -51,7 +87,11 @@ func NewProbeQueueWorker(cfg ProbeQueueWorkerConfig) *ProbeQueueWorker {
 		cfg.Workers = 1
 	}
 	if cfg.Lease <= 0 {
-		cfg.Lease = 30 * time.Second
+		// 2026-08-18 Agent B: bumped 30s → ProbeQueueLeaseDefault (5m) so a
+		// two-round probe + side effects run is not reclaimed by
+		// RequeueExpiredLeases mid-flight. The lease heartbeat inside
+		// ProbeService.Run keeps the window refreshed while side effects run.
+		cfg.Lease = ProbeQueueLeaseDefault
 	}
 	if cfg.PollInterval <= 0 {
 		cfg.PollInterval = 250 * time.Millisecond
@@ -100,6 +140,7 @@ func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
 	if _, err := w.cfg.Queue.RequeueExpiredLeases(ctx); err != nil {
 		return err
 	}
+	w.maybeReviveExpiredReady(ctx)
 	tasks, err := w.cfg.Queue.Claim(ctx, 1, w.cfg.Lease)
 	if err != nil {
 		return err
@@ -110,18 +151,70 @@ func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
 	return nil
 }
 
+// maybeReviveExpiredReady runs the zombie-ready rescue at most once per 30s
+// across all worker goroutines (2026-08-18: leftover ready rows with expired
+// expires_at could never be claimed, silently killing the probe pipeline).
+func (w *ProbeQueueWorker) maybeReviveExpiredReady(ctx context.Context) {
+	w.reviveMu.Lock()
+	due := time.Since(w.reviveAt) >= 30*time.Second
+	if due {
+		w.reviveAt = time.Now()
+	}
+	w.reviveMu.Unlock()
+	if !due {
+		return
+	}
+	if n, err := w.cfg.Queue.ReviveExpiredReady(ctx); err != nil {
+		slog.Warn("probe queue revive expired-ready failed", "error", err)
+	} else if n > 0 {
+		slog.Info("probe queue revived expired ready tasks", "count", n)
+	}
+}
+
 func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask) {
+	if w.cfg.Scope != nil && !w.cfg.Scope.AllowsIdentity(task.TenantID, int(task.CredentialID), task.RawModel) {
+		slog.Info("probe queue skipped out-of-scope task", "queue_id", task.ID)
+		w.complete(ctx, task, ProbeQueueResult{Status: ProbeQueueSuccess, ReasonCode: "probe_out_of_scope"})
+		return
+	}
 	// Unified node_probe path (需求 6): ProbeService.Run does the two-round
 	// direct+gateway probe with all side-effects + audit, and returns a result
 	// whose NextRunAt already reflects the 7-step node-probe backoff chain.
 	if task.Command == "node_probe" && w.cfg.ProbeService != nil {
 		result, err := w.cfg.ProbeService.Run(ctx, task)
 		if err != nil {
+			if errors.Is(err, ErrProbeOutOfScope) || errors.Is(err, ErrProbeAutomaticIneligible) {
+				slog.Info("probe_service skipped task", "queue_id", task.ID, "reason", result.ReasonCode)
+				w.complete(ctx, task, result)
+				return
+			}
+			// Run may have completed both probe rounds and applied routing
+			// side effects before the audit INSERT failed. Settle the result
+			// it returned instead of re-running the probe on the next retry.
+			if errors.Is(err, ErrProbeAuditPersistFailed) {
+				slog.Warn("probe_service audit persistence failed after probe completion", "queue_id", task.ID, "error", err)
+				w.completeNodeProbe(ctx, task, result)
+				return
+			}
+			// A reclaimed lease belongs to the new owner. The stale owner must
+			// not complete or re-arm the row with its old lease token.
+			if errors.Is(err, ErrProbeLeaseLost) {
+				slog.Info("probe_service stopped after lease loss", "queue_id", task.ID)
+				return
+			}
 			slog.Warn("probe_service run failed", "queue_id", task.ID, "error", err)
 			w.completeFailure(ctx, task, "probe_service_error", err.Error(), 0, 0, "")
 			return
 		}
 		w.completeNodeProbe(ctx, task, result)
+		// 2026-08-26 quota-recovery-notify fix: when the unified node_probe
+		// path returned a successful ProbeQueueResult, notify the dispatcher
+		// so the per-credential candidate cache invalidates immediately and
+		// the next chat request re-plans with the recovered binding visible.
+		// nil hook → silent, routing layer falls back to candCache TTL.
+		if result.Status == ProbeQueueSuccess && w.onQuotaRecovered != nil {
+			w.onQuotaRecovered(int(task.CredentialID), "fast_probe")
+		}
 		return
 	}
 	target, err := w.cfg.Executor.LoadTarget(ctx, int(task.CredentialID), task.RawModel)
@@ -145,6 +238,12 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 			HTTPStatus: result.HTTPStatus, LatencyMs: result.LatencyMs,
 			BodyPreview: result.RespPreview,
 		})
+		// 2026-08-26 quota-recovery-notify fix: on the legacy executor
+		// success branch, notify the dispatcher so the per-credential
+		// candidate cache invalidates immediately. nil hook → silent.
+		if w.onQuotaRecovered != nil {
+			w.onQuotaRecovered(int(task.CredentialID), "fast_probe")
+		}
 		return
 	}
 	w.completeFailure(ctx, task, result.ErrCode, result.ErrMsg, result.HTTPStatus, result.LatencyMs, result.RespPreview)

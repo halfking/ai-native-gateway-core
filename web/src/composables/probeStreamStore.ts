@@ -11,7 +11,6 @@
 // SelfCheckPanel uses this for live updates while still calling the REST
 // endpoints for the first paint and as a fallback when SSE is unavailable.
 import { ref } from 'vue'
-import { authBearer } from '../store'
 
 // OBS-BE5 (25 号 §6 / 26 号 §4): tri-state origin badge carried by every task
 // object. Old payloads without `origin` keep rendering (callers derive a
@@ -30,6 +29,8 @@ export interface ProbeStreamTile {
   credential_id: number
   provider_id?: number
   provider_code?: string
+  /** 供应商显示名（2026-08-20）— 自检 tab 卡片显示 供应商+凭据 */
+  provider_name?: string
   raw_model?: string
   attempt?: number
   latency_ms?: number
@@ -61,12 +62,20 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 // dashboards cost ~zero CPU. When the tab becomes visible again we clear the
 // (now stale) tiles and reconnect so the backend's authoritative
 // initial_data snapshot rebuilds the view instead of replaying a gap.
+//
+// 2026-09-01 (P1 audit fix): visibility listener is now installed on first
+// acquire (refCount 0→1) and removed on full release (refCount → 0). Previously
+// it was attached at module-load time and lived for the process lifetime,
+// leaking across HMR reloads and tests.
 const visibility = {
   hidden: typeof document !== 'undefined' ? document.hidden : false,
   missed: false,
 }
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
+let visibilityChangeHandler: (() => void) | null = null
+
+function installVisibilityListener() {
+  if (typeof document === 'undefined' || visibilityChangeHandler) return
+  visibilityChangeHandler = () => {
     if (!document.hidden && visibility.hidden) {
       visibility.hidden = false
       if (visibility.missed && refCount > 0) {
@@ -78,16 +87,23 @@ if (typeof document !== 'undefined') {
     } else if (document.hidden) {
       visibility.hidden = true
     }
-  })
+  }
+  document.addEventListener('visibilitychange', visibilityChangeHandler)
+}
+
+function removeVisibilityListener() {
+  if (typeof document === 'undefined' || !visibilityChangeHandler) return
+  document.removeEventListener('visibilitychange', visibilityChangeHandler)
+  visibilityChangeHandler = null
 }
 
 function buildUrl(): string {
-  let url = ENDPOINT
-  try {
-    const token = authBearer()
-    if (token) url += `?token=${encodeURIComponent(token)}`
-  } catch { /* cookie auth fallback */ }
-  return url
+  // 2026-08-26 (P1-7 fix): do NOT append a `?token=` query parameter
+  // — the URL is captured in browser history / proxy logs and would
+  // re-introduce the long-lived credential exposure that the cookie
+  // path already solves. EventSource is opened with credentials:'include'
+  // so the HttpOnly `llmgw_session` cookie is attached automatically.
+  return ENDPOINT
 }
 
 function collapseTile(tile: ProbeStreamTile) {
@@ -134,6 +150,9 @@ function handleEvent(type: string, data: unknown) {
 
 function open() {
   if (es) return
+  // Install visibility listener when opening the connection so it lives
+  // alongside the SSE consumer count.
+  installVisibilityListener()
   connection.value = 'connecting'
   try {
     es = new EventSource(buildUrl(), { withCredentials: true })
@@ -193,6 +212,8 @@ export function releaseProbeStream() {
   if (refCount === 0) {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null }
     teardownEs()
+    // Tear down the visibility listener now that the last consumer is gone.
+    removeVisibilityListener()
     tiles.value = []
   }
 }

@@ -294,7 +294,7 @@ fi
 
 section "6. 监控配置"
 
-ALERT_PATH="/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go/observability/alerts/partition_health.yml"
+ALERT_PATH="/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go/deploy/prometheus/rules/partition-health.yml"
 
 if [[ -f "$ALERT_PATH" ]]; then
   info "partition_health.yml 存在"

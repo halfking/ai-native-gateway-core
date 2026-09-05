@@ -24,6 +24,7 @@ import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
 import RouteIncidentDrawer from './RouteIncidentDrawer.vue'
 import LiveStreamFilterDialog from './LiveStreamFilterDialog.vue'
 import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
+import RequestJourneyQueues from './RequestJourneyQueues.vue'
 import NodeStatusMatrix from './NodeStatusMatrix.vue'
 import type { GroupByDimension } from '../types/swimlane'
 import type { RouteIncident } from '../types/routeIncident'
@@ -59,6 +60,7 @@ const {
   mode: laneMode,
   setMode: setLaneMode,
   lanes,
+  filterSourceLanes,
   selectedLegends,
   legendItems,
   statusLegendItems,
@@ -91,10 +93,10 @@ const {
   modelFilterSelected,
   providerFilterSelected,
   vendorFilterSelected,
-  agentFilterSelected,
-  activeFilterCount,
-  filteredLanes,
-} = useLiveStreamFilters({ lanes })
+    agentFilterSelected,
+    activeFilterCount,
+    filteredLanes,
+  } = useLiveStreamFilters({ lanes: filterSourceLanes })
 
 // 2026-07-24: 筛选弹窗状态（保留在组件内，仅 UI 控制）
 const filterDialog = ref<'status' | 'model' | 'provider' | 'vendor' | 'agent' | null>(null)
@@ -163,6 +165,7 @@ const connectionClass = computed(() => {
 
 // 维度标签
 const dimensionLabel = computed(() => {
+  if (groupBy.value === 'credential') return t('dashboard.liveStream.dimensionCredential')
   if (groupBy.value === 'vendor') return t('dashboard.liveStream.dimensionVendor')
   if (groupBy.value === 'provider') return t('dashboard.liveStream.dimensionProvider')
   return t('dashboard.liveStream.dimensionModel')
@@ -226,10 +229,10 @@ function vendorOptionLabel(v: string) {
           <button
             type="button"
             class="control-btn"
-            :class="{ 'control-btn--active': groupBy === 'vendor' }"
-            @click="handleGroupByChange('vendor')"
+            :class="{ 'control-btn--active': groupBy === 'credential' }"
+            @click="handleGroupByChange('credential')"
           >
-            {{ t('dashboard.liveStream.groupByVendor') }}
+            {{ t('dashboard.liveStream.groupByCredential') }}
           </button>
           <button
             type="button"
@@ -484,8 +487,16 @@ function vendorOptionLabel(v: string) {
     </div>
 
     <!-- 2026-08-14 V3.2: 按处理队列维度时显示队列透视 + 节点矩阵面板 -->
+    <!-- 2026-08-28: 传递上层筛选条件到 QueuePerspectivePanel -->
     <div v-if="groupBy === 'queue'" class="v32-queue-panels">
-      <QueuePerspectivePanel />
+      <QueuePerspectivePanel
+        :model-filter="modelFilter"
+        :provider-filter="providerFilter"
+        :vendor-filter="vendorFilter"
+        :agent-filter="agentFilter"
+        :status-filter="statusFilter"
+      />
+      <RequestJourneyQueues />
       <NodeStatusMatrix />
     </div>
 

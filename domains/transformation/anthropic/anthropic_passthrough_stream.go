@@ -1,8 +1,8 @@
 package anthropic
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
 )
 
 const anthropicSSEBufSize = 64 * 1024
@@ -29,6 +31,14 @@ const anthropicSSEBufSize = 64 * 1024
 // disconnect. The capturer is finalized before return so the caller can
 // snapshot and persist it (see cmd/gateway/main.go's saveCapturedPending
 // helper). nil pc is fine (legacy / non-session requests).
+//
+// Q3 parity TODO (2026-08-28, audit-24h-20260828-r3): AnthropicToOpenAIStream
+// and AnthropicToResponsesStream at ../anthropic_to_openai_stream.go and
+// ../anthropic_to_responses_stream.go run their own SSE loops and do NOT
+// invoke the empty-response detector added in this commit — an OpenAI or
+// Responses client hitting an empty Anthropic upstream will still record
+// a successful empty stream. Match the executor_anthropic.go:1263-1272
+// comment on Q3 parity when those translators grow the same check.
 func StreamAnthropicPassthrough(
 	w http.ResponseWriter,
 	resp *http.Response,
@@ -78,18 +88,28 @@ func StreamAnthropicPassthrough(
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+	reader := sse.NewLineReader(resp.Body, currentStreamRuntimeConfig().sseMaxLineBytes)
+	// audit-24h-20260828-r3 P1-B: track chunk count for empty-response
+	// detection. A "chunk" here is any `data:` line sent from upstream;
+	// the EOF-time empty check mirrors the non-stream path at
+	// executor_anthropic.go:1273 (isEmptyAnthropicMessagesResponse).
+	chunkCount := 0
 
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := reader.ReadLine()
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
+			outcome.Kind = errorsx.KindUpstreamDown
+			if errors.Is(err, sse.ErrLineTooLong) {
+				outcome.Reason = "stream_line_too_large"
+			}
+			outcome.Resumable = chunkCount == 0
 			if capture != nil {
-				capture.MarkInterruptedWithReason("read_error")
+				capture.MarkInterruptedWithReason(outcome.Reason)
 			}
 			return outcome
 		}
@@ -109,9 +129,19 @@ func StreamAnthropicPassthrough(
 		if pc != nil {
 			pc.append(line)
 		}
+		// audit-24h-20260828-r3 P1-B: count only content-bearing events
+		// (content_block_*), not envelope events (message_start/stop/delta).
+		// The EOF-time empty check mirrors the non-stream path's content-array
+		// length check (isEmptyAnthropicMessagesResponse).
 		if capture != nil && strings.HasPrefix(line, "data: ") {
 			payload := strings.TrimPrefix(line, "data: ")
 			payload = strings.TrimSpace(payload)
+			// Parse just enough to know if this is a content_block_* event.
+			// content_block_start / content_block_delta / content_block_stop
+			// all have `"type":"content_block_*"`.
+			if strings.Contains(payload, `"type":"content_block_`) {
+				chunkCount++
+			}
 			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
 		}
 		if line == "\n" {
@@ -119,6 +149,39 @@ func StreamAnthropicPassthrough(
 		}
 	}
 	flusher.Flush()
+
+	// audit-24h-20260828-r3 P1-B: anthropic stream empty-response parity
+	// with the non-stream detector at executor_anthropic.go:1273. After a
+	// clean EOF, if the upstream sent zero semantic bytes (no text/thinking/
+	// tool blocks observed, no usage tokens), surface KindEmptyResponse so
+	// the executor routes this to the next candidate via streamInterruptedError
+	// + TaskActionRetryNow, instead of recording it as a successful empty
+	// stream. Mirrors executor_chat.go:1153 (Reason -> Kind upgrade).
+	//
+	// The check is strict: chunkCount==0 (no `data:` lines at all) AND
+	// (capture is nil OR both OutputTokens and InputTokens are nil). If
+	// upstream returned `message_start` with usage but zero content_block_*
+	// events, this still flags empty — matching non-stream semantics
+	// (isEmptyAnthropicMessagesResponse checks content array length, not
+	// usage token presence).
+	isEmpty := chunkCount == 0 &&
+		(capture == nil ||
+			(capture.OutputTokens == nil && capture.InputTokens == nil))
+	if isEmpty {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("anthropic_empty_response")
+		}
+		if pc != nil {
+			pc.markInterrupted("anthropic_empty_response")
+		}
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "anthropic_empty_response",
+			Kind:        errorsx.KindEmptyResponse,
+			Resumable:   true,
+			ChunkCount:  0,
+		}
+	}
 	return outcome
 }
 

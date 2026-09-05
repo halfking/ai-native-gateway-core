@@ -17,12 +17,100 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/shadow"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability (2026-08-23 hzx-2 audit)
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 var tierOrder = [4]int{1, 2, 3, 9}
+
+const ursmShadowQueueSize = 128
+
+type ursmShadowTask struct {
+	manager   *ursmv2.Manager
+	seeds     []ursmv2.CandidateSeed
+	legacyIDs []string
+	tenant    string
+	canonical string
+	requestID string
+}
+
+type ursmShadowWorker struct {
+	mu      sync.RWMutex
+	queue   chan ursmShadowTask
+	stop    chan struct{}
+	done    chan struct{}
+	stopped bool
+	observe func(ursmShadowTask)
+}
+
+func newURSMShadowWorker(size int, observe func(ursmShadowTask)) *ursmShadowWorker {
+	if size < 1 {
+		size = 1
+	}
+	if observe == nil {
+		observe = observeURSMv2Shadow
+	}
+	w := &ursmShadowWorker{
+		queue:   make(chan ursmShadowTask, size),
+		stop:    make(chan struct{}),
+		done:    make(chan struct{}),
+		observe: observe,
+	}
+	go w.run()
+	return w
+}
+
+func (w *ursmShadowWorker) run() {
+	defer close(w.done)
+	for {
+		select {
+		case task := <-w.queue:
+			w.observe(task)
+		case <-w.stop:
+			for {
+				select {
+				case <-w.queue:
+					continue
+				default:
+					return
+				}
+			}
+		}
+	}
+}
+
+func (w *ursmShadowWorker) enqueue(task ursmShadowTask) bool {
+	if w == nil {
+		return false
+	}
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	if w.stopped {
+		return false
+	}
+	select {
+	case w.queue <- task:
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *ursmShadowWorker) stopAndWait() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	if !w.stopped {
+		w.stopped = true
+		close(w.stop)
+	}
+	w.mu.Unlock()
+	<-w.done
+}
 
 type Router struct {
 	Sticky  *StickyCache
@@ -46,6 +134,13 @@ type Router struct {
 	}
 	// weightCounters isolates deterministic weighted selection by candidate set.
 	weightCounters sync.Map
+	// PriorityRoutingEnabled controls the priority candidate bucket. It defaults
+	// to true and can be disabled at process start for an emergency rollback.
+	PriorityRoutingEnabled bool
+
+	shadowMu      sync.Mutex
+	shadowWorker  *ursmShadowWorker
+	shadowStopped bool
 
 	// 新增：状态管理器引用（向后兼容）
 	StateManager credentialstate.StateProvider
@@ -75,15 +170,21 @@ type Router struct {
 	// 对比，不改变实际选中候选。nil = 现状（P2C/bandit 行为零变化）。
 	// 非 nil 时，planByTier 在每个 tier bucket 用 ShadowStrategy 独立评分，
 	// 记录 agreed/disagreed metric（llmgw_routing_shadow_strategy_outcomes_total）。
-	// 通过环境变量 LLM_GATEWAY_ROUTING_SHADOW_STRATEGY 选择策略名构造。
+	// 通过环境变量 LLM_GATEWAY_ROUTING_SHADOW_STRATEGY 选择策略构造。
 	ShadowStrategy Strategy
+
+	// outageFallbackActive (2026-09-04 availability gear) tracks whether the
+	// URSM v2 outage fallback is currently serving so engage/disengage are
+	// logged once per transition instead of once per request.
+	outageFallbackActive atomic.Bool
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
 	return &Router{
-		Sticky:           sticky,
-		Limiter:          lim,
-		LoadScoreWeights: DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+		Sticky:                 sticky,
+		Limiter:                lim,
+		LoadScoreWeights:       DefaultLoadScoreWeights(), // Phase 1: 使用默认权重
+		PriorityRoutingEnabled: true,
 	}
 }
 
@@ -107,13 +208,64 @@ func (r *Router) PlanCandidatesWithContext(
 	tenantID string,
 	canonical string,
 	requestID string,
-) []provider.Candidate {
+) (result []provider.Candidate) {
+	return r.planCandidates(requestCtx, candidates, stickyCredentialID, nil, policy, egressPreference, tenantID, canonical, requestID)
+}
+
+// PlanCandidatesPinned is the probe-pin-aware variant used by the executor
+// when params.PinCredentialID is set (trusted self-check / node-probe callers
+// only; OriginMiddleware strips the header for everyone else). probePin
+// bypasses the URSM v2 / state-backend runtime availability filters for that
+// one credential — the whole point of a probe is to test a node the router
+// currently distrusts, so filtering it out deadlocks recovery: the pinned
+// gateway round can never succeed while the node is marked unavailable, so
+// the probe verdict can never flip the node back to available (glm-5.2
+// all-provider lockout on 154, 2026-08-18). DB-level business gates
+// (lifecycle/status/manual disable) still apply — those are admin decisions,
+// not runtime health evidence.
+func (r *Router) PlanCandidatesPinned(
+	requestCtx context.Context,
+	candidates []provider.Candidate,
+	stickyCredentialID *int,
+	probePin *int,
+	policy *provider.Policy,
+	egressPreference []string,
+	tenantID string,
+	canonical string,
+	requestID string,
+) (result []provider.Candidate) {
+	return r.planCandidates(requestCtx, candidates, stickyCredentialID, probePin, policy, egressPreference, tenantID, canonical, requestID)
+}
+
+func (r *Router) planCandidates(
+	requestCtx context.Context,
+	candidates []provider.Candidate,
+	stickyCredentialID *int,
+	probePin *int,
+	policy *provider.Policy,
+	egressPreference []string,
+	tenantID string,
+	canonical string,
+	requestID string,
+) (result []provider.Candidate) {
 	if requestCtx == nil {
 		requestCtx = context.Background()
 	}
 	candidates = deduplicateCandidates(candidates)
 	if len(candidates) == 0 {
 		return nil
+	}
+	shadowInput := append([]provider.Candidate(nil), candidates...)
+	var shadowLegacy []provider.Candidate
+	shadowLegacySet := false
+	if r.URSMv2 != nil && (r.URSMv2.Mode() == ursmv2api.ModeShadow || r.URSMv2.Mode() == ursmv2api.ModeCanary) {
+		defer func() {
+			legacy := result
+			if shadowLegacySet {
+				legacy = shadowLegacy
+			}
+			r.enqueueURSMv2Shadow(shadowInput, legacy, tenantID, canonical, requestID)
+		}()
 	}
 
 	// S-3 (Step 5 round 1): decide and record the OUTER
@@ -153,15 +305,20 @@ func (r *Router) PlanCandidatesWithContext(
 		readySnapshot = &ready
 	}
 
-	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && readySnapshot != nil && *readySnapshot {
-		ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
-		defer cancel()
+	// outageServed (2026-09-04 availability gear): set when the authoritative
+	// v2 read path was unavailable because Redis is unreachable and the router
+	// served a degraded read-only decision from the URSM node mirror instead.
+	// The Manager owns the reachability proof — a reachable Redis (deliberate
+	// gate closure, recovery race) always refuses the fallback — so this gear
+	// can never bypass a recovery-gate closure.
+	var outageServed bool
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
 		seeds := make([]ursmv2.CandidateSeed, 0, len(candidates))
 		for _, c := range candidates {
 			seeds = append(seeds, ursmv2.CandidateSeed{
 				ProviderID:   c.ProviderID,
 				CredentialID: c.CredentialID,
-				RawModel:     c.RawModel,
+				RawModel:     c.BindingRawModel(),
 				Canonical:    firstNonEmpty(c.StandardizedName, canonical),
 				TenantID:     tenantID,
 				PriceIn:      derefPrice(c.PriceInPer1M),
@@ -171,20 +328,7 @@ func (r *Router) PlanCandidatesWithContext(
 				BaseURLMs:    c.P50LatencyMs,
 			})
 		}
-		// Use the S-3 variant so the inner NodeMirror source is
-		// recorded into the shared counter. The returned enum is
-		// intentionally not consulted here — the router records the
-		// OUTER label, not the inner one.
-		views, _, err := r.URSMv2.FilterAndScoreReadyWithSource(ctx, seeds, *readySnapshot)
-		if err != nil {
-			slog.Warn("router: URSM v2 FilterAndScore failed, failing open",
-				"error", err,
-				"seed_count", len(seeds),
-				"mode", r.URSMv2.Mode(),
-			)
-			recordOuterSource(statesource.StateSourceFallback)
-		} else {
-			recordOuterSource(statesource.StateSourceAuthoritative)
+		filteredByViews := func(views []ursmv2api.NodeView) []provider.Candidate {
 			allow := make(map[string]bool, len(views))
 			for _, v := range views {
 				if v.Available {
@@ -193,21 +337,64 @@ func (r *Router) PlanCandidatesWithContext(
 			}
 			filtered := make([]provider.Candidate, 0, len(candidates))
 			for i, c := range candidates {
-				if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.RawModel)] {
+				if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.BindingRawModel())] ||
+					(probePin != nil && c.CredentialID == *probePin) {
 					filtered = append(filtered, c)
 				}
 			}
-			candidates = filtered
-			if len(candidates) == 0 {
+			return filtered
+		}
+
+		if readySnapshot != nil && *readySnapshot {
+			ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
+			// Use the S-3 variant so the inner NodeMirror source is
+			// recorded into the shared counter. The returned enum is
+			// intentionally not consulted here — the router records the
+			// OUTER label, not the inner one.
+			views, _, err := r.URSMv2.FilterAndScoreReadyWithSource(ctx, seeds, *readySnapshot)
+			cancel()
+			if err != nil {
+				slog.Warn("router: URSM v2 FilterAndScore failed, rejecting authoritative route",
+					"error", err,
+					"seed_count", len(seeds),
+					"mode", r.URSMv2.Mode(),
+				)
+				if kept := r.tryURSMOutageFallback(requestCtx, candidates, seeds, probePin); len(kept) > 0 {
+					candidates = kept
+					outageServed = true
+					recordOuterSource(statesource.StateSourceOutageMirror)
+				} else {
+					recordOuterSource(statesource.StateSourceFallback)
+					return nil
+				}
+			} else {
+				recordOuterSource(statesource.StateSourceAuthoritative)
+				if r.outageFallbackActive.CompareAndSwap(true, false) {
+					slog.Info("router: URSM v2 outage fallback disengaged (authoritative read path healthy again)")
+				}
+				candidates = filteredByViews(views)
+				if len(candidates) == 0 {
+					return nil
+				}
+			}
+		} else {
+			// Strict authoritative mode never substitutes DB-only or legacy state
+			// while the recovery gate is closed. A route may resume only after v2
+			// coverage has been revalidated and the gate has reopened.
+			//
+			// 2026-09-04 availability exception: when the Ready read failed
+			// because Redis itself is unreachable (as opposed to the gate being
+			// deliberately closed), the outage gear may serve read-only routing
+			// from the node mirror, bounded by URSM_V2_OUTAGE_GRACE_SECONDS.
+			if kept := r.tryURSMOutageFallback(requestCtx, candidates, seeds, probePin); len(kept) > 0 {
+				candidates = kept
+				outageServed = true
+				recordOuterSource(statesource.StateSourceOutageMirror)
+			} else {
+				recordOuterSource(statesource.StateSourceFallback)
 				return nil
 			}
 		}
-	} else if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
-		// Authoritative but not ready. Per spec §8.2 the legacy
-		// state source must NOT be the authoritative health judge,
-		// but the router still needs to surface that we did not
-		// consult v2 on this request → StateSourceFallback.
-		recordOuterSource(statesource.StateSourceFallback)
 	}
 
 	// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
@@ -218,8 +405,25 @@ func (r *Router) PlanCandidatesWithContext(
 	// 一次性决定使用 URSM v2 / StateManager / DB-only 哪套系统。
 	ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
 	defer cancel()
-	stateBackend := selectStateBackendWithReady(r.URSMv2, r.StateManager, ctx, readySnapshot)
+	var stateBackend StateBackend
+	if outageServed {
+		// Outage gear: candidates were already availability-filtered by the
+		// node mirror above; selectStateBackendWithReady would return the
+		// rejecting backend because the ready snapshot is false against a
+		// dead Redis.
+		stateBackend = &OutageMirrorStateBackend{}
+	} else {
+		stateBackend = selectStateBackendWithReady(r.URSMv2, r.StateManager, ctx, readySnapshot)
+	}
 	available := stateBackend.FilterAvailable(ctx, candidates)
+
+	// Probe-pin rescue: a pinned self-check probe must survive runtime
+	// availability filtering (see PlanCandidatesPinned). Rescue from the
+	// pre-filter candidate list so the len(available)==0 early return below
+	// cannot starve the probe of its only candidate.
+	if probePin != nil {
+		available = rescuePinnedCandidate(candidates, available, *probePin)
+	}
 
 	// 2026-07-25 Phase 2.4: 标记 Feature flag 状态（供外部观察）
 	SetPressureAwareRoutingEnabled(r.PressureAwareEnabled)
@@ -269,9 +473,10 @@ func (r *Router) PlanCandidatesWithContext(
 			}
 		}
 
-		// 2026-07-24 Phase 1: 在 authoritative 模式下也保留降级模式。
-		// 降级模式是保护机制，用于处理瞬态故障导致的完全失败。
-		// URSM v2 authoritative 模式下的冷却决策仍在生效，降级只是最后的保护。
+		if stateBackend.IsAuthoritative() {
+			slog.Warn("router: authoritative URSM v2 rejected all candidates", "total", len(candidates), "reasons", reasonCounts)
+			return nil
+		}
 		if len(candidates) <= 2 {
 			degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
 			if len(degradedCandidates) > 0 {
@@ -280,6 +485,10 @@ func (r *Router) PlanCandidatesWithContext(
 					"degraded_count", len(degradedCandidates),
 					"reasons", reasonCounts,
 					"state_backend", stateBackend.Name(),
+					"degraded_override", true,
+					"route_override", "degraded_override",
+					"fallback_reason", "transient_unavailable",
+					"effective_route_status", "degraded",
 				)
 				return degradedCandidates
 			}
@@ -297,6 +506,43 @@ func (r *Router) PlanCandidatesWithContext(
 	// URSM v2 authoritative 已包含冷却期和健康状态判断，无需重复过滤。
 	if !stateBackend.IsAuthoritative() {
 		available = r.filterHealthyNodes(available)
+		if probePin != nil {
+			available = rescuePinnedCandidate(candidates, available, *probePin)
+		}
+
+		// 2026-08-23 (hzx-2 audit): all-candidates-cooling fallback.
+		//
+		// When filterHealthyNodes removes every candidate (typical when a
+		// pool-wide outage tripped every node's Disabled=true), the original
+		// code returned nil and the request got 503. Periodic-quota nodes
+		// like hzx-2 would never recover because they couldn't even get a
+		// single request through to validate the upstream.
+		//
+		// We relax only in the non-authoritative path (URSM v2 authoritative
+		// still gates on its single source of truth) and only when there is
+		// no probePin (the probe-pin path is a strict, intentional
+		// override). The fallback picks the candidate with the smallest
+		// DisabledUntil so the "freshest" cooldown goes first. A future
+		// real request through that candidate triggers the Lua cooldown-
+		// expired + success branch and the natural recovery resumes.
+		if len(available) == 0 && probePin == nil && r.FpSlots != nil {
+			fallback := r.chooseLeastCooledCandidate(candidates)
+			if fallback != nil {
+				slog.Warn("router: all candidates in cooldown, falling back to least-cooled",
+					"request_id", requestID,
+					"credential_id", fallback.CredentialID,
+					"model", fallback.RawModel,
+					"provider_id", fallback.ProviderID,
+					"cooling_fallback", true,
+					"degraded_override", true,
+					"route_override", "cooling_fallback",
+					"fallback_reason", "all_candidates_cooling",
+					"effective_route_status", "degraded",
+				)
+				met.RoutingCoolingFallbackTotal.WithLabelValues("all_unusable").Inc()
+				available = []provider.Candidate{*fallback}
+			}
+		}
 	}
 
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
@@ -330,20 +576,35 @@ func (r *Router) PlanCandidatesWithContext(
 		ordered = applyProtocolAffinity(ordered, egressPreference)
 	}
 
-	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeCanary && r.URSMv2.ShouldUseV2(tenantID, canonical, requestID) {
-		if v2Ordered := r.planWithURSMv2Context(ordered, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot); v2Ordered != nil {
+	if r.URSMv2 != nil && (r.URSMv2.Mode() == ursmv2api.ModeShadow || r.URSMv2.Mode() == ursmv2api.ModeCanary) {
+		shadowLegacy = append([]provider.Candidate(nil), ordered...)
+		shadowLegacySet = true
+	}
+
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeCanary && (r.URSMv2.StrictCanary() || r.URSMv2.ShouldUseV2(tenantID, canonical, requestID)) {
+		if r.URSMv2.StrictCanary() {
+			scoped, legacy := splitStrictCanaryCandidates(r.URSMv2, tenantID, ordered)
+			if len(scoped) > 0 {
+				v2Ordered := r.planWithURSMv2Context(scoped, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot)
+				if probePin != nil {
+					v2Ordered = rescuePinnedCandidate(scoped, v2Ordered, *probePin)
+				}
+				ordered = append(v2Ordered, legacy...)
+				if len(v2Ordered) > 0 {
+					recordOuterSource(statesource.StateSourceCanary)
+				} else {
+					recordOuterSource(statesource.StateSourceFallback)
+				}
+			}
+		} else if v2Ordered := r.planWithURSMv2Context(ordered, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot); v2Ordered != nil {
 			ordered = v2Ordered
+			recordOuterSource(statesource.StateSourceCanary)
+		} else {
+			// Canary is allowed to retain the legacy ordering on a v2 read
+			// failure, but that degraded decision must be visible to the
+			// promotion gate rather than counted as a successful canary route.
+			recordOuterSource(statesource.StateSourceFallback)
 		}
-		// S-3 (Step 5 round 1): the canary v2 path was applied to
-		// this request — the outer source is Canary. The inner
-		// NodeMirror source (hit/miss/stale/fallback) is recorded
-		// inside planWithURSMv2Context -> PlanReadyWithSource ->
-		// FilterAndScoreReadyWithSource, which auto-records into the
-		// shared statesource counter (same contract as the
-		// authoritative path). Spec §8.2 requires both inner and
-		// outer to be observable; the canary path now satisfies
-		// that.
-		recordOuterSource(statesource.StateSourceCanary)
 	}
 
 	// S-3: if we got here without recording an outer source, the
@@ -354,7 +615,219 @@ func (r *Router) PlanCandidatesWithContext(
 		recordOuterSource(statesource.StateSourceOff)
 	}
 
+	// Priority routing observability: classify the first-attempt candidate
+	// after every reordering pass (tier/billing, sticky, affinity, canary)
+	// has settled. ordered[0] is what the executor will try first, so this
+	// is the point where "did the priority bucket actually absorb traffic"
+	// becomes measurable. Only recorded when the feature flag is on so the
+	// no_priority_candidates baseline doesn't mask flag-off deployments.
+	if r.PriorityRoutingEnabled && len(ordered) > 0 {
+		met.RoutingPriorityCandidatesSelectedTotal.WithLabelValues(classifyPrioritySelection(ordered)).Inc()
+	}
+
 	return ordered
+}
+
+// tryURSMOutageFallback attempts the URSM v2 Redis-outage availability gear
+// (2026-09-04). It returns the availability-filtered candidate list, or nil
+// when the gear cannot serve — disabled via URSM_V2_OUTAGE_GRACE_SECONDS=0,
+// Redis actually reachable (deliberate gate closure / recovery race — the
+// Manager PING refuses, so this gear can never bypass the recovery gate),
+// or the node mirror holds no entries inside the outage window. The caller
+// falls back to its normal rejection path in that case.
+func (r *Router) tryURSMOutageFallback(
+	ctx context.Context,
+	candidates []provider.Candidate,
+	seeds []ursmv2.CandidateSeed,
+	probePin *int,
+) []provider.Candidate {
+	views, err := r.URSMv2.FilterAndScoreOutageFallback(ctx, seeds)
+	if err != nil {
+		return nil
+	}
+	allow := make(map[string]bool, len(views))
+	for _, v := range views {
+		if v.Available {
+			allow[seedLookupKey(v.ProviderID, v.CredentialID, v.RawModel)] = true
+		}
+	}
+	filtered := make([]provider.Candidate, 0, len(candidates))
+	for i, c := range candidates {
+		if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.BindingRawModel())] ||
+			(probePin != nil && c.CredentialID == *probePin) {
+			filtered = append(filtered, c)
+		}
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	if r.outageFallbackActive.CompareAndSwap(false, true) {
+		slog.Warn("router: URSM v2 outage fallback ENGAGED — serving read-only routing from the node mirror while Redis is unreachable",
+			"candidates", len(candidates),
+			"kept", len(filtered),
+			"hint", "window bounded by URSM_V2_OUTAGE_GRACE_SECONDS; routing state is frozen at the outage moment",
+		)
+	}
+	return filtered
+}
+
+// classifyPrioritySelection maps the final ordered candidate list to the
+// outcome label of llmgw_routing_priority_candidates_selected_total:
+// priority_only (first attempt is priority-eligible),
+// spillover_to_non_priority (priority candidates exist but a standard
+// candidate is attempted first), or no_priority_candidates (baseline).
+func classifyPrioritySelection(ordered []provider.Candidate) string {
+	if len(ordered) == 0 {
+		return "no_priority_candidates"
+	}
+	if isPriorityBucketEligible(ordered[0]) {
+		return "priority_only"
+	}
+	for _, c := range ordered {
+		if isPriorityBucketEligible(c) {
+			return "spillover_to_non_priority"
+		}
+	}
+	return "no_priority_candidates"
+}
+
+func (r *Router) enqueueURSMv2Shadow(candidates, legacyOrder []provider.Candidate, tenant, canonical, requestID string) {
+	if r.URSMv2 == nil {
+		return
+	}
+	if !r.URSMv2.ShouldSampleShadow(tenant, canonical, requestID) {
+		shadow.Record(shadow.OutcomeSampledOut)
+		shadow.RecordEnqueueResult("sampled_out")
+		return
+	}
+
+	seeds := make([]ursmv2.CandidateSeed, 0, len(candidates))
+	for _, c := range candidates {
+		seeds = append(seeds, candidateSeed(c, tenant, canonical))
+	}
+	legacyIDs := make([]string, 0, len(legacyOrder))
+	for _, c := range legacyOrder {
+		legacyIDs = append(legacyIDs, seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel))
+	}
+	task := ursmShadowTask{
+		manager: r.URSMv2, seeds: seeds, legacyIDs: legacyIDs,
+		tenant: tenant, canonical: canonical, requestID: requestID,
+	}
+	worker := r.getOrStartShadowWorker()
+	switch {
+	case worker == nil:
+		// 2026-08-31 (P2-3): distinguish worker-stopped from queue-full so
+		// the operator can alert on production-load back-pressure without
+		// being distracted by clean shutdowns.
+		shadow.Record(shadow.OutcomeDropped)
+		shadow.RecordEnqueueResult("worker_stopped")
+	case !worker.enqueue(task):
+		// Queue at capacity (128). This is the silently-dropped path the
+		// audit flagged: under production load a saturated shadow queue
+		// skews the comparison set, so we surface it as a labelled metric
+		// in addition to the legacy OutcomeDropped aggregation.
+		shadow.Record(shadow.OutcomeDropped)
+		shadow.RecordEnqueueResult("queue_full")
+		slog.Warn("ursm v2 shadow queue full; dropping observation",
+			"tenant", tenant, "canonical", canonical, "request_id", requestID,
+			"queue_capacity", ursmShadowQueueSize)
+	default:
+		shadow.RecordEnqueueResult("enqueued")
+	}
+}
+
+func (r *Router) getOrStartShadowWorker() *ursmShadowWorker {
+	if r == nil {
+		return nil
+	}
+	r.shadowMu.Lock()
+	defer r.shadowMu.Unlock()
+	if r.shadowStopped {
+		return nil
+	}
+	if r.shadowWorker == nil {
+		r.shadowWorker = newURSMShadowWorker(ursmShadowQueueSize, nil)
+	}
+	return r.shadowWorker
+}
+
+// StopShadowWorker stops shadow observation and discards queued work. It is
+// idempotent and primarily exists so tests and explicit application shutdowns
+// can bound the worker lifecycle.
+func (r *Router) StopShadowWorker() {
+	if r == nil {
+		return
+	}
+	r.shadowMu.Lock()
+	r.shadowStopped = true
+	worker := r.shadowWorker
+	r.shadowWorker = nil
+	r.shadowMu.Unlock()
+	worker.stopAndWait()
+}
+
+func splitStrictCanaryCandidates(manager *ursmv2.Manager, tenant string, candidates []provider.Candidate) (scoped, legacy []provider.Candidate) {
+	if manager == nil || !manager.StrictCanary() {
+		return candidates, nil
+	}
+	for _, candidate := range candidates {
+		if manager.AllowsIdentity(tenant, candidate.CredentialID, candidate.BindingRawModel()) {
+			scoped = append(scoped, candidate)
+		} else {
+			legacy = append(legacy, candidate)
+		}
+	}
+	return scoped, legacy
+}
+
+func candidateSeed(c provider.Candidate, tenant, canonical string) ursmv2.CandidateSeed {
+	return ursmv2.CandidateSeed{
+		ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.BindingRawModel(),
+		Canonical: firstNonEmpty(c.StandardizedName, canonical), TenantID: tenant,
+		PriceIn: derefPrice(c.PriceInPer1M), PriceOut: derefPrice(c.PriceOutPer1M),
+		BillingMode: c.BillingMode, BaseURLMs: c.P50LatencyMs,
+	}
+}
+
+func observeURSMv2Shadow(task ursmShadowTask) {
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	ready, err := task.manager.ReadyWithError(ctx)
+	if err != nil {
+		shadow.Record(shadow.OutcomeError)
+		return
+	}
+	if !ready {
+		shadow.Record(shadow.OutcomeNotReady)
+		return
+	}
+
+	v2Ordered, err := task.manager.PlanReadyObserved(ctx, task.seeds, task.tenant, task.canonical, true)
+	if err != nil {
+		shadow.Record(shadow.OutcomeError)
+		return
+	}
+
+	v2IDs := make([]string, 0, len(v2Ordered))
+	for _, seed := range v2Ordered {
+		v2IDs = append(v2IDs, seedLookupKey(seed.ProviderID, seed.CredentialID, seed.RawModel))
+	}
+	diff := shadow.Compute(task.requestID, task.tenant, task.canonical, task.legacyIDs, v2IDs)
+	outcome := diff.Outcome()
+	shadow.Record(outcome)
+	if diff.HasTop1Mismatch() {
+		shadow.Record(shadow.OutcomeTop1Mismatch)
+	}
+	if outcome != shadow.OutcomeIdentical {
+		slog.Debug("ursm.v2: shadow routing diff",
+			"request_id", task.requestID,
+			"tenant_id", task.tenant,
+			"canonical_model", task.canonical,
+			"type", outcome,
+			"legacy_order", task.legacyIDs,
+			"v2_order", v2IDs,
+		)
+	}
 }
 
 // planWithURSMv2Context is the request-aware variant used by canary routing.
@@ -370,10 +843,10 @@ func (r *Router) planWithURSMv2Context(fallback []provider.Candidate, requestCtx
 	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
 	lookup := make(map[string]provider.Candidate, len(fallback))
 	for _, c := range fallback {
-		key := seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel)
+		key := seedLookupKey(c.ProviderID, c.CredentialID, c.BindingRawModel())
 		lookup[key] = c
 		seeds = append(seeds, ursmv2.CandidateSeed{
-			ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.RawModel,
+			ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.BindingRawModel(),
 			Canonical: firstNonEmpty(c.StandardizedName, canonical), TenantID: tenant,
 			PriceIn: derefPrice(c.PriceInPer1M), PriceOut: derefPrice(c.PriceOutPer1M),
 			BillingMode: c.BillingMode, BaseURLMs: c.P50LatencyMs,
@@ -425,12 +898,12 @@ func (r *Router) planWithURSMv2(fallback []provider.Candidate) []provider.Candid
 	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
 	lookup := make(map[string]provider.Candidate, len(fallback))
 	for _, c := range fallback {
-		key := seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel)
+		key := seedLookupKey(c.ProviderID, c.CredentialID, c.BindingRawModel())
 		lookup[key] = c
 		seeds = append(seeds, ursmv2.CandidateSeed{
 			ProviderID:   c.ProviderID,
 			CredentialID: c.CredentialID,
-			RawModel:     c.RawModel,
+			RawModel:     c.BindingRawModel(),
 			Canonical:    c.StandardizedName,
 			TenantID:     "", // TODO(T20): plumb tenant through PlanCandidates.
 			PriceIn:      derefPrice(c.PriceInPer1M),
@@ -572,6 +1045,16 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 			sorted = p2cOrder(bucket, r)
 		}
 
+		// Priority routing: when enabled, stable-partition the bandit/P2C
+		// order so priority candidates with ok quota_state sort before
+		// standard ones, preserving the relative order within each group.
+		// This mirrors the SQL ORDER BY bucket
+		// (CASE WHEN priority AND quota_state='ok' THEN 0 ELSE 1 END)
+		// so the Go-side re-sort inside planByTier doesn't erase it.
+		if r.PriorityRoutingEnabled {
+			sorted = stablePartitionPriority(sorted)
+		}
+
 		// GW-03: shadow strategy diff（仅观测，不改顺序）。
 		// 在 weighted selection 之前对比 ShadowStrategy 首选 vs 实际首选。
 		if r.ShadowStrategy != nil {
@@ -582,7 +1065,25 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		// health-aware order produced above for failover.
 		if len(sorted) > 1 {
 			counter := r.nextWeightCounter(sorted)
-			sorted = promoteWeightedCandidate(sorted, counter)
+			// Priority gate: the weighted lottery must stay inside the
+			// leading priority bucket, otherwise a high-weight standard
+			// candidate gets promoted to index 0 and receives the first
+			// attempt over priority-eligible ones. The partition above
+			// guarantees eligible candidates form a prefix; when the bucket
+			// is all-priority or all-standard the promotion is unchanged.
+			if r.PriorityRoutingEnabled {
+				if head := priorityPrefixLen(sorted); head > 0 && head < len(sorted) {
+					promoted := promoteWeightedCandidate(sorted[:head], counter)
+					merged := make([]provider.Candidate, 0, len(sorted))
+					merged = append(merged, promoted...)
+					merged = append(merged, sorted[head:]...)
+					sorted = merged
+				} else {
+					sorted = promoteWeightedCandidate(sorted, counter)
+				}
+			} else {
+				sorted = promoteWeightedCandidate(sorted, counter)
+			}
 		}
 
 		ordered = append(ordered, sorted...)
@@ -778,6 +1279,53 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 	return healthy
 }
 
+// chooseLeastCooledCandidate returns the candidate whose NodeState has the
+// smallest DisabledUntil (or no cooldown at all). nil when none of the
+// candidates have a NodeState with DisabledUntil set.
+//
+// 2026-08-23 (hzx-2 audit): used by the all-candidates-cooling fallback
+// to pick the "freshest" cooldown so the recovery probe lands on the node
+// most likely to have recovered. Candidates with no NodeState (never seen
+// in this Redis instance) are treated as DisabledUntil=0 — first in line.
+func (r *Router) chooseLeastCooledCandidate(candidates []provider.Candidate) *provider.Candidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	keys := make([]credentialfpslot.NodeStateKey, len(candidates))
+	for i, cand := range candidates {
+		keys[i] = credentialfpslot.NodeStateKey{CredentialID: cand.CredentialID, Model: cand.RawModel}
+	}
+	states, err := r.FpSlots.GetNodeStatesBatch(ctx, keys)
+	if err != nil {
+		slog.Warn("router: chooseLeastCooledCandidate node-state read failed",
+			"error", err)
+		// Fail-open: return the first candidate so the request still
+		// has a path; the natural cooldown-expired branch in Lua will
+		// re-clear Disabled if the upstream has actually recovered.
+		return &candidates[0]
+	}
+	bestIdx := 0
+	bestUntil := int64(1<<62 - 1)
+	now := time.Now().Unix()
+	for i, s := range states {
+		if s == nil {
+			// No node state ⇒ never disabled ⇒ most eligible.
+			return &candidates[i]
+		}
+		until := s.DisabledUntil
+		if until <= now {
+			return &candidates[i]
+		}
+		if until < bestUntil {
+			bestUntil = until
+			bestIdx = i
+		}
+	}
+	return &candidates[bestIdx]
+}
+
 func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
 	if len(cands) <= 1 {
 		return cands
@@ -906,6 +1454,28 @@ func removeCandidate(pool []provider.Candidate, target provider.Candidate) []pro
 	return pool
 }
 
+// rescuePinnedCandidate guarantees the probe-pinned credential survives a
+// runtime availability filter. If the pin is already present in filtered the
+// slice returns unchanged; otherwise the pinned candidate is appended (from
+// pre, the pre-filter list) so a self-check probe can still reach the node it
+// is explicitly testing. DB-level gates already ran before `pre` was built,
+// so business-disabled credentials are NOT resurrected here.
+func rescuePinnedCandidate(pre, filtered []provider.Candidate, pinID int) []provider.Candidate {
+	for _, c := range filtered {
+		if c.CredentialID == pinID {
+			return filtered
+		}
+	}
+	for _, c := range pre {
+		if c.CredentialID == pinID {
+			out := make([]provider.Candidate, 0, len(filtered)+1)
+			out = append(out, filtered...)
+			return append(out, c)
+		}
+	}
+	return filtered
+}
+
 func prioritizeSticky(ordered []provider.Candidate, stickyID int) []provider.Candidate {
 	var sticky, rest []provider.Candidate
 	for _, c := range ordered {
@@ -940,7 +1510,13 @@ func applyProtocolAffinity(ordered []provider.Candidate, pref []string) []provid
 		if ri != rj {
 			return ri < rj
 		}
-		return ordered[i].SuccessRate > ordered[j].SuccessRate
+		// Same protocol rank: preserve the incoming order. Affinity's
+		// job is to group preferred protocols first, never to re-rank
+		// within a group — the earlier SuccessRate fallback silently
+		// erased the priority bucket, sticky pin, weighted first
+		// attempt, and tier/billing ordering in the single-protocol
+		// common case (the default egress preference is one protocol).
+		return false
 	})
 	return ordered
 }
@@ -1004,9 +1580,58 @@ func CalculateCompositeScore(c provider.Candidate, weights ScoringWeights) float
 	return score
 }
 
+// isPriorityBucketEligible mirrors the SQL ORDER BY predicate
+// CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state,'ok')='ok'
+// THEN 0 ELSE 1 END — a candidate sorts into the priority bucket only when
+// its priority flag is set AND its quota_state is ok (or absent).
+func isPriorityBucketEligible(c provider.Candidate) bool {
+	return c.Priority && (c.QuotaState == "" || c.QuotaState == "ok")
+}
+
+// stablePartitionPriority reorders candidates so that priority-bucket
+// candidates come before standard ones, preserving the relative order
+// within each group. This keeps the bandit/P2C ordering intact inside
+// each sub-group while lifting priority candidates to the front — the
+// same semantics as the SQL ORDER BY priority bucket.
+func stablePartitionPriority(cands []provider.Candidate) []provider.Candidate {
+	if len(cands) <= 1 {
+		return cands
+	}
+	prio := make([]provider.Candidate, 0, len(cands))
+	rest := make([]provider.Candidate, 0, len(cands))
+	for _, c := range cands {
+		if isPriorityBucketEligible(c) {
+			prio = append(prio, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	return append(prio, rest...)
+}
+
+// priorityPrefixLen returns the length of the leading run of
+// priority-eligible candidates. Callers feed it a stable-partitioned
+// slice (see stablePartitionPriority), so eligibility is contiguous
+// from index 0.
+func priorityPrefixLen(cands []provider.Candidate) int {
+	n := 0
+	for _, c := range cands {
+		if !isPriorityBucketEligible(c) {
+			break
+		}
+		n++
+	}
+	return n
+}
+
 // CompareCandidatePriority returns true when a should sort before b.
-// Billing round (plan/free before PAYG) takes precedence over composite score.
+// Priority bucket takes precedence over billing round, mirroring the
+// SQL ORDER BY: priority AND quota_state='ok' ⇒ 0, else 1.
 func CompareCandidatePriority(a, b provider.Candidate) bool {
+	pa, pb := isPriorityBucketEligible(a), isPriorityBucketEligible(b)
+	if pa != pb {
+		return pa
+	}
 	ra, rb := provider.BillingRound(a.BillingMode), provider.BillingRound(b.BillingMode)
 	if ra != rb {
 		return ra < rb
@@ -1141,7 +1766,12 @@ func (r *Router) tryDegradedMode(ctx context.Context, candidates []provider.Cand
 				"provider_id", c.ProviderID,
 				"model", c.RawModel,
 				"reason", reason,
+				"degraded_override", true,
+				"route_override", "degraded_override",
+				"fallback_reason", reason,
+				"effective_route_status", "degraded",
 			)
+
 			degradedCandidates = append(degradedCandidates, c)
 		}
 	}

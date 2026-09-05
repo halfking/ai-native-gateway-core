@@ -16,10 +16,50 @@
 package outbox
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"time"
 )
+
+// BuildSessionOpenedEventV1 constructs the durable session.opened.v1 event.
+// The event ID is derived only from tenantID and sessionID so repeated request
+// log writes for the same session are idempotent.
+func BuildSessionOpenedEventV1(tenantID, sessionID, userID string) (EventEnvelope, error) {
+	if tenantID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildSessionOpenedEventV1: tenant_id is required")
+	}
+	if sessionID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildSessionOpenedEventV1: session_id is required")
+	}
+	if userID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildSessionOpenedEventV1: user_id is required")
+	}
+
+	hashInput := tenantID + "\x00" + sessionID
+	digest := sha256.Sum256([]byte(hashInput))
+	eventID := "evt-session-opened-" + hex.EncodeToString(digest[:8])
+	now := time.Now().UTC()
+
+	return EventEnvelope{
+		EventID:          eventID,
+		EventType:        "session.opened.v1",
+		SchemaVersion:    1,
+		TenantID:         tenantID,
+		AggregateID:      sessionID,
+		AggregateVersion: 1,
+		OccurredAt:       now,
+		Payload: map[string]any{
+			"session_id":    sessionID,
+			"user_id":       userID,
+			"source_system": "gateway",
+		},
+		SessionID:     sessionID,
+		CorrelationID: sessionID,
+		SourceSystem:  "gateway",
+	}, nil
+}
 
 // BuildRequestCompletedEventV3 constructs a request.completed.v1 event whose
 // wire rendering validates against gateway-event-schema-v1.json.
@@ -67,7 +107,9 @@ func BuildRequestCompletedEventV3(
 	}
 
 	now := time.Now().UTC()
-	eventID := fmt.Sprintf("evt-%s-%s", now.Format("20060102150405"), requestID[len(requestID)-min(8, len(requestID)):])
+	hashInput := tenantID + "\x00request.completed.v1\x00" + requestID
+	digest := sha256.Sum256([]byte(hashInput))
+	eventID := "evt-request-completed-" + hex.EncodeToString(digest[:16])
 
 	payload := map[string]any{
 		// V1 required fields (gateway-event-schema-v1.json RequestCompletedPayload)
@@ -111,7 +153,7 @@ func BuildRequestCompletedEventV3(
 		SchemaVersion:    1, // storage representation; wire renders "1.0"
 		TenantID:         tenantID,
 		AggregateID:      sessionID,
-		AggregateVersion: turnNo,
+		AggregateVersion: turnNo + 1,
 		OccurredAt:       now,
 		Payload:          payload,
 		SessionID:        sessionID,

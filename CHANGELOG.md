@@ -1,11 +1,501 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Turn Digest/L2 集成审计修复 (2026-09-04)**：统一 Turn 列表延迟字段为 `latency_ms`，补强 dual 路由 shadow 对比可观测性与独立超时上下文；修复流式 L2 shadow 短流 verdict、flush 观测漏记和空缓存 panic，并恢复 autoroute treatment attribution 编译契约。
+
+ 修复 sp1/spi-3 的 glm-5.2 模型频繁被网关降级的问题。直连供应商工作正常，但通过网关访问时经常被标记为 continuous_failure 导致不可用。
+  - **credentialhealth/checker.go**: 优化降级策略参数
+    - `rate_limit` 阈值: 0.95 → 0.98 (+3% 容错，智谱 GLM/MiniMax 在高峰期 429 是正常流控信号)
+    - 最小样本数: 8 → 15 (需要 15 样本中 14.7 个失败才触发，避免误判)
+    - 冷却时间: 60s → 30s (更快恢复)
+    - 新增 `concurrent` 专用策略 (阈值 0.95, 样本 12, 冷却 2 分钟)
+  - **domains/routing/weighted_router.go**: 优化路由缓存失效策略
+    - RecordError: 仅在连续失败 ≥3 或状态转换时失效缓存 (减少 70-90% 权重重算)
+    - RecordSuccess: 仅在从失败恢复时失效缓存 (稳定运行期间不触发重算)
+    - 预期降低 CPU 使用率 30-50%
+  - **验证结果**: credential 48 (spi-3) 从 `auto_credential_transient` 完全恢复，glm-5-2 成功率 95%，降级事件减少 70-80%
+  - **部署**: 154 生产 (build_seq 1803) 和 245 预生产 (build_seq 1805) 均验证通过
+  - **文档**: `.handoff/2026-08-29-glm5.2-*.md`, `docs/monitoring/2026-08-29-glm5.2-first-check.md`
+  - **工具**: `scripts/fix-glm5.2-degradation.sh`, `sql/fix-glm5.2-degradation.sql`
+- **Post-merge audit closeout (2026-08-29)**: fixes and hardening from the multi-branch merge audit.
+  - **Gemini stream writer releases its pending buffer on fail-closed**: `geminiStreamWriter.failClosed` previously marked the stream failed but retained up to `maxPendingBytes` (16 MiB) of buffered frame data for the rest of the request, inflating RSS under concurrent Gemini streams. The buffer is now released immediately. Regression assertion added to `TestGeminiStreamWriter_PendingCapFailClosed`.
+  - **Native Responses stream capture terminal ordering**: `StreamNativeResponsesSSE` now guards `capture.MarkDone` behind the `terminal` flag so a duplicate `response.completed` after an earlier `response.failed` cannot flip an interrupted capture back to done.
+  - **XFF trust list now covers the streaming and identity fallback paths**: `request_meta.go` and `domains/identity` previously called `telemetry.ExtractClientIP` directly, which honoured X-Forwarded-For from any peer — bypassing the `OriginMiddleware` trusted-proxy allowlist introduced in `c0719c699`. Both paths now prefer the middleware-resolved `ContextClientIP`/`ContextClientForwardedFor` and only fall back to raw header extraction when the middleware never ran. `NewOriginMiddleware`'s doc comment corrected to match its actual trust-nothing default.
+  - **Dockerfile builder digest arg**: the hardening commit's comment promised a `BASE_IMAGE_DIGEST` build arg, but the builder stage never consumed it. Replaced with `GO_IMAGE_DIGEST` and wired into the `FROM` line so CI can pin the Go build image the same way as the runtime image.
+  - **unlock-remote.sh stale detection no longer misreports unknown ages as fresh**: when `started_at` metadata is missing or unparseable, `--detect-stale` now exits 75 (`age unknown`) instead of falling through to `AGE_S=0` → "within threshold" → exit 0. A lock whose age cannot be computed now fails closed.
+  - Audit report: `docs/audit/2026-08-29-post-merge-audit.md`.
+- **KeyRotator invalid keys now auto-recover after a cooldown (MEDIUM, 2026-08-29)**: `domains/credential/keyrotator.go` previously marked a key `KeyStatusInvalid` after 2 consecutive failures and left it out of rotation until an admin `ResetKey` or a process restart. A transient 401 during a key-rotation overlap, or a brief provider-side rate-limit window, would permanently eject the key even after the upstream issue cleared. Each invalid key is now stamped with `invalidSince`, and a background sweeper (started in `provider.Client.SetDB`, runs every `DefaultSweepInterval` = 1 minute) flips any invalid key whose stamp is older than `DefaultInvalidCooldown` (15 minutes) back to `KeyStatusActive`. `terminal` keys (402 balance, revoked auth) are intentionally untouched — those need operator action. `ResetKey` clears `invalidSince` so a fresh operator reset isn't undone by a stale-cooldown sweep. Sweeper lifecycle is guarded by `sync.Once` + `sweepMu` and idempotent across `SetDB` reconfiguration; verified under `-race`. Regression tests: `TestKeyRotator_SweepInvalid_{BeforeCooldown,AfterCooldown,SkipsTerminal}`, `TestKeyRotator_ResetKey_ClearsInvalidSince`, `TestKeyRotator_StartSweeper_StopIdempotent`.
+- **XFF/X-Real-IP now require a trusted-proxy allowlist (HIGH security, 2026-08-29)**: `OriginMiddleware` previously honoured `X-Forwarded-For` / `X-Real-IP` from every immediate peer, letting any public client spoof the source IP to impersonate another tenant or bypass IP-based rate limits and audit trails. The middleware now ONLY honours those headers when the TCP peer matches a CIDR in the new `Security.TrustedProxyCIDRs` config (default loopback-only). When untrusted, the middleware falls back to `RemoteAddr`. New constructor `middleware.NewOriginMiddlewareWithTrustedProxies(cidrs)` + `middleware.ParseTrustedProxyCIDRs(raw []string) []*net.IPNet` helper; the wiring lives in `cmd/gateway/main.go`. `telemetry.ExtractClientIPTrusted` / `ExtractForwardedForTrusted` provide the same allowlist semantics for downstream call sites that read the headers directly. Configure via YAML `trusted_proxy_cidrs` or env `LLM_GATEWAY_TRUSTED_PROXY_CIDRS`. Deployments behind a load balancer MUST extend the list — otherwise every request will appear to originate from the LB.
+
+### Added
+- **供应商控制台对 default 租户管理员开放（2026-09-04）**: 修复 `https://llm.kxpms.cn/providers/24` 凭据详情中 API Key「修改」操作对 default 租户 `tenant_admin` 完全不可用的问题 —— 此前 `/providers` 页面（前端 `requiresSuper` 路由守卫 + 菜单 `super` 标记）与整棵 `/api/providers/*` API（`SuperAdminMiddleware`）均为 super_admin 专属，default 租户的 `tenant_admin` 全部被 403/`/forbidden` 拦截。
+  - **后端**: 新增 `admin/provider_access.go` `ProviderConsoleMiddleware` 挂到 `/api/providers` 与 `/api/providers/`：super_admin 行为不变；default 租户 `tenant_admin` 放行只读（GET/HEAD）+ 唯一写路径 `POST /api/providers/{id}/credentials/{cid}/rotate-primary-key`（API Key 修改），其余写操作 403；`/api/providers/{id}/…` 目标额外校验属于 default 租户的存活供应商（非 default 供应商一律拒绝；`seed-from-catalog`、`/api/providers/credentials/` 强制恢复仍 super_admin 专属）。单测 + `TEST_DATABASE_URL` 集成测试见 `admin/provider_access_test.go`。
+  - **前端**: `store.isProviderConsoleView()`（super_admin 或 default 租户 tenant_admin）+ 路由 `requiresProviderConsole` + 菜单 `providerConsole` 标记（`appNav.ts`/`AppTopbar.vue`/`export-menu-config.mjs`/`menu-config.json` 同步）。页面按角色收敛：列表页隐藏新增/删除；详情页隐藏启停/删除/诊断/模型/探测/设置 tab；凭据抽屉只读化（label/状态/生命周期/套餐/手工禁用/立即检测/默认探活模型/并发/fp-slot/生效期/tags/保存/危险区全部禁用或隐藏，「显示完整 API Key」仍 super_admin 专属），仅保留「修改」API Key 轮换入口。
+  - **i18n**: 补齐 2026-09-02 reveal/rotate 文案在 ar-SA/de-DE/es-ES/fr-FR/ja-JP/zh-TW 的 21 个缺失键（`providerDetail` 模块 parity 回填），vitest i18n parity 门禁恢复全绿。
+- **FS-backed request store（2026-08-26，Phase B 落地）**：新增 `internal/fsstore/` 提供文件系统级持久化层,在 PG/Redis 不可用时承载"请求记录、供应商、租户、用户、API key"。目录组织 `{LLM_GATEWAY_FS_ROOT}/{index/{entities,requests}.bleve, entities/{providers,tenants,users,api_keys}/<id>.json, requests/YYYY/MM/DD/<request_id>.json, bodies/YYYY/MM/DD/<request_id>/{request,response}.jsonl.gz}`,实体写走 copy-on-write + `syscall.Flock` + 原子 rename,Bleve 索引与 Phase A 共用 scorch 后端,启动期或运维触发 `RebuildIndexes()` 从磁盘回灌。`fsstore.NewFallback(ctx, pool, store)` 启动期探测 PG（`SELECT 1`,5s 超时）→ ModePG（FS 关闭）/ ModeFS（PG 关闭,`slog.Warn` 提示运维）;运行期不切换避免双写脑裂(设计原则见 `docs/03-design/02-modules/fs-request-store.md`)。Phase A 的 Bleve 索引层被直接复用,无新依赖。
+- **Database topology documentation refresh (2026-08-27)**: added the project-local `db-sync-252-local` skill and `local-pg-sync-from-252.md` runbook for 252-to-local PostgreSQL refreshes. The runbook records hot-table filtering, `PGOPTIONS` timeout handling, password-persistent container recreation, and the `_`-prefixed pending-deletion table convention. Active deployment documentation now treats RDS production, 252 test, and local Docker as the only current database environments; retired server-specific guides moved to `docs/archive/2026-08/` with explicit non-operational banners.
+- **Bleve log full-text search（2026-08-26，Phase A 落地）**：在 slog → lumberjack 管道上叠加 `BleveFanoutHandler`（`internal/logging/bleve_fanout.go`），每条 record 异步进入有界 ring channel + 后台 batch indexer，Bleve 写入失败不会拖垮主链路。新增 `GET /api/admin/logs/search?q=&tenant=&level=&from=&to=&regex=&fuzzy=&page=&size=`（admin 权限）支持子串 / term / date-range / regex / fuzzy / 分页排序，索引文档按 `ts/level/msg/raw` + `request_id/tenant_id/user_id/session_id/trace_id/model/provider_id/method/path` 提升字段，结构与 live + 回灌同构。`GET /api/admin/logs/search/status` 暴露 fan-out 计数器（`records_indexed / records_dropped / records_failed / queue_depth`），启用通过 `LLM_GATEWAY_LOG_BLEVE_ENABLED=true` + `LLM_GATEWAY_LOG_INDEX_DIR=<dir>`，默认 `false`（老路径不变）。新增 `cmd/bleve-backfill/` 独立命令,按天扫描 `gateway-*.log.gz` 并行回灌历史,支持 `--since/--workers/--batch/--dry-run`。设计/运维见 `docs/03-design/02-modules/log-search-bleve.md`。下一阶段（Phase B）将复用同一 Bleve 索引层承载"请求记录搬到文件系统"。
+
+### Removed
+- Remove the temporary `POST /api/admin/live-stream/trigger-snapshot` debug endpoint. Added 2026-07-26 for snapshot_refresh guard validation; superseded by the periodic `PushFullSnapshots` tick (default 30m) plus the terminal-status overlay. The `HandleTriggerSnapshot` method and its route registration are deleted; no production traffic depends on the endpoint (the only frontend caller `_requestSnapshotRefresh` was never invoked).
+
+### Fixed
+- **deploy-lib/unlock-remote.sh audit log + stale detection (MEDIUM, 2026-08-29)**: the operator escape hatch now writes a JSONL audit line for every `--force` invocation (and for malformed-lock removals) to `LOCK_AUDIT_LOG` (default `/var/log/llm-gateway/lock-audit.jsonl`), capturing ts, target, remote, holder PID/user/host/commit/version, lock age, and the local operator. New `--detect-stale` mode reports the lock age against `LOCK_STALE_AFTER_SEC` (default 3600s) and exits 75 without removing anything; this lets cron / on-call scripts pre-emptively flag stale deploy locks before invoking the destructive `--force` path. Both new behaviours are off by default for legacy callers — `--detect-stale` requires the explicit flag, audit log writes are best-effort (a failed write warns but never blocks the unlock).
+- **Dockerfile runtime hardening (MEDIUM, 2026-08-29)**: the runtime stage now creates a dedicated `llmgw` user (UID 65532, GID 65532) and switches to it via `USER llmgw:llmgw` before `CMD`, so a container-escape vulnerability no longer inherits root inside the pod. `WORKDIR /app` is `chown`'d to the same user so runtime files (fsstore, migration ledger ndjson) can be written without elevating. Digest pinning is opt-in via the new `RUNTIME_IMAGE_DIGEST` build arg — leaving it empty falls back to the mutable `alpine:3.22` tag (dev only); CI passes `--build-arg RUNTIME_IMAGE_DIGEST=sha256:...` for production. The `adduser`/`addgroup` calls live in the same `RUN apk` layer so the final image still has a single tool layer.
+- **URSM v2 invalidation subscriber lifecycle hardening (MEDIUM, 2026-08-29)**: `startInvalidationSubscriber` previously overwrote `invalidationStop` and called `invalidationWG.Add(1)` on every invocation, so a second start would orphan the first cancel func and a `Close`-then-restart sequence could double-Add on the WG (eventually panicking with a negative counter). Added `invalidationMu` to serialise the start/close handshake: `startInvalidationSubscriber` now no-ops when a subscriber is already live, and `Close` clears `invalidationStop` inside the lock before invoking it so a concurrent start cannot race against shutdown.
+- **Migration ledger Append now fsyncs per record (MEDIUM, 2026-08-29)**: `migration.Ledger.Append` previously relied on `O_APPEND` without an explicit `f.Sync()`, so a process crash could lose the last few records even though the bytes had reached the page cache. The on-disk NDJSON is the authoritative resume/audit artefact; losing records would force a re-scan of Redis and possibly repeat destructive cleanup. `NewLedger` now defaults to `syncOnAppend=true`; opt out via `NewLedgerWithSync(path, false)` or `Ledger.SetSyncOnAppend(false)`. The `k2-migrate-ursm` CLI exposes `--ledger-no-fsync` for environments that accept the resume-window loss (CI benchmarks, dry-runs). New regression `TestLedgerAppendPersistsImmediately` asserts that an Append is visible to a fresh reader before the handle is reused.
+- **URSM apply_decision.lua TOCTOU between Go pre-read and Lua EVAL (HIGH, 2026-08-29)**: the script previously consumed the admin_hold flag from ARGV[6] (caller-supplied pre-read). Between the Go-side HGet and the Redis EVAL, `ApplyAdmin` could flip `manual_hold=1`, leaving a stale "0" in flight and allowing an unauthorized write to override an admin hold. The script now reads `manual_hold` directly inside the EVAL — closing the race window and dropping one hot-path Redis RTT, mirroring the 2026-07-28 M3 fix to `apply_probe.lua`. ARGV[6] is preserved for ABI parity but unused. Regression: `TestApplyDecisionManualHoldLiveRead` seeds `manual_hold=1`, calls `ApplyDecision(..., adminHold=false)`, and asserts the result is `ignored_manual_hold` with the key untouched.
+- **Audit hardening round 2 (2026-08-29)**: post-merge code review of the 5 integrated fixes, plus a no-code-loss check. **(a) `apply_decision.lua` nil-safety**: `tonumber(ARGV[1..4])` now defaults to `0` via `or 0`, matching the in-script `HGET ... or "0"` guard, so a missing/empty ARGV can no longer throw a raw Lua "attempt to compare number with nil" on the generation/priority comparison. **(b) `migration.Ledger.Append` atomic-frame write**: the item is now marshalled into a `bytes.Buffer` and written as a single `f.Write` before `f.Sync`, so a partial encode error can never leave a truncated NDJSON line that would poison `LoadAll` on resume — preserving the authoritative resume/audit contract. **(c) URSM invalidation subscriber auto-reconnect**: `startInvalidationSubscriber` previously exited permanently on the first non-shutdown Redis error (connection reset / failover), silently breaking the LRU mirror invalidation contract until restart; it now closes and resubscribes with exponential backoff (100ms→1s, capped) while `ctx` is live, and still tears down instantly on `ctx` cancel. Shutdown stays race-clean (verified with `-race`).
+- **Streaming P0 audit followup (2026-08-28)**: hardened Anthropic error-response body lifecycle and gate/writer short-write contracts after auditing the 2026-08-27 P0 merge.
+  - **Anthropic executor now fully drains all 4xx error responses**: introduced `readAndDrainErrorBody` helper that captures at most 64 KiB for classification/passthrough, then consumes the remainder to EOF via `io.LimitReader` + `io.Copy(io.Discard)`, handling short reads and preserving HTTP connection reuse. Previously only read once (4096 bytes), leaving upstream body partially consumed when `n < len(buffer)` or when early-return paths (`PreStreamPrepared`, model-not-found, retryable 429, context-length heuristic) bypassed drain. All `resp.StatusCode >= 400` branches now use the unified helper; nil Body is defensively handled.
+  - **SerializedStreamWriter detaches on short write**: `write` now treats `(n < len(p), err == nil)` as `io.ErrShortWrite` and immediately detaches, preserving fail-closed semantics. A writer violating `io.Writer` contract (returning fewer bytes than requested with nil error) would previously leave the gate believing bytes were sent while the connection dropped part of the frame.
+  - **AttemptCommitGate refuses oversized frames before appending**: `appendBufferedLocked` now checks `bufferLen + len(frame) > maxMetadata` before modifying the buffer, preventing `bufferLen` from transiently exceeding the cap. The old code appended first, then checked, allowing overflow until the next call.
+  - Added regression tests: `executor_anthropic_body_drain_test.go` (short reads, cap overflow, nil/empty body), `serialized_stream_writer_short_write_test.go` (short-write detach), `attempt_commit_gate_capacity_test.go` (pre-append capacity check). Full streaming test suite remains green (66.8s).
+  - Audit report: `docs/audit/2026-08-28-streaming-p0-followup-audit.md`.
+- **Credential routing model picker completeness (2026-08-27)**: return every policy-featured model, including `minimax-m3`, independently of the usage-suggestion cap. The cap now applies only to current popular models. Popularity sources exclude probe traffic: removed the mixed live-lane queue source and added a `quality_flags` probe exclusion to the `request_logs_hot` fallback query; the existing tenant-scoped recent-use ZSET remains probe-gated at write time.
+- **Request protocol metadata parity (2026-08-27)**: persist client protocol, upstream protocol, and protocol-conversion status together so cross-protocol requests such as OpenAI Chat to Anthropic are auditable without inferring from `transform_summary`. Added field-alignment and conversion-flag regression coverage.
+- **Merge-loss recovery after the d2cbaf88b integration merge (2026-08-27)**: the 2026-08-26 20:37 "integrate origin/main" merge silently reverted a batch of accepted audit fixes (provider routing identity helpers, credential-key surgical reset + FOR UPDATE admin transactions, empty-response isolation in node health, priority-bucket + cooling-fallback routing, credential-label swim-lane persistence, recharge/fresh-degraded/periodic-quota probe recovery, redis quota slot pruning, MiniMax/Apigpt error classification, schema mirrors for migrations 553/568/571/362, session-summary dialogue extraction, provisional auto-title metadata, journey telemetry ApplyTx path) and even committed an unresolved `>>>>>>>` conflict marker. Restored all lost implementations from c0dfd4a00-era sources, aligned mismatched tests, and re-added the full test battery so `go build`, `go vet`, and `go test ./...` are green again.
+- **Fail-loud OpenAI Chat to Anthropic conversion validation (2026-08-27)**: preserve system text block arrays and reject unsupported content blocks, malformed image blocks, missing tool-call functions, and non-object or invalid tool arguments instead of silently dropping or replacing request data. Added regression coverage for these conversion boundaries after the `claude-sonnet-5` request audit.
+- **24h deep-audit critical fixes (2026-08-28)**: production-blocking defects discovered during 24h commit audit.
+  - **`bg.credential_probe_v2.writeHealth` SQL had duplicate SET clauses** — the 08df287 follow-up repeated the `lifecycle_status`, `auto_enabled_at`, `auto_enabled_reason`, `auto_disabled_at`, `auto_disabled_reason` CASE blocks in the same UPDATE; PostgreSQL would reject the statement with `column specified more than once` and break all credential probe writes. Single-sourced the lifecycle recovery CASE in one block.
+  - **`bg.credential_probe_v2.ProbeNow` lifecycle filter excluded auto-disabled credentials** — the 08df287 SQL recovery path targeted `lifecycle_status='disabled' AND auto_disabled_at IS NOT NULL` but ProbeNow's SELECT filtered on `lifecycle_status='active'`, making the recovery branch unreachable. ProbeNow now also accepts rows with `lifecycle_status='disabled' AND auto_disabled_at IS NOT NULL AND manual_disabled=FALSE`; manual disable remains guarded.
+  - **Admin endpoints queried non-existent `request_logs.{request_body,response_body,outbound_body,created_at}` columns** after migration 573 dropped them. Switched 17 `COALESCE(rb.x, rl.x)` fallback references in admin/{no_topic_session,logs_summary,session_title,body_resolver,session_export,memora_handlers,quality_correlations,auto_title_generator,compression_stats}.go, domains/sessionforensics/export.go, and bg/passive_probe_listener.go to `COALESCE(rb.x, '')` / `''::jsonb` (bodies view is now SSOT). Renamed `rl.created_at → rl.ts` and `COUNT(rl.outbound_body) → COUNT(rb.outbound_body)` + LEFT JOIN where the join was missing.
+  - **`settings.ProviderSettingsResolver.Close()` was non-idempotent** — `close(r.stopCleanup)` without a guard would panic with `close of closed channel` on double-invoke (e.g. graceful-shutdown + reload). Guarded with `sync.Once` and added the `closeOnce` field.
+  - **`domains/streaming/executors/executor_anthropic` body drain only ran when prefix buffer was filled** — async retry path with `params.W == nil` and `n < len(body)` left the upstream body unread, forcing connection-pool to close instead of reuse. Moved `io.Copy(io.Discard, resp.Body)` outside the conditional so it always runs.
+  - Updated three admin test files (`logs_test.go`, `logs_join_test.go`, `logs_view_test.go`) to the new SSOT query pattern so CI stays green after 573 lands.
+- **24h deep-audit P1 follow-up (2026-08-28, audit-24h-20260828-r3)**: wire `dispatch.JournalSnapshot()` into `requestjourney.Recorder` via new `JournalSink` so per-request attempt traces flow to journey persistence at terminal time. The global `/api/admin/dispatch/journal/{id}` endpoint was removed in ff18dc3b6 with a promise that `JournalSnapshot() → requestjourney` would bridge the data flow; this commit fulfills that promise. Added `JournalSink` interface (mirrors `ObservationSink`), `Pipeline.SetJournalSink`, `emitJournalSnapshot` in `Pipeline.complete` (CAS-guarded exactly-once), `dispatchJourneyJournalAdapter` (translates each `JournalEntry.Action` to `EventType`), `Recorder.MaxSeq` peek method (seq-offset calculation for monotonic invariant), and 6 regression tests covering sink contract + nil-safety + CAS guard + concurrent set/emit. Each journal entry becomes one `JourneyEvent` with `Seq = baseSeq + offset + 1`; terminal actions map to `EventRequestSucceeded/Failed/Canceled`, continuation actions map to `EventRetryScheduled/NodeSwitched/ModelSwitched`. Ops/CS can now diagnose "what path did this request take" via the requestjourney Detail API.
+- **24h deep-audit P1 follow-up (2026-08-28, audit-24h-20260828-r3)**: Anthropic native passthrough and Anthropic-to-OpenAI/Responses bridges now detect `message_start` + `message_stop` streams with no semantic output and return retryable `KindEmptyResponse`, without emitting a successful terminal envelope. Semantic detection covers text, thinking, partial tool JSON, and supported tool blocks. Regression coverage includes empty native, Chat, and Responses streams plus positive semantic-output cases. Q4 empty streams are eligible for candidate failover only before client-visible semantic commit; committed output remains resume-blocked to prevent duplicate bytes.
+- **Streaming/URSM audit closeout (2026-08-28, branch fix/streaming-ursm-audit-closeout-20260828)**: closed four P1 streaming lifecycle gaps, PTTL sentinel handling, typed safe pipeline, Lua fallback instrumentation, and URSM canonical wrong-type semantics. Regression coverage in `domains/streaming/attempt_commit_gate_regressions_test.go`, `domains/ursm/v2/migration/preflight_scan_test.go`, `domains/ursm/v2/store/pipeline_schema_test.go`. Streaming package and URSM v2 packages all pass under `go test -race`.
+- **Safe-read audit r4 P2 hardening (2026-08-28)**: the 5 raw `client.HGetAll` call sites that the audit-24h r4 P2 migration had converted to `SafeHGetAll` (`domains/session/v2/cache_v2_redis.go`, `domains/session/preprocess/redis_store.go:readManifest`, `domains/stats/boardcache/store.go` loadBaseline/readDeltaHash/attachMeta) were silently reverted back to raw `HGetAll` on the working tree. All five sites now route through `redissafe.SafeHGetAll` so a wrong-typed key surfaces a `*TypedError`/`ErrWrongType` instead of an untyped `WRONGTYPE` panic; missing keys map to `ErrKeyNotFound`. `CHANGELOG.md` text is realigned with the code state.
+- **`cmd/regen-credentials` secrets handling (2026-08-28)**: removed the hardcoded Fernet fallback key from `cmd/regen-credentials/main.go`; the binary now requires `LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY` (or `LLM_GATEWAY_SECRET_KEY`) and fails fast when neither is set. The per-credential regenerated key is no longer printed to stdout; logs now report only `cred_id` and `provider_id`.
+
+- Add credential grouping to the admin live-stream controls, snapshots, incident indexes, persisted preferences, and all dashboard locales.
+- Scope admin popular-model aggregates and cached picker responses by tenant. Successful telemetry now writes tenant-specific Redis ZSETs; usage SQL filters `request_logs_hot.tenant_id`; tenant-admin reads do not consume global live lanes.
+- Add `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` with a seven-day fallback, and skip the SQL usage fallback when policy plus Redis already satisfy the requested limit.
+- Expose `llmgw_live_stream_tile_overlay_db_lookup_total{outcome}` for database-corrected live-stream tiles, with pre-warmed success, failure, locked, and unknown labels.
+
+### Fixed (Stage F policy hot-reload audit)
+- **`Pipeline.ApplyPolicy` fails closed on Redis backend construction errors.** Previously, `governorForCredential` returned an `unavailableGovernor` and `ApplyPolicy` swapped it in while advancing `activePolicyRevision`, so the publisher marked the revision applied and would not retry while traffic was silently denied at admission. Now the constructor propagates `ErrGovernorUnavailable`-wrapped errors; `ApplyPolicy` aborts before any swap and leaves the active revision pinned so the publisher's retry loop replays the same delta. Cold-start (`newCredForwarder`) remains fail-open with a structured `slog.Warn` fallback so a transient Redis outage cannot block the very first dispatch to a fresh forwarder.
+- **`Pipeline.ApplyPolicy` routes mode-correct limits for RPM/TPM specs.** `GovernorSpec.Limit` is mode-dependent (concurrency cap, RPM, or TPM); pre-fix the loop copied it into `CredentialRef.ConcurrencyLimit` only, so a valid `{Mode: ModeRPM, Limit: 100}` policy staged a no-op governor. Now `specToCredentialRef` derives `RPMLimit` / `TPMLimit` from `spec.Limit` based on `spec.Mode`, taking the max of canonical-vs-mirror when both are populated.
+- **Redis governor carries the new policy revision, not the previous one.** `governorForCredential` now takes `specRevision` and is called with `pol.Revision` from `ApplyPolicy` (was `p.ActiveRevision()`, which read the *previous* revision). The Redis backend's `spec.Revision` is the cache-invalidation identity; a stale revision would silently reuse stale lease state on every live swap.
+- **`recordingApplier` honors the strict-monotonic contract.** Previously it accepted any revision and overwrote `active`, making the test double drift from the production `Pipeline`. Now it no-ops on `pol.Revision <= active` and bumps `active` only on strictly greater revisions; `TestRecordingApplierRejectsOlderRevision` pins the new contract and `TestRecordingApplierConcurrentApplySerializes` was updated to assert that the highest revision wins under load.
+- **`Pipeline.ApplyPolicy` serializes concurrent publishers with a dedicated `policyMu`.** Concurrent `ApplyPolicy` calls were observed interleaving between `NotifyRevisions` and the live forwarder swap; pre-fix this could leave the pipeline at one cluster-wide revision while holding another local governor. `policyMu` now serializes the full critical section (monotonicity check → NotifyRevisions → governor build → swap → revision stamp) so two publishers are forced to land in order.
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **泳道按凭据 (credential) 分组 + 终态 overlay 闭环（2026-08-26，154 in_progress 卡死根因修复）**：
+  1. admin live stream swim lane 维度从 vendor 切到 credential：同一原厂下的多 key（"openai:主力"/"openai:备用 1"）独立泳道，运维能精确看到哪个 key 卡 in_progress。新增 `liveStreamCredentialKey`（label 优先，否则 "凭据 #ID"）；vendor 维度作为"测试/老检查位别名"并行保留（前端 tile 颜色仍依赖 Vendor 字段）。
+  2. `overlaySnapshotTerminalStatuses` 新增：snapshot 里有 tile 状态 in_progress 但 DB `request_logs` 已写终态 (success/failure) 时就地纠错，避免"请求已完成但泳道 tile 永远 in_progress"的 P0 卡死 (154 网关每 ~5 分钟 1 次)。节流: `liveStreamSnapshotOverlayInterval` 默认 60s，避免 broadcast hot path 每 2s tick 打 DB；连接级 HandleLiveStream 初始帧不走节流。
+  3. `queryPopularModels` 新增双源 popular models 聚合（admin "凭据路由模型" picker fix）：① Redis dim queue `ZCARD`（live source，前 5 名，in-memory 维度队列的 lane cardinality） + ② 专用 ZSET `llmgw:routing:recently_used_models`（recent source，TTL 7d，`RecordRecentlyUsedModel` 在 `persistRequestLog` success path 上 ZINCRBY + EXPIRE，probe-gated 不污染） + ③ SQL `popularModelsHotSQL`（usage source，`request_logs_hot` + plan-time literal `$1` 7d cutoff，避开 partitioned `request_logs_with_current_month` 的分区/列存扫表）。三源结果通过现有 `add(...)` 去重聚合。`admin/logs.go:listTopModels` 同样从 `request_logs_with_current_month` 切到 `request_logs_hot`（timeout 30s→10s）。新增 `admin/routing_popular_models_test.go` (190 行) 7 个 tests：hot-table SQL contract（必须 `FROM request_logs_hot` / 必须 `$1` literal / 必须 not `NOW() - INTERVAL`）、ZSET round-trip + ZINCRBY、probe gate（isProbe=true / empty / "unknown" 全部不写）、nil-safe、TTL refresh、live stream source empty、listTopModels SQL contract。
+     - **审计修正（2026-08-26 session）**：原 commit message 与 CHANGELOG 描述的 `fetchPopularModels(rdb, db)` / `fetchPopularModelsForTenant(rdb, db, tenantID)` / `LLM_GATEWAY_DB_POPULAR_MODELS_LOOKUP_HOURS` env / `live_stream_tile_overlay_db_lookup` metric / "DB count ≤ ZSet 候选数 short-circuit" 均**未落地**（code grep 0 命中）；实现是 `queryPopularModels` 内联 + ZSET fast path + SQL fallback，无租户维度、无 Prometheus 指标、无 24h env、无 short-circuit。详见 `docs/changelogs/2026-08-26-popular-models-audit.md`。**follow-up**：补 `fetchPopularModelsForTenant`、补 overlay metric、补 24h env（若需）、加 SQL fallback short-circuit（按 ZSET 候选数 gate）。
+  4. `LiveStreamLaneVisibleLimit` 20 → 100（前端 swim lane 显示层 `SwimLane.maxVisibleTiles` 已按泳道轨道宽度动态裁剪显示数量）。
+  5. 单元测试 `TestLiveStreamRedisStore_TrimDimensionQueueToTwenty` 循环数从固定 25 改成 `LiveStreamLaneVisibleLimit+5`，对齐常量变更；新增 `TestRecordRecentlyUsedModel_TTLRefreshed` miniredis TTL 语义注释。
+
+### Fixed
+- **RPM queue budget 测试去除分钟边界 flaky（2026-08-26）**：`TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast` 不再依赖真实分钟桶剩余时间；改用确定性的 `RPMBudgetedAdmission` fake，锁定网关将 `ErrQueueBudgetExceeded` 映射为快速拒绝且保持 `Retry-After` 估算值的契约。恢复 rate-limit placeholder 早返回路径回归测试，并补充无 session-compression 时 outbound body 必须持久化的事故背景。详见 `docs/changelogs/2026-08-26-rate-limit-test-determinism.md`。
+- **Rate-limit 黑洞（2026-08-26 follow-up，d24dab5e7 残余漏洞）**：`captureAndEmitRateLimited` 早 return 路径绕过 `recordInitialRequestLog` 的 INSERT，`EmitRateLimited` 是 UPDATE-only，命中 0 行，`request_logs_hot` 漏写（`request_wal_hot` 与 Redis trace 仍记）。新增 `insertRateLimitedPlaceholder` helper（`domains/streaming/handler.go`），在 `EmitRateLimited` 前补一次最小 INSERT（RequestStatus=in_progress，幂等 ON CONFLICT DO UPDATE）；guard：已 logged / client 未启用 / nil ctx 全部 no-op。新增 `TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled`。`TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast` warm-up 重写为直接调 `sliding.AdmitRPM` 占桶（绕开分钟边界飘移），100 次连跑稳定。详见 `docs/changelogs/2026-08-26-ratelimit-log-blindspot-fix.md`。
+- **kimi-k3"总是失败"根因修复（2026-08-26，245 实锤排查）**：`LLM_GATEWAY_API_KEY=sk-gwops-*`（带 sk- 前缀）在 `AuthMiddleware` 被 sk- 直通分支送进 DB verifier 落在 default tier（12 RPM），sentinel 不生效，probe/ops/客户端共享该 key 时请求在分钟桶排队 55-94s，吃光 60s 上游预算后 `context canceled` 变 502，且该类失败不落 `request_logs`（日志黑洞）。修复：① 静态 key 精确匹配优先于 sk- 直通，恢复 `global-auth-passed` sentinel（`auth_mw.go`，新增 `TestAuthMiddleware_StaticKeyWithSkPrefixIsExempt`）；② RPM 排队预算化 `RPMBudgetedAdmission.AdmitRPMWithBudget` — 分钟桶/Redis 入队前按队位×窗口估算等待，超过 ctx 剩余预算（deadline-5s headroom）即拒绝入队，`checkGatewayRateLimit` 映射为 429 + Retry-After fail-fast（新增 `TestMinuteBucketAdmissionBudgetedRejectsFastWhenWaitExceedsBudget` / `TestCheckGatewayRateLimit_QueuedBeyondBudgetFailsFast`）。154 部署 seq 1761 验证：静态 key burst 20 连发无 X-RateLimit-Queue 头、串行 1.4-2.0s 200 OK、array content 正常——与数据格式无关。详见 `docs/changelogs/2026-08-26-kimi-k3-queue-budget-fix.md`。
+
+### Added
+- **会话总结识别智能体类型 / 专家类型 / 标签（2026-08-26，migration 606）**：会话总结 LLM prompt 此前只含对话消息，无法识别请求方是哪个智能体（Cursor="powered by Composer"、ZCode="You are ZCode, an interactive coding agent"、opencode="You are opencode, an interactive CLI tool..."）与专家类型（software_engineering/security/...）——这两类信号都写在客户端注入的 system prompt 开头。本次在 `domains/sessionsummary` 全量/滚动总结两条路径上：① 新增 `SystemPromptSource`（可选能力接口）+ V1（request_logs_bodies 首请求体，兼容 OpenAI Chat/Anthropic/Responses 三协议）与 V2（session_bodies 首 turn request_delta）实现，提取系统提示词前 4096 字节（rune 边界安全 + secretmask 脱敏）；② 两个 prompt builder 增加"系统提示词节选"段与输出 schema 扩展 `agent_type`/`expert_type`/`tags`，LLM 未返回或返回 unknown 时用既有规则引擎兜底（`telemetry.DetectAgentFromSystemPrompt` 16 类 + `sessionmeta.DetectExpertFromSystemPrompt` 14 类）补齐；③ `SessionSummary` 新增 `agent_type`/`expert_type`/`tags` 字段注入 `summarystore.Upsert`，落 `session_summaries` 新三列（migration 606: `agent_type`/`expert_type` TEXT、`tags` TEXT[]，幂等可回滚，session_summaries 无 VIEW 挂载无需 rule 49 §9.2 配对重建）。新增 14 个单测覆盖三协议提取/超长截断/secret 脱敏/新字段解析/规则兜底/Legacy 兼容；`go build ./...` + `go vet` + `go test`（sessionsummary/summarystore/sessionmeta/telemetry）全绿。详见 `docs/changelogs/2026-08-26-summary-agent-expert-tags.md`。
+
+### Fixed
+- **sessionmeta/summarizer 读面切 `_with_current_month` 视图（2026-08-26，606 部署验证中发现）**：migration 600 后请求体先落 `request_logs_bodies_hot`，父表要等热点提升才有数据；`domains/sessionsummary` 的 V1 message source（`GetSessionMessages` / `GetMessagesSince`）与新增的 `GetSystemPromptPrefix` 此前 JOIN 父表，导致会话刚关闭时总结读不到 fresh 系统提示词（154 实测：zcode 会话 `gw_8434924f` 身份行在 hot 中，改前 agent_type 为空，改后产出 `agent_type=zcode, expert_type=software_engineering, tags={go,http-handler,admin,权限管理}`）。切换到既有视图（hot ∪ parent，与 `syncCanonicalSessionTitle` 同款读面），154 已部署 release 1760。
+- **Expert detection 审计修正（2026-08-25，F2+F3）**：审计 expert detection feature（`ae0ad0d4a` + `08566ce99`）发现 4 处问题：(1) `Result` struct `omitempty` 被误删（Major）— 已在 `08566ce99` 修复；(2) 设计文档 `docs/design/expert-detection/00-design.md` §6 声称改 `extractor_rules.go` 但 §3 / §2.5 / 实际代码三者均说不改（Major）— 从 §6 删除该行，新增 §7 说明审计补遗；(3) `extractExpert` 中 `detected != ""` 冗余条件（`DetectExpertFromSystemPrompt` 永不返回 `""`，永远是 `ExpertUnknown` 或非空常量）— 简化为单 `if detected != ExpertUnknown`；(4) `telemetry/request_metadata.go` 的 `ae0ad0d4a` commit message 漏提新加的 `"cursor's ai"` pattern — 历史 commit 已 push 不 amend。改动 2 文件共 13 行；不触动工作树脏 SQL 改动 / version bump / docs/db-changelog.md（独立任务）。`go build ./...` + `go test ./domains/analysis/sessionmeta/... ./telemetry/... ./admin/... ./domains/streaming/...` 全 pass。详见 `docs/changelogs/2026-08-25-expert-detection-audit-fixes.md`。
+- **Reorder scope hash drift on disabled-provider / manual-disabled credentials（2026-08-25，dashboard drag-sort 假性 409 根因）**：`/api/routing/candidate-bindings/reorder` 写入侧的 scope SQL（`reorderScopeSQL` / `reorderScopeByCanonicalSQL`）此前 `LEFT JOIN credential_model_bindings` 后未过滤 `providers.enabled` 与 `credentials.manual_disabled`，而 `/api/routing/resolve` 视图已隐含 `AND p.enabled IS TRUE`，导致 dashboard 看到 N 个候选、写入侧 scope 拉到 N+M（M 个被 admin 隐藏的），任何拖拽 PATCH 都返回 HTTP 409 `"scope=N+M submitted=N"`（典型 `scope=15 submitted=11`），必须强制 refetch 才能提交。修复：写入侧 scope SQL 改 `JOIN providers p ON p.id = pm.provider_id AND p.enabled = TRUE` + `JOIN credentials c ON c.id = cmb.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE`；两个 `ensureScopeRevision` 种子查询同步加同样 INNER JOIN 让持久化的 `scope_hash` 与 dashboard 视角收敛。**SQL 侧配套**：migration 574 把 6 个 statement-level bump 函数（raw_model ×3 + canonical ×3 + pm_update）和种子查询都从 `LEFT JOIN` 改为同样 INNER JOIN，up 末尾一次性 `UPDATE ... SET scope_hash = h.scope_hash WHERE scope_hash IS DISTINCT FROM h.scope_hash` 收敛所有现存 scope 行（不动 `scope_version`），下迁移用 LEFT JOIN 形态回滚。迁移契约测试 `migration_574_test.go` 锁定 INNER JOIN gate 数量（≥7）+ recompute CTE 存在 + down 文件回到 LEFT JOIN。新增 `TestReorderScopeSQL_ExcludesDisabledProviderBinding` / `TestReorderScopeSQL_ExcludesManualDisabledCredential` / `TestEnsureScopeRevision_FilterConvergentHash` 三个 PG 集成测试（skip when `LLM_GATEWAY_PG_URL` 未设）覆盖端到端：构造 disabled-provider + manual_disabled credential 后，drag PATCH 仅覆盖可见凭据必须一次 200。详见 `docs/changelogs/2026-08-25-rerorder-scope-disabled-filter.md`。
+- **管理面板 401 轮询风暴（2026-08-24，96k/日）**：会话过期后挂在管理页的轮询组件（background-tasks 每 30s、sliding-window batch+N-way）对非 admin 名单的 `/api` 端点 401 永不停止。修复：`_core.ts` 中央会话失效处理（非 admin `/api` 401 且仍处登录态 → clearAll + 跳内联登录）；`SystemStatusIndicator` 匿名跳过受保护端点；`QueuePerspectivePanel` 匿名跳过轮询且 batch 401 不再放大为 N-way。附静态门拒绝日志补 `key_prefix`。401 可观测性审计修正：gateway.log 与 request_logs_hot 实际已有 401（前次盲区结论系日志路径误判）。**另：未跟踪的迁移 573 因 `CREATE OR REPLACE VIEW` 不能移除列而阻塞所有部署，已 `.sql.skip` 延期待 LP owner 改为 DROP+CREATE**。详见 `docs/changelogs/2026-08-24-admin-401-polling-storm-fix.md`。
+- **迁移 573 解除 .skip + admin/data_lifecycle trend 适配（2026-08-25，LP1 follow-up）**：把 `573_drop_request_logs_body_columns.sql.skip` 改回 `.sql` 让 deploy gate (`offline_apply.go` 只读 `.sql`) 接管；SQL 改 `CREATE OR REPLACE VIEW` → `DROP VIEW + CREATE VIEW`（同事务），DROP 2 个引用 body 列的 view（含 328a backfill 监控 view `request_logs_bodies_progress`），DROP `request_logs_hot` + `request_logs` 上 3 个冗余 body 列（PG 11+ 已 propagate 到 monthly 分区）。生产 dry-run（`psql --single-transaction -v ON_ERROR_STOP=1`）验证：view body 列 0 残留、view 总列数 108、`request_logs_bodies_hot` 95,041 行 / 11 GB 完整（业务数据 0 丢失）。`admin/data_lifecycle.go` trend 接口 LEFT JOIN `request_logs_bodies_with_current_month`，`compressed` 谓词改读 `rb.outbound_body`，`go build ./...` + `go vet ./admin/...` exit 0。详见 `docs/changelogs/2026-08-25-573-migration-un-skip.md`。
+- **数据面 sk-key 被全局静态门拦截（2026-08-24，间歇性 "Invalid or expired API key" 根因）**：`/v1/*` 的全局静态门此前对 Bearer 做 constant-time 比对 `LLM_GATEWAY_API_KEY`，154/245 两实例各自复用了不同的用户 sk-key 作为该值，导致"非本机全局 key"的合法 DB key 全部 401（文案与 DB 验证失败相同）；154 每次部署重启的 90s 切换窗口流量落 245 时用户 key 被拒，形成间歇性 401。修复：静态门放行 `sk-*` 前缀交给 `KeyVerifier` DB 校验（rule 20 §2 分层认证）；`/v1/models` 补接 keyVerifier（此前依赖静态门"恰好"保护）。详见 `docs/changelogs/2026-08-24-dataplane-skkey-static-gate-fix.md`。
+
+### Added
+- **Request body storage Phase 1 (2026-08-24)**: route `outbound_body` writes to `request_logs_bodies_hot` with tenant metadata, keep the legacy hot-table column for rollback compatibility, and update admin body/compression readers to use the dedicated body side table. Installer and dbinit now include migration 600.
+- **热更新 prompt 预算配置（2026-08-24）**：新增系统配置 `gateway.max_prompt_tokens`，网关默认接收上限为 2097152（2M tokens）；该值只是入口接收上限，不是供应商模型上下文窗口。候选解析后按实际供应商上下文窗口的 80% 触发压缩；通过 `/api/admin/settings/gateway.max_prompt_tokens` 修改后约 5 秒内生效；保留 `LLM_GATEWAY_MAX_PROMPT_TOKENS` 作为无 settings registry 时的环境变量回退。
+- **供应商凭据错误详情与透明 failover（2026-08-24）**：新增 admin 只读接口，按凭据聚合供应商错误类型、最近失败、凭据状态和 7 天质量评分；provider detail 页面新增错误明细 tab。可重试/切换时通过安全的 SSE comment 发送脱敏提示，不写入对话内容、不暴露上游响应原文，完整错误继续落到 `candidate_failure_logs`。
+- **smart-fallback 暂定恢复接通 + probe rollback 可观测（2026-08-24）**：`bg/probe_rollback.go` 的 `MarkTentativeRestore` 首次接通真实调用方 —— `ProbeSync`（请求热路径 no_candidates 恢复）成功分支在恢复可用性之后、gateway 轮之前打 `probe_revert_at` 暂定标记；后续确认探测成功（tick/队列/request_failure 驱动，经 `updateBindingAvailability` 成功分支清 timer）转正，窗口内未确认则由 rollback worker 回退（one-shot WHERE guard）。窗口由 `LLM_GATEWAY_PROBE_TENTATIVE_REVERT_AFTER` 配置（Go duration 或秒数，默认 15m，`0/off/false/disabled` 关闭）。新增 `llmgw_probe_rollback_*` metrics：`tentative_marked_total` / `reverted_total` / `scan_failures_total` / `scan_duration_seconds` / `pending`（此前 worker 只有 slog，245 上 8 次 revert scan failed 无指标信号）。
+- **请求入口 prompt 接收上限（2026-08-24，245 memcg OOM 根因缓解）**：`gateway.max_prompt_tokens`（默认 2097152，即 2M）在 `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 三入口于 JSON 解析与上游转发之前按 `estimateTokens` 拒绝超过网关接收上限的 prompt（413 `prompt_too_large`）。2M 不是供应商模型上下文窗口；候选解析后按实际模型 context window 的 80% 触发消息级压缩，供应商窗口未知时不猜测。`0` 可关闭网关上限；settings registry 下 settings_kv 优先于环境变量。
+- **245 GOMEMLIMIT GC 背压（deploy/llmgo-245.service）**：unit 注入 `GOMEMLIMIT=1900MiB`，低于服务端 drop-in `MemoryMax`，让 Go GC 在 memcg 击杀前先自我回收；与 prompt 预算、memory-override 上限构成三层防线。
+- **Dashboard SessionStats 空状态兜底**：`SessionStatsRankings` 在 `modelUsage` 为空数组时显示 `topModelsEmpty`；`SessionStatsSignals` 在错误计数/错误率均为 0 时显示 `errorsEmpty`；中英文 i18n 同步。
+- **dashboard-trend-normalize 测试扩展**：`dashboard-trend-normalize.test.ts` 从 3 用例扩至 10 用例，覆盖 trend 断点、空窗口、数值回填、命名兼容、period 优先级、null trend 防御。
+- **sessionmeta provisional 集成测试**：`handler_provisional_metadata_test.go`（arrival wiring）、`auto_title_provisional_test.go`（enabled gate / 已有 title 跳过）；`titlestore` 收窄为 `dbPool` 接口以支持 pgxmock。
+- **sessionmeta 到达态 provisional 抽取（session-analysis/v1）**：规则引擎 `Extract` + 契约文档；handler 到达时投影 provisional title（尊重 auto-title enabled / 已有 title 不覆盖）；与 `AssignRequestCost` 并存。
+- **session_analysis_metadata 持久化（migration 567）**：arrival UPSERT `status=provisional` 完整 Result JSON；`input_hash` 不变跳过；无 title 时仍写 metadata。
+- **Distributed dispatch controls integration (2026-08-24)**: integrated `feat/dispatch-selfcheck-followup-20260824` into main via `e20dd089a merge: integrate distributed dispatch controls`. Adds the bounded total execution queue (`domains/dispatch/total_queue.go`), priority credential clusters with session affinity preservation (`priority_affinity.go` + `cmd/gateway/dispatch_session_affinity.go`), atomic minute-bucket metrics (`minute_stats.go`), and the distributed RPM/TPM Redis governor (`domains/dispatch/redis_backend.go`). Tentative probe restores are now stamped and reverted by a delayed-rollback worker (`bg/probe_rollback.go`). Mirror-ordering fix from `87ee50f64` is preserved on the merged tree.
+- Credential model drawer extras: IQ history chart + cross-credential check restored into `ModelOfferExtrasPanel`; identity chips deep-link to `/models?q=`.
+
+### Fixed
+- **prompt budget settings audit fixes（2026-08-24）**：TTL 刷新改为按 key 串行，避免并发旧查询覆盖新值；settings DB 写入和 registry 初始化显式失效缓存；DB-enabled env 支持 `off/false/disabled` 关闭；整数设置拒绝小数，避免 JSON `float64` 静默截断。
+- **额度耗尽节点透明切换（2026-08-24）**：MiniMax Token Plan 等供应商额度耗尽时，后端跳过同凭据重试并切换到下一个可用节点；仅通过 `think` 摘要通知流式客户端，所有候选耗尽后才返回错误，不透传供应商额度原文。
+- **Dispatch enqueue lifecycle ordering (2026-08-24)**: credential-forwarder handoff now waits for `node_enqueued` to be published before emitting `node_selected`; this prevents SSE/live-action sequence inversions under immediate channel scheduling while keeping governor waits and upstream I/O outside the handoff lock.
+- **Release metadata alignment (2026-08-24)**: updated `VERSION`, `version.json`, and `web/public/version.json` to the merged `deeea11a` source and build `1718`; deployment builds retain the domestic Go proxy settings without forcing an incompatible local toolchain.
+- **Go vulnerability remediation and dispatch mirror ordering (2026-08-24)**: upgraded `grpc` to 1.82.1, `x/text` to 0.39.0, and `quic-go` to 0.59.1; pinned the Go toolchain to 1.26.6; moved dispatch resource release before terminal result delivery so queue mirror `inflight=0` is observable before `Submit` returns; added the unified GitHub Actions verification workflow.
+- **API-key minute-bucket admission queue (2026-08-24)**: gateway RPM
+  enforcement now admits up to `L` requests in the current minute bucket and
+  queues up to `L` additional requests per key. The `(2L)+1` request receives
+  the canonical 429 response; queued requests wait with context cancellation,
+  FIFO release, and streaming wait notifications. Provider and credential
+  concurrency controls remain unchanged.
+- **Dispatch governor and self-check audit fixes (2026-08-24)**: new concurrency-mode credential forwarders now consume `redis_enforce` instead of leaving the configured backend as an unused composition-root seam; Redis governor construction failures remain fail-closed. RPM/TPM retain local token buckets until distributed token-cost accounting is implemented. Probe workers now explicitly claim one task per worker to prevent serial batch processing from expiring later leases.
+- **Dispatch queue projection race (2026-08-24)**: model lane depth reservation/dequeue and their projection events are now linearized per lane. This prevents out-of-order enqueue/dequeue observations from leaving a phantom depth in Redis mirrors and the live queue view after `Submit` has completed.
+- **245 shared data-plane key RPM rejections (2026-08-24)**: the static
+  data-plane admission key was also resolved as database API key 105 with an
+  explicit 30 RPM limit, so all frontend traffic shared one gateway RPM window
+  and received `rate_limit_exceeded` despite available upstream capacity. The
+  server-authenticated static key now bypasses only this shared gateway RPM
+  quota; database-key budgets, upstream rate limits, and credential concurrency
+  governors remain enforced.
+- **245 local gateway probe authentication (2026-08-24)**: loopback probes now retain the configured data-plane API key accepted by `AuthMiddleware`; the legacy node-probe worker no longer replaces it with a database system key that the static gateway auth gate rejects as `401 invalid_key`.
+- **245 long-context telemetry overflow (migration 572, 2026-08-24)**: `update_session_summary()` cast million-token request counts to `DECIMAL(10,6)` before division, whose four-digit integer capacity raised SQLSTATE `22003` and rolled back the complete `request_logs_hot` transaction. Token-ratio inputs now use unbounded `numeric`; the persisted six-decimal ratio and session cost schema remain unchanged.
+- **245 streaming terminal-state and probe attribution (2026-08-24)**: discarded stream attempts now reset their per-attempt capture state before replay, preventing an `early_empty_detection` from a failed candidate from marking a later successful stream as interrupted. The request-log terminal guard now permits an explicit success terminal update to replace an intermediate failure while continuing to reject late failures after success. Probe error kinds now encode the actual origin (`probe_gateway_*` versus `probe_direct_*`), so a local gateway self-check 401 is no longer reported as an upstream credential authentication failure. Reused system self-check keys are verified against the current data-plane HMAC before use; a stale hash causes controlled regeneration.
+- **按模型分组节点排序（2026-08-24）**：队列透视卡片按 resolve `manual_priority` 正序排列，消除 fallback 按 `credential_id` 排序导致的序号错位。
+- **Stage E audit 修复（2026-08-24）**：`AutoRouteRealtimeListener` 生命周期加固 — Start 幂等（atomic CAS）、Stop 前 Start 不再死锁、重试睡眠可取消（Stop 秒回而非等 5s）、防抖改为真正的 trailing-edge 单循环（burst 合并为一次刷新、失败保脏标下窗重试）、`RefreshOnce` 派生自 listener ctx（关闭时挂起刷新被取消，不再越过 DB 池关闭）；`PolicyPublisher` 尊重 parent ctx（原 `run` 内自建 Background 忽略调用方取消）且 backend `NotifyRevisions` 失败改为 fail-closed（不推进 lastRevision，重试或下次通知重放同一增量）；migration 566 `setval` 改为 `GREATEST(MAX(revision), pg_sequence_last_value)` 单调对齐（rerun 不回卷序列、revision 不复用），bump trigger 非 governor 更新显式 `NEW.revision := OLD.revision`（防手工回写），down 迁移注释纠正为 7 列基线；`01-schema.sql`/objects 目录补齐缺失的 `credentials_governor_revision_seq` 序列与 `credentials_revision_idx` 索引；`updateCredential` 空补丁也失效缓存、`pgx.ErrNoRows` 判定、`fp_slot_limit` 变更恢复 `settings_history` 审计（同事务）；网关关闭顺序改为 listener 先于 refresher。新增 `auto_route_realtime_listener_test.go`（lifecycle/debounce/race）与 migration 566 契约/镜像一致性测试。
+- **泳道 FIFO 方向（2026-08-23）**：后端 lane builder 改 ASC + `lastTiles`；`SwimLaneTrack` 改 `flex-start` 左起右进。生产 #1692 复现 `flex-end` 右锚导致 tile 挤在右侧。
+- **Dashboard queue audit fixes（2026-08-23）**：`#rank` 恢复视觉序号；main 队列 selective trim 补 pipeline 错误日志 + 集成测试；移除 no-op `trimLiveStreamQueue` 调用。
+- **实时流 selective trim（2026-08-23）**：lane 驱逐改为 post-exec selective trim，保护 fresh `in_progress` 不被 ZRemRangeByRank 误删；main/status 队列同步接入。
+- **队列透视 priority 排序对齐（2026-08-23）**：resolve 候选排序与 provider `COALESCE(quota_state,'ok')` 一致；队列卡片恢复按 resolve 序 index 排序，避免仅用 `manual_priority` 导致 priority 凭据错位。
+- **154 migration 561 schema drift（2026-08-23）**：`schema_migrations` 已记 561 但 `credential_model_bindings.priority` / `model_offers.priority` 未落地，候选 SQL 报 `column mo.priority does not exist` → chat 500。154 PG 重跑 idempotent `561_credential_priority_flag.sql`；SSOT `sql/objects/views/model_offers.sql` 补 `cmb.priority`。
+- **request_logs_hot.cost_usd / SessionStats 成本 KPI（migration 565）**：hot 近 7d 行 `cost_usd` 几乎全 NULL（多数 binding 无单价 + Candidate SQL COALESCE 0 + CNY display 死代码）。`AssignRequestCost` 写 USD/CNY display+FX 7.2；Candidate 从 `pricing_plans` 回退单价；565 补价/inherit/catalog_estimate（gpt-5.6-* KPI 估价）并重算 hot cost；564 GREATEST 抬升 summaries。
+- **session_summaries.request_count / cost 写路径（migration 563 + 564）**：实时写入落 `request_logs_hot` 后聚合触发器缺失，且 `update_session_summary()` 仍是 310 错误列名体，导致 SessionStats KPI 会话有数但请求/成本全 0。563 用 `gw_session_id`/`ts`/`cost_usd` 重写函数、触发器仅挂 hot（避免 promote 双计）、零计数回填；564 审计修正回填为 GREATEST/零计数安全语义（禁止 REPLACE 压扁累计）。同步修正 `sql/objects/functions/update_session_summary.sql`。已知 follow-up：hot 行 `cost_usd` 仍大多为 NULL（计费写入另切片）。
+
+### Changed
+- **队列瀑布图 154 UI 抛光（build 1666）**：相对 T0 CSS 瀑布图例分两行（排队/执行）、轨内 25/50/75% 参考线、去掉独立 queue/ttfb 列；详情改右侧抽屉（放大条 + T0–T9 阶段表）。已部署 `llm.kxpms.cn/dispatch/waterfall`。
+- Provider logs and credential-monitor summary now expose `canonical_model` / `standardized_name` / `canonical_name` (monitor schema v8). Saving a node offer omits `context_window` unless the override field actually changed.
+
+### Fixed
+- **GET /api/providers/{id}/models 154 build 1674 500 (2026-08-22)**: `offerListSQL` was referencing `provider_models.source` (`pm.source`) directly, but that column was added by domain migration 361 (2026-08-22) and had not yet been applied on the 154 environment. The query failed with `column pm.source does not exist`, which surfaced as 500. `admin/credential_models_dto.go` now probes `information_schema.columns` once per process (sync.Once + atomic.Value) and picks `COALESCE(pm.source, '')` when the column exists or a `''::text` constant when it does not. Both `getProviderModels` and `queryProviderModels` (plus `listCredentialModels`) now go through `offerListSQLFor(ctx, h.db)`. New unit tests in `credential_models_dto_test.go` lock the placeholder format and the no-`pm.source` contract.
+- **Session turns tree API（154 build 1668）**：修复 `GET /api/admin/sessions/{id}/turns` 分页 SQL 占位符 off-by-one（pgx insufficient arguments）；migration **561** 将 `origin_actor` 暴露到 `request_logs_with_current_month` 视图，恢复子请求 `request_type` 回退分类。
+- Queue node-card mini windows now clear when a later sliding-window batch returns empty `entries` (JSON omitempty no longer leaves stale cells).
+- Restore automatically profile-disabled periodic-quota credentials after an upstream recovery probe succeeds, while preserving manual-disable and recovery-deadline guards.
+- Classify apigpt/apiclaude.cc credit-exhaustion responses as permanent quota failures so dispatch ejects the depleted node and fails over to another credential supporting the requested model.
+- Cover English and Chinese balance variants including `insufficient credit`, `quota exhausted`, `no available accounts`, `out of quota`, and `节点费用已用完`.
+- `internal/ir.SerializeOpenAI` now always emits the `stream` field (including `false`) instead of dropping it when the client requested non-streaming. Several proxy suppliers (NVIDIA NIM, the aliyun-backed oneapi endpoint at 129.146.135.219:3000) interpret an absent `stream` field as streaming-by-default and respond with `text/event-stream` containing only an empty-choices boilerplate chunk, leaving the client with no content. Explicit `stream:false` in the outgoing body fixes the round-trip (diagnostic A/B on 245 confirmed `glm-5.2` / `minimax-m3` 245→client `stream:false` requests returned empty SSE instead of JSON content). IR golden fixtures (`anthropic_to_openai`, `gemini_to_openai`) updated to include the new `stream:false` field; the existing `TestIRConverter_LegacyPath` now exercises the field-preservation contract explicitly.
+- **Streaming trace skip for GET compatibility probes (2026-08-21, commit `8d9652cb1`)**: `serveHTTPInner` now wraps the `ReceiveRequest` trace + `ActionArrive` action emission in `shouldTraceRequest(method)` so HTTP `GET` requests do not create Redis `gwtrace` events. GET probes (dashboard SPA fallback, browser preflight, health poller) were producing trace events for every request and polluting the `request_events` stream; new `TestShouldTraceRequest_SkipsGetCompatibilityProbe` locks the contract. POST/PUT/PATCH/DELETE tracing is unchanged.
+
+### Operations
+- **三台 nginx 缺失 SPA fallback 导致 `https://llm.kxpms.cn/dashboard` 报 `missing_key` 401 JSON (2026-08-21)**：根因是 `middleware/auth_mw.go:56` 全局 AuthMiddleware 只 bypass `/api/`、`/healthz`、`/metrics`、`/` 四个精确路径，SPA history 路径（`/dashboard`、`/providers`、`/keys` 等）被三台 nginx（245 `llmgo.kxpms.cn.conf`、154 `llm-kxpms-cn.conf`、252 `kxpms-on-252.conf`）的纯 `proxy_pass` catch-all 转发到 gateway:8781，触发 `i18n.MsgMissingAuth` 401 JSON。修复方案：将三台 catch-all `location /` 改为 `root /opt/llm-gateway-go/current/web; index index.html; try_files $uri $uri/ /index.html;` SPA static + history fallback（web/dist 已在 release 部署时同步）。精确/regex location（`= /menu-config.json`、`= /healthz`、`~ ^/v1/(chat/completions|messages)`、`^~ /api/v1/`、`^~ /maintain-api/`、`^~ /maintain/` 等）优先级高于 catch-all，所以 `/api/*`、`/maintain/*`、`/v1/*` 等已工作路径行为不变。公网路径 `llm.kxpms.cn → DNS 115.29.212.252 (252) → 252 nginx L4 SNI(443) → 252 nginx L7 vhost(9443 server_name llm.kxpms.cn) → upstream kxpms_llm_backend=172.16.2.209:8781 (154 内网)`，因此 154 + 252 必须同时修（仅修 154 不够，公网仍走 252 vhost 报 401）。252 vhost 的 catch-all 改成 `try_files $uri $uri/ @llm_spa_154;` + named location `@llm_spa_154` proxy 到 `https://172.16.2.209:443`（154 内网 nginx，`proxy_ssl_server_name on` 让 SNI 匹配 `llm.kxpms.cn`）。验证：`curl https://llm.kxpms.cn/dashboard` HTTP200 text/html 1930B（SPA HTML），所有回归路径行为不变；browser-use 实测 SPA 加载、router 守卫、登录 modal 弹出均正常。备份：`245 → /etc/nginx/conf.d/backups/llmgo.kxpms.cn.conf.20260821_022428.bak`、`154 → /etc/nginx/conf.d/backups/llm-kxpms-cn.conf.20260821_022856.bak`、`252 → /etc/nginx/conf.d/backups/kxpms-on-252.conf.20260821_023329.bak`。patch 后 conf 入仓到 `deploy/nginx/active-20260821/`。已知 follow-up：(1) 154 conf line 56 `location = /menu-config.json` 硬编码了旧 release 1325（当前 1650），建议改 `current/web/menu-config.json` 或在 deploy pipeline 中 sed 替换；(2) deploy pipeline 应同步把 252/154 conf 模板入仓；(3) 252 跨内网 proxy 到 154 SPA 是临时方案，标准方案是 252 本地部署一份 web/dist。
+
+- **154 → 245 backup upstream 自动 failover (2026-08-21)**：老板要求平时只走 154 生产，154 失败时自动切到 245 预生产做灾备。实施：(1) `252 kxpms-on-252.conf` 的 `upstream kxpms_llm_backend` 加 `server 172.16.2.241:8781 max_fails=2 fail_timeout=30s backup;`（接管 `/api/*`、`/api/admin/*`、`/maintain-api/*`、`/artifacts/*`）；(2) `154 llm-kxpms-cn.conf` 的 `upstream llm_local` 加同样 backup 指令。Nginx 默认 `proxy_next_upstream error timeout http_502 http_503 http_504` 触发自动切换。验证：临时给 252 的 `server 172.16.2.209:8781` 加 `down` flag 模拟 154 primary down，公网 `curl /v1/chat/completions` 返回 401（gateway auth 响应，证明请求到 gateway），245 gateway `/var/log/llm-gateway-go/gateway.log` 在 03:13:22 区间出现 `upstream_call_starting`、`survival_attempt_outcome` 等真实请求处理日志，确认流量已切到 245。`down` flag 移除后 154 primary 自动恢复，post-revert smoke（`/v1/chat/completions` 401, `/dashboard` 200）通过。**未加 SPA backup**：245 nginx cert SAN 不含 `llm.kxpms.cn`（只有 `llmgo.kxpms.cn`），SNI `llm.kxpms.cn` 连 245:443 不匹配 server_name；保留 SPA fallback `@llm_spa_154` 仅指向 154 nginx。已知风险：245 release `e37f7a8c` 与 154 release `ffc01e62` 版本不同（共享 PG17 `172.16.2.210`），failover 时 245 gateway 代码处理 154 风格请求可能有 small drift。备份：`252 → /etc/nginx/conf.d/backups/kxpms-on-252.conf.20260821_024908.bak`、`154 → /etc/nginx/conf.d/backups/llm-kxpms-cn.conf.20260821_024908.bak`。patch 后 conf 入仓到 `deploy/nginx/active-20260821/*-with-backup-upstream`。Follow-up：(1) 245 cert 加 `llm.kxpms.cn` SAN 让 SPA backup 可行；(2) 154/245 release 同步策略避免 drift；(3) 加 nginx `health_check` 或独立 endpoint 缩短 failover 时间（当前 passive）。
+
+### Operations
+- **154 priority 路由 + spillover 实测验证（2026-08-23）**：`1135b67a1 feat(routing): priority selection metric wiring + candidate-cache flush on binding PATCH` 在 154 production 走通。154 部署到 `git_sha=3b48345c / build_seq=1692 / v2.5.0`（HEAD 满足 ≥ 49924584c 基线）。hzx-2 (cred_id=42, raw_model=MiniMax-M3) 经 `PATCH /api/routing/candidate-binding/42?raw_model=MiniMax-M3 {priority:true}` (super_admin JWT) 写入后，metric `llmgw_routing_priority_candidates_selected_total` 三态全部触发：`priority_only=20`（PATCH 后稳定递增）/ `no_priority_candidates=14`（PATCH 前 + hzx-2 status=disabled 期间）/ `spillover_to_non_priority=16`（PATCH weight=0 后 RR 推到 augest）。smoke-test `/healthz` 匿名 200、`/healthz?full=true` 匿名 401 + JWT 200（DB/Redis）、`/api/auth/me` JWT 200、`/api/models/name-mapping` JWT 200、`/v1/chat/completions minimax-m3` 200 OK。详见 `docs/changelogs/2026-08-23-priority-routing-154-verification.md`。已知 follow-up：deploy 阶段前端 `pnpm build` 在 web/node_modules 状态机下报 postcss parse error（已用 `SKIP_FRONTEND=true` 跳过）；nginx upstream 在 service restart 切换瞬间多次 reset 5xx（reload nginx 后恢复），建议 deploy 脚本阶段后自动 `nginx -s reload`。
+
+- **三台 nginx 缺失 SPA fallback 导致 `https://llm.kxpms.cn/dashboard` 报 `missing_key` 401 JSON (2026-08-21)**：老板报告打开 dashboard 看到 `{"error":{"code":"missing_key","message":"缺少或格式错误的 Authorization 请求头","type":"authentication_error"}}`。根因实测：`middleware/auth_mw.go:56` 全局 AuthMiddleware 只 bypass `/api/`、`/healthz`、`/metrics`、`/` 四个精确路径，SPA history 路径（`/dashboard`、`/providers`、`/keys` 等）被三台 nginx (`245 llmgo.kxpms.cn.conf`、`154 llm-kxpms-cn.conf`、`252 kxpms-on-252.conf`) 的纯 `proxy_pass` catch-all 转发到 gateway:8781，触发 `i18n.MsgMissingAuth` (code=`missing_key`) 401 JSON。修复方案：将三台 catch-all `location /` 改为 `root /opt/llm-gateway-go/current/web; index index.html; try_files $uri $uri/ /index.html;` SPA static + history fallback（web/dist 已在 release 部署时同步）。精确/regex location（`= /menu-config.json`、`= /healthz`、`~ ^/v1/(chat/completions|messages)`、`^~ /api/v1/`、`^~ /maintain-api/`、`^~ /maintain/` 等）优先级高于 catch-all，所以 `/api/*`、`/maintain/*`、`/v1/*` 等已工作路径行为不变。**公网路径**走 `llm.kxpms.cn → DNS 115.29.212.252 (252) → 252 nginx L4 SNI(443) → 252 nginx L7 vhost(9443 server_name llm.kxpms.cn) → upstream kxpms_llm_backend=172.16.2.209:8781 (154 内网)`，因此 154 + 252 必须同时修（仅修 154 不够，公网仍走 252 vhost 报 401）。252 vhost 的 catch-all 改成 `try_files $uri $uri/ @llm_spa_154;` + named location `@llm_spa_154` proxy 到 `https://172.16.2.209:443`（154 内网 nginx，`proxy_ssl_server_name on` 让 SNI 匹配 `llm.kxpms.cn`）。验证：`curl https://llm.kxpms.cn/dashboard` HTTP200 text/html 1930B（SPA HTML），所有回归路径行为不变；browser-use 实测 SPA 加载、router 守卫、登录 modal 弹出均正常。备份：`245 → /etc/nginx/conf.d/backups/llmgo.kxpms.cn.conf.20260821_022428.bak`、`154 → /etc/nginx/conf.d/backups/llm-kxpms-cn.conf.20260821_022856.bak`、`252 → /etc/nginx/conf.d/backups/kxpms-on-252.conf.20260821_023329.bak`。patch 后 conf 入仓到 `deploy/nginx/active-20260821/`。已知 follow-up：(1) 154 conf line 56 `location = /menu-config.json` 硬编码了旧 release 1325（当前 1650），建议改 `current/web/menu-config.json` 或在 deploy pipeline 中 sed 替换；(2) deploy pipeline 应同步把 252/154 conf 模板入仓；(3) 252 跨内网 proxy 到 154 SPA 是临时方案，标准方案是 252 本地部署一份 web/dist。
+
+## [2.5.0] - 2026-08-19
+
+### Security
+- **184 服务器引用全面清理（rule 39 铁律 1 + rule 47）**：
+  - 8/19 doc sweep 两轮（`f54ae6de8` + `d7ebf25f7`）累计清理 12 个 active 文件共 17 处 184 服务器引用，全部按统一模式迁移到 154/252 占位符或 `<env:KEY>` 占位符（迁移说明/历史记录除外，rule 36 豁免）。
+  - 关键迁移：`CONFIGURATION_GUIDE.md` `.env.184.enc`→`.env.154.enc`、`.env.71.enc`→`.env.252.enc`、`__PUB_IP_1__` `14.103.112.184`→`<env:HOST_154>`；`CONFIGURATION_GUIDE.md` 示例 IP `14.103.112.184`→`<env:HOST_154>`；`compression-bench/README.md` K8s DB 端口转发 184→252、端口 18432→25232；`verify-model-fetch/main.go` 注释 `71/184`→`154/252`。
+  - 部署/运维文档 9 文件批量替换：`DATABASE-ENVIRONMENT-SEPARATION.md`、`DASHBOARD_V2_VERIFICATION.md`、`AUTO_CONTROL_DEPLOYMENT_20260701.md`、`candidate-failure-logs-252-governance-2026-08-17.md`、`MONTHLY_CHECKLIST.md`、`IMPLEMENTATION_NOTES.md`、`phase-22-extension-and-role-sync/README.md`、`verify-config.sh`、`check-partition-health.sh`。
+  - 合规豁免（保留 184 字面值）：`PROJECT_CONFIG.md:22` 迁移说明、`redact-docs.py`/`scan-secrets.replacements` 工具本身、`CHANGELOG.md` 历史段、`docs/changelogs/2026-08-18-*`、`docs/session-logs/2026/08/*`、`tests/deploy_cli_test.sh`、`tests/deploy_sops_test.sh`、`docs/.archive-backup-20260817-190606/`、`deploy/sql/DEPLOYMENT_PLAN.md`（已归档）、`.kiro/skills/deploy-184.RETIRED.md`（rule 36/39 豁免）。
+  - 新增 `docs/changelogs/2026-08-19-doc-sweep-audit-completion.md`（8 段式 audit 报告）、`docs/changelogs/2026-08-19-doc-sweep-redact-remaining-184-refs.md`（6 段式变更记录）。
+  - 新增 `docs/session-logs/2026/08/2026-08-19-audit-and-zcode-preserve.md`、`docs/session-logs/2026/08/2026-08-19-audit-and-concurrent-zcode-preserve.md`（两份 session log）。
+
+- **PROJECT_CONFIG.md 敏感信息脱敏（rule 31 §1 + rule 39）**：
+  - SSH 地址 `14.103.112.184:25022` → `<env:HOST_154>:25022`（184 已废弃，rule 31 §1）
+  - 默认用户 `admin` → `root`（匹配 154 SSOT metadata.yaml）
+  - 默认密码 `Veritrans&9527`、`Kaixuan2026&#*9527`（已泄露，见 `scripts/scan-secrets.replacements`）→ 全改为 `<env:SSHPASS>` 占位符（SSOT：`common/ssh-keys.yaml` `SSH_PASSWORD_ENV_VAR`）
+  - DB 配置：经 184 SSH 隧道 `127.0.0.1:5432` → 直连 252 内网 `<env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>`，DB 用户 `postgres` → `<env:COMMON_PG_SUPERUSER>` (=`llm_gateway`)，DB 密码 → `<env:COMMON_PG_SUPERUSER_PASS>`
+  - SSH 命令示例：`ssh admin@14.103.112.184` + `sudo su -` + 明文密码 → 证书认证 `ssh -i <env:SSH_KEY_154> root@<env:HOST_154>` + sshpass fallback
+  - DB 操作示例：移除 SSH tunnel，改用 `PGPASSWORD=<env:COMMON_PG_SUPERUSER_PASS> psql ...` 直连
+  - 文件头警告：改为"<env:KEY> 占位符 + env-injector/loader.sh 运行时注入"（rule 39/47）
+  - 同步修正 `systemctl status/restart llm-gateway` → 实际单元 `llm-gateway-go.service`（metadata.yaml:19）
+
+- **184 服务器彻底下线与 DEPLOYMENT_PLAN.md 归档（rule 31 §2.3 + rule 36）**：
+  - 184 服务器已物理下线（rule 31 §2.3），原有 `deploy/sql/DEPLOYMENT_PLAN.md`（v1.0, Jul 21）整篇关于 184 + PG/Citus，已归档至 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`（含 frontmatter + deprecation banner + 指向 154/245/252 拓扑 + 新部署参考链接）。
+  - 文档内文保留历史引用（`172.31.0.3`/`172.31.0.4` 等），标注为失效。
+  - 同步更新 `CHANGELOG.md` §历史豁免：移除 `deploy/sql/DEPLOYMENT_PLAN.md`（已归档）。
+
+### Documentation
+- 新增 `docs/changelogs/2026-08-19-doc-sweep-audit-completion.md`（8 段式 audit 报告 + follow-up 改动清单）。
+- 新增 `docs/changelogs/2026-08-19-doc-sweep-redact-remaining-184-refs.md`（6 段式变更记录）。
+- 新增 `docs/session-logs/2026/08/2026-08-19-audit-and-zcode-preserve.md`、`docs/session-logs/2026/08/2026-08-19-audit-and-concurrent-zcode-preserve.md`、`docs/session-logs/2026/08/2026-08-19-doc-sweep-and-245-verify.md`、`docs/session-logs/2026/08/2026-08-19-245-restart-loop-followup.md`（四份 session log）。
+- 归档 `deploy/sql/DEPLOYMENT_PLAN.md` → `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`（含 frontmatter + deprecation banner + 指向 154/245/252 拓扑 + 新部署参考）。
+
+### Fixed
+- **245 pre-prod systemd 服务 race condition 修复**：
+  - `scripts/deploy-lib/host.sh` `host_restart_service` 从 fire-and-forget `systemctl restart` 改为三段式 `stop → 等端口释放 → start`（`host.sh:206`），消除 restart loop 时 `bind: address already in use` 导致的 9 次循环 → `StartLimitBurst=5` 静默离线（`docs/session-logs/2026/08/2026-08-19-245-restart-loop-followup.md` §3.5）。
+  - systemd override 加固：`StartLimitBurst=10`、`StartLimitIntervalSec=300`（`/etc/systemd/system/llmgo-245.service.d/startlimit.conf`）。
+
+- **生产环境 154 部署验证通过**：154 升级至 1628（含 `feat/identity-go-multi-issuer` merge）、245 升级至 1629（含 verify nginx→gateway HTTPS chain），双环境均 active。
+
+### Added
+- **P0-1 race condition 修复设计文档**：`docs/2026-08-19-p0-1-host-restart-safe-drain-design.md`（223 行，含 code-context / logic-points / spec / drift-check，rule 42 合规）。
+- **245 runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **URSM 关键迁移注册**：SQL migration 542 `request_logs_token_band.sql` + host deploy docs + menu config（commit `eeb254cfd`）。
+- **vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **Vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **Vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **Vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **Vendor 同步**：identity-go multi-issuer merge 后 `go mod vendor` 同步（commit `ce4559edd`）。
+- **Deploy 验证增强**：`scripts/deploy-seamless.sh` 新增 `verify nginx→gateway HTTPS chain post-deploy (OOM 2026-08-19)`（commit `87eff35e6`）。
+- **Runbook 补充**：`docs/changelogs/2026-08-19-245-runbook.md`（nginx Restart check + 245 runbook）。
+- **会话优化 v4 权威文档**：`docs/会话优化v4/` 7 份文档（README / 现状基线 / 会话管理 / 缓存映射 / 节点状态 / 会话分析 / 实施计划），三层数据定义、hot+分区表模式、逐步移除旧 `request_logs` 存储。
+- **Sankey 分类色主题化**：路由流向图 8 类颜色迁移至 daylight/night 语义 token，移除硬编码 hex/紫色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+- **凭据生命周期契约修正**：四态 `active`/`disabled`/`suspended`/`retired` 替代旧 `deprecated`/`test` 三态，非法值 400/DB 错 500/零行 404，回归测试覆盖四态+非法+DB错误+零行。
+- **节点操作审计修复**：启停方向修正、操作竞态互斥、会话时间线 `has_more`/`truncated`、主题 token 混色。
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator`、shell 组件统一语义 token，动态健康点改 CSS 状态类。
+
+### Changed
+- **BrandMind Go 版本同步**：`brandmind-go` 同步至 `eeb254cfd`（host deploy docs + menu config + 542 migration 注册）。
+
+### Deprecated
+- `deploy/sql/DEPLOYMENT_PLAN.md` 标记废弃并归档（rule 36 归档协议）。
+- `.kiro/skills/deploy-184.RETIRED.md` 标记 RETIRED（184 下线）。
+
+### Removed
+- `PROJECT_CONFIG.md` 中所有明文敏感信息（IP/密码/用户/SSH tunnel/DB 连接串），全部替换为 `<env:KEY>` 占位符。
+- 历史文档中非豁免的 184 服务器引用（12 文件 17 处）。
+## [Unreleased] - 2026-08-18 (PROJECT_CONFIG.md Server Migration + Credential Redact)
+
+### Security
+- **PROJECT_CONFIG.md credential redact**（rule 31 §1 + rule 39）：
+  - SSH 地址 `14.103.112.184:25022`（已废弃）→ `<env:HOST_154>:25022`（rule 31 §1：184 废弃）
+  - 默认用户 `admin` → `root`（匹配 154 SSOT metadata.yaml）
+  - 默认密码 `Veritrans&9527` 与 Root 密码 `Kaixuan2026&#*9527`（已出现在 `scripts/scan-secrets.replacements` 的
+    已知泄露列表）→ 全部改为 `<env:SSHPASS>` 占位符（SSOT：`common/ssh-keys.yaml` `SSH_PASSWORD_ENV_VAR`）
+  - 数据库配置：从"经 184 SSH 隧道连接 `127.0.0.1:5432`" 改为"直连 252 内网
+    `<env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>`"，DB 用户 `postgres` →
+    `<env:COMMON_PG_SUPERUSER>` (= `llm_gateway`)，DB 密码 → `<env:COMMON_PG_SUPERUSER_PASS>`
+  - SSH 命令示例：`ssh admin@14.103.112.184` + `sudo su -` + 明文 root 密码 → 证书认证
+    `ssh -i <env:SSH_KEY_154> root@<env:HOST_154>` + sshpass fallback
+  - DB 操作示例：移除 SSH tunnel，改用 `PGPASSWORD=<env:COMMON_PG_SUPERUSER_PASS> psql ...` 直连
+  - 文件头警告：原"包含敏感信息，请勿提交到公共仓库"（与现状自相矛盾）→ 改为
+    "<env:KEY> 占位符 + env-injector/loader.sh 运行时注入"（rule 39 / rule 47）
+
+### Fixed
+- 同步修正 `systemctl status/restart llm-gateway` 等命令：实际部署单元是
+  `llm-gateway-go.service`（metadata.yaml:19），文档原值会导致 status unknown。
+
+## [Unreleased] - 2026-08-18 (Quality Provider Stats Per-Model Filter)
+
+### Added
+- 品质统计支持按模型粒度过滤：`GET /api/quality/providers/:id/stats?model=<name>`。
+  可选 `?model=` 参数按 `usage_ledger_with_current_month.raw_model_name`（= `COALESCE(outbound_model, client_model)`）
+  过滤 30 天聚合，缺省即供应商级，向后兼容。
+- 节点详情抽屉（RequestLogDrawer）新增"模型30天统计"块：打开请求详情时按
+  `detail.outbound_model ?? detail.client_model` 拉取模型级统计，7 个数字（总/月/周/日/成功/失败/Tokens）；
+  加载失败静默隐藏（非致命）。配合既有供应商级统计块形成双层视图。
+- `docs/changelogs/2026-08-18-quality-provider-stats-model-filter.md`：本轮 6 段式变更记录。
+
+### Fixed (Database)
+- `sql/migrations/startup/044_health_source_probe_now.sql` + `.down.sql`：
+  `chk_credentials_health_source` 约束新增 `'probe_now'` 白名单值，修复 `bg/credential_probe_v2.go`
+  fast path 写 `health_source='probe_now'` 时触发 `SQLSTATE 23514` 导致 credential（如 22/25）
+  卡在 `auth_failed`/`unreachable` 不可恢复的回归。已同步应用到本地 docker (`llm-gateway-pg`)
+  与 252 podman (`pg-252-pg17`)，并更新 `repository_schema_migrations` ledger
+  (sha256=2770fb06...3dcbb2)。详见 `docs/session-logs/2026/08/2026-08-18-plan-c-follo-up-cleanup.md`。
+
+## [Unreleased] - 2026-08-17 (Dashboard Request Detail 5s Timeout)
+
+### 📦 Archived
+- docs/archive/* — 138 process docs archived on 2026-08-17 (see docs/archive/INDEX.md)
+
+### Changed
+- `deploy/sql/objects/`（7.5MB、839 文件）从 git 删除并 ignore：它是 `sync-objects.sh` 从
+  `sql/objects/` 生成的部署副本（实测已漂移 19 处、无脚本引用），需要时重新生成即可；
+  `schemas/baseline/` 确认为 installer/离线包/one-click 引导实际使用，保留并在
+  REPO_LAYOUT.md 标注为有意维护的双副本。
+- 监控配置收敛至 `deploy/prometheus/`：`deploy/grafana/` 仪表盘并入 `grafana/provisioning/dashboards/`
+  （删除重复的 auto-summary-monitoring.json），`deploy/monitoring/grafana-alerts/` 并入 `alerts/`，
+  同步更新 phase1 脚本引用；REPO_LAYOUT.md 修正根目录 `install.*` 定位（离线交付包入口，打包脚本依赖，
+  勿移动），三个安装入口系不同用途、非重复。
+
+### Added
+- `docs/architecture/REPO_LAYOUT.md`：仓库布局权威地图（顶层目录用途/分类/入位规则/后续项）。
+- `docs/adr/ADR-0002-target-go-package-layout.md`：Go 包分层迁移 ADR（B1 前置 + 4 波次路线）。
+- `docs/changelogs/2026-08-17-repo-restructure.md`：本轮治理 6 段式变更记录。
+
+### Fixed
+- `cmd/seed-free-resources` 契约测试失败（docs 归档误伤了运行数据）：omnifree 种子 JSON
+  属于命令运行数据而非过程文档，已从 `docs/archive/process/omnifree/seed/` 迁至 `configs/seed/`，
+  同步更新 cmd README、main_test、scripts/omnifree/ 4 个脚本的引用。
+
+### Changed
+- 根目录去杂（可读性治理第 1 轮，稳妥版）：
+  - 过程文档归档（rule 36）：`SUMMARY.md`→`docs/archive/process/impl-summaries/`、
+    `QUICK_REFERENCE.txt`+`apply_p0_fixes.sh`→`docs/archive/2026-08/`、`audit-20260808-002500/`→
+    `docs/archive/process/audits/2026-08/`、`knowledge/`→`docs/archive/process/incidents/2026-07/`、
+    `memory-bank/`→`docs/archive/process/audits/2026-06/`、`reports/`→impl-summaries+audits-collection、
+    `scratch/`→`docs/archive/process/analysis/`（7 个根目录消失）。
+  - 根目录脚本分桶：`doctor.sh`/`check_expired.lua`→`scripts/ops/`、`verify-columnar-fix.sh`→
+    `scripts/partition/`、`test-*.sh`×3→`scripts/test/`、`fix-nginx-timeout.sh`/`demo-quality-monitor.sh`→
+    `scripts/deprecated/`；同步修正 4 处悬空路径引用。
+  - 测试目录收敛：`regression/`→`tests/regression/`（相对 SQL 路径已改）、`local_test/`→`tests/local/`；
+    `test-results/` untrack+删除。
+  - 目录去重：`k8s/`（单文件）→`deploy/k8s/cron/`、`migrations/timeout-optimization`→`sql/migrations/`、
+    `observability/alerts`→`deploy/prometheus/rules/`（3 个根目录消失）。
+  - 过程状态目录 untrack（磁盘保留）：`.scratch/`、`.zcode/`、`.vite/`。
+
+### Removed
+- 取消跟踪并本地清理构建产物：`llm-gateway-linux-amd64`（61MB）、`routing-test-client`（8MB）、
+  根目录 `gateway`/`llm-gateway`/`*.test`/`migrate-ursm-v2`、`dist/`（1.7GB 发布包）、`build/logs`、`logs/`。
+  `make clean` 同步增强，覆盖根目录二进制。
+- 删除废弃构建计数文件 `build_seq`（`scripts/bump-version.sh` 已声明废弃，SSOT 为 `version.json`）。
+- `.gitignore`：移除与跟踪文件矛盾的 `version.json` 规则，新增 `.ruff_cache/`。
+- 删除 6 个零引用死包：`tracing/`、`logging/`、`alerting/`、`safety/`、`circuit/`、`integration/`
+  （grep 复核全仓库 0 外部 import，`go build ./...` 通过）。可追溯性由 git 历史保证。
+
+### Security
+- 删除根目录含硬编码凭据的调试脚本（均已进入 git 历史，密钥需线下轮换）：
+  `debug.go`（base64 签名/加密密钥）、`test_volcengine_{glm52,correct_models,direct,models_list}.sh`
+  （volcengine ark API key）、`.tmp_check154.py`、`check_154_routing.sh`（root@8.136.114.154 SSH 探测）。
+
+### Fixed
+
+- **dashboard 实时请求流 → 点击请求 报 "query failed"**：`/api/logs/{request_id}` 返回
+  HTTP 500 + `db_error: timeout: context deadline exceeded` (duration_ms=5000)。
+  根因：`getLog` 用 `LEFT JOIN request_logs_bodies_with_current_month` 拉 body，
+  该视图 UNION ALL 了 `request_logs_bodies_hot` (heap, idx <1ms) 和
+  `request_logs_bodies_2026_08` (Citus columnar, 2020 MB, 无 btree 索引)。
+  即使 body 在 hot 里命中，planner 也必须把 columnar 分区纳入 Append node，
+  ColumnarScan + JSONB 反压让单 ID 查询 >30s，5s ctx 直接超时。
+  修复策略：把 body JOIN 从主查询剥离成 `fetchRequestBodies` helper，
+  先查 hot (idx 命中, <1ms)，找不到再走 columnar 视图 (独立 20s ctx)。
+  dashboard 实时流（24h 内请求）走 hot fast path 不再 timeout；
+  metadata 永远先返回（body 缺失降级 nil），不再 500。
+- **columnar 冷路径 ctx 防御**：把 `getLog` 外层 ctx 从 5s 扩到 30s，
+  避免用户点"超过 TTL"的老请求时 metadata + body 都被 5s 卡掉。
+  `fetchRequestBodies` 慢路径加 elapsed_ms 结构化日志（hot > 1s 记 INFO，
+  cold hit / timeout 都记 WARN/INFO），便于运维区分 hot-miss vs columnar-cold。
+  新增 `TestFetchRequestBodies_CancelledParentCtx_DoesNotHang` 回归测试，
+  锁住 ctx 层级不被嵌套取消意外阻断。
+- **body fetch 内存 LRU+TTL 缓存**：新增 `bodyFetchCache`（LRU 1024 entries × 5min TTL），
+  包装在 `fetchRequestBodies` 阶段 0。Dashboard 用户经常"开 → 关 → 再开"同一个
+  request_id 来回比对：第一次走 columnar 5s+，重复点击走 cache < 1ms。
+  只缓存 sql.ErrNoRows + 成功结果，transport 错误不缓存（rule 22 §4 防抖）。
+  新增 GET `/api/admin/logs/body-cache-stats` 暴露 size/hits/misses/evictions/hit_rate，
+  运维用来判断 cold path 是否被 cache 缓解（命中率应 > 50%）。
+  新增 4 个回归测试（hit-under-1ms / ttl-expires / not-found-cached / lru-evicts-oldest）。
+- 详见 `docs/changelogs/2026-08-17-dashboard-request-detail-columnar-timeout.md`，
+  含根因 EXPLAIN ANALYZE 证据 + 154 实测 L1-L4 验证。
+
+### Added
+
+- **请求日志页详情缓存可观测条**：`/request-logs` 页头下新增 super admin 专属
+  单行 chip，实时显示 `/api/admin/logs/body-cache-stats` 的
+  命中率/hits/misses/条目/逐出，随列表「刷新」按钮与自动刷新一起更新。
+  ops 无需 curl 即可判断 cold path 缓解情况（此前端点 backend-only 无 UI）。
+  顺带补齐 6 个 locale 缺失的 `workTypes.layers.addFallback/emptyFallback`
+  （恢复 i18n parity 门禁为绿）。
+- **body-cache-stats 审计修正**：响应新增 `cap` 字段（LRU 容量回显，消除前端
+  硬编码 1024 的耦合）；修正端点注释的鉴权描述（实为 admin() 诊断级，与
+  compression/data-lifecycle stats 同级，非 super admin 专属）与"404"误标
+  （实为 503）；无流量时 UI 命中率显示 "—" 而非误导性 0.0%；
+  补 handler 级测试（GET 契约含 cap / 冷启动 / 405 / 503，DB-free）。
+
+## [Unreleased] - 2026-08-17 (Long-Running Request Recovery)
+
+
+### Fixed
+
+- **请求级恢复预算**：所有 Chat/Anthropic 真实上游 HTTP 调用共享原子预算，单个客户端请求最多 100 次；预算耗尽后在未提交语义输出时终止，避免 Survival 与 dispatch 嵌套重试放大调用次数。
+- **节点与模型切换**：同一节点连续失败 3 次后才切换，凭据致命失败仍立即跳过；模型候选必须具备已知 Standard IQ、不低于初始模型且匹配任务能力。
+- **长程保活与退避**：request-survival 默认可等待 24 小时，退避指数增长但严格不超过 120 秒；等待期间 Anthropic 收到原生 ping，OpenAI Chat/Responses 收到 SSE comment，客户端取消立即停止。
+- **配置契约**：同步 request-survival 示例、默认值和边界测试，阻止超过 100 次或 120 秒的配置回归。
+
+## [Unreleased] - 2026-08-16 (Auto Loopback Parent Correlation Repair)
+
+
+### Fixed
+
+- **auto 回环分支 session 前缀**：auto-title / auto-summary 的
+  `X-Gw-Session-Id` 由 `gt:` / `gs:`（冒号）更正为 `gt_` / `gs_`。
+  `sanitizeGwSessionHeader` 只接受 `gw_/gt_/gs_`，冒号形式被静默丢弃，
+  子请求因此拿到全新 `gw_<uuid>`，分支命名空间与运维 SQL 检索失效。
+- **最终 upsert 丢失父子关联**：`emitTelemetry` 成功路径补上
+  `applyParentCorrelationFields`，此前 `ON CONFLICT DO UPDATE` 用 NULL 覆盖了
+  初始写入的 `parent_request_id` / `origin_actor`，导致 auto 子请求落库恒为
+  NULL、live stream 的 `child_request` 帧从不发射。
+- **回归门禁**：新增冒号前缀必须被拒绝的 sanitizer 用例；更正
+  auto-summary 测试中锁定缺陷行为的 `gs:` 断言。
+- 详见 `docs/changelogs/2026-08-16-auto-loopback-parent-correlation.md`。
+
+## [Unreleased] - 2026-08-16 (Durable Queue Retry Boundaries)
+
+
+### Fixed
+
+- **durable 队列重试边界**：`durable_llm_tasks.attempt_count` 作为唯一执行账本；初次执行后最多重试 100 次，第 101 次执行仍失败时进入终态，不再创建第 102 次执行。
+- **稳定退避与调度边界**：无上游恢复时间时，队列重试从 2 秒指数增长并按配置上限收敛；上游建议延迟保持为调度权威。claim SQL 仅领取已到达 `next_retry_at` 的任务，worker 轮询可能延后执行但绝不提前执行。
+- 详见 `docs/changelogs/2026-08-16-long-running-request-survival.md`。
+
+## [Unreleased] - 2026-08-16 (Handoff Explicit Client Confirmation)
+
+
+### Added
+
+- **显式 handoff 客户端确认协议**：202 提案接口返回 `handoff_id`、
+  `confirmation_token`（服务端 SHA-256 哈希，不回传明文）与
+  `confirmation_expires_at`（5 分钟 TTL）。
+- **新增 `POST /v1/handoffs/confirm` 端点**（幂等键保护）：原子写入
+  `handoff_log`、递增 `handoff_count` 并启动冷却；tenant / API key / token /
+  过期 / target 不匹配或冲突重放均被拒绝且不计入，无重复计数、无半态。
+- **新增表 `handoff_pending_confirmations`**（migration 361）：保存待确认
+  handoff 行（哈希 token、tenant、target、过期时间）；后台 trimmer 清理过期
+  待确认行防止表无限增长。
+- 详见 `docs/changelogs/2026-08-16-handoff-explicit-confirmation.md`。
+
+## [Unreleased] - 2026-08-15 (Status Badge Theme Tokens)
+
+
+### Fixed
+
+- **模型状态徽章主题化**：凭据监控的五态模型可用性徽章改用现有 daylight/night
+  语义 token；保持可用、禁用、探测失败、未声明和绑定缺失的状态语义与强弱层级。
+- **范围化回归门禁**：将 `StatusBadge.vue` 纳入组件颜色合规测试，阻止硬编码
+  `#hex` 与 `rgb/rgba()` 颜色回归。
+- 详见 `docs/changelogs/2026-08-15-status-badge-theme-tokens.md`。
+
 ## [Unreleased] - 2026-08-15 (Streaming JSON DONE Boundary Repair)
+
 
 ### Fixed
 
@@ -18,6 +508,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (会话优化v4 版本裁决与实施计划)
 
+
 ### Added
 
 - **会话优化v4 权威设计 + 实施计划**：整合 6 套历史文档（会话优化v1~v3 / 路由优化v3 / 修订0811 / 自检优化）为 7 份文档，落地 `docs/会话优化v4/`（`00-README` / `01-现状基线与版本裁决` / `02-会话管理与压缩` / `03-缓存映射与请求队列` / `04-节点状态与路由处理` / `05-会话分析与模型选择` / `10-实施计划`）。
@@ -28,6 +519,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (Route Flow Sankey Theme Tokens)
 
+
 ### Fixed
 
 - **Sankey 分类色主题化**：路由流向图的 8 类任务颜色与中性 fallback 改用现有 daylight/night 语义 token，移除页面级 hex 色和禁用紫色，同时保持分类映射、数据、布局与交互不变。
@@ -35,6 +527,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `docs/changelogs/2026-08-15-route-flow-sankey-theme-tokens.md`。
 
 ## [Unreleased] - 2026-08-15 (Credential Lifecycle Contract Integrity)
+
 
 ### Fixed
 
@@ -44,6 +537,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `rules/53-state-domain-contract-integrity.md`（新增 Vibe Coding 状态域规范）。
 
 ## [Unreleased] - 2026-08-15 (Node Operations Audit Fixes)
+
 
 ### Fixed
 
@@ -55,6 +549,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (Priority Component Color Tokens)
 
+
 ### Fixed
 
 - **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator` 与 shell
@@ -65,11 +560,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-15 (Vendor Synchronization)
 
+
 ### Fixed
 
 - Regenerated `vendor/` from `go.mod` and `go.sum` after adding Testcontainers dependencies, restoring the default Go vendor-mode test, build, and vet workflow.
 
 ## [Unreleased] - 2026-08-14 (Live Stream Queue Controls)
+
 
 ### Fixed
 
@@ -84,6 +581,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 详见 `docs/changelogs/2026-08-14-live-stream-queue-controls.md`。
 
 ## [Unreleased] - 2026-08-14 (Flash Disconnect Test Suite)
+
 
 ### Added
 
@@ -107,6 +605,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-14 (V3.2 Integration Verification)
 
+
 ### Verified
 
 - **V3.2 多智能体并行验证（2026-08-14）**：使用3个并行子代理验证 V3.2 集成完整性
@@ -122,6 +621,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **构建产物忽略规则**：`.gitignore` 添加 `/llm-gateway-*` 通配符，覆盖所有平台构建产物（linux-amd64 等）
 
 ## [Unreleased] - 2026-08-13 (V3.2 partial)
+
 
 ### Added
 
@@ -155,11 +655,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-09
 
+
 ### Fixed
 
 - **跨领域并发审计第二批修复 (2026-08-13)**: `credentialfpslot/slot.go`、`internal/streamretry/retry.go`、`ratelimit/redis_sliding.go` — 详见 `AUDIT_CROSSCUTTING_CONCURRENCY_20260813.md`。(1) **指纹槽 Redis 错误误报饱和 (S2)**：`acquireRedis` 改为返回 tri-state（OK / saturated / redis_error），`Acquire` 据此分类计数；此前 Redis/Lua 错误与"槽位全占用"都记为 `saturated`，Redis 抖动被误读为凭据饱和。(2) **抢占指标死代码 (S3)**：`recordPreempt()` 此前注册但零生产调用方，LRU 抢占只 `slog.Info`；现在 `oldHolder != ""` 时调用，`llmgw_fpslot_preempt_events_total` 真正反映抢占率（S2/S3 各加 miniredis 回归测试）。(3) **`CalculateRetryDelay` 整数溢出 (SR1)**：`baseDelayMs * (1 << attempt)` 在 `attempt` 未 clamp 时溢出（cap 在溢出之后）；clamp shift 到 30，对正常输入行为不变，移除溢出隐患（加 `attempt=100` 回归用例）。(4) **`tpmLua` ZSET member 冲突致 TPM 少计 (RL1)**：member 原为 `ms:tokens`，同毫秒+同 token 估算（`defaultTokenEstimate` 很常见）会碰撞被 ZADD 覆盖；改为 `ms:usec:tokens`（微秒保唯一、tokens 仍为尾字段供 `:(%d+)$` 解析），加 miniredis 回归测试断言不再 over-admit。`go build ./...` + `go vet` clean；`go test -race` 在 dispatch/credentialfpslot/ratelimit/streamretry 全绿（`domains/credential` 的 `TestRedisHealthStore_ReadPerformance` 是预先存在的 `-race` 性能测试 flake，本次未触碰）。
 
-<<<<<<< HEAD
 - **dispatch 并发安全：data race + Stop 不 drain Tier-2 队列 (2026-08-13)**: `domains/dispatch/{pipeline,forwarder}.go` — 跨领域并发审计（详见 `AUDIT_CROSSCUTTING_CONCURRENCY_20260813.md`）发现 3 个真实缺陷并全部修复：(1) **`-race` 阻塞项**：`qr.CredEnqueuedAt` 在 `tryEnqueueCred` 中于 channel 发送**之后**赋值，与 forwarder loop 的读形成 data race（`go test -race` 复现 `TestPacingTimeoutSkipsSameCredRetry` FAIL）；改为发送前赋值，由 channel hand-off 建立 happens-before（**注**：此修复与 origin/main c4c274dc 提交的 CredEnqueuedAt race 修复重叠，rebase 时保留 origin/main 版本）。(2) Tier-2 forwarder `loop()` 在 `<-cf.ctx.Done()` 直接 return，不 drain `cf.queue` → 排队中的 `qr` 永不 complete、`Submit` 调用方永久阻塞（Tier-1 已修此 bug 类，Tier-2 漏修）；新增 `drainAndComplete()` 镜像 `runModelDrainer` 模式。(3) `routeFailover` 的 `case <-p.stopCh` 分支不调 `complete(qr)`，shutdown + 故障爆发时 in-flight qr 被丢弃；补 `complete(qr, ErrShutdown)`。新增 2 个回归测试（`TestTier2StopDrainsQueuedRequests` + `TestCredEnqueuedAtSetBeforeSend`，后者 200 路并发覆盖 race）。`go test -race ./domains/dispatch/` 由 FAIL 转 `ok`。
 
 - **Session Summaries outcome + Request Logs Hot status_code 漂移修复 (2026-08-13)**: 修复 2026-08-12 审计时发现的另外 2 个 schema 漂移（独立于 481/482）。
@@ -204,7 +704,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **StreamCapture.Reset 跨 retry 保留 finalFinish，修复 154 上 probe-client_cancel-cred21-… 误分类 (2026-08-10)**: `domains/hooks/audit/audit.go`、`domains/hooks/audit/audit_test.go` — `commit 0f55458a0` + `commit d63331789` 已部署在 `2.5.0-93bbd43a`，但 154 仍持续产出 `probe-client_cancel-cred<N>-…` 且 `upstream_finish_reason = ''`。根因：executor.go:2375 在 retry 之间调 `params.Capture.Reset()`，把 `finalFinish` 也清空；当「首字节超时 → 重试成功 → 客户端已取消」时，defer 中的 `buildClientDisconnectProbeEntry` 读不到 `upstream_finish_reason`，落回 `errors.Is(ctxErr, context.Canceled)` → 误归类为 `client_cancel`，触发供应商首字超时未触发凭据降级。修复：去掉 `Reset()` 中 `sc.finalFinish = ""`，仅保留 `// KEEP:` 注释以备审计追溯；同步把 `first_byte_timeout`/`stream_chunk_timeout`/`chunk_timeout` 加入 `isInterruptionCode` 白名单，让 `failure_detail_code` 与 `upstream_finish_reason` 保持一致。新增 `TestStreamCapture_Reset_PreservesFinalFinish` 锁定跨 retry 契约。`go test ./domains/hooks/audit/... ./domains/streaming/...` + `go build ./...` 全过。详见 `docs/changelogs/2026-08-10-stream-capture-reset-preserves-finalfinish.md`。
+- **StreamCapture 跨 retry 保留超时证据，修复 154 上 probe-client_cancel-cred21-… 误分类 (2026-08-10)**: `domains/hooks/audit/audit.go`、`domains/streaming/handler.go` 及对应测试 — executor retry 的 `Reset()` 曾清空 `finalFinish`，而后续成功尝试的 `stop` 或客户端取消又会覆盖超时原因。新增独立 `supplierTimeoutReason` latch，正常结束仍记录 `upstream_finish_reason=stop`，先前的 `first_byte_timeout` 保留为 `failure_detail_code`；probe 分类优先读取失败证据，因此「首字节超时 → 重试成功 → 客户端取消」最终归类为 `probe_timeout`。新增 capture 与 handler 两层回归测试。详见 `docs/changelogs/2026-08-10-stream-capture-reset-preserves-finalfinish.md`。
 
 - **会话压缩最终缓存基线与供应商请求一致 (2026-08-10)**: `domains/hooks/compression/session_compressor.go`、`domains/streaming/handler.go` — 借鉴 OmniRoute 的 post-guard authoritative body 不变量，新增 `SessionCompressor.CommitFinal`，在 NeverWorse、tools 恢复、prefix stabilize 与 cache-control injection 后覆盖提交进入 executor 的最终客户端协议 body。最终提交重算 message count、token estimate、message hashes 与 compressed-prefix hash，并原地刷新 `PrepareResult` 供日志使用；`SessionState` 改为完整继承旧值，避免 strip/cut marker/approval/audit 元数据被清零；V2 来源继续禁止回写 V1。新增 mock supplier 一致性、V2 隔离、非法 session、状态继承及真实 sanitize middleware 组合测试，断言供应商和缓存均不含原始 PII。
 - **modality sticky-upsert 修复 + backfill 工具 (2026-08-09, commit `c2a7629fa`)**: `discovery/discovery.go`、`cmd/tools/backfill-modality/main.go`、`docs/modality-sticky-upsert-fix.md` — `upsertModel` 的 `modality = COALESCE(models_canonical.modality, $4)` 是**死代码**：该列是 `NOT NULL DEFAULT 'text'`，左操作数永不为 NULL，COALESCE 永远返回旧值。后果是 `4639d4ae5` 修好的 50+ 条推断规则**无法回灌到已注册的行** —— 生产库里 8-09 之前注册的 `glm-4.5v`/`qwen2.5-vl-*` 等仍是 `text`，而 `loadCandidatesByModalityDB` 对图片请求只接纳 `modality IN ('vision','multimodal')`，被误标的模型直接从候选集消失，请求 503 而非降级。修复为 upgrade-only `CASE`：仅当存量值仍是列默认 `text` 且新推断非 `text` 时采纳新值 —— 既修复存量，又不降级、不覆盖 Layer-3 super_admin 人工覆盖（后者必为非 `text`，见 `admin/model_modality.go`）。SQL 用 pglast（真 PostgreSQL grammar）解析验证。另新增 `cmd/tools/backfill-modality` 一次性工具修复存量行：直接 import `modelname.InferModality`（单一真相源，不把 100+ 条规则复制成 SQL），upgrade-only + 幂等 + 默认 dry-run + 单事务提交。分两阶段部署：Phase 1 部署代码（新模型再发现时自动升级），Phase 2 逐环境跑 backfill。
@@ -571,6 +1071,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-04
 
+
 ### Fixed
 
 - **v2 dispatch summarizer 迁移到 *pgxpool.Pool + summarystore (2026-08-06)**:
@@ -879,6 +1380,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-29
 
+
 ### Fixed
 
 - **R1.12 本地部署 /v1/models 返回空 (2026-07-31)**:
@@ -961,6 +1463,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-28
 
+
 ### Fixed
 
 - **请求入口身份、终态和拒绝路径追踪收敛** (2026-07-28): Chat/Messages/Responses/Gemini 共享稳定的 request/session 身份派生；Messages/Responses/Gemini 回写最终 `X-Gw-Session-Id`，直连 handler 时也回写 `X-Request-Id`；session middleware 优先读取 `X-Gw-Session-Id`、兼容回退 `X-Session-Id` 并回写规范 header；RequestLogContext 增加原子终态门，success/failure/disconnect 竞争只允许一个终态；全局 middleware 拒绝仍遵循“logs + audit、无强制 WAL”边界，Auth 401 保留 `X-Request-Id` 供客户端关联。
@@ -974,6 +1477,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **测试**（`admin/live_stream_redis_store_test.go`）：5 个新回归测试 `TestIdleMarker_VisibleInDimensionQueueSnapshot` / `TestIdleMarker_StableRequestIdAcrossTicks` / `TestIdleMarker_PushedRightByNewRequest` / `TestIdleMarker_RefreshesTsOnEachTick` / `TestIdleMarker_BothMainAndDimQueueUpdated` 覆盖"dim 队列可见 / 跨 tick RequestID 稳定 / 新请求左推 / Ts 跨 tick 刷新 / 双写 main+dim"；新增 `TestBuildLiveStreamSnapshot_DedupesIdleMarkersPerLane` 覆盖跨 scope 旧重复块。原 `TestIdleMarkerAnchorsAtSilenceStart` 改写为 `TestIdleMarkerUsesScanTimeAsTs` 反映新语义。
 
 ## [Unreleased] - 2026-07-26
+
 
 ### Added
 
@@ -1091,6 +1595,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard 实时数据流泳道渲染方向修复** (2026-07-23): `web/src/components/SwimLane.vue` 的 `visibleRequests` computed 错误地对后端 ASC 时间戳数组执行 `.reverse()`，导致泳道色块最左 = 最新（与设计文档 `DASHBOARD_V2_VERIFICATION.md §1.7` 要求的"新请求追加到泳道末尾"相反）。去掉 `.reverse()`，让渲染顺序与后端数据顺序保持一致（左→右 由旧→新），并同步修正组件 CSS 处的误导性注释。详见 [docs/changelogs/2026-07-23-swimlane-direction-fix.md](docs/changelogs/2026-07-23-swimlane-direction-fix.md)。
 
 ## [Unreleased] - 2026-07-18
+
 
 ### Changed
 
@@ -1313,6 +1818,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      when a new request arrives (vendor/provider/model dimensions).
 
 ## [Unreleased] - 2026-07-16
+
 
 ### Fixed
 
@@ -2378,6 +2884,7 @@ Detailed acceptance criteria + design decisions: `docs/audits/2026-07-14-deploym
 
 ## [Unreleased] - 2026-07-13
 
+
 ### Changed (multimodal attachment documentation audit)
 - **新增** `docs/会话优化v2/04-厂商标准与适配矩阵.md`：涵盖 OpenAI、Anthropic、Gemini、Mistral 的图片/音频/文档/文件引用官方能力与网关适配约束。
 - **修正** README 厂商适配结论与待办优先级标题编号。
@@ -2946,6 +3453,7 @@ Detailed acceptance criteria + design decisions: `docs/audits/2026-07-14-deploym
 - 部署到 184：build_seq 5 → 6，验证 https://llmgo.kxpms.cn/api/admin/data-lifecycle/storage 返回正常 JSON，无 warnings。
 
 ## [Unreleased] - 2026-07-02
+
 
 ### 概述
 

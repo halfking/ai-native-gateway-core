@@ -144,16 +144,38 @@ func buildMatrixQuery(rowDim, metric string) (string, error) {
 		SELECT %s AS row_key,
 		       %s AS col_key,
 		       %s AS val
-		FROM request_logs_with_current_month
+		FROM routing_analytics_source
 		WHERE ts >= NOW() - $1::interval
 		  AND %s
 		  AND %s IS NOT NULL
+		  AND %s
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
-	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, rowExpr, colExpr), nil
+	`, rowExpr, colExpr, metricExpr, rowNullFilter, colExpr, businessRequestFilter(""), rowExpr, colExpr), nil
+}
+
+// businessRequestFilterStages lists every origin_stage value that marks a
+// synthetic (non-business) request: the three current workers plus the legacy
+// probe stages kept valid by the additive CHECK constraint. Keep in sync with
+// domains/streaming/context_attrs.go isProbeOriginStage and the
+// routingAnalyticsMVSQL WHERE clause in db/db.go.
+const businessRequestFilterStages = "'self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual'"
+
+// businessRequestFilter returns the shared predicate used by routing
+// analytics to exclude self-check/probe traffic while retaining historical
+// rows whose origin_stage was never populated. alias is optional (for joined
+// queries, e.g. "rl").
+func businessRequestFilter(alias string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return fmt.Sprintf(`COALESCE(%sorigin_stage, '') NOT IN (%s)
+		  AND COALESCE(%stask_type, '') <> 'probe_triggered'
+		  AND COALESCE(%srequest_id, '') NOT LIKE 'probe-%%'`, prefix, businessRequestFilterStages, prefix, prefix)
 }
 
 // effectiveTaskExpr returns the SQL expression that produces the row
@@ -187,15 +209,16 @@ func buildFlowL12Query() string {
 		SELECT %s AS src,
 		       %s AS dst,
 		       COUNT(*)::float8 AS val
-		FROM request_logs_with_current_month
+		FROM routing_analytics_source
 		WHERE ts >= NOW() - $1::interval
 		  AND %s IS NOT NULL
+		  AND %s
 		  AND (
 		    is_auto_request = TRUE
 		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
 		  )
 		GROUP BY (%s), (%s)
-	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
+	`, taskExpr, modelExpr, taskExpr, businessRequestFilter(""), taskExpr, modelExpr)
 }
 
 // buildFlowL23Query assembles the L2→L3 (model × task → provider)
@@ -214,18 +237,19 @@ func buildFlowL23Query() string {
 		       %s AS src,
 		       COALESCE(p.display_name, 'unknown') AS dst,
 		       COUNT(*)::float8 AS val
-		FROM request_logs_with_current_month rl
+		FROM routing_analytics_source rl
 		LEFT JOIN providers p ON p.id = COALESCE(rl.provider_id, (
 		    SELECT cr.provider_id FROM credentials cr WHERE cr.id = rl.credential_id LIMIT 1
 		))
 		WHERE rl.ts >= NOW() - $1::interval
 		  AND %s IS NOT NULL
+		  AND %s
 		  AND (
 		    rl.is_auto_request = TRUE
 		    OR (rl.is_auto_request IS NOT TRUE AND rl.client_model IS NOT NULL AND rl.client_model <> '')
 		  )
 		GROUP BY (%s), (%s), p.display_name
-	`, taskExpr, modelExpr, taskExpr, taskExpr, modelExpr)
+	`, taskExpr, modelExpr, taskExpr, businessRequestFilter("rl"), taskExpr, modelExpr)
 }
 
 // handleMatrix returns a canonical_model × row_dim heatmap.
@@ -266,19 +290,40 @@ func (h *AnalyticsHandlers) handleMatrix(w http.ResponseWriter, r *http.Request)
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	query, err := buildMatrixQuery(rowDim, metric)
-	if err != nil {
-		writeJSONErr(w, http.StatusBadRequest, err.Error())
-		return
+	var query string
+	var args []any
+
+	// Try to use materialized view for better performance
+	useMV := useMaterializedView(ctx, h.db, windowLabel)
+	if useMV {
+		query, err = buildMatrixQueryMaterialized(rowDim, metric)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 1)
+		args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			query = strings.Replace(query, "WHERE ", "WHERE tenant_id = $1 AND ", 1)
+			args = append(args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		query, err = buildMatrixQuery(rowDim, metric)
+		if err != nil {
+			writeJSONErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
+		args = []any{intervalStr}
+		if tenantFrag != "" {
+			query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
+			args = append(args, tenantArgs...)
+		}
 	}
 
-	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
-	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-	args := []any{intervalStr}
-	if tenantFrag != "" {
-		query = strings.Replace(query, "GROUP BY", tenantFrag+"\n\t\tGROUP BY", 1)
-		args = append(args, tenantArgs...)
-	}
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -393,19 +438,33 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 		return canon
 	}
 
-	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+	// Try to use materialized view for better performance
+	useMV := useMaterializedView(ctx, h.db, windowLabel)
+
+	var l12Query string
+	var l12Args []any
 	tenantFrag, tenantArgs, _ := tenantLogsClause(r, 2)
-	l12Args := []any{intervalStr}
-	if tenantFrag != "" { //nolint:staticcheck // placeholder, deferred injection happens after build*Query call
-		// (intentionally empty — reserved for future use)
+
+	if useMV {
+		// Use materialized view
+		l12Query = buildFlowL12QueryMaterialized()
+		l12Args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			l12Query = strings.Replace(l12Query, "WHERE ", "WHERE tenant_id = $1 AND ", 1)
+			l12Args = append(l12Args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		l12Args = []any{intervalStr}
+		l12Query = buildFlowL12Query()
+		if tenantFrag != "" {
+			l12Query = strings.Replace(l12Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
+			l12Args = append(l12Args, tenantArgs...)
+		}
 	}
 
-	// Layer 1→2: task_type → outbound_model (aggregated to canonical in Go)
-	l12Query := buildFlowL12Query()
-	if tenantFrag != "" {
-		l12Query = strings.Replace(l12Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
-		l12Args = append(l12Args, tenantArgs...)
-	}
 	l12Rows, err := h.db.Query(ctx, l12Query, l12Args...)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -457,12 +516,29 @@ func (h *AnalyticsHandlers) handleFlow(w http.ResponseWriter, r *http.Request) {
 	// Includes both auto requests and explicit-model requests; the latter
 	// use client_model as the model anchor and __specified__ as the task.
 	// NOTE: providers table column is display_name, NOT name.
-	l23Query := buildFlowL23Query()
-	l23Args := []any{intervalStr}
-	if tenantFrag != "" {
-		l23Query = strings.Replace(l23Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
-		l23Args = append(l23Args, tenantArgs...)
+	var l23Query string
+	var l23Args []any
+
+	if useMV {
+		// Use materialized view
+		l23Query = buildFlowL23QueryMaterialized()
+		l23Args = []any{}
+		if tenantFrag != "" {
+			// Inject tenant filter for materialized view
+			l23Query = strings.Replace(l23Query, "WHERE ", "WHERE mv.tenant_id = $1 AND ", 1)
+			l23Args = append(l23Args, tenantArgs...)
+		}
+	} else {
+		// Fallback to base view
+		intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
+		l23Query = buildFlowL23Query()
+		l23Args = []any{intervalStr}
+		if tenantFrag != "" {
+			l23Query = strings.Replace(l23Query, "GROUP BY", tenantFrag+"\n\tGROUP BY", 1)
+			l23Args = append(l23Args, tenantArgs...)
+		}
 	}
+
 	l23Rows, err := h.db.Query(ctx, l23Query, l23Args...)
 	if err != nil {
 		writeInternalErr(w, err)
@@ -791,7 +867,12 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 	intervalStr := fmt.Sprintf("%d seconds", int(windowDur.Seconds()))
 
-	cacheKey := funnelCacheKey(model, windowLabel)
+		scope := EffectiveTenantIDAll(r)
+		if scope == "" {
+			scope = "*"
+		}
+		cacheKey := funnelCacheKey(scope, model, windowLabel)
+
 	if cached, ok := globalFunnelCache.get(cacheKey); ok {
 		writeJSONOk(w, cached)
 		return
@@ -841,8 +922,14 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		  AND (
 		    outbound_model = ANY($2) OR canonical_model = ANY($2)
 		    OR client_model = ANY($2) OR model = ANY($2)
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM routing_analytics_source probe
+		    WHERE probe.request_id = routing_decision_log.request_id::text
+		      AND NOT (`+businessRequestFilter("probe")+`)
 		  )` + rdlTenantWhere + `
-	`
+		`
 	_ = h.db.QueryRow(ctx, rdlQuery, rdlArgs...).Scan(
 		&fr.requests, &fr.traceRows, &fr.totalPlanned, &fr.totalBlocked,
 		&fr.routable, &fr.chosen, &fr.success,
@@ -855,16 +942,17 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			approxArgs = append(approxArgs, rdlTenantArgs...)
 		}
-		if err := h.db.QueryRow(ctx, `
-			SELECT
-				COUNT(*)::int,
-				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
-				COUNT(*) FILTER (WHERE success IS TRUE)::int
-			FROM request_logs
-			WHERE is_auto_request = TRUE
-			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)`+rdlTenantWhere+`
-		`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
+			if err := h.db.QueryRow(ctx, `
+				SELECT
+					COUNT(*)::int,
+					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
+					COUNT(*) FILTER (WHERE success IS TRUE)::int
+				FROM routing_analytics_source
+				WHERE is_auto_request = TRUE
+				  AND ts >= NOW() - $1::interval
+				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
+				  AND `+businessRequestFilter("")+rdlTenantWhere+`
+			`, approxArgs...).Scan(&autoReq, &routed, &ok); err != nil {
 			writeInternalErr(w, err)
 			return
 		}
@@ -886,16 +974,17 @@ func (h *AnalyticsHandlers) handleFunnel(w http.ResponseWriter, r *http.Request)
 		if rdlTenantFrag != "" {
 			mixedArgs = append(mixedArgs, rdlTenantArgs...)
 		}
-		_ = h.db.QueryRow(ctx, `
-			SELECT
-				COUNT(*)::int,
-				COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
-				COUNT(*) FILTER (WHERE success IS TRUE)::int
-			FROM request_logs
-			WHERE is_auto_request = TRUE
-			  AND ts >= NOW() - $1::interval
-			  AND outbound_model = ANY($2)`+rdlTenantWhere+`
-		`, mixedArgs...).Scan(&autoReq, &routed, &ok)
+			_ = h.db.QueryRow(ctx, `
+				SELECT
+					COUNT(*)::int,
+					COUNT(*) FILTER (WHERE credential_id IS NOT NULL)::int,
+					COUNT(*) FILTER (WHERE success IS TRUE)::int
+				FROM routing_analytics_source
+				WHERE is_auto_request = TRUE
+				  AND ts >= NOW() - $1::interval
+				  AND COALESCE(NULLIF(outbound_model, ''), client_model) = ANY($2)
+				  AND `+businessRequestFilter("")+rdlTenantWhere+`
+			`, mixedArgs...).Scan(&autoReq, &routed, &ok)
 		if fr.requests == 0 {
 			fr.requests = autoReq
 		}

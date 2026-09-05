@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,18 @@ import (
 
 type DB struct {
 	pool *pgxpool.Pool
+
+	// lifecycleMu serializes the lazy stdlib bridge creation with shutdown so
+	// callers never receive a bridge after its owning DB has been closed.
+	lifecycleMu sync.Mutex
+	closed      bool
+
+	// stdlibDBOnce lazily creates the shared *sql.DB bridge returned by
+	// Stdlib(). Exactly one bridge is constructed for the lifetime of *DB;
+	// all callers share the underlying pgxpool.Pool instead of spawning
+	// independent connection pools on every invocation.
+	stdlibDBOnce sync.Once
+	stdlibDB     *sql.DB
 }
 
 func Open(ctx context.Context, databaseURL string) (*DB, error) {
@@ -114,7 +127,44 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureRequestLogSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureRequestJourneyObservationSchema(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureJournalSnapshotReceiptSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureQualityFixModeSchema(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureProviderSoftDelete(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-05 migration 655: session_summaries 表结构对账（memora 覆盖事件
+	// 修复）。触发器 trg_update_session_summary 与 admin 读路径都按 canonical
+	// 列访问该表，缺列时请求日志写入与 /api/admin/sessions/:id/snapshot 等
+	// 端点整体 42703。幂等补列，必须先于任何会话读路径生效。
+	if err := db.ensureSessionSummariesCanonical(migCtx); err != nil {
+		return err
+	}
+	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
+	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
+	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
+	// worker 每 sweep 报错——学习闭环空转。与 655 同位置生效。
+	if err := db.ensureAutoRouteSelectionsHotSchema(migCtx); err != nil {
+		return err
+	}
+	// Routing analytics reads these columns while creating its source view.
+	// Keep this small table-only ensure ahead of the analytics materialized
+	// views; the broader recent-success-rate ensure runs later because it
+	// also updates credential binding state.
+	if err := db.ensureRoutingAnalyticsColumns(migCtx); err != nil {
+		return err
+	}
+	// 2026-08-31 migration 632: routing analytics materialized views.
+	// Must run before the gateway serves /api/admin/auto-route/analytics/*
+	// traffic; on failure the views are absent and handlers fall back to
+	// the (slow but correct) base-view queries.
+	if err := db.ensureRoutingAnalyticsMaterializedViews(migCtx); err != nil {
 		return err
 	}
 	if err := db.ensureApplicationsTable(migCtx); err != nil {
@@ -129,12 +179,16 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureConcurrencyMode(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureCredentialGovernorRevision(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureRoutingRecentSuccessRate(migCtx); err != nil {
 		return err
 	}
 	if err := db.ensureUnavailableRecoverAtSchema(migCtx); err != nil {
 		return err
 	}
+
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
 		return err
 	}
@@ -148,6 +202,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 		return err
 	}
 	if err := db.ensureSessionTitles(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureSessionTitleStates(migCtx); err != nil {
 		return err
 	}
 	if err := db.ensureTuningSignalsViews(migCtx); err != nil {
@@ -186,9 +243,24 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureProbeStateFunctionFixes(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureNodeProbeTriggerKindSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureTenantModelPoliciesSchema(migCtx); err != nil {
 		return err
 	}
+	// TODO(credentialquota): bootstrap re-enabled when dispatch path is wired
+	// (see AUDIT_24H_20260817.md B1). The credential_client_quota table has no
+	// production reader/writer yet: domains/credentialquota has zero importers
+	// and credentialfpslot.Manager.AcquireWithQuota (the alleged exposure per
+	// commit 7b086ed52) is test-only and does not import domains/credentialquota.
+	// Auto-creating the RLS-protected table on 245/154 would land a permanently
+	// empty orphan schema that cannot be cleaned up without a real drop
+	// migration (>=530).
+	//
+	// if err := db.ensureCredentialClientQuotaSchema(migCtx); err != nil {
+	// 	return err
+	// }
 	if err := db.ensureResponseFormatAnomaliesSchema(migCtx); err != nil {
 		return err
 	}
@@ -250,6 +322,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensurePartitionAutovacuumSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureHandoffLogsHotColumnarSchema(migCtx); err != nil {
+		return err
+	}
 	// OmniFree schema (2026-08-07): 4 tables + extensions + RLS + triggers.
 	// Equivalent to sql/migrations/075-omnifree-schema.sql but idempotent
 	// and startup-safe.
@@ -260,6 +335,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 		return err
 	}
 	if err := db.ensureWebCookieSessionsSchema(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureUrsmKeyMigrationLedgerSchema(migCtx); err != nil {
 		return err
 	}
 	// 2026-08-11: model IQ system — standard_iq column on models_canonical
@@ -273,7 +351,266 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
+	if err := db.ensureApprovalResumeClaimSchema(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureGoalClientSignalSchema(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureProxyManagementCanonicalSchema(migCtx); err != nil {
+		return err
+	}
 	db.ensureProbeHealthDashboardViews(migCtx)
+	return nil
+}
+
+func (d *DB) ensureRequestJourneyObservationSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS request_state_transitions (
+			id BIGSERIAL PRIMARY KEY,
+			request_id TEXT NOT NULL,
+			tenant_id TEXT NOT NULL DEFAULT 'default',
+			transition_type TEXT,
+			from_state TEXT,
+			to_state TEXT,
+			metadata JSONB,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`,
+		`ALTER TABLE request_state_transitions
+			ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT 'default',
+			ALTER COLUMN transition_type DROP NOT NULL,
+			ADD COLUMN IF NOT EXISTS seq BIGINT,
+			ADD COLUMN IF NOT EXISTS gateway_instance_id TEXT,
+			ADD COLUMN IF NOT EXISTS event_type TEXT,
+			ADD COLUMN IF NOT EXISTS stage TEXT,
+			ADD COLUMN IF NOT EXISTS requested_model TEXT,
+			ADD COLUMN IF NOT EXISTS resolved_model TEXT,
+			ADD COLUMN IF NOT EXISTS model TEXT,
+			ADD COLUMN IF NOT EXISTS provider_id BIGINT,
+			ADD COLUMN IF NOT EXISTS provider TEXT,
+			ADD COLUMN IF NOT EXISTS credential_id BIGINT,
+			ADD COLUMN IF NOT EXISTS from_model TEXT,
+			ADD COLUMN IF NOT EXISTS to_model TEXT,
+			ADD COLUMN IF NOT EXISTS from_credential_id BIGINT,
+			ADD COLUMN IF NOT EXISTS to_credential_id BIGINT,
+			ADD COLUMN IF NOT EXISTS attempt_id TEXT,
+			ADD COLUMN IF NOT EXISTS attempt_no INTEGER,
+			ADD COLUMN IF NOT EXISTS outcome TEXT,
+			ADD COLUMN IF NOT EXISTS error_kind TEXT,
+			ADD COLUMN IF NOT EXISTS http_status INTEGER,
+			ADD COLUMN IF NOT EXISTS retry_reason TEXT,
+			ADD COLUMN IF NOT EXISTS switch_reason TEXT,
+			ADD COLUMN IF NOT EXISTS observation_status TEXT,
+			ADD COLUMN IF NOT EXISTS node_health_status TEXT,
+			ADD COLUMN IF NOT EXISTS retry_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ`,
+		`DROP INDEX IF EXISTS uq_state_transitions_request_seq`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_legacy_request_seq
+			ON request_state_transitions (request_id, seq)
+			WHERE event_type IS NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_state_transitions_tenant_request_seq
+			ON request_state_transitions (tenant_id, request_id, seq)
+			WHERE event_type IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_state_transitions_journey_retry_at
+			ON request_state_transitions (tenant_id, retry_at)
+			WHERE event_type = 'retry_scheduled' AND retry_at IS NOT NULL`,
+		// 2026-09-05: definition-guarded. The previous unconditional DROP+ADD
+		// re-validated the whole table (ACCESS EXCLUSIVE for the scan) on every
+		// boot; on the shared 252 DB this grew past the 20s boot budget (5×
+		// 245 deploy aborts on 2026-09-05, live INSERTs queued behind it).
+		// If the definition ever changes, update the expected pg_get_constraintdef
+		// string in the same commit so the guard still self-heals drift.
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'request_state_transitions_retry_at_event_chk'
+				  AND conrelid = 'request_state_transitions'::regclass
+				  AND pg_get_constraintdef(oid) = 'CHECK (((retry_at IS NULL) OR (event_type = ''retry_scheduled''::text)))'
+			) THEN
+				ALTER TABLE request_state_transitions
+					DROP CONSTRAINT IF EXISTS request_state_transitions_retry_at_event_chk;
+				ALTER TABLE request_state_transitions
+					ADD CONSTRAINT request_state_transitions_retry_at_event_chk CHECK (
+						retry_at IS NULL OR event_type = 'retry_scheduled'
+					);
+			END IF;
+		END $$`,
+		`CREATE TABLE IF NOT EXISTS request_journey_observation_outbox (
+			id BIGSERIAL PRIMARY KEY,
+			tenant_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			seq BIGINT NOT NULL,
+			payload JSONB NOT NULL,
+			payload_hash TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			claim_owner TEXT,
+			claim_until TIMESTAMPTZ,
+			claim_fencing_token BIGINT NOT NULL DEFAULT 0,
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CONSTRAINT request_journey_observation_outbox_identity_uq UNIQUE (tenant_id, request_id, seq),
+			CONSTRAINT request_journey_observation_outbox_seq_chk CHECK (seq > 0),
+			CONSTRAINT request_journey_observation_outbox_attempts_chk CHECK (attempts >= 0),
+			CONSTRAINT request_journey_observation_outbox_claim_fence_chk CHECK (claim_fencing_token >= 0),
+			CONSTRAINT request_journey_observation_outbox_status_chk CHECK (status IN ('pending', 'processing', 'failed')),
+			CONSTRAINT request_journey_observation_outbox_processing_lease_chk CHECK (
+				status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
+			)
+		)`,
+		`ALTER TABLE request_journey_observation_outbox
+			ADD COLUMN IF NOT EXISTS claim_fencing_token BIGINT NOT NULL DEFAULT 0`,
+		// Definition-guarded (see request_state_transitions_retry_at_event_chk
+		// above): the outbox takes per-request writes on the shared DB, so
+		// re-adding these CHECKs every boot is not acceptable.
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'request_journey_observation_outbox_claim_fence_chk'
+				  AND conrelid = 'request_journey_observation_outbox'::regclass
+				  AND pg_get_constraintdef(oid) = 'CHECK ((claim_fencing_token >= 0))'
+			) THEN
+				ALTER TABLE request_journey_observation_outbox
+					DROP CONSTRAINT IF EXISTS request_journey_observation_outbox_claim_fence_chk;
+				ALTER TABLE request_journey_observation_outbox
+					ADD CONSTRAINT request_journey_observation_outbox_claim_fence_chk
+					CHECK (claim_fencing_token >= 0);
+			END IF;
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'request_journey_observation_outbox_processing_lease_chk'
+				  AND conrelid = 'request_journey_observation_outbox'::regclass
+				  AND pg_get_constraintdef(oid) = 'CHECK (((status <> ''processing''::text) OR ((claim_owner IS NOT NULL) AND (claim_until IS NOT NULL))))'
+			) THEN
+				ALTER TABLE request_journey_observation_outbox
+					DROP CONSTRAINT IF EXISTS request_journey_observation_outbox_processing_lease_chk;
+				ALTER TABLE request_journey_observation_outbox
+					ADD CONSTRAINT request_journey_observation_outbox_processing_lease_chk CHECK (
+						status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
+					);
+			END IF;
+		END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_request_journey_observation_outbox_due
+			ON request_journey_observation_outbox (next_retry_at, created_at)
+			WHERE status IN ('pending', 'failed')`,
+		`CREATE INDEX IF NOT EXISTS idx_request_journey_observation_outbox_lease
+			ON request_journey_observation_outbox (claim_until, created_at)
+			WHERE status = 'processing'`,
+		`CREATE INDEX IF NOT EXISTS idx_request_journey_observation_outbox_tenant
+			ON request_journey_observation_outbox (tenant_id, created_at)`,
+		`ALTER TABLE request_journey_observation_outbox ENABLE ROW LEVEL SECURITY`,
+		`ALTER TABLE request_journey_observation_outbox FORCE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS request_journey_observation_outbox_tenant_isolation
+			ON request_journey_observation_outbox`,
+		`CREATE POLICY request_journey_observation_outbox_tenant_isolation
+			ON request_journey_observation_outbox
+			USING (tenant_id = current_setting('app.current_tenant', true)::TEXT)
+			WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::TEXT)`,
+		`DROP POLICY IF EXISTS request_journey_observation_outbox_super_admin_bypass
+			ON request_journey_observation_outbox`,
+		`CREATE POLICY request_journey_observation_outbox_super_admin_bypass
+			ON request_journey_observation_outbox
+			USING (current_setting('app.current_role', true) = 'super_admin'
+				OR current_setting('app.bypass_rls', true) = 'true')
+			WITH CHECK (current_setting('app.current_role', true) = 'super_admin'
+				OR current_setting('app.bypass_rls', true) = 'true')`,
+	}
+	for _, statement := range statements {
+		if _, err := d.pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("ensure request journey observation schema: %w", err)
+		}
+	}
+	return nil
+}
+
+func (d *DB) ensureJournalSnapshotReceiptSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS public.journal_snapshot_receipts (
+			tenant_id TEXT NOT NULL,
+			request_id TEXT NOT NULL,
+			snapshot_version BIGINT NOT NULL,
+			payload_hash TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'processing',
+			claim_owner TEXT,
+			claim_until TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CONSTRAINT journal_snapshot_receipts_identity_uq UNIQUE (tenant_id, request_id, snapshot_version),
+			CONSTRAINT journal_snapshot_receipts_version_chk CHECK (snapshot_version > 0),
+			CONSTRAINT journal_snapshot_receipts_status_chk CHECK (status IN ('processing', 'completed')),
+			CONSTRAINT journal_snapshot_receipts_processing_lease_chk CHECK (
+				status <> 'processing' OR (claim_owner IS NOT NULL AND claim_until IS NOT NULL)
+			)
+		)`,
+		// projection_base_seq semantics (2026-08-31, audit P1-4 followup):
+		//   * 0  : first-time projection (no prior receipt row) — legacy
+		//          first-claim sentinel. Two replicas that both pass 0 are
+		//          not distinguishable to the durable store; callers MUST
+		//          serialise per-owner delivery before issuing a same-base
+		//          0 claim (see cmd/gateway/main_dispatch_observation.go).
+		//   * >0 : retry attempt pinned to an existing projection base so
+		//          event identities remain stable across partial projection
+		//          failures. ClaimWithProjectionBase rejects reclaim paths
+		//          that disagree on the stored base with
+		//          ErrSnapshotReceiptLeaseLost; non-zero bases are the
+		//          cross-process safe choice.
+		// Concurrent retries that pass different base values must be rejected by
+		// the application layer (ClaimWithProjectionBase); the schema check below
+		// only enforces non-negative, leaving 0 as a legal first-claim marker.
+		`ALTER TABLE public.journal_snapshot_receipts
+			ADD COLUMN IF NOT EXISTS projection_base_seq BIGINT NOT NULL DEFAULT 0`,
+		// Definition-guarded (see ensureRequestJourneyObservationSchema): receipts
+		// are written on the hot path of the shared DB.
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint
+				WHERE conname = 'journal_snapshot_receipts_projection_base_seq_chk'
+				  AND conrelid = 'public.journal_snapshot_receipts'::regclass
+				  AND pg_get_constraintdef(oid) = 'CHECK ((projection_base_seq >= 0))'
+			) THEN
+				ALTER TABLE public.journal_snapshot_receipts
+					DROP CONSTRAINT IF EXISTS journal_snapshot_receipts_projection_base_seq_chk;
+				ALTER TABLE public.journal_snapshot_receipts
+					ADD CONSTRAINT journal_snapshot_receipts_projection_base_seq_chk
+					CHECK (projection_base_seq >= 0);
+			END IF;
+		END $$`,
+		`CREATE INDEX IF NOT EXISTS idx_journal_snapshot_receipts_claim
+			ON public.journal_snapshot_receipts (claim_until, updated_at)
+			WHERE status = 'processing'`,
+		`CREATE INDEX IF NOT EXISTS idx_journal_snapshot_receipts_tenant
+			ON public.journal_snapshot_receipts (tenant_id, updated_at DESC)`,
+		`ALTER TABLE public.journal_snapshot_receipts ENABLE ROW LEVEL SECURITY`,
+		`ALTER TABLE public.journal_snapshot_receipts FORCE ROW LEVEL SECURITY`,
+		`DROP POLICY IF EXISTS journal_snapshot_receipts_tenant_isolation ON public.journal_snapshot_receipts`,
+		`CREATE POLICY journal_snapshot_receipts_tenant_isolation
+			ON public.journal_snapshot_receipts
+			USING (tenant_id = current_setting('app.current_tenant', true)::TEXT)
+			WITH CHECK (tenant_id = current_setting('app.current_tenant', true)::TEXT)`,
+		`DROP POLICY IF EXISTS journal_snapshot_receipts_super_admin_bypass ON public.journal_snapshot_receipts`,
+		`CREATE POLICY journal_snapshot_receipts_super_admin_bypass
+			ON public.journal_snapshot_receipts
+			USING (current_setting('app.current_role', true) = 'super_admin'
+				OR current_setting('app.bypass_rls', true) = 'true')
+			WITH CHECK (current_setting('app.current_role', true) = 'super_admin'
+				OR current_setting('app.bypass_rls', true) = 'true')`,
+	}
+	for _, statement := range statements {
+		if _, err := d.pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("ensure journal snapshot receipt schema: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -363,7 +700,9 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	    WHERE tool_calls IS NOT NULL AND tool_calls != '[]'::jsonb;
 	CREATE INDEX IF NOT EXISTS idx_request_logs_provider_tool_calls
 	    ON request_logs (provider_id, ts DESC)
-	    WHERE tool_calls IS NOT NULL AND jsonb_array_length(tool_calls) > 0;
+	    WHERE tool_calls IS NOT NULL
+	      AND jsonb_typeof(tool_calls) = 'array'
+	      AND jsonb_array_length(tool_calls) > 0;
 `)
 	if err != nil {
 		return err
@@ -399,7 +738,75 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 		return err
 	}
 
-	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id)")
+	// 会话优化 v4 (migration 532): 会话级最终成功标记。hot 侧部分唯一索引
+	// 保证同 gw_session_id 至多一条 final success（历史存量行全 FALSE，谓词
+	// 空集，054 时代重复数据不会阻塞索引构建）；分区侧由 SQL migration 的
+	// ensure_request_logs_partition 为新分区补建（columnar AM 可能拒建唯一
+	// 索引，故此处只做 hot 侧 Go 镜像）。
+	_, err = d.pool.Exec(ctx, `
+		ALTER TABLE request_logs_hot
+		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
+		ALTER TABLE request_logs
+		    ADD COLUMN IF NOT EXISTS is_final_success BOOLEAN NOT NULL DEFAULT FALSE;
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_request_logs_hot_final_success_session
+		    ON request_logs_hot (gw_session_id)
+		    WHERE is_final_success AND gw_session_id IS NOT NULL AND gw_session_id <> '';
+	`)
+	if err != nil {
+		return err
+	}
+
+	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id, is_final_success)")
+
+	// Validate request_logs_hot is heap (not columnar) — UPDATE-heavy table
+	// Citus Columnar does not support UPDATE/CTID scans (SQLSTATE 0A000).
+	// See: https://github.com/citusdata/citus/issues/... (ColumnarScan UPDATE limitation)
+	var storage string
+	err = d.pool.QueryRow(ctx, `
+		SELECT am.amname
+		FROM pg_class c
+		JOIN pg_am am ON am.oid = c.relam
+		WHERE c.relname = 'request_logs_hot'
+	`).Scan(&storage)
+	if err != nil {
+		slog.Warn("request_logs_hot storage validation failed",
+			"error", err,
+			"hint", "ensure request_logs_hot exists and is accessible")
+	} else if storage != "heap" {
+		slog.Error("request_logs_hot storage is NOT heap - UPDATEs will fail!",
+			"actual_storage", storage,
+			"expected", "heap",
+			"action_required", "Convert to heap: ALTER TABLE request_logs_hot SET (storage = heap) or recreate as heap")
+	} else {
+		slog.Debug("request_logs_hot storage validation passed", "storage", storage)
+	}
+
+	// Validate current month partition of request_logs is heap (DETACHED, supports UPDATE)
+	// The current month partition must be heap because it receives UPDATEs from claimSessionFinalSuccess
+	// via the NOT EXISTS check against request_logs. If it's columnar, UPDATEs routed to it will fail.
+	currentMonthPartition := "request_logs_" + time.Now().Format("2006_01")
+	err = d.pool.QueryRow(ctx, `
+		SELECT am.amname
+		FROM pg_class c
+		JOIN pg_am am ON am.oid = c.relam
+		WHERE c.relname = $1
+	`, currentMonthPartition).Scan(&storage)
+	if err != nil {
+		// Partition might not exist yet (first day of month) - log as debug
+		slog.Debug("current month partition storage validation skipped",
+			"partition", currentMonthPartition,
+			"reason", err.Error())
+	} else if storage != "heap" {
+		slog.Error("current month partition is NOT heap - UPDATEs may fail!",
+			"partition", currentMonthPartition,
+			"actual_storage", storage,
+			"expected", "heap",
+			"action_required", "DETACH partition and ensure it uses heap storage. See rule 33.")
+	} else {
+		slog.Debug("current month partition storage validation passed",
+			"partition", currentMonthPartition, "storage", storage)
+	}
+
 	return nil
 }
 
@@ -432,6 +839,325 @@ func (d *DB) ensureQualityFixModeSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("quality_fix_mode + provider_quality_rollup schema ensured")
+	return nil
+}
+
+// ensureProviderSoftDelete mirrors sql/migrations/startup/631_provider_credential_soft_delete.sql.
+// 2026-08-31 凭据/供应商软删除：
+//   - providers.deleted_at（NULL = 存活行）+ 存活行部分索引
+//   - credentials.status CHECK 增加 'deleted' 终态值
+//
+// 幂等：ADD COLUMN IF NOT EXISTS / 索引 IF NOT EXISTS / 约束先 DROP 再
+// ADD（PG 无法 IF NOT EXISTS 约束，重复执行等价重建，值集不变时无副作用）。
+// 编号 SQL 文件供 DBA 同步流程使用；本函数保证二进制启动即生效，
+// 否则 admin 的 listProviders（WHERE p.deleted_at IS NULL）会在未同步的
+// 库上直接 500。
+func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE providers
+		    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+
+		CREATE INDEX IF NOT EXISTS idx_providers_live
+		    ON providers (id)
+		    WHERE deleted_at IS NULL;
+
+		-- 2026-09-05: credentials 是共享库最热表，此前这里的无条件 DROP+ADD 每次
+		-- 启动都对全表做验证扫描并持 ACCESS EXCLUSIVE。守卫：约束存在且定义一致
+		-- 则跳过；状态列表变更时同步更新期望的 pg_get_constraintdef 串即可自愈。
+		DO $$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1 FROM pg_constraint
+		        WHERE conname = 'credentials_status_check'
+		          AND conrelid = 'credentials'::regclass
+		          AND pg_get_constraintdef(oid) = 'CHECK ((status = ANY (ARRAY[''active''::text, ''cooling''::text, ''degraded''::text, ''quarantine''::text, ''quota_expired''::text, ''disabled''::text, ''deleted''::text])))'
+		    ) THEN
+		        ALTER TABLE credentials
+		            DROP CONSTRAINT IF EXISTS credentials_status_check;
+		        ALTER TABLE credentials
+		            ADD CONSTRAINT credentials_status_check
+		            CHECK (status = ANY (ARRAY[
+		                'active'::text, 'cooling'::text, 'degraded'::text,
+		                'quarantine'::text, 'quota_expired'::text,
+		                'disabled'::text, 'deleted'::text
+		            ]));
+		    END IF;
+		END $$;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("provider/credential soft-delete schema ensured (migration 631)")
+	return nil
+}
+
+// ensureRoutingAnalyticsColumns provides the small, dependency-free schema
+// prerequisite for migration 632/649. It must run before the analytics source
+// view is created because older databases may predate the probe-origin fields.
+func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE IF EXISTS request_logs_hot
+		    ADD COLUMN IF NOT EXISTS task_type TEXT,
+		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32),
+		    ADD COLUMN IF NOT EXISTS origin_actor VARCHAR(255);
+
+		ALTER TABLE IF EXISTS request_logs
+		    ADD COLUMN IF NOT EXISTS task_type TEXT,
+		    ADD COLUMN IF NOT EXISTS origin_stage VARCHAR(32),
+		    ADD COLUMN IF NOT EXISTS origin_actor VARCHAR(255);
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure routing analytics columns: %w", err)
+	}
+	return nil
+}
+
+// routingAnalyticsMVSQL is the shared definition of the routing analytics
+// materialized views (migration 632/649). It owns a narrow source view so
+// analytics does not depend on the frozen request-log wrapper column contract.
+// Kept as one statement batch because CREATE MATERIALIZED VIEW cannot be
+// re-run with CREATE OR REPLACE; the IF NOT EXISTS guards make the batch idempotent.
+//
+// NULL-safety (2026-08-31 audit): is_auto_request is COALESCEd to FALSE in
+// the view. Historical rows carry NULL; without normalization the view
+// would split identical traffic into NULL and FALSE buckets (GROUP BY
+// treats them as distinct), diverging from the base queries, which read
+// NULL as FALSE everywhere (`is_auto_request IS NOT TRUE`).
+//
+// tenant_id is TEXT in this schema (not bigint — verified on prod 252 PG:
+// request_logs_hot.tenant_id → text). The unique indexes therefore use
+// plain tenant_id columns with no COALESCE placeholder: PG rejects
+// expression indexes for REFRESH MATERIALIZED VIEW CONCURRENTLY
+// (SQLSTATE 55000, seen on prod 2026-09-01), and plain-column uniqueness
+// is safe because GROUP BY collapses NULL keys into a single row.
+//
+// effective_provider_id bakes in the same COALESCE(provider_id,
+// credential lookup) fallback that buildFlowL23Query (admin/analytics.go)
+// applies, so the L2→L3 Sankey shows the same 'unknown' provider share on
+// both the materialized and base paths.
+const routingAnalyticsMVSQL = `
+		-- Keep analytics isolated from the frozen request-log wrapper view. The
+		-- narrow source has stable types across hot and parent partitions and
+		-- explicitly exposes origin_stage for probe filtering.
+		-- CREATE OR REPLACE (not DROP+CREATE): the routing matviews depend on
+		-- this view, so a plain DROP fails with SQLSTATE 2BP01 whenever this
+		-- batch runs on the index-repair path (views current, ukey missing).
+		CREATE OR REPLACE VIEW routing_analytics_source AS
+		SELECT
+		  ts,
+		  task_type::text AS task_type,
+		  outbound_model::text AS outbound_model,
+		  client_model::text AS client_model,
+		  work_type::text AS work_type,
+		  provider_id::bigint AS provider_id,
+		  credential_id::bigint AS credential_id,
+		  is_auto_request::boolean AS is_auto_request,
+		  tenant_id::text AS tenant_id,
+		  request_id::text AS request_id,
+		  success::boolean AS success,
+		  latency_ms::numeric AS latency_ms,
+		  cost_usd::numeric AS cost_usd,
+		  origin_stage::text AS origin_stage
+		FROM request_logs_hot
+		UNION ALL
+		SELECT
+		  ts,
+		  task_type::text AS task_type,
+		  outbound_model::text AS outbound_model,
+		  client_model::text AS client_model,
+		  work_type::text AS work_type,
+		  provider_id::bigint AS provider_id,
+		  credential_id::bigint AS credential_id,
+		  is_auto_request::boolean AS is_auto_request,
+		  tenant_id::text AS tenant_id,
+		  request_id::text AS request_id,
+		  success::boolean AS success,
+		  latency_ms::numeric AS latency_ms,
+		  cost_usd::numeric AS cost_usd,
+		  origin_stage::text AS origin_stage
+		FROM request_logs;
+
+		CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
+	SELECT
+	  DATE_TRUNC('hour', ts) AS time_bucket,
+	  COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '__specified__' END) AS effective_task_type,
+	  COALESCE(NULLIF(outbound_model, ''), client_model) AS effective_model,
+	  COALESCE(NULLIF(work_type, ''), 'unknown') AS effective_work_type,
+	  COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr WHERE cr.id = credential_id LIMIT 1)) AS effective_provider_id,
+	  COALESCE(is_auto_request, FALSE) AS is_auto_request,
+	  tenant_id,
+	  COUNT(*) AS request_count,
+	  COUNT(*) FILTER (WHERE success) AS success_count,
+	  COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
+	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
+	  percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_latency_ms,
+	  percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
+	  percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
+	  COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
+	  NOW() AS refreshed_at
+	FROM routing_analytics_source
+	WHERE ts >= NOW() - INTERVAL '7 days'
+	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
+	  AND COALESCE(task_type, '') <> 'probe_triggered'
+	  AND COALESCE(request_id, '') NOT LIKE 'probe-%'
+	  AND (
+	    is_auto_request = TRUE
+	    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+	  )
+	  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
+	GROUP BY
+	  time_bucket,
+	  effective_task_type,
+	  effective_model,
+	  effective_work_type,
+	  effective_provider_id,
+	  is_auto_request,
+	  tenant_id;
+
+	-- Unique index for REFRESH ... CONCURRENTLY. PG rejects expression
+	-- indexes for concurrent refresh (SQLSTATE 55000, verified on prod
+	-- PG17), so this must be plain columns. NULL keys are safe: GROUP BY
+	-- collapses NULLs into a single row per key, so the btree's
+	-- "duplicate NULLs allowed" semantics never sees two rows with the
+	-- same key. The old expression index (_pkey) is dropped and replaced
+	-- by _ukey; the rename makes the swap idempotent under IF [NOT] EXISTS.
+	DROP INDEX IF EXISTS routing_analytics_7d_pkey;
+	CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_ukey
+	  ON routing_analytics_7d (
+	    time_bucket,
+	    effective_task_type,
+	    effective_model,
+	    effective_work_type,
+	    effective_provider_id,
+	    is_auto_request,
+	    tenant_id
+	  );
+
+	CREATE INDEX IF NOT EXISTS routing_analytics_7d_task_model_idx
+	  ON routing_analytics_7d (effective_task_type, effective_model);
+
+	CREATE INDEX IF NOT EXISTS routing_analytics_7d_time_idx
+	  ON routing_analytics_7d (time_bucket DESC);
+
+	CREATE INDEX IF NOT EXISTS routing_analytics_7d_tenant_idx
+	  ON routing_analytics_7d (tenant_id)
+	  WHERE tenant_id IS NOT NULL;
+
+	CREATE MATERIALIZED VIEW IF NOT EXISTS routing_audit_summary_7d AS
+	SELECT
+	  tenant_id,
+	  COUNT(*) AS total_requests,
+	  COUNT(*) FILTER (WHERE success) AS success_count,
+	  COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
+	  COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
+	  NOW() AS refreshed_at
+	FROM routing_analytics_source
+	WHERE ts >= NOW() - INTERVAL '7 days'
+	  AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
+	  AND COALESCE(task_type, '') <> 'probe_triggered'
+	  AND COALESCE(request_id, '') NOT LIKE 'probe-%'
+	  AND (
+	    is_auto_request = TRUE
+	    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+	  )
+	GROUP BY tenant_id;
+
+	DROP INDEX IF EXISTS routing_audit_summary_7d_pkey;
+	CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_ukey
+	  ON routing_audit_summary_7d (tenant_id);
+`
+
+// ensureRoutingAnalyticsMaterializedViews mirrors
+// sql/migrations/startup/up/632_routing_analytics_materialized_view.sql.
+// 2026-08-31: pre-aggregates the 7-day window that the admin analytics
+// endpoints (matrix / flow / audit) aggregate on demand — those queries
+// Seq-Scan 314K+ rows and blew the 15s handler timeout. Views are refreshed
+// every 10 minutes by bg.MaterializedViewRefresher; admin handlers fall
+// back to the base-view queries whenever the views are missing or stale.
+//
+// CREATE MATERIALIZED VIEW populates the view as part of creation, so no
+// initial REFRESH is needed here. The statement can take tens of seconds
+// on the production dataset while the shared PG sets statement_timeout=30s,
+// so it runs on a pinned connection with the timeout raised and restored.
+func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+
+	// Fast idempotent path: views present AND the plain-column unique
+	// indexes exist → nothing to build or repair. The index check is part
+	// of the gate because the original 632 deploy created expression
+	// indexes (…_pkey) that REFRESH ... CONCURRENTLY rejects; instances
+	// running this ensure must still swap them for …_ukey.
+	var upToDate bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_analytics_7d')
+		   AND EXISTS (SELECT 1 FROM pg_matviews WHERE schemaname='public' AND matviewname='routing_audit_summary_7d')
+		   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_analytics_7d_ukey')
+			   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_audit_summary_7d_ukey')
+			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
+		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
+	`).Scan(&upToDate); err == nil && upToDate {
+		return nil
+	}
+
+	conn, err := d.pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+
+	// CREATE aggregates the full 7-day partition; the default 30s
+	// statement_timeout on prod would cancel it mid-boot.
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '10min'`); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = conn.Exec(context.WithoutCancel(ctx), `SET statement_timeout = DEFAULT`)
+	}()
+
+	var staleDefinition bool
+	if err := conn.QueryRow(ctx, `
+		SELECT CASE
+				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
+				 AND to_regclass('public.routing_audit_summary_7d') IS NOT NULL
+				 AND to_regclass('public.routing_analytics_source') IS NOT NULL
+				THEN NOT (
+					POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+					AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
+					AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
+				)
+				WHEN to_regclass('public.routing_analytics_7d') IS NOT NULL
+				  OR to_regclass('public.routing_audit_summary_7d') IS NOT NULL
+				  OR to_regclass('public.routing_analytics_source') IS NOT NULL
+				THEN TRUE
+				ELSE FALSE
+			END
+	`).Scan(&staleDefinition); err != nil {
+		return err
+	}
+	if staleDefinition {
+		if _, err := conn.Exec(ctx, `
+			DROP MATERIALIZED VIEW IF EXISTS routing_analytics_7d CASCADE;
+			DROP MATERIALIZED VIEW IF EXISTS routing_audit_summary_7d CASCADE;
+		`); err != nil {
+			return err
+		}
+	}
+
+	// Migration 649 performs the same one-time rebuild for SQL-driven
+	// deployments; this ensure path covers Go-driven startup upgrades.
+	if _, err := conn.Exec(ctx, routingAnalyticsMVSQL); err != nil {
+		return err
+	}
+	slog.Info("routing analytics materialized views ensured (migration 632)")
 	return nil
 }
 
@@ -596,8 +1322,9 @@ VALUES
     ARRAY['总结','摘要','会话','日志'],
     24,
     '你是会话日志分析助手。请严格输出 JSON，格式如下：
-{"summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"]}
+{"title":"简短准确的中文会话标题（12-20字）","summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"],"user_intent":"用户核心目标"}
 要求：
+- title 概括用户当前目标与已取得的结果，不要使用引号或解释
 - summary 必须是完整句子，涵盖：做了什么、怎么做的、结果如何
 - key_points 提取 3-5 个关键事实或决策点，每条 15-40 字
 - 不要输出 JSON 以外的任何文本
@@ -607,36 +1334,106 @@ ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled)
 VALUES
-  ('session_title',   'minimax-m3',         1.00, 0, TRUE),
+  ('session_title',   'minimax-m2.7',       1.00, 0, TRUE),
+  ('session_title',   'glm-5.1',            0.95, 0, TRUE),
   ('session_title',   'deepseek-v4-flash',  0.90, 0, TRUE),
-  ('session_summary', 'minimax-m3',         1.00, 0, TRUE),
+  ('session_summary', 'minimax-m2.7',       1.00, 0, TRUE),
+  ('session_summary', 'glm-5.1',            0.95, 0, TRUE),
   ('session_summary', 'deepseek-v4-flash',  0.90, 0, TRUE)
 ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
 `
 
 func (d *DB) Enabled() bool {
-	return d != nil && d.pool != nil
+	if d == nil {
+		return false
+	}
+	d.lifecycleMu.Lock()
+	defer d.lifecycleMu.Unlock()
+	return !d.closed && d.pool != nil
 }
 
 func (d *DB) Pool() *pgxpool.Pool {
 	if d == nil {
 		return nil
 	}
+	d.lifecycleMu.Lock()
+	defer d.lifecycleMu.Unlock()
+	if d.closed {
+		return nil
+	}
 	return d.pool
 }
 
 // Stdlib 返回一个 database/sql.DB，用于需要 *sql.DB 接口的场景。
-// 注意：返回的 *sql.DB 与 Pool() 共享底层连接池，调用方不应关闭它。
+//
+// 2026-09-01 修复：之前通过 stdlib.OpenDB(*d.pool.Config().ConnConfig) 在每次
+// 调用时构造一个全新的 *sql.DB，会在 database/sql 层各自建立独立的连接池，
+// 导致：
+//   - 每条 dbConn.Stdlib() 调用站点都会泄漏一个连接池（11 处调用 → 11+ 个
+//     独立池，与主 pgxpool 互相争抢 PG 连接）；
+//   - 注释中"共享底层连接池"的承诺不成立；
+//   - 资源生命周期与 db.DB.Close() 不挂钩：调用方关闭 db.DB 时这些孤儿池
+//     不会被回收。
+//
+// 修复方案：使用 stdlib.OpenDBFromPool(d.pool) —— pgx 通过 connector 代理
+// 从主 pgxpool.Pool 借/还连接，*sql.DB 自身不持有物理连接（pgx 已强制
+// SetMaxIdleConns(0) 防止 database/sql 把池里的连接全部缓存走）。
+//
+// 所有权：返回的 *sql.DB 由 *DB 独占管理，调用方**不得**调用 Close。
+// *DB.Close() 会负责关闭它；重复调用 Close() 是幂等且安全的。
+//
+// 并发安全：sync.Once 保证整个进程生命周期内只创建一次 *sql.DB，多 goroutine
+// 同时调用 Stdlib() 会拿到同一个实例指针（database/sql 内部连接池本身支持并发）。
 func (d *DB) Stdlib() *sql.DB {
-	if d == nil || d.pool == nil {
+	if d == nil {
 		return nil
 	}
-	return stdlib.OpenDB(*d.pool.Config().ConnConfig)
+	d.lifecycleMu.Lock()
+	defer d.lifecycleMu.Unlock()
+	if d.closed || d.pool == nil {
+		return nil
+	}
+	d.stdlibDBOnce.Do(func() {
+		// OpenDBFromPool 的副作用：
+		//   - 内部创建 *sql.DB 但不分配任何 PG 连接（连接全部从 pool 借）；
+		//   - 自动 SetMaxIdleConns(0)，避免 database/sql 缓存连接挤占 pgxpool；
+		//   - 关闭 *sql.DB 不会关闭 pgxpool（由我们手动管理）。
+		d.stdlibDB = stdlib.OpenDBFromPool(d.pool)
+	})
+	return d.stdlibDB
 }
 
+// Close 释放 *DB 持有的所有资源：主 pgxpool.Pool 以及由 Stdlib() 创建的共享
+// *sql.DB 桥接。幂等；二次调用是 no-op。
+//
+// 历史背景：早期实现只关闭 pool，导致 *sql.DB 桥接成为孤儿。本次修复后
+// Stdlib() 缓存到 *DB 上，Close() 必须同时释放它，避免在测试与短生命周期
+// 调用方中泄漏连接池。
 func (d *DB) Close() {
-	if d != nil && d.pool != nil {
-		d.pool.Close()
+	if d == nil {
+		return
+	}
+	d.lifecycleMu.Lock()
+	if d.closed {
+		d.lifecycleMu.Unlock()
+		return
+	}
+	d.closed = true
+	stdlibDB := d.stdlibDB
+	pool := d.pool
+	d.stdlibDB = nil
+	d.pool = nil
+	d.lifecycleMu.Unlock()
+
+	if stdlibDB != nil {
+		// *sql.DB.Close() 仅清空 database/sql 自己的连接队列，不会触碰底层
+		// pgxpool.Pool（pgx connector 解耦了这两层）。即便 pool 已经先关闭，
+		// 这一次 Close() 也是安全的：database/sql 会把残留请求直接返回
+		// driver.ErrBadConn。
+		_ = stdlibDB.Close()
+	}
+	if pool != nil {
+		pool.Close()
 	}
 }
 
@@ -832,6 +1629,62 @@ func (d *DB) ensureSessionTitles(ctx context.Context) error {
 // Both are regular (not materialised) views. The bg worker
 // (bg/tuning_view_refresher.go) refreshes them every 5 minutes.
 // The refresh cost is bounded (~50ms) and runs out of band.
+func (d *DB) ensureSessionTitleStates(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.session_title_states (
+		    tenant_id         text NOT NULL,
+		    scoped_session_id text NOT NULL,
+		    title             text,
+		    deleted           boolean NOT NULL DEFAULT false,
+		    deleted_at        timestamptz,
+		    fencing_token     bigint NOT NULL DEFAULT 0,
+		    lease_owner       text,
+		    lease_expires_at  timestamptz,
+		    source            text NOT NULL DEFAULT 'unknown',
+		    source_priority   integer NOT NULL DEFAULT 0,
+		    source_task_id    text,
+		    created_at        timestamptz NOT NULL DEFAULT now(),
+		    updated_at        timestamptz NOT NULL DEFAULT now(),
+		    PRIMARY KEY (tenant_id, scoped_session_id)
+		);
+		ALTER TABLE public.session_title_states
+		    ADD COLUMN IF NOT EXISTS title text,
+		    ADD COLUMN IF NOT EXISTS deleted boolean NOT NULL DEFAULT false,
+		    ADD COLUMN IF NOT EXISTS deleted_at timestamptz,
+		    ADD COLUMN IF NOT EXISTS fencing_token bigint NOT NULL DEFAULT 0,
+		    ADD COLUMN IF NOT EXISTS lease_owner text,
+		    ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
+		    ADD COLUMN IF NOT EXISTS source text NOT NULL DEFAULT 'unknown',
+		    ADD COLUMN IF NOT EXISTS source_priority integer NOT NULL DEFAULT 0,
+		    ADD COLUMN IF NOT EXISTS source_task_id text,
+		    ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now(),
+		    ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+		DO $$
+		BEGIN
+		    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.session_title_states'::regclass AND conname = 'session_title_states_token_nonnegative') THEN
+		        ALTER TABLE public.session_title_states ADD CONSTRAINT session_title_states_token_nonnegative CHECK (fencing_token >= 0);
+		    END IF;
+		    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.session_title_states'::regclass AND conname = 'session_title_states_priority_nonnegative') THEN
+		        ALTER TABLE public.session_title_states ADD CONSTRAINT session_title_states_priority_nonnegative CHECK (source_priority >= 0);
+		    END IF;
+		    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.session_title_states'::regclass AND conname = 'session_title_states_deleted_consistency') THEN
+		        ALTER TABLE public.session_title_states ADD CONSTRAINT session_title_states_deleted_consistency CHECK ((deleted AND deleted_at IS NOT NULL) OR NOT deleted);
+		    END IF;
+		END $$;
+		CREATE INDEX IF NOT EXISTS idx_session_title_states_active ON public.session_title_states (tenant_id, scoped_session_id) WHERE deleted = false AND title IS NOT NULL AND title <> '';
+		CREATE INDEX IF NOT EXISTS idx_session_title_states_tombstone ON public.session_title_states (tenant_id, updated_at DESC) WHERE deleted = true;
+		CREATE INDEX IF NOT EXISTS idx_session_title_states_lease ON public.session_title_states (lease_expires_at) WHERE lease_expires_at IS NOT NULL;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("session_title_states schema ensured")
+	return nil
+}
+
 func (d *DB) ensureTuningSignalsViews(ctx context.Context) error {
 	if d == nil || d.pool == nil {
 		return nil
@@ -1625,6 +2478,49 @@ func (d *DB) ensureProbeStateFunctionFixes(ctx context.Context) error {
 	return nil
 }
 
+// ensureNodeProbeTriggerKindSchema mirrors startup migration 538. Existing
+// deployments may have the tables with the old CHECK definitions, while some
+// older installations may not have the tables yet; only converge constraints
+// when the corresponding table exists.
+func (d *DB) ensureNodeProbeTriggerKindSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		DO $$
+		BEGIN
+			IF to_regclass('public.node_probe_runs') IS NOT NULL THEN
+				ALTER TABLE public.node_probe_runs
+					DROP CONSTRAINT IF EXISTS node_probe_runs_trigger_kind_check;
+				ALTER TABLE public.node_probe_runs
+					ADD CONSTRAINT node_probe_runs_trigger_kind_check CHECK (
+						trigger_kind IN (
+							'request_failure', 'manual', 'credential_recovery',
+							'sync_request', 'periodic', 'admin',
+							'integrity_probe_planner', 'selfcheck', 'external_async'
+						)
+					);
+			END IF;
+			IF to_regclass('public.credential_probe_queue') IS NOT NULL THEN
+				ALTER TABLE public.credential_probe_queue
+					DROP CONSTRAINT IF EXISTS credential_probe_queue_source_check;
+				ALTER TABLE public.credential_probe_queue
+					ADD CONSTRAINT credential_probe_queue_source_check CHECK (
+						source IN (
+							'request_failure', 'periodic', 'external_async', 'admin',
+							'integrity_probe_planner', 'selfcheck'
+						)
+					);
+			END IF;
+		END
+		$$;
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure migration 538 probe constraints: %w", err)
+	}
+	return nil
+}
+
 // ensureTenantModelPoliciesSchema mirrors
 // db/migrations/024_tenant_model_policies.sql for startup apply.
 // Idempotent. Creates:
@@ -2140,6 +3036,96 @@ func (d *DB) ensureConcurrencyMode(ctx context.Context) error {
 		return err
 	}
 	slog.Info("concurrency_mode schema ensured (credentials.concurrency_mode/tpm_limit/max_queue_depth/max_queue_wait_ms)")
+	return nil
+}
+
+// ensureCredentialGovernorRevision mirrors migration 566. The listener gets
+// only a revision payload, so the sequence is global and publishers can safely
+// catch up using revision > lastSeen.
+func (d *DB) ensureCredentialGovernorRevision(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.credentials
+			ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
+		CREATE SEQUENCE IF NOT EXISTS public.credentials_governor_revision_seq
+			AS BIGINT START WITH 1 MINVALUE 1;
+		SELECT setval(
+			'public.credentials_governor_revision_seq',
+			GREATEST(
+				COALESCE((SELECT MAX(revision) FROM public.credentials), 0),
+				COALESCE(pg_sequence_last_value('public.credentials_governor_revision_seq'), 0),
+				1
+			),
+			COALESCE((SELECT MAX(revision) FROM public.credentials), 0) > 0
+				OR pg_sequence_last_value('public.credentials_governor_revision_seq') IS NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS credentials_revision_idx ON public.credentials (revision);
+		COMMENT ON COLUMN public.credentials.revision IS
+			'Globally monotonic governor policy revision. Bumped by governor-relevant credential writes and consumed by domains/dispatch/policy_publisher.go via LISTEN credentials_revision.';
+
+		CREATE OR REPLACE FUNCTION public.bump_credentials_governor_revision()
+		RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF TG_OP = 'INSERT' THEN
+				NEW.revision := nextval('public.credentials_governor_revision_seq');
+			ELSIF OLD.concurrency_limit IS DISTINCT FROM NEW.concurrency_limit
+			   OR OLD.concurrency_mode IS DISTINCT FROM NEW.concurrency_mode
+			   OR OLD.rpm_limit IS DISTINCT FROM NEW.rpm_limit
+			   OR OLD.tpm_limit IS DISTINCT FROM NEW.tpm_limit
+			   OR OLD.fp_slot_limit IS DISTINCT FROM NEW.fp_slot_limit
+			   OR OLD.max_queue_depth IS DISTINCT FROM NEW.max_queue_depth
+			   OR OLD.max_queue_wait_ms IS DISTINCT FROM NEW.max_queue_wait_ms THEN
+				NEW.revision := nextval('public.credentials_governor_revision_seq');
+			ELSE
+				NEW.revision := OLD.revision;
+			END IF;
+			RETURN NEW;
+		END;
+		$$;
+
+		CREATE OR REPLACE FUNCTION public.notify_credentials_governor_revision()
+		RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			PERFORM pg_notify('credentials_revision', NEW.revision::text);
+			RETURN NEW;
+		END;
+		$$;
+
+		DROP TRIGGER IF EXISTS trg_bump_credentials_governor_revision ON public.credentials;
+		CREATE TRIGGER trg_bump_credentials_governor_revision
+		BEFORE INSERT OR UPDATE OF concurrency_limit, concurrency_mode, rpm_limit,
+			tpm_limit, fp_slot_limit, max_queue_depth, max_queue_wait_ms
+		ON public.credentials FOR EACH ROW
+		EXECUTE FUNCTION public.bump_credentials_governor_revision();
+
+		DROP TRIGGER IF EXISTS trg_notify_credentials_governor_revision_insert ON public.credentials;
+		CREATE TRIGGER trg_notify_credentials_governor_revision_insert
+		AFTER INSERT ON public.credentials FOR EACH ROW
+		EXECUTE FUNCTION public.notify_credentials_governor_revision();
+
+		DROP TRIGGER IF EXISTS trg_notify_credentials_governor_revision_update ON public.credentials;
+		CREATE TRIGGER trg_notify_credentials_governor_revision_update
+		AFTER UPDATE OF concurrency_limit, concurrency_mode, rpm_limit, tpm_limit,
+			fp_slot_limit, max_queue_depth, max_queue_wait_ms
+		ON public.credentials FOR EACH ROW
+		WHEN (OLD.revision IS DISTINCT FROM NEW.revision)
+		EXECUTE FUNCTION public.notify_credentials_governor_revision();
+
+		DROP TRIGGER IF EXISTS trg_notify_auto_route_creds ON public.credentials;
+		CREATE TRIGGER trg_notify_auto_route_creds
+		AFTER UPDATE OF status, availability_state, quota_state, circuit_state,
+			concurrency_limit, concurrency_mode, rpm_limit, tpm_limit, fp_slot_limit,
+			max_queue_depth, max_queue_wait_ms, lifecycle_status, manual_disabled
+		ON public.credentials FOR EACH ROW
+		WHEN (OLD.* IS DISTINCT FROM NEW.*)
+		EXECUTE FUNCTION public.notify_auto_route_refresh();
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential governor revision schema ensured")
 	return nil
 }
 
@@ -3742,5 +4728,594 @@ func (d *DB) ensurePartitionAutovacuumSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("partition autovacuum settings ensured (hot + partition tables)")
+	return nil
+}
+
+// ensureCredentialClientQuotaSchema mirrors the per-credential, per-client
+// quota contract introduced by P0-C. The shadow rollout is driven by
+// settings (credential_client_quota.mode); the table only records policy
+// rows and never blocks credential health writes.
+//
+// Parked by AUDIT_24H_20260817.md B1 (option C): the bootstrap call at
+// applyMigrationsOnce is commented out until the dispatch path actually
+// consumes credential_client_quota.mode, so this method is currently
+// uncalled. The body is retained to make restoring one line of caller +
+// re-enabling the spec registration enough to un-park; suppress the
+// resulting U1000 so a future staticcheck gate stays clean in the meantime.
+//
+//lint:ignore U1000 retained for credentialquota un-park; see AUDIT_24H_20260817.md B1
+func (d *DB) ensureCredentialClientQuotaSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.credential_client_quota (
+		    credential_id    BIGINT NOT NULL REFERENCES public.credentials(id) ON DELETE CASCADE,
+		    client_type      VARCHAR(64) NOT NULL,
+		    owner_tenant_id  TEXT NOT NULL,
+		    max_concurrent   INTEGER,
+		    max_fp_slots     INTEGER,
+		    fp_enforce_after TIMESTAMPTZ,
+		    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    updated_by       TEXT,
+		    CONSTRAINT credential_client_quota_pkey
+		        PRIMARY KEY (credential_id, client_type),
+		    CONSTRAINT credential_client_quota_client_type_check
+		        CHECK (client_type IN (
+		            'cursor', 'claude-code', 'opencode', 'zcode', 'codex', 'roocode',
+		            'vscode', 'copilot', 'windsurf', 'zed', 'jetbrains', 'unknown'
+		        )),
+		    CONSTRAINT credential_client_quota_max_concurrent_check
+		        CHECK (max_concurrent IS NULL OR max_concurrent > 0),
+		    CONSTRAINT credential_client_quota_max_fp_slots_check
+		        CHECK (max_fp_slots IS NULL OR max_fp_slots > 0),
+		    CONSTRAINT credential_client_quota_has_limit_check
+		        CHECK (max_concurrent IS NOT NULL OR max_fp_slots IS NOT NULL)
+		);
+		CREATE INDEX IF NOT EXISTS idx_credential_client_quota_owner_client
+		    ON public.credential_client_quota (owner_tenant_id, client_type);
+		ALTER TABLE public.credential_client_quota
+		    ADD COLUMN IF NOT EXISTS updated_by TEXT;
+	`)
+	if err != nil {
+		return err
+	}
+	_, err = d.pool.Exec(ctx, `
+		CREATE OR REPLACE FUNCTION public.credential_client_quota_set_owner_tenant()
+		RETURNS TRIGGER AS $fn$
+		DECLARE
+		    parent_tenant TEXT;
+		BEGIN
+		    SELECT tenant_id INTO parent_tenant
+		    FROM public.credentials
+		    WHERE id = NEW.credential_id;
+		    IF NOT FOUND THEN
+		        RAISE EXCEPTION 'credential_client_quota credential_id % does not exist', NEW.credential_id
+		            USING ERRCODE = '23503';
+		    END IF;
+		    NEW.owner_tenant_id := parent_tenant;
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+		DROP TRIGGER IF EXISTS trg_credential_client_quota_set_owner_tenant
+		    ON public.credential_client_quota;
+		CREATE TRIGGER trg_credential_client_quota_set_owner_tenant
+		    BEFORE INSERT OR UPDATE OF credential_id, owner_tenant_id
+		    ON public.credential_client_quota
+		    FOR EACH ROW
+		    EXECUTE FUNCTION public.credential_client_quota_set_owner_tenant();
+
+		CREATE OR REPLACE FUNCTION public.credential_client_quota_touch_updated_at()
+		RETURNS TRIGGER AS $fn$
+		BEGIN
+		    NEW.updated_at := now();
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+		DROP TRIGGER IF EXISTS trg_credential_client_quota_touch_updated_at
+		    ON public.credential_client_quota;
+		CREATE TRIGGER trg_credential_client_quota_touch_updated_at
+		    BEFORE UPDATE ON public.credential_client_quota
+		    FOR EACH ROW
+		    EXECUTE FUNCTION public.credential_client_quota_touch_updated_at();
+
+		ALTER TABLE public.credential_client_quota ENABLE ROW LEVEL SECURITY;
+		ALTER TABLE public.credential_client_quota FORCE ROW LEVEL SECURITY;
+
+		DROP POLICY IF EXISTS tenant_isolation_credential_client_quota
+		    ON public.credential_client_quota;
+		CREATE POLICY tenant_isolation_credential_client_quota
+		    ON public.credential_client_quota
+		    USING (
+		        owner_tenant_id = public.get_current_tenant()
+		        OR current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    )
+		    WITH CHECK (
+		        owner_tenant_id = public.get_current_tenant()
+		        OR current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    );
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential_client_quota schema ensured")
+	return nil
+}
+
+// ensureUrsmKeyMigrationLedgerSchema maintains the final schema formed by
+// sql/migrations/080-ursm-key-migration-ledger.sql and the additive 081
+// rollback_deadline repair. Idempotent and startup-safe so multi-key
+// admin/runtime paths do not depend on an external file runner applying root
+// sql/migrations/*.sql. The schema records the durable migration identity
+// (owner / ledger_id / mode / preflight checksum / checkpoint) and one row per
+// exact source Redis key so copy and cleanup remain exact-key and
+// interruptible.
+func (d *DB) ensureUrsmKeyMigrationLedgerSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS ursm_key_migration_runs (
+		    ledger_id          TEXT PRIMARY KEY,
+		    owner              TEXT NOT NULL,
+		    key_schema_mode    TEXT NOT NULL,
+		    preflight_checksum TEXT NOT NULL,
+		    preflight_total    INT  NOT NULL DEFAULT 0,
+		    preflight_migratable INT NOT NULL DEFAULT 0,
+		    preflight_canonical_present INT NOT NULL DEFAULT 0,
+		    preflight_ambiguous INT NOT NULL DEFAULT 0,
+		    preflight_excluded INT NOT NULL DEFAULT 0,
+		    checkpoint         TEXT NOT NULL,
+			cutover_epoch      BIGINT NOT NULL DEFAULT 0,
+			rollback_deadline  TIMESTAMPTZ,
+			started_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    finished_at        TIMESTAMPTZ,
+		    CONSTRAINT ursm_key_migration_runs_checkpoint_chk CHECK (
+		        checkpoint IN ('preflight','copy','coverage','dual','observe','cleanup','rollback','done')
+		    ),
+		    CONSTRAINT ursm_key_migration_runs_mode_chk CHECK (
+		        key_schema_mode IN ('legacy','dual','canonical')
+		    )
+			);
+
+			ALTER TABLE ursm_key_migration_runs
+			    ADD COLUMN IF NOT EXISTS rollback_deadline TIMESTAMPTZ;
+
+			CREATE TABLE IF NOT EXISTS ursm_key_migration_entries (
+		    ledger_id        TEXT NOT NULL REFERENCES ursm_key_migration_runs(ledger_id) ON DELETE CASCADE,
+		    source_key       TEXT NOT NULL,
+		    target_key       TEXT NOT NULL DEFAULT '',
+		    classification   TEXT NOT NULL,
+		    schema_origin    TEXT NOT NULL DEFAULT '',
+		    key_type         TEXT NOT NULL DEFAULT '',
+		    pttl_ms          BIGINT NOT NULL DEFAULT -2,
+		    generation       BIGINT NOT NULL DEFAULT 0,
+		    field_checksum   TEXT NOT NULL DEFAULT '',
+		    tuple_tenant     TEXT NOT NULL DEFAULT '',
+		    tuple_credential BIGINT NOT NULL DEFAULT 0,
+		    tuple_raw_model  TEXT NOT NULL DEFAULT '',
+		    state            TEXT NOT NULL DEFAULT 'classified',
+		    copied_at        TIMESTAMPTZ,
+		    copied_pttl_ms   BIGINT,
+		    cleaned_at       TIMESTAMPTZ,
+		    last_error       TEXT NOT NULL DEFAULT '',
+		    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		    PRIMARY KEY (ledger_id, source_key),
+		    CONSTRAINT ursm_key_migration_entries_class_chk CHECK (
+		        classification IN ('migratable','canonical_present','ambiguous','excluded_non_authoritative')
+		    ),
+		    CONSTRAINT ursm_key_migration_entries_schema_chk CHECK (
+		        schema_origin IN ('','legacy','k2')
+		    ),
+		    CONSTRAINT ursm_key_migration_entries_state_chk CHECK (
+		        state IN ('classified','copied','cleaned','rolled_back','conflict','expired','fenced')
+		    )
+		);
+
+		CREATE INDEX IF NOT EXISTS ursm_key_migration_entries_state_idx
+		    ON ursm_key_migration_entries (ledger_id, state);
+			CREATE INDEX IF NOT EXISTS ursm_key_migration_entries_class_idx
+			    ON ursm_key_migration_entries (ledger_id, classification);
+			ALTER TABLE ursm_key_migration_entries
+			    ADD COLUMN IF NOT EXISTS cleanup_claim_owner TEXT NOT NULL DEFAULT '',
+			    ADD COLUMN IF NOT EXISTS cleanup_claim_epoch BIGINT,
+			    ADD COLUMN IF NOT EXISTS cleanup_claimed_at TIMESTAMPTZ;
+			CREATE TABLE IF NOT EXISTS ursm_key_migration_transitions (
+			    ledger_id       TEXT NOT NULL REFERENCES ursm_key_migration_runs(ledger_id) ON DELETE CASCADE,
+			    cutover_epoch   BIGINT NOT NULL,
+			    from_checkpoint TEXT NOT NULL,
+			    to_checkpoint   TEXT NOT NULL,
+			    key_schema_mode TEXT NOT NULL,
+			    actor           TEXT NOT NULL,
+			    approved_by     TEXT NOT NULL,
+			    evidence_sha256 TEXT NOT NULL,
+			    evidence_ref    TEXT NOT NULL,
+			    reason          TEXT NOT NULL DEFAULT '',
+			    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			    PRIMARY KEY (ledger_id, cutover_epoch),
+			    CONSTRAINT ursm_key_migration_transitions_checkpoint_chk CHECK (
+from_checkpoint IN ('preflight','copy','coverage','dual','observe','cleanup')
+				        AND to_checkpoint IN ('copy','coverage','dual','observe','cleanup','done','rollback')
+			    ),
+			    CONSTRAINT ursm_key_migration_transitions_mode_chk CHECK (
+			        key_schema_mode IN ('legacy','dual','canonical')
+			    ),
+			    CONSTRAINT ursm_key_migration_transitions_evidence_sha256_chk CHECK (
+			        evidence_sha256 ~ '^[0-9a-f]{64}$'
+			    )
+			);
+			CREATE INDEX IF NOT EXISTS ursm_key_migration_entries_fenced_claim_idx
+			    ON ursm_key_migration_entries (ledger_id, state, cleanup_claimed_at);
+			ALTER TABLE ursm_key_migration_runs
+			    DROP CONSTRAINT IF EXISTS ursm_key_migration_runs_checkpoint_chk;
+			ALTER TABLE ursm_key_migration_runs
+			    ADD CONSTRAINT ursm_key_migration_runs_checkpoint_chk CHECK (
+			        checkpoint IN ('preflight','copy','coverage','dual','observe','cleanup','rollback','done')
+			    );
+			`)
+	if err != nil {
+		return err
+	}
+	slog.Info("ursm_key_migration ledger schema ensured")
+	return nil
+}
+
+// ensureApprovalResumeClaimSchema mirrors startup migration 553 for gateway
+// databases that are upgraded through db.Open rather than the installer.
+func (d *DB) ensureApprovalResumeClaimSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+
+	var exists bool
+	if err := d.pool.QueryRow(ctx, `SELECT to_regclass('public.approval_queue') IS NOT NULL`).Scan(&exists); err != nil {
+		return fmt.Errorf("check approval resume table: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+
+	tx, err := d.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin approval resume schema: %w", err)
+	}
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
+	if _, err := tx.Exec(ctx, `
+		ALTER TABLE public.approval_queue
+		    ADD COLUMN IF NOT EXISTS resume_state TEXT NOT NULL DEFAULT 'idle',
+		    ADD COLUMN IF NOT EXISTS resume_owner TEXT,
+		    ADD COLUMN IF NOT EXISTS resume_lease_until TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS resume_fencing_token BIGINT NOT NULL DEFAULT 0,
+		    ADD COLUMN IF NOT EXISTS resume_started_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS resume_completed_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS resume_error TEXT;
+		ALTER TABLE public.approval_queue
+		    DROP CONSTRAINT IF EXISTS approval_queue_resume_state_chk;
+		ALTER TABLE public.approval_queue
+		    ADD CONSTRAINT approval_queue_resume_state_chk CHECK (
+		        resume_state IN ('idle', 'running', 'completed', 'failed')
+		    );
+		ALTER TABLE public.approval_queue
+		    DROP CONSTRAINT IF EXISTS approval_queue_resume_fencing_token_chk;
+		ALTER TABLE public.approval_queue
+		    ADD CONSTRAINT approval_queue_resume_fencing_token_chk CHECK (
+		        resume_fencing_token >= 0
+		    );
+		CREATE INDEX IF NOT EXISTS idx_approval_queue_resume_claimable
+		    ON public.approval_queue (resume_lease_until, created_at)
+		    WHERE status = 'approved' AND resume_state IN ('idle', 'running', 'failed');
+	`); err != nil {
+		return fmt.Errorf("ensure approval resume schema: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit approval resume schema: %w", err)
+	}
+	return nil
+}
+
+// ensureProxyManagementCanonicalSchema mirrors startup migration 646. It is
+// deliberately explicit in the production startup chain so gateway upgrades do
+// not depend on an external SQL file runner. Every statement is replay-safe and
+// repairs nullable columns left by interrupted legacy migration 364 installs.
+func (d *DB) ensureProxyManagementCanonicalSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.proxy_subscriptions (
+			id SERIAL PRIMARY KEY, name VARCHAR(100) NOT NULL, subscribe_url TEXT NOT NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'active', last_fetch_at TIMESTAMP,
+			last_fetch_status VARCHAR(20), last_error TEXT, node_count INTEGER NOT NULL DEFAULT 0,
+			priority INTEGER NOT NULL DEFAULT 0, notes TEXT, created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+			updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		);
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS name VARCHAR(100);
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS subscribe_url TEXT;
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS last_fetch_at TIMESTAMP;
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS last_fetch_status VARCHAR(20);
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS last_error TEXT;
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS node_count INTEGER DEFAULT 0;
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS priority INTEGER DEFAULT 0;
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS notes TEXT;
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+		ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+			UPDATE public.proxy_subscriptions SET name = COALESCE(NULLIF(name, ''), 'legacy-subscription-' || id::text), status = CASE WHEN subscribe_url IS NULL OR btrim(subscribe_url) = '' THEN 'disabled' ELSE COALESCE(NULLIF(status, ''), 'disabled') END, subscribe_url = COALESCE(subscribe_url, ''), node_count = COALESCE(node_count, 0), priority = COALESCE(priority, 0), created_at = COALESCE(created_at, NOW()), updated_at = COALESCE(updated_at, NOW());
+		ALTER TABLE public.proxy_subscriptions ALTER COLUMN name SET NOT NULL;
+		ALTER TABLE public.proxy_subscriptions ALTER COLUMN subscribe_url SET NOT NULL;
+		ALTER TABLE public.proxy_subscriptions ALTER COLUMN status SET NOT NULL;
+		ALTER TABLE public.proxy_subscriptions ALTER COLUMN node_count SET NOT NULL;
+		ALTER TABLE public.proxy_subscriptions ALTER COLUMN priority SET NOT NULL;
+		ALTER TABLE public.proxy_subscriptions ALTER COLUMN created_at SET NOT NULL;
+		ALTER TABLE public.proxy_subscriptions ALTER COLUMN updated_at SET NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_proxy_subs_status ON public.proxy_subscriptions(status);
+		CREATE INDEX IF NOT EXISTS idx_proxy_subs_priority ON public.proxy_subscriptions(priority DESC) WHERE status = 'active';
+
+		CREATE TABLE IF NOT EXISTS public.proxy_nodes (
+			id SERIAL PRIMARY KEY, subscription_id INTEGER REFERENCES public.proxy_subscriptions(id) ON DELETE CASCADE,
+			name VARCHAR(200) NOT NULL, protocol VARCHAR(20) NOT NULL, server VARCHAR(255) NOT NULL,
+			port INTEGER NOT NULL, username VARCHAR(100), password TEXT, config JSONB, location VARCHAR(50),
+			status VARCHAR(20) NOT NULL DEFAULT 'active', health_check_url TEXT DEFAULT 'https://www.google.com/generate_204',
+			last_health_check_at TIMESTAMP, last_health_check_status VARCHAR(20), response_time_ms INTEGER,
+			success_rate FLOAT NOT NULL DEFAULT 1.0, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		);
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS subscription_id INTEGER;
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS name VARCHAR(200);
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS protocol VARCHAR(20);
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS server VARCHAR(255);
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS port INTEGER;
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS username VARCHAR(100);
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS password TEXT;
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS config JSONB;
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS location VARCHAR(50);
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'active';
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS health_check_url TEXT DEFAULT 'https://www.google.com/generate_204';
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS last_health_check_at TIMESTAMP;
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS last_health_check_status VARCHAR(20);
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS response_time_ms INTEGER;
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS success_rate FLOAT DEFAULT 1.0;
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS consecutive_failures INTEGER DEFAULT 0;
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+		ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+			DELETE FROM public.proxy_nodes n WHERE n.subscription_id IS NULL OR NOT EXISTS (SELECT 1 FROM public.proxy_subscriptions s WHERE s.id = n.subscription_id);
+			UPDATE public.proxy_nodes SET name = COALESCE(NULLIF(name, ''), 'legacy-node-' || id::text), status = CASE WHEN protocol IS NULL OR btrim(protocol) = '' OR server IS NULL OR btrim(server) = '' OR port IS NULL OR port < 1 OR port > 65535 THEN 'disabled' WHEN status IN ('active', 'disabled', 'unhealthy') THEN status ELSE 'disabled' END, protocol = COALESCE(NULLIF(protocol, ''), 'http'), server = COALESCE(NULLIF(server, ''), 'invalid.local'), port = CASE WHEN port BETWEEN 1 AND 65535 THEN port ELSE 0 END, health_check_url = COALESCE(NULLIF(health_check_url, ''), 'https://www.google.com/generate_204'), success_rate = COALESCE(success_rate, 0.0), consecutive_failures = COALESCE(consecutive_failures, 0), created_at = COALESCE(created_at, NOW()), updated_at = COALESCE(updated_at, NOW()) WHERE name IS NULL OR name = '' OR protocol IS NULL OR protocol = '' OR server IS NULL OR server = '' OR port IS NULL OR port < 1 OR port > 65535 OR status IS NULL OR status NOT IN ('active', 'disabled', 'unhealthy') OR health_check_url IS NULL OR health_check_url = '' OR success_rate IS NULL OR consecutive_failures IS NULL OR created_at IS NULL OR updated_at IS NULL;
+			ALTER TABLE public.proxy_nodes ALTER COLUMN subscription_id SET NOT NULL;
+			ALTER TABLE public.proxy_nodes ALTER COLUMN name SET NOT NULL;
+			ALTER TABLE public.proxy_nodes ALTER COLUMN protocol SET NOT NULL;
+			ALTER TABLE public.proxy_nodes ALTER COLUMN server SET NOT NULL;
+			ALTER TABLE public.proxy_nodes ALTER COLUMN port SET NOT NULL;
+			ALTER TABLE public.proxy_nodes ALTER COLUMN status SET NOT NULL;
+			ALTER TABLE public.proxy_nodes ALTER COLUMN health_check_url SET DEFAULT 'https://www.google.com/generate_204';
+			ALTER TABLE public.proxy_nodes ALTER COLUMN health_check_url SET NOT NULL;
+		ALTER TABLE public.proxy_nodes ALTER COLUMN success_rate SET NOT NULL;
+		ALTER TABLE public.proxy_nodes ALTER COLUMN consecutive_failures SET NOT NULL;
+		ALTER TABLE public.proxy_nodes ALTER COLUMN created_at SET NOT NULL;
+		ALTER TABLE public.proxy_nodes ALTER COLUMN updated_at SET NOT NULL;
+			DO $$ BEGIN
+				IF EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'public.proxy_nodes'::regclass AND c.conname = 'proxy_nodes_subscription_id_fkey' AND NOT (c.contype = 'f' AND c.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = 'public.proxy_nodes'::regclass AND attname = 'subscription_id' AND NOT attisdropped)]::smallint[] AND c.confrelid = 'public.proxy_subscriptions'::regclass AND c.confdeltype = 'c')) THEN
+					ALTER TABLE public.proxy_nodes DROP CONSTRAINT proxy_nodes_subscription_id_fkey;
+				END IF;
+				IF NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'public.proxy_nodes'::regclass AND c.contype = 'f' AND c.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = 'public.proxy_nodes'::regclass AND attname = 'subscription_id' AND NOT attisdropped)]::smallint[] AND c.confrelid = 'public.proxy_subscriptions'::regclass AND c.confdeltype = 'c') THEN
+					ALTER TABLE public.proxy_nodes ADD CONSTRAINT proxy_nodes_subscription_id_fkey FOREIGN KEY (subscription_id) REFERENCES public.proxy_subscriptions(id) ON DELETE CASCADE NOT VALID;
+				END IF;
+			END $$;
+		CREATE INDEX IF NOT EXISTS idx_proxy_nodes_sub_id ON public.proxy_nodes(subscription_id);
+		CREATE INDEX IF NOT EXISTS idx_proxy_nodes_status ON public.proxy_nodes(status);
+		CREATE INDEX IF NOT EXISTS idx_proxy_nodes_health ON public.proxy_nodes(status, response_time_ms) WHERE status = 'active';
+
+		CREATE TABLE IF NOT EXISTS public.provider_domains (
+			id SERIAL PRIMARY KEY, domain VARCHAR(255) NOT NULL UNIQUE, catalog_code VARCHAR(100),
+			requires_proxy BOOLEAN NOT NULL DEFAULT FALSE, location VARCHAR(50), probe_status VARCHAR(20),
+			last_probe_at TIMESTAMP, last_probe_direct_ms INTEGER, last_probe_proxy_ms INTEGER, notes TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT NOW(), updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+		);
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS domain VARCHAR(255);
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS catalog_code VARCHAR(100);
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS requires_proxy BOOLEAN DEFAULT FALSE;
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS location VARCHAR(50);
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS probe_status VARCHAR(20);
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS last_probe_at TIMESTAMP;
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS last_probe_direct_ms INTEGER;
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS last_probe_proxy_ms INTEGER;
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS notes TEXT;
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+		ALTER TABLE public.provider_domains ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW();
+		UPDATE public.provider_domains SET domain = COALESCE(NULLIF(domain, ''), 'legacy-domain-' || id::text), requires_proxy = COALESCE(requires_proxy, FALSE), created_at = COALESCE(created_at, NOW()), updated_at = COALESCE(updated_at, NOW());
+		UPDATE public.provider_domains d SET domain = left(d.domain, 255 - length('#legacy-' || d.id::text)) || '#legacy-' || d.id::text WHERE EXISTS (SELECT 1 FROM public.provider_domains older WHERE older.domain = d.domain AND older.id < d.id);
+		ALTER TABLE public.provider_domains ALTER COLUMN domain SET NOT NULL;
+		ALTER TABLE public.provider_domains ALTER COLUMN requires_proxy SET NOT NULL;
+		ALTER TABLE public.provider_domains ALTER COLUMN created_at SET NOT NULL;
+		ALTER TABLE public.provider_domains ALTER COLUMN updated_at SET NOT NULL;
+		DO $$ BEGIN
+			IF NOT EXISTS (SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = 'public' AND t.relname = 'provider_domains' AND c.contype IN ('p', 'u') AND c.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = 'public.provider_domains'::regclass AND attname = 'domain' AND NOT attisdropped)]::smallint[]) THEN
+				ALTER TABLE public.provider_domains ADD CONSTRAINT provider_domains_domain_key UNIQUE (domain);
+			END IF;
+		END $$;
+		CREATE INDEX IF NOT EXISTS idx_provider_domains_requires_proxy ON public.provider_domains(requires_proxy);
+		CREATE INDEX IF NOT EXISTS idx_provider_domains_catalog ON public.provider_domains(catalog_code);
+		CREATE INDEX IF NOT EXISTS idx_provider_domains_probe ON public.provider_domains(probe_status);
+
+		ALTER TABLE public.providers ADD COLUMN IF NOT EXISTS egress_profile TEXT DEFAULT 'direct';
+		ALTER TABLE public.providers ADD COLUMN IF NOT EXISTS proxy_subscription_id INTEGER;
+		UPDATE public.providers SET egress_profile = 'direct' WHERE egress_profile IS NULL OR egress_profile = '';
+		ALTER TABLE public.providers ALTER COLUMN egress_profile SET DEFAULT 'direct';
+		ALTER TABLE public.providers ALTER COLUMN egress_profile SET NOT NULL;
+			DO $$ BEGIN
+				IF EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'public.providers'::regclass AND c.conname = 'providers_proxy_subscription_id_fkey' AND NOT (c.contype = 'f' AND c.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = 'public.providers'::regclass AND attname = 'proxy_subscription_id' AND NOT attisdropped)]::smallint[] AND c.confrelid = 'public.proxy_subscriptions'::regclass AND c.confdeltype = 'n')) THEN
+					ALTER TABLE public.providers DROP CONSTRAINT providers_proxy_subscription_id_fkey;
+				END IF;
+				IF NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conrelid = 'public.providers'::regclass AND c.contype = 'f' AND c.conkey = ARRAY[(SELECT attnum FROM pg_attribute WHERE attrelid = 'public.providers'::regclass AND attname = 'proxy_subscription_id' AND NOT attisdropped)]::smallint[] AND c.confrelid = 'public.proxy_subscriptions'::regclass AND c.confdeltype = 'n') THEN
+					ALTER TABLE public.providers ADD CONSTRAINT providers_proxy_subscription_id_fkey FOREIGN KEY (proxy_subscription_id) REFERENCES public.proxy_subscriptions(id) ON DELETE SET NULL NOT VALID;
+				END IF;
+			END $$;
+		CREATE INDEX IF NOT EXISTS idx_providers_egress ON public.providers(egress_profile) WHERE egress_profile IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_providers_proxy_sub ON public.providers(proxy_subscription_id) WHERE proxy_subscription_id IS NOT NULL;
+		INSERT INTO public.schema_migrations (version, description) VALUES ('646', 'canonical proxy management schema') ON CONFLICT (version) DO NOTHING;
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure proxy management canonical schema: %w", err)
+	}
+	return nil
+}
+
+// autoRouteSelectionsHotEnsureSQL mirrors the hot-table half of
+// sql/migrations/startup/656_auto_route_selections_hot.sql (table shape,
+// defaults, CHECK constraints, indexes, and the auto_route_selections_all
+// UNION ALL view). It intentionally does NOT install the
+// ensure_/promote_ functions — those ship with migration 656 and with the
+// installer; this ensure only guarantees the write path
+// (auto_route_selections_hot + view) exists so selection batches are not
+// dropped on binaries upgraded without re-running migrations.
+const autoRouteSelectionsHotEnsureSQL = `
+CREATE TABLE IF NOT EXISTS public.auto_route_selections_hot (
+  id BIGINT NOT NULL DEFAULT nextval('public.auto_route_selections_id_seq'::regclass),
+  request_id TEXT NOT NULL, session_id TEXT, task_id TEXT, tenant_id VARCHAR(64),
+  ts TIMESTAMPTZ NOT NULL DEFAULT NOW(), task_type TEXT NOT NULL, profile TEXT NOT NULL DEFAULT 'smart',
+  classifier TEXT NOT NULL DEFAULT 'heuristic', confidence NUMERIC(4,3), canonical_id BIGINT,
+  chosen_model TEXT NOT NULL, candidate_rank SMALLINT NOT NULL DEFAULT 1,
+  composite_score NUMERIC(6,2), affinity_score NUMERIC(6,2),
+  affinity_applied BOOLEAN NOT NULL, explore BOOLEAN NOT NULL, fallback_used BOOLEAN NOT NULL,
+  success BOOLEAN, latency_ms INTEGER, cost_usd NUMERIC(14,8), reward NUMERIC(4,3),
+  reward_source TEXT, settled_at TIMESTAMPTZ, partition_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  experiment_id TEXT, treatment TEXT, assignment_version TEXT, assignment_key_hash TEXT,
+  PRIMARY KEY (id, partition_date)
+);
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN ts SET DEFAULT NOW();
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN profile SET DEFAULT 'smart';
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN classifier SET DEFAULT 'heuristic';
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN candidate_rank SET DEFAULT 1;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN affinity_applied SET DEFAULT FALSE;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN explore SET DEFAULT FALSE;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN fallback_used SET DEFAULT FALSE;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN partition_date SET DEFAULT CURRENT_DATE;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.auto_route_selections_hot'::regclass AND conname = 'ars_hot_profile_check') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD CONSTRAINT ars_hot_profile_check CHECK (profile IN ('', 'smart', 'speed_first', 'cost_first'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.auto_route_selections_hot'::regclass AND conname = 'ars_hot_reward_range') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD CONSTRAINT ars_hot_reward_range CHECK (reward IS NULL OR (reward >= 0 AND reward <= 1));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.auto_route_selections_hot'::regclass AND conname = 'ars_hot_reward_source_check') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD CONSTRAINT ars_hot_reward_source_check CHECK (reward_source IS NULL OR reward_source IN ('request', 'session'));
+  END IF;
+END $$;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'detected_language') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN detected_language TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'prompt_length_bucket') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN prompt_length_bucket TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'context_length_bucket') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN context_length_bucket TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'turn_count_bucket') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN turn_count_bucket TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'has_code_indicator') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN has_code_indicator BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'has_math_indicator') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN has_math_indicator BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'has_table_indicator') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN has_table_indicator BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'has_multimedia_indicator') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN has_multimedia_indicator BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'intent_category') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN intent_category TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'domain_hint') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN domain_hint TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'complexity_bucket') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN complexity_bucket TEXT;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'latency_sensitive') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN latency_sensitive BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'cost_sensitive') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN cost_sensitive BOOLEAN;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'feature_version') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN feature_version TEXT DEFAULT 'v1';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'auto_route_selections_hot' AND column_name = 'content_hash') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD COLUMN content_hash TEXT;
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ars_hot_request ON public.auto_route_selections_hot (request_id, partition_date);
+CREATE INDEX IF NOT EXISTS idx_ars_hot_task_profile_ts ON public.auto_route_selections_hot (task_type, profile, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ars_hot_session ON public.auto_route_selections_hot (session_id, ts DESC) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ars_hot_unsettled ON public.auto_route_selections_hot (ts) WHERE settled_at IS NULL;
+DROP VIEW IF EXISTS public.auto_route_selections_all;
+CREATE VIEW public.auto_route_selections_all AS
+SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
+  canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
+  explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,
+  partition_date, experiment_id, treatment, assignment_version, assignment_key_hash,
+  detected_language, prompt_length_bucket, context_length_bucket, turn_count_bucket,
+  has_code_indicator, has_math_indicator, has_table_indicator, has_multimedia_indicator,
+  intent_category, domain_hint, complexity_bucket, latency_sensitive, cost_sensitive,
+  feature_version, content_hash, 'hot'::text AS storage_tier
+FROM public.auto_route_selections_hot
+UNION ALL
+SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
+  canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
+  explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,
+  partition_date, experiment_id, treatment, assignment_version, assignment_key_hash,
+  detected_language, prompt_length_bucket, context_length_bucket, turn_count_bucket,
+  has_code_indicator, has_math_indicator, has_table_indicator, has_multimedia_indicator,
+  intent_category, domain_hint, complexity_bucket, latency_sensitive, cost_sensitive,
+  feature_version, content_hash, 'parent'::text AS storage_tier
+FROM public.auto_route_selections;
+`
+
+// ensureAutoRouteSelectionsHotSchema mirrors the hot-table DDL of
+// sql/migrations/startup/656_auto_route_selections_hot.sql + 658_auto_route_structured_features.sql
+// (audit 2026-09-05 D-2#4 / H-2 + 2026-09-06 view schema mismatch fix). On a deployment that upgraded
+// the binary without re-running the 656/658 migrations, every telemetry selection-writer batch INSERT
+// failed and was dropped (dropped counter + one WARN), the settle worker failed each sweep, and the
+// AUTO routing learning loop silently did nothing.
+//
+// 2026-09-06 fix: Migration 658 added 15 structured feature columns and updated the
+// auto_route_selections_all view with DROP VIEW + CREATE VIEW (because CREATE OR REPLACE VIEW cannot
+// change column positions). This ensure function must match that schema to avoid
+// "ERROR: cannot drop columns from view (SQLSTATE 42P16)" when the view already has the 658 columns
+// but the ensure tries to replace it with the old 656 definition.
+//
+// Error handling matches ensureSessionSummariesCanonical: a missing parent table (fresh empty database
+// where 478/650 have not run yet) is a degraded skip with a pointer to the migration SQL, not a fatal
+// — the hot DDL references auto_route_selections_id_seq (owned by the parent's BIGSERIAL) and the view
+// unions the parent, so both require the parent to exist. Everything else is CREATE IF NOT EXISTS /
+// DROP+CREATE idempotent and any execution error is returned to ApplyMigrations.
+func (d *DB) ensureAutoRouteSelectionsHotSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	var parentExists bool
+	if err := d.pool.QueryRow(ctx,
+		`SELECT to_regclass('public.auto_route_selections') IS NOT NULL`,
+	).Scan(&parentExists); err != nil {
+		return fmt.Errorf("probe auto_route_selections existence: %w", err)
+	}
+	if !parentExists {
+		slog.Warn("auto_route_selections parent table missing; skipping auto_route_selections_hot ensure " +
+			"(run sql/migrations/startup/656_auto_route_selections_hot.sql to install)")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, autoRouteSelectionsHotEnsureSQL); err != nil {
+		return fmt.Errorf("ensure auto_route_selections_hot schema: %w", err)
+	}
 	return nil
 }

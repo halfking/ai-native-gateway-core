@@ -78,7 +78,20 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		// provider's chat completions / messages endpoint.  Pass an empty
 		// string to clear it (revert to raw_model_name).
 		OutboundModelName *string `json:"outbound_model_name"`
+		// ContextWindow (522) calibrates this credential×model's context
+		// window. nil/omitted = leave unchanged. A non-nil pointer sets the
+		// override: a positive value replaces it, a zero/negative value
+		// clears it (falls back to models_canonical). This is the per-credential
+		// lever the operator needs when a provider's real context window
+		// diverges from the standardized catalog value.
+		ContextWindow        *int     `json:"context_window"`
+		UnitPriceInPer1M     *float64 `json:"unit_price_in_per_1m"`
+		UnitPriceOutPer1M    *float64 `json:"unit_price_out_per_1m"`
+		CacheReadPricePer1M  *float64 `json:"cache_read_price_per_1m"`
+		CacheWritePricePer1M *float64 `json:"cache_write_price_per_1m"`
+		BillingMode          *string  `json:"billing_mode"`
 	}
+
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
@@ -173,29 +186,116 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		)
 	}
 
+	if req.UnitPriceInPer1M != nil || req.UnitPriceOutPer1M != nil || req.CacheReadPricePer1M != nil || req.CacheWritePricePer1M != nil || req.BillingMode != nil {
+		if req.BillingMode != nil && *req.BillingMode != "" && !isValidBillingMode(*req.BillingMode) {
+			writeError(w, http.StatusBadRequest, "invalid billing_mode")
+			return
+		}
+		if _, err := h.db.Exec(ctx, `
+				UPDATE credential_model_bindings
+				SET unit_price_in_per_1m = COALESCE($1, unit_price_in_per_1m),
+				    unit_price_out_per_1m = COALESCE($2, unit_price_out_per_1m),
+				    cache_read_price_per_1m = COALESCE($3, cache_read_price_per_1m),
+				    cache_write_price_per_1m = COALESCE($4, cache_write_price_per_1m),
+				    billing_mode = COALESCE(NULLIF($5, ''), billing_mode), updated_at = now()
+				WHERE id = $6
+			`, req.UnitPriceInPer1M, req.UnitPriceOutPer1M, req.CacheReadPricePer1M, req.CacheWritePricePer1M, req.BillingMode, offerID); err != nil {
+			writeError(w, http.StatusInternalServerError, "update pricing failed")
+			return
+		}
+		invalidateRoutingCaches(r.Context(), h.db, "credential_model_bindings", offerID)
+	}
+
+	// credential_model_bindings row directly (not via the model_offers view)
+	// because the INSTEAD OF UPDATE trigger uses COALESCE() and cannot express
+	// "clear the override to NULL" — the only way to fall back to the canonical
+	// value is to set the column to NULL, which COALESCE would mask. A
+	// zero/negative context_window clears the override; a positive value sets
+	// it. source is tagged 'manual' so discovery probes won't silently clobber
+	// an operator decision.
+	if req.ContextWindow != nil {
+		if *req.ContextWindow > 0 {
+			if _, err := h.db.Exec(ctx, `
+				UPDATE credential_model_bindings
+				SET context_window_override = $1,
+				    context_window_source = 'manual',
+				    context_window_updated_at = now(),
+				    updated_at = now()
+				WHERE id = $2
+			`, *req.ContextWindow, offerID); err != nil {
+				writeError(w, http.StatusInternalServerError, "update context_window failed: "+err.Error())
+				return
+			}
+		} else {
+			if _, err := h.db.Exec(ctx, `
+				UPDATE credential_model_bindings
+				SET context_window_override = NULL,
+				    context_window_source = 'catalog',
+				    context_window_updated_at = now(),
+				    updated_at = now()
+				WHERE id = $1
+			`, offerID); err != nil {
+				writeError(w, http.StatusInternalServerError, "clear context_window failed: "+err.Error())
+				return
+			}
+		}
+		slog.Info("credential_model_bindings.context_window_override updated",
+			"offer_id", offerID,
+			"raw_model_name", rawName,
+			"provider_id", providerID,
+			"context_window", *req.ContextWindow,
+		)
+		// 522/523 audit: a context-window override feeds the runtime candidate
+		// SQL and therefore the compression trigger thresholds (mechanical
+		// trim ThresholdBytes, session-compressor TOKEN trigger, 4xx
+		// smart-window recovery cut point). Without this wakeup other gateway
+		// instances keep a stale candCache and trim off the old window —
+		// exactly the multi-layer-cache hazard the review flagged.
+		// Migration 524 widens the DB trigger to NOTIFY on the column, but we
+		// also fire an explicit NOTIFY here (matching the other manual-override
+		// endpoints) so a missed DB-event path can't strand sibling processes.
+		invalidateRoutingCaches(r.Context(), h.db, "credential_model_bindings", offerID)
+	}
+
 	var result struct {
-		ID                int     `json:"id"`
-		RawModelName      string  `json:"raw_model_name"`
-		StandardizedName  *string `json:"standardized_name"`
-		CanonicalID       *int    `json:"canonical_id"`
-		CanonicalName     *string `json:"canonical_name"`
-		OutboundModelName *string `json:"outbound_model_name"`
+		ID                    int      `json:"id"`
+		RawModelName          string   `json:"raw_model_name"`
+		StandardizedName      *string  `json:"standardized_name"`
+		CanonicalID           *int     `json:"canonical_id"`
+		CanonicalName         *string  `json:"canonical_name"`
+		OutboundModelName     *string  `json:"outbound_model_name"`
+		ContextWindow         *int     `json:"context_window"`
+		ContextWindowOverride *int     `json:"context_window_override"`
+		UnitPriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
+		UnitPriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
+		CacheReadPricePer1M   *float64 `json:"cache_read_price_per_1m"`
+		CacheWritePricePer1M  *float64 `json:"cache_write_price_per_1m"`
+		BillingMode           *string  `json:"billing_mode"`
 	}
 	//nolint:errcheck // scan error non-critical
 	h.db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name, mo.standardized_name, mo.canonical_id,
-		       mc.canonical_name, mo.outbound_model_name
+		       mc.canonical_name, mo.outbound_model_name,
+		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
+		       mo.context_window_override, cmb.unit_price_in_per_1m, cmb.unit_price_out_per_1m,
+		       cmb.cache_read_price_per_1m, cmb.cache_write_price_per_1m, cmb.billing_mode
 		FROM model_offers mo
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
+		LEFT JOIN credential_model_bindings cmb ON cmb.id = mo.id
 		WHERE mo.id = $1
 	`, offerID).Scan(&result.ID, &result.RawModelName, &result.StandardizedName,
-		&result.CanonicalID, &result.CanonicalName, &result.OutboundModelName)
+		&result.CanonicalID, &result.CanonicalName, &result.OutboundModelName,
+		&result.ContextWindow, &result.ContextWindowOverride, &result.UnitPriceInPer1M,
+		&result.UnitPriceOutPer1M, &result.CacheReadPricePer1M, &result.CacheWritePricePer1M,
+		&result.BillingMode)
 
 	// 2026-06-19 audit: any PATCH that touches standardized_name /
 	// canonical_id / outbound_model_name can change the data
 	// /api/routing/available-models aggregates.  Invalidate the
 	// process-wide cache so the next page render re-reads the DB.
-	if req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil {
+	// 522: context_window also feeds the candidate trim threshold, so a
+	// calibration change must flush the cache too.
+	if req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil || req.ContextWindow != nil {
 		InvalidateAvailableModelsCache()
 	}
 
@@ -554,21 +654,21 @@ func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Req
 	ursmApplied := h.applyURSMManualDisabled(ctx, credID, req.ManualDisabled, req.Reason, actor)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message":             "updated",
-		"manual_disabled":     req.ManualDisabled,
-		"actor":               actor,
-		"ursm_v2_applied":     ursmApplied.applied,
-		"ursm_v2_models":      ursmApplied.models,
-		"ursm_v2_errors":      ursmApplied.errors,
+		"message":         "updated",
+		"manual_disabled": req.ManualDisabled,
+		"actor":           actor,
+		"ursm_v2_applied": ursmApplied.applied,
+		"ursm_v2_models":  ursmApplied.models,
+		"ursm_v2_errors":  ursmApplied.errors,
 	})
 }
 
 // urmsManualDisableResult reports the URSM v2 manual-hold fan-out outcome for
 // setCredentialManualDisabled. Used only to surface diagnostics in the response.
 type urmsManualDisableResult struct {
-	applied bool   // true if at least one model's ApplyAdmin succeeded
-	models  int    // number of bound raw_models attempted
-	errors  int    // number of per-model ApplyAdmin failures
+	applied bool // true if at least one model's ApplyAdmin succeeded
+	models  int  // number of bound raw_models attempted
+	errors  int  // number of per-model ApplyAdmin failures
 }
 
 // applyURSMManualDisabled fans an URSM v2 manual-hold (or release) across every

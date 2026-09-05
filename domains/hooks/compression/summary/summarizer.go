@@ -117,6 +117,8 @@ func (s *Summarizer) SummarizeAll(ctx context.Context, conversation string) (map
 // flows remain stable while still allowing per-dimension model selection.
 func DimensionForTaskType(taskType string) appconfig.SummaryDimension {
 	switch {
+	case taskType == "document_summary":
+		return appconfig.SummaryDimensionDocumentSummary
 	case strings.HasPrefix(taskType, "code_"):
 		return appconfig.SummaryDimensionTechnical
 	case strings.HasPrefix(taskType, "data_"):
@@ -143,6 +145,8 @@ func BuildPrompt(dim appconfig.SummaryDimension, conversation string) string {
 		return "请总结以下对话中的问题与解决方案：症状、根因、修复方式、未解决项。\n\n" + conversation
 	case appconfig.SummaryDimensionTechnical:
 		return "请总结以下对话中的技术细节：文件路径、API、命令、配置、代码片段、数值。\n\n" + conversation
+	case appconfig.SummaryDimensionDocumentSummary:
+		return "请压缩以下长文档/会话：保留任务目标、关键事实、约束、决定、精确数值、代码和引用；删除重复内容；不要编造缺失信息。\n\n" + conversation
 	default:
 		return "请总结以下对话内容。\n\n" + conversation
 	}
@@ -164,6 +168,8 @@ func SystemPromptForDimension(dim appconfig.SummaryDimension) string {
 		return "你是问题总结器，重点保留问题、根因和修复结果。"
 	case appconfig.SummaryDimensionTechnical:
 		return "你是技术细节总结器，重点保留代码、命令、配置和精确数值。"
+	case appconfig.SummaryDimensionDocumentSummary:
+		return "你是长文档压缩器。忠实保留可执行事实、约束、数值和引用，不要虚构内容。"
 	default:
 		return "你是一个专业的对话总结器。"
 	}
@@ -172,6 +178,8 @@ func SystemPromptForDimension(dim appconfig.SummaryDimension) string {
 // MaxTokensForDimension returns the token budget for one summary dimension.
 func MaxTokensForDimension(dim appconfig.SummaryDimension) int {
 	switch dim {
+	case appconfig.SummaryDimensionDocumentSummary:
+		return 2560
 	case appconfig.SummaryDimensionDecisions, appconfig.SummaryDimensionTechnical:
 		return 1024
 	case appconfig.SummaryDimensionProject, appconfig.SummaryDimensionTasks, appconfig.SummaryDimensionProblems:
@@ -189,7 +197,7 @@ func TemperatureForDimension(dim appconfig.SummaryDimension) float64 {
 	switch dim {
 	case appconfig.SummaryDimensionKeywords:
 		return 0.0
-	case appconfig.SummaryDimensionDecisions, appconfig.SummaryDimensionTechnical:
+	case appconfig.SummaryDimensionDecisions, appconfig.SummaryDimensionTechnical, appconfig.SummaryDimensionDocumentSummary:
 		return 0.1
 	default:
 		return 0.2

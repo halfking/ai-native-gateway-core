@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { listTags, type TagInfo } from '../api'
 
 const props = defineProps<{
@@ -16,6 +16,7 @@ const emit = defineEmits<{
 const draft = ref('')
 const allTags = ref<TagInfo[]>([])
 const showSuggest = ref(false)
+let suggestCloseTimer: ReturnType<typeof setTimeout> | null = null
 
 const NAMESPACES = ['family', 'version', 'series', 'generation', 'variant', 'modality', 'cap', 'user']
 
@@ -69,7 +70,13 @@ function onBlur() {
   // Vue template inline expressions don't resolve the global setTimeout,
   // so the blur handler is wrapped in a script-defined function. 150ms
   // delay lets the user click a suggestion before the dropdown closes.
-  setTimeout(() => (showSuggest.value = false), 150)
+  // Track the handle so onUnmounted can cancel a pending close when the
+  // component is torn down between blur and the timeout fire.
+  if (suggestCloseTimer) clearTimeout(suggestCloseTimer)
+  suggestCloseTimer = setTimeout(() => {
+    showSuggest.value = false
+    suggestCloseTimer = null
+  }, 150)
 }
 
 function nsHint(ns: string) {
@@ -78,6 +85,13 @@ function nsHint(ns: string) {
 
 watch(() => props.suggestions, () => { loadTags() })
 onMounted(loadTags)
+
+onUnmounted(() => {
+  if (suggestCloseTimer) {
+    clearTimeout(suggestCloseTimer)
+    suggestCloseTimer = null
+  }
+})
 </script>
 
 <template>
@@ -125,18 +139,17 @@ onMounted(loadTags)
   padding: 6px; border: 1px solid var(--border); border-radius: 6px; min-height: 36px;
   background: var(--bg);
 }
-.chip {
-  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
-  padding: 2px 8px; font-size: 12px; display: inline-flex; align-items: center; gap: 4px;
-}
-.chip-x { background: none; border: none; cursor: pointer; color: var(--text-muted); font-size: 14px; line-height: 1; }
+/* .chip / .chip-x 从全局 styles/pill-chip.css 继承（P1-8）。
+ * 注：本组件原 padding/border-radius 与全局 --chip-padding-y/x / --chip-radius
+ * 数值不同，scoped 内仅覆盖 padding 微调。 */
+.chip { padding: 2px 8px; }
 .tag-input { flex: 1; min-width: 160px; border: none; outline: none; background: transparent; font-size: 13px; color: var(--text); }
 .ns-hints { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .suggest {
   position: absolute; top: 100%; left: 0; right: 0; z-index: 10;
   margin-top: 2px; background: var(--card); border: 1px solid var(--border); border-radius: 6px;
   list-style: none; padding: 4px 0; max-height: 200px; overflow-y: auto;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  box-shadow: 0 4px 12px var(--overlay-light);
 }
 .suggest li { padding: 4px 10px; cursor: pointer; font-size: 12px; }
 .suggest li:hover { background: var(--bg); }

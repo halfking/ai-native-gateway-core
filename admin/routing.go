@@ -2,8 +2,12 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,17 +20,20 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // emergency-repair state recovery (2026-08-15)
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"     //nolint:depguard // emergency-repair state recovery (2026-08-15)
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	met "github.com/kaixuan/llm-gateway-go/metrics" //nolint:depguard // routing credential observability counters
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	"github.com/kaixuan/llm-gateway-go/recentmodels"
+	"github.com/redis/go-redis/v9"
 )
 
 type routingHandler struct { //nolint:unused
@@ -43,37 +50,44 @@ type routingHandler struct { //nolint:unused
 // safe and gives an order-of-magnitude speedup under repeated
 // page-load / tab-switch traffic.
 type availableModelsCache struct {
-	mu        sync.Mutex
-	value     map[string]any
-	expiresAt time.Time
-	ttl       time.Duration
+	mu      sync.Mutex
+	entries map[string]availableModelsCacheEntry
+	ttl     time.Duration
 	// hits/misses are exposed via /api/system/background-tasks for ops.
 	hits   uint64
 	misses uint64
 }
 
-func (c *availableModelsCache) get(now time.Time) (map[string]any, bool) {
-	if c == nil || c.value == nil {
+type availableModelsCacheEntry struct {
+	value     map[string]any
+	expiresAt time.Time
+}
+
+func (c *availableModelsCache) get(now time.Time, tenantID string) (map[string]any, bool) {
+	if c == nil {
 		return nil, false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if now.Before(c.expiresAt) {
+	entry, ok := c.entries[tenantID]
+	if ok && now.Before(entry.expiresAt) {
 		c.hits++
-		return c.value, true
+		return entry.value, true
 	}
 	c.misses++
 	return nil, false
 }
 
-func (c *availableModelsCache) set(now time.Time, value map[string]any) {
+func (c *availableModelsCache) set(now time.Time, tenantID string, value map[string]any) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.value = value
-	c.expiresAt = now.Add(c.ttl)
+	if c.entries == nil {
+		c.entries = make(map[string]availableModelsCacheEntry)
+	}
+	c.entries[tenantID] = availableModelsCacheEntry{value: value, expiresAt: now.Add(c.ttl)}
 }
 
 const availableModelsCacheTTL = 30 * time.Second
@@ -84,24 +98,162 @@ func (h *Handler) logAudit(r *http.Request, action string, details map[string]an
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
-	detailsJSON, _ := json.Marshal(details)
-	// Do NOT use X-Actor header as the authoritative identity — any client that
-	// can reach the admin API can forge it. Use the verified remote address as
-	// a tamper-evident fallback. If a proper auth layer (JWT, mTLS) is added
-	// later, extract the principal from that context instead.
+	actor := requestActor(r)
+	if err := logAuditExec(ctx, h.db, actor, action, details); err != nil {
+		slog.Debug("routing audit insert failed (best-effort)", "action", action, "error", err.Error())
+	}
+}
+
+// logAuditExec inserts a row into routing_audit_log using the supplied
+// executor (typically *pgxpool.Pool or pgx.Tx). It is exported so handlers
+// running inside a transaction can keep their audit row tied to the same
+// commit boundary as the data change.
+func logAuditExec(ctx context.Context, exec pgxAuditExecutor, actor, action string, details map[string]any) error {
+	detailsJSON, err := json.Marshal(details)
+	if err != nil {
+		return fmt.Errorf("marshal audit details: %w", err)
+	}
+	// Pass the payload as text and cast to jsonb. Passing a []byte would make
+	// pgx encode it as the bytea type, which Postgres cannot assign to the
+	// jsonb after_json column and rejects with "invalid input syntax for type
+	// json" (SQLSTATE 22P02). This mirrors the insert in admin/users.go.
+	_, err = exec.Exec(ctx, `
+		INSERT INTO routing_audit_log (actor, action, target_type, after_json)
+		VALUES ($1, $2, $3, $4::text::jsonb)
+	`, actor, action, action, string(detailsJSON))
+	return err
+}
+
+// pgxAuditExecutor is the small surface area logAuditExec needs. Both
+// *pgxpool.Pool and pgx.Tx satisfy it via pgx v5's stable signatures.
+type pgxAuditExecutor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// quotaAllowsPriorityRouting mirrors provider candidate SQL:
+// COALESCE(c.quota_state, 'ok') = 'ok'.
+func quotaAllowsPriorityRouting(quotaState string) bool {
+	q := strings.ToLower(strings.TrimSpace(quotaState))
+	return q == "" || q == "ok"
+}
+
+func requestActor(r *http.Request) string {
+	// Prefer the verified AuthContext subject (super_admin / tenant_admin
+	// username) over the network address so audit rows stay attributable
+	// to a real operator. The X-Admin-User header is intentionally NOT
+	// trusted here — any caller able to reach the admin API could forge it.
+	if auth := GetAuthContext(r); auth != nil {
+		if auth.Username != "" {
+			return auth.Username
+		}
+		if auth.UserID > 0 {
+			return fmt.Sprintf("user:%d", auth.UserID)
+		}
+		if auth.Role != "" {
+			return "role:" + auth.Role
+		}
+	}
 	actor := r.RemoteAddr
 	if actor == "" {
 		actor = "unknown"
 	}
+	return actor
+}
 
-	// Schema (sql/030_routing_v2.sql): id, ts, actor, action, target_type, target_id,
-	// before_json, after_json. Use action as target_type so logAudit stays a
-	// single-call helper; structured details go into after_json.
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `
-		INSERT INTO routing_audit_log (actor, action, target_type, after_json)
-		VALUES ($1, $2, $3, $4)
-	`, actor, action, action, detailsJSON)
+// resolveCandidate is one row of the routing resolve table. It was a
+// function-local type until 2026-08-18; promoted to package scope so
+// applyURSMOverlay (and its unit tests) can operate on the slice directly.
+type resolveCandidate struct {
+	Rank                  int      `json:"rank"`
+	ProviderID            int      `json:"provider_id"`
+	ProviderName          string   `json:"provider_name"`
+	CatalogCode           string   `json:"catalog_code"`
+	Protocol              string   `json:"protocol"`
+	BaseURL               string   `json:"base_url"`
+	ProviderEnabled       bool     `json:"provider_enabled"`
+	CredentialID          int      `json:"credential_id"`
+	TenantID              string   `json:"-"`
+	CredentialLabel       string   `json:"credential_label"`
+	CredentialStatus      string   `json:"credential_status"`
+	LifecycleStatus       string   `json:"lifecycle_status"`
+	AvailabilityState     string   `json:"availability_state"`
+	AvailabilityRecoverAt *string  `json:"availability_recover_at"`
+	QuotaState            string   `json:"quota_state"`
+	QuotaRecoverAt        *string  `json:"quota_recover_at"`
+	ConcurrencyLimit      *int     `json:"concurrency_limit"`
+	EffectiveConcurrency  *int     `json:"effective_concurrency"`
+	EffectiveAt           *string  `json:"effective_at"`
+	ExpiresAt             *string  `json:"expires_at"`
+	CredentialInEffect    bool     `json:"credential_in_effect"`
+	BalanceUSD            *float64 `json:"balance_usd"`
+	CircuitState          string   `json:"circuit_state"`
+	CoolingUntil          *string  `json:"cooling_until"`
+	Available             bool     `json:"available"`
+	Tier                  int      `json:"tier"`
+	Weight                int      `json:"weight"`
+	UnitPriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
+	UnitPriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
+	Currency              string   `json:"currency"`
+	SuccessRate           float64  `json:"success_rate"`
+	P95LatencyMs          int      `json:"p95_latency_ms"`
+	ModelName             string   `json:"model_name"`
+	StandardizedName      string   `json:"standardized_name"`
+	CanonicalID           *int64   `json:"canonical_id,omitempty"`
+	QuotaCapUSD           float64  `json:"quota_cap_usd"`
+	QuotaUsedUSD          float64  `json:"quota_used_usd"`
+	RuntimeRoutable       bool     `json:"runtime_routable"`
+	Routable              bool     `json:"routable"`
+	DBEligible            bool     `json:"db_eligible"`
+	URSMObserved          bool     `json:"ursm_observed"`
+	RuntimeState          string   `json:"runtime_state"`
+	BlockReason           string   `json:"block_reason,omitempty"`
+	ManualPriority        int      `json:"manual_priority"`
+	Priority              bool     `json:"priority"`
+	ActiveSessions        int      `json:"active_sessions"`
+	// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
+	// 而 resolve 操作的是 credentials.consecutive_failures。
+	// 这里增列 credential-level 的值用于显示，避免误判。
+	ConsecutiveFailures           int     `json:"consecutive_failures"`
+	CredentialConsecutiveFailures int     `json:"credential_consecutive_failures"`
+	CompositeScore                float64 `json:"composite_score"`
+	BillingMode                   string  `json:"billing_mode"`
+	BillingRound                  int     `json:"billing_round"`
+}
+
+func sortResolveCandidatesStable(candidates []resolveCandidate) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		aPriority := a.Priority && quotaAllowsPriorityRouting(a.QuotaState)
+		bPriority := b.Priority && quotaAllowsPriorityRouting(b.QuotaState)
+		if aPriority != bPriority {
+			return aPriority
+		}
+		if a.ManualPriority != b.ManualPriority {
+			return a.ManualPriority < b.ManualPriority
+		}
+		if a.Tier != b.Tier {
+			return a.Tier < b.Tier
+		}
+		if a.Weight != b.Weight {
+			return a.Weight > b.Weight
+		}
+		toProviderCandidate := func(c resolveCandidate) provider.Candidate {
+			return provider.Candidate{
+				CredentialID:        c.CredentialID,
+				Tier:                c.Tier,
+				ManualPriority:      c.ManualPriority,
+				PriceInPer1M:        c.UnitPriceInPer1M,
+				PriceOutPer1M:       c.UnitPriceOutPer1M,
+				Currency:            c.Currency,
+				ConcurrencyLimit:    c.ConcurrencyLimit,
+				ActiveSessions:      c.ActiveSessions,
+				ConsecutiveFailures: c.ConsecutiveFailures,
+				CompositeScore:      c.CompositeScore,
+				BillingMode:         c.BillingMode,
+			}
+		}
+		return executors.CompareCandidatePriority(toProviderCandidate(a), toProviderCandidate(b))
+	})
 }
 
 func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
@@ -140,65 +292,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	type candidate struct {
-		Rank                  int      `json:"rank"`
-		ProviderID            int      `json:"provider_id"`
-		ProviderName          string   `json:"provider_name"`
-		CatalogCode           string   `json:"catalog_code"`
-		Protocol              string   `json:"protocol"`
-		BaseURL               string   `json:"base_url"`
-		ProviderEnabled       bool     `json:"provider_enabled"`
-		CredentialID          int      `json:"credential_id"`
-		CredentialLabel       string   `json:"credential_label"`
-		CredentialStatus      string   `json:"credential_status"`
-		LifecycleStatus       string   `json:"lifecycle_status"`
-		AvailabilityState     string   `json:"availability_state"`
-		AvailabilityRecoverAt *string  `json:"availability_recover_at"`
-		QuotaState            string   `json:"quota_state"`
-		QuotaRecoverAt        *string  `json:"quota_recover_at"`
-		ConcurrencyLimit      *int     `json:"concurrency_limit"`
-		EffectiveConcurrency  *int     `json:"effective_concurrency"`
-		EffectiveAt           *string  `json:"effective_at"`
-		ExpiresAt             *string  `json:"expires_at"`
-		CredentialInEffect    bool     `json:"credential_in_effect"`
-		BalanceUSD            *float64 `json:"balance_usd"`
-		CircuitState          string   `json:"circuit_state"`
-		CoolingUntil          *string  `json:"cooling_until"`
-		Available             bool     `json:"available"`
-		Tier                  int      `json:"tier"`
-		Weight                int      `json:"weight"`
-		UnitPriceInPer1M      *float64 `json:"unit_price_in_per_1m"`
-		UnitPriceOutPer1M     *float64 `json:"unit_price_out_per_1m"`
-		Currency              string   `json:"currency"`
-		SuccessRate           float64  `json:"success_rate"`
-		P95LatencyMs          int      `json:"p95_latency_ms"`
-		ModelName             string   `json:"model_name"`
-		StandardizedName      string   `json:"standardized_name"`
-		QuotaCapUSD           float64  `json:"quota_cap_usd"`
-		QuotaUsedUSD          float64  `json:"quota_used_usd"`
-		RuntimeRoutable       bool     `json:"runtime_routable"`
-		Routable              bool     `json:"routable"`
-		BlockReason           string   `json:"block_reason,omitempty"`
-		ManualPriority        int      `json:"manual_priority"`
-		ActiveSessions        int      `json:"active_sessions"`
-		// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
-		// 而 resolve 操作的是 credentials.consecutive_failures。
-		// 这里增列 credential-level 的值用于显示，避免误判。
-		ConsecutiveFailures           int     `json:"consecutive_failures"`
-		CredentialConsecutiveFailures int     `json:"credential_consecutive_failures"`
-		CompositeScore                float64 `json:"composite_score"`
-		BillingMode                   string  `json:"billing_mode"`
-		BillingRound                  int     `json:"billing_round"`
-	}
-
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
-	// 2026-07-24 SQL 瘦身：cmb.available / c.circuit_state / c.cooling_until /
-	// cmb.consecutive_failures / c.consecutive_failures / cmb.success_rate /
-	// mo.p95_latency_ms 这些运行时状态在 URSM v2 里才是真相源，DB 只是
-	// credentialstate / v1 URSM 的周期性回写副本。Resolve handler 在拿到 SQL
-	// 行后会调用 h.ursmV2.FilterAndScore 按 (credential_id, raw_model) 覆写
-	// 这些字段；URSM v2 不可用（nil / ModeOff / not ready / pipeline 失败）
-	// 时落到下面的 default 分支，保留 DB 值作为 fallback。
+	// 这些字段由 URSM v2 覆写；在 authoritative 模式下 not-ready 或查询失败
+	// 会显式报告 unknown，而不是把数据库 eligibility 当作运行时可用。
+
 	rows, err := h.db.Query(ctx, `
 			SELECT
 				p.id AS provider_id,
@@ -207,8 +304,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(p.protocol, 'openai-completions') AS protocol,
 				p.base_url,
 				p.enabled AS provider_enabled,
-				v.credential_id,
-				COALESCE(c.label, '') AS credential_label,
+					v.credential_id,
+					v.tenant_id,
+					COALESCE(c.label, '') AS credential_label,
 				c.status AS credential_status,
 				c.lifecycle_status,
 				c.availability_state,
@@ -225,6 +323,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.routing_tier, 2) AS tier,
 				COALESCE(cmb.weight, 100) AS weight,
 				COALESCE(cmb.manual_priority, 99) AS manual_priority,
+				COALESCE(cmb.priority, FALSE) AS priority,
 				COALESCE(cmb.active_sessions, 0) AS active_sessions,
 				COALESCE(cmb.billing_mode, 'per_token') AS billing_mode,
 				mo.unit_price_in_per_1m,
@@ -232,6 +331,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.currency, 'USD') AS currency,
 				v.raw_model_name AS model_name,
 				COALESCE(mo.standardized_name, v.raw_model_name) AS standardized_name,
+				v.canonical_id AS canonical_id,
 				COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
 				COALESCE(mo.unit_price_out_per_1m, 0) AS quota_used_usd,
 				v.is_routable,
@@ -253,9 +353,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			-- resolves. models_canonical.canonical_name is lowercased by
 			-- migration 396; lower(...) is a safety net.
 			LEFT JOIN models_canonical mc ON mc.id = v.canonical_id
-			WHERE p.tenant_id = 'default'
-			  AND (
-			      lower(v.raw_model_name) = ANY($1)
+				WHERE ($2 = '' OR v.tenant_id = $2)
+				  AND v.tenant_id = p.tenant_id
+				  AND v.tenant_id = c.tenant_id
+				  AND (
+				      lower(v.raw_model_name) = ANY($1)
 			      OR lower(COALESCE(mo.standardized_name, v.raw_model_name)) = ANY($1)
 			      OR lower(mc.canonical_name) = ANY($1)
 			  )
@@ -274,7 +376,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.routing_tier, 2),
 				COALESCE(cmb.weight, 100) DESC,
 				COALESCE(cmb.success_rate, 0.9) DESC
-			`, rawModels)
+				`, rawModels, EffectiveTenantIDAll(r))
 
 	if err != nil {
 		slog.Error("routing resolve query failed", "error", err.Error(), "model", model, "rawModels", rawModels)
@@ -284,9 +386,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 
 	weights := scoringWeightsFromMap(h.getScoringWeights(ctx))
-	candidates := make([]candidate, 0)
+	candidates := make([]resolveCandidate, 0)
 	for rows.Next() {
-		var c candidate
+		var c resolveCandidate
 		var isRoutable bool
 		var unavailableReason *string
 
@@ -296,23 +398,27 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		// back-filled below if the manager is ready.
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
-			&c.ProviderEnabled, &c.CredentialID, &c.CredentialLabel, &c.CredentialStatus,
+			&c.ProviderEnabled, &c.CredentialID, &c.TenantID, &c.CredentialLabel, &c.CredentialStatus,
 			&c.LifecycleStatus, &c.AvailabilityState, &c.AvailabilityRecoverAt,
 			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
 			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
 			&c.Tier, &c.Weight,
-			&c.ManualPriority, &c.ActiveSessions, &c.BillingMode,
+			&c.ManualPriority, &c.Priority, &c.ActiveSessions, &c.BillingMode,
 			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency,
-			&c.ModelName, &c.StandardizedName,
+			&c.ModelName, &c.StandardizedName, &c.CanonicalID,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
 			&isRoutable, &unavailableReason,
 		); err != nil {
 			continue
 		}
-		// 2026-07-02: 使用视图的 is_routable 判断，不再重复计算
-		// 视图已包含所有过滤规则：status, lifecycle, availability, quota, plan_type 兼容性
+		// Keep database eligibility separate from the authoritative runtime
+		// decision. The resolve endpoint is diagnostic and must not imply that
+		// a SQL-routable row is request-routable when URSM has no node view.
+		c.DBEligible = isRoutable
 		c.RuntimeRoutable = isRoutable
 		c.Routable = isRoutable
+		c.RuntimeState = "db_only"
+
 		if unavailableReason != nil {
 			c.BlockReason = *unavailableReason
 		}
@@ -340,33 +446,23 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	// fail_streak=0 / success_rate=0.9 / p95_latency_ms=9999），保留旧的
 	// resolve 行为。
 	//
-	// T4 保护性拒绝契约：URSM v2 Redis miss ⇒ Available=false；这里
-	// **忽略** T4 默认值 —— 只有真正拿到 NodeView 才覆写。Redis miss 的
-	// 行（新人未观测）保持 Available=true，避免误判不可用。
+	// T4 保护性拒绝契约：URSM v2 Redis miss ⇒ Available=false。权威
+	// 模式下 resolve 仅把真正拿到的 NodeView 标为可路由；miss 会在
+	// applyURSMOverlay 中明确呈现为 runtime_state=missing。
+
 	ursmManager := h.ursmV2
-	defaults := func(c *candidate) {
-		c.Available = true
-		c.CircuitState = "closed"
-		c.CoolingUntil = nil
-		c.ConsecutiveFailures = 0
-		c.CredentialConsecutiveFailures = 0
-		if c.SuccessRate == 0 {
-			c.SuccessRate = 0.9
-		}
-		if c.P95LatencyMs == 0 {
-			c.P95LatencyMs = 9999
+	applyResolveDefaults := func(candidates []resolveCandidate) {
+		for i := range candidates {
+			resolveRuntimeDefaults(&candidates[i])
 		}
 	}
 	switch {
 	case ursmManager == nil, ursmManager.Mode() == api.ModeOff:
-		for i := range candidates {
-			defaults(&candidates[i])
-		}
+		applyResolveDefaults(candidates)
 	case !ursmManager.Ready(ctx):
-		slog.Debug("routing resolve: ursm v2 not ready, using DB defaults")
-		for i := range candidates {
-			defaults(&candidates[i])
-		}
+		slog.Debug("routing resolve: ursm v2 not ready; runtime state is unknown")
+		markResolveRuntimeUnknown(candidates, "ursm_not_ready")
+
 	default:
 		seeds := make([]v2.CandidateSeed, 0, len(candidates))
 		for _, c := range candidates {
@@ -382,7 +478,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				CredentialID: c.CredentialID,
 				RawModel:     c.ModelName,
 				Canonical:    c.StandardizedName,
-				TenantID:     "default",
+				TenantID:     c.TenantID,
 				PriceIn:      priceIn,
 				PriceOut:     priceOut,
 				BillingMode:  c.BillingMode,
@@ -392,107 +488,22 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		}
 		views, err := ursmManager.FilterAndScore(ctx, seeds)
 		if err != nil {
-			slog.Warn("routing resolve: ursm v2 filter failed, using DB defaults",
+			slog.Warn("routing resolve: ursm v2 filter failed; runtime state is unknown",
 				"error", err.Error(), "model_count", len(seeds))
-			for i := range candidates {
-				defaults(&candidates[i])
-			}
+			markResolveRuntimeUnknown(candidates, "ursm_query_failed")
 		} else {
 			if len(views) != len(candidates) {
 				slog.Warn("routing resolve: ursm v2 partial result",
 					"got", len(views), "want", len(candidates))
 			}
-			now := time.Now()
-			for i, c := range candidates {
-				defaults(&c) // baseline；URSM 拿到 NodeView 才覆盖
-				if i >= len(views) {
-					continue
-				}
-				v := views[i]
-				if v.CredentialID != c.CredentialID || v.RawModel != c.ModelName {
-					slog.Warn("routing resolve: ursm v2 view out of order",
-						"want_cred", c.CredentialID, "want_model", c.ModelName,
-						"got_cred", v.CredentialID, "got_model", v.RawModel)
-					continue
-				}
-				c.Available = v.Available
-				c.ConsecutiveFailures = v.FailStreak
-				c.CredentialConsecutiveFailures = v.FailStreak
-				if v.SR5m > 0 {
-					c.SuccessRate = v.SR5m
-				}
-				if v.LatP95Ms > 0 {
-					c.P95LatencyMs = v.LatP95Ms
-				}
-				if !v.CoolUntil.IsZero() && v.CoolUntil.After(now) {
-					c.CircuitState = "open"
-					s := v.CoolUntil.UTC().Format(time.RFC3339)
-					c.CoolingUntil = &s
-				} else {
-					c.CircuitState = "closed"
-					c.CoolingUntil = nil
-				}
-				// Re-derive Routable: SQL view covers schema gating
-				// (provider enabled, plan compatibility, etc.); URSM v2
-				// covers runtime gating. AND them together.
-				if !c.Routable {
-					continue // SQL view 已经否决 —— 保持它的原因
-				}
-				if !v.Available {
-					c.Routable = false
-					c.RuntimeRoutable = false
-					if v.Reason != "" {
-						c.BlockReason = v.Reason
-					} else {
-						c.BlockReason = "node_unavailable_by_ursm_v2"
-					}
-					continue
-				}
-				if c.CircuitState == "open" {
-					c.Routable = false
-					c.RuntimeRoutable = false
-					if v.Reason != "" {
-						c.BlockReason = v.Reason
-					} else {
-						c.BlockReason = "node_in_cool_until"
-					}
-					continue
-				}
-			}
+			applyURSMOverlay(candidates, views, time.Now())
 		}
 	}
 
-	toProviderCandidate := func(c candidate) provider.Candidate {
-		return provider.Candidate{
-			CredentialID:        c.CredentialID,
-			Tier:                c.Tier,
-			ManualPriority:      c.ManualPriority,
-			PriceInPer1M:        c.UnitPriceInPer1M,
-			PriceOutPer1M:       c.UnitPriceOutPer1M,
-			Currency:            c.Currency,
-			ConcurrencyLimit:    c.ConcurrencyLimit,
-			ActiveSessions:      c.ActiveSessions,
-			ConsecutiveFailures: c.ConsecutiveFailures,
-			CompositeScore:      c.CompositeScore,
-			BillingMode:         c.BillingMode,
-		}
-	}
 	// Keep the persisted manual order authoritative on this page. Composite
 	// score remains a deterministic tie-breaker for candidates that share a
 	// priority, while unavailable candidates stay in the same ordered list.
-	sort.SliceStable(candidates, func(i, j int) bool {
-		a, b := candidates[i], candidates[j]
-		if a.ManualPriority != b.ManualPriority {
-			return a.ManualPriority < b.ManualPriority
-		}
-		if a.Tier != b.Tier {
-			return a.Tier < b.Tier
-		}
-		if a.Weight != b.Weight {
-			return a.Weight > b.Weight
-		}
-		return executors.CompareCandidatePriority(toProviderCandidate(a), toProviderCandidate(b))
-	})
+	sortResolveCandidatesStable(candidates)
 
 	for i := range candidates {
 		candidates[i].Rank = i + 1
@@ -524,15 +535,87 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			resolutionPath = "canonical:variant"
 		}
 	}
+	// Reorder revision: keyed by canonical_id so a drag operation can reorder
+	// every candidate of a model even when those candidates are registered
+	// under several raw_model_name aliases that share one canonical_id (e.g.
+	// glm-5.2 + z-ai/glm-5.2, or kimi-k2-250711 + kimi-k2-250905).
+	//
+	// Resolution order:
+	//   1. If every candidate shares one positive canonical_id, the canonical
+	//      scope (migration 566) owns the reorder revision.
+	//   2. Else if every candidate shares one raw_model_name, the legacy
+	//      raw_model scope (migration 541) owns the reorder revision — this
+	//      covers bindings whose provider rows still have NULL canonical_id.
+	//   3. Mixed canonical_ids (genuinely different models pulled together by
+	//      dot↔dash bridge etc.) or mixed raw_model_names intentionally leave
+	//      both fields empty so the UI keeps reordering disabled.
+	//
+	// The reorder endpoint accepts canonical_id XOR raw_model and dispatches
+	// to the matching fetch helper; the client only needs to echo whichever
+	// field the resolve response returned.
+	//
+	// Errors loading the revision are not fatal: the dashboard still works,
+	// just without drag-and-drop, so we log and continue with an empty
+	// token. When the scope row is missing (new scope or backfill gap),
+	// ensureScopeRevision / ensureCanonicalScopeRevision seeds version=1 so
+	// drag-and-drop stays available.
+	var (
+		reorderRevision      string
+		reorderCanonicalID   int64
+		reorderRawModel      string
+		respCanonicalIDValue *int64
+	)
+	if len(candidates) > 0 {
+		if firstCanonical, ok := singleCanonicalForRevision(candidates); ok {
+			rev, revErr := ensureCanonicalScopeRevision(ctx, h.db, firstCanonical)
+			if revErr != nil {
+				slog.Warn("routing resolve: canonical reorder scope ensure failed; revision omitted",
+					"canonical_id", firstCanonical, "error", revErr.Error())
+			} else {
+				reorderRevision = rev.Raw
+				reorderCanonicalID = firstCanonical
+			}
+			id := firstCanonical
+			respCanonicalIDValue = &id
+		} else if firstRaw, ok := singleRawModelForRevision(rawModelNames(candidates)); ok {
+			rev, revErr := ensureScopeRevision(ctx, h.db, firstRaw)
+			if revErr != nil {
+				slog.Warn("routing resolve: raw_model reorder scope ensure failed; revision omitted",
+					"raw_model", firstRaw, "error", revErr.Error())
+			} else {
+				reorderRevision = rev.Raw
+				reorderRawModel = firstRaw
+			}
+		}
+	}
+	var respCanonicalID any
+	if respCanonicalIDValue != nil {
+		respCanonicalID = *respCanonicalIDValue
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_model":    model,
-		"canonical_name":  rawModels[0],
-		"canonical_id":    nil,
-		"resolution_path": resolutionPath,
-		"raw_models":      rawModels,
-		"plan_order":      []any{},
-		"candidates":      candidates,
+		"client_model":         model,
+		"canonical_name":       rawModels[0],
+		"canonical_id":         respCanonicalID,
+		"resolution_path":      resolutionPath,
+		"raw_models":           rawModels,
+		"plan_order":           []any{},
+		"candidates":           candidates,
+		"reorder_revision":     reorderRevision,
+		"reorder_canonical_id": reorderCanonicalID,
+		"reorder_raw_model":    reorderRawModel,
 	})
+}
+
+// rawModelNames returns the set of raw_model_name values on the candidates.
+// Used by the legacy raw_model-keyed reorder scope fallback.
+func rawModelNames(candidates []resolveCandidate) []string {
+	out := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		if c.ModelName != "" {
+			out = append(out, c.ModelName)
+		}
+	}
+	return out
 }
 
 // (applyURSMv2Overrides inlined below — see handler body; it must be a
@@ -587,13 +670,13 @@ func blockReason(c interface{}) string { //nolint:unused
 }
 
 // handleRoutingCandidateBindingUpdate updates credential_model_bindings fields
-// that influence routing order (manual_priority / routing_tier / weight).
-// It is intentionally narrow: only those three fields can be PATCHed here,
+// that influence routing order (manual_priority / routing_tier / weight / priority).
+// It is intentionally narrow: only those four fields can be PATCHed here,
 // so admin mistakes stay inside the routing-sorted surface area and don't
 // silently flip a credential's lifecycle / availability / circuit flags.
 //
 // Path: PATCH /api/routing/candidate-binding/{credential_id}?raw_model=...
-// Body: { manual_priority?: int, routing_tier?: int, weight?: int }
+// Body: { manual_priority?: int, routing_tier?: int, weight?: int, priority?: bool }
 //
 // Authorization: super_admin only (registered via h.superAdmin).
 // Audit: every successful write appends a row to routing_audit_log.
@@ -615,16 +698,17 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	}
 
 	var req struct {
-		ManualPriority *int `json:"manual_priority"`
-		RoutingTier    *int `json:"routing_tier"`
-		Weight         *int `json:"weight"`
+		ManualPriority *int  `json:"manual_priority"`
+		RoutingTier    *int  `json:"routing_tier"`
+		Weight         *int  `json:"weight"`
+		Priority       *bool `json:"priority"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil {
-		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight required")
+	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil && req.Priority == nil {
+		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight / priority required")
 		return
 	}
 	if req.RoutingTier != nil && (*req.RoutingTier < 0 || *req.RoutingTier > 9) {
@@ -643,19 +727,24 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// Lookup the binding_id for (credential_id, raw_model_name) — the
-	// resolve page hands callers those two keys, never the surrogate
-	// binding id. Resolve via provider_models.raw_model_name so we don't
-	// rely on the inferred provider-side match.
-	var bindingID int
+	// Lookup the binding_id, provider_id, and current concurrency_limit
+	// for (credential_id, raw_model_name) — the resolve page hands callers
+	// those two keys, never the surrogate binding id. Resolve via
+	// provider_models.raw_model_name so we don't rely on the inferred
+	// provider-side match. Concurrency_limit is needed for hot-reloading
+	// the in-process Limiter semaphore so admin changes apply without a
+	// service restart.
+	var bindingID, providerID int
+	var concurrencyLimit *int
 	if err := h.db.QueryRow(ctx, `
-		SELECT cmb.id
+		SELECT cmb.id, c.provider_id, c.concurrency_limit
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c ON c.id = cmb.credential_id
 		WHERE cmb.credential_id = $1
 		  AND pm.raw_model_name = $2
 		LIMIT 1
-	`, credID, rawModel).Scan(&bindingID); err != nil {
+	`, credID, rawModel).Scan(&bindingID, &providerID, &concurrencyLimit); err != nil {
 		writeError(w, http.StatusNotFound, "binding not found for credential/model pair")
 		return
 	}
@@ -668,11 +757,40 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 			manual_priority = COALESCE($1::int, manual_priority),
 			routing_tier    = COALESCE($2::int, routing_tier),
 			weight          = COALESCE($3::int, weight),
+			priority        = COALESCE($4::boolean, priority),
 			updated_at      = NOW()
-		WHERE id = $4
-	`, req.ManualPriority, req.RoutingTier, req.Weight, bindingID); err != nil {
+		WHERE id = $5
+	`, req.ManualPriority, req.RoutingTier, req.Weight, req.Priority, bindingID); err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
+	}
+
+	// Flush the in-process candidate cache so the new routing inputs (incl.
+	// cmb.priority) apply to the next request instead of after the 30s
+	// candCache TTL. The PG notify trigger only refreshes the auto-route
+	// index — provider.candCache has no LISTEN/NOTIFY path. Mirrors the
+	// other credential-mutating admin handlers (credential_keys.go etc.).
+	provider.InvalidateCandidateCacheForCredential(credID)
+
+	// 2026-08-26 hot-reload (operator-confirmed: priority / concurrency
+	// changes must take effect immediately, no TTL delay, no service restart):
+	//
+	//  1. Refresh the in-process Limiter pool so a new concurrency_limit
+	//     (if changed via the credentials row elsewhere) takes effect for
+	//     new in-flight requests.
+	//  2. Clear every sticky entry pointing at this credential so new
+	//     sessions stop inheriting the previous credential via L2 sticky
+	//     and re-enter load balancing.
+	if h.limiter != nil && concurrencyLimit != nil {
+		h.limiter.SetCredentialCapacity(providerID, credID, *concurrencyLimit)
+	}
+	if h.stickyCache != nil {
+		if cleared, err := h.stickyCache.ClearForCredential(credID); err != nil {
+			slog.Warn("sticky hot-reload: clear failed", "credential_id", credID, "error", err)
+		} else if cleared > 0 {
+			slog.Info("sticky hot-reload: cleared bindings on binding PATCH",
+				"credential_id", credID, "cleared", cleared)
+		}
 	}
 
 	// Audit log: keep before/after so the routing_audit_log table holds
@@ -688,6 +806,7 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 		"manual_priority": req.ManualPriority,
 		"routing_tier":    req.RoutingTier,
 		"weight":          req.Weight,
+		"priority":        req.Priority,
 	}
 	h.logAudit(r, "routing_candidate_binding_update", beforeAfter)
 
@@ -700,56 +819,563 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 
 const maxRoutingCandidateReorderItems = 99
 
+// reorderScopeSQL selects every binding row for an exact raw_model in
+// deterministic id order. The same SQL backs the resolve endpoint's
+// reorder_revision helper, so the revision hash stays aligned with the
+// scope the writer will mutate.
+//
+// Disabled providers (p.enabled = FALSE) and credentials manually
+// toggled off (c.manual_disabled = TRUE) are excluded so the scope
+// hash matches what the resolver ships today; otherwise a partial
+// drag-submit can pass validation while still mutating rows the
+// operator cannot observe via the credential model binding views.
+const reorderScopeSQL = `
+SELECT cmb.id,
+       cmb.credential_id,
+       cmb.manual_priority,
+       cmb.updated_at
+FROM credential_model_bindings cmb
+JOIN provider_models pm ON pm.id = cmb.provider_model_id
+JOIN providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+JOIN credentials c ON c.id = cmb.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
+WHERE pm.raw_model_name = $1
+ORDER BY cmb.id
+`
+
+// reorderScopeRow is one ordered entry of the reorder scope. Sorted by
+// id before hashing so concurrent transactions agree on the digest.
+type reorderScopeRow struct {
+	ID             int64
+	CredentialID   int64
+	ManualPriority int
+	UpdatedAt      time.Time
+}
+
+// pgxQueryRower is the read surface shared by *pgxpool.Pool and pgx.Tx.
+type pgxQueryRower interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// pgxExecRower adds Exec for ensure-on-read paths (resolve revision seed).
+type pgxExecRower interface {
+	pgxQueryRower
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// fetchReorderScope returns every binding row for rawModel in id order.
+// PROBE-MARKER-2026-08-19-0338: file should have loadScopeRevision helper below.
+func fetchReorderScope(ctx context.Context, q pgxQueryRower, rawModel string, lock bool) ([]reorderScopeRow, scopeRevision, error) {
+	sqlText := reorderScopeSQL
+	if lock {
+		sqlText = sqlText + "\nFOR UPDATE OF cmb"
+	}
+	rows, err := q.Query(ctx, sqlText, rawModel)
+	if err != nil {
+		return nil, scopeRevision{}, err
+	}
+	defer rows.Close()
+	out := make([]reorderScopeRow, 0)
+	for rows.Next() {
+		var r reorderScopeRow
+		if err := rows.Scan(&r.ID, &r.CredentialID, &r.ManualPriority, &r.UpdatedAt); err != nil {
+			return nil, scopeRevision{}, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, scopeRevision{}, err
+	}
+	rev, err := loadScopeRevision(ctx, q, rawModel)
+	if err != nil {
+		return nil, scopeRevision{}, err
+	}
+	return out, rev, nil
+}
+
+// reorderScopeByCanonicalSQL selects every binding row whose provider_model
+// shares canonical_id, in deterministic id order. The same SQL backs the
+// resolve endpoint's reorder_revision helper, so the revision hash stays
+// aligned with the scope the writer will mutate. Keying by canonical_id lets
+// one reorder span all raw_model_name aliases of a model (e.g. glm-5.2 +
+// z-ai/glm-5.2) under a single atomic revision.
+//
+// Disabled providers (p.enabled = FALSE) and credentials manually
+// toggled off (c.manual_disabled = TRUE) are excluded so the scope
+// hash matches what the resolver ships today; otherwise a partial
+// drag-submit can pass validation while still mutating rows the
+// operator cannot observe via the credential model binding views.
+const reorderScopeByCanonicalSQL = `
+SELECT cmb.id,
+       cmb.credential_id,
+       cmb.manual_priority,
+       cmb.updated_at
+FROM credential_model_bindings cmb
+JOIN provider_models pm ON pm.id = cmb.provider_model_id
+JOIN providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+JOIN credentials c ON c.id = cmb.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
+WHERE pm.canonical_id = $1
+ORDER BY cmb.id
+`
+
+// fetchReorderScopeByCanonical returns every binding row for canonicalID in id
+// order, plus the current canonical scope revision. Identical contract to
+// fetchReorderScope (the raw_model variant) but keyed by canonical_id.
+//
+// The caller MUST pass a positive canonical_id (singleCanonicalForRevision
+// already enforces that every candidate in the resolve scope shares one).
+// Non-positive values are rejected here as a defence in depth.
+func fetchReorderScopeByCanonical(ctx context.Context, q pgxQueryRower, canonicalID int64, lock bool) ([]reorderScopeRow, scopeRevision, error) {
+	if canonicalID <= 0 {
+		return nil, scopeRevision{}, fmt.Errorf("canonical scope reorder requires canonical_id > 0, got %d", canonicalID)
+	}
+	sqlText := reorderScopeByCanonicalSQL
+	if lock {
+		sqlText = sqlText + "\nFOR UPDATE OF cmb"
+	}
+	rows, err := q.Query(ctx, sqlText, canonicalID)
+	if err != nil {
+		return nil, scopeRevision{}, err
+	}
+	defer rows.Close()
+	out := make([]reorderScopeRow, 0)
+	for rows.Next() {
+		var r reorderScopeRow
+		if err := rows.Scan(&r.ID, &r.CredentialID, &r.ManualPriority, &r.UpdatedAt); err != nil {
+			return nil, scopeRevision{}, err
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, scopeRevision{}, err
+	}
+	rev, err := loadCanonicalScopeRevision(ctx, q, canonicalID)
+	if err != nil {
+		return nil, scopeRevision{}, err
+	}
+	return out, rev, nil
+}
+
+// scopeRevision is the persistent, monotonic version of a candidate-binding
+// scope. The Raw form is the wire payload sent to clients; Version is the
+// integer used for 409 detection.
+type scopeRevision struct {
+	Version int64
+	Hash    string // 64-char SHA-256 hex; empty when no rows exist for the scope
+	Raw     string // "<version>:<hash>" (or "" when the scope has no revision row yet)
+}
+
+func formatScopeRevision(version int64, hash string) string {
+	if version <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d:%s", version, hash)
+}
+
+// singleRawModelForRevision returns the shared raw_model when every candidate
+// name matches. Mixed aliases intentionally yield ok=false so resolve omits
+// reorder_revision and the UI keeps drag-and-drop disabled.
+func singleRawModelForRevision(modelNames []string) (raw string, ok bool) {
+	if len(modelNames) == 0 {
+		return "", false
+	}
+	first := strings.TrimSpace(modelNames[0])
+	if first == "" {
+		return "", false
+	}
+	for _, name := range modelNames[1:] {
+		if strings.TrimSpace(name) != first {
+			return "", false
+		}
+	}
+	return first, true
+}
+
+// singleCanonicalForRevision returns the shared canonical_id when every
+// candidate maps to one canonical model. This is the scope key the reorder
+// endpoint now uses, so a drag operation can reorder all candidates of a
+// model even when they are registered under several raw_model_name aliases
+// that share one canonical_id (e.g. glm-5.2 + z-ai/glm-5.2). Genuinely
+// distinct canonical models (e.g. the dot↔dash bridge pulling
+// glm-5-2-260617 into a glm-5.2 resolve) yield ok=false, which keeps
+// drag-and-drop disabled — correct, because reordering across real models
+// would be unsafe. NULL canonical_id on any candidate also yields ok=false,
+// since a candidate without a canonical parent cannot participate in a
+// canonical-keyed reorder.
+func singleCanonicalForRevision(candidates []resolveCandidate) (canonicalID int64, ok bool) {
+	if len(candidates) == 0 {
+		return 0, false
+	}
+	first := candidates[0].CanonicalID
+	if first == nil || *first <= 0 {
+		return 0, false
+	}
+	for _, c := range candidates[1:] {
+		if c.CanonicalID == nil || *c.CanonicalID != *first {
+			return 0, false
+		}
+	}
+	return *first, true
+}
+
+// loadScopeRevision reads the persistent scope revision row. Missing rows
+// are NOT errors — a scope that has never been bumped returns the zero value
+// and a nil error so the caller can decide whether the empty token is
+// acceptable (resolve) or fatal (reorder).
+func loadScopeRevision(ctx context.Context, q pgxQueryRower, rawModel string) (scopeRevision, error) {
+	var version int64
+	var hash string
+	err := q.QueryRow(ctx, `
+		SELECT scope_version, scope_hash
+		  FROM public.candidate_binding_scope_revision
+		 WHERE raw_model = $1
+	`, rawModel).Scan(&version, &hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return scopeRevision{}, nil
+	}
+	if err != nil {
+		return scopeRevision{}, err
+	}
+	return scopeRevision{
+		Version: version,
+		Hash:    hash,
+		Raw:     formatScopeRevision(version, hash),
+	}, nil
+}
+
+// ensureScopeRevision returns the persistent revision for rawModel, seeding
+// version=1 (same hash formula as migration 541 backfill, extended in 568 to
+// include b.priority and mirrored in the canonical bump functions by 571) when
+// the row is absent. Concurrent ensures are safe via ON CONFLICT DO NOTHING.
+//
+// The seed query mirrors reorderScopeSQL: it must skip bindings under
+// disabled providers and credentials with manual_disabled = TRUE so the
+// resulting hash lines up with what fetchReorderScope returns at write
+// time. Otherwise a client could compute one hash from the resolve
+// payload (which already filters those rows) and watch the server reject
+// its PATCH with a phantom "scope drift" 409.
+func ensureScopeRevision(ctx context.Context, q pgxExecRower, rawModel string) (scopeRevision, error) {
+	rawModel = strings.TrimSpace(rawModel)
+	if rawModel == "" {
+		return scopeRevision{}, nil
+	}
+	rev, err := loadScopeRevision(ctx, q, rawModel)
+	if err != nil || rev.Raw != "" {
+		return rev, err
+	}
+	_, err = q.Exec(ctx, `
+INSERT INTO public.candidate_binding_scope_revision (raw_model, scope_version, scope_hash)
+VALUES (
+    $1::text,
+    1,
+    COALESCE(
+        (
+            SELECT encode(digest(string_agg(
+                b.id::text || '|' ||
+                b.credential_id::text || '|' ||
+                b.manual_priority::text || '|' ||
+                b.priority::text || '|' ||
+                extract(epoch from b.updated_at)::text,
+                '|' ORDER BY b.id
+            ), 'sha256'), 'hex')
+            FROM public.provider_models pm
+            LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+            JOIN public.providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+            JOIN public.credentials c ON c.id = b.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
+            WHERE pm.raw_model_name = $1
+        ),
+        ''
+    )
+)
+ON CONFLICT (raw_model) DO NOTHING
+`, rawModel)
+	if err != nil {
+		return scopeRevision{}, err
+	}
+	return loadScopeRevision(ctx, q, rawModel)
+}
+
+// loadCanonicalScopeRevision reads the persistent canonical scope revision
+// row (migration 566). Missing rows are NOT errors — a scope that has never
+// been bumped returns the zero value and a nil error so the caller can decide
+// whether the empty token is acceptable (resolve) or fatal (reorder).
+func loadCanonicalScopeRevision(ctx context.Context, q pgxQueryRower, canonicalID int64) (scopeRevision, error) {
+	var version int64
+	var hash string
+	err := q.QueryRow(ctx, `
+		SELECT scope_version, scope_hash
+		  FROM public.candidate_binding_scope_revision_canonical
+		 WHERE canonical_id = $1
+	`, canonicalID).Scan(&version, &hash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return scopeRevision{}, nil
+	}
+	if err != nil {
+		return scopeRevision{}, err
+	}
+	return scopeRevision{
+		Version: version,
+		Hash:    hash,
+		Raw:     formatScopeRevision(version, hash),
+	}, nil
+}
+
+// ensureCanonicalScopeRevision returns the persistent revision for
+// canonicalID, seeding version=1 (same hash formula as migration 566
+// backfill, keyed by canonical_id; the b.priority term was added by 571
+// alongside the four canonical bump functions) when the row is absent.
+// Concurrent ensures are safe via ON CONFLICT DO NOTHING.
+//
+// The seed query mirrors reorderScopeByCanonicalSQL: it must skip
+// bindings under disabled providers and credentials with manual_disabled
+// = TRUE so the resulting hash lines up with what
+// fetchReorderScopeByCanonical returns at write time. Otherwise a client
+// could compute one hash from the resolve payload (which already filters
+// those rows) and watch the server reject its PATCH with a phantom
+// "scope drift" 409.
+func ensureCanonicalScopeRevision(ctx context.Context, q pgxExecRower, canonicalID int64) (scopeRevision, error) {
+	if canonicalID <= 0 {
+		return scopeRevision{}, nil
+	}
+	rev, err := loadCanonicalScopeRevision(ctx, q, canonicalID)
+	if err != nil || rev.Raw != "" {
+		return rev, err
+	}
+	_, err = q.Exec(ctx, `
+INSERT INTO public.candidate_binding_scope_revision_canonical (canonical_id, scope_version, scope_hash)
+VALUES (
+    $1::bigint,
+    1,
+    COALESCE(
+        (
+            SELECT encode(digest(string_agg(
+                b.id::text || '|' ||
+                b.credential_id::text || '|' ||
+                b.manual_priority::text || '|' ||
+                b.priority::text || '|' ||
+                extract(epoch from b.updated_at)::text,
+                '|' ORDER BY b.id
+            ), 'sha256'), 'hex')
+            FROM public.provider_models pm
+            LEFT JOIN public.credential_model_bindings b ON b.provider_model_id = pm.id
+            JOIN public.providers p ON p.id = pm.provider_id AND p.enabled = TRUE
+            JOIN public.credentials c ON c.id = b.credential_id AND COALESCE(c.manual_disabled, FALSE) = FALSE
+            WHERE pm.canonical_id = $1
+        ),
+        ''
+    )
+)
+ON CONFLICT (canonical_id) DO NOTHING
+`, canonicalID)
+	if err != nil {
+		return scopeRevision{}, err
+	}
+	return loadCanonicalScopeRevision(ctx, q, canonicalID)
+}
+
+// parseScopeRevision parses the wire form "<version>:<hash>" back into a
+// scopeRevision. The shape is forward-compatible: extra ":" segments after
+// the hash are preserved verbatim in Raw.
+func parseScopeRevision(token string) (scopeRevision, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return scopeRevision{}, fmt.Errorf("malformed revision: empty token")
+	}
+	parts := strings.SplitN(token, ":", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return scopeRevision{}, fmt.Errorf("malformed revision %q: expected \"<version>:<hash>\"", token)
+	}
+	v, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || v <= 0 {
+		return scopeRevision{}, fmt.Errorf("malformed revision %q: bad version", token)
+	}
+	return scopeRevision{Version: v, Hash: parts[1], Raw: token}, nil
+}
+
+// scopeRevisionsEqual returns true when two revisions refer to the same
+// committed state.
+func scopeRevisionsEqual(a, b scopeRevision) bool {
+	if a.Version != b.Version {
+		return false
+	}
+	if a.Version == 0 {
+		return true
+	}
+	return secureEqualString(a.Hash, b.Hash)
+}
+
+// candidateReorderRevision hashes the scope rows so the writer can detect
+// membership or priority drift between the client's snapshot and the
+// locked current state. UpdatedAt is included so direct PATCH or legacy
+// view-trigger writes invalidate the digest.
+func candidateReorderRevision(rows []reorderScopeRow) (string, error) {
+	sorted := make([]reorderScopeRow, len(rows))
+	copy(sorted, rows)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
+	hasher := sha256.New()
+	for _, r := range sorted {
+		if _, err := fmt.Fprintf(hasher, "%d|%d|%d|%s\n",
+			r.ID, r.CredentialID, r.ManualPriority,
+			r.UpdatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+// secureEqualString compares opaque revsions in constant time so callers
+// can't infer match probability from response timing.
+func secureEqualString(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+func isPgSerializationFailure(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40001"
+}
+
+func isPgDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
+}
+
+// validateReorderCompleteness rejects partial or mismatched submissions:
+// the request must cover every binding currently in scope.
+func validateReorderCompleteness(scope []reorderScopeRow, items []routingCandidateReorderItem) error {
+	if len(scope) != len(items) {
+		return fmt.Errorf("incomplete candidate set, refetch and retry (scope=%d, submitted=%d)", len(scope), len(items))
+	}
+	scopeIDs := make(map[int64]struct{}, len(scope))
+	for _, r := range scope {
+		scopeIDs[r.CredentialID] = struct{}{}
+	}
+	seenIDs := make(map[int64]struct{}, len(items))
+	for _, it := range items {
+		if _, ok := scopeIDs[int64(it.CredentialID)]; !ok {
+			return fmt.Errorf("incomplete candidate set, refetch and retry (credential_id=%d not in scope)", it.CredentialID)
+		}
+		seenIDs[int64(it.CredentialID)] = struct{}{}
+	}
+	if len(seenIDs) != len(scopeIDs) {
+		return fmt.Errorf("incomplete candidate set, refetch and retry (missing credentials)")
+	}
+	return nil
+}
+
+// applyReorderUpdate writes the new priorities in a single statement,
+// parameterised in id order so concurrent transactions lock rows in the
+// same sequence and avoid reverse-order deadlocks.
+func applyReorderUpdate(ctx context.Context, tx pgx.Tx, scope []reorderScopeRow, items []routingCandidateReorderItem) error {
+	if len(scope) == 0 {
+		return nil
+	}
+	picked := make(map[int64]int, len(items))
+	for _, it := range items {
+		picked[int64(it.CredentialID)] = it.ManualPriority
+	}
+	args := make([]any, 0, 2*len(scope))
+	values := make([]string, 0, len(scope))
+	for _, r := range scope {
+		priority, ok := picked[r.CredentialID]
+		if !ok {
+			return fmt.Errorf("missing priority for credential_id=%d", r.CredentialID)
+		}
+		values = append(values, fmt.Sprintf("($%d::bigint, $%d::int)", len(args)+1, len(args)+2))
+		args = append(args, r.ID, priority)
+	}
+	sqlText := fmt.Sprintf(`
+		UPDATE credential_model_bindings
+		SET manual_priority = v.priority, updated_at = NOW()
+		FROM (VALUES %s) AS v(id, priority)
+		WHERE credential_model_bindings.id = v.id
+	`, strings.Join(values, ","))
+	_, err := tx.Exec(ctx, sqlText, args...)
+	return err
+}
+
 type routingCandidateReorderItem struct {
 	CredentialID   int    `json:"credential_id"`
-	RawModel       string `json:"raw_model"`
+	RawModel       string `json:"raw_model,omitempty"`
 	ManualPriority int    `json:"manual_priority"`
 }
 
 type routingCandidateReorderRequest struct {
-	Items []routingCandidateReorderItem `json:"items"`
+	// CanonicalID scopes the entire reorder to one canonical model
+	// (models_canonical.id). Bindings registered under any raw_model_name
+	// alias of that canonical are all in scope, so a drag operation can
+	// reorder every candidate of a model that spans several raw_model names.
+	// Mixed-canonical submissions are rejected to keep the write path atomic.
+	//
+	// CanonicalID is preferred when >0; otherwise RawModel is used as the
+	// fallback scope for models whose provider rows have NULL canonical_id
+	// (legacy bindings predating migration 566's coverage).
+	CanonicalID int64  `json:"canonical_id"`
+	RawModel    string `json:"raw_model,omitempty"`
+	// ExpectedRevision is the opaque token the client received from
+	// /api/routing/resolve. The handler locks the scope, recomputes the
+	// revision, and rejects stale clients with HTTP 409.
+	ExpectedRevision string                        `json:"expected_revision"`
+	Items            []routingCandidateReorderItem `json:"items"`
 }
 
 func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string {
+	if req.CanonicalID <= 0 && strings.TrimSpace(req.RawModel) == "" {
+		return "canonical_id or raw_model is required"
+	}
 	if len(req.Items) == 0 {
 		return "items must not be empty"
 	}
 	if len(req.Items) > maxRoutingCandidateReorderItems {
 		return "too many items"
 	}
-	seenBindings := make(map[string]struct{}, len(req.Items))
+	seenBindings := make(map[int64]struct{}, len(req.Items))
 	seenPriorities := make(map[int]struct{}, len(req.Items))
 	for _, item := range req.Items {
-		if strings.TrimSpace(item.RawModel) == "" {
-			return "raw_model is required for every item"
-		}
 		if item.CredentialID <= 0 {
 			return "credential_id must be positive"
 		}
-		if item.ManualPriority < 1 || item.ManualPriority > len(req.Items) {
-			return "manual_priority must be contiguous starting at 1"
+		// Spaced priorities (5,10,15…) are allowed so clients can insert
+		// mid-rank values without rewriting the whole ladder every time.
+		// Resolve order is ascending manual_priority (not items array order);
+		// values must stay unique within [1, 99] (same ceiling as single-binding PATCH).
+		if item.ManualPriority < 1 || item.ManualPriority > 99 {
+			return "manual_priority must be in [1, 99]"
 		}
-		bindingKey := fmt.Sprintf("%d:%s", item.CredentialID, strings.TrimSpace(item.RawModel))
-		if _, ok := seenBindings[bindingKey]; ok {
-			return "credential_id and raw_model must be unique"
+		if _, ok := seenBindings[int64(item.CredentialID)]; ok {
+			return "credential_id must be unique"
 		}
 		if _, ok := seenPriorities[item.ManualPriority]; ok {
 			return "manual_priority must be unique"
 		}
-		seenBindings[bindingKey] = struct{}{}
+		seenBindings[int64(item.CredentialID)] = struct{}{}
 		seenPriorities[item.ManualPriority] = struct{}{}
-	}
-	for priority := 1; priority <= len(req.Items); priority++ {
-		if _, ok := seenPriorities[priority]; !ok {
-			return "manual_priority must be contiguous starting at 1"
-		}
 	}
 	return ""
 }
 
 // handleRoutingCandidateBindingReorder persists the complete resolve-list order
-// in one transaction. It intentionally updates only manual_priority; health,
-// availability, lifecycle, and circuit state remain owned by their monitors.
+// in one transaction. The write path enforces three invariants:
+//
+//  1. The reorder targets exactly one canonical model (the top-level
+//     CanonicalID field). Bindings registered under any raw_model_name alias
+//     of that canonical are all in scope, so a drag can reorder every
+//     candidate of a model that spans several raw_model names. Mixed-canonical
+//     submissions are rejected at validation time.
+//  2. The submission covers every credential currently bound to that
+//     canonical. A subset write would silently orphan sibling rows.
+//  3. The client's ExpectedRevision matches the locked current scope state.
+//     Mismatches indicate a stale view and surface as HTTP 409 so the UI can
+//     refetch before retrying.
+//
+// Authorization: super_admin only (registered via h.superAdmin).
+// Concurrency: SERIALIZABLE isolation; every binding row is locked with
+// FOR UPDATE OF cmb in id order before any UPDATE, which both serialises
+// concurrent writers and prevents reverse-order deadlocks.
+// Audit: written inside the same transaction so the audit row commits or
+// rolls back together with the priority change.
 func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPatch {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -760,56 +1386,183 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	req.RawModel = strings.TrimSpace(req.RawModel)
+	if req.CanonicalID <= 0 && req.RawModel == "" {
+		writeError(w, http.StatusBadRequest, "canonical_id or raw_model is required")
+		return
+	}
+	req.ExpectedRevision = strings.TrimSpace(req.ExpectedRevision)
+	if req.ExpectedRevision == "" {
+		writeError(w, http.StatusBadRequest, "expected_revision is required")
+		return
+	}
+	// Restore the per-item raw_model contract from bc788bfac (atomic
+	// complete-set reorder): an item may omit raw_model (inherits the
+	// top-level scope) but must not contradict it — that silently writes
+	// priorities into a different model's binding set.
+	for i := range req.Items {
+		itemRaw := strings.TrimSpace(req.Items[i].RawModel)
+		switch {
+		case itemRaw == "":
+			req.Items[i].RawModel = req.RawModel
+		case req.RawModel != "" && !strings.EqualFold(itemRaw, req.RawModel):
+			writeError(w, http.StatusBadRequest, "raw_model mismatch between request and item")
+			return
+		default:
+			req.Items[i].RawModel = itemRaw
+		}
+	}
 	if validationErr := validateRoutingCandidateReorder(req); validationErr != "" {
 		writeError(w, http.StatusBadRequest, validationErr)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
-	tx, err := h.db.Begin(ctx)
+	tx, err := h.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "begin reorder transaction failed")
 		return
 	}
-	defer tx.Rollback(ctx) // harmless after a successful commit
+	defer tx.Rollback(ctx)
 
-	for _, item := range req.Items {
-		var bindingID int
-		err := tx.QueryRow(ctx, `
-			SELECT cmb.id
-			FROM credential_model_bindings cmb
-			JOIN provider_models pm ON pm.id = cmb.provider_model_id
-			WHERE cmb.credential_id = $1
-			  AND pm.raw_model_name = $2
-			LIMIT 1
-		`, item.CredentialID, strings.TrimSpace(item.RawModel)).Scan(&bindingID)
-		if err != nil {
-			writeError(w, http.StatusNotFound, "binding not found for credential/model pair")
-			return
-		}
-		if _, err := tx.Exec(ctx, `
-			UPDATE credential_model_bindings
-			SET manual_priority = $1, updated_at = NOW()
-			WHERE id = $2
-		`, item.ManualPriority, bindingID); err != nil {
-			writeError(w, http.StatusInternalServerError, "reorder update failed")
-			return
-		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		writeError(w, http.StatusInternalServerError, "commit reorder failed")
+	// Plumb the audit-attributable actor into the session GUC so the
+	// migration 566 (canonical) or 541 (raw_model fallback) trigger records
+	// it on the appropriate scope-revision row. We do this BEFORE the first
+	// SELECT so the revision row written by our own UPDATE is attributed to
+	// this actor rather than NULL.
+	actor := requestActor(r)
+	if _, setErr := tx.Exec(ctx, "SELECT set_config('app.actor', $1, true)", actor); setErr != nil {
+		writeError(w, http.StatusInternalServerError, "set app.actor guc failed: "+setErr.Error())
 		return
 	}
 
-	h.logAudit(r, "routing_candidate_binding_reorder", map[string]any{
-		"items": req.Items,
-	})
-	writeJSON(w, http.StatusOK, map[string]any{
-		"message": "updated",
-		"items":   req.Items,
-	})
+	var (
+		scope      []reorderScopeRow
+		currentRev scopeRevision
+		nextRev    scopeRevision
+		scopeLabel string
+	)
+	if req.CanonicalID > 0 {
+		var err error
+		scope, currentRev, err = fetchReorderScopeByCanonical(ctx, tx, req.CanonicalID, true)
+		if err != nil {
+			if isPgSerializationFailure(err) || isPgDeadlock(err) {
+				writeError(w, http.StatusConflict, "transient ordering conflict, retry")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "load reorder scope failed: "+err.Error())
+			return
+		}
+		if len(scope) == 0 {
+			writeError(w, http.StatusNotFound, "no candidate bindings found for canonical_id")
+			return
+		}
+		scopeLabel = "canonical_id"
+	} else {
+		var err error
+		scope, currentRev, err = fetchReorderScope(ctx, tx, req.RawModel, true)
+		if err != nil {
+			if isPgSerializationFailure(err) || isPgDeadlock(err) {
+				writeError(w, http.StatusConflict, "transient ordering conflict, retry")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "load reorder scope failed: "+err.Error())
+			return
+		}
+		if len(scope) == 0 {
+			writeError(w, http.StatusNotFound, "no candidate bindings found for raw_model")
+			return
+		}
+		scopeLabel = "raw_model"
+	}
+	// The persistent scope revision (migration 566 canonical or 541 raw_model)
+	// is the source of truth for 409 detection. We parse the client token once
+	// and compare on the integer version (primary) plus the hash
+	// (defence-in-depth: catches scope contents drifting without a version
+	// bump, which would indicate the trigger is broken).
+	expectedRev, parseErr := parseScopeRevision(req.ExpectedRevision)
+	if parseErr != nil || !scopeRevisionsEqual(expectedRev, currentRev) {
+		writeError(w, http.StatusConflict, "stale candidate binding set, refetch and retry")
+		return
+	}
+	if err := validateReorderCompleteness(scope, req.Items); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	if err := applyReorderUpdate(ctx, tx, scope, req.Items); err != nil {
+		writeError(w, http.StatusInternalServerError, "apply reorder failed: "+err.Error())
+		return
+	}
+	// The trigger fired by applyReorderUpdate has already advanced
+	// scope_version inside the same statement; we re-read the row so the
+	// response carries the fresh token the client must echo on its next
+	// PATCH. We deliberately do NOT cache the pre-write currentRev here.
+	if req.CanonicalID > 0 {
+		nextRev, err = loadCanonicalScopeRevision(ctx, tx, req.CanonicalID)
+	} else {
+		nextRev, err = loadScopeRevision(ctx, tx, req.RawModel)
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "reload revision failed: "+err.Error())
+		return
+	}
+	auditDetail := map[string]any{
+		"scope":             scopeLabel,
+		"expected_revision": req.ExpectedRevision,
+		"scope_version":     nextRev.Version,
+		"items":             req.Items,
+	}
+	if req.CanonicalID > 0 {
+		auditDetail["canonical_id"] = req.CanonicalID
+	} else {
+		auditDetail["raw_model"] = req.RawModel
+	}
+	if err := logAuditExec(ctx, tx, actor,
+		"routing_candidate_binding_reorder", auditDetail); err != nil {
+		writeError(w, http.StatusInternalServerError, "audit insert failed: "+err.Error())
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		if isPgSerializationFailure(err) || isPgDeadlock(err) {
+			writeError(w, http.StatusConflict, "transient ordering conflict, retry")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "commit reorder failed: "+err.Error())
+		return
+	}
+
+	resp := map[string]any{
+		"message":           "updated",
+		"expected_revision": nextRev.Raw,
+		"items":             req.Items,
+		"scope":             scopeLabel,
+	}
+	if req.CanonicalID > 0 {
+		resp["canonical_id"] = req.CanonicalID
+	} else {
+		resp["raw_model"] = req.RawModel
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
+
+const forceEnableCredentialSQL = `
+	UPDATE credentials SET
+		manual_disabled = false,
+		lifecycle_status = 'active',
+		availability_state = 'ready',
+		availability_recover_at = NULL,
+		quota_state = 'ok',
+		quota_recover_at = NULL,
+		circuit_state = 'closed',
+		cooling_until = NULL,
+		health_status = 'healthy',
+		consecutive_failures = 0,
+		state_reason_code = NULL,
+		state_reason_detail = $2,
+		state_updated_at = NOW()
+	WHERE id = $1
+`
 
 // handleEmergencyRepair handles emergency repair actions for credentials.
 // PATCH /api/routing/emergency-repair
@@ -899,215 +1652,17 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		// node_probe_failed) stayed red after HTTP 200 — observed on NVIDIA NIM
 		// (cred 8/18/19/23 · minimaxai/minimax-m3) and 普联 (cred 29 · glm-5.2).
 		// Now also: reset availability/circuit/failures + node_probe_state.
-		var currentDisabled bool
-		var availState string
-		var providerID int
-		err := h.db.QueryRow(ctx,
-			`SELECT COALESCE(manual_disabled, false), COALESCE(availability_state, 'ready'),
-			        COALESCE(provider_id, 0)
-			 FROM credentials WHERE id = $1`,
-			req.CredentialID,
-		).Scan(&currentDisabled, &availState, &providerID)
-		if err != nil {
-			if err == pgx.ErrNoRows {
+		//
+		// 2026-08-23: extracted to applyForceEnable so the new
+		// POST /api/routing/credentials/{id}/reset-state endpoint can reuse
+		// the exact same DB + in-memory + URSM v2 reset chain.
+		if err := h.applyForceEnable(ctx, req.CredentialID, req.RawModel, req.Reason, actor, ursmTenantID, beforeAfter); err != nil {
+			if errors.Is(err, errForceEnableCredNotFound) {
 				writeError(w, http.StatusNotFound, "credential not found")
 			} else {
-				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+				writeError(w, http.StatusInternalServerError, err.Error())
 			}
 			return
-		}
-
-		tx, err := h.db.Begin(ctx)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "begin tx failed: "+err.Error())
-			return
-		}
-		defer tx.Rollback(ctx)
-
-		if _, err := tx.Exec(ctx, `
-			UPDATE credentials SET
-				manual_disabled = false,
-				availability_state = 'ready',
-				availability_recover_at = NULL,
-				quota_state = 'ok',
-				quota_recover_at = NULL,
-				circuit_state = 'closed',
-				cooling_until = NULL,
-				health_status = 'healthy',
-				consecutive_failures = 0,
-				state_reason_code = NULL,
-				state_reason_detail = $2,
-				state_updated_at = NOW()
-			WHERE id = $1
-		`, req.CredentialID, "emergency force_enable: "+req.Reason); err != nil {
-			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
-			return
-		}
-
-		var cmbRows int64
-		if req.RawModel != "" {
-			tag, err := tx.Exec(ctx, `
-				UPDATE credential_model_bindings cmb
-				SET available = TRUE,
-					unavailable_reason = NULL,
-					unavailable_at = NULL,
-					unavailable_recover_at = NULL,
-					updated_at = NOW()
-				FROM provider_models pm
-				WHERE cmb.credential_id = $1
-				  AND pm.id = cmb.provider_model_id
-				  AND pm.raw_model_name = $2
-			`, req.CredentialID, req.RawModel)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "update cmb failed: "+err.Error())
-				return
-			}
-			cmbRows = tag.RowsAffected()
-		}
-
-		// Clear NodeProbeWorker backoff so v_routable_credential_models
-		// drops node_probe_failed immediately (see migration 417).
-		var probeRows int64
-		if req.RawModel != "" {
-			tag, err := tx.Exec(ctx, `
-				UPDATE node_probe_state SET
-					last_direct_ok = TRUE,
-					last_gateway_ok = TRUE,
-					last_err_code = NULL,
-					last_err_detail = NULL,
-					next_retry_at = now(),
-					next_retry_seconds = 0,
-					consecutive_failures = 0,
-					paused = FALSE,
-					in_flight_until = NULL,
-					updated_at = now()
-				WHERE credential_id = $1 AND raw_model_name = $2
-			`, req.CredentialID, req.RawModel)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reset node_probe_state failed: "+err.Error())
-				return
-			}
-			probeRows = tag.RowsAffected()
-		} else {
-			tag, err := tx.Exec(ctx, `
-				UPDATE node_probe_state SET
-					last_direct_ok = TRUE,
-					last_gateway_ok = TRUE,
-					last_err_code = NULL,
-					last_err_detail = NULL,
-					next_retry_at = now(),
-					next_retry_seconds = 0,
-					consecutive_failures = 0,
-					paused = FALSE,
-					in_flight_until = NULL,
-					updated_at = now()
-				WHERE credential_id = $1
-			`, req.CredentialID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reset node_probe_state failed: "+err.Error())
-				return
-			}
-			probeRows = tag.RowsAffected()
-		}
-
-		// Clear model_probe_state broken_confirmed (2026-08-13): the SQL view
-		// v_routable_credential_models also gates routability on
-		// model_probe_state.state != 'broken_confirmed', and
-		// reconcileBrokenConfirmedBindings re-marks the cmb unavailable every
-		// probe cycle while it stays broken_confirmed. Without this clear,
-		// force_enable leaves a broken_confirmed node non-routable despite the
-		// credential/cmb/node_probe resets above. 'recovering' is immediately
-		// routable (only 'broken_confirmed' is gated) and matches the
-		// BrokenProbeReviver semantics.
-		var modelProbeRows int64
-		if req.RawModel != "" {
-			tag, err := tx.Exec(ctx, `
-				UPDATE model_probe_state SET
-					state = 'recovering',
-					consecutive_failures = 0,
-					next_retry_at = now(),
-					last_state_change_at = now()
-				WHERE credential_id = $1 AND raw_model_name = $2
-				  AND state = 'broken_confirmed'
-			`, req.CredentialID, req.RawModel)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reset model_probe_state failed: "+err.Error())
-				return
-			}
-			modelProbeRows = tag.RowsAffected()
-		} else {
-			tag, err := tx.Exec(ctx, `
-				UPDATE model_probe_state SET
-					state = 'recovering',
-					consecutive_failures = 0,
-					next_retry_at = now(),
-					last_state_change_at = now()
-				WHERE credential_id = $1
-				  AND state = 'broken_confirmed'
-			`, req.CredentialID)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "reset model_probe_state failed: "+err.Error())
-				return
-			}
-			modelProbeRows = tag.RowsAffected()
-		}
-
-		if err := tx.Commit(ctx); err != nil {
-			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
-			return
-		}
-		beforeAfter["previous_manual_disabled"] = currentDisabled
-		beforeAfter["previous_availability_state"] = availState
-		beforeAfter["new_manual_disabled"] = false
-		beforeAfter["new_availability_state"] = "ready"
-		beforeAfter["cmb_available"] = cmbRows > 0 || req.RawModel == ""
-		beforeAfter["cmb_rows_updated"] = cmbRows
-		beforeAfter["node_probe_rows_updated"] = probeRows
-		beforeAfter["model_probe_rows_updated"] = modelProbeRows
-
-		// 2026-08-15: the DB transaction above only reaches the persistent
-		// layers. The request hot path also consults in-process / Redis state
-		// (circuit breaker, fpslot NodeState cooldown, legacy credentialstate
-		// cache) that would keep filtering this node out for up to 5 minutes
-		// after force_enable returned 200. Reset them now.
-		resetModels, memOutcome := h.resetInMemoryNodeState(ctx, req.CredentialID, providerID, req.RawModel, true)
-		for k, v := range memOutcome {
-			beforeAfter[k] = v
-		}
-
-		// URSM v2: clear manual_hold via ApplyAdmin, AND wipe any
-		// residual disabled/fail_streak/cool_until_ms via ClearState.
-		// 2026-08-15: when RawModel is empty (whole-credential repair) the
-		// per-model loop below covers every binding model instead of
-		// skipping URSM entirely.
-		if h.ursmV2 != nil {
-			disabled := false
-			applied, cleared := 0, 0
-			for _, m := range resetModels {
-				adminAction := api.AdminAction{
-					Scope:          api.ScopeNode,
-					CredentialID:   req.CredentialID,
-					RawModel:       m,
-					TenantID:       ursmTenantID,
-					ManualDisabled: &disabled,
-					Reason:         req.Reason,
-					Actor:          actor,
-					IssuedAtMs:     time.Now().UnixMilli(),
-				}
-				if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
-					slog.Warn("emergency_repair: ursm.v2 apply_admin failed", "error", err, "cred", req.CredentialID, "model", m)
-				} else {
-					applied++
-				}
-				if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, req.CredentialID, m); err != nil {
-					slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID, "model", m)
-				} else {
-					cleared++
-				}
-			}
-			beforeAfter["ursm_v2_admin_applied"] = len(resetModels) > 0 && applied == len(resetModels)
-			beforeAfter["ursm_v2_cleared"] = len(resetModels) > 0 && cleared == len(resetModels)
-			beforeAfter["ursm_v2_models_covered"] = len(resetModels)
 		}
 
 	case "force_disable":
@@ -1368,6 +1923,11 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 	if h.circuitResetter != nil && providerID > 0 {
 		h.circuitResetter.Reset(providerID, credentialID)
 		outcome["in_memory_circuit_reset"] = true
+		met.RoutingCredentialResetTotal.WithLabelValues("in_memory_circuit", "ok").Inc()
+	} else if h.circuitResetter == nil && providerID > 0 {
+		// Surface missing injection: this is the exact failure mode that
+		// kept hzx-2 locked after a force_enable in the 2026-08-23 audit.
+		met.RoutingCredentialResetTotal.WithLabelValues("in_memory_circuit", "skipped").Inc()
 	}
 
 	models := make([]string, 0, 4)
@@ -1404,9 +1964,11 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 				Model:        m,
 			}); err == nil {
 				reset++
+				met.RoutingCredentialResetTotal.WithLabelValues("redis_fpslot", "ok").Inc()
 			} else {
 				slog.Warn("emergency_repair: reset fp node state failed",
 					"error", err, "cred", credentialID, "model", m)
+				met.RoutingCredentialResetTotal.WithLabelValues("redis_fpslot", "error").Inc()
 			}
 		}
 		if reset > 0 {
@@ -1429,8 +1991,11 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 				LastUpdatedAt: now,
 				Source:        "manual",
 			})
+			met.RoutingCredentialResetTotal.WithLabelValues("in_memory_credstate", "ok").Inc()
 		}
 		outcome["cred_state_recovered_models"] = len(models)
+	} else if includeCredState && h.credStateRecoverer == nil {
+		met.RoutingCredentialResetTotal.WithLabelValues("in_memory_credstate", "skipped").Inc()
 	}
 
 	return models, outcome
@@ -2008,8 +2573,175 @@ type popularModelEntry struct {
 	Count         *int   `json:"count,omitempty"`
 }
 
-func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry) []popularModelEntry {
-	popular := make([]popularModelEntry, 0, 20)
+// defaultPopularModelsLookupWindow is how far back we look in request_logs_hot
+// for "popular models" suggestions unless the environment overrides it.
+// request_logs_hot is the hot standalone
+// table (rule 33 / migration 341) — older rows are migrated nightly into
+// the monthly partitioned request_logs table by promote_request_logs_hot_to_partition.
+// Querying request_logs_hot directly avoids the columnar monthly partitions
+// that the previous request_logs_with_current_month UNION dragged in.
+const defaultPopularModelsLookupWindow = 7 * 24 * time.Hour
+
+// popularModelsHotSQL returns up to 10 (model_key, count) rows from
+// request_logs_hot covering the configured lookup window.
+//
+// The cutoff is passed as a plan-time literal ($1) computed in Go so the
+// hot-table scan is bounded by an index range on (ts) rather than the
+// previous `NOW() - INTERVAL '7 days'` predicate that could not prune
+// against the partitioned parent view.
+const popularModelsHotSQL = `
+SELECT model_key, cnt FROM (
+    SELECT
+        COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
+        COUNT(*) AS cnt
+    FROM request_logs_hot rl
+    LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+    LEFT JOIN LATERAL (
+        SELECT canonical_id
+        FROM model_aliases
+        WHERE raw_name = lower(rl.client_model)
+          AND status = 'active'
+        LIMIT 1
+    ) ma ON TRUE
+    LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
+    WHERE rl.ts >= $1
+      AND rl.success = TRUE
+      AND NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)
+      AND ($2 = '' OR rl.tenant_id = $2)
+      AND rl.client_model IS NOT NULL AND rl.client_model != ''
+    GROUP BY model_key
+) u
+ORDER BY cnt DESC
+LIMIT 10`
+
+// livePopularModels queries Redis for "currently accessed models" using the
+// live-stream dimension queues indexed at llmgw:live:dim:index:global.
+// Each lane queue key llmgw:live:dim:model:<normalized> has ZSET members
+// (one per recent request-id in that lane). ZCARD is a cheap O(1) proxy
+// for "currently in flight / recently active". Results are returned sorted
+// by cardinality desc, capped at topLivePopularLimit.
+//
+// This is the fast path that lets the dashboard's "凭据路由模型" picker
+// surface *what is being routed right now* without touching the request_logs
+// tables at all. Best-effort: errors are swallowed and an empty slice
+// is returned so callers fall back to the SQL path.
+func livePopularModels(ctx context.Context, rdb *redis.Client, limit int) []popularModelEntry {
+	if rdb == nil || limit <= 0 {
+		return nil
+	}
+	keys, err := rdb.SMembers(ctx, liveStreamDimIndexKey("", true)).Result()
+	if err != nil || len(keys) == 0 {
+		return nil
+	}
+	const dimModelPrefix = liveStreamDimPrefix + "model:"
+	type modelCount struct {
+		name  string
+		count int64
+	}
+	bucket := make([]modelCount, 0, len(keys))
+	for _, key := range keys {
+		if !strings.HasPrefix(key, dimModelPrefix) {
+			continue
+		}
+		n, err := rdb.ZCard(ctx, key).Result()
+		if err != nil || n <= 0 {
+			continue
+		}
+		bucket = append(bucket, modelCount{
+			name:  strings.TrimPrefix(key, dimModelPrefix),
+			count: n,
+		})
+	}
+	if len(bucket) == 0 {
+		return nil
+	}
+	sort.Slice(bucket, func(i, j int) bool {
+		if bucket[i].count != bucket[j].count {
+			return bucket[i].count > bucket[j].count
+		}
+		return bucket[i].name < bucket[j].name
+	})
+	if len(bucket) > limit {
+		bucket = bucket[:limit]
+	}
+	out := make([]popularModelEntry, 0, len(bucket))
+	for _, b := range bucket {
+		c := int(b.count)
+		out = append(out, popularModelEntry{
+			CanonicalName: b.name,
+			DisplayName:   b.name,
+			Source:        "live",
+			Count:         &c,
+		})
+	}
+	return out
+}
+
+// recentlyUsedModelsKeyPrefix namespaces one Redis ZSET per tenant. Each key
+// records canonical model names hit by a real (non-probe) successful request
+// over the last RecentlyUsedModelsTTL. This is the primary fast path for the
+// "凭据路由模型" dashboard widget — O(log N) writes (ZINCRBY) on the
+// request hot path, O(log N + M) reads (ZREVRANGE) here.
+//
+// Why a dedicated key (vs the live-stream dim queue ZCARD used by
+// livePopularModels):
+//   - TTL exactly matches the 7-day hot-popular window, no extra
+//     "we measured 24h but the UI asks for 7d" drift.
+//   - Writes are gated on is_probe=false + success=true so node
+//     probes, model probes, and self-check tiles cannot pollute the
+//     ranking.
+//   - Score is the real request counter (not lane-queue cardinality
+//     which mixes real requests with idle markers and capped lanes).
+//   - Persistent across gateway restarts via AOF/RDB (lane queue
+//     contents live in process memory only).
+const (
+	RecentlyUsedModelsTTL   = recentmodels.TTL
+	recentlyUsedModelsLimit = 10
+)
+
+// recentlyUsedPopularModels reads the top-N recently-used canonical model
+// names for one tenant. An empty tenant intentionally has no Redis aggregate:
+// super-admin reads remain DB-backed and cannot be served by a global key.
+// Best-effort: returns nil on any Redis error so callers fall back to SQL.
+func recentlyUsedModelsKey(tenantID string) string {
+	return recentmodels.Key(tenantID)
+}
+
+func recentlyUsedPopularModels(ctx context.Context, rdb *redis.Client, tenantID string, limit int) []popularModelEntry {
+	entries := recentmodels.Read(ctx, rdb, tenantID, limit)
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]popularModelEntry, 0, len(entries))
+	for _, entry := range entries {
+		count := entry.Count
+		out = append(out, popularModelEntry{
+			CanonicalName: entry.Model,
+			DisplayName:   entry.Model,
+			Source:        "recent",
+			Count:         &count,
+		})
+	}
+	return out
+}
+
+// RecordRecentlyUsedModel bumps the canonical model's score in the
+// recently-used ZSET and refreshes the key TTL. Safe to call from
+// the request hot path: errors are swallowed and reported through a
+// counter (no log spam per request).
+//
+// Probe / selfcheck / pre-flight requests must pass isProbe=false so
+// health-check traffic does not skew the dashboard ranking. tenantID is
+// required so model popularity never crosses tenant boundaries.
+func RecordRecentlyUsedModel(ctx context.Context, rdb *redis.Client, tenantID, canonical string, isProbe bool) {
+	recentmodels.Record(ctx, rdb, tenantID, canonical, isProbe)
+}
+
+func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []string, byCanonical map[string]*availableVersionEntry, tenantID string, limit int) []popularModelEntry {
+	if limit <= 0 {
+		return nil
+	}
+	popular := make([]popularModelEntry, 0, 32)
 	seen := map[string]bool{}
 
 	add := func(canonical, display, source string, count *int) {
@@ -2043,30 +2775,31 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 		add(n, n, "policy", nil)
 	}
 
-	usageRows, err := h.db.Query(ctx, `
-		SELECT model_key, cnt FROM (
-			SELECT
-				COALESCE(mc.canonical_name, mc2.canonical_name, rl.client_model) AS model_key,
-				COUNT(*) AS cnt
-			FROM request_logs_with_current_month rl
-			LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
-			LEFT JOIN LATERAL (
-				SELECT canonical_id
-				FROM model_aliases
-				-- 2026-07-14: model_aliases.raw_name is stored lowercase; compare directly.
-				WHERE raw_name = lower(rl.client_model)
-				  AND status = 'active'
-				LIMIT 1
-			) ma ON TRUE
-			LEFT JOIN models_canonical mc2 ON mc2.id = ma.canonical_id
-			WHERE rl.ts > NOW() - INTERVAL '7 days'
-			  AND rl.success = TRUE
-			  AND rl.client_model IS NOT NULL AND rl.client_model != ''
-			GROUP BY model_key
-		) u
-		ORDER BY cnt DESC
-		LIMIT 10
-	`)
+	// The limit applies only to usage-derived models. Featured models are a
+	// policy list and must all remain visible, even when the list is longer
+	// than the usage suggestion limit.
+	hotCount := 0
+	addHot := func(model popularModelEntry) {
+		if hotCount >= limit {
+			return
+		}
+		before := len(popular)
+		add(model.CanonicalName, model.DisplayName, model.Source, model.Count)
+		if len(popular) > before {
+			hotCount++
+		}
+	}
+
+	if rc, ok := h.redisClient.(*redis.Client); ok {
+		// The live dimension queues mix real requests with probes and idle
+		// markers, so they cannot satisfy the picker's non-probe contract.
+		for _, recent := range recentlyUsedPopularModels(ctx, rc, tenantID, recentlyUsedModelsLimit) {
+			addHot(recent)
+		}
+	}
+
+	cutoff := time.Now().UTC().Add(-popularModelsLookupWindow())
+	usageRows, err := h.db.Query(ctx, popularModelsHotSQL, cutoff, tenantID)
 	if err == nil {
 		defer usageRows.Close()
 		for usageRows.Next() {
@@ -2076,7 +2809,12 @@ func (h *Handler) queryPopularModels(ctx context.Context, featuredModels []strin
 				continue
 			}
 			c := cnt
-			add(modelKey, modelKey, "usage", &c)
+			addHot(popularModelEntry{
+				CanonicalName: modelKey,
+				DisplayName:   modelKey,
+				Source:        "usage",
+				Count:         &c,
+			})
 		}
 	}
 	return popular
@@ -2103,7 +2841,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	// policy edit / provider refresh is handled in those paths
 	// (call invalidateAvailableModelsCache below).
 	if r.Method == http.MethodGet {
-		if cached, ok := globalAvailableModelsCache.get(time.Now()); ok {
+		tenantID := EffectiveTenantIDAll(r)
+		if cached, ok := globalAvailableModelsCache.get(time.Now(), tenantID); ok {
 			writeJSON(w, http.StatusOK, cached)
 			return
 		}
@@ -2282,7 +3021,8 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 	})
 	sort.Strings(unmapped)
 
-	popular := h.queryPopularModels(ctx, featuredModels, byCanonical)
+	tenantID := EffectiveTenantIDAll(r)
+	popular := h.queryPopularModels(ctx, featuredModels, byCanonical, tenantID, 20)
 
 	resp := map[string]any{
 		"families":  familiesOut,
@@ -2291,7 +3031,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 		"total_raw": totalRaw,
 	}
 	if r.Method == http.MethodGet {
-		globalAvailableModelsCache.set(time.Now(), resp)
+		globalAvailableModelsCache.set(time.Now(), tenantID, resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -2305,8 +3045,7 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 // admin.InvalidateAvailableModelsCache() without importing the cache.
 func InvalidateAvailableModelsCache() {
 	globalAvailableModelsCache.mu.Lock()
-	globalAvailableModelsCache.value = nil
-	globalAvailableModelsCache.expiresAt = time.Time{}
+	globalAvailableModelsCache.entries = nil
 	globalAvailableModelsCache.mu.Unlock()
 }
 
@@ -2314,11 +3053,11 @@ func InvalidateAvailableModelsCache() {
 // (admin/routing_cache_test.go) exercise the hit/miss/invalidate
 // lifecycle without spinning up a real DB.
 func setAvailableModelsCacheForTest(value map[string]any) {
-	globalAvailableModelsCache.set(time.Now(), value)
+	globalAvailableModelsCache.set(time.Now(), "", value)
 }
 
 func getAvailableModelsCacheForTest() (map[string]any, bool) {
-	return globalAvailableModelsCache.get(time.Now())
+	return globalAvailableModelsCache.get(time.Now(), "")
 }
 
 func (h *Handler) handleRoutingAvailableModelsRaw(w http.ResponseWriter, r *http.Request) {
@@ -3111,7 +3850,7 @@ func (h *Handler) handleRoutingFeaturedModelsDynamic(w http.ResponseWriter, r *h
 	polRow := h.db.QueryRow(ctx, `SELECT featured_models FROM routing_policy WHERE tenant_id = 'default'`)
 	_ = polRow.Scan(&featuredModels)
 
-	popular := h.queryPopularModels(ctx, featuredModels, nil)
+	popular := h.queryPopularModels(ctx, featuredModels, nil, EffectiveTenantIDAll(r), 20)
 
 	type featuredModel struct {
 		Name             string `json:"name"`
@@ -3472,21 +4211,16 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// overlayFreePoolRuntimeHealth overwrites the zero-valued runtime health fields
-// on each free-pool model entry with live values from URSM v2 (Redis-backed),
-// and re-derives `routable` from the runtime view. Mirrors the overlay logic in
-// handleRoutingResolve (routing.go ~367-460). No-op when URSM v2 is nil / off /
-// not ready — the zero defaults already set in the map remain (graceful).
-//
-// This is the fix for "看不到有效的变化": without it the free-pool page only
-// showed coarse persisted DB enums (availability_state / quota_state) and never
-// the router's real success_rate / latency / fail streak / cooling state.
+// overlayFreePoolRuntimeHealth overlays the free-pool page with authoritative
+// URSM v2 state. Missing views and an unavailable runtime store are marked
+// explicitly so persisted DB eligibility is not presented as a live route.
 func (h *Handler) overlayFreePoolRuntimeHealth(ctx context.Context, models []any) {
 	ursmManager := h.ursmV2
 	if ursmManager == nil || ursmManager.Mode() == api.ModeOff {
 		return
 	}
 	if !ursmManager.Ready(ctx) {
+		markFreePoolRuntimeUnknown(models, "ursm_not_ready")
 		return
 	}
 
@@ -3529,20 +4263,25 @@ func (h *Handler) overlayFreePoolRuntimeHealth(ctx context.Context, models []any
 	}
 	views, err := ursmManager.FilterAndScore(ctx, pureSeeds)
 	if err != nil {
-		slog.Debug("free-pool status: ursm v2 overlay failed, keeping DB defaults", "error", err.Error())
+		slog.Debug("free-pool status: ursm v2 overlay failed", "error", err.Error())
+		markFreePoolRuntimeUnknown(models, "ursm_query_failed")
 		return
 	}
 
+	viewByKey := make(map[string]api.NodeView, len(views))
+	for _, v := range views {
+		viewByKey[ursmViewKey(v.CredentialID, v.RawModel)] = v
+	}
 	now := time.Now()
-	for j, s := range seeds {
-		if j >= len(views) {
-			break
-		}
-		v := views[j]
-		if v.CredentialID != s.seed.CredentialID || v.RawModel != s.seed.RawModel {
+	for _, s := range seeds {
+		mm := models[s.idx].(map[string]any)
+		v, ok := viewByKey[ursmViewKey(s.seed.CredentialID, s.seed.RawModel)]
+		if !ok {
+			markFreePoolModelUnavailable(mm, "missing", "ursm_node_missing")
 			continue
 		}
-		mm := models[s.idx].(map[string]any)
+		mm["ursm_observed"] = true
+		mm["runtime_state"] = "observed"
 		if v.SR5m > 0 {
 			mm["success_rate"] = v.SR5m
 		}
@@ -3563,9 +4302,30 @@ func (h *Handler) overlayFreePoolRuntimeHealth(ctx context.Context, models []any
 		// If URSM says the node is unavailable, override routable regardless of
 		// the persisted availability_state.
 		if !v.Available {
-			mm["routable"] = false
+			reason := v.Reason
+			if reason == "" {
+				reason = "node_unavailable_by_ursm_v2"
+			}
+			markFreePoolModelUnavailable(mm, "observed", reason)
 		}
 	}
+}
+
+func markFreePoolRuntimeUnknown(models []any, reason string) {
+	for _, m := range models {
+		mm, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		markFreePoolModelUnavailable(mm, "unknown", reason)
+	}
+}
+
+func markFreePoolModelUnavailable(model map[string]any, runtimeState, reason string) {
+	model["ursm_observed"] = runtimeState == "observed"
+	model["runtime_state"] = runtimeState
+	model["routable"] = false
+	model["runtime_block_reason"] = reason
 }
 
 // nullTimeToAny converts a sql.NullTime to a JSON-friendly value: nil when
@@ -4225,6 +4985,19 @@ type freeProviderConfig struct {
 	// quota). Only meaningful when the keys belong to ONE account — bulk-
 	// importing keys from different accounts would wrongly pool their quota.
 	extraKeys []string
+	// 2026-08-29 代理出口：空串保持历史默认 'direct'。设为 'proxy' 表示该供应商
+	// 需经代理访问（GFW 环境下的海外供应商）。proxySubscriptionID 可选，
+	// 为 nil 时由 ProxyManager 自动挑选最优可拨号节点。
+	egressProfile       string
+	proxySubscriptionID *int
+}
+
+// egressProfileOrDefault 返回实际生效的出口配置，空串视为历史默认 'direct'。
+func (c freeProviderConfig) egressProfileOrDefault() string {
+	if s := strings.TrimSpace(c.egressProfile); s != "" {
+		return s
+	}
+	return "direct"
 }
 
 func (h *Handler) collectEnvProviderConfigs() []freeProviderConfig {
@@ -4442,4 +5215,351 @@ func (h *Handler) mirrorExistingKeys(ctx context.Context) []map[string]any {
 		}
 	}
 	return results
+}
+
+// ursmViewKey builds the map key that pairs a URSM v2 NodeView with a
+// resolve candidate. Credential IDs cannot contain the NUL separator, so
+// the pair (credential_id, raw_model) is collision-free.
+func ursmViewKey(credentialID int, rawModel string) string {
+	return strconv.Itoa(credentialID) + "\x00" + rawModel
+}
+
+// resolveRuntimeDefaults back-fills display-only runtime columns when URSM v2
+// is disabled. Authoritative URSM misses, readiness failures, and query failures
+// are handled separately so the response never presents DB eligibility as runtime
+// reachability.
+func resolveRuntimeDefaults(c *resolveCandidate) {
+	c.Available = true
+	c.CircuitState = "closed"
+	c.CoolingUntil = nil
+	c.ConsecutiveFailures = 0
+	c.CredentialConsecutiveFailures = 0
+	c.RuntimeState = "unobserved"
+	if c.SuccessRate == 0 {
+		c.SuccessRate = 0.9
+	}
+	if c.P95LatencyMs == 0 {
+		c.P95LatencyMs = 9999
+	}
+}
+
+func markResolveRuntimeUnknown(candidates []resolveCandidate, reason string) {
+	for i := range candidates {
+		c := &candidates[i]
+		c.RuntimeState = "unknown"
+		c.URSMObserved = false
+		if !c.DBEligible {
+			continue
+		}
+		c.Available = false
+		c.RuntimeRoutable = false
+		c.Routable = false
+		c.BlockReason = reason
+
+	}
+}
+
+// applyURSMOverlay merges URSM v2 runtime NodeViews into the resolve
+// candidates. Two 2026-08-18 fixes live here:
+//
+//  1. FilterAndScore sorts views by score before returning them, so views
+//     are NOT guaranteed to stay in seed order. The previous index pairing
+//     mismatched rows whenever the sort order differed (log spam: "ursm v2
+//     view out of order") and silently skipped the overlay for every
+//     misaligned candidate. Views are now paired by (credential_id,
+//     raw_model).
+//  2. The previous loop iterated `for i, c := range candidates` and mutated
+//     the loop COPY c — defaults and overlay writes were discarded, so the
+//     emitted candidates always carried zero-valued runtime fields (and
+//     Routable never reflected runtime state). Mutations now go through a
+//     pointer into the slice.
+//
+// Redis/mirror misses are explicitly marked as missing so the diagnostic
+// surface agrees with authoritative request routing.
+func applyURSMOverlay(candidates []resolveCandidate, views []api.NodeView, now time.Time) {
+	viewByKey := make(map[string]api.NodeView, len(views))
+	for _, v := range views {
+		viewByKey[ursmViewKey(v.CredentialID, v.RawModel)] = v
+	}
+	for i := range candidates {
+		c := &candidates[i]
+		resolveRuntimeDefaults(c)
+		v, ok := viewByKey[ursmViewKey(c.CredentialID, c.ModelName)]
+		if !ok {
+			if !c.DBEligible {
+				continue
+			}
+			c.Available = false
+
+			c.RuntimeRoutable = false
+			c.Routable = false
+			c.RuntimeState = "missing"
+			c.BlockReason = "ursm_node_missing"
+			continue
+		}
+		c.URSMObserved = true
+		c.RuntimeState = "observed"
+
+		c.Available = v.Available
+		c.ConsecutiveFailures = v.FailStreak
+		c.CredentialConsecutiveFailures = v.FailStreak
+		if v.SR5m > 0 {
+			c.SuccessRate = v.SR5m
+		}
+		if v.LatP95Ms > 0 {
+			c.P95LatencyMs = v.LatP95Ms
+		}
+		if !v.CoolUntil.IsZero() && v.CoolUntil.After(now) {
+			c.CircuitState = "open"
+			s := v.CoolUntil.UTC().Format(time.RFC3339)
+			c.CoolingUntil = &s
+		} else {
+			c.CircuitState = "closed"
+			c.CoolingUntil = nil
+		}
+		// Re-derive Routable: SQL view covers schema gating (provider
+		// enabled, plan compatibility, etc.); URSM v2 covers runtime
+		// gating. AND them together.
+		if !c.Routable {
+			continue // SQL view 已经否决 —— 保持它的原因
+		}
+		if !v.Available {
+			c.Routable = false
+			c.RuntimeRoutable = false
+			if v.Reason != "" {
+				c.BlockReason = v.Reason
+			} else {
+				c.BlockReason = "node_unavailable_by_ursm_v2"
+			}
+			continue
+		}
+		if c.CircuitState == "open" {
+			c.Routable = false
+			c.RuntimeRoutable = false
+			if v.Reason != "" {
+				c.BlockReason = v.Reason
+			} else {
+				c.BlockReason = "node_in_cool_until"
+			}
+			continue
+		}
+	}
+}
+
+// errForceEnableCredNotFound is returned by applyForceEnable when the credential
+// id has no row in `credentials`. Surfaces as 404 to the caller.
+var errForceEnableCredNotFound = errors.New("credential not found")
+
+// applyForceEnable runs the full DB + in-memory + URSM v2 reset chain that the
+// force_enable emergency-repair action performs. It is shared between:
+//   - PATCH /api/routing/emergency-repair with action=force_enable
+//   - POST  /api/routing/credentials/{id}/reset-state (the new hzx-2 audit endpoint)
+//   - any future operator-driven "make this credential routable again" flow.
+//
+// On success the `beforeAfter` map is populated with the same keys the legacy
+// inline handler used so audit-log consumers keep working unchanged. All
+// non-fatal errors are reported via the metric counter
+// met.met.RoutingCredentialResetTotal{surface=...,result=error}.
+func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawModel, reason, actor, ursmTenantID string, beforeAfter map[string]any) error {
+	// Look up current state + provider id (needed by resetInMemoryNodeState).
+	var currentDisabled bool
+	var availState string
+	var providerID int
+	err := h.db.QueryRow(ctx,
+		`SELECT COALESCE(manual_disabled, false), COALESCE(availability_state, 'ready'),
+		        COALESCE(provider_id, 0)
+		 FROM credentials WHERE id = $1`,
+		credentialID,
+	).Scan(&currentDisabled, &availState, &providerID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			// Surface the 404 distinctly from a 500 so operators can tell
+			// "wrong credential id" apart from "reset chain broke" in the
+			// llmgw_routing_credential_reset_total counter.
+			met.RoutingCredentialResetTotal.WithLabelValues("lookup", "not_found").Inc()
+			return errForceEnableCredNotFound
+		}
+		met.RoutingCredentialResetTotal.WithLabelValues("lookup", "error").Inc()
+		return fmt.Errorf("force_enable: query failed: %w", err)
+	}
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("force_enable: begin tx failed: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, forceEnableCredentialSQL,
+		credentialID, "force_enable: "+reason); err != nil {
+		met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+		return fmt.Errorf("force_enable: update credentials failed: %w", err)
+	}
+
+	var cmbRows int64
+	if rawModel != "" {
+		tag, err := tx.Exec(ctx, `
+			UPDATE credential_model_bindings cmb
+			SET available = TRUE,
+				unavailable_reason = NULL,
+				unavailable_at = NULL,
+				unavailable_recover_at = NULL,
+				updated_at = NOW()
+			FROM provider_models pm
+			WHERE cmb.credential_id = $1
+			  AND pm.id = cmb.provider_model_id
+			  AND pm.raw_model_name = $2
+		`, credentialID, rawModel)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: update cmb failed: %w", err)
+		}
+		cmbRows = tag.RowsAffected()
+	}
+
+	// Clear NodeProbeWorker backoff so v_routable_credential_models drops
+	// node_probe_failed immediately (see migration 417).
+	var probeRows int64
+	if rawModel != "" {
+		tag, err := tx.Exec(ctx, `
+			UPDATE node_probe_state SET
+				last_direct_ok = TRUE,
+				last_gateway_ok = TRUE,
+				last_err_code = NULL,
+				last_err_detail = NULL,
+				next_retry_at = now(),
+				next_retry_seconds = 0,
+				consecutive_failures = 0,
+				paused = FALSE,
+				in_flight_until = NULL,
+				updated_at = now()
+			WHERE credential_id = $1 AND raw_model_name = $2
+		`, credentialID, rawModel)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: reset node_probe_state failed: %w", err)
+		}
+		probeRows = tag.RowsAffected()
+	} else {
+		tag, err := tx.Exec(ctx, `
+			UPDATE node_probe_state SET
+				last_direct_ok = TRUE,
+				last_gateway_ok = TRUE,
+				last_err_code = NULL,
+				last_err_detail = NULL,
+				next_retry_at = now(),
+				next_retry_seconds = 0,
+				consecutive_failures = 0,
+				paused = FALSE,
+				in_flight_until = NULL,
+				updated_at = now()
+			WHERE credential_id = $1
+		`, credentialID)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: reset node_probe_state failed: %w", err)
+		}
+		probeRows = tag.RowsAffected()
+	}
+
+	// Clear model_probe_state broken_confirmed so v_routable_credential_models
+	// stops gating the node.
+	var modelProbeRows int64
+	if rawModel != "" {
+		tag, err := tx.Exec(ctx, `
+			UPDATE model_probe_state SET
+				state = 'recovering',
+				consecutive_failures = 0,
+				next_retry_at = now(),
+				last_state_change_at = now()
+			WHERE credential_id = $1 AND raw_model_name = $2
+			  AND state = 'broken_confirmed'
+		`, credentialID, rawModel)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: reset model_probe_state failed: %w", err)
+		}
+		modelProbeRows = tag.RowsAffected()
+	} else {
+		tag, err := tx.Exec(ctx, `
+			UPDATE model_probe_state SET
+				state = 'recovering',
+				consecutive_failures = 0,
+				next_retry_at = now(),
+				last_state_change_at = now()
+			WHERE credential_id = $1
+			  AND state = 'broken_confirmed'
+		`, credentialID)
+		if err != nil {
+			met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+			return fmt.Errorf("force_enable: reset model_probe_state failed: %w", err)
+		}
+		modelProbeRows = tag.RowsAffected()
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		met.RoutingCredentialResetTotal.WithLabelValues("db", "error").Inc()
+		return fmt.Errorf("force_enable: commit failed: %w", err)
+	}
+	met.RoutingCredentialResetTotal.WithLabelValues("db", "ok").Inc()
+	beforeAfter["previous_manual_disabled"] = currentDisabled
+	beforeAfter["previous_availability_state"] = availState
+	beforeAfter["new_manual_disabled"] = false
+	beforeAfter["new_availability_state"] = "ready"
+	beforeAfter["cmb_available"] = cmbRows > 0 || rawModel == ""
+	beforeAfter["cmb_rows_updated"] = cmbRows
+	beforeAfter["node_probe_rows_updated"] = probeRows
+	beforeAfter["model_probe_rows_updated"] = modelProbeRows
+
+	// 2026-08-15: the DB transaction above only reaches the persistent
+	// layers. The request hot path also consults in-process / Redis state
+	// (circuit breaker, fpslot NodeState cooldown, legacy credentialstate
+	// cache) that would keep filtering this node out for up to 5 minutes
+	// after force_enable returned 200. Reset them now.
+	resetModels, memOutcome := h.resetInMemoryNodeState(ctx, credentialID, providerID, rawModel, true)
+	for k, v := range memOutcome {
+		beforeAfter[k] = v
+	}
+
+	// URSM v2: clear manual_hold via ApplyAdmin, AND wipe any residual
+	// disabled/fail_streak/cool_until_ms via ClearState. When RawModel is
+	// empty (whole-credential repair) the per-model loop covers every
+	// binding model instead of skipping URSM entirely.
+	if h.ursmV2 != nil {
+		disabled := false
+		applied, cleared := 0, 0
+		for _, m := range resetModels {
+			adminAction := api.AdminAction{
+				Scope:          api.ScopeNode,
+				CredentialID:   credentialID,
+				RawModel:       m,
+				TenantID:       ursmTenantID,
+				ManualDisabled: &disabled,
+				Reason:         reason,
+				Actor:          actor,
+				IssuedAtMs:     time.Now().UnixMilli(),
+			}
+			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
+				slog.Warn("force_enable: ursm.v2 apply_admin failed", "error", err, "cred", credentialID, "model", m)
+				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
+			} else {
+				applied++
+				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
+			}
+			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, credentialID, m); err != nil {
+				slog.Warn("force_enable: ursm.v2 clear_state failed", "error", err, "cred", credentialID, "model", m)
+				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
+			} else {
+				cleared++
+				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
+			}
+		}
+		beforeAfter["ursm_v2_admin_applied"] = len(resetModels) > 0 && applied == len(resetModels)
+		beforeAfter["ursm_v2_cleared"] = len(resetModels) > 0 && cleared == len(resetModels)
+		beforeAfter["ursm_v2_models_covered"] = len(resetModels)
+	}
+
+	// Best-effort cache invalidation so the next request picks up the fresh state.
+	invalidateRoutingCaches(ctx, h.db, "credentials", credentialID)
+	InvalidateAvailableModelsCache()
+	return nil
 }

@@ -49,7 +49,7 @@ type updateUserRequest struct {
 }
 
 // writeAuditLog inserts a row into routing_audit_log using r's AuthContext (best-effort, async).
-func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targetID int, details string) {
+func (h *Handler) writeAuditLog(r *http.Request, action, targetType string, targetID int, details any) {
 	auth := GetAuthContext(r)
 	actor := "unknown"
 	if auth != nil && auth.Username != "" {
@@ -101,9 +101,10 @@ func (h *Handler) auditLog(actor, action, targetType string, targetID int, detai
 		// so we never silently drop a login event. Cast through
 		// ::text to bypass JSONB validation.
 		if isJSONBValidationError(err) {
-			fallback := []byte(`{"raw":"` + scrubUTF8(string(payload)) + `"}`)
+			fallback := auditJSONBValidationFallback(payload)
 			if _, fbErr := h.db.Exec(ctx,
 				`INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5::text::jsonb)`,
+
 				actor, action, targetType, targetID, string(fallback)); fbErr != nil {
 				slog.Warn("audit_log insert failed (fallback also failed)",
 					"action", action, "actor", actor, "error", err, "fallback_error", fbErr)
@@ -176,6 +177,14 @@ func containsNUL(b []byte) bool {
 // scrubUTF8 is a string wrapper for the fallback path.
 func scrubUTF8(s string) string {
 	return string(scrubUTF8Bytes([]byte(s)))
+}
+
+func auditJSONBValidationFallback(payload []byte) []byte {
+	fallback, err := json.Marshal(map[string]string{"raw": scrubUTF8(string(payload))})
+	if err != nil {
+		return []byte(`{"raw":""}`)
+	}
+	return fallback
 }
 
 // isJSONBValidationError returns true for SQLSTATE 22P02 (invalid

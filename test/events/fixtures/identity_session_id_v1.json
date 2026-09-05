@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "identity_kind": "session_id",
+  "fixture_purpose": "pin exact-bytes JSON shape for session_id (Sessions V2 text surrogate)",
+  "exact_bytes": true,
+  "tenant_id": "tenant_freeze_sess_001",
+  "session_id": "sess_freeze_20260822_xyz789",
+  "session_pk": 100042,
+  "produced_at": "2026-08-22T00:00:00Z",
+  "shape": {
+    "session_id": "string (Sessions V2 text identifier; server-allocated, stable across the session lifetime)",
+    "session_pk": "int64 positive (numeric PK of sessions.id; opaque to clients but indexed server-side)",
+    "tenant_id": "string (resolver-derived)",
+    "produced_at": "RFC3339 UTC timestamp"
+  },
+  "semantics": "sessions_v2_text",
+  "notes": [
+    "session_id is the textual identifier exposed via Sessions V2 API",
+    "session_pk is the numeric DB primary key for internal joins",
+    "session_id and session_pk MUST refer to the same session record",
+    "session_pk MUST be >0 and unique within the sessions table"
+  ],
+  "consumers": [
+    "domains/session.Session.SessionID",
+    "internal/admin/Sessions V2 list endpoint",
+    "ASM EventEnvelope.aggregate_id (for session-scoped events)"
+  ],
+  "validation_rules": [
+    "session_id MUST be non-empty",
+    "session_pk MUST be a positive int64",
+    "session_id and session_pk MUST be consistent at any emit point"
+  ]
+}

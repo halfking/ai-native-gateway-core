@@ -165,7 +165,7 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 		}
 
 		msg := Message{Role: role}
-		for _, p := range c.Parts {
+		for partIdx, p := range c.Parts {
 			// Gemini thinking part
 			if p.Thought != "" {
 				msg.Content = append(msg.Content, ContentBlock{
@@ -210,10 +210,14 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					if len(fc.Args) > 0 {
 						argsStr = string(fc.Args)
 					}
+					// Gemini does not assign tool_use IDs in the wire format, and parallel
+					// functionCall parts of the same Name would otherwise collapse onto a
+					// single ID. Disambiguate by the position within this content entry's
+					// parts array so parallel calls round-trip with distinct IDs.
 					msg.Content = append(msg.Content, ContentBlock{
 						Type: "tool_use",
 						ToolUse: &ToolUse{
-							ID:    "gemini_call_" + fc.Name,
+							ID:    fmt.Sprintf("gemini_call_%s_%d", fc.Name, partIdx),
 							Name:  fc.Name,
 							Input: fc.Args,
 						},
@@ -230,14 +234,21 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					Response json.RawMessage `json:"response"`
 				}
 				if err := json.Unmarshal(p.FunctionResponse, &fr); err == nil && fr.Name != "" {
-					msg.Content = append(msg.Content, ContentBlock{
-						Type: "tool_result",
-						ToolResult: &ToolResult{
-							ToolUseID: "gemini_call_" + fr.Name,
-							Content: []ContentBlock{
-								{Type: "text", Text: string(fr.Response)},
-							},
+					// Mirror the disambiguator used on the function_call side: parallel
+					// functionResponse parts of the same Name get the same partIdx
+					// disambiguator so the tool_use_id round-trips correctly.
+					result := &ToolResult{
+						ToolUseID: fmt.Sprintf("gemini_call_%s_%d", fr.Name, partIdx),
+						Content: []ContentBlock{
+							{Type: "text", Text: string(fr.Response)},
 						},
+					}
+					if fr.Response != nil {
+						result.GeminiResponse = append(json.RawMessage(nil), fr.Response...)
+					}
+					msg.Content = append(msg.Content, ContentBlock{
+						Type:       "tool_result",
+						ToolResult: result,
 					})
 				}
 				continue
@@ -450,6 +461,8 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 		ResponseMimeType string                `json:"responseMimeType,omitempty"`
 		ResponseSchema   json.RawMessage       `json:"responseSchema,omitempty"`
 		CandidateCount   *int                  `json:"candidateCount,omitempty"`
+		PresencePenalty  *float64              `json:"presencePenalty,omitempty"`
+		FrequencyPenalty *float64              `json:"frequencyPenalty,omitempty"`
 		Seed             *int64                `json:"seed,omitempty"`
 		ThinkingConfig   *GeminiThinkingConfig `json:"thinkingConfig,omitempty"`
 	}
@@ -471,6 +484,32 @@ func parseGeminiGenerationConfig(raw json.RawMessage, ir *InternalRequest) error
 	}
 	if gc.CandidateCount != nil {
 		ir.N = *gc.CandidateCount
+	}
+	// 2026-09-05 audit A-#3: GenerationConfig declared these fields but the
+	// parse struct never read them, so they vanished on the Gemini round trip
+	// (same silent-loss shape as the safetySettings fix above).
+	ir.PresencePenalty = gc.PresencePenalty
+	ir.FrequencyPenalty = gc.FrequencyPenalty
+
+	// Unknown generationConfig subfields must not disappear silently: the
+	// top-level whitelist already pulled "generationConfig" out of Extensions,
+	// so without this anomaly the only trace was the raw payload.
+	knownSubfields := map[string]bool{
+		"temperature": true, "topP": true, "topK": true, "maxOutputTokens": true,
+		"stopSequences": true, "responseMimeType": true, "responseSchema": true,
+		"candidateCount": true, "presencePenalty": true, "frequencyPenalty": true,
+		"seed": true, "thinkingConfig": true,
+		// Gemini also documents responseLogprobs / logprobs — parsed upstream
+		// is not wired yet, but they are known fields, not anomalies.
+		"responseLogprobs": true, "logprobs": true,
+	}
+	var rawSubfields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawSubfields); err == nil {
+		for key := range rawSubfields {
+			if !knownSubfields[key] {
+				ReportUnknownField("", ProtocolGeminiGenerate, "generationConfig."+key, nil)
+			}
+		}
 	}
 
 	// Map Gemini responseMimeType/Schema to IR ResponseFormat

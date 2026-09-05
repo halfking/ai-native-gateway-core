@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // TestKindConversion_IsValid ensures the KindConversion constant used
@@ -50,11 +51,30 @@ func TestClassifyError_ConnectionReset(t *testing.T) {
 	}
 }
 
+func TestClassifyError_OtherSideClosed(t *testing.T) {
+	for _, message := range []string{
+		"other side closed",
+		"provider request failed: Other Side Closed",
+	} {
+		if kind := ClassifyError(errors.New(message), nil); kind != KindNetwork {
+			t.Errorf("expected KindNetwork for %q, got %q", message, kind)
+		}
+	}
+}
+
 func TestClassifyError_DNSFailure(t *testing.T) {
 	err := errors.New("lookup nonexistent.example.com: no such host")
 	kind := ClassifyError(err, nil)
 	if kind != KindNetwork {
 		t.Errorf("expected KindNetwork for DNS failure, got %q", kind)
+	}
+}
+
+func TestClassifyError_EADDRNOTAVAIL(t *testing.T) {
+	err := errors.New("connect EADDRNOTAVAIL 198.18.0.51:443 - Local (0.0.0.0:0): cannot assign requested address")
+	kind := ClassifyError(err, nil)
+	if kind != KindNetwork {
+		t.Errorf("expected KindNetwork for EADDRNOTAVAIL, got %q", kind)
 	}
 }
 
@@ -436,9 +456,37 @@ func TestClassifyErrorWithBody_ToolCallIdMismatch(t *testing.T) {
 	}
 }
 
+func TestClassifyErrorWithBody_InvalidRequestFormat(t *testing.T) {
+	bodies := []string{
+		`{"error":{"code":"1214","message":"messages 参数非法。请检查文档。"}}`,
+		`{"error":{"code":"invalid_request_format","message":"messages malformed"}}`,
+	}
+	for _, body := range bodies {
+		if got := ClassifyErrorWithBody(400, []byte(body)); got != KindClientBug {
+			t.Fatalf("ClassifyErrorWithBody(400, %q) = %q, want %q", body, got, KindClientBug)
+		}
+		if got := ClassifyResponseBody(400, []byte(body)); got != KindClientBug {
+			t.Fatalf("ClassifyResponseBody(400, %q) = %q, want %q", body, got, KindClientBug)
+		}
+	}
+}
+
+func TestClassifyErrorWithBody_ContentFilterOnRelay500(t *testing.T) {
+	body := []byte(`{"error":{"message":"sensitive_words_detected (request id: req-1)","type":"new_api_error","code":"sensitive_words_detected"}}`)
+	if got := ClassifyErrorWithBody(500, body); got != KindContentFilter {
+		t.Fatalf("ClassifyErrorWithBody(500, sensitive_words_detected) = %q, want %q", got, KindContentFilter)
+	}
+	if got := ClassifyResponseBody(500, body); got != KindContentFilter {
+		t.Fatalf("ClassifyResponseBody(500, sensitive_words_detected) = %q, want %q", got, KindContentFilter)
+	}
+}
+
 func TestIsClientBug(t *testing.T) {
 	if !IsClientBug(KindToolCallIdMismatch) {
 		t.Error("KindToolCallIdMismatch must be flagged as a client bug")
+	}
+	if !IsClientBug(KindClientBug) {
+		t.Error("KindClientBug must be flagged as a client bug")
 	}
 	// 2026-07-03: Bug #10 fix - KindModelNotFound is no longer a client bug.
 	// model_not_found is a provider-side issue (model removed/renamed upstream)
@@ -534,6 +582,16 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		// window_type 表明这是会按周期重置的用量窗口，应走 KindQuotaPeriodic。
 		{"429_zhima_window_type_total_now_periodic", 429, `{"error":"usage limit exceeded","window_type":"total"}`, KindQuotaPeriodic},
 		{"429_window_type_daily_now_periodic", 429, `usage limit exceeded, window_type: "daily"`, KindQuotaPeriodic},
+		// 2026-08-18 fix: 智谱AI GLM Coding Plan 的 5 小时窗口限额报文
+		// （无 reset 时间戳、无 window_type 字段，只提及 5 小时窗口）。
+		// 5 小时窗口按周期滚动重置，是 periodic 而非 permanent；
+		// 旧逻辑落到 KindQuotaPermanent → permanently_exhausted 无限挂起，
+		// 且 quota probe 队列无消费者（同日修复）导致永远等不到探活翻回。
+		{"429_five_hour_window_english_now_periodic", 429, `{"error":{"type":"usage_limit_exceeded","message":"usage limit exceeded, resets every 5 hours"}}`, KindQuotaPeriodic},
+		{"429_five_hour_window_compact_now_periodic", 429, `{"error":"usage limit exceeded","window_type":"five_hour"}`, KindQuotaPeriodic},
+		{"429_five_hour_window_hour5_now_periodic", 429, `usage limit exceeded (hour-5 window)`, KindQuotaPeriodic},
+		{"429_five_hour_window_chinese_now_periodic", 429, `{"error":{"message":"您已达到 5 小时用量上限"}}`, KindQuotaPeriodic},
+		{"429_five_hour_window_chinese_compact_now_periodic", 429, `5小时额度已用尽`, KindQuotaPeriodic},
 		// 2026-08-08 P0 fix: apiclaude.cc / 智码 / OneAPI-family relays
 		// return HTTP 403 with body {"code":"INSUFFICIENT_BALANCE",
 		// "message":"Insufficient account balance"} when the user's
@@ -551,6 +609,7 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		{"403_bare_no_body_still_auth", 403, `forbidden`, KindAuth},
 		{"500_still_upstream_down", 500, `internal server error`, KindUpstreamDown},
 		{"502_still_upstream_down", 502, `bad gateway`, KindUpstreamDown},
+		{"nvidia_degraded_function_is_upstream_down", 400, `{"status":400,"detail":"Function id 'x': DEGRADED function cannot be invoked"}`, KindUpstreamDown},
 		{"503_still_concurrent", 503, `service unavailable`, KindConcurrent},
 		// 2026-08-08: a 5xx whose BODY reports transient load is not the
 		// same failure as a dead upstream. Observed on 154 against the
@@ -589,6 +648,20 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 					got, retryable, retryableWant)
 			}
 		})
+	}
+}
+
+func TestClassifyNVIDIADegradedFunctionAsUpstreamDown(t *testing.T) {
+	body := []byte(`{"status":400,"detail":"Function id 'endpoint-1': DEGRADED function cannot be invoked"}`)
+
+	if got := ClassifyErrorWithBody(http.StatusBadRequest, body); got != KindUpstreamDown {
+		t.Fatalf("ClassifyErrorWithBody() = %q, want %q", got, KindUpstreamDown)
+	}
+	if got := ClassifyResponseBody(http.StatusBadRequest, body); got != KindUpstreamDown {
+		t.Fatalf("ClassifyResponseBody() = %q, want %q", got, KindUpstreamDown)
+	}
+	if got := ClassifyError(fmt.Errorf("upstream 400: %s", body), nil); got != KindUpstreamDown {
+		t.Fatalf("ClassifyError() = %q, want %q", got, KindUpstreamDown)
 	}
 }
 
@@ -847,6 +920,61 @@ func TestClassifyErrorWithBody_ContentFilter_Negative(t *testing.T) {
 			if kind == KindContentFilter {
 				t.Errorf("ClassifyErrorWithBody(%d, %q) = KindContentFilter, want something else — false positive",
 					tc.status, tc.body)
+			}
+		})
+	}
+}
+
+// TestClassifyErrorWithBody_ContentFilter_Negative5xx guards the 5xx
+// branch of contentFilterRe's status gate (classify.go:747). Benign 5xx
+// bodies that happen to contain "case-sensitive", "policy file",
+// "sensitive", or "forbidden" must NOT be misclassified as
+// KindContentFilter — and must land on a transient-family kind so the
+// executor's normal retry path still fires.
+//
+// Note: "content_filter" mentioned as a config key (e.g. admin disabled
+// the filter module) is intentionally NOT in this list — the regex's
+// literal token matches both genuine rejections and admin-config
+// messages, and the body-only classifier cannot tell them apart.
+//
+// The transient-family whitelist is exhaustive: UpstreamDown, Transient,
+// Network, Concurrent, UpstreamOverloaded, StreamTimeout. Anything else
+// (KindUnsupportedFeature, KindClientBug, KindModelNotFound, etc.)
+// means the 5xx is being mis-routed to a non-retryable handler.
+func TestClassifyErrorWithBody_ContentFilter_Negative5xx(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		// "case-sensitive" — generic 5xx mentioning parser config.
+		{"500-case-sensitive", 500, `{"error":"config file is case-sensitive, expected lowercase key"}`},
+		{"502-case-sensitive", 502, `{"error":"header parsing is case sensitive"}`},
+		// "policy" alone — config / auth / ACL failure, not moderation.
+		{"503-policy-file", 503, `{"error":"failed to load policy file /etc/gateway/policy.yaml"}`},
+		// "sensitive" alone — infra error messages about secrets / PII.
+		{"500-sensitive-data", 500, `{"error":"log redaction failed for sensitive data field"}`},
+		{"502-sensitive-headers", 502, `{"error":"proxy refused to forward sensitive headers"}`},
+		// "forbidden" alone — relay/proxy auth gate, not "forbidden content".
+		// The matched positive case requires a content noun within 30 chars.
+		{"500-forbidden-alone", 500, `{"error":"forbidden: missing API key"}`},
+		// Mixed CJK + 5xx — error message about log rotation must not trip
+		// the CJK branch of contentFilterRe.
+		{"500-cjk-content-sensitive-false-positive", 500, `{"error":"日志轮转失败: 检测到敏感词表读取超时"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			kind := ClassifyErrorWithBody(tc.status, []byte(tc.body))
+			if kind == KindContentFilter {
+				t.Errorf("ClassifyErrorWithBody(%d, %q) = KindContentFilter, want something else — false positive on 5xx",
+					tc.status, tc.body)
+			}
+			switch kind {
+			case KindUpstreamDown, KindTransient, KindNetwork, KindConcurrent, KindUpstreamOverloaded, KindStreamTimeout:
+				// expected
+			default:
+				t.Errorf("ClassifyErrorWithBody(%d, %q) = %q, want a transient-family kind — 5xx must remain retryable",
+					tc.status, tc.body, kind)
 			}
 		})
 	}
@@ -1129,5 +1257,62 @@ func TestClassifyError_WrappedBudgetExceeded(t *testing.T) {
 					tc.err.Error(), got, tc.want)
 			}
 		})
+	}
+}
+
+// TestNextQuotaResetFiveHourWindow covers the 2026-08-18 fix: a body that
+// mentions a 5-hour usage window recovers at the next 5-hour boundary
+// (00/05/10/15/20 UTC+8) instead of the next UTC midnight. The midnight
+// default stretched a 凌晨 5 点重置的窗口到北京 08:00.
+func TestNextQuotaResetFiveHourWindow(t *testing.T) {
+	// 2026-08-18 03:30 北京 = 2026-08-17 19:30 UTC → next boundary
+	// 05:00 北京 = 21:00 UTC same day.
+	now := time.Date(2026, 8, 17, 19, 30, 0, 0, time.UTC)
+	want := time.Date(2026, 8, 17, 21, 0, 0, 0, time.UTC)
+	for _, body := range []string{
+		`{"error":{"type":"usage_limit_exceeded","message":"usage limit exceeded, resets every 5 hours"}}`,
+		`您已达到 5 小时用量上限`,
+		`5小时额度已用尽`,
+	} {
+		if got := NextQuotaReset(body, now); !got.Equal(want) {
+			t.Errorf("NextQuotaReset(%q) = %s, want next 5h boundary %s", body, got.UTC(), want.UTC())
+		}
+	}
+}
+
+// TestNextQuotaResetMonthlyStillMidnight guards the precedence: bodies
+// without a 5-hour hint keep the month/week/midnight semantics.
+func TestNextQuotaResetMonthlyStillMidnight(t *testing.T) {
+	now := time.Date(2026, 8, 17, 19, 30, 0, 0, time.UTC)
+	got := NextQuotaReset("monthly quota exceeded", now)
+	if got.Year() != 2026 || got.Month() != time.September || got.Day() != 1 {
+		t.Errorf("monthly body should snap to next month start, got %s", got.UTC())
+	}
+}
+
+// TestQuotaResetsReFiveHourWordBoundary guards the audit refinement of the
+// 2026-08-18 five-hour patterns: "25 hours"/"15 hours" (non-window retry
+// phrasing, no other reset keyword) must not trip the 5-hour periodic
+// classification, while exact five-hour wording still does.
+func TestQuotaResetsReFiveHourWordBoundary(t *testing.T) {
+	for _, body := range []string{
+		`usage limit exceeded, cooldown 25 hours`,
+		`quota exceeded, limit 15 hours`,
+		`usage limit exceeded, cooldown 25小时`,
+		`quota exceeded, limit 15 小时`,
+	} {
+		if quotaResetsRe.MatchString(body) {
+			t.Errorf("quotaResetsRe should not treat %q as a five-hour window hint", body)
+		}
+	}
+	for _, body := range []string{
+		`usage limit exceeded, resets every 5 hours`,
+		`usage limit exceeded every 5 hours`,
+		`5-hour window exhausted`,
+		`usage limit exceeded (hour-5 window)`,
+	} {
+		if !quotaResetsRe.MatchString(body) {
+			t.Errorf("quotaResetsRe should match five-hour wording in %q", body)
+		}
 	}
 }

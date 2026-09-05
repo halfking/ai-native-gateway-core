@@ -9,6 +9,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+const (
+	stoppedSessionIndexKey      = "session:stopped:index"
+	stoppedSessionIndexSentinel = "__empty__"
+)
+
 type CleanupWorker struct {
 	redis        *redis.Client
 	stoppedTTL   time.Duration
@@ -71,20 +76,43 @@ func (w *CleanupWorker) scanOnce(ctx context.Context) error {
 	if w == nil || w.redis == nil {
 		return nil
 	}
-	iter := w.redis.Scan(ctx, 0, "session:stopped:*", 100).Iterator()
 	cutoff := time.Now().Add(-w.stoppedTTL)
-	for iter.Next(ctx) {
-		setKey := iter.Val()
-		sessionIDs, err := w.redis.SMembers(ctx, setKey).Result()
-		if err != nil {
-			continue
+	// The index avoids a broad keyspace scan; the legacy scan remains below as
+	// a compatibility fallback for deployments created before the index existed.
+	setKeys, err := w.redis.SMembers(ctx, stoppedSessionIndexKey).Result()
+	if err == nil && len(setKeys) > 0 {
+		for _, setKey := range setKeys {
+			if setKey == stoppedSessionIndexSentinel || setKey == stoppedSessionIndexKey {
+				continue
+			}
+			if err := w.cleanStoppedSet(ctx, setKey, cutoff); err != nil {
+				return err
+			}
 		}
-		for _, sessionID := range sessionIDs {
-			_ = w.cleanExpired(ctx, sessionID, cutoff)
+		return nil
+	}
+	_ = w.redis.SAdd(ctx, stoppedSessionIndexKey, stoppedSessionIndexSentinel).Err()
+	iter := w.redis.Scan(ctx, 0, "session:stopped:*", 100).Iterator()
+	for iter.Next(ctx) {
+		if iter.Val() != stoppedSessionIndexKey {
+			_ = w.cleanStoppedSet(ctx, iter.Val(), cutoff)
 		}
 	}
 	if err := iter.Err(); err != nil {
 		return fmt.Errorf("scan iterator error: %w", err)
+	}
+	return nil
+}
+
+func (w *CleanupWorker) cleanStoppedSet(ctx context.Context, setKey string, cutoff time.Time) error {
+	sessionIDs, err := w.redis.SMembers(ctx, setKey).Result()
+	if err != nil {
+		return err
+	}
+	for _, sessionID := range sessionIDs {
+		if err := w.cleanExpired(ctx, sessionID, cutoff); err != nil {
+			return err
+		}
 	}
 	return nil
 }

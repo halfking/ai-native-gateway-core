@@ -14,7 +14,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -298,25 +297,25 @@ type InspectorFindingResponse struct {
 
 // SessionInspectorFindingsResponse GET /api/admin/sessions/<id>/inspector-findings
 type SessionInspectorFindingsResponse struct {
-	GwSessionID string                    `json:"gw_session_id"`
-	TenantID    string                    `json:"tenant_id"`
+	GwSessionID string                     `json:"gw_session_id"`
+	TenantID    string                     `json:"tenant_id"`
 	Findings    []InspectorFindingResponse `json:"findings"`
-	Count       int                       `json:"count"`
-	GeneratedAt time.Time                 `json:"generated_at"`
+	Count       int                        `json:"count"`
+	GeneratedAt time.Time                  `json:"generated_at"`
 	// ConfigSnapshot 返回当前生效的关键阈值（便于 UI 显示）
 	ConfigSnapshot map[string]any `json:"config_snapshot,omitempty"`
 }
 
 // SessionInspectorStatsResponse GET /api/admin/sessions/inspector-stats
 type SessionInspectorStatsResponse struct {
-	ActiveSessions   int       `json:"active_sessions"`
-	IdleSessions     int       `json:"idle_sessions"`
-	ClosedSessions   int       `json:"closed_sessions"`
-	TotalTokens      int64     `json:"total_tokens"`
-	AvgHealthScore   float64   `json:"avg_health_score"`
-	RecycledToday    int       `json:"recycled_today"`
-	FindingsLast1h   int       `json:"findings_last_1h"`
-	GeneratedAt      time.Time `json:"generated_at"`
+	ActiveSessions int       `json:"active_sessions"`
+	IdleSessions   int       `json:"idle_sessions"`
+	ClosedSessions int       `json:"closed_sessions"`
+	TotalTokens    int64     `json:"total_tokens"`
+	AvgHealthScore float64   `json:"avg_health_score"`
+	RecycledToday  int       `json:"recycled_today"`
+	FindingsLast1h int       `json:"findings_last_1h"`
+	GeneratedAt    time.Time `json:"generated_at"`
 }
 
 // HandleSessionInspectorFindings GET /api/admin/sessions/<id>/inspector-findings
@@ -360,7 +359,7 @@ func (h *Handler) HandleSessionInspectorFindings(w http.ResponseWriter, r *http.
 	// 3. 配置快照
 	cfgSnapshot := map[string]any{
 		"token_count":          dim.TotalTokens, // 当前值（用于上下文）
-		"idle_timeout_seconds": 0,              // 占位；如需真实值可读 settings.Global
+		"idle_timeout_seconds": 0,               // 占位；如需真实值可读 settings.Global
 		"rpm_limit":            0,
 		"recycle_action":       "soft_close",
 	}
@@ -432,7 +431,7 @@ func (h *Handler) HandleSessionRecycle(w http.ResponseWriter, r *http.Request) {
 		Operator string `json:"operator,omitempty"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body) // 允许空 body
+		_ = readJSONRequired(r, &body) // 允许空 body
 	}
 	if body.Reason == "" {
 		body.Reason = "manual_admin"
@@ -464,11 +463,11 @@ func (h *Handler) HandleSessionRecycle(w http.ResponseWriter, r *http.Request) {
 		"reason", body.Reason)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":      "ok",
+		"status":        "ok",
 		"gw_session_id": gwSessionID,
-		"recycled":    tag.RowsAffected() > 0,
-		"reason":      body.Reason,
-		"operator":    body.Operator,
+		"recycled":      tag.RowsAffected() > 0,
+		"reason":        body.Reason,
+		"operator":      body.Operator,
 	})
 }
 
@@ -476,23 +475,23 @@ func (h *Handler) HandleSessionRecycle(w http.ResponseWriter, r *http.Request) {
 
 // sessionDimBrief 会话维度精简版（用于 inspector 实时检查）。
 type sessionDimBrief struct {
-	GwSessionID   string
-	TenantID      string
-	Status        string
-	RequestCount  int
-	TotalTokens   int
-	ErrorCount    int
-	LastActiveAt  time.Time
-	StartedAt     time.Time
+	GwSessionID  string
+	TenantID     string
+	Status       string
+	RequestCount int
+	TotalTokens  int
+	ErrorCount   int
+	LastActiveAt time.Time
+	StartedAt    time.Time
 	// 错误率
-	ErrorRate     float64
+	ErrorRate float64
 	// 模型切换数（来自 session_summaries.model_switch_count）
 	ModelSwitchCount int
 	// 租户级活跃会话数（可选填充）
 	TenantActiveCount int
 	// 突发/并发数（从 request_logs 短期统计；本接口不计算，返回 0 即可）
-	BurstCount       int
-	ConcurrentCount  int
+	BurstCount      int
+	ConcurrentCount int
 }
 
 func (h *Handler) fetchSessionDim(ctx context.Context, gwSessionID, tenantID string) (*sessionDimBrief, error) {

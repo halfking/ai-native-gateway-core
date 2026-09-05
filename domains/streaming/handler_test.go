@@ -1,14 +1,242 @@
 package streaming
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 )
+
+type healthTestConnector struct{ err error }
+
+func (c healthTestConnector) Ping(context.Context) error { return c.err }
+
+func TestHealthHandlerReadyzRequiresBothDependencies(t *testing.T) {
+	tests := []struct {
+		name  string
+		db    dbConnector
+		redis redisConnector
+		want  int
+	}{
+		{name: "healthy", db: healthTestConnector{}, redis: healthTestConnector{}, want: http.StatusOK},
+		{name: "missing database", redis: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "missing redis", db: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "database error", db: healthTestConnector{err: errors.New("private db error")}, redis: healthTestConnector{}, want: http.StatusServiceUnavailable},
+		{name: "redis error", db: healthTestConnector{}, redis: healthTestConnector{err: errors.New("private redis error")}, want: http.StatusServiceUnavailable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHealthHandler(nil, nil, nil, tt.db, tt.redis)
+			r := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, r)
+			if w.Code != tt.want {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, tt.want, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "private ") {
+				t.Fatalf("anonymous readiness leaked dependency error: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+// TestHealthHandlerReadyzJSONContract locks down the /readyz response shape
+// so the frontend SystemStatusIndicator.vue can keep relying on the public
+// fields without having to fall back to admin-only /healthz?full=true.
+//
+// Contract (audit 2026-09-03, follow-up to commit 9d21f671c):
+//   - status field is always "ready" or "not_ready"
+//   - database and redis fields are always present (may be null when connector is nil)
+//   - when present, the inner ResourceStatus.error field MUST be empty string
+//     (anonymous endpoint must not leak backend ping error strings)
+//   - frontend uses .connected and .latency; never reads .error
+func TestHealthHandlerReadyzJSONContract(t *testing.T) {
+	cases := []struct {
+		name           string
+		db             dbConnector
+		redis          redisConnector
+		wantStatus     string
+		wantHTTPCode   int
+		wantDBConn     bool
+		wantRedisConn  bool
+	}{
+		{
+			name:          "all healthy",
+			db:            healthTestConnector{},
+			redis:         healthTestConnector{},
+			wantStatus:    "ready",
+			wantHTTPCode:  http.StatusOK,
+			wantDBConn:    true,
+			wantRedisConn: true,
+		},
+		{
+			name:          "db connector nil",
+			redis:         healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    false,
+			wantRedisConn: true,
+		},
+		{
+			name:          "redis connector nil",
+			db:            healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    true,
+			wantRedisConn: false,
+		},
+		{
+			name:          "db ping fails with private error",
+			db:            healthTestConnector{err: errors.New("private db error")},
+			redis:         healthTestConnector{},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    false,
+			wantRedisConn: true,
+		},
+		{
+			name:          "redis ping fails with private error",
+			db:            healthTestConnector{},
+			redis:         healthTestConnector{err: errors.New("private redis error")},
+			wantStatus:    "not_ready",
+			wantHTTPCode:  http.StatusServiceUnavailable,
+			wantDBConn:    true,
+			wantRedisConn: false,
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			h := NewHealthHandler(nil, nil, nil, tt.db, tt.redis)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+			if w.Code != tt.wantHTTPCode {
+				t.Fatalf("http status = %d, want %d; body=%s", w.Code, tt.wantHTTPCode, w.Body.String())
+			}
+
+			var body struct {
+				Status   string          `json:"status"`
+				Database *ResourceStatus `json:"database"`
+				Redis    *ResourceStatus `json:"redis"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode /readyz body: %v (body=%s)", err, w.Body.String())
+			}
+
+			if body.Status != tt.wantStatus {
+				t.Errorf("status field = %q, want %q", body.Status, tt.wantStatus)
+			}
+
+			// database / redis fields must be present (even when nil connectors
+			// give nil status); pointer-not-nil distinguishes "field absent"
+			// from "field present with nil value", but since the handler
+			// always emits these fields we only require pointer values.
+			// When connector is nil, healthResourceStatus returns nil so the
+			// JSON value will be null. When connector pings OK or errors,
+			// healthResourceStatus returns a non-nil *ResourceStatus with
+			// Error stripped.
+			if tt.db != nil && body.Database == nil {
+				t.Errorf("database field missing despite non-nil connector (body=%s)", w.Body.String())
+			}
+			if tt.redis != nil && body.Redis == nil {
+				t.Errorf("redis field missing despite non-nil connector (body=%s)", w.Body.String())
+			}
+
+			// Lock down the privacy contract: Error must always be empty in
+			// the anonymous response. If a future refactor renames ResourceStatus.Error,
+			// the strip block in serveReadyz will fail to compile (Go won't
+			// silently no-op), but this test catches drift if the strip is
+			// removed entirely.
+			if body.Database != nil && body.Database.Error != "" {
+				t.Errorf("database.error leaked to anonymous endpoint: %q", body.Database.Error)
+			}
+			if body.Redis != nil && body.Redis.Error != "" {
+				t.Errorf("redis.error leaked to anonymous endpoint: %q", body.Redis.Error)
+			}
+
+			if body.Database != nil && body.Database.Connected != tt.wantDBConn {
+				t.Errorf("database.connected = %v, want %v", body.Database.Connected, tt.wantDBConn)
+			}
+			if body.Redis != nil && body.Redis.Connected != tt.wantRedisConn {
+				t.Errorf("redis.connected = %v, want %v", body.Redis.Connected, tt.wantRedisConn)
+			}
+		})
+	}
+}
+
+func TestHealthHandlerHealthzIsLivenessWhenDependencyFails(t *testing.T) {
+	h := NewHealthHandler(nil, nil, nil, healthTestConnector{}, healthTestConnector{err: errors.New("private redis error")})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body HealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode healthz response: %v", err)
+	}
+	if body.Ready {
+		t.Fatalf("healthz ready = true, want false")
+	}
+	if strings.Contains(w.Body.String(), "private redis error") {
+		t.Fatalf("anonymous liveness leaked dependency error: %s", w.Body.String())
+	}
+}
+
+func TestHealthHandlerVersionDoesNotRequireDependencies(t *testing.T) {
+	h := NewHealthHandler(nil, nil, nil, nil, nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode version response: %v", err)
+	}
+	h.SetRuntimeIdentity("traffic-only", ":8782")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if !strings.Contains(w.Body.String(), `"runtime_role":"traffic-only"`) || !strings.Contains(w.Body.String(), `"listen":":8782"`) {
+		t.Fatalf("version response missing runtime identity: %s", w.Body.String())
+	}
+	for _, key := range []string{"version", "git_sha", "build_seq", "build_date", "module", "runtime_role", "listen"} {
+		if _, ok := body[key]; !ok {
+			t.Fatalf("version response missing %q: %s", key, w.Body.String())
+		}
+	}
+}
+
+func TestApplyActualOutboundBodyPrefersExecutorBody(t *testing.T) {
+	logCtx := &RequestLogContext{OutboundBody: []byte(`{"messages":[{"role":"system","content":"old"}]}`)}
+	result := &executors.ExecuteResult{RequestBody: []byte(`{"system":"new","messages":[{"role":"user","content":"hi"}]}`)}
+
+	applyActualOutboundBody(logCtx, result)
+
+	if got := string(logCtx.OutboundBody); got != string(result.RequestBody) {
+		t.Fatalf("OutboundBody = %s, want executor request body %s", got, result.RequestBody)
+	}
+}
+
+func TestApplyActualOutboundBodyKeepsSnapshotWithoutExecutorBody(t *testing.T) {
+	original := []byte(`{"messages":[{"role":"user","content":"snapshot"}]}`)
+	logCtx := &RequestLogContext{OutboundBody: append([]byte(nil), original...)}
+
+	applyActualOutboundBody(logCtx, &executors.ExecuteResult{})
+
+	if got := string(logCtx.OutboundBody); got != string(original) {
+		t.Fatalf("OutboundBody = %s, want existing snapshot %s", got, original)
+	}
+}
 
 func TestSuccessUpstreamStatusCode(t *testing.T) {
 	if got := successUpstreamStatusCode(&executors.ExecuteResult{Response: &http.Response{StatusCode: http.StatusCreated}}); got != http.StatusCreated {
@@ -155,11 +383,49 @@ func TestSanitizeGwSessionHeader(t *testing.T) {
 		{name: "gs_ without trailing chars accepted", input: "gs_x", want: "gs_x"},
 		{name: "trailing whitespace trimmed", input: "  gw_abc  ", want: "gw_abc"},
 		{name: "gt_ with whitespace preserved on content", input: "  gt_gw_abc  ", want: "gt_gw_abc"},
+		// 2026-08-15 regression: the auto-title/auto-summary loopback used to
+		// set "gt:" / "gs:" (colon) prefixes, which the sanitizer silently
+		// dropped → the child row got a fresh gw_<uuid> and its parent_request_id
+		// link was unusable. Colon forms MUST be rejected by the contract.
+		{name: "title colon gt: rejected (bug class)", input: "gt:gw_abc", want: ""},
+		{name: "summary colon gs: rejected (bug class)", input: "gs:gw_abc", want: ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := sanitizeGwSessionHeader(tc.input); got != tc.want {
 				t.Fatalf("sanitizeGwSessionHeader(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsBranchSessionID (OBS-DV2 #4) — guards the predicate that decides
+// whether an already-sanitized session id is an auto-title/auto-summary branch
+// rather than a user main session. Branch ids MUST stay gt_/gs_ (matching the
+// loopback callers) so the chat handler can preserve them verbatim instead of
+// auto-creating a fresh gw_<uuid> and so they are never written to the
+// no-session lastSystemSession resume pointer.
+func TestIsBranchSessionID(t *testing.T) {
+	tests := []struct {
+		name      string
+		sessionID string
+		want      bool
+	}{
+		{name: "empty is not branch", sessionID: "", want: false},
+		{name: "main gw_ is not branch", sessionID: "gw_abc-123", want: false},
+		{name: "title branch gt_ recognized", sessionID: "gt_gw_abc-123", want: true},
+		{name: "summary branch gs_ recognized", sessionID: "gs_gw_abc-123", want: true},
+		{name: "gt_ bare recognized", sessionID: "gt_x", want: true},
+		{name: "gs_ bare recognized", sessionID: "gs_x", want: true},
+		{name: "gt: colon is NOT branch (rejected upstream)", sessionID: "gt:gw_abc", want: false},
+		{name: "gs: colon is NOT branch (rejected upstream)", sessionID: "gs:gw_abc", want: false},
+		{name: "other prefix not branch", sessionID: "sess_abc", want: false},
+		{name: "uppercase GT_ is NOT branch (case-sensitive)", sessionID: "GT_gw_abc", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBranchSessionID(tc.sessionID); got != tc.want {
+				t.Fatalf("isBranchSessionID(%q) = %v, want %v", tc.sessionID, got, tc.want)
 			}
 		})
 	}
@@ -414,6 +680,7 @@ func TestDetectUpstreamContextLoss(t *testing.T) {
 		completionSet   bool // false → leave CompletionTokens nil
 		finishReason    string
 		includeFinish   bool // false → omit upstream_finish_reason from m
+		toolCalls       bool
 		wantContextLoss bool
 	}{
 		{
@@ -504,8 +771,21 @@ func TestDetectUpstreamContextLoss(t *testing.T) {
 			wantContextLoss: false,
 		},
 		{
-			name:            "stop terminator with full body still flags when prompt drops",
-			bodyBytes:       919 * 1024,
+			name:            "tool call with short usage is not detected",
+			bodyBytes:       129774,
+			promptTokens:    33,
+			promptSet:       true,
+			completion:      39,
+			completionSet:   true,
+			finishReason:    "tool_calls",
+			includeFinish:   true,
+			toolCalls:       true,
+			wantContextLoss: false,
+		},
+		{
+			name:      "stop terminator with full body still flags when prompt drops",
+			bodyBytes: 919 * 1024,
+
 			promptTokens:    500,
 			promptSet:       true,
 			completion:      30,
@@ -532,9 +812,16 @@ func TestDetectUpstreamContextLoss(t *testing.T) {
 			if tt.includeFinish {
 				m["upstream_finish_reason"] = tt.finishReason
 			}
+			if tt.toolCalls {
+				m["tool_calls"] = []map[string]any{{
+					"id":   "toolu_test",
+					"type": "function",
+				}}
+			}
 
 			got := detectUpstreamContextLoss(m, entry)
 			if got != tt.wantContextLoss {
+
 				t.Fatalf("detectUpstreamContextLoss() = %v, want %v", got, tt.wantContextLoss)
 			}
 		})

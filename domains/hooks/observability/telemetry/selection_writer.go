@@ -35,6 +35,10 @@ const (
 // Outcome fields are deliberately absent: they are backfilled later by
 // AutoRouteSettleWorker once the request has settled, because latency and cost
 // are not known at decision time.
+//
+// Privacy: This struct contains NO prompt text, NO message content, NO keywords,
+// and NO reversible content features. Structured features are low-sensitivity,
+// non-reversible, fixed schema values only.
 type AutoSelection struct {
 	RequestID string
 	SessionID string
@@ -54,6 +58,31 @@ type AutoSelection struct {
 	AffinityApplied bool
 	Explore         bool
 	FallbackUsed    bool
+
+	// Treatment attribution is recorded only when the request enrolled in the
+	// enabled rollout. Empty values represent an unenrolled request.
+	ExperimentID      string
+	Treatment         string
+	AssignmentVersion string
+	AssignmentKeyHash string
+
+	// Structured features (v1) — non-reversible, low-sensitivity features
+	// extracted from ClassificationSignals. See autoroute/structured_features.go.
+	DetectedLanguage       string
+	PromptLengthBucket     string
+	ContextLengthBucket    string
+	TurnCountBucket        string
+	HasCodeIndicator       bool
+	HasMathIndicator       bool
+	HasTableIndicator      bool
+	HasMultimediaIndicator bool
+	IntentCategory         string
+	DomainHint             string
+	ComplexityBucket       string
+	LatencySensitive       bool
+	CostSensitive          bool
+	FeatureVersion         string
+	ContentHash            string
 }
 
 type selectionWriter struct {
@@ -120,6 +149,13 @@ func SelectionWriterStats() (persisted, dropped int64) {
 }
 
 func (w *selectionWriter) run() {
+	// Panic guard (audit 2026-09-05 G-#1): a flush panic would crash the whole
+	// process AND skip wg.Done, hanging StopSelectionWriter forever.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("selection writer panic", "recover", rec)
+		}
+	}()
 	defer w.wg.Done()
 	batch := make([]AutoSelection, 0, selectionBatchSize)
 	timer := time.NewTimer(selectionFlushDelay)
@@ -186,7 +222,7 @@ func (w *selectionWriter) flush(batch []AutoSelection) {
 	}
 }
 
-const selectionColumnCount = 16
+const selectionColumnCount = 35 // Updated for structured features v1
 
 func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection) error {
 	values := make([]string, 0, len(sels))
@@ -194,11 +230,16 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
 
 	for i, s := range sels {
 		base := i * selectionColumnCount
-		values = append(values, fmt.Sprintf(
-			"($%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d,$%d)",
-			base+1, base+2, base+3, base+4, base+5, base+6, base+7, base+8,
-			base+9, base+10, base+11, base+12, base+13, base+14, base+15, base+16,
-		))
+		// Build placeholder string for 35 columns
+		placeholders := "("
+		for j := 1; j <= selectionColumnCount; j++ {
+			if j > 1 {
+				placeholders += ","
+			}
+			placeholders += fmt.Sprintf("$%d", base+j)
+		}
+		placeholders += ")"
+		values = append(values, placeholders)
 
 		profile := s.Profile
 		if profile == "" {
@@ -212,8 +253,13 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
 		if rank < 1 {
 			rank = 1
 		}
+		featureVer := s.FeatureVersion
+		if featureVer == "" {
+			featureVer = "v1"
+		}
 
 		args = append(args,
+			// Original 20 columns
 			s.RequestID,
 			nullableString(s.SessionID),
 			nullableString(s.TaskID),
@@ -230,7 +276,28 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
 			s.AffinityApplied,
 			s.Explore,
 			s.FallbackUsed,
+			nullableString(s.ExperimentID),
+			nullableString(s.Treatment),
+			nullableString(s.AssignmentVersion),
+			nullableString(s.AssignmentKeyHash),
+			// Structured features v1 (15 new columns)
+			nullableString(s.DetectedLanguage),
+			nullableString(s.PromptLengthBucket),
+			nullableString(s.ContextLengthBucket),
+			nullableString(s.TurnCountBucket),
+			nullableBool(s.HasCodeIndicator),
+			nullableBool(s.HasMathIndicator),
+			nullableBool(s.HasTableIndicator),
+			nullableBool(s.HasMultimediaIndicator),
+			nullableString(s.IntentCategory),
+			nullableString(s.DomainHint),
+			nullableString(s.ComplexityBucket),
+			nullableBool(s.LatencySensitive),
+			nullableBool(s.CostSensitive),
+			featureVer,
+			nullableString(s.ContentHash),
 		)
+
 	}
 
 	// ON CONFLICT DO NOTHING pairs with uq_ars_request (request_id,
@@ -238,17 +305,31 @@ func (w *selectionWriter) insertBatch(ctx context.Context, sels []AutoSelection)
 	// duplicate sample, which matters because duplicates would inflate
 	// sample_count and skew the learned ranking.
 	query := `
-INSERT INTO auto_route_selections (
+	INSERT INTO auto_route_selections_hot (
     request_id, session_id, task_id, tenant_id,
     task_type, profile, classifier, confidence,
     canonical_id, chosen_model, candidate_rank,
     composite_score, affinity_score, affinity_applied, explore,
-    fallback_used
+    fallback_used, experiment_id, treatment, assignment_version,
+    assignment_key_hash,
+    detected_language, prompt_length_bucket, context_length_bucket, turn_count_bucket,
+    has_code_indicator, has_math_indicator, has_table_indicator, has_multimedia_indicator,
+    intent_category, domain_hint, complexity_bucket, latency_sensitive, cost_sensitive,
+    feature_version, content_hash
 ) VALUES ` + joinStrings(values, ",") + `
 ON CONFLICT DO NOTHING`
 
 	_, err := w.pool.Exec(ctx, query, args...)
 	return err
+}
+
+func nullableBool(b bool) any {
+	// For nullable boolean columns, return nil for false (default state)
+	// This optimizes storage and follows PostgreSQL best practices
+	if !b {
+		return nil
+	}
+	return b
 }
 
 func nullableInt64(i int64) any {

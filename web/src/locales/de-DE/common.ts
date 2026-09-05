@@ -2,6 +2,7 @@
 // common.ts — shared strings reused across every module: buttons, status, feedback, pagination.
 // High-frequency words (cancel/confirm/enabled/disabled/loading) are referenced widely; extracted first.
 export default {
+  credentialFallback: 'Anmeldeinformation',
   button: {
     cancel: 'Abbrechen',
     confirm: 'Bestätigen',
@@ -122,6 +123,7 @@ export default {
   cancel: 'Abbrechen',
   close: 'Schließen',
   confirm: 'Bestätigen',
+  confirmTitle: 'Bitte bestätigen',
   count: 'Anzahl',
   create: 'Neu erstellen',
   createdAt: 'Erstellt',
@@ -133,6 +135,7 @@ export default {
   enabled: 'Aktiviert',
   lastOccurred: 'Zuletzt aufgetreten',
   loading: 'Wird geladen…',
+  never: 'Nie',
   module: 'Modul',
   no: 'Nein',
   refresh: 'Aktualisieren',

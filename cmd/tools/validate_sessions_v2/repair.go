@@ -2,10 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -149,9 +148,10 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Acquire advisory lock
-	lockKey := hashSessionKey(tenantID, sessionID)
-	_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey)
+	// 1. Acquire the same canonical lock used by writer, aggregator, and promote.
+	_, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(
+		public.session_turns_advisory_lock_key($1, $2)
+	)`, tenantID, sessionID)
 	if err != nil {
 		result.Error = fmt.Errorf("acquire advisory lock: %w", err)
 		return result, result.Error
@@ -181,16 +181,25 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 	}
 	result.DeletedRows["session_bodies"] = int(tag.RowsAffected())
 
-	// Delete turns
+	// Delete turns from both stores. Historical repair writes the partitioned
+	// table directly, while live traffic uses session_turns_hot.
+	hotTag, err := tx.Exec(ctx, `
+		DELETE FROM public.session_turns_hot
+		WHERE tenant_id = $1 AND session_id = $2
+	`, tenantID, sessionID)
+	if err != nil {
+		result.Error = fmt.Errorf("delete hot turns: %w", err)
+		return result, result.Error
+	}
 	tag, err = tx.Exec(ctx, `
 		DELETE FROM public.session_turns
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID)
 	if err != nil {
-		result.Error = fmt.Errorf("delete turns: %w", err)
+		result.Error = fmt.Errorf("delete partitioned turns: %w", err)
 		return result, result.Error
 	}
-	result.DeletedRows["session_turns"] = int(tag.RowsAffected())
+	result.DeletedRows["session_turns"] = int(hotTag.RowsAffected() + tag.RowsAffected())
 
 	// Delete session snapshot
 	tag, err = tx.Exec(ctx, `
@@ -253,19 +262,19 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 				submit_mode, model, provider, credential_id,
 				prompt_tokens, completion_tokens, cost_usd,
 				injection_verdict, output_verdict,
-				success, source_kind, quality
+				success, source_kind, quality, partition_date
 			) VALUES (
 				$1, $2, $3, $4, $5,
 				$6, $7, $8, $9,
 				$10, $11, $12,
 				$13, $14,
-				$15, 'backfill', 'verified'
+				$15, 'backfill', 'verified', $16
 			)
 		`, tenantID, sessionID, turnNo, turn.RequestID, turn.Ts,
 			submitMode, turn.ClientModel, turn.ProviderID, turn.CredentialID,
 			promptTokens, completionTokens, turn.CostUSD,
 			injectionVerdict, outputVerdict,
-			turn.Success)
+			turn.Success, calendarDateUTC(turn.Ts))
 
 		if err != nil {
 			result.Error = fmt.Errorf("insert turn %d: %w", turnNo, err)
@@ -301,14 +310,14 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 			INSERT INTO public.session_bodies (
 				tenant_id, session_id, turn_no, request_id, ts,
 				request_delta, response_delta,
-				request_attachments, response_attachments
+				request_attachments, response_attachments, partition_date
 			) VALUES (
 				$1, $2, $3, $4, $5,
 				$6, $7,
-				'[]'::jsonb, '[]'::jsonb
+				'[]'::jsonb, '[]'::jsonb, $8
 			)
 		`, tenantID, sessionID, turnNo, turn.RequestID, turn.Ts,
-			requestDeltaJSON, responseDeltaJSON)
+			requestDeltaJSON, responseDeltaJSON, calendarDateUTC(turn.Ts))
 
 		if err != nil {
 			result.Error = fmt.Errorf("insert body %d: %w", turnNo, err)
@@ -343,17 +352,17 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 			tenant_id, session_id, status,
 			total_turns, total_tokens, total_cost_usd,
 			last_turn_no, last_model, last_provider,
-			primary_request_id, created_at, updated_at
-		) VALUES (
-			$1, $2, 'closed',
-			$3, $4, $5,
-			$6, $7, $8,
-			$9, $10, $11
-		)
-	`, tenantID, sessionID,
+				primary_request_id, created_at, updated_at, partition_date
+			) VALUES (
+				$1, $2, 'closed',
+				$3, $4, $5,
+				$6, $7, $8,
+				$9, $10, $11, $12
+			)
+		`, tenantID, sessionID,
 		len(v1Turns), totalTokens, totalCost,
 		len(v1Turns), lastTurn.ClientModel, lastTurn.ProviderID,
-		v1Turns[0].RequestID, v1Turns[0].Ts, lastTurn.Ts)
+		v1Turns[0].RequestID, v1Turns[0].Ts, lastTurn.Ts, calendarDateUTC(lastTurn.Ts))
 
 	if err != nil {
 		result.Error = fmt.Errorf("insert session: %w", err)
@@ -369,6 +378,11 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 
 	result.Success = true
 	return result, nil
+}
+
+func calendarDateUTC(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // VerifyRepair runs validation after repair to confirm success
@@ -403,12 +417,4 @@ func (r *SessionRepairer) VerifyRepair(ctx context.Context, tenantID, sessionID 
 	report := r.reportGen.GenerateSessionReport(tenantID, sessionID, v1Turns, v2Turns, checks, reconResults)
 
 	return report, nil
-}
-
-// hashSessionKey generates a deterministic int64 hash for advisory lock
-func hashSessionKey(tenantID, sessionID string) int64 {
-	h := sha256.New()
-	h.Write([]byte(tenantID + ":" + sessionID))
-	sum := h.Sum(nil)
-	return int64(binary.BigEndian.Uint64(sum[:8]))
 }

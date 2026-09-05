@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -373,5 +375,97 @@ func TestNetworkError(t *testing.T) {
 	}
 	if result.Reason != "network_timeout" {
 		t.Errorf("Network timeout reason = %v, want network_timeout", result.Reason)
+	}
+}
+
+func TestWrapper_RequestCarrierStateCancellation(t *testing.T) {
+	cfg := Config{Enabled: true, MaxRetries: 5, BaseDelayMs: 500, MaxDelayMs: 5000}
+	wrapper := NewWrapper(cfg, nil)
+	stateCancelCh := make(chan struct{})
+	ctx := withRequestCarrier(context.Background())
+	BindStateCancel(ctx, stateCancelCh)
+
+	var attempts atomic.Int32
+	done := make(chan error, 1)
+	go func() {
+		done <- wrapper.Execute(ctx, nil, func(ctx context.Context, _ http.ResponseWriter) error {
+			attempts.Add(1)
+			return io.ErrUnexpectedEOF
+		})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for attempts.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	close(stateCancelCh)
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Execute error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("state cancellation did not stop retry backoff")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Fatalf("attempts = %d, want 1", got)
+	}
+}
+
+// TestStreamRetry_CancelDuringBackoff (SP-03, 2026-08-19) verifies that
+// when the state-machine cancel channel fires during a retry backoff,
+// Sleep() returns within microseconds (instead of waiting for the full
+// backoff window). Pre-SP-03 this test would take 5s+ (the cap of the
+// retry delay); post-SP-03 it must finish in <100ms.
+func TestStreamRetry_CancelDuringBackoff(t *testing.T) {
+	cfg := Config{
+		Enabled:     true,
+		MaxRetries:  5,
+		BaseDelayMs: 500, // 500ms base — pre-fix this was the floor
+		MaxDelayMs:  5000,
+	}
+
+	stateCancelCh := make(chan struct{})
+	rc := &RetryContext{
+		Config:        cfg,
+		Attempt:       0, // first retry uses base delay (≈500ms+)
+		StateCancelCh: stateCancelCh,
+	}
+
+	// Fire the state-machine cancel signal 50ms into the backoff. Pre-fix
+	// Sleep would block until the timer fired (≈500ms+); post-fix it
+	// returns within microseconds of the close.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(stateCancelCh)
+	}()
+
+	ctx := context.Background()
+	start := time.Now()
+	err := rc.Sleep(ctx)
+	elapsed := time.Since(start)
+
+	if err != context.Canceled {
+		t.Errorf("Sleep() error = %v, want context.Canceled", err)
+	}
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("Sleep() elapsed = %v, want <100ms (state cancel must short-circuit backoff)", elapsed)
+	}
+	t.Logf("SP-03 CancelDuringBackoff: elapsed=%v (under 100ms threshold)", elapsed)
+}
+
+func TestClassifyErrorPreservesRetryAfter(t *testing.T) {
+	classified := ClassifyError(&HTTPError{
+		StatusCode: http.StatusTooManyRequests,
+		RetryAfter: "7",
+		Err:        errors.New("rate limited"),
+	})
+	var httpErr *HTTPError
+	if !errors.As(classified.Err, &httpErr) {
+		t.Fatalf("classified error = %T, want *HTTPError", classified.Err)
+	}
+	if httpErr.RetryAfter != "7" {
+		t.Fatalf("RetryAfter = %q, want 7", httpErr.RetryAfter)
 	}
 }

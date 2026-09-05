@@ -21,14 +21,14 @@ import (
 // 由调用方（cache_update_hook）从 compression.SessionState 构造，避免本包
 // 反向依赖 compression 包（compression 不应被 analysis 引入）。
 type SessionStateProjection struct {
-	GwSessionID      string
-	TenantID         string
-	AuditScore       int    // 0-10
-	SecurityScore    int    // 0-10
+	GwSessionID       string
+	TenantID          string
+	AuditScore        int // 0-10
+	SecurityScore     int // 0-10
 	SensitiveDetected bool
-	PIIStripped      bool
-	ApprovalStatus   string // pending|approved|rejected|timeout|""
-	OptimizationTag  string // strip_tools|compress_thinking|summarize|""
+	PIIStripped       bool
+	ApprovalStatus    string // pending|approved|rejected|timeout|""
+	OptimizationTag   string // strip_tools|compress_thinking|summarize|""
 }
 
 // SessionStateProjector 把 SessionStateProjection 写入 session_tags。

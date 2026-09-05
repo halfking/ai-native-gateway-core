@@ -122,13 +122,13 @@ func (d *ApprovalDetector) sortRulesByPriority(rules []ApprovalRule) []ApprovalR
 
 // evaluationContext 评估上下文
 type evaluationContext struct {
-	sessionContext    *session.SessionContext
-	messageContent    string
-	tokenCount        int
-	estimatedCost     float64
-	toolNames         []string
-	sensitiveResult   *DetectionResult
-	model             string
+	sessionContext  *session.SessionContext
+	messageContent  string
+	tokenCount      int
+	estimatedCost   float64
+	toolNames       []string
+	sensitiveResult *DetectionResult
+	model           string
 }
 
 // buildEvaluationContext 构建评估上下文
@@ -142,7 +142,7 @@ func (d *ApprovalDetector) buildEvaluationContext(ctx context.Context, sc *sessi
 	// 提取消息内容
 	if sc.ClientIR != nil {
 		evalCtx.messageContent = d.extractMessageContent(sc.ClientIR)
-		
+
 		// 提取工具调用（从 Messages 中提取）
 		if sc.ClientIR.Messages != nil {
 			for _, msg := range sc.ClientIR.Messages {
@@ -184,21 +184,21 @@ func (d *ApprovalDetector) extractMessageContent(irReq interface{}) string {
 	if irReq == nil {
 		return ""
 	}
-	
+
 	// 类型断言为 InternalRequest
 	req, ok := irReq.(*ir.InternalRequest)
 	if !ok {
 		return ""
 	}
-	
+
 	var content strings.Builder
-	
+
 	// 提取系统提示
 	if req.System != nil && req.System.Content != "" {
 		content.WriteString(req.System.Content)
 		content.WriteString(" ")
 	}
-	
+
 	// 提取所有消息的文本内容
 	for _, msg := range req.Messages {
 		for _, block := range msg.Content {
@@ -208,7 +208,7 @@ func (d *ApprovalDetector) extractMessageContent(irReq interface{}) string {
 			}
 		}
 	}
-	
+
 	return strings.TrimSpace(content.String())
 }
 
@@ -233,30 +233,30 @@ func (d *ApprovalDetector) evaluateCondition(condition RuleCondition, evalCtx *e
 	switch condition.Field {
 	case "message_content":
 		return d.evaluateStringCondition(evalCtx.messageContent, condition.Operator, condition.Value)
-	
+
 	case "token_count":
 		return d.evaluateNumericCondition(float64(evalCtx.tokenCount), condition.Operator, condition.Value)
-	
+
 	case "estimated_cost":
 		return d.evaluateNumericCondition(evalCtx.estimatedCost, condition.Operator, condition.Value)
-	
+
 	case "tool_name":
 		return d.evaluateArrayCondition(evalCtx.toolNames, condition.Operator, condition.Value)
-	
+
 	case "model":
 		return d.evaluateStringCondition(evalCtx.model, condition.Operator, condition.Value)
-	
+
 	case "sensitive_count":
 		count := 0
 		if evalCtx.sensitiveResult != nil {
 			count = evalCtx.sensitiveResult.TotalCount
 		}
 		return d.evaluateNumericCondition(float64(count), condition.Operator, condition.Value)
-	
+
 	case "has_sensitive":
 		hasSensitive := evalCtx.sensitiveResult != nil && evalCtx.sensitiveResult.HasSensitive
 		return d.evaluateBoolCondition(hasSensitive, condition.Operator, condition.Value)
-	
+
 	default:
 		return false, fmt.Errorf("unknown field: %s", condition.Field)
 	}
@@ -267,29 +267,29 @@ func (d *ApprovalDetector) evaluateStringCondition(value, operator, target strin
 	switch operator {
 	case "contains":
 		return strings.Contains(strings.ToLower(value), strings.ToLower(target)), nil
-	
+
 	case "not_contains":
 		return !strings.Contains(strings.ToLower(value), strings.ToLower(target)), nil
-	
+
 	case "eq":
 		return strings.EqualFold(value, target), nil
-	
+
 	case "ne":
 		return !strings.EqualFold(value, target), nil
-	
+
 	case "regex":
 		re, err := regexp.Compile(target)
 		if err != nil {
 			return false, fmt.Errorf("invalid regex: %w", err)
 		}
 		return re.MatchString(value), nil
-	
+
 	case "starts_with":
 		return strings.HasPrefix(strings.ToLower(value), strings.ToLower(target)), nil
-	
+
 	case "ends_with":
 		return strings.HasSuffix(strings.ToLower(value), strings.ToLower(target)), nil
-	
+
 	default:
 		return false, fmt.Errorf("unknown operator for string: %s", operator)
 	}
@@ -334,7 +334,7 @@ func (d *ApprovalDetector) evaluateArrayCondition(values []string, operator, tar
 			}
 		}
 		return false, nil
-	
+
 	case "not_in":
 		targetValues := strings.Split(target, ",")
 		for _, v := range values {
@@ -345,7 +345,7 @@ func (d *ApprovalDetector) evaluateArrayCondition(values []string, operator, tar
 			}
 		}
 		return true, nil
-	
+
 	case "contains":
 		for _, v := range values {
 			if strings.Contains(strings.ToLower(v), strings.ToLower(target)) {
@@ -353,7 +353,7 @@ func (d *ApprovalDetector) evaluateArrayCondition(values []string, operator, tar
 			}
 		}
 		return false, nil
-	
+
 	default:
 		return false, fmt.Errorf("unknown operator for array: %s", operator)
 	}
@@ -388,20 +388,20 @@ func (d *ApprovalDetector) executeRuleAction(rule ApprovalRule, evalCtx *evaluat
 		decision.TriggerType = TriggerPolicyMatch
 		decision.TriggerReason = rule.Action.Reason
 		decision.RiskLevel = rule.Action.RiskLevel
-	
+
 	case "auto_approve":
 		decision.RequiresApproval = false
 		decision.TriggerType = TriggerPolicyMatch
 		decision.TriggerReason = rule.Action.Reason
 		decision.RiskLevel = RiskLow
-	
+
 	case "auto_reject":
 		// auto_reject 也算是需要"审批"（被拒绝）
 		decision.RequiresApproval = true
 		decision.TriggerType = TriggerPolicyMatch
 		decision.TriggerReason = rule.Action.Reason
 		decision.RiskLevel = RiskCritical
-	
+
 	default:
 		decision.RequiresApproval = false
 	}
@@ -409,10 +409,10 @@ func (d *ApprovalDetector) executeRuleAction(rule ApprovalRule, evalCtx *evaluat
 	// 附加成本和敏感信息
 	decision.EstimatedCost = evalCtx.estimatedCost
 	decision.EstimatedTokens = evalCtx.tokenCount
-	
+
 	if evalCtx.sensitiveResult != nil {
 		decision.SensitiveItems = evalCtx.sensitiveResult.Items
-		
+
 		// 如果没有指定风险等级，根据敏感信息数量自动判断
 		if decision.RiskLevel == "" && decision.RequiresApproval {
 			decision.RiskLevel = d.calculateRiskLevel(evalCtx.sensitiveResult, evalCtx.estimatedCost)

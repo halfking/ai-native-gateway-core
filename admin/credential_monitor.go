@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,6 +28,7 @@ type summaryCache struct {
 	mu      sync.RWMutex
 	ttl     time.Duration
 	entries map[string]summaryCacheEntry
+	flights map[string]chan struct{}
 }
 
 type summaryCacheEntry struct {
@@ -62,7 +64,49 @@ func (c *summaryCache) set(key string, value map[string]any, created time.Time) 
 	if c.entries == nil {
 		c.entries = make(map[string]summaryCacheEntry)
 	}
+	for cacheKey, entry := range c.entries {
+		if !created.Before(entry.expires) {
+			delete(c.entries, cacheKey)
+		}
+	}
 	c.entries[key] = summaryCacheEntry{value: cloneSummaryResponse(value), created: created, expires: created.Add(c.ttl)}
+}
+
+func (c *summaryCache) begin(key string) (<-chan struct{}, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.flights == nil {
+		c.flights = make(map[string]chan struct{})
+	}
+	if flight, ok := c.flights[key]; ok {
+		return flight, false
+	}
+	flight := make(chan struct{})
+	c.flights[key] = flight
+	return flight, true
+}
+
+func (c *summaryCache) finish(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if flight, ok := c.flights[key]; ok {
+		delete(c.flights, key)
+		close(flight)
+	}
+}
+
+func (c *summaryCache) invalidateCredential(credentialID int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if credentialID <= 0 {
+		c.entries = nil
+		return
+	}
+	for key := range c.entries {
+		if strings.Contains(key, fmt.Sprintf(":c%d:", credentialID)) {
+			delete(c.entries, key)
+		}
+	}
 }
 
 func (c *summaryCache) ttlSeconds() int {
@@ -90,6 +134,7 @@ func NewCredentialMonitorHandlers(h *Handler, recorder *credentialhealth.Recorde
 func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wrap func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/api/credentials/monitor-summary", wrap(m.handleMonitorSummary))
 	mux.HandleFunc("/api/credentials/sliding-window", wrap(m.handleSlidingWindow))
+	mux.HandleFunc("/api/credentials/sliding-window/batch", wrap(m.handleSlidingWindowBatch))
 	mux.HandleFunc("/api/credentials/promote", wrap(m.handlePromote))
 	mux.HandleFunc("/api/credentials/demote", wrap(m.handleDemote))
 	mux.HandleFunc("/api/credentials/set-concurrency-auto", wrap(m.handleSetConcurrencyAuto))
@@ -125,6 +170,8 @@ type CredentialMonitorSummary struct {
 	ModelTotal            int     `json:"model_total,omitempty"`
 	ModelAvailable        int     `json:"model_available,omitempty"`
 	BrokenModelCount      int     `json:"broken_model_count,omitempty"`
+	EffectiveState        string  `json:"effective_state"`
+	EffectiveReason       string  `json:"effective_reason,omitempty"`
 	// Models is the per-(credential, model) availability breakdown. Replaces the
 	// single-model recent_window_stats field (2026-06-22). Each entry carries
 	// the probe state, offer/binding availability and the live last-N success
@@ -175,7 +222,7 @@ type CredentialModelStatus struct {
 // shape changes. The in-memory cache uses the version as part of the key, so
 // older cached responses (with the previous schema) are automatically
 // ignored after a redeploy — no manual flush needed.
-const monitorSummarySchemaVersion = 6
+const monitorSummarySchemaVersion = 7
 
 func monitorSummaryMeta(created, expires time.Time, cacheHit bool, serverDuration time.Duration) map[string]any {
 	return map[string]any{
@@ -187,66 +234,107 @@ func monitorSummaryMeta(created, expires time.Time, cacheHit bool, serverDuratio
 	}
 }
 
-// WindowStats aggregates recent sliding window data.
-type WindowStats struct {
-	Total       int            `json:"total"`
-	Success     int            `json:"success"`
-	Failed      int            `json:"failed"`
-	FailureRate float64        `json:"failure_rate"`
-	ErrorKinds  map[string]int `json:"error_kinds"`
-	SampleModel string         `json:"sample_model,omitempty"`
+func monitorSummaryCacheKey(p monitorSummarySQLParams) string {
+	detailMode := p.CredentialID > 0 && p.Mode != "core"
+	return fmt.Sprintf("p%d:c%d:d%t:m%s:t=%s:v%d",
+		p.ProviderID, p.CredentialID, detailMode, p.Mode, p.TenantID, monitorSummarySchemaVersion)
 }
 
-// handleMonitorSummary returns all credentials with their monitoring state.
-// GET /api/credentials/monitor-summary?provider_id=X&credential_id=Y
+// monitorSummarySQLParams captures the request-derived parameters the SQL
+// builder / executor consume. Extracted so buildMonitorSummarySQL is a pure
+// function tests can pin (mode branch, tenant filter, detail join) without
+// spinning up an HTTP request, and runMonitorSummary can be driven against a
+// pgxmock pool without exposing h.db as a public field.
+type monitorSummarySQLParams struct {
+	ProviderID   int
+	CredentialID int
+	Mode         string // raw, lowercased query-string value: "" | "core" | "detail"
+	TenantID     string // empty for super_admin; non-empty for tenant_admin
+}
+
+// buildMonitorSummarySQL returns the SQL executed by runMonitorSummary. Pure
+// function (no DB, no globals) so unit tests can pin the core/detail branches
+// and the tenant guard without standing up a request.
 //
-// 2026-06-22: rewritten to return a per-(credential, model) breakdown in the
-// `models` array instead of the single most-common-model `recent_window_stats`.
-// One SQL query carries both the credential rows and their models[] (via
-// json_agg over a LATERAL recent_success_rate join), so there is no N+1.
-// A 30s in-memory cache (same pattern as loadCandidatesDB) keeps the page
-// refresh cheap.
-func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
-	providerID := queryInt(r, "provider_id", 0)
-	credentialID := queryInt(r, "credential_id", 0)
-	detailMode := credentialID > 0
-	// 2026-08-07: tenant_admin must only see their own credentials.
-	// Without this filter, the WHERE clause exposes every tenant's
-	// provider/credential names + IDs to anyone calling the endpoint.
-	// We pass an additional placeholder ($3) only for tenant_admin; the
-	// super_admin path keeps the original 2-arg form. The recent_success_rate
-	// LATERAL function is keyed by credential_id (which is already tenant-
-	// scoped by virtue of being a row in `credentials`), so it does not
-	// leak across tenants.
-	tenantID := ""
-	if IsTenantAdmin(r) {
-		tenantID = GetTenantID(r)
-	}
-	startedAt := time.Now()
-
-	// 30s cache: the page auto-refreshes every 10-60s and the per-model
-	// LATERAL success-rate join is the heaviest part. Cache key includes the
-	// caller's tenant scope so concurrent super_admin and tenant_admin
-	// callers do not share a cached payload that leaks cross-tenant rows.
-	cacheKey := fmt.Sprintf("p%d:c%d:d%t:t=%s:v%d", providerID, credentialID, detailMode, tenantID, monitorSummarySchemaVersion)
-	if cached, created, expires, ok := monitorSummaryCache.get(cacheKey); ok {
-		cached["meta"] = monitorSummaryMeta(created, expires, true, 0)
-		writeJSON(w, http.StatusOK, cached)
-		return
-	}
-
+// coreMode:  lightweight preload — drops request_logs/percentile_cont/credential_model_index
+//
+//	joins so the dashboard settings path returns fast.
+//
+// detailMode: per-(credential, model) breakdown with P95/success rate.
+// default:  list-only — no models[], per-credential MIN(success_rate) only.
+func buildMonitorSummarySQL(p monitorSummarySQLParams) string {
+	coreMode := p.Mode == "core"
+	detailMode := p.CredentialID > 0 && !coreMode
 	// Summary mode keeps the list light: it returns only aggregate counts and
 	// the worst recent success rate, without materializing models[]. Detail mode
 	// reuses the same row shape but also includes the per-model JSON payload.
-	query := `
+	// Core mode deliberately avoids request-log and per-model rate/latency
+	// aggregates. It is used by the dashboard settings/maintenance path, where
+	// state must be available quickly but historical statistics are not needed.
+	var query string
+	if coreMode {
+		query = `
+			SELECT
+				c.id, c.provider_id,
+				COALESCE(p.display_name, p.catalog_code, '') AS provider_name,
+				COALESCE(c.label, '') AS label,
+				COALESCE(c.status, 'active') AS status,
+				COALESCE(c.availability_state, 'ready') AS availability_state,
+				COALESCE(c.health_status, 'unknown') AS health_status,
+				COALESCE(c.quota_state, 'ok') AS quota_state,
+				c.concurrency_limit,
+				c.concurrency_limit_auto,
+				COALESCE(c.concurrency_limit, c.concurrency_limit_auto, 5) AS effective_concurrency,
+				COALESCE(c.manual_disabled, FALSE) AS manual_disabled,
+				COALESCE(c.consecutive_failures, 0) AS consecutive_failures,
+				c.availability_recover_at,
+				c.state_reason_code,
+				c.state_reason_detail,
+				c.health_checked_at,
+				0::bigint AS total_requests,
+				COALESCE(ms.model_total, 0) AS model_total,
+				COALESCE(ms.model_available, 0) AS model_available,
+				COALESCE(ms.broken_model_count, 0) AS broken_model_count,
+				NULL::double precision AS aggregated_success_rate,
+				COALESCE(ms.models, '[]'::json) AS models
+			FROM credentials c
+			LEFT JOIN providers p ON c.provider_id = p.id
+			LEFT JOIN LATERAL (
+				SELECT
+					COUNT(*) AS model_total,
+					COUNT(*) FILTER (WHERE COALESCE(mo.available, TRUE) AND COALESCE(cmb.available, TRUE)) AS model_available,
+					COUNT(*) FILTER (WHERE COALESCE(mps.state, 'unknown') = 'broken_confirmed') AS broken_model_count,
+					json_agg(json_build_object(
+						'raw_model_name', mo.raw_model_name,
+						'offer_available', COALESCE(mo.available, TRUE),
+						'offer_unavailable_reason', mo.unavailable_reason,
+						'binding_available', COALESCE(cmb.available, TRUE),
+						'binding_unavailable_reason', cmb.unavailable_reason,
+						'probe_state', COALESCE(mps.state, 'unknown'),
+						'probe_last_status', mps.last_status,
+						'probe_last_attempt_at', mps.last_attempt_at,
+						'recent_samples', 0,
+						'p95_source', 'no_data',
+						'data_source', 'declared',
+						'total_calls', 0
+					) ORDER BY mo.raw_model_name) AS models
+				FROM model_offers mo
+				LEFT JOIN credential_model_bindings cmb
+					ON cmb.credential_id = mo.credential_id
+				   AND cmb.provider_model_id = (SELECT id FROM provider_models pm WHERE pm.raw_model_name = mo.raw_model_name AND pm.provider_id = c.provider_id LIMIT 1)
+				LEFT JOIN model_probe_state mps
+					ON mps.credential_id = mo.credential_id
+				   AND mps.raw_model_name = mo.raw_model_name
+				WHERE mo.credential_id = c.id
+			) ms ON true
+			WHERE ($1 = 0 OR c.provider_id = $1)
+			  AND ($2 = 0 OR c.id = $2)
+			  AND c.lifecycle_status != 'retired'
+			  AND ($3 = '' OR c.tenant_id = $3)
+			ORDER BY c.provider_id, c.id
+		`
+	} else {
+		query = `
 		SELECT
 			c.id, c.provider_id,
 			COALESCE(p.display_name, p.catalog_code, '') AS provider_name,
@@ -264,20 +352,20 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			c.state_reason_code,
 			c.state_reason_detail,
 			c.health_checked_at,
-			COALESCE((SELECT COUNT(*) FROM request_logs rl WHERE rl.credential_id = c.id), 0) AS total_requests,
+				COALESCE((SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE rl.credential_id = c.id), 0) AS total_requests,
 			COALESCE(ms.model_total, 0) AS model_total,
 			COALESCE(ms.model_available, 0) AS model_available,
-			COALESCE(ms.broken_model_count, 0) AS broken_model_count,
-			ms.aggregated_success_rate AS aggregated_success_rate,
-			%s
-		FROM credentials c
+				COALESCE(ms.broken_model_count, 0) AS broken_model_count,
+				ms.aggregated_success_rate AS aggregated_success_rate,
+				%s
+			FROM credentials c
 		LEFT JOIN providers p ON c.provider_id = p.id
 		LEFT JOIN LATERAL (
 			SELECT
 				COUNT(*) AS model_total,
 				COUNT(*) FILTER (WHERE COALESCE(mo.available, TRUE) AND COALESCE(cmb.available, TRUE)) AS model_available,
 				COUNT(*) FILTER (WHERE COALESCE(mps.state, 'unknown') = 'broken_confirmed') AS broken_model_count,
-				MIN(rsr.rate) AS aggregated_success_rate
+				%s
 			FROM model_offers mo
 			LEFT JOIN credential_model_bindings cmb
 				ON cmb.credential_id = mo.credential_id
@@ -285,7 +373,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			LEFT JOIN model_probe_state mps
 				ON mps.credential_id = mo.credential_id
 			   AND (mps.raw_model_name = mo.raw_model_name OR mps.raw_model_name = mo.standardized_name)
-			CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr
+			%s
 			WHERE mo.credential_id = c.id
 		) ms ON true
 		WHERE ($1 = 0 OR c.provider_id = $1)
@@ -294,9 +382,14 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		  AND ($3 = '' OR c.tenant_id = $3)
 		ORDER BY c.provider_id, c.id
 	`
+	}
 
 	modelsSelect := `NULL::json AS models`
+	aggregatedSuccessSelect := `MIN(rsr.rate) AS aggregated_success_rate`
+	aggregatedSuccessJoin := `CROSS JOIN LATERAL recent_success_rate(c.id, mo.raw_model_name, 50) AS rsr`
 	if detailMode {
+		aggregatedSuccessSelect = `NULL::double precision AS aggregated_success_rate`
+		aggregatedSuccessJoin = ``
 		modelsSelect = `COALESCE((
 				SELECT json_agg(row_to_json(t))
 				FROM (
@@ -331,25 +424,24 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 						ON mps.credential_id = mo.credential_id
 					   AND mps.raw_model_name = mo.raw_model_name
 					-- P95: bg rollup (5min bucket, latest 1) - main hot path
-					LEFT JOIN LATERAL (
-						SELECT p95_latency_ms, bucket
-						FROM credential_model_index
-						WHERE credential_id = c.id AND raw_model = mo.raw_model_name
-						ORDER BY bucket DESC LIMIT 1
-					) cmi ON true
-					-- P95 live: percentile_cont 3h window fallback
-					LEFT JOIN LATERAL (
+						LEFT JOIN LATERAL (
+							SELECT p95_latency_ms, bucket
+							FROM credential_model_index_with_current_month
+							WHERE credential_id = c.id AND raw_model = mo.raw_model_name
+							ORDER BY bucket DESC LIMIT 1
+						) cmi ON true
+						-- Aggregate the live fallback once per credential instead of once per model.
+						LEFT JOIN LATERAL (
 							SELECT
+								lower(COALESCE(outbound_model, client_model)) AS canonical_raw_name,
 								percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_live,
 								AVG(latency_ms)::int AS avg_live
 							FROM request_logs_with_current_month
 							WHERE credential_id = c.id
-							  -- 2026-07-14: provider_models.canonical_raw_name is the
-							  -- lowercase client-facing key; compare directly.
-							  AND lower(COALESCE(outbound_model, client_model)) = mo.canonical_raw_name
 							  AND ts > NOW() - INTERVAL '3 hours'
 							  AND latency_ms IS NOT NULL
-						) live ON true
+							GROUP BY lower(COALESCE(outbound_model, client_model))
+						) live ON live.canonical_raw_name = mo.canonical_raw_name
 					-- 🆕 2026-06-23: last_used + total_calls (24h credential_model_call_history).
 					-- 184 host system postgres 真实表 schema (2026-06-24 实查, migration 033):
 					--   credential_id, raw_model, window_start, total_calls, success_calls,
@@ -374,29 +466,51 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 				) t
 				), '[]'::json) AS models`
 	}
-	query = fmt.Sprintf(query, modelsSelect)
+	// coreMode has no %s placeholders, so return query directly.
+	// For detail/summary modes, use fmt.Sprintf with the three %s placeholders.
+	if coreMode {
+		return query
+	}
+	return fmt.Sprintf(query, modelsSelect, aggregatedSuccessSelect, aggregatedSuccessJoin)
+}
 
-	rows, err := m.h.db.Query(ctx, query, providerID, credentialID, tenantID)
+// runMonitorSummary executes buildMonitorSummarySQL on db and returns the
+// parsed summaries. rows.Err() surfaces as a wrapped error so the handler
+// can map it to a 5xx (audit guarantee: incomplete payloads never reach the
+// UI). Scan failures are logged and the partial row is dropped, matching
+// the previous handler semantics.
+//
+// pgxQueryer-parameterized so admin tests can drive this against a pgxmock
+// pool without exporting the *pgxpool.Pool-typed h.db field.
+func runMonitorSummary(ctx context.Context, db pgxQueryer, p monitorSummarySQLParams) (startedAt time.Time, summaries []CredentialMonitorSummary, err error) {
+	startedAt = time.Now()
+	coreMode := p.Mode == "core"
+	detailMode := p.CredentialID > 0 && !coreMode
+
+	rows, err := db.Query(ctx, buildMonitorSummarySQL(p), p.ProviderID, p.CredentialID, p.TenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
-		return
+		return startedAt, nil, fmt.Errorf("query failed: %w", err)
 	}
 	defer rows.Close()
 
-	summaries := make([]CredentialMonitorSummary, 0)
+	summaries = make([]CredentialMonitorSummary, 0)
+	scanFailures := 0
 	for rows.Next() {
 		var s CredentialMonitorSummary
 		var recoverAt, checkedAt *time.Time
 		var successRate sql.NullFloat64
 		var modelsJSON []byte
-		if err := rows.Scan(
+		if scanErr := rows.Scan(
 			&s.ID, &s.ProviderID, &s.ProviderName, &s.Label,
 			&s.Status, &s.AvailabilityState, &s.HealthStatus, &s.QuotaState,
 			&s.ConcurrencyLimit, &s.ConcurrencyLimitAuto, &s.EffectiveConcurrency,
 			&s.ManualDisabled, &s.ConsecutiveFailures,
 			&recoverAt, &s.StateReasonCode, &s.StateReasonDetail,
 			&checkedAt, &s.TotalRequests, &s.ModelTotal, &s.ModelAvailable, &s.BrokenModelCount, &successRate, &modelsJSON,
-		); err != nil {
+		); scanErr != nil {
+			scanFailures++
+			slog.Warn("monitor summary scan failed",
+				"credential_id", p.ProviderID, "error", scanErr.Error())
 			continue
 		}
 
@@ -413,8 +527,20 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 			s.AggregatedSuccessRate = &r
 		}
 
-		if detailMode {
+		state := deriveCredentialDisplayState(credentialStateInput{
+			Status:          s.Status,
+			LifecycleStatus: "active", // monitor SQL does not select lifecycle_status; status/manual gates remain authoritative here.
+			Availability:    s.AvailabilityState,
+			QuotaState:      s.QuotaState,
+			HealthStatus:    s.HealthStatus,
+			ManualDisabled:  s.ManualDisabled,
+		})
+		s.EffectiveState = string(state.State)
+		s.EffectiveReason = state.Reason
+
+		if detailMode || coreMode {
 			models := make([]CredentialModelStatus, 0)
+
 			if len(modelsJSON) > 0 && string(modelsJSON) != "null" {
 				_ = json.Unmarshal(modelsJSON, &models)
 			}
@@ -423,10 +549,109 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 				ms := &models[i]
 				ms.EffectiveState = deriveModelEffectiveState(ms, s.ManualDisabled)
 				ms.ModelDisabledReason = humanizeDisabledReason(ms)
+				if ms.RecentSuccessRate != nil && (s.AggregatedSuccessRate == nil || *ms.RecentSuccessRate < *s.AggregatedSuccessRate) {
+					rate := *ms.RecentSuccessRate
+					s.AggregatedSuccessRate = &rate
+				}
 			}
 		}
 
 		summaries = append(summaries, s)
+	}
+	if rows.Err() != nil {
+		slog.Error("monitor summary rows iteration failed",
+			"credential_id", p.ProviderID, "scan_failures", scanFailures, "error", rows.Err().Error())
+		return startedAt, summaries, fmt.Errorf("rows iteration failed: %w", rows.Err())
+	}
+	if scanFailures > 0 {
+		slog.Warn("monitor summary scan failures observed",
+			"credential_id", p.ProviderID, "scan_failures", scanFailures)
+	}
+	return startedAt, summaries, nil
+}
+
+// WindowStats aggregates recent sliding window data.
+type WindowStats struct {
+	Total       int            `json:"total"`
+	Success     int            `json:"success"`
+	Failed      int            `json:"failed"`
+	FailureRate float64        `json:"failure_rate"`
+	ErrorKinds  map[string]int `json:"error_kinds"`
+	SampleModel string         `json:"sample_model,omitempty"`
+}
+
+// handleMonitorSummary returns all credentials with their monitoring state.
+// GET /api/credentials/monitor-summary?provider_id=X&credential_id=Y[&mode=core]
+//
+// 2026-06-22: rewritten to return a per-(credential, model) breakdown in the
+// `models` array instead of the single most-common-model `recent_window_stats`.
+// One SQL query carries both the credential rows and their models[] (via
+// json_agg over a LATERAL recent_success_rate join), so there is no N+1.
+// A 30s in-memory cache (same pattern as loadCandidatesDB) keeps the page
+// refresh cheap.
+//
+// 2026-08-19: added mode=core for the dashboard settings/maintenance path —
+// skips request_logs/percentile_cont joins so a tab-open doesn't refetch the
+// entire history. The default (mode absent or mode=detail) keeps the previous
+// contract. SQL building + row scanning live in buildMonitorSummarySQL /
+// runMonitorSummary so a pgxmock pool can drive them without exporting
+// h.db as a public field.
+func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	// 2026-08-07: tenant_admin must only see their own credentials.
+	// Without this filter, the WHERE clause exposes every tenant's
+	// provider/credential names + IDs to anyone calling the endpoint.
+	// We pass an additional placeholder ($3) only for tenant_admin; the
+	// super_admin path keeps the original 2-arg form. The recent_success_rate
+	// LATERAL function is keyed by credential_id (which is already tenant-
+	// scoped by virtue of being a row in `credentials`), so it does not
+	// leak across tenants.
+	params := monitorSummarySQLParams{
+		ProviderID:   queryInt(r, "provider_id", 0),
+		CredentialID: queryInt(r, "credential_id", 0),
+		Mode:         strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode"))),
+	}
+	if IsTenantAdmin(r) {
+		params.TenantID = GetTenantID(r)
+	}
+	startedAt := time.Now()
+
+	// 30s cache: the page auto-refreshes every 10-60s and the per-model
+	// LATERAL success-rate join is the heaviest part. Cache key includes the
+	// caller's tenant scope so concurrent super_admin and tenant_admin
+	// callers do not share a cached payload that leaks cross-tenant rows.
+	cacheKey := monitorSummaryCacheKey(params)
+
+	for {
+		if cached, created, expires, ok := monitorSummaryCache.get(cacheKey); ok {
+			cached["meta"] = monitorSummaryMeta(created, expires, true, 0)
+			writeJSON(w, http.StatusOK, cached)
+			return
+		}
+		flight, leader := monitorSummaryCache.begin(cacheKey)
+		if leader {
+			defer monitorSummaryCache.finish(cacheKey)
+			break
+		}
+		select {
+		case <-flight:
+		case <-ctx.Done():
+			writeError(w, http.StatusGatewayTimeout, "monitor summary timed out waiting for refresh")
+			return
+		}
+	}
+
+	queryStart, summaries, qerr := runMonitorSummary(ctx, m.h.db, params)
+	if qerr != nil {
+		writeError(w, http.StatusInternalServerError, qerr.Error())
+		return
 	}
 
 	resp := map[string]any{
@@ -435,7 +660,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	}
 	generatedAt := time.Now()
 	expiresAt := generatedAt.Add(monitorSummaryCache.ttl)
-	resp["meta"] = monitorSummaryMeta(generatedAt, expiresAt, false, time.Since(startedAt))
+	resp["meta"] = monitorSummaryMeta(generatedAt, expiresAt, false, queryStart.Sub(startedAt))
 	monitorSummaryCache.set(cacheKey, resp, generatedAt)
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -619,6 +844,7 @@ func (m *CredentialMonitorHandlers) handlePromote(w http.ResponseWriter, r *http
 	m.h.auditLog("admin", "credential.promote", "credential", req.CredentialID, map[string]any{
 		"reason": req.Reason,
 	})
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
@@ -678,6 +904,7 @@ func (m *CredentialMonitorHandlers) handleDemote(w http.ResponseWriter, r *http.
 		"recover_after_hours": req.RecoverAfterHours,
 		"recover_at":          recoverAt.Format(time.RFC3339),
 	})
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success":    true,
@@ -733,6 +960,7 @@ func (m *CredentialMonitorHandlers) handleSetConcurrencyAuto(w http.ResponseWrit
 		"concurrency_limit_auto": req.ConcurrencyLimitAuto,
 		"reason":                 req.Reason,
 	})
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"success": true,
@@ -963,6 +1191,8 @@ func (m *CredentialMonitorHandlers) handleModelToggle(w http.ResponseWriter, r *
 		},
 	)
 
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
+
 	writeJSON(w, http.StatusOK, ModelToggleResponse{
 		Success:           true,
 		Available:         newAvailable,
@@ -999,17 +1229,128 @@ type ModelHistoryEvent struct {
 	Reason       *string `json:"reason"`
 }
 
+// runModelHistory merges automatic probe state transitions (model_probe_runs)
+// with manual operator toggles (routing_audit_log) for a single (credential,
+// model) binding, ordered by timestamp DESC. rows.Err() surfaces as a wrapped
+// error so the handler can map it to a 5xx (audit guarantee: incomplete
+// payloads never reach the UI).
+//
+// pgxQueryer-parameterized so admin tests can drive this against a pgxmock
+// pool without exporting the *pgxpool.Pool-typed h.db field.
+func runModelHistory(ctx context.Context, db pgxQueryer, credentialID int, rawModel string, limit int, tenantID string) ([]ModelHistoryEvent, error) {
+	rows, err := db.Query(ctx, `
+		WITH auto_events AS (
+			SELECT
+				mpr.created_at      AS ts,
+				'auto'              AS source,
+				mpr.triggered_by    AS triggered_by,
+				mpr.state_change    AS event,
+				mpr.status          AS probe_status,
+				mpr.http_status     AS http_status,
+				mpr.error_code      AS error_code,
+				mpr.error_message   AS error_message,
+				NULL::text          AS actor,
+				NULL::text          AS reason
+			FROM model_probe_runs_with_current_month mpr
+			WHERE mpr.credential_id = $1
+			  AND mpr.raw_model_name = $2
+			  AND ($4 = '' OR mpr.tenant_id = $4)
+			  AND mpr.state_change IN ('recovered', 'broke')
+		),
+		manual_events AS (
+			SELECT
+				al.ts               AS ts,
+				'manual'            AS source,
+				NULL::text          AS triggered_by,
+				CASE al.action
+				    WHEN 'credential.model_toggle_online'  THEN 'online'
+				    WHEN 'credential.model_toggle_offline' THEN 'offline'
+				END                 AS event,
+				NULL::text          AS probe_status,
+				NULL::int           AS http_status,
+				NULL::text          AS error_code,
+				NULL::text          AS error_message,
+				al.actor            AS actor,
+				COALESCE(al.after_json->>'reason', '') AS reason
+			FROM routing_audit_log al
+			WHERE al.target_type = 'credential_model'
+			  AND al.action IN ('credential.model_toggle_online', 'credential.model_toggle_offline')
+			  AND (al.after_json->>'credential_id')::int = $1
+			  AND al.after_json->>'raw_model_name' = $2
+			  AND ($4 = '' OR al.tenant_id = $4)
+		)
+		SELECT ts, source, triggered_by, event,
+		       probe_status, http_status, error_code, error_message,
+		       actor, reason
+		FROM (
+			SELECT * FROM auto_events
+			UNION ALL
+			SELECT * FROM manual_events
+		) u
+		ORDER BY ts DESC
+		LIMIT $3
+		`, credentialID, rawModel, limit, tenantID)
+
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	events := make([]ModelHistoryEvent, 0)
+	scanFailures := 0
+	for rows.Next() {
+		var (
+			ev          ModelHistoryEvent
+			triggeredBy sql.NullString
+			probeStatus sql.NullString
+			httpStatus  sql.NullInt64
+			errCode     sql.NullString
+			errMsg      sql.NullString
+			actor       sql.NullString
+			reason      sql.NullString
+		)
+		var ts time.Time
+		if scanErr := rows.Scan(&ts, &ev.Source, &triggeredBy, &ev.Event,
+			&probeStatus, &httpStatus, &errCode, &errMsg,
+			&actor, &reason); scanErr != nil {
+			scanFailures++
+			slog.Warn("model history scan failed", "credential_id", credentialID, "error", scanErr.Error())
+			continue
+		}
+		ev.TS = ts.UTC().Format(time.RFC3339)
+		ev.TriggeredBy = nullableString(triggeredBy)
+		ev.ProbeStatus = nullableString(probeStatus)
+		ev.HTTPStatus = nullableInt(httpStatus)
+		ev.ErrorCode = nullableString(errCode)
+		ev.ErrorMessage = nullableString(errMsg)
+		ev.Actor = nullableString(actor)
+		if reason.Valid && reason.String != "" {
+			ev.Reason = &reason.String
+		}
+		events = append(events, ev)
+	}
+	if rows.Err() != nil {
+		slog.Error("model history rows iteration failed",
+			"credential_id", credentialID, "scan_failures", scanFailures, "error", rows.Err().Error())
+		return events, fmt.Errorf("rows iteration failed: %w", rows.Err())
+	}
+	return events, nil
+}
+
 // handleModelHistory returns the merged history of automatic probe state
 // transitions and manual operator toggles for a single (credential, model)
 // binding, ordered by timestamp DESC.
 //
 // GET /api/credentials/model-history?credential_id=X&raw_model_name=Y&limit=50
+//
+// SQL building + row scanning live in runModelHistory so admin tests can drive
+// it against a pgxmock pool without exporting h.db as a public field.
 func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if m.h.db == nil {
+	if m.h == nil || m.h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
@@ -1033,91 +1374,14 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := m.h.db.Query(ctx, `
-		WITH auto_events AS (
-			SELECT
-				mpr.created_at      AS ts,
-				'auto'              AS source,
-				mpr.triggered_by    AS triggered_by,
-				mpr.state_change    AS event,
-				mpr.status          AS probe_status,
-				mpr.http_status     AS http_status,
-				mpr.error_code      AS error_code,
-				mpr.error_message   AS error_message,
-				NULL::text          AS actor,
-				NULL::text          AS reason
-			FROM model_probe_runs_with_current_month mpr
-			WHERE mpr.credential_id = $1
-			  AND mpr.raw_model_name = $2
-			  AND mpr.state_change IN ('recovered', 'broke')
-		),
-		manual_events AS (
-			SELECT
-				al.ts               AS ts,
-				'manual'            AS source,
-				NULL::text          AS triggered_by,
-				CASE al.action
-				    WHEN 'credential.model_toggle_online'  THEN 'online'
-				    WHEN 'credential.model_toggle_offline' THEN 'offline'
-				END                 AS event,
-				NULL::text          AS probe_status,
-				NULL::int           AS http_status,
-				NULL::text          AS error_code,
-				NULL::text          AS error_message,
-				al.actor            AS actor,
-				COALESCE(al.after_json->>'reason', '') AS reason
-			FROM routing_audit_log al
-			WHERE al.target_type = 'credential_model'
-			  AND al.action IN ('credential.model_toggle_online', 'credential.model_toggle_offline')
-			  AND (al.after_json->>'credential_id')::int = $1
-			  AND al.after_json->>'raw_model_name' = $2
-		)
-		SELECT ts, source, triggered_by, event,
-		       probe_status, http_status, error_code, error_message,
-		       actor, reason
-		FROM (
-			SELECT * FROM auto_events
-			UNION ALL
-			SELECT * FROM manual_events
-		) u
-		ORDER BY ts DESC
-		LIMIT $3
-	`, credentialID, rawModel, limit)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
-		return
+	tenantID := ""
+	if IsTenantAdmin(r) {
+		tenantID = GetTenantID(r)
 	}
-	defer rows.Close()
-
-	events := make([]ModelHistoryEvent, 0)
-	for rows.Next() {
-		var (
-			ev          ModelHistoryEvent
-			probeStatus *string
-			httpStatus  *int
-			errCode     *string
-			errMsg      *string
-			actor       *string
-			reason      *string
-		)
-		var ts time.Time
-		if err := rows.Scan(&ts, &ev.Source, &ev.TriggeredBy, &ev.Event,
-			&probeStatus, &httpStatus, &errCode, &errMsg,
-			&actor, &reason); err != nil {
-			continue
-		}
-		ev.TS = ts.UTC().Format(time.RFC3339)
-		ev.ProbeStatus = probeStatus
-		ev.HTTPStatus = httpStatus
-		ev.ErrorCode = errCode
-		ev.ErrorMessage = errMsg
-		ev.Actor = actor
-		if reason != nil && *reason != "" {
-			ev.Reason = reason
-		} else {
-			ev.Reason = nil
-		}
-		events = append(events, ev)
+	events, err := runModelHistory(ctx, m.h.db, credentialID, rawModel, limit, tenantID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1128,14 +1392,146 @@ func (m *CredentialMonitorHandlers) handleModelHistory(w http.ResponseWriter, r 
 	})
 }
 
+// credentialDecisionRow is one row in the response of /api/credentials/decisions.
+// Lifted from inside handleCredentialDecisions so runCredentialDecisions can
+// return a typed slice; the JSON tags are unchanged.
+func nullableString(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	return &value.String
+}
+
+func nullableInt(value sql.NullInt64) *int {
+	if !value.Valid {
+		return nil
+	}
+	integer := int(value.Int64)
+	return &integer
+}
+
+type credentialDecisionRow struct {
+	TS               string  `json:"ts"`
+	RequestID        string  `json:"request_id"`
+	Model            string  `json:"model"`
+	Tier             *int    `json:"tier"`
+	Success          bool    `json:"success"`
+	LatencyMs        *int    `json:"latency_ms"`
+	ErrorClass       *string `json:"error_class"`
+	ChosenProviderID *int    `json:"chosen_provider_id"`
+	ClientModel      *string `json:"client_model"`
+	OutboundModel    *string `json:"outbound_model"`
+	StickyHit        *bool   `json:"sticky_hit"`
+}
+
+// credentialDecisionParams captures the request-derived parameters used by
+// runCredentialDecisions. Extracted so the SQL builder is testable without
+// standing up a request and the helper is reusable from admin tooling.
+type credentialDecisionParams struct {
+	CredentialID  int
+	Limit         int
+	IsTenantAdmin bool   // when true, the WHERE clause adds tenant_id = $2
+	TenantID      string // required when IsTenantAdmin is true
+	ModelFilter   string // empty → no model filter; otherwise case-insensitive match
+}
+
+// runCredentialDecisions returns recent routing decisions for the given
+// credential. tenant_admin callers are scoped to their own tenant; the model
+// filter, when non-empty, matches across model/client_model/outbound_model
+// case-insensitively. rows.Err() surfaces as a wrapped error so the handler
+// can map it to a 5xx.
+//
+// pgxQueryer-parameterized so admin tests can drive this against a pgxmock
+// pool without exporting the *pgxpool.Pool-typed h.db field.
+func runCredentialDecisions(ctx context.Context, db pgxQueryer, p credentialDecisionParams) ([]credentialDecisionRow, error) {
+	args := []any{p.CredentialID}
+	clauses := ""
+	if p.IsTenantAdmin {
+		args = append(args, p.TenantID)
+		clauses += fmt.Sprintf(" AND rdl.tenant_id = $%d", len(args))
+	}
+	if p.ModelFilter != "" {
+		args = append(args, p.ModelFilter)
+		clauses += fmt.Sprintf(" AND (lower(rdl.model) = lower($%d) OR lower(rdl.client_model) = lower($%d) OR lower(rdl.outbound_model) = lower($%d))", len(args), len(args), len(args))
+	}
+	args = append(args, p.Limit)
+
+	q := fmt.Sprintf(`
+		SELECT rdl.ts, rdl.request_id::text, rdl.model, rdl.tier, rdl.success,
+		       rdl.latency_ms, rdl.error_class, rdl.chosen_provider_id,
+		       rdl.client_model, rdl.outbound_model, rdl.sticky_hit
+		FROM routing_decision_log rdl
+		WHERE rdl.chosen_credential_id = $1%s
+		ORDER BY rdl.ts DESC
+		LIMIT $%d
+	`, clauses, len(args))
+
+	rows, err := db.Query(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+	defer rows.Close()
+
+	decisions := make([]credentialDecisionRow, 0)
+	scanFailures := 0
+	for rows.Next() {
+		var (
+			d                credentialDecisionRow
+			tier             sql.NullInt64
+			latencyMs        sql.NullInt64
+			errorClass       sql.NullString
+			chosenProviderID sql.NullInt64
+			clientModel      sql.NullString
+			outboundModel    sql.NullString
+			stickyHit        sql.NullBool
+		)
+		var ts time.Time
+		if scanErr := rows.Scan(&ts, &d.RequestID, &d.Model, &tier, &d.Success,
+			&latencyMs, &errorClass, &chosenProviderID,
+			&clientModel, &outboundModel, &stickyHit); scanErr != nil {
+			scanFailures++
+			slog.Warn("credential decisions scan failed", "credential_id", p.CredentialID, "error", scanErr.Error())
+			continue
+		}
+		d.TS = ts.UTC().Format(time.RFC3339)
+		d.Tier = nullableInt(tier)
+		d.LatencyMs = nullableInt(latencyMs)
+		d.ErrorClass = nullableString(errorClass)
+		d.ChosenProviderID = nullableInt(chosenProviderID)
+		d.ClientModel = nullableString(clientModel)
+		d.OutboundModel = nullableString(outboundModel)
+		if stickyHit.Valid {
+			d.StickyHit = &stickyHit.Bool
+		}
+		decisions = append(decisions, d)
+	}
+	if rows.Err() != nil {
+		slog.Error("credential decisions rows iteration failed",
+			"credential_id", p.CredentialID, "scan_failures", scanFailures, "error", rows.Err().Error())
+		return decisions, fmt.Errorf("rows iteration failed: %w", rows.Err())
+	}
+	return decisions, nil
+}
+
 // handleCredentialDecisions returns recent routing decisions for a specific credential (2026-06-23).
-// GET /api/credentials/decisions?credential_id=123&limit=50
+// GET /api/credentials/decisions?credential_id=123&limit=50[&model=gpt-4o]
 //
 // Returns routing_decision_log entries where chosen_credential_id matches.
 // Useful for the credential detail drawer to show "what traffic is this credential handling".
+// 2026-08-18: optional model filter scopes the list to one model×credential pair
+// (dashboard node detail drawer). Matches model/client_model/outbound_model
+// case-insensitively because callers may pass canonical, raw, or client names.
+//
+// 2026-08-19: SQL building + row scanning live in runCredentialDecisions so
+// admin tests can drive it against a pgxmock pool without exporting h.db as a
+// public field.
 func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
 
@@ -1154,57 +1550,20 @@ func (m *CredentialMonitorHandlers) handleCredentialDecisions(w http.ResponseWri
 	defer cancel()
 
 	// tenant_admin callers can only see decisions for their own tenant
-	var tenantClause string
-	var args []any
-	if IsTenantAdmin(r) {
-		tenantClause = "AND rdl.tenant_id = $2"
-		args = []any{credentialID, GetTenantID(r), limit}
-	} else {
-		args = []any{credentialID, limit}
+	params := credentialDecisionParams{
+		CredentialID:  credentialID,
+		Limit:         limit,
+		ModelFilter:   queryString(r, "model"),
+		IsTenantAdmin: IsTenantAdmin(r),
+	}
+	if params.IsTenantAdmin {
+		params.TenantID = GetTenantID(r)
 	}
 
-	q := fmt.Sprintf(`
-		SELECT rdl.ts, rdl.request_id::text, rdl.model, rdl.tier, rdl.success,
-		       rdl.latency_ms, rdl.error_class, rdl.chosen_provider_id,
-		       rdl.client_model, rdl.outbound_model, rdl.sticky_hit
-		FROM routing_decision_log rdl
-		WHERE rdl.chosen_credential_id = $1 %s
-		ORDER BY rdl.ts DESC
-		LIMIT $%d
-	`, tenantClause, len(args))
-
-	rows, err := m.h.db.Query(ctx, q, args...)
+	decisions, err := runCredentialDecisions(ctx, m.h.db, params)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
-	}
-	defer rows.Close()
-
-	type Decision struct {
-		TS               string  `json:"ts"`
-		RequestID        string  `json:"request_id"`
-		Model            string  `json:"model"`
-		Tier             *int    `json:"tier"`
-		Success          bool    `json:"success"`
-		LatencyMs        *int    `json:"latency_ms"`
-		ErrorClass       *string `json:"error_class"`
-		ChosenProviderID *int    `json:"chosen_provider_id"`
-		ClientModel      *string `json:"client_model"`
-		OutboundModel    *string `json:"outbound_model"`
-		StickyHit        *bool   `json:"sticky_hit"`
-	}
-
-	decisions := make([]Decision, 0)
-	for rows.Next() {
-		var d Decision
-		var ts time.Time
-		if err := rows.Scan(&ts, &d.RequestID, &d.Model, &d.Tier, &d.Success,
-			&d.LatencyMs, &d.ErrorClass, &d.ChosenProviderID,
-			&d.ClientModel, &d.OutboundModel, &d.StickyHit); err != nil {
-			continue
-		}
-		d.TS = ts.UTC().Format(time.RFC3339)
-		decisions = append(decisions, d)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1230,7 +1589,7 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 		CredentialID int    `json:"credential_id"`
 		Reason       string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -1296,13 +1655,10 @@ func (m *CredentialMonitorHandlers) handleClearManualDisabled(w http.ResponseWri
 	//nolint:errcheck
 	m.h.db.Exec(ctx, `
 		INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json)
-		VALUES ($1, $2, $3, $4, $5)
-	`, actor, "credential.clear_manual_disabled", "credential", req.CredentialID, detailsJSON)
+		VALUES ($1, $2, $3, $4, $5::text::jsonb)
+	`, actor, "credential.clear_manual_disabled", "credential", req.CredentialID, string(detailsJSON))
 
-	// Invalidate cache
-	monitorSummaryCache.mu.Lock()
-	monitorSummaryCache.entries = nil
-	monitorSummaryCache.mu.Unlock()
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	// 2026-06-28: clear manual_disabled doesn't go through the PG trigger
 	// (trigger only watches status/availability_state/quota_state/circuit_state/
@@ -1333,7 +1689,7 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 		ManualDisabled bool   `json:"manual_disabled"`
 		Reason         string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -1404,13 +1760,10 @@ func (m *CredentialMonitorHandlers) handleSetManualDisabled(w http.ResponseWrite
 	//nolint:errcheck
 	m.h.db.Exec(ctx, `
 		INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json)
-		VALUES ($1, $2, $3, $4, $5)
-	`, actor, action, "credential", req.CredentialID, detailsJSON)
+		VALUES ($1, $2, $3, $4, $5::text::jsonb)
+	`, actor, action, "credential", req.CredentialID, string(detailsJSON))
 
-	// Invalidate cache
-	monitorSummaryCache.mu.Lock()
-	monitorSummaryCache.entries = nil
-	monitorSummaryCache.mu.Unlock()
+	monitorSummaryCache.invalidateCredential(req.CredentialID)
 
 	// 2026-06-28: same as handleClearManualDisabled — manual_disabled UPDATE
 	// does not fire trg_notify_auto_route_creds (PG trigger only watches

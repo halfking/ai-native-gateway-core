@@ -117,9 +117,9 @@ go build -o /tmp/seed-free-resources-245 ./cmd/seed-free-resources || error "编
 /tmp/seed-free-resources-245 \
     --db-url="$DB_URL" \
     --tenant-id="default" \
-    --catalog=docs/omnifree/seed/free_resource_catalog.json \
-    --templates=docs/omnifree/seed/auto_combo_templates.json \
-    --keyless=docs/omnifree/seed/keyless_providers.json \
+    --catalog=configs/seed/free_resource_catalog.json \
+    --templates=configs/seed/auto_combo_templates.json \
+    --keyless=configs/seed/keyless_providers.json \
     || error "seed 导入失败"
 
 success "seed 导入成功"

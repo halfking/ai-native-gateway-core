@@ -30,8 +30,14 @@ type NodeView struct {
 	CoolUntil      time.Time
 	// Scoring fields (M2): mirror what FilterAndScore reads so a cache hit
 	// can produce the same Score as a fresh Redis read.
-	LatEWMA int
-	SR5m    float64
+	LatEWMA   int
+	SR5m      float64
+	Samples5m int
+	// HealthStatus (会话优化 v4 T5 / P1-5, UT-UR-12) carries the rich
+	// node-health enum (api.HealthStatus*) from the Redis "health" field so
+	// a mirror hit surfaces the same value a fresh read would. DISPLAY-ONLY:
+	// nothing in the scoring/eligibility path reads it.
+	HealthStatus string
 	// CachedAt is when this entry was populated from Redis. Observability/
 	// staleness hint (the soft-expire decision uses softExpireAt, not this).
 	CachedAt     time.Time
@@ -70,11 +76,22 @@ const NodeMirrorShards = 16
 type NodeMirror struct {
 	shards  [NodeMirrorShards]*LRU[string, NodeView]
 	softTTL time.Duration
+	prefix  string
 }
 
 func NewNodeMirror(capacity int, softTTL time.Duration) *NodeMirror {
+	return NewNodeMirrorWithPrefix(capacity, softTTL, "ursm:v2:")
+}
+
+// NewNodeMirrorWithPrefix constructs a mirror whose internal key namespace
+// matches the configured URSM Redis prefix. This prefix is process-local cache
+// namespacing only; Redis remains the authoritative store.
+func NewNodeMirrorWithPrefix(capacity int, softTTL time.Duration, prefix string) *NodeMirror {
 	if capacity <= 0 {
 		capacity = 1
+	}
+	if prefix == "" {
+		prefix = "ursm:v2:"
 	}
 	// Distribute total capacity evenly across shards. Round up per shard so
 	// total >= requested capacity (overshoot is bounded by shard count).
@@ -82,11 +99,20 @@ func NewNodeMirror(capacity int, softTTL time.Duration) *NodeMirror {
 	if per < 1 {
 		per = 1
 	}
-	m := &NodeMirror{softTTL: softTTL}
+	m := &NodeMirror{softTTL: softTTL, prefix: prefix}
 	for i := 0; i < NodeMirrorShards; i++ {
 		m.shards[i] = NewLRU[string, NodeView](per)
 	}
 	return m
+}
+
+// Prefix returns the Redis namespace mirrored by this process-local cache.
+// It is exposed for diagnostics and contract tests; Redis remains authoritative.
+func (m *NodeMirror) Prefix() string {
+	if m == nil {
+		return ""
+	}
+	return m.prefix
 }
 
 // shardOf returns a deterministic shard index for the given cache key.
@@ -121,7 +147,7 @@ func (m *NodeMirror) shard(key string) *LRU[string, NodeView] {
 //
 // 其余情况接受(覆盖)。
 func (m *NodeMirror) applyToLRU(v NodeView) {
-	key := nodeMirrorKeyForTenant(v.TenantID, v.CredentialID, v.RawModel)
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, v.TenantID, v.CredentialID, v.RawModel)
 	v.softExpireAt = time.Now().Add(m.softTTL)
 	l := m.shard(key)
 	if l == nil {
@@ -153,7 +179,7 @@ func (m *NodeMirror) GetForTenant(tenant string, credID int, raw string) (NodeVi
 	if m == nil {
 		return NodeView{}, false
 	}
-	key := nodeMirrorKeyForTenant(tenant, credID, raw)
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, tenant, credID, raw)
 	v, ok := m.shard(key).Get(key)
 	if !ok {
 		return NodeView{}, false
@@ -170,12 +196,33 @@ func (m *NodeMirror) Peek(credID int, raw string) (NodeView, bool) {
 	return m.PeekForTenant("", credID, raw)
 }
 
+// GetForTenantWithinOutageWindow returns a tenant-scoped entry regardless of
+// the soft TTL, as long as it was populated within maxAge of now. It exists
+// for the Redis-outage availability gear (2026-09-04): when Redis is
+// unreachable the manager may serve read-only routing from soft-expired
+// entries, bounded by the operator-configured outage window instead of the
+// 30s soft TTL. maxAge <= 0 always misses.
+func (m *NodeMirror) GetForTenantWithinOutageWindow(tenant string, credID int, raw string, maxAge time.Duration) (NodeView, bool) {
+	if m == nil || maxAge <= 0 {
+		return NodeView{}, false
+	}
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, tenant, credID, raw)
+	v, ok := m.shard(key).Peek(key)
+	if !ok {
+		return NodeView{}, false
+	}
+	if v.CachedAt.IsZero() || time.Since(v.CachedAt) > maxAge {
+		return NodeView{}, false
+	}
+	return v, true
+}
+
 // PeekForTenant 是 GetForTenant 的不提升顺序对应物.
 func (m *NodeMirror) PeekForTenant(tenant string, credID int, raw string) (NodeView, bool) {
 	if m == nil {
 		return NodeView{}, false
 	}
-	key := nodeMirrorKeyForTenant(tenant, credID, raw)
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, tenant, credID, raw)
 	return m.shard(key).Peek(key)
 }
 
@@ -187,7 +234,7 @@ func (m *NodeMirror) InvalidateForTenant(tenant string, credID int, raw string) 
 	if m == nil {
 		return false
 	}
-	key := nodeMirrorKeyForTenant(tenant, credID, raw)
+	key := nodeMirrorKeyForTenantWithPrefix(m.prefix, tenant, credID, raw)
 	return m.shard(key).Delete(key)
 }
 
@@ -217,6 +264,8 @@ func (m *NodeMirror) ApplyFromAPI(v api.NodeView) {
 		CoolUntil:      v.CoolUntil,
 		LatEWMA:        v.LatEWMA,
 		SR5m:           v.SR5m,
+		Samples5m:      v.Samples5m,
+		HealthStatus:   v.HealthStatus,
 		CachedAt:       time.Now(),
 	})
 }

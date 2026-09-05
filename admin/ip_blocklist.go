@@ -2,13 +2,12 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 )
 
@@ -54,7 +53,7 @@ func (h *Handler) handleIPBlocklistCreate(w http.ResponseWriter, r *http.Request
 		Scope     string     `json:"scope"`
 		ExpiresAt *time.Time `json:"expires_at"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, 1<<16, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -106,7 +105,7 @@ func (h *Handler) patchIPBlocklist(w http.ResponseWriter, r *http.Request, id in
 		Enabled   *bool      `json:"enabled"`
 		ExpiresAt *time.Time `json:"expires_at"`
 	}
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, 1<<16, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

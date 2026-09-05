@@ -1,12 +1,117 @@
 package outbox
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
 
+func TestBuildSessionOpenedEventV1_DeterministicAndValid(t *testing.T) {
+	envelope, err := BuildSessionOpenedEventV1("tenant-123", "session-abc", "42")
+	if err != nil {
+		t.Fatalf("BuildSessionOpenedEventV1 failed: %v", err)
+	}
+	retry, err := BuildSessionOpenedEventV1("tenant-123", "session-abc", "42")
+	if err != nil {
+		t.Fatalf("BuildSessionOpenedEventV1 retry failed: %v", err)
+	}
+	if envelope.EventID != retry.EventID {
+		t.Fatalf("event IDs differ across retries: %q vs %q", envelope.EventID, retry.EventID)
+	}
+	if !strings.HasPrefix(envelope.EventID, "evt-session-opened-") {
+		t.Errorf("event ID = %q, want session-opened prefix", envelope.EventID)
+	}
+	if len(envelope.EventID) > 255 {
+		t.Errorf("event ID length = %d, exceeds DB-safe limit", len(envelope.EventID))
+	}
+	if envelope.EventType != "session.opened.v1" {
+		t.Errorf("event type = %q, want session.opened.v1", envelope.EventType)
+	}
+	if envelope.SchemaVersion != 1 || envelope.AggregateID != "session-abc" || envelope.AggregateVersion != 1 {
+		t.Errorf("envelope identity/version = (%d, %q, %d), want (1, session-abc, 1)", envelope.SchemaVersion, envelope.AggregateID, envelope.AggregateVersion)
+	}
+	if envelope.SourceSystem != "gateway" || envelope.SessionID != "session-abc" || envelope.CorrelationID != "session-abc" {
+		t.Errorf("v1 envelope fields not populated: source=%q session=%q correlation=%q", envelope.SourceSystem, envelope.SessionID, envelope.CorrelationID)
+	}
+	if got := envelope.Payload["session_id"]; got != "session-abc" {
+		t.Errorf("payload session_id = %v, want session-abc", got)
+	}
+	if got := envelope.Payload["user_id"]; got != "42" {
+		t.Errorf("payload user_id = %v, want 42", got)
+	}
+
+	wire, err := RenderWireEnvelope(envelope)
+	if err != nil {
+		t.Fatalf("RenderWireEnvelope failed: %v", err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal(wire, &parsed); err != nil {
+		t.Fatalf("unmarshal wire envelope: %v", err)
+	}
+	if parsed["type"] != "session.opened.v1" {
+		t.Errorf("wire type = %v, want session.opened.v1", parsed["type"])
+	}
+	if parsed["schema_version"] != "1.0" {
+		t.Errorf("wire schema_version = %v, want 1.0", parsed["schema_version"])
+	}
+	if parsed["source_system"] != "gateway" {
+		t.Errorf("wire source_system = %v, want gateway", parsed["source_system"])
+	}
+
+	completion, err := BuildRequestCompletedEventV3(
+		"tenant-123", "session-abc", 1,
+		"request-001", "", "",
+		"provider", "model", "success",
+		0, 0, 0, nil, true,
+	)
+	if err != nil {
+		t.Fatalf("BuildRequestCompletedEventV3 failed: %v", err)
+	}
+	if envelope.OccurredAt.After(completion.OccurredAt) {
+		t.Errorf("session opener occurred_at %s is after completion %s", envelope.OccurredAt, completion.OccurredAt)
+	}
+}
+
+func TestBuildSessionOpenedEventV1_RequiredFields(t *testing.T) {
+	for name, args := range map[string][3]string{
+		"missing tenant":  {"", "session-1", "user-1"},
+		"missing session": {"tenant-1", "", "user-1"},
+		"missing user":    {"tenant-1", "session-1", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := BuildSessionOpenedEventV1(args[0], args[1], args[2]); err == nil {
+				t.Fatal("expected required-field error")
+			}
+		})
+	}
+}
+
+func TestBuildRequestCompletedEventV3_DeterministicIDAndOrdering(t *testing.T) {
+	first, err := BuildRequestCompletedEventV3(
+		"tenant-1", "session-1", 1, "request-1", "", "",
+		"provider", "model", "success", 0, 0, 0, nil, true,
+	)
+	if err != nil {
+		t.Fatalf("BuildRequestCompletedEventV3 first call: %v", err)
+	}
+	retry, err := BuildRequestCompletedEventV3(
+		"tenant-1", "session-1", 1, "request-1", "", "",
+		"provider", "model", "success", 0, 0, 0, nil, true,
+	)
+	if err != nil {
+		t.Fatalf("BuildRequestCompletedEventV3 retry: %v", err)
+	}
+	if first.EventID != retry.EventID {
+		t.Fatalf("event IDs differ across retries: %q vs %q", first.EventID, retry.EventID)
+	}
+	if first.AggregateVersion != 2 {
+		t.Errorf("completion aggregate_version = %d, want 2 after session.opened", first.AggregateVersion)
+	}
+}
 func TestBuildRequestCompletedEvent(t *testing.T) {
 	envelope, err := BuildRequestCompletedEvent(
+
 		"tenant-123",
 		"session-abc",
 		1,

@@ -8,8 +8,15 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+)
+
+const (
+	defaultHTTPTimeout = 30 * time.Second
+	maxErrorBodyBytes  = 8 << 10
+	maxResponseBytes   = 1 << 20
 )
 
 // OpenAIClient implements LLMClient using OpenAI's API.
@@ -33,7 +40,7 @@ func NewOpenAIClient(apiKey, baseURL, model string) *OpenAIClient {
 		apiKey:     apiKey,
 		baseURL:    baseURL,
 		model:      model,
-		httpClient: &http.Client{},
+		httpClient: &http.Client{Timeout: defaultHTTPTimeout},
 	}
 }
 
@@ -81,7 +88,13 @@ func (c *OpenAIClient) GenerateSummary(ctx context.Context, messages []ir.Messag
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes+1))
+		if err != nil {
+			return nil, fmt.Errorf("OpenAI API error (status %d; read body: %w)", resp.StatusCode, err)
+		}
+		if len(body) > maxErrorBodyBytes {
+			body = append(body[:maxErrorBodyBytes], []byte("...")...)
+		}
 		return nil, fmt.Errorf("OpenAI API error (status %d): %s", resp.StatusCode, string(body))
 	}
 
@@ -94,7 +107,7 @@ func (c *OpenAIClient) GenerateSummary(ctx context.Context, messages []ir.Messag
 		} `json:"choices"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&apiResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
@@ -104,7 +117,7 @@ func (c *OpenAIClient) GenerateSummary(ctx context.Context, messages []ir.Messag
 
 	// Parse the JSON response from LLM
 	content := apiResp.Choices[0].Message.Content
-	
+
 	// Try to extract JSON from the response (it might be wrapped in markdown code blocks)
 	content = extractJSON(content)
 
@@ -168,7 +181,7 @@ func extractMessageContentForPrompt(msg ir.Message) string {
 func extractJSON(content string) string {
 	// Remove markdown code block markers if present
 	content = strings.TrimSpace(content)
-	
+
 	// Check for ```json ... ``` or ``` ... ```
 	if strings.HasPrefix(content, "```json") {
 		content = strings.TrimPrefix(content, "```json")
@@ -177,11 +190,11 @@ func extractJSON(content string) string {
 		content = strings.TrimPrefix(content, "```")
 		content = strings.TrimSpace(content)
 	}
-	
+
 	if strings.HasSuffix(content, "```") {
 		content = strings.TrimSuffix(content, "```")
 		content = strings.TrimSpace(content)
 	}
-	
+
 	return content
 }

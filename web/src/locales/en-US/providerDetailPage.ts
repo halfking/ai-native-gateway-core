@@ -11,6 +11,7 @@ export default {
   tabProbe: 'Auto-probe',
   tabProbeTitle: 'View auto-probe records (failed bindings are re-probed every 10 minutes)',
   tabSettings: 'Settings',
+  tabErrorDetail: 'Vendor Errors',
   quality: {
     loading: 'Loading quality data…',
     noData: 'No quality data yet. Quality profiles are calculated periodically; refresh later or run a probe first.',
@@ -25,6 +26,14 @@ export default {
     stability: 'Stability',
     costEfficiency: 'Cost efficiency',
     updatedAt: 'Updated at',
+    requestStats: 'Request stats',
+    totalRequests: 'Total requests',
+    monthRequests: 'This month',
+    weekRequests: 'This week',
+    dayRequests: 'Today',
+    successCount: 'Success',
+    failureCount: 'Failures',
+    totalTokens: 'Total tokens',
   },
   loading: 'Loading…',
   loadingFallback: '...',
@@ -51,4 +60,9 @@ export default {
   loadFailed: 'Load failed',
   operationFailed: 'Operation failed',
   diagFailed: 'Diagnosis failed',
+  // 2026-08-31: provider soft delete (terminal)
+  deleteBtn: 'Delete provider',
+  deleteTitle: 'Soft-delete this provider. The provider and all of its credentials will be removed from every list and the route table. This cannot be undone.',
+  deleteConfirm: 'Delete provider "{name}"? All of its credentials will be marked deleted and all related model routes will stop immediately. This cannot be undone.',
+  deleteFailed: 'Provider delete failed',
 }

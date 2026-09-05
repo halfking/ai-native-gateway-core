@@ -3,6 +3,7 @@ package config
 import (
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -29,9 +30,23 @@ type Config struct {
 	PendingTTLSeconds int      `yaml:"pending_ttl_seconds" env:"LLM_GATEWAY_PENDING_TTL_SECONDS"`
 	SessionIDBodyKeys []string `yaml:"session_id_body_keys" env:"LLM_GATEWAY_SESSION_ID_BODY_KEYS"`
 
+	// TrustedProxyCIDRs (2026-08-29, HIGH security): allowlist of immediate
+	// peer CIDRs allowed to set X-Forwarded-For / X-Real-IP. Requests from
+	// peers outside this list fall back to RemoteAddr; this blocks spoof
+	// attempts where a public client impersonates another tenant or bypasses
+	// IP-based rate limits / audit trails. Default: loopback only —
+	// production deployments behind an LB MUST extend this explicitly.
+	// Accepts a comma-separated list via LLM_GATEWAY_TRUSTED_PROXY_CIDRS or
+	// `trusted_proxy_cidrs` in YAML.
+	TrustedProxyCIDRs []string `yaml:"trusted_proxy_cidrs" env:"LLM_GATEWAY_TRUSTED_PROXY_CIDRS"`
+
 	// Server
-	Listen      string `yaml:"listen" env:"LLM_GATEWAY_LISTEN"`
-	LogLevel    string `yaml:"log_level" env:"LLM_GATEWAY_LOG_LEVEL"`
+	Listen   string `yaml:"listen" env:"LLM_GATEWAY_LISTEN"`
+	LogLevel string `yaml:"log_level" env:"LLM_GATEWAY_LOG_LEVEL"`
+	// RuntimeRole controls whether this process owns background workers. A
+	// traffic-only candidate may be warmed on the alternate port without
+	// competing with the active instance for leases, probes, or rollups.
+	RuntimeRole string `yaml:"runtime_role" env:"LLM_GATEWAY_RUNTIME_ROLE"`
 	APIKey      string `yaml:"api_key" env:"LLM_GATEWAY_API_KEY"`
 	CORSOrigins string `yaml:"cors_origins" env:"LLM_GATEWAY_CORS_ORIGINS"`
 	StaticDir   string `yaml:"static_dir" env:"LLM_GATEWAY_STATIC_DIR"`
@@ -63,6 +78,10 @@ type Config struct {
 	StreamChunkTimeout int `yaml:"stream_chunk_timeout_seconds" env:"LLM_GATEWAY_STREAM_CHUNK_TIMEOUT"`
 	FirstByteTimeout   int `yaml:"first_byte_timeout_seconds" env:"LLM_GATEWAY_FIRST_BYTE_TIMEOUT"`
 	KeepaliveInterval  int `yaml:"keepalive_interval_seconds" env:"LLM_GATEWAY_KEEPALIVE_INTERVAL"`
+	// SSEMaxLineBytes bounds one physical upstream SSE line, including its line
+	// terminator. It is not a cumulative response limit and does not affect the
+	// existing 128 MiB non-stream response limit.
+	SSEMaxLineBytes int `yaml:"sse_max_line_bytes" env:"LLM_GATEWAY_SSE_MAX_LINE_BYTES"`
 
 	// Stream failover
 	StreamRetryThreshold int `yaml:"stream_retry_threshold" env:"LLM_GATEWAY_STREAM_RETRY_THRESHOLD"`
@@ -109,8 +128,16 @@ type Config struct {
 	RequestSurvivalDurableEnabled bool `yaml:"request_survival_durable_enabled" env:"LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED"`
 
 	// RequestSurvivalInteractiveDeadlineSeconds: max in-connection wait for
-	// ordinary streaming requests. Default 1800 (30 min).
+	// ordinary streaming requests. Default 18000 (5h).
 	RequestSurvivalInteractiveDeadlineSeconds int `yaml:"request_survival_interactive_deadline_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS"`
+
+	// RequestSurvivalRetryIntervalSeconds is the ordinary fixed recovery
+	// cadence. Default 30 seconds; zero retains legacy exponential pacing.
+	RequestSurvivalRetryIntervalSeconds int `yaml:"request_survival_retry_interval_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_INTERVAL_SECONDS"`
+	// RequestSurvivalNightMaxAttempts applies from NightStartHour (inclusive)
+	// until midnight in Asia/Shanghai. It counts retries after the initial call.
+	RequestSurvivalNightMaxAttempts int `yaml:"request_survival_night_max_attempts" env:"LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_MAX_ATTEMPTS"`
+	RequestSurvivalNightStartHour   int `yaml:"request_survival_night_start_hour" env:"LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_START_HOUR"`
 
 	// RequestSurvivalDurableDeadlineSeconds: max total wait for durable
 	// tasks (client disconnect / gateway restart included). Default 86400.
@@ -123,7 +150,9 @@ type Config struct {
 	// RequestSurvivalRetryBaseSeconds / RetryMaxSeconds: exponential backoff
 	// base and cap for the fallback delay when no authoritative recovery time
 	// exists. Authoritative Retry-After / recover_at is NOT truncated by the
-	// cap. Defaults 2s / 300s.
+	// cap. Defaults 30s / 120s. A configured retry interval
+	// (RequestSurvivalRetryIntervalSeconds) replaces this exponential pacing
+	// with an exact fixed cadence.
 	RequestSurvivalRetryBaseSeconds int `yaml:"request_survival_retry_base_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS"`
 	RequestSurvivalRetryMaxSeconds  int `yaml:"request_survival_retry_max_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_MAX_SECONDS"`
 
@@ -132,7 +161,8 @@ type Config struct {
 	RequestSurvivalWorkerCount     int `yaml:"request_survival_worker_count" env:"LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_COUNT"`
 	RequestSurvivalWorkerLeaseSecs int `yaml:"request_survival_worker_lease_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_LEASE_SECONDS"`
 
-	// RequestSurvivalMaxAttempts: per-task attempt cap. Default 100.
+	// RequestSurvivalMaxAttempts: retries allowed after a task's initial
+	// execution. Default 100, for at most 101 total executions.
 	RequestSurvivalMaxAttempts int `yaml:"request_survival_max_attempts" env:"LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ATTEMPTS"`
 
 	// RequestSurvivalMaxActiveTasksPerTenant: tenant-level active durable
@@ -162,6 +192,12 @@ type Config struct {
 	// path. ON by default; set to false to disable per-deploy if it causes
 	// regressions with a particular upstream.
 	EnableEmptyStreamGate bool `yaml:"enable_empty_stream_gate" env:"LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE"`
+
+	// EmptyStreamEarlyEmptyChunks (2026-08-20): valid empty OpenAI delta
+	// frames seen consecutively before any semantic content trigger an
+	// immediate KindEmptyResponse failover. Zero disables early detection;
+	// the end-of-stream empty gate remains available independently.
+	EmptyStreamEarlyEmptyChunks int `yaml:"empty_stream_early_empty_chunks" env:"LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS"`
 
 	// Pool grace period (seconds)
 	PoolGracePeriod int `yaml:"pool_grace_period_seconds" env:"LLM_GATEWAY_POOL_GRACE_PERIOD"`
@@ -214,6 +250,13 @@ type Config struct {
 	// Empty defaults to "en".
 	DefaultLanguage string `yaml:"default_language" env:"LLM_GATEWAY_DEFAULT_LANGUAGE"`
 
+	// ModelAliasPrefix is the client-facing model name prefix that gets stripped
+	// before internal routing. When clients send "kx-gpt-5.6-terra", the gateway
+	// strips this prefix and routes to "gpt-5.6-terra". Default "kx-" can be
+	// overridden via LLM_GATEWAY_MODEL_ALIAS_PREFIX or yaml "model_alias_prefix".
+	// Empty string disables alias stripping.
+	ModelAliasPrefix string `yaml:"model_alias_prefix" env:"LLM_GATEWAY_MODEL_ALIAS_PREFIX"`
+
 	// WeChat Work (企业微信) notification settings for approval workflow
 	WeChatCorpID     string `yaml:"wechat_corp_id" env:"LLM_GATEWAY_WECHAT_CORP_ID"`
 	WeChatCorpSecret string `yaml:"wechat_corp_secret" env:"LLM_GATEWAY_WECHAT_CORP_SECRET"`
@@ -228,7 +271,12 @@ type Config struct {
 	LicenseAESKey     string `yaml:"license_aes_key" env:"LLM_GATEWAY_LICENSE_AES_KEY"`
 
 	// Config file path (internal, not serialized)
-	configPath string `yaml:"-"`
+	configPath                 string `yaml:"-"`
+	modelAliasPrefixConfigured bool   `yaml:"-"`
+	// yamlConfigured tracks fields whose zero value is meaningful (notably
+	// booleans). It lets LoadFile apply an explicit YAML false while retaining
+	// environment-variable precedence.
+	yamlConfigured map[string]bool `yaml:"-"`
 }
 
 // IsProduction reports whether the process is running in a production-like
@@ -245,8 +293,8 @@ func (cfg *Config) IsProduction() bool {
 // alone also enables the in-connection coordinator, which is its Phase 1
 // prerequisite.
 func (cfg *Config) NormalizeRequestSurvival() {
-	if cfg.RequestSurvivalInteractiveDeadlineSeconds <= 0 {
-		cfg.RequestSurvivalInteractiveDeadlineSeconds = 1800
+	if cfg.RequestSurvivalInteractiveDeadlineSeconds <= 0 || cfg.RequestSurvivalInteractiveDeadlineSeconds > 5*60*60 {
+		cfg.RequestSurvivalInteractiveDeadlineSeconds = 5 * 60 * 60
 	}
 	if cfg.RequestSurvivalDurableDeadlineSeconds <= 0 {
 		cfg.RequestSurvivalDurableDeadlineSeconds = 86400
@@ -254,11 +302,14 @@ func (cfg *Config) NormalizeRequestSurvival() {
 	if cfg.RequestSurvivalStatusIntervalSeconds <= 0 {
 		cfg.RequestSurvivalStatusIntervalSeconds = 60
 	}
-	if cfg.RequestSurvivalRetryBaseSeconds <= 0 {
-		cfg.RequestSurvivalRetryBaseSeconds = 2
+	if cfg.RequestSurvivalRetryIntervalSeconds <= 0 {
+		cfg.RequestSurvivalRetryIntervalSeconds = 30
 	}
-	if cfg.RequestSurvivalRetryMaxSeconds <= 0 {
-		cfg.RequestSurvivalRetryMaxSeconds = 300
+	if cfg.RequestSurvivalRetryBaseSeconds <= 0 {
+		cfg.RequestSurvivalRetryBaseSeconds = 30
+	}
+	if cfg.RequestSurvivalRetryMaxSeconds <= 0 || cfg.RequestSurvivalRetryMaxSeconds > 120 {
+		cfg.RequestSurvivalRetryMaxSeconds = 120
 	}
 	if cfg.RequestSurvivalWorkerCount <= 0 {
 		cfg.RequestSurvivalWorkerCount = 4
@@ -266,8 +317,14 @@ func (cfg *Config) NormalizeRequestSurvival() {
 	if cfg.RequestSurvivalWorkerLeaseSecs <= 0 {
 		cfg.RequestSurvivalWorkerLeaseSecs = 60
 	}
-	if cfg.RequestSurvivalMaxAttempts <= 0 {
+	if cfg.RequestSurvivalMaxAttempts <= 0 || cfg.RequestSurvivalMaxAttempts > 600 {
 		cfg.RequestSurvivalMaxAttempts = 100
+	}
+	if cfg.RequestSurvivalNightMaxAttempts <= 0 || cfg.RequestSurvivalNightMaxAttempts > 600 {
+		cfg.RequestSurvivalNightMaxAttempts = 600
+	}
+	if cfg.RequestSurvivalNightStartHour <= 0 || cfg.RequestSurvivalNightStartHour > 23 {
+		cfg.RequestSurvivalNightStartHour = 20
 	}
 	if cfg.RequestSurvivalMaxActiveTasksPerTenant <= 0 {
 		cfg.RequestSurvivalMaxActiveTasksPerTenant = 100
@@ -344,6 +401,24 @@ func envOrDefault(key, def string) string {
 	return def
 }
 
+func defaultStaticDir() string {
+	candidates := []string{"web/dist", "web"}
+	for _, dir := range candidates {
+		info, err := os.Stat(filepath.Join(dir, "index.html"))
+		if err == nil && !info.IsDir() {
+			return dir
+		}
+	}
+	return candidates[0]
+}
+
+func modelAliasPrefixFromEnv() string {
+	if value, ok := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX"); ok {
+		return value
+	}
+	return "kx-"
+}
+
 func parseCommaList(raw string) []string {
 	if strings.TrimSpace(raw) == "" {
 		return nil
@@ -363,6 +438,18 @@ func parseCommaList(raw string) []string {
 	return out
 }
 
+// defaultTrustedProxyCIDRs returns the caller-supplied list unchanged when
+// non-empty, otherwise falls back to the loopback-only default. The default
+// is the safest baseline (public peers can never spoof XFF); deployments
+// behind a load balancer MUST extend it explicitly via
+// LLM_GATEWAY_TRUSTED_PROXY_CIDRS or `trusted_proxy_cidrs` in YAML.
+func defaultTrustedProxyCIDRs(supplied []string) []string {
+	if len(supplied) > 0 {
+		return supplied
+	}
+	return []string{"127.0.0.1/32", "::1/128"}
+}
+
 // Load loads configuration from environment variables (and optionally a file).
 func Load() *Config {
 	cfg := &Config{
@@ -374,9 +461,10 @@ func Load() *Config {
 		RedisPassword:           os.Getenv("LLM_GATEWAY_REDIS_PASSWORD"),
 		Listen:                  envOrDefault("LLM_GATEWAY_LISTEN", ":8781"),
 		LogLevel:                envOrDefault("LLM_GATEWAY_LOG_LEVEL", "info"),
+		RuntimeRole:             envOrDefault("LLM_GATEWAY_RUNTIME_ROLE", "active"),
 		APIKey:                  os.Getenv("LLM_GATEWAY_API_KEY"),
 		CORSOrigins:             os.Getenv("LLM_GATEWAY_CORS_ORIGINS"),
-		StaticDir:               envOrDefault("LLM_GATEWAY_STATIC_DIR", "web/dist"),
+		StaticDir:               envOrDefault("LLM_GATEWAY_STATIC_DIR", defaultStaticDir()),
 		PythonEndpoint:          os.Getenv("LLM_GATEWAY_PYTHON_ENDPOINT"),
 		AdminAPIKey:             os.Getenv("LLM_GATEWAY_ADMIN_API_KEY"),
 		UpstreamURL:             envOrDefault("LLM_GATEWAY_UPSTREAM", "http://127.0.0.1:8780"),
@@ -385,6 +473,7 @@ func Load() *Config {
 		UpstreamTimeout:         150,
 		StreamTimeout:           900,
 		StreamChunkTimeout:      600,
+		SSEMaxLineBytes:         16 << 20,
 		// 2026-08-04: 120→180s. Reasoning models (Claude thinking, o-series)
 		// with large tool-call contexts regularly exceed 120s to first byte.
 		// Combined with all-protocol pre-stream keepalive (now on by default),
@@ -396,9 +485,14 @@ func Load() *Config {
 		// 7 天累计 23.6 万个 session hash keys 占用 91% 的 Redis 内存。
 		// 3 天足以覆盖 OpenCode/Cursor 用户的连续编辑场景。
 		// 如果需要更长可设 LLM_GATEWAY_SESSION_TTL_HOURS 环境变量。
-		SessionTTLHours:      72,
-		PendingTTLSeconds:    300,
-		SessionIDBodyKeys:    parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
+		SessionTTLHours:   72,
+		PendingTTLSeconds: 300,
+		SessionIDBodyKeys: parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
+		// TrustedProxyCIDRs (HIGH security, 2026-08-29): loopback-only default.
+		// Operators behind an LB / reverse proxy MUST extend this list,
+		// otherwise X-Forwarded-For / X-Real-IP will be ignored and every
+		// request will appear to come from the LB's IP.
+		TrustedProxyCIDRs:    defaultTrustedProxyCIDRs(parseCommaList(os.Getenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS"))),
 		StreamRetryThreshold: 50, // Default: allow stream failover if < 50 chunks sent
 		// 2026-08-12: streamretry 默认关闭。开启后 internal/streamretry
 		// 会在 mux 入口包一层重试 executor，掩盖 pre-stream 5xx/429/连接中断。
@@ -414,11 +508,14 @@ func Load() *Config {
 		// mutually exclusive with StreamRetryEnabled (startup check).
 		RequestSurvivalEnabled:                    false,
 		RequestSurvivalDurableEnabled:             false,
-		RequestSurvivalInteractiveDeadlineSeconds: 1800,
+		RequestSurvivalInteractiveDeadlineSeconds: 18000,
+		RequestSurvivalRetryIntervalSeconds:       30,
+		RequestSurvivalNightMaxAttempts:           600,
+		RequestSurvivalNightStartHour:             20,
 		RequestSurvivalDurableDeadlineSeconds:     86400,
 		RequestSurvivalStatusIntervalSeconds:      60,
-		RequestSurvivalRetryBaseSeconds:           2,
-		RequestSurvivalRetryMaxSeconds:            300,
+		RequestSurvivalRetryBaseSeconds:           30,
+		RequestSurvivalRetryMaxSeconds:            120,
 		RequestSurvivalWorkerCount:                4,
 		RequestSurvivalWorkerLeaseSecs:            60,
 		RequestSurvivalMaxAttempts:                100,
@@ -438,8 +535,10 @@ func Load() *Config {
 		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长
 		EnableDisguise:                     false, // off by default; opt-in
 		EnableEmptyStreamGate:              true,  // 2026-07-15: ON by default; kills the 13% NIM empty-stream failure mode.
+		EmptyStreamEarlyEmptyChunks:        3,     // 2026-08-20: fail over after three valid empty deltas.
 		DeployEnv:                          firstNonEmpty(os.Getenv("LLM_GATEWAY_ENV"), os.Getenv("GO_ENV"), os.Getenv("APP_ENV")),
 		DefaultLanguage:                    envOrDefault("LLM_GATEWAY_DEFAULT_LANGUAGE", "en"),
+		ModelAliasPrefix:                   modelAliasPrefixFromEnv(),
 		// WeChat Work notification settings
 		WeChatCorpID:     os.Getenv("LLM_GATEWAY_WECHAT_CORP_ID"),
 		WeChatCorpSecret: os.Getenv("LLM_GATEWAY_WECHAT_CORP_SECRET"),
@@ -472,7 +571,13 @@ func Load() *Config {
 	applyPositiveIntEnv("LLM_GATEWAY_UPSTREAM_TIMEOUT", &cfg.UpstreamTimeout)
 	applyPositiveIntEnv("LLM_GATEWAY_STREAM_TIMEOUT", &cfg.StreamTimeout)
 	applyPositiveIntEnv("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", &cfg.StreamChunkTimeout)
+	applyPositiveIntEnv("LLM_GATEWAY_SSE_MAX_LINE_BYTES", &cfg.SSEMaxLineBytes)
 	applyPositiveIntEnv("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", &cfg.FirstByteTimeout)
+	applyNonNegativeIntEnv("LLM_GATEWAY_STREAM_RETRY_THRESHOLD", &cfg.StreamRetryThreshold)
+	applyNonNegativeIntEnv("LLM_GATEWAY_STREAM_RETRY_MAX_RETRIES", &cfg.StreamRetryMaxRetries)
+	applyPositiveIntEnv("LLM_GATEWAY_STREAM_RETRY_BASE_DELAY_MS", &cfg.StreamRetryBaseDelayMs)
+	applyPositiveIntEnv("LLM_GATEWAY_STREAM_RETRY_MAX_DELAY_MS", &cfg.StreamRetryMaxDelayMs)
+	applyPositiveIntEnv("LLM_GATEWAY_STREAM_RETRY_KEEPALIVE_SECS", &cfg.StreamRetryKeepaliveSecs)
 	applyPositiveIntEnv("LLM_GATEWAY_KEEPALIVE_INTERVAL", &cfg.KeepaliveInterval)
 	if pidStr := os.Getenv("LLM_GATEWAY_DEFAULT_PROVIDER"); pidStr != "" {
 		if v, err := strconv.Atoi(pidStr); err == nil {
@@ -536,6 +641,10 @@ func Load() *Config {
 	if v := os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE"); v != "" {
 		cfg.EnablePreStreamKeepalive = v == "true" || v == "1"
 	}
+	if v := os.Getenv("LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE"); v != "" {
+		cfg.EnableEmptyStreamGate = v == "true" || v == "1"
+	}
+	applyNonNegativeIntEnv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", &cfg.EmptyStreamEarlyEmptyChunks)
 	// streamretry flag: the struct tag declares the env var but the parse was
 	// historically missing, so env-only deployments silently ran with the
 	// wrapper off. Parsed here so the survival mutual-exclusion check in
@@ -551,6 +660,9 @@ func Load() *Config {
 		cfg.RequestSurvivalDurableEnabled = v == "true" || v == "1"
 	}
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS", &cfg.RequestSurvivalInteractiveDeadlineSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_INTERVAL_SECONDS", &cfg.RequestSurvivalRetryIntervalSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_MAX_ATTEMPTS", &cfg.RequestSurvivalNightMaxAttempts)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_START_HOUR", &cfg.RequestSurvivalNightStartHour)
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_DEADLINE_SECONDS", &cfg.RequestSurvivalDurableDeadlineSeconds)
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_STATUS_INTERVAL_SECONDS", &cfg.RequestSurvivalStatusIntervalSeconds)
 	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS", &cfg.RequestSurvivalRetryBaseSeconds)
@@ -599,6 +711,17 @@ func applyPositiveIntEnv(key string, target *int) {
 	}
 }
 
+func applyNonNegativeIntEnv(key string, target *int) {
+	if target == nil {
+		return
+	}
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed >= 0 {
+			*target = parsed
+		}
+	}
+}
+
 // LoadFile merges config from a YAML file on top of the current config.
 // File values are overridden by environment variables for security.
 func (cfg *Config) LoadFile(path string) error {
@@ -611,8 +734,21 @@ func (cfg *Config) LoadFile(path string) error {
 	if err := yaml.Unmarshal(data, &fileCfg); err != nil {
 		return err
 	}
+	var raw map[string]any
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	fileCfg.yamlConfigured = make(map[string]bool, len(raw))
+	for key := range raw {
+		fileCfg.yamlConfigured[key] = true
+	}
+	fileCfg.modelAliasPrefixConfigured = fileCfg.yamlConfigured["model_alias_prefix"]
 	cfg.mergeFrom(&fileCfg)
 	return nil
+}
+
+func configValueConfigured(cfg *Config, key string) bool {
+	return cfg != nil && (cfg.yamlConfigured == nil || cfg.yamlConfigured[key])
 }
 
 func (cfg *Config) mergeFrom(other *Config) {
@@ -640,8 +776,14 @@ func (cfg *Config) mergeFrom(other *Config) {
 	if len(other.SessionIDBodyKeys) > 0 && os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS") == "" {
 		cfg.SessionIDBodyKeys = other.SessionIDBodyKeys
 	}
+	if len(other.TrustedProxyCIDRs) > 0 && os.Getenv("LLM_GATEWAY_TRUSTED_PROXY_CIDRS") == "" {
+		cfg.TrustedProxyCIDRs = other.TrustedProxyCIDRs
+	}
 	if other.LogLevel != "" && os.Getenv("LLM_GATEWAY_LOG_LEVEL") == "" {
 		cfg.LogLevel = other.LogLevel
+	}
+	if other.RuntimeRole != "" && os.Getenv("LLM_GATEWAY_RUNTIME_ROLE") == "" {
+		cfg.RuntimeRole = other.RuntimeRole
 	}
 	if other.APIKey != "" && os.Getenv("LLM_GATEWAY_API_KEY") == "" {
 		cfg.APIKey = other.APIKey
@@ -679,6 +821,25 @@ func (cfg *Config) mergeFrom(other *Config) {
 	if other.StreamChunkTimeout != 0 && os.Getenv("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT") == "" {
 		cfg.StreamChunkTimeout = other.StreamChunkTimeout
 	}
+	if configValueConfigured(other, "stream_retry_threshold") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_THRESHOLD") == "" {
+		cfg.StreamRetryThreshold = other.StreamRetryThreshold
+	}
+	if configValueConfigured(other, "stream_retry_max_retries") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_MAX_RETRIES") == "" {
+		cfg.StreamRetryMaxRetries = other.StreamRetryMaxRetries
+	}
+	if configValueConfigured(other, "stream_retry_base_delay_ms") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_BASE_DELAY_MS") == "" {
+		cfg.StreamRetryBaseDelayMs = other.StreamRetryBaseDelayMs
+	}
+	if configValueConfigured(other, "stream_retry_max_delay_ms") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_MAX_DELAY_MS") == "" {
+		cfg.StreamRetryMaxDelayMs = other.StreamRetryMaxDelayMs
+	}
+	if configValueConfigured(other, "stream_retry_keepalive_secs") && os.Getenv("LLM_GATEWAY_STREAM_RETRY_KEEPALIVE_SECS") == "" {
+		cfg.StreamRetryKeepaliveSecs = other.StreamRetryKeepaliveSecs
+	}
+	if configValueConfigured(other, "sse_max_line_bytes") && os.Getenv("LLM_GATEWAY_SSE_MAX_LINE_BYTES") == "" {
+		cfg.SSEMaxLineBytes = other.SSEMaxLineBytes
+	}
+
 	if other.FirstByteTimeout != 0 && os.Getenv("LLM_GATEWAY_FIRST_BYTE_TIMEOUT") == "" {
 		cfg.FirstByteTimeout = other.FirstByteTimeout
 	}
@@ -694,15 +855,55 @@ func (cfg *Config) mergeFrom(other *Config) {
 	if other.EnablePreStreamKeepalive && os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE") == "" {
 		cfg.EnablePreStreamKeepalive = true
 	}
-	// Request survival file overrides (env wins, same pattern as above).
-	if other.RequestSurvivalEnabled && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED") == "" {
-		cfg.RequestSurvivalEnabled = true
+	if other.yamlConfigured["enable_empty_stream_gate"] {
+
+		if os.Getenv("LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE") == "" {
+			cfg.EnableEmptyStreamGate = other.EnableEmptyStreamGate
+		}
 	}
-	if other.RequestSurvivalDurableEnabled && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED") == "" {
-		cfg.RequestSurvivalDurableEnabled = true
+	if other.yamlConfigured["stream_retry_enabled"] {
+
+		if os.Getenv("LLM_GATEWAY_STREAM_RETRY_ENABLED") == "" {
+			cfg.StreamRetryEnabled = other.StreamRetryEnabled
+		}
+	}
+	if other.DefaultCredentialConcurrency != 0 && os.Getenv("LLM_GATEWAY_DEFAULT_CREDENTIAL_CONCURRENCY") == "" {
+		cfg.DefaultCredentialConcurrency = other.DefaultCredentialConcurrency
+	}
+	if other.yamlConfigured["enable_credential_fp_slots"] {
+		if os.Getenv("LLM_GATEWAY_ENABLE_CREDENTIAL_FP_SLOTS") == "" {
+			cfg.EnableCredentialFpSlots = other.EnableCredentialFpSlots
+		}
+	}
+	if other.CredentialFpSlotActiveGateSeconds != 0 && os.Getenv("LLM_GATEWAY_CREDENTIAL_FP_SLOT_ACTIVE_GATE_SECONDS") == "" {
+		cfg.CredentialFpSlotActiveGateSeconds = other.CredentialFpSlotActiveGateSeconds
+	}
+	if other.CredentialFpSlotReclaimIdleSeconds != 0 && os.Getenv("LLM_GATEWAY_CREDENTIAL_FP_SLOT_RECLAIM_IDLE_SECONDS") == "" {
+		cfg.CredentialFpSlotReclaimIdleSeconds = other.CredentialFpSlotReclaimIdleSeconds
+	}
+	if other.EmptyStreamEarlyEmptyChunks != 0 && os.Getenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS") == "" {
+		cfg.EmptyStreamEarlyEmptyChunks = other.EmptyStreamEarlyEmptyChunks
+	}
+
+	// Request survival file overrides (env wins, same pattern as above).
+
+	if configValueConfigured(other, "request_survival_enabled") && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED") == "" {
+		cfg.RequestSurvivalEnabled = other.RequestSurvivalEnabled
+	}
+	if configValueConfigured(other, "request_survival_durable_enabled") && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED") == "" {
+		cfg.RequestSurvivalDurableEnabled = other.RequestSurvivalDurableEnabled
 	}
 	if other.RequestSurvivalInteractiveDeadlineSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS") == "" {
 		cfg.RequestSurvivalInteractiveDeadlineSeconds = other.RequestSurvivalInteractiveDeadlineSeconds
+	}
+	if other.RequestSurvivalRetryIntervalSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_INTERVAL_SECONDS") == "" {
+		cfg.RequestSurvivalRetryIntervalSeconds = other.RequestSurvivalRetryIntervalSeconds
+	}
+	if other.RequestSurvivalNightMaxAttempts != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_MAX_ATTEMPTS") == "" {
+		cfg.RequestSurvivalNightMaxAttempts = other.RequestSurvivalNightMaxAttempts
+	}
+	if other.RequestSurvivalNightStartHour != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_NIGHT_START_HOUR") == "" {
+		cfg.RequestSurvivalNightStartHour = other.RequestSurvivalNightStartHour
 	}
 	if other.RequestSurvivalDurableDeadlineSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_DEADLINE_SECONDS") == "" {
 		cfg.RequestSurvivalDurableDeadlineSeconds = other.RequestSurvivalDurableDeadlineSeconds
@@ -753,6 +954,13 @@ func (cfg *Config) mergeFrom(other *Config) {
 	if other.DefaultLanguage != "" && os.Getenv("LLM_GATEWAY_DEFAULT_LANGUAGE") == "" {
 		cfg.DefaultLanguage = other.DefaultLanguage
 	}
+	// ModelAliasPrefix: an explicit YAML value, including empty string, wins
+	// when the environment variable is not configured.
+	if other.modelAliasPrefixConfigured {
+		if _, envConfigured := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX"); !envConfigured {
+			cfg.ModelAliasPrefix = other.ModelAliasPrefix
+		}
+	}
 }
 
 // Store provides atomic access to a Config pointer for hot-reload.
@@ -780,6 +988,11 @@ func (s *Store) ReloadFile(path string) error {
 	*cfg = *old
 	if err := cfg.LoadFile(path); err != nil {
 		return err
+	}
+	cfg.NormalizeRequestSurvival()
+	if cfg.RequestSurvivalEnabled && cfg.StreamRetryEnabled {
+		slog.Warn("config: hot reload enabled mutually exclusive retry owners; disabling stream_retry", "path", path)
+		cfg.StreamRetryEnabled = false
 	}
 	s.Swap(cfg)
 	slog.Info("config: hot-reloaded from file", "path", path)

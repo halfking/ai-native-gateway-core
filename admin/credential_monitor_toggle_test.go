@@ -9,7 +9,108 @@ import (
 	"testing"
 )
 
-// newReq builds a minimal *http.Request. body may be nil.
+// TestMonitorSummaryCoreModeSQLShape pins the lightweight query contract
+// used by the dashboard settings preload. The assertions read every SQL
+// fragment the handler may concatenate, so they stay robust across harmless
+// refactors of indentation, comments, or surrounding branches.
+func TestMonitorSummaryCoreModeSQLShape(t *testing.T) {
+	src, err := os.ReadFile("credential_monitor.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+
+	var fragments []string
+	for i := 0; i < len(body); i++ {
+		if body[i] != '`' {
+			continue
+		}
+		j := i + 1
+		for j < len(body) && body[j] != '`' {
+			j++
+		}
+		if j >= len(body) {
+			break
+		}
+		fragments = append(fragments, body[i+1:j])
+		i = j
+	}
+
+	coreFound := false
+	detailFound := false
+	for _, frag := range fragments {
+		if !strings.Contains(strings.ToLower(frag), "from credentials c") {
+			continue
+		}
+		hasHeavy := strings.Contains(frag, "request_logs_with_current_month") ||
+			strings.Contains(frag, "recent_success_rate") ||
+			strings.Contains(frag, "credential_model_index_with_current_month") ||
+			strings.Contains(frag, "credential_model_call_history") ||
+			strings.Contains(frag, "percentile_cont")
+		hasCoreOffer := strings.Contains(frag, "model_offers") &&
+			strings.Contains(frag, "model_probe_state")
+		hasTenantGuard := strings.Contains(frag, "tenant_id")
+		switch {
+		case hasHeavy:
+			// detail mode is allowed (and expected) to also join
+			// model_offers + model_probe_state for the per-model availability
+			// breakdown. The audit guarantee is only that detail touches
+			// the heavy aggregates; do not flag the lightweight join.
+			detailFound = true
+		case hasCoreOffer && hasTenantGuard:
+			coreFound = true
+		}
+	}
+	if !coreFound {
+		t.Fatal("could not locate a lightweight (core) SELECT fragment that joins model_offers/model_probe_state and gates on tenant_id")
+	}
+	if !detailFound {
+		t.Fatal("could not locate a detail SELECT fragment that touches the heavy aggregates (request_logs / recent_success_rate / percentile_cont)")
+	}
+}
+
+// TestMonitorSummaryRowsIterationFailure guards the audit fix: when the
+// driver reports rows.Err() (network drop, server-side cancellation, etc.)
+// the handler must surface 5xx instead of returning an incomplete payload.
+//
+// 2026-08-19: the iteration now lives in pgxQueryer-parameterized helpers
+// (runMonitorSummary / runModelHistory / runCredentialDecisions) so a
+// pgxmock pool can drive them. The audit guarantee — that the SQL
+// execution path checks rows.Err() before returning — must hold inside the
+// helpers, which the HTTP handler then maps to 5xx via the returned error.
+func TestMonitorSummaryRowsIterationFailurePropagates(t *testing.T) {
+	src, err := os.ReadFile("credential_monitor.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "rows iteration failed") {
+		t.Fatal("credential monitor SQL helpers must surface a wrapped rows.Err() (the file no longer logs a rows iteration failure)")
+	}
+	// Each helper owns its own rows.Next() loop and must check rows.Err()
+	// before returning. Anchor on the helper signature so the snippet search
+	// window is scoped to *that* helper rather than to a sibling handler or
+	// free-floating doc-comment that mentions the same name.
+	requiredHelpers := []string{"runMonitorSummary", "runModelHistory", "runCredentialDecisions"}
+	requiredSnippet := "if rows.Err() != nil"
+	for _, h := range requiredHelpers {
+		sig := "func " + h + "("
+		idx := strings.Index(body, sig)
+		if idx < 0 {
+			t.Errorf("helper %s not found in credential_monitor.go", h)
+			continue
+		}
+		tail := strings.Index(body[idx+len(sig):], "\nfunc ")
+		end := len(body)
+		if tail >= 0 {
+			end = idx + len(sig) + tail
+		}
+		if !strings.Contains(body[idx:end], requiredSnippet) {
+			t.Errorf("%s must call rows.Err() before returning results", h)
+		}
+	}
+}
+
 func newReq(method, path string, body *strings.Reader) *http.Request {
 	if body == nil {
 		return httptest.NewRequest(method, path, nil)

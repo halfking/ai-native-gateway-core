@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getReleases,
   createRelease,
@@ -21,6 +22,7 @@ import {
 } from '../../api/ops'
 
 import { useEnumLabel } from '../../composables/useEnumLabel'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 const enumLabel = useEnumLabel()
@@ -139,38 +141,32 @@ async function handleCreate() {
 }
 
 async function handlePublish(release: Release) {
+  if (!(await confirmDialog(
+    t('ops.autoupdate.publishConfirm', { version: release.version }),
+    { title: t('common.confirm'), type: 'info' },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.autoupdate.publishConfirm', { version: release.version }),
-      t('common.confirm'),
-      { type: 'info' }
-    )
     await publishRelease(release.version)
     ElMessage.success(t('ops.autoupdate.publishSuccess'))
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.autoupdate.publishFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.autoupdate.publishFailed'))
+    console.error(error)
   }
 }
 
 async function handleUnpublish(release: Release) {
+  if (!(await confirmDialog(
+    t('ops.autoupdate.unpublishConfirm', { version: release.version }),
+    { title: t('common.warning') },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.autoupdate.unpublishConfirm', { version: release.version }),
-      t('common.warning'),
-      { type: 'warning' }
-    )
     await unpublishRelease(release.version)
     ElMessage.success(t('ops.autoupdate.unpublishSuccess'))
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.autoupdate.unpublishFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.autoupdate.unpublishFailed'))
+    console.error(error)
   }
 }
 
@@ -275,21 +271,18 @@ async function handleRollback() {
     return
   }
 
+  if (!(await confirmDialog(
+    t('ops.autoupdate.rollbackConfirm', { version: rollbackTarget.value }),
+    { title: t('common.warning') },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.autoupdate.rollbackConfirm', { version: rollbackTarget.value }),
-      t('common.warning'),
-      { type: 'warning' }
-    )
     await rollbackRelease(rollbackTarget.value)
     ElMessage.success(t('ops.autoupdate.rollbackSuccess'))
     showRollbackDialog.value = false
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.autoupdate.rollbackFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.autoupdate.rollbackFailed'))
+    console.error(error)
   }
 }
 
@@ -313,11 +306,6 @@ function logStatusType(status: string) {
     rolled_back: 'info',
   }
   return map[status] || 'info'
-}
-
-function formatDate(date?: string) {
-  if (!date) return '—'
-  return new Date(date).toLocaleString()
 }
 
 onMounted(() => {
@@ -366,7 +354,7 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="published_at" :label="t('ops.autoupdate.publishedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.published_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.published_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="340" fixed="right">
           <template #default="scope">
@@ -427,10 +415,10 @@ onMounted(() => {
           </template>
         </el-table-column>
         <el-table-column prop="started_at" :label="t('ops.autoupdate.startedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.started_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.started_at) }}</template>
         </el-table-column>
         <el-table-column prop="completed_at" :label="t('ops.autoupdate.completedAt')" width="160">
-          <template #default="scope">{{ formatDate(scope?.row?.completed_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.completed_at) }}</template>
         </el-table-column>
         <el-table-column prop="error" :label="t('ops.autoupdate.errorMessage')" min-width="200" show-overflow-tooltip />
         <el-table-column prop="retry_count" :label="t('ops.autoupdate.retryCount')" width="90" />

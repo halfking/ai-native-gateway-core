@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -109,14 +110,35 @@ func (h *WeChatCallbackHandler) handleVerification(w http.ResponseWriter, r *htt
 //	  "user_id": "user-456",
 //	  "reason": "approved by manager"
 //	}
+//
+// 2026-08-26 (P1-4 fix): cap the body at 1 MiB via http.MaxBytesReader.
+// The previous io.ReadAll(r.Body) had no upper bound.
 func (h *WeChatCallbackHandler) handleEvent(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			slog.Warn("wechat callback body exceeds 1 MiB", "remote_addr", r.RemoteAddr)
+			http.Error(w, "body too large", http.StatusBadRequest)
+			return
+		}
 		slog.Error("failed to read callback body", "error", err)
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	defer func() { _ = r.Body.Close() }()
+
+	// 2026-08-26 (P1-3 fail-closed): signature verification is
+	// mandatory. If h.token is empty the operator has not configured
+	// the WeChat integration and we refuse to process events rather
+	// than silently accepting whatever body the caller sends.
+	if h.token == "" {
+		slog.Error("wechat callback refused: token not configured",
+			"remote_addr", r.RemoteAddr)
+		http.Error(w, "wechat webhook not configured", http.StatusServiceUnavailable)
+		return
+	}
 
 	// Try JSON format first
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {

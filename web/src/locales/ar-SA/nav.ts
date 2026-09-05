@@ -9,6 +9,7 @@ export default {
     dataOps: "عمليات البيانات",
     guide: "دليل التكامل",
     chat: "محادثة",
+    plugins: "الإضافات",
     opsplatform: "运维平台"
   },
   item: {
@@ -34,6 +35,8 @@ export default {
     auditLogs: "سجلات التدقيق",
     requestLogs: "سجلات الطلبات",
     dispatchWaterfall: "شلال قائمة الانتظار",
+    requestRegistry: "Request Registry",
+    connectionRegistry: "Connection Registry",
     turns: "قائمة الدورات",
     requestTrace: "تتبع الطلبات",
     sessions: "قائمة الجلسات",
@@ -44,6 +47,7 @@ export default {
     wechatBot: "بوت WeChat",
     sessionContext: "سياق الجلسة",
     settings: "إعدادات النظام",
+    proxy: "إدارة الوكيل",
     dataLifecycle: "دورة حياة البيانات",
     formatAnomalies: "مراقبة شذوذ التنسيق",
     modelIntegrity: "مراقبة سلامة النموذج",
@@ -68,6 +72,9 @@ export default {
     tenantAutoUpdate: "تحديثاتي"
 ,
     updateActivate: 'Update & Activate',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
+    activateAction: 'تفعيل',
+    activateActionTip: 'انقر لتفعيل هذا الجهاز',
 
     licenseActivate: 'License Activation',
 
@@ -80,6 +87,7 @@ export default {
     licenseOffline: 'Offline Activation',
 
     telemetryScope: 'Data Collection Scope',
+    supportDonate: 'الرعاية والتبرع',
   },
 
   mainAria: 'التنقل الرئيسي',

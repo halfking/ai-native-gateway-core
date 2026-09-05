@@ -3,6 +3,9 @@ package modelquality
 import (
 	"context"
 	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ModelDiscovery 模型发现接口 - 从网关配置中自动发现需要监控的模型
@@ -80,7 +83,109 @@ func (d *ConfigFileModelDiscovery) DiscoverModels(ctx context.Context) ([]ModelT
 	return nil, fmt.Errorf("ConfigFileModelDiscovery not implemented")
 }
 
+// CanonicalCatalogDiscovery 从数据库目录（models_canonical × provider_models × providers）
+// 发现可实际路由的活跃模型列表，按 provider model 行返回，作为 ModelTarget 返回。
+//
+// 引入于 2026-08-20（feat/standard-models-rollout）：取代 GetDefaultMonitorModels 的静态回退
+// —— 后者不再覆盖 grok-4.6 / kimi-k* / gemini-3.*。数据库行由 sql/migrations/domain/352-355
+// 维护；routing_policy.featured_models 决定哪些 canonical 出现在 dashboard 头条。
+//
+// 设计要点：
+//   - 只返回 status='active' 的 canonical 行（DB 是 single source of truth）
+//   - 同时存在可用 credential binding 才返回；credential_id=0 的占位行不参与
+//   - 一个 canonical 可能挂在多个 provider/raw model 行上（如 gpt-4o 在多个 provider），
+//     DiscoverModels 按 provider model 行返回，保留 provider-facing raw 名称
+//   - 短超时（默认 1s），DB 慢不应阻塞监控循环
+type CanonicalCatalogDiscovery struct {
+	pool    *pgxpool.Pool
+	timeout time.Duration
+}
+
+// NewCanonicalCatalogDiscovery 构造基于 models_canonical 的发现器。
+// 默认 1s 查询超时（DB 慢不应阻塞监控循环）。
+func NewCanonicalCatalogDiscovery(pool *pgxpool.Pool) *CanonicalCatalogDiscovery {
+	return &CanonicalCatalogDiscovery{pool: pool, timeout: 1 * time.Second}
+}
+
+// WithTimeout 调整默认 1s 的查询超时。返回 d 本身以便链式调用。
+// timeout <= 0 表示恢复默认 1s。
+func (d *CanonicalCatalogDiscovery) WithTimeout(timeout time.Duration) *CanonicalCatalogDiscovery {
+	if d == nil {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = 1 * time.Second
+	}
+	d.timeout = timeout
+	return d
+}
+
+// DiscoverModels 实现 ModelDiscovery 接口：读取 (providers × provider_models × models_canonical)。
+func (d *CanonicalCatalogDiscovery) DiscoverModels(ctx context.Context) ([]ModelTarget, error) {
+	if d == nil || d.pool == nil {
+		return nil, fmt.Errorf("CanonicalCatalogDiscovery: pool is nil")
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, d.timeout)
+	defer cancel()
+
+	const q = `
+		SELECT DISTINCT p.code       AS provider,
+		       pm.raw_model_name AS model_name,
+		       mc.canonical_name AS canonical_model,
+		       COALESCE(mc.display_name, mc.canonical_name) AS display_name
+		FROM provider_models pm
+		JOIN providers p
+		  ON p.id = pm.provider_id AND p.tenant_id = pm.tenant_id
+			JOIN models_canonical mc
+			  ON mc.id = pm.canonical_id
+			JOIN credential_model_bindings cmb
+			  ON cmb.provider_model_id = pm.id
+			JOIN credentials c
+			  ON c.id = cmb.credential_id
+			WHERE pm.tenant_id = 'default'
+			  AND c.tenant_id = pm.tenant_id
+			  AND pm.available = TRUE
+			  AND cmb.available = TRUE
+			  AND cmb.credential_id > 0
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			  AND COALESCE(c.status, 'active') = 'active'
+			  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+			  AND COALESCE(c.availability_state, 'ready') = 'ready'
+			  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted', 'periodic_exhausted')
+			  AND mc.status = 'active'
+			  AND p.enabled = TRUE
+			  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+			ORDER BY p.code, mc.canonical_name, pm.raw_model_name`
+
+	rows, err := d.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("CanonicalCatalogDiscovery.Query: %w", err)
+	}
+	defer rows.Close()
+
+	var targets []ModelTarget
+	for rows.Next() {
+		var t ModelTarget
+		if err := rows.Scan(&t.Provider, &t.ModelName, &t.CanonicalModel, &t.Alias); err != nil {
+			return nil, fmt.Errorf("CanonicalCatalogDiscovery.Scan: %w", err)
+		}
+		targets = append(targets, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("CanonicalCatalogDiscovery.rows: %w", err)
+	}
+	return targets, nil
+}
+
 // GetDefaultMonitorModels 获取默认的监控模型列表（特色模型+常用模型）
+//
+// Deprecated: 2026-08-20 — 新代码请使用 CanonicalCatalogDiscovery。
+// 该函数仅保留作为兜底（DB 不可用时的零依赖路径），其覆盖范围不含
+// grok-4.6 / kimi-k* / gemini-3.*；后续将逐步迁移到 DB-only 发现。
+//
+// Deprecated: prefer CanonicalCatalogDiscovery.
 func GetDefaultMonitorModels() []ModelTarget {
 	return []ModelTarget{
 		// OpenAI 系列

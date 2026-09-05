@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // ApprovalListRequest 审批列表请求
@@ -239,7 +239,7 @@ func (h *Handler) handleApprovalApprove(w http.ResponseWriter, r *http.Request) 
 
 	// 解析请求体
 	var req ApprovalActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -293,7 +293,7 @@ func (h *Handler) handleApprovalReject(w http.ResponseWriter, r *http.Request) {
 
 	// 解析请求体
 	var req ApprovalActionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}

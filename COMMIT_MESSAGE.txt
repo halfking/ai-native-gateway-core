@@ -1,0 +1,38 @@
+feat: add grok-4.6 model support
+
+Add complete support for xAI's grok-4.6 model with 500k context window,
+vision capabilities, and reasoning support.
+
+Changes:
+- Database migrations (352, 353): Add grok-4.6 to models_canonical and
+  update xAI provider catalog
+- Modality: Configure grok-4.6 as vision model (supports image + text input)
+- Reasoning: Configure 4 effort levels (low, medium, high, xhigh) with
+  Grok dialect
+- Tests: Add comprehensive test coverage for modality and reasoning configs
+
+Model specs:
+- Context: 500k tokens
+- Modality: vision (text + image input, text output)
+- Reasoning: low|medium|high|xhigh (can disable)
+- API: OpenAI-compatible at https://api.x.ai/v1
+
+Fixes: "Model 'grok-4.6' is not supported by this gateway" error
+
+Files changed:
+- sql/migrations/domain/352_add_grok_4_6.sql (+ .down.sql)
+- sql/migrations/domain/353_update_xai_provider_add_grok_4_6.sql (+ .down.sql)
+- modelname/modality_defaults.go
+- modelname/modality_defaults_test.go
+- internal/reasoncap/reasoning_defaults.go
+- internal/reasoncap/caps_test.go
+- internal/reasoncap/grok_4_6_test.go (new)
+
+Documentation:
+- GROK_4_6_SUMMARY.md: Complete implementation and deployment guide
+- test_grok_4_6_config.md: Verification checklist
+
+Tests: All passing
+- ✅ modelname.TestInferModality
+- ✅ reasoncap.TestPatterns
+- ✅ reasoncap.TestGrok46Config

@@ -16,16 +16,58 @@ func NodeKeyForTenant(prefix, tenant string, cid int, raw string) string {
 	if tenant == "" {
 		return NodeKey(prefix, cid, raw)
 	}
-	return fmt.Sprintf("%snode:%s:%d:%s", prefix, tenantKeyPart(tenant), cid, raw)
+	if !isNumericTenant(tenant) {
+		return fmt.Sprintf("%snode:%s:%d:%s", prefix, tenantKeyPart(tenant), cid, raw)
+	}
+	return fmt.Sprintf("%snode:t:%s:%d:%s", prefix, tenantKeyPart(tenant), cid, raw)
 }
 
 func NodeKey(prefix string, cid int, raw string) string {
 	return fmt.Sprintf("%snode:%d:%s", prefix, cid, raw)
 }
 
-// ParseNodeKey decodes both the legacy node:<credential>:<model> form and the
-// tenant-scoped node:<tenant>:<credential>:<model> form. Raw model names may
-// contain colons, so only the structural prefix is split.
+// NodeKeySet groups the Redis keys that make up one logical node state: the
+// node hash plus the 1m/5m/30m window ZSETs. RecordRequest must read and
+// write these as one unit. The per-request dedup key is derived from Node at
+// the store layer (requestDedupKey), so it follows the node key's schema
+// automatically and is not listed here.
+//
+// The tuple fields retain the identity the set was built from: schema-aware
+// paths (dual/canonical) derive the k2 set from them instead of re-parsing
+// the legacy key, which delimiter-bearing tuples cannot survive.
+type NodeKeySet struct {
+	Prefix string
+	Node   string
+	Win1m  string
+	Win5m  string
+	Win30m string
+
+	TenantID     string
+	CredentialID int
+	RawModel     string
+}
+
+// NodeKeySetForTenant builds the complete key set for one
+// (tenant, credential, raw model) tuple using the legacy exact-byte
+// constructors. Callers must not assemble these keys by hand.
+func NodeKeySetForTenant(prefix, tenant string, cid int, raw string) NodeKeySet {
+	return NodeKeySet{
+		Prefix: prefix,
+		Node:   NodeKeyForTenant(prefix, tenant, cid, raw),
+		Win1m:  WindowKeyForTenant(prefix, tenant, cid, raw, "1m"),
+		Win5m:  WindowKeyForTenant(prefix, tenant, cid, raw, "5m"),
+		Win30m: WindowKeyForTenant(prefix, tenant, cid, raw, "30m"),
+
+		TenantID:     tenant,
+		CredentialID: cid,
+		RawModel:     raw,
+	}
+}
+
+// ParseNodeKey decodes the tagged tenant-scoped node:t:<tenant>:<credential>:<model>
+// form and the legacy node:<credential>:<model> form. It also accepts the prior
+// untagged string-tenant form for persistence compatibility; numeric tenants
+// must use the tagged form so they cannot collide with legacy credential IDs.
 func ParseNodeKey(prefix, key string) (ParsedNodeKey, bool) {
 	base := prefix + "node:"
 	if !strings.HasPrefix(key, base) {
@@ -34,6 +76,25 @@ func ParseNodeKey(prefix, key string) (ParsedNodeKey, bool) {
 	parts := strings.Split(strings.TrimPrefix(key, base), ":")
 	if len(parts) < 2 {
 		return ParsedNodeKey{}, false
+	}
+	// The k2 marker is reserved for the canonical grammar. The loose
+	// legacy branches below must never consume it: an all-digit base64url
+	// tenant segment (b64 of some tenants is only 0-9) would otherwise
+	// "successfully" decode as {tenant:"k2", cid:<digits>} with a wrong
+	// tuple. Canonical keys parse via ParseNodeKeyAny only.
+	if parts[0] == "k2" {
+		return ParsedNodeKey{}, false
+	}
+	if parts[0] == "t" && len(parts) >= 4 && isNumericTenant(parts[1]) {
+		if parts[1] == "" {
+			return ParsedNodeKey{}, false
+		}
+		credentialID, err := strconv.Atoi(parts[2])
+		if err != nil || credentialID <= 0 {
+			return ParsedNodeKey{}, false
+		}
+		raw := strings.Join(parts[3:], ":")
+		return ParsedNodeKey{TenantID: parts[1], CredentialID: credentialID, RawModel: raw}, raw != ""
 	}
 	if credentialID, err := strconv.Atoi(parts[0]); err == nil && credentialID > 0 {
 		raw := strings.Join(parts[1:], ":")
@@ -54,7 +115,10 @@ func WindowKeyForTenant(prefix, tenant string, cid int, raw, bucket string) stri
 	if tenant == "" {
 		return WindowKey(prefix, cid, raw, bucket)
 	}
-	return fmt.Sprintf("%swin:%s:%s:%d:%s", prefix, bucket, tenantKeyPart(tenant), cid, raw)
+	if !isNumericTenant(tenant) {
+		return fmt.Sprintf("%swin:%s:%s:%d:%s", prefix, bucket, tenantKeyPart(tenant), cid, raw)
+	}
+	return fmt.Sprintf("%swin:%s:t:%s:%d:%s", prefix, bucket, tenantKeyPart(tenant), cid, raw)
 }
 
 func WindowKey(prefix string, cid int, raw, bucket string) string {
@@ -65,14 +129,38 @@ func tenantKeyPart(tenant string) string {
 	return tenant
 }
 
+func isNumericTenant(tenant string) bool {
+	if tenant == "" {
+		return false
+	}
+	for _, r := range tenant {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// BindingKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
+//
+// Deprecated: no callers; do not use in new code.
 func BindingKey(prefix string, cid int, raw string) string {
 	return fmt.Sprintf("%sbinding:%d:%s", prefix, cid, raw)
 }
 
+// CredentialKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
+//
+// Deprecated: no callers; do not use in new code.
 func CredentialKey(prefix string, cid int) string {
 	return fmt.Sprintf("%scredential:%d", prefix, cid)
 }
 
+// ProviderKey has no callers since the v2 store landed; it is kept only so
+// the frozen key surface stays inspectable.
+//
+// Deprecated: no callers; do not use in new code.
 func ProviderKey(prefix string, pid int) string {
 	return fmt.Sprintf("%sprovider:%d", prefix, pid)
 }
@@ -89,7 +177,19 @@ func EpochKey(prefix string) string {
 	return fmt.Sprintf("%smeta:epoch", prefix)
 }
 
-// RecoveryDebounceKey is the cluster-wide coordination key used by
+// CoverageKey stores the expected tenant-aware node keys written by the
+// cutover migration. Authoritative startup validates every listed key before
+// opening the recovery gate.
+func CoverageKey(prefix string) string {
+	return fmt.Sprintf("%smeta:coverage", prefix)
+}
+
+// CoveragePendingKey marks a migration transaction that has not yet published
+// its verified coverage manifest. Authoritative startup refuses while it exists.
+func CoveragePendingKey(prefix string) string {
+	return fmt.Sprintf("%smeta:coverage:pending", prefix)
+}
+
 // Manager.MarkClosedDebounced. When set (with TTL), all subsequent
 // callers see "already debounced" and skip the EnterRecovery write
 // — this caps the cluster's epoch counter inflation to one bump per

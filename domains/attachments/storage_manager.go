@@ -152,10 +152,10 @@ func (sm *StorageManager) CleanupOldAttachments(ctx context.Context, olderThan t
 func (sm *StorageManager) GenerateUploadToken(ctx context.Context, filename string) (string, error) {
 	// 生成唯一的上传令牌
 	token := uuid.New().String()
-	
+
 	// TODO: 将令牌与文件名关联，存储到临时存储或缓存中
 	// 这里需要配合 Redis 或其他缓存系统使用
-	
+
 	return token, nil
 }
 

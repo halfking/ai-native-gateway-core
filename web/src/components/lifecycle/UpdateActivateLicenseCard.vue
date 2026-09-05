@@ -141,15 +141,10 @@ const heartbeatDisplay = computed(() => {
 .status-dot--idle { background: var(--muted); }
 .status-label { font-size: 15px; }
 
-.chip {
-  display: inline-block;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  background: var(--kx-primary-soft);
-  color: var(--kx-primary);
-}
-.chip--tier { font-weight: 500; }
+/* .chip / .chip--tier 从全局 styles/pill-chip.css 继承（P1-8）。
+ * 注意：全局 .chip 默认带 border: 1px solid var(--kx-border)，本组件原风格
+ * 是 "纯背景无边框"，补一条 scoped 覆盖保证视觉一致。 */
+.chip { border: 0; padding: 2px 10px; }
 
 .ml { margin-left: 4px; }
 

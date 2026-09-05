@@ -4,14 +4,24 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestDispatchAllowModelChangeEnabled_SettingOrEnv(t *testing.T) {
-	// No env, no setting → false (default). Just asserts it does not panic and
-	// returns a bool; the live value depends on DB/env state.
-	v := dispatchAllowModelChangeEnabled()
-	assert.IsType(t, false, v)
+	previous := dispatch.IsModelChangeEnabled()
+	t.Cleanup(func() { dispatch.SetModelChangeEnabled(previous) })
+
+	t.Setenv("AUTO_ROUTE_FALLBACK_ENABLED", "")
+	dispatch.SetModelChangeEnabled(false)
+	assert.False(t, dispatchAllowModelChangeEnabled(), "default must remain disabled")
+
+	dispatch.SetModelChangeEnabled(true)
+	assert.True(t, dispatchAllowModelChangeEnabled(), "runtime setting must apply immediately")
+
+	dispatch.SetModelChangeEnabled(false)
+	t.Setenv("AUTO_ROUTE_FALLBACK_ENABLED", "true")
+	assert.True(t, dispatchAllowModelChangeEnabled(), "legacy env remains force-on")
 }
 
 func TestParsePinCredentialHeader(t *testing.T) {

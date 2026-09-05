@@ -1,11 +1,22 @@
 # LLM Gateway Dockerfile
+#
+# MEDIUM hardening (2026-08-29):
+#   - Runtime image pins a non-root user (UID 65532, GID 65532) and the
+#     final USER directive switches to it. The previous Dockerfile ran the
+#     binary as root, which let any container-escape vuln inherit root.
+#   - Digest pinning is opt-in via GO_IMAGE_DIGEST / RUNTIME_IMAGE_DIGEST
+#     build args. CI overrides them with the immutable @sha256:... value
+#     resolved from the registry; leaving them empty falls back to the
+#     mutable tag (local dev only — production builds must pin).
 
 ARG BASE_REGISTRY=registry.kxpms.cn/kx-base
 ARG GO_BASE_IMAGE=${BASE_REGISTRY}/golang:1.25-alpine
+ARG GO_IMAGE_DIGEST=
 ARG RUNTIME_BASE_IMAGE=${BASE_REGISTRY}/alpine:3.22
+ARG RUNTIME_IMAGE_DIGEST=
 
 # 构建阶段
-FROM ${GO_BASE_IMAGE} AS builder
+FROM ${GO_BASE_IMAGE}${GO_IMAGE_DIGEST:+@${GO_IMAGE_DIGEST}} AS builder
 
 # China network: proxy.golang.org is unreachable, use goproxy.cn instead.
 # The offline-package build script already does this; Docker builds need it too.
@@ -21,12 +32,23 @@ RUN go mod download
 COPY . .
 
 # 编译
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=mod -o /app/bin/llm-gateway ./cmd/gateway
+# 2026-09-05: 双模式存储架构引入 mattn/go-sqlite3（CGO 包，lite 模式必需）。
+#   - 显式安装 gcc/musl-dev 保证 C 工具链存在（部分精简 golang-alpine 镜像不含）；
+#   - CGO_ENABLED=1：CGO_ENABLED=0 构建会在编译期直接失败（go-sqlite3 无 cgo 存根
+#     不含 SQLiteConn.Exec 等）。sqlite3.c 由 go-sqlite3 静态编入二进制，
+#     运行时仅动态依赖 musl libc，与 alpine:3.22 运行时兼容。
+#   - full 模式行为不受影响（SQLite 驱动不会被打开）。
+RUN apk --no-cache add gcc musl-dev \
+    && CGO_ENABLED=1 GOOS=linux go build -mod=mod -o /app/bin/llm-gateway ./cmd/gateway
 
 # 运行阶段
-FROM ${RUNTIME_BASE_IMAGE}
+# Compose the digest-pinned reference when the CI-provided digest is
+# non-empty; otherwise fall back to the mutable tag (dev only).
+FROM ${RUNTIME_BASE_IMAGE}${RUNTIME_IMAGE_DIGEST:+@${RUNTIME_IMAGE_DIGEST}} AS runtime
 
-RUN apk --no-cache add ca-certificates
+RUN apk --no-cache add ca-certificates wget \
+    && addgroup -g 65532 -S llmgw \
+    && adduser -u 65532 -S -G llmgw llmgw
 
 WORKDIR /app
 
@@ -36,12 +58,19 @@ COPY --from=builder /app/bin/llm-gateway .
 # 复制配置文件
 COPY config.example.yaml config.yaml
 
+# Ensure the non-root user owns everything we might write to at runtime
+# (e.g. fsstore, ledger ndjson).
+RUN chown -R llmgw:llmgw /app
+
 # 暴露端口
 EXPOSE 8781
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8781/healthz || exit 1
+
+# Drop root privileges before exec.
+USER llmgw:llmgw
 
 # 运行
 CMD ["./llm-gateway"]

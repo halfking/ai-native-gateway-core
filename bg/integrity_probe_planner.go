@@ -87,7 +87,12 @@ func NewIntegrityProbePlanner(db *pgxpool.Pool, queue *ProbeQueue, cfg Integrity
 	if cfg.DedupWindow <= 0 {
 		cfg.DedupWindow = 24 * time.Hour
 	}
-	return &IntegrityProbePlanner{db: db, queue: queue, cfg: cfg}
+	return &IntegrityProbePlanner{
+		db:    db,
+		queue: queue,
+		cfg:   cfg,
+		done:  make(chan struct{}),
+	}
 }
 
 // Start launches the background loop. Idempotent.
@@ -211,7 +216,6 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	rows.Close()
 
 	for _, item := range batch {
 		task := ProbeQueueTask{
@@ -225,6 +229,7 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 			ReasonCode:   item.anomaly,
 			ReasonDetail: fmt.Sprintf("planner: unresolved %s event for (%d, %s)", item.anomaly, item.credID, item.rawModel),
 			MaxAttempts:  2,
+			Automatic:    true,
 			Source:       "integrity_probe_planner",
 			// source_event_id is intentionally empty: the anomaly type is
 			// not globally unique and would collide across credentials.

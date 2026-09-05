@@ -26,26 +26,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 )
 
 // probeURLResult is the response shape for both probe-url endpoints.
+// 2026-09-02: extended with ModelsErrorKind / ModelsErrorPreview so the admin
+// UI can render a tailored hint when an upstream returns HTML on /v1/models
+// instead of OpenAI-compatible JSON.
 type probeURLResult struct {
-	Reachable    bool     `json:"reachable"`
-	Protocol     string   `json:"protocol,omitempty"`
-	HTTPStatus   int      `json:"http_status,omitempty"`
-	ModelsCount  int      `json:"models_count,omitempty"`
-	SampleModels []string `json:"sample_models,omitempty"`
-	AuthOK       bool     `json:"auth_ok,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	Reachable          bool     `json:"reachable"`
+	Protocol           string   `json:"protocol,omitempty"`
+	HTTPStatus         int      `json:"http_status,omitempty"`
+	ModelsCount        int      `json:"models_count,omitempty"`
+	SampleModels       []string `json:"sample_models,omitempty"`
+	AuthOK             bool     `json:"auth_ok,omitempty"`
+	Error              string   `json:"error,omitempty"`
+	ModelsErrorKind    string   `json:"models_error_kind,omitempty"`
+	ModelsErrorPreview string   `json:"models_error_preview,omitempty"`
 }
 
 type probeResult struct {
-	statusCode   int
-	modelCount   int
-	sampleModels []string
-	authOK       bool   // whether the credential is authoritative for this base
-	probeURL     string // which URL candidate succeeded
+	statusCode    int
+	modelCount    int
+	sampleModels  []string
+	authOK        bool   // whether the credential is authoritative for this base
+	probeURL      string // which URL candidate succeeded
+	modelsErrKind string // 2026-09-02: error kind from modelresponse.ParseModelIDs ("non_json_body" / "invalid_models_format" / "")
+	modelsErrText string // short, redacted snippet for diagnostics; safe for UI surfaces
 }
 
 // isAcceptableStatus mirrors the Python probe loop: 200/401/403 indicate
@@ -100,28 +108,23 @@ func doProbeRequest(ctx context.Context, urls []string, apiKey string) (*probeRe
 			probeURL:   u,
 		}
 		if resp.StatusCode == http.StatusOK {
-			// Parse models list (tolerate alternative shapes like {models:[...]})
-			var modelsResp struct {
-				Data   []map[string]any `json:"data"`
-				Models []map[string]any `json:"models"`
-			}
-			if json.Unmarshal(body, &modelsResp) == nil {
-				rows := modelsResp.Data
-				if len(rows) == 0 {
-					rows = modelsResp.Models
-				}
-				result.modelCount = len(rows)
-				limit := 3
-				if len(rows) < limit {
-					limit = len(rows)
-				}
-				for i := 0; i < limit; i++ {
-					if id, ok := rows[i]["id"].(string); ok {
-						result.sampleModels = append(result.sampleModels, id)
-					} else if name, ok := rows[i]["name"].(string); ok {
-						result.sampleModels = append(result.sampleModels, name)
-					}
-				}
+			// 2026-09-02: do NOT swallow ParseModelIDs errors. Previously
+			// the probe loop dropped the body into modelCount=0 silently,
+			// which leaked "parse models response failed: invalid character
+			// '<' looking for beginning of value (context: body_bytes=1726)"
+			// into the admin UI health_error field when an upstream
+			// (e.g. sunyun-china2) returned an HTML error page on
+			// /v1/models. Capture the structured kind here so callers can
+			// render a tailored hint without exposing raw HTML.
+			models, parseErr := modelresponse.ParseModelIDs(body)
+			switch {
+			case parseErr == nil:
+				result.modelCount = len(models)
+				limit := min(3, len(models))
+				result.sampleModels = append(result.sampleModels, models[:limit]...)
+			default:
+				result.modelsErrKind = modelresponse.Kind(parseErr)
+				result.modelsErrText = modelresponse.Preview(parseErr)
 			}
 		}
 
@@ -143,6 +146,7 @@ func doProbeRequest(ctx context.Context, urls []string, apiKey string) (*probeRe
 type chatResult struct {
 	statusCode      int
 	modelInResponse string
+	errorMessage    string
 	// errorCode is set when the 404 body indicates the provider requires
 	// an endpoint ID (outbound_model_name) rather than a raw model name.
 	// The diagnose UI uses this to render a friendly hint.
@@ -188,6 +192,9 @@ func doChatProbe(ctx context.Context, url, apiKey, model string) (*chatResult, e
 		// probe model needs an endpoint ID.  Surface this so the diagnose UI
 		// can render a hint instead of a misleading "404 model not found".
 		result.errorCode = probeutil.EndpointIDRequiredErrCode
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		result.errorMessage = modelresponse.SanitizeBodySnippet(respBody, 500)
 	}
 
 	return result, nil

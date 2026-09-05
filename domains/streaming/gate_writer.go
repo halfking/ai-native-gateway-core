@@ -27,8 +27,9 @@ type GateWriter struct {
 	gate     *AttemptCommitGate
 	pending  []byte
 	delegate http.ResponseWriter
-	status   int
-	header   http.Header
+	status              int
+	header              http.Header
+	semanticVisibility  func()
 }
 
 // NewGateWriter wraps the client connection for one attempt. The gate must
@@ -93,7 +94,12 @@ func (gw *GateWriter) Write(p []byte) (int, error) {
 // classification. Pending bytes stay buffered until the frame completes (or
 // Finish at attempt end).
 func (gw *GateWriter) Flush() {
-	gw.gate.writer.Flush()
+	_ = gw.FlushError()
+}
+
+// FlushError preserves connection errors from the shared serialized writer.
+func (gw *GateWriter) FlushError() error {
+	return gw.gate.writer.FlushError()
 }
 
 // Finish writes any trailing partial frame through the gate's attempt-end
@@ -112,6 +118,29 @@ func (gw *GateWriter) Finish() error {
 // of stacking a second one (SR-07 wiring).
 func (gw *GateWriter) UnderlyingAttemptGate() *AttemptCommitGate {
 	return gw.gate
+}
+
+// SetFirstSemanticByteCallback binds dispatch's attempt-scoped first-byte hook
+// to a coordinator-created gate without stacking a second classifier.
+func (gw *GateWriter) SetFirstSemanticByteCallback(callback func()) {
+	if gw != nil && gw.gate != nil {
+		gw.gate.SetFirstSemanticByteCallback(callback)
+	}
+}
+
+// MarkClientSemanticVisible records a client-visible terminal/error frame that
+// intentionally does not advance AttemptCommitGate semantic state. Dispatch
+// uses this only for post-write failover protection.
+func (gw *GateWriter) MarkClientSemanticVisible() {
+	if gw != nil && gw.semanticVisibility != nil {
+		gw.semanticVisibility()
+	}
+}
+
+func (gw *GateWriter) SetClientSemanticVisibility(callback func()) {
+	if gw != nil {
+		gw.semanticVisibility = callback
+	}
 }
 
 // frameBoundary returns the byte length of the first complete frame in buf

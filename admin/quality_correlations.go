@@ -169,9 +169,9 @@ func buildBreakdownQuery(by string) (string, error) {
 		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN jsonb_array_length(COALESCE(COALESCE(rb.request_body, rl.request_body)->'tools', '[]'::jsonb)) = 0
+				WHEN jsonb_array_length(COALESCE(rb.request_body->'tools', '[]'::jsonb)) = 0
 					THEN '0'
-				WHEN jsonb_array_length(COALESCE(COALESCE(rb.request_body, rl.request_body)->'tools', '[]'::jsonb)) = 1
+				WHEN jsonb_array_length(COALESCE(rb.request_body->'tools', '[]'::jsonb)) = 1
 					THEN '1'
 				ELSE '2+'
 			END`
@@ -180,7 +180,7 @@ func buildBreakdownQuery(by string) (string, error) {
 		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN COALESCE(rb.request_body, rl.request_body)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
+				WHEN COALESCE(rb.request_body, ''::jsonb)->'messages' @> '[{"content":[{"type":"image_url"}]}]'::jsonb
 					THEN 'has_image'
 				ELSE 'no_image'
 			END`
@@ -191,7 +191,7 @@ func buildBreakdownQuery(by string) (string, error) {
 		// 2026-07-21 Ticket #11: Use COALESCE to access request_body from either table
 		bucketExpr = `
 			CASE
-				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, rl.request_body)::text) > 0
+				WHEN position(chr(96) || chr(96) || chr(96) in COALESCE(rb.request_body, ''::jsonb)::text) > 0
 					THEN 'has_code'
 				ELSE 'no_code'
 			END`
@@ -313,8 +313,15 @@ func computeAllInsights(ctx context.Context, db pgxQueryer, r *http.Request, day
 
 // pgxQueryer is the minimal interface for computeAllInsights.
 // Satisfied by *pgxpool.Pool and *pgx.Tx.
+//
+// 2026-08-18 (Agent C): QueryRow was added so dashboard helpers
+// (admin/probe_dashboard.go: queryUnifiedProbeSystemHealth,
+// queryUnifiedProbeQueueStats) can drive single-row aggregates
+// without a separate type. *pgxpool.Pool and *pgx.Tx both expose
+// QueryRow(ctx, sql, args...) pgx.Row.
 type pgxQueryer interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // bucketIndex maps a bucket label to an ordinal index for

@@ -290,11 +290,20 @@ func (b *Breaker) tryTransitionToHalfOpen() bool {
 	}
 
 	if time.Now().After(b.coolingExpires) {
+		previous := b.State()
+		coolingDuration := b.coolingExpires.Sub(b.openSince)
+		if coolingDuration < 0 {
+			coolingDuration = 0
+		}
 		b.state.Store(int32(StateHalfOpen))
 		b.halfOpenProbes.Store(0)
 		b.nextProbeAt = time.Now()
 		slog.Info("circuit half-open",
 			"key", b.key,
+			"previous_state", previous.String(),
+			"new_state", StateHalfOpen.String(),
+			"error_kind", b.lastErrorKind,
+			"cooling_duration_ms", coolingDuration.Milliseconds(),
 			"cooling_cycle", b.coolingCycle,
 		)
 		return true
@@ -325,6 +334,7 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 	defer b.mu.Unlock()
 
 	now := time.Now()
+	previous := b.State()
 	policy, ok := defaultPolicies[kind]
 	if !ok {
 		policy = b.coolingPolicy
@@ -364,7 +374,10 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		b.coolingCycle = 0
 		slog.Warn("circuit quarantined",
 			"key", b.key,
+			"previous_state", previous.String(),
+			"new_state", StateQuarantined.String(),
 			"error_kind", kind,
+			"cooling_duration_ms", int64(0),
 		)
 
 	case RecoveryAuto, RecoveryExponential:
@@ -372,14 +385,17 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 		b.halfOpenProbes.Store(0)
 		b.openSince = now
 
+		var coolingDuration time.Duration
 		if policy.RecoveryType == RecoveryExponential {
 			b.coolingCycle++
 			cooling := policy.InitialCooling * time.Duration(math.Pow(2, float64(b.coolingCycle-1)))
 			if cooling > policy.MaxCooling {
 				cooling = policy.MaxCooling
 			}
+			coolingDuration = cooling
 			b.coolingExpires = now.Add(cooling)
 			if b.coolingCycle >= 5 {
+
 				slog.Warn("circuit repeated cooling cycles",
 					"key", b.key,
 					"cycle", b.coolingCycle,
@@ -388,7 +404,9 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 				)
 			}
 		} else {
+			coolingDuration = policy.InitialCooling
 			b.coolingExpires = now.Add(policy.InitialCooling)
+
 			// Escalate: 3 consecutive transient/timeout/network → use exponential policy.
 			// 2026-08-08 P0 Fix: do NOT escalate upstream_overloaded here. Overloaded
 			// is a supplier-side short-lived condition that already gets its own
@@ -400,7 +418,9 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 			case KindTransient, KindTimeout, KindNetwork, KindStreamTimeout:
 				if consecutive >= autoRecoveryFailureThreshold {
 					escalated := defaultPolicies[KindUpstreamDown]
+					coolingDuration = escalated.InitialCooling
 					b.coolingExpires = now.Add(escalated.InitialCooling)
+
 					slog.Warn("circuit escalated to exponential cooling",
 						"key", b.key,
 						"consecutive", consecutive,
@@ -412,7 +432,10 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 
 		slog.Warn("circuit opened",
 			"key", b.key,
+			"previous_state", previous.String(),
+			"new_state", StateOpen.String(),
 			"error_kind", kind,
+			"cooling_duration_ms", coolingDuration.Milliseconds(),
 			"cooling_until", b.coolingExpires.Format(time.RFC3339),
 			"cycle", b.coolingCycle,
 		)
@@ -445,6 +468,10 @@ func (b *Breaker) RecordSuccess() {
 	if prev != StateClosed {
 		slog.Info("circuit closed",
 			"key", b.key,
+			"previous_state", prev.String(),
+			"new_state", StateClosed.String(),
+			"error_kind", b.lastErrorKind,
+			"cooling_duration_ms", int64(0),
 		)
 	}
 }
@@ -453,14 +480,22 @@ func (b *Breaker) RecordSuccess() {
 func (b *Breaker) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	previous := b.State()
 	b.state.Store(int32(StateClosed))
 	b.consecutive.Store(0)
 	b.failCount.Store(0)
 	b.coolingCycle = 0
 	b.halfOpenProbes.Store(0)
 	b.lastFailureAt = time.Time{}
+	lastErrorKind := b.lastErrorKind
 	b.lastErrorKind = ""
-	slog.Info("circuit reset", "key", b.key)
+	slog.Info("circuit reset",
+		"key", b.key,
+		"previous_state", previous.String(),
+		"new_state", StateClosed.String(),
+		"error_kind", lastErrorKind,
+		"cooling_duration_ms", int64(0),
+	)
 }
 
 // Stats returns diagnostic information about the breaker.

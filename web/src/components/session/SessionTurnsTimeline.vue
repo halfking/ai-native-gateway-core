@@ -19,6 +19,7 @@
  * 设计约束：颜色只用 var(--kx-*)；三态（Skeleton / Empty / Error 区分码）。
  */
 import { onMounted, ref, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import {
   fetchSessionTurnsTree,
   SessionObsApiError,
@@ -26,6 +27,12 @@ import {
 } from '../../api/sessionTurnsTree'
 
 const props = defineProps<{ sessionId: string }>()
+const emit = defineEmits<{
+  openRequest: [payload: { requestId: string; turnNumber: number }]
+  showDigest: [payload: { turnNumber: number }]
+}>()
+
+const { t } = useI18n()
 
 const turns = ref<SessionTurnTreeItem[]>([])
 const loading = ref(false)
@@ -36,6 +43,11 @@ const error = ref<SessionObsApiError | null>(null)
 const loaded = ref(false)
 
 const PAGE_LIMIT = 20
+const unifiedTurnsEnabled = String(import.meta.env.VITE_SESSION_TURNS_UNIFIED || '').toLowerCase() === 'true'
+
+function turnNumber(turn: SessionTurnTreeItem): number {
+  return turn.turn_no ?? turn.turn_number
+}
 
 async function load(reset = true) {
   if (reset) {
@@ -45,10 +57,12 @@ async function load(reset = true) {
     loadingMore.value = true
   }
   try {
-    const r = await fetchSessionTurnsTree(props.sessionId, {
+    const params: { limit: number; cursor?: string; source?: 'v2' } = {
       limit: PAGE_LIMIT,
       cursor: reset ? undefined : nextCursor.value || undefined,
-    })
+    }
+    if (unifiedTurnsEnabled) params.source = 'v2'
+    const r = await fetchSessionTurnsTree(props.sessionId, params)
     turns.value = reset ? r.turns : [...turns.value, ...r.turns]
     hasMore.value = r.has_more
     nextCursor.value = r.next_cursor || ''
@@ -92,7 +106,7 @@ function latencyClass(ms: number | null | undefined): string {
 
 function fmtLatency(ms: number | null | undefined): string {
   // null = 未知，禁止渲染成 0ms
-  if (ms === null || ms === undefined) return '未知'
+  if (ms === null || ms === undefined) return t('sessionTimeline.latencyUnknown')
   if (ms < 1000) return `${ms}ms`
   return `${(ms / 1000).toFixed(2)}s`
 }
@@ -124,7 +138,7 @@ function errorText(e: SessionObsApiError | null): string {
     case 'unauthorized':
       return '未认证或登录已过期，请重新登录（401）'
     case 'network':
-      return '网络错误，请检查连接后重试'
+      return t('sessionTimeline.errors.network')
     default:
       return `加载失败（HTTP ${e.status}）：${e.message}`
   }
@@ -142,7 +156,7 @@ function errorText(e: SessionObsApiError | null): string {
         :disabled="loading"
         @click="load(true)"
       >
-        {{ loading ? '刷新中…' : '刷新' }}
+        {{ loading ? t('sessionTimeline.refreshing') : t('sessionTimeline.refresh') }}
       </button>
     </div>
 
@@ -160,42 +174,56 @@ function errorText(e: SessionObsApiError | null): string {
     >
       <span class="stt-error-text">{{ errorText(error) }}</span>
       <button type="button" class="stt-retry" :disabled="loading" @click="load(true)">
-        重试
+        {{ t('sessionTimeline.retry') }}
       </button>
     </div>
 
     <!-- 空态：200 但无轮次 -->
     <div v-else-if="loaded && turns.length === 0" class="stt-empty">
-      该会话暂无轮次记录
+      {{ t('sessionTimeline.empty') }}
     </div>
 
     <!-- 轮次时间线 -->
     <div v-else class="stt-timeline">
       <div
-        v-for="t in turns"
-        :key="t.request_id"
+        v-for="turn in turns"
+        :key="turn.request_id"
         class="stt-turn"
-        :data-turn-number="t.turn_number"
+        :data-turn-number="turnNumber(turn)"
       >
         <!-- 主请求卡 -->
-        <div class="stt-turn-main">
-          <span class="stt-turn-no">#{{ t.turn_number }}</span>
-          <span class="stt-status" :class="statusClass(t.status)">{{ t.status }}</span>
-          <span v-if="t.model" class="stt-turn-model">{{ t.model }}</span>
-          <span class="stt-turn-latency" :class="latencyClass(t.latency)">
-            {{ fmtLatency(t.latency) }}
+        <button
+          type="button"
+          class="stt-turn-main stt-turn-main--clickable"
+          @click="emit('openRequest', { requestId: turn.request_id, turnNumber: turnNumber(turn) })"
+        >
+          <span class="stt-turn-no">#{{ turnNumber(turn) }}</span>
+          <span class="stt-status" :class="statusClass(turn.status)">{{ turn.status }}</span>
+          <span v-if="turn.model" class="stt-turn-model">{{ turn.model }}</span>
+          <span class="stt-turn-latency" :class="latencyClass(turn.latency)">
+            {{ fmtLatency(turn.latency) }}
           </span>
-          <span class="stt-turn-rid" :title="t.request_id">{{ t.request_id }}</span>
-        </div>
+          <span class="stt-turn-rid" :title="turn.request_id">{{ turn.request_id }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="stt-digest-btn"
+          data-testid="stt-show-digest"
+          :aria-label="`${t('turnDigest.view')} #${turnNumber(turn)}`"
+          @click.stop="emit('showDigest', { turnNumber: turnNumber(turn) })"
+        >
+          {{ t('turnDigest.view') }}
+        </button>
 
         <!-- 内联子请求树 -->
         <div
-          v-if="t.child_requests && t.child_requests.length > 0"
+          v-if="turn.child_requests && turn.child_requests.length > 0"
           class="stt-children"
-          :data-child-count="t.child_requests.length"
+          :data-child-count="turn.child_requests.length"
         >
           <div
-            v-for="c in t.child_requests"
+            v-for="c in turn.child_requests"
             :key="c.request_id"
             class="stt-child"
           >
@@ -225,11 +253,11 @@ function errorText(e: SessionObsApiError | null): string {
           data-testid="stt-load-more"
           @click="load(false)"
         >
-          {{ loadingMore ? '加载中…' : '加载更多轮次' }}
+          {{ loadingMore ? t('sessionTimeline.loading') : t('sessionTimeline.loadMore') }}
         </button>
       </div>
       <div v-else-if="loaded && turns.length > 0" class="stt-end">
-        共 {{ turns.length }} 轮，已全部加载
+        {{ t('sessionTimeline.allLoaded', { n: turns.length }) }}
       </div>
     </div>
   </div>
@@ -347,6 +375,31 @@ function errorText(e: SessionObsApiError | null): string {
   gap: 10px;
   flex-wrap: wrap;
 }
+.stt-turn-main--clickable {
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.stt-turn-main--clickable:hover .stt-turn-rid {
+  color: var(--kx-primary, var(--accent));
+  text-decoration: underline;
+}
+.stt-digest-btn {
+  margin-top: 6px;
+  border: 1px solid var(--kx-border);
+  border-radius: 10px;
+  background: var(--kx-surface);
+  color: var(--kx-primary);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.stt-digest-btn:hover { border-color: var(--kx-primary); }
 .stt-turn-no {
   font-weight: 600;
   color: var(--kx-primary);

@@ -67,6 +67,9 @@ func TestApprovalManagerCreator_BuildsSessionauditRequest(t *testing.T) {
 	}
 	id, err := c.Create(context.Background(), env, &governance.ApprovalRequest{
 		Reason: "critical", RiskLevel: "high", RequestID: "req-99", SessionID: "sess-1",
+		Snapshot: &sessionaudit.RequestSnapshot{
+			SessionID: "sess-1", TenantID: "tenant-1", RequestID: "req-99",
+		},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)

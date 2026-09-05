@@ -99,7 +99,13 @@ func LoadStorageConfigFromEnv() StorageConfig {
 
 	switch strings.ToLower(storageType) {
 	case "local", "":
-		config.LocalDir = getEnv("LLM_GATEWAY_ATTACHMENT_DIR", "./data/attachments")
+		// Local backend base dir resolution order:
+		//   1. LLM_GATEWAY_ATTACHMENT_DIR (explicit env, always wins)
+		//   2. ~/Downloads/llm-gateway-files/attachments (canonical local-host layout)
+		// The previous default "./data/attachments" silently wrote into the process
+		// cwd (typically the source tree), so we removed it — see incident 2026-09-03
+		// where 77 files were found in services/llm-gateway-go/data/attachments.
+		config.LocalDir = getEnv("LLM_GATEWAY_ATTACHMENT_DIR", defaultLocalAttachmentDir())
 
 	case "oss":
 		config.OSSEndpoint = getEnv("LLM_GATEWAY_OSS_ENDPOINT", "")
@@ -143,6 +149,17 @@ func getEnv(key, defaultValue string) string {
 		return defaultValue
 	}
 	return value
+}
+
+// defaultLocalAttachmentDir 返回本地部署的默认 attachment 根目录。
+// 仅在 LLM_GATEWAY_ATTACHMENT_DIR 未设置时使用；与
+// scripts/local-host-layout-helper.sh 的 lh_layout_vars 必须保持一致。
+func defaultLocalAttachmentDir() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, "Downloads", "llm-gateway-files", "attachments")
+	}
+	// 兜底兜底：拿不到 home 时返回绝对路径 /data/attachments，至少不再以 cwd 为锚点。
+	return "/data/attachments"
 }
 
 // ValidateStorageConfig 验证存储配置

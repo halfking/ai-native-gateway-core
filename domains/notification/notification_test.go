@@ -35,6 +35,49 @@ func newMockChannel(name string) *mockChannel {
 	return &mockChannel{name: name}
 }
 
+func TestWebhookChannelDoPostBodySnippetAndDrain(t *testing.T) {
+	const prefix = "upstream failure"
+	largeTail := strings.Repeat("x", 4096)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(prefix + largeTail))
+	}))
+	defer server.Close()
+
+	channel := NewWebhookChannel(WebhookConfig{URL: server.URL})
+	err := channel.doPost(context.Background(), []byte(`{"ok":true}`))
+	if err == nil {
+		t.Fatal("expected webhook error")
+	}
+	var webhookErr *webhookHTTPError
+	if !asWebhookError(err, &webhookErr) {
+		t.Fatalf("expected webhook HTTP error, got %T: %v", err, err)
+	}
+	if webhookErr.Body != prefix+largeTail[:1024-len(prefix)] {
+		t.Fatalf("unexpected body snippet length/content: got %d bytes", len(webhookErr.Body))
+	}
+}
+
+func TestWebhookChannelDoPostEmptyErrorBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	channel := NewWebhookChannel(WebhookConfig{URL: server.URL})
+	err := channel.doPost(context.Background(), []byte(`{}`))
+	if err == nil {
+		t.Fatal("expected webhook error")
+	}
+	var webhookErr *webhookHTTPError
+	if !asWebhookError(err, &webhookErr) {
+		t.Fatalf("expected webhook HTTP error, got %T: %v", err, err)
+	}
+	if webhookErr.Body != "" {
+		t.Fatalf("expected empty body snippet, got %q", webhookErr.Body)
+	}
+}
+
 func (m *mockChannel) Name() string { return m.name }
 
 func (m *mockChannel) Send(ctx context.Context, msg *Message) error {
@@ -1048,3 +1091,74 @@ func TestJoinStrings(t *testing.T) {
 
 // 抑制 unused import 警告（fmt 在 test helper 中间接使用）
 var _ = fmt.Sprintf
+
+// TestClassifyLarkSendErr pins the retry classifier: 5xx/408/429/network →
+// retry, 401 / Feishu 99991663 / 99991661 → refresh + retry, anything else →
+// no retry.
+func TestClassifyLarkSendErr(t *testing.T) {
+	cases := []struct {
+		name        string
+		err         error
+		wantRetry   bool
+		wantRefresh bool
+	}{
+		{"nil", nil, false, false},
+		{"network", errors.New("notification: lark http: dial tcp: timeout"), true, false},
+		{"http 500", errors.New("notification: lark status 500: boom"), true, false},
+		{"http 502", errors.New("notification: lark status 502: bad gateway"), true, false},
+		{"http 429", errors.New("notification: lark status 429: too many requests"), true, false},
+		{"http 408", errors.New("notification: lark status 408: timeout"), true, false},
+		{"http 401", errors.New("notification: lark status 401: unauthorized"), true, true},
+		{"feishu 99991663", errors.New("notification: lark api: token expired (code 99991663)"), true, true},
+		{"feishu 99991661", errors.New("notification: lark api: invalid token (code 99991661)"), true, true},
+		{"http 400 caller error", errors.New("notification: lark status 400: bad request"), false, false},
+		{"api code 99991400", errors.New("notification: lark api: invalid param (code 99991400)"), false, false},
+		{"marshal error", errors.New("notification: lark marshal: bad json"), false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			retry, refresh := classifyLarkSendErr(tc.err)
+			if retry != tc.wantRetry || refresh != tc.wantRefresh {
+				t.Errorf("classifyLarkSendErr(%v) = (%v,%v), want (%v,%v)", tc.err, retry, refresh, tc.wantRetry, tc.wantRefresh)
+			}
+		})
+	}
+}
+
+// TestLarkBotChannel_SendJSON_RetriesOn429 uses an httptest server that
+// returns 429 the first two times and 200 on the third to verify the retry
+// loop eventually succeeds.
+func TestLarkBotChannel_SendJSON_RetriesOn429(t *testing.T) {
+	var hits int32
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		hits++
+		n := hits
+		mu.Unlock()
+		// sendJSON is called via a non-Lark path; the test exercises
+		// sendJSONOnce directly to bypass the token refresh path.
+		if n <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte("throttled"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "msg": "ok"})
+	}))
+	defer srv.Close()
+
+	channel := &LarkBotChannel{
+		config:     LarkBotConfig{BaseURL: srv.URL},
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+	}
+	if err := channel.sendJSON(context.Background(), "/messages", map[string]any{"foo": "bar"}); err != nil {
+		t.Fatalf("sendJSON: %v", err)
+	}
+	mu.Lock()
+	got := hits
+	mu.Unlock()
+	if got != 3 {
+		t.Errorf("expected 3 attempts, got %d", got)
+	}
+}

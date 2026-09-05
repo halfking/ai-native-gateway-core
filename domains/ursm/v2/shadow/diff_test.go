@@ -21,7 +21,33 @@ func TestOrderMismatch(t *testing.T) {
 	if !d.HasOrderMismatch() {
 		t.Fatalf("order must mismatch")
 	}
+	if !d.HasTop1Mismatch() {
+		t.Fatal("reordered first candidate must record a top1 mismatch")
+	}
+	if d.Outcome() != OutcomeOrderMismatch {
+		t.Fatalf("Outcome()=%q, want %q", d.Outcome(), OutcomeOrderMismatch)
+	}
 	if d.HasAvailabilityMismatch() {
 		t.Fatalf("availability must match")
+	}
+}
+
+func TestOutcomeAndCapturedSlices(t *testing.T) {
+	oldOrder := []string{"a", "b"}
+	newOrder := []string{"a", "b"}
+	d := Compute("req", "tenant", "model", oldOrder, newOrder)
+	oldOrder[0] = "changed"
+	newOrder[0] = "changed"
+
+	if got := d.Outcome(); got != OutcomeIdentical {
+		t.Fatalf("Outcome()=%q, want %q", got, OutcomeIdentical)
+	}
+	result := d.Result()
+	if result.OldOrderedIDs[0] != "a" || result.NewOrderedIDs[0] != "a" {
+		t.Fatalf("Compute must capture defensive copies: %+v", result)
+	}
+	result.OldOrderedIDs[0] = "mutated"
+	if d.Result().OldOrderedIDs[0] != "a" {
+		t.Fatal("Result must return defensive copies")
 	}
 }

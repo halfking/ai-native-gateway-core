@@ -105,10 +105,12 @@ logs/
 
 # Vendored kx-design (use services/shared/kx-design instead)
 kx-design/
-version.json
 web/public/version.json
 web-vue/tsconfig.tsbuildinfo
 traffic-replay-bin
+
+# Python linter cache
+.ruff_cache/
 
 # ─────────────────────────────────────────────────────────────
 # 敏感信息防护 (2026-06-25 双仓库策略补充)
@@ -158,6 +160,9 @@ deploy/prod-*.yml
 # 部署记录目录（含完整方案/SQL变更/验证记录）
 deploy/r*-*/
 
+# deploy/sql/objects/ 为 sync-objects.sh 生成的派生副本（SSOT = sql/objects/）
+deploy/sql/objects/
+
 
 # 环境变量（明文，不提交）
 # Spec cf8aad1a9 §SOPS and Credentials: only encrypted forms are
@@ -202,6 +207,14 @@ reports/
 # 触发: docs/<feature>/results/*.json (如 docs/全方面测试/results/S*.json)
 docs/**/results/*.json
 
+# 2026-08-17: docs-archive overhaul
+# 历史过程文档（bugfix / audit / fix / phase / handoff / deploy-report / summary / report）
+# 统一归档到 docs/archive/，需要保留历史可追溯，**不应用上面的 SUMMARY/REPORT/AUDIT 排除规则**
+!docs/archive/**/*_SUMMARY.md
+!docs/archive/**/*_REPORT.md
+!docs/archive/**/*_AUDIT.md
+!docs/archive/**/TEST_RESULTS_*.md
+
 _to-be-deprecated/
 Dockerfile.web-fix
 web-dist.tar.gz
@@ -217,6 +230,9 @@ bin/
 backups/
 # Local DB dumps / pre-sync backups (large binaries, never commit)
 local-pre-sync-backup-*.dump
+
+# 2026-08-17: docs-archive skill backup directories (per-rule-08, soft-link originals for rollback)
+/docs/.archive-backup-*
 *.dump
 llm-gateway-go.v969.linux.amd64
 fix-selfcheck-keyhash
@@ -229,7 +245,32 @@ quality-monitor
 demo-history/
 test-data/
 test-history-demo.sh
+# Runtime mmlu_lite score snapshots produced by cmd/calc_quality and friends;
+# commit the schema under data/model-quality/scores/ at most once, then ignore.
+data/model-quality/scores/
+
+# 2026-09-03: attachment extractor 写出的文件必须落到
+# ~/Downloads/llm-gateway-files/attachments，源码目录下的 data/attachments/
+# 视为历史遗留 / 误启动产物，永远不入仓。
+data/attachments/
 
 # 全方面测试 run 产物（本地跑测试产生的大量 JSON 报告，不入仓）
 docs/全方面测试/results/runs/
 docs/全方面测试/results/*.jsonl
+gui-test-screenshots/
+
+# Tool binaries (cmd/tools/)
+# cfg_dump built binary at the repo root (go build ./cmd/cfg_dump produces ./cfg_dump)
+/cfg_dump
+
+/backfill_session_bodies
+/backfill_sessions_v2_v2
+/validate_sessions_v2
+
+# local benchmark build artifacts (cmd/autoclass-bench output)
+/autoclass-bench
+
+# 2026-09-05: benchmark 每次运行的原始输出与容量采集报告（机器本地归档，不入仓；
+# 只提交 docs/perf/bench-baseline.txt 基线文件与整理后的容量基线文档）
+docs/perf/bench-history/
+scripts/capacity-baseline/reports/

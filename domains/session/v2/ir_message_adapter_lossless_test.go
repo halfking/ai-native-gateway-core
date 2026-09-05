@@ -2,6 +2,7 @@ package v2
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -162,6 +163,25 @@ func TestPersist_EveryContentBlockKindSurvives(t *testing.T) {
 				}
 				if len(b.ToolResult.Content) != 1 || b.ToolResult.Content[0].Text != "not found" {
 					t.Fatalf("nested tool_result content lost: %+v", b.ToolResult.Content)
+				}
+			},
+		},
+		{
+			name: "tool_result keeps native Gemini response",
+			block: ir.ContentBlock{Type: "tool_result", ToolResult: &ir.ToolResult{
+				ToolUseID:      "gemini_call_lookup",
+				Content:        []ir.ContentBlock{{Type: "text", Text: `{"value":7}`}},
+				GeminiResponse: json.RawMessage(`{"value":7,"unknown":{"keep":true}}`),
+			}},
+			check: func(t *testing.T, b ir.ContentBlock) {
+				if b.ToolResult == nil {
+					t.Fatal("tool_result lost")
+				}
+				if b.ToolResult.GeminiResponse == nil {
+					t.Fatal("GeminiResponse lost across persistence round-trip")
+				}
+				if string(b.ToolResult.GeminiResponse) != `{"value":7,"unknown":{"keep":true}}` {
+					t.Fatalf("GeminiResponse = %s, want structured value preserved", b.ToolResult.GeminiResponse)
 				}
 			},
 		},
@@ -949,5 +969,76 @@ func TestPersist_TextOnlyStaysByteIdenticalToLegacy(t *testing.T) {
 	want := `[{"role":"system","content":"be brief"},{"role":"user","content":"hi"}]`
 	if string(wire) != want {
 		t.Fatalf("legacy wire shape changed:\n got %s\nwant %s", wire, want)
+	}
+}
+
+// TestPersist_GeminiStructuredResponseSurvivesRelayRoundTrip exercises the full
+// Gemini same-protocol path: a native functionResponse.response (object with
+// unknown members) is parsed from the wire, persisted via the v2 envelope
+// round-trip, and serialized back to Gemini. Without the GeminiResponse
+// persistence fix the structured value collapses to a {"result":"..."} text
+// wrapper after the session round-trip.
+func TestPersist_GeminiStructuredResponseSurvivesRelayRoundTrip(t *testing.T) {
+	wire := `{"contents":[{"role":"function","parts":[{
+		"functionResponse":{"name":"lookup","response":{"value":7,"unknown":{"keep":true}}}
+	}]}]}`
+
+	parsed, err := ir.ParseGemini([]byte(wire))
+	if err != nil {
+		t.Fatalf("ParseGemini: %v", err)
+	}
+	if len(parsed.Messages) != 1 {
+		t.Fatalf("want 1 message, got %d", len(parsed.Messages))
+	}
+
+	// Persist through the v2 envelope round-trip.
+	persisted := persistAndRecover(t, parsed.Messages[0])
+	if len(persisted.Content) != 1 || persisted.Content[0].ToolResult == nil {
+		t.Fatalf("tool_result lost: %#v", persisted.Content)
+	}
+	tr := persisted.Content[0].ToolResult
+	if tr.GeminiResponse == nil {
+		t.Fatal("GeminiResponse lost across persistence round-trip")
+	}
+	if string(tr.GeminiResponse) != `{"value":7,"unknown":{"keep":true}}` {
+		t.Fatalf("GeminiResponse = %s, want structured value preserved", tr.GeminiResponse)
+	}
+
+	// Serialize back to Gemini and confirm the structured shape is intact.
+	out, err := ir.SerializeGemini(&ir.InternalRequest{
+		Messages: []ir.Message{persisted},
+	})
+	if err != nil {
+		t.Fatalf("SerializeGemini: %v", err)
+	}
+	var gemini struct {
+		Contents []struct {
+			Parts []struct {
+				FunctionResponse json.RawMessage `json:"functionResponse"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(out, &gemini); err != nil {
+		t.Fatalf("unmarshal Gemini output: %v", err)
+	}
+	if len(gemini.Contents) != 1 || len(gemini.Contents[0].Parts) != 1 {
+		t.Fatalf("unexpected Gemini output: %s", out)
+	}
+	var fr struct {
+		Response json.RawMessage `json:"response"`
+	}
+	if err := json.Unmarshal(gemini.Contents[0].Parts[0].FunctionResponse, &fr); err != nil {
+		t.Fatalf("unmarshal functionResponse: %v", err)
+	}
+	var value any
+	if err := json.Unmarshal(fr.Response, &value); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	want := map[string]any{
+		"value":   float64(7),
+		"unknown": map[string]any{"keep": true},
+	}
+	if !reflect.DeepEqual(value, want) {
+		t.Fatalf("round-trip response = %#v, want %#v", value, want)
 	}
 }

@@ -1,6 +1,6 @@
 // Package durable — durable 持久接管的存储层（doc 18 §11/§12.2，SR-08/09/10）。
 //
-// 本包（Wave A）只做存储层：schema（migration 515）、DurableTaskStore
+// 本包（Wave A）只做存储层：schema（migration 516）、DurableTaskStore
 // （CreateAndClaim / claim / lease / fencing / write-ahead checkpoint /
 // 原子终态 / reapers）与 PendingStore CAS 投影。RecoveryWorker（SR-11）、
 // Handler 接线（SR-12）与指标（SR-13）属 Wave B。

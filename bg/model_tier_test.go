@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,11 +16,11 @@ import (
 
 func TestNormalizeModelKey(t *testing.T) {
 	cases := map[string]string{
-		"GPT-5.4":      "gpt-5.4",
-		" glm-5.2 ":    "glm-5.2",
+		"GPT-5.4":       "gpt-5.4",
+		" glm-5.2 ":     "glm-5.2",
 		"Claude-Sonnet": "claude-sonnet",
-		"":             "",
-		"   ":          "",
+		"":              "",
+		"   ":           "",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, normalizeModelKey(in), "input=%q", in)
@@ -48,12 +49,12 @@ func newTierWithSet(static, usage []string) *ModelTier {
 func TestIsFeaturedModel_StaticAndUsage(t *testing.T) {
 	m := newTierWithSet([]string{"gpt-5.4", "Claude-Sonnet"}, []string{"glm-5.2"})
 
-	assert.True(t, m.IsFeaturedModel("gpt-5.4", ""))          // static hit (raw)
-	assert.True(t, m.IsFeaturedModel("GPT-5.4", ""))          // case-insensitive
-	assert.True(t, m.IsFeaturedModel("claude-sonnet", ""))    // static normalized
-	assert.True(t, m.IsFeaturedModel("glm-5.2", ""))          // usage hit
-	assert.False(t, m.IsFeaturedModel("deepseek-chat", ""))   // neither
-	assert.False(t, m.IsFeaturedModel("", ""))                // empty
+	assert.True(t, m.IsFeaturedModel("gpt-5.4", ""))        // static hit (raw)
+	assert.True(t, m.IsFeaturedModel("GPT-5.4", ""))        // case-insensitive
+	assert.True(t, m.IsFeaturedModel("claude-sonnet", ""))  // static normalized
+	assert.True(t, m.IsFeaturedModel("glm-5.2", ""))        // usage hit
+	assert.False(t, m.IsFeaturedModel("deepseek-chat", "")) // neither
+	assert.False(t, m.IsFeaturedModel("", ""))              // empty
 
 	// Canonical fallback: raw not in set but canonical is static.
 	m2 := newTierWithSet([]string{"claude-sonnet-5"}, nil)
@@ -65,7 +66,7 @@ func TestIsFeaturedModel_NilSafe(t *testing.T) {
 	var m *ModelTier
 	assert.False(t, m.IsFeaturedModel("gpt-5.4", "")) // nil receiver
 
-	m2 := NewModelTier(nil, ModelTierConfig{}) // no snapshot stored
+	m2 := NewModelTier(nil, ModelTierConfig{})         // no snapshot stored
 	assert.False(t, m2.IsFeaturedModel("gpt-5.4", "")) // empty snapshot
 }
 
@@ -98,7 +99,44 @@ func TestModelTier_StopWithoutStart(t *testing.T) {
 	}
 }
 
-// TestModelTier_SQLReferencesActualColumns (audit fix #12) is a frozen-golden
+func TestModelTier_StopConcurrent(t *testing.T) {
+	m := NewModelTier(nil, ModelTierConfig{})
+	// Mark the tier as started without requiring a live database. This keeps the
+	// test focused on Stop's close-once lifecycle guarantee.
+	m.once.Store(true)
+
+	const callers = 100
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			m.Stop()
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case <-m.done:
+	default:
+		t.Fatal("concurrent Stop calls did not close done")
+	}
+}
+
+func TestModelTier_LoopRefreshUsesParentContext(t *testing.T) {
+	src := sourceFromFile(t, "model_tier.go")
+	loopStart := strings.Index(src, "func (m *ModelTier) loop(ctx context.Context)")
+	if loopStart < 0 {
+		t.Fatal("ModelTier.loop not found")
+	}
+	loopSrc := src[loopStart:]
+	if end := strings.Index(loopSrc, "\nfunc "); end >= 0 {
+		loopSrc = loopSrc[:end]
+	}
+	assert.Contains(t, loopSrc, "context.WithTimeout(ctx, 10*time.Second)")
+	assert.NotContains(t, loopSrc, "context.WithTimeout(context.Background(), 10*time.Second)")
+}
+
 // guard: the SQL inside ModelTier.refresh must reference the real schema column
 // names. It does not execute the query (that would need a DB) but it asserts
 // the literal strings so a regression like "model" (a nonexistent column) is
@@ -109,10 +147,10 @@ func TestModelTier_SQLReferencesActualColumns(t *testing.T) {
 	// The test fails if the developer accidentally references a missing column.
 	mustContain := []string{
 		"COALESCE(rl.outbound_model, rl.client_model)", // real model-name column
-		"FROM request_logs_hot rl",                    // table exists
-		"WHERE rl.success",                            // column exists
-		"WHERE tenant_id = $1",                        // tenant scope (audit #3)
-		"GROUP BY raw_model",                          // dedup (audit #11)
+		"FROM request_logs_hot rl",                     // table exists
+		"WHERE rl.success",                             // column exists
+		"WHERE tenant_id = $1",                         // tenant scope (audit #3)
+		"GROUP BY raw_model",                           // dedup (audit #11)
 	}
 	src := sourceFromFile(t, "model_tier.go")
 	for _, fragment := range mustContain {

@@ -2,7 +2,11 @@
 // Prefer this over quality-api-client.ts (axios + hardcoded baseURL).
 
 import { headers } from './_core'
-import type { ProviderQualityData, QualityGrade } from '../types/quality-api'
+import type {
+  ProviderQualityData,
+  ProviderRequestStats,
+  QualityGrade,
+} from '../types/quality-api'
 
 export interface QualitySummaryItem {
   provider_id: number
@@ -61,6 +65,26 @@ export async function getProviderQualityDetail(
   if (body.code === 40402 || body.code === 40401) return null
   if (body.code !== 0) {
     throw new Error(body.message || 'load provider quality failed')
+  }
+  return body.data ?? null
+}
+
+/**
+ * 取供应商近 30 天请求统计（轻量接口，供请求详情抽屉等复用）。
+ * 供应商不存在时返回 null。
+ * model 可选：非空时按模型粒度统计（raw_model_name 过滤，方案 C）。
+ */
+export async function getProviderRequestStats(
+  providerId: number,
+  model?: string,
+): Promise<ProviderRequestStats | null> {
+  const qs = model ? `?model=${encodeURIComponent(model)}` : ''
+  const body = await qualityFetch<ProviderRequestStats>(
+    `/api/quality/providers/${providerId}/stats${qs}`,
+  )
+  if (body.code === 40401 || body.code === 40402) return null
+  if (body.code !== 0) {
+    throw new Error(body.message || 'load provider request stats failed')
   }
   return body.data ?? null
 }

@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -20,6 +22,25 @@ var (
 	ErrSessionExpired  = errors.New("session expired")
 	ErrInvalidSession  = errors.New("invalid session")
 )
+
+// logSessionTypeMismatch records only bounded type metadata. TypedError's
+// Error method includes the full Redis key, which may contain a session or
+// tenant identifier and must not be duplicated into structured logs.
+func logSessionTypeMismatch(operation, sessionID string, err error) {
+	var typed *redissafe.TypedError
+	if errors.As(err, &typed) {
+		slog.Warn("session Redis key type mismatch",
+			"operation", operation,
+			"session_id", sessionID,
+			"expected_type", typed.Expected,
+			"actual_type", typed.Actual)
+		return
+	}
+	slog.Warn("session Redis key type mismatch",
+		"operation", operation,
+		"session_id", sessionID,
+		"type_error", true)
+}
 
 type Device struct {
 	DeviceSeed string    `json:"device_seed"`
@@ -86,12 +107,32 @@ type RedisClient struct {
 	client *redis.Client
 }
 
+// NewRedisClient creates a Redis client with optimized connection pool settings.
+// P1-15 fix (2026-08-28): Configure PoolSize, MinIdleConns, ConnMaxIdleTime, and
+// PoolTimeout to prevent connection exhaustion under high load and reduce latency.
 func NewRedisClient(addr, password string, db int) *RedisClient {
 	return &RedisClient{
 		client: redis.NewClient(&redis.Options{
 			Addr:     addr,
 			Password: password,
 			DB:       db,
+
+			// Connection pool sizing (P1-15):
+			// PoolSize: max concurrent connections. Set to 100 to handle high throughput.
+			// Default is 10*runtime.GOMAXPROCS, often too low for gateway workloads.
+			PoolSize: 100,
+
+			// MinIdleConns: keep warm connections ready for incoming requests.
+			// Reduces latency by avoiding cold connection establishment on request path.
+			MinIdleConns: 10,
+
+			// ConnMaxIdleTime: close idle connections after 5 minutes to prevent
+			// holding stale connections that may be closed by server or firewall.
+			ConnMaxIdleTime: 5 * time.Minute,
+
+			// PoolTimeout: wait time for connection from pool before giving up.
+			// Set to 2s to fail fast under extreme load rather than queueing indefinitely.
+			PoolTimeout: 2 * time.Second,
 		}),
 	}
 }
@@ -303,8 +344,27 @@ func (sm *Manager) Create(ctx context.Context, apiKeyID int, tenantID string, de
 }
 
 func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) {
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
+		return nil, ErrSessionNotFound
+	}
+
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			logSessionTypeMismatch("get", sessionID, err)
+			return nil, ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("redis error reading session: %w", err)
+	}
+	return sessionFromRedisHash(sessionID, data)
+}
+
+func sessionFromRedisHash(sessionID string, data map[string]string) (*Session, error) {
+	if len(data) == 0 {
 		return nil, ErrSessionNotFound
 	}
 
@@ -385,9 +445,21 @@ func (sm *Manager) Get(ctx context.Context, sessionID string) (*Session, error) 
 }
 
 func (sm *Manager) Delete(ctx context.Context, sessionID string) error {
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	client := sm.redis.Client()
+	if client == nil {
 		return ErrSessionNotFound
+	}
+
+	data, err := redissafe.SafeHGetAll(ctx, client, "session:"+sessionID)
+	if err != nil {
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return ErrSessionNotFound
+		}
+		if errors.Is(err, redissafe.ErrWrongType) {
+			logSessionTypeMismatch("delete", sessionID, err)
+			return ErrSessionNotFound
+		}
+		return fmt.Errorf("redis error reading session: %w", err)
 	}
 
 	apiKeyID, _ := strconv.Atoi(data["api_key_id"])
@@ -447,28 +519,54 @@ func (sm *Manager) Touch(ctx context.Context, sessionID string) error {
 	return sm.redis.client.Expire(ctx, "session:"+sessionID, sm.ttl).Err()
 }
 
-// BindAPIKey claims an orphan session (api_key_id=0) created before auth was wired.
+const bindAPIKeyScript = `
+local current = redis.call('HGET', KEYS[1], 'api_key_id')
+if current == false then
+  return {'missing'}
+end
+if current ~= '' and current ~= '0' then
+  return {'bound', current}
+end
+local storedTenant = redis.call('HGET', KEYS[1], 'tenant_id')
+if storedTenant ~= false and storedTenant ~= '' and storedTenant ~= ARGV[2] then
+  return {'tenant_mismatch', storedTenant}
+end
+redis.call('HSET', KEYS[1], 'api_key_id', ARGV[1], 'tenant_id', ARGV[2])
+redis.call('EXPIRE', KEYS[1], ARGV[3])
+redis.call('SADD', KEYS[2], ARGV[4])
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+return {'claimed'}
+`
+
+// BindAPIKey atomically claims an orphan session (api_key_id=0) created before
+// auth was wired. Only the winning claimant is added to its active-key set.
 func (sm *Manager) BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error {
-	data, err := sm.redis.HGetAll(ctx, "session:"+sessionID)
-	if err != nil || len(data) == 0 {
+	if sm == nil || sm.redis == nil || sm.redis.client == nil || sessionID == "" || apiKeyID <= 0 || tenantID == "" {
+		return ErrInvalidSession
+	}
+	activeKeyRedis := fmt.Sprintf("session:apiKey:%d:active", apiKeyID)
+	result, err := sm.redis.client.Eval(ctx, bindAPIKeyScript,
+		[]string{"session:" + sessionID, activeKeyRedis},
+		strconv.Itoa(apiKeyID), tenantID, int(sm.ttl.Seconds()), sessionID).StringSlice()
+	if err != nil {
+		return err
+	}
+	if len(result) == 0 {
 		return ErrSessionNotFound
 	}
-	oldAPIKeyID, _ := strconv.Atoi(data["api_key_id"])
-	if oldAPIKeyID != 0 {
-		return fmt.Errorf("session already bound to api key %d", oldAPIKeyID)
+	switch result[0] {
+	case "claimed":
+		return nil
+	case "missing":
+		return ErrSessionNotFound
+	case "bound", "tenant_mismatch":
+		if len(result) > 1 {
+			return fmt.Errorf("session already bound to api key %s", result[1])
+		}
+		return fmt.Errorf("session is unavailable for api key binding")
+	default:
+		return fmt.Errorf("unexpected session claim result %q", result[0])
 	}
-
-	activeKeyRedis := fmt.Sprintf("session:apiKey:%d:active", apiKeyID)
-	pipe := sm.redis.client.Pipeline()
-	pipe.HSet(ctx, "session:"+sessionID, map[string]any{
-		"api_key_id": strconv.Itoa(apiKeyID),
-		"tenant_id":  tenantID,
-	})
-	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
-	pipe.SAdd(ctx, activeKeyRedis, sessionID)
-	pipe.Expire(ctx, activeKeyRedis, sm.ttl)
-	_, err = pipe.Exec(ctx)
-	return err
 }
 
 func (sm *Manager) UpdateCacheInfo(ctx context.Context, sessionID string, cacheInfo CacheInfo) error {

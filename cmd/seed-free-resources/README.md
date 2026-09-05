@@ -15,9 +15,9 @@ go build -o seed-free-resources ./cmd/seed-free-resources
 ```bash
 ./seed-free-resources \
   --db-url "postgres://llm_gateway:password@localhost/llm_gateway_dev" \
-  --catalog ../../docs/omnifree/seed/free_resource_catalog.json \
-  --templates ../../docs/omnifree/seed/auto_combo_templates.json \
-  --keyless ../../docs/omnifree/seed/keyless_providers.json
+  --catalog ../../configs/seed/free_resource_catalog.json \
+  --templates ../../configs/seed/auto_combo_templates.json \
+  --keyless ../../configs/seed/keyless_providers.json
 ```
 
 ### 3. 仅导入免费资源目录
@@ -25,7 +25,7 @@ go build -o seed-free-resources ./cmd/seed-free-resources
 ```bash
 ./seed-free-resources \
   --db-url "postgres://..." \
-  --catalog ../../docs/omnifree/seed/free_resource_catalog.json
+  --catalog ../../configs/seed/free_resource_catalog.json
 ```
 
 ### 4. 试运行（不实际写入）
@@ -33,7 +33,7 @@ go build -o seed-free-resources ./cmd/seed-free-resources
 ```bash
 ./seed-free-resources \
   --db-url "postgres://..." \
-  --catalog ../../docs/omnifree/seed/free_resource_catalog.json \
+  --catalog ../../configs/seed/free_resource_catalog.json \
   --dry-run
 ```
 
@@ -42,7 +42,7 @@ go build -o seed-free-resources ./cmd/seed-free-resources
 ```bash
 ./seed-free-resources \
   --db-url "postgres://..." \
-  --catalog ../../docs/omnifree/seed/free_resource_catalog.json \
+  --catalog ../../configs/seed/free_resource_catalog.json \
   --tenant-id 2
 ```
 

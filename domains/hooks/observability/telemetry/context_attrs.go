@@ -26,37 +26,37 @@ const (
 //
 // 与 RequestLogEntry 完全独立：本表写入失败不影响 request_logs 写入。
 type ContextAttrsEntry struct {
-	Op               ContextAttrsOp `json:"op,omitempty"`
-	RequestID        string         `json:"request_id"`
-	TenantID         string         `json:"tenant_id"`
-	GwSessionID      *string        `json:"gw_session_id,omitempty"`
-	GwTaskID         *string        `json:"gw_task_id,omitempty"`
+	Op          ContextAttrsOp `json:"op,omitempty"`
+	RequestID   string         `json:"request_id"`
+	TenantID    string         `json:"tenant_id"`
+	GwSessionID *string        `json:"gw_session_id,omitempty"`
+	GwTaskID    *string        `json:"gw_task_id,omitempty"`
 
 	// ─── 客户端信息 ───
-	IdentityHash      *string `json:"identity_hash,omitempty"`
-	VirtualClientID  *string `json:"virtual_client_id,omitempty"`
-	VirtualIP        *string `json:"virtual_ip,omitempty"`
-	VirtualMAC       *string `json:"virtual_mac,omitempty"`
-	AgentName        *string `json:"agent_name,omitempty"`
-	AgentType        *string `json:"agent_type,omitempty"`
-	ClientIP         *string `json:"client_ip,omitempty"`
+	IdentityHash       *string `json:"identity_hash,omitempty"`
+	VirtualClientID    *string `json:"virtual_client_id,omitempty"`
+	VirtualIP          *string `json:"virtual_ip,omitempty"`
+	VirtualMAC         *string `json:"virtual_mac,omitempty"`
+	AgentName          *string `json:"agent_name,omitempty"`
+	AgentType          *string `json:"agent_type,omitempty"`
+	ClientIP           *string `json:"client_ip,omitempty"`
 	ClientForwardedFor *string `json:"client_forwarded_for,omitempty"`
-	APIKeyFingerprint *string `json:"api_key_fingerprint,omitempty"`
-	APIKeyID         *int    `json:"api_key_id,omitempty"`
-	ApplicationID    *int    `json:"application_id,omitempty"`
-	ApplicationCode  *string `json:"application_code,omitempty"`
-	OwnerUser        *string `json:"owner_user,omitempty"`
-	EndUserID        *string `json:"end_user_id,omitempty"`
-	CustomerID       *int64  `json:"customer_id,omitempty"`
-	ClientProtocol   *string `json:"client_protocol,omitempty"`
+	APIKeyFingerprint  *string `json:"api_key_fingerprint,omitempty"`
+	APIKeyID           *int    `json:"api_key_id,omitempty"`
+	ApplicationID      *int    `json:"application_id,omitempty"`
+	ApplicationCode    *string `json:"application_code,omitempty"`
+	OwnerUser          *string `json:"owner_user,omitempty"`
+	EndUserID          *string `json:"end_user_id,omitempty"`
+	CustomerID         *int64  `json:"customer_id,omitempty"`
+	ClientProtocol     *string `json:"client_protocol,omitempty"`
 
 	// ─── 请求信息 ───
-	IsRetry        bool    `json:"is_retry"`
-	AttemptNo      *int    `json:"attempt_no,omitempty"`
-	IsProbe        bool    `json:"is_probe"`
-	OriginStage    *string `json:"origin_stage,omitempty"`
-	TurnNo         *int    `json:"turn_no,omitempty"`
-	SourceChannel  *string `json:"source_channel,omitempty"`
+	IsRetry         bool    `json:"is_retry"`
+	AttemptNo       *int    `json:"attempt_no,omitempty"`
+	IsProbe         bool    `json:"is_probe"`
+	OriginStage     *string `json:"origin_stage,omitempty"`
+	TurnNo          *int    `json:"turn_no,omitempty"`
+	SourceChannel   *string `json:"source_channel,omitempty"`
 	ClientRequestID *string `json:"client_request_id,omitempty"`
 
 	// ─── 会话扩展信息 ───

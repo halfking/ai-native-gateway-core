@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-08-15T13:11:19.115Z",
+  "exported_at": "2026-09-05T12:08:21.384Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -119,8 +119,7 @@
           "label": "供应商",
           "labelKey": "nav.item.providers",
           "icon": "🔌",
-          "super": true,
-          "hideForTenant": true,
+          "providerConsole": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },
@@ -262,6 +261,16 @@
           "label": "系统设置",
           "labelKey": "nav.item.settings",
           "icon": "⚙️",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/proxy",
+          "label": "代理管理",
+          "labelKey": "nav.item.proxy",
+          "icon": "🌐",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",
@@ -451,6 +460,7 @@
           "hideForTenant": true,
           "opsPlatform": true,
           "external": true,
+          "activateWhenNotActivated": true,
           "tenantScope": "default",
           "pluginScope": "*"
         },

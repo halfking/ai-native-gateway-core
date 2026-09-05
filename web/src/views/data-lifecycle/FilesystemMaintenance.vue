@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../../i18n'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import { attachmentFilesystemStats, attachmentFilesystemCleanup } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -98,9 +99,7 @@ async function executeCleanup() {
     alert('请填写清理原因')
     return
   }
-  if (!confirm(`确认删除 ${cleanupForm.value.olderThanDays} 天前的文件？\n原因：${cleanupForm.value.reason}`)) {
-    return
-  }
+  if (!(await confirmDialog(t('dataLifecycle.confirmFileCleanup', { days: cleanupForm.value.olderThanDays, reason: cleanupForm.value.reason })))) return
   cleanupLoading.value = true
   try {
     const result = await attachmentFilesystemCleanup({
@@ -126,11 +125,6 @@ function formatBytes(bytes: number): string {
   const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
   const i = Math.floor(Math.log(bytes) / Math.log(k))
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return '-'
-  return new Date(dateStr).toLocaleString(localeRef.value)
 }
 
 onMounted(() => {
@@ -171,7 +165,7 @@ defineExpose({ load })
 
       <div class="stat-card">
         <div class="stat-label">最早文件时间</div>
-        <div class="stat-value-small">{{ formatDate(stats.oldest_file_time) }}</div>
+        <div class="stat-value-small">{{ fmtDateTime24h(stats.oldest_file_time) }}</div>
       </div>
 
       <!-- 磁盘空间统计 -->
@@ -318,7 +312,7 @@ defineExpose({ load })
 .btn-refresh {
   padding: 8px 16px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
   border: none;
   border-radius: var(--radius, 8px);
   cursor: pointer;
@@ -489,7 +483,7 @@ defineExpose({ load })
 
 .btn-preview {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .btn-preview:hover:not(:disabled) {
@@ -498,7 +492,7 @@ defineExpose({ load })
 
 .btn-execute {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .btn-execute:hover:not(:disabled) {
@@ -526,7 +520,7 @@ defineExpose({ load })
 
 .btn-danger {
   background: var(--danger);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -546,7 +540,7 @@ defineExpose({ load })
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -562,7 +556,7 @@ defineExpose({ load })
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0,0,0,.15);
+  box-shadow: 0 8px 24px var(--overlay-light);
 }
 
 .modal-content h3 {

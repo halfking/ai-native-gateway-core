@@ -1,0 +1,59 @@
+[Unit]
+# 2026-08-31: this is the runtime contract for blue-green candidates on env 154
+# and 245. We pin a unit that *follows the active binary symlink* (not a
+# per-port slot) because that is what production 154/245 currently run and
+# what the seamless deployer swap path assumes. The unit restarts on failure
+# so a transient bind or DB blip does not leave the candidate dead, and logs
+# go to journald so probe failures can be diagnosed without log scraping.
+#
+# Do NOT change ExecStart to a per-port slot (e.g. slots/%i/llm-gateway-go)
+# without first wiring the seamless deployer to populate slots/, OR you will
+# reproduce the 2026-08-31 incident where the candidate silently failed to
+# bind and the deploy script could not surface which probe failed.
+Description=LLM Gateway Go blue-green candidate (port %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/llm-gateway-go
+# Shared configuration (DB URL, secrets, Redis) comes from the active env
+# file. The runtime role keys off a plain Environment= directive — the env
+# file does NOT set it, so systemd merge order between Environment= and
+# EnvironmentFile= is irrelevant here.
+EnvironmentFile=/etc/llm-gateway-go/env
+Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
+
+# Per-instance identity, unified with env 245's llmgo-245-canary@.service:
+# %i is the candidate port and ALTERNATES between 8781 and 8782 on every
+# deploy (the deployer picks the port the active is NOT on). systemd cannot
+# expand %i inside EnvironmentFile=, so the port is pinned on ExecStart —
+# /usr/bin/env sets it directly in the exec environment, which
+# deterministically overrides anything the EnvironmentFile/Environment lines
+# set, regardless of systemd's merge order. (The previous Environment=:%i
+# form only worked because /etc/llm-gateway-go/env happens not to set
+# LLM_GATEWAY_LISTEN; one added line there would have silently broken every
+# candidate.)
+#
+# The candidate is pinned to its immutable slot so pre-warm never mutates
+# current or changes the running service's binary/version identity.
+ExecStart=/usr/bin/env LLM_GATEWAY_LISTEN=:%i LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/slots/%i/version.json LLM_GATEWAY_LOG_FILE=/opt/llm-gateway-go/logs/gateway-canary-%i.log /opt/llm-gateway-go/slots/%i/llm-gateway-go
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=25s
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+LimitNOFILE=65536
+LimitNPROC=32768
+
+[Install]
+WantedBy=multi-user.target

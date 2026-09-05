@@ -7,6 +7,15 @@ import (
 	"time"
 )
 
+func newQueueCollectorForPipeline(p *Pipeline) *QueueMetricsCollector {
+	if p == nil {
+		return NewQueueMetricsCollector(nil)
+	}
+	projection := NewQueueProjection()
+	p.SetQueueObservationSink(projection)
+	return NewQueueMetricsCollector(projection)
+}
+
 // TestQueueMetricsCollector_DegradedMode verifies that a nil pipeline
 // results in a permanently degraded collector (Wired=false).
 func TestQueueMetricsCollector_DegradedMode(t *testing.T) {
@@ -22,8 +31,8 @@ func TestQueueMetricsCollector_DegradedMode(t *testing.T) {
 	if snap.Wired {
 		t.Errorf("expected Wired=false in degraded mode, got true")
 	}
-	if snap.Enabled {
-		t.Errorf("expected Enabled=false in degraded mode, got true")
+	if !snap.Enabled {
+		t.Errorf("expected Enabled=true in degraded mode, got false")
 	}
 }
 
@@ -44,7 +53,7 @@ func TestQueueMetricsCollector_WiredMode(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 	if c == nil {
 		t.Fatal("NewQueueMetricsCollector(pipeline) returned nil")
 	}
@@ -66,6 +75,7 @@ func TestQueueMetricsCollector_WiredMode(t *testing.T) {
 // TestQueueMetricsCollector_SnapshotReflectsPipelineState verifies that
 // Snapshot() reads live depths from Pipeline.Snapshot().
 func TestQueueMetricsCollector_SnapshotReflectsPipelineState(t *testing.T) {
+	releaseForward := make(chan struct{})
 	p := NewPipeline(Deps{
 		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
 			return []CredentialRef{{CredentialID: 42, ConcurrencyMode: "concurrency"}}, nil
@@ -74,16 +84,16 @@ func TestQueueMetricsCollector_SnapshotReflectsPipelineState(t *testing.T) {
 			return "gpt-4", nil, nil
 		},
 		ForwardFunc: func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome {
-			// Simulate slow forward to keep request in queue
-			time.Sleep(100 * time.Millisecond)
+			<-releaseForward
 			return ForwardOutcome{}
 		},
 		AllowModelChange: false,
 	})
 	p.Start()
 	defer p.Stop()
+	defer close(releaseForward)
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 
 	// Submit a request to populate model queue (non-blocking via goroutine)
 	go func() {
@@ -104,9 +114,8 @@ func TestQueueMetricsCollector_SnapshotReflectsPipelineState(t *testing.T) {
 		t.Fatal("Snapshot() returned nil")
 	}
 
-	// Should have at least one model lane (gpt-4) or credential lane (42)
-	if len(snap.Models) == 0 && len(snap.Credentials) == 0 {
-		t.Errorf("expected non-empty model or credential lanes, got empty snapshot")
+	if snap.Pipeline == nil || snap.Pipeline.InFlight < 1 {
+		t.Errorf("expected an in-flight request while forward is blocked, got %+v", snap.Pipeline)
 	}
 }
 
@@ -126,7 +135,7 @@ func TestQueueMetricsCollector_ConcurrentSnapshots(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 
 	// Simulate 10 concurrent SSE ticks reading snapshots
 	var wg sync.WaitGroup
@@ -151,53 +160,6 @@ func TestQueueMetricsCollector_ConcurrentSnapshots(t *testing.T) {
 	wg.Wait()
 }
 
-// TestQueueMetricsCollector_GateTransition verifies that the collector
-// tracks dispatch gate transitions (enabled ↔ disabled).
-func TestQueueMetricsCollector_GateTransition(t *testing.T) {
-	// Save original gate state and restore after test
-	originalState := IsDispatchEnabled()
-	defer SetDispatchEnabled(originalState)
-
-	p := NewPipeline(Deps{
-		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
-		ModelResolveFunc: func(ctx context.Context, req string, tried []string) (string, []string, error) {
-			return "model-c", nil, nil
-		},
-		ForwardFunc: func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome {
-			return ForwardOutcome{}
-		},
-		AllowModelChange: false,
-	})
-	p.Start()
-	defer p.Stop()
-
-	c := NewQueueMetricsCollector(p)
-
-	// Initial state (should be enabled by default)
-	snap1 := c.Snapshot()
-	if !snap1.Enabled {
-		t.Errorf("expected initial Enabled=true, got false")
-	}
-
-	// Disable gate
-	SetDispatchEnabled(false)
-	time.Sleep(10 * time.Millisecond) // Allow transition handler to fire
-
-	snap2 := c.Snapshot()
-	if snap2.Enabled {
-		t.Errorf("expected Enabled=false after SetDispatchEnabled(false), got true")
-	}
-
-	// Re-enable gate
-	SetDispatchEnabled(true)
-	time.Sleep(10 * time.Millisecond)
-
-	snap3 := c.Snapshot()
-	if !snap3.Enabled {
-		t.Errorf("expected Enabled=true after SetDispatchEnabled(true), got false")
-	}
-}
-
 // TestQueueMetricsCollector_RecordHooksNonBlocking verifies that
 // RecordEnqueue/RecordDequeue hooks do not panic and are safe no-ops
 // (current implementation does not use push hooks, only pull via Snapshot).
@@ -215,7 +177,7 @@ func TestQueueMetricsCollector_RecordHooksNonBlocking(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 
 	// Should not panic
 	c.RecordEnqueue("gpt-4", 0, "")

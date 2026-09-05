@@ -31,6 +31,7 @@ type IntentRedisStore interface {
 func toCacheIntent(in CachedIntent) ursmcache.Intent {
 	return ursmcache.Intent{
 		TaskType:     string(in.TaskType),
+		WorkType:     in.WorkType,
 		ChosenModel:  in.ChosenModel,
 		CredentialID: in.CredentialID,
 		Profile:      string(in.Profile),
@@ -45,6 +46,7 @@ func toCacheIntent(in CachedIntent) ursmcache.Intent {
 func fromCacheIntent(ci ursmcache.Intent) CachedIntent {
 	return CachedIntent{
 		TaskType:     TaskType(ci.TaskType),
+		WorkType:     ci.WorkType,
 		ChosenModel:  ci.ChosenModel,
 		CredentialID: ci.CredentialID,
 		Profile:      Profile(ci.Profile),
@@ -66,6 +68,7 @@ func fromCacheIntent(ci ursmcache.Intent) CachedIntent {
 // already handles cross-instance credential stickiness via DB.
 type CachedIntent struct {
 	TaskType     TaskType
+	WorkType     string
 	ChosenModel  string
 	CredentialID int64
 	Profile      Profile
@@ -214,19 +217,29 @@ func (c *SessionIntentCache) IncrementHit(sessionID string) (CachedIntent, bool)
 		return CachedIntent{}, false
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	intent, ok := c.entries[sessionID]
-	if !ok {
-		return CachedIntent{}, false
+	if !ok || c.now().After(intent.ExpiresAt) {
+		if ok {
+			delete(c.entries, sessionID)
+		}
+		c.mu.Unlock()
+		intent, ok = c.redisFallback(sessionID)
+		if !ok {
+			return CachedIntent{}, false
+		}
+		c.mu.Lock()
 	}
 	now := c.now()
-	if now.After(intent.ExpiresAt) {
-		delete(c.entries, sessionID)
-		return CachedIntent{}, false
-	}
 	intent.HitCount++
 	intent.ExpiresAt = now.Add(c.ttl)
 	c.entries[sessionID] = intent
+	c.mu.Unlock()
+
+	if c.redisStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_ = c.redisStore.Set(ctx, sessionID, toCacheIntent(intent), c.ttl)
+	}
 	return intent, true
 }
 

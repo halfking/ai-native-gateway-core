@@ -22,6 +22,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, LifecycleSpecs()...)
 	out = append(out, SessionAnalyticsSpecs()...)
 	out = append(out, DashboardSpecs()...)
+	// 2026-08-19: read-only legacy/canonical statistics shadow comparison.
+	out = append(out, StatsShadowSpecs()...)
 	// 2026-07-17: Sessions V2 feature flags (Migration 430)
 	out = append(out, SessionsV2Specs()...)
 	// 2026-07-18: dedicated session-manager service JWT gate.
@@ -37,6 +39,17 @@ func PlatformSpecs() []*Spec {
 	out = append(out, SessionsV2CompressionPlatformSpecs()...)
 	// 2026-08-11: V2 多层队列调度（模型/凭据队列 + 并发模式削峰 + 分层故障转移）。
 	out = append(out, DispatchSpecs()...)
+	// 2026-08-17: per-credential, per-client quota enforcement (FP-slot + concurrency).
+	// Parked (AUDIT_24H_20260817.md B1): the package has zero production
+	// importers and no code reads credential_client_quota.mode. Surfacing a
+	// no-op knob lets operators believe enforcement is "shadow"-on when nothing
+	// is recorded. Re-register when the dispatch path is actually wired.
+	// out = append(out, CredentialClientQuotaSpecs()...)
+	// 2026-08-20: 项目归属（LLM 推断）平台级主开关，默认关闭。
+	out = append(out, ProjectAttributionSpecs()...)
+	// Gateway admission controls are platform-scoped and must be registered so
+	// settings_kv values can override the environment fallback.
+	out = append(out, GatewaySpecs()...)
 	return out
 }
 

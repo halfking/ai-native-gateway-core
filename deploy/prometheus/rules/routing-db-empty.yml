@@ -1,0 +1,15 @@
+groups:
+  - name: routing_candidate_diagnostics
+    interval: 30s
+    rules:
+      - alert: RoutingCandidateDBEmpty
+        expr: increase(llmgw_routing_candidate_diagnostics_total{event="db_empty"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: llm-gateway
+          component: routing
+        annotations:
+          summary: "路由候选数据库结果为空"
+          description: "过去 5 分钟出现 db_empty 候选诊断事件，检查 model_offers、凭据/提供商状态和路由可用性视图。"
+          runbook: "检查 gateway candidate_diag 日志与 model_offers、credentials、providers、v_routable_credential_models。"

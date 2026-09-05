@@ -151,3 +151,41 @@ func TestStickyCache_RecordSuccessMultiLevel_DynamicTTL(t *testing.T) {
 	// 允许 1 秒的误差
 	assert.WithinDuration(t, expectedExpiry, entry.expiresAt, 1*time.Second)
 }
+
+func TestStickyCache_NewSessionDoesNotInheritClientModelOrClientBinding(t *testing.T) {
+	cache := NewStickyCache()
+	appID, apiKeyID := 1, 2
+
+	cache.RecordSuccessMultiLevel("tenant", &appID, &apiKeyID, "profile", "session-a", "minimax-m3", 42)
+
+	first := cache.GetMultiLevel("tenant", &appID, &apiKeyID, "profile", "session-a", "minimax-m3")
+	if !first.Found || first.Level != StickyLevelSession || first.CredentialID != 42 {
+		t.Fatalf("same session must reuse L1 binding, got %+v", first)
+	}
+
+	second := cache.GetMultiLevel("tenant", &appID, &apiKeyID, "profile", "session-b", "minimax-m3")
+	if second.Found {
+		t.Fatalf("new session must not inherit prior client/model binding, got %+v", second)
+	}
+
+	_, l2, l3 := buildStickyKeys("tenant", &appID, &apiKeyID, "profile", "session-a", "minimax-m3")
+	cache.mu.RLock()
+	_, l2Exists := cache.items[l2]
+	_, l3Exists := cache.items[l3]
+	cache.mu.RUnlock()
+	if l2Exists || l3Exists {
+		t.Fatalf("complete session/model success must persist only L1; l2=%t l3=%t", l2Exists, l3Exists)
+	}
+}
+
+func TestStickyCache_IncompleteIdentityUsesL3Fallback(t *testing.T) {
+	cache := NewStickyCache()
+	appID, apiKeyID := 1, 2
+
+	cache.RecordSuccessMultiLevel("tenant", &appID, &apiKeyID, "profile", "", "", 42)
+
+	lookup := cache.GetMultiLevel("tenant", &appID, &apiKeyID, "profile", "", "")
+	if !lookup.Found || lookup.Level != StickyLevelClient || lookup.CredentialID != 42 {
+		t.Fatalf("incomplete identity must retain L3 compatibility fallback, got %+v", lookup)
+	}
+}

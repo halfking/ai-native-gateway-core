@@ -16,6 +16,8 @@ func TestStreamAnthropicPassthrough_ForwardsBytes(t *testing.T) {
 		//nolint:errcheck // HTTP write error non-recoverable
 		_, _ = w.Write([]byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\"}}\n\n"))
 		//nolint:errcheck // HTTP write error non-recoverable
+		_, _ = w.Write([]byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n"))
+		//nolint:errcheck // HTTP write error non-recoverable
 		_, _ = w.Write([]byte("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
 	}))
 	defer upstream.Close()

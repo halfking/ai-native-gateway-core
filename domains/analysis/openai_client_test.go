@@ -11,15 +11,18 @@ import (
 func TestOpenAIClientCompleteWithConfig(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			Model       string              `json:"model"`
-			Messages    []map[string]string `json:"messages"`
-			MaxTokens   int                 `json:"max_tokens"`
-			Temperature float64             `json:"temperature"`
+			Model          string              `json:"model"`
+			Messages       []map[string]string `json:"messages"`
+			MaxTokens      int                 `json:"max_tokens"`
+			Temperature    float64             `json:"temperature"`
+			ResponseFormat struct {
+				Type string `json:"type"`
+			} `json:"response_format"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatal(err)
 		}
-		if request.Model != "summary-fast" || request.MaxTokens != 500 || request.Temperature != 0.3 {
+		if request.Model != "summary-fast" || request.MaxTokens != 500 || request.Temperature != 0.3 || request.ResponseFormat.Type != "json_object" {
 			t.Fatalf("request = %+v", request)
 		}
 		if len(request.Messages) != 2 || request.Messages[0]["role"] != "system" {

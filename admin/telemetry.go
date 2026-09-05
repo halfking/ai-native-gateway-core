@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type decisionLogInput struct {
@@ -106,6 +107,20 @@ type telemetryIngester struct {
 	done  chan struct{}
 	wg    sync.WaitGroup
 
+	// 2026-08-26: optional Redis client wired by SetIngesterRedisClient.
+	// When non-nil, persistRequestLog bumps the canonical model name into
+	// the recently-used ZSET so the admin "凭据路由模型" picker has a
+	// Redis fast path that mirrors the request_logs_hot SQL aggregate.
+	// Nil-safe: persistRequestLog skips the bump without affecting the
+	// existing ingest contract.
+	//
+	// Wrapped in atomic.Pointer so SetIngesterRedisClient (called from
+	// main goroutine after StartIngester) and persistRequestLog (called
+	// from the ingest worker goroutine) race-free share the value. The
+	// underlying *redis.Client is itself safe for concurrent use, so a
+	// pointer swap is sufficient — no extra mutex required.
+	redisClient atomic.Pointer[redis.Client]
+
 	// 2026-07-16: failure counters split by category so ops can
 	// distinguish transient (worth retrying) from permanent (data
 	// quality / schema drift) failures. Read via admin/metrics if
@@ -113,6 +128,17 @@ type telemetryIngester struct {
 	failTransient uint64 // atomic
 	failPermanent uint64 // atomic
 	failRetried   uint64 // atomic
+}
+
+// SetIngesterRedisClient wires the optional Redis client used by
+// persistRequestLog to bump the recently-used ZSET on success. Call
+// from cmd/gateway/main.go once the cluster Redis client is healthy.
+// Safe to leave unset — the bump is best-effort and skipped when nil.
+func SetIngesterRedisClient(rc *redis.Client) {
+	if ingester == nil {
+		return
+	}
+	ingester.redisClient.Store(rc)
 }
 
 var ingester *telemetryIngester
@@ -250,13 +276,11 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	search := buildSearchText(e)
 
 	// 2026-07-21: Implement proper two-table separation (Ticket #10, Issue #8)
-	// - request_logs_hot: stores metadata + preview fields (first ~500 chars) + outbound_body
-	// - request_logs_bodies_hot: stores complete request_body/response_body
+	// - request_logs_hot: stores metadata + preview fields (first ~500 chars)
+	// - request_logs_bodies_hot: stores complete request/response/outbound bodies
 	//
-	// Note: outbound_body stays in request_logs_hot because it's part of the v3
-	// session compression feature (migration 016) and is typically much smaller
-	// than request_body (delta-append only adds new messages). The 70% disk savings
-	// come from moving request_body and response_body (the largest columns).
+	// Phase 1 routes outbound_body to the dedicated body table as well, so the
+	// wide metadata table does not duplicate TOAST-heavy payloads.
 	//
 	// This resolves the storage pressure (3.4 GB / 24k rows on 154) by moving
 	// the two largest JSONB columns out of the metadata table. Queries that need
@@ -378,6 +402,18 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
 		slog.Warn("telemetry ingest bodies failed", "request_id", e.RequestID, "error", err)
 		return
+	}
+
+	// 2026-08-26: bump the recently-used ZSET so the admin "凭据路由模型"
+	// picker has a Redis fast path mirroring the request_logs_hot aggregate.
+	// Fires only on successful user requests (probes do not write here) and
+	// only when the row actually persisted. Best-effort: Redis errors are
+	// swallowed so the ingest contract is unchanged. ClientModel is the
+	// canonical name the gateway resolves before writing request_logs_hot
+	// (the request_log_ingest schema does not carry a separate canonical
+	// field — ClientModel is the lower-cased canonical form on this path).
+	if rc := t.redisClient.Load(); rc != nil && e.Success {
+		RecordRecentlyUsedModel(ctx, rc, nonEmptyDefault(e.TenantID), derefStr(e.ClientModel), false)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -34,8 +34,8 @@ func TestHandleCredentialDecisions(t *testing.T) {
 
 		m.handleCredentialDecisions(w, req)
 
-		if w.Code != http.StatusBadRequest {
-			t.Errorf("expected 400, got %d", w.Code)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Errorf("expected 503, got %d", w.Code)
 		}
 	})
 }
@@ -115,7 +115,8 @@ func TestCredentialDecisionsIntegration(t *testing.T) {
 	h := &Handler{db: pool}
 	m := &CredentialMonitorHandlers{h: h}
 
-	// Insert test data
+	// Insert test data: two models on the same credential so the optional
+	// model filter has something to discriminate.
 	_, err = pool.Exec(ctx, `
 		INSERT INTO routing_decision_log_default (
 			ts, request_id, tenant_id, model, chosen_credential_id, chosen_provider_id,
@@ -124,6 +125,15 @@ func TestCredentialDecisionsIntegration(t *testing.T) {
 	`, time.Now())
 	if err != nil {
 		t.Fatalf("failed to insert test data: %v", err)
+	}
+	_, err = pool.Exec(ctx, `
+		INSERT INTO routing_decision_log_default (
+			ts, request_id, tenant_id, model, chosen_credential_id, chosen_provider_id,
+			tier, candidates_tried, success, latency_ms
+		) VALUES ($1, gen_random_uuid(), 'test', 'claude-x', 999, 1, 0, 1, true, 120)
+	`, time.Now())
+	if err != nil {
+		t.Fatalf("failed to insert second model row: %v", err)
 	}
 
 	// Test the endpoint
@@ -146,8 +156,35 @@ func TestCredentialDecisionsIntegration(t *testing.T) {
 	}
 
 	decisions, ok := resp["decisions"].([]any)
-	if !ok || len(decisions) == 0 {
-		t.Errorf("expected at least one decision, got %v", resp["decisions"])
+	if !ok || len(decisions) < 2 {
+		t.Errorf("expected at least two decisions, got %v", resp["decisions"])
+	}
+
+	// 2026-08-18: model filter scopes the list to one model×credential pair
+	// and matches case-insensitively across model/client_model/outbound_model.
+	for _, modelParam := range []string{"gpt-4", "GPT-4"} {
+		freq := httptest.NewRequest(http.MethodGet, "/api/credentials/decisions?credential_id=999&model="+modelParam, nil)
+		fw := httptest.NewRecorder()
+		m.handleCredentialDecisions(fw, freq)
+		if fw.Code != http.StatusOK {
+			t.Errorf("model=%s: expected 200, got %d: %s", modelParam, fw.Code, fw.Body.String())
+			continue
+		}
+		var fresp map[string]any
+		if err := json.NewDecoder(fw.Body).Decode(&fresp); err != nil {
+			t.Fatalf("model=%s: failed to decode response: %v", modelParam, err)
+		}
+		fdecisions, ok := fresp["decisions"].([]any)
+		if !ok || len(fdecisions) == 0 {
+			t.Errorf("model=%s: expected filtered decisions, got %v", modelParam, fresp["decisions"])
+			continue
+		}
+		for _, entry := range fdecisions {
+			row, _ := entry.(map[string]any)
+			if row["model"] != "gpt-4" {
+				t.Errorf("model=%s: expected only gpt-4 rows, got %v", modelParam, row["model"])
+			}
+		}
 	}
 
 	// Cleanup

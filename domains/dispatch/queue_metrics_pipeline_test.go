@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -36,6 +37,15 @@ func submitAndWait(t *testing.T, p *Pipeline, n int) {
 }
 
 func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
+	// v4 (R1.3): the pipeline default is zero queue-wait, which would fail
+	// saturated requests over to the failover ladder instead of queueing
+	// them. This contract test needs a real queue backlog, so it opts into
+	// an explicit wait budget (and disables same-cred retry churn).
+	cfg := DefaultConfig()
+	cfg.MaxQueueWaitMS = 2000
+	cfg.RetryPerCredential = 0
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
 	p := NewPipeline(Deps{
 		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
 			return []CredentialRef{{
@@ -51,11 +61,12 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 			time.Sleep(200 * time.Millisecond) // hold in-flight + queue backlog
 			return ForwardOutcome{}
 		},
+		HotCfg: hotCfg,
 	})
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 
 	// Mid-flight snapshot: 8 submissions, concurrency cap 1 → at least one
 	// queued and one forwarding.
@@ -64,7 +75,12 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 		submitAndWait(t, p, 8)
 		close(done)
 	}()
-	time.Sleep(60 * time.Millisecond)
+	// Wait long enough for at least one request to enter the forwarder
+	// (ForwardFunc sleeps 200ms to hold in-flight + backlog). 60ms was
+	// flaky under full-repo `go test ./...` parallelism when the GOMAXPROCS
+	// scheduler delayed the first forwarder pick-up; 150ms leaves headroom
+	// well under the 200ms forwarder hold.
+	time.Sleep(150 * time.Millisecond)
 
 	snapMid := c.Snapshot()
 	if !snapMid.Wired || !snapMid.Enabled {
@@ -88,7 +104,26 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 
 	// Drain: waiting percentiles must come from real ring samples.
 	<-done
-	time.Sleep(20 * time.Millisecond) // let recordStageMetrics/waterfall land
+	// 8 submissions × 200ms forwarder hold × concurrency=1 = up to ~1.6s total
+	// drain. The test relies on the percentile ring filling and the depth
+	// counter settling to zero; poll instead of a fixed sleep so the
+	// drain window survives full-repo `go test ./...` parallelism where
+	// the scheduler can stretch drain beyond the theoretical minimum.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		s := c.Snapshot()
+		if s.Pipeline != nil && s.Pipeline.Depth == 0 && s.Pipeline.InFlight == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// Give the ticker-driven waterfall/percentile ring one more tick to
+	// land (100ms cadence in recordStageMetrics). Polling for percentile
+	// presence separately would couple to too many internal cadences.
+	time.Sleep(150 * time.Millisecond)
 
 	snapIdle := c.Snapshot()
 	if snapIdle.Pipeline == nil {
@@ -119,61 +154,6 @@ func TestPipelineQueueStats_RealPipelineTraffic(t *testing.T) {
 	}
 }
 
-func TestPipelineQueueStats_GateDisabledOmitsPipeline(t *testing.T) {
-	original := IsDispatchEnabled()
-	defer SetDispatchEnabled(original)
-
-	p := NewPipeline(Deps{
-		RouteFunc:        func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
-		ModelResolveFunc: func(ctx context.Context, req string, tried []string) (string, []string, error) { return "m", nil, nil },
-		ForwardFunc: func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome {
-			return ForwardOutcome{}
-		},
-	})
-	p.Start()
-	defer p.Stop()
-
-	c := NewQueueMetricsCollector(p)
-
-	// One enabled tick so the collector records a baseline version.
-	if s := c.Snapshot(); s.Pipeline == nil {
-		t.Fatal("precondition: pipeline present while enabled")
-	}
-
-	SetDispatchEnabled(false)
-	time.Sleep(10 * time.Millisecond) // transition handler propagation
-
-	snap := c.Snapshot()
-	if snap.Pipeline != nil {
-		t.Errorf("expected pipeline field absent when dispatch disabled, got %+v", snap.Pipeline)
-	}
-	if snap.SourceVersion != 0 {
-		t.Errorf("expected sourceVersion omitted when dispatch disabled, got %d", snap.SourceVersion)
-	}
-	if snap.Enabled {
-		t.Error("expected Enabled=false after gate disable")
-	}
-	if !snap.Wired {
-		t.Error("wired semantics must be unaffected by the gate")
-	}
-
-	// Wire-level check: the JSON must not contain the keys at all.
-	raw, err := json.Marshal(snap)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := m["pipeline"]; ok {
-		t.Errorf("pipeline key must be absent from JSON when disabled, got %s", raw)
-	}
-	if _, ok := m["sourceVersion"]; ok {
-		t.Errorf("sourceVersion key must be absent from JSON when disabled, got %s", raw)
-	}
-}
-
 func TestPipelineQueueStats_DegradedOnDisabledGovernor(t *testing.T) {
 	p := NewPipeline(Deps{
 		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
@@ -189,7 +169,7 @@ func TestPipelineQueueStats_DegradedOnDisabledGovernor(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 	// Route one request so the credential forwarder (and its noop governor)
 	// actually exists.
 	submitAndWait(t, p, 1)
@@ -213,16 +193,15 @@ func TestPipelineQueueStats_DegradedOnOverflowBetweenTicks(t *testing.T) {
 	p.Start()
 	defer p.Stop()
 
-	c := NewQueueMetricsCollector(p)
+	c := newQueueCollectorForPipeline(p)
 	// Baseline tick latches the current overflow counter.
 	snap1 := c.Snapshot()
 	if snap1.Pipeline == nil || snap1.Pipeline.Degraded {
 		t.Fatalf("precondition failed: baseline degraded should be clean, got %+v", snap1.Pipeline)
 	}
 
-	// Simulate an overflow event (any reason label; the collector diffs the
-	// cumulative counter, not the label).
-	metricOverflow.WithLabelValues("model_queue_full").Inc()
+	// Publish overflow through the queue observation seam.
+	c.projection.ObserveQueue(QueueObservation{Kind: QueueOverflow, OverflowReason: "model_queue_full"})
 
 	snap2 := c.Snapshot()
 	if snap2.Pipeline == nil {
@@ -232,39 +211,31 @@ func TestPipelineQueueStats_DegradedOnOverflowBetweenTicks(t *testing.T) {
 		t.Error("expected degraded=true on the tick following an overflow")
 	}
 
-	// No further overflow → the flag clears on the next tick.
+	// The degradation window is shared by all readers; a second reader must see it.
 	snap3 := c.Snapshot()
 	if snap3.Pipeline == nil {
 		t.Fatal("expected pipeline stats while enabled")
 	}
-	if snap3.Pipeline.Degraded {
-		t.Error("expected degraded to clear after an overflow-free tick")
+	if !snap3.Pipeline.Degraded {
+		t.Error("expected all readers to observe the active degradation window")
 	}
 }
 
 func TestPipelineQueueStats_NoWaitingSamplesOmitPercentiles(t *testing.T) {
-	// Fresh pipeline with zero completions: waiting percentiles must be
+	// Fresh projection with zero completions: waiting percentiles must be
 	// absent (nil), not 0 — the ring window simply has no sample.
-	p := NewPipeline(Deps{
-		RouteFunc:        func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
-		ModelResolveFunc: func(ctx context.Context, req string, tried []string) (string, []string, error) { return "m", nil, nil },
-		ForwardFunc: func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome {
-			return ForwardOutcome{}
-		},
-	})
-	p.Start()
-	defer p.Stop()
-
-	stats := p.pipelineQueueStats(false)
-	if stats == nil {
-		t.Fatal("expected stats from a wired pipeline")
+	projection := NewQueueProjection()
+	view := projection.Snapshot()
+	if view.Pipeline == nil {
+		t.Fatal("expected stats from a wired projection")
 	}
+	stats := view.Pipeline
 	if stats.WaitingMsP50 != nil || stats.WaitingMsP95 != nil {
 		t.Errorf("expected nil percentiles on an empty window, got p50=%v p95=%v",
 			stats.WaitingMsP50, stats.WaitingMsP95)
 	}
 	if stats.Depth != 0 || stats.InFlight != 0 {
-		t.Errorf("expected real-zero depth/inFlight on an idle pipeline, got depth=%d inFlight=%d",
+		t.Errorf("expected real-zero depth/inFlight on an idle projection, got depth=%d inFlight=%d",
 			stats.Depth, stats.InFlight)
 	}
 

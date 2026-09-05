@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '../i18n/index'
 import { languages } from '../i18n'
@@ -28,10 +28,20 @@ function handleClickOutside(event: MouseEvent) {
   }
 }
 
-// 监听全局点击事件
-if (typeof window !== 'undefined') {
-  document.addEventListener('click', handleClickOutside)
-}
+// 全局 click 监听仅在组件存活期间存在：挂载时注册、卸载时移除，
+// 避免每次 LanguageSelector 挂载（顶栏 / HMR / 跨布局切换）都向 document
+// 追加一个永不回收的监听器，导致监听器与组件实例泄漏。
+onMounted(() => {
+  if (typeof document !== 'undefined') {
+    document.addEventListener('click', handleClickOutside)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof document !== 'undefined') {
+    document.removeEventListener('click', handleClickOutside)
+  }
+})
 </script>
 
 <template>
@@ -96,7 +106,7 @@ if (typeof window !== 'undefined') {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 4px 12px var(--overlay-light);
   z-index: 1000;
   overflow: hidden;
 }

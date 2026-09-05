@@ -184,6 +184,31 @@ const (
 	//     failure is (credential, model)-scoped and recoverable; handled by the
 	//     per-model state write + isTransientFailoverKind sibling failover.
 	KindNoAvailableChannel ErrorKind = "no_available_channel"
+	// KindCircuitOpen (2026-08-30): the per-credential circuit breaker
+	// rejected the request because it is OPEN / QUARANTINED / has no probe
+	// slot. Distinct from KindConcurrent (which is the limiter's "too many
+	// inflight requests" signal) so the candidate_failure_logs_hot dashboard
+	// can attribute rejections to "this credential's breaker is open" rather
+	// than collapsing it into a generic concurrent pool rejection. Also
+	// distinct from the various upstream error kinds (RateLimit, Auth,
+	// UpstreamDown) because the circuit is a gateway-side state, not an
+	// upstream response. Intentionally NOT in IsRetryable (the breaker
+	// timeout / half-open probe decides when to retry, not the kind) and
+	// NOT in IsCredentialFatal (a circuit-open is recoverable; the
+	// credential will auto-reset after cooling).
+	KindCircuitOpen ErrorKind = "circuit_open"
+	// KindFpSlotSaturated (2026-08-31): the per-fingerprint concurrency slot
+	// for this request was exhausted, so the attempt DEGRADED (it continues
+	// without the slot) rather than failed. Distinct from KindRateLimit
+	// because rate_limit means the UPSTREAM throttled the credential (a
+	// provider-quality signal that feeds provider_error_details), while an
+	// fp-slot saturation is a gateway-side admission event for the caller's
+	// own request fingerprint: the same request usually succeeds moments
+	// later on the same credential. Collapsing the two would inflate the
+	// rate_limit bucket on the credential detail page and penalize healthy
+	// providers in quality evaluation. Intentionally NOT in IsRetryable and
+	// NOT in IsCredentialFatal.
+	KindFpSlotSaturated ErrorKind = "fp_slot_saturated"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too
@@ -337,6 +362,51 @@ var modelDeprecatedRe = regexp.MustCompile(
 //   - `"code"\s*:\s*"INSUFFICIENT_BALANCE"` / `"code"\s*:\s*"insufficient_balance"`:
 //     explicit OpenAI-style codes (apiclaude.cc, 智码, OneAPI-family relays)
 //   - `account.{0,20}(exhausted|depleted|low)`: "Account exhausted", etc.
+//
+// budgetExceededRe matches upstream error bodies that signal permanent
+// quota exhaustion (balance insufficient, budget exceeded, credits
+// depleted). These are KindQuotaPermanent, not KindRateLimit, because
+// they won't resolve until the user tops up their account — retrying
+// or waiting is futile.
+//
+// 2026-07-16 P0 fix: Anthropic 429 with "Organization balance insufficient" +
+// "budget_exceeded" was misclassified as KindRateLimit (transient), causing
+// the executor to retry and trigger false-positive credential degradation.
+// Direct API calls worked (different key with balance), but gateway kept
+// trying the exhausted credential.
+//
+// 2026-07-19 P0 fix: 智谱AI 429 with "您已达到每周/每月使用上限" (code: 1310)
+// was misclassified as KindRateLimit because Chinese quota messages weren't
+// matched. Extended regex to support Chinese patterns.
+//
+// 2026-08-08 P0 fix: extend to also match "Insufficient account balance" (apiclaude.cc /
+// 智码转发 / OpenAI-compatible balance-exhaustion responses that report on HTTP 403
+// instead of 429). Previous patterns required the noun to immediately precede "balance"
+// (`balance insufficient` / `insufficient balance`), but the upstream body is:
+//
+//	{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}
+//
+// which has "account" between "Insufficient" and "balance". Without the
+// `(?:.{0,20}balance.{0,20}insufficient|insufficient.{0,20}balance)` window, the
+// body-pattern check at the 403/402/429 status gates fell through to KindAuth.
+// That misclassification produced the user-facing error "Upstream credential API
+// key invalid" for what was actually a balance/budget exhaustion event — and
+// because KindAuth opens the circuit breaker with exponential backoff (5min → 24h
+// cap), it also took the bad credential out of the rotation with no recovery
+// signal for the OTHER sibling credentials.
+//
+// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+// added the `费用` noun variant for Chinese ("费用用完" / "费用已用完",
+// the user's exact phrasing: "节点费用已用完"); added `用完` to the
+// exhaustion-verb alternation (existing regex used 用尽/耗尽/不足/超限 but
+// missed 用完, which is the colloquial "used up" form); added English
+// fallback "no available credits?" / "out of quota" / "quota exhausted"
+// (which were previously caught by concurrentOverloadRe's overly-broad
+// trailing group, producing KindConcurrent → same-cred retry against
+// a permanently-dead node → eventual attempt-cap exhaustion → 5xx to
+// the client). The concurrentOverloadRe fix below removes the
+// conflicting patterns so these bodies fall through to this regex
+// instead.
 var budgetExceededRe = regexp.MustCompile(
 	`(?i)(budget[_ -]?exceeded|` +
 		`balance[_ -]?insufficient|` +
@@ -345,19 +415,51 @@ var budgetExceededRe = regexp.MustCompile(
 		// ("Insufficient account balance", "Your balance is currently insufficient").
 		`insufficient.{0,20}balance|` +
 		`balance.{0,20}insufficient|` +
-		`account.{0,20}(exhausted|depleted|low)|` +
+		`account.{0,20}(exhausted|depleted|low|unavailable|disabled)|` +
 		`credit[s]?[_ -]?(exhausted|depleted|insufficient)|` +
 		`account[_ -]?balance[_ -]?(low|insufficient|exhausted)|` +
 		`quota[_ -]?exceeded|` +
+		`quota.{0,15}exhausted|` + // 2026-08-20 P0 fix: OneAPI / apigpt "quota exhausted" variant
+		// 2026-08-20 P0 fix: apigpt / OneAPI distributor relays return
+		// "No available credits" / "no available credit" / "no available
+		// accounts" when the account behind the relay has been exhausted.
+		// Was previously mis-routed to KindConcurrent via concurrentOverloadRe's
+		// trailing group ("available accounts"). Now caught here.
+		`\bno\s+available\s+(credits?|accounts?)\b|` +
+		// 2026-08-20 P0 fix: generic "account unavailable" / "account disabled"
+		// signals (apigpt / OneAPI variants). The previous pattern lived in
+		// concurrentOverloadRe as `account (not|un)available` but should be
+		// a quota signal — the relay's account is unreachable until reset.
+		`\baccount\s+(unavailable|disabled|suspended)\b|` +
 		`usage[_ -]?limit[_ -]?exceeded|` +
+		// 2026-08-20 P0 fix: apigpt / OpenAI-style "out of quota" signal.
+		// Different from "out of credits" (which the existing `out of credits`
+		// pattern already catches); both are quota exhaustion, both permanent.
+		`\bout\s+of\s+quota\b|` +
 		// 2026-08-08 P0 fix: explicit OpenAI-style balance code from
 		// apiclaude.cc / 智码 / OneAPI-family relays that report
 		// {"code":"INSUFFICIENT_BALANCE","message":"..."} with HTTP 403.
 		`"code"\s*:\s*"INSUFFICIENT_BALANCE"|` +
 		`"code"\s*:\s*"insufficient_balance"|` +
-		// Chinese quota exhaustion patterns (智谱AI, etc.)
-		`达到.{0,10}(每周|每月|每日|使用)?上限|` +
-		`(配额|额度|余额).{0,10}(用尽|耗尽|不足|超限)|` +
+		// Chinese quota exhaustion patterns (智谱AI, 智码, apigpt, MiniMax).
+		// 2026-08-20 扩展: 加入 `费用` 名词变体（用户原文："节点费用已用完"），
+		// 加入 `用完` 动词变体（"用完"是口语"已耗尽"的标准说法，原 regex 仅含
+		// 用尽/耗尽/不足/超限，会漏掉"费用用完"这一 apigpt 最常见的中文报错形式）。
+		//
+		// 2026-08-21 merge: MiniMax Token Plan 在 "达到" 和 "用量上限" 之间插入了
+		// 产品名（"Token Plan"），原 0-10 字符窗口不够；同时把 noun 列表扩到
+		// 包含 `用量`、把动词列表扩到包含 `上限`。
+		//
+		// 2026-08-20 备注: 时间周期词仍保持 optional `(每周|每月|每日|使用)?`，
+		// 因为以下两类都属配额信号——
+		//   (a) 智谱AI/智码的 "您已达到每周/每月使用上限"（周期限额）
+		//   (b) apigpt/OneAPI 的 "您已达到 5 小时用量上限"（5h 窗口；该 5h 信号由
+		//       quotaResetsRe 兜底，二者必须同时命中才会落到 KindQuotaPeriodic）
+		// 唯一会误吞的非配额信号是"并发过大，达到上限"，但 ClassifyErrorWithBody
+		// / ClassifyResponseBody 已把 concurrentOverloadCJKRe 提到 budgetExceededRe
+		// 之前（见上方注释），"并发过大"先被 CJK 负载分支吞掉，不会到这一行。
+		`达到.{0,40}(每周|每月|每日|使用|用量)?上限|` +
+		`(配额|额度|余额|费用|账户|用量).{0,10}(用尽|用完|耗尽|不足|超限|已用尽|已用完|上限)|` +
 		`(限额|使用量).{0,10}重置|` +
 		`"code"\s*:\s*"1310"|` + // 智谱AI specific code
 		// OmniRoute-derived provider-specific quota signals (classify429.ts).
@@ -408,6 +510,17 @@ var quotaResetsRe = regexp.MustCompile(
 		// 一个会按周期重置的用量窗口，应走 KindQuotaPeriodic 的恢复通道，
 		// 由 balance_quota_probe 实测探活后自动翻回。
 		`window[_ -]?type|"window_type"|` +
+		// 2026-08-18 fix: 智谱AI GLM Coding Plan 的 5 小时窗口限额报文
+		// （"usage limit exceeded ... every 5 hours"，无 reset 时间戳）。
+		// 提及 5 小时窗口即表明这是周期性重置窗口，不是永久耗尽；
+		// 旧逻辑落到 KindQuotaPermanent → permanently_exhausted 无限挂起。
+		// \b 词边界防止误吞 "25 hours"/"15 hours" 或 "25小时" 的尾部子串；
+		// standalone `5小时`/`每5小时` 仍会匹配，恢复时间再由探活纠偏。
+		`\bfive[_ -]?hours?\b|` +
+		`\b5[_ -]?hours?\b|` +
+		`\bhour[_ -]?5\b|` +
+		`每.{0,3}\b5.{0,3}小时|` +
+		`\b5.{0,3}小时|` +
 		// Chinese "重置" with up to 80 chars between the noun and 重置
 		// (covers 智谱AI "...限额将在 YYYY-MM-DD HH:MM:SS 重置。").
 		`(限额|使用量|配额|额度|余额).{0,80}重置|` +
@@ -427,6 +540,20 @@ var quotaResetsRe = regexp.MustCompile(
 // Both patterns must be classified as KindConcurrent so the breaker can
 // apply the 5-minute cooling policy and immediately route to the next
 // candidate credential instead of retrying the same overloaded one.
+//
+// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+// the trailing group `available accounts|account (not|un)available|
+// quota exhausted|insufficient credit` was removed. Those bodies are
+// PERMANENT quota/balance exhaustion (the relay has no accounts/credits
+// left), not transient overload, and routing them through KindConcurrent
+// caused the executor to same-cred retry against a dead node until the
+// attempt-cap was hit and the client received a 5xx. They now fall
+// through to budgetExceededRe (which has matching patterns for all
+// four) and classify as KindQuotaPermanent so the failover dispatcher
+// (failover.go move() + PlanCandidatesPinned) immediately ejects the
+// dead credential and switches to a sibling node that supports the
+// same model. The reordering in ClassifyErrorWithBody puts the budget
+// check first for 402/403/429 statuses (where these signals are typical).
 var concurrentOverloadRe = regexp.MustCompile(
 	`(?i)(concurrent.{0,30}(limit|exceed|over|too many|reach|max)|` +
 		`too many (concurrent|requests|connections)|` +
@@ -434,8 +561,7 @@ var concurrentOverloadRe = regexp.MustCompile(
 		`(server|service|upstream) (is )?(overload|under pressure)|` +
 		`(rpm|tpm).{0,20}(limit|exceed|reach|over)|` +
 		`request(ed|s)? too (fast|frequent|many)|` +
-		`slow down|try again later|backoff|` +
-		`available accounts|account (not|un)available|quota exhausted|insufficient credit)`,
+		`slow down|try again later|backoff)`,
 )
 var concurrentOverloadCJKRe = regexp.MustCompile(
 	`并发.{0,15}(超限|过大|过高|达到上限|超过限制)|` +
@@ -443,6 +569,11 @@ var concurrentOverloadCJKRe = regexp.MustCompile(
 		`服务.{0,10}(繁忙|过载|压力|降级)|` +
 		`稍后重试|限流`,
 )
+
+// degradedFunctionRe matches NVIDIA NIM's explicit "DEGRADED function cannot
+// be invoked" response. The model may be available through another credential
+// or provider, so this is a transient upstream failure, not a client 400.
+var degradedFunctionRe = regexp.MustCompile(`(?i)degraded function cannot be invoked`)
 
 // overloadKindForStatus splits an overload-shaped body into the two
 // distinct kinds by HTTP status. Both body classifiers must agree, so
@@ -501,6 +632,19 @@ var toolCallIdMismatchRe = regexp.MustCompile(
 		`item[_ ]?reference.*(matching|each|call[_ ]?id)|previous[_ ]?response[_ ]?id|replayable[_ ]?tool[_ ]?call[_ ]?context)`,
 )
 
+// invalidRequestFormatRe matches provider validation errors caused by the
+// request shape, not by the credential.  Zhipu's coding endpoint returns
+// code 1214 for malformed `messages` histories; similar OpenAI-compatible
+// relays use the explicit invalid_request_format label.  These errors must
+// not be retried across the same provider or cool the credential.
+var invalidRequestFormatRe = regexp.MustCompile(
+	`(?i)(invalid[_ -]?request[_ -]?format|` +
+		`["']code["']\s*:\s*["']?1214["']?|` +
+		`messages.{0,40}(invalid|illegal|malformed)|` +
+		`(invalid|illegal|malformed).{0,40}messages|` +
+		`messages[[:space:]]*(参数非法|格式错误|无效))`,
+)
+
 // contentFilterRe matches upstream error bodies that signal a
 // content-moderation / safety-policy rejection. Scoped to avoid false
 // positives on legitimate "sensitive" tokens (e.g. "case-sensitive"):
@@ -513,6 +657,7 @@ var toolCallIdMismatchRe = regexp.MustCompile(
 //   - CJK equivalents for domestic providers.
 var contentFilterRe = regexp.MustCompile(
 	`(?i)(new_sensitive|` +
+		`sensitive[_ -]?words?[_ -]?detected|` +
 		`content[_ -]?(filter|policy|moderation)|` +
 		`policy[_ -]?violation|` +
 		`sensitive[_ ]?\(?\d{2,5}\)?|` +
@@ -533,13 +678,28 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if errors.Is(err, context.Canceled) {
 			return KindCanceled
 		}
-		msg := err.Error()
+		msg := strings.ToLower(err.Error())
 		// Order matters: overload and EOF-without-done are checked
 		// before generic timeouts because upstream-reported overload
 		// messages often include words like "timeout" or "connection"
 		// that would otherwise be mis-classified.
-		if concurrentOverloadRe.MatchString(msg) || concurrentOverloadCJKRe.MatchString(msg) {
+		//
+		// 2026-08-20 P0 fix: preserve the CJK overload precedence used by
+		// the body classifier. "并发过大，达到上限" is an overload signal,
+		// while "达到每周上限" is a quota signal; both contain "达到上限".
+		if concurrentOverloadCJKRe.MatchString(msg) {
 			return KindConcurrent
+		}
+		// Credit/balance exhaustion must beat the English overload classifier
+		// so wrapped apigpt errors switch away from the dead credential.
+		if budgetExceededRe.MatchString(msg) {
+			return KindQuotaPermanent
+		}
+		if concurrentOverloadRe.MatchString(msg) {
+			return KindConcurrent
+		}
+		if degradedFunctionRe.MatchString(msg) {
+			return KindUpstreamDown
 		}
 		if eofWithoutDoneRe.MatchString(msg) {
 			// EOF without [DONE] is most often a benign provider quirk
@@ -553,8 +713,11 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") {
 			return KindTimeout
 		}
-		if strings.Contains(msg, "connection") || strings.Contains(msg, "refused") ||
-			strings.Contains(msg, "no such host") || strings.Contains(msg, "reset") {
+		if strings.Contains(msg, "connection") || strings.Contains(msg, "connect") ||
+			strings.Contains(msg, "refused") || strings.Contains(msg, "no such host") ||
+			strings.Contains(msg, "reset") || strings.Contains(msg, "other side closed") ||
+			strings.Contains(msg, "eaddrnotavail") ||
+			strings.Contains(msg, "cannot assign requested address") {
 			return KindNetwork
 		}
 		if modelDeprecatedRe.MatchString(msg) {
@@ -590,20 +753,16 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if toolCallIdMismatchRe.MatchString(msg) {
 			return KindToolCallIdMismatch
 		}
-		// 2026-08-08 P0 fix (defense in depth): budget_exceeded / balance
-		// insufficient / account-low can also appear in the wrapped
-		// error.Error() string when an upstream.Error is re-wrapped via
-		// fmt.Errorf. Without this check, those calls fall through to
-		// KindTransient and the executor treats a balance-exhaustion
-		// signal as a recoverable retry. Since this path has no status
-		// code, the periodic/permanent split is unavailable — we route
-		// any budget pattern to KindQuotaPermanent so writeCredentialStateOnError
-		// sets availability_state='suspended' instead of cascading
-		// retries. Periodic recovery (quotaResetsRe) is handled by the
-		// typed *upstream.Error path with full body access.
-		if budgetExceededRe.MatchString(msg) {
-			return KindQuotaPermanent
+		if invalidRequestFormatRe.MatchString(msg) {
+			return KindClientBug
 		}
+		if contentFilterRe.MatchString(msg) {
+			return KindContentFilter
+		}
+
+		// The budget check above is intentionally the only fallback here;
+		// keeping one ordering point prevents wrapped-error classification
+		// from diverging from ClassifyErrorWithBody.
 		return KindTransient
 	}
 	if resp == nil {
@@ -683,8 +842,40 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if status >= 500 && noAvailableChannelRe.Match(body) {
 			return KindNoAvailableChannel
 		}
+		if degradedFunctionRe.Match(body) {
+			return KindUpstreamDown
+		}
 
-		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
+		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+		// the CJK concurrent-overload check MUST run before budgetExceededRe
+		// below. budgetExceededRe's "达到.{0,10}(每周|每月|每日|使用)?上限"
+		// branch is permissive by design (it catches both "您已达到每周上限"
+		// quota signals AND the bare "达到上限" tail of "并发过大，达到上限"
+		// overload signals). The differentiator is the leading "并发" —
+		// concurrentOverloadCJKRe's "并发.{0,15}(...达到上限...)" captures
+		// the overload signal exactly, so we route those bodies to
+		// KindConcurrent here and let non-"并发" quota bodies (with the
+		// optional time-period word) reach the budget check below.
+		if concurrentOverloadCJKRe.Match(body) {
+			return overloadKindForStatus(status)
+		}
+
+		// 2026-08-20 P0 fix: budget check (402/403/429 only) precedes the
+		// English concurrent-overload check so quota bodies are not
+		// shadowed by the overload path. The four patterns removed from
+		// concurrentOverloadRe's trailing group ("insufficient credit",
+		// "quota exhausted", "available accounts", "account (not|un)available")
+		// plus the new patterns added to budgetExceededRe (Chinese "费用/用完",
+		// English "no available credits?", "out of quota", "quota exhausted")
+		// close the apigpt/apiclaude.cc node-credit-exhaustion gap.
+		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
+			if quotaResetsRe.Match(body) {
+				return KindQuotaPeriodic
+			}
+			return KindQuotaPermanent
+		}
+
+		if concurrentOverloadRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated (2026-08-05 P0): upstream permanently removed /
@@ -720,7 +911,7 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// "new_sensitive (1026)", OpenAI "content_filter", etc). Gate on
 		// the typical moderation status codes so a 200 body that happens
 		// to contain "sensitive" (e.g. a benign word) is not mis-flagged.
-		if (status == 400 || status == 403 || status == 422 || status == 451) &&
+		if (status == 400 || status == 403 || status == 422 || status == 451 || status >= 500) &&
 			contentFilterRe.Match(body) {
 			return KindContentFilter
 		}
@@ -731,44 +922,21 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
 		}
-		// 2026-07-16 P0 fix: budget_exceeded / balance insufficient on 429.
-		// These are permanent quota exhaustion (KindQuotaPermanent), not
-		// transient rate limits. Anthropic returns:
-		//   429 {"error":{"message":"Organization balance insufficient",
-		//        "type":"rate_limit_error","code":"budget_exceeded"}}
-		// Without this check, such errors are classified as KindRateLimit
-		// (transient), causing retries, probes, and false-positive degradation
-		// even though the credential is permanently unusable until top-up.
-		// 2026-07-21 P0 fix: when the body carries a reset timestamp, route
-		// to KindQuotaPeriodic instead so the credential can recover.
-		// 智谱AI 1310 returns "...限额将在 YYYY-MM-DD HH:MM:SS 重置" which
-		// signals "wait for the quota window to reset" — periodic, not
-		// permanent.
-		//
-		// 2026-08-08 P0 fix: extend the status gate to include 402 (Payment
-		// Required — explicit semantic match) and 403 (apiclaude.cc / 智码 /
-		// OneAPI-family relays that return HTTP 403 {"code":"INSUFFICIENT_BALANCE",
-		// "message":"Insufficient account balance"} when the user's account
-		// balance is exhausted). Without this gate, the body-pattern match
-		// is skipped for 403 → falls through to ClassifyResponseStatus →
-		// KindAuth → user-facing error "Upstream credential API key invalid"
-		// (which is misleading; the upstream is saying the account is out of
-		// credit, not that the API key was rejected) → circuit breaker
-		// exponential backoff 5min→24h cap, removing the credential from
-		// rotation with no clear recovery signal. Status codes 402 and 403
-		// were selected because:
-		//   - 402 is the canonical "payment required / balance exhausted" code.
-		//   - 403 is what most 智码 / apiclaude.cc / OneAPI-family relays use
-		//     when balance runs out (instead of the canonical 402).
-		// Both cases are body-driven, so we still require the budget pattern
-		// to match — a 403 with no body or unrelated body text falls through
-		// to KindAuth as before.
-		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
-			if quotaResetsRe.Match(body) {
-				return KindQuotaPeriodic
-			}
-			return KindQuotaPermanent
+		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
+			return KindClientBug
 		}
+		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+		// the budgetExhaustion check has been moved ABOVE the concurrentOverload
+		// check in this function (right after the noAvailableChannel/degraded
+		// checks, before the overload classification). For 402/403/429 statuses,
+		// the budget check wins so a "insufficient credit" / "quota exhausted"
+		// body produces KindQuotaPermanent (credential ejected, sibling failover
+		// triggered) rather than KindConcurrent (same-cred retry against a
+		// dead node). The earlier position in this file had this same check
+		// AFTER concurrentOverloadRe, which meant the old overlapping patterns
+		// in concurrentOverloadRe's trailing group intercepted the signal first.
+		// See the comments at the new position and at budgetExceededRe /
+		// concurrentOverloadRe definitions for the full rationale.
 	}
 	// 2026-06-13: protocol/shape 4xx codes (e.g. 405 Method Not Allowed,
 	// 406 Not Acceptable, 415 Unsupported Media Type) are NOT transient —
@@ -852,6 +1020,13 @@ func NextQuotaReset(body string, now time.Time) time.Time {
 		return t.UTC()
 	}
 	lower := strings.ToLower(body)
+	// 2026-08-18 fix: 5-hour usage windows (智谱AI GLM Coding Plan and
+	// Anthropic-compatible relays of it) roll at fixed 00/05/10/15/20 UTC+8
+	// marks. Recover at the next boundary, not the next UTC midnight —
+	// midnight stretched a 凌晨 5 点 window reset to 北京 08:00.
+	if fiveHourWindowHintRe.MatchString(body) {
+		return nextFiveHourBoundaryUTC8(now)
+	}
 	if strings.Contains(lower, "month") || strings.Contains(lower, "per month") || strings.Contains(lower, "月") {
 		return time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
 	}
@@ -870,27 +1045,104 @@ func NextQuotaReset(body string, now time.Time) time.Time {
 // the same logic as domains/credential/writer.parseQuotaResetTimestamp but
 // lives here so errorsx.NextQuotaReset has no dependency on the credential
 // domain. Kept in sync; prefer editing both together when patterns change.
+//
+// Supports both naive (UTC) and RFC3339-aware (`Z` / numeric offset) formats
+// so upstream bodies that emit ISO-8601 timestamps with timezones
+// (Google Gemini `RESOURCE_EXHAUSTED` reset messages, OpenAI proxies, Zhipu)
+// are honored instead of silently falling through to next-UTC-midnight.
+// timestampCandidateRe matches plausible ISO-8601 / naive timestamps in a
+// 429 body so the scanner can extract them and try each layout. The
+// pattern is permissive enough to catch fractional seconds (RFC3339Nano)
+// and timezone designators (Z, +HH:MM, -HH:MM), but conservative enough
+// to skip JSON tokens like numeric fields. Anchored on the leading
+// 4-digit year so we don't pick up "0123" style false-positives.
+var timestampCandidateRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
+
 func scanQuotaResetTimestamp(detail string, now time.Time) (time.Time, bool) {
+	now = now.UTC()
+	// 2026-08-22 fix (audit round-2 §5.3): extract candidate timestamp
+	// substrings first, then try each layout against each candidate.
+	//
+	// Previous implementation slid a window of exactly len(layout) over
+	// the body. That fails for short fractional-second timestamps like
+	// "2026-08-10T12:34:56.789Z" (24 chars) against time.RFC3339Nano
+	// (35 chars including ".999999999Z07:00") — the inner loop
+	// `i+window <= len(detail)` produces zero iterations, the layout
+	// is silently skipped, and the scanner falls through to the naive
+	// layout which parses "2026-08-10T12:34:56" (19 chars) and returns
+	// whole seconds (`.789` is dropped). For credentials this means the
+	// reset-at is recorded up to 999ms late, which on a tight 5h/24h
+	// window can hold a credential in cooling past its real recovery.
+	//
+	// Extracting candidate substrings via regex first decouples layout
+	// length from body length: each candidate is a self-contained
+	// timestamp that `time.Parse` can accept with any of the layouts
+	// below (the offset-aware layouts ignore trailing components the
+	// body doesn't carry, and the naive layouts use ParseInLocation).
+	for _, m := range timestampCandidateRe.FindAllString(detail, -1) {
+		for _, layout := range []string{
+			time.RFC3339Nano,
+			time.RFC3339,
+			"2006-01-02 15:04:05",
+			"2006-01-02T15:04:05",
+			"2006/01/02 15:04:05",
+			"2006/01/02T15:04:05",
+		} {
+			var (
+				t   time.Time
+				err error
+			)
+			switch layout {
+			case time.RFC3339, time.RFC3339Nano:
+				t, err = time.Parse(layout, m)
+			default:
+				t, err = time.ParseInLocation(layout, m, time.UTC)
+			}
+			if err != nil {
+				continue
+			}
+			if t.Before(now.Add(-1 * time.Minute)) {
+				continue
+			}
+			return t.UTC(), true
+		}
+	}
+	// Fallback: original sliding-window approach for non-stdout layouts
+	// that the regex might miss (defense in depth — the regex above
+	// covers the common cases; this catches edge cases like a body
+	// containing only a naive timestamp without the 4-digit-year
+	// anchor or with whitespace inside the date).
 	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
 		"2006-01-02 15:04:05",
 		"2006-01-02T15:04:05",
 		"2006/01/02 15:04:05",
 		"2006/01/02T15:04:05",
 	} {
-		const window = 19
-		if len(detail) < window {
-			continue
+		window := len(layout)
+		if window < 19 {
+			window = 19
 		}
 		for i := 0; i+window <= len(detail); i++ {
 			candidate := detail[i : i+window]
-			t, err := time.ParseInLocation(layout, candidate, time.UTC)
+			var (
+				t   time.Time
+				err error
+			)
+			switch layout {
+			case time.RFC3339, time.RFC3339Nano:
+				t, err = time.Parse(layout, candidate)
+			default:
+				t, err = time.ParseInLocation(layout, candidate, time.UTC)
+			}
 			if err != nil {
 				continue
 			}
-			if t.Before(now.UTC().Add(-1 * time.Minute)) {
+			if t.Before(now.Add(-1 * time.Minute)) {
 				continue
 			}
-			return t, true
+			return t.UTC(), true
 		}
 	}
 	return time.Time{}, false
@@ -898,6 +1150,27 @@ func scanQuotaResetTimestamp(detail string, now time.Time) (time.Time, bool) {
 
 func midnightUTCShared(t time.Time) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// fiveHourWindowHintRe mirrors domains/credential/writer.fiveHourWindowRe:
+// any mention of a 5-hour usage window in a quota-exhausted body means the
+// limit rolls on that window cadence. Word boundaries keep 25h variants out.
+var fiveHourWindowHintRe = regexp.MustCompile(`(?i)(?:\bfive[_ -]?hours?\b|\b5[_ -]?hours?\b|\bhour[_ -]?5\b|每.{0,3}\b5.{0,3}小时|\b5.{0,3}小时)`)
+
+// utc8Zone is the fixed UTC+8 zone used to align 5-hour quota windows.
+var utc8Zone = time.FixedZone("UTC+8", 8*3600)
+
+// nextFiveHourBoundaryUTC8 returns the first 5-hour mark (00/05/10/15/20
+// in UTC+8) strictly after now.
+func nextFiveHourBoundaryUTC8(now time.Time) time.Time {
+	local := now.In(utc8Zone)
+	nextHour := 5 * (local.Hour()/5 + 1)
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, utc8Zone)
+	if nextHour >= 24 {
+		nextHour -= 24
+		day = day.AddDate(0, 0, 1)
+	}
+	return day.Add(time.Duration(nextHour) * time.Hour)
 }
 
 // ClassifyResponseBody inspects an error body fragment (e.g. SSE error
@@ -920,7 +1193,37 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if status >= 500 && noAvailableChannelRe.Match(body) {
 			return KindNoAvailableChannel
 		}
-		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
+		if degradedFunctionRe.Match(body) {
+			return KindUpstreamDown
+		}
+		// 2026-08-20 P0 fix (apigpt/apiclaude.cc node-credit-exhaustion regression):
+		// the CJK concurrent-overload check MUST run before budgetExceededRe
+		// below. budgetExceededRe's "达到.{0,10}(每周|每月|每日|使用)?上限"
+		// branch is permissive by design (it catches both "您已达到每周上限"
+		// quota signals AND the bare "达到上限" tail of "并发过大，达到上限"
+		// overload signals). The differentiator is the leading "并发" —
+		// concurrentOverloadCJKRe's "并发.{0,15}(...达到上限...)" captures
+		// the overload signal exactly, so we route those bodies to
+		// KindConcurrent here and let non-"并发" quota bodies (with the
+		// optional time-period word) reach the budget check below.
+		if concurrentOverloadCJKRe.Match(body) {
+			return overloadKindForStatus(status)
+		}
+		// 2026-08-20 P0 fix: budget check (402/403/429 only) precedes the
+		// English concurrent-overload check so quota bodies are not
+		// shadowed by the overload path. The four patterns removed from
+		// concurrentOverloadRe's trailing group ("insufficient credit",
+		// "quota exhausted", "available accounts", "account (not|un)available")
+		// plus the new patterns added to budgetExceededRe (Chinese "费用/用完",
+		// English "no available credits?", "out of quota", "quota exhausted")
+		// close the apigpt/apiclaude.cc node-credit-exhaustion gap.
+		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
+			if quotaResetsRe.Match(body) {
+				return KindQuotaPeriodic
+			}
+			return KindQuotaPermanent
+		}
+		if concurrentOverloadRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated: see ClassifyErrorWithBody. Checked before
@@ -943,32 +1246,26 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
 		}
-		if (status == 400 || status == 403 || status == 422 || status == 451) &&
+		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
+			return KindClientBug
+		}
+		if (status == 400 || status == 403 || status == 422 || status == 451 || status >= 500) &&
 			contentFilterRe.Match(body) {
 			return KindContentFilter
 		}
 		if contextLengthRe.Match(body) || contextLengthCJKRe.Match(body) {
 			return KindContextLength
 		}
-		// 2026-07-16 P0 fix: budget_exceeded on 429 → KindQuotaPermanent.
-		// 2026-07-21 P0 fix: when the body carries a reset timestamp, route
-		// to KindQuotaPeriodic instead so the credential can recover.
-		//
-		// 2026-08-08 P0 fix: extend status gate to 402 (Payment Required) and
-		// 403 (apiclaude.cc / 智码 / OneAPI-family relays that return
-		// HTTP 403 {"code":"INSUFFICIENT_BALANCE", "message":"Insufficient account balance"}
-		// when the user's account balance is exhausted). Without this gate,
-		// the body-pattern match is skipped for 403 → falls through to
-		// ClassifyResponseStatus → KindAuth, which misleads users into
-		// thinking the API key is invalid when it's actually a balance
-		// issue. See the matching comment in ClassifyErrorWithBody for the
-		// full rationale.
-		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
-			if quotaResetsRe.Match(body) {
-				return KindQuotaPeriodic
-			}
-			return KindQuotaPermanent
-		}
+		// 2026-08-20 P0 fix: the budgetExhaustion check has been moved to the
+		// top of this function (right after degradedFunctionRe, before
+		// concurrentOverloadRe) so it runs first against SSE error-chunk
+		// bodies. The bottom-of-function placement (post 2026-08-08 P0
+		// fix) had the same ordering bug as ClassifyErrorWithBody —
+		// concurrentOverloadRe's now-removed trailing group intercepted
+		// "insufficient credit" / "quota exhausted" / "No available
+		// accounts" first and produced KindConcurrent. See full rationale
+		// at the up-front position above and at budgetExceededRe /
+		// concurrentOverloadRe definitions.
 	}
 	return ""
 }
@@ -1045,7 +1342,7 @@ func IsClientBug(kind ErrorKind) bool {
 	// upstream), not a client bug. It should trigger binding unavailability
 	// via the dedicated mnf branch in executor.go, not skip state writes.
 	switch kind {
-	case KindToolCallIdMismatch, KindUnsupportedFeature, KindCanceled:
+	case KindClientBug, KindToolCallIdMismatch, KindUnsupportedFeature, KindCanceled:
 		return true
 	default:
 		return false

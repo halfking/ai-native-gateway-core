@@ -2,7 +2,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +13,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 func extractID(path string) (int, bool) { //nolint:unused
@@ -58,7 +59,7 @@ func (h *Handler) checkProvider(w http.ResponseWriter, r *http.Request, provider
 
 	var code, displayName string
 	var enabled bool
-	err := h.db.QueryRow(ctx, `SELECT code, display_name, enabled FROM providers WHERE id = $1 AND tenant_id = 'default'`, providerID).Scan(&code, &displayName, &enabled)
+	err := h.db.QueryRow(ctx, `SELECT code, display_name, enabled FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL`, providerID).Scan(&code, &displayName, &enabled)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")
 		return
@@ -171,7 +172,7 @@ func (h *Handler) probeProviderURL(w http.ResponseWriter, r *http.Request, provi
 	defer cancel()
 
 	var baseURL, protocol string
-	err := h.db.QueryRow(ctx, `SELECT COALESCE(base_url,''), COALESCE(protocol,'openai-completions') FROM providers WHERE id = $1 AND tenant_id = 'default'`, providerID).Scan(&baseURL, &protocol)
+	err := h.db.QueryRow(ctx, `SELECT COALESCE(base_url,''), COALESCE(protocol,'openai-completions') FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL`, providerID).Scan(&baseURL, &protocol)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")
 		return
@@ -248,28 +249,17 @@ func (h *Handler) doProbeURL(ctx context.Context, baseURL, apiKey string) probeU
 				AuthOK:     resp.StatusCode == http.StatusOK || !hasKey,
 			}
 			if hasKey && resp.StatusCode == http.StatusOK {
-				var modelsData []map[string]any
-				var mResp struct {
-					Data   []map[string]any `json:"data"`
-					Models []map[string]any `json:"models"`
-				}
-				if json.Unmarshal(body, &mResp) == nil {
-					modelsData = mResp.Data
-					if len(modelsData) == 0 {
-						modelsData = mResp.Models
+				models, parseErr := modelresponse.ParseModelIDs(body)
+				if parseErr != nil {
+					result.ModelsErrorKind = modelresponse.Kind(parseErr)
+					result.ModelsErrorPreview = modelresponse.Preview(parseErr)
+				} else {
+					result.ModelsCount = len(models)
+					limit := 3
+					if len(models) < limit {
+						limit = len(models)
 					}
-				}
-				result.ModelsCount = len(modelsData)
-				limit := 3
-				if len(modelsData) < limit {
-					limit = len(modelsData)
-				}
-				for i := 0; i < limit; i++ {
-					if id, ok := modelsData[i]["id"].(string); ok {
-						result.SampleModels = append(result.SampleModels, id)
-					} else if name, ok := modelsData[i]["name"].(string); ok {
-						result.SampleModels = append(result.SampleModels, name)
-					}
+					result.SampleModels = append(result.SampleModels, models[:limit]...)
 				}
 				if result.SampleModels == nil {
 					result.SampleModels = []string{}
@@ -374,6 +364,10 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 			h.updateProvider(w, r, providerID)
 		case http.MethodGet:
 			h.getProvider(w, r, providerID)
+		// 2026-08-31: 供应商软删除。级联将该供应商下未删除的凭据置为
+		// 'deleted' 终态；行保留在表里供审计 / FK 完整。
+		case http.MethodDelete:
+			h.deleteProvider(w, r, providerID)
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -408,8 +402,15 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodDelete:
 			h.clearProviderModels(w, r, providerID)
-		case http.MethodGet, http.MethodPost:
+		case http.MethodGet:
 			h.getProviderModels(w, r, providerID)
+		// 2026-08-23: explicitly reject POST on /api/providers/{id}/models.
+		// Earlier the dispatcher aliased POST→GET, which made
+		// getProviderModels run on the read path while still parsing as a
+		// POST in HTTP logs and downstream tooling. Frontend's getOrPost
+		// helper also fell back GET→POST, so users observed repeated
+		// `POST /api/providers/{id}/models 500` on environments missing
+		// migration 361. Restored 2026-08-27 after d2cbaf88b reverted it.
 		default:
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
@@ -482,6 +483,13 @@ func (h *Handler) handleProviders(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "error-stats":
+		// 审计修复 (2026-08-30)：P1-8 - Admin API 错误统计展示
+		if r.Method == http.MethodGet {
+			h.getProviderErrorStats(w, r, providerID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	case "credentials":
 		h.handleProviderCredentials(w, r, providerID, "")
 	case "set-free-models":
@@ -529,7 +537,9 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Build dynamic WHERE clauses
-	whereClauses := []string{"p.tenant_id = 'default'"}
+	// 2026-08-31: 软删除的供应商（deleted_at 非空）不出现在任何列表里
+	// —— 终态语义，与"停用（enabled=false）"区分（停用仍可恢复）。
+	whereClauses := []string{"p.tenant_id = 'default'", "p.deleted_at IS NULL"}
 	args := []any{}
 	argIdx := 1
 
@@ -735,7 +745,8 @@ func (h *Handler) getProvider(w http.ResponseWriter, r *http.Request, id int) {
 		-- request_logs_hot directly (independent hot table for the last 7 days,
 		-- migration 341, 2026-07-05).
 		LEFT JOIN (SELECT provider_id, COALESCE(SUM(CASE WHEN lower(COALESCE(request_status, '')) IN ('failure', '') AND NOT success THEN 1 ELSE 0 END)::float8 / NULLIF(COUNT(*),0), 0) rate FROM request_logs_hot WHERE ts >= now() - interval '24 hours' GROUP BY provider_id) er ON er.provider_id = p.id
-		WHERE p.id = $1 AND p.tenant_id = 'default'
+		-- 2026-08-31: 软删除的供应商不存在（列表与详情都不返回 404）。
+		WHERE p.id = $1 AND p.tenant_id = 'default' AND p.deleted_at IS NULL
 	`, id).Scan(
 		&p.ID, &p.Code, &p.DisplayName, &p.CatalogCode,
 		&p.Kind, &p.Category, &p.Protocol, &p.BaseURL,
@@ -806,13 +817,26 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var id int
+		// 2026-08-31: 软删除后允许重添同 code 供应商 —— 冲突行若处于
+		// deleted 态则复活（清 deleted_at / manual_disabled），活跃冲突
+		// 仍返回 409。ON CONFLICT 的 DO UPDATE 带 WHERE 谓词：不满足时
+		// 不产生行，QueryRow 返回 ErrNoRows → 走 409 分支。
 		err := h.db.QueryRow(ctx, `
 			INSERT INTO providers (tenant_id, code, display_name, base_url, protocol, is_custom, kind, category, enabled)
 			VALUES ('default', $1, $2, $3, $4, TRUE, 'cloud', 'official', TRUE)
+			ON CONFLICT (tenant_id, code) DO UPDATE SET
+			    deleted_at = NULL,
+			    display_name = EXCLUDED.display_name,
+			    base_url = EXCLUDED.base_url,
+			    protocol = EXCLUDED.protocol,
+			    manual_disabled = FALSE,
+			    enabled = TRUE,
+			    updated_at = NOW()
+			WHERE providers.deleted_at IS NOT NULL
 			RETURNING id
 		`, code, displayName, baseURL, protocol).Scan(&id)
 		if err != nil {
-			if strings.Contains(err.Error(), "duplicate key") {
+			if strings.Contains(err.Error(), "duplicate key") || errors.Is(err, pgx.ErrNoRows) {
 				writeError(w, http.StatusConflict, "provider already exists: "+code)
 				return
 			}
@@ -849,13 +873,23 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var id int
+	// 2026-08-31: 同 custom 分支 —— 冲突行已软删除则复活，活跃冲突 409。
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol, catalog_code, is_custom, kind, category, enabled)
 		VALUES ('default', $1, $2, $3, $4, $5, FALSE, 'cloud', 'official', TRUE)
+		ON CONFLICT (tenant_id, code) DO UPDATE SET
+		    deleted_at = NULL,
+		    display_name = EXCLUDED.display_name,
+		    base_url = EXCLUDED.base_url,
+		    protocol = EXCLUDED.protocol,
+		    manual_disabled = FALSE,
+		    enabled = TRUE,
+		    updated_at = NOW()
+		WHERE providers.deleted_at IS NOT NULL
 		RETURNING id
 	`, code, displayName, baseURL, protocol, catalogCode).Scan(&id)
 	if err != nil {
-		if strings.Contains(err.Error(), "duplicate key") {
+		if strings.Contains(err.Error(), "duplicate key") || errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusConflict, "provider already exists: "+code)
 			return
 		}
@@ -886,6 +920,18 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// 2026-08-31: 软删除的供应商不可再被更新（行已不可见，PATCH 应
+	// 404 而不是静默改一行谁都看不到的数据）。
+	var alive bool
+	if err := h.db.QueryRow(ctx, `SELECT TRUE FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL`, id).Scan(&alive); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "provider not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "load provider failed")
+		}
+		return
+	}
+
 	// Track whether base_url or protocol changed — if so, auto-reprobe all active credentials.
 	needsReprobe := false
 
@@ -893,9 +939,9 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE providers SET display_name = $1, updated_at = now() WHERE id = $2`, *req.DisplayName, id)
 	}
-	if req.Name != nil {
+	if req.Name != nil && req.DisplayName == nil {
 		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE providers SET name = $1, updated_at = now() WHERE id = $2`, *req.Name, id)
+		h.db.Exec(ctx, `UPDATE providers SET display_name = $1, updated_at = now() WHERE id = $2`, *req.Name, id)
 	}
 	if req.BaseURL != nil {
 		//nolint:errcheck // best-effort exec, non-critical
@@ -961,7 +1007,7 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 						slog.Warn("auto-reprobe: task insert failed", "provider_id", pid, "credential_id", cid, "error", taskErr)
 						return
 					}
-					h.runHealthCheck(pid, cid, taskID)
+					h.runHealthCheck(pid, cid, "", taskID)
 				}(id, cid)
 			}
 		}
@@ -973,12 +1019,160 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 func (h *Handler) toggleProvider(w http.ResponseWriter, r *http.Request, id int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	_, err := h.db.Exec(ctx, `UPDATE providers SET enabled = NOT enabled WHERE id = $1`, id)
+	// 2026-08-31: 软删除行不参与启停切换。
+	tag, err := h.db.Exec(ctx, `UPDATE providers SET enabled = NOT enabled WHERE id = $1 AND deleted_at IS NULL`, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "toggle failed")
 		return
 	}
+	if tag.RowsAffected() == 0 {
+		writeError(w, http.StatusNotFound, "provider not found")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "toggled"})
+}
+
+// deleteProvider 软删除供应商。
+//
+// 2026-08-31 operator request: 供应商删除使用软删除（deleted_at）。
+// 与"停用"（enabled=false / manual_disabled=true）的区别：停用仅让该
+// 供应商从路由剔除，但仍出现在所有列表里（"已禁用"分组）；软删除
+// 是终态，listProviders / getProvider 一律以 deleted_at IS NULL 过滤，
+// 列表/详情/路由表都不再返回该供应商。
+//
+// 行保留在表里以维持 model_offers / credentials / credential_model_bindings
+// 的 FK 完整，并保留历史 request_logs 的可追溯性。后续如需硬删可单独
+// 走清理任务（带 backup 窗口），不在本端点范围内。
+//
+// 副作用：
+//   - 同步将该供应商下所有 status <> 'deleted' 的凭据置为 'deleted'，
+//     保持凭据层面"软删除随供应商一起"的一致语义；
+//   - 失效所有候选缓存与 sticky 路由，避免脏路由命中已删除供应商的
+//     凭据；
+//   - 写一条 routing_audit_log。
+func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "begin delete provider failed: "+err.Error())
+		return
+	}
+	defer func() {
+		if rbErr := tx.Rollback(ctx); rbErr != nil && !strings.Contains(rbErr.Error(), "tx is closed") {
+			slog.Warn("deleteProvider rollback failed", "provider_id", id, "error", rbErr)
+		}
+	}()
+
+	// 1) 把供应商置为软删除态。幂等：若已经是 deleted_at 非空，
+	//    返回 200 + already deleted；不重置时间戳，不写新 audit 行。
+	var existingDeletedAt *time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT deleted_at FROM providers
+		WHERE id = $1 AND tenant_id = 'default'
+		FOR UPDATE
+	`, id).Scan(&existingDeletedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "provider not found")
+		} else {
+			writeError(w, http.StatusInternalServerError, "load provider failed: "+err.Error())
+		}
+		return
+	}
+	if existingDeletedAt != nil {
+		if err := tx.Commit(ctx); err != nil {
+			slog.Warn("deleteProvider commit (already deleted) failed", "provider_id", id, "error", err)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message":     "already deleted",
+			"provider_id": id,
+			"deleted_at":  existingDeletedAt,
+		})
+		return
+	}
+
+	now := time.Now().UTC()
+	if _, err := tx.Exec(ctx, `
+		UPDATE providers
+		SET deleted_at = $1,
+		    enabled = FALSE,
+		    manual_disabled = TRUE,
+		    updated_at = $1
+		WHERE id = $2 AND tenant_id = 'default' AND deleted_at IS NULL
+	`, now, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "delete provider failed: "+err.Error())
+		return
+	}
+
+	// 2) 级联软删除该供应商下所有未删除的凭据。复用凭据层 'deleted'
+	//    终态（migration 627）以保持列表过滤语义一致；lifecycle 同步置
+	//    'retired'（与单凭据删除路径对齐，双轴终态）。
+	//    RETURNING id 收集受影响凭据，提交后逐个清 sticky 路由与
+	//    每凭据缓存——否则 L2 sticky 会在 TTL 内继续把新会话粘到
+	//    已删凭据上。
+	cascadedRows, err := tx.Query(ctx, `
+		UPDATE credentials
+		SET status = 'deleted',
+		    lifecycle_status = 'retired',
+		    updated_at = NOW()
+		WHERE provider_id = $1
+		  AND status <> 'deleted'
+		RETURNING id
+	`, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cascade delete credentials failed: "+err.Error())
+		return
+	}
+	var cascadedCredIDs []int
+	for cascadedRows.Next() {
+		var cid int
+		if err := cascadedRows.Scan(&cid); err != nil {
+			cascadedRows.Close()
+			writeError(w, http.StatusInternalServerError, "cascade delete scan failed: "+err.Error())
+			return
+		}
+		cascadedCredIDs = append(cascadedCredIDs, cid)
+	}
+	cascadedRows.Close()
+	if err := cascadedRows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "cascade delete iterate failed: "+err.Error())
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit delete provider failed: "+err.Error())
+		return
+	}
+
+	provider.InvalidateAllCandidateCache()
+	for _, cid := range cascadedCredIDs {
+		provider.InvalidateCredentialKeyCache(cid)
+		provider.InvalidateCandidateCacheForCredential(cid)
+		provider.ResetKeyRotatorForCredential(cid)
+		if h.stickyCache != nil {
+			if cleared, scErr := h.stickyCache.ClearForCredential(cid); scErr != nil {
+				slog.Warn("deleteProvider: clear sticky failed", "provider_id", id, "credential_id", cid, "error", scErr)
+			} else if cleared > 0 {
+				slog.Info("deleteProvider: cleared sticky bindings", "provider_id", id, "credential_id", cid, "cleared", cleared)
+			}
+		}
+	}
+
+	h.writeAuditLog(r, "provider.deleted", "provider", id, map[string]any{
+		"soft_deleted":            true,
+		"cascaded_credential_cnt":  len(cascadedCredIDs),
+		"cascaded_credential_ids":  cascadedCredIDs,
+		"deleted_at":               now,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":                 "deleted",
+		"provider_id":             id,
+		"deleted_at":              now,
+		"cascaded_credential_cnt": len(cascadedCredIDs),
+	})
 }
 
 func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) {
@@ -1044,7 +1238,7 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 
 	var total int
 	//nolint:errcheck // scan error non-critical
-	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM providers WHERE tenant_id = 'default'`).Scan(&total)
+	h.db.QueryRow(ctx, `SELECT COUNT(*) FROM providers WHERE tenant_id = 'default' AND deleted_at IS NULL`).Scan(&total)
 
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"message":   fmt.Sprintf("Seeded %d new providers from catalog", len(created)),
@@ -1141,6 +1335,12 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 	case "reveal":
 		if r.Method == http.MethodPost {
 			h.revealCredential(w, r, providerID, credID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+	case "rotate-primary-key":
+		if r.Method == http.MethodPost {
+			h.rotateCredentialPrimaryKey(w, r, providerID, credID)
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}

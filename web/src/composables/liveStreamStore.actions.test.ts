@@ -7,8 +7,17 @@
 // and silent ignore of unknown event types (backward compatibility).
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { __testing, getRequestActions, getRequestChildren, actionsRef, childrenRef } from './liveStreamStore'
-import type { ActionEvent, LiveRequest, LiveStreamEnvelope } from './liveStreamStore'
+import {
+  __testing,
+  getRequestActions,
+  getRequestChildren,
+  getRequestCredentialId,
+  getRequestsForCredential,
+  getNodesForModel,
+  actionsRef,
+  childrenRef,
+} from './liveStreamStore'
+import type { ActionEvent, LiveRequest, LiveNodeStatus, LiveStreamEnvelope } from './liveStreamStore'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -227,5 +236,165 @@ describe('unknown event types', () => {
       request: makeRequest('c1'),
     } as LiveStreamEnvelope)
     expect(__testing.state.children.size).toBe(0)
+  })
+
+  it('rebuilds the child index from initial_data after a reconnect', () => {
+    const parent = makeRequest('parent')
+    const childRequest = makeRequest('child', { parentRequestId: 'parent', requestType: 'title' })
+    __testing.applyInitialData([parent, childRequest])
+
+    expect(getRequestChildren('parent').map((r) => r.request_id)).toEqual(['child'])
+    expect(__testing.childrenTotal()).toBe(1)
+
+    // A later duplicate child_request frame must keep the same one-child index.
+    child('parent', childRequest)
+    expect(getRequestChildren('parent')).toHaveLength(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// requestCredential index — 2026-08-17 (OBS-UI model-grouped nodes):
+// request_id → most-recent credential_id derived from credential_selected /
+// upstream_request / node_switch / reply. Drives the "节点下的请求列表"
+// expansion in QueuePerspectivePanel. Window semantics: only the requests
+// currently in the SSE replay buffer are visible (no historical guarantee).
+// ---------------------------------------------------------------------------
+
+describe('requestCredential index', () => {
+  beforeEach(() => {
+    __testing.clearRequestCredentialIndex()
+    __testing.state.requests = []
+    __testing.state.nodes = []
+  })
+
+  it('derives credential_id from credential_selected and surfaces via getRequestCredentialId', () => {
+    lifecycle(action('r1', 1, { action: 'arrive' }))
+    lifecycle(action('r1', 2, { action: 'credential_selected', credential_id: 7 }))
+    expect(getRequestCredentialId('r1')).toBe(7)
+  })
+
+  it('upstream_request overrides the previous credential when seq advances', () => {
+    lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 7 }))
+    lifecycle(action('r1', 2, { action: 'upstream_request', credential_id: 9 }))
+    expect(getRequestCredentialId('r1')).toBe(9)
+  })
+
+  it('node_switch: keeps the to_credential_id as the new current', () => {
+    lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 7 }))
+    lifecycle(action('r1', 2, {
+      action: 'node_switch',
+      from_credential_id: 7,
+      to_credential_id: 12,
+    }))
+    expect(getRequestCredentialId('r1')).toBe(12)
+  })
+
+  it('out-of-order delivery does not regress the credential', () => {
+    // seq 2 凭据 7 比 seq 1 凭据 5 更新；seq 1 后到达也不应覆盖
+    lifecycle(action('r1', 2, { action: 'credential_selected', credential_id: 7 }))
+    lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 5 }))
+    expect(getRequestCredentialId('r1')).toBe(7)
+  })
+
+  it('ignores actions without credential_id (e.g. arrive, route_resolved)', () => {
+    lifecycle(action('r1', 1, { action: 'arrive' }))
+    lifecycle(action('r1', 2, { action: 'route_resolved' }))
+    expect(getRequestCredentialId('r1')).toBeNull()
+  })
+
+  it('resetStream clears the index and bumps the revision', () => {
+    lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 7 }))
+    expect(getRequestCredentialId('r1')).toBe(7)
+    const before = __testing.requestCredentialRevision.value
+    __testing.resetStream()
+    expect(getRequestCredentialId('r1')).toBeNull()
+    expect(__testing.requestCredentialRevision.value).toBeGreaterThan(before)
+  })
+
+  // 2026-08-17 (audit P1): 同 seq replay 也要同步 requestCredential 索引。
+  it('same-seq replay refreshes the credential binding (last write wins)', () => {
+    // 初次写入 credential_selected(7)
+    lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 7 }))
+    expect(getRequestCredentialId('r1')).toBe(7)
+    // Redis replay 可能缺少 ts；同 seq 修正帧仍要按 timeline 的
+    // last-write-wins 语义把 credential 更新为 9。
+    lifecycle({ request_id: 'r1', seq: 1, action: 'credential_selected', credential_id: 9 })
+    expect(getRequestCredentialId('r1')).toBe(9)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getNodesForModel — reverse index on LiveNodeStatus.raw_models
+// ---------------------------------------------------------------------------
+
+describe('getNodesForModel', () => {
+  beforeEach(() => {
+    __testing.clearRequestCredentialIndex()
+    __testing.state.requests = []
+    __testing.state.nodes = []
+  })
+
+  it('returns nodes whose raw_models include the requested model', () => {
+    __testing.state.nodes = [
+      { credential_id: 1, manual_disabled: false, raw_models: ['claude-sonnet', 'gpt-4o'] } as LiveNodeStatus,
+      { credential_id: 2, manual_disabled: false, raw_models: ['gpt-4o'] } as LiveNodeStatus,
+      { credential_id: 3, manual_disabled: false, raw_models: [] } as LiveNodeStatus,
+      { credential_id: 4, manual_disabled: false } as LiveNodeStatus,
+    ]
+    const result = getNodesForModel('gpt-4o')
+    expect(result.map((n) => n.credential_id).sort()).toEqual([1, 2])
+  })
+
+  it('returns an empty array when no node reports raw_models (缺省隐藏)', () => {
+    __testing.state.nodes = [
+      { credential_id: 1, manual_disabled: false } as LiveNodeStatus,
+      { credential_id: 2, manual_disabled: false } as LiveNodeStatus,
+    ]
+    expect(getNodesForModel('any-model')).toEqual([])
+  })
+
+  it('returns an empty array for empty model name', () => {
+    __testing.state.nodes = [
+      { credential_id: 1, manual_disabled: false, raw_models: ['x'] } as LiveNodeStatus,
+    ]
+    expect(getNodesForModel('')).toEqual([])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// getRequestsForCredential — request list under a node, window-scoped
+// ---------------------------------------------------------------------------
+
+describe('getRequestsForCredential', () => {
+  beforeEach(() => {
+    __testing.clearRequestCredentialIndex()
+    __testing.state.requests = []
+    __testing.state.nodes = []
+  })
+
+  it('returns requests whose latest action binds to the given credential_id', () => {
+    lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 7 }))
+    lifecycle(action('r2', 1, { action: 'credential_selected', credential_id: 9 }))
+    __testing.state.requests = [
+      makeRequest('r1', { status: 'in_progress', model: 'gpt-4o' }),
+      makeRequest('r2', { status: 'success', model: 'claude-sonnet' }),
+      makeRequest('r3', { status: 'success', model: 'gpt-4o' }),
+    ]
+    const result = getRequestsForCredential(7)
+    expect(result.map((r) => r.request_id)).toEqual(['r1'])
+  })
+
+  it('skips idle_marker and requests without request_id', () => {
+    lifecycle(action('r1', 1, { action: 'credential_selected', credential_id: 7 }))
+    __testing.state.requests = [
+      { ...makeRequest('r1', { status: 'in_progress' }) },
+      { ts: '', type: 'idle_marker' } as unknown as LiveRequest,
+    ]
+    expect(getRequestsForCredential(7).map((r) => r.request_id)).toEqual(['r1'])
+  })
+
+  it('returns an empty array when no request binds to the credential', () => {
+    __testing.state.requests = [makeRequest('r1', { status: 'success' })]
+    expect(getRequestsForCredential(99)).toEqual([])
   })
 })

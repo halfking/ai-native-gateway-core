@@ -176,12 +176,12 @@ func TestSystemPromptForDimension_Unknown(t *testing.T) {
 
 func TestMaxTokensForDimension_AllDimensions(t *testing.T) {
 	cases := map[appconfig.SummaryDimension]int{
-		appconfig.SummaryDimensionDecisions:  1024,
-		appconfig.SummaryDimensionTechnical:  1024,
-		appconfig.SummaryDimensionProject:    768,
-		appconfig.SummaryDimensionTasks:      768,
-		appconfig.SummaryDimensionProblems:   768,
-		appconfig.SummaryDimensionKeywords:   256,
+		appconfig.SummaryDimensionDecisions: 1024,
+		appconfig.SummaryDimensionTechnical: 1024,
+		appconfig.SummaryDimensionProject:   768,
+		appconfig.SummaryDimensionTasks:     768,
+		appconfig.SummaryDimensionProblems:  768,
+		appconfig.SummaryDimensionKeywords:  256,
 	}
 	for dim, want := range cases {
 		if got := MaxTokensForDimension(dim); got != want {

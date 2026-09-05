@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -31,9 +32,13 @@ import (
 // satisfies it.
 type DurableForegroundStore interface {
 	DurableHandlerStore
-	RenewLease(ctx context.Context, taskID, owner string, token int64, until time.Time) error
-	CheckpointCommitState(ctx context.Context, p durable.CheckpointParams) error
-	CommitTerminal(ctx context.Context, c durable.TerminalCommit) (*durable.TerminalProjection, error)
+	RenewLease(context.Context, string, string, int64, time.Time) error
+	CheckpointCommitState(context.Context, durable.CheckpointParams) error
+	PersistSettlementIntent(context.Context, durable.TerminalCommit) error
+	ClaimSettlementIntent(context.Context, string, string, time.Duration, time.Time) (*durable.ClaimedSettlement, error)
+	ClaimSettlementIntents(context.Context, string, time.Duration, int, time.Time) ([]*durable.ClaimedSettlement, error)
+	FinalizeSettlement(context.Context, durable.ClaimedSettlement) (*durable.TerminalProjection, error)
+	RetrySettlementIntent(context.Context, durable.ClaimedSettlement, time.Time, error) error
 }
 
 // DurableStreamBinding is the foreground lease/checkpoint/settlement
@@ -43,10 +48,20 @@ type DurableStreamBinding struct {
 	task  *durable.Task
 	lease time.Duration
 
-	mu        sync.Mutex
-	lastRank  int
-	stopRenew chan struct{}
-	renewDone chan struct{}
+	mu          sync.Mutex
+	lastRank    int
+	renewCtx    context.Context
+	renewCancel context.CancelFunc
+	renewDone   chan struct{}
+	// renewInterval is the ticker period of the renewal loop; Stop bounds its
+	// wait on it so it never times out before a pending tick can drain.
+	renewInterval time.Duration
+}
+
+var settlementRetryDelays = [...]time.Duration{
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	200 * time.Millisecond,
 }
 
 func newDurableStreamBinding(store DurableForegroundStore, task *durable.Task, lease time.Duration) *DurableStreamBinding {
@@ -59,28 +74,40 @@ func newDurableStreamBinding(store DurableForegroundStore, task *durable.Task, l
 // Start launches the lease renewal loop (every lease/2) until Stop.
 func (b *DurableStreamBinding) Start() {
 	b.mu.Lock()
-	if b.stopRenew != nil {
+	if b.renewCancel != nil {
 		b.mu.Unlock()
 		return
 	}
-	stop := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	b.stopRenew, b.renewDone = stop, done
-	b.mu.Unlock()
+	b.renewCtx, b.renewCancel, b.renewDone = ctx, cancel, done
 
 	interval := b.lease / 2
+	if interval <= 0 {
+		interval = time.Second
+	}
+	b.renewInterval = interval
+	b.mu.Unlock()
+
 	go func() {
-		defer close(done)
+		defer func() {
+			b.mu.Lock()
+			if b.renewDone == done {
+				b.renewCtx, b.renewCancel, b.renewDone = nil, nil, nil
+			}
+			b.mu.Unlock()
+			close(done)
+		}()
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stop:
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				err := b.store.RenewLease(ctx, b.task.ID, b.task.LeaseOwner, b.task.FencingToken, time.Now().Add(b.lease))
-				cancel()
+				renewCtx, renewCancel := context.WithTimeout(ctx, 5*time.Second)
+				err := b.store.RenewLease(renewCtx, b.task.ID, b.task.LeaseOwner, b.task.FencingToken, time.Now().Add(b.lease))
+				renewCancel()
 				if err != nil {
 					// Fence lost or DB unavailable: stop renewing. Post-content
 					// tasks are unclaimable (commit_state gate) and the safety
@@ -88,6 +115,7 @@ func (b *DurableStreamBinding) Start() {
 					// worker — the client keeps our stream either way.
 					if err == durable.ErrLeaseLost {
 						metrics.SurvivalLeaseConflictsTotal.Inc()
+						metrics.DurableLeaseLostTotal.Inc()
 					}
 					slog.Warn("durable foreground lease renewal stopped", "task_id", b.task.ID, "error", err)
 					return
@@ -98,28 +126,42 @@ func (b *DurableStreamBinding) Start() {
 }
 
 // Stop ends the renewal loop. Idempotent; bounded wait so a stuck renewal
-// call cannot pin the request goroutine.
+// call cannot pin the request goroutine. Cancellation is propagated to the
+// in-flight renewal before waiting for the loop to exit.
 func (b *DurableStreamBinding) Stop() {
 	b.mu.Lock()
-	stop, done := b.stopRenew, b.renewDone
-	b.stopRenew, b.renewDone = nil, nil
+	cancel, done := b.renewCancel, b.renewDone
+	grace := b.renewInterval + 6*time.Second
+	if grace < 3*time.Second {
+		grace = 3 * time.Second
+	}
 	b.mu.Unlock()
-	if stop == nil {
+	if cancel == nil {
 		return
 	}
-	close(stop)
+	cancel()
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(grace):
+		slog.Warn("durable foreground renewal stop grace exceeded", "task_id", b.task.ID)
 	}
 }
 
 // Checkpoint adapts the gate write-ahead hook. The durable SQL only accepts
 // rank advances (equal rank reads as 0 rows → ErrLeaseLost), so retried
 // attempts — whose gate state resets to none — must be deduped against the
-// highest rank already persisted. Uses a detached bounded context: the
-// checkpoint must outlive a disconnecting client.
+// highest rank already persisted.
+//
+// Checkpoint remains a compatibility wrapper for callers without a request
+// context. Streaming paths should use CheckpointContext.
 func (b *DurableStreamBinding) Checkpoint(s CommitState) error {
+	return b.CheckpointContext(context.Background(), s)
+}
+
+// CheckpointContext performs the durable checkpoint with the caller's context.
+// The five-second upper bound prevents a broken store from blocking the gate
+// indefinitely while preserving request cancellation and deadlines.
+func (b *DurableStreamBinding) CheckpointContext(parent context.Context, s CommitState) error {
 	state := durable.CommitState(s.String())
 	rank := durable.CommitStateRank(state)
 	if rank < 0 {
@@ -131,7 +173,10 @@ func (b *DurableStreamBinding) Checkpoint(s CommitState) error {
 	if dupe {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	if err := b.store.CheckpointCommitState(ctx, durable.CheckpointParams{
 		TaskID:       b.task.ID,
@@ -157,27 +202,44 @@ func (b *DurableStreamBinding) ContentCommitted() bool {
 	return b.lastRank >= durable.CommitStateRank(durable.CommitStateContent)
 }
 
-// Complete settles a successful stream with its captured wire bytes.
+// Complete persists a terminal intent before attempting immediate finalization.
 func (b *DurableStreamBinding) Complete(ctx context.Context, body []byte, contentType string) error {
-	_, err := b.store.CommitTerminal(ctx, durable.TerminalCommit{
+	return b.settleTerminal(ctx, durable.TerminalCommit{
 		Task:        b.task,
 		Outcome:     durable.StatusCompleted,
 		Body:        body,
 		ContentType: contentType,
 		Attempt:     b.task.AttemptCount,
 	})
-	return err
 }
 
-// FailTerminal settles a foreground terminal failure.
+// FailTerminal persists a terminal intent before attempting immediate finalization.
 func (b *DurableStreamBinding) FailTerminal(ctx context.Context, reason, kind string) error {
-	_, err := b.store.CommitTerminal(ctx, durable.TerminalCommit{
+	return b.settleTerminal(ctx, durable.TerminalCommit{
 		Task:       b.task,
 		Outcome:    durable.StatusFailed,
 		ReasonCode: reason,
 		ErrorKind:  kind,
 		Attempt:    b.task.AttemptCount,
 	})
+}
+
+func (b *DurableStreamBinding) settleTerminal(ctx context.Context, c durable.TerminalCommit) error {
+	if err := retrySettlement(ctx, func() error {
+		return b.store.PersistSettlementIntent(ctx, c)
+	}); err != nil {
+		return err
+	}
+	claim, err := b.store.ClaimSettlementIntent(ctx, b.task.ID, b.task.LeaseOwner, b.lease, time.Now())
+	if err != nil || claim == nil {
+		return err
+	}
+	_, err = b.store.FinalizeSettlement(ctx, *claim)
+	if err != nil && err != durable.ErrLeaseLost {
+		if retryErr := b.store.RetrySettlementIntent(ctx, *claim, time.Now().Add(2*time.Second), err); retryErr != nil {
+			return retryErr
+		}
+	}
 	return err
 }
 
@@ -193,6 +255,22 @@ func (b *DurableStreamBinding) ReleaseToWorker(ctx context.Context, reason strin
 	})
 }
 
+// releaseDurableBeforeSurvival hands a foreground-claimed task to the worker
+// when a handler fails after the snapshot cut point but before the coordinator
+// can own its lease. No semantic bytes reached the client, so recovery is safe
+// and must not wait for the frontend lease to expire.
+func releaseDurableBeforeSurvival(b *DurableStreamBinding, reason string) {
+	if b == nil {
+		return
+	}
+	ctx, cancel := settleCtx()
+	defer cancel()
+	if err := b.ReleaseToWorker(ctx, reason); err != nil {
+		logSettleError("release_before_survival", b, err)
+	}
+	b.Stop()
+}
+
 // settleCtx bounds settlement store writes: they run after the survival
 // loop ends and must survive a disconnected client, but must not pin the
 // handler forever.
@@ -204,6 +282,24 @@ func settleCtx() (context.Context, context.CancelFunc) {
 // ends. clientDisconnected reports whether the connection dropped (the
 // coordinator's client_disconnected verdict). body is the captured wire
 // output (may be nil when capture is unavailable or oversize).
+//
+// Worst-case failure window (doc 18 §10.3 / SR-W3):
+//
+//   - PersistSettlementIntent exhausted -> task stays `running`, lease
+//     eventually expires -> ReapDeadlines owns it (default 15s lease).
+//   - ClaimSettlementIntent exhausted -> an intent row exists; the worker
+//     drainSettlementIntents loop picks it up on its next tick (5s).
+//   - FinalizeSettlement non-lease-loss error -> the intent row is parked
+//     via RetrySettlementIntent; the worker retries with bounded backoff.
+//   - ReleaseToWorker (reschedule) failure -> task stays `running`; safety
+//     reaper / lease expiry own it; never re-execute, never replay.
+//
+// None of these branches invents a foreground fall-back write — re-execution
+// safety depends on the safety reaper so the post-content
+// "resume_safety_blocked" / no-replay contract is preserved end-to-end.
+// Stage failures are surfaced via
+// durable_settlement_stage_failures_total{stage=...} so an alert can catch
+// the worst-case window before the reaper closes it.
 func settleDurableStream(_ context.Context, b *DurableStreamBinding, res SurvivalResult, body []byte, contentType string, clientDisconnected bool) {
 	if b == nil {
 		return
@@ -250,11 +346,46 @@ func settleDurableStream(_ context.Context, b *DurableStreamBinding, res Surviva
 	}
 }
 
+func retrySettlement(ctx context.Context, write func() error) error {
+	var err error
+	for attempt, delay := range settlementRetryDelays {
+		err = write()
+		if err == nil || errors.Is(err, durable.ErrLeaseLost) {
+			return err
+		}
+		if attempt == len(settlementRetryDelays)-1 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("durable settlement failed after %d attempts: %w", attempt+1, err)
+		case <-timer.C:
+		}
+	}
+	return fmt.Errorf("durable settlement failed after %d attempts: %w", len(settlementRetryDelays), err)
+}
+
+// logSettleError is the single funnel for foreground settlement write
+// failures. It records the durable_settlement_stage_failures_total{stage}
+// signal so an alert can detect a task that entered the worst-case window
+// (stuck in `running` until the safety reaper / lease-expiry owns it).
+// Lease-loss is counted in both observability families and does not
+// increment the stage failure metric — losing the lease is a benign
+// ownership change, not a stuck write.
 func logSettleError(stage string, b *DurableStreamBinding, err error) {
 	if err == durable.ErrLeaseLost {
 		metrics.SurvivalLeaseConflictsTotal.Inc()
+		metrics.DurableLeaseLostTotal.Inc()
+		slog.Warn("durable foreground settlement step fenced off", "stage", stage, "task_id", b.task.ID, "error", err)
+		return
 	}
-	slog.Warn("durable foreground settlement step failed", "stage", stage, "task_id", b.task.ID, "error", err)
+	metrics.DurableSettlementStageFailuresTotal.WithLabelValues(stage).Inc()
+	slog.Warn("durable foreground settlement step failed; task left to safety reaper",
+		"stage", stage, "task_id", b.task.ID, "error", err)
 }
 
 // durableWireCapture tees the committed wire bytes of one durable stream so
@@ -291,7 +422,14 @@ func (c *durableWireCapture) WriteHeader(status int) {
 func (c *durableWireCapture) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.mu.Lock()
-	if !c.overflowed {
+	if err != nil {
+		// A failed downstream write means bytes may not have reached the
+		// client — persisting them as the durable pollable body would lie
+		// about reachability. Mark the capture as overflowed so the
+		// settlement path records durable_result_unavailable instead.
+		c.overflowed = true
+		c.buf = nil
+	} else if !c.overflowed {
 		if len(c.buf)+n > c.limit {
 			c.overflowed = true
 			c.buf = nil

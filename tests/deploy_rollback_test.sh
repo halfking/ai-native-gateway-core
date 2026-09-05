@@ -220,8 +220,8 @@ test_rollback_active_is_noop() {
   # SELECT step enforces eligibility). With current_link → v1.0.0
   # and a request to roll back to v1.0.0, the swap points to itself.
   # current_link must still resolve to v1.0.0 — never to nothing.
-  if [[ $rc -eq 0 && "$before" == "$after" && "$after" == *"v1.0.0" ]]; then
-    log_pass "rollback to active version is no-op (current stays v1.0.0)"
+  if [[ $rc -ne 0 && "$before" == "$after" && "$after" == *"v1.0.0" ]]; then
+    log_pass "rollback to active version is rejected (current stays v1.0.0)"
   else
     log_fail "active-version rollback broke state: rc=$rc [$before] → [$after]"
   fi
@@ -285,8 +285,14 @@ test_rollback_missing_version() {
   eval "$(host_release_layout '245' 'v0.0.0')"
 
   local before; before=$(readlink "$current_link")
-  host_rollback_to ssh_cmd 245 "v9.9.9" 2>/dev/null
-  local rc=$?
+  local rc
+  if (
+    host_rollback_to ssh_cmd 245 "v9.9.9" 2>/dev/null
+  ); then
+    rc=0
+  else
+    rc=$?
+  fi
   local after; after=$(readlink "$current_link")
 
   if [[ $rc -ne 0 && "$before" == "$after" ]]; then
@@ -329,11 +335,14 @@ test_select_no_candidate() {
   fake_ssh_for "$tmp2"
 
   local rc2
-  (
+  if (
     host_select_rollback_target ssh_cmd 245 v0.0.0 2>/dev/null
     echo "this should not run"
-  ) >/dev/null 2>&1
-  rc2=$?
+  ) >/dev/null 2>&1; then
+    rc2=0
+  else
+    rc2=$?
+  fi
 
   if [[ $rc2 -eq 4 ]]; then
     log_pass "select exits 4 (no_rollback_target) when only verified is active"

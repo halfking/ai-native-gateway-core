@@ -16,10 +16,16 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
-const maxRawLogFileSize = 200 * 1024 * 1024
+// 2026-08-18: 调整为 100MB/文件 × 10 备份 = 1000MB 总量上限
+// （rule 11 §3 「允许最高1000M的log总量，但每个文件不超过100M」）
+const (
+	maxRawLogFileSize  = 100 * 1024 * 1024 // 100MB/文件
+	maxRawLogKeepCount = 10                // 保留最近 10 个文件
+)
 
 // 特性：
-//   - 回转日志文件，最大200MB
+//   - 回转日志文件，单个文件最大 100MB（rule 11 §3 红线）
+//   - 保留最近 10 个文件（约 1000MB 总量上限）
 //   - 记录完整的请求和响应数据（未经IR转换）
 //   - 包含时间戳、请求ID、协议类型等元数据
 //   - 线程安全
@@ -103,14 +109,23 @@ func (e *RawDataEntry) RawDataEncodingJSON() []byte {
 // NewRawDataLogger 创建原始数据日志记录器
 //
 // baseDir: 日志文件目录路径
-// maxSize: 单个日志文件最大字节数（默认200MB）
+// maxSize: 单个日志文件最大字节数（默认100MB，符合 rule 11 §3）
 // enabled: 是否启用日志记录（可通过环境变量控制）
 func NewRawDataLogger(baseDir string, maxSize int64, enabled bool) (*RawDataLogger, error) {
 	if !enabled {
 		return &RawDataLogger{enabled: false}, nil
 	}
 
-	if maxSize <= 0 || maxSize > maxRawLogFileSize {
+	// 2026-08-18: maxSize>0 时严格按调用方传入值生效，但超过
+	// maxRawLogFileSize（100MB）时截断到上限，避免单文件过大
+	// 导致 total 超出 1000MB 上限。
+	if maxSize <= 0 {
+		maxSize = maxRawLogFileSize
+	}
+	if maxSize > maxRawLogFileSize {
+		slog.Warn("raw_data_logger: requested maxSize exceeds policy, clamping",
+			"requested_bytes", maxSize,
+			"policy_max_bytes", maxRawLogFileSize)
 		maxSize = maxRawLogFileSize
 	}
 
@@ -314,8 +329,9 @@ func (l *RawDataLogger) rotate() error {
 
 	slog.Info("raw_data_logger: rotated log file", "path", filePath)
 
-	// 清理旧文件（保留最近5个）
-	go l.cleanupOldFiles(5)
+	// 2026-08-18: 清理旧文件（保留最近 10 个，rule 11 §3）。
+	// 单文件 100MB × 10 ≈ 1000MB 上限。
+	go l.cleanupOldFiles(maxRawLogKeepCount)
 
 	return nil
 }

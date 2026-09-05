@@ -1,0 +1,551 @@
+# ============================================================================
+# 252 unified gateway for kxpms.cn domains (Deployed 2026-07-08)
+# Architecture:
+#   - 252 is the unified SSL termination point for *.kxpms.cn
+#   - Each domain proxies to its 154 backend via HTTP (internal network)
+#   - certbot manages kxpms.cn SSL cert at /etc/letsencrypt/live/kxpms.cn
+#   - 154 has its own nginx for direct-access mode (fallback)
+#
+# Domains & backends:
+#   www.kxpms.cn    → 172.16.2.209:12009 (154 SPA static + api reverse proxy)
+#   llm.kxpms.cn    → 172.16.2.241:8781  (154 llm-gateway-go native)
+#   auth.kxpms.cn   → 172.16.2.209:8000  (154 casdoor-server native)
+#   kxpms.cn        → 302 → www.kxpms.cn
+#
+# Cert topology (verified & updated 2026-08-15):
+#   - kxpms.cn + llm.kxpms.cn share ONE cert: /etc/letsencrypt/live/kxpms.cn
+#     (SAN: kxpms.cn, llm.kxpms.cn; renewed on 252 via certbot-renew.timer,
+#     webroot /var/www/certbot HTTP-01).
+#   - 154 keeps a mirror synced by /etc/letsencrypt/renewal-hooks/deploy/sync-to-154.sh
+#     (runs natively on every successful renewal; NOT via $DEPLOY_HOOK in sysconfig).
+#     Both 252 and 154 serve llm.kxpms.cn with the same cert → flip DNS at will.
+#   - legacy /etc/nps/conf/certs/hosts/llm.kxpms.cn path no longer exists (removed).
+# ============================================================================
+
+upstream kxpms_www_backend {
+    server 172.16.2.209:443 max_fails=3 fail_timeout=10s;
+    keepalive 32;
+}
+
+upstream kxpms_memora_backend {
+    server 172.16.2.209:9001 max_fails=3 fail_timeout=10s;
+    keepalive 32;
+}
+
+upstream kxpms_maintain_backend {
+    server 172.16.2.241:8082 max_fails=3 fail_timeout=10s;
+    keepalive 16;
+}
+
+upstream kxpms_llm_backend {
+    server 172.16.2.209:8781 max_fails=2 fail_timeout=5s;
+    keepalive 32;
+    # 2026-08-21: Add 245 (172.16.2.241:8781) as backup gateway.
+    # 245 is llmgo.kxpms.cn pre-prod (release e37f7a8c). When 154 gateway
+    # fails (max_fails=2 fail_timeout=30s), nginx auto-shifts traffic here.
+    server 172.16.2.241:8781 max_fails=2 fail_timeout=30s backup;
+
+}
+
+upstream kxpms_license_authority {
+    server 172.16.2.209:8443 max_fails=3 fail_timeout=10s;
+    keepalive 8;
+}
+
+
+upstream kxpms_auth_backend {
+    server 172.16.2.209:8000 max_fails=3 fail_timeout=10s;
+    keepalive 32;
+}
+
+
+# HTTP :80 — ACME challenge + redirect to HTTPS
+server {
+    include /etc/nginx/conf.d/00-security-hardening.snippet;
+    autoindex off;
+    listen 80;
+    listen [::]:80;
+    # Expanded 2026-08-20: include all *.kxpms.cn subdomains that resolve to
+    # 252 public IP (115.29.212.252). This makes ACME HTTP-01 challenges go to
+    # the local webroot directly, instead of falling through to the regex
+    # catch-all block below (which proxies to 154, where only llm.kxpms.cn
+    # has a working ACME endpoint).
+    server_name kxpms.cn www.kxpms.cn llm.kxpms.cn auth.kxpms.cn memora.kxpms.cn
+                ai.kxpms.cn nexus.kxpms.cn nbjl.kxpms.cn
+                acc.kxpms.cn m.kxpms.cn m-api.kxpms.cn
+                finance.kxpms.cn doc-tools.kxpms.cn mcp.kxpms.cn
+                bidding.kxpms.cn crm.kxpms.cn dashboard.kxpms.cn
+                fmail.kxpms.cn geo.kxpms.cn geoflow.kxpms.cn
+                marketing.kxpms.cn public-kb.kxpms.cn quotation.kxpms.cn
+                trendaradar.kxpms.cn;
+
+    # HTTP-01 ACME challenge — serve from local webroot (proven pattern, used
+    # for *.itestu.cn certs). Certbot writes tokens here during renewal.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        try_files $uri =404;
+    }
+
+    # Everything else → HTTPS redirect
+    location / {
+        return 301 https://$host$request_uri;
+    }
+    # Sensitive file blocking (hardened 2026-07-08)
+    location ~ /\.(git|svn|hg|env|htaccess|htpasswd|docker|kube) { deny all; return 404; }
+    location ~ /\.(env|envrc|env\.local|env\.production|env\.development)$ { deny all; return 404; }
+    location ~* (^|/)(wp-config|wp-settings|web\.config|composer\.json|composer\.lock|\.npmrc|\.docker/|\.git/|\.ssh/|\.aws/|Procfile|README\.md)$ { deny all; return 404; }
+    location ~* (^|/)(database\.yml|secrets\.yml|\.htpasswd|credentials\.json|service-account.*\.json|\.kube/config)$ { deny all; return 404; }
+    # Exploit pattern blocking
+    location ~* (union.*select|select.*from|concat.*char|<script|javascript:|onerror=|onload=) { return 444; }
+}
+
+
+# HTTPS :9443 — memora.kxpms.cn
+server {
+    include /etc/nginx/conf.d/00-security-hardening.snippet;
+    autoindex off;
+    listen 9443 ssl http2 proxy_protocol;
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+
+    server_name memora.kxpms.cn;
+    ssl_certificate     /etc/letsencrypt/live/kxpms.cn/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kxpms.cn/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    client_max_body_size 100m;
+    keepalive_timeout 300s;
+
+    access_log /var/log/nginx/memora-252-access.log;
+    error_log  /var/log/nginx/memora-252-error.log;
+
+    location / {
+        proxy_pass http://kxpms_memora_backend;
+        proxy_set_header Host memora.kxpms.cn;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /api/ {
+        proxy_pass http://kxpms_memora_backend;
+        proxy_set_header Host memora.kxpms.cn;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 300s;
+    }
+
+    location /api/chat/ {
+        proxy_pass http://kxpms_memora_backend;
+        proxy_set_header Host memora.kxpms.cn;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+    }
+
+    location ~ /.(git|svn|hg|env|htaccess|htpasswd|docker|kube) { deny all; return 404; }
+}
+# HTTPS :9443 — SSL termination + reverse proxy (proxy_protocol from stream.d/sni-proxy.conf)
+server {
+    include /etc/nginx/conf.d/00-security-hardening.snippet;
+    autoindex off;
+    listen 9443 ssl http2 proxy_protocol;
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+
+    # kxpms.cn root → 302 to www
+    server_name kxpms.cn;
+    ssl_certificate     /etc/letsencrypt/live/kxpms.cn/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kxpms.cn/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    return 302 https://www.kxpms.cn$request_uri;
+    # Sensitive file blocking (hardened 2026-07-08)
+    location ~ /\.(git|svn|hg|env|htaccess|htpasswd|docker|kube) { deny all; return 404; }
+    location ~ /\.(env|envrc|env\.local|env\.production|env\.development)$ { deny all; return 404; }
+    location ~* (^|/)(wp-config|wp-settings|web\.config|composer\.json|composer\.lock|\.npmrc|\.docker/|\.git/|\.ssh/|\.aws/|Procfile|README\.md)$ { deny all; return 404; }
+    location ~* (^|/)(database\.yml|secrets\.yml|\.htpasswd|credentials\.json|service-account.*\.json|\.kube/config)$ { deny all; return 404; }
+    # Exploit pattern blocking
+    location ~* (union.*select|select.*from|concat.*char|<script|javascript:|onerror=|onload=) { return 444; }
+}
+
+server {
+    include /etc/nginx/conf.d/00-security-hardening.snippet;
+    autoindex off;
+    listen 9443 ssl http2 proxy_protocol;
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+    server_name www.kxpms.cn;
+
+    ssl_certificate     /etc/letsencrypt/live/kxpms.cn/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kxpms.cn/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL_kxpms_www:10m;
+    ssl_session_timeout 10m;
+    client_max_body_size 100M;
+
+    access_log /var/log/nginx/kxpms-cn-www-access.log;
+    error_log /var/log/nginx/kxpms-cn-www-error.log;
+
+    location / {
+        proxy_pass https://kxpms_www_backend;
+        proxy_ssl_server_name on;
+        proxy_ssl_protocols TLSv1.2 TLSv1.3;
+        proxy_ssl_name www.kxpms.cn;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+    }
+    # Sensitive file blocking (hardened 2026-07-08)
+    location ~ /\.(git|svn|hg|env|htaccess|htpasswd|docker|kube) { deny all; return 404; }
+    location ~ /\.(env|envrc|env\.local|env\.production|env\.development)$ { deny all; return 404; }
+    location ~* (^|/)(wp-config|wp-settings|web\.config|composer\.json|composer\.lock|\.npmrc|\.docker/|\.git/|\.ssh/|\.aws/|Procfile|README\.md)$ { deny all; return 404; }
+    location ~* (^|/)(database\.yml|secrets\.yml|\.htpasswd|credentials\.json|service-account.*\.json|\.kube/config)$ { deny all; return 404; }
+    # Exploit pattern blocking
+    location ~* (union.*select|select.*from|concat.*char|<script|javascript:|onerror=|onload=) { return 444; }
+}
+
+server {
+    include /etc/nginx/conf.d/00-security-hardening.snippet;
+    autoindex off;
+    listen 9443 ssl http2 proxy_protocol;
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+    server_name llm.kxpms.cn;
+    # Allow brand fonts for guest landing (Outfit / Noto Sans SC)
+    proxy_hide_header Content-Security-Policy;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com data:; img-src 'self' data: https:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+
+
+    # Cert managed by certbot at /etc/letsencrypt/live/kxpms.cn/ (auto-renewed on 252
+    # via certbot-renew.timer). 154 keeps its own mirror via the deploy hook
+    # /etc/letsencrypt/renewal-hooks/deploy/sync-to-154.sh.
+    ssl_certificate     /etc/letsencrypt/live/kxpms.cn/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kxpms.cn/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL_kxpms_llm:10m;
+    ssl_session_timeout 10m;
+    client_max_body_size 100M;
+
+    access_log /var/log/nginx/kxpms-cn-llm-access.log;
+    error_log /var/log/nginx/kxpms-cn-llm-error.log;
+
+    # Marker-driven deploy page for the 154 gateway behind this public ingress.
+    error_page 503 =200 /__llm_gateway_upgrade.html;
+    location = /__llm_gateway_upgrade.html {
+        internal;
+        alias /var/www/llm-gateway-maintenance/index.html;
+        add_header Cache-Control "no-store, no-cache, must-revalidate" always;
+        add_header X-LLM-Gateway-Upgrade "in-progress" always;
+    }
+
+    # Keep public probes real while the gateway marker gates user traffic.
+    location = /healthz {
+        proxy_pass http://kxpms_llm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+    location = /readyz {
+        proxy_pass http://kxpms_llm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 30s;
+        proxy_send_timeout 30s;
+    }
+
+    # LLM Gateway long-timeout (AI reasoning/thinking SSE)
+    proxy_buffering off;
+    proxy_cache off;
+
+# --- license-authority /api/v1 (managed) ---
+    location ^~ /api/v1/ {
+        proxy_pass http://kxpms_license_authority;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+    }
+
+
+    # ---- ai-native-maintain same-origin wiring (2026-07-20) ----
+    location = /maintain-api/healthz {
+        proxy_pass http://kxpms_maintain_backend/healthz;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location = /maintain-api/readyz {
+        proxy_pass http://kxpms_maintain_backend/readyz;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location ^~ /maintain-api/ {
+        proxy_pass http://kxpms_maintain_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header Authorization $http_authorization;
+        proxy_set_header X-Tenant-ID "";
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 300s;
+    }
+
+    location ^~ /artifacts/ {
+        proxy_pass http://kxpms_maintain_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # 2026-08-27: split static-asset cache policy for /maintain/ — assets/
+    # chunks are hash-named (immutable, 30d); index.html/SPA fallback stays
+    # no-cache so users always get the latest entry point.
+    location ^~ /maintain/assets/ {
+        root /opt/ai-native-maintain/web;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        access_log off;
+    }
+    location = /maintain/favicon.png {
+        root /opt/ai-native-maintain/web;
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+        add_header X-Content-Type-Options nosniff always;
+        access_log off;
+    }
+    location ^~ /maintain/ {
+        root /opt/ai-native-maintain/web;
+        try_files $uri $uri/ /maintain/index.html;
+        add_header Cache-Control "no-cache";
+    }
+    location = /maintain { return 302 /maintain/home; }
+
+    absolute_redirect off;
+    location = /download { return 302 /maintain/download$is_args$args; }
+    location = /support { return 302 /maintain/support$is_args$args; }
+    location = /offline-activation { return 302 /maintain/offline-activation$is_args$args; }
+    location = /activate { return 302 /maintain/activate$is_args$args; }
+    location = /public/download { return 302 /maintain/download$is_args$args; }
+    location = /public/support { return 302 /maintain/support$is_args$args; }
+    location = /public/feedback { return 302 /maintain/feedback$is_args$args; }
+    location = /public/offline-activation { return 302 /maintain/offline-activation$is_args$args; }
+    location = /setup { return 302 /maintain/setup$is_args$args; }
+
+
+    # Product intro → Maintain home. Gateway login entry: /?login=*
+    location = / {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
+        # A local error_page (418) blocks inheritance of the server-level 503
+        # mapping; without this line the marker's return 503 serves nginx's
+        # default error body instead of the upgrade page.
+        error_page 503 =200 /__llm_gateway_upgrade.html;
+        error_page 418 = @llm_gateway_root;
+        if ($arg_login != "") { return 418; }
+        return 302 /maintain/home;
+    }
+    location @llm_gateway_root {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
+        proxy_pass http://kxpms_llm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 60s;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 1200s;
+    }
+
+    # 2026-07-23: Gateway 菜单配置静态文件（供 Maintain 动态加载）
+    # 252 本地服务，避免上游 Gateway 应用 SPA fallback
+    location = /menu-config.json {
+        root /opt;
+        add_header Cache-Control "public, max-age=300" always;
+        add_header Content-Type "application/json" always;
+        access_log off;
+    }
+
+    # 2026-07-23: ai-session-manager plugin healthz（用于 Maintain 端 plugin 探测）
+    location ^~ /plugins/ai-session-manager/healthz {
+        default_type application/json;
+        return 200 '{"status":"ok","plugin":"ai-session-manager","timestamp":"$arg_t"}';
+    }
+
+    # 2026-08-21: SPA fallback for llm-gateway-go web SPA paths (/dashboard, /keys, ...).
+    # Root cause of 401 missing_key on /dashboard: this catch-all proxied SPA paths
+    # to llm-gateway-go gateway (kxpms_llm_backend = 172.16.2.209:8781) which has a
+    # global AuthMiddleware that bypasses only /api/, /healthz, /metrics, /. Now serve
+    # SPA via 154 nginx (which was patched 2026-08-21 to serve /opt/llm-gateway-go/current/web).
+    # Higher-priority ^~ and = locations already match /api/v1/, /maintain-api/,
+    # /artifacts/, /maintain/, /menu-config.json, /plugins/, /api/admin/ etc., so
+    # behavior for those routes is preserved.
+    location / {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
+        try_files $uri $uri/ @llm_spa_154;
+    }
+    location @llm_spa_154 {
+        proxy_pass https://172.16.2.209:443;
+        proxy_ssl_server_name on;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 1200s;
+        proxy_send_timeout 1200s;
+        proxy_buffering off;
+        proxy_cache off;
+    }
+
+    # Admin API
+    location /api/admin/ {
+        if (-f /var/www/llm-gateway-maintenance/UPGRADING) { return 503; }
+        proxy_pass http://kxpms_llm_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+    # Sensitive file blocking (hardened 2026-07-08)
+    location ~ /\.(git|svn|hg|env|htaccess|htpasswd|docker|kube) { deny all; return 404; }
+    location ~ /\.(env|envrc|env\.local|env\.production|env\.development)$ { deny all; return 404; }
+    location ~* (^|/)(wp-config|wp-settings|web\.config|composer\.json|composer\.lock|\.npmrc|\.docker/|\.git/|\.ssh/|\.aws/|Procfile|README\.md)$ { deny all; return 404; }
+    location ~* (^|/)(database\.yml|secrets\.yml|\.htpasswd|credentials\.json|service-account.*\.json|\.kube/config)$ { deny all; return 404; }
+    # Exploit pattern blocking
+    location ~* (union.*select|select.*from|concat.*char|<script|javascript:|onerror=|onload=) { return 444; }
+}
+
+server {
+    include /etc/nginx/conf.d/00-security-hardening.snippet;
+    autoindex off;
+    listen 9443 ssl http2 proxy_protocol;
+    set_real_ip_from 127.0.0.1;
+    real_ip_header proxy_protocol;
+    server_name auth.kxpms.cn;
+
+    ssl_certificate     /etc/letsencrypt/live/kxpms.cn/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/kxpms.cn/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache shared:SSL_kxpms_auth:10m;
+    ssl_session_timeout 10m;
+    client_max_body_size 100M;
+
+    access_log /var/log/nginx/kxpms-cn-auth-access.log;
+    error_log /var/log/nginx/kxpms-cn-auth-error.log;
+
+    location / {
+        proxy_pass http://kxpms_auth_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_connect_timeout 30s;
+        proxy_read_timeout 300s;
+        proxy_send_timeout 300s;
+        proxy_buffering off;
+    }
+    # Sensitive file blocking (hardened 2026-07-08)
+    location ~ /\.(git|svn|hg|env|htaccess|htpasswd|docker|kube) { deny all; return 404; }
+    location ~ /\.(env|envrc|env\.local|env\.production|env\.development)$ { deny all; return 404; }
+    location ~* (^|/)(wp-config|wp-settings|web\.config|composer\.json|composer\.lock|\.npmrc|\.docker/|\.git/|\.ssh/|\.aws/|Procfile|README\.md)$ { deny all; return 404; }
+    location ~* (^|/)(database\.yml|secrets\.yml|\.htpasswd|credentials\.json|service-account.*\.json|\.kube/config)$ { deny all; return 404; }
+    # Exploit pattern blocking
+    location ~* (union.*select|select.*from|concat.*char|<script|javascript:|onerror=|onload=) { return 444; }
+}
+
+
+# ============================================================================
+# HTTP :80 — ACME challenge proxy for *.kxpms.cn (2026-07-11)
+# 252 is now the public ingress for *.kxpms.cn (DNS flipped to 115.29.212.252).
+# But certbot is on 154 and renews there using HTTP-01.
+# This block proxies /.well-known/acme-challenge/ for any *.kxpms.cn host back
+# to 154 (172.16.2.209:80) so the renewal challenge can reach the 154 webroot.
+# All non-challenge requests fall through to the 301->HTTPS redirect.
+# ============================================================================
+upstream kxpms_acme_154_backend {
+    server 172.16.2.209:80 max_fails=2 fail_timeout=5s;
+    keepalive 8;
+}
+
+server {
+    include /etc/nginx/conf.d/00-security-hardening.snippet;
+    autoindex off;
+
+    # Bind to :80 explicitly but don't set server_name so we can use regex
+    # matching on the Host header to catch any *.kxpms.cn (or kxpms.cn) that
+    # doesn't have its own server block on 252.
+    listen 80;
+    listen [::]:80;
+
+    # Use regex to match ALL *.kxpms.cn subdomains + the bare domain.
+    # Host header captured into $kxpms_host for proxying.
+    server_name ~^(?<kxpms_host>(?:[^.]+\.)?kxpms\.cn)$;
+
+    # Only allow ACME challenge path; everything else -> HTTPS redirect.
+    # FIX (2026-08-20): Read ACME token from LOCAL /var/www/certbot instead of
+    # proxying to 154. Reason: 154 only serves /.well-known/acme-challenge/ for
+    # llm.kxpms.cn; the other *.kxpms.cn subdomains had no token on 154 → 502
+    # when certbot tried to renew the unified kxpms.cn cert with extra SANs.
+    # The :80 whitelist in the earlier server block already covers the historical
+    # whitelisted hosts (kxpms.cn/www/llm/auth/memora/ai/files.kxpms.cn); this
+    # regex block is the catch-all for the remaining *.kxpms.cn subdomains.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        try_files $uri =404;
+    }
+
+    # All other requests -> redirect to HTTPS (handled by the earlier :80 block
+    # for whitelisted hosts; for unknown *.kxpms.cn we also redirect).
+    location / {
+        return 301 https://$kxpms_host$request_uri;
+    }
+}

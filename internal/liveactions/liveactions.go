@@ -117,8 +117,11 @@ const (
 	// DefaultBufferSize is the in-process emit buffer. When full, events are
 	// dropped + counted (never block the hot path).
 	DefaultBufferSize = 4096
-	// redisWriteTimeout bounds one worker-side LPUSH+LTRIM pipeline.
+	// redisWriteTimeout bounds one worker-side LPUSH+LTRIM+EXPIRE pipeline.
 	redisWriteTimeout = 2 * time.Second
+	// redisKeyTTL bounds the action replay queue when the gateway is idle.
+	// Each successful write renews it so active dashboards retain their replay window.
+	redisKeyTTL = 24 * time.Hour
 )
 
 // redisMaxLen is the runtime LTRIM bound (defaults to RedisMaxLen; a var so
@@ -167,6 +170,16 @@ func ResetSeqForTest() {
 	})
 }
 
+// ResetMetricsForTest zeros the three package-level metric atomics so a test
+// can assert the value introduced by its own action (droppedTotal /
+// redisFailureTot / stageNormFailureTot). Tests only — never call from
+// production code.
+func ResetMetricsForTest() {
+	droppedTotal.Store(0)
+	redisFailureTot.Store(0)
+	stageNormFailureTot.Store(0)
+}
+
 // ── metrics ────────────────────────────────────────────────────────────────
 //
 // Flat package-level atomics surfaced through one custom Prometheus collector
@@ -174,9 +187,10 @@ func ResetSeqForTest() {
 // readable from unit tests without the prometheus testutil dependency, which
 // is not vendored in this repo).
 var (
-	droppedTotal      atomic.Uint64
-	redisFailureTot   atomic.Uint64
-	metricsRegistered sync.Once
+	droppedTotal        atomic.Uint64
+	redisFailureTot     atomic.Uint64
+	stageNormFailureTot atomic.Uint64
+	metricsRegistered   sync.Once
 )
 
 // DroppedTotal returns how many events this process dropped because the emit
@@ -210,6 +224,9 @@ func (liveActionsCollector) Collect(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(
 		prometheus.NewDesc("live_actions_redis_failures_total", "Action-event Redis writes that failed (silent degradation).", nil, nil),
 		prometheus.CounterValue, float64(redisFailureTot.Load()))
+	ch <- prometheus.MustNewConstMetric(
+		prometheus.NewDesc("live_actions_stage_normalization_failures_total", "Action-event stage-normalization failures (silent degradation).", nil, nil),
+		prometheus.CounterValue, float64(stageNormFailureTot.Load()))
 }
 
 // ── emitter ────────────────────────────────────────────────────────────────
@@ -328,6 +345,7 @@ func (e *Emitter) write(ev ActionEvent) {
 	pipe.LPush(ctx, RedisKey, string(data))
 	// Keep the newest RedisMaxLen entries at the head (0..redisMaxLen-1).
 	pipe.LTrim(ctx, RedisKey, 0, redisMaxLen-1)
+	pipe.Expire(ctx, RedisKey, redisKeyTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
 		// 静默降级：计数 + debug 日志，不阻塞、不上抛（Redis 不可用时请求路径零感知）。
 		e.redisFailures.Add(1)

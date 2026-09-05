@@ -5,7 +5,93 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestRecoveryCoordinator_V2MetadataColdStartRecovery(t *testing.T) {
+	large := strings.Repeat("long context ", 80)
+	body := makeBodyAny(
+		makeMsg("system", "sys"),
+		makeMsg("user", large), makeMsg("assistant", large),
+		makeMsg("user", "latest"),
+	)
+	cached := []byte(`[{"role":"system","content":"sys"},{"role":"user","content":"latest"}]`)
+	rc := NewRecoveryCoordinator(RecoveryDeps{
+		V2Meta: stubV2RecoveryMeta{meta: map[string]any{
+			"cut_marker": map[string]interface{}{
+				"created_at": float64(time.Now().Unix()), "source_msg_count": float64(4),
+				"system_msg_count": float64(1), "cut_index": float64(2),
+				"strategy": "mechanical_trim",
+			},
+		}},
+		V2Builder: stubV2RecoveryBuilder{body: cached},
+	})
+	res := rc.Recover(context.Background(), body, "openai", 1000, "tenant", "session", 0)
+	if !res.ShouldRetry || res.Strategy != "incremental_v2_metadata" {
+		t.Fatalf("V2 recovery = %+v, want retry via metadata", res)
+	}
+}
+
+func TestRecoveryCoordinator_V2MetadataAcceptsReaderTypedProvenance(t *testing.T) {
+	body := makeBodyAny(
+		makeMsg("system", "sys"),
+		makeMsg("user", strings.Repeat("old ", 100)),
+		makeMsg("assistant", strings.Repeat("old ", 100)),
+		makeMsg("user", "latest"),
+	)
+	cached := []byte(`[{"role":"system","content":"sys"},{"role":"user","content":"latest"}]`)
+	meta := map[string]any{
+		"pre_sanitize_offset_range": []int{1, 3},
+		"cut_marker": map[string]interface{}{
+			"version": 1, "created_at": float64(time.Now().Unix()), "source_msg_count": 4,
+			"system_msg_count": 1, "cut_index": 2, "strategy": "mechanical_trim",
+			"pre_sanitize_offset_range": []int{1, 3},
+		},
+		"sanitize_message_refs": []map[string]interface{}{
+			{"raw_index": 0, "sanitized_index": 0},
+		},
+		"alignment_map": []map[string]interface{}{
+			{"original_index": 0, "compressed_index": 0},
+		},
+	}
+	res := NewRecoveryCoordinator(RecoveryDeps{
+		V2Meta:    stubV2RecoveryMeta{meta: meta},
+		V2Builder: stubV2RecoveryBuilder{body: cached},
+	}).Recover(context.Background(), body, "openai", 1000, "tenant", "session", 0)
+	if !res.ShouldRetry || res.Strategy != "incremental_v2_metadata" {
+		t.Fatalf("typed V2 metadata = %+v, want accepted incremental recovery", res)
+	}
+	if res.CutMarker == nil || res.CutMarker.PreSanitizeOffsetRange != [2]int{1, 3} {
+		t.Fatalf("typed PSOR = %+v, want [1 3]", res.CutMarker)
+	}
+}
+
+func TestRecoveryCoordinator_V2MetadataRejectsNestedPSORMismatch(t *testing.T) {
+	meta := map[string]any{
+		"pre_sanitize_offset_range": []int{1, 3},
+		"cut_marker": map[string]interface{}{
+			"version": 1, "created_at": float64(time.Now().Unix()), "source_msg_count": 4,
+			"system_msg_count": 1, "cut_index": 2, "strategy": "mechanical_trim",
+			"pre_sanitize_offset_range": []int{1, 2},
+		},
+	}
+	marker, ok := cutMarkerFromMetadata(meta["cut_marker"].(map[string]interface{}))
+	if !ok || validatePersistedProvenance(meta, marker) {
+		t.Fatal("nested/top-level PSOR mismatch must be rejected")
+	}
+}
+
+type stubV2RecoveryMeta struct{ meta map[string]any }
+
+func (s stubV2RecoveryMeta) CompressionMetadata(context.Context, string, string) (map[string]any, error) {
+	return s.meta, nil
+}
+
+type stubV2RecoveryBuilder struct{ body []byte }
+
+func (s stubV2RecoveryBuilder) BuildLatestOutbound(context.Context, string, string) ([]byte, error) {
+	return s.body, nil
+}
 
 func TestRecoveryCoordinator_MechanicalFallback(t *testing.T) {
 	// Build a large body that needs compression.
@@ -374,6 +460,30 @@ func makeRecoveryTestBody() []byte {
 	}
 	body, _ := json.Marshal(map[string]any{"model": "test", "messages": msgs})
 	return body
+}
+
+func TestRecoveryCoordinator_CutMarkerUsesExactCompressionRange(t *testing.T) {
+	body := makeRecoveryTestBody()
+	rc := NewRecoveryCoordinator(RecoveryDeps{})
+	res := rc.Recover(context.Background(), body, "openai", 5000, "tenant", "exact-range", 0)
+	if !res.ShouldRetry || res.CutMarker == nil {
+		t.Fatalf("recovery failed: %+v", res)
+	}
+	messages, err := extractMessages(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := FindOptimalCutPoint(messages, 5000, 0.65)
+	if plan.CutIndex <= 0 {
+		t.Fatalf("test fixture did not produce a compression cut: %+v", plan)
+	}
+	want := [2]int{plan.SystemCount, plan.SystemCount + plan.CutIndex}
+	if got := res.CutMarker.PreSanitizeOffsetRange; got != want {
+		t.Fatalf("PSOR = %v, want exact CutPlan range %v (messages=%d, plan=%+v)", got, want, len(messages), plan)
+	}
+	if want[0] == 0 && want[1] == len(messages) {
+		t.Fatal("PSOR still covers the entire message array")
+	}
 }
 
 // We use a nil deps (→ ok=false) and assert the coordinator then degrades to

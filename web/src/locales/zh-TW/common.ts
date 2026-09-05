@@ -2,6 +2,7 @@
 // common.ts — 全站複用文案：按鈕、狀態、操作回饋、分頁等。
 // 高頻詞（取消/確認/啟用/停用/載入中）在多個模組引用，優先抽取。
 export default {
+  credentialFallback: '憑證',
   button: {
     cancel: '取消',
     confirm: '確認',
@@ -122,6 +123,7 @@ export default {
   cancel: '取消',
   close: '關閉',
   confirm: '確認',
+  confirmTitle: '請確認',
   count: '數量',
   create: '新建',
   createdAt: '建立時間',
@@ -133,6 +135,7 @@ export default {
   enabled: '啟用',
   lastOccurred: '最後發生',
   loading: '載入中…',
+  never: '從未',
   module: '模組',
   no: '否',
   refresh: '重新整理',

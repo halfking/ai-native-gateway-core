@@ -2,12 +2,40 @@ package handoff
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 )
 
-func TestPrepareRequest_TransparentOpenAI(t *testing.T) {
+func TestDefaultExplicitRequiresTenantOptIn(t *testing.T) {
+	settings := &stubSettings{}
+	hook := NewTriggerHook(TriggerConfig{SettingsGetter: settings}, &memoryStore{})
+
+	if hook.DefaultExplicit("tenant-a") {
+		t.Fatal("handoff must default to transparent for clients without an explicit capability signal")
+	}
+	settings.set("handoff.client_mode", "explicit")
+	if !hook.DefaultExplicit("tenant-a") {
+		t.Fatal("tenant explicit mode must opt clients into the resume-packet protocol")
+	}
+}
+
+func TestCommitRequestRequiresCreatedTargetSession(t *testing.T) {
+	store := &memoryStore{}
+	hook := NewTriggerHook(TriggerConfig{}, store)
+	result := &RequestResult{Record: &HandoffRecord{SessionKey: "gw_old"}}
+
+	hook.CommitRequest(context.Background(), result, "")
+	if len(store.rows) != 0 || store.handoffCount != 0 {
+		t.Fatalf("unconfirmed handoff must not be persisted, rows=%d count=%d", len(store.rows), store.handoffCount)
+	}
+
+	hook.CommitRequest(context.Background(), result, "gw_new")
+	if len(store.rows) != 1 || store.handoffCount != 1 || store.rows[0].NewSessionID != "gw_new" {
+		t.Fatalf("confirmed handoff not persisted correctly: rows=%+v count=%d", store.rows, store.handoffCount)
+	}
+}
+
+func TestPrepareRequest_TransparentConfigDoesNotRewriteUpstreamBody(t *testing.T) {
 	store := &memoryStore{tokenCount: 200_000, msgCount: 12}
 	hook := NewTriggerHook(TriggerConfig{
 		Enabled: true, TriggerMode: TriggerModeAuto, AbsoluteThreshold: 180_000,
@@ -20,29 +48,8 @@ func TestPrepareRequest_TransparentOpenAI(t *testing.T) {
 		Body:     []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"Continue the migration in /srv/app"}]}`),
 		Protocol: "openai", ContextWindow: 200_000, TokenEstimate: 1000, MessageCount: 12,
 	})
-	if err != nil || result == nil || !result.Triggered {
-		t.Fatalf("expected transparent handoff, result=%+v err=%v", result, err)
-	}
-	if result.Explicit || !strings.HasPrefix(result.Reason, "absolute_threshold") {
-		t.Fatalf("unexpected handoff result: %+v", result)
-	}
-	var payload struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(result.Body, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if len(payload.Messages) != 2 || payload.Messages[0].Role != "system" {
-		t.Fatalf("expected resume system message, got %+v", payload.Messages)
-	}
-	if !strings.Contains(payload.Messages[0].Content, "gateway-handoff-v1") || !strings.Contains(payload.Messages[0].Content, "Continue the migration") {
-		t.Fatalf("resume packet lacks real context: %q", payload.Messages[0].Content)
-	}
-	if payload.Messages[1].Content != "Continue the migration in /srv/app" {
-		t.Fatalf("user message changed: %q", payload.Messages[1].Content)
+	if err != nil || result != nil {
+		t.Fatalf("automatic handoff without explicit client opt-in must leave the request unchanged, result=%+v err=%v", result, err)
 	}
 }
 
@@ -58,8 +65,8 @@ func TestPrepareRequest_ManualSkillIsGatewayOnly(t *testing.T) {
 	if err != nil || result == nil || !strings.HasPrefix(result.Reason, "manual_skill:resume-work") {
 		t.Fatalf("expected manual handoff, result=%+v err=%v", result, err)
 	}
-	if strings.Contains(string(result.Body), "/resume-work") {
-		t.Fatalf("gateway-only skill leaked to upstream: %s", result.Body)
+	if !result.Explicit || len(result.Body) != 0 {
+		t.Fatalf("manual handoff must return an explicit packet without an upstream body: %+v", result)
 	}
 }
 
@@ -78,6 +85,27 @@ func TestPrepareRequest_RedactsSensitiveRuleSummary(t *testing.T) {
 	}
 	if strings.Contains(result.ResumePacket.Summary, "secret-value") {
 		t.Fatalf("sensitive token leaked into packet: %q", result.ResumePacket.Summary)
+	}
+}
+
+func TestPrepareRequest_RedactsSensitiveLLMSummaryEcho(t *testing.T) {
+	hook := NewTriggerHook(TriggerConfig{
+		Enabled: true, TriggerMode: TriggerModeManual, SummaryEngine: SummaryLLM,
+		MaxPerSession: 5, SettingsGetter: &stubSettings{},
+		LLMCaller: fakeLLMCaller{out: "summary api_key=super-secret-value-123456"},
+	}, &memoryStore{})
+	result, err := hook.PrepareRequest(context.Background(), &Request{
+		SessionID: "gw_old", TenantID: "tenant-a",
+		Body: []byte(`{"messages":[{"role":"user","content":"/handoff continue"}]}`), MessageCount: 1,
+	})
+	if err != nil || result == nil {
+		t.Fatalf("expected handoff, result=%+v err=%v", result, err)
+	}
+	if strings.Contains(result.ResumePacket.Summary, "super-secret") || !strings.Contains(result.ResumePacket.Summary, "[redacted]") {
+		t.Fatalf("LLM secret echo leaked into packet: %q", result.ResumePacket.Summary)
+	}
+	if result.Record == nil || strings.Contains(result.Record.SummaryText, "super-secret") {
+		t.Fatalf("LLM secret echo leaked into record: %+v", result.Record)
 	}
 }
 
@@ -100,7 +128,7 @@ func TestPrepareRequest_ExplicitReturnsPacketWithoutRewrite(t *testing.T) {
 	}
 }
 
-func TestPrepareRequest_AnthropicWritesSystemField(t *testing.T) {
+func TestPrepareRequest_AnthropicDoesNotRewriteSystemField(t *testing.T) {
 	hook := NewTriggerHook(TriggerConfig{
 		Enabled: true, TriggerMode: TriggerModeManual, SkillName: "handoff",
 		SummaryEngine: SummaryRule, MaxPerSession: 5, SettingsGetter: &stubSettings{},
@@ -113,19 +141,7 @@ func TestPrepareRequest_AnthropicWritesSystemField(t *testing.T) {
 	if err != nil || result == nil {
 		t.Fatalf("expected anthropic handoff, result=%+v err=%v", result, err)
 	}
-	var payload struct {
-		System   string `json:"system"`
-		Messages []struct {
-			Content string `json:"content"`
-		} `json:"messages"`
-	}
-	if err := json.Unmarshal(result.Body, &payload); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(payload.System, "original rules") || !strings.Contains(payload.System, "gateway-handoff-v1") {
-		t.Fatalf("unexpected anthropic system: %q", payload.System)
-	}
-	if strings.Contains(payload.Messages[0].Content, "/handoff") {
-		t.Fatalf("manual command leaked to upstream: %q", payload.Messages[0].Content)
+	if !result.Explicit || len(result.Body) != 0 {
+		t.Fatalf("anthropic handoff must not rewrite the upstream system field: %+v", result)
 	}
 }

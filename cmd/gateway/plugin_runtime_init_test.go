@@ -29,10 +29,10 @@ func writeTestManifest(t *testing.T, path, pluginID, version string) {
 			"api_contract": "gateway-plugin-v1",
 		},
 		"runtime": map[string]any{
-			"entrypoint":      "bin/" + pluginID,
-			"protocol":        "http-unix-socket",
-			"health_path":     "/plugin/healthz",
-			"handshake_path":  "/plugin/handshake",
+			"entrypoint":             "bin/" + pluginID,
+			"protocol":               "http-unix-socket",
+			"health_path":            "/plugin/healthz",
+			"handshake_path":         "/plugin/handshake",
 			"shutdown_grace_seconds": 5,
 		},
 	}
@@ -60,12 +60,8 @@ func TestScanPlugins_PopulatesRegistry(t *testing.T) {
 		t.Fatalf("expected at least 1 manifest, got %d", len(manifests))
 	}
 	entries := reg.NavEntries(pluginruntime.ViewerOpts{IsSuper: true})
-	if len(entries) == 0 {
-		t.Fatal("no nav entries after scan")
-	}
-	// the manifest has 2 pages with nav (sessions + settings); both visible to super
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 nav entries, got %d", len(entries))
+	if len(entries) != 0 {
+		t.Fatalf("discovered plugin must not expose nav before readiness gate, got %d entries", len(entries))
 	}
 }
 

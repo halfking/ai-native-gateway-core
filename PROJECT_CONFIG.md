@@ -1,6 +1,6 @@
 # 项目配置信息
 
-> **重要提示**: 此文档包含敏感信息，请勿提交到公共仓库。智能体在每次会话开始时应首先读取本文件。
+> **重要提示**: 本文档使用 `<env:KEY>` 占位符占位所有敏感值（IP / 凭据 / 端口）。真实值由 `env-injector inject` / `envs/loader.sh` 在运行时注入（rule 39 / rule 47）。智能体在每次会话开始时应首先读取本文件，并按需通过 `bash env-injector.sh query <KEY>` 查询真值；切勿在文档外复制真值。
 
 ## 项目概述
 
@@ -19,18 +19,20 @@
   域名模式: *.kxpms.cn (火山服务统一域名)
 
 服务器信息:
-  SSH地址: 14.103.112.184:25022
-  默认用户: admin
-  默认密码: Veritrans&9527
-  Root密码: Kaixuan2026&#*9527
-  
+  # 154 = llm.kxpms.cn / llmgo.kxpms.cn 生产网关（2026-07 替换原 184 server，rule 31 §1）
+  # 245 = pre-prod 测试环境（部署 → 245 → 154 晋级门禁）
+  SSH地址: <env:HOST_154>:25022         # 阿里云 154 生产；245 测试用 <env:HOST_245>
+  默认用户: root
+  默认密码: <env:SSHPASS>              # sshpass -e 模式；首选证书认证（<env:SSH_KEY_154> → ~/.ssh/id_ed25519）
+
 数据库配置:
+  # DB 主库位于 252（115.29.212.252），与 154/245 共享
   类型: PostgreSQL
-  SSH隧道: 14.103.112.184:25022
-  本地地址: 127.0.0.1:5432
+  数据库服务器: <env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>    # 阿里云 252 内网；245/154 直连
   数据库名: llm_gateway
-  用户名: postgres
-  访问方式: 通过SSH隧道连接
+  用户名: <env:COMMON_PG_SUPERUSER>    # = llm_gateway
+  密码: <env:COMMON_PG_SUPERUSER_PASS>
+  访问方式: 直接连接（DB 端口仅 252 内网可达，无需 SSH 隧道）
 ```
 
 ### 开发环境
@@ -213,31 +215,32 @@ npm run build
 ### 服务器部署
 
 ```bash
-# SSH连接
-ssh -p 25022 admin@14.103.112.184
-
-# 切换到root
-sudo su -
-# 密码: Kaixuan2026&#*9527
+# SSH连接（首选证书；fallback 用 sshpass -e + SSHPASS）
+ssh -i <env:SSH_KEY_154> -p 25022 root@<env:HOST_154>
+# 或：SSHPASS='<env:SSHPASS>' sshpass -e ssh -p 25022 root@<env:HOST_154>
 
 # 查看服务状态
-systemctl status llm-gateway
+systemctl status llm-gateway-go.service
 
 # 重启服务
-systemctl restart llm-gateway
+systemctl restart llm-gateway-go.service
 
 # 查看日志
-journalctl -u llm-gateway -f
+journalctl -u llm-gateway-go -f
 ```
 
 ### 数据库操作
 
 ```bash
-# 通过SSH连接数据库
-ssh -p 25022 -L 5432:127.0.0.1:5432 admin@14.103.112.184
+# 直接连接（DB 在 252 内网，不需 SSH 隧道）
+PGPASSWORD=<env:COMMON_PG_SUPERUSER_PASS> psql \
+  -h <env:COMMON_PG_HOST_252> \
+  -p <env:COMMON_PG_PORT_252> \
+  -U <env:COMMON_PG_SUPERUSER> \
+  -d llm_gateway
 
-# 在本地连接
-psql -h 127.0.0.1 -p 5432 -U postgres -d llm_gateway
+# 或通过 .pgpass（推荐，env-injector 不需要每次注入 PGPASSWORD）
+# ~/.pgpass 内容: <env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>:*:<env:COMMON_PG_SUPERUSER>:<env:COMMON_PG_SUPERUSER_PASS>
 
 # 常用查询
 # 查看最近的请求日志

@@ -122,6 +122,13 @@ export default {
     subtitle: 'View bound license status, expiry, and device quotas for this instance',
   },
   upgrade: {
+    contactAdminButton: 'التواصل مع المسؤول لتطبيق الترقية',
+
+    notifyAdminBody: 'يرجى التواصل مع مسؤول لتطبيق هذا الترقية عبر /admin/autoupdate. لا يمكن لبوابة العملاء تنفيذ الترقية مباشرة.',
+    notifyAdminTitle: 'مطلوب تدخل المسؤول',
+    notifyAdminOk: 'فهمت',
+    notifyAdminCopy: 'نسخ الإصدار',
+
     title: 'Software upgrade',
     subtitle: 'Check for updates; download offline packages from the download page',
   },

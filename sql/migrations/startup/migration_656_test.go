@@ -1,0 +1,64 @@
+package startup
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestMigration655AutoRouteSelectionsHotContract(t *testing.T) {
+	upPath := filepath.Join("656_auto_route_selections_hot.sql")
+	downPath := filepath.Join("656_auto_route_selections_hot.down.sql")
+	upBytes, err := os.ReadFile(upPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downBytes, err := os.ReadFile(downPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	up := string(upBytes)
+	down := string(downBytes)
+
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS public.auto_route_selections_hot",
+		"CREATE OR REPLACE VIEW public.auto_route_selections_all AS",
+		"UNION ALL",
+		"CREATE OR REPLACE FUNCTION public.ensure_auto_route_selections_partition",
+		"CREATE OR REPLACE FUNCTION public.promote_auto_route_selections_hot_to_partition",
+		"FOR UPDATE SKIP LOCKED",
+		// 2026-09-05 audit H-4: promote must only drain settled rows past the
+		// retention window, with a 7-day fallback so unsettled rows cannot
+		// strand in hot forever.
+		"settled_at IS NOT NULL AND ts < statement_timestamp() - p_retention",
+		"ts < statement_timestamp() - interval '7 days'",
+		"DELETE FROM public.auto_route_selections_hot",
+		"RETURNING h.id",
+		"INSERT INTO public.auto_route_selections (",
+		"DEFAULT interval '8 hours'",
+		"ts TIMESTAMPTZ NOT NULL DEFAULT NOW()",
+		"partition_date DATE NOT NULL DEFAULT CURRENT_DATE",
+		"pg_advisory_xact_lock",
+		"DETACH PARTITION public.auto_route_selections_default",
+		"ATTACH PARTITION public.auto_route_selections_default DEFAULT",
+	} {
+		if !strings.Contains(up, want) {
+			t.Errorf("migration 656 missing %q", want)
+		}
+	}
+	if strings.Contains(strings.ToUpper(up), "SELECT *") {
+		t.Error("migration 656 must use explicit columns, not SELECT *")
+	}
+	if strings.Contains(strings.ToUpper(up), "EXCEPTION WHEN") {
+		t.Error("migration 656 promote must propagate errors")
+	}
+	copyPos := strings.Index(down, "INSERT INTO public.auto_route_selections (")
+	dropPos := strings.Index(down, "DROP TABLE IF EXISTS public.auto_route_selections_hot")
+	if copyPos < 0 || dropPos < 0 || copyPos >= dropPos {
+		t.Error("down migration must copy hot rows to parent before dropping hot table")
+	}
+	if strings.Contains(strings.ToUpper(down), "SELECT *") {
+		t.Error("down migration must use explicit columns")
+	}
+}

@@ -2,6 +2,7 @@
 import { ref, watch, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
+import { fmtDateTime24h } from '../../../i18n/useFormat'
 import {
   getCenterInstance,
   getInstanceStatus,
@@ -71,13 +72,6 @@ function successColor(pct: number | null) {
 function formatNum(n: number | null | undefined, digits = 1) {
   if (n == null || Number.isNaN(n)) return '—'
   return n.toFixed(digits)
-}
-
-function formatDate(iso?: string) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleString()
 }
 
 function rel(iso?: string) {
@@ -237,7 +231,7 @@ watch(
             <div class="alert-body">
               <div class="alert-title">{{ a.title }}</div>
               <div class="alert-msg">{{ a.message }}</div>
-              <div class="alert-time">{{ formatDate(a.detected_at) }}</div>
+              <div class="alert-time">{{ fmtDateTime24h(a.detected_at) }}</div>
             </div>
           </li>
         </ul>
@@ -247,7 +241,7 @@ watch(
         <h3>{{ t('ops.center.heartbeatHistory') }}</h3>
         <el-table :data="heartbeats" size="small" max-height="220">
           <el-table-column :label="t('common.createdAt')" min-width="140">
-            <template #default="scope">{{ formatDate(scope?.row?.timestamp) }}</template>
+            <template #default="scope">{{ fmtDateTime24h(scope?.row?.timestamp) }}</template>
           </el-table-column>
           <el-table-column label="Goroutines" width="90">
             <template #default="scope">{{ scope?.row?.num_goroutine ?? '—' }}</template>

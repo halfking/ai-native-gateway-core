@@ -14,16 +14,65 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/domain"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domain"              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
+
+// ExecuteHooks (SP-03, 2026-08-19) lets the streaming state machine observe
+// the lifecycle of an upstream execution without taking a hard dependency on
+// the state package. The handler (SP-02) installs the hooks via
+// WithExecuteHooks(ctx, hooks); executeOpenAI reads them from
+// params.R.Context() and fires:
+//
+//   - OnCompressing — once at the top of executeOpenAI, before any work.
+//   - OnCompressed  — via defer at the top of executeOpenAI, with the
+//     terminal error (nil on success).
+//
+// Both fields are optional; nil = no-op (preserves existing call sites and
+// keeps tests that don't install hooks working).
+//
+// Because executeOpenAI can be invoked once per upstream attempt inside
+// Execute's retry loop, the hooks fire per attempt. Callers that want
+// one-shot semantics should wrap their callbacks with sync.Once externally.
+type ExecuteHooks struct {
+	OnCompressing func()
+	OnCompressed  func(err error)
+}
+
+type executeHooksCtxKey struct{}
+
+// WithExecuteHooks returns a derived context that carries the provided
+// ExecuteHooks. Pass the result to the executor via ExecParams.R so
+// executeOpenAI can observe lifecycle events.
+func WithExecuteHooks(parent context.Context, hooks *ExecuteHooks) context.Context {
+	if hooks == nil {
+		return parent
+	}
+	return context.WithValue(parent, executeHooksCtxKey{}, hooks)
+}
+
+// ExecuteHooksFromContext extracts hooks previously stored by
+// WithExecuteHooks. Returns nil if no hooks are attached.
+func ExecuteHooksFromContext(ctx context.Context) *ExecuteHooks {
+	if ctx == nil {
+		return nil
+	}
+	if v, ok := ctx.Value(executeHooksCtxKey{}).(*ExecuteHooks); ok {
+		return v
+	}
+	return nil
+}
 
 // ChatExecutor is the ProtocolHandler for OpenAI Chat Completions
 // protocol. It owns: chat-completions URL, Bearer auth, OpenAI-shaped
@@ -34,7 +83,8 @@ type ChatExecutor struct {
 	// Hooks (set via SetXxx) for downstream consumers.
 	Normalize          func([]byte, bool) []byte
 	XMLCoerceNonStream func([]byte, bool) []byte
-	StreamChat         func(http.ResponseWriter, *http.Response, string, string, audit.StreamCapture) StreamOutcome
+	// P1-2 fix (2026-08-28): Updated to StreamHandler signature with ctx parameter.
+	StreamChat StreamHandler
 	// StripMinimaxFields strips minimax-private top-level fields
 	// (nvext, audio_content, name, etc.) from the chat response body
 	// before it is returned to the client. Wired from main.go.
@@ -123,11 +173,7 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	if c.RedactBodyFn != nil {
 		body = c.RedactBodyFn(body, "", "")
 	}
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
-		}
-	}
+	copyNonStreamResponseHeaders(w.Header(), resp.Header, len(body))
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
 	return body, err
@@ -162,9 +208,10 @@ func intPtrFromInt(v int) *int {
 	return &out
 }
 
-func (c *ChatExecutor) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func (c *ChatExecutor) StreamResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome {
 	if c.StreamChat != nil {
-		return c.StreamChat(w, resp, "", "", audit.StreamCapture{})
+		return c.StreamChat(ctx, w, resp, "", "", "", c.Normalize, &audit.StreamCapture{}, false)
 	}
 	return legacyStreamChat(w, resp)
 }
@@ -200,6 +247,10 @@ func extractOpenAIUsageFromBody(body []byte) (*int, *int) {
 // and is wired in by cmd/gateway/main.go through Executor's StreamChat field.
 // This fallback exists so ChatExecutor can be used standalone (Phase 1 tests).
 func legacyStreamChat(w http.ResponseWriter, resp *http.Response) StreamOutcome {
+	if resp == nil || resp.Body == nil {
+		return StreamOutcome{Interrupted: true, Reason: "empty_response", Kind: errorsx.KindEmptyResponse}
+	}
+	defer resp.Body.Close()
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
@@ -298,11 +349,61 @@ func (e *Executor) executeOpenAI(
 	maxRetries int,
 	tTotal time.Time,
 	fpLease *credentialfpslot.Lease,
-) (*ExecuteResult, error) {
+) (result *ExecuteResult, err error) {
+	// SP-03 (2026-08-19): state-machine lifecycle hooks. The handler
+	// (SP-02) installs these via WithExecuteHooks(ctx, &ExecuteHooks{...})
+	// and executeOpenAI reads them from params.R.Context(). Both fields
+	// default to nil so callers that don't install hooks see no behavior
+	// change. The hooks bracket this executeOpenAI invocation; SP-02 is
+	// responsible for wiring one-shot semantics if needed at the
+	// Execute() boundary. Named return values let the OnCompressed
+	// defer observe the terminal error/result regardless of which
+	// return path triggers.
+	execHooks := ExecuteHooksFromContext(params.R.Context())
+	if execHooks != nil && execHooks.OnCompressing != nil {
+		execHooks.OnCompressing()
+	}
+	if execHooks != nil && execHooks.OnCompressed != nil {
+		defer func() {
+			execHooks.OnCompressed(err)
+		}()
+	}
+
+	nativeNonStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponses && !params.IsStream
+	nativeStream := cand.Protocol == "openai-responses" && cand.SupportsNativeResponsesStream && params.IsStream
+	if cand.Protocol == "openai-responses" &&
+		((params.IsStream && (!cand.SupportsNativeResponsesStream || e.NativeResponsesStream == nil)) ||
+			(!params.IsStream && !cand.SupportsNativeResponses)) {
+		return nil, &upstreampkg.Error{
+			Kind:       errorsx.KindUnsupportedFeature,
+			Message:    "native Responses transport is not enabled for this request",
+			StatusCode: http.StatusNotImplemented,
+		}
+	}
+
 	sourceBody := append([]byte(nil), params.BodyBytes...)
-	bodyBytes, err := e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
-	if err != nil {
-		return nil, err
+	var bodyBytes []byte
+	if nativeNonStream || nativeStream {
+		sourceBody = append([]byte(nil), params.ResponsesBodyBytes...)
+		if len(sourceBody) == 0 {
+			return nil, &upstreampkg.Error{
+				Kind:       errorsx.KindUnsupportedFeature,
+				Message:    "native Responses request body is unavailable",
+				StatusCode: http.StatusNotImplemented,
+			}
+		}
+		contextWindow := 0
+		if cand.ContextWindow != nil {
+			contextWindow = *cand.ContextWindow
+		}
+		reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
+		bodyBytes = transformation.CompressResponsesInputIfNeeded(sourceBody, contextWindow, reserve)
+		bodyBytes = transformation.RewriteResponsesModel(bodyBytes, cand.RawModel)
+	} else {
+		bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 2026-07-16: Pre-request validation
@@ -354,10 +455,7 @@ func (e *Executor) executeOpenAI(
 	// Ensure at least 1 retry is available for internal model_not_found retry.
 	// When maxRetries is 0 (from policy.RetryPerCredential), we still need
 	// one retry attempt to verify if model_not_found is transient.
-	effectiveMaxRetries := maxRetries
-	if effectiveMaxRetries < 1 {
-		effectiveMaxRetries = 1
-	}
+	effectiveMaxRetries := effectiveOpenAIRetryBudget(maxRetries, params.DispatchAttempt)
 
 	// P3-9: mnfBonus grants exactly one extra loop iteration when an mnf
 	// retry is outstanding. It flips to 1 the moment mnfRetried is set
@@ -366,9 +464,34 @@ func (e *Executor) executeOpenAI(
 	// maxRetries is 0, without forcing unrelated errors to retry.
 	mnfBonus := 0
 	var lastErr error // 2026-07-03 (Bug #N extension): preserve last error for "exhausted retries"
+	// 2026-09-01 fix: context-length recovery success flag. When set, the next
+	// iteration should NOT increment attempt, allowing the compressed body to
+	// be retried immediately without consuming the retry budget.
+	ctxLenRecoveryRetry := false
 	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
+		// Candidate-attempt boundary is intentionally logged once per attempt,
+		// rather than once per streamed frame, so a retry/failover can be
+		// reconstructed without logging request content or secrets.
+		slog.Debug("candidate_attempt_start",
+			"request_id", params.RequestID,
+			"attempt", attempt,
+			"provider_id", cand.ProviderID,
+			"credential_id", cand.CredentialID,
+			"raw_model", cand.RawModel,
+			"client_model", params.Model,
+			"is_stream", params.IsStream,
+			"max_retries", effectiveMaxRetries+mnfBonus,
+		)
+		// 2026-09-01 fix: if the previous iteration succeeded in context-length
+
+		// recovery, decrement attempt so the compressed body retry doesn't consume
+		// the retry budget. This allows the recovery to actually be retried.
+		if ctxLenRecoveryRetry {
+			ctxLenRecoveryRetry = false
+			attempt-- // cancel the increment so the compressed retry is free
+		}
 		if attempt > 0 {
-			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
+			delay := time.Duration(5*(1<<(attempt-1))) * time.Second
 			if isUpstreamOverloaded(lastErr) {
 				delay = errorsx.DefaultOverloadRetryDelay
 			}
@@ -408,9 +531,12 @@ func (e *Executor) executeOpenAI(
 		result, tryErr := func() (*ExecuteResult, error) {
 			var reqPool *pool.Pool
 			var upstreamURL string
-			if cand.Protocol == "anthropic-messages" {
+			switch {
+			case cand.Protocol == "anthropic-messages":
 				upstreamURL = upstreamurl.MessagesURL(cand.BaseURL)
-			} else {
+			case nativeNonStream || nativeStream:
+				upstreamURL = upstreamurl.ResponsesURL(cand.BaseURL)
+			default:
 				upstreamURL = upstreamurl.ChatCompletionsURL(cand.BaseURL)
 			}
 
@@ -499,47 +625,85 @@ func (e *Executor) executeOpenAI(
 			}
 
 			var httpClient *http.Client
+			var poolUnavailable error
 			if e.Pools != nil {
+
 				poolKey := pool.PoolKey{
 					IdentityHash: params.ClientID.IdentityHash,
 					ProviderID:   cand.ProviderID,
 					CredentialID: cand.CredentialID,
 				}
-				if p := e.Pools.GetOrCreate(poolKey, ""); p != nil && p.State() == pool.PoolActive {
+				if p := e.Pools.GetOrCreate(poolKey, ""); p != nil {
 					reqPool = p
 					httpClient = p.Client()
 				}
+
 			}
 			if httpClient == nil {
 				httpClient = http.DefaultClient
 			} else if err := reqPool.Acquire(upCtx); err != nil {
-				return nil, err
+				poolUnavailable = err
+				httpClient = nil
 			} else {
 				defer reqPool.Release()
 			}
+			if poolUnavailable != nil {
+				return nil, poolUnavailable
+			}
 
 			// Track C (2026-06-18): upCtx is set at loop scope above.
-			// For session requests it is context.WithTimeout(background, streamTimeout)
-			// so client disconnect does not cancel the vendor call; the response
-			// is cached for reconnect via pending/ and sessions/handler.go C3.
-			// Streaming requests use a detached context so a browser cancellation
-			// cannot abort the upstream deadline before timeout health is recorded.
+			// Session and survival streams detach from client cancellation so
+			// background completion can finish. Ordinary streams retain client
+			// cancellation. No stream carries a total wall-clock deadline.
 
 			if e.Upstream != nil {
 				req.GetBody = func() (io.ReadCloser, error) {
 					return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 				}
 			}
-			e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes)
+			if err := e.beginUpstreamAttempt(params, cand, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes); err != nil {
+				return nil, err
+			}
 
 			reqStart := time.Now()
+			// 2026-08-18 (B1-PR3): log the actual upstream HTTP call so we
+			// can see exactly when the request was sent, the upstream URL,
+			// and the timeout applied. Without this, the 5-10s gaps between
+			// routing_resolve and the first upstream call (during which the
+			// opencode client can time out) are invisible in the audit log.
+			dl, hasDeadline := upCtx.Deadline()
+			slog.Info("upstream_call_starting",
+				"request_id", params.RequestID,
+				"attempt", attempt,
+				"upstream_url", req.URL.String(),
+				"upstream_method", req.Method,
+				"body_bytes", len(bodyBytes),
+				"is_stream", params.IsStream,
+				"timeout_remaining_ms", func() int64 {
+					if hasDeadline {
+						return time.Until(dl).Milliseconds()
+					}
+					return -1
+				}(),
+				"rctx_err", func() error {
+					if params.R.Context() != nil {
+						return params.R.Context().Err()
+					}
+					return nil
+				}(),
+			)
 			var resp *http.Response
 			var uErr *upstreampkg.Error
 			if e.Upstream != nil {
-				resp, uErr = e.Upstream.Do(req)
+				if reqPool != nil {
+					resp, uErr = e.Upstream.DoWithHTTPClient(req, httpClient)
+				} else {
+					resp, uErr = e.Upstream.Do(req)
+				}
 			} else {
 				var doErr error
 				resp, doErr = httpClient.Do(req)
+
 				if doErr != nil {
 					kind := errorsx.ClassifyError(doErr, nil)
 					// P0 fix (2026-07-16): distinguish timeout from client cancel
@@ -557,6 +721,13 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 			upstreamLatency := time.Since(reqStart)
+			if reqPool != nil {
+				if uErr != nil || resp == nil || resp.StatusCode >= 500 {
+					reqPool.RecordFailure()
+				} else {
+					reqPool.RecordSuccess()
+				}
+			}
 
 			// 2026-07-18: structured log around every upstream HTTP attempt
 			// so journald can correlate req_id → upstream url → status /
@@ -587,10 +758,10 @@ func (e *Executor) executeOpenAI(
 					attrs = append(attrs, "err_kind", errKind)
 				}
 				if bodyPreview != "" {
-					attrs = append(attrs, "body_preview", bodyPreview)
+					attrs = append(attrs, "body_bytes", len(bodyPreview), "body_digest", safeUpstreamBodyDigest([]byte(bodyPreview)))
 				}
 				if uErr != nil {
-					attrs = append(attrs, "err_message", uErr.Message)
+					attrs = append(attrs, "err_message_bytes", len(uErr.Message), "err_message_digest", safeUpstreamBodyDigest([]byte(uErr.Message)))
 				}
 				slog.Info("upstream_http_attempt", attrs...)
 			}
@@ -615,16 +786,26 @@ func (e *Executor) executeOpenAI(
 
 				result := ClassifyResult(uErr, statusCode)
 
-				params.RoutingTracker.Add(RoutingAttempt{
+				attempt := RoutingAttempt{
 					ProviderID:   int64(cand.ProviderID),
 					CredentialID: int64(cand.CredentialID),
+					ProviderName: cand.CatalogCode,
 					RawModel:     cand.RawModel,
 					UpstreamURL:  req.URL.String(),
 					Result:       result,
 					LatencyMs:    upstreamLatency.Milliseconds(),
 					HTTPStatus:   statusCode,
 					ErrorMessage: errMsg,
-				})
+					Stage:        "upstream",
+				}
+				if uErr != nil {
+					// 2026-09-05 审计闭环2：结构化错误维度（低基数 kind +
+					// 三态 retryable），前端不再解析自由文本 message。
+					attempt.ErrorKind = string(uErr.Kind)
+					retryable := errorsx.ProjectRecovery(uErr.Kind).GenericRetryable
+					attempt.Retryable = &retryable
+				}
+				params.RoutingTracker.Add(attempt)
 			}
 
 			// Continue with original logic
@@ -734,14 +915,14 @@ func (e *Executor) executeOpenAI(
 							"model", cand.RawModel,
 							"status", resp.StatusCode,
 							"upstream_latency_ms", upstreamLatency.Milliseconds(),
-							"body_preview", string(body[:min(n, 120)]),
+							"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 						)
-						// Brief delay before retry (150ms) to give upstream time to
+						// Give the upstream time to recover before retrying.
 						// recover. Abort early if the client disconnects.
 						select {
 						case <-params.R.Context().Done():
 							return nil, params.R.Context().Err()
-						case <-time.After(150 * time.Millisecond):
+						case <-time.After(5 * time.Second):
 						}
 						// Mark as retried and return a retryable error to trigger
 						// retry on same credential. mnfBonus grants the extra
@@ -770,7 +951,7 @@ func (e *Executor) executeOpenAI(
 						"status", resp.StatusCode,
 						"kind", bodyKind,
 						"upstream_latency_ms", upstreamLatency.Milliseconds(),
-						"body_preview", string(body[:min(n, 120)]),
+						"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 					)
 					return nil, &modelNotFoundError{
 						credentialID: cand.CredentialID,
@@ -787,20 +968,20 @@ func (e *Executor) executeOpenAI(
 					resp.StatusCode != 403 && resp.StatusCode != 402 &&
 					errKind != errorsx.KindConcurrent {
 					if !errorsx.IsClientBug(errKind) {
-						e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+						e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
 					} else {
 						slog.Info("upstream rejected request as client bug",
 							"credential_id", cand.CredentialID,
 							"provider_id", cand.ProviderID,
 							"status", resp.StatusCode,
 							"kind", errKind,
-							"body_preview", string(body[:min(n, 200)]),
+							"body_digest", safeUpstreamBodyDigest(body[:min(n, 200)]), "body_bytes", min(n, 200),
 						)
 					}
 				} else if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 				} else if errKind == errorsx.KindConcurrent {
-					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
+					e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
 						&upstreampkg.Error{
 							Kind:       errorsx.KindConcurrent,
 							Message:    fmt.Sprintf("upstream %d concurrent overload", resp.StatusCode),
@@ -813,7 +994,7 @@ func (e *Executor) executeOpenAI(
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"status", resp.StatusCode,
-						"body_preview", string(body[:min(n, 120)]),
+						"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 					)
 				}
 				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
@@ -839,12 +1020,28 @@ func (e *Executor) executeOpenAI(
 					if (errorsx.IsContextLength(errKind) ||
 						shouldHeuristicCompact(resp.StatusCode, errKind, len(sourceBody), cand.ContextWindow)) &&
 						cand.Protocol != "anthropic-messages" {
-						switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode) {
+						switch e.handleContextLengthRecovery(params.R.Context(), params, cand, &sourceBody, &contextLenRecovery, resp.StatusCode, body[:n]) {
 						case ctxLenRetry:
-							bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+							if nativeNonStream || nativeStream {
+								contextWindow := 0
+								if cand.ContextWindow != nil {
+									contextWindow = *cand.ContextWindow
+								}
+								reserve := transformation.OutputTokenReserve(sourceBody, "openai-responses")
+								sourceBody = transformation.CompressResponsesInputAggressively(sourceBody, contextWindow, reserve)
+								bodyBytes = transformation.RewriteResponsesModel(sourceBody, cand.RawModel)
+							} else {
+								bodyBytes, err = e.finalizeOpenAIUpstreamBody(params, cand, sourceBody)
+							}
 							if err != nil {
 								return nil, err
 							}
+							// 2026-09-01 fix: context-length recovery succeeded. Set the flag
+							// so the next iteration decrements attempt, allowing the compressed
+							// body to be retried without consuming the retry budget. This fixes
+							// the bug where recovery succeeded but the compressed payload was
+							// never sent because attempt >= effectiveMaxRetries on the next loop.
+							ctxLenRecoveryRetry = true
 							// 2026-07-03 (Bug #N extension): preserve errKind in the
 							// retryableError wrapper so if retries are exhausted, the
 							// outer tryCandidate returns lastErr with the precise Kind.
@@ -906,32 +1103,35 @@ func (e *Executor) executeOpenAI(
 				}}
 			}
 
-			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
 			latencyMs := int(time.Since(tTotal).Milliseconds())
 
-			// 2026-07-16: Record TTFB and execution outcome
+			// TTFB is known once headers arrive, but provider success is not:
+			// streaming bodies can still fail before completion.
 			ttfbMs := upstreamLatency.Milliseconds()
 			if e.TTFBTracker != nil {
 				e.TTFBTracker.Record(cand.CredentialID, upstreamLatency)
 			}
-			if e.PostExecutionHook != nil {
-				_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
-					CredentialID:   cand.CredentialID,
-					ProviderID:     cand.ProviderID,
-					RawModel:       cand.RawModel,
-					CanonicalModel: params.Model,
-					RequestID:      params.RequestID,
-					TenantID:       params.TenantID,
-					Success:        true,
-					LatencyMs:      int64(latencyMs),
-					TTFBMs:         ttfbMs,
-					IsStream:       params.IsStream,
-					ChunkCount:     0, // Will be updated for stream
-					IsRetry:        attempt > 0,
-					AttemptNum:     attempt,
-					StartedAt:      tTotal,
-					CompletedAt:    time.Now(),
-				})
+			recordAttemptSuccess := func(chunkCount int) {
+				e.recordProtocolCircuitSuccess(params, cand.ProviderID, cand.CredentialID)
+				if e.PostExecutionHook != nil {
+					_ = e.PostExecutionHook.RecordOutcome(params.R.Context(), ExecutionOutcome{
+						CredentialID:   cand.CredentialID,
+						ProviderID:     cand.ProviderID,
+						RawModel:       cand.RawModel,
+						CanonicalModel: params.Model,
+						RequestID:      params.RequestID,
+						TenantID:       params.TenantID,
+						Success:        true,
+						LatencyMs:      time.Since(tTotal).Milliseconds(),
+						TTFBMs:         ttfbMs,
+						IsStream:       params.IsStream,
+						ChunkCount:     chunkCount,
+						IsRetry:        attempt > 0,
+						AttemptNum:     attempt,
+						StartedAt:      tTotal,
+						CompletedAt:    time.Now(),
+					})
+				}
 			}
 
 			if params.IsStream {
@@ -950,29 +1150,36 @@ func (e *Executor) executeOpenAI(
 				// writer，让 upstream body 照常读入 params.Capture 而不
 				//触碰已失效的客户端连接。
 				streamSink := responseSink(params)
-				switch {
-				case e.OpenAIToAnthropicStream != nil &&
-					params.ClientProtocol == "anthropic-messages" &&
-					cand.Protocol != "anthropic-messages":
-					streamOutcome = e.OpenAIToAnthropicStream(
-						streamSink, resp,
-						params.ClientModel, outboundModel,
-						diagnosticRequestID(params),
-						params.Capture, nil,
-					)
-				case e.OpenAIToResponsesStream != nil &&
-					params.ClientProtocol == "openai-responses" &&
-					cand.Protocol != "anthropic-messages":
-					streamOutcome = e.OpenAIToResponsesStream(
-						streamSink, resp,
-						params.ClientModel, outboundModel,
-						diagnosticRequestID(params),
-						params.Capture, nil,
-					)
-				case params.StreamWrapper != nil:
-					streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
-				case e.StreamChat != nil:
-					streamOutcome = e.StreamChat(streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+				if nativeStream {
+					streamOutcome = e.NativeResponsesStream(params.R.Context(), streamSink, resp, diagnosticRequestID(params), params.Capture, params.ClientSemanticBytesVisible)
+				} else {
+					switch {
+					case e.OpenAIToAnthropicStream != nil &&
+						params.ClientProtocol == "anthropic-messages" &&
+						cand.Protocol != "anthropic-messages":
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.OpenAIToAnthropicStream(
+							params.R.Context(), streamSink, resp,
+							params.ClientModel, outboundModel,
+							diagnosticRequestID(params),
+							params.Capture, nil,
+						)
+					case e.OpenAIToResponsesStream != nil &&
+						params.ClientProtocol == "openai-responses" &&
+						cand.Protocol != "anthropic-messages":
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.OpenAIToResponsesStream(
+							params.R.Context(), streamSink, resp,
+							params.ClientModel, outboundModel,
+							diagnosticRequestID(params),
+							params.Capture, nil,
+						)
+					case params.StreamWrapper != nil:
+						streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
+					case e.StreamChat != nil:
+						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						streamOutcome = e.StreamChat(params.R.Context(), streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+					}
 				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)
@@ -985,36 +1192,39 @@ func (e *Executor) executeOpenAI(
 				var streamQualityFlags []string
 				var streamQualityScore *float64
 				if params.Capture != nil {
-					streamQualityFlags = params.Capture.QualityFlags
+					streamQualityFlags, _ = params.Capture.QualityStateSnapshot()
 					streamQualityScore = params.Capture.QualityScore
 				}
-				if streamOutcome.Interrupted && streamOutcome.Reason != "client_cancel" {
-					if streamOutcome.Reason == "client_write_failed" {
-						// The client closed the response. Preserve the interruption
-						// for request telemetry, but do not treat it as upstream
-						// failure or trigger a probe.
-						slog.Info("executor: client disconnected during stream",
-							"credential_id", cand.CredentialID,
-							"provider_id", cand.ProviderID,
-							"chunk_count", streamOutcome.ChunkCount,
-						)
-						return &ExecuteResult{
-								Response:       resp,
-								Candidate:      cand,
-								LatencyMs:      latencyMs,
-								RequestBody:    append([]byte(nil), bodyBytes...),
-								InboundBody:    sourceBody,
-								RoutingTracker: params.RoutingTracker,
-							}, &streamInterruptedError{
-								reason:       streamOutcome.Reason,
-								credentialID: cand.CredentialID,
-								resumable:    false,
-								kind:         errorsx.KindCanceled,
-							}
-					}
+				if streamOutcome.Interrupted && isClientStreamInterruption(streamOutcome.Kind, streamOutcome.Reason) {
+					// The client closed the response. Preserve the interruption
+					// for request telemetry, but do not treat it as upstream
+					// failure or trigger a probe.
+					slog.Info("executor: client disconnected during stream",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+						"chunk_count", streamOutcome.ChunkCount,
+					)
+					return &ExecuteResult{
+							Response:       resp,
+							Candidate:      cand,
+							LatencyMs:      latencyMs,
+							RequestBody:    append([]byte(nil), bodyBytes...),
+							InboundBody:    sourceBody,
+							RoutingTracker: params.RoutingTracker,
+						}, &streamInterruptedError{
+							reason:       streamOutcome.Reason,
+							credentialID: cand.CredentialID,
+							resumable:    false,
+							kind:         errorsx.KindCanceled,
+						}
+				}
+				if streamOutcome.Interrupted {
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
 
-					streamKind := errorsx.KindStreamTimeout
+					streamKind := streamOutcome.Kind
+					if streamKind == "" {
+						streamKind = errorsx.KindStreamTimeout
+					}
 					if errorsx.IsConcurrentOverload(streamOutcome.Reason) {
 						streamKind = errorsx.KindConcurrent
 					}
@@ -1037,48 +1247,33 @@ func (e *Executor) executeOpenAI(
 						streamKind = errorsx.KindEmptyResponse
 					}
 
-					isBenignEOF := streamOutcome.Reason == "eof_without_done" && streamOutcome.ChunkCount > 0
-
 					slog.Warn("executor: stream interrupted",
-						"credential_id", cand.CredentialID,
+						"request_id", params.RequestID,
 						"provider_id", cand.ProviderID,
+						"credential_id", cand.CredentialID,
+						"raw_model", cand.RawModel,
+						"client_model", params.Model,
+						"upstream_url", cand.BaseURL,
 						"reason", streamOutcome.Reason,
+						"kind", streamKind,
 						"chunk_count", streamOutcome.ChunkCount,
 						"resumable", isResumable,
 						"classified_as", streamKind,
-						"benign_eof", isBenignEOF,
 					)
 
-					if isBenignEOF {
-						e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
-						return &ExecuteResult{
-							Response:    resp,
-							Candidate:   cand,
-							LatencyMs:   latencyMs,
-							RequestBody: append([]byte(nil), bodyBytes...),
-							// Phase D (2026-06-22): inbound body for audit logging
-							InboundBody: sourceBody,
-							// Round 47 T-NEW-4: stream success path also records
-							// pre-request trim metadata so emitTelemetry can write
-							// compression_meta for streaming requests.
-							CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
-							CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
-							CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
-							RoutingTracker:      params.RoutingTracker,
-						}, nil
-					} else if isResumable {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+					if isResumable {
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
 						if streamKind == errorsx.KindConcurrent {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (concurrent-overload inferred)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						} else if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind, fmt.Errorf("stream %s", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
 					} else if streamKind == errorsx.KindConcurrent {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
-						e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
+						e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 							fmt.Errorf("stream %s (concurrent-overload inferred, non-resumable)", streamOutcome.Reason))
 						e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						slog.Warn("non-resumable stream interrupted by concurrent-overload, credential now in 5-min cooling",
@@ -1088,9 +1283,9 @@ func (e *Executor) executeOpenAI(
 							"chunk_count", streamOutcome.ChunkCount,
 						)
 					} else {
-						e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, streamKind)
+						e.recordProtocolCircuitFailure(params, cand.ProviderID, cand.CredentialID, streamKind)
 						if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, streamKind) {
-							e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
+							e.writeProtocolCredentialStateOnError(params, params.R.Context(), cand.CredentialID, cand.StandardizedName, streamKind,
 								fmt.Errorf("stream %s (non-resumable)", streamOutcome.Reason))
 							e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, streamKind)
 						}
@@ -1104,19 +1299,24 @@ func (e *Executor) executeOpenAI(
 					}
 
 					return &ExecuteResult{
-						Response:    resp,
-						Candidate:   cand,
-						LatencyMs:   latencyMs,
-						RequestBody: append([]byte(nil), bodyBytes...),
-						// Phase D (2026-06-22): inbound body for audit logging
-						InboundBody: sourceBody,
-						// 2026-06-19 quality fix mode: capture any flags the
-						// stream reader observed before the interrupt fired.
-						QualityFlags:   streamQualityFlags,
-						QualityScore:   streamQualityScore,
-						RoutingTracker: params.RoutingTracker,
-					}, &streamInterruptedError{reason: streamOutcome.Reason, credentialID: cand.CredentialID, resumable: isResumable, kind: streamKind}
+							Response:    resp,
+							Candidate:   cand,
+							LatencyMs:   latencyMs,
+							RequestBody: append([]byte(nil), bodyBytes...),
+							// Phase D (2026-06-22): inbound body for audit logging
+							InboundBody: sourceBody,
+							// 2026-06-19 quality fix mode: capture any flags the
+							// stream reader observed before the interrupt fired.
+							QualityFlags:   streamQualityFlags,
+							QualityScore:   streamQualityScore,
+							RoutingTracker: params.RoutingTracker,
+						}, &streamInterruptedError{
+							reason: streamOutcome.Reason, credentialID: cand.CredentialID,
+							resumable: isResumable, kind: streamKind,
+							statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+						}
 				}
+				recordAttemptSuccess(streamOutcome.ChunkCount)
 				return &ExecuteResult{
 					Response:    resp,
 					Candidate:   cand,
@@ -1150,8 +1350,14 @@ func (e *Executor) executeOpenAI(
 				slog.Warn("upstream response truncated", "size", len(respBody))
 				respBody = respBody[:maxBodySize]
 			}
+			if nativeNonStream {
+				if validationErr := validateNativeResponsesBody(respBody); validationErr != nil {
+					return nil, validationErr
+				}
+			}
 			// 2026-07-15: non-stream empty-response failover. The upstream
 			// returned HTTP 200 with a well-formed but content-less body
+
 			// (notably NIM: `{"choices":[{"message":{}}],"usage":{...}}`).
 			// Previously this fell through to the handler's terminal 502
 			// (messages.go:863 / responses.go:691). Now we return a
@@ -1160,11 +1366,14 @@ func (e *Executor) executeOpenAI(
 			// (executor.go:1814) fails over to the next credential with
 			// no client-side error. The handler-side 502 stays as the
 			// final fallback when ALL candidates are empty.
-			if !params.IsStream && isNonStreamEmptyResponse(respBody) {
+			if !nativeNonStream && !params.IsStream && isNonStreamEmptyResponse(respBody) {
 				slog.Warn("executor: non-stream empty response, failing over to next candidate",
+					"request_id", params.RequestID,
 					"credential_id", cand.CredentialID,
 					"provider_id", cand.ProviderID,
 					"raw_model", cand.RawModel,
+					"client_model", params.Model,
+					"status", resp.StatusCode,
 				)
 				return nil, &upstreampkg.Error{
 					Kind:       errorsx.KindEmptyResponse,
@@ -1173,6 +1382,36 @@ func (e *Executor) executeOpenAI(
 					StatusCode: resp.StatusCode,
 					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 				}
+			}
+			if nativeNonStream {
+				if !params.SuppressSuccessWrite && params.W != nil {
+					if e.IntegrityDetector != nil && len(respBody) > 0 {
+						e.IntegrityDetector.Observe(params.R.Context(), IntegrityCandidate{
+							RequestID: params.RequestID, TenantID: params.TenantID,
+							ApplicationID: params.AppID, APIKeyID: params.ApiKeyID,
+							ProviderID: intPtrFromInt(cand.ProviderID), ProviderCode: cand.CatalogCode,
+							CredentialID: intPtrFromInt(cand.CredentialID), ClientModel: params.ClientModel,
+							OutboundModel: outboundModel, RawModel: cand.RawModel, IsStream: false,
+							ResponseBody: append([]byte(nil), respBody...),
+						})
+					}
+					e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-responses"), respBody)
+					copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
+					params.W.WriteHeader(resp.StatusCode)
+					_, _ = params.W.Write(e.redactClientResponse(params, respBody))
+
+				}
+				recordAttemptSuccess(0)
+				return &ExecuteResult{
+					Response: resp, Candidate: cand, LatencyMs: latencyMs,
+					RequestBody: append([]byte(nil), bodyBytes...), InboundBody: sourceBody,
+					ResponseBody:        append([]byte(nil), respBody...),
+					IntegrityObserved:   e.IntegrityDetector != nil && !params.SuppressSuccessWrite && params.W != nil && len(respBody) > 0,
+					CompressionReason:   strPtrCompat(contextLenRecovery.lastReason),
+					CompressionStrategy: strPtrCompat(contextLenRecovery.lastStrategy),
+					CompressionMeta:     mergeCompressionMeta(contextLenRecovery.lastMeta, preTrimMeta),
+					RoutingTracker:      params.RoutingTracker,
+				}, nil
 			}
 			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			// Run before any other body transform so the scanner sees
@@ -1206,6 +1445,23 @@ func (e *Executor) executeOpenAI(
 			if e.Normalize != nil {
 				respBody = e.Normalize(respBody, false)
 			}
+			// 2026-08-28 P0-MiniMax-1: Detect MiniMax base_resp.status_code
+			// before stripVendorFields. MiniMax wraps errors in HTTP 200
+			// responses with {base_resp: {status_code: non-0, status_msg}}.
+			// If we strip base_resp first, the error signal is permanently lost.
+			catalogCode := strings.ToLower(strings.TrimSpace(cand.CatalogCode))
+			if catalogCode == "minimax" || catalogCode == "" {
+				if code, msg, isErr := parseMiniMaxBaseResp(respBody); isErr {
+					kind := classifyMiniMaxStatusCode(code)
+					return nil, &upstreampkg.Error{
+						Kind:       kind,
+						Message:    fmt.Sprintf("MiniMax error %d: %s", code, msg),
+						Body:       append([]byte(nil), respBody...),
+						StatusCode: resp.StatusCode, // HTTP status is 200 but base_resp signals error
+						RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+					}
+				}
+			}
 			// 2026-07-20: Strip vendor-private fields (minimax/zhipu/deepseek/doubao)
 			// before protocol conversion and client write. Missing this step caused
 			// 5xx errors for gpt-5.2/gpt-5.6-luna/Minimax-m3 when vendor fields were
@@ -1233,20 +1489,48 @@ func (e *Executor) executeOpenAI(
 						if converted, serErr := irScoped.SerializeAnthropicResponse(irResp, params.ClientModel); serErr == nil {
 							respBody = converted
 						} else {
-							slog.Warn("q2 ir serialize anthropic response failed; forwarding raw body",
-								"error", serErr, "request_id", params.R.Header.Get("X-Request-Id"))
+							return nil, &upstreampkg.Error{
+								Kind:       errorsx.KindConversion,
+								Message:    "convert OpenAI response to Anthropic response",
+								Err:        serErr,
+								StatusCode: resp.StatusCode,
+							}
 						}
+
 					} else {
-						slog.Warn("q2 ir parse openai response failed; forwarding raw body",
-							"error", irErr, "request_id", params.R.Header.Get("X-Request-Id"))
+						// 2026-08-28 P1-GLM-2: If ParseOpenAIResponse returns a
+						// *ir.ParseError (e.g. GLM finish_reason error channel),
+						// treat it as an upstream error rather than silently
+						// forwarding the raw body to the client.
+						var parseErr *ir.ParseError
+						if errors.As(irErr, &parseErr) {
+							return nil, &upstreampkg.Error{
+								Kind:       parseErr.Kind,
+								Message:    parseErr.Message,
+								Body:       append([]byte(nil), respBody...),
+								StatusCode: resp.StatusCode,
+								RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+							}
+						}
+						return nil, &upstreampkg.Error{
+							Kind:       errorsx.KindConversion,
+							Message:    "parse OpenAI response for Anthropic client",
+							Err:        irErr,
+							StatusCode: resp.StatusCode,
+						}
 					}
 				} else if e.ChatResponseToAnthropic != nil {
 					if converted, convErr := e.ChatResponseToAnthropic(respBody, params.ClientModel, params.R.Header.Get("X-Request-Id")); convErr == nil {
 						respBody = converted
 					} else {
-						slog.Warn("q2 chat_to_anthropic response convert failed; forwarding raw body",
-							"error", convErr, "request_id", params.R.Header.Get("X-Request-Id"))
+						return nil, &upstreampkg.Error{
+							Kind:       errorsx.KindConversion,
+							Message:    "convert OpenAI response to Anthropic response",
+							Err:        convErr,
+							StatusCode: resp.StatusCode,
+						}
 					}
+
 				}
 			}
 			// 并发修复 2026-07-27：异步重试路径既设 SuppressSuccessWrite
@@ -1276,16 +1560,14 @@ func (e *Executor) executeOpenAI(
 						ResponseBody:       append([]byte(nil), respBody...),
 					})
 				}
+				respBody = e.redactClientResponse(params, respBody)
 				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
-				for k, vs := range resp.Header {
-					for _, v := range vs {
-						params.W.Header().Add(k, v)
-					}
-				}
+				copyNonStreamResponseHeaders(params.W.Header(), resp.Header, len(respBody))
 				params.W.WriteHeader(resp.StatusCode)
 				//nolint:errcheck // HTTP write error non-recoverable
 				params.W.Write(respBody)
 			}
+			recordAttemptSuccess(0)
 			return &ExecuteResult{
 				Response:    resp,
 				Candidate:   cand,
@@ -1346,6 +1628,13 @@ func (e *Executor) executeOpenAI(
 	return nil, fmt.Errorf("exhausted %d retries for credential %d", effectiveMaxRetries, cand.CredentialID)
 }
 
+func effectiveOpenAIRetryBudget(maxRetries int, dispatchAttempt bool) int {
+	if maxRetries < 1 && !dispatchAttempt {
+		return 1
+	}
+	return maxRetries
+}
+
 // finalizeOpenAIUpstreamBody applies prepareRequestBody plus OpenAI-path-only
 // transforms (Q2 anthropic→openai conversion, disguise, prompt-cache injection).
 func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
@@ -1379,9 +1668,13 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		if converter, ok := irScoped.(interface {
 			SetContext(*domain.TransportContext)
 		}); ok {
+			// V6-W1.6 T2: carry the dispatch request class (定时请求) into the
+			// converter so the parsed IR is class-stamped.
 			converter.SetContext(&domain.TransportContext{
 				UpstreamCatalogCode: cand.CatalogCode,
 				ProviderID:          cand.ProviderID,
+				RequestClass:        string(ir.ClassOf(params.DispatchDueAt)),
+				DueAt:               params.DispatchDueAt,
 			})
 		}
 		// Parse Anthropic body → IR → Serialize OpenAI
@@ -1456,23 +1749,11 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			}
 			return nil, fmt.Errorf("ir serialize openai: %w", err)
 		}
-		// Apply remaining OpenAI-path transforms (disguise, prompt cache)
-		if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
-			profileName := ""
-			if params.Transform != nil && params.Transform.DisguiseProfileID != "" {
-				profileName = params.Transform.DisguiseProfileID
-			} else if params.ClientID.Fingerprint.ClientProfile != "" {
-				profileName = params.ClientID.Fingerprint.ClientProfile
-			}
-			if profileName != "" {
-				bodyBytes, _ = disguise.Apply(bodyBytes, nil, nil, profileName, 0)
-				slog.Debug("disguise layer applied", "profile", profileName)
-			}
+		bodyBytes, err = e.applyOpenAITailTransforms(params, cand, bodyBytes)
+		if err != nil {
+			return nil, err
 		}
-		if params.SessionKey != "" && cand.SupportsPromptCache {
-			bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
-		}
-		return bodyBytes, nil
+		return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
@@ -1503,19 +1784,33 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
 			// Override model to outbound model
 			irReq.Model = resolveOutboundModel(params, cand)
-			bodyBytes, _ = irScoped.SerializeOpenAI(irReq)
-			slog.Info("finalizeOpenAIUpstreamBody: legacy IR path validated",
-				"request_id", params.RequestID,
-				"path", "legacy_with_ir",
-				"model", params.Model,
-				"provider_id", cand.ProviderID,
-				"credential_id", cand.CredentialID,
-				"raw_model", cand.RawModel,
-				"pre_body_bytes", preBodyBytes,
-				"post_body_bytes", len(bodyBytes),
-				"pre_messages", preMsgs,
-				"post_messages", len(irReq.Messages),
-			)
+			serializedBody, serializeErr := irScoped.SerializeOpenAI(irReq)
+			if serializeErr != nil {
+				slog.Warn("finalizeOpenAIUpstreamBody: legacy IR serialization failed; preserving pre-validation body",
+					"request_id", params.RequestID,
+					"path", "legacy_with_ir_serialize_failed",
+					"model", params.Model,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"pre_body_bytes", preBodyBytes,
+					"error", serializeErr,
+				)
+			} else {
+				bodyBytes = serializedBody
+				slog.Info("finalizeOpenAIUpstreamBody: legacy IR path validated",
+					"request_id", params.RequestID,
+					"path", "legacy_with_ir",
+					"model", params.Model,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"pre_body_bytes", preBodyBytes,
+					"post_body_bytes", len(bodyBytes),
+					"pre_messages", preMsgs,
+					"post_messages", len(irReq.Messages),
+				)
+			}
 		} else if errors.Is(parseErr, transformation.ErrConverterCircuitOpen) {
 			// 2026-08-09 P0 fix (req cb103844b742b0611478cd033ad3c187,
 			// tool_call_id_mismatch on gpt-5.6-luna/apiclaude.cc): when the
@@ -1619,7 +1914,11 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			bodyBytes = converted
 		}
 	}
-	return e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	bodyBytes, err := e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+	return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
 }
 
 // legacyChatToOpenAIBody performs the legacy Anthropic→OpenAI body conversion
@@ -1646,7 +1945,30 @@ func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Cand
 			bodyBytes = converted
 		}
 	}
-	return e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	bodyBytes, err := e.applyOpenAITailTransforms(params, cand, bodyBytes)
+	if err != nil {
+		return nil, err
+	}
+	return e.applyOptionalOpenAIStrategies(params, cand, bodyBytes), nil
+}
+
+func (e *Executor) applyOptionalOpenAIStrategies(params *ExecParams, cand provider.Candidate, bodyBytes []byte) []byte {
+	if cand.ContextWindow != nil {
+		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+	}
+	requestCtx := context.Background()
+	if params != nil && params.R != nil {
+		requestCtx = params.R.Context()
+	}
+	if out, applied, runnerMeta := e.runCompressionStrategiesWithMeta(requestCtx, bodyBytes, cand.ContextWindow, compression.ModeAutoThreshold, forceCompression(params)); applied {
+		if params != nil {
+			params.CompressionRunnerMeta = runnerMeta
+		}
+		return out
+	} else if params != nil && len(runnerMeta) > 0 {
+		params.CompressionRunnerMeta = runnerMeta
+	}
+	return bodyBytes
 }
 
 // applyOpenAITailTransforms runs the format-agnostic tail steps of the OpenAI
@@ -1671,7 +1993,7 @@ func (e *Executor) applyOpenAITailTransforms(params *ExecParams, cand provider.C
 	if params.SessionKey != "" && cand.SupportsPromptCache {
 		bodyBytes, _ = injectCacheParams(bodyBytes, cand.CacheMode, params.SessionKey)
 	}
-	return bodyBytes, nil
+	return paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol)), nil
 }
 
 // prepareRequestBody builds the upstream request body from params and cand.
@@ -1757,6 +2079,7 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 		bodyBytes = transformation.CollapseToolHistory(bodyBytes)
 	}
 	bodyBytes = transformation.ApplyCapabilitySanitizer(bodyBytes, cand.CatalogCode)
+	bodyBytes = paramguard.Apply(bodyBytes, paramreg.Resolve(cand.CatalogCode, cand.Protocol))
 	bodyBytes = transformation.MergeConsecutiveMessages(bodyBytes)
 	// Client-side context window enforcement for Q1/Q2/Q3 openai protocol.
 	// Q4 (anthropic-messages) is handled in prepareAnthropicRequestBody
@@ -1764,7 +2087,8 @@ func prepareRequestBody(params *ExecParams, cand provider.Candidate) []byte {
 	// upstreams like minimax trim server-side on direct calls, but proxy
 	// clients must trim at the gateway.
 	if cand.Protocol != "anthropic-messages" && cand.ContextWindow != nil {
-		bodyBytes = transformation.CompressMessagesIfNeeded(bodyBytes, *cand.ContextWindow)
+		reserve := transformation.OutputTokenReserve(bodyBytes, params.ClientProtocol)
+		bodyBytes = transformation.CompressMessagesIfNeededWithReserve(bodyBytes, *cand.ContextWindow, reserve)
 	}
 	return bodyBytes
 }
@@ -1785,60 +2109,28 @@ func strPtrCompat(s string) *string {
 	return &s
 }
 
-// hasSessionID reports whether the request carries a gateway session
-// id (X-Gw-Session-Id). When true, the executor decouples the
-// upstream context from the client context so a client disconnect
-// does not cancel the vendor request — the response is cached for
-// the client to pick up on reconnect (see pending/ Store + the GET
-// endpoint in sessions/handler.go).
-//
-// Track C (2026-06-18). Mirrors the X-Session-Id → X-Gw-Session-Id
-// fallback used in relay/handler.go, but here we only care about
-// "is the client claiming session tracking" — the actual lookup
-// happens earlier in the handler.
-func hasSessionID(params *ExecParams) bool {
-	if params == nil || params.R == nil {
-		return false
-	}
-	if v := params.R.Header.Get("X-Gw-Session-Id"); v != "" {
-		return true
-	}
-	if v := params.R.Header.Get("X-Session-Id"); v != "" {
-		return true
-	}
-	return false
-}
+const detachedStreamMaxLifetime = 2 * time.Hour
 
-// upstreamContext (Track C, 2026-06-18) returns the context used for
-// the upstream HTTP call. When the request carries a session id,
-// the context is decoupled from the client request context so a
-// client disconnect does not cancel the vendor request. Otherwise,
-// the original behaviour is preserved (client disconnect cancels
-// upstream immediately) to avoid wasting vendor budget on requests
-// the client will not retrieve.
-//
-// The decoupling is intentionally minimal in C1: we do NOT yet
-// implement the response buffering or the cache write — those are
-// C2 (stream.go) and C4 (executor.go async retry). C1 only proves
-// the "upstream does not cancel on client disconnect" building
-// block. The timeout is still respected, so a stuck vendor is
-// bounded regardless of client state.
-//
-// 2026-08-04: streaming requests no longer carry a wall-clock deadline.
-// Previously every stream was capped at StreamTimeout (900s), which silently
-// killed long-running agent tasks (multi-step reasoning + tool calls) whose
-// total streaming time exceeded 15 minutes even though data was flowing
-// normally. A stuck vendor is still bounded — independently of this context —
-// by two layers: ResponseHeaderTimeout (120s, awaits the first byte) on the
-// http.Transport, and streamChunkTimeout (300s+) on every read in the bridge
-// loop. Both fire on *inactivity*, which is the correct failure signal; a
-// pure wall-clock cap fires on age and causes false interruptions. We still
-// derive from WithoutCancel so a client disconnect never aborts an in-flight
-// vendor call (session/cache completion).
+// Streaming requests are bounded by streamChunkTimeout while the client stays
+// attached. A detached durable stream also receives a wall-clock cap so an
+// upstream that keeps emitting infrequent data cannot retain a pool slot
+// indefinitely after the client has disconnected.
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if hasSessionID(params) || params.IsStream {
-		ctx, cancel := context.WithCancel(context.WithoutCancel(params.R.Context()))
-		return ctx, cancel
+	if params.IsStream && params.StreamSurvivesClientCancel {
+		return context.WithTimeout(context.WithoutCancel(params.R.Context()), detachedStreamMaxLifetime)
+	}
+	if params.IsStream {
+		return context.WithCancel(params.R.Context())
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
+}
+
+// parseMiniMaxBaseResp extracts MiniMax's HTTP 200-wrapped error signal
+// (base_resp.status_code). Inline version to avoid import cycle with streaming pkg.
+func parseMiniMaxBaseResp(body []byte) (statusCode int, statusMsg string, isError bool) {
+	return vendorstrip.ParseMiniMaxBaseResp(body)
+}
+
+func classifyMiniMaxStatusCode(code int) errorsx.ErrorKind {
+	return vendorstrip.ClassifyMiniMaxStatusCode(code)
 }

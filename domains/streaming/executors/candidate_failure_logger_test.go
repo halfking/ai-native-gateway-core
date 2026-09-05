@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"testing"
 
-	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // TestSafeErrorMessage_2026_07_20 exercises the safeErrorMessage helper
@@ -59,5 +62,71 @@ func TestSafeErrorMessage_2026_07_20(t *testing.T) {
 	t.Run("arbitrary error renders normally", func(t *testing.T) {
 		err := fmt.Errorf("connection reset by peer")
 		assert.Equal(t, "connection reset by peer", safeErrorMessage(err))
+	})
+}
+
+// TestBuildRow_SessionIDAndExplicitKind (2026-08-17, V358): candidate
+// failure rows carry the session id directly, and the stream-interruption
+// call path passes its pre-classified kind so "other side closed"-style
+// failures are not flattened to the message-fallback transient kind.
+func TestBuildRow_RecoveryProjectionInContext(t *testing.T) {
+	w := &CandidateFailureWriter{}
+	for _, tt := range []struct {
+		name string
+		kind errorsx.ErrorKind
+	}{
+		{"empty response", errorsx.KindEmptyResponse},
+		{"no available channel", errorsx.KindNoAvailableChannel},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			row := w.buildRow("req", "tenant", "sess", 1, 2, "model", 0,
+				&upstreampkg.Error{Kind: tt.kind, Message: "failure"}, "", nil, nil,
+				map[string]any{"source": "test"})
+			if row.Retryable == nil || *row.Retryable {
+				t.Fatalf("retryable = %v, want false", row.Retryable)
+			}
+			if row.Context["generic_retryable"] != false || row.Context["candidate_failover"] != true {
+				t.Fatalf("recovery context = %#v", row.Context)
+			}
+			if row.Context["effective_action"] != errorsx.RecoveryActionCandidateFailover || row.Context["transparent_resume"] != true {
+				t.Fatalf("recovery action context = %#v", row.Context)
+			}
+			if row.Context["source"] != "test" {
+				t.Fatalf("caller context was not preserved: %#v", row.Context)
+			}
+		})
+	}
+}
+
+func TestBuildRow_SessionIDAndExplicitKind(t *testing.T) {
+	w := &CandidateFailureWriter{}
+
+	t.Run("session id lands on the row", func(t *testing.T) {
+		row := w.buildRow("req-1", "tenant-1", "sess-1", 7, 9, "glm-5.2", 3,
+			fmt.Errorf("stream_interrupted: network_error"), errorsx.KindNetwork, nil, nil, nil)
+		assert.Equal(t, "sess-1", row.SessionID)
+	})
+
+	t.Run("explicit kind wins over the message fallback", func(t *testing.T) {
+		// "stream_interrupted: network_error" classifies as transient by
+		// message — the executor's pre-classified KindNetwork must win.
+		row := w.buildRow("req-1", "tenant-1", "sess-1", 7, 9, "glm-5.2", 3,
+			fmt.Errorf("stream_interrupted: network_error"), errorsx.KindNetwork, nil, nil, nil)
+		assert.Equal(t, "network", row.ErrorKind)
+		require.NotNil(t, row.Retryable)
+		assert.True(t, *row.Retryable)
+	})
+
+	t.Run("empty explicit kind keeps message classification", func(t *testing.T) {
+		row := w.buildRow("req-2", "tenant-1", "", 1, 2, "m", 0,
+			fmt.Errorf("connection reset by peer"), "", nil, nil, nil)
+		assert.Equal(t, "", row.SessionID)
+		assert.Equal(t, "network", row.ErrorKind)
+	})
+
+	t.Run("upstream error kind is preserved without explicit kind", func(t *testing.T) {
+		ue := &upstreampkg.Error{Kind: upstreampkg.KindRateLimit, Message: "limited", Err: fmt.Errorf("429"), StatusCode: 429}
+		row := w.buildRow("req-3", "tenant-1", "sess-3", 1, 2, "m", 0, ue, "", nil, nil, nil)
+		assert.Equal(t, "rate_limit", row.ErrorKind)
 	})
 }

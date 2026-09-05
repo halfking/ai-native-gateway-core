@@ -10,7 +10,7 @@
 // designed to be reachable when state === 'none' from any other page.
 
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import PublicPortalLayout from '../components/PublicPortalLayout.vue'
 import OperationAgreementDialog from '../components/OperationAgreementDialog.vue'
@@ -23,6 +23,7 @@ import {
   type CustomerLicenseStatus,
   type ActivationResult,
 } from '../api/customer'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -130,11 +131,10 @@ async function handleActivationResult(result: ActivationResult) {
     return
   }
   if (result.need_deactivate || result.error_code === 'device_limit_exceeded') {
-    await ElMessageBox.confirm(
-      deviceLimitBody(),
-      t('customer.wizard.messages.deviceLimitTitle'),
-      { confirmButtonText: t('customer.wizard.messages.deviceLimitOk') },
-    )
+    await confirmDialog(deviceLimitBody(), {
+      title: t('customer.wizard.messages.deviceLimitTitle'),
+      confirmButtonText: t('customer.wizard.messages.deviceLimitOk'),
+    })
     return
   }
   ElMessage.error(activationErrorMessage(result))
@@ -549,7 +549,7 @@ onMounted(refresh)
   flex-wrap: wrap;
   gap: 12px;
 }
-.subtitle { color: #909399; margin: 4px 0 0; }
+.subtitle { color: var(--text-secondary); margin: 4px 0 0; }
 .status-summary { margin-top: 16px; }
 .wizard-steps { margin: 24px 0; }
 .step-card { margin-bottom: 16px; }
@@ -563,13 +563,13 @@ onMounted(refresh)
 .trial-email { margin-top: 16px; }
 .device-limit-alert { margin-top: 16px; }
 .device-limit-table { margin-top: 12px; }
-.device-id-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; font-size: 13px; color: #94a3b8; }
-.device-id-row code { word-break: break-all; color: #cbd5e1; }
+.device-id-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 12px 0; font-size: 13px; color: var(--muted); }
+.device-id-row code { word-break: break-all; color: var(--border); }
 .flow-alert { margin: 12px 0; }
 .compare-table { margin-top: 8px; }
 .signed-request {
   background: #f5f7fa;
-  border: 1px solid #dcdfe6;
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 12px;
   font-size: 12px;

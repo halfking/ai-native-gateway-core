@@ -50,6 +50,9 @@ func TestBuildAlignmentMap_LLMSummary(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		a := align[i]
+		if a.TargetKind != "summary" || a.TargetSpace != "messages" {
+			t.Fatalf("orig %d target = %s/%s, want summary/messages", i, a.TargetKind, a.TargetSpace)
+		}
 		if !a.IsCompressed {
 			t.Fatalf("orig %d should be folded into summary", i)
 		}
@@ -98,6 +101,9 @@ func TestBuildAlignmentMap_MechanicalTrim(t *testing.T) {
 	}
 	for i := 0; i < 6; i++ {
 		a := align[i]
+		if a.TargetKind != "dropped" || a.TargetSpace != "none" {
+			t.Fatalf("orig %d target = %s/%s, want dropped/none", i, a.TargetKind, a.TargetSpace)
+		}
 		if !a.IsCompressed || a.CompressedIndex != -1 || a.CompressedInto != -1 {
 			t.Fatalf("orig %d want dropped (-1/-1, compressed), got compressed=%v idx=%d into=%d",
 				i, a.IsCompressed, a.CompressedIndex, a.CompressedInto)
@@ -112,7 +118,40 @@ func TestBuildAlignmentMap_MechanicalTrim(t *testing.T) {
 	}
 }
 
-// TestBuildAlignmentMap_EmptyInput verifies the defensive nil return when the
+func TestBuildAlignmentMap_AnthropicSystemSummary(t *testing.T) {
+	before := []byte(`{"system":"old system","messages":[{"role":"user","content":"old"},{"role":"assistant","content":"old answer"},{"role":"user","content":"latest"}]}`)
+	after, err := json.Marshal(map[string]any{
+		"system":   AnthropicSystemSummaryPrefix + "prior turns",
+		"messages": []map[string]string{{"role": "user", "content": "latest"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	align := buildAlignmentMapForProtocol(before, after, -1, "anthropic-messages")
+	if len(align) != 3 {
+		t.Fatalf("want 3 entries, got %d", len(align))
+	}
+	for i := 0; i < 2; i++ {
+		if align[i].TargetKind != "summary" || align[i].TargetSpace != "top_level_system" || align[i].CompressedIndex != -1 {
+			t.Fatalf("orig %d system summary target = %+v", i, align[i])
+		}
+	}
+	if align[2].TargetKind != "retained" || align[2].TargetSpace != "messages" || align[2].CompressedIndex != 0 {
+		t.Fatalf("latest message target = %+v", align[2])
+	}
+}
+
+func TestBuildAlignmentMap_InvalidSummaryIndexFailsSafe(t *testing.T) {
+	before := messagesBody(2)
+	after := messagesBody(2)
+	align := buildAlignmentMap(before, after, 99)
+	for _, item := range align {
+		if item.TargetKind == "summary" || item.CompressedIndex == 99 {
+			t.Fatalf("out-of-range summary index leaked into alignment: %+v", align)
+		}
+	}
+}
+
 // original body has no parseable messages.
 func TestBuildAlignmentMap_EmptyInput(t *testing.T) {
 	if got := buildAlignmentMap(nil, []byte(`{"messages":[]}`), -1); got != nil {
@@ -157,8 +196,8 @@ func TestSessionState_AlignmentMapRoundTrip(t *testing.T) {
 		SummaryMarker:    "smm_v1:abc",
 		AuditedAt:        1750000000,
 		AlignmentMap: []AlignmentInfo{
-			{OriginalIndex: 0, CompressedIndex: 0, IsCompressed: true, CompressedInto: 0, Hash: "h0"},
-			{OriginalIndex: 1, CompressedIndex: 1, IsCompressed: false, CompressedInto: -1, Hash: "h1"},
+			{OriginalIndex: 0, CompressedIndex: 0, IsCompressed: true, CompressedInto: 0, Hash: "h0", Occurrence: 0, TargetKind: "summary", TargetSpace: "messages"},
+			{OriginalIndex: 1, CompressedIndex: 1, IsCompressed: false, CompressedInto: -1, Hash: "h1", Occurrence: 0, TargetKind: "retained", TargetSpace: "messages"},
 		},
 	}
 	fields := encodeSessionStateFields(st)
@@ -259,6 +298,34 @@ func TestUpdateCache_StampsAuditedAt_PersistsAlignmentMap(t *testing.T) {
 	}
 	if st.LastCompressedAt == 0 {
 		t.Fatal("LastCompressedAt should be stamped")
+	}
+}
+
+func TestBuildAlignmentMap_DuplicateMessagesPreserveOccurrenceOrder(t *testing.T) {
+	before := []byte(`{"messages":[{"role":"user","content":"same"},{"role":"user","content":"same"}]}`)
+	after := []byte(`{"messages":[{"role":"user","content":"same"},{"role":"user","content":"same"}]}`)
+
+	align := buildAlignmentMap(before, after, -1)
+	if len(align) != 2 {
+		t.Fatalf("want two alignment entries, got %d", len(align))
+	}
+	if align[0].IsCompressed || align[0].CompressedIndex != 0 {
+		t.Fatalf("first duplicate mapped incorrectly: %+v", align[0])
+	}
+	if align[1].IsCompressed || align[1].CompressedIndex != 1 {
+		t.Fatalf("second duplicate mapped incorrectly: %+v", align[1])
+	}
+}
+
+func TestBuildAlignmentMap_RecordsDuplicateOccurrences(t *testing.T) {
+	before := []byte(`{"messages":[{"role":"user","content":"same"},{"role":"user","content":"same"}]}`)
+	after := []byte(`{"messages":[{"role":"user","content":"same"}]}`)
+	align := buildAlignmentMap(before, after, -1)
+	if len(align) != 2 || align[0].Occurrence != 0 || align[1].Occurrence != 1 {
+		t.Fatalf("occurrences = %+v", align)
+	}
+	if align[0].TargetKind != "retained" || align[1].TargetKind != "dropped" {
+		t.Fatalf("target kinds = %+v", align)
 	}
 }
 

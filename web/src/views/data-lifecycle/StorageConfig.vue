@@ -10,6 +10,7 @@ import {
   type StorageConfig,
   type MigrationRun,
 } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 const config = ref<StorageConfig | null>(null)
@@ -110,15 +111,10 @@ async function save() {
   try {
     // 目录变更时弹确认框（说明将复制文件并删除旧目录）
     if (dirChanged.value) {
-      const ok = confirm(
-        '即将修改附件存储目录，系统会把现有文件复制到新目录，校验完成后删除旧目录。\n\n' +
-        '· 复制期间下载/写入不受影响（仍走旧目录）\n' +
-        '· 完成后自动切换到新目录\n' +
-        '· 文件较多时可能耗时较长，进度会在下方显示\n\n确认修改目录并迁移？'
-      )
+      const ok = await confirmDialog(t('dataLifecycle.confirmDirMigrate'))
       if (!ok) {
         saving.value = false
-        saveMsg.value = '已取消（目录未修改）'
+        saveMsg.value = t('dataLifecycle.dirMigrateCancelled')
         return
       }
     }
@@ -412,7 +408,7 @@ function fmtNum(n?: number) {
 .path-test-row .form-input { flex: 1; }
 .btn-secondary { background: var(--card); border: 1px solid var(--accent); color: var(--accent-h); border-radius: 4px; padding: 6px 16px; cursor: pointer; white-space: nowrap; transition: opacity .15s; }
 .btn-secondary:hover:not(:disabled) { opacity: .85; }
-.btn-primary { background: var(--accent); color: #fff; border: none; border-radius: 4px; padding: 8px 24px; cursor: pointer; font-size: 14px; transition: opacity .15s; }
+.btn-primary { background: var(--accent); color: var(--on-primary); border: none; border-radius: 4px; padding: 8px 24px; cursor: pointer; font-size: 14px; transition: opacity .15s; }
 .btn-primary:hover:not(:disabled) { opacity: .85; }
 .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
 .test-result { padding: 8px 12px; border-radius: 4px; font-size: 13px; margin-top: 8px; }
@@ -423,14 +419,14 @@ function fmtNum(n?: number) {
 .switch-label input { width: 16px; height: 16px; accent-color: var(--accent); }
 .form-actions { margin-top: 16px; }
 .save-msg { margin-top: 10px; font-size: 13px; color: var(--accent-h); }
-.warn-box { padding: 8px 12px; background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.3); border-radius: 4px; color: var(--warning); font-size: 13px; margin-top: 12px; }
-.error-box { padding: 8px 12px; background: rgba(248,81,73,.1); border: 1px solid rgba(248,81,73,.3); border-radius: 4px; color: var(--danger); margin-bottom: 16px; }
+.warn-box { padding: 8px 12px; background: var(--warning-bg); border: 1px solid var(--warning-bd); border-radius: 4px; color: var(--warning); font-size: 13px; margin-top: 12px; }
+.error-box { padding: 8px 12px; background: var(--danger-bg); border: 1px solid var(--danger-bd); border-radius: 4px; color: var(--danger); margin-bottom: 16px; }
 
 /* ── 目录迁移进度卡片 ── */
 .migration-box { margin-top: 12px; padding: 12px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-subtle); font-size: 13px; }
 .migration-box.running { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 08%, transparent); }
-.migration-box.done { border-color: rgba(63,185,80,.45); background: rgba(63,185,80,.08); }
-.migration-box.failed { border-color: rgba(248,81,73,.45); background: rgba(248,81,73,.08); }
+.migration-box.done { border-color: rgba(63,185,80,.45); background: color-mix(in srgb, var(--success) 14%, transparent); }
+.migration-box.failed { border-color: color-mix(in srgb, var(--danger) 12%, transparent); background: color-mix(in srgb, var(--danger) 12%, transparent); }
 .migration-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .migration-title { font-weight: 600; color: var(--text); }
 .migration-runid { font-size: 11px; color: var(--muted); }

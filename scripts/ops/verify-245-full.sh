@@ -2,6 +2,21 @@
 # Full verification on 245 after ops/blocklist deploy.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VERSION_FILE="$SCRIPT_DIR/../../version.json"
+IFS=$'\t' read -r EXPECTED_BUILD_SEQ EXPECTED_GIT_SHA < <(
+  python3 - "$VERSION_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as version_file:
+    version = json.load(version_file)
+print(f"{version['build_seq']}\t{version['git_sha']}")
+PY
+)
+[[ "$EXPECTED_BUILD_SEQ" =~ ^[0-9]+$ ]] || { echo "invalid build_seq in $VERSION_FILE" >&2; exit 1; }
+[[ "$EXPECTED_GIT_SHA" =~ ^[0-9a-fA-F]+$ ]] || { echo "invalid git_sha in $VERSION_FILE" >&2; exit 1; }
+
 SSH_PORT="${LLM_GATEWAY_SSH_PORT:-25022}"
 SSH_KEY_FILE="${SSH_KEY_FILE:-}"
 for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
@@ -9,6 +24,7 @@ for k in ~/.ssh/id_ed25519 ~/.ssh/56_id_rsa ~/.ssh/71_id_rsa; do
 done
 SSH_OPTS=(-i "$SSH_KEY_FILE" -p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=12)
 SSH_HOST="${LLM_GATEWAY_245_SSH:-root@8.136.114.245}"
+SERVICE_NAME="llmgo-245.service"
 
 PASS=0
 FAIL=0
@@ -20,11 +36,14 @@ warn() { echo "  ⚠ $*"; WARN=$((WARN+1)); }
 
 echo "=== 245 完整验证 (ops + blocklist + board) ==="
 
-ssh "${SSH_OPTS[@]}" "$SSH_HOST" 'python3 - <<'"'"'PY'"'"'
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" \
+  "EXPECTED_BUILD_SEQ=$EXPECTED_BUILD_SEQ EXPECTED_GIT_SHA=$EXPECTED_GIT_SHA python3 -" <<'PY'
 import json, os, sys, time, urllib.request, urllib.error
 from pathlib import Path
 
 PASS=FAIL=WARN=0
+expected_build_seq = int(os.environ["EXPECTED_BUILD_SEQ"])
+expected_git_sha = os.environ["EXPECTED_GIT_SHA"]
 
 def ok(m):
     global PASS; PASS+=1; print("  ✓", m)
@@ -32,6 +51,12 @@ def fail(m):
     global FAIL; FAIL+=1; print("  ✗", m)
 def warn(m):
     global WARN; WARN+=1; print("  ⚠", m)
+
+def version_matches(version):
+    return (
+        version.get("build_seq") == expected_build_seq
+        and version.get("git_sha") == expected_git_sha
+    )
 
 def req(method, url, data=None, headers=None, timeout=20):
     h = headers or {}
@@ -64,7 +89,13 @@ else:
 st, raw = req("GET", base+"/api/system/version")
 if st == 200:
     ver = json.loads(raw)
-    ok(f"version build_seq={ver.get('"'"'build_seq'"'"')} sha={ver.get('"'"'git_sha'"'"')}")
+    if version_matches(ver):
+        ok(f"version build_seq={ver.get('build_seq')} sha={ver.get('git_sha')}")
+    else:
+        fail(
+            f"version mismatch: expected build_seq={expected_build_seq} sha={expected_git_sha}, "
+            f"got build_seq={ver.get('build_seq')} sha={ver.get('git_sha')}"
+        )
 else:
     fail(f"version HTTP {st}")
 
@@ -107,11 +138,11 @@ if st == 200:
         elif r.get("missing"):
             warn(f"region {want} not registered")
         elif r.get("online_instances",0) > 0:
-            ok(f"region {want} online={r.get('"'"'online_instances'"'"')}")
+            ok(f"region {want} online={r.get('online_instances')}")
         else:
             warn(f"region {want} present but offline")
     tables = ov.get("data_plane_tables") or {}
-    ok(f"data_plane: instances={tables.get('"'"'gateway_instances'"'"',0)} heartbeats={tables.get('"'"'instance_heartbeats'"'"',0)} blocklist_tables_ok")
+    ok(f"data_plane: instances={tables.get('gateway_instances',0)} heartbeats={tables.get('instance_heartbeats',0)} blocklist_tables_ok")
 else:
     fail(f"ops/overview HTTP {st}")
 
@@ -149,17 +180,18 @@ if entry_id:
 
 # 6) env checks
 if env.get("LLM_GATEWAY_CENTER_URL"):
-    ok(f"LLM_GATEWAY_CENTER_URL={env.get('LLM_GATEWAY_CENTER_URL').split(chr(10))[0]}")
+    ok("LLM_GATEWAY_CENTER_URL={}".format(env.get("LLM_GATEWAY_CENTER_URL").split(chr(10))[0]))
 else:
     fail("LLM_GATEWAY_CENTER_URL missing")
 if env.get("OPS_COLLECT_URL"):
-    ok(f"OPS_COLLECT_URL={env.get('"'"'OPS_COLLECT_URL'"'"').split(chr(10))[0]}")
+    ok("OPS_COLLECT_URL={}".format(env.get("OPS_COLLECT_URL").split(chr(10))[0]))
 else:
     fail("OPS_COLLECT_URL missing")
+
 if env.get("OPS_NODE_REGION") == "245":
     ok("OPS_NODE_REGION=245")
 else:
-    warn(f"OPS_NODE_REGION={env.get('"'"'OPS_NODE_REGION'"'"')}")
+    warn("OPS_NODE_REGION={}".format(env.get("OPS_NODE_REGION")))
 if env.get("OPS_COLLECT_LICENSE_KEY"):
     ok("OPS_COLLECT_LICENSE_KEY set")
 else:
@@ -180,11 +212,11 @@ if DB:
             fail(f"table {tbl} query failed")
     out, rc = psql("SELECT region,status,COUNT(*)::int FROM gateway_instances GROUP BY 1,2 ORDER BY 1,2")
     if rc == 0:
-        ok(f"gateway_instances by region: {out or '"'"'(empty)'"'"'}")
+        ok(f"gateway_instances by region: {out or '(empty)'}")
 
 print(f"\n=== RESULT pass={PASS} fail={FAIL} warn={WARN} ===")
 sys.exit(1 if FAIL else 0)
-PY'
+PY
 
 echo ""
 echo "=== 252 数据面（经 245 查询）==="
@@ -192,4 +224,4 @@ bash "$(dirname "$0")/verify-ops-data-plane.sh" 245 2>&1 | sed 's/^/  /'
 
 echo ""
 echo "=== 远端日志：ops reporter / blocklist ==="
-ssh "${SSH_OPTS[@]}" "$SSH_HOST" "journalctl -u llm-gateway-go.service --since '10 min ago' --no-pager 2>&1 | grep -iE 'ops reporter|blocklist|center agent' | tail -10 || echo '  (no matching log lines)'"
+ssh "${SSH_OPTS[@]}" "$SSH_HOST" "journalctl -u '$SERVICE_NAME' --since '10 min ago' --no-pager 2>&1 | grep -iE 'ops reporter|blocklist|center agent|request_survival' | tail -10 || echo '  (no matching log lines)'"

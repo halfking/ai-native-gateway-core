@@ -12,6 +12,7 @@ export default {
     opsplatform: 'Ops Center',
     guide: 'Integration Guide',
     chat: 'Chat',
+    plugins: 'Plugins',
   },
 
   item: {
@@ -36,6 +37,8 @@ export default {
     auditLogs: 'Audit Logs',
     requestLogs: 'Request Logs',
     dispatchWaterfall: 'Queue Waterfall',
+    requestRegistry: 'Request Registry',
+    connectionRegistry: 'Connection Registry',
     turns: 'Turns List',
     sessions: 'Sessions',
     pluginSessions: 'Plugin Sessions',
@@ -45,6 +48,7 @@ export default {
     wechatBot: 'WeChat Bot',
     sessionContext: 'Session Context',
     settings: 'System Settings',
+    proxy: 'Proxy Management',
     dataLifecycle: 'Data Lifecycle',
     formatAnomalies: 'Format Anomalies',
     modelIntegrity: 'Model Integrity',
@@ -59,6 +63,9 @@ export default {
     chat: 'Chat',
     updateActivate: 'Update & Activate',
     licenseActivate: 'License Activation',
+    // 2026-09-04: activate CTA shown in place of gated ops entries (e.g. Auto Update) when not activated
+    activateAction: 'Activate',
+    activateActionTip: 'Click to activate this instance',
     siteInfo: 'Site Info',
     licenseStatus: 'License Status',
     licenseAgreement: 'User License Agreement',
@@ -72,6 +79,7 @@ export default {
     opsOverview: 'Ops Overview',
     opsDownloads: 'Releases & Downloads',
     opsProductEntry: 'Product Entry',
+    supportDonate: 'Sponsorship & Donation',
   },
 
   // 2026-07-21: top-bar & public nav

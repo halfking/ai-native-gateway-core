@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -20,11 +21,23 @@ import (
 // fakeForegroundStore extends the handler fake with the foreground surface.
 type fakeForegroundStore struct {
 	fakeDurableHandlerStore
-	renews    []durableRenewCall
-	checks    []durable.CheckpointParams
-	terminals []durable.TerminalCommit
-	renewErr  error
-	checkErr  error
+	renews          []durableRenewCall
+	checks          []durable.CheckpointParams
+	checkpointErrs  []error
+	terminals       []durable.TerminalCommit
+	renewErr        error
+	renewStarted    chan struct{}
+	renewCanceled   chan struct{}
+	checkErr        error
+	rescheduleErr   error
+	rescheduleCalls int
+	intents         []durable.TerminalCommit
+	intentErr       error
+	intentFailures  int
+	intentCalls     int
+	claims          []*durable.ClaimedSettlement
+	finalizeErr     error
+	retried         []durable.ClaimedSettlement
 }
 
 type durableRenewCall struct {
@@ -33,7 +46,17 @@ type durableRenewCall struct {
 	token  int64
 }
 
-func (f *fakeForegroundStore) RenewLease(_ context.Context, taskID, owner string, token int64, _ time.Time) error {
+func (f *fakeForegroundStore) RenewLease(ctx context.Context, taskID, owner string, token int64, _ time.Time) error {
+	if f.renewStarted != nil {
+		select {
+		case f.renewStarted <- struct{}{}:
+		default:
+		}
+	}
+	if f.renewCanceled != nil {
+		<-ctx.Done()
+		close(f.renewCanceled)
+	}
 	if f.renewErr != nil {
 		return f.renewErr
 	}
@@ -41,7 +64,20 @@ func (f *fakeForegroundStore) RenewLease(_ context.Context, taskID, owner string
 	return nil
 }
 
-func (f *fakeForegroundStore) CheckpointCommitState(_ context.Context, p durable.CheckpointParams) error {
+// Reschedule shadows fakeDurableHandlerStore.Reschedule so a test can inject
+// rescheduleErr without altering the handler fake. releaseDurableBeforeSurvival
+// and the foreground post-survival path both go through here.
+func (f *fakeForegroundStore) Reschedule(_ context.Context, p durable.RescheduleParams) error {
+	f.rescheduleCalls++
+	if f.rescheduleErr != nil {
+		return f.rescheduleErr
+	}
+	f.resched = append(f.resched, p)
+	return nil
+}
+
+func (f *fakeForegroundStore) CheckpointCommitState(ctx context.Context, p durable.CheckpointParams) error {
+	f.checkpointErrs = append(f.checkpointErrs, ctx.Err())
 	if f.checkErr != nil {
 		return f.checkErr
 	}
@@ -52,6 +88,58 @@ func (f *fakeForegroundStore) CheckpointCommitState(_ context.Context, p durable
 func (f *fakeForegroundStore) CommitTerminal(_ context.Context, c durable.TerminalCommit) (*durable.TerminalProjection, error) {
 	f.terminals = append(f.terminals, c)
 	return &durable.TerminalProjection{Committed: true}, nil
+}
+
+func (f *fakeForegroundStore) PersistSettlementIntent(_ context.Context, c durable.TerminalCommit) error {
+	f.intentCalls++
+	if f.intentFailures > 0 {
+		f.intentFailures--
+		return errors.New("temporary settlement intent failure")
+	}
+	if f.intentErr != nil {
+		return f.intentErr
+	}
+	f.intents = append(f.intents, c)
+	return nil
+}
+
+func (f *fakeForegroundStore) ClaimSettlementIntent(_ context.Context, taskID, owner string, lease time.Duration, now time.Time) (*durable.ClaimedSettlement, error) {
+	for _, claim := range f.claims {
+		if claim.TaskID == taskID {
+			claim.ClaimOwner, claim.ClaimUntil = owner, now.Add(lease)
+			return claim, nil
+		}
+	}
+	return &durable.ClaimedSettlement{SettlementIntent: durable.SettlementIntent{TaskID: taskID, Attempts: 1}, ClaimOwner: owner, ClaimUntil: now.Add(lease), ClaimFencingToken: 1}, nil
+}
+
+func (f *fakeForegroundStore) ClaimSettlementIntents(_ context.Context, _ string, _ time.Duration, _ int, _ time.Time) ([]*durable.ClaimedSettlement, error) {
+	if f.claims != nil {
+		return f.claims, nil
+	}
+	if len(f.intents) == 0 {
+		return nil, nil
+	}
+	c := f.intents[len(f.intents)-1]
+	return []*durable.ClaimedSettlement{{SettlementIntent: durable.SettlementIntent{TaskID: c.Task.ID}}}, nil
+}
+
+func (f *fakeForegroundStore) FinalizeSettlement(_ context.Context, c durable.ClaimedSettlement) (*durable.TerminalProjection, error) {
+	if f.finalizeErr != nil {
+		return nil, f.finalizeErr
+	}
+	for i := len(f.intents) - 1; i >= 0; i-- {
+		if f.intents[i].Task != nil && f.intents[i].Task.ID == c.TaskID {
+			f.terminals = append(f.terminals, f.intents[i])
+			break
+		}
+	}
+	return &durable.TerminalProjection{Committed: true}, nil
+}
+
+func (f *fakeForegroundStore) RetrySettlementIntent(_ context.Context, c durable.ClaimedSettlement, _ time.Time, _ error) error {
+	f.retried = append(f.retried, c)
+	return nil
 }
 
 func newStreamBinding(store *fakeForegroundStore) *DurableStreamBinding {
@@ -116,6 +204,155 @@ func TestDurableStreamBindingRenewalLoopStops(t *testing.T) {
 	}
 	// Stop is idempotent.
 	b.Stop()
+}
+
+// TestDurableStreamBindingStopWaitsForRenewalExit proves that Stop returns
+// only after the renewal goroutine has actually exited, never on a premature
+// timeout. With the default 15s lease the renew interval is 7.5s; a fixed
+// grace shorter than that (the old 3s) would spuriously time out on nearly
+// every stop. Here Stop is observed to return promptly once the goroutine
+// exits and must not block for the full grace.
+func TestDurableStreamBindingStopWaitsForRenewalExit(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newDurableStreamBinding(store,
+		&durable.Task{ID: "task-7", TenantID: "tenant-1", RequestID: "req-9",
+			SessionID: "sess-1", RequestHash: "hash-1", LeaseOwner: "gw-front", FencingToken: 1},
+		200*time.Millisecond)
+
+	b.mu.Lock()
+	ctx, cancel := context.WithCancel(context.Background())
+	doneCh := make(chan struct{})
+	b.renewCtx, b.renewCancel, b.renewDone = ctx, cancel, doneCh
+	b.renewInterval = 100 * time.Millisecond
+	b.mu.Unlock()
+	// Simulate the renewal loop: exit only when Stop cancels its context.
+	go func() {
+		defer close(doneCh)
+		<-ctx.Done()
+	}()
+
+	stopStart := time.Now()
+	b.Stop()
+	elapsed := time.Since(stopStart)
+	// If the grace fired we would see ~6s; a correct wait returns in well
+	// under a second once the goroutine exits.
+	if elapsed > 2*time.Second {
+		t.Fatalf("Stop blocked for %v; renewal goroutine did not exit promptly (grace fired?)", elapsed)
+	}
+	select {
+	case <-doneCh:
+	default:
+		t.Fatal("renewal goroutine still running after Stop returned")
+	}
+}
+
+func TestDurableStreamBindingRenewalCancellationStopsInFlightCall(t *testing.T) {
+	started := make(chan struct{}, 1)
+	canceled := make(chan struct{})
+	store := &fakeForegroundStore{renewStarted: started, renewCanceled: canceled}
+	b := newDurableStreamBinding(store,
+		&durable.Task{ID: "task-7", TenantID: "tenant-1", RequestID: "req-9",
+			SessionID: "sess-1", RequestHash: "hash-1", LeaseOwner: "gw-front", FencingToken: 1},
+		20*time.Millisecond)
+	b.Start()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("renewal did not start")
+	}
+
+	stopStart := time.Now()
+	b.Stop()
+	if elapsed := time.Since(stopStart); elapsed > time.Second {
+		t.Fatalf("Stop took %v; cancellation did not reach in-flight renewal", elapsed)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("in-flight renewal did not observe cancellation")
+	}
+}
+
+func TestDurableStreamBindingRenewalLeaseLossCountsBothMetricFamilies(t *testing.T) {
+	beforeSurvival := gatherMetricValue(t, "gateway_survival_lease_conflicts_total")
+	beforeDurable := gatherMetricValue(t, "durable_lease_lost_total")
+	store := &fakeForegroundStore{renewErr: durable.ErrLeaseLost}
+	b := newStreamBinding(store)
+	b.Start()
+	defer b.Stop()
+	time.Sleep(80 * time.Millisecond)
+	if got := gatherMetricValue(t, "gateway_survival_lease_conflicts_total"); got < beforeSurvival+1 {
+		t.Fatalf("survival lease conflicts = %v, want >= %v", got, beforeSurvival+1)
+	}
+	if got := gatherMetricValue(t, "durable_lease_lost_total"); got < beforeDurable+1 {
+		t.Fatalf("durable lease lost = %v, want >= %v", got, beforeDurable+1)
+	}
+}
+
+func TestReleaseDurableBeforeSurvivalHandsTaskToWorker(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+
+	releaseDurableBeforeSurvival(b, "candidate_resolution_failed")
+
+	if len(store.resched) != 1 {
+		t.Fatalf("reschedules = %d, want 1", len(store.resched))
+	}
+	got := store.resched[0]
+	if got.TaskID != b.task.ID || got.LeaseOwner != b.task.LeaseOwner || got.FencingToken != b.task.FencingToken {
+		t.Fatalf("reschedule fence = %+v, want task fence %+v", got, b.task)
+	}
+	if got.Reason != "candidate_resolution_failed" {
+		t.Fatalf("reschedule reason = %q, want candidate_resolution_failed", got.Reason)
+	}
+	if len(store.terminals) != 0 {
+		t.Fatalf("pre-survival release must not terminalize task, got %+v", store.terminals)
+	}
+}
+
+func TestSettleDurableStreamLeaseLossCountsBothMetricFamilies(t *testing.T) {
+	beforeSurvival := gatherMetricValue(t, "gateway_survival_lease_conflicts_total")
+	beforeDurable := gatherMetricValue(t, "durable_lease_lost_total")
+	store := &fakeForegroundStore{finalizeErr: durable.ErrLeaseLost}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},
+		[]byte("data: hi\\n\\n"), "text/event-stream", false)
+	if got := gatherMetricValue(t, "gateway_survival_lease_conflicts_total"); got < beforeSurvival+1 {
+		t.Fatalf("survival lease conflicts = %v, want >= %v", got, beforeSurvival+1)
+	}
+	if got := gatherMetricValue(t, "durable_lease_lost_total"); got < beforeDurable+1 {
+		t.Fatalf("durable lease lost = %v, want >= %v", got, beforeDurable+1)
+	}
+}
+
+func TestDurableBeforeSemanticCommitSurvivesCanceledClientContext(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	hook := durableBeforeSemanticCommit(b)
+	if err := hook(ctx, CommitStateMetadata); err != nil {
+		t.Fatalf("canceled client context must not cancel durable checkpoint: %v", err)
+	}
+	if len(store.checks) != 1 || len(store.checkpointErrs) != 1 || store.checkpointErrs[0] != nil {
+		t.Fatalf("checkpoint context errors = %v, checks = %+v; want detached successful write", store.checkpointErrs, store.checks)
+	}
+}
+
+func TestSettleDurableStreamDeadlineDoesNotReleaseToWorker(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}},
+		nil, "", false)
+	if len(store.resched) != 0 {
+		t.Fatalf("deadline settlement must not reschedule to worker: %+v", store.resched)
+	}
+	if len(store.terminals) != 1 || store.terminals[0].ReasonCode != "deadline_exceeded" {
+		t.Fatalf("deadline settlement terminals = %+v, want one terminal deadline_exceeded", store.terminals)
+	}
 }
 
 func TestSettleDurableStreamMatrix(t *testing.T) {
@@ -194,6 +431,81 @@ func TestSettleDurableStreamMatrix(t *testing.T) {
 	})
 }
 
+func TestSettleDurableStreamRetriesTransientTerminalFailure(t *testing.T) {
+	store := &fakeForegroundStore{intentFailures: 2}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},
+		[]byte("data: hi\n\n"), "text/event-stream", false)
+	if len(store.terminals) != 1 {
+		t.Fatalf("terminals = %d, want 1 after transient failures", len(store.terminals))
+	}
+	if store.intentCalls != 3 {
+		t.Fatalf("settlement intent calls = %d, want 3", store.intentCalls)
+	}
+}
+
+func TestSettleDurableStreamStopsOnLeaseLoss(t *testing.T) {
+	store := &fakeForegroundStore{intentErr: durable.ErrLeaseLost}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},
+		[]byte("data: hi\n\n"), "text/event-stream", false)
+	if len(store.terminals) != 0 {
+		t.Fatalf("lease loss must not finalize terminal, got %+v", store.terminals)
+	}
+	if store.intentCalls != 1 {
+		t.Fatalf("lease loss settlement intent calls = %d, want 1", store.intentCalls)
+	}
+}
+
+// TestSettleDurableStreamRecordsStageFailureOnPersistExhaustion pins the
+// observability contract for the documented "stuck-task worst case": when
+// PersistSettlementIntent keeps returning a non-lease-loss error after the
+// 3 in-attempt retries, the foreground handler must surface a
+// durable_settlement_stage_failures_total tick so an alert can catch the
+// task before the safety reaper / deadline reaper own it on lease expiry.
+// The task must remain in `running` (no terminal written) — re-execution
+// safety depends on the safety reaper, never on a foreground fall-back
+// write that could replay terminal bytes.
+func TestSettleDurableStreamRecordsStageFailureOnPersistExhaustion(t *testing.T) {
+	before := gatherMetricValue(t, "durable_settlement_stage_failures_total")
+	store := &fakeForegroundStore{intentFailures: 10} // > retrySettlement budget
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},
+		[]byte("data: hi\n\n"), "text/event-stream", false)
+	if len(store.terminals) != 0 {
+		t.Fatalf("persist exhaustion must not finalize terminal, got %+v", store.terminals)
+	}
+	if store.intentCalls != len(settlementRetryDelays) {
+		t.Fatalf("settlement intent calls = %d, want %d", store.intentCalls, len(settlementRetryDelays))
+	}
+	if got := gatherMetricValue(t, "durable_settlement_stage_failures_total"); got < before+1 {
+		t.Fatalf("stage failure metric not incremented: before=%v after=%v", before, got)
+	}
+}
+
+// TestSettleDurableStreamRecordsStageFailureOnRescheduleExhaustion pins the
+// equivalent contract for the release_to_worker stage: a foreground
+// Reschedule write failure must surface a stage metric so the stuck-task
+// window is observable. The handler must not invent a fallback write path;
+// the safety reaper / lease expiry is the documented recovery.
+func TestSettleDurableStreamRecordsStageFailureOnRescheduleExhaustion(t *testing.T) {
+	before := gatherMetricValue(t, "durable_settlement_stage_failures_total")
+	store := &fakeForegroundStore{rescheduleErr: errors.New("reschedule store unavailable")}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}},
+		nil, "", true)
+	if store.rescheduleCalls != 1 {
+		t.Fatalf("reschedule attempts = %d, want 1 (only the foreground attempt)", store.rescheduleCalls)
+	}
+	if got := gatherMetricValue(t, "durable_settlement_stage_failures_total"); got < before+1 {
+		t.Fatalf("stage failure metric not incremented: before=%v after=%v", before, got)
+	}
+}
+
 // frameWritingExecutor writes protocol frames through the attempt writer
 // (the coordinator wraps it in a gate writer) and succeeds.
 type frameWritingExecutor struct{ frames []string }
@@ -268,6 +580,22 @@ func TestSurvivalCoordinatorCheckpointFailureFailsClosed(t *testing.T) {
 		t.Fatal("no semantic bytes may reach the wire after a failed checkpoint")
 	}
 }
+
+func TestDurableWireCaptureDiscardsBodyOnWriteError(t *testing.T) {
+	failed := newDurableWireCapture(errorResponseWriter{}, 64)
+	if _, err := failed.Write([]byte("data: incomplete\n\n")); err == nil {
+		t.Fatal("write error must propagate")
+	}
+	if body, _ := failed.result(); body != nil {
+		t.Fatalf("failed write must not produce durable body, got %q", body)
+	}
+}
+
+type errorResponseWriter struct{}
+
+func (errorResponseWriter) Header() http.Header       { return make(http.Header) }
+func (errorResponseWriter) Write([]byte) (int, error) { return 0, errors.New("client disconnected") }
+func (errorResponseWriter) WriteHeader(int)           {}
 
 func TestDurableWireCaptureTeesAndOverflows(t *testing.T) {
 	inner := httptest.NewRecorder()

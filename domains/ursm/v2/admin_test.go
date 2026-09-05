@@ -8,6 +8,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
 func TestApplyAdminTargetsTenantAndInvalidatesMirror(t *testing.T) {
@@ -37,12 +38,47 @@ func TestApplyAdminTargetsTenantAndInvalidatesMirror(t *testing.T) {
 	}
 }
 
+func TestApplyAdminDualSchemaUpdatesBothKeys(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := DefaultConfig()
+	cfg.KeySchemaMode = store.KeySchemaModeDual
+	mgr := New(Dependencies{Redis: rdb, Config: cfg})
+	hold := true
+	ctx := context.Background()
+	if err := mgr.ApplyAdmin(ctx, api.AdminAction{TenantID: "tenant", CredentialID: 10, RawModel: "model", ManualDisabled: &hold, Actor: "test", IssuedAtMs: 1}); err != nil {
+		t.Fatalf("ApplyAdmin: %v", err)
+	}
+	legacy := store.NodeKeyForTenant(cfg.RedisKeyPrefix, "tenant", 10, "model")
+	k2, err := store.K2NodeKeyForTenant(cfg.RedisKeyPrefix, "tenant", 10, "model")
+	if err != nil {
+		t.Fatalf("K2 key: %v", err)
+	}
+	for _, key := range []string{legacy, k2} {
+		got, err := rdb.HGet(ctx, key, "manual_hold").Result()
+		if err != nil || got != "1" {
+			t.Fatalf("%s manual_hold=%q err=%v, want 1", key, got, err)
+		}
+	}
+}
+
+func TestApplyAdminCanonicalSchemaRejectsEmptyTenant(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := DefaultConfig()
+	cfg.KeySchemaMode = store.KeySchemaModeCanonical
+	mgr := New(Dependencies{Redis: rdb, Config: cfg})
+	hold := true
+	if err := mgr.ApplyAdmin(context.Background(), api.AdminAction{CredentialID: 11, RawModel: "model", ManualDisabled: &hold}); err == nil {
+		t.Fatal("ApplyAdmin with empty tenant succeeded in canonical mode")
+	}
+}
+
 func TestApplyAdminSetsManualHold(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	cfg := DefaultConfig()
-	// DefaultConfig() is ModeOff, which short-circuits FilterAndScore.
-	// Flip to Canary with 100% so the read path actually runs and
+	// Use Canary with 100% so this test exercises cohort planning and
 	// observes the manual_hold the script just wrote.
 	cfg.Mode = api.ModeCanary
 	cfg.CanaryPercent = 100

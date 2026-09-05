@@ -7,6 +7,8 @@ import (
 	"net/http"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // TelemetryFallbackBufferHandler exposes the in-memory ring buffer
@@ -132,8 +134,16 @@ func (h *TelemetryFallbackBufferHandler) handleReplay(w http.ResponseWriter, r *
 		return
 	}
 	var req replayRequest
-	// body is optional — empty body → replay all
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	// 2026-08-26 (P1-19 fix): the body is documented as optional, but
+	// the previous implementation silently swallowed every parse
+	// error and proceeded with the zero-value struct — meaning a
+	// caller that sent `{"limit": "oops"}` got the "replay all"
+	// behaviour rather than a 400. ReadOptional distinguishes empty
+	// body (accepted) from malformed body (400) and also enforces a
+	// hard 1 MiB cap.
+	if ok, _ := jsonbody.ReadOptional(w, r, &req); !ok {
+		return
+	}
 
 	replayed, failed, err := h.ringBuffer.Replay(r.Context(), req.Limit, h.replayFn)
 	if err != nil {
@@ -150,12 +160,11 @@ func (h *TelemetryFallbackBufferHandler) handleReplay(w http.ResponseWriter, r *
 	})
 }
 
+// writeJSON 薄委托 internal/httpx（2026-09-04 writeJSON 收敛）。
 func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(body); err != nil {
-		// Body already partly written; best effort logging.
-		// Caller can't do anything useful with this error.
-		_ = err
-	}
+	// Best-effort: marshal failures are returned before the status is
+	// committed but the payload shapes here (maps/structs of scalars)
+	// cannot fail to marshal; write failures after commit are
+	// unrecoverable, matching the previous streaming helper.
+	_ = httpx.WriteJSON(w, status, "application/json", body)
 }

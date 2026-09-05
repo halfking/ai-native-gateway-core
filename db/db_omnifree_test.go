@@ -9,11 +9,13 @@ import (
 // all 4 tables + extensions + RLS + triggers when run against a fresh database.
 //
 // This test requires a live PostgreSQL instance. Set TEST_DB_URL to run it:
-//   export TEST_DB_URL="postgres://user:pass@localhost/testdb?sslmode=disable"
-//   go test -v ./db -run TestEnsureOmniFreeSchema_FreshDB
+//
+//	export TEST_DB_URL="postgres://user:pass@localhost/testdb?sslmode=disable"
+//	go test -v ./db -run TestEnsureOmniFreeSchema_FreshDB
 //
 // To skip integration tests in CI/short mode:
-//   go test -short ./db
+//
+//	go test -short ./db
 func TestEnsureOmniFreeSchema_FreshDB(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

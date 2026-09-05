@@ -9,13 +9,13 @@ func TestEnhancedClassifier_HardRules(t *testing.T) {
 	classifier := NewEnhancedClassifier(cfg)
 
 	tests := []struct {
-		name              string
-		content           string
-		hasImages         bool
-		toolCount         int
-		contextLength     int
-		expectedIntent    IntentKind
-		minConfidence     float64
+		name           string
+		content        string
+		hasImages      bool
+		toolCount      int
+		contextLength  int
+		expectedIntent IntentKind
+		minConfidence  float64
 	}{
 		{
 			name:           "代码块检测",
@@ -30,11 +30,11 @@ func TestEnhancedClassifier_HardRules(t *testing.T) {
 			minConfidence:  0.80,
 		},
 		{
-			name:          "图像检测",
-			content:       "这张图片里有什么？",
-			hasImages:     true,
+			name:           "图像检测",
+			content:        "这张图片里有什么？",
+			hasImages:      true,
 			expectedIntent: IntentCode, // 注意：当前硬规则将图像归类为Code，可能需要调整
-			minConfidence: 0.90,
+			minConfidence:  0.90,
 		},
 		{
 			name:           "多工具调用",
@@ -137,7 +137,7 @@ func TestEnhancedClassifier_KeywordScore(t *testing.T) {
 			}
 
 			if !found {
-				t.Errorf("expected intent %s with confidence >= %.2f not found in candidates", 
+				t.Errorf("expected intent %s with confidence >= %.2f not found in candidates",
 					tt.expectedIntent, tt.minConfidence)
 			}
 		})
@@ -191,7 +191,7 @@ func TestCalculateIntentDrift(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			drift := calculateIntentDrift(tt.history, tt.current)
-			
+
 			if drift < 0 || drift > 1 {
 				t.Errorf("drift score should be in [0,1], got %.2f", drift)
 			}
@@ -207,11 +207,11 @@ func TestCalculateIntentDrift(t *testing.T) {
 
 func TestDetectIntentShift(t *testing.T) {
 	tests := []struct {
-		name           string
-		history        []IntentEvolution
-		currentIntent  string
-		expectedShift  bool
-		expectedType   string
+		name          string
+		history       []IntentEvolution
+		currentIntent string
+		expectedShift bool
+		expectedType  string
 	}{
 		{
 			name:          "无历史",
@@ -270,9 +270,9 @@ func TestDetectIntentShift(t *testing.T) {
 
 func TestCalculateIntentStability(t *testing.T) {
 	tests := []struct {
-		name        string
-		history     []IntentEvolution
-		windowSize  int
+		name         string
+		history      []IntentEvolution
+		windowSize   int
 		minStability float64
 		maxStability float64
 	}{
@@ -321,7 +321,7 @@ func TestCalculateIntentStability(t *testing.T) {
 			}
 
 			if stability < tt.minStability || stability > tt.maxStability {
-				t.Errorf("expected stability in [%.2f, %.2f], got %.2f", 
+				t.Errorf("expected stability in [%.2f, %.2f], got %.2f",
 					tt.minStability, tt.maxStability, stability)
 			}
 

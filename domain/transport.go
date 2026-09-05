@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 )
 
 // TransportContext 封装网络中转领域的所有上下文。
@@ -35,6 +36,14 @@ type TransportContext struct {
 	// Set by the executor after candidate selection, alongside
 	// UpstreamCatalogCode.
 	ProviderID int
+
+	// RequestClass / DueAt carry the dispatch request type (V6-W1.6 R8,
+	// 定时请求): "immediate" | "scheduled" plus the scheduled due time. The
+	// executor stamps them per attempt from params.DispatchDueAt;
+	// TransportIRConverter.Parse* copies them onto the returned IR as
+	// gateway-internal metadata (never serialized upstream).
+	RequestClass string
+	DueAt        time.Time
 
 	Transform      *TransformResult
 	ToolsRequested bool

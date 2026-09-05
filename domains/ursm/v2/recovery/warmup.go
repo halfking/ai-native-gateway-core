@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
 type Seed struct {
@@ -22,10 +24,7 @@ func (m *Manager) WarmupFromSeed(ctx context.Context, seeds []Seed) error {
 	}
 	pipe := m.rdb.Pipeline()
 	for _, s := range seeds {
-		key := fmt.Sprintf("%snode:%s:%d:%s", m.prefix, s.TenantID, s.CredentialID, s.RawModel)
-		if s.TenantID == "" {
-			key = fmt.Sprintf("%snode:%d:%s", m.prefix, s.CredentialID, s.RawModel)
-		}
+		key := store.NodeKeyForTenant(m.prefix, s.TenantID, s.CredentialID, s.RawModel)
 		pipe.HSet(ctx, key,
 			"available", "1",
 			"source_priority", "30", // recover priority

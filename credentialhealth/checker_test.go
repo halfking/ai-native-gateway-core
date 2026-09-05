@@ -14,6 +14,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func expectRawBindingResolution(mockDB pgxmock.PgxPoolIface, credentialID int, requestedModel, rawModel string) {
+	mockDB.ExpectQuery(`SELECT COALESCE`).
+		WithArgs(credentialID, requestedModel).
+		WillReturnRows(pgxmock.NewRows([]string{"raw_models"}).AddRow(rawModel))
+}
+
 func TestChecker_CheckAndUpdate_BelowThreshold(t *testing.T) {
 	// Setup Redis + Recorder
 	mr, err := miniredis.Run()
@@ -131,6 +137,7 @@ func TestChecker_CheckAndUpdate_AboveThreshold(t *testing.T) {
 	// NOT the credentials table. The cmb route is what v_routable_credential_models
 	// reads; writing to credentials leaves the binding routable in production
 	// even though the credential is "degraded" in the admin UI.
+	expectRawBindingResolution(mockDB, credID, model, model)
 	mockDB.ExpectExec("UPDATE credential_model_bindings").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
@@ -279,6 +286,7 @@ func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 	// 2026-08-11 fix: cmb UPDATE now carries 4 placeholders
 	// ($1 credential_id, $2 model, $3 recoverAt, $4 now) and the
 	// model_offers mirror carries 3 ($1 credential_id, $2 model, $3 now).
+	expectRawBindingResolution(mockDB, credID, model, strings.ToLower(model))
 	mockDB.ExpectExec("UPDATE credential_model_bindings").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
@@ -347,6 +355,7 @@ func TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures(t *testing.T) {
 
 	// Expect: cmb UPDATE (the production source of truth).
 	// 2026-08-11 fix: cmb UPDATE now carries 4 placeholders.
+	expectRawBindingResolution(mockDB, credID, model, strings.ToLower(model))
 	mockDB.ExpectExec("UPDATE credential_model_bindings").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))

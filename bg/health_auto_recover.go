@@ -20,7 +20,25 @@ type HealthAutoRecover struct {
 	// so a second Stop() panicked with "close of closed channel".
 	// Same guard as bg/routing_health_checker.go.
 	stopOnce sync.Once
+
+	// 2026-08-17 P0 fix: tickInterval is the live, possibly-updated interval.
+	// 0 means "disabled" (recover() is skipped). guarded by tickMu so
+	// cmd/gateway/main.go can install an env-driven override
+	// (LLM_GATEWAY_AUTO_RECOVER_INTERVAL_SECONDS) at any point in the worker
+	// lifecycle. tickIntervalEverSet distinguishes "no override yet, use the
+	// boot-time default" from "operator just disabled us with SetTickInterval(0)".
+	tickMu             sync.RWMutex
+	tickInterval       time.Duration
+	tickIntervalEverSet bool
 }
+
+// disabledProbeInterval is the heart-beat used while the loop is in the
+// "disabled" state. We can't simply stop the ticker because then the loop
+// couldn't notice when an operator sets the interval back to a positive
+// value — long heart-beat (10 minutes) just to re-check the configured
+// interval. The recover() body is skipped while disabled, so the loop is
+// effectively idle.
+const healthAutoRecoverDisabledProbeInterval = 10 * time.Minute
 
 // NewHealthAutoRecover creates a recovery worker.
 func NewHealthAutoRecover(
@@ -32,18 +50,69 @@ func NewHealthAutoRecover(
 	}
 
 	return &HealthAutoRecover{
-		db:       db,
-		interval: interval,
-		stopCh:   make(chan struct{}),
+		db:          db,
+		interval:    interval,
+		tickInterval: interval,
+		stopCh:      make(chan struct{}),
 	}
+}
+
+// SetTickInterval changes the recovery loop period at runtime.
+//
+// Semantics:
+//   - d < 0: ignored (defensive; env parsing may yield -1).
+//   - d == 0: the loop enters a disabled state — recover() is not called
+//     until a subsequent SetTickInterval(<positive>) re-arms it.
+//   - 0 < d < 1s: clamped to 1s.
+//   - d >= 1s: used as-is.
+//
+// The change is picked up at the next ticker boundary.
+func (w *HealthAutoRecover) SetTickInterval(d time.Duration) {
+	if d < 0 {
+		return
+	}
+	w.tickMu.Lock()
+	w.tickIntervalEverSet = true
+	if d == 0 {
+		w.tickInterval = 0
+	} else {
+		if d < time.Second {
+			d = time.Second
+		}
+		w.tickInterval = d
+	}
+	w.tickMu.Unlock()
+}
+
+func (w *HealthAutoRecover) currentInterval() time.Duration {
+	w.tickMu.RLock()
+	defer w.tickMu.RUnlock()
+	// "no override yet" → boot-time default; "disabled" → 0.
+	if !w.tickIntervalEverSet {
+		return w.interval
+	}
+	return w.tickInterval
 }
 
 // Start begins the recovery loop.
 func (w *HealthAutoRecover) Start(ctx context.Context) {
-	slog.Info("health_auto_recover started", "interval", w.interval)
+	slog.Info("health_auto_recover started", "interval", w.currentInterval().String())
 
 	go func() {
-		ticker := time.NewTicker(w.interval)
+		// resolveInterval maps the configured value to the ticker period we
+		// actually use. 0 (disabled) → disabledProbeInterval so the loop can
+		// still notice a subsequent SetTickInterval(<positive>). Any other
+		// value is used as-is.
+		resolveInterval := func() (period time.Duration, enabled bool) {
+			v := w.currentInterval()
+			if v == 0 {
+				return healthAutoRecoverDisabledProbeInterval, false
+			}
+			return v, true
+		}
+
+		period, _ := resolveInterval()
+		ticker := time.NewTicker(period)
 		defer ticker.Stop()
 
 		for {
@@ -55,6 +124,15 @@ func (w *HealthAutoRecover) Start(ctx context.Context) {
 				slog.Info("health_auto_recover stopped")
 				return
 			case <-ticker.C:
+				newPeriod, newEnabled := resolveInterval()
+				if newPeriod != period {
+					period = newPeriod
+					ticker.Reset(period)
+				}
+				if !newEnabled {
+					// Disabled: heart-beat only. Don't call recover().
+					continue
+				}
 				if err := w.recover(ctx); err != nil {
 					slog.Error("health_auto_recover failed", "error", err)
 				}

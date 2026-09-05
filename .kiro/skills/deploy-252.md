@@ -1,181 +1,75 @@
-# deploy-252 / deploy-154 技能文档
+# 252 / 154 部署技能边界
 
-## 技能名称
-`deploy-252` - 标准化 252 (阿里云 llm.itestu.cn) 部署流程
-`deploy-154` - 标准化 154 (主机部署 llm.kxpms.cn) 部署流程
-`deploy-kaixuan-1` - 标准化 kaixuan-1 (内网 k3s 控制面) 部署流程
+## 当前结论
 
-> 历史备注：原 `deploy-184` / `deploy-71` 技能已退役。184 → 252（公网数据面），
-> 71 → 154（公网主机部署）。旧的 `deploy-184.sh` 调用方式映射到 `scripts/deploy.sh 252`，
-> `deploy-71.sh` 映射到 `scripts/deploy.sh 154`。
+> **252 当前是数据库与基础设施节点，不是 `llm-gateway-go` 运行节点。**
+>
+> 2026-08-16 的只读核查确认：252 上运行 PostgreSQL/PG17 等 Podman 容器及其他平台设施；不存在 `llm-gateway-go.service`、Go gateway 进程或 `8780/8781` gateway 监听端口。
 
-## 技能描述
+因此 252 的 gateway runtime contract 保持：
 
-自动化完成从代码检查、版本更新、镜像构建、镜像推送、k3s 部署更新、
-健康检查到清理过期镜像的完整部署流程。
-
-## 使用方法
-
-### 基本用法
-
-```bash
-# 252 阿里云 llm.itestu.cn 数据面部署
-./scripts/deploy.sh 252
-
-# 154 主机部署 llm.kxpms.cn
-./scripts/deploy.sh 154
-
-# kaixuan-1 内网 k3s 控制面部署
-./scripts/deploy.sh kaixuan-1
-
-# 同时部署 252 + 154（推荐顺序）
-./scripts/deploy.sh both
-
-# 仅构建（不部署）
-./scripts/deploy.sh build
-
-# 仅运行 DB 迁移
-./scripts/deploy.sh migrate 252
-
-# 仅运行验证
-./scripts/deploy.sh verify 252
-
-# 回滚
-./scripts/deploy.sh rollback 252
+```text
+support: deferred
+service_manager: ""
+service_name: ""
+binary_path: ""
+web_path: ""
+health_url: ""
+rollback_policy: refuse
 ```
 
-### 前置要求
+canonical CLI 会在构建、锁、SSH 或任何文件/远端操作之前拒绝 252 的 gateway `deploy`、`rollback` 和其他变更动作。252 没有独立的 canonical `verify` 子命令；健康检查应通过 245/154 的正式部署与验证流程执行。`deploy-to-252.sh` 是冻结的历史入口，不得用于上传 gateway 二进制、执行 migration、替换文件或重启服务。
 
-1. **Git 仓库状态**: 建议工作区干净，无未提交改动
-2. **SSH 访问**: 通过 ssh-add 加载对应服务器私钥，或用 env-injector 的
-   `inject deploy-252` / `inject deploy-154` / `inject deploy-kaixuan-1`
-3. **Registry 访问**: 能够推送镜像到内部 registry
-4. **kaixuan-* 服务器**: 不要自行安装 docker，tart vm + k3s 已就绪
-5. **阿里云 252**: 已安装 docker + redis:6389 + pg17:5432
+## 正确的网关晋级路径
 
-### 部署环境配置
+```text
+local → dev → 245 / llmgo.kxpms.cn → 154 / llm.kxpms.cn
+```
 
-脚本使用以下默认配置（可在脚本顶部修改）：
+- **245**：预生产/晋级门禁，使用 `llm-gateway-go.service` 与本机 `http://127.0.0.1:8781/healthz` 合约。
+- **154**：生产网关，使用 `llm-gateway-go.service` 与本机 `http://127.0.0.1:8781/healthz` 合约。
+- **252**：数据库/基础设施节点；必要时可作为 154 的 SSH 跳板，但不是 gateway 部署目标。
+- 245 gate 未通过时，禁止执行 154 晋级。
 
-| 目标 | 服务器地址 | SSH 端口 | 用户 | 角色 |
-|---|---|---|---|---|
-| 252 | root@115.29.212.252 (root@172.16.2.210) | 25022 | root | llm.itestu.cn 数据面 + nps + vpn |
-| 154 | root@47.97.111.154 (root@172.16.2.209) | 25022 | root | llm.kxpms.cn 主机部署 |
-| 245 | root@8.136.114.245 (root@172.16.2.241) | 25022 | root | registry.kxpms.cn 生产镜像 |
-| 186 | root@118.31.18.168 | 25022 | root | 应用服务器（即将弃用） |
-| kaixuan-1 | kaixuan@192.168.31.28 | 25022 | kaixuan | k3s 控制面 + PG 17 (192.168.31.8:30432) |
-| kaixuan-2 | kaixuan@192.168.31.19 | 25022 | kaixuan | k3s worker（应用服务） |
-| kaixuan-3 | kaixuan@192.168.31.30 | 25022 | kaixuan | k3s worker（数据服务 + nexus） |
+### 只读查看 252 契约
 
-- **k3s 命名空间**: `pms-test`
-- **Deployment 名称**: `llm-gateway-go-deployment`
-- **镜像名称**: `kx-llm-gateway-go`
-- **生产 Registry**: `registry.kxpms.cn`（245 公网）
-- **开发 Registry**: `registry.itestu.cn`（kaixuan-1 内网 192.168.31.8:5000）
-- **健康检查端点**: `http://localhost:30080/health`
-- **过期镜像天数**: 30 天
+```bash
+./scripts/deploy.sh plan 252
+```
 
-## 部署流程
+### 252 变更动作的预期结果
 
-### 步骤 1: 检查未提交改动
-- 检查 git 工作区状态
-- 如有未提交改动，提示用户选择是否提交
-- 可选择提交、跳过或取消部署
+以下命令应在任何构建、锁、SSH 或远端操作前返回退出码 `64`：
 
-### 步骤 2: 获取版本信息
-- **Git Tag**: 通过 `git describe --tags --abbrev=0` 从 git 仓库获取最近的 tag
-- **Git SHA**: 获取当前提交的短 SHA（8位）
-- **Build Date**: 生成构建日期（格式：YYYYMMDD）
-- **Build Seq**: 从 `version.json` 读取并自动递增编译序号
-- **Image Tag**: 组合生成完整镜像标签，格式：`${GIT_TAG}-${GIT_SHA}-${BUILD_DATE}-${BUILD_SEQ}`
+```bash
+./scripts/deploy.sh deploy 252
+./scripts/deploy.sh rollback 252
+./scripts/deploy.sh deploy 184       # 历史别名，解析到 252
+```
 
-### 步骤 3: 预检
-- go build / go vet
-- vue-tsc（web/ 改动时）
-- pre-commit hooks
+独立旧入口同样 fail-closed：
 
-### 步骤 4: 构建镜像
-- 在 buildx 中构建多平台镜像
-- tag 包含版本号信息
+```bash
+./deploy-to-252.sh                  # 返回 64，不连接 252
+```
 
-### 步骤 5: 推送到 Registry
-- 252 部署推送到 `registry.kxpms.cn`（245 公网）
-- 154 / kaixuan-1 部署推送到 `registry.itestu.cn`（kaixuan-1 内网 5000）
-- 失败时 SSH 到目标服务器 pull + retag + push
+## 252 基础设施职责
 
-### 步骤 6: 部署到目标服务器
-- 252 / 245 / 186：通过 docker-compose / systemd 重启服务
-- 154：通过 systemctl 重启主机模式服务
-- kaixuan-1：kubectl rollout（k3s 集群）
+252 上的 PostgreSQL/PG17 是网关及其他服务可能使用的后端基础设施。数据库 migration 必须通过独立、已授权的数据库变更流程处理；不得借助已冻结的 gateway 部署脚本隐式上传二进制、重启服务或重复执行 migration。migration 519 已在 252 登记并验证，本任务不重复执行。
 
-### 步骤 7: 健康检查
-- 轮询 health 端点直到返回 200
-- 超时则自动回滚
+252 的数据库、容器和平台服务应按照各自的基础设施 runbook 管理；本文件不定义其 systemd、容器编排或 gateway healthz 合约。
 
-### 步骤 8: 清理过期镜像
-- 删除 build_seq < 当前 - 30 的镜像
-- 保留最近 5 个版本以备回滚
+## 相关命令与文档
 
-## 数据库信息（2026-07-12 重新规划）
+- `scripts/deploy.sh plan 252`：查看 deferred contract，纯只读。
+- `scripts/deploy.sh deploy 245`：245 canonical 晋级入口，须先通过环境注入与门禁。
+- `scripts/deploy-154.sh`：154 生产部署入口，须在 245 gate 通过后执行。
+- `deploy-to-252.sh`：冻结的历史入口，任何调用均 fail-closed。
+- `scripts/deploy-lib/targets.sh`：canonical target contract 与 deferred 门禁。
+- `~/.agents/skills/llm-gateway-deploy-test/SKILL.md`：local → dev → 245 → 154 的当前晋级规范。
 
-### 阿里 252 上的 PostgreSQL 17
+## 历史说明
 
-| 字段 | 值 |
-|---|---|
-| 主机 | 172.16.2.210 |
-| 端口 | 5432 |
-| 数据库 | llm_gateway / crm 等 |
-| 用户 | kxuser / llm_gateway / kaixuan_user / doc_tools_user / casdoor_user / crm_user |
-| 密码 | 统一在 .env.252.enc 中加密管理 |
-
-### kaixuan-1 上的 PostgreSQL 17 + Citus 13.3-1
-
-| 字段 | 值 |
-|---|---|
-| 主机 | 192.168.31.8 (k3s 控制面后端) |
-| 端口 | 30432 |
-| 扩展 | citus 13.3-1 + pgvector + 列存储引擎 |
-| 外网 | pg-dev.itestu.cn (NPS 转发) |
-| 用户 | 同上 |
-| 用途 | llm-gateway-go + memora + www + auth |
-
-### 数据库用户清单（统一）
-
-- `crm_user` / `crm_pass123` → CRM
-- `llm_gateway` / `4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg` → 主超级用户
-- `kaixuan_user` / `kaixuan_pass123` → 开轩主应用
-- `doc_tools_user` / `doc_tools_pass123` → doc-tools
-- `casdoor_user` / `casdoor_pass123` → Casdoor
-- `kxuser` / `kxuser123` → 列存表 owner
-
-## 部署检查清单
-
-### 部署前
-- [ ] SSH 私钥已加载（ssh-add -l 检查）
-- [ ] 当前分支与 origin/main 一致
-- [ ] 工作区干净或改动已 commit
-- [ ] pre-commit hooks 全绿
-- [ ] 当前 build_seq 未冲突
-
-### 部署中
-- [ ] 镜像构建成功
-- [ ] 镜像推送成功
-- [ ] 目标服务器可 SSH
-- [ ] kubectl rollout 成功（k3s 环境）
-
-### 部署后
-- [ ] health 端点 200
-- [ ] Pod/容器状态 Running
-- [ ] 数据库连接正常
-- [ ] 24 小时无 P0/P1 告警
-
-## 故障排查
-
-参见 `deploy/DEPLOYMENT_GUIDE.md` 故障排查章节。
-
-## 历史备注
-
-- 2026-07-12: 服务器角色重新规划。71 / 184 退役，新增 252（数据面）、
-  245（registry）、kaixuan-1/2/3（内网 k3s）。
-- 2026-07-11: 旧 `deploy-184.sh` / `deploy-71.sh` 已删除，由
-  `scripts/deploy.sh <target>` 统一入口替代。
+- 184 已退役，并作为历史别名解析到 deferred 的 252。
+- 旧的“252 + 154”同时部署流程不属于当前晋级路径。
+- 如果未来恢复 252 gateway runtime，必须先重新确认服务管理器、二进制路径、环境文件、健康 URL、认证和回滚契约，再建立新的 canonical target；不得解除本文件或旧脚本的 fail-closed 保护。

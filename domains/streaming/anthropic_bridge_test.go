@@ -2,16 +2,73 @@ package streaming
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
+
+type closeUnblocksReadCloser struct {
+	closed     chan struct{}
+	closeOnce  sync.Once
+	mu         sync.Mutex
+	closeCalls int
+}
+
+func newCloseUnblocksReadCloser() *closeUnblocksReadCloser {
+	return &closeUnblocksReadCloser{closed: make(chan struct{})}
+}
+
+func (r *closeUnblocksReadCloser) Read([]byte) (int, error) {
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *closeUnblocksReadCloser) Close() error {
+	r.mu.Lock()
+	r.closeCalls++
+	r.mu.Unlock()
+	r.closeOnce.Do(func() { close(r.closed) })
+	return nil
+}
+
+func (r *closeUnblocksReadCloser) CloseCalls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.closeCalls
+}
+
+type blockTimeoutWriteResponseWriter struct {
+	header  http.Header
+	release chan struct{}
+}
+
+func newBlockTimeoutWriteResponseWriter() *blockTimeoutWriteResponseWriter {
+	return &blockTimeoutWriteResponseWriter{header: http.Header{}, release: make(chan struct{})}
+}
+
+func (w *blockTimeoutWriteResponseWriter) Header() http.Header { return w.header }
+func (w *blockTimeoutWriteResponseWriter) WriteHeader(int)     {}
+func (w *blockTimeoutWriteResponseWriter) Flush()              {}
+func (w *blockTimeoutWriteResponseWriter) Write(p []byte) (int, error) {
+	if bytes.Contains(p, []byte("upstream first-byte timeout")) {
+		<-w.release
+	}
+	return len(p), nil
+}
 
 // TestConvertChatRequestToAnthropic_OpenAIToAnthropic verifies the
 // Q2 OpenAI→Anthropic request body conversion. The first system
@@ -42,6 +99,36 @@ func TestConvertChatRequestToAnthropic_OpenAIToAnthropic(t *testing.T) {
 	require.Len(t, msgs, 1, "system message should be lifted out of messages")
 	first, _ := msgs[0].(map[string]any)
 	assert.Equal(t, "user", first["role"])
+}
+
+func TestConvertChatRequestToAnthropic_PreservesSystemBlocks(t *testing.T) {
+	in := []byte(`{
+		"model":"claude-sonnet-5",
+		"messages":[
+			{"role":"system","content":[{"type":"text","text":"Follow the policy."},{"type":"text","text":"Answer in Chinese."}]},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	out, err := ConvertChatRequestToAnthropic(in)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(out, &got))
+	assert.Equal(t, "Follow the policy.\nAnswer in Chinese.", got["system"])
+}
+
+func TestConvertChatRequestToAnthropic_RejectsInvalidToolArguments(t *testing.T) {
+	in := []byte(`{
+		"model":"claude-sonnet-5",
+		"messages":[{"role":"assistant","content":null,"tool_calls":[{
+			"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{not-json"}
+		}]}]
+	}`)
+
+	_, err := ConvertChatRequestToAnthropic(in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid tool arguments")
 }
 
 // TestConvertAnthropicResponseToChat_NonStream verifies the Q3
@@ -108,6 +195,109 @@ func TestConvertAnthropicResponseToChat_ToolCalls(t *testing.T) {
 	assert.Equal(t, `{"city":"SF"}`, fn["arguments"])
 }
 
+func TestStreamAnthropicSSEToOpenAI_WrappedEOFWithoutMessageStopIsInterrupted(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+			err:  fmt.Errorf("wrapped: %w", io.EOF),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-test", "claude-test", "req-wrapped-eof", nil, nil)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "eof_without_done", out.Reason)
+	assert.Equal(t, errorsx.KindUpstreamDown, out.Kind)
+	assert.True(t, out.Resumable)
+	assert.NotContains(t, rec.Body.String(), "data: [DONE]")
+}
+
+func TestStreamOpenAIToAnthropicSSE_FirstByteTimeoutClosesBlockingBody(t *testing.T) {
+	previousStore := streamConfigStore.Load()
+	SetConfigStore(nil)
+	t.Cleanup(func() { SetConfigStore(previousStore) })
+	t.Setenv("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", "1")
+	body := newCloseUnblocksReadCloser()
+	resp := &http.Response{
+		Body:    body,
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	w := newBlockTimeoutWriteResponseWriter()
+	done := make(chan StreamOutcome, 1)
+	go func() {
+		// P1-2 fix (2026-08-28): Add ctx parameter.
+		done <- StreamOpenAIToAnthropicSSE(context.Background(), w, resp, "claude-test", "upstream-test", "req-blocking-body", nil, nil)
+	}()
+
+	select {
+	case <-body.closed:
+		close(w.release)
+	case <-time.After(3 * time.Second):
+		close(w.release)
+		_ = body.Close()
+		<-done
+		t.Fatal("first-byte timeout did not close the blocking response body before rendering the timeout")
+	}
+
+	select {
+	case outcome := <-done:
+		assert.True(t, outcome.Interrupted)
+		assert.Equal(t, "first_byte_timeout", outcome.Reason)
+		assert.Equal(t, errorsx.KindStreamTimeout, outcome.Kind)
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("stream bridge did not return promptly after closing the blocking body")
+	}
+	assert.Equal(t, 1, body.CloseCalls(), "underlying response body must be closed exactly once")
+}
+
+func TestStreamAnthropicPassthrough_ClientDisconnectWinsOverLaterUpstreamError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+			err:  errors.New("other side closed"),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+
+	// P1-2 fix (2026-08-28): Add ctx parameter.
+	out := StreamAnthropicPassthrough(context.Background(), newDisconnectingStreamWriter(), resp,
+		"claude-test", "claude-test", "req-client-close", nil, NewPendingCapturer(4096),
+	)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "client_write_failed", out.Reason)
+	assert.Equal(t, errorsx.KindCanceled, out.Kind)
+	assert.False(t, out.Resumable)
+}
+
+func TestStreamAnthropicPassthrough_OtherSideClosedIsNetworkError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n"),
+			err:  errors.New("other side closed"),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-test", "claude-test", "req-passthrough-close", nil, nil)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "network_error", out.Reason)
+	assert.Equal(t, errorsx.KindNetwork, out.Kind)
+	// 2026-08-17: the content frame already committed the attempt, so the
+	// gateway renders its own structured terminal error event; a transparent
+	// retry would duplicate the client-visible content.
+	assert.False(t, out.Resumable)
+	assert.Equal(t, 1, out.ChunkCount)
+	assert.Contains(t, rec.Body.String(), `"text":"hello"`)
+	assert.Contains(t, rec.Body.String(), "event: error")
+	assert.Contains(t, rec.Body.String(), "upstream stream interrupted: network_error")
+}
+
 // TestStreamAnthropicPassthrough_BytesForPassThrough ensures the
 // passthrough writes every byte of the upstream SSE event stream to
 // the client and records a capturer buffer when pc is supplied.
@@ -135,9 +325,31 @@ func TestStreamAnthropicPassthrough_BytesForPassThrough(t *testing.T) {
 
 	rec := newBridgeWriter()
 	pc := newBridgePendingCapturer(1024)
-	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-1", nil, pc)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-1", nil, pc)
 	assert.Equal(t, body, rec.buf.String())
 	assert.False(t, out.Interrupted)
+}
+
+func TestStreamAnthropicPassthrough_KeepaliveBeforeFirstSemanticFrameDoesNotCommit(t *testing.T) {
+	body := ": upstream ping\n\ndata: {\"type\":\"content_block_delta\"}\n\n"
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+	writer := newBridgeWriter()
+	out := StreamAnthropicPassthrough(context.Background(), writer, resp, "claude", "claude", "req-boundary", nil, nil)
+	if out.Interrupted {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if !strings.HasPrefix(writer.buf.String(), ": upstream ping\n\n") {
+		t.Fatalf("wire = %q, keepalive must precede first semantic frame", writer.buf.String())
+	}
+}
+
+func TestStreamAnthropicPassthrough_FlushErrorAfterSemanticFrameIsClientFailure(t *testing.T) {
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader("data: {\"type\":\"content_block_delta\"}\n\n"))}
+	writer := &initialFlushErrorWriter{header: make(http.Header), flushErr: errors.New("client gone")}
+	out := StreamAnthropicPassthrough(context.Background(), writer, resp, "claude", "claude", "req-flush", nil, nil)
+	if !out.Interrupted || out.Reason != "client_write_failed" || out.Kind != errorsx.KindCanceled {
+		t.Fatalf("outcome = %+v, want client_write_failed cancellation", out)
+	}
 }
 
 func TestStreamAnthropicPassthrough_ForwardsUnterminatedFinalFrame(t *testing.T) {
@@ -145,10 +357,17 @@ func TestStreamAnthropicPassthrough_ForwardsUnterminatedFinalFrame(t *testing.T)
 	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
 	rec := newBridgeWriter()
 
-	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-eof", nil, nil)
+	out := StreamAnthropicPassthrough(context.Background(), rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-eof", nil, nil)
 
-	assert.False(t, out.Interrupted)
-	assert.Equal(t, body, rec.buf.String())
+	// An unterminated message_stop without any preceding content_block_*
+	// frames is an empty stream — the empty-response detector must surface
+	// it as a retryable failure (KindEmptyResponse) so the executor can
+	// fail over to the next credential. The original fixture expected
+	// Interrupted=false, but the documented audit contract (r4 CRITICAL:
+	// anthropic stream empty-response parity) supersedes that fixture.
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, errorsx.KindEmptyResponse, out.Kind)
+	assert.True(t, out.Resumable)
 }
 
 func TestStreamOpenAIToAnthropicSSE_SplitsDoneJoinedToJSON(t *testing.T) {
@@ -160,11 +379,50 @@ func TestStreamOpenAIToAnthropicSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamOpenAIToAnthropicSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
 
 	require.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"text":"planning"`)
 	assert.Contains(t, rec.Body.String(), `event: message_stop`)
+}
+
+func TestStreamOpenAIToAnthropicSSE_OtherSideClosedIsNetworkError(t *testing.T) {
+	resp := &http.Response{
+		Body: &errorAfterDataReadCloser{
+			data: []byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+			err:  errors.New("other side closed"),
+		},
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "glm-5.2", "glm-5.2", "req-network-close", nil, nil)
+
+	assert.True(t, out.Interrupted)
+	assert.Equal(t, "network_error", out.Reason)
+	assert.Equal(t, errorsx.KindNetwork, out.Kind)
+	assert.True(t, out.Resumable)
+	assert.NotContains(t, rec.Body.String(), `"text":"hello"`)
+}
+
+func TestStreamAnthropicSSEToOpenAI_SignatureDeltaRetainedAndObserved(t *testing.T) {
+	body := strings.Join([]string{
+		"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_sig\",\"model\":\"claude-opus-4-8\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+		"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}\n\n",
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_opaque_123\"}}\n\n",
+		"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+		"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+	}, "")
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body)), Request: httptest.NewRequest(http.MethodPost, "/v1/messages", nil)}
+	rec := httptest.NewRecorder()
+	capture := audit.NewStreamCapture()
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-signature", capture, nil)
+	require.False(t, out.Interrupted, "signature_delta must not interrupt the bridge: %+v", out)
+	wire := rec.Body.String()
+	assert.NotContains(t, wire, "sig_opaque_123", "opaque Anthropic signature must not be forged into OpenAI wire")
+	flags := capture.SummaryAsMap()["quality_flags"]
+	assert.Contains(t, flags, "anthropic_signature_delta:f961f12556af3c7b")
 }
 
 func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing.T) {
@@ -172,8 +430,17 @@ func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing
 		"event: message_start\n",
 		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1d3XmXHys2Nmre53dzh0lQuE\",\"model\":\"claude-opus-4-8\",\"role\":\"assistant\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"type\":\"message\",\"usage\":{\"cache_creation_input_tokens\":115427,\"cache_read_input_tokens\":0,\"input_tokens\":14,\"output_tokens\":0}}}\n",
 		"\n",
+		"event: content_block_start\n",
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n",
+		"\n",
+		"event: content_block_delta\n",
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n",
+		"\n",
+		"event: content_block_stop\n",
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n",
+		"\n",
 		"event: message_delta\n",
-		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}\n",
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}}\n",
 		"\n",
 		"event: message_stop\n",
 		"data: {\"type\":\"message_stop\"}\n",
@@ -190,7 +457,7 @@ func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil)
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil)
 	require.False(t, out.Interrupted)
 
 	output := rec.Body.String()

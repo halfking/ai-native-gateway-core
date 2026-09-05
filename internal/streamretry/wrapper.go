@@ -8,48 +8,103 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"sync"
+	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/dispatch" //nolint:depguard // V3.2 state-transition logger
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
 )
 
-// requestIDCtxKey is the private context key used to thread the inbound
-// X-Request-Id from the http.Request into the wrapper's retry loop. We
-// deliberately avoid touching the streaming / identity packages to keep the
-// streamretry package self-contained (the request id is already stamped
-// upstream by domains/streaming/handler.go).
-type requestIDCtxKey struct{}
+// requestCarrierCtxKey is the private context key for the request carrier
+// installed by ServeHTTP. The streamretry package stays self-contained: it
+// never imports the streaming / requestjourney packages directly.
+type requestCarrierCtxKey struct{}
 
-// withRequestID attaches a request id to ctx (set by ServeHTTP from the
-// inbound X-Request-Id header).
-func withRequestID(ctx context.Context, requestID string) context.Context {
-	if requestID == "" {
+// JourneyObserver is the request-scoped journey emission surface this wrapper
+// needs between attempts: the retry boundary event plus the sequence
+// high-water and original arrival time that seed the next attempt's
+// lifecycle. *requestjourney.Lifecycle satisfies it; the local interface
+// keeps this package free of domain imports.
+type JourneyObserver interface {
+	// RetryScheduled emits the retry boundary event (reason = error class).
+	RetryScheduled(ctx context.Context, reason string)
+	// SequenceHighWater returns the last allocated journey sequence.
+	SequenceHighWater() int64
+	// ArrivalTime returns the request's original ingress arrival, so the
+	// next attempt updates the same ingress record instead of duplicating it.
+	ArrivalTime() time.Time
+}
+
+// requestCarrier is the mutable per-request state installed by the wrapper.
+// ctx values are immutable, so the wrapped handler writes the requestjourney
+// lifecycle back through this pointer. It is the bridge that lets retry
+// attempts share one journey sequence and lets the wrapper observe the retry
+// boundary. (The V3.2 tenant/request-id carrier slots were retired with the
+// state-transition writer: the journey lifecycle carries both identities.)
+type requestCarrier struct {
+	mu          sync.RWMutex
+	journey     JourneyObserver
+	stateCancel <-chan struct{}
+}
+
+func withRequestCarrier(ctx context.Context) context.Context {
+	// Re-entry (a request context reaching ServeHTTP again, e.g. driven
+	// twice in tests) keeps the existing carrier so the journey binding
+	// survives; fresh requests always install a fresh carrier.
+	if carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier); carrier != nil {
 		return ctx
 	}
-	return context.WithValue(ctx, requestIDCtxKey{}, requestID)
+	return context.WithValue(ctx, requestCarrierCtxKey{}, &requestCarrier{})
 }
 
-// requestIDFromCtx returns the request id stashed by withRequestID, or "".
-func requestIDFromCtx(ctx context.Context) string {
-	if v, ok := ctx.Value(requestIDCtxKey{}).(string); ok {
-		return v
+// BindJourneyObserver publishes the request journey lifecycle into the
+// request carrier. Called by the wrapped handler each attempt; the retry loop
+// and the next attempt read it back through the same carrier. No-op unless
+// the retry wrapper installed a carrier (non-retry entry paths simply do not
+// observe retry events).
+func BindJourneyObserver(ctx context.Context, observer JourneyObserver) {
+	carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier)
+	if carrier == nil || observer == nil {
+		return
 	}
-	// Fallback: try the standard X-Request-Id header in case the caller
-	// didn't route through ServeHTTP (e.g. legacy callers using Execute
-	// directly). Some upstream callers place the id in the request itself,
-	// not just the context.
-	if req, ok := ctx.Value(httpReqCtxKey{}).(*http.Request); ok && req != nil {
-		return strings.TrimSpace(req.Header.Get("X-Request-Id"))
-	}
-	return ""
+	carrier.mu.Lock()
+	carrier.journey = observer
+	carrier.mu.Unlock()
 }
 
-// httpReqCtxKey is a secondary context key used by callers that prefer
-// to pass the *http.Request directly (e.g. unit tests). Production flows
-// use http.ServerMux → ServeHTTP → withRequestID.
-type httpReqCtxKey struct{}
+// BindStateCancel publishes the per-request state-machine cancellation
+// channel into the retry carrier. The channel is never stored on Wrapper,
+// because DefaultStreamExecutor shares its Wrapper across requests.
+func BindStateCancel(ctx context.Context, cancelled <-chan struct{}) {
+	carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier)
+	if carrier == nil {
+		return
+	}
+	carrier.mu.Lock()
+	carrier.stateCancel = cancelled
+	carrier.mu.Unlock()
+}
+
+func stateCancelFromCtx(ctx context.Context) <-chan struct{} {
+	carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier)
+	if carrier == nil {
+		return nil
+	}
+	carrier.mu.RLock()
+	defer carrier.mu.RUnlock()
+	return carrier.stateCancel
+}
+
+// JourneyObserverFromCtx returns the journey lifecycle bound by the wrapped
+// handler, or nil when the request never bound one.
+func JourneyObserverFromCtx(ctx context.Context) JourneyObserver {
+	carrier, _ := ctx.Value(requestCarrierCtxKey{}).(*requestCarrier)
+	if carrier == nil {
+		return nil
+	}
+	carrier.mu.RLock()
+	defer carrier.mu.RUnlock()
+	return carrier.journey
+}
 
 // StreamFunc represents a function that executes a streaming request.
 // It should return an error if the stream fails, or nil if it completes successfully.
@@ -83,6 +138,14 @@ func NewWrapper(config Config, logger *slog.Logger) *Wrapper {
 	}
 }
 
+// WithStateCancelCh binds state cancellation to the current request carrier.
+// Prefer BindStateCancel at handler initialization; this method remains for
+// callers already operating inside the retry wrapper's request context.
+func (w *Wrapper) WithStateCancelCh(ctx context.Context, ch <-chan struct{}) *Wrapper {
+	BindStateCancel(ctx, ch)
+	return w
+}
+
 // Execute runs the streaming function with retry and keepalive.
 //
 // Flow:
@@ -104,6 +167,13 @@ func (w *Wrapper) Execute(ctx context.Context, httpW http.ResponseWriter, stream
 // The returned snapshot is isolated from concurrent requests; Metrics remains
 // available for callers that only need the latest completed execution.
 func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWriter, streamFunc StreamFunc) (metrics WrapperMetrics, err error) {
+	// SP-03 (2026-08-19): if a state-machine cancel channel is wired,
+	// derive a child context that fires when EITHER the parent ctx is
+	// canceled OR the state machine closes its cancel channel. This
+	// keeps all existing ctx.Done() selects (retry backoff, keepalive
+	// tick) working unchanged while honouring state-machine signals.
+	ctx = bindStateCancel(ctx, stateCancelFromCtx(ctx))
+
 	// Initialize metrics for this execution
 	metrics = WrapperMetrics{SuccessAttempt: -1}
 	defer func() {
@@ -127,8 +197,9 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 
 	// Initialize retry context
 	rc := &RetryContext{
-		Config:  w.config,
-		Attempt: 0,
+		Config:        w.config,
+		Attempt:       0,
+		StateCancelCh: stateCancelFromCtx(ctx),
 	}
 
 	// Keepalive messages are sent synchronously before backoff. A background
@@ -178,20 +249,14 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 			"attempt", rc.Attempt+1,
 			"next_attempt", rc.Attempt+2)
 
-		// 2026-08-14 V3.2 (BE-B1): record state transition for the retry.
-		// nil-safe — no logger wired (DB disabled / test mode) → no-op.
-		// Pulled from X-Request-Id header so the row joins request_logs.request_id.
-		// ADR-V3-102: reuse the existing request_id, never mint a new one.
-		// Tenant identity is intentionally left empty until a trusted, authenticated
-		// context is threaded into this outer retry wrapper.
-		if requestID := requestIDFromCtx(ctx); requestID != "" {
-			dispatch.LogRetryGlobal(requestID, "", rc.Attempt+1, classify.Reason,
-
-				map[string]any{
-					"next_attempt": rc.Attempt + 2,
-					"retriable":    classify.Retriable,
-					"reason":       classify.Reason,
-				})
+		// 2026-08-17 B3-PR1: the retry boundary enters the request journey
+		// stream (event_type=retry_scheduled) through the lifecycle the
+		// wrapped handler bound into the request carrier. The legacy
+		// dispatch.LogRetryGlobal state-transition writer was retired with
+		// the rest of the V3.2 logger; the journey lifecycle itself guards
+		// emission until a trusted tenant is bound.
+		if observer := JourneyObserverFromCtx(ctx); observer != nil {
+			observer.RetryScheduled(ctx, classify.Reason)
 		}
 
 		// Sleep with backoff (and send keepalive notification)
@@ -228,6 +293,7 @@ func WrapHTTPError(resp *http.Response, baseErr error) error {
 		return &HTTPError{
 			StatusCode: resp.StatusCode,
 			Err:        baseErr,
+			RetryAfter: resp.Header.Get("Retry-After"),
 		}
 	}
 
@@ -289,12 +355,14 @@ func NewDefaultStreamExecutor(handler http.Handler, config Config) *DefaultStrea
 // context is forwarded to ExecuteStream so context cancellation (client
 // disconnect, request timeout) propagates naturally and stops the retry loop.
 //
-// 2026-08-14 V3.2: extract X-Request-Id from the inbound header and stash
-// it in the context so the retry loop can call LogRetryGlobal with the
-// existing request id (ADR-V3-102 — never mint a new id).
+// The wrapper installs a mutable request carrier in the context; the wrapped
+// handler writes the journey lifecycle (BindJourneyObserver) back through it,
+// and the retry loop reads the observer to emit the retry boundary between
+// attempts. The request id is not threaded here — the journey lifecycle owns
+// it, and the handler stamps X-Request-Id on the response either way.
 func (e *DefaultStreamExecutor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	ctx := withRequestID(req.Context(), strings.TrimSpace(req.Header.Get("X-Request-Id")))
-	_ = e.ExecuteStream(ctx, w, req)
+	ctx := withRequestCarrier(req.Context())
+	_ = e.ExecuteStream(ctx, w, req.WithContext(ctx))
 }
 
 // ExecuteStream implements the StreamExecutor interface.
@@ -405,11 +473,21 @@ type errorRecorder struct {
 
 // Flush preserves SSE behavior through the retry wrapper.
 func (r *errorRecorder) Flush() {
-	if r.committed {
-		if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
-			flusher.Flush()
-		}
+	_ = r.FlushError()
+}
+
+// FlushError preserves connection errors through the retry wrapper.
+func (r *errorRecorder) FlushError() error {
+	if !r.committed {
+		return nil
 	}
+	if flusher, ok := r.ResponseWriter.(interface{ FlushError() error }); ok {
+		return flusher.FlushError()
+	}
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
 }
 
 // Unwrap exposes the underlying writer to middleware that needs to inspect it.
@@ -421,13 +499,14 @@ func (r *errorRecorder) Unwrap() http.ResponseWriter {
 // retriable and do NOT mark the writer committed. Success statuses (2xx)
 // mark the writer committed since retrying would change the status code.
 func (r *errorRecorder) WriteHeader(statusCode int) {
+	r.committed = true
 	if statusCode >= 400 {
 		r.err = &HTTPError{
 			StatusCode: statusCode,
 			Err:        fmt.Errorf("HTTP %d", statusCode),
+			RetryAfter: r.Header().Get("Retry-After"),
 		}
-	} else {
-		r.committed = true
+
 	}
 	r.ResponseWriter.WriteHeader(statusCode)
 }
@@ -445,4 +524,31 @@ func (r *errorRecorder) Write(p []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// bindStateCancel returns a child context that is canceled when the parent
+// context or the request state machine cancellation channel fires. It returns
+// the input context unchanged when no state cancellation channel is present.
+//
+// The returned context cancels exactly once (whichever signal fires
+// first), and the watcher goroutine exits when either signal has been
+// observed. A nil parent is tolerated and treated as context.Background().
+func bindStateCancel(ctx context.Context, stateCancelCh <-chan struct{}) context.Context {
+	if stateCancelCh == nil {
+		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	derived, cancel := context.WithCancel(ctx)
+	go func() {
+		select {
+		case <-stateCancelCh:
+			cancel()
+		case <-derived.Done():
+			// Parent ctx canceled (or already canceled itself);
+			// derived already done — exit quietly.
+		}
+	}()
+	return derived
 }

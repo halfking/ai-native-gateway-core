@@ -12,6 +12,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 func TestLiveStreamRedisStore_RecordAndReplay(t *testing.T) {
@@ -43,10 +45,10 @@ func TestLiveStreamRedisStore_RecordAndReplay(t *testing.T) {
 		Status:        "failure",
 	}
 
-	if err := store.Record(ctx, req1); err != nil {
+	if err := store.Record(ctx, req1, ""); err != nil {
 		t.Fatalf("Record req1: %v", err)
 	}
-	if err := store.Record(ctx, req2); err != nil {
+	if err := store.Record(ctx, req2, ""); err != nil {
 		t.Fatalf("Record req2: %v", err)
 	}
 
@@ -105,7 +107,7 @@ func TestLiveStreamRedisStore_IdleMarker(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record seed: %v", err)
 	}
 
@@ -239,7 +241,7 @@ func TestIdleMarkerUsesScanTimeAsTs(t *testing.T) {
 	}
 }
 
-func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
+func TestLiveStreamRedisStore_TrimDimensionQueueToVisibleLimit(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("miniredis: %v", err)
@@ -249,16 +251,17 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	ctx := context.Background()
 	base := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
 
-	for i := 0; i < 25; i++ {
+	total := LiveStreamLaneVisibleLimit + 5
+	for i := 0; i < total; i++ {
 		req := LiveRequest{
-			RequestID:     fmt.Sprintf("req-%02d", i),
+			RequestID:     fmt.Sprintf("req-%03d", i),
 			Ts:            base.Add(time.Duration(i) * time.Second).UTC().Format(time.RFC3339),
 			Model:         "gpt-4o",
 			ModelCategory: "openai",
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := store.Record(ctx, req); err != nil {
+		if err := store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record %d: %v", i, err)
 		}
 	}
@@ -277,8 +280,9 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	}
 	// Dimension queues store slim tile JSON members, so compare the decoded
 	// request id rather than the raw member.
-	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != "req-05" {
-		t.Fatalf("oldest member=%v want req-05 (first 5 trimmed)", oldest)
+	wantOldest := fmt.Sprintf("req-%03d", total-LiveStreamLaneVisibleLimit)
+	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != wantOldest {
+		t.Fatalf("oldest member=%v want %q (first 5 trimmed)", oldest, wantOldest)
 	}
 }
 
@@ -309,7 +313,7 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	ctx := context.Background()
 
 	// Should not panic, all operations are no-ops
-	if err := store.Record(ctx, LiveRequest{RequestID: "test"}); err != nil {
+	if err := store.Record(ctx, LiveRequest{RequestID: "test"}, ""); err != nil {
 		t.Errorf("Record with nil client should return nil, got %v", err)
 	}
 	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now(), LiveStreamLaneRetention); err != nil {
@@ -321,6 +325,38 @@ func TestLiveStreamRedisStore_NilClient(t *testing.T) {
 	}
 	if items != nil {
 		t.Errorf("Replay with nil client should return nil slice, got %v", items)
+	}
+}
+
+// countingRecorder is a minimal metrics.Recorder that only counts
+// RecordLiveStreamRecordDropped(reason) calls. All other methods are
+// no-ops so the test does not have to satisfy the full Recorder surface.
+type countingRecorder struct {
+	metrics.NoopRecorder
+	drops atomic.Int64
+}
+
+func (c *countingRecorder) RecordLiveStreamRecordDropped(reason string) {
+	c.drops.Add(1)
+}
+
+// TestLiveStreamRedisStore_RecordDroppedMetric_NilClient (2026-08-31, P2-2)
+// pins that Record() with a nil client emits the
+// "store_unconfigured" silent-drop metric. Without this contract test a
+// future refactor could remove the metric call site and the operator
+// dashboard would silently go dark.
+func TestLiveStreamRedisStore_RecordDroppedMetric_NilClient(t *testing.T) {
+	rec := &countingRecorder{}
+	prev := metrics.Global()
+	metrics.SetGlobal(rec)
+	t.Cleanup(func() { metrics.SetGlobal(prev) })
+
+	store := NewLiveStreamRedisStore(nil)
+	if err := store.Record(context.Background(), LiveRequest{RequestID: "test"}, ""); err != nil {
+		t.Fatalf("Record with nil client should return nil, got %v", err)
+	}
+	if got := rec.drops.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 silent-drop metric increment, got %d", got)
 	}
 }
 
@@ -387,7 +423,7 @@ func TestLiveStreamRedisStore_DimensionQueues(t *testing.T) {
 		Status:        "success",
 	}
 
-	if err := store.Record(ctx, req); err != nil {
+	if err := store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -440,7 +476,7 @@ func TestLiveStreamRedisStore_DimensionQueuesKeepSmallRawDimensions(t *testing.T
 			ProviderCode:  "provider-" + string(rune('a'+i)),
 			Status:        "success",
 		}
-		if err := store.Record(ctx, req); err != nil {
+		if err := store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record: %v", err)
 		}
 	}
@@ -488,10 +524,10 @@ func TestLiveStreamRedisStore_StatusTransitionReplacesRequestID(t *testing.T) {
 	done.Ts = time.Now().UTC().Format(time.RFC3339)
 	done.Status = "success"
 
-	if err := store.Record(ctx, start); err != nil {
+	if err := store.Record(ctx, start, ""); err != nil {
 		t.Fatalf("Record start: %v", err)
 	}
-	if err := store.Record(ctx, done); err != nil {
+	if err := store.Record(ctx, done, ""); err != nil {
 		t.Fatalf("Record done: %v", err)
 	}
 
@@ -550,10 +586,10 @@ func TestLiveStreamRedisStore_StatusTransitionDoesNotMoveTimestampBackward(t *te
 	staleDone.Ts = base.Add(-12 * time.Minute).Format(time.RFC3339)
 	staleDone.Status = "success"
 
-	if err := store.Record(ctx, start); err != nil {
+	if err := store.Record(ctx, start, ""); err != nil {
 		t.Fatalf("Record start: %v", err)
 	}
-	if err := store.Record(ctx, staleDone); err != nil {
+	if err := store.Record(ctx, staleDone, ""); err != nil {
 		t.Fatalf("Record staleDone: %v", err)
 	}
 
@@ -599,7 +635,7 @@ func TestLiveStreamRedisStore_IdleMarkerWritesMainQueue(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -696,7 +732,7 @@ func TestComputeScopeDelta_FallsBackToReplayWhenDimensionSnapshotEmpty(t *testin
 		ProviderCode:  "openai",
 		Status:        "success",
 	}
-	if err := hub.store.Record(ctx, req); err != nil {
+	if err := hub.store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -926,6 +962,28 @@ func TestBuildLiveStreamSnapshot_ServerSideAggregation(t *testing.T) {
 	}
 }
 
+func TestBuildLiveStreamSnapshot_ClientCancelProbeDoesNotCountAsProviderFailure(t *testing.T) {
+	stage := "probe"
+	errorKind := "client_cancel"
+	items := []LiveRequest{
+		{RequestID: "real", Ts: "2026-08-16T00:00:01Z", Model: "claude", ModelCategory: "anthropic", ProviderCode: "zhima", Status: "success"},
+		{RequestID: "probe-client_cancel-1", Ts: "2026-08-16T00:00:02Z", Model: "claude", ModelCategory: "anthropic", ProviderCode: "zhima", Status: "failure", FailureStage: &stage, ErrorKind: &errorKind},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+
+	if snapshot.Summary.Total != 1 || snapshot.Summary.Success != 1 || snapshot.Summary.Failure != 0 {
+		t.Fatalf("client cancel probe affected summary stats: %#v", snapshot.Summary)
+	}
+	lane := snapshot.Dimensions["provider"][0]
+	if lane.Stats.Total != 1 || lane.Stats.Failure != 0 {
+		t.Fatalf("client cancel probe affected provider stats: %#v", lane.Stats)
+	}
+	if len(lane.Requests) != 2 {
+		t.Fatalf("diagnostic probe must remain visible, requests=%d", len(lane.Requests))
+	}
+}
+
 func TestBuildLiveStreamSnapshot_TopNOthers(t *testing.T) {
 	items := make([]LiveRequest, 0, 7)
 	for i := 0; i < 7; i++ {
@@ -952,12 +1010,13 @@ func TestBuildLiveStreamSnapshot_TopNOthers(t *testing.T) {
 			t.Fatalf("should not have synthetic others lane after removing aggregation: %#v", lane)
 		}
 	}
-	if len(s.DetailDimensions["vendor"]) != 7 {
-		t.Fatalf("detail dimensions must retain all 7 vendors, got %d", len(s.DetailDimensions["vendor"]))
+	// DetailDimensions removed in P0 optimization - Dimensions is the single source of truth
+	if len(s.Dimensions["vendor"]) != 7 {
+		t.Fatalf("dimensions must retain all 7 vendors, got %d", len(s.Dimensions["vendor"]))
 	}
-	for _, lane := range s.DetailDimensions["vendor"] {
+	for _, lane := range s.Dimensions["vendor"] {
 		if lane.ID == "__others__" || lane.IsOthers {
-			t.Fatalf("detail dimensions must not contain synthetic others lane: %#v", lane)
+			t.Fatalf("dimensions must not contain synthetic others lane: %#v", lane)
 		}
 	}
 }
@@ -986,8 +1045,9 @@ func TestBuildLiveStreamSnapshot_NoOthersWhenFiveOrFewer(t *testing.T) {
 			t.Fatalf("did not expect others lane when dimension count <= 5: %#v", lane)
 		}
 	}
-	if len(s.DetailDimensions["vendor"]) != 5 {
-		t.Fatalf("detail dimensions should contain 5 raw vendors, got %d", len(s.DetailDimensions["vendor"]))
+	// DetailDimensions removed in P0 optimization - Dimensions is the single source of truth
+	if len(s.Dimensions["vendor"]) != 5 {
+		t.Fatalf("dimensions should contain 5 raw vendors, got %d", len(s.Dimensions["vendor"]))
 	}
 }
 
@@ -1004,7 +1064,7 @@ func TestLiveStreamRedisStore_TenantScopedReplay(t *testing.T) {
 		{RequestID: "a", Ts: time.Now().UTC().Format(time.RFC3339), TenantID: "tenant-a", Model: "gpt", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 		{RequestID: "b", Ts: time.Now().UTC().Format(time.RFC3339), TenantID: "tenant-b", Model: "claude", ModelCategory: "anthropic", ProviderCode: "anthropic", Status: "success"},
 	} {
-		if err := store.Record(ctx, req); err != nil {
+		if err := store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record: %v", err)
 		}
 	}
@@ -1304,7 +1364,7 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 		{RequestID: "r2", ModelCategory: "openai", Status: "success"},
 		{RequestID: "r3", ModelCategory: "anthropic", Status: "success"},
 	}
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) < 2 {
 		t.Fatalf("expected at least 2 lanes, got %d", len(lanes))
 	}
@@ -1321,14 +1381,13 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 	}
 }
 
-// 2026-07-26: the lane ordering contract is DESC (newest first).
-// SwimLaneTrack.vue paints index 0 leftmost and slices the first N, and
-// firstTiles() caps each lane by taking items[:N]. Both only mean
-// "newest on the left, oldest truncated" when the lane builder emits
-// DESC. buildLiveStreamLanes therefore sorts each lane itself rather
-// than inheriting the caller's order, so the dimension-queue path and
-// the main-queue replay path agree.
-func TestBuildLiveStreamLanes_LaneRequestsAreDESC(t *testing.T) {
+// 2026-08-27: the lane ordering contract is ASC FIFO (oldest left → newest
+// right), flipped deliberately by 730cbaef8. SwimLaneTrack paints index 0
+// leftmost and lastTiles() caps each lane by keeping the tail (newest N).
+// buildLiveStreamLanes therefore sorts each lane itself rather than
+// inheriting the caller's order, so the dimension-queue path and the
+// main-queue replay path agree.
+func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 	// Deliberately shuffled: the lane builder must not depend on the
 	// caller pre-sorting its input.
 	items := []LiveRequest{
@@ -1337,7 +1396,7 @@ func TestBuildLiveStreamLanes_LaneRequestsAreDESC(t *testing.T) {
 		{RequestID: "r4", Ts: "2026-07-20T00:00:03Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "failure"},
 		{RequestID: "r2", Ts: "2026-07-20T00:00:01Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 	}
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
 		t.Fatalf("expected 1 lane, got %d", len(lanes))
 	}
@@ -1346,21 +1405,23 @@ func TestBuildLiveStreamLanes_LaneRequestsAreDESC(t *testing.T) {
 		t.Fatalf("expected 4 tiles in lane, got %d", len(requests))
 	}
 	for i := 1; i < len(requests); i++ {
-		if requests[i-1].Timestamp < requests[i].Timestamp {
-			t.Fatalf("lane %q not DESC at idx %d: prev=%q curr=%q",
+		if requests[i-1].Timestamp > requests[i].Timestamp {
+			t.Fatalf("lane %q not ASC at idx %d: prev=%q curr=%q",
 				lanes[0].ID, i, requests[i-1].Timestamp, requests[i].Timestamp)
 		}
 	}
-	// DESC means the newest request is what the UI paints leftmost.
-	if requests[0].RequestID != "r4" {
-		t.Fatalf("expected newest request (r4) at head, got %q", requests[0].RequestID)
+	// ASC FIFO: the oldest request is painted leftmost, newest rightmost.
+	if requests[0].RequestID != "r1" {
+		t.Fatalf("expected oldest request (r1) at head, got %q", requests[0].RequestID)
+	}
+	if requests[len(requests)-1].RequestID != "r4" {
+		t.Fatalf("expected newest request (r4) at tail, got %q", requests[len(requests)-1].RequestID)
 	}
 }
 
-// 2026-07-26: the per-lane cap must drop the OLDEST tiles. Under the
-// previous ASC ordering firstTiles kept items[:20] = the oldest 20, so a
-// busy lane froze on its first 20 tiles and newer requests never reached
-// the dashboard at all.
+// 2026-08-27: under the ASC FIFO contract lastTiles() keeps items[len-N:],
+// i.e. the newest N tiles — the cap must drop the OLDEST so a busy lane
+// keeps showing fresh traffic instead of freezing on its first tiles.
 func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 	base := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
 	total := liveStreamLaneLimit + 5
@@ -1376,7 +1437,7 @@ func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 		})
 	}
 
-	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	lanes, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
 		t.Fatalf("expected 1 lane, got %d", len(lanes))
 	}
@@ -1386,8 +1447,8 @@ func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
 	}
 
 	newest := fmt.Sprintf("req-%03d", total-1)
-	if requests[0].RequestID != newest {
-		t.Fatalf("newest tile=%q want %q", requests[0].RequestID, newest)
+	if requests[len(requests)-1].RequestID != newest {
+		t.Fatalf("newest tile=%q want %q", requests[len(requests)-1].RequestID, newest)
 	}
 	for _, tile := range requests {
 		if tile.RequestID == "req-000" {
@@ -1474,7 +1535,7 @@ func TestSnapshotFromDimensionQueues_RequestsAreDESC(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := store.Record(ctx, req); err != nil {
+		if err := store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record %d: %v", i, err)
 		}
 	}
@@ -1487,7 +1548,7 @@ func TestSnapshotFromDimensionQueues_RequestsAreDESC(t *testing.T) {
 			ModelCategory: "openai",
 			ProviderCode:  "openai",
 			Status:        "success",
-		}); err != nil {
+		}, ""); err != nil {
 			t.Fatalf("Record %s: %v", id, err)
 		}
 	}
@@ -1503,8 +1564,8 @@ func TestSnapshotFromDimensionQueues_RequestsAreDESC(t *testing.T) {
 	for _, dim := range []string{"vendor", "provider", "model"} {
 		for _, lane := range snap.Dimensions[dim] {
 			for j := 1; j < len(lane.Requests); j++ {
-				if lane.Requests[j-1].Timestamp < lane.Requests[j].Timestamp {
-					t.Fatalf("%s lane %q not DESC at idx %d: prev=%q curr=%q",
+				if lane.Requests[j-1].Timestamp > lane.Requests[j].Timestamp {
+					t.Fatalf("%s lane %q not ASC at idx %d: prev=%q curr=%q",
 						dim, lane.ID, j,
 						lane.Requests[j-1].Timestamp, lane.Requests[j].Timestamp)
 				}
@@ -1536,7 +1597,7 @@ func TestSnapshotFromDimensionQueues_ReadsSlimTileMembers(t *testing.T) {
 		ProviderCode:  "apiclaude",
 		Status:        "success",
 	}
-	if err := store.Record(ctx, req); err != nil {
+	if err := store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -1615,6 +1676,173 @@ func TestBuildLiveStreamSnapshot_DedupesSummaryAndLaneMembers(t *testing.T) {
 		if lane.Requests[0].RequestID != req.RequestID {
 			t.Fatalf("%s lane request_id=%q want %q", dim, lane.Requests[0].RequestID, req.RequestID)
 		}
+	}
+}
+
+func TestBuildLiveStreamSnapshot_CredentialLaneUsesProviderAndCredential(t *testing.T) {
+	items := []LiveRequest{
+		{
+			RequestID:       "labeled",
+			Ts:              "2026-08-27T00:00:01Z",
+			Model:           "claude-sonnet-4",
+			ProviderCode:    "Anthropic 官方",
+			CredentialID:    42,
+			CredentialLabel: "生产主凭据",
+			Status:          "success",
+		},
+		{
+			RequestID:    "fallback",
+			Ts:           "2026-08-27T00:00:02Z",
+			Model:        "claude-sonnet-4",
+			ProviderCode: "Anthropic 官方",
+			CredentialID: 43,
+			Status:       "success",
+		},
+		// 2026-08-27: renamed credential — the newest request carries the
+		// current label; the lane must show it, not the first-seen snapshot.
+		{
+			RequestID:       "renamed",
+			Ts:              "2026-08-27T00:00:03Z",
+			Model:           "claude-sonnet-4",
+			ProviderCode:    "Anthropic 官方",
+			CredentialID:    42,
+			CredentialLabel: "生产主凭据-新名",
+			Status:          "success",
+		},
+		// 2026-08-27: legacy-format idle marker (pre-ID-keying writer). It must
+		// NOT spawn a ghost credential lane during the TTL migration window.
+		{
+			Type:            "idle_marker",
+			RequestID:       "idle-legacy",
+			Ts:              "2026-08-27T00:00:04Z",
+			CredentialLabel: "Anthropic 官方/生产主凭据",
+			Status:          "idle",
+		},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	if len(lanes) != 2 {
+		t.Fatalf("credential lanes=%d want 2 (legacy idle-only lane must be dropped): %#v", len(lanes), lanes)
+	}
+
+	byID := make(map[string]LiveStreamLane, len(lanes))
+	for _, lane := range lanes {
+		byID[lane.ID] = lane
+	}
+
+	// 2026-08-27: Lane.ID is the stable credential_id; Lane.Name is the
+	// display string resolved from the NEWEST request (rename wins).
+	expectations := []struct {
+		id   string
+		name string
+	}{
+		{id: "42", name: "Anthropic 官方/生产主凭据-新名"},
+		{id: "43", name: "Anthropic 官方/凭据 #43"},
+	}
+
+	for _, expect := range expectations {
+		lane, ok := byID[expect.id]
+		if !ok {
+			t.Fatalf("missing credential lane ID=%q: %#v", expect.id, lanes)
+		}
+		if lane.Name != expect.name {
+			t.Fatalf("lane ID=%q name=%q want %q", expect.id, lane.Name, expect.name)
+		}
+	}
+
+	// Legends: Key must match Lane.ID (credential_id), Name must match the
+	// lane display name.
+	for _, legend := range snapshot.DimensionLegends["credential"] {
+		lane, ok := byID[legend.Key]
+		if !ok {
+			t.Fatalf("legend key=%q does not match any lane ID", legend.Key)
+		}
+		if legend.Name != lane.Name {
+			t.Fatalf("legend key=%q name=%q want %q (lane display name)", legend.Key, legend.Name, lane.Name)
+		}
+	}
+}
+
+func TestBuildLiveStreamLanes_CredentialSortsByNameThenNumericID(t *testing.T) {
+	items := []LiveRequest{
+		// Same provider, labels sorted "B*" < "C*" — id 9 (label B) must come
+		// before id 10 (label C) even though "10" < "9" lexicographically.
+		{RequestID: "r1", Ts: "2026-08-27T00:00:01Z", ProviderCode: "P", CredentialID: 9, CredentialLabel: "B凭据", Status: "success"},
+		{RequestID: "r2", Ts: "2026-08-27T00:00:02Z", ProviderCode: "P", CredentialID: 10, CredentialLabel: "C凭据", Status: "success"},
+		{RequestID: "r3", Ts: "2026-08-27T00:00:03Z", ProviderCode: "P", CredentialID: 2, CredentialLabel: "C凭据", Status: "success"},
+		{RequestID: "r4", Ts: "2026-08-27T00:00:04Z", ProviderCode: "P", CredentialID: 1, CredentialLabel: "A凭据", Status: "success"},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	// Name order "P/A凭据" < "P/B凭据" < "P/C凭据"; the two "P/C凭据" lanes
+	// tie-break on numeric id (2 before 10, NOT lexicographic "10" < "2").
+	wantOrder := []string{"1", "9", "2", "10"}
+	if len(lanes) != len(wantOrder) {
+		t.Fatalf("credential lanes=%d want %d: %#v", len(lanes), len(wantOrder), lanes)
+	}
+	for i, want := range wantOrder {
+		if lanes[i].ID != want {
+			t.Fatalf("lane[%d].ID=%q want %q (order by name then numeric id)", i, lanes[i].ID, want)
+		}
+	}
+	if !(lanes[2].ID == "2" && lanes[3].ID == "10") {
+		t.Fatalf("name-equal lanes must tie-break on numeric id, got %q then %q", lanes[2].ID, lanes[3].ID)
+	}
+}
+
+func TestCreateIdleMarkerForDimension_CredentialCarriesNumericID(t *testing.T) {
+	ts := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	marker := createIdleMarkerForDimension("credential", "42", "tenant-a", ts)
+
+	if marker.CredentialID != 42 {
+		t.Fatalf("idle marker CredentialID=%d want 42 (frontend highlight needs the id)", marker.CredentialID)
+	}
+	if got := liveStreamCredentialKey(marker); got != "42" {
+		t.Fatalf("idle marker lane key=%q want %q", got, "42")
+	}
+	tile := liveRequestTile(marker)
+	if tile.CredentialID != 42 {
+		t.Fatalf("idle tile CredentialID=%d want 42", tile.CredentialID)
+	}
+}
+
+func TestBuildLiveStreamLanes_CredentialRejectsNonPositiveIDs(t *testing.T) {
+	items := []LiveRequest{
+		{RequestID: "zero", Ts: "2026-08-27T00:00:01Z", ProviderCode: "P", CredentialID: 0, CredentialLabel: "zero", Status: "success"},
+		{RequestID: "negative", Ts: "2026-08-27T00:00:02Z", ProviderCode: "P", CredentialID: -1, CredentialLabel: "negative", Status: "success"},
+		{RequestID: "valid", Ts: "2026-08-27T00:00:03Z", ProviderCode: "P", CredentialID: 7, CredentialLabel: "valid", Status: "success"},
+	}
+
+	snapshot := BuildLiveStreamSnapshot(items)
+	lanes := snapshot.Dimensions["credential"]
+	if len(lanes) != 1 || lanes[0].ID != "7" {
+		t.Fatalf("credential lanes=%#v want only positive ID 7", lanes)
+	}
+}
+func TestLiveStreamCredentialKey_UnknownProviderKeepsShape(t *testing.T) {
+	// 2026-08-27: liveStreamCredentialKey now returns stable credential_id
+	got := liveStreamCredentialKey(LiveRequest{CredentialID: 7})
+	if got != "7" {
+		t.Fatalf("credential key=%q want %q", got, "7")
+	}
+
+	got = liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产", CredentialID: 99})
+	if got != "99" {
+		t.Fatalf("credential key=%q want %q (CredentialID takes precedence)", got, "99")
+	}
+
+	// Idle markers inherit the lane key directly from CredentialLabel
+	got = liveStreamCredentialKey(LiveRequest{Type: "idle_marker", CredentialLabel: "42"})
+	if got != "42" {
+		t.Fatalf("idle credential key=%q want %q", got, "42")
+	}
+
+	// Requests without CredentialID return empty string
+	got = liveStreamCredentialKey(LiveRequest{ProviderCode: "供应商", CredentialLabel: "生产"})
+	if got != "" {
+		t.Fatalf("credential key without ID=%q want empty", got)
 	}
 }
 
@@ -1709,29 +1937,31 @@ func TestSlimTileFormatSizeReduction(t *testing.T) {
 
 func float64Ptr(v float64) *float64 { return &v }
 
-func TestFirstTiles(t *testing.T) {
+// lastTiles caps a lane whose items are sorted ASC (oldest first), so the
+// kept tail is the newest N — the FIFO contract from 730cbaef8.
+func TestLastTiles(t *testing.T) {
 	tiles := []LiveStreamTile{
-		{RequestID: "newest", Timestamp: "2026-07-26T12:03:00Z"},
-		{RequestID: "newer", Timestamp: "2026-07-26T12:02:00Z"},
-		{RequestID: "older", Timestamp: "2026-07-26T12:01:00Z"},
 		{RequestID: "oldest", Timestamp: "2026-07-26T12:00:00Z"},
+		{RequestID: "older", Timestamp: "2026-07-26T12:01:00Z"},
+		{RequestID: "newer", Timestamp: "2026-07-26T12:02:00Z"},
+		{RequestID: "newest", Timestamp: "2026-07-26T12:03:00Z"},
 	}
 
 	t.Run("returns all when limit >= length", func(t *testing.T) {
-		result := firstTiles(tiles, 10)
+		result := lastTiles(tiles, 10)
 		assert.Equal(t, 4, len(result))
-		assert.Equal(t, "newest", result[0].RequestID)
+		assert.Equal(t, "oldest", result[0].RequestID)
 	})
 
-	t.Run("returns first N when limit < length", func(t *testing.T) {
-		result := firstTiles(tiles, 2)
+	t.Run("keeps newest N when limit < length", func(t *testing.T) {
+		result := lastTiles(tiles, 2)
 		assert.Equal(t, 2, len(result))
-		assert.Equal(t, "newest", result[0].RequestID)
-		assert.Equal(t, "newer", result[1].RequestID)
+		assert.Equal(t, "newer", result[0].RequestID)
+		assert.Equal(t, "newest", result[1].RequestID)
 	})
 
 	t.Run("returns all when limit is 0", func(t *testing.T) {
-		result := firstTiles(tiles, 0)
+		result := lastTiles(tiles, 0)
 		assert.Equal(t, 4, len(result))
 	})
 }
@@ -1844,7 +2074,7 @@ func TestIdleMarker_VisibleInDimensionQueueSnapshot(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record seed: %v", err)
 	}
 
@@ -1939,11 +2169,12 @@ func TestBuildLiveStreamSnapshot_DedupesIdleMarkersPerLane(t *testing.T) {
 	if len(lane.Requests) != 2 {
 		t.Fatalf("expected one normal tile plus one idle tile, got %#v", lane.Requests)
 	}
-	if lane.Requests[0].RequestID != "req-new" {
-		t.Fatalf("new normal request should remain leftmost, got %#v", lane.Requests)
+	// ASC FIFO: the idle marker (10:05) precedes the newer request (10:06).
+	if lane.Requests[0].RequestID != newIdle.RequestID || lane.Requests[0].Status != "idle" {
+		t.Fatalf("expected newest idle marker first under ASC ordering, got %#v", lane.Requests)
 	}
-	if lane.Requests[1].RequestID != newIdle.RequestID || lane.Requests[1].Status != "idle" {
-		t.Fatalf("expected newest idle marker after normal request, got %#v", lane.Requests)
+	if lane.Requests[1].RequestID != "req-new" {
+		t.Fatalf("new normal request should be the newest (rightmost) tile, got %#v", lane.Requests)
 	}
 	for _, tile := range lane.Requests {
 		if tile.Status == "idle" && tile.RequestID == oldIdle.RequestID {
@@ -1974,7 +2205,7 @@ func TestIdleMarker_StableRequestIdAcrossTicks(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -2053,7 +2284,7 @@ func TestIdleMarker_PushedRightByNewRequest(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	// Force EVERY activity key into the past. The scanner compares
@@ -2085,7 +2316,7 @@ func TestIdleMarker_PushedRightByNewRequest(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record req-2: %v", err)
 	}
 
@@ -2144,7 +2375,7 @@ func TestIdleMarker_RefreshesTsOnEachTick(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	// Force EVERY activity key into the past. The scanner compares
@@ -2219,7 +2450,7 @@ func TestIdleMarker_BothMainAndDimQueueUpdated(t *testing.T) {
 		ModelCategory: "openai",
 		ProviderCode:  "openai",
 		Status:        "success",
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	// Force EVERY activity key into the past. The scanner compares
@@ -2315,6 +2546,10 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer rdb.Close()
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb, InitialReplayLimit: 200})
+	// Disable the 2s snapshot throttle (2026-08-25): this test exercises the
+	// degraded-snapshot guard, which must run on the immediate second read —
+	// the throttle would just replay the cached baseline delta instead.
+	hub.SetSnapshotMinInterval(0)
 	ctx := context.Background()
 
 	// Seed a healthy baseline into Redis: 100 openai requests → snapshot total=100.
@@ -2328,7 +2563,7 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := hub.store.Record(ctx, req); err != nil {
+		if err := hub.store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record baseline %d: %v", i, err)
 		}
 	}
@@ -2362,7 +2597,7 @@ func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := hub.store.Record(ctx, req); err != nil {
+		if err := hub.store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record degraded %d: %v", i, err)
 		}
 	}
@@ -2411,7 +2646,7 @@ func TestComputeScopeDelta_AcceptsNonDegradedSnapshot(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := hub.store.Record(ctx, req); err != nil {
+		if err := hub.store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record cold %d: %v", i, err)
 		}
 	}
@@ -2430,7 +2665,7 @@ func TestComputeScopeDelta_AcceptsNonDegradedSnapshot(t *testing.T) {
 			ProviderCode:  "openai",
 			Status:        "success",
 		}
-		if err := hub.store.Record(ctx, req); err != nil {
+		if err := hub.store.Record(ctx, req, ""); err != nil {
 			t.Fatalf("Record mod %d: %v", i, err)
 		}
 	}
@@ -2462,7 +2697,7 @@ func TestLiveStreamDimIndex_PopulatedAndRead(t *testing.T) {
 		ProviderCode:  "openai",
 		Status:        "success",
 	}
-	if err := store.Record(ctx, req); err != nil {
+	if err := store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 
@@ -2557,7 +2792,7 @@ func TestLiveStreamDimIndex_FallbackToScan(t *testing.T) {
 		ProviderCode:  "anthropic",
 		Status:        "success",
 	}
-	if err := store.Record(ctx, req); err != nil {
+	if err := store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
 	rdb.Del(ctx, liveStreamDimIndexKey("tenant-fb", false))

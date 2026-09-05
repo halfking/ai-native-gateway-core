@@ -112,6 +112,10 @@ import {
   type BlobCleanupRequest,
   type BlobCleanupResponse,
 } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const rows = ref<BlobRow[]>([])
 const preview = ref<BlobCleanupResponse | null>(null)
@@ -152,7 +156,7 @@ async function onPreview() {
 
 async function onExecute() {
   if (!preview.value) return
-  if (!confirm(`确认清理？\n影响 ${formatNumber(preview.value.affected_rows)} 行\n释放约 ${preview.value.estimated_freed_human}\n（仅置 NULL request_body / outbound_body，保留元数据）`)) return
+  if (!(await confirmDialog(t('dataLifecycle.confirmBlobCleanup', { rows: formatNumber(preview.value.affected_rows), size: preview.value.estimated_freed_human })))) return
   loading.value = true
   try {
     const r = await dataLifecycleBlobCleanupExecute(form.value)
@@ -246,9 +250,9 @@ onMounted(load)
 
 .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary { background: var(--accent); color: var(--on-primary); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
-.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger { background: var(--danger); color: var(--on-primary); }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, var(--text)); }
 .btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
 .btn-ghost:hover:not(:disabled) { background: var(--bg-hover); }

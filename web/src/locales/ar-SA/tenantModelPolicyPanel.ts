@@ -66,4 +66,5 @@ export default {
     deleteFailed: 'فشل الحذف',
     restoreFailed: 'فشلت الاستعادة',
   },
+  softDeleteConfirm: 'حذف مبدئي للسياسة {name}؟ (قابل للاستعادة)',
 }

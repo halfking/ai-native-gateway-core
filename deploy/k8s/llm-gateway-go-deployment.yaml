@@ -17,18 +17,22 @@ spec:
     matchLabels:
       app: llm-gateway-go
   strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
+    type: Recreate
   template:
     metadata:
       labels:
         app: llm-gateway-go
     spec:
+      nodeSelector:
+        kubernetes.io/hostname: kaixuan-1
+      securityContext:
+        fsGroup: 65532
+        fsGroupChangePolicy: OnRootMismatch
+      terminationGracePeriodSeconds: 35
       containers:
         - name: llm-gateway-go
-          image: registry.itestu.cn/kx-llm-gateway-go:latest
+          # Keep this immutable release tag in sync with version.json/build_seq.
+          image: registry.itestu.cn/kx-llm-gateway-go:2.5.0-1805
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -42,6 +46,17 @@ spec:
               value: /opt/llm-gateway-go/web/dist
             - name: LLM_GATEWAY_CORS_ORIGINS
               value: https://llm.itestu.cn
+            # 附件与持久化诊断日志必须指向下方 volumes 挂载的容器路径
+            # （storage-pvc.yaml 的 PVC），否则写入容器临时层、Pod 重建即丢失。
+            # 主 slog 保持 stdout，供 kubectl logs 采集。
+            - name: LLM_GATEWAY_ATTACHMENT_DIR
+              value: /var/lib/llm-gateway/attachments
+            - name: LLM_GATEWAY_PERSISTENT_LOG_DIR
+              value: /var/log/llm-gateway
+            - name: LLM_GATEWAY_RAW_LOG_DIR
+              value: /var/lib/llm-gateway/raw-logs
+            - name: LLM_GATEWAY_BACKUP_DIR
+              value: /var/lib/llm-gateway/backups
             - name: LLM_GATEWAY_DATABASE_URL
               valueFrom:
                 secretKeyRef:
@@ -71,7 +86,7 @@ spec:
             timeoutSeconds: 5
           readinessProbe:
             httpGet:
-              path: /healthz
+              path: /readyz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -83,6 +98,28 @@ spec:
             limits:
               cpu: "2"
               memory: 2Gi
+          volumeMounts:
+            - name: attachments
+              mountPath: /var/lib/llm-gateway/attachments
+            - name: persistent-logs
+              mountPath: /var/log/llm-gateway
+            - name: raw-logs
+              mountPath: /var/lib/llm-gateway/raw-logs
+            - name: backups
+              mountPath: /var/lib/llm-gateway/backups
+      volumes:
+        - name: attachments
+          persistentVolumeClaim:
+            claimName: llm-gateway-attachments-pvc
+        - name: persistent-logs
+          persistentVolumeClaim:
+            claimName: llm-gateway-logs-pvc
+        - name: raw-logs
+          persistentVolumeClaim:
+            claimName: llm-gateway-raw-logs-pvc
+        - name: backups
+          persistentVolumeClaim:
+            claimName: llm-gateway-backups-pvc
 ---
 apiVersion: v1
 kind: Service

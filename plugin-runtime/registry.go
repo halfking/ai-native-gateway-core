@@ -20,6 +20,7 @@ type Registry struct {
 	plugins  map[string]*PluginState
 	nav      map[string][]Page
 	versions map[string]string
+	bindings *BindingRegistry
 }
 
 // NewRegistry 构造一个空的内存 registry。
@@ -28,15 +29,20 @@ func NewRegistry() *Registry {
 		plugins:  map[string]*PluginState{},
 		nav:      map[string][]Page{},
 		versions: map[string]string{},
+		bindings: NewBindingRegistry(),
 	}
 }
 
 // SetPlugin 注册或覆盖一个插件的 PluginState。
 func (r *Registry) SetPlugin(st *PluginState) {
+	if r == nil || st == nil {
+		return
+	}
+	copy := *st
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.plugins[st.PluginID] = st
-	r.versions[st.PluginID] = st.PluginVersion
+	r.plugins[copy.PluginID] = &copy
+	r.versions[copy.PluginID] = copy.PluginVersion
 }
 
 // SetPluginStatus 仅更新单个插件的状态（用于 degraded/ready 切换）。
@@ -44,8 +50,25 @@ func (r *Registry) SetPluginStatus(pluginID, status string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if st, ok := r.plugins[pluginID]; ok {
-		st.Status = status
+		copy := *st
+		copy.Status = status
+		r.plugins[pluginID] = &copy
 	}
+}
+
+// SetBindings registers lifecycle bindings separately from the menu/status index.
+func (r *Registry) SetBindings(pluginID string, bindings []PluginBinding, opts BindingValidationOptions) error {
+	if r == nil || r.bindings == nil {
+		return fmt.Errorf("plugin binding registry unavailable")
+	}
+	return r.bindings.Register(pluginID, bindings, opts)
+}
+
+func (r *Registry) Bindings(pluginID string) []PluginBinding {
+	if r == nil || r.bindings == nil {
+		return nil
+	}
+	return r.bindings.Bindings(pluginID)
 }
 
 // SetNav 注册某个插件的页面/菜单集合并记录版本。

@@ -33,9 +33,12 @@
 #
 # 注意：
 #   - 这个脚本只切换 gateway 进程的环境变量并重启；**不**清空 URSM v2 Redis 数据
-#   - 如果要清空 URSM v2 Redis 命名空间（比如做反向切回权威前清理），
-#     单独执行 `redis-cli --scan --pattern 'ursm:v2:*' | xargs redis-cli DEL`
-#   - 反向切回 URSM v2 authoritative：先重新跑 scripts/migrations/ursm_v2_initial_migration.sh --apply
+#   - 禁止用 `redis-cli --scan --pattern 'ursm:v2:*' | xargs redis-cli DEL` 这类批量删除
+#     清空命名空间（会话优化v4 14 号冻结决策 §6.2：legacy key 只能由 Migration owner 的
+#     exact-key ledger cleanup job 按 source key + checksum 删除，且须等到 rollback_deadline）
+#   - 本脚本只做 URSM_V2_MODE 运行回退；delimiter-safe key schema（legacy/k2）的回滚是
+#     独立开关，按 14 号冻结决策 §6.3 执行，同样不删除任何 Redis 证据
+#   - 反向切回 URSM v2 authoritative：先重新跑 `go run ./cmd/migrate-ursm-v2 --apply`
 #     再 URSM_V2_MODE=authoritative + 重启 gateway + 跑 L1-L4
 
 set -euo pipefail
@@ -107,28 +110,34 @@ echo "   set URSM_V2_MODE=off (was: $MODE_BEFORE)"
 if [ "$DRY_RUN" = true ]; then
   echo "   [dry-run] would restart gateway with URSM_V2_MODE=off"
 else
-  # 注意：实际重启 gateway 的命令取决于部署系统。
-  # 这里我们假设 systemd / docker-compose 是常规部署形态。
-  # 运维应根据自己的部署形态调整 SYSTEMD_UNIT 或 DOCKER_SERVICE 变量。
   SYSTEMD_UNIT="${SYSTEMD_UNIT:-llm-gateway-go.service}"
-  DOCKER_SERVICE="${DOCKER_SERVICE:-llm-gateway-go}"
+  if [ -z "${URSM_V2_ENV_FILE:-}" ]; then
+    case "$SYSTEMD_UNIT" in
+      llmgo-245.service) URSM_V2_ENV_FILE=/opt/llm-gateway-go/.env ;;
+      *) URSM_V2_ENV_FILE=/etc/llm-gateway-go/env ;;
+    esac
+  fi
 
   if systemctl cat "$SYSTEMD_UNIT" >/dev/null 2>&1; then
     echo "   detected systemd unit: $SYSTEMD_UNIT"
-    sudo systemctl set-environment URSM_V2_MODE=off
-    sudo systemctl set-environment URSM_V2_SHADOW_DOUBLE_WRITE=0
+    echo "   updating persistent environment file: $URSM_V2_ENV_FILE"
+    sudo touch "$URSM_V2_ENV_FILE"
+    sudo sed -i \
+      -e '/^URSM_V2_MODE=/d' \
+      -e '/^URSM_V2_SHADOW_DOUBLE_WRITE=/d' \
+      -e '/^URSM_V2_SHADOW_SAMPLE_RATE=/d' \
+      -e '/^URSM_V2_CANARY_PERCENT=/d' \
+      -e '/^URSM_V2_CANARY_TENANTS=/d' \
+      -e '/^URSM_V2_CANARY_MODELS=/d' \
+      "$URSM_V2_ENV_FILE"
+    printf '%s\n' 'URSM_V2_MODE=off' | sudo tee -a "$URSM_V2_ENV_FILE" >/dev/null
+    sudo systemctl unset-environment \
+      URSM_V2_MODE URSM_V2_SHADOW_DOUBLE_WRITE URSM_V2_SHADOW_SAMPLE_RATE \
+      URSM_V2_CANARY_PERCENT URSM_V2_CANARY_TENANTS URSM_V2_CANARY_MODELS || true
     sudo systemctl restart "$SYSTEMD_UNIT"
-  elif command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -q "^${DOCKER_SERVICE}$"; then
-    echo "   detected docker service: $DOCKER_SERVICE"
-    docker stop "$DOCKER_SERVICE"
-    docker run -d --rm \
-      --name "$DOCKER_SERVICE" \
-      -e URSM_V2_MODE=off \
-      -e URSM_V2_SHADOW_DOUBLE_WRITE=0 \
-      "$DOCKER_SERVICE:latest"
   else
-    echo "❌ cannot detect deployment form. Set SYSTEMD_UNIT or DOCKER_SERVICE explicitly." >&2
-    echo "   e.g. SYSTEMD_UNIT=llm-gateway-go.service DOCKER_SERVICE=llm-gateway-go $0 --env=$ENV" >&2
+    echo "❌ persistent rollback requires a systemd unit and EnvironmentFile." >&2
+    echo "   set SYSTEMD_UNIT and URSM_V2_ENV_FILE for the deployed gateway." >&2
     exit 4
   fi
   echo "   ✓ gateway restarted with URSM_V2_MODE=off"
@@ -194,9 +203,9 @@ echo " URSM v2 data  : PRESERVED in Redis (not deleted)"
 echo "==============================================="
 echo ""
 echo "Next steps:"
-echo "  - file incident report at knowledge/audit/incidents/$(date +%Y-%m-%d)-ursmv2-rollback.md"
+echo "  - file incident report at docs/archive/process/incidents/$(date +%Y-%m-%d)-ursmv2-rollback.md"
 echo "  - notify stakeholders (飞书 llm-gateway-go channel)"
-echo "  - if rolling back due to data corruption: run scripts/migrations/ursm_v2_initial_migration.sh --apply"
+echo "  - if rolling back due to data corruption: run 'go run ./cmd/migrate-ursm-v2 --apply'"
 echo "    before flipping URSM_V2_MODE back to authoritative"
 echo "  - if rolling back due to env misconfig: fix env, then bash scripts/rollback/ursm_v2_to_legacy.sh --env=$ENV again"
 echo ""

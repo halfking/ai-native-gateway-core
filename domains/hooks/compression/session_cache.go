@@ -178,6 +178,11 @@ type SessionState struct {
 	CutStrategy    string `json:"cm_strat,omitempty"`
 	CutBytesBefore int    `json:"cm_bb,omitempty"`
 	CutBytesAfter  int    `json:"cm_ba,omitempty"`
+	// CutPreSanitizeStart / CutPreSanitizeEnd (2026-09-01, audit §五)：把压缩
+	// 覆盖的 message 在 sanitize 之前的 index 范围持久化到 Redis hash。
+	// 与 SessionState.SanitizeMapRef 配合可还原三层 offset 全貌。
+	CutPreSanitizeStart int `json:"cm_psor0,omitempty"`
+	CutPreSanitizeEnd   int `json:"cm_psor1,omitempty"`
 
 	// v6: Audited state (Cache 2 concept).
 	//
@@ -210,18 +215,21 @@ type SessionState struct {
 	// observability and quality scoring.
 	//
 	// L1 fields (raw session, true values):
-	RawTokenEstimate int `json:"raw_te,omitempty"` // token count before sanitization/compression
-	RawMsgCount      int `json:"raw_mc,omitempty"` // message count before compression
+	RawSnapshot      MessageSnapshot `json:"raw_snapshot,omitempty"`
+	RawTokenEstimate int             `json:"raw_te,omitempty"` // token count before sanitization/compression
+	RawMsgCount      int             `json:"raw_mc,omitempty"` // message count before compression
 
 	// L2 fields (compressed session, placeholders):
+	CompressedSnapshot   MessageSnapshot         `json:"compressed_snapshot,omitempty"`
 	CompressedTokens     int                     `json:"cmp_te,omitempty"`      // token count after compression
 	CompressedMsgs       int                     `json:"cmp_mc,omitempty"`      // message count after compression
 	CompressedPrefixHash string                  `json:"cmp_ph,omitempty"`      // stable compressed prefix fingerprint
 	CompressionQuality   CompressionQualityScore `json:"cmp_quality,omitempty"` // quality metrics
 
 	// L3 fields (audited session, sanitize map):
-	SanitizeMapRef string        `json:"sanitize_ref,omitempty"` // Redis key: session:{id}:sanitize
-	SanitizeStats  SanitizeStats `json:"sanitize_stats,omitempty"`
+	SanitizeMapRef      string                `json:"sanitize_ref,omitempty"` // Redis key: session:{id}:sanitize
+	SanitizeStats       SanitizeStats         `json:"sanitize_stats,omitempty"`
+	SanitizeMessageRefs []SanitizedMessageRef `json:"sanitize_message_refs,omitempty"`
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
@@ -285,6 +293,10 @@ type SessionCache struct {
 	l1       map[string]*l1Entry // key = tenantID+":"+gwSessionID → entry (entry.elem is the list node)
 	curBytes int                 // aggregate bytes across all l1 entries (D3: enforces l1MaxBytes)
 
+	// updateStripes serializes multi-step read-modify-write updates for one
+	// session without retaining an unbounded lock per session.
+	updateStripes [256]sync.Mutex
+
 	redis      SessionCacheBackend // nil = L2 disabled (tests / no Redis)
 	db         SessionCacheDB      // nil = L3 disabled (tests / no DB)
 	turnReader *v2.TurnReader      // V2-P2.5: L3 reads session_bodies when wired
@@ -318,6 +330,38 @@ func redisKey(tenantID, gwSessionID string) string {
 	return "session:sc:" + tenantID + ":" + gwSessionID + ":v1"
 }
 
+func (c *SessionCache) updateStripe(key string) *sync.Mutex {
+	sum := sha256.Sum256([]byte(key))
+	return &c.updateStripes[sum[0]]
+}
+
+// Update atomically loads, transforms, and stores one session state. The
+// callback receives caller-owned copies; returning nil state deletes nothing
+// and leaves the existing cache entry unchanged.
+func (c *SessionCache) Update(
+	ctx context.Context,
+	tenantID, gwSessionID string,
+	fn func(*SessionState, []byte) (*SessionState, []byte, error),
+) error {
+	if gwSessionID == "" || fn == nil || !settings.IsEnabled("session_cache") {
+		return nil
+	}
+	key := l1Key(tenantID, gwSessionID)
+	stripe := c.updateStripe(key)
+	stripe.Lock()
+	defer stripe.Unlock()
+
+	state, body, err := c.GetOrLoad(ctx, tenantID, gwSessionID)
+	if err != nil {
+		return err
+	}
+	state, body, err = fn(state, body)
+	if err != nil || state == nil {
+		return err
+	}
+	return c.Set(ctx, tenantID, gwSessionID, state, body)
+}
+
 // GetOrLoad returns the SessionState and last outbound body for the session,
 // or (nil, nil, nil) when the session is new / unknown.
 // Tier priority: L1 → L2 → L3. A cache-miss at one tier is back-filled
@@ -340,10 +384,10 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 	c.mu.Lock()
 	if e, ok := c.l1[key]; ok {
 		c.ll.MoveToFront(e.elem) // O(1) LRU promote.
-		st := *e.state           // copy
-		body := e.body
+		st := cloneSessionState(e.state)
+		body := append([]byte(nil), e.body...)
 		c.mu.Unlock()
-		return &st, body, nil
+		return st, body, nil
 	}
 	c.mu.Unlock()
 
@@ -458,8 +502,18 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 		// as the L2 state (both written per session), so deleting them here
 		// closes the lifecycle gap without a new dependency on the sanitize
 		// package (which imports this one).
-		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(gwSessionID))
-		_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(gwSessionID))
+		//
+		// T11-P0 v2: sanitize key 现在带 tenantHash 段；tenantID 由 caller 在
+		// Invalidate() 入参传入，落到与 L2 redisKey 同一 tenant。空 tenant 时
+		// mirror 函数会落到 "_unknown" 桶 — 与输入中间件降级路径一致。
+		// T11-P0 v2 fix: 之前直接把 raw tenantID 传给 SessionSanitizeRedisKey，
+		// 但该函数的第一个参数应是 tenantHash (sha256[:8])。写入侧
+		// (smart_sani_guard.go) 用 HashTenant 派生 hash，所以 key 永远匹配不上，
+		// 删除是静默 no-op — stale sanitize map/offset 泄漏到 TTL。这里镜像同样
+		// 的 hash 派生后再调用 key builder。
+		tenantHash := hashTenantForSanitizeKey(tenantID)
+		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(tenantHash, gwSessionID))
+		_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(tenantHash, gwSessionID))
 	}
 }
 
@@ -467,26 +521,38 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 // Internal helpers
 // ──────────────────────────────────────────────────────────────────────────────
 
+func cloneSessionState(state *SessionState) *SessionState {
+	if state == nil {
+		return nil
+	}
+	clone := *state
+	clone.AlignmentMap = append([]AlignmentInfo(nil), state.AlignmentMap...)
+	clone.SanitizeMessageRefs = append([]SanitizedMessageRef(nil), state.SanitizeMessageRefs...)
+	return &clone
+}
+
 func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	st := *state // copy
-	entryBytes := len(body) + len(key) + l1EntryOverheadBytes
+	st := cloneSessionState(state)
+	bodyCopy := append([]byte(nil), body...)
+	entryBytes := len(bodyCopy) + len(key) + l1EntryOverheadBytes
 
 	// Update-in-place + promote to front if the key already exists.
 	if existing, ok := c.l1[key]; ok {
 		// Adjust curBytes for the delta (new - old).
 		c.curBytes -= existing.bytes
 		c.curBytes += entryBytes
-		existing.state = &st
-		existing.body = body
+		existing.state = st
+		existing.body = bodyCopy
+
 		existing.bytes = entryBytes
 		c.ll.MoveToFront(existing.elem)
 		return
 	}
 
 	// New entry: push to front, evict the LRU (back) if over capacity OR bytes.
-	entry := &l1Entry{key: key, state: &st, body: body, bytes: entryBytes}
+	entry := &l1Entry{key: key, state: st, body: bodyCopy, bytes: entryBytes}
 	entry.elem = c.ll.PushFront(entry)
 	c.l1[key] = entry
 	c.curBytes += entryBytes
@@ -676,6 +742,12 @@ func encodeSessionStateFields(st *SessionState) []any {
 		if st.CutBytesAfter > 0 {
 			fields = append(fields, "cm_ba", fmt.Sprintf("%d", st.CutBytesAfter))
 		}
+		// v9 (2026-09-01, audit §五)：三层 offset 串接。CutPreSanitize* 仅有意义
+		// 在 HasCutMarker=true 时写入；omitempty 语义由"任一 > 0"判定。
+		if st.CutPreSanitizeStart > 0 || st.CutPreSanitizeEnd > 0 {
+			fields = append(fields, "cm_psor0", fmt.Sprintf("%d", st.CutPreSanitizeStart))
+			fields = append(fields, "cm_psor1", fmt.Sprintf("%d", st.CutPreSanitizeEnd))
+		}
 	}
 	if st.CompressedPrefixHash != "" {
 		fields = append(fields, "cmp_ph", st.CompressedPrefixHash)
@@ -711,6 +783,48 @@ func encodeSessionStateFields(st *SessionState) []any {
 	if len(st.AlignmentMap) > 0 {
 		if b, err := json.Marshal(st.AlignmentMap); err == nil {
 			fields = append(fields, "algn", string(b))
+		}
+	}
+	// v8: persist the raw/compressed/audit semantic counters so Redis
+	// rehydration remains equivalent to an in-process L1 cache hit.
+	if st.RawTokenEstimate != 0 {
+		fields = append(fields, "raw_te", fmt.Sprintf("%d", st.RawTokenEstimate))
+	}
+	if st.RawMsgCount != 0 {
+		fields = append(fields, "raw_mc", fmt.Sprintf("%d", st.RawMsgCount))
+	}
+	if st.CompressedTokens != 0 {
+		fields = append(fields, "cmp_te", fmt.Sprintf("%d", st.CompressedTokens))
+	}
+	if st.CompressedMsgs != 0 {
+		fields = append(fields, "cmp_mc", fmt.Sprintf("%d", st.CompressedMsgs))
+	}
+	if st.CompressionQuality != (CompressionQualityScore{}) {
+		if b, err := json.Marshal(st.CompressionQuality); err == nil {
+			fields = append(fields, "cmp_q", string(b))
+		}
+	}
+	if st.SanitizeMapRef != "" {
+		fields = append(fields, "san_ref", st.SanitizeMapRef)
+	}
+	if st.SanitizeStats != (SanitizeStats{}) {
+		if b, err := json.Marshal(st.SanitizeStats); err == nil {
+			fields = append(fields, "san_stats", string(b))
+		}
+	}
+	if !st.RawSnapshot.IsZero() {
+		if b, err := json.Marshal(st.RawSnapshot); err == nil {
+			fields = append(fields, "raw_snap", string(b))
+		}
+	}
+	if !st.CompressedSnapshot.IsZero() {
+		if b, err := json.Marshal(st.CompressedSnapshot); err == nil {
+			fields = append(fields, "cmp_snap", string(b))
+		}
+	}
+	if len(st.SanitizeMessageRefs) > 0 {
+		if b, err := json.Marshal(st.SanitizeMessageRefs); err == nil {
+			fields = append(fields, "san_msg_refs", string(b))
 		}
 	}
 	return fields
@@ -749,6 +863,9 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.CutStrategy = fields["cm_strat"]
 	st.CutBytesBefore = int(parseInt(fields["cm_bb"]))
 	st.CutBytesAfter = int(parseInt(fields["cm_ba"]))
+	// v9 (2026-09-01, audit §五)：缺省即零值，旧 Redis hash 自动读为零。
+	st.CutPreSanitizeStart = int(parseInt(fields["cm_psor0"]))
+	st.CutPreSanitizeEnd = int(parseInt(fields["cm_psor1"]))
 	st.CompressedPrefixHash = fields["cmp_ph"]
 	// v6: Audited state — missing keys decode to zero value, which is the
 	// intended "no audit yet" semantic.
@@ -765,6 +882,29 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	if raw, ok := fields["algn"]; ok && raw != "" {
 		if err := json.Unmarshal([]byte(raw), &st.AlignmentMap); err != nil {
 			st.AlignmentMap = nil
+		}
+	}
+	st.TokensAfterStrip = int(parseInt(fields["tas"]))
+	st.RawTokenEstimate = int(parseInt(fields["raw_te"]))
+	st.RawMsgCount = int(parseInt(fields["raw_mc"]))
+	st.CompressedTokens = int(parseInt(fields["cmp_te"]))
+	st.CompressedMsgs = int(parseInt(fields["cmp_mc"]))
+	st.SanitizeMapRef = fields["san_ref"]
+	if raw := fields["cmp_q"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st.CompressionQuality)
+	}
+	if raw := fields["san_stats"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st.SanitizeStats)
+	}
+	if raw := fields["raw_snap"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st.RawSnapshot)
+	}
+	if raw := fields["cmp_snap"]; raw != "" {
+		_ = json.Unmarshal([]byte(raw), &st.CompressedSnapshot)
+	}
+	if raw := fields["san_msg_refs"]; raw != "" {
+		if err := json.Unmarshal([]byte(raw), &st.SanitizeMessageRefs); err != nil {
+			st.SanitizeMessageRefs = nil
 		}
 	}
 	return nil
@@ -809,6 +949,8 @@ func (s *SessionState) SetCutMarker(cm CutMarker) {
 	s.CutBytesBefore = cm.BytesBefore
 	s.CutBytesAfter = cm.BytesAfter
 	s.SummaryMarker = cm.SummaryMarker
+	s.CutPreSanitizeStart = cm.PreSanitizeOffsetRange[0]
+	s.CutPreSanitizeEnd = cm.PreSanitizeOffsetRange[1]
 }
 
 // ToCutMarker reconstructs a CutMarker from SessionState fields.
@@ -819,21 +961,25 @@ func (s *SessionState) ToCutMarker(summaryText string) *CutMarker {
 		return nil
 	}
 	return &CutMarker{
-		Version:        cutMarkerSchemaVersion,
-		CreatedAt:      s.CutCreatedAt,
-		SourceMsgCount: s.CutSourceMsgs,
-		SystemMsgCount: s.CutSystemMsgs,
-		CutIndex:       s.CutIndex,
-		SummaryMarker:  s.SummaryMarker,
-		Strategy:       s.CutStrategy,
-		BytesBefore:    s.CutBytesBefore,
-		BytesAfter:     s.CutBytesAfter,
-		SummaryText:    summaryText,
+		Version:                cutMarkerSchemaVersion,
+		CreatedAt:              s.CutCreatedAt,
+		SourceMsgCount:         s.CutSourceMsgs,
+		SystemMsgCount:         s.CutSystemMsgs,
+		CutIndex:               s.CutIndex,
+		SummaryMarker:          s.SummaryMarker,
+		Strategy:               s.CutStrategy,
+		BytesBefore:            s.CutBytesBefore,
+		BytesAfter:             s.CutBytesAfter,
+		PreSanitizeOffsetRange: [2]int{s.CutPreSanitizeStart, s.CutPreSanitizeEnd},
+		SummaryText:            summaryText,
 	}
 }
 
 // ClearCutMarker removes any cached cut marker state.
 func (s *SessionState) ClearCutMarker() {
+	if s == nil {
+		return
+	}
 	s.HasCutMarker = false
 	s.CutCreatedAt = 0
 	s.CutSourceMsgs = 0
@@ -842,6 +988,9 @@ func (s *SessionState) ClearCutMarker() {
 	s.CutStrategy = ""
 	s.CutBytesBefore = 0
 	s.CutBytesAfter = 0
+	s.CutPreSanitizeStart = 0
+	s.CutPreSanitizeEnd = 0
+	s.SummaryMarker = ""
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

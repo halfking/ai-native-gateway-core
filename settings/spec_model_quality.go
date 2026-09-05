@@ -14,7 +14,7 @@ func ModelQualitySpecs() []*Spec {
 			Type:        TypeBool,
 			Scope:       ScopePlatform,
 			Category:    CategoryModelQuality,
-			Default:     false, // 默认关闭，避免影响现有系统
+			Default:     true, // 2026-08-29: 默认开启，管理后台"模型智商"检测依赖此开关
 			Description: "是否启用模型质量监控",
 			DangerLevel: Safe,
 			HotReload:   true,

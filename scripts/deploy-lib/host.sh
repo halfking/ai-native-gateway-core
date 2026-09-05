@@ -161,18 +161,27 @@ host_stage_release() {
   [[ -f "$binary_src"  ]] || { echo "host_stage_release: missing binary_src $binary_src" >&2; return 1; }
   [[ -d "$web_src"     ]] || { echo "host_stage_release: missing web_src $web_src" >&2; return 1; }
 
-  install -m 0755 "$binary_src" "$bundle_dir/$bin_name"
-  cp -R "$web_src/." "$bundle_dir/web/"
-  if [[ -f version.json ]]; then cp version.json "$bundle_dir/version.json"; fi
-  if [[ -f VERSION      ]]; then cp VERSION      "$bundle_dir/VERSION"; fi
+  # 陈旧产物防线（同 deploy-local.sh build_backend / dl_stage_release，
+  # bc6e696b3）：本函数经 deploy-seamless.sh 的 `if ! host_stage_release …
+  # | sed` 管道语境调用，函数内失败命令不会触发 set -e（2026-09-05 陈旧
+  # 二进制事故的 bash 怪癖），必须逐项显式 return，绝不能依赖外层兜底。
+  # 先删旧 manifest：任何后续步骤失败都不残留上一轮的 SHA256SUMS。
+  rm -f "$bundle_dir/SHA256SUMS"
+  install -m 0755 "$binary_src" "$bundle_dir/$bin_name" || return 1
+  [[ -s "$bundle_dir/$bin_name" ]] || { echo "host_stage_release: staged binary is empty: $bundle_dir/$bin_name" >&2; return 1; }
+  cp -R "$web_src/." "$bundle_dir/web/" || return 1
+  if [[ -f version.json ]]; then cp version.json "$bundle_dir/version.json" || return 1; fi
+  if [[ -f VERSION      ]]; then cp VERSION      "$bundle_dir/VERSION"      || return 1; fi
 
   # 2026-07-19: Copy configs directory for sensitive_words.json and other runtime configs
   if [[ -d configs ]]; then
-    cp -R configs "$bundle_dir/configs"
+    cp -R configs "$bundle_dir/configs" || return 1
   fi
 
   # Checksums. Include runtime configs so a changed sensitive-word list
   # cannot be deployed without being detected by bundle verification.
+  # SHA256SUMS 最后生成且失败即删除：消费端 host_verify_bundle 对缺失/
+  # 残缺 manifest 必然 fail-closed（与 dl_stage_release 的语义一致）。
   (
     cd "$bundle_dir"
     sha256sum "$bin_name" version.json VERSION
@@ -181,7 +190,8 @@ host_stage_release() {
         sha256sum "$file"
       done < <(find configs -type f -print | sort)
     fi
-  ) > "$bundle_dir/SHA256SUMS"
+  ) > "$bundle_dir/SHA256SUMS" || { rm -f "$bundle_dir/SHA256SUMS"; return 1; }
+  [[ -s "$bundle_dir/SHA256SUMS" ]] || { rm -f "$bundle_dir/SHA256SUMS"; return 1; }
 
   # Initial deployment.json (verified=false). The orchestrator flips
   # this to true only after /healthz returns 2xx.
@@ -198,17 +208,48 @@ host_verify_bundle() {
   local ssh_cmd=$1 bundle_dir=$2
   local bin_name
   bin_name=$(host_binary_name "${HOST_STAGE_TARGET:-245}") || return 64
-  "$ssh_cmd" "cd '$bundle_dir' && sha256sum -c SHA256SUMS --strict >/dev/null 2>&1"
+  # Fail-closed 前置校验：manifest 缺失/为空/未覆盖 bundle 二进制时，
+  # `sha256sum -c` 要么对空 manifest 报错，要么只校验了列出的子集——
+  # 二进制本身可能从未被校验（陈旧/残缺 bundle 静默通过的事故同类窗口）。
+  # 显式要求 manifest 非空且含二进制条目后再做逐文件校验。
+  "$ssh_cmd" "cd '$bundle_dir' && test -s SHA256SUMS && grep -q '  $bin_name\$' SHA256SUMS && sha256sum -c SHA256SUMS --strict >/dev/null 2>&1"
 }
 
 # Restart the tracked service on the target host. Slice 1-4 only knows
 # systemd; the k3s and launchd paths come with their respective slices.
+#
+# 2026-08-19 (rule 11 §1 plan-first, follow-up §3.5 候选 C 验证):
+#   原实现 "$ssh_cmd \"systemctl restart '$service_name'\" 是 fire-and-forget:
+#   systemd stop 阶段旧 Go srv.Shutdown 最长阻塞 30s 让 :8781 端口,
+#   期间 systemd 拉起新 binary → bind :8781 失败 → exit 1 → RestartSec=5 循环.
+#   现改为显式 stop → 同步等端口释放 (healthz 不可达) → start 三段式,
+#   复用 host_drain_and_stop (下 328-351) 的 drain 模式避免重复代码.
+#   drain 超时 30s; 失败时函数返回 1 让上层 _seamless_auto_rollback 兜底.
 host_restart_service() {
   local ssh_cmd=$1 target=$2
-  local service_name
+  local service_name health_url deadline_port_release
   service_name=$(target_field "$target" service_name)
+  health_url=$(target_field "$target" health_url)
   [[ -n "$service_name" ]] || { echo "service_name missing for $target" >&2; return 1; }
-  "$ssh_cmd" "systemctl restart '$service_name'"
+  [[ -n "$health_url" ]] || { echo "health_url missing for $target" >&2; return 1; }
+
+  # Step 1: stop (旧 binary srv.Shutdown 开始 drain). A stop failure means
+  # the old listener may still own the port, so fail closed rather than racing it.
+  "$ssh_cmd" "systemctl stop '$service_name'" || return 1
+
+  # Step 2: wait until :8781 is actually released. Do not start the new
+  # process after the deadline: that would recreate the bind/restart loop.
+  deadline_port_release=$(( $(date +%s) + 30 ))
+  while (( $(date +%s) < deadline_port_release )); do
+    if ! "$ssh_cmd" "curl -fsS --max-time 1 '$health_url' >/dev/null 2>&1"; then
+      "$ssh_cmd" "systemctl start '$service_name'"
+      return
+    fi
+    sleep 1
+  done
+
+  echo "host_restart_service: $target did not release $health_url within 30s" >&2
+  return 1
 }
 
 # Wait for /healthz on the target host to answer 2xx. Slice 1-4 uses a
@@ -231,14 +272,109 @@ host_wait_healthy() {
   return 1
 }
 
-# Mark a release bundle as verified=true once /healthz answers 2xx.
-# The metadata file is rewritten in-place — the orchestrator rolls
-# back via the deployment.json instead of new sidecars.
+# Wait for the strict dependency readiness endpoint. Unlike /healthz, /readyz
+# returns 2xx only when the gateway dependencies are usable.
+host_wait_readyz() {
+  local ssh_cmd=$1 target=$2 timeout_s=${3:-60}
+  local health_url ready_url deadline
+  health_url=$(target_field "$target" health_url)
+  [[ -n "$health_url" ]] || { echo "readyz: health_url missing for $target" >&2; return 1; }
+  ready_url="${health_url%/healthz}/readyz"
+  local deadline=$(( $(date +%s) + timeout_s ))
+  while (( $(date +%s) < deadline )); do
+    if "$ssh_cmd" "curl -fsS --max-time 2 '$ready_url' >/dev/null 2>&1"; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: $target readyz check timed out after ${timeout_s}s" >&2
+  return 1
+}
+
+# Wait for the strict dependency readiness endpoint. Unlike /healthz, /readyz
+# must return 2xx only when the gateway can serve requests with its configured
+# dependencies. Keep this as a separate gate so liveness remains useful during
+# startup and incident diagnosis.
 #
-# Implementation: pure shell. The deployment.json format is fixed
-# (verified, verified_at, target, version), and rewriting two fields
-# in-place is straightforward enough that pulling in python / jq on a
-# minimal target host would be overkill.
+# 本函数在 target 自身 curl https://127.0.0.1/healthz 验证 nginx→gateway 链路.
+# nginx 用的是 let's encrypt 给 kxpms.cn 的 cert, curl 127.0.0.1 会 CN mismatch,
+# 用 -k 跳过 cert verify. -k 在这里可接受: 我们只验证"链路通 + 返回 200", 不
+# 验证 TLS 身份 (TLS 身份由发起机器的公网 curl 验证, 见 deploy-245 SKILL).
+#
+# 当 target contract 有 internal_https_health_url 时调用, 空则跳过 (兼容 252/kaixuan).
+host_wait_https_healthy() {
+  local ssh_cmd=$1 target=$2 timeout_s=${3:-30}
+  local https_url
+  https_url=$(target_field "$target" internal_https_health_url)
+  [[ -n "$https_url" ]] || { echo "  internal_https_health_url not set for $target, skip"; return 0; }
+  local deadline=$(( $(date +%s) + timeout_s ))
+  while (( $(date +%s) < deadline )); do
+    if "$ssh_cmd" "curl -kfsS --max-time 3 '$https_url' >/dev/null 2>&1"; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "ERROR: $target nginx (443) https health check timed out after ${timeout_s}s — nginx may be down (post-OOM symptom)" >&2
+  return 1
+}
+
+# Wait until nginx actually serves the upgrade/maintenance page after the
+# UPGRADING marker is created. The marker is checked per-request by nginx
+# (no reload needed), but the first served maintenance response can lag the
+# marker write — CDN/edge cache, a slow nginx worker, or the 252 public
+# ingress syncing behind the 154 local marker all add latency.
+#
+# 2026-08-28: timeout raised to 120s (typical enablement ~60s) so a lagging
+# public edge never aborts the deploy prematurely. The check passes only when
+# the marker file exists AND nginx returns the maintenance page (detected via
+# the X-LLM-Gateway-Upgrade: in-progress header, or the page body marker).
+host_wait_upgrade_banner() {
+  local ssh_cmd=$1 target=$2 timeout_s=${3:-120}
+  local install_root=${4:-$(host_root_for "$target")}
+  local maintenance_dir=${5:-$install_root/maintenance}
+  local probe_url=${6:-}
+  local probe_extra_args=${7:-}
+  local maint_root="$maintenance_dir"
+  local url
+  # 2026-08-28: 探测 URL 可显式传入 (第 6 参)。252 场景下 ssh_cmd 在 252 上
+  # 执行, 但 target 字段仍是 154 的 127.0.0.1 — 127.0.0.1 在 252 上命中的
+  # 是另一个 vhost, 维护页永远探测不到 (部署被误判失败)。显式传 URL 时以
+  # 传入值为准; 否则回落到 target 的 internal_https_health_url。
+  # 第 7 参为附加 curl 参数 (如 --resolve host:443:127.0.0.1), 允许含空格。
+  if [[ -n "$probe_url" ]]; then
+    url="$probe_url"
+  else
+    url=$(target_field "$target" internal_https_health_url 2>/dev/null)
+    url="${url%%/healthz}/"
+  fi
+  [[ -n "$url" ]] || url="https://127.0.0.1/"
+  local deadline=$(( $(date +%s) + timeout_s ))
+  local start_ts=$(date +%s)
+  echo "  等待升级静态页生效 (最长 ${timeout_s}s)…"
+  while (( $(date +%s) < deadline )); do
+    # Marker must exist (nginx decides per-request on this file) …
+    if "$ssh_cmd" "test -f '$maint_root/UPGRADING' && test -f '$maint_root/index.html'" 2>/dev/null; then
+      # … and nginx must actually serve the maintenance page.
+      local out
+      out=$("$ssh_cmd" "curl -ksS --max-time 3 ${probe_extra_args:+$probe_extra_args} -o /tmp/kx-upgrade-banner-\$\$.html -D - '$url' 2>/dev/null; cat /tmp/kx-upgrade-banner-\$\$.html 2>/dev/null" ) || true
+      if printf '%s' "$out" | grep -qiE 'X-LLM-Gateway-Upgrade:[[:space:]]*in-progress|系统正在升级|正在升级 · llm-gateway-go'; then
+        local elapsed=$(( $(date +%s) - start_ts ))
+        "$ssh_cmd" "rm -f /tmp/kx-upgrade-banner-\$\$.html" 2>/dev/null || true
+        echo "  ✓ 升级静态页已生效 (target=$target, ${elapsed}s)"
+        return 0
+      fi
+    fi
+    sleep 2
+  done
+  "$ssh_cmd" "rm -f /tmp/kx-upgrade-banner-\$\$.html" 2>/dev/null || true
+  echo "ERROR: $target 升级静态页未在 ${timeout_s}s 内生效 — marker 已写但 nginx 未返回维护页" >&2
+  return 1
+}
+
+# Mark a release bundle as verified=true after the orchestrator has passed
+# liveness, strict readiness, and release-identity gates. Metadata is written
+# through a temporary file and rename so rollback selection never reads a
+# partially updated deployment.json.
 host_mark_verified() {
   local ssh_cmd=$1 target=$2 version=$3
   local metadata_file
@@ -246,23 +382,83 @@ host_mark_verified() {
   local now
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-  # Hand the rewrite to a single remote shell so atomicity is preserved.
-  # Steps:
-  #   1. mkdir -p the metadata directory.
-  #   2. Replace `"verified":(true|false)` with `"verified":true`.
-  #      Use sed -E for portability; macOS sed needs `sed -E`.
-  #   3. Upsert verified_at, target, version fields (existing values win).
-  #   4. Validate JSON shape — the orchestrator re-reads it during
-  #      rollback selection.
-  "$ssh_cmd" "set -e; m='$metadata_file'; mkdir -p \"\$(dirname \"\$m\")\"; \
+  "$ssh_cmd" "set -e; m='$metadata_file'; mkdir -p \"\$(dirname \"\$m\")\"; tmp=\"\$m.tmp.\$\$\"; \
     if [ ! -f \"\$m\" ]; then \
-      printf '{\"target\":\"$target\",\"version\":\"$version\",\"verified\":true,\"verified_at\":\"$now\"}\\n' > \"\$m\"; \
+      printf '{\"target\":\"$target\",\"version\":\"$version\",\"verified\":true,\"verified_at\":\"$now\"}\\n' > \"\$tmp\"; \
     else \
-      sed -E -i.bak 's/\"verified\"[[:space:]]*:[[:space:]]*(true|false)/\"verified\":true/' \"\$m\" && rm -f \"\$m.bak\"; \
-      if ! grep -q '\"verified_at\"' \"\$m\"; then \
-        sed -E -i.bak 's/}$/, \"verified_at\":\"$now\"}/' \"\$m\" && rm -f \"\$m.bak\"; \
+      sed -E 's/\"verified\"[[:space:]]*:[[:space:]]*(true|false)/\"verified\":true/' \"\$m\" > \"\$tmp\"; \
+      if ! grep -q '\"verified_at\"' \"\$tmp\"; then \
+        sed -E -i.bak 's/}[[:space:]]*$/,\"verified_at\":\"$now\"}/' \"\$tmp\" && rm -f \"\$tmp.bak\"; \
       fi; \
-    fi"
+    fi; \
+    python3 -m json.tool "\$tmp" >/dev/null; mv -f "\$tmp" "\$m""
+}
+
+# ============================================================================
+# Upgrade banner — nginx 标志文件驱动的静态升级页
+# ----------------------------------------------------------------------------
+# nginx 预先配置 `if (-f .../maintenance/UPGRADING) { return 503; }`
+# 与 error_page 静态页。show 在 stop 前原子地写入 index.html 后创建 marker；
+# hide 只在所有部署门禁通过后删除 marker。无需 reload nginx，也没有临时端口/
+# 进程残留风险。
+# ============================================================================
+
+host_show_upgrade_banner() {
+  local ssh_cmd=$1 target=$2 new_version=$3
+  local template_file started_at old_version maint_root render_script rendered_html
+  local install_root=${4:-$(host_root_for "$target")}
+  local maintenance_dir=${5:-$install_root/maintenance}
+  local version_root=${6:-$install_root}
+
+  template_file="${HOST_LIB_DIR:-$(dirname "${BASH_SOURCE[0]}")}/maintenance-template.html"
+  [[ -f "$template_file" ]] || { echo "升级横幅模板缺失: $template_file" >&2; return 1; }
+
+  maint_root="$maintenance_dir"
+  started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  old_version=$("$ssh_cmd" "readlink '$version_root/current' 2>/dev/null | xargs basename 2>/dev/null" 2>/dev/null || true)
+  : "${old_version:=unknown}"
+
+  render_script=$(mktemp -t kx-render-banner.XXXXXX.py) || {
+    echo "创建升级页模板临时文件失败" >&2
+    return 1
+  }
+  cat >"$render_script" <<'PYEOF'
+import sys
+old_v, new_v, started_at, template = sys.argv[1:]
+with open(template, encoding="utf-8") as source:
+    body = source.read()
+for token, value in (("__OLD_VERSION__", old_v), ("__NEW_VERSION__", new_v), ("__STARTED_AT__", started_at)):
+    body = body.replace(token, value)
+sys.stdout.write(body)
+PYEOF
+  if ! rendered_html=$(python3 "$render_script" "$old_version" "$new_version" "$started_at" "$template_file"); then
+    rm -f "$render_script"
+    echo "升级横幅模板渲染失败" >&2
+    return 1
+  fi
+  rm -f "$render_script"
+
+  # Write a temporary file and atomically rename it before creating the marker;
+  # nginx never sees a partial page, even if a previous deploy left the marker.
+  local remote_tmp="$maint_root/.index.html.deploy.$$"
+  if ! printf '%s' "$rendered_html" | "$ssh_cmd" "set -e; mkdir -p '$maint_root'; cat > '$remote_tmp'; mv -f '$remote_tmp' '$maint_root/index.html'; : > '$maint_root/UPGRADING'"; then
+    "$ssh_cmd" "rm -f '$remote_tmp'" >/dev/null 2>&1 || true
+    echo "升级页或标志文件写入失败" >&2
+    return 1
+  fi
+  echo "  ✓ 升级静态页已启用 (target=$new_version)"
+}
+
+host_hide_upgrade_banner() {
+  local ssh_cmd=$1 target=$2 maint_root install_root maintenance_dir
+  install_root=${3:-$(host_root_for "$target")}
+  maintenance_dir=${4:-$install_root/maintenance}
+  maint_root="$maintenance_dir"
+  # Remove the page first and verify it is gone; only then remove the marker.
+  # If either operation fails, UPGRADING remains and nginx continues to protect
+  # the unverified release instead of resuming real traffic.
+  "$ssh_cmd" "set -e; rm -f '$maint_root/index.html'; test ! -e '$maint_root/index.html'; rm -f '$maint_root/UPGRADING'" || return 1
+  echo "  ✓ 升级静态页已撤掉"
 }
 
 # Atomic switch: rewrite the current symlink to point at the freshly
@@ -275,6 +471,10 @@ host_mark_verified() {
 # We now collapse them into ONE heredoc'd remote shell. The heredoc
 # preserves ordering (set -e stops on first failure) and the host.sh
 # contract — exactly one remote action, atomic to the caller.
+#
+# The deploy orchestrator owns the upgrade-page lifecycle. It enables the
+# marker before calling this function and removes it only after all post-
+# deploy gates pass; keeping this primitive focused preserves rollback use.
 host_atomic_switch() {
   local ssh_cmd=$1 target=$2 version=$3
   local current_link binary_link web_link version_link release_dir bin_name
@@ -292,7 +492,9 @@ host_atomic_switch() {
   # out of the way, otherwise nginx serves stale index.html.
   # 2026-07-21 fix: when deploying --no-frontend (release has no web/),
   # preserve the existing web symlink so the UI is not broken.
-  "$ssh_cmd" "set -e
+  # 陈旧产物防线（同 bc6e696b3）：符号链接切换失败绝不能被吞掉后继续
+  # restart——那会把旧 binary 重新拉起并让调用方误以为切换成功。
+  if ! "$ssh_cmd" "set -e
     ln -sfn '$release_dir' '$current_link'
     ln -sfn '$current_link/$bin_name' '$binary_link'
     if [ -d '$current_link/web' ]; then
@@ -305,13 +507,17 @@ host_atomic_switch() {
     if [ -d '$current_link/configs' ]; then
       ln -sfn '$current_link/configs' '$(dirname "$current_link")/configs'
     fi
-  "
+  "; then
+    echo "host_atomic_switch: symlink swap to $version failed on target; restart aborted (previous release left serving)" >&2
+    return 1
+  fi
 
   # Restart stays as a separate call because it returns only after
   # systemd has issued the SIGTERM; combining it with the heredoc
   # would force us to wait synchronously and we'd lose the
   # timing/return-code signal.
   host_restart_service "$ssh_cmd" "$target"
+
 }
 
 # Drain the running service until all in-flight requests finish, then
@@ -418,18 +624,25 @@ host_prune_releases() {
     printf '%s' \"\$keep_set\""
 }
 
-# Rollback: point `current` at the given version and restart. The
-# orchestrator MUST gate on `host_select_rollback_target` first —
-# this function refuses silently so a bad version can't be forced.
+# Rollback: point `current` at the given version and restart. Refuse missing,
+# active, or unverified bundles even when called directly; the canonical CLI
+# still selects a target first, but this primitive must be safe on its own.
 host_rollback_to() {
   local ssh_cmd=$1 target=$2 version=$3
-  local metadata_file
+  local metadata_file current_link
   metadata_file=$(host_release_layout "$target" "$version" | sed -n 's/^metadata_file=//p')
+  current_link=$(host_release_layout "$target" "$version" | sed -n 's/^current_link=//p')
 
-  # Refuse silently if the bundle is missing or unverified — the
-  # caller is responsible for selection.
   if ! "$ssh_cmd" "test -f '$metadata_file'"; then
     echo "host_rollback_to: no bundle at $version on $target" >&2
+    return 1
+  fi
+  if "$ssh_cmd" "test \"\$(readlink '$current_link' 2>/dev/null | xargs basename 2>/dev/null)\" = '$version'"; then
+    echo "host_rollback_to: $version is already active on $target" >&2
+    return 1
+  fi
+  if ! "$ssh_cmd" "grep -Eq '\"verified\"[[:space:]]*:[[:space:]]*true' '$metadata_file'"; then
+    echo "host_rollback_to: $version is not verified on $target" >&2
     return 1
   fi
 

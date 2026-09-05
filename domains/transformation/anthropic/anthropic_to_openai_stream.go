@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,7 +14,9 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
 
@@ -110,6 +113,14 @@ func StreamAnthropicSSEToOpenAI(
 		bufferedToolArgs    strings.Builder
 		currentToolCallID   string
 		initialArgsSent     bool
+		// emittedContent (audit-24h-20260828-r3 P1-B parity) tracks
+		// whether any client-visible semantic bytes — text, thinking,
+		// tool-call deltas, or a terminal [DONE] — reached the wire.
+		// Set true inside writeChunk for content-bearing deltas and
+		// inside the ChunkTypeDone branch; read at the two clean-EOF
+		// return paths to decide whether to surface KindEmptyResponse
+		// (parity with anthropic_passthrough_stream.go:147-178).
+		emittedContent bool
 	)
 
 	// writeChunk writes a single OpenAI chunk to w and the capturer.
@@ -131,6 +142,24 @@ func StreamAnthropicSSEToOpenAI(
 		}
 
 		chunkCount++
+		// Mark semantic emission: any non-empty text / thinking /
+		// tool-call delta reaches the client as part of sseLine above.
+		// The role prelude alone (no content) is NOT semantic emission.
+		// ThinkingSignature (Anthropic signature_delta) also counts — a
+		// thinking block with only an opaque signature is still a thinking
+		// turn and the empty-response detector must not fire on it.
+		if chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil {
+			if chunk.Delta.Content != "" || chunk.Delta.ReasoningContent != "" ||
+				chunk.Delta.ThinkingSignature != "" {
+				emittedContent = true
+			}
+			for _, tc := range chunk.Delta.ToolCalls {
+				if tc.Arguments != "" || tc.Name != "" {
+					emittedContent = true
+					break
+				}
+			}
+		}
 	}
 
 	// flushBufferedText emits the accumulated text content.
@@ -219,8 +248,39 @@ func StreamAnthropicSSEToOpenAI(
 		}
 
 		if err != nil {
+			if errors.Is(err, sse.ErrLineTooLong) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("stream_line_too_large")
+				}
+				outcome = StreamOutcome{Interrupted: true, Reason: "stream_line_too_large", Kind: errorsx.KindUpstreamDown, Resumable: chunkCount == 0, ChunkCount: chunkCount}
+				if pc != nil {
+					pc.markInterrupted(outcome.Reason)
+				}
+				return outcome
+			}
 			if err == io.EOF || readCtx.Err() != nil {
 				flushBufferedText()
+				if writeErr := legacyStreamWriterErr(w); writeErr != nil {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("client_write_failed")
+					}
+					if pc != nil {
+						pc.markInterrupted("client_write_failed")
+					}
+					return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
+				}
+				// Empty streams must be classified before writing usage or [DONE].
+				// Otherwise the executor can fail over after the client already saw
+				// a syntactically complete response.
+				if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, legacyStreamWriterCancelled(w)) {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("anthropic_empty_response")
+					}
+					if pc != nil {
+						pc.markInterrupted("anthropic_empty_response")
+					}
+					return EmptyResponseStreamOutcome(chunkCount)
+				}
 				// Emit usage if we have it
 				if inputTokens > 0 || outputTokens > 0 {
 					usageChunk := &ir.StreamChunk{
@@ -236,6 +296,22 @@ func StreamAnthropicSSEToOpenAI(
 					writeChunk(usageChunk)
 				}
 				writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
+				// audit-24h-20260828-r3 P1-B parity (Q3): an Anthropic
+				// stream that closed cleanly but emitted no semantic bytes
+				// and no usage tokens is treated as empty so the executor
+				// fails over to the next candidate. Matches the
+				// non-stream detector at executor_anthropic.go:1273 and
+				// the passthrough detector at
+				// anthropic_passthrough_stream.go:147-178.
+				if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, false) {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("anthropic_empty_response")
+					}
+					if pc != nil {
+						pc.markInterrupted("anthropic_empty_response")
+					}
+					return EmptyResponseStreamOutcome(chunkCount)
+				}
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			if capture != nil {
@@ -355,6 +431,11 @@ func StreamAnthropicSSEToOpenAI(
 							Text        string `json:"text"`
 							Thinking    string `json:"thinking"`
 							PartialJSON string `json:"partial_json"`
+							// PR-2 (2026-06-24): signature_delta closes a thinking
+							// block. We surface the signature through the IR
+							// so the empty-response detector sees thinking-only
+							// turns as semantic emission.
+							Signature string `json:"signature"`
 						} `json:"delta"`
 					}
 					if err := json.Unmarshal(data, &evt); err == nil {
@@ -388,7 +469,16 @@ func StreamAnthropicSSEToOpenAI(
 							// that branch used to corrupt the chunk
 							// index for the *following* tool_use block
 							// on opus-4-8 streams.
-							_ = evt.Delta
+							//
+							// audit-24h-20260828-r4 (post-merge): thread
+							// the signature through IR.Delta so a
+							// thinking-only turn is observable to the
+							// downstream empty-response detector (the
+							// emittedContent bookkeeping lives in
+							// writeChunk, which is intentionally not
+							// called here — signature_delta produces no
+							// wire bytes for OpenAI clients).
+							emittedContent = emittedContent || evt.Delta.Signature != ""
 
 						default:
 							slog.Warn("unknown_delta_type_in_stream",
@@ -446,7 +536,21 @@ func StreamAnthropicSSEToOpenAI(
 								capture.AddQualityFlag("tool_args_repaired_on_flush")
 							}
 						}
-						chunk := buildToolCallChunk(toolCallIndex-1, currentToolCallID, "", &validated, true)
+						// Defensive fallback for malformed upstream streams that send
+						// input_json_delta without a preceding tool_use block. The
+						// OpenAI wire contract requires a stable non-empty call id;
+						// never emit an empty id or a negative tool index.
+						callIndex := toolCallIndex - 1
+						if callIndex < 0 {
+							callIndex = 0
+						}
+						if currentToolCallID == "" {
+							currentToolCallID = fmt.Sprintf("call_%s_%d", requestID, callIndex)
+							slog.Warn("anthropic-to-openai: synthesized missing tool call id",
+								"request_id", requestID,
+								"tool_call_index", callIndex)
+						}
+						chunk := buildToolCallChunk(callIndex, currentToolCallID, "", &validated, true)
 						writeChunk(chunk)
 						bufferedToolArgs.Reset()
 					}
@@ -474,6 +578,26 @@ func StreamAnthropicSSEToOpenAI(
 					"original_finish_reason", "tool_calls")
 				stop := "stop"
 				finishReason = &stop
+			}
+
+			if writeErr := legacyStreamWriterErr(w); writeErr != nil {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("client_write_failed")
+				}
+				if pc != nil {
+					pc.markInterrupted("client_write_failed")
+				}
+				return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false, ChunkCount: chunkCount}
+			}
+			// Empty streams must be classified before writing terminal frames.
+			if IsAnthropicStreamEmpty(emittedContent, inputTokens, outputTokens, legacyStreamWriterCancelled(w)) {
+				if capture != nil {
+					capture.MarkInterruptedWithReason("anthropic_empty_response")
+				}
+				if pc != nil {
+					pc.markInterrupted("anthropic_empty_response")
+				}
+				return EmptyResponseStreamOutcome(chunkCount)
 			}
 
 			// Emit final chunk with finish_reason
@@ -504,7 +628,8 @@ func StreamAnthropicSSEToOpenAI(
 				writeChunk(usageChunk)
 			}
 
-			// Emit [DONE]
+			// Emit [DONE] only after the semantic/empty decision above. The
+			// empty path must never expose a completed response before failover.
 			writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
 			return StreamOutcome{ChunkCount: chunkCount}
 
@@ -569,11 +694,8 @@ func emitErrorChunk(w http.ResponseWriter, code, message string, flusher http.Fl
 }
 
 // readSSEEvent reads one SSE event.
-func readSSEEvent(ctx context.Context, reader io.Reader, _ streamRuntimeConfig) (eventType string, data []byte, err error) {
-	br, ok := reader.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReader(reader)
-	}
+func readSSEEvent(ctx context.Context, reader io.Reader, runtimeCfg streamRuntimeConfig) (eventType string, data []byte, err error) {
+	lineReader := sse.NewLineReader(reader, runtimeCfg.sseMaxLineBytes)
 	var dataLines []string
 	for {
 		select {
@@ -581,7 +703,7 @@ func readSSEEvent(ctx context.Context, reader io.Reader, _ streamRuntimeConfig) 
 			return "", nil, ctx.Err()
 		default:
 		}
-		line, rerr := br.ReadString('\n')
+		line, rerr := lineReader.ReadLine()
 		line = strings.TrimRight(line, "\r\n")
 		if line == "" {
 			if len(dataLines) == 0 {

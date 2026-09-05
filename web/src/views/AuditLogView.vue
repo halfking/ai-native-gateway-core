@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
+import { fmtDateCompact } from '../i18n/useFormat'
 import { ref, onMounted, computed } from 'vue'
 import { getAuditLogs, type AuditLogEntry } from '../api'
 
@@ -81,11 +82,6 @@ function actionLabel(action: string): string {
     if (te(key)) return t(key)
   }
   return action
-}
-
-function fmtDate(s: string) {
-  if (!s) return t('auditLog.dash')
-  return new Date(s).toLocaleDateString(localeRef.value, { month: '2-digit', day: '2-digit' })
 }
 
 function fmtTime(s: string) {
@@ -241,7 +237,7 @@ onMounted(load)
               @keyup.enter="openDetail(e)"
             >
               <td class="col-time" :title="fmtTs(e.ts)">
-                <div class="cell-line1">{{ fmtDate(e.ts) }}</div>
+                <div class="cell-line1">{{ fmtDateCompact(e.ts) }}</div>
                 <div class="cell-line2">{{ fmtTime(e.ts) }}</div>
               </td>
               <td class="col-actor">

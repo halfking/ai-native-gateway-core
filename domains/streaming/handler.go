@@ -3,6 +3,7 @@ package streaming
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,21 +23,25 @@ import (
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta" //nolint:depguard // deterministic arrival metadata extraction
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // V3.2 state-transition logger
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
+	"github.com/kaixuan/llm-gateway-go/domains/goalintegration"                     //nolint:depguard // Wave 2-D: HTTP API integration
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"                          //nolint:depguard // Goal retry outcome observer
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"                       //nolint:depguard // request-side session handoff hook
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/identity"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/requestjourney"                      //nolint:depguard // request lifecycle observation
 	"github.com/kaixuan/llm-gateway-go/domains/session"                             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/state"                     //nolint:depguard // SP-02 state machine wiring
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
@@ -64,21 +69,25 @@ const maxBodySize = 128 << 20 // 128MB - increased for large context models like
 func MaxBodySize() int { return maxBodySize }
 
 type preStreamKeepalive struct {
-	w       http.ResponseWriter
-	flusher http.Flusher
-	stopCh  chan struct{}
-	doneCh  chan struct{}
-	mu      sync.Mutex
-	once    sync.Once
-	// paused is set by the executor when entering the synchronous
-	// no-candidate probe hold. While paused, the loop() goroutine
-	// skips writing SSE keepalive comments so the client does not
-	// interpret a stale comment as a response-start signal during
-	// the hold. Resumed by resume(); the goroutine checks the flag
-	// on every tick so the resume latency is at most one keepalive
-	// interval (default 15s — but the executor's 5s probe timeout
-	// means we resume long before that regardless).
-	paused atomic.Bool
+	session *StreamSession
+}
+
+type retryCommitWriter struct {
+	http.ResponseWriter
+	wrote atomic.Bool
+}
+
+func (w *retryCommitWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.wrote.Store(true)
+	}
+	return w.ResponseWriter.Write(p)
+}
+
+func (w *retryCommitWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 // interceptingStreamWriter applies the response interceptor chain to complete
@@ -119,10 +128,19 @@ func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
 }
 
 func (w *interceptingStreamWriter) Flush() {
+	_ = w.FlushError()
+}
+
+func (w *interceptingStreamWriter) FlushError() error {
 	w.drain()
-	if w.flusher != nil {
-		w.flusher.Flush()
+	if w.flusher == nil {
+		return nil
 	}
+	if errorFlusher, ok := w.flusher.(interface{ FlushError() error }); ok {
+		return errorFlusher.FlushError()
+	}
+	w.flusher.Flush()
+	return nil
 }
 
 func (w *interceptingStreamWriter) finish() {
@@ -167,78 +185,30 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 	}
 }
 
-func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration, requestID string) (*preStreamKeepalive, bool) {
+func startPreStreamKeepalive(ctx context.Context, w http.ResponseWriter, interval time.Duration, requestID string) (*preStreamKeepalive, bool) {
 	if _, ok := w.(http.Flusher); !ok {
 		return nil, false
 	}
-	if interval <= 0 {
-		interval = 15 * time.Second
-	}
-	// 2026-08-15 (A-P2-6): the keepalive loop is one of several producers on
-	// this connection — the bridges write the same ResponseWriter once the
-	// stream starts. Wrap the connection in a serializedResponseWriter so
-	// keepalive comments and stream frames can never interleave; the handler
-	// reassigns its local writer to psk.Writer() so later writes join the
-	// same channel. The survival path (survival_wiring.go) installs its own
-	// SerializedStreamWriter after stopping this loop, so the two never
-	// overlap on one connection.
-	sw := NewSerializedResponseWriter(w)
-	psk := &preStreamKeepalive{
-		w:       sw,
-		flusher: sw,
-		stopCh:  make(chan struct{}),
-		doneCh:  make(chan struct{}),
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	// 2026-08-04: set X-Accel-Buffering here so nginx/reverse proxies disable
-	// response buffering from the very first byte. Previously this header was
-	// only set inside each protocol bridge (stream.go/anthropic_bridge.go/
-	// responses_bridge.go) AFTER WriteHeader — too late for the prewarmed
-	// path, where keepalive comments would be buffered and never reach the
-	// client, defeating the whole purpose.
-	w.Header().Set("X-Accel-Buffering", "no")
-	// 2026-08-04: stamp X-Request-Id here so the response carries the
-	// request id on the prewarmed path. Each protocol bridge sets it again
-	// later, but that happens AFTER its own WriteHeader — too late once we
-	// have already committed headers. The caller passes the already-resolved
-	// id as a parameter (see preStreamKeepalive call site) rather than
-	// re-reading r.Header, which may not be populated yet.
+	session := NewStreamSession(w, interval, sseKeepaliveComment)
+	psk := &preStreamKeepalive{session: session}
+	streamWriter := session.Writer()
+	streamWriter.Header().Set("Content-Type", "text/event-stream")
+	streamWriter.Header().Set("Cache-Control", "no-cache")
+	streamWriter.Header().Set("Connection", "keep-alive")
+	streamWriter.Header().Set("X-Accel-Buffering", "no")
 	if requestID != "" {
-		w.Header().Set("X-Request-Id", requestID)
+		streamWriter.Header().Set("X-Request-Id", requestID)
 	}
-	w.WriteHeader(http.StatusOK)
-	psk.writeComment(sseKeepaliveComment)
-	go psk.loop(interval)
+	streamWriter.WriteHeader(http.StatusOK)
+	_ = session.Heartbeat()
+	session.Start(ctx)
 	return psk, true
 }
 
-func (p *preStreamKeepalive) loop(interval time.Duration) {
-	defer close(p.doneCh)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-p.stopCh:
-			return
-		case <-ticker.C:
-			if p.paused.Load() {
-				continue
-			}
-			p.writeComment(sseKeepaliveComment)
-		}
-	}
-}
-
 func (p *preStreamKeepalive) writeComment(line string) {
-	if p == nil {
-		return
+	if p != nil {
+		_ = p.session.WriteTransportFrame(line)
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	safeWriteSSE(p.w, line)
-	safeFlush(p.flusher)
 }
 
 // writeThinking sends a thinking event to the client (SSE event: thinking).
@@ -258,41 +228,31 @@ func (p *preStreamKeepalive) writeThinking(message string) {
 	if p == nil {
 		return
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
 	escaped, _ := json.Marshal(message)
-	fmt.Fprintf(p.w, ": thinking: %s\n\n", escaped)
-	safeFlush(p.flusher)
+	_ = p.session.WriteTransportFrame(fmt.Sprintf(": thinking: %s\n\n", escaped))
 }
 
 // pause suspends future keepalive comments. Idempotent.
 func (p *preStreamKeepalive) pause() {
-	if p == nil {
-		return
+	if p != nil {
+		p.session.Pause()
 	}
-	p.paused.Store(true)
 }
 
 // resume re-enables keepalive comment writes. Idempotent.
 func (p *preStreamKeepalive) resume() {
-	if p == nil {
-		return
+	if p != nil {
+		p.session.Resume()
 	}
-	p.paused.Store(false)
 }
 
-// Writer returns the serialized connection view (the serializedResponseWriter
-// this keepalive installed). The handler reassigns its local ResponseWriter
-// to it so bridge writes share the keepalive's serialized channel instead of
-// racing the keepalive loop on the raw connection (doc 20 A-P2-6).
-func (p *preStreamKeepalive) Writer() http.ResponseWriter { return p.w }
+// Writer returns the serialized connection view shared by all producers.
+func (p *preStreamKeepalive) Writer() http.ResponseWriter { return p.session.Writer() }
 
 func (p *preStreamKeepalive) stop() {
-	if p == nil {
-		return
+	if p != nil {
+		p.session.Stop()
 	}
-	p.once.Do(func() { close(p.stopCh) })
-	<-p.doneCh
 }
 
 func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code string) {
@@ -340,6 +300,10 @@ type RequestIdentity struct {
 	ClientModel     string
 	SessionID       string
 	UserKey         string
+	// SubAgents (2026-09-03) — parsed snapshot from X-Gw-Sub-Agents header.
+	// Empty when the header is missing or malformed. Used by the goal hook
+	// (sub-agent gate) and the goal-mode continue payload builder.
+	SubAgents SubAgentSnapshot
 }
 
 // initializeRequestIdentity establishes one stable request and provisional
@@ -366,11 +330,12 @@ func initializeRequestIdentity(r *http.Request) RequestIdentity {
 		r.Header.Set("X-Gw-Session-Id", identity.SessionID)
 	}
 	identity.ClientType = strings.TrimSpace(r.Header.Get("X-Gw-Client-Type"))
+	identity.SubAgents = parseSubAgentsHeader(r.Header.Get(SubAgentHeader))
 	return identity
 }
 
 func sanitizeGwSessionHeader(v string) string {
-	s := strings.TrimSpace(v)
+	s := sanitizeRequestCorrelationID(v)
 	if s == "" {
 		return ""
 	}
@@ -387,6 +352,23 @@ func sanitizeGwSessionHeader(v string) string {
 		return ""
 	}
 	return s
+}
+
+// isBranchSessionID reports whether the already-sanitized session id belongs to
+// an auto-generated background branch rather than a user-facing main session.
+// The two namespaces are written by the auto-title / auto-summary loopback
+// (admin/auto_title_generator.go, admin/auto_summary_generator.go) and MUST be
+// preserved verbatim on the request log row so operators can SQL:
+//
+//	WHERE gw_session_id LIKE 'gt\_%' ESCAPE '\'   -- every auto-title row
+//	WHERE gw_session_id LIKE 'gs\_%' ESCAPE '\'   -- every auto-summary row
+//
+// They must NOT be auto-created/migrated into a fresh gw_<uuid> by the chat
+// handler's ErrSessionNotFound fallback, nor written into the no-session
+// "last system session" resume pointer. The prefixes MUST stay in sync with
+// sanitizeGwSessionHeader above.
+func isBranchSessionID(sessionID string) bool {
+	return strings.HasPrefix(sessionID, "gt_") || strings.HasPrefix(sessionID, "gs_")
 }
 
 // InitializeRequestIdentity is the exported helper that establishes one
@@ -555,6 +537,16 @@ type chatRequestBody struct {
 	// Format: ["filesystem.*", "network.http_get"]
 	// Expands to full tool definitions via toolRegistry.
 	ToolIDs []string `json:"tool_ids,omitempty"`
+	// Goal (Wave 2-D, 2026-08-22) is the optional unified orchestration
+	// goal object. Backward compatible: absent/null/empty is allowed.
+	// GoalIntegration.ParseAndCreate decides whether to create a GoalRun.
+	Goal json.RawMessage `json:"goal,omitempty"`
+	// 2026-08-23: gateway-private routing override. Mirrors the
+	// X-LLMGW-Preferred-Credential HTTP header so clients that cannot set
+	// custom headers (e.g. SDK defaults) can still pin a credential via
+	// the OpenAI-compatible metadata extension slot. The admin token gate
+	// is applied by ExtractPreferredCredential at the v2 preflight layer.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
 //-----------------------------------------------------------------------------
@@ -652,8 +644,16 @@ func calculateRetryDelay(attempt int, baseDelayMs int, maxDelayMs int) time.Dura
 		maxDelayMs = 5000 // default max 5s
 	}
 
-	// Exponential backoff: 100ms -> 200ms -> 400ms -> 800ms -> ...
-	delayMs := baseDelayMs * (1 << attempt)
+	// Exponential backoff: 100ms -> 200ms -> 400ms -> 800ms ...
+	// Cap the shift: 1<<attempt overflows int once attempt ≥ 31 (63 on
+	// 64-bit for int64, but int is 64-bit here and the multiplication still
+	// overflows for large bases). maxDelayMs clamps the result long before
+	// shift 20, so capping keeps the math safe if retries are ever raised.
+	shift := attempt
+	if shift > 20 {
+		shift = 20
+	}
+	delayMs := baseDelayMs * (1 << shift)
 	if delayMs > maxDelayMs {
 		delayMs = maxDelayMs
 	}
@@ -681,17 +681,29 @@ type providerResolver interface {
 	ModelKnown(ctx context.Context, model string) bool
 }
 
+// requestKeyVerifier is the authorization surface used by request handlers.
+// *authentication.KeyVerifier is the production implementation; the interface
+// keeps endpoint-level recovery tests on the same authentication contract.
+type requestKeyVerifier interface {
+	Enabled() bool
+	Verify(ctx context.Context, rawKey string) (*authentication.KeyInfo, error)
+	VerifyByID(ctx context.Context, id int) (*authentication.KeyInfo, error)
+	CheckBudget(ctx context.Context, keyID int) error
+	LookupKeyMeta(ctx context.Context, rawKey string) (*authentication.KeyLookupMeta, error)
+}
+
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
-	circuit    *credential.Manager
-	limiter    *credential.Limiter
-	matrix     *transformation.Matrix
-	pools      *pool.PoolManager
-	resolver   *resolve.Resolver
-	auditor    audit.Sink
-	client     *upstreampkg.Client
-	normalizer *Normalizer
-	executor   *executors.Executor
+	circuit     *credential.Manager
+	limiter     *credential.Limiter
+	matrix      *transformation.Matrix
+	pools       *pool.PoolManager
+	resolver    *resolve.Resolver
+	auditor     audit.Sink
+	client      *upstreampkg.Client
+	normalizer  *Normalizer
+	executor    *executors.Executor
+	adminAPIKey string
 	// SR-W2 request survival (doc 18 §6): nil gate keeps the survival branch
 	// inert; armed via SetRequestSurvival from main.go.
 	survivalTenantAllowed func(tenantID string) bool
@@ -703,7 +715,8 @@ type ChatHandler struct {
 	durableExecOptions   DurableExecutionOptions
 	provider             providerResolver
 	sticky               *executors.StickyCache
-	keyVerifier          *authentication.KeyVerifier
+	keyVerifier          requestKeyVerifier
+	survivalAttemptExec  AttemptExecutor
 	rateLimiter          ratelimit.RPMLimiter
 	telemetryClient      *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
@@ -809,6 +822,22 @@ type ChatHandler struct {
 	// 旁路异步、满即丢，不阻塞请求热路径。
 	liveActions *liveactions.Emitter
 
+	// connectionRegistry (会话优化 v4 T4/R1.6) 流式连接注册表：
+	// request_id → 客户端写出流。流式 ingress 在 pre-stream keepalive
+	// 启动后 Register、请求收尾 Unregister；nil 禁用（桥接帧/管理端
+	// 投影均无操作）。Register 满即返回错误，绝不阻塞请求热路径。
+	connectionRegistry *ConnectionRegistry
+
+	journeyRecorder          *requestjourney.Recorder
+	journeyGatewayInstanceID string
+
+	// provisionalMetadataExtractor performs zero-cost arrival analysis. The
+	// extraction itself is synchronous; persistence is best-effort and must not
+	// delay request routing.
+	provisionalMetadataExtractor interface {
+		MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input)
+	}
+
 	// autoTitleGenerator (2026-06-22) automatically generates session titles
 	// after the first successful request. nil disables auto-title generation.
 	autoTitleGenerator interface {
@@ -820,7 +849,7 @@ type ChatHandler struct {
 		// request_logs_hot.parent_request_id makes the loopback joinable.
 		// 2026-08-06: taskID is the request's gw_task_id so the stored title
 		// row matches request_logs on (task_id, scoped_session_id).
-		MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string)
+		MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID, requestID string)
 	}
 
 	// autoSummaryGenerator (2026-08-06) incrementally rolls session
@@ -865,9 +894,12 @@ type ChatHandler struct {
 	// by SanitizeRestoreInterceptor on the response path. nil = disabled.
 	sanitizeInputMiddleware func(http.Handler) http.Handler
 
-	// handoffHook prepares a trusted resume packet and rotates the gateway
-	// session before the provider receives a near-limit request.
-	handoffHook *handoff.TriggerHook
+	// handoffHook may return an explicit resume packet before provider dispatch;
+	// it must never inject gateway control data into the provider request body.
+	handoffHook          *handoff.TriggerHook
+	handoffSessionGetter interface {
+		Get(ctx context.Context, id string) (*session.Session, error)
+	}
 
 	// attachmentExtractor (2026-07-01) extracts base64/data-URI attachments
 	// from incoming requests and saves them to the filesystem before forwarding.
@@ -892,12 +924,25 @@ type ChatHandler struct {
 	// goalRetryRecorder (2026-07-23) persists actual retry count to goal_sessions.
 	// When non-nil, handler writes retry_count after each request. nil disables
 	// persistence (fail-open: retry behavior unchanged, only stats missing).
-	goalRetryRecorder GoalRetryRecorder
+	goalRetryRecorder   GoalRetryRecorder
+	goalOutcomeObserver goal.OutcomeObserver
+
+	// goalIntegrator (Wave 2-D, 2026-08-22) parses the optional `goal` field
+	// in the request body and creates a durable GoalRun ledger row before
+	// the durable snapshot cut point. Nil means the feature is disabled
+	// (no-op); explicit goal requests will return ErrNoGoal (treated as
+	// "no goal" and continue). Configured store + missing migration 554
+	// returns ErrInvalidGoal (fail-closed, 400).
+	goalIntegrator *goalintegration.Integrator
 
 	// formatDetector (2026-07-26) automatically detects client request format patterns.
 	// When non-nil, handler identifies format (OpenAI, OpenCode, etc.) and applies
 	// known fixes before validation. nil disables format detection (strict validation only).
 	formatDetector *FormatDetector
+
+	// goalSubAgentRecorder (2026-09-03, gw-continue feature) persists the
+	// X-Gw-Sub-Agents client report into goal_sessions.
+	goalSubAgentRecorder GoalSubAgentRecorder
 
 	// formatFixer (2026-07-26) applies automatic fixes to common format issues.
 	// Works with formatDetector to repair malformed requests (empty objects, wrong types).
@@ -994,6 +1039,19 @@ func (h *ChatHandler) SetLiveActions(e *liveactions.Emitter) {
 	h.liveActions = e
 }
 
+// SetConnectionRegistry (会话优化 v4 T4/R1.6) 注入进程级流式连接注册表。
+// 必须在服务开始接收流量前调用（ServeHTTP 期间并发读写该指针不安全）；
+// 传 nil 禁用注册（桥接帧与管理端 /api/admin/connection-registry 投影
+// 均退化为空表）。
+func (h *ChatHandler) SetConnectionRegistry(r *ConnectionRegistry) {
+	h.connectionRegistry = r
+}
+
+func (h *ChatHandler) SetRequestJourney(recorder *requestjourney.Recorder, gatewayInstanceID string) {
+	h.journeyRecorder = recorder
+	h.journeyGatewayInstanceID = strings.TrimSpace(gatewayInstanceID)
+}
+
 // clientProtocolFromPath infers the inbound wire protocol from the URL path
 // for the arrive action event (the authoritative ir.DetectProtocol runs later,
 // after the body is parsed; arrive fires before that).
@@ -1006,6 +1064,14 @@ func clientProtocolFromPath(path string) string {
 	default:
 		return "openai-completions"
 	}
+}
+
+func protocolConversionFlag(clientProtocol, upstreamProtocol string) *bool {
+	if clientProtocol == "" || upstreamProtocol == "" {
+		return nil
+	}
+	converted := clientProtocol != upstreamProtocol
+	return &converted
 }
 
 // emitAction 是 liveactions 注入的薄包装（同 emitTrace 的做法）。
@@ -1083,6 +1149,15 @@ func (h *ChatHandler) SetSessionCompressor(sc *compression.SessionCompressor) {
 // before session compression sends the request upstream.
 func (h *ChatHandler) SetHandoffHook(hook *handoff.TriggerHook) {
 	h.handoffHook = hook
+}
+
+// SetGoalIntegrator (Wave 2-D, 2026-08-22) wires the optional GoalRun
+// integration. Pass nil to disable. When enabled with a configured store,
+// explicit `goal` fields in /v1/chat/completions bodies will create a
+// GoalRun row before the durable snapshot cut point and the response will
+// include X-Goal-Run-Id + status_url headers.
+func (h *ChatHandler) SetGoalIntegrator(integrator *goalintegration.Integrator) {
+	h.goalIntegrator = integrator
 }
 
 // SetSanitizeInputMiddleware wires the SmartSaniGuard input-side sanitizer.
@@ -1171,11 +1246,22 @@ func (h *ChatHandler) SetAuth(kv *authentication.KeyVerifier, rl ratelimit.RPMLi
 	h.rateLimiter = rl
 }
 
+// SetAdminAPIKey configures the operator token used to gate the
+// X-LLMGW-Preferred-Credential routing override.
+func (h *ChatHandler) SetAdminAPIKey(key string) {
+	h.adminAPIKey = key
+}
+
 func (h *ChatHandler) AuthKeyVerifier() *authentication.KeyVerifier {
 	if h == nil {
 		return nil
 	}
-	return h.keyVerifier
+	verifier, _ := h.keyVerifier.(*authentication.KeyVerifier)
+	return verifier
+}
+
+func (h *ChatHandler) setRequestKeyVerifierForTest(verifier requestKeyVerifier) {
+	h.keyVerifier = verifier
 }
 
 func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {
@@ -1246,12 +1332,36 @@ func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
 	return capture
 }
 
-// SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
+// SetProvisionalMetadataExtractor wires the deterministic session-arrival
+// metadata extractor. Passing nil disables the optional projection.
+func (h *ChatHandler) SetProvisionalMetadataExtractor(extractor interface {
+	MaybeGenerateProvisionalMetadata(tenantID, sessionID, taskID string, in sessionmeta.Input)
+}) {
+	h.provisionalMetadataExtractor = extractor
+}
+
+func (h *ChatHandler) invokeProvisionalMetadataOnArrival(r *http.Request, sessionID string, keyInfo *authentication.KeyInfo, logCtx *RequestLogContext, bodyBytes []byte) {
+	if h == nil || h.provisionalMetadataExtractor == nil || sessionID == "" || isBranchSessionID(sessionID) || keyInfo == nil || logCtx == nil {
+		return
+	}
+	taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+	h.provisionalMetadataExtractor.MaybeGenerateProvisionalMetadata(keyInfo.TenantID, sessionID, taskID, sessionmeta.Input{
+		RequestBody:    append([]byte(nil), bodyBytes...),
+		AgentName:      logCtx.meta.AgentName,
+		AgentType:      logCtx.meta.AgentType,
+		ClientType:     r.Header.Get("X-Gw-Client-Type"),
+		ClientProtocol: logCtx.meta.ClientProtocol,
+		WorkType:       logCtx.WorkType,
+		ProjectRef:     logCtx.meta.ProjectID,
+		TaskRef:        taskID,
+	})
+}
+
 // 2026-08-06: signature extended with parentRequestID for request_logs_hot.parent_request_id linkage.
 // 2026-08-06: signature extended with taskID so the stored title row matches
 // request_logs on (task_id, scoped_session_id).
 func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
-	MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string)
+	MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID, requestID string)
 }) {
 	h.autoTitleGenerator = atg
 }
@@ -1351,6 +1461,18 @@ func (h *ChatHandler) SetGoalRetryRecorder(recorder GoalRetryRecorder) {
 	h.goalRetryRecorder = recorder
 }
 
+// SetGoalOutcomeObserver wires fail-open Goal lifecycle observations.
+func (h *ChatHandler) SetGoalOutcomeObserver(observer goal.OutcomeObserver) {
+	h.goalOutcomeObserver = observer
+}
+
+// SetGoalSubAgentRecorder (2026-09-03) wires the goal-sessions sub-agent
+// recorder. The handler calls RecordSubAgents for every request carrying
+// X-Gw-Sub-Agents. Fail-open: nil disables persistence silently.
+func (h *ChatHandler) SetGoalSubAgentRecorder(recorder GoalSubAgentRecorder) {
+	h.goalSubAgentRecorder = recorder
+}
+
 func (h *ChatHandler) SetSessionGetter(sg interface {
 	Get(ctx context.Context, id string) (*session.Session, error)
 	Touch(ctx context.Context, id string) error
@@ -1358,6 +1480,7 @@ func (h *ChatHandler) SetSessionGetter(sg interface {
 	BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 }) {
 	h.sessionGetter = sg
+	h.handoffSessionGetter = sg
 }
 
 // SetFormatAnomalyRecorder configures the anomaly recorder for tracking
@@ -1511,6 +1634,9 @@ type QuotaRecorder interface {
 // wraps the real handler so sensitive info in r.Body is replaced with
 // placeholders + persisted to Redis before any request processing.
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w, r, journeyWriter := beginRequestJourney(w, r, h)
+	defer finishRequestJourney(r, journeyWriter)
+	r = markExplicitStreamSession(r)
 	if h.sanitizeInputMiddleware != nil {
 		h.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
 		return
@@ -1582,19 +1708,22 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	if clientIP == "" {
 		clientIP = r.RemoteAddr
 	}
-	h.emitTrace(r.Context(), requestID,
-		gwtrace.ReceiveRequest(r.Method, r.URL.Path, clientIP).
-			WithDetails(
-				"client_request_id", clientRequestID,
-				"user_agent", r.Header.Get("User-Agent"),
-			))
-	// ── 2026-08-15 (V3.3-OBS OBS-B1): arrive 动作事件（S1，24 号 §2）──────
-	// 客户端请求到达网关。client_protocol 按路径推断；model(原始) 在 body
-	// 解析之后才可知，route_resolved 事件会带上解析结果，此处不重复。
-	h.emitAction(r.Context(), requestID, liveactions.ActionArrive, map[string]string{
-		"client_protocol": clientProtocolFromPath(r.URL.Path),
-		"method":          r.Method,
-	})
+	if shouldTraceRequest(r.Method) {
+		h.emitTrace(r.Context(), requestID,
+			gwtrace.ReceiveRequest(r.Method, r.URL.Path, clientIP).
+				WithDetails(
+					"client_request_id", clientRequestID,
+					"user_agent", r.Header.Get("User-Agent"),
+				))
+		// ── 2026-08-15 (V3.3-OBS OBS-B1): arrive 动作事件（S1，24 号 §2）──────
+		// 客户端请求到达网关。client_protocol 按路径推断；model(原始) 在 body
+		// 解析之后才可知，route_resolved 事件会带上解析结果，此处不重复。
+		h.emitAction(r.Context(), requestID, liveactions.ActionArrive, map[string]string{
+			"client_protocol": clientProtocolFromPath(r.URL.Path),
+			"method":          r.Method,
+		})
+	}
+
 	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
 	// Even pre-keyInfo failures (missing_key, invalid_key, auth_unavailable)
 	// emit a request_log row via the safety net. Without a session_id here
@@ -1684,7 +1813,13 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 		// as stage=13 (response_fail) so audit completeness stays at 100%.
 		// Only runs if the request context is canceled (client disconnect)
 		// AND we never successfully completed via the success path.
-		if h.requestLogger != nil && r.Context().Err() != nil {
+		// 2026-08-16 fix: the guard used to be only "context canceled" — a
+		// request that had ALREADY completed successfully (stream flushed,
+		// emitTelemetry wrote the row, IsLogged()=true) still tripped this
+		// block when the client tore down its connection at the very end,
+		// producing a spurious "client_cancel" probe in the live stream.
+		// Add !IsLogged() so an already-recorded request never emits one.
+		if h.requestLogger != nil && shouldEmitDisconnectProbe(r.Context(), logCtx) {
 			// 2026-06-30: 标记客户端超时/断开连接 (migration 320)
 			if errors.Is(r.Context().Err(), context.DeadlineExceeded) ||
 				errors.Is(r.Context().Err(), context.Canceled) {
@@ -1736,7 +1871,7 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 			if h.telemetryClient != nil {
 				if pool := h.telemetryClient.DBPool(); pool != nil {
 					go func(rid string) {
-						for attempt, delay := range []time.Duration{0, 100 * time.Millisecond, 500 * time.Millisecond, 2 * time.Second} {
+						for attempt, delay := range []time.Duration{0, 5 * time.Second, 5 * time.Second, 5 * time.Second} {
 							if delay > 0 {
 								time.Sleep(delay)
 							}
@@ -1830,6 +1965,15 @@ func (h *ChatHandler) serveWithExecutor(
 	startTime := logCtx.StartTime
 	logCtx.EnsureCaptured()
 
+	// ── SP-02 (stream state machine): initialise runtime + RequestContext ──
+	// All downstream state transitions are emitted at the same call sites as
+	// the existing INFO logs (auth/routed/compressing/dispatching/firstByte/
+	// ended/failed/cancelled). The runtime runs on its own goroutine driven
+	// by r.Context(); defer cancel guarantees the event loop reaches a
+	// terminal state on every exit path.
+	rt, _ := h.initRequestStateMachine(r.Context(), requestID, "")
+	defer cancelRequestStateMachine(rt, nil)
+
 	// ── 2026-07-17: trace.body_parse ──────────────────────────────────────
 	// 在 EnsureCaptured 后 (body 已读取) 立即记录, body_size 用于分析上游
 	// prompt cache 命中与上下文窗口风险。
@@ -1880,6 +2024,16 @@ func (h *ChatHandler) serveWithExecutor(
 				logCtx.SetClientModel("<unknown>")
 			}
 		}
+		// 2026-08-26 (kimi-k3 queue bug fix #2): rate-limit early-return
+		// bypassed recordInitialRequestLog (handler.go:3572), so the
+		// subsequent EmitRateLimited UPDATE hit 0 rows in
+		// request_logs_hot — leaving the failure unlogged while the WAL
+		// and Redis trace still recorded it. INSERT a minimal placeholder
+		// (RequestStatus=in_progress) so the UPDATE lands. Idempotent via
+		// INSERT … ON CONFLICT (request_id) DO UPDATE on
+		// request_logs_hot. Mirrors the recordInitialRequestLog seed
+		// surface without pulling in its 14-arg signature.
+		h.insertRateLimitedPlaceholder(logCtx)
 		logCtx.EmitRateLimited(errCode, errMsg, providerID, credentialID)
 		logCtx.MarkLogged()
 	}
@@ -1919,6 +2073,9 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		keyInfo = ki
 		logCtx.SetKey(ki)
+		bindRequestJourney(r, ki.TenantID, logCtx.ClientModel)
+		// SP-02: state machine — auth succeeded.
+		rt.Emit(state.EventAuthed)
 
 		// Round 38 (2026-06-16) — emit multi-tenant OTel span
 		// attributes per docs/multi-tenant-otel-design.md §3.1.
@@ -1937,21 +2094,6 @@ func (h *ChatHandler) serveWithExecutor(
 			"Your API key has been throttled due to anomalous usage. Contact admin.",
 			"rate_limit_error", "key_throttled")
 		return
-	}
-
-	// ── RPM rate limit (unified via checkGatewayRateLimit) ──────────────
-	rlOutcome := checkGatewayRateLimit(keyInfo, h.rateLimiter)
-	h.emitTrace(r.Context(), requestID,
-		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
-			WithDetails("limit", rlOutcome.Limit, "reset_sec", rlOutcome.ResetSec))
-	if !rlOutcome.Skipped {
-		writeRateLimitHeaders(w, rlOutcome)
-		if rlOutcome.Blocked {
-
-			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
-			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
-			return
-		}
 	}
 
 	// ── Budget pre-check ─────────────────────────────────────────────────
@@ -2048,6 +2190,25 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.MarkLogged()
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
 			"error": map[string]string{"message": "request body exceeds 32 MiB limit", "type": "invalid_request", "code": "body_too-large"},
+		})
+		return
+	}
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Record the receipt-time estimate. Provider-aware compression runs later,
+	// after candidate resolution supplies the selected model context window.
+	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai"); applied {
+		logCtx.SetPreflightCompress(pbEst, len(pb))
+		bodyBytes = pb
+	}
+	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
+	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
+	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
+		msg := fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit (LLM_GATEWAY_MAX_PROMPT_TOKENS)", estTokens, promptBudgetLimit())
+		logCtx.SetError("prompt_too_large", msg)
+		logCtx.EmitFailure("prompt_too_large", msg, nil, nil)
+		logCtx.MarkLogged()
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{
+			"error": map[string]string{"message": msg, "type": "invalid_request", "code": "prompt_too_large"},
 		})
 		return
 	}
@@ -2170,11 +2331,26 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	// ========== End Format Detection & Auto-Fix ==========
 
+	// 2026-08-25: strip client-facing alias prefix (e.g. "kx-").
+	// Must run before CanonicalizeClientModel so the alias is removed
+	// before canonicalization and SQL lookup.
+	modelAfterStrip := ApplyAliasPrefix(reqBody.Model)
+	if modelAfterStrip != reqBody.Model {
+		slog.Debug("handler: alias prefix stripped",
+			"original", reqBody.Model,
+			"prefix", ModelAliasPrefix(),
+			"stripped", modelAfterStrip,
+			"request_id", requestID)
+	}
+
 	// 2026-07-14: enforce lowercase at the wire boundary so downstream
 	// SQL matches (canonical_raw_name / standardized_name / model_aliases)
 	// work without lower() wrappers.
-	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
+	clientModel := modelname.CanonicalizeClientModel(modelAfterStrip)
 	logCtx.SetClientModel(clientModel)
+	if clientModel != autoRequestMagic {
+		resolveRequestJourney(r, tenant(keyInfo), clientModel, clientModel)
+	}
 
 	// ========== Message Field Validation (2026-07-26) ==========
 	// Validate messages field with enhanced checks for common issues.
@@ -2268,46 +2444,60 @@ func (h *ChatHandler) serveWithExecutor(
 			}()
 			ctx = session.SessionFromContextWith(ctx, sessionInfo)
 		} else if err == session.ErrSessionNotFound && keyInfo != nil {
-			deviceSeed := r.Header.Get("X-Device-Seed")
-			if deviceSeed == "" {
-				deviceSeed = r.Header.Get("X-Machine-Id")
-			}
-			if deviceSeed == "" {
-				deviceSeed = "default"
-			}
-			taskID := r.Header.Get("X-Gw-Task-Id")
-			newSession, createErr := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
-			if createErr != nil {
-				slog.Error("session fallback create failed", "error", createErr, "session_id", sessionID)
+			// 2026-08-15 (OBS-DV2 #4): auto-title/auto-summary loopback sessions
+			// carry an internal branch id (gt_/gs_) that is intentionally NOT a
+			// real user session. Do NOT auto-create a fresh gw_<uuid> for them —
+			// that would silently reassign the row's gw_session_id away from the
+			// branch namespace operators query by. Leave sessionInfo nil so the
+			// branch id is preserved verbatim on the request log, and skip the
+			// lastSystemSession write so the loopback cannot poison the no-session
+			// resume pointer. Ordinary unknown gw_ ids still fall through to
+			// CreateV2 below and get a real session.
+			if isBranchSessionID(sessionID) {
+				slog.Debug("branch session id preserved (no auto-create)",
+					"session_id", sessionID)
 			} else {
-				sessionInfo = newSession
-				sessionID = newSession.SessionID
-				logCtx.SetSession(newSession)
-				h.emitTrace(r.Context(), requestID,
-					gwtrace.SessionLookup(newSession.SessionID, true, nil))
-				ctx = session.SessionFromContextWith(ctx, newSession)
-				w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
-				w.Header().Set("X-Gw-Session-Auto", "true")
-				if r.Header.Get("X-Session-Id") != "" {
-					slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
-						"original_session_id", r.Header.Get("X-Session-Id"),
-						"new_session_id", newSession.SessionID,
-					)
-					w.Header().Set("Deprecation", "true")
+				deviceSeed := r.Header.Get("X-Device-Seed")
+				if deviceSeed == "" {
+					deviceSeed = r.Header.Get("X-Machine-Id")
 				}
-				slog.Info("session fallback created",
-					"original_session_id", r.Header.Get("X-Gw-Session-Id"),
-					"new_session_id", newSession.SessionID,
-					"task_id", taskID,
-				)
-				if h.lastSystemSession != nil {
-					lsEntry := &session.LastSystemSessionEntry{
-						SessionID:  newSession.SessionID,
-						DeviceSeed: deviceSeed,
-						TaskID:     taskID,
+				if deviceSeed == "" {
+					deviceSeed = "default"
+				}
+				taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+				newSession, createErr := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, deviceSeed, taskID)
+				if createErr != nil {
+					slog.Error("session fallback create failed", "error", createErr, "session_id", sessionID)
+				} else {
+					sessionInfo = newSession
+					sessionID = newSession.SessionID
+					logCtx.SetSession(newSession)
+					h.emitTrace(r.Context(), requestID,
+						gwtrace.SessionLookup(newSession.SessionID, true, nil))
+					ctx = session.SessionFromContextWith(ctx, newSession)
+					w.Header().Set("X-Gw-Session-Id-Resume", newSession.SessionID)
+					w.Header().Set("X-Gw-Session-Auto", "true")
+					if r.Header.Get("X-Session-Id") != "" {
+						slog.Warn("legacy X-Session-Id used, fallback created; migrate to X-Gw-Session-Id",
+							"original_session_id", r.Header.Get("X-Session-Id"),
+							"new_session_id", newSession.SessionID,
+						)
+						w.Header().Set("Deprecation", "true")
 					}
-					if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
-						slog.Warn("LastSystemSessionIndex update failed", "error", setErr, "api_key_id", keyInfo.ID)
+					slog.Info("session fallback created",
+						"original_session_id", r.Header.Get("X-Gw-Session-Id"),
+						"new_session_id", newSession.SessionID,
+						"task_id", taskID,
+					)
+					if h.lastSystemSession != nil {
+						lsEntry := &session.LastSystemSessionEntry{
+							SessionID:  newSession.SessionID,
+							DeviceSeed: deviceSeed,
+							TaskID:     taskID,
+						}
+						if setErr := h.lastSystemSession.Set(ctx, keyInfo.ID, lsEntry); setErr != nil {
+							slog.Warn("LastSystemSessionIndex update failed", "error", setErr, "api_key_id", keyInfo.ID)
+						}
 					}
 				}
 			}
@@ -2348,7 +2538,7 @@ func (h *ChatHandler) serveWithExecutor(
 				lsEntry := &session.LastSystemSessionEntry{
 					SessionID:  sessionID,
 					DeviceSeed: r.Header.Get("X-Device-Seed"),
-					TaskID:     r.Header.Get("X-Gw-Task-Id"),
+					TaskID:     sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id")),
 				}
 				if lsEntry.DeviceSeed == "" {
 					lsEntry.DeviceSeed = r.Header.Get("X-Machine-Id")
@@ -2362,7 +2552,9 @@ func (h *ChatHandler) serveWithExecutor(
 		// 2026-07-27: We already resolved a session from the body or header
 		// above. Rebuild the lastSystemSession pointer for consistency with
 		// the assignment branch so follow-up turn reuse still works.
-		if h.lastSystemSession != nil && keyInfo != nil {
+		// OBS-DV2 #4: auto-title/auto-summary branch ids (gt_/gs_) must not
+		// overwrite the no-session resume pointer — skip them.
+		if h.lastSystemSession != nil && keyInfo != nil && !isBranchSessionID(sessionID) {
 			deviceSeed := r.Header.Get("X-Device-Seed")
 			if deviceSeed == "" {
 				deviceSeed = r.Header.Get("X-Machine-Id")
@@ -2370,7 +2562,7 @@ func (h *ChatHandler) serveWithExecutor(
 			if deviceSeed == "" {
 				deviceSeed = "default"
 			}
-			taskID := r.Header.Get("X-Gw-Task-Id")
+			taskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
 			lsEntry := &session.LastSystemSessionEntry{
 				SessionID:  sessionID,
 				DeviceSeed: deviceSeed,
@@ -2392,6 +2584,7 @@ func (h *ChatHandler) serveWithExecutor(
 		applyProvisionalGatewaySessionHeader(r, logCtx.ProvisionalSessionID)
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
+	h.invokeProvisionalMetadataOnArrival(r, sessionID, keyInfo, logCtx, bodyBytes)
 	if sessionID != "" && h.sessionPref != nil {
 		modelChanged, prevModel := detectAndHandleModelSwitch(ctx, h.sessionPref, sessionID, clientModel)
 		if modelChanged {
@@ -2424,6 +2617,12 @@ func (h *ChatHandler) serveWithExecutor(
 			hookTenant = keyInfo.TenantID
 		}
 		res := h.sessionAuditHook.CheckV1(ctx, sessionID, hookTenant, clientModel, hookContent, r.Header.Get("User-Agent"), r.RemoteAddr)
+		if sessionaudithook.IsApprovedResume(ctx) && res.StatusCode == http.StatusAccepted {
+			slog.Info("session-audit approval gate bypassed for approved resume",
+				"session_id", sessionID,
+				"tenant_id", hookTenant)
+			res.StatusCode = 0
+		}
 		switch res.StatusCode {
 		case 403:
 			captureAndEmitFailure("session_audit_block", res.Reason, nil, nil)
@@ -2522,7 +2721,7 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.IsAutoRequest = true
 		}
 		// 2026-07-14: keep the client-facing model name lowercase.
-		clientModel = modelname.CanonicalizeClientModel(reqBody.Model)
+		clientModel = modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
 		logCtx.SetClientModel(clientModel)
 	}
 
@@ -2549,6 +2748,8 @@ func (h *ChatHandler) serveWithExecutor(
 			return
 		}
 	}
+
+	resolveRequestJourney(r, tenant(keyInfo), preAutoModel, clientModel)
 
 	// ── Phase 3: tool_ids expansion ────────────────────────────────────
 	// If the client provided tool_ids, expand them to full tool definitions.
@@ -2590,6 +2791,25 @@ func (h *ChatHandler) serveWithExecutor(
 	// "v3 Session-level intelligent compression" block after GetCandidates.
 
 	isStream := reqBody.Stream
+	if !isStream {
+		// Declare trailers before the executor commits headers. Values are set
+		// only when a negotiated response hook returns a client signal.
+		w.Header().Add("Trailer", "X-Gw-Client-Signal")
+		w.Header().Add("Trailer", "X-Gw-Client-Signal-Payload-B64")
+	}
+	rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.rateLimiter, notifyRateLimitWait(w, isStream))
+	h.emitTrace(r.Context(), requestID,
+		gwtrace.RateLimitCheck(!rlOutcome.Blocked, rateLimitOutcomeKind(rlOutcome), rlOutcome.Remaining).
+			WithDetails("limit", rlOutcome.Limit, "reset_sec", rlOutcome.ResetSec))
+	if !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
+			captureAndEmitRateLimited("rate_limit_exceeded", "rate limit exceeded", nil, nil)
+			writeErrorJSONCtx(r.Context(), w, http.StatusTooManyRequests, requestID, "rate_limit_error", i18n.MsgRateLimitExceeded, nil)
+			return
+		}
+	}
 	endUser := resolveEndUser(reqBody.User, r)
 	// 2026-06-29: Prefer the Pipeline-computed identity (v2 dispatch
 	// path) to avoid recomputing. Fall back to inline computation for
@@ -2621,12 +2841,41 @@ func (h *ChatHandler) serveWithExecutor(
 	var preStream *preStreamKeepalive
 	preStreamPrepared := false
 	defer func() {
+		// 会话优化 v4 T4/R1.6：连接收尾（见 connection_registry_wiring.go）。
+		// 无论正常完成还是提前 return，都从注册表摘下，使 admin 投影
+		// 进入关闭审计；未注册/已清理是 no-op。
+		h.unregisterStreamConnection(requestID, "request_completed")
+		if preStream != nil {
+			preStream.stop()
+		}
 		if streamCapture != nil {
 			auditBuilder.StreamMetrics(streamCapture)
 		}
 		h.auditor.Emit(context.Background(), auditBuilder.Build())
 	}()
 
+	// 2026-08-18 (B1-PR1): commit the HTTP 200 + first SSE keepalive comment
+	// after routing and handoff validation, but BEFORE the session compressor
+	// and other known heavy stages run.
+	//
+	// Root cause of the e0a849a3f29abff690818a812fa44c34 incident (and
+	// the cluster of 838-message minimax-m3 provider_error failures on
+	// 154 around 11:30-12:00 2026-08-18): large request bodies with
+	// 800+ messages made session compressor Prepare take 5-10 seconds,
+	// during which the gateway sent NO bytes to the client. The
+	// opencode SDK's HTTP idle timeout (default ~10s) fired and the
+	// client disconnected, canceling r.Context() — by the time the
+	// pre-stream keepalive would have started, the connection was
+	// already dead. Direct connections to api.minimaxi.com did not
+	// have this problem because the vendor endpoint emits SSE
+	// keep-alive pings during thinking.
+	//
+	// Candidate and handoff errors must still be able to return their proper
+	// HTTP status, so this block intentionally runs after those gates.
+	// The keepalive is a pure SSE comment (": keep-alive\n\n") which
+	// every conformant SSE parser silently ignores, so it is wire-safe
+	// even for non-streaming clients (they'll just see the comments
+	// before the actual error envelope).
 	// ── Armor security check (Track A B1-5, 2026-06-25) ──────────────────
 	// Score prompt for prompt-injection before provider resolution.
 	// v1 observe-only: even if score > threshold, never block (only log).
@@ -2697,6 +2946,70 @@ func (h *ChatHandler) serveWithExecutor(
 	tenantID := ""
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
+	}
+
+	// ── Wave 2-D: unified orchestration — GoalRun integration cut point ─────
+	// 在 body 规范化、session ownership 校验、tenant 解析都已就绪、durable
+	// snapshot 之前执行。规则：
+	//   - 字段缺失 / 显式 null  → 不创建 GoalRun，向后兼容；
+	//   - 字段存在但解析失败   → 400 fail-closed（goal=request 时不能降级）；
+	//   - 成功                  → GoalRun 落库，goal_run_id 写入 ctx，并在
+	//     最终响应头中返回 goal_run_id + status_url。
+	if h.goalIntegrator != nil && h.goalIntegrator.IsConfigured() && sessionID != "" && tenantID != "" {
+		apiKeyID := apiKeyIDValue(keyInfo)
+		resolved, goalErr := h.goalIntegrator.ParseAndCreate(ctx, bodyBytes, tenantID, apiKeyID, sessionID, requestID)
+		switch {
+		case goalErr == nil:
+			ctx = WithGoalRun(ctx, resolved)
+			// 把 goal_run_id / status_url 写入响应头，无论后续响应路径
+			// （同步 / 流式 / 202 durable）都会带上。Wave 2-D 契约要求：
+			// 客户端拿到这两个值即可轮询 /v1/goal-runs/{id}。
+			w.Header().Set("X-Goal-Run-Id", resolved.GoalRunID)
+			w.Header().Set("X-Goal-Status-Url", resolved.StatusURL)
+			w.Header().Set("X-Goal-Status", resolved.Status)
+			h.emitAction(ctx, requestID, liveactions.ActionArrive, map[string]string{
+				"goal_run_id": resolved.GoalRunID,
+				"goal_status": resolved.Status,
+			})
+			slog.InfoContext(ctx, "goal: GoalRun created",
+				"request_id", requestID,
+				"goal_run_id", resolved.GoalRunID,
+				"status_url", resolved.StatusURL,
+				"policy_version", resolved.PolicySnapshot != nil,
+			)
+		case errors.Is(goalErr, goalintegration.ErrNoGoal):
+			// backward compatible: no explicit goal request
+		case errors.Is(goalErr, goalintegration.ErrInvalidGoal):
+			logCtx.SetError("invalid_goal", goalErr.Error())
+			logCtx.EmitFailure("invalid_goal", goalErr.Error(), nil, nil)
+			logCtx.MarkLogged()
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"error": map[string]string{
+					"message": "goal request invalid: " + goalErr.Error(),
+					"type":    "invalid_request",
+					"code":    "invalid_goal",
+				},
+			})
+			return
+		default:
+			// DB / 其他错误：fail-closed（落库失败不让请求走完，避免后续
+			// 产生孤儿 step / action）
+			logCtx.SetError("goal_create_failed", goalErr.Error())
+			logCtx.EmitFailure("goal_create_failed", goalErr.Error(), nil, nil)
+			logCtx.MarkLogged()
+			slog.ErrorContext(ctx, "goal: CreateGoalRun failed",
+				"request_id", requestID,
+				"error", goalErr,
+			)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error": map[string]string{
+					"message": "failed to create GoalRun",
+					"type":    "server_error",
+					"code":    "goal_create_failed",
+				},
+			})
+			return
+		}
 	}
 
 	// ── SR-12 durable snapshot cut point (doc 18 §11.2) ────────────────
@@ -2806,14 +3119,32 @@ func (h *ChatHandler) serveWithExecutor(
 				slog.Debug("omnifree resolve failed, fall back to provider resolver",
 					"error", omniErr, "model", clientModel, "request_id", requestID)
 			}
+			resolveStart := time.Now()
 			candidates, policy, requestModality, err = resolveCandidatesForRequest(
 				r.Context(), h.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes,
 			)
+			slog.Info("candidates_resolved",
+				"request_id", requestID,
+				"elapsed_ms", time.Since(resolveStart).Milliseconds(),
+				"candidates_count", len(candidates),
+				"err", err,
+			)
+			// SP-02: state machine — routing produced a final candidate set.
+			rt.Emit(state.EventRouted)
 		}
 	} else {
+		resolveStart := time.Now()
 		candidates, policy, requestModality, err = resolveCandidatesForRequest(
 			r.Context(), h.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes,
 		)
+		slog.Info("candidates_resolved",
+			"request_id", requestID,
+			"elapsed_ms", time.Since(resolveStart).Milliseconds(),
+			"candidates_count", len(candidates),
+			"err", err,
+		)
+		// SP-02: state machine — routing produced a final candidate set.
+		rt.Emit(state.EventRouted)
 	}
 
 	// 2026-07-18: structured log of routing_resolve so journald can
@@ -2886,6 +3217,7 @@ func (h *ChatHandler) serveWithExecutor(
 		writeErrorJSON(w, rc.httpStatus, requestID, rc.message, "server_error", rc.code)
 		return
 	}
+	survivalEligible := isStream && (durableStream != nil || h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID))
 	if len(candidates) == 0 {
 		// 2026-07-14: Distinguish "model not recognized anywhere" (400
 		// invalid_model) from "model recognized but no routable provider right
@@ -2929,20 +3261,23 @@ func (h *ChatHandler) serveWithExecutor(
 				"blocked_reason": noCandReason,
 			},
 		})
-		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
-		logCtx.failAndMark("no_candidate",
-			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
-		markLogged()
-		// 2026-08-09: the requested model has no routable node, but other
-		// models often do. Offer them so the caller can switch instead of
-		// polling a dead model. Task-type-aware when the session's type is
-		// known (header → autoroute session cache → inline heuristic), else
-		// ordered featured-then-popular. Availability is judged by
-		// v_routable_credential_models.is_routable — the same gate the router
-		// uses — so a suggested model is genuinely reachable right now.
-		alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
-		writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
-		return
+		if !survivalEligible {
+			h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
+			logCtx.failAndMark("no_candidate",
+				fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
+			markLogged()
+			// 2026-08-09: the requested model has no routable node, but other
+			// models often do. Offer them so the caller can switch instead of
+			// polling a dead model. Task-type-aware when the session's type is
+			// known (header → autoroute session cache → inline heuristic), else
+			// ordered featured-then-popular. Availability is judged by
+			// v_routable_credential_models.is_routable — the same gate the router
+			// uses — so a suggested model is genuinely reachable right now.
+			alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
+			writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
+			return
+		}
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		// Stash the first candidate so the safety net can attribute
@@ -2951,19 +3286,14 @@ func (h *ChatHandler) serveWithExecutor(
 		pid := candidates[0].ProviderID
 		cid := candidates[0].CredentialID
 		logCtx.SetRoute(&pid, &cid)
-
-		// 2026-08-14 V3.2 (BE-B1): record route decision in state transitions.
-		// nil-safe helper — no logger wired (DB disabled / test mode) → no-op.
-		// Captures from_state="route_resolve" + chosen credential's display name
-		// so the timeline view shows "route_resolve → provider-X (cred-Y)".
-		dispatch.LogRouteDecisionGlobal(requestID, tenantID, "route_resolve", "credential_selected",
-			map[string]any{
-				"chosen_provider_id":   pid,
-				"chosen_credential_id": cid,
-				"chosen_raw_model":     candidates[0].RawModel,
-				"candidates_count":     len(candidates),
-				"profile":              clientID.Fingerprint.ClientProfile,
-			})
+		// 2026-08-17 B3-PR1: the V3.2 LogRouteDecisionGlobal transition row is
+		// retired. The journey stream already covers this boundary with better
+		// fidelity: route_resolved (emitted upstream in serveWithExecutor)
+		// plus dispatch's credential_selected observation, which records the
+		// credential that actually served the attempt rather than the first
+		// candidate. The legacy row's unique payload (candidates_count,
+		// client profile) is unrepresentable in the content-free journey
+		// contract (migration 530 forbids metadata on journey rows).
 	}
 
 	var modelResolution *resolve.Resolution
@@ -2988,7 +3318,10 @@ func (h *ChatHandler) serveWithExecutor(
 		explicitOutbound = renderOutboundFromTransform(txResult, candidates[0], tCtx.CanonicalName)
 	}
 
-	auditBuilder.OutboundModel(explicitOutbound).Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)
+	auditBuilder.OutboundModel(explicitOutbound)
+	if len(candidates) > 0 {
+		auditBuilder.Provider(candidates[0].ProviderID).Credential(candidates[0].CredentialID)
+	}
 	if modelResolution != nil {
 		auditBuilder.ResolutionPath(modelResolution.ResolutionPath)
 		if modelResolution.CanonicalName != nil {
@@ -3008,6 +3341,10 @@ func (h *ChatHandler) serveWithExecutor(
 		canonicalID = modelResolution.CanonicalID
 	}
 	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessionInfo)
+	auditCtx := executors.AuditContextFromRequest(r, sessionInfo, bodyBytes, keyInfo)
+	auditCtx.RequestID = requestID
+	auditCtx.GWSessionID = gwSessionID
+	auditCtx.GWTaskID = gwTaskID
 	outboundForLog := explicitOutbound
 	if len(candidates) > 0 {
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
@@ -3037,8 +3374,8 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── Request-side session handoff ─────────────────────────────────────
 	// The handoff runs after routing resolves the real context window and
-	// before compression. It therefore rewrites the exact body compression
-	// will cache and forward, instead of scheduling a second hidden request.
+	// before compression. It may return an explicit resume packet, but it must
+	// never rewrite the request body forwarded to the provider.
 	if h.handoffHook != nil && gwSessionID != "" {
 		contextWindow := 0
 		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
@@ -3059,34 +3396,54 @@ func (h *ChatHandler) serveWithExecutor(
 		if handoffErr != nil {
 			slog.Warn("handoff_prepare_failed", "session_id", gwSessionID, "error", handoffErr)
 		} else if handoffResult != nil && handoffResult.Triggered {
-			if handoffResult.Explicit {
-				h.handoffHook.CommitRequest(ctx, handoffResult, "")
-				w.Header().Set("X-Gw-Handoff", "explicit")
-				w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
-				writeJSON(w, http.StatusAccepted, map[string]any{
-					"status": "handoff_required", "resume_packet": handoffResult.ResumePacket,
-				})
+			if keyInfo == nil || keyInfo.ID <= 0 {
+				handoff.RecordProposal(handoffResult.Reason, "prepare_failed")
+				writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "handoff confirmation is unavailable", "handoff_error", "handoff_confirmation_unavailable")
 				return
 			}
-			if keyInfo == nil || h.sessionGetter == nil {
-				slog.Warn("handoff_session_rotation_skipped", "session_id", gwSessionID, "reason", "session_owner_unavailable")
-			} else if newSession, err := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, handoffDeviceSeed(r), r.Header.Get("X-Gw-Task-Id")); err != nil {
-				slog.Warn("handoff_session_rotation_failed", "session_id", gwSessionID, "error", err)
-			} else {
-				bodyBytes = handoffResult.Body
-				previousSessionID := gwSessionID
-				gwSessionID = newSession.SessionID
-				sessionInfo = newSession
-				ctx = session.SessionFromContextWith(ctx, newSession)
-				r = r.WithContext(ctx)
-				r.Header.Set("X-Gw-Session-Id", gwSessionID)
-				logCtx.SetSession(newSession)
-				w.Header().Set("X-Gw-Handoff", "transparent")
-				w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
-				w.Header().Set("X-Gw-Handoff-From", previousSessionID)
-				w.Header().Set("X-Gw-Handoff-To", gwSessionID)
-				w.Header().Set("X-Gw-Session-Id-Resume", gwSessionID)
-				h.handoffHook.CommitRequest(ctx, handoffResult, gwSessionID)
+			proposal, token, proposalErr := h.handoffHook.PrepareConfirmation(ctx, handoffResult, keyInfo.ID)
+			if proposalErr != nil {
+				handoff.RecordProposal(handoffResult.Reason, "prepare_failed")
+				slog.Warn("handoff_confirmation_prepare_failed", "session_id", gwSessionID, "error", proposalErr)
+				writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "handoff confirmation is unavailable", "handoff_error", "handoff_confirmation_unavailable")
+				return
+			}
+			handoff.RecordProposal(handoffResult.Reason, "triggered")
+			body := map[string]any{
+				"status": "handoff_required", "resume_packet": handoffResult.ResumePacket,
+				"handoff_id": proposal.ID, "confirmation_token": token,
+				"confirmation_expires_at": proposal.ExpiresAt,
+			}
+			if jsonBytes, err := json.Marshal(body); err == nil {
+				handoff.RecordPayload("message", len(jsonBytes))
+			}
+			w.Header().Set("X-Gw-Handoff", "explicit")
+			w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
+			writeJSON(w, http.StatusAccepted, body)
+			return
+		}
+	}
+
+	// Keep the client connection alive while session compression runs. This
+	// must stay after routing/handoff gates so those failures retain their
+	// correct HTTP status instead of being written into a committed 200 SSE
+	// response.
+	if isStream {
+		cfg := currentStreamRuntimeConfig()
+		if cfg.enablePreStreamKeepalive {
+			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
+				preStream = psk
+				preStreamPrepared = true
+				w = psk.Writer()
+				slog.Info("pre_stream_keepalive_started_early",
+					"request_id", requestID,
+					"reason", "send_200_before_session_compressor",
+					"keepalive_interval_ms", cfg.keepaliveInterval.Milliseconds(),
+					"body_bytes", len(bodyBytes),
+				)
+				// 会话优化 v4 T4/R1.6：注册连接供 ActionBridge 回写思考帧
+				// 与 admin 连接投影。旁路能力，失败静默（见 connection_registry_wiring.go）。
+				h.registerStreamConnection(psk, requestID, clientProtocolFromPath(r.URL.Path), extractClientType(r), tenant(keyInfo))
 			}
 		}
 	}
@@ -3098,7 +3455,12 @@ func (h *ChatHandler) serveWithExecutor(
 	// new turns to the compressed session history and, when the sliding
 	// window fires, produces a lossless LLM summary (or trims as fallback).
 	var scResult *compression.PrepareResult
-	if h.sessionCompressor != nil && gwSessionID != "" {
+	// SessionCompressor persists message hashes, summaries, and rebuild markers
+	// for Chat/Anthropic envelopes. Native Responses retains its input-shaped
+	// body through dispatch, where candidate-window and 4xx recovery use the
+	// Responses-specific compressor without corrupting session-cache state.
+	if h.sessionCompressor != nil && gwSessionID != "" && clientProtocolFromPath(r.URL.Path) != "openai-responses" {
+		// entering the compressing block — runtime transitioned EventRouted → EventCompressing below
 		tenantForSC := "default"
 		if keyInfo != nil {
 			tenantForSC = keyInfo.TenantID
@@ -3107,12 +3469,22 @@ func (h *ChatHandler) serveWithExecutor(
 		if isAnthropicMessagesPath(r.URL.Path) {
 			protocolForSC = "anthropic-messages"
 		}
-		// Resolve the target model context window from the first candidate.
-		// 0 when unknown (TOKEN trigger then relies on msg_count / idle only).
+		// Use the smallest known candidate window as a safe session-level
+		// baseline. Dispatch may reorder or fail over candidates after Prepare;
+		// a conservative baseline prevents a later small-window candidate from
+		// receiving an over-large session body.
 		ctxWindow := 0
-		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
-			ctxWindow = *candidates[0].ContextWindow
+		for _, candidate := range candidates {
+			if candidate.ContextWindow == nil || *candidate.ContextWindow <= 0 {
+				continue
+			}
+			if ctxWindow == 0 || *candidate.ContextWindow < ctxWindow {
+				ctxWindow = *candidate.ContextWindow
+			}
 		}
+		scPrepareStart := time.Now()
+		// SP-02: state machine — body compression has started.
+		rt.Emit(state.EventCompressing)
 		scResult = h.sessionCompressor.Prepare(
 			r.Context(),
 			bodyBytes,
@@ -3122,6 +3494,19 @@ func (h *ChatHandler) serveWithExecutor(
 			ctxWindow,
 			false, // not streaming yet at this point
 		)
+		// 2026-08-18 (B1-PR2): detailed timing log around session compressor.
+		// The 838-message e0a849a3f29abff690818a812fa44c34 incident showed
+		// Prepare can take 5-10s for large bodies — this log surfaces the
+		// exact cost so we can attribute client-timeout cancellations to
+		// the right stage.
+		slog.Info("session_compressor_prepare_done",
+			"request_id", requestID,
+			"elapsed_ms", time.Since(scPrepareStart).Milliseconds(),
+			"body_bytes", len(bodyBytes),
+			"has_session_id", gwSessionID != "",
+			"ctx_window", ctxWindow,
+		)
+		// SP-02: state machine — body compression completed successfully.
 		if scResult != nil && len(scResult.OutboundBody) > 0 {
 			// NeverWorse guard: the compressor must never inflate the request
 			// body. If the "compressed" output is >= the raw body length the
@@ -3180,6 +3565,10 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
 			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
 			logCtx.OutboundWindowTriggered = scResult.WindowTriggered
+			logCtx.OutboundTokenBand = string(scResult.TokenBand)
+			logCtx.OutboundPriorLayerTokens = scResult.PriorLayerTokens
+			logCtx.OutboundCompressionReason = scResult.CompressionReason
+
 		}
 		if scResult != nil && scResult.CompressionStrategy != "" {
 			logCtx.OutboundStrategy = scResult.CompressionStrategy
@@ -3253,7 +3642,7 @@ func (h *ChatHandler) serveWithExecutor(
 		clientID.Fingerprint.ClientProfile, identityHash,
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, clientProtocolFromPath(r.URL.Path), txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
@@ -3366,6 +3755,13 @@ func (h *ChatHandler) serveWithExecutor(
 			logCtx.OutboundTokenEst = &te
 			logCtx.OutboundMsgHashes = append(logCtx.OutboundMsgHashes[:0], scResult.MsgHashes...)
 		}
+		// SP-02: state machine — body compression completed successfully.
+		rt.Emit(state.EventCompressingDone)
+	} else {
+		// SP-02: state machine — compression not needed (no session id or
+		// compressor disabled). Surface EventCompressingSkipped so the
+		// timeline still crosses the compression boundary.
+		rt.Emit(state.EventCompressingSkipped)
 	}
 
 	// Phase C (2026-06-22): Pass bodyBytes directly — per-candidate
@@ -3392,21 +3788,24 @@ func (h *ChatHandler) serveWithExecutor(
 	// thinking; the gateway now fills that gap for every protocol.
 	//
 	// The keepalive emits pure SSE comments (": keep-alive\n\n") which every
-	// conformant SSE parser silently ignores, so this is wire-safe for all
-	// protocol shapes (see writeThinking comment re: opencode Zod union).
-	if isStream {
+	// 2026-08-18 (B1-PR1): pre-stream keepalive is now started earlier
+	// (right after isStream is determined, see lines ~2680 above). This
+	// late-stage initialization is kept as a no-op fallback for callers
+	// that haven't gone through the early-start path, but the normal
+	// stream path will see preStreamPrepared=true already.
+	if isStream && !preStreamPrepared {
 		cfg := currentStreamRuntimeConfig()
 		if cfg.enablePreStreamKeepalive {
-			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval, requestID); ok {
+			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
 				preStream = psk
 				preStreamPrepared = true
-				// 2026-08-15 (A-P2-6): every later body write on this
-				// connection (bridges, interceptor chain, prewarmed error
-				// envelopes, survival coordinator) goes through the
-				// keepalive's serialized channel so keepalive comments and
-				// stream frames can never interleave mid-frame. Headers and
-				// status still delegate to the original ResponseWriter.
 				w = psk.Writer()
+				slog.Warn("pre_stream_keepalive_late_fallback",
+					"request_id", requestID,
+					"reason", "early_start_missed_should_not_happen",
+				)
+				// 会话优化 v4 T4/R1.6：注册连接（见另一处注释）。
+				h.registerStreamConnection(psk, requestID, clientProtocolFromPath(r.URL.Path), extractClientType(r), tenant(keyInfo))
 			}
 		}
 	}
@@ -3429,7 +3828,7 @@ func (h *ChatHandler) serveWithExecutor(
 			candTracker.Add(executors.RoutingAttempt{
 				ProviderName: fmt.Sprintf("... and %d more", len(candidates)-10),
 				RawModel:     clientModel,
-				Result:       "pending",
+				Result:       executors.ResultPending,
 				ErrorMessage: "truncated for payload size",
 			})
 			break
@@ -3444,13 +3843,24 @@ func (h *ChatHandler) serveWithExecutor(
 				return fmt.Sprintf("provider_%d", cand.ProviderID)
 			}(),
 			RawModel:     cand.RawModel,
-			Result:       "pending",
+			Result:       executors.ResultPending,
 			ErrorMessage: fmt.Sprintf("candidate #%d from routing", i+1),
 		})
 	}
 
-	// Retry configuration - Phase 1.5: read from Phase 0 cost_mode preset
-	// 2026-07-23: Use resolver for runtime policy if available
+	// Goal retry is only meaningful for an active Goal session. The policy
+	// resolver may exist process-wide, but ordinary chat requests must not
+	// inherit Goal retry latency or upstream side effects.
+	goalRetryActive := false
+	if h.goalRetryRecorder != nil && gwSessionID != "" && keyInfo != nil && keyInfo.TenantID != "" {
+		if reader, ok := h.goalRetryRecorder.(interface {
+			GetSession(context.Context, string, string) (*goal.Session, error)
+		}); ok {
+			session, err := reader.GetSession(r.Context(), keyInfo.TenantID, gwSessionID)
+			goalRetryActive = err == nil && session != nil
+		}
+	}
+
 	var retryPolicy GoalRetryPolicy
 	var policySource string
 	if h.goalRetryPolicyResolver != nil && keyInfo != nil && keyInfo.TenantID != "" {
@@ -3481,6 +3891,10 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
+	if !goalRetryActive {
+		retryPolicy.Enabled = false
+	}
+
 	// Extract values from policy. 2026-07-24 审计修复：通过 EffectiveMaxRetries()
 	// 在一处收敛「Enabled=false ⇒ MaxRetries=0」，防止下游直接读 MaxRetries
 	// 绕过关闭开关，仍跑满指数退避。
@@ -3495,15 +3909,15 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// Retry loop
 	dispatchModelAlternatives := []string(nil)
-	dispatchAllowModelChange := false
-	if logCtx != nil && logCtx.IsAutoRequest && len(logCtx.AutoFallbackModels) > 0 && dispatchAllowModelChangeEnabled() {
+	dispatchAllowModelChange := logCtx != nil && logCtx.IsAutoRequest && dispatchAllowModelChangeEnabled()
+	if dispatchAllowModelChange {
 		dispatchModelAlternatives = append([]string(nil), logCtx.AutoFallbackModels...)
-		dispatchAllowModelChange = true
 	}
 	dispatchAllowProviderChange := hasMultipleProviders(candidates)
 	dispatchModelAlternativesConsumed := dispatchAllowModelChange
 	retryStartTime := time.Now()
 	retriesPerformed := 0
+	retryBudgetExhausted := false
 
 	// Track active retry (2026-07-23: metrics)
 	if keyInfo != nil && keyInfo.TenantID != "" {
@@ -3514,19 +3928,32 @@ func (h *ChatHandler) serveWithExecutor(
 	// buildExecParams assembles the per-attempt ExecParams shared by the
 	// legacy goal-retry loop and the SR-W2 survival branch (doc 18 §5.1):
 	// one construction site, zero drift between the two paths.
+	upstreamAttempts := executors.NewUpstreamAttemptBudget(executors.DefaultUpstreamAttemptLimit)
+	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
+	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
+	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
 	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
 		return &executors.ExecParams{
-			W:                  streamWriter,
-			AttachmentMetadata: attachmentsForOutbound(logCtx),
-			R:                  r,
-			BodyBytes:          upstreamBody,
-			IsStream:           isStream,
-			PreStreamPrepared:  preStreamPrepared,
-			OnStreamReady: func() {
+			W:                          streamWriter,
+			UpstreamAttempts:           upstreamAttempts,
+			AttachmentMetadata:         attachmentsForOutbound(logCtx),
+			R:                          r,
+			BodyBytes:                  upstreamBody,
+			IsStream:                   isStream,
+			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
+			PreStreamPrepared:          preStreamPrepared,
+			DispatchDueAt:              dispatchDueAt,
+			// The StreamSession heartbeat remains active while the protocol
+			// bridge is blocked on upstream reads. The request-level defer owns
+			// shutdown at the terminal outcome.
+			OnStreamReady: func() {},
+			OnStreamHeartbeat: func() error {
 				if preStream != nil {
-					preStream.stop()
-					preStream = nil
+					return preStream.session.Heartbeat()
 				}
+				return nil
 			},
 			OnStreamStarted: func(ttfbMs int) {
 				h.emitTrace(r.Context(), requestID, gwtrace.StreamStart(ttfbMs))
@@ -3539,6 +3966,8 @@ func (h *ChatHandler) serveWithExecutor(
 						"ttfb_ms": strconv.Itoa(ttfbMs),
 					},
 				})
+				// SP-02: state machine — upstream first byte arrived.
+				rt.Emit(state.EventFirstByte)
 			},
 			OnStreamCompleted: func(outcome executors.StreamOutcome) {
 				h.emitTrace(r.Context(), requestID,
@@ -3552,6 +3981,13 @@ func (h *ChatHandler) serveWithExecutor(
 					event = event.WithError(fmt.Errorf("%s", outcome.Reason))
 				}
 				h.emitTrace(r.Context(), requestID, event)
+				// SP-02: state machine — upstream stream ended. An interrupted
+				// outcome is a failure, not a clean end.
+				if outcome.Interrupted {
+					rt.Emit(state.EventFailed)
+				} else {
+					rt.Emit(state.EventStreamEnded)
+				}
 			},
 
 			// 2026-07-17 同步探测回调：执行器进入同步探测 hold 时调用
@@ -3613,14 +4049,36 @@ func (h *ChatHandler) serveWithExecutor(
 			Policy:                      policy,
 			DispatchModelAlternatives:   append([]string(nil), dispatchModelAlternatives...),
 			DispatchAllowModelChange:    dispatchAllowModelChange,
+			DispatchAutoTask:            autoTaskFromLogContext(logCtx),
+			DispatchAutoProfile:         autoProfileFromLogContext(logCtx),
+			DispatchAutoWorkType:        autoWorkTypeFromLogContext(logCtx),
+			DispatchAutoSignals:         autoSignalsFromLogContext(logCtx),
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
-			PinCredentialID:             parsePinCredentialHeader(r),
-			DispatchRequestModality:     requestModality,
-			AuditBuilder:                auditBuilder,
-			Capture:                     streamCapture,
-			ToolsRequested:              requestHasTools(bodyBytes),
-			SessionKey:                  sessionKey,
-			StickyKey:                   stickyKey,
+			PinCredentialID: func() *int {
+				if pinned := parsePinCredentialHeader(r); pinned != nil {
+					return pinned
+				}
+				if h.adminAPIKey == "" {
+					return nil
+				}
+				pref := ExtractPreferredCredential(
+					r.Header.Get(PreferredCredentialHeader),
+					bodyBytes,
+					r.Header.Get(PreferredCredentialAdminTokenHeader),
+					h.adminAPIKey,
+				)
+				id, err := strconv.Atoi(pref)
+				if err != nil || id <= 0 {
+					return nil
+				}
+				return &id
+			}(),
+			DispatchRequestModality: requestModality,
+			AuditBuilder:            auditBuilder,
+			Capture:                 streamCapture,
+			ToolsRequested:          requestHasTools(bodyBytes),
+			SessionKey:              sessionKey,
+			StickyKey:               stickyKey,
 			KeyID: func() int {
 				if keyInfo != nil {
 					return keyInfo.ID
@@ -3645,7 +4103,16 @@ func (h *ChatHandler) serveWithExecutor(
 			// as the probe row's parent_request_id. Without this the
 			// probe row in request_logs / live-stream would have no link
 			// back to the failed business request.
-			RequestID: requestID,
+			RequestID:                requestID,
+			ClientRequestID:          auditCtx.ClientRequestID,
+			GWTaskID:                 auditCtx.GWTaskID,
+			ParentRequestID:          auditCtx.ParentRequestID,
+			TraceID:                  auditCtx.TraceID,
+			SpanID:                   auditCtx.SpanID,
+			Audit:                    auditCtx,
+			JourneyGatewayInstanceID: journeyInstanceID,
+			JourneySeq:               journeySeq,
+			JourneyTerminal:          journeyTerminal,
 			// 2026-07-07: Multi-level sticky routing (L1: session+model, L2: client+model, L3: client).
 			SessionID: gwSessionID,
 			Model:     clientModel,
@@ -3689,6 +4156,8 @@ func (h *ChatHandler) serveWithExecutor(
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
+		// SP-02: state machine — survival branch dispatches upstream.
+		rt.Emit(state.EventDispatching)
 		result, execErr = h.runSurvivalCoordinator(r, base, buildExecParams, tenantID, durableStream)
 		goto goalRetryLoopDone
 	}
@@ -3734,10 +4203,15 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 
 		// Execute the request
-		streamWriter := w
+		streamWriter := http.ResponseWriter(w)
 		var interceptedWriter *interceptingStreamWriter
+		var retryWriter *retryCommitWriter
+		if isStream {
+			retryWriter = &retryCommitWriter{ResponseWriter: w}
+			streamWriter = retryWriter
+		}
 		if isStream && h.responseInterceptor != nil {
-			interceptedWriter = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+			interceptedWriter = newInterceptingStreamWriter(streamWriter, h.responseInterceptor, r.Context(), response.StreamMeta{
 				SessionID:   gwSessionID,
 				RequestID:   requestID,
 				TenantID:    tenantID,
@@ -3745,6 +4219,9 @@ func (h *ChatHandler) serveWithExecutor(
 			})
 			streamWriter = interceptedWriter
 		}
+		// SP-02: state machine — executor has accepted the request and is now
+		// sending it upstream (no first byte yet).
+		rt.Emit(state.EventDispatching)
 		result, execErr = h.executor.Execute(buildExecParams(streamWriter))
 		if interceptedWriter != nil {
 			interceptedWriter.finish()
@@ -3761,8 +4238,17 @@ func (h *ChatHandler) serveWithExecutor(
 			break
 		}
 
+		if retryWriter != nil && retryWriter.wrote.Load() {
+			slog.Warn("goal_retry_suppressed_after_stream_commit",
+				"request_id", requestID,
+				"attempt", attempt,
+				"error", execErr)
+			break
+		}
+
 		// Last attempt - no more retries, exit loop
 		if attempt >= maxRetries {
+			retryBudgetExhausted = true
 			slog.Warn("goal_retry_exhausted",
 				"request_id", requestID,
 				"attempts", attempt+1,
@@ -3784,6 +4270,16 @@ func (h *ChatHandler) serveWithExecutor(
 				return "unknown"
 			}())
 
+		// 2026-08-17: keep the client informed (and the link visibly alive)
+		// during the backoff window. Pure SSE comment — wire-safe for every
+		// parser (see preStreamKeepalive.writeThinking). The session
+		// heartbeat continues underneath; this adds the human-readable
+		// progress line the user asked for during gateway-side retries.
+		if preStream != nil {
+			preStream.writeThinking(fmt.Sprintf("上游请求失败，正在重试 (第 %d/%d 次，等待 %v)...",
+				attempt+1, maxRetries, delay.Round(time.Millisecond)))
+		}
+
 		// Wait for delay or context cancellation
 		timer := time.NewTimer(delay)
 		select {
@@ -3802,6 +4298,14 @@ func (h *ChatHandler) serveWithExecutor(
 goalRetryLoopDone:
 
 	// ── End of retry loop ────────────────────────────────────────────────
+
+	// SP-02: state machine — if the executor returned a non-cancel error,
+	// surface EventFailed. (EventCancelled is already handled by the
+	// runtime event loop reacting to r.Context().Done(), so we only emit
+	// when the failure came from the executor itself.)
+	if execErr != nil && !errors.Is(retryCtx.Err(), context.Canceled) {
+		rt.Emit(state.EventFailed)
+	}
 
 	// 2026-08-09: attach the executor's StreamCapture to the log context so
 	// the client-disconnect probe (deferred in the handler safety net) can
@@ -3823,7 +4327,7 @@ goalRetryLoopDone:
 		outcome = "cancelled"
 	} else if errors.Is(retryCtx.Err(), context.DeadlineExceeded) {
 		outcome = "timeout"
-	} else if retriesPerformed >= maxRetries {
+	} else if retryBudgetExhausted {
 		outcome = "exhausted"
 	} else {
 		outcome = "error"
@@ -3832,10 +4336,28 @@ goalRetryLoopDone:
 	if keyInfo != nil && keyInfo.TenantID != "" {
 		recordGoalRetryOutcome(keyInfo.TenantID, retryPolicy.CostMode, outcome, retriesPerformed, retryDuration)
 	}
+	if outcome == "exhausted" && retryPolicy.Enabled && h.goalOutcomeObserver != nil && gwSessionID != "" {
+		tenantID := ""
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		if err := h.goalOutcomeObserver.ObserveGoalOutcome(r.Context(), goal.Outcome{
+			Kind: goal.OutcomeFailed, SessionID: gwSessionID, TenantID: tenantID,
+			Reason: "provider_retry_exhausted", Source: "provider_retry", RetryCount: retriesPerformed,
+		}); err != nil {
+			slog.Warn("goal_retry_outcome_observer_failed", "session_id", gwSessionID, "error", err)
+		}
+	}
 
-	// Persist retry count if recorder is available (fail-open)
+	// Persist retry count if recorder is available (fail-open).
+	// Use a detached 2s-timeout context: r.Context() is already canceled when
+	// the client disconnects mid-flight (or when the request-level timeout
+	// fires), and AddRetryCount would otherwise return context.Canceled
+	// immediately and silently undercount retry_count for that session.
+	persistCtx, persistCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer persistCancel()
 	if retriesPerformed > 0 && gwSessionID != "" && h.goalRetryRecorder != nil {
-		if err := h.goalRetryRecorder.AddRetryCount(r.Context(), gwSessionID, retriesPerformed); err != nil {
+		if err := h.goalRetryRecorder.AddRetryCount(persistCtx, tenantID, gwSessionID, retriesPerformed); err != nil {
 			slog.Warn("goal_retry_count_persist_failed",
 				"request_id", requestID,
 				"session_id", gwSessionID,
@@ -3860,17 +4382,15 @@ goalRetryLoopDone:
 
 	if result != nil && result.CachedReplay {
 		if preStream != nil {
+			h.unregisterStreamConnection(requestID, "cached_replay")
 			preStream.stop()
 			preStream = nil
 		}
 		return
 	}
-	if logCtx != nil && len(logCtx.OutboundBody) == 0 && result != nil && len(result.RequestBody) > 0 {
-		logCtx.OutboundBody = result.RequestBody
-	}
+	applyActualOutboundBody(logCtx, result)
 
 	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
-	// 在 executor.Execute 返回后立即记录"实际命中的凭据"。 这是 trace 视图里
 	// 最关键的一行: 让运维看到"gpt-5.6-luna 请求 → 选中了 provider_id=12,
 	// credential_id=2451 (z-ai/glm-5.2, tier=premium)", 失败时凭据也记。
 	if result != nil && result.Candidate.ProviderID > 0 {
@@ -4026,6 +4546,7 @@ goalRetryLoopDone:
 
 	if execErr != nil {
 		if preStream != nil {
+			h.unregisterStreamConnection(requestID, "exec_error")
 			preStream.stop()
 			preStream = nil
 		}
@@ -4036,12 +4557,20 @@ goalRetryLoopDone:
 				logCtx.ApplyQueueTimestampsFromError(ee)
 			}
 		}
+		providerID, credentialID := failureAttribution(execErr, candidates)
+		if providerID != nil && credentialID != nil {
+			auditBuilder.Provider(*providerID).Credential(*credentialID)
+			if logCtx != nil {
+				logCtx.SetRoute(providerID, credentialID)
+			}
+		}
+
 		// ── Request WAL: synchronous update on execution failure ─────────────
 		if h.requestLogger != nil {
 			var pid, cid *int64
-			if len(candidates) > 0 {
-				p := int64(candidates[0].ProviderID)
-				c := int64(candidates[0].CredentialID)
+			if providerID != nil && credentialID != nil {
+				p := int64(*providerID)
+				c := int64(*credentialID)
 				pid, cid = &p, &c
 			}
 			update := &telemetry.LogUpdate{
@@ -4058,53 +4587,15 @@ goalRetryLoopDone:
 		}
 
 		slog.Error("executor failed",
+			"request_id", requestID,
 			"error", execErr,
 			"model", clientModel,
 		)
-		var providerID, credentialID *int
 		var tried int
 		var failTrace *executors.Trace
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			tried = execErrTyped.Tried
 			failTrace = execErrTyped.Trace
-		}
-		if len(candidates) > 0 {
-			providerID = intPtr(candidates[0].ProviderID)
-			credentialID = intPtr(candidates[0].CredentialID)
-		}
-
-		// Track C C4 (2026-06-18): the executor demoted a slow
-		// request to async mode. Surface 202 + X-Gw-Pending so the
-		// client knows to poll GET /v1/sessions/{id}/pending-response
-		// (see sessions/handler.go C3). The body is a small JSON
-		// status object; the real response lands in pending store
-		// when the async goroutine completes.
-		var asyncErr *executors.AsyncPendingError
-		if errors.As(execErr, &asyncErr) {
-			if preStreamPrepared {
-				logCtx.SetError("async_pending_unsupported_after_stream_start", "stream already prepared")
-				writePrewarmedStreamError(w, "upstream request delayed; async fallback unavailable after stream start", "server_error", "provider_error")
-				return
-			}
-			w.Header().Set("X-Gw-Pending", asyncErr.SessionID)
-			w.Header().Set("X-Gw-Pending-Request", asyncErr.RequestID)
-			w.Header().Set("Retry-After", "5")
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status":      "in_progress",
-				"session_id":  asyncErr.SessionID,
-				"request_id":  asyncErr.RequestID,
-				"retry_after": 5,
-				"started_at":  asyncErr.StartedAt.Format(time.RFC3339),
-				"poll_url":    "/v1/sessions/" + asyncErr.SessionID + "/pending-response?request_id=" + asyncErr.RequestID,
-			})
-			slog.Info("async_pending_dispatched",
-				"session_id", asyncErr.SessionID,
-				"request_id", asyncErr.RequestID,
-				"model", clientModel,
-			)
-			return
 		}
 
 		errCode := "provider_error"
@@ -4332,11 +4823,22 @@ goalRetryLoopDone:
 				// fact that a client got an empty 200 only surfaced inside
 				// journal logs, which means an alert is set up days after
 				// the incident, not in time to act.
+				//
+				// 2026-09-05: candidates can legitimately be empty here
+				// ("all 0 candidates failed" — every credential for the
+				// model cooling/quota-exhausted); indexing candidates[0]
+				// panicked per request until the guard. Match the
+				// failureAttribution convention: no candidate, no attribution.
+				exhaustedProviderID, exhaustedCredentialID := "", ""
+				if len(candidates) > 0 {
+					exhaustedProviderID = strconv.Itoa(candidates[0].ProviderID)
+					exhaustedCredentialID = strconv.Itoa(candidates[0].CredentialID)
+				}
 				recordPrewarmedExhaustion(
 					string(execErrTyped.LastKind),
 					"model_not_found",
-					strconv.Itoa(candidates[0].ProviderID),
-					strconv.Itoa(candidates[0].CredentialID),
+					exhaustedProviderID,
+					exhaustedCredentialID,
 					clientModel,
 				)
 				writePrewarmedStreamErrorWithKind(w,
@@ -4410,11 +4912,20 @@ goalRetryLoopDone:
 	}
 	logCtx.markAttachmentsSent()
 	if preStream != nil {
+		h.unregisterStreamConnection(requestID, "stream_done")
 		preStream.stop()
 		preStream = nil
 	}
 
-	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
+	auditBuilder.Success(true).
+		Latency(time.Duration(result.LatencyMs) * time.Millisecond).
+		Provider(result.Candidate.ProviderID).
+		Credential(result.Candidate.CredentialID)
+	if logCtx != nil {
+		providerID := result.Candidate.ProviderID
+		credentialID := result.Candidate.CredentialID
+		logCtx.SetRoute(&providerID, &credentialID)
+	}
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
 	// logging, not RequestBody (which may be protocol-converted for upstream).
 	//
@@ -4438,16 +4949,21 @@ goalRetryLoopDone:
 	if h.responseInterceptor != nil && result != nil {
 		// Calculate total message count from request body
 		msgCount := extractMessageCount(bodyBytes)
+		subAgents := parseSubAgentsHeader(r.Header.Get(SubAgentHeader))
+		tenantID := ""
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		if h.goalSubAgentRecorder != nil && tenantID != "" && gwSessionID != "" && subAgents.Total > 0 {
+			if err := h.goalSubAgentRecorder.RecordSubAgents(r.Context(), tenantID, gwSessionID, subAgents.Total, subAgents.Completed, subAgents.Pending); err != nil {
+				slog.Debug("goal_sub_agents_persist_failed", "session_id", gwSessionID, "error", err)
+			}
+		}
 
 		interceptReq := &ResponseInterceptRequest{
-			SessionID: gwSessionID,
-			RequestID: requestID,
-			TenantID: func() string {
-				if keyInfo != nil {
-					return keyInfo.TenantID
-				}
-				return ""
-			}(),
+			SessionID:    gwSessionID,
+			RequestID:    requestID,
+			TenantID:     tenantID,
 			ClientModel:  clientModel,
 			ResponseBody: result.ResponseBody,
 			TokensUsed:   extractTotalTokens(result.ResponseBody, streamCapture),
@@ -4457,9 +4973,15 @@ goalRetryLoopDone:
 				}
 				return 0
 			}(),
-			MessageCount: msgCount,
-			FinishReason: extractFinishReason(result.ResponseBody),
-			IsStreaming:  isStream,
+			MessageCount:         msgCount,
+			FinishReason:         extractFinishReason(result.ResponseBody),
+			IsStreaming:          isStream,
+			FollowUpAction:       strings.TrimSpace(r.Header.Get("X-Gw-Follow-Up-Action")),
+			ClientSignalAllowed:  ClientSignalRequested(r),
+			HandoffSignalAllowed: HandoffSignalRequested(r),
+			SubAgentsTotal:       subAgents.Total,
+			SubAgentsCompleted:   subAgents.Completed,
+			SubAgentsPending:     subAgents.Pending,
 		}
 
 		if isStream {
@@ -4471,28 +4993,46 @@ goalRetryLoopDone:
 			// gets. When no capture is available the fields stay empty and
 			// the goal hook falls back to its legacy length-based behaviour.
 			interceptMeta := &ResponseStreamMeta{
-				SessionID:     gwSessionID,
-				RequestID:     requestID,
-				TenantID:      interceptReq.TenantID,
-				ClientModel:   clientModel,
-				ContextWindow: interceptReq.ContextWindow,
-				MessageCount:  msgCount,
-				TokensUsed:    interceptReq.TokensUsed,
-				ResponseBody:  reassembleStreamBody(streamCapture),
-				FinishReason:  reassembleFinishReason(streamCapture),
+				SessionID:            gwSessionID,
+				RequestID:            requestID,
+				TenantID:             interceptReq.TenantID,
+				ClientModel:          clientModel,
+				ContextWindow:        interceptReq.ContextWindow,
+				MessageCount:         msgCount,
+				TokensUsed:           interceptReq.TokensUsed,
+				ResponseBody:         reassembleStreamBody(streamCapture),
+				FinishReason:         reassembleFinishReason(streamCapture),
+				FollowUpAction:       interceptReq.FollowUpAction,
+				ClientSignalAllowed:  interceptReq.ClientSignalAllowed,
+				HandoffSignalAllowed: interceptReq.HandoffSignalAllowed,
+				SubAgentsTotal:       interceptReq.SubAgentsTotal,
+				SubAgentsCompleted:   interceptReq.SubAgentsCompleted,
+				SubAgentsPending:     interceptReq.SubAgentsPending,
 			}
 
 			if endResult, err := h.responseInterceptor.InterceptStreamEnd(r.Context(), interceptMeta); err != nil {
 				slog.Warn("response_interceptor_stream_end_failed", "error", err, "session_id", gwSessionID)
-			} else if endResult != nil && len(endResult.InjectFollowUp) > 0 {
-				// Inject follow-up request asynchronously.
-				// Carry the follow-up depth from the request context so
-				// recursive follow-ups are bounded by MaxFollowUpDepth.
-				// Detach from r.Context() (Background) since the response
-				// is already complete and r.Context() may be canceled.
-				followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
-				parentAuthHeader := h.buildHandoffAuthHeader(r)
-				go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, parentAuthHeader)
+			} else if endResult != nil {
+				if endResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, endResult.ClientSignalKind) {
+					slog.Warn("client_signal_capability_mismatch", "session_id", gwSessionID, "kind", endResult.ClientSignalKind)
+					endResult.ClientSignalKind = ""
+					endResult.ClientSignalPayload = nil
+				}
+				if frame := renderClientSignalFrame(endResult.ClientSignalKind, endResult.ClientSignalPayload); frame != "" {
+					if safeWriteSSE(w, frame) {
+						if flusher, ok := w.(http.Flusher); ok {
+							safeFlush(flusher)
+						}
+					} else {
+						slog.Warn("client_signal_stream_write_failed", "session_id", gwSessionID, "kind", endResult.ClientSignalKind)
+					}
+				} else if len(endResult.InjectFollowUp) > 0 {
+					// Legacy clients have not opted into a client signal, so retain
+					// the historical server-side follow-up behavior.
+					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
+					parentAuthHeader := h.buildHandoffAuthHeader(r)
+					go h.injectFollowUpRequest(followUpCtx, gwSessionID, endResult.InjectFollowUp, endResult.Action, parentAuthHeader)
+				}
 			}
 		} else {
 			// For non-streaming, call InterceptNonStream
@@ -4504,9 +5044,17 @@ goalRetryLoopDone:
 					// Response was blocked, don't continue
 					return
 				}
-				if len(interceptResult.InjectFollowUp) > 0 {
-					// Inject follow-up request asynchronously.
-					// Carry the follow-up depth from the request context.
+				if interceptResult.ClientSignalKind != "" && !clientSignalKindAllowed(r, interceptResult.ClientSignalKind) {
+					slog.Warn("client_signal_capability_mismatch", "session_id", gwSessionID, "kind", interceptResult.ClientSignalKind)
+					interceptResult.ClientSignalKind = ""
+					interceptResult.ClientSignalPayload = nil
+				}
+				if interceptResult.ClientSignalKind != "" && len(interceptResult.ClientSignalPayload) > 0 {
+					w.Header().Set("X-Gw-Client-Signal", interceptResult.ClientSignalKind)
+					w.Header().Set("X-Gw-Client-Signal-Payload-B64", base64.StdEncoding.EncodeToString(interceptResult.ClientSignalPayload))
+				} else if len(interceptResult.InjectFollowUp) > 0 {
+					// Legacy clients have not opted into a client signal, so retain
+					// the historical server-side follow-up behavior.
 					followUpCtx := withFollowUpDepth(context.Background(), FollowUpDepthFromContext(r.Context()))
 					parentAuthHeader := h.buildHandoffAuthHeader(r)
 					go h.injectFollowUpRequest(followUpCtx, gwSessionID, interceptResult.InjectFollowUp, interceptResult.Action, parentAuthHeader)
@@ -4577,6 +5125,22 @@ func successUpstreamStatusCode(result *executors.ExecuteResult) int {
 		return result.Response.StatusCode
 	}
 	return http.StatusOK
+}
+
+func failureAttribution(execErr error, candidates []provider.Candidate) (*int, *int) {
+	var typed *executors.ExecuteError
+	if errors.As(execErr, &typed) {
+		for i := len(typed.Attempts) - 1; i >= 0; i-- {
+			attempt := typed.Attempts[i]
+			if attempt.ProviderID > 0 && attempt.CredentialID > 0 {
+				return intPtr(attempt.ProviderID), intPtr(attempt.CredentialID)
+			}
+		}
+	}
+	if len(candidates) > 0 && candidates[0].ProviderID > 0 && candidates[0].CredentialID > 0 {
+		return intPtr(candidates[0].ProviderID), intPtr(candidates[0].CredentialID)
+	}
+	return nil, nil
 }
 
 func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteResult, endUser string, keyInfo *authentication.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transformation.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
@@ -4827,6 +5391,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		LatencyMs:      intPtr(result.LatencyMs),
 		Success:        true,
 		RequestStatus:  strPtr(telemetry.RequestStatusSuccess),
+		PromptTokens:   promptTokensEstimateFromContext(logCtx, requestBody),
+		UsageSource:    usageSourceForEstimate(logCtx, requestBody),
+		TokenBand:      tokenBandFromLogCtx(logCtx),
 		// 2026-06-20: explicitly clear ErrorKind so any stale
 		// error_kind from a prior failed UPDATE attempt for the
 		// same request_id is wiped. The UPSERT also handles this
@@ -4861,7 +5428,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		CompressionReason:   result.CompressionReason,
 		CompressionStrategy: result.CompressionStrategy,
 		CompressionMeta:     result.CompressionMeta,
-		ParentRequestID:     result.ParentRequestID,
+		// Compression-rewrite parent chain only; the header-supplied auto
+		// loopback parent is applied below via applyParentCorrelationFields.
+		ParentRequestID: result.ParentRequestID,
 		// V3.1 dispatch queue timestamps (migration 491)
 		T0ArrivedAt:       result.T0ArrivedAt,
 		T1TotalEnqueuedAt: result.T1TotalEnqueuedAt,
@@ -4908,22 +5477,35 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			reqLog.GwTaskID = strPtr(gwTID)
 		}
 	}
+	// 2026-08-15 (OBS-DV2 #4)：最终 upsert 此前只带 result.ParentRequestID
+	// （压缩重写父链），入口侧从 X-Gw-Parent-Request-Id 读入 logCtx 的
+	// auto loopback 父子关联被丢弃，ON CONFLICT DO UPDATE 又用 NULL 覆盖了
+	// recordInitialRequestLog 已写入的值 —— auto-title/auto-summary 子请求的
+	// parent_request_id / origin_actor 落库恒为 NULL，live stream 的
+	// child_request 帧因此从不发射。与初始写入保持同一套关联字段应用。
+	applyParentCorrelationFields(reqLog, logCtx)
 
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.
 	// (v7 and v3 strategies are mutually exclusive in a single request.)
 
+	promptTokensFromLLM := false
 	if capture != nil {
 		m := capture.SummaryAsMap()
+
 		// Only set pointers when the captured value is non-zero. Some providers
+
 		// (e.g. minimax) include `"usage": null` in every SSE chunk, so the
 		// stream summary may have the keys present with value 0. Setting a
 		// non-nil *int to 0 would otherwise suppress the estimator fallback
 		// below (because the nil-check would be false).
 		if v, ok := m["prompt_tokens"].(int); ok && v > 0 {
 			reqLog.PromptTokens = &v
+			promptTokensFromLLM = true
 		}
+
 		if v, ok := m["completion_tokens"].(int); ok && v > 0 {
+
 			reqLog.CompletionTokens = &v
 		}
 		if v, ok := m["cache_read_tokens"].(int); ok && v > 0 {
@@ -4987,6 +5569,19 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ErrorKind = strPtr("empty_response")
 				reqLog.FailureStage = strPtr("upstream_empty_response")
 				reqLog.FailureDetailCode = strPtr("zero_tokens_few_chunks")
+
+				// Emit Prometheus metric (2026-08-29)
+				modelName := ""
+				if reqLog.OutboundModel != nil {
+					modelName = *reqLog.OutboundModel
+				} else if reqLog.ClientModel != nil {
+					modelName = *reqLog.ClientModel
+				}
+				providerID := ""
+				if reqLog.ProviderID != nil {
+					providerID = fmt.Sprintf("%d", *reqLog.ProviderID)
+				}
+				metrics.Global().RecordSuccessEmptyResponse(modelName, providerID, reqLog.TenantID)
 			}
 		}
 
@@ -5009,6 +5604,50 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.FailureStage = strPtr(string(errorsx.KindUpstreamContextLoss))
 				reqLog.FailureDetailCode = strPtr("prompt_tokens_body_mismatch")
 				reqLog.QualityFlags = append(reqLog.QualityFlags, QualityFlagUpstreamContextLoss)
+			}
+		}
+
+		// 2026-08-29 §4.4: Detect non-streaming success with empty response body.
+		// Runs only on non-streaming requests still marked success.
+		// Per design decision §4.1 (conservative approach), this does NOT modify
+		// reqLog.Success — it only logs and emits metrics for observability.
+		if capture == nil && reqLog.Success {
+			if detectEmptyNonStreamResponse(reqLog) {
+				modelName := ""
+				if reqLog.OutboundModel != nil {
+					modelName = *reqLog.OutboundModel
+				} else if reqLog.ClientModel != nil {
+					modelName = *reqLog.ClientModel
+				}
+
+				providerID := 0
+				if reqLog.ProviderID != nil {
+					providerID = *reqLog.ProviderID
+				}
+
+				slog.Warn("success_with_empty_response_body",
+					"request_id", reqLog.RequestID,
+					"tenant_id", reqLog.TenantID,
+					"model", modelName,
+					"provider_id", providerID,
+					"has_response_body", reqLog.ResponseBody != nil,
+					"response_body_len", func() int {
+						if reqLog.ResponseBody == nil {
+							return 0
+						}
+						return len(*reqLog.ResponseBody)
+					}(),
+				)
+
+				// Emit Prometheus metric (2026-08-29)
+				metrics.Global().RecordSuccessEmptyResponse(
+					modelName,
+					fmt.Sprintf("%d", providerID),
+					reqLog.TenantID,
+				)
+
+				// Add quality flag for downstream analysis
+				reqLog.QualityFlags = append(reqLog.QualityFlags, "empty_response_body")
 			}
 		}
 
@@ -5064,6 +5703,25 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				reqLog.ToolCalls = b
 			}
 		}
+		// The survival coordinator records retry-discard context on the
+		// capture; persist the JSONB on the terminal request-log update.
+
+		if v, ok := m["discard_events"]; ok && v != nil {
+			switch t := v.(type) {
+			case []audit.DiscardEvent:
+				if b, err := json.Marshal(t); err == nil {
+					reqLog.DiscardEvents = b
+				}
+			case json.RawMessage:
+				if len(t) > 0 {
+					reqLog.DiscardEvents = t
+				}
+			case []any:
+				if b, err := json.Marshal(t); err == nil {
+					reqLog.DiscardEvents = b
+				}
+			}
+		}
 	}
 
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): propagate
@@ -5090,11 +5748,15 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	if len(result.ResponseBody) > 0 {
 		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
 		if pt > 0 || ct > 0 {
-			// Only overwrite if not already set from streaming capture
-			if reqLog.PromptTokens == nil || *reqLog.PromptTokens == 0 {
+			// A receipt-time estimate is provisional. Replace it whenever the
+			// upstream response provides the real prompt token count.
+			if pt > 0 && !promptTokensFromLLM {
 				reqLog.PromptTokens = &pt
+				promptTokensFromLLM = true
 			}
+
 			if reqLog.CompletionTokens == nil || *reqLog.CompletionTokens == 0 {
+
 				reqLog.CompletionTokens = &ct
 			}
 			if crt > 0 && (reqLog.CacheReadTokens == nil || *reqLog.CacheReadTokens == 0) {
@@ -5186,8 +5848,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			}
 		}
 
-	} else if reqLog.UsageSource == nil {
+	}
+	if promptTokensFromLLM {
 		reqLog.UsageSource = strPtr(UsageSourceLLM)
+	} else if reqLog.UsageSource == nil && (reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil) {
+		reqLog.UsageSource = strPtr(UsageSourceEstimated)
 	}
 
 	// CO-2 (2026-08-15): 真实 usage 到达时，异步修正本请求此前可能已落库的
@@ -5219,34 +5884,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	if reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil {
-		cost := CalcCost(CostInput{
-			PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
-			CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
-			CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
-			CacheWriteTokens: floatPtrFromInt(reqLog.CacheWriteTokens),
+		reqLog.CostUSD, reqLog.CostDisplay, reqLog.CostCurrency = AssignRequestCost(CostPriceInput{
+			PromptTokens:     reqLog.PromptTokens,
+			CompletionTokens: reqLog.CompletionTokens,
+			CacheReadTokens:  reqLog.CacheReadTokens,
+			CacheWriteTokens: reqLog.CacheWriteTokens,
 			PriceIn:          result.Candidate.PriceInPer1M,
 			PriceOut:         result.Candidate.PriceOutPer1M,
 			CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
 			CacheWritePrice:  result.Candidate.CacheWritePricePer1M,
+			Currency:         result.Candidate.Currency,
 		})
-		reqLog.CostUSD = cost
-		// For CNY-priced providers (cost_usd is intentionally nil) record the
-		// native-currency value in cost_display so /request-logs can show it.
-		if cost == nil && result.Candidate.Currency != "" && result.Candidate.Currency != "USD" {
-			cnyCost := CalcCost(CostInput{
-				PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),
-				CompletionTokens: floatPtrFromInt(reqLog.CompletionTokens),
-				CacheReadTokens:  floatPtrFromInt(reqLog.CacheReadTokens),
-				CacheWriteTokens: floatPtrFromInt(reqLog.CacheWriteTokens),
-				PriceIn:          result.Candidate.PriceInPer1M,
-				PriceOut:         result.Candidate.PriceOutPer1M,
-				CacheReadPrice:   result.Candidate.CacheReadPricePer1M,
-				CacheWritePrice:  result.Candidate.CacheWritePricePer1M,
-			})
-			reqLog.CostDisplay = cnyCost
-			curr := result.Candidate.Currency
-			reqLog.CostCurrency = &curr
-		}
 	}
 
 	if h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
@@ -5310,6 +5958,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// instead of an LCS-inferred verdict. The header never survives to the hook
 	// otherwise — the hook only sees the telemetry entry, not the request.
 	applySubmitModeHeader(reqLog, logCtx)
+	// V6-W1.6 R8 (migration 608): 完成态 UPDATE 也带上请求类型（幂等，
+	// 首行已写时保持原值，COALESCE 侧同样防回退）。
+	if reqLog.RequestClass == nil {
+		reqLog.RequestClass = requestClassPtr(logCtx)
+		reqLog.DueAt = requestDueAtPtr(logCtx)
+	}
 
 	// 2026-07-19: 填充路由尝试追踪数据到 telemetry
 	// 2026-07-20: Try result.RoutingTracker first (populated by the executor),
@@ -5368,7 +6022,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if reqLog.GwTaskID != nil {
 			taskID = *reqLog.GwTaskID
 		}
-		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, taskID, body, preview, evt.RequestID)
+		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, taskID, body, preview, evt.RequestID, reqLog.RequestID)
 	}
 
 	// 2026-08-06: auto-summary — fires after auto-title on the same
@@ -5575,6 +6229,29 @@ func intValueOrZero(p *int) int {
 //
 // error_kind: "client_cancel" for context.Canceled, "probe_timeout" for
 // context.DeadlineExceeded. failure_stage is always "probe".
+//
+// shouldEmitDisconnectProbe reports whether the client-disconnect safety net
+// should synthesize a probe row: the request context must actually be canceled
+// (client disconnect / deadline) AND the request must NOT have already been
+// recorded via the success or failure path (IsLogged()==false). 2026-08-16:
+// extracted from the ServeHTTP defer guard so this predicate is unit-testable —
+// a request that already completed successfully (emitTelemetry wrote the row,
+// IsLogged()==true) must never emit a probe when the client tears down at the
+// very end.
+func shouldEmitDisconnectProbe(rctx context.Context, logCtx *RequestLogContext) bool {
+	if rctx == nil || rctx.Err() == nil {
+		return false
+	}
+	if logCtx == nil || logCtx.IsLogged() {
+		return false
+	}
+	return true
+}
+
+func shouldTraceRequest(method string) bool {
+	return method != http.MethodGet
+}
+
 func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *http.Request, logCtx *RequestLogContext) {
 	if h == nil || h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
@@ -5625,7 +6302,11 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	errorKind := "client_cancel"
 	if logCtx != nil && logCtx.StreamCapture != nil {
 		summary := logCtx.StreamCapture.SummaryAsMap()
-		if reason, ok := summary["upstream_finish_reason"].(string); ok {
+		reason, _ := summary["failure_detail_code"].(string)
+		if reason == "" {
+			reason, _ = summary["upstream_finish_reason"].(string)
+		}
+		if reason != "" {
 			// first_byte_timeout / stream_timeout / stream_chunk_timeout /
 			// chunk_timeout 都是供应商端超时，应归类为 probe_timeout。
 			// 这些 reason 会触发 KindStreamTimeout / KindTimeout 降级。
@@ -5763,6 +6444,7 @@ func buildRequestPreview(body map[string]any) string {
 
 // recordFailedRequestWithKey records a failure via the unified RequestLogContext pipeline.
 func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboundModel string, providerID, credentialID *int, errCode, errMessage string, latencyMs int, requestBody []byte, keyInfo *authentication.KeyInfo, r *http.Request) {
+	markRequestJourneyFailure(r, keyInfo, errCode)
 	ctx := &RequestLogContext{
 		handler:       h,
 		RequestID:     requestID,
@@ -5775,7 +6457,7 @@ func (h *ChatHandler) recordFailedRequestWithKey(requestID, clientModel, outboun
 	}
 	if r != nil {
 		if session := session.SessionFromContext(r.Context()); session != nil {
-			ctx.Session = session
+			ctx.SetSession(session)
 		}
 		// 2026-06-26: forward the client-supplied X-Request-Id (set by
 		// the RequestIDMiddleware into X-Gw-Client-Request-Id) so the
@@ -5992,7 +6674,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	clientProfile, identityHash string,
 	providerID, credentialID, canonicalID *int,
 	canonicalName string, // 2026-07-27: 标准模型名 (migration 458)
-	requestBody []byte,
+	requestBody []byte, clientProtocol string,
 	txResult *transformation.TransformResult,
 	egressProtocol string,
 	isStream bool,
@@ -6061,21 +6743,34 @@ func (h *ChatHandler) recordInitialRequestLog(
 		ProviderID:      providerID,
 		CredentialID:    credentialID,
 		CanonicalID:     canonicalID,
+		// V6-W1.6 R8 (migration 608): 请求类型（即时/定时）随首行落库。
+		RequestClass: requestClassPtr(autoCtx),
+		DueAt:        requestDueAtPtr(autoCtx),
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
-		CanonicalModel:    strPtr(canonicalName),
-		ClientProfile:     strPtr(clientProfile),
-		IdentityHash:      strPtr(identityHash),
-		RequestMode:       strPtr(requestMode),
-		GwSessionID:       strPtr(gwSessionID),
-		GwTaskID:          strPtr(gwTaskID),
-		Success:           false,
-		RequestStatus:     strPtr(telemetry.RequestStatusInProgress),
-		RequestBody:       requestBodyText,
-		RequestPreview:    requestPreviewPtr,
-		TransformSummary:  transformSummaryPtr,
-		TransformRuleID:   transformRuleID,
-		EgressProtocol:    strPtr(egressProtocol),
-		StreamInterrupted: &streamInterrupted,
+		CanonicalModel: strPtr(canonicalName),
+		ClientProfile:  strPtr(clientProfile),
+		IdentityHash:   strPtr(identityHash),
+		RequestMode:    strPtr(requestMode),
+		GwSessionID:    strPtr(gwSessionID),
+		GwTaskID:       strPtr(gwTaskID),
+		Success:        false,
+		RequestStatus:  strPtr(telemetry.RequestStatusInProgress),
+		PromptTokens:   promptTokensEstimateFromContext(autoCtx, requestBody),
+		UsageSource:    usageSourceForEstimate(autoCtx, requestBody),
+		// 2026-08-19: copy token_band from the SessionCompressor result so the
+		// initial in_progress row carries the same classification as the eventual
+		// success UPDATE. The success path's emitTelemetry will overwrite this
+		// via tokenBandFromLogCtx.
+		TokenBand:          strPtrFromLogCtx(autoCtx),
+		RequestBody:        requestBodyText,
+		RequestPreview:     requestPreviewPtr,
+		TransformSummary:   transformSummaryPtr,
+		TransformRuleID:    transformRuleID,
+		EgressProtocol:     strPtr(egressProtocol),
+		ClientProtocol:     strPtr(clientProtocol),
+		UpstreamProtocol:   strPtr(egressProtocol),
+		ProtocolConversion: protocolConversionFlag(clientProtocol, egressProtocol),
+		StreamInterrupted:  &streamInterrupted,
 		// 2026-06-26: preserve client-supplied X-Request-Id for debug
 		// (request_id itself is server-generated; see middleware/requestid_mw.go).
 		ClientRequestID: clientRequestIDPtr,
@@ -6323,12 +7018,25 @@ type ResourceStatus struct {
 	Connected bool   `json:"connected"`
 	Latency   string `json:"latency,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Mode explains the readiness semantics when the connector is not a live
+	// external dependency: "local" (lite storage: SQLite + local dirs carry
+	// persistence) or "not_required" (optional in this runtime mode).
+	Mode string `json:"mode,omitempty"`
 }
 
 // HealthResponse represents the health check response.
 type HealthResponse struct {
-	Status      string          `json:"status"`
-	Version     string          `json:"version"`
+	Status  string `json:"status"`
+	Version string `json:"version"`
+	// 2026-08-29 扩 fields：/healthz 暴露 git_sha + build_seq + build_date，
+	// 让 scripts/lifecycle/preflight.sh 的 /version 段能与切完后的 bundle version 比对。
+	// 字段保持 minimal，仅 SSOT；不要把 internal versionInfoStruct 全部泄出去。
+	GitSHA    string `json:"git_sha,omitempty"`
+	BuildSeq  int    `json:"build_seq,omitempty"`
+	BuildDate string `json:"build_date,omitempty"`
+	// Ready 标识依赖是否就绪：DB ping + Redis ping 都通时 true。
+	// 由 HealthHandler.ServeHTTP 在 anonymous 路径上设置（不暴露任何内网拓扑）。
+	Ready       bool            `json:"ready"`
 	Database    *ResourceStatus `json:"database,omitempty"`
 	Redis       *ResourceStatus `json:"redis,omitempty"`
 	Circuit     any             `json:"circuit,omitempty"`
@@ -6343,6 +7051,14 @@ type HealthHandler struct {
 	proxy   *upstreampkg.ProxyResolver
 	db      dbConnector
 	redis   redisConnector
+	// depsOptional marks the lite storage runtime: PostgreSQL is intentionally
+	// bypassed (SQLite + local dirs), so h.db == nil is a configuration fact
+	// rather than an init failure and must not fail readiness forever.
+	depsOptional bool
+	// Runtime identity is included in /version so a proxy can prove that it
+	// switched to the warmed candidate rather than merely seeing a live port.
+	runtimeRole string
+	listen      string
 }
 
 // dbConnector interface for database ping check
@@ -6360,6 +7076,36 @@ func NewHealthHandler(cm *credential.Manager, l *credential.Limiter, proxy *upst
 	return &HealthHandler{circuit: cm, limiter: l, proxy: proxy, db: db, redis: redis}
 }
 
+// SetRuntimeIdentity attaches non-sensitive process identity to /version.
+// It is intentionally separate from the constructor because config and Redis
+// are initialized at different points in the gateway composition root.
+func (h *HealthHandler) SetRuntimeIdentity(role, listen string) {
+	h.runtimeRole = role
+	h.listen = listen
+}
+
+// SetDepsOptional marks the runtime as lite storage mode (PostgreSQL bypassed).
+// Full mode keeps the historical fail-closed semantics; only the composition
+// root may call this, exactly once at startup.
+func (h *HealthHandler) SetDepsOptional(optional bool) {
+	h.depsOptional = optional
+}
+
+func healthResourceStatus(parent context.Context, connector interface{ Ping(context.Context) error }) *ResourceStatus {
+	if connector == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(parent, 2*time.Second)
+	defer cancel()
+	start := time.Now()
+	err := connector.Ping(ctx)
+	status := &ResourceStatus{Connected: err == nil, Latency: time.Since(start).String()}
+	if err != nil {
+		status.Error = err.Error()
+	}
+	return status
+}
+
 // SetRedis updates the Redis connection for health checks (2026-07-08).
 // Called after Redis is initialized in main.go.
 func (h *HealthHandler) SetRedis(redis redisConnector) {
@@ -6367,9 +7113,31 @@ func (h *HealthHandler) SetRedis(redis redisConnector) {
 }
 
 func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 2026-08-29：按 path 分发：
+	//   /version   仅 build metadata（version + git_sha + build_seq + build_date）
+	//   /readyz    严格门：DB + Redis 都通才 200，否则 503。K8s readiness 用。
+	//   /healthz   现有逻辑（anon 暴露 Ready，full=true 暴露 Circuit/Concurrency/Proxy 需 admin token）
+	switch r.URL.Path {
+	case "/version":
+		h.serveVersion(w)
+		return
+	case "/readyz":
+		h.serveReadyz(w, r)
+		return
+	}
+
+	// 2026-08-29：/healthz 暴露 git_sha / build_seq / build_date / ready（DB+Redis 是否通）。
+	// 字段保持 minimal，不暴露 internal versionInfoStruct 的全部内容；与
+	// scripts/lifecycle/preflight.sh 的 /version 段配合，让客户级升级器能确认
+	// 切完后的 binary 真的起来了，且依赖就绪。
+	// 解析 version.json 时拿到 GitSHA / BuildSeq / BuildDate；与 BuildNumber() 复用同一路径。
+	vInfo := resolveGatewayVersionInfo()
 	resp := HealthResponse{
-		Status:  "ok",
-		Version: resolveGatewayVersion(),
+		Status:    "ok",
+		Version:   vInfo.Version,
+		GitSHA:    vInfo.GitSHA,
+		BuildSeq:  vInfo.BuildSeq,
+		BuildDate: vInfo.BuildDate,
 	}
 
 	// NET-007 fix: ?full=true 必须 admin token（完整的 LLM_GATEWAY_ADMIN_API_KEY
@@ -6425,6 +7193,11 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				resp.Redis.Error = redisErr.Error()
 			}
 		}
+	} else {
+		// 匿名路径：DB + Redis ping 都通才算 ready=true。任一不通 → ready=false 但仍 200，
+		// 让 L1 healthz 在依赖故障时仍能 serve 探针（K8s liveness 不应 fail），
+		// 同时把 Ready=false 暴露给 readyz 端点做 L2 严格门。
+		resp.Ready = h.dependenciesReady(r)
 	}
 
 	// NET-007 fix: proxy 字段也属于敏感信息（暴露 internal.example.com 等内网
@@ -6441,6 +7214,162 @@ func (h *HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+// serveVersion — /version 端点：仅 build metadata，anon 可访问。
+// scripts/lifecycle/preflight.sh 用它与切完后的 bundle version.json 比对。
+func (h *HealthHandler) serveVersion(w http.ResponseWriter) {
+	v := resolveGatewayVersionInfo()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	//nolint:errcheck
+	json.NewEncoder(w).Encode(map[string]any{
+		"version":      v.Version,
+		"git_sha":      v.GitSHA,
+		"build_seq":    v.BuildSeq,
+		"build_date":   v.BuildDate,
+		"module":       "llm-gateway-go",
+		"runtime_role": h.runtimeRole,
+		"listen":       h.listen,
+	})
+}
+
+// serveReadyz — /readyz 端点：DB + Redis 都通才 200，否则 503。
+// 严格门：与 /healthz 的 anon 路径区分——healthz 在 K8s liveness 中应 fail-open，
+// readyz 在 readiness 中应 fail-closed（依赖故障时摘流量）。
+//
+// 2026-09-03: 返回结构同时包含 `database` 与 `redis` ResourceStatus 字段，
+// 让前端 SystemStatusIndicator 的 D/R 徽章可以从这个匿名端点拿到真实
+// 连通性，而不必依赖 /healthz?full=true (需要 admin token)。Error 字段
+// 继续 strip，避免向匿名端点泄漏后端错误字符串。
+func (h *HealthHandler) serveReadyz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	// lite storage mode: PostgreSQL is bypassed by design, so readiness is
+	// governed by the optional Redis dependency only (2026-09-05 audit B1 —
+	// previously lite reported not_ready 503 forever).
+	if h.depsOptional {
+		resp := map[string]any{
+			"status":   "ready",
+			"mode":     "lite",
+			"database": &ResourceStatus{Connected: true, Mode: "local"},
+		}
+		if h.redis != nil {
+			redisStatus := healthResourceStatus(r.Context(), h.redis)
+			if redisStatus != nil {
+				redisStatus.Error = ""
+			}
+			resp["redis"] = redisStatus
+			if redisStatus == nil || !redisStatus.Connected {
+				resp["status"] = "not_ready"
+				w.WriteHeader(http.StatusServiceUnavailable)
+				//nolint:errcheck
+				json.NewEncoder(w).Encode(resp)
+				return
+			}
+		} else {
+			resp["redis"] = &ResourceStatus{Connected: true, Mode: "not_required"}
+		}
+		w.WriteHeader(http.StatusOK)
+		//nolint:errcheck
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	dbStatus := healthResourceStatus(r.Context(), h.db)
+	redisStatus := healthResourceStatus(r.Context(), h.redis)
+	if dbStatus != nil {
+		dbStatus.Error = "" // 不要向匿名端点泄漏 ping 错误细节
+	}
+	if redisStatus != nil {
+		redisStatus.Error = ""
+	}
+	resp := map[string]any{
+		"database": dbStatus,
+		"redis":    redisStatus,
+	}
+	allReady := dbStatus != nil && dbStatus.Connected &&
+		redisStatus != nil && redisStatus.Connected
+	if allReady {
+		resp["status"] = "ready"
+		w.WriteHeader(http.StatusOK)
+	} else {
+		resp["status"] = "not_ready"
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	//nolint:errcheck
+	json.NewEncoder(w).Encode(resp)
+}
+
+// dependenciesReady — 内部 helper：DB ping + Redis ping（任一失败返回 false）。
+func (h *HealthHandler) dependenciesReady(r *http.Request) bool {
+	// lite storage mode: the DB is intentionally nil (SQLite + local dirs);
+	// only a configured-but-unreachable Redis blocks readiness (audit B1).
+	if h.depsOptional {
+		if h.redis == nil {
+			return true
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		return h.redis.Ping(ctx) == nil
+	}
+	// DB and Redis are mandatory runtime dependencies. A nil connector means
+	// initialization did not complete and must never be reported as ready.
+	if h.db == nil || h.redis == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := h.db.Ping(ctx); err != nil {
+		return false
+	}
+	ctx, cancel = context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	return h.redis.Ping(ctx) == nil
+}
+
+// healthVersionInfo 是 /healthz 暴露字段的子集（SSOT 来自 version.json）。
+// 不要把这个 struct 直接暴露给客户端——只暴露 HealthResponse 字段。
+type healthVersionInfo struct {
+	Version   string
+	GitSHA    string
+	BuildSeq  int
+	BuildDate string
+}
+
+// resolveGatewayVersionInfo reads the same instance-local override used by the
+// gateway version loader, then falls back to the active release paths.
+func resolveGatewayVersionInfo() healthVersionInfo {
+	candidates := make([]string, 0, 3)
+	if path := strings.TrimSpace(os.Getenv("LLM_GATEWAY_VERSION_FILE")); path != "" {
+		candidates = append(candidates, path)
+	}
+	candidates = append(candidates,
+		"/opt/llm-gateway-go/version.json",
+		"version.json",
+	)
+	out := healthVersionInfo{
+		Version:   "dev",
+		GitSHA:    "unknown",
+		BuildDate: "unknown",
+	}
+	for _, path := range candidates {
+		if raw, err := os.ReadFile(path); err == nil {
+			var v struct {
+				Version   string `json:"version"`
+				GitSHA    string `json:"git_sha"`
+				BuildSeq  int    `json:"build_seq"`
+				BuildDate string `json:"build_date"`
+			}
+			if err := json.Unmarshal(raw, &v); err == nil && v.Version != "" {
+				out.Version = v.Version
+				out.GitSHA = v.GitSHA
+				out.BuildSeq = v.BuildSeq
+				out.BuildDate = v.BuildDate
+				return out
+			}
+		}
+	}
+	return out
+}
+
 func extractBearerToken(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); auth != "" {
 		if strings.HasPrefix(auth, "Bearer ") {
@@ -6454,6 +7383,43 @@ func extractBearerToken(r *http.Request) string {
 		return key
 	}
 	return ""
+}
+
+// insertRateLimitedPlaceholder ensures request_logs_hot has a row before the
+// rate-limit UPDATE writes its terminal fields. Used by the rate-limit
+// early-return path (handler.go captureAndEmitRateLimited) which bypasses
+// recordInitialRequestLog. Idempotent: INSERT … ON CONFLICT (request_id)
+// DO UPDATE means a subsequent UPDATE still lands on the same row.
+//
+// 2026-08-26: introduced to plug the kimi-k3 / RPM queue blind spot —
+// when the queue budget was exceeded the request returned 429/200 bytes
+// but never landed in request_logs_hot (only WAL + Redis trace did),
+// producing "request log row not found, retaining Redis trace" warnings
+// at FlushToPG. Mirrors the seed surface of recordInitialRequestLog
+// without pulling in its 14-arg signature.
+func (h *ChatHandler) insertRateLimitedPlaceholder(logCtx *RequestLogContext) {
+	if logCtx == nil || logCtx.IsLogged() {
+		return
+	}
+	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
+		return
+	}
+	minimal := &telemetry.RequestLogEntry{
+		RequestID:     logCtx.RequestID,
+		TenantID:      "default",
+		ClientModel:   strPtr(logCtx.ClientModel),
+		RequestStatus: strPtr(telemetry.RequestStatusInProgress),
+	}
+	if ki := logCtx.KeyInfo; ki != nil {
+		minimal.TenantID = ki.TenantID
+		kid := ki.ID
+		minimal.APIKeyID = &kid
+		if aid := appID(ki); aid != nil {
+			a := *aid
+			minimal.ApplicationID = &a
+		}
+	}
+	h.telemetryClient.EmitRequestLogInsert(minimal)
 }
 
 // resolveEndUser picks the best end-user identifier available for this
@@ -6772,19 +7738,14 @@ func boolPtr(v bool) *bool {
 // request log as failed. It returns (isError, detailCode).
 //
 // Benign cases that do NOT mark the request as failed:
-//   - "eof_without_done" with chunk_count > 0: upstream closed without [DONE]
-//     but content was already delivered (e.g. MiniMax). The gateway synthesises
-//     [DONE] for the client. This mirrors executor_chat.go's isBenignEOF.
 //   - "client_cancel" / "client_disconnected": the client went away; not a
 //     gateway or upstream error.
 func classifyStreamInterruption(m map[string]any) (isError bool, detailCode string) {
 	detailCode, _ = m["failure_detail_code"].(string)
-	chunkCount, _ := m["stream_chunk_count"].(int)
 
-	isBenignEOF := detailCode == "eof_without_done" && chunkCount > 0
 	isClientCancel := detailCode == "client_cancel" || detailCode == "client_disconnected"
 
-	if isBenignEOF || isClientCancel {
+	if isClientCancel {
 		return false, detailCode
 	}
 	return true, detailCode
@@ -6798,10 +7759,7 @@ func classifyStreamInterruption(m map[string]any) (isError bool, detailCode stri
 //	stream_timeout       — no data for >stream_chunk_timeout
 //	concurrent_overload  — circuit breaker inferred a 429-class overload
 //	empty_response       — upstream 200 with zero content (NIM pattern)
-//	eof_without_done     — upstream closed without sending [DONE]; benign
-//	                       when chunks > 0 (handled by executor_chat.go
-//	                       isBenignEOF before this mapper is reached),
-//	                       real failure when chunks == 0 (2026-07-29 split)
+//	eof_without_done     — upstream closed without sending its terminal marker
 //	stream_read_error    — generic read failure (malformed SSE, etc.)
 //	stream_panic         — recovered panic in a stream bridge
 //	client_cancel        — client disconnected before stream completion
@@ -6848,17 +7806,9 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 		return "client_cancel"
 	case "concurrent_overload", "concurrent":
 		return "concurrent_overload"
-	case "empty_stream_no_content":
+	case "empty_stream_no_content", "early_empty_detection":
 		return "empty_response"
 	case "eof_without_done":
-		// 2026-07-29: Decomposed from the "stream_read_error" bucket so the
-		// operator-facing error_kind column no longer conflates the benign
-		// "upstream closed without [DONE]" pattern (observed on MiniMax,
-		// ~13% of streams as of 2026-07-28) with generic read failures.
-		// Mirrors executor_chat.go isBenignEOF: chunk_count > 0 is
-		// classified as success and never reaches this mapping; chunks == 0
-		// remains a real failure but now has its own error_kind for
-		// accurate dashboard filtering.
 		return "eof_without_done"
 	case "anthropic_to_openai_read_error", "anthropic_to_responses_read_error",
 		"read_error", "stream_read_error":
@@ -7591,6 +8541,13 @@ func StreamChunkErrorsFromLogCtxForTest(c *RequestLogContext) int {
 	return streamChunkErrorsFromLogCtx(c)
 }
 
+func applyActualOutboundBody(logCtx *RequestLogContext, result *executors.ExecuteResult) {
+	if logCtx == nil || result == nil || len(result.RequestBody) == 0 {
+		return
+	}
+	logCtx.OutboundBody = append(logCtx.OutboundBody[:0], result.RequestBody...)
+}
+
 // requestBytesFromLogCtx returns the request body size from logCtx.
 // Returns nil if logCtx is nil or RequestBodySize is 0 (to avoid storing
 // zero values in request_logs.request_bytes for requests without bodies).
@@ -7607,30 +8564,11 @@ func requestBytesFromLogCtx(c *RequestLogContext) *int {
 //
 // 2026-07-14: 移除对旧 VERSION 文件的依赖，统一读 version.json。
 func resolveGatewayVersion() string {
-	candidates := []string{
-		"/opt/llm-gateway-go/version.json",
-		"version.json",
+	v := resolveGatewayVersionInfo()
+	if v.GitSHA != "" && v.GitSHA != "unknown" {
+		return v.Version + "-" + v.GitSHA
 	}
-	for _, path := range candidates {
-		if raw, err := os.ReadFile(path); err == nil {
-			var v struct {
-				Version string `json:"version"`
-				GitSHA  string `json:"git_sha"`
-			}
-			if json.Unmarshal(raw, &v) == nil {
-				if v.Version != "" {
-					if v.GitSHA != "" {
-						return v.Version + "-" + v.GitSHA
-					}
-					return v.Version
-				}
-			}
-		}
-	}
-	if sha := strings.TrimSpace(os.Getenv("GIT_SHA")); sha != "" {
-		return "1.0.0-" + sha + "-" + time.Now().UTC().Format("2006-01-02")
-	}
-	return "0.2.0-unknown"
+	return v.Version
 }
 
 // detectEmptyStreamResponse checks if a streaming response is effectively empty.
@@ -7762,6 +8700,13 @@ func detectUpstreamContextLoss(m map[string]any, reqLog *telemetry.RequestLogEnt
 		return false // substantial reply — assume the context was honoured
 	}
 
+	// A tool-call turn is intentionally short: the model emits a structured
+	// action for the gateway to execute, so low completion_tokens are expected.
+	// Do not treat its tool-call arguments as evidence that the prompt vanished.
+	if hasStructuredToolCalls(m["tool_calls"]) {
+		return false
+	}
+
 	// Require a clean terminator: this fault class closes the stream
 	// normally, which is why no interruption detector catches it.
 	reason := ""
@@ -7776,6 +8721,43 @@ func detectUpstreamContextLoss(m map[string]any, reqLog *telemetry.RequestLogEnt
 	}
 
 	return true
+}
+
+// detectEmptyNonStreamResponse checks for the anomalous pattern where a
+// non-streaming request is marked as successful but has no response body.
+// This mirrors the empty-response detection for streams (detectEmptyStreamResponse).
+//
+// Per §4.4 design (2026-08-29-success-empty-response-design.md), detection
+// does NOT modify settlement or already-sent responses; it only logs and
+// emits metrics for observability.
+//
+// Returns true when ALL of the following conditions hold:
+//   - Request is marked as successful (reqLog.Success == true)
+//   - Response body is missing or empty (nil, "", or "{}")
+//
+// Note: This function does not check isStream because the caller
+// (emitTelemetry) already guards the call with `if !isStream`.
+func detectEmptyNonStreamResponse(reqLog *telemetry.RequestLogEntry) bool {
+	if reqLog == nil {
+		return false
+	}
+
+	// Only check successful requests
+	if !reqLog.Success {
+		return false
+	}
+
+	// Missing or empty response_body
+	if reqLog.ResponseBody == nil {
+		return true
+	}
+
+	body := strings.TrimSpace(*reqLog.ResponseBody)
+	if body == "" || body == "{}" {
+		return true
+	}
+
+	return false
 }
 
 func hasStructuredToolCalls(value any) bool {

@@ -17,19 +17,19 @@ func getTestRedis() *redis.Client {
 	if redisAddr == "" {
 		redisAddr = "localhost:6379"
 	}
-	
+
 	client := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 	})
-	
+
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
-	
+
 	if err := client.Ping(ctx).Err(); err != nil {
 		return nil
 	}
-	
+
 	return client
 }
 

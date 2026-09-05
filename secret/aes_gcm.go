@@ -168,7 +168,11 @@ func decryptAESGCMStr(envelope string, kr *Keyring) ([]byte, error) {
 	}
 	plaintext, err := gcm.Open(nil, nonce, ctAndTag, []byte(gcmAAD))
 	if err != nil {
-		return nil, errors.New("AES-GCM decryption failed — tampered data or wrong key")
+		// Wrapped as the canonical secret.ErrDecrypt sentinel so callers
+		// can route via errors.Is without string-matching the message.
+		// %w:%w keeps the underlying gcm.Open error in the unwrap chain
+		// so errors.Unwrap recovers the GCM error string for diagnostics.
+		return nil, fmt.Errorf("%w: %w", ErrDecrypt, err)
 	}
 	return plaintext, nil
 }
@@ -178,6 +182,13 @@ func IsV1Envelope(s string) bool {
 	return strings.HasPrefix(s, gcmVersion+gcmSep)
 }
 
+// legacyFernetMarker prefixes Fernet-token ciphertexts written before the
+// AES-GCM keyring rollout.  Two payload forms exist in the wild:
+//
+//	v1:legacy:<fernet-token-text>           — early rows, token text inline
+//	v1:legacy:<b64url(fernet-token-text)>   — credential-17 (154 incident DB)
+const legacyFernetMarker = "v1:legacy:"
+
 // DecryptAny decrypts either a v1 AES-GCM envelope or a legacy Fernet token.
 // Returns (plaintext, isLegacy, error).  When isLegacy=true, the caller should
 // re-encrypt and persist the new envelope to complete lazy migration.
@@ -186,24 +197,42 @@ func DecryptAny(ciphertext string, kr *Keyring, fernetKey []byte) ([]byte, bool,
 	// This handles both v1:<kid>:<b64> (kid != "legacy") and
 	// v1:legacy:<b64> when kid "legacy" was used with AES-GCM (default keyring).
 	if IsV1Envelope(ciphertext) {
+		isLegacyMarker := strings.HasPrefix(ciphertext, legacyFernetMarker)
 		if kr != nil {
 			pt, err := DecryptAESGCM(ciphertext, kr)
 			if err == nil {
 				return pt, false, nil
 			}
-			// AES-GCM failed — fall through to legacy Fernet path below.
-			// (Common when ciphertext was written with a different key
-			//  than the current keyring.)
+			// A GCM tag mismatch on a non-"legacy" kid means the envelope
+			// parsed and its key resolved but the data did not authenticate:
+			// return ErrDecrypt instead of masking it as unknown format so
+			// callers (admin reveal paths, credential_reveal_failure metrics)
+			// keep the tamper/wrong-key classification.  v1:legacy: payloads
+			// stay on the fallback path because that marker is ambiguous with
+			// legacy Fernet rows.
+			if errors.Is(err, ErrDecrypt) && !isLegacyMarker {
+				return nil, false, err
+			}
+			// Other AES-GCM failures (unknown kid, malformed payload) fall
+			// through to the legacy Fernet path below.  (Common when
+			// ciphertext was written with a different key than the current
+			// keyring.)
 		}
-		// 2026-07-08: legacy v1:legacy: prefix path — kept as fallback for
-		// ciphertexts actually encrypted with Fernet + the legacy marker.
-		if strings.HasPrefix(ciphertext, "v1:legacy:") && len(fernetKey) == 32 {
-			pt, err := DecryptFernet([]byte(strings.TrimPrefix(ciphertext, "v1:legacy:")), fernetKey)
-			if err == nil {
+		if isLegacyMarker && len(fernetKey) == 32 {
+			payload := []byte(strings.TrimPrefix(ciphertext, legacyFernetMarker))
+			// Inline form: the payload is the Fernet token text itself.
+			if pt, err := DecryptFernet(payload, fernetKey); err == nil {
 				return []byte(pt), true, nil
 			}
+			// Wrapped form: the payload is base64url(fernet-token-text),
+			// the credential-17 storage format.
+			if decoded, derr := decodeBase64URLPayload(string(payload)); derr == nil {
+				if pt, err := DecryptFernet(decoded, fernetKey); err == nil {
+					return []byte(pt), true, nil
+				}
+			}
 		}
-		return nil, false, errors.New("cannot decrypt: unknown format")
+		return nil, false, ErrUnknownFormat
 	}
 	// Try Fernet legacy (handles tokens without v1: prefix)
 	if len(fernetKey) == 32 {
@@ -212,7 +241,16 @@ func DecryptAny(ciphertext string, kr *Keyring, fernetKey []byte) ([]byte, bool,
 			return []byte(pt), true, nil
 		}
 	}
-	return nil, false, errors.New("cannot decrypt: unknown format")
+	return nil, false, ErrUnknownFormat
+}
+
+// decodeBase64URLPayload decodes base64url input with or without trailing
+// padding, tolerating either encoder variant used across legacy rows.
+func decodeBase64URLPayload(s string) ([]byte, error) {
+	if raw, err := base64.URLEncoding.DecodeString(s); err == nil {
+		return raw, nil
+	}
+	return base64.RawURLEncoding.DecodeString(s)
 }
 
 // --- Helpers -----------------------------------------------------------------

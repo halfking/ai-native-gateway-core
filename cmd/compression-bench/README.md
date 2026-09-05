@@ -56,14 +56,15 @@ llm-gateway-go 的会话压缩采用**智能滑动窗口 + 分段增量**架构�
 ### 基础用法
 
 ```bash
-# 连接 252 DB，测试最近 7 天的 100 条记录
-go run ./cmd/compression-bench/ \
-  -dsn="postgres://llm_gateway:xxx@127.0.0.1:25432/llm_gateway?sslmode=disable" \
+# DATABASE_URL 应由受限环境变量或 secret 注入提供，避免 DSN 出现在 argv/history。
+DATABASE_URL='postgres://…' go run ./cmd/compression-bench/ \
   -days=7 \
   -max-samples=100 \
   -protocol=openai \
   -context-window=128000
 ```
+
+默认模式只对 `request_logs` 执行读取，并且 JSON 输出只有聚合统计；不会创建表、插入结果、输出请求正文，或输出 request/tenant/session/timestamp 标识符。只有显式传入 `-persist-results` 时才允许创建结果表和写入逐条结果；该开关不应在敏感流量审计中使用。
 
 ### 测试模式
 
@@ -114,10 +115,12 @@ go run ./cmd/compression-bench/ \
 ### 输出 JSON 结果
 
 ```bash
-go run ./cmd/compression-bench/ \
-  -output=bench_results.json \
+DATABASE_URL='postgres://…' go run ./cmd/compression-bench/ \
+  -output=bench_summary.json \
   -max-samples=500
 ```
+
+`bench_summary.json` 仅包含汇总分布、压缩比和节省量；它不包含任何逐请求结果或请求正文。报告中的信息密度、遗失率等字段应仅视为结构保留/压缩率代理指标，不是经过 LLM judge 验证的语义质量结论。
 
 ## 输出报告解读
 
@@ -209,15 +212,15 @@ go run ./cmd/compression-bench/ \
   -dsn="$DATABASE_URL"
 ```
 
-### 连接 184 DB（Kubernetes）
+### 连接 PG（252 server，Kubernetes 共享）
 
 ```bash
-# 1. 建立隧道
-ssh -p 25022 root@14.103.112.184 -L 18432:10.43.118.61:5432 -N -f
+# 1. 建立隧道（PG17 在 252 上，172.16.2.210:5432）
+ssh -p 25022 root@<env:HOST_252> -L 25232:172.16.2.210:5432 -N -f
 
 # 2. 运行 benchmark
 go run ./cmd/compression-bench/ \
-  -dsn="postgres://llm_gateway:xxx@127.0.0.1:18432/llm_gateway?sslmode=disable"
+  -dsn="postgres://llm_gateway:<env:LLM_GATEWAY_DB_PASS>@127.0.0.1:25232/llm_gateway?sslmode=disable"
 ```
 
 ## 测试用例建议

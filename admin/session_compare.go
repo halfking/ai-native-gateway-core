@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // ── Session Compare API (v4, 2026-06-21) ────────────────────────────────
@@ -179,8 +180,8 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 	query := `
 		SELECT 
 			rl.request_id,
-			COALESCE(rb.request_body, rl.request_body) AS request_body,
-			rl.outbound_body, COALESCE(rb.response_body, rl.response_body) AS response_body,
+			rb.request_body AS request_body,
+			rb.outbound_body, rb.response_body AS response_body,
 			rl.compression_strategy, rl.compression_meta, 
 			rl.outbound_msg_count, rl.outbound_token_est,
 			rl.client_model, rl.outbound_model,
@@ -715,7 +716,7 @@ func (api *HandoffAPI) HandleHandoff(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req HandoffRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"status":  "error",
 			"message": "Invalid request body",
@@ -791,14 +792,14 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 	var summaries []string
 	err := withTenantTx(ctx, api.db, tenantID, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `
-			SELECT COALESCE(rb.request_body, rl.request_body) AS request_body,
-			       COALESCE(rb.response_body, rl.response_body) AS response_body,
-			       rl.created_at
-			FROM request_logs rl
-			LEFT JOIN request_logs_bodies rb 
+			SELECT COALESCE(rb.request_body) AS request_body,
+			       COALESCE(rb.response_body) AS response_body,
+			       rl.ts
+			FROM request_logs_with_current_month rl
+			LEFT JOIN request_logs_bodies_with_current_month rb 
 			  ON rb.request_id = rl.request_id
 			WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
-			ORDER BY rl.created_at DESC
+			ORDER BY rl.ts DESC
 			LIMIT 3
 		`, sessionID, tenantID)
 		if err != nil {

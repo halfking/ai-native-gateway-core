@@ -1,0 +1,27 @@
+[Unit]
+Description=LLM Gateway Go service
+Documentation=https://llmgo.kxpms.cn
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@PREFIX@/current
+ExecStart=@PREFIX@/current/scripts/lifecycle/service-runner.sh --config @CONFIG_FILE@ --binary @PREFIX@/current/bin/gateway
+Restart=on-failure
+RestartSec=5s
+Environment=HOME=/var/lib/@SERVICE_USER@
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+StateDirectory=@SERVICE_USER@
+LogsDirectory=@SERVICE_USER@
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/@SERVICE_USER@ /var/log/@SERVICE_USER@ @PREFIX@
+
+[Install]
+WantedBy=multi-user.target

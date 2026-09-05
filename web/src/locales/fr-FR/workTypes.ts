@@ -85,8 +85,10 @@ export default {
     dragToReorder: 'Glisser-déposer pour réorganiser la priorité',
     emptyPrimary: 'Aucun modèle principal — cliquer sur « Ajouter principal »',
     emptySecondary: 'Aucun modèle secondaire — cliquer sur « Ajouter secondaire »',
+    emptyFallback: 'Aucun modèle de repli — cliquer sur « Ajouter repli »',
     addPrimary: '+ Ajouter principal',
     addSecondary: '+ Ajouter secondaire',
+    addFallback: '+ Ajouter repli',
   },
   routes: {
     title: 'Model type routes',

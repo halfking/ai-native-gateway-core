@@ -1,357 +1,295 @@
-# Swimlane Optimization - Deployment & Testing Handoff
+# LLM Gateway 新增模型支持 - 部署与后续任务
 
-## 背景
+## 已完成工作（Commit 6d9baf795）
 
-泳道优化项目的所有开发工作（17/19任务）已完成并推送到 `main` 分支。现在需要进行本地集成测试和生产环境部署验证。
+### 新增模型支持
 
-## 项目信息
+1. **grok-4.6** (xAI)
+   - 500k 上下文
+   - Vision 模型（支持图像+文本输入）
+   - 推理能力：low, medium, high, xhigh
 
-- **仓库**: `/Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2`
-- **分支**: `main`
-- **最新commit**: `9c731044`
-- **设计文档**: `docs/superpowers/specs/2026-07-26-swimlane-optimization-design.md`
-- **实施计划**: `docs/superpowers/plans/2026-07-26-swimlane-optimization.md`
+2. **glm-5.3** (Zhipu AI / Z.AI)
+   - 1M 上下文
+   - 文本模型
+   - 推理能力：low, high, max（强制开启，不可关闭）
 
-## 已完成的改进
+3. **Kimi 系列** (Moonshot AI)
+   - `kimi-k3`: 1M 上下文，multimodal（文本+图像+视频）
+   - `kimi-k2.6`: 256k 上下文，vision（文本+图像）
+   - `kimi-k2.7-code`: 256k 上下文，文本模型（代码专用）
+   - `kimi-k2.7-code-highspeed`: 文本模型（高速代码）
 
-### 后端优化
-1. **Redis内存减少72.5%**: Slim tile格式（244字节 → 67字节）
-2. **显示方向反转**: `firstTiles()`返回最新N条（支持newest-on-left）
-3. **时间戳容差**: 100ms容差防止不必要的delta更新
-4. **调试日志增强**: 详细记录快照刷新决策
+4. **Gemini 3 系列** (Google)
+   - `gemini-3.6-flash`
+   - `gemini-3.5-flash`
+   - `gemini-3.5-flash-lite`
+   - `gemini-3.1-flash-lite`
+   - `gemini-3.1-flash-lite-image`
+   - `gemini-3.1-pro-preview`
+   - `gemini-3.1-flash-image`
+   - `gemini-3-pro-image`
+   - `gemini-3-flash-preview`
+   - `gemini-omni-flash`
 
-### 前端优化
-1. **显示方向**: 最新请求显示在左侧（RIGHT→LEFT时间轴）
-2. **动画优化**: 新tile从左侧滑入，旧tile向右滑出
-3. **页面可见性**: 隐藏时暂停更新，可见时刷新数据
-4. **大小写不敏感**: 模型过滤忽略大小写
-5. **组件重构**: 提取SwimLaneTrack组件，包含完整测试
+### 技术变更
 
-## 剩余任务
+- 新增迁移：352, 353, 354, 355, 356（含对应的 .down.sql 回滚脚本）
+- 更新 `modelname/modality_defaults.go` 和测试
+- 更新 `internal/reasoncap/reasoning_defaults.go` 和测试
+- 所有迁移使用 JSONB 追加模式，避免覆盖现有模型目录
+- 回滚脚本使用精确删除，避免误删其他迁移添加的模型
 
-### Task 7.1: 本地集成测试
-
-**目标**: 验证所有优化在本地环境正常工作
-
-**步骤**:
-
-1. **构建前端**
-   ```bash
-   cd /Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2/web
-   npm run build
-   ```
-   预期: 构建成功，无错误
-
-2. **构建后端**
-   ```bash
-   cd /Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2
-   go build -o llm-gateway cmd/gateway/main.go
-   ```
-   预期: 编译成功，生成 `llm-gateway` 可执行文件
-
-3. **启动服务**
-   ```bash
-   ./llm-gateway
-   ```
-   预期: 服务在 http://localhost:8080 启动
-
-4. **打开Dashboard**
-   - 浏览器访问: `http://localhost:8080/admin/dashboard`
-   - 使用管理员账户登录
-
-5. **验证项清单**
-
-   **✅ 显示方向 (newest on LEFT)**
-   - [ ] 新请求出现在泳道左侧
-   - [ ] 旧请求在右侧
-   - [ ] 时间轴从右到左（最新→最旧）
-
-   **✅ 无数据跳变**
-   - [ ] 观察5分钟，泳道无闪烁/跳变
-   - [ ] 新请求平滑滑入
-   - [ ] 维度切换（vendor/provider/model）流畅
-
-   **✅ 页面可见性优化**
-   - [ ] 切换到其他标签页（隐藏dashboard）
-   - [ ] 等待1分钟
-   - [ ] 切换回dashboard标签
-   - [ ] 控制台显示 "Page visible, refreshing snapshot"
-   - [ ] 数据自动刷新
-
-   **✅ 模型过滤大小写不敏感**
-   - [ ] 点击"筛选"→"模型"
-   - [ ] 选择一个模型（如 "gpt-4o"）
-   - [ ] 验证 "GPT-4o", "GPT-4O", "gpt-4o" 都匹配
-   - [ ] 清除过滤，所有模型重新出现
-
-   **✅ 动画流畅**
-   - [ ] 观察新tile滑入动画（从左侧）
-   - [ ] 观察旧tile滑出动画（向右侧）
-   - [ ] 打开浏览器DevTools → Performance
-   - [ ] 录制动画，验证 FPS ≥ 60
-
-   **✅ Redis内存使用**
-   - [ ] 连接到Redis: `redis-cli`
-   - [ ] 运行: `INFO memory | grep used_memory_human`
-   - [ ] 记录内存使用量
-   - [ ] 生成1000个测试请求
-   - [ ] 再次检查内存，验证增长 < 预期
-
-6. **文档测试结果**
-   创建: `docs/test-results-local-integration.md`
-   ```markdown
-   # 本地集成测试结果
-   
-   **测试时间**: [填写时间]
-   **测试人**: [填写姓名]
-   **版本**: commit 9c731044
-   
-   ## 测试结果
-   
-   - [ ] 显示方向: ✅/❌ (说明)
-   - [ ] 无数据跳变: ✅/❌ (说明)
-   - [ ] 页面可见性: ✅/❌ (说明)
-   - [ ] 模型过滤: ✅/❌ (说明)
-   - [ ] 动画流畅: ✅/❌ (说明)
-   - [ ] Redis内存: ✅/❌ (Before: XXX, After: XXX)
-   
-   ## 发现的问题
-   
-   [记录任何问题]
-   
-   ## 截图
-   
-   [附上关键截图]
-   ```
-
-7. **提交测试结果**
-   ```bash
-   git add docs/test-results-local-integration.md
-   git commit -m "docs: local integration test results"
-   git push origin main
-   ```
+### 测试状态
+✅ 所有 Go 测试通过
+✅ 迁移 SQL 语法已验证（使用实际 schema 字段）
+⚠️  **未执行实际数据库迁移**
 
 ---
 
-### Task 7.2: 部署到245并生产测试
+## 部署步骤
 
-**目标**: 在生产环境验证所有优化
-
-**前置条件**: Task 7.1 全部通过 ✅
-
-**步骤**:
-
-1. **构建生产版本**
-   ```bash
-   cd /Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2
-   
-   # 构建前端
-   cd web
-   npm run build
-   
-   # 构建后端
-   cd ..
-   go build -o llm-gateway cmd/gateway/main.go
-   ```
-
-2. **部署到245**
-   ```bash
-   # 部署后端
-   scp llm-gateway user@245:/path/to/deploy/
-   
-   # 部署前端
-   scp -r web/dist user@245:/path/to/deploy/web/
-   ```
-   
-   **注意**: 请替换 `user@245` 和部署路径为实际值
-
-3. **重启服务**
-   ```bash
-   ssh user@245 'systemctl restart llmgw'
-   ```
-
-4. **验证服务状态**
-   ```bash
-   ssh user@245 'systemctl status llmgw'
-   ```
-   预期: `Active (running)`
-
-5. **访问Dashboard**
-   - 浏览器访问: `http://245/admin/dashboard`
-   - 使用生产管理员账户登录
-
-6. **生产环境验证**
-
-   执行与Task 7.1相同的验证清单，但在生产环境：
-   - [ ] 显示方向正确
-   - [ ] 无数据跳变
-   - [ ] 页面可见性优化生效
-   - [ ] 模型过滤大小写不敏感
-   - [ ] 动画流畅
-
-7. **监控30分钟**
-
-   **检查错误日志**:
-   ```bash
-   ssh user@245 'journalctl -u llmgw -n 100 -f'
-   ```
-   监控是否有错误或警告
-
-   **监控Redis内存**:
-   ```bash
-   ssh user@245 'redis-cli INFO memory | grep used_memory_human'
-   ```
-   每10分钟记录一次，验证内存稳定且低于预期
-
-   **监控CPU使用**:
-   ```bash
-   ssh user@245 'top -b -n 1 | grep llmgw'
-   ```
-
-   **验证用户体验**:
-   - 与真实用户确认dashboard是否流畅
-   - 询问是否观察到跳变现象
-   - 收集反馈
-
-8. **文档部署结果**
-   创建: `docs/test-results-production-deployment.md`
-   ```markdown
-   # 生产部署测试结果
-   
-   **部署时间**: [填写时间]
-   **部署人**: [填写姓名]
-   **版本**: commit 9c731044
-   **环境**: 245
-   
-   ## 部署情况
-   
-   - 部署开始: [时间]
-   - 服务重启: [时间]
-   - 部署完成: [时间]
-   - 停机时间: [X秒/分钟]
-   
-   ## 功能验证
-   
-   - [ ] 显示方向: ✅/❌
-   - [ ] 无数据跳变: ✅/❌
-   - [ ] 页面可见性: ✅/❌
-   - [ ] 模型过滤: ✅/❌
-   - [ ] 动画流畅: ✅/❌
-   
-   ## 性能监控（30分钟）
-   
-   **Redis内存**:
-   - 部署前: XXX MB
-   - 部署后: XXX MB
-   - 减少: XX%
-   
-   **CPU使用**:
-   - 平均: XX%
-   - 峰值: XX%
-   
-   **错误日志**:
-   - 错误数: X
-   - 警告数: X
-   - 详情: [列出关键日志]
-   
-   ## 用户反馈
-   
-   [记录用户反馈]
-   
-   ## 发现的问题
-   
-   [记录任何问题]
-   
-   ## 结论
-   
-   ✅ 部署成功，可以继续使用
-   ❌ 发现问题，需要回滚
-   ```
-
-9. **提交部署结果**
-   ```bash
-   git add docs/test-results-production-deployment.md
-   git commit -m "docs: production deployment test results on 245"
-   git push origin main
-   ```
-
----
-
-## 回滚计划（如果需要）
-
-如果生产环境发现严重问题：
-
-1. **识别问题**
-   ```bash
-   ssh user@245 'journalctl -u llmgw -n 100'
-   ```
-
-2. **回滚到上一个版本**
-   ```bash
-   # 找到上一个稳定版本的commit
-   git log --oneline -20
-   
-   # 回滚到上一个版本（例如 e968618f）
-   git revert HEAD~11..HEAD
-   
-   # 或者硬回滚
-   git reset --hard e968618f
-   ```
-
-3. **重新部署旧版本**
-   ```bash
-   go build -o llm-gateway cmd/gateway/main.go
-   scp llm-gateway user@245:/path/to/deploy/
-   ssh user@245 'systemctl restart llmgw'
-   ```
-
-4. **验证回滚成功**
-   ```bash
-   ssh user@245 'systemctl status llmgw'
-   ```
-
-5. **文档回滚原因**
-   ```bash
-   git commit -m "rollback: swimlane optimization due to [问题描述]"
-   git push origin main
-   ```
-
----
-
-## 成功标准
-
-部署被认为成功，当所有以下条件满足：
-
-- ✅ Redis内存使用 < 100KB（从~500KB降低）
-- ✅ 零视觉跳变（5分钟观察期）
-- ✅ 页面可见性优化工作正常
-- ✅ 模型过滤100%大小写不敏感
-- ✅ 动画流畅度 60 FPS
-- ✅ 生产环境30分钟无错误
-- ✅ 用户反馈积极
-
----
-
-## 联系信息
-
-如果遇到问题，请参考：
-- **设计文档**: `docs/superpowers/specs/2026-07-26-swimlane-optimization-design.md`
-- **实施计划**: `docs/superpowers/plans/2026-07-26-swimlane-optimization.md`
-- **代码提交历史**: `git log --oneline -15`
-
----
-
-## 开始部署
-
-请执行以下命令开始Task 7.1（本地集成测试）：
+### 前置检查
 
 ```bash
-cd /Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2
-git status  # 确认在main分支，代码是最新的
-git log --oneline -3  # 确认最新commit是9c731044
+# 1. 确认数据库连接
+export DATABASE_URL="postgresql://user:password@host:port/dbname"
+psql "$DATABASE_URL" -c "SELECT version();"
 
-# 开始本地测试
-cd web && npm run build
+# 2. 备份当前 provider_catalog
+psql "$DATABASE_URL" -c "
+COPY (SELECT code, models_manifest_json FROM provider_catalog 
+      WHERE code IN ('xai', 'zhipu', 'moonshot', 'google-gemini'))
+TO '/tmp/provider_catalog_backup_$(date +%Y%m%d_%H%M%S).csv' CSV HEADER;
+"
+
+# 3. 备份 models_canonical 和 model_aliases
+pg_dump "$DATABASE_URL" -t models_canonical -t model_aliases -f /tmp/models_backup_$(date +%Y%m%d_%H%M%S).sql
 ```
 
-祝部署顺利！🚀
+### 执行迁移
+
+```bash
+cd /path/to/llm-gateway-go
+
+# 运行迁移（352-356）
+./scripts/run-migrations-strict.sh
+
+# 验证迁移结果
+psql "$DATABASE_URL" -c "
+SELECT canonical_name, context_window, modality, status 
+FROM models_canonical 
+WHERE canonical_name IN ('grok-4.6', 'glm-5.3', 'kimi-k3', 'kimi-k2.6', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed')
+ORDER BY canonical_name;
+"
+
+# 验证 provider manifest
+psql "$DATABASE_URL" -c "
+SELECT code, jsonb_pretty(models_manifest_json) 
+FROM provider_catalog 
+WHERE code IN ('xai', 'zhipu', 'moonshot', 'google-gemini');
+"
+```
+
+### 回滚（如遇问题）
+
+```bash
+# 按逆序回滚迁移
+psql "$DATABASE_URL" -f sql/migrations/domain/356_update_provider_catalogs_latest_models.down.sql
+psql "$DATABASE_URL" -f sql/migrations/domain/355_add_gemini_3_series.down.sql
+psql "$DATABASE_URL" -f sql/migrations/domain/354_add_latest_models_glm_kimi.down.sql
+psql "$DATABASE_URL" -f sql/migrations/domain/353_update_xai_provider_add_grok_4_6.down.sql
+psql "$DATABASE_URL" -f sql/migrations/domain/352_add_grok_4_6.down.sql
+
+# 或恢复备份
+psql "$DATABASE_URL" < /tmp/models_backup_YYYYMMDD_HHMMSS.sql
+```
+
+---
+
+## 后续必要任务
+
+### 1. Provider Credentials 配置
+
+新增模型需要对应的 API credentials 才能实际调用。需要在 `credentials` 和 `credential_model_bindings` 表中配置：
+
+```sql
+-- 检查是否有可用的 xAI credentials
+SELECT id, provider_id, name, status 
+FROM credentials 
+WHERE provider_id = (SELECT id FROM providers WHERE code = 'xai');
+
+-- 如果没有，需要添加 xAI API key
+-- INSERT INTO credentials (provider_id, tenant_id, name, api_key, status) VALUES ...
+
+-- 绑定模型到 credentials
+-- INSERT INTO credential_model_bindings (credential_id, raw_model_name, canonical_id) 
+-- SELECT credential_id, 'grok-4.6', (SELECT id FROM models_canonical WHERE canonical_name = 'grok-4.6')
+-- FROM credentials WHERE provider_id = ...;
+```
+
+同样需要配置：
+- Zhipu AI (Z.AI) credentials for glm-5.3
+- Moonshot credentials for kimi-k3, kimi-k2.6, kimi-k2.7-code 系列
+- Google Gemini credentials for Gemini 3 系列
+
+### 2. 模型发现与同步
+
+运行模型发现任务，让网关从 provider API 同步模型列表到 `provider_models` 表：
+
+```bash
+# 触发模型发现（具体命令取决于网关实现）
+curl -X POST http://localhost:8080/internal/admin/discover-models \
+  -H "Authorization: Bearer ADMIN_TOKEN" \
+  -d '{"provider_codes": ["xai", "zhipu", "moonshot", "google-gemini"]}'
+```
+
+或通过定时任务等待自动发现。
+
+### 3. 端到端测试
+
+```bash
+# 测试 grok-4.6
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer USER_API_KEY" \
+  -d '{
+    "model": "grok-4.6",
+    "messages": [{"role": "user", "content": "Hello"}],
+    "reasoning_effort": "medium"
+  }'
+
+# 测试 glm-5.3（reasoning 强制开启）
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer USER_API_KEY" \
+  -d '{
+    "model": "glm-5.3",
+    "messages": [{"role": "user", "content": "解释量子纠缠"}],
+    "reasoning_effort": "high"
+  }'
+
+# 测试 kimi-k3（multimodal）
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer USER_API_KEY" \
+  -d '{
+    "model": "kimi-k3",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {"type": "text", "text": "这张图片里有什么？"},
+          {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
+        ]
+      }
+    ]
+  }'
+```
+
+### 4. 监控与告警
+
+配置监控指标：
+- 新模型的请求量
+- 新模型的成功率
+- 新模型的延迟分布
+- credential 可用性
+
+### 5. 文档更新
+
+- 更新用户文档，说明新模型的能力和限制
+- 更新 API 文档中的模型列表
+- 更新定价信息（如果有）
+
+---
+
+## 已知限制与注意事项
+
+1. **GLM-5.3 reasoning 强制开启**
+   - 官方要求 reasoning 不可关闭
+   - `CanDisable: false` 已在代码中配置
+   - 用户请求中即使设置 `reasoning_effort: "none"` 也会被忽略
+
+2. **Kimi K2.7 Code 系列的多模态能力**
+   - 官方文档未明确声明视觉输入支持
+   - 当前配置为文本模型
+   - 如后续官方确认支持视觉，需修改 modality_defaults.go
+
+3. **Gemini 3 系列上下文窗口**
+   - 迁移中未填充具体数值（NULL）
+   - 需通过 Google API 的 `models.get` 端点查询实际值
+   - 或等待模型发现任务自动更新
+
+4. **Provider manifest 追加模式**
+   - 所有 manifest 更新使用 JSONB 追加
+   - 不会删除现有模型
+   - 但可能导致重复条目（已用 DISTINCT 去重）
+
+5. **迁移幂等性**
+   - 所有迁移使用 `ON CONFLICT ... DO UPDATE`
+   - 可安全重复执行
+   - 回滚脚本使用精确删除，不会误删其他模型
+
+---
+
+## 技术债务与改进建议
+
+1. **自动化上下文窗口同步**
+   - 当前需要手动在迁移中填充 context_window
+   - 建议实现从官方 API 自动同步的机制
+
+2. **Reasoning 能力的数据库存储**
+   - 当前 reasoning 能力只存在于 Go 代码
+   - `models_canonical` 表没有 `reasoning_caps` 列
+   - 建议添加该列并通过迁移持久化
+
+3. **Provider manifest 版本管理**
+   - 当前 manifest 更新没有版本追踪
+   - 建议添加 manifest_version 字段
+
+4. **模型能力的动态查询**
+   - 当前模型能力（上下文、modality、reasoning）在代码中硬编码
+   - 建议实现从 provider API 动态查询的机制
+
+---
+
+## Handoff Prompt for Next Session
+
+```
+Continue work on LLM Gateway model support deployment:
+
+1. Deploy the committed changes (commit 6d9baf795) to staging environment:
+   - Run database migrations 352-356
+   - Verify models_canonical and model_aliases entries
+   - Verify provider_catalog manifest updates
+
+2. Configure provider credentials:
+   - Add/verify xAI credentials for grok-4.6
+   - Add/verify Z.AI credentials for glm-5.3
+   - Add/verify Moonshot credentials for kimi-k3, kimi-k2.6, kimi-k2.7-code series
+   - Add/verify Google Gemini credentials for Gemini 3 series
+
+3. Run end-to-end tests:
+   - Test grok-4.6 with reasoning (low/medium/high/xhigh)
+   - Test glm-5.3 with mandatory reasoning
+   - Test kimi-k3 with multimodal input (text + image)
+   - Test kimi-k2.6 with vision input
+   - Test Gemini 3 series models
+
+4. Monitor and validate:
+   - Check request success rates
+   - Verify modality routing (vision models accept image inputs)
+   - Verify reasoning parameter handling
+
+5. Address known issues:
+   - Query and fill actual context_window values for Gemini 3 models
+   - Verify kimi-k2.7-code series modality (if official docs updated)
+   - Add reasoning_caps column to models_canonical table (if needed)
+
+Reference:
+- Deployment steps: see HANDOFF_DEPLOYMENT.md in repo root
+- Commit: 6d9baf795
+- Files changed: 17 files, 576 insertions
+```
+
+保存此 handoff 到会话中供下次继续。

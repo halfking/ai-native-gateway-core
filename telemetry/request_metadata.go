@@ -35,12 +35,20 @@ func defaultAgentPatterns() []agentPatternEntry {
 		// + 增加 roocode/windsurf/zed/copilot/cline/aider/continue/kiro 模式
 		// + 增加 bare "you are claude" 兜底。
 		//
+		// 2026-09-03 (audit closure): tightened the bare-substring patterns
+		// for zcode/opencode to "you are ..." and explicit token variants.
+		// The bare tokens "zcode" and "opencode" would also fire on any
+		// sentence that happens to mention the project name (e.g. "running
+		// inside ZCode CLI" inside a Cursor session), causing the registry
+		// to mis-rank Cursor as ZCode. The "you are" prefix is the canonical
+		// self-description shape that all three top-tier agents emit.
+		//
 		// Order matters: more-specific patterns first. Generic phrases like
 		// "you are claude" can co-occur with "you are claude code" / "you are
 		// opencode" / "you are claude in zcode", so concrete agent names go
 		// before generic ones. Each pattern is lower-cased at match time.
-		{"zcode", []string{"zcode"}},
-		{"opencode", []string{"opencode"}},
+		{"zcode", []string{"you are zcode", "zcode cli", "zcode-interactive"}},
+		{"opencode", []string{"you are opencode", "opencode cli"}},
 		{"codex", []string{"openai codex", "codex cli", "you are codex"}},
 		{"claude-code", []string{"claude code", "claude-code", "you are claude code"}},
 		{"roocode", []string{"roocode", "roo-code", "you are roo code", "you are roocode"}},
@@ -51,7 +59,7 @@ func defaultAgentPatterns() []agentPatternEntry {
 		{"aider", []string{"you are aider", "aider chat"}},
 		{"continue", []string{"you are continue", "continue dev"}},
 		{"kiro", []string{"you are kiro", "kiro ide"}},
-		{"cursor", []string{"you are an ai assistant in cursor", "cursor ide", "you are cursor"}},
+		{"cursor", []string{"you are an ai assistant in cursor", "cursor ide", "you are cursor", "operate in cursor"}},
 		{"vscode", []string{"visual studio code", "vscode"}},
 		// Bare Claude / Anthropic fallback — only fires when no more-specific
 		// agent above matched. Useful for custom Claude-API clients that embed
@@ -72,12 +80,19 @@ func defaultAgentPatterns() []agentPatternEntry {
 //
 //	telemetry.RegisterAgentPattern("my-custom-agent", "my agent", "custom cli")
 func RegisterAgentPattern(name string, patterns ...string) {
+	name = strings.TrimSpace(name)
 	if name == "" || len(patterns) == 0 {
 		return
 	}
-	lower := make([]string, len(patterns))
-	for i, p := range patterns {
-		lower[i] = strings.ToLower(p)
+	lower := make([]string, 0, len(patterns))
+	for _, p := range patterns {
+		p = strings.TrimSpace(strings.ToLower(p))
+		if p != "" {
+			lower = append(lower, p)
+		}
+	}
+	if len(lower) == 0 {
+		return
 	}
 	agentPatternsMu.Lock()
 	defer agentPatternsMu.Unlock()
@@ -162,6 +177,10 @@ type RequestMetadata struct {
 
 // ExtractClientIP extracts the real client IP from HTTP request headers
 // Priority: X-Real-IP > X-Forwarded-For (first) > RemoteAddr
+//
+// SECURITY: this function trusts the inbound headers unconditionally.
+// Production code paths that take an explicit allowlist MUST use
+// ExtractClientIPTrusted instead.
 func ExtractClientIP(r *http.Request) string {
 	// X-Real-IP is most reliable if set by trusted proxy
 	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
@@ -181,9 +200,82 @@ func ExtractClientIP(r *http.Request) string {
 	return host
 }
 
-// ExtractForwardedFor extracts the full X-Forwarded-For header chain
+// ExtractForwardedFor extracts the full X-Forwarded-For header chain.
+//
+// SECURITY: this function trusts the inbound header unconditionally.
+// Production code paths that take an explicit allowlist MUST use
+// ExtractForwardedForTrusted instead.
 func ExtractForwardedFor(r *http.Request) string {
 	return r.Header.Get("X-Forwarded-For")
+}
+
+// ExtractClientIPTrusted returns the client IP using the standard
+// precedence (X-Real-IP > XFF[0] > RemoteAddr) but ONLY honours the
+// X-Real-IP / X-Forwarded-For headers when the immediate TCP peer
+// matches one of the supplied trusted CIDRs. When the allowlist is
+// empty/nil or the peer is untrusted, the function falls back to
+// RemoteAddr — preventing public clients from spoofing an arbitrary
+// source IP (HIGH security, 2026-08-29).
+//
+// `trusted` may be nil or empty; in that case the function behaves like
+// ExtractClientIP with no header trust (RemoteAddr only).
+func ExtractClientIPTrusted(r *http.Request, trusted []*net.IPNet) string {
+	remoteHost, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if remoteHost == "" {
+		remoteHost = r.RemoteAddr
+	}
+	if len(trusted) == 0 {
+		return remoteHost
+	}
+	remoteIP := net.ParseIP(remoteHost)
+	if remoteIP == nil {
+		return remoteHost
+	}
+	peerTrusted := false
+	for _, cidr := range trusted {
+		if cidr.Contains(remoteIP) {
+			peerTrusted = true
+			break
+		}
+	}
+	if !peerTrusted {
+		return remoteHost
+	}
+	// Peer is on the allowlist — honour the headers.
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		return realIP
+	}
+	if fwd := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); fwd != "" {
+		parts := strings.Split(fwd, ",")
+		if len(parts) > 0 {
+			return strings.TrimSpace(parts[0])
+		}
+	}
+	return remoteHost
+}
+
+// ExtractForwardedForTrusted returns the full X-Forwarded-For header
+// chain when the immediate peer is on the supplied trusted allowlist,
+// otherwise returns the remote host (so the chain is never populated
+// from spoofed headers).
+func ExtractForwardedForTrusted(r *http.Request, trusted []*net.IPNet) string {
+	remoteHost, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if remoteHost == "" {
+		remoteHost = r.RemoteAddr
+	}
+	if len(trusted) == 0 {
+		return remoteHost
+	}
+	remoteIP := net.ParseIP(remoteHost)
+	if remoteIP == nil {
+		return remoteHost
+	}
+	for _, cidr := range trusted {
+		if cidr.Contains(remoteIP) {
+			return strings.TrimSpace(r.Header.Get("X-Forwarded-For"))
+		}
+	}
+	return remoteHost
 }
 
 // MaskAPIKey masks an API key, keeping first 8 chars visible

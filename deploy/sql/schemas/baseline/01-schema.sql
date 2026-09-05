@@ -1875,14 +1875,14 @@ BEGIN
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
-    
+
     -- session_turns 分区（heap格式）
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS public.session_turns_%s PARTITION OF public.session_turns
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
-    
+
     -- session_bodies 分区使用 heap，因为正文写入支持冲突更新。
     EXECUTE format(
         'CREATE TABLE IF NOT EXISTS public.session_bodies_%s PARTITION OF public.session_bodies
@@ -2404,7 +2404,7 @@ BEGIN
         unit_price_in_per_1m, unit_price_out_per_1m,
         cache_read_price_per_1m, cache_write_price_per_1m,
         currency, billing_mode, pricing_source, pricing_updated_at,
-        admin_protected
+        admin_protected, context_window_override, priority
     ) VALUES (
         NEW.credential_id, NEW.id, COALESCE(NEW.available, TRUE),
         COALESCE(NEW.routing_tier, 2), COALESCE(NEW.weight, 100), COALESCE(NEW.manual_priority, 99),
@@ -2414,7 +2414,8 @@ BEGIN
         COALESCE(NEW.cache_read_price_per_1m, 0), COALESCE(NEW.cache_write_price_per_1m, 0),
         COALESCE(NEW.currency, 'USD'), COALESCE(NEW.billing_mode, 'token'),
         NEW.pricing_source, NEW.pricing_updated_at,
-        COALESCE(NEW.admin_protected, FALSE)
+        COALESCE(NEW.admin_protected, FALSE),
+        NEW.context_window_override, COALESCE(NEW.priority, FALSE)
     )
     ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
         routing_tier = COALESCE(EXCLUDED.routing_tier, credential_model_bindings.routing_tier),
@@ -2432,6 +2433,8 @@ BEGIN
         billing_mode = COALESCE(EXCLUDED.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(EXCLUDED.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(EXCLUDED.pricing_updated_at, credential_model_bindings.pricing_updated_at),
+        context_window_override = COALESCE(EXCLUDED.context_window_override, credential_model_bindings.context_window_override),
+        priority = COALESCE(EXCLUDED.priority, credential_model_bindings.priority),
         updated_at = now();
 
     RETURN NEW;
@@ -2493,6 +2496,8 @@ BEGIN
         billing_mode = COALESCE(NEW.billing_mode, credential_model_bindings.billing_mode),
         pricing_source = COALESCE(NEW.pricing_source, credential_model_bindings.pricing_source),
         pricing_updated_at = COALESCE(NEW.pricing_updated_at, credential_model_bindings.pricing_updated_at),
+        context_window_override = COALESCE(NEW.context_window_override, credential_model_bindings.context_window_override),
+        priority = COALESCE(NEW.priority, credential_model_bindings.priority),
         updated_at = now()
     WHERE id = OLD.id;
 
@@ -2616,7 +2621,8 @@ CREATE FUNCTION public.model_probe_mark_available(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -2664,7 +2670,8 @@ CREATE FUNCTION public.model_probe_mark_unavailable(p_credential_id bigint, p_ra
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -3046,8 +3053,41 @@ CREATE FUNCTION public.promote_request_logs_bodies_hot_to_partition(p_retention 
     LANGUAGE plpgsql
     AS $$
 DECLARE
-  v_moved bigint := 0;
+  v_processed bigint := 0;
+  v_ttl_days int := 7;
 BEGIN
+  SELECT CASE jsonb_typeof(value)
+           WHEN 'number' THEN value::text::int
+           WHEN 'string' THEN trim(both '"' from value::text)::int
+           ELSE 7
+         END
+    INTO v_ttl_days
+    FROM settings_kv
+   WHERE key = 'lifecycle.request_logs_bodies_ttl_days'
+     AND scope = 'platform'
+   LIMIT 1;
+
+  v_ttl_days := GREATEST(COALESCE(v_ttl_days, 7), 1);
+
+  WITH expired_batch AS (
+    SELECT request_id
+      FROM request_logs_bodies_hot
+     WHERE ts < now() - make_interval(days => v_ttl_days)
+       AND ts < now() - p_retention
+     ORDER BY ts
+     LIMIT p_batch_size
+  ),
+  expired_deleted AS (
+    DELETE FROM request_logs_bodies_hot
+     WHERE request_id IN (SELECT request_id FROM expired_batch)
+    RETURNING request_id
+  )
+  SELECT count(*) INTO v_processed FROM expired_deleted;
+
+  IF v_processed > 0 THEN
+    RETURN v_processed;
+  END IF;
+
   WITH batch AS (
     SELECT request_id, ts, request_body, outbound_body, response_body
     FROM request_logs_bodies_hot
@@ -3060,11 +3100,11 @@ BEGIN
     WHERE request_id IN (SELECT request_id FROM batch)
     RETURNING *
   )
-  INSERT INTO request_logs_bodies (request_id, ts, request_body, outbound_body, response_body)
+  INSERT INTO public.request_logs_bodies (request_id, ts, request_body, outbound_body, response_body)
   SELECT request_id, ts, request_body, outbound_body, response_body FROM deleted;
 
-  GET DIAGNOSTICS v_moved = ROW_COUNT;
-  RETURN v_moved;
+  GET DIAGNOSTICS v_processed = ROW_COUNT;
+  RETURN v_processed;
 END;
 $$;
 
@@ -3627,7 +3667,8 @@ CREATE FUNCTION public.unified_probe_mark_failing(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -3694,7 +3735,8 @@ CREATE FUNCTION public.unified_probe_mark_healthy(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -4464,7 +4506,16 @@ CREATE TABLE public.approval_queue (
     reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
-    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text])))
+    resume_state text DEFAULT 'idle'::text NOT NULL,
+    resume_owner text,
+    resume_lease_until timestamp with time zone,
+    resume_fencing_token bigint DEFAULT 0 NOT NULL,
+    resume_started_at timestamp with time zone,
+    resume_completed_at timestamp with time zone,
+    resume_error text,
+    CONSTRAINT approval_queue_status_chk CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'timeout'::text]))),
+    CONSTRAINT approval_queue_resume_state_chk CHECK ((resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'completed'::text, 'failed'::text]))),
+    CONSTRAINT approval_queue_resume_fencing_token_chk CHECK ((resume_fencing_token >= 0))
 );
 
 ALTER TABLE ONLY public.approval_queue FORCE ROW LEVEL SECURITY;
@@ -5150,7 +5201,9 @@ CREATE TABLE public.credential_model_bindings (
     transient_failure_count integer DEFAULT 0,
     pending_verification boolean DEFAULT false,
     plan_type_origin text,
-    plan_type_updated_at timestamp with time zone
+    plan_type_updated_at timestamp with time zone,
+    context_window_override integer,
+    priority boolean DEFAULT false NOT NULL
 );
 
 
@@ -7261,7 +7314,13 @@ CREATE TABLE public.goal_sessions (
     model_switch_count integer DEFAULT 0 NOT NULL,
     repeat_count integer DEFAULT 0 NOT NULL,
     last_response_hash character varying(64) DEFAULT ''::character varying,
-    current_model character varying(128) DEFAULT ''::character varying
+    current_model character varying(128) DEFAULT ''::character varying,
+    continue_attempt integer DEFAULT 0 NOT NULL,
+    last_completion_judgement character varying(32) DEFAULT ''::character varying,
+    sub_agents_total integer DEFAULT 0 NOT NULL,
+    sub_agents_completed integer DEFAULT 0 NOT NULL,
+    sub_agents_pending integer DEFAULT 0 NOT NULL,
+    last_sub_agents_report_at timestamp with time zone
 );
 
 
@@ -8821,7 +8880,9 @@ CREATE VIEW public.model_offers AS
     cmb.admin_protected,
     cmb.created_at,
     cmb.updated_at,
-    pm.modality AS provider_modality
+    pm.modality AS provider_modality,
+    cmb.context_window_override,
+    cmb.priority
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
@@ -9345,7 +9406,7 @@ CREATE TABLE public.node_probe_runs (
     timeout_at_ms integer,
     via_proxy boolean,
     CONSTRAINT node_probe_runs_attempt_check CHECK (((attempt >= 1) AND (attempt <= 7))),
-    CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text])))
+    CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text, 'periodic'::text, 'admin'::text, 'integrity_probe_planner'::text, 'selfcheck'::text, 'external_async'::text])))
 );
 
 
@@ -9416,7 +9477,7 @@ COMMENT ON COLUMN public.node_probe_runs.via_proxy IS 'probeDirect是否通过HT
 -- Name: CONSTRAINT node_probe_runs_trigger_kind_check ON node_probe_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425: trigger_kind 枚举扩展 —— 新增 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）';
+COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425 + 538: trigger_kind 枚举 —— 425 增量 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）；538 增量 periodic / admin / integrity_probe_planner / selfcheck / external_async（统一 credential_probe_queue 的 task.Source 全集）';
 
 
 --
@@ -14258,8 +14319,8 @@ CREATE TABLE public.self_check_runs (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     selection_strategy text DEFAULT 'most_used'::text,
     attempted_models jsonb DEFAULT '[]'::jsonb,
-    CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type = ANY (ARRAY['http_000'::text, 'http_502'::text, 'http_503'::text, 'http_504'::text, 'timeout'::text, 'upstream_fail'::text, 'none'::text])))),
-    CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'most_used'::text) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = 'random'::text))),
+    CONSTRAINT self_check_runs_error_type_check CHECK (((error_type IS NULL) OR (error_type ~~ 'http_%'::text) OR (error_type = ANY (ARRAY['none'::text, 'timeout'::text, 'network'::text, 'transient'::text, 'rate_limit'::text, 'auth'::text, 'auth_revoked'::text, 'quota'::text, 'quota_periodic'::text, 'quota_balance'::text, 'quota_permanent'::text, 'upstream_down'::text, 'upstream_overloaded'::text, 'concurrent'::text, 'stream_timeout'::text, 'model_not_found'::text, 'model_deprecated'::text, 'unsupported_feature'::text, 'context_length_exceeded'::text, 'content_filter'::text, 'tool_call_id_mismatch'::text, 'empty_response'::text, 'conversion_error'::text, 'upstream_context_loss'::text, 'no_available_channel'::text, 'canceled'::text, 'client_bug'::text, 'parse_error'::text, 'internal'::text, 'unattributed'::text, 'upstream_fail'::text])))),
+    CONSTRAINT self_check_runs_selection_strategy_check CHECK (((selection_strategy IS NULL) OR (selection_strategy ~~ 'fallback_%'::text) OR (selection_strategy = ANY (ARRAY['most_used'::text, 'random'::text, 'featured'::text, 'recent'::text, 'common_7d'::text, 'failed_model'::text, 'no_eligible_model'::text))))),
     CONSTRAINT self_check_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'success'::text, 'partial'::text, 'failed'::text, 'retrying'::text])))
 );
 
@@ -14268,7 +14329,7 @@ CREATE TABLE public.self_check_runs (
 -- Name: COLUMN self_check_runs.selection_strategy; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON COLUMN public.self_check_runs.selection_strategy IS '341: most_used | fallback_<n> | random — which model the credential_selfcheck worker tested';
+COMMENT ON COLUMN public.self_check_runs.selection_strategy IS 'Primary selection: recent/common_7d/featured plus fallback_<n> failed-model follow-ups.';
 
 
 --
@@ -14831,6 +14892,8 @@ CREATE TABLE public.session_summaries (
     messages_at_trigger integer DEFAULT 0 NOT NULL,
     last_trigger_reason character varying(64),
     last_trigger_at timestamp with time zone,
+    parent_session_key character varying(255) DEFAULT ''::character varying,
+    handoff_reason character varying(64) DEFAULT ''::character varying,
     CONSTRAINT session_summaries_quality_score_check CHECK (((quality_score >= 0) AND (quality_score <= 10)))
 );
 
@@ -15030,6 +15093,10 @@ CREATE TABLE public.session_turns (
     turn_no integer NOT NULL,
     tenant_id character varying(255) NOT NULL,
     request_id text NOT NULL,
+    project_id text,
+    namespace text,
+    parent_request_id text,
+    task_type text,
     ts timestamp with time zone DEFAULT now() NOT NULL,
     submit_mode text DEFAULT 'full'::text NOT NULL,
     compression_applied boolean DEFAULT false,
@@ -15053,11 +15120,33 @@ CREATE TABLE public.session_turns (
     source_kind text DEFAULT 'live'::text NOT NULL,
     quality text DEFAULT 'verified'::text NOT NULL,
     partition_date date DEFAULT CURRENT_DATE NOT NULL,
+    attachment_count integer DEFAULT 0,
+    attachment_total_bytes bigint DEFAULT 0,
+    multimodal_types text[] DEFAULT '{}'::text[],
+    attempt_no integer DEFAULT 0 NOT NULL,
+    tools jsonb DEFAULT '[]'::jsonb NOT NULL,
+    title text,
+    summary text,
+    digest jsonb,
+    aggregate_applied_at timestamp with time zone,
+    t0_arrived_at timestamp with time zone,
+    t1_total_enqueued_at timestamp with time zone,
+    t2_total_dequeued_at timestamp with time zone,
+    t3_model_enqueued_at timestamp with time zone,
+    t4_model_dequeued_at timestamp with time zone,
+    t5_cred_enqueued_at timestamp with time zone,
+    t6_cred_dequeued_at timestamp with time zone,
+    t7_forward_start_at timestamp with time zone,
+    t8_response_start_at timestamp with time zone,
+    t9_response_end_at timestamp with time zone,
+    CONSTRAINT session_turns_attachment_count_check CHECK (((attachment_count IS NULL) OR (attachment_count >= 0))),
+    CONSTRAINT session_turns_attachment_total_bytes_check CHECK (((attachment_total_bytes IS NULL) OR (attachment_total_bytes >= 0))),
+    CONSTRAINT session_turns_attempt_no_check CHECK ((attempt_no >= 0)),
     CONSTRAINT session_turns_injection_verdict_check CHECK ((injection_verdict = ANY (ARRAY['pass'::text, 'warn'::text, 'block'::text, 'skip'::text]))),
     CONSTRAINT session_turns_output_verdict_check CHECK ((output_verdict = ANY (ARRAY['pass'::text, 'warn'::text, 'block'::text, 'skip'::text]))),
     CONSTRAINT session_turns_quality_check CHECK ((quality = ANY (ARRAY['verified'::text, 'inferred'::text, 'partial'::text, 'rejected'::text]))),
     CONSTRAINT session_turns_source_kind_check CHECK ((source_kind = ANY (ARRAY['live'::text, 'backfill'::text]))),
-    CONSTRAINT session_turns_submit_mode_check CHECK ((submit_mode = ANY (ARRAY['full'::text, 'delta'::text, 'snapshot'::text, 'inferred_compressed'::text])))
+    CONSTRAINT session_turns_submit_mode_check CHECK ((submit_mode = ANY (ARRAY['full'::text, 'delta'::text, 'snapshot'::text, 'inferred_compressed'::text, 'attachment_only'::text])))
 )
 PARTITION BY RANGE (partition_date);
 
@@ -15101,6 +15190,10 @@ CREATE TABLE public.session_turns_2026_07 (
     turn_no integer NOT NULL,
     tenant_id character varying(255) NOT NULL,
     request_id text NOT NULL,
+    project_id text,
+    namespace text,
+    parent_request_id text,
+    task_type text,
     ts timestamp with time zone DEFAULT now() NOT NULL,
     submit_mode text DEFAULT 'full'::text NOT NULL,
     compression_applied boolean DEFAULT false,
@@ -15124,11 +15217,33 @@ CREATE TABLE public.session_turns_2026_07 (
     source_kind text DEFAULT 'live'::text NOT NULL,
     quality text DEFAULT 'verified'::text NOT NULL,
     partition_date date DEFAULT CURRENT_DATE NOT NULL,
+    attachment_count integer DEFAULT 0,
+    attachment_total_bytes bigint DEFAULT 0,
+    multimodal_types text[] DEFAULT '{}'::text[],
+    attempt_no integer DEFAULT 0 NOT NULL,
+    tools jsonb DEFAULT '[]'::jsonb NOT NULL,
+    title text,
+    summary text,
+    digest jsonb,
+    aggregate_applied_at timestamp with time zone,
+    t0_arrived_at timestamp with time zone,
+    t1_total_enqueued_at timestamp with time zone,
+    t2_total_dequeued_at timestamp with time zone,
+    t3_model_enqueued_at timestamp with time zone,
+    t4_model_dequeued_at timestamp with time zone,
+    t5_cred_enqueued_at timestamp with time zone,
+    t6_cred_dequeued_at timestamp with time zone,
+    t7_forward_start_at timestamp with time zone,
+    t8_response_start_at timestamp with time zone,
+    t9_response_end_at timestamp with time zone,
+    CONSTRAINT session_turns_attachment_count_check CHECK (((attachment_count IS NULL) OR (attachment_count >= 0))),
+    CONSTRAINT session_turns_attachment_total_bytes_check CHECK (((attachment_total_bytes IS NULL) OR (attachment_total_bytes >= 0))),
+    CONSTRAINT session_turns_attempt_no_check CHECK ((attempt_no >= 0)),
     CONSTRAINT session_turns_injection_verdict_check CHECK ((injection_verdict = ANY (ARRAY['pass'::text, 'warn'::text, 'block'::text, 'skip'::text]))),
     CONSTRAINT session_turns_output_verdict_check CHECK ((output_verdict = ANY (ARRAY['pass'::text, 'warn'::text, 'block'::text, 'skip'::text]))),
     CONSTRAINT session_turns_quality_check CHECK ((quality = ANY (ARRAY['verified'::text, 'inferred'::text, 'partial'::text, 'rejected'::text]))),
     CONSTRAINT session_turns_source_kind_check CHECK ((source_kind = ANY (ARRAY['live'::text, 'backfill'::text]))),
-    CONSTRAINT session_turns_submit_mode_check CHECK ((submit_mode = ANY (ARRAY['full'::text, 'delta'::text, 'snapshot'::text, 'inferred_compressed'::text])))
+    CONSTRAINT session_turns_submit_mode_check CHECK ((submit_mode = ANY (ARRAY['full'::text, 'delta'::text, 'snapshot'::text, 'inferred_compressed'::text, 'attachment_only'::text])))
 );
 
 
@@ -15142,6 +15257,10 @@ CREATE TABLE public.session_turns_2026_08 (
     turn_no integer NOT NULL,
     tenant_id character varying(255) NOT NULL,
     request_id text NOT NULL,
+    project_id text,
+    namespace text,
+    parent_request_id text,
+    task_type text,
     ts timestamp with time zone DEFAULT now() NOT NULL,
     submit_mode text DEFAULT 'full'::text NOT NULL,
     compression_applied boolean DEFAULT false,
@@ -15165,11 +15284,33 @@ CREATE TABLE public.session_turns_2026_08 (
     source_kind text DEFAULT 'live'::text NOT NULL,
     quality text DEFAULT 'verified'::text NOT NULL,
     partition_date date DEFAULT CURRENT_DATE NOT NULL,
+    attachment_count integer DEFAULT 0,
+    attachment_total_bytes bigint DEFAULT 0,
+    multimodal_types text[] DEFAULT '{}'::text[],
+    attempt_no integer DEFAULT 0 NOT NULL,
+    tools jsonb DEFAULT '[]'::jsonb NOT NULL,
+    title text,
+    summary text,
+    digest jsonb,
+    aggregate_applied_at timestamp with time zone,
+    t0_arrived_at timestamp with time zone,
+    t1_total_enqueued_at timestamp with time zone,
+    t2_total_dequeued_at timestamp with time zone,
+    t3_model_enqueued_at timestamp with time zone,
+    t4_model_dequeued_at timestamp with time zone,
+    t5_cred_enqueued_at timestamp with time zone,
+    t6_cred_dequeued_at timestamp with time zone,
+    t7_forward_start_at timestamp with time zone,
+    t8_response_start_at timestamp with time zone,
+    t9_response_end_at timestamp with time zone,
+    CONSTRAINT session_turns_attachment_count_check CHECK (((attachment_count IS NULL) OR (attachment_count >= 0))),
+    CONSTRAINT session_turns_attachment_total_bytes_check CHECK (((attachment_total_bytes IS NULL) OR (attachment_total_bytes >= 0))),
+    CONSTRAINT session_turns_attempt_no_check CHECK ((attempt_no >= 0)),
     CONSTRAINT session_turns_injection_verdict_check CHECK ((injection_verdict = ANY (ARRAY['pass'::text, 'warn'::text, 'block'::text, 'skip'::text]))),
     CONSTRAINT session_turns_output_verdict_check CHECK ((output_verdict = ANY (ARRAY['pass'::text, 'warn'::text, 'block'::text, 'skip'::text]))),
     CONSTRAINT session_turns_quality_check CHECK ((quality = ANY (ARRAY['verified'::text, 'inferred'::text, 'partial'::text, 'rejected'::text]))),
     CONSTRAINT session_turns_source_kind_check CHECK ((source_kind = ANY (ARRAY['live'::text, 'backfill'::text]))),
-    CONSTRAINT session_turns_submit_mode_check CHECK ((submit_mode = ANY (ARRAY['full'::text, 'delta'::text, 'snapshot'::text, 'inferred_compressed'::text])))
+    CONSTRAINT session_turns_submit_mode_check CHECK ((submit_mode = ANY (ARRAY['full'::text, 'delta'::text, 'snapshot'::text, 'inferred_compressed'::text, 'attachment_only'::text])))
 );
 
 
@@ -15495,7 +15636,8 @@ CREATE TABLE public.sticky_sessions (
     set_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     canonical_id bigint,
-    last_request_id text
+    last_request_id text,
+    CONSTRAINT uq_sticky_sessions_sticky_key UNIQUE (sticky_key)
 );
 
 
@@ -20627,6 +20769,14 @@ ALTER TABLE ONLY public.request_wal_2026_08
 
 
 --
+-- Name: request_wal_bodies request_wal_bodies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.request_wal_bodies
+    ADD CONSTRAINT request_wal_bodies_pkey PRIMARY KEY (request_id);
+
+
+--
 -- Name: request_wal_hot request_wal_hot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -20931,35 +21081,35 @@ ALTER TABLE ONLY public.session_turns_2026_07
 
 
 --
--- Name: session_turns session_turns_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: session_turns session_turns_tenant_request_partition_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns
-    ADD CONSTRAINT session_turns_request_id_partition_date_key UNIQUE (request_id, partition_date);
+    ADD CONSTRAINT session_turns_tenant_request_partition_key UNIQUE (tenant_id, request_id, partition_date);
 
 
 --
--- Name: session_turns_2026_07 session_turns_2026_07_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: session_turns_2026_07 session_turns_2026_07_tenant_request_partition_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns_2026_07
-    ADD CONSTRAINT session_turns_2026_07_request_id_partition_date_key UNIQUE (request_id, partition_date);
+    ADD CONSTRAINT session_turns_2026_07_tenant_request_partition_key UNIQUE (tenant_id, request_id, partition_date);
 
 
 --
--- Name: session_turns session_turns_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: session_turns session_turns_tenant_session_turn_partition_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns
-    ADD CONSTRAINT session_turns_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
+    ADD CONSTRAINT session_turns_tenant_session_turn_partition_key UNIQUE (tenant_id, session_id, turn_no, partition_date);
 
 
 --
--- Name: session_turns_2026_07 session_turns_2026_07_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: session_turns_2026_07 session_turns_2026_07_tenant_session_turn_partition_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns_2026_07
-    ADD CONSTRAINT session_turns_2026_07_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
+    ADD CONSTRAINT session_turns_2026_07_tenant_session_turn_partition_key UNIQUE (tenant_id, session_id, turn_no, partition_date);
 
 
 --
@@ -20971,19 +21121,19 @@ ALTER TABLE ONLY public.session_turns_2026_08
 
 
 --
--- Name: session_turns_2026_08 session_turns_2026_08_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: session_turns_2026_08 session_turns_2026_08_tenant_request_partition_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns_2026_08
-    ADD CONSTRAINT session_turns_2026_08_request_id_partition_date_key UNIQUE (request_id, partition_date);
+    ADD CONSTRAINT session_turns_2026_08_tenant_request_partition_key UNIQUE (tenant_id, request_id, partition_date);
 
 
 --
--- Name: session_turns_2026_08 session_turns_2026_08_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: session_turns_2026_08 session_turns_2026_08_tenant_session_turn_partition_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns_2026_08
-    ADD CONSTRAINT session_turns_2026_08_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
+    ADD CONSTRAINT session_turns_2026_08_tenant_session_turn_partition_key UNIQUE (tenant_id, session_id, turn_no, partition_date);
 
 
 --
@@ -21755,6 +21905,14 @@ CREATE INDEX idx_approval_configs_tenant ON public.approval_configs USING btree 
 --
 
 CREATE INDEX idx_approval_queue_expires ON public.approval_queue USING btree (expires_at) WHERE (status = 'pending'::text);
+
+
+--
+-- Name: idx_approval_queue_resume_claimable; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_approval_queue_resume_claimable ON public.approval_queue USING btree (resume_lease_until, created_at)
+    WHERE ((status = 'approved'::text) AND (resume_state = ANY (ARRAY['idle'::text, 'running'::text, 'failed'::text])));
 
 
 --
@@ -24378,6 +24536,8 @@ CREATE INDEX idx_session_summaries_quality ON public.session_summaries USING btr
 --
 -- Name: idx_session_summaries_tenant_time; Type: INDEX; Schema: public; Owner: -
 --
+
+CREATE INDEX idx_session_summaries_parent ON public.session_summaries USING btree (tenant_id, parent_session_key) WHERE ((parent_session_key)::text <> ''::text);
 
 CREATE INDEX idx_session_summaries_tenant_time ON public.session_summaries USING btree (tenant_id, last_request_at DESC);
 
@@ -27057,10 +27217,10 @@ ALTER INDEX public.idx_session_turns_request ATTACH PARTITION public.session_tur
 
 
 --
--- Name: session_turns_2026_07_request_id_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: session_turns_2026_07_tenant_request_partition_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.session_turns_request_id_partition_date_key ATTACH PARTITION public.session_turns_2026_07_request_id_partition_date_key;
+ALTER INDEX public.session_turns_tenant_request_partition_key ATTACH PARTITION public.session_turns_2026_07_tenant_request_partition_key;
 
 
 --
@@ -27071,10 +27231,10 @@ ALTER INDEX public.idx_session_turns_session ATTACH PARTITION public.session_tur
 
 
 --
--- Name: session_turns_2026_07_session_id_turn_no_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: session_turns_2026_07_tenant_session_turn_partition_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.session_turns_session_id_turn_no_partition_date_key ATTACH PARTITION public.session_turns_2026_07_session_id_turn_no_partition_date_key;
+ALTER INDEX public.session_turns_tenant_session_turn_partition_key ATTACH PARTITION public.session_turns_2026_07_tenant_session_turn_partition_key;
 
 
 --
@@ -27099,10 +27259,10 @@ ALTER INDEX public.idx_session_turns_request ATTACH PARTITION public.session_tur
 
 
 --
--- Name: session_turns_2026_08_request_id_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: session_turns_2026_08_tenant_request_partition_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.session_turns_request_id_partition_date_key ATTACH PARTITION public.session_turns_2026_08_request_id_partition_date_key;
+ALTER INDEX public.session_turns_tenant_request_partition_key ATTACH PARTITION public.session_turns_2026_08_tenant_request_partition_key;
 
 
 --
@@ -27113,10 +27273,10 @@ ALTER INDEX public.idx_session_turns_session ATTACH PARTITION public.session_tur
 
 
 --
--- Name: session_turns_2026_08_session_id_turn_no_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
+-- Name: session_turns_2026_08_tenant_session_turn_partition_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.session_turns_session_id_turn_no_partition_date_key ATTACH PARTITION public.session_turns_2026_08_session_id_turn_no_partition_date_key;
+ALTER INDEX public.session_turns_tenant_session_turn_partition_key ATTACH PARTITION public.session_turns_2026_08_tenant_session_turn_partition_key;
 
 
 --
@@ -27645,7 +27805,7 @@ CREATE TRIGGER trg_notify_auto_route_cmb_insert_delete AFTER INSERT OR DELETE ON
 -- Name: credential_model_bindings trg_notify_auto_route_cmb_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
-CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures))) EXECUTE FUNCTION public.notify_auto_route_refresh();
+CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures) OR (old.context_window_override IS DISTINCT FROM new.context_window_override) OR (old.priority IS DISTINCT FROM new.priority)) EXECUTE FUNCTION public.notify_auto_route_refresh();
 
 
 --
@@ -28812,3 +28972,165 @@ ALTER TABLE public.vibe_coding_sessions ENABLE ROW LEVEL SECURITY;
 
 --
 --
+
+
+-- Session turns 525/526 baseline objects.
+-- Migration 525: add the remaining scoped dimensions to session_turns.
+-- PostgreSQL 14+ propagates ALTER TABLE ... ADD COLUMN from a partitioned
+-- parent to every attached partition. The postcondition below verifies that
+-- propagation instead of assuming it succeeded.
+
+BEGIN;
+
+DO $$
+BEGIN
+    IF current_setting('server_version_num')::integer < 140000 THEN
+        RAISE EXCEPTION 'Migration 525 requires PostgreSQL 14 or newer';
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_partitioned_table
+        WHERE partrelid = 'public.session_turns'::regclass
+    ) THEN
+        RAISE EXCEPTION 'public.session_turns must be a partitioned table';
+    END IF;
+END $$;
+
+ALTER TABLE public.session_turns
+    ADD COLUMN IF NOT EXISTS project_id TEXT,
+    ADD COLUMN IF NOT EXISTS namespace TEXT,
+    ADD COLUMN IF NOT EXISTS parent_request_id TEXT,
+    ADD COLUMN IF NOT EXISTS task_type TEXT;
+
+COMMENT ON COLUMN public.session_turns.project_id IS
+    'Tenant-scoped project identifier for direct turn queries.';
+COMMENT ON COLUMN public.session_turns.namespace IS
+    'Tenant-scoped project namespace for direct turn queries.';
+COMMENT ON COLUMN public.session_turns.parent_request_id IS
+    'Request identifier of the parent turn for derived or subordinate work.';
+COMMENT ON COLUMN public.session_turns.task_type IS
+    'Task classification copied onto the turn to avoid a sessions join.';
+
+-- These are partitioned parent indexes. PostgreSQL creates or attaches matching
+-- child indexes for existing partitions and propagates them to new partitions.
+CREATE INDEX IF NOT EXISTS idx_session_turns_tenant_project
+    ON public.session_turns (tenant_id, project_id, ts DESC)
+    WHERE project_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_session_turns_tenant_namespace
+    ON public.session_turns (tenant_id, namespace, ts DESC)
+    WHERE namespace IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_session_turns_tenant_parent_request
+    ON public.session_turns (tenant_id, parent_request_id, ts DESC)
+    WHERE parent_request_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_session_turns_tenant_task_type
+    ON public.session_turns (tenant_id, task_type, ts DESC)
+    WHERE task_type IS NOT NULL;
+
+DO $$
+DECLARE
+    v_column TEXT;
+    v_partition REGCLASS;
+    v_parent_index TEXT;
+    v_indexed_column TEXT;
+BEGIN
+    FOREACH v_column IN ARRAY ARRAY[
+        'project_id', 'namespace', 'parent_request_id', 'task_type'
+    ] LOOP
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_attribute
+            WHERE attrelid = 'public.session_turns'::regclass
+              AND attname = v_column
+              AND atttypid = 'text'::regtype
+              AND attnum > 0
+              AND NOT attisdropped
+              AND NOT attnotnull
+        ) THEN
+            RAISE EXCEPTION 'public.session_turns.% must exist as nullable TEXT', v_column;
+        END IF;
+
+        FOR v_partition IN
+            SELECT relid
+            FROM pg_partition_tree('public.session_turns'::regclass)
+            WHERE isleaf
+        LOOP
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_attribute
+                WHERE attrelid = v_partition
+                  AND attname = v_column
+                  AND atttypid = 'text'::regtype
+                  AND attnum > 0
+                  AND NOT attisdropped
+                  AND NOT attnotnull
+            ) THEN
+                RAISE EXCEPTION 'PG14+ parent propagation failed: %.% is missing or incompatible',
+                    v_partition, v_column;
+            END IF;
+        END LOOP;
+    END LOOP;
+
+    FOR v_parent_index, v_indexed_column IN
+        SELECT *
+        FROM (VALUES
+            ('idx_session_turns_tenant_project', 'project_id'),
+            ('idx_session_turns_tenant_namespace', 'namespace'),
+            ('idx_session_turns_tenant_parent_request', 'parent_request_id'),
+            ('idx_session_turns_tenant_task_type', 'task_type')
+        ) expected(index_name, indexed_column)
+    LOOP
+        IF NOT EXISTS (
+            SELECT 1
+            FROM pg_class i
+            JOIN pg_index x ON x.indexrelid = i.oid
+            JOIN pg_attribute tenant_key
+              ON tenant_key.attrelid = x.indrelid
+             AND tenant_key.attnum = (x.indkey::smallint[])[0]
+            JOIN pg_attribute scoped_key
+              ON scoped_key.attrelid = x.indrelid
+             AND scoped_key.attnum = (x.indkey::smallint[])[1]
+            WHERE i.relnamespace = 'public'::regnamespace
+              AND i.relname = v_parent_index
+              AND i.relkind = 'I'
+              AND x.indrelid = 'public.session_turns'::regclass
+              AND x.indisvalid
+              AND tenant_key.attname = 'tenant_id'
+              AND scoped_key.attname = v_indexed_column
+              AND pg_get_expr(x.indpred, x.indrelid) =
+                  format('(%I IS NOT NULL)', v_indexed_column)
+        ) THEN
+            RAISE EXCEPTION 'partitioned parent index public.% is missing or malformed',
+                v_parent_index;
+        END IF;
+
+        IF EXISTS (
+            SELECT 1
+            FROM pg_partition_tree('public.session_turns'::regclass) p
+            WHERE p.isleaf
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM pg_class parent_i
+                  JOIN pg_inherits inherited_index
+                    ON inherited_index.inhparent = parent_i.oid
+                  JOIN pg_index child_x
+                    ON child_x.indexrelid = inherited_index.inhrelid
+                  WHERE parent_i.relnamespace = 'public'::regnamespace
+                    AND parent_i.relname = v_parent_index
+                    AND child_x.indrelid = p.relid
+                    AND child_x.indisvalid
+              )
+        ) THEN
+            RAISE EXCEPTION 'partitioned index public.% is not attached on every leaf partition',
+                v_parent_index;
+        END IF;
+    END LOOP;
+END $$;
+
+COMMIT;
+
+-- Migration 526 historically owns session_turns_hot, its security-invoker view, advisory-lock key, and promotion function.
+-- Fresh installer bootstrap supplies their current final-state form through session_turns_hot_bootstrap.sql.

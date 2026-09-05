@@ -131,9 +131,9 @@ fi
 # ---- 5. 导入 seed ----
 if ! cd "$PROJECT_ROOT" && go run ./cmd/seed-free-resources \
   --db-url="postgres://${ADMIN_USER}:${ADMIN_PASS}@${PG_HOST}:${PG_PORT}/${TEST_DB_NAME}?sslmode=disable" \
-  --catalog=docs/omnifree/seed/free_resource_catalog.json \
-  --templates=docs/omnifree/seed/auto_combo_templates.json \
-  --keyless=docs/omnifree/seed/keyless_providers.json >/dev/null 2>&1; then
+  --catalog=configs/seed/free_resource_catalog.json \
+  --templates=configs/seed/auto_combo_templates.json \
+  --keyless=configs/seed/keyless_providers.json >/dev/null 2>&1; then
   fail "seed 导入失败"
   exit 1
 fi

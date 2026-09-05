@@ -11,7 +11,7 @@ func TestWaterfallRingNewestFirstAndCap(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		r.push(WaterfallRequest{RequestID: itoa(i), Model: "m"})
 	}
-	got := r.snapshot(10, "", 0)
+	got := r.snapshot(10, "", 0, "")
 	if len(got) != 3 {
 		t.Fatalf("len=%d want 3", len(got))
 	}
@@ -27,17 +27,61 @@ func TestWaterfallRingFilter(t *testing.T) {
 	r.push(WaterfallRequest{RequestID: "b", Model: "gpt", Credential: 2})
 	r.push(WaterfallRequest{RequestID: "c", Model: "claude", Credential: 2})
 
-	byModel := r.snapshot(50, "claude", 0)
+	byModel := r.snapshot(50, "claude", 0, "")
 	if len(byModel) != 2 {
 		t.Fatalf("model filter len=%d", len(byModel))
 	}
-	byCred := r.snapshot(50, "", 2)
+	byCred := r.snapshot(50, "", 2, "")
 	if len(byCred) != 2 {
 		t.Fatalf("cred filter len=%d", len(byCred))
 	}
-	both := r.snapshot(50, "claude", 2)
+	both := r.snapshot(50, "claude", 2, "")
 	if len(both) != 1 || both[0].RequestID != "c" {
 		t.Fatalf("both filter=%+v", both)
+	}
+}
+
+func TestWaterfallRingFindByRequestID(t *testing.T) {
+	r := newWaterfallRing(10)
+	r.push(WaterfallRequest{RequestID: "a", TenantID: "t1", Model: "m", Result: "success"})
+	r.push(WaterfallRequest{RequestID: "b", TenantID: "t2", Model: "m", Result: "fail"})
+
+	got, ok := r.findByRequestID("b", "")
+	if !ok || got.RequestID != "b" || got.Result != "fail" {
+		t.Fatalf("find b=%+v ok=%v", got, ok)
+	}
+	_, ok = r.findByRequestID("b", "t1")
+	if ok {
+		t.Fatal("tenant t1 should not see b")
+	}
+	got, ok = r.findByRequestID("a", "t1")
+	if !ok || got.RequestID != "a" {
+		t.Fatalf("find a scoped=%+v ok=%v", got, ok)
+	}
+	_, ok = r.findByRequestID("missing", "")
+	if ok {
+		t.Fatal("missing should be false")
+	}
+}
+
+func TestWaterfallRingTenantFilter(t *testing.T) {
+	r := newWaterfallRing(10)
+	r.push(WaterfallRequest{RequestID: "a", TenantID: "t1", Model: "m"})
+	r.push(WaterfallRequest{RequestID: "b", TenantID: "t2", Model: "m"})
+	r.push(WaterfallRequest{RequestID: "c", TenantID: "t1", Model: "m"})
+
+	scoped := r.snapshot(50, "", 0, "t1")
+	if len(scoped) != 2 {
+		t.Fatalf("tenant t1 len=%d want 2", len(scoped))
+	}
+	for _, item := range scoped {
+		if item.TenantID != "t1" {
+			t.Fatalf("leaked tenant %q in %+v", item.TenantID, item)
+		}
+	}
+	all := r.snapshot(50, "", 0, "")
+	if len(all) != 3 {
+		t.Fatalf("all tenants len=%d want 3", len(all))
 	}
 }
 
@@ -45,7 +89,7 @@ func TestBuildWaterfallRequestDurations(t *testing.T) {
 	qr := NewQueuedRequest("req-1", "t", "claude", nil, nil)
 	qr.ResolvedModel = "claude-sonnet-4"
 	qr.SelectedCred = CredentialRef{CredentialID: 587, Vendor: "anthropic"}
-	t0 := qr.T0_ArrivedAt
+	t0 := qr.ReqStageTime(ReqStageArrived)
 	t1 := t0.Add(10 * time.Millisecond)
 	t2 := t1.Add(40 * time.Millisecond)
 	t3 := t2.Add(2 * time.Millisecond)
@@ -55,15 +99,15 @@ func TestBuildWaterfallRequestDurations(t *testing.T) {
 	t7 := t6.Add(2 * time.Millisecond)
 	t8 := t7.Add(48 * time.Millisecond)
 	t9 := t8.Add(1850 * time.Millisecond)
-	qr.T1_TotalEnqueuedAt = &t1
-	qr.T2_TotalDequeuedAt = &t2
-	qr.T3_ModelEnqueuedAt = &t3
-	qr.T4_ModelDequeuedAt = &t4
-	qr.T5_CredEnqueuedAt = &t5
-	qr.T6_CredDequeuedAt = &t6
-	qr.T7_ForwardStartAt = &t7
-	qr.T8_ResponseStartAt = &t8
-	qr.T9_ResponseEndAt = &t9
+	qr.SetReqStageTime(ReqStageTotalEnqueued, t1)
+	qr.SetReqStageTime(ReqStageTotalDequeued, t2)
+	qr.SetReqStageTime(ReqStageModelEnqueued, t3)
+	qr.SetReqStageTime(ReqStageModelDequeued, t4)
+	qr.SetReqStageTime(ReqStageCredEnqueued, t5)
+	qr.SetReqStageTime(ReqStageCredDequeued, t6)
+	qr.SetReqStageTime(ReqStageForwardStart, t7)
+	qr.SetReqStageTime(ReqStageResponseStart, t8)
+	qr.SetReqStageTime(ReqStageResponseEnd, t9)
 
 	item := buildWaterfallRequest(qr, ForwardOutcome{})
 	if item.RequestID != "req-1" || item.Model != "claude-sonnet-4" || item.Credential != 587 {
@@ -97,11 +141,11 @@ func TestPipelineSnapshotWaterfall(t *testing.T) {
 		},
 	})
 	qr := NewQueuedRequest("wf-1", "t", "m", nil, nil)
-	end := qr.T0_ArrivedAt.Add(100 * time.Millisecond)
-	qr.T9_ResponseEndAt = &end
+	end := qr.ReqStageTime(ReqStageArrived).Add(100 * time.Millisecond)
+	qr.SetReqStageTime(ReqStageResponseEnd, end)
 	p.recordWaterfall(qr, ForwardOutcome{})
 
-	snap := p.SnapshotWaterfall(10, "", 0)
+	snap := p.SnapshotWaterfall(10, "", 0, "")
 	if !snap.Wired {
 		t.Fatal("wired=false")
 	}

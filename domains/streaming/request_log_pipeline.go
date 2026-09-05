@@ -11,13 +11,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry"              //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/modelname"
+	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
 )
 
 // jsonMarshal is a local alias used by auto_route.go to avoid pulling
@@ -48,9 +51,16 @@ type RequestLogContext struct {
 	// UUID that is the primary audit key) so client retries that reuse
 	// the same id do not collapse into one row.
 	ClientRequestID string
-	StartTime       time.Time
-	Request         *http.Request
-	Session         *session.Session
+	// RequestClass / DueAt carry the V6-W1.6 R8 request class
+	// (immediate|scheduled, from X-Gw-Due-At) so BOTH the initial
+	// request_logs_hot row and the completion UPDATE persist it
+	// (migration 608). Set next to parseDispatchDueAt in each protocol
+	// handler; empty RequestClass or zero DueAt means immediate.
+	RequestClass string
+	DueAt        time.Time
+	StartTime    time.Time
+	Request      *http.Request
+	Session      *session.Session
 
 	// ProvisionalSessionID is the auto-generated session id that the
 	// handler attaches to early-failure branches via
@@ -60,14 +70,24 @@ type RequestLogContext struct {
 	// leak a different id on every helper invocation.
 	ProvisionalSessionID string
 
-	KeyInfo       *authentication.KeyInfo
-	Body          []byte
-	ClientModel   string
-	OutboundModel string
-	EndUser       string
-	ProviderID    *int
-	CredentialID  *int
-	ResponseBody  []byte
+	KeyInfo *authentication.KeyInfo
+	Body    []byte
+	// PromptTokensEstimate is the receipt-time estimate of the original client
+	// body. It is telemetry-only: compression uses the assembled outbound body
+	// after session delta-append and prior summaries have been applied.
+	PromptTokensEstimate *int
+	// These fields are retained for telemetry compatibility. The receipt-time
+	// preflight no longer compresses because the provider context window is not
+	// known until candidates are resolved; candidate-aware compression is recorded
+	// by the executor/session compression metadata.
+	PreflightCompressedTokens    *int
+	PreflightCompressedPostBytes *int
+	ClientModel                  string
+	OutboundModel                string
+	EndUser                      string
+	ProviderID                   *int
+	CredentialID                 *int
+	ResponseBody                 []byte
 
 	// v2.0 auto-route fields (populated when model="auto" was used)
 	IsAutoRequest  bool
@@ -76,6 +96,7 @@ type RequestLogContext struct {
 	AutoProfile    string
 	AutoDecision   []byte // serialised autoRouteDecision JSON
 	AutoConfidence float64
+	AutoSignals    autoroute.ClassificationSignals
 
 	// D5: model-level fallback list. The canonical model names from the
 	// auto-route CandidatesTop3, EXCLUDING the already-chosen winner. Used by
@@ -88,13 +109,16 @@ type RequestLogContext struct {
 	// v3 (2026-06-19) session-level outbound body fields.
 	// Populated by SessionCompressor.Prepare when it rewrites bodyBytes.
 	// All nil when the session compressor was not active.
-	OutboundBody            []byte
-	OutboundMsgCount        *int
-	OutboundTokenEst        *int
-	OutboundMsgHashes       []byte // JSON [{index, sha256}]
-	OutboundStrategy        string // compression_strategy value (e.g. "delta_append")
-	OutboundSummaryMarker   string
-	OutboundWindowTriggered string
+	OutboundBody              []byte
+	OutboundMsgCount          *int
+	OutboundTokenEst          *int
+	OutboundMsgHashes         []byte // JSON [{index, sha256}]
+	OutboundStrategy          string // compression_strategy value (e.g. "delta_append")
+	OutboundSummaryMarker     string
+	OutboundWindowTriggered   string
+	OutboundTokenBand         string
+	OutboundPriorLayerTokens  int
+	OutboundCompressionReason string
 
 	ErrCode string
 	ErrMsg  string
@@ -177,7 +201,7 @@ type RequestLogContext struct {
 	StreamCapture *audit.StreamCapture
 
 	meta     requestAttemptMeta
-	logged   bool
+	logged   atomic.Bool
 	terminal atomic.Bool
 }
 
@@ -342,7 +366,14 @@ func (h *ChatHandler) NewRequestLogContext(r *http.Request, requestID string, st
 }
 
 func (c *RequestLogContext) SetSession(session *session.Session) {
+	if c == nil {
+		return
+	}
 	c.Session = session
+	c.meta.Namespace = ""
+	if session != nil {
+		c.meta.Namespace = strings.TrimSpace(session.Namespace)
+	}
 }
 
 func (c *RequestLogContext) SetKey(keyInfo *authentication.KeyInfo) {
@@ -370,6 +401,17 @@ func (c *RequestLogContext) SetOutboundModel(model string) {
 func (c *RequestLogContext) SetRoute(providerID, credentialID *int) {
 	c.ProviderID = providerID
 	c.CredentialID = credentialID
+}
+
+// SetPreflightCompress is retained for compatibility with older callers. New
+// candidate-aware compression should be represented in compression metadata.
+// Empty/nil logCtx is a no-op so callers don't need nil-guard.
+func (c *RequestLogContext) SetPreflightCompress(estimatedTokens, postBytes int) {
+	if c == nil {
+		return
+	}
+	c.PreflightCompressedTokens = &estimatedTokens
+	c.PreflightCompressedPostBytes = &postBytes
 }
 
 // ApplyQueueTimestampsFromResult copies V3.1 T0–T9 from a successful ExecuteResult.
@@ -513,6 +555,7 @@ func (c *RequestLogContext) EnsureCaptured() {
 	if err := ensureRequestBodyBuffered(c.Request, &c.Body, &c.ClientModel); err != nil {
 		c.recordBodyCaptureFailure(err)
 	}
+	c.recordReceiptTokenEstimate()
 	// 2026-07-27: 智能体兜底识别 — 从已缓冲 body 抽出 system prompt,
 	// 让 fillAttemptMeta 能在 AgentName == "unknown" 时调用语义匹配。
 	// 只在第一次捕获后填一次,避免每次 refresh 都重新解析。
@@ -574,8 +617,17 @@ func (c *RequestLogContext) recordBodyCaptureFailure(err error) {
 		})
 }
 
+func (c *RequestLogContext) recordReceiptTokenEstimate() {
+	if c == nil || c.PromptTokensEstimate != nil || len(c.Body) == 0 {
+		return
+	}
+	tokens := EstimateInputTokens(c.Body)
+	c.PromptTokensEstimate = &tokens
+}
+
 func (c *RequestLogContext) CapturePartialBody(body []byte) {
 	capturePartialBodyOnReadError(body, &c.Body, &c.ClientModel)
+	c.recordReceiptTokenEstimate()
 }
 
 func (c *RequestLogContext) refreshMeta() {
@@ -659,12 +711,15 @@ func (c *RequestLogContext) IsTerminal() bool {
 
 func (c *RequestLogContext) MarkLogged() {
 	if c != nil {
-		c.logged = true
-		c.terminal.CompareAndSwap(false, true)
+		// Logging completion and request terminality are independent lifecycle
+		// transitions. In particular, an early placeholder or a safety-net
+		// marker must not win the terminal CAS and prevent the real outcome from
+		// being captured later.
+		c.logged.Store(true)
 	}
 }
 func (c *RequestLogContext) IsLogged() bool {
-	return c != nil && (c.logged || c.IsTerminal())
+	return c != nil && c.logged.Load()
 }
 
 // MarkProbeHoldStart is invoked by the executor when it enters the
@@ -707,19 +762,19 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 	c.TaskType = wire.TaskType
 	c.AutoProfile = wire.Profile
 	c.AutoConfidence = wire.Confidence
-	// D5: extract fallback model names (all top-3 except the chosen winner).
-	if len(wire.CandidatesTop3) > 1 {
-		fallbacks := make([]string, 0, len(wire.CandidatesTop3)-1)
+	c.AutoSignals = wire.signals
+	// D5: extract the ordered, canonical fallback sequence. The process-local
+	// tier plan is preferred because the wire CandidatesTop3 is an audit view
+	// and may omit lower tiers; the wire list remains the compatibility fallback.
+	fallbacks := wire.failoverModels
+	if len(fallbacks) == 0 {
+		fallbacks = make([]string, 0, len(wire.CandidatesTop3))
 		for _, cand := range wire.CandidatesTop3 {
-			if cand.Model == "" || cand.Model == wire.ChosenModel {
-				continue
-			}
 			fallbacks = append(fallbacks, cand.Model)
 		}
-		if len(fallbacks) > 0 {
-			c.AutoFallbackModels = fallbacks
-		}
 	}
+	c.AutoFallbackModels = orderedAutoFallbackModels(wire.ChosenModel, fallbacks)
+
 	b, err := jsonMarshal(wire)
 	if err == nil {
 		c.AutoDecision = b
@@ -729,6 +784,26 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 		// column existed.
 		c.recordMetadataLoss("auto_decision", err)
 	}
+}
+
+// orderedAutoFallbackModels canonicalizes and de-duplicates the model-level
+// failover sequence while preserving the router-provided order.
+func orderedAutoFallbackModels(chosen string, models []string) []string {
+	chosen = modelname.CanonicalizeClientModel(chosen)
+	seen := make(map[string]struct{}, len(models))
+	out := make([]string, 0, len(models))
+	for _, raw := range models {
+		name := modelname.CanonicalizeClientModel(raw)
+		if name == "" || name == chosen {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 // BuildFailureEntry assembles a failure row from cached context + exit metadata.
@@ -745,6 +820,7 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	if c == nil {
 		return nil
 	}
+	c.recordReceiptTokenEstimate()
 	if providerID != nil {
 		c.ProviderID = providerID
 	}
@@ -779,7 +855,12 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 	var responseBodyText *string
 	if len(c.ResponseBody) > 0 {
-		v := string(c.ResponseBody)
+		// E-#2 (audit round2): upstream error bodies can echo credentials
+		// (Bearer / sk-* / api_key= on 401/403); the telemetry client only
+		// repairs UTF-8, it does not redact. Redact at the entry builder,
+		// same as the candidate-failure path; full body is preserved
+		// (redaction without truncation).
+		v := string(errorsx.RedactCredentialShapes(c.ResponseBody))
 		responseBodyText = &v
 	}
 
@@ -801,7 +882,7 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		requestPreviewPtr = strPtr(preview)
 	}
 	var responsePreviewPtr *string
-	if preview := responsePreview(c.ResponseBody); preview != "" {
+	if preview := responsePreview(errorsx.RedactCredentialShapes(c.ResponseBody)); preview != "" {
 		responsePreviewPtr = strPtr(preview)
 	}
 
@@ -922,12 +1003,30 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		T8ResponseStartAt: c.T8ResponseStartAt,
 		T9ResponseEndAt:   c.T9ResponseEndAt,
 	}
+	if c.PromptTokensEstimate != nil {
+		v := *c.PromptTokensEstimate
+		reqLog.PromptTokens = &v
+		reqLog.UsageSource = strPtr(UsageSourceEstimated)
+	}
+	// 2026-08-19: token-band observability. Failures after the
+	// SessionCompressor ran carry the band on the log context so operators
+	// can distinguish "session over the force threshold but upstream died"
+	// from a fresh-session failure.
+	if c.OutboundTokenBand != "" {
+		v := c.OutboundTokenBand
+		reqLog.TokenBand = &v
+	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
 	// 2026-08-06: flow X-Gw-Parent-Request-Id / X-Gw-Source-Actor into the
 	// persisted row so operators can SQL JOIN auto-title rows back to their
 	// parent user request.
 	applyParentCorrelationFields(reqLog, c)
+	// V6-W1.6 R8 (migration 608): 完成态 UPDATE 携带请求类型（幂等）。
+	if reqLog.RequestClass == nil {
+		reqLog.RequestClass = requestClassPtr(c)
+		reqLog.DueAt = requestDueAtPtr(c)
+	}
 	if len(c.OutboundBody) > 0 {
 		reqLog.OutboundBody = json.RawMessage(c.OutboundBody)
 	}
@@ -952,21 +1051,61 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	return reqLog
 }
 
+// recordTerminalEntryLoss makes a failed terminal-entry build observable. A
+// nil entry must never silently consume the terminal transition: operators need
+// to distinguish a terminal request-log metadata loss from an ordinary outcome.
+func (c *RequestLogContext) recordTerminalEntryLoss(kind, errCode string) {
+	if c == nil {
+		return
+	}
+	cause := errors.New("BuildFailureEntry returned nil")
+	c.recordMetadataLoss("terminal_request_log_entry", cause)
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	if c.handler != nil {
+		c.handler.recordDataLoss(ctx, "terminal_request_log_entry_missing", string(SeverityHigh), c.RequestID,
+			"terminal request log entry missing; outcome="+kind+" error_code="+errCode,
+			map[string]any{"outcome": kind, "error_code": errCode, "terminal": true})
+		return
+	}
+	slog.Error("terminal request log entry missing", "request_id", c.RequestID, "outcome", kind, "error_code", errCode)
+}
+
+// minimalTerminalEntry preserves a terminal row when the rich builder fails.
+// It intentionally contains only stable identity/outcome fields and is not a
+// substitute for the metadata-loss anomaly emitted by recordTerminalEntryLoss.
+func (c *RequestLogContext) minimalTerminalEntry(errCode, status string) *telemetry.RequestLogEntry {
+	if c == nil {
+		return nil
+	}
+	now := time.Now()
+	return &telemetry.RequestLogEntry{
+		RequestID:         c.RequestID,
+		EventAt:           &now,
+		TenantID:          "default",
+		Success:           false,
+		RequestStatus:     strPtr(status),
+		ErrorKind:         strPtr(errCode),
+		FailureDetailCode: strPtr("terminal_request_log_entry_missing"),
+	}
+}
+
 // EmitFailure writes/updates request_logs for a non-success exit.
 func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, credentialID *int) {
 	if c == nil || c.handler == nil {
 		return
 	}
-	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
-	// disconnect three-way race has a single in-process winner. If
-	// another path already claimed the terminal transition, skip the
-	// emit entirely (the DB-level L-2 guard still prevents terminal
-	// regression, but this avoids a double telemetry emit in-process).
-	if !c.SetTerminal("failure", nil) {
-		return
-	}
+	markRequestJourneyFailure(c.Request, c.KeyInfo, errCode)
+	// Build before claiming terminal so a nil entry cannot consume the terminal
+	// CAS. The winner captures the exact entry it emits.
 	reqLog := c.BuildFailureEntry(errCode, errMessage, providerID, credentialID)
 	if reqLog == nil {
+		c.recordTerminalEntryLoss("failure", errCode)
+		reqLog = c.minimalTerminalEntry(errCode, telemetry.RequestStatusFailure)
+	}
+	if !c.SetTerminal("failure", reqLog) {
 		return
 	}
 	if c.handler.requestLogHook != nil {
@@ -981,7 +1120,7 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 			c.handler.telemetryClient.EmitContextAttrs(attrs)
 		}
 	}
-	c.logged = true
+	c.logged.Store(true)
 }
 
 // EmitRateLimited records a gateway-side rate-limit rejection (RPM/concurrent
@@ -995,13 +1134,15 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 	if c == nil || c.handler == nil {
 		return
 	}
-	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
-	// disconnect three-way race has a single in-process winner.
-	if !c.SetTerminal("rate_limited", nil) {
-		return
-	}
+	markRequestJourneyFailure(c.Request, c.KeyInfo, errCode)
+	// Build before claiming terminal so a nil entry cannot consume the terminal
+	// CAS. The winner captures the exact entry it emits.
 	reqLog := c.buildEntry(errCode, errMessage, providerID, credentialID, telemetry.RequestStatusRateLimited)
 	if reqLog == nil {
+		c.recordTerminalEntryLoss("rate_limited", errCode)
+		reqLog = c.minimalTerminalEntry(errCode, telemetry.RequestStatusRateLimited)
+	}
+	if !c.SetTerminal("rate_limited", reqLog) {
 		return
 	}
 	if c.handler.requestLogHook != nil {
@@ -1015,7 +1156,7 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 			c.handler.telemetryClient.EmitContextAttrs(attrs)
 		}
 	}
-	c.logged = true
+	c.logged.Store(true)
 }
 
 // failAndMark emits a failure row immediately (explicit exit paths).
@@ -1051,22 +1192,27 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 	if len(c.OutboundBody) > 0 {
 		entry.OutboundBody = json.RawMessage(c.OutboundBody)
 	}
-	if c.OutboundStrategy == "" {
-		return // compression_meta fields only when compression actually fired
+	if c.OutboundStrategy == "" && c.OutboundTokenBand == "" {
+		return // no compression rewrite or threshold observation to persist
 	}
 	if len(c.OutboundMsgHashes) > 0 {
 		entry.OutboundMsgHashes = json.RawMessage(c.OutboundMsgHashes)
 	}
 
-	// compression_strategy: prefer v7 value if set, else use v3 strategy
-	if entry.CompressionStrategy == nil || *entry.CompressionStrategy == "" {
+	// compression_strategy: prefer v7 value if set, else use v3 strategy.
+	if c.OutboundStrategy != "" && (entry.CompressionStrategy == nil || *entry.CompressionStrategy == "") {
 		entry.CompressionStrategy = strPtr(c.OutboundStrategy)
 	}
+	if c.OutboundCompressionReason != "" && (entry.CompressionReason == nil || *entry.CompressionReason == "") {
+		entry.CompressionReason = strPtr(c.OutboundCompressionReason)
+	}
 
-	// Merge window_triggered + summary_marker into compression_meta JSONB.
-	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" {
+	// Merge window-triggered, summary, and multi-layer threshold facts into
+	// compression_meta without clobbering fields written by other transforms.
+	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" || c.OutboundTokenBand != "" {
 		merged, err := mergeCompressionMetaV3(entry.CompressionMeta,
-			c.OutboundWindowTriggered, c.OutboundSummaryMarker)
+			c.OutboundWindowTriggered, c.OutboundSummaryMarker,
+			c.OutboundTokenBand, c.OutboundTokenEst, c.OutboundPriorLayerTokens)
 		if err != nil {
 			c.recordMetadataLoss("compression_meta", err)
 		}
@@ -1097,15 +1243,20 @@ func applySubmitModeHeader(entry *telemetry.RequestLogEntry, c *RequestLogContex
 	}
 }
 
-// mergeCompressionMetaV3 adds window_triggered and summary_marker to the
-// existing compression_meta JSONB without clobbering v7 fields.
+// mergeCompressionMetaV3 adds session-compression facts to the existing
+// compression_meta JSONB without clobbering v7 fields.
 //
 // Returns (result, droppedErr). A decode failure must NOT be merged into an
 // empty map: doing so returns a blob containing only the two new keys and
 // silently deletes the pre-existing v7 compression fields. On decode failure
 // the existing blob is preserved untouched and the error is reported so the
 // caller can record it.
-func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMarker string) (json.RawMessage, error) {
+func mergeCompressionMetaV3(
+	existing json.RawMessage,
+	windowTriggered, summaryMarker, tokenBand string,
+	outboundTokens *int,
+	priorLayerTokens int,
+) (json.RawMessage, error) {
 	m := make(map[string]any)
 	if len(existing) > 0 {
 		if err := json.Unmarshal(existing, &m); err != nil {
@@ -1117,6 +1268,13 @@ func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMa
 	}
 	if summaryMarker != "" {
 		m["summary_marker"] = summaryMarker
+	}
+	if tokenBand != "" {
+		m["token_band"] = tokenBand
+		m["prior_layer_tokens"] = priorLayerTokens
+		if outboundTokens != nil {
+			m["outbound_tokens"] = *outboundTokens
+		}
 	}
 	if len(m) == 0 {
 		return existing, nil

@@ -4,7 +4,7 @@
 # 生产构建通过 --build-arg REGISTRY=registry.kxpms.cn/ 覆盖。
 #
 # Build:
-#   docker compose -f docker-compose.local-r112.yml build gateway-v2
+#   docker compose -f docker-compose.dev-research.yml build gateway-v2
 #   # 或生产:
 #   docker build --build-arg REGISTRY=registry.kxpms.cn/ -t kx-gateway-v2 ./cmd/gateway-v2
 

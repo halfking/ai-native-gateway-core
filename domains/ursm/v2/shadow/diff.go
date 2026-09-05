@@ -30,9 +30,8 @@ type Result struct {
 //	  the other)?
 //	HasOrderMismatch — same set, but a different priority order?
 //
-// Both flags can be true (an availability mismatch subsumes the order
-// question); HasOrderMismatch is therefore meaningful only when
-// HasAvailabilityMismatch is false.
+// The flags are mutually exclusive. Ordering is compared only when both
+// planners returned the same availability set.
 type Diff struct {
 	r     Result
 	avail bool
@@ -47,9 +46,28 @@ func (d Diff) HasAvailabilityMismatch() bool { return d.avail }
 // priority, given the same availability set.
 func (d Diff) HasOrderMismatch() bool { return d.order }
 
+func (d Diff) HasTop1Mismatch() bool {
+	return len(d.r.OldOrderedIDs) > 0 && len(d.r.NewOrderedIDs) > 0 && d.r.OldOrderedIDs[0] != d.r.NewOrderedIDs[0]
+}
+
 // Result returns the captured inputs (request id, tenant, canonical,
 // both orderings) for logging / metric labels.
-func (d Diff) Result() Result { return d.r }
+func (d Diff) Result() Result {
+	r := d.r
+	r.OldOrderedIDs = append([]string(nil), r.OldOrderedIDs...)
+	r.NewOrderedIDs = append([]string(nil), r.NewOrderedIDs...)
+	return r
+}
+
+func (d Diff) Outcome() Outcome {
+	if d.avail {
+		return OutcomeAvailabilityMismatch
+	}
+	if d.order {
+		return OutcomeOrderMismatch
+	}
+	return OutcomeIdentical
+}
 
 // Compute compares two candidate orderings identified by credential
 // id strings. The orderings are expected to be already-stable sequences
@@ -65,8 +83,8 @@ func Compute(reqID, tenant, canonical string, oldOrder, newOrder []string) Diff 
 		RequestID:     reqID,
 		TenantID:      tenant,
 		Canonical:     canonical,
-		OldOrderedIDs: oldOrder,
-		NewOrderedIDs: newOrder,
+		OldOrderedIDs: append([]string(nil), oldOrder...),
+		NewOrderedIDs: append([]string(nil), newOrder...),
 	}}
 	set := func(xs []string) map[string]struct{} {
 		m := map[string]struct{}{}

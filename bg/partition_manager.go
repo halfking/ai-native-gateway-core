@@ -17,11 +17,9 @@ func settingsGetPlatformInt(key string, fallback int) int {
 	return settings.GetPlatformInt(key, fallback)
 }
 
-// DefaultPromoteInterval is how often the migrate-default-to-partition
-// scheduler runs. 7-day *_default retention requires relatively
-// frequent polling so writes don't accumulate beyond the configured
-// window. 24h is too coarse — promote_xxx_default_batch must sweep at
-// least every few hours.
+// DefaultPromoteInterval is how often the hot-table promote scheduler runs.
+// The default 8-hour hot window requires more frequent polling than the
+// daily ensure/archive maintenance cycle.
 const DefaultPromoteInterval = 1 * time.Hour
 
 // DefaultRetentionWindow is the *_default "hot data" keep-window. Rows
@@ -30,11 +28,23 @@ const DefaultPromoteInterval = 1 * time.Hour
 // promote_*_default_batch functions installed in migration 336.
 //
 // 2026-07 hot-table architecture:
-//   - most *_hot tables keep a short hot window, then promote into monthly
-//     partitions on the promote scheduler;
+//   - most *_hot tables keep an 8-hour hot window by default, then promote
+//     into monthly partitions on the promote scheduler;
 //   - model_probe_runs_hot is an exception as of 2026-07-14: it no longer
 //     promotes and is cleaned by direct TTL DELETE.
-const DefaultRetentionWindow = 24 * time.Hour
+const DefaultRetentionWindow = 8 * time.Hour
+
+// promoteCycleTimeout bounds one promote scheduler cycle so a large backlog
+// cannot starve partition creation and cleanup workers.
+const promoteCycleTimeout = 5 * time.Minute
+
+// promoteCycleMaxBatches bounds the number of database batches processed by a
+// single cycle. The next cycle resumes from the remaining hot-table rows.
+const promoteCycleMaxBatches = 100
+
+// providerErrorCleanupInterval is independent from the daily partition/archive
+// schedule because resolved error rows should not wait 24 hours to be reaped.
+const providerErrorCleanupInterval = time.Hour
 
 // promoteBatchSize is the per-call LIMIT inside each promote_xxx_batch
 // CTE. Keeps per-tx memory bounded so a backlog cannot OOM the gateway.
@@ -57,11 +67,10 @@ const requestLogsBodiesPromoteBatchSize = 500
 // cold rows from most *_hot tables into matching monthly partitions,
 // and applies direct TTL cleanup for model_probe_runs_hot.
 //
-// Runs `interval` for ensure+archive (typically 24h). Runs
-// `promoteInterval` for the promote cycle (typically 1h — see
-// DefaultPromoteInterval). Three schedules are independent so a
-// long-running promote cycle never delays ensure_next_month.
-//
+// Runs `interval` for ensure+archive (typically 24h), an independent
+// hourly promote cycle, and an independent cleanup cycle. Promote cycles
+// are time- and batch-bounded so a backlog cannot delay other maintenance.
+
 // On day 1-3 of each month, archives the partition from 2 months ago.
 //
 // Usage:
@@ -73,10 +82,18 @@ type PartitionManager struct {
 	db              *pgxpool.Pool
 	interval        time.Duration
 	promoteInterval time.Duration
-	cancel          context.CancelFunc
-	done            chan struct{}
-	mu              sync.Mutex // 2026-07-20: protect lastAnalyzeAt
-	lastAnalyzeAt   time.Time  // 2026-07-20: analyze cooldown 5min
+	errorAggregator *ProviderErrorAggregator // 2026-08-29: provider error aggregation
+	supplierStats   *SupplierErrorStatsAggregator // 2026-09-05: supplier_errors_hot → stats 预聚合（审计闭环1）
+
+	mu            sync.Mutex
+	cancel        context.CancelFunc
+	done          chan struct{}
+	promoteDone   chan struct{}
+	cleanupDone   chan struct{}
+	ready         chan struct{}
+	started       bool
+	stopped       bool
+	lastAnalyzeAt time.Time // 2026-07-20: analyze cooldown 5min
 }
 
 // archiveSpec describes one archive_xxx call: which SQL function to
@@ -99,64 +116,164 @@ type archiveSpec struct {
 }
 
 func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {
-	if interval == 0 {
+	if interval <= 0 {
 		interval = 24 * time.Hour
 	}
 	return &PartitionManager{
 		db:              db,
 		interval:        interval,
 		promoteInterval: DefaultPromoteInterval,
+		errorAggregator: NewProviderErrorAggregator(db, 10*time.Minute),
+		supplierStats:   NewSupplierErrorStatsAggregator(db, 5*time.Minute),
 		done:            make(chan struct{}),
+		promoteDone:     make(chan struct{}),
+		cleanupDone:     make(chan struct{}),
+		ready:           make(chan struct{}),
 	}
 }
 
-// SetPromoteInterval overrides the default promote cycle (1h). Tests
-// use a shorter interval to drain a backlog quickly. Setting to 0
-// disables the promote scheduler entirely.
+// SetPromoteInterval overrides the default promote cycle (1h). A non-positive
+// value disables the promote scheduler. It is safe to call before or after
+// Start; a running worker observes the value on its next cycle.
 func (pm *PartitionManager) SetPromoteInterval(d time.Duration) {
+	pm.mu.Lock()
 	pm.promoteInterval = d
+	pm.mu.Unlock()
 }
 
 func (pm *PartitionManager) Start(ctx context.Context) {
+	if pm == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	pm.mu.Lock()
+	if pm.started {
+		pm.mu.Unlock()
+		return
+	}
+	pm.started = true
+	pm.stopped = false
 	ctx, pm.cancel = context.WithCancel(ctx)
+	pm.mu.Unlock()
+
 	go pm.run(ctx)
+	go pm.runPromote(ctx)
+	go pm.runCleanup(ctx)
+	if pm.errorAggregator != nil {
+		pm.errorAggregator.Start(ctx)
+	}
+	if pm.supplierStats != nil {
+		pm.supplierStats.Start(ctx)
+	}
 	slog.Info("partition_manager started", "interval", pm.interval)
 }
 
 func (pm *PartitionManager) Stop() {
-	if pm.cancel != nil {
-		pm.cancel()
+	if pm == nil {
+		return
+	}
+	pm.mu.Lock()
+	if !pm.started || pm.stopped {
+		pm.mu.Unlock()
+		return
+	}
+	pm.stopped = true
+	cancel := pm.cancel
+	pm.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if pm.errorAggregator != nil {
+		pm.errorAggregator.Stop()
+	}
+	if pm.supplierStats != nil {
+		pm.supplierStats.Stop()
 	}
 	<-pm.done
+	<-pm.promoteDone
+	<-pm.cleanupDone
 }
 
 func (pm *PartitionManager) run(ctx context.Context) {
 	defer close(pm.done)
 
-	// Run once on startup — the gateway has no insight into how long
-	// it was down so a single pass drains whatever _default rows have
-	// accumulated since the last run.
-	pm.ensureNextMonthPartitions(ctx)
-	pm.archiveOldPartitionsIfNeeded(ctx)
-	pm.promoteDefaultToPartitions(ctx)
+	// Run partition creation and archive once on startup. Promote runs in its
+	// own worker so a backlog cannot block these maintenance operations.
+	if pm.db != nil {
+		pm.ensureNextMonthPartitions(ctx)
+		pm.archiveOldPartitionsIfNeeded(ctx)
+	}
+	close(pm.ready)
 
 	mainTicker := time.NewTicker(pm.interval)
 	defer mainTicker.Stop()
-
-	// promoteTicker fires more frequently than mainTicker so the
-	// 7-day retention window stays sharp even during heavy write load.
-	promoteTicker := time.NewTicker(pm.promoteInterval)
-	defer promoteTicker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-mainTicker.C:
-			pm.ensureNextMonthPartitions(ctx)
-			pm.archiveOldPartitionsIfNeeded(ctx)
-		case <-promoteTicker.C:
+			if pm.db != nil {
+				pm.ensureNextMonthPartitions(ctx)
+				pm.archiveOldPartitionsIfNeeded(ctx)
+			}
+		}
+	}
+}
+
+func (pm *PartitionManager) runPromote(ctx context.Context) {
+	defer close(pm.promoteDone)
+	select {
+	case <-pm.ready:
+	case <-ctx.Done():
+		return
+	}
+	pm.promoteDefaultToPartitions(ctx)
+
+	for {
+		pm.mu.Lock()
+		promoteInterval := pm.promoteInterval
+		pm.mu.Unlock()
+		if promoteInterval <= 0 {
+			// A disabled scheduler remains cancellable and observes a later
+			// re-enable without constructing an invalid ticker.
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+
+		timer := time.NewTimer(promoteInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
 			pm.promoteDefaultToPartitions(ctx)
+		}
+	}
+}
+
+func (pm *PartitionManager) runCleanup(ctx context.Context) {
+	defer close(pm.cleanupDone)
+	ticker := time.NewTicker(providerErrorCleanupInterval)
+	defer ticker.Stop()
+	pm.cleanupOldProviderErrorDetails(ctx)
+	pm.cleanupOldSupplierErrorStats(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pm.cleanupOldProviderErrorDetails(ctx)
+			pm.cleanupOldSupplierErrorStats(ctx)
 		}
 	}
 }
@@ -684,7 +801,7 @@ func ensureSpecs() []archiveSpec {
 		// 这里只是把它们接入 24h 定时轮转。
 		//
 		// timestamptz 签名（默认 argExpr="$1"）
-		{fnName: "ensure_credit_ledger_partition", label: "credit_ledger"},      // Migration 334
+		{fnName: "ensure_credit_ledger_partition", label: "credit_ledger"},       // Migration 334
 		{fnName: "ensure_tool_usage_stats_partition", label: "tool_usage_stats"}, // Migration 335
 
 		// date 签名 —— pgx 传 time.Time 为 timestamptz，需显式 ::date 转换，
@@ -697,6 +814,13 @@ func ensureSpecs() []archiveSpec {
 		{fnName: "ensure_session_module_executions_partition", label: "session_module_executions", argExpr: "$1::date"},              // Migration 382
 		{fnName: "ensure_dashboard_events_partition", label: "dashboard_access_events", argExpr: "$1::date"},                         // Migration 383
 		{fnName: "ensure_cache_metrics_partition", label: "cache_metrics", argExpr: "$1::date"},                                      // Migration 475
+		{fnName: "ensure_handoff_logs_partition", label: "handoff_logs"},                                                             // Migration 532
+		{fnName: "ensure_auto_route_selections_partition", label: "auto_route_selections", argExpr: "$1::date"},                      // Migration 656
+		// 2026-09-05 (D-2#13): V371 的 ensure_supplier_errors_partition 是
+		// timestamptz 签名（返回 text），走默认 argExpr="$1"。缺这条时
+		// supplier_errors 下月分区不预建，promote 只能靠函数内自 ensure 兜底，
+		// ensure 日志/可观测链路缺一张表。
+		{fnName: "ensure_supplier_errors_partition", label: "supplier_errors"}, // Migration V371 (2026-09-05)
 
 		// model_probe_runs 已切换为纯 hot 表策略（2026-07-14），
 		// 不再 promote 到 columnar 分区，所以也不需要 ensure。
@@ -736,6 +860,11 @@ func archiveSpecs() []archiveSpec {
 // All promote functions now use *_hot_to_partition pattern.
 //
 // 2026-07-13: added candidate_failure_logs_hot (Migration 392).
+// 2026-08-25: added session_module_executions_hot (Migration 580) and
+//
+//	dashboard_access_events_hot (Migration 579); both ship the
+//	hot → monthly-partition drain that previously relied on
+//	manually-run pg_cron archive_* scripts which drifted.
 //
 // Each function signature is promote_<table>_hot_to_partition(p_retention interval,
 // p_batch_size int) RETURNS bigint; the caller loops until the function
@@ -754,7 +883,18 @@ func promoteSpecs() []archiveSpec {
 		// 不再 promote 到 columnar 分区。hot 表数据通过 cleanupOldModelProbeRuns()
 		// 按 lifecycle.model_probe_runs_ttl_days 直接 DELETE 清理。
 		// {fnName: "promote_model_probe_runs_hot_to_partition", label: "model_probe_runs_hot"},
-		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"}, // Migration 392
+		{fnName: "promote_candidate_failure_logs_hot_to_partition", label: "candidate_failure_logs_hot"},       // Migration 392
+		{fnName: "promote_session_turns_hot_to_partition", label: "session_turns_hot"},                         // Migration 526
+		{fnName: "promote_session_bodies_hot_to_partition", label: "session_bodies_hot"},                       // Migration 614
+		{fnName: "promote_handoff_logs_hot_to_partition", label: "handoff_logs_hot"},                           // Migration 532
+		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
+		{fnName: "promote_dashboard_access_events_hot_to_partition", label: "dashboard_access_events_hot"},     // Migration 579
+		{fnName: "promote_auto_route_selections_hot_to_partition", label: "auto_route_selections_hot"},         // Migration 656
+		// 2026-09-05 (D-2#1): V371 建了 supplier_errors_hot 并在
+		// admin/data_lifecycle_hot_partition.go 注册了手动 promote，
+		// 但后台调度漏注册 → hot 表只有管理员手动迁移，8h 不变式断裂
+		// 且错误明细无界增长。resolvePromoteConfig 走 default 8h 分支。
+		{fnName: "promote_supplier_errors_hot_to_partition", label: "supplier_errors_hot"}, // Migration V371 (2026-09-05)
 	}
 }
 
@@ -785,23 +925,37 @@ func promoteLockKey(label string) int64 {
 }
 
 func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
-	if pm.promoteInterval == 0 {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	pm.mu.Lock()
+	promoteInterval := pm.promoteInterval
+	pm.mu.Unlock()
+	if promoteInterval <= 0 {
 		// Disabled via SetPromoteInterval(0) — used by tests.
 		return
 	}
+	cycleCtx, cycleCancel := context.WithTimeout(ctx, promoteCycleTimeout)
+	defer cycleCancel()
+	batches := 0
+	budgetExhausted := false
 	for _, s := range promoteSpecs() {
 		retention, batchSize := resolvePromoteConfig(s.label)
 		lockKey := promoteLockKey(s.label)
 		for {
-			if ctx.Err() != nil {
-				return
+			if cycleCtx.Err() != nil || batches >= promoteCycleMaxBatches {
+				budgetExhausted = true
+				break
 			}
-			timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			batchStart := time.Now() // 2026-08-29 P2: track duration
+			timeoutCtx, cancel := context.WithTimeout(cycleCtx, 60*time.Second)
 			tx, err := pm.db.Begin(timeoutCtx)
 			if err != nil {
 				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
 				slog.Error("partition_manager: promote begin failed",
 					"label", s.label, "error", err)
+				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
 				break
 			}
 			// Serialize against the peer gateway's promote on the same
@@ -814,17 +968,27 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			).Scan(&locked); err != nil {
 				tx.Rollback(timeoutCtx)
 				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
 				slog.Error("partition_manager: promote lock failed",
 					"label", s.label, "error", err)
+				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
 				break
 			}
 			if !locked {
 				tx.Rollback(timeoutCtx)
 				cancel()
+				recordPromoteDuration(s.label, time.Since(batchStart).Seconds())
 				slog.Debug("partition_manager: promote skipped (peer holds lock)",
 					"label", s.label)
+				recordPromoteSkipped(s.label)       // 2026-08-29 P2: record skip
+				incPromoteZombieLockStreak(s.label) // 2026-08-31 P2-8: zombie-lock observability
 				break
 			}
+			// 2026-08-31 (P2-8): we just acquired the lock for this table, so
+			// any previously-recorded zombie-lock streak is cleared. This
+			// keeps the gauge semantically a "consecutive-skip" counter,
+			// not a lifetime counter.
+			resetPromoteZombieLockStreak(s.label)
 			var n int64
 			err = tx.QueryRow(timeoutCtx,
 				"SELECT "+s.fnName+"($1::interval, $2::int)",
@@ -832,26 +996,39 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 			).Scan(&n)
 			commitErr := tx.Commit(timeoutCtx) // releases the xact lock
 			cancel()
+			batchDuration := time.Since(batchStart).Seconds() // 2026-08-29 P2
 			if err != nil {
 				slog.Error("partition_manager: promote failed",
 					"fn", s.fnName, "label", s.label,
 					"retention", retention, "batch_size", batchSize,
 					"error", err)
-				break // move on to the next table
+				recordPromoteDuration(s.label, batchDuration)
+				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
+				break                         // move on to the next table
 			}
 			if commitErr != nil {
 				slog.Error("partition_manager: promote commit failed",
 					"label", s.label, "error", commitErr)
+				recordPromoteDuration(s.label, batchDuration)
+				recordPromoteFailure(s.label) // 2026-08-29 P2: record failure
 				break
 			}
+			// Record every completed attempt, including an empty batch.
+			recordPromoteDuration(s.label, batchDuration)
 			if n == 0 {
 				slog.Debug("partition_manager: promote done",
 					"label", s.label,
 					"retention", retention)
 				break
 			}
+			batches++
+			// 2026-08-29 P2: record successful batch
+			recordPromoteBatch(s.label, n)
 			slog.Info("partition_manager: promote batch",
 				"label", s.label, "rows", n)
+		}
+		if budgetExhausted {
+			break
 		}
 	}
 	pm.analyzePartitionStats(ctx)
@@ -895,14 +1072,48 @@ func (pm *PartitionManager) analyzePartitionStats(ctx context.Context) {
 // layer to invalidate. Updated settings take effect within one tick
 // (DefaultPromoteInterval = 1h).
 //
-// Per-table retention settings (all hot-reloadable, all default 24h except
-// request_logs_bodies which is 1d due to size):
-//   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ...
+// Per-table retention settings (all hot-reloadable):
+//   - lifecycle.hot_retention_hours            — request_logs_hot, usage_ledger_hot, ... (default 8h)
 //   - lifecycle.request_logs_bodies_retention_hours — request_logs_bodies (1d default)
+//   - lifecycle.handoff_logs_hot_retention_hours — handoff_logs_hot (8h default)
+//   - lifecycle.session_module_executions_hot_retention_hours — Migration 580 (8h default)
+//   - lifecycle.dashboard_access_events_hot_retention_hours — Migration 579 (8h default)
 //   - lifecycle.credential_model_index_ttl_days  — credential_model_index (reaped by
 //     cleanup_old_credential_model_index())
 func resolvePromoteConfig(label string) (time.Duration, int) {
 	switch label {
+	case "handoff_logs_hot":
+		hours := settingsGetPlatformInt("lifecycle.handoff_logs_hot_retention_hours", 8)
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour {
+			retention = time.Hour
+		}
+		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
+		if batchSize < 100 {
+			batchSize = 100
+		}
+		if batchSize > 50_000 {
+			batchSize = 50_000
+		}
+		return retention, batchSize
+	case "session_module_executions_hot", "dashboard_access_events_hot":
+		// Migrations 580/579 pair these hot tables with PartitionManager
+		// and seed lifecycle.<label>_retention_hours = 8. (579's function
+		// body shipped with a wrong column projection; migration 607
+		// re-installs the corrected body.)
+		hours := settingsGetPlatformInt("lifecycle."+label+"_retention_hours", 8)
+		retention := time.Duration(hours) * time.Hour
+		if retention < time.Hour {
+			retention = time.Hour
+		}
+		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
+		if batchSize < 100 {
+			batchSize = 100
+		}
+		if batchSize > 50_000 {
+			batchSize = 50_000
+		}
+		return retention, batchSize
 	case "request_logs_bodies":
 		// 2026-07-13: request_logs_bodies stores full request/response
 		// payloads (TOAST). It grew to 3.4 GB / 24k rows in one month
@@ -924,6 +1135,33 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 			batchSize = 100 // safety floor — avoid pathological micro-batches
 		}
 		return retention, batchSize
+	case "auto_route_selections_hot":
+		// 2026-09-05 (audit H-3): the settle worker needs settleDelay (2min)
+		// + settleAbandonAfter (4h) to finish before promote drains hot, and
+		// it only ever touches auto_route_selections_hot (never the parent).
+		// Promoting earlier would strand unsettled rows in the columnar
+		// parent forever (reward lost, affinity sample lost). The generic
+		// 1h floor is therefore not enough for this table — clamp to 5h
+		// (4h abandon window + 2min settle delay + margin) and warn when a
+		// smaller lifecycle.hot_retention_hours is configured.
+		const autoRouteMinRetention = 5 * time.Hour
+		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
+		retention := time.Duration(hours) * time.Hour
+		if retention < autoRouteMinRetention {
+			slog.Warn("partition_manager: auto_route_selections_hot retention below settle window, clamped",
+				"configured", retention.String(),
+				"clamped_to", autoRouteMinRetention.String(),
+				"reason", "settleDelay(2m)+settleAbandonAfter(4h) must finish before promote")
+			retention = autoRouteMinRetention
+		}
+		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
+		if batchSize < 100 {
+			batchSize = 100
+		}
+		if batchSize > 50_000 {
+			batchSize = 50_000
+		}
+		return retention, batchSize
 	default:
 		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
 		retention := time.Duration(hours) * time.Hour
@@ -938,5 +1176,90 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 			batchSize = 50_000
 		}
 		return retention, batchSize
+	}
+}
+
+// cleanupOldProviderErrorDetails deletes resolved error aggregations from
+// provider_error_details older than the configured TTL. Unresolved errors
+// (resolved=false) are retained indefinitely for operational visibility.
+// This prevents the aggregation table from growing unboundedly while
+// preserving active error signals.
+//
+// Retention: lifecycle.provider_error_details_ttl_days (default 30, hot-reloadable).
+// Backed by idx_ped_resolved_updated_at (partial index on resolved=true,
+// keyed by updated_at).
+//
+// 2026-08-29 P2: Added to prevent unbounded growth of the error aggregation
+// table after the聚合器 was implemented in migration 616.
+func (pm *PartitionManager) cleanupOldProviderErrorDetails(ctx context.Context) {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	retentionDays := settings.GetPlatformInt("lifecycle.provider_error_details_ttl_days", 30)
+	if retentionDays < 1 {
+		retentionDays = 30 // safety floor — never set to 0
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Only delete resolved errors older than TTL.
+	// Unresolved errors are kept indefinitely for operational visibility.
+	tag, err := pm.db.Exec(timeoutCtx,
+		`DELETE FROM provider_error_details 
+		 WHERE resolved = true 
+		 AND updated_at < now() - ($1 || ' days')::interval`,
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: provider_error_details cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("partition_manager: cleaned provider_error_details",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldSupplierErrorStats deletes minute-bucket pre-aggregations from
+// supplier_error_stats older than the configured TTL. The table has no
+// partition strategy and the aggregator upserts one row per minute per
+// (supplier × credential × error_type × model) combination, so without
+// this it grows linearly forever — and it is the sole read source for the
+// /api/errors/trend endpoint (audit 2026-09-05 D-2#5 / E-#8).
+//
+// Only granularity='minute' rows are deleted; hour/day rollups are far
+// smaller and are kept for long-range trend views (24h view reads hour,
+// 168h view reads day). The (stat_time DESC, granularity) index from V371
+// backs the DELETE as an index descent.
+//
+// Retention: lifecycle.supplier_error_stats_ttl_days (default 30,
+// hot-reloadable via settings_kv — same pattern as
+// lifecycle.provider_error_details_ttl_days; no config struct change).
+func (pm *PartitionManager) cleanupOldSupplierErrorStats(ctx context.Context) {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	retentionDays := settingsGetPlatformInt("lifecycle.supplier_error_stats_ttl_days", 30)
+	if retentionDays < 1 {
+		retentionDays = 30 // safety floor — never set to 0 (would wipe minute history)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := pm.db.Exec(timeoutCtx,
+		`DELETE FROM supplier_error_stats
+		 WHERE granularity = 'minute'
+		   AND stat_time < now() - ($1 || ' days')::interval`,
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: supplier_error_stats cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("partition_manager: cleaned supplier_error_stats minute buckets",
+			"deleted_rows", n, "retention_days", retentionDays)
 	}
 }

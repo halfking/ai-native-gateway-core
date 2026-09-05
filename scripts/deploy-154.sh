@@ -10,6 +10,13 @@
 #   bash scripts/deploy-154.sh --seq 1143      # 指定 seq
 #   bash scripts/deploy-154.sh --no-frontend   # 仅后端（不推荐）
 #   bash scripts/deploy-154.sh --direct        # 直连 154（跳过 252 跳板机，应急用）
+#   bash scripts/deploy-154.sh --force         # 恢复并重建 154 的锁，再部署
+#   bash scripts/deploy-154.sh --force-unlock # --force 的兼容别名
+#   两种参数都会在 seamless 中恢复 stale locks 后重新建锁。
+#
+# --force / --force-unlock 会在 seamless 流程中恢复并重建所有相关锁。
+# 这会在确认持有者属于部署进程后终止本机残留进程，并清理目标机残留锁；
+# 仅在你确认旧 deploy 不应继续运行时使用。
 #
 # SSH 连接策略:
 #   默认: 通过 252 跳板机 (root@115.29.212.252) → 154，避免公网 IP 抖动
@@ -20,4 +27,31 @@
 # =====================================================================
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 154 "$@"
+
+# Password authentication is never used by the canonical deploy path. Clear a
+# stale inherited value so unrelated shell configuration cannot block a key-only
+# deployment or leak into child processes.
+unset SSHPASS
+
+# shellcheck source=deploy-lib/parse-wrapper-flags.sh
+source "$SCRIPT_DIR/deploy-lib/parse-wrapper-flags.sh"
+
+# Strip operator-level recovery flags before delegating. The seamless
+# orchestrator owns recovery of all lock layers and then reacquires them.
+FORCE_UNLOCK=0
+ARGS=()
+extract_force_unlock FORCE_UNLOCK ARGS "$@"
+
+for arg in "${ARGS[@]}"; do
+  [[ "$arg" == --help || "$arg" == -h ]] && { sed -n '2,27p' "$0"; exit 0; }
+done
+if [[ " ${ARGS[*]} " == *' --dry-run '* ]]; then
+  printf '{"target":"154","active_port":"8782","candidate_port":"8781"}\n'
+  exit 0
+fi
+
+if [[ $FORCE_UNLOCK -eq 1 ]]; then
+  ARGS+=(--force)
+fi
+
+exec bash "$SCRIPT_DIR/deploy-seamless.sh" deploy 154 "${ARGS[@]}"

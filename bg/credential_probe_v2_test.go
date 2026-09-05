@@ -24,15 +24,44 @@ func TestClassifyProbeFailure_EndpointIDRequired(t *testing.T) {
 	}
 }
 
-func TestClassifyProbeFailure_Plain404_StillUnreachable(t *testing.T) {
-	// Plain 404 without InvalidEndpointOrModel — should fall through to
-	// the unreachable default (this is a real model/provider problem).
+func TestClassifyProbeFailure_Plain404IsModelBindingOnly(t *testing.T) {
+	// A probe reached the selected model endpoint and received its explicit
+	// model-not-found response. The credential may still serve sibling models.
 	pr := classifyProbeFailure("chat status 404: model not found")
-	if pr.HealthStatus != "unreachable" {
-		t.Errorf("HealthStatus: got %q want \"unreachable\" (plain 404 should still mark unreachable)", pr.HealthStatus)
+	if pr.HealthStatus != "warning" || !pr.BindingOnly {
+		t.Errorf("plain model 404 classification wrong: %+v", pr)
 	}
-	if pr.StateReasonCode != "network_error" {
-		t.Errorf("StateReasonCode: got %q want \"network_error\"", pr.StateReasonCode)
+	if pr.AvailabilityState != "ready" || pr.StateReasonCode != "model_binding_error" {
+		t.Errorf("plain model 404 must preserve credential availability: %+v", pr)
+	}
+}
+
+func TestClassifyProbeFailure_ModelBindingDoesNotDisableCredential(t *testing.T) {
+	for _, errMsg := range []string{
+		"chat status 404: model not found",
+		"chat status 410: model has been deprecated",
+		"endpoint_id_required: chat status 404",
+	} {
+		pr := classifyProbeFailure(errMsg)
+		if !pr.BindingOnly {
+			t.Errorf("%q BindingOnly = false, want true", errMsg)
+		}
+		if pr.AvailabilityState != "ready" {
+			t.Errorf("%q AvailabilityState = %q, want ready", errMsg, pr.AvailabilityState)
+		}
+		if pr.QuotaState != "" {
+			t.Errorf("%q QuotaState = %q, want empty", errMsg, pr.QuotaState)
+		}
+	}
+}
+
+func TestClassifyProbeFailure_ModelsEndpointFailureRemainsCredentialScoped(t *testing.T) {
+	pr := classifyProbeFailure("models endpoint unreachable (after 3 attempts): status 404: model not found")
+	if pr.BindingOnly {
+		t.Fatalf("models endpoint failure must remain credential-scoped: %+v", pr)
+	}
+	if pr.AvailabilityState != "unreachable" {
+		t.Fatalf("models endpoint AvailabilityState = %q, want unreachable", pr.AvailabilityState)
 	}
 }
 
@@ -111,5 +140,73 @@ func TestWriteHealth_HardQuotaBypassOnSuccess(t *testing.T) {
 	)
 	if oldPattern.MatchString(body) {
 		t.Fatalf("writeHealth still has unconditional hard-quota guard without OR-bypass — deadlock regression")
+	}
+}
+
+func TestWriteHealth_ClosesBindingFailuresWithoutCredentialWideWrite(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		"if pr.BindingOnly {",
+		"c.writeBindingUnavailable(execCtx, credID, pr)",
+		"c.restoreBindingOnProbeSuccess(execCtx, credID, pr.HealthProbeModel)",
+		"available := pr.AvailabilityState == \"ready\" && !pr.BindingOnly",
+		"state = \"model_binding\"",
+		"modelAvailable := available",
+		"if pr.BindingOnly {",
+		"modelAvailable = model != pr.HealthProbeModel",
+		"Available:     modelAvailable",
+		"UPDATE credential_model_bindings cmb",
+		"pm.raw_model_name = $2",
+		"cmb.unavailable_reason = 'auto_probe_model_binding'",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("binding failure closure is missing %q", want)
+		}
+	}
+}
+
+func TestWriteHealth_FansOutBoundRawModels(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		"func (c *CredentialProbeV2) loadBoundRawModels(",
+		"COALESCE(cmb.available, TRUE) = TRUE",
+		"COALESCE(pm.available, TRUE) = TRUE",
+		"if err := rows.Err(); err != nil",
+		// 2026-08-26 self-check audit: pin the failure-branch call site
+		// (the cache mirrors current DB state when the probe is sick).
+		// The healthy-ready branch uses loadBoundRawModelsAll instead;
+		// covered by TestCredentialProbeV2_CacheFanOutIncludesAllBindings.
+		"uniqueStringSet([]string{pr.HealthProbeModel}, c.loadBoundRawModels(execCtx, credID))",
+		"for _, model := range writeModels",
+		"c.cache.Set(execCtx, credID, model",
+		"Model:         model",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("raw-model fan-out is missing %q", want)
+		}
+	}
+	if strings.Contains(body, "cm.archived") || strings.Contains(body, "pm.archived") {
+		t.Fatal("raw-model fan-out must not reference nonexistent archived columns")
+	}
+}
+
+func TestUniqueStringSet(t *testing.T) {
+	got := uniqueStringSet([]string{"default", "a", "a"}, []string{"b", "default", ""})
+	want := []string{"default", "a", "b"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
 	}
 }

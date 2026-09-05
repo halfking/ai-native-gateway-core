@@ -2,7 +2,6 @@ package providerprofile
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 )
@@ -79,7 +78,9 @@ func (e *AlertEngine) EvaluateCredential(ctx context.Context, credentialID int64
 	alerts := EvaluateAlerts(profiles, credentialID, providerID, e.cfg)
 	res := EvaluateResult{CredentialID: credentialID, ProviderID: providerID, Alerts: alerts, Action: "none"}
 
-	// 1. 先处理 auto_disabled
+	// 1. 记录 auto_disabled 告警，但不改变 credential 生命周期。
+	// 模型级停用必须由 model_probe_state -> credential_model_bindings 完成；
+	// 画像按 credential 聚合，不能让单个模型的异常下线整个凭据。
 	for _, a := range alerts {
 		if a.Type != AlertTypeAutoDisabled {
 			continue
@@ -101,63 +102,30 @@ func (e *AlertEngine) EvaluateCredential(ctx context.Context, credentialID int64
 			return res, nil
 		}
 
-		if err := e.actor.Disable(ctx, credentialID, a.Message); err != nil {
-			return res, fmt.Errorf("disable credential: %w", err)
-		}
-		a.ActionTaken = "disabled"
+		a.ActionTaken = "none"
+		a.Details = map[string]interface{}{"action": "advisory_only"}
 		if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
-			return res, fmt.Errorf("save auto-disabled alert: %w", err)
+			return res, fmt.Errorf("save auto-disable advisory: %w", err)
 		}
-		if err := e.actor.RecordEvent(ctx, credentialID, "profile_auto_disabled", map[string]interface{}{"reason": a.Message, "dimension": a.Dimension, "score": a.CurrentScore}); err != nil {
-			return res, fmt.Errorf("record auto-disabled event: %w", err)
+		if err := e.actor.RecordEvent(ctx, credentialID, "profile_auto_disable_advisory", map[string]interface{}{"reason": a.Message, "dimension": a.Dimension, "score": a.CurrentScore}); err != nil {
+			return res, fmt.Errorf("record auto-disable advisory: %w", err)
 		}
-
-		res.Action = "disabled"
 		return res, nil
 	}
 
-	// 2. 处理 auto_enabled：仅当当前是 disabled 才执行
+	// 2. 记录 auto_enabled 告警，但不自动恢复 credential 生命周期。
 	for _, a := range alerts {
 		if a.Type != AlertTypeAutoEnabled {
 			continue
 		}
-		lc, lerr := e.actor.CurrentLifecycle(ctx, credentialID)
-		if lerr != nil {
-			return res, lerr
-		}
-		if lc.Lifecycle != "disabled" {
-			// 当前未禁用，无需恢复；丢弃该告警
-			continue
-		}
-		if lc.ManualDisabled {
-			// 管理员手动禁用，不自动恢复；记录但不动作
-			a.ActionTaken = "none"
-			a.Details = map[string]interface{}{"suppressed": "manual_disabled"}
-			if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
-				return res, fmt.Errorf("save manually suppressed alert: %w", err)
-			}
-
-			continue
-		}
-		if err := e.actor.Enable(ctx, credentialID, a.Message); err != nil {
-			if errors.Is(err, ErrManualDisabled) {
-				a.ActionTaken = "none"
-				if saveErr := e.alerts.SaveIfNew(ctx, &a); saveErr != nil {
-					return res, fmt.Errorf("save manually suppressed alert: %w", saveErr)
-				}
-				continue
-			}
-			return res, fmt.Errorf("enable credential: %w", err)
-		}
-		a.ActionTaken = "enabled"
+		a.ActionTaken = "none"
+		a.Details = map[string]interface{}{"action": "advisory_only"}
 		if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
-			return res, fmt.Errorf("save auto-enabled alert: %w", err)
+			return res, fmt.Errorf("save auto-enable advisory: %w", err)
 		}
-		if err := e.actor.RecordEvent(ctx, credentialID, "profile_auto_enabled", map[string]interface{}{"reason": a.Message, "score": a.CurrentScore}); err != nil {
-			return res, fmt.Errorf("record auto-enabled event: %w", err)
+		if err := e.actor.RecordEvent(ctx, credentialID, "profile_auto_enable_advisory", map[string]interface{}{"reason": a.Message, "score": a.CurrentScore}); err != nil {
+			return res, fmt.Errorf("record auto-enable advisory: %w", err)
 		}
-
-		res.Action = "enabled"
 		return res, nil
 	}
 

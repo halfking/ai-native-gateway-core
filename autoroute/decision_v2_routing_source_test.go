@@ -12,6 +12,7 @@ package autoroute
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -131,6 +132,70 @@ func TestDecideV2_WorkTypeRouteBoostDoesNotOverridePin(t *testing.T) {
 	}
 }
 
+func TestDecideV2_WorkTypeRouteFallsBackWhenPrimaryMissesMinScore(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseChannelQualityRouting: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := newV2Index([]Candidate{
+		{CredentialID: 1, CanonicalID: 1, CanonicalName: "primary", Tags: []string{"code"}, SuccessRate: 0.99, UnitPriceInPer1M: 1},
+		{CredentialID: 2, CanonicalID: 2, CanonicalName: "secondary", Tags: []string{"code"}, SuccessRate: 0.80, UnitPriceInPer1M: 50},
+	})
+	routes := NewWorkTypeRouteStore(nil)
+	routes.snapshot.Store(&wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{
+		"code": {
+			{CanonicalName: "primary", Tier: "primary", MinScore: 99},
+			{CanonicalName: "secondary", Tier: "secondary"},
+		},
+	}})
+
+	d := NewDecider(&v2TestClassifier{task: TaskCode}, nil, idx, NewMemoryProfileStore())
+	d.SetWorkTypeRouteStore(routes)
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "secondary" || dec.CandidatesTopN[0].Breakdown.RouteTier != "secondary" {
+		t.Fatalf("secondary should be selected after primary misses min_score: %+v", dec)
+	}
+}
+
+func TestDecideV2_WorkTypeRouteFailoverPlanIncludesLowerTiers(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseChannelQualityRouting: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := newV2Index([]Candidate{
+		{CredentialID: 1, CanonicalID: 1, CanonicalName: "primary-a", Tags: []string{"code"}, SuccessRate: 0.99, UnitPriceInPer1M: 1},
+		{CredentialID: 2, CanonicalID: 2, CanonicalName: "primary-b", Tags: []string{"code"}, SuccessRate: 0.98, UnitPriceInPer1M: 2},
+		{CredentialID: 3, CanonicalID: 3, CanonicalName: "secondary", Tags: []string{"code"}, SuccessRate: 0.97, UnitPriceInPer1M: 3},
+		{CredentialID: 4, CanonicalID: 4, CanonicalName: "fallback", Tags: []string{"code"}, SuccessRate: 0.96, UnitPriceInPer1M: 4},
+	})
+	routes := NewWorkTypeRouteStore(nil)
+	routes.snapshot.Store(&wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{
+		"code": {
+			{CanonicalName: "primary-a", Tier: "primary"},
+			{CanonicalName: "primary-b", Tier: "primary"},
+			{CanonicalName: "secondary", Tier: "secondary"},
+			{CanonicalName: "fallback", Tier: "fallback"},
+		},
+	}})
+
+	d := NewDecider(&v2TestClassifier{task: TaskCode}, nil, idx, NewMemoryProfileStore())
+	d.SetWorkTypeRouteStore(routes)
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if len(dec.CandidatesTopN) != 2 || dec.CandidatesTopN[0].Breakdown.RouteTier != "primary" {
+		t.Fatalf("audit candidates must retain only active primary tier: %+v", dec.CandidatesTopN)
+	}
+	wantPlan := []string{"primary-a", "primary-b", "secondary", "fallback"}
+	if !reflect.DeepEqual(dec.TierFailoverModels, wantPlan) {
+		t.Fatalf("TierFailoverModels: got %v, want %v", dec.TierFailoverModels, wantPlan)
+	}
+}
+
 func TestDecideV2_WorkTypeRouteCanSelectBeyondInitialTopN(t *testing.T) {
 	old := GetFeatureFlags()
 	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseChannelQualityRouting: true})
@@ -157,7 +222,10 @@ func TestDecideV2_WorkTypeRouteCanSelectBeyondInitialTopN(t *testing.T) {
 	if dec.ChosenModel != "configured-model" {
 		t.Fatalf("configured model outside initial TopN should be considered, got %q", dec.ChosenModel)
 	}
-	if len(dec.CandidatesTopN) != 2 {
-		t.Fatalf("CandidatesTopN length: got %d, want 2", len(dec.CandidatesTopN))
+	if len(dec.CandidatesTopN) != 1 {
+		t.Fatalf("strict primary tier should retain only configured primary candidates: got %d", len(dec.CandidatesTopN))
+	}
+	if dec.CandidatesTopN[0].Breakdown.RouteTier != "primary" {
+		t.Fatalf("RouteTier: got %q, want primary", dec.CandidatesTopN[0].Breakdown.RouteTier)
 	}
 }

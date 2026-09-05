@@ -1,0 +1,40 @@
+--
+-- Name: handoff_pending_confirmations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.handoff_pending_confirmations (
+    id uuid NOT NULL,
+    tenant_id character varying(64) NOT NULL,
+    api_key_id bigint NOT NULL,
+    previous_session_id character varying(255) NOT NULL,
+    token_hash character(64) NOT NULL,
+    status character varying(32) DEFAULT 'pending'::character varying NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    confirmed_at timestamp with time zone,
+    new_session_id character varying(255),
+    idempotency_hash character(64),
+    handoff_log_id integer,
+    goal_state jsonb,
+    goal_state_version integer,
+    restore_status character varying(32),
+    restore_error character varying(512),
+    restore_attempted_at timestamp with time zone,
+    restored_at timestamp with time zone,
+    trigger_mode character varying(32) NOT NULL,
+    trigger_reason character varying(64) NOT NULL,
+    tokens_at_trigger integer NOT NULL,
+    context_window integer,
+    messages_at_trigger integer NOT NULL,
+    tokens_in_session integer NOT NULL,
+    summary_engine character varying(32),
+    summary_text text,
+    handoff_prompt text,
+    skill_name character varying(64),
+    duration_ms integer,
+    proposal_created_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT handoff_pending_confirmations_pkey PRIMARY KEY (id),
+    CONSTRAINT handoff_pending_confirmations_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'confirmed'::character varying, 'accounting_confirmed'::character varying, 'restored'::character varying, 'manual_required'::character varying, 'expired'::character varying])::text[]))),
+    CONSTRAINT handoff_pending_confirmations_log_fk FOREIGN KEY (handoff_log_id) REFERENCES public.handoff_logs(id) ON DELETE SET NULL
+);

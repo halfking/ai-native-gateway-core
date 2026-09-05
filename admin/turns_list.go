@@ -11,6 +11,10 @@
 //       &model=...         按模型筛选
 //       &provider=...      按供应商筛选
 //       &status_code=...   按状态码筛选
+//       &project_id=...    按项目筛选
+//       &namespace=...     按会话命名空间筛选
+//       &parent_request_id=... 按派生父请求筛选
+//       &task_type=...     按任务类型筛选
 //       &ts_from=...       起始时间（RFC3339）
 //       &ts_to=...         截止时间（RFC3339）
 //       &tenant=...        租户筛选（仅 super_admin 可指定）
@@ -28,13 +32,19 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 )
 
 // TurnInList 是跨会话轮次列表的单行记录，继承 TurnListItem 的所有字段，
 // 额外携带 session_id 以便前端跳转到会话详情页。
 type TurnInList struct {
 	TurnListItem
-	SessionID string `json:"session_id"`
+	SessionID       string `json:"session_id"`
+	ProjectID       string `json:"project_id,omitempty"`
+	Namespace       string `json:"namespace,omitempty"`
+	ParentRequestID string `json:"parent_request_id,omitempty"`
+	TaskType        string `json:"task_type,omitempty"`
 }
 
 // handleTurnsList 处理 GET /api/admin/turns。
@@ -91,47 +101,15 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 	tsTo := parseQueryTime(r, "ts_to", now)
 
 	// 构造 WHERE 条件
-	clauses := []string{"t.ts >= $1", "t.ts <= $2"}
-	args := []any{tsFrom, tsTo}
-	argIdx := 3
-
-	if tenantID != "" {
-		clauses = append(clauses, fmt.Sprintf("t.tenant_id = $%d", argIdx))
-		args = append(args, tenantID)
-		argIdx++
-	}
-
-	// Cursor 分页：按 (ts, session_id, turn_no) 复合序，cursor 传各字段
-	if beforeTS != (time.Time{}) {
-		clauses = append(clauses, fmt.Sprintf(
-			"(t.ts, t.session_id, t.turn_no) < ($%d, $%d, $%d)", argIdx, argIdx+1, argIdx+2))
-		args = append(args, beforeTS, beforeSessionID, beforeNo)
-		argIdx += 3
-	}
-
-	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("t.model = $%d", argIdx))
-		args = append(args, v)
-		argIdx++
-	}
-	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
-		clauses = append(clauses, fmt.Sprintf("t.provider = $%d", argIdx))
-		args = append(args, v)
-		argIdx++
-	}
-	if v := r.URL.Query().Get("status_code"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			clauses = append(clauses, fmt.Sprintf("t.status_code = $%d", argIdx))
-			args = append(args, n)
-			argIdx++
-		}
-	}
-
-	where := strings.Join(clauses, " AND ")
+	where, args, argIdx := buildTurnsListWhere(r, tenantID, tsFrom, tsTo, beforeTS, beforeSessionID, beforeNo)
 
 	// 查询
 	query := fmt.Sprintf(`
 		SELECT t.session_id, t.turn_no, t.ts,
+			COALESCE(t.project_id, '') AS project_id,
+			COALESCE(t.namespace, '') AS namespace,
+			COALESCE(t.parent_request_id, '') AS parent_request_id,
+			COALESCE(t.task_type, '') AS task_type,
 			COALESCE(t.title, '') AS title,
 			COALESCE(t.summary, '') AS summary,
 			COALESCE(t.prompt_tokens, 0) AS prompt_tokens,
@@ -143,8 +121,9 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 			COALESCE(t.submit_mode, '') AS submit_mode,
 			COALESCE(t.injection_verdict, '') AS injection_verdict,
 			COALESCE(t.output_verdict, '') AS output_verdict,
-			COALESCE(t.attachment_count, 0) AS attachment_count
-		FROM public.session_turns t
+			COALESCE(t.attachment_count, 0) AS attachment_count,
+			t.digest
+		FROM public.session_turns_with_current_month t
 		WHERE %s
 		ORDER BY t.ts DESC, t.session_id DESC, t.turn_no DESC
 		LIMIT $%d
@@ -161,18 +140,31 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 
 	items := make([]TurnInList, 0, limit)
 	for rows.Next() {
-		var it TurnInList
+		var (
+			it                 TurnInList
+			persistedDigestRaw []byte
+		)
 		if err := rows.Scan(
 			&it.SessionID, &it.TurnNo, &it.Ts,
+			&it.ProjectID, &it.Namespace, &it.ParentRequestID, &it.TaskType,
 			&it.Title, &it.Summary,
 			&it.RequestTokens, &it.ResponseTokens, &it.CostUSD,
 			&it.Model, &it.Provider, &it.StatusCode,
 			&it.SubmitMode, &it.InjectionVerdict, &it.OutputVerdict,
-			&it.AttachmentCount,
+			&it.AttachmentCount, &persistedDigestRaw,
 		); err != nil {
 			slog.Warn("admin handleTurnsList scan failed", "err", err.Error())
 			writeError(w, http.StatusInternalServerError, "scan turn failed")
 			return
+		}
+		// Persisted-digest only: this endpoint deliberately does not join
+		// session_bodies_unified (that's the whole point of avoiding the
+		// cross-session body-read cost), so unlike the per-session
+		// list/detail endpoints there is no live-reconstruction fallback.
+		// Turns written before migration 636, or with a digest that fails
+		// to unmarshal, surface with Digest == nil rather than a body read.
+		if persisted, err := sessiondigest.Unmarshal(persistedDigestRaw); err == nil && persisted != nil {
+			it.Digest = turnDigestFromPayload(persisted.Payload)
 		}
 		items = append(items, it)
 	}
@@ -200,4 +192,63 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 		"has_more":    hasMore,
 		"next_cursor": nextCursor,
 	})
+}
+
+// buildTurnsListWhere constructs the WHERE clause for /api/admin/turns from
+// query parameters. It is extracted so unit tests can pin the exact SQL
+// contract (column names, parameter positions) without spinning up the
+// handler and a live database.
+func buildTurnsListWhere(r *http.Request, tenantID string, tsFrom, tsTo, beforeTS time.Time, beforeSessionID string, beforeTurnNo int) (string, []any, int) {
+	q := r.URL.Query()
+	clauses := []string{"t.ts >= $1", "t.ts <= $2"}
+	args := []any{tsFrom, tsTo}
+	argIdx := 3
+
+	if tenantID != "" {
+		clauses = append(clauses, fmt.Sprintf("t.tenant_id = $%d", argIdx))
+		args = append(args, tenantID)
+		argIdx++
+	}
+
+	if !beforeTS.IsZero() {
+		clauses = append(clauses, fmt.Sprintf(
+			"(t.ts, t.session_id, t.turn_no) < ($%d, $%d, $%d)", argIdx, argIdx+1, argIdx+2))
+		args = append(args, beforeTS, beforeSessionID, beforeTurnNo)
+		argIdx += 3
+	}
+
+	if v := strings.TrimSpace(q.Get("model")); v != "" {
+		clauses = append(clauses, fmt.Sprintf("t.model = $%d", argIdx))
+		args = append(args, v)
+		argIdx++
+	}
+	if v := strings.TrimSpace(q.Get("provider")); v != "" {
+		clauses = append(clauses, fmt.Sprintf("t.provider = $%d", argIdx))
+		args = append(args, v)
+		argIdx++
+	}
+	if v := q.Get("status_code"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			clauses = append(clauses, fmt.Sprintf("t.status_code = $%d", argIdx))
+			args = append(args, n)
+			argIdx++
+		}
+	}
+	for _, filter := range []struct {
+		queryKey string
+		column   string
+	}{
+		{queryKey: "project_id", column: "project_id"},
+		{queryKey: "namespace", column: "namespace"},
+		{queryKey: "parent_request_id", column: "parent_request_id"},
+		{queryKey: "task_type", column: "task_type"},
+	} {
+		if v := strings.TrimSpace(q.Get(filter.queryKey)); v != "" {
+			clauses = append(clauses, fmt.Sprintf("t.%s = $%d", filter.column, argIdx))
+			args = append(args, v)
+			argIdx++
+		}
+	}
+
+	return strings.Join(clauses, " AND "), args, argIdx
 }

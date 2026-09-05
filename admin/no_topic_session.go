@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 const noTopicSessionPrefix = "/api/system/no-topic-session/"
@@ -135,8 +136,8 @@ func (h *Handler) handleNoTopicSessionMessages(w http.ResponseWriter, r *http.Re
 		SELECT
 			rl.ts, rl.request_id, rl.client_model, rl.outbound_model,
 			rl.request_preview, rl.response_preview,
-			COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-			COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+			COALESCE(rb.request_body::text, '') AS request_body,
+			COALESCE(rb.response_body::text, '') AS response_body,
 			rl.prompt_tokens, rl.completion_tokens, rl.latency_ms,
 			rl.cost_usd, rl.request_status, rl.error_kind,
 			rl.work_type, rl.request_mode, rl.gw_session_id
@@ -299,8 +300,8 @@ func (h *Handler) loadNoTopicTaskLogsForTitle(ctx context.Context, prefix string
 
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+		       COALESCE(rb.request_body::text, '') AS request_body,
+		       COALESCE(rb.response_body::text, '') AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
@@ -358,8 +359,14 @@ func (h *Handler) handleNoTopicSessionExtractToMemora(w http.ResponseWriter, r *
 	defer cancel()
 
 	var body extractToMemoraRequest
+	// 2026-08-26 (P1-19 fix): empty body accepted silently, malformed
+	// body rejected with 400. Previously every parse error was
+	// silently discarded and the handler proceeded with the
+	// zero-value struct, hiding client-side bugs.
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body)
+		if ok, _ := jsonbody.ReadOptional(w, r, &body); !ok {
+			return
+		}
 	}
 	includeResponses := true
 

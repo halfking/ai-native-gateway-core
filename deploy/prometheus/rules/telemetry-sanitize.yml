@@ -1,0 +1,104 @@
+# 2026-08-23: 告警规则 —— telemetry sanitize / required_field_guard 事件。
+#
+# 计数器：telemetry_sanitize_events_total{outcome, field, source, stage}
+#
+# outcome 语义：
+#   discarded — sanitizeUTF8JSON 返回空串，JSONB 列被 NULL 化。
+#               严重事件：审计员看不到原始数据。
+#   rescued   — sanitizeUTF8JSON 返回非空 truncated prefix，保留 prefix 入库。
+#               中等事件：说明上游在发坏字节。
+#
+# stage 语义：
+#   sanitize            — sanitizeUTF8JSON 主动清洗。
+#   required_field_guard — required_field 守卫阶段触发的 drop。
+#
+# 本文件只负责 outcome=discarded 与 outcome=rescued 两个 outcome 的告警。
+# SLO 与具体 field 基数会随发布演进；阈值保持保守以便先发到。
+
+groups:
+  - name: llmgw-telemetry-sanitize
+    interval: 30s
+    rules:
+      # 1) 任何字段出现 outcome=discarded 即视为严重：JSONB 列被 NULL 化，
+      #    审计员看不到原始数据。
+      - alert: TelemetrySanitizeDiscarded
+        expr: rate(telemetry_sanitize_events_total{outcome="discarded"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: telemetry
+        annotations:
+          runbook: "docs/runbooks/telemetry-sanitize-discarded.md — 先跑 scripts/diag/245-minimax-m3-requestlog-investigation.sh：3b=真丢失（WAL 有/logs_hot 无），3c/3e=side-table 缺失；指标为 0 但 3b 有缺口时查 persist failed (SQLSTATE 22003)"
+          summary: "Telemetry sanitize 丢弃事件 (field={{ $labels.field }}, source={{ $labels.source }}, stage={{ $labels.stage }})"
+          description: |
+            field={{ $labels.field }} source={{ $labels.source }}
+            stage={{ $labels.stage }} 触发了 sanitizeUTF8JSON 返回空串。
+            对应 JSONB 列已被 NULL 化，审计员看不到原始数据。
+            速率={{ $value | humanize }} events/s（5m 窗口）。
+
+      # 2) outcome=rescued 持续超过 0.1 events/s 达 10 分钟：
+      #    说明上游在持续发坏字节，需要联系上游整改。
+      - alert: TelemetrySanitizeRescuedHigh
+        expr: rate(telemetry_sanitize_events_total{outcome="rescued"}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          component: telemetry
+        annotations:
+          runbook: "docs/runbooks/telemetry-sanitize-discarded.md — 先跑 scripts/diag/245-minimax-m3-requestlog-investigation.sh：3b=真丢失（WAL 有/logs_hot 无），3c/3e=side-table 缺失；指标为 0 但 3b 有缺口时查 persist failed (SQLSTATE 22003)"
+          summary: "Telemetry sanitize 持续 rescue (field={{ $labels.field }})"
+          description: |
+            持续 rescue 说明上游在发坏字节 —— sanitizeUTF8JSON 反复命中
+            非 ASCII / 控制字符并截断为 prefix。保留 prefix 入库是降级
+            行为，不是预期行为。
+            速率={{ $value | humanize }} events/s（5m 窗口），
+            field={{ $labels.field }}, source={{ $labels.source }},
+            stage={{ $labels.stage }}。
+            排查方向：核对上游协议版本、UTF-8 编码、是否夹带 BOM/控制符。
+
+      # 3) 仅针对关键字段（request_body / outbound_body / attachments /
+      #    tool_calls）单独的严重告警。这些字段是审计与回放的核心，
+      #    一旦被 NULL 化比其它字段影响大。
+      - alert: TelemetrySanitizeDiscardedCriticalFields
+        expr: |
+          rate(
+            telemetry_sanitize_events_total{
+              outcome="discarded",
+              field=~"request_body|outbound_body|attachments|tool_calls"
+            }[5m]
+          ) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: telemetry
+        annotations:
+          runbook: "docs/runbooks/telemetry-sanitize-discarded.md — 先跑 scripts/diag/245-minimax-m3-requestlog-investigation.sh：3b=真丢失（WAL 有/logs_hot 无），3c/3e=side-table 缺失；指标为 0 但 3b 有缺口时查 persist failed (SQLSTATE 22003)"
+          summary: "关键 telemetry 字段被丢弃 ({{ $labels.field }})"
+          description: |
+            关键字段 {{ $labels.field }}（source={{ $labels.source }},
+            stage={{ $labels.stage }}）出现 outcome=discarded。
+            JSONB 列被 NULL 化，审计/回放数据缺失。
+            速率={{ $value | humanize }} events/s（5m 窗口）。
+
+      # 4) required_field_guard 阶段的 drop 持续发生：
+      #    这是 stale gauge 触发后的兜底落库。出现意味着校验链异常。
+      - alert: TelemetryRequiredFieldGuardDiscarded
+        expr: |
+          rate(
+            telemetry_sanitize_events_total{
+              outcome="discarded",
+              stage="required_field_guard"
+            }[5m]
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: telemetry
+        annotations:
+          runbook: "docs/runbooks/telemetry-sanitize-discarded.md — 先跑 scripts/diag/245-minimax-m3-requestlog-investigation.sh：3b=真丢失（WAL 有/logs_hot 无），3c/3e=side-table 缺失；指标为 0 但 3b 有缺口时查 persist failed (SQLSTATE 22003)"
+          summary: "required_field_guard 持续丢弃 telemetry 事件"
+          description: |
+            required_field_guard 阶段在持续丢弃 telemetry 事件
+            （field={{ $labels.field }}, source={{ $labels.source }}）。
+            这通常是 stale gauge 命中或写入链缺字段，需要排查
+            写入端是否漏字段 / schema 是否漂移。

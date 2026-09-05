@@ -85,8 +85,10 @@ export default {
     dragToReorder: '拖曳調整優先級',
     emptyPrimary: '尚未設定首選模型 — 點擊「新增首選」',
     emptySecondary: '尚未設定備選模型 — 點擊「新增備選」',
+    emptyFallback: '尚未設定托底模型 — 點擊「新增托底」',
     addPrimary: '+ 新增首選',
     addSecondary: '+ 新增備選',
+    addFallback: '+ 新增托底',
   },
   routes: {
     title: 'Model type routes',

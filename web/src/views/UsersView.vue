@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateTime24h } from '../i18n/useFormat'
 import { ref, computed, onMounted } from 'vue'
 import { getUsers, createUser, updateUser, deleteUser, resetUserPassword, getTenantsAdmin } from '../api'
 import type { Tenant } from '../api'
 import { store, isReadOnlyMode, isTenantAdmin } from '../store'
 import { checkPasswordPolicy, passwordsMatch } from '../utils/passwordPolicy'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -104,7 +105,7 @@ async function handleToggle(u: User) {
 }
 
 async function handleDelete(u: User) {
-  if (!confirm(t('users.confirmDelete', { name: u.username }))) return
+  if (!(await confirmDialog(t('users.confirmDelete', { name: u.username })))) return
   try {
     await deleteUser(u.id)
     await load()
@@ -133,11 +134,6 @@ async function handleResetPwd() {
 
 function roleLabel(r: string) {
   return r === 'super_admin' ? t('users.role.super_admin') : t('users.role.tenant_admin')
-}
-
-function fmtDate(s: string | null) {
-  if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
 }
 
 function closeCreateModal() {
@@ -221,7 +217,7 @@ onMounted(() => { load(); loadTenants() })
               {{ u.enabled ? t('users.status.enabled') : t('users.status.disabled') }}
             </span>
           </td>
-          <td>{{ fmtDate(u.last_login_at) }}</td>
+          <td>{{ fmtDateTime24h(u.last_login_at) }}</td>
           <td>
             <button v-if="canResetPasswords" class="btn btn-ghost btn-sm" @click="resetPwdUser = u; newPwd = ''; resetConfirmPwd = ''">{{ t('users.action.resetPassword') }}</button>
             <button v-if="canDeleteUsers && u.id !== store.userInfo?.id" class="btn btn-ghost btn-sm" style="color:var(--danger)" @click="handleDelete(u)">{{ t('users.action.delete') }}</button>
@@ -334,15 +330,15 @@ onMounted(() => { load(); loadTenants() })
 .page-header h1 { font-size: 20px; margin: 0; }
 
 .badge-purple { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
-.badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }
-.badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
-.badge-red { background: rgba(239,68,68,.15); color: #f87171; }
-.badge-yellow { background: rgba(234,179,8,.15); color: #facc15; }
+.badge-blue { background: var(--info-bg); color: var(--accent); }
+.badge-green { background: var(--success-bg); color: var(--success); }
+.badge-red { background: var(--danger-bg); color: var(--danger); }
+.badge-yellow { background: var(--warning-bg); color: var(--warning); }
 
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,.5);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -390,7 +386,7 @@ onMounted(() => { load(); loadTenants() })
 }
 
 .is-pass {
-  color: #4ade80;
+  color: var(--success);
 }
 
 .is-pending {
@@ -398,6 +394,6 @@ onMounted(() => { load(); loadTenants() })
 }
 
 .is-error {
-  color: #f87171;
+  color: var(--danger);
 }
 </style>

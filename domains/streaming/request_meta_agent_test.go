@@ -201,6 +201,8 @@ func TestEnrichRequestLogFromMeta_AgentFields(t *testing.T) {
 		ClientProtocol:  "openai-chat",
 		VirtualClientID: "vc-abcdef0123456789",
 		IdentityHash:    "hash-123",
+		ProjectID:       "project-123",
+		Namespace:       "workspace",
 	}
 
 	enrichRequestLogFromMeta(reqLog, nil, meta)
@@ -219,6 +221,12 @@ func TestEnrichRequestLogFromMeta_AgentFields(t *testing.T) {
 	}
 	if reqLog.IdentityHash == nil || *reqLog.IdentityHash != "hash-123" {
 		t.Errorf("IdentityHash = %v, want %q", reqLog.IdentityHash, "hash-123")
+	}
+	if reqLog.ProjectID == nil || *reqLog.ProjectID != "project-123" {
+		t.Errorf("ProjectID = %v, want %q", reqLog.ProjectID, "project-123")
+	}
+	if reqLog.Namespace == nil || *reqLog.Namespace != "workspace" {
+		t.Errorf("Namespace = %v, want %q", reqLog.Namespace, "workspace")
 	}
 }
 

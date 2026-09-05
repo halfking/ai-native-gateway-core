@@ -39,7 +39,7 @@ import (
 // 失败仅记录日志，不阻断主流程。
 type CacheUpdateHook struct {
 	sessionCache   *compression.SessionCache
-	now            func() time.Time // 可注入测试时钟
+	now            func() time.Time                // 可注入测试时钟
 	stateProjector *analysis.SessionStateProjector // 可选：把 v6 投影到 session_tags
 }
 
@@ -94,40 +94,33 @@ func (h *CacheUpdateHook) Execute(ctx context.Context, env *domain.PipelineReque
 		return nil
 	}
 
-	state, _, err := h.sessionCache.GetOrLoad(ctx, env.TenantID, env.SessionID)
+	var stamped *compression.SessionState
+	err := h.sessionCache.Update(ctx, env.TenantID, env.SessionID, func(state *compression.SessionState, body []byte) (*compression.SessionState, []byte, error) {
+		if state == nil {
+			state = &compression.SessionState{SchemaVersion: 1}
+		}
+
+		multiScore := sessionaudit.CalculateMultiDimensionScore(result)
+		state.MarkAudited(
+			h.now(),
+			result.Score,
+			multiScore.Security,
+			len(result.SensitiveWords) > 0,
+			extractPIIStripped(env),
+			result.Decision == sessionaudit.DecisionNeedApproval,
+		)
+		if tag, ok := env.Metadata["optimization_applied"].(string); ok && tag != "" {
+			state.ApplyOptimization(tag)
+		}
+		stamped = state
+		return state, body, nil
+	})
 	if err != nil {
-		slog.Warn("cache_update: load session state failed",
+		slog.Warn("cache_update: save session state failed",
 			"session_id", env.SessionID, "tenant_id", env.TenantID, "error", err)
 		return nil
 	}
-	if state == nil {
-		// 新会话：创建仅含 v6 字段的空 state。
-		state = &compression.SessionState{SchemaVersion: 1}
-	}
-
-	// 1. 写入审计元数据
-	multiScore := sessionaudit.CalculateMultiDimensionScore(result)
-	now := h.now()
-	state.MarkAudited(
-		now,
-		result.Score,
-		multiScore.Security,
-		len(result.SensitiveWords) > 0,
-		extractPIIStripped(env),
-		result.Decision == sessionaudit.DecisionNeedApproval,
-	)
-
-	// 2. 写入审计阶段执行的优化（如果有）
-	if tag, ok := env.Metadata["optimization_applied"].(string); ok && tag != "" {
-		state.ApplyOptimization(tag)
-	}
-
-	// 3. 写入 SessionState — outbound body 留 nil（L2 不存 body）。
-	if setErr := h.sessionCache.Set(ctx, env.TenantID, env.SessionID, state, nil); setErr != nil {
-		slog.Warn("cache_update: save session state failed",
-			"session_id", env.SessionID, "tenant_id", env.TenantID, "error", setErr)
-		return nil
-	}
+	state := stamped
 
 	// 4. 投影 v6 → session_tags（统一打标层）。best-effort，失败不阻断。
 	if h.stateProjector != nil {
@@ -178,15 +171,13 @@ func (h *CacheUpdateHook) UpdateApprovalID(ctx context.Context, tenantID, sessio
 		return errors.New("cache_update: tenant and session required")
 	}
 
-	state, _, err := h.sessionCache.GetOrLoad(ctx, tenantID, sessionID)
-	if err != nil {
-		return err
-	}
-	if state == nil {
-		state = &compression.SessionState{SchemaVersion: 1}
-	}
-	state.SetApprovalID(approvalID)
-	return h.sessionCache.Set(ctx, tenantID, sessionID, state, nil)
+	return h.sessionCache.Update(ctx, tenantID, sessionID, func(state *compression.SessionState, body []byte) (*compression.SessionState, []byte, error) {
+		if state == nil {
+			state = &compression.SessionState{SchemaVersion: 1}
+		}
+		state.SetApprovalID(approvalID)
+		return state, body, nil
+	})
 }
 
 // extractPIIStripped 从 metadata 读取 PII 脱敏标记。

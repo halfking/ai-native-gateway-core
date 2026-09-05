@@ -7,8 +7,9 @@
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
+import { fmtDateShort } from '../i18n/useFormat'
 import {
   getMaasUsageSummary,
   getMaasWallet,
@@ -18,15 +19,37 @@ import {
   type RequestLogRow,
 } from '../api'
 import { getCurrentTenantId } from '../store'
-import LiveRequestStream from '../components/LiveRequestStream.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
-import RequestLogDrawer from '../components/RequestLogDrawer.vue'
-import { useLiveStream } from '../composables/useLiveStream'
-import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
 const { t } = useI18n()
+const router = useRouter()
 
-const days = ref(7)
+const LEGACY_STORAGE_KEY_DAYS = 'tenant_dashboard_days'
+const VALID_DAYS = [1, 7, 30] as const
+
+function readStoredDays(): number {
+  try {
+    const key = dashboardPreferenceStorageKey('tenant-days')
+    const raw = localStorage.getItem(key) ?? localStorage.getItem(LEGACY_STORAGE_KEY_DAYS)
+    return VALID_DAYS.includes(Number(raw) as typeof VALID_DAYS[number]) ? Number(raw) : 7
+  } catch {
+    return 7
+  }
+}
+
+function persistDays(value: number) {
+  try {
+    if (VALID_DAYS.includes(value as typeof VALID_DAYS[number])) {
+      localStorage.setItem(dashboardPreferenceStorageKey('tenant-days'), String(value))
+    }
+  } catch {
+    // Storage failure should not prevent tenant statistics from loading.
+  }
+}
+
+const days = ref(readStoredDays())
 const summary = ref<MaasUsageSummary | null>(null)
 const wallet = ref<MaasWallet | null>(null)
 const loading = ref(false)
@@ -70,13 +93,8 @@ const degradedHint = computed(() => {
 })
 const degradedView = computed(() => summary.value?.missing_view || '')
 
-function fmtDate(s: string | undefined) {
-  if (!s) return '—'
-  return new Date(s).toLocaleDateString(localeRef.value, { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
 function subscriptionPeriod(sub: NonNullable<MaasWallet['subscription']>) {
-  return `${fmtDate(sub.period_start)} — ${fmtDate(sub.period_end)}`
+  return `${fmtDateShort(sub.period_start)} — ${fmtDateShort(sub.period_end)}`
 }
 
 const maxModelRequests = computed(() => {
@@ -186,30 +204,41 @@ async function showDateDetail(day: string) {
   }
 }
 
-// 实时请求流和抽屉
-const { requests: liveRequests } = useLiveStream()
-const activeRequestId = ref<string | null>(null)
+// 实时请求流：点击详情新开页
+// 2026-09-01 (P2-4 fix): 不再在父视图直接调用 useLiveStream()，
+// LiveRequestStreamV2 内部已经 acquire/release；父视图再调一次会
+// 让 refCount 多 +1，visibility listener 多注册一份，并在卸载时
+// 多一次 release（实际并未触发 onBeforeUnmount 因为父视图从未 unmount
+// 该 composable 的绑定——liveRequests 一直未使用）。
 function openRequestDetail(id: string) {
-  activeRequestId.value = id
+  openRequestDetailPage(id, undefined, router)
 }
-function closeRequestDrawer() {
-  activeRequestId.value = null
-}
-
-// 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
-// 2026-08-06 (later): 重构为 useSessionSummaryJump composable，与其它父视图共享一处
-// 实现；onBeforeJump 钩子用于关闭抽屉。
-const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
-  onBeforeJump: () => closeRequestDrawer(),
-})
 
 // Tab 控制（与 DashboardViewV2 对齐：stream / stats）
-const STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
+const LEGACY_STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
 const activeTab = ref<'stream' | 'stats'>('stream')
+
+function readStoredTab(): 'stream' | 'stats' | null {
+  try {
+    const saved = localStorage.getItem(dashboardPreferenceStorageKey('tenant-tab'))
+      ?? localStorage.getItem(LEGACY_STORAGE_KEY_TAB)
+    return saved === 'stream' || saved === 'stats' ? saved : null
+  } catch {
+    return null
+  }
+}
+
+function persistTab(tab: 'stream' | 'stats') {
+  try {
+    localStorage.setItem(dashboardPreferenceStorageKey('tenant-tab'), tab)
+  } catch {
+    // Storage failure should not prevent tenant dashboard navigation.
+  }
+}
 
 function switchTab(tab: 'stream' | 'stats') {
   activeTab.value = tab
-  localStorage.setItem(STORAGE_KEY_TAB, tab)
+  persistTab(tab)
 }
 
 // 5 分钟自动刷新
@@ -227,8 +256,8 @@ function scheduleStatsRecalibrate() {
 }
 
 onMounted(() => {
-  const saved = localStorage.getItem(STORAGE_KEY_TAB)
-  if (saved === 'stream' || saved === 'stats') activeTab.value = saved
+  const saved = readStoredTab()
+  if (saved) activeTab.value = saved
   void load()
   scheduleStatsRecalibrate()
 })
@@ -267,7 +296,7 @@ onUnmounted(() => {
       </div>
       <div class="page-header-right">
         <span class="tenant-badge">{{ tenantLabel }}</span>
-        <select v-model.number="days" class="days-select" @change="load">
+          <select v-model.number="days" class="days-select" @change="persistDays(days); load()">
           <option :value="1">{{ t('tenants.dashboard.range.today') }}</option>
           <option :value="7">{{ t('tenants.dashboard.range.last7d') }}</option>
           <option :value="30">{{ t('tenants.dashboard.range.last30d') }}</option>
@@ -334,7 +363,7 @@ onUnmounted(() => {
         </div>
         <div class="sub-item">
           <span class="sub-label">{{ t('tenants.dashboard.labelExpiresAt') }}</span>
-          <span class="sub-value">{{ fmtDate(activeSubscription.period_end) }}</span>
+          <span class="sub-value">{{ fmtDateShort(activeSubscription.period_end) }}</span>
         </div>
       </div>
       <div v-else class="subscription-empty">
@@ -565,13 +594,6 @@ onUnmounted(() => {
       <RouterLink to="/keys">{{ t('tenants.dashboard.onboardingKeys') }}</RouterLink>
       {{ t('tenants.dashboard.onboardingKeysHint') }}
     </div>
-
-    <!-- 请求详情抽屉 -->
-    <RequestLogDrawer
-      :request-id="activeRequestId"
-      @close="closeRequestDrawer"
-      @generateSessionSummary="openSessionSummary"
-    />
   </div>
 </template>
 
@@ -625,7 +647,7 @@ onUnmounted(() => {
 .tab-btn--active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px var(--overlay-light);
 }
 .page-header-right {
   display: flex;
@@ -641,8 +663,8 @@ onUnmounted(() => {
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
   white-space: nowrap;
 }
 .days-select {
@@ -732,7 +754,7 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .sub-value.highlight {
-  color: #f59e0b;
+  color: var(--warning);
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .subscription-empty {
@@ -761,7 +783,7 @@ onUnmounted(() => {
 }
 .stat-mini:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 2px 8px var(--overlay-light);
 }
 .stat-mini--highlight {
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
@@ -845,7 +867,7 @@ onUnmounted(() => {
 }
 .bar-track {
   height: 10px;
-  background: rgba(255, 255, 255, 0.06);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   border-radius: 5px;
   overflow: hidden;
 }
@@ -884,7 +906,7 @@ onUnmounted(() => {
   font-family: 'SF Mono', 'Fira Code', monospace;
 }
 .num.credits {
-  color: #f59e0b;
+  color: var(--warning);
 }
 .trend-grid {
   display: grid;
@@ -933,7 +955,7 @@ onUnmounted(() => {
   opacity: 0.85;
 }
 .trend-bar.credits {
-  background: linear-gradient(180deg, #f59e0b, #d97706);
+  background: linear-gradient(180deg, var(--warning), var(--warning));
 }
 .trend-bar.requests {
   background: linear-gradient(180deg, var(--accent), var(--accent-h));
@@ -967,8 +989,8 @@ onUnmounted(() => {
   border-radius: 8px;
   font-size: 11px;
 }
-.badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
-.badge-red { background: rgba(239,68,68,.15); color: #f87171; }
+.badge-green { background: var(--success-bg); color: var(--success); }
+.badge-red { background: var(--danger-bg); color: var(--danger); }
 .detail-footer {
   display: flex;
   gap: 16px;
@@ -990,8 +1012,8 @@ onUnmounted(() => {
 .alert-danger {
   padding: 8px 12px;
   border-radius: 4px;
-  background: rgba(239, 68, 68, 0.1);
-  color: #f87171;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
   margin-bottom: 12px;
 }
 @media (max-width: 1024px) {

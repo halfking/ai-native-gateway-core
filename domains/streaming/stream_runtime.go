@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/config"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
 type streamRuntimeConfig struct {
@@ -15,11 +16,13 @@ type streamRuntimeConfig struct {
 	streamChunkTimeout       time.Duration
 	firstByteTimeout         time.Duration
 	keepaliveInterval        time.Duration
+	sseMaxLineBytes          int
 	enablePreStreamKeepalive bool
 	// 2026-07-15: content-gate buffers the first few chunks before writing
 	// to the client, so the executor can transparently failover an empty
 	// upstream stream (notably NIM) before the client sees [DONE].
-	enableEmptyStreamGate bool
+	enableEmptyStreamGate       bool
+	emptyStreamEarlyEmptyChunks int
 }
 
 var streamConfigStore atomic.Pointer[config.Store]
@@ -37,28 +40,39 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 	envEmptyGateEnabled := envBool("LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE", true)
 	if store := streamConfigStore.Load(); store != nil {
 		if cfg := store.Get(); cfg != nil {
+			earlyEmptyChunks := cfg.EmptyStreamEarlyEmptyChunks
+			if raw := os.Getenv("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS"); raw != "" {
+				earlyEmptyChunks = envNonNegativeInt("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", 3)
+			} else if earlyEmptyChunks <= 0 {
+				earlyEmptyChunks = 3
+			}
 			return streamRuntimeConfig{
 				upstreamTimeout:    durationSecondsOrDefault(cfg.UpstreamTimeout, 120*time.Second),
 				streamTimeout:      durationSecondsOrDefault(cfg.StreamTimeout, 900*time.Second),
 				streamChunkTimeout: durationSecondsOrDefault(cfg.StreamChunkTimeout, 300*time.Second),
 				// 2026-08-04: 120→180s default. Reasoning models with large
 				// tool-call contexts often exceed 120s to first byte.
-				firstByteTimeout:         durationSecondsOrDefault(cfg.FirstByteTimeout, 180*time.Second),
-				keepaliveInterval:        durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
-				enablePreStreamKeepalive: cfg.EnablePreStreamKeepalive || envKeepaliveEnabled,
-				enableEmptyStreamGate:    cfg.EnableEmptyStreamGate && envEmptyGateEnabled,
+				firstByteTimeout:            durationSecondsOrDefault(cfg.FirstByteTimeout, 180*time.Second),
+				keepaliveInterval:           durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
+				sseMaxLineBytes:             positiveIntOrDefault(cfg.SSEMaxLineBytes, 16<<20),
+				enablePreStreamKeepalive:    cfg.EnablePreStreamKeepalive || envKeepaliveEnabled,
+				enableEmptyStreamGate:       cfg.EnableEmptyStreamGate && envEmptyGateEnabled,
+				emptyStreamEarlyEmptyChunks: earlyEmptyChunks,
 			}
 		}
 	}
+	earlyEmptyChunks := envNonNegativeInt("LLM_GATEWAY_EMPTY_STREAM_EARLY_EMPTY_CHUNKS", 3)
 	return streamRuntimeConfig{
 		upstreamTimeout:    envDurationSeconds("LLM_GATEWAY_UPSTREAM_TIMEOUT", 120*time.Second),
 		streamTimeout:      envDurationSeconds("LLM_GATEWAY_STREAM_TIMEOUT", 900*time.Second),
 		streamChunkTimeout: envDurationSeconds("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", 300*time.Second),
 		// 2026-08-04: 120→180s default for thinking/long-running models.
-		firstByteTimeout:         envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 180*time.Second),
-		keepaliveInterval:        envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
-		enablePreStreamKeepalive: envKeepaliveEnabled,
-		enableEmptyStreamGate:    envEmptyGateEnabled,
+		firstByteTimeout:            envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 180*time.Second),
+		keepaliveInterval:           envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
+		sseMaxLineBytes:             envPositiveInt("LLM_GATEWAY_SSE_MAX_LINE_BYTES", 16<<20),
+		enablePreStreamKeepalive:    envKeepaliveEnabled,
+		enableEmptyStreamGate:       envEmptyGateEnabled,
+		emptyStreamEarlyEmptyChunks: earlyEmptyChunks,
 	}
 }
 
@@ -81,6 +95,37 @@ func envDurationSeconds(key string, def time.Duration) time.Duration {
 	return time.Duration(s) * time.Second
 }
 
+func positiveIntOrDefault(value, def int) int {
+	if value <= 0 {
+		return def
+	}
+	return value
+}
+
+func envPositiveInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
+}
+
+func envNonNegativeInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
 func envBool(key string, def bool) bool {
 	v := os.Getenv(key)
 	if v == "" {
@@ -89,10 +134,36 @@ func envBool(key string, def bool) bool {
 	return v == "true" || v == "1"
 }
 
+func envOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
 func StreamTimeout() time.Duration {
 	return currentStreamRuntimeConfig().streamTimeout
 }
 
 func UpstreamTimeout() time.Duration {
 	return currentStreamRuntimeConfig().upstreamTimeout
+}
+
+// ModelAliasPrefix returns the configured client-facing model name prefix
+// that gets stripped before internal routing. Default "kx-". Empty string means disabled.
+func ModelAliasPrefix() string {
+	if store := streamConfigStore.Load(); store != nil {
+		if cfg := store.Get(); cfg != nil {
+			return cfg.ModelAliasPrefix
+		}
+	}
+	if value, ok := os.LookupEnv("LLM_GATEWAY_MODEL_ALIAS_PREFIX"); ok {
+		return value
+	}
+	return "kx-"
+}
+
+// ApplyAliasPrefix strips the configured alias prefix from a client-facing model name.
+func ApplyAliasPrefix(model string) string {
+	return modelname.StripAliasPrefix(model, ModelAliasPrefix())
 }

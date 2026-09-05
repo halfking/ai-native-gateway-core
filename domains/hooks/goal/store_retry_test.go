@@ -46,56 +46,56 @@ func TestPGStore_AddRetryCount(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("increment by positive delta", func(t *testing.T) {
-		err := store.AddRetryCount(ctx, session.SessionID, 2)
+		err := store.AddRetryCount(ctx, session.TenantID, session.SessionID, 2)
 		require.NoError(t, err)
 
 		// Verify
-		retrieved, err := store.GetSession(ctx, session.SessionID)
+		retrieved, err := store.GetSession(ctx, session.TenantID, session.SessionID)
 		require.NoError(t, err)
 		require.Equal(t, 2, retrieved.RetryCount)
 	})
 
 	t.Run("increment again accumulates", func(t *testing.T) {
-		err := store.AddRetryCount(ctx, session.SessionID, 3)
+		err := store.AddRetryCount(ctx, session.TenantID, session.SessionID, 3)
 		require.NoError(t, err)
 
 		// Verify
-		retrieved, err := store.GetSession(ctx, session.SessionID)
+		retrieved, err := store.GetSession(ctx, session.TenantID, session.SessionID)
 		require.NoError(t, err)
 		require.Equal(t, 5, retrieved.RetryCount, "should accumulate: 2 + 3")
 	})
 
 	t.Run("empty session ID is no-op", func(t *testing.T) {
-		err := store.AddRetryCount(ctx, "", 5)
+		err := store.AddRetryCount(ctx, "", "", 5)
 		require.NoError(t, err, "should not error on empty ID")
 	})
 
 	t.Run("zero delta is no-op", func(t *testing.T) {
-		before, err := store.GetSession(ctx, session.SessionID)
+		before, err := store.GetSession(ctx, session.TenantID, session.SessionID)
 		require.NoError(t, err)
 
-		err = store.AddRetryCount(ctx, session.SessionID, 0)
+		err = store.AddRetryCount(ctx, session.TenantID, session.SessionID, 0)
 		require.NoError(t, err)
 
-		after, err := store.GetSession(ctx, session.SessionID)
+		after, err := store.GetSession(ctx, session.TenantID, session.SessionID)
 		require.NoError(t, err)
 		require.Equal(t, before.RetryCount, after.RetryCount, "count should not change")
 	})
 
 	t.Run("negative delta is no-op", func(t *testing.T) {
-		before, err := store.GetSession(ctx, session.SessionID)
+		before, err := store.GetSession(ctx, session.TenantID, session.SessionID)
 		require.NoError(t, err)
 
-		err = store.AddRetryCount(ctx, session.SessionID, -1)
+		err = store.AddRetryCount(ctx, session.TenantID, session.SessionID, -1)
 		require.NoError(t, err)
 
-		after, err := store.GetSession(ctx, session.SessionID)
+		after, err := store.GetSession(ctx, session.TenantID, session.SessionID)
 		require.NoError(t, err)
 		require.Equal(t, before.RetryCount, after.RetryCount, "count should not change")
 	})
 
 	t.Run("non-existent session does not error", func(t *testing.T) {
-		err := store.AddRetryCount(ctx, "nonexistent_session", 1)
+		err := store.AddRetryCount(ctx, "test_tenant", "nonexistent_session", 1)
 		require.NoError(t, err, "fail-open: should not error on missing session")
 	})
 }

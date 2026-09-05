@@ -34,6 +34,22 @@ const (
 	ProtocolAnthropic
 )
 
+// String implements fmt.Stringer for log / metric labels. Centralising
+// the rendering here means the survival loop, attempt gate and recovery
+// ladder all emit the same canonical token.
+func (p ClientProtocol) String() string {
+	switch p {
+	case ProtocolOpenAIChat:
+		return "openai_chat"
+	case ProtocolOpenAIResponses:
+		return "openai_responses"
+	case ProtocolAnthropic:
+		return "anthropic"
+	default:
+		return "unknown"
+	}
+}
+
 // FrameClass is the coarse, protocol-independent classification of a single
 // client-facing SSE frame. Ordering matters: AttemptCommitGate keeps a
 // monotonic commit state and higher classes win.
@@ -214,18 +230,28 @@ func classifyResponsesFrame(frame string) FrameClass {
 		return FrameClassUnknown
 	}
 	switch name {
-	case "response.output_text.delta", "response.reasoning_text.delta":
+	case "response.output_text.delta", "response.reasoning_text.delta",
+		"response.reasoning_summary_text.delta", "response.refusal.delta",
+		"response.audio.delta", "response.audio_transcript.delta":
 		return FrameClassContent
 	case "response.function_call_arguments.delta":
 		return FrameClassToolCall
 	case "response.created", "response.in_progress",
 		"response.output_item.added", "response.content_part.added",
-		"response.output_text.annotation.added":
+		"response.output_text.annotation.added",
+		"response.reasoning_summary_part.added",
+		"response.reasoning_summary_part.done",
+		"response.reasoning_item.added":
 		return FrameClassAttemptMetadata
-	case "response.output_text.done", "response.output_item.done",
-		"response.content_part.done", "response.completed",
-		"response.incomplete", "response.failed":
+	case "response.output_text.done", "response.reasoning_text.done",
+		"response.reasoning_summary_text.done", "response.refusal.done",
+		"response.audio.done", "response.audio_transcript.done",
+		"response.function_call_arguments.done", "response.output_item.done",
+		"response.content_part.done", "response.reasoning_item.done",
+		"response.completed", "response.incomplete", "response.failed":
 		return FrameClassTerminal
+	case "error":
+		return FrameClassError
 	default:
 		return FrameClassUnknown
 	}

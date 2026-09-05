@@ -39,6 +39,24 @@ func TestAdminLiveRequestFromEntry_UsesEventAtTimestamp(t *testing.T) {
 	}
 }
 
+func TestAdminLiveRequestFromEntry_PreservesCredentialIDWithoutHub(t *testing.T) {
+	credentialID := 42
+	entry := &telemetry.RequestLogEntry{
+		RequestID:    "req-credential-fallback",
+		TenantID:     "tenant-a",
+		ClientModel:  strPtrMain("gpt-4o"),
+		CredentialID: &credentialID,
+	}
+
+	got := adminLiveRequestFromEntry(entry, nil)
+	if got.CredentialID != credentialID {
+		t.Fatalf("CredentialID=%d want %d", got.CredentialID, credentialID)
+	}
+	if got.CredentialLabel != "" {
+		t.Fatalf("CredentialLabel=%q want empty without hub lookup", got.CredentialLabel)
+	}
+}
+
 func TestAdminLiveRequestFromEntry_StaleEventAtDoesNotMoveLaneBackward(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
@@ -77,10 +95,10 @@ func TestAdminLiveRequestFromEntry_StaleEventAtDoesNotMoveLaneBackward(t *testin
 	staleDone.ProviderCode = "openai"
 	ctx := context.Background()
 
-	if err := store.Record(ctx, start); err != nil {
+	if err := store.Record(ctx, start, ""); err != nil {
 		t.Fatalf("Record start: %v", err)
 	}
-	if err := store.Record(ctx, staleDone); err != nil {
+	if err := store.Record(ctx, staleDone, ""); err != nil {
 		t.Fatalf("Record staleDone: %v", err)
 	}
 

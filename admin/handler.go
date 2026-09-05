@@ -2,32 +2,42 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock" // 2026-08-19 title-gen per-session distributed lock
 	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/sessionmeta"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // attachment download/list routes live in the admin mux
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
-	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/requestdetail"
+	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // session state manager
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	v2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
+	"github.com/kaixuan/llm-gateway-go/internal/titlestore"   //nolint:depguard // durable title fencing/tombstone state
 	"github.com/kaixuan/llm-gateway-go/pending"
+	"github.com/kaixuan/llm-gateway-go/proxy"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
 	"github.com/kaixuan/llm-gateway-go/security/sanitize"
@@ -36,20 +46,46 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+type controlledBodyDB interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 type Handler struct {
-	db          *pgxpool.Pool
-	secret      string
-	encKey      []byte
-	keyring     *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
-	discSvc     *discovery.Service
-	credCycler  *bg.CredentialCycler
-	credRecov   *bg.CredentialRecovery
-	envCleaner  *bg.EnvelopeCleaner
-	stickyClean *bg.StickyCleaner
-	taxSync     *bg.TaxonomySync
+	db                   *pgxpool.Pool
+	bodyDB               controlledBodyDB
+	bodyServiceJWTSecret string
+	secret               string
+	encKey               []byte
+	keyring              *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
+	discSvc              *discovery.Service
+	credCycler           *bg.CredentialCycler
+	credRecov            *bg.CredentialRecovery
+	envCleaner           *bg.EnvelopeCleaner
+	stickyClean          *bg.StickyCleaner
+	taxSync              *bg.TaxonomySync
+	// 2026-08-26 hot-reload: in-process sticky cache for clear-for-credential
+	// on PATCH binding/credential. Cleared by HandleRoutingCandidateBindingUpdate
+	// and updateCredential so new sessions can re-enter load balancing
+	// without waiting for the sticky TTL to expire.
+	stickyCache StickyCacheClearer
+	// 2026-08-26 hot-reload: in-process limiter for hot-update of
+	// concurrency_limit on PATCH credential/binding. The Limiter pool's
+	// per-credential semaphore capacity is refreshed by
+	// HandleRoutingCandidateBindingUpdate / updateCredential.
+	limiter     LimiterCapacitySetter
 	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
 	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// 2026-08-29 代理管理：由 proxyRuntime() 惰性构建（见 admin/proxy.go），
+	// 避免改动所有 Handler 构造点。请求路径不会启动后台 goroutine。
+	proxyOnce  sync.Once
+	proxyMgr   *proxy.Manager
+	proxyStore *proxy.PgStore
+	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
+	// "force re-check after recharge" endpoint. nil → the route is
+	// still registered (URL stays stable across deployments); the
+	// handler returns 503 when this is nil.
+	balanceQuotaProbe *bg.BalanceQuotaProbe
 	// 2026-07-23: 系统监测模块 — 所有探测任务的唯一入口 (design §1.2 #1).
 	// nil 时 /api/admin/system-monitor/* 端点 503；探测仍可能由旧 worker 跑。
 	systemMonitor    SystemMonitorBackend
@@ -70,8 +106,12 @@ type Handler struct {
 	// 2026-06-23 Phase 2/3: backs /api/candidate-failures* endpoints.
 	// Wired from cmd/gateway/main.go via SetCandidateFailureHandlers so
 	// /alerts can read live data from the CandidateFailureMonitor.
-	cfHandlers *candidateFailureHandlers
-	fpSlots    *credentialfpslot.Manager
+	cfHandlers  *candidateFailureHandlers
+	vceHandlers *vendorCredentialErrorHandlers
+	// 2026-09-05 审计闭环1: backs GET /api/errors/trend（supplier_error_stats
+	// 预聚合读端 + supplier_errors_unified 明细兜底）。
+	errorsTrendHandlers *errorsTrendHandlers
+	fpSlots     *credentialfpslot.Manager
 	// pendingStore (Track C C7, 2026-06-18) is the durable cache
 	// for client reconnect and vendor async retry. nil disables
 	// the /api/admin/pending-responses* endpoints; the GET
@@ -92,6 +132,10 @@ type Handler struct {
 	boardOperationalCache *boardOperationalCache
 	// opsOverviewCache bundles ops overview stats for /api/admin/ops/overview.
 	opsOverviewCache *opsOverviewCache
+	// 2026-08-17 OPTIMIZATION: in-memory LRU+TTL cache for fetchRequestBodies.
+	// Reduces repeat dashboard click latency from 5s columnar scan to < 1ms.
+	// Stats surfaced via admin/stats endpoint (see admin/handler.go stats handler).
+	bodyFetchCache *bodyFetchCache
 	// ipBlocklist backs security IP denylist admin + request gate cache.
 	ipBlocklist *ipblocklist.Service
 	// bodySizeTracker (2026-07-25) tracks request/response body size stats in Redis
@@ -181,6 +225,9 @@ type Handler struct {
 		Enabled() bool
 	}
 	redisClient            interface{}                   // Redis client for sliding window access
+	titleDistLock          distlock.Manager              // 2026-08-19 per-session title-gen distributed lock; defaults to in-process LocalManager
+	titleStore             *titlestore.Store             // durable title fencing/tombstone state
+	analysisMetadataStore  *sessionmeta.MetadataStore    // arrival/final session analysis metadata
 	availabilityReader     *bg.ModelAvailabilityReader   // 2026-06-29 mirror of unified probe state to Redis
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
@@ -277,21 +324,76 @@ type Handler struct {
 		UpdateFromProbe(ctx context.Context, state *credentialstate.State)
 	}
 
+	// probeSubmitter (2026-08-23, hzx-2 audit) lets the focused
+	// /api/routing/credentials/{id}/reset-state endpoint trigger an
+	// immediate self-check probe so the operator doesn't have to wait for
+	// the next 5-min tick to learn whether the upstream is back.
+	// nil → trigger_probe=true is silently ignored.
+	//
+	// Stored as a function value (not an interface) so cmd/gateway/main.go
+	// can wire a closure around the late-constructed NodeProbeWorker
+	// without needing a named adapter type.
+	probeSubmitter func(credentialID int, rawModel, tenantID, parentReqID string)
+
+	// autoHealOneShot (2026-08-23, hzx-2 audit) is the bg.CredentialAutoHealWorker.OneShot
+	// method bound to the credentialAutoHealWorker instance. The reset-state
+	// endpoint calls it synchronously after a successful reset so the
+	// self-heal probes start within the same request instead of waiting
+	// for the next 5-min tick. Returns the number of (cred, model) pairs
+	// submitted. nil → the endpoint silently skips this step.
+	autoHealOneShot func(ctx context.Context, credentialID int) int
+
+	// requestDetailStore (2026-08-25): in-flight request meta + per-request_id
+	// local body files. Locator prefers memory/file before DB dual-write.
+	requestDetailStore   *requestdetail.Store
+	requestDetailLocator *requestdetail.Locator
+	// liveStreamRedisStore (2026-08-30): optional Redis-backed live
+	// request cache. When non-nil, SetRequestDetailStore wires it as the
+	// Locator's LiveDetailReader so swim-lane clicks resolve immediately.
+	liveStreamRedisStore *LiveStreamRedisStore
+	// requestDetailRetry preserves the operator-supplied retry policy when
+	// the locator is rebuilt after live-stream wiring.
+	requestDetailRetry    LocatorRetryConfig
+	requestDetailRetrySet bool
+
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
-
+	// statsShadowExecutor runs bounded, read-only legacy/canonical comparisons.
+	statsShadowExecutor *statsShadowExecutor
 	// auditLogger (V3.2-LP5, 2026-08-14) 节点操作审计：异步写入 request_state_transitions。
 	auditLogger *nodeOperationAuditLogger
 }
 
+// refreshDB returns the pool used by catalog writes during an admin model
+// refresh. Keeping the accessor local avoids widening Handler's public API.
+func (h *Handler) refreshDB() *pgxpool.Pool {
+	return h.db
+}
+
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	h := &Handler{
-		db:          db,
-		secret:      secretKey,
-		encKey:      encKey,
-		rateLimiter: newNodeOperationsRateLimiter(),
-		auditLogger: newNodeOperationAuditLogger(db),
+		db:                   db,
+		bodyDB:               db,
+		bodyServiceJWTSecret: strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_SERVICE_JWT_SECRET")),
+		secret:               secretKey,
+		encKey:               encKey,
+		rateLimiter:          newNodeOperationsRateLimiter(),
+		auditLogger:          newNodeOperationAuditLogger(db),
+		// 2026-08-17 OPTIMIZATION: LRU 1024 entries × 5min TTL.
+		// 1024 entries × ~20KB/entry ≈ 20MB max footprint (rule 23 §3).
+		// 5min TTL ≈ body 数据写入后罕见被修改（rule 36 §1 持久化）。
+		bodyFetchCache:      newBodyFetchCache(1024, 5*time.Minute),
+		statsShadowExecutor: newStatsShadowExecutor(db),
+		// 2026-08-19: title generation lock defaults to the in-process
+		// LocalManager so no-Redis deployments still benefit from
+		// single-flight semantics within a single replica. The wiring
+		// code in cmd/gateway/main.go upgrades this to a Redis-backed
+		// manager once the cluster Redis client is healthy.
+		titleDistLock:         distlock.NewLocalManager(),
+		titleStore:            titlestore.New(db),
+		analysisMetadataStore: sessionmeta.NewMetadataStore(db),
 	}
+
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
 	// 2026-08-06: initialize incremental-rolling session summary generator.
@@ -359,6 +461,20 @@ func (h *Handler) SetRedisClient(rc interface{}) {
 	h.redisClient = rc
 }
 
+// SetTitleDistLock (2026-08-19) upgrades the title-generation distributed
+// lock from the in-process LocalManager (set in NewHandler) to a
+// Redis-backed manager. Safe to leave unset when Redis is unavailable —
+// the title pipeline will still acquire the lock, just without
+// cross-replica coordination. The title DistLock guards the leader /
+// follower pattern for both the streaming auto-title pipeline and the
+// admin summarize-title / PUT / DELETE handlers.
+func (h *Handler) SetTitleDistLock(m distlock.Manager) {
+	if m == nil {
+		return
+	}
+	h.titleDistLock = m
+}
+
 // SetAvailabilityReader (2026-06-29) wires the Redis availability reader
 // so admin endpoints can query the unified probe-state cache directly.
 func (h *Handler) SetAvailabilityReader(r *bg.ModelAvailabilityReader) {
@@ -405,6 +521,21 @@ func (h *Handler) SetLiveStreamSSE(hub *LiveStreamSSEHub) {
 	h.liveStreamHub = hub
 }
 
+// SetLiveStreamRedisStore wires the Redis-backed live-stream detail
+// cache so the unified request detail locator can answer swim-lane
+// clicks immediately, before the eventual request_logs write.
+// Pass nil to disable. It is safe to call before or after
+// SetRequestDetailStore; the existing retry policy is preserved when
+// the locator is rebuilt.
+func (h *Handler) SetLiveStreamRedisStore(store *LiveStreamRedisStore) {
+	h.liveStreamRedisStore = store
+	// Rebuild the locator if the request-detail store was already
+	// configured so a later wiring still picks up the live reader.
+	if h.requestDetailStore != nil {
+		h.SetRequestDetailStore(h.requestDetailStore)
+	}
+}
+
 // SetRequestTraceHandler (2026-07-17) wires the trace viewer endpoints.
 // nil disables the page.
 func (h *Handler) SetRequestTraceHandler(rth *RequestTraceHandler) {
@@ -447,37 +578,46 @@ func (h *Handler) SetSessionCleanupWorker(c *session.CleanupWorker) {
 // encryptCred encrypts a plaintext credential using AES-256-GCM (if keyring is
 // configured) or Fernet-CBC legacy (backward-compat fallback).
 // Returns the envelope string ready to store in key_ciphertext.
+//
+// 2026-08-18 (incident 154): a round-trip self-check is now performed before
+// returning. The 154 production failure was caused by raw Fernet bytes being
+// stored without base64-encode, leaving the column unreadable by DecryptAny.
+// The self-check catches any future drift in the Encrypt path — if a caller
+// returns an envelope that cannot be re-decrypted by the active keyring/fernet
+// key, we refuse to hand it back, so the bad value never reaches the DB.
 func (h *Handler) encryptCred(plaintext []byte) (string, error) {
+	var envelope string
 	if h.keyring != nil {
-		return secret.EncryptAESGCM(plaintext, h.keyring)
+		out, err := secret.EncryptAESGCM(plaintext, h.keyring)
+		if err != nil {
+			return "", err
+		}
+		envelope = out
+	} else {
+		enc, err := encryptFernet(plaintext, h.encKey)
+		if err != nil {
+			return "", err
+		}
+		envelope = string(enc)
 	}
-	enc, err := encryptFernet(plaintext, h.encKey)
-	if err != nil {
-		return "", err
+	// round-trip: ensure decryptCred can read back exactly the plaintext we
+	// just encrypted. If it fails, fail closed so callers never persist a
+	// ciphertext the gateway can't later decrypt.
+	if _, _, derr := h.decryptCred(envelope); derr != nil {
+		return "", fmt.Errorf("encryptCred round-trip failed: %w", derr)
 	}
-	return string(enc), nil
+	return envelope, nil
 }
 
 // decryptCred decrypts a credential stored as either a v1 AES-GCM envelope or
 // a legacy Fernet token.  Returns (plaintext, isLegacy, error).
 // When isLegacy=true the caller MAY re-encrypt and update the DB row.
 func (h *Handler) decryptCred(ciphertext string) (string, bool, error) {
-	if secret.IsV1Envelope(ciphertext) {
-		if h.keyring == nil {
-			return "", false, errorf("AES-GCM keyring not configured")
-		}
-		pt, err := secret.DecryptAESGCM([]byte(ciphertext), h.keyring)
-		if err != nil {
-			return "", false, err
-		}
-		return string(pt), false, nil
+	pt, isLegacy, err := secret.DecryptAny(ciphertext, h.keyring, h.encKey)
+	if err != nil {
+		return "", false, err
 	}
-	// Legacy Fernet path
-	if len(h.encKey) != 32 {
-		return "", false, errorf("legacy encryption key not configured")
-	}
-	pt, err := decryptFernet([]byte(ciphertext), h.encKey)
-	return pt, err == nil, err
+	return string(pt), isLegacy, nil
 }
 
 // decryptCredStr is a convenience wrapper over decryptCred that returns only
@@ -524,6 +664,36 @@ func (h *Handler) SetBackgroundServices(credCycler *bg.CredentialCycler, credRec
 	h.taxSync = taxSync
 }
 
+// 2026-08-26 hot-reload: small interfaces decouple admin handlers from the
+// concrete Limiter / StickyCache types. The executors.StickyCache and
+// credential.Limiter types already implement these (duck-typed). Defined
+// here so admin/handler.go doesn't have to import the heavy packages just
+// for two methods.
+
+// StickyCacheClearer is the small surface of executors.StickyCache that the
+// admin handler needs to clear sticky bindings for one credential.
+type StickyCacheClearer interface {
+	ClearForCredential(credID int) (int, error)
+}
+
+// LimiterCapacitySetter is the small surface of credential.Limiter that
+// the admin handler needs to hot-update concurrency capacity.
+type LimiterCapacitySetter interface {
+	SetCredentialCapacity(providerID, credentialID, capacity int)
+}
+
+// SetHotReloadDeps wires the runtime caches that PATCH endpoints need to
+// invalidate when admin changes a credential's priority / weight /
+// concurrency_limit. Called from cmd/gateway/main.go.
+func (h *Handler) SetHotReloadDeps(stickyCache StickyCacheClearer, limiter LimiterCapacitySetter) {
+	if stickyCache != nil {
+		h.stickyCache = stickyCache
+	}
+	if limiter != nil {
+		h.limiter = limiter
+	}
+}
+
 // SetProbeServices injects the 900-series background services (spec §4-5).
 func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.DefaultProbePicker) {
 	h.probeV2 = probeV2
@@ -534,6 +704,11 @@ func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.Def
 // 2026-06-18-model-probe-rounds).  nil-safe — admin keeps working
 // without the manual-trigger endpoint if the worker isn't running.
 func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r }
+
+// SetBalanceQuotaProbe wires the balance/permanent quota probe worker
+// so the admin force-probe endpoint (POST /api/admin/probe/force/{id})
+// can dispatch immediate re-checks. Pass nil to disable the endpoint.
+func (h *Handler) SetBalanceQuotaProbe(b *bg.BalanceQuotaProbe) { h.balanceQuotaProbe = b }
 
 // SetModelQualityBackend wires the model-quality worker for the on-demand
 // node IQ test endpoint (POST /api/admin/model-iq/trigger). Pass nil to
@@ -606,6 +781,22 @@ func (h *Handler) SetCredStateRecoverer(r interface {
 	h.credStateRecoverer = r
 }
 
+// SetProbeSubmitter (2026-08-23, hzx-2 audit) wires the focused
+// /api/routing/credentials/{id}/reset-state endpoint to a probe-submitting
+// function. Optional — when nil the reset endpoint still works but
+// trigger_probe=true is silently ignored.
+func (h *Handler) SetProbeSubmitter(s func(credentialID int, rawModel, tenantID, parentReqID string)) {
+	h.probeSubmitter = s
+}
+
+// SetAutoHealOneShot (2026-08-23, hzx-2 audit) wires the bg.CredentialAutoHealWorker.OneShot
+// method into the focused reset-state endpoint so a successful reset kicks
+// off self-heal probes immediately. Optional — when nil the endpoint skips
+// the immediate self-heal submission.
+func (h *Handler) SetAutoHealOneShot(f func(ctx context.Context, credentialID int) int) {
+	h.autoHealOneShot = f
+}
+
 // SetSettingsStore (settings-management, 2026-06-20) injects the
 // DB-backed settings backend so /api/admin/settings/* endpoints
 // can read/write settings_kv / tenant_settings_kv.
@@ -670,6 +861,14 @@ func (h *Handler) superAdmin(fn http.HandlerFunc) http.HandlerFunc {
 	return SuperAdminMiddleware(fn, h.db, h.secret)
 }
 
+// providerConsole wraps the provider console tree with
+// ProviderConsoleMiddleware: super_admin keeps full access, and a
+// default-tenant tenant_admin gets read-only access plus credential API
+// key rotation (2026-09-04). Everything else is unchanged.
+func (h *Handler) providerConsole(fn http.HandlerFunc) http.HandlerFunc {
+	return ProviderConsoleMiddleware(fn, h.db, h.secret)
+}
+
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Public routes (no Bearer admin key)
 	mux.HandleFunc("/api/auth/token", h.handleLogin)
@@ -702,7 +901,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/routing/recent-model-failures", admin(h.handleRoutingRecentModelFailures))
 	// 2026-07-24: routing-v2 resolve 页"候选设置"写入端点（仅 super_admin）。
 	// 仅允许改 credential_model_bindings 的 manual_priority / routing_tier /
-	// weight 三个排序相关字段；状态/熔断/可用性等硬规则必须走原有监控路径。
+	// weight / priority 四个排序相关字段；状态/熔断/可用性等硬规则必须走原有监控路径。
 	mux.HandleFunc("/api/routing/candidate-binding/", h.superAdmin(h.handleRoutingCandidateBindingUpdate))
 	mux.HandleFunc("/api/routing/candidate-bindings/reorder", h.superAdmin(h.handleRoutingCandidateBindingReorder))
 	// 2026-07-24: emergency repair endpoint for routing-v2 resolve page.
@@ -710,11 +909,24 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Only super_admin can access. All actions are audited.
 	mux.HandleFunc("/api/routing/emergency-repair", h.superAdmin(h.handleEmergencyRepair))
 
+	// 2026-08-23 (hzx-2 audit): focused credential state reset. Body
+	// {reason, raw_model?, trigger_probe?}; runs the same DB + in-memory
+	// + URSM v2 chain as emergency-repair force_enable, with optional
+	// immediate self-check probe. super_admin only.
+	mux.HandleFunc("POST /api/routing/credentials/{id}/reset-state", h.superAdmin(h.handleResetCredentialState))
+
 	// NOTE: /api/credentials/monitor-summary is registered later in
 	// RegisterMonitorRoutes (line ~460) via NewCredentialMonitorHandlers.
 	// Do NOT register it here to avoid mux.HandleFunc panic.
+	// Controlled body resolver: service JWT only; intentionally bypasses the
+	// human admin middleware and never exposes the /api/logs surface.
+	mux.HandleFunc("/api/admin/bodies/{body_ref...}", h.handleControlledBody)
 	mux.HandleFunc("/api/admin/compression/stats", admin(h.handleCompressionStats))
 	mux.HandleFunc("/api/admin/compression/sessions", admin(h.handleCompressionSessions))
+
+	// 2026-08-17 OPTIMIZATION: bodyFetchCache 命中率/淘汰数可观测端点。
+	// 运维用来判断 cold path 是否被 cache 缓解（命中率应 > 50%）。
+	mux.HandleFunc("/api/admin/logs/body-cache-stats", admin(h.handleBodyFetchCacheStats))
 	mux.HandleFunc("/api/admin/data-lifecycle/stats", admin(h.handleDataLifecycleStats))
 	mux.HandleFunc("/api/admin/data-lifecycle/cleanup/preview", admin(h.handleDataLifecycleCleanupPreview))
 	mux.HandleFunc("/api/admin/data-lifecycle/metrics", admin(h.handleDataLifecycleMetrics))
@@ -775,6 +987,16 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/live-stream/trigger-snapshot", admin(h.liveStreamHub.HandleTriggerSnapshot))
 	}
 
+	// 2026-08-18: 会话优化 v4（T4）连接注册表只读投影 + 请求 action
+	// 时间线 REST 回退（liveactions Redis LIST 有界扫描，(request_id,seq)
+	// 去重）。仅元数据/计数，不暴露请求正文或凭据（§13.5 安全约束）。
+	// Registry 未装配时 list/get 返回 503（SetConnectionRegistry 门控）。
+	mux.HandleFunc("/api/admin/connection-registry", admin(h.handleConnectionRegistryList))
+	mux.HandleFunc("/api/admin/connection-registry/{request_id}", admin(h.handleConnectionRegistryGet))
+	mux.HandleFunc("/api/admin/requests/{id}/actions", admin(h.handleRequestActions))
+	// 2026-08-23: 节点恢复时间线（node_probe_runs → SPA NodeRecoveryEvent）。
+	mux.HandleFunc("/api/admin/node-health/{credential_id}/timeline", admin(h.handleNodeHealthTimeline))
+
 	// 2026-07-13: read-only route-incident diagnosis API (Phase 1).
 	// Super-admin only. nil handler means the diagnose entry is
 	// hidden on the swim lane and the SSE incident_update envelope
@@ -808,6 +1030,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/dashboard/errors", admin(h.handleDashboardErrors))
 	mux.HandleFunc("/api/admin/dashboard/performance", admin(h.handleDashboardPerformance))
 	mux.HandleFunc("/api/admin/dashboard/board", admin(h.handleDashboardBoard))
+	mux.HandleFunc("/api/admin/stats", admin(h.handleStats))
+	mux.HandleFunc("/api/admin/stats/", admin(h.handleStats))
 	mux.HandleFunc("/api/admin/dashboard/operational", admin(h.handleDashboardOperational))
 	mux.HandleFunc("/api/admin/dashboard/board/error-drill", admin(h.handleDashboardBoardErrorDrill))
 	mux.HandleFunc("/api/admin/ops/overview", admin(h.handleOpsOverview))
@@ -903,17 +1127,17 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Platform-level aggregate stats: active/idle/closed counts, average health score, recycled today.
 	mux.HandleFunc("/api/admin/sessions/inspector-stats", admin(h.HandleSessionInspectorStats))
 
-	// 2026-08-14 V3.2 (BE-B1 + BE-B2): 状态变更历史 + 在线会话浏览。
-	// 路径中 /online 显式写在 /sessions/ 通配之前（Go 1.22+ ServeMux 长前缀优先，
-	// 但显式更清晰）；/timeline 用 {id} 通配。
-	// 鉴权：只读，走 admin 中间件（JWT 或 admin_key）。
-	mux.HandleFunc("/api/admin/requests/{id}/transitions", admin(h.handleRequestTransitions))
+	// B3 PR2 (2026-08-17): admin 节点操作审计独立查询面，替换
+	// /api/admin/requests/{id}/transitions 中 audit 行查询部分
+	// （transition_type='state' 的伪 request_id 行）。请求生命周期事件
+	// 已迁入 requestjourney，由 /api/admin/request-journeys/ Detail 覆盖。
+	mux.HandleFunc("/api/admin/audit/node-operations", admin(h.handleAuditNodeOperations))
 	mux.HandleFunc("/api/admin/sessions/online", admin(h.handleSessionsOnline))
 	mux.HandleFunc("/api/admin/sessions/{id}/timeline", admin(h.handleSessionTimeline))
 	// 2026-08-15 V3.3-OBS (OBS-BE6): 会话轮次-子请求树（仅元数据，分页）。
 	// 主请求按 ts 排序派生 turn_number，子请求经 parent_request_id 关联，
 	// request_type 优先 510 迁移列、缺失回退 origin_actor（X-Gw-Source-Actor 落库）。
-	mux.HandleFunc("/api/admin/sessions/{id}/turns", admin(h.handleSessionTurnsTree))
+	mux.HandleFunc("/api/admin/sessions/{id}/turns", admin(h.handleSessionTurnsListRouted))
 
 	// Public polling endpoint (no auth) — clients poll this to learn whether
 	// their pending approval was approved/rejected/timeout. Cross-tenant
@@ -941,8 +1165,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/telemetry/decision-log", admin(h.handleTelemetryDecisionLog))
 	mux.HandleFunc("/api/telemetry/request-log", admin(h.handleTelemetryRequestLog))
 	mux.HandleFunc("/api/telemetry/batch", admin(h.handleTelemetryBatch))
-	mux.HandleFunc("/api/providers", h.superAdmin(h.handleProvidersRoot))
-	mux.HandleFunc("/api/providers/", h.superAdmin(h.handleProviders))
+	// 2026-09-04: 供应商列表/详情树改挂 providerConsole —— super_admin 行为
+	// 不变；default 租户 tenant_admin 获得只读 + 凭据 API Key 轮换。
+	// seed-from-catalog 与 /credentials/ 强制恢复仍为 super_admin 专属。
+	mux.HandleFunc("/api/credentials/", h.admin(h.handleUnifiedCredentialSecrets))
+	mux.HandleFunc("/api/providers", h.providerConsole(h.handleProvidersRoot))
+	mux.HandleFunc("/api/providers/", h.providerConsole(h.handleProviders))
 	mux.HandleFunc("/api/providers/seed-from-catalog", h.superAdmin(h.handleSeedFromCatalog))
 	mux.HandleFunc("/api/providers/credentials/", h.superAdmin(h.handleForceRecover))
 
@@ -952,6 +1180,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 路径中的 {id} 由 Go 1.22+ ServeMux 解析，handler 用 r.PathValue("id")。
 	mux.HandleFunc("/api/admin/providers/{id}/test-now", h.handleNodeTestNow)
 	mux.HandleFunc("/api/admin/providers/{id}/enable", h.handleNodeToggle)
+	mux.HandleFunc("/api/admin/credentials/{id}/session-ping", h.superAdmin(h.handleCredentialSessionPing))
 
 	// 2026-06-23 Phase 2 (P1) + Phase 3 (P2): candidate_failure_logs query
 	// endpoints + alert ring view from the CandidateFailureMonitor.
@@ -959,10 +1188,18 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.cfHandlers == nil {
 		h.cfHandlers = &candidateFailureHandlers{db: h.db}
 	}
+	if h.vceHandlers == nil {
+		h.vceHandlers = &vendorCredentialErrorHandlers{db: h.db}
+	}
+	if h.errorsTrendHandlers == nil {
+		h.errorsTrendHandlers = &errorsTrendHandlers{db: h.db}
+	}
+	mux.HandleFunc("/api/errors/trend", admin(h.errorsTrendHandlers.getErrorsTrend))
 	mux.HandleFunc("/api/candidate-failures", admin(h.cfHandlers.listCandidateFailures))
 	mux.HandleFunc("/api/candidate-failures/stats", admin(h.cfHandlers.getCandidateFailureStats))
 	mux.HandleFunc("/api/candidate-failures/credential/{id}", admin(h.cfHandlers.getCandidateFailuresByCredential))
 	mux.HandleFunc("/api/candidate-failures/alerts", admin(h.cfHandlers.listRecentAlerts))
+	mux.HandleFunc("/api/vendors/credentials/{id}/error-detail", admin(h.vceHandlers.getVendorCredentialErrorDetail))
 	mux.HandleFunc("/api/keys", admin(h.handleKeysRoot))
 	mux.HandleFunc("/api/keys/", admin(h.handleKeys))
 	mux.HandleFunc("/api/key-applications", admin(h.handleKeyApplicationsList))
@@ -978,6 +1215,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/usage/", h.admin(h.HandleUsageAdmin))
 	mux.HandleFunc("/api/logs", admin(h.handleLogsRoot))
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
+	// 2026-08-25: unified request detail (memory/file → request_logs → session_turns)
+	mux.HandleFunc("/api/admin/request-detail/", admin(h.handleUnifiedRequestDetail))
 	// 2026-08-09: 跨会话轮次列表端点（复用 session_turns 表）
 	mux.HandleFunc("/api/admin/turns", admin(h.handleTurnsList))
 	// 2026-08-10: 会话分组轮次列表端点（最外层会话 + 内层轮次，分层展示）
@@ -1026,6 +1265,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/quick-entry", h.superAdmin(h.handleFreePoolQuickEntry))
 	mux.HandleFunc("/api/free-pool/keys", h.superAdmin(h.handleFreePoolKeysRouter))
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
+
+	// 2026-08-29 代理管理（出口基础设施，仅 superAdmin）
+	mux.HandleFunc("/api/proxy/status", h.superAdmin(h.handleProxyStatus))
+	mux.HandleFunc("/api/proxy/subscriptions", h.superAdmin(h.handleProxySubscriptionsRoot))
+	mux.HandleFunc("/api/proxy/subscriptions/", h.superAdmin(h.handleProxySubscriptions))
+	mux.HandleFunc("/api/proxy/nodes", h.superAdmin(h.handleProxyNodesRoot))
+	mux.HandleFunc("/api/proxy/nodes/", h.superAdmin(h.handleProxyNodes))
 	if h.freePoolSSE != nil {
 		mux.HandleFunc("/api/free-pool/stream", h.admin(h.freePoolSSE.HandleStream))
 	}
@@ -1066,6 +1312,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		wtH := NewWorkTypeHandlers(h.db)
 		wtH.RegisterWorkTypeRoutes(mux, h.superAdmin)
 
+		// 2026-08-20: 项目归属 admin 端点（POST sync-from-acc / GET list）。
+		// 与 work_type 一样的 superAdmin 保护：同步动作会写 project_dim，
+		// 列表会泄漏租户项目清单。
+		pH := NewProjectHandlers(h.db)
+		pH.RegisterProjectAdminRoutes(mux, h.superAdmin)
+
 		// Credential monitor (2026-06-22): sliding window + manual promote/demote.
 		// Redis is optional: monitor-summary works from DB alone; sliding window
 		// degrades to request_logs fallback when Redis is unavailable.
@@ -1090,6 +1342,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// 2026-07-24: 供应商级路由阻塞诊断 — "凭据正常但路由不到"场景
 		mux.HandleFunc("/api/admin/diagnostics/routing-blocked", h.superAdmin(h.handleRoutingBlockedDiagnostic))
 		mux.HandleFunc("/api/admin/diagnostics/routing-blocked/fix", h.superAdmin(h.handleRoutingBlockedFix))
+		mux.HandleFunc("/api/admin/diagnostics/model-routing", h.superAdmin(h.handleModelRoutingDiagnostic))
 
 		// 2026-08-11: 模型智商（Model IQ）— 标准智商 / 节点智商历史 / 立即测试。
 		// catalog/node-latest/history 只读 DB；trigger 调用 modelQualityBackend。
@@ -1102,9 +1355,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	}
 }
 
+// writeJSON 写 JSON 响应；marshal 失败时记日志并返回 500 兜底体。
+// 薄委托 internal/httpx（2026-09-04 writeJSON 收敛），错误分支语义保留在本地。
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	data, err := json.Marshal(v)
-	if err != nil {
+	if err := httpx.WriteJSON(w, status, "application/json", v); err != nil {
 		slog.Error("json marshal failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -1112,12 +1366,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 		w.Write([]byte(`{"error":{"detail":"json marshal failed"}}`))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write(data)
-	//nolint:errcheck // HTTP write error non-recoverable
-	w.Write([]byte("\n"))
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
@@ -1136,13 +1384,28 @@ func writeErrorWithCode(w http.ResponseWriter, status int, code, msg string) {
 	})
 }
 
+func readJSONRequired(r *http.Request, v any) error {
+	if r == nil || r.Body == nil {
+		return jsonbody.ErrEmptyBody
+	}
+	return readJSON(r, v)
+}
+
 func readJSON(r *http.Request, v any) error {
-	if r.Body == nil {
+	if r == nil || r.Body == nil {
 		return nil
 	}
+	// 2026-08-27 P1 fix: Add 2MB size limit to prevent OOM from malicious payloads.
+	// This protects all 82 admin endpoints using readJSON.
+	const maxAdminBodySize = 2 << 20 // 2 MiB
+	limited := http.MaxBytesReader(nil, r.Body, maxAdminBodySize)
 	//nolint:errcheck // best-effort close
 	defer r.Body.Close()
-	return json.NewDecoder(r.Body).Decode(v)
+	raw, err := io.ReadAll(limited)
+	if err != nil {
+		return err
+	}
+	return jsonbody.DecodeBody(raw, v)
 }
 
 func queryInt(r *http.Request, key string, def int) int {

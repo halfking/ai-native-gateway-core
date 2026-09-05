@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { ElAlert } from 'element-plus'
 import { store } from '../store'
+import { probeMaintainAvailable } from '../config/edition'
 import DashboardView from './DashboardView.vue'
 import LandingView from './LandingView.vue'
 
@@ -15,12 +17,17 @@ const isLoggedIn = computed(() => !!(store.jwtToken || store.apiKey || store.use
 //  - 已登录: 显示 DashboardView（总览）
 // 仅当 query.login=1 时（被 App.vue 触发）才内嵌 LandingView（用于弹登录框）。
 const showLoginOverlay = computed(() => route.query.login === '1' || route.query.login === 'true')
+const maintainUnavailable = ref(false)
 
-// 未登录态且非 /dashboard 入口：直接跳到 maintain SPA 首页。
-onMounted(() => {
+// 未登录态先探测 Maintain；不可用时留在 Gateway 登录页，避免整页互踢。
+onMounted(async () => {
   if (!isLoggedIn.value && !showLoginOverlay.value) {
-    if (typeof window !== 'undefined') {
+    const available = await probeMaintainAvailable()
+    if (available && typeof window !== 'undefined') {
       window.location.replace('/maintain/home')
+    } else {
+      maintainUnavailable.value = true
+      await router.replace({ path: '/', query: { login: '1' } })
     }
   }
 })
@@ -28,7 +35,14 @@ onMounted(() => {
 
 <template>
   <DashboardView v-if="isLoggedIn" />
-  <LandingView v-else-if="showLoginOverlay" />
-  <!-- 未登录未触发 login overlay：已在外层 redirect，此处保留占位 -->
-  <div v-else class="guest-redirect-hint">正在跳转至产品首页…</div>
+  <template v-else>
+    <el-alert
+      v-if="maintainUnavailable"
+      class="maintain-unavailable-alert"
+      type="warning"
+      :closable="false"
+      title="运维平台暂时不可用，已保留在网关登录页。"
+    />
+    <LandingView />
+  </template>
 </template>

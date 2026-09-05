@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -17,9 +18,25 @@ var transitionRecoverySrc string
 
 var transitionRecoveryScript = redis.NewScript(transitionRecoverySrc)
 
+// ErrCoverageManifestEmpty reports that the coverage manifest set holds no
+// members — the signature of a Redis namespace wiped by a restart without
+// persistence (or an incomplete bootstrap). Callers may errors.Is this to
+// decide whether a rebuild-from-PostgreSQL (bootstrap.Apply) is the right
+// remedy before retrying the reopen (2026-09-04 availability work).
+var ErrCoverageManifestEmpty = errors.New("coverage manifest empty")
+
+// ErrCoverageIncomplete reports a non-empty manifest with missing or malformed
+// node state, which is also recoverable by rebuilding from PostgreSQL.
+var ErrCoverageIncomplete = errors.New("coverage manifest incomplete")
+
 type Manager struct {
 	rdb    *redis.Client
 	prefix string
+
+	// schemaMode mirrors the store's boot-only key schema mode (doc 14
+	// §3): it decides which grammars coverage validation and warmup
+	// counting accept. Zero value legacy keeps the historical behavior.
+	schemaMode store.KeySchemaMode
 
 	// 2026-07-29 (audit follow-up #4): observability for the incident
 	// lifecycle. lastError / lastErrorAt record the most recent
@@ -27,7 +44,7 @@ type Manager struct {
 	// etc.) so operators can correlate health-check noise with the
 	// recovery gate state. lastRecoveryAt records the timestamp of the
 	// most recent successful reopen, so a dashboard can show "last
-	// recovery was N minutes ago". All access is mutex-guarded; the
+	// recovery was N hours ago". All access is mutex-guarded; the
 	// fields are read by admin endpoints and Prometheus exporters, not
 	// by the request hot path, so contention is bounded.
 	mu              sync.RWMutex
@@ -41,15 +58,27 @@ func New(rdb *redis.Client, prefix string) *Manager {
 	return &Manager{rdb: rdb, prefix: prefix}
 }
 
+// SetKeySchemaMode fixes the key schema mode. Boot-only by contract, kept
+// in lockstep with store.Store.SetKeySchemaMode.
+func (m *Manager) SetKeySchemaMode(mode store.KeySchemaMode) { m.schemaMode = mode }
+
 func (m *Manager) Ready(ctx context.Context) bool {
+	ready, _ := m.ReadyWithError(ctx)
+	return ready
+}
+
+func (m *Manager) ReadyWithError(ctx context.Context) (bool, error) {
 	if m == nil || m.rdb == nil {
-		return false
+		return false, fmt.Errorf("ursm.v2: nil recovery manager / redis client")
 	}
 	v, err := m.rdb.Get(ctx, store.ReadyKey(m.prefix)).Result()
-	if err != nil {
-		return false
+	if errors.Is(err, redis.Nil) {
+		return false, nil
 	}
-	return v == "1"
+	if err != nil {
+		return false, err
+	}
+	return v == "1", nil
 }
 
 func (m *Manager) SetReady(ctx context.Context, ready bool) error {
@@ -105,8 +134,14 @@ func (m *Manager) MarkClosedDebounced(ctx context.Context, reason string, deboun
 		return false, nil
 	}
 	if err := m.EnterRecovery(ctx, reason); err != nil {
-		// EnterRecovery already recorded the error; bubble up.
-		return true, err
+		// Do not leave a successful debounce claim behind when the actual
+		// gate close failed; that would suppress every retry until the TTL.
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = m.rdb.Del(cleanupCtx, store.RecoveryDebounceKey(m.prefix)).Err()
+		cancel()
+		// EnterRecovery already recorded the error; bubble up. The claim did
+		// not produce a closed gate, so report that this caller did not win.
+		return false, err
 	}
 	m.clearError()
 	return true, nil
@@ -150,7 +185,8 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 		m.recordError(err)
 		return 0, err
 	}
-	if len(keys) == 0 {
+	count := m.countWarmupNodes(keys)
+	if count == 0 {
 		err := fmt.Errorf("ursm.v2: warmup refused: no node state")
 		m.recordError(err)
 		return 0, err
@@ -158,7 +194,7 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	result, err := transitionRecoveryScript.Run(ctx, m.rdb,
 		[]string{store.ReadyKey(m.prefix), store.EpochKey(m.prefix)},
-		"open_if_epoch", "", now, observedEpoch, intToString(len(keys))).Text()
+		"open_if_epoch", "", now, observedEpoch, intToString(count)).Text()
 	if err != nil {
 		m.recordError(err)
 		return 0, fmt.Errorf("ursm.v2: warmup transition: %w", err)
@@ -168,13 +204,126 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 		m.recordError(err)
 		return 0, err
 	}
-	m.recordRecovery(len(keys))
+	m.recordRecovery(count)
 	m.clearError()
+	return count, nil
+}
+
+// countWarmupNodes reduces the scanned node keys to the node count that
+// may reopen the gate under the current schema mode: legacy keeps the raw
+// key count (historical behavior), dual counts distinct logical tuples
+// (a tuple mirrored in both grammars is one node), canonical counts only
+// canonical keys — legacy-only state cannot reopen a canonical gate
+// (doc 14 §5.3).
+func (m *Manager) countWarmupNodes(keys []string) int {
+	switch m.schemaMode {
+	case store.KeySchemaModeCanonical:
+		n := 0
+		for _, k := range keys {
+			if p, ok := store.ParseNodeKeyAny(m.prefix, k); ok && p.Schema == store.KeySchemaK2 {
+				n++
+			}
+		}
+		return n
+	case store.KeySchemaModeDual:
+		seen := make(map[store.ParsedNodeKey]struct{}, len(keys))
+		for _, k := range keys {
+			if p, ok := store.ParseNodeKeyAny(m.prefix, k); ok {
+				seen[p.ParsedNodeKey] = struct{}{}
+			}
+		}
+		return len(seen)
+	default:
+		return len(keys)
+	}
+}
+
+// ValidateCoverage verifies the migration manifest and every expected tenant-aware
+// node hash. It intentionally does not change the ready gate.
+func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
+	if m == nil || m.rdb == nil {
+		return 0, fmt.Errorf("ursm.v2: nil manager / redis client")
+	}
+	if pending, err := m.rdb.Exists(ctx, store.CoveragePendingKey(m.prefix)).Result(); err != nil {
+		return 0, fmt.Errorf("ursm.v2: read coverage pending marker: %w", err)
+	} else if pending != 0 {
+		return 0, fmt.Errorf("ursm.v2: coverage migration is still pending")
+	}
+	keys, err := m.rdb.SMembers(ctx, store.CoverageKey(m.prefix)).Result()
+	if err != nil {
+		return 0, fmt.Errorf("ursm.v2: read coverage manifest: %w", err)
+	}
+	if len(keys) == 0 {
+		return 0, fmt.Errorf("ursm.v2: coverage manifest is empty: %w", ErrCoverageManifestEmpty)
+	}
+	pipe := m.rdb.Pipeline()
+	exists := make([]*redis.IntCmd, len(keys))
+	fields := make([]*redis.SliceCmd, len(keys))
+	for i, key := range keys {
+		exists[i] = pipe.Exists(ctx, key)
+		fields[i] = pipe.HMGet(ctx, key, "generation", "available")
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, fmt.Errorf("ursm.v2: validate coverage: %w", err)
+	}
+	for i, key := range keys {
+		parsed, ok := store.ParseNodeKeyAny(m.prefix, key)
+		if !ok || parsed.TenantID == "" {
+			return 0, fmt.Errorf("ursm.v2: coverage key is not tenant-aware: %s", key)
+		}
+		// Canonical mode is canonical-only: a legacy key in the manifest
+		// cannot open the authoritative gate (doc 14 §5.3).
+		if m.schemaMode == store.KeySchemaModeCanonical && parsed.Schema != store.KeySchemaK2 {
+			return 0, fmt.Errorf("ursm.v2: coverage key is not canonical: %s", key)
+		}
+		if exists[i].Val() != 1 {
+			return 0, fmt.Errorf("ursm.v2: coverage key missing: %s: %w", key, ErrCoverageIncomplete)
+		}
+		values, err := fields[i].Result()
+		if err != nil || len(values) < 2 || values[0] == nil || values[1] == nil {
+			return 0, fmt.Errorf("ursm.v2: coverage hash incomplete: %s: %w", key, ErrCoverageIncomplete)
+		}
+	}
 	return len(keys), nil
 }
 
-// RestoreIfClosed is the convenience wrapper used by
-// systemmonitor.healthCheckLoop on the fallback→healthy transition.
+// WarmupFromCoverage validates the migration manifest and atomically opens the
+// gate only after every expected node is present.
+func (m *Manager) WarmupFromCoverage(ctx context.Context) (int, error) {
+	observedEpoch, err := m.rdb.HGet(ctx, store.EpochKey(m.prefix), "counter").Result()
+	if err != nil && err != redis.Nil {
+		m.recordError(err)
+		return 0, fmt.Errorf("ursm.v2: read recovery epoch: %w", err)
+	}
+	if err == redis.Nil {
+		observedEpoch = ""
+	}
+	if err := m.SetReady(ctx, false); err != nil {
+		return 0, err
+	}
+	count, err := m.ValidateCoverage(ctx)
+	if err != nil {
+		m.recordError(err)
+		return 0, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := transitionRecoveryScript.Run(ctx, m.rdb,
+		[]string{store.ReadyKey(m.prefix), store.EpochKey(m.prefix)},
+		"open_if_epoch", "", now, observedEpoch, intToString(count)).Text()
+	if err != nil {
+		m.recordError(err)
+		return 0, fmt.Errorf("ursm.v2: coverage warmup transition: %w", err)
+	}
+	if result == "superseded" {
+		err := fmt.Errorf("ursm.v2: coverage warmup superseded by newer recovery close")
+		m.recordError(err)
+		return 0, err
+	}
+	m.recordRecovery(count)
+	m.clearError()
+	return count, nil
+}
+
 // When the gate is already open it returns (0, nil) as a no-op; when
 // the gate is closed it re-warms from existing keys and returns the
 // observed count.

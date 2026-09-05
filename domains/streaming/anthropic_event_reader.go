@@ -1,12 +1,13 @@
 package streaming
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
 )
 
 type anthropicSSEReadResult struct {
@@ -25,9 +26,23 @@ func readAnthropicSSEEventWithTimeoutRaw(ctx context.Context, reader io.Reader, 
 	readCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Audit-2026-08-29 (§5.2 hardening, peer to native_responses_stream.go:57):
+	// if readAnthropicSSEEventRaw panics, the channel send is skipped and the
+	// reader goroutine dies. The caller in this function blocks on the select
+	// until readCtx times out, leaving StreamAnthropicSSEToOpenAI hung for the
+	// entire stream chunk timeout. LineReader + strings.Builder are known safe
+	// today, but contract surface includes attacker-controlled SSE bytes — guard
+	// the goroutine so a panic becomes an error, never a silent reader death.
 	resultCh := make(chan anthropicSSEReadResult, 1)
 	go func() {
-		eventType, data, raw, err := readAnthropicSSEEventRaw(readCtx, reader)
+		eventType, data, raw, err := func() (eventType string, data, raw []byte, err error) {
+			defer func() {
+				if r := recover(); r != nil {
+					err = fmt.Errorf("anthropic SSE read panic: %v", r)
+				}
+			}()
+			return readAnthropicSSEEventRaw(readCtx, reader)
+		}()
 		resultCh <- anthropicSSEReadResult{eventType: eventType, data: data, raw: raw, err: err}
 	}()
 
@@ -46,10 +61,7 @@ func readAnthropicSSEEventWithTimeoutRaw(ctx context.Context, reader io.Reader, 
 }
 
 func readAnthropicSSEEventRaw(ctx context.Context, reader io.Reader) (eventType string, data, raw []byte, err error) {
-	br, ok := reader.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReader(reader)
-	}
+	lineReader := sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes)
 
 	var dataLines []string
 	var rawEvent strings.Builder
@@ -60,7 +72,7 @@ func readAnthropicSSEEventRaw(ctx context.Context, reader io.Reader) (eventType 
 		default:
 		}
 
-		line, rerr := br.ReadString('\n')
+		line, rerr := lineReader.ReadLine()
 		rawEvent.WriteString(line)
 		trimmedLine := strings.TrimRight(line, "\r\n")
 		if trimmedLine == "" {

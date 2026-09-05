@@ -18,13 +18,18 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -120,6 +125,147 @@ func (h *Handler) handleNodeTestNow(w http.ResponseWriter, r *http.Request) {
 
 // nodeProbeTargets 取 provider 的候选 base URL 与一个可用 credential 的解密 apiKey。
 // 复用现有 probe 模式：secret_ciphertext + decryptCredStr + modelsURLCandidatesForBase。
+type credentialSessionPingResponse struct {
+	CredentialID int    `json:"credential_id"`
+	Model        string `json:"model"`
+	LatencyMs    int64  `json:"latency_ms"`
+	Status       string `json:"status"`
+	TestedAt     string `json:"tested_at"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	Error        string `json:"error,omitempty"`
+}
+
+// handleCredentialSessionPing sends one bounded chat request through the exact
+// credential and model selected in the node drawer.
+// POST /api/admin/credentials/{id}/session-ping {"model":"..."}
+func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	credentialID, ok := parseProviderIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Model string `json:"model"`
+	}
+	if err := jsonbody.DecodeRequest(r, &req, 4096, true); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	req.Model = strings.TrimSpace(req.Model)
+	if req.Model == "" {
+		writeError(w, http.StatusBadRequest, "model required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var providerID int
+	var baseURL, protocol, catalogCode string
+	var ciphertext []byte
+	err := h.db.QueryRow(ctx, `
+		SELECT p.id, p.base_url, COALESCE(p.protocol, ''), COALESCE(p.catalog_code, ''), c.secret_ciphertext
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		WHERE c.id = $1 AND pm.raw_model_name = $2 AND p.enabled = TRUE
+		LIMIT 1
+	`, credentialID, req.Model).Scan(&providerID, &baseURL, &protocol, &catalogCode, &ciphertext)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "credential-model binding not found")
+		return
+	}
+	apiKey, err := h.decryptCredStr(string(ciphertext))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "decrypt credential failed")
+		return
+	}
+	operatorID := extractOperatorID(r)
+	if h.rateLimiter != nil {
+		if err := h.rateLimiter.checkTestNow(ctx, credentialID, operatorID); err != nil {
+			writeError(w, http.StatusTooManyRequests, err.Error())
+			return
+		}
+	}
+
+	startedAt := time.Now()
+	status, errorCode, message := h.runCredentialSessionPing(ctx, baseURL, protocol, catalogCode, apiKey, req.Model)
+	latency := time.Since(startedAt).Milliseconds()
+	response := credentialSessionPingResponse{
+		CredentialID: credentialID,
+		Model:        req.Model,
+		LatencyMs:    latency,
+		Status:       status,
+		TestedAt:     time.Now().UTC().Format(time.RFC3339),
+		ErrorCode:    errorCode,
+		Error:        message,
+	}
+	slog.Info("credential session ping", "credential_id", credentialID, "model", req.Model, "status", status, "latency_ms", latency, "operator_id", operatorID, "source", "web_api")
+	if h.auditLogger != nil {
+		h.auditLogger.auditTestNow(providerID, operatorID, status, latency)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protocol, catalogCode, apiKey, model string) (status, errorCode, message string) {
+	endpoint := strings.TrimRight(baseURL, "/") + "/chat/completions"
+	payload, err := json.Marshal(map[string]any{
+		"model":      model,
+		"max_tokens": 1,
+		"stream":     false,
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+	})
+	if err != nil {
+		return "error", "encode_error", "could not encode ping request"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return "error", "invalid_endpoint", "provider endpoint is invalid"
+	}
+	setModelsAuthHeaders(req, protocol, apiKey)
+	h.applyCatalogHeaderProfile(ctx, req, catalogCode)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || ctx.Err() == context.DeadlineExceeded {
+			return "timeout", "timeout", "session ping timed out"
+		}
+		return "unreachable", "transport_error", "provider could not be reached"
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices && isChatPingResponse(body) {
+		return "healthy", "", ""
+	}
+	message = strings.TrimSpace(string(body))
+	if len(message) > 500 {
+		message = message[:500]
+	}
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return "auth_failed", "auth_failed", "credential rejected by provider"
+	case resp.StatusCode == http.StatusNotFound:
+		return "model_not_found", "model_not_found", message
+	case resp.StatusCode >= http.StatusInternalServerError:
+		return "upstream_error", "upstream_5xx", message
+	case resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices:
+		return "error", "invalid_response", "provider returned an invalid chat response"
+	default:
+		return "error", fmt.Sprintf("http_%d", resp.StatusCode), message
+	}
+}
+
+func isChatPingResponse(body []byte) bool {
+	var response struct {
+		Choices json.RawMessage `json:"choices"`
+	}
+	return json.Unmarshal(body, &response) == nil && len(response.Choices) > 0
+}
+
 func (h *Handler) nodeProbeTargets(ctx context.Context, providerID int) ([]string, string, error) {
 	var baseURL, protocol string
 	var ciphertext []byte
@@ -181,7 +327,7 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req nodeEnableRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonbody.DecodeRequest(r, &req, jsonbody.MaxRequiredBody, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 		return
 	}

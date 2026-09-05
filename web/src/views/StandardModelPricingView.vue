@@ -17,6 +17,7 @@ import {
 } from '../api'
 import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -254,7 +255,7 @@ async function saveEdit() {
 
 async function resetAll(row: AdminMaasModelRate) {
   if (!row.is_custom) return
-  if (!confirm(`${t('standardModelPricing.editModal.resetConfirm').replace('{name}', row.display_name)}`)) return
+  if (!(await confirmDialog(`${t('standardModelPricing.editModal.resetConfirm').replace('{name}', row.display_name)}`))) return
   error.value = ''
   try {
     await deleteAdminMaasModelRate(row.canonical_id)
@@ -446,7 +447,7 @@ async function applyBatch() {
 async function batchResetAll() {
   const ids = Array.from(selectedRows.value)
   if (ids.length === 0) return
-  if (!confirm(t('standardModelPricing.batch.resetAllConfirm').replace('{n}', String(ids.length)))) return
+  if (!(await confirmDialog(t('standardModelPricing.batch.resetAllConfirm').replace('{n}', String(ids.length))))) return
   savingBatch.value = true
   batchMsg.value = ''
   try {
@@ -464,7 +465,7 @@ async function batchResetAll() {
 async function batchFillGlobal() {
   const ids = Array.from(selectedRows.value)
   if (ids.length === 0) return
-  if (!confirm(t('standardModelPricing.batch.fillGlobalConfirm').replace('{n}', String(ids.length)))) return
+  if (!(await confirmDialog(t('standardModelPricing.batch.fillGlobalConfirm').replace('{n}', String(ids.length))))) return
   savingBatch.value = true
   batchMsg.value = ''
   try {
@@ -757,22 +758,22 @@ onMounted(load)
 .manual-tag {
   display: inline-block; margin-left: 4px; padding: 0 4px;
   font-size: 10px; border-radius: 4px;
-  background: rgba(59, 130, 246, 0.15); color: #60a5fa;
+  background: var(--info-bg); color: var(--accent);
 }
 .modality-badge {
   display: inline-block; padding: 2px 8px; border-radius: 8px;
   font-size: 11px; font-weight: 500; margin-right: 6px;
-  background: rgba(148, 163, 184, 0.18); color: #94a3b8;
+  background: rgba(148, 163, 184, 0.18); color: var(--muted);
 }
-.modality-badge.modality-multimodal { background: color-mix(in srgb, #d946ef 18%, transparent); color: #c084fc; }
-.modality-badge.modality-vision { background: rgba(34, 197, 94, 0.18); color: #4ade80; }
-.modality-badge.modality-audio { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
-.modality-badge.modality-video { background: rgba(244, 63, 94, 0.18); color: #fb7185; }
+.modality-badge.modality-multimodal { background: color-mix(in srgb, var(--magenta) 18%, transparent); color: var(--purple); }
+.modality-badge.modality-vision { background: var(--success-bd); color: var(--success); }
+.modality-badge.modality-audio { background: var(--warning-bd); color: var(--warning); }
+.modality-badge.modality-video { background: rgba(244, 63, 94, 0.18); color: var(--danger); }
 .modality-badge.modality-embedding { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-h); }
 .multimodal-tag {
   display: inline-block; padding: 1px 6px; border-radius: 6px;
   font-size: 10px; font-weight: 600;
-  background: color-mix(in srgb, #d946ef 18%, transparent); color: #c084fc;
+  background: color-mix(in srgb, var(--magenta) 18%, transparent); color: var(--purple);
   margin-left: 2px;
 }
 .section-sub { font-size: 12px; font-weight: 600; margin: 12px 0 8px; color: var(--muted); }
@@ -780,12 +781,12 @@ onMounted(load)
 .actions { white-space: nowrap; display: flex; gap: 6px; justify-content: flex-end; }
 .empty-cell { text-align: center; color: var(--muted); padding: 24px; }
 .badge { padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-gray { background: rgba(156,163,175,.15); color: #9ca3af; }
-.badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }
-.badge-yellow { background: rgba(234,179,8,.15); color: #fbbf24; }
+.badge-gray { background: var(--neutral-bg); color: var(--muted); }
+.badge-blue { background: var(--info-bg); color: var(--accent); }
+.badge-yellow { background: var(--warning-bg); color: var(--warning); }
 .modal-backdrop {
   position: fixed; inset: 0; z-index: 100;
-  background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: var(--overlay-medium); display: flex; align-items: center; justify-content: center; padding: 20px;
 }
 .modal { width: min(560px, 100%); padding: 20px; max-height: 90vh; overflow-y: auto; }
 .modal-code { display: block; margin-bottom: 8px; }

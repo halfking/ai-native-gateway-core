@@ -211,7 +211,7 @@ func TestAutoDecision_RoundTrip(t *testing.T) {
 		EmbeddingShadowSimilarity: 0,
 		CandidatesTopN: []autoroute.ScoredCandidate{
 			{Candidate: autoroute.Candidate{CanonicalName: "claude-sonnet", CredentialID: 777},
-				Breakdown: autoroute.ScoringBreakdown{Composite: 85, MatchScore: 70, PriceScore: 60, ChannelQuality: 55}},
+				Breakdown: autoroute.ScoringBreakdown{Composite: 85, MatchScore: 70, PriceScore: 60, ChannelQuality: 55, RouteTier: "primary"}},
 			{Candidate: autoroute.Candidate{CanonicalName: "gpt-4.1", CredentialID: 123},
 				Breakdown: autoroute.ScoringBreakdown{Composite: 72, MatchScore: 65, PriceScore: 50, ChannelQuality: 40}},
 		},
@@ -272,6 +272,7 @@ func TestAutoDecision_RoundTrip(t *testing.T) {
 		t.Fatal("winner candidate not a map")
 	}
 	assertStr(t, winner, "model", "claude-sonnet")
+	assertStr(t, winner, "route_tier", "primary")
 	assertFloat(t, winner, "composite_score", 85)
 }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
@@ -87,6 +89,16 @@ func recordSuspiciousExitDBDuration(seconds float64) {
 	suspiciousExitDBDuration.Observe(seconds)
 }
 
+// BindingRawModel returns the model_offers identity used for routing state.
+// RawModel is the outbound request name and can be shared by several bindings.
+// State keyed by RawModel would merge their independent health telemetry.
+func (c Candidate) BindingRawModel() string {
+	if strings.TrimSpace(c.OfferRawModel) != "" {
+		return strings.TrimSpace(c.OfferRawModel)
+	}
+	return strings.TrimSpace(c.RawModel)
+}
+
 type Candidate struct {
 	CredentialID     int     `json:"credential_id"`
 	ProviderID       int     `json:"provider_id"`
@@ -135,17 +147,30 @@ type Candidate struct {
 	SupportsPromptCache  bool     `json:"supports_prompt_cache"`
 	CacheMode            string   `json:"cache_mode"`
 	ManualPriority       int      `json:"manual_priority"`
-	ActiveSessions       int      `json:"active_sessions"`
-	ConsecutiveFailures  int      `json:"consecutive_failures"`
-	CompositeScore       float64  `json:"composite_score"`
-	Currency             string   `json:"currency"`
-	BillingMode          string   `json:"billing_mode"`
-	// ContextWindow is the upstream model's context window in tokens, read
-	// from models_canonical.context_window. Used by the Q1/Q2/Q3 client-side
-	// context trim path (transformation.CompressMessagesIfNeeded). nil means
-	// "unknown" — in which case the trim path is a no-op.
-	ContextWindow *int   `json:"context_window,omitempty"`
-	APIKey        string `json:"-"`
+	// Priority is the explicit operator priority flag on a credential-model
+	// binding. It is additive to ManualPriority: routing keeps ManualPriority
+	// ordering while callers can surface this boolean in admin projections.
+	Priority            bool    `json:"priority"`
+	ActiveSessions      int     `json:"active_sessions"`
+	ConsecutiveFailures int     `json:"consecutive_failures"`
+	CompositeScore      float64 `json:"composite_score"`
+	Currency            string  `json:"currency"`
+	BillingMode         string  `json:"billing_mode"`
+	// ContextWindow is the upstream model's context window in tokens. Precedence
+	// (migration 523): credential×model override (credential_model_bindings
+	// .context_window_override) > canonical override (models_canonical
+	// .context_window_override) > canonical base (models_canonical.context_window).
+	// Used by the Q1/Q2/Q3 client-side context trim path
+	// (transformation.CompressMessagesIfNeeded). nil means "unknown" — in which
+	// case the trim path is a no-op.
+	ContextWindow *int `json:"context_window,omitempty"`
+	// SupportsNativeResponses is an opt-in binding capability for verified
+	// non-stream native Responses request/response handling. Streaming remains
+	// disabled until a separate SSE capability is implemented and verified.
+	SupportsNativeResponses bool `json:"supports_native_responses,omitempty"`
+	// SupportsNativeResponsesStream is an independently verified native Responses SSE capability.
+	SupportsNativeResponsesStream bool   `json:"supports_native_responses_stream,omitempty"`
+	APIKey                        string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
 	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
@@ -190,7 +215,16 @@ func (c *Candidate) CalcCost(promptTokens, completionTokens int, cacheReadTokens
 		promptCost -= float64(*cacheWriteTokens) * pIn
 		promptCost += float64(*cacheWriteTokens) * *c.CacheWritePricePer1M
 	}
-	return (promptCost + float64(completionTokens)*pOut) / 1_000_000.0
+	cost := (promptCost + float64(completionTokens)*pOut) / 1_000_000.0
+	// Prices come from ::float8 columns — a manually edited 'NaN' or a cache
+	// price above the input price would otherwise yield NaN/negative cost that
+	// propagates silently through billing and sorting.
+	if math.IsNaN(cost) || math.IsInf(cost, 0) || cost < 0 {
+		slog.Warn("cost computation out of range; clamped to 0",
+			"provider_id", c.ProviderID, "credential_id", c.CredentialID, "raw_model", c.RawModel)
+		return 0
+	}
+	return cost
 }
 
 func (c *Candidate) IsAvailable() bool {
@@ -218,6 +252,9 @@ func (c *Candidate) UnavailableReason() string {
 	}
 	if c.LifecycleStatus != "" && c.LifecycleStatus != "active" {
 		reasons = append(reasons, "lifecycle:"+c.LifecycleStatus)
+	}
+	if c.CircuitState == "open" {
+		reasons = append(reasons, "circuit:open")
 	}
 	switch c.AvailabilityState {
 	case "suspended":
@@ -302,6 +339,58 @@ type cacheEntry[T any] struct {
 	expires time.Time
 }
 
+// decryptFailureCacheTTL bounds how long we remember a decryption failure
+// for a (credential_id) so repeated upstream requests don't keep re-trying
+// the same broken secret. Short enough that an operator fixing the secret
+// (rotation, keyring reload, ciphertext migration) sees traffic resume
+// within one minute without manual intervention.
+const decryptFailureCacheTTL = 1 * time.Minute
+
+// decryptFailureCacheMax prevents the negative cache from growing unbounded
+// across thousands of credentials. When the cap is reached we evict the
+// oldest entries — failure-cache entries are short-lived (1 minute) so
+// this only matters in pathological fleets with many broken secrets at once.
+const decryptFailureCacheMax = 1024
+
+const (
+	candidateCacheTTL        = 30 * time.Second
+	candidateEmptyCacheTTL   = 5 * time.Second
+	candidateCacheStaleGrace = 30 * time.Second
+	candidateGenerationTries = 3
+)
+
+var errCandidateCacheInvalidated = errors.New("candidate cache invalidated during lookup")
+
+type candidateGenerationInvalidatedError struct {
+	queried uint64
+	current uint64
+}
+
+func (e *candidateGenerationInvalidatedError) Error() string {
+	return fmt.Sprintf("%v: queried generation %d, current generation %d", errCandidateCacheInvalidated, e.queried, e.current)
+}
+
+func (e *candidateGenerationInvalidatedError) Unwrap() error {
+	return errCandidateCacheInvalidated
+}
+
+type candidateFlightResult struct {
+	response   *resolveResponse
+	generation uint64
+}
+
+func candidateFlightKey(key string, generation uint64) string {
+	return fmt.Sprintf("cand:%s:g%d", key, generation)
+}
+
+func candidateGenerationChanged(queried, current uint64) bool {
+	return queried != current
+}
+
+func candidateGenerationRetryError(tries int, cause error) error {
+	return fmt.Errorf("candidate lookup invalidated after %d attempts: %w", tries, cause)
+}
+
 type Client struct {
 	dbPool              *pgxpool.Pool
 	redis               *redis.Client
@@ -314,10 +403,23 @@ type Client struct {
 	// Shared across all candidate enrichments so health persists across requests.
 	keyRotator *credential.KeyRotator
 
-	mu        sync.RWMutex
-	candCache map[string]cacheEntry[*resolveResponse]
-	polCache  cacheEntry[*Policy]
-	keyCache  map[int]cacheEntry[string]
+	mu             sync.RWMutex
+	candCache      map[string]cacheEntry[*resolveResponse]
+	candGeneration uint64
+	polCache       cacheEntry[*Policy]
+	keyCache       map[int]cacheEntry[string]
+	// keyGeneration prevents a reveal that started before an operator rotates a
+	// primary key from putting stale plaintext back into keyCache afterwards.
+	keyGeneration map[int]uint64
+	// keyCacheNeg memoises "this credential's API key failed to decrypt"
+	// for decryptFailureCacheTTL seconds. Previously every request within
+	// the 5-minute positive window re-fetched ciphertext from PG and
+	// re-tried DecryptAny, generating a steady stream of
+	// "enrichWithAPIKeys: reveal failed" warnings and DB scans. With the
+	// negative cache we only retry once a minute — the same window as the
+	// upstream call health-probe (bg/credential_recovery.go), which is
+	// granular enough that an operator-rotated secret is picked up promptly.
+	keyCacheNeg map[int]negativeCacheEntry
 
 	sf singleflight.Group
 }
@@ -326,8 +428,9 @@ var defaultClient *Client
 
 func NewClient() *Client {
 	c := &Client{
-		candCache: make(map[string]cacheEntry[*resolveResponse]),
-		keyCache:  make(map[int]cacheEntry[string]),
+		candCache:     make(map[string]cacheEntry[*resolveResponse]),
+		keyCache:      make(map[int]cacheEntry[string]),
+		keyGeneration: make(map[int]uint64),
 	}
 	c.asyncExitSuspicious = c.defaultAsyncExitSuspicious
 	defaultClient = c
@@ -342,6 +445,7 @@ func InvalidateAllCandidateCache() {
 		return
 	}
 	defaultClient.mu.Lock()
+	defaultClient.candGeneration++
 	defaultClient.candCache = make(map[string]cacheEntry[*resolveResponse])
 	defaultClient.mu.Unlock()
 	// 2026-07-03: 降级为 Debug —— 此函数在每次永久故障/状态变更时都会被调用，
@@ -366,6 +470,7 @@ func InvalidateCandidateCacheForCredential(credentialID int) {
 	}
 	defaultClient.mu.Lock()
 	defer defaultClient.mu.Unlock()
+	defaultClient.candGeneration++
 	for key, entry := range defaultClient.candCache {
 		if entry.value == nil {
 			delete(defaultClient.candCache, key)
@@ -394,11 +499,51 @@ func ResetKeyRotatorForCredential(credentialID int) {
 	slog.Debug("key rotator reset for credential", "credential_id", credentialID)
 }
 
+// ResetKeyRotatorKey clears in-memory health for a single key on a credential.
+// Use when only one key's status changed (admin PATCH /keys/{kid} status, or
+// operator re-activates a single key) so sibling keys' round-robin health is
+// preserved. No-op when the rotator is in single-key mode (the per-credential
+// states map has no entry for credentialID, so there is nothing to reset).
+func ResetKeyRotatorKey(credentialID, kid int) {
+	if defaultClient == nil || credentialID == 0 || defaultClient.keyRotator == nil {
+		return
+	}
+	defaultClient.keyRotator.ResetKey(credentialID, kid)
+	slog.Debug("key rotator reset for single key",
+		"credential_id", credentialID, "kid", kid)
+}
+
+// InvalidateCredentialKeyCache evicts both primary-key caches for one
+// credential. The generation fence makes an already in-flight reveal unable
+// to reinsert the pre-rotation plaintext after this function returns.
+func InvalidateCredentialKeyCache(credentialID int) {
+	if defaultClient == nil || credentialID == 0 {
+		return
+	}
+	defaultClient.mu.Lock()
+	if defaultClient.keyGeneration == nil {
+		defaultClient.keyGeneration = make(map[int]uint64)
+	}
+	defaultClient.keyGeneration[credentialID]++
+	delete(defaultClient.keyCache, credentialID)
+	delete(defaultClient.keyCacheNeg, credentialID)
+	defaultClient.mu.Unlock()
+	slog.Debug("primary key cache invalidated for credential", "credential_id", credentialID)
+}
+
 func (c *Client) Enabled() bool {
+	// dbPool is written by SetDB (potentially after early readers run); read
+	// it under mu to avoid racing a lazy reconfiguration.
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.dbPool != nil
 }
 
 func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey string) {
+	// Write under c.mu so concurrent readers (Enabled, fetchReveal, rotator
+	// users) never see a partially configured client.
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.dbPool = pool
 	if key, err := secret.FernetKeyFromSecret(secretKey, credentialEncryptionKey); err == nil {
 		c.fernetKey = key
@@ -411,7 +556,20 @@ func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey st
 		slog.Warn("credential keyring unavailable; AES-GCM v1 envelopes will fail to decrypt", "error", kerr)
 	}
 	if pool != nil {
+		// Stop any prior rotator's sweeper before overwriting — a reconfigure
+		// path must not leak the previous background goroutine.
+		if c.keyRotator != nil {
+			c.keyRotator.StopSweeper()
+		}
 		c.keyRotator = credential.NewKeyRotator()
+		// Start the sweeper so a stale KeyStatusInvalid key auto-recovers to
+		// active after credential.DefaultInvalidCooldown. Without this, a
+		// transient 401 during a key-rotation overlap would permanently eject
+		// the key from rotation until an admin ResetKey or a process restart.
+		// context.Background() here is fine: the sweeper runs for the lifetime
+		// of the rotator, which is the lifetime of the process. StopSweeper
+		// above is the explicit shutdown path.
+		c.keyRotator.StartSweeper(context.Background())
 	}
 }
 
@@ -450,14 +608,25 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		key = key + "|modality:" + modality
 	}
 
-	cacheState := "miss"
-	c.mu.RLock()
-	if entry, ok := c.candCache[key]; ok {
-		if time.Now().Before(entry.expires) {
+	var invalidatedErr error
+	for attempt := 0; attempt < candidateGenerationTries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, DefaultPolicy(), err
+		}
+
+		cacheState := "miss"
+		c.mu.RLock()
+		queryGeneration := c.candGeneration
+		entry, cacheOK := c.candCache[key]
+		if cacheOK && time.Now().Before(entry.expires) {
 			cacheState = "hit"
 			c.mu.RUnlock()
 			policy, _ := c.getPolicyCached(ctx)
 			cands := c.enrichWithAPIKeys(ctx, entry.value)
+			if !c.candidateGenerationIsCurrent(queryGeneration) {
+				invalidatedErr = c.candidateGenerationInvalidatedError(queryGeneration)
+				continue
+			}
 			if len(cands) == 0 {
 				logCandidateDiagnostic("cache_empty",
 					"model", routeModel,
@@ -470,95 +639,179 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 			}
 			return cands, policy, nil
 		}
-		cacheState = "expired"
-	}
-	c.mu.RUnlock()
-	slog.Debug("[candidate_diag] candidate cache lookup",
-		"cache_state", cacheState,
-		"model", routeModel,
-		"profile", profile,
-		"tenant_id", tenantID,
-		"cache_key", key,
-	)
+		if cacheOK {
+			cacheState = "expired"
+		}
+		c.mu.RUnlock()
+		slog.Debug("[candidate_diag] candidate cache lookup",
+			"cache_state", cacheState,
+			"model", routeModel,
+			"profile", profile,
+			"tenant_id", tenantID,
+			"cache_key", key,
+			"generation", queryGeneration,
+		)
 
-	v, err, shared := c.sf.Do("cand:"+key, func() (any, error) {
-		resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID, modality)
-		if fetchErr != nil {
-			return nil, fetchErr
+		resp, shared, err := c.fetchCandidateGeneration(key, queryGeneration, func() (*resolveResponse, error) {
+			resp, fetchErr := c.fetchCandidatesDB(ctx, routeModel, profile, tenantID, modality)
+			if fetchErr == nil && (planCount(resp) == 0 || candidateCount(resp) == 0) {
+				logCandidateDiagnostic("db_empty",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"plan_count", planCount(resp),
+					"candidate_count", candidateCount(resp),
+				)
+			}
+			return resp, fetchErr
+		})
+		if errors.Is(err, errCandidateCacheInvalidated) {
+			invalidatedErr = err
+			continue
 		}
-		if planCount(resp) == 0 || candidateCount(resp) == 0 {
-			logCandidateDiagnostic("db_empty",
-				"model", routeModel,
-				"profile", profile,
-				"tenant_id", tenantID,
-				"cache_key", key,
-				"plan_count", planCount(resp),
-				"candidate_count", candidateCount(resp),
-			)
-		}
-
-		c.mu.Lock()
-		c.candCache[key] = cacheEntry[*resolveResponse]{
-			value:   resp,
-			expires: time.Now().Add(30 * time.Second),
-		}
-		c.mu.Unlock()
-		return resp, nil
-	})
-	if err != nil {
-		// 🆕 Fail-Safe: 数据库查询失败时，尝试使用过期缓存
-		c.mu.RLock()
-		if staleEntry, ok := c.candCache[key]; ok {
+		if err != nil {
+			// Stale fallback is limited to retryable failures, live contexts,
+			// and non-empty entries. Two windows (2026-09-04 availability
+			// work): the original 30s grace past expiry, then the wider
+			// candidateOutageGrace for a DB that stays down — without the
+			// second window every request fails ~60s into a DB outage.
+			c.mu.RLock()
+			staleEntry, ok := c.candCache[key]
 			c.mu.RUnlock()
+			now := time.Now()
+			serveStale := ok && canServeStaleCandidateCache(ctx, err, staleEntry, now)
+			serveOutage := !serveStale && ok && canServeCandidateCacheDuringOutage(ctx, err, staleEntry, now)
+			if !serveStale && !serveOutage {
+				return nil, DefaultPolicy(), err
+			}
 
 			cacheAge := time.Since(staleEntry.expires)
-			slog.Warn("[candidate_diag] database unavailable, serving stale cache",
-				"model", routeModel,
-				"profile", profile,
-				"tenant_id", tenantID,
-				"cache_key", key,
-				"cache_age", cacheAge,
-				"plan_count", planCount(staleEntry.value),
-				"candidate_count", candidateCount(staleEntry.value),
-				"db_error", err.Error(),
-			)
+			if serveOutage {
+				recordCandidateDiagnostic("db_outage_stale")
+				slog.Warn("[candidate_diag] database outage, serving expired cache beyond grace",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"cache_age", cacheAge,
+					"plan_count", planCount(staleEntry.value),
+					"candidate_count", candidateCount(staleEntry.value),
+					"db_error", err.Error(),
+				)
+			} else {
+				recordCandidateDiagnostic("db_unavailable")
+				slog.Warn("[candidate_diag] database unavailable, serving stale cache",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_key", key,
+					"cache_age", cacheAge,
+					"plan_count", planCount(staleEntry.value),
+					"candidate_count", candidateCount(staleEntry.value),
+					"db_error", err.Error(),
+				)
+			}
 
-			policy, _ := c.getPolicyCached(ctx)
 			cands := c.enrichWithAPIKeys(ctx, staleEntry.value)
-
-			if len(cands) == 0 {
+			if !c.candidateGenerationIsCurrent(queryGeneration) {
+				invalidatedErr = c.candidateGenerationInvalidatedError(queryGeneration)
+				continue
+			}
+			if ctx.Err() != nil || len(cands) == 0 {
 				logCandidateDiagnostic("stale_cache_empty",
 					"model", routeModel,
 					"profile", profile,
 					"tenant_id", tenantID,
 					"cache_age", cacheAge,
 				)
+				return nil, DefaultPolicy(), err
 			}
 
+			policy, _ := c.getPolicyCached(ctx)
 			return cands, policy, nil
 		}
-		c.mu.RUnlock()
 
-		// 缓存也没有，真正失败
-		return nil, DefaultPolicy(), err
+		policy, _ := c.getPolicyCached(ctx)
+		cands := c.enrichWithAPIKeys(ctx, resp)
+		if !c.candidateGenerationIsCurrent(queryGeneration) {
+			invalidatedErr = c.candidateGenerationInvalidatedError(queryGeneration)
+			continue
+		}
+		if len(cands) == 0 && candidateCount(resp) > 0 {
+			logCandidateDiagnostic("enrich_empty",
+				"model", routeModel,
+				"profile", profile,
+				"tenant_id", tenantID,
+				"cache_key", key,
+				"singleflight_shared", shared,
+				"plan_count", planCount(resp),
+				"candidate_count", candidateCount(resp),
+				"enriched_count", len(cands),
+			)
+		}
+		return cands, policy, nil
 	}
 
-	policy, _ := c.getPolicyCached(ctx)
-	resp := v.(*resolveResponse)
-	cands := c.enrichWithAPIKeys(ctx, resp)
-	if len(cands) == 0 && candidateCount(resp) > 0 {
-		logCandidateDiagnostic("enrich_empty",
-			"model", routeModel,
-			"profile", profile,
-			"tenant_id", tenantID,
-			"cache_key", key,
-			"singleflight_shared", shared,
-			"plan_count", planCount(resp),
-			"candidate_count", candidateCount(resp),
-			"enriched_count", len(cands),
-		)
+	return nil, DefaultPolicy(), candidateGenerationRetryError(candidateGenerationTries, invalidatedErr)
+}
+
+func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fetch func() (*resolveResponse, error)) (*resolveResponse, bool, error) {
+	v, err, shared := c.sf.Do(candidateFlightKey(key, queryGeneration), func() (any, error) {
+		resp, fetchErr := fetch()
+		now := time.Now()
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if candidateGenerationChanged(queryGeneration, c.candGeneration) {
+			return nil, &candidateGenerationInvalidatedError{queried: queryGeneration, current: c.candGeneration}
+		}
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+
+		current, currentOK := c.candCache[key]
+		if currentOK && candidateResponseNonEmpty(current.value) && !candidateResponseNonEmpty(resp) && staleCandidateCacheUsable(current, now) {
+			logCandidateDiagnostic("db_empty_fallback",
+				"cache_key", key,
+				"cache_age", now.Sub(current.expires),
+				"plan_count", planCount(resp),
+				"candidate_count", candidateCount(resp),
+			)
+			return candidateFlightResult{response: current.value, generation: queryGeneration}, nil
+		}
+
+		cacheTTL := candidateCacheTTL
+		if !candidateResponseNonEmpty(resp) {
+			cacheTTL = candidateEmptyCacheTTL
+		}
+		c.candCache[key] = cacheEntry[*resolveResponse]{
+			value:   resp,
+			expires: now.Add(cacheTTL),
+		}
+		return candidateFlightResult{response: resp, generation: queryGeneration}, nil
+	})
+	if err != nil {
+		return nil, shared, err
 	}
-	return cands, policy, nil
+
+	result := v.(candidateFlightResult)
+	if !c.candidateGenerationIsCurrent(result.generation) {
+		return nil, shared, c.candidateGenerationInvalidatedError(result.generation)
+	}
+	return result.response, shared, nil
+}
+
+func (c *Client) candidateGenerationIsCurrent(queryGeneration uint64) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.candGeneration == queryGeneration
+}
+
+func (c *Client) candidateGenerationInvalidatedError(queryGeneration uint64) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return &candidateGenerationInvalidatedError{queried: queryGeneration, current: c.candGeneration}
 }
 
 func planCount(resp *resolveResponse) int {
@@ -575,7 +828,42 @@ func candidateCount(resp *resolveResponse) int {
 	return len(resp.Candidates)
 }
 
+func candidateResponseNonEmpty(resp *resolveResponse) bool {
+	return planCount(resp) > 0 && candidateCount(resp) > 0
+}
+
+func staleCandidateCacheUsable(entry cacheEntry[*resolveResponse], now time.Time) bool {
+	return candidateResponseNonEmpty(entry.value) &&
+		!entry.expires.IsZero() && now.Before(entry.expires.Add(candidateCacheStaleGrace))
+}
+
+func canServeStaleCandidateCache(ctx context.Context, err error, entry cacheEntry[*resolveResponse], now time.Time) bool {
+	return ctx != nil && ctx.Err() == nil && isRetryableDBError(err) && staleCandidateCacheUsable(entry, now)
+}
+
+// candidateOutageGrace bounds how long an expired-but-present candidate
+// cache entry may still serve while the DB query fails with a retryable
+// infrastructure error (2026-09-04 availability work). The original
+// staleCandidateCacheUsable window (TTL 30s + 30s grace) covers blips;
+// without this wider window every relay request fails ~60s into a real DB
+// outage because getCandidates is a hard prerequisite of routing.
+const candidateOutageGrace = time.Hour
+
+// canServeCandidateCacheDuringOutage reports whether the expired entry may
+// be served past the ordinary stale grace because the DB has been down for
+// an extended period. Same preconditions as canServeStaleCandidateCache
+// (live context, retryable error, non-empty entry) but with the outage
+// window; the db_empty_fallback path in fetchCandidateGeneration
+// deliberately keeps the SHORT window so a healthy-but-changed DB is never
+// masked by hour-old cache.
+func canServeCandidateCacheDuringOutage(ctx context.Context, err error, entry cacheEntry[*resolveResponse], now time.Time) bool {
+	return ctx != nil && ctx.Err() == nil && isRetryableDBError(err) &&
+		candidateResponseNonEmpty(entry.value) &&
+		!entry.expires.IsZero() && now.Before(entry.expires.Add(candidateOutageGrace))
+}
+
 func logCandidateDiagnostic(event string, args ...any) {
+	recordCandidateDiagnostic(event)
 	slog.Warn("[candidate_diag] "+event, args...)
 }
 
@@ -1099,23 +1387,27 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(c.availability_state, 'ready') AS availability_state,
 			COALESCE(c.quota_state, 'ok') AS quota_state,
 			COALESCE(c.lifecycle_status, 'active') AS lifecycle_status,
-			COALESCE(mo.unit_price_in_per_1m, 0)::float8 AS unit_price_in_per_1m,
-			COALESCE(mo.unit_price_out_per_1m, 0)::float8 AS unit_price_out_per_1m,
-			COALESCE(mo.cache_read_price_per_1m, 0)::float8 AS cache_read_price_per_1m,
-			COALESCE(mo.cache_write_price_per_1m, 0)::float8 AS cache_write_price_per_1m,
+			COALESCE(mo.unit_price_in_per_1m, pp_fb.plan_in)::float8 AS unit_price_in_per_1m,
+			COALESCE(mo.unit_price_out_per_1m, pp_fb.plan_out)::float8 AS unit_price_out_per_1m,
+			mo.cache_read_price_per_1m::float8 AS cache_read_price_per_1m,
+			mo.cache_write_price_per_1m::float8 AS cache_write_price_per_1m,
 			-- is_routable comes from the unified VIEW (manual > auto priority).
 			-- Spec: 2026-06-12-credential-availability-audit-design §3.1
 			COALESCE(v.is_routable, FALSE) AS runtime_routable,
 			v.unavailable_reason,
-			CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
-			COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
-			COALESCE(mo.manual_priority, 99)::int AS manual_priority,
+				CASE WHEN cc.capability = 'prompt_caching' AND cc.supported IS TRUE THEN TRUE ELSE FALSE END AS supports_prompt_cache,
+				COALESCE(cmcap.supported, FALSE) AS supports_native_responses,
+			COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream,
+				COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
+				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
+			COALESCE(mo.priority, FALSE) AS priority,
 			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
 			mo.raw_model_name,
-			COALESCE(mc.context_window_override, mc.context_window) AS context_window,
+			-- 522: 优先级 凭据×模型级覆盖 > 标准模型级覆盖 > 标准目录默认值。
+			COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			-- Read from providers so the routing executor can pass the
 			-- per-provider mode through to the relay stream reader and
@@ -1137,11 +1429,29 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		LEFT JOIN v_routable_credential_models v
 		       ON v.credential_id = mo.credential_id
 		      AND (v.raw_model_name = mo.raw_model_name OR v.raw_model_name = mo.standardized_name)
-		LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
-		LEFT JOIN model_aliases ma
+			LEFT JOIN credential_capabilities cc ON cc.credential_id = c.id AND cc.capability = 'prompt_caching'
+			LEFT JOIN credential_model_capabilities cmcap
+			       ON cmcap.credential_model_binding_id = mo.id
+			      AND cmcap.capability = 'native_responses_nonstream'
+			LEFT JOIN credential_model_capabilities cmstream
+			       ON cmstream.credential_model_binding_id = mo.id
+			      AND cmstream.capability = 'native_responses_stream'
+			LEFT JOIN model_aliases ma
 		       ON ma.raw_name = mo.canonical_raw_name
 		      AND COALESCE(ma.status, 'active') = 'active'
 		LEFT JOIN models_canonical mc ON mc.id = COALESCE(mo.canonical_id, ma.canonical_id)
+		LEFT JOIN LATERAL (
+			SELECT
+				NULLIF(pp.plan_json->>'input_per_1m', '')::float8 AS plan_in,
+				NULLIF(pp.plan_json->>'output_per_1m', '')::float8 AS plan_out
+			FROM pricing_plans pp
+			WHERE pp.model_canonical_id = mc.id
+			  AND pp.effective_to IS NULL
+			  AND (pp.credential_id = c.id OR pp.credential_id IS NULL)
+			ORDER BY CASE WHEN pp.credential_id = c.id THEN 0 ELSE 1 END,
+			         pp.effective_from DESC
+			LIMIT 1
+		) pp_fb ON TRUE
 		-- LEFT JOIN model_name_mapping for standardized name lookup fallback
 		LEFT JOIN model_name_mapping mnm
 		       ON mnm.raw_model_name = mo.canonical_raw_name
@@ -1189,7 +1499,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			      -- transient failures; the executor and state manager soft-demote
 			      -- them instead of hard-excluding the only route.
 			      COALESCE(mo.billing_mode, 'per_token') <> 'free'
-			      AND rsr.samples >= 20
+			      -- MERGE-AUDIT 2026-08-27: preserve the prior hard-gate terms
+			      -- below for review, but disable exclusion so a degraded sibling
+			      -- remains routable and can be soft-demoted by ORDER BY.
+			      AND FALSE
 			      AND COALESCE(rsr.rate, 1.0) < 0.5
 			      -- A single-candidate model needs a recovery chance. Circuit,
 			      -- model-probe and permanent-state guards still apply; the
@@ -1254,18 +1567,24 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		      OR mo.standardized_name = $1
 		      -- (3) model_name_mapping lookup: centralized raw->standardized mapping
 		      OR mnm.standardized_name = $1
-		      -- (4) alias match: client_model points to a canonical that this offer belongs to
-		      OR EXISTS (
-		          SELECT 1 FROM model_aliases ma2
-		          WHERE ma2.raw_name = $1
-		            AND COALESCE(ma2.status, 'active') = 'active'
-		            AND (
-		                (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
-		                OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
-		            )
-		      )
-		  )
+				-- (4) alias match: client_model points to a canonical that this offer belongs to
+				OR EXISTS (
+				    SELECT 1 FROM model_aliases ma2
+				    WHERE ma2.raw_name = $1
+				      AND COALESCE(ma2.status, 'active') = 'active'
+				      AND (
+				          (mo.canonical_id IS NOT NULL AND ma2.canonical_id = mo.canonical_id)
+				          OR (mo.canonical_id IS NULL AND ma2.canonical_id IS NULL)
+				      )
+				)
+				-- (5) canonical-id match: legacy offers may retain a provider-prefixed
+				-- canonical_raw_name while their canonical_id already points at the
+				-- client-facing catalog name. Keep this in sync with admin resolve.
+				OR lower(mc.canonical_name) = $1
+			)
+
 		ORDER BY
+			CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END,
 			CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1
@@ -1296,6 +1615,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		}
 
 		backoff := time.Duration(50*(attempt+1)) * time.Millisecond
+		recordCandidateDiagnostic("db_query_retry")
 		slog.Warn("[candidate_diag] db query retry",
 			"model", clientModel,
 			"tenant_id", tenantID,
@@ -1356,8 +1676,11 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.Routable,
 			&cand.BlockReason,
 			&cand.SupportsPromptCache,
+			&cand.SupportsNativeResponses,
+			&cand.SupportsNativeResponsesStream,
 			&cand.CacheMode,
 			&cand.ManualPriority,
+			&cand.Priority,
 			&cand.ActiveSessions,
 			&cand.ConsecutiveFailures,
 			&cand.Currency,
@@ -1549,38 +1872,184 @@ func uniqueRawModels(values []string) []string {
 	return out
 }
 
-func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int) (string, error) {
-	c.mu.RLock()
-	if entry, ok := c.keyCache[credentialID]; ok && time.Now().Before(entry.expires) {
-		c.mu.RUnlock()
-		return entry.value, nil
-	}
-	c.mu.RUnlock()
+const maxRevealGenerationAttempts = 2
 
-	v, err, _ := c.sf.Do(fmt.Sprintf("key:%d", credentialID), func() (any, error) {
-		key, fetchErr := c.fetchReveal(ctx, providerID, credentialID)
-		if fetchErr != nil {
-			return "", fetchErr
+// negativeCacheEntry carries enough information for the cached-error
+// metric path to attribute the failure to the original cause (e.g.
+// unknown_format) while still letting the cache-amplification series
+// count hits independently. msg is the original error string for log
+// fidelity; reason is the closed-vocabulary metric label computed at
+// write time so cached lookups do not need to re-classify.
+type negativeCacheEntry struct {
+	value   string
+	reason  string
+	expires time.Time
+}
+
+func (c *Client) RevealAPIKey(ctx context.Context, providerID, credentialID int) (string, error) {
+	for attempt := 0; attempt < maxRevealGenerationAttempts; attempt++ {
+		c.mu.RLock()
+		generation := c.keyGeneration[credentialID]
+		if entry, ok := c.keyCache[credentialID]; ok && time.Now().Before(entry.expires) {
+			c.mu.RUnlock()
+			return entry.value, nil
 		}
-		c.mu.Lock()
-		c.keyCache[credentialID] = cacheEntry[string]{
-			value:   key,
-			expires: time.Now().Add(5 * time.Minute),
+		if neg, ok := c.keyCacheNeg[credentialID]; ok && time.Now().Before(neg.expires) {
+			c.mu.RUnlock()
+			// 2026-08-17 P0 fix: avoid re-trying a known-broken decryption for
+			// decryptFailureCacheTTL. Previously every request within the 5-minute
+			// positive window hit PG + DecryptAny + a "reveal failed" warning;
+			// on 154 production this produced 60+ identical log lines per minute
+			// for credentials whose secret was actually rotated / corrupted.
+			slog.Debug("reveal: decrypt failure cached, skipping retry",
+				"credential_id", credentialID,
+				"provider_id", providerID,
+				"cached_err", neg.value,
+				"expires_in", time.Until(neg.expires).String(),
+			)
+			// Two counter increments: cached (amplification visibility) and
+			// the original cause reason (root-cause frequency), both with
+			// the same provider_id. The reason was computed at cache
+			// write time so the error chain does not need to survive into
+			// the cached string form.
+			recordCredentialRevealCachedHit(providerID, neg.reason)
+			return "", fmt.Errorf("%w (credential_id=%d): %s", secret.ErrRevealCached, credentialID, neg.value)
 		}
-		c.mu.Unlock()
-		return key, nil
-	})
-	if err != nil {
-		return "", err
+		c.mu.RUnlock()
+
+		v, err, _ := c.sf.Do(fmt.Sprintf("key:%d:g%d", credentialID, generation), func() (any, error) {
+			key, fetchErr := c.fetchReveal(ctx, providerID, credentialID)
+			if fetchErr != nil {
+				c.cacheRevealFailureIfCurrent(credentialID, generation, fetchErr)
+				return "", fetchErr
+			}
+			c.cacheRevealedKeyIfCurrent(credentialID, generation, key)
+			return key, nil
+		})
+
+		c.mu.RLock()
+		currentGeneration := c.keyGeneration[credentialID]
+		c.mu.RUnlock()
+		if currentGeneration != generation {
+			continue
+		}
+		if err != nil {
+			// DB-outage availability gear (2026-09-04): an infrastructure
+			// error must not strip routing of credentials whose plaintext
+			// this process revealed recently. Serve the expired positive
+			// entry within revealOutageGrace. Generation-bumped (rotated)
+			// credentials are exempt — their entry was deleted and must
+			// NOT resurface.
+			if isRetryableDBError(err) {
+				if key, ok := c.getStaleRevealedKey(credentialID); ok {
+					slog.Warn("reveal: db unavailable, serving stale key cache",
+						"credential_id", credentialID,
+						"provider_id", providerID,
+						"db_error", err.Error(),
+					)
+					return key, nil
+				}
+			}
+			return "", err
+		}
+		return v.(string), nil
 	}
-	return v.(string), nil
+	return "", fmt.Errorf("%w (credential_id=%d)", secret.ErrRevealRotation, credentialID)
+}
+
+// revealOutageGrace bounds how long an expired positive keyCache entry may
+// serve while reveal fetches fail with retryable DB errors. Without it every
+// relay request through a cached credential fails 5 minutes into a DB
+// outage (the positive TTL), which defeats the candidate-cache outage
+// window above. One hour aligns with candidateOutageGrace.
+const revealOutageGrace = time.Hour
+
+// getStaleRevealedKey returns the expired-but-present positive entry for a
+// credential when its age past expiry is within revealOutageGrace. Only the
+// generation-checked positive cache is consulted; negative entries never
+// yield a key.
+func (c *Client) getStaleRevealedKey(credentialID int) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.keyCache[credentialID]
+	if !ok || entry.value == "" {
+		return "", false
+	}
+	if time.Since(entry.expires) > revealOutageGrace {
+		return "", false
+	}
+	return entry.value, true
+}
+
+func (c *Client) cacheRevealFailureIfCurrent(credentialID int, generation uint64, fetchErr error) {
+	if isRetryableDBError(fetchErr) {
+		// DB-outage guard (2026-09-04): an unreachable database is not a
+		// broken credential. Negative-caching it would flip every reveal to
+		// a cached failure for decryptFailureCacheTTL even after the DB
+		// recovers, and blocks the stale-serve path above from being tried
+		// on the next request.
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyGeneration[credentialID] == generation {
+		c.recordNegativeCacheLocked(credentialID, fetchErr.Error(), classifyRevealFailure(fetchErr))
+	}
+}
+
+func (c *Client) cacheRevealedKeyIfCurrent(credentialID int, generation uint64, key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keyGeneration[credentialID] != generation {
+		return
+	}
+	c.keyCache[credentialID] = cacheEntry[string]{
+		value:   key,
+		expires: time.Now().Add(5 * time.Minute),
+	}
+	// Successful reveal invalidates any prior negative entry so the next call
+	// doesn't carry forward a stale "broken" signal.
+	delete(c.keyCacheNeg, credentialID)
+}
+
+// recordNegativeCacheLocked inserts a decrypt-failure entry into
+// keyCacheNeg, evicting the oldest entries if the cap is exceeded. Must be
+// called with c.mu held for writing. reason is the closed-vocabulary
+// metric label for this failure; cached lookups will use it directly
+// instead of re-classifying the error string.
+func (c *Client) recordNegativeCacheLocked(credentialID int, errMsg, reason string) {
+	if c.keyCacheNeg == nil {
+		c.keyCacheNeg = make(map[int]negativeCacheEntry)
+	}
+	if len(c.keyCacheNeg) >= decryptFailureCacheMax {
+		// Evict the entry with the earliest expiry; the map is small so a
+		// linear scan is cheap and avoids dragging in a heap for a corner
+		// case that only fires when there are 1024+ simultaneously broken
+		// credentials — by definition a deeper problem than this cache.
+		var oldestID int
+		var oldestExp time.Time
+		first := true
+		for id, e := range c.keyCacheNeg {
+			if first || e.expires.Before(oldestExp) {
+				oldestID = id
+				oldestExp = e.expires
+				first = false
+			}
+		}
+		delete(c.keyCacheNeg, oldestID)
+	}
+	c.keyCacheNeg[credentialID] = negativeCacheEntry{
+		value:   errMsg,
+		reason:  reason,
+		expires: time.Now().Add(decryptFailureCacheTTL),
+	}
 }
 
 func (c *Client) fetchReveal(ctx context.Context, providerID, credentialID int) (string, error) {
 	if c.dbPool != nil && (c.keyring != nil || len(c.fernetKey) == 32) {
 		return c.fetchRevealDB(ctx, providerID, credentialID)
 	}
-	return "", fmt.Errorf("credential reveal not configured (no DB, keyring, or fernet key)")
+	return "", fmt.Errorf("%w (no DB, keyring, or fernet key)", secret.ErrRevealNotConfigured)
 }
 
 func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int) (string, error) {
@@ -1592,7 +2061,7 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	`, credentialID, providerID).Scan(&ciphertext)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return "", fmt.Errorf("credential %d not found", credentialID)
+			return "", fmt.Errorf("credential %d: %w", credentialID, secret.ErrRevealNotFound)
 		}
 		return "", err
 	}
@@ -1601,7 +2070,14 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	}
 	pt, _, err := secret.DecryptAny(string(ciphertext), c.keyring, c.fernetKey)
 	if err != nil {
-		return "", err
+		// Wrap the upstream error with a canonical sentinel so callers
+		// (metrics, tests) can classify via errors.Is. The original error
+		// also goes into the unwrap chain via %w so errors.Unwrap recovers
+		// the underlying decrypt error for diagnostics.
+		if errors.Is(err, secret.ErrUnknownFormat) {
+			return "", fmt.Errorf("%w: %w", secret.ErrRevealUnknownFormat, err)
+		}
+		return "", fmt.Errorf("%w: %w", secret.ErrRevealDecrypt, err)
 	}
 	return string(pt), nil
 }
@@ -1689,6 +2165,12 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 				"provider_id", cand.ProviderID,
 				"error", err,
 			)
+			// Cached failures are already counted by recordCredentialRevealCachedHit
+			// inside RevealAPIKey; counting them again here would over-report
+			// cache amplification. Only record fresh failures here.
+			if !errors.Is(err, secret.ErrRevealCached) {
+				recordCredentialRevealFailure(cand.ProviderID, err)
+			}
 			skippedCount++
 			reason := fmt.Sprintf("key_decrypt_failed: %v (credential_id=%d, provider_id=%d)", err, cand.CredentialID, cand.ProviderID)
 			cand.Routable = false
@@ -1747,7 +2229,11 @@ func (c *Client) maybeExitSuspicious(credentialID int, rawModel string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	data, err := c.redis.HGetAll(ctx, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel)).Result()
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the availability key collides with a non-hash type. Errors and
+	// empty maps both fall through to recordSuspiciousExit("noop") — the
+	// original behaviour for missing or invalid state.
+	data, err := redissafe.SafeHGetAll(ctx, c.redis, fmt.Sprintf("llmgw:avail:%d:%s", credentialID, rawModel))
 	if err != nil || len(data) == 0 || data["state"] != "suspicious" {
 		recordSuspiciousExit("noop")
 		return

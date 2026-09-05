@@ -2,6 +2,7 @@
 // DashboardViewV2.vue — 看板 + 实时流 + 会话统计 + 系统监测
 
 import { ref, computed, inject, type Ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
@@ -15,9 +16,10 @@ import type { BoardPayload } from '../api/board'
 import type { ModelUsage, HotApiKeyEntry } from '../api'
 import type { DashboardTabId } from './DashboardView.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
-import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const boardState = inject<{
   board: Ref<BoardPayload | null>
@@ -48,8 +50,7 @@ const dashboardTab = inject<{
 const dashboardActions = inject<{ refreshBoard: () => Promise<void> }>('dashboardActions')!
 
 const statsDrawerRef = ref<InstanceType<typeof StatsDrawer> | null>(null)
-const activeRequestId = ref<string | null>(null)
-
+const activeDrawerRequestId = ref<string | null>(null)
 const loading = boardState.loading
 const error = boardState.error
 const activeTab = dashboardTab.activeTab
@@ -62,23 +63,18 @@ const tenantLabel = computed(() => {
 })
 
 function openRequestDetail(id: string) {
-  // 2026-07-17: 实时请求流点击打开原始请求详情抽屉。
-  // 抽屉内的「流程详情」按钮负责打开内嵌面板 RequestTracePanel，避免依赖已删除的独立 trace 路由。
-  activeRequestId.value = id
+  // 2026-08-28: 泳道点击改为打开抽屉弹窗（与 request-logs 页一致），
+  // 抽屉 header 内提供「打开全页」按钮跳到独立页面。
+  activeDrawerRequestId.value = id
 }
 
-function closeRequestDrawer() {
-  activeRequestId.value = null
+function closeDrawer() {
+  activeDrawerRequestId.value = null
 }
 
-// 2026-08-06: RequestLogDrawer 上的「会话总结」按钮 → 跳到请求日志页并预填
-// 会话筛选。RequestLogsView 已有「会话总结」生成卡片，可直接复用。
-// 2026-08-06 (later): 重构为 composable useSessionSummaryJump，三个父视图共用
-// 一处跳转逻辑，避免重复实现。
-const { jumpToSessionSummary } = useSessionSummaryJump({
-  onBeforeJump: () => closeRequestDrawer(),
-})
-const openSessionSummary = jumpToSessionSummary
+function openDrawerRequestFullscreen(id: string) {
+  openRequestDetailPage(id, undefined, router)
+}
 
 async function openStatsDrawer(tab: 'apikeys' | 'models') {
   await drawerState.loadDrawerData()
@@ -194,8 +190,8 @@ async function onRefresh() {
     <!-- V3.3-OBS (OBS-FE5, 26 号 §5): 会话与统计 tab 下钻链路
          在线会话列表 → 轮次时间线（内联子请求树），手动加载、无轮询。 -->
     <template v-if="activeTab === 'stats'">
-      <SessionDrilldownPanel />
       <SessionStatsPanel style="margin-bottom: 20px;" />
+      <SessionDrilldownPanel />
     </template>
 
     <SelfCheckPanel v-if="activeTab === 'selfcheck'" />
@@ -213,11 +209,10 @@ async function onRefresh() {
       :loading="drawerLoading"
     />
 
-    <!-- 请求详情抽屉 -->
     <RequestLogDrawer
-      :request-id="activeRequestId"
-      @close="closeRequestDrawer"
-      @generateSessionSummary="openSessionSummary"
+      :request-id="activeDrawerRequestId"
+      @close="closeDrawer"
+      @open-request="openDrawerRequestFullscreen"
     />
   </div>
 </template>
@@ -282,7 +277,7 @@ async function onRefresh() {
 .tab-btn--active {
   background: var(--accent);
   color: white;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px var(--overlay-light);
 }
 
 .page-header-right {
@@ -333,13 +328,13 @@ async function onRefresh() {
 }
 
 .tenant-badge--admin {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 
 .tenant-badge--default {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .days-select {
@@ -394,7 +389,7 @@ async function onRefresh() {
 }
 
 .background-tasks-banner--active {
-  background: rgba(251, 191, 36, 0.10);
+  background: var(--warning-bg);
   border: 1px solid rgba(251, 191, 36, 0.45);
 }
 
@@ -445,7 +440,7 @@ async function onRefresh() {
 
 .stat-mini:hover {
   border-color: var(--accent);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 2px 8px var(--overlay-light);
 }
 
 .stat-mini__label {

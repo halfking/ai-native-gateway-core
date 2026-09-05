@@ -158,7 +158,7 @@ func (h *ModeHook) recordAndDetect(ctx context.Context, sess *Session, req *resp
 	resetOnProgress := h.loadBool(req.TenantID, "goal.repeat_reset_on_progress", h.config.RepeatResetOnProgress)
 	hash := hashResponse(req.ResponseBody)
 
-	repeatCount, err := h.db.RecordResponse(ctx, req.SessionID, hash, resetOnProgress)
+	repeatCount, err := h.db.RecordResponse(ctx, req.TenantID, req.SessionID, hash, resetOnProgress)
 	if err != nil {
 		slog.Warn("goal_record_response_failed", "error", err, "session_id", req.SessionID)
 		// Keep going with the in-memory value; a stale repeat count is a soft
@@ -180,7 +180,7 @@ func (h *ModeHook) recordAndDetect(ctx context.Context, sess *Session, req *resp
 // Returns true if this caller won the rotation.
 func (h *ModeHook) applyModelSwitch(ctx context.Context, req *response.InterceptRequest, sess *Session, newModel string) bool {
 	maxSwitch := h.loadInt(req.TenantID, "goal.max_model_switch_count", h.config.MaxModelSwitchCount)
-	won, err := h.db.AtomicModelSwitch(ctx, req.SessionID, newModel, maxSwitch)
+	won, err := h.db.AtomicModelSwitch(ctx, req.TenantID, req.SessionID, newModel, maxSwitch)
 	if err != nil {
 		slog.Warn("goal_model_switch_failed", "error", err, "session_id", req.SessionID)
 		return false

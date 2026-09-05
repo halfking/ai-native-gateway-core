@@ -1,11 +1,67 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"os"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/pashagolub/pgxmock/v4"
 )
+
+func TestLoadV1TurnsJoinsBodiesByRequestIDAndTimestampAcrossStores(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("new mock pool: %v", err)
+	}
+	defer mockDB.Close()
+
+	firstTS := time.Date(2026, 8, 1, 1, 2, 3, 0, time.UTC)
+	secondTS := firstTS.Add(time.Minute)
+	metaRows := mockDB.NewRows([]string{
+		"request_id", "ts", "gw_session_id", "tenant_id", "client_model", "provider_id", "credential_id",
+		"prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd", "success",
+	}).AddRow("req_reused", firstTS, "gw_fixture", "tenant_fixture", "gpt-test", "provider-test", "credential-test", 1, 2, 0, 0, 0.01, true).
+		AddRow("req_reused", secondTS, "gw_fixture", "tenant_fixture", "gpt-test", "provider-test", "credential-test", 3, 4, 0, 0, 0.02, true)
+	mockDB.ExpectQuery("FROM request_logs").WithArgs("tenant_fixture", "gw_fixture").WillReturnRows(metaRows)
+
+	mockDB.ExpectQuery("request_logs_bodies").WithArgs("req_reused", firstTS).WillReturnRows(
+		mockDB.NewRows([]string{"request_body", "response_body"}).AddRow(
+			json.RawMessage(`{"messages":[{"role":"user","content":"hot body"}]}`),
+			json.RawMessage(`{"choices":[]}`),
+		),
+	)
+	mockDB.ExpectQuery("request_logs_bodies").WithArgs("req_reused", secondTS).WillReturnRows(
+		mockDB.NewRows([]string{"request_body", "response_body"}).AddRow(
+			json.RawMessage(`{"messages":[{"role":"user","content":"partition body"}]}`),
+			json.RawMessage(`{"choices":[]}`),
+		),
+	)
+
+	loader := NewSessionLoader(mockDB)
+	turns, err := loader.LoadV1Turns(context.Background(), "tenant_fixture", "gw_fixture")
+	if err != nil {
+		t.Fatalf("load V1 turns: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("got %d turns, want 2", len(turns))
+	}
+	if string(turns[0].RequestBody) != `{"messages":[{"role":"user","content":"hot body"}]}` {
+		t.Errorf("first request body = %s", turns[0].RequestBody)
+	}
+	if string(turns[1].RequestBody) != `{"messages":[{"role":"user","content":"partition body"}]}` {
+		t.Errorf("second request body = %s", turns[1].RequestBody)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("mock expectations: %v", err)
+	}
+}
 
 func TestV1TurnStructure(t *testing.T) {
 	// Test that V1Turn struct can be instantiated
+
 	turn := V1Turn{
 		RequestID:    "req_123",
 		SessionID:    "gw_abc",
@@ -100,6 +156,26 @@ func TestV2SessionStructure(t *testing.T) {
 	}
 }
 
+func TestCanonicalQueryContracts(t *testing.T) {
+	data, err := os.ReadFile("loader.go")
+	if err != nil {
+		t.Fatalf("read loader.go: %v", err)
+	}
+	source := string(data)
+	for _, want := range []string{
+		"public.session_turns_with_current_month",
+		"public.session_bodies_with_current_month",
+		"gw_session_id",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("loader source missing canonical contract %q", want)
+		}
+	}
+	if strings.Contains(source, "FROM session_turns") || strings.Contains(source, "FROM session_bodies") {
+		t.Fatal("validator must not read V2 parent tables directly")
+	}
+}
+
 // Note: Integration tests for LoadV1Turns, LoadV2Turns, etc. require a real database
 // and are better suited for integration test suite. These unit tests verify struct
-// definitions and basic type safety.
+// definitions, basic type safety, and the read-only query contract.

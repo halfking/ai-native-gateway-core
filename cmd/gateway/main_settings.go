@@ -55,31 +55,38 @@ func syncRateLimitGateFromSettings() {
 	slog.Info("rate_limit.enabled initialised", "enabled", b)
 }
 
-// syncDispatchGateFromSettings reads dispatch_v2.enabled from settings.Global
-// and applies it to dispatch's atomic.Bool cache (domains/dispatch/gate.go).
-// The cache is read on every Execute hot-path call so we never hit the
-// settings backend during a request. Mirrors syncRateLimitGateFromSettings.
-// Runtime changes go through the admin settings PUT handler which calls
-// dispatch.SetDispatchEnabled directly. Errors are non-fatal (keep default ON).
+// syncDispatchGateFromSettings reads dispatch_v2.allow_model_change from
+// settings.Global and applies it to dispatch's atomic.Bool cache
+// (domains/dispatch/gate.go). The cache is read on the dispatch failover
+// hot path so we never hit the settings backend during a request. Mirrors
+// syncRateLimitGateFromSettings. Runtime changes go through the admin
+// settings PUT handler. Errors are non-fatal (keep default OFF).
+//
+// AUDIT_24H B2b (2026-08-17): the dispatch_v2.enabled boot sync was removed —
+// the pipeline is the only execute path and its kill-switch was retired.
 func syncDispatchGateFromSettings() {
+	syncDispatchBoolSetting(dispatch.ModelChangeGateKey, dispatch.SetModelChangeEnabled)
+}
+
+func syncDispatchBoolSetting(key string, apply func(bool)) {
 	if settings.Global == nil {
 		return
 	}
-	sp := settings.Global.Spec(dispatch.DispatchGateKey)
+	sp := settings.Global.Spec(key)
 	if sp == nil {
-		return // Spec not registered — keep package default (enabled).
+		return
 	}
-	v, _, err := settings.Global.EffectiveValue(sp.Scope, dispatch.DispatchGateKey, "")
+	v, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
 	if err != nil || len(v) == 0 {
 		return
 	}
 	var b bool
 	if err := json.Unmarshal(v, &b); err != nil {
-		slog.Debug("dispatch_v2.enabled: failed to unmarshal", "raw", string(v))
+		slog.Debug(key+": failed to unmarshal", "raw", string(v))
 		return
 	}
-	dispatch.SetDispatchEnabled(b)
-	slog.Info("dispatch_v2.enabled initialised", "enabled", b)
+	apply(b)
+	slog.Info(key+" initialised", "enabled", b)
 }
 
 // applyLogSettingsToLogging 从 settings_kv 读取 log.* 配置并应用到已初始化的

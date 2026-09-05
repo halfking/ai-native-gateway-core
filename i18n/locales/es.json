@@ -38,6 +38,12 @@
   "invalid_model": {
     "other": "El modelo '{{.Model}}' no es compatible con esta puerta de enlace"
   },
+  "unsupported_feature": {
+    "other": "El modelo seleccionado no admite este formato o modalidad de solicitud."
+  },
+  "model_deprecated": {
+    "other": "El modelo solicitado ha sido retirado permanentemente (fin de vida útil) por el proveedor ascendente."
+  },
   "meta_tool_error": {
     "other": "Error en el procesamiento de la meta-herramienta"
   },

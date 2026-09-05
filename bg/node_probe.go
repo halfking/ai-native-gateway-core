@@ -65,8 +65,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -77,6 +79,15 @@ const (
 
 	// 30s is a safety-net scan; Submit also wakes the worker immediately.
 	nodeProbeTickInterval = 30 * time.Second
+	// nodeProbeQueuePumpInterval paces the unified-queue pump that feeds due
+	// node_probe_state rows into credential_probe_queue (legacy picker is
+	// parked in that mode; without the pump the rows starve the queue).
+	nodeProbeQueuePumpInterval = 30 * time.Second
+	// nodeProbeQueuePumpBatch caps how many due rows one pump tick enqueues.
+	nodeProbeQueuePumpBatch = 20
+	// nodeProbeQueuePumpHoldoff advances a pumped row's next_retry_at so the
+	// same row is not re-enqueued on every tick while the queue drains it.
+	nodeProbeQueuePumpHoldoff = 10 * time.Minute
 	// A bounded batch keeps a large outage from monopolizing the worker.
 	nodeProbeBatchSize = 8
 
@@ -92,10 +103,33 @@ const (
 	// upstream pressure beyond what the background worker would
 	// produce.
 	nodeProbeSyncFanout = 8
+
+	// 2026-09-03 P1.3: bounded retry + persistent failure for
+	// submitViaQueueSource. ProbeQueue.Enqueue can fail with transient DB
+	// pressure; one-shot failures used to be silently logged (Submit) or
+	// delayed until the next pump tick (pumpDueStatesToQueue), so operators
+	// had no signal and Submit callers observed no recovery. We now retry
+	// up to nodeProbeQueueSubmitMaxAttempts with a small exponential
+	// backoff (100ms / 250ms / 500ms) bounded by the caller's ctx, and
+	// persist the final error to node_probe_state so the row stays
+	// inspectable. The retry budget is small on purpose: queue submission
+	// is a single INSERT round-trip, so 3 attempts cover transient
+	// connection blips without blocking recovery loops for seconds.
+	nodeProbeQueueSubmitMaxAttempts    = 3
+	nodeProbeQueueSubmitBaseBackoff    = 100 * time.Millisecond
+	nodeProbeQueueSubmitBackoffMult    = 2.5
+	nodeProbeQueueSubmitMaxBackoff     = 500 * time.Millisecond
+	nodeProbeQueueSubmitFailureHoldoff = 30 * time.Second
+	nodeProbeQueueSubmitErrCode        = "queue_submit_failed"
+	nodeProbeQueueSubmitErrDetailMax   = 256
 )
 
 type NodeProbeStateSink interface {
 	ApplyProbeForTenant(ctx context.Context, tenant string, credentialID int, rawModel string, success bool, latencyMs int) error
+}
+
+type nodeProbeAuditDB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
 // NodeProbeWorker polls node_probe_state and executes the two-round
@@ -116,6 +150,7 @@ type NodeProbeStateSink interface {
 // "models briefly work then 5xx" pattern.
 type NodeProbeWorker struct {
 	db            *pgxpool.Pool
+	auditDB       nodeProbeAuditDB
 	encKey        []byte
 	keyring       *secret.Keyring
 	apiKey        string
@@ -151,6 +186,13 @@ type NodeProbeWorker struct {
 	// Submit enqueues, the legacy loop() stops picking node_probe_state rows,
 	// and a ProbeQueueWorker + ProbeService own execution. nil = legacy path.
 	probeQueue *ProbeQueue
+	// enqueueFn (2026-09-05 noise-reduction) is the submitViaQueueSource test
+	// seam over ProbeQueue.Enqueue, following the same injectable-fn style as
+	// ProbeService.automaticEligibilityFn. It exists so the deterministic-gate
+	// skip (ErrProbeAutomaticIneligible / ErrProbeOutOfScope must not consume
+	// the retry budget) can be unit-tested without a live database. Production
+	// wiring leaves it nil and enqueue() falls through to probeQueue.Enqueue.
+	enqueueFn func(ctx context.Context, task ProbeQueueTask) (int64, bool, error)
 
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
@@ -291,11 +333,12 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		if envURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL")); envURL != "" {
 			baseURL = envURL
 		} else {
-			baseURL = "http://127.0.0.1:8781/v1"
+			baseURL = loopback.GatewayBase() + "/v1"
 		}
 	}
 	w := &NodeProbeWorker{
 		db:          db,
+		auditDB:     db,
 		encKey:      encKey,
 		keyring:     keyring,
 		apiKey:      apiKey,
@@ -364,36 +407,15 @@ func (w *NodeProbeWorker) Start(ctx context.Context) {
 	)
 }
 
-// resolveProbeAPIKey tries to find a system API key owned by the default
-// tenant's admin user.  When found it replaces w.apiKey so the gateway
-// probe round uses a real admin-owned key.  If nothing is found the
-// caller-provided value (env var) is kept as-is.
+// resolveProbeAPIKey preserves the caller-provided data-plane key. Local
+// gateway probes traverse AuthMiddleware, which validates only the static
+// gateway key; substituting a database system key causes an unrelated 401.
 func (w *NodeProbeWorker) resolveProbeAPIKey(ctx context.Context) {
-	// The default tenant's admin login is "{tenant_code}user" — "defaultuser"
-	// for the "default" tenant (see admin/password.go:DefaultTenantAdminUsername).
-	adminUser := "defaultuser"
-
-	qr := w.db.QueryRow(ctx, `
-		SELECT key_ciphertext FROM api_keys
-		WHERE COALESCE(is_system, FALSE) = TRUE AND status = 'active'
-		  AND tenant_id = 'default' AND owner_user = $1
-		ORDER BY created_at DESC LIMIT 1`, adminUser)
-
-	var ciphertext string
-	if err := qr.Scan(&ciphertext); err != nil {
-		slog.Debug("node_probe_worker: no existing admin system key, keeping env key",
-			"admin_user", adminUser, "error", err)
+	if w == nil {
 		return
 	}
-	pt, _, err := secret.DecryptAny(ciphertext, w.keyring, w.encKey)
-	if err != nil {
-		slog.Warn("node_probe_worker: admin system key exists but cannot decrypt, keeping env key",
-			"admin_user", adminUser, "error", err)
-		return
-	}
-	w.apiKey = string(pt)
-	slog.Info("node_probe_worker: resolved probe API key from DB",
-		"admin_user", adminUser)
+	slog.DebugContext(ctx, "node_probe_worker: using configured gateway API key",
+		"api_key_resolved", w.apiKey != "")
 }
 
 func (w *NodeProbeWorker) Stop() {
@@ -410,6 +432,12 @@ func (w *NodeProbeWorker) Stop() {
 			delete(w.wakeTimers, key)
 		}
 		w.mu.Unlock()
+		if w.client != nil {
+			w.client.CloseIdleConnections()
+		}
+		if w.probeClient != nil && w.probeClient != w.client {
+			w.probeClient.CloseIdleConnections()
+		}
 	})
 }
 
@@ -424,8 +452,24 @@ func (w *NodeProbeWorker) loop(ctx context.Context) {
 	// ProbeSync (synchronous request-path probe) does not use this loop.
 	if w.UseProbeQueue() {
 		slog.Info("node_probe_worker: unified-queue mode, legacy picker disabled")
-		<-ctx.Done()
-		return
+		// 2026-08-18 fix (glm-5.2 outage): with the picker parked, NOTHING fed
+		// the 569 due node_probe_state rows into the queue — the rows sat
+		// "ready" on dashboards forever while the durable queue starved
+		// (no traffic → no request_failure submissions). Pump due rows into
+		// the queue on a slow tick; dedup keys make double-enqueue a no-op.
+		pumpTicker := time.NewTicker(nodeProbeQueuePumpInterval)
+		defer pumpTicker.Stop()
+		w.pumpDueStatesToQueue(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-w.stopCh:
+				return
+			case <-pumpTicker.C:
+				w.pumpDueStatesToQueue(ctx)
+			}
+		}
 	}
 	ticker := time.NewTicker(nodeProbeTickInterval)
 	defer ticker.Stop()
@@ -579,16 +623,79 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 
 // submitViaQueue is the unified-queue path for Submit. It enqueues a node_probe
 // task into credential_probe_queue; the ProbeQueueWorker + ProbeService execute
-// it. Best-effort on DB error (matches the legacy path which ignores UPSERT err).
+// it. Best-effort on DB error: the source-parameterized helper
+// submitViaQueueSource already retries + persists failures (P1.3), so this
+// wrapper only logs at Warn when the helper ultimately fails.
 func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqID string) {
-	if w.probeQueue == nil {
-		return
+	if _, err := w.submitViaQueueSource(credID, model, tenantID, parentReqID, "request_failure"); err != nil {
+		slog.Warn("node_probe_worker: submit via queue failed",
+			"credential_id", credID, "model", model, "source", "request_failure", "error", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+}
+
+// enqueue routes submitViaQueueSource through ProbeQueue.Enqueue, or the
+// injected test seam when wired (see NodeProbeWorker.enqueueFn).
+func (w *NodeProbeWorker) enqueue(ctx context.Context, task ProbeQueueTask) (int64, bool, error) {
+	if w.enqueueFn != nil {
+		return w.enqueueFn(ctx, task)
+	}
+	return w.probeQueue.Enqueue(ctx, task)
+}
+
+// submitViaQueueSource is the source-parameterized enqueue used by Submit
+// ("request_failure") and the scheduled pump ("periodic"). The source feeds
+// the 自检 stream's origin badge and must stay inside the
+// credential_probe_queue.source CHECK constraint.
+//
+// 2026-09-03 P1.3: bounded retry (default 3 attempts, 100ms / 250ms /
+// 500ms backoff) plus persistent failure record. Behaviour:
+//   - Each attempt runs under a 1s sub-context; the outer ctx
+//     (caller-provided or 5s fallback) bounds total wall time.
+//   - Duplicate dedup_keys are treated as success (peer or earlier attempt
+//     already enqueued the same task) and recorded under outcome="duplicate".
+//   - 2026-09-05 noise-reduction: deterministic gate rejections
+//     (ErrProbeAutomaticIneligible / ErrProbeOutOfScope) are NOT retried.
+//     They are evaluated from current credential/provider state at the queue
+//     boundary and cannot flip between retries, so the old retry loop only
+//     amplified one rejection into 3 WARNs + 1 ERROR per credential per pump
+//     cycle (~75 ERRORs/cycle, docs 2026-09-05-pg-error-audit §5 P1). They
+//     are now logged once at Info (mirroring the consumption-side branch in
+//     probe_queue_worker.go::processTask), recorded under
+//     outcome="skipped_ineligible" / "skipped_out_of_scope", and returned as
+//     (false, nil) so no caller re-arms the row or re-logs the failure.
+//     node_probe_state is deliberately left untouched (no
+//     queue_submit_failed stamp) — a gate rejection is a business skip, not
+//     an infrastructure failure.
+//   - If all attempts fail on a transient error, the final error is persisted
+//     to node_probe_state (UPDATE existing row or INSERT a placeholder row)
+//     so operators have a queryable trail and Submit callers observe
+//     non-nil error. We do NOT modify consecutive_failures /
+//     next_retry_at / paused: those belong to the probe execution layer
+//     (runOne) and must not be polluted by infrastructure flakiness.
+//   - Every attempt and the final outcome are reflected in
+//     llmgw_node_probe_queue_submission_total{source,outcome} and the
+//     matching duration histogram so dashboards can alert on sustained
+//     outcome=failed rates.
+//
+// Returns (inserted, err): inserted=true iff this call produced a
+// new credential_probe_queue row. False on duplicate, deterministic gate
+// skip, or error. The boolean is what pumpDueStatesToQueue's P1.2 holdoff
+// branch consults.
+func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, parentReqID, source string) (bool, error) {
+	if w == nil || w.probeQueue == nil {
+		err := fmt.Errorf("probe queue not initialized")
+		nodeProbeQueueSubmissionTotal.WithLabelValues(source, "failed").Inc()
+		return false, err
+	}
 	if tenantID == "" {
 		tenantID = "default"
 	}
+	if source == "" {
+		source = "request_failure"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	task := ProbeQueueTask{
 		CredentialID: int64(credID),
 		TenantID:     tenantID,
@@ -599,19 +706,296 @@ func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqI
 		Priority:    FeaturedQueuePriority(model, 60),
 		MaxAttempts: nodeProbeMaxAttempts,
 		NextRunAt:   time.Now().Add(5 * time.Second),
-		Source:      "request_failure",
+		Automatic:   source != "admin",
+		Source:      source,
 		ParentReqID: parentReqID,
 		DedupKey:    buildNodeProbeTaskID(credID, model),
 	}
-	if _, inserted, err := w.probeQueue.Enqueue(ctx, task); err != nil {
-		slog.Warn("node_probe_worker: enqueue via queue failed",
-			"credential_id", credID, "model", model, "error", err)
-	} else {
-		slog.Info("node_probe_worker: submit via queue",
-			"credential_id", credID, "model", model, "inserted", inserted)
+
+	start := time.Now()
+	var (
+		inserted        bool
+		lastErr         error
+		firstAttemptErr error
+	)
+	for attempt := 1; attempt <= nodeProbeQueueSubmitMaxAttempts; attempt++ {
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, time.Second)
+		_, ins, err := w.enqueue(attemptCtx, task)
+		attemptCancel()
+		if err == nil {
+			inserted = ins
+			outcome := "success"
+			if !ins {
+				outcome = "duplicate"
+			}
+			nodeProbeQueueSubmissionTotal.WithLabelValues(source, outcome).Inc()
+			nodeProbeQueueSubmissionDuration.WithLabelValues(source, outcome).Observe(time.Since(start).Seconds())
+			if attempt > 1 {
+				slog.Info("node_probe_worker: submit via queue succeeded after retry",
+					"credential_id", credID, "model", model, "source", source,
+					"attempts", attempt, "inserted", ins)
+			} else {
+				slog.Info("node_probe_worker: submit via queue",
+					"credential_id", credID, "model", model, "source", source, "inserted", ins)
+			}
+			return inserted, nil
+		}
+		// 2026-09-05 noise-reduction: deterministic gate rejections must not
+		// consume the retry budget. The eligibility gate (probe_queue.go
+		// automaticTaskEligible) reads current credential/provider state and
+		// the URSM scope gate is static for the process lifetime, so neither
+		// can flip between two attempts milliseconds apart. Mirror the
+		// consumption-side branch (probe_queue_worker.go processTask: single
+		// Info + settle-as-skip) instead of 3 WARNs + 1 ERROR per credential
+		// per pump cycle. No persistSubmitFailure: a disabled credential or a
+		// disabled provider is a config state, not queue_submit_failed.
+		if errors.Is(err, ErrProbeAutomaticIneligible) || errors.Is(err, ErrProbeOutOfScope) {
+			outcome := "skipped_out_of_scope"
+			if errors.Is(err, ErrProbeAutomaticIneligible) {
+				outcome = "skipped_ineligible"
+			}
+			nodeProbeQueueSubmissionTotal.WithLabelValues(source, outcome).Inc()
+			nodeProbeQueueSubmissionDuration.WithLabelValues(source, outcome).Observe(time.Since(start).Seconds())
+			slog.Info("node_probe_worker: enqueue rejected by deterministic gate, skipped",
+				"credential_id", credID, "model", model, "source", source,
+				"outcome", outcome, "error", err)
+			return false, nil
+		}
+		if attempt == 1 {
+			firstAttemptErr = err
+		}
+		lastErr = err
+		slog.Warn("node_probe_worker: enqueue via queue failed, retrying",
+			"credential_id", credID, "model", model, "source", source,
+			"attempt", attempt, "max_attempts", nodeProbeQueueSubmitMaxAttempts,
+			"error", err)
+		if attempt < nodeProbeQueueSubmitMaxAttempts {
+			nodeProbeQueueSubmissionRetriesTotal.WithLabelValues(source).Inc()
+			backoff := nodeProbeQueueSubmitBaseBackoff
+			for i := 1; i < attempt; i++ {
+				backoff = time.Duration(float64(backoff) * nodeProbeQueueSubmitBackoffMult)
+				if backoff > nodeProbeQueueSubmitMaxBackoff {
+					backoff = nodeProbeQueueSubmitMaxBackoff
+					break
+				}
+			}
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				nodeProbeQueueSubmissionTotal.WithLabelValues(source, "failed").Inc()
+				nodeProbeQueueSubmissionDuration.WithLabelValues(source, "failed").Observe(time.Since(start).Seconds())
+				return false, fmt.Errorf("enqueue probe task: ctx cancelled mid-retry: %w", ctx.Err())
+			case <-timer.C:
+			}
+		}
 	}
-	// publishProbeTask (called inside Enqueue) emits the pending tile using
-	// task.Command as TaskType, so it shows as node_probe on the 自检 stream.
+
+	// All attempts exhausted. Persist the failure so operators and the
+	// next pump tick can both see it (best-effort: persistence failure
+	// must not mask the original enqueue error).
+	if w.db != nil {
+		w.persistSubmitFailure(credID, model, firstAttemptErr, lastErr)
+	}
+	nodeProbeQueueSubmissionTotal.WithLabelValues(source, "failed").Inc()
+	nodeProbeQueueSubmissionDuration.WithLabelValues(source, "failed").Observe(time.Since(start).Seconds())
+	slog.Error("node_probe_worker: enqueue via queue exhausted retries",
+		"credential_id", credID, "model", model, "source", source,
+		"attempts", nodeProbeQueueSubmitMaxAttempts,
+		"last_error", lastErr,
+	)
+	return false, fmt.Errorf("enqueue probe task: exhausted %d attempts: %w",
+		nodeProbeQueueSubmitMaxAttempts, lastErr)
+}
+
+// persistSubmitFailure records the final submission error onto
+// node_probe_state. It must NOT modify consecutive_failures /
+// next_retry_at / next_retry_seconds / paused — those columns are owned
+// by the probe-execution layer (runOne) and pollution here would skew
+// the 5s→30s→60s→5m→1h→2h→6h backoff ladder for transient DB blips
+// that have nothing to do with upstream health.
+//
+// We update last_err_code / last_err_detail / updated_at for an existing
+// row, or INSERT a placeholder row (next_retry_at=now() so the next
+// pump tick picks it up; paused=FALSE; in_flight_until=NULL) so the
+// failure is queryable even on a credential that has not yet produced a
+// real probe run. The error detail is truncated to
+// nodeProbeQueueSubmitErrDetailMax bytes to stay within TEXT bounds.
+func (w *NodeProbeWorker) persistSubmitFailure(credID int, model string, firstErr, lastErr error) {
+	if w.db == nil || (firstErr == nil && lastErr == nil) {
+		return
+	}
+	detail := lastErr
+	if detail == nil {
+		detail = firstErr
+	}
+	detailStr := detail.Error()
+	if len(detailStr) > nodeProbeQueueSubmitErrDetailMax {
+		detailStr = detailStr[:nodeProbeQueueSubmitErrDetailMax] + "…(truncated)"
+	}
+	firstStr := ""
+	if firstErr != nil {
+		firstStr = firstErr.Error()
+		if len(firstStr) > nodeProbeQueueSubmitErrDetailMax {
+			firstStr = firstStr[:nodeProbeQueueSubmitErrDetailMax] + "…(truncated)"
+		}
+	}
+	// Use a short independent ctx so a caller-cancelled ctx cannot stop us
+	// from recording the failure.
+	persistCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, err := w.db.Exec(persistCtx, `
+		UPDATE node_probe_state
+		SET last_err_code  = $3,
+		    last_err_detail = $4,
+		    updated_at      = now()
+		WHERE credential_id = $1 AND raw_model_name = $2
+	`, credID, model, nodeProbeQueueSubmitErrCode, detailStr); err != nil {
+		slog.Warn("node_probe_worker: persist submit failure (update) failed",
+			"credential_id", credID, "model", model, "error", err)
+		return
+	}
+	// INSERT path uses ON CONFLICT DO NOTHING so we never overwrite a row
+	// that the probe worker has already started managing. Keep the normal
+	// probe backoff untouched; this timestamp only rate-limits infrastructure
+	// submission failures while the queue/database is unavailable.
+	if _, err := w.db.Exec(persistCtx, `
+		INSERT INTO node_probe_state (
+			credential_id, raw_model_name,
+			consecutive_failures, consecutive_successes,
+			last_attempt_at, next_retry_at, next_retry_seconds,
+			paused, in_flight_until,
+			last_direct_ok, last_gateway_ok,
+			last_err_code, last_err_detail,
+			updated_at
+		) VALUES (
+			$1, $2, 0, 0,
+			NULL, now() + $5::interval, 5,
+			FALSE, NULL,
+			NULL, NULL,
+			$3, $4,
+			now()
+		)
+		ON CONFLICT (credential_id, raw_model_name) DO NOTHING
+	`, credID, model, nodeProbeQueueSubmitErrCode, detailStr,
+		fmt.Sprintf("%d seconds", int(nodeProbeQueueSubmitFailureHoldoff.Seconds()))); err != nil {
+		slog.Warn("node_probe_worker: persist submit failure (insert) failed",
+			"credential_id", credID, "model", model, "error", err)
+	}
+	if firstStr != "" && firstStr != detailStr {
+		slog.Warn("node_probe_worker: enqueue retries did not improve the error",
+			"credential_id", credID, "model", model,
+			"first_error", firstStr, "last_error", detailStr)
+	}
+}
+
+// pumpDueStatesToQueue feeds due node_probe_state rows into the unified
+// credential_probe_queue. In unified-queue mode the legacy picker loop is
+// parked, so these rows (written by failures, watchdogs, and the hourly
+// healthy-mark reconciler) had no consumer at all — the dashboards kept
+// counting them as "ready probes" while zero probes executed (2026-08-18
+// glm-5.2 incident: 569 ready / 0 probing, oldest due since 2026-06-19).
+// Pumping keeps node_probe_state as the scheduling surface and the queue as
+// the execution surface. Enqueue dedup (buildNodeProbeTaskID) makes repeat
+// pumps a no-op; the holdoff UPDATE stops a tight re-pump loop.
+func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
+	if w == nil || w.db == nil || w.probeQueue == nil {
+		return
+	}
+	qCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	rows, err := w.db.Query(qCtx, pumpDueStatesSQL(), nodeProbeQueuePumpBatch)
+	if err != nil {
+		slog.Warn("node_probe_worker: pump due states query failed", "error", err)
+		return
+	}
+	defer rows.Close()
+	type dueRow struct {
+		credID int
+		model  string
+		tenant string
+	}
+	var due []dueRow
+	for rows.Next() {
+		var r dueRow
+		if err := rows.Scan(&r.credID, &r.model, &r.tenant); err != nil {
+			slog.Warn("node_probe_worker: pump due states scan failed", "error", err)
+			return
+		}
+		due = append(due, r)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("node_probe_worker: pump due states iterate failed", "error", err)
+		return
+	}
+	for _, r := range due {
+		// 'periodic' (not 'request_failure'): these are scheduled re-probes,
+		// and the CHECK constraint on credential_probe_queue.source rejects
+		// anything outside its enum anyway.
+		//
+		// 2026-09-03 P1.2 fix: only update next_retry_at when probe submission
+		// succeeds. If submission fails, keep the old next_retry_at so the next
+		// recovery cycle can retry. This ensures the backoff ladder actually
+		// executes probes instead of silently advancing the schedule without
+		// doing any work.
+		//
+		// 2026-09-03 P1.3 follow-on: submitViaQueueSource returns
+		// (inserted, error). The `inserted` flag tells us whether THIS call
+		// produced a new row in credential_probe_queue (vs. dedup-collapsing
+		// an existing one). For the holdoff branch it does not matter —
+		// either way the queue now owns the task — so we keep the P1.2
+		// behaviour: any non-error advance the next_retry_at by 10 minutes
+		// so the next tick doesn't re-pump before the queue can claim the row.
+		if _, err := w.submitViaQueueSource(r.credID, r.model, r.tenant, "", "periodic"); err != nil {
+			slog.Warn("node_probe_worker: pump submit failed, will retry in next cycle",
+				"credential_id", r.credID, "model", r.model, "error", err)
+			continue
+		}
+		// Submission succeeded (or dedup-collapsed): advance the row so the
+		// next tick doesn't re-pump it before the queue has a chance to
+		// execute/claim it. Real outcomes (success reset / failure backoff)
+		// overwrite this via mirrorNodeProbeState.
+		if _, err := w.db.Exec(qCtx, `
+				UPDATE node_probe_state
+				SET next_retry_at = now() + $3::interval, updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2 AND next_retry_at <= now()`,
+			r.credID, r.model, fmt.Sprintf("%d seconds", int(nodeProbeQueuePumpHoldoff.Seconds()))); err != nil {
+			slog.Warn("node_probe_worker: pump holdoff update failed",
+				"credential_id", r.credID, "model", r.model, "error", err)
+		}
+	}
+	if len(due) > 0 {
+		slog.Info("node_probe_worker: pumped due states to queue", "count", len(due))
+	}
+}
+
+// pumpDueStatesSQL is extracted for guard tests (same pattern as
+// probe_queue.go reviveExpiredReadySQL). Beyond the paused/due filters it
+// applies the SAME automatic-probe eligibility gate the queue enforces at
+// Enqueue (automaticProbeEligibilityExistsSQL — credential active +
+// lifecycle active + not manually disabled, provider enabled + not manually
+// disabled). Rows for disabled credentials/providers are rejected
+// deterministically at the queue boundary (ErrProbeAutomaticIneligible), so
+// pumping them could never succeed — it only produced the per-cycle
+// "enqueue via queue exhausted retries" ERROR spam (3 WARNs + 1 ERROR per
+// credential per 30s tick, ~75 ERRORs/cycle; docs
+// 2026-09-05-pg-error-audit-and-environment §5 P1). Keeping the gate in
+// WHERE (evaluated before ORDER BY/LIMIT) means ineligible rows do not
+// consume the nodeProbeQueuePumpBatch slots, and they re-enter the pump
+// automatically the moment their credential/provider is re-enabled — probe
+// semantics are unchanged, the futile enqueue attempts are gone. The outer
+// alias is `cred` so it cannot shadow the EXISTS fragment's own
+// `credentials c` / `providers p` aliases.
+func pumpDueStatesSQL() string {
+	return `
+		SELECT nps.credential_id, nps.raw_model_name, COALESCE(cred.tenant_id, 'default')
+		FROM node_probe_state nps
+		JOIN credentials cred ON cred.id = nps.credential_id
+		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
+		  AND ` + automaticProbeEligibilityExistsSQL("nps.credential_id") + `
+		ORDER BY nps.next_retry_at
+		LIMIT $1`
 }
 
 // publishProbeTask TaskType uses task.Command so node_probe / integrity_verify /
@@ -867,16 +1251,50 @@ func (w *NodeProbeWorker) ProbeSync(
 				w.updateBindingAvailability(ctx, j.credID, j.model, true, "")
 				w.updateCredentialHealth(ctx, j.credID)
 				w.updateObservedState(ctx, j.credID, j.model, true, "", time.Now())
+				// 2026-08-24: smart-fallback tentative restore (需求 6
+				// bullet 6). A sync probe "passed in isolation" — stamp a
+				// revert deadline so bg.ProbeRollback reverts the binding
+				// if no confirming probe success (which clears
+				// probe_revert_at via updateBindingAvailability's success
+				// branch) lands within the window. Confirmation arrives
+				// naturally: the tick/queue still probes this (cred,model)
+				// because emitSyncAudit deliberately does NOT touch
+				// node_probe_state (next_retry_at unchanged). Disabled
+				// entirely when the window env is 0/off.
+				if revertAfter := probeTentativeRevertAfter(); revertAfter > 0 {
+					markCtx, markCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+					if err := MarkTentativeRestore(markCtx, w.db, j.credID, j.model, revertAfter); err != nil {
+						slog.Warn("node_probe_worker: tentative restore stamp failed",
+							"credential_id", j.credID, "model", j.model, "error", err)
+					}
+					markCancel()
+				}
 				res.gateway = w.probeGateway(ctx, j.credID, j.model)
 			} else {
 				w.updateBindingAvailability(ctx, j.credID, j.model, false, res.direct.errCode)
 				recoverAt := time.Now().Add(5 * time.Minute)
 				w.updateObservedState(ctx, j.credID, j.model, false, res.direct.errCode, recoverAt)
 			}
+			// 2026-08-18: the sync path also drives the URSM v2 authoritative
+			// router. Without this write the probe "recovered" only the PG
+			// binding while PlanCandidatesWithContext kept rejecting the node
+			// for its missing/expired Redis node key, so the executor's retry
+			// after ProbeSync returned 503 again (glm-5.2 outage on 154).
+			// Success reflects the direct round only: the gateway round is
+			// routed through this same URSM filter and can 503 circularly
+			// while the key is missing.
+			w.updateURSMv2ProbeState(ctx, tenantID, j.credID, j.model, res.direct.ok, res.direct.latencyMs)
 			if w.invalidateCandidateCache != nil {
 				w.invalidateCandidateCache(j.credID)
 			}
-			w.emitSyncAudit(ctx, j.credID, j.model, res.direct, res.gateway, start, parentReqID)
+			if err := w.emitSyncAudit(ctx, j.credID, j.model, res.direct, res.gateway, start, parentReqID); err != nil {
+				slog.Warn("node_probe_worker: sync audit persist failed",
+					"credential_id", j.credID,
+					"raw_model", j.model,
+					"trigger_kind", "sync_request",
+					"parent_request_id", parentReqID,
+					"error", err)
+			}
 			results <- res
 		}()
 	}
@@ -1028,9 +1446,13 @@ func (w *NodeProbeWorker) emitSyncAudit(
 	gw nodeProbeRoundResult,
 	startedAt time.Time,
 	parentReqID string,
-) {
-	if w.db == nil {
-		return
+) error {
+	auditDB := w.auditDB
+	if auditDB == nil {
+		auditDB = w.db
+	}
+	if auditDB == nil {
+		return nil
 	}
 	now := time.Now()
 	durationMs := int(now.Sub(startedAt).Milliseconds())
@@ -1043,9 +1465,9 @@ func (w *NodeProbeWorker) emitSyncAudit(
 		}
 		cleaned[k] = v
 	}
-	requestHeadersJSON, _ := json.Marshal(cleaned)
+	requestHeadersJSON := probeHeadersJSON(cleaned)
 
-	_, _ = w.db.Exec(ctx, `
+	_, err := auditDB.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
@@ -1061,7 +1483,7 @@ func (w *NodeProbeWorker) emitSyncAudit(
 			$8, $9, $10, $11, $12,
 			$13, $14, $15, $16,
 			$17, $18, $19,
-			$20, $21, $22, $23,
+			$20, $21::text::jsonb, $22, $23,
 			$24, $25,
 			$26
 		)
@@ -1075,6 +1497,11 @@ func (w *NodeProbeWorker) emitSyncAudit(
 		direct.latencyMs, direct.viaProxy,
 		parentReqID,
 	)
+	if err != nil {
+		auditPersistFailedTotal.WithLabelValues("sync_request").Inc()
+		return fmt.Errorf("insert node_probe_runs sync audit: %w", err)
+	}
+	return nil
 }
 
 func (w *NodeProbeWorker) drainDue(ctx context.Context) {
@@ -1285,7 +1712,13 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	gw := w.probeGateway(ctx, credID, model)
 
 	success := direct.ok && gw.ok
-	w.updateURSMv2ProbeState(ctx, trigger.tenantID, credID, model, success, direct.latencyMs)
+	// 2026-08-18: URSM availability reflects the direct (upstream) round only.
+	// The gateway round is itself routed through the URSM v2 filter; when the
+	// node key is missing/expired the round 503s circularly and writing that
+	// composite result back as available=0 turned a transient key expiry into
+	// a persistent "confirmed unavailable" lockout (glm-5.2 outage on 154).
+	// The composite still drives the backoff ladder and audit below.
+	w.updateURSMv2ProbeState(ctx, trigger.tenantID, credID, model, direct.ok, direct.latencyMs)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	if !direct.ok {
@@ -1314,23 +1747,26 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		// asset health probe still runs hourly, so this is a
 		// layered defense — the cred is re-probed at most once per
 		// hour instead of once per day.
-		_, _ = w.db.Exec(ctx, `
-			UPDATE node_probe_state SET
-				consecutive_failures = 0,
-				consecutive_successes = consecutive_successes + 1,
-				last_attempt_at = now(),
-				next_retry_at = now() + interval '1 hour',
-				next_retry_seconds = 3600,
-				paused = FALSE,
-				last_run_id = NULL,
-				last_direct_ok = TRUE,
-				last_gateway_ok = TRUE,
-				last_err_code = NULL,
-				last_err_detail = NULL,
-				in_flight_until = NULL,
-				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2
-		`, credID, model)
+		if _, err := w.db.Exec(ctx, `
+				UPDATE node_probe_state SET
+					consecutive_failures = 0,
+					consecutive_successes = consecutive_successes + 1,
+					last_attempt_at = now(),
+					next_retry_at = now() + interval '1 hour',
+					next_retry_seconds = 3600,
+					paused = FALSE,
+					last_run_id = NULL,
+					last_direct_ok = TRUE,
+					last_gateway_ok = TRUE,
+					last_err_code = NULL,
+					last_err_detail = NULL,
+					in_flight_until = NULL,
+					updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2
+			`, credID, model); err != nil {
+
+			w.logNodeProbeStateUpdateWarning("success", direct.providerID, credID, model, trigger.parentID, err)
+		}
 
 		// 2026-07-25 SPEC §3.1.2: success must immediately drop
 		// node_probe_failed: invalidate URSM v2 candCache + pg_notify
@@ -1370,22 +1806,25 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
 		nextRetryAt := now.Add(backoff)
 		nextSec := int(backoff.Seconds())
-		_, _ = w.db.Exec(ctx, `
-			UPDATE node_probe_state SET
-				consecutive_failures = $3,
-				consecutive_successes = 0,
-				last_attempt_at = now(),
-				next_retry_at = $4,
-				next_retry_seconds = $5,
-				last_direct_ok = $6,
-				last_gateway_ok = $7,
-				last_err_code = $8,
-				last_err_detail = $9,
-				in_flight_until = NULL,
-				updated_at = now()
-			WHERE credential_id = $1 AND raw_model_name = $2
-		`, credID, model, attempt, nextRetryAt, nextSec,
-			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw))
+		if _, err := w.db.Exec(ctx, `
+				UPDATE node_probe_state SET
+					consecutive_failures = $3,
+					consecutive_successes = 0,
+					last_attempt_at = now(),
+					next_retry_at = $4,
+					next_retry_seconds = $5,
+					last_direct_ok = $6,
+					last_gateway_ok = $7,
+					last_err_code = $8,
+					last_err_detail = $9,
+					in_flight_until = NULL,
+					updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2
+			`, credID, model, attempt, nextRetryAt, nextSec,
+			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw)); err != nil {
+
+			w.logNodeProbeStateUpdateWarning("failure", direct.providerID, credID, model, trigger.parentID, err)
+		}
 
 		// 2026-08-11: suspicious-action hook. When a node has failed 2+ times
 		// in a row (the same consecutive_threshold the active_probe submitter
@@ -1402,9 +1841,9 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	nextSec := int(ChainBackoffIndex(attempt, NodeProbeBackoffChain).Seconds())
 
 	// 准备新字段数据
-	var requestHeadersJSON []byte
+	var requestHeadersJSON string
 	if len(direct.requestHeaders) > 0 {
-		requestHeadersJSON, _ = json.Marshal(direct.requestHeaders)
+		requestHeadersJSON = probeHeadersJSON(direct.requestHeaders)
 	}
 
 	timeoutAtMs := 0
@@ -1412,14 +1851,14 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		timeoutAtMs = direct.latencyMs
 	}
 
-	_, _ = w.db.Exec(ctx, `
+	_, err = w.db.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
 			gateway_ok, gateway_http_status, gateway_err_code, gateway_latency_ms, gateway_err_detail,
 			success, started_at, completed_at, duration_ms,
-			api_model, outbound_model, provider_id, 
-			request_url, request_headers, request_body, response_body, 
+			api_model, outbound_model, provider_id,
+			request_url, request_headers, request_body, response_body,
 			timeout_at_ms, via_proxy
 		) VALUES (
 			$1, $2, $3, $4, $5,
@@ -1427,7 +1866,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			$11, $12, $13, $14, $15,
 			$16, $17, $18, $19,
 			$20, $21, $22,
-			$23, $24, $25, $26,
+			$23, $24::text::jsonb, $25, $26,
 			$27, $28
 		)`,
 		credID, model, triggerKind, attempt, nextSec,
@@ -1438,6 +1877,16 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		direct.requestURL, requestHeadersJSON, direct.requestBody, direct.responseBody,
 		timeoutAtMs, direct.viaProxy,
 	)
+	if err != nil {
+		// 2026-08-18 Agent B: the legacy runOne path used to swallow this
+		// error with _, _ = ... — combined with the trigger_kind CHECK gap
+		// that is exactly how node_probe_runs froze. Surface it so the
+		// operator sees a gap and can replay the row out-of-band.
+		auditPersistFailedTotal.WithLabelValues(triggerKind).Inc()
+		slog.Error("node_probe: node_probe_runs audit insert failed (legacy runOne)",
+			"credential_id", credID, "model", model, "trigger_kind", triggerKind, "error", err)
+		return fmt.Errorf("audit insert: %w", err)
+	}
 	return nil
 }
 
@@ -1501,6 +1950,17 @@ type nodeProbeRoundResult struct {
 	requestBody    string
 	responseBody   string // 前512字节
 	viaProxy       bool   // probeDirect是否通过代理
+}
+
+func probeHeadersJSON(headers map[string]string) string {
+	if len(headers) == 0 {
+		return "{}"
+	}
+	encoded, err := json.Marshal(headers)
+	if err != nil {
+		return "{}"
+	}
+	return string(encoded)
 }
 
 // probeDirect issues a chat-completion ping directly to the upstream
@@ -1799,6 +2259,37 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		LIMIT 1
 	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
 	if err != nil {
+		// 2026-08-18 fix (glm-5.2 outage): the strict gates above conflate
+		// "no binding row" (a config problem) with "credential currently
+		// status/lifecycle-disabled" (runtime state a probe exists to gather
+		// evidence about). Score automation flips lifecycle_status='disabled'
+		// on stale data; the probe then fails endpoint-build with "no rows",
+		// isMissingBindingErr short-circuits to a fake success, deletes
+		// node_probe_state and never writes URSM — the credential becomes
+		// unprobeable and unmonitorable. Retry once with only the
+		// human-intent gates (provider enabled + not manual_disabled) so
+		// direct evidence can still be collected for such credentials.
+		var looseErr error
+		looseErr = w.db.QueryRow(queryCtx, `
+			SELECT c.secret_ciphertext,
+			       COALESCE(NULLIF(pm.outbound_model_name, ''), pm.raw_model_name, ''),
+			       p.base_url, COALESCE(p.protocol, 'openai-completions'), p.id
+			FROM credentials c
+			JOIN providers p ON p.id = c.provider_id
+			JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE c.id = $1 AND pm.raw_model_name = $2
+			  AND p.enabled = TRUE AND p.manual_disabled = FALSE
+			LIMIT 1
+		`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
+		if looseErr == nil {
+			slog.Info("node_probe_worker: probing credential despite non-active status flags",
+				"credential_id", credID, "model", model,
+				"note", "status/lifecycle gates skipped to collect direct evidence")
+			err = nil
+		}
+	}
+	if err != nil {
 		// 2026-07-24 P0 fix: surface the missing-binding case explicitly.
 		// resolveDirectTarget requires (cred, raw_model_name) to have a
 		// row in credential_model_bindings AND a matching provider_models
@@ -1876,6 +2367,21 @@ func directProbeBody(model, protocol string) string {
 		"max_tokens": 10,
 	})
 	return string(body)
+}
+
+func (w *NodeProbeWorker) logNodeProbeStateUpdateWarning(phase string, providerID, credID int, model, parentRequestID string, err error) {
+	if err == nil {
+		return
+	}
+	slog.Warn("node_probe_worker: node_probe_state update failed",
+		"phase", phase,
+		"provider_id", providerID,
+		"credential_id", credID,
+		"raw_model", model,
+		"parent_request_id", parentRequestID,
+		"queue", w != nil && w.probeQueue != nil,
+		"error", err,
+	)
 }
 
 func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID int, model string, available bool, reason string) {

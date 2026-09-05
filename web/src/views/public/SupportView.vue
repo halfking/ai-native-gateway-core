@@ -195,22 +195,22 @@ function skip() {
 </template>
 
 <style scoped>
-.sup-count, .sup-note { color: #94a3b8; }
+.sup-count, .sup-note { color: var(--muted); }
 .sup-impact ul, .sup-custom-box ul { margin: 0.5rem 0 0; padding-left: 1.25rem; }
 .sup-tiers { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 0.75rem; margin: 1.5rem 0; }
 .sup-tier { cursor: pointer; text-align: center; transition: border-color 0.2s; }
 .sup-tier--active { border-color: var(--el-color-primary); }
 .sup-tier__label { font-weight: 600; }
 .sup-tier__price { font-size: 1.25rem; margin: 0.25rem 0; color: var(--el-color-primary); }
-.sup-tier__desc { font-size: 0.75rem; color: #64748b; }
+.sup-tier__desc { font-size: 0.75rem; color: var(--muted); }
 .sup-custom { margin-bottom: 1rem; }
 .sup-actions { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
 .sup-custom-box { margin-top: 1.5rem; }
 .sup-custom-box h3 { margin: 0 0 8px; }
 .sup-pay-dialog { text-align: center; }
 .sup-pay-amount { font-size: 2rem; font-weight: 700; color: #1677ff; margin: 0; }
-.sup-pay-order { font-size: 0.8rem; color: #64748b; }
-.sup-pay-hint, .sup-pay-tip { font-size: 0.875rem; color: #94a3b8; line-height: 1.5; }
+.sup-pay-order { font-size: 0.8rem; color: var(--muted); }
+.sup-pay-hint, .sup-pay-tip { font-size: 0.875rem; color: var(--muted); line-height: 1.5; }
 .sup-qr { max-width: 260px; width: 100%; margin: 12px auto; display: block; }
-.sup-stub { color: #b45309; font-size: 0.875rem; }
+.sup-stub { color: var(--warning-dark); font-size: 0.875rem; }
 </style>

@@ -21,6 +21,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/metrics"
+	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -61,6 +63,11 @@ type SystemMonitor struct {
 	recoveryDebounceTTL   time.Duration // debounce window for cluster-wide MarkClosedDebounced; default 5m
 	healthMu              sync.Mutex
 	consecutiveFailures   int // protected by healthMu; never hold it across gate/Redis I/O
+	// restoreRetryTicks counts healthy ticks (protected by healthMu) to
+	// pace the periodic closed-gate restore retry (2026-09-04): a closed
+	// gate previously received exactly ONE restore attempt, on the
+	// fallback→healthy transition.
+	restoreRetryTicks int64
 
 	// pingFn is an optional test seam that overrides the production
 	// dedup.Ping. nil in production; tests inject a stub here to drive
@@ -161,7 +168,7 @@ const DefaultRecoveryDebounceTTL = 5 * time.Minute
 type Config struct {
 	DB          *pgxpool.Pool
 	Redis       *redis.Client
-	Keyring     interface{}
+	Keyring     *secret.Keyring
 	EncKey      []byte
 	ProxyFunc   func(*http.Request) (*url.URL, error)
 	TimeoutMs   int
@@ -211,15 +218,21 @@ func NewSystemMonitor(cfg Config) (*SystemMonitor, error) {
 			slog.Warn("system_monitor: lua scripts load failed, will retry on first Submit",
 				"error", err)
 			// continue with nil scripts — Submit will retry LoadScripts lazily
+			metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(metrics.RedisLuaScriptPreloadedFailed)
 		} else {
 			scripts = s
+			metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(metrics.RedisLuaScriptPreloadedOK)
 		}
+	} else {
+		// Redis 未配置：-1 sentinel 与 gateway main.go 中 ursm 模块保持一致，
+		// 让 Prometheus query 能区分"未启用"和"启用但预加载失败"。
+		metrics.RedisLuaScriptPreloaded.WithLabelValues("systemmonitor").Set(metrics.RedisLuaScriptPreloadedDisabled)
 	}
 
 	sm := &SystemMonitor{
 		queue:                 NewQueue(cfg.Redis, scripts),
 		dedup:                 NewInflightDedup(cfg.Redis),
-		executor:              NewExecutor(ExecutorConfig{DB: cfg.DB, Keyring: nil, EncKey: cfg.EncKey, ProxyFunc: cfg.ProxyFunc, TimeoutMs: cfg.TimeoutMs}),
+		executor:              NewExecutor(ExecutorConfig{DB: cfg.DB, Keyring: cfg.Keyring, EncKey: cfg.EncKey, ProxyFunc: cfg.ProxyFunc, TimeoutMs: cfg.TimeoutMs}),
 		audit:                 NewAudit(cfg.DB),
 		metricsCollector:      NewMetricsCollector(cfg.DB),
 		concurrency:           cfg.Concurrency,
@@ -526,6 +539,7 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 		"worker_count", sm.workerCount,
 		"concurrency", sm.concurrency,
 		"fallback", sm.fallback,
+		"audit_enabled", sm.audit != nil && sm.audit.Enabled(),
 	)
 	for i := 0; i < sm.workerCount; i++ {
 		sm.wg.Add(1)
@@ -641,6 +655,16 @@ func (sm *SystemMonitor) fetchTask(ctx context.Context, workerLog *slog.Logger) 
 	return nil, false
 }
 
+// writeAudit makes an unconfigured audit backend observable instead of
+// silently treating it as a successful best-effort write. Queue completion
+// remains independent so an audit outage does not strand a claimed task.
+func (sm *SystemMonitor) writeAudit(ctx context.Context, task *Task, result *ExecutorResult, extras map[string]any) error {
+	if sm == nil || sm.audit == nil || !sm.audit.Enabled() {
+		return errors.New("system monitor audit backend is disabled")
+	}
+	return sm.audit.Write(ctx, task, result, extras)
+}
+
 // processTask handles a single claimed task end-to-end.
 //
 // Order matters:
@@ -683,8 +707,14 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 			task.RecentRequestAt = &info.At
 			sm.publishEvent(ctx, "skipped", task)
 
-			if err := sm.audit.Write(ctx, task, nil, extras); err != nil {
-				workerLog.Warn("system_monitor: audit skip write failed", "error", err)
+			if err := sm.writeAudit(ctx, task, nil, extras); err != nil {
+				workerLog.Warn("system_monitor: audit skip write failed",
+					"task_id", task.ID,
+					"credential_id", task.CredentialID,
+					"raw_model", task.RawModel,
+					"source", task.Source,
+					"attempt", task.Attempt,
+					"error", err)
 			}
 			if !sm.IsFallback() {
 				if err := sm.queue.Complete(ctx, task, TaskStatusSkipped, extras); err != nil {
@@ -723,8 +753,15 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 	sm.publishEvent(ctx, string(status), task)
 
 	// Audit
-	if err := sm.audit.Write(ctx, task, result, extras); err != nil {
-		workerLog.Warn("system_monitor: audit write failed", "error", err)
+	if err := sm.writeAudit(ctx, task, result, extras); err != nil {
+		workerLog.Warn("system_monitor: audit write failed",
+			"task_id", task.ID,
+			"credential_id", task.CredentialID,
+			"raw_model", task.RawModel,
+			"source", task.Source,
+			"attempt", task.Attempt,
+			"status", task.Status,
+			"error", err)
 	}
 
 	// Complete (Redis status update + running removal)
@@ -778,7 +815,11 @@ func (sm *SystemMonitor) classifyResult(task *Task, result *ExecutorResult, exec
 	extras := map[string]any{}
 	if result == nil || result.Result == nil {
 		extras["err_code"] = "executor_nil_result"
-		extras["err_detail"] = execErr.Error()
+		if execErr != nil {
+			extras["err_detail"] = execErr.Error()
+		} else {
+			extras["err_detail"] = "executor returned nil result"
+		}
 		return TaskStatusFailed, extras
 	}
 	pr := result.Result
@@ -879,6 +920,20 @@ func (sm *SystemMonitor) checkRedisHealthOnce(ctx context.Context) {
 		// Healthy and not in fallback — nothing to do, but reset the
 		// failure counter so the next failure event starts from 0.
 		sm.resetConsecutiveFailures()
+		// 2026-09-04 availability: retry the (self-guarding) gate restore
+		// once a minute while healthy. Previously a closed gate got
+		// exactly one restore attempt, on the fallback→healthy
+		// transition; if that single attempt failed — e.g. Redis came
+		// back EMPTY after a persistence-less restart — the gate stayed
+		// closed forever. RestoreIfClosed is a no-op-when-open Redis GET,
+		// so the steady-state cost is one GET per minute.
+		sm.healthMu.Lock()
+		sm.restoreRetryTicks++
+		retry := sm.restoreRetryTicks%4 == 0
+		sm.healthMu.Unlock()
+		if retry {
+			sm.maybeAutoRestoreRecoveryGate(ctx)
+		}
 	case pingErr != nil && !sm.IsFallback():
 		slog.Warn("system_monitor: redis unhealthy, entering fallback mode",
 			"error", pingErr)

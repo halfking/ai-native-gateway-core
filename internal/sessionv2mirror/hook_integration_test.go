@@ -43,6 +43,7 @@ func cleanupTestV2Data(t *testing.T, db *pgxpool.Pool, sessionID, tenantID strin
 	ctx := context.Background()
 	tables := []string{
 		"public.sessions",
+		"public.session_turns_hot",
 		"public.session_turns",
 		"public.session_bodies",
 		"public.session_turn_logs",
@@ -106,13 +107,17 @@ func TestPersistHook_Integration_DBWrite(t *testing.T) {
 	err := writer.Write(ctx, req)
 	require.NoError(t, err, "writer.Write should succeed")
 
-	// Verify data in V2 tables
+	// Verify data lands in the hot table before the asynchronous promotion job runs.
 	var turnCount int
+	var digestSchemaVersion string
 	err = db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM public.session_turns WHERE session_id = $1 AND tenant_id = $2`,
-		sessionID, tenantID).Scan(&turnCount)
+		`SELECT COUNT(*), COALESCE(MAX(digest->>'schema_version'), '')
+		 FROM public.session_turns_hot
+		 WHERE session_id = $1 AND tenant_id = $2`,
+		sessionID, tenantID).Scan(&turnCount, &digestSchemaVersion)
 	require.NoError(t, err)
-	require.Equal(t, 1, turnCount, "expected 1 turn")
+	require.Equal(t, 1, turnCount, "expected one hot turn")
+	require.Equal(t, "1", digestSchemaVersion, "expected persisted digest schema version")
 
 	var bodyCount int
 	err = db.QueryRow(ctx,

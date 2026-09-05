@@ -8,7 +8,7 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
 )
 
 const (
@@ -56,6 +58,52 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 
 	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
 		return
+	}
+
+	// 2026-08-19: per-session, per-trigger-type distributed lock so two
+	// concurrent manual "regenerate" clicks (or cross-replica races) do
+	// not both call the LLM. Auto-title and manual-title have
+	// independent keys so the user can regenerate while auto-title is
+	// mid-run, and vice-versa.
+	//
+	// Follower semantics: wait for the leader, then re-read the stored
+	// title. If the leader wrote one, return it; otherwise fall through
+	// to the normal pipeline so the user sees a useful error rather
+	// than a silent no-op.
+	var lockHandle *distlock.Handle
+	if h.titleDistLock != nil {
+		key := titleDistLockKey("manual", taskID, scopedKey)
+		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
+			Key:   key,
+			TTL:   60 * time.Second,
+			Scope: "manual",
+		})
+		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
+			slog.Warn("session_title: distlock acquire failed; proceeding without lock",
+				"task_id", taskID, "session_id", scopedKey, "error", lerr)
+		} else if hh != nil {
+			lockHandle = hh
+			defer lockHandle.Release(context.Background())
+			if !lockHandle.IsLeader() {
+				waitErr := lockHandle.Wait(ctx)
+				if waitErr != nil {
+					writeError(w, http.StatusConflict, "标题生成仍在进行，请稍后重试")
+					return
+				}
+				if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
+					meta := sessionTitleMeta{
+						TaskID:          taskID,
+						ScopedSessionID: sc.SessionID,
+						GeneratedAt:     time.Now().UTC().Format(time.RFC3339),
+						Model:           "manual-follower",
+					}
+					writeJSON(w, http.StatusOK, sessionTitleResponse{Title: title, Meta: meta})
+					return
+				}
+				writeError(w, http.StatusConflict, "标题生成未完成，请稍后重试")
+				return
+			}
+		}
 	}
 
 	logs, err := h.loadTaskLogsForTitle(ctx, taskID, sc, r)
@@ -99,6 +147,12 @@ func (h *Handler) handleSessionSummarizeTitle(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	if lockHandle != nil && lockHandle.IsLeader() {
+		if err := lockHandle.Check(ctx); err != nil {
+			writeError(w, http.StatusConflict, "标题租约已失效，请稍后重试")
+			return
+		}
+	}
 	if err := h.upsertSessionTitle(ctx, taskID, scopedKey, title, model, keyID); err != nil {
 		writeError(w, http.StatusInternalServerError, "保存标题失败")
 		return
@@ -121,8 +175,8 @@ func (h *Handler) loadTaskLogsForTitle(ctx context.Context, taskID string, sc se
 	limitArg := "$" + strconv.Itoa(len(args))
 	rows, err := h.db.Query(ctx, `
 		SELECT rl.ts, rl.request_preview, rl.response_preview,
-		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+		       COALESCE(rb.request_body::text, '') AS request_body,
+		       COALESCE(rb.response_body::text, '') AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
@@ -242,6 +296,30 @@ func (h *Handler) upsertSessionTitle(ctx context.Context, taskID, scopedSessionI
 	return err
 }
 
+// resolveSessionTitleTaskID chooses the real task scope from user-facing
+// requests so summary refreshes update the same title row as request logs.
+// Legacy sessions without a task retain the historical "auto" scope.
+func (h *Handler) resolveSessionTitleTaskID(ctx context.Context, sessionID, tenantID string) (string, error) {
+	if h == nil || h.db == nil {
+		return "", fmt.Errorf("database not configured")
+	}
+	var taskID string
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(TRIM(gw_task_id), ''), 'auto')
+		FROM request_logs_with_current_month
+		WHERE gw_session_id = $1
+		  AND tenant_id = $2
+		  AND success = TRUE
+		  AND COALESCE(is_auto_request, FALSE) = FALSE
+		ORDER BY ts DESC, id DESC
+		LIMIT 1
+	`, sessionID, tenantID).Scan(&taskID)
+	if err != nil {
+		return "", err
+	}
+	return taskID, nil
+}
+
 func (h *Handler) loadSessionTitlesBatch(ctx context.Context, keys [][2]string) map[string]string {
 	out := make(map[string]string, len(keys))
 	if h.db == nil || len(keys) == 0 {
@@ -300,6 +378,12 @@ type titleUpdateRequest struct {
 // generated_at=now(), model="manual" so it is distinguishable from
 // auto-generated titles. Empty/whitespace titles are rejected so we
 // never overwrite a usable title with empty data.
+//
+// 2026-08-19: per-session distributed lock so two concurrent PUTs
+// (e.g. operator race + UI rapid edit) do not interleave. Followers
+// wait for the leader, then re-SELECT the row and return whatever the
+// leader wrote — guarantees the API consumer sees the same value
+// that is now in the database, regardless of who "won" the write.
 func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Request, taskID string) {
 	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "task_id required")
@@ -311,7 +395,7 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 	}
 
 	var body titleUpdateRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
@@ -329,9 +413,55 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// 2026-08-19: acquire the per-session distributed lock. Followers
+	// wait for the leader and re-read the final row so the operator
+	// sees the title that is now persisted, regardless of write order.
+	var lockHandle *distlock.Handle
+	if h.titleDistLock != nil {
+		key := titleDistLockKey("manual", taskID, scopedKey)
+		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
+			Key:   key,
+			TTL:   30 * time.Second,
+			Scope: "manual",
+		})
+		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
+			slog.Warn("session_title_update: distlock acquire failed; proceeding without lock",
+				"task_id", taskID, "session_id", scopedKey, "error", lerr)
+		} else if hh != nil {
+			lockHandle = hh
+			defer lockHandle.Release(context.Background())
+			if !lockHandle.IsLeader() {
+				waitErr := lockHandle.Wait(ctx)
+				if waitErr != nil {
+					writeError(w, http.StatusConflict, "标题生成仍在进行，请稍后重试")
+					return
+				}
+				if title, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); ok {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"task_id":           taskID,
+						"scoped_session_id": scopedKey,
+						"title":             title,
+						"model":             "manual-follower",
+						"updated_at":        time.Now().UTC().Format(time.RFC3339),
+					})
+					return
+				}
+				writeError(w, http.StatusConflict, "标题生成未完成，请稍后重试")
+				return
+			}
+
+		}
+	}
+
 	// Manual overrides are stamped with model="manual" so future
 	// summarize-title calls can preserve the human intent (caller can
 	// re-run summarize-title to refresh; the next LLM call will win).
+	if lockHandle != nil && lockHandle.IsLeader() {
+		if err := lockHandle.Check(ctx); err != nil {
+			writeError(w, http.StatusConflict, "标题租约已失效，请稍后重试")
+			return
+		}
+	}
 	_, err := h.db.Exec(ctx, `
 		INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
 		VALUES ($1, $2, $3, NOW(), 'manual', NULL)
@@ -360,6 +490,11 @@ func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Reques
 // Removes the title row so the next list render falls back to the
 // short-id display, and so a fresh summarize-title can run unblocked.
 // No-op if the row doesn't exist (200 + deleted:false).
+//
+// 2026-08-19: per-session distributed lock so two concurrent DELETEs
+// (or DELETE racing summarize-title) do not interleave. Followers wait
+// for the leader, then re-check the row and return whatever the final
+// state is — guarantees the API consumer sees the row's final state.
 func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Request, taskID string) {
 	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "task_id required")
@@ -378,6 +513,49 @@ func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// 2026-08-19: acquire the per-session distributed lock. Followers
+	// wait for the leader and re-check the row.
+	var lockHandle *distlock.Handle
+	if h.titleDistLock != nil {
+		key := titleDistLockKey("manual", taskID, scopedKey)
+		hh, lerr := h.titleDistLock.Acquire(ctx, distlock.AcquireOpts{
+			Key:   key,
+			TTL:   30 * time.Second,
+			Scope: "manual",
+		})
+		if lerr != nil && !errors.Is(lerr, distlock.ErrNotEnabled) {
+			slog.Warn("session_title_delete: distlock acquire failed; proceeding without lock",
+				"task_id", taskID, "session_id", scopedKey, "error", lerr)
+		} else if hh != nil {
+			lockHandle = hh
+			defer lockHandle.Release(context.Background())
+			if !lockHandle.IsLeader() {
+				waitErr := lockHandle.Wait(ctx)
+				if waitErr != nil {
+					writeError(w, http.StatusConflict, "标题删除仍在进行，请稍后重试")
+					return
+				}
+				if _, ok := h.loadStoredSessionTitle(ctx, taskID, scopedKey); !ok {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"task_id":           taskID,
+						"scoped_session_id": scopedKey,
+						"deleted":           false,
+					})
+					return
+				}
+				writeError(w, http.StatusConflict, "标题状态已变化，请稍后重试")
+				return
+			}
+
+		}
+	}
+
+	if lockHandle != nil && lockHandle.IsLeader() {
+		if err := lockHandle.Check(ctx); err != nil {
+			writeError(w, http.StatusConflict, "标题租约已失效，请稍后重试")
+			return
+		}
+	}
 	tag, err := h.db.Exec(ctx, `
 		DELETE FROM session_titles
 		WHERE task_id = $1 AND scoped_session_id = $2
@@ -420,7 +598,7 @@ func (h *Handler) handleSessionTitlesBatch(w http.ResponseWriter, r *http.Reques
 	}
 
 	var body titlesBatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}

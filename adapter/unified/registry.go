@@ -87,7 +87,7 @@ func GetAdapter(provider string) (Adapter, error) {
 	return globalRegistry.Get(provider)
 }
 
-// ListAdapters 列出全局注册表中的所有 Adapter
+// ListAdapters 列出全局注册表中的所有 Adapter 名称
 func ListAdapters() []string {
 	return globalRegistry.List()
 }
@@ -140,7 +140,13 @@ func GetStreamAdapter(provider string) (StreamAdapter, error) {
 	return streamAdapter, nil
 }
 
-// init 自动注册内置 Adapter
+// init 自动注册内置 Adapter.
+//
+// Deprecated: package unified is non-canonical IR. The init() side effect was
+// left in place only so that historical test binaries that import this package
+// can still resolve NewOpenAIAdapter()/NewAnthropicAdapter() through the global
+// registry. No production code should rely on the global registry being
+// pre-populated; canonical adapters live in internal/ir.
 func init() {
 	Register(NewOpenAIAdapter())
 	Register(NewAnthropicAdapter())

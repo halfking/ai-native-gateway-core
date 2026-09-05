@@ -85,8 +85,10 @@ export default {
     dragToReorder: 'ドラッグで優先度を並び替え',
     emptyPrimary: '優先モデル未設定 — 「優先を追加」をクリック',
     emptySecondary: '代替モデル未設定 — 「代替を追加」をクリック',
+    emptyFallback: 'フォールバックモデル未設定 — 「フォールバックを追加」をクリック',
     addPrimary: '+ 優先を追加',
     addSecondary: '+ 代替を追加',
+    addFallback: '+ フォールバックを追加',
   },
   routes: {
     title: 'Model type routes',

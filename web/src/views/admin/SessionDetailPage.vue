@@ -1,92 +1,95 @@
 <script setup lang="ts">
-// SessionDetailPage.vue — V2-P4 (2026-07-24)
-// New admin session detail page. Replaces legacy SessionTurnsPanel:
-//   - sticky summary bar with instant summary trigger (V2-P5)
-//   - cursor-paginated dual-column turn list
-//   - right-side drawer with five tabs (request/response/meta/...
-//     governance/attachments) when a row is clicked
-//   - `?turn=N&focus=1` deep-link support for cross-page handoff
-
-import { onMounted, ref, watch } from 'vue'
+/**
+ * SessionDetailPage — admin session detail (summary + request_logs turn tree).
+ *
+ * Turn list uses SessionTurnsTimeline (GET …/turns → session_turns_tree.go).
+ * Clicking a turn opens the fullscreen request detail in session-turns mode.
+ * The "view digest" button on each turn opens a side drawer showing the
+ * generated turn digest (user input, assistant output, metrics, events, tools).
+ */
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import {
-  listSessionTurns,
-  getSessionSnapshot,
-  type TurnListItem,
-} from '../../api/sessions_v2'
+import { getSessionSnapshot } from '../../api/sessions_v2'
+import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
-import SessionTurnListItem from '../../components/SessionTurnListItem.vue'
-import SessionTurnDrawer from '../../components/SessionTurnDrawer.vue'
+import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
+import TurnDigestDrawer from '../../components/session/TurnDigestDrawer.vue'
+import { useTurnTitleSummary } from '../../composables/useTurnTitleSummary'
+import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const route = useRoute()
 const router = useRouter()
-const sessionId = String(route.params.id)
-const focusTurn = Number(route.query.turn || 0)
+const sessionId = computed(() => String(route.params.id || ''))
 
-const turns = ref<TurnListItem[]>([])
-const hasMore = ref(false)
-const nextCursor = ref('')
-const loading = ref(false)
-const drawerTurnNo = ref<number | null>(focusTurn || null)
+const snapshotError = ref('')
 const snapshot = ref<Record<string, unknown> | null>(null)
+let snapshotController: AbortController | null = null
 
-async function load(reset = true) {
-  loading.value = true
-  try {
-    if (reset) {
-      turns.value = []
-      nextCursor.value = ''
-    }
-    const params: { cursor?: string; limit: number } = { limit: 50 }
-    if (nextCursor.value) params.cursor = nextCursor.value
-    const r = await listSessionTurns(sessionId, params)
-    turns.value = [...turns.value, ...r.turns]
-    hasMore.value = r.has_more
-    nextCursor.value = r.next_cursor
-  } catch (e) {
-    console.error('list turns failed', e)
-  } finally {
-    loading.value = false
-  }
-}
+// Digest drawer state — opened from the inline "view digest" button on each
+// turn card. Reset on sessionId change / unmount so the drawer never points
+// at a stale turn after navigating between sessions.
+const digestOpen = ref(false)
+const digestTurnNo = ref<number | null>(null)
+// 2026-09-05 audit F2-#9: the turn detail response has no title/summary, so
+// the drawer's fallbacks come from the turns list (cached per session).
+const { ensureTurnTitleSummary, lookupTurnTitleSummary } = useTurnTitleSummary()
+const digestTitle = ref('')
+const digestSummary = ref('')
 
-async function loadSnapshot() {
-  try {
-    snapshot.value = (await getSessionSnapshot(sessionId)) as Record<
-      string,
-      unknown
-    >
-  } catch (e) {
-    snapshot.value = null
-  }
-}
-
-function openDrawer(t: TurnListItem) {
-  drawerTurnNo.value = t.turn_no
-  router.replace({
-    query: { ...route.query, turn: String(t.turn_no), focus: '1' },
+function showDigest(payload: { turnNumber: number }) {
+  digestTurnNo.value = payload.turnNumber
+  digestTitle.value = ''
+  digestSummary.value = ''
+  digestOpen.value = true
+  void ensureTurnTitleSummary(sessionId.value).then(() => {
+    // Ignore the resolved lookup if the user already switched turns.
+    if (digestTurnNo.value !== payload.turnNumber) return
+    const item = lookupTurnTitleSummary(sessionId.value, payload.turnNumber)
+    digestTitle.value = item.title
+    digestSummary.value = item.summary
   })
 }
 
-function closeDrawer() {
-  drawerTurnNo.value = null
-  const { turn: _t, focus: _f, ...rest } = route.query
-  router.replace({ query: rest })
+function closeDigest() {
+  digestOpen.value = false
+  digestTurnNo.value = null
+  digestTitle.value = ''
+  digestSummary.value = ''
 }
 
-onMounted(() => {
-  load(true)
+async function loadSnapshot() {
+  const id = sessionId.value
+  if (!id) return
+  snapshotController?.abort()
+  snapshotController = new AbortController()
+  snapshot.value = null
+  snapshotError.value = ''
+  try {
+    snapshot.value = (await getSessionSnapshot(id, {
+      signal: snapshotController.signal,
+    })) as Record<string, unknown>
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') return
+    snapshotError.value = e instanceof ApiError ? e.detail : e instanceof Error ? e.message : String(e)
+  }
+}
+
+function openTurn(payload: { requestId: string; turnNumber: number }) {
+  openRequestDetailPage(payload.requestId, { mode: 'session-turns' }, router)
+}
+
+onMounted(loadSnapshot)
+
+watch(sessionId, () => {
+  // Session navigation: drop any open drawer before loading the new snapshot.
+  closeDigest()
   loadSnapshot()
 })
 
-watch(
-  () => route.params.id,
-  () => {
-    drawerTurnNo.value = null
-    load(true)
-    loadSnapshot()
-  }
-)
+onBeforeUnmount(() => {
+  closeDigest()
+  snapshotController?.abort()
+})
 </script>
 
 <template>
@@ -98,31 +101,36 @@ watch(
       :total-turns="snapshot?.total_turns as number | undefined"
       :total-cost="snapshot?.total_cost_usd as number | undefined"
       :summary-generated-at="snapshot?.summary_generated_at as string | undefined"
+      @summary-updated="snapshot = $event"
     />
     <div class="list">
-      <SessionTurnListItem
-        v-for="t in turns"
-        :key="t.turn_no"
-        :turn="t"
-        :active="t.turn_no === drawerTurnNo"
-        @open="openDrawer"
-      />
-      <div v-if="!loading && turns.length === 0" class="empty">暂无 turn 记录</div>
-      <div v-if="hasMore" class="load-more">
-        <el-button :loading="loading" @click="load(false)">加载更早</el-button>
+      <div v-if="snapshotError" class="error snapshot-error" role="alert">
+        会话摘要加载失败：{{ snapshotError }}
       </div>
+      <SessionTurnsTimeline
+        v-if="sessionId"
+        :key="sessionId"
+        :session-id="sessionId"
+        @open-request="openTurn"
+        @show-digest="showDigest"
+      />
+      <TurnDigestDrawer
+        v-if="sessionId"
+        :model-value="digestOpen"
+        :session-id="sessionId"
+        :turn-no="digestTurnNo"
+        :title="digestTitle"
+        :summary="digestSummary"
+        @update:model-value="(value: boolean) => { if (!value) closeDigest() }"
+        @close="closeDigest"
+      />
     </div>
-    <SessionTurnDrawer
-      :session-id="sessionId"
-      :turn-no="drawerTurnNo"
-      @close="closeDrawer"
-    />
   </div>
 </template>
 
 <style scoped>
 .session-detail {
-  background: #f3f4f6;
+  background: var(--kx-bg, var(--surface-secondary));
   min-height: 100vh;
 }
 .list {
@@ -130,14 +138,12 @@ watch(
   max-width: 1400px;
   margin: 0 auto;
 }
-.empty {
-  text-align: center;
-  color: #6b7280;
-  padding: 32px;
-}
-.load-more {
-  display: flex;
-  justify-content: center;
-  margin-top: 12px;
+.error {
+  color: var(--kx-danger, var(--danger));
+  background: var(--kx-danger-soft, var(--danger-bg));
+  border: 1px solid color-mix(in srgb, var(--kx-danger, var(--danger)) 40%, var(--kx-border, var(--danger-bg)));
+  padding: 10px 12px;
+  border-radius: 6px;
+  margin-bottom: 10px;
 }
 </style>

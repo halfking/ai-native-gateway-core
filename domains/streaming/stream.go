@@ -18,6 +18,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -107,6 +109,41 @@ func chunkHasContent(payload string) bool {
 	return false
 }
 
+// isEmptySemanticDelta reports whether payload is a valid OpenAI delta frame
+// with at least one choice but no semantic output. It deliberately excludes
+// usage, keepalive, malformed payloads, and empty/missing choices so those
+// protocol-control frames cannot trigger early-empty failover.
+func isEmptySemanticDelta(payload string) bool {
+	if payload == "" || payload == "[DONE]" {
+		return false
+	}
+	var envelope struct {
+		Choices json.RawMessage `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(payload), &envelope); err != nil || len(envelope.Choices) == 0 {
+		return false
+	}
+	var choices []json.RawMessage
+	if err := json.Unmarshal(envelope.Choices, &choices); err != nil || len(choices) == 0 {
+		return false
+	}
+	chunk, err := ir.ParseOpenAIStreamChunk("data: " + payload + "\n\n")
+	return err == nil && chunk != nil && chunk.Type == ir.ChunkTypeDelta && chunk.Delta != nil && !chunkHasContent(payload)
+}
+
+func earlyEmptyOutcome(capture *audit.StreamCapture) *StreamOutcome {
+	if capture != nil {
+		capture.MarkInterruptedWithReason("early_empty_detection")
+	}
+	return &StreamOutcome{
+		Interrupted: true,
+		Reason:      "early_empty_detection",
+		Kind:        errorsx.KindEmptyResponse,
+		Resumable:   true,
+		ChunkCount:  0,
+	}
+}
+
 // runEmptyStreamGate buffers upstream chunks BEFORE writing them to the
 // client, so an empty stream (notably the NIM (Provider 18) ~13% failure
 // mode: stream opens, sends 1-3 chunks with empty choices, then [DONE])
@@ -153,30 +190,170 @@ func runEmptyStreamGate(
 	clientModel string,
 	discoveredUpstream *string,
 	startingLine string,
-	firstByteTimeout time.Duration,
+	_ time.Duration,
 	lastSend *time.Time,
 	chunkCount *int,
 	onRawLine func(string),
 ) (flushedLines []string, outcome *StreamOutcome) {
+	return runEmptyStreamGateWithVendor(ctx, reader, bodyCloser, w, flusher, norm, capture, pc, clientModel, discoveredUpstream, startingLine, currentStreamRuntimeConfig().streamChunkTimeout, lastSend, chunkCount, onRawLine, "", nil, false)
+}
+
+func runEmptyStreamGateWithVendor(
+	ctx context.Context,
+	reader *bufio.Reader,
+	bodyCloser io.ReadCloser,
+	w http.ResponseWriter,
+	flusher http.Flusher,
+	norm *Normalizer,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
+	clientModel string,
+	discoveredUpstream *string,
+	startingLine string,
+	streamChunkTimeout time.Duration,
+	lastSend *time.Time,
+	chunkCount *int,
+	onRawLine func(string),
+	vendorCode string,
+	stripFn func([]byte) []byte,
+	toolsRequested bool,
+) (flushedLines []string, outcome *StreamOutcome) {
 	buffered := make([]string, 0, emptyGateMaxChunks)
 	bufferedBytes := 0
+	xmlToolCoercer := newStreamXMLToolCallCoercer()
+	earlyEmptyChunks := currentStreamRuntimeConfig().emptyStreamEarlyEmptyChunks
+	consecutiveEmptyDeltas := 0
+	observeEarlyEmptyDelta := func(payload string) *StreamOutcome {
+		if earlyEmptyChunks == 0 {
+			return nil
+		}
+		if chunkHasContent(payload) {
+			consecutiveEmptyDeltas = 0
+			return nil
+		}
+		if payload == "" || strings.HasPrefix(strings.TrimSpace(payload), ":") {
+			return nil
+		}
+		if !isEmptySemanticDelta(payload) {
+			consecutiveEmptyDeltas = 0
+			return nil
+		}
+		consecutiveEmptyDeltas++
+		// 2026-09-01: the early-empty counter was invisible, so an
+		// empty_response verdict left no evidence of how many empty deltas
+		// preceded it or what they looked like. Debug level plus a truncated
+		// preview keeps production logs quiet while making the glm-5.2 /
+		// minimax-m3 empty-burst pattern reconstructible.
+		slog.Debug("early_empty_delta_detected",
+			"vendor_code", vendorCode,
+			"client_model", clientModel,
+			"consecutive", consecutiveEmptyDeltas,
+			"threshold", earlyEmptyChunks,
+			"payload_preview", truncateForLog(payload, 120),
+		)
+		if consecutiveEmptyDeltas >= earlyEmptyChunks {
+			slog.Warn("early_empty_threshold_reached",
+				"vendor_code", vendorCode,
+				"client_model", clientModel,
+				"consecutive", consecutiveEmptyDeltas,
+				"threshold", earlyEmptyChunks,
+			)
+			return earlyEmptyOutcome(capture)
+		}
+		return nil
+	}
 	if startingLine != "" {
+		var errCode int
+		startingLine, errCode, _ = stripChunkFieldsForVendor(startingLine, vendorCode, stripFn)
+		if errCode != 0 {
+			if capture != nil {
+				capture.MarkInterruptedWithReason("minimax_base_resp_error")
+			}
+			return nil, &StreamOutcome{
+				Interrupted: true,
+				Reason:      "upstream_error",
+				Kind:        classifyMiniMaxStatusCodeInline(errCode),
+				Resumable:   true,
+				ChunkCount:  0,
+			}
+		}
 		buffered = append(buffered, startingLine)
 		bufferedBytes += len(startingLine)
+		startingPayload := extractPayload(startingLine)
+		if startingPayload == "[DONE]" {
+			// 2026-09-01 P0 observability: log empty stream with available context.
+			// Detailed provider/credential/model context is logged by the executor
+			// when it classifies the outcome as empty_response.
+			streamLogFromContext(ctx, nil).Warn("stream_empty_on_first_chunk",
+				"first_chunk_content", startingPayload,
+				"reason", "immediate_done",
+			)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("empty_stream_no_content")
+			}
+			return nil, &StreamOutcome{
+				Interrupted: true,
+				Reason:      "empty_stream_no_content",
+				Resumable:   true,
+			}
+		}
+		if chunkHasContent(startingPayload) {
+			return buffered, nil
+		}
+		if outcome := observeEarlyEmptyDelta(startingPayload); outcome != nil {
+			return nil, outcome
+		}
 	}
 
 	for {
 		// Read the next upstream line, with the same first-byte / inter-chunk
 		// timeout semantics as the main loop.
-		line, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, firstByteTimeout)
+		line, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, streamChunkTimeout)
 		if err != nil {
-			// Timeout / network error during buffering → flush whatever we
-			// have so the caller can write them, then let the main loop
-			// surface the error as a stream interruption.
-			return buffered, nil
+			// Nothing buffered by the gate has reached the client yet. Preserve
+			// the read classification so the executor can fail over instead of
+			// treating the closed upstream as a clean EOF.
+			state := classifyStreamReadError(ctx, err)
+			failure := StreamOutcome{
+				Interrupted: true,
+				Reason:      "read_error",
+				Kind:        errorsx.KindUpstreamDown,
+				Resumable:   true,
+			}
+			switch state {
+			case streamReadCanceled:
+				failure.Reason = "client_cancel"
+				failure.Kind = errorsx.KindCanceled
+				failure.Resumable = false
+			case streamReadTimeout:
+				failure.Reason = "stream_timeout"
+				failure.Kind = errorsx.KindStreamTimeout
+			case streamReadEOF:
+				failure.Reason = "eof_without_done"
+				failure.Kind = errorsx.KindUpstreamDown
+			}
+			if capture != nil {
+				capture.MarkInterruptedWithReason(failure.Reason)
+			}
+			return nil, &failure
 		}
+
 		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
 		line = normalizedLine
+		var errCode int
+		line, errCode, _ = stripChunkFieldsForVendor(line, vendorCode, stripFn)
+		if errCode != 0 {
+			if capture != nil {
+				capture.MarkInterruptedWithReason("minimax_base_resp_error")
+			}
+			return nil, &StreamOutcome{
+				Interrupted: true,
+				Reason:      "upstream_error",
+				Kind:        classifyMiniMaxStatusCodeInline(errCode),
+				Resumable:   !attemptHasClientSemanticOutput(nil, *chunkCount),
+				ChunkCount:  *chunkCount,
+			}
+		}
 		if onRawLine != nil {
 			onRawLine(line)
 		}
@@ -207,25 +384,29 @@ func runEmptyStreamGate(
 		// Apply the same line transforms the main loop would apply, so
 		// flushed chunks are byte-identical to what write-through would
 		// have produced (quality fix / XML coerce / model rewrite / norm).
-		line = applyGateLineTransforms(ctx, line, clientModel, discoveredUpstream, norm, capture)
+		line = applyGateLineTransforms(ctx, line, clientModel, discoveredUpstream, norm, capture, toolsRequested, xmlToolCoercer)
 
 		buffered = append(buffered, line)
 		bufferedBytes += len(line)
+		transformedPayload := extractPayload(line)
 		if hasCombinedDone {
 			buffered = append(buffered, "data: [DONE]\n")
 			break
 		}
 
 		// [DONE] while buffering: classify and decide.
-		if payload == "[DONE]" {
+		if transformedPayload == "[DONE]" {
 			break
 		}
 
 		// Real content seen? Flush immediately. This is the common case
 		// for normal streams — first content chunk arrives, gate exits,
 		// caller writes flushed lines and continues write-through.
-		if chunkHasContent(payload) {
+		if chunkHasContent(transformedPayload) {
 			return buffered, nil
+		}
+		if outcome := observeEarlyEmptyDelta(transformedPayload); outcome != nil {
+			return nil, outcome
 		}
 
 		// Buffer cap: too many chunks / bytes without content. Likely a
@@ -246,6 +427,12 @@ func runEmptyStreamGate(
 		}
 	}
 	if !sawContent {
+		// 2026-09-01 P0 observability: log empty stream detected after buffering.
+		// Detailed provider/credential context is logged by the executor.
+		streamLogFromContext(ctx, nil).Warn("stream_empty_after_buffering",
+			"buffered_chunks", len(buffered),
+			"reason", "no_content_before_done",
+		)
 		// Empty stream — signal Resumable failover. The executor will
 		// continue to the next candidate. We do NOT write [DONE] to the
 		// client, so the next candidate's stream begins cleanly.
@@ -278,21 +465,28 @@ func applyGateLineTransforms(
 	discoveredUpstream *string,
 	norm *Normalizer,
 	capture *audit.StreamCapture,
+	toolsRequested bool,
+	xmlToolCoercer *streamXMLToolCallCoercer,
 ) string {
 	qualityMode := qualityFixModeFromContext(ctx)
 	if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
-		newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+		flags, seen := capture.QualityStateSnapshot()
+		newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, flags, seen)
 		if newLine != "" {
 			line = newLine
 		}
 		if len(newFlags) > 0 {
-			capture.QualityFlags = newFlags
+			capture.SetQualityFlags(newFlags)
 		}
 		if newSeen != nil {
-			capture.QualitySeenToolCallIDs = newSeen
+			capture.SetQualitySeenToolCallIDs(newSeen)
 		}
 	}
-	line = coerceXMLToolCallsInStreamLine(line, false)
+	if xmlToolCoercer != nil {
+		line = xmlToolCoercer.apply(line, toolsRequested)
+	} else {
+		line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
+	}
 	if clientModel != "" && *discoveredUpstream == "" {
 		*discoveredUpstream = extractModelFromChunk(line)
 	}
@@ -342,16 +536,19 @@ func integrityBreachOutcome(capture *audit.StreamCapture, chunkCount int) Stream
 
 func ptrStreamOutcome(o StreamOutcome) *StreamOutcome { return &o }
 
-func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
-	return StreamChatWithCapture(w, resp, clientModel, outboundModel, norm, nil)
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func StreamChat(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
+	return StreamChatWithCapture(ctx, w, resp, clientModel, outboundModel, norm, nil)
 }
 
-func StreamChatWithCapture(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture) StreamOutcome {
-	return StreamChatWithCaptureAndToolFallback(w, resp, clientModel, outboundModel, norm, capture, false, nil)
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func StreamChatWithCapture(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture) StreamOutcome {
+	return StreamChatWithCaptureAndToolFallback(ctx, w, resp, clientModel, outboundModel, norm, capture, false, nil)
 }
 
-func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool, stripFn func([]byte) []byte) (outcome StreamOutcome) {
-	return StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, nil)
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+func StreamChatWithCaptureAndToolFallback(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer, capture *audit.StreamCapture, toolsRequested bool, stripFn func([]byte) []byte) (outcome StreamOutcome) {
+	return StreamChatWithPendingCapture(ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, nil)
 }
 
 // StreamChatWithPendingCapture (Track C C2, 2026-06-18) extends
@@ -373,7 +570,9 @@ func StreamChatWithCaptureAndToolFallback(w http.ResponseWriter, resp *http.Resp
 // The capturer is intentionally decoupled from the audit
 // StreamCapture — it serves a different purpose (replay) with
 // different size limits (1 MiB cap here, vs unbounded there).
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamChatWithPendingCapture(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel string,
@@ -383,13 +582,15 @@ func StreamChatWithPendingCapture(
 	stripFn func([]byte) []byte,
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
-	return StreamChatWithPendingCaptureAndDiagnostics(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, nil)
+	return StreamChatWithPendingCaptureAndDiagnosticsWithVendor(ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, "", pc, nil)
 }
 
 // StreamChatWithPendingCaptureAndDiagnostics forwards an OpenAI stream with
 // optional best-effort diagnostics. Diagnostic failures never affect the
 // client-visible stream.
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
 func StreamChatWithPendingCaptureAndDiagnostics(
+	ctx context.Context,
 	w http.ResponseWriter,
 	resp *http.Response,
 	clientModel, outboundModel string,
@@ -397,6 +598,25 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	capture *audit.StreamCapture,
 	toolsRequested bool,
 	stripFn func([]byte) []byte,
+	pc *pendingCapturer,
+	diagnostics *DiagnosticContext,
+) (outcome StreamOutcome) {
+	return StreamChatWithPendingCaptureAndDiagnosticsWithVendor(ctx, w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, "", pc, diagnostics)
+}
+
+// StreamChatWithPendingCaptureAndDiagnosticsWithVendor is the vendor-aware
+// implementation. vendorCode is normalized once and is used to ensure vendor
+// error envelopes are checked only by the matching sanitizer.
+func StreamChatWithPendingCaptureAndDiagnosticsWithVendor(
+	ctx context.Context,
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel string,
+	norm *Normalizer,
+	capture *audit.StreamCapture,
+	toolsRequested bool,
+	stripFn func([]byte) []byte,
+	vendorCode string,
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
@@ -412,9 +632,25 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-completions", outcome.Interrupted)
 	}()
 
+	// Monitor the client transport without emitting probe bytes. The derived
+	// context lets blocked upstream reads and provider calls observe a client
+	// disconnect while normal writes keep the idle timer fresh.
+	ctx, monitor := NewConnectionMonitor(ctx, w)
+	defer monitor.Stop()
+	w = &monitoredResponseWriter{delegate: w, monitor: monitor}
+
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
 	// audit emit in the caller and lose the request_logs row entirely.
+	// Hoist gate above this defer so the recover closure can see it: a
+	// panic after the client already saw semantic output must not be
+	// classified as transparently resumable (would duplicate committed
+	// bytes). Mirrors responses_bridge.go (commit 485f3ca2e) and
+	// responses_stream.go. gate stays nil until wrapAttemptWriter assigns
+	// it; attemptHasClientSemanticOutput(nil, 0) returns false so the
+	// not-yet-wired case degrades to Resumable=true, the same as the
+	// sibling paths.
+	var gate *AttemptCommitGate
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("stream panic recovered", "panic", r, "stack", string(debug.Stack()), "client_model", clientModel)
@@ -424,6 +660,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -442,7 +679,8 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIChat)
+	// P1-2 fix (2026-08-28): Pass context to gate for checkpoint propagation.
+	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIChat)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -453,14 +691,23 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
+	if !safeFlush(flusher) {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "client_write_failed",
+			Kind:        errorsx.KindUpstreamDown,
+			Resumable:   false,
+			ChunkCount:  0,
+		}
 	}
+
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	// BUG-1 fix (2026-06-19): hold a reference to the raw body as an
 	// io.ReadCloser so readLineWithTimeoutAndCloser can close it on timeout,
@@ -471,6 +718,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	discoveredUpstream := ""
 	lastSend := time.Now()
 	chunkCount := 0 // Track number of chunks sent
+	xmlToolCoercer := newStreamXMLToolCallCoercer()
 
 	if clientModel != "" && outboundModel != "" && clientModel != outboundModel {
 		slog.Debug("upstream model diff",
@@ -500,11 +748,18 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		if !clientDisconnected || pc != nil {
 			return false
 		}
+		// Client connection is gone mid-stream. A transparent retry would
+		// re-attempt header writes against the same dead connection,
+		// wasting an upstream call regardless of whether semantic output
+		// had reached the wire. Mark non-resumable so the executor fails
+		// the task instead of transparently retrying. Mirrors the
+		// initial-flush site above and the deferred-Finish site in
+		// anthropic_bridge.go.
 		outcome.Interrupted = true
 		outcome.Reason = "client_write_failed"
-		outcome.Kind = errorsx.KindUpstreamDown
-		outcome.Resumable = chunkCount < 5
-		outcome.ChunkCount = chunkCount
+		outcome.Kind = errorsx.KindCanceled
+		outcome.Resumable = false
+		outcome.ChunkCount = 0
 		if capture != nil {
 			capture.MarkInterruptedWithReason("client_write_failed")
 		}
@@ -515,24 +770,46 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 
 	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
+		state := classifyStreamReadError(ctx, err)
+		var firstFailure StreamOutcome
+		switch state {
+		case streamReadCanceled:
+			firstFailure = StreamOutcome{
+				Interrupted: true,
+				Reason:      "client_cancel",
+				Kind:        errorsx.KindCanceled,
+				Resumable:   false,
+			}
+		case streamReadEOF:
+			firstFailure = StreamOutcome{
+				Interrupted: true,
+				Reason:      "eof_without_done",
+				Kind:        errorsx.KindUpstreamDown,
+				Resumable:   true,
+			}
+		case streamReadTimeout:
+			firstFailure = StreamOutcome{
+				Interrupted: true,
+				Reason:      "first_byte_timeout",
+				Kind:        errorsx.KindStreamTimeout,
+				Resumable:   true,
+			}
+		default:
+			firstFailure = streamReadFailureOutcome(err, 0)
+		}
 		if capture != nil {
-			capture.MarkInterruptedWithReason("first_byte_timeout")
+			capture.MarkInterruptedWithReason(firstFailure.Reason)
 		}
-		slog.Warn("stream first-byte timeout",
-			"error", err,
-			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
-			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
-		)
-		if gate.MayWriteTerminal() {
-			safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream first-byte timeout\",\"type\":\"timeout\",\"code\":\"first_byte_timeout\"}}\n\n")
-			safeFlush(flusher)
+		if firstFailure.Reason == "first_byte_timeout" {
+			slog.Warn("stream first-byte timeout",
+				"error", err,
+				"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
+				"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
+			)
+		} else {
+			slog.Warn("stream first read failed", "error", err, "state", state, "reason", firstFailure.Reason)
 		}
-		outcome.Interrupted = true
-		outcome.Reason = "first_byte_timeout"
-		outcome.Kind = errorsx.KindStreamTimeout
-		outcome.Resumable = true // First-byte timeout is resumable (no chunks sent)
-		outcome.ChunkCount = 0
-		return outcome
+		return firstFailure
 	}
 	normalizedFirstLine, hasCombinedDone := splitCombinedDoneFrame(firstLine)
 	firstLine = normalizedFirstLine
@@ -588,16 +865,79 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			// the raw vendor error envelope, so SDK clients can
 			// parse it as a normal chat.completion.chunk stream
 			// error rather than choking on an unexpected shape.
-			safeWriteSSE(w, fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", errMsg, "upstream_error", errKind))
-			safeFlush(flusher)
+			terminalVisible := attemptHasClientSemanticOutput(gate, 0)
+			if terminalVisible {
+				safeWriteSSE(w, fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", errMsg, "upstream_error", errKind))
+				safeFlush(flusher)
+			}
 			outcome.Interrupted = true
 			outcome.Reason = "json_error_in_stream"
 			outcome.Kind = errorsx.KindUpstreamDown
-			outcome.Resumable = true
+			outcome.Resumable = !terminalVisible
+
 			outcome.ChunkCount = 0
 			return outcome
 		}
+		var firstErrCode int
+		firstLine, firstErrCode, _ = stripChunkFieldsForVendor(firstLine, vendorCode, stripFn)
+		if firstErrCode != 0 {
+			if capture != nil {
+				capture.MarkInterruptedWithReason("minimax_base_resp_error")
+			}
+			return StreamOutcome{
+				Interrupted: true,
+				Reason:      "upstream_error",
+				Kind:        classifyMiniMaxStatusCodeInline(firstErrCode),
+				Resumable:   true,
+				ChunkCount:  0,
+			}
+		}
+		// 2026-08-29: Validate SSE frame JSON integrity before attempting to parse.
+		// Unstable upstreams (minimax-m3, glm-5.2) occasionally send incomplete JSON
+		// (e.g., bare "{" or truncated objects), which causes client-side parsing
+		// errors and premature gateway_survival_resume_blocked failures when the
+		// garbage reaches the client before the executor can retry. This check
+		// catches malformed frames early and marks them as resumable so the survival
+		// coordinator can discard within the holdback window and retry transparently.
+		if !validateSSEDataFrame(firstLine) {
+			payload := extractPayload(firstLine)
+			slog.Warn("stream: malformed first SSE frame detected",
+				"payload_prefix", truncateForLog(payload, 100),
+				"client_model", clientModel,
+				"vendor", vendorCode,
+				"reason", "incomplete_or_invalid_json",
+			)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("malformed_sse_frame")
+			}
+			metrics.Global().RecordMalformedSSEFrame(vendorCode, "first_frame")
+			// Resumable=true allows survival coordinator to retry within holdback
+			// window before any bytes reach the client.
+			return StreamOutcome{
+				Interrupted: true,
+				Reason:      "malformed_sse_frame",
+				Kind:        errorsx.KindUpstreamDown,
+				Resumable:   true,
+				ChunkCount:  0,
+			}
+		}
+		if payload := extractPayload(firstLine); payload != "" && payload != "[DONE]" {
+			if _, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr != nil {
+				slog.Warn("stream: invalid first SSE chunk", "error", parseErr, "client_model", clientModel)
+				if capture != nil {
+					capture.MarkInterruptedWithReason("invalid_chunk")
+				}
+				return StreamOutcome{
+					Interrupted: true,
+					Reason:      "invalid_chunk",
+					Kind:        errorsx.KindUpstreamDown,
+					Resumable:   true,
+				}
+			}
+		}
+
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). Run
+
 		// before XML coercion so the scanner sees the raw upstream
 		// delta.tool_calls shape and can rewrite empty names to
 		// __unknown_tool_stream_<i>__. detect_only mode leaves the
@@ -605,18 +945,19 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		// capture's QualityFlags slice.
 		qualityMode := qualityFixModeFromContext(ctx)
 		if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
-			newLine, newFlags, newSeen := ProcessStreamLine(firstLine, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+			flags, seen := capture.QualityStateSnapshot()
+			newLine, newFlags, newSeen := ProcessStreamLine(firstLine, qualityMode, flags, seen)
 			if newLine != "" {
 				firstLine = newLine
 			}
 			if len(newFlags) > 0 {
-				capture.QualityFlags = newFlags
+				capture.SetQualityFlags(newFlags)
 			}
 			if newSeen != nil {
-				capture.QualitySeenToolCallIDs = newSeen
+				capture.SetQualitySeenToolCallIDs(newSeen)
 			}
 		}
-		firstLine = coerceXMLToolCallsInStreamLine(firstLine, toolsRequested)
+		firstLine = xmlToolCoercer.apply(firstLine, toolsRequested)
 		if clientModel != "" && discoveredUpstream == "" {
 			discoveredUpstream = extractModelFromChunk(firstLine)
 		}
@@ -656,10 +997,11 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		// or config, fall through to the original write-immediately
 		// path so behavior is unchanged from prior releases.
 		if currentStreamRuntimeConfig().enableEmptyStreamGate {
-			flushedLines, gateOutcome := runEmptyStreamGate(
+			flushedLines, gateOutcome := runEmptyStreamGateWithVendor(
+
 				ctx, reader, bodyCloser, w, flusher, norm, capture, pc,
 				clientModel, &discoveredUpstream, firstLine,
-				runtimeCfg.firstByteTimeout, &lastSend, &chunkCount,
+				runtimeCfg.streamChunkTimeout, &lastSend, &chunkCount,
 				func(line string) {
 					logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
 					payload := extractPayload(line)
@@ -673,7 +1015,9 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 						reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(payload), parseErr, nil)
 					}
 				},
+				vendorCode, stripFn, toolsRequested,
 			)
+
 			if gateOutcome != nil {
 				return *gateOutcome
 			}
@@ -751,20 +1095,69 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		if readResult.err != nil {
 			switch readResult.state {
 			case streamReadEOF:
-				// If upstream closed before sending [DONE], still send
-				// the terminator to the client (clients expect a
-				// well-formed stream) but mark the capture as
-				// interrupted with reason "eof_without_done" so audit
-				// queries can distinguish a clean completion from a
-				// premature close.
 				if !upstreamDoneReceived {
-					slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
-					if capture != nil {
-						capture.MarkInterruptedWithReason("eof_without_done")
+					terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
+					if terminalVisible {
+						// 2026-09-01 (P0 MiniMax-fix): MiniMax upstream
+						// (api.minimaxi.com) closes the HTTP body after
+						// sending 200 + valid SSE chunks but WITHOUT the
+						// final `data: [DONE]` line. The client already
+						// saw the complete response and we synthesize
+						// `data: [DONE]\n\n` for them, so this is
+						// protocol-level non-compliance, not a real
+						// business failure. Treat as completed so audit
+						// success=true, the circuit-breaker stays quiet,
+						// and credential health is unaffected. A distinct
+						// reason literal preserves operator visibility
+						// (SQL-filter by reason) without re-triggering
+						// the audit isInterruptionCode failure path
+						// (audit.go:90) which lists "eof_without_done".
+						slog.Info("upstream EOF without [DONE] but semantic output already committed; treating as completed (benign upstream non-compliance)",
+							"client_model", clientModel,
+							"chunk_count", chunkCount,
+						)
+						if capture != nil {
+							capture.ObserveChunk(&ir.StreamChunk{
+								Type:           ir.ChunkTypeDone,
+								SourceProtocol: ir.ProtocolOpenAIChat,
+							})
+						}
+						safeWriteSSE(w, "data: [DONE]\n\n")
+						safeFlush(flusher)
+						metrics.Global().RecordStreamSynthesizedDone()
+						outcome.Interrupted = false
+						outcome.Reason = "eof_without_done_after_commit"
+						// 2026-09-01 (P0-2 24h-audit round2): benign EOF must
+						// carry an explicit non-failure Kind. A blank Kind
+						// leaking into classifyExecError / ClassifyError falls
+						// through to the default transient bucket, which would
+						// mis-report this completed request as a retryable
+						// failure. KindEmptyResponse is the closest existing
+						// non-failure semantics: HTTP 200, well-formed stream,
+						// upstream protocol non-compliance the gateway already
+						// papered over (synthesized [DONE]). It is NOT in
+						// IsRetryable (no retry: output is committed) and NOT
+						// credential-fatal. Downstream guards that read Kind
+						// only act when Interrupted=true, so this is
+						// observability-only attribution.
+						outcome.Kind = errorsx.KindEmptyResponse
+						outcome.Resumable = false
+						outcome.ChunkCount = chunkCount
+					} else {
+						// No semantic output committed: this IS a real
+						// upstream failure. Preserve the pre-fix
+						// behavior so genuine failures still surface
+						// in error-rate metrics and trip the breaker.
+						slog.Warn("upstream EOF without [DONE]", "client_model", clientModel)
+						if capture != nil {
+							capture.MarkInterruptedWithReason("eof_without_done")
+						}
+						outcome.Interrupted = true
+						outcome.Reason = "eof_without_done"
+						outcome.Kind = errorsx.KindUpstreamDown
+						outcome.Resumable = true
+						outcome.ChunkCount = chunkCount
 					}
-					outcome.Interrupted = true
-					outcome.Reason = "eof_without_done"
-					outcome.Kind = errorsx.KindUpstreamDown
 				}
 				// When the client has gone away but the capturer is
 				// still alive and the upstream DID send [DONE], do NOT
@@ -773,27 +1166,6 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				if pc != nil && upstreamDoneReceived {
 					outcome.Interrupted = false
 					outcome.Reason = ""
-				}
-				// 2026-08-06 hot-patch: capture whether this branch had to
-				// synthesize the SSE terminator. The MiniMax API (~13% of
-				// streams as of 2026-07-28) ends without sending
-				// "data: [DONE]\n\n" — the gateway injects the trailing
-				// frame so SSE clients can finalize the stream. Decision
-				// "isBenignEOF" lives in executor_chat.go:975 + handler.go:5609;
-				// this signal only provides operator visibility, not
-				// classification.
-				synthesizedDone := !upstreamDoneReceived
-				if gate.MayWriteTerminal() {
-					safeWriteSSE(w, "data: [DONE]\n\n")
-					safeFlush(flusher)
-					if synthesizedDone {
-						slog.Warn("stream synthesized [DONE] terminator",
-							"client_model", clientModel,
-							"chunk_count", chunkCount,
-							"had_capture", capture != nil,
-						)
-						metrics.Global().RecordStreamSynthesizedDone()
-					}
 				}
 				if capture != nil && upstreamDoneReceived {
 					capture.ObserveChunk(&ir.StreamChunk{
@@ -817,7 +1189,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 					"client_model", clientModel,
 					"hint", "if timeout occurs frequently with chunks received, consider increasing llmgw_node_timeout_seconds (current default 120s, hotconfigurable via admin/settings)",
 				)
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
 					safeFlush(flusher)
 				}
@@ -827,18 +1199,33 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
-				outcome.Resumable = true // Timeout is resumable
+				// Gate-aware resumability. Mirrors the eof_without_done and
+				// default branches in this switch (and the stream_timeout
+				// branches in responses_stream.go:282 and
+				// anthropic_stream.go:503): a timeout after the client
+				// already saw semantic output must NOT be transparently
+				// retried — the next supplier node would duplicate committed
+				// bytes. The pre-fix "Timeout is resumable" comment was a
+				// simplification that this fix corrects.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				outcome.ChunkCount = chunkCount
 			default:
-				slog.Warn("stream read error", "error", readResult.err)
+				failure := streamReadFailureOutcome(readResult.err, chunkCount)
+				slog.Warn("stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
-					capture.MarkInterruptedWithReason("read_error")
+					capture.MarkInterruptedWithReason(failure.Reason)
 				}
-				outcome.Interrupted = true
-				outcome.Reason = "read_error"
-				outcome.Kind = errorsx.KindUpstreamDown
-				outcome.Resumable = true // Read error is resumable
-				outcome.ChunkCount = chunkCount
+				outcome = failure
+				// Gate-aware resumability. streamReadFailureOutcome hardcodes
+				// Resumable=true, but a recoverable read failure after the client
+				// already saw semantic output must NOT be transparently retried —
+				// the next supplier node would duplicate committed bytes. The
+				// downstream executor (executor_chat.go:1124) keeps an independent
+				// ceiling on chunk count (StreamRetryThreshold, default 50), and
+				// mayRetryInterruptedStream (executor.go:2963-2978) refuses retry
+				// when any chunk has been captured. Mirrors the gate-aware
+				// treatment in the eof_without_done and stream_timeout branches.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 			}
 			return outcome
 		}
@@ -850,6 +1237,41 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			reader = prependDoneFrame(reader)
 		}
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
+
+		// 2026-08-29: Validate SSE frame before processing. If the frame is malformed
+		// (incomplete JSON) and we haven't committed semantic output yet, fail the
+		// attempt as resumable so the survival coordinator can retry. If already
+		// committed, log the issue but continue (dropping the bad frame is safer
+		// than breaking the stream mid-flight).
+		if !validateSSEDataFrame(line) {
+			payload := extractPayload(line)
+			terminalVisible := attemptHasClientSemanticOutput(gate, chunkCount)
+			slog.Warn("stream: malformed SSE frame detected mid-stream",
+				"payload_prefix", truncateForLog(payload, 100),
+				"chunk_count", chunkCount,
+				"committed", terminalVisible,
+				"client_model", clientModel,
+				"vendor", vendorCode,
+			)
+			if capture != nil {
+				capture.MarkInterruptedWithReason("malformed_sse_frame_mid_stream")
+			}
+			metrics.Global().RecordMalformedSSEFrame(vendorCode, "mid_stream")
+			if !terminalVisible {
+				// Not yet committed — fail as resumable and retry
+				return StreamOutcome{
+					Interrupted: true,
+					Reason:      "malformed_sse_frame_mid_stream",
+					Kind:        errorsx.KindUpstreamDown,
+					Resumable:   true,
+					ChunkCount:  chunkCount,
+				}
+			}
+			// Already committed — skip this bad frame and continue
+			// (better to have a partial response than to break the stream)
+			continue
+		}
+
 		rawPayload := extractPayload(line)
 		if rawPayload != "" && rawPayload != "[DONE]" {
 			diagnosticCollector.observeRaw([]byte(rawPayload))
@@ -866,19 +1288,20 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		// the scanner sees the raw upstream delta.tool_calls shape.
 		qualityMode := qualityFixModeFromContext(ctx)
 		if qualityMode != "" && qualityMode != QualityModeOff && capture != nil {
-			newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, capture.QualityFlags, capture.QualitySeenToolCallIDs)
+			flags, seen := capture.QualityStateSnapshot()
+			newLine, newFlags, newSeen := ProcessStreamLine(line, qualityMode, flags, seen)
 			if newLine != "" {
 				line = newLine
 			}
 			if len(newFlags) > 0 {
-				capture.QualityFlags = newFlags
+				capture.SetQualityFlags(newFlags)
 			}
 			if newSeen != nil {
-				capture.QualitySeenToolCallIDs = newSeen
+				capture.SetQualitySeenToolCallIDs(newSeen)
 			}
 		}
 
-		line = coerceXMLToolCallsInStreamLine(line, toolsRequested)
+		line = xmlToolCoercer.apply(line, toolsRequested)
 
 		if clientModel != "" && discoveredUpstream == "" {
 			discoveredUpstream = extractModelFromChunk(line)
@@ -887,8 +1310,38 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			line = replaceModelInChunk(line, clientModel, discoveredUpstream)
 		}
 
-		if stripFn != nil {
-			line = stripChunkFields(line, stripFn)
+		{
+			var errCode int
+			var errMsg string
+			line, errCode, errMsg = stripChunkFieldsForVendor(line, vendorCode, stripFn)
+			if errCode != 0 {
+				kind := classifyMiniMaxStatusCodeInline(errCode)
+				outcome = StreamOutcome{
+					Interrupted: true,
+					Reason:      "upstream_error",
+					Kind:        kind,
+					Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+					ChunkCount:  chunkCount,
+				}
+				if capture != nil {
+					capture.MarkInterruptedWithReason("minimax_base_resp_error")
+				}
+				slog.Warn("vendor stream: error envelope detected",
+					"request_id", requestID,
+					"status_code", errCode,
+					"status_msg", errMsg,
+					"kind", string(kind),
+					"client_visible_chunks", chunkCount,
+				)
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
+					writeSSE(w, "error", map[string]any{
+						"type":  "error",
+						"error": map[string]any{"type": string(kind), "message": fmt.Sprintf("MiniMax error %d: %s", errCode, errMsg)},
+					})
+					flusher.Flush()
+				}
+				return outcome
+			}
 		}
 
 		payload := extractPayload(line)
@@ -948,13 +1401,17 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		diagnosticCollector.observeEmittedLine(line)
 		if writeClientLine(line) {
 			lastSend = time.Now()
-			chunkCount++ // Track chunks sent
+			chunkCount++ // Track chunks accepted by the client-facing gate
 			if capture != nil {
 				capture.RecordChunkSent()
 			}
 		}
+		if clientWriteFailure() {
+			return outcome
+		}
 
 	}
+
 }
 
 func extractPayload(line string) string {
@@ -1028,7 +1485,7 @@ func streamJSONTrailingKind(trailing string) string {
 }
 
 func prependDoneFrame(reader *bufio.Reader) *bufio.Reader {
-	return bufio.NewReaderSize(io.MultiReader(strings.NewReader("data: [DONE]\n"), reader), streamBufSize)
+	return bufio.NewReaderSize(io.MultiReader(strings.NewReader("data: [DONE]\n\n"), reader), streamBufSize)
 }
 
 // shouldDropEmptyChoicesFrame reports whether an SSE data line is a
@@ -1103,94 +1560,93 @@ func shouldDropEmptyChoicesFrame(line string) bool {
 
 // stripChunkFields applies stripFn to the JSON payload of a "data: {...}" line.
 // Non-data lines (event:, comment:, blank) are returned unchanged.
-func stripChunkFields(line string, stripFn func([]byte) []byte) string {
-	if !strings.HasPrefix(line, "data: ") || stripFn == nil {
-		return line
+//
+// 2026-08-28 P0-MiniMax-1: Returns (strippedLine, errorCode, errorMsg). If
+// errorCode != 0, the caller must interrupt the stream as a MiniMax base_resp
+// error was detected (HTTP 200-wrapped error signal).
+func stripChunkFields(line string, stripFn func([]byte) []byte) (string, int, string) {
+	return stripChunkFieldsForVendor(line, "", stripFn)
+}
+
+// stripChunkFieldsForVendor applies the matching vendor sanitizer and checks
+// MiniMax's HTTP-200 error envelope only when the vendor identity is known (or
+// can be safely inferred from top-level response fields). Passing the vendor
+// explicitly avoids fragile function-value identity checks and cross-vendor
+// error classification.
+func stripChunkFieldsForVendor(line, vendorCode string, stripFn func([]byte) []byte) (string, int, string) {
+	if !strings.HasPrefix(line, "data: ") {
+		return line, 0, ""
 	}
-	payload := strings.TrimPrefix(line, "data: ")
-	payload = strings.TrimSpace(payload)
+	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
 	if payload == "" || payload == "[DONE]" {
-		return line
+		return line, 0, ""
+	}
+
+	vendorCode, stripFn = resolveStreamVendor(payload, vendorCode, stripFn)
+	if vendorCode == "minimax" {
+		if code, msg, isErr := parseMiniMaxBaseRespInline([]byte(payload)); isErr {
+			return line, code, msg
+		}
+	}
+	if stripFn == nil {
+		return line, 0, ""
 	}
 	stripped := stripFn([]byte(payload))
 	if len(stripped) == 0 {
-		return line
+		return line, 0, ""
 	}
-	return "data: " + string(stripped) + "\n"
+	return "data: " + string(stripped) + "\n", 0, ""
+}
+
+// resolveStreamVendor normalizes an explicit catalog code and, for empty
+// catalog codes, infers a vendor only from top-level JSON fields. This avoids
+// substring matches inside user content while keeping third-party candidates
+// compatible with the registered vendor sanitizers.
+func resolveStreamVendor(payload, vendorCode string, stripFn func([]byte) []byte) (string, func([]byte) []byte) {
+	vendorCode = strings.ToLower(strings.TrimSpace(vendorCode))
+	if vendorCode != "" {
+		return vendorCode, stripFn
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(payload), &fields) != nil {
+		return "", stripFn
+	}
+	switch {
+	case fields["base_resp"] != nil || fields["nvext"] != nil || fields["input_sensitive"] != nil:
+		return "minimax", StripMinimaxFieldsBody
+	case fields["zhipu_request_id"] != nil || fields["web_search_results"] != nil:
+		return "zhipu", StripZhipuFieldsBody
+	case fields["deepseek_request_id"] != nil || fields["cache_hit_tokens"] != nil:
+		return "deepseek", StripDeepSeekFieldsBody
+	case fields["doubao_request_id"] != nil || fields["seeddance_request_id"] != nil:
+		return "doubao", StripDoubaoFieldsBody
+	default:
+		return "", stripFn
+	}
 }
 
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, nil).ReadLine(ctx, timeout)
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, nil)
 }
 
 // readLineWithTimeoutAndCloser is like readLineWithTimeout but also takes the
-// underlying io.ReadCloser. On timeout it closes the closer to unblock the
-// ReadString goroutine, then drains the channel — eliminating the goroutine
-// leak that existed in the plain readLineWithTimeout path (BUG-1 fix).
+// underlying io.ReadCloser. The shared SSE reader bounds physical-line
+// accumulation before any sanitizer or IR parser sees the bytes.
 func readLineWithTimeoutAndCloser(ctx context.Context, reader *bufio.Reader, closer io.ReadCloser, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, closer).ReadLine(ctx, timeout)
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, closer)
 }
 
-type timedLineReader struct {
-	reader *bufio.Reader
-	// closer is the underlying io.ReadCloser (e.g. resp.Body). When non-nil,
-	// ReadLine closes it on timeout so the blocked ReadString goroutine returns
-	// immediately rather than leaking until the TCP connection is closed.
-	closer io.ReadCloser
+// onceReadCloser prevents timeout cleanup and deferred stream cleanup from
+// closing the same upstream body more than once.
+type onceReadCloser struct {
+	io.ReadCloser
+	once sync.Once
+	err  error
 }
 
-func newTimedLineReader(reader *bufio.Reader, closer io.ReadCloser) *timedLineReader {
-	return &timedLineReader{reader: reader, closer: closer}
-}
-
-func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	ch := make(chan result, 1)
-	readCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				ch <- result{"", fmt.Errorf("read panic: %v", r)}
-			}
-		}()
-		line, err := r.reader.ReadString('\n')
-		ch <- result{line, err}
-	}()
-
-	select {
-	case res := <-ch:
-		// bufio.Reader returns a final unterminated line together with io.EOF.
-		// The bytes are still a valid SSE frame and must be processed before
-		// the next read reports the terminal EOF.
-		if res.err == io.EOF && res.line != "" {
-			return res.line, nil
-		}
-		return res.line, res.err
-	case <-readCtx.Done():
-		// BUG-1 fix (2026-06-19): close the underlying body to force the
-		// blocked ReadString goroutine to return an error immediately.
-		// Without this, the goroutine would leak until resp.Body.Close()
-		// is called by the deferred cleanup in StreamChatWithPendingCapture,
-		// which can be minutes later on the session path (context.Background).
-		// After Close(), drain the channel so the goroutine completes before
-		// we return — zero goroutine leak guarantee.
-		if r.closer != nil {
-			_ = r.closer.Close()
-		}
-		// Drain: the goroutine returns shortly after Close() because
-		// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
-		// The buffered channel (size 1) ensures this never blocks forever.
-		<-ch
-		if readCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("stream read timeout")
-		}
-		return "", readCtx.Err()
-	}
+func (c *onceReadCloser) Close() error {
+	c.once.Do(func() { c.err = c.ReadCloser.Close() })
+	return c.err
 }
 
 func extractModelFromChunk(line string) string {
@@ -1222,6 +1678,13 @@ func safeFlush(flusher http.Flusher) (ok bool) {
 			ok = false
 		}
 	}()
+	if errorFlusher, supportsError := flusher.(interface{ FlushError() error }); supportsError {
+		if err := errorFlusher.FlushError(); err != nil {
+			slog.Warn("failed to flush stream to client", "error", err)
+			return false
+		}
+		return true
+	}
 	flusher.Flush()
 	return true
 }
@@ -1540,4 +2003,14 @@ func RequestIDFromResp(resp *http.Response) string {
 		return v
 	}
 	return ""
+}
+
+// parseMiniMaxBaseRespInline is an inline copy of minimax_error.go functions
+// to avoid import cycle. Detects MiniMax's HTTP 200-wrapped error signal.
+func parseMiniMaxBaseRespInline(body []byte) (statusCode int, statusMsg string, isError bool) {
+	return vendorstrip.ParseMiniMaxBaseResp(body)
+}
+
+func classifyMiniMaxStatusCodeInline(code int) errorsx.ErrorKind {
+	return vendorstrip.ClassifyMiniMaxStatusCode(code)
 }

@@ -130,7 +130,7 @@ func TestAuthMiddleware_BypassesHealthAndMetrics(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	for _, path := range []string{"/healthz", "/metrics", "/"} {
+	for _, path := range []string{"/healthz", "/healthz/full", "/readyz", "/version", "/metrics", "/"} {
 		called = false
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rr := httptest.NewRecorder()

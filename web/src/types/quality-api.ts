@@ -72,6 +72,26 @@ export interface ModelQualityProfile {
 }
 
 /**
+ * 供应商请求统计
+ */
+export interface ProviderRequestStats {
+  /** 总请求次数 */
+  total_requests: number;
+  /** 当月请求次数 */
+  month_requests: number;
+  /** 当周请求次数 */
+  week_requests: number;
+  /** 当天请求次数 */
+  day_requests: number;
+  /** 成功次数 */
+  success_count: number;
+  /** 失败次数 */
+  failure_count: number;
+  /** 总 token 量 */
+  total_tokens: number;
+}
+
+/**
  * 供应商质量画像数据
  */
 export interface ProviderQualityData {
@@ -81,6 +101,8 @@ export interface ProviderQualityData {
   provider_name: string;
   /** 模型质量画像列表 */
   models: ModelQualityProfile[];
+  /** 请求统计 */
+  request_stats: ProviderRequestStats;
 }
 
 /**

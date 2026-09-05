@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -187,7 +188,7 @@ func TestStreamAnthropicSSEToOpenAI_LogsRawUpstreamFrames(t *testing.T) {
 	diagnostics := &DiagnosticContext{RawLogger: logger}
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToOpenAIWithDiagnostics(
+	out := StreamAnthropicSSEToOpenAIWithDiagnostics(context.Background(),
 		rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-raw", nil, nil, diagnostics,
 	)
 	require.False(t, out.Interrupted)
@@ -217,7 +218,7 @@ func TestStreamAnthropicSSEToOpenAI_HealthyToolCallRaisesNoAnomaly(t *testing.T)
 	diagnostics := &DiagnosticContext{Anomaly: reporter}
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToOpenAIWithDiagnostics(
+	out := StreamAnthropicSSEToOpenAIWithDiagnostics(context.Background(),
 		rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-missing", nil, nil, diagnostics,
 	)
 	require.False(t, out.Interrupted)
@@ -266,7 +267,7 @@ func TestStreamDiagnosticCollector_NoAnomalyWhenToolCallEmitted(t *testing.T) {
 func TestStreamAnthropicSSEToOpenAI_ErroringDiagnosticsDoNotCorruptStream(t *testing.T) {
 	baseline := httptest.NewRecorder()
 	baseResp := sseServer(t, anthropicToolCallStream)
-	baseOut := StreamAnthropicSSEToOpenAIWithDiagnostics(
+	baseOut := StreamAnthropicSSEToOpenAIWithDiagnostics(context.Background(),
 		baseline, baseResp, "claude-opus-4-8", "claude-opus-4-8", "req-base", nil, nil, nil,
 	)
 	require.False(t, baseOut.Interrupted)
@@ -278,7 +279,7 @@ func TestStreamAnthropicSSEToOpenAI_ErroringDiagnosticsDoNotCorruptStream(t *tes
 		Anomaly:   &fakeAnomalyReporter{errOnReport: errors.New("endpoint down")},
 		Semantic:  &fakeSemanticAnalyzer{err: errors.New("analyzer broken")},
 	}
-	failOut := StreamAnthropicSSEToOpenAIWithDiagnostics(
+	failOut := StreamAnthropicSSEToOpenAIWithDiagnostics(context.Background(),
 		withFailures, failResp, "claude-opus-4-8", "claude-opus-4-8", "req-base", nil, nil, diagnostics,
 	)
 	require.False(t, failOut.Interrupted, "diagnostic failures must not interrupt the stream")

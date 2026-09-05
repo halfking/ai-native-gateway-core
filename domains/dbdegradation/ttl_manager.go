@@ -107,7 +107,13 @@ func (tm *TTLManager) ExitDegradedMode(ctx context.Context) error {
 		<-done
 	}
 
-	// 恢复正常 TTL（可选：不主动缩短 TTL，让 Redis 自然过期）
+	// 2026-08-18: 之前退出降级时"不主动缩短 TTL"，导致降级期间被批量抬到
+	// degradedTTL(30d) 的键——其中大部分是早已逻辑过期的死会话——继续占用
+	// 内存最长 30 天。现在退出时把 TTL 高于 normalTTL 的 session 键收回
+	// normalTTL（只缩短、绝不延长），死键在 normalTTL 内自然消化。
+	if err := tm.shrinkSessionTTLs(ctx, tm.normalTTL); err != nil {
+		slog.Warn("ttl_manager: failed to shrink TTLs on exit", "error", err)
+	}
 	tm.mode.Store("normal")
 
 	slog.Info("ttl_manager: returned to normal mode")
@@ -191,12 +197,13 @@ func (tm *TTLManager) extendAllSessionTTLs(ctx context.Context, ttl time.Duratio
 		return nil
 	}
 
+	// 2026-08-18: "ursm:*" 被移出。URSM 键有自己的生命周期契约：node 键
+	// 持久或带探测 TTL 地板（见 domains/ursm/v2/probe.go），sticky 键分钟
+	// 级。把它们无差别抬到 30 天既浪费内存，也掩盖 T4 读路径依赖的 TTL
+	// 语义。DB 降级时 URSM 继续走 Redis（本来就是 Redis-only），无需救援。
 	patterns := []string{
-		"session:*",         // 会话主键
-		"session:key:*",     // 会话密钥映射
-		"session:apiKey:*",  // API 密钥索引
-		"session:stopped:*", // 停止会话索引
-		"ursm:*",            // URSM 路由状态
+		"session:*",      // 会话主键、索引与轮换记录
+		"session_pref:*", // 供应商偏好必须与会话一同保留
 	}
 
 	totalExtended := 0
@@ -218,6 +225,81 @@ func (tm *TTLManager) extendAllSessionTTLs(ctx context.Context, ttl time.Duratio
 		"ttl", ttl.String(),
 	)
 
+	return nil
+}
+
+// shrinkSessionTTLs 把 TTL 高于 target 的 session 键收回 target（只缩短、
+// 绝不延长）。用于退出降级模式：降级期间 extendAllSessionTTLs 把全量键抬到
+// degradedTTL，退出时把这部分抬升收回来，死会话在 normalTTL 内自然消化。
+// 分两轮 pipeline（先批量 TTL 读，再对超标的批量 Expire），因为单个
+// pipeline 内无法基于同批命令的结果做条件写。
+func (tm *TTLManager) shrinkSessionTTLs(ctx context.Context, target time.Duration) error {
+	client := tm.redis.Client()
+	if client == nil {
+		return nil
+	}
+	// Session preferences use a separate prefix. Keep their TTL aligned with
+	// the session key so expired sessions cannot leave multi-day preference
+	// orphans behind after a degraded-mode recovery.
+	patterns := []string{"session:*", "session_pref:*"}
+	shrunk := 0
+	for _, pattern := range patterns {
+		var cursor uint64
+		for {
+			keys, newCursor, err := client.Scan(ctx, cursor, pattern, 500).Result()
+			if err != nil {
+				return err
+			}
+			for i := 0; i < len(keys); i += 250 {
+				end := i + 250
+				if end > len(keys) {
+					end = len(keys)
+				}
+				batch := keys[i:end]
+				pipe := client.Pipeline()
+				ttlCmds := make([]*redis.DurationCmd, len(batch))
+				for j, key := range batch {
+					ttlCmds[j] = pipe.TTL(ctx, key)
+				}
+				if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+					return err
+				}
+				var over []string
+				for j, cmd := range ttlCmds {
+					// redis.Nil = 键已被并发删除（race with SCAN）；跳过，
+					// 不要把它当成 ttl=0 去"收紧"。
+					// -1 = 无 TTL（CreateV2 泄漏键等）：也收回 target，
+					// 让它们重新进入自然过期轨道。
+					if cmd.Err() == redis.Nil {
+						continue
+					}
+					if cmd.Err() != nil {
+						continue
+					}
+					val := cmd.Val()
+					if val < 0 || val > target {
+						over = append(over, batch[j])
+					}
+				}
+				if len(over) > 0 {
+					pipe2 := client.Pipeline()
+					for _, key := range over {
+						pipe2.Expire(ctx, key, target)
+					}
+					if _, err := pipe2.Exec(ctx); err != nil {
+						slog.Warn("ttl_manager: shrink expire failed", "error", err)
+						continue
+					}
+					shrunk += len(over)
+				}
+			}
+			cursor = newCursor
+			if cursor == 0 {
+				break
+			}
+		}
+	}
+	slog.Info("ttl_manager: shrank TTLs back to normal", "count", shrunk, "ttl", target.String())
 	return nil
 }
 

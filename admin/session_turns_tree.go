@@ -45,6 +45,14 @@ type SessionTurnTreeItem struct {
 	Model         string                 `json:"model,omitempty"`
 	LatencyMs     *int                   `json:"latency"` // 毫秒；NULL 未知
 	ChildRequests []*SessionChildRequest `json:"child_requests"`
+	V2Shadow      *SessionTurnV2Shadow   `json:"v2_shadow,omitempty"`
+}
+
+// SessionTurnV2Shadow is the per-turn, metadata-only dual-read comparison.
+// It intentionally contains no body or digest payload.
+type SessionTurnV2Shadow struct {
+	TurnNo          int  `json:"turn_no"`
+	DigestAvailable bool `json:"digest_available"`
 }
 
 // SessionChildRequest 是挂在主请求下的扩展请求（仅元数据）。
@@ -210,7 +218,10 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 		ORDER BY t.turn_number ASC, t.request_id ASC
 		LIMIT $%d`,
 		len(args)+1, len(args)+2, len(args)+3, len(args)+4)
-	args = append(args, p.Cursor.TurnNumber, p.Cursor.RequestID, p.Limit+1)
+	// 游标比较用 (turn_number, request_id): turn_number 出现在两个比较分支
+	// ("> $N" 与 "= $N+1") 中, 需各传一个值, 否则占位符数量 > 实参数 →
+	// pgx 报 "insufficient arguments" → /turns 接口 500。
+	args = append(args, p.Cursor.TurnNumber, p.Cursor.TurnNumber, p.Cursor.RequestID, p.Limit+1)
 
 	rows, err := db.Query(ctx, mainSQL, args...)
 	if err != nil {
@@ -270,16 +281,25 @@ func querySessionTurnsTree(ctx context.Context, db sessionTurnsTreeDB, p session
 			index[t.RequestID] = t
 		}
 		childSQL := `
-			SELECT parent_request_id, request_id, COALESCE(request_status, ''),
-			       latency_ms, COALESCE(request_type, 'main'), COALESCE(origin_actor, '')
-			FROM request_logs_with_current_month
-			WHERE parent_request_id = ANY($1)`
+				WITH ranked_children AS (
+					SELECT parent_request_id, request_id, COALESCE(request_status, '') AS request_status,
+					       latency_ms, COALESCE(request_type, 'main') AS request_type,
+					       COALESCE(origin_actor, '') AS origin_actor,
+					       ROW_NUMBER() OVER (PARTITION BY parent_request_id ORDER BY ts ASC, request_id ASC) AS child_no
+					FROM request_logs_with_current_month
+					WHERE parent_request_id = ANY($1)`
 		childArgs := []any{ids}
 		if p.TenantID != "" {
 			childSQL += " AND tenant_id = $2"
 			childArgs = append(childArgs, p.TenantID)
 		}
-		childSQL += " ORDER BY ts ASC, request_id ASC"
+		childSQL += fmt.Sprintf(`
+				)
+				SELECT parent_request_id, request_id, request_status, latency_ms, request_type, origin_actor
+				FROM ranked_children
+				WHERE child_no <= %d
+				ORDER BY parent_request_id ASC, request_id ASC
+				LIMIT %d`, maxChildRequestsPerParent, maxChildRequestsPerPage+1)
 
 		crows, err := db.Query(ctx, childSQL, childArgs...)
 		if err != nil {

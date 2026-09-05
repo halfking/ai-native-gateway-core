@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -142,64 +143,105 @@ func ParseGeminiStreamChunk(line string) (*StreamChunk, error) {
 		}
 	}
 
-	// Parse candidate content
-	if len(raw.Candidates) > 0 {
-		cand := raw.Candidates[0]
+	// StreamChunk represents exactly one candidate. Reject multi-candidate
+	// Gemini chunks explicitly rather than silently discarding candidates[1:].
+	if len(raw.Candidates) > 1 {
+		return nil, fmt.Errorf("gemini stream chunk contains %d candidates; StreamChunk supports one candidate", len(raw.Candidates))
+	}
+	if len(raw.Candidates) == 0 {
+		return chunk, nil
+	}
 
-		// If we already set usage, this is a usage chunk; still capture finishReason
-		if chunk.Type == ChunkTypeUsage {
-			if cand.FinishReason != "" {
-				chunk.FinishReason = mapGeminiFinishReason(cand.FinishReason)
-			}
-			return chunk, nil
-		}
+	cand := raw.Candidates[0]
+	chunk.CandidateIndex = cand.Index
 
-		// Otherwise this is a delta chunk
+	// Usage can arrive alongside a final candidate delta. StreamChunk can carry
+	// both, so retain the candidate instead of dropping its terminal content.
+	if chunk.Type != ChunkTypeUsage {
 		chunk.Type = ChunkTypeDelta
-
-		for _, p := range cand.Content.Parts {
-			switch {
-			case p.Thought != "":
-				// Gemini 2.5+ reasoning delta
-				if chunk.Delta == nil {
-					chunk.Delta = &StreamDelta{}
-				}
-				chunk.Delta.ReasoningContent = p.Thought
-				chunk.Delta.DeltaType = "reasoning"
-			case p.Text != "":
-				if chunk.Delta == nil {
-					chunk.Delta = &StreamDelta{}
-				}
-				chunk.Delta.Content = p.Text
-				chunk.Delta.DeltaType = "text"
-			case len(p.FunctionCall) > 0 && string(p.FunctionCall) != "null":
-				// Streamed functionCall
-				var fc struct {
-					Name string          `json:"name"`
-					Args json.RawMessage `json:"args"`
-				}
-				if err := json.Unmarshal(p.FunctionCall, &fc); err == nil && fc.Name != "" {
-					if chunk.Delta == nil {
-						chunk.Delta = &StreamDelta{}
-					}
-					chunk.Delta.ToolCalls = []StreamToolCallDelta{{
-						Index:     cand.Index,
-						ID:        "gemini_call_" + fc.Name,
-						Type:      "function",
-						Name:      fc.Name,
-						Arguments: string(fc.Args),
-					}}
-					chunk.Delta.DeltaType = "tool_call"
-				}
+	}
+	chunk.Delta = &StreamDelta{}
+	var audioData []byte
+	for partIdx, p := range cand.Content.Parts {
+		switch {
+		case p.Thought != "":
+			// Multiple parts from one candidate belong to the same delta.
+			chunk.Delta.ReasoningContent += p.Thought
+		case p.Text != "":
+			chunk.Delta.Content += p.Text
+		case len(p.FunctionCall) > 0 && string(p.FunctionCall) != "null":
+			var fc struct {
+				Name string          `json:"name"`
+				Args json.RawMessage `json:"args"`
 			}
+			if err := json.Unmarshal(p.FunctionCall, &fc); err != nil {
+				return nil, fmt.Errorf("unmarshal gemini functionCall: %w", err)
+			}
+			// Gemini may send an argument continuation before the function name.
+			// Preserve it as a tool delta rather than dropping it.
+			toolCall := StreamToolCallDelta{
+				Index:     cand.Index,
+				Type:      "function",
+				Name:      fc.Name,
+				Arguments: string(fc.Args),
+			}
+			if fc.Name != "" {
+				// Disambiguate parallel functionCall parts of the same Name within
+				// a single chunk by partIdx. The IR stream contract carries tool_call
+				// IDs across chunks; the caller stitches them via Index.
+				toolCall.ID = fmt.Sprintf("gemini_call_%s_%d", fc.Name, partIdx)
+			}
+			chunk.Delta.ToolCalls = append(chunk.Delta.ToolCalls, toolCall)
+		case len(p.InlineData) > 0 && string(p.InlineData) != "null":
+			var inlineData struct {
+				MIMEType string `json:"mimeType"`
+				Data     string `json:"data"`
+			}
+			if err := json.Unmarshal(p.InlineData, &inlineData); err != nil {
+				return nil, fmt.Errorf("unmarshal gemini inlineData: %w", err)
+			}
+			if !strings.HasPrefix(inlineData.MIMEType, "audio/") {
+				return nil, fmt.Errorf("gemini stream inlineData MIME type %q is not representable as audio", inlineData.MIMEType)
+			}
+			if chunk.Delta.AudioDelta != nil && chunk.Delta.AudioDelta.MIMEType != inlineData.MIMEType {
+				return nil, fmt.Errorf("gemini stream contains mixed audio MIME types %q and %q", chunk.Delta.AudioDelta.MIMEType, inlineData.MIMEType)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(inlineData.Data)
+			if err != nil {
+				return nil, fmt.Errorf("decode gemini inlineData audio: %w", err)
+			}
+			if chunk.Delta.AudioDelta == nil {
+				chunk.Delta.AudioDelta = &StreamAudioDelta{MIMEType: inlineData.MIMEType}
+			}
+			audioData = append(audioData, decoded...)
 		}
-
-		if cand.FinishReason != "" {
-			chunk.FinishReason = mapGeminiFinishReason(cand.FinishReason)
-		}
+	}
+	if chunk.Delta.AudioDelta != nil {
+		chunk.Delta.AudioDelta.Data = base64.StdEncoding.EncodeToString(audioData)
+	}
+	chunk.Delta.DeltaType = geminiDeltaType(chunk.Delta)
+	if cand.FinishReason != "" {
+		chunk.FinishReason = mapGeminiFinishReason(cand.FinishReason)
 	}
 
 	return chunk, nil
+}
+
+func geminiDeltaType(delta *StreamDelta) string {
+	switch {
+	case delta == nil:
+		return ""
+	case delta.Content != "":
+		return "text"
+	case delta.ReasoningContent != "":
+		return "reasoning"
+	case len(delta.ToolCalls) > 0:
+		return "tool_call"
+	case delta.AudioDelta != nil:
+		return "audio"
+	default:
+		return ""
+	}
 }
 
 // mapGeminiFinishReason converts Gemini finishReason strings to the IR's

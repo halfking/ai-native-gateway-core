@@ -21,7 +21,7 @@ import (
 //	writer := NewDualWriter(v1Writer, v2Writer, flags, metrics)
 //	err := writer.Write(ctx, req)
 type DualWriter struct {
-	v1Writer RequestLogWriter      // Legacy writer (request_logs)
+	v1Writer RequestLogWriter         // Legacy writer (request_logs)
 	v2Writer SessionWriterV2Interface // V2 writer (sessions tables)
 
 	flags   FeatureFlags
@@ -87,10 +87,14 @@ func NewDualWriter(
 // be defined in a shared package to avoid circular dependencies.
 type ProcessedRequest struct {
 	// Session context
-	SessionID string
-	TenantID  string
-	RequestID string
-	Timestamp time.Time
+	SessionID       string
+	TenantID        string
+	RequestID       string
+	Timestamp       time.Time
+	ProjectID       string
+	Namespace       string
+	ParentRequestID string
+	TaskType        string
 
 	// Request content
 	RequestBody  []v2.Message
@@ -130,7 +134,7 @@ type ProcessedRequest struct {
 
 	// Protocol-specific extensions (added for V2 compatibility)
 	ProviderExtensions map[string]interface{} // Preserves vendor-specific fields
-	MultimodalTypes    []string                // Types present: ["image", "audio", "video", "document"]
+	MultimodalTypes    []string               // Types present: ["image", "audio", "video", "document"]
 
 	// Processing stages
 	ProcessingStages []v2.ProcessingStage
@@ -239,6 +243,10 @@ func convertToV2Request(req *ProcessedRequest) *v2.ProcessedRequest {
 		TenantID:            req.TenantID,
 		RequestID:           req.RequestID,
 		Timestamp:           req.Timestamp,
+		ProjectID:           req.ProjectID,
+		Namespace:           req.Namespace,
+		ParentRequestID:     req.ParentRequestID,
+		TaskType:            req.TaskType,
 		RequestBody:         req.RequestBody,
 		ResponseBody:        req.ResponseBody,
 		Attachments:         req.Attachments,

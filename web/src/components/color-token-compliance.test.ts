@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 const targets = [
   'src/components/LiveRequestStreamV2.vue',
   'src/components/SystemStatusIndicator.vue',
+  'src/components/StatusBadge.vue',
   'src/components/analytics/RouteFlowSankey.vue',
   'src/components/shell/AppTopbar.vue',
   'src/components/shell/LifecycleShell.vue',

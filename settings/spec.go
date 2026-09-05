@@ -26,6 +26,7 @@ package settings
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 )
@@ -64,6 +65,9 @@ const (
 	CategoryCircuitBreaker Category = "circuit_breaker"
 	CategoryGeneral        Category = "general"
 	CategoryIntegration    Category = "integration"
+	// 2026-08-20: 项目归属（LLM 推断层）的归类。属于辅助分析类，不是
+	// 计费/路由类，不参与 hot path 控制。
+	CategoryAttribution Category = "attribution"
 )
 
 // DangerLevel gates the required role for PUT operations.
@@ -126,6 +130,9 @@ func (s *Spec) Validate(v any) error {
 		case int64:
 			n = int(x)
 		case float64:
+			if x != math.Trunc(x) {
+				return fmt.Errorf("expected int, got fractional float %v", x)
+			}
 			n = int(x)
 		default:
 			return fmt.Errorf("expected int, got %T", v)

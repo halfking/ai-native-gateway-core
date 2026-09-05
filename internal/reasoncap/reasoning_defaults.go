@@ -57,6 +57,18 @@ var reasoningRules = []reasoningRule{
 		Supported: true, Dialect: DialectKimiThink,
 		CanDisable: true, HistoryField: "keep",
 	}},
+	{"kimi-k2.6", 0, Caps{
+		Supported: true, Dialect: DialectKimiThink,
+		CanDisable: true, HistoryField: "keep",
+	}},
+	{"kimi-k2.7-code", 0, Caps{
+		Supported: true, Dialect: DialectKimiThink,
+		CanDisable: true, HistoryField: "keep",
+	}},
+	{"kimi-k2.7-code-highspeed", 0, Caps{
+		Supported: true, Dialect: DialectKimiThink,
+		CanDisable: true, HistoryField: "keep",
+	}},
 	{"kimi-k3", 0, Caps{
 		Supported: true, Dialect: DialectKimiEffort,
 		Efforts: []string{"low", "high", "max"}, CanDisable: true,
@@ -73,6 +85,12 @@ var reasoningRules = []reasoningRule{
 		Supported: true, Dialect: DialectGrok,
 		Efforts:    []string{"low", "medium", "high"},
 		CanDisable: false,
+	}},
+	{"grok-4.6", 0, Caps{
+		// grok-4.6 supports low, medium, high, xhigh reasoning levels
+		Supported: true, Dialect: DialectGrok,
+		Efforts:    []string{"low", "medium", "high", "xhigh"},
+		CanDisable: true,
 	}},
 
 	// ══════════════════════════════════════════════════════════════════════
@@ -174,7 +192,12 @@ var reasoningRules = []reasoningRule{
 		CanDisable: true,
 	}},
 
-	// ─── GLM-4.5 / GLM-5 / GLM-Z1 ────────────────────────────────────────
+	// ─── GLM-4.5 / GLM-5 / GLM-5.3 / GLM-Z1 ───────────────────────────────
+	{"glm-5.3", 1, Caps{
+		Supported: true, Dialect: DialectGLM,
+		Efforts:    []string{"low", "high", "max"},
+		CanDisable: false, HistoryField: "clear_thinking",
+	}},
 	{"glm-4.5", 1, Caps{
 		Supported: true, Dialect: DialectGLM,
 		Efforts:    []string{"max", "xhigh", "high", "medium", "low", "minimal", "none"},

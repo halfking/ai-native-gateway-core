@@ -2,16 +2,18 @@
 // Backend: admin/self_check_handlers.go
 // 对应数据库表: self_check_runs, self_check_round_results, self_check_settings
 
-import { authBearer } from './store'
+import { store } from './store'
 
 const BASE = ''
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = { 'Authorization': `Bearer ${authBearer()}` }
+  const headers: Record<string, string> = {}
+  if (store.apiKey) headers['Authorization'] = `Bearer ${store.apiKey}`
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   const resp = await fetch(BASE + path, {
     method,
     headers,
+    credentials: 'same-origin',
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   if (!resp.ok) {
@@ -275,6 +277,10 @@ export interface ProbeTriStateTask {
   dedup_key: string
   credential_id: number
   provider_id?: number
+  /** 供应商显示名（来自 providers LEFT JOIN，2026-08-20）— 自检 tab 卡片显示 供应商+凭据 */
+  provider_name?: string
+  /** 供应商 code（来自 providers.code LEFT JOIN）— 自检 tab 卡片副标题 */
+  provider_code?: string
   raw_model: string
   command: string
   source: string

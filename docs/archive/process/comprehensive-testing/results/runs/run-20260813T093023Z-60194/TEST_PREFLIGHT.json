@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T093023Z-60194",
+  "scenario": "TEST_PREFLIGHT",
+  "category": "environment",
+  "status": "PASS",
+  "commit": "d53e20a4118ad4df9781f1d50c45a95d4a752c94",
+  "gateway": "http://127.0.0.1:8793",
+  "checks": {
+    "gateway": true,
+    "database": true,
+    "mocks": true,
+    "metrics": true
+  },
+  "metrics": {},
+  "evidence": {
+    "healthz": {
+      "ok": true,
+      "detail": "{\"status\":\"ok\",\"version\":\"2.5.0-9ba88bb5-20260812-1504-9ba88bb5\"}\n"
+    },
+    "database": {
+      "hot": true,
+      "bodies_hot": true,
+      "titles": true,
+      "summaries": true,
+      "compression_strategy": true,
+      "compression_meta": true,
+      "detail": "schema ok"
+    },
+    "mocks": {
+      "healthy": 60,
+      "total": 60,
+      "detail": "60/60 mocks healthy",
+      "checked": true
+    },
+    "metrics": {
+      "ok": false,
+      "detail": "HTTP Error 401: Unauthorized",
+      "authenticated": false
+    }
+  },
+  "failures": [],
+  "parameters": {
+    "gateway": "http://127.0.0.1:8793",
+    "output": "/Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go/docs/全方面测试/results/runs/run-20260813T093023Z-60194/TEST_PREFLIGHT.json",
+    "mock_base_port": 19080,
+    "mock_count": 60,
+    "skip_mocks": false,
+    "skip_db": false,
+    "require_metrics": false
+  },
+  "reason": "all required dependencies available"
+}

@@ -51,7 +51,7 @@ type OverrideCreateReq struct {
 }
 
 func jsonDecode(r *http.Request, dst any) error {
-	return json.NewDecoder(r.Body).Decode(dst)
+	return readJSONRequired(r, dst)
 }
 
 // ── handlers ─────────────────────────────────────────────────────
@@ -496,10 +496,13 @@ func (h *AutoRouteHandlers) writeAuditLog(r *http.Request, action string, target
 		return
 	}
 	actor := requestUser(r)
-	payload, _ := json.Marshal(details)
-	_, err := h.db.Exec(r.Context(),
-		`INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5)`,
-		actor, action, "routing_override", targetID, payload)
+	payload, err := json.Marshal(details)
+	if err != nil {
+		return
+	}
+	_, err = h.db.Exec(r.Context(),
+		`INSERT INTO routing_audit_log (actor, action, target_type, target_id, after_json) VALUES ($1, $2, $3, $4, $5::text::jsonb)`,
+		actor, action, "routing_override", targetID, string(payload))
 	if err != nil {
 		// Audit failures are non-fatal; the trigger-based log
 		// already records the action+actor+row.

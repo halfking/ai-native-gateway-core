@@ -12,12 +12,14 @@ const waterfallRingCap = 200
 // WaterfallRequest is one completed request's 9-stage timeline for the
 // admin waterfall UI. Timestamps are RFC3339Nano when present.
 type WaterfallRequest struct {
-	RequestID  string `json:"request_id"`
-	SessionID  string `json:"session_id,omitempty"`
-	Model      string `json:"model,omitempty"`
-	Credential int    `json:"credential_id,omitempty"`
-	Result     string `json:"result"`
-	Vendor     string `json:"vendor,omitempty"`
+	RequestID  string             `json:"request_id"`
+	TenantID   string             `json:"tenant_id,omitempty"`
+	SessionID  string             `json:"session_id,omitempty"`
+	Model      string             `json:"model,omitempty"`
+	Credential int                `json:"credential_id,omitempty"`
+	Result     string             `json:"result"`
+	Vendor     string             `json:"vendor,omitempty"`
+	Attempts   []WaterfallAttempt `json:"attempts,omitempty"`
 
 	ArrivedAt       string `json:"arrived_at,omitempty"`
 	TotalEnqueuedAt string `json:"total_enqueued_at,omitempty"`
@@ -41,6 +43,22 @@ type WaterfallRequest struct {
 	TotalMS             int `json:"total_ms"`
 }
 
+// WaterfallAttempt is one immutable upstream attempt in a request waterfall.
+// The request-level fields above remain for API compatibility.
+type WaterfallAttempt struct {
+	AttemptID    string `json:"attempt_id"`
+	AttemptNo    int    `json:"attempt_no"`
+	Model        string `json:"model,omitempty"`
+	ProviderID   int64  `json:"provider_id,omitempty"`
+	CredentialID int64  `json:"credential_id"`
+	Vendor       string `json:"vendor,omitempty"`
+	StartedAt    string `json:"started_at,omitempty"`
+	FirstByteAt  string `json:"first_byte_at,omitempty"`
+	EndedAt      string `json:"ended_at,omitempty"`
+	Outcome      string `json:"outcome,omitempty"`
+	ErrorKind    string `json:"error_kind,omitempty"`
+}
+
 // WaterfallSnapshot is the admin waterfall API response body.
 type WaterfallSnapshot struct {
 	Requests            []WaterfallRequest  `json:"requests"`
@@ -48,6 +66,9 @@ type WaterfallSnapshot struct {
 	BottleneckDiagnosis BottleneckDiagnosis `json:"bottleneck_diagnosis"`
 	Enabled             bool                `json:"enabled"`
 	Wired               bool                `json:"wired"`
+	// Source describes where Requests came from for the admin UI.
+	// memory | memory+db | db | none
+	Source string `json:"source,omitempty"`
 }
 
 // WaterfallTimeRange bounds the returned request sample.
@@ -78,18 +99,28 @@ func newWaterfallRing(cap int) *waterfallRing {
 	return &waterfallRing{buf: make([]WaterfallRequest, cap)}
 }
 
-func (r *waterfallRing) push(item WaterfallRequest) {
+// push appends one completion, returning the evicted entry when the ring
+// wraps over an existing sample. Callers maintaining derived read models
+// (e.g. the projection's waiting-percentile window) use the evicted value
+// to keep their aggregates aligned with the ring contents.
+func (r *waterfallRing) push(item WaterfallRequest) (evicted WaterfallRequest, didEvict bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.full {
+		evicted = r.buf[r.next]
+		didEvict = true
+	}
 	r.buf[r.next] = item
 	r.next = (r.next + 1) % len(r.buf)
 	if r.next == 0 {
 		r.full = true
 	}
+	return evicted, didEvict
 }
 
 // snapshot returns the newest-first slice, optionally filtered.
-func (r *waterfallRing) snapshot(limit int, model string, credentialID int) []WaterfallRequest {
+// tenantID empty means all tenants (platform ops); non-empty enforces isolation.
+func (r *waterfallRing) snapshot(limit int, model string, credentialID int, tenantID string) []WaterfallRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -114,7 +145,10 @@ func (r *waterfallRing) snapshot(limit int, model string, credentialID int) []Wa
 		if idx < 0 {
 			idx += len(r.buf)
 		}
-		item := r.buf[idx]
+		item := cloneWaterfallRequest(r.buf[idx])
+		if tenantID != "" && item.TenantID != tenantID {
+			continue
+		}
 		if model != "" && item.Model != model {
 			continue
 		}
@@ -124,6 +158,35 @@ func (r *waterfallRing) snapshot(limit int, model string, credentialID int) []Wa
 		out = append(out, item)
 	}
 	return out
+}
+
+// findByRequestID returns one ring sample matching requestID (and optional tenant).
+// tenantID empty skips tenant check (platform ops). ok=false when not found.
+func (r *waterfallRing) findByRequestID(requestID, tenantID string) (WaterfallRequest, bool) {
+	if r == nil || requestID == "" {
+		return WaterfallRequest{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := r.next
+	if r.full {
+		n = len(r.buf)
+	}
+	for i := 0; i < n; i++ {
+		idx := r.next - 1 - i
+		if idx < 0 {
+			idx += len(r.buf)
+		}
+		item := r.buf[idx]
+		if item.RequestID != requestID {
+			continue
+		}
+		if tenantID != "" && item.TenantID != tenantID {
+			continue
+		}
+		return cloneWaterfallRequest(item), true
+	}
+	return WaterfallRequest{}, false
 }
 
 // Pipeline embeds a ring; allocated lazily so tests without Start still work.
@@ -144,11 +207,20 @@ func (p *Pipeline) recordWaterfall(qr *QueuedRequest, out ForwardOutcome) {
 	ring.push(item)
 }
 
+// FindWaterfallByRequestID looks up one completion in the pipeline ring.
+func (p *Pipeline) FindWaterfallByRequestID(requestID, tenantID string) (WaterfallRequest, bool) {
+	if p == nil || requestID == "" {
+		return WaterfallRequest{}, false
+	}
+	return p.ensureWaterfallRing().findByRequestID(requestID, tenantID)
+}
+
 // SnapshotWaterfall returns recent timelines + live bottleneck diagnosis.
-func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) WaterfallSnapshot {
+// tenantID empty = all tenants (platform ops).
+func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int, tenantID string) WaterfallSnapshot {
 	snap := WaterfallSnapshot{
 		Requests: []WaterfallRequest{},
-		Enabled:  IsDispatchEnabled(),
+		Enabled:  true, // AUDIT_24H B2b: dispatch is the only path
 		Wired:    p != nil,
 		BottleneckDiagnosis: BottleneckDiagnosis{
 			Bottleneck: "none",
@@ -156,12 +228,14 @@ func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) 
 		},
 	}
 	if p == nil {
+		snap.Source = "none"
 		return snap
 	}
 	ring := p.ensureWaterfallRing()
-	reqs := ring.snapshot(limit, model, credentialID)
+	reqs := ring.snapshot(limit, model, credentialID, tenantID)
 	snap.Requests = reqs
 	if len(reqs) > 0 {
+		snap.Source = "memory"
 		// requests are newest-first; time range is oldest→newest among sample.
 		end := reqs[0].ResponseEndAt
 		if end == "" {
@@ -169,6 +243,8 @@ func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) 
 		}
 		start := reqs[len(reqs)-1].ArrivedAt
 		snap.TimeRange = &WaterfallTimeRange{Start: start, End: end}
+	} else {
+		snap.Source = "none"
 	}
 	models, creds := p.Snapshot()
 	snap.BottleneckDiagnosis = diagnoseBottleneck(models, creds)
@@ -176,36 +252,49 @@ func (p *Pipeline) SnapshotWaterfall(limit int, model string, credentialID int) 
 }
 
 func buildWaterfallRequest(qr *QueuedRequest, out ForwardOutcome) WaterfallRequest {
+	t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 := qr.StageTimestamps()
+	stage := func(t *time.Time) time.Time {
+		if t == nil {
+			return time.Time{}
+		}
+		return *t
+	}
+	stages := [10]time.Time{stage(t0), stage(t1), stage(t2), stage(t3), stage(t4), stage(t5), stage(t6), stage(t7), stage(t8), stage(t9)}
+	cred := qr.selectedCredential()
+	resolvedModel := qr.resolvedModel()
+	vendor := qr.selectedVendor()
 	item := WaterfallRequest{
 		RequestID:  qr.ID,
+		TenantID:   qr.TenantID,
 		SessionID:  qr.SessionID,
-		Model:      firstNonEmpty(qr.ResolvedModel, qr.RequestedModel),
-		Credential: qr.SelectedCred.CredentialID,
+		Model:      firstNonEmpty(resolvedModel, qr.RequestedModel),
+		Credential: cred.CredentialID,
 		Result:     resultLabel(out),
-		Vendor:     firstNonEmpty(qr.vendor, qr.SelectedCred.Vendor),
-		ArrivedAt:  formatTS(qr.T0_ArrivedAt),
+		Vendor:     firstNonEmpty(vendor, cred.Vendor),
+		Attempts:   qr.waterfallAttempts(),
+		ArrivedAt:  formatTS(stages[ReqStageArrived]),
 	}
-	item.TotalEnqueuedAt = formatTSPtr(qr.T1_TotalEnqueuedAt)
-	item.TotalDequeuedAt = formatTSPtr(qr.T2_TotalDequeuedAt)
-	item.ModelEnqueuedAt = formatTSPtr(qr.T3_ModelEnqueuedAt)
-	item.ModelDequeuedAt = formatTSPtr(qr.T4_ModelDequeuedAt)
-	item.CredEnqueuedAt = formatTSPtr(qr.T5_CredEnqueuedAt)
-	item.CredDequeuedAt = formatTSPtr(qr.T6_CredDequeuedAt)
-	item.ForwardStartAt = formatTSPtr(qr.T7_ForwardStartAt)
-	item.ResponseStartAt = formatTSPtr(qr.T8_ResponseStartAt)
-	item.ResponseEndAt = formatTSPtr(qr.T9_ResponseEndAt)
+	item.TotalEnqueuedAt = formatTS(stages[ReqStageTotalEnqueued])
+	item.TotalDequeuedAt = formatTS(stages[ReqStageTotalDequeued])
+	item.ModelEnqueuedAt = formatTS(stages[ReqStageModelEnqueued])
+	item.ModelDequeuedAt = formatTS(stages[ReqStageModelDequeued])
+	item.CredEnqueuedAt = formatTS(stages[ReqStageCredEnqueued])
+	item.CredDequeuedAt = formatTS(stages[ReqStageCredDequeued])
+	item.ForwardStartAt = formatTS(stages[ReqStageForwardStart])
+	item.ResponseStartAt = formatTS(stages[ReqStageResponseStart])
+	item.ResponseEndAt = formatTS(stages[ReqStageResponseEnd])
 
-	item.WaitingInTotalMS = durationMS(qr.T1_TotalEnqueuedAt, qr.T2_TotalDequeuedAt)
-	item.WaitingInModelMS = durationMS(qr.T3_ModelEnqueuedAt, qr.T4_ModelDequeuedAt)
-	item.WaitingInNodeMS = durationMS(qr.T5_CredEnqueuedAt, qr.T6_CredDequeuedAt)
-	item.RoutingMS = durationMS(qr.T2_TotalDequeuedAt, qr.T5_CredEnqueuedAt)
-	item.AcquireMS = durationMS(qr.T6_CredDequeuedAt, qr.T7_ForwardStartAt)
-	item.UpstreamLatencyMS = durationMS(qr.T7_ForwardStartAt, qr.T8_ResponseStartAt)
-	item.StreamingDurationMS = durationMS(qr.T8_ResponseStartAt, qr.T9_ResponseEndAt)
-	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T6_CredDequeuedAt); ok {
+	item.WaitingInTotalMS = durationMS(stages[ReqStageTotalEnqueued], stages[ReqStageTotalDequeued])
+	item.WaitingInModelMS = durationMS(stages[ReqStageModelEnqueued], stages[ReqStageModelDequeued])
+	item.WaitingInNodeMS = durationMS(stages[ReqStageCredEnqueued], stages[ReqStageCredDequeued])
+	item.RoutingMS = durationMS(stages[ReqStageTotalDequeued], stages[ReqStageCredEnqueued])
+	item.AcquireMS = durationMS(stages[ReqStageCredDequeued], stages[ReqStageForwardStart])
+	item.UpstreamLatencyMS = durationMS(stages[ReqStageForwardStart], stages[ReqStageResponseStart])
+	item.StreamingDurationMS = durationMS(stages[ReqStageResponseStart], stages[ReqStageResponseEnd])
+	if s, ok := stageSeconds(stages[ReqStageArrived], stages[ReqStageCredDequeued]); ok {
 		item.QueueWaitMS = int(s * 1000)
 	}
-	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T9_ResponseEndAt); ok {
+	if s, ok := stageSeconds(stages[ReqStageArrived], stages[ReqStageResponseEnd]); ok {
 		item.TotalMS = int(s * 1000)
 	}
 	return item
@@ -262,14 +351,7 @@ func formatTS(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
 
-func formatTSPtr(t *time.Time) string {
-	if t == nil || t.IsZero() {
-		return ""
-	}
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-func durationMS(start, end *time.Time) int {
+func durationMS(start, end time.Time) int {
 	s, ok := stageSeconds(start, end)
 	if !ok {
 		return 0

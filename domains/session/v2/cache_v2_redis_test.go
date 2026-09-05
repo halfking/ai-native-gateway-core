@@ -9,7 +9,7 @@ import (
 // TestRedisGovernanceCache_DisabledCache 测试禁用缓存（fail-open）
 func TestRedisGovernanceCache_DisabledCache(t *testing.T) {
 	// Empty address = disabled cache
-	cache := NewRedisGovernanceCache("", 0)
+	cache := NewRedisGovernanceCache("", 0, 2)
 
 	if cache.enabled {
 		t.Error("expected disabled cache")
@@ -78,7 +78,7 @@ func TestRedisGovernanceCache_SetGet(t *testing.T) {
 	// Skip if Redis not available
 	t.Skip("Skipping test that requires Redis connection")
 
-	cache := NewRedisGovernanceCache("localhost:6379", 5*time.Minute)
+	cache := NewRedisGovernanceCache("localhost:6379", 5*time.Minute, 2)
 	if !cache.enabled {
 		t.Skip("Redis not available, skipping test")
 	}
@@ -149,7 +149,7 @@ func TestRedisGovernanceCache_SetGet(t *testing.T) {
 func TestRedisGovernanceCache_CacheMiss(t *testing.T) {
 	t.Skip("Skipping test that requires Redis connection")
 
-	cache := NewRedisGovernanceCache("localhost:6379", 5*time.Minute)
+	cache := NewRedisGovernanceCache("localhost:6379", 5*time.Minute, 2)
 	if !cache.enabled {
 		t.Skip("Redis not available, skipping test")
 	}
@@ -169,7 +169,7 @@ func TestRedisGovernanceCache_CacheMiss(t *testing.T) {
 
 // TestRedisGovernanceCache_NilMeta 测试 nil meta 处理
 func TestRedisGovernanceCache_NilMeta(t *testing.T) {
-	cache := NewRedisGovernanceCache("", 0) // disabled cache
+	cache := NewRedisGovernanceCache("", 0, 2) // disabled cache
 
 	ctx := context.Background()
 
@@ -201,7 +201,7 @@ func TestRedisGovernanceCache_TTL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cache := NewRedisGovernanceCache("", tt.inputTTL)
+			cache := NewRedisGovernanceCache("", tt.inputTTL, 2)
 			if cache.ttl != tt.expectedTTL {
 				t.Errorf("expected TTL %v, got %v", tt.expectedTTL, cache.ttl)
 			}
@@ -212,7 +212,7 @@ func TestRedisGovernanceCache_TTL(t *testing.T) {
 // TestRedisGovernanceCache_Close 测试关闭连接
 func TestRedisGovernanceCache_Close(t *testing.T) {
 	// Disabled cache
-	cache := NewRedisGovernanceCache("", 0)
+	cache := NewRedisGovernanceCache("", 0, 2)
 	err := cache.Close()
 	if err != nil {
 		t.Errorf("expected no error closing disabled cache, got: %v", err)

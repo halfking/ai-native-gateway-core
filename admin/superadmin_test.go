@@ -265,6 +265,31 @@ func TestAuthContextEffectiveTenantID(t *testing.T) {
 	}
 }
 
+func TestAuthContextEffectiveTenantIDAll(t *testing.T) {
+	tests := []struct {
+		name string
+		auth *AuthContext
+		want string
+	}{
+		{"nil returns all", nil, ""},
+		{"tenant_admin scoped", &AuthContext{Role: "tenant_admin", TenantID: "acme"}, "acme"},
+		{"super_admin sees all", &AuthContext{Role: "super_admin", TenantID: "acme"}, ""},
+		{"admin_key sees all", &AuthContext{Role: "admin_key", TenantID: "default"}, ""},
+		{"empty tenant_admin retains default fallback", &AuthContext{Role: "tenant_admin", TenantID: ""}, "default"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/", nil)
+			if tt.auth != nil {
+				req = SetAuthContext(req, tt.auth)
+			}
+			if got := EffectiveTenantIDAll(req); got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAuditLogCtxFallsBackToUnknown(t *testing.T) {
 	req := httptest.NewRequest("GET", "/", nil)
 	if got := GetAuthContext(req); got != nil {

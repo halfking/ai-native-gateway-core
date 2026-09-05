@@ -15,6 +15,7 @@ import { detectTheme, logoSrc } from './theme'
 import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
+import { loadCredentialLabels, clearCredentialLabels } from './composables/useCredentialLabels'
 
 const { t } = useI18n()
 const route = useRoute()
@@ -34,6 +35,7 @@ const brandLogo = ref(logoSrc(detectTheme()))
 const logoObserver = typeof MutationObserver !== 'undefined'
   ? new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
   : null
+let stopMaintainAvailabilityWatch: (() => void) | null = null
 
 onMounted(async () => {
   brandLogo.value = logoSrc(detectTheme())
@@ -59,11 +61,14 @@ onMounted(async () => {
   void probeMaintainAvailable()
   // 保留 maintain 可用性订阅入口以便未来 topbar 内 onUnmounted 正确清理。
   // 当前无回调（topbar 自取），不会泄漏 — onMaintainAvailabilityChange 在静态模块层仅保留全局 listener。
-  onMaintainAvailabilityChange(() => { /* noop */ })
+  stopMaintainAvailabilityWatch?.()
+  stopMaintainAvailabilityWatch = onMaintainAvailabilityChange(() => { /* noop */ })
 })
 
 onUnmounted(() => {
   logoObserver?.disconnect()
+  stopMaintainAvailabilityWatch?.()
+  stopMaintainAvailabilityWatch = null
 })
 
 const versionInfo = ref<{
@@ -116,6 +121,18 @@ watch(
   { immediate: true },
 )
 
+// 2026-08-23 (凭据显示) : 全局加载凭据名称缓存。selfcheck/stream/节点矩阵
+// 等视图通过 useCredentialLabels 共享这份缓存，避免子组件各自拉取。
+// 登出时必须清空，否则下一位用户（尤其跨租户）会在 TTL 内看到上一
+// 用户的凭据标签——这是跨租户信息泄露。
+watch(isLoggedIn, (loggedIn) => {
+  if (loggedIn) {
+    void loadCredentialLabels()
+  } else {
+    clearCredentialLabels()
+  }
+}, { immediate: true })
+
 watch(
   () => route.query.login,
   (login) => {
@@ -132,9 +149,13 @@ async function logout() {
   }
   clearAll()
   markAuthHydrated() // 2026-07-09: 登出后保持 hydrated=true，下一次 mount 才会重新探测
-  // 退出后直接跳转到产品首页（ai-native-maintain），避免先到 / 再二次跳转造成的加载延迟
+  // Maintain 未部署时留在 Gateway 登录页，不能停留在已清空认证态的受保护页面。
   if (typeof window !== 'undefined') {
-    window.location.replace('/maintain/home')
+    if (await probeMaintainAvailable()) {
+      window.location.replace('/maintain/home')
+    } else {
+      await router.replace({ path: '/', query: { login: '1' } })
+    }
   }
 }
 
@@ -421,7 +442,7 @@ function handleChangePasswordSuccess() {
 }
 
 .nav-group-header:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   color: var(--text);
 }
 
@@ -486,7 +507,7 @@ function handleChangePasswordSuccess() {
 }
 
 .nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   color: var(--text);
 }
 
@@ -593,7 +614,7 @@ function handleChangePasswordSuccess() {
 }
 
 .sidebar-toggle:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
   color: var(--text);
 }
 

@@ -29,6 +29,7 @@ interface IncidentByLane {
 const incidentState = reactive({
   byId: {} as IncidentById,
   byLane: {
+    credential: {} as Record<string, string[]>,
     vendor: {} as Record<string, string[]>,
     provider: {} as Record<string, string[]>,
     model: {} as Record<string, string[]>,
@@ -104,7 +105,7 @@ function indexByLanes(inc: RouteIncident, lanes?: RouteIncidentAffectedLane[]) {
   if (!lanes) return
   for (const lane of lanes) {
     const dim = lane.dimension
-    if (dim !== 'vendor' && dim !== 'provider' && dim !== 'model') continue
+    if (dim !== 'credential' && dim !== 'vendor' && dim !== 'provider' && dim !== 'model') continue
     const bucket = incidentState.byLane[dim]
     if (!bucket[lane.value]) bucket[lane.value] = []
     if (!bucket[lane.value].includes(inc.id)) {
@@ -121,7 +122,7 @@ function deindexByLanes(
   const keys: LaneKey[] = []
   if (lanes) {
     for (const lane of lanes) {
-      if (lane.dimension === 'vendor' || lane.dimension === 'provider' || lane.dimension === 'model') {
+      if (lane.dimension === 'credential' || lane.dimension === 'vendor' || lane.dimension === 'provider' || lane.dimension === 'model') {
         keys.push({ dimension: lane.dimension, value: lane.value })
       }
     }
@@ -148,7 +149,7 @@ export function useRouteIncidents() {
   // Active incidents for a given lane (used by SwimLane to know
   // whether to show the diagnose button).
   // 2026-08-14 V3.2: 支持 'queue' 维度（返回空数组）
-  function incidentsForLane(dimension: 'vendor' | 'provider' | 'model' | 'queue', value: string): RouteIncident[] {
+  function incidentsForLane(dimension: 'credential' | 'vendor' | 'provider' | 'model' | 'queue', value: string): RouteIncident[] {
     if (dimension === 'queue') return []
     _bump.value
     const ids = incidentState.byLane[dimension][value] || []
@@ -184,7 +185,7 @@ export function useRouteIncidents() {
 // user disconnects / the SSE connection closes.
 export function resetRouteIncidents() {
   incidentState.byId = {}
-  incidentState.byLane = { vendor: {}, provider: {}, model: {} }
+  incidentState.byLane = { credential: {}, vendor: {}, provider: {}, model: {} }
   incidentState.revision += 1
 }
 

@@ -1,140 +1,81 @@
-#!/bin/bash
-# clean_redis_leaks.sh
-# 2026-07-23: 清理 Redis 中没有 TTL 的 session/pending_response 残留 keys
-# 触发场景：HSet 隐式清除 TTL 的 bug 导致部分 key 永不过期
-# 运行后需要重启 LLM Gateway 触发一次 Touch/Set 让正常 keys 续期
+#!/usr/bin/env bash
+# Reports or explicitly removes gateway keys that have lost their TTL.
+#
+# Required:
+#   LLM_GATEWAY_REDIS_ADDR=host:port
+#   LLM_GATEWAY_REDIS_PASSWORD=...
+# Optional:
+#   LLM_GATEWAY_REDIS_DB=2
+#   APPLY=1 CONFIRM_DELETE_NO_TTL=delete-no-ttl-keys
+#
+# The default is report-only. Deletion is intentionally opt-in because some
+# Redis prefixes contain persistent coordination keys outside this gateway.
 
 set -euo pipefail
 
-REDIS_HOST="${REDIS_HOST:-172.16.2.210}"
-REDIS_PORT="${REDIS_PORT:-6389}"
-REDIS_PASS="${REDIS_PASS:-Veritrans9900}"
+: "${LLM_GATEWAY_REDIS_ADDR:?LLM_GATEWAY_REDIS_ADDR is required}"
+: "${LLM_GATEWAY_REDIS_PASSWORD:?LLM_GATEWAY_REDIS_PASSWORD is required}"
 
-# 安全网：dry-run 支持
-DRY_RUN="${DRY_RUN:-0}"
+REDIS_DB="${LLM_GATEWAY_REDIS_DB:-2}"
+APPLY="${APPLY:-0}"
+REDIS_HOST="${LLM_GATEWAY_REDIS_ADDR%:*}"
+REDIS_PORT="${LLM_GATEWAY_REDIS_ADDR##*:}"
 
-if [ "$DRY_RUN" = "1" ]; then
-  echo "[DRY RUN] No keys will be deleted"
-  REDIS_ARGS=""
-else
-  REDIS_ARGS=""
+if [[ -z "$REDIS_HOST" || -z "$REDIS_PORT" || "$REDIS_HOST" == "$REDIS_PORT" ]]; then
+  printf 'LLM_GATEWAY_REDIS_ADDR must use host:port form\n' >&2
+  exit 2
+fi
+if [[ "$APPLY" == "1" && "${CONFIRM_DELETE_NO_TTL:-}" != "delete-no-ttl-keys" ]]; then
+  printf 'Refusing deletion: set CONFIRM_DELETE_NO_TTL=delete-no-ttl-keys with APPLY=1.\n' >&2
+  exit 2
 fi
 
+export REDISCLI_AUTH="$LLM_GATEWAY_REDIS_PASSWORD"
+
 run_redis() {
-  redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" -a "$REDIS_PASS" "$@"
+  redis-cli --no-auth-warning -h "$REDIS_HOST" -p "$REDIS_PORT" -n "$REDIS_DB" "$@"
 }
 
-count_no_ttl() {
-  local pattern=$1
-  local label=$2
-  run_redis EVAL "
-    local cursor = '0'
-    local n = 0
-    repeat
-      local result = redis.call('SCAN', cursor, 'MATCH', '$pattern', 'COUNT', 1000)
-      cursor = result[1]
-      for _, k in ipairs(result[2]) do
-        local ttl = redis.call('TTL', k)
-        if ttl == -1 then
-          n = n + 1
-        end
-      end
-    until cursor == '0'
-    return n
-  " 0
+scan_keys() {
+  local pattern="$1"
+  run_redis --scan --pattern "$pattern"
 }
 
-delete_no_ttl() {
-  local pattern=$1
-  local label=$2
-  echo "=== Scanning $label (pattern: $pattern) ==="
-  local count=$(count_no_ttl "$pattern" "$label")
-  echo "  found $count keys without TTL"
-  if [ "$count" = "0" ]; then
-    return
-  fi
-  if [ "$DRY_RUN" = "1" ]; then
-    echo "  [DRY RUN] would delete $count keys"
-    return
-  fi
-  read -p "Delete $count keys? (yes/no): " ans
-  if [ "$ans" = "yes" ]; then
-    echo "  deleting $count keys..."
-    run_redis EVAL "
-      local cursor = '0'
-      local n = 0
-      repeat
-        local result = redis.call('SCAN', cursor, 'MATCH', '$pattern', 'COUNT', 1000)
-        cursor = result[1]
-        for _, k in ipairs(result[2]) do
-          local ttl = redis.call('TTL', k)
-          if ttl == -1 then
-            redis.call('DEL', k)
-            n = n + 1
-          end
-        end
-      until cursor == '0'
-      return n
-    " 0
-    echo "  ✓ deleted"
+report_or_remove_no_ttl() {
+  local pattern="$1"
+  local label="$2"
+  local matched=0
+  local no_ttl=0
+  local removed=0
+
+  printf '\n[%s] pattern=%s\n' "$label" "$pattern"
+  while IFS= read -r key; do
+    [[ -z "$key" ]] && continue
+    matched=$((matched + 1))
+    local ttl
+    ttl="$(run_redis TTL "$key")"
+    [[ "$ttl" == "-1" ]] || continue
+    no_ttl=$((no_ttl + 1))
+    if [[ "$APPLY" == "1" ]]; then
+      run_redis UNLINK "$key" >/dev/null
+      removed=$((removed + 1))
+    else
+      printf '  would unlink: %s\n' "$key"
+    fi
+  done < <(scan_keys "$pattern")
+  if [[ "$APPLY" == "1" ]]; then
+    printf '  matched=%d no_ttl=%d removed=%d\n' "$matched" "$no_ttl" "$removed"
   else
-    echo "  skipped"
+    printf '  matched=%d no_ttl=%d\n' "$matched" "$no_ttl"
   fi
 }
 
-# Step 1: scan all keyspace for no-TTL keys by prefix
-echo "=== Step 1: Scanning all keyspace for no-TTL keys ==="
-PREFIXES=(
-  "session:*"
-  "session_pref:*"
-  "session:key:*"
-  "pending_response:*"
-  "llmgw:live:*"
-  "llmgw:stats:*"
-)
-total_no_ttl=0
-for pattern in "${PREFIXES[@]}"; do
-  c=$(count_no_ttl "$pattern" "$pattern")
-  if [ "$c" != "0" ]; then
-    echo "  $pattern: $c"
-    total_no_ttl=$((total_no_ttl + c))
-  fi
-done
-echo "TOTAL no_ttl keys: $total_no_ttl"
+printf 'Redis no-TTL audit\n'
+printf 'target=%s db=%s mode=%s\n' "$LLM_GATEWAY_REDIS_ADDR" "$REDIS_DB" "$([[ "$APPLY" == "1" ]] && printf delete || printf report-only)"
 
-# Step 2: per-pattern cleanup
-echo ""
-echo "=== Step 2: Cleanup options ==="
-echo "1. session:gw_* (永不过期的活跃 session)"
-echo "2. session:key:* (永不过期的 session_key 映射)"
-echo "3. session_pref:* (永不过期的偏好)"
-echo "4. pending_response:* (永不过期的响应缓存)"
-echo "5. llmgw:live:* (永不过期的实时流)"
-echo "6. llmgw:stats:* (永不过期的统计)"
-echo "0. Exit"
-echo ""
-read -p "Which patterns to clean up? (e.g. 1,2,3 or 0): " choice
+report_or_remove_no_ttl 'session:gw_*' 'session hash'
+report_or_remove_no_ttl 'session:key:*' 'session key mapping'
+report_or_remove_no_ttl 'session_pref:*' 'session preferences'
+report_or_remove_no_ttl 'pending_response:*' 'pending response'
 
-IFS=',' read -ra CHOICES <<< "$choice"
-for c in "${CHOICES[@]}"; do
-  case $c in
-    0) echo "exiting"; exit 0 ;;
-    1) delete_no_ttl "session:gw_*" "session hash" ;;
-    2) delete_no_ttl "session:key:*" "session key map" ;;
-    3) delete_no_ttl "session_pref:*" "session preferences" ;;
-    4) delete_no_ttl "pending_response:*" "pending responses" ;;
-    5) delete_no_ttl "llmgw:live:*" "live stream" ;;
-    6) delete_no_ttl "llmgw:stats:*" "stats" ;;
-    *) echo "unknown: $c" ;;
-  esac
-done
-
-echo ""
-echo "=== Step 3: verify ==="
-for pattern in "${PREFIXES[@]}"; do
-  c=$(count_no_ttl "$pattern" "$pattern")
-  if [ "$c" != "0" ]; then
-    echo "  $pattern: $c no_ttl remaining"
-  fi
-done
-echo "done"
+printf '\nllmgw:live:* and llmgw:stats:* are intentionally excluded: their lifecycle is governed by application code and requires prefix-specific review.\n'

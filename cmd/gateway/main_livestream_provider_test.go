@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -12,7 +13,7 @@ import (
 )
 
 func TestLiveQueueSnapshotProvider(t *testing.T) {
-	p := dispatch.NewPipeline(dispatch.Deps{})
+	p := dispatch.NewQueueProjection()
 	got := liveQueueSnapshotProvider(p)
 	if !got.Enabled {
 		t.Fatalf("Enabled = false, want dispatch gate state true in test")
@@ -56,7 +57,7 @@ func TestLiveNodeStatusCacheRetainsLastGoodSnapshot(t *testing.T) {
 	}, context.Background()); err != nil {
 		t.Fatalf("initial refresh: %v", err)
 	}
-	if got := cache.get(); len(got) != 1 || got[0] != want[0] {
+	if got := cache.get(); len(got) != 1 || !reflect.DeepEqual(got[0], want[0]) {
 		t.Fatalf("snapshot after success = %+v", got)
 	}
 
@@ -67,7 +68,7 @@ func TestLiveNodeStatusCacheRetainsLastGoodSnapshot(t *testing.T) {
 		t.Fatalf("refresh error = %v, want %v", err, errBoom)
 	}
 	got := cache.get()
-	if len(got) != 1 || got[0] != want[0] {
+	if len(got) != 1 || !reflect.DeepEqual(got[0], want[0]) {
 		t.Fatalf("last good snapshot was not retained: %+v", got)
 	}
 

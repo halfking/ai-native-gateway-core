@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,9 +13,27 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // request context carries the loaded session
 )
 
-// TestRequestLogContext_BuildFailureEntry_ClientRequestID asserts that
+func TestRequestLogContext_SetAutoDecisionCanonicalizesTierFailoverModels(t *testing.T) {
+	ctx := &RequestLogContext{}
+	ctx.SetAutoDecision(&autoRouteDecision{
+		ChosenModel: "Z-AI/GLM-5.2",
+		failoverModels: []string{
+			"glm-5.2",
+			" Anthropic/Claude-Sonnet ",
+			"claude-sonnet",
+			"openai/gpt-5.1",
+			"",
+		},
+	})
+	want := []string{"claude-sonnet", "gpt-5.1"}
+	if !reflect.DeepEqual(ctx.AutoFallbackModels, want) {
+		t.Fatalf("AutoFallbackModels: got %v, want %v", ctx.AutoFallbackModels, want)
+	}
+}
+
 // the 2026-06-26 client-request-id propagation works end-to-end inside
 // the streaming package: a failure entry produced by EmitFailure must
 // carry the client-supplied id on telemetry.RequestLogEntry.ClientRequestID
@@ -32,6 +51,25 @@ func TestPreferCapturedBody_UsesContextSnapshotWhenPrimaryMissing(t *testing.T) 
 	primary := []byte(`{"model":"converted"}`)
 	if got := preferCapturedBody(primary, captured); string(got) != string(primary) {
 		t.Fatalf("preferCapturedBody(primary, captured) = %q, want primary body", got)
+	}
+}
+
+func TestRequestLogContext_BuildFailureEntry_UsesReceiptTokenEstimate(t *testing.T) {
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	body := []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"failed request still counts"}]}`)
+	ctx := ch.NewRequestLogContext(httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(string(body))), "server-uuid-tokens", time.Now())
+	ctx.Body = body
+	ctx.recordReceiptTokenEstimate()
+
+	entry := ctx.BuildFailureEntry("validation_error", "invalid request", nil, nil)
+	if entry == nil || entry.PromptTokens == nil {
+		t.Fatal("failure entry must retain receipt-time prompt token estimate")
+	}
+	if got, want := *entry.PromptTokens, EstimateInputTokens(body); got != want {
+		t.Fatalf("PromptTokens = %d, want %d", got, want)
+	}
+	if entry.UsageSource == nil || *entry.UsageSource != UsageSourceEstimated {
+		t.Fatalf("UsageSource = %v, want estimated", entry.UsageSource)
 	}
 }
 
@@ -56,6 +94,24 @@ func TestRequestLogContext_BuildFailureEntry_ClientRequestID(t *testing.T) {
 	}
 	if entry.ClientRequestID == nil || *entry.ClientRequestID != "client-retry-XYZ" {
 		t.Fatalf("ClientRequestID=%v, want client-retry-XYZ", entry.ClientRequestID)
+	}
+}
+
+func TestRequestLogContext_BuildFailureEntry_ProjectAndNamespace(t *testing.T) {
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.1"}`))
+	r.Header.Set("X-Gw-Project-Id", " project-transport ")
+
+	ctx := ch.NewRequestLogContext(r, "server-uuid-dimensions", time.Now())
+	ctx.Body = []byte(`{"model":"glm-5.1"}`)
+	ctx.SetSession(&session.Session{SessionID: "session-dimensions", Namespace: " workspace "})
+
+	entry := ctx.BuildFailureEntry("transient", "upstream transient", nil, nil)
+	if entry.ProjectID == nil || *entry.ProjectID != "project-transport" {
+		t.Fatalf("ProjectID = %v, want project-transport", entry.ProjectID)
+	}
+	if entry.Namespace == nil || *entry.Namespace != "workspace" {
+		t.Fatalf("Namespace = %v, want workspace", entry.Namespace)
 	}
 }
 
@@ -426,4 +482,79 @@ func intStrPtr(v *int) *string {
 	}
 	s := strconv.Itoa(*v)
 	return &s
+}
+
+// TestSynthesizeStreamBodyFromText documents the helper that packages the
+// StreamCapture.textContent reconstructed assistant text into a minimal
+// OpenAI-style chat completion envelope, so the failure-row writer can
+// persist partial upstream output even when c.ResponseBody is empty
+// (which is the streaming case).
+func TestSynthesizeStreamBodyFromText(t *testing.T) {
+	if got := synthesizeStreamBodyFromText(""); got != "" {
+		t.Errorf("empty input: expected empty string, got %q", got)
+	}
+	if got := synthesizeStreamBodyFromText("   \n\t  "); got != "" {
+		t.Errorf("whitespace input: expected empty string, got %q", got)
+	}
+
+	got := synthesizeStreamBodyFromText("partial model output")
+	var parsed struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("not valid JSON: %v\nraw: %q", err, got)
+	}
+	if parsed.ID != "partial-stream" || parsed.Object != "chat.completion.partial" {
+		t.Errorf("unexpected envelope shape: id=%q object=%q", parsed.ID, parsed.Object)
+	}
+	if len(parsed.Choices) != 1 {
+		t.Fatalf("expected 1 choice, got %d", len(parsed.Choices))
+	}
+	if parsed.Choices[0].Message.Content != "partial model output" {
+		t.Errorf("content lost: got %q", parsed.Choices[0].Message.Content)
+	}
+	if parsed.Choices[0].Message.Role != "assistant" {
+		t.Errorf("expected role=assistant, got %q", parsed.Choices[0].Message.Role)
+	}
+}
+
+// TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled guards the new
+// 2026-08-26 kimi-k3 / RPM queue blind-spot fix. The rate-limit early-return
+// path (handler.go captureAndEmitRateLimited) must call
+// insertRateLimitedPlaceholder before EmitRateLimited so the subsequent
+// UPDATE finds a row in request_logs_hot. The helper short-circuits when
+// the log context is already marked logged and when the telemetry client is
+// disabled (no DB pool); this test covers both.
+func TestInsertRateLimitedPlaceholder_SkipsWhenLoggedOrDisabled(t *testing.T) {
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+
+	// nil logCtx + disabled client -> no panic.
+	ch.insertRateLimitedPlaceholder(nil)
+
+	ctx := ch.NewRequestLogContext(httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"kimi-k3"}`)), "req-rl-placeholder", time.Now())
+	ctx.Body = []byte(`{"model":"kimi-k3"}`)
+	ctx.SetClientModel("kimi-k3")
+
+	// Client disabled (no DB pool) -> INSERT must be skipped without error.
+	ch.insertRateLimitedPlaceholder(ctx)
+	if ctx.IsLogged() {
+		t.Fatalf("disabled client should not flip ctx.logged; got IsLogged=true")
+	}
+
+	// Even with a non-nil telemetryClient whose Enabled() is false, the
+	// helper must not call EmitRequestLogInsert. Asserted via the absence
+	// of side effects (ctx.logged stays false) -- telemetry.Client has
+	// no DB pool in this test, so Enabled()=false and INSERT is short-circuited.
+	ctx.MarkLogged()
+	if !ctx.IsLogged() {
+		t.Fatalf("MarkLogged must flip IsLogged=true")
+	}
+	ch.insertRateLimitedPlaceholder(ctx) // already-logged branch, should no-op
 }
