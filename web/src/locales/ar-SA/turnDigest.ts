@@ -41,5 +41,6 @@ export default {
   noAttachments: 'لا توجد مرفقات',
   noWaterfall: 'لا تتوفر بيانات توقيت',
   openAttachment: 'تنزيل',
+  retry: 'إعادة المحاولة',
   openingAttachment: 'جارٍ الفتح…',
 }

@@ -40,5 +40,6 @@ export default {
   noWaterfall: '暂无瀑布时间数据',
   noAttachments: '无附件',
   openAttachment: '下载附件',
+  retry: '重试',
   openingAttachment: '正在打开…',
 }

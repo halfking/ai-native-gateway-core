@@ -127,6 +127,13 @@ func SelectionWriterStats() (persisted, dropped int64) {
 }
 
 func (w *selectionWriter) run() {
+	// Panic guard (audit 2026-09-05 G-#1): a flush panic would crash the whole
+	// process AND skip wg.Done, hanging StopSelectionWriter forever.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("selection writer panic", "recover", rec)
+		}
+	}()
 	defer w.wg.Done()
 	batch := make([]AutoSelection, 0, selectionBatchSize)
 	timer := time.NewTimer(selectionFlushDelay)

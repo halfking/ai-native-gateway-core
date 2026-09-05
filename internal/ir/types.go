@@ -499,10 +499,12 @@ type Document struct {
 
 // DocumentSource is the source of a document.
 type DocumentSource struct {
-	Type      string `json:"type"` // "text" | "csv"
+	Type      string `json:"type"` // "text" | "csv" | "base64" | "url" | "file"
 	MediaType string `json:"media_type,omitempty"`
 	Data      string `json:"data,omitempty"` // Raw text or base64
 	URL       string `json:"url,omitempty"`
+	// FileID references a pre-uploaded file (Anthropic Files API source.type="file")
+	FileID string `json:"file_id,omitempty"`
 }
 
 // Metadata is generic key-value metadata.

@@ -48,6 +48,15 @@ func (p *Pipeline) runFailover() {
 // ladder's terminal sites fire first, so exhaustion always wins over budget
 // (UT-FO-05).
 func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
+	// Cancellation race guard (audit 2026-09-05 C-#1): Submit's ctx.Done path
+	// may have already CAS-won complete() and stamped the terminal journal
+	// entry in the caller's goroutine while this item sat in failoverCh. The
+	// journal/counts/attempt fields recordDecision mutates are unsynchronized,
+	// so a mover that lost the terminal race must not touch them (it also must
+	// not burn another attempt/slot for a caller that already left).
+	if qr == nil || qr.completed.Load() || qr.abandoned.Load() {
+		return
+	}
 	err := out.Err
 	cred := qr.selectedCredential()
 	model := qr.resolvedModel()
@@ -305,8 +314,8 @@ func (p *Pipeline) retryNotice(qr *QueuedRequest, out ForwardOutcome, err error,
 // onRetryDue is the RetryScheduler pickup: the parked request re-enters
 // in-flight (UT-DQ-04) and is re-enqueued on its scheduled credential.
 func (p *Pipeline) onRetryDue(qr *QueuedRequest, retryAt time.Time) {
-	if qr == nil || qr.completed.Load() {
-		return // already terminal (client cancel raced the timer)
+	if qr == nil || qr.completed.Load() || qr.abandoned.Load() {
+		return // already terminal or caller left (client cancel raced the timer)
 	}
 	if p.shutdown.Load() {
 		p.complete(qr, ForwardOutcome{Err: ErrShutdown})
