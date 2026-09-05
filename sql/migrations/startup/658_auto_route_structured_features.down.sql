@@ -40,7 +40,10 @@ ALTER TABLE public.auto_route_selections_hot
   DROP COLUMN IF EXISTS content_hash;
 
 -- Restore original all view
-CREATE OR REPLACE VIEW public.auto_route_selections_all AS
+-- 2026-09-05 可重放修复（与正向同理）：回滚时视图已是 658 形态（含特征列），
+-- CREATE OR REPLACE VIEW 无法收缩/改名列，改为 DROP+CREATE 回到 656 形态。
+DROP VIEW IF EXISTS public.auto_route_selections_all;
+CREATE VIEW public.auto_route_selections_all AS
 SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
   canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
   explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,

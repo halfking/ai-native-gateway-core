@@ -273,7 +273,14 @@ END $$;
 -- ─────────────────────────────────────────────────────────────────────────
 -- 3. Update auto_route_selections_all view to include structured features
 -- ─────────────────────────────────────────────────────────────────────────
-CREATE OR REPLACE VIEW public.auto_route_selections_all AS
+-- 2026-09-05 可重放修复：658 在 656 视图的 storage_tier 之前插入 14 个特征列，
+-- CREATE OR REPLACE VIEW 不允许改变既有列的名称/位置（245/154 共享 PG 实测
+-- ERROR: cannot change name of view column "storage_tier" to "detected_language"，
+-- 与本日 632 的可重放改写同类）。改为 DROP+CREATE（事务内，原子生效）。
+-- 该视图仅有只读消费方（admin/auto_route.go、bg/auto_route_affinity_worker.go），
+-- 无其他视图依赖，无需 CASCADE。
+DROP VIEW IF EXISTS public.auto_route_selections_all;
+CREATE VIEW public.auto_route_selections_all AS
 SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
   canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
   explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,
