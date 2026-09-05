@@ -72,14 +72,18 @@ CURRENT_VERSION=$(python3 -c "import json; print(json.load(open('$VERSION_JSON')
 
 # git tag (e.g. "v2.4.1") — 这是 NEW_VERSION 的 tag 部分
 # 跳过 archive/* / sr-* / release/* 等工作分支 tag；只有 semver 风格的
-# X.Y.Z 才应当出现在 git_tag 字段。优先匹配 v 前缀标签（v2.4.1），仓库改用
-# 不带 v 前缀的标签后（2026-09 的 2.5.x 系列）回落匹配裸 semver —— 此前只
-# 匹配 v 前缀，无前缀仓库会静默回落 v0.0.0 且随每次 bump 自我延续，导航
-# 版本一直显示 v0.0.0。两种都缺失时仍回落 v0.0.0，脚本照常 bump。
-GIT_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
-if [[ -z "$GIT_TAG" ]]; then
-  GIT_TAG=$(git tag --list '[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
-fi
+# X.Y.Z 才应当出现在 git_tag 字段。仓库同时存在 v 前缀（v2.4.1）与裸
+# semver（2.5.x，2026-09 起）两种 tag，按版本号统一取最新 —— 此前 v 前缀
+# 优先，遗留的 v2.5.0 会遮蔽后续裸 2.5.x，版本随每次 bump 回落（2026-09-05
+# 部署 stamp 由 2.5.3 回退 2.5.0 即此因）。两种都缺失时仍回落 v0.0.0。
+GIT_TAG=$(
+  {
+    git tag --list 'v[0-9]*.[0-9]*.[0-9]*'
+    git tag --list '[0-9]*.[0-9]*.[0-9]*'
+  } | awk '{ bare=$0; sub(/^v/, "", bare); print bare "\t" $0 }' \
+    | sort -t. -k1,1n -k2,2n -k3,3n \
+    | tail -n 1 | cut -f2
+)
 if [[ -z "$GIT_TAG" ]]; then
   GIT_TAG="v0.0.0"
 fi
