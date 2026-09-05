@@ -82,6 +82,12 @@
    （整序列标记掩盖 656 是上一例）。建议后续给 `apply-db-revision-sequence.sh`
    加一条规则：同一 `CREATE OR REPLACE FUNCTION` 只允许出现在序列的一个文件
    里，否则部署时报错，避免再靠事后审计发现。
+   **已落地（本轮收口）**：脚本在应用任何文件前扫描全序列，凡多文件重复定义
+   同一函数必须登记进 `intentional_function_chains`（登记串须与序列顺序一致、
+   末位为最终定义体），未登记即 exit 5；扫描器剥离 SQL 行/块注释与
+   dollar-quoted 函数体，注释/动态 SQL 里的字样不误报。现存两条有意链
+   （572→563→661 重申链、653→654 超越链）已登记，契约测试
+   `apply-db-revision-sequence_test.sh` 固化登记项，本地库端到端复跑通过。
 2. 5 条 XX000（cache lookup failed）为运行期 DDL 的连接缓存失效，重启自愈；
    若高频复现可考虑 Go 侧把 XX000 归类为"重连后重试"，本轮未做。
 3. PG 容器 stderr 在 09-04 16:04 至 09-05 17:26 之间有一段日志黑洞（服务正常、

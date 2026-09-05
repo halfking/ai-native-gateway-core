@@ -119,6 +119,99 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/661_session_summary_token_ratio_reassert.sql"
   "$ROOT_DIR/deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql"
 )
+
+# 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
+# both CREATE OR REPLACE update_session_summary() and 563's older body
+# silently overwrote the 572 fix one second after it applied (397 x 22003
+# on the day). Any function defined by more than one sequence file must be
+# registered below as an intentional chain, written in EXACT sequence order
+# with the intended final definition LAST — a chain whose entries drift out
+# of sequence order fails the equality check below. Unregistered duplicates
+# abort the deployment before the first file is applied. The scanner strips
+# SQL line/block comments and dollar-quoted bodies, so prose or dynamic SQL
+# that merely mentions CREATE OR REPLACE cannot trigger it.
+intentional_function_chains=(
+  # 563 restores the hot trigger with the corrected unbounded-numeric ratio
+  # body; 661 re-asserts the same fixed body AFTER 563 and validates the
+  # function source. 572 must stay before 563; 661 must stay last.
+  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|661_session_summary_token_ratio_reassert.sql|'
+  # 654 supersedes 653's DELETE-based archive body with the columnar-safe
+  # DETACH PARTITION + DROP path and must stay the later entry.
+  'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|'
+)
+redefined_functions="$(
+  for file in "${files[@]}"; do
+    base="$(basename "$file")"
+    awk '
+      BEGIN { indq = 0; inbc = 0 }
+      {
+        line = $0
+        clean = ""
+        while (length(line) > 0) {
+          if (indq) {
+            end = index(line, dqtag)
+            if (end == 0) { line = "" }
+            else { line = substr(line, end + length(dqtag)); indq = 0 }
+          } else if (inbc) {
+            end = index(line, "*/")
+            if (end == 0) { line = "" }
+            else { line = substr(line, end + 2); inbc = 0 }
+          } else {
+            dq = match(line, /\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$/)
+            bc = index(line, "/*")
+            lc = index(line, "--")
+            if (dq > 0 && (bc == 0 || dq < bc) && (lc == 0 || dq < lc)) {
+              clean = clean substr(line, 1, dq - 1)
+              tag = substr(line, dq, RLENGTH)
+              rest = substr(line, dq + RLENGTH)
+              end = index(rest, tag)
+              if (end == 0) { indq = 1; line = "" }
+              else { line = substr(rest, end + length(tag)) }
+            } else if (bc > 0 && (lc == 0 || bc < lc)) {
+              clean = clean substr(line, 1, bc - 1)
+              line = substr(line, bc + 2)
+              end = index(line, "*/")
+              if (end == 0) { inbc = 1; line = "" }
+              else { line = substr(line, end + 2) }
+            } else if (lc > 0) {
+              clean = clean substr(line, 1, lc - 1)
+              line = ""
+            } else {
+              clean = clean line
+              line = ""
+            }
+          }
+        }
+        if (length(clean) > 0) print tolower(clean)
+      }
+    ' "$file" \
+      | grep -oE 'create[[:space:]]+or[[:space:]]+replace[[:space:]]+function[[:space:]]+("?[a-z_][a-z0-9_$]*"?\.)*"?[a-z_][a-z0-9_$]*"?' \
+      | sed -E 's/.*function[[:space:]]+//; s/"//g; s/^([a-z_][a-z0-9_$]*\.)+//' \
+      | awk -v f="$base" '{ print $0 "\t" f }' || true
+  done | awk -F'\t' '
+    {
+      if (!(($1) in chain)) { chain[$1] = "|"; hits[$1] = 0 }
+      if (index(chain[$1], "|" $2 "|") == 0) { hits[$1]++; chain[$1] = chain[$1] $2 "|" }
+    }
+    END { for (f in chain) if (hits[f] > 1) print f chain[f] }'
+)"
+guard_violations="$(printf '%s\n' "$redefined_functions" | while IFS= read -r entry; do
+  if [[ -z "$entry" ]]; then continue; fi
+  known=0
+  for rule in "${intentional_function_chains[@]}"; do
+    if [[ "$entry" == "$rule" ]]; then known=1; break; fi
+  done
+  if [[ "$known" == 0 ]]; then printf '%s\n' "${entry%|}"; fi
+done)"
+if [[ -n "$guard_violations" ]]; then
+  printf 'error: sequence redefines the same function from multiple files; register each intentional chain in intentional_function_chains (entries must match sequence order, last entry wins):\n%s\n' "$guard_violations" >&2
+  exit 5
+fi
+if [[ -n "$redefined_functions" ]]; then
+  printf 'function clobber guard: multi-file redefinitions match the intentional allowlist:\n'
+  printf '%s\n' "$redefined_functions" | sed 's/^/  /; s/|$//'
+fi
+
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
   marker="${sequence_name}:$(basename "$file")"

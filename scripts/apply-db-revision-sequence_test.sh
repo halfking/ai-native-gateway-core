@@ -21,10 +21,22 @@ done
 
 # Keep the migration sequence explicit in the executable so deployment cannot
 # silently fall back to numeric directory ordering.
-sequence=$(grep -A14 '^files=(' "$SCRIPT")
-for required in 655 560 572 606 563 564 644 645 656; do
+sequence=$(grep -A20 '^files=(' "$SCRIPT")
+for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 660 661 V371; do
   printf '%s\n' "$sequence" | grep -q "${required}_" || {
     printf 'missing sequence entry: %s\n' "$required" >&2
+    exit 1
+  }
+done
+
+# Function clobber guard (2026-09-05 PG log audit): 572→563 silently
+# re-clobbered update_session_summary(). Every multi-file function chain must
+# stay registered in intentional_function_chains or deployment aborts.
+for chain in \
+  'update_session_summary|572_session_summary_large_token_ratio.sql|563_session_summary_trigger_on_hot.sql|661_session_summary_token_ratio_reassert.sql|' \
+  'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|'; do
+  grep -qF -- "'$chain'" "$SCRIPT" || {
+    printf 'missing intentional function chain registration: %s\n' "$chain" >&2
     exit 1
   }
 done
