@@ -17,6 +17,42 @@ import (
 
 const providerErrorAggregatorDefaultInterval = 10 * time.Minute
 
+// stageSourceRowsSQL snapshots the rows this tick will process into a
+// per-transaction temp table. The select list matches the previous in-pipeline
+// all_source_rows CTE byte-for-byte; only the transport changed — see the
+// columnar note above the staging Exec in aggregateErrors. The watermark
+// parameter bounds the scan so steady-state ticks stage only new rows.
+const stageSourceRowsSQL = `
+CREATE TEMP TABLE provider_error_agg_src
+ON COMMIT DROP AS
+ SELECT c.aggregation_id,
+  c.tenant_id,
+  c.provider_id,
+  -- 2026-09-01 (P0-1 24h-audit round2): credential_id joins the
+  -- aggregation grain so per-credential error sets stay separable
+  -- (migration 639 added the column + rebuilt the unique index).
+  COALESCE(c.credential_id::text, '') AS credential_id,
+  c.raw_model_name AS model_name,
+  COALESCE(NULLIF(c.context->>'endpoint', ''),
+           NULLIF(c.context->>'client_endpoint', ''),
+           NULLIF(c.context->>'upstream_endpoint', ''), 'unknown') AS endpoint,
+  c.error_kind AS error_type,
+  NULLIF(COALESCE(c.upstream_status_code::text, ''), '') AS error_code,
+  LEFT(COALESCE(c.error_message, ''), 200) AS error_message,
+  (date_trunc('hour', c.ts) +
+   floor(extract(minute FROM c.ts) / 10) * interval '10 minutes') AS aggregation_bucket,
+  c.request_id,
+  c.context,
+  c.ts,
+  -- The view's synthesized 'source' constant column ("hot"/"historical")
+  -- crashes this plan on citus-columnar partitions with
+  -- "cache lookup failed for attribute source of relation" (SQLSTATE XX000,
+  -- citus 13.3; 2026-09-05 PG log audit). Nothing downstream reads it, so
+  -- stage a NULL placeholder to keep the temp-table column shape identical.
+  NULL::text AS source
+ FROM candidate_failure_logs_unified c
+ WHERE c.aggregation_id > $1`
+
 // ProviderErrorAggregator 从 candidate_failure_logs_hot 聚合错误到 provider_error_details。
 type ProviderErrorAggregator struct {
 	db       *pgxpool.Pool
@@ -122,7 +158,9 @@ func (a *ProviderErrorAggregator) aggregateErrors(ctx context.Context) {
 	// jumps from very-negative to a positive sequence value — that's the
 	// expected forward movement, not a regression.
 	var preWatermark int64
-	if err := tx.QueryRow(timeoutCtx, "SELECT COALESCE(last_source_id, 0) FROM provider_error_aggregator_state WHERE id = 1").Scan(&preWatermark); err != nil {
+	// FOR UPDATE holds the state row until commit so the watermark cannot
+	// move under us between staging and the pipeline below.
+	if err := tx.QueryRow(timeoutCtx, "SELECT COALESCE(last_source_id, 0) FROM provider_error_aggregator_state WHERE id = 1 FOR UPDATE").Scan(&preWatermark); err != nil {
 		// State row may not exist yet on the very first tick after migration
 		// 622/627 install. Treat missing as zero and continue.
 		preWatermark = 0
@@ -142,34 +180,34 @@ func (a *ProviderErrorAggregator) aggregateErrors(ctx context.Context) {
 	// visible to the watermark predicate. The view is SECURITY INVOKER so
 	// pooled connections never retain elevated visibility beyond the bypass
 	// already applied via set_config above.
+	//
+	// 2026-09-05 (PG log audit): the historical side of the unified view is
+	// backed by citus-columnar month partitions, and the citus 13.3 build in
+	// use aborts this specific plan shape (multi-CTE window/DISTINCT ON
+	// pipeline directly over the UNION ALL view) with
+	// "cache lookup failed for attribute source of relation" (SQLSTATE XX000)
+	// as soon as any columnar partition is in scope — every tick failed and
+	// the watermark never advanced. Simple scans over the same partitions are
+	// fine, so the source rows are first staged into a per-transaction temp
+	// table with a plain CTAS and the aggregation pipeline reads from there.
+	// Same transaction, same semantics, no columnar partition in the complex
+	// plan.
+	if _, err := tx.Exec(timeoutCtx, "DROP TABLE IF EXISTS pg_temp.provider_error_agg_src"); err != nil {
+		slog.Error("provider_error_aggregator: temp table drop failed", "error", err)
+		return
+	}
+	if _, err := tx.Exec(timeoutCtx, stageSourceRowsSQL, preWatermark); err != nil {
+		slog.Error("provider_error_aggregator: source staging failed", "error", err)
+		return
+	}
 	query := `
 WITH watermark AS (
  SELECT last_source_id
  FROM provider_error_aggregator_state
  WHERE id = 1
  FOR UPDATE
-), all_source_rows AS NOT MATERIALIZED (
- SELECT c.aggregation_id,
-  c.tenant_id,
-  c.provider_id,
-  -- 2026-09-01 (P0-1 24h-audit round2): credential_id joins the
-  -- aggregation grain so per-credential error sets stay separable
-  -- (migration 639 added the column + rebuilt the unique index).
-  COALESCE(c.credential_id::text, '') AS credential_id,
-  c.raw_model_name AS model_name,
-  COALESCE(NULLIF(c.context->>'endpoint', ''),
-           NULLIF(c.context->>'client_endpoint', ''),
-           NULLIF(c.context->>'upstream_endpoint', ''), 'unknown') AS endpoint,
-  c.error_kind AS error_type,
-  NULLIF(COALESCE(c.upstream_status_code::text, ''), '') AS error_code,
-  LEFT(COALESCE(c.error_message, ''), 200) AS error_message,
-  (date_trunc('hour', c.ts) +
-   floor(extract(minute FROM c.ts) / 10) * interval '10 minutes') AS aggregation_bucket,
-  c.request_id,
-  c.context,
-  c.ts,
-  c.source
- FROM candidate_failure_logs_unified c
+), all_source_rows AS (
+ SELECT * FROM provider_error_agg_src
 ), new_source_rows AS (
  SELECT s.*
  FROM all_source_rows s

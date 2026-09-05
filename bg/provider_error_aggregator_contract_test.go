@@ -17,9 +17,17 @@ func TestProviderErrorAggregatorSQLIsTenantScopedAndBucketIdempotent(t *testing.
 		"set_config('app.current_role', 'super_admin', true)",
 		"set_config('app.bypass_rls', 'true', true)",
 		"pg_try_advisory_xact_lock($1)",
+		// 2026-09-05 (PG log audit): source rows must be staged via the
+		// temp-table CTAS — the direct multi-CTE pipeline over
+		// candidate_failure_logs_unified aborts on citus-columnar partitions
+		// (SQLSTATE XX000, "cache lookup failed for attribute source").
+		"CREATE TEMP TABLE provider_error_agg_src",
+		"FROM candidate_failure_logs_unified c",
+		"WHERE c.aggregation_id > $1",
+		"all_source_rows AS (",
+		"SELECT * FROM provider_error_agg_src",
 		"new_source_rows AS",
 		"affected_buckets AS",
-		"all_source_rows AS NOT MATERIALIZED",
 		"bucket_rows AS",
 		"FROM bucket_rows",
 		"PARTITION BY tenant_id, provider_id, credential_id",
