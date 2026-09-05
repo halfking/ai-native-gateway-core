@@ -27,7 +27,7 @@ type GoalRetryPolicyResolver interface {
 // GoalRetryRecorder persists actual retry attempts to goal_sessions.retry_count.
 // Implementations must be fail-open: persistence errors should not block requests.
 type GoalRetryRecorder interface {
-	AddRetryCount(ctx context.Context, sessionID string, delta int) error
+	AddRetryCount(ctx context.Context, tenantID, sessionID string, delta int) error
 }
 
 // defaultGoalRetryPolicy returns a safe fallback when resolver is unavailable.

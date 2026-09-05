@@ -151,7 +151,7 @@ func ClassifyError(err error) *RetryableError {
 	// Check if it's an HTTPError and classify by status code
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
-		return ClassifyHTTPError(httpErr.StatusCode, httpErr.Err)
+		return classifyHTTPError(httpErr.StatusCode, httpErr.Err, httpErr.RetryAfter)
 	}
 
 	// Unknown error type - conservative: non-retriable
@@ -166,6 +166,9 @@ func ClassifyError(err error) *RetryableError {
 type HTTPError struct {
 	StatusCode int
 	Err        error
+	// RetryAfter preserves the upstream Retry-After header when available.
+	// It may be either delta-seconds or an HTTP-date.
+	RetryAfter string
 }
 
 func (e *HTTPError) Error() string {
@@ -178,7 +181,11 @@ func (e *HTTPError) Unwrap() error {
 
 // ClassifyHTTPError determines if an HTTP error is retriable based on status code.
 func ClassifyHTTPError(statusCode int, err error) *RetryableError {
-	httpErr := &HTTPError{StatusCode: statusCode, Err: err}
+	return classifyHTTPError(statusCode, err, "")
+}
+
+func classifyHTTPError(statusCode int, err error, retryAfter string) *RetryableError {
+	httpErr := &HTTPError{StatusCode: statusCode, Err: err, RetryAfter: retryAfter}
 
 	// Retriable HTTP status codes
 	switch {
@@ -254,12 +261,15 @@ func CalculateRetryDelay(attempt int, baseDelayMs int, maxDelayMs int) time.Dura
 
 // KeepaliveWriter sends periodic thinking events to prevent client timeout during retry.
 type KeepaliveWriter struct {
-	w        http.ResponseWriter
-	flusher  http.Flusher
-	interval time.Duration
-	stopCh   chan struct{}
-	doneCh   chan struct{}
-	writeMu  sync.Mutex
+	w         http.ResponseWriter
+	flusher   http.Flusher
+	interval  time.Duration
+	stopCh    chan struct{}
+	doneCh    chan struct{}
+	writeMu   sync.Mutex
+	startOnce sync.Once
+	stopOnce  sync.Once
+	started   chan struct{}
 }
 
 type retryBlockedError struct {
@@ -288,6 +298,7 @@ func NewKeepaliveWriter(w http.ResponseWriter, interval time.Duration) *Keepaliv
 		interval: interval,
 		stopCh:   make(chan struct{}),
 		doneCh:   make(chan struct{}),
+		started:  make(chan struct{}),
 	}
 
 	return kw
@@ -296,6 +307,17 @@ func NewKeepaliveWriter(w http.ResponseWriter, interval time.Duration) *Keepaliv
 // Start begins sending keepalive events.
 // Must be called in a goroutine.
 func (kw *KeepaliveWriter) Start(ctx context.Context) {
+	if kw == nil {
+		return
+	}
+	owner := false
+	kw.startOnce.Do(func() {
+		close(kw.started)
+		owner = true
+	})
+	if !owner {
+		return
+	}
 	defer close(kw.doneCh)
 
 	ticker := time.NewTicker(kw.interval)
@@ -341,8 +363,13 @@ func (kw *KeepaliveWriter) Stop() {
 	if kw == nil {
 		return
 	}
-	close(kw.stopCh)
-	<-kw.doneCh
+	kw.stopOnce.Do(func() { close(kw.stopCh) })
+	select {
+	case <-kw.started:
+		<-kw.doneCh
+	default:
+		// A writer that was never started has no goroutine to join.
+	}
 }
 
 // RetryContext holds state for a retry loop.
@@ -351,6 +378,12 @@ type RetryContext struct {
 	Attempt   int
 	LastError error
 	Keepalive *KeepaliveWriter
+	// StateCancelCh (SP-03, 2026-08-19) is the optional state-machine
+	// cancellation channel. When non-nil, Sleep() also exits early if
+	// this channel closes (in addition to ctx.Done()). Production
+	// callers that don't wire state-machine cancellation leave it nil;
+	// Sleep() then behaves exactly like the pre-SP-03 version.
+	StateCancelCh <-chan struct{}
 }
 
 // ShouldRetry determines if another retry attempt should be made.
@@ -386,6 +419,21 @@ func (rc *RetryContext) Sleep(ctx context.Context) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 
+	// SP-03 (2026-08-19): also honour the state-machine cancel channel
+	// when wired. Production callers without it see the legacy
+	// ctx.Done() vs timer.C behaviour; with it, client_disconnect or
+	// upstream-cancel signals from the state machine exit Sleep in
+	// microseconds rather than waiting for the full backoff window.
+	if rc.StateCancelCh != nil {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-rc.StateCancelCh:
+			return context.Canceled
+		case <-timer.C:
+			return nil
+		}
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()

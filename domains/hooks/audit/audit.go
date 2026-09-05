@@ -88,6 +88,8 @@ func isInterruptionCode(s string) bool {
 	// Stream-level interruption codes (relay/handler.go::classifyStreamInterruption
 	// + relay/stream.go).
 	case "eof_without_done",
+		"network_error",
+		"read_error",
 		"first_byte_timeout",
 		"stream_chunk_timeout",
 		"chunk_timeout",
@@ -113,24 +115,36 @@ func isInterruptionCode(s string) bool {
 	return false
 }
 
+func isSupplierTimeoutCode(s string) bool {
+	switch s {
+	case "first_byte_timeout", "stream_timeout", "stream_chunk_timeout", "chunk_timeout":
+		return true
+	}
+	return false
+}
+
 type StreamCapture struct {
-	mu               sync.Mutex
-	startTime        time.Time
-	chunkCount       int
-	chunksSent       int // Chunks successfully sent to client (vs chunkCount = chunks received from upstream)
-	chunkErrors      int // 2026-07-28 §5.5: chunks the bridge or executor failed to emit
-	firstChunkMs     int
-	doneReceived     bool
-	interrupted      bool
-	finalized        bool // 2026-07-28 §5.5: pinned at MarkDone / MarkInterrupted
-	checksum         [32]byte
-	finalFinish      string
-	preview          []byte
-	textContent      []byte
-	promptTokens     *int
-	completionTokens *int
-	cacheReadTokens  *int
-	cacheWriteTokens *int
+	mu           sync.Mutex
+	startTime    time.Time
+	chunkCount   int
+	chunksSent   int // Chunks successfully sent to client (vs chunkCount = chunks received from upstream)
+	chunkErrors  int // 2026-07-28 §5.5: chunks the bridge or executor failed to emit
+	firstChunkMs int
+	doneReceived bool
+	interrupted  bool
+	finalized    bool // 2026-07-28 §5.5: pinned at MarkDone / MarkInterrupted
+	checksum     [32]byte
+	finalFinish  string // Finish reason for the current attempt.
+	// supplierTimeoutReason is request-scoped evidence that survives credential
+	// retries. It remains separate because a later successful attempt may set
+	// finalFinish to a normal reason such as "stop".
+	supplierTimeoutReason string
+	preview               []byte
+	textContent           []byte
+	promptTokens          *int
+	completionTokens      *int
+	cacheReadTokens       *int
+	cacheWriteTokens      *int
 	// HasThinking is set when the stream contained at least one
 	// Anthropic-style thinking content block. Detected in the
 	// side-channel audit of the Q4 passthrough path.
@@ -186,6 +200,15 @@ type StreamCapture struct {
 	// This is OpenAI Chat Completions format, compatible with both
 	// OpenAI and Anthropic upstream protocols (IR layer normalizes them).
 	ToolCalls []map[string]any
+
+	// DiscardEvents (2026-08-19) records every discard event the
+	// survival / stream-recovery / empty-gate pipelines observe. Each
+	// entry describes the buffered bytes the attempt dropped before a
+	// transparent retry. The field is JSON-encoded into
+	// request_logs_hot.discard_events by the audit upsert path so
+	// post-mortem can correlate "why was a partial response dropped"
+	// with the surrounding request_log row.
+	DiscardEvents []DiscardEvent
 
 	// textObserver is the optional incremental integrity observer. It is
 	// notified from appendText — the single funnel every transformer
@@ -334,9 +357,9 @@ func (sc *StreamCapture) Reset() {
 	sc.interrupted = false
 	sc.finalized = false
 	sc.checksum = [32]byte{}
-	// KEEP: finalFinish — diagnostic terminal reason that must survive
-	// executor retries so buildClientDisconnectProbeEntry can still
-	// see "first_byte_timeout" on the cancel path (see 2026-08-10 fix).
+	// KEEP: supplierTimeoutReason must survive executor retries so
+	// buildClientDisconnectProbeEntry can classify a final cancel correctly;
+	// finalFinish is intentionally reset only by a new request, not by retry.
 	sc.preview = sc.preview[:0]
 	sc.textContent = sc.textContent[:0]
 	sc.promptTokens = nil
@@ -383,6 +406,45 @@ func (sc *StreamCapture) AddQualityFlag(flag string) {
 	sc.QualityFlags = append(sc.QualityFlags, flag)
 }
 
+// QualityStateSnapshot returns independent copies of the quality processor
+// state so a stream transformer can safely derive its next state.
+func (sc *StreamCapture) QualityStateSnapshot() ([]string, map[string]int) {
+	if sc == nil {
+		return nil, nil
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	flags := append([]string(nil), sc.QualityFlags...)
+	seen := make(map[string]int, len(sc.QualitySeenToolCallIDs))
+	for id, count := range sc.QualitySeenToolCallIDs {
+		seen[id] = count
+	}
+	return flags, seen
+}
+
+// SetQualityFlags replaces the quality flags with a caller-owned snapshot.
+func (sc *StreamCapture) SetQualityFlags(flags []string) {
+	if sc == nil {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.QualityFlags = append(sc.QualityFlags[:0], flags...)
+}
+
+// SetQualitySeenToolCallIDs replaces the tool-call id state with a copy.
+func (sc *StreamCapture) SetQualitySeenToolCallIDs(seen map[string]int) {
+	if sc == nil {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.QualitySeenToolCallIDs = make(map[string]int, len(seen))
+	for id, count := range seen {
+		sc.QualitySeenToolCallIDs[id] = count
+	}
+}
+
 func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted bool, checksum string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -419,6 +481,61 @@ func (sc *StreamCapture) Finalized() bool {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	return sc.finalized
+}
+
+// FinalFinishReason returns the most recent non-empty finish_reason
+// observed for the current attempt ("stop", "length", "tool_calls",
+// "end_turn", "max_tokens", …). Returns "" if no finish_reason has
+// been observed yet or if no capture exists.
+//
+// 2026-08-23: introduced for the eof_without_done recovery path in
+// domains/streaming/stream.go. Some upstreams (e.g. minimax) emit a
+// terminal `choices[0].finish_reason` chunk and then close the TCP
+// stream without sending the SSE-spec `data: [DONE]` sentinel. The
+// bridge must NOT classify such an EOF as a stream interruption
+// when finish_reason is already set, because the model has already
+// declared the response complete. Without this signal, every minimax
+// long-context chat request triggers survival retries that burn the
+// 11-minute upstream-timeout budget.
+func (sc *StreamCapture) FinalFinishReason() string {
+	if sc == nil {
+		return ""
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.finalFinish
+}
+
+// TextContentSnapshot returns the assistant text reconstructed from the
+// deltas observed so far. Safe to call concurrently with the streaming
+// goroutine — the read is guarded by sc.mu. Returns "" if the capture is
+// nil or no delta text has been received yet.
+//
+// 2026-08-23: exposed so that the failure-row writer in
+// domains/streaming/request_log_pipeline.go can persist the partial
+// upstream output when a streaming request is interrupted mid-flight
+// (eof_without_done, stream_timeout, client_disconnected, …). Without
+// this getter, the failure row's response_body column is always NULL
+// for streaming failures, which makes post-mortem analysis impossible.
+func (sc *StreamCapture) TextContentSnapshot() string {
+	if sc == nil {
+		return ""
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return string(sc.textContent)
+}
+
+// PreviewSnapshot returns the first ~2 KiB of the raw SSE wire observed
+// so far. Safe to call concurrently with the streaming goroutine.
+// Returns "" if the capture is nil or no payload has been recorded.
+func (sc *StreamCapture) PreviewSnapshot() string {
+	if sc == nil {
+		return ""
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return string(sc.preview)
 }
 
 // RecordChunkError increments the chunks-failed counter. Called by
@@ -569,6 +686,9 @@ func (sc *StreamCapture) MarkInterruptedWithReason(finishReason string) {
 	sc.finalized = true
 	if finishReason != "" {
 		sc.finalFinish = finishReason
+		if sc.supplierTimeoutReason == "" && isSupplierTimeoutCode(finishReason) {
+			sc.supplierTimeoutReason = finishReason
+		}
 	}
 }
 
@@ -700,7 +820,9 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 		//     "successful stream ended with stop/tool_calls/length" case,
 		//     failure_detail_code is intentionally left absent.
 		m["upstream_finish_reason"] = sc.finalFinish
-		if isInterruptionCode(sc.finalFinish) {
+		if sc.supplierTimeoutReason != "" {
+			m["failure_detail_code"] = sc.supplierTimeoutReason
+		} else if isInterruptionCode(sc.finalFinish) {
 			m["failure_detail_code"] = sc.finalFinish
 		}
 	}
@@ -750,6 +872,14 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	// Emit as JSONB-compatible array for persistence in request_logs.tool_calls.
 	if len(sc.ToolCalls) > 0 {
 		m["tool_calls"] = sc.ToolCalls
+	}
+	// 2026-08-19: surface every discard event the survival / recovery /
+	// empty-gate paths recorded. The audit upsert pipeline forwards this
+	// into request_logs_hot.discard_events JSONB so post-mortem SQL can
+	// answer "which attempts were dropped, and why" without joining the
+	// application log.
+	if len(sc.DiscardEvents) > 0 {
+		m["discard_events"] = sc.DiscardEvents
 	}
 	return m
 }

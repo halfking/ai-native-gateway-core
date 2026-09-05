@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -16,6 +18,14 @@ const ProbeQueueTTL = 5 * time.Minute
 // this worker wrote its result. Callers must not retry Complete with the stale
 // task because a newer owner may already have recorded a result.
 var ErrProbeLeaseLost = errors.New("probe queue lease lost")
+var ErrProbeOutOfScope = errors.New("probe queue task is outside strict canary scope")
+var ErrProbeAutomaticIneligible = errors.New("automatic probe task is not eligible")
+
+// ProbeScope is implemented by URSM v2 Manager. Keeping this tiny interface
+// avoids coupling the durable queue to the URSM package's concrete type.
+type ProbeScope interface {
+	AllowsIdentity(tenant string, credentialID int, rawModel string) bool
+}
 
 type ProbeQueueStatus string
 
@@ -31,6 +41,10 @@ const (
 type ProbeQueueTask struct {
 	ID           int64
 	CredentialID int64
+	// Automatic distinguishes scheduler/system-generated work from an explicit
+	// operator request. Eligibility gates apply only to automatic tasks so
+	// manual self-checks remain available for diagnosis and recovery.
+	Automatic    bool
 	ProviderID   int64
 	TenantID     string
 	Canonical    string
@@ -89,6 +103,8 @@ type ProbeTaskTransition struct {
 	Status        string // pending | in-flight | ok | fail
 	CredentialID  int64
 	ProviderID    int64
+	ProviderName  string // 供应商显示名（2026-08-20 自检 tab 供应商+凭据）
+	ProviderCode  string
 	RawModel      string
 	Attempt       int
 	Origin        string // scheduled | error | manual
@@ -121,10 +137,25 @@ type ProbeQueue struct {
 	// set it takes precedence over probeSink for the queue's own transitions
 	// so origin/next_retry_at reach the dashboard without double-emitting.
 	detailSink ProbeTaskDetailSink
+	scope      ProbeScope
+	// providerNameCache (2026-08-20) lets publishProbeTask / publishRearmTransition
+	// attach a 供应商 display name to SSE transitions without per-event DB hits.
+	// Lazy-loaded, 5-min TTL, never errors out (a cache miss returns empty
+	// strings — the dashboard already tolerates a missing provider name).
+	providerNameMu      sync.RWMutex
+	providerNameCache   map[int64]providerNameEntry
+	providerNameExpires time.Time
 }
 
+type providerNameEntry struct {
+	name string
+	code string
+}
+
+const providerNameCacheTTL = 5 * time.Minute
+
 func NewProbeQueue(db *pgxpool.Pool) *ProbeQueue {
-	return &ProbeQueue{db: db}
+	return &ProbeQueue{db: db, providerNameCache: map[int64]providerNameEntry{}}
 }
 
 // SetProbeSink wires the self-check SSE sink for the durable integrity-probe
@@ -147,6 +178,69 @@ func (q *ProbeQueue) SetProbeTaskDetailSink(sink ProbeTaskDetailSink) {
 	}
 }
 
+// SetScope installs the strict-canary identity gate for all future enqueues.
+func (q *ProbeQueue) SetScope(scope ProbeScope) {
+	if q != nil {
+		q.scope = scope
+	}
+}
+
+// lookupProviderName returns the cached display name/code for a provider_id.
+// Cache miss or DB failure → empty strings (the dashboard tolerates a missing
+// provider name; per-event DB hits would be wasteful given the publish path
+// runs on every claim/complete).
+//
+// The cache is keyed by provider_id (BIGINT PK in the canonical providers
+// schema — sql/schema/01-schema.sql) and is refreshed on a 5-minute TTL.
+// provider_id is stored as BIGINT in credential_probe_queue — same type, no
+// coercion required.
+//
+// Fallback chain mirrors live_stream_sse.go providerCodeForCredential
+// (`NULLIF(display_name) → NULLIF(catalog_code) → NULLIF(code)`); omitting
+// catalog_code silently regresses any row whose display_name is empty but
+// catalog_code is populated (the canonical "未知供应商" guard).
+func (q *ProbeQueue) lookupProviderName(providerID int64) (string, string) {
+	if q == nil || providerID == 0 {
+		return "", ""
+	}
+	q.providerNameMu.RLock()
+	cacheHit := false
+	var entry providerNameEntry
+	if q.providerNameCache != nil && time.Now().Before(q.providerNameExpires) {
+		if e, ok := q.providerNameCache[providerID]; ok {
+			entry = e
+			cacheHit = true
+		}
+	}
+	q.providerNameMu.RUnlock()
+	if cacheHit {
+		return entry.name, entry.code
+	}
+	if q.db == nil {
+		return "", ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	var name, code string
+	err := q.db.QueryRow(ctx,
+		`SELECT COALESCE(NULLIF(display_name, ''), NULLIF(catalog_code, ''), NULLIF(code, ''), ''),
+		        COALESCE(NULLIF(catalog_code, ''), NULLIF(code, ''), '')
+		 FROM providers WHERE id = $1`, providerID).Scan(&name, &code)
+	if err != nil {
+		// Cache miss is not fatal — just log at debug so we don't spam logs on
+		// every publish for an unresolved provider (e.g. id removed mid-run).
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Debug("probe queue: provider name lookup failed", "provider_id", providerID, "error", err)
+		}
+		return "", ""
+	}
+	q.providerNameMu.Lock()
+	q.providerNameCache[providerID] = providerNameEntry{name: name, code: code}
+	q.providerNameExpires = time.Now().Add(providerNameCacheTTL)
+	q.providerNameMu.Unlock()
+	return name, code
+}
+
 // publishProbeTask is the shared hook for the durable queue's lifecycle events.
 // Best-effort: a nil sink or a publish error never blocks the enqueue/claim.
 //
@@ -163,6 +257,7 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 	if q == nil {
 		return
 	}
+	providerName, providerCode := q.lookupProviderName(task.ProviderID)
 	if q.detailSink != nil {
 		q.detailSink.PublishProbeTransition(ProbeTaskTransition{
 			ID:            probeQueueLifecycleID(task),
@@ -171,6 +266,8 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 			Status:        status,
 			CredentialID:  task.CredentialID,
 			ProviderID:    task.ProviderID,
+			ProviderName:  providerName,
+			ProviderCode:  providerCode,
 			RawModel:      task.RawModel,
 			Attempt:       task.Attempt,
 			Origin:        probeQueueOriginFromSource(task.Source),
@@ -198,6 +295,8 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 		Status:       status,
 		CredentialID: task.CredentialID,
 		ProviderID:   task.ProviderID,
+		ProviderCode: providerCode,
+		ProviderName: providerName,
 		RawModel:     task.RawModel,
 		Attempt:      task.Attempt,
 		Reason:       task.Source,
@@ -216,6 +315,7 @@ func (q *ProbeQueue) publishRearmTransition(task ProbeQueueTask, nextRunAt *time
 	if q == nil || q.detailSink == nil {
 		return
 	}
+	providerName, providerCode := q.lookupProviderName(task.ProviderID)
 	q.detailSink.PublishProbeTransition(ProbeTaskTransition{
 		ID:            probeQueueLifecycleID(task),
 		TaskType:      probeQueueTaskType(task.Command),
@@ -223,6 +323,8 @@ func (q *ProbeQueue) publishRearmTransition(task ProbeQueueTask, nextRunAt *time
 		Status:        "pending",
 		CredentialID:  task.CredentialID,
 		ProviderID:    task.ProviderID,
+		ProviderName:  providerName,
+		ProviderCode:  providerCode,
 		RawModel:      task.RawModel,
 		Attempt:       task.Attempt,
 		Origin:        probeQueueOriginFromSource(task.Source),
@@ -264,8 +366,20 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 	if q == nil || q.db == nil {
 		return 0, false, fmt.Errorf("enqueue probe failed: database is unavailable (dedup_key=%s)", task.DedupKey)
 	}
+	if task.Automatic {
+		eligible, err := q.automaticTaskEligible(ctx, task)
+		if err != nil {
+			return 0, false, err
+		}
+		if !eligible {
+			return 0, false, fmt.Errorf("%w: credential_id=%d", ErrProbeAutomaticIneligible, task.CredentialID)
+		}
+	}
 	if task.TenantID == "" {
 		task.TenantID = "default"
+	}
+	if q.scope != nil && !q.scope.AllowsIdentity(task.TenantID, int(task.CredentialID), task.RawModel) {
+		return 0, false, fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrProbeOutOfScope, task.TenantID, task.CredentialID, task.RawModel)
 	}
 	if task.Mode == "" {
 		task.Mode = "single"
@@ -282,20 +396,23 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 		WHERE dedup_key=$1 AND status IN ('ready','running') AND expires_at <= now()`, task.DedupKey); err != nil {
 		return 0, false, fmt.Errorf("enqueue probe failed: expire stale task: %w (dedup_key=%s)", err, task.DedupKey)
 	}
+	if task.NextRunAt.IsZero() {
+		task.NextRunAt = time.Now()
+	}
 	var id int64
 	err := q.db.QueryRow(ctx, `
-		INSERT INTO credential_probe_queue (
-			credential_id, provider_id, tenant_id, canonical_model, raw_model,
-			outbound_model, probe_command, probe_mode, priority, reason_code,
-			reason_detail, max_attempts, source, source_event_id, parent_request_id,
-			dedup_key, expires_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,now()+$17)
-		ON CONFLICT DO NOTHING
-		RETURNING id`, task.CredentialID, task.ProviderID, task.TenantID,
+			INSERT INTO credential_probe_queue (
+				credential_id, provider_id, tenant_id, canonical_model, raw_model,
+				outbound_model, probe_command, probe_mode, priority, reason_code,
+				reason_detail, max_attempts, next_run_at, automatic, source,
+				source_event_id, parent_request_id, dedup_key, expires_at
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,now()+$19)
+			ON CONFLICT DO NOTHING
+			RETURNING id`, task.CredentialID, task.ProviderID, task.TenantID,
 		nilString(task.Canonical), task.RawModel, nilString(task.Outbound),
 		task.Command, task.Mode, task.Priority, nilString(task.ReasonCode),
-		nilString(task.ReasonDetail), task.MaxAttempts, task.Source,
-		nilString(task.SourceEvent), nilString(task.ParentReqID), task.DedupKey,
+		nilString(task.ReasonDetail), task.MaxAttempts, task.NextRunAt, task.Automatic,
+		task.Source, nilString(task.SourceEvent), nilString(task.ParentReqID), task.DedupKey,
 		ProbeQueueTTL).Scan(&id)
 	if err == pgx.ErrNoRows {
 		return 0, false, nil
@@ -373,8 +490,40 @@ func BuildProbeDedupKey(command string, credentialID int64, model string) string
 	}
 }
 
-// Claim atomically leases ready tasks. It is safe for multiple gateway
-// instances to call this concurrently because rows are locked with SKIP LOCKED.
+// automaticProbeEligibilityExistsSQL is shared by enqueue, claim, and the
+// final ProbeService preflight so the eligibility contract cannot drift between
+// boundaries. credentialExpr is trusted SQL supplied by this package only.
+func automaticProbeEligibilityExistsSQL(credentialExpr string) string {
+	return `EXISTS (
+		SELECT 1
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.id = ` + credentialExpr + `
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.enabled, FALSE) = TRUE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+	)`
+}
+
+func automaticProbeEligibilitySQL() string {
+	return "SELECT " + automaticProbeEligibilityExistsSQL("$1")
+}
+
+// automaticTaskEligible is the single authoritative eligibility check for
+// automatic probes. It deliberately reads current credential/provider state at
+// each boundary; manual tasks bypass it so operators can diagnose disabled
+// credentials/providers.
+func (q *ProbeQueue) automaticTaskEligible(ctx context.Context, task ProbeQueueTask) (bool, error) {
+	var eligible bool
+	err := q.db.QueryRow(ctx, automaticProbeEligibilitySQL(), task.CredentialID).Scan(&eligible)
+	if err != nil {
+		return false, fmt.Errorf("check automatic probe eligibility failed: %w (credential_id=%d)", err, task.CredentialID)
+	}
+	return eligible, nil
+}
+
 func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) ([]ProbeQueueTask, error) {
 	if q == nil || q.db == nil {
 		return nil, fmt.Errorf("claim probes failed: database is unavailable (limit=%d)", limit)
@@ -383,7 +532,12 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 		limit = 1
 	}
 	if lease <= 0 {
-		lease = 30 * time.Second
+		// 2026-08-18 Agent B: default lease bumped 30s → ProbeQueueLeaseDefault
+		// (5m) so a direct+gateway+side-effects run that takes >30s cannot be
+		// reclaimed by RequeueExpiredLeases and double-settled. The lease
+		// heartbeat in ProbeService.Run keeps the window refreshed every
+		// ProbeQueueHeartbeatInterval while side effects run.
+		lease = ProbeQueueLeaseDefault
 	}
 	tx, err := q.db.Begin(ctx)
 	if err != nil {
@@ -391,9 +545,10 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 	}
 	defer tx.Rollback(ctx)
 	rows, err := tx.Query(ctx, `
-		WITH picked AS (
-			SELECT id FROM credential_probe_queue
-			WHERE status='ready' AND next_run_at <= now() AND expires_at > now() AND attempt < max_attempts
+			WITH picked AS (
+				SELECT q.id FROM credential_probe_queue q
+					WHERE q.status='ready' AND q.next_run_at <= now() AND q.expires_at > now() AND q.attempt < q.max_attempts
+					  AND (q.automatic = FALSE OR `+automaticProbeEligibilityExistsSQL("q.credential_id")+`)
 			ORDER BY priority DESC, next_run_at, id
 			FOR UPDATE SKIP LOCKED LIMIT $1
 		)
@@ -402,11 +557,11 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 			lease_token=gen_random_uuid(), lease_until=now()+$2,
 			started_at=COALESCE(q.started_at, now()), updated_at=now()
 		FROM picked WHERE q.id=picked.id
-		RETURNING q.id, q.credential_id, COALESCE(q.provider_id,0), q.tenant_id,
-			COALESCE(q.canonical_model,''), q.raw_model, COALESCE(q.outbound_model,''),
-			q.probe_command, q.probe_mode, q.priority, q.attempt, q.max_attempts,
-			q.next_run_at, q.lease_until, q.lease_token::text, q.source, COALESCE(q.source_event_id,''),
-			COALESCE(q.parent_request_id,''), q.dedup_key, q.expires_at`, limit, lease)
+			RETURNING q.id, q.credential_id, q.automatic, COALESCE(q.provider_id,0), q.tenant_id,
+				COALESCE(q.canonical_model,''), q.raw_model, COALESCE(q.outbound_model,''),
+				q.probe_command, q.probe_mode, q.priority, q.attempt, q.max_attempts,
+				q.next_run_at, q.lease_until, q.lease_token::text, q.source, COALESCE(q.source_event_id,''),
+				COALESCE(q.parent_request_id,''), q.dedup_key, q.expires_at`, limit, lease)
 	if err != nil {
 		return nil, fmt.Errorf("claim probes failed: select tasks: %w (limit=%d)", err, limit)
 	}
@@ -414,7 +569,7 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 	var tasks []ProbeQueueTask
 	for rows.Next() {
 		var task ProbeQueueTask
-		if err := rows.Scan(&task.ID, &task.CredentialID, &task.ProviderID, &task.TenantID, &task.Canonical,
+		if err := rows.Scan(&task.ID, &task.CredentialID, &task.Automatic, &task.ProviderID, &task.TenantID, &task.Canonical,
 			&task.RawModel, &task.Outbound, &task.Command, &task.Mode, &task.Priority,
 			&task.Attempt, &task.MaxAttempts, &task.NextRunAt, &task.LeaseUntil, &task.LeaseToken,
 			&task.Source, &task.SourceEvent, &task.ParentReqID, &task.DedupKey, &task.ExpiresAt); err != nil {
@@ -437,6 +592,20 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 	return tasks, nil
 }
 
+// completeProbeTaskSQL is extracted for guard tests. The expires_at CASE
+// arm is the 2026-08-18 fix: failure re-arms must refresh the task TTL or
+// the backoff ladder (up to 6h) always outlives the 5-minute expires_at and
+// the task starves to death mid-ladder.
+func completeProbeTaskSQL() string {
+	return `
+		UPDATE credential_probe_queue
+		SET status=$2, reason_code=$3, reason_detail=$4, result_http_status=$5,
+			result_latency_ms=$6, result_body_preview=$7, next_run_at=COALESCE($8,next_run_at),
+			lease_until=$9, finished_at=$10, updated_at=now(),
+			expires_at=CASE WHEN $2='ready' THEN now() + $12::interval ELSE expires_at END
+		WHERE id=$1 AND status='running' AND lease_token=$11::uuid`
+}
+
 func (q *ProbeQueue) Complete(ctx context.Context, task ProbeQueueTask, result ProbeQueueResult) error {
 	id := task.ID
 	if q == nil || q.db == nil {
@@ -447,15 +616,11 @@ func (q *ProbeQueue) Complete(ctx context.Context, task ProbeQueueTask, result P
 		now := time.Now()
 		result.FinishedAt = &now
 	}
-	tag, err := q.db.Exec(ctx, `
-		UPDATE credential_probe_queue
-		SET status=$2, reason_code=$3, reason_detail=$4, result_http_status=$5,
-			result_latency_ms=$6, result_body_preview=$7, next_run_at=COALESCE($8,next_run_at),
-			lease_until=$9, finished_at=$10, updated_at=now()
-		WHERE id=$1 AND status='running' AND lease_token=$11::uuid`,
+	tag, err := q.db.Exec(ctx, completeProbeTaskSQL(),
 		id, result.Status, nilString(result.ReasonCode), nilString(result.ReasonDetail),
 		result.HTTPStatus, result.LatencyMs, nilString(result.BodyPreview), result.NextRunAt,
-		result.LeaseUntil, result.FinishedAt, task.LeaseToken)
+		result.LeaseUntil, result.FinishedAt, task.LeaseToken,
+		fmt.Sprintf("%d seconds", int(ProbeQueueTTL.Seconds())))
 	if err != nil {
 		return fmt.Errorf("complete probe failed: %w (queue_id=%d)", err, id)
 	}
@@ -480,7 +645,7 @@ func (q *ProbeQueue) ExtendLease(ctx context.Context, task ProbeQueueTask, lease
 		return fmt.Errorf("extend probe lease failed: database is unavailable (queue_id=%d)", task.ID)
 	}
 	if lease <= 0 {
-		lease = 30 * time.Second
+		lease = ProbeQueueLeaseDefault
 	}
 	tag, err := q.db.Exec(ctx, `
 		UPDATE credential_probe_queue
@@ -528,6 +693,48 @@ func (q *ProbeQueue) RequeueExpiredLeases(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("requeue expired probes failed: %w (queue=credential_probe_queue)", err)
 	}
 	return result.RowsAffected(), nil
+}
+
+// ReviveExpiredReady rescues zombie 'ready' rows whose expires_at already
+// elapsed (2026-08-18 glm-5.2 incident: Claim requires expires_at > now(), so
+// such rows can never be claimed, yet their dedup_key also blocks a fresh
+// Enqueue insert unless the enqueue pre-step notices the expiry — rows left
+// behind by a crashed worker or a restart sat forever as "ready but dead",
+// and the queue looked alive on dashboards while executing nothing). Rows
+// still under the attempt cap get a fresh TTL; rows past the cap or without
+// remaining attempts are marked expired so they stop counting as pending.
+func (q *ProbeQueue) ReviveExpiredReady(ctx context.Context) (int64, error) {
+	if q == nil || q.db == nil {
+		return 0, fmt.Errorf("revive expired ready probes failed: database is unavailable (queue=credential_probe_queue)")
+	}
+	result, err := q.db.Exec(ctx, reviveExpiredReadySQL(),
+		fmt.Sprintf("%d seconds", int(ProbeQueueTTL.Seconds())))
+	if err != nil {
+		return 0, fmt.Errorf("revive expired ready probes failed: %w (queue=credential_probe_queue)", err)
+	}
+	return result.RowsAffected(), nil
+}
+
+// reviveExpiredReadySQL is extracted for guard tests. Required invariants:
+// only status='ready' rows with an elapsed expires_at are touched; rows
+// still under the attempt cap get a TTL that covers their whole next backoff
+// hop (GREATEST(next_run_at, now()) + TTL — otherwise a 30s sweep rewrites a
+// deep-backoff row every few minutes for hours); rows at/over the cap are
+// marked expired so dashboards stop counting them as pending.
+func reviveExpiredReadySQL() string {
+	return `
+		UPDATE credential_probe_queue
+		SET expires_at=CASE
+				WHEN attempt < max_attempts THEN GREATEST(next_run_at, now()) + $1::interval
+				ELSE expires_at
+			END,
+			status=CASE
+				WHEN attempt < max_attempts THEN status
+				ELSE 'expired'
+			END,
+			finished_at=CASE WHEN attempt < max_attempts THEN finished_at ELSE now() END,
+			updated_at=now()
+		WHERE status='ready' AND expires_at <= now()`
 }
 
 func nilString(value string) any {

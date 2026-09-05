@@ -40,11 +40,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"              //nolint:depguard // reuse LLM endpoint config
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"     //nolint:depguard // reuse ApplyHTTPLlmCallerDefaults
@@ -106,6 +110,13 @@ type TriggerConfig struct {
 	NotifyLevel         NotifyLevel
 	NotifyWebhook       string
 	ContinueHintTpl     string
+
+	// Goal coordination is optional. Nil preserves the standalone handoff path.
+	ContextMonitor      ContextMonitor
+	GoalStateSerializer GoalStateSerializer
+	GoalTrigger         HandoffTrigger
+	MessageBuilder      HandoffMessageBuilder
+	GoalCostMode        func(tenantID string) string
 
 	// SettingsGetter resolves per-tenant overrides (mirrors goal.SettingsGetter).
 	SettingsGetter SettingsGetter
@@ -532,7 +543,7 @@ func (h *TriggerHook) buildSummary(ctx context.Context, req *response.InterceptR
 	if out == "" {
 		out = "Session completed (no summary available)"
 	}
-	return truncateRunes(out, 4000)
+	return truncateRunes(redactResumeSensitive(out), 4000)
 }
 
 func derefInt(i int) int {
@@ -648,6 +659,21 @@ type PGStore struct {
 	db *sql.DB
 }
 
+var handoffSchemaMismatchOnce sync.Once
+
+func handoffSchemaMismatch(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "42703" {
+		return false
+	}
+	handoffSchemaMismatchOnce.Do(func() {
+		slog.Warn("handoff_session_summary_schema_mismatch",
+			"error", err,
+			"hint", "session_summaries is missing canonical handoff columns; run the canonical migrations against the configured database")
+	})
+	return true
+}
+
 // NewPGStore creates a new PostgreSQL-backed handoff store.
 func NewPGStore(db *sql.DB) *PGStore {
 	return &PGStore{db: db}
@@ -666,7 +692,7 @@ func (s *PGStore) RecordHandoff(ctx context.Context, r *HandoffRecord) error {
 		return nil
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO handoff_logs (
+		INSERT INTO handoff_logs_hot (
 			session_id, tenant_id, trigger_reason, tokens_at_handoff, context_window,
 			handoff_prompt, new_session_id, summary_text, summary_engine, trigger_mode,
 			tokens_in_session, messages_in_session, skill_name, duration_ms, created_at
@@ -702,6 +728,9 @@ func (s *PGStore) GetSessionTokens(ctx context.Context, sessionKey string) (int,
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
+	if handoffSchemaMismatch(err) {
+		return 0, nil
+	}
 	return n, err
 }
 
@@ -717,6 +746,9 @@ func (s *PGStore) GetSessionMessages(ctx context.Context, sessionKey string) (in
 		`SELECT COALESCE(request_count, 0) FROM session_summaries WHERE session_key = $1`,
 		sessionKey).Scan(&n)
 	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if handoffSchemaMismatch(err) {
 		return 0, nil
 	}
 	return n, err
@@ -735,6 +767,9 @@ func (s *PGStore) GetSessionLastActivity(ctx context.Context, sessionKey string)
 		return time.Time{}, nil
 	}
 	if err != nil {
+		if handoffSchemaMismatch(err) {
+			return time.Time{}, nil
+		}
 		return time.Time{}, err
 	}
 	if !t.Valid {
@@ -755,6 +790,9 @@ func (s *PGStore) GetHandoffCount(ctx context.Context, sessionKey string) (int, 
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
+	if handoffSchemaMismatch(err) {
+		return 0, nil
+	}
 	return n, err
 }
 
@@ -771,6 +809,9 @@ func (s *PGStore) GetLastHandoffAt(ctx context.Context, sessionKey string) (time
 		return time.Time{}, nil
 	}
 	if err != nil {
+		if handoffSchemaMismatch(err) {
+			return time.Time{}, nil
+		}
 		return time.Time{}, err
 	}
 	if !t.Valid {
@@ -794,6 +835,9 @@ func (s *PGStore) IsHandoffCooldownActive(ctx context.Context, sessionKey string
 		)
 	`, sessionKey, fmt.Sprintf("%d", cooldownSeconds)).Scan(&active)
 	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if handoffSchemaMismatch(err) {
 		return false, nil
 	}
 	return active, err

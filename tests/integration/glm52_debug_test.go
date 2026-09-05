@@ -1,4 +1,4 @@
-//go:build integration
+//go:build integration && integration_debug
 
 package integration
 
@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,12 @@ func TestGLM52RealRequest(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real gateway test in short mode")
 	}
+	gatewayURL := strings.TrimRight(os.Getenv("GATEWAY_URL"), "/")
+	apiKey := os.Getenv("LLM_GATEWAY_API_KEY")
+	if gatewayURL == "" || apiKey == "" {
+		t.Skip("set GATEWAY_URL and LLM_GATEWAY_API_KEY to run GLM-5.2 live gateway test")
+	}
+	endpoint := gatewayURL + "/v1/chat/completions"
 
 	// Test configurations
 	testCases := []struct {
@@ -27,23 +34,20 @@ func TestGLM52RealRequest(t *testing.T) {
 		endpoint    string
 		model       string
 		contentType string
-		authHeader  string
 		stream      bool
 	}{
 		{
 			name:        "glm-5.2_openai_format_non_stream",
-			endpoint:    "https://llmgateway.internal.example.com/v1/chat/completions",
+			endpoint:    endpoint,
 			model:       "glm-5.2",
 			contentType: "application/json",
-			authHeader:  "Bearer ", // Will be filled from env
 			stream:      false,
 		},
 		{
 			name:        "glm-5.2_openai_format_stream",
-			endpoint:    "https://llmgateway.internal.example.com/v1/chat/completions",
+			endpoint:    endpoint,
 			model:       "glm-5.2",
 			contentType: "application/json",
-			authHeader:  "Bearer ",
 			stream:      true,
 		},
 	}
@@ -82,9 +86,7 @@ func TestGLM52RealRequest(t *testing.T) {
 			}
 
 			req.Header.Set("Content-Type", tc.contentType)
-			// In real test, you'd get this from env or config
-			// For now, we'll just test the format conversion path
-			req.Header.Set("Authorization", tc.authHeader+"test-key")
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 
 			// Send request
 			client := &http.Client{
@@ -100,48 +102,18 @@ func TestGLM52RealRequest(t *testing.T) {
 
 			t.Logf("Response status: %d", resp.StatusCode)
 			t.Logf("Response headers: %v", resp.Header)
+			if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<10))
+				t.Fatalf("gateway returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+			}
 
 			// Read response
 			if tc.stream {
 				t.Log("Processing streaming response...")
-				scanner := newSSEScanner(resp.Body)
-				chunkCount := 0
-				for scanner.Scan() {
-					line := scanner.Text()
-					chunkCount++
-					t.Logf("Chunk %d: %s", chunkCount, line)
-
-					if strings.HasPrefix(line, "data: ") {
-						data := strings.TrimPrefix(line, "data: ")
-						if data == "[DONE]" {
-							t.Log("Stream completed with [DONE]")
-							break
-						}
-
-						// Try to parse as JSON
-						var chunk map[string]interface{}
-						if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-							t.Errorf("Failed to parse chunk %d as JSON: %v\nData: %s", chunkCount, err, data)
-							continue
-						}
-
-						// Check for choices array
-						if choices, ok := chunk["choices"].([]interface{}); ok {
-							if len(choices) == 0 {
-								t.Errorf("Chunk %d has empty choices array", chunkCount)
-							} else {
-								t.Logf("Chunk %d choices: %+v", chunkCount, choices)
-							}
-						} else {
-							t.Logf("Chunk %d structure: %+v", chunkCount, chunk)
-						}
-					}
+				chunkCount, err := validateGLM52Stream(resp.Body)
+				if err != nil {
+					t.Error(err)
 				}
-
-				if err := scanner.Err(); err != nil {
-					t.Errorf("SSE scanner error: %v", err)
-				}
-
 				t.Logf("Total chunks received: %d", chunkCount)
 			} else {
 				bodyBytes, err := io.ReadAll(resp.Body)
@@ -206,84 +178,118 @@ func (s *sseScanner) Err() error {
 	return s.lastErr
 }
 
-// TestGLM52FormatConversion tests the conversion functions directly
-func TestGLM52FormatConversion(t *testing.T) {
-	t.Run("openai_to_anthropic_conversion", func(t *testing.T) {
-		// Simulate a glm-5.2 request through OpenAI format
-		openaiReq := map[string]interface{}{
-			"model": "glm-5.2",
-			"messages": []map[string]interface{}{
-				{"role": "system", "content": "You are helpful."},
-				{"role": "user", "content": "Hello"},
-			},
-			"max_tokens":  100,
-			"temperature": 0.7,
-			"stream":      false,
+func validateGLM52Stream(r io.Reader) (int, error) {
+	scanner := newSSEScanner(r)
+	chunkCount := 0
+	sawDone := false
+	sawContent := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		chunkCount++
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			sawDone = true
+			break
 		}
 
-		reqBytes, err := json.Marshal(openaiReq)
-		if err != nil {
-			t.Fatalf("marshal failed: %v", err)
+		var chunk struct {
+			Choices []struct {
+				Delta    map[string]any `json:"delta"`
+				Finished string         `json:"finish_reason"`
+			} `json:"choices"`
 		}
-
-		t.Logf("Original OpenAI request: %s", string(reqBytes))
-
-		// This would trigger Q3 path (OpenAI client -> Anthropic upstream)
-		// if glm-5.2 is configured with anthropic-messages protocol
-		t.Log("Q3 path: OpenAI request should be converted to Anthropic format")
-		t.Log("Expected: system message extracted to top-level 'system' field")
-		t.Log("Expected: messages array contains only user/assistant messages")
-		t.Log("Expected: max_tokens preserved")
-	})
-
-	t.Run("anthropic_response_to_openai", func(t *testing.T) {
-		// Simulate an Anthropic response that needs conversion back
-		anthropicResp := map[string]interface{}{
-			"id":    "msg-123",
-			"type":  "message",
-			"role":  "assistant",
-			"model": "glm-5.2",
-			"content": []map[string]interface{}{
-				{"type": "text", "text": "Hello back"},
-			},
-			"usage": map[string]interface{}{
-				"input_tokens":  10,
-				"output_tokens": 5,
-			},
-			"stop_reason": "end_turn",
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return chunkCount, fmt.Errorf("parse chunk %d as JSON: %w", chunkCount, err)
 		}
-
-		respBytes, err := json.Marshal(anthropicResp)
-		if err != nil {
-			t.Fatalf("marshal failed: %v", err)
+		if len(chunk.Choices) == 0 {
+			return chunkCount, fmt.Errorf("chunk %d has empty choices array", chunkCount)
 		}
+		if chunk.Choices[0].Delta == nil {
+			return chunkCount, fmt.Errorf("chunk %d has no choices[0].delta", chunkCount)
+		}
+		if content, ok := chunk.Choices[0].Delta["content"].(string); ok && content != "" {
+			sawContent = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return chunkCount, fmt.Errorf("SSE scanner: %w", err)
+	}
+	if !sawContent {
+		return chunkCount, fmt.Errorf("stream contained no choices[0].delta.content event")
+	}
+	if !sawDone {
+		return chunkCount, fmt.Errorf("stream did not terminate with data: [DONE]")
+	}
+	return chunkCount, nil
+}
 
-		t.Logf("Anthropic response: %s", string(respBytes))
-		t.Log("Q3 return path: Should be converted back to OpenAI format")
-		t.Log("Expected: content array flattened to string")
-		t.Log("Expected: usage tokens mapped correctly")
-	})
+func TestValidateGLM52Stream(t *testing.T) {
+	tests := []struct {
+		name    string
+		stream  string
+		wantErr string
+	}{
+		{
+			name:   "valid completion",
+			stream: "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n",
+		},
+		{
+			name:    "missing content",
+			stream:  "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n",
+			wantErr: "no choices[0].delta.content",
+		},
+		{
+			name:    "missing done marker",
+			stream:  "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n",
+			wantErr: "did not terminate",
+		},
+		{
+			name:    "missing delta",
+			stream:  "data: {\"choices\":[{}]}\n\ndata: [DONE]\n",
+			wantErr: "has no choices[0].delta",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := validateGLM52Stream(strings.NewReader(tt.stream))
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateGLM52Stream() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateGLM52Stream() error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 // TestGLM52StreamEventParsing tests SSE event parsing for glm-5.2
 func TestGLM52StreamEventParsing(t *testing.T) {
-	testEvents := []string{
-		// Valid Anthropic event
-		`data: {"type":"message_start","message":{"id":"msg_1","role":"assistant"}}`,
-		// Valid OpenAI-format chunk (should be detected and handled)
-		`data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`,
-		// Empty choices (the bug symptom)
-		`data: {"id":"chatcmpl-2","object":"chat.completion.chunk","choices":[]}`,
-		// Mixed format (Anthropic event with OpenAI fields - the actual bug)
-		`data: {"type":"","choices":[],"model":"glm-5.2"}`,
+	testEvents := []struct {
+		name       string
+		raw        string
+		wantValid  bool
+		wantOpenAI bool
+		wantEmpty  bool
+		wantMixed  bool
+	}{
+		{"anthropic_message_start", `data: {"type":"message_start","message":{"id":"msg_1","role":"assistant"}}`, true, false, false, false},
+		{"openai_chunk", `data: {"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hi"}}]}`, false, true, false, false},
+		{"empty_choices", `data: {"id":"chatcmpl-2","object":"chat.completion.chunk","choices":[]}`, false, true, true, false},
+		{"mixed_empty_type", `data: {"type":"","choices":[],"model":"glm-5.2"}`, false, true, true, true},
 	}
 
-	for i, event := range testEvents {
-		t.Run(fmt.Sprintf("event_%d", i), func(t *testing.T) {
-			t.Logf("Testing event: %s", event)
+	for _, event := range testEvents {
+		t.Run(event.name, func(t *testing.T) {
+			t.Logf("Testing event: %s", event.raw)
 
 			// Parse the event data
-			dataStr := strings.TrimPrefix(event, "data: ")
+			dataStr := strings.TrimPrefix(event.raw, "data: ")
 			var data map[string]interface{}
 			if err := json.Unmarshal([]byte(dataStr), &data); err != nil {
 				t.Errorf("Failed to parse event: %v", err)
@@ -296,17 +302,12 @@ func TestGLM52StreamEventParsing(t *testing.T) {
 
 			t.Logf("Event type: %q, has choices: %v", eventType, hasChoices)
 
-			if hasChoices {
-				if len(choices) == 0 {
-					t.Error("❌ DETECTED: Empty choices array - this causes client crashes")
-				}
-				if hasType && eventType == "" {
-					t.Error("❌ DETECTED: Mixed format - has choices but empty type field")
-				}
-			}
-
-			if !hasType && hasChoices {
-				t.Error("❌ DETECTED: OpenAI-format chunk in Anthropic stream")
+			isEmpty := hasChoices && len(choices) == 0
+			isOpenAI := hasChoices
+			isMixed := isOpenAI && hasType && eventType == ""
+			isValid := hasType && eventType != ""
+			if isValid != event.wantValid || isOpenAI != event.wantOpenAI || isEmpty != event.wantEmpty || isMixed != event.wantMixed {
+				t.Errorf("classification = valid:%v openai:%v empty:%v mixed:%v, want valid:%v openai:%v empty:%v mixed:%v", isValid, isOpenAI, isEmpty, isMixed, event.wantValid, event.wantOpenAI, event.wantEmpty, event.wantMixed)
 			}
 		})
 	}

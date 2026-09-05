@@ -9,6 +9,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // SR-05 (doc 18 §5.1 ExecuteAttempt): one bounded attempt through the
@@ -33,7 +34,7 @@ func (f *fakeAttemptExecutor) Execute(params *executors.ExecParams) (*executors.
 }
 
 func newAttemptGateForTest() *AttemptCommitGate {
-	return NewAttemptCommitGate(ProtocolAnthropic,
+	return NewAttemptCommitGate(context.Background(), ProtocolAnthropic,
 		NewSerializedStreamWriter(io.Discard), GateOptions{Mode: GateModeBuffered})
 }
 
@@ -94,6 +95,37 @@ func TestExecuteAttemptFoldsCandidateOutcomesAndSafeRetry(t *testing.T) {
 	}
 }
 
+func TestFailureAttributionUsesLastExecutedAttempt(t *testing.T) {
+	execErr := &executors.ExecuteError{
+		Attempts: []executors.AttemptRecord{
+			{ProviderID: 5917, CredentialID: 32},
+			{ProviderID: 12763, CredentialID: 36},
+		},
+	}
+
+	providerID, credentialID := failureAttribution(execErr, nil)
+
+	if providerID == nil || *providerID != 12763 {
+		t.Fatalf("provider attribution = %v, want 12763", providerID)
+	}
+	if credentialID == nil || *credentialID != 36 {
+		t.Fatalf("credential attribution = %v, want 36", credentialID)
+	}
+}
+
+func TestFailureAttributionFallsBackToTopCandidate(t *testing.T) {
+	candidates := []provider.Candidate{{ProviderID: 5917, CredentialID: 32}}
+
+	providerID, credentialID := failureAttribution(errors.New("context canceled"), candidates)
+
+	if providerID == nil || *providerID != 5917 {
+		t.Fatalf("provider attribution = %v, want 5917", providerID)
+	}
+	if credentialID == nil || *credentialID != 32 {
+		t.Fatalf("credential attribution = %v, want 32", credentialID)
+	}
+}
+
 func TestExecuteAttemptNoCandidatesSynthesizesOutcome(t *testing.T) {
 	execErr := &executors.ExecuteError{Tried: 0, Exhausted: true}
 	fake := &fakeAttemptExecutor{err: execErr}
@@ -103,6 +135,14 @@ func TestExecuteAttemptNoCandidatesSynthesizesOutcome(t *testing.T) {
 	if len(res.CandidateOutcomes) != 1 ||
 		res.CandidateOutcomes[0].Kind != errorsx.KindNoAvailableChannel {
 		t.Fatalf("expected single no_available_channel outcome, got %+v", res.CandidateOutcomes)
+	}
+}
+
+func TestFoldCandidateOutcomesPreservesTypedRetryableKinds(t *testing.T) {
+	err := &executors.ExecuteError{LastKind: errorsx.KindEmptyResponse, LastErr: errors.New("empty upstream response")}
+	outcomes := foldCandidateOutcomes(err, "test-request-id", nil)
+	if len(outcomes) != 1 || outcomes[0].Kind != errorsx.KindEmptyResponse {
+		t.Fatalf("outcomes = %+v, want one empty_response outcome", outcomes)
 	}
 }
 

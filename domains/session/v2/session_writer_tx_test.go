@@ -2,6 +2,7 @@ package v2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,6 +46,30 @@ func anyArgs(n int) []interface{} {
 type noopAggregator struct{}
 
 func (noopAggregator) UpdateSession(context.Context, SessionUpdate) error { return nil }
+
+type digestArgument struct{}
+
+func (digestArgument) Match(value interface{}) bool {
+	text, ok := value.(string)
+	if !ok || text == "" {
+		return false
+	}
+	var envelope sessiondigest.Envelope
+	if json.Unmarshal([]byte(text), &envelope) != nil {
+		return false
+	}
+	return envelope.SchemaVersion == sessiondigest.SchemaVersion &&
+		envelope.AlgorithmVersion == sessiondigest.AlgorithmVersion &&
+		envelope.Payload.UserInput == "hi" &&
+		envelope.Payload.AssistantOutput == "hello"
+}
+
+type outboxJSONTextArgument struct{}
+
+func (outboxJSONTextArgument) Match(value interface{}) bool {
+	text, ok := value.(string)
+	return ok && json.Valid([]byte(text))
+}
 
 type flakyAggregator struct {
 	calls   int
@@ -112,10 +138,29 @@ func expectListAllBodiesEmpty(mock pgxmock.PgxPoolIface) {
 		}))
 }
 
+// expectSessionLock mocks the pg_advisory_xact_lock call so the regexp
+// matcher doesn't trip on either the main session lock or the per-request
+// lock (both call the same SQL fragment in production).
 func expectSessionLock(mock pgxmock.PgxPoolIface) {
-	mock.ExpectExec("pg_advisory_xact_lock").
-		WithArgs(pgxmock.AnyArg()).
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+}
+
+func expectRequestLock(mock pgxmock.PgxPoolIface) {
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+}
+
+// expectOutboxEnqueue mocks the audit-data-closure-C outbox INSERT that the
+// writer emits in the same transaction as turn+bodies. The fifth argument
+// must stay a string: []byte is encoded as bytea by pgx's Simple Protocol and
+// is not valid JSON text for a jsonb column.
+func expectOutboxEnqueue(mock pgxmock.PgxPoolIface) {
+	mock.ExpectExec("INSERT INTO session_aggregate_outbox[\\s\\S]*\\$5::text::jsonb").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), outboxJSONTextArgument{}).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 }
 
 // sampleRequest builds a minimal ProcessedRequest that is enough to drive the
@@ -134,6 +179,45 @@ func sampleRequest() *ProcessedRequest {
 		StatusCode:   200,
 		Success:      true,
 	}
+}
+
+func TestWrite_PersistsVersionedDigestInTurnTransaction(t *testing.T) {
+	w, mock := newMockedSessionWriter(t)
+	req := sampleRequest()
+
+	mock.ExpectBegin()
+	expectSessionLock(mock)
+	expectListAllBodiesEmpty(mock)
+	expectRequestLock(mock)
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+		WithArgs(req.TenantID, req.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+
+	args := anyArgs(47)
+	args[35] = digestArgument{} // versioned JSONB digest follows title/summary.
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(args...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO public.session_bodies").
+		WithArgs(anyArgs(11)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	expectOutboxEnqueue(mock)
+	mock.ExpectCommit()
+
+	require.NoError(t, w.Write(context.Background(), req))
+	require.NoError(t, w.Stop(context.Background()))
+	require.NoError(t, mock.ExpectationsWereMet())
+
+	envelope := sessiondigest.Build(req.RequestBody, req.ResponseBody, map[string]any{
+		"prompt_tokens": req.PromptTokens, "completion_tokens": req.CompletionTokens,
+		"cost_usd": req.CostUSD, "latency_ms": 1000, "status_code": req.StatusCode,
+		"success": req.Success, "error_kind": req.ErrorKind,
+		"cache_read_tokens": req.CacheReadTokens, "cache_write_tokens": req.CacheWriteTokens,
+	}, map[string]any{"injection_verdict": req.InjectionVerdict, "output_verdict": req.OutputVerdict, "compression_applied": req.CompressionApplied, "compression_tokens_saved": req.TokensSaved}, req.Timestamp)
+	require.NotNil(t, envelope)
+	require.Equal(t, sessiondigest.SchemaVersion, envelope.SchemaVersion)
+	require.Equal(t, "hi", envelope.Payload.UserInput)
+	require.Equal(t, "hello", envelope.Payload.AssistantOutput)
 }
 
 func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
@@ -160,11 +244,12 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 			[]byte(`[{"role":"user","content":"old"},{"role":"assistant","content":"old response"}]`),
 			[]byte(`[]`), []byte(`[]`),
 		))
+	expectRequestLock(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
-	mock.ExpectExec("INSERT INTO public.session_turns").
-		WithArgs(anyArgs(32)...).
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(47)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	bodyArgs := anyArgs(11)
@@ -172,6 +257,10 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(bodyArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	// audit-data-closure-C: outbox row enqueued in the same tx as the turn
+	// and bodies insert, so a future reaper (session_aggregate_outbox_reaper)
+	// can replay the snapshot update even if the fast-path goroutine dies.
+	expectOutboxEnqueue(mock)
 	mock.ExpectCommit()
 
 	require.NoError(t, w.Write(context.Background(), req))
@@ -195,11 +284,12 @@ func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 	expectListAllBodiesEmpty(mock)
 
 	// 2. AppendTurnInTx.
+	expectRequestLock(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO public.session_turns").
-		WithArgs(anyArgs(32)...).
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(47)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx FAILS — simulate a DB error on the bodies INSERT.
@@ -233,17 +323,21 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 
 	// 2. AppendTurnInTx.
 
+	expectRequestLock(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO public.session_turns").
-		WithArgs(anyArgs(32)...).
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(47)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx succeeds.
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(11)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	// 4b. audit-data-closure-C: outbox enqueue in the same tx.
+	expectOutboxEnqueue(mock)
 
 	// 5. Commit.
 	mock.ExpectCommit()
@@ -265,6 +359,7 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 type recordingAggregator struct {
 	mu       sync.Mutex
 	calls    int32
+	last     SessionUpdate
 	started  chan struct{}
 	release  chan struct{}
 	returned chan struct{}
@@ -278,8 +373,11 @@ func newRecordingAggregator() *recordingAggregator {
 	}
 }
 
-func (r *recordingAggregator) UpdateSession(ctx context.Context, _ SessionUpdate) error {
+func (r *recordingAggregator) UpdateSession(ctx context.Context, update SessionUpdate) error {
 	atomic.AddInt32(&r.calls, 1)
+	r.mu.Lock()
+	r.last = update
+	r.mu.Unlock()
 	select {
 	case r.started <- struct{}{}:
 	default:
@@ -295,6 +393,12 @@ func (r *recordingAggregator) UpdateSession(ctx context.Context, _ SessionUpdate
 }
 
 func (r *recordingAggregator) callCount() int32 { return atomic.LoadInt32(&r.calls) }
+
+func (r *recordingAggregator) lastUpdate() SessionUpdate {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.last
+}
 
 // TestWrite_AggregateGoroutineManagedByLifecycle (spec §6.3)
 //
@@ -315,6 +419,57 @@ func TestStop_ContextDeadline(t *testing.T) {
 	}
 }
 
+func TestWrite_AggregateSnapshotIsIndependentOfCaller(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
+	require.NoError(t, err)
+	defer func() { _ = mock.ExpectationsWereMet(); mock.Close() }()
+
+	agg := newRecordingAggregator()
+	w := &SessionWriterV2{
+		turnWriter:        newTurnWriter(mock),
+		bodiesWriter:      newSessionBodiesWriter(bodiesPoolShim{mock}),
+		sessionAggregator: agg,
+	}
+	mock.ExpectBegin()
+	expectSessionLock(mock)
+	expectListAllBodiesEmpty(mock)
+	expectRequestLock(mock)
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(47)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec("INSERT INTO public.session_bodies").
+		WithArgs(anyArgs(11)...).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	expectOutboxEnqueue(mock)
+	mock.ExpectCommit()
+
+	req := sampleRequest()
+	req.SessionID, req.TenantID, req.RequestID = "stable-session", "stable-tenant", "stable-request"
+	req.ClientModel, req.ProviderID = "stable-model", "stable-provider"
+	req.ResponseBody = []Message{{Role: "assistant", Content: "stable-response"}}
+	req.RequestBody = []Message{{Role: "user", Content: "stable-request-body"}}
+	req.Timestamp = time.Unix(123, 0)
+	require.NoError(t, w.Write(context.Background(), req))
+	// Mutate caller-owned fields immediately after Write returns. The async
+	// updater must observe the copied snapshot, not these replacements.
+	req.SessionID, req.TenantID, req.RequestID = "mutated-session", "mutated-tenant", "mutated-request"
+	req.ClientModel, req.ProviderID = "mutated-model", "mutated-provider"
+	req.ResponseBody[0].Content = "mutated-response"
+	select {
+	case <-agg.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("aggregate goroutine never started")
+	}
+	close(agg.release)
+	require.NoError(t, w.Stop(context.Background()))
+	update := agg.lastUpdate()
+	if update.SessionID != "stable-session" || update.TenantID != "stable-tenant" || update.RequestID != "stable-request" ||
+		update.LastModel != "stable-model" || update.LastProvider != "stable-provider" || update.LastResponseSummary == "" {
+		t.Fatalf("aggregate captured mutated request: %+v", update)
+	}
+}
+
 func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
 	require.NoError(t, err)
@@ -332,15 +487,18 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 	mock.ExpectBegin()
 	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
+	expectRequestLock(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO public.session_turns").
-		WithArgs(anyArgs(32)...).
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(47)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(11)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	// audit-data-closure-C: outbox enqueue in the same tx.
+	expectOutboxEnqueue(mock)
 	mock.ExpectCommit()
 
 	require.NoError(t, w.Write(context.Background(), sampleRequest()))

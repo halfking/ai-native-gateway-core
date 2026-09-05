@@ -22,7 +22,7 @@ import (
 
 const (
 	maxRetries     = 2
-	retryBaseDelay = 500 * time.Millisecond
+	retryBaseDelay = 5 * time.Second
 	connectTimeout = 10 * time.Second
 	// The stream executor owns the 30s first-byte product policy. The transport
 	// must allow slower reasoning models to reach their headers first.
@@ -80,6 +80,24 @@ func (e *Error) Unwrap() error {
 		return nil
 	}
 	return e.Err
+}
+
+// UpstreamStatusCode exposes the HTTP status without conflicting with the
+// existing StatusCode field.
+func (e *Error) UpstreamStatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.StatusCode
+}
+
+// UpstreamBody exposes the captured response body without conflicting with the
+// existing Body field.
+func (e *Error) UpstreamBody() []byte {
+	if e == nil {
+		return nil
+	}
+	return e.Body
 }
 
 // Client wraps http.Client with upstream-specific configuration.
@@ -179,6 +197,21 @@ func (c *Client) Stop() {
 // It does NOT close the response body on success — caller must do that.
 // On retryable errors after exhausting retries, the response body IS closed.
 func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
+	return c.doWithClient(req, c.hc)
+}
+
+// DoWithHTTPClient sends the request through the supplied client while keeping
+// this package's retry and error-classification policy. It is used by
+// identity-bound connection pools so pool health and the actual socket
+// transport describe the same request.
+func (c *Client) DoWithHTTPClient(req *http.Request, client *http.Client) (*http.Response, *Error) {
+	if client == nil {
+		return nil, &Error{Kind: KindTransient, Message: "nil upstream HTTP client"}
+	}
+	return c.doWithClient(req, client)
+}
+
+func (c *Client) doWithClient(req *http.Request, httpClient *http.Client) (*http.Response, *Error) {
 	var (
 		resp *http.Response
 		uErr *Error
@@ -191,6 +224,9 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 	var nextDelay time.Duration
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
+			if req.Body != nil && req.GetBody == nil {
+				return nil, &Error{Kind: KindTransient, Message: "request body is not replayable"}
+			}
 			if req.GetBody != nil {
 				body, err := req.GetBody()
 				if err != nil {
@@ -211,7 +247,8 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 		}
 
 		var doErr error
-		resp, doErr = c.hc.Do(req)
+		resp, doErr = httpClient.Do(req)
+
 		if doErr == nil && resp.StatusCode < 500 {
 			return resp, nil
 		}

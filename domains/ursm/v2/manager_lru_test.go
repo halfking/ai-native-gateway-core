@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 )
 
 // newMirrorManager builds a Manager in authoritative mode with the LRU mirror
@@ -27,6 +28,27 @@ func newMirrorManager(t *testing.T) (*Manager, *miniredis.Miniredis, *redis.Clie
 	mgr := New(Dependencies{Redis: rdb, Config: cfg})
 	_ = mgr.SetReady(context.Background(), true)
 	return mgr, mr, rdb
+}
+
+// stubHotSource is a test HotConfigSource (会话优化 v4 T5). Zero entries
+// behave exactly like a missing settings_kv row: boot defaults win.
+type stubHotSource struct {
+	ints  map[string]int
+	bools map[string]bool
+}
+
+func (s stubHotSource) GetInt(key string, defaultValue int) int {
+	if v, ok := s.ints[key]; ok {
+		return v
+	}
+	return defaultValue
+}
+
+func (s stubHotSource) GetBool(key string, defaultValue bool) bool {
+	if v, ok := s.bools[key]; ok {
+		return v
+	}
+	return defaultValue
 }
 
 // seedNode writes a node Hash into miniredis so PipelineNodeViews returns it.
@@ -46,16 +68,19 @@ func seedNode(t *testing.T, mr *miniredis.Miniredis, credID int, model string, g
 }
 
 // TestFilterAndScore_LRUMissThenHit verifies the M2 fast path: the first call
-// misses the LRU, reads Redis, and backfills; the second call hits the LRU and
-// must NOT touch Redis (we observe this by closing Redis and confirming the
-// result is still returned, including the cached availability).
+// misses the LRU, reads Redis, and backfills; the second call hits the LRU.
+//
+// 会话优化 v4 §14.3 (2026-08-18): the gear contract changed — a full mirror
+// hit is no longer an unconditional fail-open when Redis dies. Two gears are
+// pinned here:
+//   - target gear (default): mirror hit + Redis dead → protective rejection;
+//   - grace gear (llmgw_ursm_mirror_grace_enabled=true): mirror hit within
+//     soft TTL serves degraded read-only routing with zero Redis IO.
 //
 // NOTE: PipelineNodeViews currently populates availability/fail_streak/
-// generation/cool_until but NOT latency/SR fields (those land with the
-// scoring-window work, spec Task 14). The cache mirrors whatever the store
-// returns today; when Task 14 extends the store, the cache picks it up
-// automatically via ApplyFromAPI. So this test asserts on availability + the
-// fail-open behavior, not on latency values.
+// generation/cool_until but NOT latency/SR fields beyond what the node hash
+// carries. The cache mirrors whatever the store returns today. So this test
+// asserts on availability + the gear behavior, not on latency values.
 func TestFilterAndScore_LRUMissThenHit(t *testing.T) {
 	mgr, mr, _ := newMirrorManager(t)
 	seedNode(t, mr, 7, "gpt-x", 1, true, 120, 0.95)
@@ -68,14 +93,23 @@ func TestFilterAndScore_LRUMissThenHit(t *testing.T) {
 	require.Len(t, views, 1)
 	assert.True(t, views[0].Available, "first read must come from Redis")
 
-	// Kill Redis. A second call MUST still succeed via the LRU (the whole
-	// point of the mirror). If it errored, the LRU was not consulted — the
-	// Ready gate or the Redis pipeline would have failed.
+	// Target gear: kill Redis — the full-hit call must now be protectively
+	// rejected (P0-1 residual closure; the mirror may not serve state of
+	// unknown freshness when the authoritative store is unreachable).
 	mr.Close()
+	_, err = mgr.FilterAndScoreReady(context.Background(), seeds, true)
+	require.Error(t, err, "default gear: mirror hit + Redis down must protectively reject")
+	assert.Contains(t, err.Error(), "redis unavailable",
+		"rejection must name Redis so the router falls back, not serve stale mirror state")
+
+	// Grace gear: same dead-Redis situation, but llmgw_ursm_mirror_grace_enabled
+	// flips the manager to the availability-over-consistency gear. The fresh
+	// (within soft TTL) mirror entry serves degraded read-only routing.
+	mgr.SetHotConfig(stubHotSource{bools: map[string]bool{HotKeyMirrorGrace: true}})
 	views2, err := mgr.FilterAndScoreReady(context.Background(), seeds, true)
-	require.NoError(t, err, "LRU hit must not require Redis (fail-open)")
+	require.NoError(t, err, "grace gear: fresh mirror hit must serve without Redis IO")
 	require.Len(t, views2, 1)
-	assert.True(t, views2[0].Available, "LRU-cached availability must survive Redis death")
+	assert.True(t, views2[0].Available, "grace gear: mirror-cached availability must survive Redis death")
 }
 
 // TestFilterAndScore_LRUSoftExpireRefetchesRedis verifies a soft-expired LRU
@@ -118,8 +152,12 @@ func TestNodeMirror_StaleGenRejected(t *testing.T) {
 	// ApplyFromAPI. This must be REJECTED — the LRU must keep gen=5/unavailable.
 	mgr.nodeMirror.ApplyFromAPI(apiNodeView(11, "m", 3, true))
 
-	// Kill Redis so only the LRU can answer.
+	// Kill Redis so only the LRU can answer, and enable the grace gear so the
+	// mirror is allowed to serve (会话优化 v4 §14.3: the default gear would
+	// protectively reject a mirror-only answer while Redis is down, which is
+	// pinned separately in TestFilterAndScore_LRUMissThenHit).
 	mr.Close()
+	mgr.SetHotConfig(stubHotSource{bools: map[string]bool{HotKeyMirrorGrace: true}})
 	views, err := mgr.FilterAndScoreReady(context.Background(), seeds, true)
 	require.NoError(t, err)
 	require.Len(t, views, 1)
@@ -185,14 +223,57 @@ func TestFilterAndScoreReady_RejectsMirrorWhenNotReady(t *testing.T) {
 	require.Contains(t, err.Error(), "not ready",
 		"rejection reason must be explicit so router.go can fall back to LegacyStateBackend")
 
-	// And ready=true on the same data still works (mirror is consulted, no Redis IO).
+	// And ready=true on the same data still works in the GRACE gear (the
+	// default gear protectively rejects mirror-only answers while Redis is
+	// down — §14.3, pinned in TestFilterAndScore_LRUMissThenHit). The grace
+	// gear keeps the afb13c9ea contract observable: readiness, not mirror
+	// contents, is what gates the answer.
+	mgr.SetHotConfig(stubHotSource{bools: map[string]bool{HotKeyMirrorGrace: true}})
 	views, err := mgr.FilterAndScoreReady(context.Background(), seeds, true)
-	require.NoError(t, err, "ready=true must consult the LRU when Redis is down")
+	require.NoError(t, err, "ready=true must consult the LRU when Redis is down (grace gear)")
 	require.Len(t, views, 1)
 	assert.True(t, views[0].Available,
-		"mirror-cached availability must survive when ready=true")
+		"mirror-cached availability must survive when ready=true (grace gear)")
 }
 
+func TestPlanReadyObservedDoesNotPopulateMirror(t *testing.T) {
+	mgr, mr, _ := newMirrorManager(t)
+	seedNode(t, mr, 23, "m", 1, true, 50, 0.9)
+	seeds := []CandidateSeed{{ProviderID: 1, CredentialID: 23, RawModel: "m", TenantID: "t"}}
+
+	before := statesource.Snapshot()
+	ordered, err := mgr.PlanReadyObserved(context.Background(), seeds, "t", "m", true)
+	require.NoError(t, err)
+	require.Len(t, ordered, 1)
+	assert.Equal(t, before, statesource.Snapshot(), "observe-only planning must not record routing sources")
+	_, cached := mgr.nodeMirror.PeekForTenant("t", 23, "m")
+	assert.False(t, cached, "observe-only planning must not backfill production mirror state")
+}
+
+func TestNodeMirrorPreservesSamples5mForScoring(t *testing.T) {
+	mgr, mr, _ := newMirrorManager(t)
+	seedNode(t, mr, 41, "m", 1, true, 100, 0.95)
+	seedNode(t, mr, 42, "m", 1, true, 100, 0.60)
+	mr.HSet("ursm:v2:node:t:41:m", "samples_5m", "20")
+	mr.HSet("ursm:v2:node:t:42:m", "samples_5m", "20")
+
+	seeds := []CandidateSeed{
+		{ProviderID: 1, CredentialID: 41, RawModel: "m", TenantID: "t"},
+		{ProviderID: 2, CredentialID: 42, RawModel: "m", TenantID: "t"},
+	}
+
+	fromRedis, err := mgr.FilterAndScore(context.Background(), seeds)
+	require.NoError(t, err)
+	require.Len(t, fromRedis, 2)
+	assert.Equal(t, 41, fromRedis[0].CredentialID, "higher sampled success rate should win Redis scoring")
+
+	fromMirror, _, err := mgr.FilterAndScoreReadyWithSource(context.Background(), seeds, true)
+	require.NoError(t, err)
+	require.Len(t, fromMirror, 2)
+	assert.Equal(t, 41, fromMirror[0].CredentialID, "LRU scoring must preserve the Redis ordering")
+	assert.Equal(t, fromRedis[0].Score, fromMirror[0].Score)
+	assert.Equal(t, fromRedis[1].Score, fromMirror[1].Score)
+}
 func TestManagerCloseIsIdempotent(t *testing.T) {
 	mgr, _, _ := newMirrorManager(t)
 	mgr.Close()
@@ -207,4 +288,39 @@ func apiNodeView(credID int, model string, gen int64, available bool) api.NodeVi
 		Generation:   gen,
 		SrcPriority:  10,
 	}
+}
+
+// TestMirrorServesHealthStatusBridge pins the manager half of UT-UR-12: the
+// "health" hash field written by record_request.lua flows through
+// PipelineNodeViews → cache.NodeView (ApplyFromAPI) → mirrorToAPIView, so a
+// full mirror hit surfaces the same HealthStatus a fresh Redis read would.
+//
+// BOUNDARY: the field is display-only — availability filtering (Available)
+// still decides routing eligibility and must not consult HealthStatus.
+func TestMirrorServesHealthStatusBridge(t *testing.T) {
+	mgr, mr, _ := newMirrorManager(t)
+	key := "ursm:v2:node:t:31:hm"
+	mr.HSet(key, "available", "1")
+	mr.HSet(key, "generation", "4")
+	mr.HSet(key, "source_priority", "10")
+	mr.HSet(key, "health", "quarantined")
+	mr.HSet(key, "lat_ewma_ms", "111")
+	mr.HSet(key, "sr_5m", "0.9")
+
+	seeds := []CandidateSeed{{ProviderID: 1, CredentialID: 31, RawModel: "hm", TenantID: "t"}}
+
+	// Miss → Redis read (HealthStatus read + backfilled into the mirror).
+	views, err := mgr.FilterAndScore(context.Background(), seeds)
+	require.NoError(t, err)
+	require.Len(t, views, 1)
+	assert.Equal(t, "quarantined", views[0].HealthStatus, "Redis read must surface the bridged health field")
+
+	// Full mirror hit (Redis alive, default gear PING passes): the mirror
+	// view carries the same HealthStatus.
+	views2, _, err := mgr.FilterAndScoreReadyWithSource(context.Background(), seeds, true)
+	require.NoError(t, err)
+	require.Len(t, views2, 1)
+	assert.Equal(t, "quarantined", views2[0].HealthStatus, "mirror hit must surface the bridged health field")
+	assert.True(t, views2[0].Available,
+		"routing eligibility stays decided by available=1 — the quarantined DISPLAY state must not filter the node")
 }

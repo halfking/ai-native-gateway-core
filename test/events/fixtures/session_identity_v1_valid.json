@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "tenant_id": "tenant_contract_1",
+  "gw_session_id": "gw_contract_1",
+  "session_id": "session_contract_1",
+  "session_pk": 42,
+  "request_id": "request_contract_1",
+  "attempt_id": "attempt_contract_1",
+  "attempt_no": 1,
+  "semantics": {
+    "gw_session_id": "gateway_logical_session_text",
+    "session_id": "sessions_v2_text",
+    "session_pk": "public_sessions_numeric_surrogate",
+    "request_id": "server_request_identity",
+    "attempt_id": "execution_attempt_identity",
+    "attempt_no": "one_based_attempt_sequence"
+  }
+}

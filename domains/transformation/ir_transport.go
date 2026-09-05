@@ -43,7 +43,7 @@ func NewIRTransport() *IRTransport {
 			logDir = "./logs/raw_data"
 		}
 		maxSizeStr := os.Getenv("LLM_GATEWAY_RAW_LOG_MAX_SIZE")
-		maxSize := int64(200 * 1024 * 1024) // 200MB default
+		maxSize := int64(100 * 1024 * 1024) // 100MB default
 		if maxSizeStr != "" {
 			if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil {
 				maxSize = parsed
@@ -434,32 +434,32 @@ func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.Reques
 	// pendingEvent 跟踪 Anthropic SSE 的 event: 行类型，等待对应的 data: 行
 	pendingEvent := ""
 
-		for {
-			line, err := br.ReadBytes('\n')
+	for {
+		line, err := br.ReadBytes('\n')
 
-			if len(line) > 0 {
-				if writeErr := t.processStreamLine(tc, envelope, line, &pendingEvent); writeErr != nil {
-					// 关键写入错误 → 立即终止
-					if t.cb != nil {
-						t.cb.RecordError()
-					}
-					slog.Error("ir_transport: stream write failed", "request_id", envelope.RequestID, "err", writeErr)
-					return writeErr
+		if len(line) > 0 {
+			if writeErr := t.processStreamLine(tc, envelope, line, &pendingEvent); writeErr != nil {
+				// 关键写入错误 → 立即终止
+				if t.cb != nil {
+					t.cb.RecordError()
 				}
-			}
-
-			if err != nil {
-				if err != io.EOF {
-					// 非 EOF 的读取错误视为流失败
-					if t.cb != nil {
-						t.cb.RecordError()
-					}
-					slog.Error("ir_transport: stream read failed", "request_id", envelope.RequestID, "err", err)
-					return fmt.Errorf("stream read error: %w", err)
-				}
-				break
+				slog.Error("ir_transport: stream write failed", "request_id", envelope.RequestID, "err", writeErr)
+				return writeErr
 			}
 		}
+
+		if err != nil {
+			if err != io.EOF {
+				// 非 EOF 的读取错误视为流失败
+				if t.cb != nil {
+					t.cb.RecordError()
+				}
+				slog.Error("ir_transport: stream read failed", "request_id", envelope.RequestID, "err", err)
+				return fmt.Errorf("stream read error: %w", err)
+			}
+			break
+		}
+	}
 
 	// 发送 [DONE]（仅 OpenAI Chat Completions 客户端需要；Responses API
 	// 通过 response.completed 显式终止，不需要 [DONE] 哨兵）
@@ -518,6 +518,10 @@ func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain
 			"upstream", tc.UpstreamProtocol,
 			"pending_event", *pendingEvent,
 			"err", parseErr)
+		// 审计修复 (2026-08-29)：IR P1-1 - 记录失败的 chunk 到 RawDataLogger
+		if t.rawLogger != nil {
+			t.rawLogger.LogConversionError(env.RequestID, tc.UpstreamProtocol, "upstream_response", "stream_parse", trimmedSpace, parseErr)
+		}
 		// 解析错误：记录到熔断器但继续
 		if t.cb != nil {
 			t.cb.RecordError()
@@ -665,6 +669,10 @@ func parseResponse(protocol string, body []byte) (*ir.InternalResponse, error) {
 		return ir.ParseOpenAIResponse(body)
 	case "anthropic-messages", "anthropic":
 		return ir.ParseAnthropicResponse(body)
+	case "gemini-generate", "gemini":
+		return ir.ParseGeminiResponse(body)
+	case "openai-responses", "responses":
+		return ir.ParseResponsesResponse(body)
 	default:
 		return nil, fmt.Errorf("unsupported upstream protocol: %s", protocol)
 	}
@@ -684,6 +692,8 @@ func serializeResponse(protocol string, resp *ir.InternalResponse, clientModel s
 		return ir.SerializeAnthropicResponse(resp, clientModel)
 	case "openai-responses", "responses":
 		return ir.SerializeResponsesResponse(resp, clientModel)
+	case "gemini-generate", "gemini":
+		return ir.SerializeGeminiResponse(resp, clientModel)
 	default:
 		return nil, fmt.Errorf("unsupported client protocol: %s", protocol)
 	}

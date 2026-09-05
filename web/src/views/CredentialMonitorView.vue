@@ -4,12 +4,19 @@ import { useI18n } from 'vue-i18n'
 import { getCredentialMonitorSummary, getSlidingWindow, promoteCredential, demoteCredential, setConcurrencyAuto, toggleModelAvailability, getModelHistory, getCredentialFpSlotStats, getCredentialDecisions, clearManualDisabled, setManualDisabled, type CredentialMonitorSummary, type CredentialModelStatus, type CallEntry, type ModelHistoryEvent, type ModelToggleAction, type FpSlotStats, type CredentialRoutingDecision, type CredentialMonitorMeta } from '../api'
 import { Chart, registerables } from 'chart.js'
 import FpSlotVisualizer from '../components/FpSlotVisualizer.vue'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
+import CredentialStatusBar from '../components/CredentialStatusBar.vue'
+import { credentialDisplayState } from '../utils/credentialStatus'
+import { isSuperAdmin } from '../store'
 
 Chart.register(...registerables)
 
 const { t } = useI18n()
+
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
+const canManageMonitor = computed(() => isSuperAdmin())
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -197,12 +204,13 @@ const setManualDisabledTargetValue = ref(false)
 const setManualDisabledReason = ref('')
 
 function openClearDisabledDialog() {
+  if (!canManageMonitor.value) return
   clearDisabledDialogOpen.value = true
   clearDisabledReason.value = ''
 }
 
 async function submitClearDisabled() {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   try {
     await clearManualDisabled(selectedCred.value.id, clearDisabledReason.value)
     clearDisabledDialogOpen.value = false
@@ -214,13 +222,14 @@ async function submitClearDisabled() {
 
 // Set manual_disabled (2026-06-23)
 function openSetManualDisabledDialog(targetValue: boolean) {
+  if (!canManageMonitor.value) return
   setManualDisabledTargetValue.value = targetValue
   setManualDisabledReason.value = ''
   setManualDisabledDialogOpen.value = true
 }
 
 async function submitSetManualDisabled() {
-  if (!selectedCred.value || !setManualDisabledReason.value.trim()) return
+  if (!canManageMonitor.value || !selectedCred.value || !setManualDisabledReason.value.trim()) return
   try {
     await setManualDisabled(selectedCred.value.id, setManualDisabledTargetValue.value, setManualDisabledReason.value)
     setManualDisabledDialogOpen.value = false
@@ -329,8 +338,17 @@ async function load() {
   const requestSeq = ++listRequestSeq
   loading.value = true
   try {
+    // 2026-08-31: pass mode: 'core' so the backend takes the fast path
+    // (skip request_logs_with_current_month + recent_success_rate() LATERAL
+    // JOIN). Without mode=core, the default detail path scans every
+    // credential's full request history and hits the 15s context deadline
+    // on env 154 (production data scale), returning HTTP 500 and leaving
+    // the table empty. The list view doesn't render per-(credential,
+    // model) rows; the detail drawer still uses the full mode for its
+    // models[] breakdown (loadSelectedCredential at line ~404).
     const res = await getCredentialMonitorSummary({
       provider_id: providerFilter.value || undefined,
+      mode: 'core',
     })
     if (requestSeq !== listRequestSeq) return
     credentials.value = res.credentials
@@ -525,6 +543,7 @@ function manualControlMeta(state: ManualControlState): ManualControlMeta {
 }
 
 function onClickManualControl() {
+  if (!canManageMonitor.value) return
   const m = selectedModelObj.value
   if (!m) return
   const state = manualControlState.value
@@ -617,6 +636,7 @@ function toggleAutoRefresh() {
 }
 
 function openBatchDialog(action: 'promote' | 'demote') {
+  if (!canManageMonitor.value) return
   if (selectedIds.value.size === 0) {
     alert(t('credentialMonitor.error.selectFirst'))
     return
@@ -628,6 +648,7 @@ function openBatchDialog(action: 'promote' | 'demote') {
 }
 
 async function submitBatch() {
+  if (!canManageMonitor.value) return
   const ids = Array.from(selectedIds.value)
   const promises = ids.map(id =>
     batchAction.value === 'promote'
@@ -645,13 +666,14 @@ async function submitBatch() {
 }
 
 function openDemoteDialog() {
+  if (!canManageMonitor.value) return
   demoteDialogOpen.value = true
   demoteReason.value = ''
   demoteHours.value = 2
 }
 
 async function submitDemote() {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   try {
     await demoteCredential(selectedCred.value.id, demoteReason.value, demoteHours.value)
     demoteDialogOpen.value = false
@@ -663,12 +685,13 @@ async function submitDemote() {
 }
 
 function openPromoteDialog() {
+  if (!canManageMonitor.value) return
   promoteDialogOpen.value = true
   promoteReason.value = ''
 }
 
 async function submitPromote() {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   try {
     await promoteCredential(selectedCred.value.id, promoteReason.value)
     promoteDialogOpen.value = false
@@ -680,13 +703,14 @@ async function submitPromote() {
 }
 
 function openConcurrencyDialog() {
+  if (!canManageMonitor.value) return
   concurrencyDialogOpen.value = true
   concurrencyValue.value = selectedCred.value?.concurrency_limit_auto || selectedCred.value?.effective_concurrency || 5
   concurrencyReason.value = ''
 }
 
 async function submitConcurrency() {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   try {
     await setConcurrencyAuto(selectedCred.value.id, concurrencyValue.value, concurrencyReason.value)
     concurrencyDialogOpen.value = false
@@ -698,7 +722,7 @@ async function submitConcurrency() {
 
 // ── 2026-06-23: per-model toggle + history helpers ────────────────────────
 function openToggleDialog(m: CredentialModelStatus, action: ModelToggleAction) {
-  if (!selectedCred.value) return
+  if (!canManageMonitor.value || !selectedCred.value) return
   toggleTarget.value = {
     credId: selectedCred.value.id,
     rawModel: m.raw_model_name,
@@ -710,7 +734,7 @@ function openToggleDialog(m: CredentialModelStatus, action: ModelToggleAction) {
 }
 
 async function submitToggle() {
-  if (!toggleTarget.value || !toggleReason.value.trim()) return
+  if (!canManageMonitor.value || !toggleTarget.value || !toggleReason.value.trim()) return
   const t = toggleTarget.value
   const key = `${t.credId}|${t.rawModel}`
   toggleBusy.value[key] = true
@@ -776,7 +800,14 @@ function formatCacheMeta(meta: CredentialMonitorMeta | null): string {
   return `${meta.cache_hit ? '缓存命中' : '实时生成'} · 服务端 ${meta.server_duration_ms}ms · 过期 ${formatTs(meta.expires_at)}`
 }
 
-// ── Badge / color helpers ──────────────────────────────────────────────
+function effectiveCredentialState(c: CredentialMonitorSummary) {
+  return c.effective_state || credentialDisplayState(c)
+}
+
+function effectiveCredentialReason(c: CredentialMonitorSummary) {
+  return c.effective_reason || c.state_reason_detail || c.state_reason_code || undefined
+}
+
 function statusBadge(state: string) {
   if (state === 'ready') return 'badge-green'
   if (['degraded', 'cooling', 'rate_limited'].includes(state)) return 'badge-amber'
@@ -820,7 +851,10 @@ function p95Class(ms: number | null | undefined) {
   return 'p95-bad'
 }
 
-onMounted(() => load())
+onMounted(() => {
+  void loadCredentialLabels()
+  load()
+})
 
 onUnmounted(() => {
   stopAutoRefresh()
@@ -880,10 +914,10 @@ onUnmounted(() => {
           <button class="btn btn-sm btn-ghost" :class="quickFilter === 'low-rate' ? 'qf-active qf-warn' : ''" @click="quickFilter = 'low-rate'">成功率&lt;50%</button>
         </div>
         <span class="spacer"></span>
-        <button class="btn btn-sm btn-success" :disabled="selectedIds.size === 0" @click="openBatchDialog('promote')">
+        <button class="btn btn-sm btn-success" :disabled="!canManageMonitor || selectedIds.size === 0" @click="openBatchDialog('promote')">
           批量恢复 ({{ selectedIds.size }})
         </button>
-        <button class="btn btn-sm btn-danger" :disabled="selectedIds.size === 0" @click="openBatchDialog('demote')">
+        <button class="btn btn-sm btn-danger" :disabled="!canManageMonitor || selectedIds.size === 0" @click="openBatchDialog('demote')">
           批量降级 ({{ selectedIds.size }})
         </button>
       </div>
@@ -942,7 +976,11 @@ onUnmounted(() => {
             </td>
             <td>{{ c.provider_name }}</td>
             <td>
-              <span class="badge" :class="statusBadge(c.availability_state)">{{ c.availability_state }}</span>
+              <CredentialStatusBar
+                :credential="c"
+                :labels="{ active: 'ready', cooling: 'cooling', degraded: 'degraded', rate_limited: 'rate_limited', unreachable: 'unreachable', auth_failed: 'auth_failed', suspended: 'suspended', quota_exhausted: 'quota_exhausted', disabled: 'disabled', deleted: 'deleted', unknown: 'unknown' }"
+                :reason="effectiveCredentialReason(c)"
+              />
               <div v-if="c.state_reason_code" class="cell-sub">{{ c.state_reason_code }}</div>
             </td>
             <td>
@@ -976,7 +1014,7 @@ onUnmounted(() => {
       <div class="drawer-panel card drawer-panel-wide" @click.stop>
         <div class="drawer-header">
           <div>
-            <h3 style="margin:0">{{ selectedCred.label || `凭据 #${selectedCred.id}` }}</h3>
+            <h3 style="margin:0">{{ credentialDisplayName(selectedCred.id, selectedCred.label || '凭据') }}</h3>
             <div class="drawer-sub">{{ selectedCred.provider_name }}</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
@@ -985,12 +1023,14 @@ onUnmounted(() => {
             <button
               v-if="selectedCred.manual_disabled"
               class="btn btn-xs btn-warning"
+              :disabled="!canManageMonitor"
               title="解除整凭据禁用"
               @click="openClearDisabledDialog"
             >🔓 解除禁用</button>
             <button
               v-else
               class="btn btn-xs btn-danger"
+              :disabled="!canManageMonitor"
               title="手动禁用此凭据 (路由时将不被选中)"
               @click="openSetManualDisabledDialog(true)"
             >⛔ 手动禁用</button>
@@ -1043,6 +1083,10 @@ onUnmounted(() => {
             <div class="drawer-section">
               <div class="drawer-section-title">状态概览</div>
               <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px">
+                <div>
+                  <label class="field-label">有效状态</label>
+                  <CredentialStatusBar :credential="selectedCred" :reason="effectiveCredentialReason(selectedCred)" />
+                </div>
                 <div>
                   <label class="field-label">可用性</label>
                   <span class="badge" :class="statusBadge(selectedCred.availability_state)">{{ selectedCred.availability_state }}</span>
@@ -1194,6 +1238,9 @@ onUnmounted(() => {
                           @click="selectModel(m.raw_model_name)">
                         <td>
                           <code class="mono-sm">{{ m.raw_model_name }}</code>
+                          <div v-if="m.standardized_name || m.canonical_name" class="cell-muted" style="font-size:11px">
+                            标准: {{ m.canonical_name || m.standardized_name }}
+                          </div>
                           <span v-if="!m.offer_available || !m.binding_available" class="badge badge-gray" style="margin-left:4px">unavail</span>
                         </td>
                         <td>
@@ -1222,14 +1269,14 @@ onUnmounted(() => {
                           <button
                             v-if="m.binding_available && m.binding_unavailable_reason !== 'manual_offline'"
                             class="btn btn-xs btn-ghost"
-                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                            :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
                             :title="`下线后自动探测将不再触碰该模型 (原因 = manual_offline)，直到你重新上线`"
                             @click="openToggleDialog(m, 'offline')"
                           >🔴 下线</button>
                           <button
                             v-else-if="m.binding_unavailable_reason === 'manual_offline'"
                             class="btn btn-xs btn-ghost"
-                            :disabled="toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
+                            :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + m.raw_model_name]"
                             title="恢复后下一轮自动探测（~10 min）会重新评估"
                             @click="openToggleDialog(m, 'online')"
                           >🟢 上线</button>
@@ -1288,7 +1335,7 @@ onUnmounted(() => {
                             color: manualControlMeta(manualControlState).color,
                           }"
                           :title="manualControlMeta(manualControlState).tooltip"
-                          :disabled="toggleBusy[selectedCred.id + '|' + selectedModel]"
+                          :disabled="!canManageMonitor || toggleBusy[selectedCred.id + '|' + selectedModel]"
                           @click="onClickManualControl"
                         >
                           <span class="status-icon-emoji">{{ manualControlMeta(manualControlState).emoji }}</span>
@@ -1551,7 +1598,7 @@ onUnmounted(() => {
           确认{{ toggleTarget?.action === 'offline' ? '下线' : '上线' }}
         </h3>
         <div class="cell-sub" style="margin-bottom:12px">
-          <code class="mono-sm">{{ toggleTarget?.rawModel }}</code> · 凭据 #{{ toggleTarget?.credId }}
+          <code class="mono-sm">{{ toggleTarget?.rawModel }}</code> · 凭据 {{ selectedCred?.label || `#${toggleTarget?.credId}` }}
         </div>
         <div v-if="toggleTarget?.action === 'offline'" class="cell-sub" style="margin-bottom:12px">
           下线后自动探测将不再触碰该模型（原因 = <code>manual_offline</code>），需你手动恢复。
@@ -1780,11 +1827,11 @@ onUnmounted(() => {
   color: var(--muted);
   margin-top: 2px;
 }
-.summary-good { border-color: rgba(63, 185, 80, 0.4); }
+.summary-good { border-color: var(--success-bd); }
 .summary-good .summary-value { color: var(--success); }
-.summary-warn { border-color: rgba(210, 153, 34, 0.4); }
+.summary-warn { border-color: var(--warning-bd); }
 .summary-warn .summary-value { color: var(--warning); }
-.summary-bad { border-color: rgba(248, 81, 73, 0.4); }
+.summary-bad { border-color: var(--danger-bd); }
 .summary-bad .summary-value { color: var(--danger); }
 
 .drawer-body {
@@ -1814,7 +1861,7 @@ onUnmounted(() => {
 
 .skeleton {
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(139, 148, 158, 0.16) 25%, rgba(139, 148, 158, 0.28) 50%, rgba(139, 148, 158, 0.16) 75%);
+  background: linear-gradient(90deg, var(--neutral-bg) 25%, rgba(139, 148, 158, 0.28) 50%, var(--neutral-bg) 75%);
   background-size: 200% 100%;
   animation: detail-skeleton-shimmer 1.2s ease-in-out infinite;
 }
@@ -1857,7 +1904,7 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--card) 92%, var(--accent) 8%);
   color: var(--muted);
   font-size: 11px;
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 6px 18px var(--overlay-faint);
 }
 
 @keyframes detail-skeleton-shimmer {
@@ -1915,7 +1962,7 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .clickable-row:hover {
-  background: rgba(255, 255, 255, 0.04) !important;
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent) !important;
 }
 
 /* Model table in drawer */
@@ -1940,7 +1987,7 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .model-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .model-row-selected {
   background: color-mix(in srgb, var(--accent) 12%, transparent) !important;
@@ -1970,11 +2017,11 @@ onUnmounted(() => {
   letter-spacing: 0.02em;
 }
 .source-live {
-  background: rgba(63, 185, 80, 0.15);
+  background: var(--success-bg);
   color: var(--success);
 }
 .source-declared {
-  background: rgba(139, 148, 158, 0.15);
+  background: var(--neutral-bg);
   color: var(--muted);
 }
 
@@ -2042,7 +2089,7 @@ onUnmounted(() => {
   font-weight: 600;
   vertical-align: middle;
 }
-.src-redis { background: rgba(63, 185, 80, 0.15); color: var(--success); }
+.src-redis { background: var(--success-bg); color: var(--success); }
 .src-rl { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
 
 .cell-sub { font-size: 11px; color: var(--muted); }
@@ -2139,7 +2186,7 @@ onUnmounted(() => {
   background: rgba(239, 68, 68, 0.03);
 }
 .decision-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.05) !important;
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent) !important;
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -2214,7 +2261,7 @@ onUnmounted(() => {
   line-height: 1.4;
 }
 .layout-btn:last-child { border-right: 0; }
-.layout-btn:hover { background: rgba(255, 255, 255, 0.04); color: var(--text); }
+.layout-btn:hover { background: color-mix(in srgb, var(--kx-text) 4%, transparent); color: var(--text); }
 .layout-btn.active {
   background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent-h);

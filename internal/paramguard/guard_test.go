@@ -73,7 +73,9 @@ func TestApply_AnthropicBudgetOK_NoChange(t *testing.T) {
 	}
 	// If it was modified, budget must still be < max_tokens
 	m := mustUnmarshal(out)
-	var th struct{ BudgetTokens int `json:"budget_tokens"` }
+	var th struct {
+		BudgetTokens int `json:"budget_tokens"`
+	}
 	if err := json.Unmarshal(m["thinking"], &th); err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +111,56 @@ func TestApply_KeepTemperatureWhenThinkingDisabled(t *testing.T) {
 	m := mustUnmarshal(out)
 	if _, ok := m["temperature"]; !ok {
 		t.Error("temperature should be kept when thinking is disabled")
+	}
+}
+
+func TestApply_AnthropicThinkingRemovesSamplingAndPreservesExtensions(t *testing.T) {
+	body := mustMarshal(map[string]any{
+		"max_tokens":  4096,
+		"temperature": 2.0,
+		"top_p":       0.9,
+		"thinking": map[string]any{
+			"type":          "enabled",
+			"budget_tokens": 4096,
+			"vendor_option": "keep-me",
+		},
+	})
+	out := Apply(body, paramreg.DialectAnthropic)
+	m := mustUnmarshal(out)
+	if _, ok := m["temperature"]; ok {
+		t.Fatal("temperature must be removed for active thinking")
+	}
+	if _, ok := m["top_p"]; ok {
+		t.Fatal("top_p must be removed for active thinking")
+	}
+	var thinking map[string]json.RawMessage
+	if err := json.Unmarshal(m["thinking"], &thinking); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := thinking["vendor_option"]; !ok {
+		t.Fatal("budget clamp must preserve unknown thinking fields")
+	}
+	var budget int
+	requireRaw := thinking["budget_tokens"]
+	if err := json.Unmarshal(requireRaw, &budget); err != nil {
+		t.Fatal(err)
+	}
+	if budget != 4095 {
+		t.Fatalf("budget = %d, want 4095", budget)
+	}
+}
+
+func TestApply_AnthropicDisabledThinkingIsNotRemoved(t *testing.T) {
+	body := mustMarshal(map[string]any{
+		"max_tokens": 1024,
+		"thinking": map[string]any{
+			"type":          "disabled",
+			"budget_tokens": 4096,
+		},
+	})
+	out := Apply(body, paramreg.DialectAnthropic)
+	if string(out) != string(body) {
+		t.Fatalf("disabled thinking must not be rewritten: got %s want %s", out, body)
 	}
 }
 
@@ -179,6 +231,118 @@ func TestApply_GrokNoThinking_NoStrip(t *testing.T) {
 	m := mustUnmarshal(out)
 	if _, ok := m["stop"]; !ok {
 		t.Error("stop should not be removed for non-Grok dialect")
+	}
+}
+
+func TestApply_GrokOnlyStripsReasoningModelsAndAliases(t *testing.T) {
+	reasoning := mustMarshal(map[string]any{
+		"model":             "grok-4-0709",
+		"stop_sequences":    []string{"END"},
+		"presence_penalty":  0.5,
+		"frequency_penalty": 0.3,
+	})
+	m := mustUnmarshal(Apply(reasoning, paramreg.DialectGrok))
+	for _, key := range []string{"stop_sequences", "presence_penalty", "frequency_penalty"} {
+		if _, ok := m[key]; ok {
+			t.Errorf("reasoning Grok key %q must be removed", key)
+		}
+	}
+
+	nonReasoning := mustMarshal(map[string]any{"model": "grok-beta", "stop": []string{"END"}})
+	m = mustUnmarshal(Apply(nonReasoning, paramreg.DialectGrok))
+	if _, ok := m["stop"]; !ok {
+		t.Fatal("non-reasoning Grok stop must be preserved")
+	}
+}
+
+func TestApply_VendorSpecificInvariants(t *testing.T) {
+	tests := []struct {
+		name    string
+		dialect paramreg.Dialect
+		body    map[string]any
+		check   func(*testing.T, map[string]json.RawMessage)
+	}{
+		{
+			name:    "o series renames max tokens",
+			dialect: paramreg.DialectOpenAIChat,
+			body:    map[string]any{"model": "o3-mini", "max_tokens": 100},
+			check: func(t *testing.T, m map[string]json.RawMessage) {
+				if _, ok := m["max_tokens"]; ok {
+					t.Fatal("max_tokens must be removed")
+				}
+				if got := string(m["max_completion_tokens"]); got != "100" {
+					t.Fatalf("max_completion_tokens=%s", got)
+				}
+			},
+		},
+		{
+			name:    "explicit o series value wins",
+			dialect: paramreg.DialectOpenAIChat,
+			body:    map[string]any{"model": "o4", "max_tokens": 100, "max_completion_tokens": 200},
+			check: func(t *testing.T, m map[string]json.RawMessage) {
+				if _, ok := m["max_tokens"]; ok {
+					t.Fatal("legacy max_tokens must be removed")
+				}
+				if got := string(m["max_completion_tokens"]); got != "200" {
+					t.Fatalf("explicit value changed: %s", got)
+				}
+			},
+		},
+		{
+			name:    "near miss model is preserved",
+			dialect: paramreg.DialectOpenAIChat,
+			body:    map[string]any{"model": "gpt-4o1", "max_tokens": 100},
+			check: func(t *testing.T, m map[string]json.RawMessage) {
+				if _, ok := m["max_tokens"]; !ok {
+					t.Fatal("near miss must retain max_tokens")
+				}
+			},
+		},
+		{
+			name:    "glm tool choice",
+			dialect: paramreg.DialectGLM,
+			body:    map[string]any{"tool_choice": map[string]any{"type": "function"}},
+			check: func(t *testing.T, m map[string]json.RawMessage) {
+				if got := string(m["tool_choice"]); got != `"auto"` {
+					t.Fatalf("tool_choice=%s", got)
+				}
+			},
+		},
+		{
+			name:    "minimax n",
+			dialect: paramreg.DialectMiniMax,
+			body:    map[string]any{"n": 3},
+			check: func(t *testing.T, m map[string]json.RawMessage) {
+				if got := string(m["n"]); got != "1" {
+					t.Fatalf("n=%s", got)
+				}
+			},
+		},
+		{
+			name:    "known effort clamps",
+			dialect: paramreg.DialectGrok,
+			body:    map[string]any{"model": "grok-4", "reasoning_effort": "max"},
+			check: func(t *testing.T, m map[string]json.RawMessage) {
+				if got := string(m["reasoning_effort"]); got != `"high"` {
+					t.Fatalf("reasoning_effort=%s", got)
+				}
+			},
+		},
+		{
+			name:    "unknown effort remains forward compatible",
+			dialect: paramreg.DialectOpenAIChat,
+			body:    map[string]any{"model": "future-model", "reasoning_effort": "ultra"},
+			check: func(t *testing.T, m map[string]json.RawMessage) {
+				if got := string(m["reasoning_effort"]); got != `"ultra"` {
+					t.Fatalf("reasoning_effort=%s", got)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check(t, mustUnmarshal(Apply(mustMarshal(tt.body), tt.dialect)))
+		})
 	}
 }
 

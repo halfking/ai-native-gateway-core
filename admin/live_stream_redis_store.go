@@ -3,13 +3,17 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // LiveStreamRedisStore backs the realtime request stream with Redis,
@@ -47,12 +51,17 @@ type LiveStreamStats struct {
 }
 
 type LiveStreamTile struct {
-	RequestID        string   `json:"request_id"`
-	Timestamp        string   `json:"timestamp"`
-	Model            string   `json:"model"`
-	Vendor           string   `json:"vendor"`
-	Provider         string   `json:"provider"`
-	Status           string   `json:"status"`
+	RequestID string `json:"request_id"`
+	Timestamp string `json:"timestamp"`
+	Model     string `json:"model"`
+	Vendor    string `json:"vendor"`
+	Provider  string `json:"provider"`
+	Status    string `json:"status"`
+	// 2026-08-26: 凭据维度泳道（替换原厂维度）。credential_id 是稳定身份，
+	// credential_label 是显示名（凭据标签，无标签时为空串，回退
+	// "凭据 #ID" 由 liveStreamCredentialKey / 前端负责）。
+	CredentialID     int      `json:"credential_id,omitempty"`
+	CredentialLabel  string   `json:"credential_label,omitempty"`
 	ErrorKind        *string  `json:"error_kind,omitempty"`
 	LatencyMs        *int     `json:"latency_ms,omitempty"`
 	CostUSD          *float64 `json:"cost_usd,omitempty"`
@@ -61,6 +70,10 @@ type LiveStreamTile struct {
 	IsProbe          bool     `json:"is_probe,omitempty"`
 	ProbeOrigin      string   `json:"probe_origin,omitempty"`
 	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
+	// StageCategory is the coarse UI phase for in-flight tiles:
+	// routing = received / routing; llm = already sent upstream, waiting.
+	// Empty for terminal / idle tiles.
+	StageCategory string `json:"stage_category,omitempty"`
 }
 
 // LiveStreamTileSlim is a lightweight version of LiveStreamTile for Redis queue storage.
@@ -131,7 +144,6 @@ type LiveStreamLegendItem struct {
 
 type LiveStreamSnapshot struct {
 	Summary          LiveStreamStats                   `json:"summary"`
-	DetailDimensions map[string][]LiveStreamLane       `json:"detail_dimensions"`
 	Dimensions       map[string][]LiveStreamLane       `json:"dimensions"`
 	DimensionLegends map[string][]LiveStreamLegendItem `json:"dimension_legends"`
 	StatusLegends    []LiveStreamLegendItem            `json:"status_legends"`
@@ -174,6 +186,10 @@ type liveRequestRedisPayload struct {
 	// 经 pub/sub 重建请求时不丢 child_request 所需的 parent/type 元数据。
 	ParentRequestID string `json:"parent_request_id,omitempty"`
 	RequestType     string `json:"request_type,omitempty"`
+	// 2026-08-26: 凭据维度泳道 —— 凭据身份必须随 Redis payload 持久化，
+	// 否则 replay/snapshot 重建后凭据泳道退化为 "凭据 #ID" 或整条消失。
+	CredentialID    int    `json:"credential_id,omitempty"`
+	CredentialLabel string `json:"credential_label,omitempty"`
 }
 
 // 2026-07-23: 精细化分层 TTL
@@ -200,9 +216,13 @@ const (
 	LiveStreamMainQueueRetention = 2 * time.Hour
 )
 
-// LiveStreamLaneVisibleLimit is how many tiles each swim lane shows. Entries
-// scrolled past this window are trimmed from per-dimension Redis queues.
-const LiveStreamLaneVisibleLimit = 20
+// LiveStreamLaneVisibleLimit is how many tiles each swim lane keeps in its
+// per-dimension Redis queue. 2026-08-26: 20 → 100。显示层（前端
+// SwimLane.maxVisibleTiles）已按泳道轨道宽度动态裁剪显示数量（小模式 9px
+// 竖条 / 大模式 80px 卡片），此常量只作为"数据供给窗口"上限 —— 必须 ≥
+// 最宽屏在 small 模式下的可显示数，否则显示层"取不到足够 tile"。前端合并
+// 侧有同口径常量 LANE_TILE_CAP（web/src/composables/liveStreamStore.ts）。
+const LiveStreamLaneVisibleLimit = 100
 
 // LiveStreamIdleThreshold is how long a lane must be silent before an idle
 // marker is written into the stream.
@@ -296,8 +316,19 @@ func NewLiveStreamRedisStore(rdb *redis.Client) *LiveStreamRedisStore {
 
 // Record persists one LiveRequest to Redis queues. Returns nil on
 // success or when Redis is unavailable (graceful degradation).
-func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) error {
+// Record persists a request to Redis and publishes a notify. instanceID, when
+// non-empty, is stamped onto the notify so the originating hub can skip its own
+// echo (the local fan-out in Publish already delivered the request). Callers
+// that are not a live-stream hub pass "".
+func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest, instanceID string) error {
 	if s == nil || s.rdb == nil {
+		slog.Warn("live stream record: store or Redis client is nil, skipping write",
+			"store_nil", s == nil, "rdb_nil", s != nil && s.rdb == nil,
+			"request_id", req.RequestID)
+		// 2026-08-31 (P2-2 observability): surface silent drops to Prometheus
+		// so operators can distinguish "Redis is down" from "Redis is fine
+		// and nothing is happening" on the live stream hub.
+		metrics.Global().RecordLiveStreamRecordDropped("store_unconfigured")
 		return nil
 	}
 	if req.RequestID == "" {
@@ -337,17 +368,24 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	// still lives in request_logs and arrives via the next snapshot refresh.
 	release, locked := s.acquireLiveStreamRecordLock(ctx, req.RequestID)
 	if !locked {
+		slog.Warn("live stream record: lock not acquired, dropping request to preserve dedup",
+			"request_id", req.RequestID, "tenant_id", tenantID)
+		// 2026-08-31 (P2-2 observability): the per-request_id SETNX lock
+		// failed (Redis down OR contention exhausted). Without this counter,
+		// the operator cannot tell that tiles are being lost while the
+		// canonical record still lands in request_logs.
+		metrics.Global().RecordLiveStreamRecordDropped("redis_unavailable")
 		return nil
 	}
 	defer release()
 
-	return s.recordLocked(ctx, req, tenantID)
+	return s.recordLocked(ctx, req, tenantID, instanceID)
 }
 
 // recordLocked is the body of Record(), executed while holding the
 // per-request_id lock when locking succeeded. It performs the read-modify-write
 // against Redis.
-func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest, tenantID string) error {
+func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest, tenantID, instanceID string) error {
 	var oldData string
 	var oldReq LiveRequest
 	hasOldReq := false
@@ -382,6 +420,7 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 	score := float64(ts.UnixMilli())
 
 	pipe := s.rdb.Pipeline()
+	trimKeys := make([]string, 0, 16)
 	if hasOldReq {
 		removeLiveRequestFromQueues(ctx, pipe, normalizeLiveStreamTenant(oldReq.TenantID), oldReq)
 	}
@@ -401,6 +440,10 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 	if req.ModelCategory != "" {
 		pipe.Set(ctx, liveStreamActivityKey("", "vendor", req.ModelCategory), activityUnix, liveStreamActivityTTL)
 		pipe.Set(ctx, liveStreamActivityKey(tenantID, "vendor", req.ModelCategory), activityUnix, liveStreamActivityTTL)
+	}
+	if credKey := liveStreamCredentialKey(req); credKey != "" {
+		pipe.Set(ctx, liveStreamActivityKey("", "credential", credKey), activityUnix, liveStreamActivityTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "credential", credKey), activityUnix, liveStreamActivityTTL)
 	}
 	if req.ProviderCode != "" {
 		pipe.Set(ctx, liveStreamActivityKey("", "provider", req.ProviderCode), activityUnix, liveStreamActivityTTL)
@@ -463,7 +506,7 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 		}
 		// 2026-07-23: 维度队列 24h TTL（泳道存在不超过 1 天）
 		pipe.Expire(ctx, key, liveStreamLaneQueueTTL)
-		trimLiveStreamQueue(pipe, ctx, key, liveStreamQueueKeepLimit(key))
+		trimKeys = append(trimKeys, key)
 	}
 	// 2026-07-23: 请求详情 4h TTL（一般请求不会跨 4 小时）
 	pipe.Set(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID), data, liveStreamTTL)
@@ -483,7 +526,10 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 			pipe.ZRem(ctx, tenantLiveStreamKey(tenantID, "main"), idleMarkerRequestID(tenantID, dim, val))
 		}
 	}
-	addIdleRemoval("vendor", req.ModelCategory)
+	if req.ModelCategory != "" {
+		addIdleRemoval("vendor", req.ModelCategory)
+	}
+	addIdleRemoval("credential", liveStreamCredentialKey(req))
 	addIdleRemoval("provider", req.ProviderCode)
 	addIdleRemoval("model", modelKey)
 
@@ -491,7 +537,12 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 	if err != nil {
 		return fmt.Errorf("redis pipeline exec failed: request_id=%s tenant_id=%s model=%s provider=%s category=%s queue_count=%d: %w", req.RequestID, tenantID, req.Model, req.ProviderCode, req.ModelCategory, len(queueKeys), err)
 	}
-	if err := s.NotifyChange(ctx, tenantID, req.RequestID); err != nil {
+	for _, key := range trimKeys {
+		if trimErr := selectiveTrimLiveStreamQueue(ctx, s.rdb, key, liveStreamQueueKeepLimit(key)); trimErr != nil {
+			slog.Debug("live stream selective trim failed", "key", key, "err", trimErr.Error())
+		}
+	}
+	if err := s.NotifyChange(ctx, tenantID, req.RequestID, instanceID); err != nil {
 		slog.Debug("live stream redis notify failed", "request_id", req.RequestID, "tenant_id", tenantID, "err", err.Error())
 	}
 	return nil
@@ -508,7 +559,12 @@ const liveStreamRecordLockTTL = 5 * time.Second
 // exhaustion — that would reintroduce the duplicate-member race this lock
 // exists to prevent. Only ctx cancellation aborts the wait.
 const (
-	liveStreamRecordLockRetryAttempts = 64
+	// 2026-08-26: 64 → 200（上限 ~8s）。实测 onair 场景下同一个 request 的
+	// in_progress 与 terminal update 相邻到达，锁竞争耗尽导致整条 terminal
+	// 更新被静默丢弃（tile 永久停在 in_progress —— 用户反馈 "请求已完成但
+	// 显示进行中" 的根因之一）。把重试窗口拉长到远大于 recordLocked 的典型
+	// pipeline 耗时（数十 ms），耗尽只应发生在锁持有者崩溃/僵死的极端场景。
+	liveStreamRecordLockRetryAttempts = 200
 	liveStreamRecordLockRetrySleep    = 10 * time.Millisecond
 )
 
@@ -588,20 +644,24 @@ func requestIDHash(s string) int64 {
 }
 
 type liveStreamNotifyPayload struct {
-	RequestID string `json:"request_id"`
-	TenantID  string `json:"tenant_id"`
+	RequestID  string `json:"request_id"`
+	TenantID   string `json:"tenant_id"`
+	InstanceID string `json:"instance_id,omitempty"`
 }
 
 // NotifyChange publishes a lightweight event so SSE hubs (local or
 // remote) can react to Redis writes without coupling to the request
-// handler goroutine.
-func (s *LiveStreamRedisStore) NotifyChange(ctx context.Context, tenantID, requestID string) error {
+// handler goroutine. instanceID, when non-empty, lets the originating hub
+// skip its own notify (it already fanned the request out locally) and thus
+// avoid duplicating child_request frames.
+func (s *LiveStreamRedisStore) NotifyChange(ctx context.Context, tenantID, requestID, instanceID string) error {
 	if s == nil || s.rdb == nil || requestID == "" {
 		return nil
 	}
 	payload, err := json.Marshal(liveStreamNotifyPayload{
-		RequestID: requestID,
-		TenantID:  normalizeLiveStreamTenant(tenantID),
+		RequestID:  requestID,
+		TenantID:   normalizeLiveStreamTenant(tenantID),
+		InstanceID: instanceID,
 	})
 	if err != nil {
 		return err
@@ -611,9 +671,15 @@ func (s *LiveStreamRedisStore) NotifyChange(ctx context.Context, tenantID, reque
 
 // LoadRequest reads the latest request detail from Redis. Used by the
 // pub/sub subscriber to rebuild the LiveRequest before SSE fan-out.
+//
+// Sentinel errors:
+//   - ErrLiveStreamStoreUnavailable — store not configured or nil receiver
+//   - ErrLiveStreamRequestNotFound  — request_id absent in Redis (wrapped with the id)
+//
+// Callers should use errors.Is to detect, never string-match on the message.
 func (s *LiveStreamRedisStore) LoadRequest(ctx context.Context, tenantID, requestID string) (LiveRequest, error) {
 	if s == nil || s.rdb == nil || requestID == "" {
-		return LiveRequest{}, fmt.Errorf("live stream store unavailable")
+		return LiveRequest{}, ErrLiveStreamStoreUnavailable
 	}
 	tenantID = normalizeLiveStreamTenant(tenantID)
 	data, err := s.rdb.Get(ctx, liveStreamGlobalRequestDetailKey(requestID)).Result()
@@ -621,13 +687,29 @@ func (s *LiveStreamRedisStore) LoadRequest(ctx context.Context, tenantID, reques
 		data, err = s.rdb.Get(ctx, liveStreamRequestDetailKey(tenantID, requestID)).Result()
 	}
 	if err == redis.Nil {
-		return LiveRequest{}, fmt.Errorf("request not found: %s", requestID)
+		return LiveRequest{}, fmt.Errorf("%w: %s", ErrLiveStreamRequestNotFound, requestID)
 	}
 	if err != nil {
 		return LiveRequest{}, err
 	}
 	return unmarshalLiveRequestRedisPayload(data)
 }
+
+// Sentinel errors returned by LoadRequest. Callers MUST use errors.Is
+// instead of string-matching on Error() output; the readable ": <id>"
+// suffix on ErrLiveStreamRequestNotFound is preserved for logs only.
+var (
+	// ErrLiveStreamStoreUnavailable indicates the live store is not configured
+	// or the caller passed a nil receiver / empty request id. Treated as a
+	// cache miss by adapters so they can fall through to DB-backed lookups.
+	ErrLiveStreamStoreUnavailable = errors.New("live stream store unavailable")
+
+	// ErrLiveStreamRequestNotFound indicates the request id was absent in
+	// Redis at lookup time (TTL expired, never written, or wrong tenant scope).
+	// Returned wrapped with the request id so slog can include it; callers
+	// detect via errors.Is(err, ErrLiveStreamRequestNotFound).
+	ErrLiveStreamRequestNotFound = errors.New("request not found")
+)
 
 func removeLiveRequestFromQueues(ctx context.Context, pipe redis.Pipeliner, tenantID string, req LiveRequest) {
 	// 2026-07-26: Remove from both main queues (by request_id) and dimension
@@ -654,14 +736,8 @@ func liveStreamQueueKeepLimit(key string) int {
 	return LiveStreamLaneVisibleLimit
 }
 
-// trimLiveStreamQueue removes the oldest members so at most keep entries
-// remain (highest scores / newest requests). Called after every ZADD.
-func trimLiveStreamQueue(pipe redis.Pipeliner, ctx context.Context, key string, keep int) {
-	if keep <= 0 {
-		return
-	}
-	pipe.ZRemRangeByRank(ctx, key, 0, int64(-keep-1))
-}
+// selectiveTrimLiveStreamQueue is invoked post-exec after queue writes; see
+// live_stream_queue_trim.go.
 
 func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 	tenantID = normalizeLiveStreamTenant(tenantID)
@@ -679,12 +755,35 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 			liveStreamDimPrefix+"vendor:"+vendor,
 			tenantLiveStreamKey(tenantID, "dim:vendor:"+vendor),
 		)
+	} else {
+		slog.Debug("live stream: vendor dimension skipped",
+			"request_id", req.RequestID, "tenant_id", tenantID,
+			"vendor", vendor, "model_category", req.ModelCategory,
+			"provider_code", req.ProviderCode, "model", req.Model)
+	}
+	// 2026-08-26: 凭据(credential)维度作为新增泳道（与原厂维度并行）。泳道
+	// key = 凭据标签(label 优先，否则 "凭据 #ID")，见 liveStreamCredentialKey。
+	// 无凭据身份的请求（如鉴权/路由前置失败）不出现在凭据维度。
+	if credKey := liveStreamCredentialKey(req); credKey != "" {
+		keys = append(keys,
+			liveStreamDimPrefix+"credential:"+credKey,
+			tenantLiveStreamKey(tenantID, "dim:credential:"+credKey),
+		)
+	} else {
+		slog.Debug("live stream: credential dimension skipped",
+			"request_id", req.RequestID, "tenant_id", tenantID,
+			"credential_id", req.CredentialID, "credential_label", req.CredentialLabel,
+			"provider_code", req.ProviderCode, "model", req.Model)
 	}
 	if req.ProviderCode != "" && req.ProviderCode != "unknown" {
 		keys = append(keys,
 			liveStreamDimPrefix+"provider:"+req.ProviderCode,
 			tenantLiveStreamKey(tenantID, "dim:provider:"+req.ProviderCode),
 		)
+	} else {
+		slog.Debug("live stream: provider dimension skipped",
+			"request_id", req.RequestID, "tenant_id", tenantID,
+			"provider_code", req.ProviderCode)
 	}
 	// Use CanonicalName for model dimension queue keys when available,
 	// matching the aggregation logic in liveStreamDimensionKey. This ensures
@@ -702,6 +801,11 @@ func liveRequestQueueKeys(tenantID string, req LiveRequest) []string {
 			liveStreamDimPrefix+"model:"+modelKey,
 			tenantLiveStreamKey(tenantID, "dim:model:"+modelKey),
 		)
+	} else {
+		slog.Debug("live stream: model dimension skipped",
+			"request_id", req.RequestID, "tenant_id", tenantID,
+			"canonical_name", req.CanonicalName, "model", req.Model,
+			"model_key", modelKey)
 	}
 	return keys
 }
@@ -780,6 +884,8 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		CreditsCharged:   req.CreditsCharged,
 		ParentRequestID:  req.ParentRequestID,
 		RequestType:      req.RequestType,
+		CredentialID:     req.CredentialID,
+		CredentialLabel:  req.CredentialLabel,
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -819,6 +925,8 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		CreditsCharged:   p.CreditsCharged,
 		ParentRequestID:  p.ParentRequestID,
 		RequestType:      normalizeLiveRequestType(p.RequestType),
+		CredentialID:     p.CredentialID,
+		CredentialLabel:  p.CredentialLabel,
 	}, nil
 }
 
@@ -843,20 +951,17 @@ func (s *LiveStreamRedisStore) Snapshot(ctx context.Context, tenantID string, is
 
 func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 	s := &LiveStreamSnapshot{
-		DetailDimensions: map[string][]LiveStreamLane{
-			"vendor":   {},
-			"provider": {},
-			"model":    {},
-		},
 		Dimensions: map[string][]LiveStreamLane{
-			"vendor":   {},
-			"provider": {},
-			"model":    {},
+			"credential": {},
+			"vendor":     {},
+			"provider":   {},
+			"model":      {},
 		},
 		DimensionLegends: map[string][]LiveStreamLegendItem{
-			"vendor":   {},
-			"provider": {},
-			"model":    {},
+			"credential": {},
+			"vendor":     {},
+			"provider":   {},
+			"model":      {},
 		},
 		StatusLegends: []LiveStreamLegendItem{},
 	}
@@ -864,6 +969,11 @@ func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 	seenForSummary := make(map[string]struct{}, len(items))
 	for _, item := range items {
 		if item.Type == "idle_marker" {
+			continue
+		}
+		// Diagnostic client-cancel probes remain visible as tiles, but they do
+		// not represent an upstream outcome and must not affect failure rates.
+		if isClientCancelProbe(item) {
 			continue
 		}
 		if _, ok := seenForSummary[item.RequestID]; ok {
@@ -877,17 +987,16 @@ func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 		}
 	}
 
-	for _, dim := range []string{"vendor", "provider", "model"} {
-		view, detail, legends := buildLiveStreamLanes(dim, items)
-		s.Dimensions[dim] = view
-		s.DetailDimensions[dim] = detail
+	for _, dim := range []string{"credential", "vendor", "provider", "model"} {
+		lanes, legends := buildLiveStreamLanes(dim, items)
+		s.Dimensions[dim] = lanes
 		s.DimensionLegends[dim] = legends
 	}
 	s.StatusLegends = buildStatusLegends(items)
 	return s
 }
 
-func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLane, []LiveStreamLane, []LiveStreamLegendItem) {
+func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLane, []LiveStreamLegendItem) {
 	stats := map[string]LiveStreamStats{}
 	grouped := map[string][]LiveStreamTile{}
 	seenByLane := map[string]map[string]struct{}{}
@@ -930,7 +1039,9 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		}
 		laneSeen[req.RequestID] = struct{}{}
 		st := stats[key]
-		countStatus(&st, req.Status)
+		if !isClientCancelProbe(req) {
+			countStatus(&st, req.Status)
+		}
 		stats[key] = st
 		grouped[key] = append(grouped[key], liveRequestTile(req))
 	}
@@ -939,14 +1050,10 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		grouped[key] = append(grouped[key], idleTile)
 	}
 
-	// 2026-07-26: the lane owns its ordering contract instead of trusting
-	// the caller's order. SwimLaneTrack.vue paints index 0 leftmost and
-	// firstTiles() caps a lane with items[:N], so both only mean "newest
-	// on the left, oldest truncated" when tiles are DESC by ts. Sorting
-	// here also makes the two producers agree: SnapshotFromDimensionQueues
-	// (dimension ZSETs) and Replay (main queue) previously fed ASC input,
-	// which silently capped busy lanes to their OLDEST 20 tiles and hid
-	// every newer request.
+	// Product FIFO: oldest left → newest right. SwimLaneTrack paints index
+	// 0 leftmost and lastTiles() keeps the tail (newest N). Sorting here
+	// makes SnapshotFromDimensionQueues and Replay agree regardless of
+	// caller order.
 	for key := range grouped {
 		tiles := grouped[key]
 		sort.SliceStable(tiles, func(i, j int) bool {
@@ -954,19 +1061,54 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 			// order. Tie-break on RequestID so equal timestamps stay stable
 			// across snapshots and don't trip lanesChanged.
 			if tiles[i].Timestamp != tiles[j].Timestamp {
-				return tiles[i].Timestamp > tiles[j].Timestamp
+				return tiles[i].Timestamp < tiles[j].Timestamp
 			}
 			return tiles[i].RequestID < tiles[j].RequestID
 		})
+		grouped[key] = tiles
 	}
 
 	keys := make([]string, 0, len(stats))
 	for key := range stats {
 		keys = append(keys, key)
 	}
-	// Stable alphabetical order — Total only affects legend count, not lane
-	// position. Sorting by Total caused lanes to jump on every stat tick.
-	sort.Strings(keys)
+
+	// 2026-08-27: credential lanes key on the numeric credential_id. During
+	// the 24h TTL migration window, idle markers written by the legacy
+	// "provider/label" keying still resolve to non-numeric lane keys; those
+	// idle-only lanes have no data and no display name — drop them instead of
+	// rendering ghost lanes.
+	displayNames := make(map[string]string, len(keys))
+	if dimension == "credential" {
+		numeric := keys[:0]
+		for _, key := range keys {
+			credentialID, err := strconv.Atoi(key)
+			if err != nil || credentialID <= 0 {
+				continue
+			}
+			numeric = append(numeric, key)
+			displayNames[key] = resolveCredentialDisplayName(key, items)
+		}
+		keys = numeric
+	}
+
+	if dimension == "credential" {
+		// Sort credential lanes by display name (provider/label), tie-broken
+		// by numeric credential_id. Handoff requires name-first ordering with a
+		// stable ID tie-break; plain sort.Strings would order "10" before "9".
+		sort.SliceStable(keys, func(i, j int) bool {
+			if displayNames[keys[i]] != displayNames[keys[j]] {
+				return displayNames[keys[i]] < displayNames[keys[j]]
+			}
+			idI, _ := strconv.Atoi(keys[i])
+			idJ, _ := strconv.Atoi(keys[j])
+			return idI < idJ
+		})
+	} else {
+		// Stable alphabetical order — Total only affects legend count, not lane
+		// position. Sorting by Total caused lanes to jump on every stat tick.
+		sort.Strings(keys)
+	}
 
 	// Build lanes - no more top N or others aggregation, return all lanes
 	// Skip empty keys and unknown/other categories
@@ -979,19 +1121,27 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		if key == "" || key == "unknown" || key == "__unknown__" || key == "__idle__" {
 			continue
 		}
+
+		// 2026-08-27: For credential dimension, Lane.ID is the stable credential_id,
+		// Lane.Name is the display string "provider/label" resolved from the newest
+		// request in this lane. Other dimensions use key for both ID and Name.
+		displayName := key
+		if dimension == "credential" {
+			displayName = displayNames[key]
+		}
+
 		lanes = append(lanes, LiveStreamLane{
 			ID:        key,
-			Name:      key,
+			Name:      displayName,
 			Dimension: dimension,
-			Requests:  firstTiles(grouped[key], liveStreamLaneLimit),
+			Requests:  lastTiles(grouped[key], liveStreamLaneLimit),
 			Stats:     stats[key],
 			IsOthers:  false,
 		})
-		legends = append(legends, LiveStreamLegendItem{Key: key, Name: key, Count: stats[key].Total})
+		legends = append(legends, LiveStreamLegendItem{Key: key, Name: displayName, Count: stats[key].Total})
 	}
 
-	// Both viewLanes and detailLanes return the same full list
-	return lanes, lanes, legends
+	return lanes, legends
 }
 
 func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
@@ -1016,19 +1166,100 @@ func buildStatusLegends(items []LiveRequest) []LiveStreamLegendItem {
 	return legends
 }
 
+// liveStreamCredentialKey returns the credential lane identity and display name.
+//
+// 2026-08-27: Identity strategy. A credential's ID is globally unique and stable
+// across renames; label is a mutable display string. The lane key must be stable
+// so rename operations do not break the Redis queue identity or the frontend
+// Vue TransitionGroup key.
+//
+// Lane identity (Redis key, Lane.ID, Legend.Key): credential_id (integer)
+// Display name (Lane.Name, Legend.Name): "provider/label" or "provider/凭据 #id"
+//
+// Idle markers inherit the lane key in CredentialLabel so both real requests
+// and idle markers resolve to the same lane.
+func liveStreamCredentialKey(req LiveRequest) string {
+	// Idle markers carry the stable lane key in CredentialLabel (set by createIdleMarkerForDimension).
+	// Re-applying the provider/label fallback would create a different lane identity.
+	if req.Type == "idle_marker" {
+		return strings.TrimSpace(req.CredentialLabel)
+	}
+
+	// Real requests: use credential_id as the stable lane identity.
+	// The display name (provider/label) is resolved separately in buildLiveStreamLanes.
+	if req.CredentialID <= 0 {
+		return "" // Skip requests without credential binding
+	}
+
+	return fmt.Sprintf("%d", req.CredentialID)
+}
+
+// resolveCredentialDisplayName builds the display name "provider/label" for a
+// credential lane. It picks the NEWEST real request carrying the lane's
+// credential_id so a renamed credential shows its latest label instead of a
+// stale first-seen snapshot. Falls back to "未知供应商/凭据 #<id>" when the
+// lane has no real request (idle-only lane) or fields are missing.
+func resolveCredentialDisplayName(laneKey string, items []LiveRequest) string {
+	// strconv.Atoi (not Sscanf) rejects suffixes: "42abc" must not resolve to 42.
+	credentialID, err := strconv.Atoi(laneKey)
+	if err != nil || credentialID <= 0 {
+		// Legacy-format key ("provider/label") — caller filters these out;
+		// return as-is for any residual defensive call.
+		return laneKey
+	}
+
+	var newest LiveRequest
+	found := false
+	for _, req := range items {
+		if req.Type == "idle_marker" || req.CredentialID != credentialID {
+			continue
+		}
+		if !found || req.Ts > newest.Ts || (req.Ts == newest.Ts && req.RequestID > newest.RequestID) {
+			newest = req
+			found = true
+		}
+	}
+	if !found {
+		return fmt.Sprintf("未知供应商/凭据 #%d", credentialID)
+	}
+	return credentialDisplayNameFrom(newest)
+}
+
+// credentialDisplayNameFrom composes the "provider/label" display string from
+// one request, applying the shared fallbacks (unknown provider → 未知供应商,
+// empty label → "凭据 #ID").
+func credentialDisplayNameFrom(req LiveRequest) string {
+	provider := strings.TrimSpace(req.ProviderCode)
+	if provider == "" || provider == "unknown" || provider == "__unknown__" {
+		provider = "未知供应商"
+	}
+	label := strings.TrimSpace(req.CredentialLabel)
+	if label == "" {
+		label = fmt.Sprintf("凭据 #%d", req.CredentialID)
+	}
+	return provider + "/" + label
+}
+
 func liveStreamDimensionKey(dimension string, req LiveRequest) string {
 	// For idle markers, use the actual dimension value (already set correctly in createIdleMarkerForDimension)
 	// This ensures idle markers inherit the queue's identity rather than creating separate idle lanes
 	switch dimension {
+	case "credential":
+		// 2026-08-26: 凭据维度。idle marker 的 CredentialLabel 已被
+		// createIdleMarkerForDimension 置为泳道 key，liveStreamCredentialKey
+		// 的 label 优先规则对真实请求与 idle marker 同时成立。
+		return liveStreamCredentialKey(req)
 	case "vendor":
+		// 2026-08-26: 原厂维度仍在泳道队列里有写入 (liveRequestQueueKeys
+		// 写 vendor:<vendor> + tenant dim:vendor:<vendor> 双队列)，保留
+		// 是因为：(a) BuildLiveStreamSnapshot 在 credential 之外仍输出
+		// vendor 维度让前端 tile 颜色 / 老检查位兼容；(b) CreateIdleMarkerForDimension
+		// 的 vendor case 把 ModelCategory 作为泳道 key 注入 → 与真实
+		// 请求归到同一泳道，避免出现"空闲块"重复泳道。
 		if req.Type == "idle_marker" {
-			if req.ModelCategory != "" {
-				return req.ModelCategory
-			}
-			return ""
+			return req.ModelCategory
 		}
-		key := resolveVendorForRequest(req)
-		return key
+		return resolveVendorForRequest(req)
 	case "provider":
 		if req.Type == "idle_marker" {
 			pc := strings.TrimSpace(req.ProviderCode)
@@ -1148,13 +1379,16 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 	if standardModel == "" {
 		standardModel = strings.TrimSpace(req.Model)
 	}
+	status := emptyAs(req.Status, "in_progress")
 	tile := LiveStreamTile{
 		RequestID:        req.RequestID,
 		Timestamp:        req.Ts,
 		Model:            standardModel,
 		Vendor:           resolveVendorForRequest(req),
 		Provider:         req.ProviderCode,
-		Status:           emptyAs(req.Status, "in_progress"),
+		Status:           status,
+		CredentialID:     req.CredentialID,
+		CredentialLabel:  strings.TrimSpace(req.CredentialLabel),
 		ErrorKind:        req.ErrorKind,
 		LatencyMs:        req.LatencyMs,
 		CostUSD:          req.CostUSD,
@@ -1163,6 +1397,13 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 		IsProbe:          req.IsProbe,
 		ProbeOrigin:      req.ProbeOrigin,
 		ProbeAttempt:     req.ProbeAttempt,
+	}
+	// First paint for in-flight tiles defaults to "routing" so the live
+	// stream can distinguish "received / routing" from "waiting on LLM"
+	// before the first lifecycle action arrives. Upstream actions flip
+	// this to "llm" via SSE request_lifecycle patches.
+	if status == "in_progress" {
+		tile.StageCategory = "routing"
 	}
 	// Idle markers carry only their own dimension's identity. Surface a
 	// human-readable "[空闲]" label on whichever field is empty so the
@@ -1183,6 +1424,11 @@ func liveRequestTile(req LiveRequest) LiveStreamTile {
 	return tile
 }
 
+func isClientCancelProbe(req LiveRequest) bool {
+	return req.FailureStage != nil && *req.FailureStage == "probe" &&
+		req.ErrorKind != nil && *req.ErrorKind == "client_cancel"
+}
+
 func countStatus(stats *LiveStreamStats, status string) {
 	stats.Total++
 	switch status {
@@ -1199,14 +1445,22 @@ func countStatus(stats *LiveStreamStats, status string) {
 	}
 }
 
-// firstTiles caps a lane at limit tiles by keeping the head of items.
-// buildLiveStreamLanes sorts each lane DESC (newest first) before calling
-// this, so the head is the newest N and the truncated tail is the oldest.
+// lastTiles caps a lane at limit tiles by keeping the tail of items.
+// buildLiveStreamLanes sorts each lane ASC (oldest first) before calling
+// this, so the tail is the newest N and the truncated head is the oldest.
+func lastTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
+	if limit <= 0 || len(items) <= limit {
+		return items
+	}
+	return items[len(items)-limit:]
+}
+
+// firstTiles returns the first N tiles from items (newest tiles, for RIGHT→LEFT display).
+// Backend stores tiles in DESC timestamp order in Redis ZSET, so first N = newest N.
 func firstTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
 	if limit <= 0 || len(items) <= limit {
 		return items
 	}
-	// Return first N instead of last N
 	return items[:limit]
 }
 
@@ -1233,15 +1487,18 @@ func liveStreamDimIndexKey(tenantID string, isSuper bool) string {
 // known dimension suffix are considered.
 func isDimensionQueueKey(key string) bool {
 	// Both global ("llmgw:live:dim:vendor:...") and tenant
-	// ("llmgw:live:tenant:<id>:dim:vendor:...") forms contain ":dim:".
+	// ("llmgw:live:tenant:<id>:dim:credential:...") forms contain ":dim:".
 	idx := strings.Index(key, ":dim:")
 	if idx < 0 {
 		return false
 	}
 	rest := key[idx+len(":dim:"):]
-	return strings.HasPrefix(rest, "vendor:") ||
+	// 2026-08-26: credential 替换 vendor。"vendor:" 旧队列保留识别以兼容
+	// 存量 Redis 数据（24h TTL 自动过期），但新代码不再写入。
+	return strings.HasPrefix(rest, "credential:") ||
 		strings.HasPrefix(rest, "provider:") ||
-		strings.HasPrefix(rest, "model:")
+		strings.HasPrefix(rest, "model:") ||
+		strings.HasPrefix(rest, "vendor:")
 }
 
 // isGlobalDimKey reports whether a dim queue key is the global-scope form
@@ -1352,19 +1609,23 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 
 	nowUnix := ts.Unix()
 
-	// 1) Collect candidate activity keys via SCAN.
-	//    The shared Redis DB has hundreds of thousands of unrelated keys
-	//    (request details, sessions, etc.), so SCAN must traverse them
-	//    all to find our ~50 activity keys. Use COUNT 5000 to amortise
-	//    round-trips — with COUNT 0 (Redis default 10) we made 40K SCAN
-	//    calls and exceeded any reasonable context deadline.
-	var activityKeys []string
-	iter := s.rdb.Scan(ctx, 0, liveStreamActivityPrefix+"*", 5000).Iterator()
-	for iter.Next(ctx) {
-		activityKeys = append(activityKeys, iter.Val())
+	// 1) Derive activity keys from the dimension indexes. The Redis DB also
+	// contains hundreds of thousands of session/detail keys; scanning the
+	// whole keyspace every 10 seconds starves live request writes and makes
+	// provider lanes appear stale. Indexes are populated by Record().
+	activityKeys, err := s.activityKeysFromDimensionIndexes(ctx)
+	if err != nil {
+		return fmt.Errorf("load activity indexes failed: %w", err)
 	}
-	if err := iter.Err(); err != nil {
-		return fmt.Errorf("scan activity keys failed: %w", err)
+	if len(activityKeys) == 0 {
+		// Preserve cold-start compatibility before the first indexed write.
+		iter := s.rdb.Scan(ctx, 0, liveStreamActivityPrefix+"*", 5000).Iterator()
+		for iter.Next(ctx) {
+			activityKeys = append(activityKeys, iter.Val())
+		}
+		if err := iter.Err(); err != nil {
+			return fmt.Errorf("scan activity keys failed: %w", err)
+		}
 	}
 	if len(activityKeys) == 0 {
 		return nil
@@ -1419,6 +1680,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 
 	// 3) Build + persist idle markers, writing only to the relevant lane(s).
 	writePipe := s.rdb.Pipeline()
+	idleTrimKeys := make([]string, 0, len(idle)*2)
 	for _, p := range idle {
 		// 2026-07-28 fix: use scan time (ts) for BOTH the marker Ts and
 		// the ZSet score. The previous implementation anchored both at
@@ -1455,7 +1717,7 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			writePipe.ZAdd(ctx, qkey, redis.Z{Score: score, Member: marker.RequestID})
 			// 2026-07-23: idle marker 写入泳道队列，队列 TTL 用 24h（泳道存在 ≤ 1 天）
 			writePipe.Expire(ctx, qkey, liveStreamLaneQueueTTL)
-			trimLiveStreamQueue(writePipe, ctx, qkey, liveStreamQueueKeepLimit(qkey))
+			idleTrimKeys = append(idleTrimKeys, qkey)
 			// 2026-08-04 (方案C): keep the dim index SET in sync when an idle
 			// marker creates a dim queue (idle-only lane). Routes the key to the
 			// global vs tenant index, matching the Record() path.
@@ -1470,7 +1732,82 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	if _, err := writePipe.Exec(ctx); err != nil && err != redis.Nil {
 		return fmt.Errorf("write idle markers failed: %w", err)
 	}
+	for _, qkey := range idleTrimKeys {
+		if trimErr := selectiveTrimLiveStreamQueue(ctx, s.rdb, qkey, liveStreamQueueKeepLimit(qkey)); trimErr != nil {
+			slog.Debug("live stream idle selective trim failed", "key", qkey, "err", trimErr.Error())
+		}
+	}
 	return nil
+}
+
+func (s *LiveStreamRedisStore) activityKeysFromDimensionIndexes(ctx context.Context) ([]string, error) {
+	global, err := s.rdb.SMembers(ctx, liveStreamDimIndexKey("", true)).Result()
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	tenants, err := s.rdb.SMembers(ctx, liveStreamTenantSet).Result()
+	if err != nil && err != redis.Nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(global)+len(tenants)*4)
+	appendQueueKeys := func(queueKeys []string) {
+		for _, queueKey := range queueKeys {
+			if !isDimensionQueueKey(queueKey) {
+				continue
+			}
+			info, ok := dimensionQueueKeyInfo(queueKey)
+			if ok {
+				keys = append(keys, liveStreamActivityKey(info.tenantID, info.dimension, info.dimensionKey))
+			}
+		}
+	}
+	appendQueueKeys(global)
+	for _, tenantID := range tenants {
+		members, memberErr := s.rdb.SMembers(ctx, liveStreamDimIndexKey(tenantID, false)).Result()
+		if memberErr != nil && memberErr != redis.Nil {
+			return nil, memberErr
+		}
+		appendQueueKeys(members)
+	}
+	return uniqueStrings(keys), nil
+}
+
+type dimensionQueueInfo struct {
+	tenantID     string
+	dimension    string
+	dimensionKey string
+}
+
+func dimensionQueueKeyInfo(key string) (dimensionQueueInfo, bool) {
+	marker := ":dim:"
+	idx := strings.Index(key, marker)
+	if idx < 0 {
+		return dimensionQueueInfo{}, false
+	}
+	prefix, suffix := key[:idx], key[idx+len(marker):]
+	parts := strings.SplitN(suffix, ":", 2)
+	// 2026-08-26: credential 替换 vendor；保留 "vendor" 读兼容（存量队列）。
+	if len(parts) != 2 || (parts[0] != "credential" && parts[0] != "provider" && parts[0] != "model" && parts[0] != "vendor") || parts[1] == "" {
+		return dimensionQueueInfo{}, false
+	}
+	tenantID := ""
+	if strings.HasPrefix(prefix, "llmgw:live:tenant:") {
+		tenantID = strings.TrimPrefix(prefix, "llmgw:live:tenant:")
+	}
+	return dimensionQueueInfo{tenantID: tenantID, dimension: parts[0], dimensionKey: parts[1]}, true
+}
+
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 // idleMarkerQueueKeys returns the Redis ZSET keys an idle marker should
@@ -1584,8 +1921,20 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 	// others (e.g. a vendor-idle marker must not spawn a phantom lane in
 	// the model view). The carried value doubles as the display label.
 	switch dimension {
+	case "credential":
+		// 2026-08-27: key is the stable credential_id (e.g. "42").
+		// CredentialLabel carries the raw key so liveStreamCredentialKey groups
+		// the marker into the same lane as real requests; the parsed
+		// CredentialID lets liveRequestTile expose the id so frontend legend
+		// highlighting also matches idle tiles.
+		marker.CredentialLabel = key
+		if id, err := strconv.Atoi(key); err == nil {
+			marker.CredentialID = id
+		}
 	case "vendor":
-		// Vendor lane idle: only ModelCategory is set.
+		// 2026-08-26: Vendor lane idle: carry ModelCategory so the marker
+		// groups under the same vendor lane as real requests (legacy 兼容,
+		// vendor 维度作为 dim 别名保留给 BuildLiveStreamSnapshot 输出 + tile 颜色)。
 		marker.ModelCategory = key
 	case "provider":
 		// Provider lane idle: only ProviderCode is set.
@@ -1622,7 +1971,7 @@ func ComputeDelta(old, new *LiveStreamSnapshot) *LiveStreamDelta {
 		DimensionLegends: map[string][]LiveStreamLegendItem{},
 		StatusLegends:    new.StatusLegends,
 	}
-	for _, dim := range []string{"vendor", "provider", "model"} {
+	for _, dim := range []string{"credential", "vendor", "provider", "model"} {
 		oldLanes := old.Dimensions[dim]
 		newLanes := new.Dimensions[dim]
 		if lanesChanged(oldLanes, newLanes) {

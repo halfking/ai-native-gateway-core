@@ -149,11 +149,13 @@ if entry_id:
 
 # 6) env checks
 if env.get("LLM_GATEWAY_CENTER_URL"):
-    ok(f"LLM_GATEWAY_CENTER_URL={env.get('LLM_GATEWAY_CENTER_URL').split(chr(10))[0]}")
+    center_url = env.get("LLM_GATEWAY_CENTER_URL").split(chr(10))[0]
+    ok(f"LLM_GATEWAY_CENTER_URL={center_url}")
 else:
     fail("LLM_GATEWAY_CENTER_URL missing")
 if env.get("OPS_COLLECT_URL"):
-    ok(f"OPS_COLLECT_URL={env.get('"'"'OPS_COLLECT_URL'"'"').split(chr(10))[0]}")
+    collect_url = env.get("OPS_COLLECT_URL").split(chr(10))[0]
+    ok(f"OPS_COLLECT_URL={collect_url}")
 else:
     fail("OPS_COLLECT_URL missing")
 if env.get("OPS_NODE_REGION") == "154":

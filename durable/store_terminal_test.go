@@ -328,3 +328,30 @@ func TestStore_ReapDeadlines_ExcludesCheckpointed(t *testing.T) {
 		t.Fatalf("expectations: %v", err)
 	}
 }
+
+// TestStore_ReapUnsafeCheckpointed_SkipsAlreadyBlocked：safety reaper 必须
+// 排除已处于 resume_safety_blocked 的任务——否则每次调度循环都会把 sank 态
+// 任务重割（fencing+1、completed_at 刷新、再写失败投影事件），污染审计并
+// 反复向 PendingStore 投递失败（doc 发现：原谓词只排除四终态，漏排 sink 态）。
+// 已 sank + 过期 lease 的任务零行返回。
+func TestStore_ReapUnsafeCheckpointed_SkipsAlreadyBlocked(t *testing.T) {
+	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	// 谓词必须同时携带 lease 护栏（$2=now）与 status 排除 sink 态
+	// （'resume_safety_blocked'）——已 sank 的任务不应进入扫描结果。
+	mock.ExpectQuery(`status NOT IN \('completed', 'failed', 'expired', 'canceled', 'resume_safety_blocked'\)`).
+		WithArgs(anyArgs(2)...).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "status"}))
+	mock.ExpectCommit()
+
+	blocked, err := store.ReapUnsafeCheckpointed(context.Background(), 16, time.Now())
+	if err != nil {
+		t.Fatalf("ReapUnsafeCheckpointed: %v", err)
+	}
+	if len(blocked) != 0 {
+		t.Fatalf("already-blocked tasks must not be reaped, got %+v", blocked)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}

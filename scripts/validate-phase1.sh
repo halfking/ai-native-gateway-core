@@ -16,7 +16,7 @@ FILES=(
     "domains/streaming/executors/metrics_degradation.go"
     "domains/streaming/executors/sticky_ttl_test.go"
     "settings/sticky_ttl.go"
-    "deploy/monitoring/grafana-alerts/fp-slot-saturation.yaml"
+    "deploy/prometheus/alerts/fp-slot-saturation.yaml"
 )
 
 MISSING=0

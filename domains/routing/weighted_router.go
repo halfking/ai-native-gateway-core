@@ -212,6 +212,10 @@ func (wr *WeightedRouter) RecordLatency(credentialID string, latency time.Durati
 
 // RecordError reports a 5xx (or other error) for the given credential.
 // It updates the ErrorDetector's failure count and the last-error timestamp.
+//
+// 2026-08-29 优化: 仅在连续失败或错误率显著变化时失效缓存，避免每次错误都
+// 触发重算。这减少了 CPU 开销，特别是在高并发场景下（智谱 GLM / MiniMax 等
+// 国内模型在高峰期可能每秒数十个错误）。
 func (wr *WeightedRouter) RecordError(credentialID string, statusCode int, err error) {
 	wr.mu.RLock()
 	wc, ok := wr.candidates[credentialID]
@@ -219,6 +223,13 @@ func (wr *WeightedRouter) RecordError(credentialID string, statusCode int, err e
 	if !ok {
 		return
 	}
+	
+	// 记录错误前先获取当前连续失败数
+	oldConsecutiveFails := 0
+	if wc.ErrorDetector != nil {
+		oldConsecutiveFails = wc.ErrorDetector.GetConsecutiveFails(credentialID)
+	}
+	
 	if wc.ErrorDetector != nil {
 		wc.ErrorDetector.OnError(health.ErrorEvent{
 			CredentialID: credentialID,
@@ -227,10 +238,26 @@ func (wr *WeightedRouter) RecordError(credentialID string, statusCode int, err e
 			Timestamp:    time.Now(),
 		})
 	}
-	wc.invalidateCache()
+	
+	// 仅在以下情况失效缓存（显著变化）：
+	// 1. 连续失败数达到 3 次（接近降级阈值）
+	// 2. 从成功状态转为失败状态（连续失败从 0 变为 1）
+	newConsecutiveFails := 0
+	if wc.ErrorDetector != nil {
+		newConsecutiveFails = wc.ErrorDetector.GetConsecutiveFails(credentialID)
+	}
+	
+	significant := newConsecutiveFails >= 3 || (oldConsecutiveFails == 0 && newConsecutiveFails > 0)
+	if significant {
+		wc.invalidateCache()
+	}
 }
 
 // RecordSuccess reports a successful request.
+//
+// 2026-08-29 优化: 仅在从失败恢复到成功时失效缓存（连续失败从 >0 变为 0），
+// 避免每次成功请求都触发缓存失效和权重重算。在稳定运行期间（连续成功），
+// 缓存可以持续有效 1 秒（见 computeWeight 的缓存 TTL），大幅减少 CPU 消耗。
 func (wr *WeightedRouter) RecordSuccess(credentialID string, latency time.Duration) {
 	wr.RecordLatency(credentialID, latency)
 	wr.mu.RLock()
@@ -239,10 +266,22 @@ func (wr *WeightedRouter) RecordSuccess(credentialID string, latency time.Durati
 	if !ok {
 		return
 	}
+	
+	// 记录成功前先获取连续失败数
+	oldConsecutiveFails := 0
+	if wc.ErrorDetector != nil {
+		oldConsecutiveFails = wc.ErrorDetector.GetConsecutiveFails(credentialID)
+	}
+	
 	if wc.ErrorDetector != nil {
 		wc.ErrorDetector.OnSuccess(credentialID)
 	}
-	wc.invalidateCache()
+	
+	// 仅在从失败恢复到成功时失效缓存（权重会显著上升）
+	// 连续成功期间不失效，让缓存保持有效（1 秒 TTL 自然过期）
+	if oldConsecutiveFails > 0 {
+		wc.invalidateCache()
+	}
 }
 
 // ResetCredential fully resets a credential's failure state, allowing it to

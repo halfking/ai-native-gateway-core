@@ -9,6 +9,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -50,9 +51,20 @@ func (h *FeishuCallbackHandler) HandleCallback(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Read request body
+	// 2026-08-26 (P1-4 fix): cap the body at 1 MiB. The previous
+	// io.ReadAll(r.Body) had no upper bound — a single unbounded
+	// chunked upload from a misbehaving / hostile Feishu relay
+	// could exhaust server memory. 1 MiB is generous for any
+	// Feishu callback payload (real payloads are < 16 KiB).
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			slog.Warn("feishu callback body exceeds 1 MiB", "remote_addr", r.RemoteAddr)
+			h.writeError(w, http.StatusBadRequest, "body too large")
+			return
+		}
 		slog.Error("failed to read callback body", "error", err)
 		h.writeError(w, http.StatusBadRequest, "failed to read request body")
 		return
@@ -62,7 +74,13 @@ func (h *FeishuCallbackHandler) HandleCallback(w http.ResponseWriter, r *http.Re
 	// Parse callback payload
 	var callback FeishuCallback
 	if err := json.Unmarshal(body, &callback); err != nil {
-		slog.Error("failed to parse callback body", "error", err, "body", string(body))
+		// 2026-08-27 (audit fix): never log the full body — callbacks
+		// may carry operator identities and card content. Size + a
+		// short escaped preview is enough to triage.
+		slog.Error("failed to parse callback body",
+			"error", err,
+			"body_bytes", len(body),
+			"body_preview", previewBody(body))
 		h.writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -73,13 +91,22 @@ func (h *FeishuCallbackHandler) HandleCallback(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Verify signature if configured
-	if h.verifyToken != "" {
-		if !h.verifySignature(r, body) {
-			slog.Warn("invalid signature", "remote_addr", r.RemoteAddr)
-			h.writeError(w, http.StatusUnauthorized, "invalid signature")
-			return
-		}
+	// 2026-08-26 (P1-3 fail-closed): signature verification is no
+	// longer conditional on verifyToken being set in config. If
+	// verifyToken is empty, refuse the request entirely so an
+	// operator who forgot to configure the secret can't accidentally
+	// serve unauthenticated callbacks.
+	if h.verifyToken == "" {
+		slog.Error("feishu callback refused: verifyToken not configured",
+			"remote_addr", r.RemoteAddr)
+		h.writeError(w, http.StatusServiceUnavailable,
+			"feishu webhook not configured (verifyToken empty)")
+		return
+	}
+	if !h.verifySignature(r, body) {
+		slog.Warn("invalid signature", "remote_addr", r.RemoteAddr)
+		h.writeError(w, http.StatusUnauthorized, "invalid signature")
+		return
 	}
 
 	// Handle different event types
@@ -293,4 +320,17 @@ type FeishuSender struct {
 	OpenID    string `json:"open_id"`
 	UserID    string `json:"user_id"`
 	TenantKey string `json:"tenant_key"`
+}
+
+// previewBody returns a short, control-character-escaped preview of a
+// callback body safe for structured logs (2026-08-27 audit fix). Cap
+// is 256 bytes — enough to identify a malformed payload's shape
+// without dumping operator identities or card content.
+func previewBody(body []byte) string {
+	const cap = 256
+	b := body
+	if len(b) > cap {
+		b = b[:cap]
+	}
+	return strconv.Quote(string(b))
 }

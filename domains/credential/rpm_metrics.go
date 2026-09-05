@@ -11,7 +11,7 @@ var (
 	rpmLimiterMode = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
 			Name: "llmgw_rpm_limiter_mode",
-			Help: "RPM limiter mode (0=memory, 1=redis)",
+			Help: "RPM limiter mode (0=local/degraded, 1=redis)",
 		},
 		[]string{"mode"},
 	)

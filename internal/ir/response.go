@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // InternalResponse is the unified intermediate representation for upstream
@@ -18,80 +20,85 @@ import (
 // Complexity reduced from O(N²) to O(N): adding a new protocol only requires
 // one Parser + one Serializer.
 type InternalResponse struct {
-	ID             string
-	Model          string
-	Created        int64  // Unix timestamp (OpenAI style); 0 if not available
-	Role           string // "assistant" (Anthropic uses top-level role field)
-	SourceProtocol string // "openai-chat" | "anthropic-messages" — which upstream we parsed
+	ID             string `json:"id"`
+	Model          string `json:"model"`
+	Created        int64  `json:"created"`        // Unix timestamp (OpenAI style); 0 if not available
+	Role           string `json:"role"`           // "assistant" (Anthropic uses top-level role field)
+	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages" — which upstream we parsed
 
 	// Content is the normalized message content. Both OpenAI messages[] and
 	// Anthropic content[] are normalized into this structure.
-	Content []ResponseContentBlock
+	Content []ResponseContentBlock `json:"content,omitempty"`
 
 	// ToolCalls is the normalized tool call list. OpenAI's message.tool_calls
 	// and Anthropic's content[].tool_use are both normalized here.
-	ToolCalls []ResponseToolCall
+	ToolCalls []ResponseToolCall `json:"tool_calls,omitempty"`
 
 	// ReasoningContent holds extended thinking (Claude) from OpenAI's
 	// reasoning_content or Anthropic's content[].thinking blocks.
-	ReasoningContent string
+	ReasoningContent string `json:"reasoning_content,omitempty"`
 
 	// FinishReason is the unified stop reason.
 	// OpenAI: "stop" | "length" | "content_filter" | "tool_calls"
 	// Anthropic: "end_turn" | "stop_sequence" | "max_tokens" | "tool_use"
 	// We store the OpenAI form; Anthropic values are mapped via mapFinishReason.
-	FinishReason string
+	FinishReason string `json:"finish_reason"`
 
 	// Usage statistics (both protocols have compatible usage fields)
-	Usage ResponseUsage
+	Usage ResponseUsage `json:"usage"`
 
 	// Extensions carries non-standard top-level fields extracted by the
 	// transport layer for lossless round-trip conversion (same semantics as
 	// InternalRequest.Extensions).
-	Extensions map[string]json.RawMessage
+	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
 }
 
 // ResponseContentBlock represents a single content element in a response.
 // Type values: "text" | "tool_use" | "thinking" | "redacted_thinking"
 type ResponseContentBlock struct {
-	Type string // Discriminant
+	Type string `json:"type"` // Discriminant
 
 	// type=text
-	Text string
+	Text string `json:"text,omitempty"`
 
 	// type=tool_use
-	ID    string
-	Name  string
-	Input json.RawMessage // Already-serialized JSON object
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"` // Already-serialized JSON object
 
 	// type=thinking / redacted_thinking
-	Thinking string
+	Thinking string `json:"thinking,omitempty"`
+
+	// Data carries the encrypted payload of type=redacted_thinking blocks
+	// (Anthropic wire key "data"). A-#17: without it redacted blocks were
+	// dropped on the response parse → serialize round-trip.
+	Data string `json:"data,omitempty"`
 
 	// Signature is the Anthropic chain-of-thought verification token
 	// returned with thinking blocks. Populated only for type=thinking.
 	// PR-2 (2026-06-24): required for opus-4-8 multi-turn round-trip —
 	// without it the next turn is rejected with HTTP 400 and the
 	// model loses the prior tool_use context.
-	Signature string
+	Signature string `json:"signature,omitempty"`
 }
 
 // ResponseToolCall represents a tool call from the assistant.
 type ResponseToolCall struct {
-	ID   string
-	Name string
+	ID   string `json:"id"`
+	Name string `json:"name"`
 	// Arguments is the JSON-stringified tool input. Populated from
 	// OpenAI's `tool_calls[].function.arguments` verbatim so non-JSON
 	// strings (e.g. provider-specific edge cases) round-trip without
 	// reinterpretation. For Anthropic parsed via ParseAnthropicResponse
 	// this is the marshalled `tool_use.input` and InputRaw carries the
 	// same payload for callers that need the raw bytes.
-	Arguments string
+	Arguments string `json:"arguments"`
 	// InputRaw is the raw JSON of the tool input. It is populated by
 	// the parser (Anthropic `tool_use.input`, OpenAI
 	// `function.arguments` parsed as JSON) and preferred by serializers
 	// that want a lossless wire-round-trip. May be empty if the upstream
 	// payload could not be parsed as a JSON object.
-	InputRaw json.RawMessage
+	InputRaw json.RawMessage `json:"input_raw,omitempty"`
 }
 
 // ResponseUsage holds token usage statistics.
@@ -100,26 +107,26 @@ type ResponseToolCall struct {
 // for accurate billing across all providers.
 type ResponseUsage struct {
 	// Basic token counts (always present)
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 
 	// Cache tokens (Anthropic, OpenAI with prompt caching)
 	// nil = not applicable for this provider/request
-	CacheReadTokens  *int // Cache hit tokens (billed at reduced rate)
-	CacheWriteTokens *int // Cache creation tokens (billed at premium rate)
+	CacheReadTokens  *int `json:"cache_read_tokens,omitempty"`  // Cache hit tokens (billed at reduced rate)
+	CacheWriteTokens *int `json:"cache_write_tokens,omitempty"` // Cache creation tokens (billed at premium rate)
 
 	// Reasoning tokens (DeepSeek R1, OpenAI reasoning models)
-	ReasoningTokens *int
+	ReasoningTokens *int `json:"reasoning_tokens,omitempty"`
 
 	// Multimodal token breakdowns (Vision, Audio, Video)
 	// Enables separate billing for different modalities
-	ImageTokens *int // Vision input tokens
-	AudioTokens *int // Audio input/output tokens
-	VideoTokens *int // Video input tokens
+	ImageTokens *int `json:"image_tokens,omitempty"` // Vision input tokens
+	AudioTokens *int `json:"audio_tokens,omitempty"` // Audio input/output tokens
+	VideoTokens *int `json:"video_tokens,omitempty"` // Video input tokens
 
 	// Provider-specific token counts (e.g., Doubao seed_token_usage)
-	ProviderTokens *int
+	ProviderTokens *int `json:"provider_tokens,omitempty"`
 }
 
 // ─── Parse ─────────────────────────────────────────────────────────────────
@@ -142,6 +149,7 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			Input     json.RawMessage `json:"input"`
 			Thinking  string          `json:"thinking"`
 			Signature string          `json:"signature"`
+			Data      string          `json:"data"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
@@ -206,10 +214,10 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 				}
 			}
 			ir.ToolCalls = append(ir.ToolCalls, ResponseToolCall{
-				ID:       c.ID,
-				Name:     c.Name,
+				ID:        c.ID,
+				Name:      c.Name,
 				Arguments: arguments,
-				InputRaw: append(json.RawMessage(nil), c.Input...),
+				InputRaw:  append(json.RawMessage(nil), c.Input...),
 			})
 		case "thinking":
 			if c.Thinking != "" {
@@ -224,6 +232,18 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 				Type:      "thinking",
 				Thinking:  c.Thinking,
 				Signature: c.Signature,
+			})
+		case "redacted_thinking":
+			// A-#17 (audit round2): redacted blocks were dropped entirely,
+			// so the next-turn thinking chain could 400. Preserve the
+			// encrypted payload (fall back to the thinking key).
+			payload := c.Data
+			if payload == "" {
+				payload = c.Thinking
+			}
+			ir.Content = append(ir.Content, ResponseContentBlock{
+				Type: "redacted_thinking",
+				Data: payload,
 			})
 		}
 	}
@@ -328,6 +348,30 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 		choice := src.Choices[0]
 		ir.Role = choice.Message.Role
 		ir.FinishReason = choice.FinishReason
+
+		// 2026-08-28 P1-GLM-2: Zhipu GLM uses finish_reason as an error
+		// channel (network_error/sensitive/model_context_window_exceeded).
+		// Streaming path already detects these (ae1ecaedf); add detection
+		// to non-stream path so HTTP 200 responses with these finish_reason
+		// values are classified as errors rather than silently succeeding.
+		switch choice.FinishReason {
+		case "network_error":
+			return nil, &ParseError{
+				Kind:    errorsx.KindNetwork,
+				Message: "GLM network_error",
+			}
+		case "sensitive":
+			return nil, &ParseError{
+				Kind:    errorsx.KindContentFilter,
+				Message: "GLM content filter: sensitive",
+			}
+		case "model_context_window_exceeded":
+			return nil, &ParseError{
+				Kind:    errorsx.KindContextLength,
+				Message: "GLM context window exceeded",
+			}
+		}
+
 		if choice.Message.ReasoningContent != "" {
 			ir.ReasoningContent = choice.Message.ReasoningContent
 		}
@@ -375,7 +419,9 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 	return ir, nil
 }
 
-// parseOpenAIResponseContentBlock parses a single OpenAI content block into IR format.
+// parseOpenAIResponseContentBlock parses a single OpenAI-compatible content
+// block into IR format. Qwen/DashScope use {"text":"..."} without the
+// OpenAI Responses API's type:"text" discriminator.
 func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
 	typ, _ := m["type"].(string)
 	switch typ {
@@ -387,6 +433,10 @@ func parseOpenAIResponseContentBlock(m map[string]any) ResponseContentBlock {
 		name, _ := m["name"].(string)
 		inputRaw, _ := json.Marshal(m["input"])
 		return ResponseContentBlock{Type: "tool_use", ID: id, Name: name, Input: inputRaw}
+	case "":
+		if text, ok := m["text"].(string); ok {
+			return ResponseContentBlock{Type: "text", Text: text}
+		}
 	}
 	return ResponseContentBlock{Type: typ}
 }
@@ -631,6 +681,11 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 				thinking["signature"] = c.Signature
 			}
 			content = append(content, thinking)
+		case "redacted_thinking":
+			content = append(content, map[string]any{
+				"type": "redacted_thinking",
+				"data": c.Data,
+			})
 		}
 	}
 

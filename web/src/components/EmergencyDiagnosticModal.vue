@@ -4,6 +4,9 @@
 
 import { ref, computed, watch } from 'vue'
 import { authBearer } from '../store'
+import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
   visible: boolean
@@ -16,6 +19,8 @@ const emit = defineEmits<{
   close: []
   recovered: []
 }>()
+
+const { t } = useI18n()
 
 interface DiagFailure {
   request_id: string
@@ -60,6 +65,14 @@ const recovering = ref(false)
 const diagnosticData = ref<DiagnosticData | null>(null)
 const error = ref<string | null>(null)
 
+// 凭据显示：诊断接口返回 label 优先；未加载时用全局标签缓存，订阅
+// revision 让异步加载完成后自动刷新。
+const { labelRevision } = useCredentialLabels()
+const credentialName = computed(() => {
+  void labelRevision.value
+  return diagnosticData.value?.label || credentialDisplayName(props.credentialId)
+})
+
 const hasData = computed(() => !!diagnosticData.value)
 
 async function fetchDiagnostic() {
@@ -95,9 +108,11 @@ async function fetchDiagnostic() {
 async function handleForceRecover() {
   if (!props.credentialId || recovering.value) return
 
-  if (!confirm(`确认强制恢复凭据 ${props.credentialId}？\n此操作将重置凭据状态、清空所有 binding 的不可用标记、重置探测状态。`)) {
-    return
-  }
+  const confirmName = diagnosticData.value?.label || credentialDisplayName(props.credentialId)
+  const confirmed = await confirmDialog(
+    t('providerDetail.creds.forceRecoverModalConfirm', { name: confirmName }),
+  )
+  if (!confirmed) return
 
   recovering.value = true
   error.value = null
@@ -175,8 +190,8 @@ watch(() => props.visible, (visible) => {
             <span class="diag-context-value">{{ model }}</span>
           </div>
           <div class="diag-context-item">
-            <span class="diag-context-label">凭据 ID:</span>
-            <span class="diag-context-value">{{ credentialId }}</span>
+            <span class="diag-context-label">凭据:</span>
+            <span class="diag-context-value" :title="`#${credentialId}`">{{ credentialName }}</span>
           </div>
         </div>
 
@@ -341,7 +356,7 @@ watch(() => props.visible, (visible) => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.75);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -358,7 +373,7 @@ watch(() => props.visible, (visible) => {
   max-height: 90vh;
   display: flex;
   flex-direction: column;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 8px 32px var(--overlay-strong);
 }
 
 .modal-header {
@@ -511,7 +526,7 @@ watch(() => props.visible, (visible) => {
 }
 
 .status-warn {
-  color: #d29922 !important;
+  color: var(--warning) !important;
 }
 
 .status-error {
@@ -597,7 +612,7 @@ watch(() => props.visible, (visible) => {
 /* 分析和推荐 */
 .diag-analysis {
   padding: 12px;
-  background: rgba(248, 81, 73, 0.1);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
   border-left: 3px solid var(--danger);
   border-radius: 4px;
   font-size: 13px;
@@ -607,7 +622,7 @@ watch(() => props.visible, (visible) => {
 
 .diag-recommendation {
   padding: 12px;
-  background: rgba(88, 166, 255, 0.1);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-left: 3px solid var(--accent);
   border-radius: 4px;
   font-size: 13px;
@@ -628,11 +643,11 @@ watch(() => props.visible, (visible) => {
 
 .btn-primary {
   background: var(--accent);
-  color: #ffffff;
+  color: var(--on-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #1f6feb;
+  background: var(--accent);
 }
 
 .btn-primary:disabled {

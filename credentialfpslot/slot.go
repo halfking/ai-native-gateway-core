@@ -27,6 +27,12 @@ const (
 	// pin 记录该 holder 上次使用哪个槽位，即使 slot 已过期，
 	// holder 回来后仍可快速重获同一槽位。
 	sessionPinTTLSeconds = 86400 // 24 hours
+
+	// slotIndexTTLSeconds keeps the reclaim index alive while any active
+	// session pin can still refresh a slot. It avoids a periodic full-keyspace
+	// SCAN on the shared Redis DB.
+	slotIndexTTLSeconds = sessionPinTTLSeconds
+	slotIndexSentinel   = "__slot_index_initialized__"
 )
 
 // Config controls slot pool behaviour.
@@ -96,6 +102,10 @@ type Lease struct {
 	CredentialID int
 	Holder       string
 	TenantID     string
+
+	inFlight  bool
+	releaseMu sync.Mutex
+	released  bool
 }
 
 // resolveActiveGateSeconds returns the configured active gate, falling
@@ -266,6 +276,22 @@ func tenantSlotRedisKey(tenantID string, credentialID, slotIndex int) string {
 	return fmt.Sprintf("%s:%d", tenantSlotRedisPrefix(tenantID, credentialID), slotIndex)
 }
 
+func slotReclaimIndexKey() string {
+	return "llmgw:cred_fp_slot:index"
+}
+
+func (m *Manager) trackSlotForReclaim(ctx context.Context, tenantID string, credentialID, slotIndex int) {
+	if m == nil || m.client == nil || credentialID <= 0 || slotIndex < 0 {
+		return
+	}
+	pipe := m.client.Pipeline()
+	pipe.SAdd(ctx, slotReclaimIndexKey(), tenantSlotRedisKey(tenantID, credentialID, slotIndex))
+	pipe.Expire(ctx, slotReclaimIndexKey(), time.Duration(slotIndexTTLSeconds)*time.Second)
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		slog.Debug("cred_fp_slot reclaim index update failed", "credential_id", credentialID, "slot", slotIndex, "error", err)
+	}
+}
+
 func tenantPinRedisPrefix(tenantID string) string {
 	return fmt.Sprintf("llmgw:tenant:%s:sess_cred_fp:", normalizeTenantID(tenantID))
 }
@@ -327,7 +353,10 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 	lease, outcome := m.acquireRedis(ctx, credentialID, *eff, holder, tenantID)
 	switch outcome {
 	case acquireOK:
+		m.trackSlotForReclaim(ctx, tenantID, credentialID, lease.SlotIndex)
 		recordAcquireSuccess()
+		lease.inFlight = true
+		recordClientTokenInFlight(tenantID, credentialID, 1)
 		return lease, true
 	case acquireRedisError:
 		recordAcquireRedisError()
@@ -373,12 +402,18 @@ const (
 // executors/executor.go) now passes an independent background context so a
 // cancelled request context can no longer abort the release.
 func (m *Manager) Release(ctx context.Context, lease *Lease) {
-	if lease == nil || lease.Unlimited {
+	if lease == nil || lease.Unlimited || m.client == nil {
 		return
 	}
-	if m.client == nil {
+	lease.releaseMu.Lock()
+	defer lease.releaseMu.Unlock()
+	if lease.released {
 		return
 	}
+	m.releaseFiniteLease(ctx, lease)
+}
+
+func (m *Manager) releaseFiniteLease(ctx context.Context, lease *Lease) {
 	tenantID := normalizeTenantID(lease.TenantID)
 	key := tenantSlotRedisKey(tenantID, lease.CredentialID, lease.SlotIndex)
 	pinKey := tenantPinRedisKey(tenantID, lease.Holder, lease.CredentialID)
@@ -404,6 +439,10 @@ func (m *Manager) Release(ctx context.Context, lease *Lease) {
 				)
 			}
 			recordReleaseSuccess()
+			if lease.inFlight {
+				recordClientTokenInFlight(lease.TenantID, lease.CredentialID, -1)
+			}
+			lease.released = true
 			return
 		}
 

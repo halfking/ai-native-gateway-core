@@ -1,8 +1,9 @@
 // useLiveStreamFilters.test.ts — 多维过滤器状态管理单元测试
 
-import { describe, it, expect } from 'vitest'
+import { beforeEach, describe, it, expect } from 'vitest'
 import { ref } from 'vue'
 import { useLiveStreamFilters } from './useLiveStreamFilters'
+import { _resetPersistState, flushPersist, liveStreamPreferencesStorageKey } from './liveStreamPreferences'
 import type { SwimLane, RequestTile } from '../types/swimlane'
 
 // Test helper: create minimal RequestTile for testing
@@ -31,6 +32,42 @@ function makeLane(id: string, requests: RequestTile[]): SwimLane {
 }
 
 describe('useLiveStreamFilters', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    _resetPersistState()
+  })
+
+  it('restores and persists all filter selections', () => {
+    localStorage.setItem(liveStreamPreferencesStorageKey(), JSON.stringify({
+      version: 1,
+      groupBy: 'queue',
+      mode: 'small',
+      filters: {
+        requestTypes: ['probe'],
+        statuses: ['failure'],
+        models: ['gpt-4o'],
+        providers: ['provider-a'],
+        vendors: ['openai'],
+        agents: ['zcode'],
+      },
+      queue: { depthOpen: false, statusFilter: { active: true, degraded: true, manualDisabled: true, exhausted: true } },
+    }))
+
+    const filters = useLiveStreamFilters({ lanes: ref<SwimLane[]>([]) })
+    expect([...filters.requestTypeFilter.value]).toEqual(['probe'])
+    expect([...filters.statusFilter.value]).toEqual(['failure'])
+    expect([...filters.modelFilter.value]).toEqual(['gpt-4o'])
+    expect([...filters.providerFilter.value]).toEqual(['provider-a'])
+    expect([...filters.vendorFilter.value]).toEqual(['openai'])
+    expect([...filters.agentFilter.value]).toEqual(['zcode'])
+
+    filters.applyAgentFilter(['OpenCode'])
+    flushPersist() // 2026-08-24 LP7: writes 已是 debounced，需要手动 flush 读 storage
+    const saved = JSON.parse(localStorage.getItem(liveStreamPreferencesStorageKey()) || '{}')
+    expect(saved.filters.agents).toEqual(['opencode'])
+    expect(saved.filters.providers).toEqual(['provider-a'])
+  })
+
   it('initializes with empty filters (show all)', () => {
     const lanes = ref<SwimLane[]>([])
     const filters = useLiveStreamFilters({ lanes })

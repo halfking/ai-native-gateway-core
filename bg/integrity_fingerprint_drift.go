@@ -245,7 +245,6 @@ func (w *IntegrityFingerprintDrift) scanDrift(ctx context.Context) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	rows.Close()
 
 	for _, p := range batch {
 		// Cross-tick dedup + baseline state update in a single tx so a

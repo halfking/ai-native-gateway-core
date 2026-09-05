@@ -7,11 +7,16 @@ import { resolveRouting } from '../api/routing'
 import { getDecisions } from '../api/routing'
 import { getRequestLogs } from '../api/logs'
 import { getSlidingWindow } from '../api/credential-monitor'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { store } from '../store'
 
 const route = useRoute()
 const router = useRouter()
 const modelName = ref((route.query.model as string) || '')
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName } = useCredentialLabels()
 
 type TabId = 'nodes' | 'routing' | 'decisions' | 'monitor' | 'logs' | 'probe' | 'pricing'
 const tabs: { id: TabId; label: string }[] = [
@@ -122,6 +127,11 @@ async function loadNodes() {
 
 // ── Tab: 路由路径 ─────────────────────────────────────────────────────────
 import type { RoutingResolveResponse } from '../api/routing'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import EmptyState from '../components/EmptyState.vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 const routingResult = ref<RoutingResolveResponse | null>(null)
 
 async function loadRouting() {
@@ -262,7 +272,7 @@ async function triggerProbe(node: ModelNode) {
       credential_id: node.credential_id,
       raw_model_name: modelName.value,
     })
-    flash(`已触发凭据 #${node.credential_id} 的探活`)
+    flash(`已触发 ${credentialDisplayName(node.credential_id)} 的探活`)
   } catch (err) {
     flash(`触发失败: ${err instanceof Error ? err.message : String(err)}`)
   } finally {
@@ -275,7 +285,7 @@ async function triggerProbe(node: ModelNode) {
 }
 
 async function triggerAllProbes() {
-  if (!confirm(`对模型 ${modelName.value} 的全部 ${nodes.value.length} 个凭据触发探活?`)) return
+  if (!(await confirmDialog(t('probeHealth.probeAllConfirm', { model: modelName.value, n: nodes.value.length })))) return
   for (const node of nodes.value) {
     await triggerProbe(node)
   }
@@ -430,17 +440,17 @@ onMounted(() => {
     <div v-if="flashMsg" class="flash">{{ flashMsg }}</div>
 
     <div class="tab-content card">
-      <div v-if="loading" class="empty-state">加载中...</div>
+      <EmptyState v-if="loading" text="加载中..." />
 
       <div v-else-if="activeTab === 'nodes'">
-        <div v-if="nodes.length === 0" class="empty-state">暂无节点数据</div>
+        <EmptyState v-if="nodes.length === 0" text="暂无节点数据" />
         <div v-else class="node-list">
           <div v-for="node in nodes" :key="node.credential_id" class="node-card">
             <div class="node-header">
               <div>
                 <div class="node-label">{{ node.credential_label }}</div>
                 <div class="muted-text small">
-                  Credential #{{ node.credential_id }} · {{ node.provider_name }}
+                  {{ credentialDisplayName(node.credential_id) }} · {{ node.provider_name }}
                 </div>
               </div>
               <div class="node-badges">
@@ -471,7 +481,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'routing'">
-        <div v-if="!routingResult" class="empty-state">暂无路由数据</div>
+        <EmptyState v-if="!routingResult" text="暂无路由数据" />
         <div v-else>
           <div class="info-grid">
             <div class="info-row"><span class="info-label">客户端模型</span><span>{{ routingResult.client_model }}</span></div>
@@ -481,7 +491,7 @@ onMounted(() => {
             <div class="info-row"><span class="info-label">可路由凭据</span><span>{{ routingResult.candidates?.filter(c => c.routable).length || 0 }} / {{ routingResult.candidates?.length || 0 }}</span></div>
           </div>
           <h3 style="margin-top:16px">候选凭据</h3>
-          <div v-if="!routingResult.candidates || routingResult.candidates.length === 0" class="empty-state">无可用候选</div>
+          <EmptyState v-if="!routingResult.candidates || routingResult.candidates.length === 0" text="无可用候选" />
           <table v-else class="data-table">
             <thead>
               <tr>
@@ -500,7 +510,7 @@ onMounted(() => {
                 <td>T{{ c.tier }}</td>
                 <td>{{ c.provider_name }}</td>
                 <td>
-                  {{ c.credential_label || '#' + c.credential_id }}
+                  {{ c.credential_label || credentialDisplayName(c.credential_id) }}
                   <div v-if="c.runtime_block_reason" class="muted-text small">{{ c.runtime_block_reason }}</div>
                 </td>
                 <td>{{ formatNumber(c.success_rate * 100, 1) }}%</td>
@@ -519,7 +529,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'decisions'">
-        <div v-if="decisions.length === 0" class="empty-state">近 7 天无决策记录</div>
+        <EmptyState v-if="decisions.length === 0" text="近 7 天无决策记录" />
         <table v-else class="data-table">
           <thead>
             <tr>
@@ -538,7 +548,7 @@ onMounted(() => {
             <tr v-for="d in decisions" :key="d.request_id">
               <td>{{ formatTime(d.ts) }}</td>
               <td class="mono">{{ d.request_id.slice(0, 12) }}…</td>
-              <td>{{ d.chosen_credential_id ? '#' + d.chosen_credential_id : '—' }}</td>
+              <td>{{ d.chosen_credential_id ? credentialDisplayName(d.chosen_credential_id) : '—' }}</td>
               <td>{{ d.tier != null ? 'T' + d.tier : '—' }}</td>
               <td>
                 <span :class="['badge', d.success ? 'badge-green' : 'badge-red']">
@@ -576,7 +586,7 @@ onMounted(() => {
           <span class="muted-text small">错误分类:</span>
           <span v-for="(count, kind) in monitorStats.error_kinds" :key="kind" class="badge badge-red">{{ kind }}: {{ count }}</span>
         </div>
-        <div v-if="monitorEntries.length === 0" class="empty-state">暂无监控数据</div>
+        <EmptyState v-if="monitorEntries.length === 0" text="暂无监控数据" />
         <table v-else class="data-table">
           <thead>
             <tr>
@@ -602,7 +612,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'logs'">
-        <div v-if="requestLogs.length === 0" class="empty-state">暂无请求记录</div>
+        <EmptyState v-if="requestLogs.length === 0" text="暂无请求记录" />
         <table v-else class="data-table">
           <thead>
             <tr>
@@ -623,7 +633,7 @@ onMounted(() => {
               <td class="mono">{{ log.request_id.slice(0, 12) }}…</td>
               <td>
                 <span v-if="log.credential_label">{{ log.credential_label }}</span>
-                <span v-else-if="log.credential_id">#{{ log.credential_id }}</span>
+                <span v-else-if="log.credential_id">{{ credentialDisplayName(log.credential_id) }}</span>
                 <span v-else>—</span>
                 <div v-if="log.provider_name" class="muted-text small">{{ log.provider_name }}</div>
               </td>
@@ -649,7 +659,7 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'probe'">
-        <div v-if="nodes.length === 0" class="empty-state">请先在「节点概览」标签页加载数据</div>
+        <EmptyState v-if="nodes.length === 0" text="请先在「节点概览」标签页加载数据" />
         <div v-else>
           <div class="probe-toolbar">
             <p class="muted-text">点击「触发探活」手动对指定凭据发起探测：</p>
@@ -661,7 +671,7 @@ onMounted(() => {
             <div class="probe-info">
               <strong>{{ node.credential_label }}</strong>
               <span class="muted-text small">
-                · #{{ node.credential_id }} · {{ node.provider_name }}
+                · {{ credentialDisplayName(node.credential_id) }} · {{ node.provider_name }}
                 · 状态:
                 <span :style="{ color: getStateColor(node.state) }">{{ node.state }}</span>
               </span>
@@ -678,9 +688,9 @@ onMounted(() => {
       </div>
 
       <div v-else-if="activeTab === 'pricing'">
-        <div v-if="!isAdmin" class="empty-state">仅超级管理员可查看价格</div>
-        <div v-else-if="tabErrors.pricing" class="empty-state">{{ tabErrors.pricing }}</div>
-        <div v-else-if="pricingData.length === 0" class="empty-state">暂无价格数据</div>
+        <EmptyState v-if="!isAdmin" text="仅超级管理员可查看价格" />
+        <EmptyState v-else-if="tabErrors.pricing" text="{{ tabErrors.pricing }}" />
+        <EmptyState v-else-if="pricingData.length === 0" text="暂无价格数据" />
         <table v-else class="data-table">
           <thead>
             <tr>
@@ -704,7 +714,7 @@ onMounted(() => {
               <td>{{ p.provider_name }}</td>
               <td>
                 {{ p.credential_label }}
-                <div class="muted-text small">#{{ p.credential_id }}</div>
+                <div class="muted-text small">{{ credentialDisplayName(p.credential_id) }}</div>
               </td>
               <td>{{ formatPrice(p.unit_price_in_per_1m, p.currency) }}</td>
               <td>{{ formatPrice(p.unit_price_out_per_1m, p.currency) }}</td>
@@ -764,7 +774,7 @@ onMounted(() => {
 
 .flash {
   padding: 8px 16px;
-  background: rgba(96, 165, 250, 0.12);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
   border-radius: var(--radius);
   margin-bottom: 12px;
@@ -907,7 +917,7 @@ onMounted(() => {
 }
 
 .data-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 
 .mono {
@@ -940,7 +950,7 @@ onMounted(() => {
 .window-btn.active {
   color: var(--accent);
   border-color: var(--accent);
-  background: rgba(96, 165, 250, 0.08);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
 }
 
 .stats-row {

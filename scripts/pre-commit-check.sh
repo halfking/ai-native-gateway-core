@@ -138,19 +138,30 @@ check_migration_unique() {
     return 0
   fi
   # Existing historical migrations cannot be safely renamed because some
-  # environments may already have recorded their filename. Enforce uniqueness
-  # for newly staged forward migrations instead. This still prevents new
-  # collisions while letting a separate migration-normalisation task address
-  # the legacy 341/360/361 filenames safely.
-  local dups
-  dups=$(git diff --cached --name-only --diff-filter=A -- "$mig_dir" \
-         | grep -E "^${mig_dir}/[0-9]{3}_.*\.sql$" \
-         | grep -v -E '\.(down|disabled|fix)\.sql$' \
-         | sed -E 's|.*/([0-9]{3})_.*|\1|' \
-         | sort | uniq -d)
-  if [[ -n "$dups" ]]; then
-    echo "Duplicate migration numbers in $mig_dir/: $dups"
-    echo "New forward migrations must not share a number."
+  # environments may already have recorded their filename. For each newly
+  # staged forward migration, compare its version with the complete active
+  # startup set so collisions with both existing and newly staged files fail.
+  local new_files f base ver matches staged_files
+  local -a conflicts=()
+  new_files=$(git diff --cached --no-renames --name-only --diff-filter=A -- "$mig_dir" \
+              | grep -E "^${mig_dir}/[0-9]{3}_.*\.sql$" \
+              | grep -v -E '\.(down|disabled|fix)\.sql$' || true)
+  staged_files=$(git ls-files --cached -- "$mig_dir" \
+                 | grep -E "^${mig_dir}/[0-9]{3}_.*\.sql$" \
+                 | grep -v -E '\.(down|disabled|fix)\.sql$' || true)
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    base=$(basename "$f")
+    ver=${base%%_*}
+    matches=$(printf '%s\n' "$staged_files" | grep -E "^${mig_dir}/${ver}_" | sort || true)
+    if [[ $(printf '%s\n' "$matches" | grep -c .) -gt 1 ]]; then
+      conflicts+=("$ver:$(printf '%s' "$matches" | xargs -n1 basename | paste -sd, -)")
+    fi
+  done <<<"$new_files"
+  if [[ ${#conflicts[@]} -gt 0 ]]; then
+    echo "Duplicate migration numbers in $mig_dir/:"
+    printf '  %s\n' "${conflicts[@]}"
+    echo "New forward migrations must not share a number with any active migration."
     return 1
   fi
   return 0

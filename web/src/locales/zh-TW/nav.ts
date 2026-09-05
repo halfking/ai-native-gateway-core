@@ -9,9 +9,12 @@ export default {
     dataOps: "資料維運",
     guide: "接入指南",
     chat: "對話",
+    plugins: "外掛",
     opsplatform: "运维平台"
   },
   item: {
+    activateAction: '啟用',
+    activateActionTip: '點擊前往啟用本機',
     overview: "總覽",
     tenantModels: "標準模型",
     tenantAccount: "我的帳號",
@@ -34,6 +37,8 @@ export default {
     auditLogs: "稽核記錄",
     requestLogs: "請求記錄",
     dispatchWaterfall: "佇列瀑布圖",
+    requestRegistry: "Request Registry",
+    connectionRegistry: "Connection Registry",
     turns: "輪次列表",
     requestTrace: "請求鏈路追蹤",
     sessions: "會話清單",
@@ -44,6 +49,7 @@ export default {
     wechatBot: "微信機器人",
     sessionContext: "會話上下文",
     settings: "系統設定",
+    proxy: "代理管理",
     dataLifecycle: "資料生命週期",
     formatAnomalies: "格式異常監控",
     modelIntegrity: "模型完整性監控",
@@ -68,6 +74,7 @@ export default {
     tenantAutoUpdate: "我的更新"
 ,
     updateActivate: '更新与激活',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
 
     licenseActivate: '许可激活',
 
@@ -80,6 +87,7 @@ export default {
     licenseOffline: '离线激活',
 
     telemetryScope: '数据采集范围',
+    supportDonate: '贊助與捐贈',
   },
 
   mainAria: '主導航',

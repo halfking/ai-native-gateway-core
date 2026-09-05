@@ -4,63 +4,51 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"math"
 	"strings"
-	"sync/atomic"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
-// CompletionDetector detects task completion using multiple strategies.
-// A single detector is shared across all goal-mode requests (it lives on
-// ModeHook, a singleton on ChatHandler). minConfidenceBits holds the
-// configured LLM-verdict threshold as its IEEE-754 bit pattern in an
-// atomic.Uint64 so SetMinConfidence (per-tenant writes) and checkWithLLM
-// (reads) are race-free under concurrent interception.
+// CompletionDetector detects task completion using multiple strategies. The
+// detector is stateless w.r.t. tenant-specific thresholds: the LLM-verdict
+// threshold is passed per request as minConfidence, never cached on the
+// instance. ModeHook is a singleton on ChatHandler, so any per-instance
+// threshold state would race between concurrent tenants — making the LLM
+// verdict obey whichever tenant wrote last instead of the requesting tenant.
 type CompletionDetector struct {
-	db                GoalStore
-	llmCaller         LLMCaller
-	minConfidenceBits atomic.Uint64
+	db        GoalStore
+	llmCaller LLMCaller
 }
 
 // DefaultCompletionConfidence is the threshold used when a caller hasn't
 // configured one. Matches the historical hard-coded value.
 const DefaultCompletionConfidence = 0.8
 
-// NewCompletionDetector creates a new completion detector. When minConfidence
-// is 0, DefaultCompletionConfidence (0.8) is used.
+// NewCompletionDetector creates a stateless completion detector. The threshold
+// is supplied per request via IsCompleted; nothing on the detector varies by
+// tenant.
 func NewCompletionDetector(db GoalStore, llmCaller LLMCaller) *CompletionDetector {
-	return NewCompletionDetectorWithConfidence(db, llmCaller, DefaultCompletionConfidence)
-}
-
-// NewCompletionDetectorWithConfidence lets the caller inject a per-tenant
-// confidence threshold (read from settings by ModeHook).
-func NewCompletionDetectorWithConfidence(db GoalStore, llmCaller LLMCaller, minConfidence float64) *CompletionDetector {
-	if minConfidence <= 0 {
-		minConfidence = DefaultCompletionConfidence
-	}
-	d := &CompletionDetector{db: db, llmCaller: llmCaller}
-	d.minConfidenceBits.Store(math.Float64bits(minConfidence))
-	return d
-}
-
-// SetMinConfidence updates the LLM-verdict confidence threshold. ModeHook calls
-// this per interception with the tenant's configured value so the threshold is
-// hot-reloadable. Values <= 0 reset to DefaultCompletionConfidence.
-func (d *CompletionDetector) SetMinConfidence(min float64) {
-	if min <= 0 {
-		min = DefaultCompletionConfidence
-	}
-	d.minConfidenceBits.Store(math.Float64bits(min))
-}
-
-// minConfidence returns the currently-effective threshold (race-free read).
-func (d *CompletionDetector) minConfidence() float64 {
-	return math.Float64frombits(d.minConfidenceBits.Load())
+	return &CompletionDetector{db: db, llmCaller: llmCaller}
 }
 
 // IsCompleted checks if the task is completed using hybrid detection.
-func (d *CompletionDetector) IsCompleted(ctx context.Context, req *response.InterceptRequest) (bool, float64, string) {
+func (d *CompletionDetector) IsCompleted(ctx context.Context, req *response.InterceptRequest, minConfidence float64) (bool, float64, string) {
+	return d.IsCompletedWithSubAgents(ctx, req, minConfidence, 0)
+}
+
+// IsCompletedWithSubAgents applies the sub-agent gate before heuristic/LLM
+// completion detection. A pending delegated agent always keeps the goal open.
+func (d *CompletionDetector) IsCompletedWithSubAgents(ctx context.Context, req *response.InterceptRequest, minConfidence float64, pending int) (bool, float64, string) {
+	if minConfidence <= 0 {
+		minConfidence = DefaultCompletionConfidence
+	}
+	// Strategy 0: a client-reported running sub-agent is a hard gate. The
+	// assistant may claim completion while delegated work is still running;
+	// never let keyword or LLM heuristics override that durable snapshot.
+	if pending > 0 {
+		d.recordJudgement(ctx, req, "subagent:pending")
+		return false, 0.0, "subagent:pending"
+	}
 	// Strategy 1: Check structured output
 	if completed, confidence, reason := d.checkStructuredOutput(req); completed {
 		return true, confidence, "structured:" + reason
@@ -72,14 +60,27 @@ func (d *CompletionDetector) IsCompleted(ctx context.Context, req *response.Inte
 	}
 
 	// Strategy 3: LLM analysis
-	if completed, confidence, reason := d.checkWithLLM(ctx, req); completed {
+	if completed, confidence, reason := d.checkWithLLM(ctx, req, minConfidence); completed {
 		return true, confidence, "llm:" + reason
 	}
 
 	return false, 0.0, ""
 }
 
-// checkStructuredOutput looks for task_status field in function calling results.
+func (d *CompletionDetector) recordJudgement(ctx context.Context, req *response.InterceptRequest, judgement string) {
+	if d == nil || d.db == nil || req == nil {
+		return
+	}
+	if recorder, ok := d.db.(interface {
+		RecordLastCompletionJudgement(context.Context, string, string, string) error
+	}); ok {
+		if err := recorder.RecordLastCompletionJudgement(ctx, req.TenantID, req.SessionID, judgement); err != nil {
+			slog.Debug("completion_detection_judgement_persist_failed", "error", err,
+				"session_id", req.SessionID)
+		}
+	}
+}
+
 func (d *CompletionDetector) checkStructuredOutput(req *response.InterceptRequest) (bool, float64, string) {
 	var resp map[string]interface{}
 	if err := json.Unmarshal(req.ResponseBody, &resp); err != nil {
@@ -157,7 +158,9 @@ func (d *CompletionDetector) hasCompletionContext(content string) bool {
 }
 
 // checkWithLLM uses LLM to analyze recent conversation for completion.
-func (d *CompletionDetector) checkWithLLM(ctx context.Context, req *response.InterceptRequest) (bool, float64, string) {
+// minConfidence is passed per call (not read from detector state) so concurrent
+// tenants don't pollute each other's verdict threshold.
+func (d *CompletionDetector) checkWithLLM(ctx context.Context, req *response.InterceptRequest, minConfidence float64) (bool, float64, string) {
 	if d.llmCaller == nil {
 		return false, 0.0, ""
 	}
@@ -187,7 +190,7 @@ LLM响应: ` + extractAssistantContent(req.ResponseBody)
 		return false, 0.0, ""
 	}
 
-	if result.Completed && result.Confidence >= d.minConfidence() {
+	if result.Completed && result.Confidence >= minConfidence {
 		return true, result.Confidence, result.Reason
 	}
 	return false, 0.0, ""

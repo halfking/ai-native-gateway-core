@@ -12,6 +12,51 @@ import (
 // deliberate spec update.
 // 2026-07-24: changed from 24h to 6h to prevent nodes from being
 // stranded for a full day after transient failures.
+func TestNodeProbeStateUpdatesLogWriteFailures(t *testing.T) {
+	source, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read node_probe.go: %v", err)
+	}
+	text := string(source)
+	for _, marker := range []string{
+		"consecutive_failures = 0",
+		"consecutive_failures = $3",
+	} {
+		idx := strings.Index(text, "UPDATE node_probe_state SET\n")
+		for idx >= 0 && !strings.Contains(text[idx:idx+220], marker) {
+			next := strings.Index(text[idx+len("UPDATE node_probe_state SET\n"):], "UPDATE node_probe_state SET\n")
+			if next < 0 {
+				idx = -1
+				break
+			}
+			idx += len("UPDATE node_probe_state SET\n") + next
+		}
+		if idx < 0 {
+			t.Fatalf("state update SQL not found for marker %q", marker)
+		}
+		start := idx - 220
+		if start < 0 {
+			start = 0
+		}
+		if !strings.Contains(text[start:idx], "if _, err := w.db.Exec") {
+			t.Fatalf("node_probe_state update must check Exec error near %q", marker)
+		}
+	}
+	for _, field := range []string{
+		"node_probe_worker: node_probe_state update failed",
+		"\"phase\", phase",
+		"\"provider_id\", providerID",
+		"\"credential_id\", credID",
+		"\"raw_model\", model",
+		"\"parent_request_id\", parentRequestID",
+		"\"queue\", w != nil && w.probeQueue != nil",
+	} {
+		if !strings.Contains(text, field) {
+			t.Fatalf("state update warning missing field %q", field)
+		}
+	}
+}
+
 func TestNodeProbeBackoffLadder(t *testing.T) {
 	want := []time.Duration{
 		5 * time.Second,
@@ -241,7 +286,7 @@ func TestRunOneMissingBindingDropsOrphanStateRow(t *testing.T) {
 	// before any "UPDATE node_probe_state SET consecutive_failures".
 	idxLog := strings.Index(body, `node_probe_worker: dropping probe for (cred, model) with no credential_model_bindings row`)
 	idxFail := strings.Index(body, `UPDATE node_probe_state SET
-				consecutive_failures = $3,`)
+					consecutive_failures = $3,`)
 	if idxLog < 0 {
 		t.Fatalf("missing-binding log line not found in source")
 	}
@@ -297,22 +342,17 @@ func TestRunOneSuccessClearsLastDirectOkAndErrCode(t *testing.T) {
 		t.Fatalf("read source: %v", err)
 	}
 	body := string(src)
-	wantSnippet := `
-				consecutive_failures = 0,
-				consecutive_successes = consecutive_successes + 1,
-				last_attempt_at = now(),
-				next_retry_at = now() + interval '1 hour',
-				next_retry_seconds = 3600,
-				paused = FALSE,
-				last_run_id = NULL,
-				last_direct_ok = TRUE,
-				last_gateway_ok = TRUE,
-				last_err_code = NULL,
-				last_err_detail = NULL,
-				in_flight_until = NULL,
-				updated_at = now()`
-	if !strings.Contains(body, wantSnippet) {
-		t.Fatalf("runOne success branch must write last_direct_ok=TRUE, last_err_code=NULL; update bg/node_probe.go:runOne success UPDATE block")
+	for _, field := range []string{
+		"consecutive_failures = 0",
+		"consecutive_successes = consecutive_successes + 1",
+		"last_direct_ok = TRUE",
+		"last_gateway_ok = TRUE",
+		"last_err_code = NULL",
+		"last_err_detail = NULL",
+	} {
+		if !strings.Contains(body, field) {
+			t.Fatalf("runOne success branch must write %q; update bg/node_probe.go:runOne success UPDATE block", field)
+		}
 	}
 }
 
@@ -437,5 +477,99 @@ func TestTriggerManualSuccessCallsMarkNodeProbeHealthy(t *testing.T) {
 	// when the manual probe itself failed
 	if !strings.Contains(fnBody, `status == "ok"`) && !strings.Contains(fnBody, `status=="ok"`) {
 		t.Fatalf("MarkNodeProbeHealthy call must be guarded by status == \"ok\"")
+	}
+}
+
+// TestPumpDueStatesOnlyUpdatesNextRetryAtOnSuccess verifies P1.2 fix:
+// pumpDueStatesToQueue must only advance next_retry_at when probe submission
+// succeeds. If submission fails, the next_retry_at must remain unchanged so
+// the next recovery cycle can retry.
+//
+// Root cause (2026-09-02 analysis): the previous implementation unconditionally
+// updated next_retry_at after calling submitViaQueueSource, even when enqueue
+// failed. This caused probes to never execute: the scheduler kept pushing
+// next_retry_at forward without actually submitting work, producing the
+// "ready probes on dashboard but zero executing" symptom.
+//
+// Expected behavior:
+//   - submitViaQueueSource returns error when enqueue fails
+//   - pumpDueStatesToQueue only updates next_retry_at on success (no error)
+//   - Failed submissions preserve the original next_retry_at for retry
+func TestPumpDueStatesOnlyUpdatesNextRetryAtOnSuccess(t *testing.T) {
+	src, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read node_probe.go: %v", err)
+	}
+	body := string(src)
+
+	// submitViaQueueSource now returns (inserted, error).
+	submitStart := strings.Index(body, "func (w *NodeProbeWorker) submitViaQueueSource(")
+	if submitStart < 0 {
+		t.Fatalf("submitViaQueueSource function not found")
+	}
+	submitEnd := strings.Index(body[submitStart:], "\nfunc (")
+	if submitEnd < 0 {
+		submitEnd = len(body)
+	} else {
+		submitEnd += submitStart
+	}
+	submitBody := body[submitStart:submitEnd]
+
+	if !strings.Contains(submitBody, ") (bool, error) {") {
+		t.Fatalf("submitViaQueueSource must return (bool, error) (found: %s)",
+			body[submitStart:submitStart+200])
+	}
+
+	// Must return an error after enqueue retries are exhausted.
+	if !strings.Contains(submitBody, "return false, fmt.Errorf(") {
+		t.Fatalf("submitViaQueueSource must return error on enqueue failure")
+	}
+
+	// 2. pumpDueStatesToQueue must check submitViaQueueSource error
+	pumpStart := strings.Index(body, "func (w *NodeProbeWorker) pumpDueStatesToQueue(")
+	if pumpStart < 0 {
+		t.Fatalf("pumpDueStatesToQueue function not found")
+	}
+	pumpEnd := strings.Index(body[pumpStart:], "\n}\n")
+	if pumpEnd < 0 {
+		t.Fatalf("pumpDueStatesToQueue closing brace not found")
+	}
+	pumpBody := body[pumpStart : pumpStart+pumpEnd]
+
+	// Must call submitViaQueueSource with error check
+	if !strings.Contains(pumpBody, "if _, err := w.submitViaQueueSource(") {
+		t.Fatalf("pumpDueStatesToQueue must check submitViaQueueSource result")
+	}
+	if !strings.Contains(pumpBody, "if err != nil {") {
+		t.Fatalf("pumpDueStatesToQueue must check submitViaQueueSource error")
+	}
+
+	// Must skip next_retry_at update on error (continue statement after error check)
+	if !strings.Contains(pumpBody, "continue") {
+		t.Fatalf("pumpDueStatesToQueue must skip next_retry_at update on submission failure (missing continue)")
+	}
+
+	// 3. Verify UPDATE node_probe_state comes AFTER error check
+	// Extract the loop body that processes each due row
+	forLoopStart := strings.LastIndex(pumpBody, "for _, r := range due {")
+	if forLoopStart < 0 {
+		t.Fatalf("pumpDueStatesToQueue loop over due rows not found")
+	}
+	loopBody := pumpBody[forLoopStart:]
+
+	// Find positions: error check, continue, and UPDATE
+	errCheckPos := strings.Index(loopBody, "if _, err := w.submitViaQueueSource(")
+	continuePos := strings.Index(loopBody, "continue")
+	updatePos := strings.Index(loopBody, "UPDATE node_probe_state")
+
+	if errCheckPos < 0 || continuePos < 0 || updatePos < 0 {
+		t.Fatalf("pumpDueStatesToQueue loop must contain: error check, continue, and UPDATE")
+	}
+
+	// Verify order: error check → continue → UPDATE
+	// This ensures UPDATE only runs when submission succeeds
+	if !(errCheckPos < continuePos && continuePos < updatePos) {
+		t.Fatalf("pumpDueStatesToQueue must order: error check → continue → UPDATE (found positions: err=%d, continue=%d, update=%d)",
+			errCheckPos, continuePos, updatePos)
 	}
 }

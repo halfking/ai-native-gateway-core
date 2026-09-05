@@ -186,6 +186,84 @@ func TestBuildOutbound_SummaryMarkerPreserved(t *testing.T) {
 	}
 }
 
+func TestBuildOutbound_DuplicateOccurrenceIsPreserved(t *testing.T) {
+	last := makeBody([]map[string]string{userMsg("A")})
+	client := makeBody([]map[string]string{userMsg("A"), userMsg("A"), userMsg("new")})
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := extractMessages(res.Body)
+	if err != nil || len(msgs) != 3 || res.DeltaCount != 2 {
+		t.Fatalf("new duplicate occurrence was lost: %+v", res)
+	}
+}
+
+func TestBuildOutbound_CompressedDuplicateAnchorFailsOpen(t *testing.T) {
+	last := makeBody([]map[string]string{summaryMsg("prior"), userMsg("A")})
+	client := makeBody([]map[string]string{userMsg("A"), assistantMsg("middle"), userMsg("A"), userMsg("new")})
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("ambiguous compressed suffix must fail open: %+v", res)
+	}
+}
+
+func TestBuildOutbound_RejectsStaleCachedBodyHash(t *testing.T) {
+	last := makeBody([]map[string]string{userMsg("cached")})
+	client := makeBody([]map[string]string{userMsg("cached"), userMsg("new")})
+	state := &SessionState{SchemaVersion: 1, LastOutboundHash: sha256Hex([]byte(`{"messages":[]}`)), MsgCount: 1}
+	res, err := BuildOutboundMessages(client, state, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("stale cached body must fail open: %+v", res)
+	}
+}
+
+func TestBuildOutbound_RejectsCachedMessageCountMismatch(t *testing.T) {
+	last := makeBody([]map[string]string{userMsg("cached")})
+	client := makeBody([]map[string]string{userMsg("cached"), userMsg("new")})
+	state := &SessionState{SchemaVersion: 1, MsgCount: 99}
+	res, err := BuildOutboundMessages(client, state, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("cached message count mismatch must fail open: %+v", res)
+	}
+}
+
+func TestBuildOutbound_ModifiedPrefixFailsOpen(t *testing.T) {
+	last := makeBody([]map[string]string{userMsg("original"), assistantMsg("answer")})
+	client := makeBody([]map[string]string{userMsg("changed"), assistantMsg("answer"), userMsg("new")})
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "openai")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.IsNewSess || string(res.Body) != string(client) {
+		t.Fatalf("modified uncompressed prefix must reset lineage: %+v", res)
+	}
+}
+
+func TestMsgHash_UsesCompleteMessage(t *testing.T) {
+	prefix := strings.Repeat("x", 512)
+	a := json.RawMessage(`{"role":"user","content":"` + prefix + `A"}`)
+	b := json.RawMessage(`{"role":"user","content":"` + prefix + `B"}`)
+	if msgHash(a) == msgHash(b) {
+		t.Fatal("message hash ignored content after byte 512")
+	}
+
+	toolA := json.RawMessage(`{"role":"assistant","content":null,"tool_calls":[{"id":"call_a","type":"function","function":{"name":"f","arguments":"{}"}}]}`)
+	toolB := json.RawMessage(`{"role":"assistant","content":null,"tool_calls":[{"id":"call_b","type":"function","function":{"name":"f","arguments":"{}"}}]}`)
+	if msgHash(toolA) == msgHash(toolB) {
+		t.Fatal("message hash ignored assistant tool_calls")
+	}
+}
+
 func TestMsgHash_Stable(t *testing.T) {
 	m := json.RawMessage(`{"role":"user","content":"hello"}`)
 	h1 := msgHash(m)
@@ -218,7 +296,16 @@ func TestInjectSummaryMarker_PreservesSummaryFields(t *testing.T) {
 }
 
 func TestInjectSummaryMarker_AnthropicSystemBlock(t *testing.T) {
-	body := []byte(`{"system":[{"type":"text","text":"original"},{"type":"text","text":"` + AnthropicSystemSummaryPrefix + `summary"}],"messages":[]}`)
+	body, err := json.Marshal(map[string]any{
+		"system": []map[string]string{
+			{"type": "text", "text": "original"},
+			{"type": "text", "text": AnthropicSystemSummaryPrefix + "summary"},
+		},
+		"messages": []any{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	marker, rebuilt := injectSummaryMarker(body, "anthropic-messages")
 	if marker == "" || !strings.Contains(string(rebuilt), marker) {
 		t.Fatalf("expected injected Anthropic marker, marker=%q body=%s", marker, rebuilt)
@@ -241,5 +328,94 @@ func TestBuildSummaryMarker(t *testing.T) {
 	}
 	if len(marker) == 0 {
 		t.Error("expected non-empty summary marker")
+	}
+}
+
+// TestContentFingerprint_InputOutputTextBlocks 验证 P2 issue #5:
+// contentFingerprint 必须把 input_text / output_text 块纳入指纹计算，
+// 不能只处理 type=="text" 的块。否则同角色不同内容会发生碰撞。
+func TestContentFingerprint_InputOutputTextBlocks(t *testing.T) {
+	// 两条消息：role 相同，但 content 不同（一个 text 块，一个 input_text 块）
+	msg1 := json.RawMessage(`[{"type":"text","text":"hello world"}]`)
+	msg2 := json.RawMessage(`[{"type":"input_text","text":"different content"}]`)
+
+	fp1 := contentFingerprint(msg1)
+	fp2 := contentFingerprint(msg2)
+
+	// P2 issue #5: 当前实现会忽略 input_text 块 → fp2 == ""
+	// 导致两条不同内容的消息指纹碰撞（都退化为 role-only hash）
+	if fp1 == fp2 {
+		t.Errorf("contentFingerprint collision: msg1=%q msg2=%q both produce fp=%q (P2 issue #5)",
+			msg1, msg2, fp1)
+	}
+
+	if fp2 == "" {
+		t.Errorf("contentFingerprint ignored input_text block, fp2 should contain 'different content'")
+	}
+}
+
+// TestContentFingerprint_AnthropicToolBlocks 验证 Anthropic 的
+// tool_use / tool_result 块的关键字段也必须纳入指纹。
+func TestContentFingerprint_AnthropicToolBlocks(t *testing.T) {
+	// tool_use 块
+	toolUse := json.RawMessage(`[{
+		"type": "tool_use",
+		"id": "toolu_abc123",
+		"name": "search",
+		"input": {"query": "test"}
+	}]`)
+
+	// tool_result 块
+	toolResult := json.RawMessage(`[{
+		"type": "tool_result",
+		"tool_use_id": "toolu_abc123",
+		"content": "result here"
+	}]`)
+
+	fpUse := contentFingerprint(toolUse)
+	fpResult := contentFingerprint(toolResult)
+
+	// 两种不同类型的 tool 块不应碰撞
+	if fpUse == fpResult {
+		t.Errorf("tool_use and tool_result should have different fingerprints, both=%q", fpUse)
+	}
+
+	// tool_use 应包含 id / name / input 信息
+	if fpUse == "" {
+		t.Errorf("tool_use fingerprint should not be empty (P2 issue #5)")
+	}
+
+	// tool_result 应包含 tool_use_id / content 信息
+	if fpResult == "" {
+		t.Errorf("tool_result fingerprint should not be empty (P2 issue #5)")
+	}
+}
+
+// TestContentFingerprint_BlockSeparatorNoCollision — audit follow-up to
+// 7622526a5: content blocks are concatenated without a separator, so
+// [{"text":"ab"}] and [{"text":"a"},{"text":"b"}] produced identical
+// fingerprints. A per-block terminator is required.
+func TestContentFingerprint_BlockSeparatorNoCollision(t *testing.T) {
+	single := json.RawMessage(`[{"type":"text","text":"ab"}]`)
+	split := json.RawMessage(`[{"type":"text","text":"a"},{"type":"text","text":"b"}]`)
+	if contentFingerprint(single) == contentFingerprint(split) {
+		t.Errorf("block-boundary collision: %s and %s share fingerprint %q",
+			single, split, contentFingerprint(single))
+	}
+}
+
+// TestContentFingerprint_ThinkingBlock — Anthropic thinking blocks carry
+// their payload in the "thinking" field, not "text". A thinking-only message
+// must still produce a non-empty fingerprint distinct from other thinking
+// content (same-role collision otherwise).
+func TestContentFingerprint_ThinkingBlock(t *testing.T) {
+	a := json.RawMessage(`[{"type":"thinking","thinking":"plan A"}]`)
+	b := json.RawMessage(`[{"type":"thinking","thinking":"plan B"}]`)
+	fa, fb := contentFingerprint(a), contentFingerprint(b)
+	if fa == "" {
+		t.Fatal("thinking-only message produced empty fingerprint")
+	}
+	if fa == fb {
+		t.Errorf("thinking content collision: %q and %q share fingerprint %q", a, b, fa)
 	}
 }

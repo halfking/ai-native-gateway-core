@@ -5,13 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
+	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 const (
@@ -102,11 +102,12 @@ func (c *OpenAIClient) CompleteWithConfig(ctx context.Context, prompt string, co
 	}
 	messages = append(messages, map[string]string{"role": "user", "content": prompt})
 	payload := map[string]any{
-		"model":       config.Model,
-		"messages":    messages,
-		"max_tokens":  config.MaxTokens,
-		"temperature": config.Temperature,
-		"stream":      false,
+		"model":           config.Model,
+		"messages":        messages,
+		"max_tokens":      config.MaxTokens,
+		"temperature":     config.Temperature,
+		"stream":          false,
+		"response_format": map[string]string{"type": "json_object"},
 	}
 	var response struct {
 		Choices []struct {
@@ -192,13 +193,14 @@ func (c *OpenAIClient) postJSON(ctx context.Context, url string, payload, result
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	responseBody, bodyErr := httputil.ReadPrefixAndDrain(resp.Body, maxAnalysisResponseBodyBytes)
+	if bodyErr != nil {
+		return fmt.Errorf("read analysis response: %w", bodyErr)
+	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 		return fmt.Errorf("analysis upstream HTTP %d", resp.StatusCode)
 	}
-	decoder := json.NewDecoder(io.LimitReader(resp.Body, maxAnalysisResponseBodyBytes))
-	if err := decoder.Decode(result); err != nil {
+	if err := json.Unmarshal(responseBody, result); err != nil {
 		return fmt.Errorf("decode analysis response: %w", err)
 	}
 	return nil

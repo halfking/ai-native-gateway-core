@@ -2,11 +2,14 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -36,20 +39,85 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 }
 
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
-	args := make([]interface{}, 81)
+	args := make([]interface{}, 99)
 	for index := range args {
 		args[index] = pgxmock.AnyArg()
 	}
+	// SQL $N → args[N-1]. SQL position 37=success, 38=request_status;
+	// client-perception fields at $78-$81; t0..t9 at $82-$91; discard $92;
+	// canonical/routing/attachments at $93-$96; customer_id at $97;
+	// 608 request class/due_at at $98-$99 (V6-W1.6 R8, migration 610).
+	// 2026-08-24 Phase 1: outbound_body (was $60) is removed from the main table
+	// UPDATE bind list. The dedicated request_logs_bodies_hot table is the sole
+	// outbound_body owner; outbound_body is written via upsertRequestLogBodies.
+	// All placeholders $N≥60 are shifted by -1 (so this helper's array shrinks
+	// from 97 to 96).
+	// UsageSource is nonEmptyPtr-wrapped
+	// by nonEmptyPtr() and is nil-safe so we leave it as a generic matcher.
 	args[36] = boolPointerMatcher{want: entry.Success}
 	args[37] = stringPointerMatcher{want: entry.RequestStatus}
 	args[77] = stringPointerMatcher{want: entry.AgentName}
 	args[78] = stringPointerMatcher{want: entry.AgentType}
 	args[79] = stringPointerMatcher{want: entry.ClientProtocol}
 	args[80] = stringPointerMatcher{want: entry.VirtualClientID}
+	// $82-$91 t0..t9 stay AnyArg; $92 discard; $93-$96 canonical/routing/attachments
+	args[91] = nullableJSONArg(entry.DiscardEvents)
 	return args
 }
 
-func TestUpdateRequestLog_UsesTerminalStateGuard(t *testing.T) {
+func TestUpsertRequestLogBodies_UsesBodyOnlyColumns(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	tx, err := mockDB.Begin(context.Background())
+	require.NoError(t, err)
+
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot \(request_id, ts, request_body, response_body, outbound_body\)`).
+		WithArgs("req-body-only", `{"messages":[]}`, `{"choices":[]}`, `{"messages":[]}`).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	client := &Client{}
+	err = client.upsertRequestLogBodies(
+		context.Background(),
+		tx,
+		"req-body-only",
+		"",
+		`{"messages":[]}`,
+		`{"choices":[]}`,
+		`{"messages":[]}`,
+	)
+	require.NoError(t, err)
+
+	mockDB.ExpectRollback()
+	require.NoError(t, tx.Rollback(context.Background()))
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestInsertSessionOpenedEvent_IsIdempotent(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	tx, err := mockDB.Begin(context.Background())
+	require.NoError(t, err)
+	opened, err := outbox.BuildSessionOpenedEventV1("tenant-1", "session-1", "42")
+	require.NoError(t, err)
+
+	mockDB.ExpectExec(`INSERT INTO outbox_events[\s\S]*ON CONFLICT \(event_id\) DO NOTHING`).
+		WithArgs(
+			opened.EventID, opened.EventType, opened.SchemaVersion, opened.TenantID,
+			opened.AggregateID, opened.AggregateVersion, opened.OccurredAt, pgxmock.AnyArg(),
+		).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	require.NoError(t, insertSessionOpenedEvent(context.Background(), tx, opened, "req-1"))
+	mockDB.ExpectRollback()
+	require.NoError(t, tx.Rollback(context.Background()))
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+func TestUpdateRequestLog_AllowsTerminalSuccessToReplaceIntermediateFailure(t *testing.T) {
 	mockDB, err := pgxmock.NewPool()
 	require.NoError(t, err)
 	defer mockDB.Close()
@@ -58,16 +126,16 @@ func TestUpdateRequestLog_UsesTerminalStateGuard(t *testing.T) {
 	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
 		WithArgs("req-update", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	status := RequestStatusFailure
+	status := RequestStatusSuccess
 	requestLogArgs := requestLogUpdateArgs(RequestLogEntry{
-		Success:       false,
+		Success:       true,
 		RequestStatus: &status,
 	})
 	mockDB.ExpectExec(`UPDATE request_logs_hot[\s\S]*request_logs_hot\.request_status = 'failure'`).
 		WithArgs(requestLogArgs...).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 
@@ -75,11 +143,35 @@ func TestUpdateRequestLog_UsesTerminalStateGuard(t *testing.T) {
 	err = client.updateRequestLog(&RequestLogEntry{
 		RequestID:     "req-update",
 		Op:            RequestLogUpdate,
-		Success:       false,
+		Success:       true,
 		RequestStatus: &status,
 	})
 	require.NoError(t, err)
 	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestMergeRequestLogEntry_PreservesProtocolMetadata(t *testing.T) {
+	client := "openai-completions"
+	upstream := "anthropic-messages"
+	converted := true
+	dst := &RequestLogEntry{RequestID: "request-1"}
+	src := &RequestLogEntry{
+		ClientProtocol:     &client,
+		UpstreamProtocol:   &upstream,
+		ProtocolConversion: &converted,
+	}
+
+	mergeRequestLogEntry(dst, src)
+
+	if dst.ClientProtocol == nil || *dst.ClientProtocol != client {
+		t.Fatalf("client protocol = %v, want %q", dst.ClientProtocol, client)
+	}
+	if dst.UpstreamProtocol == nil || *dst.UpstreamProtocol != upstream {
+		t.Fatalf("upstream protocol = %v, want %q", dst.UpstreamProtocol, upstream)
+	}
+	if dst.ProtocolConversion == nil || !*dst.ProtocolConversion {
+		t.Fatalf("protocol conversion = %v, want true", dst.ProtocolConversion)
+	}
 }
 
 func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T) {
@@ -109,12 +201,10 @@ func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T
 			wantRollback: true,
 		},
 		{
-			name:         "failure to success",
-			entry:        RequestLogEntry{RequestID: "req-failure-success", Success: true, RequestStatus: strptr(RequestStatusSuccess)},
-			updateRows:   0,
-			existing:     true,
-			wantQuery:    true,
-			wantRollback: true,
+			name:       "failure to success",
+			entry:      RequestLogEntry{RequestID: "req-failure-success", Success: true, RequestStatus: strptr(RequestStatusSuccess)},
+			updateRows: 1,
+			wantCommit: true,
 		},
 		{
 			name:       "success enrichment",
@@ -148,7 +238,7 @@ func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T
 			}
 			if tc.wantCommit {
 				mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 					WillReturnResult(pgxmock.NewResult("INSERT", 1))
 				mockDB.ExpectCommit()
 			}
@@ -187,15 +277,15 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 100)
+	requestInsertArgs := make([]interface{}, 102) // 608: +request_class/due_at ($101/$102)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
-	mockDB.ExpectExec(`INSERT INTO request_logs_hot`).
+	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
 		WithArgs(requestInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mockDB.ExpectCommit()
 
@@ -303,82 +393,23 @@ func TestResolveRequestStatus(t *testing.T) {
 }
 
 func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T) {
-	// Per the 2026-07 data-lifecycle architecture, UPDATE must target
-	// request_logs_default (the canonical write target), not the parent
-	// table. Tests below pin the schema: the SET clause is unqualified
-	// (no `rl.` alias) and the WHERE clause references the same
-	// request_logs_default target — never the parent.
+	// 2026-08-20: 校正 stale 断言。早期的 *_default 表（canonical write target）
+	// 已被迁移 341 替换为 request_logs_hot（hot table），production 代码不再
+	// 写 request_logs_default。该测试现锁定"UPDATE 必须指向 hot 表且不带
+	// 别名"。
+	//
+	// 注：不再校验具体的列清单（运维在迁移 341 / 455 之间改过两次表结构），
+	// 只校验 SET 子句没有 `rl.` 别名引用 + WHERE 指向 hot 表。这是 schema
+	// 演进路径上的"轻量级回归防护"——具体列由 SQL 编译器保证。
 	const updateSQL = `
-		UPDATE request_logs_default
+		UPDATE request_logs_hot
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
-		       credential_id = COALESCE($4, credential_id),
-		       provider_id = COALESCE($5, provider_id),
-		       canonical_id = COALESCE($6, canonical_id),
-		       client_profile = COALESCE($7, client_profile),
-		       request_mode = COALESCE($8, request_mode),
-		       end_user_id = COALESCE($9, end_user_id),
-		       prompt_tokens = COALESCE($10, prompt_tokens),
-		       completion_tokens = COALESCE($11, completion_tokens),
-		       total_tokens = COALESCE($12, total_tokens),
-		       cache_read_tokens = COALESCE($13, cache_read_tokens),
-		       cache_write_tokens = COALESCE($14, cache_write_tokens),
-		       cost_usd = COALESCE($15, cost_usd),
-		       cost_display = COALESCE($16, cost_display),
-		       cost_currency = COALESCE($17, cost_currency),
-		       stream_first_chunk_ms = COALESCE($18, stream_first_chunk_ms),
-		       stream_chunk_count = COALESCE($19, stream_chunk_count),
-		       stream_done_received = COALESCE($20, stream_done_received),
-		       stream_interrupted = COALESCE($21, stream_interrupted),
-		       response_checksum = COALESCE($22, response_checksum),
-		       response_preview = COALESCE($23, response_preview),
-		       response_body = COALESCE(CAST($24 AS jsonb), response_body),
-		       failure_stage = COALESCE($25, failure_stage),
-		       failure_detail_code = COALESCE($26, failure_detail_code),
-		       transform_rule_id = COALESCE($27, transform_rule_id),
-		       egress_protocol = COALESCE($28, egress_protocol),
-		       request_preview = COALESCE($29, request_preview),
-		       transform_summary = COALESCE($30, transform_summary),
-		       request_body = COALESCE(CAST($31 AS jsonb), request_body),
-		       usage_source = COALESCE(NULLIF($32, ''), usage_source),
-		       success = COALESCE($33, success),
-		       request_status = COALESCE($34, request_status),
-		       error_kind = CASE
-		           WHEN COALESCE($33, success) = TRUE THEN NULL
-		           ELSE COALESCE($35, error_kind)
-		       END,
-		       latency_ms = COALESCE($36, latency_ms),
-		       identity_hash = COALESCE($37, identity_hash),
-		       search_text = COALESCE($38, search_text),
-		       gw_session_id = COALESCE($39, gw_session_id),
-		       gw_task_id = COALESCE($40, gw_task_id),
-		       api_key_prefix = COALESCE($41, api_key_prefix),
-		       api_key_owner_user = COALESCE($42, api_key_owner_user),
-		       application_code = COALESCE($43, application_code),
-		       is_auto_request = COALESCE($44, is_auto_request),
-		       task_type = COALESCE($45, task_type),
-		       auto_profile = COALESCE($46, auto_profile),
-		       auto_decision = COALESCE(CAST($47 AS jsonb), auto_decision),
-		       auto_confidence = COALESCE($48, auto_confidence),
-		       work_type = COALESCE($49, work_type),
-		       credits_charged = COALESCE($50, credits_charged),
-		       parent_request_id = COALESCE($51, parent_request_id),
-		       compression_reason = COALESCE($52, compression_reason),
-		       compression_strategy = COALESCE($53, compression_strategy),
-		       compression_meta = COALESCE(CAST($54 AS jsonb), compression_meta),
-		       outbound_body = COALESCE(CAST($55 AS jsonb), outbound_body),
-		       outbound_msg_count = COALESCE($56, outbound_msg_count),
-		       outbound_token_est = COALESCE($57, outbound_token_est),
-		       outbound_msg_hashes = COALESCE(CAST($58 AS jsonb), outbound_msg_hashes),
 		       quality_flags = COALESCE(CAST($59 AS text[]), quality_flags),
-		       quality_fix_actions = COALESCE(CAST($60 AS jsonb), quality_fix_actions),
-		       quality_score = COALESCE($61, quality_score),
-		       upstream_finish_reason = COALESCE($62, upstream_finish_reason),
-		       tool_calls = COALESCE(CAST($63 AS jsonb), tool_calls),
-		       client_request_id = COALESCE($64, client_request_id)
+		       quality_fix_actions = COALESCE(CAST($60 AS jsonb), quality_fix_actions)
 		  FROM latest
-		 WHERE request_logs_default.id = latest.id
-		   AND request_logs_default.ts = latest.ts
+		 WHERE request_logs_hot.id = latest.id
+		   AND request_logs_hot.ts = latest.ts
 	`
 
 	setIdx := strings.Index(updateSQL, "SET ")
@@ -393,35 +424,47 @@ func TestRequestLogsUpdateSQL_SetClauseDoesNotReferenceTargetAlias(t *testing.T)
 	if strings.Contains(updateSQL, "UPDATE request_logs rl") {
 		t.Fatal("UPDATE must not alias request_logs as rl")
 	}
-	if !strings.Contains(updateSQL, "UPDATE request_logs_default") {
-		t.Fatal("UPDATE must target the *_default canonical write target (request_logs_default)")
+	if strings.Contains(updateSQL, "UPDATE request_logs_default") {
+		t.Fatal("UPDATE must NOT target the deprecated request_logs_default table")
 	}
-	if !strings.Contains(updateSQL, "request_logs_default.id") {
-		t.Fatal("WHERE clause must reference request_logs_default.id (never the parent table)")
+	if !strings.Contains(updateSQL, "UPDATE request_logs_hot") {
+		t.Fatal("UPDATE must target request_logs_hot (post-migration 341)")
+	}
+	if !strings.Contains(updateSQL, "request_logs_hot.id") {
+		t.Fatal("WHERE clause must reference request_logs_hot.id")
 	}
 }
 
-func TestInsertUpsertSQL_DoesNotReferenceUndefinedRLAlias(t *testing.T) {
-	// Per the 2026-07 data-lifecycle architecture, INSERT INTO ...
-	// ON CONFLICT DO UPDATE targets request_logs_default (the canonical
-	// write target), not the parent table.
-	const upsertTail = `
-		ON CONFLICT (request_id, ts) DO UPDATE SET
-			client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_default.client_request_id)
+func TestRequestLogsHotTarget_QualityColumnsUseHotTable(t *testing.T) {
+	// 2026-08-20: 锁定 quality_* 列随 INSERT/UPDATE 一起迁移到 hot 表。
+	// 测试不依赖具体参数编号，只验证 SQL 中同时出现 quality_* 和 request_logs_hot。
+	const sql = `
+		INSERT INTO request_logs_hot (request_id, ts, quality_flags, quality_fix_actions)
+		VALUES ($1, $2, $3::text[], $4::text::jsonb)
 	`
-	if strings.Contains(upsertTail, "rl.client_request_id") {
-		t.Fatal("upsert tail must not reference undefined rl alias")
+	if !strings.Contains(sql, "request_logs_hot") {
+		t.Fatal("INSERT must target request_logs_hot")
 	}
-	if !strings.Contains(upsertTail, "request_logs_default.client_request_id") {
-		t.Fatal("upsert tail must qualify the existing column with the request_logs_default table name to avoid ambiguity")
+	for _, col := range []string{"quality_flags", "quality_fix_actions"} {
+		if !strings.Contains(sql, col) {
+			t.Errorf("SQL missing %s", col)
+		}
 	}
 }
-
 func TestNormalizeRequestStatus(t *testing.T) {
 	entry := &RequestLogEntry{Op: RequestLogInsert, Success: false}
 	normalizeRequestStatus(entry)
 	if entry.RequestStatus == nil || *entry.RequestStatus != RequestStatusInProgress {
 		t.Fatalf("expected in_progress, got %#v", entry.RequestStatus)
+	}
+}
+
+func TestMergeRequestLogEntry_PreservesDiscardEventsOnEmptyUpdate(t *testing.T) {
+	events := json.RawMessage(`[{"reason":"survival_attempt_discarded","attempt_number":1}]`)
+	dst := &RequestLogEntry{RequestID: "req-discard-preserve", DiscardEvents: events}
+	mergeRequestLogEntry(dst, &RequestLogEntry{RequestID: dst.RequestID})
+	if string(dst.DiscardEvents) != string(events) {
+		t.Fatalf("DiscardEvents = %s, want %s", dst.DiscardEvents, events)
 	}
 }
 
@@ -440,6 +483,76 @@ func TestMergeRequestLogEntry_PreservesBodiesOnEmptyUpdate(t *testing.T) {
 	if dst.ResponseBody == nil || *dst.ResponseBody != responseBody {
 		t.Fatalf("ResponseBody = %v, want original body", dst.ResponseBody)
 	}
+}
+
+func TestPersistRequestLog_ReleasesBodiesAfterPersistedHooks(t *testing.T) {
+	requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
+	responseBody := `{"choices":[{"message":{"content":"hi"}}]}`
+	outboundBody := json.RawMessage(`{"messages":[{"role":"user","content":"hello"}]}`)
+	status := RequestStatusSuccess
+
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
+		WithArgs("req-release", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+		WithArgs(requestLogUpdateArgs(RequestLogEntry{Success: true, RequestStatus: &status})...).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectCommit()
+
+	entry := &RequestLogEntry{
+		RequestID:     "req-release",
+		Op:            RequestLogUpdate,
+		Success:       true,
+		RequestStatus: &status,
+		RequestBody:   &requestBody,
+		ResponseBody:  &responseBody,
+		OutboundBody:  outboundBody,
+	}
+	client := &Client{requestLogDB: mockDB}
+	client.AddOnRequestLogPersisted(func(got *RequestLogEntry) {
+		require.Equal(t, requestBody, *got.RequestBody)
+		require.Equal(t, responseBody, *got.ResponseBody)
+		require.Equal(t, outboundBody, got.OutboundBody)
+	})
+
+	require.NoError(t, client.persistRequestLog(entry))
+	require.Nil(t, entry.RequestBody)
+	require.Nil(t, entry.ResponseBody)
+	require.Nil(t, entry.OutboundBody)
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestPersistRequestLog_KeepsBodiesWhenWriteFails(t *testing.T) {
+	requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
+	responseBody := `{"choices":[{"message":{"content":"hi"}}]}`
+	outboundBody := json.RawMessage(`{"messages":[{"role":"user","content":"hello"}]}`)
+
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin().WillReturnError(pgx.ErrTxClosed)
+	entry := &RequestLogEntry{
+		RequestID:    "req-retain",
+		RequestBody:  &requestBody,
+		ResponseBody: &responseBody,
+		OutboundBody: outboundBody,
+	}
+	client := &Client{requestLogDB: mockDB}
+
+	require.Error(t, client.persistRequestLog(entry))
+	require.Equal(t, requestBody, *entry.RequestBody)
+	require.Equal(t, responseBody, *entry.ResponseBody)
+	require.Equal(t, outboundBody, entry.OutboundBody)
+	require.NoError(t, mockDB.ExpectationsWereMet())
 }
 
 func TestMergeRequestLogEntry_PreservesClientPerceptionFields(t *testing.T) {
@@ -461,6 +574,21 @@ func TestMergeRequestLogEntry_PreservesClientPerceptionFields(t *testing.T) {
 	require.Equal(t, agentType, *dst.AgentType)
 	require.Equal(t, protocol, *dst.ClientProtocol)
 	require.Equal(t, virtualID, *dst.VirtualClientID)
+}
+
+func TestMergeRequestLogEntry_PreservesMirrorDimensions(t *testing.T) {
+	projectID := "project-123"
+	namespace := "workspace"
+	dst := &RequestLogEntry{
+		RequestID: "req-mirror-dimensions",
+		ProjectID: &projectID,
+		Namespace: &namespace,
+	}
+
+	mergeRequestLogEntry(dst, &RequestLogEntry{RequestID: dst.RequestID, Success: true})
+
+	require.Equal(t, projectID, *dst.ProjectID)
+	require.Equal(t, namespace, *dst.Namespace)
 }
 
 func TestMergeRequestLogEntry_ClearsErrorKindOnSuccess(t *testing.T) {
@@ -853,4 +981,168 @@ func TestLookupTurnNumber(t *testing.T) {
 			mockDB.Close()
 		}
 	})
+}
+
+// ── 2026-08-25 live-stream decoupling: SetOnRequestLogEmitted hook ────────────
+//
+// EmitRequestLog fires onEmitted synchronously on the caller's goroutine
+// BEFORE the entry enters the queue (or the sync-fallback persist path).
+// These tests pin that ordering contract plus the disabled/stopped gates.
+
+// newEmittedHookClient builds an Enabled() Client with a worker-free queue:
+// EmitRequestLog runs gate → onEmitted → enqueue, and pre-filling the buffer
+// drives the queue-full sync fallback (persistRequestLog → onPersisted).
+// No worker goroutine is started, so nothing drains the queue behind the
+// test's back and there is nothing to leak.
+func newEmittedHookClient(t *testing.T, bufSize int) (*Client, pgxmock.PgxPoolIface) {
+	t.Helper()
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	t.Cleanup(func() { mockDB.Close() })
+	return &Client{
+		requestLogDB: mockDB,
+		queue:        make(chan any, bufSize),
+		done:         make(chan struct{}),
+	}, mockDB
+}
+
+func TestRequestLogEmittedHookFiresBeforeQueueing(t *testing.T) {
+	c, _ := newEmittedHookClient(t, 4)
+	emitted := make(chan *RequestLogEntry, 1)
+	c.SetOnRequestLogEmitted(func(entry *RequestLogEntry) { emitted <- entry })
+
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-emit-sync", TenantID: "tenant-a"})
+
+	// Synchronous contract: by the time EmitRequestLog returns, the hook has
+	// already fired — no receive-wait, no scheduler dependency.
+	select {
+	case got := <-emitted:
+		require.Equal(t, "req-emit-sync", got.RequestID)
+	default:
+		t.Fatal("onEmitted must fire before EmitRequestLog returns (synchronous, caller goroutine)")
+	}
+	// The same call must also have queued the entry (after the hook).
+	select {
+	case queued := <-c.queue:
+		entry, ok := queued.(*RequestLogEntry)
+		require.True(t, ok, "queued item type %T", queued)
+		require.Equal(t, "req-emit-sync", entry.RequestID)
+		require.Equal(t, RequestLogInsert, entry.Op, "EmitRequestLog must default Op before queueing")
+	default:
+		t.Fatal("entry must be queued by EmitRequestLog")
+	}
+}
+
+func TestSetOnRequestLogEmitted_ReplacesAndClears(t *testing.T) {
+	c, _ := newEmittedHookClient(t, 4)
+	first, second := make(chan struct{}, 2), make(chan struct{}, 2)
+	c.SetOnRequestLogEmitted(func(*RequestLogEntry) { first <- struct{}{} })
+	c.SetOnRequestLogEmitted(func(*RequestLogEntry) { second <- struct{}{} }) // replace semantics
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-replace"})
+
+	select {
+	case <-first:
+		t.Fatal("a replaced onEmitted hook must not fire")
+	default:
+	}
+	select {
+	case <-second:
+	default:
+		t.Fatal("the latest onEmitted hook must fire")
+	}
+
+	c.SetOnRequestLogEmitted(nil) // clear
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-clear"})
+	select {
+	case <-second:
+		t.Fatal("cleared onEmitted hook must not fire")
+	default:
+	}
+}
+
+// TestRequestLogEmittedBeforePersisted pins the two-phase broadcast contract:
+// for one entry, the onEmitted hook fires before the entry reaches the
+// database and the onPersisted hook fires only after the successful INSERT.
+// The queue is pre-filled so EmitRequestLog takes the queue-full sync
+// fallback (persistRequestLog), letting BOTH hooks fire within a single call
+// on the same goroutine — the observed order is therefore deterministic.
+func TestRequestLogEmittedBeforePersisted(t *testing.T) {
+	c, mockDB := newEmittedHookClient(t, 1)
+
+	// Insert-path mock sequence (mirrors TestUpdateRequestLog_MissingRequestFallsBackToInsert).
+	mockDB.ExpectBegin()
+	usageInsertArgs := make([]interface{}, 18)
+	for index := range usageInsertArgs {
+		usageInsertArgs[index] = pgxmock.AnyArg()
+	}
+	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
+		WithArgs(usageInsertArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	requestInsertArgs := make([]interface{}, 102) // 608: +request_class/due_at ($101/$102)
+	for index := range requestInsertArgs {
+		requestInsertArgs[index] = pgxmock.AnyArg()
+	}
+	mockDB.ExpectExec(`INSERT INTO\s+request_logs_hot\s*\(`).
+		WithArgs(requestInsertArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectCommit()
+
+	var mu sync.Mutex
+	var order []string
+	record := func(stage string) func(*RequestLogEntry) {
+		return func(*RequestLogEntry) {
+			mu.Lock()
+			order = append(order, stage)
+			mu.Unlock()
+		}
+	}
+	c.SetOnRequestLogEmitted(record("emitted"))
+	c.AddOnRequestLogPersisted(record("persisted"))
+
+	// 1st emit fills the queue; 2nd emit hits the sync fallback: gate →
+	// onEmitted → persistRequestLog (INSERT) → onPersisted.
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-fill", TenantID: "tenant-a"})
+	c.EmitRequestLog(&RequestLogEntry{RequestID: "req-emit-before-persist", TenantID: "tenant-a"})
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"emitted", "emitted", "persisted"}, order,
+		"per entry the emitted hook must fire before the persisted hook")
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+// TestRequestLogEmittedGatedOnDisabledAndStopped: the onEmitted hook is a
+// telemetry emit concern, not a shutdown broadcast — it must stay silent when
+// the client is disabled (no DB) or already stopped.
+func TestRequestLogEmittedGatedOnDisabledAndStopped(t *testing.T) {
+	fired := func() chan *RequestLogEntry { return make(chan *RequestLogEntry, 1) }
+
+	disabled := NewClient()
+	require.False(t, disabled.Enabled(), "client without a DB must be disabled")
+	disabledFired := fired()
+	disabled.SetOnRequestLogEmitted(func(entry *RequestLogEntry) { disabledFired <- entry })
+	disabled.EmitRequestLog(&RequestLogEntry{RequestID: "req-gate-disabled"})
+	select {
+	case <-disabledFired:
+		t.Fatal("onEmitted must not fire when the client is disabled")
+	default:
+	}
+
+	stopped, _ := newEmittedHookClient(t, 4)
+	stopped.Stop()
+	stoppedFired := fired()
+	stopped.SetOnRequestLogEmitted(func(entry *RequestLogEntry) { stoppedFired <- entry })
+	stopped.EmitRequestLog(&RequestLogEntry{RequestID: "req-gate-stopped"})
+	select {
+	case <-stoppedFired:
+		t.Fatal("onEmitted must not fire after Stop()")
+	default:
+	}
+	// Sanity: the gate fires before queueing, so nothing was enqueued either.
+	if got := len(stopped.queue); got != 0 {
+		t.Fatalf("stopped client queued %d entries, want 0", got)
+	}
 }

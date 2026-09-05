@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateCompact } from '../i18n/useFormat'
 import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
@@ -170,12 +170,6 @@ function fmtPct(v: number | undefined | null): string {
   return (Number(v) * 100).toFixed(1) + '%'
 }
 
-function fmtDate(v: string | null | undefined): string {
-  if (!v) return '—'
-  const d = new Date(v)
-  return d.toLocaleString(localeRef.value, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
-}
-
 const strategyLabels: Record<string, string> = {
   delta_append: t('compression.delta_append'),
   sliding_window_token: t('compression.sliding_window_token'),
@@ -340,6 +334,14 @@ watch(activeTab, loadAll)
           {{ stats.estimated_tokens_saved != null ? fmtNum(stats.estimated_tokens_saved) : '—' }}
         </div>
       </div>
+      <div class="stat-card">
+        <div class="stat-label">{{ t('compression.stats.tokenBands') }}</div>
+        <div class="stat-value" style="font-size:14px">
+          {{ t('compression.stats.tokenBandBelow') }} {{ fmtNum(stats.token_band_below ?? 0) }}
+          · {{ t('compression.stats.tokenBandPreliminary') }} {{ fmtNum(stats.token_band_preliminary ?? 0) }}
+          · {{ t('compression.stats.tokenBandForced') }} {{ fmtNum(stats.token_band_forced ?? 0) }}
+        </div>
+      </div>
     </div>
 
     <!-- Strategy Distribution + Time Series -->
@@ -431,7 +433,7 @@ watch(activeTab, loadAll)
                 </template>
                 <span v-else class="text-muted">—</span>
               </td>
-              <td>{{ fmtDate(s.last_ts) }}</td>
+              <td>{{ fmtDateCompact(s.last_ts) }}</td>
             </tr>
           </tbody>
         </table>
@@ -716,7 +718,7 @@ watch(activeTab, loadAll)
   padding: 1px 6px;
   border-radius: 4px;
   font-size: 11px;
-  color: #fff;
+  color: var(--on-primary);
   font-weight: 500;
 }
 
@@ -774,8 +776,8 @@ watch(activeTab, loadAll)
   color: var(--text-primary);
   border: 1px solid var(--border);
 }
-.chip-on { background: rgba(52,211,153,.15); color: #34d399; border-color: rgba(52,211,153,.3); }
-.chip-off { background: rgba(139,148,158,.15); color: #8b949e; border-color: rgba(139,148,158,.3); }
+.chip-on { background: var(--success-bg); color: var(--success); border-color: var(--success-bd); }
+.chip-off { background: var(--neutral-bg); color: var(--muted); border-color: var(--neutral-bd); }
 .chip-item { display: flex; align-items: center; gap: 6px; }
 .chip-lbl { font-size: 11px; color: var(--text-secondary); }
 .code-chip { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

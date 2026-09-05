@@ -1,6 +1,7 @@
 /** Sidebar navigation — grouped menus with role / tenant visibility flags. */
 
 import { showOpsPlatform } from './edition'
+import { usePersistedValue } from '../composables/usePersistedValue'
 
 export type NavItem = {
   path: string
@@ -11,6 +12,12 @@ export type NavItem = {
   super?: boolean
   /** super_admin + default tenant (platform ops) */
   platformOps?: boolean
+  /**
+   * 2026-09-04: 供应商控制台 —— super_admin 或 default 租户 tenant_admin。
+   * 后端 ProviderConsoleMiddleware 对 tenant_admin 放行只读 + 凭据
+   * API Key 轮换，其余写操作仍 super_admin 专属。
+   */
+  providerConsole?: boolean
   /** Non-default tenant portal only */
   tenantOnly?: boolean
   /** Hidden when logged in as non-default tenant (tenant_admin) */
@@ -38,6 +45,13 @@ export type NavItem = {
   exact?: boolean
   /** Only show when system is not activated (for activation-related pages) */
   notActivatedOnly?: boolean
+  /**
+   * 2026-09-02: 当系统未激活时,该菜单项会被渲染成「前往激活」的按钮,
+   * 目标路径替换为 /customer/update-activate;激活后恢复为正常菜单项。
+   * 用于: 自动升级、License 管理等需要 License 的运维入口,
+   * 避免未激活用户点进去看不到 license / 升级通道。
+   */
+  activateWhenNotActivated?: boolean
 }
 
 export type NavGroup = {
@@ -51,6 +65,54 @@ export type NavGroup = {
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
   { path: '/dashboard', label: '总览', labelKey: 'nav.item.overview', icon: '📊', platformOps: true, exact: true },
 ]
+
+/**
+ * 2026-09-02: 当一个菜单项被 `activateWhenNotActivated` 标记且系统未激活时,
+ * 点击该菜单项会被路由到本路径。它是激活向导页面的统一入口。
+ */
+export const ACTIVATE_REDIRECT_PATH = '/customer/update-activate'
+
+/**
+ * 2026-09-02: 根据当前激活状态决定一个菜单项最终渲染的路径与样式。
+ * 返回值供 AppTopbar 等渲染层直接使用:
+ *   - `path`: 跳转目标(未激活时替换为 ACTIVATE_REDIRECT_PATH)
+ *   - `activateAction`: 是否以「激活」CTA 形式渲染(粗体 / 强调色 / 右上角角标)
+ *   - `originalPath`: 原始路径(只在 activateAction=true 时有意义,用于 tooltip 提示)
+ */
+export function resolveNavItemActivation(
+  item: NavItem,
+  opts: { isActivated?: boolean },
+): {
+  path: string
+  labelKey?: string
+  label: string
+  icon: string
+  external?: boolean
+  exact?: boolean
+  activateAction: boolean
+  originalPath: string
+} {
+  const base = {
+    labelKey: item.labelKey,
+    label: item.label,
+    icon: item.icon,
+    external: item.external,
+    exact: item.exact,
+    originalPath: item.path,
+  }
+  if (item.activateWhenNotActivated && opts.isActivated === false) {
+    return {
+      ...base,
+      path: ACTIVATE_REDIRECT_PATH,
+      activateAction: true,
+    }
+  }
+  return {
+    ...base,
+    path: item.path,
+    activateAction: false,
+  }
+}
 
 export const NAV_GROUPS: NavGroup[] = [
   {
@@ -74,7 +136,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
       { path: '/probe-health', label: '探测健康度', labelKey: 'nav.item.probeHealth', icon: '🔍', super: true, hideForTenant: true },
       { path: '/dashboard?tab=selfcheck', label: '系统自检', labelKey: 'nav.item.systemMonitor', icon: '📈', super: true, hideForTenant: true },
-      { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', super: true, hideForTenant: true },
+      { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
@@ -100,9 +162,12 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
       { path: '/dispatch/waterfall', label: '队列瀑布图', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
       { path: '/admin/turns', label: '轮次列表', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },
-      // 2026-07-23: ai-session-manager plugin 入口
-      // Plugin 模式：完整页面跳转（同 opsPlatform 的 external 机制）
-      { path: '/plugins/ai-session-manager/sessions', label: '会话列表', labelKey: 'nav.item.pluginSessions', icon: '💬', super: true, hideForTenant: true, external: true, plugin: 'ai-session-manager' },
+      // T9 — 请求注册表 + 连接注册台（mock stage）
+      { path: '/admin/request-registry', label: '请求注册表', labelKey: 'nav.item.requestRegistry', icon: '📑', super: true, hideForTenant: true },
+      { path: '/admin/connection-registry', label: '连接注册台', labelKey: 'nav.item.connectionRegistry', icon: '🔗', super: true, hideForTenant: true },
+      // V5.1: plugin-runtime nav (ai-session-manager etc.) is now injected
+      // dynamically via /api/v1/plugin-nav. See mergeRemotePluginNav in
+      // AppTopbar.vue — the request-sessions group above is the merge target.
     ],
   },
   {
@@ -111,6 +176,7 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.dataOps',
     items: [
       { path: '/admin/settings', label: '系统设置', labelKey: 'nav.item.settings', icon: '⚙️', super: true, hideForTenant: true },
+      { path: '/admin/proxy', label: '代理管理', labelKey: 'nav.item.proxy', icon: '🌐', super: true, hideForTenant: true },
       { path: '/admin/data-lifecycle', label: '数据生命周期', labelKey: 'nav.item.dataLifecycle', icon: '💾', platformOps: true, hideForTenant: true },
       { path: '/format-anomalies', label: '格式异常监控', labelKey: 'nav.item.formatAnomalies', icon: '⚠️', super: true, hideForTenant: true },
       { path: '/model-integrity', label: '模型完整性监控', labelKey: 'nav.item.modelIntegrity', icon: '🛰️', super: true, hideForTenant: true },
@@ -136,7 +202,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/maintain/ops/downloads', label: '发布与下载', labelKey: 'nav.item.opsDownloads', icon: '📦', super: true, hideForTenant: true, opsPlatform: true, external: true },
       { path: '/maintain/ops/licenses', label: 'License管理', labelKey: 'nav.item.opsLicenses', icon: '🔑', super: true, hideForTenant: true, opsPlatform: true, external: true },
       { path: '/maintain/ops/faults', label: '故障管理', labelKey: 'nav.item.opsFaults', icon: '⚠️', super: true, hideForTenant: true, opsPlatform: true, external: true },
-      { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true, opsPlatform: true, external: true },
+      { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', super: true, hideForTenant: true, opsPlatform: true, external: true, activateWhenNotActivated: true },
       { path: '/ops/vibecoding', label: 'VibeCoding', labelKey: 'nav.item.opsVibeCoding', icon: '💻', super: true, hideForTenant: true, opsPlatform: true },
     ],
   },
@@ -144,7 +210,11 @@ export const NAV_GROUPS: NavGroup[] = [
     id: 'guide',
     label: '接入指南',
     labelKey: 'nav.group.guide',
-    items: [{ path: '/examples', label: '接入示例', labelKey: 'nav.item.examples', icon: '📝' }],
+    items: [
+      { path: '/examples', label: '接入示例', labelKey: 'nav.item.examples', icon: '📝' },
+      { path: '/maintain/ops/autoupdate', label: '自动更新', labelKey: 'nav.item.opsAutoUpdate', icon: '🚀', external: true, opsPlatform: true, activateWhenNotActivated: true },
+      { path: '/maintain/donate', label: '赞助与捐赠', labelKey: 'nav.item.supportDonate', icon: '💖', external: true },
+    ],
   },
   {
     id: 'chat',
@@ -154,30 +224,31 @@ export const NAV_GROUPS: NavGroup[] = [
   },
 ]
 
-export function canShowNavItem(
-  item: NavItem,
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
-): boolean {
+type NavVisibilityOpts = {
+  isSuperAdmin: boolean
+  isPlatformOps: boolean
+  isTenantPortal: boolean
+  /** super_admin 或 default 租户 tenant_admin（2026-09-04 供应商控制台） */
+  isProviderConsole?: boolean
+  isActivated?: boolean
+}
+
+export function canShowNavItem(item: NavItem, opts: NavVisibilityOpts): boolean {
   if (item.opsPlatform && !showOpsPlatform()) return false
   if (item.super && !opts.isSuperAdmin) return false
   if (item.platformOps && !opts.isPlatformOps) return false
+  if (item.providerConsole && !opts.isProviderConsole) return false
   if (item.tenantOnly && !opts.isTenantPortal) return false
   if (item.hideForTenant && opts.isTenantPortal) return false
   if (item.notActivatedOnly && opts.isActivated) return false
   return true
 }
 
-export function visibleNavItems(
-  items: NavItem[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
-): NavItem[] {
+export function visibleNavItems(items: NavItem[], opts: NavVisibilityOpts): NavItem[] {
   return items.filter((item) => canShowNavItem(item, opts))
 }
 
-export function visibleNavGroups(
-  groups: NavGroup[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
-): NavGroup[] {
+export function visibleNavGroups(groups: NavGroup[], opts: NavVisibilityOpts): NavGroup[] {
   return groups
     .map((g) => ({
       ...g,
@@ -194,20 +265,26 @@ export function isNavItemActive(path: string, currentPath: string, exact?: boole
 
 const SIDEBAR_COLLAPSED_KEY = 'llmgw_sidebar_collapsed'
 
+// LP8 (2026-08-24): sidebar collapse state persisted through usePersistedValue
+// for shared lifecycle-flush / error-degrade. Stored as '0'/'1' (compact)
+// instead of JSON to keep the legacy key format intact for any external
+// tooling that reads localStorage directly.
+const sidebarCollapsedPersisted = usePersistedValue<boolean>(
+  SIDEBAR_COLLAPSED_KEY,
+  () => false,
+  {
+    immediate: true,
+    serialize: (v) => (v ? '1' : '0'),
+    deserialize: (r) => (r === '1' ? true : r === '0' ? false : undefined),
+  },
+)
+
 export function readSidebarCollapsed(): boolean {
-  try {
-    return localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === '1'
-  } catch {
-    return false
-  }
+  return sidebarCollapsedPersisted.value.value
 }
 
 export function writeSidebarCollapsed(collapsed: boolean) {
-  try {
-    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, collapsed ? '1' : '0')
-  } catch {
-    // ignore
-  }
+  sidebarCollapsedPersisted.value.value = collapsed
 }
 
 // 2026-07-21: 顶部 topbar 用的"扁平化 + 分组标签"导航数据。
@@ -223,6 +300,101 @@ export type TopbarNavGroup = {
 }
 
 /**
+ * V5.1: adapter from the plugin-runtime NavEntry[] (fetched via
+ * /api/v1/plugin-nav) into our local NavItem shape.
+ *
+ * Notes:
+ *  - Plugin entries are always rendered as full-page external `<a>` links
+ *    (same as opsPlatform / maintain entries), because the plugin's web
+ *    bundle lives at /plugins/<plugin_id>/<page_path> — outside the Gateway
+ *    SPA's router. external:true triggers the <a href> branch in AppTopbar.
+ *  - role/tenant flags come straight from the manifest (super, platform_ops,
+ *    tenant_only). hideForTenant is the inverse of platform_ops for symmetry
+ *    with the static items.
+ *  - Unknown nav_group values fall back to 'plugins' so the entry still
+ *    shows up under a discoverable group instead of being silently dropped.
+ *  - i18n: label_key is forwarded; AppTopbar's `t()` resolves it against the
+ *    active locale (zh-CN, en-US, ...). The hard-coded `label` is only the
+ *    fallback when the key is missing.
+ */
+export interface RemoteNavEntry {
+  plugin_id: string
+  plugin_version: string
+  page_path: string
+  page_type: 'settings' | 'data'
+  nav_group: string
+  label_key: string
+  icon?: string
+  super: boolean
+  platform_ops: boolean
+  tenant_only: boolean
+  order: number
+  route_url: string
+}
+
+export function remoteNavToNavItems(entries: RemoteNavEntry[]): NavItem[] {
+  if (!entries || entries.length === 0) return []
+  return entries.map((e) => ({
+    path: e.route_url,
+    label: e.label_key,
+    labelKey: e.label_key || undefined,
+    icon: e.icon || '🧩',
+    super: e.super,
+    platformOps: e.platform_ops,
+    tenantOnly: e.tenant_only,
+    hideForTenant: e.platform_ops, // mirrors static convention
+    external: true,
+    plugin: e.plugin_id,
+  }))
+}
+
+/**
+ * V5.1: merge plugin nav entries into the static NAV_GROUPS.
+ *
+ * - Entries whose nav_group matches an existing group are appended to that
+ *   group's items (and re-sorted by `order`).
+ * - Entries with an unknown nav_group are gathered into a synthetic
+ *   'plugins' group, kept at the end so it never displaces the curated
+ *   layout.
+ *
+ * The result is consumed by visibleNavGroups → mergeNav, so all
+ * role/tenant filters apply uniformly.
+ */
+export function mergeRemotePluginNav(groups: NavGroup[], entries: RemoteNavEntry[]): NavGroup[] {
+  if (!entries || entries.length === 0) return groups
+  const items = remoteNavToNavItems(entries)
+  const knownIds = new Set(groups.map((g) => g.id))
+  const buckets = new Map<string, NavItem[]>()
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]
+    const it = items[i]
+    const gid = e.nav_group && knownIds.has(e.nav_group) ? e.nav_group : 'plugins'
+    if (!buckets.has(gid)) buckets.set(gid, [])
+    buckets.get(gid)!.push(it)
+  }
+  const out: NavGroup[] = []
+  for (const g of groups) {
+    const add = buckets.get(g.id)
+    if (add && add.length > 0) {
+      out.push({ ...g, items: [...g.items, ...add] })
+      buckets.delete(g.id)
+    } else {
+      out.push(g)
+    }
+  }
+  const synthetic = buckets.get('plugins')
+  if (synthetic && synthetic.length > 0) {
+    out.push({
+      id: 'plugins',
+      label: '插件',
+      labelKey: 'nav.group.plugins',
+      items: synthetic,
+    })
+  }
+  return out
+}
+
+/**
  * 将 PRIMARY + GROUPS 合并成 topbar 用的扁平分组结构。
  * - PRIMARY（无分组）放到组 "primary"（总览）
  * - 每个 group 的 items 过滤掉 visible 后打包
@@ -230,7 +402,7 @@ export type TopbarNavGroup = {
 export function mergeNav(
   primary: NavItem[],
   groups: NavGroup[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isProviderConsole?: boolean },
 ): TopbarNavGroup[] {
   const visiblePrimary = primary.filter((it) => canShowNavItem(it, opts))
   const visibleGroups = visibleNavGroups(groups, opts)

@@ -93,7 +93,7 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		AvgLatencyMs        float64 `json:"avg_latency_ms"`
 		SuccessRate         float64 `json:"success_rate"`
 	}
-	tid := EffectiveTenantIDAll(r) // Use All version for super_admin to see all tenants
+	tid := statsTenantScope(r)
 	whereClause := "ts >= now() - ($1 * INTERVAL '1 day')"
 	args := []any{days}
 	if tid != "" {
@@ -143,6 +143,23 @@ func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	summary.TotalCreditsCharged = h.queryTotalCreditsCharged(ctx, tid, days)
+	shadowEnd := time.Now().UTC()
+	h.enqueueStatsShadow(
+		"usage_summary",
+		tid,
+		shadowEnd.Add(-time.Duration(days)*24*time.Hour),
+		shadowEnd,
+
+		statsSummaryValues{
+			Requests:     int64(summary.TotalRequests),
+			PromptTokens: int64(summary.TotalPromptTokens),
+			Completion:   int64(summary.TotalCompletionTok),
+			TotalTokens:  int64(summary.TotalPromptTokens + summary.TotalCompletionTok),
+			Credits:      summary.TotalCreditsCharged,
+			CostUSD:      summary.TotalCostUSD,
+			AvgLatencyMs: summary.AvgLatencyMs,
+		},
+	)
 	writeJSON(w, http.StatusOK, summary)
 }
 
@@ -157,7 +174,7 @@ func (h *Handler) usageDashboard(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	tid := EffectiveTenantIDAll(r) // Use All version for super_admin to see all tenants
+	tid := statsTenantScope(r)
 	var overview struct {
 		TotalAPIKeys          int `json:"total_api_keys"`
 		ActiveAPIKeys         int `json:"active_api_keys"`
@@ -296,7 +313,7 @@ func (h *Handler) usageHotKeys(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	tid := EffectiveTenantIDAll(r) // Use All version for super_admin to see all tenants
+	tid := statsTenantScope(r)
 
 	// Build dynamic query
 	var query string
@@ -514,7 +531,7 @@ func (h *Handler) usageByModel(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	tid := EffectiveTenantIDAll(r) // Use All version for super_admin to see all tenants
+	tid := statsTenantScope(r)
 
 	var query string
 	var args []any
@@ -617,7 +634,7 @@ func (h *Handler) usageByKey(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	tid := EffectiveTenantIDAll(r) // Use All version for super_admin to see all tenants
+	tid := statsTenantScope(r)
 
 	var query string
 	var args []any

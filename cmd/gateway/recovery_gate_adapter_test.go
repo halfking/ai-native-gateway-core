@@ -8,10 +8,16 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+
 	"github.com/kaixuan/llm-gateway-go/bg/systemmonitor"
+	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/recovery"
 )
 
@@ -129,4 +135,82 @@ func (s *stubGate) RestoreIfClosed(_ context.Context) (int, error) {
 
 func (s *stubGate) Stats() systemmonitor.RecoveryStats {
 	return s.stats
+}
+
+// ── Empty-namespace self-heal (2026-09-04 availability work) ───────────
+//
+// After a Redis restart WITHOUT persistence the authoritative restore
+// refuses with recovery.ErrCoverageManifestEmpty. These tests pin the
+// adapter behaviour: without rebuild deps the sentinel passes through;
+// with rebuild deps a bootstrap attempt fires (validated here against an
+// unreachable PG, so the rebuild itself fails distinctly) and immediate
+// retries are rate limited.
+
+func buildEmptyNamespaceManager(t *testing.T) (*ursmv2.Manager, *redis.Client) {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	cfg := ursmv2.DefaultConfig() // ModeAuthoritative, prefix ursm:v2:
+	mgr := ursmv2.New(ursmv2.Dependencies{Redis: rdb, Config: cfg})
+	if err := mgr.SetReady(context.Background(), false); err != nil {
+		t.Fatalf("close gate: %v", err)
+	}
+	return mgr, rdb
+}
+
+// TestV2RecoveryGateAdapter_EmptyNamespaceWithoutRebuildPassthrough: no
+// rebuild deps → the original sentinel error reaches the caller unchanged.
+func TestV2RecoveryGateAdapter_EmptyNamespaceWithoutRebuildPassthrough(t *testing.T) {
+	mgr, _ := buildEmptyNamespaceManager(t)
+	adapter := newV2RecoveryGateAdapter(mgr)
+
+	_, err := adapter.RestoreIfClosed(context.Background())
+	if err == nil {
+		t.Fatal("empty-namespace restore must refuse")
+	}
+	if !errors.Is(err, recovery.ErrCoverageManifestEmpty) {
+		t.Fatalf("error must pass through as ErrCoverageManifestEmpty, got: %v", err)
+	}
+}
+
+// TestV2RecoveryGateAdapter_RebuildAttemptsAndRateLimits: with rebuild
+// deps wired, the empty-namespace refusal triggers a bootstrap attempt.
+// The PG pool points at an unreachable address so the rebuild itself
+// fails — proving the wiring fired — and the immediate retry is rate
+// limited (the original sentinel error returns without a second attempt).
+func TestV2RecoveryGateAdapter_RebuildAttemptsAndRateLimits(t *testing.T) {
+	mgr, rdb := buildEmptyNamespaceManager(t)
+
+	pool, err := pgxpool.New(context.Background(), "postgres://u:p@127.0.0.1:1/db?sslmode=disable")
+	if err != nil {
+		t.Fatalf("dead pool: %v", err)
+	}
+	defer pool.Close()
+
+	cfg := ursmv2.DefaultConfig()
+	adapter := newV2RecoveryGateAdapter(mgr).withRebuild(rebuildOptions{
+		pool:        pool,
+		rdb:         rdb,
+		keyPrefix:   cfg.RedisKeyPrefix,
+		coolSeconds: cfg.CoolSeconds,
+		schemaMode:  cfg.KeySchemaMode,
+	})
+
+	_, err = adapter.RestoreIfClosed(context.Background())
+	if err == nil {
+		t.Fatal("rebuild against an unreachable PG must fail")
+	}
+	if !strings.Contains(err.Error(), "empty-namespace rebuild failed") {
+		t.Fatalf("rebuild failure must be distinguishable from the original refusal, got: %v", err)
+	}
+
+	// Immediate retry is rate limited: the plain sentinel error returns
+	// (no second bootstrap attempt against the dead pool).
+	_, err = adapter.RestoreIfClosed(context.Background())
+	if err == nil {
+		t.Fatal("rate-limited retry must still refuse")
+	}
+	if !errors.Is(err, recovery.ErrCoverageManifestEmpty) {
+		t.Fatalf("rate-limited retry must surface the original refusal, got: %v", err)
+	}
 }

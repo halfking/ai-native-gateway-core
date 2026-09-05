@@ -48,7 +48,7 @@ const compressionStatsEstimatedOrigSQL = `
 						WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object'
 							AND (rb.request_body #>> '{_gw_body_summary,bytes}') ~ '^[0-9]+$'
 						THEN (rb.request_body #>> '{_gw_body_summary,bytes}')::numeric
-					ELSE LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body)::text, ''))::numeric
+					ELSE LENGTH(COALESCE(rb.request_body::text, ''))::numeric
 				END / 4.0)), 0)::bigint,
 				COALESCE(SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END), 0)::bigint
 		FROM request_logs_with_current_month rl
@@ -107,11 +107,18 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		CompressedTotal      int            `json:"compressed_total"`
 		CompressionRate      float64        `json:"compression_rate"`
 		StrategyDistribution map[string]int `json:"strategy_distribution"`
-		TotalOutboundTokens  *int64         `json:"total_outbound_tokens,omitempty"`
-		EstimatedOrigTokens  *int64         `json:"estimated_original_tokens,omitempty"`
-		EstimatedTokensSaved *int64         `json:"estimated_tokens_saved,omitempty"`
-		SummaryModeRows      *int64         `json:"summary_mode_rows,omitempty"`
-		HourlySeries         []hourBucket   `json:"hourly_series"`
+		// 2026-08-19: token-band observability counters (preliminary / forced
+		// vs the below baseline). Below-band rows also count for transparency
+		// so the band ratios are derivable; only the two non-baseline bands
+		// are surfaced as separate numeric fields for alert wiring.
+		TokenBandBelow       *int64       `json:"token_band_below,omitempty"`
+		TokenBandPreliminary *int64       `json:"token_band_preliminary,omitempty"`
+		TokenBandForced      *int64       `json:"token_band_forced,omitempty"`
+		TotalOutboundTokens  *int64       `json:"total_outbound_tokens,omitempty"`
+		EstimatedOrigTokens  *int64       `json:"estimated_original_tokens,omitempty"`
+		EstimatedTokensSaved *int64       `json:"estimated_tokens_saved,omitempty"`
+		SummaryModeRows      *int64       `json:"summary_mode_rows,omitempty"`
+		HourlySeries         []hourBucket `json:"hourly_series"`
 	}{
 		StrategyDistribution: make(map[string]int),
 		HourlySeries:         make([]hourBucket, 0),
@@ -130,10 +137,11 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		SELECT
 			COALESCE(NULLIF(rl.compression_strategy,''), 'none') AS strategy,
 			COUNT(*) AS cnt,
-			COUNT(rl.outbound_body)::bigint AS with_outbound,
+			COUNT(rb.outbound_body)::bigint AS with_outbound,
 			SUM(COALESCE(rl.outbound_token_est, 0))::bigint AS total_tok_after,
-			SUM(CASE WHEN rl.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
+			SUM(CASE WHEN rb.outbound_body IS NOT NULL THEN COALESCE(rl.outbound_token_est, 0) ELSE 0 END)::bigint AS compressed_tok
 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY strategy
@@ -160,6 +168,11 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		}
 		result.StrategyDistribution[strategy] = cnt
 		totalToksAfter += int64(tokAfter)
+	}
+	if err := aggRows.Err(); err != nil {
+		slog.Warn("compression_stats agg iteration failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
 	}
 
 	if result.TotalRequests > 0 {
@@ -193,6 +206,46 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// 2026-08-19: token-band aggregation. Uses the dedicated column (indexed
+	// by token_band, ts DESC) so the query is O(band rows in window) and
+	// unaffected by the much larger uncompressed-row count.
+	bandRows, err := h.db.Query(ctx, `
+		SELECT
+			COALESCE(token_band, '') AS band,
+			COUNT(*) AS cnt
+		FROM request_logs_with_current_month
+		WHERE ts >= $1 AND ts <= $2
+		  AND ($3 OR success)`+aggWhere+`
+		GROUP BY token_band
+		ORDER BY cnt DESC
+	`, aggArgs...)
+	if err != nil {
+		slog.Warn("compression_stats band query failed", "error", err)
+	} else {
+		defer bandRows.Close()
+		for bandRows.Next() {
+			var band string
+			var cnt int
+			if err := bandRows.Scan(&band, &cnt); err != nil {
+				continue
+			}
+			switch band {
+			case "below":
+				v := int64(cnt)
+				result.TokenBandBelow = &v
+			case "preliminary":
+				v := int64(cnt)
+				result.TokenBandPreliminary = &v
+			case "forced":
+				v := int64(cnt)
+				result.TokenBandForced = &v
+			}
+		}
+		if err := bandRows.Err(); err != nil {
+			slog.Warn("compression_stats band iteration failed", "error", err)
+		}
+	}
+
 	rangeHours := to.Sub(from).Hours()
 	var bucketExpr string
 	switch {
@@ -207,8 +260,9 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 	bucketRows, err := h.db.Query(ctx, `
 		SELECT `+bucketExpr+` AS bucket,
 			COUNT(*) AS total,
-			COUNT(rl.outbound_body)::int AS compressed
+			COUNT(rb.outbound_body)::int AS compressed
 		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.ts >= $1 AND rl.ts <= $2
 		  AND ($3 OR rl.success)`+aggWhere+`
 		GROUP BY bucket
@@ -237,6 +291,9 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 				Compressed: b.Compressed,
 				Rate:       rate,
 			})
+		}
+		if err := bucketRows.Err(); err != nil {
+			slog.Warn("compression_stats bucket iteration failed", "error", err)
 		}
 	}
 

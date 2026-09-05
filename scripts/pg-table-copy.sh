@@ -5,6 +5,12 @@
 # Copies schema for ALL tables, data for non-hot/non-partition tables.
 # Hot tables (*_hot, *_2026_*, *_archived) get structure only.
 #
+# PHASE 8.5 (added 2026-09-01) auto-applies apply-routing-mv-fixup.sh when the
+# target is the local docker container — closes the matview drift gap (the
+# 252-only routing_analytics_7d / routing_audit_summary_7d matviews + the
+# columnar_insert_only_parents() helper). The fixup is idempotent; re-runs
+# during normal sync are no-ops. Override the path with --fixup-script.
+#
 # Usage:
 #   ./scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh
 #   ./scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-kaixuan1.sh
@@ -33,8 +39,14 @@ SCHEMA_ONLY=false
 DATA_ONLY=false
 DRY_RUN=false
 VERBOSE=false
+CLEAN_SCHEMA=false
+REPLACE_DATA=false
 WORK_DIR="/tmp/pg-table-copy"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+SCHEMA_IMPORT_FAILED=false
+DATA_IMPORT_FAILED=false
+FIXUP_FAILED=false
+PGOPTIONS="${PGOPTIONS:-}"
 
 # ── Parse args ────────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -44,9 +56,12 @@ while [[ $# -gt 0 ]]; do
     --hot-patterns)  HOT_PATTERNS="$2"; shift 2 ;;
     --schema-only)   SCHEMA_ONLY=true; shift ;;
     --data-only)     DATA_ONLY=true; shift ;;
+    --clean-schema)  CLEAN_SCHEMA=true; shift ;;
+    --replace-data)  REPLACE_DATA=true; shift ;;
     --dry-run)       DRY_RUN=true; shift ;;
     --verbose)       VERBOSE=true; shift ;;
     --work-dir)      WORK_DIR="$2"; shift 2 ;;
+    --fixup-script)  FIXUP_SCRIPT_PATH="$2"; shift 2 ;;
     -h|--help)
       echo "Usage: $0 --source <env-file> --target <env-file> [options]"
       echo ""
@@ -56,8 +71,22 @@ while [[ $# -gt 0 ]]; do
       echo "  --hot-patterns 'p'  Comma-separated LIKE patterns for schema-only tables"
       echo "  --schema-only       Only copy schemas, no data"
       echo "  --data-only         Only copy data, no schema"
+      echo "  --clean-schema      DROP/CREATE schema objects during import (destructive; opt-in)"
+      echo "  --replace-data      TRUNCATE classified normal tables before data import"
+      echo "                       (required for exact source→target replacement)"
       echo "  --dry-run           Show what would be done"
       echo "  --verbose           Show detailed progress"
+      echo "  --fixup-script <p>  Override the path to apply-routing-mv-fixup.sh"
+      echo "                       (default: scripts/local-dev/apply-routing-mv-fixup.sh)"
+      echo "                       The fixup runs automatically at PHASE 8.5 when"
+      echo "                       the target is a local docker container and the"
+      echo "                       run is not --dry-run / --data-only. Idempotent."
+      echo ""
+      echo "Environment:"
+      echo "  PGOPTIONS          Passed to psql (env var only). Recommended:"
+      echo "                       export PGOPTIONS='-c statement_timeout=0'"
+      echo "                     252 enforces a 30s server-side statement_timeout,"
+      echo "                     which trips count(*) and large COPY streams."
       exit 0
       ;;
     *) err "Unknown option: $1"; exit 1 ;;
@@ -68,6 +97,11 @@ done
 if [[ -z "$SOURCE_CONFIG" || -z "$TARGET_CONFIG" ]]; then
   err "Both --source and --target are required"
   echo "Run with --help for usage"
+  exit 1
+fi
+
+if [[ "$SCHEMA_ONLY" == true && "$DATA_ONLY" == true ]]; then
+  err "--schema-only and --data-only cannot be used together"
   exit 1
 fi
 
@@ -89,6 +123,13 @@ SRC_PORT="$PG_PORT"
 SRC_USER="$PG_USER"
 SRC_PASS="$PG_PASS"
 SRC_DB="$PG_DB"
+SRC_PSQL_BIN="${PG_PSQL_BIN:-psql}"
+SRC_PG_DUMP_BIN="${PG_DUMP_BIN:-pg_dump}"
+if [[ ! -x "$SRC_PSQL_BIN" || ! -x "$SRC_PG_DUMP_BIN" ]]; then
+  err "source requires native PostgreSQL clients; PG_PSQL_BIN=$SRC_PSQL_BIN PG_DUMP_BIN=$SRC_PG_DUMP_BIN"
+  err "install Homebrew libpq or set both paths explicitly"
+  exit 1
+fi
 
 info "Loading target config: $TARGET_CONFIG"
 source "$TARGET_CONFIG"
@@ -101,13 +142,13 @@ TGT_DB="$PG_DB"
 # ── Local docker target detection ─────────────────────────────────────────
 # On macOS the host may run a Homebrew PostgreSQL on localhost:5432 that shadows
 # the docker container's published port. When the target is the local docker
-# container (env file sets DOCKER_HOST="local" + DOCKER_PG_CONTAINER), route all
-# target access through `docker exec -i` instead of `psql -h localhost`.
+# container (TARGET_TYPE=docker + DOCKER_PG_CONTAINER), route all target
+# access through `docker exec -i` instead of `psql -h localhost`.
 # This mirrors sync-from-252.sh and avoids hitting the wrong instance
 # (see skill pg-sync-252-to-env Q0).
 TGT_IS_LOCAL_DOCKER=false
 TGT_CONTAINER="${DOCKER_PG_CONTAINER:-}"
-if [[ "${DOCKER_HOST:-}" == "local" && -n "$TGT_CONTAINER" ]]; then
+if [[ "${TARGET_TYPE:-}" == "docker" && -n "$TGT_CONTAINER" ]]; then
   TGT_IS_LOCAL_DOCKER=true
   # The target env file may inherit a stale DOCKER_HOST from a previously sourced
   # remote config (e.g. env-252.sh sets DOCKER_HOST to an SSH endpoint). Reset it
@@ -118,36 +159,42 @@ fi
 
 # ── Helper functions ──────────────────────────────────────────────────────
 
-# Run psql on source
+# Run psql on source (respect PGOPTIONS for statement_timeout overrides).
+# Note: PGOPTIONS must be an environment variable — passing it on the psql CLI
+# line is parsed as a query and produces "syntax error at or near
+# statement_timeout". psql honors PGOPTIONS automatically.
 src_psql() {
-  PGPASSWORD="$SRC_PASS" psql -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
+  PGOPTIONS="$PGOPTIONS" PGPASSWORD="$SRC_PASS" "$SRC_PSQL_BIN" -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" -tAq "$@"
 }
 
 # Run psql on target. Local docker → docker exec; remote → network psql.
 tgt_psql() {
   if $TGT_IS_LOCAL_DOCKER; then
-    PGPASSWORD="$TGT_PASS" docker exec -i -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
+    PGOPTIONS="$PGOPTIONS" PGPASSWORD="$TGT_PASS" docker exec -i \
+      -e PGOPTIONS="$PGOPTIONS" -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
       psql -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
   else
-    PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
+    PGOPTIONS="$PGOPTIONS" PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" -tAq "$@"
   fi
 }
 
-# Import a SQL file into the target. Local docker pipes via stdin to docker exec.
+# Import a SQL file into the target. Caller can pass extra psql args as a
+# whitespace-separated string (currently only --single-transaction).
 tgt_psql_file() {
   local f="$1"
+  local extra_args="${2:-}"
   if $TGT_IS_LOCAL_DOCKER; then
-    docker exec -i -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
-      psql -U "$TGT_USER" -d "$TGT_DB" -v ON_ERROR_STOP=off < "$f"
+    docker exec -i -e PGOPTIONS="$PGOPTIONS" -e PGPASSWORD="$TGT_PASS" "$TGT_CONTAINER" \
+      psql -U "$TGT_USER" -d "$TGT_DB" -v ON_ERROR_STOP=1 $extra_args < "$f"
   else
-    PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" \
-      -v ON_ERROR_STOP=off -f "$f"
+    PGOPTIONS="$PGOPTIONS" PGPASSWORD="$TGT_PASS" psql -h "$TGT_HOST" -p "$TGT_PORT" -U "$TGT_USER" -d "$TGT_DB" \
+      -v ON_ERROR_STOP=1 $extra_args -f "$f"
   fi
 }
 
-# Check if table matches any hot pattern (shell glob matching)
+# Check if table matches any configured hot pattern (shell glob matching).
 is_hot_table() {
-  local tbl="$1"
+  local tbl="$1" pat
   IFS=',' read -ra patterns <<< "$HOT_PATTERNS"
   for pat in "${patterns[@]}"; do
     pat=$(echo "$pat" | xargs)
@@ -157,6 +204,10 @@ is_hot_table() {
   done
   return 1
 }
+
+# Return 0 when a source catalog relation must not receive data. This uses
+# pg_inherits/relispartition rather than names alone, so unnamed/default
+# partitions are protected even when they do not match HOT_PATTERNS.
 
 # ============================================================================
 # PHASE 1: TEST CONNECTIONS
@@ -216,9 +267,13 @@ done
 mapfile -t TABLE_LINES < <(src_psql -c "
 SELECT schemaname, tablename,
        pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) AS size,
-       pg_total_relation_size(schemaname || '.' || tablename) AS bytes
-FROM pg_tables
-WHERE schemaname NOT IN (${EXCLUDE_SQL})
+       pg_total_relation_size(schemaname || '.' || tablename) AS bytes,
+       CASE WHEN c.relkind = 'p' OR c.relispartition OR pt.partrelid IS NOT NULL THEN 't' ELSE 'f' END AS catalog_hot
+FROM pg_tables t
+JOIN pg_class c ON c.relname=t.tablename
+JOIN pg_namespace n ON n.oid=c.relnamespace AND n.nspname=t.schemaname
+LEFT JOIN pg_partitioned_table pt ON pt.partrelid=c.oid
+WHERE t.schemaname NOT IN (${EXCLUDE_SQL})
 ORDER BY bytes DESC;
 ")
 
@@ -234,10 +289,10 @@ HOT_TABLES=()
 DATA_TABLES=()
 
 for line in "${TABLE_LINES[@]}"; do
-  IFS='|' read -r schema tbl size bytes <<< "$line"
+  IFS='|' read -r schema tbl size _bytes catalog_hot <<< "$line"
   [[ -z "$schema" ]] && continue
   
-  if is_hot_table "$tbl"; then
+  if [[ "$catalog_hot" == "t" ]] || is_hot_table "$tbl"; then
     HOT_TABLES+=("$schema.$tbl")
     $VERBOSE && dim "  SCHEMA-ONLY: $schema.$tbl ($size)"
   else
@@ -266,21 +321,34 @@ else
   SCHEMA_FILE="$WORK_DIR/$TIMESTAMP/schema_all.sql"
   info "Exporting schema to $SCHEMA_FILE"
   
-  # --clean --if-exists: emit per-object DROP ... IF EXISTS before each CREATE,
-  # so re-importing into a non-empty target replaces objects instead of failing
-  # with "already exists". This is safer than DROP SCHEMA CASCADE (which would
-  # also drop Citus/columnar metadata). columnar_internal.* stays excluded.
-  # Note: we do NOT use --disable-triggers here (schema-only, no data).
-  PGPASSWORD="$SRC_PASS" pg_dump \
+  # `--clean` is deliberately opt-in: pg_dump emits DROP statements for hot
+  # tables/partitions too, which can delete target data even though hot data is
+  # not exported. Use --clean-schema only when the target is disposable.
+  schema_clean_args=()
+  if $CLEAN_SCHEMA; then
+    schema_clean_args+=(--clean --if-exists)
+    warn "--clean-schema enabled: target schema objects (including hot tables) may be dropped"
+  else
+    info "Safe schema mode: no DROP statements; existing target data is preserved"
+  fi
+  dump_err="$WORK_DIR/$TIMESTAMP/schema_dump.err"
+  if ! PGOPTIONS="${PGOPTIONS:-}" PGPASSWORD="$SRC_PASS" "$SRC_PG_DUMP_BIN" \
     -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" \
-    --schema-only \
-    --no-owner \
-    --no-privileges \
-    --clean --if-exists \
-    --exclude-schema='columnar_internal' \
-    --exclude-schema='citus' \
-    -f "$SCHEMA_FILE" 2>/dev/null
-  
+    --schema-only --no-owner --no-privileges \
+    "${schema_clean_args[@]}" \
+    --exclude-schema='columnar_internal' --exclude-schema='citus' \
+    -f "$SCHEMA_FILE" 2>"$dump_err"; then
+    err "Schema export failed; see $dump_err"; exit 1
+  fi
+  if [[ ! -s "$SCHEMA_FILE" ]]; then
+    err "Schema export produced an empty file"; exit 1
+  fi
+  if grep -q "set_config('search_path', '', false)" "$SCHEMA_FILE"; then
+    tmp_schema="$SCHEMA_FILE.fixed"
+    grep -vE "set_config\('search_path', '', false\)" "$SCHEMA_FILE" > "$tmp_schema"
+    mv "$tmp_schema" "$SCHEMA_FILE"
+    ok "Stripped pg_dump search_path='' guard before import"
+  fi
   SCHEMA_SIZE=$(du -h "$SCHEMA_FILE" | cut -f1)
   SCHEMA_LINES=$(wc -l < "$SCHEMA_FILE")
   ok "Schema exported: $SCHEMA_SIZE ($SCHEMA_LINES lines)"
@@ -292,7 +360,9 @@ fi
 phase "PHASE 5: DATA EXPORT"
 
 DATA_DIR="$WORK_DIR/$TIMESTAMP/data"
+MANIFEST_FILE="$WORK_DIR/$TIMESTAMP/data_manifest.tsv"
 mkdir -p "$DATA_DIR"
+: > "$MANIFEST_FILE"
 
 if $SCHEMA_ONLY; then
   info "Skipping data export (--schema-only)"
@@ -320,17 +390,22 @@ else
       if [[ "$row_count" == "0" ]]; then
         echo -e " ${C}(empty, skipping)${N}"
         touch "$DATA_FILE"
+        printf '%s\t%s\t%s\t%s\n' "$DATA_FILE" "$schema" "$tbl" "$row_count" >> "$MANIFEST_FILE"
         SKIPPED=$((SKIPPED + 1))
       else
-        PGPASSWORD="$SRC_PASS" pg_dump \
+        dump_err="$DATA_FILE.err"
+        if ! PGOPTIONS="${PGOPTIONS:-}" PGPASSWORD="$SRC_PASS" "$SRC_PG_DUMP_BIN" \
           -h "$SRC_HOST" -p "$SRC_PORT" -U "$SRC_USER" -d "$SRC_DB" \
-          --data-only \
-          --table="$schema.$tbl" \
-          --no-owner \
-          --no-privileges \
-          --disable-triggers \
-          -f "$DATA_FILE" 2>/dev/null
-        
+          --data-only --table="$schema.$tbl" --no-owner --no-privileges \
+          --disable-triggers -f "$DATA_FILE" 2>"$dump_err"; then
+          err "Data export failed for $schema.$tbl; see $dump_err"
+          exit 1
+        fi
+        if [[ ! -s "$DATA_FILE" ]]; then
+          err "Data export produced an empty file for non-empty table $schema.$tbl"
+          exit 1
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$DATA_FILE" "$schema" "$tbl" "$row_count" >> "$MANIFEST_FILE"
         DATA_SIZE=$(du -h "$DATA_FILE" | cut -f1)
         echo -e " ${G}→ $DATA_SIZE${N}"
         EXPORTED=$((EXPORTED + 1))
@@ -356,23 +431,42 @@ else
     dim "  [DRY-RUN] Would import schema from $SCHEMA_FILE"
   else
     info "Importing schema to target (with --clean: existing objects are dropped then recreated)..."
-    
+
     tgt_psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$TGT_DB' AND pid<>pg_backend_pid();" &>/dev/null || true
-    
+
+    # pg_dump emits `SELECT pg_catalog.set_config('search_path', '', false)` for
+    # security. On databases carrying the columnar event trigger
+    # (enforce_columnar_trigger -> columnar_insert_only_parents()) — present on
+    # BOTH 252 and local — an empty search_path makes the trigger fail to resolve
+    # its function and EVERY CREATE/DROP TABLE errors out. All objects in the
+    # dump are already schema-qualified, so strip the guard before importing.
+    SCHEMA_IMPORT_FILE="$SCHEMA_FILE"
+    if grep -q "set_config('search_path', '', false)" "$SCHEMA_FILE" 2>/dev/null; then
+      SCHEMA_IMPORT_FILE="$SCHEMA_FILE.fixed"
+      grep -vE "set_config\('search_path', '', false\)" "$SCHEMA_FILE" > "$SCHEMA_IMPORT_FILE"
+      ok "Stripped pg_dump search_path='' guard (it breaks the columnar event trigger on import)"
+    fi
+
     # --clean mode emits per-object DROP IF EXISTS; "does not exist, skipping"
     # notices are expected. Capture full output for diagnosis, show tail + errors.
-    if tgt_psql_file "$SCHEMA_FILE" > "$WORK_DIR/$TIMESTAMP/schema_import.log" 2>&1; then
-      ok "Schema imported"
+    SCHEMA_IMPORT_LOG="$WORK_DIR/$TIMESTAMP/schema_import.log"
+    import_exit=0
+    tgt_psql_file "$SCHEMA_IMPORT_FILE" > "$SCHEMA_IMPORT_LOG" 2>&1 || import_exit=$?
+
+    # ALWAYS scan the log for real errors. With ON_ERROR_STOP=off psql exits 0
+    # even when statements fail, so the exit code alone proves nothing: the
+    # 2026-08-26 sync reported "Schema imported" while the DDL had actually
+    # failed on the columnar trigger, leaving stale schema behind (this hid
+    # migrations 573/610 and was only caught by the 2026-08-31 structure audit).
+    SCHEMA_ERRORS=$(grep -cE "(ERROR|FATAL):" "$SCHEMA_IMPORT_LOG" 2>/dev/null || true)
+    SCHEMA_ERRORS=${SCHEMA_ERRORS:-0}
+    if [ "$import_exit" -ne 0 ] || [ "$SCHEMA_ERRORS" -gt 0 ]; then
+      err "Schema import FAILED (psql exit=$import_exit, $SCHEMA_ERRORS error lines):"
+      grep -E "(ERROR|FATAL):" "$SCHEMA_IMPORT_LOG" | head -15
+      err "Full log: $SCHEMA_IMPORT_LOG"
+      SCHEMA_IMPORT_FAILED=true
     else
-      # psql may exit non-zero on dropped-object errors; surface real failures.
-      err_count=$(grep -ciE "error:|fatal" "$WORK_DIR/$TIMESTAMP/schema_import.log" 2>/dev/null || echo 0)
-      if [ "$err_count" -gt 0 ]; then
-        warn "Schema import reported $err_count errors (showing first 15):"
-        grep -iE "error:|fatal" "$WORK_DIR/$TIMESTAMP/schema_import.log" | head -15
-        warn "Full log: $WORK_DIR/$TIMESTAMP/schema_import.log"
-      else
-        ok "Schema imported (non-zero exit was only 'does not exist, skipping' notices)"
-      fi
+      ok "Schema imported (0 error lines; 'does not exist, skipping' notices are expected with --clean)"
     fi
   fi
 fi
@@ -391,38 +485,82 @@ else
     IMPORTED=0
     FAILED=0
     SKIPPED=0
-    
+    PARTIAL=0
+    IMPORT_LOG="$WORK_DIR/$TIMESTAMP/data_import.log"
+
     info "Importing data..."
     echo ""
-    
-    for data_file in "$DATA_DIR"/*.sql; do
-      [[ ! -f "$data_file" ]] && continue
-      
-      tbl_name=$(basename "$data_file" .sql)
+
+    if $REPLACE_DATA; then
+      if [[ ! -s "$MANIFEST_FILE" ]]; then
+        err "--replace-data requires a populated data manifest"; exit 1
+      fi
+      info "Checking foreign-key safety before replacing normal-table data..."
+      owned_tables_sql=""
+      while IFS=$'\t' read -r _manifest_file schema tbl _expected_rows; do
+        [[ -z "$tbl" ]] && continue
+        [[ -n "$owned_tables_sql" ]] && owned_tables_sql+=","
+        owned_tables_sql+="'${schema}.${tbl}'"
+      done < "$MANIFEST_FILE"
+      unsafe_fk=$(tgt_psql -tAc "
+        WITH owned(rel) AS (VALUES (${owned_tables_sql}))
+        SELECT count(*) FROM pg_constraint c
+        JOIN pg_class child ON child.oid=c.conrelid
+        JOIN pg_class parent ON parent.oid=c.confrelid
+        JOIN pg_namespace n1 ON n1.oid=child.relnamespace
+        JOIN pg_namespace n2 ON n2.oid=parent.relnamespace
+        WHERE c.contype='f' AND n1.nspname='public' AND n2.nspname='public'
+          AND (n1.nspname||'.'||child.relname) NOT IN (SELECT rel FROM owned)
+          AND (n2.nspname||'.'||parent.relname) IN (SELECT rel FROM owned);")
+      if [[ "${unsafe_fk:-0}" != "0" ]]; then
+        err "--replace-data refused: $unsafe_fk FK(s) from tables outside the manifest would make replacement unsafe"
+        exit 1
+      fi
+      truncate_tables_sql=""
+      while IFS=$'\t' read -r _manifest_file schema tbl _expected_rows; do
+        [[ -z "$tbl" ]] && continue
+        [[ -n "$truncate_tables_sql" ]] && truncate_tables_sql+=","
+        truncate_tables_sql+="\"$schema\".\"$tbl\""
+      done < "$MANIFEST_FILE"
+      tgt_psql -c "TRUNCATE TABLE $truncate_tables_sql RESTART IDENTITY;" >> "$IMPORT_LOG" 2>&1 || {
+        err "failed to atomically clear classified normal tables"; exit 1;
+      }
+    else
+      warn "append mode: existing target rows are preserved; use --replace-data for exact replacement"
+    fi
+
+    while IFS=$'\t' read -r data_file schema tbl expected_rows; do
+      [[ -z "$tbl" ]] && continue
       tbl_size=$(du -h "$data_file" | cut -f1)
-      
-      schema=$(echo "$tbl_name" | cut -d_ -f1)
-      tbl=$(echo "$tbl_name" | sed "s/^${schema}_//")
-      
+
       if [[ ! -s "$data_file" ]]; then
         dim "  SKIP: $schema.$tbl (empty)"
         SKIPPED=$((SKIPPED + 1))
         continue
       fi
-      
-      printf "  %-45s %8s" "$schema.$tbl" "$tbl_size"
 
-      if tgt_psql_file "$data_file" &>/dev/null; then
+      printf "  %-45s %8s" "$schema.$tbl" "$tbl_size"
+      import_err="$WORK_DIR/$TIMESTAMP/${schema}_${tbl}.import.err"
+      if tgt_psql_file "$data_file" "--single-transaction" >>"$IMPORT_LOG" 2>"$import_err"; then
         echo -e " ${G}OK${N}"
         IMPORTED=$((IMPORTED + 1))
       else
         echo -e " ${R}FAILED${N}"
+        printf "    [stderr] %s\n" "$(head -3 "$import_err" | tr -d '\r' | tr '\n' ' ' | head -c 200)"
+        cat "$import_err" >> "$IMPORT_LOG"
         FAILED=$((FAILED + 1))
       fi
-    done
-    
+      rm -f "$import_err"
+    done < "$MANIFEST_FILE"
+
     echo ""
-    ok "Data imported: $IMPORTED succeeded, $FAILED failed, $SKIPPED skipped"
+    if [[ $FAILED -gt 0 || $PARTIAL -gt 0 ]]; then
+      err "Data import FAILED: $IMPORTED succeeded, $FAILED failed, $PARTIAL partial, $SKIPPED skipped"
+      err "Data import log: $IMPORT_LOG"
+      DATA_IMPORT_FAILED=true
+    else
+      ok "Data imported: $IMPORTED succeeded, $FAILED failed, $PARTIAL partial, $SKIPPED skipped"
+    fi
   fi
 fi
 
@@ -500,6 +638,46 @@ else
   fi
 fi
 
+# 6. Routing-MV fixup (PHASE 8.5). After schema+data import and before SUMMARY,
+# close the matview drift gap: pg_dump's plain import path drops 252's
+# `routing_analytics_7d` and `routing_audit_summary_7d` materialized views
+# and the `columnar_insert_only_parents()` helper they depend on (discovered
+# 2026-09-01). apply-routing-mv-fixup.sh is idempotent — re-runs are no-ops.
+# PHASE 8.5 lives OUTSIDE the `if ! $DRY_RUN` so dry-run still prints the
+# planned action without touching the target.
+phase "PHASE 8.5: ROUTING-MV FIXUP (local-docker only, idempotent)"
+if $DRY_RUN; then
+  dim "  [DRY-RUN] Would apply routing-mv fixup to $TGT_CONTAINER (skipped)"
+elif $DATA_ONLY; then
+  info "  skip: --data-only mode (fixup is a schema operation)"
+elif ! $TGT_IS_LOCAL_DOCKER; then
+  info "  skip: target is not a local docker container (fixup is local-only)"
+else
+  FIXUP_SCRIPT_PATH="${FIXUP_SCRIPT_PATH:-$(dirname "$0")/local-dev/apply-routing-mv-fixup.sh}"
+  if [[ ! -f "$FIXUP_SCRIPT_PATH" ]]; then
+    err "fixup script not found: $FIXUP_SCRIPT_PATH"
+    err "Re-run after restoring scripts/local-dev/apply-routing-mv-fixup.sh,"
+    err "or invoke it manually: bash scripts/local-dev/apply-routing-mv-fixup.sh"
+    FIXUP_FAILED=true
+  else
+    info "  invoking: $FIXUP_SCRIPT_PATH (PG_FIXUP_CONTAINER=$TGT_CONTAINER)"
+    # Pass credentials via env vars only on the subshell command line — they
+    # never leak into the main shell's environment, matching the
+    # local-host-sync-db.sh convention.
+    if PG_FIXUP_CONTAINER="$TGT_CONTAINER" \
+       PG_FIXUP_USER="$TGT_USER" \
+       PG_FIXUP_PASS="$TGT_PASS" \
+       PG_FIXUP_DB="$TGT_DB" \
+       bash "$FIXUP_SCRIPT_PATH"; then
+      ok "routing-mv fixup applied (idempotent — re-run is a no-op)"
+    else
+      err "routing-mv fixup FAILED — matview drift may remain on target"
+      err "Invoke manually: bash scripts/local-dev/apply-routing-mv-fixup.sh"
+      FIXUP_FAILED=true
+    fi
+  fi
+fi
+
 # ============================================================================
 # SUMMARY
 # ============================================================================
@@ -512,4 +690,24 @@ echo "  Config:  $SOURCE_CONFIG → $TARGET_CONFIG"
 echo "  Tables:  ${#HOT_TABLES[@]} hot (schema-only) + ${#DATA_TABLES[@]} normal (schema+data)"
 echo "  Dump:    $WORK_DIR/$TIMESTAMP/"
 echo ""
+
+if $SCHEMA_IMPORT_FAILED || $DATA_IMPORT_FAILED || $FIXUP_FAILED; then
+  if $SCHEMA_IMPORT_FAILED; then
+    err "pg-table-copy completed WITH SCHEMA IMPORT ERRORS — target schema may be stale or partial."
+    err "Do NOT trust migration-tracking tables copied as data: they can claim migrations"
+    err "are applied while the DDL never landed. Fix the errors above and re-run, then"
+  fi
+  if $DATA_IMPORT_FAILED; then
+    err "pg-table-copy completed WITH DATA IMPORT ERRORS — target data is partial or stale."
+    err "Fix the errors above and re-run with --replace-data, then"
+  fi
+  if $FIXUP_FAILED; then
+    err "pg-table-copy completed WITH ROUTING-MV FIXUP ERRORS — matview drift may remain on target."
+    err "Re-run pg-table-copy.sh, or invoke the fixup manually:"
+    err "  bash scripts/local-dev/apply-routing-mv-fixup.sh, then"
+  fi
+  err "verify with scripts/local-dev/verify-db-consistency.sh and scripts/local-dev/verify-db-data-consistency.sh."
+  exit 1
+fi
+
 ok "pg-table-copy complete!"

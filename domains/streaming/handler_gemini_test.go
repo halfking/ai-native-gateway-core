@@ -133,11 +133,28 @@ func TestGeminiStreamWriter_ConvertsFlushedChunks(t *testing.T) {
 	if w.flushes != 1 {
 		t.Fatalf("flushes = %d, want 1", w.flushes)
 	}
-	if _, err := gw.Write([]byte("data: [DONE]\n\ndata: [DONE]\n")); err != nil {
-		t.Fatalf("done write: %v", err)
+	if _, err := gw.Write([]byte(": keep-alive\n\ndata: [DONE]\n\ndata: [DONE]\n")); err != nil {
+		t.Fatalf("transport write: %v", err)
 	}
-	if got := strings.Count(w.body.String(), "data: [DONE]"); got != 1 {
-		t.Fatalf("DONE count = %d, want 1", got)
+	if got := strings.Count(w.body.String(), ": keep-alive"); got != 1 {
+		t.Fatalf("heartbeat count = %d, want 1", got)
+	}
+	if got := strings.Count(w.body.String(), "data: [DONE]"); got != 0 {
+		t.Fatalf("Gemini stream leaked %d OpenAI DONE sentinels", got)
+	}
+}
+
+func TestGeminiSyntheticRequestPropagatesOriginalContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	original := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini:streamGenerateContent", nil).WithContext(ctx)
+	synthetic := newGeminiSyntheticRequest(original, []byte(`{"stream":true}`))
+
+	cancel()
+	if synthetic.Context().Err() != context.Canceled {
+		t.Fatalf("synthetic context error = %v, want context.Canceled", synthetic.Context().Err())
+	}
+	if got := synthetic.Header.Get("X-Gw-Client-Protocol"); got != ir.ProtocolGeminiGenerate {
+		t.Fatalf("client protocol = %q", got)
 	}
 }
 
@@ -379,5 +396,96 @@ func TestMapFinishReasonToGemini(t *testing.T) {
 		if cand["finishReason"] != want {
 			t.Errorf("FinishReason %q → %v, want %q", in, cand["finishReason"], want)
 		}
+	}
+}
+
+// TestGeminiStreamWriter_PendingCapFailClosed verifies the unified pending
+// byte cap: a frame larger than maxPendingBytes triggers a Gemini-native
+// error frame and marks the stream failed, and subsequent writes are
+// swallowed rather than appended after the error.
+func TestGeminiStreamWriter_PendingCapFailClosed(t *testing.T) {
+	fw := &geminiFlushWriter{header: http.Header{}}
+	w := &geminiStreamWriter{ResponseWriter: fw, maxPendingBytes: 32}
+
+	// A single oversized pseudo-SSE frame (no newline) exceeds the cap.
+	big := strings.Repeat("x", 64)
+	n, err := w.Write([]byte(big))
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if n != len(big) {
+		t.Fatalf("Write returned n=%d, want %d", n, len(big))
+	}
+	if !w.failed {
+		t.Fatal("writer should be failed after exceeding pending cap")
+	}
+	if w.pending != nil {
+		t.Fatalf("failClosed must release the pending buffer, got %d bytes retained", len(w.pending))
+	}
+
+	// The client must have received a Gemini-native error frame.
+	out := fw.body.String()
+	if !strings.Contains(out, "\"error\"") || !strings.Contains(out, "pending byte limit") {
+		t.Fatalf("expected Gemini-native error frame, got %q", out)
+	}
+
+	// Subsequent writes are swallowed and add no new frames.
+	before := fw.body.Len()
+	_, _ = w.Write([]byte("data: should-be-swallowed\n\n"))
+	if fw.body.Len() != before {
+		t.Fatalf("post-fail writes should be swallowed; body grew unexpectedly")
+	}
+}
+
+// TestGeminiStreamWriter_WithinCapNotFailed verifies that frames within the
+// cap do not trip the fail-closed path.
+func TestGeminiStreamWriter_WithinCapNotFailed(t *testing.T) {
+	fw := &geminiFlushWriter{header: http.Header{}}
+	w := &geminiStreamWriter{ResponseWriter: fw, maxPendingBytes: maxGeminiPendingBytes}
+
+	if _, err := w.Write([]byte("data: small\n\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if w.failed {
+		t.Fatal("writer must not be failed for a frame within the cap")
+	}
+}
+
+// TestGeminiMultiCandidateCollapsesToFirst asserts the documented product
+// decision: a Gemini response with multiple candidates collapses to
+// candidate[0] through the IR round-trip the GeminiHandler depends on.
+// Extending the IR to carry N candidates is future work and out of scope.
+func TestGeminiMultiCandidateCollapsesToFirst(t *testing.T) {
+	body := `{"candidates":[` +
+		`{"content":{"parts":[{"text":"first"}],"role":"model"}},` +
+		`{"content":{"parts":[{"text":"second"}],"role":"model"}}` +
+		`],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"totalTokenCount":15}}`
+
+	irResp, err := ir.ParseGeminiResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("ParseGeminiResponse: %v", err)
+	}
+	out, err := ir.SerializeGeminiResponse(irResp, "gemini-2.5-pro")
+	if err != nil {
+		t.Fatalf("SerializeGeminiResponse: %v", err)
+	}
+
+	var parsed struct {
+		Candidates []map[string]any `json:"candidates"`
+	}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, out)
+	}
+	if len(parsed.Candidates) != 1 {
+		t.Fatalf("expected exactly 1 candidate after collapse, got %d: %s", len(parsed.Candidates), out)
+	}
+	content, _ := parsed.Candidates[0]["content"].(map[string]any)
+	parts, _ := content["parts"].([]any)
+	if len(parts) == 0 {
+		t.Fatalf("candidate[0] has no parts: %v", parsed.Candidates[0])
+	}
+	part0, _ := parts[0].(map[string]any)
+	if part0["text"] != "first" {
+		t.Fatalf("expected surviving candidate[0] text 'first', got %v", part0["text"])
 	}
 }

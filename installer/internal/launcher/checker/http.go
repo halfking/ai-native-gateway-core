@@ -2,72 +2,52 @@ package checker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
-	"time"
+
+	"github.com/kaixuan/llm-gateway-go/installer/internal/upgrader"
 )
 
-// MasterHTTPSource queries master for the latest Gateway release.
-// Matches upgrader/client.go:46 endpoint shape:
-// GET <master>/api/v1/updates/latest?channel=<ch>&current_version=<ver>
-//
-// CurrentVersion is a provider so the query string reflects the live
-// post-Apply version (audit C9).
+// MasterHTTPSource queries Maintain's distribution version-check endpoint.
+// Anonymous callers receive release metadata; a complete DeviceProof also
+// enables the instance-specific P4.4 policy hint.
 type MasterHTTPSource struct {
 	MasterURL      string
 	CurrentVersion func() string
 	Channel        string
+	Platform       string
+	Arch           string
+	Proof          upgrader.DeviceProof
 	HTTPClient     *http.Client
 }
 
 func (m *MasterHTTPSource) Check(ctx context.Context) (*FoundRelease, error) {
-	if m.HTTPClient == nil {
-		m.HTTPClient = &http.Client{Timeout: 10 * time.Second}
-	}
+	client := upgrader.NewClientWithHTTPClient(m.MasterURL, m.Proof, m.HTTPClient)
 	curVer := ""
 	if m.CurrentVersion != nil {
 		curVer = m.CurrentVersion()
 	}
-	endpoint := fmt.Sprintf("%s/api/v1/updates/latest?channel=%s&current_version=%s",
-		m.MasterURL,
-		url.QueryEscape(m.Channel),
-		url.QueryEscape(curVer),
-	)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	platform, arch := m.Platform, m.Arch
+	if platform == "" {
+		platform = "linux"
+	}
+	if arch == "" {
+		arch = "amd64"
+	}
+	result, err := client.CheckDistribution(ctx, curVer, m.Channel, platform, arch)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("maintain version check: %w", err)
 	}
-	resp, err := m.HTTPClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("master check status %d", resp.StatusCode)
-	}
-	var body struct {
-		HasUpdate bool `json:"has_update"`
-		Release   struct {
-			Version     string `json:"version"`
-			DownloadURL string `json:"download_url"`
-			SHA256      string `json:"sha256"`
-			Changelog   string `json:"changelog"`
-			Image       string `json:"image"`
-		} `json:"release"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return nil, err
-	}
-	if !body.HasUpdate {
+	if !result.HasUpdate || result.Release == nil {
 		return nil, nil
 	}
 	return &FoundRelease{
-		Version:     body.Release.Version,
-		DownloadURL: body.Release.DownloadURL,
-		SHA256:      body.Release.SHA256,
-		Changelog:   body.Release.Changelog,
-		Image:       body.Release.Image,
+		Version:                  result.Release.Version,
+		DownloadURL:              result.Release.DownloadURL,
+		SHA256:                   result.Release.SHA256,
+		Changelog:                result.Release.Changelog,
+		AutoUpgrade:              result.AutoUpgrade,
+		UpgradePolicyID:          result.UpgradePolicyID,
+		EstimatedDowntimeMinutes: result.EstimatedDowntimeMinutes,
 	}, nil
 }

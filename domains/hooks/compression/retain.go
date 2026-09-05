@@ -28,6 +28,7 @@ package compression
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Retained holds the pinned message slices a compressor pass must preserve.
@@ -82,6 +83,17 @@ func extractOpenAI(body []byte) (*Retained, error) {
 			ret.SystemMessages = append(ret.SystemMessages, m)
 		case "user":
 			if ret.FirstUser == nil {
+				if isSystemReminderMessage(m) {
+					continue
+				}
+				// Skip gateway-injected summary markers (smm_v1) from a
+				// prior compression pass: they carry role=user but are not
+				// the original user intent, and pinning one as B-track would
+				// let it survive re-summarisation, producing nested markers
+				// on the next compression round (see marker_idempotency_test.go).
+				if isSummaryMarkerMsg(m) {
+					continue
+				}
 				raw := m
 				ret.FirstUser = &raw
 				ret.FirstUserIndex = i
@@ -119,6 +131,15 @@ func extractAnthropic(body []byte) (*Retained, error) {
 	for i, m := range probe.Messages {
 		role := messageRole(m)
 		if role == "user" && ret.FirstUser == nil {
+			if isSystemReminderMessage(m) {
+				continue
+			}
+			// Skip gateway-injected summary markers (see extractOpenAI for
+			// the full rationale): a prior-round marker must not be pinned
+			// as B-track, or it survives re-summarisation and nests.
+			if isSummaryMarkerMsg(m) {
+				continue
+			}
 			raw := m
 			ret.FirstUser = &raw
 			ret.FirstUserIndex = i
@@ -137,6 +158,44 @@ func messageRole(raw json.RawMessage) string {
 	}
 	_ = json.Unmarshal(raw, &probe)
 	return probe.Role
+}
+
+// isSystemReminderMessage identifies runtime system-reminder envelopes that
+// arrive as user messages in the Responses-to-Chat conversion path. They are
+// retained in the request body, but must not become the pinned user intent.
+func isSystemReminderMessage(raw json.RawMessage) bool {
+	var probe struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil || len(probe.Content) == 0 {
+		return false
+	}
+
+	var text string
+	var plain string
+	if err := json.Unmarshal(probe.Content, &plain); err == nil {
+		text = plain
+	} else {
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(probe.Content, &blocks); err != nil || len(blocks) == 0 {
+			return false
+		}
+		for _, block := range blocks {
+			switch block.Type {
+			case "", "text", "input_text", "output_text":
+				text += block.Text
+			default:
+				return false
+			}
+		}
+	}
+
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "<system-reminder>") &&
+		strings.HasSuffix(trimmed, "</system-reminder>")
 }
 
 // IsPinnedSystem reports whether the request has any system messages

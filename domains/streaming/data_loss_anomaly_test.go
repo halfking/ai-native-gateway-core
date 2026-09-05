@@ -46,7 +46,7 @@ func TestExtractFirstUserMessage_ReportsParseFailure(t *testing.T) {
 func TestMergeCompressionMetaV3_PreservesExistingOnDecodeFailure(t *testing.T) {
 	corrupt := json.RawMessage(`{"v7_field":`) // truncated, will not decode
 
-	got, err := mergeCompressionMetaV3(corrupt, "window-a", "marker-b")
+	got, err := mergeCompressionMetaV3(corrupt, "window-a", "marker-b", "", nil, 0)
 	if err == nil {
 		t.Fatal("expected a decode error to be reported, got nil")
 	}
@@ -61,7 +61,7 @@ func TestMergeCompressionMetaV3_PreservesExistingOnDecodeFailure(t *testing.T) {
 func TestMergeCompressionMetaV3_MergesWhenDecodable(t *testing.T) {
 	existing := json.RawMessage(`{"v7_strategy":"mechanical"}`)
 
-	got, err := mergeCompressionMetaV3(existing, "window-a", "marker-b")
+	got, err := mergeCompressionMetaV3(existing, "window-a", "marker-b", "", nil, 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

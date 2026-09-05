@@ -41,6 +41,9 @@ jobs:
       - name: Run unit tests (short mode)
         run: make test-short
 
+      - name: Compile PostgreSQL integration tests without credentials
+        run: go test -tags=integration ./bg ./domains/requestjourney -run '^$' -count=1
+
       - name: Run sessionforensics tests
         run: make test-sessionforensics
         env:
@@ -57,6 +60,8 @@ jobs:
             | head -10
 
   gateway-rls:
+    # Never execute PR-controlled code with a persistent database credential.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     name: Gateway RLS integration
     runs-on: [self-hosted, postgresql-low-priv]
     timeout-minutes: 15
@@ -77,16 +82,20 @@ jobs:
       - name: Run RLS integration tests
         run: go test ./admin -run '^Test(RLS_|AssertSessionOwnerAccessInTx_RealDB)' -count=1 -v
 
-  gateway-session-v2:
-    # Integration tests for the Sessions V2 read path (OutboundBuilder,
-    # TurnReader) against a live PostgreSQL with migration 430 applied.
-    # Shares the TEST_DATABASE_URL secret with gateway-rls; the v2 test
-    # helper also accepts TEST_DB_URL for local runs.
-    name: Sessions V2 integration
+  gateway-pg-contracts:
+    # This mutates the dedicated contract database and must never run PR code
+    # with database secrets. It runs only after a protected main push.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Gateway PostgreSQL contract integration
     runs-on: [self-hosted, postgresql-low-priv]
-    timeout-minutes: 15
+    environment: gateway-pg-contracts
+    concurrency:
+      group: gateway-pg-contracts-isolated-db
+      cancel-in-progress: false
+    timeout-minutes: 20
     env:
-      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+      TEST_DATABASE_URL: ${{ secrets.PG_CONTRACT_WRITER_DATABASE_URL }}
+      TEST_TENANT_DATABASE_URL: ${{ secrets.PG_CONTRACT_TENANT_DATABASE_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -96,8 +105,48 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Require database DSN
-        run: test -n "$TEST_DATABASE_URL"
+      - name: Require dedicated PostgreSQL contract DSNs
+        run: |
+          test -n "$TEST_DATABASE_URL"
+          test -n "$TEST_TENANT_DATABASE_URL"
+          test "$TEST_DATABASE_URL" != "$TEST_TENANT_DATABASE_URL"
+          writer_db=$(psql "$TEST_DATABASE_URL" -XAtqc 'SELECT current_database()')
+          tenant_db=$(psql "$TEST_TENANT_DATABASE_URL" -XAtqc 'SELECT current_database()')
+          test "$writer_db" = "$tenant_db"
+          case "$writer_db" in *_test) ;; *) echo "refusing non-test database: $writer_db"; exit 1;; esac
+          psql "$TEST_DATABASE_URL" -XAtqc "SELECT pg_has_role(current_user, 'llm_gateway_rls_bypass', 'member')" | grep -qx t
+          psql "$TEST_TENANT_DATABASE_URL" -XAtqc "SELECT NOT rolsuper AND NOT rolbypassrls AND NOT pg_has_role(current_user, 'llm_gateway_rls_bypass', 'member') FROM pg_roles WHERE rolname=current_user" | grep -qx t
+
+      - name: Run provider and JournalSnapshot contract tests
+        run: make test-pg-contracts
+
+  gateway-session-v2:
+    # Never execute PR-controlled code with a persistent database credential.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Integration tests for the Sessions V2 read path (OutboundBuilder,
+    # TurnReader) against a live PostgreSQL with migration 430 applied.
+    # Uses a dedicated test-only secret. The helper still accepts legacy
+    # TEST_DB_URL / TEST_DATABASE_URL values for explicitly isolated local runs.
+    name: Sessions V2 integration
+    runs-on: [self-hosted, postgresql-low-priv]
+    timeout-minutes: 15
+    env:
+      TEST_SESSION_V2_DATABASE_URL: ${{ secrets.TEST_SESSION_V2_DATABASE_URL }}
+      TEST_SESSION_V2_ISOLATED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Require isolated V2 database DSN
+        run: |
+          test -n "$TEST_SESSION_V2_DATABASE_URL"
+          database=$(psql "$TEST_SESSION_V2_DATABASE_URL" -XAtqc 'SELECT current_database()')
+          case "$database" in *_test) ;; *) echo "refusing non-test database: $database"; exit 1;; esac
 
       - name: Verify migration 430 schema is present
         # Fail loudly (rather than skip) if the CI DB lacks the V2 tables.
@@ -105,9 +154,9 @@ jobs:
         # before this job; this guard makes a missing schema a visible
         # CI failure instead of a green-but-meaningless skip.
         run: |
-          psql "$TEST_DATABASE_URL" -c "\d gateway.session_bodies" \
+          psql "$TEST_SESSION_V2_DATABASE_URL" -c "\d public.session_bodies" \
             | grep -q "session_bodies" \
-            || { echo "gateway.session_bodies missing — apply migration 430 to the CI DB"; exit 1; }
+            || { echo "public.session_bodies missing — apply migration 430 to the CI DB"; exit 1; }
 
       - name: Run Sessions V2 integration tests
         # Scoped to the V2 read/write round-trip tests for outbound_body
@@ -125,12 +174,84 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # AUDIT_24H (2026-08-17): ratchet mode. The repo carries ~224+ legacy
+      # lint findings, so a plain `golangci-lint run` is permanently red and
+      # gates nothing. --new-from-rev makes the job fail only on issues
+      # introduced by the pushed commits; the legacy stock ratchets down as
+      # it gets cleaned. Base = previous main tip on push events, merge base
+      # (HEAD~1) on PRs; zero-SHA (branch creation) falls back to HEAD~1.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      - name: Determine ratchet base
+        run: |
+          BASE="HEAD~1"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BEFORE="${{ github.event.before }}"
+            if [ -n "$BEFORE" ] && [ "$BEFORE" != "0000000000000000000000000000000000000000" ] \
+               && git cat-file -e "$BEFORE"^{commit} 2>/dev/null; then
+              BASE="$BEFORE"
+            fi
+          fi
+          echo "LINT_RATCHET_BASE=$BASE" >> "$GITHUB_ENV"
+          echo "lint ratchet base: $BASE"
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
           version: v2.0
-          args: --timeout=5m
+          args: --timeout=5m --new-from-rev=${{ env.LINT_RATCHET_BASE }}
+
+  identity-race:
+    # Identity unit tests under the race detector. These are the pure
+    # in-memory auth/identity logic in admin/auth_identity_test.go
+    # (TestIdentity_*, TestSignToken_*) and domains/identity/identity_test.go.
+    # The -run filter keeps us OFF the DB/network integration suites
+    # (no _RealDB, no pgx): the existing gateway-rls / gateway-session-v2
+    # jobs already cover those against a live PostgreSQL on self-hosted
+    # runners. Do NOT add a blanket `go test ./... -race` here — this repo
+    # has DB/network tests that would break the build in this job.
+    name: Identity unit tests (race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run identity unit tests (race detector)
+        run: go test -race -count=1 ./admin -run 'Test(SignToken|MultiIssuer|ResolveToken|Identity|Authenticate)' ./domains/identity/...
+
+  core-quality:
+    # Keep this scope limited to the pure Go core packages. The repository's
+    # full test graph contains DB/network integration suites and must not be
+    # blanket-raced in this PR job.
+    name: Core quality (vet + race + fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Run core vet checks
+        run: make vet-core
+
+      - name: Run core tests with race detector
+        run: make test-race-core
+
+      - name: Lint fuzz corpus for secrets
+        run: make fuzz-corpus-lint
+
+      - name: Run IR fuzz smoke
+        run: go test ./internal/ir -run '^$' -fuzz '^FuzzIRParsersNeverPanic$' -fuzztime=5s -count=1

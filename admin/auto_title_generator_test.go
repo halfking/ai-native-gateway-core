@@ -1,16 +1,101 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/kaixuan/llm-gateway-go/admin/distlock"
+	"github.com/redis/go-redis/v9"
 )
+
+func unsetEnvForTest(t *testing.T, envName string) {
+	t.Helper()
+	original, wasSet := os.LookupEnv(envName)
+	if err := os.Unsetenv(envName); err != nil {
+		t.Fatalf("unset %s: %v", envName, err)
+	}
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv(envName, original)
+			return
+		}
+		_ = os.Unsetenv(envName)
+	})
+}
+
+func TestReadAutoGeneratorEnabled(t *testing.T) {
+	const envName = "LLM_GATEWAY_AUTO_TITLE_ENABLED"
+
+	tests := []struct {
+		name  string
+		value string
+		set   bool
+		want  bool
+	}{
+		{name: "unset uses fallback", want: true},
+		{name: "empty uses fallback", value: "", set: true, want: true},
+		{name: "trimmed false disables", value: " false ", set: true, want: false},
+		{name: "trimmed true enables", value: " true ", set: true, want: true},
+		{name: "invalid uses fallback", value: "not-a-bool", set: true, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.set {
+				t.Setenv(envName, tt.value)
+			} else {
+				unsetEnvForTest(t, envName)
+			}
+			if got := readAutoGeneratorEnabled(envName, true); got != tt.want {
+				t.Fatalf("readAutoGeneratorEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNewAutoTitleGeneratorReadsEnabledEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "defaults enabled", want: true},
+		{name: "false disables", value: "false", want: false},
+		{name: "true enables", value: "true", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.value == "" {
+				unsetEnvForTest(t, "LLM_GATEWAY_AUTO_TITLE_ENABLED")
+			} else {
+				t.Setenv("LLM_GATEWAY_AUTO_TITLE_ENABLED", tt.value)
+			}
+			if got := NewAutoTitleGenerator(nil).enabled; got != tt.want {
+				t.Fatalf("NewAutoTitleGenerator().enabled = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPickFirstAvailableAPIKeyForAutoRequiresDatabaseWithoutStaticKey(t *testing.T) {
+	unsetEnvForTest(t, EnvAPIKey)
+
+	_, _, err := (&Handler{}).pickFirstAvailableAPIKeyForAuto(t.Context(), "default")
+	if err == nil || !strings.Contains(err.Error(), "database not configured") {
+		t.Fatalf("error = %v, want missing database error", err)
+	}
+}
 
 func TestDetectIDESource(t *testing.T) {
 	gen := &AutoTitleGenerator{}
@@ -188,9 +273,12 @@ You are Zoo, a helpful assistant
 				t.Errorf("extractTitleFromPreview() length = %d, want >= %d (result: %q)",
 					len(result), tt.minLen, result)
 			}
-			if len(result) > tt.maxLen {
-				t.Errorf("extractTitleFromPreview() length = %d, want <= %d (result: %q)",
-					len(result), tt.maxLen, result)
+			if utf8.RuneCountInString(result) > sessionTitleMaxRunes {
+				t.Errorf("extractTitleFromPreview() rune count = %d, want <= %d (result: %q)",
+					utf8.RuneCountInString(result), sessionTitleMaxRunes, result)
+			}
+			if !utf8.ValidString(result) {
+				t.Errorf("extractTitleFromPreview() returned invalid UTF-8: %q", result)
 			}
 
 			if tt.wantIDE {
@@ -207,6 +295,22 @@ You are Zoo, a helpful assistant
 				}
 			}
 		})
+	}
+}
+
+func TestExtractTitleFromPreviewUsesRuneBudget(t *testing.T) {
+	gen := &AutoTitleGenerator{}
+	preview := strings.Repeat("你好啊\n", sessionTitleMaxRunes)
+
+	title := gen.extractTitleFromPreview(preview)
+	if !utf8.ValidString(title) {
+		t.Fatalf("extractTitleFromPreview() returned invalid UTF-8: %q", title)
+	}
+	if got := utf8.RuneCountInString(title); got <= 60 || got > sessionTitleMaxRunes {
+		t.Fatalf("extractTitleFromPreview() rune count = %d, want 61..%d", got, sessionTitleMaxRunes)
+	}
+	if !strings.HasSuffix(title, "…") {
+		t.Fatalf("extractTitleFromPreview() = %q, want ellipsis suffix", title)
 	}
 }
 
@@ -317,21 +421,31 @@ func TestExtractMessagesForTitle_BumpedLimits(t *testing.T) {
 	// (turn-11 was preserved by the last-user rule.)
 }
 
-// TestExtractMessagesForTitle_LongSystemTruncated (2026-08-06) — long system
-// messages (IDE tool descriptions) get the explicit "<ide-tool-context truncated>"
-// marker so it's obvious in logs that the system prompt was cut.
-func TestExtractMessagesForTitle_LongSystemTruncated(t *testing.T) {
-	longSys := strings.Repeat("你可以使用以下工具...", 100) // well over 800 chars
+// TestExtractMessagesForTitle_ExcludesSystem (2026-08-26) — system/developer
+// prompts must never enter the title corpus; only user/assistant remain.
+func TestExtractMessagesForTitle_ExcludesSystem(t *testing.T) {
+	longSys := strings.Repeat("你可以使用以下工具...", 100)
 	body := fmt.Sprintf(`{"messages":[
 		{"role":"system","content":%q},
-		{"role":"user","content":"实际问题"}
+		{"role":"developer","content":"dev instructions"},
+		{"role":"user","content":"实际问题"},
+		{"role":"assistant","content":"好的"}
 	]}`, longSys)
 	got := extractMessagesForTitle(body)
 	if got == "" {
 		t.Fatal("expected non-empty corpus")
 	}
-	if !strings.Contains(got, "<ide-tool-context truncated>") {
-		t.Fatalf("expected ide-tool-context truncated marker; got:\n%s", got)
+	if strings.Contains(got, "你可以使用以下工具") || strings.Contains(got, "dev instructions") {
+		t.Fatalf("system/developer content leaked into title corpus:\n%s", got)
+	}
+	if strings.Contains(got, "system:") || strings.Contains(got, "developer:") {
+		t.Fatalf("system/developer role lines leaked into title corpus:\n%s", got)
+	}
+	if !strings.Contains(got, "实际问题") {
+		t.Fatalf("expected user question preserved; got:\n%s", got)
+	}
+	if !strings.Contains(got, "assistant: 好的") {
+		t.Fatalf("expected assistant reply preserved; got:\n%s", got)
 	}
 }
 
@@ -484,6 +598,172 @@ func TestCallAutoTitleLLM_NoRetryOn400(t *testing.T) {
 
 // TestIsTransientAutoTitleErr (2026-08-06) — directly unit-tests the
 // retry classifier without standing up a fake server.
+func TestAutoTitleFirstTurnGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hasPrior bool
+		want     bool
+	}{
+		{name: "first turn is eligible", hasPrior: false, want: true},
+		{name: "continuing session is not eligible", hasPrior: true, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gen := &AutoTitleGenerator{
+				firstTurnCheck: func(_, _, _ string) bool { return !tc.hasPrior },
+			}
+			if got := gen.isFirstSuccessfulUserTurn("gw_session", "tenant-a", "request-current"); got != tc.want {
+				t.Fatalf("isFirstSuccessfulUserTurn() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+func TestExtractMessagesForTitle_ToolMessagesDoNotConsumeSemanticBudget(t *testing.T) {
+	messages := make([]map[string]string, 0, 12)
+	for i := 0; i < 10; i++ {
+		messages = append(messages, map[string]string{
+			"role":    "tool",
+			"content": fmt.Sprintf("large tool output %d", i),
+		})
+	}
+	messages = append(messages,
+		map[string]string{"role": "user", "content": "请为现有会话补充标题连续性测试"},
+		map[string]string{"role": "assistant", "content": "我会检查首轮判定和工具消息过滤。"},
+	)
+	body, err := json.Marshal(map[string]any{"messages": messages})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	got := extractMessagesForTitle(string(body))
+	if strings.Contains(got, "large tool output") {
+		t.Fatalf("tool output leaked into corpus: %s", got)
+	}
+	if !strings.Contains(got, "请为现有会话补充标题连续性测试") {
+		t.Fatalf("user message was excluded by tool traffic: %s", got)
+	}
+	if !strings.Contains(got, "我会检查首轮判定和工具消息过滤") {
+		t.Fatalf("assistant message was excluded by tool traffic: %s", got)
+	}
+}
+
+// TestExtractLastUserMessageRuneCount (2026-08-19) — guards the short-user-message
+// gate that decides whether MaybeGenerateTitle can skip the LLM round-trip.
+// Returns the LAST user message's rune count (whitespace-collapsed), or 0 when
+// the body is unparseable / empty / has no user message.
+func TestExtractLastUserMessageRuneCount(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{
+			name: "empty body",
+			body: "",
+			want: 0,
+		},
+		{
+			name: "invalid json",
+			body: "not json",
+			want: 0,
+		},
+		{
+			name: "no messages array",
+			body: `{"model":"gpt-4"}`,
+			want: 0,
+		},
+		{
+			name: "only system messages",
+			body: `{"messages":[{"role":"system","content":"You are a helpful assistant"}]}`,
+			want: 0,
+		},
+		{
+			name: "single short user message",
+			body: `{"messages":[{"role":"user","content":"你好"}]}`,
+			want: 2, // 你好 = 2 runes
+		},
+		{
+			name: "last user message wins over earlier user message",
+			body: `{"messages":[
+				{"role":"user","content":"first long long long long long long long long prompt"},
+				{"role":"assistant","content":"ok"},
+				{"role":"user","content":"hi"}
+			]}`,
+			want: 2, // "hi"
+		},
+		{
+			name: "long user message exceeds title budget",
+			body: fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`,
+				strings.Repeat("长", 200)),
+			want: 200,
+		},
+		{
+			name: "exactly at title budget boundary",
+			body: fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`,
+				strings.Repeat("a", sessionTitleMaxRunes)),
+			want: sessionTitleMaxRunes,
+		},
+		{
+			name: "tool messages do not count as user",
+			body: `{"messages":[
+				{"role":"user","content":"hi"},
+				{"role":"tool","content":"tool output"}
+			]}`,
+			want: 2, // "hi" is the last user message
+		},
+		{
+			name: "case insensitive role match",
+			body: `{"messages":[{"role":"USER","content":"case test"}]}`,
+			want: 9, // "case test"
+		},
+		{
+			name: "whitespace-collapsed user message",
+			body: `{"messages":[{"role":"user","content":"   short   "}]}`,
+			want: 5, // "short"
+		},
+		{
+			name: "empty user content returns 0",
+			body: `{"messages":[{"role":"user","content":""}]}`,
+			want: 0,
+		},
+		{
+			name: "multimodal content flattened",
+			body: `{"messages":[{"role":"user","content":[
+				{"type":"text","text":"hello "},
+				{"type":"text","text":"world"}
+			]}]}`,
+			want: 11, // "hello world"
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractLastUserMessageRuneCount(tc.body)
+			if got != tc.want {
+				t.Fatalf("extractLastUserMessageRuneCount() = %d, want %d (body=%q)",
+					got, tc.want, tc.body)
+			}
+		})
+	}
+}
+
+// TestShortUserMessageGateThreshold (2026-08-19) — pins the gate's
+// relationship to sessionTitleMaxRunes: any last-user-message with rune count
+// in [1, sessionTitleMaxRunes] inclusive should be eligible to skip the LLM
+// round-trip. Anything above the budget (or 0 = no user message) must fall
+// through to the existing pipeline.
+func TestShortUserMessageGateThreshold(t *testing.T) {
+	short := strings.Repeat("a", sessionTitleMaxRunes)
+	long := strings.Repeat("a", sessionTitleMaxRunes+1)
+	shortBody := fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`, short)
+	longBody := fmt.Sprintf(`{"messages":[{"role":"user","content":%q}]}`, long)
+
+	if n := extractLastUserMessageRuneCount(shortBody); n <= 0 || n > sessionTitleMaxRunes {
+		t.Fatalf("short body: rune count = %d, want 1..%d (gate should fire)", n, sessionTitleMaxRunes)
+	}
+	if n := extractLastUserMessageRuneCount(longBody); n <= sessionTitleMaxRunes {
+		t.Fatalf("long body: rune count = %d, want > %d (gate must NOT fire)", n, sessionTitleMaxRunes)
+	}
+}
+
 func TestIsTransientAutoTitleErr(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -507,5 +787,116 @@ func TestIsTransientAutoTitleErr(t *testing.T) {
 					tc.err, tc.status, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAutoTitle_DistLock_FollowerSkipsOnRecheck is the regression test for
+// the 2026-08-19 lock wiring: when two goroutines call MaybeGenerateTitle
+// on the same session, only the leader should hit the upstream LLM. The
+// follower waits for the leader, re-checks the DB, and exits silently.
+//
+// We can't easily exercise the full AutoTitleGenerator pipeline against
+// miniredis without a DB, so we test the distlock integration at the
+// goroutine-boundary using the same key shape generateTitleAsync uses.
+func TestAutoTitle_DistLock_FollowerSkipsOnRecheck(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	mgr := distlock.NewRedisManager(rdb)
+
+	const sessionID = "gw_dedup_test"
+	const taskID = "default"
+
+	var llmCalls atomic.Int32
+	ctx := context.Background()
+
+	// Pre-acquire the leader handle so the lock is already held when
+	// the second goroutine joins. This eliminates the "who runs first"
+	// race that otherwise lets both goroutines see themselves as
+	// leader (the second one runs after the first releases). The test
+	// then verifies that a concurrent Acquire is correctly classified
+	// as a follower and waits for the leader to release.
+	leader, err := mgr.Acquire(ctx, distlock.AcquireOpts{
+		Key: titleDistLockKey("auto", taskID, sessionID),
+		TTL: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("leader Acquire: %v", err)
+	}
+	if !leader.IsLeader() {
+		t.Fatal("first handle must be leader")
+	}
+
+	followerAcquired := make(chan *distlock.Handle, 1)
+	go func() {
+		h, err := mgr.Acquire(ctx, distlock.AcquireOpts{
+			Key: titleDistLockKey("auto", taskID, sessionID),
+			TTL: 30 * time.Second,
+		})
+		if err != nil {
+			t.Errorf("follower Acquire: %v", err)
+			followerAcquired <- nil
+			return
+		}
+		followerAcquired <- h
+	}()
+
+	// Give the goroutine time to subscribe to the release channel.
+	var follower *distlock.Handle
+	select {
+	case follower = <-followerAcquired:
+		if follower == nil {
+			t.Fatal("follower Acquire failed")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower did not acquire in time")
+	}
+
+	if follower.IsLeader() {
+		t.Fatal("second handle must be follower (pre-held lock should serialize)")
+	}
+
+	// Simulate generateTitleAsync's follower path: Wait then re-check.
+	// Here we just verify Wait returns without error and that the
+	// leader's protected work ran first.
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- follower.Wait(ctx)
+	}()
+
+	// The leader runs its protected work then releases.
+	llmCalls.Add(1)
+	leader.Release(ctx)
+
+	// Follower must wake up cleanly.
+	select {
+	case err := <-waitDone:
+		if err != nil {
+			t.Errorf("follower Wait: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("follower did not wake after leader Release")
+	}
+	follower.Release(ctx)
+
+	if got := llmCalls.Load(); got != 1 {
+		t.Fatalf("protected work (LLM call surrogate) ran %d times, want 1", got)
+	}
+}
+
+// TestTitleDistLockKey_AutoVsManualIndependent pins the operator
+// requirement that auto and manual title pipelines must not block each
+// other: different "kind" segments yield different keys.
+func TestTitleDistLockKey_AutoVsManualIndependent(t *testing.T) {
+	auto := titleDistLockKey("auto", "default", "sess-1")
+	manual := titleDistLockKey("manual", "default", "sess-1")
+	if auto == manual {
+		t.Fatalf("auto/manual keys collide: %q", auto)
+	}
+	if auto != "llmgw:distlock:title:auto:default\x00sess-1" {
+		t.Fatalf("auto key shape wrong: %q", auto)
+	}
+	if manual != "llmgw:distlock:title:manual:default\x00sess-1" {
+		t.Fatalf("manual key shape wrong: %q", manual)
 	}
 }

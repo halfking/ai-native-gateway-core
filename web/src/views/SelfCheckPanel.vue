@@ -24,6 +24,10 @@ import {
 import ProbeTriStateQueue from '../components/probe/ProbeTriStateQueue.vue'
 import { getFeaturedModelsDynamic } from '../api/system'
 import type { FeaturedModel } from '../api/system'
+import EmptyState from '../components/EmptyState.vue'
+import {
+  displaySyntheticCredentialModel,
+} from '../composables/useCredentialLabels'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -48,9 +52,36 @@ const range = ref<'1h' | '6h' | '24h' | '7d'>('24h')
 const probeHealth = ref<ProbeSystemHealth | null>(null)
 
 let pollTimer: number | undefined
+// 2026-09-01 (P2 audit fix): hold the trigger→reload debounce so we can
+// cancel it on unmount instead of letting it fire loadAll() against a
+// destroyed component when the user navigates away within the 1-second
+// window.
+let postTriggerReloadTimer: ReturnType<typeof setTimeout> | null = null
 
 // 2026-08-15 (OBS-FE4): 探测队列泳道改为三段式队列组件（待请求/正在请求/
 // 已完成），SSE 为主 + tri-state API 兜底，组件内部自管可见性门控与降级态。
+
+// 2026-09-03: 三态 trigger 按钮文案。
+//  - available=true → "▶ 手动触发"（可点击）
+//  - available=false + error_code=no_probe_path → "⚠ 自检未启用"（中性，
+//    新探测模式下 trigger 已迁移到节点探测队列，UI 触发按钮有意禁用）
+//  - available=false + 其它 → "⛔ 触发异常"（真有故障，需要看 reason）
+const triggerButtonLabel = computed(() => {
+  if (triggerBusy.value) return '⏳ 触发中'
+  if (triggerAvailability.value.available) return '▶ 手动触发'
+  if (triggerAvailability.value.error_code === 'self_check.trigger.no_probe_path') {
+    return '⚠ 自检未启用'
+  }
+  return '⛔ 触发异常'
+})
+
+const triggerButtonClass = computed(() => {
+  if (triggerAvailability.value.available) return 'btn-primary'
+  if (triggerAvailability.value.error_code === 'self_check.trigger.no_probe_path') {
+    return 'btn-secondary' // 中性灰，提示"未启用"而非"故障"
+  }
+  return 'btn-danger' // 真异常，警告色
+})
 
 // ── 数据加载 ──────────────────────────────────────────
 
@@ -115,6 +146,12 @@ onMounted(() => {
 
 onUnmounted(() => {
   stopPoll()
+  // 2026-09-01 (P2 audit fix): cancel the post-trigger reload timer so
+  // loadAll() does not fire after the component is gone.
+  if (postTriggerReloadTimer) {
+    clearTimeout(postTriggerReloadTimer)
+    postTriggerReloadTimer = null
+  }
 })
 
 watch(range, () => {
@@ -190,7 +227,16 @@ async function onTrigger(model = '') {
   triggerBusy.value = true
   try {
     await triggerSelfCheck(model)
-    setTimeout(() => void loadAll(), 1000)
+    // 2026-09-01 (P2 audit fix): save the timer handle so we can cancel
+    // it on unmount; without this the user could switch tabs in <1s and
+    // loadAll() would still fire against a destroyed component.
+    if (postTriggerReloadTimer) {
+      clearTimeout(postTriggerReloadTimer)
+    }
+    postTriggerReloadTimer = setTimeout(() => {
+      postTriggerReloadTimer = null
+      void loadAll()
+    }, 1000)
   } catch (e: unknown) {
     // 410 Gone = server explicitly retired this endpoint (new probe mode).
     // Surface the friendly reason from the payload instead of the raw 410
@@ -287,13 +333,7 @@ const errorColor = (t: string): string => {
 // the suffix indicates which credential's daily check produced the
 // run. Real upstream models (e.g. "gpt-5.6-luna") pass through.
 function formatSelfCheckModelLabel(label: string): string {
-  if (!label) return label
-  if (label.startsWith('cred-')) {
-    const id = label.slice(5)
-    if (/^\d+$/.test(id)) return `凭据 #${id}`
-    return label
-  }
-  return label
+  return label ? displaySyntheticCredentialModel(label) : label
 }
 
 const summaryCards = computed(() => {
@@ -364,18 +404,12 @@ const probeSummaryCards = computed(() => {
         </select>
         <button class="btn btn-secondary" @click="openSettings">⚙ 设置</button>
         <button
-          class="btn btn-primary"
+          :class="['btn', triggerButtonClass]"
           :disabled="triggerBusy || !triggerAvailability.available"
           :title="triggerAvailability.available ? '' : (triggerAvailability.reason || '触发功能不可用')"
           @click="onTrigger('')"
         >
-          {{
-            triggerBusy
-              ? '⏳ 触发中'
-              : triggerAvailability.available
-                ? '▶ 手动触发'
-                : '⛔ 触发已下线'
-          }}
+          {{ triggerButtonLabel }}
         </button>
         <button class="btn btn-secondary" @click="loadAll">🔄</button>
       </div>
@@ -439,10 +473,16 @@ const probeSummaryCards = computed(() => {
           :title="triggerAvailability.available ? '' : (triggerAvailability.reason || '触发功能不可用')"
           @click="onTrigger(m.model_name)"
         >
-          触发测试
+          {{
+            triggerAvailability.available
+              ? '触发测试'
+              : triggerAvailability.error_code === 'self_check.trigger.no_probe_path'
+                ? '未启用'
+                : '异常'
+          }}
         </button>
       </div>
-      <div v-if="models.length === 0" class="empty-state">暂无模型</div>
+      <EmptyState v-if="models.length === 0" text="暂无模型" padding="24px" />
     </div>
 
     <!-- 错误分类 -->
@@ -537,7 +577,7 @@ const probeSummaryCards = computed(() => {
           </table>
         </div>
       </div>
-      <div v-if="recentRuns.length === 0" class="empty-state">暂无运行记录</div>
+      <EmptyState v-if="recentRuns.length === 0" text="暂无运行记录" padding="24px" />
     </div>
 
     <!-- 设置弹窗 -->
@@ -625,15 +665,15 @@ const probeSummaryCards = computed(() => {
 }
 
 .status-badge.enabled {
-  background: rgba(63, 185, 80, 0.15);
+  background: var(--success-bg);
   color: var(--success);
-  border: 1px solid rgba(63, 185, 80, 0.4);
+  border: 1px solid var(--success-bd);
 }
 
 .status-badge.disabled {
-  background: rgba(248, 81, 73, 0.15);
+  background: var(--danger-bg);
   color: var(--danger);
-  border: 1px solid rgba(248, 81, 73, 0.4);
+  border: 1px solid var(--danger-bd);
 }
 
 .interval-info {
@@ -667,7 +707,7 @@ const probeSummaryCards = computed(() => {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
   border-color: var(--accent);
 }
 
@@ -711,9 +751,9 @@ const probeSummaryCards = computed(() => {
 }
 
 .alert-danger {
-  background: rgba(248, 81, 73, 0.12);
+  background: var(--danger-bg);
   color: var(--danger);
-  border: 1px solid rgba(248, 81, 73, 0.35);
+  border: 1px solid var(--danger-bd);
 }
 
 .btn-close {
@@ -937,8 +977,8 @@ const probeSummaryCards = computed(() => {
 .upstream-error {
   margin-top: 4px;
   padding: 4px 8px;
-  background: rgba(248, 81, 73, 0.12);
-  border: 1px solid rgba(248, 81, 73, 0.35);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
   border-radius: 3px;
   font-family: monospace;
   font-size: 11px;
@@ -991,7 +1031,7 @@ const probeSummaryCards = computed(() => {
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
   display: flex;
   justify-content: center;
   align-items: center;
@@ -1053,7 +1093,7 @@ const probeSummaryCards = computed(() => {
   border-radius: 4px;
   font-size: 12px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .muted {
   font-size: 12px;

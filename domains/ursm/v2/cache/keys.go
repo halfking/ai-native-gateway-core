@@ -1,25 +1,28 @@
 package cache
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+)
 
 // keyf 是包内 fmt.Sprintf 别名,集中 key 构造便于审计。
 func keyf(format string, args ...any) string {
 	return fmt.Sprintf(format, args...)
 }
 
-// nodeMirrorKey 复刻 store.NodeKey 的逻辑(为避免循环 import,在此重写)。
-// 必须与 domains/ursm/v2/store/keys.go:5 NodeKey 保持一致:
-//
-//	{prefix}node:{cid}:{raw}  (prefix 默认 "ursm:v2:")
+// nodeMirrorKeyForTenant mirrors store.NodeKeyForTenant while keeping the
+// cache package independent from Manager configuration.
 func nodeMirrorKeyForTenant(tenant string, credID int, raw string) string {
-	if tenant == "" {
-		return nodeMirrorKey(credID, raw)
-	}
-	return keyf("ursm:v2:node:%s:%d:%s", tenant, credID, raw)
+	return nodeMirrorKeyForTenantWithPrefix("ursm:v2:", tenant, credID, raw)
+}
+
+func nodeMirrorKeyForTenantWithPrefix(prefix, tenant string, credID int, raw string) string {
+	return store.NodeKeyForTenant(prefix, tenant, credID, raw)
 }
 
 func nodeMirrorKey(credID int, raw string) string {
-	return keyf("ursm:v2:node:%d:%s", credID, raw)
+	return nodeMirrorKeyForTenantWithPrefix("ursm:v2:", "", credID, raw)
 }
 
 // StickyKey 复刻 domains/routing/sticky.go buildStickyKeys 的 key,

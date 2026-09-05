@@ -5,6 +5,7 @@
 //
 // 设计原则：
 // - URSM v2 authoritative 模式 + Ready → URSMv2Backend（唯一权威源）
+// - URSM v2 authoritative 模式未 Ready → RejectingStateBackend（保护性拒绝）
 // - 否则 → LegacyStateBackend（StateManager 内存缓存）或 DBOnlyBackend（兜底）
 //
 // 防封锁机制（FpSlots/Limiter/RPM/DisguisePool/EgressIdentity）保持完全独立，
@@ -70,7 +71,44 @@ func (b *URSMv2Backend) Name() string {
 	return "ursm_v2_authoritative"
 }
 
-// LegacyStateBackend 是旧 StateManager 的状态后端。
+// RejectingStateBackend fails closed when URSM v2 authoritative mode has not
+// opened its recovery gate. The router normally returns before backend
+// selection, but keeping this backend here protects any future caller that
+// selects a backend directly.
+type RejectingStateBackend struct{}
+
+func (b *RejectingStateBackend) FilterAvailable(ctx context.Context, candidates []provider.Candidate) []provider.Candidate {
+	return nil
+}
+
+func (b *RejectingStateBackend) IsAuthoritative() bool {
+	return true
+}
+
+func (b *RejectingStateBackend) Name() string {
+	return "ursm_v2_not_ready"
+}
+
+// OutageMirrorStateBackend backs the 2026-09-04 Redis-outage availability
+// gear: the router already availability-filtered the candidate list through
+// the URSM node mirror (FilterAndScoreOutageFallback), so this backend only
+// passes the list through. It reports IsAuthoritative so the downstream
+// FpSlots/degraded-mode branches keep authoritative semantics (skip the
+// legacy health filter, fail closed when everything was filtered).
+type OutageMirrorStateBackend struct{}
+
+func (b *OutageMirrorStateBackend) FilterAvailable(ctx context.Context, candidates []provider.Candidate) []provider.Candidate {
+	return candidates
+}
+
+func (b *OutageMirrorStateBackend) IsAuthoritative() bool {
+	return true
+}
+
+func (b *OutageMirrorStateBackend) Name() string {
+	return "ursm_v2_outage_mirror"
+}
+
 // 用于 URSM v2 未启用或处于 shadow/canary 模式时的降级路径。
 type LegacyStateBackend struct {
 	sm credentialstate.StateProvider
@@ -157,10 +195,12 @@ func selectStateBackendWithReady(ursmv2Mgr URSMv2Manager, stateMgr credentialsta
 		if ready {
 			return &URSMv2Backend{mgr: ursmv2Mgr}
 		}
-		// Ready 检查失败，降级到 StateManager
-		slog.Warn("ursm_v2 authoritative mode but not ready, falling back to legacy",
+		// Authoritative mode is fail-closed. The router normally rejects
+		// before this selector runs; this protects direct callers too.
+		slog.Warn("ursm_v2 authoritative mode but not ready, rejecting route",
 			"mode", ursmv2Mgr.Mode(),
 		)
+		return &RejectingStateBackend{}
 	}
 
 	// StateManager 降级路径

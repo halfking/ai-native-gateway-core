@@ -1,12 +1,15 @@
 -- Migration 007: MaaS billing — credits, plans, wallets, ledger
 -- Idempotent: uses IF NOT EXISTS and DROP IF EXISTS + CREATE POLICY, safe to run multiple times.
 
-ALTER TABLE request_logs
-    ADD COLUMN IF NOT EXISTS credits_charged BIGINT;
-
-CREATE INDEX IF NOT EXISTS idx_request_logs_credits_charged
-    ON request_logs (tenant_id, ts DESC)
-    WHERE credits_charged IS NOT NULL AND credits_charged > 0;
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'request_logs') THEN
+        ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS credits_charged BIGINT;
+        CREATE INDEX IF NOT EXISTS idx_request_logs_credits_charged
+            ON request_logs (tenant_id, ts DESC)
+            WHERE credits_charged IS NOT NULL AND credits_charged > 0;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS maas_settings (
     id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
@@ -68,11 +71,26 @@ CREATE INDEX IF NOT EXISTS idx_tenant_subscriptions_tenant
     ON tenant_subscriptions (tenant_id, status);
 
 CREATE TABLE IF NOT EXISTS model_credit_rates (
-    canonical_id INT PRIMARY KEY REFERENCES models_canonical(id) ON DELETE CASCADE,
+    canonical_id INT PRIMARY KEY,
     credits_per_1m_in BIGINT,
     credits_per_1m_out BIGINT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Add foreign key constraint only if models_canonical table exists
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'models_canonical') THEN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.table_constraints 
+            WHERE constraint_name = 'model_credit_rates_canonical_id_fkey'
+        ) THEN
+            ALTER TABLE model_credit_rates
+            ADD CONSTRAINT model_credit_rates_canonical_id_fkey
+            FOREIGN KEY (canonical_id) REFERENCES models_canonical(id) ON DELETE CASCADE;
+        END IF;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS credit_ledger (
     id BIGSERIAL PRIMARY KEY,

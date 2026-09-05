@@ -19,8 +19,11 @@ package paramguard
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/reasoncap"
+	"github.com/kaixuan/llm-gateway-go/internal/reasonnorm"
 )
 
 // Apply runs all param-guard rules for the given dialect and returns the
@@ -40,21 +43,28 @@ func Apply(body []byte, dialect paramreg.Dialect) []byte {
 
 	modified := false
 
-	// Rule 1: max_tokens > thinking.budget_tokens (Anthropic hard 400)
+	// Anthropic thinking forbids sampling parameters. Do this before the
+	// generic cap so we never clamp a value that is immediately discarded.
 	if dialect == paramreg.DialectAnthropic {
+		modified = removeSamplingIfThinking(obj) || modified
 		modified = fixAnthropicBudgetCap(obj) || modified
 	}
 
-	// Rule 2: temperature cap per dialect
+	// Temperature cap per dialect applies only when the field survives the
+	// thinking rule above.
 	modified = fixTemperatureCap(obj, dialect) || modified
 
-	// Rule 3: Anthropic — remove temperature when thinking is active
-	if dialect == paramreg.DialectAnthropic {
-		modified = removeTemperatureIfThinking(obj) || modified
-	}
+	// These provider rules operate on the final OpenAI-shaped body. They are
+	// intentionally model-gated so unknown/new models retain forward-compatible
+	// fields rather than being silently rewritten.
+	modified = fixOpenAIOTokens(obj, dialect) || modified
+	modified = fixGLMToolChoice(obj, dialect) || modified
+	modified = fixMiniMaxN(obj, dialect) || modified
+	modified = fixReasoningEffort(obj, dialect) || modified
 
-	// Rule 4: Grok reasoning models — strip rejected params
-	if dialect == paramreg.DialectGrok {
+	// Grok only rejects these controls on reasoning models. The raw model is
+	// carried in the body and is the compatibility signal available here.
+	if dialect == paramreg.DialectGrok && isGrokReasoningModel(obj) {
 		modified = stripGrokIncompatible(obj) || modified
 	}
 
@@ -87,15 +97,23 @@ func fixAnthropicBudgetCap(obj map[string]json.RawMessage) bool {
 	if !ok {
 		return false
 	}
-	var th struct {
-		Type         string `json:"type"`
-		BudgetTokens int    `json:"budget_tokens"`
+	var th map[string]json.RawMessage
+	if err := json.Unmarshal(thinking, &th); err != nil {
+		return false
 	}
-	if err := json.Unmarshal(thinking, &th); err != nil || th.BudgetTokens == 0 {
+	var typ string
+	if raw, ok := th["type"]; ok {
+		_ = json.Unmarshal(raw, &typ)
+	}
+	if typ != "enabled" && typ != "adaptive" {
+		return false
+	}
+	var budgetTokens int
+	if raw, ok := th["budget_tokens"]; !ok || json.Unmarshal(raw, &budgetTokens) != nil || budgetTokens <= 0 {
 		return false
 	}
 
-	if th.BudgetTokens < maxTok {
+	if budgetTokens < maxTok {
 		return false
 	}
 
@@ -104,14 +122,18 @@ func fixAnthropicBudgetCap(obj map[string]json.RawMessage) bool {
 	if newBudget < 1024 {
 		// Can't fit thinking with this max_tokens; remove thinking entirely.
 		slog.Warn("paramguard: removing thinking block (max_tokens too small for min budget)",
-			"max_tokens", maxTok, "budget_tokens", th.BudgetTokens)
+			"max_tokens", maxTok, "budget_tokens", budgetTokens)
 		delete(obj, "thinking")
 		return true
 	}
 
 	slog.Warn("paramguard: clamped thinking.budget_tokens to max_tokens-1",
-		"original_budget", th.BudgetTokens, "new_budget", newBudget, "max_tokens", maxTok)
-	th.BudgetTokens = newBudget
+		"original_budget", budgetTokens, "new_budget", newBudget, "max_tokens", maxTok)
+	rawBudget, err := json.Marshal(newBudget)
+	if err != nil {
+		return false
+	}
+	th["budget_tokens"] = rawBudget
 	raw, err := json.Marshal(th)
 	if err != nil {
 		return false
@@ -158,13 +180,9 @@ func fixTemperatureCap(obj map[string]json.RawMessage, dialect paramreg.Dialect)
 	return true
 }
 
-// removeTemperatureIfThinking removes temperature when Anthropic thinking is active.
-//
-// Claude Code source (claude.ts:1691-1695):
-// "the API requires temperature: 1 when thinking is enabled"
-// and the client simply omits temperature when thinking is on.
-// The gateway must not inject temperature into a thinking request.
-func removeTemperatureIfThinking(obj map[string]json.RawMessage) bool {
+// removeSamplingIfThinking removes sampling controls that Anthropic rejects
+// when thinking is active. Claude Code omits both rather than forcing values.
+func removeSamplingIfThinking(obj map[string]json.RawMessage) bool {
 	thinking, ok := obj["thinking"]
 	if !ok {
 		return false
@@ -172,20 +190,18 @@ func removeTemperatureIfThinking(obj map[string]json.RawMessage) bool {
 	var th struct {
 		Type string `json:"type"`
 	}
-	if err := json.Unmarshal(thinking, &th); err != nil {
+	if err := json.Unmarshal(thinking, &th); err != nil || (th.Type != "enabled" && th.Type != "adaptive") {
 		return false
 	}
-	if th.Type != "enabled" && th.Type != "adaptive" {
-		return false
+	modified := false
+	for _, key := range []string{"temperature", "top_p"} {
+		if _, ok := obj[key]; ok {
+			slog.Warn("paramguard: removed Anthropic-thinking-incompatible parameter", "key", key)
+			delete(obj, key)
+			modified = true
+		}
 	}
-
-	if _, hasTemp := obj["temperature"]; !hasTemp {
-		return false
-	}
-
-	slog.Warn("paramguard: removed temperature from Anthropic thinking request")
-	delete(obj, "temperature")
-	return true
+	return modified
 }
 
 // grokIncompatibleParams is the set of params that cause hard errors on Grok
@@ -195,6 +211,7 @@ var grokIncompatibleParams = []string{
 	"presence_penalty",
 	"frequency_penalty",
 	"stop",
+	"stop_sequences",
 }
 
 // stripGrokIncompatible removes params that Grok reasoning models hard-reject.
@@ -208,6 +225,154 @@ func stripGrokIncompatible(obj map[string]json.RawMessage) bool {
 		}
 	}
 	return modified
+}
+
+func isGrokReasoningModel(obj map[string]json.RawMessage) bool {
+	raw, ok := obj["model"]
+	if !ok {
+		return false
+	}
+	var model string
+	if json.Unmarshal(raw, &model) != nil {
+		return false
+	}
+	model = strings.ToLower(model)
+	return strings.HasPrefix(model, "grok-3-mini") || strings.HasPrefix(model, "grok-4")
+}
+
+// fixOpenAIOTokens converts the legacy token alias for o-series models.
+// OpenAI rejects max_tokens on these models; an explicit completion-token
+// value wins when both aliases are present.
+func fixOpenAIOTokens(obj map[string]json.RawMessage, dialect paramreg.Dialect) bool {
+	if dialect != paramreg.DialectOpenAIChat || !isOpenAIOSeries(obj) {
+		return false
+	}
+	legacy, hasLegacy := obj["max_tokens"]
+	_, hasExplicit := obj["max_completion_tokens"]
+	if !hasLegacy && !hasExplicit {
+		return false
+	}
+	if hasExplicit {
+		if hasLegacy {
+			delete(obj, "max_tokens")
+			return true
+		}
+		return false
+	}
+	obj["max_completion_tokens"] = legacy
+	delete(obj, "max_tokens")
+	return true
+}
+
+func isOpenAIOSeries(obj map[string]json.RawMessage) bool {
+	model, ok := stringField(obj, "model")
+	if !ok {
+		return false
+	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	return model == "o1" || model == "o3" || model == "o4" ||
+		strings.HasPrefix(model, "o1-") || strings.HasPrefix(model, "o3-") || strings.HasPrefix(model, "o4-")
+}
+
+// fixGLMToolChoice normalises GLM's narrower tool_choice contract.
+func fixGLMToolChoice(obj map[string]json.RawMessage, dialect paramreg.Dialect) bool {
+	if dialect != paramreg.DialectGLM {
+		return false
+	}
+	raw, ok := obj["tool_choice"]
+	if !ok {
+		return false
+	}
+	var choice string
+	if json.Unmarshal(raw, &choice) == nil && choice == "auto" {
+		return false
+	}
+	obj["tool_choice"] = json.RawMessage(`"auto"`)
+	return true
+}
+
+// fixMiniMaxN enforces MiniMax's single-completion contract.
+func fixMiniMaxN(obj map[string]json.RawMessage, dialect paramreg.Dialect) bool {
+	if dialect != paramreg.DialectMiniMax {
+		return false
+	}
+	raw, ok := obj["n"]
+	if !ok {
+		return false
+	}
+	var n int
+	if json.Unmarshal(raw, &n) == nil && n == 1 {
+		return false
+	}
+	obj["n"] = json.RawMessage(`1`)
+	return true
+}
+
+// fixReasoningEffort narrows effort values only when the raw model is known to
+// have a target effort capability. Unknown models are left untouched.
+func fixReasoningEffort(obj map[string]json.RawMessage, dialect paramreg.Dialect) bool {
+	rawEffort, ok := obj["reasoning_effort"]
+	if !ok || dialect == paramreg.DialectUnknown {
+		return false
+	}
+	effort, ok := stringValue(rawEffort)
+	if !ok || effort == "" {
+		return false
+	}
+	model, ok := stringField(obj, "model")
+	if !ok {
+		return false
+	}
+	caps := reasoncap.Resolve(nil, model, nil)
+	if !caps.Supported || len(caps.Efforts) == 0 {
+		return false
+	}
+	// The capability table is authoritative for model names. Apply only when
+	// its wire dialect matches the outgoing family to avoid cross-provider edits.
+	if !reasonDialectMatchesParamDialect(caps.Dialect, dialect) {
+		return false
+	}
+	clamped := reasonnorm.ClampEffort(effort, caps.Efforts)
+	if clamped == "" || clamped == effort {
+		return false
+	}
+	encoded, err := json.Marshal(clamped)
+	if err != nil {
+		return false
+	}
+	obj["reasoning_effort"] = encoded
+	return true
+}
+
+func reasonDialectMatchesParamDialect(reasonDialect reasoncap.Dialect, dialect paramreg.Dialect) bool {
+	switch reasonDialect {
+	case reasoncap.DialectOpenAI:
+		return dialect == paramreg.DialectOpenAIChat
+	case reasoncap.DialectGrok:
+		return dialect == paramreg.DialectGrok
+	case reasoncap.DialectMistral:
+		return dialect == paramreg.DialectMistral
+	case reasoncap.DialectKimiEffort:
+		return dialect == paramreg.DialectKimi
+	default:
+		return false
+	}
+}
+
+func stringField(obj map[string]json.RawMessage, key string) (string, bool) {
+	raw, ok := obj[key]
+	if !ok {
+		return "", false
+	}
+	return stringValue(raw)
+}
+
+func stringValue(raw json.RawMessage) (string, bool) {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", false
+	}
+	return value, true
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────

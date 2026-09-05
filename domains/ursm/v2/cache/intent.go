@@ -12,6 +12,7 @@ import (
 // autoroute.CachedIntent(设计稿 Decision 5)。
 type Intent struct {
 	TaskType     string  `json:"task"`
+	WorkType     string  `json:"work_type,omitempty"`
 	ChosenModel  string  `json:"model"`
 	CredentialID int64   `json:"cred_id"`
 	Profile      string  `json:"profile"`

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -73,12 +74,15 @@ func TestQuerySessionTurnsTree_Normal(t *testing.T) {
 	l80, l30 := 80, 30
 	// 主请求页：limit=2 取 3 行 → has_more=true，截断为 2
 	// （pgxmock 惯例：可空列用指针值喂给 **int 目标，nil 表示 NULL）
+	// 游标比较用 (turn_number, request_id) 两段, turn_number 出现在 ">" 与 "="
+	// 两个分支, 故 TurnNumber 在实参中传两次 →
+	// 实参 = [SessionID, TenantID, TurnNumber, TurnNumber, RequestID, Limit+1] = 6 个。
 	mainRows := pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}).
 		AddRow(int64(1), "req_main_1", "success", "glm-4", &l80).
 		AddRow(int64(2), "req_main_2", "success", "glm-4.5", &latency).
 		AddRow(int64(3), "req_main_3", "pending", "glm-4", nil)
 	mock.ExpectQuery("SELECT t.turn_number").
-		WithArgs("gw_s1", "acme", int64(0), "", 3).
+		WithArgs("gw_s1", "acme", int64(0), int64(0), "", 3).
 		WillReturnRows(mainRows)
 	// 子请求：一条 510 列 title_gen，一条回退 origin_actor（sensitive_check 暂无写入方）
 	childRows := pgxmock.NewRows([]string{"parent_request_id", "request_id", "request_status", "latency_ms", "request_type", "origin_actor"}).
@@ -142,7 +146,7 @@ func TestQuerySessionTurnsTree_NotFound(t *testing.T) {
 	defer mock.Close()
 
 	mock.ExpectQuery("SELECT t.turn_number").
-		WithArgs("gw_none", "acme", int64(0), "", 21).
+		WithArgs("gw_none", "acme", int64(0), int64(0), "", 21).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}))
 	mock.ExpectQuery("SELECT tenant_id FROM request_logs_with_current_month").
 		WithArgs("gw_none").
@@ -171,7 +175,7 @@ func TestQuerySessionTurnsTree_CrossTenantForbidden(t *testing.T) {
 
 	// tenant 过滤下主请求为空
 	mock.ExpectQuery("SELECT t.turn_number").
-		WithArgs("gw_other", "acme", int64(0), "", 21).
+		WithArgs("gw_other", "acme", int64(0), int64(0), "", 21).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_number", "request_id", "status", "model", "latency_ms"}))
 	// 不限租户存在性检查：会话归属 other-tenant
 	mock.ExpectQuery("SELECT tenant_id FROM request_logs_with_current_month").
@@ -227,6 +231,29 @@ func TestHandleSessionTurnsTree_MethodAndAuth(t *testing.T) {
 	mux.ServeHTTP(rr, r)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestSessionTurnsRouteRegistration_PreservesTreeSpecificity(t *testing.T) {
+	h := &Handler{}
+	mux := http.NewServeMux()
+	// Keep this registration pair identical to RegisterRoutes: Go 1.22's
+	// method/path pattern must continue to win over the legacy subtree.
+	mux.HandleFunc("/api/admin/sessions/", h.handleSessionSubrouter)
+	mux.HandleFunc("/api/admin/sessions/{id}/turns", h.handleSessionTurnsTree)
+
+	r := newTurnsTreeAuthRequest(t, http.MethodGet, "/api/admin/sessions/gw_s1/turns?cursor=invalid", "tenant_admin", "acme")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, r)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "session.pagination_invalid_cursor") {
+		t.Fatalf("exact turns route was not handled by tree endpoint: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	r = newTurnsTreeAuthRequest(t, http.MethodGet, "/api/admin/sessions/gw_s1/turns/not-a-number", "tenant_admin", "acme")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, r)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid turn_no") {
+		t.Fatalf("turn detail did not remain on V2 subtree: status=%d body=%s", rr.Code, rr.Body.String())
 	}
 }
 

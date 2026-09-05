@@ -9,7 +9,7 @@
 // bg/credential_probe_v2.probeCredential ran step1 (GET /v1/models) and
 // step2 (mini chat) exactly once before declaring the credential dead.
 //
-// probeRetryDelays: 0s, 2s, 5s — three attempts total. The 0s first attempt
+// probeRetryDelays: 0s, 5s, 5s — three attempts total. The 0s first attempt
 // keeps the happy path identical (no extra latency for healthy credentials).
 // The 2s + 5s backoff is deliberately short: it is meant to absorb blips,
 // not to wait for upstream recovery. Long backoff (10/15/30s) lives in
@@ -41,7 +41,7 @@ import (
 // The authoritative backoff chain definitions live in bg/probe_backoff.go.
 // This package keeps its own defaults because bg cannot import probeutil
 // (circular dependency — probeutil is imported by bg).
-var probeRetryDelaysDefault = []time.Duration{0, 2 * time.Second, 5 * time.Second}
+var probeRetryDelaysDefault = []time.Duration{0, 5 * time.Second, 5 * time.Second}
 
 // ProbeRetryDelays is the short-jitter retry schedule for credential/model
 // probes. First entry is 0 so the happy path is unchanged.

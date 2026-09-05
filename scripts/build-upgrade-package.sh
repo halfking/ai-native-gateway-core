@@ -66,28 +66,57 @@ if ! docker image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
 fi
 docker save "$IMAGE_TAG" -o "$WORK/images.tar"
 
-# 3. 复制增量迁移脚本
-echo "[3/5] Copying migration scripts..."
-mkdir -p "$WORK/migrations"
-if [[ -d sql/migrations ]]; then
-  cp -a sql/migrations/*.sql "$WORK/migrations/" 2>/dev/null || true
-fi
-# 如果没有专门的迁移目录，复制 baseline（首次升级场景）
-if [[ ! -f "$WORK/migrations/"*.sql ]]; then
-  if [[ -d sql/baseline ]]; then
-    cp -a sql/baseline/*.sql "$WORK/migrations/" 2>/dev/null || true
-  fi
-fi
+# 3. 复制受控的 startup migration bundle。离线升级器没有
+# schema_migrations checksum ledger，因此不能把整段历史迁移无差别重放。
+echo "[3/5] Copying controlled startup migration bundle..."
+mkdir -p "$WORK/migrations/startup"
+startup_migrations=(
+	511_state_transitions_table.sql
+	515_state_transitions_seq_unique.sql
+	521_repair_state_transitions_tenant.sql
+	530_request_journey_contract.sql
+	531_request_journey_tenant_uniqueness.sql
+	536_stats_analytics_foundation.sql
+	537_usage_facts.sql
+	539_stats_reconciliation_tenant.sql
+	540_stats_event_inbox_consumer.sql
+	544_stats_adjustments_alignment.sql
+	545_stats_reconciliation_phantom_resolution.sql
+	546_stats_reconciliation_diffs_unique.sql
+	547_session_project_attribution.sql
+	548_stats_reconciliation_diffs_identity.sql
+	553_approval_resume_claim.sql
+	552_request_journey_durable_outbox.sql
+	618_request_journey_snapshot_receipts.sql
+	646_proxy_management_canonical.sql
+	647_goal_client_signal.sql
+	649_routing_analytics_probe_filter.sql
+	650_auto_route_selection_treatment_attribution.sql
+	651_provider_quality_hot_rollup.sql
+	652_system_monitor_fallback_queue.sql
+	653_archive_credential_model_index_canonical_return.sql
+	654_archive_credential_model_index_detach_drop.sql
+)
+for name in "${startup_migrations[@]}"; do
+  source="sql/migrations/startup/$name"
+  [[ -f "$source" ]] || { echo "missing required startup migration: $source" >&2; exit 1; }
+  cp "$source" "$WORK/migrations/startup/$name"
+done
 
 # 4. 生成 manifest.json
 echo "[4/5] Generating manifest.json..."
 FILES=()
-for file in kx-gateway images.tar migrations/*.sql; do
+for file in kx-gateway images.tar; do
   if [[ -e "$WORK/$file" ]]; then
     sha=$(shasum -a 256 "$WORK/$file" | awk '{print $1}')
     FILES+=("{\"path\":\"$file\",\"sha256\":\"$sha\"}")
   fi
 done
+while IFS= read -r file; do
+  relative="${file#$WORK/}"
+  sha=$(shasum -a 256 "$file" | awk '{print $1}')
+  FILES+=("{\"path\":\"$relative\",\"sha256\":\"$sha\"}")
+done < <(find "$WORK/migrations" -type f -name '*.sql' -print | LC_ALL=C sort)
 
 IFS=,
 cat > "$WORK/manifest.json" <<JSON
@@ -103,7 +132,7 @@ JSON
 # 5. 打包
 echo "[5/5] Packaging..."
 ARTIFACT="llm-gateway-go-${VERSION}-upgrade.tar.gz"
-(cd "$WORK" && tar czf "$OUT_DIR/$ARTIFACT" --exclude='.' manifest.json kx-gateway images.tar migrations/*.sql 2>/dev/null || tar czf "$OUT_DIR/$ARTIFACT" manifest.json kx-gateway images.tar)
+(cd "$WORK" && tar czf "$OUT_DIR/$ARTIFACT" manifest.json kx-gateway images.tar migrations)
 
 # 生成校验和
 SHA256=$(shasum -a 256 "$OUT_DIR/$ARTIFACT" | awk '{print $1}')

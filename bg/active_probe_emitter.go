@@ -48,6 +48,9 @@ type ProbeStreamEvent struct {
 	CredentialID int64
 	ProviderID   int64
 	ProviderCode string
+	// ProviderName (2026-08-20): 自检 tab 显示 供应商+凭据 所需的供应商显示名。
+	// Optional — empty when the producer has not loaded it yet.
+	ProviderName string
 	RawModel     string
 	Attempt      int
 	LatencyMs    *int

@@ -1,0 +1,65 @@
+[Unit]
+# 2026-08-31: this is the runtime contract for blue-green candidates on env 245.
+# We pin a unit that *follows the active binary symlink* (not a per-port slot)
+# because that is what env 245 currently runs and what scripts/deploy-seamless.sh
+# assumes on its swap path (line 686: `ln -sfn current/$BIN_NAME $BIN_NAME`).
+# 154's contract (deploy/llm-gateway-go-canary@.service) uses the same pattern.
+# The unit restarts on failure so a transient bind or DB blip does not leave
+# the candidate dead, and logs go to journald so probe failures can be
+# diagnosed without log scraping.
+#
+# Do NOT change ExecStart to a per-port slot (e.g. slots/%i/gateway) without
+# first wiring the seamless deployer to populate slots/, OR you will reproduce
+# the 2026-08-31 incident where the candidate silently failed to bind and the
+# deploy script could not surface which probe failed.
+Description=LLM Gateway Go 245 blue-green candidate (port %i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/llm-gateway-go
+# Shared configuration (DB URL, secrets, Redis) comes from the active .env;
+# operators editing .env never need to touch canary state. The runtime role
+# keys off a plain Environment= directive — .env does NOT set it, so systemd
+# merge order between Environment= and EnvironmentFile= is irrelevant here.
+EnvironmentFile=/opt/llm-gateway-go/.env
+Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
+
+# Per-instance identity, unified with env 154's llm-gateway-go-canary@.service:
+# %i is the candidate port and ALTERNATES between 8781 and 8782 on every
+# deploy (the deployer picks the port the active is NOT on). systemd cannot
+# expand %i inside EnvironmentFile=, and env 245's /opt/llm-gateway-go/.env
+# hard-codes LLM_GATEWAY_LISTEN=:8781, so the port must be pinned on
+# ExecStart: /usr/bin/env sets it directly in the exec environment, which
+# deterministically overrides both EnvironmentFile lines regardless of
+# systemd's Environment=/EnvironmentFile= merge order.
+#
+# 2026-08-31 incident: the port used to live in canary.env, written once at
+# install time with :8782. From the second blue-green deploy onward the
+# candidate ignored its instance port, fought the active for :8782, died on
+# "bind: address already in use", and the deploy aborted with a misleading
+# 60s /healthz "connection refused" probe timeout on the OTHER port.
+#
+# The candidate is pinned to its immutable slot so pre-warm never mutates
+# current or changes the running service's binary/version identity.
+ExecStart=/usr/bin/env LLM_GATEWAY_LISTEN=:%i LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/slots/%i/version.json LLM_GATEWAY_LOG_FILE=/var/log/llm-gateway-go/canary-%i.jsonl /opt/llm-gateway-go/slots/%i/gateway
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=25s
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+LimitNOFILE=65536
+LimitNPROC=32768
+
+[Install]
+WantedBy=multi-user.target

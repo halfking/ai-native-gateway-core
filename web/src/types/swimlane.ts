@@ -2,7 +2,7 @@
 // 2026-07-05: 实时请求流泳道系统的核心类型定义
 // 2026-07-05 v2: 完善字符截断、空闲块、状态枚举
 
-export type GroupByDimension = 'queue' | 'vendor' | 'provider' | 'model'
+export type GroupByDimension = 'queue' | 'credential' | 'vendor' | 'provider' | 'model'
 
 // 2026-07-23: 泳道展示模式 — small=竖条（默认，容量更大），large=卡片
 export type SwimLaneMode = 'small' | 'large'
@@ -18,7 +18,8 @@ export type RequestStatus =
   | 'failure_other'
   | 'idle'              // 空闲块（系统生成）
 
-// 状态描述映射（显示在状态图例中）
+export type StageCategory = 'routing' | 'llm' | 'retrying' | 'terminal'
+
 export const STATUS_DESCRIPTIONS: Record<RequestStatus, string> = {
   'success': '请求成功',
   'in_progress': '正在处理中',
@@ -52,6 +53,7 @@ export interface RequestTile {
   status: string          // success, in_progress, failure
   success?: boolean       // derived flag: status === 'success'
   credential_id?: number  // optional, only present when available
+  credential_label?: string // optional, credential display name (2026-08-27)
   client_model?: string   // optional, the original client-facing model name
   // 2026-07-27: 客户端感知 (从 SSE 推送,显示在 tile 角标)
   agent_name?: string
@@ -71,6 +73,7 @@ export interface RequestTile {
   // backward compatible — absent means "not reported", the card must NOT
   // render a guessed value (13号 gate).
   stage?: string
+  stage_category?: StageCategory
   retrySeq?: number
   parentRequestId?: string
   requestType?: 'chat' | 'title' | 'summary' | 'sensitive_word' | 'probe' | 'unknown'
@@ -87,6 +90,7 @@ export interface DimensionStat {
 
 // 三维度统计数据
 export interface DimensionStats {
+  credential: DimensionStat[]
   vendor: DimensionStat[]
   provider: DimensionStat[]
   model: DimensionStat[]

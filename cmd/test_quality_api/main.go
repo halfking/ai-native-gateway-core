@@ -41,7 +41,7 @@ func main() {
 	log.Println("  GET  /api/providers/:id/quality")
 	log.Println("  GET  /api/providers/quality/ranking")
 	log.Println("  POST /api/providers/:id/quality/recalculate")
-	
+
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
 	}

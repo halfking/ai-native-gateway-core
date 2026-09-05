@@ -36,10 +36,10 @@
 
           <!-- No engines yet — render an explicit empty state instead of relying
                on el-table to coerce its empty template into a usable row. -->
-          <div v-if="!enginesLoading && engines.length === 0" class="empty-state">
+          <EmptyState v-if="!enginesLoading && engines.length === 0" padding="32px 16px">
             <p>{{ t('sessions.promptInjectionFull.enginesEmpty') }}</p>
             <p class="meta">{{ t('sessions.promptInjectionFull.enginesEmptyHint') }}</p>
-          </div>
+          </EmptyState>
           <div v-else-if="enginesLoading" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
           <el-table v-else :data="engines" style="width: 100%" stripe>
             <el-table-column prop="engine_name" :label="t('sessions.promptInjectionFull.colName')" width="180" />
@@ -136,9 +136,9 @@
             </template>
           </el-alert>
 
-          <div v-if="!severityMatrixLoading && severityMatrix.length === 0" class="empty-state">
+          <EmptyState v-if="!severityMatrixLoading && severityMatrix.length === 0" padding="32px 16px">
             <p>{{ t('sessions.promptInjectionFull.severityEmpty') }}</p>
-          </div>
+          </EmptyState>
           <div v-else-if="severityMatrixLoading" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
           <el-table v-else :data="severityMatrix" style="width: 100%" stripe border>
             <el-table-column :label="t('sessions.promptInjectionFull.colSeverityLevel')" width="120">
@@ -272,9 +272,9 @@
           </div>
 
           <div v-if="rulesLoading && rules.length === 0" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
-          <div v-else-if="!rules.length" class="empty-state">
+          <EmptyState v-else-if="!rules.length" padding="32px 16px">
             <p>{{ t('sessions.promptInjectionFull.rulesEmpty') }}</p>
-          </div>
+          </EmptyState>
           <el-table v-else :data="rules" style="width: 100%" stripe>
             <el-table-column prop="rule_name" :label="t('sessions.promptInjectionFull.colRuleName')" width="220" show-overflow-tooltip />
             <el-table-column :label="t('sessions.promptInjectionFull.colCategory')" width="150">
@@ -340,9 +340,9 @@
           </el-alert>
 
           <div v-if="canaryLoading && canaryTokens.length === 0" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
-          <div v-else-if="!canaryTokens.length" class="empty-state">
+          <EmptyState v-else-if="!canaryTokens.length" padding="32px 16px">
             <p>{{ t('sessions.promptInjectionFull.canaryEmpty') }}</p>
-          </div>
+          </EmptyState>
           <el-table v-else :data="canaryTokens" style="width: 100%" stripe>
             <el-table-column prop="token_name" :label="t('sessions.promptInjectionFull.colName')" width="150" />
             <el-table-column :label="t('sessions.promptInjectionFull.colTokenValue')" width="320">
@@ -536,9 +536,9 @@
           </el-form>
 
           <div v-if="detectionsLoading && detections.length === 0" class="state">{{ t('sessions.promptInjectionFull.loading') }}</div>
-          <div v-else-if="!detections.length" class="empty-state">
+          <EmptyState v-else-if="!detections.length" padding="32px 16px">
             <p>{{ t('sessions.promptInjectionFull.detectionsEmpty') }}</p>
-          </div>
+          </EmptyState>
           <el-table v-else :data="detections" style="width: 100%" stripe>
             <el-table-column prop="detected_at" :label="t('sessions.promptInjectionFull.colTime')" width="180" />
             <el-table-column prop="request_id" :label="t('sessions.promptInjectionFull.colRequestId')" width="180" show-overflow-tooltip />
@@ -708,7 +708,8 @@
 import { computed, onMounted, ref, watch, reactive } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { confirmDialog } from '../composables/useConfirmDialog'
 import {
   QuestionFilled, CircleCloseFilled, CircleCheckFilled,
   Setting, Cpu, Warning, List, Key, Checked, DataAnalysis,
@@ -847,6 +848,7 @@ const loadAvailableModels = async () => {
   } catch { availableModels.value = [] }
 }
 import { req } from '../api/_core'
+import EmptyState from '../components/EmptyState.vue'
 const createEngine = async () => {
   try {
     await apiCreateEngine(newEngine as any)
@@ -874,8 +876,8 @@ const editEngine = async (engine: any) => {
   }
 }
 const deleteEngine = async (engine: any) => {
+  if (!(await confirmDialog(t('sessions.promptInjectionFull.confirmDelete'), { title: t('sessions.promptInjectionFull.confirmTitle') }))) return
   try {
-    await ElMessageBox.confirm(t('sessions.promptInjectionFull.confirmDelete'), t('sessions.promptInjectionFull.confirmTitle'), { type: 'warning' })
     await deleteEngineApi(engine.id)
     ElMessage.success(t('sessions.promptInjectionFull.engineDeleted'))
     loadEngines()
@@ -971,13 +973,13 @@ const createRule = async () => {
   }
 }
 const deleteRule = async (rule: any) => {
+  if (!(await confirmDialog(t('sessions.promptInjectionFull.confirmDelete'), { title: t('sessions.promptInjectionFull.confirmTitle') }))) return
   try {
-    await ElMessageBox.confirm(t('sessions.promptInjectionFull.confirmDelete'), t('sessions.promptInjectionFull.confirmTitle'), { type: 'warning' })
     await req('DELETE', `/api/admin/prompt-injection/rules/${rule.id}`)
     ElMessage.success(t('sessions.promptInjectionFull.ruleDeleted'))
     loadRules()
   } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error(t('sessions.promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
   }
 }
 
@@ -1019,13 +1021,13 @@ const updateCanaryToken = async (token: any) => {
   }
 }
 const deleteCanaryToken = async (token: any) => {
+  if (!(await confirmDialog(t('sessions.promptInjectionFull.confirmDelete'), { title: t('sessions.promptInjectionFull.confirmTitle') }))) return
   try {
-    await ElMessageBox.confirm(t('sessions.promptInjectionFull.confirmDelete'), t('sessions.promptInjectionFull.confirmTitle'), { type: 'warning' })
     await deleteCanaryApi(token.id)
     ElMessage.success(t('sessions.promptInjectionFull.tokenDeleted'))
     loadCanaryTokens()
   } catch (e: any) {
-    if (e !== 'cancel') ElMessage.error(t('sessions.promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
+    ElMessage.error(t('sessions.promptInjectionFull.deleteFailed', { msg: e?.message || '' }))
   }
 }
 async function deleteCanaryApi(id: number | string) { return removeCanaryToken(id) }
@@ -1114,9 +1116,9 @@ onMounted(async () => {
     padding: 16px; border-radius: 4px; text-align: center;
     .risk-label { font-size: 14px; margin-bottom: 8px; }
     .risk-count { font-size: 24px; font-weight: bold; }
-    &.risk-critical { background: rgba(248,81,73,.12); color: #f85149; }
-    &.risk-high { background: rgba(248,81,73,.12); color: #f85149; }
-    &.risk-medium { background: rgba(210,153,34,.12); color: #d29922; }
+    &.risk-critical { background: var(--danger-bg); color: var(--danger); }
+    &.risk-high { background: var(--danger-bg); color: var(--danger); }
+    &.risk-medium { background: var(--warning-bg); color: var(--warning); }
     &.risk-low { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h); }
   }
 }
@@ -1131,7 +1133,7 @@ onMounted(async () => {
 .quick-link-card {
   cursor: pointer; text-align: center; padding: 20px;
   transition: all 0.3s;
-  &:hover { transform: translateY(-4px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); }
+  &:hover { transform: translateY(-4px); box-shadow: 0 4px 12px var(--overlay-light); }
   h3 { margin: 12px 0 8px; font-size: 16px; }
   p { color: var(--muted); font-size: 14px; margin: 0; }
 }

@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T093227Z-69036",
+  "suite": "reliability",
+  "scenarios": [
+    "R01_reliability"
+  ]
+}

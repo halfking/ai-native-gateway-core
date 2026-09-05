@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // KeyVerifier 是 Handler 用来验证 API key 的抽象。
@@ -22,7 +25,9 @@ type KeyInfo struct {
 	TenantID string
 }
 
-// InvalidKeyError 表示"key 无效/过期"错误。
+// InvalidKeyError 表示"key 无效/过期"错误 (session package 本地副本,
+// 保留供 handler_test.go 测试桩使用)。生产路径上,handler 必须断言
+// authentication.InvalidKeyError (跨包类型) — 见 handler.go line 122。
 type InvalidKeyError struct {
 	Message string
 }
@@ -117,7 +122,10 @@ func (h *Handler) authenticate(w http.ResponseWriter, r *http.Request) (context.
 	}
 	ki, err := h.keyVerifier.Verify(r.Context(), rawKey)
 	if err != nil {
-		if _, ok := err.(*InvalidKeyError); ok {
+		// 2026-08-19 fix: 必须断言 authentication.InvalidKeyError (跨包类型) —
+		// session 本地的 InvalidKeyError 与 verifier 返回的类型同名不同包,
+		// 类型断言永不匹配,导致 /v1/sessions 所有 bearer 错误都回退到 503。
+		if _, ok := err.(*authentication.InvalidKeyError); ok {
 			writeErrorJSON(w, http.StatusUnauthorized, "", "Invalid or expired API key", "authentication_error", "INVALID_KEY")
 		} else {
 			writeErrorJSON(w, http.StatusServiceUnavailable, "", "Authentication service temporarily unavailable", "server_error", "AUTH_UNAVAILABLE")
@@ -207,8 +215,18 @@ func (h *Handler) CreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body createSessionRequest
-	//nolint:errcheck // test parse, non-critical
-	json.NewDecoder(r.Body).Decode(&body)
+	// 2026-08-26 (P1-19 fix): body is documented as optional (a missing
+	// X-Gw-Task-Id in the request is fine; the comment on the legacy
+	// handler said "test parse, non-critical"). Empty body is fine.
+	// But a present-but-malformed body must NOT be silently coerced
+	// to the zero value — that hides client-side bugs and was the
+	// bug the audit flagged. jsonbody.ReadOptional distinguishes the
+	// two cases and surfaces a 400 for the malformed body.
+	if r.Body != nil {
+		if ok, _ := jsonbody.ReadOptional(w, r, &body); !ok {
+			return
+		}
+	}
 
 	taskID := body.TaskID
 	if taskID == "" {
@@ -291,7 +309,7 @@ func (h *Handler) MigrateSession(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		SessionID string `json:"session_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := jsonbody.DecodeRequest(r, &body, jsonbody.MaxRequiredBody, true); err != nil {
 		writeErrorJSON(w, http.StatusBadRequest, "", "invalid request body", "session_error", "INVALID_REQUEST")
 		return
 	}

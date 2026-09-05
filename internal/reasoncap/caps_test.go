@@ -72,8 +72,8 @@ func TestPatterns(t *testing.T) {
 		{"o1", DialectOpenAI, true},
 		{"o3", DialectOpenAI, true},
 		{"o4", DialectOpenAI, true},
-		{"o1-mini", DialectOpenAI, true},          // prefix o1-
-		{"o3-mini", DialectOpenAI, true},          // prefix o3-
+		{"o1-mini", DialectOpenAI, true},            // prefix o1-
+		{"o3-mini", DialectOpenAI, true},            // prefix o3-
 		{"o4-mini-2025-04-16", DialectOpenAI, true}, // prefix o4-
 		{"gpt-5", DialectOpenAI, true},
 		{"gpt-5-turbo", DialectOpenAI, true},
@@ -139,8 +139,27 @@ func TestPatterns(t *testing.T) {
 		{"grok-3-mini-fast", DialectGrok, true},
 		{"grok-4", DialectGrok, true},
 		{"grok-4.5", DialectGrok, true},
+		{"grok-4.6", DialectGrok, true},
 		{"grok-4-latest", DialectGrok, true},
 		{"grok-2", DialectNone, false}, // grok-2 has no reasoning
+		// ─── GLM ──────────────────────────────────────────────────────────
+		{"glm-5.3", DialectGLM, true},
+		{"glm-5.2", DialectGLM, true},
+		{"glm-5.1", DialectGLM, true},
+		{"glm-5", DialectGLM, true},
+		{"glm-4.5", DialectGLM, true},
+		{"glm-z1-flash", DialectGLM, true},
+		// ─── Kimi ─────────────────────────────────────────────────────────
+		{"kimi-k3", DialectKimiEffort, true},
+		{"kimi-k2.6", DialectKimiThink, true},
+		{"kimi-k2.7-code", DialectKimiThink, true},
+		{"kimi-k2.7-code-highspeed", DialectKimiThink, true},
+		{"kimi-k2", DialectKimiThink, true},
+		// ─── Gemini 3 ─────────────────────────────────────────────────────
+		{"gemini-3.7-flash", DialectGemini3, true},
+		{"gemini-3.6-flash", DialectGemini3, true},
+		{"gemini-3.5-flash", DialectGemini3, true},
+		{"gemini-3.1-pro", DialectGemini3, true},
 		// ─── vLLM / open-weight "-r1" suffix ──────────────────────────────
 		{"llama-3-70b-r1", DialectVLLM, true},
 		{"qwen2.5-72b-r1", DialectVLLM, true},

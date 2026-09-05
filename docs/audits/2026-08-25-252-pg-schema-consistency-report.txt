@@ -1,0 +1,85 @@
+====================================================================================================
+252 PG 分区表 vs _hot 表 Schema 一致性报告
+====================================================================================================
+扫描时间: 2026-08-25 (handoff 后新会话)
+对比范围: 14 对 (parent 分区表, _hot 普通表)
+对比维度: 列名 / 数据类型 / 可空性 / 字符最大长度 / 数值精度 / 列默认值
+源依据: rule 49 §49-1 (列名假设禁止) + rule 33 (分区表铁律)
+
+
+❌ candidate_failure_logs ↔ candidate_failure_logs_hot: 1 处差异
+   parent 列数: 20, hot 列数: 20
+   � ts: nullable: parent=NO hot=YES
+
+✅ credential_model_index ↔ credential_model_index_hot: 完全一致 (列数=17)
+
+✅ credit_ledger ↔ credit_ledger_hot: 完全一致 (列数=10)
+
+❌ dashboard_access_events ↔ dashboard_access_events_hot: 2 处差异
+   parent 列数: 23, hot 列数: 23
+   � created_at: default: parent='' hot='now()'
+   � timestamp: default: parent='' hot='now()'
+
+✅ handoff_logs ↔ handoff_logs_hot: 完全一致 (列数=16)
+
+✅ model_probe_runs ↔ model_probe_runs_hot: 完全一致 (列数=13)
+
+❌ request_logs ↔ request_logs_hot: 25 处差异
+   parent 列数: 151, hot 列数: 143
+   � agent_name: type: parent=character varying hot=text; max_len: parent=255 hot=
+   � agent_type: type: parent=character varying hot=text; max_len: parent=50 hot=
+   � api_key_fingerprint: type: parent=character varying hot=text; max_len: parent=16 hot=
+   � attachment_count: default: parent='' hot='0'
+   � cached_response_id: MISSING_IN_HOT
+   � caller_id: MISSING_IN_PARENT
+   � content_safety_score: type: parent=jsonb hot=double precision; num_prec: parent= hot=53
+   � context_size_tokens: MISSING_IN_HOT
+   � continuation_keywords: MISSING_IN_HOT
+   � dlp_violations: type: parent=jsonb hot=ARRAY
+   � effective_timeout_seconds: MISSING_IN_HOT
+   � has_attachments: default: parent='' hot='false'
+   � ir_extensions: type: parent=jsonb hot=text
+   � is_continuation: MISSING_IN_HOT
+   � keepalive_sent_count: MISSING_IN_HOT
+   � node_switch_count: MISSING_IN_HOT
+   � outbound_body: MISSING_IN_HOT
+   � protocol_conversion: type: parent=boolean hot=text
+   � raw_model_name: MISSING_IN_HOT
+   � sanitizer_mutations: type: parent=jsonb hot=text
+   � session_correlation_id: MISSING_IN_PARENT
+   � status_code: MISSING_IN_PARENT
+   � system_fingerprint: MISSING_IN_HOT
+   � task_id: type: parent=character varying hot=text; max_len: parent=255 hot=
+   � timeout_mode: MISSING_IN_HOT
+
+❌ request_logs_bodies ↔ request_logs_bodies_hot: 1 处差异
+   parent 列数: 6, hot 列数: 5
+   � tenant_id: MISSING_IN_HOT
+
+✅ request_wal ↔ request_wal_hot: 完全一致 (列数=17)
+
+✅ routing_decision_log ↔ routing_decision_log_hot: 完全一致 (列数=36)
+
+❌ session_module_executions ↔ session_module_executions_hot: 5 处差异
+   parent 列数: 19, hot 列数: 19
+   � created_at: default: parent='' hot='now()'
+   � execution_id: default: parent='' hot="nextval('session_module_executions_hot_execution_id_seq'::regclass)"
+   � started_at: default: parent='' hot='now()'
+   � status: default: parent='' hot="'running'::character varying"
+   � updated_at: default: parent='' hot='now()'
+
+✅ session_turns ↔ session_turns_hot: 完全一致 (列数=50)
+
+✅ tool_usage_stats ↔ tool_usage_stats_hot: 完全一致 (列数=11)
+
+❌ usage_ledger ↔ usage_ledger_hot: 5 处差异
+   parent 列数: 19, hot 列数: 24
+   � audio_tokens: MISSING_IN_PARENT
+   � image_tokens: MISSING_IN_PARENT
+   � provider_tokens: MISSING_IN_PARENT
+   � reasoning_tokens: MISSING_IN_PARENT
+   � video_tokens: MISSING_IN_PARENT
+
+====================================================================================================
+汇总: 8/14 对完全一致, 39 处差异分布在 6 对表
+====================================================================================================

@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -92,7 +93,7 @@ func sortActionsStable(actions []liveactions.ActionEvent) {
 // is flattened to the top level so the FE1 ActionEvent contract is met
 // without a second DTO. Detail never carries body content or secrets
 // (BE1 安全红线), so promotion across the wire is safe.
-func flattenActionEvent(ev liveactions.ActionEvent) map[string]any {
+func flattenActionEvent(ev liveactions.ActionEvent, labels map[int]string) map[string]any {
 	b, err := json.Marshal(ev)
 	if err != nil {
 		slog.Debug("live actions flatten: marshal failed", "action", ev.Action, "request_id", ev.RequestID, "err", err.Error())
@@ -108,6 +109,15 @@ func flattenActionEvent(ev liveactions.ActionEvent) map[string]any {
 		for k, v := range detail {
 			if _, taken := m[k]; !taken {
 				m[k] = v
+			}
+		}
+	}
+	if labels != nil && ev.CredentialID > 0 {
+		if label, ok := labels[ev.CredentialID]; ok && label != "" {
+			// Don't clobber an explicit `credential_label` already on the
+			// wire (e.g. a future emitter that promotes its own label).
+			if _, taken := m["credential_label"]; !taken {
+				m["credential_label"] = label
 			}
 		}
 	}
@@ -141,15 +151,64 @@ func normalizeLiveRequestType(raw string) string {
 // actionWirePayload shapes the envelope's "action" field: a single object
 // for one event (24号 §3 示例), an array for an aggregated batch frame.
 // Both shapes are accepted by the frontend store.
-func actionWirePayload(actions []liveactions.ActionEvent) any {
+func actionWirePayload(actions []liveactions.ActionEvent, labels map[int]string) any {
 	if len(actions) == 1 {
-		return flattenActionEvent(actions[0])
+		return flattenActionEvent(actions[0], labels)
 	}
 	out := make([]map[string]any, len(actions))
 	for i, a := range actions {
-		out[i] = flattenActionEvent(a)
+		out[i] = flattenActionEvent(a, labels)
 	}
 	return out
+}
+
+// collectCredentialIDs gathers the distinct credential ids referenced by a
+// batch (including ActionNodeSwitch from/to ids in Detail) for one batched
+// label lookup. Restored 2026-08-27 after d2cbaf88b stripped the label
+// enrichment step and left CredentialLabelsFor without a caller.
+func collectCredentialIDs(actions []liveactions.ActionEvent) []int {
+	if len(actions) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{})
+	out := make([]int, 0, len(actions))
+	add := func(id int) {
+		if id <= 0 {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, a := range actions {
+		add(a.CredentialID)
+		if a.Action == liveactions.ActionNodeSwitch {
+			if v, ok := extractIntFromDetail(a.Detail, "from_credential_id"); ok {
+				add(v)
+			}
+			if v, ok := extractIntFromDetail(a.Detail, "to_credential_id"); ok {
+				add(v)
+			}
+		}
+	}
+	return out
+}
+
+func extractIntFromDetail(detail map[string]string, key string) (int, bool) {
+	if detail == nil {
+		return 0, false
+	}
+	raw, ok := detail[key]
+	if !ok || raw == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // MarshalJSON emits the frozen snake_case fields plus the V3.3 camelCase
@@ -191,19 +250,14 @@ func (h *LiveStreamSSEHub) rememberActionTenant(requestID, tenantID string) {
 	if h == nil || requestID == "" {
 		return
 	}
+	// 2026-08-27 P1 fix: Use LRU cache instead of random eviction.
+	// The LRU cache automatically evicts least-recently-used entries when
+	// at capacity. Redis detail fallback still re-resolves evicted entries.
+	normalized := normalizeLiveStreamTenant(tenantID)
+	h.actionTenantIndex.Set(requestID, normalized)
+	
 	h.actionMu.Lock()
-	h.actionTenantIndex[requestID] = normalizeLiveStreamTenant(tenantID)
 	delete(h.actionTenantMiss, requestID)
-	if len(h.actionTenantIndex) > actionTenantIndexCap {
-		// Bounded cache, not an LRU: random eviction is fine because the
-		// Redis detail fallback re-resolves anything evicted.
-		for k := range h.actionTenantIndex {
-			delete(h.actionTenantIndex, k)
-			if len(h.actionTenantIndex) <= actionTenantIndexCap {
-				break
-			}
-		}
-	}
 	h.actionMu.Unlock()
 }
 
@@ -212,10 +266,8 @@ func (h *LiveStreamSSEHub) actionTenant(requestID string) (string, bool) {
 	if h == nil || requestID == "" {
 		return "", false
 	}
-	h.actionMu.Lock()
-	defer h.actionMu.Unlock()
-	t, ok := h.actionTenantIndex[requestID]
-	return t, ok
+	// 2026-08-27 P1 fix: LRU cache has internal locking
+	return h.actionTenantIndex.Get(requestID)
 }
 
 // resolveActionTenants resolves ownership for every request-scoped action
@@ -234,7 +286,8 @@ func (h *LiveStreamSSEHub) resolveActionTenants(ctx context.Context, actions []l
 		if a.RequestID == "" {
 			continue
 		}
-		if _, known := h.actionTenantIndex[a.RequestID]; known {
+		// 2026-08-27 P1 fix: Check LRU cache instead of map
+		if _, known := h.actionTenantIndex.Get(a.RequestID); known {
 			continue
 		}
 		if t, recent := h.actionTenantMiss[a.RequestID]; recent && now.Sub(t) < actionTenantNegCacheTTL {
@@ -431,10 +484,16 @@ func (h *LiveStreamSSEHub) fanOutLifecycleActions(actions []liveactions.ActionEv
 			payloads[key] = nil
 			continue
 		}
+		// 2026-08-23 (Agent C): resolve credential labels once per distinct
+		// payload. The lookup is best-effort (nil when no DB / cache cold)
+		// and the wire contract remains valid without it. Use a fresh,
+		// bounded background context so the broadcast path does not depend
+		// on any per-client deadline (it never gets one).
+		labels := h.CredentialLabelsFor(context.Background(), collectCredentialIDs(subset))
 		data, err := json.Marshal(LiveStreamEnvelope{
 			Type:      "request_lifecycle",
 			Timestamp: time.Now().UTC(),
-			Action:    actionWirePayload(subset),
+			Action:    actionWirePayload(subset, labels),
 		})
 		if err != nil {
 			slog.Warn("live actions marshal failed", "err", err.Error())
@@ -467,10 +526,39 @@ func (h *LiveStreamSSEHub) fanOutLifecycleActions(actions []liveactions.ActionEv
 
 // ── initial replay ──────────────────────────────────────────────────────────
 
-// replayLifecycleActions replays the most recent actions to a freshly
-// connected client, ordered ascending by (ts, seq) per 24号 §4, scoped to
-// the client's tenant visibility.
+func snapshotRequestIDs(snapshot *LiveStreamSnapshot) map[string]struct{} {
+	if snapshot == nil {
+		return nil
+	}
+	ids := make(map[string]struct{})
+	add := func(dimensions map[string][]LiveStreamLane) {
+		for _, lanes := range dimensions {
+			for _, lane := range lanes {
+				for _, tile := range lane.Requests {
+					if tile.RequestID != "" {
+						ids[tile.RequestID] = struct{}{}
+					}
+				}
+			}
+		}
+	}
+	// P0 optimization: DetailDimensions removed, Dimensions is the single source
+	add(snapshot.Dimensions)
+	return ids
+}
+
+// replayLifecycleActions preserves the legacy unrestricted helper used by
+// focused unit tests and callers that do not have an initial snapshot.
 func (h *LiveStreamSSEHub) replayLifecycleActions(ctx context.Context, client *liveStreamClient) {
+	h.replayLifecycleActionsFor(ctx, client, nil)
+}
+
+// replayLifecycleActionsFor replays lifecycle actions for a freshly connected
+// client. When requestIDs is non-nil, only actions belonging to request cards
+// included in the just-sent initial snapshot are replayed. This keeps the
+// global action list from filling the frontend timeline index with unrelated
+// high-volume requests.
+func (h *LiveStreamSSEHub) replayLifecycleActionsFor(ctx context.Context, client *liveStreamClient, requestIDs map[string]struct{}) {
 	if h == nil || h.cfg.RedisClient == nil || client == nil {
 		return
 	}
@@ -480,7 +568,11 @@ func (h *LiveStreamSSEHub) replayLifecycleActions(ctx context.Context, client *l
 	}
 	ctx, cancel := context.WithTimeout(ctx, actionReadTimeout)
 	defer cancel()
-	entries, err := h.cfg.RedisClient.LRange(ctx, liveactions.RedisKey, 0, int64(limit)-1).Result()
+	scanLimit := limit
+	if requestIDs != nil && actionScanPerPoll > scanLimit {
+		scanLimit = actionScanPerPoll
+	}
+	entries, err := h.cfg.RedisClient.LRange(ctx, liveactions.RedisKey, 0, int64(scanLimit)-1).Result()
 	if err != nil {
 		atomic.AddInt64(&h.actionScanErrors, 1)
 		slog.Debug("live actions replay failed", "err", err.Error())
@@ -496,6 +588,11 @@ func (h *LiveStreamSSEHub) replayLifecycleActions(ctx context.Context, client *l
 		if !isRequestScopedAction(ev) {
 			continue // 节点维度 state_change 不进 lifecycle 回放（24号 §2）
 		}
+		if requestIDs != nil {
+			if _, ok := requestIDs[ev.RequestID]; !ok {
+				continue
+			}
+		}
 		events = append(events, ev)
 	}
 	if len(events) == 0 {
@@ -508,13 +605,20 @@ func (h *LiveStreamSSEHub) replayLifecycleActions(ctx context.Context, client *l
 	if !client.isSuper {
 		subset = h.actionsVisibleToTenant(events, client.tenantID)
 	}
+	if len(subset) > limit {
+		subset = subset[len(subset)-limit:]
+	}
 	if len(subset) == 0 {
 		return
 	}
+	// 2026-08-23 (Agent C): pre-resolve credential labels so the initial
+	// action replay already carries `credential_label`. Same best-effort
+	// semantics as the live broadcast path.
+	labels := h.CredentialLabelsFor(ctx, collectCredentialIDs(subset))
 	data, err := json.Marshal(LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: time.Now().UTC(),
-		Action:    actionWirePayload(subset),
+		Action:    actionWirePayload(subset, labels),
 	})
 	if err != nil {
 		slog.Warn("live actions replay marshal failed", "err", err.Error())

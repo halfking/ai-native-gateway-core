@@ -28,6 +28,7 @@ export * from './api/system'
 export * from './api/free-pool'
 export * from './api/compression'
 export * from './api/admin'
+export * from './api/proxy'
 export * from './api/tuning'
 export * from './api/memora'
 export * from './api/maas'
@@ -39,6 +40,7 @@ export * from './api/credential-monitor'
 export * from './api/format-anomalies'
 export * from './api/ops'
 export * from './api/dispatch'
+export * from './api/request-journeys'
 
 // Default export: axios-style HTTP client (api.get/put/patch/post/delete).
 // Wraps the low-level `req<T>(method, path, body?)` from api/_core so views

@@ -29,14 +29,22 @@ func quoteIdentifier(name string) string {
 // 2026-07-14: model_probe_runs_hot 切换为纯 hot 表策略，
 // 移除了 model_probe_runs_hot 项（不再 promote）。
 var hotPromoteTableMap = map[string]string{
-	"request_logs_hot":           "promote_request_logs_hot_to_partition",
-	"usage_ledger_hot":           "promote_usage_ledger_hot_to_partition",
-	"request_wal_hot":            "promote_request_wal_hot_to_partition",
-	"routing_decision_log_hot":   "promote_routing_decision_log_hot_to_partition",
-	"credential_model_index_hot": "promote_credential_model_index_hot_to_partition",
-	"request_logs_bodies_hot":    "promote_request_logs_bodies_hot_to_partition",
-	"credit_ledger_hot":          "promote_credit_ledger_hot_to_partition",
-	"tool_usage_stats_hot":       "promote_tool_usage_stats_hot_to_partition",
+	"request_logs_hot":              "promote_request_logs_hot_to_partition",
+	"usage_ledger_hot":              "promote_usage_ledger_hot_to_partition",
+	"request_wal_hot":               "promote_request_wal_hot_to_partition",
+	"routing_decision_log_hot":      "promote_routing_decision_log_hot_to_partition",
+	"credential_model_index_hot":    "promote_credential_model_index_hot_to_partition",
+	"request_logs_bodies_hot":       "promote_request_logs_bodies_hot_to_partition",
+	"credit_ledger_hot":             "promote_credit_ledger_hot_to_partition",
+	"tool_usage_stats_hot":          "promote_tool_usage_stats_hot_to_partition",
+	"candidate_failure_logs_hot":    "promote_candidate_failure_logs_hot_to_partition",
+	"supplier_errors_hot":           "promote_supplier_errors_hot_to_partition",
+	"session_turns_hot":             "promote_session_turns_hot_to_partition",
+	"session_bodies_hot":            "promote_session_bodies_hot_to_partition",
+	"handoff_logs_hot":              "promote_handoff_logs_hot_to_partition",
+	"session_module_executions_hot": "promote_session_module_executions_hot_to_partition",
+	"dashboard_access_events_hot":   "promote_dashboard_access_events_hot_to_partition",
+	"auto_route_selections_hot":     "promote_auto_route_selections_hot_to_partition",
 }
 
 // HotJobStatus 状态枚举
@@ -221,8 +229,8 @@ type promoteHotAsyncResponse struct {
 	Message    string `json:"message"`
 }
 
-// 默认保留时间改为 24 小时（2026-07-13 产品调整：hot 表只保留最近 1 天）
-const defaultHotRetentionHours = 24
+// 默认 hot 窗口为 8 小时，所有手动/自动 promote 使用同一默认值。
+const defaultHotRetentionHours = 8
 
 // handleDataLifecyclePromoteHotAsync POST /api/admin/data-lifecycle/hot/promote-async
 //
@@ -234,7 +242,7 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 		return
 	}
 	var req promoteHotAsyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -248,8 +256,11 @@ func (h *Handler) handleDataLifecyclePromoteHotAsync(w http.ResponseWriter, r *h
 	if req.RetentionHours != nil {
 		retentionHours = *req.RetentionHours
 	}
-	if retentionHours < 0 {
-		writeError(w, http.StatusBadRequest, "retention_hours must be non-negative")
+	// 2026-09-01 审计修正：retention 0（乃至 NULL interval）会让 promote 以
+	// cutoff=now() 清空整个 hot 表（迁移 638 已在 SQL 侧加同样 guard），
+	// 这里提前拒绝，错误信息与语义保持一致：必须是正数。
+	if retentionHours <= 0 {
+		writeError(w, http.StatusBadRequest, "retention_hours must be positive")
 		return
 	}
 	if req.BatchSize <= 0 {
@@ -564,18 +575,20 @@ func (h *Handler) handleDataLifecyclePromoteHot(w http.ResponseWriter, r *http.R
 		return
 	}
 	var req promoteHotRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 
-	// 默认值（同步接口保持 168 = 7天 以避免破坏现有 UI；新接口 /promote-async 默认 24h）
-	retentionHours := 168
+	// 同步兼容接口与异步接口使用统一的 8 小时 hot 窗口默认值。
+	// retention 必须 > 0（与异步接口及迁移 638 的 SQL guard 一致），
+	// 否则 cutoff=now() 会把整个 hot 表清进分区存储。
+	retentionHours := defaultHotRetentionHours
 	if req.RetentionHours != nil {
 		retentionHours = *req.RetentionHours
 	}
-	if retentionHours < 0 {
-		writeError(w, http.StatusBadRequest, "retention_hours must be non-negative")
+	if retentionHours <= 0 {
+		writeError(w, http.StatusBadRequest, "retention_hours must be positive")
 		return
 	}
 	if req.BatchSize == 0 {
@@ -723,7 +736,7 @@ func (h *Handler) handleDataLifecycleDropPartition(w http.ResponseWriter, r *htt
 		return
 	}
 	var req dropPartitionRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -823,7 +836,7 @@ func (h *Handler) handleDataLifecycleDropPartitionAsync(w http.ResponseWriter, r
 		return
 	}
 	var req dropPartitionAsyncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}

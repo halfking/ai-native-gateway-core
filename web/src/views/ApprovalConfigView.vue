@@ -5,6 +5,7 @@ import { getApprovalConfig, updateApprovalConfig, type ApprovalConfig } from '..
 import ApproverManager from '../components/ApproverManager.vue'
 import NotificationChannels from '../components/NotificationChannels.vue'
 import ApprovalRules from '../components/ApprovalRules.vue'
+import AppSpinner from '../components/AppSpinner.vue'
 
 const { t } = useI18n()
 const loading = ref(false)
@@ -111,9 +112,7 @@ onMounted(() => {
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="loading-container">
-      <div class="loading-spinner">{{ t('approval.config.loading') }}</div>
-    </div>
+    <AppSpinner v-if="loading" :label="t('approval.config.loading')" />
 
     <!-- Content -->
     <div v-else class="content">
@@ -268,15 +267,15 @@ onMounted(() => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
-  color: #f87171;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .message-success {
-  background: rgba(52, 211, 153, 0.1);
-  border: 1px solid rgba(52, 211, 153, 0.3);
-  color: #34d399;
+  background: var(--success-bg);
+  border: 1px solid var(--success-bd);
+  color: var(--success);
 }
 
 .loading-container {
@@ -286,10 +285,6 @@ onMounted(() => {
   padding: 64px;
 }
 
-.loading-spinner {
-  font-size: 16px;
-  color: var(--text-secondary);
-}
 
 .content {
   display: flex;
@@ -460,11 +455,11 @@ onMounted(() => {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #5558e3;
+  background: var(--accent);
 }
 
 .btn-primary:disabled {

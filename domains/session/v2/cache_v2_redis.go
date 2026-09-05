@@ -11,10 +11,12 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -38,10 +40,13 @@ type RedisGovernanceCache struct {
 // Parameters:
 //   - redisAddr: Redis server address (e.g., "localhost:6379")
 //   - ttl: Cache TTL (0 = use default 30min)
+//   - redisDB: Redis logical database index (e.g., 2 for llmgw main).
+//     2026-08-25: 之前硬编码 0, session:v2 governance cache 污染了 PMS 共享的
+//     db0, 违反 252 pms-redis 多租户隔离原则. 强制要求调用方传入 cfg.RedisDB.
 //
 // Returns:
 //   - *RedisGovernanceCache: nil client = disabled cache (fail-open)
-func NewRedisGovernanceCache(redisAddr string, ttl time.Duration) *RedisGovernanceCache {
+func NewRedisGovernanceCache(redisAddr string, ttl time.Duration, redisDB int) *RedisGovernanceCache {
 	if ttl == 0 {
 		ttl = defaultGovernanceTTL
 	}
@@ -57,7 +62,7 @@ func NewRedisGovernanceCache(redisAddr string, ttl time.Duration) *RedisGovernan
 
 	client := redis.NewClient(&redis.Options{
 		Addr:         redisAddr,
-		DB:           0,
+		DB:           redisDB,
 		DialTimeout:  2 * time.Second,
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
@@ -98,14 +103,23 @@ func (r *RedisGovernanceCache) Get(ctx context.Context, tenantID, sessionID stri
 
 	key := redisKeyV2(tenantID, sessionID)
 
-	// Use HGETALL to retrieve all fields
-	data, err := r.client.HGetAll(ctx, key).Result()
-	if err == redis.Nil || len(data) == 0 {
-		return nil, nil // Cache miss (not an error)
-	}
+	// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent WRONGTYPE errors
+	// when the manifest key collides with a non-hash Redis type (some admin
+	// tools SET the same key during live debugging). SafeHGetAll performs
+	// a TYPE guard before HGETALL and surfaces a TypedError on type mismatch.
+	// Both ErrKeyNotFound (key absent) and empty map (key present but empty)
+	// are valid cache-miss signals — preserved from the original code path.
+	data, err := redissafe.SafeHGetAll(ctx, r.client, key)
 	if err != nil {
-		// Redis error, log and return nil (fail-open)
-		return nil, fmt.Errorf("redis hgetall: %w", err)
+		if errors.Is(err, redissafe.ErrKeyNotFound) {
+			return nil, nil // Cache miss (not an error)
+		}
+		// TypedError (WRONGTYPE) or genuine network error — log and
+		// return nil (fail-open semantics preserved from the original).
+		return nil, fmt.Errorf("redis safe hgetall: %w", err)
+	}
+	if len(data) == 0 {
+		return nil, nil // Cache miss (not an error)
 	}
 
 	// Parse fields into GovernanceMeta

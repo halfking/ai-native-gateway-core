@@ -31,21 +31,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// defaultWindowFraction is the INTENTIONAL lower bound used by the dormant
-// pre-request gate (Estimator.NeedsCompression → ShouldCompressPreRequest).
-// It is deliberately 0.80, BELOW window.go's DefaultWindowFraction (0.85)
-// used by the live proactive trigger (SessionCompressor → ShouldTriggerWindow).
-//
-// The 5% gap is by design: the proactive trigger fires at 85% of context, the
-// pre-request gate would pre-empt at 80% to leave buffer for upstream response
-// generation + model internal overhead. Do NOT "unify" these to the same value.
-//
-// NOTE (corrected 2026-08-07): NeedsCompression IS live — Compressor.
-// ShouldCompressPreRequest (compressor.go:261) calls est.NeedsCompression and
-// is itself invoked on the pre-request path (compressor.go:318). The proactive
-// in-request threshold is ShouldTriggerWindow (window.go, default 0.85). The
-// 5-point gap between 0.80 (pre-request) and 0.85 (in-request) is intentional:
-// the pre-request gate fires earlier to leave headroom for response generation.
+// defaultWindowFraction is the provider-context threshold used by the
+// pre-request gate. Keep all provider-aware proactive compression paths at 80%
+// so the outbound prompt leaves room for response generation and model overhead.
 const defaultWindowFraction = 0.8
 
 // envFraction reads LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION. Falls back to

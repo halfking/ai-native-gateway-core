@@ -53,6 +53,7 @@ package middleware
 
 import (
 	"context"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -145,8 +146,20 @@ func loadEgressEnv() {
 // request context for downstream consumers (telemetry, loggers, etc).
 type OriginMiddleware struct {
 	BaseMiddleware
+	// trustedProxies are the CIDR-allowed immediate peers from which
+	// X-Forwarded-For / X-Real-IP are honoured. Requests from peers
+	// outside this list fall back to RemoteAddr (see resolveClientIP).
+	// nil means "trust nothing" — the safest baseline; deployers behind
+	// a load balancer MUST extend it via Security.TrustedProxyCIDRs.
+	trustedProxies []*net.IPNet
 }
 
+// NewOriginMiddleware constructs an OriginMiddleware with no trusted-proxy
+// allowlist: X-Forwarded-For / X-Real-IP are ignored and the resolved client
+// IP falls back to the immediate peer (RemoteAddr). Production wiring MUST
+// use NewOriginMiddlewareWithTrustedProxies with the trusted CIDR list so
+// that X-Forwarded-For / X-Real-IP from public clients cannot impersonate
+// other tenants.
 func NewOriginMiddleware() *OriginMiddleware {
 	loadEgressEnv()
 	return &OriginMiddleware{
@@ -158,6 +171,41 @@ func NewOriginMiddleware() *OriginMiddleware {
 			},
 		},
 	}
+}
+
+// NewOriginMiddlewareWithTrustedProxies builds the middleware with a
+// pre-parsed allowlist. Callers SHOULD pre-validate the CIDRs (use
+// ParseTrustedProxyCIDRs to convert from the YAML/env string slice).
+func NewOriginMiddlewareWithTrustedProxies(cidrs []*net.IPNet) *OriginMiddleware {
+	mw := NewOriginMiddleware()
+	mw.trustedProxies = cidrs
+	return mw
+}
+
+// ParseTrustedProxyCIDRs parses the raw config strings into *net.IPNet
+// values. Invalid CIDRs are dropped with a slog.Warn so a single bad
+// entry cannot poison the entire allowlist — but the rest still take
+// effect. Returning a non-nil empty slice means "trust nothing"; nil
+// means "trust nothing" as well (legacy constructor behaviour).
+func ParseTrustedProxyCIDRs(raw []string) []*net.IPNet {
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]*net.IPNet, 0, len(raw))
+	for _, c := range raw {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			slog.Warn("trusted proxy CIDR parse failed; entry ignored",
+				"cidr", c, "err", err)
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 func (m *OriginMiddleware) Wrap(next http.Handler) http.Handler {
@@ -251,30 +299,46 @@ func isValidOriginStage(s string) bool {
 //
 //	X-Real-IP  >  X-Forwarded-For[0]  >  RemoteAddr
 //
-// For the chain we keep the *original* X-Forwarded-For header value
-// (after trimming whitespace) so operators can audit every proxy hop.
+// Trust model (2026-08-29, HIGH security): X-Real-IP / X-Forwarded-For
+// are ONLY honoured when the immediate TCP peer (r.RemoteAddr host)
+// matches one of the CIDRs in m.trustedProxies. When no allowlist is
+// configured (nil/empty), the headers are ignored and the caller falls
+// back to RemoteAddr — preventing a public client from spoofing an IP
+// to impersonate another tenant or bypass IP-based rate limits /
+// audit trails. For the chain we keep the *original* X-Forwarded-For
+// header value (after trimming whitespace) so operators can audit
+// every proxy hop when the peer is trusted.
 func (m *OriginMiddleware) resolveClientIP(r *http.Request) (single, chain string) {
-	if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
-		single = v
+	remoteHost, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+	if splitErr != nil {
+		remoteHost = r.RemoteAddr
 	}
-	if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
-		chain = v
-		// If no X-Real-IP, fall back to the first hop.
-		if single == "" {
-			if i := strings.IndexByte(v, ','); i >= 0 {
-				single = strings.TrimSpace(v[:i])
-			} else {
-				single = strings.TrimSpace(v)
+	remoteIP := net.ParseIP(remoteHost)
+
+	trusted := m.trustedProxies != nil && remoteIP != nil
+	if trusted {
+		for _, cidr := range m.trustedProxies {
+			if cidr.Contains(remoteIP) {
+				if v := strings.TrimSpace(r.Header.Get("X-Real-IP")); v != "" {
+					single = v
+				}
+				if v := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); v != "" {
+					chain = v
+					// If no X-Real-IP, fall back to the first hop.
+					if single == "" {
+						if i := strings.IndexByte(v, ','); i >= 0 {
+							single = strings.TrimSpace(v[:i])
+						} else {
+							single = strings.TrimSpace(v)
+						}
+					}
+				}
+				break
 			}
 		}
 	}
 	if single == "" {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err == nil {
-			single = host
-		} else {
-			single = r.RemoteAddr
-		}
+		single = remoteHost
 	}
 	// If a single value came from X-Real-IP but no XFF chain is
 	// available, persist the single value as the chain too so the
@@ -349,4 +413,12 @@ func RegisterAuthOwnerUser(ctx context.Context, ownerUser string) context.Contex
 		return ctx
 	}
 	return context.WithValue(ctx, authOwnerUserCtxKey, ownerUser)
+}
+
+// IsGlobalAuthPassed reports whether AuthMiddleware authenticated the request
+// with the deployed static data-plane key. The sentinel is intentionally
+// private to middleware so downstream packages can only observe the decision,
+// not forge the context value.
+func IsGlobalAuthPassed(ctx context.Context) bool {
+	return authOwnerUser(ctx) == "global-auth-passed"
 }

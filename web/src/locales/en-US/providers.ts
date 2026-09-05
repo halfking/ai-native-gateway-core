@@ -59,6 +59,8 @@ export default {
       performanceScore: 'Performance score',
       health: 'System health',
       status: 'Status',
+      // 2026-08-31: per-row provider actions column
+      actions: 'Actions',
     },
     channel: {
       official: 'Official',
@@ -91,6 +93,9 @@ export default {
     empty: 'No providers configured yet',
     manualDisabledBadge: 'Disabled',
     manualDisabledTooltip: 'This provider has been manually disabled by admin',
+    // 2026-08-31: row-level provider delete button
+    deleteProviderBtn: 'Delete',
+    deleteProviderTooltip: 'Soft-delete this provider. The provider and all of its credentials will be removed from every list and the route table. This cannot be undone.',
   },
   create: {
     title: 'Add provider',
@@ -216,7 +221,9 @@ export default {
       checkBtn: 'Check',
       checkTooltip: 'Run a health check on this credential',
       diagnose: 'Diagnose',
-      disable: 'Disable',
+      // 2026-08-31: credential delete is terminal (status='deleted'),
+      // not a soft disable.
+      disable: 'Delete',
     },
     addDialog: {
       title: 'Add credential — {name}',
@@ -234,12 +241,27 @@ export default {
     errors: {
       apiKeyRequired: 'Please enter API Key',
       addFailed: 'Add failed',
-      deleteConfirm: 'Disable this credential?',
+      // 2026-08-31: credential delete is terminal (status='deleted'),
+      // not a soft disable. The credential and every binding to it
+      // disappear from all lists and cannot be restored via UI.
+      deleteConfirm: 'Delete this credential? It will be removed from all lists and routing. This cannot be undone.',
       deleteFailed: 'Delete failed',
       loadFailed: 'Credential load failed',
       saveFailed: 'Save credential failed',
       toggleFailed: 'Operation failed',
     },
+  },
+  // 2026-08-31: provider soft delete (DELETE /api/providers/{id}).
+  // The row stays in the table but deleted_at is set, so the
+  // provider disappears from every list and the route table.
+  providerDelete: {
+    confirm: 'Delete this provider? All of its credentials will also be marked deleted and all related model routes will stop immediately. This cannot be undone.',
+    failed: 'Provider delete failed',
+    success: 'Provider deleted',
+  },
+  // 2026-08-31: provider-deleted toast.
+  toast: {
+    providerDeleted: 'Provider deleted',
   },
   check: {
     providerStarted: 'Check started',
@@ -327,4 +349,48 @@ export default {
       actions: "Actions",
     },
   },
+  emergencyConfirmAction: 'Run "{action}"?\nIt will apply to {credential} / {model}.',
+  emergencyTitle: 'Emergency maintenance',
+  emergencyUnavailable: 'Candidate not loaded; emergency maintenance unavailable.',
+  emergencyIntro: 'These actions rewrite runtime state immediately; confirm the blast radius before running.',
+  forceDisable: 'Force disable',
+  forceDisableDesc: 'Sets manual_disabled=true; routing stops immediately.',
+  forceEnable: 'Force enable',
+  forceEnableDesc: 'Clears runtime blocks and restores model bindings.',
+  clearCircuit: 'Clear circuit',
+  clearCircuitDesc: 'Current: ',
+  clearCircuitAction: 'Clear circuit state',
+  resetErrors: 'Reset error count',
+  consecutiveFailures: 'Consecutive failures: ',
+  resetCountButton: 'Reset count',
+  noNeedForceEnable: 'Node is already healthy (no runtime block); force-enable is unnecessary',
+  warningCmbNotUpdated: 'Model bindings were not updated; check the raw model mapping',
+  warningUrsmNotCleared: 'URSM state was not cleared; runtime may still need a retry',
+  actionDoneWithWarnings: '"{action}" executed; {warnings}',
+  actionDone: '"{action}" completed successfully',
+  emergencyFailed: 'Emergency maintenance failed',
+  // ── 2026-09-05: settings tab · lifecycle state chips + manual-disable state ──
+  lifecycleTitle: 'Lifecycle',
+  lifecycleHint: 'Click a state to save immediately; leaving Active asks for confirmation',
+  lifecycleLabelActive: 'Active',
+  lifecycleLabelDisabled: 'Disabled',
+  lifecycleLabelSuspended: 'Suspended',
+  lifecycleLabelRetired: 'Retired',
+  lifecycleHintActive: 'active · participates in routing normally',
+  lifecycleHintDisabled: 'disabled · manually disabled, excluded from routing',
+  lifecycleHintSuspended: 'suspended · temporarily paused, excluded from routing',
+  lifecycleHintRetired: 'retired · retired for good, not recoverable here',
+  lifecycleCurrent: 'Current',
+  lifecycleChangeConfirm: 'Switch lifecycle from Active to "{label}" ({value})?\nThe credential will stop receiving traffic; you can switch back to Active at any time.',
+  lifecycleChangeDone: 'Lifecycle switched to "{label}".',
+  lifecycleChangeFailed: 'Failed to switch lifecycle',
+  settingsNoChange: 'No settings changed.',
+  manualDisableTitle: 'Manual disable state',
+  manualDisabledBadge: 'Manually disabled',
+  manualNormalBadge: 'Routing normally',
+  manualUnbanAction: 'Unban (restore routing)',
+  manualDisableAction: 'Disable manually',
+  manualUnbanActionTitle: 'Clear the manual-disabled flag to restore routing (reason required)',
+  manualDisableActionTitle: 'Disabling removes this credential from routing (reason required)',
+  manualIndependenceHint: 'Manual disable is independent from lifecycle: unbanning here only clears the manual-disabled flag and does not change the lifecycle state.',
 }

@@ -3,6 +3,8 @@ import { useI18n } from 'vue-i18n'
 import { ref, onMounted, computed } from 'vue'
 import { listSettings, updateSetting, SettingItem } from '../api/settings'
 import { req } from '../api/_core'
+import { fmtDateTime24h } from '../i18n/useFormat'
+import AppSpinner from '../components/AppSpinner.vue'
 
 const { t } = useI18n({ useScope: 'global' })
 
@@ -261,15 +263,6 @@ async function saveConfig() {
 }
 
 // ========== 辅助函数 ==========
-function fmtDate(s: string) {
-  if (!s) return '-'
-  try {
-    return new Date(s).toLocaleString()
-  } catch {
-    return s
-  }
-}
-
 function changeRecordsPage(delta: number) {
   const next = recordsPage.value + delta
   if (next < 1 || next > totalPages.value) return
@@ -326,10 +319,7 @@ onMounted(() => {
 
     <!-- 概览标签页 -->
     <div v-if="activeTab === 'overview'">
-      <div v-if="statsLoading" class="loading-state">
-        <span class="spinner"></span>
-        {{ t('outputCompliance.loading') }}
-      </div>
+      <AppSpinner v-if="statsLoading" :label="t('outputCompliance.loading')" />
       <div v-else-if="statsError" class="error-banner">⚠️ {{ statsError }}</div>
       <div v-else-if="stats" class="stats-grid">
         <div class="stat-card">
@@ -400,8 +390,7 @@ onMounted(() => {
           <tbody v-if="recordsLoading">
             <tr>
               <td colspan="9" class="loading-cell">
-                <span class="spinner"></span>
-                {{ t('outputCompliance.loading') }}
+                <AppSpinner inline :label="t('outputCompliance.loading')" />
               </td>
             </tr>
           </tbody>
@@ -430,7 +419,7 @@ onMounted(() => {
                 </span>
               </td>
               <td class="content-preview">{{ rec.content_preview }}</td>
-              <td class="date-cell">{{ fmtDate(rec.created_at) }}</td>
+              <td class="date-cell">{{ fmtDateTime24h(rec.created_at) }}</td>
             </tr>
           </tbody>
         </table>
@@ -452,10 +441,7 @@ onMounted(() => {
 
     <!-- 配置标签页 -->
     <div v-if="activeTab === 'config'" class="config-panel">
-      <div v-if="configLoading" class="loading-state">
-        <span class="spinner"></span>
-        {{ t('outputCompliance.config.loading') }}
-      </div>
+      <AppSpinner v-if="configLoading" :label="t('outputCompliance.config.loading')" />
       <div v-else-if="configError" class="error-banner">⚠️ {{ configError }}</div>
       <div v-else class="config-form">
         <div v-if="configSuccess" class="success-banner">✅ {{ configSuccess }}</div>
@@ -594,7 +580,7 @@ onMounted(() => {
 }
 
 .view-subtitle {
-  color: #666;
+  color: var(--muted);
   margin: 0 0 1.5rem;
 }
 
@@ -603,7 +589,7 @@ onMounted(() => {
   display: flex;
   gap: 0;
   margin-bottom: 1.5rem;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--surface-secondary);
 }
 
 .tab-btn {
@@ -613,14 +599,14 @@ onMounted(() => {
   border-bottom: 2px solid transparent;
   cursor: pointer;
   font-size: 0.9375rem;
-  color: #666;
+  color: var(--muted);
   transition: all 0.2s;
 }
 
-.tab-btn:hover { color: #3b82f6; }
+.tab-btn:hover { color: var(--accent); }
 .tab-btn.active {
-  color: #3b82f6;
-  border-bottom-color: #3b82f6;
+  color: var(--accent);
+  border-bottom-color: var(--accent);
   font-weight: 500;
 }
 
@@ -634,14 +620,14 @@ onMounted(() => {
 
 .stat-card {
   background: white;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--surface-secondary);
   border-radius: 8px;
   padding: 1rem;
 }
 
 .stat-label {
   font-size: 0.875rem;
-  color: #666;
+  color: var(--muted);
   margin-bottom: 0.5rem;
 }
 
@@ -650,8 +636,8 @@ onMounted(() => {
   font-weight: 600;
 }
 
-.stat-danger { color: #ef4444; }
-.stat-warn { color: #f59e0b; }
+.stat-danger { color: var(--danger); }
+.stat-warn { color: var(--warning); }
 
 /* 筛选栏 */
 .filter-bar {
@@ -664,7 +650,7 @@ onMounted(() => {
 .filter-input,
 .filter-select {
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.875rem;
   min-width: 150px;
@@ -673,13 +659,13 @@ onMounted(() => {
 .filter-input:focus,
 .filter-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--accent);
 }
 
 /* 表格 */
 .table-container {
   background: white;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--surface-secondary);
   border-radius: 8px;
   overflow-x: auto;
   margin-bottom: 1rem;
@@ -692,24 +678,24 @@ onMounted(() => {
 }
 
 .data-table th {
-  background: #f9fafb;
+  background: var(--surface-secondary);
   padding: 0.75rem 1rem;
   text-align: left;
   font-weight: 600;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--surface-secondary);
   white-space: nowrap;
 }
 
 .data-table td {
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--surface-secondary);
 }
 
 .loading-cell,
 .empty-cell {
   text-align: center;
   padding: 2rem;
-  color: #999;
+  color: var(--muted);
 }
 
 .loading-cell {
@@ -737,7 +723,7 @@ onMounted(() => {
 .date-cell {
   white-space: nowrap;
   font-size: 0.8rem;
-  color: #666;
+  color: var(--muted);
 }
 
 /* 分页 */
@@ -750,7 +736,7 @@ onMounted(() => {
 
 .page-info {
   font-size: 0.875rem;
-  color: #666;
+  color: var(--muted);
 }
 
 /* 按钮 */
@@ -766,50 +752,50 @@ onMounted(() => {
 }
 
 .btn-primary {
-  background: #3b82f6;
+  background: var(--accent);
   color: white;
 }
 
-.btn-primary:hover { background: #2563eb; }
+.btn-primary:hover { background: var(--accent); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-secondary {
   background: white;
-  color: #374151;
-  border: 1px solid #d1d5db;
+  color: var(--muted);
+  border: 1px solid var(--border);
 }
 
-.btn-secondary:hover { background: #f9fafb; }
+.btn-secondary:hover { background: var(--surface-secondary); }
 .btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* Badge */
 .badge-blue {
-  background: #dbeafe;
-  color: #1e40af;
+  background: var(--info-bg);
+  color: var(--accent-dark);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
 }
 
 .badge-yellow {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warning-bg);
+  color: var(--warning-dark);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
 }
 
 .badge-green {
-  background: #d1fae5;
-  color: #065f46;
+  background: var(--success-bg);
+  color: var(--success-strong);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
 }
 
 .badge-gray {
-  background: #f3f4f6;
-  color: #374151;
+  background: var(--surface-secondary);
+  color: var(--muted);
   padding: 0.25rem 0.5rem;
   border-radius: 4px;
   font-size: 0.75rem;
@@ -821,15 +807,15 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   padding: 2rem;
-  color: #666;
+  color: var(--muted);
 }
 
 .spinner {
   display: inline-block;
   width: 14px;
   height: 14px;
-  border: 2px solid #e5e7eb;
-  border-top-color: #3b82f6;
+  border: 2px solid var(--surface-secondary);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -837,18 +823,18 @@ onMounted(() => {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 .error-banner {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #dc2626;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-bd);
+  color: var(--danger);
   padding: 0.75rem 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
 }
 
 .success-banner {
-  background: #d1fae5;
+  background: var(--success-bg);
   border: 1px solid #6ee7b7;
-  color: #065f46;
+  color: var(--success-strong);
   padding: 0.75rem 1rem;
   border-radius: 6px;
   margin-bottom: 1rem;
@@ -868,7 +854,7 @@ onMounted(() => {
 .config-section {
   margin-bottom: 2rem;
   padding-bottom: 1.5rem;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--surface-secondary);
 }
 
 .config-section:last-of-type {
@@ -879,7 +865,7 @@ onMounted(() => {
   margin: 0 0 1rem;
   font-size: 1rem;
   font-weight: 600;
-  color: #374151;
+  color: var(--muted);
 }
 
 .form-row {
@@ -893,34 +879,34 @@ onMounted(() => {
 .form-row label {
   min-width: 180px;
   font-weight: 500;
-  color: #374151;
+  color: var(--muted);
 }
 
 .form-input {
   flex: 1;
   min-width: 200px;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.875rem;
 }
 
 .form-input:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--accent);
 }
 
 .form-input-small {
   width: 100px;
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.875rem;
 }
 
 .form-select {
   padding: 0.5rem 0.75rem;
-  border: 1px solid #d1d5db;
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 0.875rem;
   min-width: 150px;
@@ -928,7 +914,7 @@ onMounted(() => {
 
 .form-select:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--accent);
 }
 
 .form-checkbox {

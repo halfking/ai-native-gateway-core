@@ -88,8 +88,10 @@ export default {
     dragToReorder: 'Drag to reorder priority',
     emptyPrimary: 'No primary models yet — click Add primary',
     emptySecondary: 'No secondary models yet — click Add secondary',
+    emptyFallback: 'No fallback models yet — click Add fallback',
     addPrimary: '+ Add primary',
     addSecondary: '+ Add secondary',
+    addFallback: '+ Add fallback',
   },
   routes: {
     title: 'Model type routes',

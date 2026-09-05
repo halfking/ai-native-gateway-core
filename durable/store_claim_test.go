@@ -3,11 +3,21 @@ package durable
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/pashagolub/pgxmock/v4"
 )
+
+func TestClaimSelectSQLRequiresScheduledRetryToBeDue(t *testing.T) {
+	if !strings.Contains(claimSelectSQL, "next_retry_at <= $2") {
+		t.Fatalf("claim SQL must only claim tasks whose retry time is due or within the allowed scheduling window: %s", claimSelectSQL)
+	}
+	if !strings.Contains(claimSelectSQL, "INTERVAL '5 seconds'") {
+		t.Fatalf("claim SQL must retain the documented 5-second scheduling window: %s", claimSelectSQL)
+	}
+}
 
 func claimOpts() ClaimOptions {
 	return ClaimOptions{

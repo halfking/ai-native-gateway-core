@@ -44,6 +44,10 @@ func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *t
 	defer rdb.Close()
 
 	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb})
+	// Disable the 2s snapshot throttle (2026-08-25): the empty-read contract
+	// must be exercised on the immediate second read instead of replaying the
+	// cached delta.
+	hub.SetSnapshotMinInterval(0)
 	ctx := context.Background()
 	first := LiveRequest{
 		RequestID:     "request-a",
@@ -53,7 +57,7 @@ func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *t
 		ProviderCode:  "provider-a",
 		Status:        "success",
 	}
-	if err := hub.store.Record(ctx, first); err != nil {
+	if err := hub.store.Record(ctx, first, ""); err != nil {
 		t.Fatalf("record first request: %v", err)
 	}
 
@@ -103,7 +107,7 @@ func TestLiveStreamSSEHub_ComputeScopeDeltaPreservesBaselineAcrossEmptyRead(t *t
 		ProviderCode:  "provider-b",
 		Status:        "success",
 	}
-	if err := hub.store.Record(ctx, second); err != nil {
+	if err := hub.store.Record(ctx, second, ""); err != nil {
 		t.Fatalf("record second request: %v", err)
 	}
 	if delta := hub.computeScopeDelta(ctx, "", false); delta == nil || delta.Summary.Total != 1 {

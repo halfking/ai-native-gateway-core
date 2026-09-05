@@ -50,8 +50,13 @@ const (
 	settleBatchSize = 500
 
 	// settleAbandonAfter is when a row with no matching request_log is given up
-	// on and stamped settled with a NULL reward.
-	settleAbandonAfter = 24 * time.Hour
+	// on and stamped settled with a NULL reward. It MUST stay comfortably inside
+	// the hot-table retention (lifecycle.hot_retention_hours, default 8h): the
+	// "UPDATE/DELETE only in hot" partition invariant forbids writing promoted
+	// rows, so every selection has to reach a terminal state (rewarded or
+	// abandoned) before the hourly promote moves it to the partition parent.
+	// 4h leaves two promote cycles of margin for a missed sweep.
+	settleAbandonAfter = 4 * time.Hour
 
 	// baselineWindow is the lookback for cohort baselines.
 	baselineWindow = 24 * time.Hour
@@ -138,6 +143,13 @@ func (w *AutoRouteSettleWorker) Stop() {
 }
 
 func (w *AutoRouteSettleWorker) run(ctx context.Context) {
+	// Panic guard (audit 2026-09-05 G-#1): a sweep panic must not kill the
+	// process; it would also skip close(w.done) below and hang Stop forever.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("auto-route settle worker panic", "recover", rec)
+		}
+	}()
 	defer close(w.done)
 
 	ticker := time.NewTicker(settleInterval)
@@ -187,28 +199,34 @@ func (w *AutoRouteSettleWorker) sweep(ctx context.Context) {
 	}
 }
 
-// All three queries in this worker read from request_logs_hot ONLY.
+// Hot-only settlement (audit 2026-09-05 D-#1): the settle UPDATE used to
+// follow rows that the 8h promote had already moved to the partition parent
+// (settleAbandonAfter was 24h), so writeReward/abandon wrote the PARENT —
+// violating the "update/delete only in hot" partition invariant. The
+// abandon window now fits inside hot retention (see settleAbandonAfter) and
+// this worker only ever reads AND writes auto_route_selections_hot.
 //
-// DO NOT add `UNION ALL request_logs` here. The request_logs partitions use the
-// citus columnar access method, and a UNION ALL containing the partitioned
-// PARENT fails at plan time with:
+// All three queries here read request_logs_hot ONLY — DO NOT add
+// `UNION ALL request_logs`. The request_logs partitions use the citus
+// columnar access method, and a UNION ALL containing the partitioned PARENT
+// fails at plan time with:
 //     ERROR: invalid perminfoindex 0 in RTE with relid 0
 // (PG 17.10 / citus 13.3, verified 2026-08-11; leaf partitions are fine, the
-// parent is not). Hot-only is also sufficient: this worker never looks further
-// back than settleAbandonAfter (24h) and baselineWindow (24h), both well inside
-// request_logs_hot retention (~7 days, migration 399). See
-// docs/HANDOFF_478_CRITICAL_FIXES.md CRITICAL-1.
+// parent is not). Hot-only is sufficient: this worker never looks further
+// back than settleAbandonAfter (4h) and baselineWindow (24h, effectively
+// capped by the 8h hot retention). See docs/HANDOFF_478_CRITICAL_FIXES.md
+// CRITICAL-1.
 //
 //   - loadTaskBaselines: percentiles of latency/cost over recent hot rows.
 //     Percentiles do NOT merge across separate tables; one statement is correct.
 //   - settleBatch: outcome join (LEFT JOIN ... ON rl.request_id = ...).
-//     All 2min-24h rows live in _hot.
+//     All settled rows are still inside the hot window.
 //   - settleBatch LATERAL: count + retry_count over the session.
 //
-// If a future change ever needs to look past ~6 days through _hot, the answer
-// is not to reintroduce this union. Either run two queries and merge in Go
-// (lookup-style merge is safe; percentile merge is not), or use LATERAL per
-// partition explicitly.
+// If a future change ever needs to look past hot retention through _hot, the
+// answer is not to reintroduce this union. Either run two queries and merge
+// in Go (lookup-style merge is safe; percentile merge is not), or use
+// LATERAL per partition explicitly.
 
 // loadTaskBaselines computes cohort p95 latency and p75 cost per task type over
 // the recent window, across every model.
@@ -290,10 +308,10 @@ func (w *AutoRouteSettleWorker) settleBatch(
 	// needed for attribution. LEFT JOINs throughout: a missing session or a
 	// not-yet-computed health score must not hide the row.
 	//
-	// Outcome comes from request_logs_hot only: at the 2-minute settle lag the
-	// row is still in _hot (retention ~7d), and the columnar parent of
-	// request_logs cannot participate in a set operation (see requestLogSource
-	// comment + docs/HANDOFF_478_CRITICAL_FIXES.md).
+	// Outcome comes from request_logs_hot only: both the 2-minute settle lag and
+	// the 4h abandon horizon sit inside the hot window, and the columnar parent
+	// of request_logs cannot participate in a set operation (see the file-level
+	// requestLogSource comment + docs/HANDOFF_478_CRITICAL_FIXES.md).
 	//
 	// retry_count is the count of routing_attempts entries beyond the first —
 	// i.e. actual credential-level failovers for THIS request. It is NOT
@@ -301,34 +319,37 @@ func (w *AutoRouteSettleWorker) settleBatch(
 	// sequential calls is N requests, not N-1 retries. Earlier code made that
 	// mistake and penalised healthy conversation flows.
 	rows, qErr := w.db.Query(ctx, `
-		SELECT s.id, s.partition_date, s.request_id, s.task_type, s.canonical_id, s.ts,
-		       rl.success, rl.latency_ms, rl.cost_usd,
-		       rl.canonical_id        AS rl_canonical_id,
-		       LEFT(rl.tenant_id, 64) AS rl_tenant_id,
-		       ss.health_score, ss.error_count, ss.request_count,
-		       mr.model_reqs, mr.retry_count
-		FROM auto_route_selections s
-		LEFT JOIN request_logs_hot rl
-		       ON rl.request_id = s.request_id
-		LEFT JOIN session_summaries ss
-		       ON ss.session_key = s.session_id
-		LEFT JOIN LATERAL (
-		       SELECT COUNT(*)::int AS model_reqs,
-		              SUM(GREATEST(COALESCE(jsonb_array_length(r2.routing_attempts), 1) - 1, 0))::int AS retry_count
-		       FROM request_logs_hot r2
-		       WHERE s.session_id IS NOT NULL
-		         AND r2.gw_session_id = s.session_id
-		         AND s.canonical_id IS NOT NULL
-		         AND r2.canonical_id = s.canonical_id
-		) mr ON TRUE
-		WHERE s.settled_at IS NULL
-		  AND s.ts < NOW() - $1::interval
-		ORDER BY s.ts
-		LIMIT $2
+			SELECT s.id, s.partition_date, s.request_id, s.task_type, s.canonical_id, s.ts,
+			       rl.success, rl.latency_ms, rl.cost_usd,
+			       rl.canonical_id        AS rl_canonical_id,
+			       LEFT(rl.tenant_id, 64) AS rl_tenant_id,
+			       ss.health_score, ss.error_count, ss.request_count,
+			       mr.model_reqs, mr.retry_count
+			FROM (
+				SELECT id, partition_date, request_id, task_type, canonical_id, ts, session_id
+				FROM auto_route_selections_hot
+				WHERE settled_at IS NULL AND ts < NOW() - $1::interval
+				ORDER BY ts
+				LIMIT $2
+			) s
+			LEFT JOIN request_logs_hot rl
+			       ON rl.request_id = s.request_id
+			LEFT JOIN session_summaries ss
+			       ON ss.session_key = s.session_id
+			LEFT JOIN LATERAL (
+			       SELECT COUNT(*)::int AS model_reqs,
+			              SUM(GREATEST(COALESCE(jsonb_array_length(r2.routing_attempts), 1) - 1, 0))::int AS retry_count
+			       FROM request_logs_hot r2
+			       WHERE s.session_id IS NOT NULL
+			         AND r2.gw_session_id = s.session_id
+			         AND s.canonical_id IS NOT NULL
+			         AND r2.canonical_id = s.canonical_id
+			) mr ON TRUE
 	`, settleDelay.String(), settleBatchSize)
 	if qErr != nil {
 		return 0, 0, qErr
 	}
+	defer rows.Close()
 
 	pending := make([]pendingSelection, 0, settleBatchSize)
 	for rows.Next() {
@@ -341,16 +362,13 @@ func (w *AutoRouteSettleWorker) settleBatch(
 			&p.sessionHealth, &p.sessionErrors, &p.sessionReqs,
 			&p.modelReqsInSes, &p.retryCount,
 		); scanErr != nil {
-			rows.Close()
 			return 0, 0, scanErr
 		}
 		pending = append(pending, p)
 	}
 	if rErr := rows.Err(); rErr != nil {
-		rows.Close()
 		return 0, 0, rErr
 	}
-	rows.Close()
 
 	now := time.Now()
 	for _, p := range pending {
@@ -459,8 +477,12 @@ func (w *AutoRouteSettleWorker) writeReward(
 	// later write from a non-null decision never gets overwritten by a NULL
 	// from request_logs_hot (e.g. legacy rows written before canonical_id was
 	// a populated column).
+	//
+	// Hot-only by partition invariant (audit 2026-09-05 D-#1): settlement
+	// completes inside the hot window (settleAbandonAfter < hot retention), so
+	// the promoted partition parent is never written.
 	_, err := w.db.Exec(ctx, `
-		UPDATE auto_route_selections
+		UPDATE auto_route_selections_hot
 		SET success       = $1,
 		    latency_ms    = $2,
 		    cost_usd      = $3,
@@ -478,9 +500,10 @@ func (w *AutoRouteSettleWorker) writeReward(
 
 // abandon stamps a row settled with no reward, so it stops being scanned and is
 // excluded from learning (the affinity rollup requires reward IS NOT NULL).
+// Hot-only by partition invariant (see writeReward).
 func (w *AutoRouteSettleWorker) abandon(ctx context.Context, p pendingSelection) error {
 	_, err := w.db.Exec(ctx, `
-		UPDATE auto_route_selections
+		UPDATE auto_route_selections_hot
 		SET settled_at = NOW(), reward_source = 'request'
 		WHERE id = $1 AND partition_date = $2 AND settled_at IS NULL
 	`, p.id, p.partitionDate)

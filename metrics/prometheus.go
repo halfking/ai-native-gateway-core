@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 
+	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pkg/logger"
 )
 
@@ -30,13 +31,13 @@ type PrometheusRecorder struct {
 	adapterActive             *prometheus.GaugeVec
 
 	// Scheduler
-	schedulerSelections            prometheus.Counter
-	schedulerSelectionsByProvider  *prometheus.CounterVec
-	schedulerWeight                *prometheus.GaugeVec
-	schedulerCurrentWeight         *prometheus.GaugeVec
-	schedulerEffectiveWeight       *prometheus.GaugeVec
-	schedulerSelectionDuration     prometheus.Histogram
-	schedulerAvailableCredentials  prometheus.Gauge
+	schedulerSelections           prometheus.Counter
+	schedulerSelectionsByProvider *prometheus.CounterVec
+	schedulerWeight               *prometheus.GaugeVec
+	schedulerCurrentWeight        *prometheus.GaugeVec
+	schedulerEffectiveWeight      *prometheus.GaugeVec
+	schedulerSelectionDuration    prometheus.Histogram
+	schedulerAvailableCredentials prometheus.Gauge
 
 	// Safety
 	safetyChecks        *prometheus.CounterVec
@@ -69,9 +70,9 @@ type PrometheusRecorder struct {
 	// rawAuditFailed     : raw audit JSONL write/rotate/sync failed. CRITICAL
 	//                      because audit JSONL is the only immutable local copy
 	//                      before cross-machine replication (P2-2).
-	shadowWriteFailed    *prometheus.CounterVec
-	ringBufferDropped    prometheus.Counter
-	rawAuditWriteFailed  prometheus.Counter
+	shadowWriteFailed   *prometheus.CounterVec
+	ringBufferDropped   prometheus.Counter
+	rawAuditWriteFailed prometheus.Counter
 
 	// streamSynthDoneTotal (P1 hot-patch 2026-08-06): counts streams
 	// where the gateway had to inject "data: [DONE]\n\n" because the
@@ -90,12 +91,69 @@ type PrometheusRecorder struct {
 	// cutover (audit §7.1 R-7.1).
 	ursmv2ShadowResult *prometheus.CounterVec
 
+	// malformedSSEFrameTotal (2026-08-29): counts SSE frames with invalid
+	// JSON rejected by the validation layer. Labels: provider (to avoid
+	// model name cardinality), stage ("first_frame" before any client
+	// output | "mid_stream" after chunks sent). High rates indicate
+	// unstable upstreams (minimax-m3, glm-5.2) sending incomplete JSON.
+	// Triggers investigation when rate(malformed_sse_frame_total[5m]) > threshold.
+	malformedSSEFrameTotal *prometheus.CounterVec
+
+	// incompleteToolCallTotal (2026-08-29): counts streams where tool_use
+	// blocks were sent but corresponding tool_result blocks were missing.
+	// Labels: provider_family (route-key normalized model family; avoids the
+	// high-cardinality raw model name forbidden by GW-00), reason
+	// ("incomplete_tool_call_interrupted" when stream ended before message_stop |
+	// "incomplete_tool_call_after_done" when message_stop received but
+	// tool_result missing). High rates indicate unstable Anthropic upstreams
+	// or mid-stream interruptions.
+	incompleteToolCallTotal *prometheus.CounterVec
+
+	// successEmptyResponseTotal (2026-08-29): counts requests marked as
+	// successful but returned no content (empty response body or zero tokens).
+	// Label: provider_id. Helps identify providers with high empty response
+	// rates (e.g., NVIDIA NIM ~13%). Uses provider_id instead of model to
+	// avoid high cardinality (GW-00 label constraint).
+	successEmptyResponseTotal *prometheus.CounterVec
+
+	// journalSnapshotStoredTotal (2026-08-29): counts journal snapshots
+	// successfully written to JournalSnapshotStore. No labels to keep
+	// cardinality minimal (tenant_id is forbidden per GW-00).
+	journalSnapshotStoredTotal prometheus.Counter
+
+	// journalSnapshotAppliedTotal (2026-08-29): counts journal snapshot
+	// Apply() operations. Label: success (true|false). No tenant_id per GW-00.
+	journalSnapshotAppliedTotal *prometheus.CounterVec
+
+	// journalSnapshotDeduplicatedTotal (2026-08-29): counts journal snapshots
+	// rejected due to deduplication. Label: reason
+	// (already_completed|version_conflict|not_claimed). No tenant_id per GW-00.
+	journalSnapshotDeduplicatedTotal *prometheus.CounterVec
+
+	// liveStreamRecordDroppedTotal (2026-08-31, P2-2 observability): counts
+	// LiveStreamRedisStore.Record() invocations that returned nil WITHOUT
+	// writing to Redis. The audit flagged this as silent degradation; without
+	// a counter operators had no way to distinguish "Redis is down, the live
+	// stream is empty" from "Redis is fine and nothing is happening".
+	//
+	// Label: reason
+	//   - "store_unconfigured" : operator never wired the store (rdb == nil)
+	//   - "redis_unavailable"  : per-request_id lock acquisition failed
+	//                            (Redis down or the SETNX lock contended past
+	//                            the retry budget). This is the only path
+	//                            where tiles can be lost under steady-state
+	//                            load; alert on rate() > 0 over a 5-minute
+	//                            window.
+	//
+	// No tenant_id per GW-00.
+	liveStreamRecordDroppedTotal *prometheus.CounterVec
+
 	logger logger.Logger
 }
 
 // NewPrometheusRecorder 创建 Prometheus Recorder
 func NewPrometheusRecorder() *PrometheusRecorder {
-	return &PrometheusRecorder{
+	recorder := &PrometheusRecorder{
 		// Circuit Breaker
 		circuitRequests: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -366,8 +424,73 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 			[]string{"result"},
 		),
 
+		// 2026-08-29: malformed SSE frame counter
+		malformedSSEFrameTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_malformed_sse_frame_total",
+				Help: "SSE frames with invalid JSON rejected by validation layer (labels: provider, stage=first_frame|mid_stream). High rates indicate unstable upstreams.",
+			},
+			[]string{"provider", "stage"},
+		),
+
+		// 2026-08-29: incomplete tool call counter
+		incompleteToolCallTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_incomplete_tool_call_total",
+				Help: "Streams where tool_use blocks were sent but tool_result blocks were missing (labels: provider_family, reason=incomplete_tool_call_interrupted|incomplete_tool_call_after_done). High rates indicate unstable upstreams.",
+			},
+			[]string{"provider_family", "reason"},
+		),
+
+		// 2026-08-29: success empty response counter
+		successEmptyResponseTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_success_empty_response_total",
+				Help: "Requests marked as successful but returned no content (empty response body or zero tokens). Label: provider_id.",
+			},
+			[]string{"provider_id"},
+		),
+
+		// 2026-08-29: journal snapshot lifecycle counters
+		journalSnapshotStoredTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "gateway_journal_snapshot_stored_total",
+				Help: "Journal snapshots successfully written to JournalSnapshotStore.",
+			},
+		),
+		journalSnapshotAppliedTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_journal_snapshot_applied_total",
+				Help: "Journal snapshot Apply() operations. Label: success (true|false).",
+			},
+			[]string{"success"},
+		),
+		journalSnapshotDeduplicatedTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_journal_snapshot_deduplicated_total",
+				Help: "Journal snapshots rejected due to deduplication. Label: reason (already_completed|version_conflict|not_claimed).",
+			},
+			[]string{"reason"},
+		),
+
+		// 2026-08-31 (P2-2): live-stream Redis record silent-drop counter.
+		liveStreamRecordDroppedTotal: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "gateway_live_stream_record_dropped_total",
+				Help: "LiveStreamRedisStore.Record() calls that returned nil without writing (graceful degradation). Label: reason (store_unconfigured|redis_unavailable).",
+			},
+			[]string{"reason"},
+		),
+
 		logger: logger.New("metrics"),
 	}
+	for _, result := range []string{"recorded", "skipped", "failed"} {
+		recorder.ursmv2ShadowResult.WithLabelValues(result).Add(0)
+	}
+	for _, reason := range []string{"store_unconfigured", "redis_unavailable"} {
+		recorder.liveStreamRecordDroppedTotal.WithLabelValues(reason).Add(0)
+	}
+	return recorder
 }
 
 // Circuit Breaker methods
@@ -581,4 +704,95 @@ func (p *PrometheusRecorder) RecordStreamSynthesizedDone() {
 // new Prometheus time series. Keep this list stable.
 func (p *PrometheusRecorder) RecordURSMv2ShadowResult(result string) {
 	p.ursmv2ShadowResult.WithLabelValues(result).Inc()
+}
+
+// RecordMalformedSSEFrame (2026-08-29) increments the counter when the
+// SSE frame validation layer rejects a frame with invalid JSON.
+//
+//   - provider: upstream provider name (e.g., "anthropic", "openai")
+//   - stage: "first_frame" (before any client output, resumable retry) |
+//            "mid_stream" (after chunks sent, frame skipped)
+//
+// High rates indicate unstable upstreams (minimax-m3, glm-5.2) sending
+// incomplete JSON (bare "{", truncated objects). Operators monitor
+// rate(malformed_sse_frame_total[5m]) to detect provider issues.
+func (p *PrometheusRecorder) RecordMalformedSSEFrame(provider, stage string) {
+	p.malformedSSEFrameTotal.WithLabelValues(provider, stage).Inc()
+}
+
+// RecordIncompleteToolCall (2026-08-29) increments the counter when a stream
+// ends with incomplete tool execution (tool_use sent but tool_result missing).
+//
+//   - model: raw client-facing model name; internally normalized via
+//     modelname.NormalizeRouteKey to a low-cardinality "provider_family" value
+//     (strips date suffixes, provider prefixes, and feature tokens) so the
+//     Prometheus label never carries per-model high cardinality (GW-00).
+//   - reason: "incomplete_tool_call_interrupted" (stream ended before message_stop) |
+//             "incomplete_tool_call_after_done" (message_stop received but tool_result missing)
+//
+// High rates indicate unstable Anthropic upstreams or mid-stream interruptions
+// during tool execution. Operators monitor rate(incomplete_tool_call_total[5m])
+// to detect provider issues.
+func (p *PrometheusRecorder) RecordIncompleteToolCall(model, reason string) {
+	family := modelname.NormalizeRouteKey(model)
+	if family == "" {
+		family = "unknown"
+	}
+	p.incompleteToolCallTotal.WithLabelValues(family, reason).Inc()
+}
+
+// RecordSuccessEmptyResponse (2026-08-29) increments the counter when a
+// request is marked as successful but returned no content (empty response
+// body or zero tokens). This helps identify providers with high empty
+// response rates (e.g., NVIDIA NIM ~13%).
+//
+//   - providerID: provider identifier (low cardinality)
+//
+// Note: model and tenant_id are intentionally excluded per GW-00 label
+// cardinality constraints. Use provider_id aggregation instead.
+func (p *PrometheusRecorder) RecordSuccessEmptyResponse(model, providerID, tenantID string) {
+	p.successEmptyResponseTotal.WithLabelValues(providerID).Inc()
+}
+
+// RecordJournalSnapshotStored (2026-08-29) increments the counter when a
+// journal snapshot is successfully written to the JournalSnapshotStore.
+// No labels per GW-00 (tenant_id is forbidden).
+func (p *PrometheusRecorder) RecordJournalSnapshotStored(tenantID string) {
+	p.journalSnapshotStoredTotal.Inc()
+}
+
+// RecordJournalSnapshotApplied (2026-08-29) increments the counter when a
+// journal snapshot Apply() operation completes. success=true for clean apply,
+// success=false for any Apply() error. No tenant_id per GW-00.
+func (p *PrometheusRecorder) RecordJournalSnapshotApplied(tenantID string, success bool) {
+	successStr := "false"
+	if success {
+		successStr = "true"
+	}
+	p.journalSnapshotAppliedTotal.WithLabelValues(successStr).Inc()
+}
+
+// RecordJournalSnapshotDeduplicated (2026-08-29) increments the counter when
+// a journal snapshot is rejected due to deduplication. No tenant_id per GW-00.
+//
+//   - reason: "already_completed" (durable receipt found) |
+//             "version_conflict" (hash mismatch) |
+//             "not_claimed" (failed to acquire lease)
+func (p *PrometheusRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string) {
+	p.journalSnapshotDeduplicatedTotal.WithLabelValues(reason).Inc()
+}
+
+// RecordLiveStreamRecordDropped (2026-08-31, P2-2 observability) increments
+// the counter when LiveStreamRedisStore.Record() returns nil without
+// writing the tile to Redis.
+//
+// reason values are validated upstream in admin/live_stream_redis_store.go:
+//   - "store_unconfigured" — operator never wired the store (rdb == nil)
+//   - "redis_unavailable"  — per-request_id lock acquisition failed
+//
+// Unknown reasons will create new Prometheus time series, so keep this list
+// stable and aligned with the alerting rules in
+// deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml.
+func (p *PrometheusRecorder) RecordLiveStreamRecordDropped(reason string) {
+	p.liveStreamRecordDroppedTotal.WithLabelValues(reason).Inc()
 }

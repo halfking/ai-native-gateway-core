@@ -79,14 +79,14 @@ func (s *PGHistoryStore) FetchBySession(ctx context.Context, sessionID, tenantID
 	// to retrieve full request_body and response_body (moved to separate table in #10).
 	// COALESCE ensures backwards compatibility during migration.
 	const query = `
-		SELECT COALESCE(rb.request_body, rl.request_body) AS request_body,
-		       COALESCE(rb.response_body, rl.response_body) AS response_body
+		SELECT rb.request_body AS request_body,
+		       rb.response_body AS response_body
 		FROM request_logs rl
 		LEFT JOIN request_logs_bodies rb 
 		  ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1
 		  AND COALESCE(rl.tenant_id, '') = COALESCE(NULLIF($2, ''), rl.tenant_id)
-		  AND (rb.request_body IS NOT NULL OR rl.request_body IS NOT NULL)
+		  AND (rb.request_body IS NOT NULL)
 		ORDER BY rl.ts DESC
 		LIMIT $3`
 

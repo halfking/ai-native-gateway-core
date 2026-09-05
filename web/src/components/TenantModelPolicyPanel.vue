@@ -16,6 +16,8 @@
 
 import { ref, onMounted } from 'vue'
 import { localeRef } from '../i18n'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
 import {
   listTenantModelPolicies,
   createTenantModelPolicy,
@@ -31,6 +33,8 @@ import type {
 } from '../api'
 
 const props = defineProps<{ tenantCode: string }>()
+
+const { t } = useI18n()
 
 const policies = ref<TenantModelPolicy[]>([])
 const audit = ref<TenantModelPolicyAuditEntry[]>([])
@@ -98,7 +102,7 @@ async function submitAdd() {
 }
 
 async function softDelete(p: TenantModelPolicy) {
-  if (!confirm(`确认软删除策略 ${p.canonical_name}？(可恢复)`)) return
+  if (!(await confirmDialog(t('tenantModelPolicyPanel.softDeleteConfirm', { name: p.canonical_name })))) return
   try {
     await deleteTenantModelPolicy(props.tenantCode, p.id)
     await load()
@@ -262,7 +266,7 @@ onMounted(load)
 .table tr.is-deleted td { color: var(--muted); text-decoration: line-through; }
 .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
 .alert { padding: 8px 12px; border-radius: 4px; margin: 8px 0; font-size: 13px; }
-.alert-danger { background: rgba(239,68,68,.12); color: #f87171; }
+.alert-danger { background: var(--danger-bg); color: var(--danger); }
 .loading { text-align: center; padding: 24px; color: var(--muted); }
 .audit-section { margin-top: 16px; }
 .audit-section summary {
@@ -273,9 +277,9 @@ onMounted(load)
 .btn:hover { background: color-mix(in srgb, var(--accent) 06%, transparent); }
 .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
 .btn-sm { padding: 3px 8px; font-size: 12px; }
-.btn-danger { background: rgba(239,68,68,.12); color: #f87171; border-color: rgba(239,68,68,.3); }
+.btn-danger { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-bd); }
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,.5);
+  position: fixed; inset: 0; background: var(--overlay-strong);
   display: flex; align-items: center; justify-content: center; z-index: 100;
 }
 .modal {

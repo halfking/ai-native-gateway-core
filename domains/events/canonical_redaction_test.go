@@ -50,13 +50,13 @@ func TestCanonicalTypesRedaction(t *testing.T) {
 		"bearer",
 		"secret",
 		"password",
-		"token",   // credential token / access token
-		"prompt",  // prompt 正文
+		"token",      // credential token / access token
+		"prompt",     // prompt 正文
 		"session_id", // 高基数，不进 canonical payload
 		"request_id",
 		"tenant_id", // signed tenant 不得进 payload 覆盖
-		"/users/",  // 绝对路径
-		"sk-",      // OpenAI key 前缀
+		"/users/",   // 绝对路径
+		"sk-",       // OpenAI key 前缀
 	}
 
 	cases := []struct {

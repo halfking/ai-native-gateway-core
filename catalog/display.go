@@ -22,6 +22,8 @@ var familyVendor = map[string]string{
 	"yi":         "01.AI",
 	"perplexity": "Perplexity", "sonar": "Perplexity",
 	"sensenova": "商汤",
+	// 历史 family 字符串兼容：612 之前的历史 seed 行 family='sensetime'
+	"sensetime": "商汤",
 	"cohere":    "Cohere",
 	"nvidia":    "NVIDIA", "nemotron": "NVIDIA", "nv": "NVIDIA",
 	"phi":    "Microsoft",
@@ -52,6 +54,9 @@ var nameVendorPrefixes = []namePrefix{
 	{"yi-", "01.AI"},
 	{"sonar", "Perplexity"},
 	{"sensechat", "商汤"},
+	// 2026-08-29 (612): 显式覆盖 sensenova-* 新行（含 u1-fast / u1.5-lite /
+	// 6.x-flash-lite），使 inferVendorFromName 直接命中。
+	{"sensenova", "商汤"},
 	{"command-", "Cohere"},
 	{"nemotron", "NVIDIA"}, {"phi-", "Microsoft"},
 	{"o1", "OpenAI"}, {"o3", "OpenAI"}, {"o4", "OpenAI"},

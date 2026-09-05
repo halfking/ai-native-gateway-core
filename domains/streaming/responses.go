@@ -1,9 +1,10 @@
 package streaming
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,9 +13,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/identity"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/state"     //nolint:depguard // SP-02 state machine wiring
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
@@ -99,6 +102,9 @@ func NewResponsesHandler(ch *ChatHandler) *ResponsesHandler {
 }
 
 func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w, r, journeyWriter := beginRequestJourney(w, r, h.chatHandler)
+	defer finishRequestJourney(r, journeyWriter)
+	r = markExplicitStreamSession(r)
 	defer func() { _ = r.Body.Close() }()
 
 	var (
@@ -110,6 +116,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		attemptProviderID   *int
 		attemptCredentialID *int
 		attemptRequestBody  []byte
+		autoWire            *autoRouteDecision
 	)
 	attemptLogged := &attemptLoggedFlag
 	// 2026-06-26: ALWAYS generate a server-side UUID. The
@@ -125,6 +132,13 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logCtx := h.chatHandler.NewRequestLogContext(r, requestID, time.Now())
 	logCtx.ClientRequestID = clientRequestID
 	startTime := logCtx.StartTime
+
+	// SP-02: state machine — share the same entry point as chat completions.
+	// requests that fail before any state transition still hit a terminal
+	// state via the deferred cancel below.
+	rt, _ := h.chatHandler.initRequestStateMachine(r.Context(), requestID, "")
+	defer cancelRequestStateMachine(rt, nil)
+
 	// Generate a provisional session ID for early-failure branches.
 	// Declared before the deferred safety-net so the closure can capture it.
 	provisionalSessionID := requestIdentity.SessionID
@@ -212,26 +226,9 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		keyInfo = ki
 		attemptKeyInfo = ki
-	}
-
-	if rlOutcome := checkGatewayRateLimit(keyInfo, h.chatHandler.rateLimiter); !rlOutcome.Skipped {
-		writeRateLimitHeaders(w, rlOutcome)
-		if rlOutcome.Blocked {
-			attemptErrCode = "rate_limit_exceeded"
-			attemptErrMsg = "rate limit exceeded"
-			peeked, _ := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
-			if len(peeked) > maxBodySize {
-				peeked = peeked[:maxBodySize]
-			}
-			if len(peeked) > 0 {
-				attemptRequestBody = peeked
-				if attemptClientModel == "" {
-					attemptClientModel = extractModelFromBody(peeked)
-				}
-			}
-			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
-			return
-		}
+		bindRequestJourney(r, ki.TenantID, attemptClientModel)
+		// SP-02: state machine — auth succeeded.
+		rt.Emit(state.EventAuthed)
 	}
 
 	bodyBytes, err := readRequestBody(r.Context(), r.Body, maxBodySize)
@@ -263,6 +260,22 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeResponsesError(w, http.StatusRequestEntityTooLarge, "Request body too large", "invalid_request", "body_too_large")
 		return
 	}
+	// ── Gateway prompt admission preflight ───────────────────────────────────
+	// Provider-aware compression runs later after candidate resolution.
+	if pb, applied, pbEst := preflightCompress(bodyBytes, "openai-responses"); applied {
+		_ = pbEst
+		bodyBytes = pb
+	}
+	// ── Prompt budget guard (2026-08-24, 245 memcg OOM) ──────────────────
+	// 拒绝发生在 JSON 解析 / 上游转发之前；见 request_meta.go 注释。
+	if estTokens, over := promptBudgetExceeded(bodyBytes); over {
+		attemptErrCode = "prompt_too_large"
+		attemptErrMsg = fmt.Sprintf("prompt exceeds gateway budget: estimated %d tokens > %d limit", estTokens, promptBudgetLimit())
+		writeResponsesError(w, http.StatusRequestEntityTooLarge,
+			fmt.Sprintf("Prompt exceeds gateway budget (estimated %d tokens > %d limit)", estTokens, promptBudgetLimit()),
+			"invalid_request", "prompt_too_large")
+		return
+	}
 
 	var reqBody responsesRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
@@ -279,16 +292,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chatBody := convertResponsesToChatBody(&reqBody)
-	chatBodyBytes, err := json.Marshal(chatBody)
-	if err != nil {
-		attemptErrCode = "conversion_error"
-		attemptErrMsg = "internal conversion error"
-		attemptClientModel = reqBody.Model
-		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
-		return
-	}
 	attemptClientModel = reqBody.Model
+	requestedModel := reqBody.Model
 
 	// model=auto: classify + rewrite before CanonicalizeClientModel.
 	if reqBody.Model == autoRequestMagic {
@@ -305,15 +310,37 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"server_error", "auto_route_decider_failed")
 			return
 		}
-		bodyBytes = newBody
+		// Flag-off auto returns (nil, nil, false): keep the original body
+		// instead of zeroing it (parity with the chat path nil guard).
+		if newBody != nil {
+			bodyBytes = newBody
+		}
 		attemptClientModel = reqBody.Model
 		if wire != nil {
 			writeAutoDecisionHeader(w, wire)
+			logCtx.SetAutoDecision(wire)
+			autoWire = wire
+		} else {
+			logCtx.IsAutoRequest = true
 		}
 	}
 
+	// Build the legacy Chat fallback only after auto-route has rewritten the
+	// Responses model, so both protocol bodies describe the same attempt.
+	chatBody := convertResponsesToChatBody(&reqBody)
+	chatBodyBytes, err := json.Marshal(chatBody)
+	if err != nil {
+		attemptErrCode = "conversion_error"
+		attemptErrMsg = "internal conversion error"
+		attemptClientModel = reqBody.Model
+		writeResponsesError(w, http.StatusInternalServerError, "Internal conversion error", "server_error", "conversion_error")
+		return
+	}
+	responsesBodyBytes := append([]byte(nil), bodyBytes...)
+
 	// 2026-07-14: lowercase at the wire boundary.
-	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
+	clientModel := modelname.CanonicalizeClientModel(ApplyAliasPrefix(reqBody.Model))
+	resolveRequestJourney(r, tenant(keyInfo), requestedModel, clientModel)
 
 	if keyInfo != nil {
 		profile := clientProfileFromKey(keyInfo)
@@ -336,6 +363,26 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	isStream := reqBody.Stream
+	if rlOutcome := checkGatewayRateLimit(r.Context(), keyInfo, h.chatHandler.rateLimiter, notifyRateLimitWait(w, isStream)); !rlOutcome.Skipped {
+		writeRateLimitHeaders(w, rlOutcome)
+		if rlOutcome.Blocked {
+			recordGatewayRateLimitRejection(rlOutcome)
+			attemptErrCode = "rate_limit_exceeded"
+			attemptErrMsg = "rate limit exceeded"
+			if attemptClientModel == "" {
+				attemptClientModel = clientModel
+			}
+			logCtx.SetKey(keyInfo)
+			logCtx.SetClientModel(attemptClientModel)
+			logCtx.Body = bodyBytes
+			applyProvisionalGatewaySessionHeader(r, provisionalSessionID)
+			h.chatHandler.insertRateLimitedPlaceholder(logCtx)
+			logCtx.EmitRateLimited(attemptErrCode, attemptErrMsg, nil, nil)
+			*attemptLogged = true
+			writeResponsesError(w, http.StatusTooManyRequests, "Rate limit exceeded", "rate_limit_exceeded", "rate_limit_exceeded")
+			return
+		}
+	}
 
 	// ── Session resolution (2026-06-29) ────────────────────────────
 	// Priority: body > header > Redis Get > CreateV2 > provisional.
@@ -379,6 +426,10 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionID = provisionalSessionID
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
+	logCtx.SetSession(sessionInfo)
+	if autoWire != nil {
+		recordAutoSelectionFromWire(r, sessionID, autoWire)
+	}
 	if h.chatHandler.requestLogger != nil {
 		tenantID := "default"
 		if keyInfo != nil {
@@ -394,6 +445,12 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("request_logger: responses session merge failed", "request_id", requestID, "error", err)
 		}
 	}
+	// 2026-08-23: protocol-coverage for provisional metadata — mirror the
+	// chat-completions hook so /v1/responses arrivals also feed the rule
+	// extractor. The dispatcher's `instructions`/`input` normalization
+	// lets the Responses shape produce the same heuristic signals as
+	// the OpenAI chat shape (see sessionmeta.ParseMessages).
+	h.chatHandler.invokeProvisionalMetadataOnArrival(r, sessionID, keyInfo, logCtx, bodyBytes)
 	// 2026-08-06 audit fix: extractEndUser only checks X-End-User-Id and
 	// r.Body (which is already drained at this point). The original
 	// request body bytes are in bodyBytes — pass them in so we recover
@@ -426,6 +483,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── SR-12 durable snapshot cut point (doc 18 §11.2) ────────────────
+	var durableStream *DurableStreamBinding
 	if h.chatHandler.durableStore != nil && DurableRequested(r, isStream) {
 		in := DurableSnapshotInput{
 			Protocol:       "openai-responses",
@@ -442,15 +500,19 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			RequestID:      requestID,
 			ToolsRequested: responsesHasTools(&reqBody),
 		}
-		// These endpoints have no survival branch yet: streaming durable
-		// stays fail-closed (501) until their coordinator wiring lands.
-		if decision, _ := h.chatHandler.maybeStartDurable(w, r, in, isStream, false); decision == durableHandled {
+		decision, binding := h.chatHandler.maybeStartDurable(w, r, in, isStream, true)
+		if decision == durableHandled {
 			return
 		}
+		durableStream = binding
 	}
 
 	candidates, policy, _, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
+	// SP-02: state machine — routing produced a final candidate set.
+	rt.Emit(state.EventRouted)
 	if candErr != nil {
+		// SP-02: routing error path.
+		rt.Emit(state.EventFailed)
 		// Database or infrastructure error - do NOT disguise as no_candidate
 		slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel, "request_id", requestID)
 		rc := classifyRoutingError(candErr)
@@ -458,6 +520,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 			nil, nil, rc.code, rc.message, latency, bodyBytes, keyInfo, r)
 		*attemptLogged = true
+		releaseDurableBeforeSurvival(durableStream, "candidate_resolution_failed")
 		writeResponsesError(w, rc.httpStatus, rc.message, "server_error", rc.code)
 		return
 	}
@@ -473,18 +536,24 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
 				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
 			*attemptLogged = true
+			releaseDurableBeforeSurvival(durableStream, "invalid_model")
 			writeResponsesError(w, http.StatusBadRequest, attemptErrMsg, "invalid_request_error", "invalid_model")
 			return
 		}
-		// This is the real no_candidate case - no database error, just no matching providers
-		attemptErrCode = "no_candidate"
-		attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
-		latency := int(time.Since(startTime).Milliseconds())
-		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
-			nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
-		*attemptLogged = true
-		writeResponsesError(w, http.StatusServiceUnavailable, attemptErrMsg, "server_error", "no_candidate")
-		return
+		survivalEligible := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
+		if !survivalEligible {
+			// This is the real no_candidate case - no database error, just no matching providers
+			attemptErrCode = "no_candidate"
+			attemptErrMsg = fmt.Sprintf("No available provider for model '%s'", clientModel)
+			latency := int(time.Since(startTime).Milliseconds())
+			h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
+				nil, nil, attemptErrCode, attemptErrMsg, latency, bodyBytes, keyInfo, r)
+			*attemptLogged = true
+			releaseDurableBeforeSurvival(durableStream, "no_candidate")
+			writeResponsesError(w, http.StatusServiceUnavailable, attemptErrMsg, "server_error", "no_candidate")
+			return
+		}
+		slog.Info("initial route has no candidates; entering request survival", "request_id", requestID, "model", clientModel)
 	}
 	if len(candidates) > 0 {
 		pid := candidates[0].ProviderID
@@ -523,7 +592,11 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if modelResolution != nil {
 		canonicalID = modelResolution.CanonicalID
 	}
-	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, session.SessionFromContext(r.Context()))
+	gwSessionID, gwTaskID := gwSessionTaskFromRequest(r, sessionInfo)
+	auditCtx := executors.AuditContextFromRequest(r, sessionInfo, bodyBytes, keyInfo)
+	auditCtx.RequestID = requestID
+	auditCtx.GWSessionID = gwSessionID
+	auditCtx.GWTaskID = gwTaskID
 	outboundForLog := explicitOutbound
 	if len(candidates) > 0 {
 		outboundForLog = outboundModelForLog(clientModel, explicitOutbound, candidates[0].RawModel)
@@ -534,68 +607,153 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
 		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名 (migration 458)
-		bodyBytes, txResult, egressProtocol, isStream,
+		bodyBytes, "openai-responses", txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
 	)
 
-	result, execErr := h.chatHandler.executor.Execute(&executors.ExecParams{
-		W:                    w,
-		R:                    r,
-		BodyBytes:            chatBodyBytes,
-		IsStream:             isStream,
-		SuppressSuccessWrite: !isStream,
-		// Phase E (2026-07-01): was incorrectly "openai-completions",
-		// which caused executor_anthropic.go to use the Q3 OpenAI
-		// translator (Anthropic→chat.completion.chunk) for /v1/responses
-		// clients, instead of the IR-based Responses translator.
-		ClientProtocol: "openai-responses",
-		ClientModel:    clientModel,
-		// See domains/streaming/handler.go for the rationale: the
-		// executor resolves the upstream model per candidate, so we
-		// pass clientModel here to avoid leaking the FIRST candidate's
-		// outbound id into retry/failover attempts.
-		OutboundModel:  clientModel,
-		ClientID:       clientID,
-		Transform:      txResult,
-		Resolution:     modelResolution,
-		Candidates:     candidates,
-		Policy:         policy,
-		AuditBuilder:   auditBuilder,
-		Capture:        streamCapture,
-		ToolsRequested: responsesHasTools(&reqBody),
-		// StreamWrapper intentionally unset. The executor routes via
-		// AnthropicToResponsesStream / OpenAIToResponsesStream based on
-		// ClientProtocol + cand.Protocol — see executor_anthropic.go:StreamResponse
-		// and executor_chat.go's Responses bridge block.
-		StickyKey: buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
-		KeyID: func() int {
-			if keyInfo != nil {
-				return keyInfo.ID
+	var preStream *preStreamKeepalive
+	preStreamPrepared := false
+	if isStream {
+		cfg := currentStreamRuntimeConfig()
+		if cfg.enablePreStreamKeepalive {
+			if psk, ok := startPreStreamKeepalive(r.Context(), w, cfg.keepaliveInterval, requestID); ok {
+				preStream = psk
+				preStreamPrepared = true
+				w = psk.Writer()
+				defer psk.stop()
 			}
-			return 0
-		}(),
-		KeyConcurrentLimit: func() int {
-			if keyInfo != nil {
-				return keyInfo.EffectiveConcurrent()
-			}
-			return 0
-		}(),
-		// 2026-07-07: Multi-level sticky routing (L1 session+model, L2 client+model, L3 client).
-		// Without SessionID/Model here, /v1/responses requests would fall back to L3-only
-		// sticky, routing all concurrent sessions to the same credential.
-		SessionID: gwSessionID,
-		Model:     clientModel,
-		TenantID:  tenant(keyInfo),
-		AppID:     appID(keyInfo),
-		ApiKeyID:  apiKeyIDPtr(keyInfo),
-		// 2026-07-14: hand the per-request id to the executor so the
-		// no-candidates fallback can pass it to ActiveProbeWorker as
-		// the probe row's parent_request_id.
-		RequestID: requestID,
-	})
+		}
+	}
+
+	journeyInstanceID, journeySeq, journeyTerminal := requestJourneyExecState(r)
+	dispatchAllowProviderChange, dispatchAllowModelChange, dispatchModelAlternatives := responsesDispatchOptions(
+		logCtx, hasMultipleProviders(candidates),
+	)
+	// v6 G-Ⅱ: X-Gw-Due-At 定时请求（到期前停在 dispatch 的到期堆）。
+	dispatchDueAt := parseDispatchDueAt(r)
+	// V6-W1.6 R8: class 一并写入 logCtx，供首行与完成 UPDATE 落库（608）。
+	applyRequestClassToLogCtx(logCtx, dispatchDueAt)
+	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
+		return &executors.ExecParams{
+			W:                          streamWriter,
+			R:                          r,
+			BodyBytes:                  chatBodyBytes,
+			ResponsesBodyBytes:         responsesBodyBytes,
+			IsStream:                   isStream,
+			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
+			PreStreamPrepared:          preStreamPrepared,
+			DispatchDueAt:              dispatchDueAt,
+			OnStreamReady:              func() {},
+			// v6 G-Ⅲ: dispatch 回队/切换通知走 `: thinking:` SSE 注释
+			// 通道（不影响会话内容；preStream 为 nil 时安全跳过）。
+			OnNodeJump: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
+			OnStreamHeartbeat: func() error {
+				if preStream != nil {
+					return preStream.session.Heartbeat()
+				}
+				return nil
+			},
+			SuppressSuccessWrite: !isStream,
+			// Phase E (2026-07-01): was incorrectly "openai-completions",
+			// which caused executor_anthropic.go to use the Q3 OpenAI
+			// translator (Anthropic→chat.completion.chunk) for /v1/responses
+			// clients, instead of the IR-based Responses translator.
+			ClientProtocol: "openai-responses",
+			ClientModel:    clientModel,
+			// See domains/streaming/handler.go for the rationale: the
+			// executor resolves the upstream model per candidate, so we
+			// pass clientModel here to avoid leaking the FIRST candidate's
+			// outbound id into retry/failover attempts.
+			OutboundModel:               clientModel,
+			ClientID:                    clientID,
+			Transform:                   txResult,
+			Resolution:                  modelResolution,
+			Candidates:                  candidates,
+			Policy:                      policy,
+			DispatchAllowProviderChange: dispatchAllowProviderChange,
+			DispatchAllowModelChange:    dispatchAllowModelChange,
+			DispatchModelAlternatives:   dispatchModelAlternatives,
+			AuditBuilder:                auditBuilder,
+			Capture:                     streamCapture,
+
+			ToolsRequested: responsesHasTools(&reqBody),
+			// StreamWrapper intentionally unset. The executor routes via
+			// AnthropicToResponsesStream / OpenAIToResponsesStream based on
+			// ClientProtocol + cand.Protocol — see executor_anthropic.go:StreamResponse
+			// and executor_chat.go's Responses bridge block.
+			StickyKey: buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
+			KeyID: func() int {
+				if keyInfo != nil {
+					return keyInfo.ID
+				}
+				return 0
+			}(),
+			KeyConcurrentLimit: func() int {
+				if keyInfo != nil {
+					return keyInfo.EffectiveConcurrent()
+				}
+				return 0
+			}(),
+			SessionID:                gwSessionID,
+			Model:                    clientModel,
+			TenantID:                 tenant(keyInfo),
+			AppID:                    appID(keyInfo),
+			ApiKeyID:                 apiKeyIDPtr(keyInfo),
+			RequestID:                requestID,
+			ClientRequestID:          auditCtx.ClientRequestID,
+			GWTaskID:                 auditCtx.GWTaskID,
+			ParentRequestID:          auditCtx.ParentRequestID,
+			TraceID:                  auditCtx.TraceID,
+			SpanID:                   auditCtx.SpanID,
+			Audit:                    auditCtx,
+			JourneyGatewayInstanceID: journeyInstanceID,
+			JourneySeq:               journeySeq,
+			JourneyTerminal:          journeyTerminal,
+		}
+	}
+
+	usedSurvival := isStream && (durableStream != nil || h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID))
+	var result *executors.ExecuteResult
+	var execErr error
+	if usedSurvival {
+		base := w
+		if h.chatHandler.responseInterceptor != nil {
+			base = newInterceptingStreamWriter(w, h.chatHandler.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:   gwSessionID,
+				RequestID:   requestID,
+				TenantID:    tenantID,
+				ClientModel: clientModel,
+			})
+			defer base.(*interceptingStreamWriter).finish()
+		}
+		// SP-02: state machine — survival branch dispatches upstream.
+		rt.Emit(state.EventDispatching)
+		result, execErr = h.chatHandler.runSurvivalCoordinator(r, base, buildExecParams, tenantID, durableStream)
+	} else {
+		if durableStream != nil {
+			durableStream.Stop()
+			slog.Error("durable stream escaped survival branch; failing closed",
+				"request_id", requestID, "task_id", durableStream.task.ID)
+			writeResponsesError(w, http.StatusServiceUnavailable, "durable request cannot run in-connection on this gateway", "api_error", "durable_survival_unavailable")
+			return
+		}
+		// SP-02: state machine — executor has accepted the request.
+		rt.Emit(state.EventDispatching)
+		result, execErr = h.chatHandler.executor.Execute(buildExecParams(w))
+	}
 
 	if execErr != nil {
+		// SP-02: state machine — executor failed (skip when the failure was a
+		// client cancel, since r.Context() cancellation has already driven
+		// the runtime to StateCancelled).
+		if !errors.Is(r.Context().Err(), context.Canceled) {
+			rt.Emit(state.EventFailed)
+		}
 		errCode := "provider_error"
 		errMsg := execErr.Error()
 		if ee, ok := execErr.(*executors.ExecuteError); ok && ee.Exhausted {
@@ -608,6 +766,9 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
 			attemptProviderID, attemptCredentialID, errCode, errMsg, latency, chatBodyBytes, keyInfo, r)
 		*attemptLogged = true
+		if usedSurvival {
+			return
+		}
 		if execErr, ok := execErr.(*executors.ExecuteError); ok && execErr.Exhausted {
 			// Content moderation: render 400 with upstream reason + hint.
 			if execErr.LastKind == errorsx.KindContentFilter {
@@ -616,13 +777,25 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					map[string]any{"Reason": reason})
 				h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, explicitOutbound,
 					attemptProviderID, attemptCredentialID, "content_filter", msg, latency, chatBodyBytes, keyInfo, r)
-				writeResponsesError(w, http.StatusBadRequest, msg, "content_filter", "content_filter")
+				if preStreamPrepared {
+					writeResponsesStreamError(w, msg, "content_filter")
+				} else {
+					writeResponsesError(w, http.StatusBadRequest, msg, "content_filter", "content_filter")
+				}
 				return
 			}
-			writeResponsesError(w, http.StatusServiceUnavailable, "All providers unavailable", "server_error", "provider_unavailable")
+			if preStreamPrepared {
+				writeResponsesStreamError(w, "All providers unavailable", "provider_unavailable")
+			} else {
+				writeResponsesError(w, http.StatusServiceUnavailable, "All providers unavailable", "server_error", "provider_unavailable")
+			}
 			return
 		}
-		writeResponsesError(w, http.StatusServiceUnavailable, "Upstream request failed", "server_error", "upstream_error")
+		if preStreamPrepared {
+			writeResponsesStreamError(w, "Upstream request failed", "upstream_error")
+		} else {
+			writeResponsesError(w, http.StatusServiceUnavailable, "Upstream request failed", "server_error", "upstream_error")
+		}
 		return
 	}
 	if result != nil && result.CachedReplay {
@@ -640,9 +813,18 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	*attemptLogged = true
 }
 
+func responsesDispatchOptions(logCtx *RequestLogContext, allowProviderChange bool) (bool, bool, []string) {
+	allowModelChange := logCtx != nil && logCtx.IsAutoRequest && dispatchAllowModelChangeEnabled()
+	if !allowModelChange {
+		return allowProviderChange, false, nil
+	}
+	return allowProviderChange, true, append([]string(nil), logCtx.AutoFallbackModels...)
+}
+
 func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 	chatBody := map[string]any{
-		"model":  req.Model,
+		"model": req.Model,
+
 		"stream": req.Stream,
 	}
 
@@ -990,12 +1172,16 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []
 		return nil
 	}
 
-	if isEmptyUpstreamChatResponse(body) {
+	format, empty := classifyNonStreamUpstreamResponse(body)
+	if empty {
 		writeResponsesError(w, http.StatusBadGateway, "模型未返回任何内容", "api_error", "empty_upstream_response")
 		return nil
 	}
 
-	respBody := convertChatResponseToResponses(body, clientModel, requestID)
+	respBody := body
+	if format != nonStreamResponseResponses {
+		respBody = convertChatResponseToResponses(body, clientModel, requestID)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", requestID)
@@ -1144,6 +1330,19 @@ func convertChatResponseToResponses(body []byte, clientModel, requestID string) 
 	return result
 }
 
+func writeResponsesStreamError(w http.ResponseWriter, message, code string) {
+	payload, _ := json.Marshal(map[string]any{
+		"type": "response.failed",
+		"response": map[string]any{
+			"error": map[string]any{"code": code, "message": message},
+		},
+	})
+	_, _ = fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", payload)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
@@ -1157,6 +1356,8 @@ func writeResponsesError(w http.ResponseWriter, statusCode int, message, errType
 	})
 }
 
+// responsesStreamWrapper is a deprecated compatibility wrapper around the
+// text-only legacy Responses path; production routing uses the IR bridge.
 func responsesStreamWrapper(requestID, clientModel, outboundModel string, capture *audit.StreamCapture) executors.StreamWrapperFunc { //nolint:unused
 	return func(w http.ResponseWriter, resp *http.Response, norm executors.NormalizerFunc, cap *audit.StreamCapture) executors.StreamOutcome {
 		c := cap
@@ -1164,6 +1365,8 @@ func responsesStreamWrapper(requestID, clientModel, outboundModel string, captur
 			c = capture
 		}
 		_ = norm
-		return StreamResponsesSSE(w, resp, clientModel, outboundModel, requestID, c)
+		// P1-2 fix (2026-08-28): Extract context from resp.Request for gate propagation.
+		ctx := resp.Request.Context()
+		return StreamResponsesSSE(ctx, w, resp, clientModel, outboundModel, requestID, c)
 	}
 }

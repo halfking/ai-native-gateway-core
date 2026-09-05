@@ -31,6 +31,8 @@ help: ## 显示帮助
 
 # ── 测试 ──────────────────────────────────────────────────────────────────
 
+CORE_GO_PACKAGES := ./internal/ir ./domains/dispatch ./domains/streaming/...
+
 .PHONY: test
 test: ## 全量单元测试（CI 默认入口）
 	$(GO) test ./... -count=1 -timeout=300s
@@ -38,6 +40,37 @@ test: ## 全量单元测试（CI 默认入口）
 .PHONY: test-short
 test-short: ## 短模式，跳过 -short=false 的测试
 	$(GO) test ./... -count=1 -short -timeout=120s
+
+.PHONY: test-race-core
+test-race-core: ## 核心 IR/调度/流式包的 race 检测（不含外部依赖集成测试）
+	$(GO) test -race $(CORE_GO_PACKAGES) -count=1 -timeout=600s
+
+.PHONY: vet-core
+vet-core: ## 核心 IR/调度/流式包的 go vet 检查
+	$(GO) vet $(CORE_GO_PACKAGES)
+
+.PHONY: bench-core
+bench-core: ## 核心 IR/调度/流式包的 benchmark（不运行普通测试）
+	$(GO) test $(CORE_GO_PACKAGES) -run '^$$' -bench . -benchmem -count=1 -timeout=600s
+
+# fuzz 失败样本回归流程（见 scripts/fuzz/README.md）
+FUZZTIME ?= 5s
+
+.PHONY: fuzz-smoke
+fuzz-smoke: ## 对全部 IR fuzz 目标限时运行（FUZZTIME=5s 可调）
+	bash scripts/fuzz/fuzz-regress.sh run $(FUZZTIME)
+
+.PHONY: fuzz-corpus-lint
+fuzz-corpus-lint: ## 对已入库 fuzz 语料做脱敏门禁
+	bash scripts/fuzz/sanitize_corpus.sh --all
+
+.PHONY: bench-baseline
+bench-baseline: ## 运行 bench-core 并更新基线文件（docs/perf/bench-baseline.txt）
+	bash scripts/perf/bench_compare.sh --update
+
+.PHONY: bench-check
+bench-check: ## 对照基线检查 benchmark 回归（阈值见 scripts/perf/README.md）
+	bash scripts/perf/bench_compare.sh --check
 
 .PHONY: integrity-smoke
 integrity-smoke: ## model integrity + durable queue planner smoke (requires PG*)
@@ -47,6 +80,14 @@ integrity-smoke: ## model integrity + durable queue planner smoke (requires PG*)
 test-rls: ## 使用 TEST_DATABASE_URL 运行真实 PostgreSQL RLS 门禁
 	@test -n "$(TEST_DATABASE_URL)" || (echo "TEST_DATABASE_URL is required; source .env.local first" && exit 1)
 	$(GO) test ./admin -run "^Test(RLS_|AssertSessionOwnerAccessInTx_RealDB)" -count=1 -v
+
+.PHONY: test-pg-contracts
+test-pg-contracts: ## 隔离 PostgreSQL 合约门禁（需要两个专用、低权限 DSN）
+	@test -n "$${TEST_DATABASE_URL}" || (echo "TEST_DATABASE_URL is required" && exit 1)
+	@test -n "$${TEST_TENANT_DATABASE_URL}" || (echo "TEST_TENANT_DATABASE_URL is required" && exit 1)
+	@test "$${TEST_DATABASE_URL}" != "$${TEST_TENANT_DATABASE_URL}" || (echo "separate writer and tenant DSNs are required" && exit 1)
+	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./bg -run '^TestProviderErrorAggregatorRealPG$$' -count=1 -v -timeout=90s
+	TEST_PG_CONTRACTS_ISOLATED=1 $(GO) test -tags=integration ./domains/requestjourney -run '^TestJournalSnapshotReceiptRealPG$$' -count=1 -v -timeout=90s
 
 .PHONY: test-sessionforensics
 test-sessionforensics: ## sessionforensics 全套（含真实数据回放）
@@ -157,5 +198,7 @@ open-mutation-report: ## 在浏览器打开 mutation 报告
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 .PHONY: clean
-clean: ## 清理 bin/ 和 coverage.*
+clean: ## 清理 bin/、coverage.* 与根目录构建产物
 	rm -rf $(BIN_DIR) coverage.out coverage.html
+	rm -f gateway llm-gateway llm-gateway-linux-amd64 migrate-ursm-v2 routing-test-client
+	rm -f *.test

@@ -2,6 +2,7 @@ package sessionsummary
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -116,6 +117,15 @@ func TestCollapseTurns_PreservesOrderAndSkips(t *testing.T) {
 
 // TestV2Source_NilPoolErrors guards the nil-safety contract shared with the V1
 // source: a nil pool must return an error, not panic.
+func TestV2SessionBodiesBaseQuery_UsesCurrentMonthView(t *testing.T) {
+	if !strings.Contains(v2SessionBodiesBaseQuery, "LEFT JOIN public.session_turns_with_current_month t") {
+		t.Fatalf("V2 message source must join the current-month view: %s", v2SessionBodiesBaseQuery)
+	}
+	if strings.Contains(v2SessionBodiesBaseQuery, "JOIN public.session_turns t") {
+		t.Fatalf("V2 message source must not join the base table directly: %s", v2SessionBodiesBaseQuery)
+	}
+}
+
 func TestV2Source_NilPoolErrors(t *testing.T) {
 	src := &v2SessionBodiesSource{pool: nil}
 	if _, err := src.GetSessionMessages(nil, "t", "s"); err == nil {

@@ -8,7 +8,7 @@
 //   - 全黑色调: 所有背景都是 var(--bg) / var(--card) / var(--bg-subtle),
 //     严禁大块亮色 (rgba 红黄绿警告框);状态色只用于小尺寸文字/小图标/左侧细条。
 //   - 兼容既有 API: 暴露 requestId, 内部自己 watch 并加载。
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestTrace,
@@ -44,6 +44,7 @@ const aiTokens = ref(0)
 const aiEventCount = ref(0)
 const aiError = ref<string | null>(null)
 const aiCopySuccess = ref(false)
+let aiCopyResetTimer: ReturnType<typeof setTimeout> | null = null
 
 // 监控 open/close 重新加载
 watch(
@@ -52,6 +53,14 @@ watch(
     error.value = null
     trace.value = null
     expanded.value = new Set()
+    // Switching traces resets any in-flight "Copied" pill on the prior
+    // trace's AI prompt; cancel the pending reset timer so it can't fire
+    // against a stale aiCopySuccess.
+    if (aiCopyResetTimer) {
+      clearTimeout(aiCopyResetTimer)
+      aiCopyResetTimer = null
+    }
+    aiCopySuccess.value = false
     if (showAIPanel.value) closeAI()
     if (!id) return
     await loadTrace(id)
@@ -235,7 +244,14 @@ async function copyPrompt() {
   try {
     await navigator.clipboard.writeText(aiPrompt.value)
     aiCopySuccess.value = true
-    setTimeout(() => (aiCopySuccess.value = false), 2000)
+    // Reset the "Copied" pill after 2s. Track the handle so a rapid second
+    // click doesn't stack overlapping timers, and so onUnmounted can cancel
+    // a pending reset if the panel is torn down mid-window.
+    if (aiCopyResetTimer) clearTimeout(aiCopyResetTimer)
+    aiCopyResetTimer = setTimeout(() => {
+      aiCopySuccess.value = false
+      aiCopyResetTimer = null
+    }, 2000)
   } catch {
     aiError.value = '剪贴板不可用, 请手动复制'
   }
@@ -248,6 +264,13 @@ async function copyRawJson() {
     /* noop */
   }
 }
+
+onUnmounted(() => {
+  if (aiCopyResetTimer) {
+    clearTimeout(aiCopyResetTimer)
+    aiCopyResetTimer = null
+  }
+})
 </script>
 
 <template>
@@ -475,7 +498,7 @@ async function copyRawJson() {
 /*
  * 2026-07-17: 暗色内嵌面板 (替代此前的 modal)。
  * 关键约束:
- *   - 所有背景使用 var(--bg) / var(--card) / var(--bg-subtle), 严禁 #fff / rgba 红黄绿大块;
+ *   - 所有背景使用 var(--bg) / var(--card) / var(--bg-subtle), 严禁 var(--on-primary) / rgba 红黄绿大块;
  *   - 状态色仅用于小尺寸元素: 序号圆点 / 文字 / 左侧细条;
  *   - 与所在 drawer / 详情面板 视觉一体, 不出现独立"亮色卡片"。
  */

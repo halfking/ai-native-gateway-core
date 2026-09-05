@@ -148,7 +148,11 @@ func TestPipelineEmitsFailoverActions(t *testing.T) {
 		t.Fatal("Submit should fail (all forwards fail)")
 	}
 
-	events := rec.actions(t, "req-live-2", 6)
+	// 完整事件链恰 9 步：model_enqueued → node_enqueued → node_selected →
+	// node_switch(retry) → node_enqueued → node_selected → model_switch →
+	// model_enqueued(new model) → no_route。等待下限必须 ≥ 9，否则异步
+	// Redis worker 可能在 no_route 落库前提前返回，造成时序 flaky。
+	events := rec.actions(t, "req-live-2", 9)
 	byAction := map[liveactions.Action][]liveactions.ActionEvent{}
 	for _, ev := range events {
 		byAction[ev.Action] = append(byAction[ev.Action], ev)

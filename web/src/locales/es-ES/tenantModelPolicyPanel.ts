@@ -66,4 +66,5 @@ export default {
     deleteFailed: 'Error al eliminar',
     restoreFailed: 'Error al restaurar',
   },
+  softDeleteConfirm: '¿Eliminación suave de la política {name}? (recuperable)',
 }

@@ -74,9 +74,17 @@ func (rw *prometheusResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (rw *prometheusResponseWriter) Flush() {
+	_ = rw.FlushError()
+}
+
+func (rw *prometheusResponseWriter) FlushError() error {
+	if f, ok := rw.ResponseWriter.(interface{ FlushError() error }); ok {
+		return f.FlushError()
+	}
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+	return nil
 }
 
 func normalizeMetricsPath(path string) string {

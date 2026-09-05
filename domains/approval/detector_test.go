@@ -505,10 +505,10 @@ func TestApprovalDetector_CalculateRiskLevel(t *testing.T) {
 	detector := &ApprovalDetector{}
 
 	tests := []struct {
-		name            string
-		sensitiveCount  int
-		cost            float64
-		expectedLevel   RiskLevel
+		name           string
+		sensitiveCount int
+		cost           float64
+		expectedLevel  RiskLevel
 	}{
 		{"high_sensitive", 5, 1.0, RiskHigh},
 		{"high_cost", 1, 15.0, RiskHigh},

@@ -33,15 +33,7 @@ deploy/sql/
 │   └── snapshots/                     # 各版本快照
 │       └── r9XX-YYYYMMDD.sql          # 版本快照（待生成）
 │
-├── objects/                           # 数据库对象（按类型分类，839个文件）
-│   ├── tables/                        # 表定义（103个）
-│   ├── views/                         # 视图定义（9个）
-│   ├── functions/                     # 函数定义（18个）
-│   ├── sequences/                     # 序列定义（113个）
-│   ├── triggers/                      # 触发器定义（14个）
-│   ├── indexes/                       # 索引定义（425个）
-│   ├── constraints/                   # 约束定义（127个）
-│   └── policies/                      # RLS策略定义（30个）
+├── objects/                           # （按需生成，不入库）sync-objects.sh 从 sql/objects/ 同步
 │
 ├── migrations/                        # 部署时的数据迁移
 │   └── README.md                      # 迁移说明（待生成）
@@ -89,19 +81,17 @@ deploy/sql/
 | 目录 | 用途 | 内容 | 维护者 |
 |------|------|------|--------|
 | **sql/** | 开发时的SSOT | objects/, migrations/startup, migrations/domain, schema/ | 开发人员 |
-| **deploy/sql/** | 部署时的资产 | schemas/baseline, objects/, cron/, tests/, docs/, 部署脚本 | 运维/DevOps |
+| **deploy/sql/** | 部署时的资产 | schemas/baseline, cron/, tests/, docs/, 部署脚本 | 运维/DevOps |
 
 ### 关键原则
 
 1. **schemas/baseline/** 与 **sql/schema/** 内容完全相同
    - `schemas/baseline/` 是 installer 嵌入使用的副本
    - 通过 `migrate-sql-files.sh` 保持同步
-   
-2. **objects/** 与 **sql/objects/** 内容完全相同
-   - `deploy/sql/objects/` 是数据库对象的部署副本
-   - 通过 `sync-objects.sh` 从 `sql/objects/` 自动同步
-   - 按对象类型分类：tables, views, functions, sequences, triggers, indexes, constraints, policies
-   - 总计 839 个对象文件
+
+2. **objects/ 不再入库**（2026-08-17 结构治理）
+   - `deploy/sql/objects/` 曾是 `sql/objects/` 的部署副本（sync-objects.sh 生成），已出现漂移且无脚本引用
+   - 已从 git 删除并加入 .gitignore；需要时运行 `./sync-objects.sh` 重新生成
    
 3. **不重复 sql/migrations/**
    - `sql/migrations/startup/` 由 Go 代码自动应用

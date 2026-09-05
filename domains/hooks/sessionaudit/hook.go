@@ -456,6 +456,10 @@ func (h *SessionAuditHook) CheckV1(ctx context.Context, sessionID, tenantID, mod
 	// v2 Execute 也没有把 NeedApproval 升级为 Block — 这是 v1 的实现选择。
 	// 如果要 403, 应该由 detector 自身的 maxSeverity/Score 阈值直接决定 (不通过 hook 升级)。
 	if result.Decision == sessionaudit.DecisionNeedApproval {
+		if IsApprovedResume(ctx) {
+			slog.Info("session-audit need-approval accepted by approved resume", "session_id", sessionID, "tenant_id", tenantID)
+			return CheckV1Result{Decision: sessionaudit.DecisionNeedApproval}
+		}
 		if h.approvalMgr == nil {
 			// v2 demo 模式：无 mgr 时降级为 Pass（仅记录 warning）
 			slog.Warn("session-audit CheckV1 need-approval but approvalMgr=nil, degrading to pass",

@@ -59,6 +59,8 @@ export default {
       performanceScore: '性能',
       health: '系统健康',
       status: '状态',
+      // 2026-08-31: 行级供应商操作列
+      actions: '操作',
     },
     channel: {
       official: '原厂',
@@ -91,6 +93,9 @@ export default {
     empty: '尚未配置任何提供商',
     manualDisabledBadge: '已禁用',
     manualDisabledTooltip: '此供应商已被管理员手动禁用，所有路由将跳过',
+    // 2026-08-31: 行级供应商删除按钮
+    deleteProviderBtn: '删除',
+    deleteProviderTooltip: '软删除该供应商。删除后该供应商及其全部凭据将不再出现在任何列表与路由中，且无法撤销。',
   },
   create: {
     title: '添加供应商',
@@ -216,7 +221,8 @@ export default {
       checkBtn: '检测',
       checkTooltip: '对此凭据执行一次健康检测',
       diagnose: '诊断',
-      disable: '停用',
+      // 2026-08-31: 凭据删除为终态（status='deleted'），不可撤销。
+      disable: '删除',
     },
     addDialog: {
       title: '添加凭据 — {name}',
@@ -234,12 +240,24 @@ export default {
     errors: {
       apiKeyRequired: '请输入 API Key',
       addFailed: '添加失败',
-      deleteConfirm: '确认停用该凭据？',
+      // 2026-08-31: 凭据删除为终态（status='deleted'），不可恢复。
+      deleteConfirm: '确认删除该凭据？删除后该凭据及其绑定的所有路由将不再出现在任何列表中，且无法撤销。',
       deleteFailed: '删除失败',
       loadFailed: '凭据加载失败',
       saveFailed: '保存凭据失败',
       toggleFailed: '操作失败',
     },
+  },
+  // 2026-08-31: 供应商软删除（DELETE /api/providers/{id}）—— 行保留
+  // 在表里但 deleted_at 非空，所有列表/路由表均不再返回。
+  providerDelete: {
+    confirm: '确认删除该供应商？该供应商下的所有凭据将一并标记为已删除，所有相关模型路由将立即停止。该操作不可撤销。',
+    failed: '供应商删除失败',
+    success: '供应商已删除',
+  },
+  // 2026-08-31: 供应商已删除 toast。
+  toast: {
+    providerDeleted: '供应商已删除',
   },
   check: {
     providerStarted: '检测已启动',
@@ -327,4 +345,48 @@ export default {
       actions: '操作',
     },
   },
+  emergencyConfirmAction: '确认执行「{action}」？\n将对 {credential} / {model} 生效。',
+  emergencyTitle: '紧急维护',
+  emergencyUnavailable: '候选未加载，紧急维护暂不可用。',
+  emergencyIntro: '以下操作会立即改写运行态；执行前请确认影响范围。',
+  forceDisable: '强制禁用',
+  forceDisableDesc: '写入 manual_disabled=true，立即不可路由。',
+  forceEnable: '强制启用',
+  forceEnableDesc: '清除运行态阻塞并恢复模型 binding。',
+  clearCircuit: '清除熔断',
+  clearCircuitDesc: '当前：',
+  clearCircuitAction: '清除熔断状态',
+  resetErrors: '重置错误计数',
+  consecutiveFailures: '连续失败：',
+  resetCountButton: '重置计数',
+  noNeedForceEnable: '节点当前已健康（无运行态阻塞），无需强制启用',
+  warningCmbNotUpdated: '模型绑定未更新，请检查 raw model 映射',
+  warningUrsmNotCleared: 'URSM 状态未清理，运行态可能仍需重试',
+  actionDoneWithWarnings: '「{action}」已执行；{warnings}',
+  actionDone: '「{action}」执行成功',
+  emergencyFailed: '紧急维护失败',
+  // ── 2026-09-05: 设置与维护 · 生命周期状态 chips + 人工禁用状态 ──
+  lifecycleTitle: '生命周期',
+  lifecycleHint: '点击状态立即保存生效；从「在用」切出需二次确认',
+  lifecycleLabelActive: '在用',
+  lifecycleLabelDisabled: '停用',
+  lifecycleLabelSuspended: '暂停',
+  lifecycleLabelRetired: '退役',
+  lifecycleHintActive: 'active · 正常参与路由',
+  lifecycleHintDisabled: 'disabled · 人工停用，不参与路由',
+  lifecycleHintSuspended: 'suspended · 临时暂停，不参与路由',
+  lifecycleHintRetired: 'retired · 已退役，不再恢复',
+  lifecycleCurrent: '当前',
+  lifecycleChangeConfirm: '确认将生命周期从「在用」切换为「{label}」（{value}）？\n该凭据将不再参与路由，可随时切回「在用」恢复。',
+  lifecycleChangeDone: '生命周期已切换为「{label}」。',
+  lifecycleChangeFailed: '生命周期切换失败',
+  settingsNoChange: '设置无变更。',
+  manualDisableTitle: '凭据禁用状态',
+  manualDisabledBadge: '已人工禁用',
+  manualNormalBadge: '正常参与路由',
+  manualUnbanAction: '解禁（恢复参与路由）',
+  manualDisableAction: '人工禁用',
+  manualUnbanActionTitle: '清除人工禁用标记，恢复参与路由（需填写维护原因）',
+  manualDisableActionTitle: '人工禁用后该凭据不再参与路由（需填写维护原因）',
+  manualIndependenceHint: '人工禁用与生命周期相互独立：此处解禁只清除人工禁用标记，不改变生命周期状态。',
 }

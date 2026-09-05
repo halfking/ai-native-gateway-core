@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
 [![Multi-Tenant](https://img.shields.io/badge/Multi--Tenant-RLS%20enabled-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/Version-v2.4.8-green.svg)](VERSION)
+[![Version](https://img.shields.io/badge/Version-v2.4.7-green.svg)](VERSION)
 
 ---
 
@@ -55,7 +55,7 @@
 | **分发** | 自动化打包（upgrade-package builder + Cloudreve + version-check API） |
 | **部署** | M1-M4 四种模式 + systemd + Docker + K8s |
 
-详细架构见 [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md)。
+详细架构见 [`docs/03-design/01-architecture/architecture/ARCHITECTURE.md`](docs/03-design/01-architecture/architecture/ARCHITECTURE.md)。
 
 ### 模块导航
 
@@ -117,7 +117,7 @@ cd ..
 
 # 健康检查
 curl http://localhost:8781/healthz
-# 返回: {"status":"ok","version":"v2.4.8"}
+# 返回: {"status":"ok","version":"v2.4.7"}
 ```
 
 ### 升级
@@ -219,7 +219,7 @@ git push github       # → github（自动严格扫描，命中即阻断）
 ```
 
 敏感信息保护：`.githooks/pre-push` 推送 github 时自动运行 `scripts/scan-secrets.sh` 严格模式（49 规则）。
-详见 [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md)。
+详见 [`docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md`](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)。
 
 ---
 
@@ -227,12 +227,13 @@ git push github       # → github（自动严格扫描，命中即阻断）
 
 | 类别 | 文档 |
 |------|------|
-| **部署** | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — M1-M4 四种部署模式 |
-| **API** | [`docs/API.md`](docs/API.md) — 主控端 8 个 API 端点 |
-| **升级** | [`docs/UPGRADE.md`](docs/UPGRADE.md) — 在线/离线升级流程 |
-| **架构** | [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md) — V3 架构方案 |
-| **会话优化V2** | [`docs/会话优化v2/配置说明.md`](docs/会话优化v2/配置说明.md) — Sessions V2 Feature Flag 配置与灰度发布 |
-| **双仓库** | [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md) — codeup ⇄ github 工作流 |
+| **部署总入口** | [`deploy/README.md`](deploy/README.md) — 现役部署物料、环境和发布门禁 |
+| **环境总览** | [`docs/06-deployment/01-environments/README.md`](docs/06-deployment/01-environments/README.md) — 环境、端口、平台支持矩阵 |
+| **客户安装** | [`docs/06-deployment/01-environments/customer-install/README.md`](docs/06-deployment/01-environments/customer-install/README.md) — host/Docker 客户路径 |
+| **升级与回滚** | [`docs/06-deployment/README.md`](docs/06-deployment/README.md) — 迁移兼容、健康检查和回滚门禁 |
+| **架构** | [`docs/03-design/01-architecture/architecture/ARCHITECTURE.md`](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — 当前架构方案 |
+| **会话优化V2** | [`docs/archive/process/session-optimization-v2/配置说明.md`](docs/archive/process/session-optimization-v2/配置说明.md) — Sessions V2 Feature Flag 配置与灰度发布 |
+| **双仓库** | [`docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md`](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md) — codeup ⇄ github 工作流 |
 | **安全** | [`SECURITY.md`](SECURITY.md) — 漏洞报告 + 扫描器用法 |
 | **贡献** | [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发规范 + 提交规范 |
 
@@ -262,8 +263,8 @@ git push github       # → github（自动严格扫描，命中即阻断）
 ## 🔐 安全
 
 - 漏洞报告：见 [`SECURITY.md`](SECURITY.md)
-- 公开仓库敏感信息保护：见 [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md)
-- 法务白名单：见 [`docs/legal/disguise-compliance.md`](docs/legal/disguise-compliance.md)
+- 公开仓库敏感信息保护：见 [`docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md`](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)
+- 法务白名单：见 [`docs/02-resources/compliance/legal/disguise-compliance.md`](docs/02-resources/compliance/legal/disguise-compliance.md)
 
 ---
 

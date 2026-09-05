@@ -2,7 +2,6 @@ package v2
 
 import (
 	"context"
-	"regexp"
 	"sync"
 	"testing"
 	"time"
@@ -24,7 +23,7 @@ func newMockTurnWriter(t *testing.T) (*TurnWriter, pgxmock.PgxPoolIface) {
 
 // expectAppendTurn mocks the new (Round-3) flow for a single AppendTurn call:
 //   - BEGIN
-//   - SELECT pg_advisory_xact_lock($1) with the lock key
+//   - SELECT pg_advisory_xact_lock(session_turns_advisory_lock_key($1, $2))
 //   - SELECT COALESCE(MAX(turn_no), 0) + 1
 //   - INSERT INTO public.session_turns (with precise WithArgs)
 //   - If inserted == false, SELECT turn_no WHERE request_id=... (post-conflict re-read)
@@ -58,8 +57,11 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 	}
 	partitionDate := rec.Ts.Truncate(24 * time.Hour)
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_xact_lock($1)")).
-		WithArgs(hashSessionKey(rec.TenantID, rec.SessionID)).
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(rec.TenantID, rec.SessionID).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(rec.TenantID, "request:"+rec.RequestID).
 		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(rec.TenantID, rec.SessionID).
@@ -122,9 +124,10 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 	// as-is to the column (a text[] typed as []string on the Go side).
 	multimodalArg := pgxmock.AnyArg()
 
-	mock.ExpectExec("INSERT INTO public.session_turns").
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
 		WithArgs(
 			rec.SessionID, nextTurn, rec.TenantID, rec.RequestID, rec.Ts,
+			rec.ProjectID, rec.Namespace, rec.ParentRequestID, rec.TaskType,
 			rec.SubmitMode,
 			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr, rec.TokensSaved,
 			rec.InjectionVerdict, rec.OutputVerdict,
@@ -133,15 +136,19 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 			rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
 			rec.SourceKind, rec.Quality,
 			rec.AttachmentCount, rec.AttachmentTotalBytes, multimodalArg,
-			rec.Title, rec.Summary,
+			rec.Title, rec.Summary, string(rec.DigestJSON),
+			rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
+			rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
+			rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
+			rec.T9ResponseEndAt,
 			partitionDate,
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", rowsAffected))
 	if !inserted {
 		// Post-conflict re-read: SELECT turn_no WHERE request_id=...
-		mock.ExpectQuery("SELECT turn_no[[:space:]]+FROM public.session_turns").
-			WithArgs(rec.SessionID, rec.TenantID, rec.RequestID, partitionDate).
-			WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(existingTurn))
+		mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
+			WithArgs(rec.TenantID, rec.RequestID).
+			WillReturnRows(pgxmock.NewRows([]string{"session_id", "turn_no", "partition_date"}).AddRow(rec.SessionID, existingTurn, partitionDate))
 		// 2026-08-05 (v2 mirror bug): on the conflict path the writer backfills
 		// the late-arriving compression_strategy / compression_meta / submit_mode
 		// that the initial INSERT could not carry (the mirror fires this write
@@ -151,14 +158,22 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 		//   $5 compression_applied $6 compression_strategy $7 compression_meta
 		//   $8 compression_tokens_saved $9 submit_mode
 		//   $10 title $11 summary (migration 456 preview backfill)
-		mock.ExpectExec("UPDATE public.session_turns").
-			WithArgs(
-				rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
-				rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
-				rec.TokensSaved, rec.SubmitMode,
-				rec.Title, rec.Summary,
-			).
+		enrichmentArgs := []any{
+			rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
+			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
+			rec.TokensSaved, rec.SubmitMode, rec.Title, rec.Summary, string(rec.DigestJSON),
+			rec.ProjectID, rec.Namespace, rec.ParentRequestID, rec.TaskType,
+			rec.T0ArrivedAt, rec.T1TotalEnqueuedAt, rec.T2TotalDequeuedAt,
+			rec.T3ModelEnqueuedAt, rec.T4ModelDequeuedAt, rec.T5CredEnqueuedAt,
+			rec.T6CredDequeuedAt, rec.T7ForwardStartAt, rec.T8ResponseStartAt,
+			rec.T9ResponseEndAt,
+		}
+		mock.ExpectExec("UPDATE public.session_turns_hot").
+			WithArgs(enrichmentArgs...).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		mock.ExpectExec("UPDATE public.session_turns").
+			WithArgs(enrichmentArgs...).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	}
 	mock.ExpectCommit()
 }
@@ -180,6 +195,35 @@ func TestTurnWriterAppendTurnDuplicateReturnsExistingTurnNo(t *testing.T) {
 	require.Equal(t, first, second)
 }
 
+func TestTurnWriterAppendTurnRejectsRequestOwnedByAnotherSession(t *testing.T) {
+	writer, mock := newMockTurnWriter(t)
+	rec := TurnRecord{
+		SessionID: "session-new", TenantID: "tenant-1", RequestID: "request-shared",
+		Ts: time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC),
+	}
+	partitionDate := rec.Ts.Truncate(24 * time.Hour)
+	mock.ExpectBegin()
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(rec.TenantID, rec.SessionID).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(rec.TenantID, "request:"+rec.RequestID).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+		WithArgs(rec.TenantID, rec.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(47)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 0))
+	mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
+		WithArgs(rec.TenantID, rec.RequestID).
+		WillReturnRows(pgxmock.NewRows([]string{"session_id", "turn_no", "partition_date"}).AddRow("session-existing", 9, partitionDate))
+	mock.ExpectRollback()
+
+	_, err := writer.AppendTurn(context.Background(), rec)
+	require.ErrorContains(t, err, "already belongs to session session-existing")
+}
+
 func TestTurnWriterAppendTurnDifferentRequestsIncrement(t *testing.T) {
 	writer, mock := newMockTurnWriter(t)
 	base := TurnRecord{SessionID: "s2", TenantID: "t1", RequestID: "r1", Ts: time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)}
@@ -195,24 +239,55 @@ func TestTurnWriterAppendTurnDifferentRequestsIncrement(t *testing.T) {
 	require.Equal(t, first+1, second)
 }
 
-func TestTurnWriterAppendTurnSameRequestDifferentPartitionIsDistinct(t *testing.T) {
+func TestTurnWriterAppendTurnSameRequestDifferentPartitionIsRejected(t *testing.T) {
 	writer, mock := newMockTurnWriter(t)
 	firstRec := TurnRecord{SessionID: "s3", TenantID: "t1", RequestID: "r1", Ts: time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)}
 	expectAppendTurn(mock, firstRec, 1, true, 0)
+
 	secondRec := firstRec
 	secondRec.Ts = firstRec.Ts.Add(24 * time.Hour)
-	expectAppendTurn(mock, secondRec, 2, true, 0)
+	mock.ExpectBegin()
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(secondRec.TenantID, secondRec.SessionID).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectExec("session_turns_advisory_lock_key").
+		WithArgs(secondRec.TenantID, "request:"+secondRec.RequestID).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+		WithArgs(secondRec.TenantID, secondRec.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
+	mock.ExpectExec("INSERT INTO public.session_turns_hot").
+		WithArgs(anyArgs(47)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 0))
+	mock.ExpectQuery("SELECT session_id, turn_no, partition_date[[:space:]]+FROM public.session_turns_with_current_month").
+		WithArgs(secondRec.TenantID, secondRec.RequestID).
+		WillReturnRows(pgxmock.NewRows([]string{"session_id", "turn_no", "partition_date"}).AddRow(
+			firstRec.SessionID, 1, firstRec.Ts.Truncate(24*time.Hour),
+		))
+	mock.ExpectRollback()
 
-	first, err := writer.AppendTurn(context.Background(), firstRec)
+	_, err := writer.AppendTurn(context.Background(), firstRec)
 	require.NoError(t, err)
-	second, err := writer.AppendTurn(context.Background(), secondRec)
-	require.NoError(t, err)
-	require.Equal(t, first+1, second)
+	_, err = writer.AppendTurn(context.Background(), secondRec)
+	require.ErrorContains(t, err, "already belongs to partition date 2026-07-28")
 }
 
 func TestTurnWriterAppendTurnConflictReadsExistingTurnNo(t *testing.T) {
 	writer, mock := newMockTurnWriter(t)
-	rec := TurnRecord{SessionID: "s4", TenantID: "t1", RequestID: "r1", Ts: time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)}
+	t0 := time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)
+	t9 := t0.Add(750 * time.Millisecond)
+	rec := TurnRecord{
+		SessionID:       "s4",
+		TenantID:        "t1",
+		RequestID:       "r1",
+		Ts:              t0,
+		ProjectID:       "project-1",
+		Namespace:       "gw",
+		ParentRequestID: "parent-1",
+		TaskType:        "code",
+		T0ArrivedAt:     &t0,
+		T9ResponseEndAt: &t9,
+	}
 	// INSERT succeeds (RowsAffected=0 because a concurrent goroutine already
 	// wrote turn 3 in another partition? No — same partition. To exercise
 	// the post-conflict re-read we need RowsAffected=0 on the INSERT and

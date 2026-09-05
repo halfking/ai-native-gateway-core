@@ -1,0 +1,81 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T093023Z-60194",
+  "scenario": "C01_concurrency_steady",
+  "category": "concurrency",
+  "status": "PASS",
+  "commit": "d53e20a4118ad4df9781f1d50c45a95d4a752c94",
+  "gateway": "http://127.0.0.1:8793",
+  "checks": {
+    "load_completed": true
+  },
+  "metrics": {
+    "total": 503,
+    "succ": 503,
+    "fail": 0,
+    "success_rate": 1.0,
+    "p50_ms": 2309.7630001138896,
+    "p95_ms": 5475.129958009347,
+    "p99_ms": 8238.667292054743,
+    "max_ms": 8533.062624977902,
+    "ttfb_p50_ms": 2309.732374968007,
+    "ttfb_p95_ms": 5475.093249930069,
+    "ttfb_p99_ms": 8238.608375191689,
+    "throughput_rps": 15.214340395310249,
+    "elapsed_sec": 33.0609140410088,
+    "fail_by_status": {},
+    "fail_by_kind": {},
+    "stream_total": 0,
+    "stream_completed": 0,
+    "stream_completion_rate": 0,
+    "stream_parse_failed": 0,
+    "stream_cancelled": 0,
+    "cancelled": 0,
+    "request_id_count": 503
+  },
+  "evidence": {
+    "raw_metrics": {
+      "total": 503,
+      "succ": 503,
+      "fail": 0,
+      "success_rate": 1.0,
+      "p50_ms": 2309.7630001138896,
+      "p95_ms": 5475.129958009347,
+      "p99_ms": 8238.667292054743,
+      "max_ms": 8533.062624977902,
+      "ttfb_p50_ms": 2309.732374968007,
+      "ttfb_p95_ms": 5475.093249930069,
+      "ttfb_p99_ms": 8238.608375191689,
+      "throughput_rps": 15.214340395310249,
+      "elapsed_sec": 33.0609140410088,
+      "fail_by_status": {},
+      "fail_by_kind": {},
+      "stream_total": 0,
+      "stream_completed": 0,
+      "stream_completion_rate": 0,
+      "stream_parse_failed": 0,
+      "stream_cancelled": 0,
+      "cancelled": 0,
+      "request_id_count": 503
+    },
+    "models": [
+      "loadtest-mini-alpha",
+      "loadtest-mini-beta",
+      "loadtest-standard-alpha"
+    ]
+  },
+  "failures": [],
+  "parameters": {
+    "gateway": "http://127.0.0.1:8793",
+    "n_clients": 50,
+    "rps_per_client": 3.0,
+    "duration_sec": 30,
+    "prompt_size": "short",
+    "sticky_ratio": 0.0,
+    "stream_ratio": 0.0,
+    "fault_inject_cancel": 0.0,
+    "compression": null,
+    "no_cache": false,
+    "protocol": null
+  }
+}

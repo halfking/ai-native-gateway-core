@@ -21,7 +21,10 @@ type command interface {
 
 // SupervisorConfig 是 supervisor 的初始化配置。
 type SupervisorConfig struct {
-	SocketDir     string
+	SocketDir string
+	// ContextSecret remains gateway-local and is used only to redact child output.
+	// Plugin-to-gateway calls must use a dedicated, revocable transport identity;
+	// the gateway secret is never placed in a child environment.
 	ContextSecret []byte
 	// SigningPubkey 是 ed25519 公钥 hex；为空时跳过 manifest 签名校验（开发模式）。
 	SigningPubkey string
@@ -50,9 +53,15 @@ func NewSupervisor(cfg SupervisorConfig) *Supervisor {
 	return s
 }
 
-// Start 启动插件进程并返回初始状态。握手（ready 判定）由 handshake.go 完成。
-// entrypoint 来自 manifest.Runtime.Entrypoint；socket/context secret/contract 通过 env 注入。
+// Start starts a plugin process in a restricted environment. Readiness is not
+// granted here: callers must complete handshake, health, and binding checks.
 func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, error) {
+	if m == nil || m.PluginID == "" {
+		return nil, fmt.Errorf("plugin manifest with id required")
+	}
+	if m.Runtime.Entrypoint == "" && m.ManifestPath != "" {
+		return nil, fmt.Errorf("plugin manifest entrypoint required")
+	}
 	if err := VerifyManifestSignature(m.ManifestPath, s.cfg.SigningPubkey); err != nil {
 		return nil, fmt.Errorf("plugin %s manifest signature: %w", m.PluginID, err)
 	}
@@ -62,18 +71,6 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 		"AI_SESSION_MANAGER_PLUGIN_SOCKET=" + socketPath,
 		"GATEWAY_PLUGIN_CONTRACT=" + m.GatewayCompatibility.APIContract,
 		"AI_SESSION_MANAGER_MANIFEST=" + manifestPath,
-	}
-	if len(s.cfg.ContextSecret) > 0 {
-		env = append(env, "AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET="+string(s.cfg.ContextSecret))
-	}
-	// 显式透传插件所需的数据库 DSN。newExecCommand.Start 会以 append(os.Environ(),
-	// env...) 作为子进程环境，所以 supervisor 进程继承的 DATABASE_URL 也会兜底到达；
-	// 这里显式注入是为了：1) 让配置来源可观测（manifest/env 而非隐式继承）；
-	// 2) 在测试中可通过 SupervisorConfig 控制而非依赖全局 os.Getenv 污染。
-	// 见 cmd/session-manager/main.go 的 dbFromEnv() —— 插件侧用同一个 DSN 打开
-	// session_projection + session_state 表做本地读与 shadow 对账。
-	if v := os.Getenv("AI_SESSION_MANAGER_DATABASE_URL"); v != "" {
-		env = append(env, "AI_SESSION_MANAGER_DATABASE_URL="+v)
 	}
 	cmd := s.commandFactory(socketPath, m.Runtime.Entrypoint, env)
 	if err := cmd.Start(ctx); err != nil {
@@ -99,6 +96,11 @@ func (s *Supervisor) Stop(pluginID string) error {
 	s.mu.Lock()
 	cmd, ok := s.procs[pluginID]
 	delete(s.procs, pluginID)
+	if st := s.states[pluginID]; st != nil {
+		st.Status = "stopped"
+		st.SocketPath = ""
+		st.Pid = 0
+	}
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("plugin %s not running", pluginID)
@@ -140,9 +142,13 @@ func (s *Supervisor) Restart(pluginID string) error {
 
 // Upgrade stops the currently running plugin (if any) and starts the new
 // manifest. If the new Start fails, the supervisor restores the previous
-// manifest in its index so the caller and health-loop see the canonical
-// version. The old process is already stopped by this point; callers that
-// need the old version running again must call Restart after a failed Upgrade.
+// manifest in its index AND best-effort re-runs the previous version, so the
+// plugin returns to a ready state without caller intervention. Caller-level
+// recovery (e.g. upgrade admin API) should still treat the error as a failed
+// upgrade and surface it; the rollback is a safety net so that callers like
+// the lifecycle admin API don't leave a plugin half-stopped.
+//
+// If there was no previous version, the new failure simply clears state.
 // Returns nil on success.
 func (s *Supervisor) Upgrade(ctx context.Context, newManifest *Manifest) error {
 	s.mu.Lock()
@@ -160,9 +166,8 @@ func (s *Supervisor) Upgrade(ctx context.Context, newManifest *Manifest) error {
 
 	// 2. start new
 	if _, err := s.Start(ctx, newManifest); err != nil {
-		// rollback: restore old manifest in index so health-loop/caller see
-		// the canonical version. We do NOT auto-restart old here — if old
-		// must keep running, caller calls Restart after failed Upgrade.
+		// rollback: restore old manifest, then auto-restart old so plugin is
+		// ready (spec §3.4: upgrade failure must restore ready state).
 		s.mu.Lock()
 		if oldManifest != nil {
 			s.manifests[newManifest.PluginID] = oldManifest
@@ -171,8 +176,35 @@ func (s *Supervisor) Upgrade(ctx context.Context, newManifest *Manifest) error {
 			delete(s.states, newManifest.PluginID)
 		}
 		s.mu.Unlock()
+		if oldManifest != nil {
+			if _, restartErr := s.Start(ctx, oldManifest); restartErr != nil {
+				// even rollback Start failed — old process cannot be revived.
+				// Best we can do is report both errors; caller may need to
+				// deactivate / retry.
+				return fmt.Errorf("upgrade plugin %s: %w (rollback start failed: %v)", newManifest.PluginID, err, restartErr)
+			}
+		}
 		return fmt.Errorf("upgrade plugin %s: %w", newManifest.PluginID, err)
 	}
+	return nil
+}
+
+// Uninstall stops the plugin process if running and removes all per-plugin
+// state from the supervisor in-memory index (procs/states/manifests). It does
+// NOT touch on-disk bundles; the caller (lifecycle admin API or installer)
+// is responsible for deleting files and catalog rows after a successful
+// Uninstall.
+//
+// pluginID must match the supervisor's plugin_id regex (validated upstream);
+// Uninstall never resolves paths so the directory traversal check in the
+// lifecycle layer stays the single source of truth.
+func (s *Supervisor) Uninstall(pluginID string) error {
+	// Stop first to release the unix socket and the process; ignore
+	// "not running" so a Stop-then-Uninstall from the admin API is idempotent.
+	_ = s.Stop(pluginID)
+	s.mu.Lock()
+	delete(s.manifests, pluginID)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -204,7 +236,7 @@ func (e *execCommand) Start(ctx context.Context) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	c := exec.CommandContext(ctx, e.entrypoint)
-	c.Env = append(os.Environ(), e.env...)
+	c.Env = append([]string(nil), e.env...)
 	// 插件 stdout/stderr 经过 redacting writer 过滤掉 context secret 后再写入 gateway 日志流；
 	// 防止插件把 env 打到日志里造成 HMAC secret 泄露。P5 计划改为结构化捕获。
 	c.Stdout = NewRedactingWriter(e.secret, os.Stderr)

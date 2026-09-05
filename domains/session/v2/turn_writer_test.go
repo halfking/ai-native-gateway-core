@@ -204,7 +204,7 @@ func TestTurnWriter_GetTurn(t *testing.T) {
 	require.NoError(t, err)
 
 	// Retrieve the turn
-	retrievedRec, err := writer.GetTurn(ctx, "req_get_test")
+	retrievedRec, err := writer.GetTurn(ctx, originalRec.TenantID, "req_get_test")
 	require.NoError(t, err)
 	require.NotNil(t, retrievedRec)
 
@@ -323,5 +323,70 @@ func TestTurnWriter_ListTurns_WithAttachments(t *testing.T) {
 		assert.Equal(t, expectedCount, turn.AttachmentCount, "Turn %d attachment count mismatch", i+1)
 		assert.Equal(t, int64(expectedCount*1024), turn.AttachmentTotalBytes, "Turn %d attachment bytes mismatch", i+1)
 		assert.Equal(t, []string{"image"}, turn.MultimodalTypes, "Turn %d multimodal types mismatch", i+1)
+	}
+}
+
+// ─── deriveTurnQuality (P1-2, 2026-09) ─────────────────────────────────────
+
+func TestDeriveTurnQuality(t *testing.T) {
+	cases := []struct {
+		name string
+		req  *ProcessedRequest
+		want string
+	}{
+		{"nil request defaults to verified", nil, "verified"},
+		{"explicit override wins", &ProcessedRequest{Quality: "inferred", Success: true, ResponseBody: []Message{{Role: "assistant"}}}, "inferred"},
+		{"failure rejected", &ProcessedRequest{Success: false, ErrorKind: "upstream_5xx"}, "rejected"},
+		{"error kind alone rejected", &ProcessedRequest{Success: true, ErrorKind: "rate_limited"}, "rejected"},
+		{"success without response partial", &ProcessedRequest{Success: true}, "partial"},
+		{"success with response verified", &ProcessedRequest{Success: true, ResponseBody: []Message{{Role: "assistant", Content: "ok"}}}, "verified"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := deriveTurnQuality(tc.req); got != tc.want {
+				t.Fatalf("deriveTurnQuality() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ─── extractRequestDelta empty-diff fallback (P2-5, 2026-09) ───────────────
+
+// A "full"-mode client that re-sends an identical history (bare retry, or a
+// turn with no new user message) yields an EMPTY set difference. The delta
+// MUST fall back to the full body: every reader accumulates request_delta
+// across turns (turn_reader.LoadChain, outbound_builder.BuildFromDeltas), so
+// persisting nil here would drop the turn's user input from reconstruction.
+func TestExtractRequestDelta_IdenticalHistoryFallsBackToFullBody(t *testing.T) {
+	history := []Message{
+		{Role: "user", Content: "first question"},
+		{Role: "assistant", Content: "first answer"},
+		{Role: "user", Content: "second question"},
+	}
+	req := &ProcessedRequest{
+		RequestBody:     history,
+		LastOutboundBody: history, // identical → zero new messages
+	}
+	delta := extractRequestDelta(req, "full")
+	if len(delta) != len(history) {
+		t.Fatalf("expected full-body fallback (%d messages), got %d", len(history), len(delta))
+	}
+	for i, msg := range delta {
+		if msg.Content != history[i].Content || msg.Role != history[i].Role {
+			t.Fatalf("delta[%d] = %+v, want %+v", i, msg, history[i])
+		}
+	}
+}
+
+// Sanity: when the history genuinely extends, only the new tail is persisted.
+func TestExtractRequestDelta_NewMessagesStillExtracted(t *testing.T) {
+	prev := []Message{{Role: "user", Content: "q1"}, {Role: "assistant", Content: "a1"}}
+	req := &ProcessedRequest{
+		RequestBody:      append(append([]Message{}, prev...), Message{Role: "user", Content: "q2"}),
+		LastOutboundBody: prev,
+	}
+	delta := extractRequestDelta(req, "full")
+	if len(delta) != 1 || delta[0].Content != "q2" {
+		t.Fatalf("expected only the new message, got %+v", delta)
 	}
 }

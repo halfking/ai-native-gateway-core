@@ -119,10 +119,12 @@ func (w *StatsMinuteRollup) rollup(ctx context.Context) {
 		return
 	}
 	now := time.Now().UTC()
-	if err := w.rollupVirtualIP(timeoutCtx, lastTS, now); err != nil {
-		slog.Warn("stats minute virtual_ip rollup failed", "error", err)
+	if err := w.rollupWindow(timeoutCtx, lastTS, now); err != nil {
+		slog.Warn("stats minute rollup failed", "error", err)
 		return
 	}
+	// Advancing the cursor only after all projections succeed makes a retry
+	// converge instead of permanently skipping rows.
 	_, _ = w.db.Exec(timeoutCtx, `
 		UPDATE request_stats_rollup_cursor
 		   SET last_ts = $1, updated_at = now()
@@ -162,12 +164,12 @@ func (w *StatsMinuteRollup) rollupVirtualIP(ctx context.Context, since, until ti
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 4
 		ON CONFLICT (bucket, tenant_id, dim_type, dim_key) DO UPDATE SET
-			requests = request_stats_dim_minute.requests + EXCLUDED.requests,
-			success_count = request_stats_dim_minute.success_count + EXCLUDED.success_count,
-			failure_count = request_stats_dim_minute.failure_count + EXCLUDED.failure_count,
-			total_tokens = request_stats_dim_minute.total_tokens + EXCLUDED.total_tokens,
-			credits_charged = request_stats_dim_minute.credits_charged + EXCLUDED.credits_charged,
-			cost_usd = request_stats_dim_minute.cost_usd + EXCLUDED.cost_usd
+			requests = EXCLUDED.requests,
+			success_count = EXCLUDED.success_count,
+			failure_count = EXCLUDED.failure_count,
+			total_tokens = EXCLUDED.total_tokens,
+			credits_charged = EXCLUDED.credits_charged,
+			cost_usd = EXCLUDED.cost_usd
 	`, since, until)
 	return err
 }
@@ -199,15 +201,15 @@ func (w *StatsMinuteRollup) rollupMain(ctx context.Context, since, until time.Ti
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 3, 4
 		ON CONFLICT (bucket, tenant_id, provider_id, canonical_id) DO UPDATE SET
-			requests = request_stats_minute.requests + EXCLUDED.requests,
-			success_count = request_stats_minute.success_count + EXCLUDED.success_count,
-			failure_count = request_stats_minute.failure_count + EXCLUDED.failure_count,
-			prompt_tokens = request_stats_minute.prompt_tokens + EXCLUDED.prompt_tokens,
-			completion_tokens = request_stats_minute.completion_tokens + EXCLUDED.completion_tokens,
-			total_tokens = request_stats_minute.total_tokens + EXCLUDED.total_tokens,
-			credits_charged = request_stats_minute.credits_charged + EXCLUDED.credits_charged,
-			cost_usd = request_stats_minute.cost_usd + EXCLUDED.cost_usd,
-			latency_ms_sum = request_stats_minute.latency_ms_sum + EXCLUDED.latency_ms_sum
+			requests = EXCLUDED.requests,
+			success_count = EXCLUDED.success_count,
+			failure_count = EXCLUDED.failure_count,
+			prompt_tokens = EXCLUDED.prompt_tokens,
+			completion_tokens = EXCLUDED.completion_tokens,
+			total_tokens = EXCLUDED.total_tokens,
+			credits_charged = EXCLUDED.credits_charged,
+			cost_usd = EXCLUDED.cost_usd,
+			latency_ms_sum = EXCLUDED.latency_ms_sum
 	`, since, until)
 	return err
 }
@@ -218,6 +220,12 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 		dimKey  string
 	}{
 		{"client_profile", `COALESCE(NULLIF(r.client_profile, ''), '__unknown__')`},
+		// 2026-09-03: aggregate by agent_name (the canonical client-type
+		// identifier written by telemetry.ExtractAgentName and persisted on
+		// request_logs_hot.agent_name). The dashboard 'clients' pie reads
+		// from this dim; client_profile is retained as a legacy dim for
+		// operators comparing old vs new tagging.
+		{"agent_name", `COALESCE(NULLIF(r.agent_name, ''), '__unknown__')`},
 		{"virtual_ip", `COALESCE(NULLIF(r.virtual_ip, ''), '__unknown__')`},
 		{"identity_hash", `COALESCE(NULLIF(r.identity_hash, ''), '__unknown__')`},
 		{"model", `COALESCE(NULLIF(r.outbound_model, ''), NULLIF(r.client_model, ''), '__unknown__')`},
@@ -249,12 +257,12 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 			  AND ($3 <> 'error_kind' OR r.request_status = 'failure')
 			GROUP BY 1, 2, 4
 			ON CONFLICT (bucket, tenant_id, dim_type, dim_key) DO UPDATE SET
-				requests = request_stats_dim_minute.requests + EXCLUDED.requests,
-				success_count = request_stats_dim_minute.success_count + EXCLUDED.success_count,
-				failure_count = request_stats_dim_minute.failure_count + EXCLUDED.failure_count,
-				total_tokens = request_stats_dim_minute.total_tokens + EXCLUDED.total_tokens,
-				credits_charged = request_stats_dim_minute.credits_charged + EXCLUDED.credits_charged,
-				cost_usd = request_stats_dim_minute.cost_usd + EXCLUDED.cost_usd
+				requests = EXCLUDED.requests,
+				success_count = EXCLUDED.success_count,
+				failure_count = EXCLUDED.failure_count,
+				total_tokens = EXCLUDED.total_tokens,
+				credits_charged = EXCLUDED.credits_charged,
+				cost_usd = EXCLUDED.cost_usd
 		`, since, until, dq.dimType)
 		if err != nil {
 			return err
@@ -277,7 +285,7 @@ func (w *StatsMinuteRollup) rollupDims(ctx context.Context, since, until time.Ti
 		  AND r.ts > $1 AND r.ts <= $2
 		GROUP BY 1, 2, 3, 4, 5, 6
 		ON CONFLICT (bucket, tenant_id, error_kind, model_name, provider_id, client_profile) DO UPDATE SET
-			requests = request_stats_error_drill_minute.requests + EXCLUDED.requests
+			requests = EXCLUDED.requests
 	`, since, until)
 	return err
 }

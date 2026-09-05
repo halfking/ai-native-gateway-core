@@ -93,11 +93,12 @@ func TestSelectStateBackend_AuthoritativeMode(t *testing.T) {
 	}
 }
 
-// TestSelectStateBackend_NotReady 测试 URSM v2 authoritative 但 not ready
+// TestSelectStateBackend_NotReady confirms authoritative mode is fail-closed
+// even for callers that use the backend selector directly.
 func TestSelectStateBackend_NotReady(t *testing.T) {
 	ursmMgr := &mockURSMv2Manager{
 		mode:  ursmv2api.ModeAuthoritative,
-		ready: false, // not ready → 降级到 StateManager
+		ready: false,
 	}
 	stateMgr := &mockStateProvider{enabled: true}
 
@@ -106,12 +107,15 @@ func TestSelectStateBackend_NotReady(t *testing.T) {
 
 	backend := selectStateBackend(ursmMgr, stateMgr, ctx)
 
-	if backend.Name() != "legacy_state_manager" {
-		t.Errorf("expected legacy_state_manager backend when not ready, got %s", backend.Name())
+	if backend.Name() != "ursm_v2_not_ready" {
+		t.Errorf("expected ursm_v2_not_ready backend when not ready, got %s", backend.Name())
 	}
 
-	if backend.IsAuthoritative() {
-		t.Error("legacy backend should not be authoritative")
+	if !backend.IsAuthoritative() {
+		t.Error("rejecting backend must remain authoritative")
+	}
+	if got := backend.FilterAvailable(ctx, []provider.Candidate{{CredentialID: 1}}); len(got) != 0 {
+		t.Fatalf("not-ready authoritative backend returned %d candidates", len(got))
 	}
 }
 

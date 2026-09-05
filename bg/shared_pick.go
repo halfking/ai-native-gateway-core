@@ -70,14 +70,16 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 		return PickProbeResult{}, nil
 	}
 
-	// Priority 1: most-used client_model in request_logs (7d)
+	// Priority 1: most-used client_model in request_logs (7d).
+	// request_logs uses the boolean success column (NOT status_code);
+	// request_status stores the upstream HTTP code as text when present.
 	var topModel string
 	err = db.QueryRow(ctx, `
 		SELECT client_model
 		FROM request_logs
 		WHERE credential_id = $1
 		  AND ts > now() - interval '7 days'
-		  AND status_code = 200
+		  AND success = TRUE
 		  AND client_model IS NOT NULL
 		GROUP BY client_model
 		ORDER BY count(*) DESC
@@ -119,14 +121,13 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	if qerr != nil {
 		return PickProbeResult{}, qerr
 	}
+	defer rows.Close()
 	if rows.Next() {
 		var pick string
 		if scanErr := rows.Scan(&pick); scanErr == nil && pick != "" {
-			rows.Close()
 			return PickProbeResult{Model: pick, Source: "auto:domestic_featured"}, nil
 		}
 	}
-	rows.Close()
 
 	// Priority 3: safety-net random pick across all available bindings.
 	// Only reached when no featured model is bound to this credential.

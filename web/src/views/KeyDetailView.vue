@@ -2,6 +2,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
+import { fmtDateTimeShort, fmtDateCompact } from '../i18n/useFormat'
 import { useRoute, useRouter } from 'vue-router'
 import { getKeyDetail, updateKeyLimits, type ApiKey, type UpdateKeyLimitsRequest } from '../api'
 import {
@@ -375,16 +376,6 @@ const trendLineColor = computed(() =>
 )
 
 // ── Helpers ────────────────────────────────────────────────────────────────
-function fmtDate(s: string | null | undefined) {
-  if (!s) return '—'
-  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
-}
-
-function fmtDateShort(s: string | null | undefined) {
-  if (!s) return '—'
-  return new Date(s).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
-}
-
 // Format a trend period label based on the selected trend period.
 // The backend emits "YYYY-MM-DD" for day, "IYYY-IW" for week, "YYYY-MM"
 // for month.  new Date() does not parse "2026-25" (returns Invalid Date),
@@ -449,7 +440,7 @@ function fmtQueryWindow(): string {
   if (u?.window_start && u?.window_end) {
     const end = new Date(u.window_end)
     end.setUTCDate(end.getUTCDate() - 1)
-    return `${fmtDateShort(u.window_start)} ~ ${fmtDateShort(end.toISOString())}`
+    return `${fmtDateCompact(u.window_start)} ~ ${fmtDateCompact(end.toISOString())}`
   }
   if (useCustomRange.value && customStart.value && customEnd.value) {
     return `${customStart.value} ~ ${customEnd.value}`
@@ -597,7 +588,7 @@ watch(keyId, async () => {
           </div>
           <div class="key-info-item">
             <span class="key-info-label">{{ t('keys.common.lastUsed') }}</span>
-            <span class="key-info-value">{{ fmtDate(keyInfo.last_used_at) }}</span>
+            <span class="key-info-value">{{ fmtDateTimeShort(keyInfo.last_used_at) }}</span>
           </div>
         </div>
 
@@ -695,7 +686,7 @@ watch(keyId, async () => {
           <div class="time-range-info">
             <span>{{ t('keys.detail.queryWindow') }}{{ fmtQueryWindow() }}</span>
             <span v-if="keyUsage.first_request_at || keyUsage.last_request_at" class="time-range-actual">
-              {{ t('keys.detail.actualRange', { start: fmtDate(keyUsage.first_request_at), end: fmtDate(keyUsage.last_request_at) }) }}
+              {{ t('keys.detail.actualRange', { start: fmtDateTimeShort(keyUsage.first_request_at), end: fmtDateTimeShort(keyUsage.last_request_at) }) }}
             </span>
           </div>
 
@@ -875,8 +866,8 @@ watch(keyId, async () => {
                   <td>{{ fmtNum(m.total_tokens) }}</td>
                   <td class="cost-cell">{{ fmtCost(m.cost_usd) }}</td>
                   <td>{{ (m.success_rate * 100).toFixed(1) }}%</td>
-                  <td style="font-size:11px">{{ fmtDateShort(m.first_used_at) }}</td>
-                  <td style="font-size:11px">{{ fmtDateShort(m.last_used_at) }}</td>
+                  <td style="font-size:11px">{{ fmtDateCompact(m.first_used_at) }}</td>
+                  <td style="font-size:11px">{{ fmtDateCompact(m.last_used_at) }}</td>
                 </tr>
               </tbody>
             </table>
@@ -1201,7 +1192,7 @@ watch(keyId, async () => {
   font-size: 11px;
   line-height: 1.35;
   white-space: nowrap;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 4px 12px var(--overlay-light);
   z-index: 2;
 }
 

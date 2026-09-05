@@ -388,7 +388,7 @@ onMounted(load)
   border-radius: 3px 3px 0 0;
 }
 .trend-bar.credits { background: var(--accent); }
-.trend-bar.requests { background: #22c55e; }
+.trend-bar.requests { background: var(--success); }
 .trend-date {
   font-size: 10px;
   color: var(--muted);
@@ -446,8 +446,8 @@ onMounted(load)
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 13px;
 }
-.amount-neg { color: #f87171; }
-.amount-pos { color: #4ade80; }
+.amount-neg { color: var(--danger); }
+.amount-pos { color: var(--success); }
 .ref-cell {
   max-width: 180px;
   overflow: hidden;
@@ -464,9 +464,9 @@ onMounted(load)
   border-radius: 8px;
   font-size: 11px;
 }
-.badge-red { background: rgba(239,68,68,.15); color: #f87171; }
-.badge-green { background: rgba(34,197,94,.15); color: #4ade80; }
-.badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }
+.badge-red { background: var(--danger-bg); color: var(--danger); }
+.badge-green { background: var(--success-bg); color: var(--success); }
+.badge-blue { background: var(--info-bg); color: var(--accent); }
 .empty {
   text-align: center;
   padding: 40px;
@@ -475,8 +475,8 @@ onMounted(load)
 .alert-danger {
   padding: 8px 12px;
   border-radius: 4px;
-  background: rgba(239,68,68,.1);
-  color: #f87171;
+  background: var(--danger-bg);
+  color: var(--danger);
   margin-bottom: 12px;
 }
 .tenant-badge {
@@ -490,8 +490,8 @@ onMounted(load)
   color: var(--text-secondary);
 }
 .tenant-badge--admin {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 @media (max-width: 768px) {
   .trend-grid {

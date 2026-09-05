@@ -216,8 +216,7 @@
                   >{{ t('dataLifecycle.storageOverview.buttons.reindex') }}</button>
                 </div>
                 <div v-if="busy[tRow.table]" class="row-status">
-                  <span class="spinner"></span>
-                  <span class="status-text">{{ busy[tRow.table] }}</span>
+                  <AppSpinner inline :label="busy[tRow.table]" />
                 </div>
                 <div v-else-if="lastResult[tRow.table]" class="row-result" :class="lastResult[tRow.table]!.success ? 'ok' : 'err'">
                   <span v-if="lastResult[tRow.table]!.success">
@@ -311,6 +310,7 @@ import { ref, computed, onMounted, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
+import AppSpinner from '../../components/AppSpinner.vue'
 import {
   dataLifecycleStorage,
   dataLifecycleTableSizes,
@@ -913,7 +913,7 @@ function fmtNum(n: number) {
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay-strong);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -927,7 +927,7 @@ function fmtNum(n: number) {
   max-width: 540px;
   width: 100%;
   border: 1px solid var(--border);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 10px 40px var(--overlay-light);
 }
 .modal.modal-wide {
   max-width: 680px;

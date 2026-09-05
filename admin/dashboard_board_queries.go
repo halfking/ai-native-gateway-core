@@ -56,9 +56,12 @@ func (h *Handler) queryBoardSummary(ctx context.Context, tenantID string, tr boa
 	if err != nil || totalReq == 0 {
 		return nil, false
 	}
-	if h.shouldUseBoardLogsFallback(ctx, tenantID, tr) {
-		return nil, false
-	}
+	// 2026-08-31: when minute data has rows, use it as the authoritative
+	// source. The previous version forced the fallback for days>1 even
+	// when minute data was present (correctly covering recent days),
+	// which made every days>1 board request run a 1s fallbackBoardSummary
+	// aggregation on top of an already-fast minute pass. Keep the
+	// fallback for the empty case only.
 
 	var activeKeys, activeModels, providers int
 	_ = h.queryOverviewCounts(ctx, tenantID, tr, &activeKeys, &activeModels, &providers)
@@ -165,7 +168,15 @@ func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boar
 		}
 		return nil, err
 	}
-	if h.shouldUseBoardLogsFallback(ctx, tenantID, tr) {
+	// 2026-08-31: only fall back to the slow log-based query when minute
+	// stats have NO data for the range. Previously the code also fired
+	// the fallback when minute data was present-but-incomplete, which
+	// silently made every days>1 board request run 7 sequential pie
+	// queries (~9.8s) over request_logs_with_current_month and exhaust
+	// the handler's 10s timeout. The minute path is the authoritative
+	// source for the operational dashboard; the log path is only a
+	// safety net for environments where the minute rollup is missing.
+	if piesEmpty(pies) && h.shouldUseBoardLogsFallback(ctx, tenantID, tr) {
 		fb, fbErr := h.fallbackBoardPies(ctx, tenantID, tr)
 		if fbErr == nil {
 			return fb, nil
@@ -174,9 +185,26 @@ func (h *Handler) resolveBoardPies(ctx context.Context, tenantID string, tr boar
 	return pies, nil
 }
 
+func piesEmpty(pies map[string]any) bool {
+	if len(pies) == 0 {
+		return true
+	}
+	for _, v := range pies {
+		items, ok := v.([]boardPieItem)
+		if ok && len(items) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (h *Handler) queryBoardPies(ctx context.Context, tenantID string, tr boardTimeRange) (map[string]any, error) {
+	// 2026-09-03 (audit closure): the "clients" pie now aggregates by
+	// agent_name (the canonical client-type identifier persisted on
+	// request_logs_hot.agent_name) instead of client_profile (the legacy
+	// device-fingerprint column).
 	types := map[string]string{
-		"clients":         "client_profile",
+		"clients":         "agent_name",
 		"virtual_ips":     "virtual_ip",
 		"identity_hashes": "identity_hash",
 		"models":          "model",
@@ -243,6 +271,16 @@ func (h *Handler) resolveBoardTrends(ctx context.Context, tenantID string, tr bo
 		return nil, err
 	}
 	if trendPointsCoverRange(tr, points) {
+		return points, nil
+	}
+	// 2026-08-31: skip the log fallback when the minute path already has
+	// ANY points. The fallback runs GROUP BY date_trunc on 175K rows of
+	// request_logs_with_current_month, which takes ~1.4s on days=7 — when
+	// added to other fallback work (summary, pies) it exhausts the 10s
+	// handler timeout. Returning the partial minute data is the lesser
+	// evil: the user sees a recent slice of trends instead of a 10s
+	// timeout that returns trends=null and pies via fallback.
+	if len(points) > 0 {
 		return points, nil
 	}
 	fallback, fbErr := h.fallbackBoardTrends(ctx, tenantID, tr, providerID)

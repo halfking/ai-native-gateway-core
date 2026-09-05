@@ -63,16 +63,22 @@ func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *Intercep
 			if len(result.ModifiedBody) > 0 {
 				finalResult.ModifiedBody = result.ModifiedBody
 				currentReq = &InterceptRequest{
-					SessionID:     currentReq.SessionID,
-					RequestID:     currentReq.RequestID,
-					TenantID:      currentReq.TenantID,
-					ClientModel:   currentReq.ClientModel,
-					ResponseBody:  result.ModifiedBody,
-					TokensUsed:    currentReq.TokensUsed,
-					ContextWindow: currentReq.ContextWindow,
-					MessageCount:  currentReq.MessageCount,
-					FinishReason:  currentReq.FinishReason,
-					IsStreaming:   currentReq.IsStreaming,
+					SessionID:            currentReq.SessionID,
+					RequestID:            currentReq.RequestID,
+					TenantID:             currentReq.TenantID,
+					ClientModel:          currentReq.ClientModel,
+					ResponseBody:         result.ModifiedBody,
+					TokensUsed:           currentReq.TokensUsed,
+					ContextWindow:        currentReq.ContextWindow,
+					MessageCount:         currentReq.MessageCount,
+					FinishReason:         currentReq.FinishReason,
+					IsStreaming:          currentReq.IsStreaming,
+					FollowUpAction:       currentReq.FollowUpAction,
+					ClientSignalAllowed:  currentReq.ClientSignalAllowed,
+					HandoffSignalAllowed: currentReq.HandoffSignalAllowed,
+					SubAgentsTotal:       currentReq.SubAgentsTotal,
+					SubAgentsCompleted:   currentReq.SubAgentsCompleted,
+					SubAgentsPending:     currentReq.SubAgentsPending,
 				}
 			}
 			if len(result.InjectFollowUp) > 0 {
@@ -88,6 +94,11 @@ func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *Intercep
 				for k, v := range result.Metadata {
 					finalResult.Metadata[k] = v
 				}
+			}
+			if result.ClientSignalKind != "" {
+				finalResult.ClientSignalKind = result.ClientSignalKind
+				finalResult.ClientSignalPayload = append([]byte(nil), result.ClientSignalPayload...)
+				finalResult.ClientSignalAttempts = result.ClientSignalAttempts
 			}
 		}
 
@@ -185,6 +196,11 @@ func (c *InterceptorChain) InterceptStreamEnd(ctx context.Context, meta *StreamM
 				for k, v := range result.Metadata {
 					finalResult.Metadata[k] = v
 				}
+			}
+			if result.ClientSignalKind != "" {
+				finalResult.ClientSignalKind = result.ClientSignalKind
+				finalResult.ClientSignalPayload = append([]byte(nil), result.ClientSignalPayload...)
+				finalResult.ClientSignalAttempts = result.ClientSignalAttempts
 			}
 		}
 	}

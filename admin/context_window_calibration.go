@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -69,7 +68,7 @@ func (h *ContextWindowCalibrationHandler) handleContextWindowCalibration(w http.
 		Source        string `json:"source"` // manual, discovery, probe
 		Reason        string `json:"reason"` // audit reason
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON"})
 		return
 	}

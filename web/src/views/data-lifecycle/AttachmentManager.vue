@@ -142,7 +142,7 @@
           </thead>
           <tbody>
             <tr v-for="it in items" :key="it.request_id">
-              <td>{{ formatDate(it.ts) }}</td>
+              <td>{{ fmtDateTime24h(it.ts) }}</td>
               <td>{{ it.tenant_id }}</td>
               <td><code class="code">{{ it.client_model || '—' }}</code></td>
               <td>
@@ -180,6 +180,7 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import { localeRef } from '../../i18n'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   attachmentList,
   attachmentStats,
@@ -190,6 +191,10 @@ import {
   type AttachmentStatsResponse,
   type AttachmentPolicyResponse,
 } from '../../api'
+import { confirmDialog } from '../../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const items = ref<AttachmentListItem[]>([])
 const stats = ref<AttachmentStatsResponse | null>(null)
@@ -237,7 +242,7 @@ async function onPreview() {
 
 async function onExecute() {
   if (!lastResult.value) return
-  if (!confirm(`确认执行？\n将置 NULL ${formatNumber(lastResult.value.affected_records)} 个 elements\n累计 ${humanBytes(lastResult.value.total_bytes)}\n（不会删除文件系统实体文件）`)) return
+  if (!(await confirmDialog(t('dataLifecycle.confirmAttachmentNullify', { n: formatNumber(lastResult.value.affected_records), size: humanBytes(lastResult.value.total_bytes) })))) return
   loading.value = true
   try {
     const r = await attachmentCleanupExecute({ older_than_days: cleanup.older_than_days })
@@ -272,10 +277,6 @@ function humanBytes(n: number): string {
   return `${v.toFixed(1)} ${units[i]}`
 }
 function formatNumber(n: number): string { return n.toLocaleString(localeRef.value) }
-function formatDate(s: string): string {
-  if (!s) return '—'
-  return s.slice(0, 19).replace('T', ' ')
-}
 
 onMounted(load)
 </script>
@@ -394,16 +395,16 @@ onMounted(load)
 
 .btn { padding: 6px 14px; border-radius: 6px; border: 1px solid transparent; font-size: 13px; cursor: pointer; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary { background: var(--accent); color: var(--on-primary); }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
-.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger { background: var(--danger); color: var(--on-primary); }
 .btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, var(--text)); }
 .btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
 .btn-ghost:hover:not(:disabled) { background: var(--bg-hover); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .modal-mask {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+  position: fixed; inset: 0; background: var(--overlay-strong);
   display: flex; align-items: center; justify-content: center; z-index: 9999;
 }
 .modal {

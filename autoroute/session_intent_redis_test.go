@@ -19,13 +19,13 @@ func TestIntentDoubleWrite(t *testing.T) {
 	c := NewSessionIntentCache(time.Minute)
 	c.SetRedisStore(store)
 
-	c.Put("sess1", CachedIntent{TaskType: TaskChat, ChosenModel: "m", CredentialID: 3})
+	c.Put("sess1", CachedIntent{TaskType: TaskChat, WorkType: "chat_general", ChosenModel: "m", CredentialID: 3})
 	got, ok := c.Get("sess1")
 	if !ok || got.CredentialID != 3 || got.ChosenModel != "m" {
 		t.Fatalf("in-memory miss: %+v ok=%v", got, ok)
 	}
 	redisIn, ok := store.Get(context.Background(), "sess1")
-	if !ok || redisIn.CredentialID != 3 || redisIn.ChosenModel != "m" {
+	if !ok || redisIn.CredentialID != 3 || redisIn.ChosenModel != "m" || redisIn.WorkType != "chat_general" {
 		t.Fatalf("Redis double-write missing: %+v ok=%v", redisIn, ok)
 	}
 }
@@ -58,6 +58,29 @@ func TestIntentRedisFallbackOnMemoryMiss(t *testing.T) {
 	// 回填后内存应有
 	if c.Len() != 1 {
 		t.Errorf("memory backfill failed: Len=%d", c.Len())
+	}
+}
+
+func TestIntentIncrementHitFallsBackToRedis(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := ursmcache.NewIntentStore(rdb, 100, time.Minute)
+	ctx := context.Background()
+	if err := store.Set(ctx, "sess-hit", ursmcache.Intent{
+		TaskType: "code", WorkType: "code_gen", ChosenModel: "m", HitCount: 4,
+	}, time.Minute); err != nil {
+		t.Fatalf("seed Redis intent: %v", err)
+	}
+
+	c := NewSessionIntentCache(time.Minute)
+	c.SetRedisStore(store)
+	got, ok := c.IncrementHit("sess-hit")
+	if !ok || got.HitCount != 5 || got.WorkType != "code_gen" {
+		t.Fatalf("Redis fallback increment: %+v ok=%v", got, ok)
+	}
+	redisIntent, ok := store.Get(ctx, "sess-hit")
+	if !ok || redisIntent.HitCount != 5 {
+		t.Fatalf("Redis hit count not refreshed: %+v ok=%v", redisIntent, ok)
 	}
 }
 

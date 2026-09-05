@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +23,23 @@ var globalFunnelCache = &funnelCache{
 	ttl:   2 * time.Minute,
 }
 
-func funnelCacheKey(model, window string) string {
-	return model + "|" + window
+func funnelCacheKey(scope, model, window string) string {
+	return scope + "|" + model + "|" + window
+}
+
+func cloneFunnelPayload(payload map[string]interface{}) map[string]interface{} {
+	if payload == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	var clone map[string]interface{}
+	if err := json.Unmarshal(encoded, &clone); err != nil {
+		return nil
+	}
+	return clone
 }
 
 func (c *funnelCache) get(key string) (map[string]interface{}, bool) {
@@ -33,21 +49,26 @@ func (c *funnelCache) get(key string) (map[string]interface{}, bool) {
 	if !ok || time.Now().After(entry.expiresAt) {
 		return nil, false
 	}
-	return entry.payload, true
+	clone := cloneFunnelPayload(entry.payload)
+	return clone, clone != nil
 }
 
 func (c *funnelCache) set(key string, payload map[string]interface{}) {
+	clone := cloneFunnelPayload(payload)
+	if clone == nil {
+		return
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.items[key] = funnelCacheEntry{payload: payload, expiresAt: time.Now().Add(c.ttl)}
+	c.items[key] = funnelCacheEntry{payload: clone, expiresAt: time.Now().Add(c.ttl)}
 }
 
 func (c *funnelCache) invalidateModel(model string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	prefix := model + "|"
 	for k := range c.items {
-		if strings.HasPrefix(k, prefix) {
+		parts := strings.SplitN(k, "|", 3)
+		if len(parts) == 3 && parts[1] == model {
 			delete(c.items, k)
 		}
 	}

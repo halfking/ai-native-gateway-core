@@ -15,9 +15,22 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
 
-func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
+// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+// StreamResponsesSSE is the deprecated text-only Responses implementation.
+// Production /v1/responses traffic uses the IR bridges in responses_bridge.go;
+// this path remains only as a compatibility and rollback reference until a
+// traffic observation window proves it is unused.
+func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
+	// Hoist gate above the panic-recovery defer so the recover closure can see
+	// it: a panic after the client already saw semantic output must not be
+	// classified as transparently resumable (would duplicate client-visible
+	// content). Mirrors responses_bridge.go (commit 485f3ca2e). gate stays nil
+	// until wrapAttemptWriter assigns it; attemptHasClientSemanticOutput(nil,
+	// 0) returns false so the not-yet-wired case degrades to resumable, the
+	// legacy behaviour.
+	var gate *AttemptCommitGate
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("responses stream panic recovered", "panic", r, "stack", string(debug.Stack()), "request_id", requestID)
@@ -27,13 +40,17 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
+			outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 		}
 	}()
+	// P1-4 fix (2026-08-28): Initialize gate BEFORE any potentially-panicking code
+	// (such as currentStreamRuntimeConfig) to ensure panic recovery sees a non-nil
+	// gate when semantic output determination is needed.
+	w, gate = wrapAttemptWriter(ctx, w, ProtocolOpenAIResponses)
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
-	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -47,7 +64,15 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if !safeFlush(flusher) {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		// Client connection is dead before any frame — including headers —
+		// reaches the wire. A transparent retry would re-attempt the same
+		// header flush on the same dead connection, wasting an upstream call.
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
+	}
 
 	respID := "resp_"
 	msgID := "msg_"
@@ -59,6 +84,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		msgID += requestID
 	}
 	createdAt := int(time.Now().Unix())
+	chunkCount := 0
 
 	initialResp := map[string]any{
 		"type": "response.created",
@@ -102,12 +128,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	writeSSE(w, "response.content_part.added", contentPart)
 	flusher.Flush()
 
-	var ctx context.Context
-	if resp.Request != nil {
-		ctx = resp.Request.Context()
-	} else {
-		ctx = context.Background()
-	}
+	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	// BUG-1 fix: hold the body closer so readNextStreamLine can close it on
 	// chunk timeout, unblocking the ReadString goroutine immediately.
@@ -119,6 +140,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	finalFinishReason := ""
 	promptTokens := 0
 	completionTokens := 0
+	upstreamDoneReceived := false
 
 	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
 	if err != nil {
@@ -130,12 +152,13 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
 			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
 		)
-		if gate.MayWriteTerminal() {
+		if attemptHasClientSemanticOutput(gate, 0) {
 			writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "first_byte_timeout")
 		}
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		outcome.Kind = errorsx.KindStreamTimeout
+		outcome.Resumable = !attemptHasClientSemanticOutput(gate, 0)
 		return outcome
 	}
 
@@ -146,6 +169,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		}
 		data := line[6:]
 		if data == "[DONE]" {
+			upstreamDoneReceived = true
 			return
 		}
 
@@ -192,6 +216,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 
 		textDelta, _ := delta["content"].(string)
 		if textDelta != "" {
+			chunkCount++
 			fullText += textDelta
 			deltaEvent := map[string]any{
 				"type":          "response.output_text.delta",
@@ -227,7 +252,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				if capture != nil {
 					capture.MarkInterruptedWithReason("client_disconnected")
 				}
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "client_disconnected")
 				}
 				outcome.Interrupted = true
@@ -235,30 +260,50 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				outcome.Kind = errorsx.KindCanceled
 				return outcome
 			case streamReadEOF:
+				if !upstreamDoneReceived {
+					if capture != nil {
+						capture.MarkInterruptedWithReason("eof_without_done")
+					}
+					outcome = StreamOutcome{
+						Interrupted: true,
+						Reason:      "eof_without_done",
+						Kind:        errorsx.KindUpstreamDown,
+						Resumable:   !attemptHasClientSemanticOutput(gate, chunkCount),
+						ChunkCount:  chunkCount,
+					}
+					return outcome
+				}
 				stop = true
 			case streamReadTimeout:
 				slog.Warn("responses stream read timeout", "error", readResult.err)
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
-				if gate.MayWriteTerminal() {
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
 					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "stream_timeout")
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+				outcome.ChunkCount = chunkCount
 				return outcome
 			default:
-				slog.Warn("responses stream read error", "error", readResult.err)
+				failure := streamReadFailureOutcome(readResult.err, chunkCount)
+				slog.Warn("responses stream read error", "error", readResult.err, "kind", failure.Kind, "reason", failure.Reason)
 				if capture != nil {
-					capture.MarkInterruptedWithReason("stream_error")
+					capture.MarkInterruptedWithReason(failure.Reason)
 				}
-				if gate.MayWriteTerminal() {
-					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "upstream_error")
+				if attemptHasClientSemanticOutput(gate, chunkCount) {
+					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, failure.Reason)
 				}
-				outcome.Interrupted = true
-				outcome.Reason = "read_error"
-				outcome.Kind = errorsx.KindUpstreamDown
+				outcome = failure
+				// Gate-aware resumability. streamReadFailureOutcome hardcodes
+				// Resumable=true; a read failure after the client already saw
+				// semantic output must NOT be transparently retried — the next
+				// supplier node would duplicate committed bytes. Mirrors the
+				// eof_without_done and stream_timeout branches above.
+				outcome.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
 				return outcome
 			}
 		}

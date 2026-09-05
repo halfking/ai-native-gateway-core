@@ -13,6 +13,7 @@ export default {
     opsplatform: '运维中心',
     guide: '接入指南',
     chat: '对话',
+    plugins: '插件',
   },
 
   item: {
@@ -37,6 +38,8 @@ export default {
     auditLogs: '审计日志',
     requestLogs: '请求日志',
     dispatchWaterfall: '队列瀑布图',
+    requestRegistry: '请求注册表',
+    connectionRegistry: '连接注册台',
     turns: '轮次列表',
     sessions: '会话列表',
     pluginSessions: '插件会话列表',
@@ -46,6 +49,7 @@ export default {
     wechatBot: '微信机器人',
     sessionContext: '会话上下文',
     settings: '系统设置',
+    proxy: '代理管理',
     dataLifecycle: '数据生命周期',
     formatAnomalies: '格式异常监控',
     modelIntegrity: '模型完整性监控',
@@ -60,6 +64,9 @@ export default {
     chat: '对话',
     updateActivate: '更新与激活',
     licenseActivate: '许可激活',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案
+    activateAction: '激活',
+    activateActionTip: '点击前往激活本机',
     siteInfo: '站点信息',
     licenseStatus: '许可状态',
     licenseAgreement: '用户许可协议',
@@ -73,6 +80,7 @@ export default {
     opsOverview: '运维总览',
     opsDownloads: '发布与下载',
     opsProductEntry: '产品入口',
+    supportDonate: '赞助与捐赠',
   },
 
   // 2026-07-21: 顶部水平导航 + 未登录公开页导航

@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/time/rate"
 
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -26,7 +27,7 @@ import (
 // but for the session_summary LLM task.
 //
 // Naming convention — the loopback request's X-Gw-Session-Id is prefixed
-// with "gs:" + original session_id, yielding e.g. "gs_gw_abc123". Operators
+// with "gs_" + original session_id, yielding e.g. "gs_gw_abc123". Operators
 // can SQL:
 //   WHERE gw_session_id LIKE 'gs\_%' ESCAPE '\'
 // to find every auto-summary row, and JOIN child.parent_request_id back
@@ -55,7 +56,7 @@ import (
 // auto_title_generator.go's autoParentRequestIDHeader / autoSourceActorHeader.
 const (
 	autoSummaryOriginActor      = "auto-summary-generator"
-	autoSummarySessionIDPrefix  = "gs" // appended before ":" to form "gs:gw_xxx" → "gs_gw_xxx"
+	autoSummarySessionIDPrefix  = "gs" // appended before "_" to form "gs_gw_xxx" (sanitizer contract: gw_/gt_/gs_)
 	autoSummaryChunkApproxTurns = 5    // each chunk target turn count
 	autoSummaryHTTPTimeout      = 30 * time.Second
 )
@@ -207,7 +208,7 @@ func NewAutoSummaryGenerator(handler *Handler, store *summarystore.Store) *AutoS
 	return &AutoSummaryGenerator{
 		handler:     handler,
 		store:       store,
-		enabled:     true, // TODO: env var
+		enabled:     readAutoGeneratorEnabled("LLM_GATEWAY_AUTO_SUMMARY_ENABLED", true),
 		rateByTnt:   make(map[string]*rate.Limiter),
 		ratePerMin:  ratePerMin,
 		workerSlots: make(chan struct{}, workerSlots),
@@ -235,7 +236,7 @@ func (g *AutoSummaryGenerator) SetWorkerSlots(n int) {
 // forget; the heavy lifting happens in a background goroutine.
 //
 // sessionID is the user's gw_session_id (e.g. "gw_abc123"); the loopback
-// LLM call will tag its own session as "gs:gw_abc123" → "gs_gw_abc123" via
+// LLM call will tag its own session as "gs_gw_abc123" via
 // X-Gw-Session-Id.
 //
 // parentRequestID is the user request's request_id; forwarded to the
@@ -340,9 +341,26 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 			"session_id", sessionID,
 			"tenant_id", tenantID)
 	}
+	canonicalTitle := normalizeSessionTitle(title)
+	if !isValidSessionTitle(canonicalTitle) {
+		metrics.AutoSummaryTrigger.WithLabelValues("title_invalid").Inc()
+		logger.Warn("auto_summary: summary persisted but generated title was invalid", "title", title)
+		return
+	}
+	taskID, err := g.handler.resolveSessionTitleTaskID(ctx, sessionID, tenantID)
+	if err != nil {
+		metrics.AutoSummaryTrigger.WithLabelValues("title_scope_error").Inc()
+		logger.Error("auto_summary: summary persisted but title task lookup failed", "error", err)
+		return
+	}
+	if err := g.handler.upsertSessionTitle(ctx, taskID, sessionID, canonicalTitle, "auto-summary:"+model, 0); err != nil {
+		metrics.AutoSummaryTrigger.WithLabelValues("title_sync_error").Inc()
+		logger.Error("auto_summary: summary persisted but canonical title sync failed", "error", err)
+		return
+	}
 	metrics.AutoSummaryTrigger.WithLabelValues("ok").Inc()
 	logger.Info("auto_summary saved",
-		"title", title,
+		"title", canonicalTitle,
 		"summary_len", len(summary),
 		"model", model)
 }
@@ -350,10 +368,10 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 // shouldTriggerSummary returns whether to run the summary LLM this turn.
 // It implements the incremental-rolling gate with a minimum session length
 // requirement:
-//   1. Session must have at least minimumTurns() successful turns (default 5)
-//   2. If never summarized before, allow (satisfies rule 1)
-//   3. If summarized before, only re-run when ≥ rollingTurnGate() new turns
-//      have been recorded since the previous summary (default 3)
+//  1. Session must have at least minimumTurns() successful turns (default 5)
+//  2. If never summarized before, allow (satisfies rule 1)
+//  3. If summarized before, only re-run when ≥ rollingTurnGate() new turns
+//     have been recorded since the previous summary (default 3)
 //
 // 2026-08-06 audit fix: added rule 1 to enforce the requirement that summaries
 // should only be generated for sessions with at least 5 turns. This prevents
@@ -362,8 +380,8 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 // Returns:
 //   - shouldRun bool
 //   - reason    string  — "session_too_short_{N}_turns" | "never_summarized"
-//                         | "rolling_gate_open" | "only_{N}_new_turns_since_last_summary"
-//                         | "db_error"
+//     | "rolling_gate_open" | "only_{N}_new_turns_since_last_summary"
+//     | "db_error"
 //   - lastSum   time.Time
 //   - err       error
 func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, sessionID string) (bool, string, time.Time, error) {
@@ -679,7 +697,10 @@ func (g *AutoSummaryGenerator) doCallSummaryOnce(
 	// "gs_gw_<original>" instead of a fresh gw_<uuid>. Operators can SQL
 	//   WHERE gw_session_id LIKE 'gs\_%' ESCAPE '\'
 	// to find every auto-summary row.
-	req.Header.Set("X-Gw-Session-Id", autoSummarySessionIDPrefix+":"+sessionID)
+	// 2026-08-15 fix: prefix MUST be "gs_" (underscore) — sanitizeGwSessionHeader
+	// only accepts gw_/gt_/gs_; the previous "gs:" (colon) form was silently
+	// dropped (same class of bug as the auto-title gt: fix).
+	req.Header.Set("X-Gw-Session-Id", autoSummarySessionIDPrefix+"_"+sessionID)
 	if parentRequestID != "" {
 		req.Header.Set(autoParentRequestIDHeader, parentRequestID)
 	}
@@ -879,7 +900,7 @@ func (g *AutoSummaryGenerator) getGatewayEndpoint() string {
 	if endpoint := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ENDPOINT")); endpoint != "" {
 		return endpoint
 	}
-	return "http://127.0.0.1:8781"
+	return loopback.GatewayBase()
 }
 
 // errStringSummary is the nil-safe err → string helper used in slog fields.

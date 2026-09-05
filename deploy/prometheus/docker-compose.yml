@@ -35,11 +35,35 @@ services:
     ports:
       - "9093:9093"
     volumes:
-      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
       - alertmanager-data:/alertmanager
-    command:
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
-      - '--storage.path=/alertmanager'
+    # 2026-08-18 credential 17 follow-up: alertmanager 0.26 does not
+    # resolve ${CREDENTIAL_TEAM_WEBHOOK_URL} inline (issue prom/alertmanager
+    # #2719). We substitute the placeholder token in alertmanager.yml via sed
+    # at container start so the secret never lives in the committed file. The
+    # placeholder is `https://placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##`
+    # — the `https://placeholder.invalid/` prefix (RFC-2606 reserved TLD) is
+    # kept so an unconfigured deploy fails loudly instead of hitting a real
+    # endpoint. The sed MUST match the whole prefix+token: `s|https://
+    # placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##|URL|g`. A suffix-only
+    # substitution (`s|##CREDENTIAL_TEAM_WEBHOOK_URL##|URL|g`) would yield the
+    # malformed `https://placeholder.invalid/URL` and silently drop every alert.
+    # If CREDENTIAL_TEAM_WEBHOOK_URL is unset the placeholder is left untouched
+    # and webhook delivery fails loudly — preferable to a silently dropped alert.
+    environment:
+      - CREDENTIAL_TEAM_WEBHOOK_URL=${CREDENTIAL_TEAM_WEBHOOK_URL:-}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        cp /etc/alertmanager/alertmanager.yml /tmp/alertmanager.rendered.yml
+        if [ -n "$$CREDENTIAL_TEAM_WEBHOOK_URL" ]; then
+          sed -i "s|https://placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##|$$CREDENTIAL_TEAM_WEBHOOK_URL|g" /tmp/alertmanager.rendered.yml
+        fi
+        exec /bin/alertmanager \
+          --config.file=/tmp/alertmanager.rendered.yml \
+          --storage.path=/alertmanager
     networks:
       - monitoring
 
@@ -52,6 +76,12 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./dashboards:/etc/grafana/provisioning/telemetry-dashboards:ro
+      # The proxy dashboards live in deploy/grafana; mount them read-only into the existing file provider path.
+      - ../grafana/proxy-overview-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-overview-dashboard.json:ro
+      - ../grafana/proxy-node-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-node-dashboard.json:ro
+      - ../grafana/proxy-performance-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-performance-dashboard.json:ro
+      - ../grafana/proxy-subscription-dashboard.json:/etc/grafana/provisioning/dashboards/proxy-subscription-dashboard.json:ro
     environment:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}

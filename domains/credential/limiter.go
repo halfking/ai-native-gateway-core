@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,6 +52,11 @@ const (
 	// before the executor times out, allowing failover to the next
 	// candidate within one sync-retry round.
 	acquireWaitTimeout = 5 * time.Second
+
+	defaultIdentityMaxEntries = 10000
+	maxIdentityEntries        = 100000
+	defaultIdentityIdleTTL    = 30 * time.Minute
+	maxIdentityIdleTTL        = 24 * time.Hour
 )
 
 // ---------------------------------------------------------------------------
@@ -96,6 +103,9 @@ func (s *Semaphore) TryAcquire() bool {
 // Acquire blocks until a token is available or the context is cancelled.
 func (s *Semaphore) Acquire(ctx context.Context) error {
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if s.TryAcquire() {
 			return nil
 		}
@@ -190,16 +200,27 @@ type Limiter struct {
 	identityLimit   int
 
 	global *Semaphore
-	pools  map[int]*Semaphore    // providerID → semaphore
-	creds  map[string]*Semaphore // "providerID/credentialID" → semaphore
-	idents map[string]*Semaphore // "providerID/credentialID/identityHash" → semaphore
-	keys   map[int]*Semaphore    // keyID → per-key semaphore (limit from DB)
+	pools  map[int]*Semaphore        // providerID → semaphore
+	creds  map[string]*Semaphore     // "providerID/credentialID" → semaphore
+	idents map[string]*identityEntry // "providerID/credentialID/identityHash" → entry
+	keys   map[int]*Semaphore        // keyID → per-key semaphore (limit from DB)
+
+	identityMaxEntries int
+	identityIdleTTL    time.Duration
+	identityEvictions  atomic.Uint64
 
 	// RPM uses Redis across instances when configured and memory otherwise.
 	rpmLimiter RPMLimiter
 
-	mu     sync.RWMutex
-	stopCh chan struct{}
+	mu       sync.RWMutex
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	workers  sync.WaitGroup
+}
+
+type identityEntry struct {
+	sem      *Semaphore
+	lastUsed time.Time
 }
 
 // rpmWindow is a 60-second sliding window of acquire timestamps. Stale
@@ -219,20 +240,45 @@ func NewLimiter() *Limiter {
 // NewWithLimits creates a new limiter with custom limits.
 func NewWithLimits(global, pool, credential, identity int) *Limiter {
 	l := &Limiter{
-		globalLimit:     global,
-		poolLimit:       pool,
-		credentialLimit: credential,
-		identityLimit:   identity,
-		global:          NewSemaphore("global", global),
-		pools:           make(map[int]*Semaphore),
-		creds:           make(map[string]*Semaphore),
-		idents:          make(map[string]*Semaphore),
-		keys:            make(map[int]*Semaphore),
-		rpmLimiter:      NewRPMLimiterFromEnv(),
-		stopCh:          make(chan struct{}),
+		globalLimit:        global,
+		poolLimit:          pool,
+		credentialLimit:    credential,
+		identityLimit:      identity,
+		global:             NewSemaphore("global", global),
+		pools:              make(map[int]*Semaphore),
+		creds:              make(map[string]*Semaphore),
+		idents:             make(map[string]*identityEntry),
+		keys:               make(map[int]*Semaphore),
+		identityMaxEntries: envPositiveInt("LLM_GATEWAY_IDENTITY_LIMITER_MAX_ENTRIES", defaultIdentityMaxEntries),
+		identityIdleTTL:    envPositiveDuration("LLM_GATEWAY_IDENTITY_LIMITER_IDLE_TTL", defaultIdentityIdleTTL),
+		rpmLimiter:         NewRPMLimiterFromEnv(),
+		stopCh:             make(chan struct{}),
 	}
+	l.workers.Add(1)
 	go l.recoveryLoop()
 	return l
+}
+
+func envPositiveInt(name string, fallback int) int {
+	value, err := strconv.Atoi(os.Getenv(name))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	if value > maxIdentityEntries {
+		return maxIdentityEntries
+	}
+	return value
+}
+
+func envPositiveDuration(name string, fallback time.Duration) time.Duration {
+	value, err := time.ParseDuration(os.Getenv(name))
+	if err != nil || value <= 0 {
+		return fallback
+	}
+	if value > maxIdentityIdleTTL {
+		return maxIdentityIdleTTL
+	}
+	return value
 }
 
 // CheckCredentialRPM records a credential acquire and returns true if
@@ -253,7 +299,10 @@ func (l *Limiter) CheckCredentialRPM(providerID, credentialID int, limit *int) b
 
 // Stop stops the recovery loop.
 func (l *Limiter) Stop() {
-	close(l.stopCh)
+	l.stopOnce.Do(func() {
+		close(l.stopCh)
+		l.workers.Wait()
+	})
 }
 
 // Global returns the global semaphore.
@@ -298,24 +347,83 @@ func (l *Limiter) Credential(providerID, credentialID int) *Semaphore {
 	return s
 }
 
+// SetCredentialCapacity hot-updates the in-flight semaphore capacity for one
+// credential. New Acquire calls see the new capacity immediately; in-flight
+// requests (already holding a token) are unaffected because capacity is
+// stored as an atomic.Int64 and only checked on TryAcquire.
+//
+// 2026-08-26 hot-reload hook: when admin patches concurrency_limit, this
+// ensures the in-process semaphore tracks the DB value within the same
+// request — without a service restart.
+func (l *Limiter) SetCredentialCapacity(providerID, credentialID, capacity int) {
+	if capacity < 1 {
+		capacity = 1
+	}
+	s := l.Credential(providerID, credentialID)
+	old := s.Capacity()
+	s.capacity.Store(int64(capacity))
+	slog.Info("limiter hot-reload: capacity updated",
+		"name", s.name,
+		"old_capacity", old,
+		"new_capacity", capacity,
+	)
+}
+
 // Identity returns the identity-level semaphore.
 func (l *Limiter) Identity(providerID, credentialID int, identityHash string) *Semaphore {
 	key := fmt.Sprintf("%d/%d/%s", providerID, credentialID, identityHash)
-	l.mu.RLock()
-	s, ok := l.idents[key]
-	l.mu.RUnlock()
-	if ok {
-		return s
-	}
-
+	now := time.Now()
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if s, ok = l.idents[key]; ok {
-		return s
+	if entry, ok := l.idents[key]; ok {
+		entry.lastUsed = now
+		return entry.sem
 	}
-	s = NewSemaphore(fmt.Sprintf("ident_%s", key), l.identityLimit)
-	l.idents[key] = s
-	return s
+	if !l.makeIdentityRoomLocked(now) {
+		return NewSemaphore(fmt.Sprintf("ident_ephemeral_%s", key), l.identityLimit)
+	}
+	entry := &identityEntry{
+		sem:      NewSemaphore(fmt.Sprintf("ident_%s", key), l.identityLimit),
+		lastUsed: now,
+	}
+	l.idents[key] = entry
+	return entry.sem
+}
+
+func (l *Limiter) makeIdentityRoomLocked(now time.Time) bool {
+	l.cleanupIdentitiesLocked(now)
+	for len(l.idents) >= l.identityMaxEntries {
+		var oldestKey string
+		var oldest time.Time
+		for key, entry := range l.idents {
+			if entry.sem.Used() != 0 {
+				continue
+			}
+			if oldestKey == "" || entry.lastUsed.Before(oldest) {
+				oldestKey, oldest = key, entry.lastUsed
+			}
+		}
+		if oldestKey == "" {
+			return false
+		}
+		delete(l.idents, oldestKey)
+		l.identityEvictions.Add(1)
+	}
+	return true
+}
+
+func (l *Limiter) cleanupIdentitiesLocked(now time.Time) {
+	cutoff := now.Add(-l.identityIdleTTL)
+	for key, entry := range l.idents {
+		if len(l.idents) <= l.identityMaxEntries && entry.lastUsed.After(cutoff) {
+			continue
+		}
+		if entry.sem.Used() != 0 {
+			continue
+		}
+		delete(l.idents, key)
+		l.identityEvictions.Add(1)
+	}
 }
 
 // Key returns the per-key semaphore for the given API key ID.
@@ -447,16 +555,19 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 		}
 	}
 
+	var releaseOnce sync.Once
 	return func() {
-		if keyAcquired && keySem != nil {
-			keySem.Release()
-		}
-		if identAcquired {
-			ident.Release()
-		}
-		cred.Release()
-		pool.Release()
-		l.global.Release()
+		releaseOnce.Do(func() {
+			if keyAcquired && keySem != nil {
+				keySem.Release()
+			}
+			if identAcquired {
+				ident.Release()
+			}
+			cred.Release()
+			pool.Release()
+			l.global.Release()
+		})
 	}, nil
 }
 
@@ -506,15 +617,18 @@ func (l *Limiter) AcquireAllNoCredLayer(ctx context.Context, providerID, credent
 		}
 	}
 
+	var releaseOnce sync.Once
 	return func() {
-		if keyAcquired && keySem != nil {
-			keySem.Release()
-		}
-		if identAcquired {
-			ident.Release()
-		}
-		pool.Release()
-		l.global.Release()
+		releaseOnce.Do(func() {
+			if keyAcquired && keySem != nil {
+				keySem.Release()
+			}
+			if identAcquired {
+				ident.Release()
+			}
+			pool.Release()
+			l.global.Release()
+		})
 	}, nil
 }
 
@@ -579,7 +693,8 @@ func (l *Limiter) Stats() map[string]any {
 	// Per-identity (providerID/credentialID/identityHash) semaphores. Same
 	// rationale as keys: surface used so soft-cap saturation is observable.
 	identEntries := make([]map[string]any, 0, len(l.idents))
-	for k, s := range l.idents {
+	for k, entry := range l.idents {
+		s := entry.sem
 		identEntries = append(identEntries, map[string]any{
 			"identity":  k,
 			"capacity":  s.Capacity(),
@@ -594,15 +709,17 @@ func (l *Limiter) Stats() map[string]any {
 			"used":      l.global.Used(),
 			"available": l.global.Available(),
 		},
-		"pools":          poolEntries,
-		"credentials":    credEntries,
-		"keys":           keyEntries,
-		"identities":     identEntries,
-		"identity_count": len(l.idents),
+		"pools":              poolEntries,
+		"credentials":        credEntries,
+		"keys":               keyEntries,
+		"identities":         identEntries,
+		"identity_count":     len(l.idents),
+		"identity_evictions": l.identityEvictions.Load(),
 	}
 }
 
 func (l *Limiter) recoveryLoop() {
+	defer l.workers.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("limiter recoveryLoop panic", "recover", r)
@@ -622,8 +739,9 @@ func (l *Limiter) recoveryLoop() {
 }
 
 func (l *Limiter) recoveryStep() {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.cleanupIdentitiesLocked(time.Now())
 
 	for _, s := range l.pools {
 		s.RecoverStep(l.poolLimit)
@@ -725,9 +843,10 @@ func (l *Limiter) calculatePressure(
 		identity, hasIdentity := l.idents[identityKey]
 		l.mu.RUnlock()
 		if hasIdentity {
-			cap := identity.Capacity()
+			sem := identity.sem
+			cap := sem.Capacity()
 			if cap > 0 {
-				used := identity.Used()
+				used := sem.Used()
 				pressure := float64(used) / float64(cap)
 				if pressure > maxPressure {
 					maxPressure = pressure

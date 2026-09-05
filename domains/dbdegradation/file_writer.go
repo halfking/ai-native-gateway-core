@@ -22,12 +22,12 @@ type FileWriter struct {
 	currentFile   *os.File
 	currentGzip   *gzip.Writer
 	currentDate   string
-	currentSeq    int          // 当日文件序号（用于轮转）
+	currentSeq    int // 当日文件序号（用于轮转）
 	encoder       *json.Encoder
 	stats         atomic.Value // Stats
 	retryMax      int
-	maxFileSize   int64        // 单文件最大大小（字节），0 表示无限制
-	maxDailyFiles int          // 单日最大文件数，0 表示无限制
+	maxFileSize   int64 // 单文件最大大小（字节），0 表示无限制
+	maxDailyFiles int   // 单日最大文件数，0 表示无限制
 }
 
 // NewFileWriter 创建文件写入器
@@ -36,7 +36,9 @@ func NewFileWriter(baseDir string) *FileWriter {
 		baseDir:       baseDir,
 		retryMax:      3,
 		maxFileSize:   100 * 1024 * 1024, // 100MB（压缩后）
-		maxDailyFiles: 10,                 // 单日最多 10 个文件
+		maxDailyFiles: 50,                // 2026-08-25: 10→50. 245 网关日 1GB+ WAL, 原 10 文件很快
+		//                                              触发 "daily file limit reached", 阻塞 session
+		//                                              snapshot 落盘 → trace 滞留 Redis → PG WAL 堆积.
 	}
 	fw.stats.Store(Stats{})
 	return fw

@@ -27,7 +27,7 @@ package anthropic
 import (
 	"bufio"
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -40,6 +40,9 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/config"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/sse"
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 )
 
 // =====================================================================
@@ -57,8 +60,68 @@ const (
 type StreamOutcome struct {
 	Interrupted bool
 	Reason      string
-	Resumable   bool // Whether the stream can be resumed with a different credential
-	ChunkCount  int  // Number of chunks sent before interruption
+	// Kind (audit-24h-20260828-r3 P1-B) is the errorsx.ErrorKind
+	// classification for the interruption reason. Empty when Interrupted
+	// is false or Reason is unclassified. Used by executor_anthropic.go
+	// to route empty-response interruptions to the fail-over path via
+	// streamInterruptedError{kind: KindEmptyResponse, resumable: true}.
+	Kind       errorsx.ErrorKind
+	Resumable  bool // Whether the stream can be resumed with a different credential
+	ChunkCount int  // Number of chunks sent before interruption
+}
+
+// IsAnthropicStreamEmpty returns true when the translator observed an
+// upstream Anthropic Messages stream that produced zero semantic assistant
+// output: no text / thinking / tool-call deltas reached the client, and no
+// usage tokens were reported. Mirrors isEmptyAnthropicMessagesResponse
+// (domains/streaming/executors/empty_response.go:61) at the stream layer so
+// the candidate-loop failover path (streamInterruptedError{kind:
+// KindEmptyResponse, resumable: true} → executor_anthropic.go:1206) fires
+// for every Anthropic-compatibility code path — not just the raw
+// passthrough audited in audit-24h-20260828-r3 P1-B.
+//
+// Usage:
+//   - emittedContent: set true the first time the translator's writeChunk
+//     closure serializes a delta with non-empty Content / ReasoningContent
+//     / ToolCalls, or when a ChunkTypeDone with finish_reason="stop" arrives.
+//   - inputTokens/outputTokens: local IR-Usage accumulators (also mirrored
+//     into audit.StreamCapture.promptTokens/completionTokens via
+//     ObserveChunk, but reading the local copies avoids taking the capture
+//     mutex in the hot path).
+//
+// The check is strict: no content AND (no input AND no output tokens). An
+// upstream that returns usage tokens but no content is treated as empty —
+// matching the non-stream semantics in isEmptyAnthropicMessagesResponse
+// (which checks content array length, not usage token presence).
+//
+// clientDisconnectPending is deliberately distinct from merely having a
+// pending capturer. A capturer is also installed for ordinary requests so a
+// later client disconnect can be replayed; it must not turn a clean upstream
+// empty response into a success. Only a stream that actually observed a
+// client write failure may preserve completed-replay semantics.
+//
+// Usage tokens do not make a response semantically non-empty. Providers can
+// report prompt/output accounting while returning no assistant content; the
+// candidate loop must receive KindEmptyResponse for that shape as well.
+func IsAnthropicStreamEmpty(emittedContent bool, inputTokens, outputTokens int, clientDisconnectPending bool) bool {
+	_ = inputTokens
+	_ = outputTokens
+	return !emittedContent && !clientDisconnectPending
+}
+
+// EmptyResponseStreamOutcome builds the standard StreamOutcome returned
+// when an Anthropic-compatibility stream is detected as empty. Mirrors
+// anthropic_passthrough_stream.go:171-177 so the three Anthropic SSE
+// translators (passthrough / Q3 / Phase E) all surface the same shape and
+// the executor's streamInterruptedError routing treats them identically.
+func EmptyResponseStreamOutcome(chunkCount int) StreamOutcome {
+	return StreamOutcome{
+		Interrupted: true,
+		Reason:      "anthropic_empty_response",
+		Kind:        errorsx.KindEmptyResponse,
+		Resumable:   true,
+		ChunkCount:  chunkCount,
+	}
 }
 
 // PendingFinalState is the state recorded by finalize() and
@@ -231,79 +294,18 @@ func (p *pendingCapturer) BytesCaptured() int {
 	return p.bytes
 }
 
-// readLineWithTimeout is the BUG-1 fix variant of
-// readLineWithTimeoutAndCloser: it does not have a closer to
-// unblock the read goroutine on timeout, so callers must already
-// have wired their own cleanup. The anthropic first-byte path
-// uses this (no closer because the body lifetime is managed by
-// the defer in StreamOpenAIToAnthropicSSE).
+// readLineWithTimeout is retained for compatibility with callers that do not
+// own a closable body. Such callers receive a timeout without waiting for a
+// potentially blocking reader; they should prefer readLineWithTimeoutAndCloser
+// whenever the upstream response body is available.
 func readLineWithTimeout(ctx context.Context, reader *bufio.Reader, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, nil).ReadLine(ctx, timeout)
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, nil)
 }
 
-// readLineWithTimeoutAndCloser is the BUG-1 fix variant of
-// readLineWithTimeout: it also closes the underlying body on
-// timeout to unblock the ReadString goroutine. Used by
-// readNextStreamLine for the chunk loop and by the first-byte
-// path in StreamChatWithPendingCapture.
+// readLineWithTimeoutAndCloser uses the shared bounded SSE reader so timeout
+// handling and physical-line limits remain identical across relay paths.
 func readLineWithTimeoutAndCloser(ctx context.Context, reader *bufio.Reader, closer io.ReadCloser, timeout time.Duration) (string, error) {
-	return newTimedLineReader(reader, closer).ReadLine(ctx, timeout)
-}
-
-type timedLineReader struct {
-	reader *bufio.Reader
-	// closer is the underlying io.ReadCloser (e.g. resp.Body). When non-nil,
-	// ReadLine closes it on timeout so the blocked ReadString goroutine returns
-	// immediately rather than leaking until the TCP connection is closed.
-	closer io.ReadCloser
-}
-
-func newTimedLineReader(reader *bufio.Reader, closer io.ReadCloser) *timedLineReader {
-	return &timedLineReader{reader: reader, closer: closer}
-}
-
-func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (string, error) {
-	type result struct {
-		line string
-		err  error
-	}
-	ch := make(chan result, 1)
-	readCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				ch <- result{"", fmt.Errorf("read panic: %v", r)}
-			}
-		}()
-		line, err := r.reader.ReadString('\n')
-		ch <- result{line, err}
-	}()
-
-	select {
-	case res := <-ch:
-		return res.line, res.err
-	case <-readCtx.Done():
-		// BUG-1 fix (2026-06-19): close the underlying body to force the
-		// blocked ReadString goroutine to return an error immediately.
-		// Without this, the goroutine would leak until resp.Body.Close()
-		// is called by the deferred cleanup in StreamChatWithPendingCapture,
-		// which can be minutes later on the session path (context.Background).
-		// After Close(), drain the channel so the goroutine completes before
-		// we return — zero goroutine leak guarantee.
-		if r.closer != nil {
-			_ = r.closer.Close()
-		}
-		// Drain: the goroutine returns shortly after Close() because
-		// ReadString on a closed body returns io.ErrClosedPipe or io.EOF.
-		// The buffered channel (size 1) ensures this never blocks forever.
-		<-ch
-		if readCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("stream read timeout")
-		}
-		return "", readCtx.Err()
-	}
+	return sse.NewLineReader(reader, currentStreamRuntimeConfig().sseMaxLineBytes).ReadLineWithContext(ctx, timeout, closer)
 }
 
 // safeFlush is a small wrapper around flusher.Flush that recovers
@@ -331,6 +333,168 @@ func safeWriteSSE(w io.Writer, line string) { //nolint:unused
 }
 
 // =====================================================================
+// 统一 legacy streaming 写入契约（audit/contract 2026-08-29）
+//
+// StreamWriter 是 legacy 路径 SSE 流式写入的统一契约实现。它包裹客户端
+// http.ResponseWriter，对每一次写入强制以下保证：
+//
+//   - Context：ctx 取消/超时后，任何 Write/Flush 都短路并返回 ctx.Err()，
+//     使调用方既有的 werr != nil 分支能立即中止循环；读取侧的阻塞由调用方
+//     关闭上游 body 解除（见 LegacyTransport.ConvertStream）。
+//   - Timeout：由 DeriveStreamContext 从运行时配置派生整体流超时。
+//   - Pending capture：不属于本契约，调用方原样透传 pendingCapturer。
+//   - Write-error：短写（n < len）与底层写入错误被记录并透出；Flush 在
+//     连接已关闭时可能 panic，这里 recover 后记录，绝不炸 worker。
+//
+// StreamWriter 同时实现 http.ResponseWriter 与 http.Flusher，可直接作为
+// w 传给 StreamAnthropicPassthrough / StreamAnthropicSSEToOpenAI，无需
+// 修改其签名（从而不影响 20+ 现有测试与 IR 路径的并行副本）。
+type StreamWriter struct {
+	ctx     context.Context
+	w       http.ResponseWriter
+	flusher http.Flusher
+
+	mu        sync.Mutex
+	lastErr   error
+	cancelled bool
+}
+
+// NewStreamWriter wraps w with the unified streaming write contract bound to
+// ctx. A nil ctx is treated as context.Background.
+func NewStreamWriter(ctx context.Context, w http.ResponseWriter) *StreamWriter {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sw := &StreamWriter{ctx: ctx, w: w}
+	sw.flusher, _ = w.(http.Flusher)
+	return sw
+}
+
+// Header implements http.ResponseWriter.
+func (sw *StreamWriter) Header() http.Header {
+	if sw == nil || sw.w == nil {
+		return http.Header{}
+	}
+	return sw.w.Header()
+}
+
+// WriteHeader implements http.ResponseWriter.
+func (sw *StreamWriter) WriteHeader(status int) {
+	if sw == nil || sw.w == nil {
+		return
+	}
+	sw.w.WriteHeader(status)
+}
+
+// Write implements http.ResponseWriter with the unified contract.
+func (sw *StreamWriter) Write(p []byte) (int, error) {
+	if sw == nil || sw.w == nil {
+		return len(p), nil
+	}
+	if err := sw.ctx.Err(); err != nil {
+		sw.record(err)
+		return 0, err
+	}
+	n, err := sw.w.Write(p)
+	if err != nil {
+		sw.record(err)
+		return n, err
+	}
+	if n < len(p) {
+		// Short write: the response writer accepted fewer bytes than
+		// requested. Treat as a terminal write failure so the caller
+		// aborts and finalizes the pending capture as interrupted rather
+		// than silently truncating the stream.
+		werr := fmt.Errorf("stream short write: wrote %d of %d bytes", n, len(p))
+		sw.record(werr)
+		return n, werr
+	}
+	return n, nil
+}
+
+// Flush implements http.Flusher, recovering flush-after-close panics.
+func (sw *StreamWriter) Flush() {
+	if sw == nil || sw.flusher == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			sw.record(fmt.Errorf("stream flush panic recovered: %v", r))
+		}
+	}()
+	sw.flusher.Flush()
+}
+
+// record stores the first observed write/flush error and flags cancellation
+// when the error is a context cancellation or timeout.
+func (sw *StreamWriter) record(err error) {
+	if err == nil {
+		return
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	if sw.lastErr == nil {
+		sw.lastErr = err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		sw.cancelled = true
+	}
+}
+
+// Err returns the first write/flush error observed by the contract, if any.
+func (sw *StreamWriter) Err() error {
+	if sw == nil {
+		return nil
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.lastErr
+}
+
+// Cancelled reports whether a context cancellation or timeout was observed.
+func (sw *StreamWriter) Cancelled() bool {
+	if sw == nil {
+		return false
+	}
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.cancelled || sw.ctx.Err() != nil
+}
+
+// legacyStreamWriterErr and legacyStreamWriterCancelled expose the concrete
+// writer's disconnect state without coupling the converter to StreamWriter.
+// Legacy callers may still pass a plain ResponseWriter, in which case the
+// absence of an error is the only available signal.
+func legacyStreamWriterErr(w http.ResponseWriter) error {
+	if sw, ok := w.(*StreamWriter); ok {
+		return sw.Err()
+	}
+	return nil
+}
+
+func legacyStreamWriterCancelled(w http.ResponseWriter) bool {
+	if sw, ok := w.(*StreamWriter); ok {
+		return sw.Cancelled()
+	}
+	return false
+}
+
+// DeriveStreamContext returns a context bounded by the effective stream
+// timeout from the runtime config. If ctx already carries a deadline (e.g. a
+// test injecting a short timeout, or an upstream deadline), it is returned
+// unchanged so callers keep control. The returned CancelFunc must be called
+// by the caller (typically via defer).
+func DeriveStreamContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, ok := ctx.Deadline(); ok {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, currentStreamRuntimeConfig().streamTimeout)
+}
+
+// =====================================================================
 // 来自 relay/stream_runtime.go 的运行时配置
 // =====================================================================
 
@@ -340,6 +504,7 @@ type streamRuntimeConfig struct {
 	streamChunkTimeout time.Duration
 	firstByteTimeout   time.Duration
 	keepaliveInterval  time.Duration
+	sseMaxLineBytes    int
 }
 
 var streamConfigStore atomic.Pointer[config.Store]
@@ -366,6 +531,7 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 				// 2026-07-23: 30→120s for long-thinking Claude models.
 				firstByteTimeout:  durationSecondsOrDefault(cfg.FirstByteTimeout, 120*time.Second),
 				keepaliveInterval: durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
+				sseMaxLineBytes:   positiveIntOrDefault(cfg.SSEMaxLineBytes, 16<<20),
 			}
 		}
 	}
@@ -376,7 +542,27 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 		// 2026-07-23: 30→120s default for long-thinking Claude models.
 		firstByteTimeout:  envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 120*time.Second),
 		keepaliveInterval: envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
+		sseMaxLineBytes:   envPositiveInt("LLM_GATEWAY_SSE_MAX_LINE_BYTES", 16<<20),
 	}
+}
+
+func positiveIntOrDefault(value, def int) int {
+	if value <= 0 {
+		return def
+	}
+	return value
+}
+
+func envPositiveInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }
 
 func durationSecondsOrDefault(seconds int, def time.Duration) time.Duration {
@@ -492,59 +678,6 @@ func classifyStreamReadError(ctx context.Context, err error) streamReadState {
 // 来自 relay/stream_error_body.go 的 JSON error body 识别
 // =====================================================================
 
-// jsonErrorBody is the inner error object inside the standard
-// `{"error": {...}}` envelope used by OpenAI / Anthropic / most
-// proxy-style upstreams. The fields are deliberately permissive:
-//   - Type:    the upstream's semantic classification
-//     (e.g. "service_unavailable", "insufficient_quota")
-//   - Code:    the upstream's machine-readable code when Type is
-//     absent (some upstreams use one or the other, never both)
-//   - Message: human-readable reason
-//   - Param:   optional structured field (kept so a future audit
-//     column can surface it without re-parsing the body)
-type jsonErrorBody struct {
-	Type    string `json:"type"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Param   string `json:"param"`
-}
-
-// jsonErrorEnvelope is a single struct that tolerates BOTH of
-// the production shapes we have observed (2026-06-20 audit):
-//
-//	{"error": {"type": "...", "message": "..."}}    — OpenAI / proxies
-//	{"error": {"code": "...", "message": "..."}}    — quota / billing
-//	{"type": "...", "message": "..."}               — Anthropic-style
-//
-// The pointer + plain fields mean a single Unmarshal populates
-// the right slot regardless of which shape arrived. The caller
-// then resolves which slot is non-empty.
-type jsonErrorEnvelope struct {
-	Error   *jsonErrorBody `json:"error,omitempty"`
-	Type    string         `json:"type,omitempty"`
-	Code    string         `json:"code,omitempty"`
-	Message string         `json:"message,omitempty"`
-}
-
-// resolveError returns the (kind, message) pair for an envelope
-// regardless of which shape it took. kind is preferred from
-// inside the "error" wrapper when present, then from the
-// top-level type / code fields. message is preferred from the
-// inner wrapper, then from the top-level message.
-func (e *jsonErrorEnvelope) resolveError() (kind string, message string) {
-	if e.Error != nil {
-		kind = firstNonEmpty(e.Error.Code, e.Error.Type)
-		message = e.Error.Message
-	}
-	if kind == "" {
-		kind = firstNonEmpty(e.Code, e.Type)
-	}
-	if message == "" {
-		message = e.Message
-	}
-	return kind, message
-}
-
 // isJSONErrorBody returns true when the given raw bytes look like
 // a non-SSE JSON error body returned by an upstream provider. The
 // caller is expected to pass either the entire body or just the
@@ -563,45 +696,7 @@ func (e *jsonErrorEnvelope) resolveError() (kind string, message string) {
 // is the human-readable reason that goes into slog + response_body
 // preview.
 func isJSONErrorBody(body []byte) (bool, string, string) {
-	if len(body) == 0 {
-		return false, "", ""
-	}
-	// Trim trailing whitespace and stray SSE terminator fragments
-	// so a body of `{"error":...}\n\n` still parses.
-	trimmed := strings.TrimRight(string(body), " \t\r\n")
-	if trimmed == "" {
-		return false, "", ""
-	}
-	// Defensive: a stream reader might pass an SSE-prefixed line
-	// to this helper by mistake. Strip the prefix and re-test
-	// the JSON shape so the helper stays robust to that call site
-	// bug. After stripping, we still require the body to start
-	// with '{' so legitimate SSE comments (":heartbeat") and
-	// "event:" lines don't false-positive.
-	if strings.HasPrefix(trimmed, "data:") {
-		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
-	}
-	if trimmed == "" || trimmed[0] != '{' {
-		return false, "", ""
-	}
-	var env jsonErrorEnvelope
-	if err := json.Unmarshal([]byte(trimmed), &env); err != nil {
-		return false, "", ""
-	}
-	kind, msg := env.resolveError()
-	if kind == "" && msg == "" {
-		return false, "", ""
-	}
-	return true, kind, msg
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+	return vendorstrip.IsJSONErrorBody(body)
 }
 
 // =====================================================================

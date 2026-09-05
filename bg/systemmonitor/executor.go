@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/internal/loopback"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
@@ -176,7 +177,7 @@ func (e *Executor) executeChatPing(ctx context.Context, task *Task, gateway bool
 	if gateway {
 		gwBase := os.Getenv("LLM_GATEWAY_GATEWAY_BASE_URL")
 		if gwBase == "" {
-			gwBase = "http://127.0.0.1:8781/v1"
+			gwBase = loopback.GatewayBase() + "/v1"
 		}
 		// 直接覆盖 base_url 字段（LoadTarget 不会校验该字段语义）。
 		target.BaseURL = gwBase

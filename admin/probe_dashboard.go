@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -186,6 +187,485 @@ func buildStateDistribution(breakdown []ModelStateBreakdown) map[string]int {
 
 // ── API Handlers ────────────────────────────────────────────────────────
 
+// 2026-08-18 (Agent C): unified probe queue snapshot from
+// credential_probe_queue + node_probe_state. The previous handler
+// returned only the legacy v_probe_queue_snapshot (sourced from
+// model_probe_state) and the 572-row historical backlog could not be
+// distinguished from new activity. The new helper aggregates the
+// durable queue and the in-flight node-probe state into a single
+// response so the dashboard can render the queue as it actually is.
+//
+// UnifiedProbeQueueStats holds the new-shape counts. The three numbers
+// (ready/running/finished) are the closest mapping to the legacy
+// priority/state grid and let the frontend render the same 4 status
+// badges without breaking change.
+type UnifiedProbeQueueStats struct {
+	// credential_probe_queue counts (integrity probe planner).
+	QueueReady    int `json:"queue_ready"`
+	QueueRunning  int `json:"queue_running"`
+	QueueFinished int `json:"queue_finished"` // last 2h rows
+	QueueClaims   int `json:"queue_claims"`   // in-flight rows owned by an active lease
+
+	// node_probe_state counts (error-triggered NodeProbeWorker).
+	NodePending     int `json:"node_pending"`
+	NodeRunning     int `json:"node_running"`
+	NodePaused      int `json:"node_paused"`
+	NodeDue         int `json:"node_due"`         // next_retry_at <= now
+	NodeUnclaimable int `json:"node_unclaimable"` // in_flight_until set but expired — no worker holds the lease
+
+	// Active leases that have not been renewed within the lease window.
+	// Detected by leased_at + heartbeat_window < now() with status='running'
+	// in credential_probe_queue. Mirrors Agent B's lease heartbeat
+	// detection so the dashboard surfaces the same risk metric.
+	StaleLeases int `json:"stale_leases"`
+
+	// Last completed record (audit coverage indicator).
+	LastRunAt *time.Time `json:"last_run_at,omitempty"`
+	// Legacy alias: the dashboard used to expose queue_size as an
+	// aggregation across priorities. Keep the field for backward
+	// compatibility but route it to the new source.
+	QueueSize int `json:"queue_size"`
+
+	// SnapshotAt is the wall-clock time the aggregation was taken at.
+	SnapshotAt time.Time `json:"snapshot_at"`
+}
+
+// UnifiedProbeSystemHealth is the new `system-health` payload that
+// joins credential_probe_queue, node_probe_state, node_probe_runs,
+// and URSM tenant coverage. The legacy view (model_probe_state) is
+// returned separately under `legacy_*` so a reader can see when the
+// two pictures disagree.
+type UnifiedProbeSystemHealth struct {
+	// New source: tenant-routable credential coverage.
+	// URSM tenant key coverage is the authoritative runtime signal:
+	// a credential can be DB-eligible and still be unroutable if
+	// its URSM tenant key is missing (see 2026-08-18 handoff §6.1).
+	TotalCredentials    int `json:"total_credentials"`
+	CredentialsWithURSM int `json:"credentials_with_ursm"`
+	CredentialsNoURSM   int `json:"credentials_no_ursm"`
+	URSMKeyCount        int `json:"ursm_key_count"`
+
+	// New source: credential_probe_queue aggregate.
+	QueuePending   int `json:"queue_pending"`
+	QueueInFlight  int `json:"queue_in_flight"`
+	QueueCompleted int `json:"queue_completed"` // last 2h
+	QueueFailed    int `json:"queue_failed"`    // last 2h
+	QueueExpired   int `json:"queue_expired"`   // last 2h
+	QueueTotal     int `json:"queue_total"`     // convenience total
+
+	// New source: node_probe_state aggregate.
+	NodeTotal   int `json:"node_total"`
+	NodeHealthy int `json:"node_healthy"`
+	NodeFailing int `json:"node_failing"`
+	NodePaused  int `json:"node_paused"`
+	NodeRunning int `json:"node_running"`
+	NodeDueNow  int `json:"node_due_now"`
+	NodeLeased  int `json:"node_leased"`
+
+	// New source: node_probe_runs aggregate.
+	RunsLast1h        int        `json:"runs_last_1h"`
+	RunsSuccess1h     int        `json:"runs_success_1h"`
+	RunsFailed1h      int        `json:"runs_failed_1h"`
+	RunsLastAt        *time.Time `json:"runs_last_at,omitempty"`
+	SuccessRateLast1h *float64   `json:"success_rate_last_1h,omitempty"`
+
+	// New source: recovery pseudo-success detection (handoff §6 P0).
+	// A credential is "pseudo-ok" if its latest node_probe_runs row
+	// shows direct_ok=true but the credentials row no longer has a
+	// URSM tenant key — i.e. the row was written by the deprecated
+	// recovery SQL that Agent A is removing. The dashboard surfaces
+	// the count so operators can see the impact.
+	PseudoSuccessCount int `json:"pseudo_success_count"`
+
+	// Legacy view (model_probe_state — superseded). Returned so the
+	// frontend can keep rendering the old badges while the migration
+	// to URSM/probe_queue finishes. Explicitly tagged so a careless
+	// reader doesn't mix the two.
+	Legacy TotalLegacySystemHealth `json:"legacy"`
+
+	SnapshotAt time.Time `json:"snapshot_at"`
+}
+
+// TotalLegacySystemHealth mirrors the existing v_probe_system_health
+// shape (only the integer fields that survive the legacy view definition).
+// It is intentionally a *separate* struct so the JSON marshaller can
+// emit `legacy: {...}` and so a Go-side reader cannot accidentally
+// read the new fields under the legacy type.
+type TotalLegacySystemHealth struct {
+	// Legacy field set is the same as the existing v_probe_system_health
+	// view columns (the legacy backend keeps producing them).
+	TotalNodes      int        `json:"total_nodes"`
+	HealthyNodes    int        `json:"healthy_nodes"`
+	FailingNodes    int        `json:"failing_nodes"`
+	SuspiciousNodes int        `json:"suspicious_nodes"`
+	ProbingNodes    int        `json:"probing_nodes"`
+	UrgentQueueSize int        `json:"urgent_queue_size"`
+	ReadyProbes     int        `json:"ready_probes"`
+	CurrentProbing  int        `json:"current_probing"`
+	LastProbeAt     *time.Time `json:"last_probe_at,omitempty"`
+	// LegacySource is the constant string "model_probe_state" so the
+	// frontend can label the section without a code review.
+	LegacySource string `json:"legacy_source"`
+	// LegacyModeSafe=false tells the frontend the legacy view is no
+	// longer authoritative. Toggle to true only after the legacy
+	// table is fully drained (planned for migration 536+).
+	LegacyModeSafe bool `json:"legacy_mode_safe"`
+}
+
+// 2026-08-18 (Agent C): queue lease heartbeat window. A lease whose
+// started_at + this interval has elapsed is treated as "stale" by
+// the dashboard and counted under stale_leases. The 5-minute window
+// matches Agent B's ProbeQueueLeaseDefault so the dashboard's metric
+// is consistent with the queue's own lease expiry.
+const unifiedProbeQueueLeaseWindow = 5 * time.Minute
+
+// queryUnifiedProbeQueueStats aggregates the new probe queue state
+// (credential_probe_queue + node_probe_state) in a single query. The
+// handler writes the result under the `"unified"` key so the legacy
+// `v_probe_queue_snapshot` view does not pollute the new dashboard.
+//
+// pgxQueryer-parameterized so the dashboard tests can drive it against
+// a pgxmock pool without an exported *pgxpool.Pool-typed constructor.
+func queryUnifiedProbeQueueStats(ctx context.Context, db pgxQueryer) (UnifiedProbeQueueStats, error) {
+	out := UnifiedProbeQueueStats{SnapshotAt: time.Now()}
+	row := db.QueryRow(ctx, `
+		WITH q AS (
+			SELECT
+				COUNT(*) FILTER (WHERE status = 'ready')    AS q_ready,
+				COUNT(*) FILTER (WHERE status = 'running')  AS q_running,
+			COUNT(*) FILTER (WHERE status = 'running'
+			                   AND lease_until IS NOT NULL
+			                   AND lease_until < now()) AS q_stale,
+				COUNT(*) FILTER (WHERE status IN ('success','failed','expired','cancelled')
+				                   AND COALESCE(finished_at, updated_at) > now() - interval '2 hours') AS q_finished,
+				COUNT(*) FILTER (WHERE status = 'success'
+				                   AND COALESCE(finished_at, updated_at) > now() - interval '2 hours') AS q_finished_ok,
+				COALESCE(MAX(COALESCE(finished_at, updated_at)), NOW()) AS q_last_run
+			FROM credential_probe_queue
+		),
+		n AS (
+			SELECT
+				COUNT(*) FILTER (WHERE NOT COALESCE(paused, FALSE)
+				                   AND COALESCE(in_flight_until, '1970-01-01'::timestamptz) <= now()
+				                   AND next_retry_at <= now()) AS n_due,
+				COUNT(*) FILTER (WHERE COALESCE(in_flight_until, '1970-01-01'::timestamptz) > now()) AS n_running,
+				COUNT(*) FILTER (WHERE COALESCE(paused, FALSE)) AS n_paused,
+				COUNT(*) FILTER (WHERE NOT COALESCE(paused, FALSE)
+				                   AND next_retry_at <= now() + interval '1 hour') AS n_pending,
+				COUNT(*) FILTER (WHERE in_flight_until IS NOT NULL AND in_flight_until < now() - interval '2 minutes') AS n_unclaimable
+			FROM node_probe_state
+		)
+		SELECT
+			COALESCE(q.q_ready, 0),
+			COALESCE(q.q_running, 0),
+			COALESCE(q.q_finished, 0),
+			COALESCE(q.q_stale, 0),
+			COALESCE(n.n_due, 0),
+			COALESCE(n.n_running, 0),
+			COALESCE(n.n_paused, 0),
+			COALESCE(n.n_pending, 0),
+			COALESCE(n.n_unclaimable, 0),
+			q.q_last_run
+		FROM q, n
+		`)
+
+	var lastRun time.Time
+	if err := row.Scan(
+		&out.QueueReady,
+		&out.QueueRunning,
+		&out.QueueFinished,
+		&out.StaleLeases,
+		&out.NodeDue,
+		&out.NodeRunning,
+		&out.NodePaused,
+		&out.NodePending,
+		&out.NodeUnclaimable,
+		&lastRun,
+	); err != nil {
+		return out, fmt.Errorf("unified probe queue stats: %w", err)
+	}
+	// QueueClaims is the conservative total of running rows that still
+	// hold a recent lease. Cheap to compute from already-loaded numbers.
+	out.QueueClaims = out.QueueRunning
+	out.QueueSize = out.QueueReady + out.QueueRunning
+	out.LastRunAt = &lastRun
+	return out, nil
+}
+
+// queryUnifiedProbeSystemHealth reads the new source tables and joins
+// them with URSM tenant coverage. The handler returns the resulting
+// struct under the `"unified"` key; the legacy view is loaded via
+// handleProbeSystemHealth and serialized separately under `legacy`.
+//
+// pgxQueryer-parameterized so admin tests can drive it against a
+// pgxmock pool. The function is intentionally pure (no Redis) —
+// URSM tenant coverage is read from PostgreSQL via credentials +
+// v_routable_credential_models so the response can be cached and
+// the dashboard contract stays deterministic.
+func queryUnifiedProbeSystemHealth(ctx context.Context, db pgxQueryer) (UnifiedProbeSystemHealth, error) {
+	out := UnifiedProbeSystemHealth{
+		SnapshotAt: time.Now(),
+	}
+	// Single round trip: queue + node + runs + URSM coverage + pseudo-success.
+	// Each CTE is independently understandable; the final SELECT joins
+	// them on a synthetic row (1) so we issue one query instead of five.
+	row := db.QueryRow(ctx, `
+		WITH q AS (
+			SELECT
+				COUNT(*) FILTER (WHERE status = 'ready')    AS q_ready,
+				COUNT(*) FILTER (WHERE status = 'running')  AS q_inflight,
+				COUNT(*) FILTER (WHERE status = 'success'
+				                   AND COALESCE(finished_at, updated_at) > now() - interval '2 hours') AS q_completed,
+				COUNT(*) FILTER (WHERE status = 'failed'
+				                   AND COALESCE(finished_at, updated_at) > now() - interval '2 hours') AS q_failed,
+				COUNT(*) FILTER (WHERE status = 'expired'
+				                   AND COALESCE(finished_at, updated_at) > now() - interval '2 hours') AS q_expired
+			FROM credential_probe_queue
+		),
+		n AS (
+			SELECT
+				COUNT(*) AS n_total,
+				COUNT(*) FILTER (WHERE COALESCE(last_direct_ok, FALSE) = TRUE
+				                   AND COALESCE(consecutive_failures, 0) = 0) AS n_healthy,
+				COUNT(*) FILTER (WHERE COALESCE(consecutive_failures, 0) >= 2
+				                   AND NOT COALESCE(paused, FALSE)) AS n_failing,
+				COUNT(*) FILTER (WHERE COALESCE(paused, FALSE)) AS n_paused,
+				COUNT(*) FILTER (WHERE COALESCE(in_flight_until, '1970-01-01'::timestamptz) > now()) AS n_running,
+				COUNT(*) FILTER (WHERE NOT COALESCE(paused, FALSE)
+				                   AND next_retry_at <= now()) AS n_due,
+				COUNT(*) FILTER (WHERE COALESCE(in_flight_until, '1970-01-01'::timestamptz) > now()) AS n_leased
+			FROM node_probe_state
+		),
+		r AS (
+			SELECT
+				COUNT(*) FILTER (WHERE started_at >= now() - interval '1 hour') AS r_total,
+				COUNT(*) FILTER (WHERE started_at >= now() - interval '1 hour'
+				                   AND COALESCE(success, FALSE) = TRUE) AS r_success,
+				COUNT(*) FILTER (WHERE started_at >= now() - interval '1 hour'
+				                   AND COALESCE(success, FALSE) = FALSE) AS r_failed,
+				MAX(started_at) AS r_last_at
+			FROM node_probe_runs
+		),
+		cr AS (
+			SELECT
+				COUNT(*) AS c_total,
+				COUNT(*) FILTER (WHERE EXISTS (
+					SELECT 1 FROM v_routable_credential_models v
+					WHERE v.credential_id = c.id AND v.is_routable = TRUE)) AS c_with_ursm
+			FROM credentials c
+			WHERE COALESCE(c.lifecycle_status, '') = 'active'
+		),
+		ps AS (
+			-- Pseudo-success (handoff §6 P0): a node_probe_runs row
+			-- claims direct_ok=true but the underlying credential has
+			-- no routable binding any more. This is the recovery
+			-- SQL's spurious-true footprint; Agent A is removing it.
+			SELECT COUNT(DISTINCT npr.credential_id) AS n_pseudo
+			FROM node_probe_runs npr
+			WHERE COALESCE(npr.direct_ok, FALSE) = TRUE
+			  AND npr.started_at >= now() - interval '7 days'
+			  AND NOT EXISTS (
+			    SELECT 1 FROM v_routable_credential_models v
+			    WHERE v.credential_id = npr.credential_id
+			      AND v.is_routable = TRUE)
+		)
+		SELECT
+			COALESCE(q.q_ready, 0),
+			COALESCE(q.q_inflight, 0),
+			COALESCE(q.q_completed, 0),
+			COALESCE(q.q_failed, 0),
+			COALESCE(q.q_expired, 0),
+			COALESCE(n.n_total, 0),
+			COALESCE(n.n_healthy, 0),
+			COALESCE(n.n_failing, 0),
+			COALESCE(n.n_paused, 0),
+			COALESCE(n.n_running, 0),
+			COALESCE(n.n_due, 0),
+			COALESCE(n.n_leased, 0),
+			COALESCE(r.r_total, 0),
+			COALESCE(r.r_success, 0),
+			COALESCE(r.r_failed, 0),
+			r.r_last_at,
+			COALESCE(cr.c_total, 0),
+			COALESCE(cr.c_with_ursm, 0),
+			COALESCE(ps.n_pseudo, 0)
+		FROM q, n, r, cr, ps
+	`)
+	var (
+		runsLastAt                sql.NullTime
+		totalCreds, credsWithURSM int
+		pseudoSuccess             int
+		successRate               sql.NullFloat64
+	)
+	if err := row.Scan(
+		&out.QueuePending,
+		&out.QueueInFlight,
+		&out.QueueCompleted,
+		&out.QueueFailed,
+		&out.QueueExpired,
+		&out.NodeTotal,
+		&out.NodeHealthy,
+		&out.NodeFailing,
+		&out.NodePaused,
+		&out.NodeRunning,
+		&out.NodeDueNow,
+		&out.NodeLeased,
+		&out.RunsLast1h,
+		&out.RunsSuccess1h,
+		&out.RunsFailed1h,
+		&runsLastAt,
+		&totalCreds,
+		&credsWithURSM,
+		&pseudoSuccess,
+	); err != nil {
+		return out, fmt.Errorf("unified probe system health: %w", err)
+	}
+	out.QueueTotal = out.QueuePending + out.QueueInFlight + out.QueueCompleted + out.QueueFailed + out.QueueExpired
+	out.TotalCredentials = totalCreds
+	out.CredentialsWithURSM = credsWithURSM
+	out.CredentialsNoURSM = out.TotalCredentials - out.CredentialsWithURSM
+	out.PseudoSuccessCount = pseudoSuccess
+	// URSMKeyCount is approximated from credentials-with-ursm; the
+	// Redis SCAN happens in the handler for an exact number.
+	out.URSMKeyCount = out.CredentialsWithURSM
+	if out.RunsLast1h > 0 {
+		rate := float64(out.RunsSuccess1h) / float64(out.RunsLast1h)
+		successRate = sql.NullFloat64{Float64: rate, Valid: true}
+	}
+	if successRate.Valid {
+		v := successRate.Float64
+		out.SuccessRateLast1h = &v
+	}
+	if runsLastAt.Valid {
+		t := runsLastAt.Time
+		out.RunsLastAt = &t
+	}
+	return out, nil
+}
+
+// countURSMKeys SCANs the URSM v2 tenant namespace for an exact key
+// count. The query is bounded by a configurable per-pass limit so a
+// missing key prefix cannot cause an unbounded Redis block. The
+// caller is expected to provide a context with a timeout so a Redis
+// stall cannot stall the dashboard handler.
+//
+// 2026-08-18 (Agent C): the dashboard used to expose
+// `llmgw:avail:*:*` key counts as the proxy for "node state". That
+// metric is still useful, but the new tenant coverage requires
+// counting the `ursm:v2:node:tenant:*` keys because that is the
+// authoritative runtime routability indicator. The handler returns
+// both numbers so the frontend can keep the historical chart and
+// surface the new routing-coverage series.
+//
+// Pure Redis client interface so it can be tested with a fake
+// (the actual Handler.redisClient is interface{} for backward
+// compatibility).
+type redisScanner interface {
+	Scan(ctx context.Context, cursor uint64, match string, count int64) *redis.ScanCmd
+}
+
+func countURSMKeys(ctx context.Context, rc redisScanner, pattern string, max int) int {
+	if rc == nil {
+		return 0
+	}
+	var (
+		cursor uint64
+		total  int
+	)
+	for {
+		ks, next, err := rc.Scan(ctx, cursor, pattern, 256).Result()
+		if err != nil {
+			return total
+		}
+		total += len(ks)
+		cursor = next
+		if cursor == 0 || total >= max {
+			break
+		}
+		if max > 0 && total >= max {
+			break
+		}
+	}
+	return total
+}
+
+// loadLegacySystemHealth reads the legacy v_probe_system_health view
+// and returns the bag of integers the dashboard wants to keep
+// rendering. Extracted so the handler test can drive it against a
+// pgxmock pool without exporting the *pgxpool.Pool-typed h.db field.
+//
+// 2026-08-18 (Agent C): the legacy view is intentionally tagged
+// legacy_mode_safe=false in the response so the dashboard can warn
+// the operator that the numbers are no longer authoritative.
+func loadLegacySystemHealth(ctx context.Context, db pgxQueryer) (ProbeSystemHealth, error) {
+	var health ProbeSystemHealth
+	var avgSuccessRate7d sql.NullFloat64
+	var totalRealSuccess24h sql.NullInt64
+	var totalRealFailure24h sql.NullInt64
+	err := db.QueryRow(ctx, `SELECT * FROM v_probe_system_health`).Scan(
+		&health.TotalNodes,
+		&health.HealthyNodes,
+		&health.FailingNodes,
+		&health.SuspiciousNodes,
+		&health.ProbingNodes,
+		&health.UrgentQueueSize,
+		&health.SuspiciousQueueSize,
+		&health.FailingQueueSize,
+		&health.WatchdogQueueSize,
+		&health.ReadyProbes,
+		&health.CurrentProbing,
+		&health.CredentialsBeingProbed,
+		&avgSuccessRate7d,
+		&health.LastProbeAt,
+		&health.LastRealRequestAt,
+		&totalRealSuccess24h,
+		&totalRealFailure24h,
+		&health.CriticalNodes,
+		&health.PendingProbes5min,
+		&health.SnapshotAt,
+	)
+	if err != nil {
+		return health, err
+	}
+	if avgSuccessRate7d.Valid {
+		health.AvgSuccessRate7d = &avgSuccessRate7d.Float64
+	}
+	health.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
+	health.TotalRealFailure24h = nullInt(totalRealFailure24h)
+	return health, nil
+}
+
+// loadLegacyQueueSnapshot reads the legacy v_probe_queue_snapshot
+// view and returns the rows for the dashboard. Extracted so the
+// handler test can drive it against a pgxmock pool.
+func loadLegacyQueueSnapshot(ctx context.Context, db pgxQueryer) ([]ProbeQueueSnapshot, error) {
+	rows, err := db.Query(ctx, `SELECT * FROM v_probe_queue_snapshot`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var queues []ProbeQueueSnapshot
+	for rows.Next() {
+		var q ProbeQueueSnapshot
+		if err := rows.Scan(
+			&q.ProbePriority,
+			&q.State,
+			&q.QueueSize,
+			&q.ReadyNow,
+			&q.Ready1min,
+			&q.Ready5min,
+			&q.EarliestRetryAt,
+			&q.LatestRetryAt,
+			&q.AvgWaitSeconds,
+			&q.MaxWaitSeconds,
+		); err != nil {
+			return nil, err
+		}
+		queues = append(queues, q)
+	}
+	return queues, rows.Err()
+}
+
 // GET /api/admin/probe/dashboard
 // Returns model health summary for all models or filtered by model name
 func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
@@ -270,11 +750,28 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 // GET /api/admin/probe/queue-snapshot
-// Returns current state of all probe queues
+//
+// 2026-08-18 (Agent C): now returns both the new unified source
+// (credential_probe_queue + node_probe_state) and the legacy view
+// (v_probe_queue_snapshot, model_probe_state) under separate keys
+// so the frontend can render both. The legacy view is flagged
+// `legacy: true` so a careless reader does not mix the two
+// pictures — the 572-row historical backlog (AGENT C handoff
+// 2026-08-18) lives in the legacy view and is unaffected by the
+// active queue.
 func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Request) {
+	// ── new source: credential_probe_queue + node_probe_state ─────
+	unified, err := queryUnifiedProbeQueueStats(r.Context(), h.db)
+	if err != nil {
+		slog.Error("probe dashboard unified queue query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+
+	// ── legacy source: v_probe_queue_snapshot (model_probe_state) ─
 	rows, err := h.db.Query(r.Context(), `SELECT * FROM v_probe_queue_snapshot`)
 	if err != nil {
-		slog.Error("probe dashboard db query failed", "error", err)
+		slog.Error("probe dashboard legacy queue query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
@@ -305,79 +802,160 @@ func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		// New source: tagged as legacy: false so a frontend can
+		// trust the numbers and ignore the legacy view.
+		"unified": unified,
+		// Legacy view: tagged as legacy: true and preserved under
+		// its own key so the operator can compare the two.
+		// Keep the established top-level shape for existing clients while
+		// exposing the source-labelled views for new clients.
 		"queues": queues,
 		"total":  len(queues),
+		"legacy": map[string]interface{}{
+			"queues":           queues,
+			"total":            len(queues),
+			"legacy":           true,
+			"legacy_mode_safe": false,
+			"legacy_source":    "model_probe_state",
+		},
+		"snapshot_at": time.Now(),
 	})
 }
 
 // GET /api/admin/probe/system-health
-// Returns overall system health metrics
+//
+// 2026-08-18 (Agent C): now returns both the new unified source
+// (credential_probe_queue + node_probe_state + node_probe_runs +
+// URSM tenant coverage) and the legacy view (v_probe_system_health,
+// model_probe_state). The legacy view is preserved under `legacy`
+// with `legacy: true` so the frontend can render the old badges
+// while the migration to URSM/probe_queue finishes without losing
+// the historical chart.
 func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request) {
-	var health ProbeSystemHealth
-	var avgSuccessRate7d sql.NullFloat64
-	var totalRealSuccess24h sql.NullInt64
-	var totalRealFailure24h sql.NullInt64
-	err := h.db.QueryRow(r.Context(), `SELECT * FROM v_probe_system_health`).Scan(
-		&health.TotalNodes,
-		&health.HealthyNodes,
-		&health.FailingNodes,
-		&health.SuspiciousNodes,
-		&health.ProbingNodes,
-		&health.UrgentQueueSize,
-		&health.SuspiciousQueueSize,
-		&health.FailingQueueSize,
-		&health.WatchdogQueueSize,
-		&health.ReadyProbes,
-		&health.CurrentProbing,
-		&health.CredentialsBeingProbed,
-		&avgSuccessRate7d,
-		&health.LastProbeAt,
-		&health.LastRealRequestAt,
-		&totalRealSuccess24h,
-		&totalRealFailure24h,
-		&health.CriticalNodes,
-		&health.PendingProbes5min,
-		&health.SnapshotAt,
-	)
+	// ── new source: unified probe + URSM tenant coverage ─────────
+	unified, err := queryUnifiedProbeSystemHealth(r.Context(), h.db)
 	if err != nil {
-		slog.Error("probe dashboard db query failed", "error", err)
+		slog.Error("probe dashboard unified system-health query failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
-	if avgSuccessRate7d.Valid {
-		health.AvgSuccessRate7d = &avgSuccessRate7d.Float64
-	}
-	health.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
-	health.TotalRealFailure24h = nullInt(totalRealFailure24h)
+	// ── URSM tenant key count is the only Redis-side metric. The
+	// legacy llmgw:avail count is intentionally NOT mixed here — the
+	// new source is the authoritative runtime signal.
 	if rc, ok := h.redisClient.(*redis.Client); ok {
-		keys, cacheErr := rc.Keys(r.Context(), "llmgw:avail:*:*").Result()
-		if cacheErr == nil && len(keys) > 0 {
-			health.TotalNodes = len(keys)
-			health.HealthyNodes = 0
-			health.FailingNodes = 0
-			health.SuspiciousNodes = 0
-			health.ProbingNodes = 0
-			for _, key := range keys {
-				data, err := rc.HGetAll(r.Context(), key).Result()
-				if err != nil {
-					continue
-				}
-				switch data["state"] {
-				case "healthy", "healthy_confirmed", "available":
-					health.HealthyNodes++
-				case "failing", "broken_confirmed", "unavailable":
-					health.FailingNodes++
-				case "suspicious":
-					health.SuspiciousNodes++
-				case "probing":
-					health.ProbingNodes++
+		ursm := countURSMKeys(r.Context(), rc, "ursm:v2:node:k2:*", 0)
+		unified.URSMKeyCount = ursm
+	}
+
+	// ── legacy source: v_probe_system_health (model_probe_state) ──
+	var legacyHealth ProbeSystemHealth
+	var avgSuccessRate7d sql.NullFloat64
+	var totalRealSuccess24h sql.NullInt64
+	var totalRealFailure24h sql.NullInt64
+	legacyErr := h.db.QueryRow(r.Context(), `SELECT * FROM v_probe_system_health`).Scan(
+		&legacyHealth.TotalNodes,
+		&legacyHealth.HealthyNodes,
+		&legacyHealth.FailingNodes,
+		&legacyHealth.SuspiciousNodes,
+		&legacyHealth.ProbingNodes,
+		&legacyHealth.UrgentQueueSize,
+		&legacyHealth.SuspiciousQueueSize,
+		&legacyHealth.FailingQueueSize,
+		&legacyHealth.WatchdogQueueSize,
+		&legacyHealth.ReadyProbes,
+		&legacyHealth.CurrentProbing,
+		&legacyHealth.CredentialsBeingProbed,
+		&avgSuccessRate7d,
+		&legacyHealth.LastProbeAt,
+		&legacyHealth.LastRealRequestAt,
+		&totalRealSuccess24h,
+		&totalRealFailure24h,
+		&legacyHealth.CriticalNodes,
+		&legacyHealth.PendingProbes5min,
+		&legacyHealth.SnapshotAt,
+	)
+	if legacyErr != nil {
+		// Legacy view is intentionally soft-fail. The new source is
+		// authoritative; the legacy view is best-effort and may be
+		// absent on a green-field deployment. Surface the error in
+		// the response so the dashboard can warn the operator.
+		slog.Warn("probe dashboard legacy system-health query failed",
+			"error", legacyErr)
+	} else {
+		if avgSuccessRate7d.Valid {
+			legacyHealth.AvgSuccessRate7d = &avgSuccessRate7d.Float64
+		}
+		legacyHealth.TotalRealSuccess24h = nullInt(totalRealSuccess24h)
+		legacyHealth.TotalRealFailure24h = nullInt(totalRealFailure24h)
+		if rc, ok := h.redisClient.(*redis.Client); ok {
+			// KEYS → SCAN: KEYS 是 O(N) 全键扫描，在共享 Redis 上会阻塞主线程；
+			// SCAN 用 cursor 增量扫描替代。
+			var keys []string
+			iter := rc.Scan(r.Context(), 0, "llmgw:avail:*:*", 1000).Iterator()
+			for iter.Next(r.Context()) {
+				keys = append(keys, iter.Val())
+			}
+			cacheErr := iter.Err()
+			if cacheErr == nil && len(keys) > 0 {
+				legacyHealth.TotalNodes = len(keys)
+				legacyHealth.HealthyNodes = 0
+				legacyHealth.FailingNodes = 0
+				legacyHealth.SuspiciousNodes = 0
+				legacyHealth.ProbingNodes = 0
+				for _, key := range keys {
+					// audit-24h-20260828-r4 P2: Use SafeHGetAll to prevent
+					// WRONGTYPE errors when a non-hash key collides with
+					// the SCAN pattern. Errors (including TypedError and
+					// ErrKeyNotFound) continue to the next key — the
+					// original best-effort aggregation semantics.
+					data, err := redissafe.SafeHGetAll(r.Context(), rc, key)
+					if err != nil {
+						continue
+					}
+					switch data["state"] {
+					case "healthy", "healthy_confirmed", "available":
+						legacyHealth.HealthyNodes++
+					case "failing", "broken_confirmed", "unavailable":
+						legacyHealth.FailingNodes++
+					case "suspicious":
+						legacyHealth.SuspiciousNodes++
+					case "probing":
+						legacyHealth.ProbingNodes++
+					}
 				}
 			}
 		}
 	}
 
+	// Populate the Legacy struct embedded in the unified payload so the
+	// frontend can render both views side-by-side without losing the
+	// pre-cutover chart history.
+	unified.Legacy = TotalLegacySystemHealth{
+		TotalNodes:      legacyHealth.TotalNodes,
+		HealthyNodes:    legacyHealth.HealthyNodes,
+		FailingNodes:    legacyHealth.FailingNodes,
+		SuspiciousNodes: legacyHealth.SuspiciousNodes,
+		ProbingNodes:    legacyHealth.ProbingNodes,
+		UrgentQueueSize: legacyHealth.UrgentQueueSize,
+		ReadyProbes:     legacyHealth.ReadyProbes,
+		CurrentProbing:  legacyHealth.CurrentProbing,
+		LastProbeAt:     legacyHealth.LastProbeAt,
+		LegacySource:    "model_probe_state",
+		LegacyModeSafe:  false,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(health)
+	// Preserve every historical top-level field for existing dashboard clients;
+	// the source-labelled payloads remain available for the cutover view.
+	legacyPayload := make(map[string]any)
+	if raw, marshalErr := json.Marshal(legacyHealth); marshalErr == nil {
+		_ = json.Unmarshal(raw, &legacyPayload)
+	}
+	legacyPayload["unified"] = unified
+	legacyPayload["legacy"] = legacyHealth
+	legacyPayload["legacy_mode_safe"] = false
+	legacyPayload["snapshot_at"] = time.Now()
+	_ = json.NewEncoder(w).Encode(legacyPayload)
 }
 
 // GET /api/admin/probe/model/{model}/nodes
@@ -1000,11 +1578,11 @@ func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) 
 	var req struct {
 		CredentialID int64  `json:"credential_id"`
 		RawModel     string `json:"raw_model"`
-		Command      string `json:"command"`       // default node_probe
-		Source       string `json:"source"`        // default admin
-		Priority     int16  `json:"priority"`      // default 60
-		MaxAttempts  int    `json:"max_attempts"`  // default 7 (node-probe chain)
-		Reason       string `json:"reason"`        // free-form audit detail
+		Command      string `json:"command"`           // default node_probe
+		Source       string `json:"source"`            // default admin
+		Priority     int16  `json:"priority"`          // default 60
+		MaxAttempts  int    `json:"max_attempts"`      // default 7 (node-probe chain)
+		Reason       string `json:"reason"`            // free-form audit detail
 		RunAfterSec  int    `json:"run_after_seconds"` // schedule in future (0 = now)
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -1086,8 +1664,8 @@ func (h *Handler) handleProbeTaskCancel(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cancelled":  n,
-		"dedup_key":  key,
+		"cancelled": n,
+		"dedup_key": key,
 	})
 }
 
@@ -1102,26 +1680,32 @@ func ternary(b bool, t, f string) string {
 // 25 号 §6.2 三态队列). Metadata only — no result_body_preview, keeping the
 // 可观测安全红线 (body 不进 API/SSE) 一致。
 type ProbeTriStateTask struct {
-	ID           int64      `json:"id"`
-	DedupKey     string     `json:"dedup_key"`
-	CredentialID int64      `json:"credential_id"`
-	ProviderID   *int64     `json:"provider_id,omitempty"`
-	RawModel     string     `json:"raw_model"`
-	Command      string     `json:"command"`
-	Source       string     `json:"source"`
-	Origin       string     `json:"origin"`            // scheduled | error | manual
-	Status       string     `json:"status"`            // pending | in_flight | completed
-	Outcome      string     `json:"outcome,omitempty"` // success|failed|expired|cancelled (completed 行)
-	Attempt      int        `json:"attempt"`
-	MaxAttempts  int        `json:"max_attempts"`
-	Priority     int16      `json:"priority"`
-	NextRetryAtMs int64     `json:"next_retry_at_ms,omitempty"` // 退避下一跳（pending 重臂行）
-	ReasonCode   string     `json:"reason_code,omitempty"`
-	HTTPStatus   *int       `json:"http_status,omitempty"`
-	LatencyMs    *int       `json:"latency_ms,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+	ID           int64  `json:"id"`
+	DedupKey     string `json:"dedup_key"`
+	CredentialID int64  `json:"credential_id"`
+	ProviderID   *int64 `json:"provider_id,omitempty"`
+	// ProviderName / ProviderCode come from the providers table (LEFT JOIN).
+	// They let the 自检 tab render 供应商 + 凭据 instead of a bare
+	// "凭据 #<id>" — operator-facing dashboard readability (2026-08-20).
+	// omitempty so legacy clients keep working when the JOIN yields NULL.
+	ProviderName  string     `json:"provider_name,omitempty"`
+	ProviderCode  string     `json:"provider_code,omitempty"`
+	RawModel      string     `json:"raw_model"`
+	Command       string     `json:"command"`
+	Source        string     `json:"source"`
+	Origin        string     `json:"origin"`            // scheduled | error | manual
+	Status        string     `json:"status"`            // pending | in_flight | completed
+	Outcome       string     `json:"outcome,omitempty"` // success|failed|expired|cancelled (completed 行)
+	Attempt       int        `json:"attempt"`
+	MaxAttempts   int        `json:"max_attempts"`
+	Priority      int16      `json:"priority"`
+	NextRetryAtMs int64      `json:"next_retry_at_ms,omitempty"` // 退避下一跳（pending 重臂行）
+	ReasonCode    string     `json:"reason_code,omitempty"`
+	HTTPStatus    *int       `json:"http_status,omitempty"`
+	LatencyMs     *int       `json:"latency_ms,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
 }
 
 // probeTriStateOrigin maps credential_probe_queue.source onto the 26 号 §4
@@ -1165,11 +1749,14 @@ func queryProbeTriStateTasks(ctx context.Context, db pgxQueryer, status string, 
 	}
 	rows, err := db.Query(ctx, `
 		SELECT q.id, q.dedup_key, q.credential_id, q.provider_id,
+		       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), ''),
+		       COALESCE(NULLIF(p.catalog_code, ''), NULLIF(p.code, ''), ''),
 		       COALESCE(q.raw_model, ''), q.probe_command, q.source, q.status,
 		       q.attempt, q.max_attempts, q.priority, q.next_run_at,
 		       COALESCE(q.reason_code, ''), q.result_http_status, q.result_latency_ms,
 		       q.created_at, q.updated_at, q.finished_at
 		FROM credential_probe_queue q
+		LEFT JOIN providers p ON p.id = q.provider_id
 		WHERE `+where+`
 		ORDER BY `+order+`
 		LIMIT $1
@@ -1185,6 +1772,7 @@ func queryProbeTriStateTasks(ctx context.Context, db pgxQueryer, status string, 
 		var httpStatus, latency sql.NullInt32
 		if err := rows.Scan(
 			&t.ID, &t.DedupKey, &t.CredentialID, &t.ProviderID,
+			&t.ProviderName, &t.ProviderCode,
 			&t.RawModel, &t.Command, &t.Source, &t.Status,
 			&t.Attempt, &t.MaxAttempts, &t.Priority, &nextRunAt,
 			&t.ReasonCode, &httpStatus, &latency,
@@ -1566,7 +2154,7 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 	}
 	var body req
 	if r.ContentLength > 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
+		if err := readJSONRequired(r, &body); err != nil && err.Error() != "EOF" {
 			slog.Error("probe dashboard invalid json", "error", err)
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return

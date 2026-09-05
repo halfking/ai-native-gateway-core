@@ -197,15 +197,35 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// systemPlainText flattens IR System to plain text for text-only system
+// surfaces (OpenAI system message, Responses instructions). Content wins when
+// set; otherwise Anthropic/Gemini parse paths leave Parts-only systems, which
+// must not be silently dropped.
+func systemPlainText(sys *SystemPrompt) string {
+	if sys == nil {
+		return ""
+	}
+	if sys.Content != "" {
+		return sys.Content
+	}
+	parts := make([]string, 0, len(sys.Parts))
+	for _, block := range sys.Parts {
+		if block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return joinTextParts(parts)
+}
+
 // serializeOpenAIMessages converts IR messages to OpenAI format.
 func serializeOpenAIMessages(req *InternalRequest) []map[string]any {
 	messages := make([]map[string]any, 0, len(req.Messages)+1)
 
 	// Prepend system message if present
-	if req.System != nil && req.System.Content != "" {
+	if text := systemPlainText(req.System); text != "" {
 		messages = append(messages, map[string]any{
 			"role":    "system",
-			"content": req.System.Content,
+			"content": text,
 		})
 	}
 
@@ -364,6 +384,14 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 						mt = "image/png"
 					}
 					url = "data:" + mt + ";base64," + block.Image.Data
+				}
+
+				// A-#18(c): file_id-only 图片在 Chat Completions 上没有
+				// image_url 表达。输出 image_url:"" 会产生上游拒收的空字段，
+				// 因此跳过该块；损失由 reportSerializeOpenAILosses 显式上报
+				// （本函数拿不到 message 索引与 SourceProtocol）。
+				if url == "" && block.Image.FileID != "" {
+					continue
 				}
 
 				imageURL := map[string]any{"url": url}
@@ -655,8 +683,24 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 			url = doc.Source.Data
 		}
 		fileInner["file_data"] = url
-	case "file_id":
-		fileInner["file_id"] = doc.Source.Data
+	case "file", "file_id":
+		// 2026-09-05 round2 复审: Anthropic-native Files API documents parse
+		// with Type="file" (parse_anthropic keeps the wire type as-is), so
+		// "file" must take the same path as the IR-internal "file_id" —
+		// previously it fell through with no case and the id was silently
+		// dropped, leaving a filename-only block. Prefer the unified FileID
+		// field; fall back to Data for legacy rows (parse_openai used to
+		// encode the id there, and session restore collapses FileID into
+		// Data).
+		fid := doc.Source.FileID
+		if fid == "" {
+			fid = doc.Source.Data
+		}
+		// 空值护栏: a double-empty source has no identity left — never emit
+		// file_id:""; reportSerializeOpenAILosses records the loss instead.
+		if fid != "" {
+			fileInner["file_id"] = fid
+		}
 	case "text":
 		fileInner["file_data"] = doc.Source.Data
 	}
@@ -718,6 +762,68 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 	// concept. Skip when source == OpenAI Chat (same-protocol with target).
 	for i, msg := range req.Messages {
 		for j, block := range msg.Content {
+			// A-#18(c): a Files-API file_id image has no image_url
+			// representation on Chat Completions — the content serializer
+			// drops the block (never emits image_url:""). No same-protocol
+			// guard: parse_openai never produces FileID images, so any
+			// FileID here is cross-protocol or session-restored, and the
+			// drop is a real loss in both cases.
+			//
+			// 2026-09-05 round2 复审: the block.Type == "image" guard keeps
+			// the report truthful if a future writer ever attaches Image to
+			// a raw-passthrough block (which the wire would keep verbatim —
+			// reporting that as lost would be a false positive).
+			if block.Type == "image" && block.Image != nil && block.Image.FileID != "" && block.Image.URL == "" && block.Image.Data == "" {
+				ReportProtocolLoss(
+					requestIDFromIR(req),
+					fieldPathMessageContent(i, j, "image.file_id"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIChat,
+					"loss",
+					"file_id image reference cannot be expressed as an OpenAI Chat image_url; block dropped",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
+			// 2026-09-05 round2 复审: a document block typed as a Files-API
+			// reference whose FileID and Data are both empty serializes as a
+			// filename-only file block — the identity is unrecoverable on the
+			// wire. Same no-same-protocol-guard rationale as the file_id
+			// image above: parsers always fill the id, so a double-empty
+			// source is a real loss (degenerate programmatic IR only).
+			if block.Document != nil && block.Document.Source != nil &&
+				(block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id") &&
+				block.Document.Source.FileID == "" && block.Document.Source.Data == "" {
+				ReportProtocolLoss(
+					requestIDFromIR(req),
+					fieldPathMessageContent(i, j, "document.file_id"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIChat,
+					"loss",
+					"file_id document reference carries neither FileID nor Data; upstream receives a filename-only file block",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
+			// 2026-09-05 round2 复审: Anthropic tool_result blocks accept
+			// image children, but every Chat tool path flattens tool content
+			// to text — nested images are dropped on the wire. Walk the
+			// nested content so the drop is reported like any other loss
+			// (nested text does survive and is not reported here).
+			if block.ToolResult != nil {
+				for k, cb := range block.ToolResult.Content {
+					if cb.Type != "image" || cb.Image == nil {
+						continue
+					}
+					ReportProtocolLoss(
+						requestIDFromIR(req),
+						fieldPathMessageContent(i, j, "tool_result.content["+smallItoa(k)+"].image"),
+						ifaceNonEmpty(src, ProtocolAnthropicMessages),
+						ProtocolOpenAIChat,
+						"loss",
+						"image inside tool_result cannot be expressed on OpenAI Chat; tool content is flattened to text and the image is dropped",
+						map[string]any{"message_index": i, "content_index": j, "tool_content_index": k},
+					)
+				}
+			}
 			if src == ProtocolOpenAIChat {
 				continue
 			}

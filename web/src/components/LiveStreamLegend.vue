@@ -95,6 +95,15 @@ function handleClick(key: string) {
           </span>
           <span class="legend-label">探测</span>
         </span>
+        <span class="legend-heading legend-heading--stage">阶段</span>
+        <span class="legend-item legend-item--status" title="路由中：已收到请求，正在选路/排队">
+          <span class="legend-stage legend-stage--routing" aria-hidden="true">⏳</span>
+          <span class="legend-label">路由中</span>
+        </span>
+        <span class="legend-item legend-item--status" title="等大模型：已发上游，等待响应">
+          <span class="legend-stage legend-stage--llm" aria-hidden="true">🔄</span>
+          <span class="legend-label">等大模型</span>
+        </span>
       </div>
     </div>
   </div>
@@ -215,7 +224,7 @@ function handleClick(key: string) {
   height: 12px;
   border-radius: 2px;
   flex-shrink: 0;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 0 0 1px var(--overlay-light);
 }
 
 .legend-swatch--border {
@@ -232,10 +241,10 @@ function handleClick(key: string) {
   width: 14px;
   height: 14px;
   border-radius: 3px;
-  color: #0c1a26;
-  background: linear-gradient(180deg, #7dd3fc 0%, #38bdf8 100%);
-  border: 1.5px solid #0284c7;
-  box-shadow: 0 0 4px rgba(56, 189, 248, 0.6);
+  color: var(--probe-dark-bg);
+  background: linear-gradient(180deg, var(--probe-cyan-light) 0%, var(--probe-cyan) 100%);
+  border: 1.5px solid var(--probe-cyan-darker);
+  box-shadow: 0 0 4px color-mix(in srgb, var(--probe-cyan) 30%, transparent);
   flex-shrink: 0;
 }
 
@@ -243,6 +252,31 @@ function handleClick(key: string) {
   width: 10px;
   height: 10px;
   display: block;
+}
+
+.legend-heading--stage {
+  margin-left: 8px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+}
+
+.legend-stage {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 10px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.legend-stage--routing {
+  color: var(--accent);
+}
+
+.legend-stage--llm {
+  color: var(--accent);
 }
 
 .legend-label {

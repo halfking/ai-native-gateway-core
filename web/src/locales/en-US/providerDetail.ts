@@ -44,6 +44,8 @@ export default {
     errorRate24h: "24h error rate"
   },
   creds: {
+    forceRecoverModalConfirm: 'Force-recover credential {name}?\nThis resets the credential state, clears unavailable flags on all bindings, and resets probe state.',
+
     listTitle: "Credentials",
     addBtn: "+ Add credential",
     table: {
@@ -54,6 +56,7 @@ export default {
       concurrency: "Concurrency",
       usage: "Usage"
     },
+    viewErrorDetail: "Vendor errors",
     empty: "No credentials",
     labelFallback: "Credential #{id}",
     fingerprintTitle: "For upstream reconciliation only — not the full key",
@@ -80,8 +83,8 @@ export default {
     fpSlotExceedsConcurrencyAdd: "Fingerprint slot ({slot}) cannot exceed concurrency limit ({concurrency})",
     fpSlotExceedsConcurrencyEdit: "Fingerprint slot ({slot}) cannot exceed concurrency limit ({concurrency})",
     saveFailed: "Save failed",
-    deleteConfirm: "Disable this credential?",
-    deleteFailed: "Disable failed",
+    deleteConfirm: "Delete this credential? It will be removed from all lists and routing. This cannot be undone.",
+    deleteFailed: "Delete failed",
     setFailed: "Operation failed",
     reasonPromptDisable: "Reason for manually disabling this credential (required, written to audit log):",
     reasonPromptEnable: "Reason for manually re-enabling this credential (required, written to audit log):",
@@ -125,13 +128,22 @@ export default {
     drawerResetAvail: "Reset availability",
     drawerResetQuota: "Reset quota",
     drawerForceRecover: "Force recover",
-    drawerDisable: "Disable credential",
+    drawerDisable: "Delete credential",
     drawerCancel: "Cancel",
     drawerSave: "Save",
     drawerSaving: "Saving…",
     probeModelUnset: "Not set",
     probeSetManual: "Set manually",
     probeRepick: "Re-pick now",
+    // 2026-08-31 hzx-2 round-5: inline picker replaces the legacy
+    // native prompt(). <select> when the credential has routable
+    // bindings; free-text input only when cmb is empty.
+    probeSave: "Save",
+    probeClear: "Clear",
+    probeModelNoneOption: "(unset)",
+    probeModelManualPlaceholder: "No bindings under this credential; type a model name…",
+    probeModelNoBindingsHint: "No routable bindings on this credential. Open the Models tab to refresh, or type a model name manually.",
+    probeLoadingModels: "Loading model list…",
     probeRunning: "Probing…",
     probeCheckNow: "Probe now",
     manualDisabledSuffix: "Disabled",
@@ -183,6 +195,8 @@ export default {
       manual: "🔒 Manual",
       autoRequestLog: "📊 Request log",
       autoDomestic: "🎲 Domestic random",
+      autoFeatured: "⭐ Featured model",
+      autoRefreshLatest: "🆕 Latest-model autofill",
       cleared: "— Cleared"
     },
     resetAvailConfirm: "Reset availability status for {name}?",
@@ -202,7 +216,45 @@ export default {
     expired: "Expired",
     checkFailed: "Check failed",
     lifecycleFailed: "Operation failed",
-    planTypeFailed: "Failed to set plan_type"
+    planTypeFailed: "Failed to set plan_type",
+    // 2026-09-02: typed upstream-error hint shown under health_error in the
+    // credential detail drawer. Triggered when models_error_kind ===
+    // 'non_json_body' (the upstream /v1/models returned HTML / XML instead
+    // of OpenAI-compatible JSON, e.g. a reverse-proxy error page).
+    upstreamNonJsonHint: "The upstream `/v1/models` returned a non-JSON response (likely an HTML error page from a proxy/reverse-proxy/gateway). Check the credential's `base_url` and the reverse-proxy configuration.",
+    // 2026-09-02: reveal / rotate UI for the credential detail drawer.
+    apiKeyReveal: "Reveal full API Key",
+    apiKeyRevealing: "Revealing…",
+    apiKeyHide: "Hide",
+    apiKeyCopy: "Copy",
+    apiKeyWarningReveal: "The plaintext API key is visible in the browser. Handle with care — it will be hidden once you close the drawer.",
+    apiKeyRotateBtn: "Rotate",
+    apiKeyRotateTitle: "Rotate API Key",
+    apiKeyRotateModelLabel: "Bound model (used to auto-probe the new key)",
+    apiKeyRotateNewKeyLabel: "New API Key",
+    apiKeyRotateConfirmLabel: "Confirm new API Key",
+    apiKeyRotateSubmit: "Submit",
+    apiKeyRotating: "Submitting…",
+    apiKeyRotateMismatch: "The two entries do not match — please re-enter.",
+    apiKeyRotateMissing: "Please enter a new API Key.",
+    apiKeyRotateSuccess: "API Key rotated",
+    apiKeyRotateFailed: "Rotation failed",
+    apiKeyWarningRotate: "Rotation overwrites the current key immediately; the backend will auto-probe the chosen model to verify the new key and writes an audit log entry.",
+    apiKeyRotateHintNoBinding: "This credential has no bound models. Refresh bindings on the Models tab first.",
+    drawerFieldApiKey: "API Key",
+  },
+  errorDetail: {
+    supplier: 'Supplier', errorCode: 'Error code', requestId: 'Request ID',
+    stage: 'Stage', retry: 'Retry', latency: 'Latency',
+    openRequestTitle: 'Open request detail',
+    title: "Vendor error detail", selectCredential: "Select a credential first", windowTitle: "Time window",
+    lastHour: "Last 1 hour", lastDay: "Last 24 hours", lastWeek: "Last 7 days", loading: "Loading vendor errors…",
+    loadFailed: "Failed to load vendor errors", credential: "Credential", health: "Health", availability: "Availability", circuit: "Circuit",
+    consecutiveFailures: "Consecutive failures", balance: "Balance", summary: "Error distribution", errorKind: "Error kind", count: "Count",
+    statusCodes: "Status code types", lastSeen: "Last seen", noErrors: "No errors in this window", recentFailures: "Recent failures",
+    time: "Time", model: "Model", kind: "Kind", httpStatus: "HTTP status", message: "Message", upstreamPreview: "Upstream preview",
+    noRecentFailures: "No recent failures", qualityScores: "Provider quality, last 7 days", date: "Date", totalScore: "Total score",
+    availabilityScore: "Availability", stabilityScore: "Stability", noQualityScores: "No quality scores",
   },
   models: {
     title: "Models ({n})",
@@ -244,11 +296,13 @@ export default {
       credential: "Bound credential",
       available: "Available",
       source: "Source",
+      contextWindow: "Context window",
       latencyP95: "Latency P95",
       successRate: "Success rate",
       standardIq: "Standard IQ",
       nodeIq: "Node IQ"
     },
+    contextWindowOverrideHint: "Binding-level override is in effect (catalog value would be different).",
     standardIqHint: "Benchmark standard IQ (Artificial Analysis Intelligence Index)",
     standardIqLabel: "Standard IQ",
     nodeIqLabel: "Node IQ",
@@ -284,6 +338,13 @@ export default {
     drawerOutboundPlaceholder: "ep-XXXXXXXX",
     drawerOutboundSend: "Will send:",
     drawerOutboundUnset: "Not set — will use",
+    drawerSectionContextWindow: "Context window (tokens)",
+    drawerContextWindowHint: "Binding-level override for this credential × model. Resolution chain: this override → canonical model override → canonical model catalog. Leave empty (or 0, or click Clear) to remove the override and fall back to the catalog value. Editing this field only takes effect when you actually change it; saving other fields (e.g. standardized name) does not clobber an existing override.",
+    drawerContextWindowPlaceholder: "e.g. 200000",
+    drawerContextWindowClearBtn: "Clear",
+    drawerContextWindowClearTitle: "Remove the binding-level override and fall back to the canonical model catalog value",
+    drawerContextWindowOverride: "Override in effect:",
+    drawerContextWindowEffective: "Using catalog value:",
     drawerSectionMetrics: "Metrics",
     metricP95: "P95 latency",
     metricSuccessRate: "Success rate",
@@ -492,6 +553,7 @@ export default {
     credColChat: "Chat probe",
     probeFailed: "Failed",
     probeMetaModels: "{status} · {count} models · {latency}ms",
+    probeNonJson: "{status} · non-JSON body",
     probeMetaChat: "{status} · {latency}ms"
   },
   probe: {

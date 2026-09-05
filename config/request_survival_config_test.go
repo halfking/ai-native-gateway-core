@@ -23,23 +23,34 @@ func TestRequestSurvivalDefaults(t *testing.T) {
 func TestRequestSurvivalNormalizeFillsDefaults(t *testing.T) {
 	cfg := &Config{}
 	cfg.NormalizeRequestSurvival()
-	if cfg.RequestSurvivalInteractiveDeadlineSeconds != 1800 {
-		t.Fatalf("interactive deadline = %d, want 1800", cfg.RequestSurvivalInteractiveDeadlineSeconds)
+	if cfg.RequestSurvivalInteractiveDeadlineSeconds != 18000 {
+		t.Fatalf("interactive deadline = %d, want 18000 (5h recovery window)", cfg.RequestSurvivalInteractiveDeadlineSeconds)
 	}
 	if cfg.RequestSurvivalDurableDeadlineSeconds != 86400 {
 		t.Fatalf("durable deadline = %d, want 86400", cfg.RequestSurvivalDurableDeadlineSeconds)
 	}
-	if cfg.RequestSurvivalRetryBaseSeconds != 2 || cfg.RequestSurvivalRetryMaxSeconds != 300 {
-		t.Fatalf("retry base/max = %d/%d, want 2/300", cfg.RequestSurvivalRetryBaseSeconds, cfg.RequestSurvivalRetryMaxSeconds)
+	if cfg.RequestSurvivalRetryBaseSeconds != 30 || cfg.RequestSurvivalRetryMaxSeconds != 120 {
+		t.Fatalf("retry base/max = %d/%d, want 30/120", cfg.RequestSurvivalRetryBaseSeconds, cfg.RequestSurvivalRetryMaxSeconds)
+	}
+	if cfg.RequestSurvivalRetryIntervalSeconds != 30 || cfg.RequestSurvivalNightMaxAttempts != 600 || cfg.RequestSurvivalNightStartHour != 20 {
+		t.Fatalf("recovery cadence/night policy = %d/%d/%d, want 30/600/20", cfg.RequestSurvivalRetryIntervalSeconds, cfg.RequestSurvivalNightMaxAttempts, cfg.RequestSurvivalNightStartHour)
 	}
 	if cfg.RequestSurvivalWorkerCount != 4 || cfg.RequestSurvivalWorkerLeaseSecs != 60 {
 		t.Fatalf("worker count/lease = %d/%d, want 4/60", cfg.RequestSurvivalWorkerCount, cfg.RequestSurvivalWorkerLeaseSecs)
 	}
 	if cfg.RequestSurvivalMaxAttempts != 100 || cfg.RequestSurvivalMaxActiveTasksPerTenant != 100 {
-		t.Fatalf("max attempts/tasks = %d/%d, want 100/100", cfg.RequestSurvivalMaxAttempts, cfg.RequestSurvivalMaxActiveTasksPerTenant)
+		t.Fatalf("max retries/tasks = %d/%d, want 100/100", cfg.RequestSurvivalMaxAttempts, cfg.RequestSurvivalMaxActiveTasksPerTenant)
 	}
 	if cfg.RequestSurvivalStatusIntervalSeconds != 60 {
 		t.Fatalf("status interval = %d, want 60", cfg.RequestSurvivalStatusIntervalSeconds)
+	}
+}
+
+func TestRequestSurvivalNormalizeClampsRetryLimits(t *testing.T) {
+	cfg := &Config{RequestSurvivalRetryMaxSeconds: 600, RequestSurvivalMaxAttempts: 500}
+	cfg.NormalizeRequestSurvival()
+	if cfg.RequestSurvivalRetryMaxSeconds != 120 || cfg.RequestSurvivalMaxAttempts != 500 {
+		t.Fatalf("retry max/attempts = %d/%d, want 120/500", cfg.RequestSurvivalRetryMaxSeconds, cfg.RequestSurvivalMaxAttempts)
 	}
 }
 

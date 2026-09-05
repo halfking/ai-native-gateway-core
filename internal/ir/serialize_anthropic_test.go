@@ -362,6 +362,47 @@ func TestSerializeAnthropic_ToolResultBlocks(t *testing.T) {
 	}
 }
 
+func TestSerializeAnthropic_ToolRoleNestedToolResultID(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		outerID  string
+		idField  string
+		wantID   string
+		wantText string
+	}{
+		{name: "standard nested fallback", idField: "tool_use_id", wantID: "toolu_inner", wantText: "outer\ninner"},
+		{name: "minimax nested fallback", provider: "minimax", idField: "tool_call_id", wantID: "toolu_inner", wantText: "outer\ninner"},
+		{name: "outer ID takes precedence", outerID: "toolu_outer", idField: "tool_use_id", wantID: "toolu_outer", wantText: "outer\ninner"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := Message{
+				Role:       "tool",
+				ToolCallID: tt.outerID,
+				Content: []ContentBlock{
+					{Type: "text", Text: "outer"},
+					{Type: "tool_result", ToolResult: &ToolResult{
+						ToolUseID: "toolu_inner",
+						Content:   []ContentBlock{{Type: "text", Text: "inner"}},
+					}},
+				},
+			}
+
+			out := serializeAnthropicMessage(msg, tt.provider, "")
+			content := out["content"].([]map[string]any)
+			result := content[0]
+			if got := result[tt.idField]; got != tt.wantID {
+				t.Fatalf("%s = %q, want %q", tt.idField, got, tt.wantID)
+			}
+			if got := result["content"]; got != tt.wantText {
+				t.Fatalf("content = %q, want %q", got, tt.wantText)
+			}
+		})
+	}
+}
+
 func TestSerializeAnthropic_Metadata(t *testing.T) {
 	ir := &InternalRequest{
 		Model:     "claude-sonnet-4-20250514",

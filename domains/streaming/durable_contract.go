@@ -13,6 +13,16 @@ const (
 	GatewayCapabilitiesHeader = "X-Gw-Capabilities"
 	CapabilityDurableRecovery = "durable-recovery"
 	CapabilityStatusEvents    = "status-events"
+	// CapabilityClientSignal (2026-09-03) — client opts into receiving a
+	// `gw-continue` SSE control event at stream tail when the goal judge
+	// finds the task incomplete. The handler emits the frame in place of the
+	// legacy server-side self-call. Clients without this capability continue
+	// to see goal_continue self-calls (zero behavior change).
+	CapabilityClientSignal = "continue"
+	// CapabilityHandoffSignal (2026-09-03) — client opts into receiving a
+	// `gw-handoff` SSE control event when the context monitor fires. Tells
+	// the client to start a fresh session with the provided summary anchor.
+	CapabilityHandoffSignal = "handoff"
 )
 
 // DurableRequestSnapshotV1 is the versioned, credential-free request DTO used
@@ -29,6 +39,7 @@ type DurableRequestSnapshotV1 struct {
 	ApplicationID        int             `json:"application_id"`
 	SessionID            string          `json:"session_id"`
 	SessionSource        string          `json:"session_source"`
+	ClientProfile        string          `json:"client_profile,omitempty"`
 	ClientIdentityHash   string          `json:"client_identity_hash"`
 	ToolsRequested       bool            `json:"tools_requested"`
 	ResponseFormat       string          `json:"response_format,omitempty"`
@@ -104,7 +115,8 @@ func ParseClientCapabilities(value string) ClientCapabilities {
 	for _, raw := range strings.Split(value, ",") {
 		token := strings.ToLower(strings.TrimSpace(raw))
 		switch token {
-		case CapabilityDurableRecovery, CapabilityStatusEvents:
+		case CapabilityDurableRecovery, CapabilityStatusEvents,
+			CapabilityClientSignal, CapabilityHandoffSignal:
 			out[token] = struct{}{}
 		}
 	}
@@ -147,4 +159,37 @@ func DurableRequested(r *http.Request, isStream bool) bool {
 		return false
 	}
 	return isStream || PreferRespondAsync(r)
+}
+
+// ClientSignalRequested (2026-09-03) reports whether the client opts into
+// receiving gw-continue control frames at stream tail. Paired with the
+// goal.client_signal_enabled server-side gate.
+func ClientSignalRequested(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return ParseClientCapabilities(r.Header.Get(GatewayCapabilitiesHeader)).Has(CapabilityClientSignal)
+}
+
+// HandoffSignalRequested (2026-09-03) reports whether the client opts into
+// receiving gw-handoff control frames at stream tail.
+func HandoffSignalRequested(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return ParseClientCapabilities(r.Header.Get(GatewayCapabilitiesHeader)).Has(CapabilityHandoffSignal)
+}
+
+// clientSignalKindAllowed verifies that a hook result may be emitted for the
+// current request. The HTTP-boundary check prevents a future interceptor from
+// accidentally leaking a signal to a client that did not negotiate it.
+func clientSignalKindAllowed(r *http.Request, kind string) bool {
+	switch kind {
+	case "gw-continue":
+		return ClientSignalRequested(r)
+	case "gw-handoff":
+		return HandoffSignalRequested(r)
+	default:
+		return false
+	}
 }

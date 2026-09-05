@@ -714,7 +714,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 			ON CONFLICT (request_id) DO UPDATE SET
 				outbound_body = EXCLUDED.outbound_body,
 				compression_meta = EXCLUDED.compression_meta
-		`, update.RequestID, update.OutboundBody, compressionMetaStr)
+		`, update.RequestID, string(update.OutboundBody), compressionMetaStr)
 		if err != nil {
 			return err
 		}

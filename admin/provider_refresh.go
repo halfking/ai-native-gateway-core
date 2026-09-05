@@ -25,17 +25,72 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 )
 
 func bgPickProbeModel(ctx context.Context, db *pgxpool.Pool, credID int) (pickProbeResult, error) {
 	return pickProbeModelForCredentialAdapter(ctx, db, credID)
+}
+
+func summarizeProviderRefreshError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var httpErr *modelresponse.HTTPBodyError
+	if errors.As(err, &httpErr) {
+		switch {
+		case httpErr.StatusCode == http.StatusUnauthorized || httpErr.StatusCode == http.StatusForbidden:
+			return fmt.Sprintf("models endpoint returned HTTP %d (authentication failed)", httpErr.StatusCode)
+		case httpErr.StatusCode == http.StatusTooManyRequests:
+			return "models endpoint returned HTTP 429 (rate limited or quota exhausted)"
+		case httpErr.StatusCode >= 500:
+			return fmt.Sprintf("models endpoint returned HTTP %d (upstream unavailable)", httpErr.StatusCode)
+		default:
+			return fmt.Sprintf("models endpoint returned HTTP %d", httpErr.StatusCode)
+		}
+	}
+	var modelErr *modelresponse.Error
+	if errors.As(err, &modelErr) {
+		switch modelErr.Kind {
+		case modelresponse.ErrorKindNonJSONBody:
+			return "models response was not JSON"
+		case modelresponse.ErrorKindInvalidModelsFmt:
+			return "models response JSON format was invalid"
+		case modelresponse.ErrorKindUnrecognizedShape:
+			return "models response shape was unrecognized"
+		default:
+			return "models response could not be parsed"
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return "models request timed out or was canceled"
+	}
+	if errors.Is(err, io.EOF) {
+		return "models response was empty"
+	}
+	// Keep only a small, stable category derived from the error class. Never
+	// expose arbitrary vendor text, which may contain credentials or secrets.
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "timeout"):
+		return "models request timed out"
+	case strings.Contains(lower, "rate limit"), strings.Contains(lower, "too many requests"):
+		return "models request was rate limited"
+	case strings.Contains(lower, "unauthorized"), strings.Contains(lower, "forbidden"), strings.Contains(lower, "api key"):
+		return "models request authentication failed"
+	default:
+		return "models request failed"
+	}
 }
 
 // ── Per-provider model list refresh (force fetch from vendor API) ───────
@@ -97,18 +152,33 @@ func (h *Handler) recordProviderRefresh(providerID int, run *providerRefreshRun)
 	st := h.getProviderRefreshState()
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	st.latest[providerID] = run
+	st.latest[providerID] = cloneProviderRefreshRun(run)
+}
+
+func cloneProviderRefreshRun(run *providerRefreshRun) *providerRefreshRun {
+	if run == nil {
+		return nil
+	}
+	copy := *run
+	if run.FinishedAt != nil {
+		finishedAt := *run.FinishedAt
+		copy.FinishedAt = &finishedAt
+	}
+	if run.HeartbeatAt != nil {
+		heartbeatAt := *run.HeartbeatAt
+		copy.HeartbeatAt = &heartbeatAt
+	}
+	if run.Errors != nil {
+		copy.Errors = append([]string(nil), run.Errors...)
+	}
+	return &copy
 }
 
 func (h *Handler) getProviderRefresh(providerID int) *providerRefreshRun {
 	st := h.getProviderRefreshState()
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	if run, ok := st.latest[providerID]; ok {
-		copy := *run
-		return &copy
-	}
-	return nil
+	return cloneProviderRefreshRun(st.latest[providerID])
 }
 
 func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
@@ -127,7 +197,7 @@ func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Requ
 	)
 	err := h.db.QueryRow(ctx, `
 		SELECT COALESCE(code,''), COALESCE(display_name,''), enabled
-		FROM providers WHERE id = $1 AND tenant_id = 'default'
+		FROM providers WHERE id = $1 AND tenant_id = 'default' AND deleted_at IS NULL
 	`, providerID).Scan(&providerCode, &providerName, &providerEnabled)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "provider not found")
@@ -179,7 +249,8 @@ func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Requ
 			upserted, failed, err := h.discoverAndUpsertForCredential(bgCtx, cred)
 			if err != nil {
 				totalFailed++
-				errs = append(errs, fmt.Sprintf("credential #%d %s: %s", cred.id, cred.label, err.Error()))
+				errs = append(errs, fmt.Sprintf("credential #%d %s: %s", cred.id, cred.label, summarizeProviderRefreshError(err)))
+
 				slog.Warn("provider refresh: credential failed",
 					"run_id", runID,
 					"provider_id", providerID,
@@ -226,7 +297,7 @@ func (h *Handler) startRefreshProviderModels(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"accepted": true,
 		"reason":   "started",
-		"run":      run,
+		"run":      cloneProviderRefreshRun(run),
 	})
 }
 
@@ -264,6 +335,34 @@ type credentialRowLite struct {
 }
 
 func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, providerID int) ([]credentialRowLite, error) {
+	// Manual refresh eligibility filter (POST /api/providers/{id}/refresh-models):
+	//
+	// Excluded:
+	//   - manual_disabled=TRUE (operator-disabled via PATCH /api/admin/providers/{id}/enable)
+	//   - secret_ciphertext IS NULL (no API key)
+	//   - tenant_id != 'default' (tenant-scoped providers not yet supported)
+	//   - provider.enabled=FALSE (operator-disabled provider)
+	//
+	// Included:
+	//   - status='active' credentials (normal case)
+	//   - auto-disabled credentials (status='disabled' / lifecycle_status='disabled')
+	//     that previously had working models (api_models_ok=TRUE). This allows
+	//     manual refresh to recover credentials that were auto-disabled by quota
+	//     probes or health checks but still have callable models. Scheduled
+	//     background discovery uses stricter filters and skips these.
+	//
+	// Rationale (2026-08-22 0019aabfa):
+	//   Provider 14 (MiniMax) reported credentials_scanned=0 on refresh even though
+	//   it had 4 credentials; 3 were auto-disabled (quota_state=permanently_exhausted)
+	//   but api_models_ok=true indicated they had working models. The strict
+	//   status='active' filter dropped them, leaving only 1 credential which then
+	//   failed, resulting in an empty model list. Manual refresh now includes
+	//   auto-disabled credentials so operators can recover model lists without
+	//   waiting for health checks to re-enable them.
+	//
+	// 2026-08-29: restored after merge d2cbaf88b regressed the filter by choosing
+	//   upstream over local changes, dropping manual_disabled exclusion and
+	//   api_models_ok relaxation.
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			c.id, COALESCE(c.label,''), p.id, p.display_name,
@@ -277,11 +376,20 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.provider_id = $1
-		  AND c.status = 'active'
-		  AND COALESCE(c.lifecycle_status, 'active') NOT IN ('suspended', 'retired', 'disabled')
-		  AND COALESCE(c.availability_state, 'ready') = 'ready'
-		  AND (c.quota_state IS NULL OR c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted'))
+		  AND c.tenant_id = 'default'
+		  AND p.tenant_id = 'default'
+		  AND c.secret_ciphertext IS NOT NULL
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
+		  AND (
+		      c.status = 'active'
+		      OR COALESCE(c.api_models_ok, FALSE) = TRUE
+		  )
+		  AND (
+		      c.lifecycle_status IS NULL
+		      OR c.lifecycle_status = 'active'
+		      OR (c.lifecycle_status = 'disabled' AND COALESCE(c.api_models_ok, FALSE) = TRUE)
+		  )
 		ORDER BY c.id
 	`, providerID)
 	if err != nil {
@@ -316,7 +424,7 @@ func (h *Handler) loadCredentialRowLite(ctx context.Context, providerID, credID 
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
-		WHERE c.id = $1 AND c.provider_id = $2
+		WHERE c.id = $1 AND c.provider_id = $2 AND c.status <> 'deleted' AND p.deleted_at IS NULL
 	`, credID, providerID).Scan(&c.id, &c.label, &c.providerID, &c.providerName,
 		&c.baseURL, &c.protocol, &c.catalogCode,
 		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON)

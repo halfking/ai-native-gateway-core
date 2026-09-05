@@ -1,8 +1,8 @@
-// turns.ts — 跨会话轮次列表 API（2026-08-09）
+// turns.ts — 跨会话轮次列表 API（2026-08-09 / 2026-08-21 api_key + status）
 // 调用 GET /api/admin/turns，返回所有会话的轮次记录，按时间倒序分页。
 // 与 sessions_v2.ts 不同，该端点不限定单一会话，而是跨会话查询。
 
-import { req } from './_core'
+import { req, type RequestOptions } from './_core'
 
 export interface TurnInList {
   session_id: string
@@ -53,16 +53,16 @@ export async function listTurns(params: {
 }
 
 // =============================================================================
-// 会话分组轮次列表（2026-08-10）
+// 会话分组轮次列表（2026-08-10 / 2026-08-21）
 // 调用 GET /api/admin/turns/sessions，按会话分组返回：
-//   外层 = 会话摘要（topic/title/summary/status/totals/压缩汇总），
+//   外层 = 会话摘要（topic/title/summary/status/totals/压缩汇总/api_key），
 //   内层 = 该会话的轮次（request/response 摘要 + compression/cache 明细）。
-// 供 TurnsListView.vue 分层展示使用。
 // =============================================================================
 
 export interface TurnGroupItem {
   turn_no: number
   ts: string
+  request_id?: string
   title?: string
   summary?: string
   request_tokens: number
@@ -119,7 +119,6 @@ export interface TurnsSessionGroup {
   duration_ms: number
   compression: TurnsCompressionAgg
   turns: TurnGroupItem[]
-  // 会话级附加信息（来自 session_dim / session_summaries，可能为空）
   project_id?: string
   task_id?: string
   owner_user?: string
@@ -128,7 +127,8 @@ export interface TurnsSessionGroup {
   end_user_id?: string
   user_tags: string[]
   start_time?: string
-  // 会话间父子/附属关系：handoff=透明轮换派生，auto_title/auto_summary=回环分支会话
+  api_key_id?: number
+  api_key_label?: string
   parent_session_id?: string
   parent_relation?: string
 }
@@ -139,7 +139,24 @@ export interface TurnsSessionsResponse {
   next_cursor: string
 }
 
-export async function listTurnsSessions(params: {
+export interface TurnsAPIKeyOption {
+  id: number
+  label: string
+}
+
+export interface TurnsFilterOptions {
+  projects: string[]
+  tasks: string[]
+  owners: string[]
+  clients: string[]
+  tags: string[]
+  models: string[]
+  providers: string[]
+  status_codes: string[]
+  api_keys: TurnsAPIKeyOption[]
+}
+
+export interface TurnsSessionsParams {
   cursor?: string
   limit?: number
   model?: string
@@ -154,7 +171,14 @@ export async function listTurnsSessions(params: {
   tags?: string
   client?: string
   owner_user?: string
-}): Promise<TurnsSessionsResponse> {
+  api_key_id?: string
+  status?: string
+}
+
+export async function listTurnsSessions(
+  params: TurnsSessionsParams,
+  options?: RequestOptions,
+): Promise<TurnsSessionsResponse> {
   const qs = new URLSearchParams()
   if (params.cursor) qs.set('cursor', params.cursor)
   if (params.limit) qs.set('limit', String(params.limit))
@@ -170,26 +194,11 @@ export async function listTurnsSessions(params: {
   if (params.tags) qs.set('tags', params.tags)
   if (params.client) qs.set('client', params.client)
   if (params.owner_user) qs.set('owner_user', params.owner_user)
+  if (params.api_key_id) qs.set('api_key_id', params.api_key_id)
+  if (params.status) qs.set('status', params.status)
 
   const path = `/api/admin/turns/sessions${qs.toString() ? '?' + qs.toString() : ''}`
-  return req<TurnsSessionsResponse>('GET', path)
-}
-
-// =============================================================================
-// 热门筛选条件（2026-08-10）
-// 调用 GET /api/admin/turns/sessions/filter-options，返回近 30 天内各筛选维度
-// 实际出现的热门取值，供 TurnsListView.vue 的 filterable 下拉填充。
-// =============================================================================
-
-export interface TurnsFilterOptions {
-  projects: string[]
-  tasks: string[]
-  owners: string[]
-  clients: string[]
-  tags: string[]
-  models: string[]
-  providers: string[]
-  status_codes: string[]
+  return req<TurnsSessionsResponse>('GET', path, undefined, options)
 }
 
 export async function listTurnsFilterOptions(): Promise<TurnsFilterOptions> {

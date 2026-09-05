@@ -1,4 +1,4 @@
-import { req } from './_core'
+import { req, type RequestOptions } from './_core'
 
 // credential-monitor.ts — credential monitoring, sliding window, and manual promotion/demotion
 
@@ -8,6 +8,8 @@ export interface CredentialMonitorSummary {
   provider_name: string
   label: string
   status: string
+  effective_state?: string | null
+  effective_reason?: string | null
   availability_state: string
   health_status: string
   quota_state: string
@@ -36,6 +38,9 @@ export interface CredentialMonitorSummary {
 // Per-(credential, model) availability row for the credential monitor drawer.
 export interface CredentialModelStatus {
   raw_model_name: string
+  /** Optional catalog mapping fields when monitor payload includes them. */
+  standardized_name?: string | null
+  canonical_name?: string | null
   offer_available: boolean
   offer_unavailable_reason?: string | null
   binding_available: boolean
@@ -98,18 +103,50 @@ export interface CallEntry {
   err?: string // error kind
 }
 
-export function getCredentialMonitorSummary(opts?: { provider_id?: number; credential_id?: number }) {
+export function getCredentialMonitorSummary(
+  opts?: { provider_id?: number; credential_id?: number; mode?: 'core' | 'detail' },
+  requestOptions?: RequestOptions,
+) {
   const params = new URLSearchParams()
   if (opts?.provider_id) params.set('provider_id', String(opts.provider_id))
   if (opts?.credential_id) params.set('credential_id', String(opts.credential_id))
+  if (opts?.mode) params.set('mode', opts.mode)
   const qs = params.toString()
   return req<{ credentials: CredentialMonitorSummary[]; count: number; meta?: CredentialMonitorMeta }>(
     'GET',
-    `/api/credentials/monitor-summary${qs ? `?${qs}` : ''}`
+    `/api/credentials/monitor-summary${qs ? `?${qs}` : ''}`,
+    undefined,
+    requestOptions,
   )
 }
 
-export function getSlidingWindow(credentialId: number, model: string, minutes = 60) {
+export interface CredentialSessionPingResponse {
+  credential_id: number
+  model: string
+  latency_ms: number
+  status: 'healthy' | 'timeout' | 'unreachable' | 'auth_failed' | 'model_not_found' | 'upstream_error' | 'error'
+  tested_at: string
+  error_code?: string
+  error?: string
+}
+
+export function sessionPingCredential(credentialId: number, model: string) {
+  return req<CredentialSessionPingResponse>(
+    'POST',
+    `/api/admin/credentials/${credentialId}/session-ping`,
+    { model },
+  )
+}
+
+/** 异步入队单模型探活（202 Accepted）；结果经 probe/history 可见。 */
+export function testCredentialModel(credentialId: number, model: string) {
+  return req<{ message: string; credential_id: number; model: string; status: string }>(
+    'POST',
+    `/api/credentials/${credentialId}/models/${encodeURIComponent(model)}/test`,
+  )
+}
+
+export function getSlidingWindow(credentialId: number, model: string, minutes = 60, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))
   params.set('model', model)
@@ -127,7 +164,53 @@ export function getSlidingWindow(credentialId: number, model: string, minutes = 
       failure_rate: number
       error_kinds: Record<string, number>
     }
-  }>('GET', `/api/credentials/sliding-window?${params.toString()}`)
+  }>('GET', `/api/credentials/sliding-window?${params.toString()}`, undefined, requestOptions)
+}
+
+export type SlidingWindowBatchItem = { credential_id: number; model: string }
+
+export type SlidingWindowBatchOptions = {
+  minutes?: number
+  includeEntries?: boolean
+  entryLimit?: number
+}
+
+export type SlidingWindowBatchResult = {
+  credential_id: number
+  model: string
+  source?: 'redis' | 'request_logs'
+  stats?: {
+    total: number
+    success: number
+    failed: number
+    failure_rate: number
+    error_kinds?: Record<string, number>
+  }
+  entries?: CallEntry[]
+  error?: string
+}
+
+/** Queue-perspective stats: one POST for many credential×model pairs. */
+export function getSlidingWindowBatch(
+  items: SlidingWindowBatchItem[],
+  minutesOrOptions: number | SlidingWindowBatchOptions = 5,
+  requestOptions?: RequestOptions,
+) {
+  const options: SlidingWindowBatchOptions =
+    typeof minutesOrOptions === 'number'
+      ? { minutes: minutesOrOptions }
+      : (minutesOrOptions ?? {})
+  const minutes = options.minutes ?? 5
+  const body: Record<string, unknown> = { minutes, items }
+  if (options.includeEntries) {
+    body.include_entries = true
+    if (options.entryLimit != null) body.entry_limit = options.entryLimit
+  }
+  return req<{
+    window_minutes: number
+    count: number
+    results: SlidingWindowBatchResult[]
+  }>('POST', '/api/credentials/sliding-window/batch', body, requestOptions)
 }
 
 export function promoteCredential(credentialId: number, reason: string) {
@@ -223,7 +306,7 @@ export interface ModelHistoryResponse {
   count: number
 }
 
-export function getModelHistory(credentialId: number, rawModel: string, limit = 50) {
+export function getModelHistory(credentialId: number, rawModel: string, limit = 50, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))
   params.set('raw_model_name', rawModel)
@@ -231,6 +314,8 @@ export function getModelHistory(credentialId: number, rawModel: string, limit = 
   return req<ModelHistoryResponse>(
     'GET',
     `/api/credentials/model-history?${params.toString()}`,
+    undefined,
+    requestOptions,
   )
 }
 
@@ -259,13 +344,19 @@ export interface CredentialDecisionsResponse {
   total: number
 }
 
-export function getCredentialDecisions(credentialId: number, limit = 50) {
+// 2026-08-18: optional model filter scopes the list to one model×credential
+// pair (dashboard node detail drawer). Backend matches model/client_model/
+// outbound_model case-insensitively.
+export function getCredentialDecisions(credentialId: number, limit = 50, model?: string, requestOptions?: RequestOptions) {
   const params = new URLSearchParams()
   params.set('credential_id', String(credentialId))
   params.set('limit', String(limit))
+  if (model) params.set('model', model)
   return req<CredentialDecisionsResponse>(
     'GET',
     `/api/credentials/decisions?${params.toString()}`,
+    undefined,
+    requestOptions,
   )
 }
 

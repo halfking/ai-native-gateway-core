@@ -2,7 +2,7 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -10,8 +10,33 @@ import (
 
 	"log/slog"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
+
+// beginCredKeyTx opens the transaction used by deleteCredentialKey and
+// resetCredentialKey. Tests override beginCredKeyTxOverride to plug in
+// pgxmock; production callers fall back to h.db.Begin.
+//
+// This mirrors the beginApprovalTx / beginApprovalTxOverride seam in
+// stats.go: Handler.db is the concrete *pgxpool.Pool type, so tests
+// can't inject a mock pool directly without touching the field. The
+// override lets credential_keys_test.go drive the FOR-UPDATE + DELETE/
+// UPDATE flow against an in-process mock pool.
+func beginCredKeyTx(ctx context.Context, h *Handler) (pgx.Tx, error) {
+	if beginCredKeyTxOverride != nil {
+		return beginCredKeyTxOverride(ctx, h)
+	}
+	if h == nil || h.db == nil {
+		return nil, fmt.Errorf("admin handler: nil database pool")
+	}
+	return h.db.Begin(ctx)
+}
+
+// beginCredKeyTxOverride lets tests inject a fake pgx.Tx source. Nil in
+// production; the variable is package-private to keep the seam from
+// leaking into other packages.
+var beginCredKeyTxOverride func(ctx context.Context, h *Handler) (pgx.Tx, error)
 
 // handleCredentialKeys manages the extra keys on a credential (migration 076).
 //
@@ -70,6 +95,7 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 		FROM credential_keys ck
 		JOIN credentials c ON c.id = ck.credential_id
 		WHERE ck.credential_id = $1 AND c.provider_id = $2
+          AND c.status <> 'deleted'
 		ORDER BY ck.kid_index
 	`, credID, providerID)
 	if err != nil {
@@ -155,7 +181,7 @@ func (h *Handler) addCredentialKey(w http.ResponseWriter, r *http.Request, provi
 	err = tx.QueryRow(ctx, `
 		SELECT tenant_id
 		FROM credentials
-		WHERE id = $1 AND provider_id = $2
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
 		FOR UPDATE
 	`, credID, providerID).Scan(&credTenant)
 	if err != nil {
@@ -195,38 +221,71 @@ func (h *Handler) addCredentialKey(w http.ResponseWriter, r *http.Request, provi
 	writeJSON(w, http.StatusOK, map[string]any{"kid_index": newKid, "message": "ok"})
 }
 
-// deleteCredentialKey removes an extra key by kid_index.
+// deleteCredentialKey removes an extra key by kid_index. The transaction holds
+// a FOR UPDATE row lock on the parent credential so the DB write and the
+// in-process cache+rotator invalidation commit together against any concurrent
+// POST /keys on the same credential.
 func (h *Handler) deleteCredentialKey(w http.ResponseWriter, r *http.Request, providerID, credID, kid int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	tag, err := h.db.Exec(ctx, `
-		DELETE FROM credential_keys ck
-		USING credentials c
-		WHERE ck.credential_id = c.id AND c.provider_id = $1 AND ck.credential_id = $2 AND ck.kid_index = $3
-	`, providerID, credID, kid)
+	tx, err := beginCredKeyTx(ctx, h)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "begin transaction failed")
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // harmless after successful Commit
+
+	// Lock the parent credential row so concurrent add/list/status flips on the
+	// same credential serialize. Mirrors addCredentialKey's pattern. The actual
+	// FOR UPDATE here is what serializes against addCredentialKey's own
+	// FOR UPDATE; without this lock a concurrent POST /keys could insert a
+	// new kid_index between our ownership check and our DELETE.
+	var credTenant string
+	if err := tx.QueryRow(ctx, `
+		SELECT tenant_id
+		FROM credentials
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
+		FOR UPDATE
+	`, credID, providerID).Scan(&credTenant); err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM credential_keys
+		WHERE credential_id = $1 AND kid_index = $2
+	`, credID, kid)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "delete failed")
 		return
 	}
 	if tag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
 	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit failed")
+		return
+	}
 	provider.InvalidateCandidateCacheForCredential(credID)
+	// Deleting a key changes the *set* (not just one slot's status), so wipe
+	// the rotator entirely so the next EnsureCred rebuilds from the new DB set.
 	provider.ResetKeyRotatorForCredential(credID)
 	writeJSON(w, http.StatusOK, map[string]any{"message": "deleted"})
 }
 
 // resetCredentialKey marks an invalid/terminal key active again (e.g. after
-// an operator tops up balance). Also best-effort resets the in-memory
-// KeyRotator state via cache invalidation so the next request re-registers.
+// an operator tops up balance). The transaction holds a FOR UPDATE row lock
+// on the parent credential so the DB write and the in-process rotator
+// invalidation commit together; the surgical ResetKey(credID, kid) preserves
+// the health state of sibling keys (admin can flip one key without nuking
+// the round-robin state for the others).
 func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, providerID, credID, kid int) {
 	var req struct {
 		Status string `json:"status"`
 	}
 	// body optional; default to "active"
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = readJSONRequired(r, &req)
 	if req.Status == "" {
 		req.Status = "active"
 	}
@@ -238,24 +297,44 @@ func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, pro
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	tag, err := h.db.Exec(ctx, `
-		UPDATE credential_keys ck
-		SET status = $4
-		FROM credentials c
-		WHERE ck.credential_id = c.id AND c.provider_id = $1 AND ck.credential_id = $2 AND ck.kid_index = $3
-	`, providerID, credID, kid, req.Status)
+	tx, err := beginCredKeyTx(ctx, h)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "begin transaction failed")
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var credTenant string
+	if err := tx.QueryRow(ctx, `
+		SELECT tenant_id
+		FROM credentials
+		WHERE id = $1 AND provider_id = $2 AND status <> 'deleted'
+		FOR UPDATE
+	`, credID, providerID).Scan(&credTenant); err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE credential_keys
+		SET status = $3
+		WHERE credential_id = $1 AND kid_index = $2
+	`, credID, kid, req.Status)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed")
 		return
 	}
 	if tag.RowsAffected() == 0 {
 		writeError(w, http.StatusNotFound, "key not found")
 		return
 	}
-	// Invalidate candidate cache and reset the shared in-memory KeyRotator. Cache
-	// invalidation alone does not clear per-key terminal/invalid state.
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit failed")
+		return
+	}
 	provider.InvalidateCandidateCacheForCredential(credID)
-	provider.ResetKeyRotatorForCredential(credID)
+	// Surgical reset: only the targeted key's in-memory state changes. Sibling
+	// keys' round-robin health counters and the rotator's cursor are preserved.
+	provider.ResetKeyRotatorKey(credID, kid)
 	slog.Info("credential key status reset",
 		"credential_id", credID, "kid_index", kid, "status", req.Status)
 	writeJSON(w, http.StatusOK, map[string]any{"message": "updated", "status": req.Status})

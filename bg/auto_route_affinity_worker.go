@@ -129,6 +129,13 @@ func (w *AutoRouteAffinityWorker) Stop() {
 }
 
 func (w *AutoRouteAffinityWorker) run(ctx context.Context) {
+	// Panic guard (audit 2026-09-05 G-#1): a sweep panic must not kill the
+	// process; it would also skip close(w.done) below and hang Stop forever.
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("auto-route affinity worker panic", "recover", rec)
+		}
+	}()
 	defer close(w.done)
 
 	ticker := time.NewTicker(affinityInterval)
@@ -201,7 +208,7 @@ func (w *AutoRouteAffinityWorker) aggregate(ctx context.Context) ([]affinityAggr
 		       COALESCE(AVG(s.cost_usd), 0),
 		       COALESCE(AVG(ss.health_score), 0),
 		       AVG(s.reward)
-		FROM auto_route_selections s
+		FROM auto_route_selections_all s
 		LEFT JOIN session_summaries ss
 		       ON ss.session_key = s.session_id
 		WHERE s.reward IS NOT NULL
@@ -342,6 +349,7 @@ func (w *AutoRouteAffinityWorker) applyStalenessDecay(ctx context.Context) error
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	type staleRow struct {
 		taskType, profile, tenantID string
 		canonicalID                 int64
@@ -354,16 +362,13 @@ func (w *AutoRouteAffinityWorker) applyStalenessDecay(ctx context.Context) error
 		// Scan errors in pgx v5 terminate iteration. Treat as sweep-fatal.
 		if err := rows.Scan(&r.taskType, &r.profile, &r.canonicalID, &r.tenantID,
 			&r.affinity, &r.lastSampled); err != nil {
-			rows.Close()
 			return err
 		}
 		stale = append(stale, r)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return err
 	}
-	rows.Close()
 
 	now := time.Now()
 	for _, r := range stale {

@@ -25,6 +25,14 @@ func TestParseNodeKey(t *testing.T) {
 	if !ok || tenant.TenantID != "tenant-a" || tenant.CredentialID != 34 || tenant.RawModel != "model:with:colon" {
 		t.Fatalf("tenant parse = %+v ok=%v", tenant, ok)
 	}
+	numericKey := NodeKeyForTenant("ursm:v2:", "123", 34, "model:with:colon")
+	if numericKey != "ursm:v2:node:t:123:34:model:with:colon" {
+		t.Fatalf("numeric tenant key = %q", numericKey)
+	}
+	numeric, ok := ParseNodeKey("ursm:v2:", numericKey)
+	if !ok || numeric.TenantID != "123" || numeric.CredentialID != 34 || numeric.RawModel != "model:with:colon" {
+		t.Fatalf("numeric tenant parse = %+v ok=%v", numeric, ok)
+	}
 	if _, ok := ParseNodeKey("ursm:v2:", "ursm:v2:node:tenant-a:not-a-number:model"); ok {
 		t.Fatal("invalid credential ID must not parse")
 	}
@@ -33,5 +41,35 @@ func TestParseNodeKey(t *testing.T) {
 func TestReadyKey(t *testing.T) {
 	if k := ReadyKey("ursm:v2:"); k != "ursm:v2:meta:ready" {
 		t.Fatalf("unexpected ready key %q", k)
+	}
+}
+
+func TestNodeKeySetForTenantMatchesIndividualConstructors(t *testing.T) {
+	cases := []struct {
+		name   string
+		tenant string
+		cid    int
+		raw    string
+	}{
+		{"legacy empty tenant", "", 12, "gpt-4"},
+		{"string tenant", "tenant-a", 34, "model:with:colon"},
+		{"numeric tenant", "123", 34, "model:with:colon"},
+	}
+	for _, tc := range cases {
+		set := NodeKeySetForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw)
+		want := NodeKeySet{
+			Prefix: "ursm:v2:",
+			Node:   NodeKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw),
+			Win1m:  WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "1m"),
+			Win5m:  WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "5m"),
+			Win30m: WindowKeyForTenant("ursm:v2:", tc.tenant, tc.cid, tc.raw, "30m"),
+
+			TenantID:     tc.tenant,
+			CredentialID: tc.cid,
+			RawModel:     tc.raw,
+		}
+		if set != want {
+			t.Fatalf("%s: key set = %+v, want %+v", tc.name, set, want)
+		}
 	}
 }

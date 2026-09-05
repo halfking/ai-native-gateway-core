@@ -13,10 +13,11 @@ import (
 
 // Runner DB 初始化执行器
 type Runner struct {
-	CitusContainer string  // "kx-citus"
-	DBUser         string  // "kxuser"
-	DBName         string  // "llm_gateway"
-	SQLDir         string  // 包含 00-prereqs.sql / 01-schema.sql / 02-seed.sql
+	CitusContainer string // "kx-citus"
+	DBUser         string // "kxuser"
+	DBName         string // "llm_gateway"
+	SQLDir         string // 包含 00-prereqs.sql / 01-schema.sql / 02-seed.sql
+	StartupFiles   []string
 }
 
 // NewRunner 创建 Runner
@@ -26,6 +27,77 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 		DBUser:         dbUser,
 		DBName:         dbName,
 		SQLDir:         sqlDir,
+		StartupFiles: []string{
+			"478_auto_route_affinity.sql",
+			"511_state_transitions_table.sql",
+			"515_state_transitions_seq_unique.sql",
+			"521_repair_state_transitions_tenant.sql",
+			"530_request_journey_contract.sql",
+			"531_request_journey_tenant_uniqueness.sql",
+			"536_stats_analytics_foundation.sql",
+			"537_usage_facts.sql",
+			"539_stats_reconciliation_tenant.sql",
+			"540_stats_event_inbox_consumer.sql",
+			"544_stats_adjustments_alignment.sql",
+			"545_stats_reconciliation_phantom_resolution.sql",
+			"546_stats_reconciliation_diffs_unique.sql",
+			"547_session_project_attribution.sql",
+			"548_stats_reconciliation_diffs_identity.sql",
+			"552_request_journey_durable_outbox.sql",
+			"553_approval_resume_claim.sql",
+			"554_goal_runs.sql",
+			"555_goal_run_actions_lease_fencing.sql",
+			"655_session_summaries_schema_reconcile.sql",
+			"560_session_summaries_tenant_uniqueness.sql",
+			"561_request_logs_view_origin_actor.sql",
+			"562_fix_request_logs_bodies_partitions_heap.sql",
+			"563_session_summary_trigger_on_hot.sql",
+			"564_session_summary_backfill_safe.sql",
+			"565_cost_usd_pricing_backfill.sql",
+			"566_credentials_governor_revision.sql",
+			"567_session_analysis_metadata.sql",
+			"568_credential_priority_flag.sql",
+			"569_candidate_binding_scope_revision_canonical.sql",
+			"570_model_offers_insert_priority_passthrough.sql",
+			"571_candidate_binding_scope_revision_canonical_priority_hash.sql",
+			"572_session_summary_large_token_ratio.sql",
+			"600_outbound_body_to_bodies_hot.sql",
+			"601_request_logs_bodies_drop_metadata.sql",
+			"602_request_logs_promote_atomic.sql",
+			"606_session_summaries_agent_expert_tags.sql",
+			"614_session_bodies_hot.sql",
+			"615_session_bodies_hot_promote_function.sql",
+			"618_request_journey_snapshot_receipts.sql",
+			"620_provider_error_details_tenant_scope.sql",
+			"621_provider_error_details_cleanup_index.sql",
+			"622_provider_error_aggregator_state.sql",
+			"623_journal_snapshot_receipts_projection_base.sql",
+			"624_candidate_failure_logs_promote_atomic_v2.sql",
+			"625_session_bodies_unified_explicit.sql",
+			"626_session_bodies_hot_promote_reconcile.sql",
+			"627_candidate_failure_logs_aggregation_id_unified.sql",
+			"628_candidate_failure_logs_promote_atomic_v3.sql",
+			"629_audit_attachments_cleanup.sql",
+			"630_session_aggregate_outbox.sql",
+			"631_provider_credential_soft_delete.sql",
+			"635_drop_session_turns_unified.sql",
+			"637_session_bodies_unified_today_visible.sql",
+			"638_session_bodies_promote_guard.sql",
+			"639_provider_error_details_credential.sql",
+			"644_tuning_views_selfcheck_and_candidate_failure_cache.sql",
+			"645_session_bodies_hot_request_unique_repair.sql",
+			"646_proxy_management_canonical.sql",
+			"647_goal_client_signal.sql",
+			"649_routing_analytics_probe_filter.sql",
+			"650_auto_route_selection_treatment_attribution.sql",
+			"651_provider_quality_hot_rollup.sql",
+			"652_system_monitor_fallback_queue.sql",
+			"653_archive_credential_model_index_canonical_return.sql",
+			"654_archive_credential_model_index_detach_drop.sql",
+			"656_auto_route_selections_hot.sql",
+			"657_durable_llm_tasks_decision_history.sql",
+			"session_turns_hot_bootstrap.sql",
+		},
 	}
 }
 
@@ -58,6 +130,13 @@ func (r *Runner) InitSchema(logger func(string)) error {
 			return fmt.Errorf("应用 %s 失败: %w", f.name, err)
 		}
 		logger(fmt.Sprintf("  ✅ %s 完成", f.name))
+	}
+	for _, name := range r.StartupFiles {
+		logger(fmt.Sprintf("  ▶ 应用 startup migration %s ...", name))
+		if err := r.applySQL(filepath.Join("startup", name)); err != nil {
+			return fmt.Errorf("应用 startup migration %s 失败: %w", name, err)
+		}
+		logger(fmt.Sprintf("  ✅ startup migration %s 完成", name))
 	}
 	return nil
 }

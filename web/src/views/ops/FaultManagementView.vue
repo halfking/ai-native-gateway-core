@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
+import { fmtDateTime24h } from '../../i18n/useFormat'
 import {
   getFaultEvents,
   getFaultRules,
@@ -15,6 +16,7 @@ import {
   type FaultRule,
   type FaultStats,
 } from '../../api/ops'
+import { confirmDialog } from '../../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -137,20 +139,17 @@ async function handleSaveRule() {
 }
 
 async function handleDeleteRule(rule: FaultRule) {
+  if (!(await confirmDialog(
+    t('ops.fault.deleteRuleConfirm', { name: rule.name }),
+    { title: t('common.warning') },
+  ))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.fault.deleteRuleConfirm', { name: rule.name }),
-      t('common.warning'),
-      { type: 'warning' }
-    )
     await deleteFaultRule(rule.id)
     ElMessage.success(t('ops.fault.deleteSuccess'))
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.fault.deleteFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.fault.deleteFailed'))
+    console.error(error)
   }
 }
 
@@ -166,20 +165,14 @@ async function handleAcknowledge(event: FaultEvent) {
 }
 
 async function handleResolve(event: FaultEvent) {
+  if (!(await confirmDialog(t('ops.fault.fixConfirm'), { title: t('common.confirm'), type: 'info' }))) return
   try {
-    await ElMessageBox.confirm(
-      t('ops.fault.fixConfirm'),
-      t('common.confirm'),
-      { type: 'info' }
-    )
     await resolveFaultEvent(event.id)
     ElMessage.success('Event resolved')
     await load()
   } catch (error) {
-    if (error !== 'cancel') {
-      ElMessage.error(t('ops.fault.fixFailed'))
-      console.error(error)
-    }
+    ElMessage.error(t('ops.fault.fixFailed'))
+    console.error(error)
   }
 }
 
@@ -207,11 +200,6 @@ function statusType(status: string) {
     ignored: 'info',
   }
   return map[status] || 'info'
-}
-
-function formatDate(date: string) {
-  if (!date) return '-'
-  return new Date(date).toLocaleString()
 }
 
 function formatDuration(minutes: number) {
@@ -314,7 +302,7 @@ onMounted(load)
         <el-table-column prop="title" :label="t('ops.fault.titleLabel')" min-width="220" show-overflow-tooltip />
         <el-table-column prop="source" :label="t('ops.fault.source')" width="100" />
         <el-table-column prop="detected_at" :label="t('ops.fault.detectedAt')" width="150">
-          <template #default="scope">{{ formatDate(scope?.row?.detected_at) }}</template>
+          <template #default="scope">{{ fmtDateTime24h(scope?.row?.detected_at) }}</template>
         </el-table-column>
         <el-table-column :label="t('common.actions')" width="200" fixed="right">
           <template #default="scope">
@@ -339,9 +327,9 @@ onMounted(load)
             <el-tag :type="severityType(selectedEvent.severity)" size="small">{{ t(`ops.fault.severity.${selectedEvent.severity}`) }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item :label="t('ops.fault.source')">{{ selectedEvent.source }}</el-descriptions-item>
-          <el-descriptions-item :label="t('ops.fault.detectedAt')">{{ formatDate(selectedEvent.detected_at) }}</el-descriptions-item>
-          <el-descriptions-item v-if="selectedEvent.acked_at" :label="t('ops.fault.ackedAt')">{{ formatDate(selectedEvent.acked_at) }} ({{ selectedEvent.acked_by }})</el-descriptions-item>
-          <el-descriptions-item v-if="selectedEvent.resolved_at" :label="t('ops.fault.resolvedAt')">{{ formatDate(selectedEvent.resolved_at) }} ({{ selectedEvent.resolved_by }})</el-descriptions-item>
+          <el-descriptions-item :label="t('ops.fault.detectedAt')">{{ fmtDateTime24h(selectedEvent.detected_at) }}</el-descriptions-item>
+          <el-descriptions-item v-if="selectedEvent.acked_at" :label="t('ops.fault.ackedAt')">{{ fmtDateTime24h(selectedEvent.acked_at) }} ({{ selectedEvent.acked_by }})</el-descriptions-item>
+          <el-descriptions-item v-if="selectedEvent.resolved_at" :label="t('ops.fault.resolvedAt')">{{ fmtDateTime24h(selectedEvent.resolved_at) }} ({{ selectedEvent.resolved_by }})</el-descriptions-item>
           <el-descriptions-item :label="t('common.description')" :span="2">{{ selectedEvent.description || '-' }}</el-descriptions-item>
           <el-descriptions-item v-if="selectedEvent.metadata" :label="t('ops.fault.metadata')" :span="2">
             <pre class="metadata-pre">{{ JSON.stringify(JSON.parse(selectedEvent.metadata), null, 2) }}</pre>

@@ -68,6 +68,64 @@ type Recorder interface {
 	// diff legacy credentialstate log entries vs URSMv2Shadow counts
 	// after a 7-day shadow run to confirm < 1% drift before cutover.
 	RecordURSMv2ShadowResult(result string)
+
+	// MalformedSSEFrame (2026-08-29): count SSE frames with invalid JSON
+	// rejected by the validation layer. stage = "first_frame" (before any
+	// client output) | "mid_stream" (after some chunks sent). Operators
+	// monitor this to detect unstable upstreams (minimax-m3, glm-5.2) that
+	// send incomplete JSON like bare "{". High rates trigger investigation.
+	// Uses "provider" label instead of "model" to avoid high cardinality.
+	RecordMalformedSSEFrame(provider, stage string)
+
+	// IncompleteToolCall (2026-08-29): count streams where tool_use blocks
+	// were sent but corresponding tool_result blocks were missing when the
+	// stream ended. reason = "incomplete_tool_call_interrupted" (stream ended
+	// before message_stop) | "incomplete_tool_call_after_done" (message_stop
+	// received but tool_result missing, protocol violation). High rates
+	// indicate unstable Anthropic upstreams or mid-stream interruptions.
+	// The label is recorded as a normalized "provider_family" (route key of
+	// the passed-in model); the raw model name is never used as a label per
+	// GW-00 high-cardinality constraints.
+	RecordIncompleteToolCall(model, reason string)
+
+	// SuccessEmptyResponse (2026-08-29): count requests marked as successful
+	// but returned no content (empty response body or zero tokens). Label:
+	// provider_id (low cardinality). Helps identify providers with high empty
+	// response rates (e.g., NVIDIA NIM ~13%). model and tenant_id are
+	// intentionally excluded per GW-00 cardinality constraints.
+	RecordSuccessEmptyResponse(model, providerID, tenantID string)
+
+	// JournalSnapshot (2026-08-29): track journal snapshot lifecycle events
+	// during dispatch observation persistence. No tenant_id labels per GW-00.
+	// Operators monitor these to detect snapshot storage failures,
+	// deduplication patterns, and apply errors.
+	//
+	// RecordJournalSnapshotStored: increments when a snapshot is written to
+	// the JournalSnapshotStore (successful Store() call). No labels.
+	RecordJournalSnapshotStored(tenantID string)
+
+	// RecordJournalSnapshotApplied: increments when Apply() completes,
+	// success=true for clean apply, success=false for any Apply() error.
+	// Label: success (true|false).
+	RecordJournalSnapshotApplied(tenantID string, success bool)
+
+	// RecordJournalSnapshotDeduplicated: increments when a snapshot is
+	// rejected due to deduplication. Label: reason (already_completed |
+	// version_conflict | not_claimed).
+	RecordJournalSnapshotDeduplicated(tenantID, reason string)
+
+	// LiveStreamRecordDropped (2026-08-31, P2-2 observability): increments
+	// when admin/live_stream_redis_store.Record() decides NOT to write the
+	// request to Redis (graceful degradation when Redis is unavailable or
+	// the per-request lock cannot be acquired). Without this counter the
+	// operator has no signal that the live stream hub is silently losing
+	// tiles while the canonical record still lands in request_logs.
+	//
+	// reason values (kept in sync with the alerting labels in
+	// deploy/monitoring/grafana-alerts/live-stream-record-dropped.yaml):
+	//   - "store_unconfigured" : store/Redis client is nil (operator never wired it)
+	//   - "redis_unavailable"  : lock acquisition failed (Redis down or contended)
+	RecordLiveStreamRecordDropped(reason string)
 }
 
 // NoopRecorder 是空实现，用于测试
@@ -116,6 +174,23 @@ func (n *NoopRecorder) RecordStreamSynthesizedDone() {}
 
 // P0-3 URSMv2Shadow method — no-op fallback.
 func (n *NoopRecorder) RecordURSMv2ShadowResult(result string) {}
+
+// 2026-08-29: malformed SSE frame counter.
+func (n *NoopRecorder) RecordMalformedSSEFrame(provider, stage string) {}
+
+// 2026-08-29: incomplete tool call counter.
+func (n *NoopRecorder) RecordIncompleteToolCall(model, reason string) {}
+
+// 2026-08-29: success empty response counter.
+func (n *NoopRecorder) RecordSuccessEmptyResponse(model, providerID, tenantID string) {}
+
+// 2026-08-29: journal snapshot lifecycle counters.
+func (n *NoopRecorder) RecordJournalSnapshotStored(tenantID string)                       {}
+func (n *NoopRecorder) RecordJournalSnapshotApplied(tenantID string, success bool)        {}
+func (n *NoopRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string)         {}
+
+// 2026-08-31 (P2-2): live-stream Redis-record silent-drop counter.
+func (n *NoopRecorder) RecordLiveStreamRecordDropped(reason string) {}
 
 // globalRecorder 保存全局默认 Recorder。
 //

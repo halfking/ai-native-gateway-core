@@ -2,6 +2,7 @@
 // common.ts — サイト全体で再利用される文言：ボタン、状態、操作フィードバック、ページネーションなど。
 // 高頻出語（キャンセル/確認/有効/無効/読み込み中）は複数のモジュールから参照されるため、優先的に抽出します。
 export default {
+  credentialFallback: '資格情報',
   button: {
     cancel: 'キャンセル',
     confirm: '確認',
@@ -122,6 +123,7 @@ export default {
   cancel: 'キャンセル',
   close: '閉じる',
   confirm: '確認',
+  confirmTitle: '確認',
   count: '数',
   create: '新規作成',
   createdAt: '作成日時',
@@ -133,6 +135,7 @@ export default {
   enabled: '有効',
   lastOccurred: '最終発生',
   loading: '読み込み中…',
+  never: '未実行',
   module: 'モジュール',
   no: 'いいえ',
   refresh: '更新',

@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -175,8 +176,8 @@ func TestSurvivalMetricsAttemptsTotalPerCandidate(t *testing.T) {
 		}
 		h := newCoordHarness(&scriptedExecutor{errs: []error{multi, multi}})
 		c := h.coordinator()
-		// Wait-recovery: both attempts run before the deadline stops the loop.
-		c.Options.Deadline = 3 * time.Second
+		// Leave enough budget for the first recovery wait and second attempt.
+		c.Options.Deadline = 12 * time.Second
 
 		rlBefore := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("rate_limit", "7"))
 		udBefore := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("upstream_down", "9"))
@@ -240,6 +241,7 @@ func TestSurvivalMetricsStateTransitions(t *testing.T) {
 		{"running", "succeed", "success"},
 		{"running", "fail_terminal", "terminal_candidate"},
 		{"running", "expired", "deadline_exceeded"},
+		{"waiting_recovery", "expired", "deadline_exceeded"},
 		{"waiting_recovery", "cancelled", "client_disconnected"},
 	}
 
@@ -299,13 +301,14 @@ func TestSurvivalMetricsStateTransitions(t *testing.T) {
 		h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
 		c := h.coordinator()
 		c.Options.Deadline = 3 * time.Second
+		c.Options.RetryInterval = 0
 		before := survivalTransitionsBefore(t, keys)
 
 		c.Run(context.Background(), h.sw, &executors.ExecParams{})
 
 		got := survivalTransitionDeltas(t, before, keys)
-		if got["running>expired|deadline_exceeded"] != 1 {
-			t.Fatalf("deadline must emit running->expired exactly once, got %v", got)
+		if got["waiting_recovery>expired|deadline_exceeded"] != 1 {
+			t.Fatalf("deadline during wait must emit waiting_recovery->expired exactly once, got %v", got)
 		}
 	})
 
@@ -382,8 +385,8 @@ func TestSurvivalMetricsWaitSeconds(t *testing.T) {
 			if ca-cb != 1 {
 				t.Fatalf("wait_seconds{%s} sample count delta = %d, want 1", tc.reason, ca-cb)
 			}
-			if got := (sa - sb) * 1e9; got != 2*1e9 {
-				t.Fatalf("wait_seconds{%s} observed %vns, want the 2s base backoff", tc.reason, got)
+			if got := (sa - sb) * 1e9; math.Abs(got-5*1e9) > 1e-3 {
+				t.Fatalf("wait_seconds{%s} observed %vns, want the 5s base backoff", tc.reason, got)
 			}
 		})
 	}
@@ -428,10 +431,10 @@ func TestSurvivalMetricsRecoveryLatency(t *testing.T) {
 		if ca-cb != 1 {
 			t.Fatalf("recovery_latency sample count delta = %d, want 1", ca-cb)
 		}
-		// Backoff doubles: 2s wait + 4s wait = first failure → completion
-		// spans 6s on the fake clock.
-		if got := (sa - sb) * 1e9; got != 6*1e9 {
-			t.Fatalf("recovery_latency observed %vns, want 6s (2s+4s waits)", got)
+		// Backoff doubles: 5s wait + 10s wait = first failure → completion
+		// spans 15s on the fake clock.
+		if got := (sa - sb) * 1e9; got != 15*1e9 {
+			t.Fatalf("recovery_latency observed %vns, want 15s (5s+10s waits)", got)
 		}
 	})
 
@@ -450,7 +453,7 @@ func TestSurvivalMetricsRecoveryLatency(t *testing.T) {
 	t.Run("task that never recovers records no recovery latency", func(t *testing.T) {
 		h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
 		c := h.coordinator()
-		c.Options.Deadline = 3 * time.Second
+		c.Options.Deadline = 6 * time.Second
 		cb, _ := survivalHistogramDelta(t, hist())
 
 		c.Run(context.Background(), h.sw, &executors.ExecParams{})

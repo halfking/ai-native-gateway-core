@@ -2,6 +2,7 @@ package upgrader
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -178,5 +179,222 @@ func TestClient_CheckUpdateDistribution(t *testing.T) {
 				t.Errorf("DownloadURL = %s, want %s", resp.Release.DownloadURL, tt.wantURL)
 			}
 		})
+	}
+}
+
+func TestClient_CheckDistributionSendsProofForInstanceHint(t *testing.T) {
+	proof := DeviceProof{InstanceID: "instance-1", LicenseKey: "license-1", HardwareHash: "hardware-1"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/maintain-api/distribution/version-check" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("instance_id"); got != proof.InstanceID {
+			t.Fatalf("instance_id = %q, want %q", got, proof.InstanceID)
+		}
+		assertProofHeaders(t, r, proof)
+		_, _ = w.Write([]byte(`{"update_available":true,"latest_version":"v1.15.0","auto_upgrade":true,"upgrade_policy_id":"policy-1","estimated_downtime_minutes":10,"target_artifacts":[{"platform":"linux","arch":"amd64","artifact_name":"gateway.tar.gz","size_bytes":123,"sha256":"abc","storage_uri":"https://files.example/gateway.tar.gz"}]}`))
+	}))
+	defer server.Close()
+
+	result, err := NewClientWithProof(server.URL, proof).CheckDistribution(context.Background(), "v1.14.0", "stable", "linux", "amd64")
+	if err != nil {
+		t.Fatalf("CheckDistribution() error = %v", err)
+	}
+	if !result.HasUpdate || result.Release == nil || result.Release.Version != "v1.15.0" {
+		t.Fatalf("unexpected release result: %#v", result)
+	}
+	if !result.AutoUpgrade || result.UpgradePolicyID != "policy-1" || result.EstimatedDowntimeMinutes != 10 {
+		t.Fatalf("unexpected policy hint: %#v", result)
+	}
+}
+
+func TestClient_CheckDistributionWithoutOrRejectedProofDoesNotCreateHint(t *testing.T) {
+	tests := []struct {
+		name  string
+		proof DeviceProof
+	}{
+		{name: "anonymous"},
+		{name: "cross instance proof rejected by server", proof: DeviceProof{InstanceID: "instance-2", LicenseKey: "wrong", HardwareHash: "wrong"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.proof.valid() {
+					assertProofHeaders(t, r, tt.proof)
+					if got := r.URL.Query().Get("instance_id"); got != tt.proof.InstanceID {
+						t.Fatalf("instance_id = %q, want %q", got, tt.proof.InstanceID)
+					}
+				} else if got := r.URL.Query().Get("instance_id"); got != "" {
+					t.Fatalf("anonymous request included instance_id %q", got)
+				}
+				_, _ = w.Write([]byte(`{"update_available":true,"latest_version":"v1.15.0","auto_upgrade":false,"target_artifacts":[{"platform":"linux","arch":"amd64","sha256":"abc","storage_uri":"https://files.example/gateway.tar.gz"}]}`))
+			}))
+			defer server.Close()
+
+			result, err := NewClientWithProof(server.URL, tt.proof).CheckDistribution(context.Background(), "v1.14.0", "stable", "linux", "amd64")
+			if err != nil {
+				t.Fatalf("CheckDistribution() error = %v", err)
+			}
+			if !result.HasUpdate || result.AutoUpgrade || result.UpgradePolicyID != "" {
+				t.Fatalf("unexpected anonymous/rejected-proof result: %#v", result)
+			}
+		})
+	}
+}
+
+func TestClient_PollUpgradeTaskTreatsConsecutive204AsIdle(t *testing.T) {
+	proof := DeviceProof{InstanceID: "instance-1", LicenseKey: "license-1", HardwareHash: "hardware-1"}
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/maintain-api/upgrade/poll" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		assertProofHeaders(t, r, proof)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client := NewClientWithProof(server.URL, proof)
+	for i := 0; i < 2; i++ {
+		task, err := client.PollUpgradeTask(context.Background())
+		if err != nil {
+			t.Fatalf("poll %d error = %v", i, err)
+		}
+		if task != nil {
+			t.Fatalf("poll %d task = %#v, want nil", i, task)
+		}
+	}
+	if requests != 2 {
+		t.Fatalf("requests = %d, want 2", requests)
+	}
+}
+
+func TestClient_P3TaskProtocol(t *testing.T) {
+	proof := DeviceProof{InstanceID: "instance-1", LicenseKey: "license-1", HardwareHash: "hardware-1"}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/maintain-api/upgrade/poll":
+			if r.Method != http.MethodGet {
+				t.Fatalf("poll method = %s", r.Method)
+			}
+			assertProofHeaders(t, r, proof)
+			_, _ = w.Write([]byte(`{"task_id":42,"to_version":"v1.15.0","pre_check":true,"download_hint":"POST ticket"}`))
+		case "/maintain-api/downloads/ticket":
+			if r.Method != http.MethodPost {
+				t.Fatalf("ticket method = %s", r.Method)
+			}
+			var body downloadTicketRequest
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode ticket request: %v", err)
+			}
+			if body.Version != "v1.15.0" || body.Platform != "linux" || body.Arch != "amd64" {
+				t.Fatalf("unexpected ticket request: %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req-1","url":"https://files.example/gateway.tar.gz","expires_at":"2026-08-17T12:00:00Z","file_name":"gateway.tar.gz"}`))
+		case "/maintain-api/upgrade/tasks/42/progress":
+			assertProofHeaders(t, r, proof)
+			var body UpgradeProgress
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode progress: %v", err)
+			}
+			if body.Status != "downloading" || body.Stage != "download" || body.Progress != 50 {
+				t.Fatalf("unexpected progress: %#v", body)
+			}
+			w.WriteHeader(http.StatusAccepted)
+		case "/maintain-api/upgrade/tasks/42/result":
+			assertProofHeaders(t, r, proof)
+			var body UpgradeResult
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode result: %v", err)
+			}
+			if body.Status != "completed" || body.DurationSeconds != 12 {
+				t.Fatalf("unexpected result: %#v", body)
+			}
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithProof(server.URL, proof)
+	task, err := client.PollUpgradeTask(context.Background())
+	if err != nil {
+		t.Fatalf("PollUpgradeTask() error = %v", err)
+	}
+	if task.TaskID != 42 || task.ToVersion != "v1.15.0" {
+		t.Fatalf("unexpected task: %#v", task)
+	}
+	ticket, err := client.CreateDownloadTicket(context.Background(), task.ToVersion, "linux", "amd64")
+	if err != nil {
+		t.Fatalf("CreateDownloadTicket() error = %v", err)
+	}
+	if ticket.RequestID != "req-1" || ticket.URL == "" {
+		t.Fatalf("unexpected ticket: %#v", ticket)
+	}
+	if err := client.ReportUpgradeProgress(context.Background(), task.TaskID, UpgradeProgress{Status: "downloading", Stage: "download", Progress: 50}); err != nil {
+		t.Fatalf("ReportUpgradeProgress() error = %v", err)
+	}
+	if err := client.ReportUpgradeResult(context.Background(), task.TaskID, UpgradeResult{Status: "completed", DurationSeconds: 12}); err != nil {
+		t.Fatalf("ReportUpgradeResult() error = %v", err)
+	}
+}
+
+func TestClient_P3TaskAPIsRequireProof(t *testing.T) {
+	client := NewClient("https://maintain.example")
+	if _, err := client.PollUpgradeTask(context.Background()); err == nil {
+		t.Fatal("PollUpgradeTask() error = nil, want proof error")
+	}
+	if err := client.ReportUpgradeProgress(context.Background(), 1, UpgradeProgress{Status: "downloading", Stage: "download"}); err == nil {
+		t.Fatal("ReportUpgradeProgress() error = nil, want proof error")
+	}
+	if err := client.ReportUpgradeResult(context.Background(), 1, UpgradeResult{Status: "completed"}); err == nil {
+		t.Fatal("ReportUpgradeResult() error = nil, want proof error")
+	}
+}
+
+func TestClient_CheckDistributionEscapesQueryValues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("channel"); got != "beta&canary" {
+			t.Fatalf("channel = %q", got)
+		}
+		if got := r.URL.Query().Get("current"); got != "v1.14.0+build?x=1" {
+			t.Fatalf("current = %q", got)
+		}
+		_, _ = w.Write([]byte(`{"update_available":false}`))
+	}))
+	defer server.Close()
+
+	result, err := NewClient(server.URL).CheckDistribution(context.Background(), "v1.14.0+build?x=1", "beta&canary", "linux", "amd64")
+	if err != nil {
+		t.Fatalf("CheckDistribution() error = %v", err)
+	}
+	if result.HasUpdate {
+		t.Fatal("HasUpdate = true, want false")
+	}
+}
+
+func TestClient_RejectsInvalidTaskStatuses(t *testing.T) {
+	proof := DeviceProof{InstanceID: "instance-1", LicenseKey: "license-1", HardwareHash: "hardware-1"}
+	client := NewClientWithProof("https://maintain.example", proof)
+	if err := client.ReportUpgradeProgress(context.Background(), 1, UpgradeProgress{Status: "completed", Stage: "download"}); err == nil {
+		t.Fatal("ReportUpgradeProgress() error = nil, want invalid status")
+	}
+	if err := client.ReportUpgradeResult(context.Background(), 1, UpgradeResult{Status: "installing"}); err == nil {
+		t.Fatal("ReportUpgradeResult() error = nil, want invalid status")
+	}
+}
+
+func assertProofHeaders(t *testing.T, r *http.Request, proof DeviceProof) {
+	t.Helper()
+	if got := r.Header.Get("X-Instance-ID"); got != proof.InstanceID {
+		t.Errorf("X-Instance-ID = %q, want %q", got, proof.InstanceID)
+	}
+	if got := r.Header.Get("X-License-Key"); got != proof.LicenseKey {
+		t.Errorf("X-License-Key = %q, want %q", got, proof.LicenseKey)
+	}
+	if got := r.Header.Get("X-Hardware-Hash"); got != proof.HardwareHash {
+		t.Errorf("X-Hardware-Hash = %q, want %q", got, proof.HardwareHash)
 	}
 }

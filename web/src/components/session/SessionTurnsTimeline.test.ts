@@ -4,6 +4,7 @@
 
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createI18n } from 'vue-i18n'
 import SessionTurnsTimeline from './SessionTurnsTimeline.vue'
 import {
   SessionObsApiError,
@@ -19,6 +20,31 @@ vi.mock('../../api/sessionTurnsTree', async (importOriginal) => {
     ...actual,
     fetchSessionTurnsTree: (...args: unknown[]) => fetchSessionTurnsTreeMock(...args),
   }
+})
+
+const i18n = createI18n({
+  legacy: false,
+  globalInjection: true,
+  locale: 'zh-CN',
+  fallbackLocale: 'en',
+  messages: {
+    'zh-CN': {
+      turnDigest: { view: '查看摘要' },
+      sessionTimeline: {
+        latencyUnknown: '未知',
+        refresh: '刷新',
+        refreshing: '刷新中…',
+        retry: '重试',
+        empty: '该会话暂无轮次记录',
+        loading: '加载中…',
+        loadMore: '加载更多轮次',
+        allLoaded: '共 {n} 轮，已全部加载',
+        errors: {
+          network: '网络错误，请检查连接后重试',
+        },
+      },
+    },
+  },
 })
 
 function page(over: Partial<SessionTurnsTreeResponse> = {}): SessionTurnsTreeResponse {
@@ -58,7 +84,10 @@ function page(over: Partial<SessionTurnsTreeResponse> = {}): SessionTurnsTreeRes
 }
 
 function mountTimeline(sessionId = 'sess-aaa') {
-  return mount(SessionTurnsTimeline, { props: { sessionId } })
+  return mount(SessionTurnsTimeline, {
+    props: { sessionId },
+    global: { plugins: [i18n] },
+  })
 }
 
 beforeEach(() => {

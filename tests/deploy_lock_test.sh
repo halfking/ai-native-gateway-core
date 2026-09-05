@@ -33,6 +33,16 @@
 #
 #   AC-L7  Given lock metadata, no secrets are written to the lock
 #          file/dir (target/user/host/pid/start/commit/version only).
+#   AC-L8  An old remote lock owner cannot remove a replacement owner's lock.
+#   AC-L9  Given a 154 lock, a 245 lock can still be acquired because
+#          deployment locks are isolated by target.
+#   AC-L10 The shared build lock serializes checkout mutations without
+#          conflating target lock ownership.
+#   AC-L11 Explicit unlock target selection wins over stale overrides.
+#   AC-L12 Forced recovery removes only dead, target-matching locks.
+#   AC-L13 Forced recovery clears stale target/build locks before reacquire.
+#   AC-L14 Force recovery rejects live/cross-target lock owners and remote
+#          read failures.
 # =====================================================================
 set -uo pipefail
 
@@ -58,12 +68,13 @@ assert_rc()   { local rc=$2; shift 2; "$@"; local got=$?; [[ "$rc" == "$got" ]] 
 source "$LIB_LOCK"
 
 setup_lock_env() {
-  local tmp; tmp=$(mktemp -d -t kx-lock-test.XXXXXX)
-  export LOCK_LOCAL_DIR="$tmp/local.lock"
+  LOCK_TEST_TMP=$(mktemp -d -t kx-lock-test.XXXXXX)
+  export LOCK_LOCAL_DIR="$LOCK_TEST_TMP/local.lock"
   # Force the mkdir fallback so we test both code paths consistently.
   export LOCK_FLOCK_BIN=""
-  printf '%s\n' "$tmp"
 }
+
+LOCK_TEST_TMP=""
 
 cleanup_lock_env() {
   local tmp=$1
@@ -75,7 +86,8 @@ cleanup_lock_env() {
 # --- AC-L1: same-process contention -------------------------------
 test_concurrent_same_process() {
   echo "── AC-L1: same-process contention ──"
-  local tmp; tmp=$(setup_lock_env)
+  setup_lock_env
+  local tmp=$LOCK_TEST_TMP
 
   # First acquire — should succeed.
   lock_acquire_local
@@ -112,7 +124,8 @@ test_concurrent_same_process() {
 # --- AC-L3: parallel-process racing (mkdir atomicity) -------------
 test_concurrent_parallel_process() {
   echo "── AC-L3: parallel-process racing ──"
-  local tmp; tmp=$(setup_lock_env)
+  setup_lock_env
+  local tmp=$LOCK_TEST_TMP
 
   # Spawn 5 racing child processes — exactly one must win.
   local pids=()
@@ -144,16 +157,16 @@ test_concurrent_parallel_process() {
     esac
   done
 
-  # mkdir atomicity guarantees at most one winner per instant.
-  if [[ $wins -ge 1 ]]; then
-    log_pass "at least one racer won ($wins wins / $losses losses)"
+  # mkdir atomicity guarantees exactly one winner per instant.
+  if [[ $wins -eq 1 ]]; then
+    log_pass "exactly one racer won ($wins wins / $losses losses)"
   else
-    log_fail "no winner (all $losses lost the race — broken atomicity)"
+    log_fail "expected exactly 1 winner, got $wins wins / $losses losses — broken atomicity"
   fi
-  if [[ $losses -ge 1 ]]; then
-    log_pass "at least one racer lost ($losses losses) — contention detected"
+  if [[ $losses -eq $(( ${#pids[@]} - 1 )) ]]; then
+    log_pass "all other racers lost ($losses losses) — contention detected"
   else
-    log_fail "no losers — all $wins won simultaneously — no contention"
+    log_fail "expected $(( ${#pids[@]} - 1 )) losses, got $losses — no contention"
   fi
 
   cleanup_lock_env "$tmp"
@@ -306,10 +319,84 @@ SSHEOF
   rm -rf "$tmp"
 }
 
-# --- AC-L7: lock metadata contains no secrets ---------------------
+# --- AC-L7: failed remote metadata write cleans partial lock ------
+test_remote_metadata_failure_cleans_lock() {
+  echo "── AC-L7: remote metadata failure cleanup ──"
+  local tmp; tmp=$(mktemp -d -t kx-remote-lock.XXXXXX)
+  local lock_path="$tmp/deploy.lock"
+  local fakebin="$tmp/bin"
+  mkdir -p "$fakebin"
+  cat >"$fakebin/base64" <<'EOF'
+#!/usr/bin/env bash
+exit 9
+EOF
+  chmod +x "$fakebin/base64"
+  failing_remote() {
+    PATH="$fakebin:$PATH" bash -c "$1"
+  }
+
+  local rc
+  if lock_acquire_remote failing_remote 245 "$lock_path" 2>/dev/null; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [[ $rc -eq 75 ]]; then
+    log_pass "metadata failure returns EX_TEMPFAIL"
+  else
+    log_fail "metadata failure returned rc=$rc, want 75"
+  fi
+  if [[ ! -e "$lock_path" ]]; then
+    log_pass "partial remote lock removed after metadata failure"
+  else
+    log_fail "partial remote lock leaked after metadata failure"
+  fi
+  rm -rf "$tmp"
+}
+
+# --- AC-L8: old remote owner cannot remove replacement lock --------
+test_remote_lock_owner_compare_and_delete() {
+  echo "── AC-L8: remote lock owner compare-and-delete ──"
+  local tmp; tmp=$(mktemp -d -t kx-remote-owner.XXXXXX)
+  local lock_path="$tmp/deploy.lock"
+  local owner_a="owner-a" owner_b="owner-b"
+  local fake_remote
+  fake_remote() { bash -c "$1"; }
+
+  LOCK_REMOTE_OWNER_TOKEN="$owner_a" lock_acquire_remote fake_remote 154 "$lock_path" 2>/dev/null
+  if [[ ! -f "$lock_path/metadata" ]] || ! grep -q "^owner_token=$owner_a$" "$lock_path/metadata"; then
+    log_fail "first remote owner metadata was not created"
+    rm -rf "$tmp"
+    return
+  fi
+  printf 'target=154\nowner_token=%s\n' "$owner_b" > "$lock_path/metadata"
+  LOCK_REMOTE_OWNER_TOKEN="$owner_a" lock_release_remote fake_remote "$lock_path"
+  if [[ -d "$lock_path" ]] && grep -q "^owner_token=$owner_b$" "$lock_path/metadata"; then
+    log_pass "old remote owner cannot delete replacement lock"
+  else
+    log_fail "old remote owner removed replacement lock"
+  fi
+  LOCK_REMOTE_OWNER_TOKEN="$owner_b" lock_release_remote fake_remote "$lock_path"
+  [[ ! -e "$lock_path" ]] && log_pass "current remote owner releases its lock" \
+    || log_fail "current remote owner did not release its lock"
+  # Release-race guard: a dangling staging dir must never be left behind,
+  # and a missing metadata file must be a no-op (not an error).
+  if compgen -G "$tmp/deploy.lock.releasing.*" >/dev/null; then
+    log_fail "lock release leaked a staging dir"
+  else
+    log_pass "lock release leaves no staging dir"
+  fi
+  mkdir -p "$lock_path"
+  LOCK_REMOTE_OWNER_TOKEN="$owner_b" lock_release_remote fake_remote "$lock_path" && \
+    log_pass "release on metadata-less lock is a no-op (rc=0)" \
+    || log_fail "release on metadata-less lock failed"
+  rm -rf "$tmp"
+}
+
 test_lock_metadata_no_secrets() {
-  echo "── AC-L7: lock metadata contains no secrets ──"
-  local tmp; tmp=$(setup_lock_env)
+  echo "── AC-L8: lock metadata contains no secrets ──"
+  setup_lock_env
+  local tmp=$LOCK_TEST_TMP
   lock_acquire_local 2>/dev/null
 
   local meta_file="$LOCK_LOCAL_DIR/metadata"
@@ -351,17 +438,321 @@ test_lock_metadata_no_secrets() {
   cleanup_lock_env "$tmp"
 }
 
+# --- AC-L8: target lock isolation -----------------------------------
+test_target_lock_isolation() {
+  echo "── AC-L8: target lock isolation ──"
+  local tmp; tmp=$(mktemp -d -t kx-target-lock.XXXXXX)
+  local lock_154="$tmp/kx-llm-gateway-deploy-154.lock"
+  local lock_245="$tmp/kx-llm-gateway-deploy-245.lock"
+
+  LOCK_FLOCK_BIN="" LOCK_LOCAL_DIR="$lock_154" LOCK_LOCAL_TARGET=154
+  lock_acquire_local 2>/dev/null
+  local first_rc=$?
+  if [[ $first_rc -eq 0 ]]; then
+    log_pass "154 lock acquired"
+  else
+    log_fail "154 lock acquire failed (rc=$first_rc)"
+    rm -rf "$tmp"; return
+  fi
+
+  LOCK_LOCAL_DIR="$lock_245" LOCK_LOCAL_TARGET=245
+  lock_acquire_local 2>/dev/null
+  local second_rc=$?
+  if [[ $second_rc -eq 0 ]]; then
+    log_pass "245 lock acquired while 154 lock is held"
+  else
+    log_fail "245 lock blocked by 154 lock (rc=$second_rc)"
+  fi
+
+  [[ -f "$lock_154/metadata" ]] && grep -q '^target=154$' "$lock_154/metadata" \
+    && log_pass "154 metadata identifies target 154" \
+    || log_fail "154 metadata target mismatch"
+  [[ -f "$lock_245/metadata" ]] && grep -q '^target=245$' "$lock_245/metadata" \
+    && log_pass "245 metadata identifies target 245" \
+    || log_fail "245 metadata target mismatch"
+
+  LOCK_LOCAL_DIR="$lock_245"; lock_release_local
+  LOCK_LOCAL_DIR="$lock_154"; lock_release_local
+  rm -rf "$tmp"
+}
+
+# --- AC-L9: shared build lock ---------------------------------------
+test_shared_build_lock() {
+  echo "── AC-L9: shared build lock ──"
+  local tmp; tmp=$(mktemp -d -t kx-build-lock.XXXXXX)
+  export LOCK_LOCAL_BUILD_DIR="$tmp/build.lock"
+  export LOCK_BUILD_FLOCK_BIN=""
+  export LOCK_BUILD_TARGET=154
+
+  lock_acquire_build 2>/dev/null
+  local first_rc=$?
+  if [[ $first_rc -eq 0 ]]; then
+    log_pass "first shared build lock acquired"
+  else
+    log_fail "first shared build lock failed (rc=$first_rc)"
+    rm -rf "$tmp"; return
+  fi
+
+  LOCK_BUILD_TARGET=245
+  lock_acquire_build 2>/dev/null
+  local second_rc=$?
+  [[ $second_rc -eq 75 ]] && log_pass "second build lock is rejected with EX_TEMPFAIL" \
+    || log_fail "second build lock rc=$second_rc (want 75)"
+
+  [[ -d "$LOCK_LOCAL_BUILD_DIR" ]] && log_pass "build lock remains held after contention" \
+    || log_fail "build lock disappeared after contention"
+  lock_release_build
+  [[ ! -e "$LOCK_LOCAL_BUILD_DIR" ]] && log_pass "build lock releases cleanly" \
+    || log_fail "build lock leaked after release"
+
+  rm -rf "$tmp"
+}
+
+# --- AC-L10: flock build lock path (when available) ----------------
+test_shared_build_lock_flock() {
+  echo "── AC-L10: shared build lock flock ──"
+  local flock_bin; flock_bin=$(command -v flock 2>/dev/null || true)
+  if [[ -z "$flock_bin" ]]; then
+    log_info "flock unavailable; mkdir path covered by AC-L9"
+    return 0
+  fi
+  local tmp; tmp=$(mktemp -d -t kx-build-flock.XXXXXX)
+  export LOCK_LOCAL_BUILD_DIR="$tmp/build.lock"
+  export LOCK_BUILD_FLOCK_BIN="$flock_bin"
+  export LOCK_BUILD_TARGET=245
+
+  lock_acquire_build 2>/dev/null
+  local first_rc=$?
+  [[ $first_rc -eq 0 ]] && log_pass "flock build lock acquired" \
+    || log_fail "flock build lock failed (rc=$first_rc)"
+  [[ -f "$LOCK_LOCAL_BUILD_DIR" ]] && grep -q '^target=245$' "$LOCK_LOCAL_BUILD_DIR" \
+    && log_pass "flock metadata identifies target 245" \
+    || log_fail "flock metadata missing target 245"
+  lock_release_build
+  [[ ! -e "$LOCK_LOCAL_BUILD_DIR" ]] && log_pass "flock build lock releases cleanly" \
+    || log_fail "flock build lock leaked after release"
+  rm -rf "$tmp"
+}
+
+# --- AC-L10: explicit unlock target precedence ---------------------
+test_unlock_target_precedence() {
+  echo "── AC-L10: unlock target precedence ──"
+  local tmp; tmp=$(mktemp -d -t kx-unlock-target.XXXXXX)
+  local legacy="$tmp/legacy.lock" target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
+  mkdir -p "$legacy" "$target_lock"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$target_lock/metadata"
+
+  local out rc=0
+  out=$(LOCK_LOCAL_DIR="$legacy" TMPDIR="$tmp" bash "$REPO_ROOT/scripts/deploy-lib/unlock-local.sh" --target 245 2>&1) || rc=$?
+  [[ $rc -eq 1 ]] && log_pass "explicit target inspects target lock despite stale override" \
+    || log_fail "unexpected unlock rc=$rc"
+  [[ "$out" == *"target=245"* ]] && log_pass "target lock metadata was selected" \
+    || log_fail "target lock metadata was not selected"
+  [[ -d "$legacy" ]] && log_pass "stale override lock was not removed" \
+    || log_fail "stale override lock was unexpectedly removed"
+
+  rm -rf "$tmp"
+}
+
+# --- AC-L11: force flag parser --------------------------------------
+test_force_flag_parser() {
+  echo "── AC-L11: force flag parser ──"
+  local parser="$REPO_ROOT/scripts/deploy-lib/parse-wrapper-flags.sh"
+  local -a args=()
+  local force=0
+  # shellcheck disable=SC1090
+  source "$parser"
+  extract_force_unlock force args --seq 42 --force --no-frontend
+  [[ $force -eq 1 ]] && log_pass "--force is recognized" \
+    || log_fail "--force was not recognized"
+  [[ ${#args[@]} -eq 3 && "${args[0]}" == "--seq" && "${args[1]}" == "42" && "${args[2]}" == "--no-frontend" ]] \
+    && log_pass "--force is stripped while deployment args are preserved" \
+    || log_fail "--force parsing changed deployment args: ${args[*]}"
+
+  args=(); force=0
+  extract_force_unlock force args --force-unlock --seq 43
+  [[ $force -eq 1 && ${#args[@]} -eq 2 && "${args[0]}" == "--seq" && "${args[1]}" == "43" ]] \
+    && log_pass "--force-unlock remains a compatible alias" \
+    || log_fail "--force-unlock alias parsing failed"
+}
+
+# --- AC-L12: stale lock recovery -----------------------------------
+test_force_recovery_stale_locks() {
+  echo "── AC-L12: stale lock recovery ──"
+  local tmp; tmp=$(mktemp -d -t kx-force-recovery.XXXXXX)
+  export TMPDIR="$tmp"
+  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
+  local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
+  local build_lock="$tmp/kx-llm-gateway-build.lock"
+  mkdir -p "$target_lock" "$build_lock"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$target_lock/metadata"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$build_lock/metadata"
+
+  lock_recover_local 245 1
+  lock_recover_build 1
+  if [[ ! -e "$target_lock" && ! -e "$build_lock" ]]; then
+    log_pass "force removes stale target and build locks"
+  else
+    log_fail "force left stale lock state"
+  fi
+
+  export LOCK_FLOCK_BIN=""
+  export LOCK_LOCAL_DIR="$target_lock"
+  export LOCK_LOCAL_TARGET=245
+  export LOCK_LOCAL_BUILD_DIR="$build_lock"
+  export LOCK_BUILD_FLOCK_BIN=""
+  export LOCK_BUILD_TARGET=245
+  lock_acquire_local && lock_acquire_build
+  if [[ -f "$target_lock/metadata" && -f "$build_lock/metadata" ]]; then
+    log_pass "normal acquisition rebuilds both lock metadata files"
+  else
+    log_fail "normal acquisition did not rebuild lock metadata"
+  fi
+  lock_release_build
+  lock_release_local
+  rm -rf "$tmp"
+}
+
+# --- AC-L13: force recovery safety guards --------------------------
+test_force_recovery_safety() {
+  echo "── AC-L13: force recovery safety guards ──"
+  local tmp; tmp=$(mktemp -d -t kx-force-safety.XXXXXX)
+  export TMPDIR="$tmp"
+  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR LOCK_FLOCK_BIN
+  local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
+  mkdir -p "$target_lock"
+  printf 'target=154\npid=999999\n' >"$target_lock/metadata"
+  local rc=0
+  lock_recover_local 245 1 || rc=$?
+  [[ $rc -ne 0 && -d "$target_lock" ]] && log_pass "cross-target local lock is preserved" \
+    || log_fail "cross-target local lock was removed"
+
+  rm -rf "$target_lock"
+  mkdir -p "$target_lock"
+  sleep 30 &
+  local live_pid=$!
+  # RETURN trap guarantees the background sleep is reaped even if the
+  # test bails out early (set -e, assertion failure, Ctrl+C). Otherwise
+  # the 30s sleep leaks until the test process itself dies.
+  trap 'kill "$live_pid" 2>/dev/null || true; wait "$live_pid" 2>/dev/null || true; rm -rf "$tmp" || true' RETURN
+  printf 'target=245\npid=%s\n' "$live_pid" >"$target_lock/metadata"
+  rc=0
+  lock_recover_local 245 1 || rc=$?
+  if [[ $rc -eq 75 && -d "$target_lock" ]] && kill -0 "$live_pid" 2>/dev/null; then
+    log_pass "live non-deploy local PID is protected"
+  else
+    log_fail "live non-deploy local PID was not protected (rc=$rc)"
+  fi
+
+  local remote_cmd
+  remote_cmd() { return 255; }
+  rc=0
+  lock_recover_remote remote_cmd 245 /var/lib/llm-gateway-go/deploy.lock 1 || rc=$?
+  [[ $rc -eq 75 ]] && log_pass "remote lock read failure fails closed" \
+    || log_fail "remote lock read failure returned rc=$rc"
+  trap - RETURN
+  kill "$live_pid" 2>/dev/null || true
+  wait "$live_pid" 2>/dev/null || true
+  rm -rf "$tmp" || true
+  return 0
+}
+
+# --- AC-L14: flock recovery path safety ----------------------------
+# Uses a stub `flock` binary to simulate the held/available states
+# without requiring real util-linux flock on macOS CI. The stub reads
+# /tmp/__flock_state and exits 0 (held) when "held", 1 (would block)
+# when "available". This exercises the flock-fail-closed branch in
+# lock_recover_local / lock_recover_build that AC-L12/AC-L13 leave
+# untested because they set LOCK_FLOCK_BIN="".
+test_force_recovery_flock_path() {
+  echo "── AC-L14: force recovery flock path ──"
+  local tmp; tmp=$(mktemp -d -t kx-flock-path.XXXXXX)
+  export TMPDIR="$tmp"
+  unset LOCK_LOCAL_DIR LOCK_LOCAL_BUILD_DIR
+  local state_file="$tmp/__flock_state"
+  local stubbin="$tmp/bin"
+  mkdir -p "$stubbin"
+  printf 'available\n' >"$state_file"
+  cat >"$stubbin/flock" <<EOF
+#!/usr/bin/env bash
+# flock -n exit 0 = "acquired lock" = file is AVAILABLE.
+# flock -n exit 1 = "would block"    = file is HELD by another holder.
+state="$state_file"
+if [[ -f "\$state" ]] && [[ "\$(cat "\$state" 2>/dev/null)" == "held" ]]; then
+  exit 1  # would block → lock IS held
+fi
+exit 0  # acquired → lock IS available
+EOF
+  chmod +x "$stubbin/flock"
+
+  local target_lock="$tmp/kx-llm-gateway-deploy-245.lock"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$target_lock"
+  local build_lock="$tmp/kx-llm-gateway-build.lock"
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$build_lock"
+
+  # Inject the stub flock into the lock module's resolution order. Without
+  # LOCK_FLOCK_BIN set, lock_recover_local / lock_recover_build treat the
+  # flock probe as unverifiable and fail closed — defeating the test goal.
+  export LOCK_FLOCK_BIN="$stubbin/flock"
+  export LOCK_BUILD_FLOCK_BIN="$stubbin/flock"
+
+  # Case 1: flock reports held → recovery refuses with rc=75.
+  printf 'held\n' >"$state_file"
+  local rc=0
+  lock_recover_local 245 1 || rc=$?
+  [[ $rc -eq 75 && -f "$target_lock" ]] && log_pass "flock-held target lock refuses removal (rc=75)" \
+    || log_fail "flock-held target lock removal returned rc=$rc"
+
+  rc=0
+  lock_recover_build 1 || rc=$?
+  [[ $rc -eq 75 && -f "$build_lock" ]] && log_pass "flock-held build lock refuses removal (rc=75)" \
+    || log_fail "flock-held build lock removal returned rc=$rc"
+
+  # Case 2: flock reports available → recovery removes the stale file
+  # because the holder PID is dead.
+  printf 'available\n' >"$state_file"
+  rc=0
+  lock_recover_local 245 1 || rc=$?
+  [[ $rc -eq 0 && ! -e "$target_lock" ]] && log_pass "flock-available target lock is removed" \
+    || log_fail "flock-available target lock removal rc=$rc"
+
+  rc=0
+  lock_recover_build 1 || rc=$?
+  [[ $rc -eq 0 && ! -e "$build_lock" ]] && log_pass "flock-available build lock is removed" \
+    || log_fail "flock-available build lock removal rc=$rc"
+
+  # Case 3: flock binary missing → unverifiable, refuse with rc=75.
+  printf 'target=245\npid=999999\nstarted_at=2020-01-01T00:00:00Z\n' >"$target_lock"
+  rc=0
+  LOCK_FLOCK_BIN="" lock_recover_local 245 1 || rc=$?
+  [[ $rc -eq 75 && -f "$target_lock" ]] && log_pass "missing flock bin refuses removal (rc=75)" \
+    || log_fail "missing flock bin removal returned rc=$rc"
+
+  rm -rf "$tmp"
+  return 0
+}
+
 # --- runner --------------------------------------------------------
 run_all() {
   echo "═══════════════════════════════════════════════════════════════"
-  echo " deploy_lock_test.sh — v2 concurrent lock + stale-detection"
+  echo " deploy_lock_test.sh — v2 concurrent deploy lock + stale-detection"
   echo "═══════════════════════════════════════════════════════════════"
   test_concurrent_same_process
   test_concurrent_parallel_process
   test_stale_lock_detection
   test_trap_release_on_crash
   test_force_unlock
+  test_remote_metadata_failure_cleans_lock
+  test_remote_lock_owner_compare_and_delete
   test_lock_metadata_no_secrets
+  test_target_lock_isolation
+  test_shared_build_lock
+  test_shared_build_lock_flock
+  test_unlock_target_precedence
+  test_force_flag_parser
+  test_force_recovery_stale_locks
+  test_force_recovery_safety
+  test_force_recovery_flock_path
 
   echo
   echo "───────────────────────────────────────────────────────────────"
@@ -382,6 +773,12 @@ if [[ $# -gt 0 ]]; then
     crash)             test_trap_release_on_crash ;;
     force)             test_force_unlock ;;
     metadata)          test_lock_metadata_no_secrets ;;
+    build)             test_shared_build_lock; test_shared_build_lock_flock ;;
+    unlock-target)     test_unlock_target_precedence ;;
+    force-parser)      test_force_flag_parser ;;
+    force-recovery)    test_force_recovery_stale_locks ;;
+    force-safety)      test_force_recovery_safety ;;
+    flock-path)        test_force_recovery_flock_path ;;
     all|*)             run_all ;;
   esac
 else

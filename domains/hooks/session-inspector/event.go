@@ -5,7 +5,7 @@
 // 由 notification / IM / webhooks 等子系统订阅消费。
 //
 // 事件命名约定：SessionInspector<EventKind>Event
-//  - Type() 统一返回 "session_inspector.<kind>"，便于订阅者过滤。
+//   - Type() 统一返回 "session_inspector.<kind>"，便于订阅者过滤。
 package sessioninspector
 
 import "time"
@@ -63,11 +63,11 @@ func (e *SessionInspectorFindingEvent) GetSource() string { return e.Source }
 type SessionInspectorRecycleEvent struct {
 	SessionID    string    `json:"session_id"`
 	TenantID     string    `json:"tenant_id"`
-	Action       string    `json:"action"`         // "soft_close" | "notify_only"
-	Reason       string    `json:"reason"`         // "idle_timeout" | "absolute_max_lifetime" | "manual"
-	LastActiveAt time.Time `json:"last_active_at"` // 当时会话的最后活跃时间
-	IdleFor      string    `json:"idle_for"`       // 人类可读：例如 "35m"
-	Source       string    `json:"source"`         // "worker" | "admin"
+	Action       string    `json:"action"`             // "soft_close" | "notify_only"
+	Reason       string    `json:"reason"`             // "idle_timeout" | "absolute_max_lifetime" | "manual"
+	LastActiveAt time.Time `json:"last_active_at"`     // 当时会话的最后活跃时间
+	IdleFor      string    `json:"idle_for"`           // 人类可读：例如 "35m"
+	Source       string    `json:"source"`             // "worker" | "admin"
 	Operator     string    `json:"operator,omitempty"` // 仅 manual 时有值
 	EventTime    time.Time `json:"event_time"`
 }

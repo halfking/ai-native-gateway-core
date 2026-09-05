@@ -1,0 +1,66 @@
+package dbinit
+
+import "testing"
+
+func TestStartupFilesIncludeRequestJourneyOutboxPrerequisites(t *testing.T) {
+	runner := NewRunner("citus", "user", "db", "/tmp/sql")
+	want := []string{
+		"511_state_transitions_table.sql",
+		"515_state_transitions_seq_unique.sql",
+		"521_repair_state_transitions_tenant.sql",
+		"530_request_journey_contract.sql",
+		"531_request_journey_tenant_uniqueness.sql",
+		"552_request_journey_durable_outbox.sql",
+		"553_approval_resume_claim.sql",
+		"600_outbound_body_to_bodies_hot.sql",
+		"601_request_logs_bodies_drop_metadata.sql",
+		"602_request_logs_promote_atomic.sql",
+		"618_request_journey_snapshot_receipts.sql",
+		"656_auto_route_selections_hot.sql",
+		"657_durable_llm_tasks_decision_history.sql",
+		"session_turns_hot_bootstrap.sql",
+	}
+	positions := make(map[string]int, len(runner.StartupFiles))
+	for i, name := range runner.StartupFiles {
+		positions[name] = i
+	}
+	for _, name := range want {
+		if _, ok := positions[name]; !ok {
+			t.Errorf("startup migration %s is missing", name)
+		}
+	}
+	for i := 1; i < len(want); i++ {
+		if positions[want[i-1]] >= positions[want[i]] {
+			t.Errorf("startup migrations are out of order: %s before %s", want[i-1], want[i])
+		}
+	}
+}
+
+func TestStartupFilesIncludeSessionSummaryAndCacheRepairs(t *testing.T) {
+	runner := NewRunner("citus", "user", "db", "/tmp/sql")
+	want := []string{
+		"655_session_summaries_schema_reconcile.sql",
+		"560_session_summaries_tenant_uniqueness.sql",
+		"563_session_summary_trigger_on_hot.sql",
+		"564_session_summary_backfill_safe.sql",
+		"572_session_summary_large_token_ratio.sql",
+		"606_session_summaries_agent_expert_tags.sql",
+		"627_candidate_failure_logs_aggregation_id_unified.sql",
+		"644_tuning_views_selfcheck_and_candidate_failure_cache.sql",
+		"645_session_bodies_hot_request_unique_repair.sql",
+	}
+	positions := make(map[string]int, len(runner.StartupFiles))
+	for i, name := range runner.StartupFiles {
+		positions[name] = i
+	}
+	for _, name := range want {
+		if _, ok := positions[name]; !ok {
+			t.Errorf("startup migration %s is missing", name)
+		}
+	}
+	for i := 1; i < len(want); i++ {
+		if positions[want[i-1]] >= positions[want[i]] {
+			t.Errorf("startup migrations are out of order: %s before %s", want[i-1], want[i])
+		}
+	}
+}

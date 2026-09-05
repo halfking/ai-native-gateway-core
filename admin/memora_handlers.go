@@ -8,7 +8,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -194,7 +193,7 @@ func (h *Handler) handleMemoraSinkControl(w http.ResponseWriter, r *http.Request
 	var body struct {
 		Action string `json:"action"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -782,8 +781,8 @@ func (h *Handler) handleSessionMessages(w http.ResponseWriter, r *http.Request) 
 			rl.outbound_model,
 			rl.request_preview,
 			rl.response_preview,
-			COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
-			COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+			COALESCE(rb.request_body::text, '') AS request_body,
+			COALESCE(rb.response_body::text, '') AS response_body,
 			rl.prompt_tokens,
 			rl.completion_tokens,
 			rl.latency_ms,

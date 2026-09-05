@@ -5,6 +5,9 @@ import { localeRef } from '../i18n'
 import { useRouter } from 'vue-router'
 import { getApprovalList, approveApproval, rejectApproval, getApprovalStats, type ApprovalItem, type ApprovalStats } from '../api/approval'
 import { isSuperAdmin } from '../store'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import AppSpinner from '../components/AppSpinner.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -172,7 +175,7 @@ async function loadStats() {
 }
 
 async function quickApprove(item: ApprovalItem) {
-  if (!confirm(t('approval.list.confirm.approve', { id: item.request_id }))) {
+  if (!(await confirmDialog(t('approval.list.confirm.approve', { id: item.request_id })))) {
     return
   }
 
@@ -352,13 +355,11 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
     <!-- Table -->
     <div class="table-container">
-      <div v-if="loading && approvals.length === 0" class="loading-state">
-        <div class="loading-spinner">{{ t('approval.list.loading') }}</div>
-      </div>
+      <AppSpinner v-if="loading && approvals.length === 0" :label="t('approval.list.loading')" />
 
-      <div v-else-if="filteredApprovals.length === 0" class="empty-state">
+      <EmptyState v-else-if="filteredApprovals.length === 0" padding="64px">
         <p>{{ t('approval.list.empty') }}</p>
-      </div>
+      </EmptyState>
 
       <table v-else class="data-table">
         <thead>
@@ -527,15 +528,15 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .message-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
-  color: #f87171;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .message-success {
-  background: rgba(52, 211, 153, 0.1);
-  border: 1px solid rgba(52, 211, 153, 0.3);
-  color: #34d399;
+  background: var(--success-bg);
+  border: 1px solid var(--success-bd);
+  color: var(--success);
 }
 
 .stats-grid {
@@ -570,15 +571,15 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .stat-value.stat-highlight {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .stat-value.stat-green {
-  color: #34d399;
+  color: var(--success);
 }
 
 .stat-value.stat-red {
-  color: #f87171;
+  color: var(--danger);
 }
 
 .filters-section {
@@ -680,7 +681,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .table-row:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 
 .link-button {
@@ -694,7 +695,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .link-button:hover {
-  color: #5558e3;
+  color: var(--accent);
 }
 
 .text-mono {
@@ -709,7 +710,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .time-left {
   font-size: 11px;
-  color: #fbbf24;
+  color: var(--warning);
   margin-top: 2px;
 }
 
@@ -728,28 +729,28 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .badge-green {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 .badge-yellow {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
+  background: var(--warning-bg);
+  color: var(--warning);
 }
 
 .badge-orange {
-  background: rgba(251, 146, 60, 0.15);
-  color: #fb923c;
+  background: var(--warning-bd);
+  color: var(--warning);
 }
 
 .badge-red {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
 }
 
 .badge-gray {
-  background: rgba(139, 148, 158, 0.15);
-  color: #8b949e;
+  background: var(--neutral-bg);
+  color: var(--muted);
 }
 
 .actions-column {
@@ -804,12 +805,12 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
   border-color: var(--accent);
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: #5558e3;
+  background: var(--accent);
 }
 
 .btn-secondary {
@@ -818,23 +819,23 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 }
 
 .btn-success {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-  border-color: #34d399;
+  background: var(--success-bg);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .btn-success:hover:not(:disabled) {
-  background: rgba(52, 211, 153, 0.25);
+  background: var(--success-bd);
 }
 
 .btn-danger {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
-  border-color: #f87171;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.25);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
 .btn-sm {

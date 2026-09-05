@@ -104,6 +104,12 @@ export interface RequestLogRow {
   // Present when an LLM-generated or manually-edited title exists for the
   // row's task; undefined when no title has been recorded.
   session_title?: string | null
+
+  // 2026-08-24: 列表接口下发的请求/响应首段预览（admin/logs.go 扫描
+  // rl.request_preview / rl.response_preview）。会话总结抽屉等处以
+  // 截断文本形式展示；null = 后端未存预览。
+  request_preview?: string | null
+  response_preview?: string | null
 }
 
 // AttachmentInfo 描述单个附件的元数据 (migration 325, request_logs.attachments 元素)。
@@ -121,6 +127,14 @@ export interface AttachmentInfo {
 }
 
 export interface RequestLogDetail extends RequestLogRow {
+	// 2026-08-28: request_logs 的 request_body/response_body 列已迁移到
+	// request_logs_bodies；详情接口（/api/logs/:id）在 metadata SELECT 之后
+	// 单独走 admin/logs.go 的 fetchRequestBodies / fetchRequestOutboundBody
+	// 二阶段读取（hot heap → columnar 月分区），最终落到下面三个字段。
+	// 2026-09-05: 后端识别 ?omit_body=1（admin/logs.go 跳过 body 二阶段抓取，
+	// 含 outbound 正文），此时 request_body/response_body 为 null、outbound_body
+	// 字段整体省略（omitempty）；抽屉首包用 omitBody 拉轻量 metadata，对话/压缩/
+	// 原始 JSON tab 再由 ensureBodies 不带参数补拉完整正文。
 	request_body: any | null
 	response_body: any | null
   // 2026-07-01: 完整附件元数据数组。仅详情接口返回；为空/undefined 表示无附件。
@@ -144,6 +158,10 @@ export interface RoutingAttempt {
 	latency_ms: number
 	http_status?: number
 	error_message?: string
+	/** 2026-09-05 审计闭环2：结构化错误维度（后端 omitempty，旧数据缺省）。 */
+	error_kind?: string
+	stage?: string
+	retryable?: boolean
 }
 
 // RequestLogsAggregate carries totals over the rows matching the listLogs
@@ -262,8 +280,29 @@ export function getRequestLogs(params: {
   return req<RequestLogsResponse>('GET', `/api/logs${s ? '?' + s : ''}`)
 }
 
-export function getRequestLogDetail(requestId: string) {
-  return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}`)
+/** 请求详情。omitBody=true 时跳过后端 body 抓取，用于抽屉分阶段首包。 */
+export function getRequestLogDetail(requestId: string, opts?: { omitBody?: boolean }) {
+  const qs = opts?.omitBody ? '?omit_body=1' : ''
+  return req<RequestLogDetail>('GET', `/api/logs/${encodeURIComponent(requestId)}${qs}`)
+}
+
+// 2026-08-17: getRequestLogDetail 的 body 抓取（fetchRequestBodies）走进程内
+// LRU × TTL(5min) 缓存，本端点返回其可观测快照。鉴权为 admin 级（与
+// compression/data-lifecycle stats 同级，计数器不含租户数据）；UI 仅在
+// super admin 视图展示。用于判断列存冷路径重复点击是否被缓存缓解。
+// GET /api/admin/logs/body-cache-stats → {"size":9,"hits":2,"misses":9,"evictions":0,"hit_rate":0.18,"cap":1024}
+export interface BodyCacheStats {
+  size: number
+  hits: number
+  misses: number
+  evictions: number
+  hit_rate: number
+  /** LRU 容量上限。2026-08-17 audit 起后端返回；旧后端缺失时不显示分母。 */
+  cap?: number
+}
+
+export function getBodyCacheStats() {
+  return req<BodyCacheStats>('GET', '/api/admin/logs/body-cache-stats')
 }
 
 // 2026-07-01 (migration 325): 附件相关辅助。

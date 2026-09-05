@@ -1,12 +1,16 @@
 package dispatch
 
-import "sync/atomic"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // modelQueue is the Tier-1 per-model FIFO buffer with a drainer goroutine
 // (runModelDrainer) forwarding into the shared dispatchIn.
 type modelQueue struct {
 	name  string
 	ch    chan *QueuedRequest
+	mu    sync.Mutex
 	depth atomic.Int64
 }
 
@@ -16,6 +20,8 @@ type QueueSnapshot struct {
 	Credential int    `json:"credential,omitempty"`
 	Mode       string `json:"mode,omitempty"`
 	Depth      int64  `json:"depth"`
+	Limit      int64  `json:"limit,omitempty"`
+	Full       bool   `json:"full,omitempty"`
 }
 
 // Snapshot returns live Tier-1 and Tier-2 queue depths for the display API
@@ -36,6 +42,8 @@ func (p *Pipeline) Snapshot() (models, creds []QueueSnapshot) {
 			Credential: cf.cred.CredentialID,
 			Mode:       cf.cred.ConcurrencyMode,
 			Depth:      cf.depth.Load(),
+			Limit:      cf.Limit(),
+			Full:       !cf.HasCapacity(),
 		})
 	}
 	p.credMu.Unlock()

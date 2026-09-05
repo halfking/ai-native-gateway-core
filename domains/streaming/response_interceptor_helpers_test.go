@@ -3,6 +3,7 @@ package streaming
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -29,6 +30,32 @@ func (i *streamChunkTestInterceptor) InterceptStreamChunk(_ context.Context, chu
 
 func (i *streamChunkTestInterceptor) InterceptStreamEnd(context.Context, *response.StreamMeta) (*response.EndResult, error) {
 	return nil, nil
+}
+
+type failingFlushResponseWriter struct {
+	header   http.Header
+	flushErr error
+}
+
+func (w *failingFlushResponseWriter) Header() http.Header { return w.header }
+func (w *failingFlushResponseWriter) WriteHeader(int)     {}
+func (w *failingFlushResponseWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+func (w *failingFlushResponseWriter) Flush()            {}
+func (w *failingFlushResponseWriter) FlushError() error { return w.flushErr }
+
+func TestInterceptingStreamWriterPropagatesFlushError(t *testing.T) {
+	underlying := &failingFlushResponseWriter{header: make(http.Header), flushErr: errors.New("connection closed")}
+	serialized := NewSerializedResponseWriter(underlying)
+	writer := newInterceptingStreamWriter(serialized, nil, context.Background(), response.StreamMeta{})
+
+	if safeFlush(writer) {
+		t.Fatal("intercepting writer must propagate the underlying flush error")
+	}
+	if !serialized.SerializedWriter().Detached() {
+		t.Fatal("underlying serialized writer must detach after flush error")
+	}
 }
 
 func TestInterceptingStreamWriterBuffersAndInterceptsSSEFrame(t *testing.T) {

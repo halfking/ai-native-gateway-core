@@ -21,8 +21,10 @@
 //	References" — we don't need the raw tool_call/tool_result pairs.
 //
 //	Phase 2 (thinking strip):      Anthropic "thinking" content blocks
-//	and any non-text content (image_url, input_audio) are removed.
-//	Only "text" and "tool_use" / "tool_result" blocks survive.
+//	are removed. Media pruning is a separate bounded step (docs/omni-ref3
+//	A3): image_url / input_audio blocks are replaced with text
+//	placeholders only while the per-message media budget remains, and all
+//	other content blocks are otherwise preserved.
 //
 // Preserved fields:
 //   - user text messages
@@ -30,10 +32,12 @@
 //   - system messages (verbatim)
 //   - INCOMPLETE tool rounds (tool_call without matching tool_result)
 //   - the LAST completed tool round (for context continuity)
+//   - non-thinking content blocks (text, tool_use, tool_result, media metadata)
 
 package compression
 
 import (
+	"bytes"
 	"encoding/json"
 )
 
@@ -595,23 +599,23 @@ func hasThinkingBlocks(msgs []json.RawMessage) bool {
 // stripThinkingBlocks removes "thinking" and non-text content blocks.
 // Returns the cleaned message, or nil if the entire message should be dropped.
 func stripThinkingBlocks(raw json.RawMessage) json.RawMessage {
-	var m struct {
+	// First check if content field exists and needs processing
+	var probe struct {
 		Content json.RawMessage `json:"content"`
-		Role    string          `json:"role"`
 	}
-	if err := json.Unmarshal(raw, &m); err != nil {
+	if err := json.Unmarshal(raw, &probe); err != nil {
 		return raw
 	}
 
 	// Check if content is a string (simple text) — no blocks to strip
 	var simpleContent string
-	if json.Unmarshal(m.Content, &simpleContent) == nil {
+	if json.Unmarshal(probe.Content, &simpleContent) == nil {
 		return raw
 	}
 
 	// Content is an array of blocks. Keep every block except thinking.
 	var parts []json.RawMessage
-	if err := json.Unmarshal(m.Content, &parts); err != nil {
+	if err := json.Unmarshal(probe.Content, &parts); err != nil {
 		return raw
 	}
 
@@ -639,19 +643,58 @@ func stripThinkingBlocks(raw json.RawMessage) json.RawMessage {
 	}
 
 	if len(filtered) == 0 {
-		return nil
+		// Every block was thinking. Drop the message only when it carries
+		// no payload beyond role/content; if tool_calls / tool_call_id /
+		// name (or any other field) survive, keep the message with an
+		// empty content array — dropping it would sever the tool-call
+		// chain. Anthropic assistant turns that emit thinking + tool_use
+		// with no text block hit exactly this shape.
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			return nil
+		}
+		if !hasMeaningfulMessagePayload(keys) {
+			return nil
+		}
+		keys["content"], _ = json.Marshal([]json.RawMessage{})
+		cleaned, err := json.Marshal(keys)
+		if err != nil {
+			return nil
+		}
+		return cleaned
 	}
 
-	// Build new message with filtered content
-	type cleanedMsg struct {
-		Role    string          `json:"role"`
-		Content json.RawMessage `json:"content"`
+	// Unmarshal the full message to preserve all fields (tool_calls, tool_call_id, name, etc.)
+	var fullMsg map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fullMsg); err != nil {
+		return raw
 	}
 
-	newParts, _ := json.Marshal(filtered)
-	cleaned, _ := json.Marshal(cleanedMsg{
-		Role:    m.Role,
-		Content: newParts,
-	})
+	// Replace only the content field with filtered blocks
+	newContent, _ := json.Marshal(filtered)
+	fullMsg["content"] = newContent
+
+	// Marshal the complete message back
+	cleaned, _ := json.Marshal(fullMsg)
 	return cleaned
+}
+
+// hasMeaningfulMessagePayload reports whether a message still has data beyond
+// role/content after thinking blocks have been stripped. It intentionally
+// accepts non-empty protocol extension fields instead of enumerating only the
+// current tool fields, while treating null and empty JSON values as no payload.
+func hasMeaningfulMessagePayload(fields map[string]json.RawMessage) bool {
+	for key, raw := range fields {
+		if key == "role" || key == "content" {
+			continue
+		}
+		trimmed := bytes.TrimSpace(raw)
+		if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) ||
+			bytes.Equal(trimmed, []byte(`""`)) || bytes.Equal(trimmed, []byte("[]")) ||
+			bytes.Equal(trimmed, []byte("{}")) {
+			continue
+		}
+		return true
+	}
+	return false
 }

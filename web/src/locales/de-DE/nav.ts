@@ -9,9 +9,12 @@ export default {
     dataOps: "Datenoperationen",
     guide: "Onboarding",
     chat: "Chat",
+    plugins: "Plugins",
     opsplatform: "运维平台"
   },
   item: {
+    activateAction: 'Aktivieren',
+    activateActionTip: 'Klicken, um diese Instanz zu aktivieren',
     overview: "Übersicht",
     tenantModels: "Standardmodelle",
     tenantAccount: "Mein Konto",
@@ -34,6 +37,8 @@ export default {
     auditLogs: "Audit-Logs",
     requestLogs: "Anfrage-Logs",
     dispatchWaterfall: "Warteschlangen-Wasserfall",
+    requestRegistry: "Request Registry",
+    connectionRegistry: "Connection Registry",
     turns: "Turns-Liste",
     requestTrace: "Anfrage-Verfolgung",
     sessions: "Sitzungen",
@@ -44,6 +49,7 @@ export default {
     wechatBot: "WeChat Bot",
     sessionContext: "Sitzungskontext",
     settings: "Systemeinstellungen",
+    proxy: "Proxyverwaltung",
     dataLifecycle: "Datenlebenszyklus",
     formatAnomalies: "Formatanomalie-Überwachung",
     modelIntegrity: "Modellintegritäts-Monitor",
@@ -68,6 +74,7 @@ export default {
     tenantAutoUpdate: "Meine Updates"
 ,
     updateActivate: 'Update & Activate',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
 
     licenseActivate: 'License Activation',
 
@@ -80,6 +87,7 @@ export default {
     licenseOffline: 'Offline Activation',
 
     telemetryScope: 'Data Collection Scope',
+    supportDonate: 'Sponsoring & Spenden',
   },
 
   mainAria: 'Hauptnavigation',

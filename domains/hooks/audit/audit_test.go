@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -94,6 +95,106 @@ func TestBatchWriter_CloseFlushes(t *testing.T) {
 	}
 	if got := len(sink.Events()); got != 1 {
 		t.Errorf("expected 1 flushed on close, got %d", got)
+	}
+}
+
+type batchTestSink struct {
+	mu       sync.Mutex
+	failures int
+	writes   int
+	events   []*Event
+	closed   int
+}
+
+func (s *batchTestSink) Emit(_ context.Context, event Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, &event)
+}
+func (s *batchTestSink) Write(events []*Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writes++
+	if s.failures > 0 {
+		s.failures--
+		return errors.New("transient sink failure")
+	}
+	s.events = append(s.events, events...)
+	return nil
+}
+func (s *batchTestSink) Close() error    { s.mu.Lock(); s.closed++; s.mu.Unlock(); return nil }
+func (s *batchTestSink) eventCount() int { s.mu.Lock(); defer s.mu.Unlock(); return len(s.events) }
+
+func TestBatchWriter_RetriesTransientWriteFailure(t *testing.T) {
+	sink := &batchTestSink{failures: 1}
+	w := NewBatchWriter(sink, 1, 10*time.Millisecond)
+	w.Append(&Event{RequestID: "retry"})
+	deadline := time.Now().Add(time.Second)
+	for sink.eventCount() != 1 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := sink.eventCount(); got != 1 {
+		t.Fatalf("expected transient failure to recover, got %d events", got)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close failed after recovery: %v", err)
+	}
+}
+
+func TestBatchWriter_PersistentFailureIsBoundedAndReported(t *testing.T) {
+	sink := &batchTestSink{failures: 100000}
+	w := NewBatchWriter(sink, 1, time.Millisecond)
+	for i := 0; i < defaultPendingCapacity+250; i++ {
+		w.Append(&Event{RequestID: "event"})
+	}
+	// Allow at least one failed flush, then verify the pending queue is bounded.
+	time.Sleep(20 * time.Millisecond)
+	if got := w.BufferedCount(); got > defaultPendingCapacity {
+		t.Fatalf("pending queue exceeded bound: %d", got)
+	}
+	if err := w.Close(); err == nil {
+		t.Fatal("expected Close to report persistent write failure/pending events")
+	}
+	if got := w.BufferedCount(); got > defaultPendingCapacity {
+		t.Fatalf("pending queue exceeded bound after Close: %d", got)
+	}
+}
+
+func TestBatchWriter_CloseIsIdempotent(t *testing.T) {
+	sink := &batchTestSink{}
+	w := NewBatchWriter(sink, 10, time.Hour)
+	w.Append(&Event{RequestID: "once"})
+	first := w.Close()
+	second := w.Close()
+	if first != nil || second != nil {
+		t.Fatalf("expected idempotent successful Close, got %v and %v", first, second)
+	}
+	sink.mu.Lock()
+	closed := sink.closed
+	sink.mu.Unlock()
+	if closed != 1 {
+		t.Fatalf("expected sink Close once, got %d", closed)
+	}
+}
+
+func TestBatchWriter_ConcurrentAppendFlushClose(t *testing.T) {
+	sink := &batchTestSink{}
+	w := NewBatchWriter(sink, 8, time.Millisecond)
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				w.Append(&Event{RequestID: "concurrent"})
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() { defer wg.Done(); time.Sleep(2 * time.Millisecond); _ = w.Close() }()
+	wg.Wait()
+	if err := w.Close(); err != nil {
+		t.Fatalf("second Close failed: %v", err)
 	}
 }
 
@@ -329,6 +430,16 @@ func TestStreamCapture_ObserveUsage(t *testing.T) {
 	}
 }
 
+func TestStreamCapture_NetworkErrorPublishesFailureDetailCode(t *testing.T) {
+	sc := NewStreamCapture()
+	sc.MarkInterruptedWithReason("network_error")
+
+	m := sc.SummaryAsMap()
+	if got := m["failure_detail_code"]; got != "network_error" {
+		t.Fatalf("failure_detail_code = %v, want network_error", got)
+	}
+}
+
 func TestStreamCapture_MarkInterruptedWithReason(t *testing.T) {
 	sc := NewStreamCapture()
 	sc.ObservePayload("data", "", false)
@@ -343,6 +454,77 @@ func TestStreamCapture_MarkInterruptedWithReason(t *testing.T) {
 	}
 	if m["failure_detail_code"].(string) != "stream_timeout" {
 		t.Errorf("expected reason=stream_timeout, got %v", m["failure_detail_code"])
+	}
+}
+
+// TestStreamCapture_FinalFinishReason documents the getter that stream.go,
+// anthropic_stream.go, responses_stream.go, and responses_bridge.go use to
+// distinguish a minimax-style "EOF without [DONE] after finish_reason" from
+// a true stream interruption. Without this signal, every long-context chat
+// on upstreams that drop the terminal sentinel triggers survival retries
+// that burn the full upstream_timeout budget.
+func TestStreamCapture_FinalFinishReason(t *testing.T) {
+	sc := NewStreamCapture()
+
+	if got := sc.FinalFinishReason(); got != "" {
+		t.Errorf("fresh capture: expected empty FinalFinishReason, got %q", got)
+	}
+
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDelta})
+	if got := sc.FinalFinishReason(); got != "" {
+		t.Errorf("after non-finish chunk: expected empty, got %q", got)
+	}
+
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDelta, FinishReason: "stop"})
+	if got := sc.FinalFinishReason(); got != "stop" {
+		t.Errorf("after finish_reason=stop: expected \"stop\", got %q", got)
+	}
+
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, FinishReason: "stop"})
+	if got := sc.FinalFinishReason(); got != "stop" {
+		t.Errorf("after Done chunk: expected \"stop\" preserved, got %q", got)
+	}
+
+	var nilSC *StreamCapture
+	if got := nilSC.FinalFinishReason(); got != "" {
+		t.Errorf("nil receiver: expected empty, got %q", got)
+	}
+}
+
+// TestStreamCapture_TextContentSnapshot documents the getter that the
+// failure-row writer uses to persist partial upstream text when a
+// streaming request is interrupted mid-flight (eof_without_done,
+// stream_timeout, client_disconnected, …). Without this getter, the
+// failure row's response_body column is always NULL for streaming
+// failures and post-mortem analysis loses the model output that was
+// already received.
+func TestStreamCapture_TextContentSnapshot(t *testing.T) {
+	sc := NewStreamCapture()
+
+	if got := sc.TextContentSnapshot(); got != "" {
+		t.Errorf("fresh capture: expected empty, got %q", got)
+	}
+	if got := sc.PreviewSnapshot(); got != "" {
+		t.Errorf("fresh capture preview: expected empty, got %q", got)
+	}
+
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDelta, Delta: &ir.StreamDelta{Content: "hello "}})
+	sc.ObserveChunk(&ir.StreamChunk{Type: ir.ChunkTypeDelta, Delta: &ir.StreamDelta{Content: "world"}})
+	sc.MarkInterruptedWithReason("stream_timeout")
+
+	if got := sc.TextContentSnapshot(); got != "hello world" {
+		t.Errorf("after two deltas + interrupted: expected \"hello world\", got %q", got)
+	}
+	if !strings.Contains(sc.PreviewSnapshot(), "hello") {
+		t.Errorf("preview should contain partial wire bytes, got %q", sc.PreviewSnapshot())
+	}
+
+	var nilSC *StreamCapture
+	if got := nilSC.TextContentSnapshot(); got != "" {
+		t.Errorf("nil TextContentSnapshot: expected empty, got %q", got)
+	}
+	if got := nilSC.PreviewSnapshot(); got != "" {
+		t.Errorf("nil PreviewSnapshot: expected empty, got %q", got)
 	}
 }
 
@@ -831,5 +1013,14 @@ func TestStreamCapture_Reset_PreservesFinalFinish(t *testing.T) {
 	m2 := sc.SummaryAsMap()
 	if got := m2["upstream_finish_reason"]; got != "stop" {
 		t.Errorf("after successful retry: upstream_finish_reason must be stop, got %v", got)
+	}
+	if got := m2["failure_detail_code"]; got != "first_byte_timeout" {
+		t.Errorf("after successful retry: failure_detail_code must remain first_byte_timeout, got %v", got)
+	}
+
+	sc.MarkInterruptedWithReason("client_cancel")
+	m3 := sc.SummaryAsMap()
+	if got := m3["failure_detail_code"]; got != "first_byte_timeout" {
+		t.Errorf("after later client cancel: first failure must remain first_byte_timeout, got %v", got)
 	}
 }

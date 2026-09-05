@@ -15,6 +15,30 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
 )
 
+func TestNewAutoSummaryGeneratorReadsEnabledEnv(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "defaults enabled", want: true},
+		{name: "false disables", value: "false", want: false},
+		{name: "true enables", value: "true", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.value == "" {
+				unsetEnvForTest(t, "LLM_GATEWAY_AUTO_SUMMARY_ENABLED")
+			} else {
+				t.Setenv("LLM_GATEWAY_AUTO_SUMMARY_ENABLED", tt.value)
+			}
+			if got := NewAutoSummaryGenerator(nil, nil).enabled; got != tt.want {
+				t.Fatalf("NewAutoSummaryGenerator().enabled = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestSplitCorpusIntoChunks (2026-08-06) — guards the map-reduce splitter
 // that decides when a session is "long enough" to need chunking. Pure
 // function, no DB or HTTP dependencies.
@@ -174,7 +198,7 @@ func TestWorkerSlots_BoundedConcurrency(t *testing.T) {
 
 // TestDoCallSummaryOnce_EmitsBranchSessionAndParentHeaders (2026-08-06)
 // — verifies the loopback request includes the gs_ branch session id
-// (X-Gw-Session-Id: gs:<parent>), the parent request correlation header,
+// (X-Gw-Session-Id: gs_<parent>), the parent request correlation header,
 // and the source-actor header. Mirrors the title-generator test in
 // auto_title_generator_test.go.
 func TestDoCallSummaryOnce_EmitsBranchSessionAndParentHeaders(t *testing.T) {
@@ -207,8 +231,8 @@ func TestDoCallSummaryOnce_EmitsBranchSessionAndParentHeaders(t *testing.T) {
 		t.Context(), srv.URL+"/v1/chat/completions",
 		[]byte(`{"model":"minimax-m2.7","messages":[]}`),
 		"sk-fake",
-		"gw_abc123",          // user main session
-		"parent-req-id-xyz",  // user request id that triggered this
+		"gw_abc123",         // user main session
+		"parent-req-id-xyz", // user request id that triggered this
 		task,
 		"minimax-m2.7",
 		"summary",
@@ -225,8 +249,11 @@ func TestDoCallSummaryOnce_EmitsBranchSessionAndParentHeaders(t *testing.T) {
 	if gotPath != "/v1/chat/completions" {
 		t.Errorf("path = %q, want /v1/chat/completions", gotPath)
 	}
-	if v := gotHeaders.Get("X-Gw-Session-Id"); v != "gs:gw_abc123" {
-		t.Errorf("X-Gw-Session-Id = %q, want gs:gw_abc123", v)
+	// The prefix must be "gs_" (underscore): streaming.sanitizeGwSessionHeader
+	// only accepts gw_/gt_/gs_, so the earlier "gs:" form was silently dropped
+	// and the loopback row got a fresh gw_<uuid> instead of the gs_ branch id.
+	if v := gotHeaders.Get("X-Gw-Session-Id"); v != "gs_gw_abc123" {
+		t.Errorf("X-Gw-Session-Id = %q, want gs_gw_abc123", v)
 	}
 	if v := gotHeaders.Get("X-Gw-Parent-Request-Id"); v != "parent-req-id-xyz" {
 		t.Errorf("X-Gw-Parent-Request-Id = %q, want parent-req-id-xyz", v)

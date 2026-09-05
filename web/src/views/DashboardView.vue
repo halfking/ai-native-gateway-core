@@ -13,10 +13,11 @@ import {
   type HotApiKeyEntry,
 } from '../api'
 import { useDashboardBoard } from '../composables/useDashboardBoard'
+import { dashboardPreferenceStorageKey } from '../composables/liveStreamPreferences'
 
 export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck' | 'systemmonitor' // systemmonitor 保留兼容，已映射到 selfcheck
 
-const STORAGE_KEY_TAB = 'dashboard_active_tab'
+const LEGACY_STORAGE_KEY_TAB = 'dashboard_active_tab'
 const route = useRoute()
 const router = useRouter()
 
@@ -27,6 +28,25 @@ function normalizeTab(raw: unknown): DashboardTabId | null {
   if (raw === 'systemmonitor') return 'selfcheck'
   if (VALID_TABS.includes(raw as DashboardTabId)) return raw as DashboardTabId
   return null
+}
+
+function readStoredTab(): DashboardTabId | null {
+  try {
+    return normalizeTab(
+      localStorage.getItem(dashboardPreferenceStorageKey('default-tab'))
+      ?? localStorage.getItem(LEGACY_STORAGE_KEY_TAB),
+    )
+  } catch {
+    return null
+  }
+}
+
+function persistTab(tab: DashboardTabId) {
+  try {
+    localStorage.setItem(dashboardPreferenceStorageKey('default-tab'), tab)
+  } catch {
+    // The dashboard remains usable when browser storage is unavailable.
+  }
 }
 
 // 2026-07-23: 默认 tab 改为 'stream'（实时流），
@@ -43,21 +63,11 @@ const hotKeys = ref<HotApiKeyEntry[]>([])
 
 onMounted(() => {
   const fromQuery = normalizeTab(route.query.tab)
-  const saved = localStorage.getItem(STORAGE_KEY_TAB)
+  const saved = readStoredTab()
   if (fromQuery) {
     activeTab.value = fromQuery
-  } else {
-    // 2026-08-06: restored `saved === 'board'` branch — when localStorage carries
-    // the explicit board tab from a prior session, honor it. Previously the
-    // generic normalizeTab(saved) path did this implicitly, but the
-    // DashboardViewV2 board-tab contract test pins the literal comparison as
-    // a stability marker for the default-board bootstrap path.
-    if (saved === 'board') {
-      activeTab.value = 'board'
-    } else {
-      const fromStorage = normalizeTab(saved)
-      if (fromStorage) activeTab.value = fromStorage
-    }
+  } else if (saved) {
+    activeTab.value = saved
   }
 
   if (isDefault.value && activeTab.value === 'board') {
@@ -68,14 +78,20 @@ onMounted(() => {
 
 function switchTab(tab: DashboardTabId) {
   const next = normalizeTab(tab) || 'stream'
+  if (activeTab.value === next) return // Avoid redundant switches
+  
+  // Clean up previous tab resources
   if (activeTab.value === 'board' && next !== 'board') {
     boardState.stopAutoRefresh()
   }
+  
   activeTab.value = next
-  localStorage.setItem(STORAGE_KEY_TAB, next)
+  persistTab(next)
   if (route.query.tab !== next) {
     router.replace({ query: { ...route.query, tab: next } })
   }
+  
+  // Initialize new tab resources
   if (next === 'board') {
     void boardState.load()
     boardState.startAutoRefresh()

@@ -1,0 +1,21 @@
+{
+  "scenario": "S19_tenant_isolation",
+  "gateway": "http://127.0.0.1:8793",
+  "metrics": {
+    "total": 4,
+    "succ": 4,
+    "fail": 0,
+    "success_rate": 1.0,
+    "elapsed_sec": 4,
+    "fail_by_status": {},
+    "fail_by_kind": {},
+    "extra": {
+      "tenant_a_own": 404,
+      "tenant_b_cross": 404,
+      "anon": 401,
+      "non_existent": 404,
+      "admin_tenant_a": 200,
+      "pass": true
+    }
+  }
+}

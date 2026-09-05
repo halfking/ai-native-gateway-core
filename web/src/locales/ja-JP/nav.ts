@@ -9,6 +9,7 @@ export default {
     dataOps: "データ運用",
     guide: "接続ガイド",
     chat: "チャット",
+    plugins: "プラグイン",
     opsplatform: "运维平台"
   },
   item: {
@@ -34,6 +35,8 @@ export default {
     auditLogs: "監査ログ",
     requestLogs: "リクエストログ",
     dispatchWaterfall: "キューウォーターフォール",
+    requestRegistry: "Request Registry",
+    connectionRegistry: "Connection Registry",
     turns: "ターンリスト",
     requestTrace: "リクエストトレース",
     sessions: "セッション一覧",
@@ -44,6 +47,7 @@ export default {
     wechatBot: "WeChatボット",
     sessionContext: "セッションコンテキスト",
     settings: "システム設定",
+    proxy: "プロキシ管理",
     dataLifecycle: "データライフサイクル",
     formatAnomalies: "フォーマット異常モニター",
     modelIntegrity: "モデル整合性モニター",
@@ -68,6 +72,9 @@ export default {
     tenantAutoUpdate: "マイアップデート"
 ,
     updateActivate: '更新与激活',
+    // 2026-09-04: 未激活时替换「自动更新」等入口的激活 CTA 文案 (parity backfill)
+    activateAction: 'アクティベート',
+    activateActionTip: 'クリックしてこのインスタンスをアクティベート',
 
     licenseActivate: '许可激活',
 
@@ -80,6 +87,7 @@ export default {
     licenseOffline: '离线激活',
 
     telemetryScope: '数据采集范围',
+    supportDonate: 'スポンサーと寄付',
   },
 
   mainAria: 'メインナビゲーション',

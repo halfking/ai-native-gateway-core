@@ -54,6 +54,8 @@ export default {
     },
   },
   editor: {
+    rollbackConfirm: '{key} を前回の値にロールバックしますか？',
+
     newValueLabel: '新しい値',
     enabledText: '有効',
     disabledText: '無効',

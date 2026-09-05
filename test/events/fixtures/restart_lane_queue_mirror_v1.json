@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "unknown_version": "reject",
+  "lane": "queue_mirror",
+  "exact_bytes": true,
+  "semantics": {
+    "execution_recovery": false,
+    "result_replay": false,
+    "lease_required": false,
+    "fencing_required": false,
+    "metadata_rebuild": true,
+    "lease_live_upstream_calls": 0,
+    "lease_expired_upstream_calls": 0,
+    "takeover_requires_fencing": false,
+    "expected_projection": "metadata_only"
+  },
+  "rules": [
+    "Queue mirror requests (mirror-first default in URSM P0-1) require only metadata rebuild on restart.",
+    "No execution recovery: the request was previously mirrored (not executed).",
+    "No result replay: nothing to replay.",
+    "On restart, the metadata-only projection is rebuilt from the durable store."
+  ],
+  "consumers": [
+    "domains/ursm/v2 mirror-first path",
+    "domains/requestjourney snapshot metadata rebuild"
+  ],
+  "validation_rules": [
+    "queue_mirror lane MUST NOT initiate upstream work",
+    "queue_mirror lane MUST rebuild only metadata (request_id, session_id, model); not attempt_id"
+  ]
+}

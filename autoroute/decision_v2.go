@@ -28,12 +28,22 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	enabledFeatures := activeFeatureNames(flags)
 
 	// Step 0: 会话缓存检查（仅在启用重校验时保留该分支）
+	requestedWorkType := workTypeFromContext(ctx)
+	if requestedWorkType != "" {
+		if l1, ok := d.ResolveWorkType(requestedWorkType); ok {
+			taskHint = l1
+		} else {
+			requestedWorkType = ""
+		}
+	}
 	if flags.UseCacheRevalidation && sessionID != "" && d.intentCache != nil {
 		// 2026-07-27 concurrency fix: use IncrementHit so the read-modify-write
 		// of HitCount happens under a single write lock (Get→HitCount++→Put
 		// raced across concurrent requests on the same session).
 		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
-			if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
+			if cached.WorkType != requestedWorkType {
+				d.intentCache.Invalidate(sessionID)
+			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				// 新增：验证缓存的模型是否仍可用
 				// 2026-07-27 concurrency fix: read idx.pool under RLock
 				// (SetPool writes it under the write lock). Snapshot the
@@ -77,6 +87,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 							DecidedAt:          time.Now(),
 							RoutingSource:      "session_cache",
 						}
+						d.annotateTreatment(ctx, apiKeyID, decision)
 						d.populateShadow(ctx, sigs, decision)
 						return decision, nil
 					}
@@ -134,7 +145,8 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		resultTopN = 3
 	}
 	candidateTopN := resultTopN
-	keepFullCandidateSet := d.workTypeRouteStore != nil && d.workTypeRouteStore.HasRoutes(task)
+	keepFullCandidateSet := d.workTypeRouteStore != nil &&
+		(d.workTypeRouteStore.HasRoutes(task) || len(requestedWorkType) > 0)
 	if d.overrideStore != nil && len(d.overrideStore.GetPins(task, prof)) > 0 {
 		keepFullCandidateSet = true
 	}
@@ -172,10 +184,16 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	if len(recommended) > 0 {
 		beforeBoostWinner = recommended[0].Candidate.CanonicalName
 	}
+	tierFailoverModels := []string(nil)
 	if d.workTypeRouteStore != nil {
-		recommended = d.workTypeRouteStore.ApplyBoost(recommended, task)
+		pins := []string(nil)
+		if d.overrideStore != nil {
+			pins = d.overrideStore.GetPins(task, prof)
+		}
+		tierFailoverModels = d.workTypeRouteStore.TierFailoverModelsWithWorkType(recommended, task, requestedWorkType)
+		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, pins)
 	}
-	boostChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
+	tierChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
 
 	beforePinWinner := ""
 	if len(recommended) > 0 {
@@ -187,7 +205,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	pinChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforePinWinner
 	if pinChangedWinner {
 		routingSource = "override_pin"
-	} else if boostChangedWinner {
+	} else if tierChangedWinner || (len(recommended) > 0 && recommended[0].Breakdown.RouteTier != "") {
 		routingSource = "work_type_route"
 	}
 	if len(recommended) > resultTopN {
@@ -221,12 +239,14 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		Classifier:         cls.Classifier + "_v2",
 		Reason:             cls.Reason,
 		CandidatesTopN:     recommended,
+		TierFailoverModels: tierFailoverModels,
 		EnabledFeatures:    enabledFeatures,
 		FallbackUsed:       fallbackUsed,
 		FilterReasons:      filterReasons,
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 	}
+	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 
 	slog.Info("autoroute.v2: decision made",
@@ -261,6 +281,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	if sessionID != "" && d.intentCache != nil {
 		d.intentCache.Put(sessionID, CachedIntent{
 			TaskType:     decision.TaskType,
+			WorkType:     requestedWorkType,
 			ChosenModel:  decision.ChosenModel,
 			CredentialID: decision.ChosenCredentialID,
 			Profile:      decision.Profile,

@@ -11,6 +11,7 @@ export default {
   tabProbe: '自动测试',
   tabProbeTitle: '查看自动测试记录（每 10 分钟对失败绑定重新探测）',
   tabSettings: '设置',
+  tabErrorDetail: '供应商错误',
   quality: {
     loading: '加载品质数据…',
     noData: '暂无质量数据。品质画像由后台定时计算，稍后刷新或触发探测后再看。',
@@ -25,6 +26,14 @@ export default {
     stability: '稳定性',
     costEfficiency: '成本效益',
     updatedAt: '更新时间',
+    requestStats: '请求统计',
+    totalRequests: '总请求次数',
+    monthRequests: '当月请求',
+    weekRequests: '当周请求',
+    dayRequests: '当天请求',
+    successCount: '成功次数',
+    failureCount: '失败次数',
+    totalTokens: '总 Token 量',
   },
   loading: '加载中…',
   loadingFallback: '...',
@@ -51,4 +60,9 @@ export default {
   loadFailed: '加载失败',
   operationFailed: '操作失败',
   diagFailed: '诊断失败',
+  // 2026-08-31: 供应商软删除（终态）
+  deleteBtn: '删除供应商',
+  deleteTitle: '软删除该供应商 —— 该供应商及其全部凭据将不再出现在任何列表与路由中，且无法撤销',
+  deleteConfirm: '确认删除供应商 "{name}" ？该供应商下的所有凭据将被一并标记为已删除，所有相关模型路由将立即停止。该操作不可撤销。',
+  deleteFailed: '供应商删除失败',
 }

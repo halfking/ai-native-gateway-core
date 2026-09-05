@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-20260813T091619Z-44427",
+  "scenario": "S13_no_candidate",
+  "category": "functional",
+  "status": "PASS",
+  "commit": "d53e20a4118ad4df9781f1d50c45a95d4a752c94",
+  "gateway": "http://127.0.0.1:8793",
+  "checks": {
+    "load_completed": true
+  },
+  "metrics": {
+    "total": 527,
+    "succ": 0,
+    "fail": 527,
+    "success_rate": 0.0,
+    "p50_ms": 77.10437499918044,
+    "p95_ms": 1085.2332920767367,
+    "p99_ms": 4109.954625135288,
+    "max_ms": 8740.34379189834,
+    "ttfb_p50_ms": 77.0774579141289,
+    "ttfb_p95_ms": 1085.2121249772608,
+    "ttfb_p99_ms": 4109.933791914955,
+    "throughput_rps": 15.96457066968197,
+    "elapsed_sec": 33.010596457868814,
+    "fail_by_status": {
+      "503": 527
+    },
+    "fail_by_kind": {
+      "server_error": 527
+    },
+    "stream_total": 0,
+    "stream_completed": 0,
+    "stream_completion_rate": 0,
+    "stream_parse_failed": 0,
+    "stream_cancelled": 0,
+    "cancelled": 0,
+    "request_id_count": 527
+  },
+  "evidence": {
+    "raw_metrics": {
+      "total": 527,
+      "succ": 0,
+      "fail": 527,
+      "success_rate": 0.0,
+      "p50_ms": 77.10437499918044,
+      "p95_ms": 1085.2332920767367,
+      "p99_ms": 4109.954625135288,
+      "max_ms": 8740.34379189834,
+      "ttfb_p50_ms": 77.0774579141289,
+      "ttfb_p95_ms": 1085.2121249772608,
+      "ttfb_p99_ms": 4109.933791914955,
+      "throughput_rps": 15.96457066968197,
+      "elapsed_sec": 33.010596457868814,
+      "fail_by_status": {
+        "503": 527
+      },
+      "fail_by_kind": {
+        "server_error": 527
+      },
+      "stream_total": 0,
+      "stream_completed": 0,
+      "stream_completion_rate": 0,
+      "stream_parse_failed": 0,
+      "stream_cancelled": 0,
+      "cancelled": 0,
+      "request_id_count": 527
+    },
+    "models": [
+      "loadtest-mini-alpha",
+      "loadtest-standard-alpha",
+      "loadtest-pro-alpha"
+    ]
+  },
+  "failures": [],
+  "parameters": {
+    "gateway": "http://127.0.0.1:8793",
+    "n_clients": 10,
+    "rps_per_client": 3.0,
+    "duration_sec": 30,
+    "prompt_size": "short",
+    "sticky_ratio": 0.0,
+    "stream_ratio": 0.0,
+    "fault_inject_cancel": 0.0,
+    "compression": null,
+    "no_cache": false,
+    "protocol": null
+  }
+}

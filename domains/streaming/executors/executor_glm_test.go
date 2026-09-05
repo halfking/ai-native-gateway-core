@@ -2,15 +2,9 @@ package executors
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/domains/credential" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/identity"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
-	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -258,76 +252,6 @@ func TestPrepareRequestBody_MiniMax_M27_Nvidia(t *testing.T) {
 	}
 	if v, _ := obj["model"].(string); v != "minimaxai/minimax-m2.7" {
 		t.Errorf("model field = %v, want minimaxai/minimax-m2.7 (NVIDIA NIM publisher-prefixed id)", v)
-	}
-}
-
-func TestExecute_GLM51_TriesThirdCandidateAfterTwoModelNotFound(t *testing.T) {
-	// 2026-06-20: Internal retry for model_not_found means each credential
-	// is tried twice (original + retry) before moving to the next candidate.
-	// So with 3 credentials where first 2 fail with model_not_found:
-	// - Credential 101: call 1 (fail) → retry call 2 (fail) → move to next
-	// - Credential 102: call 3 (fail) → retry call 4 (fail) → move to next
-	// - Credential 103: call 5 (success)
-	// Total upstream calls: 5
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		call := calls.Add(1)
-		t.Logf("Test server: call %d", call)
-		// First 4 calls return model_not_found (2 per credential × 2 credentials)
-		if call <= 4 {
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":{"message":"model glm-5.1 not found"}}`))
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"ok","object":"chat.completion","model":"glm-5.1","choices":[{"message":{"role":"assistant","content":"OK"},"finish_reason":"stop","index":0}]}`))
-	}))
-	defer server.Close()
-
-	recorder := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	policy := provider.DefaultPolicy()
-	policy.RetryPerCredential = 0
-	policy.TierFallbackMax = 3
-
-	exec := NewExecutor(
-		NewRouter(NewStickyCache(), credential.NewLimiter()),
-		credential.NewManager(),
-		credential.NewLimiter(),
-		pool.NewPoolManager(nil),
-		nil,
-		func(chunk []byte, isStream bool) []byte { return chunk },
-		nil,
-		nil,
-	)
-	result, err := exec.Execute(&ExecParams{
-		W:              recorder,
-		R:              req,
-		BodyBytes:      []byte(`{"model":"glm-5.1","messages":[{"role":"user","content":"hi"}],"stream":false}`),
-		ClientModel:    "glm-5.1",
-		ClientID:       identity.ClientIdentity{IdentityHash: "test"},
-		Candidates:     glm51Candidates(server.URL),
-		Policy:         policy,
-		ClientProtocol: "openai-completions",
-	})
-	if err != nil {
-		t.Fatalf("Execute returned error: %v", err)
-	}
-	if result == nil {
-		t.Fatal("Execute returned nil result")
-	}
-	// With internal retry: 2 calls per credential × 2 failing credentials + 1 success = 5
-	if got := calls.Load(); got != 5 {
-		t.Fatalf("upstream calls = %d, want 5", got)
-	}
-	if result.Candidate.CredentialID != 103 {
-		t.Fatalf("credential_id = %d, want 103", result.Candidate.CredentialID)
-	}
-	if result.Trace == nil || len(result.Trace.PlannedCandidates) != 3 {
-		t.Fatalf("planned candidates = %+v, want 3", result.Trace)
-	}
-	if len(result.Trace.BlockedCandidates) != 0 {
-		t.Fatalf("blocked candidates = %+v, want no router-filtered candidates", result.Trace.BlockedCandidates)
 	}
 }
 

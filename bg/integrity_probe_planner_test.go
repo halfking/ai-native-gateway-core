@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestIntegrityProbePlanner_Defaults(t *testing.T) {
@@ -65,10 +67,40 @@ func TestIntegrityProbePlanner_BuildsTaskForEvent(t *testing.T) {
 // branches so the planner does not panic when wired to a non-DB or
 // pre-deploy build.
 func TestIntegrityProbePlanner_StartStopNoop(t *testing.T) {
-	var nilDB *IntegrityProbePlanner
-	nilDB.Start(context.Background())
-	nilDB.Stop()
+	var nilPlanner *IntegrityProbePlanner
+	nilPlanner.Start(context.Background())
+	nilPlanner.Stop()
+
 	planner := NewIntegrityProbePlanner(nil, nil, DefaultIntegrityProbePlannerConfig())
 	planner.Start(context.Background())
 	planner.Stop()
+}
+
+func TestIntegrityProbePlanner_StartStopLifecycle(t *testing.T) {
+	// Use a real background loop without exercising cycle(): the zero-value
+	// pgxpool cannot be queried. We launch Start with a cancellable parent
+	// context and immediately cancel so the loop hits ctx.Done() and closes
+	// the done channel. Stop() then waits for that signal without ever
+	// running p.cycle against the nil pool.
+	planner := NewIntegrityProbePlanner(
+		&pgxpool.Pool{},
+		&ProbeQueue{},
+		IntegrityProbePlannerConfig{Interval: time.Hour, DedupWindow: time.Hour, MaxPerTick: 1},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	planner.Start(ctx)
+	cancel()
+
+	stopped := make(chan struct{})
+	go func() {
+		planner.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("planner Stop blocked waiting for lifecycle completion")
+	}
 }

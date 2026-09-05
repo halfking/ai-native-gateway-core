@@ -3,6 +3,7 @@ package credential
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/modelbinding"
 )
 
 var ErrNoDatabase = errors.New("credential state database not configured")
@@ -21,6 +23,7 @@ var ErrNoDatabase = errors.New("credential state database not configured")
 type DBQuerier interface {
 	Exec(ctx context.Context, sql string, args ...interface{}) (pgconn.CommandTag, error)
 	Begin(ctx context.Context) (pgx.Tx, error)
+	QueryRow(ctx context.Context, sql string, args ...interface{}) pgx.Row
 }
 
 type Writer struct {
@@ -111,6 +114,10 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 		// model_offers is a VIEW over credential_model_bindings, so it
 		// automatically reflects the update above. No separate UPDATE needed.
 	} else {
+		rawModel, err = modelbinding.ResolveRawBinding(ctx, tx, credentialID, rawModel)
+		if err != nil {
+			return err
+		}
 		if _, err = tx.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
 			SET available          = TRUE,
@@ -121,7 +128,7 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
 			  AND cmb.credential_id = $1
-			  AND pm.canonical_raw_name = $2
+			  AND pm.raw_model_name = $2
 			  AND cmb.available = FALSE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -130,6 +137,55 @@ func (w *Writer) RestoreOnSuccess(ctx context.Context, credentialID int, rawMode
 		}
 		// model_offers is a VIEW over credential_model_bindings, so it
 		// automatically reflects the update above. No separate UPDATE needed.
+	}
+	return tx.Commit(ctx)
+}
+
+// SetCredentialUnavailable applies a credential-wide failure only after the
+// caller has established that the credential itself is at fault. It updates
+// every non-manual binding so the credential and binding routing gates cannot
+// disagree.
+func (w *Writer) SetCredentialUnavailable(ctx context.Context, credentialID int, failure Failure) error {
+	if !w.Enabled() {
+		return ErrNoDatabase
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
+	detail := trimDetail(failure.Detail)
+	tx, err := w.dbPool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	//nolint:errcheck // deferred rollback, best-effort
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `
+		UPDATE credentials
+		SET availability_state      = 'cooling',
+		    availability_recover_at = $1,
+		    state_reason_code       = $2,
+		    state_reason_detail     = $3,
+		    state_updated_at        = now()
+		WHERE id = $4
+		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
+		  AND availability_state NOT IN ('suspended', 'auth_failed')
+	`, recoverAt, string(failure.Kind), detail, credentialID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET available              = FALSE,
+		    unavailable_reason     = 'auto_credential_' || $1,
+		    unavailable_at         = now(),
+		    unavailable_recover_at = $2,
+		    updated_at             = now()
+		WHERE cmb.credential_id = $3
+		  AND cmb.available = TRUE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+	`, string(failure.Kind), recoverAt, credentialID); err != nil {
+		return err
 	}
 	return tx.Commit(ctx)
 }
@@ -317,26 +373,20 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// availability_state (see writeModelLevelFailureOnly rationale).
 		recoverAt := time.Now().UTC().Add(30 * 24 * time.Hour)
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_deprecated", recoverAt, detail)
-	case errorsx.KindContextLength:
-		// 2026-07-03 fix: Bug #2 - context_length_exceeded is per-request
-		// but indicates the model configuration may be wrong. Mark unavailable
-		// with short cooling (5 min) to avoid immediate retry but allow quick
-		// recovery if admin fixes the issue.
-		recoverAt := time.Now().UTC().Add(5 * time.Minute)
-		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_context_length_exceeded", recoverAt, detail)
-	case errorsx.KindUnsupportedFeature:
-		// 2026-07-03 fix: Bug #2 - unsupported_feature (e.g., tools not supported)
-		// is configuration-related. Mark unavailable with medium cooling (1 hour)
-		// to avoid repeated failures but allow retry after potential config fix.
-		recoverAt := time.Now().UTC().Add(1 * time.Hour)
-		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_unsupported_feature", recoverAt, detail)
-	case errorsx.KindToolCallIdMismatch, errorsx.KindCanceled:
-		// 2026-07-03 fix: Bug #2 - true client bugs (tool_call_id_mismatch,
-		// canceled) should NOT write any state - these are client errors that
-		// don't reflect provider/model availability.
+	case errorsx.KindContextLength, errorsx.KindUnsupportedFeature,
+		errorsx.KindToolCallIdMismatch, errorsx.KindClientBug,
+		errorsx.KindContentFilter, errorsx.KindCanceled:
+		// Request shape, context-window, capability, tool-history, and
+		// content-policy rejections describe this request, not credential
+		// health. They must never cool a binding or change credential state.
 		return nil
+
 	default:
-		// Unknown error kinds: log but don't write state to avoid false negatives
+		// Unknown error kinds: do not write state to avoid false negatives.
+		// We intentionally do not log here either — credential.WriteOnError is
+		// on the request hot path, and any unknown kind will already surface
+		// from the upstream response in the caller's logs/metrics. Adding a
+		// log here would multiply noise during incidents without adding signal.
 		return nil
 	}
 }
@@ -381,6 +431,10 @@ func (w *Writer) writeModelLevelFailureOnly(
 			return err
 		}
 	} else {
+		resolvedRawModel, err := modelbinding.ResolveRawBinding(ctx, w.dbPool, credentialID, rawModel)
+		if err != nil {
+			return err
+		}
 		if _, err := w.dbPool.Exec(ctx, `
 			UPDATE credential_model_bindings cmb
 			SET available          = FALSE,
@@ -391,11 +445,11 @@ func (w *Writer) writeModelLevelFailureOnly(
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
 			  AND cmb.credential_id = $3
-			  AND pm.canonical_raw_name = $4
+			  AND pm.raw_model_name = $4
 			  AND cmb.available = TRUE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-		`, reason, recoverAt, credentialID, rawModel); err != nil {
+		`, reason, recoverAt, credentialID, resolvedRawModel); err != nil {
 			return err
 		}
 	}
@@ -470,10 +524,44 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 	}
 }
 
+// fiveHourWindowRe detects 5-hour usage-window wording in quota-exhausted
+// error bodies. 智谱AI GLM Coding Plan (and Anthropic-compatible relays of
+// it) throttle on fixed 5-hour windows; a body mentioning that window is
+// periodic by construction and recovers at the next 5-hour boundary, not at
+// the next UTC midnight (2026-08-18 fix: the old default stretched a
+// 凌晨 5 点重置的 5h 窗口到次日 UTC 零点 = 北京 08:00，白白多挂 3 小时).
+// \b 词边界防止误吞 "25 hours"/"15 hours" 或 "25小时" 的尾部子串；
+// standalone `5小时`/`每5小时` 仍会匹配，恢复时间再由探活纠偏。
+var fiveHourWindowRe = regexp.MustCompile(`(?i)(?:\bfive[_ -]?hours?\b|\b5[_ -]?hours?\b|\bhour[_ -]?5\b|每.{0,3}\b5.{0,3}小时|\b5.{0,3}小时)`)
+
+// cstZone is the UTC+8 fixed zone used to align 5-hour quota windows.
+// 智谱AI coding-plan windows roll at 00/05/10/15/20 北京时间.
+var cstZone = time.FixedZone("CST", 8*3600)
+
+// nextFiveHourBoundary returns the first 5-hour mark (00/05/10/15/20 in
+// UTC+8) strictly after now.
+func nextFiveHourBoundary(now time.Time) time.Time {
+	local := now.In(cstZone)
+	nextHour := 5 * (local.Hour()/5 + 1)
+	day := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, cstZone)
+	if nextHour >= 24 {
+		nextHour -= 24
+		day = day.AddDate(0, 0, 1)
+	}
+	return day.Add(time.Duration(nextHour) * time.Hour)
+}
+
 func inferQuotaRecoverAt(detail string) time.Time {
-	now := time.Now().UTC()
+	return inferQuotaRecoverAtNow(detail, time.Now())
+}
+
+func inferQuotaRecoverAtNow(detail string, nowArg time.Time) time.Time {
+	now := nowArg.UTC()
 	if t, ok := parseQuotaResetTimestamp(detail); ok {
 		return t.UTC()
+	}
+	if fiveHourWindowRe.MatchString(detail) {
+		return nextFiveHourBoundary(nowArg)
 	}
 	lower := strings.ToLower(detail)
 	if strings.Contains(lower, "week") || strings.Contains(lower, "per week") || strings.Contains(lower, "周") {

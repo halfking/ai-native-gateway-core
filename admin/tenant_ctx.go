@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -45,8 +46,12 @@ func withReadOnlyTx(ctx context.Context, pool *pgxpool.Pool, fn func(tx pgx.Tx) 
 	return withTx(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, fn)
 }
 
-func withTx(ctx context.Context, pool *pgxpool.Pool, options pgx.TxOptions, fn func(tx pgx.Tx) error) error {
-	if pool == nil {
+type txBeginner interface {
+	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
+}
+
+func withTx(ctx context.Context, pool txBeginner, options pgx.TxOptions, fn func(tx pgx.Tx) error) error {
+	if pool == nil || isNilTxBeginner(pool) {
 		return fmt.Errorf("nil database pool")
 	}
 	tx, err := pool.BeginTx(ctx, options)
@@ -58,6 +63,11 @@ func withTx(ctx context.Context, pool *pgxpool.Pool, options pgx.TxOptions, fn f
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+func isNilTxBeginner(pool txBeginner) bool {
+	value := reflect.ValueOf(pool)
+	return value.Kind() == reflect.Ptr && value.IsNil()
 }
 
 func setAllTenantGUC(ctx context.Context, tx pgx.Tx) error {

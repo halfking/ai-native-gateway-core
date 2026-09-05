@@ -55,11 +55,11 @@ type ClassifierConfig struct {
 	PatternsConfig map[IntentKind][]Pattern
 
 	// 阈值
-	ConfidenceThresholds  ThresholdConfig
-	DriftThreshold        float64
-	MultiTurnMemory       int
-	LLMFallbackEnabled    bool
-	LLMModel              string
+	ConfidenceThresholds   ThresholdConfig
+	DriftThreshold         float64
+	MultiTurnMemory        int
+	LLMFallbackEnabled     bool
+	LLMModel               string
 	LLMConfidenceThreshold float64
 
 	// 元数据
@@ -110,15 +110,15 @@ type IntentEvolution struct {
 	TenantID  string
 	RequestID string
 
-	TurnNumber           int
-	IntentCandidates     []IntentCandidate
-	PrimaryIntent        string
-	PrimaryConfidence    float64
+	TurnNumber            int
+	IntentCandidates      []IntentCandidate
+	PrimaryIntent         string
+	PrimaryConfidence     float64
 	PreviousPrimaryIntent *string
-	IntentDriftScore     *float64
-	IsIntentChanged      bool
+	IntentDriftScore      *float64
+	IsIntentChanged       bool
 
-	ClassifierVersion      string
+	ClassifierVersion       string
 	ClassificationLatencyMs int
 
 	UserContent     *string
@@ -134,14 +134,14 @@ type IntentEvolution struct {
 type AdjustmentType string
 
 const (
-	AdjustmentKeywordAdd          AdjustmentType = "keyword_add"
-	AdjustmentKeywordRemove       AdjustmentType = "keyword_remove"
-	AdjustmentPatternAdd          AdjustmentType = "pattern_add"
-	AdjustmentPatternRemove       AdjustmentType = "pattern_remove"
-	AdjustmentThresholdChange     AdjustmentType = "threshold_change"
-	AdjustmentStrategyChange      AdjustmentType = "strategy_change"
+	AdjustmentKeywordAdd           AdjustmentType = "keyword_add"
+	AdjustmentKeywordRemove        AdjustmentType = "keyword_remove"
+	AdjustmentPatternAdd           AdjustmentType = "pattern_add"
+	AdjustmentPatternRemove        AdjustmentType = "pattern_remove"
+	AdjustmentThresholdChange      AdjustmentType = "threshold_change"
+	AdjustmentStrategyChange       AdjustmentType = "strategy_change"
 	AdjustmentDriftThresholdChange AdjustmentType = "drift_threshold_change"
-	AdjustmentMemoryWindowChange  AdjustmentType = "memory_window_change"
+	AdjustmentMemoryWindowChange   AdjustmentType = "memory_window_change"
 )
 
 // AdjustmentStatus 调整状态
@@ -155,28 +155,28 @@ const (
 
 // Adjustment 配置调整记录
 type Adjustment struct {
-	ID         int64
-	TenantID   string
-	Type       AdjustmentType
+	ID           int64
+	TenantID     string
+	Type         AdjustmentType
 	TargetIntent *string // 影响的意图类型（NULL=全局）
-	Detail     map[string]interface{}
+	Detail       map[string]interface{}
 
 	Reason      *string
 	TriggeredBy string
 	OperatorID  *string
 
-	EffectivenessScore  *float64
+	EffectivenessScore   *float64
 	EvaluationSampleSize *int
-	BeforeAccuracy      *float64
-	AfterAccuracy       *float64
+	BeforeAccuracy       *float64
+	AfterAccuracy        *float64
 
 	Status         AdjustmentStatus
 	RollbackReason *string
 	SupersededBy   *int64
 
-	CreatedAt     time.Time
-	EvaluatedAt   *time.Time
-	RolledBackAt  *time.Time
+	CreatedAt    time.Time
+	EvaluatedAt  *time.Time
+	RolledBackAt *time.Time
 }
 
 // Feedback 意图分类反馈
@@ -186,7 +186,7 @@ type Feedback struct {
 	RequestID string
 	TenantID  string
 
-	PredictedIntent    string
+	PredictedIntent     string
 	PredictedConfidence float64
 
 	ActualIntent    *string
@@ -195,10 +195,10 @@ type Feedback struct {
 	AnnotatedAt     *time.Time
 	AnnotationNotes *string
 
-	UserAcceptedModel    *bool
-	UserSwitchedToModel  *string
-	UserRetryCount       int
-	SessionDurationSec   *int
+	UserAcceptedModel     *bool
+	UserSwitchedToModel   *string
+	UserRetryCount        int
+	SessionDurationSec    *int
 	UserSatisfactionScore *int
 
 	UserContentHash       *string
@@ -255,12 +255,12 @@ func DefaultClassifierConfig() *ClassifierConfig {
 			Medium: 0.60,
 			Low:    0.40,
 		},
-		DriftThreshold:        0.3,
-		MultiTurnMemory:       5,
-		LLMFallbackEnabled:    false,
-		LLMModel:              "gpt-4o-mini",
+		DriftThreshold:         0.3,
+		MultiTurnMemory:        5,
+		LLMFallbackEnabled:     false,
+		LLMModel:               "gpt-4o-mini",
 		LLMConfidenceThreshold: 0.50,
-		Version:               1,
-		UpdatedAt:             time.Now(),
+		Version:                1,
+		UpdatedAt:              time.Now(),
 	}
 }

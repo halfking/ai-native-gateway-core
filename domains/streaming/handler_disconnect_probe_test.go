@@ -211,6 +211,60 @@ func TestBuildClientDisconnectProbeEntry_NoErrorReturnsFalse(t *testing.T) {
 	}
 }
 
+// TestShouldEmitDisconnectProbe_AlreadyLogged_Success covers the 2026-08-16
+// fix: a request that completed successfully (emitTelemetry wrote the row,
+// logCtx.IsLogged()==true) must NOT emit a spurious client_cancel probe when
+// the client tears down its connection at the very end — even though the
+// request context is canceled. This is the exact production scenario seen in
+// the live stream (success + client_cancel probe) before the !IsLogged() guard
+// was added to the ServeHTTP defer block.
+func TestShouldEmitDisconnectProbe_AlreadyLogged_Success(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	ctx, cancel := context.WithCancel(r.Context())
+	r = r.WithContext(ctx)
+	cancel()
+
+	logCtx := &RequestLogContext{}
+	logCtx.MarkLogged() // success path recorded the request
+
+	if shouldEmitDisconnectProbe(r.Context(), logCtx) {
+		t.Fatal("already-logged success request with canceled context must NOT emit a probe")
+	}
+}
+
+// TestShouldEmitDisconnectProbe_CanceledNotLogged verifies the probe still
+// fires for a canceled context when the request was never recorded (the
+// legitimate client-disconnect scenario the safety net exists for).
+func TestShouldEmitDisconnectProbe_CanceledNotLogged(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	ctx, cancel := context.WithCancel(r.Context())
+	r = r.WithContext(ctx)
+	cancel()
+
+	if !shouldEmitDisconnectProbe(r.Context(), &RequestLogContext{}) {
+		t.Fatal("canceled + not-logged request must emit a probe")
+	}
+}
+
+// TestShouldEmitDisconnectProbe_AliveContext verifies a live (non-canceled)
+// request never emits a probe regardless of log state.
+func TestShouldEmitDisconnectProbe_AliveContext(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+
+	if shouldEmitDisconnectProbe(r.Context(), &RequestLogContext{}) {
+		t.Fatal("live request must not emit a probe")
+	}
+}
+
+func TestShouldFlushRequestTrace_SkipsGetCompatibilityProbe(t *testing.T) {
+	if shouldFlushRequestTrace(http.MethodGet) {
+		t.Fatal("GET compatibility probes must not flush a trace without a request log row")
+	}
+	if !shouldFlushRequestTrace(http.MethodPost) {
+		t.Fatal("POST requests must flush their trace")
+	}
+}
+
 // TestBuildClientDisconnectProbeEntry_NilRequest: defensive — a nil request
 // must not panic.
 func TestBuildClientDisconnectProbeEntry_NilRequest(t *testing.T) {

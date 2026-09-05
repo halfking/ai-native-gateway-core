@@ -1,13 +1,13 @@
 // useSessionSummaryJump.ts — 详情抽屉「会话总结」按钮 → 请求日志页 session 预填跳转。
 //
-// 2026-08-06: 三个父视图（DashboardViewV2 / DashboardViewLegacy / TenantDashboardView）
+// 2026-08-06: 两个父视图（DashboardViewV2 / TenantDashboardView）
 // 此前都各自复制粘贴了 `openSessionSummary(sessionId)` 7 行函数：短路校验 + 关抽屉 +
 // router.push(预填 query)。本 composable 集中存放这条跳转逻辑，避免重复实现。
 //
 // 行为契约：
 //  1. sessionId 为空 / 空白 / null 时**静默 no-op**（避免点击 emit 时把空串跳到 URL）
 //  2. 调用方可在 `onBeforeJump` 钩子里先关抽屉、清理状态等副作用（同步顺序）
-//  3. 跳到 `/request-logs?gw_session_id=...`，由 RequestLogsView 的 onMounted 预填
+//  3. 跳到 `/request-logs?gw_session_id=...&open_summary=1`，由 RequestLogsView 预填并打开总结抽屉
 //
 // 未来扩展点（保留）：
 //  - 多语言键共享：`requests.list.trace.drawerSummaryButton`（已对接 tooltip）
@@ -42,7 +42,7 @@ export function useSessionSummaryJump(options: SessionSummaryJumpOptions = {}) {
 
     void router.push({
       path: '/request-logs',
-      query: { gw_session_id: trimmed },
+      query: { gw_session_id: trimmed, open_summary: '1' },
     })
   }
 

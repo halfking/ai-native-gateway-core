@@ -36,7 +36,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-COMPOSE_FILE="$ROOT_DIR/docker-compose.local-r112.yml"
+COMPOSE_FILE="$ROOT_DIR/docker-compose.dev-research.yml"
 
 REPORT_FILE="/tmp/llm-gateway-deploy-test-report.md"
 LOG_FILE="/tmp/llm-gateway-deploy-test.log"
@@ -376,7 +376,7 @@ run_migrations() {
 # ════════════════════════════════════════════════════════════════════
 # 启动 Gateway v1
 # ════════════════════════════════════════════════════════════════════
-# gateway_env: 与 docker-compose.local-r112.yml gateway 服务一致的 env,
+# gateway_env: 与 docker-compose.dev-research.yml gateway 服务一致的 env,
 # 仅把 compose 内部服务名 (postgres/redis/llm-mock-upstream) 换成宿主机可达地址。
 gateway_env() {
   export LLM_GATEWAY_LISTEN=":8781"

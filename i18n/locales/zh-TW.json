@@ -38,6 +38,12 @@
   "invalid_model": {
     "other": "模型 '{{.Model}}' 不被此閘道支援"
   },
+  "unsupported_feature": {
+    "other": "所選模型不支援此請求格式或模式。"
+  },
+  "model_deprecated": {
+    "other": "所要求的模型已被上游供應商永久停用（停止服務）。"
+  },
   "meta_tool_error": {
     "other": "元工具處理失敗"
   },

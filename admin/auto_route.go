@@ -30,6 +30,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/i18n"
+	"github.com/kaixuan/llm-gateway-go/internal/httpx"
+	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
 )
 
 // AutoRouteHandlers groups the 5 admin endpoints for autoroute.
@@ -136,7 +138,7 @@ func (h *AutoRouteHandlers) handleDecisions(w http.ResponseWriter, r *http.Reque
 		SELECT ts, request_id, api_key_id, task_type, auto_profile,
 		       auto_confidence, client_model, outbound_model,
 		       credential_id, auto_decision, success, latency_ms, work_type
-		FROM request_logs_with_current_month
+		FROM request_logs_with_current_month_without_customer_id
 		WHERE is_auto_request = TRUE
 		  AND ts >= NOW() - INTERVAL '7 days'
 	`
@@ -391,13 +393,15 @@ func (h *AutoRouteHandlers) handleSetProfile(w http.ResponseWriter, r *http.Requ
 			APIKeyID int    `json:"api_key_id"`
 			Profile  string `json:"profile"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err == nil {
-			if body.APIKeyID > 0 {
-				apiKeyIDStr = strconv.Itoa(body.APIKeyID)
-			}
-			if body.Profile != "" {
-				profile = body.Profile
-			}
+		if err := jsonbody.DecodeRequest(r, &body, jsonbody.MaxOptionalBody, false); err != nil {
+			writeJSONErr(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if body.APIKeyID > 0 {
+			apiKeyIDStr = strconv.Itoa(body.APIKeyID)
+		}
+		if body.Profile != "" {
+			profile = body.Profile
 		}
 	}
 	apiKeyID, err := strconv.Atoi(apiKeyIDStr)
@@ -477,25 +481,63 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// are explicit-model requests, so they belong in totalSpecified and
 	// in total. Use `COALESCE(is_auto_request, FALSE)` so the arithmetic
 	// reads the NULL as FALSE instead of dropping it.
-	var total, successes, totalAuto, totalSpecified int
+	var total, successes, totalAuto, totalSpecified int64
 	auditTenantFrag, auditTenantArgs, _ := tenantLogsClause(r, 1)
-	err := h.db.QueryRow(ctx, `
-		SELECT
-		  COUNT(*),
-		  COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
-		  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) THEN 1 ELSE 0 END), 0)
-		FROM request_logs_with_current_month
-		WHERE ts >= NOW() - INTERVAL '7 days'
-		  AND (
-		    is_auto_request = TRUE
-		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+auditTenantFrag+`
-	`, auditTenantArgs...).Scan(&total, &successes, &totalAuto, &totalSpecified)
-	if err != nil {
-		writeInternalErr(w, err)
-		return
+	auditBusinessFrag := " AND " + businessRequestFilter("")
+
+	// 2026-08-31: try the audit-summary materialized view first (migration
+	// 632 routing_audit_summary_7d). Tenant isolation: the MV is grouped by
+	// tenant_id, and tenantLogsClause hands us the id as a *string* — if a
+	// tenant-scoped caller's id cannot be extracted we MUST NOT take the
+	// MV path (its nil-tenant branch sums every tenant); we fall back to
+	// the base query which carries auditTenantFrag verbatim.
+	var tenantID *string
+	mvEligible := true
+	if auditTenantFrag != "" {
+		mvEligible = false
+		if len(auditTenantArgs) > 0 {
+			if tid, ok := auditTenantArgs[0].(string); ok && tid != "" {
+				tenantID = &tid
+				mvEligible = true
+			}
+		}
 	}
+
+	var mvTotal, mvSuccesses, mvAuto, mvSpecified int64
+	var mvFound bool
+	if mvEligible {
+		mvTotal, mvSuccesses, mvAuto, mvSpecified, mvFound = getAuditSummaryMaterialized(ctx, h.db, tenantID)
+	}
+	if mvFound {
+		total, successes, totalAuto, totalSpecified = mvTotal, mvSuccesses, mvAuto, mvSpecified
+	} else {
+		// Fallback to the canonical analytics source view (migration 649).
+		// It spans request_logs_hot + request_logs without the customer_id
+		// LATERAL (a 10s+ Seq Scan over 314K rows) and matches the source
+		// the routing_audit_summary_7d materialized view aggregates, so the
+		// fallback numbers stay identical to the MV path across month
+		// partition boundaries.
+		var totalInt, successesInt, autoInt, specifiedInt int
+		err := h.db.QueryRow(ctx, `
+			SELECT
+			  COUNT(*),
+			  COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
+			  COALESCE(SUM(CASE WHEN is_auto_request THEN 1 ELSE 0 END), 0),
+			  COALESCE(SUM(CASE WHEN NOT COALESCE(is_auto_request, FALSE) THEN 1 ELSE 0 END), 0)
+			FROM routing_analytics_source
+			WHERE ts >= NOW() - INTERVAL '7 days'
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+			  )`+auditBusinessFrag+auditTenantFrag+`
+		`, auditTenantArgs...).Scan(&totalInt, &successesInt, &autoInt, &specifiedInt)
+		if err != nil {
+			writeInternalErr(w, err)
+			return
+		}
+		total, successes, totalAuto, totalSpecified = int64(totalInt), int64(successesInt), int64(autoInt), int64(specifiedInt)
+	}
+
 	out["total_requests"] = total
 	out["total_auto_requests"] = totalAuto
 	out["specified_model_requests"] = totalSpecified
@@ -509,38 +551,78 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 	// synthetic __specified__ key. Auto-only profile distribution
 	// follows below.
 	taskDist := map[string]int{}
-	taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT %s AS task_type, COUNT(*)
-		FROM request_logs_with_current_month
-		WHERE ts >= NOW() - INTERVAL '7 days'
-		  AND (
-		    is_auto_request = TRUE
-		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+auditTenantFrag+`
-		GROUP BY (%s)
-		ORDER BY COUNT(*) DESC
-		LIMIT 20
-	`, taskExpr, taskExpr), auditTenantArgs...)
-	if err == nil {
-		for rows.Next() {
-			var t string
-			var c int
-			if err := rows.Scan(&t, &c); err == nil {
-				taskDist[t] = c
-			}
+
+	// 2026-09-01: use materialized view when eligible (same tenant logic as audit summary)
+	if mvFound {
+		// MV path: aggregate by effective_task_type
+		var taskQuery string
+		var taskArgs []interface{}
+		if tenantID != nil {
+			taskQuery = `
+				SELECT effective_task_type, SUM(request_count)::int AS count
+				FROM routing_analytics_7d
+				WHERE tenant_id = $1
+				GROUP BY effective_task_type
+				ORDER BY count DESC
+				LIMIT 20
+			`
+			taskArgs = []interface{}{*tenantID}
+		} else {
+			taskQuery = `
+				SELECT effective_task_type, SUM(request_count)::int AS count
+				FROM routing_analytics_7d
+				GROUP BY effective_task_type
+				ORDER BY count DESC
+				LIMIT 20
+			`
 		}
-		rows.Close()
-		out["task_distribution"] = taskDist
+		rows, err := h.db.Query(ctx, taskQuery, taskArgs...)
+		if err == nil {
+			for rows.Next() {
+				var t string
+				var c int
+				if err := rows.Scan(&t, &c); err == nil {
+					taskDist[t] = c
+				}
+			}
+			rows.Close()
+			out["task_distribution"] = taskDist
+		}
+	} else {
+		// Fallback to base view
+		taskExpr := fmt.Sprintf(`COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '%s' END)`, SpecifiedModelTaskKey)
+		rows, err := h.db.Query(ctx, fmt.Sprintf(`
+			SELECT %s AS task_type, COUNT(*)
+			FROM routing_analytics_source
+			WHERE ts >= NOW() - INTERVAL '7 days'
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+			  )`+auditBusinessFrag+auditTenantFrag+`
+			GROUP BY (%s)
+			ORDER BY COUNT(*) DESC
+			LIMIT 20
+		`, taskExpr, taskExpr), auditTenantArgs...)
+		if err == nil {
+			for rows.Next() {
+				var t string
+				var c int
+				if err := rows.Scan(&t, &c); err == nil {
+					taskDist[t] = c
+				}
+			}
+			rows.Close()
+			out["task_distribution"] = taskDist
+		}
 	}
 
 	// Profile distribution
 	profileDist := map[string]int{}
-	rows, err = h.db.Query(ctx, `
+	rows, err := h.db.Query(ctx, `
 		SELECT COALESCE(auto_profile, 'unknown') AS p, COUNT(*)
-		FROM request_logs_with_current_month
+		FROM routing_analytics_source
 		WHERE is_auto_request = TRUE
-		  AND ts >= NOW() - INTERVAL '7 days'`+auditTenantFrag+`
+		  AND ts >= NOW() - INTERVAL '7 days'`+auditBusinessFrag+auditTenantFrag+`
 		GROUP BY p
 		ORDER BY COUNT(*) DESC
 		LIMIT 10
@@ -559,33 +641,78 @@ func (h *AutoRouteHandlers) handleAudit(w http.ResponseWriter, r *http.Request) 
 
 	// Top chosen models — union auto and specified so users can see
 	// which explicit models are consuming volume.
-	rows, err = h.db.Query(ctx, `
-		SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
-		FROM request_logs_with_current_month
-		WHERE ts >= NOW() - INTERVAL '7 days'
-		  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
-		  AND (
-		    is_auto_request = TRUE
-		    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-		  )`+auditTenantFrag+`
-		GROUP BY m
-		ORDER BY c DESC
-		LIMIT 10
-	`, auditTenantArgs...)
-	if err == nil {
-		topModels := make([]map[string]interface{}, 0)
-		for rows.Next() {
-			var m string
-			var c int
-			if err := rows.Scan(&m, &c); err == nil {
-				topModels = append(topModels, map[string]interface{}{
-					"model": m,
-					"count": c,
-				})
-			}
+	// 2026-09-01: use materialized view when eligible
+	if mvFound {
+		// MV path: aggregate by effective_model
+		var topQuery string
+		var topArgs []interface{}
+		if tenantID != nil {
+			topQuery = `
+				SELECT effective_model, SUM(request_count)::int AS c
+				FROM routing_analytics_7d
+				WHERE tenant_id = $1
+				  AND effective_model IS NOT NULL
+				GROUP BY effective_model
+				ORDER BY c DESC
+				LIMIT 10
+			`
+			topArgs = []interface{}{*tenantID}
+		} else {
+			topQuery = `
+				SELECT effective_model, SUM(request_count)::int AS c
+				FROM routing_analytics_7d
+				WHERE effective_model IS NOT NULL
+				GROUP BY effective_model
+				ORDER BY c DESC
+				LIMIT 10
+			`
 		}
-		rows.Close()
-		out["top_chosen_models"] = topModels
+		rows, err := h.db.Query(ctx, topQuery, topArgs...)
+		if err == nil {
+			topModels := make([]map[string]interface{}, 0)
+			for rows.Next() {
+				var m string
+				var c int
+				if err := rows.Scan(&m, &c); err == nil {
+					topModels = append(topModels, map[string]interface{}{
+						"model": m,
+						"count": c,
+					})
+				}
+			}
+			rows.Close()
+			out["top_chosen_models"] = topModels
+		}
+	} else {
+		// Fallback to base view
+		rows, err := h.db.Query(ctx, `
+			SELECT COALESCE(NULLIF(outbound_model, ''), client_model) AS m, COUNT(*) AS c
+			FROM routing_analytics_source
+			WHERE ts >= NOW() - INTERVAL '7 days'
+			  AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
+			  AND (
+			    is_auto_request = TRUE
+			    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
+			  )`+auditBusinessFrag+auditTenantFrag+`
+			GROUP BY m
+			ORDER BY c DESC
+			LIMIT 10
+		`, auditTenantArgs...)
+		if err == nil {
+			topModels := make([]map[string]interface{}, 0)
+			for rows.Next() {
+				var m string
+				var c int
+				if err := rows.Scan(&m, &c); err == nil {
+					topModels = append(topModels, map[string]interface{}{
+						"model": m,
+						"count": c,
+					})
+				}
+			}
+			rows.Close()
+			out["top_chosen_models"] = topModels
+		}
 	}
 
 	writeJSONOk(w, out)
@@ -814,9 +941,10 @@ func (h *AutoRouteHandlers) handleModelCost(w http.ResponseWriter, r *http.Reque
 }
 
 // writeJSONOk serialises v as JSON and writes 200. Errors are swallowed.
+// 薄委托 internal/httpx（2026-09-04 writeJSON 收敛）。
 func writeJSONOk(w http.ResponseWriter, v interface{}) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, http.StatusOK, "application/json", v)
 }
 
 // writeJSONErr serialises an error envelope and writes the given status.
@@ -828,9 +956,8 @@ func writeJSONOk(w http.ResponseWriter, v interface{}) {
 //
 // DEPRECATED: prefer writeJSONErrCtx for i18n-aware responses.
 func writeJSONErr(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, status, "application/json", map[string]interface{}{
 		"error": map[string]string{
 			"message": msg,
 			"type":    "admin_error",
@@ -846,9 +973,8 @@ func writeJSONErr(w http.ResponseWriter, status int, msg string) {
 // pass templateData as the optional 4th argument.
 func writeJSONErrCtx(w http.ResponseWriter, r *http.Request, status int, messageKey string, templateData ...map[string]any) {
 	msg := i18n.T(r.Context(), messageKey, templateData...)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	//nolint:errcheck // best-effort, matches previous streaming helper
+	httpx.WriteJSON(w, status, "application/json", map[string]interface{}{
 		"error": map[string]string{
 			"message": msg,
 			"code":    messageKey, // stable machine-readable token
@@ -1017,8 +1143,8 @@ func (h *AutoRouteHandlers) handleAffinitySelections(w http.ResponseWriter, r *h
 			       fallback_used,
 			       success, latency_ms, cost_usd, reward, reward_source,
 			       ts::text, settled_at::text
-			FROM auto_route_selections
-			WHERE session_id = $1
+				FROM auto_route_selections_all
+				WHERE session_id = $1
 			ORDER BY ts DESC
 			LIMIT $2
 		`, sessionID, limit)

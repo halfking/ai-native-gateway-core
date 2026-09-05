@@ -235,6 +235,34 @@ func TestIntegration_KeepaliveWriter(t *testing.T) {
 	}
 }
 
+func TestKeepaliveWriterStopBeforeStartAndRepeatedStop(t *testing.T) {
+	keepalive := NewKeepaliveWriter(httptest.NewRecorder(), time.Second)
+	done := make(chan struct{})
+	go func() {
+		keepalive.Stop()
+		keepalive.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Stop blocked for a keepalive writer that was never started")
+	}
+}
+
+func TestKeepaliveWriterStopEndsPeriodicWrites(t *testing.T) {
+	w := httptest.NewRecorder()
+	keepalive := NewKeepaliveWriter(w, 5*time.Millisecond)
+	go keepalive.Start(context.Background())
+	time.Sleep(20 * time.Millisecond)
+	keepalive.Stop()
+	before := w.Body.String()
+	time.Sleep(20 * time.Millisecond)
+	if got := w.Body.String(); got != before {
+		t.Fatalf("body changed after Stop: before=%q after=%q", before, got)
+	}
+}
+
 // TestIntegration_RealWorldScenario simulates a real-world streaming scenario.
 func TestIntegration_RealWorldScenario(t *testing.T) {
 	config := DefaultConfig()

@@ -66,4 +66,5 @@ export default {
     deleteFailed: '刪除失敗',
     restoreFailed: '復原失敗',
   },
+  softDeleteConfirm: '確認軟刪除策略 {name}？(可復原)',
 }

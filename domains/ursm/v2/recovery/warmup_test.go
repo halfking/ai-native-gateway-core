@@ -22,6 +22,18 @@ func TestWarmupSeedsReady(t *testing.T) {
 	}
 }
 
+func TestWarmupNumericTenantUsesTaggedKey(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	m := New(rdb, "ursm:v2:")
+	if err := m.WarmupFromSeed(context.Background(), []Seed{{CredentialID: 7, RawModel: "m", TenantID: "123"}}); err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	if !mr.Exists("ursm:v2:node:t:123:7:m") {
+		t.Fatal("numeric tenant warmup must use tagged node key")
+	}
+}
+
 func TestWarmupEmptyStaysClosed(t *testing.T) {
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})

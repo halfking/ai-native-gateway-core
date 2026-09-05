@@ -14,6 +14,160 @@ import (
 	"time"
 )
 
+type flushErrorResponseWriter struct {
+	http.ResponseWriter
+	flushErr error
+	flushes  int
+}
+
+func (w *flushErrorResponseWriter) Flush() { _ = w.FlushError() }
+func (w *flushErrorResponseWriter) FlushError() error {
+	w.flushes++
+	return w.flushErr
+}
+
+// fakeJourneyObserver records retry boundary emissions for assertions.
+type fakeJourneyObserver struct {
+	mu      sync.Mutex
+	reasons []string
+	high    int64
+	arrival time.Time
+}
+
+func (f *fakeJourneyObserver) RetryScheduled(ctx context.Context, reason string) {
+	f.mu.Lock()
+	f.reasons = append(f.reasons, reason)
+	f.mu.Unlock()
+}
+
+func (f *fakeJourneyObserver) SequenceHighWater() int64 { return f.high }
+
+func (f *fakeJourneyObserver) ArrivalTime() time.Time { return f.arrival }
+
+func (f *fakeJourneyObserver) retryReasons() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.reasons...)
+}
+
+func TestWrapHTTPErrorPreservesRetryAfter(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+	resp.Header.Set("Retry-After", "7")
+	err := WrapHTTPError(resp, errors.New("busy"))
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("error type = %T, want *HTTPError", err)
+	}
+	if httpErr.RetryAfter != "7" {
+		t.Fatalf("RetryAfter = %q, want 7", httpErr.RetryAfter)
+	}
+}
+
+func TestJourneyCarrierBinding(t *testing.T) {
+	observer := &fakeJourneyObserver{}
+	ctx := withRequestCarrier(context.Background())
+	if got := JourneyObserverFromCtx(ctx); got != nil {
+		t.Fatalf("initial observer = %v, want nil", got)
+	}
+	BindJourneyObserver(ctx, observer)
+	if got := JourneyObserverFromCtx(ctx); got != observer {
+		t.Fatalf("observer = %v, want the bound observer", got)
+	}
+	BindJourneyObserver(context.Background(), observer)
+	if got := JourneyObserverFromCtx(context.Background()); got != nil {
+		t.Fatalf("context without carrier returned observer %v", got)
+	}
+}
+
+// TestWrapperRetryEmitsJourneyRetryScheduled drives the retry loop through two
+// retriable failures and asserts the journey observer sees one retry boundary
+// per retry with the classified error reason, and nothing on the success path.
+func TestWrapperRetryEmitsJourneyRetryScheduled(t *testing.T) {
+	observer := &fakeJourneyObserver{}
+	var attempts int32
+	streamFunc := func(ctx context.Context, w http.ResponseWriter) error {
+		n := atomic.AddInt32(&attempts, 1)
+		if n < 3 {
+			return &HTTPError{StatusCode: http.StatusServiceUnavailable, Err: errors.New("service unavailable")}
+		}
+		return nil
+	}
+
+	cfg := DefaultConfig()
+	cfg.BaseDelayMs = 1
+	cfg.MaxDelayMs = 2
+	wrapper := NewWrapper(cfg, nil)
+
+	ctx := withRequestCarrier(context.Background())
+	BindJourneyObserver(ctx, observer)
+	if _, err := wrapper.ExecuteWithMetrics(ctx, httptest.NewRecorder(), streamFunc); err != nil {
+		t.Fatalf("ExecuteWithMetrics() error = %v", err)
+	}
+
+	reasons := observer.retryReasons()
+	if len(reasons) != 2 {
+		t.Fatalf("retry emissions = %v, want one per retry (2)", reasons)
+	}
+	for _, reason := range reasons {
+		if reason == "" {
+			t.Fatalf("retry emission carried empty reason: %v", reasons)
+		}
+	}
+}
+
+// TestWrapperRetryWithoutObserverIsNoOp verifies requests that never bound a
+// journey lifecycle (non-retry entry paths, unit callers) retry unchanged.
+func TestWrapperRetryWithoutObserverIsNoOp(t *testing.T) {
+	var attempts int32
+	streamFunc := func(ctx context.Context, w http.ResponseWriter) error {
+		if atomic.AddInt32(&attempts, 1) < 2 {
+			return &HTTPError{StatusCode: http.StatusServiceUnavailable, Err: errors.New("service unavailable")}
+		}
+		return nil
+	}
+
+	cfg := DefaultConfig()
+	cfg.BaseDelayMs = 1
+	cfg.MaxDelayMs = 2
+	wrapper := NewWrapper(cfg, nil)
+
+	if _, err := wrapper.ExecuteWithMetrics(context.Background(), httptest.NewRecorder(), streamFunc); err != nil {
+		t.Fatalf("ExecuteWithMetrics() error = %v", err)
+	}
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Fatalf("attempts = %d, want 2", got)
+	}
+}
+
+func TestErrorRecorderTreatsAnyWrittenStatusAsCommitted(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusBadRequest, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			recorder := &errorRecorder{ResponseWriter: httptest.NewRecorder()}
+			recorder.WriteHeader(status)
+			if !recorder.committed {
+				t.Fatalf("status %d was forwarded but recorder remained retryable", status)
+			}
+		})
+	}
+}
+
+func TestErrorRecorderPropagatesFlushErrorAfterCommit(t *testing.T) {
+	flushErr := errors.New("connection closed")
+	underlying := &flushErrorResponseWriter{ResponseWriter: httptest.NewRecorder(), flushErr: flushErr}
+	recorder := &errorRecorder{ResponseWriter: underlying}
+
+	if err := recorder.FlushError(); err != nil || underlying.flushes != 0 {
+		t.Fatalf("pre-commit flush = (%v, %d), want nil and zero calls", err, underlying.flushes)
+	}
+	recorder.WriteHeader(http.StatusOK)
+	if err := recorder.FlushError(); !errors.Is(err, flushErr) {
+		t.Fatalf("committed FlushError() = %v, want %v", err, flushErr)
+	}
+	if underlying.flushes != 1 {
+		t.Fatalf("underlying flushes = %d, want 1", underlying.flushes)
+	}
+}
+
 // TestDefaultStreamExecutor_SuccessFirstAttempt wraps a happy-path handler and
 // verifies the executor forwards the response without retrying.
 func TestDefaultStreamExecutor_SuccessFirstAttempt(t *testing.T) {
@@ -94,6 +248,36 @@ func TestDefaultStreamExecutor_RetryOnTransientFailure(t *testing.T) {
 	}
 	if metrics.SuccessAttempt != 2 {
 		t.Errorf("SuccessAttempt = %d, want 2 (0-indexed)", metrics.SuccessAttempt)
+	}
+}
+
+func TestDefaultStreamExecutor_DoesNotRetryAfterFirstStreamFrame(t *testing.T) {
+	var attempts int32
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: first-frame\\n\\n"))
+		w.(*errorRecorder).err = &HTTPError{StatusCode: http.StatusServiceUnavailable, Err: errors.New("upstream disconnected")}
+	})
+
+	cfg := DefaultConfig()
+	cfg.BaseDelayMs = 1
+	cfg.MaxRetries = 3
+	exec := NewDefaultStreamExecutor(inner, cfg)
+	rec := httptest.NewRecorder()
+	metrics, err := exec.ExecuteStreamWithMetrics(context.Background(), rec, newStreamingRequest())
+	if err == nil {
+		t.Fatal("ExecuteStreamWithMetrics() error = nil, want committed stream error")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("attempts = %d, want 1 after first frame", got)
+	}
+	if metrics.TotalAttempts != 1 || metrics.TotalRetries != 0 {
+		t.Fatalf("metrics = %+v, want one committed attempt", metrics)
+	}
+	if got := rec.Body.String(); got != "data: first-frame\\n\\n" {
+		t.Fatalf("response body = %q, want one first frame", got)
 	}
 }
 
@@ -255,7 +439,10 @@ func TestDefaultStreamExecutor_ConcurrentRequestsHaveIndependentMetrics(t *testi
 			failures = int32(value)
 		}
 		if attempt <= failures {
-			w.WriteHeader(http.StatusServiceUnavailable)
+			w.(*errorRecorder).err = &HTTPError{
+				StatusCode: http.StatusServiceUnavailable,
+				Err:        errors.New("service unavailable"),
+			}
 			return
 		}
 		w.WriteHeader(http.StatusOK)

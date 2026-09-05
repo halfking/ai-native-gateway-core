@@ -1,6 +1,9 @@
 package tokenest
 
-import "testing"
+import (
+	"math"
+	"testing"
+)
 
 // TestFromChars_MatchesLegacy35 confirms the consolidated helper reproduces
 // the pre-C4 `len(body)/3.5` semantics exactly, so callers that previously
@@ -32,6 +35,32 @@ func TestFromChars_NonPositive(t *testing.T) {
 	}
 	if FromChars(-10) != 0 {
 		t.Error("FromChars(-10) != 0")
+	}
+}
+
+func TestFromChars_LargeInputDoesNotOverflow(t *testing.T) {
+	values := []int{math.MaxInt / 4, math.MaxInt / 2, math.MaxInt}
+	previous := 0
+	for _, value := range values {
+		got := FromChars(value)
+		if got < 0 {
+			t.Fatalf("FromChars(%d) = %d, want non-negative", value, got)
+		}
+		if got < previous {
+			t.Fatalf("FromChars is not monotonic: %d after %d", got, previous)
+		}
+		previous = got
+	}
+}
+
+func TestFromChars_Monotonic(t *testing.T) {
+	previous := 0
+	for value := 1; value <= 10000; value++ {
+		got := FromChars(value)
+		if got < previous {
+			t.Fatalf("FromChars(%d) = %d after %d", value, got, previous)
+		}
+		previous = got
 	}
 }
 

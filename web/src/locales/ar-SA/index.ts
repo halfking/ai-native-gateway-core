@@ -34,6 +34,9 @@ import compression from './compression'
 import examples from './examples'
 import dataLifecycle from './dataLifecycle'
 import tuning from './tuning'
+import turnDigest from './turnDigest'
+import errorVocab from './errorVocab'
+import sessionTimeline from './sessionTimeline'
 import correlations from './correlations'
 import tenantModelPolicyPanel from './tenantModelPolicyPanel'
 import clientConfigDialog from './clientConfigDialog'
@@ -62,6 +65,13 @@ import approval from './approval'
 import probeHealth from './probeHealth'
 import tenantModels from './tenantModels'
 import publicPortal from './public'
+import requestJourneys from './requestJourneys'
+import requestRegistry from './requestRegistry'
+import requestJourneyDetail from './requestJourneyDetail'
+import connectionRegistry from './connectionRegistry'
+import nodeHealthTimeline from './nodeHealthTimeline'
+import proxy from './proxy'
+import requestDetail from './requestDetail'
 
 export default {
   common,
@@ -98,6 +108,9 @@ export default {
   examples,
   dataLifecycle,
   tuning,
+  turnDigest,
+  errorVocab,
+  sessionTimeline,
   correlations,
   tenantModelPolicyPanel,
   clientConfigDialog,
@@ -125,6 +138,11 @@ export default {
   probeHealth,
   tenantModels,
   public: publicPortal,
-
-
+  requestJourneys,
+  requestRegistry,
+  requestJourneyDetail,
+  connectionRegistry,
+  nodeHealthTimeline,
+  proxy,
+  requestDetail,
 }

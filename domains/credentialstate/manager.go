@@ -26,7 +26,8 @@
 //   - domains/ursm/v2.Manager.Plan() // canary 模式
 //
 // 回退测试:
-//   URSM_V2_MODE=off 确保此包路径正常工作
+//
+//	URSM_V2_MODE=off 确保此包路径正常工作
 //
 // Deprecated: credentialstate is superseded by URSM v2 (domains/ursm/v2).
 // It remains for legacy/off/canary modes only. Do not add new callers.
@@ -754,7 +755,12 @@ func (m *Manager) GetStaleStates(staleTTL time.Duration) []*State {
 	m.memCache.Range(func(k, v interface{}) bool {
 		entry := v.(*CacheEntry)
 		if now.Sub(entry.State.LastUpdatedAt) > staleTTL {
-			stale = append(stale, entry.State)
+			// Clone so callers cannot mutate the shared *State (other read
+			// paths return copies under the per-key mutex; a bare pointer
+			// here would bypass that) — probe callbacks that edit State in
+			// place would race UpdateOnSuccess/UpdateOnFailure.
+			clone := *entry.State
+			stale = append(stale, &clone)
 		}
 		return true
 	})

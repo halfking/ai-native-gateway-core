@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { localeRef } from '../i18n'
+import { fmtDateTimeShort } from '../i18n/useFormat'
 import { computed, ref, onBeforeUnmount, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enableKey, patchKeyProfile, getDefaultLimits, setDefaultLimits, getKeyConflict, type ApiKey, type KeyCreatedResponse, type DefaultLimits, type KeyConflict } from '../api'
 import { store, clearApiKey, setApiKey, setPreferredChatKeyId, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import FilterInput from '../components/FilterInput.vue'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -319,18 +320,13 @@ async function submitNew() {
 }
 
 async function revoke(k: ApiKey) {
-  if (!confirm(`确认吊销密钥 ${k.key_prefix}***？此操作不可撤销。`)) return
+  if (!(await confirmDialog(t('keys.list.confirm.revoke', { prefix: k.key_prefix })))) return
   try {
     await revokeKey(k.id)
     keys.value = keys.value.filter(x => x.id !== k.id)
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('keys.revokeFailed')
   }
-}
-
-function fmtDate(s: string | null | undefined) {
-  if (!s) return '—'
-  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
 }
 
 function fmtCost(n: number | string | null | undefined): string {
@@ -439,7 +435,7 @@ async function disableSelected() {
     error.value = t('keys.systemKeyCannotDisable')
     return
   }
-  if (!confirm(`确认禁用密钥 ${k.key_prefix}？可通过"启用"恢复。`)) return
+  if (!(await confirmDialog(t('keys.list.confirm.disable', { prefix: k.key_prefix })))) return
   try {
     await disableKey(k.id)
     const currentKeyPrefix = store.apiKey ? store.apiKey.substring(0, 12) : ''
@@ -702,8 +698,8 @@ onBeforeUnmount(() => {
             <td style="font-size:12px;text-align:right" :class="{ 'has-cost': k.total_cost_usd > 0 }">
               {{ k.total_cost_usd > 0 ? fmtCost(k.total_cost_usd) : '—' }}
             </td>
-            <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.expires_at) }}</td>
-            <td style="font-size:12px;color:var(--muted)">{{ fmtDate(k.last_used_at) }}</td>
+            <td style="font-size:12px;color:var(--muted)">{{ fmtDateTimeShort(k.expires_at) }}</td>
+            <td style="font-size:12px;color:var(--muted)">{{ fmtDateTimeShort(k.last_used_at) }}</td>
             <td style="font-size:11px;color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="k.remark || ''">
               {{ k.remark || '—' }}
             </td>
@@ -748,7 +744,7 @@ onBeforeUnmount(() => {
                 </span>
                 <span class="dk">预算</span><span class="dv">{{ selectedKey.budget_usd != null ? fmtCost(selectedKey.budget_usd) : t('keys.unlimited') }}</span>
                 <span class="dk">速率限制</span><span class="dv">{{ rateLimitLabel(selectedKey) }}</span>
-                <span class="dk">到期</span><span class="dv">{{ fmtDate(selectedKey.expires_at) }}</span>
+                <span class="dk">到期</span><span class="dv">{{ fmtDateTimeShort(selectedKey.expires_at) }}</span>
                 <span class="dk">备注</span><span class="dv">{{ selectedKey.remark || '—' }}</span>
               </div>
             </div>
@@ -875,7 +871,7 @@ onBeforeUnmount(() => {
               class="conflict-meta"
             >
               <span v-if="newConflict.status">状态: <code>{{ newConflict.status }}</code></span>
-              <span v-if="newConflict.expiresAt">到期: <code>{{ fmtDate(newConflict.expiresAt) }}</code></span>
+              <span v-if="newConflict.expiresAt">到期: <code>{{ fmtDateTimeShort(newConflict.expiresAt) }}</code></span>
               <span v-if="newConflict.ownerUser">归属: <code>{{ newConflict.ownerUser }}</code></span>
             </div>
             <div v-if="serverConflictLoading" class="conflict-loading">正在向服务器确认…</div>
@@ -1131,7 +1127,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius);
   background: var(--success);
   color: white;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 8px 24px var(--overlay-light);
   font-size: 13px;
 }
 

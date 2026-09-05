@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,7 +13,7 @@ import (
 
 func TestStartPreStreamKeepalive_WritesInitialComment(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-initial")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-initial")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}
@@ -37,7 +38,7 @@ func TestStartPreStreamKeepalive_WritesInitialComment(t *testing.T) {
 // header to an empty string, since some clients pattern-match on its presence.
 func TestStartPreStreamKeepalive_OmitsEmptyRequestID(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}
@@ -68,6 +69,7 @@ func TestWritePrewarmedStreamError_WritesSSEError(t *testing.T) {
 // opt-in + openai-completions-only). This is the primary fix for agent-task
 // interruptions through the gateway.
 func TestPreStreamKeepalive_EnabledByDefault(t *testing.T) {
+	isolateResponsesRuntimeConfig(t)
 	t.Setenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", "")
 	streamConfigStore.Store(config.NewStore(&config.Config{}))
 	if got := currentStreamRuntimeConfig().enablePreStreamKeepalive; !got {
@@ -76,6 +78,7 @@ func TestPreStreamKeepalive_EnabledByDefault(t *testing.T) {
 }
 
 func TestPreStreamKeepalive_DisabledViaEnv(t *testing.T) {
+	isolateResponsesRuntimeConfig(t)
 	t.Setenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", "false")
 	streamConfigStore.Store(config.NewStore(&config.Config{}))
 	if got := currentStreamRuntimeConfig().enablePreStreamKeepalive; got {
@@ -84,6 +87,7 @@ func TestPreStreamKeepalive_DisabledViaEnv(t *testing.T) {
 }
 
 func TestPreStreamKeepalive_EnabledViaEnv(t *testing.T) {
+	isolateResponsesRuntimeConfig(t)
 	t.Setenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", "true")
 	streamConfigStore.Store(config.NewStore(&config.Config{}))
 	if got := currentStreamRuntimeConfig().enablePreStreamKeepalive; !got {
@@ -99,7 +103,7 @@ func TestPreStreamKeepalive_EnabledViaEnv(t *testing.T) {
 // is delivered without a separate WriteHeader.
 func TestPreStreamKeepalive_InitialCommentArrivesBeforeContent(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-test")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-test")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}
@@ -134,7 +138,7 @@ func TestPreStreamKeepalive_InitialCommentArrivesBeforeContent(t *testing.T) {
 // again from the deferred cleanup, so a double stop must be a no-op.
 func TestPreStreamKeepalive_StopIsIdempotent(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-test")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-test")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}
@@ -147,7 +151,7 @@ func TestPreStreamKeepalive_StopIsIdempotent(t *testing.T) {
 // (no JSON, no extra WriteHeader) because prewarm already committed 200.
 func TestPreStreamKeepalive_PrewarmThenSSEError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-test")
+	psk, ok := startPreStreamKeepalive(context.Background(), rec, time.Hour, "req-test")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}

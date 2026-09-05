@@ -73,6 +73,10 @@ services:
       DATABASE_URL: postgresql://kxuser:${POSTGRES_PASSWORD}@citus:5432/llm_gateway?sslmode=disable
       LLM_GATEWAY_REDIS_ADDR: redis:6379
       LLM_GATEWAY_REDIS_PASSWORD: ${REDIS_PASSWORD}
+      LLM_GATEWAY_ATTACHMENT_DIR: /opt/llm-gateway-go/data/attachments
+      LLM_GATEWAY_RAW_LOG_DIR: /opt/llm-gateway-go/data/raw-logs
+      LLM_GATEWAY_BACKUP_DIR: /opt/llm-gateway-go/data/backups
+      LLM_GATEWAY_PERSISTENT_LOG_DIR: /var/log/llm-gateway
     ports:
       - "${APP_PORT:-8781}:8781"
     volumes:
@@ -80,6 +84,10 @@ services:
       - ./attachments:/opt/llm-gateway-go/data/attachments
       # ⭐ 应用日志持久化
       - ./app/logs:/var/log/llm-gateway
+      # ⭐ 原始请求/响应日志持久化
+      - ./raw-logs:/opt/llm-gateway-go/data/raw-logs
+      # ⭐ 数据库降级备份持久化
+      - ./backups:/opt/llm-gateway-go/data/backups
       # ⭐ 版本文件 bind-mount（方便热更新）
       - ./app/VERSION:/opt/llm-gateway-go/VERSION:ro
     healthcheck:

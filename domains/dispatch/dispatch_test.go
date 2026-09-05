@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	dto "github.com/prometheus/client_model/go"
 )
 
 // fakeDeps builds a Pipeline with controllable callbacks for testing.
@@ -80,6 +83,15 @@ func (f *fakeDeps) pipeline() *Pipeline {
 		ForwardFunc:      f.forwardFunc,
 		AllowModelChange: f.allowChange,
 	})
+}
+
+func counterValue(t *testing.T, kind string) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := metricFailover.WithLabelValues(kind).Write(metric); err != nil {
+		t.Fatalf("read failover metric: %v", err)
+	}
+	return metric.GetCounter().GetValue()
 }
 
 func contains(s []string, v string) bool {
@@ -183,6 +195,9 @@ func TestFailoverSwitch(t *testing.T) {
 	if !qr.hasTriedCredential(1) {
 		t.Fatalf("cred1 should be marked tried")
 	}
+	if got := f.forwardCalls[1]; got != MaxNodeFailures {
+		t.Fatalf("cred1 calls = %d, want %d before node switch", got, MaxNodeFailures)
+	}
 }
 
 // TestPostFirstByteNoSwitch: a failure after bytes were sent must NOT switch.
@@ -246,7 +261,200 @@ func TestModelChange(t *testing.T) {
 	}
 }
 
-// TestNoRoute: everything fails, model-change disabled → ErrNoRoute.
+func TestModelChangeRuntimeGateUsesRecommender(t *testing.T) {
+	var enabled atomic.Bool
+	var recommendCalls atomic.Int32
+	var mu sync.Mutex
+	attempts := []string(nil)
+
+	p := NewPipeline(Deps{
+		RouteFunc: func(_ context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
+			switch qr.ResolvedModel {
+			case "primary":
+				return []CredentialRef{cred(1, ModeConcurrency, 5)}, nil
+			case "recommended":
+				return []CredentialRef{cred(2, ModeConcurrency, 5)}, nil
+			default:
+				return nil, nil
+			}
+		},
+		ModelResolveFunc: func(_ context.Context, requested string, _ []string) (string, []string, error) {
+			return requested, nil, nil
+		},
+		ModelRecommendFunc: func(_ context.Context, _ *QueuedRequest, tried []string) ([]string, error) {
+			recommendCalls.Add(1)
+			if !contains(tried, "primary") {
+				t.Fatalf("recommender tried models = %v, want primary", tried)
+			}
+			return []string{"recommended"}, nil
+		},
+		ForwardFunc: func(_ context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			mu.Lock()
+			attempts = append(attempts, qr.ResolvedModel)
+			mu.Unlock()
+			if c.CredentialID == 1 {
+				return ForwardOutcome{Err: errors.New("pre-first-byte failure")}
+			}
+			return ForwardOutcome{Result: "ok"}
+		},
+		AllowModelChangeFunc: enabled.Load,
+	})
+	p.Start()
+	defer p.Stop()
+
+	t.Run("off", func(t *testing.T) {
+		enabled.Store(false)
+		qr := NewQueuedRequest("off", "t", "primary", context.Background(), nil)
+		qr.AllowModelChange = true
+		if _, err := p.Submit(context.Background(), qr); err == nil {
+			t.Fatal("expected primary failure with model change disabled")
+		}
+		if got := recommendCalls.Load(); got != 0 {
+			t.Fatalf("recommender called while gate disabled: %d", got)
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		enabled.Store(true)
+		beforeMetric := counterValue(t, "model_change")
+		qr := NewQueuedRequest("on", "t", "primary", context.Background(), nil)
+		qr.AllowModelChange = true
+		res, err := p.Submit(context.Background(), qr)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res != "ok" {
+			t.Fatalf("result = %v, want ok", res)
+		}
+		if got := recommendCalls.Load(); got != 1 {
+			t.Fatalf("recommender calls = %d, want 1", got)
+		}
+		if got := counterValue(t, "model_change"); got != beforeMetric+1 {
+			t.Fatalf("model_change metric = %v, want %v", got, beforeMetric+1)
+		}
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := distinctAttemptedModels(attempts); !reflect.DeepEqual(got, []string{"primary", "recommended"}) {
+		t.Fatalf("attempted models = %v", got)
+	}
+}
+
+func TestModelChangeRecommenderNotCalledAfterFirstByte(t *testing.T) {
+	var recommendCalls atomic.Int32
+	p := NewPipeline(Deps{
+		RouteFunc: func(_ context.Context, _ *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{cred(1, ModeConcurrency, 5)}, nil
+		},
+		ModelResolveFunc: func(_ context.Context, requested string, _ []string) (string, []string, error) {
+			return requested, nil, nil
+		},
+		ModelRecommendFunc: func(context.Context, *QueuedRequest, []string) ([]string, error) {
+			recommendCalls.Add(1)
+			return []string{"recommended"}, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{Err: errors.New("post-first-byte failure"), BytesSent: true}
+		},
+		AllowModelChange: true,
+	})
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("post-first-byte", "t", "primary", context.Background(), nil)
+	qr.AllowModelChange = true
+	if _, err := p.Submit(context.Background(), qr); err == nil {
+		t.Fatal("expected terminal post-first-byte failure")
+	}
+	if got := recommendCalls.Load(); got != 0 {
+		t.Fatalf("recommender called after first byte: %d", got)
+	}
+}
+
+func TestModelChangeUsesConfiguredAlternativeOrder(t *testing.T) {
+	var attempts []string
+	var mu sync.Mutex
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{
+			"primary":   {cred(1, ModeConcurrency, 5)},
+			"primary-b": {cred(2, ModeConcurrency, 5)},
+			"secondary": {cred(3, ModeConcurrency, 5)},
+			"fallback":  {cred(4, ModeConcurrency, 5)},
+		},
+		forwardFn: func(_ context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			mu.Lock()
+			attempts = append(attempts, qr.ResolvedModel)
+			mu.Unlock()
+			if c.CredentialID != 4 {
+				return ForwardOutcome{Err: errors.New("pre-first-byte failure")}
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+		allowChange:  true,
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "primary", context.Background(), nil)
+	qr.AllowModelChange = true
+	qr.ModelAlternatives = []string{"primary-b", "secondary", "fallback"}
+	if _, err := p.Submit(context.Background(), qr); err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	want := []string{"primary", "primary-b", "secondary", "fallback"}
+	if got := distinctAttemptedModels(attempts); !reflect.DeepEqual(got, want) {
+		t.Fatalf("model-change order: got %v, want %v (all attempts %v)", got, want, attempts)
+	}
+}
+
+func distinctAttemptedModels(attempts []string) []string {
+	seen := make(map[string]struct{}, len(attempts))
+	out := make([]string, 0, len(attempts))
+	for _, model := range attempts {
+		if _, duplicate := seen[model]; duplicate {
+			continue
+		}
+		seen[model] = struct{}{}
+		out = append(out, model)
+	}
+	return out
+}
+
+func TestModelChangeDoesNotCrossTierAfterFirstByte(t *testing.T) {
+	var attempts []string
+	var mu sync.Mutex
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{
+			"primary":   {cred(1, ModeConcurrency, 5)},
+			"secondary": {cred(2, ModeConcurrency, 5)},
+		},
+		forwardFn: func(_ context.Context, qr *QueuedRequest, _ CredentialRef) ForwardOutcome {
+			mu.Lock()
+			attempts = append(attempts, qr.ResolvedModel)
+			mu.Unlock()
+			return ForwardOutcome{Err: errors.New("mid-stream failure"), BytesSent: true}
+		},
+		forwardCalls: map[int]int{},
+		allowChange:  true,
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "primary", context.Background(), nil)
+	qr.AllowModelChange = true
+	qr.ModelAlternatives = []string{"secondary"}
+	if _, err := p.Submit(context.Background(), qr); err == nil {
+		t.Fatal("expected post-first-byte failure")
+	}
+	if want := []string{"primary"}; !reflect.DeepEqual(attempts, want) {
+		t.Fatalf("post-first-byte request must not change models: got %v, want %v", attempts, want)
+	}
+}
+
 func TestNoRoute(t *testing.T) {
 	f := &fakeDeps{
 		refsByModel: map[string][]CredentialRef{"a": {cred(1, ModeConcurrency, 5)}},
@@ -592,6 +800,10 @@ func TestTier2QueueBoundIncludesGovernorWait(t *testing.T) {
 
 	cfg := DefaultConfig()
 	cfg.RetryPerCredential = 0
+	// v4 (R1.3): MaxQueueWaitMS now defaults to 0 (zero-wait admission), so
+	// requests no longer park in the governor by default. This test asserts
+	// queue-bound behavior when waiting IS allowed — opt in explicitly.
+	cfg.MaxQueueWaitMS = 2000
 	hotCfg := &atomic.Value{}
 	hotCfg.Store(&cfg)
 	p := NewPipeline(Deps{
@@ -648,8 +860,14 @@ func TestTier2QueueBoundIncludesGovernorWait(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 	_, err := p.Submit(ctx, NewQueuedRequest("overflow", "t", "m", ctx, nil))
-	if !errors.Is(err, ErrNoRoute) {
-		t.Fatalf("expected queue overflow to reject through no-route, got %v", err)
+	// With capacity-retry mechanism, when all queues are full the request enters
+	// capacity wait (5s retry). Since the context times out after 200ms, we expect
+	// context.DeadlineExceeded or errCapacitySaturated (if it escalates before timeout).
+	if err == nil {
+		t.Fatal("expected error when queue is full, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !IsCapacitySaturated(err) && !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected context deadline exceeded, capacity saturated, or no-route when queue is full, got %v", err)
 	}
 }
 
@@ -849,6 +1067,79 @@ func TestRetryBudgetRequestOverride(t *testing.T) {
 	}
 }
 
+// TestSkipSameCredRetryOnCredentialFatal: when the forward outcome marks the
+// failure as credential-fatal (quota exhausted / auth revoked), the mover must
+// skip the same-credential retry ladder and switch to a healthy sibling
+// immediately. Retry-while-quota-dead was the root cause of incident
+// afd75c81… (claude-opus-5 retried the exhausted credential 34 instead of
+// switching to the healthy credential 17). The control case (RetryPerCredential
+// left at the global default for a non-fatal error) confirms same-credential
+// retry still happens for transient errors, so the new branch is scoped to
+// fatal kinds only.
+func TestSkipSameCredRetryOnCredentialFatal(t *testing.T) {
+	// ── Fatal case: cred1 returns quota-exhausted + FatalCredential → switch ──
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": {
+			cred(1, ModeConcurrency, 5),
+			cred(2, ModeConcurrency, 5),
+		}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			if c.CredentialID == 1 {
+				return ForwardOutcome{Err: errors.New("usage limit exceeded"), FatalCredential: true}
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+	// Global default RetryPerCredential is > 0, so without the fatal guard cred1
+	// would be retried. Confirm the fatal flag overrides the budget.
+	res, err := p.Submit(context.Background(), qr)
+	if err != nil {
+		t.Fatalf("expected switch to cred2 success, got: %v", err)
+	}
+	if res != "ok:cred2:call1" {
+		t.Fatalf("expected cred2 to serve on first attempt, got: %v", res)
+	}
+	if got := f.forwardCalls[1]; got != 1 {
+		t.Fatalf("cred1 must be tried exactly once (no same-cred retry on fatal); calls=%d", got)
+	}
+	if got := f.forwardCalls[2]; got != 1 {
+		t.Fatalf("cred2 must be tried exactly once; calls=%d", got)
+	}
+
+	// ── Control: non-fatal transient still retries same credential ──
+	ctrl := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": {
+			cred(1, ModeConcurrency, 5),
+			cred(2, ModeConcurrency, 5),
+		}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			if c.CredentialID == 1 {
+				return ForwardOutcome{Err: errors.New("transient 5xx")} // FatalCredential=false (zero value)
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	cp := ctrl.pipeline()
+	cp.Start()
+	defer cp.Stop()
+	cqr := NewQueuedRequest("r2", "t", "m", context.Background(), nil)
+	cqr.RetryPerCredential = 2 // allow up to 2 same-credential retries
+	if _, err := cp.Submit(context.Background(), cqr); err != nil {
+		t.Fatalf("control case expected success after retry, got: %v", err)
+	}
+	// cred1 must be retried (call count > 1) before switching to cred2.
+	if got := ctrl.forwardCalls[1]; got < 2 {
+		t.Fatalf("control: non-fatal error must still retry cred1; calls=%d", got)
+	}
+}
+
 // TestTier2StopDrainsQueuedRequests is the Tier-2 analogue of
 // TestStopNoDrainLoss. A request sits in the credential forwarder's Tier-2
 // queue (governor pacing wait) when Stop() fires. Under the bug the
@@ -924,6 +1215,216 @@ func TestTier2StopDrainsQueuedRequests(t *testing.T) {
 	}
 }
 
+// TestStopDrainsDispatchInResidue is the dispatchIn analogue of
+// TestStopNoDrainLoss (audit 2026-09-05 C-#2): requests sitting in the
+// dispatchIn BUFFER when stopCh fires must all complete with ErrShutdown.
+// Under the bug, runDispatcher's stopCh branch returned directly, leaving
+// buffered qrs unconsumed — their Submit callers would block on qr.ResultCh
+// until ctx expiry (2h for survival streams).
+//
+// The pipeline is driven manually (no Start) so the residue is staged
+// deterministically: runDispatcher is the only goroutine, dispatchIn holds
+// five requests before stopCh closes.
+func TestStopDrainsDispatchInResidue(t *testing.T) {
+	p := NewPipeline(Deps{
+		RouteFunc:        func(context.Context, *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) { return "m", nil, nil },
+		ForwardFunc:      func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { return ForwardOutcome{} },
+	})
+	p.dispatchIn = make(chan *QueuedRequest, 8)
+
+	const n = 5
+	victims := make([]*QueuedRequest, 0, n)
+	for i := 0; i < n; i++ {
+		qr := NewQueuedRequest(fmt.Sprintf("victim-%d", i), "t", "m", context.Background(), nil)
+		victims = append(victims, qr)
+		p.dispatchIn <- qr
+	}
+
+	p.wg.Add(1)
+	go p.runDispatcher()
+	p.Stop() // closes stopCh; drainer wait is trivial (no model queues exist)
+
+	for _, qr := range victims {
+		if !qr.completed.Load() {
+			t.Fatalf("request %s left uncompleted in dispatchIn on Stop", qr.ID)
+		}
+		select {
+		case out := <-qr.ResultCh:
+			if !errors.Is(out.Err, ErrShutdown) {
+				t.Fatalf("request %s completed with %v, want ErrShutdown", qr.ID, out.Err)
+			}
+		default:
+			t.Fatalf("request %s completed but ResultCh is empty", qr.ID)
+		}
+	}
+}
+
+// TestStopDrainsFailoverChResidue is the failoverCh analogue (audit
+// 2026-09-05 C-#2): items buffered in failoverCh when stopCh fires must all
+// complete with ErrShutdown — overriding their carried failure outcome —
+// instead of being dropped by runFailover's stopCh branch.
+func TestStopDrainsFailoverChResidue(t *testing.T) {
+	p := NewPipeline(Deps{
+		RouteFunc:        func(context.Context, *QueuedRequest) ([]CredentialRef, error) { return nil, nil },
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) { return "m", nil, nil },
+		ForwardFunc:      func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { return ForwardOutcome{} },
+	})
+	p.failoverCh = make(chan failoverItem, 8)
+
+	const n = 5
+	victims := make([]*QueuedRequest, 0, n)
+	for i := 0; i < n; i++ {
+		qr := NewQueuedRequest(fmt.Sprintf("victim-%d", i), "t", "m", context.Background(), nil)
+		victims = append(victims, qr)
+		p.failoverCh <- failoverItem{qr: qr, out: ForwardOutcome{Err: errors.New("pre-firstbyte boom")}}
+	}
+
+	p.wg.Add(1)
+	go p.runFailover()
+	p.Stop()
+
+	for _, qr := range victims {
+		if !qr.completed.Load() {
+			t.Fatalf("request %s left uncompleted in failoverCh on Stop", qr.ID)
+		}
+		select {
+		case out := <-qr.ResultCh:
+			if !errors.Is(out.Err, ErrShutdown) {
+				t.Fatalf("request %s completed with %v, want ErrShutdown (shutdown must override the carried outcome)", qr.ID, out.Err)
+			}
+		default:
+			t.Fatalf("request %s completed but ResultCh is empty", qr.ID)
+		}
+	}
+}
+
+// TestStopDrainsModelQueueResidue covers requests still BUFFERED in a Tier-1
+// model lane when Stop fires (audit 2026-09-05 C-#2). DispatcherWorkers=0
+// makes dispatchIn unbuffered: the model drainer pops one request and parks
+// on the dispatchIn send, leaving the rest in mq.ch. Stop must complete the
+// parked one (inner select, TestStopNoDrainLoss) AND drain the buffered
+// residue (drainModelQueueOnShutdown) — previously the buffered ones were
+// orphaned because Stop clears p.models and the drainer exited.
+func TestStopDrainsModelQueueResidue(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DispatcherWorkers = 0 // dispatchIn cap 0, no consumer
+	cfg.MaxQueueDepth = 8
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
+
+	p := NewPipeline(Deps{
+		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{cred(1, ModeConcurrency, 1)}, nil
+		},
+		ModelResolveFunc: func(ctx context.Context, requested string, tried []string) (string, []string, error) {
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{} // unreachable: dispatchIn is never drained
+		},
+		HotCfg: hotCfg,
+	})
+	p.Start()
+
+	const n = 3
+	done := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			_, err := p.Submit(context.Background(), NewQueuedRequest(fmt.Sprintf("r%d", i), "t", "m", context.Background(), nil))
+			done <- err
+		}(i)
+	}
+	// One request is popped + parked on the dispatchIn send; two stay in mq.ch.
+	time.Sleep(50 * time.Millisecond)
+
+	p.Stop()
+
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-done:
+			if !errors.Is(err, ErrShutdown) {
+				t.Fatalf("Submit %d returned %v, want ErrShutdown", i, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("Submit %d never returned: model queue residue dropped on Stop instead of drained", i)
+		}
+	}
+}
+
+// TestStopDispatcherResidueFullPath exercises the dispatcher drain through
+// the full Submit path (audit 2026-09-05 C-#2). The single dispatcher worker
+// is wedged inside model resolution while requests fill the dispatchIn
+// buffer; Stop fires and the wedge is released. Every Submit must return —
+// residue in dispatchIn completes via the shutdown branch instead of being
+// dispatched on a stopped pipeline.
+func TestStopDispatcherResidueFullPath(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.DispatcherWorkers = 1 // dispatchIn cap 4
+	cfg.MaxQueueDepth = 64
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
+
+	resolveGate := make(chan struct{})
+	p := NewPipeline(Deps{
+		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{cred(1, ModeConcurrency, 1)}, nil
+		},
+		ModelResolveFunc: func(ctx context.Context, requested string, tried []string) (string, []string, error) {
+			<-resolveGate // wedge the single dispatcher so dispatchIn fills up
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{}
+		},
+		HotCfg: hotCfg,
+	})
+	p.Start()
+
+	const n = 6
+	done := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			_, err := p.Submit(context.Background(), NewQueuedRequest(fmt.Sprintf("r%d", i), "t", "m", context.Background(), nil))
+			done <- err
+		}(i)
+	}
+	// Let one request wedge the dispatcher and the rest fill dispatchIn / mq.ch.
+	time.Sleep(100 * time.Millisecond)
+
+	stopDone := make(chan struct{})
+	go func() {
+		p.Stop()
+		close(stopDone)
+	}()
+	// Stop parks in wg.Wait on the wedged dispatcher; release the wedge.
+	select {
+	case <-stopDone:
+		t.Fatal("Stop returned while the dispatcher was still wedged in model resolution")
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(resolveGate)
+
+	select {
+	case <-stopDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Stop never returned after the dispatcher was released")
+	}
+	for i := 0; i < n; i++ {
+		select {
+		case err := <-done:
+			// The in-flight request may terminate with a capacity/model
+			// exhaustion error (it was dispatched before Stop); the buffered
+			// residue must be ErrShutdown. Either way Submit must return.
+			if err == nil {
+				t.Fatalf("Submit %d unexpectedly succeeded during shutdown", i)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("Submit %d never returned: dispatchIn residue dropped on Stop instead of drained", i)
+		}
+	}
+}
+
 // TestCredEnqueuedAtSetBeforeSend pins the data-race fix in tryEnqueueCred.
 // qr.CredEnqueuedAt must be written BEFORE the channel send so the
 // forwarder loop's read (acquire → metricCredQueueWait) is ordered by the
@@ -960,4 +1461,58 @@ func TestCredEnqueuedAtSetBeforeSend(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// credentialFullCounterValue mirrors counterValue but for the credential-full
+// counter. Reads the value via dto.Metric.Write (matches the repo's existing
+// style — testutil is not vendored).
+func credentialFullCounterValue(t *testing.T, credentialID int, mode string) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := metricCredentialFull.WithLabelValues(itoa(credentialID), mode).Write(metric); err != nil {
+		t.Fatalf("read credential_full metric: %v", err)
+	}
+	return metric.GetCounter().GetValue()
+}
+
+// TestCredentialFullCounter: when selectAndEnqueue walks a single credential
+// whose Tier-2 forwarder is already saturated, dispatch_credential_full_total
+// must tick exactly once. Locks down the metric wiring introduced for
+// observability of the pre-reserve routing-skip path.
+func TestCredentialFullCounter(t *testing.T) {
+	ref := cred(42, ModeConcurrency, 1)
+
+	p := NewPipeline(Deps{
+		RouteFunc: func(context.Context, *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{ref}, nil
+		},
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) {
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{}
+		},
+	})
+	// Inject a saturated forwarder directly into the map so HasCapacity()=false.
+	// We do not Start() the pipeline — selectAndEnqueue only reads the
+	// forwarder reference; the goroutine loop never runs.
+	cf := newCredForwarder(ref, ref.ConcurrencyLimit, p)
+	cf.depth.Store(int64(ref.ConcurrencyLimit)) // depth == limit → HasCapacity() == false
+	p.credMu.Lock()
+	p.forwarders[ref.CredentialID] = cf
+	p.credMu.Unlock()
+	// Stop() cancels each forwarder in p.forwarders and waits on p.wg, so the
+	// loop goroutine spawned by newCredForwarder is reaped (otherwise it
+	// parks on cf.ctx.Done() for the rest of the test process).
+	defer p.Stop()
+
+	before := credentialFullCounterValue(t, ref.CredentialID, ref.ConcurrencyMode)
+
+	qr := NewQueuedRequest("r-full", "t", "m", context.Background(), nil)
+	p.selectAndEnqueue(qr)
+
+	after := credentialFullCounterValue(t, ref.CredentialID, ref.ConcurrencyMode)
+	if got := after - before; got != 1 {
+		t.Fatalf("credential_full counter delta = %v, want 1 (before=%v after=%v)", got, before, after)
+	}
 }

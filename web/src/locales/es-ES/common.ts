@@ -1,6 +1,7 @@
 // Auto-translated draft (es-ES) · 2026-07-02 · please review
 // common.ts — Textos compartidos: botones, estados, feedback, paginación.
 export default {
+  credentialFallback: 'Credencial',
   button: {
     cancel: 'Cancelar',
     confirm: 'Confirmar',
@@ -121,6 +122,7 @@ export default {
   cancel: 'Cancelar',
   close: 'Cerrar',
   confirm: 'Confirmar',
+  confirmTitle: 'Por favor, confirme',
   count: 'Cantidad',
   create: 'Crear',
   createdAt: 'Fecha de creación',
@@ -132,6 +134,7 @@ export default {
   enabled: 'Habilitado',
   lastOccurred: 'Última ocurrencia',
   loading: 'Cargando…',
+  never: 'Nunca',
   module: 'Módulo',
   no: 'No',
   refresh: 'Actualizar',

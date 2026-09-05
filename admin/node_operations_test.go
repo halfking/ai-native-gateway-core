@@ -7,11 +7,56 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+func TestRunCredentialSessionPing(t *testing.T) {
+	t.Run("sends one minimal authenticated chat request", func(t *testing.T) {
+		var payload map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPost || r.URL.Path != "/v1/chat/completions" {
+				t.Fatalf("request = %s %s", r.Method, r.URL.Path)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+				t.Fatalf("authorization = %q", got)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.WriteString(w, `{"id":"ping","choices":[]}`)
+		}))
+		defer server.Close()
+
+		h := &Handler{}
+		status, code, message := h.runCredentialSessionPing(context.Background(), server.URL+"/v1", "", "", "test-key", "m-1")
+		if status != "healthy" || code != "" || message != "" {
+			t.Fatalf("result = (%q, %q, %q)", status, code, message)
+		}
+		if payload["model"] != "m-1" || payload["max_tokens"] != float64(1) || payload["stream"] != false {
+			t.Fatalf("unexpected payload: %#v", payload)
+		}
+		messages, ok := payload["messages"].([]any)
+		if !ok || len(messages) != 1 {
+			t.Fatalf("messages = %#v", payload["messages"])
+		}
+	})
+
+	t.Run("classifies upstream authentication failures", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "bad key", http.StatusUnauthorized)
+		}))
+		defer server.Close()
+
+		status, code, _ := (&Handler{}).runCredentialSessionPing(context.Background(), server.URL, "", "", "test-key", "m-1")
+		if status != "auth_failed" || code != "auth_failed" {
+			t.Fatalf("result = (%q, %q)", status, code)
+		}
+	})
+}
 
 func TestNodeOperationsRateLimiter(t *testing.T) {
 	rl := newNodeOperationsRateLimiter()

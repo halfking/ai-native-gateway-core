@@ -47,6 +47,7 @@ import (
 // through six function signatures (Decide/DecideV2/DecideWithFeatureFlags and
 // their callers). Set by maybeResolveAuto via WithRequestID.
 type requestIDCtxKey struct{}
+type workTypeCtxKey struct{}
 
 // WithRequestID returns a context carrying the request id for affinity sampling.
 func WithRequestID(ctx context.Context, requestID string) context.Context {
@@ -62,6 +63,24 @@ func requestIDFromContext(ctx context.Context) string {
 		return ""
 	}
 	if v, ok := ctx.Value(requestIDCtxKey{}).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// WithWorkType returns a context carrying a validated concrete work type key.
+func WithWorkType(ctx context.Context, workType string) context.Context {
+	if workType == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workTypeCtxKey{}, workType)
+}
+
+func workTypeFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if v, ok := ctx.Value(workTypeCtxKey{}).(string); ok {
 		return v
 	}
 	return ""

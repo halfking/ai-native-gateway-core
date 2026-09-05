@@ -492,8 +492,15 @@ function toggleGuide(id: ClientGuideId) {
 
 <style scoped>
 .code-block {
-  background: #1a1d23;
-  color: #e2e8f0;
+  /* Use the dedicated code-block surface token so light + dark themes both
+   * get a clearly distinguishable background instead of inheriting the page
+   * (which is also dark in dark mode). The token is defined in style.css as
+   * a fixed dark surface (#1e1e2e) for terminal-style code in both modes;
+   * we pair it with a light-on-dark text color and a subtle border so the
+   * block reads as its own region even when the page itself is dark. */
+  background: var(--bg-elevated);
+  color: #e8eef7;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
   overflow-x: auto;
@@ -501,6 +508,7 @@ function toggleGuide(id: ClientGuideId) {
   line-height: 1.6;
   white-space: pre;
   margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .code-block.compact {
   padding: 12px;
@@ -593,7 +601,7 @@ function toggleGuide(id: ClientGuideId) {
 }
 
 .guide-header:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 
 .guide-title {

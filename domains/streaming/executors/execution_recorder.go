@@ -4,9 +4,19 @@ package executors
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/credential"
+	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 )
+
+const executionStateWriteTimeout = 5 * time.Second
+
+// stateWriteContext detaches credential state persistence from the request
+// connection while retaining request-scoped values for tracing and tenancy.
+func stateWriteContext(parent context.Context) (context.Context, context.CancelFunc) {
+	return runctx.DetachedTimeout(parent, executionStateWriteTimeout)
+}
 
 // ExecutionRecorderImpl 执行结果记录器实现
 type ExecutionRecorderImpl struct {
@@ -22,8 +32,14 @@ func NewExecutionRecorder(writer *credential.Writer) *ExecutionRecorderImpl {
 
 // RecordOutcome 记录单次执行结果
 func (h *ExecutionRecorderImpl) RecordOutcome(ctx context.Context, outcome ExecutionOutcome) error {
+	if h == nil || h.StateWriter == nil {
+		return nil
+	}
+	writeCtx, cancel := stateWriteContext(ctx)
+	defer cancel()
+
 	if outcome.Success {
-		if err := h.StateWriter.RestoreOnSuccess(ctx, outcome.CredentialID, outcome.CanonicalModel); err != nil {
+		if err := h.StateWriter.RestoreOnSuccess(writeCtx, outcome.CredentialID, outcome.CanonicalModel); err != nil {
 			slog.Warn("execution_recorder: RestoreOnSuccess failed",
 				"error", err,
 				"credential_id", outcome.CredentialID,
@@ -44,7 +60,7 @@ func (h *ExecutionRecorderImpl) RecordOutcome(ctx context.Context, outcome Execu
 			Detail: outcome.ErrorDetail,
 		}
 
-		if err := h.StateWriter.WriteOnError(ctx, outcome.CredentialID, outcome.CanonicalModel, failure); err != nil {
+		if err := h.StateWriter.WriteOnError(writeCtx, outcome.CredentialID, outcome.CanonicalModel, failure); err != nil {
 			slog.Warn("execution_recorder: WriteOnError failed",
 				"error", err,
 				"credential_id", outcome.CredentialID,

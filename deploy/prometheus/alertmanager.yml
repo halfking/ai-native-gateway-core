@@ -7,6 +7,34 @@ route:
   group_wait: 10s
   group_interval: 10s
   repeat_interval: 1h
+  # 2026-08-18 credential 17 follow-up: route credential reveal alerts to a
+  # dedicated oncall so they aren't lost in the default stream. Severity-
+  # based child routing: critical goes straight to credential-team, warning
+  # is split — credential warnings still go to credential-team, everything
+  # else falls through to the default receiver.
+  routes:
+    # 2026-08-18 credential-17 P0 deploy fix: matchers MUST use double quotes.
+    # Prometheus matcher syntax rejects single quotes, so `severity = 'critical'`
+    # is silently unparseable and the route never matches — every credential
+    # alert fell through to the (webhook-less) default receiver and was dropped.
+    - matchers:
+        - severity = "critical"
+        - component = "credential"
+      receiver: 'credential-team'
+      group_by: ['alertname', 'provider_id']
+      group_wait: 10s
+      group_interval: 30s
+      repeat_interval: 30m
+      continue: false
+    - matchers:
+        - severity = "warning"
+        - component = "credential"
+      receiver: 'credential-team'
+      group_by: ['alertname', 'provider_id']
+      group_wait: 30s
+      group_interval: 1m
+      repeat_interval: 4h
+      continue: false
 
 receivers:
   - name: 'default'
@@ -17,9 +45,40 @@ receivers:
     #     http_config:
     #       follow_redirects: true
 
+  # 2026-08-18: credential-team oncall receiver. The webhook URL is sourced
+  # from $CREDENTIAL_TEAM_WEBHOOK_URL at container start (docker-compose
+  # entrypoint runs sed to substitute the whole placeholder token
+  # `https://placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##` with the env
+  # var before alertmanager reads the file). Until the env var is populated,
+  # the placeholder URL fails webhook delivery and alertmanager logs "webhook
+  # delivery failed" — visible as a missing integration in `amtool config show`.
+  # The placeholder host "placeholder.invalid" is a reserved TLD per RFC 2606
+  # so a misconfigured deploy cannot accidentally hit a real endpoint.
+  - name: 'credential-team'
+    webhook_configs:
+      - url: 'https://placeholder.invalid/##CREDENTIAL_TEAM_WEBHOOK_URL##'
+        send_resolved: true
+        http_config:
+          follow_redirects: true
+        # max_alerts keeps a single webhook payload bounded; a credential
+        # burst that fans out across many provider_id labels still ships
+        # in one POST instead of N.
+        max_alerts: 50
+
 inhibit_rules:
   - source_match:
       severity: 'critical'
     target_match:
       severity: 'warning'
     equal: ['alertname', 'cluster', 'service']
+  # 2026-08-18: when a credential critical fires, suppress the credential
+  # warning siblings for the same provider_id so oncall isn't paged twice
+  # for the same incident. Equal on (alertname, component, provider_id)
+  # keeps the suppression strictly inside the credential family.
+  - source_match:
+      component: 'credential'
+      severity: 'critical'
+    target_match:
+      component: 'credential'
+      severity: 'warning'
+    equal: ['alertname', 'component', 'provider_id']

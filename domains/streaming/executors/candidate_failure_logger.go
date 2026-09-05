@@ -19,9 +19,8 @@
 //   - Writes are best-effort and use a 3s timeout independent of the
 //     request's own context (Background) so a slow request_log write does
 //     not delay the user-visible response.
-//   - The writer takes a *pgxpool.Pool so it can run independently of any
-//     telemetry/client wiring. The pool is the same one the gateway uses
-//     for everything else (request_logs, credentials, etc.).
+//   - The writer takes the small database interface it needs so it can run
+//     independently of any telemetry/client wiring and remain easy to test.
 package executors
 
 import (
@@ -30,16 +29,17 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // candidateFailureLog is the row shape for candidate_failure_logs. Mirrors
-// the migration 037 + 300 schema; keep in sync.
+// the migration 037 + 300 + 358 schema; keep in sync.
 type candidateFailureLog struct {
 	RequestID               string
 	TenantID                string
+	SessionID               string
 	CredentialID            int
 	ProviderID              int
 	RawModelName            string
@@ -58,14 +58,32 @@ type candidateFailureLog struct {
 // CandidateFailureWriter persists per-credential failure rows so operators
 // can see "credential X failed N times in the last hour with status code 502".
 // nil-safe: LogFailure is a no-op when writer is nil.
+type candidateFailureDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}
+
+const candidateFailureInsertSQL = `
+		INSERT INTO candidate_failure_logs_hot (
+			request_id, tenant_id, session_id, credential_id, provider_id, raw_model_name,
+			attempt_index, error_kind, error_message,
+			upstream_status_code, upstream_response_body, upstream_response_preview,
+			latency_ms, per_attempt_latency_ms, retryable, context
+		) VALUES (
+			$1, $2, NULLIF($3, ''), $4, $5, $6,
+			$7, $8, $9,
+			$10, NULLIF($11, ''), NULLIF($12, ''),
+			$13, $14, $15, $16::text::jsonb
+		)
+	`
+
 type CandidateFailureWriter struct {
-	pool *pgxpool.Pool
+	pool candidateFailureDB
 }
 
 // NewCandidateFailureWriter wires the writer to the gateway's main DB pool.
 // Pass nil to disable the feature (the executor's LogFailure call becomes a
 // no-op, preserving behaviour for tests that don't have a DB).
-func NewCandidateFailureWriter(pool *pgxpool.Pool) *CandidateFailureWriter {
+func NewCandidateFailureWriter(pool candidateFailureDB) *CandidateFailureWriter {
 	return &CandidateFailureWriter{pool: pool}
 }
 
@@ -83,7 +101,7 @@ func NewCandidateFailureWriter(pool *pgxpool.Pool) *CandidateFailureWriter {
 //     and any caller-supplied extras — the column is JSONB so callers
 //     can attach custom fields without a schema change.
 func (w *CandidateFailureWriter) LogFailure(
-	requestID, tenantID string,
+	requestID, tenantID, sessionID string,
 	credentialID, providerID int,
 	rawModelName string,
 	attemptIndex int,
@@ -92,31 +110,55 @@ func (w *CandidateFailureWriter) LogFailure(
 	perAttemptLatencyMs *int,
 	extraContext map[string]any,
 ) {
+	// explicitKind "" 让 buildRow 走自动分类（upstream.Error 类型优先，消息兜底）。
+	w.logFailure(requestID, tenantID, sessionID, credentialID, providerID, rawModelName,
+		attemptIndex, execErr, "", latencyMs, perAttemptLatencyMs, extraContext)
+}
+
+// LogFailureWithKind is LogFailure with a caller-preclassified errorsx kind.
+// Used by the mid-stream interruption path where the executor already
+// classified the precise kind (streamInterruptedError carries no
+// *upstream.Error, so the message-based fallback in buildRow would flatten
+// e.g. KindNetwork to KindTransient).
+func (w *CandidateFailureWriter) LogFailureWithKind(
+	requestID, tenantID, sessionID string,
+	credentialID, providerID int,
+	rawModelName string,
+	attemptIndex int,
+	execErr error,
+	explicitKind errorsx.ErrorKind,
+	latencyMs *int,
+	perAttemptLatencyMs *int,
+	extraContext map[string]any,
+) {
+	w.logFailure(requestID, tenantID, sessionID, credentialID, providerID, rawModelName,
+		attemptIndex, execErr, explicitKind, latencyMs, perAttemptLatencyMs, extraContext)
+}
+
+func (w *CandidateFailureWriter) logFailure(
+	requestID, tenantID, sessionID string,
+	credentialID, providerID int,
+	rawModelName string,
+	attemptIndex int,
+	execErr error,
+	explicitKind errorsx.ErrorKind,
+	latencyMs *int,
+	perAttemptLatencyMs *int,
+	extraContext map[string]any,
+) {
 	if w == nil || w.pool == nil || execErr == nil {
 		return
 	}
 
-	row := w.buildRow(requestID, tenantID, credentialID, providerID, rawModelName, attemptIndex, execErr, latencyMs, perAttemptLatencyMs, extraContext)
+	row := w.buildRow(requestID, tenantID, sessionID, credentialID, providerID, rawModelName, attemptIndex, execErr, explicitKind, latencyMs, perAttemptLatencyMs, extraContext)
 
 	// Independent context: never block the request hot path on a slow DB.
 	// 3s matches the other telemetry writers in this codebase.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := w.pool.Exec(ctx, `
-		INSERT INTO candidate_failure_logs (
-			request_id, tenant_id, credential_id, provider_id, raw_model_name,
-			attempt_index, error_kind, error_message,
-			upstream_status_code, upstream_response_body, upstream_response_preview,
-			latency_ms, per_attempt_latency_ms, retryable, context
-		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8,
-			$9, NULLIF($10, ''), NULLIF($11, ''),
-			$12, $13, $14, $15::text::jsonb
-		)
-	`,
-		row.RequestID, row.TenantID, row.CredentialID, row.ProviderID, row.RawModelName,
+	_, err := w.pool.Exec(ctx, candidateFailureInsertSQL,
+		row.RequestID, row.TenantID, row.SessionID, row.CredentialID, row.ProviderID, row.RawModelName,
 		row.AttemptIndex, row.ErrorKind, row.ErrorMessage,
 		row.UpstreamStatusCode, row.UpstreamResponseBody, row.UpstreamResponsePreview,
 		row.LatencyMs, row.PerAttemptLatencyMs, row.Retryable, marshalContext(row.Context),
@@ -129,17 +171,23 @@ func (w *CandidateFailureWriter) LogFailure(
 			"raw_model", rawModelName,
 		)
 	}
+
+	// 供应商错误唯一事实源（V371）：同一行数据投影写入 supplier_errors_hot。
+	// 共用同一 3s 独立超时上下文；读端（趋势 API、凭据详情、供应商统计）
+	// 统一走 supplier_errors_unified / supplier_error_stats。
+	w.persistSupplierError(ctx, row)
 }
 
 // buildRow extracts fields from the error chain. Walks errors.Unwrap to
 // pull the typed *upstream.Error when present (Phase 1 added Body and
 // StatusCode fields to that struct).
 func (w *CandidateFailureWriter) buildRow(
-	requestID, tenantID string,
+	requestID, tenantID, sessionID string,
 	credentialID, providerID int,
 	rawModelName string,
 	attemptIndex int,
 	execErr error,
+	explicitKind errorsx.ErrorKind,
 	latencyMs *int,
 	perAttemptLatencyMs *int,
 	extraContext map[string]any,
@@ -147,6 +195,7 @@ func (w *CandidateFailureWriter) buildRow(
 	row := candidateFailureLog{
 		RequestID:    requestID,
 		TenantID:     tenantID,
+		SessionID:    sessionID,
 		CredentialID: credentialID,
 		ProviderID:   providerID,
 		RawModelName: rawModelName,
@@ -157,7 +206,7 @@ func (w *CandidateFailureWriter) buildRow(
 		// also nil-receiver safe now, but this guard means the row
 		// renders cleanly even if a future refactor introduces a
 		// different Error type without that protection.
-		ErrorMessage:        safeErrorMessage(execErr),
+		ErrorMessage:        string(errorsx.SanitizeErrorText([]byte(safeErrorMessage(execErr)), 320)),
 		LatencyMs:           latencyMs,
 		PerAttemptLatencyMs: perAttemptLatencyMs,
 	}
@@ -172,14 +221,20 @@ func (w *CandidateFailureWriter) buildRow(
 		}
 	}
 
+	kind := errorsx.ErrorKind("")
 	if ue != nil {
-		row.ErrorKind = string(ue.Kind)
+		kind = ue.Kind
+		row.ErrorKind = string(kind)
 		if ue.StatusCode > 0 {
 			sc := ue.StatusCode
 			row.UpstreamStatusCode = &sc
 		}
 		if len(ue.Body) > 0 {
-			body := truncateUTF8(string(ue.Body), 1024)
+			// Sanitize the raw upstream body BEFORE truncation so that any
+			// credentials echoed by the vendor (Bearer tokens, sk-* API keys,
+			// api_key= query parameters) are redacted before they land in
+			// candidate_failure_logs_hot and the admin credential-detail UI.
+			body := string(errorsx.SanitizeErrorText(ue.Body, 1024))
 			row.UpstreamResponseBody = body
 
 			preview := truncateUTF8(body, 320)
@@ -188,19 +243,24 @@ func (w *CandidateFailureWriter) buildRow(
 			}
 			row.UpstreamResponsePreview = preview
 		}
-		retryable := errorsx.IsRetryable(ue.Kind)
-		row.Retryable = &retryable
 	} else {
 		// Fallback: classify from the message.
-		kind := errorsx.ClassifyError(execErr, nil)
+		kind = errorsx.ClassifyError(execErr, nil)
 		row.ErrorKind = string(kind)
-		retryable := errorsx.IsRetryable(kind)
-		row.Retryable = &retryable
 	}
 
-	if extraContext != nil {
-		row.Context = extraContext
+	// Caller-preclassified kind wins: the executor's stream-interruption
+	// path already resolved the precise kind (e.g. KindNetwork for an
+	// "other side closed" read failure) and the message-based fallback
+	// cannot recover it from "stream_interrupted: <reason>".
+	if explicitKind != "" {
+		kind = explicitKind
+		row.ErrorKind = string(kind)
 	}
+	projection := errorsx.ProjectRecovery(kind)
+	retryable := projection.GenericRetryable
+	row.Retryable = &retryable
+	row.Context = recoveryContext(extraContext, projection)
 	return row
 }
 
@@ -233,6 +293,21 @@ func safeErrorMessage(err error) string {
 		_ = recover()
 	}()
 	return err.Error()
+}
+
+// recoveryContext preserves caller fields and adds the public recovery
+// projection to the existing JSONB context column.
+func recoveryContext(extra map[string]any, projection errorsx.RecoveryProjection) map[string]any {
+	ctx := make(map[string]any, len(extra)+5)
+	for key, value := range extra {
+		ctx[key] = value
+	}
+	ctx["generic_retryable"] = projection.GenericRetryable
+	ctx["candidate_failover"] = projection.CandidateFailover
+	ctx["transparent_resume"] = projection.TransparentResume
+	ctx["effective_action"] = projection.EffectiveAction
+	ctx["reason"] = projection.Reason
+	return ctx
 }
 
 // marshalContext renders a map as compact JSON string, returning nil when the

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -15,12 +17,12 @@ import (
 // without a database. It implements the AtomicAutoContinue CAS faithfully so
 // the continue-budget tests reflect real concurrency behaviour.
 type fakeStore struct {
-	mu                  sync.Mutex
-	sessions            map[string]*Session
-	autoContinueCount   map[string]int
-	atomicWonCalls      int
-	atomicLostCalls     int
-	auditUpdated        bool
+	mu                sync.Mutex
+	sessions          map[string]*Session
+	autoContinueCount map[string]int
+	atomicWonCalls    int
+	atomicLostCalls   int
+	auditUpdated      bool
 }
 
 func newFakeStore() *fakeStore {
@@ -36,10 +38,10 @@ func (s *fakeStore) seed(sess *Session) {
 	s.sessions[sess.SessionID] = sess
 }
 
-func (s *fakeStore) GetSession(_ context.Context, sessionID string) (*Session, error) {
+func (s *fakeStore) GetSession(_ context.Context, tenantID, sessionID string) (*Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sess, ok := s.sessions[sessionID]; ok {
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
 		cp := *sess
 		return &cp, nil
 	}
@@ -53,34 +55,56 @@ func (s *fakeStore) CreateSession(_ context.Context, sess *Session) error {
 	return nil
 }
 
-func (s *fakeStore) UpdateSessionState(_ context.Context, sessionID string, state State) error {
+func (s *fakeStore) UpdateSessionState(_ context.Context, tenantID, sessionID string, state State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sess, ok := s.sessions[sessionID]; ok {
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
 		sess.State = state
 	}
 	return nil
 }
 
-func (s *fakeStore) IncrementAutoContinueCount(_ context.Context, sessionID string) error {
+// CompareAndSetState mirrors PGStore's WHERE state = ANY($4) guard. Terminal
+// states (completed/failed) are sticky: once set, the CAS no-ops. An empty
+// allowedFrom behaves like a never-transition CAS.
+func (s *fakeStore) CompareAndSetState(_ context.Context, tenantID, sessionID string, allowedFrom []State, target State) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.autoContinueCount[sessionID]++
-	if sess, ok := s.sessions[sessionID]; ok {
+	sess, ok := s.sessions[sessionID]
+	if !ok || sess.TenantID != tenantID {
+		return false, nil
+	}
+	if len(allowedFrom) == 0 {
+		return false, nil
+	}
+	for _, st := range allowedFrom {
+		if sess.State == st {
+			sess.State = target
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (s *fakeStore) IncrementAutoContinueCount(_ context.Context, tenantID, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
+		s.autoContinueCount[sessionID]++
 		sess.AutoContinueCount++
 	}
 	return nil
 }
 
-func (s *fakeStore) IncrementDecisionCount(_ context.Context, sessionID string) error { return nil }
+func (s *fakeStore) IncrementDecisionCount(context.Context, string, string) error { return nil }
 
 // RecordResponse mirrors PGStore: bump repeat_count when the hash matches the
 // stored one, else reset to 1. Tracks the last hash in-memory.
-func (s *fakeStore) RecordResponse(_ context.Context, sessionID, responseHash string, resetOnProgress bool) (int, error) {
+func (s *fakeStore) RecordResponse(_ context.Context, tenantID, sessionID, responseHash string, resetOnProgress bool) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[sessionID]
-	if !ok {
+	if !ok || sess.TenantID != tenantID {
 		return 0, errors.New("session not found")
 	}
 	if sess.LastResponseHash == responseHash {
@@ -96,11 +120,11 @@ func (s *fakeStore) RecordResponse(_ context.Context, sessionID, responseHash st
 
 // AtomicModelSwitch mirrors PGStore: bump model_switch_count under maxAllowed,
 // reset auto_continue_count, record the new model.
-func (s *fakeStore) AtomicModelSwitch(_ context.Context, sessionID, newModel string, maxAllowed int) (bool, error) {
+func (s *fakeStore) AtomicModelSwitch(_ context.Context, tenantID, sessionID, newModel string, maxAllowed int) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[sessionID]
-	if !ok {
+	if !ok || sess.TenantID != tenantID {
 		return false, errors.New("session not found")
 	}
 	if maxAllowed > 0 && sess.ModelSwitchCount >= maxAllowed {
@@ -112,10 +136,10 @@ func (s *fakeStore) AtomicModelSwitch(_ context.Context, sessionID, newModel str
 	return true, nil
 }
 
-func (s *fakeStore) UpdateSessionAudit(_ context.Context, sessionID string, auditResult []byte) (bool, error) {
+func (s *fakeStore) UpdateSessionAudit(_ context.Context, tenantID, sessionID string, auditResult []byte) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sess, ok := s.sessions[sessionID]; ok && len(sess.AuditResult) == 0 {
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID && len(sess.AuditResult) == 0 {
 		sess.AuditResult = auditResult
 		s.auditUpdated = true
 		return true, nil
@@ -124,9 +148,12 @@ func (s *fakeStore) UpdateSessionAudit(_ context.Context, sessionID string, audi
 }
 
 // AtomicAutoContinue mirrors PGStore's WHERE auto_continue_count < $2 guard.
-func (s *fakeStore) AtomicAutoContinue(_ context.Context, sessionID string, maxAllowed int) (bool, error) {
+func (s *fakeStore) AtomicAutoContinue(_ context.Context, tenantID, sessionID string, maxAllowed int) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; !ok || sess.TenantID != tenantID {
+		return false, errors.New("session not found")
+	}
 	cur := s.autoContinueCount[sessionID]
 	if cur >= maxAllowed {
 		s.atomicLostCalls++
@@ -140,13 +167,43 @@ func (s *fakeStore) AtomicAutoContinue(_ context.Context, sessionID string, maxA
 	return true, nil
 }
 
-// stubLLMCaller returns canned responses keyed by an index, capturing the
+func (s *fakeStore) ClaimContinueAttempt(_ context.Context, tenantID, sessionID string, maxAllowed int) (int, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; !ok || sess.TenantID != tenantID {
+		return 0, false, errors.New("session not found")
+	} else if sess.ContinueAttempt >= maxAllowed {
+		return 0, false, nil
+	} else {
+		sess.ContinueAttempt++
+		return sess.ContinueAttempt, true, nil
+	}
+}
+
+func (s *fakeStore) RecordSubAgents(_ context.Context, tenantID, sessionID string, total, completed, pending int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
+		sess.SubAgentsTotal, sess.SubAgentsCompleted, sess.SubAgentsPending = total, completed, pending
+	}
+	return nil
+}
+
+func (s *fakeStore) RecordLastCompletionJudgement(_ context.Context, tenantID, sessionID, judgement string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sess, ok := s.sessions[sessionID]; ok && sess.TenantID == tenantID {
+		sess.LastCompletionJudgement = judgement
+	}
+	return nil
+}
+
 // messages it was called with.
 type stubLLMCaller struct {
-	mu       sync.Mutex
+	mu        sync.Mutex
 	responses []string
-	idx      int
-	calls    []stubCall
+	idx       int
+	calls     []stubCall
 }
 
 type stubCall struct {
@@ -232,6 +289,95 @@ func TestInterceptNonStream_StopButIncomplete_InjectsContinue(t *testing.T) {
 	}
 }
 
+func TestInterceptNonStream_ClientCapabilityReturnsContinueSignal(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "signal-continue", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalEnabled = true
+	hook.config.ClientSignalMode = "auto"
+
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "signal-continue", TenantID: "t1", FinishReason: "stop",
+		ResponseBody:        []byte(`{"choices":[{"message":{"role":"assistant","content":"still working"},"finish_reason":"stop"}]}`),
+		ClientSignalAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.ClientSignalKind != "gw-continue" {
+		t.Fatalf("result=%+v, want gw-continue", res)
+	}
+	if len(res.InjectFollowUp) != 0 {
+		t.Fatalf("signal response must not retain legacy follow-up: %s", res.InjectFollowUp)
+	}
+	if res.ClientSignalAttempts != 1 {
+		t.Fatalf("attempt=%d, want 1", res.ClientSignalAttempts)
+	}
+}
+
+func TestInterceptNonStream_ClientCapabilityReturnsHandoffSignal(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "signal-handoff", TenantID: "t1", State: StateActive, ContinueAttempt: 2})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalEnabled = true
+	hook.config.ClientSignalMode = "auto"
+	hook.config.HandoffSignalThresholdTokens = 100
+
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "signal-handoff", TenantID: "t1", FinishReason: "stop", TokensUsed: 100,
+		ResponseBody:         []byte(`{"choices":[{"message":{"role":"assistant","content":"still working"},"finish_reason":"stop"}]}`),
+		ClientSignalAllowed:  true,
+		HandoffSignalAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.ClientSignalKind != "gw-handoff" {
+		t.Fatalf("result=%+v, want gw-handoff", res)
+	}
+	if res.ClientSignalAttempts != 2 {
+		t.Fatalf("handoff must not consume continue budget, attempt=%d", res.ClientSignalAttempts)
+	}
+	if got := store.sessions["signal-handoff"].ContinueAttempt; got != 2 {
+		t.Fatalf("handoff changed continue attempt to %d", got)
+	}
+}
+
+func TestInterceptNonStream_ClientCapabilityReturnsHandoffOnly(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "signal-handoff-only", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	hook.config.ClientSignalEnabled = true
+	hook.config.ClientSignalMode = "auto"
+	hook.config.HandoffSignalThresholdTokens = 100
+
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "signal-handoff-only", TenantID: "t1", FinishReason: "stop", TokensUsed: 100,
+		ResponseBody:         []byte(`{"choices":[{"message":{"role":"assistant","content":"still working"},"finish_reason":"stop"}]}`),
+		ClientSignalAllowed:  false,
+		HandoffSignalAllowed: true,
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.ClientSignalKind != "gw-handoff" {
+		t.Fatalf("result=%+v, want gw-handoff", res)
+	}
+}
+
+func TestCompletionDetector_PendingSubAgentsBlocksCompletion(t *testing.T) {
+	store := newFakeStore()
+	detector := NewCompletionDetector(store, nil)
+	req := &response.InterceptRequest{
+		SessionID: "pending", TenantID: "t1",
+		ResponseBody: []byte(`{"choices":[{"message":{"role":"assistant","content":"任务完成，所有文件都已成功重构。"},"finish_reason":"stop"}]}`),
+	}
+	completed, confidence, reason := detector.IsCompletedWithSubAgents(context.Background(), req, DefaultCompletionConfidence, 1)
+	if completed || confidence != 0 || reason != "subagent:pending" {
+		t.Fatalf("completed=%t confidence=%v reason=%q, want pending gate", completed, confidence, reason)
+	}
+}
+
 // ── InterceptNonStream: completed task does NOT continue ────────────────────
 
 func TestInterceptNonStream_Completed_NoContinue(t *testing.T) {
@@ -251,15 +397,65 @@ func TestInterceptNonStream_Completed_NoContinue(t *testing.T) {
 	}
 
 	res, _ := hook.InterceptNonStream(context.Background(), req)
-	// With UseAutorouteForAudit=false the hook returns nil after marking
+	// With UseAudit=false the hook returns nil after marking
 	// completed — definitely no continue.
 	if res != nil && res.Action == "goal_continue" {
 		t.Fatalf("did not expect a continue for a completed task, got action=%q", res.Action)
 	}
 	// Session should be marked completed.
-	sess, _ := store.GetSession(context.Background(), "s2")
+	sess, _ := store.GetSession(context.Background(), "t1", "s2")
 	if sess.State != StateCompleted {
 		t.Fatalf("session state = %q, want completed", sess.State)
+	}
+}
+
+func TestInterceptNonStream_Completed_AuditEnablementIndependentOfAutoroute(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "s-audit", TenantID: "t1", State: StateActive})
+	hook := newTestHook(t, store, nil)
+	hook.config.UseAudit = true
+	hook.config.UseAutorouteForAudit = false
+	hook.config.FallbackAuditModel = "audit-model"
+
+	body := `{"choices":[{"message":{"role":"assistant","content":"任务完成，所有文件都已成功重构。"},"finish_reason":"stop"}]}`
+	res, err := hook.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "s-audit", TenantID: "t1", ResponseBody: []byte(body), FinishReason: "stop",
+	})
+	if err != nil {
+		t.Fatalf("InterceptNonStream error: %v", err)
+	}
+	if res == nil || res.Action != "audit" {
+		t.Fatalf("result=%+v, want audit action", res)
+	}
+	if !strings.Contains(string(res.InjectFollowUp), `"model":"audit-model"`) {
+		t.Fatalf("audit follow-up must use fallback model when autoroute is off: %s", res.InjectFollowUp)
+	}
+}
+
+func TestInterceptStreamEnd_Completed_UseAuditGate(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"任务完成，所有文件都已成功重构。"},"finish_reason":"stop"}]}`)
+	for _, enabled := range []bool{false, true} {
+		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
+			store := newFakeStore()
+			store.seed(&Session{SessionID: "s-stream", TenantID: "t1", State: StateActive})
+			hook := newTestHook(t, store, nil)
+			hook.config.UseAudit = enabled
+			hook.config.UseAutorouteForAudit = false
+			hook.config.FallbackAuditModel = "audit-model"
+
+			res, err := hook.InterceptStreamEnd(context.Background(), &response.StreamMeta{
+				SessionID: "s-stream", TenantID: "t1", ResponseBody: body, FinishReason: "stop",
+			})
+			if err != nil {
+				t.Fatalf("InterceptStreamEnd error: %v", err)
+			}
+			if enabled && (res == nil || res.Action != "audit") {
+				t.Fatalf("result=%+v, want audit action", res)
+			}
+			if !enabled && res != nil {
+				t.Fatalf("result=%+v, want nil when audit is disabled", res)
+			}
+		})
 	}
 }
 
@@ -325,7 +521,7 @@ func TestAtomicAutoContinue_OnlyOneWins(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			won, _ := store.AtomicAutoContinue(context.Background(), "s5", max)
+			won, _ := store.AtomicAutoContinue(context.Background(), "t1", "s5", max)
 			if won {
 				mu.Lock()
 				wins++
@@ -443,11 +639,11 @@ func TestNoopHistoryStore(t *testing.T) {
 func TestInterceptNonStream_BudgetExhausted_SwitchesModel(t *testing.T) {
 	store := newFakeStore()
 	store.seed(&Session{
-		SessionID:        "ms1",
-		TenantID:         "t1",
-		State:            StateActive,
+		SessionID:         "ms1",
+		TenantID:          "t1",
+		State:             StateActive,
 		AutoContinueCount: 3, // == MaxAutoContinueCount (3)
-		CurrentModel:     "gpt-4o",
+		CurrentModel:      "gpt-4o",
 	})
 
 	hook := newTestHook(t, store, nil)
@@ -477,7 +673,7 @@ func TestInterceptNonStream_BudgetExhausted_SwitchesModel(t *testing.T) {
 		t.Fatalf("model not switched, still %q", parsed.Model)
 	}
 
-	sess, _ := store.GetSession(context.Background(), "ms1")
+	sess, _ := store.GetSession(context.Background(), "t1", "ms1")
 	if sess.ModelSwitchCount != 1 {
 		t.Fatalf("ModelSwitchCount = %d, want 1", sess.ModelSwitchCount)
 	}
@@ -520,7 +716,7 @@ func TestInterceptNonStream_RepeatedResponse_SwitchesModel(t *testing.T) {
 	if res == nil {
 		t.Fatal("expected a model-switch follow-up on repeated response")
 	}
-	sess, _ := store.GetSession(context.Background(), "ms2")
+	sess, _ := store.GetSession(context.Background(), "t1", "ms2")
 	if sess.ModelSwitchCount != 1 {
 		t.Fatalf("ModelSwitchCount = %d, want 1", sess.ModelSwitchCount)
 	}
@@ -531,11 +727,11 @@ func TestInterceptNonStream_RepeatedResponse_SwitchesModel(t *testing.T) {
 func TestInterceptNonStream_SwitchDisabled_GivesUp(t *testing.T) {
 	store := newFakeStore()
 	store.seed(&Session{
-		SessionID:        "ms3",
-		TenantID:         "t1",
-		State:            StateActive,
+		SessionID:         "ms3",
+		TenantID:          "t1",
+		State:             StateActive,
 		AutoContinueCount: 3,
-		CurrentModel:     "gpt-4o",
+		CurrentModel:      "gpt-4o",
 	})
 
 	hook := newTestHook(t, store, nil)
@@ -625,18 +821,18 @@ func TestHashResponse_StableAndDistinct(t *testing.T) {
 // RecordResponse increments repeat_count on identical hash, resets on new.
 func TestRecordResponse_RepeatTracking(t *testing.T) {
 	store := newFakeStore()
-	store.seed(&Session{SessionID: "rr1", State: StateActive})
+	store.seed(&Session{SessionID: "rr1", TenantID: "t1", State: StateActive})
 
 	ctx := context.Background()
-	n, _ := store.RecordResponse(ctx, "rr1", "hashA", true)
+	n, _ := store.RecordResponse(ctx, "t1", "rr1", "hashA", true)
 	if n != 1 {
 		t.Fatalf("first response repeat_count = %d, want 1", n)
 	}
-	n, _ = store.RecordResponse(ctx, "rr1", "hashA", true)
+	n, _ = store.RecordResponse(ctx, "t1", "rr1", "hashA", true)
 	if n != 2 {
 		t.Fatalf("identical response repeat_count = %d, want 2", n)
 	}
-	n, _ = store.RecordResponse(ctx, "rr1", "hashB", true)
+	n, _ = store.RecordResponse(ctx, "t1", "rr1", "hashB", true)
 	if n != 1 {
 		t.Fatalf("new response should reset repeat_count to 1, got %d", n)
 	}
@@ -645,4 +841,393 @@ func TestRecordResponse_RepeatTracking(t *testing.T) {
 // jsonParse is a tiny test helper wrapping json.Unmarshal.
 func jsonParse(data []byte, v any) error {
 	return json.Unmarshal(data, v)
+}
+
+// ── Per-tenant completion-threshold isolation ──────────────────────────────
+//
+// The CompletionDetector is a singleton on ModeHook, which is shared across
+// all tenants on ChatHandler. Previously the threshold lived on the detector
+// as a shared atomic.Uint64 and each interception wrote its tenant's value
+// before reading — which meant one tenant could observe another tenant's
+// threshold in checkWithLLM. After the fix the threshold is a per-request
+// argument; this test exercises the same load pattern concurrently and
+// asserts each tenant's LLM verdict honours its own threshold.
+//
+// The test wires the LLM caller to return a fixed confidence=0.85 verdict.
+// Tenant A sets minConfidence=0.9 (verdict below threshold → NOT completed);
+// Tenant B sets minConfidence=0.6 (verdict above threshold → completed). The
+// body deliberately contains no completion keywords so only the LLM strategy
+// runs — the threshold argument is what makes the two tenants differ. The
+// same detector serves both goroutines, and after N concurrent invocations
+// each tenant's outcome must match its own threshold — never the other one.
+// Run with -race to catch any shared-mutable-state regressions.
+func TestCompletionDetector_PerTenantThreshold_NoCrossContamination(t *testing.T) {
+	const totalRounds = 200
+	// Body without any completion keyword, so the LLM strategy is the only
+	// strategy that can return completed.
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"refactor step 7 of 12 in progress"}}]}`)
+
+	llm := &stubLLMCaller{}
+	// Stub returns confidence 0.85 — sits between A's 0.9 and B's 0.6 so the
+	// thresholds can be distinguished.
+	for i := 0; i < totalRounds*2; i++ {
+		llm.responses = append(llm.responses, `{"completed":true,"confidence":0.85,"reason":"llm_verdict"}`)
+	}
+
+	detector := NewCompletionDetector(newFakeStore(), llm)
+
+	tenantA := func() (completed, notCompleted int) {
+		for i := 0; i < totalRounds; i++ {
+			done, _, _ := detector.IsCompleted(context.Background(), &response.InterceptRequest{
+				SessionID: "a", TenantID: "ta", ResponseBody: body,
+			}, 0.9)
+			if done {
+				completed++
+			} else {
+				notCompleted++
+			}
+		}
+		return
+	}
+	tenantB := func() (completed, notCompleted int) {
+		for i := 0; i < totalRounds; i++ {
+			done, _, _ := detector.IsCompleted(context.Background(), &response.InterceptRequest{
+				SessionID: "b", TenantID: "tb", ResponseBody: body,
+			}, 0.6)
+			if done {
+				completed++
+			} else {
+				notCompleted++
+			}
+		}
+		return
+	}
+
+	var wg sync.WaitGroup
+	var aDone, aMiss, bDone, bMiss int
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		aDone, aMiss = tenantA()
+	}()
+	go func() {
+		defer wg.Done()
+		bDone, bMiss = tenantB()
+	}()
+	wg.Wait()
+
+	if aDone != 0 {
+		t.Errorf("tenant A should NEVER see completed (threshold 0.9 > verdict 0.85); got %d completions", aDone)
+	}
+	if aMiss != totalRounds {
+		t.Errorf("tenant A should see %d NOT-completed, got %d", totalRounds, aMiss)
+	}
+	if bDone != totalRounds {
+		t.Errorf("tenant B should ALWAYS see completed (threshold 0.6 <= verdict 0.85); got %d/%d", bDone, totalRounds)
+	}
+	if bMiss != 0 {
+		t.Errorf("tenant B should see 0 NOT-completed, got %d", bMiss)
+	}
+}
+
+// end-to-end check that the per-request threshold reaches the detector through
+// the full InterceptNonStream path. Tenant A's LLM verdict (confidence 0.85)
+// passes tenant B's 0.6 threshold (completed) and fails tenant A's 0.9
+// threshold (NOT completed → continue follow-up injected). The body must not
+// contain completion keywords so the LLM strategy is the sole arbiter.
+func TestInterceptNonStream_PerTenantCompletionThreshold(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"step 7 of 12 in progress, almost there"},"finish_reason":"stop"}]}`)
+
+	// Tenant A: threshold 0.9 → LLM verdict 0.85 must NOT trigger completion.
+	storeA := newFakeStore()
+	storeA.seed(&Session{SessionID: "sa", TenantID: "tA", State: StateActive})
+	llmA := &stubLLMCaller{responses: []string{`{"completed":true,"confidence":0.85,"reason":"r"}`}}
+	hookA := newTestHook(t, storeA, llmA)
+	hookA.config.CompletionConfidence = 0.9
+	resA, _ := hookA.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "sa", TenantID: "tA", ResponseBody: body, FinishReason: "stop",
+	})
+	if resA == nil || resA.Action != "goal_continue" {
+		t.Fatalf("tenant A should inject a continue follow-up (LLM verdict 0.85 < threshold 0.9); got action=%v", resA)
+	}
+	sessA, _ := storeA.GetSession(context.Background(), "tA", "sa")
+	if sessA.State == StateCompleted {
+		t.Fatalf("tenant A session must NOT be completed; got %q", sessA.State)
+	}
+
+	// Tenant B: threshold 0.6 → LLM verdict 0.85 SHOULD trigger completion.
+	storeB := newFakeStore()
+	storeB.seed(&Session{SessionID: "sb", TenantID: "tB", State: StateActive})
+	llmB := &stubLLMCaller{responses: []string{`{"completed":true,"confidence":0.85,"reason":"r"}`}}
+	hookB := newTestHook(t, storeB, llmB)
+	hookB.config.CompletionConfidence = 0.6
+	hookB.config.UseAudit = false // don't inject audit follow-up — we only assert state
+	hookB.InterceptNonStream(context.Background(), &response.InterceptRequest{
+		SessionID: "sb", TenantID: "tB", ResponseBody: body, FinishReason: "stop",
+	})
+	sessB, _ := storeB.GetSession(context.Background(), "tB", "sb")
+	if sessB.State != StateCompleted {
+		t.Fatalf("tenant B session should be completed (verdict 0.85 >= threshold 0.6); got %q", sessB.State)
+	}
+}
+
+// ── CompareAndSetState terminal-state preservation ─────────────────────────
+//
+// PGStore.CompareAndSetState mirrors the WHERE state = ANY($4) guard. These
+// tests exercise the in-memory fakeStore equivalent so the hook's terminal-
+// write contract is unit-tested without PG.
+func TestCompareAndSetState_TerminalBlocksDowngrade(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs1", TenantID: "t1", State: StateCompleted})
+
+	// Failed write must NOT downgrade completed.
+	won, err := store.CompareAndSetState(context.Background(), "t1", "cs1",
+		[]State{StateActive, StateRetrying, StatePaused}, StateFailed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if won {
+		t.Fatal("CAS must NOT win when current state is terminal (completed)")
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "cs1")
+	if sess.State != StateCompleted {
+		t.Fatalf("state must remain completed, got %q", sess.State)
+	}
+}
+
+func TestCompareAndSetState_TerminalBlocksUpgrade(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs2", TenantID: "t1", State: StateFailed})
+
+	// A late completion verdict must NOT overwrite failed.
+	won, _ := store.CompareAndSetState(context.Background(), "t1", "cs2",
+		[]State{StateActive, StateRetrying, StatePaused}, StateCompleted)
+	if won {
+		t.Fatal("CAS must NOT win when current state is terminal (failed)")
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "cs2")
+	if sess.State != StateFailed {
+		t.Fatalf("state must remain failed, got %q", sess.State)
+	}
+}
+
+func TestCompareAndSetState_EmptyAllowed_Noop(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs3", TenantID: "t1", State: StateActive})
+	won, _ := store.CompareAndSetState(context.Background(), "t1", "cs3", nil, StateFailed)
+	if won {
+		t.Fatal("empty allowedFrom must never transition")
+	}
+}
+
+func TestCompareAndSetState_NonExistentSession_Noop(t *testing.T) {
+	store := newFakeStore()
+	won, _ := store.CompareAndSetState(context.Background(), "t1", "missing",
+		[]State{StateActive}, StateCompleted)
+	if won {
+		t.Fatal("non-existent session must not match CAS")
+	}
+}
+
+func TestCompareAndSetState_HappyPath(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs4", TenantID: "t1", State: StateActive})
+	won, err := store.CompareAndSetState(context.Background(), "t1", "cs4",
+		[]State{StateActive, StateRetrying, StatePaused}, StateCompleted)
+	if err != nil || !won {
+		t.Fatalf("happy-path CAS should win: won=%v err=%v", won, err)
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "cs4")
+	if sess.State != StateCompleted {
+		t.Fatalf("state should be completed, got %q", sess.State)
+	}
+}
+
+// Concurrent CAS race: N goroutines try to flip an active session to
+// completed/failed simultaneously. Exactly one writer wins per attempt, and
+// once a terminal state is set, all subsequent attempts no-op.
+func TestCompareAndSetState_ConcurrentRace(t *testing.T) {
+	store := newFakeStore()
+	store.seed(&Session{SessionID: "cs5", TenantID: "t1", State: StateActive})
+
+	const writers = 32
+	var wg sync.WaitGroup
+	var completedWins, failedWins int
+	var mu sync.Mutex
+	for i := 0; i < writers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			target := StateCompleted
+			if i%2 == 0 {
+				target = StateFailed
+			}
+			won, _ := store.CompareAndSetState(context.Background(), "t1", "cs5",
+				[]State{StateActive, StateRetrying, StatePaused, ""}, target)
+			if won {
+				mu.Lock()
+				if target == StateCompleted {
+					completedWins++
+				} else {
+					failedWins++
+				}
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	totalWins := completedWins + failedWins
+	if totalWins != 1 {
+		t.Fatalf("exactly one writer should win, got %d (completed=%d failed=%d)",
+			totalWins, completedWins, failedWins)
+	}
+	sess, _ := store.GetSession(context.Background(), "t1", "cs5")
+	if sess.State != StateCompleted && sess.State != StateFailed {
+		t.Fatalf("final state must be terminal, got %q", sess.State)
+	}
+}
+
+// ── Preset-driven budget exhaustion (Finding 8) ───────────────────────────────
+//
+// The cost_mode presets (balanced/aggressive) drive MaxAutoContinueCount,
+// MaxModelSwitchCount, etc. through GetPreset. These integration tests prove
+// that the loop detector's budgetExhausted branch actually fires — and a
+// model-switch follow-up is emitted — when a session is seeded at the
+// preset's continue budget and the hook runs with those preset-driven values.
+//
+// We do NOT hardcode MaxAutoContinueCount:3 — we read it from the preset, seed
+// the session's AutoContinueCount to exactly that value, and assert the switch.
+
+// modeConfigFromPreset builds a ModeConfig from a cost-mode preset, mirroring
+// how buildGoalConfig wires preset values into the hook at boot.
+func modeConfigFromPreset(preset ModePreset) ModeConfig {
+	return ModeConfig{
+		Enabled:              true,
+		DetectionMode:        ModeKeyword,
+		AutoContinueOnPause:  preset.AutoContinue,
+		MaxAutoContinueCount: preset.MaxContinueCount,
+		ModelSwitchOnLoop:    preset.LoopDetectionEnabled,
+		MaxModelSwitchCount:  preset.MaxModelSwitch,
+		RepeatThreshold:      preset.LoopThreshold,
+		CompletionConfidence: preset.CompletionConfidence,
+		FallbackModels:       []string{"gpt-4o", "claude-3-5-sonnet"},
+		// MaxFollowUpDepth is left at zero (engine default) — this test
+		// exercises the hook directly, not the follow-up engine, so the
+		// boot-time invariant lifting that value is irrelevant here.
+	}
+}
+
+func TestIntercept_BudgetExhausted_UnderBalancedPreset(t *testing.T) {
+	preset := GetPreset("balanced")
+	store := newFakeStore()
+	store.seed(&Session{
+		SessionID:         "bp1",
+		TenantID:          "t1",
+		State:             StateActive,
+		AutoContinueCount: preset.MaxContinueCount, // budget exhausted per preset
+		CurrentModel:      "gpt-4o",
+	})
+
+	hook := &ModeHook{
+		config:    modeConfigFromPreset(preset),
+		db:        store,
+		llmCaller: nil, // keyword-only completion detection
+		detector:  NewCompletionDetector(store, nil),
+		history:   NoopHistoryStore(),
+	}
+
+	body := `{"choices":[{"message":{"role":"assistant","content":"still working on step 5"},"finish_reason":"stop"}]}`
+	req := &response.InterceptRequest{
+		SessionID: "bp1", TenantID: "t1",
+		ResponseBody: []byte(body), FinishReason: "stop",
+	}
+
+	res, _ := hook.InterceptNonStream(context.Background(), req)
+	if res == nil {
+		t.Fatal("expected a model-switched continue follow-up under balanced preset, got nil")
+	}
+	if res.Action != "goal_model_switch" {
+		t.Fatalf("Action = %q, want goal_model_switch", res.Action)
+	}
+
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := jsonParse(res.InjectFollowUp, &parsed); err != nil {
+		t.Fatalf("parse follow-up: %v", err)
+	}
+	if parsed.Model == "gpt-4o" {
+		t.Fatalf("model not switched, still %q", parsed.Model)
+	}
+
+	sess, _ := store.GetSession(context.Background(), "t1", "bp1")
+	if sess.ModelSwitchCount != 1 {
+		t.Fatalf("ModelSwitchCount = %d, want 1", sess.ModelSwitchCount)
+	}
+	if sess.AutoContinueCount != 0 {
+		t.Fatalf("AutoContinueCount = %d, want 0 (rotation should not consume budget)", sess.AutoContinueCount)
+	}
+	if sess.CurrentModel == "gpt-4o" {
+		t.Fatalf("CurrentModel not updated, still gpt-4o")
+	}
+}
+
+func TestIntercept_BudgetExhausted_UnderAggressivePreset(t *testing.T) {
+	preset := GetPreset("aggressive")
+	store := newFakeStore()
+	store.seed(&Session{
+		SessionID:         "ap1",
+		TenantID:          "t1",
+		State:             StateActive,
+		AutoContinueCount: preset.MaxContinueCount, // budget exhausted per preset
+		CurrentModel:      "gpt-4o",
+	})
+
+	hook := &ModeHook{
+		config:    modeConfigFromPreset(preset),
+		db:        store,
+		llmCaller: nil, // keyword-only completion detection
+		detector:  NewCompletionDetector(store, nil),
+		history:   NoopHistoryStore(),
+	}
+	// Aggressive preset enables audit; disable it so the budget-exhausted
+	// model-switch path is the one that fires (not the audit path).
+	hook.config.UseAudit = false
+
+	body := `{"choices":[{"message":{"role":"assistant","content":"still working on step 9"},"finish_reason":"stop"}]}`
+	req := &response.InterceptRequest{
+		SessionID: "ap1", TenantID: "t1",
+		ResponseBody: []byte(body), FinishReason: "stop",
+	}
+
+	res, _ := hook.InterceptNonStream(context.Background(), req)
+	if res == nil {
+		t.Fatal("expected a model-switched continue follow-up under aggressive preset, got nil")
+	}
+	if res.Action != "goal_model_switch" {
+		t.Fatalf("Action = %q, want goal_model_switch", res.Action)
+	}
+
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	if err := jsonParse(res.InjectFollowUp, &parsed); err != nil {
+		t.Fatalf("parse follow-up: %v", err)
+	}
+	if parsed.Model == "gpt-4o" {
+		t.Fatalf("model not switched, still %q", parsed.Model)
+	}
+
+	sess, _ := store.GetSession(context.Background(), "t1", "ap1")
+	if sess.ModelSwitchCount != 1 {
+		t.Fatalf("ModelSwitchCount = %d, want 1", sess.ModelSwitchCount)
+	}
+	if sess.AutoContinueCount != 0 {
+		t.Fatalf("AutoContinueCount = %d, want 0 (rotation should not consume budget)", sess.AutoContinueCount)
+	}
+	if sess.CurrentModel == "gpt-4o" {
+		t.Fatalf("CurrentModel not updated, still gpt-4o")
+	}
 }

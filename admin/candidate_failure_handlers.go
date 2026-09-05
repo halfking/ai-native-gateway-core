@@ -29,6 +29,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // candidateFailureHandlers bundles the read-only endpoints. nil-safe:
@@ -66,6 +67,11 @@ func (h *candidateFailureHandlers) SetRecentAlerts(getter func() []bg.CandidateF
 //   - since:    ISO-8601 lower bound (default 24h ago)
 //   - kind:     optional error_kind filter (e.g. "transient", "network")
 //   - retryable: optional "true"/"false" filter
+//   - session:  optional session_id filter (V358) — "同一次会话内的全部
+//     节点切换尝试"归集视图；同一会话仅最终成功体现在 request_logs。
+//
+// id / session_id 为可空：startup 392 架构（hot + 月度分区）中 id 是无
+// 默认值的普通 bigint，新行 id 为 NULL 属设计内行为（应用层去重）。
 func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "db not configured")
@@ -75,6 +81,7 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 	since := parseSinceQuery(r, "since", 24*time.Hour)
 	kind := r.URL.Query().Get("kind")
 	retryable := r.URL.Query().Get("retryable")
+	session := r.URL.Query().Get("session")
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -84,14 +91,15 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 			id, ts, request_id, tenant_id, credential_id, provider_id,
 			raw_model_name, attempt_index, error_kind, error_message,
 			upstream_status_code, upstream_response_preview, latency_ms,
-			retryable
-		FROM candidate_failure_logs
+			retryable, session_id
+		FROM candidate_failure_logs_with_current_month
 		WHERE ts >= $1
 		  AND ($2 = '' OR error_kind = $2)
 		  AND ($3 = '' OR retryable::text = $3)
+		  AND ($4 = '' OR session_id = $4)
 		ORDER BY ts DESC, id DESC
-		LIMIT $4
-	`, since, kind, retryable, limit)
+		LIMIT $5
+	`, since, kind, retryable, session, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
@@ -99,7 +107,7 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 	defer rows.Close()
 
 	type row struct {
-		ID                      int64     `json:"id"`
+		ID                      *int64    `json:"id,omitempty"`
 		Ts                      time.Time `json:"ts"`
 		RequestID               string    `json:"request_id"`
 		TenantID                string    `json:"tenant_id"`
@@ -113,6 +121,7 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 		UpstreamResponsePreview *string   `json:"upstream_response_preview,omitempty"`
 		LatencyMs               *int      `json:"latency_ms,omitempty"`
 		Retryable               *bool     `json:"retryable,omitempty"`
+		SessionID               *string   `json:"session_id,omitempty"`
 	}
 	out := make([]row, 0, limit)
 	for rows.Next() {
@@ -121,12 +130,18 @@ func (h *candidateFailureHandlers) listCandidateFailures(w http.ResponseWriter, 
 			&x.ID, &x.Ts, &x.RequestID, &x.TenantID, &x.CredentialID, &x.ProviderID,
 			&x.RawModelName, &x.AttemptIndex, &x.ErrorKind, &x.ErrorMessage,
 			&x.UpstreamStatusCode, &x.UpstreamResponsePreview, &x.LatencyMs,
-			&x.Retryable,
+			&x.Retryable, &x.SessionID,
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
 			return
 		}
+		x.ErrorMessage = string(errorsx.SanitizeErrorText([]byte(x.ErrorMessage), 320))
+		if x.UpstreamResponsePreview != nil {
+			s := string(errorsx.SanitizeErrorText([]byte(*x.UpstreamResponsePreview), 320))
+			x.UpstreamResponsePreview = &s
+		}
 		out = append(out, x)
+
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data":  out,
@@ -157,8 +172,9 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 	rows, err := h.db.Query(ctx, `
 		SELECT
 			id, ts, request_id, raw_model_name, attempt_index, error_kind,
-			upstream_status_code, upstream_response_preview, latency_ms
-		FROM candidate_failure_logs
+			upstream_status_code, upstream_response_preview, latency_ms,
+			session_id
+		FROM candidate_failure_logs_with_current_month
 		WHERE credential_id = $1
 		  AND ts >= $2
 		ORDER BY ts DESC, id DESC
@@ -171,7 +187,7 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 	defer rows.Close()
 
 	type row struct {
-		ID                      int64     `json:"id"`
+		ID                      *int64    `json:"id,omitempty"`
 		Ts                      time.Time `json:"ts"`
 		RequestID               string    `json:"request_id"`
 		RawModelName            string    `json:"raw_model_name"`
@@ -180,6 +196,7 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 		UpstreamStatusCode      *int      `json:"upstream_status_code,omitempty"`
 		UpstreamResponsePreview *string   `json:"upstream_response_preview,omitempty"`
 		LatencyMs               *int      `json:"latency_ms,omitempty"`
+		SessionID               *string   `json:"session_id,omitempty"`
 	}
 	out := make([]row, 0, limit)
 	for rows.Next() {
@@ -187,7 +204,7 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 		if err := rows.Scan(
 			&x.ID, &x.Ts, &x.RequestID, &x.RawModelName, &x.AttemptIndex,
 			&x.ErrorKind, &x.UpstreamStatusCode, &x.UpstreamResponsePreview,
-			&x.LatencyMs,
+			&x.LatencyMs, &x.SessionID,
 		); err != nil {
 			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
 			return
@@ -226,7 +243,7 @@ func (h *candidateFailureHandlers) getCandidateFailureStats(w http.ResponseWrite
 			COUNT(DISTINCT upstream_status_code) AS distinct_status_codes,
 			MAX(ts)                        AS last_seen,
 			MIN(ts)                        AS first_seen
-		FROM candidate_failure_logs
+		FROM candidate_failure_logs_with_current_month
 		WHERE ts >= $1
 		GROUP BY raw_model_name, error_kind, credential_id, provider_id
 		ORDER BY count DESC

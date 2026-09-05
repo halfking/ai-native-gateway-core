@@ -44,6 +44,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/internal/modelresponse"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -63,7 +64,7 @@ func (h *Handler) loadCredentialRowLiteAny(ctx context.Context, credID int) (cre
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
-		WHERE c.id = $1
+		WHERE c.id = $1 AND c.status <> 'deleted' AND p.deleted_at IS NULL
 	`, credID).Scan(&c.id, &c.label, &c.providerID, &c.providerName,
 		&c.baseURL, &c.protocol, &c.catalogCode,
 		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON)
@@ -408,6 +409,26 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	}
 
 	upserted, failed = h.enrollCredentialModels(ctx, cred.id, models)
+
+	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model when the
+	// operator never set one. Mirrors the discovery worker so a manual
+	// admin refresh (POST /api/providers/{id}/refresh-models) has the
+	// same effect on operators who onboard a fresh credential mid-flight
+	// and immediately fire the refresh button — they should not have to
+	// wait for the next discovery tick to see a probe target written.
+	// Best-effort: a DB error here is logged but does not fail the
+	// refresh call.
+	if picked, autoErr := modelcatalog.AutoFillDefaultProbeModel(ctx, h.db, cred.id); autoErr != nil {
+		slog.Warn("admin refresh: auto-fill default_probe_model failed",
+			"credential_id", cred.id, "error", autoErr)
+	} else if picked != "" {
+		slog.Info("admin refresh: auto-filled default_probe_model",
+			"credential_id", cred.id,
+			"default_probe_model", picked,
+			"source", modelcatalog.DefaultProbeModelSourceRefreshLatest,
+		)
+	}
+
 	h.updateCredHealth(ctx, cred.id, "healthy", "")
 	return upserted, failed, nil
 }
@@ -513,7 +534,7 @@ func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred creden
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("models endpoint returned %d: %s", resp.StatusCode, string(body))
+		return nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -611,67 +632,7 @@ func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, 
 }
 
 func parseVendorModelsBody(data []byte) ([]string, error) {
-	// Standard OpenAI format: {"data": [{"id": "..."}]}
-	var openai struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(data, &openai); err == nil && len(openai.Data) > 0 {
-		var ids []string
-		for _, m := range openai.Data {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		if len(ids) > 0 {
-			return ids, nil
-		}
-	}
-
-	// Alt format: {"models": [{"id": "..."}]}
-	var alt struct {
-		Models []struct {
-			ID string `json:"id"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(data, &alt); err == nil && len(alt.Models) > 0 {
-		var ids []string
-		for _, m := range alt.Models {
-			if m.ID != "" {
-				ids = append(ids, m.ID)
-			}
-		}
-		if len(ids) > 0 {
-			return ids, nil
-		}
-	}
-
-	// Bare array
-	var bare []string
-	if err := json.Unmarshal(data, &bare); err == nil && len(bare) > 0 {
-		return bare, nil
-	}
-
-	// Array of objects
-	var objArray []map[string]any
-	if err := json.Unmarshal(data, &objArray); err == nil && len(objArray) > 0 {
-		var ids []string
-		for _, m := range objArray {
-			if id, ok := m["id"].(string); ok && id != "" {
-				ids = append(ids, id)
-			} else if name, ok := m["name"].(string); ok && name != "" {
-				ids = append(ids, name)
-			} else if model, ok := m["model"].(string); ok && model != "" {
-				ids = append(ids, model)
-			}
-		}
-		if len(ids) > 0 {
-			return ids, nil
-		}
-	}
-
-	return nil, fmt.Errorf("unrecognized models response format")
+	return modelresponse.ParseModelIDs(data)
 }
 
 func extractManifestModels(manifest *string) ([]string, error) {

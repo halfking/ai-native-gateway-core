@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
 import {
   getProviders, createProvider, updateProvider, toggleProvider,
-  addCredential, deleteCredential, getCatalog, getProviderCredentials,
+  addCredential, deleteCredential, deleteProvider, getCatalog, getProviderCredentials,
   updateCredential, checkProvider, checkCredential, diagnoseProvider,
   getBackgroundTasksStatus, probeURL, probeProviderURL,
   type Provider, type CatalogEntry, type ProviderCredential, type CredentialStatus,
@@ -21,10 +21,17 @@ import {
   QUALITY_GRADE_LABELS,
   type QualityGrade,
 } from '../types/quality-api'
+import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { isSuperAdmin } from '../store'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
-const pm = (k: string, params?: Record<string, unknown>): string =>
+const pm = (k: string, params?: Record<string,unknown>): string =>
   t(`providers.${k}` as never, params as never)
+
+// 2026-09-04: default 租户 tenant_admin 可浏览列表（只读），新增/删除
+// 供应商仍 super_admin 专属（与后端 ProviderConsoleMiddleware 同口径）。
+const canManageProviders = computed(() => isSuperAdmin())
 
 const providers = ref<Provider[]>([])
 const catalog   = ref<CatalogEntry[]>([])
@@ -48,6 +55,10 @@ const credentialsByProvider = ref<Record<number, ProviderCredential[]>>({})
 const credentialLoading = ref<Record<number, boolean>>({})
 const credentialSaving = ref<Record<number, boolean>>({})
 const credentialErrors = ref<Record<number, string>>({})
+// credentialDisplayName resolves credential id → human label; the composable
+// keeps a Map<id,label> refreshed via loadCredentialLabels(), and falls back
+// to "凭据 #ID" if the label is missing.
+const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 // ── Filter & sort state ──────────────────────────────────────────────────────
 // 2026-07-08: filter selections are persisted to localStorage so each
@@ -442,7 +453,7 @@ async function submitCred() {
 }
 
 async function delCred(p: Provider, credId: number) {
-  if (!confirm(pm('credential.errors.deleteConfirm'))) return
+  if (!(await confirmDialog(pm('credential.errors.deleteConfirm')))) return
   try {
     await deleteCredential(p.id, credId)
     await loadCredentials(p.id)
@@ -590,6 +601,24 @@ async function toggle(p: Provider) {
     p.enabled = !p.enabled
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : pm('credential.errors.toggleFailed')
+  }
+}
+
+// 2026-08-31: 软删除供应商。级联把该供应商下未删除的凭据置为
+// status='deleted'；本地数组中直接剔除该行 + 该供应商下凭据。
+async function delProvider(p: Provider) {
+  if (!(await confirmDialog(pm('providerDelete.confirm')))) return
+  try {
+    await deleteProvider(p.id)
+    // 从当前列表中移除
+    providers.value = providers.value.filter((row) => row.id !== p.id)
+    // 凭据缓存一并清理，避免引用悬空
+    delete credentialsByProvider.value[p.id]
+    delete credentialLoading.value[p.id]
+    delete credentialSaving.value[p.id]
+    delete credentialErrors.value[p.id]
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : pm('providerDelete.failed')
   }
 }
 
@@ -764,6 +793,9 @@ async function loadBgStatus() {
 }
 
 onMounted(() => {
+  // Populate the label cache so credentialDisplayName() resolves to real
+  // labels on first render (the composable is best-effort and self-caches).
+  void loadCredentialLabels()
   load()
   loadBgStatus()
   _bgPollTimer = setInterval(loadBgStatus, 15000)
@@ -778,7 +810,7 @@ onUnmounted(() => {
   <div>
     <div class="page-header">
       <h2>{{ pm('page.title') }}</h2>
-      <button class="btn btn-primary" @click="openAdd">{{ pm('page.addBtn') }}</button>
+      <button v-if="canManageProviders" class="btn btn-primary" @click="openAdd">{{ pm('page.addBtn') }}</button>
     </div>
 
     <div class="bg-status-bar" v-if="bgStatus">
@@ -901,6 +933,8 @@ onUnmounted(() => {
                  health_status now live on routability. -->
             <th>{{ pm('filter.routabilityChipGroup') }}</th>
             <th>{{ pm('list.table.status') }}</th>
+            <!-- 2026-08-31: 供应商操作列（行级删除入口） -->
+            <th>{{ pm('list.table.actions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -1006,6 +1040,15 @@ onUnmounted(() => {
               <span v-else class="badge" :class="p.enabled ? 'badge-green' : 'badge-gray'">
                 {{ p.enabled ? pm('list.enabledBadge') : pm('list.disabledBadge') }}
               </span>
+            </td>
+            <!-- 2026-08-31: 行级供应商删除入口。@click.stop 阻止冒泡
+                 触发外层 tr 的 router.push 跳转。仅 super_admin。 -->
+            <td v-if="canManageProviders" @click.stop>
+              <button
+                class="btn btn-ghost btn-sm"
+                :title="pm('list.deleteProviderTooltip')"
+                @click="delProvider(p)"
+              >{{ pm('list.deleteProviderBtn') }}</button>
             </td>
           </tr>
         </tbody>
@@ -1330,7 +1373,7 @@ onUnmounted(() => {
               <template v-for="r in diagnoseResult.results" :key="r.credential_id">
                 <tr>
                   <td>
-                    <div>#{{ r.credential_id }}</div>
+                    <div>{{ credentialDisplayName(r.credential_id) }}</div>
                     <div class="muted" v-if="r.effective_source === 'manifest_only'">{{ pm('diagnose.manifestOnly') }}</div>
                   </td>
                   <td>
@@ -1524,11 +1567,11 @@ table code {
 }
 .filter-tab:hover {
   color: var(--text);
-  background: rgba(255,255,255,0.05);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .filter-tab.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .filter-divider {
   width: 1px;
@@ -1590,7 +1633,7 @@ table code {
   border-bottom: none;
 }
 .credential-table tbody tr:hover td {
-  background: rgba(255,255,255,.03);
+  background: color-mix(in srgb, var(--kx-text) 4%, transparent);
 }
 .compact-input {
   width: 100%;
@@ -1620,8 +1663,8 @@ table code {
   overflow-wrap: break-word;
 }
 .badge-amber {
-  background: rgba(210,153,34,.18);
-  color: #f0b429;
+  background: color-mix(in srgb, var(--warning) 20%, transparent);
+  color: var(--warning);
 }
 .diag-section h4 {
   margin: 0 0 6px 0;
@@ -1657,8 +1700,8 @@ table code {
   display: inline-block;
   flex-shrink: 0;
 }
-.dot-green { background: #4caf50; }
-.dot-red { background: #f44336; }
+.dot-green { background: var(--success); }
+.dot-red { background: var(--danger); }
 .bg-label {
   font-weight: 500;
   margin-inline-end: 2px;
@@ -1672,7 +1715,7 @@ table code {
   color: #42a5f5;
 }
 .badge-orange {
-  background: rgba(210,153,34,.15);
+  background: var(--warning-bg);
   color: var(--warning);
 }
 .provider-row {

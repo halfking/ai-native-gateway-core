@@ -2,8 +2,10 @@ package streaming
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -17,9 +19,40 @@ import (
 
 func newGateForTest(mode GateMode) (*AttemptCommitGate, *trackingFlusher) {
 	f := &trackingFlusher{}
-	g := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f),
+	g := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f),
 		GateOptions{Mode: mode, MaxMetadataBufferBytes: 1024})
 	return g, f
+}
+
+func TestAttemptHasClientSemanticOutputIgnoresPreStreamHeaders(t *testing.T) {
+	g, _ := newGateForTest(GateModeImmediate)
+	if attemptHasClientSemanticOutput(g, 0) {
+		t.Fatal("pre-stream response state must not count as semantic client output")
+	}
+	if !attemptHasClientSemanticOutput(nil, 1) {
+		t.Fatal("legacy path should use emitted chunk count")
+	}
+}
+
+func TestAttemptHasClientSemanticOutputAfterCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode GateMode
+	}{
+		{name: "buffered", mode: GateModeBuffered},
+		{name: "immediate", mode: GateModeImmediate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mode := tc.mode
+			g, _ := newGateForTest(mode)
+			if err := g.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n"); err != nil {
+				t.Fatalf("write semantic frame: %v", err)
+			}
+			if !attemptHasClientSemanticOutput(g, 0) {
+				t.Fatal("semantic output must permit terminal error rendering")
+			}
+		})
+	}
 }
 
 func TestAttemptCommitGateBuffersMetadataUntilSemanticCommit(t *testing.T) {
@@ -50,6 +83,98 @@ func TestAttemptCommitGateBuffersMetadataUntilSemanticCommit(t *testing.T) {
 	}
 	if !g.Committed() {
 		t.Fatal("gate should be committed after first semantic frame")
+	}
+}
+
+func TestAttemptCommitGateCommitReturnsDiscardedWhenDiscardWinsDuringHook(t *testing.T) {
+	f := &trackingFlusher{}
+	hookEntered := make(chan struct{})
+	releaseHook := make(chan struct{})
+	g := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode: GateModeBuffered,
+		BeforeSemanticCommit: func(_ context.Context, state CommitState) error {
+			if state != CommitStateMetadata {
+				t.Errorf("checkpoint state = %v, want metadata", state)
+			}
+			close(hookEntered)
+			<-releaseHook
+			return nil
+		},
+	})
+	meta := "event: message_start\ndata: {}\n\n"
+	if err := g.WriteFrame(meta); err != nil {
+		t.Fatal(err)
+	}
+
+	commitErr := make(chan error, 1)
+	go func() { commitErr <- g.Commit() }()
+	<-hookEntered
+
+	if err := g.Discard(); err != nil {
+		t.Fatalf("Discard during checkpoint hook: %v", err)
+	}
+	close(releaseHook)
+
+	if err := <-commitErr; !errors.Is(err, ErrAttemptDiscarded) {
+		t.Fatalf("Commit after concurrent Discard = %v, want ErrAttemptDiscarded", err)
+	}
+	if got := f.buf.String(); got != "" {
+		t.Fatalf("discarded attempt flushed old content: %q", got)
+	}
+}
+
+func TestAttemptCommitGateConcurrentWritesDoNotDropFrames(t *testing.T) {
+	gate, writer := newGateForTest(GateModeImmediate)
+	const writers = 100
+	const framesPerWriter = 1000
+	frame := ": keep-alive\n\n"
+
+	var wg sync.WaitGroup
+	wg.Add(writers)
+	for i := 0; i < writers; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < framesPerWriter; j++ {
+				if err := gate.WriteFrame(frame); err != nil {
+					t.Errorf("WriteFrame: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got, want := strings.Count(writer.buf.String(), frame), writers*framesPerWriter; got != want {
+		t.Fatalf("written frame count = %d, want %d", got, want)
+	}
+}
+
+func TestAttemptCommitGatePropagatesSemanticFlushError(t *testing.T) {
+	flushErr := errors.New("connection closed")
+	writer := &failingErrorFlusher{flushErr: flushErr}
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(writer), GateOptions{Mode: GateModeBuffered})
+
+	err := gate.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n")
+	if !errors.Is(err, flushErr) {
+		t.Fatalf("semantic frame error = %v, want %v", err, flushErr)
+	}
+	if !gate.Committed() {
+		t.Fatal("written semantic bytes must remain committed after flush failure")
+	}
+}
+
+func TestAttemptCommitGatePropagatesCommitAndFinishFlushErrors(t *testing.T) {
+	flushErr := errors.New("connection closed")
+	writer := &failingErrorFlusher{flushErr: flushErr}
+	gate := NewAttemptCommitGate(context.Background(), ProtocolAnthropic, NewSerializedStreamWriter(writer), GateOptions{Mode: GateModeBuffered})
+	if err := gate.WriteFrame("event: message_start\ndata: {}\n\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Commit(); !errors.Is(err, flushErr) {
+		t.Fatalf("Commit() = %v, want %v", err, flushErr)
+	}
+	if err := gate.FinishAttempt(""); !errors.Is(err, flushErr) {
+		t.Fatalf("FinishAttempt() = %v, want retained %v", err, flushErr)
 	}
 }
 

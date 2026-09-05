@@ -2,10 +2,8 @@ package v2
 
 import (
 	"context"
-	"os"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,17 +13,10 @@ func TestSessionMetadata_SetAndGet(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	dsn := os.Getenv("TEST_DB_URL")
-	if dsn == "" {
-		t.Skip("TEST_DB_URL not set")
-	}
-
-	pool, err := pgxpool.New(context.Background(), dsn)
-	require.NoError(t, err)
-	defer pool.Close()
-
+	pool := setupTestDB(t)
 	agg := NewSessionAggregator(pool)
 	ctx := context.Background()
+	var err error
 	tenantID := "test-tenant"
 	sessionID := "test-session-m2m3"
 
@@ -88,15 +79,7 @@ func TestSessionMetadata_GetNonExistent(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	dsn := os.Getenv("TEST_DB_URL")
-	if dsn == "" {
-		t.Skip("TEST_DB_URL not set")
-	}
-
-	pool, err := pgxpool.New(context.Background(), dsn)
-	require.NoError(t, err)
-	defer pool.Close()
-
+	pool := setupTestDB(t)
 	agg := NewSessionAggregator(pool)
 	ctx := context.Background()
 
@@ -110,17 +93,10 @@ func TestSessionMetadata_PartialUpdate(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
-	dsn := os.Getenv("TEST_DB_URL")
-	if dsn == "" {
-		t.Skip("TEST_DB_URL not set")
-	}
-
-	pool, err := pgxpool.New(context.Background(), dsn)
-	require.NoError(t, err)
-	defer pool.Close()
-
+	pool := setupTestDB(t)
 	agg := NewSessionAggregator(pool)
 	ctx := context.Background()
+	var err error
 	tenantID := "test-tenant"
 	sessionID := "test-session-partial"
 

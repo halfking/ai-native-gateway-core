@@ -1,7 +1,9 @@
 package streaming
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/credential"  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,6 +40,32 @@ func TestResponsesHandler_InvalidJSON(t *testing.T) {
 	h.ServeHTTP(w, r)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestStreamHeartbeatDoesNotCommitBeforeFormatValidation(t *testing.T) {
+	chat := NewChatHandler(credential.NewManager(), credential.NewLimiter(), nil, nil, nil, nil)
+	tests := []struct {
+		name string
+		path string
+		h    http.Handler
+	}{
+		{name: "responses", path: "/v1/responses", h: NewResponsesHandler(chat)},
+		{name: "messages", path: "/v1/messages", h: NewMessagesHandler(chat)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			r := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader("bad"))
+			r.Header.Set("Content-Type", "application/json")
+			tc.h.ServeHTTP(w, r)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 before heartbeat commit", w.Code)
+			}
+			if strings.Contains(w.Body.String(), sseKeepaliveComment) {
+				t.Fatalf("invalid request emitted heartbeat: %q", w.Body.String())
+			}
+		})
+	}
 }
 
 func TestConvertResponsesToChatBody_PreservesExtraParams(t *testing.T) {
@@ -142,6 +171,60 @@ func TestConvertChatResponseToResponses(t *testing.T) {
 	assert.Equal(t, float64(10), usage["input_tokens"])
 }
 
+// TestResponsesStreamSSE_OtherSideClosedIsNetworkError pins the gate-aware
+// resumability on the chat→responses default branch
+// (responses_stream.go default case).
+//
+// Three-layer guard prevents a transparent retry from duplicating committed
+// bytes when the upstream dies mid-stream:
+//  1. bridge.Resumable = !attemptHasClientSemanticOutput(gate, chunkCount)
+//  2. executor (executor_chat.go:1124) — ChunkCount < e.n ceiling (default 50)
+//  3. mayRetryInterruptedStream — Capture.ChunkCountersSnapshot() > 0 blocks
+func TestResponsesStreamSSE_OtherSideClosedIsNetworkError(t *testing.T) {
+	t.Run("committed content blocks retry", func(t *testing.T) {
+		resp := &http.Response{
+			Body: &errorAfterDataReadCloser{
+				data: []byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n"),
+				err:  errors.New("other side closed"),
+			},
+			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		}
+		rec := httptest.NewRecorder()
+
+		out := StreamResponsesSSE(context.Background(), rec, resp, "gpt-test", "gpt-test", "req-responses-close", nil)
+
+		assert.True(t, out.Interrupted)
+		assert.Equal(t, "network_error", out.Reason)
+		assert.Equal(t, errorsx.KindNetwork, out.Kind)
+		assert.False(t, out.Resumable, "committed content + network error must NOT be transparently retried")
+		assert.Equal(t, 1, out.ChunkCount)
+		assert.Contains(t, rec.Body.String(), "hello")
+	})
+
+	t.Run("uncommitted read failure stays retry", func(t *testing.T) {
+		// A no-content finish-reason chunk lets the first-byte read succeed
+		// (so the bridge enters the main loop, not the first_byte_timeout
+		// branch). No text delta → chunkCount stays 0 → gate stays
+		// uncommitted → Resumable must remain true.
+		resp := &http.Response{
+			Body: &errorAfterDataReadCloser{
+				data: []byte("data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"),
+				err:  errors.New("other side closed"),
+			},
+			Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+		}
+		rec := httptest.NewRecorder()
+
+		out := StreamResponsesSSE(context.Background(), rec, resp, "gpt-test", "gpt-test", "req-responses-close-uncommitted", nil)
+
+		assert.True(t, out.Interrupted)
+		assert.Equal(t, "network_error", out.Reason)
+		assert.Equal(t, errorsx.KindNetwork, out.Kind)
+		assert.True(t, out.Resumable, "no semantic output committed → transparent retry is safe")
+		assert.Equal(t, 0, out.ChunkCount)
+	})
+}
+
 func TestResponsesStreamSSE_Events(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -161,7 +244,7 @@ func TestResponsesStreamSSE_Events(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	capture := audit.NewStreamCapture()
-	StreamResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", capture)
+	StreamResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "test-req-id-123456789012345678", capture)
 
 	body := rec.Body.String()
 	for _, ev := range []string{
@@ -189,11 +272,75 @@ func TestResponsesStreamSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	}
 	rec := httptest.NewRecorder()
 
-	out := StreamResponsesSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil)
+	out := StreamResponsesSSE(context.Background(), rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil)
 
 	assert.False(t, out.Interrupted)
 	assert.Contains(t, rec.Body.String(), `"delta":"planning"`)
 	assert.Contains(t, rec.Body.String(), "event: response.completed")
+}
+
+// TestResponsesStreamSSE_FirstByteTimeoutResumable pins the first-byte-timeout
+// Resumable fix: the branch previously left outcome.Resumable at its zero
+// value (false), so an uncommitted attempt would NOT transparently fail over
+// — inconsistent with the eof_without_done / stream_timeout branches and the
+// chat-path bridge. An uncommitted first-byte timeout must stay resumable and,
+// in deferred (buffered) mode, must not render a terminal error frame to the
+// client (mirrors the chat-bridge test
+// TestBridgeFirstByteTimeoutNoTerminalFrameBeforeCommit).
+func TestResponsesStreamSSE_FirstByteTimeoutResumable(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", "1")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+
+	resp, err := http.Post(upstream.URL+"/v1/chat/completions", "application/json",
+		strings.NewReader(`{"model":"gpt-4o","stream":true}`))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	t.Run("legacy path stays resumable", func(t *testing.T) {
+		restore := setAttemptGateForTest(false, GateModeImmediate)
+		defer restore()
+		rec := httptest.NewRecorder()
+		out := StreamResponsesSSE(context.Background(), rec, resp, "gpt-4o", "gpt-4o", "req-fbt-legacy", nil)
+		assert.True(t, out.Interrupted)
+		assert.Equal(t, "first_byte_timeout", out.Reason)
+		assert.True(t, out.Resumable, "first-byte timeout before any semantic output must be transparently resumable")
+	})
+
+	t.Run("deferred mode resumable and no terminal frame", func(t *testing.T) {
+		upstream2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done()
+		}))
+		defer upstream2.Close()
+		resp2, err := http.Post(upstream2.URL+"/v1/chat/completions", "application/json",
+			strings.NewReader(`{"model":"gpt-4o","stream":true}`))
+		require.NoError(t, err)
+		defer func() { _ = resp2.Body.Close() }()
+
+		restore := setAttemptGateForTest(true, GateModeBuffered)
+		defer restore()
+		rec := httptest.NewRecorder()
+		out := StreamResponsesSSE(context.Background(), rec, resp2, "gpt-4o", "gpt-4o", "req-fbt-deferred", nil)
+
+		assert.True(t, out.Interrupted)
+		assert.Equal(t, "first_byte_timeout", out.Reason)
+		assert.True(t, out.Resumable, "first-byte timeout before any semantic output must be transparently resumable")
+		if strings.Contains(rec.Body.String(), "first_byte_timeout") || strings.Contains(rec.Body.String(), "\"error\"") {
+			t.Fatalf("deferred mode must not render a terminal frame on an uncommitted attempt, got:\n%s", rec.Body.String())
+		}
+	})
 }
 
 func TestWriteResponsesError(t *testing.T) {

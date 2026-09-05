@@ -46,6 +46,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { req } from '@/api/_core'
+import { confirmDialog } from '../../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const status = ref<any>({})
 const task = ref<any>(null)
@@ -63,7 +67,7 @@ async function control(action: 'enter' | 'exit') {
   const text = action === 'enter'
     ? '确认进入降级写入？LLM 服务继续运行，但会话和日志将写入备份文件。'
     : '确认恢复数据库写入？请确保数据库已稳定可用。'
-  if (!window.confirm(text)) return
+  if (!(await confirmDialog(text))) return
   busy.value = true
   try {
     await req('POST', '/api/admin/data-lifecycle/degradation/control', { action })
@@ -72,7 +76,7 @@ async function control(action: 'enter' | 'exit') {
 }
 
 async function recover(filename: string, archive: boolean) {
-  if (!window.confirm(archive ? `确认回放并归档 ${filename}？` : `确认回放 ${filename}？`)) return
+  if (!(await confirmDialog(t(archive ? 'dataLifecycle.confirmReplayArchive' : 'dataLifecycle.confirmReplay', { filename })))) return
   busy.value = true
   try {
     const res = await req<any>('POST', '/api/admin/data-lifecycle/degradation/recover', { filename, archive })
@@ -127,8 +131,8 @@ p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .grid strong { color: var(--text); font-size: 16px; }
 .actions, .file-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn { border: 1px solid var(--border); border-radius: 6px; padding: 7px 12px; color: var(--text); background: var(--bg-subtle); cursor: pointer; }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-.btn-danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-primary); }
+.btn-danger { background: var(--danger); border-color: var(--danger); color: var(--on-primary); }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-sm { padding: 5px 9px; font-size: 12px; }
 .hint, .empty { color: var(--muted); margin-bottom: 12px; }

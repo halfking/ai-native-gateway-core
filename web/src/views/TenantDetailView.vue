@@ -713,7 +713,7 @@ watch(() => route.params.tenantId, loadTenant)
   cursor: pointer;
   font-size: 13px;
 }
-.btn-back:hover { background: rgba(255,255,255,.05); }
+.btn-back:hover { background: color-mix(in srgb, var(--on-primary) 5%, transparent); }
 .header-main { flex: 1; }
 .header-main h1 {
   font-size: 22px;
@@ -792,11 +792,11 @@ watch(() => route.params.tenantId, loadTenant)
 }
 
 .badge-purple { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-red { background: rgba(239,68,68,.15); color: #f87171; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-green { background: rgba(34,197,94,.15); color: #4ade80; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-yellow { background: rgba(234,179,8,.15); color: #fbbf24; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
-.badge-gray { background: rgba(156,163,175,.15); color: #9ca3af; padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-blue { background: var(--info-bg); color: var(--accent); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-red { background: var(--danger-bg); color: var(--danger); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-green { background: var(--success-bg); color: var(--success); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-yellow { background: var(--warning-bg); color: var(--warning); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
+.badge-gray { background: var(--neutral-bg); color: var(--muted); padding: 2px 8px; border-radius: 8px; font-size: 11px; }
 
 .mono { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; }
 
@@ -828,7 +828,7 @@ watch(() => route.params.tenantId, loadTenant)
 .billing-table { min-width: 1100px; }
 .billing-table th, .billing-table td { white-space: nowrap; }
 .table-empty { text-align: center; padding: 40px; color: var(--muted); }
-.negative-value { color: #f87171; }
+.negative-value { color: var(--danger); }
 .stats-tables h3 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); }
 .adjust-form {
   margin-top: 20px;
@@ -859,7 +859,7 @@ watch(() => route.params.tenantId, loadTenant)
 }
 .loading { text-align: center; padding: 40px; color: var(--muted); }
 .alert { padding: 8px 12px; border-radius: 4px; font-size: 13px; }
-.alert-danger { background: rgba(239,68,68,.1); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+.alert-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }
 
 .maas-shortcuts {
   margin-top: 20px;

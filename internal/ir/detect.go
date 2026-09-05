@@ -12,6 +12,7 @@ import (
 //   - ProtocolOpenAIChat        ("openai-chat")        — Chat Completions API
 //   - ProtocolAnthropicMessages ("anthropic-messages") — Anthropic Messages API
 //   - ProtocolGeminiGenerate    ("gemini-generate")    — Gemini generateContent API
+//   - ProtocolOpenAIResponses   ("openai-responses")   — OpenAI Responses API
 //
 // audit-gemini-detect (2026-07-13): Adds Gemini detection alongside the
 // existing OpenAI/Anthropic scoring. Gemini-exclusive fields (contents,
@@ -24,9 +25,10 @@ import (
 //     OpenAI/Anthropic use `messages`).
 //  2. If `systemInstruction` is present → Gemini (Anthropic uses `system`).
 //  3. If ≥2 Gemini-exclusive fields appear → Gemini.
-//  4. If ≥2 Anthropic-exclusive fields appear → Anthropic.
-//  5. Body-shape scores (messages[] vs system/thinking/etc.) determine the winner.
-//  6. Model name hint resolves truly empty bodies.
+//  4. If a Responses-exclusive field appears → OpenAI Responses.
+//  5. If ≥2 Anthropic-exclusive fields appear → Anthropic.
+//  6. Body-shape scores (messages[] vs system/thinking/etc.) determine the winner.
+//  7. Model name hint resolves truly empty bodies.
 func DetectProtocol(body []byte) (protocol string, confidence float64, err error) {
 	if len(body) == 0 {
 		return "unknown", 0.0, fmt.Errorf("empty body")
@@ -82,6 +84,18 @@ func DetectProtocol(body []byte) (protocol string, confidence float64, err error
 	// Strong Gemini signal: 2+ exclusive fields
 	if geminiExclusive >= 2 {
 		return ProtocolGeminiGenerate, maxF(0.75+float64(geminiExclusive-2)*0.05, 0.75), nil
+	}
+
+	// Responses-exclusive fields must be handled before the Anthropic/OpenAI
+	// heuristic: Responses clients use input[] instead of messages[], and their
+	// body otherwise has several fields shared with Chat Completions.
+	for _, key := range []string{
+		"input", "instructions", "previous_response_id", "max_output_tokens",
+		"truncation", "prompt_cache_key", "safety_identifier",
+	} {
+		if _, ok := keys[key]; ok {
+			return ProtocolOpenAIResponses, 0.85, nil
+		}
 	}
 
 	// ── Anthropic-exclusive field detection ────────────────────────
@@ -309,6 +323,7 @@ func indexString(s, substr string) int {
 // Supported URL hints:
 //   - /v1/chat/completions              → OpenAI Chat Completions
 //   - /v1/messages                      → Anthropic Messages
+//   - /v1/responses                     → OpenAI Responses
 //   - /v1beta/models/{m}:generateContent → Gemini generateContent
 //   - /v1/models/{m}:generateContent   → Gemini generateContent
 //   - :streamGenerateContent            → Gemini streaming endpoint
@@ -319,7 +334,12 @@ func indexString(s, substr string) int {
 func DetectProtocolByURL(body []byte, urlPath string) (protocol string, confidence float64, err error) {
 	proto, conf, err := DetectProtocol(body)
 	if err != nil {
-		return "unknown", 0.0, err
+		// Metadata extraction can run before the request body is buffered.
+		// In that case the URL remains authoritative for known gateway routes.
+		if len(body) != 0 {
+			return "unknown", 0.0, err
+		}
+		proto, conf = "unknown", 0
 	}
 
 	// High-confidence body detection is authoritative
@@ -334,6 +354,8 @@ func DetectProtocolByURL(body []byte, urlPath string) (protocol string, confiden
 			return ProtocolOpenAIChat, 0.7, nil
 		case containsBody(urlPath, "/v1/messages"):
 			return ProtocolAnthropicMessages, 0.7, nil
+		case containsBody(urlPath, "/v1/responses"):
+			return ProtocolOpenAIResponses, 0.7, nil
 		case containsBody(urlPath, ":generateContent"),
 			containsBody(urlPath, ":streamGenerateContent"):
 			return ProtocolGeminiGenerate, 0.7, nil

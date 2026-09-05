@@ -20,14 +20,17 @@ package main
 //     -tenant-id "tenant_xxx" \
 //     -start-date "2026-07-01" \
 //     -end-date "2026-07-17" \
-//     [-max-sessions 1000] [-settle-window 10m] \
+//     [-max-sessions 120] [-settle-window 30m] \
+
 //     [-format json|text] [-verbose]
 //
 // Output:
 //   - JSON format (default): machine-readable, suitable for automation
 //   - Text format: human-readable with status indicators
-//   - Exit code 0 if all checks pass or warnings only
-//   - Exit code 1 if any ERROR-level issues found
+//   - Exit code 0 only when at least 100 settled candidates load and validate
+//     without loader errors or skipped sessions (warnings are allowed)
+//   - Exit code 1 when the parity gate is not satisfied
+//   - -repair/-apply is a separate write-capable repair flow and is never parity evidence
 
 import (
 	"context"
@@ -49,8 +52,8 @@ func main() {
 	sessionID := flag.String("session-id", "", "Specific session ID to validate (single-session mode)")
 	startDate := flag.String("start-date", "", "Start date YYYY-MM-DD (batch mode)")
 	endDate := flag.String("end-date", "", "End date YYYY-MM-DD (batch mode)")
-	maxSessions := flag.Int("max-sessions", 1000, "Maximum sessions to validate in batch mode")
-	settleWindow := flag.Duration("settle-window", 10*time.Minute, "Exclude sessions updated within this window (batch mode)")
+	maxSessions := flag.Int("max-sessions", 120, "Maximum sessions to inspect in batch mode; at least 100 settled sessions must pass")
+	settleWindow := flag.Duration("settle-window", 30*time.Minute, "Exclude sessions updated within this window (batch mode)")
 	format := flag.String("format", "json", "Output format: json or text")
 	verbose := flag.Bool("verbose", false, "Show detailed per-session output during batch validation")
 	repair := flag.Bool("repair", false, "Enable repair mode (rebuild V2 from V1)")
@@ -212,61 +215,62 @@ func validateBatch(
 		log.Fatalf("Failed to load session IDs: %v", err)
 	}
 
+	minimumSessions := 100
+	batchSummary := BatchSummary{Candidates: len(sessionIDs)}
 	if len(sessionIDs) == 0 {
-		log.Println("No sessions found in the specified range")
-		return 0
+		log.Println("No settled sessions found in the specified range")
+	} else {
+		log.Printf("Found %d settled sessions to validate", len(sessionIDs))
 	}
 
-	log.Printf("Found %d sessions to validate", len(sessionIDs))
-
-	// Validate each session
+	// Validate each candidate. A failed loader is a gate failure, not a skipped
+	// success, and is retained in the machine-readable batch summary.
 	var sessionReports []SessionReport
 	for i, sessionID := range sessionIDs {
 		if verbose {
 			log.Printf("[%d/%d] Validating session %s...", i+1, len(sessionIDs), sessionID)
 		}
 
-		// Load data
 		v1Turns, err := loader.LoadV1Turns(ctx, tenantID, sessionID)
 		if err != nil {
-			log.Printf("Warning: failed to load V1 turns for %s: %v", sessionID, err)
+			batchSummary.LoaderErrors++
+			log.Printf("Error: failed to load V1 turns for %s: %v", sessionID, err)
 			continue
 		}
-
 		v2Turns, err := loader.LoadV2Turns(ctx, tenantID, sessionID)
 		if err != nil {
-			log.Printf("Warning: failed to load V2 turns for %s: %v", sessionID, err)
+			batchSummary.LoaderErrors++
+			log.Printf("Error: failed to load V2 turns for %s: %v", sessionID, err)
 			continue
 		}
-
 		v2Bodies, err := loader.LoadV2Bodies(ctx, tenantID, sessionID)
 		if err != nil {
-			log.Printf("Warning: failed to load V2 bodies for %s: %v", sessionID, err)
+			batchSummary.LoaderErrors++
+			log.Printf("Error: failed to load V2 bodies for %s: %v", sessionID, err)
 			continue
 		}
-
 		v2Session, err := loader.LoadV2Session(ctx, tenantID, sessionID)
 		if err != nil {
-			log.Printf("Warning: failed to load V2 session for %s: %v", sessionID, err)
+			batchSummary.LoaderErrors++
+			log.Printf("Error: failed to load V2 session for %s: %v", sessionID, err)
 			continue
 		}
 
-		// Run validation
 		validator := NewSessionValidator(tenantID, sessionID)
 		checks := validator.ValidateSession(v1Turns, v2Turns, v2Bodies, v2Session)
 		reconResults := reconstructor.ValidateReconstruction(v1Turns, v2Turns, v2Bodies)
-
-		// Generate session report
 		report := reportGen.GenerateSessionReport(tenantID, sessionID, v1Turns, v2Turns, checks, reconResults)
 		sessionReports = append(sessionReports, *report)
-
 		if verbose && report.Status != "ok" {
 			log.Printf("  Status: %s (%d differences)", report.Status, len(report.Differences))
 		}
 	}
 
-	// Generate batch report
 	batchReport := reportGen.GenerateBatchReport(tenantID, startDate, endDate, settleWindow, sessionReports)
+	batchReport.Summary.Candidates = batchSummary.Candidates
+	batchReport.Summary.LoaderErrors = batchSummary.LoaderErrors
+	batchReport.Summary.Skipped = batchSummary.Skipped
+	batchReport.GatePassed = BatchGatePassed(batchReport.Summary, minimumSessions)
 
 	// Output
 	if format == "json" {
@@ -280,7 +284,7 @@ func validateBatch(
 	}
 
 	// Determine exit code
-	if batchReport.Summary.SessionsError > 0 {
+	if !batchReport.GatePassed {
 		return 1
 	}
 	return 0

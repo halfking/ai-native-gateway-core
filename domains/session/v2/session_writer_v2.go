@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/sessiondigest"
 )
 
 const (
@@ -71,11 +73,16 @@ type SessionWriterV2 struct {
 // in tests) instead of NewSessionWriterV2. Idempotent.
 func (w *SessionWriterV2) ensureLifecycle() {
 	w.lifecycleInit.Do(func() {
-		if w.lifecycleCtx == nil {
-			ctx, cancel := context.WithCancel(context.Background())
-			w.lifecycleCtx = ctx
-			w.lifecycleCancel = cancel
+		if w.lifecycleCtx != nil && w.lifecycleCancel != nil {
+			return
 		}
+		parent := w.lifecycleCtx
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithCancel(parent)
+		w.lifecycleCtx = ctx
+		w.lifecycleCancel = cancel
 	})
 }
 
@@ -129,10 +136,15 @@ func (w *SessionWriterV2) Stop(ctx context.Context) error {
 // to avoid circular dependencies. In production, we'd use a shared interface.
 type ProcessedRequest struct {
 	// Session context
-	SessionID string
-	TenantID  string
-	RequestID string
-	Timestamp time.Time
+	SessionID       string
+	TenantID        string
+	RequestID       string
+	Timestamp       time.Time
+	ProjectID       string
+	Namespace       string
+	ParentRequestID string
+	TaskType        string
+	ClientType      string // IDE/client type extracted from headers or system prompt
 
 	// Request content
 	RequestBody  []Message // Full request body from client
@@ -158,6 +170,14 @@ type ProcessedRequest struct {
 	ClientModel  string
 	ProviderID   string
 	CredentialID string
+
+	// Quality override for session_turns.quality ('verified' | 'inferred' |
+	// 'partial' | 'rejected'). Empty means deriveTurnQuality classifies the
+	// turn from Success/ErrorKind/ResponseBody. Reserved for callers that
+	// hold richer signals than the writer (e.g. the telemetry quality
+	// processor behind 017_quality_fix_mode.sql); the sessionv2mirror bridge
+	// does not populate it yet.
+	Quality string
 
 	// Usage & cost
 	PromptTokens     int
@@ -284,6 +304,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 
 	// 3. Build the turn record and bodies record (computed before the insert so
 	// marshalling errors fail fast while the lock remains held).
+	digestMeta := map[string]any{
+		"prompt_tokens": req.PromptTokens, "completion_tokens": req.CompletionTokens,
+		"cost_usd": req.CostUSD, "latency_ms": int(req.CompletedAt.Sub(req.StartedAt).Milliseconds()),
+		"status_code": req.StatusCode, "success": req.Success, "error_kind": req.ErrorKind,
+		"cache_read_tokens": req.CacheReadTokens, "cache_write_tokens": req.CacheWriteTokens,
+	}
+	digestGovernance := map[string]any{
+		"injection_verdict": req.InjectionVerdict, "output_verdict": req.OutputVerdict,
+		"compression_applied": req.CompressionApplied, "compression_tokens_saved": req.TokensSaved,
+	}
+	digestJSON, err := sessiondigest.Marshal(sessiondigest.Build(requestDelta, req.ResponseBody, digestMeta, digestGovernance, req.Timestamp))
+	if err != nil {
+		return fmt.Errorf("marshal turn digest: %w", err)
+	}
 
 	requestAttachments := extractRequestAttachments(req)
 	responseAttachments := extractResponseAttachments(req)
@@ -297,11 +331,15 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	}
 
 	turnRec := TurnRecord{
-		SessionID:  req.SessionID,
-		TenantID:   req.TenantID,
-		RequestID:  req.RequestID,
-		Ts:         req.Timestamp,
-		SubmitMode: submitMode,
+		SessionID:       req.SessionID,
+		TenantID:        req.TenantID,
+		RequestID:       req.RequestID,
+		Ts:              req.Timestamp,
+		ProjectID:       req.ProjectID,
+		Namespace:       req.Namespace,
+		ParentRequestID: req.ParentRequestID,
+		TaskType:        req.TaskType,
+		SubmitMode:      submitMode,
 
 		CompressionApplied:  req.CompressionApplied,
 		CompressionStrategy: req.CompressionStrategy,
@@ -342,7 +380,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		T9ResponseEndAt:   req.T9ResponseEndAt,
 
 		SourceKind: "live",
-		Quality:    "verified",
+		// Quality is derived from what this turn actually carries, not
+		// hardcoded: the CHECK constraint on session_turns.quality
+		// ('verified'|'inferred'|'partial'|'rejected') is only useful to
+		// operators if it reflects the row's content. Derivation rules
+		// (deriveTurnQuality):
+		//   rejected — terminal failure (Success=false / ErrorKind set)
+		//   partial  — success but zero captured response messages
+		//   verified — success with a non-empty response body
+		// Callers that DID capture richer signals (the telemetry entry
+		// carries QualityFlags/QualityScore from 017_quality_fix_mode.sql)
+		// cannot forward them today because the sessionv2mirror bridge
+		// does not copy them onto ProcessedRequest; when that bridge is
+		// extended, set req.Quality explicitly and it wins over derivation.
+		Quality: deriveTurnQuality(req),
 
 		// Attachment metadata
 		AttachmentCount:      attachmentCount,
@@ -353,8 +404,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		// previews from the new messages in this turn so the admin turns-list
 		// UI shows something useful without waiting for the async LLM
 		// summarizer. summarizeMessages already produces a 200-char cap.
-		Title:   summarizeMessages(requestDelta),
-		Summary: summarizeMessages(req.ResponseBody),
+		Title:      summarizeMessages(requestDelta),
+		Summary:    summarizeMessages(req.ResponseBody),
+		DigestJSON: digestJSON,
 	}
 
 	// 4. Atomic turn + bodies write (spec §6.2). The transaction and lock were
@@ -380,6 +432,32 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	}
 	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
+	}
+
+	// audit-data-closure-C (2026-08-31): enqueue the aggregate snapshot update
+	// in the SAME transaction as the turn + bodies write so its durability
+	// matches the source-of-truth. The reaper (session_aggregate_outbox_reaper)
+	// drains the outbox with FOR UPDATE SKIP LOCKED and exponential backoff,
+	// closing the loop the original 3-attempt in-memory retry could not
+	// guarantee. partition_date uses the request's calendar date (UTC) so the
+	// unique key matches the session_turns partition the row will reconcile.
+	outboxUpdate := SessionUpdate{
+		SessionID:           req.SessionID,
+		TenantID:            req.TenantID,
+		RequestID:           req.RequestID,
+		LastTurnNo:          turnNo,
+		LastRequestSummary:  summarizeMessages(requestDelta),
+		LastResponseSummary: summarizeMessages(req.ResponseBody),
+		LastModel:           req.ClientModel,
+		LastProvider:        req.ProviderID,
+		ClientType:          req.ClientType,
+		TurnIncrement:       1,
+		TokensIncrement:     req.PromptTokens + req.CompletionTokens,
+		CostIncrement:       req.CostUSD,
+		UpdatedAt:           req.Timestamp,
+	}
+	if err := EnqueueSessionAggregateOutbox(lockCtx, tx, outboxUpdate, calendarDate(req.Timestamp)); err != nil {
+		return fmt.Errorf("enqueue session aggregate outbox: %w", err)
 	}
 
 	if err := tx.Commit(lockCtx); err != nil {
@@ -424,8 +502,38 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// (spec §6.3). The goroutine is tracked by aggWg so Stop can await it,
 	// and bound to lifecycleCtx so a blocked aggregate is cancelled on
 	// shutdown instead of leaking.
+	//
+	// audit-data-closure-C (2026-08-31): a durable copy of this update is
+	// already enqueued in session_aggregate_outbox (see step above) inside
+	// the same transaction as the turn+bodies write. The reaper guarantees
+	// eventual delivery; this in-process call is the fast path so the
+	// snapshot is current within the same request lifecycle whenever the DB
+	// cooperates. On failure the outbox row is the fallback, so this
+	// goroutine no longer needs to be the only line of defense.
 	if w.sessionAggregator != nil {
 		w.ensureLifecycle()
+		// Snapshot every caller-owned field before launching the asynchronous
+		// aggregate update. The telemetry pipeline may reuse or mutate req and
+		// its message slices as soon as Write returns; the goroutine must only
+		// capture this immutable value.
+		update := SessionUpdate{
+			SessionID: req.SessionID,
+			TenantID:  req.TenantID,
+			// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
+			// the aggregator can claim this turn exactly once and never
+			// double-accumulate token/turn/cost on a replay.
+			RequestID:           req.RequestID,
+			LastTurnNo:          turnNo,
+			LastRequestSummary:  summarizeMessages(requestDelta),
+			LastResponseSummary: summarizeMessages(req.ResponseBody),
+			LastModel:           req.ClientModel,
+			LastProvider:        req.ProviderID,
+			ClientType:          req.ClientType,
+			TurnIncrement:       1,
+			TokensIncrement:     req.PromptTokens + req.CompletionTokens,
+			CostIncrement:       req.CostUSD,
+			UpdatedAt:           req.Timestamp,
+		}
 		w.lifecycleMu.Lock()
 		if w.stopped {
 			w.lifecycleMu.Unlock()
@@ -433,37 +541,20 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		}
 		w.aggWg.Add(1)
 		w.lifecycleMu.Unlock()
-		go func() {
+		go func(update SessionUpdate) {
 			defer w.aggWg.Done()
 			// lifecycleCtx gates the goroutine on shutdown. A small timeout
 			// bounds it so a slow DB can't stall Stop indefinitely even if
 			// the ctx isn't yet cancelled.
 			aggCtx, cancel := context.WithTimeout(w.lifecycleCtx, 30*time.Second)
 			defer cancel()
-			update := SessionUpdate{
-				SessionID: req.SessionID,
-				TenantID:  req.TenantID,
-				// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
-				// the aggregator can claim this turn exactly once and never
-				// double-accumulate token/turn/cost on a replay.
-				RequestID:           req.RequestID,
-				LastTurnNo:          turnNo,
-				LastRequestSummary:  summarizeMessages(requestDelta),
-				LastResponseSummary: summarizeMessages(req.ResponseBody),
-				LastModel:           req.ClientModel,
-				LastProvider:        req.ProviderID,
-				TurnIncrement:       1,
-				TokensIncrement:     req.PromptTokens + req.CompletionTokens,
-				CostIncrement:       req.CostUSD,
-				UpdatedAt:           req.Timestamp,
-			}
 			if err := w.updateSessionAggregate(aggCtx, update); err != nil {
 				slog.Error("update session snapshot failed after retries",
-					"session_id", req.SessionID,
-					"request_id", req.RequestID,
+					"session_id", update.SessionID,
+					"request_id", update.RequestID,
 					"error", err)
 			}
-		}()
+		}(update)
 	}
 
 	return nil
@@ -537,13 +628,53 @@ func extractRequestDelta(req *ProcessedRequest, submitMode string) []Message {
 		}
 	}
 
-	// Fallback: if delta extraction found nothing, return full body
-	// (This can happen if client sent identical history but we don't detect it)
+	// Fallback: if delta extraction found nothing new, the previous turn's
+	// outbound already covers the entire client history. Returning the full
+	// body here is deliberate: every reader (turn_reader.LoadChain,
+	// outbound_builder.BuildFromDeltas, sessionsummary message_source_v2)
+	// ACCUMULATES request_delta across turns, so persisting an empty delta
+	// would silently drop this turn's user input from the reconstructed
+	// conversation. Full-body fallback re-sends messages the reader may
+	// already have, which the dedup-tolerant assembly paths handle, but never
+	// under-reports. (2026-09 fix: the previous code returned an empty slice
+	// whenever the client re-sent an identical history, e.g. a bare "retry"
+	// with no new user message or an idempotent re-submit.)
 	if len(delta) == 0 {
 		return req.RequestBody
 	}
 
 	return delta
+}
+
+// deriveTurnQuality classifies a turn for the session_turns.quality column
+// (CHECK constraint: 'verified' | 'inferred' | 'partial' | 'rejected',
+// migration 526). Values must reflect the row's content rather than a
+// constant, otherwise the column is dead weight for operators:
+//
+//	rejected — the turn records a terminal failure (Success=false, or an
+//	           ErrorKind survived onto the entry).
+//	partial  — the turn succeeded but we captured no response messages, so
+//	           the bodies row cannot reconstruct what the model said.
+//	verified — the turn succeeded and carries a response body.
+//
+// An explicit req.Quality (when a caller plumbs one through the mirror
+// bridge) always wins, so a future caller with richer signals (telemetry
+// QualityFlags/QualityScore from 017_quality_fix_mode.sql) can override
+// without touching this function.
+func deriveTurnQuality(req *ProcessedRequest) string {
+	if req == nil {
+		return "verified"
+	}
+	if req.Quality != "" {
+		return req.Quality
+	}
+	if !req.Success || req.ErrorKind != "" {
+		return "rejected"
+	}
+	if len(req.ResponseBody) == 0 {
+		return "partial"
+	}
+	return "verified"
 }
 
 // buildMessageSet creates a set of message keys for fast lookup

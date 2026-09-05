@@ -10,6 +10,7 @@ func TestSessionIntentCache_GetPut(t *testing.T) {
 	c := NewSessionIntentCache(1 * time.Minute)
 	c.Put("sess-1", CachedIntent{
 		TaskType:     TaskCode,
+		WorkType:     "code_gen",
 		ChosenModel:  "claude-sonnet-4.5",
 		CredentialID: 12,
 		Profile:      ProfileSmart,
@@ -22,6 +23,9 @@ func TestSessionIntentCache_GetPut(t *testing.T) {
 	}
 	if got.TaskType != TaskCode {
 		t.Fatalf("task: got %s want %s", got.TaskType, TaskCode)
+	}
+	if got.WorkType != "code_gen" {
+		t.Fatalf("work type: got %s", got.WorkType)
 	}
 	if got.ChosenModel != "claude-sonnet-4.5" {
 		t.Fatalf("model: got %s", got.ChosenModel)

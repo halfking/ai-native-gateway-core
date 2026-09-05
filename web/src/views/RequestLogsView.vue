@@ -1,47 +1,34 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
 import { localeRef } from '../i18n'
-import { useRoute } from 'vue-router'
+import { fmtDateCompact } from '../i18n/useFormat'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
   getRequestLogs,
-  getRequestLogDetail,
-  attachmentURL,
-  getSessionSummary,
-  sessionSummaryToMemora,
+  getBodyCacheStats,
   getKeys,
   type RequestLogRow,
-  type RequestLogDetail,
-  type AttachmentInfo,
+  type BodyCacheStats,
   type ApiKey,
   type RequestLogsResponse,
   type RequestLogsAggregate,
-  type SessionSummaryResponse,
-  type SessionSummaryToMemoraResponse,
 } from '../api'
 import { getCredentialMonitorSummary } from '../api/credential-monitor'
 import { getProviders, getProviderCredentials } from '../api/providers'
 import ModelPicker from '../components/ModelPicker.vue'
-import RequestTracePanel from '../components/RequestTracePanel.vue'
+import RequestLogDrawer from '../components/RequestLogDrawer.vue'
+import SessionSummaryDrawer from '../components/SessionSummaryDrawer.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
-// 2026-08-06: 会话标题 + 标签编辑面板（详情抽屉内联）。
-import {
-  updateSessionTitle,
-  deleteSessionTitle,
-  summarizeSessionTitle,
-} from '../api/memora'
-import {
-  getSessionTags,
-  addSessionTag,
-  updateSessionTag,
-  deleteSessionTag,
-  type SessionTag,
-} from '../api/sessionAnalytics'
+import { openRequestDetailPage } from '../utils/openRequestDetailPage'
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+// 2026-08-17: 详情 body 缓存统计（/api/admin/logs/body-cache-stats），
+// super admin 可观测条用；非 super admin 或端点失败时保持 null 不渲染。
+const bodyCache = ref<BodyCacheStats | null>(null)
 const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
 const modelFilter = ref('')
@@ -59,12 +46,7 @@ const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
 const gwSessionFilter = ref('')
 const gwTaskFilter = ref('')
-const summaryLoading = ref(false)
-const summaryError = ref<string | null>(null)
-const summaryResult = ref<SessionSummaryResponse | null>(null)
-const memoraLoading = ref(false)
-const memoraError = ref<string | null>(null)
-const memoraResult = ref<SessionSummaryToMemoraResponse['memora'] | null>(null)
+const summaryDrawerOpen = ref(false)
 
 const page = ref(1)
 const pageSize = ref(50)
@@ -107,8 +89,6 @@ watch(autoRefresh, (enabled) => {
 
 onBeforeUnmount(() => {
   stopAutoRefresh()
-  // 2026-07-02: 全局 ESC 关闭 lightbox 监听清理（参考文档 §5.2）。
-  window.removeEventListener('keydown', handleKeydown)
 })
 
 const showCompressionGuide = ref(false)
@@ -135,41 +115,8 @@ const compressionStats = computed(() => {
   }
 })
 
-const detailVisible = ref(false)
-const detailLoading = ref(false)
-const detail = ref<RequestLogDetail | null>(null)
-const detailTab = ref<'request' | 'outbound' | 'response' | 'attachments'>('request')
-
-// 2026-07-17: 流程详情直接使用 modal，避免导航到已删除的独立 trace 路由。
-const traceRequestId = ref<string | null>(null)
-
-// 2026-07-01 (migration 325): 附件查看状态。
-// detail.attachments 由详情接口直接返回（无需额外请求）；attachmentsLightbox
-// 控制大图预览遮罩，attachmentsLightboxSrc 为当前大图的 URL。
-const attachmentsLightbox = ref(false)
-const attachmentsLightboxSrc = ref('')
-
-// 2026-08-06: 会话标题 / 标签 内联编辑状态。
-// 设计：进入详情后异步加载 tags；title 直接从 detail.session_title 读取，
-// 避免冗余 GET。编辑态用 editingTitle flag + draftTitle 缓冲，提交时 PUT。
-const sessionTags = ref<SessionTag[]>([])
-const sessionTagsLoading = ref(false)
-const sessionTagsError = ref<string | null>(null)
-const editingTitle = ref(false)
-const draftTitle = ref('')
-const titleSaving = ref(false)
-const titleError = ref<string | null>(null)
-const regeneratingTitle = ref(false)
-// 新增 tag 的临时草稿；为空表示未在新增态。
-const addingTag = ref(false)
-const newTagKey = ref('')
-const newTagValue = ref('')
-const newTagSaving = ref(false)
-// 正在编辑的 tag id (key) + 草稿。
-const editingTagId = ref<number | null>(null)
-const editTagDraftKey = ref('')
-const editTagDraftValue = ref('')
-const editTagSaving = ref(false)
+const activeRequestId = ref<string | null>(null)
+const openDetailWithTrace = ref(false)
 
 // 2026-07-02: 接入 vue-i18n，附件相关文案走 t() 键
 // （键定义在 web/src/locales/*.ts，对齐参考文档 §6）。
@@ -446,7 +393,12 @@ function timeRange() {
 }
 
 function onModelFilterChange(name: string | string[]) {
-  modelFilter.value = typeof name === 'string' ? name.trim() : ''
+  // 选择模型后立即重发请求。ModelPicker 是单选交互（用户点完即期望生效），
+  // 不像 provider/credential 下拉那样依赖手动点击「查询」按钮。
+  // 注：v-model 已经在 @update:model-value 之前把 modelFilter.value 更新好了，
+  // 此处不要做 "next === modelFilter.value" 的短路判断 —— 那样会导致
+  // 所有选择（包括新选模型）都被跳过。
+  resetPageAndLoad()
 }
 
 const ERROR_KIND_LABELS: Record<string, string> = {
@@ -504,24 +456,6 @@ const FAILURE_DETAIL_LABELS: Record<string, string> = {
   body_too_large: t('requests.gwErrorKind.body_too_large'),
   eof_mid_tool_call: t('requests.gwErrorKind.eof_mid_tool_call'),
   first_byte_timeout: t('requests.gwErrorKind.first_byte_timeout'),
-}
-
-// 2026-06-19 T-NEW-7: labels for the SOLE home of the upstream
-// finish_reason (stop, tool_calls, length, end_turn, …). These are NOT
-// failures; the UI surfaces them as informational metadata in the
-// request detail panel, not as a t('requests.failureDetail') pill.
-const UPSTREAM_FINISH_REASON_LABELS: Record<string, string> = {
-  stop: t('requests.stop'),
-  tool_calls: t('requests.tool_calls'),
-  function_call: t('requests.function_call'),
-  length: t('requests.length'),
-  end_turn: t('requests.end_turn'),
-  max_tokens: t('requests.max_tokens'),
-}
-
-function upstreamFinishReasonLabel(v: string | null | undefined): string {
-  if (!v) return ''
-  return UPSTREAM_FINISH_REASON_LABELS[v] ?? v
 }
 
 function statusLabel(row: RequestLogRow): string {
@@ -727,79 +661,29 @@ function widenRangeForTrace() {
 function clearTraceFilter() {
   gwTaskFilter.value = ''
   gwSessionFilter.value = ''
-  summaryError.value = null
-  summaryResult.value = null
-  memoraError.value = null
-  memoraResult.value = null
   resetPageAndLoad()
 }
 
 const canSummarizeSession = computed(() => gwSessionFilter.value.trim().length > 0)
 
-async function generateSessionSummary() {
+const summaryDrawerTitle = computed(() => {
   const sid = gwSessionFilter.value.trim()
-  if (!sid) return
-  summaryLoading.value = true
-  summaryError.value = null
-  summaryResult.value = null
-  try {
-    summaryResult.value = await getSessionSummary(sid)
-  } catch (e: unknown) {
-    summaryError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    summaryLoading.value = false
-  }
+  if (!sid) return null
+  const row = rows.value.find(r => r.gw_session_id === sid && r.session_title)
+  return row?.session_title ?? null
+})
+
+function openSessionSummaryDrawer() {
+  if (!canSummarizeSession.value) return
+  summaryDrawerOpen.value = true
 }
 
-function summaryExportContent(data: SessionSummaryResponse): string {
-  const lines: string[] = []
-  lines.push(t('requests.title'))
-  lines.push('')
-  lines.push(`- Session ID: ${data.meta.session_id}`)
-  lines.push(`- 时间范围: ${fmtTs(data.meta.data_from)} ~ ${fmtTs(data.meta.data_to)}`)
-  lines.push(`- 日志条数: ${data.meta.log_count}`)
-  lines.push(`- 生成时间: ${fmtTs(data.meta.generated_at)}`)
-  lines.push('')
-  lines.push(t('requests.summaryHeading'))
-  lines.push(data.summary)
-  if (data.key_points && data.key_points.length) {
-    lines.push('')
-    lines.push(t('requests.keyPointsHeading'))
-    for (const p of data.key_points) lines.push(`- ${p}`)
-  }
-  return lines.join('\n')
+function onDrawerFilterSession(sessionId: string) {
+  filterBySession(sessionId)
 }
 
-function exportSessionSummary(format: 'md' | 'txt' = 'md') {
-  if (!summaryResult.value) return
-  const content = summaryExportContent(summaryResult.value)
-  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  const day = new Date().toISOString().slice(0, 10)
-  a.href = url
-  a.download = `session-summary-${summaryResult.value.meta.session_id}-${day}.${format}`
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  URL.revokeObjectURL(url)
-}
-
-async function writeSummaryToMemora() {
-  const sid = gwSessionFilter.value.trim()
-  if (!sid) return
-  memoraLoading.value = true
-  memoraError.value = null
-  memoraResult.value = null
-  try {
-    const resp = await sessionSummaryToMemora(sid)
-    summaryResult.value = { summary: resp.summary, key_points: resp.key_points, meta: resp.meta }
-    memoraResult.value = resp.memora
-  } catch (e: unknown) {
-    memoraError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    memoraLoading.value = false
-  }
+function onDrawerOpenRequest(requestId: string) {
+  showDetail(requestId)
 }
 
 function routeProviderLine(r: RequestLogRow): string {
@@ -828,22 +712,6 @@ function routeModelTitle(r: RequestLogRow): string {
     return `请求模型: ${requestModel}`
   }
   return `请求模型: ${requestModel} → 供应商模型: ${providerModel}`
-}
-
-function outboundModelDisplay(r: Pick<RequestLogRow, 'provider_model' | 'outbound_model'> | null | undefined): string {
-  if (!r) return t('requests.none')
-  const v = (r.provider_model || r.outbound_model || '').trim()
-  return v || t('requests.none')
-}
-
-function outboundModelTitle(r: Pick<RequestLogRow, 'provider_model' | 'outbound_model'> | null | undefined): string {
-  if (!r) return ''
-  const shown = outboundModelDisplay(r)
-  const recorded = (r.outbound_model || '').trim()
-  if (r.provider_model && recorded && r.provider_model !== recorded) {
-    return `出站模型: ${shown}（记录值: ${recorded}）`
-  }
-  return `出站模型: ${shown}`
 }
 
 function ellipsize(value: string | null | undefined, max = 28): string {
@@ -892,9 +760,34 @@ function traceTaskTitle(id: string) {
   return `任务 ID（点击仅筛此任务）\n${id}`
 }
 
+// 详情 body 缓存统计随列表刷新一起拉取。纯诊断信息：失败静默置 null
+// （不渲染该条），不阻塞、不污染列表加载状态。
+async function loadBodyCache() {
+  if (!isSuperAdmin()) return
+  try {
+    bodyCache.value = await getBodyCacheStats()
+  } catch {
+    bodyCache.value = null
+  }
+}
+
+// 命中率：无流量（hits+misses=0）时显示 "—"，避免冷启动误读为 0%。
+const bodyCacheHitRate = computed(() => {
+  if (!bodyCache.value) return '—'
+  const { hits, misses, hit_rate: rate } = bodyCache.value
+  return hits + misses > 0 ? `${(rate * 100).toFixed(1)}%` : '—'
+})
+
+// tooltip 与容量分母都取后端回显的 cap，不在前端硬编码 LRU 上限。
+const bodyCacheTitle = computed(
+  () =>
+    `/api/logs/{id} 详情 body 抓取的进程内缓存（LRU ${bodyCache.value?.cap ?? '—'} × TTL 5min）。未命中走热分区（亚毫秒）或列存冷路径（秒级）；条目指当前缓存内 request 数。`,
+)
+
 async function load() {
   loading.value = true
   error.value = null
+  void loadBodyCache()
   try {
     const range = timeRange()
     const resp: RequestLogsResponse = await getRequestLogs({
@@ -939,10 +832,6 @@ function resetPageAndLoad() {
 
 function fmtTs(ts: string) {
   return new Date(ts).toLocaleString(localeRef.value, { hour12: false })
-}
-
-function fmtDate(ts: string) {
-  return new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
 function fmtTime(ts: string) {
@@ -993,277 +882,31 @@ function shortHash(v: string | null | undefined) {
   return v ? `${v.slice(0, 12)}…` : t('requests.none')
 }
 
-async function showDetail(requestId: string) {
-  detailVisible.value = true
-  detailLoading.value = true
-  detail.value = null
-  detailTab.value = 'request'
-  closeLightbox()
-  // 重置内联编辑态，避免上次详情残留到新行。
-  resetSessionMetaState()
-  try {
-    detail.value = await getRequestLogDetail(requestId)
-    // detail 加载完成后，再异步拉取 tags（不阻塞详情打开）。
-    if (detail.value?.gw_session_id) {
-      void loadSessionTags(detail.value.gw_session_id)
-    }
-  } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    detailLoading.value = false
-  }
+const route = useRoute()
+const router = useRouter()
+
+function showDetail(requestId: string) {
+  openRequestDetailPage(requestId, undefined, router)
 }
 
 function closeDetail() {
-  detailVisible.value = false
-  detail.value = null
-  closeLightbox()
-  resetSessionMetaState()
+  activeRequestId.value = null
+  openDetailWithTrace.value = false
 }
 
-// 2026-08-06: 重置会话标题 + tags 编辑态。
-function resetSessionMetaState() {
-  sessionTags.value = []
-  sessionTagsLoading.value = false
-  sessionTagsError.value = null
-  editingTitle.value = false
-  draftTitle.value = ''
-  titleSaving.value = false
-  titleError.value = null
-  regeneratingTitle.value = false
-  addingTag.value = false
-  newTagKey.value = ''
-  newTagValue.value = ''
-  newTagSaving.value = false
-  editingTagId.value = null
-  editTagDraftKey.value = ''
-  editTagDraftValue.value = ''
-  editTagSaving.value = false
-}
-
-// 2026-08-06: 拉取 session tags。失败用 toast 展示但不阻塞详情。
-async function loadSessionTags(gwSessionId: string) {
-  sessionTagsLoading.value = true
-  sessionTagsError.value = null
-  try {
-    const resp = await getSessionTags(gwSessionId)
-    sessionTags.value = resp.tags ?? []
-  } catch (e: unknown) {
-    sessionTagsError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    sessionTagsLoading.value = false
-  }
-}
-
-// ── 会话标题 内联编辑 ─────────────────────────────────────────────
-function startEditTitle() {
-  if (!detail.value) return
-  draftTitle.value = detail.value.session_title ?? ''
-  editingTitle.value = true
-  titleError.value = null
-}
-function cancelEditTitle() {
-  editingTitle.value = false
-  draftTitle.value = ''
-  titleError.value = null
-}
-async function saveEditTitle() {
-  if (!detail.value || !detail.value.gw_task_id) return
-  const next = draftTitle.value.trim()
-  if (!next) {
-    titleError.value = '标题不能为空'
-    return
-  }
-  titleSaving.value = true
-  titleError.value = null
-  try {
-    await updateSessionTitle(detail.value.gw_task_id, {
-      title: next,
-      scoped_session_id: detail.value.gw_session_id ?? '',
-    })
-    // 把新值写回 detail，让 UI 立即反映；同时让列表同步刷新由调用方负责。
-    detail.value.session_title = next
-    editingTitle.value = false
-  } catch (e: unknown) {
-    titleError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    titleSaving.value = false
-  }
-}
-async function regenerateTitle() {
-  if (!detail.value || !detail.value.gw_task_id) return
-  regeneratingTitle.value = true
-  titleError.value = null
-  try {
-    const r = await summarizeSessionTitle(detail.value.gw_task_id, {
-      session_id: detail.value.gw_session_id ?? undefined,
-    })
-    detail.value.session_title = r.title
-  } catch (e: unknown) {
-    titleError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    regeneratingTitle.value = false
-  }
-}
-async function clearTitle() {
-  if (!detail.value || !detail.value.gw_task_id) return
-  if (!confirm('确认清空此会话的标题？')) return
-  titleSaving.value = true
-  titleError.value = null
-  try {
-    await deleteSessionTitle(detail.value.gw_task_id, detail.value.gw_session_id ?? '')
-    detail.value.session_title = null
-    editingTitle.value = false
-  } catch (e: unknown) {
-    titleError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    titleSaving.value = false
-  }
-}
-
-// ── Tag 增/改/删 ──────────────────────────────────────────────────
-function startAddTag() {
-  addingTag.value = true
-  newTagKey.value = ''
-  newTagValue.value = ''
-}
-function cancelAddTag() {
-  addingTag.value = false
-  newTagKey.value = ''
-  newTagValue.value = ''
-}
-async function submitAddTag() {
-  if (!detail.value?.gw_session_id) return
-  const key = newTagKey.value.trim()
-  const value = newTagValue.value.trim()
-  if (!key || !value) return
-  newTagSaving.value = true
-  try {
-    await addSessionTag(detail.value.gw_session_id, key, value)
-    addingTag.value = false
-    newTagKey.value = ''
-    newTagValue.value = ''
-    await loadSessionTags(detail.value.gw_session_id)
-  } catch (e: unknown) {
-    sessionTagsError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    newTagSaving.value = false
-  }
-}
-function startEditTag(t: SessionTag) {
-  editingTagId.value = t.id
-  editTagDraftKey.value = t.tag_key
-  editTagDraftValue.value = t.tag_value
-}
-function cancelEditTag() {
-  editingTagId.value = null
-  editTagDraftKey.value = ''
-  editTagDraftValue.value = ''
-}
-async function submitEditTag() {
-  if (!detail.value?.gw_session_id || editingTagId.value == null) return
-  const newKey = editTagDraftKey.value.trim()
-  const newValue = editTagDraftValue.value.trim()
-  if (!newValue) return
-  editTagSaving.value = true
-  try {
-    await updateSessionTag(detail.value.gw_session_id, editingTagId.value, {
-      tag_key: newKey,
-      tag_value: newValue,
-    })
-    editingTagId.value = null
-    await loadSessionTags(detail.value.gw_session_id)
-  } catch (e: unknown) {
-    sessionTagsError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    editTagSaving.value = false
-  }
-}
-async function removeTag(tag: SessionTag) {
-  if (!detail.value?.gw_session_id) return
-  if (!confirm(`删除标签 ${tag.tag_key}: ${tag.tag_value}？`)) return
-  try {
-    await deleteSessionTag(detail.value.gw_session_id, tag.id)
-    await loadSessionTags(detail.value.gw_session_id)
-  } catch (e: unknown) {
-    sessionTagsError.value = e instanceof Error ? e.message : String(e)
-  }
-}
-
-// ── 附件辅助 (migration 325) ──────────────────────────────────────
-// detailList 派生当前详情行（或刷新请求）的附件数组，空安全。
-function detailAttachments(): AttachmentInfo[] {
-  return (detail.value?.attachments as AttachmentInfo[] | null | undefined) ?? []
-}
-
-// isImageAttachment 判断附件是否为图片（用于缩略图 vs 文件图标）。
-function isImageAttachment(a: AttachmentInfo): boolean {
-  return a.type === 'image' || a.content_type.startsWith('image/')
-}
-
-// formatBytes 把字节数格式化为人类可读（KB/MB）。
-function formatBytes(n: number | undefined): string {
-  if (!n || n <= 0) return t('requests.none')
-  if (n < 1024) return n + ' B'
-  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
-  return (n / (1024 * 1024)).toFixed(2) + ' MB'
-}
-
-// fileExt 从附件 path/content_type 推断显示用的扩展名。
-function fileExt(a: AttachmentInfo): string {
-  if (a.path) {
-    const m = a.path.match(/\.([a-z0-9]+)$/i)
-    if (m) return m[1].toUpperCase()
-  }
-  if (a.content_type && a.content_type.includes('/')) {
-    return a.content_type.split('/')[1].toUpperCase()
-  }
-  return 'FILE'
-}
-
-// openLightbox 点击图片缩略图放大查看。
-function openLightbox(a: AttachmentInfo) {
-  if (!isImageAttachment(a)) return
-  attachmentsLightboxSrc.value = attachmentURL(a.path)
-  attachmentsLightbox.value = true
-}
-
-// closeLightbox 主动关闭 lightbox（被 ESC handler 调用，也可在模板中内联）。
-function closeLightbox() {
-  attachmentsLightbox.value = false
-  attachmentsLightboxSrc.value = ''
-}
-
-// 2026-07-02: 全局 ESC 关闭 lightbox（参考文档 §5.2）。
-// 抽屉打开后焦点可能不在 lightbox 内，故绑到 window 而非抽屉节点。
-// 监听注册在 onMounted（line ~919），清理在 onBeforeUnmount（line ~75）。
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && attachmentsLightbox.value) {
-    e.stopPropagation()
-    closeLightbox()
-  }
-}
-
-// downloadAttachment 触发浏览器下载（非图片）或新窗口打开（图片）。
-// 图片走 attachment; inline 行为由后端 Content-Disposition 控制；
-// 这里统一用 <a download>，浏览器会处理内联/下载。
-function downloadAttachment(a: AttachmentInfo) {
-  const url = attachmentURL(a.path)
-  const link = document.createElement('a')
-  link.href = url
-  // 从 path 末段取文件名，保证下载扩展名正确
-  link.download = a.path ? a.path.split('/').pop() || 'attachment' : 'attachment'
-  document.body.appendChild(link)
-  link.click()
-  document.body.removeChild(link)
-}
-
-function formatJson(obj: any): string {
-  if (obj == null) return t('requests.noData')
-  try {
-    return JSON.stringify(obj, null, 2)
-  } catch {
-    return String(obj)
+function syncSessionTitle({
+  taskId,
+  sessionId,
+  title,
+}: {
+  taskId: string
+  sessionId: string | null
+  title: string | null
+}) {
+  for (const row of rows.value) {
+    if (row.gw_task_id === taskId && row.gw_session_id === sessionId) {
+      row.session_title = title
+    }
   }
 }
 
@@ -1296,61 +939,6 @@ function extractMessagesFromBody(body: any): any[] {
     return msgs
   }
   return [body]
-}
-
-// v3 (2026-06-19) session-level outbound body helpers.
-// Returns true when the row has an outbound_body that differs from the
-// client request_body (i.e. v3 ran for this request).
-function hasOutboundBody(row: any): boolean {
-  if (!row?.outbound_body) return false
-  // Count messages via outbound_msg_count column (cheaper than parsing body).
-  if (typeof row.outbound_msg_count === 'number') return row.outbound_msg_count > 0
-  const msgs = extractMessagesFromBody(row.outbound_body)
-  return msgs.length > 0
-}
-
-// Cheap equality check: outbound body stringified bytes match request body bytes.
-function outboundEqualsRequest(row: any): boolean {
-  if (!row?.outbound_body) return false
-  const reqStr = JSON.stringify(row.request_body ?? '')
-  const outStr = JSON.stringify(row.outbound_body ?? '')
-  return reqStr === outStr
-}
-
-// Returns outbound_msg_count - request message count (rough delta indicator).
-function outboundMsgDelta(row: any): string {
-  const out = typeof row?.outbound_msg_count === 'number' ? row.outbound_msg_count : null
-  if (out == null) return ''
-  const reqMsgs = extractMessagesFromBody(row?.request_body)
-  const reqCount = reqMsgs.length
-  const diff = out - reqCount
-  if (diff === 0) return '0'
-  return diff > 0 ? `+${diff}` : `${diff}`
-}
-
-// Returns the smm_v1 summary marker (if present in compression_meta).
-function outboundSummaryMarker(row: any): string {
-  const meta = row?.compression_meta
-  if (!meta || typeof meta !== 'object') return ''
-  return typeof meta.summary_marker === 'string' ? meta.summary_marker : ''
-}
-
-// True if the given message looks like a gateway-injected compaction summary
-// (content starts with the smm_v1 marker prefix).
-function isSummaryMarkerMessage(msg: any): boolean {
-  const content = msg?.content
-  if (typeof content === 'string') return content.startsWith('[smm_v1:')
-  if (Array.isArray(content)) {
-    for (const p of content) {
-      if (typeof p?.text === 'string' && p.text.startsWith('[smm_v1:')) return true
-    }
-  }
-  return false
-}
-
-function truncate(s: string, n: number): string {
-  if (!s) return ''
-  return s.length > n ? s.slice(0, n) + '…' : s
 }
 
 // v3 savings helpers (2026-06-20). Compute human-readable byte/token
@@ -1389,53 +977,9 @@ function calcSavingDetail(row: any): { savingStr: string; tokenSavingStr: string
   return { savingStr, tokenSavingStr, msgReductionStr, hasSaving: true }
 }
 
-// Returns a human-readable explanation sentence for the compression strategy.
-function compressExplainText(row: any): string {
-  const strat = row.compression_strategy
-  if (!strat) return ''
-  const reason = row.compression_reason || ''
-  const meta = row.compression_meta as Record<string, any> | null
-  switch (strat) {
-    case 'delta_append':
-      return t('requests.same_session_no_retransmit')
-    case 'sliding_window_token':
-    case 'sliding_window_count':
-    case 'sliding_window_idle':
-      return [
-        `会话消息过多，触发了${strat === 'sliding_window_token' ? t('requests.strategy_token') : strat === 'sliding_window_idle' ? t('requests.strategy_idle') : t('requests.strategy_count')}`,
-        meta?.summary_marker ? t('requests.with_llm_summary') : t('requests.with_sliding_compress'),
-      ].join('')
-    case 'mechanical_trim':
-      if (reason === 'mode_2_on_4xx') return t('requests.mechanical_4xx')
-      return t('requests.mechanical_fallback')
-    case 'memora_l1_inject':
-      return '上下文超出窗口，网关从 Memora 检索了该用户的 L1 事实作为"动态上下文"注入到请求中。'
-    case 'llm_summary':
-      return t('requests.llm_summary_done')
-    case 'noop':
-      return t('requests.skipped')
-    default:
-      return strat ? `压缩策略: ${strat}` : ''
-  }
-}
-
-function roleColor(role: string): string {
-  switch (role) {
-    case 'user': return 'var(--info)'
-    case 'assistant': return 'var(--success)'
-    case 'system': return 'var(--warning)'
-    case 'tool': return 'var(--muted)'
-    default: return 'inherit'
-  }
-}
-
-const route = useRoute()
-
-// 2026-07-17: super_admin 在每条日志行可直接打开流程详情 modal，
-// 不再导航到已删除的独立 trace 页面。
+// super_admin 在每条日志行可直接打开共享请求详情，并展开流程面板。
 function gotoTrace(requestId: string) {
-  if (!requestId) return
-  traceRequestId.value = requestId
+  openRequestDetailPage(requestId, { tab: 'flow' }, router)
 }
 
 onMounted(async () => {
@@ -1486,10 +1030,6 @@ onMounted(async () => {
     normalizeTimePresetForTenant()
     if (pageSize.value < 200) pageSize.value = 200
   }
-  // 2026-07-02: 注册全局 ESC keydown 监听，用于关闭附件 lightbox
-  // （参考文档 §5.2）。清理在 onBeforeUnmount（line ~75）。
-  window.addEventListener('keydown', handleKeydown)
-
   // 2026-07-03: 添加错误处理，确保即使 API 失败页面也能正常显示
   try {
     await loadKeys()
@@ -1509,6 +1049,10 @@ onMounted(async () => {
     error.value = e instanceof Error ? e.message : String(e)
     loading.value = false
   }
+
+  if (sessionId && (q.open_summary === '1' || q.open_summary === 'true')) {
+    summaryDrawerOpen.value = true
+  }
 })
 </script>
 
@@ -1526,6 +1070,19 @@ onMounted(async () => {
         </label>
         <button class="btn btn-primary btn-sm" :disabled="loading" @click="load">刷新</button>
       </div>
+    </div>
+
+    <!-- 2026-08-17: 详情 body 缓存可观测条（super admin 专属，随列表刷新更新）。
+         低命中率说明重复点击少（miss 走热分区亚毫秒，代价低）；evictions > 0
+         说明容量吃紧，需要评估调大 LRU 上限。容量分母取后端 cap 字段（audit:
+         不硬编码 1024）；无流量时命中率显示 "—" 而非误导性的 0.0%。 -->
+    <div v-if="isSuperAdmin() && bodyCache" class="body-cache-strip" :title="bodyCacheTitle">
+      <span class="body-cache-strip__label">⚡ 详情缓存</span>
+      <span>命中率 <strong>{{ bodyCacheHitRate }}</strong></span>
+      <span>命中 {{ bodyCache.hits }}</span>
+      <span>未命中 {{ bodyCache.misses }}</span>
+      <span>条目 {{ bodyCache.size }}<template v-if="bodyCache.cap">/{{ bodyCache.cap }}</template></span>
+      <span>逐出 {{ bodyCache.evictions }}</span>
     </div>
 
     <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:#3b82f6">
@@ -1868,42 +1425,14 @@ onMounted(async () => {
       <button class="btn btn-ghost btn-sm" style="margin-left:auto" @click="clearTraceFilter">清除脉络筛选</button>
     </div>
 
-    <div v-if="canSummarizeSession" class="card" style="margin-bottom:12px;padding:12px">
+    <div v-if="canSummarizeSession" class="card session-summary-entry" style="margin-bottom:12px;padding:12px">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <strong>会话总结</strong>
-        <span style="color:var(--muted);font-size:12px">仅在会话 ID 筛选下可用</span>
-        <button class="btn btn-primary btn-sm" :disabled="summaryLoading" @click="generateSessionSummary">
-          {{ summaryLoading ? t('requests.generating') : t('requests.generate') }}
+        <span style="color:var(--muted);font-size:12px">{{ t('requests.list.trace.sessionSummaryHint') }}</span>
+        <span style="color:var(--muted);font-size:12px">会话: {{ shortHash(gwSessionFilter) }}</span>
+        <button class="btn btn-primary btn-sm" style="margin-left:auto" @click="openSessionSummaryDrawer">
+          打开会话总结
         </button>
-        <button
-          v-if="summaryResult"
-          class="btn btn-ghost btn-sm"
-          @click="exportSessionSummary('md')"
-        >导出 Markdown</button>
-        <button
-          v-if="summaryResult"
-          class="btn btn-ghost btn-sm"
-          @click="exportSessionSummary('txt')"
-        >导出 TXT</button>
-        <button
-          class="btn btn-ghost btn-sm"
-          :disabled="memoraLoading"
-          @click="writeSummaryToMemora"
-        >{{ memoraLoading ? t('requests.writingMemora') : t('requests.writeMemora') }}</button>
-      </div>
-      <p v-if="summaryError" style="margin:8px 0 0;color:var(--danger)">{{ summaryError }}</p>
-      <p v-if="memoraError" style="margin:8px 0 0;color:var(--danger)">Memora: {{ memoraError }}</p>
-      <p v-if="memoraResult" style="margin:8px 0 0;color:var(--success)">
-        已写入 Memora：{{ memoraResult.written }} 条（{{ memoraResult.status }}）
-      </p>
-      <div v-if="summaryResult" style="margin-top:10px;font-size:12px">
-        <div style="color:var(--muted);margin-bottom:6px">
-          范围：{{ fmtTs(summaryResult.meta.data_from) }} ~ {{ fmtTs(summaryResult.meta.data_to) }} · {{ summaryResult.meta.log_count }} 条
-        </div>
-        <div style="white-space:pre-wrap;line-height:1.6">{{ summaryResult.summary }}</div>
-        <ul v-if="summaryResult.key_points?.length" style="margin:8px 0 0;padding-left:18px">
-          <li v-for="(p, i) in summaryResult.key_points" :key="i">{{ p }}</li>
-        </ul>
       </div>
     </div>
 
@@ -1959,7 +1488,7 @@ onMounted(async () => {
               <span class="cell-line1">{{ r.trace_seq ?? t('requests.none') }}</span>
             </td>
             <td class="col-time" :title="`${r.request_id} · ${fmtTs(r.ts)}`">
-              <div class="cell-line1">{{ fmtDate(r.ts) }}</div>
+              <div class="cell-line1">{{ fmtDateCompact(r.ts) }}</div>
               <div class="cell-line2">{{ fmtTime(r.ts) }}</div>
             </td>
             <td class="col-trace" @click.stop="filterByTrace(r)">
@@ -2073,413 +1602,51 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- Detail Modal -->
-    <div v-if="detailVisible" class="drawer-backdrop" @click="closeDetail">
-      <div class="drawer-panel card drawer-panel-wide" @click.stop>
-        <div class="drawer-header">
-          <h3 style="margin:0">请求详情</h3>
-          <button class="btn btn-sm" @click="closeDetail">关闭</button>
-        </div>
+    <RequestLogDrawer
+      :request-id="activeRequestId"
+      mode="request-logs"
+      :initial-trace-open="openDetailWithTrace"
+      @close="closeDetail"
+      @session-title-changed="syncSessionTitle"
+      @filter-session="onDrawerFilterSession"
+      @open-request="onDrawerOpenRequest"
+    />
 
-        <div v-if="detailLoading" style="text-align:center;padding:40px">加载中…</div>
-
-        <template v-else-if="detail">
-          <div class="drawer-section">
-            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px;font-size:12px">
-              <span><strong>请求ID:</strong> {{ detail.request_id }}</span>
-              <span><strong>会话:</strong> {{ detail.gw_session_id ?? t('requests.none') }}</span>
-              <span><strong>任务:</strong> {{ detail.gw_task_id ?? t('requests.none') }}</span>
-              <span><strong>Key:</strong> {{ detail.api_key_prefix ?? (detail.api_key_id != null ? t('requests.apiKeyIdPrefix') + detail.api_key_id : t('requests.noKey')) }}</span>
-              <span v-if="detail.api_key_owner_user"><strong>Key用户:</strong> {{ detail.api_key_owner_user }}</span>
-              <span v-if="detail.application_code"><strong>应用:</strong> {{ detail.application_code }}</span>
-              <span><strong>时间:</strong> {{ fmtTs(detail.ts) }}</span>
-              <span><strong>客户端模型:</strong> {{ detail.client_model ?? t('requests.none') }}</span>
-              <span :title="outboundModelTitle(detail)"><strong>出站模型:</strong> {{ outboundModelDisplay(detail) }}</span>
-              <span><strong>供应商:</strong> {{ detail.provider_name ?? t('requests.none') }}</span>
-              <span><strong>状态:</strong> <span :style="{ color: detail.request_status === 'rate_limited' ? 'var(--warning)' : detail.success ? 'var(--success)' : 'var(--danger)' }">{{ detail.success ? t('requests.resultSuccess') : statusLabel(detail) }}</span></span>
-              <span v-if="detail.failure_stage"><strong>失败阶段:</strong> {{ detail.failure_stage }}</span>
-              <span v-if="detail.failure_detail_code">
-                <strong>失败详情:</strong>
-                {{ FAILURE_DETAIL_LABELS[detail.failure_detail_code] ?? detail.failure_detail_code }}
-              </span>
-              <!-- 2026-06-19 T-NEW-7: surface the upstream finish_reason
-                   separately from failure_detail_code so a successful
-                   `tool_calls` response stops looking like a failure. -->
-              <span v-if="detail.upstream_finish_reason" :title="t('requests.finishReasonTitle')">
-                <strong>结束原因:</strong>
-                {{ upstreamFinishReasonLabel(detail.upstream_finish_reason) }}
-              </span>
-              <span><strong>延迟:</strong> {{ detail.latency_ms ?? t('requests.none') }}ms</span>
-              <span><strong>Token:</strong> {{ token(detail.prompt_tokens) }} / {{ token(detail.completion_tokens) }}</span>
-              <span v-if="!isDefaultTenant()"><strong>积分消耗:</strong> {{ creditsDisplay(detail.credits_charged) }}</span>
-              <!-- v3 (2026-06-19) session-level outbound metadata.
-                   Displayed when v3 ran for this request (compression_strategy
-                   in {delta_append, sliding_window_*, mechanical_trim}). -->
-              <template v-if="hasOutboundBody(detail)">
-                <div style="display:flex;flex-wrap:wrap;gap:8px;padding:6px 10px;background:var(--surface-primary);border-radius:6px;margin-top:4px;font-size:12px">
-                  <span><strong>转发消息数:</strong> {{ detail.outbound_msg_count ?? t('requests.none') }}</span>
-                  <span><strong>转发 token 估算:</strong> {{ detail.outbound_token_est ?? t('requests.none') }}</span>
-                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--success);font-weight:600">
-                    节约: {{ calcSavingDetail(detail).savingStr }}
-                  </span>
-                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--warning)">
-                    Token: {{ calcSavingDetail(detail).tokenSavingStr }}
-                  </span>
-                  <span v-if="calcSavingDetail(detail).hasSaving" style="color:var(--text-secondary)">
-                    消息: {{ calcSavingDetail(detail).msgReductionStr }}
-                  </span>
-                  <span v-if="outboundSummaryMarker(detail)">
-                    <span class="summary-marker-badge" :title="outboundSummaryMarker(detail)">含 LLM 摘要</span>
-                  </span>
-                </div>
-                <div v-if="detail.compression_strategy" style="margin-top:4px;font-size:11px;color:var(--text-secondary)">
-                  {{ compressExplainText(detail) }}
-                </div>
-              </template>
-            </div>
-          </div>
-
-          <!-- 2026-08-06: 会话标题 + 标签 内联编辑区段。
-               设计：紧贴基础字段（请求ID/会话/任务）下方，
-               用户进入详情就能看到并可编辑。tags 是 session 级别，
-               由 getSessionTags 异步加载；title 来自 detail.session_title。 -->
-          <div class="drawer-section session-meta-section">
-            <div class="session-meta-title">
-              <strong>会话标题:</strong>
-              <template v-if="!editingTitle">
-                <span class="title-value" :class="{ 'title-missing': !detail.session_title }">
-                  {{ detail.session_title || '尚无标题' }}
-                </span>
-                <button
-                  v-if="detail.gw_task_id"
-                  class="btn btn-sm btn-ghost"
-                  :disabled="titleSaving || regeneratingTitle"
-                  @click="startEditTitle"
-                >编辑</button>
-                <button
-                  v-if="detail.gw_task_id && detail.session_title"
-                  class="btn btn-sm btn-ghost"
-                  :disabled="titleSaving || regeneratingTitle"
-                  @click="regenerateTitle"
-                >{{ regeneratingTitle ? '重新生成中…' : '重新生成' }}</button>
-                <button
-                  v-if="detail.gw_task_id && detail.session_title"
-                  class="btn btn-sm btn-ghost btn-danger-ghost"
-                  :disabled="titleSaving || regeneratingTitle"
-                  @click="clearTitle"
-                >清空</button>
-              </template>
-              <template v-else>
-                <input
-                  v-model="draftTitle"
-                  class="title-input"
-                  maxlength="80"
-                  placeholder="2-80 字符，不含 XML 标签"
-                  @keydown.enter="saveEditTitle"
-                  @keydown.esc="cancelEditTitle"
-                />
-                <button
-                  class="btn btn-sm btn-primary"
-                  :disabled="titleSaving"
-                  @click="saveEditTitle"
-                >{{ titleSaving ? '保存中…' : '保存' }}</button>
-                <button
-                  class="btn btn-sm btn-ghost"
-                  :disabled="titleSaving"
-                  @click="cancelEditTitle"
-                >取消</button>
-              </template>
-              <span v-if="titleError" class="meta-error">{{ titleError }}</span>
-            </div>
-
-            <div class="session-meta-tags">
-              <div class="tags-header">
-                <strong>项目 / 任务等标签:</strong>
-                <span v-if="detail.gw_session_id" class="muted" style="font-size:11px">
-                  （绑定 session: {{ ellipsize(detail.gw_session_id, 24) }}）
-                </span>
-                <button
-                  v-if="detail.gw_session_id && !addingTag"
-                  class="btn btn-sm btn-ghost"
-                  @click="startAddTag"
-                >+ 添加标签</button>
-                <button
-                  v-if="addingTag"
-                  class="btn btn-sm btn-ghost"
-                  :disabled="newTagSaving"
-                  @click="cancelAddTag"
-                >取消</button>
-              </div>
-
-              <div v-if="!detail.gw_session_id" class="muted" style="font-size:11px">
-                此请求未绑定会话，无法关联标签。
-              </div>
-              <div v-else-if="sessionTagsLoading" class="muted" style="font-size:11px">
-                加载中…
-              </div>
-              <div v-else-if="sessionTagsError" class="meta-error">{{ sessionTagsError }}</div>
-              <div v-else-if="!sessionTags.length && !addingTag" class="muted" style="font-size:11px">
-                暂无标签。可添加 project / task / client 等维度。
-              </div>
-              <div v-else class="tags-list">
-                <div v-for="t in sessionTags" :key="t.id" class="tag-row">
-                  <template v-if="editingTagId === t.id">
-                    <input
-                      v-model="editTagDraftKey"
-                      class="tag-input tag-input-key"
-                      maxlength="50"
-                      placeholder="key"
-                      @keydown.enter="submitEditTag"
-                      @keydown.esc="cancelEditTag"
-                    />
-                    <span class="tag-sep">:</span>
-                    <input
-                      v-model="editTagDraftValue"
-                      class="tag-input tag-input-value"
-                      placeholder="value"
-                      @keydown.enter="submitEditTag"
-                      @keydown.esc="cancelEditTag"
-                    />
-                    <button
-                      class="btn btn-sm btn-primary"
-                      :disabled="editTagSaving"
-                      @click="submitEditTag"
-                    >{{ editTagSaving ? '保存中…' : '保存' }}</button>
-                    <button
-                      class="btn btn-sm btn-ghost"
-                      :disabled="editTagSaving"
-                      @click="cancelEditTag"
-                    >取消</button>
-                  </template>
-                  <template v-else>
-                    <span class="tag-key">{{ t.tag_key }}</span>
-                    <span class="tag-sep">:</span>
-                    <span class="tag-value">{{ t.tag_value }}</span>
-                    <span v-if="t.tag_source === 'manual'" class="tag-source">manual</span>
-                    <span v-else-if="t.tag_source" class="tag-source tag-source-auto">{{ t.tag_source }}</span>
-                    <span class="tag-actions">
-                      <button
-                        class="btn btn-sm btn-ghost"
-                        :disabled="editingTagId !== null || addingTag"
-                        @click="startEditTag(t)"
-                      >编辑</button>
-                      <button
-                        class="btn btn-sm btn-ghost btn-danger-ghost"
-                        :disabled="editingTagId !== null || addingTag"
-                        @click="removeTag(t)"
-                      >删除</button>
-                    </span>
-                  </template>
-                </div>
-
-                <div v-if="addingTag" class="tag-row tag-row-add">
-                  <input
-                    v-model="newTagKey"
-                    class="tag-input tag-input-key"
-                    maxlength="50"
-                    placeholder="key (project/task/client/custom)"
-                    @keydown.enter="submitAddTag"
-                    @keydown.esc="cancelAddTag"
-                  />
-                  <span class="tag-sep">:</span>
-                  <input
-                    v-model="newTagValue"
-                    class="tag-input tag-input-value"
-                    placeholder="value"
-                    @keydown.enter="submitAddTag"
-                    @keydown.esc="cancelAddTag"
-                  />
-                  <button
-                    class="btn btn-sm btn-primary"
-                    :disabled="newTagSaving || !newTagKey.trim() || !newTagValue.trim()"
-                    @click="submitAddTag"
-                  >{{ newTagSaving ? '添加中…' : '添加' }}</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- 2026-07-17: 流程详情内嵌面板 — 在「请求详情」与「Tabs/按钮」之间展开一层,
-               与 RequestLogDrawer 一致;不再使用 modal/teleport。 -->
-          <RequestTracePanel
-            v-if="traceRequestId"
-            :request-id="traceRequestId"
-            @close="traceRequestId = null"
-          />
-
-          <div class="drawer-section">
-            <div style="display:flex;gap:8px;margin-bottom:12px">
-              <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'request' }" @click="detailTab = 'request'">请求消息</button>
-              <!-- v3 outbound tab: only shown when the row has an outbound body. -->
-              <button v-if="hasOutboundBody(detail)" class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'outbound' }" @click="detailTab = 'outbound'">
-                转发消息
-                <span class="outbound-diff-badge" :class="{ unchanged: outboundEqualsRequest(detail) }">
-                  {{ outboundEqualsRequest(detail) ? t('requests.equalsRequest') : `Δ${outboundMsgDelta(detail)}` }}
-                </span>
-              </button>
-              <button class="btn btn-sm" :class="{ 'btn-primary': detailTab === 'response' }" @click="detailTab = 'response'">响应内容</button>
-              <!-- 2026-07-01 (migration 325): 附件标签按钮。仅在该请求含附件时显示，
-                   位于"响应内容"右侧。点击切换到附件列表面板（缩略图 + 下载）。
-                   2026-07-02: 文案走 i18n 键；显示附件数量。 -->
-              <button
-                v-if="detailAttachments().length"
-                class="btn btn-sm"
-                :class="{ 'btn-primary': detailTab === 'attachments' }"
-                @click="detailTab = 'attachments'"
-              >
-                📎 {{ t('requests.detail_extra.attachmentsTab') }}
-                <span class="outbound-diff-badge">{{ detailAttachments().length }}</span>
-              </button>
-              <!-- 2026-07-17: 流程详情按钮 — 切换内嵌面板 (RequestTracePanel)。
-                   重复点击可关闭。super_admin 限定。 -->
-              <button
-                class="btn btn-sm btn-trace"
-                type="button"
-                :class="{ 'btn-trace-active': traceRequestId === detail.request_id }"
-                :title="t('trace.modal.tooltip')"
-                @click.stop="traceRequestId = (traceRequestId === detail.request_id ? null : detail.request_id)"
-              >
-                {{ traceRequestId === detail.request_id ? '✕ ' + t('trace.modal.close') : t('trace.modal.openButton') }}
-              </button>
-            </div>
-          </div>
-
-          <div class="drawer-section" style="flex:1;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:12px;background:var(--surface-secondary);font-size:12px">
-            <template v-if="detailTab === 'request'">
-              <template v-if="extractMessagesFromBody(detail.request_body).length">
-                <div v-for="(msg, i) in extractMessagesFromBody(detail.request_body)" :key="i" style="margin-bottom:12px">
-                  <div style="margin-bottom:4px">
-                    <span :style="{ color: roleColor(msg.role || ''), fontWeight: 600 }">[{{ msg.role || 'unknown' }}]</span>
-                  </div>
-                  <pre style="margin:0;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;font-size:11px;line-height:1.5">{{ formatJson(msg.content ?? msg) }}</pre>
-                  <div v-if="msg.tool_calls" style="margin-top:6px">
-                    <div style="color:var(--muted);font-size:11px;margin-bottom:4px">工具调用:</div>
-                    <pre v-for="(tc, j) in msg.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary);border-radius:4px">{{ formatJson(tc) }}</pre>
-                  </div>
-                </div>
-              </template>
-              <div v-else style="color:var(--muted)">(无请求数据)</div>
-            </template>
-
-            <template v-else-if="detailTab === 'outbound'">
-              <!-- v3 outbound body: shows what was actually forwarded to the
-                   upstream LLM after delta-append / sliding-window summary. -->
-              <div v-if="detail.outbound_body" style="margin-bottom:8px;padding:6px 10px;background:var(--surface-primary);border-radius:4px;color:var(--text-secondary);font-size:11px">
-                <strong>v3 转发体</strong> · 消息数 {{ detail.outbound_msg_count }} · 估算 {{ detail.outbound_token_est }} tokens
-                <span v-if="outboundSummaryMarker(detail)" style="margin-left:8px">
-                  <span class="summary-marker-badge">{{ truncate(outboundSummaryMarker(detail), 24) }}</span>
-                  <span style="color:var(--muted);font-size:10px">(含 LLM 摘要边界)</span>
-                </span>
-              </div>
-              <template v-if="hasOutboundBody(detail)">
-                <div v-for="(msg, i) in extractMessagesFromBody(detail.outbound_body)" :key="i" style="margin-bottom:12px">
-                  <div style="margin-bottom:4px">
-                    <span :style="{ color: roleColor(msg.role || ''), fontWeight: 600 }">[{{ msg.role || 'unknown' }}]</span>
-                    <span v-if="isSummaryMarkerMessage(msg)" style="margin-left:6px;font-size:10px;color:#1d4ed8">(smm_v1 摘要边界)</span>
-                  </div>
-                  <pre style="margin:0;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;font-size:11px;line-height:1.5">{{ formatJson(msg.content ?? msg) }}</pre>
-                  <div v-if="msg.tool_calls" style="margin-top:6px">
-                    <div style="color:var(--muted);font-size:11px;margin-bottom:4px">工具调用:</div>
-                    <pre v-for="(tc, j) in msg.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary);border-radius:4px">{{ formatJson(tc) }}</pre>
-                  </div>
-                </div>
-              </template>
-              <div v-else style="color:var(--muted)">(该请求未触发 v3 会话压缩：转发体 == 客户端请求体)</div>
-            </template>
-
-            <!-- 2026-07-01 (migration 325): 附件列表面板。
-                 网格布局展示附件缩略图（图片）/ 文件图标（其他），每项含类型、大小、
-                 SHA256(截断)、路径，并提供下载/预览按钮。 -->
-            <template v-else-if="detailTab === 'attachments'">
-              <div v-if="detailAttachments().length" class="attachments-grid">
-                <div
-                  v-for="(att, idx) in detailAttachments()"
-                  :key="(att.path || '') + idx"
-                  class="attachment-card"
-                >
-                  <div class="attachment-thumb" @click="isImageAttachment(att) ? openLightbox(att) : downloadAttachment(att)">
-                    <img
-                      v-if="isImageAttachment(att)"
-                      :src="attachmentURL(att.path)"
-                      :alt="fileExt(att)"
-                      loading="lazy"
-                      class="attachment-img"
-                    />
-                    <div v-else class="attachment-file-icon">
-                      <span>{{ fileExt(att) }}</span>
-                    </div>
-                  </div>
-                  <div class="attachment-meta">
-                    <div class="attachment-line1">
-                      <span class="attachment-type">{{ att.content_type || att.type }}</span>
-                      <span class="attachment-size">{{ formatBytes(att.size) }}</span>
-                    </div>
-                    <div class="attachment-line2" :title="att.path">{{ att.path }}</div>
-                    <div v-if="att.hash" class="attachment-line2" :title="att.hash">SHA256: {{ shortHash(att.hash) }}</div>
-                    <div class="attachment-actions">
-                      <button class="btn btn-sm" @click="downloadAttachment(att)">
-                        {{ t('requests.detail_extra.download') }}
-                      </button>
-                      <button
-                        v-if="isImageAttachment(att)"
-                        class="btn btn-sm"
-                        @click="openLightbox(att)"
-                      >放大</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div v-else style="color:var(--muted)">{{ t('requests.detail_extra.noAttachments') }}</div>
-            </template>
-
-            <template v-else>
-              <template v-if="detail.response_body">
-                <template v-if="detail.response_body.choices">
-                  <div v-for="(choice, i) in detail.response_body.choices" :key="i" style="margin-bottom:12px">
-                    <div style="margin-bottom:4px">
-                      <span style="font-weight:600">Choice {{ i }}</span>
-                      <span v-if="choice.finish_reason" style="color:var(--muted);margin-left:8px">finish: {{ choice.finish_reason }}</span>
-                    </div>
-                    <div v-if="choice.message" style="margin-bottom:6px">
-                      <span :style="{ color: roleColor(choice.message.role || ''), fontWeight: 600 }">[{{ choice.message.role || 'unknown' }}]</span>
-                      <pre v-if="choice.message.content" style="margin:4px 0;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;font-size:11px;line-height:1.5">{{ choice.message.content }}</pre>
-                      <div v-if="choice.message.tool_calls" style="margin-top:6px">
-                        <div style="color:var(--muted);font-size:11px;margin-bottom:4px">工具调用:</div>
-                        <pre v-for="(tc, j) in choice.message.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary);border-radius:4px">{{ formatJson(tc) }}</pre>
-                      </div>
-                    </div>
-                  </div>
-                  <div v-if="detail.response_body.usage" style="margin-top:8px;padding:8px;background:var(--surface-primary);border-radius:4px">
-                    <strong>Usage:</strong> prompt={{ detail.response_body.usage.prompt_tokens }} completion={{ detail.response_body.usage.completion_tokens }} total={{ detail.response_body.usage.total_tokens }}
-                  </div>
-                </template>
-                <pre v-else style="white-space:pre-wrap;word-break:break-all;font-size:11px;line-height:1.5">{{ formatJson(detail.response_body) }}</pre>
-              </template>
-              <div v-else style="color:var(--muted)">(无响应数据 — 流式响应暂不记录完整内容)</div>
-            </template>
-          </div>
-        </template>
-
-        <!-- 2026-07-01 (migration 325): 附件大图预览遮罩。
-             2026-07-02: 用 Teleport to body 渲染到根（参考文档 §4.4），
-             避免 z-index 被父抽屉裁剪；ESC 由全局 keydown 关闭。 -->
-        <Teleport to="body">
-          <div v-if="attachmentsLightbox" class="lightbox-backdrop" @click="closeLightbox">
-            <img :src="attachmentsLightboxSrc" class="lightbox-img" @click.stop alt="attachment preview" />
-            <button class="btn btn-sm lightbox-close" @click="closeLightbox">
-              {{ t('requests.detail_extra.closePreview') }}
-            </button>
-          </div>
-        </Teleport>
-      </div>
-    </div>
-
-    <!-- 2026-07-17: 流程详情面板改为内嵌, 不再使用 modal/teleport。
-         RequestTracePanel 已在抽屉「请求详情」与「Tabs」之间展开。 -->
+    <SessionSummaryDrawer
+      :open="summaryDrawerOpen"
+      :session-id="gwSessionFilter.trim() || null"
+      :session-title="summaryDrawerTitle"
+      @close="summaryDrawerOpen = false"
+      @filter-session="onDrawerFilterSession"
+      @open-request="onDrawerOpenRequest"
+    />
   </div>
 </template>
 
 <style scoped>
+/* 2026-08-17: 详情 body 缓存可观测条（super admin）。轻量单行 chip，不抢
+   列表空间；数值用 tabular-nums 防刷新时跳动。 */
+.body-cache-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  margin-bottom: 12px;
+  padding: 5px 12px;
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.body-cache-strip__label {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.body-cache-strip strong {
+  color: var(--text-primary, inherit);
+}
 .request-log-row {
   cursor: pointer;
 }
@@ -2521,118 +1688,6 @@ onMounted(async () => {
   font-weight: 500;
 }
 
-/* ── 详情抽屉内的会话标题 + 标签编辑面板（2026-08-06）─────────────── */
-.session-meta-section {
-  background: var(--surface-primary);
-  border-radius: 6px;
-  padding: 8px 12px;
-  margin-top: 8px;
-}
-.session-meta-title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  margin-bottom: 8px;
-}
-.title-value {
-  font-weight: 500;
-  color: var(--kx-text-primary);
-}
-.title-missing {
-  color: var(--muted);
-  font-style: italic;
-}
-.title-input {
-  flex: 1 1 200px;
-  min-width: 180px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  background: var(--kx-bg-base);
-  color: var(--kx-text-primary);
-  font-size: 12px;
-}
-.session-meta-tags {
-  border-top: 1px dashed var(--border);
-  padding-top: 8px;
-  font-size: 12px;
-}
-.tags-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-.tags-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.tag-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
-  background: var(--kx-bg-container, transparent);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-.tag-row-add {
-  border-style: dashed;
-}
-.tag-key {
-  font-weight: 600;
-  color: var(--kx-text-primary);
-  font-family: ui-monospace, SFMono-Regular, monospace;
-  font-size: 11px;
-}
-.tag-sep {
-  color: var(--muted);
-}
-.tag-value {
-  color: var(--kx-text-primary);
-  word-break: break-word;
-}
-.tag-source {
-  font-size: 10px;
-  padding: 1px 6px;
-  border-radius: 8px;
-  background: var(--accent);
-  color: var(--kx-bg-base);
-  text-transform: lowercase;
-}
-.tag-source-auto {
-  background: var(--muted);
-}
-.tag-actions {
-  margin-left: auto;
-  display: flex;
-  gap: 4px;
-}
-.tag-input {
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--kx-bg-base);
-  color: var(--kx-text-primary);
-  font-size: 12px;
-  min-width: 80px;
-}
-.tag-input-value {
-  flex: 1 1 160px;
-  min-width: 120px;
-}
-.meta-error {
-  color: var(--danger);
-  font-size: 11px;
-}
-.btn-danger-ghost {
-  color: var(--danger);
-}
 .col-caller {
   min-width: 7rem;
   max-width: 11rem;
@@ -2719,21 +1774,6 @@ onMounted(async () => {
   border-color: var(--accent);
 }
 
-/* 2026-07-17: 详情抽屉内的流程详情按钮 — 暗色调, 与 btn-trace 一致。 */
-.btn-trace {
-  margin-left: auto;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text);
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.btn-trace:hover,
-.btn-trace-active {
-  border-color: var(--accent);
-  color: var(--accent-h);
-}
 .tenant-badge {
   display: inline-flex;
   align-items: center;
@@ -2745,12 +1785,12 @@ onMounted(async () => {
   color: var(--text-secondary);
 }
 .tenant-badge--admin {
-  background: rgba(59, 130, 246, 0.1);
-  color: #3b82f6;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .tenant-badge--default {
-  background: rgba(34, 197, 94, 0.1);
-  color: #22c55e;
+  background: var(--success-bg);
+  color: var(--success);
 }
 
 /* Round 47 compression v7: parent-child chain badge. */
@@ -2770,20 +1810,20 @@ onMounted(async () => {
   color: var(--text-secondary);
 }
 .compression-badge.strategy-mechanical_trim {
-  background: rgba(245, 158, 11, 0.1);
-  color: #b45309;
+  background: var(--warning-bg);
+  color: var(--warning-dark);
 }
 .compression-badge.strategy-memora_l1_inject {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: #6d28d9;
 }
 .compression-badge.strategy-llm_summary {
-  background: rgba(59, 130, 246, 0.1);
-  color: #1d4ed8;
+  background: var(--info-bg);
+  color: var(--accent);
 }
 .compression-badge.strategy-noop {
   background: rgba(107, 114, 128, 0.1);
-  color: #4b5563;
+  color: var(--muted);
 }
 /* v3 (2026-06-19) session-level compression strategies.
    Different color palette from v7 to make them visually distinguishable
@@ -2796,9 +1836,9 @@ onMounted(async () => {
 .compression-badge.strategy-sliding_window_token,
 .compression-badge.strategy-sliding_window_count,
 .compression-badge.strategy-sliding_window_idle {
-  background: color-mix(in srgb, #d946ef 12%, transparent);
+  background: color-mix(in srgb, var(--magenta) 12%, transparent);
   color: #7e22ce;
-  border: 1px solid color-mix(in srgb, #d946ef 30%, transparent);
+  border: 1px solid color-mix(in srgb, var(--magenta) 30%, transparent);
 }
 .col-compress {
   max-width: 180px;
@@ -2815,34 +1855,8 @@ onMounted(async () => {
   border-radius: 8px;
   font-size: 10px;
   font-weight: 600;
-  background: color-mix(in srgb, #d946ef 12%, transparent);
-  color: #c084fc;
-}
-/* v3 Outbound tab — highlight when outbound differs from request. */
-.outbound-diff-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 6px;
-  font-size: 10px;
-  font-weight: 500;
-  margin-left: 6px;
-  background: rgba(20, 184, 166, 0.1);
-  color: #0f766e;
-}
-.outbound-diff-badge.unchanged {
-  background: rgba(107, 114, 128, 0.08);
-  color: #6b7280;
-}
-.summary-marker-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 6px;
-  font-size: 10px;
-  font-weight: 500;
-  margin-left: 6px;
-  background: rgba(59, 130, 246, 0.1);
-  color: #1d4ed8;
-  font-family: var(--mono-font, ui-monospace, monospace);
+  background: color-mix(in srgb, var(--magenta) 12%, transparent);
+  color: var(--purple);
 }
 .parent-id {
   color: var(--text-secondary);
@@ -2939,99 +1953,6 @@ onMounted(async () => {
   background: var(--surface-primary, var(--bg-card));
 }
 
-/* ── 2026-07-01 (migration 325): 附件详情面板 + 大图预览 ─────────── */
-.attachments-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px;
-}
-.attachment-card {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--surface-primary, var(--bg-card));
-  display: flex;
-  flex-direction: column;
-}
-.attachment-thumb {
-  width: 100%;
-  height: 140px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface-secondary, var(--bg-subtle));
-  cursor: pointer;
-  overflow: hidden;
-}
-.attachment-thumb:hover {
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface-secondary, var(--bg-subtle)));
-}
-.attachment-img {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
-}
-.attachment-file-icon {
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--muted);
-  padding: 16px 20px;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-}
-.attachment-meta {
-  padding: 8px;
-  font-size: 11px;
-}
-.attachment-line1 {
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-.attachment-type {
-  color: var(--text-secondary);
-  font-family: var(--mono-font, ui-monospace, monospace);
-}
-.attachment-size {
-  color: var(--muted);
-  white-space: nowrap;
-}
-.attachment-line2 {
-  color: var(--muted);
-  font-size: 10px;
-  line-height: 1.35;
-  word-break: break-all;
-  margin-top: 2px;
-}
-.attachment-actions {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-}
-/* 大图预览遮罩 */
-.lightbox-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 2000;
-  background: rgba(0, 0, 0, 0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-.lightbox-img {
-  max-width: 92vw;
-  max-height: 88vh;
-  object-fit: contain;
-  border-radius: 4px;
-}
-.lightbox-close {
-  position: fixed;
-  top: 16px;
-  right: 24px;
-}
-
 /* 2026-08-09: 新筛选区样式 */
 .filter-section .filter-select {
   height: 32px;
@@ -3046,7 +1967,7 @@ onMounted(async () => {
 .filter-section .filter-select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 2px var(--info-bg);
 }
 .filter-section .filter-input {
   width: 100%;
@@ -3061,7 +1982,7 @@ onMounted(async () => {
 .filter-section .filter-input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+  box-shadow: 0 0 0 2px var(--info-bg);
 }
 .filter-section .filter-input::placeholder {
   color: var(--text-secondary);
@@ -3101,7 +2022,7 @@ onMounted(async () => {
 .preset-chip--active {
   border-color: var(--accent);
   color: var(--accent-h);
-  background: rgba(59, 130, 246, 0.12);
+  background: var(--info-bg);
 }
 .preset-chip--disabled { opacity: 0.45; cursor: not-allowed; }
 .preset-chip--disabled:hover { border-color: var(--border); color: var(--text); }

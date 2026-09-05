@@ -104,6 +104,10 @@ type PrepareResult struct {
 	// Nil when no rewrite was needed (forward clientBody as-is).
 	OutboundBody []byte
 
+	// RawSnapshot captures the client message snapshot before compression.
+	// It contains only a hash/counts and never the request body.
+	RawSnapshot MessageSnapshot
+
 	// MsgHashes is the per-message fingerprint array to persist in
 	// request_logs.outbound_msg_hashes.
 	MsgHashes json.RawMessage
@@ -114,6 +118,17 @@ type PrepareResult struct {
 
 	// TokenEst is the token estimate for OutboundBody.
 	TokenEst int
+
+	// TokenBand records the threshold classification of the fully assembled
+	// outbound body (prior compressed session layer plus current delta).
+	TokenBand OutboundTokenBand
+
+	// PriorLayerTokens is the cached estimate of the previous outbound layer.
+	PriorLayerTokens int
+
+	// CompressionReason distinguishes an absolute threshold rewrite from the
+	// existing context-window/count/idle triggers.
+	CompressionReason string
 
 	// CompressionStrategy is the strategy that fired (or "" = no rewrite).
 	// Written to request_logs.compression_strategy.
@@ -200,13 +215,22 @@ func (sc *SessionCompressor) Prepare(
 	contextWindow int,
 	streamStarted bool,
 ) *PrepareResult {
-	res := &PrepareResult{}
+	res := &PrepareResult{RawSnapshot: SnapshotForBody(clientBody)}
 
 	if sc == nil || sc.deps.Disabled || gwSessionID == "" {
 		return sc.fallbackResult(clientBody, res)
 	}
 
-	// ── Phase 0: Validate session ID to prevent cross-talk ───────────────
+	// ── Phase 0a: Enforce hard body size limit (P1-10) ───────────────────
+	const maxBodySize = 50 * 1024 * 1024 // 50 MB
+	if len(clientBody) > maxBodySize {
+		slog.Warn("session_compressor: body exceeds 50MB limit, rejecting compression",
+			"session", gwSessionID, "tenant", tenantID, "body_size", len(clientBody), "limit", maxBodySize)
+		// Return original body without compression to avoid OOM
+		return sc.fallbackResult(clientBody, res)
+	}
+
+	// ── Phase 0b: Validate session ID to prevent cross-talk ──────────────
 	if err := ValidateSessionID(gwSessionID); err != nil {
 		slog.Warn("session_compressor: invalid session_id, treating as new session",
 			"session", gwSessionID, "tenant", tenantID, "error", err)
@@ -293,8 +317,25 @@ func (sc *SessionCompressor) Prepare(
 	}
 
 	// ── Phase 4: v4 Smart modes ──────────────────────────────────────────
-	// delta_only and legacy/off modes never compress: delta-append only.
-	if mode == ModeDeltaOnly || (mode != ModeSmart && mode != ModeAggressive) {
+	// Keep explicit off/delta-only modes authoritative. Other legacy modes can
+	// be promoted for this request when the assembled outbound body exceeds the
+	// absolute threshold; the later window check re-evaluates after safe strips.
+	preliminaryBand := classifyOutboundTokenBand(res.TokenEst)
+	res.TokenBand = preliminaryBand
+	if state != nil {
+		res.PriorLayerTokens = state.TokenEstimate
+	}
+	switch preliminaryBand {
+	case OutboundTokenBandForced:
+		res.CompressionReason = "token_threshold_forced_absolute"
+		if mode != ModeOff && mode != ModeDeltaOnly {
+			mode = ModeSmart
+		}
+	case OutboundTokenBandPreliminary:
+		res.CompressionReason = "token_threshold_preliminary"
+	}
+
+	if mode == ModeOff || mode == ModeDeltaOnly || (mode != ModeSmart && mode != ModeAggressive) {
 		if !diffResult.Unchanged && !diffResult.IsNewSess {
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
@@ -333,6 +374,15 @@ func (sc *SessionCompressor) Prepare(
 
 	// ── Phase 5: Window trigger check ─────────────────────────────────────
 	winResult := ShouldTriggerWindow(outboundBody, state, contextWindow, streamStarted, time.Now())
+	res.TokenBand = winResult.TokenBand
+	res.PriorLayerTokens = winResult.PriorLayerTokens
+	res.CompressionReason = ""
+	switch winResult.TokenBand {
+	case OutboundTokenBandForced:
+		res.CompressionReason = "token_threshold_forced_absolute"
+	case OutboundTokenBandPreliminary:
+		res.CompressionReason = "token_threshold_preliminary"
+	}
 
 	if winResult.SkipStream {
 		if !diffResult.Unchanged && !diffResult.IsNewSess {
@@ -472,7 +522,11 @@ func (sc *SessionCompressor) Prepare(
 			// summary model is erroring, skip the call (and its quota/latency
 			// cost) and go straight to mechanical trim until the breaker resets.
 			taskType := extractTaskType(ctx)
+			if winResult.TokenBand == OutboundTokenBandForced {
+				taskType = "document_summary"
+			}
 			now := time.Now()
+
 			allow, _ := sc.breaker.allowDecide(now)
 			var (
 				summarised []byte
@@ -482,7 +536,10 @@ func (sc *SessionCompressor) Prepare(
 				slog.Warn("session_compressor: summary breaker open, skipping LLM summary",
 					"session", gwSessionID, "trigger", winResult.Reason)
 			} else {
-				summarised, ok = sc.tryLLMSummary(ctx, outboundBody, tenantID, protocol, taskType)
+				// SP-03 (2026-08-19): route through the fallback wrapper so
+				// the LLM summary path can honour ctx cancellation (state
+				// machine cancels are propagated via the request ctx).
+				summarised, ok = sc.tryLLMSummaryWithFallback(ctx, outboundBody, tenantID, protocol, taskType)
 				// Record outcome: success only when it produced a usable, smaller body.
 				sc.breaker.RecordResult(ok && len(summarised) > 0 && len(summarised) < len(outboundBody), time.Now())
 			}
@@ -501,7 +558,7 @@ func (sc *SessionCompressor) Prepare(
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
-				res.AlignmentMap = buildAlignmentMap(before, outboundBody, summaryMessageIndex(outboundBody, protocol))
+				res.AlignmentMap = buildAlignmentMapForProtocol(before, outboundBody, summaryMessageIndex(outboundBody, protocol), protocol)
 			} else {
 				// LLM summary failed or didn't shrink — fall back to mechanical trim.
 				slog.Info("session_compressor: LLM summary failed/no-op, falling back to mechanical trim",
@@ -673,6 +730,17 @@ func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, ten
 		return nil, false
 	}
 
+	// SP-03 (2026-08-19): bail out early when ctx is already canceled so
+	// the LLM summary path never issues a network request after the
+	// state machine has signalled cancellation. The summarizer client
+	// also honours ctx, but the early exit avoids creating a new
+	// summarizer instance only to throw it away.
+	if err := ctx.Err(); err != nil {
+		slog.DebugContext(ctx, "session_compressor: ctx already canceled, skipping LLM summary",
+			"tenant", tenantID, "session", "<masked>")
+		return nil, false
+	}
+
 	conversation, err := extractConversationText(body, protocol)
 	if err != nil || strings.TrimSpace(conversation) == "" {
 		return nil, false
@@ -693,6 +761,36 @@ func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, ten
 		return nil, false
 	}
 	return newBody, true
+}
+
+// tryLLMSummaryWithFallback (SP-03, 2026-08-19) wraps tryLLMSummary so the
+// LLM summary path can honour ctx cancellation without touching the
+// underlying cache get/set semantics. The wrapper checks ctx first, runs
+// tryLLMSummary, then re-checks ctx before returning so a cancellation
+// that arrived mid-summary is reflected back to the caller as a no-op
+// (rather than silently shipping a summary that landed after the client
+// gave up).
+//
+// tryLLMSummaryWithFallback preserves the (body, ok) signature of
+// tryLLMSummary and is the only entry point the rest of the package
+// should call.
+func (sc *SessionCompressor) tryLLMSummaryWithFallback(ctx context.Context, body []byte, tenantID, protocol, taskType string) ([]byte, bool) {
+	if err := ctx.Err(); err != nil {
+		slog.DebugContext(ctx, "session_compressor: fallback skipping LLM summary (ctx canceled)",
+			"tenant", tenantID)
+		return nil, false
+	}
+	out, ok := sc.tryLLMSummary(ctx, body, tenantID, protocol, taskType)
+	// Re-check ctx after the call: if cancellation arrived while the
+	// LLM summary was in flight, the cached summarizer may have produced
+	// a result, but the client is gone — discard it instead of letting
+	// downstream code emit "still compressing" telemetry.
+	if err := ctx.Err(); err != nil && ok {
+		slog.DebugContext(ctx, "session_compressor: fallback discarding result due to ctx cancellation",
+			"tenant", tenantID)
+		return nil, false
+	}
+	return out, ok
 }
 
 func rebuildBodyAfterSummary(body []byte, summaryText, protocol string) ([]byte, bool) {
@@ -761,6 +859,9 @@ func hydrateSanitizeInfo(ctx context.Context, state *SessionState) {
 	if info.Stats.PlaceholderCount > 0 || info.Stats.SanitizedAt > 0 {
 		state.SanitizeStats = info.Stats
 	}
+	if len(info.MessageRefs) > 0 {
+		state.SanitizeMessageRefs = append([]SanitizedMessageRef(nil), info.MessageRefs...)
+	}
 }
 
 // CommitFinal overwrites the compatible Prepare-time cache entry with the
@@ -815,8 +916,12 @@ func buildSessionState(prevState *SessionState, outboundBody []byte, res *Prepar
 	state.LastOutboundHash = sha256Hex(outboundBody)
 	state.MsgCount = res.MsgCount
 	state.TokenEstimate = res.TokenEst
-	state.RawMsgCount = countMessages(outboundBody)
-	state.RawTokenEstimate = estimateBodyTokens(outboundBody)
+	if !res.RawSnapshot.IsZero() {
+		state.RawSnapshot = res.RawSnapshot
+		state.RawMsgCount = res.RawSnapshot.MessageCount
+		state.RawTokenEstimate = res.RawSnapshot.TokenEstimate
+	}
+	state.CompressedSnapshot = SnapshotForBody(outboundBody)
 	state.CompressedMsgs = res.MsgCount
 	state.CompressedTokens = res.TokenEst
 	if res.CompressedPrefixHash != "" {
@@ -1215,6 +1320,30 @@ func (sc *SessionCompressor) loadV2CompressionState(ctx context.Context, tenantI
 	state.MsgCount = intMeta(meta["msg_count"])
 	state.LastCompressedAt = unixMeta(meta["last_compressed_at"])
 	state.RecentlyCompressedAt = unixMeta(meta["recently_compressed_at"])
+	if cut, ok := meta["cut_marker"].(map[string]interface{}); ok && len(cut) > 0 {
+		state.CutStrategy, _ = cut["strategy"].(string)
+		state.CutCreatedAt = int64Meta(cut["created_at"])
+		state.CutSourceMsgs = intMeta(cut["source_msg_count"])
+		state.CutSystemMsgs = intMeta(cut["system_msg_count"])
+		state.CutIndex = intMeta(cut["cut_index"])
+		state.CutBytesBefore = intMeta(cut["bytes_before"])
+		state.CutBytesAfter = intMeta(cut["bytes_after"])
+		if marker, ok := cut["summary_marker"].(string); ok && marker != "" {
+			state.SummaryMarker = marker
+		}
+		if psor := intPairMeta(cut["pre_sanitize_offset_range"]); psor != nil {
+			state.CutPreSanitizeStart, state.CutPreSanitizeEnd = psor[0], psor[1]
+		}
+		state.HasCutMarker = state.CutIndex > 0 && state.CutSourceMsgs >= state.CutSystemMsgs+state.CutIndex
+	}
+	if psor := intPairMeta(meta["pre_sanitize_offset_range"]); psor != nil {
+		state.CutPreSanitizeStart, state.CutPreSanitizeEnd = psor[0], psor[1]
+	}
+	if ref, ok := meta["sanitize_map_ref"].(string); ok {
+		state.SanitizeMapRef = ref
+	}
+	decodeMetaRecords(meta["alignment_map"], &state.AlignmentMap)
+	decodeMetaRecords(meta["sanitize_message_refs"], &state.SanitizeMessageRefs)
 	return state
 }
 
@@ -1222,10 +1351,72 @@ func intMeta(v any) int {
 	switch n := v.(type) {
 	case int:
 		return n
+	case int8:
+		return int(n)
+	case int16:
+		return int(n)
+	case int32:
+		return int(n)
 	case int64:
+		return int(n)
+	case uint:
+		return int(n)
+	case uint8:
+		return int(n)
+	case uint16:
+		return int(n)
+	case uint32:
+		return int(n)
+	case uint64:
+		return int(n)
+	case float32:
 		return int(n)
 	case float64:
 		return int(n)
+	default:
+		return 0
+	}
+}
+
+func intPairMeta(v any) []int {
+	switch values := v.(type) {
+	case []int:
+		if len(values) == 2 {
+			return []int{values[0], values[1]}
+		}
+	case []interface{}:
+		if len(values) == 2 {
+			return []int{intMeta(values[0]), intMeta(values[1])}
+		}
+	}
+	return nil
+}
+
+func decodeMetaRecords[T any](value any, dst *[]T) {
+	if dst == nil || value == nil {
+		return
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	_ = json.Unmarshal(raw, dst)
+}
+
+func int64Meta(v any) int64 {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case int64:
+		return n
+	case uint:
+		return int64(n)
+	case uint64:
+		return int64(n)
+	case float64:
+		return int64(n)
+	case float32:
+		return int64(n)
 	default:
 		return 0
 	}

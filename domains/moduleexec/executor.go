@@ -599,13 +599,19 @@ func (e *Executor) InvalidateCache(ctx context.Context, tenantID, sessionID, mod
 
 	// 清理 Redis 缓存（如果有）
 	if e.enableRedis {
-		pattern := "module:exec:" + compositeKeyPrefix(tenantID, sessionID, moduleName)
-		keys, redisErr := e.redis.Keys(ctx, pattern).Result()
-		if redisErr != nil {
-			e.logger.Warn("list module execution cache keys failed", "error", redisErr, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
+		// 2026-08-25: KEYS → SCAN. KEYS 是 O(N) 全键扫描, 在 73 万 key 的共享 Redis
+		// 上耗时 86ms+ 且阻塞 Redis 主线程. SCAN 是 cursor 增量扫描, 不阻塞.
+		pattern := "module:exec:" + compositeKeyPrefix(tenantID, sessionID, moduleName) + "*"
+		var collected []string
+		iter := e.redis.Scan(ctx, 0, pattern, 200).Iterator()
+		for iter.Next(ctx) {
+			collected = append(collected, iter.Val())
 		}
-		if len(keys) > 0 {
-			if redisErr := e.redis.Del(ctx, keys...).Err(); redisErr != nil {
+		if err := iter.Err(); err != nil {
+			e.logger.Warn("scan module execution cache keys failed", "error", err, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
+		}
+		if len(collected) > 0 {
+			if redisErr := e.redis.Del(ctx, collected...).Err(); redisErr != nil {
 				e.logger.Warn("invalidate module execution cache failed", "error", redisErr, "tenant_id", tenantID, "session_id", sessionID, "module", moduleName)
 			}
 		}

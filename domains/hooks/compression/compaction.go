@@ -257,6 +257,14 @@ func compactionPromptForTaskType(taskType string) string {
 - Test names and assertion messages: verbatim
 - Variable/function renames: record both old and new names`
 
+	case "document_summary":
+		return compactionSystemPrompt + `
+
+## 文档总结任务附加保留规则：
+- 关键事实、任务、约束、决定、精确数值、代码和引用必须保留
+- 删除重复内容，但不得删除仍可能影响后续执行的上下文
+- 不要编造原文没有的结论`
+
 	case "doc_translate":
 		return compactionSystemPrompt + `
 
@@ -803,6 +811,9 @@ func truncateForLog(b []byte, n int) string {
 // summary quality — the LLM has to switch language mid-call. This function
 // keeps both halves of the prompt in the same language.
 func buildUserSummaryInstruction(taskType, conversation string) string {
+	if taskType == "document_summary" {
+		return "请压缩以下长文档/会话，保留关键事实、任务、约束、决定、精确数值、代码和引用；删除重复内容；不要编造缺失信息：\n\n" + conversation
+	}
 	if strings.HasPrefix(taskType, "code_") || strings.HasPrefix(taskType, "data_") {
 		return "Summarize the following conversation history:\n\n" + conversation
 	}

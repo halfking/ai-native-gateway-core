@@ -931,7 +931,7 @@ INSERT INTO public.providers VALUES (847, 'default', 'glm-5.2-oneday', 'glm-5.2�
 INSERT INTO public.providers VALUES (581, 'default', 'glm-xianyu', 'glm-xianyu', NULL, true, NULL, '[]', 'cloud', 'official', 'openai-completions', 'https://api.tokenhub.market/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-19 18:57:15.425102+00', '2026-06-19 18:57:15.425102+00', true, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (67, 'default', 'minimax-anthropic', 'MiniMax (Anthropic)', 'minimax', false, NULL, '[]', 'cloud', 'official', 'anthropic-messages', 'https://api.minimaxi.com/anthropic', 'direct', true, 1.0000, false, 1.000, NULL, 'auto-created for anthropic passthrough (2026-06-12)', '2026-06-12 14:34:13.538285+00', '2026-06-22 18:05:47.4362+00', true, 'off') ON CONFLICT DO NOTHING;
 INSERT INTO public.providers VALUES (2451, 'default', 'apigpt', 'apigpt', NULL, true, NULL, '[]', 'cloud', 'third_party_relay', 'openai-completions', 'https://apiclaude.cc/v1', 'direct', true, 1.0000, true, 1.000, NULL, NULL, '2026-06-24 10:56:08.632177+00', '2026-06-24 11:00:04.429059+00', false, 'off') ON CONFLICT DO NOTHING;
-INSERT INTO public.routing_policy VALUES (1, 'default', '{"price": 0.20, "speed": 0.15, "credibility": 0.25, "discount_bonus": 0.05, "domestic_bonus": 0.10, "remaining_quota": 0.15, "concurrency_used": 0.10}', 1800, 0.000, 'v14 default; tune via admin UI', '2026-06-11 16:22:39.910792+00', 2, 1, 4, 1.00, 1.50, 200, 300, 5, 1800, '{claude-sonnet-5,claude-fable-5,claude-opus-4-8,claude-sonnet-4-6,gpt-5.4,o5-preview,gemini-2.0-flash-exp,qwen3-235b,minimax-m3,deepseek-chat,deepseek-coder,glm-4v-plus,mimo-v2.5-pro,moonshot-v1-128k,codestral}', 2, 10, 60, '{"price": 10, "session_load": 5, "failure_penalty": 20, "default_price_cny": 5.0, "default_price_usd": 5.0}') ON CONFLICT DO NOTHING;
+INSERT INTO public.routing_policy VALUES (1, 'default', '{"price": 0.20, "speed": 0.15, "credibility": 0.25, "discount_bonus": 0.05, "domestic_bonus": 0.10, "remaining_quota": 0.15, "concurrency_used": 0.10}', 1800, 0.000, 'v14 default; tune via admin UI', '2026-06-11 16:22:39.910792+00', 2, 1, 4, 1.00, 1.50, 200, 300, 5, 1800, '{claude-opus-4-8,claude-sonnet-4-6,deepseek-v4-pro,doubao-1-5-pro-32k,gemini-3-flash-preview,gemini-3.5-flash,glm-4-7,glm-5.1,glm-5.2,gpt-5.4,gpt-5.4-pro,gpt-5.5,mimo-v2.5,mimo-v2.5-pro,minimax-2.7,minimax-m2.5,minimax-m2.7,minimax-m2.7-highspeed,minimax-m3}', 2, 10, 60, '{"price": 10, "session_load": 5, "failure_penalty": 20, "default_price_cny": 5.0, "default_price_usd": 5.0}') ON CONFLICT DO NOTHING;
 INSERT INTO public.schema_migrations VALUES ('100', 'credential_state_machine', '2026-06-11 16:22:52.998711+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.schema_migrations VALUES ('230', 'transient_fail_threshold', '2026-06-11 16:41:02.120338+00') ON CONFLICT DO NOTHING;
 INSERT INTO public.schema_migrations VALUES ('231', 'model_offer_unavailable_reason', '2026-06-11 16:41:03.999395+00') ON CONFLICT DO NOTHING;
@@ -998,17 +998,106 @@ INSERT INTO public.work_type_config VALUES ('meeting_summary', '会议纪要', '
 INSERT INTO public.work_type_config VALUES ('compliance_audit', '合规审计', '企业', 'reasoning', 'smart', '{compliance,audit}', '{合规,审计,风控,政策}', NULL, true, 22, NULL, '2026-06-14 19:11:16.200703+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_config VALUES ('session_title', '会话标题生成', '企业', 'creative', 'cost_first', '{session,title,admin,gateway}', '{标题,会话,总结,主题}', NULL, true, 23, NULL, '2026-06-18 18:23:51.006312+00', '你是会话标题生成助手。根据下方完整多轮会话日志，用中文生成一个简短准确的标题（不超过18字），概括用户目标与会话结果。只输出标题纯文本：不要引号、编号、解释、XML/HTML 标签、thinking/redacted 标记或英文占位符。') ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_config VALUES ('session_summary', '会话日志总结', '企业', 'creative', 'cost_first', '{session,summary,admin,gateway}', '{总结,摘要,会话,日志}', NULL, true, 24, NULL, '2026-06-18 18:23:51.006312+00', '你是会话日志分析助手。请严格输出 JSON，格式如下：
-{"summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"]}
+{"title":"简短准确的中文会话标题（12-20字）","summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"],"user_intent":"用户核心目标"}
 要求：
+- title 概括用户当前目标与已取得的结果，不要使用引号或解释
 - summary 必须是完整句子，涵盖：做了什么、怎么做的、结果如何
 - key_points 提取 3-5 个关键事实或决策点，每条 15-40 字
 - 不要输出 JSON 以外的任何文本
 - 如果语料中包含错误信息，务必在总结中提及') ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (1, 'session_title', 'minimax-m2.7', 1.00, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (2, 'session_title', 'glm-5.1', 0.95, 0.0000, true) ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_model_route VALUES (3, 'session_title', 'minimax-m3', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_model_route VALUES (4, 'session_title', 'deepseek-chat', 0.85, 0.0000, true) ON CONFLICT DO NOTHING;
+INSERT INTO public.work_type_model_route VALUES (3, 'session_title', 'deepseek-v4-flash', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (5, 'session_summary', 'minimax-m2.7', 1.00, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (6, 'session_summary', 'glm-5.1', 0.95, 0.0000, true) ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_model_route VALUES (7, 'session_summary', 'minimax-m3', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_model_route VALUES (8, 'session_summary', 'deepseek-chat', 0.85, 0.0000, true) ON CONFLICT DO NOTHING;
+INSERT INTO public.work_type_model_route VALUES (7, 'session_summary', 'deepseek-v4-flash', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
+
+
+-- =============================================================================
+-- Standard models rollout (feat/standard-models-rollout, 2026-08-20)
+-- Synchronized across sql/schema/02-seed.sql, deploy/sql/schemas/baseline/02-seed.sql,
+-- installer/cmd/llm-gw-installer/embeddata/02-seed.sql.
+--
+-- These rows are required so a fresh DB — where migrations 352-358 have NOT yet
+-- been applied — still lists grok-4.6 / kimi-k* / gemini-3.* in the catalog UI
+-- before the migration runner executes. The migration files remain the source of
+-- truth; this section only mirrors the IDs into the seed payload.
+--
+-- Idempotent: every INSERT uses ON CONFLICT (canonical_name) DO NOTHING /
+-- (canonical_id, raw_name) DO NOTHING. Re-importing a dump over an existing DB
+-- is safe — the seed never overwrites operator-edited rows.
+-- =============================================================================
+
+-- grok-4.6 (mirrors migration 352 + 611 correction)
+-- 2026-08-29: 611 验证 xAI Grok-4 product page → 262144 (256K) context, vision.
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES ('grok-4.6', 'grok', 262144, 'vision', 'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- kimi-k3 / kimi-k2.6 / kimi-k2.7-code / kimi-k2.7-code-highspeed
+-- (mirror 354 + 358 modality + 611 correction)
+-- 2026-08-29: 611 验证 modelname/modality_defaults.go 注释:
+--   kimi-k3 = 1M context, multimodal; kimi-k2.6 = 256K context, vision;
+--   kimi-k2.7-code* = 256K context, text (无 vision input).
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES
+    ('kimi-k3',                   'kimi', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.6',                 'kimi',  262144, 'vision',     'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.7-code',            'kimi',  262144, 'text',       'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('kimi-k2.7-code-highspeed',  'kimi',  262144, 'text',       'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- gemini-3.* (mirror 355 + 611 context window fill)
+-- 2026-08-29: 611 验证 ai.google.dev Gemini API docs → 1M context, multimodal.
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES
+    ('gemini-3.6-flash',         'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.5-flash',         'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.5-flash-lite',    'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-lite',    'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-lite-image','google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-pro-preview',   'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3.1-flash-image',   'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3-pro-image',       'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-3-flash-preview',   'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('gemini-omni-flash',        'google-gemini', 1048576, 'multimodal', 'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- glm-5.3 (mirror 354 + 611 correction)
+-- 2026-08-29: 611 验证 Z.AI GLM-5.3 → 1M context, text reasoning.
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES ('glm-5.3', 'glm', 1048576, 'text', 'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- glm-5 / glm-5.1 / glm-5.2 (mirror seed + 611 correction)
+-- 2026-08-29: 611 验证 Zhipu bigmodel.cn + provider_catalog → 128K context, text.
+INSERT INTO public.models_canonical (canonical_name, family, context_window, modality, status, source, created_at, updated_at)
+VALUES
+    ('glm-5',   'zhipu-glm', 131072, 'text', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('glm-5.1', 'zhipu-glm', 131072, 'text', 'active', 'seed-standard-rollout', NOW(), NOW()),
+    ('glm-5.2', 'zhipu-glm', 131072, 'text', 'active', 'seed-standard-rollout', NOW(), NOW())
+ON CONFLICT (canonical_name) DO NOTHING;
+
+-- Vendor-prefix aliases (mirror migration 360). Each INSERT resolves canonical_id
+-- from models_canonical.canonical_name, so re-runs after the migration have applied
+-- are still a no-op (UNIQUE on (canonical_id, raw_name) holds).
+INSERT INTO public.model_aliases (canonical_id, raw_name, status, notes, created_at, updated_at)
+SELECT id, 'openai/grok-4.6', 'active', 'OpenRouter-style vendor prefix', NOW(), NOW()
+FROM public.models_canonical WHERE canonical_name = 'grok-4.6'
+ON CONFLICT (canonical_id, raw_name) DO NOTHING;
+
+INSERT INTO public.model_aliases (canonical_id, raw_name, status, notes, created_at, updated_at)
+SELECT id, 'moonshot-v1/kimi-k3', 'active', 'Moonshot v1 path alias', NOW(), NOW()
+FROM public.models_canonical WHERE canonical_name = 'kimi-k3'
+ON CONFLICT (canonical_id, raw_name) DO NOTHING;
+
+INSERT INTO public.model_aliases (canonical_id, raw_name, status, notes, created_at, updated_at)
+SELECT id, 'moonshot-v1/kimi-k2.6', 'active', 'Moonshot v1 path alias', NOW(), NOW()
+FROM public.models_canonical WHERE canonical_name = 'kimi-k2.6'
+ON CONFLICT (canonical_id, raw_name) DO NOTHING;
+
+INSERT INTO public.model_aliases (canonical_id, raw_name, status, notes, created_at, updated_at)
+SELECT id, 'google/' || canonical_name, 'active', 'Google AI Studio path prefix', NOW(), NOW()
+FROM public.models_canonical
+WHERE family = 'google-gemini' AND canonical_name LIKE 'gemini-3%'
+ON CONFLICT (canonical_id, raw_name) DO NOTHING;

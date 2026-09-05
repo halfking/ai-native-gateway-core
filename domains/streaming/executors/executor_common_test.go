@@ -1,10 +1,7 @@
 package executors
 
 import (
-	"context"
-	"errors"
 	"testing"
-	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/credential" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
@@ -23,53 +20,13 @@ func newLimiterForTest() *credential.Limiter {
 	return credential.NewLimiter()
 }
 
-func TestCommonExecutor_RetryOnTransient(t *testing.T) {
-	cm := newCircuitManagerForTest()
-	lim := newLimiterForTest()
-	ce := &CommonExecutor{
-		Circuit:              cm,
-		Limiter:              lim,
-		UpstreamTimeout:      5 * time.Second,
-		StreamTimeout:        30 * time.Second,
-		StreamRetryThreshold: 50,
-		providerID:           1,
-		credentialID:         1,
-	}
-	attempts := 0
-	err := ce.RunWithCredential(context.Background(), func(attempt int) error {
-		attempts++
-		if attempt < 2 {
-			return &retryableError{err: errors.New("transient")}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("RunWithCredential: %v", err)
-	}
-	if attempts != 3 {
-		t.Errorf("expected 3 attempts (2 transient + 1 success), got %d", attempts)
-	}
-}
-
-func TestCommonExecutor_NoRetryOnFatal(t *testing.T) {
-	cm := newCircuitManagerForTest()
-	lim := newLimiterForTest()
-	ce := &CommonExecutor{
-		Circuit:         cm,
-		Limiter:         lim,
-		UpstreamTimeout: 5 * time.Second,
-		providerID:      1,
-		credentialID:    1,
-	}
-	attempts := 0
-	err := ce.RunWithCredential(context.Background(), func(attempt int) error {
-		attempts++
-		return errors.New("fatal 4xx")
-	})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if attempts != 1 {
-		t.Errorf("fatal should not retry, got %d attempts", attempts)
-	}
+// wireDispatchPipelineForTest wires the real V2 dispatch pipeline (the only
+// execute path since AUDIT_24H B2b retired the legacy sync candidate loop)
+// so Execute-driven tests exercise the production path.
+func wireDispatchPipelineForTest(t *testing.T, e *Executor) {
+	t.Helper()
+	p := e.NewDispatchPipeline()
+	p.Start()
+	t.Cleanup(p.Stop)
+	e.SetDispatchPipeline(p)
 }

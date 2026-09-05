@@ -7,6 +7,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
 // ApplyAdmin writes a manual hold (or release) decision to the v2 store.
@@ -17,14 +18,35 @@ func (m *Manager) ApplyAdmin(ctx context.Context, a api.AdminAction) error {
 	if m == nil || m.store == nil {
 		return fmt.Errorf("ursm.v2: nil manager")
 	}
-	key := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, a.TenantID, a.CredentialID, a.RawModel)
+	if !m.scope.Allows(a.TenantID, a.CredentialID, a.RawModel) {
+		return fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrOutOfScope, a.TenantID, a.CredentialID, a.RawModel)
+	}
+	legacyKey := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, a.TenantID, a.CredentialID, a.RawModel)
+	keys := []string{legacyKey}
+	schemaMode := m.store.KeySchemaMode()
+	if schemaMode != store.KeySchemaModeLegacy {
+		k2Key, err := store.K2NodeKeyForTenant(m.cfg.RedisKeyPrefix, a.TenantID, a.CredentialID, a.RawModel)
+		if err != nil {
+			return fmt.Errorf("ursm.v2: derive k2 admin key: %w", err)
+		}
+		if schemaMode == store.KeySchemaModeCanonical {
+			keys[0] = k2Key
+		} else {
+			keys = append(keys, k2Key)
+		}
+	}
 	disabled := "0"
 	if a.ManualDisabled != nil && *a.ManualDisabled {
 		disabled = "1"
 	}
-	_, err := store.ApplyAdminScript.Run(ctx, m.store.RawClient(),
-		[]string{key}, disabled, a.Actor, a.Reason,
-		fmt.Sprintf("%d", a.IssuedAtMs)).Slice()
+	var err error
+	if schemaMode == store.KeySchemaModeDual {
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ApplyAdminDualScript, "apply_admin_dual.lua", keys, disabled, a.Actor, a.Reason,
+			fmt.Sprintf("%d", a.IssuedAtMs)).Slice()
+	} else {
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ApplyAdminScript, "apply_admin.lua", keys, disabled, a.Actor, a.Reason,
+			fmt.Sprintf("%d", a.IssuedAtMs)).Slice()
+	}
 	if err != nil {
 		return fmt.Errorf("ursm.v2: apply_admin: %w", err)
 	}
@@ -54,9 +76,31 @@ func (m *Manager) ClearStateForTenant(ctx context.Context, tenant string, creden
 	if m == nil || m.store == nil {
 		return fmt.Errorf("ursm.v2: nil manager")
 	}
-	key := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, credentialID, rawModel)
-	_, err := store.ClearStateScript.Run(ctx, m.store.RawClient(),
-		[]string{key}, fmt.Sprintf("%d", time.Now().UnixMilli())).Slice()
+	if !m.scope.Allows(tenant, credentialID, rawModel) {
+		return fmt.Errorf("%w: tenant=%q credential_id=%d model=%q", ErrOutOfScope, tenant, credentialID, rawModel)
+	}
+	legacyKey := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, credentialID, rawModel)
+	keys := []string{legacyKey}
+	schemaMode := m.store.KeySchemaMode()
+	if schemaMode != store.KeySchemaModeLegacy {
+		k2Key, err := store.K2NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, credentialID, rawModel)
+		if err != nil {
+			return fmt.Errorf("ursm.v2: derive k2 clear-state key: %w", err)
+		}
+		if schemaMode == store.KeySchemaModeCanonical {
+			keys[0] = k2Key
+		} else {
+			keys = append(keys, k2Key)
+		}
+	}
+	var err error
+	if schemaMode == store.KeySchemaModeDual {
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ClearStateDualScript, "clear_state_dual.lua", keys,
+			fmt.Sprintf("%d", time.Now().UnixMilli())).Slice()
+	} else {
+		_, err = redissafe.RunScript(ctx, m.store.RawClient(), store.ClearStateScript, "clear_state.lua", keys,
+			fmt.Sprintf("%d", time.Now().UnixMilli())).Slice()
+	}
 	if err != nil {
 		return fmt.Errorf("ursm.v2: clear_state: %w", err)
 	}

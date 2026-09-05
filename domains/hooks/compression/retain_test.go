@@ -147,6 +147,162 @@ func TestRetained_IsPinned_NilSafety(t *testing.T) {
 	}
 }
 
+func TestExtractOpenAI_SkipsSystemReminderForFirstUser(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"<system-reminder>The following skills are available...</system-reminder>"},
+		{"role":"user","content":"first real user message"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ret.IsPinnedFirstUser() {
+		t.Fatal("first real user must still be pinned")
+	}
+	if jsonContains(ret.FirstUser, "system-reminder") {
+		t.Error("system-reminder must not be pinned as first user")
+	}
+	if !jsonContains(ret.FirstUser, "first real user message") {
+		t.Error("the first real user message must be pinned")
+	}
+	if ret.FirstUserIndex != 1 {
+		t.Errorf("FirstUserIndex: want 1, got %d", ret.FirstUserIndex)
+	}
+}
+
+func TestExtractOpenAI_SkipsSystemReminderTextBlock(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":[{"type":"input_text","text":"<system-reminder>Available skills</system-reminder>"}]},
+		{"role":"assistant","content":"ack"},
+		{"role":"user","content":"continue the task"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret.FirstUserIndex != 2 || !jsonContains(ret.FirstUser, "continue the task") {
+		t.Fatalf("unexpected first user: index=%d message=%s", ret.FirstUserIndex, stringValue(ret.FirstUser))
+	}
+}
+
+func TestExtractOpenAI_SkipsSystemReminderOutputTextBlock(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":[{"type":"output_text","text":"<system-reminder>Available skills</system-reminder>"}]},
+		{"role":"user","content":"continue the task"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret.FirstUserIndex != 1 || !jsonContains(ret.FirstUser, "continue the task") {
+		t.Fatalf("unexpected first user: index=%d message=%s", ret.FirstUserIndex, stringValue(ret.FirstUser))
+	}
+}
+
+func TestExtractOpenAI_DoesNotSkipMixedSystemReminderText(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"<system-reminder>context</system-reminder> Please do this task"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret.FirstUserIndex != 0 || !jsonContains(ret.FirstUser, "Please do this task") {
+		t.Error("a message containing real user text must remain the first user")
+	}
+}
+
+// TestExtractOpenAI_SkipsSummaryMarkerForFirstUser covers the real-world
+// marker-nesting bug (audit #6): when a session has already gone through
+// one LLM-summary compression round, the outbound body's first "user"
+// message is the gateway-injected smm_v1 marker, not the real user intent.
+// If extractOpenAI pinned that marker as B-track (FirstUser), the next
+// compression round's RebuildOpenAIAfterSummary would re-emit it verbatim
+// alongside the freshly generated marker, nesting summaries indefinitely.
+func TestExtractOpenAI_SkipsSummaryMarkerForFirstUser(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"` + CompactionMarkerPrefix + `deadbeef]\n[Gateway compacted conversation summary...]\nprior summary text"},
+		{"role":"user","content":"turn1 user"},
+		{"role":"assistant","content":"turn1 assistant"}
+	]}`)
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ret.IsPinnedFirstUser() {
+		t.Fatal("real first user must still be pinned")
+	}
+	if jsonContains(ret.FirstUser, CompactionMarkerPrefix) {
+		t.Error("summary marker message must not be pinned as first user")
+	}
+	if !jsonContains(ret.FirstUser, "turn1 user") {
+		t.Error("the real first user message must be pinned")
+	}
+	if ret.FirstUserIndex != 1 {
+		t.Errorf("FirstUserIndex: want 1, got %d", ret.FirstUserIndex)
+	}
+}
+
+func TestExtractAnthropic_SkipsSummaryMarkerForFirstUser(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"` + CompactionMarkerPrefix + `deadbeef]\n[Gateway compacted conversation summary...]\nprior summary text"},
+		{"role":"user","content":"turn1 user"}
+	]}`)
+	ret, err := extractAnthropic(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret.FirstUserIndex != 1 || !jsonContains(ret.FirstUser, "turn1 user") {
+		t.Fatalf("unexpected first user: index=%d message=%s", ret.FirstUserIndex, stringValue(ret.FirstUser))
+	}
+}
+
+func TestExtractAnthropic_SkipsSystemReminderForFirstUser(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[
+		{"role":"user","content":"<system-reminder>runtime metadata</system-reminder>"},
+		{"role":"user","content":"actual request"}
+	]}`)
+	ret, err := extractAnthropic(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ret.FirstUserIndex != 1 || !jsonContains(ret.FirstUser, "actual request") {
+		t.Fatalf("unexpected first user: index=%d message=%s", ret.FirstUserIndex, stringValue(ret.FirstUser))
+	}
+}
+
+func TestIsSystemReminderMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want bool
+	}{
+		{"string", `{"role":"user","content":"<system-reminder>x</system-reminder>"}`, true},
+		{"text_block", `{"role":"user","content":[{"type":"text","text":" <system-reminder>x</system-reminder> "}]}`, true},
+		{"input_text_block", `{"role":"user","content":[{"type":"input_text","text":"<system-reminder>x</system-reminder>"}]}`, true},
+		{"output_text_block", `{"role":"user","content":[{"type":"output_text","text":"<system-reminder>x</system-reminder>"}]}`, true},
+		{"mixed_text", `{"role":"user","content":"<system-reminder>x</system-reminder> real request"}`, false},
+		{"mixed_blocks", `{"role":"user","content":[{"type":"text","text":"<system-reminder>x</system-reminder>"},{"type":"image_url","image_url":{"url":"x"}}]}`, false},
+		{"missing_close", `{"role":"user","content":"<system-reminder>x"}`, false},
+		{"assistant", `{"role":"assistant","content":"<system-reminder>x</system-reminder>"}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := isSystemReminderMessage(json.RawMessage(tc.raw))
+			if got != tc.want {
+				t.Errorf("isSystemReminderMessage: want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+func stringValue(raw *json.RawMessage) string {
+	if raw == nil {
+		return "<nil>"
+	}
+	return string(*raw)
+}
+
 func TestMessageRole(t *testing.T) {
 	cases := []struct {
 		raw  string

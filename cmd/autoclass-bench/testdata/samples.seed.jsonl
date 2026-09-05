@@ -1,0 +1,45 @@
+{"text": "帮我写一个 Go 函数，把字符串切片按 unicode 字符长度排序", "label": "code"}
+{"text": "Write a Python script that reads a CSV file and removes duplicate rows by email column", "label": "code"}
+{"text": "给这个接口加一个分页参数，用 cursor 返回下一页", "label": "code"}
+{"text": "implement retry with exponential backoff for this HTTP client", "label": "code"}
+{"text": "用 SQL 写一个查询：统计每个租户最近7天的请求数和 P95 延迟", "label": "code"}
+{"text": "一个水池有进水管和排水管，进水每小时 6 吨、排水每小时 4 吨，水池 100 吨，几小时注满？列方程求解", "label": "reasoning"}
+{"text": "If all A are B, and some B are C, can we conclude some A are C? Explain step by step.", "label": "reasoning"}
+{"text": "解释一下为什么这道概率题的答案是 1/6，并用枚举法验证", "label": "reasoning"}
+{"text": "三人中只有一人说真话，甲说是乙、乙说是丙、丙说不是我，推理谁说谎", "label": "reasoning"}
+{"text": "推导梯度下降在凸函数上的收敛速率，给出关键不等式", "label": "reasoning"}
+{"text": "你好，你是谁？", "label": "chat"}
+{"text": "今天天气不错，随便聊聊最近的见闻", "label": "chat"}
+{"text": "帮我记一下：周三下午三点开评审会", "label": "chat"}
+{"text": "What is your name and what can you help me with?", "label": "chat"}
+{"text": "谢谢你的帮助，辛苦了！", "label": "chat"}
+{"text": "写一首关于秋天的短诗", "label": "creative"}
+{"text": "帮我给智能台灯产品起几个有创意的名字", "label": "creative"}
+{"text": "写一段 100 字左右的产品宣传文案，语气要活泼", "label": "creative"}
+{"text": "Compose a short bedtime story about a brave little turtle", "label": "creative"}
+{"text": "帮我把这封邮件润色得更正式一些", "label": "creative"}
+{"text": "调用已声明的 get_weather 工具，查一下北京今天的天气", "label": "function_call"}
+{"text": "帮我用 create_schedule 工具建一个每天早上九点的提醒", "label": "function_call"}
+{"text": "请通过 search 工具查找 2026 年的节假日安排", "label": "function_call"}
+{"text": "Use the calculator tool to compute 23 * 47", "label": "function_call"}
+{"text": "把这条工单通过 transfer_ticket 接口转派给售后组", "label": "function_call"}
+{"text": "我给你文件系统和终端权限，把仓库里所有 TODO 整理成清单并建一个 issue", "label": "agent"}
+{"text": "分三步完成：先调研目录结构，再重构 utils 包，最后跑全量测试", "label": "agent"}
+{"text": "你作为编码代理，修复这个失败的集成测试并提交 PR", "label": "agent"}
+{"text": "帮我规划并执行一次数据迁移：导出、清洗、导入、校验，工具随意使用", "label": "agent"}
+{"text": "用浏览器工具打开管理后台，把过期活动批量下线", "label": "agent"}
+{"text": "审查这段代码有没有安全问题，重点看注入和越权", "label": "code_audit"}
+{"text": "帮我 review 这个 PR，重点关注并发安全", "label": "code_audit"}
+{"text": "检查这段密钥处理逻辑是否符合安全规范", "label": "code_audit"}
+{"text": "Security review: is this auth middleware vulnerable to timing attacks?", "label": "code_audit"}
+{"text": "看看这个函数有没有内存泄漏或资源未释放的风险", "label": "code_audit"}
+{"text": "先制定计划：如何把单体应用拆成两个服务，列出步骤再讨论", "label": "planning"}
+{"text": "帮我制定一个为期两周的性能优化计划", "label": "planning"}
+{"text": "给出这个功能的技术方案：需要哪些模块、接口和里程碑", "label": "planning"}
+{"text": "Create a step-by-step migration plan for upgrading to PostgreSQL 16", "label": "planning"}
+{"text": "为下季度规划模型成本优化的路线图，先列目标再拆任务", "label": "planning"}
+{"text": "把这条用户输入分类：我要退款，输出对应标签", "label": "intent_classification"}
+{"text": "判断这条评论是正面还是负面：物流很快，包装完好", "label": "intent_classification"}
+{"text": "以下内容属于哪个意图：查余额、转账、投诉？内容：钱怎么还没到账", "label": "intent_classification"}
+{"text": "Classify the support ticket into billing / technical / account: card was charged twice", "label": "intent_classification"}
+{"text": "对这句话做意图识别：帮我把上个月的账单发给我", "label": "intent_classification"}

@@ -1,7 +1,10 @@
 package executors
 
 import (
+	"context"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -16,6 +19,27 @@ type QualitySignals struct {
 	Flags      []string
 	FixActions []byte
 	Score      *float64
+}
+
+// copyNonStreamResponseHeaders copies end-to-end metadata from an upstream
+// response whose body has already been fully read and may have been rewritten.
+// Length, encoding, and hop-by-hop headers describe the upstream wire bytes and
+// must not survive a body rewrite. Setting the final length explicitly also
+// keeps responses correct when a middleware ResponseWriter suppresses the
+// net/http server's automatic Content-Length inference.
+func copyNonStreamResponseHeaders(dst, src http.Header, bodyLength int) {
+	for k, vs := range src {
+		if strings.EqualFold(k, "Content-Length") ||
+			strings.EqualFold(k, "Content-Encoding") ||
+			strings.EqualFold(k, "Connection") ||
+			strings.EqualFold(k, "Transfer-Encoding") {
+			continue
+		}
+		for _, v := range vs {
+			dst.Add(k, v)
+		}
+	}
+	dst.Set("Content-Length", strconv.Itoa(bodyLength))
 }
 
 // ProtocolHandler encapsulates all protocol-specific behavior for an
@@ -56,7 +80,8 @@ type ProtocolHandler interface {
 	// StreamResponse reads an upstream streaming response and writes
 	// it to the client. Returns StreamOutcome describing whether
 	// the stream completed cleanly, was interrupted, etc.
-	StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome
+	// P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+	StreamResponse(ctx context.Context, w http.ResponseWriter, resp *http.Response) StreamOutcome
 
 	// ExtractUsage pulls token counts out of the upstream response.
 	// For OpenAI, this is a single body read. For Anthropic, the

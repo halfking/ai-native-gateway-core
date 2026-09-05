@@ -13,7 +13,7 @@ import (
 //
 //	HOT_CRON_DISABLED=1         完全禁用夜间 cron
 //	HOT_CRON_RUN_AT=HH:MM       触发时间（默认 02:00）
-//	HOT_CRON_RETENTION_HOURS=N  迁移超过 N 小时的数据（默认 24）
+//	HOT_CRON_RETENTION_HOURS=N  迁移超过 N 小时的数据（默认 8）
 //	HOT_CRON_BATCH_SIZE=N       单批迁移行数（默认 500）
 //	HOT_CRON_MAX_RETRIES=N      单表失败重试次数（默认 3）
 //	HOT_CRON_BACKOFF_SECONDS=N  首次重试等待秒数（默认 30）
@@ -22,7 +22,7 @@ func HotCronConfigFromEnv() HotCronConfig {
 		Enabled:        true,
 		RunAtHour:      2,
 		RunAtMinute:    0,
-		RetentionHours: 24,
+		RetentionHours: defaultHotRetentionHours,
 		BatchSize:      500,
 		MaxRetries:     3,
 		RetryBackoff:   30 * time.Second,

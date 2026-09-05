@@ -62,6 +62,9 @@ func extractOpenAIConversationText(body []byte) (string, error) {
 	}
 	var b strings.Builder
 	for _, raw := range req.Messages {
+		if messageRole(raw) == "user" && isSystemReminderMessage(raw) {
+			continue
+		}
 		role, text := messageRoleAndSummary(raw)
 		if text == "" {
 			continue
@@ -86,6 +89,9 @@ func extractAnthropicConversationText(body []byte) (string, error) {
 		}
 	}
 	for _, raw := range req.Messages {
+		if messageRole(raw) == "user" && isSystemReminderMessage(raw) {
+			continue
+		}
 		role, text := messageRoleAndSummary(raw)
 		if text == "" {
 			continue
@@ -216,7 +222,8 @@ func rawJSONTextContent(raw json.RawMessage) string {
 		}
 		var b strings.Builder
 		for _, bl := range blocks {
-			if bl.Type == "text" || bl.Type == "" {
+			if bl.Type == "text" || bl.Type == "input_text" || bl.Type == "output_text" || bl.Type == "" {
+
 				if bl.Text != "" {
 					if b.Len() > 0 {
 						b.WriteString("\n")

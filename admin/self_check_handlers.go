@@ -32,6 +32,13 @@ type SelfCheckHandler struct {
 	worker interface {
 		TriggerManualRun(model string) error
 	}
+	// probeEnqueue (2026-08-18): under the new probe mode the legacy
+	// featured-model worker is retired, but operators still need a working
+	// "手动触发" button. When wired, the trigger fans a node_probe task out
+	// to every credential bound to the model through the durable
+	// credential_probe_queue (the same path POST /api/admin/probe/tasks
+	// uses), so the 自检 page drives real probes instead of 410-ing.
+	probeEnqueue func(ctx context.Context, model string) (int, error)
 }
 
 func NewSelfCheckHandler(db *pgxpool.Pool) *SelfCheckHandler {
@@ -41,6 +48,12 @@ func NewSelfCheckHandler(db *pgxpool.Pool) *SelfCheckHandler {
 // SetWorker is called after the worker is created to enable manual triggering.
 func (h *SelfCheckHandler) SetWorker(w interface{ TriggerManualRun(model string) error }) {
 	h.worker = w
+}
+
+// SetProbeEnqueue wires the new-probe-mode trigger path (durable queue
+// fan-out). Called from main.go after the probe queue is constructed.
+func (h *SelfCheckHandler) SetProbeEnqueue(fn func(ctx context.Context, model string) (int, error)) {
+	h.probeEnqueue = fn
 }
 
 // RegisterRoutes registers the self-check admin routes.
@@ -354,7 +367,7 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 		MaxTokens      *int            `json:"max_tokens_per_run"`
 		FeaturedModels json.RawMessage `json:"featured_model_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := readJSONRequired(r, &body); err != nil {
 		writeJSON(w, 400, map[string]any{"error": "invalid json"})
 		return
 	}
@@ -447,11 +460,14 @@ func (h *SelfCheckHandler) handleUpdateSettings(w http.ResponseWriter, r *http.R
 // --- Trigger ---
 
 // handleTriggerAvailability reports whether POST /api/self-check/trigger can
-// accept runs right now. In the new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE
-// default true since 2026-07-14), the legacy featured-model worker is no
-// longer instantiated, so manual triggers are intentionally unavailable.
-// Front-end uses this to disable the "触发测试" / "手动触发" buttons instead
-// of letting them fire a request that would 503.
+// accept runs right now. Two paths exist: the legacy featured-model worker
+// (when instantiated) or, since 2026-08-18, the durable-queue fan-out under
+// the new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE=true) — previously this
+// endpoint hard-disabled the button, which left operators with no manual
+// self-check exactly when the automated pipeline was dead.
+//
+// 2026-09-03: reason 字段改成中文友好版，便于 UI 直接显示在 tooltip 上。
+// error_code 保持稳定，UI 用它决定"未启用 vs 异常"的按钮文案。
 //
 // Route: GET /api/self-check/trigger/availability (admin).
 func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *http.Request) {
@@ -459,15 +475,22 @@ func (h *SelfCheckHandler) handleTriggerAvailability(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	available := h.worker != nil
+	available := h.worker != nil || h.probeEnqueue != nil
 	resp := map[string]any{
 		"available":      available,
 		"new_probe_mode": scNewProbeMode(),
 	}
+	if h.probeEnqueue != nil {
+		resp["mode"] = "probe_queue"
+	} else if h.worker != nil {
+		resp["mode"] = "legacy_worker"
+	}
 	if !available {
 		if scNewProbeMode() {
-			resp["reason"] = "self-check worker disabled in new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE=true); use NodeProbe / ActiveProbe / SystemHealth instead"
-			resp["error_code"] = "self_check.trigger.disabled_in_new_probe_mode"
+			// 新探测模式下 trigger 已迁移到节点探测队列，UI 触发按钮有意禁用；
+			// 这不是故障，运维需要知道"为什么禁用"而不是"触发挂了"。
+			resp["reason"] = "自检触发已迁移到节点探测队列（probe queue），手动触发按钮已禁用。如需手动触发，请走节点操作 API 或重启用 legacy selfcheck。"
+			resp["error_code"] = "self_check.trigger.no_probe_path"
 		} else {
 			resp["reason"] = "self-check worker is not initialized (server may still be starting)"
 			resp["error_code"] = "self_check.trigger.worker_unavailable"
@@ -484,11 +507,216 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Model string `json:"model"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+	if err := readJSONRequired(r, &body); err != nil && err != io.EOF {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
 	if h.worker == nil {
+		// New probe mode: fan a node_probe task out to every credential
+		// bound to the model through the durable queue. This resurrects the
+		// 自检 page's manual trigger (previously 410 Gone since the legacy
+		// worker was retired — during the 2026-08-18 glm-5.2 incident that
+		// left operators with no way to demand fresh evidence).
+		if h.probeEnqueue != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+			defer cancel()
+
+			// When model is empty, trigger self-check for all models based on settings.
+			models := []string{}
+			if body.Model == "" {
+				// Load self-check settings to determine which models to test.
+				var settings struct {
+					Enabled        bool
+					ModelSource    string
+					MaxModels      int
+					FeaturedModels json.RawMessage
+				}
+				err := h.db.QueryRow(ctx, `
+					SELECT enabled, model_source, max_models, featured_model_ids
+					FROM self_check_settings WHERE id=1`,
+				).Scan(&settings.Enabled, &settings.ModelSource, &settings.MaxModels, &settings.FeaturedModels)
+				if err != nil {
+					if errors.Is(err, pgx.ErrNoRows) {
+						// Seed default settings if missing.
+						if seedErr := h.ensureSelfCheckSettingsRow(ctx); seedErr != nil {
+							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "settings not initialized: " + seedErr.Error()})
+							return
+						}
+						// Retry after seeding.
+						err = h.db.QueryRow(ctx, `
+							SELECT enabled, model_source, max_models, featured_model_ids
+							FROM self_check_settings WHERE id=1`,
+						).Scan(&settings.Enabled, &settings.ModelSource, &settings.MaxModels, &settings.FeaturedModels)
+					}
+					if err != nil {
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to load settings: " + err.Error()})
+						return
+					}
+					if !settings.Enabled {
+						writeJSON(w, http.StatusConflict, map[string]any{"error": "trigger failed", "message": "self-check is disabled in current settings"})
+						return
+					}
+					if settings.MaxModels <= 0 {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trigger failed", "message": "max_models must be greater than zero"})
+						return
+					}
+					if settings.ModelSource != "featured" && settings.ModelSource != "top10" && settings.ModelSource != "both" {
+						writeJSON(w, http.StatusBadRequest, map[string]any{"error": "trigger failed", "message": "invalid model_source in settings: " + settings.ModelSource})
+						return
+					}
+				}
+
+				// Build candidates using the same eligibility gates as the actual
+				// probe fan-out. Preserve configured/ranked order and deduplicate.
+				eligible := make(map[string]struct{})
+				rows, err := h.db.Query(ctx, `
+					SELECT DISTINCT pm.raw_model_name
+					FROM provider_models pm
+					JOIN credential_model_bindings cmb ON cmb.provider_model_id = pm.id
+					JOIN credentials c ON c.id = cmb.credential_id
+					JOIN providers p ON p.id = c.provider_id
+					WHERE COALESCE(c.status, 'active') = 'active'
+					  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+					  AND COALESCE(p.enabled, TRUE) = TRUE
+					  AND COALESCE(p.manual_disabled, FALSE) = FALSE`)
+				if err != nil {
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to select eligible models: " + err.Error()})
+					return
+				}
+				for rows.Next() {
+					var model string
+					if err := rows.Scan(&model); err != nil {
+						rows.Close()
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read eligible models: " + err.Error()})
+						return
+					}
+					if strings.TrimSpace(model) != "" {
+						eligible[model] = struct{}{}
+					}
+				}
+				if err := rows.Err(); err != nil {
+					rows.Close()
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read eligible models: " + err.Error()})
+					return
+				}
+				rows.Close()
+
+				seen := make(map[string]struct{}, settings.MaxModels)
+				addModel := func(model string) {
+					if len(models) >= settings.MaxModels || strings.TrimSpace(model) == "" {
+						return
+					}
+					if _, ok := eligible[model]; !ok {
+						return
+					}
+					if _, ok := seen[model]; ok {
+						return
+					}
+					seen[model] = struct{}{}
+					models = append(models, model)
+				}
+				var featured []string
+				if err := json.Unmarshal(settings.FeaturedModels, &featured); err != nil && len(settings.FeaturedModels) > 0 {
+					writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "invalid featured_model_ids: " + err.Error()})
+					return
+				}
+				if settings.ModelSource == "featured" || settings.ModelSource == "both" {
+					for _, model := range featured {
+						addModel(model)
+					}
+				}
+				if settings.ModelSource == "top10" || settings.ModelSource == "both" {
+					rows, err := h.db.Query(ctx, `
+						SELECT pm.raw_model_name
+						FROM provider_models pm
+						JOIN credential_model_bindings cmb ON cmb.provider_model_id = pm.id
+						JOIN credentials c ON c.id = cmb.credential_id
+						JOIN providers p ON p.id = c.provider_id
+						WHERE COALESCE(c.status, 'active') = 'active'
+						  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+						  AND COALESCE(p.enabled, TRUE) = TRUE
+						  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+						GROUP BY pm.raw_model_name
+						ORDER BY COUNT(DISTINCT cmb.credential_id) DESC, pm.raw_model_name
+						LIMIT $1`, settings.MaxModels)
+					if err != nil {
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to select top models: " + err.Error()})
+						return
+					}
+					for rows.Next() {
+						var model string
+						if err := rows.Scan(&model); err != nil {
+							rows.Close()
+							writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read top models: " + err.Error()})
+							return
+						}
+						addModel(model)
+					}
+					if err := rows.Err(); err != nil {
+						rows.Close()
+						writeJSON(w, 500, map[string]any{"error": "trigger failed", "message": "failed to read top models: " + err.Error()})
+						return
+					}
+					rows.Close()
+				}
+				if len(models) == 0 {
+					writeJSON(w, 400, map[string]any{"error": "trigger failed", "message": "no models to test based on current settings"})
+					return
+				}
+
+			} else {
+				// Single model specified.
+				models = []string{body.Model}
+			}
+
+			// Trigger self-check for each selected model. Single-model requests
+			// intentionally use the same fan-out envelope as multi-model requests
+			// so callers can rely on one response contract.
+			totalEnqueued := 0
+			failedModels := 0
+			results := make(map[string]any)
+			for _, model := range models {
+				n, err := h.probeEnqueue(ctx, model)
+				if err != nil {
+					failedModels++
+					results[model] = map[string]any{"error": err.Error(), "enqueued": 0}
+				} else {
+					results[model] = map[string]any{"enqueued": n}
+					totalEnqueued += n
+				}
+			}
+
+			status := http.StatusOK
+			message := "node_probe tasks enqueued"
+			var topLevelError string
+			if failedModels == len(models) {
+				status = http.StatusServiceUnavailable
+				topLevelError = "trigger failed"
+				for _, model := range models {
+					if result, ok := results[model].(map[string]any); ok {
+						if errMessage, ok := result["error"].(string); ok && errMessage != "" {
+							message = errMessage
+							break
+						}
+					}
+				}
+			}
+			response := map[string]any{
+				"ok":            failedModels == 0,
+				"mode":          "probe_queue",
+				"enqueued":      totalEnqueued,
+				"models_tested": len(models),
+				"models_failed": failedModels,
+				"message":       message,
+				"models":        models,
+				"results":       results,
+			}
+			if topLevelError != "" {
+				response["error"] = topLevelError
+			}
+			writeJSON(w, status, response)
+			return
+		}
 		// 410 Gone: this endpoint is intentionally retired under the new
 		// probe mode (no longer transiently unavailable). 503 misled the UI
 		// into a red "服务不可用" banner that wasn't actionable.
@@ -497,8 +725,8 @@ func (h *SelfCheckHandler) handleTrigger(w http.ResponseWriter, r *http.Request)
 			"message": "self-check worker is not initialized",
 		}
 		if scNewProbeMode() {
-			resp["message"] = "self-check is disabled in new probe mode (LLM_GATEWAY_USE_NEW_PROBE_MODE=true). Use NodeProbe / ActiveProbe / SystemHealth for live probes."
-			resp["error_code"] = "self_check.trigger.disabled_in_new_probe_mode"
+			resp["message"] = "self-check is disabled in new probe mode and the durable probe queue is not wired."
+			resp["error_code"] = "self_check.trigger.no_probe_path"
 		} else {
 			resp["error_code"] = "self_check.trigger.worker_unavailable"
 		}
@@ -653,12 +881,49 @@ func (h *SelfCheckHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Probe-system health (2026-08-18): the 自检 page previously showed only
+	// self_check_runs, which stopped updating a month before the glm-5.2
+	// incident while the real probe pipeline was silently dead. Surface the
+	// durable-queue liveness signals here so "page green, pipeline dead"
+	// can't happen again: unclaimable-ready > 0 or a stale last_activity
+	// means probes are not executing even if old runs look fine.
+	probeSystem := map[string]any{}
+	var qs struct {
+		Ready            int        `json:"-"`
+		ReadyExpired     int        `json:"-"`
+		Running          int        `json:"-"`
+		LastActivity     *time.Time `json:"-"`
+		LastProbeAttempt *time.Time `json:"-"`
+		DueStates        int        `json:"-"`
+	}
+	_ = h.db.QueryRow(r.Context(), `
+		SELECT
+			COUNT(*) FILTER (WHERE status='ready' AND expires_at > now()),
+			COUNT(*) FILTER (WHERE status='ready' AND expires_at <= now()),
+			COUNT(*) FILTER (WHERE status='running'),
+			MAX(updated_at)
+		FROM credential_probe_queue`).Scan(
+		&qs.Ready, &qs.ReadyExpired, &qs.Running, &qs.LastActivity)
+	_ = h.db.QueryRow(r.Context(), `
+		SELECT MAX(last_attempt_at), COUNT(*) FILTER (WHERE paused=FALSE AND next_retry_at <= now())
+		FROM node_probe_state`).Scan(&qs.LastProbeAttempt, &qs.DueStates)
+	probeSystem["queue_ready"] = qs.Ready
+	probeSystem["queue_ready_unclaimable"] = qs.ReadyExpired
+	probeSystem["queue_running"] = qs.Running
+	probeSystem["queue_last_activity_at"] = qs.LastActivity
+	probeSystem["last_probe_attempt_at"] = qs.LastProbeAttempt
+	probeSystem["due_states"] = qs.DueStates
+	probeSystem["executing"] = qs.Running > 0
+	probeSystem["healthy"] = qs.ReadyExpired == 0 &&
+		(qs.Running > 0 || qs.LastActivity == nil || time.Since(*qs.LastActivity) < 15*time.Minute)
+
 	writeJSON(w, 200, map[string]any{
 		"range":           rangeParam,
 		"summary":         s,
 		"by_model":        byModel,
 		"error_breakdown": errBreakdown,
 		"trend":           trend,
+		"probe_system":    probeSystem,
 	})
 }
 

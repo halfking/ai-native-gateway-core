@@ -19,7 +19,6 @@ package admin
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -32,6 +31,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/internal/dbx"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
 
@@ -670,7 +671,7 @@ func (h *Handler) handleTableMaintenanceDispatch(w http.ResponseWriter, r *http.
 	}
 
 	var req tableMaintenanceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -754,7 +755,33 @@ func (h *Handler) runTableMaintenanceJob(ctx context.Context, run *JobRun, schem
 		sql = fmt.Sprintf("REINDEX TABLE %s", fullName)
 	}
 
-	if _, err := conn.Exec(opCtx, sql); err != nil {
+	// 2026-09-01: cluster-wide VACUUM FULL mutex. Two gateway
+	// replicas firing on the same Sunday-02:00 cron tick would
+	// otherwise race for ACCESS EXCLUSIVE; the loser would fail
+	// with a generic "vacuum failed" from lock_timeout=5s. The
+	// advisory lock below serializes all replicas on a single key
+	// so only one runs at a time. Other operations (VACUUM, REINDEX)
+	// are not serialized — they don't take ACCESS EXCLUSIVE.
+	//
+	// acquireTimeout = lockTimeout for consistency with the
+	// ACCESS EXCLUSIVE timeout: if we can't grab the cluster mutex
+	// within 5s, another replica is already mid-VACUUM FULL, and
+	// we'd be racing it anyway.
+	if op == "VACUUM FULL" {
+		acquireTimeout, perr := time.ParseDuration(lockTimeout)
+		if perr != nil {
+			acquireTimeout = 5 * time.Second
+		}
+		err = dbx.VacuumFullMutex(opCtx, h.db, conn, acquireTimeout,
+			func(ctx context.Context, c *pgxpool.Conn) error {
+				_, ierr := c.Exec(ctx, sql)
+				return ierr
+			})
+		if err != nil {
+			h.failJob(run, fmt.Sprintf("%s failed: %s", op, err.Error()))
+			return
+		}
+	} else if _, err := conn.Exec(opCtx, sql); err != nil {
 		h.failJob(run, fmt.Sprintf("%s failed: %s", op, err.Error()))
 		return
 	}

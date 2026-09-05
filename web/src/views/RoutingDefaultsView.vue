@@ -29,6 +29,7 @@ import {
   type RoutingDefaultCreate,
   type RoutingDefaultAuditRow,
 } from '../api/tuning'
+import { confirmDialog } from '../composables/useConfirmDialog'
 
 const { t } = useI18n()
 
@@ -178,9 +179,9 @@ async function submitCreate() {
 
 // ── Delete ───────────────────────────────────────────────────────
 async function deleteDefault(d: RoutingDefault) {
-  if (!confirm(t('routingDefault.table.deleteConfirm', {
+  if (!(await confirmDialog(t('routingDefault.table.deleteConfirm', {
     id: d.id, model: d.canonical_model, task: d.task_type,
-  }))) {
+  })))) {
     return
   }
   try {
@@ -630,7 +631,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 .btn-primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #fff;
+  color: var(--on-primary);
 }
 .btn-audit {
   background: var(--bg-subtle);
@@ -668,7 +669,7 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 }
 .defaults-table tbody tr:hover,
 .audit-table tbody tr:hover {
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--bg-hover);
 }
 .reason-cell {
   max-width: 200px;
@@ -716,7 +717,7 @@ code {
   align-items: center;
   justify-content: center;
   padding: 24px 16px;
-  background: rgba(0, 0, 0, 0.55);
+  background: var(--overlay-strong);
 }
 .choice-dialog {
   width: min(680px, 100%);
@@ -727,7 +728,7 @@ code {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, .35);
+  box-shadow: 0 20px 50px var(--shadow-color-dark);
 }
 .tenant-dialog { width: min(620px, 100%); }
 .choice-header {

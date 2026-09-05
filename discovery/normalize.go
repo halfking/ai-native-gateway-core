@@ -145,8 +145,10 @@ var vendorCanonicalFamilies = map[string]string{
 	"skywork": "kuae",
 
 	// 商汤科技 / SenseTime — sensechat, sensenova
-	"sensechat": "sensetime",
-	"sensenova": "sensetime",
+	// 2026-08-29 (612): family 统一为 'sensenova'，与 provider code / model_families
+	// / migration 333 CASE / API slug 完全对齐。
+	"sensechat": "sensenova",
+	"sensenova": "sensenova",
 
 	// ========== 中国厂商 - 传统科技公司 ==========
 

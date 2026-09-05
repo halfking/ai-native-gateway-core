@@ -14,7 +14,10 @@ package sessionv2mirror
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -62,11 +65,10 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 			return
 		}
 
-		// 2026-08-06: skip gateway-internal auto requests (auto title/summary
-		// loopback calls marked via X-Gw-Is-Auto). These are ephemeral and must
-		// not be mirrored into the session V2 tables — doing so pollutes the
-		// session's turn history with title-generation traffic.
-		if entry.IsAutoRequest != nil && *entry.IsAutoRequest {
+		// Gateway-internal title/summary loopbacks are not user turns. Business
+		// auto-route requests also set IsAutoRequest, but carry TaskType and must
+		// be mirrored so the task dimension is queryable from session_turns.
+		if isInternalAutoEntry(entry) {
 			return
 		}
 
@@ -140,17 +142,21 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 		eventTime = *entry.EventAt
 	}
 	req := &v2.ProcessedRequest{
-		SessionID:   *entry.GwSessionID,
-		TenantID:    entry.TenantID,
-		RequestID:   entry.RequestID,
-		Timestamp:   eventTime,
-		ClientModel: strVal(entry.ClientModel),
-		ProviderID:  providerID(entry.ProviderID),
-		Success:     entry.Success,
-		ErrorKind:   strVal(entry.ErrorKind),
-		StatusCode:  statusCode(entry),
-		StartedAt:   eventTime,
-		CompletedAt: eventTime,
+		SessionID:       *entry.GwSessionID,
+		TenantID:        entry.TenantID,
+		RequestID:       entry.RequestID,
+		Timestamp:       eventTime,
+		ProjectID:       strVal(entry.ProjectID),
+		Namespace:       strVal(entry.Namespace),
+		ParentRequestID: strVal(entry.ParentRequestID),
+		TaskType:        strVal(entry.TaskType),
+		ClientModel:     strVal(entry.ClientModel),
+		ProviderID:      providerID(entry.ProviderID),
+		Success:         entry.Success,
+		ErrorKind:       strVal(entry.ErrorKind),
+		StatusCode:      statusCode(entry),
+		StartedAt:       eventTime,
+		CompletedAt:     eventTime,
 	}
 
 	// Usage & cost
@@ -206,6 +212,14 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 		}
 		req.CompressionMeta["reason"] = *entry.CompressionReason
 	}
+	// Copy only the audited, body-free compression metadata. Raw request or
+	// response payloads are intentionally excluded from the V2 mirror.
+	for key, value := range safeCompressionMeta(entry.CompressionMeta, entry.TenantID, *entry.GwSessionID) {
+		if req.CompressionMeta == nil {
+			req.CompressionMeta = make(map[string]interface{})
+		}
+		req.CompressionMeta[key] = value
+	}
 
 	// Credential
 	if entry.CredentialID != nil {
@@ -245,6 +259,259 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 	}
 
 	return req
+}
+
+// safeCompressionMeta returns the body-free compression metadata that is safe to
+// mirror into V2. Request-log compression_meta is an extensible JSON object, so
+// copying it wholesale would accidentally persist raw payloads or future PII
+// fields. Nested cut_marker fields are filtered independently.
+const (
+	maxCompressionMetaBytes = 256 << 10
+	maxMetadataRecords      = 4096
+	maxMetadataString       = 256
+)
+
+func safeCompressionMeta(raw json.RawMessage, tenantID, sessionID string) map[string]interface{} {
+	if len(raw) == 0 || len(raw) > maxCompressionMetaBytes || string(raw) == "null" {
+		return nil
+	}
+	var input map[string]interface{}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return nil
+	}
+	out := make(map[string]interface{})
+	for key, value := range input {
+		switch key {
+		case "cut_marker":
+			if filtered := safeCutMarkerMeta(value); len(filtered) > 0 {
+				out[key] = filtered
+				if psor, ok := filtered["pre_sanitize_offset_range"]; ok {
+					out["pre_sanitize_offset_range"] = psor
+				}
+			}
+		case "alignment_map":
+			if filtered := safeAlignmentRecords(value); len(filtered) > 0 {
+				out[key] = filtered
+			}
+		case "sanitize_message_refs":
+			if filtered := safeSanitizeRefs(value); len(filtered) > 0 {
+				out[key] = filtered
+			}
+		case "sanitize_map_ref":
+			ref, ok := value.(string)
+			expected := sanitizeMapRef(tenantID, sessionID)
+			if ok && expected != "" && ref == expected {
+				out[key] = ref
+			}
+		case "summary_marker", "compressed_prefix_hash":
+			if text, ok := boundedHashLike(value); ok {
+				out[key] = text
+			}
+		case "strategy", "compression_strategy", "reason", "compression_reason", "window_triggered", "lossiness":
+			if text, ok := boundedLabel(value); ok && knownCompressionLabel(key, text) {
+				out[key] = text
+			}
+		case "tokens_before", "tokens_after", "bytes_before", "bytes_after", "context_window_used", "msg_count", "token_est", "raw_token_est", "compressed_tokens", "compressed_msgs":
+			if number, ok := boundedNumber(value); ok {
+				out[key] = number
+			}
+		case "pre_sanitize_offset_range":
+			if pair, ok := boundedPair(value); ok {
+				out[key] = pair
+			}
+		}
+	}
+	return out
+}
+
+func safeAlignmentRecords(value interface{}) []map[string]interface{} {
+	items, ok := value.([]interface{})
+	if !ok || len(items) == 0 || len(items) > maxMetadataRecords {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		record, ok := item.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		original, ok1 := nonNegativeIndex(record["original_index"])
+		compressed, ok2 := signedIndex(record["compressed_index"])
+		into, ok3 := signedIndex(record["compressed_into"])
+		isCompressed, ok4 := record["is_compressed"].(bool)
+		hash, ok5 := boundedHex(record["hash"], 32, 64)
+		if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
+			return nil
+		}
+		out = append(out, map[string]interface{}{
+			"original_index": original, "compressed_index": compressed,
+			"is_compressed": isCompressed, "compressed_into": into, "hash": hash,
+		})
+	}
+	return out
+}
+
+func safeSanitizeRefs(value interface{}) []map[string]interface{} {
+	items, ok := value.([]interface{})
+	if !ok || len(items) == 0 || len(items) > maxMetadataRecords {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(items))
+	for _, item := range items {
+		record, ok := item.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		rawIndex, ok1 := nonNegativeIndex(record["raw_index"])
+		sanitizedIndex, ok2 := nonNegativeIndex(record["sanitized_index"])
+		rawHash, ok3 := boundedHex(record["raw_hash"], 32, 64)
+		sanitizedHash, ok4 := boundedHex(record["sanitized_hash"], 32, 64)
+		changed, ok5 := record["changed"].(bool)
+		if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
+			return nil
+		}
+		filtered := map[string]interface{}{
+			"raw_index": rawIndex, "sanitized_index": sanitizedIndex,
+			"raw_hash": rawHash, "sanitized_hash": sanitizedHash, "changed": changed,
+		}
+		if count, ok := boundedNumber(record["placeholder_count"]); ok {
+			filtered["placeholder_count"] = count
+		}
+		out = append(out, filtered)
+	}
+	return out
+}
+
+func safeCutMarkerMeta(value interface{}) map[string]interface{} {
+	input, ok := value.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	version, ok1 := boundedNumber(input["version"])
+	createdAt, ok2 := boundedNumber(input["created_at"])
+	source, ok3 := boundedNumber(input["source_msg_count"])
+	system, ok4 := boundedNumber(input["system_msg_count"])
+	cut, ok5 := boundedNumber(input["cut_index"])
+	strategy, ok6 := boundedLabel(input["strategy"])
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !knownCompressionLabel("strategy", strategy) || cut <= 0 || system+cut > source {
+		return nil
+	}
+	out := map[string]interface{}{
+		"version": version, "created_at": createdAt, "source_msg_count": source,
+		"system_msg_count": system, "cut_index": cut, "strategy": strategy,
+	}
+	if number, ok := boundedNumber(input["bytes_before"]); ok {
+		out["bytes_before"] = number
+	}
+	if number, ok := boundedNumber(input["bytes_after"]); ok {
+		out["bytes_after"] = number
+	}
+	if marker, ok := boundedHashLike(input["summary_marker"]); ok {
+		out["summary_marker"] = marker
+	}
+	if pair, ok := boundedPair(input["pre_sanitize_offset_range"]); ok && pair[1] <= source {
+		out["pre_sanitize_offset_range"] = pair
+	}
+	return out
+}
+
+func boundedNumber(value interface{}) (float64, bool) {
+	n, ok := value.(float64)
+	return n, ok && n >= 0 && n <= 1<<53 && n == float64(int64(n))
+}
+
+func nonNegativeIndex(value interface{}) (float64, bool) {
+	n, ok := value.(float64)
+	return n, ok && n >= 0 && n <= maxMetadataRecords && n == float64(int64(n))
+}
+
+func signedIndex(value interface{}) (float64, bool) {
+	n, ok := value.(float64)
+	return n, ok && n >= -1 && n <= maxMetadataRecords && n == float64(int64(n))
+}
+
+func boundedPair(value interface{}) ([]float64, bool) {
+	items, ok := value.([]interface{})
+	if !ok || len(items) != 2 {
+		return nil, false
+	}
+	start, ok1 := boundedNumber(items[0])
+	end, ok2 := boundedNumber(items[1])
+	return []float64{start, end}, ok1 && ok2 && start <= end
+}
+
+func boundedLabel(value interface{}) (string, bool) {
+	text, ok := value.(string)
+	if !ok || len(text) == 0 || len(text) > maxMetadataString {
+		return "", false
+	}
+	for _, r := range text {
+		if !(r == '_' || r == '-' || r == '.' || r == ':' || r == '/' || r == ' ' || r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+			return "", false
+		}
+	}
+	return text, true
+}
+
+func knownCompressionLabel(key, text string) bool {
+	known := map[string]bool{
+		"none": true, "noop": true, "delta_append": true, "mechanical_trim": true,
+		"smart_window": true, "smart_window_llm": true, "smart_window_mechanical": true,
+		"sliding_window_token": true, "sliding_window_token_absolute": true,
+		"sliding_window_msg_count": true, "sliding_window_idle": true,
+		"incremental_cache": true, "incremental_cache_tail": true, "incremental_v2_metadata": true,
+		"strategy_runner": true, "memora_l1": true, "memora_l1_inject": true,
+		"llm_summary": true, "auto_threshold": true, "provider_window": true,
+		"aggressive": true, "mode_1_auto_threshold": true, "mode_2_on_4xx": true,
+		"mode_warmup_skipped": true, "token_threshold_forced_absolute": true,
+		"token_threshold_preliminary": true, "tail": true, "whole": true,
+		"below": true, "preliminary": true, "forced": true,
+		"size": true, "count": true, "idle": true, "token": true,
+	}
+	if known[text] {
+		return true
+	}
+	if key == "window_triggered" && strings.HasPrefix(text, "sliding_window_") {
+		suffix := strings.TrimPrefix(text, "sliding_window_")
+		return suffix == "token" || suffix == "token_absolute" || suffix == "msg_count" || suffix == "idle"
+	}
+	return false
+}
+
+func boundedHashLike(value interface{}) (string, bool) {
+	text, ok := value.(string)
+	if !ok || len(text) == 0 || len(text) > maxMetadataString {
+		return "", false
+	}
+	if strings.HasPrefix(text, "[smm_v1:") && strings.HasSuffix(text, "]") {
+		inner := strings.TrimSuffix(strings.TrimPrefix(text, "[smm_v1:"), "]")
+		if validated, ok := boundedHex(inner, 16, 16); ok {
+			return "[smm_v1:" + validated + "]", true
+		}
+		return "", false
+	}
+	return boundedHex(value, 16, 128)
+}
+
+func boundedHex(value interface{}, minLen, maxLen int) (string, bool) {
+	text, ok := value.(string)
+	if !ok || len(text) < minLen || len(text) > maxLen {
+		return "", false
+	}
+	for _, r := range text {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+			return "", false
+		}
+	}
+	return text, true
+}
+
+func sanitizeMapRef(tenantID, sessionID string) string {
+	if tenantID == "" || sessionID == "" {
+		return ""
+	}
+	hash := sha256.Sum256([]byte(tenantID))
+	return fmt.Sprintf("session:%s:%s:sanitize", hex.EncodeToString(hash[:8]), sessionID)
 }
 
 // ── JSON body parsing ──────────────────────────────────────────────────────
@@ -522,6 +789,25 @@ func intStr(v int) string {
 		buf[i], buf[j] = buf[j], buf[i]
 	}
 	return string(buf)
+}
+
+func isInternalAutoEntry(entry *telemetry.RequestLogEntry) bool {
+	if entry == nil || entry.IsAutoRequest == nil || !*entry.IsAutoRequest {
+		return false
+	}
+	if entry.RequestType != nil {
+		switch strings.TrimSpace(*entry.RequestType) {
+		case "title_gen", "summary":
+			return true
+		}
+	}
+	if entry.OriginActor != nil {
+		switch strings.TrimSpace(*entry.OriginActor) {
+		case "auto-title-generator", "auto-summary-generator", "session-summary":
+			return true
+		}
+	}
+	return entry.TaskType == nil || strings.TrimSpace(*entry.TaskType) == ""
 }
 
 func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {

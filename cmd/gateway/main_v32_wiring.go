@@ -1,8 +1,10 @@
 // Command gateway - main_v32_wiring.go (2026-08-14)
 //
-// V3.2 backend wire helpers: StateTransitionLogger + SSE providers
-// (queue_snapshot / node_status). Keep all V3.2 concerns in one small file
-// so the V3.2 commit is reviewable without touching unrelated wiring.
+// V3.2 backend wire helpers: SSE providers (queue_snapshot / node_status).
+// The V3.2 StateTransitionLogger wiring was retired by B3-PR1 (2026-08-17):
+// its two event producers now write through the requestjourney recorder, and
+// the request_state_transitions retention duty moved to
+// requestjourney.RetentionWorker (wired in main.go).
 
 package main
 
@@ -17,31 +19,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 )
 
-// wireStateTransitionLogger constructs the V3.2 state-transition logger
-// and registers it as the process-wide singleton (consumed by
-// streaming/handler.go via dispatch.LogRouteDecisionGlobal and
-// streamretry/wrapper.go via dispatch.LogRetryGlobal).
-//
-// nil-safe: if db is nil, the constructor still returns a logger whose
-// add() is a no-op (see domains/dispatch/state_transition_logger.go).
-func wireStateTransitionLogger(db *pgxpool.Pool) *dispatch.StateTransitionLogger {
-	l := dispatch.NewStateTransitionLogger(db)
-	dispatch.SetGlobalStateTransitionLogger(l)
-	slog.Info("V3.2: state-transition logger wired",
-		"db_enabled", db != nil,
-		"flush_interval", 2*time.Second,
-		"batch_size", 100)
-	return l
-}
-
-// wireQueueSnapshotProvider builds the QueueMetricsCollector and returns
-// the closure handed to LiveStreamSSEHub for V3.2 BE-A1 (V32-LP3).
-// The collector wraps dispatch.Pipeline and provides thread-safe,
-// non-blocking queue depth snapshots. Wired: false when pipeline is nil
-// (pre-deployment / test mode).
-func wireQueueSnapshotProvider(pipeline *dispatch.Pipeline) func() *admin.LiveQueueSnapshot {
-	// Create collector (handles nil pipeline gracefully with Wired=false)
-	collector := dispatch.NewQueueMetricsCollector(pipeline)
+// wireQueueSnapshotProvider wraps the independent QueueProjection in the
+// QueueMetricsCollector and returns the closure handed to LiveStreamSSEHub
+// for V3.2 BE-A1 (V32-LP3). The collector only reads the projection, so the
+// admin SSE path never locks or copies from the dispatch Pipeline.
+// Wired: false when projection is nil (pre-deployment / test mode).
+func wireQueueSnapshotProvider(projection *dispatch.QueueProjection) func() *admin.LiveQueueSnapshot {
+	// Create collector over the projection; admin/SSE never locks Pipeline.
+	collector := dispatch.NewQueueMetricsCollector(projection)
 
 	// Return closure that converts dispatch.SnapshotView → admin.LiveQueueSnapshot
 	return func() *admin.LiveQueueSnapshot {

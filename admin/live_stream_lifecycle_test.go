@@ -87,6 +87,72 @@ func asActionArray(t *testing.T, v any) []map[string]any {
 
 // ── wire contract ───────────────────────────────────────────────────────────
 
+func TestFlattenActionEvent_ProjectsCredentialLabelWhenPresent(t *testing.T) {
+	ts := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	ev := liveactions.ActionEvent{
+		RequestID:    "req-1",
+		Seq:          7,
+		Action:       liveactions.ActionCredentialSelected,
+		Ts:           ts,
+		CredentialID: 42,
+	}
+	labels := map[int]string{42: "openai-prod"}
+
+	m := flattenActionEvent(ev, labels)
+	if got := m["credential_label"]; got != "openai-prod" {
+		t.Fatalf("credential_label must surface from labels map, got %v", m["credential_label"])
+	}
+	if m["credential_id"] == nil {
+		t.Fatalf("credential_id must still be present alongside credential_label, got %#v", m)
+	}
+}
+
+func TestFlattenActionEvent_NoLabelProjectionWithoutLookup(t *testing.T) {
+	ts := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	ev := liveactions.ActionEvent{
+		RequestID:    "req-1",
+		Seq:          8,
+		Action:       liveactions.ActionCredentialSelected,
+		Ts:           ts,
+		CredentialID: 42,
+	}
+
+	// nil labels map: no projection, credential_id stays as the only wire field.
+	m := flattenActionEvent(ev, nil)
+	if _, ok := m["credential_label"]; ok {
+		t.Fatalf("credential_label must NOT appear when labels is nil, got %#v", m)
+	}
+
+	// Empty label for the id: same — no projection. The frontend falls back.
+	labels := map[int]string{42: ""}
+	m2 := flattenActionEvent(ev, labels)
+	if _, ok := m2["credential_label"]; ok {
+		t.Fatalf("credential_label must NOT appear when label is blank, got %#v", m2)
+	}
+}
+
+func TestCollectCredentialIDs_DedupesAndSkipsZero(t *testing.T) {
+	ts := time.Date(2026, 8, 23, 12, 0, 0, 0, time.UTC)
+	actions := []liveactions.ActionEvent{
+		{RequestID: "r1", Seq: 1, Action: liveactions.ActionCredentialSelected, Ts: ts, CredentialID: 7},
+		{RequestID: "r1", Seq: 2, Action: liveactions.ActionReply, Ts: ts, CredentialID: 7}, // dup
+		{RequestID: "r2", Seq: 3, Action: liveactions.ActionNodeEnqueued, Ts: ts, CredentialID: 0}, // skipped
+		{RequestID: "r3", Seq: 4, Action: liveactions.ActionNodeSwitch, Ts: ts,
+			Detail: map[string]string{"from_credential_id": "9", "to_credential_id": "11"}},
+		{RequestID: "r3", Seq: 5, Action: liveactions.ActionCredentialSelected, Ts: ts, CredentialID: 11}, // dup of to
+	}
+	got := collectCredentialIDs(actions)
+	want := []int{7, 9, 11}
+	if len(got) != len(want) {
+		t.Fatalf("collectCredentialIDs length: want %v got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("collectCredentialIDs[%d]: want %d got %v", i, want[i], got)
+		}
+	}
+}
+
 func TestRequestLifecycleEnvelope_SingleFlattensDetail(t *testing.T) {
 	ts := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
 	ev := liveactions.ActionEvent{
@@ -101,7 +167,7 @@ func TestRequestLifecycleEnvelope_SingleFlattensDetail(t *testing.T) {
 	env := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload([]liveactions.ActionEvent{ev}),
+		Action:    actionWirePayload([]liveactions.ActionEvent{ev}, nil),
 	}
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -142,7 +208,7 @@ func TestRequestLifecycleEnvelope_BatchUsesArray(t *testing.T) {
 	env := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload(batch),
+		Action:    actionWirePayload(batch, nil),
 	}
 	b, err := json.Marshal(env)
 	if err != nil {
@@ -329,7 +395,7 @@ func TestReplayLifecycleActions_ResolvesOwnershipFromRedisDetail(t *testing.T) {
 
 	// 先写请求 detail（全局键），再写动作：回放时应能解析归属 tenant-b。
 	req := LiveRequest{RequestID: "late-1", Ts: ts.Format(time.RFC3339), TenantID: "tenant-b", Model: "m", ModelCategory: "v", ProviderCode: "p", Status: "success"}
-	if err := hub.store.Record(ctx, req); err != nil {
+	if err := hub.store.Record(ctx, req, ""); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{RequestID: "late-1", Seq: 1, Action: liveactions.ActionReply, Ts: ts}))
@@ -612,7 +678,7 @@ func TestRedisNotify_ReconstructsChildMetadata(t *testing.T) {
 		ParentRequestID: "parent-sub",
 		RequestType:     "title",
 	}
-	if err := hub.store.Record(ctx, child); err != nil {
+	if err := hub.store.Record(ctx, child, ""); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	payload, err := json.Marshal(liveStreamNotifyPayload{RequestID: child.RequestID, TenantID: child.TenantID})
@@ -659,6 +725,63 @@ func TestReplayLifecycleActions_ExcludesNodeDimensionEvents(t *testing.T) {
 	}
 }
 
+func TestReplayLifecycleActionsFor_OnlyReplaysVisibleSnapshotRequests(t *testing.T) {
+	hub, _, rdb := newLifecycleTestHub(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	for _, ev := range []liveactions.ActionEvent{
+		{RequestID: "visible", Seq: 1, Action: liveactions.ActionArrive, Ts: ts},
+		{RequestID: "unrelated", Seq: 1, Action: liveactions.ActionArrive, Ts: ts.Add(time.Second)},
+	} {
+		if err := rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, ev)).Err(); err != nil {
+			t.Fatalf("push action: %v", err)
+		}
+	}
+
+	client, rec := newLifecycleClient("", true)
+	hub.replayLifecycleActionsFor(ctx, client, map[string]struct{}{"visible": {}})
+	frames := parseSSEDataFrames(t, rec.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("expected one replay frame, got %d", len(frames))
+	}
+	actions := asActionArray(t, frames[0]["action"])
+	if len(actions) != 1 || actions[0]["request_id"] != "visible" {
+		t.Fatalf("replay must contain only visible snapshot actions, got %#v", actions)
+	}
+}
+
+func TestSnapshotRequestIDs_ExtractsFromDimensions(t *testing.T) {
+	snapshot := &LiveStreamSnapshot{
+		Dimensions: map[string][]LiveStreamLane{
+			"vendor": {{Requests: []LiveStreamTile{{RequestID: "req-1"}, {RequestID: "req-1"}}}},
+		},
+	}
+	ids := snapshotRequestIDs(snapshot)
+	if len(ids) != 1 {
+		t.Fatalf("IDs = %#v, want only deduplicated request", ids)
+	}
+	if _, ok := ids["req-1"]; !ok {
+		t.Fatalf("request missing: %#v", ids)
+	}
+
+	multi := &LiveStreamSnapshot{
+		Dimensions: map[string][]LiveStreamLane{
+			"vendor":   {{Requests: []LiveStreamTile{{RequestID: "req-1"}}}},
+			"provider": {{Requests: []LiveStreamTile{{RequestID: "req-2"}}}},
+		},
+	}
+	ids = snapshotRequestIDs(multi)
+	if len(ids) != 2 {
+		t.Fatalf("IDs = %#v, want two requests", ids)
+	}
+	if _, ok := ids["req-1"]; !ok {
+		t.Fatalf("req-1 missing: %#v", ids)
+	}
+	if _, ok := ids["req-2"]; !ok {
+		t.Fatalf("req-2 missing: %#v", ids)
+	}
+}
+
 // TestLiveStreamEnvelope_LifecycleFieldSnapshot freezes the OBS-BE2 frame
 // key sets: the exact top-level keys each new envelope type may carry.
 // Adding a key requires a deliberate contract update (DV1).
@@ -668,7 +791,7 @@ func TestLiveStreamEnvelope_LifecycleFieldSnapshot(t *testing.T) {
 	lifecycle := LiveStreamEnvelope{
 		Type:      "request_lifecycle",
 		Timestamp: ts,
-		Action:    actionWirePayload([]liveactions.ActionEvent{{RequestID: "r", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}}),
+		Action:    actionWirePayload([]liveactions.ActionEvent{{RequestID: "r", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}}, nil),
 	}
 	b, err := json.Marshal(lifecycle)
 	if err != nil {

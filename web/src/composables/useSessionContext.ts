@@ -1,5 +1,4 @@
 import { ref, computed } from 'vue'
-import { localeRef } from '../i18n'
 import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import {
   getMemoraSessions,
@@ -181,19 +180,9 @@ export function displayKey(s: MemoraSession): string {
   return !v || v === '[空]' ? '[空]' : v
 }
 
-export function fmtDate(v: string | null | undefined) {
-  if (!v) return '—'
-  return new Date(v).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
-}
-
 export function fmtTime(v: string | null | undefined) {
   if (!v) return '—'
   return new Date(v).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-}
-
-export function fmtDateFull(v: string | null | undefined) {
-  if (!v) return '—'
-  return new Date(v).toLocaleString(localeRef.value)
 }
 
 export function fmtScore(v: number) {

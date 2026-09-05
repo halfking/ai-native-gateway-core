@@ -6,7 +6,7 @@
 //
 // Three independent triggers (OR logic):
 //
-//  1. TOKEN trigger  — outbound body exceeds contextWindow × 0.85 threshold.
+//  1. TOKEN trigger  — outbound body exceeds contextWindow × 0.80 threshold.
 //     Same formula as v7 mode=1 (auto_threshold) but applied at the
 //     session level, BEFORE the request is sent (proactive vs reactive).
 //
@@ -37,9 +37,16 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 const (
+	// DefaultTokenThresholdConsider is the outbound token count that marks a preliminary compression band.
+	DefaultTokenThresholdConsider = 200_000
+	// DefaultTokenThresholdForce is the absolute outbound token count that forces compression.
+	DefaultTokenThresholdForce = 400_000
+
 	// DefaultMaxMsgCount is the default message-count threshold for the
 	// COUNT trigger. Configurable via LLM_GATEWAY_WINDOW_MAX_MSG_COUNT.
 	DefaultMaxMsgCount = 50
@@ -58,9 +65,40 @@ const (
 	RecentCompressedGuardSecs = 60
 
 	// DefaultWindowFraction is the fraction of contextWindow used as the
-	// token-count threshold for the TOKEN trigger. Matches v7 §2 (0.85).
-	DefaultWindowFraction = 0.85
+	// token-count threshold for the TOKEN trigger.
+	DefaultWindowFraction = 0.80
 )
+
+// OutboundTokenBand classifies the actual body about to be forwarded to the
+// model. It never classifies the raw client body in isolation: session delta
+// assembly has already included the prior compressed history at this point.
+type OutboundTokenBand string
+
+const (
+	OutboundTokenBandBelow       OutboundTokenBand = "below"
+	OutboundTokenBandPreliminary OutboundTokenBand = "preliminary"
+	OutboundTokenBandForced      OutboundTokenBand = "forced"
+)
+
+func classifyOutboundTokenBand(outboundTokens int) OutboundTokenBand {
+	force := tokenThresholdForce()
+	if force > 0 && outboundTokens > force {
+		return OutboundTokenBandForced
+	}
+	consider := tokenThresholdConsider()
+	if consider > 0 && outboundTokens > consider {
+		return OutboundTokenBandPreliminary
+	}
+	return OutboundTokenBandBelow
+}
+
+func tokenThresholdConsider() int {
+	return settings.GetPlatformInt("compression.token_threshold_consider", DefaultTokenThresholdConsider)
+}
+
+func tokenThresholdForce() int {
+	return settings.GetPlatformInt("compression.token_threshold_force", DefaultTokenThresholdForce)
+}
 
 // WindowTriggerResult is the output of ShouldTriggerWindow.
 type WindowTriggerResult struct {
@@ -84,6 +122,14 @@ type WindowTriggerResult struct {
 	// TokensEst is the estimated token count of the outbound body.
 	TokensEst int
 
+	// TokenBand classifies the post-delta, post-cache outbound body. It lets
+	// telemetry distinguish a soft 200k warning from a forced 400k rewrite.
+	TokenBand OutboundTokenBand
+
+	// PriorLayerTokens is the cached estimate for the previous outbound body.
+	// Together with TokensEst it documents the multi-layer decision inputs.
+	PriorLayerTokens int
+
 	// Threshold is the token threshold that was used (0 when contextWindow unknown).
 	Threshold int
 }
@@ -106,7 +152,15 @@ func ShouldTriggerWindow(
 	now time.Time,
 ) WindowTriggerResult {
 	tokensEst := estimateBodyTokens(outboundBody)
-	res := WindowTriggerResult{TokensEst: tokensEst}
+	priorLayerTokens := 0
+	if state != nil {
+		priorLayerTokens = state.TokenEstimate
+	}
+	res := WindowTriggerResult{
+		TokensEst:        tokensEst,
+		TokenBand:        classifyOutboundTokenBand(tokensEst),
+		PriorLayerTokens: priorLayerTokens,
+	}
 
 	// Streaming guard: body already sent, skip.
 	if streamStarted {
@@ -128,9 +182,14 @@ func ShouldTriggerWindow(
 	}
 
 	// ── TOKEN trigger ────────────────────────────────────────────────────
-	var threshold int
-	if contextWindow > 0 {
-		threshold = int(float64(contextWindow) * fraction * 3.5) // chars ≈ tokens × 3.5
+	if res.TokenBand == OutboundTokenBandForced {
+		// The absolute gate applies to the fully assembled outbound body, which
+		// already contains the prior compressed session layer plus this turn's
+		// delta. It is intentionally independent of the selected model's window.
+		res.Threshold = tokenThresholdForce()
+		res.Reason = "sliding_window_token_absolute"
+	} else if contextWindow > 0 {
+		threshold := int(float64(contextWindow) * fraction * 3.5) // chars ≈ tokens × 3.5
 		res.Threshold = threshold
 		if len(outboundBody) > threshold {
 			res.Reason = "sliding_window_token"
@@ -167,9 +226,13 @@ func ShouldTriggerWindow(
 		elapsed := now.Unix() - state.RecentlyCompressedAt
 		if elapsed < RecentCompressedGuardSecs {
 			// A proactive summary was written very recently. Degrade to
-			// mechanical trim so we don't call the LLM again so soon.
-			res.Degraded = true
-			return res
+			// mechanical trim so we don't call the LLM again so soon. The
+			// absolute forced band is exempt: it must still enter the forced
+			// fallback even when the model context window is unknown.
+			if res.TokenBand != OutboundTokenBandForced {
+				res.Degraded = true
+				return res
+			}
 		}
 	}
 

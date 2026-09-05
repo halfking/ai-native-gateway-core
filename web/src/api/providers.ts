@@ -84,6 +84,12 @@ export interface CredentialCheckResult {
   models_endpoint_resolved: string | null
   models_endpoint_template: string | null
   discovery_strategy: string | null
+  // 2026-09-02: typed models-error kind + redacted preview. When the
+  // upstream returns HTML on /v1/models, this is "non_json_body" and the
+  // UI renders a tailored hint instead of leaking raw "<html>…" into
+  // the credential detail drawer.
+  models_error_kind?: string | null
+  models_error_preview?: string | null
 }
 
 export interface DiagnoseProviderResponse {
@@ -145,6 +151,19 @@ export function toggleProvider(id: number) {
   return req<{ id: number; enabled: boolean }>('PATCH', `/api/providers/${id}/toggle`)
 }
 
+// 2026-08-31: 软删除供应商（DELETE /api/providers/{id}）。
+// 服务端级联将该供应商下所有未删除的凭据置为 status='deleted'，并在
+// providers.deleted_at 上打时间戳。行保留在表里供审计 / FK 完整。
+// 软删除后该供应商不会出现在任何列表与路由中。
+export function deleteProvider(id: number) {
+  return req<{
+    message: string
+    provider_id: number
+    deleted_at: string
+    cascaded_credential_cnt: number
+  }>('DELETE', `/api/providers/${id}`)
+}
+
 export function checkProvider(id: number) {
   return req<{ accepted: boolean; reason: string; run?: { id: number; status: string } }>('POST', `/api/providers/${id}/check`)
 }
@@ -167,7 +186,9 @@ export function probeProviderURL(providerId: number) {
   return req<ProbeURLResult>('POST', `/api/providers/${providerId}/probe-url`)
 }
 
-export type CredentialStatus = 'active' | 'cooling' | 'degraded' | 'quarantine' | 'quota_expired' | 'disabled'
+// 2026-08-31: 增加 'deleted' 终态（migration 627）。前端列表按 status
+// 过滤时不再展示 'deleted' 凭据（服务端 listCredentials 已自动过滤）。
+export type CredentialStatus = 'active' | 'cooling' | 'degraded' | 'quarantine' | 'quota_expired' | 'disabled' | 'deleted'
 
 export interface CredentialQuota {
   id: number
@@ -217,13 +238,21 @@ export interface ProviderCredential {
   state_reason_detail?: string | null
   // 900-series: default probe model (spec §4)
   default_probe_model?: string | null
-  default_probe_model_source?: 'manual' | 'auto:request_log' | 'auto:domestic_random' | 'cleared' | null
+  // Sources: admin pin (manual), shared picker (bg/shared_pick.go),
+  // refresh-time auto-fill (modelcatalog.AutoFillDefaultProbeModel), or
+  // explicitly cleared. Keep in sync with the Go-side writers.
+  default_probe_model_source?: 'manual' | 'auto:request_log' | 'auto:domestic_featured' | 'auto:domestic_random' | 'auto:refresh_latest' | 'cleared' | null
   default_probe_model_picked_at?: string | null
   health_status?: 'unknown' | 'healthy' | 'warning' | 'unreachable'
   health_checked_at?: string | null
   health_source?: 'models' | 'probe' | 'mixed' | 'none' | null
   health_warning_code?: string | null
   health_error?: string | null
+  // 2026-09-02: typed health-error kind. Populated only by the live
+  // /check-health response (CredentialCheckResult) and not by the static
+  // listCredentials payload — operators must click "立即检测" once after a
+  // credential edit for the typed kind to appear next to health_error.
+  health_error_kind?: string | null
   health_latency_ms?: number | null
   health_probe_model?: string | null
   // v0.81: API model-list verification status (null = not yet probed)
@@ -289,7 +318,12 @@ export function addCredential(
 }
 
 export function deleteCredential(providerId: number, credId: number) {
-  return req<void>('DELETE', `/api/providers/${providerId}/credentials/${credId}`)
+  // 2026-08-31: 软删除凭据 → 服务端把 status 翻转为 'deleted'。
+  // 该终态凭据在 listCredentials、listProviders、路由表等所有列表
+  // 中均不出现；model_offers / credential_keys 等子表保留行。
+  return req<{ message: string; credential_id: number; new_status: string }>(
+    'DELETE', `/api/providers/${providerId}/credentials/${credId}`
+  )
 }
 
 export function updateCredential(providerId: number, credId: number, data: Partial<{
@@ -316,15 +350,71 @@ export function revealCredentialKey(providerId: number, credId: number) {
   return req<{ credential_id: number; api_key: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/reveal`)
 }
 
-// ── GET/POST dual-mode utility ─────────────────────────────────────────────
+export function revealUnifiedCredentialKey(credId: number) {
+  return req<{ credential_id: number; api_key: string }>('POST', `/api/credentials/${credId}/reveal`)
+}
 
-export async function getOrPost<T>(path: string, getParams?: Record<string, string>, postBody?: any): Promise<T> {
-  try {
-    const qs = getParams && Object.keys(getParams).length > 0 ? '?' + new URLSearchParams(getParams).toString() : ''
-    return await req<T>('GET', path + qs)
-  } catch {
-    return req<T>('POST', path, postBody)
-  }
+export interface SetUnifiedCredentialKeyRequest {
+  api_key: string
+}
+
+export function setUnifiedCredentialKey(credId: number, body: SetUnifiedCredentialKeyRequest) {
+  return req<RotateCredentialPrimaryKeyResponse>(
+    'POST',
+    `/api/credentials/${credId}/set-key`,
+    body,
+  )
+}
+
+// 2026-09-02: rotate a credential's primary secret without changing its
+// identity or model bindings. The backend (admin/provider_credential.go
+// rotateCredentialPrimaryKey) requires raw_model_name so it can validate
+// the binding before the swap and queue a probe afterwards.
+//
+// Probe status mirrors the queueCredentialRotationProbe return value:
+//   - "queued"             probe was queued for manual model probing
+//   - "queue_unavailable"  probe queue refused (warned to slog, surfaced to 0)
+//   - "not_configured"     modelProbe pipeline not configured
+// probe_queued is a strict boolean derived from probe_status === "queued".
+export interface RotateCredentialPrimaryKeyRequest {
+  api_key: string
+  raw_model_name: string
+}
+
+export interface RotateCredentialPrimaryKeyResponse {
+  message: string
+  probe_status: string
+  probe_queued: boolean
+}
+
+export function rotateCredentialPrimaryKey(
+  providerId: number,
+  credId: number,
+  body: RotateCredentialPrimaryKeyRequest,
+) {
+  return req<RotateCredentialPrimaryKeyResponse>(
+    'POST',
+    `/api/providers/${providerId}/credentials/${credId}/rotate-primary-key`,
+    body,
+  )
+}
+
+// ── GET helper (was: GET with POST fallback) ─────────────────────────────
+// 2026-08-23: the prior GET-then-POST fallback masked 500s as POST requests
+// (e.g. /api/providers/14/models when migration 361 was missing — GET 500
+// surfaced as "POST /api/providers/14/models 500" in the browser and tools).
+// Both methods ran the same SELECT path, so the fallback never recovered.
+// Drop the fallback; callers wanting POST behaviour should call `req('POST', …)`
+// directly. The unused `postBody` parameter is preserved on the signature
+// so existing call sites (`getOrPost(path, getParams, body)`) keep compiling
+// while we route everyone to the GET-only contract.
+export async function getOrPost<T>(
+  path: string,
+  getParams?: Record<string, string>,
+  _postBody?: any
+): Promise<T> {
+  const qs = getParams && Object.keys(getParams).length > 0 ? '?' + new URLSearchParams(getParams).toString() : ''
+  return req<T>('GET', path + qs)
 }
 
 // ── Background task API ───────────────────────────────────────────────────
@@ -408,9 +498,20 @@ export interface ModelOffer {
   success_rate: number | null
   input_price: number | null
   output_price: number | null
+  unit_price_in_per_1m?: number | null
+  unit_price_out_per_1m?: number | null
+  cache_read_price_per_1m?: number | null
+  cache_write_price_per_1m?: number | null
+  billing_mode?: string | null
   last_seen_at: string | null
   routing_tier: string
   availability_source: string
+  modality?: string
+  multimodal_caps?: string[]
+  reasoning_caps?: Record<string, unknown> | null
+  canonical_status?: string
+  admin_protected?: boolean
+  source?: string
   /**
    * Upstream-side model identifier — for providers like Volcano Ark this is
    * the deployment endpoint ID (e.g. "ep-20241227XXXX") that must be sent
@@ -424,6 +525,14 @@ export interface ModelOffer {
   node_iq_avg?: number | null
   node_iq_sample_count?: number
   node_iq_tested_at?: string | null
+  /**
+   * 2026-08-17: effective context window for this credential×model binding
+   * (`COALESCE(cmb.context_window_override, mc.context_window_override, mc.context_window)`).
+   * null when neither the binding nor the canonical model advertise a window.
+   */
+  context_window?: number | null
+  /** Raw binding-level override.  null when the canonical value is in effect. */
+  context_window_override?: number | null
 }
 
 export interface QueryModelsResponse {
@@ -497,6 +606,52 @@ export function clearProviderModels(providerId: number) {
   )
 }
 
+export interface CredentialModelCreateBody {
+  raw_model_name: string
+  standardized_name?: string | null
+  canonical_id?: number | null
+  outbound_model_name?: string | null
+  available?: boolean
+  context_window?: number | null
+  modality?: string
+  multimodal_caps?: string[]
+  reasoning_caps?: Record<string, unknown> | null
+  canonical_status?: string
+}
+
+export interface CredentialRefreshResult {
+  message: string
+  models_upserted: number
+  models_failed: number
+  skipped_protected: number
+  protected_bindings: number
+  credential_id: number
+  provider_id: number
+}
+
+export function getCredentialModels(providerId: number, credentialId: number) {
+  return req<ModelOffer[]>('GET', `/api/providers/${providerId}/credentials/${credentialId}/models`)
+}
+
+export function createCredentialModel(providerId: number, credentialId: number, body: CredentialModelCreateBody) {
+  return req<{ id: number; credential_id: number; raw_model_name: string; canonical_id: number }>(
+    'POST', `/api/providers/${providerId}/credentials/${credentialId}/models`, body
+  )
+}
+
+export function clearCredentialModels(providerId: number, credentialId: number, includeProtected = false) {
+  const q = includeProtected ? '?include_protected=1' : '?include_protected=0'
+  return req<{ message: string; deleted: number; include_protected: boolean; protected_kept?: number }>(
+    'DELETE', `/api/providers/${providerId}/credentials/${credentialId}/models${q}`
+  )
+}
+
+export function refreshCredentialModels(providerId: number, credentialId: number) {
+  return req<CredentialRefreshResult>(
+    'POST', `/api/providers/${providerId}/credentials/${credentialId}/refresh-models`, {}
+  )
+}
+
 export function toggleModelOfferState(providerId: number, offerId: number, body: { available: boolean }) {
   return req<{ message: string; available: boolean }>('PATCH', `/api/providers/${providerId}/models/${offerId}/state`, body)
 }
@@ -527,6 +682,17 @@ export function updateModelOffer(
     // Volcano Ark endpoint ID like "ep-20241227XXXX").  Pass an empty
     // string to clear it (revert to raw_model_name).
     outbound_model_name?: string | null
+    // 2026-08-17: context_window override at the credential-model binding
+    // level.  Positive value = save as override; null / 0 / negative =
+    // clear the override so the canonical model value takes effect.
+    // The backend writes directly to credential_model_bindings
+    // (skipping the model_offers view INSTEAD OF UPDATE trigger).
+    context_window?: number | null
+    unit_price_in_per_1m?: number | null
+    unit_price_out_per_1m?: number | null
+    cache_read_price_per_1m?: number | null
+    cache_write_price_per_1m?: number | null
+    billing_mode?: string | null
   }
 ) {
   return req<{
@@ -537,15 +703,23 @@ export function updateModelOffer(
     canonical_name: string | null
     display_name: string | null
     outbound_model_name: string | null
+    context_window: number | null
+    context_window_override: number | null
+    unit_price_in_per_1m: number | null
+    unit_price_out_per_1m: number | null
+    cache_read_price_per_1m: number | null
+    cache_write_price_per_1m: number | null
+    billing_mode: string | null
   }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, body)
 }
 
-export function startCredentialCheck(providerId: number, credId: number) {
-  return req<{ task_id: number; status: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
+export function startCredentialCheck(providerId: number, credId: number, model?: string) {
+  const query = model ? `?model=${encodeURIComponent(model)}` : ''
+  return req<{ task_id: number; status: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/check${query}`)
 }
 
-export async function checkCredential(providerId: number, credId: number) {
-  const { task_id } = await startCredentialCheck(providerId, credId)
+export async function checkCredential(providerId: number, credId: number, model?: string) {
+  const { task_id } = await startCredentialCheck(providerId, credId, model)
   const task = await pollTask(task_id)
   assertTaskMatches(task, providerId, credId)
   if (task.status === 'failed') {
@@ -735,6 +909,9 @@ export interface ProviderLogEntry {
   credential_label?: string | null
   client_model: string | null
   outbound_model: string | null
+  canonical_name?: string | null
+  canonical_model?: string | null
+  provider_model?: string | null
   success: boolean
   error_kind: string | null
   prompt_tokens: number | null

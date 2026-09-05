@@ -30,6 +30,10 @@ import {
 } from '../api/api-system-monitor'
 import SwimLane from '../components/SwimLane.vue'
 import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
+import { confirmDialog } from '../composables/useConfirmDialog'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const stats = ref<SystemMonitorStats | null>(null)
 const recentRuns = ref<SystemMonitorRun[]>([])
@@ -92,11 +96,11 @@ async function loadAll() {
 // ── 操作 ────────────────────────────────────────────────
 
 async function handleStartAll() {
-  if (!confirm('确认开始全部探测任务？将扫描所有 active 凭据的 binding。')) return
+  if (!(await confirmDialog(t('probeHealth.systemStartAllConfirm')))) return
   triggerBusy.value = true
   try {
     const r = await startAllSystemMonitorTasks()
-    pushToast(`已触发 ${r.triggered} 任务, 失败 ${r.failed}`)
+    pushToast(t('probeHealth.systemTriggeredToast', { n: r.triggered, failed: r.failed }))
     await loadStats()
   } catch (e) {
     error.value = `start-all failed: ${(e as Error).message}`
@@ -105,11 +109,11 @@ async function handleStartAll() {
 }
 
 async function handleStopAll() {
-  if (!confirm('确认停止全部探测任务？已 claimed 的任务仍会跑完。')) return
+  if (!(await confirmDialog(t('probeHealth.systemStopAllConfirm')))) return
   triggerBusy.value = true
   try {
     const r = await stopAllSystemMonitorTasks()
-    pushToast(`已清空队列 ${r.stopped} 条任务`)
+    pushToast(t('probeHealth.systemStoppedToast', { n: r.stopped }))
     await loadStats()
   } catch (e) {
     error.value = `stop-all failed: ${(e as Error).message}`
@@ -768,7 +772,7 @@ watch(() => error.value, (v) => {
   padding: 8px 12px;
   border-radius: 4px;
   font-size: 13px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  box-shadow: 0 4px 12px var(--overlay-light);
 }
 /* Phase 3: Migration Progress Styles */
 .sm-migration {

@@ -7,9 +7,10 @@
 // ?token=<jwt> to the URL (AdminMiddleware extracts it to Authorization).
 // The HttpOnly cookie is also sent (credentials: 'include').
 
-import { reactive, computed, type ComputedRef } from 'vue'
+import { reactive, computed, ref, type ComputedRef } from 'vue'
 import { authBearer } from '../store'
 import type { RouteIncidentUpdate } from '../types/routeIncident'
+import { usePersistedValue } from './usePersistedValue'
 
 export type LiveStatus = 'in_progress' | 'success' | 'failure' | 'rate_limited'
 
@@ -52,6 +53,10 @@ export interface LiveRequest {
   retryReasonClass?: string
   parentRequestId?: string
   requestType?: 'chat' | 'title' | 'summary' | 'sensitive_word' | 'probe' | 'unknown'
+  // 2026-08-15 (24号 §4): stage 的呈现分类（routing/llm/retrying/terminal）。
+  // lifecycle patch 落到请求 tile 时写入；in-flight 且尚无分类的请求在
+  // 渲染前默认补 'routing'（见 normalizeRequests）。
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
 }
 
 /**
@@ -72,9 +77,12 @@ export interface ActionEvent {
   ts?: string
   model?: string
   credential_id?: number
+  credential_label?: string
   error_kind?: string | null
   retry_seq?: number
   retry?: boolean
+  stage?: string
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
   // §2 per-action detail fields (only present on the actions that use them)
   client_protocol?: string
   auto_decision?: string
@@ -107,6 +115,8 @@ export interface LiveStreamTile {
   model: string
   vendor: string
   provider: string
+  credential_id?: number
+  credential_label?: string
   status: string
   error_kind?: string | null
   latency_ms?: number | null
@@ -116,12 +126,14 @@ export interface LiveStreamTile {
   is_probe?: boolean
   probe_origin?: string
   probe_attempt?: number
+  stage?: string
+  stage_category?: 'routing' | 'llm' | 'retrying' | 'terminal'
 }
 
 export interface LiveStreamLane {
   id: string
   name: string
-  dimension: 'vendor' | 'provider' | 'model'
+  dimension: 'credential' | 'vendor' | 'provider' | 'model'
   requests: LiveStreamTile[]
   stats: LiveStreamStats
   isOthers: boolean
@@ -135,17 +147,17 @@ export interface LiveStreamLegendItem {
 
 export interface LiveStreamSnapshot {
   summary: LiveStreamStats
-  detail_dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
+  detail_dimensions?: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimensions: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimension_legends: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
   latest_request_ts?: string
 }
 
 export interface LiveStreamDelta {
   summary: LiveStreamStats
-  changed_lanes: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
-  dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
+  changed_lanes: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLane[]>
+  dimension_legends: Record<'credential' | 'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
 }
 
@@ -159,6 +171,8 @@ export interface LiveQueueLaneSnapshot {
   credential?: number
   mode?: string
   depth: number
+  limit?: number
+  full?: boolean
 }
 
 // OBS-BE3 (V3.3-OBS, 2026-08-15, 13号 §4 pipeline 层): 全链路 pipeline 聚合
@@ -184,6 +198,7 @@ export interface LiveQueueSnapshot {
 
 export interface LiveNodeStatus {
   credential_id: number
+  credential_label?: string
   provider_id?: number
   provider_code?: string
   circuit_state?: string
@@ -202,6 +217,10 @@ export interface LiveNodeStatus {
   disable_kind?: 'manual' | 'system' | ''
   system_recover_at?: string
   last_error_at?: string
+  // 2026-08-17 (OBS-UI model-grouped nodes): 该凭据当前路由可见的原始
+  // 模型名列表（credential_model_bindings 投影）。未上报时缺省，
+  // 前端不得用空数组冒充"无绑定"。
+  raw_models?: string[]
 }
 
 export interface LiveStreamEnvelope {
@@ -251,6 +270,10 @@ export const ACTIONS_PER_REQUEST_CAP = 50
 export const ACTIONS_GLOBAL_CAP = 2000
 export const CHILDREN_PER_PARENT_CAP = 50
 export const CHILDREN_GLOBAL_CAP = 2000
+// Per-lane merge cap (frontend). Backend admin/live_stream_redis_store.go
+// keeps a separate LiveStreamLaneVisibleLimit = 100 for the redis snapshot.
+// Raised from 20 to 50 to match the 24号 §3 wider swim-lane viewport.
+export const LANE_VISIBLE_LIMIT = 50
 
 let actionsTotal = 0
 let childrenTotal = 0
@@ -264,12 +287,14 @@ const visibilityState = reactive({
 
 let needsFullRefresh = false
 
-// Forward declaration - actual implementation is below
-let _requestSnapshotRefresh: () => void = () => {}
+// Visibility change handler (stored so we can remove it properly)
+let visibilityChangeHandler: (() => void) | null = null
 
 // Track page visibility changes
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
+function installVisibilityListener() {
+  if (typeof document === 'undefined' || visibilityChangeHandler) return
+  
+  visibilityChangeHandler = () => {
     const wasHidden = !visibilityState.isVisible
     visibilityState.isVisible = !document.hidden
 
@@ -279,16 +304,30 @@ if (typeof document !== 'undefined') {
       console.log(`[LiveStream] Page visible after ${Math.round(hiddenDuration / 1000)}s`)
       
       if (visibilityState.missedWhileHidden) {
-        console.log('[LiveStream] Missed updates while hidden, requesting full snapshot')
-        // Request full snapshot refresh from backend
-        _requestSnapshotRefresh()
+        console.log('[LiveStream] Missed updates while hidden, reconnecting for authoritative replay')
+        // A snapshot_refresh only repairs request tiles. Reconnect so the
+        // server also replays request_lifecycle and child_request frames.
+        // The existing connection is intentionally closed first; openConnection
+        // will perform the normal initial_data + lifecycle replay handshake.
+        if (refCount > 0) {
+          closeConnection()
+          openConnection()
+        }
         visibilityState.missedWhileHidden = false
       }
     } else if (document.hidden) {
       visibilityState.lastVisibleAt = Date.now()
       console.log('[LiveStream] Page hidden, marking updates as missed')
     }
-  })
+  }
+  
+  document.addEventListener('visibilitychange', visibilityChangeHandler)
+}
+
+function removeVisibilityListener() {
+  if (typeof document === 'undefined' || !visibilityChangeHandler) return
+  document.removeEventListener('visibilitychange', visibilityChangeHandler)
+  visibilityChangeHandler = null
 }
 
 // Vue auto-unwraps `ref` and `reactive` proxies in templates.
@@ -342,6 +381,11 @@ export const ENDPOINT = '/api/admin/live-stream'
 
 // localStorage 中允许管理员写入一个自定义 SSE endpoint（reverse proxy / 隧道）
 // 读取时若为空字符串 / 不可达 / 同源默认则走 ENDPOINT。
+//
+// LP8 (2026-08-24): persistence path now goes through usePersistedValue so
+// the SSE endpoint share the lifecycle-flush / error-degrade primitives
+// with the rest of the frontend. Read still happens lazily through the
+// module-level `customEndpoint` cache so module-init order is preserved.
 function readCustomEndpoint(): string {
   try {
     const v = localStorage.getItem('llmgw_sse_endpoint')
@@ -351,18 +395,32 @@ function readCustomEndpoint(): string {
   }
 }
 
+const sseEndpointPersisted = usePersistedValue<string>(
+  'llmgw_sse_endpoint',
+  () => '',
+  {
+    immediate: true,
+    // Store the raw URL (no JSON quoting) so existing call sites that
+    // read localStorage.getItem('llmgw_sse_endpoint') and expect a bare
+    // string continue to work unchanged.
+    serialize: (v) => v,
+    deserialize: (r) => r,
+  },
+)
+
 function buildUrl(endpoint: string): string {
-  let url = endpoint
-  try {
-    const token = authBearer()
-    if (token) {
-      const sep = url.includes('?') ? '&' : '?'
-      url = `${url}${sep}token=${encodeURIComponent(token)}`
-    }
-  } catch {
-    /* SSR or storage disabled — fall back to cookie auth */
-  }
-  return url
+  // 2026-08-26 (P1-7 fix): do NOT append a `?token=` query parameter.
+  // Anything in the URL lives in browser history, server access logs,
+  // and proxy logs — that is a long-lived JWT / api-key exposure.
+  // The backend already accepts the HttpOnly `llmgw_session` cookie
+  // for EventSource auth (admin/auth_cookie_helpers.go), and the
+  // EventSource is opened with `credentials: 'include'` below, so
+  // the browser will attach the cookie automatically. Legacy api-key
+  // users still work because their Authorization: Bearer header is
+  // ignored by EventSource (it cannot set custom headers) — they must
+  // rely on the cookie path, which admin/auth.go already supports via
+  // ExtractBearerOrCookieToken.
+  return endpoint
 }
 
 // 用户层想要使用的最终 URL（可能被管理员通过弹窗覆盖）
@@ -370,11 +428,10 @@ let customEndpoint = readCustomEndpoint()
 
 export function setCustomEndpoint(url: string) {
   customEndpoint = (url || '').trim()
-  try {
-    if (customEndpoint) localStorage.setItem('llmgw_sse_endpoint', customEndpoint)
-    else localStorage.removeItem('llmgw_sse_endpoint')
-  } catch {
-    /* ignore */
+  if (customEndpoint) {
+    sseEndpointPersisted.value.value = customEndpoint
+  } else {
+    sseEndpointPersisted.remove()
   }
 }
 
@@ -383,6 +440,17 @@ export function getCustomEndpoint(): string {
     customEndpoint = readCustomEndpoint()
   }
   return customEndpoint
+}
+
+/**
+ * @internal Test-only: drop the module-level cache so the next
+ * getCustomEndpoint() re-reads localStorage. Production callers should
+ * use setCustomEndpoint() to mutate state. Exposed here (instead of as a
+ * separate test helper module) so beforeEach cleanup in useLiveStreamUrl's
+ * test suite can reset state without spinning up extra mock plumbing.
+ */
+export function __resetCustomEndpointForTest(): void {
+  customEndpoint = ''
 }
 
 const idIndex = new Set<string>()
@@ -398,9 +466,17 @@ let maxSeenTs = ''
 
 let es: EventSource | null = null
 let refCount = 0
+let connectionGeneration = 0
+let resizeHandler: (() => void) | null = null
 
 let onEvictCb: ((id: string) => void) | null = null
 const terminalListeners = new Set<(req: LiveRequest) => void>()
+// 2026-09-01 (P1 audit fix): onEvictCb was a single-callback slot — every
+// component that called setOnRequestEvicted() silently overwrote the
+// previous one, leaving dangling "should be cleaned up" callbacks on
+// unmounted components. Promote to a Set so multiple consumers can
+// coexist and each useLiveStream() cleanup only removes its own callback.
+const evictListeners = new Set<(id: string) => void>()
 
 function notifyTerminalRequest(req: LiveRequest) {
   if (req.type === 'idle_marker' || !req.request_id) return
@@ -416,6 +492,122 @@ function notifyTerminalRequest(req: LiveRequest) {
 
 function seqOf(a: ActionEvent): number {
   return a.seq ?? 0
+}
+
+// 2026-08-17 (OBS-UI model-grouped nodes): 派生索引 request_id → 当前
+// credential_id。ActionEvent 在 credential_selected / node_selected /
+// upstream_request / node_switch / reply 等动作上携带 credential_id（同
+// request 内以 seq 递增）。仅取该请求最近一条带 credential_id 的动作作为
+// "当前凭据"——支持故障转移（node_switch.from→to）只保留最新。
+//
+// 窗口语义：仅覆盖当前 SSE 回放窗口内（≈最近 200 条 + 实时流入）的请求。
+// 与"实时请求流"栏目本身的窗口语义一致，不承诺全量历史。
+type RequestCredentialIndex = Map<string, { credentialId: number; seq: number; ts: number }>
+const requestCredential: RequestCredentialIndex = new Map()
+export const requestCredentialRevision = ref(0)
+
+// Carry-credential actions: ActionEvent 中带 credential_id 且表示"请求
+// 绑定到该凭据"的子集。node_switch 携带 from_credential_id +
+// to_credential_id；reply 携带 credential_id；其余只携带 credential_id。
+function extractCredentialFromAction(action: ActionEvent): { credentialId: number; seq: number; ts: number } | null {
+  const seq = action.seq ?? 0
+  const ts = action.ts ? Date.parse(action.ts) : 0
+  if (action.action === 'node_switch') {
+    // 故障转移目标优先；缺省时退回到原凭据（让索引至少有一个非空值）。
+    if (typeof action.to_credential_id === 'number') {
+      return { credentialId: action.to_credential_id, seq, ts }
+    }
+    if (typeof action.from_credential_id === 'number') {
+      return { credentialId: action.from_credential_id, seq, ts }
+    }
+    return null
+  }
+  if (typeof action.credential_id === 'number') {
+    return { credentialId: action.credential_id, seq, ts }
+  }
+  return null
+}
+
+function applyRequestCredentialIndex(requestId: string, action: ActionEvent) {
+  const next = extractCredentialFromAction(action)
+  if (!next) return
+  const prev = requestCredential.get(requestId)
+  // 用 (seq, ts) 比较保证：① seq 大的胜出；② seq 缺失/相同时 ts 大的胜出
+  // —— 避免 node_switch 乱序造成"旧凭据"覆盖"新凭据"。
+  if (prev && prev.seq > next.seq) return
+  if (prev && prev.seq === next.seq && prev.ts > next.ts) return
+  requestCredential.set(requestId, next)
+  requestCredentialRevision.value++
+}
+
+function rebuildRequestCredentialIndex(requestId: string, timeline: ActionEvent[]) {
+  requestCredential.delete(requestId)
+  for (const action of timeline) {
+    applyRequestCredentialIndex(requestId, action)
+  }
+}
+
+export function getRequestCredentialId(requestId: string): number | null {
+  return requestCredential.get(requestId)?.credentialId ?? null
+}
+
+/** Return the requests in the current SSE replay window that are bound to
+ *  the given credential_id. Filter runs over the flat `liveStreamState.requests`
+ *  buffer, no extra data is kept. */
+export function getRequestsForCredential(credentialId: number): LiveRequest[] {
+  if (!Number.isFinite(credentialId)) return []
+  const out: LiveRequest[] = []
+  for (const r of liveStreamState.requests) {
+    if (!r || r.type === 'idle_marker' || !r.request_id) continue
+    if (getRequestCredentialId(r.request_id) === credentialId) {
+      out.push(r)
+    }
+  }
+  return out
+}
+
+/** Reverse index for model-grouped nodes: model name → nodes that
+ *  route-serve that model. Backed solely by the wire `raw_models` field. */
+export function getNodesForModel(model: string): LiveNodeStatus[] {
+  if (!model) return []
+  const out: LiveNodeStatus[] = []
+  for (const n of liveStreamState.nodes) {
+    if (!n) continue
+    if (Array.isArray(n.raw_models) && n.raw_models.includes(model)) {
+      out.push(n)
+    }
+  }
+  return out
+}
+
+export function clearRequestCredentialIndex() {
+  requestCredential.clear()
+  requestCredentialRevision.value++
+}
+
+function applyStageToRequest(requestId: string, action: ActionEvent) {
+  if (!requestId || (!action.stage && !action.stage_category)) return
+  const patch: Partial<LiveStreamTile> = {}
+  if (action.stage) patch.stage = action.stage
+  if (action.stage_category) patch.stage_category = action.stage_category
+  for (const request of liveStreamState.requests) {
+    if (request.request_id === requestId) Object.assign(request, patch)
+  }
+  const snapshot = liveStreamState.snapshot
+  if (!snapshot) return
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
+    for (const lane of snapshot.dimensions[dim] || []) {
+      const tile = lane.requests.find((item) => item.request_id === requestId)
+      if (tile) Object.assign(tile, patch)
+    }
+    // Optional backward compatibility: detail_dimensions may not exist in new snapshots
+    if (snapshot.detail_dimensions?.[dim]) {
+      for (const lane of snapshot.detail_dimensions[dim]) {
+        const tile = lane.requests.find((item) => item.request_id === requestId)
+        if (tile) Object.assign(tile, patch)
+      }
+    }
+  }
 }
 
 /** Insert one action into its request's timeline, kept sorted by seq ASC.
@@ -438,6 +630,9 @@ function recordAction(action: ActionEvent) {
   if (existingIndex >= 0) {
     // Same seq replays (snapshot refresh / reconnect): last write wins.
     list[existingIndex] = action
+    // 2026-08-17 (audit P1): timeline 用同 seq last-write-wins；索引必须
+    // 从替换后的 timeline 重建，不能让旧 action 的时间戳覆盖该语义。
+    rebuildRequestCredentialIndex(requestId, list)
     return
   }
 
@@ -446,6 +641,7 @@ function recordAction(action: ActionEvent) {
   // overall order depends only on seq — never on message arrival history.
   list.sort((a, b) => seqOf(a) - seqOf(b))
   actionsTotal += 1
+  applyRequestCredentialIndex(requestId, action)
 
   // Per-request cap: drop the OLDEST actions (smallest seq).
   while (list.length > ACTIONS_PER_REQUEST_CAP) {
@@ -483,6 +679,7 @@ function applyLifecycleActions(payload: ActionEvent | ActionEvent[] | undefined)
   for (const action of batch) {
     if (!action || typeof action !== 'object') continue
     recordAction(action)
+    applyStageToRequest(action.request_id || '', action)
   }
 }
 
@@ -550,10 +747,21 @@ function trimOldest() {
   if (dropped.type !== 'idle_marker' && dropped.request_id) {
     idIndex.delete(dropped.request_id)
     if (onEvictCb) onEvictCb(dropped.request_id)
+    for (const fn of evictListeners) fn(dropped.request_id)
+  }
+}
+
+function ensureDefaultStageCategory(item: LiveRequest) {
+  // In-flight tiles without a lifecycle patch yet default to "routing"
+  // so operators can tell "received / routing" from "waiting on LLM".
+  if (item.type === 'idle_marker') return
+  if (item.status === 'in_progress' && !item.stage_category) {
+    item.stage_category = 'routing'
   }
 }
 
 function pushOrQueue(item: LiveRequest) {
+  ensureDefaultStageCategory(item)
   if (liveStreamState.paused) {
     pending.push(item)
     if (pending.length > PENDING_CAP) {
@@ -562,6 +770,7 @@ function pushOrQueue(item: LiveRequest) {
         if (d.type !== 'idle_marker' && d.request_id) {
           idIndex.delete(d.request_id)
           if (onEvictCb) onEvictCb(d.request_id)
+          for (const fn of evictListeners) fn(d.request_id)
         }
       }
     }
@@ -619,16 +828,24 @@ function applyInitialData(items: LiveRequest[]) {
   for (const r of kept) {
     if (r.type !== 'idle_marker' && r.request_id) newIds.add(r.request_id)
   }
-  if (onEvictCb) {
+  if (onEvictCb || evictListeners.size > 0) {
     for (const oldId of idIndex) {
-      if (!newIds.has(oldId)) onEvictCb(oldId)
+      if (!newIds.has(oldId)) {
+        if (onEvictCb) onEvictCb(oldId)
+        for (const fn of evictListeners) fn(oldId)
+      }
     }
   }
   idIndex.clear()
+  liveStreamState.children.clear()
+  childrenTotal = 0
   for (const r of kept) {
     if (r.type !== 'idle_marker' && r.request_id) idIndex.add(r.request_id)
   }
   liveStreamState.requests = kept
+  for (const r of kept) {
+    if (r.parentRequestId) applyChildRequest(r.parentRequestId, r)
+  }
 }
 
 function handleEnvelope(env: LiveStreamEnvelope) {
@@ -685,7 +902,7 @@ function handleEnvelope(env: LiveStreamEnvelope) {
 
   if (env.delta) {
     mergeDelta(env.delta)
-    for (const dim of ['vendor', 'provider', 'model'] as const) {
+    for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
       const lanes = env.delta.changed_lanes[dim]
       if (!lanes) continue
       for (const lane of lanes) {
@@ -804,21 +1021,42 @@ function handleLaneIdleCheck_UNUSED(laneIds: string[], backendTs: string) {
   }
 }
 
-/** Merge server snapshot without dropping lanes that disappeared from Redis. */
+function normalizeLaneTiles(lane: LiveStreamLane) {
+  const tiles = [...lane.requests]
+  mergeTilesById(lane.requests, tiles)
+}
+
 function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
   if (!liveStreamState.snapshot) {
+    // The backend serializes lane tiles newest-first for its own replay/cap
+    // semantics. The UI contract is the opposite: FIFO, oldest on the left
+    // and newest on the right. Normalize the first snapshot too; incremental
+    // merges already pass through mergeTilesById below.
+    for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
+      for (const lane of incoming.dimensions[dim] || []) {
+        normalizeLaneTiles(lane)
+      }
+      // Optional backward compatibility: detail_dimensions may not exist
+      if (incoming.detail_dimensions?.[dim]) {
+        for (const lane of incoming.detail_dimensions[dim]) {
+          normalizeLaneTiles(lane)
+        }
+      }
+    }
     liveStreamState.snapshot = incoming
     return
   }
   const s = liveStreamState.snapshot
   s.summary = incoming.summary
   s.status_legends = incoming.status_legends
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     if (incoming.dimensions[dim]) {
       if (!s.dimensions[dim]) s.dimensions[dim] = []
       mergeLanesById(s.dimensions[dim], incoming.dimensions[dim])
     }
-    if (incoming.detail_dimensions[dim]) {
+    // Optional backward compatibility: detail_dimensions may not exist in new snapshots
+    if (incoming.detail_dimensions?.[dim]) {
+      if (!s.detail_dimensions) s.detail_dimensions = { credential: [], vendor: [], provider: [], model: [] }
       if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
       mergeLanesById(s.detail_dimensions[dim], incoming.detail_dimensions[dim])
     }
@@ -840,7 +1078,9 @@ function tilesEqual(a: LiveStreamTile[], b: LiveStreamTile[]): boolean {
       x.status !== y.status ||
       x.model !== y.model ||
       x.vendor !== y.vendor ||
-      x.provider !== y.provider
+      x.provider !== y.provider ||
+      x.credential_id !== y.credential_id ||
+      x.credential_label !== y.credential_label
     ) {
       return false
     }
@@ -900,23 +1140,24 @@ function mergeDelta(delta: LiveStreamDelta) {
   if (!liveStreamState.snapshot) {
     liveStreamState.snapshot = {
       summary: delta.summary,
-      detail_dimensions: { vendor: [], provider: [], model: [] },
-      dimensions: { vendor: [], provider: [], model: [] },
-      dimension_legends: delta.dimension_legends || { vendor: [], provider: [], model: [] },
+      dimensions: { credential: [], vendor: [], provider: [], model: [] },
+      dimension_legends: delta.dimension_legends || { credential: [], vendor: [], provider: [], model: [] },
       status_legends: delta.status_legends,
     }
   }
   const s = liveStreamState.snapshot
   s.summary = delta.summary
   s.status_legends = delta.status_legends
-  for (const dim of ['vendor', 'provider', 'model'] as const) {
+  for (const dim of ['credential', 'vendor', 'provider', 'model'] as const) {
     if (delta.changed_lanes[dim]) {
       // mergeLanesById updates in place and preserves lane order so
       // backend rank changes do not reshuffle the whole swim-lane row.
       if (!s.dimensions[dim]) s.dimensions[dim] = []
       mergeLanesById(s.dimensions[dim], delta.changed_lanes[dim])
-      if (!s.detail_dimensions[dim]) s.detail_dimensions[dim] = []
-      mergeLanesById(s.detail_dimensions[dim], delta.changed_lanes[dim])
+      // Optional backward compatibility: maintain detail_dimensions if it exists
+      if (s.detail_dimensions?.[dim]) {
+        mergeLanesById(s.detail_dimensions[dim], delta.changed_lanes[dim])
+      }
     }
     if (delta.dimension_legends && delta.dimension_legends[dim]) {
       if (!s.dimension_legends[dim]) s.dimension_legends[dim] = []
@@ -946,61 +1187,77 @@ function mergeDelta(delta: LiveStreamDelta) {
 // NOT change rank stay where they are. This is what the operator
 // wants: "no flicker" + "newest lane visible".
 function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) {
-  const byId = new Map<string, number>()
-  for (let i = 0; i < existing.length; i++) {
-    byId.set(existing[i].id, i)
-  }
+  const byId = new Map(existing.filter((lane) => lane.id).map((lane) => [lane.id, lane]))
+  const next: LiveStreamLane[] = []
+  const seen = new Set<string>()
   for (const lane of incoming) {
-    const idx = byId.get(lane.id)
-    if (idx === undefined) {
-      // New lane — append at the tail. Keep the relative order
-      // the backend produced for any other brand-new lanes in the
-      // same delta.
-      byId.set(lane.id, existing.length)
-      existing.push(lane)
-    } else {
-      // Existing lane — mutate in place. Don't touch .id (it's the
-      // merge key) or .dimension (it's structural).
-      const target = existing[idx]
+    if (!lane.id || seen.has(lane.id)) continue
+    seen.add(lane.id)
+    const target = byId.get(lane.id)
+    if (target) {
       target.name = lane.name
+      target.dimension = lane.dimension
       target.isOthers = lane.isOthers
       target.stats = lane.stats
-      // Diff tiles by request_id (TransitionGroup's `:key`). Replace
-      // per-id so unchanged tiles keep their Vue component identity and
-      // Vue does not run the leave/enter animation for tiles whose only
-      // change is the backend re-serialising them with new pointers.
-      // The backend guarantees DESC order (newest first), so a stable id
-      // match also preserves the on-screen position.
-      mergeTilesById(target.requests, lane.requests)
+      const laneTotal = lane.stats?.total
+      const authoritativeTrim =
+        laneTotal != null
+        && laneTotal === lane.requests.length
+        && lane.requests.length < target.requests.length
+      mergeTilesById(target.requests, lane.requests, { dropAbsent: authoritativeTrim })
+      next.push(target)
+    } else {
+      const normalized = { ...lane, requests: [...lane.requests] }
+      normalizeLaneTiles(normalized)
+      next.push(normalized)
     }
   }
+  existing.splice(0, existing.length, ...next)
 }
 
-// mergeTilesById replaces the existing tile array with the incoming one,
-// then sorts deterministically by (timestamp ASC, request_id ASC) and truncates
-// to the lane limit. This ensures rendering order depends only on server state,
-// not on message arrival history — eliminating drift and sudden "page flip" jumps.
-//
-// Vue TransitionGroup reuses components by `:key="tile.request_id"`, so swapping
-// object references does NOT re-trigger enter/leave animations as long as the key
-// set remains stable. Only actual additions/removals animate.
-function mergeTilesById(existing: LiveStreamTile[], incoming: LiveStreamTile[]) {
-  // Replace entire array
-  existing.length = 0
-  existing.push(...incoming)
-  
-  // Sort deterministically: oldest first (ASC), tie-break by request_id
-  existing.sort((a, b) => {
-    const tsCmp = (a.timestamp || '').localeCompare(b.timestamp || '')
-    if (tsCmp !== 0) return tsCmp
-    return (a.request_id || '').localeCompare(b.request_id || '')
-  })
-  
-  // Truncate to backend lane limit (20) to match server authority
-  const limit = 20
-  if (existing.length > limit) {
-    existing.splice(0, existing.length - limit)
+function mergeTilesById(
+  existing: LiveStreamTile[],
+  incoming: LiveStreamTile[],
+  opts?: { dropAbsent?: boolean },
+) {
+  const dropAbsent = opts?.dropAbsent === true
+  // Retain existing tiles absent from a partial delta so a single-tile
+  // push cannot briefly wipe the lane. Authoritative trims (stats.total
+  // matches incoming count and is smaller than local) drop extras.
+  const incomingById = new Map(
+    incoming.filter((tile) => tile.request_id).map((tile) => [tile.request_id, tile]),
+  )
+  const next: LiveStreamTile[] = []
+  const seen = new Set<string>()
+  for (const tile of existing) {
+    if (!tile.request_id || seen.has(tile.request_id)) continue
+    seen.add(tile.request_id)
+    const update = incomingById.get(tile.request_id)
+    if (update) {
+      // Preserve locally-derived stage_category when the wire omitempty
+      // field is absent on the update payload.
+      const prevCategory = tile.stage_category
+      Object.assign(tile, update)
+      if (!tile.stage_category && prevCategory) tile.stage_category = prevCategory
+      if (tile.status === 'in_progress' && !tile.stage_category) tile.stage_category = 'routing'
+      next.push(tile)
+      incomingById.delete(tile.request_id)
+    } else if (!dropAbsent) {
+      next.push(tile)
+    }
   }
+  for (const tile of incomingById.values()) {
+    if (!tile.request_id || seen.has(tile.request_id)) continue
+    seen.add(tile.request_id)
+    const copy = { ...tile }
+    if (copy.status === 'in_progress' && !copy.stage_category) copy.stage_category = 'routing'
+    next.push(copy)
+  }
+  next.sort((a, b) => {
+    const timestamp = (a.timestamp || '').localeCompare(b.timestamp || '')
+    return timestamp || (a.request_id || '').localeCompare(b.request_id || '')
+  })
+  existing.splice(0, existing.length, ...next.slice(-LANE_VISIBLE_LIMIT))
 }
 
 // mergeLegendsByKey is the same idea but for the legend strips —
@@ -1024,18 +1281,18 @@ function mergeLegendsByKey(existing: LiveStreamLegendItem[], incoming: LiveStrea
 }
 
 function openConnection() {
-  if (es) return
-  // Recompute MAX_VISIBLE on resize so the replay buffer stays at 2× viewport.
-  recomputeMaxVisible()
-  const onResize = () => recomputeMaxVisible()
-  window.addEventListener('resize', onResize)
-  // Store reference for cleanup
-  ;(openConnection as any)._resizeHandler = onResize
-
+  if (es || refCount <= 0) return
   if (typeof EventSource === 'undefined') {
     liveStreamState.connection = 'unsupported'
     return
   }
+  const generation = ++connectionGeneration
+  // Recompute MAX_VISIBLE on resize so the replay buffer stays at 2× viewport.
+  recomputeMaxVisible()
+  resizeHandler = () => recomputeMaxVisible()
+  window.addEventListener('resize', resizeHandler)
+  // Install visibility listener when opening connection
+  installVisibilityListener()
   // Browser EventSource cannot set Authorization headers, and the
   // project uses HttpOnly cookies that some reverse-proxy / dev
   // setups do not propagate to the EventSource request (e.g. a
@@ -1047,20 +1304,24 @@ function openConnection() {
   // The backend (admin/live_stream_sse.go) accepts this only as a
   // fallback when neither the Bearer header nor the cookie is set,
   // so the security profile is unchanged.
-  let url = buildUrl(getCustomEndpoint() || ENDPOINT)
+  const url = buildUrl(getCustomEndpoint() || ENDPOINT)
+  let connection: EventSource
   try {
-    es = new EventSource(url, { withCredentials: true })
+    connection = new EventSource(url, { withCredentials: true })
+    es = connection
   } catch (err) {
     console.warn('[liveStream] EventSource construct failed', err)
-    liveStreamState.connection = 'closed'
+    closeConnection()
     return
   }
   liveStreamState.connection = 'connecting'
 
-  es.onopen = () => {
+  connection.onopen = () => {
+    if (es !== connection || connectionGeneration !== generation) return
     liveStreamState.connection = 'open'
   }
-  es.onmessage = (ev) => {
+  connection.onmessage = (ev) => {
+    if (es !== connection || connectionGeneration !== generation) return
     try {
       const env = JSON.parse(ev.data) as LiveStreamEnvelope
       
@@ -1082,8 +1343,9 @@ function openConnection() {
       console.warn('[liveStream] bad envelope', err)
     }
   }
-  es.onerror = () => {
-    if (es && es.readyState === 2) {
+  connection.onerror = () => {
+    if (es !== connection || connectionGeneration !== generation) return
+    if (connection.readyState === 2) {
       liveStreamState.connection = 'closed'
     } else {
       liveStreamState.connection = 'reconnecting'
@@ -1092,15 +1354,18 @@ function openConnection() {
 }
 
 function closeConnection() {
-  if (!es) return
-  try { es.close() } catch { /* ignore */ }
+  const connection = es
   es = null
-  // Remove the correct resize listener reference to prevent leak
-  const handler = (openConnection as any)._resizeHandler
-  if (handler) {
-    window.removeEventListener('resize', handler)
-    delete (openConnection as any)._resizeHandler
+  connectionGeneration += 1
+  if (connection) {
+    try { connection.close() } catch { /* ignore */ }
   }
+  if (resizeHandler) {
+    window.removeEventListener('resize', resizeHandler)
+    resizeHandler = null
+  }
+  // Remove visibility listener when closing connection
+  removeVisibilityListener()
   liveStreamState.connection = 'closed'
 }
 
@@ -1145,8 +1410,10 @@ export function requestSnapshotRefresh() {
     })
 }
 
-// Set the forward reference so the visibility listener can call this
-_requestSnapshotRefresh = requestSnapshotRefresh
+// 2026-09-01 (P2 cleanup): removed _requestSnapshotRefresh forward declaration.
+// The visibility handler used to call this back-reference before the function
+// was defined below; the current implementation inlines closeConnection() +
+// openConnection() directly, so the indirection is dead code.
 
 export function pauseStream() {
   liveStreamState.paused = true
@@ -1165,6 +1432,9 @@ export function resetStream() {
   liveStreamState.snapshot = null
   liveStreamState.actions.clear()
   liveStreamState.children.clear()
+  // 复用 clearRequestCredentialIndex，让依赖于 requestCredentialRevision 的
+  // 组件（RequestTile、LiveRequestBlock）在重连/重建流时立即刷新凭据显示。
+  clearRequestCredentialIndex()
   actionsTotal = 0
   childrenTotal = 0
   idIndex.clear()
@@ -1172,11 +1442,25 @@ export function resetStream() {
   maxSeenTs = ''
 }
 export function reconnectStream() {
+  if (refCount <= 0) return
   closeConnection()
   openConnection()
 }
-export function setOnRequestEvicted(cb: ((id: string) => void) | null) {
+/**
+ * Register a callback fired whenever a live request_id is evicted from the
+ * frontend replay buffer. Multiple consumers may register simultaneously —
+ * each `useLiveStream()` cleanup only removes its own callback.
+ */
+export function setOnRequestEvicted(cb: ((id: string) => void) | null): () => void {
+  if (!cb) return () => {}
+  evictListeners.add(cb)
+  // Preserve the legacy single-callback slot so existing code paths that read
+  // `onEvictCb` still see the most recent registration.
   onEvictCb = cb
+  return () => {
+    evictListeners.delete(cb)
+    if (onEvictCb === cb) onEvictCb = null
+  }
 }
 
 /** Subscribe to completed requests (success/failure) for board stat deltas. */
@@ -1202,8 +1486,33 @@ export const __testing = {
   applyChildRequest,
   actionsTotal: () => actionsTotal,
   childrenTotal: () => childrenTotal,
+  requestCredential,
+  requestCredentialRevision,
+  getRequestCredentialId,
+  getRequestsForCredential,
+  getNodesForModel,
+  clearRequestCredentialIndex,
   resetStream,
   refCount: () => refCount,
+  // Test-only: same as acquireLiveStream() but stubs out the network
+  // handshake so unit tests can exercise the refCount ↔ visibility
+  // listener wiring without spinning up EventSource.
+  acquireForTest: (): (() => void) => {
+    refCount += 1
+    if (refCount === 1) {
+      // Intentionally do NOT call openConnection() — the store keeps
+      // refCount-relative bookkeeping independent of the network state,
+      // which is exactly the property we want to assert here.
+      liveStreamState.connection = 'closed'
+    }
+    return () => {
+      refCount -= 1
+      if (refCount <= 0) {
+        refCount = 0
+        removeVisibilityListener()
+      }
+    }
+  },
   es: () => es,
   MAX_VISIBLE,
   maxSeenTs: () => maxSeenTs,
