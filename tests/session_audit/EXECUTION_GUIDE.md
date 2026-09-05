@@ -21,7 +21,7 @@ chmod +x run_test.sh
 #### 步骤 1: 初始化数据库表
 
 ```bash
-export PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+export PGPASSWORD="***REDACTED***"
 psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -f schema.sql
 ```
 

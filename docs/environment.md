@@ -34,10 +34,10 @@ Host: 172.16.2.210
 Port: 5432
 Database: llm_gateway
 User: llm_gateway
-Password: 4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg
+Password: ***REDACTED***
 
 Connection String:
-postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable
+postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disable
 ```
 
 ### 关键表
@@ -81,7 +81,7 @@ curl http://8.136.114.245:8781/api/system/version
 
 ### 连接数据库
 ```bash
-ssh -p 25022 root@8.136.114.245 'PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway'
+ssh -p 25022 root@8.136.114.245 'PGPASSWORD="***REDACTED***" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway'
 ```
 
 ### 常用查询

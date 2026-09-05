@@ -284,7 +284,7 @@ If v2 causes regressions in production:
 2. **Manual credential injection** (fallback if env-injector regressed):
    ```bash
    export SSH_PASS_252="Kaixuan2026&#*9527"
-   export PG_PASS_252="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+   export PG_PASS_252="***REDACTED***"
    source configs/env-252.sh
    ```
 

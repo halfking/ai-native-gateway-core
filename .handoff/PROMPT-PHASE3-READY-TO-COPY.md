@@ -249,7 +249,7 @@ scripts/audit-incomplete-tool-calls.sh             # 审计脚本
 ssh -p 25022 root@8.136.114.245
 
 # 查询数据库
-ssh -p 25022 root@8.136.114.245 'PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -c "SELECT ..."'
+ssh -p 25022 root@8.136.114.245 'PGPASSWORD="***REDACTED***" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -c "SELECT ..."'
 
 # 查看服务日志
 ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service --since '1 hour ago'"

@@ -78,9 +78,9 @@ source configs/env-252.sh
 
 **Credential values** (extracted from git history 947a003e7^):
 - `SSH_PASS_252=Kaixuan2026&#*9527`
-- `PG_PASS_252=4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg`
+- `PG_PASS_252=***REDACTED***`
 - `SSH_PASS_KAIXUAN1=kaixuan123`
-- `PG_PASS_KAIXUAN1=4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg`
+- `PG_PASS_KAIXUAN1=***REDACTED***`
 - `REGISTRY_PASS_KAIXUAN1=Veritrans&9527`
 
 **Verification**:
