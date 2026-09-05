@@ -32,6 +32,7 @@ package autoroute
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -137,6 +138,49 @@ type ClassificationSignals struct {
 	// "roocode", "vscode", "copilot", "windsurf"). Extracted from User-Agent
 	// or X-Gw-Client-Type header. Non-empty value is a strong coding signal.
 	ClientType string
+}
+
+// String returns a sanitized string representation of ClassificationSignals
+// suitable for logging. All prompt content is replaced with length indicators
+// to prevent accidental leakage of sensitive content in logs.
+//
+// Privacy guarantee: The returned string does NOT contain any prompt text,
+// message content, or reversible content features.
+func (s ClassificationSignals) String() string {
+	return fmt.Sprintf("ClassificationSignals{SystemPrompt:%d chars, LastUserPrompt:%d chars, MessageCount:%d, EstimatedTokens:%d, ToolCount:%d, HasImages:%v, Language:%s, HasCodeBlock:%v, HasToolResults:%v, ClientType:%s}",
+		len(s.SystemPrompt),
+		len(s.LastUserPrompt),
+		s.MessageCount,
+		s.EstimatedTokens,
+		s.ToolCount,
+		s.HasImages,
+		s.Language,
+		s.HasCodeBlock,
+		s.HasToolResults,
+		s.ClientType,
+	)
+}
+
+// MarshalJSON returns a sanitized JSON representation of ClassificationSignals
+// suitable for logging and telemetry. All prompt content is replaced with
+// length indicators to prevent accidental leakage of sensitive content.
+//
+// Privacy guarantee: The returned JSON does NOT contain any prompt text,
+// message content, or reversible content features.
+func (s ClassificationSignals) MarshalJSON() ([]byte, error) {
+	sanitized := map[string]any{
+		"system_prompt_len": len(s.SystemPrompt),
+		"last_user_len":     len(s.LastUserPrompt),
+		"message_count":     s.MessageCount,
+		"estimated_tokens":  s.EstimatedTokens,
+		"tool_count":        s.ToolCount,
+		"has_images":        s.HasImages,
+		"language":          s.Language,
+		"has_code_block":    s.HasCodeBlock,
+		"has_tool_results":  s.HasToolResults,
+		"client_type":       s.ClientType,
+	}
+	return json.Marshal(sanitized)
 }
 
 // Classification is the structured output of a classifier. The decider
