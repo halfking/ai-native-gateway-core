@@ -57,9 +57,9 @@ func requireProviderErrorSchema(t *testing.T, pool *pgxpool.Pool) {
 		{"provider_error_details.aggregation_bucket", `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='provider_error_details' AND column_name='aggregation_bucket')`},
 		{"provider_error_aggregator_state", `SELECT to_regclass('public.provider_error_aggregator_state') IS NOT NULL`},
 		{"provider_error_aggregator_state.singleton", `SELECT EXISTS (SELECT 1 FROM public.provider_error_aggregator_state WHERE id=1)`},
-		{"tenant fingerprint index", `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='idx_provider_error_details_tenant_fingerprint')`},
-		// Migration 663 rebuilt the credential fingerprint without
-		// error_message; the aggregator's ON CONFLICT target must match it or
+		// Migration 664 rebuilt the credential fingerprint without
+		// error_message and retired the 620-era tenant-only fingerprint; the
+		// aggregator's ON CONFLICT target must match the surviving index or
 		// every tick fails with SQLSTATE 42P10.
 		{"credential fingerprint index", `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='idx_provider_error_details_tenant_cred_fingerprint')`},
 		{"cleanup index", `SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='idx_ped_resolved_updated_at')`},
