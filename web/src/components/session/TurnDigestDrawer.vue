@@ -27,6 +27,11 @@ const { t } = useI18n()
 const detail = ref<TurnDetail | null>(null)
 const loading = ref(false)
 const error = ref('')
+// 2026-09-05 audit F2-#10: attachment-level failures must not clobber the
+// global error ref (that swap replaced the whole tabs area with an error
+// state and never recovered until reload). Attachment problems render as an
+// inline hint inside the attachments tab only.
+const attachmentError = ref('')
 const activeTab = ref<'summary' | 'request' | 'response' | 'compression' | 'meta' | 'waterfall' | 'governance' | 'attachments'>('summary')
 const openingAttachment = ref<string | null>(null)
 let requestSeq = 0
@@ -88,9 +93,10 @@ function attachmentDownloadUrl(attachment: TurnAttachment): string | null {
 
 function openAttachment(attachment: TurnAttachment) {
   if (props.turnNo == null) return
+  attachmentError.value = ''
   const url = attachmentDownloadUrl(attachment)
   if (!url) {
-    error.value = t('turnDigest.noAttachments')
+    attachmentError.value = t('turnDigest.openAttachmentFailed')
     return
   }
   const key = attachmentKey(attachment)
@@ -99,7 +105,10 @@ function openAttachment(attachment: TurnAttachment) {
   window.setTimeout(() => {
     if (openingAttachment.value === key) openingAttachment.value = null
   }, 800)
-  window.open(url, '_blank', 'noopener,noreferrer')
+  // Popup blocked (window.open returns null) is also an attachment-level
+  // failure — surface it inline instead of silently doing nothing.
+  const win = window.open(url, '_blank', 'noopener,noreferrer')
+  if (!win) attachmentError.value = t('turnDigest.openAttachmentFailed')
 }
 
 function close() {
@@ -111,6 +120,7 @@ function reload() {
   // Re-trigger the watch by toggling modelValue through the existing path.
   // The watcher resets state and refetches when the props tuple changes.
   error.value = ''
+  attachmentError.value = ''
   if (props.modelValue && props.sessionId && props.turnNo != null) {
     // Force re-execution by resetting detail + bumping the seq, then
     // delegating to the same async fetch path used by the watch.
@@ -141,6 +151,7 @@ watch(
     controller = null
     detail.value = null
     error.value = ''
+    attachmentError.value = ''
     openingAttachment.value = null
     activeTab.value = 'summary'
     if (!open || !sessionId || turnNo == null) {
@@ -219,15 +230,21 @@ onBeforeUnmount(() => {
       <el-tab-pane :label="t('turnDigest.tabs.governance')" name="governance"><pre>{{ stringify(detail?.governance) }}</pre></el-tab-pane>
       <el-tab-pane :label="t('turnDigest.tabs.attachments')" name="attachments">
         <el-empty v-if="!detail?.attachments?.length" :description="t('turnDigest.noAttachments')" />
-        <ul v-else class="tdd-attachments">
-          <li v-for="attachment in detail.attachments" :key="attachmentKey(attachment)">
-            <span class="tdd-attachment-name">{{ attachment.name || attachment.att_id }}</span>
-            <span class="tdd-attachment-meta">{{ attachment.mime || 'file' }} · {{ attachment.size }} B</span>
-            <el-button size="small" :disabled="openingAttachment === attachmentKey(attachment)" @click="openAttachment(attachment)">
-              {{ openingAttachment === attachmentKey(attachment) ? t('turnDigest.openingAttachment') : t('turnDigest.openAttachment') }}
-            </el-button>
-          </li>
-        </ul>
+        <template v-else>
+          <!-- 审计 F2-#10：附件级失败用行内提示，不接管整个抽屉的错误态。 -->
+          <p v-if="attachmentError" class="tdd-attachment-error" role="status" data-testid="tdd-attachment-error">
+            {{ attachmentError }}
+          </p>
+          <ul class="tdd-attachments">
+            <li v-for="attachment in detail.attachments" :key="attachmentKey(attachment)">
+              <span class="tdd-attachment-name">{{ attachment.name || attachment.att_id }}</span>
+              <span class="tdd-attachment-meta">{{ attachment.mime || 'file' }} · {{ attachment.size }} B</span>
+              <el-button size="small" :disabled="openingAttachment === attachmentKey(attachment)" @click="openAttachment(attachment)">
+                {{ openingAttachment === attachmentKey(attachment) ? t('turnDigest.openingAttachment') : t('turnDigest.openAttachment') }}
+              </el-button>
+            </li>
+          </ul>
+        </template>
       </el-tab-pane>
     </el-tabs>
 
@@ -244,6 +261,7 @@ onBeforeUnmount(() => {
 .tdd-error { padding: 10px 12px; color: var(--kx-danger); background: var(--kx-danger-soft); border: 1px solid var(--kx-danger); border-radius: 6px; }
 .tdd-tabs :deep(pre) { margin: 0; max-height: 70vh; overflow: auto; padding: 12px; background: var(--kx-bg-accent); color: var(--kx-text); border-radius: 6px; font-size: 12px; }
 .tdd-attachments { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.tdd-attachment-error { margin: 0 0 8px; padding: 6px 10px; border: 1px solid var(--kx-warning); border-radius: 6px; color: var(--kx-warning); font-size: 12px; }
 .tdd-attachments li { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--kx-border); border-radius: 6px; }
 .tdd-attachment-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tdd-attachment-meta { color: var(--kx-muted); font-size: 12px; white-space: nowrap; }
