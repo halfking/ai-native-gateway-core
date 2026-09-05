@@ -215,7 +215,9 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindCanceled, Resumable: false}
 	}
 
-	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+	// 审计闭环6：ctx 取消时强制 Close 底层 body，解除阻塞中的 Read
+	//（上游不断流时读循环挂死的 transport 级兜底）。
+	reader := bufio.NewReaderSize(newCtxCancellableBody(ctx, resp.Body), anthropicSSEBufSize)
 	// P1-2 fix (2026-08-28): ctx is now a function parameter, no need to redeclare.
 	// Use the passed ctx directly; fallback to resp.Request.Context() is no longer needed
 	// since the caller provides the authoritative context.
@@ -881,7 +883,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 	}
 
 	runtimeCfg := currentStreamRuntimeConfig()
-	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+	// 审计闭环6：同 passthrough —— ctx 取消强制 Close body 解除 Read 阻塞。
+	reader := bufio.NewReaderSize(newCtxCancellableBody(ctx, resp.Body), anthropicSSEBufSize)
 
 	// Added panic recovery (2026-07-19): Prevent SSE parser crashes from killing the stream
 	defer func() {
