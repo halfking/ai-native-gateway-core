@@ -253,13 +253,16 @@ func (h *IntegrityHarvester) bridgeCritical(ctx context.Context) error {
 			slog.Warn("integrity_harvester: metadata marshal failed", "error", err)
 			metaJSON = []byte(`{}`)
 		}
+		// string() + ::text::jsonb (not []byte): the pool forces pgx
+		// SimpleProtocol, which binds []byte as bytea hex and any jsonb cast
+		// then fails with 22P02 (doc §3.2; internal/dbx/jsonb.go).
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO fault_events
 				(rule_id, rule_name, severity, title, description, source,
 				 status, metadata, detected_at, created_at, updated_at)
 			VALUES (0, $1, $2, $3, $4, 'integrity_harvester',
-				'new', $5, now(), now(), now())`,
-			p.ruleName, p.severity, p.title, p.desc, metaJSON); err != nil {
+				'new', $5::text::jsonb, now(), now(), now())`,
+			p.ruleName, p.severity, p.title, p.desc, string(metaJSON)); err != nil {
 			return err
 		}
 		h.criticalBridged.Add(1)
@@ -417,13 +420,15 @@ func (h *IntegrityHarvester) bridgeHigh(ctx context.Context) error {
 			slog.Warn("integrity_harvester: high metadata marshal failed", "error", err)
 			metaJSON = []byte(`{}`)
 		}
+		// string() + ::text::jsonb: see the bridging insert above
+		// (pgx SimpleProtocol binds []byte as bytea hex → 22P02).
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO fault_events
 				(rule_id, rule_name, severity, title, description, source,
 				 status, metadata, detected_at, created_at, updated_at)
 			VALUES (0, $1, $2, $3, $4, 'integrity_harvester',
-				'new', $5, $6, now(), now())`,
-			p.ruleName, p.severity, p.title, p.description, metaJSON, p.lastSeen); err != nil {
+				'new', $5::text::jsonb, $6, now(), now())`,
+			p.ruleName, p.severity, p.title, p.description, string(metaJSON), p.lastSeen); err != nil {
 			return err
 		}
 		h.highBridged.Add(1)
