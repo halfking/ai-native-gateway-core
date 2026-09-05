@@ -303,7 +303,7 @@ func TestSessionListIdleSessions(t *testing.T) {
 
 	// 阈值取 base+10min：idle-1/idle-2 命中（跨租户），active 不命中。
 	idleBefore := base.Add(10 * time.Minute)
-	got, err := store.ListIdleSessions(ctx, idleBefore, 100)
+	got, err := store.ListIdleSessions(ctx, idleBefore, 100, 0)
 	if err != nil {
 		t.Fatalf("ListIdleSessions: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestSessionListIdleSessions(t *testing.T) {
 	}
 
 	// limit=1：只返回最近活跃的 idle-2。
-	got, err = store.ListIdleSessions(ctx, idleBefore, 1)
+	got, err = store.ListIdleSessions(ctx, idleBefore, 1, 0)
 	if err != nil {
 		t.Fatalf("ListIdleSessions(limit=1): %v", err)
 	}
@@ -325,8 +325,25 @@ func TestSessionListIdleSessions(t *testing.T) {
 		t.Fatalf("limit=1 结果 = %v, want [idle-2]", ids(got))
 	}
 
+	// offset=1（2026-09-05 round2 复审 F1 轮转分页）：跳过最新的 idle-2，
+	// 返回更老的 idle-1；offset 越过末尾返回空切片（非 nil）。
+	got, err = store.ListIdleSessions(ctx, idleBefore, 1, 1)
+	if err != nil {
+		t.Fatalf("ListIdleSessions(limit=1, offset=1): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "idle-1" {
+		t.Fatalf("offset=1 结果 = %v, want [idle-1]", ids(got))
+	}
+	got, err = store.ListIdleSessions(ctx, idleBefore, 10, 2)
+	if err != nil {
+		t.Fatalf("ListIdleSessions(offset=2): %v", err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("offset 越过末尾 = %v, want 空切片（非 nil）", got)
+	}
+
 	// limit<=0：回退默认页大小（等价于不限本次数据量）。
-	got, err = store.ListIdleSessions(ctx, idleBefore, 0)
+	got, err = store.ListIdleSessions(ctx, idleBefore, 0, 0)
 	if err != nil {
 		t.Fatalf("ListIdleSessions(limit=0): %v", err)
 	}
@@ -335,7 +352,7 @@ func TestSessionListIdleSessions(t *testing.T) {
 	}
 
 	// 阈值推到所有会话之后：空切片（非 nil）。
-	got, err = store.ListIdleSessions(ctx, base.Add(time.Hour), 100)
+	got, err = store.ListIdleSessions(ctx, base.Add(time.Hour), 100, 0)
 	if err != nil {
 		t.Fatalf("ListIdleSessions(全空闲): %v", err)
 	}

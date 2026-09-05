@@ -785,8 +785,11 @@ func parseOpenAIFileBlock(block map[string]any) *DocumentBlock {
 		// DocumentSource.FileID, the same field the Anthropic parser writes,
 		// so cross-protocol serializers (serialize_anthropic) see a populated
 		// FileID instead of an empty source. Data keeps a legacy projection
-		// (same convention as the URL→Data projection above) for consumers
-		// and session-restored rows that predate the unified field.
+		// for consumers and session-restored rows that predate the unified
+		// field; the convention comes from the upstream parsers
+		// (parse_anthropic's source.url → Data projection in
+		// parseAnthropicDocumentBlock, and parse_gemini's fileUri handling) —
+		// this function's own URL branch writes URL only.
 		src.Type = "file_id"
 		src.FileID = fid
 		src.Data = fid

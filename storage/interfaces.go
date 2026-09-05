@@ -64,6 +64,10 @@ type StateStore interface {
 // 合法的「body→meta 在途窗口」。由 SQLiteSessionStore 实现。
 type IdleSessionLister interface {
 	// ListIdleSessions 返回最后活动时间早于 idleBefore 的会话（跨租户），
-	// 最近活跃优先、至多 limit 条（limit <= 0 由实现取默认页大小）。
-	ListIdleSessions(ctx context.Context, idleBefore time.Time, limit int) ([]*Session, error)
+	// 最近活跃优先，按 updated_at 倒序跳过 offset 条后至多返回 limit 条
+	// （limit <= 0 由实现取默认页大小；offset < 0 视为 0）。
+	// offset 供一致性对账 worker 做跨轮轮转分页（2026-09-05 round2 复审 F1）：
+	// 空闲会话数超过单轮 limit 时，worker 每轮按返回条数前移 offset，避免
+	// 「恒取最新一页、老会话永久饿死」。
+	ListIdleSessions(ctx context.Context, idleBefore time.Time, limit, offset int) ([]*Session, error)
 }

@@ -22,7 +22,7 @@ const (
 	updateSessionSQL    = `UPDATE sessions SET user_id = ?, updated_at = ?, metadata = ? WHERE tenant_id = ? AND id = ?;`
 	deleteSessionSQL    = `DELETE FROM sessions WHERE tenant_id = ? AND id = ?;`
 	listSessionsSQL     = `SELECT id, tenant_id, user_id, created_at, updated_at, metadata FROM sessions WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?;`
-	listIdleSessionsSQL = `SELECT id, tenant_id, user_id, created_at, updated_at, metadata FROM sessions WHERE updated_at < ? ORDER BY updated_at DESC LIMIT ?;`
+	listIdleSessionsSQL = `SELECT id, tenant_id, user_id, created_at, updated_at, metadata FROM sessions WHERE updated_at < ? ORDER BY updated_at DESC LIMIT ? OFFSET ?;`
 )
 
 // SQLiteSessionStore 基于 SQLite 的会话元数据存储，实现 storage.SessionStore。
@@ -208,15 +208,20 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context, tenantID string, 
 }
 
 // ListIdleSessions 返回最后活动时间早于 idleBefore 的会话（跨租户），按
-// updated_at 倒序（最近活跃优先）至多 limit 条（limit <= 0 时取默认页大小）。
-// 供一致性对账 worker（bg.ConsistencyWorker，审计 B-#2）枚举「近期活跃且已
-// 空闲」的会话：空闲阈值把「body 先落盘、meta 后提交」的在途写入挡在对账
-// 窗外（storage.IdleSessionLister）。无数据时返回空切片（非 nil）。
-func (s *SQLiteSessionStore) ListIdleSessions(ctx context.Context, idleBefore time.Time, limit int) ([]*storage.Session, error) {
+// updated_at 倒序（最近活跃优先）跳过 offset 条后至多 limit 条（limit <= 0
+// 时取默认页大小；offset < 0 视为 0）。offset 供一致性对账 worker
+// （bg.ConsistencyWorker，审计 B-#2）做跨轮轮转分页：空闲会话超过单轮
+// limit 时按返回条数前移偏移，保证老会话也能进入对账窗（2026-09-05 round2
+// 复审 F1）。空闲阈值把「body 先落盘、meta 后提交」的在途写入挡在对账窗外
+// （storage.IdleSessionLister）。无数据时返回空切片（非 nil）。
+func (s *SQLiteSessionStore) ListIdleSessions(ctx context.Context, idleBefore time.Time, limit, offset int) ([]*storage.Session, error) {
 	if limit <= 0 {
 		limit = defaultListLimit
 	}
-	rows, err := s.db.QueryContext(ctx, listIdleSessionsSQL, idleBefore.Unix(), limit)
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.db.QueryContext(ctx, listIdleSessionsSQL, idleBefore.Unix(), limit, offset)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: 查询空闲会话列表失败: %w", err)
 	}

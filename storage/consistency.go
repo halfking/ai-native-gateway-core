@@ -121,6 +121,10 @@ type RepairResult struct {
 	// SkippedByGrace 是复检后仍为孤儿、但因安全护栏未删除的 turn（mtime 在
 	// 宽限期内，或 mtime 查询失败按保守处理）。
 	SkippedByGrace []int `json:"skipped_by_grace,omitempty"`
+	// Vanished 是检查与删除之间文件已自行消失的 turn（如被外部清理，
+	// mtime 查询返回 ErrNotFound）：无须删除，但计入报告供审计对账
+	// （2026-09-05 round2 复审 F3，此前该分支不进任何结果桶）。
+	Vanished []int `json:"vanished,omitempty"`
 }
 
 // ReconcileTurnArtifacts 对比 turn 元数据与 body 文件两侧的一致性。
@@ -228,7 +232,9 @@ func RepairTurnArtifacts(ctx context.Context, report *TurnArtifactReport, bodies
 				res.SkippedByGrace = append(res.SkippedByGrace, n)
 				continue
 			case err != nil && errors.Is(err, ErrNotFound):
-				// 文件已消失（并发清理 / 删自灭）：无须删除，跳过。
+				// 文件已消失（并发清理 / 删自灭）：无须删除，但计入报告
+				// 桶（F3），避免审计对账时结果聚合"凭空少一个孤儿"。
+				res.Vanished = append(res.Vanished, n)
 				continue
 			case err != nil:
 				res.SkippedByGrace = append(res.SkippedByGrace, n)

@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON sessions (tenant_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_user   ON sessions (user_id, created_at DESC);
+-- 2026-09-05 round2 复审 F2：ListIdleSessions 按 updated_at 过滤 + 倒序分页，
+-- 无索引时每轮全表扫描 + 排序（lite sessions 表无保留期清理、持续增长）。
+CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions (updated_at);
 
 CREATE TABLE IF NOT EXISTS session_turns (
 	tenant_id            TEXT NOT NULL,

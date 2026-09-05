@@ -329,3 +329,334 @@ func TestOpenAIChatURLImageUnaffected(t *testing.T) {
 		t.Fatalf("URL image regressed: %s", out)
 	}
 }
+
+// ─── 2026-09-05 round2 复审 follow-ups ───
+
+// TestAnthropicNativeFileDocumentToOpenAIChatAndResponses pins the P1-1
+// regression: an Anthropic-native Files API document (source.type="file",
+// the shape parse_anthropic stores verbatim) must carry its file_id onto
+// both OpenAI wire formats instead of being reduced to a filename-only
+// block (Chat) or an empty file_data:"" (Responses).
+func TestAnthropicNativeFileDocumentToOpenAIChatAndResponses(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"max_tokens": 128,
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "text", "text": "summarize the spec"},
+					{"type": "document", "source": {"type": "file", "file_id": "file_doc_77"}, "title": "Spec.pdf"}
+				]
+			}
+		]
+	}`)
+
+	req, err := ParseAnthropic(raw)
+	if err != nil {
+		t.Fatalf("ParseAnthropic failed: %v", err)
+	}
+	src := req.Messages[0].Content[1].Document.Source
+	if src.Type != "file" || src.FileID != "file_doc_77" {
+		t.Fatalf("Anthropic-native file document not parsed into IR: %+v", src)
+	}
+
+	// OpenAI Chat: the file_id must survive.
+	chatOut, err := SerializeOpenAI(req)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI failed: %v", err)
+	}
+	if !strings.Contains(string(chatOut), `"file_id":"file_doc_77"`) {
+		t.Fatalf("file document file_id lost routing OpenAI Chat: %s", chatOut)
+	}
+	if strings.Contains(string(chatOut), `"file_id":""`) {
+		t.Fatalf("empty file_id emitted on Chat: %s", chatOut)
+	}
+
+	// Responses: input_file must carry file_id, never an empty file_data.
+	respOut, err := SerializeResponsesRequest(req)
+	if err != nil {
+		t.Fatalf("SerializeResponsesRequest failed: %v", err)
+	}
+	if !strings.Contains(string(respOut), `"file_id":"file_doc_77"`) {
+		t.Fatalf("file document file_id lost routing Responses: %s", respOut)
+	}
+	if strings.Contains(string(respOut), `"file_data":""`) {
+		t.Fatalf("empty file_data emitted on Responses: %s", respOut)
+	}
+
+	// Same-protocol Responses re-parse must see the id again.
+	req2, err := ParseResponses(respOut)
+	if err != nil {
+		t.Fatalf("re-parse serialized Responses request: %v", err)
+	}
+	src2 := req2.Messages[0].Content[1].Document.Source
+	if src2 == nil || src2.FileID != "file_doc_77" {
+		t.Fatalf("Responses round trip lost the document file_id: %+v", src2)
+	}
+}
+
+// TestAnthropicTextSourceDocumentRoundTrip pins the P1-2 regression: a
+// text-source document (the real Anthropic wire form
+// {"source":{"type":"text",...,"data":...}}) must keep its payload on a
+// same-protocol parse → serialize round trip instead of collapsing to a
+// bare {"type":"text"} source.
+func TestAnthropicTextSourceDocumentRoundTrip(t *testing.T) {
+	raw := []byte(`{
+		"model": "claude-sonnet-4-5",
+		"max_tokens": 128,
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type": "document", "source": {"type": "text", "media_type": "text/plain", "data": "the quick brown fox"}, "title": "Notes"}
+				]
+			}
+		]
+	}`)
+
+	req, err := ParseAnthropic(raw)
+	if err != nil {
+		t.Fatalf("ParseAnthropic failed: %v", err)
+	}
+	src := req.Messages[0].Content[0].Document.Source
+	if src.Type != "text" || src.Data != "the quick brown fox" {
+		t.Fatalf("text-source document not parsed into IR: %+v", src)
+	}
+
+	out, err := SerializeAnthropic(req)
+	if err != nil {
+		t.Fatalf("SerializeAnthropic failed: %v", err)
+	}
+	var wire struct {
+		Messages []struct {
+			Content []struct {
+				Type   string `json:"type"`
+				Source struct {
+					Type      string `json:"type"`
+					Data      string `json:"data"`
+					MediaType string `json:"media_type"`
+				} `json:"source"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &wire); err != nil {
+		t.Fatalf("re-unmarshal serialized request: %v", err)
+	}
+	got := wire.Messages[0].Content[0]
+	if got.Type != "document" || got.Source.Type != "text" || got.Source.Data != "the quick brown fox" || got.Source.MediaType != "text/plain" {
+		t.Fatalf("text document payload lost on same-protocol round trip: %+v", got)
+	}
+}
+
+// TestOpenAIChatFileIDWithURLImageNoFalseLoss pins the false-positive guard:
+// an image carrying both FileID and URL serializes its image_url and must
+// not produce a file_id loss event (the loss condition requires URL=="").
+func TestOpenAIChatFileIDWithURLImageNoFalseLoss(t *testing.T) {
+	cap := resetDedupAndInstall(t)
+
+	req := &InternalRequest{
+		Model: "gpt-4o",
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []ContentBlock{
+					{Type: "image", Image: &ImageSource{Type: "file_id", FileID: "file_img_9", URL: "https://example.com/pic.png"}},
+				},
+			},
+		},
+	}
+	out, err := SerializeOpenAI(req)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI failed: %v", err)
+	}
+	if !strings.Contains(string(out), "https://example.com/pic.png") {
+		t.Fatalf("FileID+URL image lost its image_url: %s", out)
+	}
+	if events := cap.snapshot(); len(events) != 0 {
+		t.Fatalf("no loss expected for a serialized FileID+URL image; events=%+v", events)
+	}
+}
+
+// TestLegacyDataFileIDDocumentFallbackOnChatAndResponses pins the Data
+// fallback on the two serializers that previously had zero coverage for it:
+// the session adapter's legacy fold shape (Type="file_id", Data=<id>,
+// FileID="") must still resolve to a file_id on the Chat and Responses wire,
+// without a loss event (the identity is preserved).
+func TestLegacyDataFileIDDocumentFallbackOnChatAndResponses(t *testing.T) {
+	cap := resetDedupAndInstall(t)
+
+	req := &InternalRequest{
+		Model: "gpt-4o",
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []ContentBlock{
+					{Type: "text", Text: "read this"},
+					{Type: "document", Document: &DocumentBlock{
+						Title:  "legacy.pdf",
+						Source: &DocumentSource{Type: "file_id", Data: "file_folded_42"},
+					}},
+				},
+			},
+		},
+	}
+
+	chatOut, err := SerializeOpenAI(req)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI failed: %v", err)
+	}
+	if !strings.Contains(string(chatOut), `"file_id":"file_folded_42"`) {
+		t.Fatalf("legacy Data-encoded id not emitted on Chat: %s", chatOut)
+	}
+
+	respOut, err := SerializeResponsesRequest(req)
+	if err != nil {
+		t.Fatalf("SerializeResponsesRequest failed: %v", err)
+	}
+	if !strings.Contains(string(respOut), `"file_id":"file_folded_42"`) {
+		t.Fatalf("legacy Data-encoded id not emitted on Responses: %s", respOut)
+	}
+	if strings.Contains(string(respOut), `"file_data":""`) {
+		t.Fatalf("empty file_data emitted alongside the legacy id: %s", respOut)
+	}
+
+	for _, ev := range cap.snapshot() {
+		if ev.FieldPath == "messages[0].content[1].document.file_id" {
+			t.Fatalf("loss reported for an identity that the Data fallback preserved: %+v", ev)
+		}
+	}
+}
+
+// TestDocumentFileIDPrecedenceOverData pins FileID-first across the
+// serializers: when a document source carries both the unified FileID and a
+// stale legacy Data id, the unified field must win everywhere.
+func TestDocumentFileIDPrecedenceOverData(t *testing.T) {
+	newDoc := func() *DocumentBlock {
+		return &DocumentBlock{
+			Title:  "dual.pdf",
+			Source: &DocumentSource{Type: "file_id", FileID: "file_current", Data: "file_stale"},
+		}
+	}
+
+	chatReq := &InternalRequest{Model: "gpt-4o", Messages: []Message{{Role: "user", Content: []ContentBlock{{Type: "document", Document: newDoc()}}}}}
+	chatOut, err := SerializeOpenAI(chatReq)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI failed: %v", err)
+	}
+	if !strings.Contains(string(chatOut), `"file_id":"file_current"`) || strings.Contains(string(chatOut), "file_stale") {
+		t.Fatalf("Chat did not prefer FileID over Data: %s", chatOut)
+	}
+
+	respReq := &InternalRequest{Model: "gpt-4o", Messages: []Message{{Role: "user", Content: []ContentBlock{{Type: "document", Document: newDoc()}}}}}
+	respOut, err := SerializeResponsesRequest(respReq)
+	if err != nil {
+		t.Fatalf("SerializeResponsesRequest failed: %v", err)
+	}
+	if !strings.Contains(string(respOut), `"file_id":"file_current"`) || strings.Contains(string(respOut), "file_stale") {
+		t.Fatalf("Responses did not prefer FileID over Data: %s", respOut)
+	}
+
+	anthReq := &InternalRequest{Model: "claude-sonnet-4-5", Messages: []Message{{Role: "user", Content: []ContentBlock{{Type: "document", Document: newDoc()}}}}}
+	anthOut, err := SerializeAnthropic(anthReq)
+	if err != nil {
+		t.Fatalf("SerializeAnthropic failed: %v", err)
+	}
+	if !strings.Contains(string(anthOut), `"file_id":"file_current"`) || strings.Contains(string(anthOut), "file_stale") {
+		t.Fatalf("Anthropic did not prefer FileID over Data: %s", anthOut)
+	}
+}
+
+// TestEmptyFileIDDocumentLossReported pins the empty-value guard: a
+// file/file_id document whose FileID and Data are both empty must not emit
+// file_id:"" / file_data:"" on either wire, and the identity loss must be
+// reported explicitly.
+func TestEmptyFileIDDocumentLossReported(t *testing.T) {
+	newReq := func() *InternalRequest {
+		return &InternalRequest{
+			Model: "gpt-4o",
+			Messages: []Message{{Role: "user", Content: []ContentBlock{
+				{Type: "document", Document: &DocumentBlock{Title: "ghost.pdf", Source: &DocumentSource{Type: "file"}}},
+			}}},
+		}
+	}
+
+	capChat := resetDedupAndInstall(t)
+	chatOut, err := SerializeOpenAI(newReq())
+	if err != nil {
+		t.Fatalf("SerializeOpenAI failed: %v", err)
+	}
+	if strings.Contains(string(chatOut), `"file_id":""`) {
+		t.Fatalf("empty file_id emitted on Chat: %s", chatOut)
+	}
+	if !capChat.hasEvent(AnomalyEvent{
+		AnomalyType:    AnomalyProtocolLoss,
+		FieldPath:      "messages[0].content[0].document.file_id",
+		TargetProtocol: ProtocolOpenAIChat,
+		Reason:         "loss",
+	}) {
+		t.Fatalf("expected ir_protocol_loss for the double-empty Chat document; events=%+v", capChat.snapshot())
+	}
+
+	capResp := resetDedupAndInstall(t)
+	respOut, err := SerializeResponsesRequest(newReq())
+	if err != nil {
+		t.Fatalf("SerializeResponsesRequest failed: %v", err)
+	}
+	if strings.Contains(string(respOut), `"file_id":""`) || strings.Contains(string(respOut), `"file_data":""`) {
+		t.Fatalf("empty file_id/file_data emitted on Responses: %s", respOut)
+	}
+	if !capResp.hasEvent(AnomalyEvent{
+		AnomalyType:    AnomalyProtocolLoss,
+		FieldPath:      "messages[0].content[0].document.file_id",
+		TargetProtocol: ProtocolOpenAIResponses,
+		Reason:         "loss",
+	}) {
+		t.Fatalf("expected ir_protocol_loss for the double-empty Responses document; events=%+v", capResp.snapshot())
+	}
+}
+
+// TestOpenAIChatNestedToolResultImageLoss pins the tool_result boundary:
+// Anthropic tool_result blocks accept image children, but every Chat tool
+// path flattens tool content to text — the nested image must be dropped
+// from the wire and reported at its nested field path.
+func TestOpenAIChatNestedToolResultImageLoss(t *testing.T) {
+	cap := resetDedupAndInstall(t)
+
+	req := &InternalRequest{
+		Model: "gpt-4o",
+		Messages: []Message{
+			{
+				Role: "user",
+				Content: []ContentBlock{
+					{
+						Type: "tool_result",
+						ToolResult: &ToolResult{
+							ToolUseID: "toolu_01",
+							Content: []ContentBlock{
+								{Type: "text", Text: "screenshot attached"},
+								{Type: "image", Image: &ImageSource{Type: "file", FileID: "file_nested_img"}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	out, err := SerializeOpenAI(req)
+	if err != nil {
+		t.Fatalf("SerializeOpenAI failed: %v", err)
+	}
+	if strings.Contains(string(out), "file_nested_img") {
+		t.Fatalf("nested tool_result image leaked onto the Chat wire: %s", out)
+	}
+	if !cap.hasEvent(AnomalyEvent{
+		AnomalyType:    AnomalyProtocolLoss,
+		FieldPath:      "messages[0].content[0].tool_result.content[1].image",
+		TargetProtocol: ProtocolOpenAIChat,
+		Reason:         "loss",
+	}) {
+		t.Fatalf("expected ir_protocol_loss for the nested tool_result image; events=%+v", cap.snapshot())
+	}
+}
