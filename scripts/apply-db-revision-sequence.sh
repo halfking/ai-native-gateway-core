@@ -47,19 +47,21 @@ fi
 printf 'database schema state: %s\n' "$base_state"
 
 sequence_name="session-summary-and-integrity-2026-09"
-# deploy-local.sh already serializes deployments with its build lock. The
-# marker makes standalone retries cheap; each underlying migration is idempotent.
+# deploy-local.sh already serializes deployments with its build lock. Markers
+# are recorded PER FILE ("<sequence>:<basename>") so appending a new migration
+# to an already-applied sequence still runs it — a single sequence-wide marker
+# silently skipped 656 after it was added to the list (2026-09-05 PG log audit:
+# ensure/promote auto_route_selections functions missing on every boot). Each
+# underlying migration is idempotent, so re-running is safe.
 psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (sequence_name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())"
-if [[ "$(psql_query "SELECT 1 FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}' LIMIT 1")" == 1 ]]; then
-  printf 'database revision sequence already applied: %s\n' "$sequence_name"
-  exit 0
-fi
 
 # Fixed order: 655 restores the canonical session_summaries columns; 560
 # supplies the tenant uniqueness guard; 572 must replace the bounded token
 # ratio before 563 performs its backfill; 563/564 then restore the hot trigger
-# and safe aggregate backfill; 644/645 finish the independent repairs; 656
-# creates the auto_route_selections hot heap (no db.go ensure covers it).
+# and safe aggregate backfill; 644/645 finish the independent repairs; 650
+# adds the treatment-attribution columns that 656's promote/ensure functions
+# and all-view require on the parent; 656 creates the auto_route_selections
+# hot heap (no db.go ensure covers it).
 files=(
   "$ROOT_DIR/sql/migrations/startup/655_session_summaries_schema_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/560_session_summaries_tenant_uniqueness.sql"
@@ -69,12 +71,20 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/564_session_summary_backfill_safe.sql"
   "$ROOT_DIR/sql/migrations/startup/644_tuning_views_selfcheck_and_candidate_failure_cache.sql"
   "$ROOT_DIR/sql/migrations/startup/645_session_bodies_hot_request_unique_repair.sql"
+  "$ROOT_DIR/sql/migrations/startup/650_auto_route_selection_treatment_attribution.sql"
   "$ROOT_DIR/sql/migrations/startup/656_auto_route_selections_hot.sql"
 )
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
+  marker="${sequence_name}:$(basename "$file")"
+  if [[ "$(psql_query "SELECT 1 FROM public.gateway_db_revision_sequences WHERE sequence_name='${marker}' LIMIT 1")" == 1 ]]; then
+    printf 'already applied: %s\n' "${file#"$ROOT_DIR/"}"
+    continue
+  fi
   printf 'applying %s\n' "${file#"$ROOT_DIR/"}"
   psql_file "$file"
+  psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name) VALUES ('${marker}') ON CONFLICT (sequence_name) DO NOTHING"
 done
-psql_query "INSERT INTO public.gateway_db_revision_sequences (sequence_name) VALUES ('${sequence_name}') ON CONFLICT (sequence_name) DO NOTHING"
+# Retire the legacy sequence-wide marker so it cannot mask future appends.
+psql_query "DELETE FROM public.gateway_db_revision_sequences WHERE sequence_name='${sequence_name}'"
 printf 'database revision sequence completed successfully: %s\n' "$sequence_name"
