@@ -230,6 +230,39 @@ COMMENT ON VIEW training_export_stats IS
 --    - ✅ triggered_by记录触发来源
 --    - ✅ export_metadata记录导出上下文（实验ID、团队等）
 
+-- ============================================================================
+-- 4. 自动清理僵尸导出记录
+-- ============================================================================
+
+-- 清理超过24小时仍在running状态的导出记录
+-- 场景：进程崩溃、数据库连接中断、手动kill进程等
+CREATE OR REPLACE FUNCTION cleanup_stale_training_exports()
+RETURNS INTEGER AS $$
+DECLARE
+  affected_rows INTEGER;
+BEGIN
+  UPDATE training_exports
+  SET status = 'failed',
+      error_message = 'Export timed out or process crashed (auto-cleanup)',
+      duration_seconds = EXTRACT(EPOCH FROM (NOW() - created_at)),
+      completed_at = NOW()
+  WHERE status = 'running'
+    AND created_at < NOW() - INTERVAL '24 hours';
+  
+  GET DIAGNOSTICS affected_rows = ROW_COUNT;
+  
+  IF affected_rows > 0 THEN
+    RAISE NOTICE 'Cleaned up % stale training export records', affected_rows;
+  END IF;
+  
+  RETURN affected_rows;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION cleanup_stale_training_exports() IS 
+  'Automatically mark stale training exports (running > 24h) as failed. ' ||
+  'Should be called periodically (e.g., hourly cron job or at gateway startup).';
+
 -- Migration完成标记
 -- Version: 663
 -- Author: AUTO Route Team
