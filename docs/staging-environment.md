@@ -15,10 +15,10 @@ ssh -p 25022 root@47.97.111.154
 ### 数据库连接
 ```bash
 # DSN (从网关进程环境变量获取)
-postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable
+postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disable
 
 # psql 连接
-export PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg'
+export PGPASSWORD='***REDACTED***'
 psql -h 172.16.2.210 -U llm_gateway -d llm_gateway
 ```
 
@@ -232,7 +232,7 @@ go build -o /tmp/validate_sessions_v2 ./cmd/tools/validate_sessions_v2
 
 ### 回填单个会话
 ```bash
-export DSN='postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable'
+export DSN='postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disable'
 export SESSION='gt_gw_76d27976-59e4-42a5-853b-299182b9b336'
 export TENANT='default'
 

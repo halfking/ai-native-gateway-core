@@ -12,7 +12,7 @@
 
 - **数据库连接**: 从 154 网关进程环境变量获取到 DSN：
   ```
-  postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable
+  postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disable
   ```
 - **Go 工具链**: 154 上已有 Go 1.25.0，git 2.43.0。
 - **代码克隆**: 成功克隆 `feat/session-turns-v2` 分支到 `/root/llm-gateway-go-session-v2`。
