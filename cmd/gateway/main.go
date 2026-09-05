@@ -2687,9 +2687,14 @@ func main() {
 			slog.Warn("fernet key unavailable", "error", ferr)
 			fernetKey = nil
 		}
-		// KEYRING_JSON alone is a valid durable keyring source (KeyringFromEnv
-		// reads it first); the credential-encryption key is only a fallback.
-		if cfg.CredentialEncryptionKey != "" || strings.TrimSpace(os.Getenv("KEYRING_JSON")) != "" {
+		// Gating on the credential key alone left deploys without it running
+		// keyring-less: every AES-GCM credential then failed with "no
+		// decryption key available" even though KeyringFromEnv's documented
+		// priority (KEYRING_JSON → credential key → SECRET_KEY SHA-256) still
+		// had a source left. Attempt init whenever any source exists;
+		// KeyringFromEnv returns ErrNoKey only when all three are absent
+		// (incident 2026-09-05: provider 587, all credentials undecryptable).
+		if cfg.CredentialEncryptionKey != "" || cfg.SecretKey != "" || strings.TrimSpace(os.Getenv("KEYRING_JSON")) != "" {
 			if kr, kErr := secret.KeyringFromEnv(cfg.SecretKey, cfg.CredentialEncryptionKey); kErr != nil {
 				slog.Warn("AES-GCM keyring init failed, falling back to Fernet only", "error", kErr)
 			} else {
