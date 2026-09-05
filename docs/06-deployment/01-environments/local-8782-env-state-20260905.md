@@ -76,8 +76,10 @@
 3. **回归测试固化**（已完成，2026-09-05）：`CGO_ENABLED=0 go build ./cmd/gateway` 已进
    deploy 测试组合：`tests/deploy_nocgo_build_test.sh`（正向构建 + 反向回归 +
    `go list -deps` 静态检查）。
-4. **晋升 245 预发**（未完成，待执行）：特性已在 local `LOCAL_VERIFIED`；245 需 env-injector 注入
-   `aliyun-frontend-245` 凭据 + `scripts/deploy-245.sh --dry-run` + 步骤 9.2 凭据解密门。
-   154 生产不自动晋升，需人工放行。
+4. **晋升 245 预发**（已完成，2026-09-05 16:20）：`2.5.0.1945`（sha=`f6ea47da`）晋升成功，
+   身份核验 + 9.2 凭据解密门（failed=0）+ 模型/鉴权证据全绿；首次尝试因 migration 658
+   缺陷 fail-closed（未切流），修复提交 `f6ea47da6` 后重试通过。154 生产不自动晋升，
+   放行清单见
+   `docs/06-deployment/01-environments/154-production-release-checklist-20260905.md`。
 5. **多 clone 纪律**（未完成，流程约定）：`llm-gateway-go-2` 等 clone HEAD 落后；发布构建一律在已
    `pull --ff-only` 同步的 clone 进行。
