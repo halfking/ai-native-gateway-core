@@ -115,8 +115,11 @@ BEGIN
         END IF;
     ELSE
         EXECUTE $sql$
+            -- id 为普通 bigint（对齐 V359 父表模式）：promote 从 hot 表
+            -- 携带 id 直插，父表不自行生成（GENERATED ALWAYS 会拒绝显式
+            -- 插入并破坏 promote 的 copy-delete-insert 契约）。
             CREATE TABLE supplier_errors (
-                id                bigint GENERATED ALWAYS AS IDENTITY,
+                id                bigint,
                 occurred_at       timestamp with time zone DEFAULT now() NOT NULL,
                 request_id        text NOT NULL,
                 trace_id          text,
@@ -162,10 +165,12 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
+        -- 裸 USING columnar（对齐 V359 模板）：citus_columnar 11.2+ 的
+        -- 压缩/stripe/chunk 参数走 columnar.* GUC（全局默认 zstd/
+        -- 150000/10000），不再接受 WITH(...) reloption。
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF supplier_errors
-             FOR VALUES FROM (%L) TO (%L) USING columnar
-             WITH (compression=zstd, stripe_row_limit=150000, chunk_group_row_limit=10000)',
+             FOR VALUES FROM (%L) TO (%L) USING columnar',
             partition_name, month_start, month_end
         );
         RAISE NOTICE 'ensure_supplier_errors_partition: created % as columnar', partition_name;
