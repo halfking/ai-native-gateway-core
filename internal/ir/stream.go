@@ -212,6 +212,13 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 			} `json:"delta"`
 			FinishReason *string `json:"finish_reason"`
 		} `json:"choices"`
+		// In-band error frame (OpenAI-compatible providers emit
+		// {"error":{...}} as a data line instead of choices).
+		Error *struct {
+			Message string `json:"message"`
+			Type    string `json:"type"`
+			Code    string `json:"code"`
+		} `json:"error"`
 		Usage *struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
@@ -232,6 +239,28 @@ func ParseOpenAIStreamChunk(line string) (*StreamChunk, error) {
 
 	if err := json.Unmarshal([]byte(payload), &raw); err != nil {
 		return nil, fmt.Errorf("unmarshal openai chunk: %w", err)
+	}
+
+	// In-band error frame: without this, {"error":{...}} data lines fell
+	// through to an empty delta chunk and downstream error handling (failover,
+	// Responses/Gemini error surfacing) never fired.
+	if raw.Error != nil {
+		chunk := &StreamChunk{
+			ID:             raw.ID,
+			Model:          raw.Model,
+			Created:        raw.Created,
+			Type:           ChunkTypeError,
+			SourceProtocol: ProtocolOpenAIChat,
+			Error: &StreamError{
+				Type:    raw.Error.Type,
+				Message: raw.Error.Message,
+				Code:    raw.Error.Code,
+			},
+		}
+		if chunk.Error.Code == "" {
+			chunk.Error.Code = raw.Error.Type
+		}
+		return chunk, nil
 	}
 
 	chunk := &StreamChunk{

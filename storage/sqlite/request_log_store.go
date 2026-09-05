@@ -17,6 +17,8 @@ const maxListRequestsLimit = 1000
 // 请求日志 SQL（时间存 Unix 秒；duration 存毫秒；Body 大字段不入库，仅记 has_body 标记）。
 // 写入为 UPSERT：telemetry 管道对同一 request_id 先 INSERT（in_progress 占位）再
 // UPDATE（终态/用量回填），接线后（审计 B2）两类 op 复用本入口，重放取最新值。
+// has_body 取两侧最大值：终态行带 body 落盘后，后续无 body 的用量回填 UPDATE
+// 不得把标记清零（B-#1，"has_body=1 ↔ body 文件存在" 契约）。
 const insertRequestSQL = `
 INSERT INTO request_logs (request_id, tenant_id, session_id, ts, method, path, status_code, duration_ms, has_body)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -25,7 +27,7 @@ ON CONFLICT(request_id) DO UPDATE SET
 	ts           = excluded.ts,
 	status_code  = excluded.status_code,
 	duration_ms  = excluded.duration_ms,
-	has_body     = excluded.has_body;`
+	has_body     = MAX(request_logs.has_body, excluded.has_body);`
 
 const selectRequestSQL = `
 SELECT request_id, tenant_id, session_id, ts, method, path, status_code, duration_ms, COALESCE(has_body, 0) AS has_body

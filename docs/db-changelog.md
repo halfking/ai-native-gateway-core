@@ -273,3 +273,9 @@ relying on it.
 | 655 | `655_session_summaries_schema_reconcile.sql` | `b3e04d12647f89fc94e7e2901d381bcd2186b45a3b071d4314932552edfbde34` | applied+verified |
 | 656 | `656_auto_route_selections_hot.sql` | `5261ec209a5d5f89a3a745c742a9e815c9086305d73ed13c06213cbfa3ab1322` | applied+verified |
 
+## 2026-09-05T06:52:05Z — deploy 154 build_seq 1942 (3c51c2e3)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 657 | `657_durable_llm_tasks_decision_history.sql` | `306f8103a45e873b5e0d8be9964f0be1bb761a8f111fd706462b38b6991fbd5c` | applied+verified |
+

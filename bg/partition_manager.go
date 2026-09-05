@@ -266,12 +266,14 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 	ticker := time.NewTicker(providerErrorCleanupInterval)
 	defer ticker.Stop()
 	pm.cleanupOldProviderErrorDetails(ctx)
+	pm.cleanupOldSupplierErrorStats(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			pm.cleanupOldProviderErrorDetails(ctx)
+			pm.cleanupOldSupplierErrorStats(ctx)
 		}
 	}
 }
@@ -814,6 +816,11 @@ func ensureSpecs() []archiveSpec {
 		{fnName: "ensure_cache_metrics_partition", label: "cache_metrics", argExpr: "$1::date"},                                      // Migration 475
 		{fnName: "ensure_handoff_logs_partition", label: "handoff_logs"},                                                             // Migration 532
 		{fnName: "ensure_auto_route_selections_partition", label: "auto_route_selections", argExpr: "$1::date"},                      // Migration 656
+		// 2026-09-05 (D-2#13): V371 的 ensure_supplier_errors_partition 是
+		// timestamptz 签名（返回 text），走默认 argExpr="$1"。缺这条时
+		// supplier_errors 下月分区不预建，promote 只能靠函数内自 ensure 兜底，
+		// ensure 日志/可观测链路缺一张表。
+		{fnName: "ensure_supplier_errors_partition", label: "supplier_errors"}, // Migration V371 (2026-09-05)
 
 		// model_probe_runs 已切换为纯 hot 表策略（2026-07-14），
 		// 不再 promote 到 columnar 分区，所以也不需要 ensure。
@@ -883,6 +890,11 @@ func promoteSpecs() []archiveSpec {
 		{fnName: "promote_session_module_executions_hot_to_partition", label: "session_module_executions_hot"}, // Migration 580
 		{fnName: "promote_dashboard_access_events_hot_to_partition", label: "dashboard_access_events_hot"},     // Migration 579
 		{fnName: "promote_auto_route_selections_hot_to_partition", label: "auto_route_selections_hot"},         // Migration 656
+		// 2026-09-05 (D-2#1): V371 建了 supplier_errors_hot 并在
+		// admin/data_lifecycle_hot_partition.go 注册了手动 promote，
+		// 但后台调度漏注册 → hot 表只有管理员手动迁移，8h 不变式断裂
+		// 且错误明细无界增长。resolvePromoteConfig 走 default 8h 分支。
+		{fnName: "promote_supplier_errors_hot_to_partition", label: "supplier_errors_hot"}, // Migration V371 (2026-09-05)
 	}
 }
 
@@ -1123,6 +1135,33 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 			batchSize = 100 // safety floor — avoid pathological micro-batches
 		}
 		return retention, batchSize
+	case "auto_route_selections_hot":
+		// 2026-09-05 (audit H-3): the settle worker needs settleDelay (2min)
+		// + settleAbandonAfter (4h) to finish before promote drains hot, and
+		// it only ever touches auto_route_selections_hot (never the parent).
+		// Promoting earlier would strand unsettled rows in the columnar
+		// parent forever (reward lost, affinity sample lost). The generic
+		// 1h floor is therefore not enough for this table — clamp to 5h
+		// (4h abandon window + 2min settle delay + margin) and warn when a
+		// smaller lifecycle.hot_retention_hours is configured.
+		const autoRouteMinRetention = 5 * time.Hour
+		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
+		retention := time.Duration(hours) * time.Hour
+		if retention < autoRouteMinRetention {
+			slog.Warn("partition_manager: auto_route_selections_hot retention below settle window, clamped",
+				"configured", retention.String(),
+				"clamped_to", autoRouteMinRetention.String(),
+				"reason", "settleDelay(2m)+settleAbandonAfter(4h) must finish before promote")
+			retention = autoRouteMinRetention
+		}
+		batchSize := settingsGetPlatformInt("lifecycle.promote_batch_size", promoteBatchSize)
+		if batchSize < 100 {
+			batchSize = 100
+		}
+		if batchSize > 50_000 {
+			batchSize = 50_000
+		}
+		return retention, batchSize
 	default:
 		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
 		retention := time.Duration(hours) * time.Hour
@@ -1178,6 +1217,49 @@ func (pm *PartitionManager) cleanupOldProviderErrorDetails(ctx context.Context) 
 	}
 	if n := tag.RowsAffected(); n > 0 {
 		slog.Info("partition_manager: cleaned provider_error_details",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldSupplierErrorStats deletes minute-bucket pre-aggregations from
+// supplier_error_stats older than the configured TTL. The table has no
+// partition strategy and the aggregator upserts one row per minute per
+// (supplier × credential × error_type × model) combination, so without
+// this it grows linearly forever — and it is the sole read source for the
+// /api/errors/trend endpoint (audit 2026-09-05 D-2#5 / E-#8).
+//
+// Only granularity='minute' rows are deleted; hour/day rollups are far
+// smaller and are kept for long-range trend views (24h view reads hour,
+// 168h view reads day). The (stat_time DESC, granularity) index from V371
+// backs the DELETE as an index descent.
+//
+// Retention: lifecycle.supplier_error_stats_ttl_days (default 30,
+// hot-reloadable via settings_kv — same pattern as
+// lifecycle.provider_error_details_ttl_days; no config struct change).
+func (pm *PartitionManager) cleanupOldSupplierErrorStats(ctx context.Context) {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	retentionDays := settingsGetPlatformInt("lifecycle.supplier_error_stats_ttl_days", 30)
+	if retentionDays < 1 {
+		retentionDays = 30 // safety floor — never set to 0 (would wipe minute history)
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := pm.db.Exec(timeoutCtx,
+		`DELETE FROM supplier_error_stats
+		 WHERE granularity = 'minute'
+		   AND stat_time < now() - ($1 || ' days')::interval`,
+		retentionDays)
+	if err != nil {
+		slog.Error("partition_manager: supplier_error_stats cleanup failed",
+			"retention_days", retentionDays, "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("partition_manager: cleaned supplier_error_stats minute buckets",
 			"deleted_rows", n, "retention_days", retentionDays)
 	}
 }

@@ -146,6 +146,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionSummariesCanonical(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
+	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
+	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
+	// worker 每 sweep 报错——学习闭环空转。与 655 同位置生效。
+	if err := db.ensureAutoRouteSelectionsHotSchema(migCtx); err != nil {
+		return err
+	}
 	// Routing analytics reads these columns while creating its source view.
 	// Keep this small table-only ensure ahead of the analytics materialized
 	// views; the broader recent-success-rate ensure runs later because it
@@ -5153,6 +5160,101 @@ func (d *DB) ensureProxyManagementCanonicalSchema(ctx context.Context) error {
 	`)
 	if err != nil {
 		return fmt.Errorf("ensure proxy management canonical schema: %w", err)
+	}
+	return nil
+}
+
+// autoRouteSelectionsHotEnsureSQL mirrors the hot-table half of
+// sql/migrations/startup/656_auto_route_selections_hot.sql (table shape,
+// defaults, CHECK constraints, indexes, and the auto_route_selections_all
+// UNION ALL view). It intentionally does NOT install the
+// ensure_/promote_ functions — those ship with migration 656 and with the
+// installer; this ensure only guarantees the write path
+// (auto_route_selections_hot + view) exists so selection batches are not
+// dropped on binaries upgraded without re-running migrations.
+const autoRouteSelectionsHotEnsureSQL = `
+CREATE TABLE IF NOT EXISTS public.auto_route_selections_hot (
+  id BIGINT NOT NULL DEFAULT nextval('public.auto_route_selections_id_seq'::regclass),
+  request_id TEXT NOT NULL, session_id TEXT, task_id TEXT, tenant_id VARCHAR(64),
+  ts TIMESTAMPTZ NOT NULL DEFAULT NOW(), task_type TEXT NOT NULL, profile TEXT NOT NULL DEFAULT 'smart',
+  classifier TEXT NOT NULL DEFAULT 'heuristic', confidence NUMERIC(4,3), canonical_id BIGINT,
+  chosen_model TEXT NOT NULL, candidate_rank SMALLINT NOT NULL DEFAULT 1,
+  composite_score NUMERIC(6,2), affinity_score NUMERIC(6,2),
+  affinity_applied BOOLEAN NOT NULL, explore BOOLEAN NOT NULL, fallback_used BOOLEAN NOT NULL,
+  success BOOLEAN, latency_ms INTEGER, cost_usd NUMERIC(14,8), reward NUMERIC(4,3),
+  reward_source TEXT, settled_at TIMESTAMPTZ, partition_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  experiment_id TEXT, treatment TEXT, assignment_version TEXT, assignment_key_hash TEXT,
+  PRIMARY KEY (id, partition_date)
+);
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN ts SET DEFAULT NOW();
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN profile SET DEFAULT 'smart';
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN classifier SET DEFAULT 'heuristic';
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN candidate_rank SET DEFAULT 1;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN affinity_applied SET DEFAULT FALSE;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN explore SET DEFAULT FALSE;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN fallback_used SET DEFAULT FALSE;
+ALTER TABLE public.auto_route_selections_hot ALTER COLUMN partition_date SET DEFAULT CURRENT_DATE;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.auto_route_selections_hot'::regclass AND conname = 'ars_hot_profile_check') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD CONSTRAINT ars_hot_profile_check CHECK (profile IN ('', 'smart', 'speed_first', 'cost_first'));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.auto_route_selections_hot'::regclass AND conname = 'ars_hot_reward_range') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD CONSTRAINT ars_hot_reward_range CHECK (reward IS NULL OR (reward >= 0 AND reward <= 1));
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.auto_route_selections_hot'::regclass AND conname = 'ars_hot_reward_source_check') THEN
+    ALTER TABLE public.auto_route_selections_hot ADD CONSTRAINT ars_hot_reward_source_check CHECK (reward_source IS NULL OR reward_source IN ('request', 'session'));
+  END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ars_hot_request ON public.auto_route_selections_hot (request_id, partition_date);
+CREATE INDEX IF NOT EXISTS idx_ars_hot_task_profile_ts ON public.auto_route_selections_hot (task_type, profile, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ars_hot_session ON public.auto_route_selections_hot (session_id, ts DESC) WHERE session_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_ars_hot_unsettled ON public.auto_route_selections_hot (ts) WHERE settled_at IS NULL;
+CREATE OR REPLACE VIEW public.auto_route_selections_all AS
+SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
+  canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
+  explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,
+  partition_date, experiment_id, treatment, assignment_version, assignment_key_hash, 'hot'::text AS storage_tier
+FROM public.auto_route_selections_hot
+UNION ALL
+SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
+  canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
+  explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,
+  partition_date, experiment_id, treatment, assignment_version, assignment_key_hash, 'parent'::text AS storage_tier
+FROM public.auto_route_selections;
+`
+
+// ensureAutoRouteSelectionsHotSchema mirrors the hot-table DDL of
+// sql/migrations/startup/656_auto_route_selections_hot.sql (audit 2026-09-05
+// D-2#4 / H-2). On a deployment that upgraded the binary without re-running
+// the 656 migration, every telemetry selection-writer batch INSERT failed
+// and was dropped (dropped counter + one WARN), the settle worker failed
+// each sweep, and the AUTO routing learning loop silently did nothing.
+//
+// Error handling matches ensureSessionSummariesCanonical: a missing parent
+// table (fresh empty database where 478/650 have not run yet) is a degraded
+// skip with a pointer to the migration SQL, not a fatal — the hot DDL
+// references auto_route_selections_id_seq (owned by the parent's BIGSERIAL)
+// and the view unions the parent, so both require the parent to exist.
+// Everything else is CREATE IF NOT EXISTS / OR REPLACE idempotent and any
+// execution error is returned to ApplyMigrations.
+func (d *DB) ensureAutoRouteSelectionsHotSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	var parentExists bool
+	if err := d.pool.QueryRow(ctx,
+		`SELECT to_regclass('public.auto_route_selections') IS NOT NULL`,
+	).Scan(&parentExists); err != nil {
+		return fmt.Errorf("probe auto_route_selections existence: %w", err)
+	}
+	if !parentExists {
+		slog.Warn("auto_route_selections parent table missing; skipping auto_route_selections_hot ensure " +
+			"(run sql/migrations/startup/656_auto_route_selections_hot.sql to install)")
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, autoRouteSelectionsHotEnsureSQL); err != nil {
+		return fmt.Errorf("ensure auto_route_selections_hot schema: %w", err)
 	}
 	return nil
 }

@@ -69,6 +69,11 @@ type ResponseContentBlock struct {
 	// type=thinking / redacted_thinking
 	Thinking string `json:"thinking,omitempty"`
 
+	// Data carries the encrypted payload of type=redacted_thinking blocks
+	// (Anthropic wire key "data"). A-#17: without it redacted blocks were
+	// dropped on the response parse → serialize round-trip.
+	Data string `json:"data,omitempty"`
+
 	// Signature is the Anthropic chain-of-thought verification token
 	// returned with thinking blocks. Populated only for type=thinking.
 	// PR-2 (2026-06-24): required for opus-4-8 multi-turn round-trip —
@@ -144,6 +149,7 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			Input     json.RawMessage `json:"input"`
 			Thinking  string          `json:"thinking"`
 			Signature string          `json:"signature"`
+			Data      string          `json:"data"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
 		Usage      struct {
@@ -226,6 +232,18 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 				Type:      "thinking",
 				Thinking:  c.Thinking,
 				Signature: c.Signature,
+			})
+		case "redacted_thinking":
+			// A-#17 (audit round2): redacted blocks were dropped entirely,
+			// so the next-turn thinking chain could 400. Preserve the
+			// encrypted payload (fall back to the thinking key).
+			payload := c.Data
+			if payload == "" {
+				payload = c.Thinking
+			}
+			ir.Content = append(ir.Content, ResponseContentBlock{
+				Type: "redacted_thinking",
+				Data: payload,
 			})
 		}
 	}
@@ -663,6 +681,11 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 				thinking["signature"] = c.Signature
 			}
 			content = append(content, thinking)
+		case "redacted_thinking":
+			content = append(content, map[string]any{
+				"type": "redacted_thinking",
+				"data": c.Data,
+			})
 		}
 	}
 

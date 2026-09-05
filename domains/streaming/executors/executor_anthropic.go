@@ -1058,6 +1058,40 @@ func (e *Executor) executeAnthropicOnce(
 	}
 	slog.Info("upstream_http_attempt", attemptAttrs...)
 
+	// E-#5 (audit round2): record the attempt in the routing tracker so the
+	// closed-loop-2 recovery path (foldCandidateOutcomes → FailedAttempts)
+	// sees real anthropic candidate failures too — previously only the
+	// OpenAI exit (executor_chat.go) populated the tracker, and anthropic
+	// failures degraded to the synthetic no_available_channel outcome.
+	if params.RoutingTracker != nil {
+		var statusCode int
+		var errMsg string
+		if resp != nil {
+			statusCode = resp.StatusCode
+		}
+		if uErr != nil {
+			errMsg = uErr.Message
+		}
+		attempt := RoutingAttempt{
+			ProviderID:   int64(cand.ProviderID),
+			CredentialID: int64(cand.CredentialID),
+			ProviderName: cand.CatalogCode,
+			RawModel:     cand.RawModel,
+			UpstreamURL:  req.URL.String(),
+			Result:       ClassifyResult(uErr, statusCode),
+			LatencyMs:    upstreamLatency.Milliseconds(),
+			HTTPStatus:   statusCode,
+			ErrorMessage: errMsg,
+			Stage:        "upstream",
+		}
+		if uErr != nil {
+			attempt.ErrorKind = string(uErr.Kind)
+			retryable := errorsx.ProjectRecovery(uErr.Kind).GenericRetryable
+			attempt.Retryable = &retryable
+		}
+		params.RoutingTracker.Add(attempt)
+	}
+
 	if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 		errKind := uErr.Kind
 		// 2026-08-08: see executor_chat.go — an overload-shaped 5xx body is a

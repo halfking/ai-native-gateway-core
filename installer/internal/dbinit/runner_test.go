@@ -17,6 +17,7 @@ func TestStartupFilesIncludeRequestJourneyOutboxPrerequisites(t *testing.T) {
 		"602_request_logs_promote_atomic.sql",
 		"618_request_journey_snapshot_receipts.sql",
 		"656_auto_route_selections_hot.sql",
+		"657_durable_llm_tasks_decision_history.sql",
 		"session_turns_hot_bootstrap.sql",
 	}
 	positions := make(map[string]int, len(runner.StartupFiles))

@@ -447,6 +447,7 @@ func (g *redisRateGovernor) Acquire(ctx context.Context, qr *QueuedRequest, give
 			return fmt.Errorf("%w: token cost=%d exceeds tpm limit=%d", ErrGovernorUnavailable, cost, g.limit)
 		}
 	}
+	attempt := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
@@ -468,7 +469,10 @@ func (g *redisRateGovernor) Acquire(ctx context.Context, qr *QueuedRequest, give
 		if code < 0 {
 			return fmt.Errorf("%w: invalid rate bucket request", ErrGovernorUnavailable)
 		}
-		wait := 2 * time.Millisecond
+		// Exponential ramp (governorBackoff): a flat 2ms poll re-runs the
+		// rate Lua per waiter under saturation (audit round2 C-#13).
+		wait := governorBackoff(attempt)
+		attempt++
 		if !giveUp.IsZero() {
 			remaining := time.Until(giveUp)
 			if remaining <= 0 {
@@ -521,6 +525,7 @@ func (g *redisEnforceGovernor) Mode() string { return g.mode }
 // On Redis error (any) wraps ErrGovernorUnavailable with the original
 // cause — strictly fail-closed, no memory fallback.
 func (g *redisEnforceGovernor) Acquire(ctx context.Context, qr *QueuedRequest, giveUp time.Time) error {
+	attempt := 0
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%w: %w", ErrGovernorUnavailable, err)
@@ -553,11 +558,12 @@ func (g *redisEnforceGovernor) Acquire(ctx context.Context, qr *QueuedRequest, g
 			g.leasesMu.Unlock()
 			return nil
 		case 0:
-			// Saturated. Sleep briefly and retry, capped by giveUp.
+			// Saturated. Back off exponentially (governorBackoff), capped by giveUp.
 			g.leasesMu.Lock()
 			delete(g.leases, qr)
 			g.leasesMu.Unlock()
-			g.waitOrGiveUp(ctx, giveUp)
+			g.waitOrGiveUp(ctx, giveUp, attempt)
+			attempt++
 			continue
 		default:
 			return fmt.Errorf("%w: lua state=%q", ErrGovernorUnavailable, state)
@@ -638,16 +644,37 @@ func (g *redisEnforceGovernor) nextToken() string {
 		":" + strconv.FormatUint(g.spec.Revision, 36)
 }
 
-// waitOrGiveUp is the pacing sleep between saturation retries. Mirrors
-// the cadence of concurrencyGovernor (2ms) so the behavior under heavy
-// load is comparable between Local and Redis-enforce backends.
-func (g *redisEnforceGovernor) waitOrGiveUp(ctx context.Context, giveUp time.Time) {
+// waitOrGiveUp is the pacing sleep between saturation retries. An exponential
+// ramp (governorBackoff) replaces the former flat 2ms poll, which re-ran the
+// acquire Lua up to ~500x/s per waiter under saturation (audit round2 C-#13).
+// governorBackoff returns the retry wait for the n-th consecutive saturated
+// attempt (0-based). A flat 2ms poll re-runs the acquire/rate Lua up to
+// ~500x/s per waiter under saturation (audit round2 C-#13: a deep Tier-2
+// queue multiplies this into a Redis retry storm); the exponential ramp keeps
+// acquisition latency low when a slot frees quickly while bounding the
+// steady-state Redis load to a few ops/s per waiter.
+func governorBackoff(attempt int) time.Duration {
+	const (
+		base = 5 * time.Millisecond
+		cap_ = 250 * time.Millisecond
+	)
+	if attempt <= 0 {
+		return base
+	}
+	wait := base << attempt
+	if wait > cap_ || wait <= 0 {
+		return cap_
+	}
+	return wait
+}
+
+func (g *redisEnforceGovernor) waitOrGiveUp(ctx context.Context, giveUp time.Time, attempt int) {
 	if !giveUp.IsZero() && !time.Now().Before(giveUp) {
 		return
 	}
 	select {
 	case <-ctx.Done():
-	case <-time.After(2 * time.Millisecond):
+	case <-time.After(governorBackoff(attempt)):
 	}
 }
 

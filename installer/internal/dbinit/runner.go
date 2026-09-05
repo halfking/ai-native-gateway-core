@@ -95,6 +95,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"653_archive_credential_model_index_canonical_return.sql",
 			"654_archive_credential_model_index_detach_drop.sql",
 			"656_auto_route_selections_hot.sql",
+			"657_durable_llm_tasks_decision_history.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

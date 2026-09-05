@@ -197,15 +197,35 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 	return json.Marshal(out)
 }
 
+// systemPlainText flattens IR System to plain text for text-only system
+// surfaces (OpenAI system message, Responses instructions). Content wins when
+// set; otherwise Anthropic/Gemini parse paths leave Parts-only systems, which
+// must not be silently dropped.
+func systemPlainText(sys *SystemPrompt) string {
+	if sys == nil {
+		return ""
+	}
+	if sys.Content != "" {
+		return sys.Content
+	}
+	parts := make([]string, 0, len(sys.Parts))
+	for _, block := range sys.Parts {
+		if block.Text != "" {
+			parts = append(parts, block.Text)
+		}
+	}
+	return joinTextParts(parts)
+}
+
 // serializeOpenAIMessages converts IR messages to OpenAI format.
 func serializeOpenAIMessages(req *InternalRequest) []map[string]any {
 	messages := make([]map[string]any, 0, len(req.Messages)+1)
 
 	// Prepend system message if present
-	if req.System != nil && req.System.Content != "" {
+	if text := systemPlainText(req.System); text != "" {
 		messages = append(messages, map[string]any{
 			"role":    "system",
-			"content": req.System.Content,
+			"content": text,
 		})
 	}
 

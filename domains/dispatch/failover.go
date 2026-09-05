@@ -38,7 +38,22 @@ func (p *Pipeline) runFailover() {
 				p.complete(it.qr, ForwardOutcome{Err: ErrShutdown})
 				continue
 			}
-			p.move(it.qr, it.out)
+			// C-#14 (audit round2): the failover ladder runs planner/router
+			// callbacks; recover per item so one panic cannot kill the worker
+			// goroutine and the process (same pattern as forwarder.attempt).
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						slog.Error("failover worker panic recovered",
+							"request_id", it.qr.ID, "panic", recovered)
+						p.complete(it.qr, ForwardOutcome{
+							Err:       fmt.Errorf("failover panic: %v", recovered),
+							ErrorKind: "failover_panic",
+						})
+					}
+				}()
+				p.move(it.qr, it.out)
+			}()
 		case <-p.stopCh:
 			p.shutdownDrainFailover()
 			return
@@ -150,6 +165,12 @@ func (p *Pipeline) move(qr *QueuedRequest, out ForwardOutcome) {
 	// complete from/to endpoints in one entry. This preserves the journal
 	// contract that recordDecision updates LastFailover to the tail entry.
 	refs, _ := p.routeFunc(ctxOf(qr), qr)
+	// C-#12 recheck: the entry guard predates routeFunc, a long cross-package
+	// callback (Router.PlanCandidatesPinned). A cancel that won the terminal
+	// CAS while it ran must win here too.
+	if qr.completed.Load() || qr.abandoned.Load() {
+		return
+	}
 	next, scoped := PlanSwitchCred(qr, refs)
 	for _, id := range scoped {
 		qr.markTriedCredential(id)

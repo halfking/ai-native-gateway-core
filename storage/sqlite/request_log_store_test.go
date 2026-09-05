@@ -170,3 +170,66 @@ func reqIDs(logs []*storage.RequestLog) []string {
 	}
 	return out
 }
+
+// TestRequestLogHasBodySurvivesEnrichment 回归（审计 B-#1）：终态行已置
+// has_body=1 后，同 request_id 的无 body 用量回填 UPDATE 不得把标记清零。
+func TestRequestLogHasBodySurvivesEnrichment(t *testing.T) {
+	db := openTestDB(t)
+	store := NewSQLiteRequestLogStore(db)
+	ctx := context.Background()
+
+	base := time.Date(2026, 9, 5, 10, 0, 0, 0, time.UTC)
+	if err := store.WriteRequest(ctx, &storage.RequestLog{
+		RequestID: "req-body", TenantID: "tenant-a", SessionID: "sess-1",
+		Timestamp: base, Method: "POST", Path: "/v1/chat/completions",
+		StatusCode: 200, Duration: 100 * time.Millisecond,
+		Body: json.RawMessage(`{"model":"gpt-4o"}`),
+	}); err != nil {
+		t.Fatalf("WriteRequest(body): %v", err)
+	}
+
+	// 终态后的 enrichment 回填：cost/tokens 更新，Body 为空。
+	if err := store.WriteRequest(ctx, &storage.RequestLog{
+		RequestID: "req-body", TenantID: "tenant-a", SessionID: "sess-1",
+		Timestamp: base.Add(time.Second), Method: "POST", Path: "/v1/chat/completions",
+		StatusCode: 200, Duration: 150 * time.Millisecond,
+		Body: nil,
+	}); err != nil {
+		t.Fatalf("WriteRequest(enrichment): %v", err)
+	}
+
+	got, err := store.GetRequest(ctx, "req-body")
+	if err != nil {
+		t.Fatalf("GetRequest: %v", err)
+	}
+	var hasBody int
+	if err := db.QueryRow(`SELECT has_body FROM request_logs WHERE request_id = ?`, "req-body").Scan(&hasBody); err != nil {
+		t.Fatalf("scan has_body: %v", err)
+	}
+	if hasBody != 1 {
+		t.Fatalf("has_body clobbered by bodyless enrichment UPDATE: got %d, %+v", hasBody, got)
+	}
+
+	// 反向：先无 body 占位，后带 body 终态 → 1。
+	if err := store.WriteRequest(ctx, &storage.RequestLog{
+		RequestID: "req-late", TenantID: "tenant-a",
+		Timestamp: base, Method: "POST", Path: "/v1/chat/completions",
+		StatusCode: 0, Duration: 0,
+	}); err != nil {
+		t.Fatalf("WriteRequest(placeholder): %v", err)
+	}
+	if err := store.WriteRequest(ctx, &storage.RequestLog{
+		RequestID: "req-late", TenantID: "tenant-a",
+		Timestamp: base.Add(time.Second), Method: "POST", Path: "/v1/chat/completions",
+		StatusCode: 200, Duration: 120 * time.Millisecond,
+		Body: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("WriteRequest(final): %v", err)
+	}
+	if err := db.QueryRow(`SELECT has_body FROM request_logs WHERE request_id = ?`, "req-late").Scan(&hasBody); err != nil {
+		t.Fatalf("scan has_body late: %v", err)
+	}
+	if hasBody != 1 {
+		t.Fatalf("has_body not set by final write: got %d", hasBody)
+	}
+}

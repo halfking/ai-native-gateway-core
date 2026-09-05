@@ -56,6 +56,7 @@ const i18n = createI18n({
         retry: '重试',
         openAttachment: '下载附件',
         openingAttachment: '正在打开…',
+        openAttachmentFailed: '附件打开失败',
       },
     },
   },
@@ -207,5 +208,53 @@ describe('TurnDigestDrawer', () => {
     await w.find('.el-button').trigger('click')
     expect(w.emitted('update:modelValue')?.[0]).toEqual([false])
     expect(w.emitted('close')).toBeTruthy()
+  })
+
+  it('shows attachment failures inline instead of replacing the tabs (audit F2-#10)', async () => {
+    // Attachment with neither object nor att_id → no download URL can be
+    // built; the failure must render as an inline hint in the attachments
+    // tab, never through the global error state.
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null)
+    getSessionTurnMock.mockResolvedValue({
+      ...detail,
+      attachments: [{ att_id: '', name: 'broken.bin', size: 3, object: '' }],
+    })
+    const w = mountDrawer()
+    await flushPromises()
+
+    expect(w.find('[data-testid="tdd-error"]').exists()).toBe(false)
+    expect(w.find('[role="alert"]').exists()).toBe(false)
+
+    const button = w.findAll('button').find((b) => b.text() !== '')
+    await button!.trigger('click')
+
+    const inline = w.find('[data-testid="tdd-attachment-error"]')
+    expect(inline.exists()).toBe(true)
+    expect(inline.text()).toBe('附件打开失败')
+    // The tabs area is intact — no global error takeover.
+    expect(w.find('[data-testid="tdd-error"]').exists()).toBe(false)
+    expect(w.find('.el-tabs').exists()).toBe(true)
+    openSpy.mockRestore()
+  })
+
+  it('does not surface an inline attachment error when the download opens fine', async () => {
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue({} as Window)
+    getSessionTurnMock.mockResolvedValue({
+      ...detail,
+      attachments: [{ att_id: 'att-1', name: 'ok.bin', size: 3, object: 'sessions/a/att-1' }],
+    })
+    const w = mountDrawer()
+    await flushPromises()
+
+    const button = w.findAll('button').find((b) => b.text() !== '')
+    await button!.trigger('click')
+
+    expect(w.find('[data-testid="tdd-attachment-error"]').exists()).toBe(false)
+    expect(openSpy).toHaveBeenCalledWith(
+      '/api/attachments/sessions/a/att-1',
+      '_blank',
+      'noopener,noreferrer',
+    )
+    openSpy.mockRestore()
   })
 })

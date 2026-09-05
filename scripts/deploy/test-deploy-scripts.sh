@@ -21,6 +21,7 @@ SCRIPTS=(
     "deploy-to-docker.sh"
     "health-check.sh"
     "rollback.sh"
+    "test-deploy-local-env.sh"
 )
 
 for script in "${SCRIPTS[@]}"; do

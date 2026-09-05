@@ -2,6 +2,10 @@ package bg
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,6 +39,7 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		"ensure_cache_metrics_partition":             false, // Migration 475
 		"ensure_handoff_logs_partition":              false, // Migration 532
 		"ensure_auto_route_selections_partition":     false, // Migration 656
+		"ensure_supplier_errors_partition":           false, // Migration V371 (2026-09-05, D-2#13)
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -73,6 +78,7 @@ func TestPromoteSpecsCoversAllDefaultPartitions(t *testing.T) {
 		"promote_dashboard_access_events_hot_to_partition":   false, // Migration 579 (body repaired by 607)
 		"promote_session_bodies_hot_to_partition":            false, // Migration 615
 		"promote_auto_route_selections_hot_to_partition":     false, // Migration 656
+		"promote_supplier_errors_hot_to_partition":           false, // Migration V371 (2026-09-05, D-2#1)
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
@@ -185,6 +191,87 @@ func TestResolvePromoteConfigHandoffRetention(t *testing.T) {
 	}
 	if batch < 100 || batch > 50_000 {
 		t.Fatalf("handoff batch = %d, outside safety bounds", batch)
+	}
+}
+
+// TestPromoteSpecsCoverAdminHotPromoteTableMap guards the 2026-09-05
+// D-2#1 drift: admin/data_lifecycle_hot_partition.go registers hot tables
+// for the manual promote endpoint while bg.promoteSpecs() drives the hourly
+// background scheduler. supplier_errors_hot shipped in admin's map (V371)
+// but was missing from promoteSpecs(), so the hot table only ever moved
+// when an admin clicked the button and grew without bound.
+//
+// admin imports bg, so this test cannot import admin (import cycle), and
+// admin's hotPromoteTableMap is unexported. Instead of a hand-copied
+// mirror (which itself can drift), parse the registry straight out of the
+// admin source file and require the two fnName sets to be equal.
+//
+// Note: label equality is intentionally NOT asserted across the two
+// registries — bg labels feed metrics + advisory-lock keys while admin
+// labels are API table names, and they legitimately differ for three
+// legacy tables (request_logs_bodies[_hot], credit_ledger[_hot],
+// tool_usage_stats[_hot]). The fnName is what selects the SQL function,
+// so set equality on fnNames is the invariant that matters.
+func TestPromoteSpecsCoverAdminHotPromoteTableMap(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "admin", "data_lifecycle_hot_partition.go"))
+	if err != nil {
+		t.Fatalf("read admin registry source: %v", err)
+	}
+
+	// Extract "table_label": "promote_fn_name" pairs from the
+	// hotPromoteTableMap literal. Only map-entry lines match; the map is
+	// the single place in the file with this `"x": "promote_..."`
+	// shape (verified against the 2026-09-05 source).
+	entryRe := regexp.MustCompile(`"([a-z0-9_]+)":\s*"(promote_[a-z0-9_]+)"`)
+	adminByFn := map[string]string{}
+	for _, line := range strings.Split(string(source), "\n") {
+		m := entryRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		adminByFn[m[2]] = m[1]
+	}
+	if len(adminByFn) < 15 {
+		t.Fatalf("parsed %d admin hotPromoteTableMap entries, expected >= 15 — the admin source layout likely changed; update this test", len(adminByFn))
+	}
+
+	promoteByFn := map[string]string{}
+	for _, s := range promoteSpecs() {
+		promoteByFn[s.fnName] = s.label
+	}
+
+	for fn, adminLabel := range adminByFn {
+		label, ok := promoteByFn[fn]
+		if !ok {
+			t.Errorf("admin hotPromoteTableMap registers %q (label %q) but promoteSpecs() does not schedule it — background promote never runs for this hot table (D-2#1 regression)", fn, adminLabel)
+			continue
+		}
+		if label != adminLabel && label+"_hot" != adminLabel && label != adminLabel+"_hot" {
+			t.Errorf("fn %q: admin label %q vs promoteSpecs label %q differ beyond the _hot suffix convention", fn, adminLabel, label)
+		}
+	}
+	for fn, label := range promoteByFn {
+		if _, ok := adminByFn[fn]; !ok {
+			t.Errorf("promoteSpecs() schedules %q (label %q) but admin hotPromoteTableMap has no such entry — manual promote endpoint cannot reach this table", fn, label)
+		}
+	}
+}
+
+// TestResolvePromoteConfigAutoRouteSelectionsFloor pins the audit H-3 fix:
+// the settle worker needs settleDelay(2min) + settleAbandonAfter(4h) to
+// finish before promote drains auto_route_selections_hot (settle is
+// hot-only), so the effective retention must never drop below 5h even if
+// lifecycle.hot_retention_hours is configured lower.
+func TestResolvePromoteConfigAutoRouteSelectionsFloor(t *testing.T) {
+	retention, batch := resolvePromoteConfig("auto_route_selections_hot")
+	if retention < 5*time.Hour {
+		t.Fatalf("auto_route_selections_hot retention = %v, want >= 5h floor (settleDelay+settleAbandonAfter+margin)", retention)
+	}
+	if retention != 8*time.Hour {
+		t.Fatalf("auto_route_selections_hot retention = %v, want 8h default", retention)
+	}
+	if batch < 100 || batch > 50_000 {
+		t.Fatalf("auto_route_selections_hot batch = %d, outside safety bounds", batch)
 	}
 }
 

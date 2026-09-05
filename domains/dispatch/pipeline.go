@@ -1152,45 +1152,68 @@ func (p *Pipeline) runTotalDrainer() {
 			if qr == nil {
 				continue
 			}
-			if p.shutdown.Load() {
-				p.releaseTotal(qr)
-				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
-				// Audit 2026-09-05 C-#2: complete the CURRENT request only was
-				// not enough — the rest of the Tier-0 buffer (capacity 1000)
-				// must be drained too, or those Submit callers hang until
-				// their ctx expires.
-				p.drainTotalQueueResidue()
-				return
-			}
-			// v6 G-Ⅱ (定时请求): a future DueAt parks the request back
-			// into the pending set (due heap) instead of executing it. The
-			// Tier-0 slot is released so scheduled backlog never consumes
-			// the waiting room; the promoter re-admits at the due time.
-			// minScheduleLead: a DueAt inside the lead window executes
-			// immediately — parking must leave enough room to finish the
-			// park-side metadata writes before the picker takes ownership.
-			if qr.DueAt.After(time.Now().Add(minScheduleLead)) {
-				if p.parkScheduledRequest(qr) {
-					p.releaseTotal(qr)
-					continue
-				}
-				// Scheduler unavailable (shutting down) → execute now.
-			}
-			if !p.enqueueModelFromTotal(queueKeyFor(qr.RequestedModel), qr) {
-				p.releaseTotal(qr)
-				if p.shutdown.Load() {
-					p.complete(qr, ForwardOutcome{Err: ErrShutdown})
-					p.drainTotalQueueResidue()
-					return
-				}
-				p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
-			} else {
-				p.releaseTotal(qr)
-			}
+			// C-#14 (audit round2): recover per item so a panic in the
+			// scheduling callbacks cannot kill the drainer goroutine; the
+			// take-once releases make the recovery sweep safe (same pattern
+			// as forwarder.attempt).
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						slog.Error("total drainer panic recovered",
+							"request_id", qr.ID, "panic", recovered)
+						p.releaseTotal(qr)
+						p.complete(qr, ForwardOutcome{
+							Err:       fmt.Errorf("total drainer panic: %v", recovered),
+							ErrorKind: "dispatch_panic",
+						})
+					}
+				}()
+				p.drainTotalOne(qr)
+			}()
 		case <-p.stopCh:
 			p.drainTotalQueueResidue()
 			return
 		}
+	}
+}
+
+// drainTotalOne processes one Tier-0 item (schedule park or model-lane
+// hand-off). Split from runTotalDrainer so the panic guard stays readable.
+func (p *Pipeline) drainTotalOne(qr *QueuedRequest) {
+	if p.shutdown.Load() {
+		p.releaseTotal(qr)
+		p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		// Audit 2026-09-05 C-#2: complete the CURRENT request only was
+		// not enough — the rest of the Tier-0 buffer (capacity 1000)
+		// must be drained too, or those Submit callers hang until
+		// their ctx expires.
+		p.drainTotalQueueResidue()
+		return
+	}
+	// v6 G-Ⅱ (定时请求): a future DueAt parks the request back
+	// into the pending set (due heap) instead of executing it. The
+	// Tier-0 slot is released so scheduled backlog never consumes
+	// the waiting room; the promoter re-admits at the due time.
+	// minScheduleLead: a DueAt inside the lead window executes
+	// immediately — parking must leave enough room to finish the
+	// park-side metadata writes before the picker takes ownership.
+	if qr.DueAt.After(time.Now().Add(minScheduleLead)) {
+		if p.parkScheduledRequest(qr) {
+			p.releaseTotal(qr)
+			return
+		}
+		// Scheduler unavailable (shutting down) → execute now.
+	}
+	if !p.enqueueModelFromTotal(queueKeyFor(qr.RequestedModel), qr) {
+		p.releaseTotal(qr)
+		if p.shutdown.Load() {
+			p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+			p.drainTotalQueueResidue()
+			return
+		}
+		p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+	} else {
+		p.releaseTotal(qr)
 	}
 }
 
@@ -1289,6 +1312,12 @@ const minScheduleLead = 100 * time.Millisecond
 // already have been sent — harmless: the request simply runs right away).
 func (p *Pipeline) parkScheduledRequest(qr *QueuedRequest) bool {
 	if p == nil || p.dueScheduler == nil || ctxOf(qr).Err() != nil {
+		return false
+	}
+	// Cancellation race guard (audit 2026-09-05 round2 C-#12): a terminal
+	// complete()/abandon in the caller's goroutine must not be followed by
+	// journal/registry/mirror writes for a request that already left.
+	if qr.completed.Load() || qr.abandoned.Load() {
 		return false
 	}
 	dueAt := qr.DueAt

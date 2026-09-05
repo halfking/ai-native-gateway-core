@@ -35,7 +35,23 @@ func (p *Pipeline) runDispatcher() {
 				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 				continue
 			}
-			p.dispatch(qr)
+			// C-#14 (audit round2): modelResolveFunc/routeFunc are complex
+			// cross-package callbacks; a panic here would kill the whole
+			// process. Recover, complete the qr, keep the worker alive
+			// (same pattern as forwarder.attempt).
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						slog.Error("dispatch worker panic recovered",
+							"request_id", qr.ID, "panic", recovered)
+						p.complete(qr, ForwardOutcome{
+							Err:       fmt.Errorf("dispatch panic: %v", recovered),
+							ErrorKind: "dispatch_panic",
+						})
+					}
+				}()
+				p.dispatch(qr)
+			}()
 		case <-p.stopCh:
 			p.shutdownDrainDispatchIn()
 			return
@@ -72,6 +88,15 @@ func (p *Pipeline) shutdownDrainDispatchIn() {
 // dispatch handles one request through model-resolution + credential selection.
 // Bounded retry on "credential queue full" to avoid spinning.
 func (p *Pipeline) dispatch(qr *QueuedRequest) {
+	// Cancellation race guard (audit 2026-09-05 round2 C-#12): while this item
+	// sat in dispatchIn, Submit's ctx.Done path may have CAS-won complete() and
+	// stamped the terminal journal entry in the caller's goroutine. Everything
+	// below (model resolve, routeFunc, recordDecision, enqueue) would then race
+	// the terminal writer on unsynchronized journal/counts fields and burn
+	// scheduling budget for a caller that already left. Mirrors move()'s guard.
+	if qr == nil || qr.completed.Load() || qr.abandoned.Load() {
+		return
+	}
 	// V3.1: Record T4 timestamp (model queue dequeued - start model resolution)
 	// Note: In current architecture, dispatchIn acts as the model queue.
 	// T3 (model enqueue) is set in runModelDrainer when feeding dispatchIn.

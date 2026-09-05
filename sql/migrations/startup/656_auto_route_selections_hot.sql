@@ -1,6 +1,8 @@
 -- Migration 656: auto_route_selections independent hot heap and all view.
 -- New selections land in the heap for low-latency settlement; historical rows
--- remain in the partitioned parent. Promotion is one atomic data-modifying CTE.
+-- remain in the partitioned parent. Promotion is one atomic data-modifying CTE
+-- that only drains settled rows past the retention window (7-day fallback for
+-- rows the settle worker never finished; 2026-09-05 audit H-4).
 \set ON_ERROR_STOP on
 BEGIN;
 
@@ -115,12 +117,21 @@ DECLARE moved bigint := 0; month_rec record;
 BEGIN
   IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN RAISE EXCEPTION 'p_retention must be positive'; END IF;
   IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN RAISE EXCEPTION 'p_batch_size must be between 1 and 50000'; END IF;
-  FOR month_rec IN SELECT DISTINCT date_trunc('month', partition_date)::date AS month_start FROM public.auto_route_selections_hot WHERE ts < statement_timestamp() - p_retention ORDER BY 1 LIMIT 12 LOOP
+  -- 2026-09-05 (audit H-4): only settled rows past the retention window are
+  -- eligible, plus a 7-day fallback so an unsettled row can never strand in
+  -- hot forever if the settle worker is down longer than the hot window.
+  -- The month pre-ensure loop must use the same predicate as the batch CTE.
+  FOR month_rec IN SELECT DISTINCT date_trunc('month', partition_date)::date AS month_start FROM public.auto_route_selections_hot
+    WHERE (settled_at IS NOT NULL AND ts < statement_timestamp() - p_retention)
+       OR ts < statement_timestamp() - interval '7 days'
+    ORDER BY 1 LIMIT 12 LOOP
     PERFORM public.ensure_auto_route_selections_partition(month_rec.month_start);
   END LOOP;
   WITH batch AS (
     SELECT id, partition_date FROM public.auto_route_selections_hot
-    WHERE ts < statement_timestamp() - p_retention ORDER BY ts, id LIMIT p_batch_size FOR UPDATE SKIP LOCKED
+    WHERE (settled_at IS NOT NULL AND ts < statement_timestamp() - p_retention)
+       OR ts < statement_timestamp() - interval '7 days'
+    ORDER BY ts, id LIMIT p_batch_size FOR UPDATE SKIP LOCKED
   ), moved_rows AS (
     DELETE FROM public.auto_route_selections_hot h USING batch b
     WHERE h.id = b.id AND h.partition_date = b.partition_date

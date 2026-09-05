@@ -42,4 +42,5 @@ export default {
   openAttachment: 'ダウンロード',
   retry: '再試行',
   openingAttachment: '開いています…',
+  openAttachmentFailed: '添付ファイルを開けませんでした',
 }

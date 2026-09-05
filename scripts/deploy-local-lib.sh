@@ -280,6 +280,38 @@ dl_sha256() {
   if _dl_have sha256sum; then sha256sum "$@"; elif _dl_have shasum; then shasum -a 256 "$@"; else _dl_die 'sha256sum or shasum is required'; fi
 }
 
+# Import .env.local keys that the calling environment left unset or empty.
+# Caller-provided values stay authoritative (CI and production wrappers
+# inject their own DSN), but gating the whole file on DATABASE_URL — the
+# behavior this replaces — also dropped LLM_GATEWAY_SECRET_KEY whenever a
+# deploy ran from a shell that had only the DSN exported: dl_write_env then
+# emitted an empty key, the gateway started unable to sign admin sessions,
+# every login returned "token generation failed", and previously issued
+# tokens stopped verifying (incident 2026-09-05: every local deploy launched
+# with DATABASE_URL preset). An empty caller value is treated as absent so
+# exported-but-blank defaults still pick up the project configuration.
+# Multi-line quoted values (PEM blocks in .env.local) survive because the
+# sourcing subshell hands its environment over as NUL-delimited `env -0`
+# records instead of line-parsed text.
+dl_load_project_env() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  local kv key val
+  while IFS= read -r -d '' kv; do
+    key="${kv%%=*}"
+    case "$key" in ''|*[!A-Za-z0-9_]*) continue ;; esac
+    val="$(printenv "$key" || true)"
+    if [[ -z "$val" ]]; then
+      export "$key=${kv#*=}"
+    fi
+  done < <(
+    # .env.local prints a friendly summary when sourced; suppress it so
+    # deploy diagnostics stay redacted and the env dump stays clean.
+    # shellcheck disable=SC1090
+    { source "$file" >/dev/null 2>&1; env -0; }
+  )
+}
+
 dl_write_env() {
   # docker --env-file consumes the file as KEY=value pairs without any shell
   # parsing. We avoid both %q-style backslash escapes and outer single

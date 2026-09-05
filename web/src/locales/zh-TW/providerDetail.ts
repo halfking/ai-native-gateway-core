@@ -239,6 +239,9 @@ export default {
     planTypeFailed: "設定 plan_type 失敗"
   },
   errorDetail: {
+    supplier: '供應商', errorCode: '錯誤碼', requestId: '請求 ID',
+    stage: '階段', retry: '重試', latency: '耗時',
+    openRequestTitle: '查看請求詳情',
     title: '供應商錯誤明細', selectCredential: '請先選擇憑證', windowTitle: '統計時間窗口',
     lastHour: '最近 1 小時', lastDay: '最近 24 小時', lastWeek: '最近 7 天', loading: '載入錯誤中…',
     loadFailed: '載入供應商錯誤失敗', credential: '憑證', health: '健康狀態', availability: '可用性', circuit: '熔斷狀態',

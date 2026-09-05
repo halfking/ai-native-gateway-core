@@ -331,7 +331,11 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"auto-route temporarily unavailable; pass an explicit model name and retry")
 			return
 		}
-		bodyBytes = newBody
+		// Flag-off auto returns (nil, nil, false): keep the original body
+		// instead of zeroing it (parity with the chat path nil guard).
+		if newBody != nil {
+			bodyBytes = newBody
+		}
 		attemptClientModel = reqBody.Model
 		if wire != nil {
 			writeAutoDecisionHeader(w, wire)

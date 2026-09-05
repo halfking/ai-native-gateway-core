@@ -4,6 +4,16 @@ import { useI18n } from 'vue-i18n'
 import type { RoutingAttempt } from '../api'
 import type { RequestJourneyEvent } from '../api/request-journeys'
 import { credentialDisplayName, loadCredentialLabels } from '../composables/useCredentialLabels'
+import {
+  attemptResultI18nKey,
+  errorKindBadgeClass,
+  errorKindI18nKey,
+  errorStageBadgeClass,
+  errorStageI18nKey,
+  rawVocabFallback,
+  retryableBadgeClass,
+  retryableI18nKey,
+} from '../utils/errorVocab'
 
 const props = defineProps<{
   summary?: string | null
@@ -14,52 +24,20 @@ const props = defineProps<{
 const { t, locale } = useI18n()
 
 // 2026-09-05 审计闭环8：凭据展示统一走 useCredentialLabels 的安全
-// 显示名（label 缺失时回退 "凭据 #id"，绝不回显密钥/原始 raw）。
+// 显示名（label 缺失时回退 i18n 化的 "凭据 #id"，绝不回显密钥/原始 raw）。
 loadCredentialLabels()
 
-const resultLabels: Record<string, string> = {
-  success: '成功',
-  canceled: '取消',
-  timeout: '超时',
-  model_not_found: '模型未找到',
-  rate_limit: '速率限制',
-  unauthorized: '未授权',
-  concurrent: '并发超限',
-  empty_response: '空响应',
-  stream_interrupted: '流中断',
-  error: '错误',
-}
-
-const errorKindLabels: Record<string, string> = {
-  transient: '瞬态错误',
-  timeout: '超时',
-  network: '网络错误',
-  rate_limit: '速率限制',
-  auth: '认证失败',
-  auth_revoked: '密钥已撤销',
-  quota: '配额限制',
-  upstream_down: '供应商不可用',
-  upstream_overloaded: '供应商过载',
-  model_not_found: '模型未找到',
-  context_length: '上下文超限',
-  content_filter: '内容审查拦截',
-  stream_timeout: '流超时',
-  canceled: '已取消',
-}
-
-const stageLabels: Record<string, string> = {
-  preflight: '预检',
-  connect: '连接',
-  upstream: '上游响应',
-  stream: '流式传输',
-}
+// 2026-09-05 审计 F2-#1/#2：error_kind / stage / result / retryable 词表
+// 统一消费 utils/errorVocab.ts（与 ErrorDetailTab.vue 同源），中文标签全部
+// 走 errorVocab.* 命名空间。
 
 const orderedJourneyEvents = computed(() =>
   [...(props.journeyEvents ?? [])].sort((a, b) => a.seq - b.seq),
 )
 
 function formatResult(result: string): string {
-  return resultLabels[result] || result.replace(/_/g, ' ')
+  const key = attemptResultI18nKey(result)
+  return key ? t(key) : rawVocabFallback(result)
 }
 
 function formatLatency(ms: number): string {
@@ -88,12 +66,14 @@ function eventDetails(event: RequestJourneyEvent): string[] {
   if (model) details.push(t('requestJourneys.detail.model', { model }))
   const provider = event.attempt?.provider || event.provider || event.attempt?.provider_id || event.provider_id
   if (provider) details.push(t('requestJourneys.detail.provider', { provider }))
+  // 审计 F2-#3：journey 事件路径的凭据 ID 也统一过 credentialDisplayName，
+  // 不再裸显数字 ID。
   const node = event.attempt?.credential_id || event.credential_id
-  if (node) details.push(t('requestJourneys.detail.node', { node }))
+  if (node) details.push(t('requestJourneys.detail.node', { node: credentialDisplayName(node) }))
   if (event.event_type === 'node_switched') {
     details.push(t('requestJourneys.detail.nodeSwitch', {
-      from: event.from_credential_id ?? '—',
-      to: event.to_credential_id ?? '—',
+      from: event.from_credential_id != null ? credentialDisplayName(event.from_credential_id) : '—',
+      to: event.to_credential_id != null ? credentialDisplayName(event.to_credential_id) : '—',
     }))
   }
   if (event.event_type === 'model_switched') {
@@ -102,7 +82,7 @@ function eventDetails(event: RequestJourneyEvent): string[] {
       to: event.to_model ?? '—',
     }))
   }
-  if (event.error_kind) details.push(t('requestJourneys.detail.error', { kind: event.error_kind }))
+  if (event.error_kind) details.push(t('requestJourneys.detail.error', { kind: formatErrorKind(event.error_kind) }))
   if (event.http_status) details.push(t('requestJourneys.detail.http', { status: event.http_status }))
   if (event.retry_reason) details.push(t('requestJourneys.detail.retry', { reason: event.retry_reason }))
   if (event.switch_reason) details.push(t('requestJourneys.detail.switchReason', { reason: event.switch_reason }))
@@ -122,26 +102,29 @@ function formatEventTime(value: string): string {
 
 // 结构化错误维度（审计闭环2/8）：优先展示低基数 error_kind /
 // retryable / stage 徽标，error_message 仅作为补充的自由文本。
+// 徽标文案与样式类同 ErrorDetailTab 一致（utils/errorVocab.ts 单一来源）。
 function formatErrorKind(kind?: string): string | null {
-  if (!kind) return null
-  return errorKindLabels[kind] || kind.replace(/_/g, ' ')
+  const key = errorKindI18nKey(kind)
+  if (key) return t(key)
+  return kind ? rawVocabFallback(kind) : null
 }
 
 function formatStage(stage?: string): string | null {
-  if (!stage) return null
-  return stageLabels[stage] || stage
+  const key = errorStageI18nKey(stage)
+  if (key) return t(key)
+  return stage ?? null
 }
 
 function formatRetryable(retryable?: boolean): string | null {
-  if (retryable === true) return '可重试'
-  if (retryable === false) return '不可重试'
-  return null
+  const key = retryableI18nKey(retryable)
+  return key ? t(key) : null
 }
 
 function credentialLabel(attempt: RoutingAttempt): string {
   const id = Number(attempt.credential_id)
   if (!Number.isFinite(id) || id <= 0) return '—'
-  return credentialDisplayName(id, '凭据')
+  // 默认前缀由 useCredentialLabels 按 i18n 解析（审计 F2-#3）。
+  return credentialDisplayName(id)
 }
 </script>
 
@@ -172,25 +155,25 @@ function credentialLabel(attempt: RoutingAttempt): string {
           <div class="attempt-marker" :class="resultClass(attempt.result)">{{ attempt.seq }}</div>
           <div class="attempt-card">
             <div class="attempt-header">
-              <strong>{{ attempt.provider_name || `供应商 ${attempt.provider_id}` }}</strong>
+              <strong>{{ attempt.provider_name || t('requestJourneys.attempts.provider', { id: attempt.provider_id }) }}</strong>
               <span class="attempt-result" :class="resultClass(attempt.result)">
                 {{ formatResult(attempt.result) }} · {{ formatLatency(attempt.latency_ms) }}
               </span>
             </div>
             <div class="attempt-meta">
-              <span>模型: {{ attempt.raw_model || '—' }}</span>
-              <span>凭据: {{ credentialLabel(attempt) }}</span>
+              <span>{{ t('requestJourneys.attempts.model', { value: attempt.raw_model || '—' }) }}</span>
+              <span>{{ t('requestJourneys.attempts.credential', { value: credentialLabel(attempt) }) }}</span>
               <span v-if="attempt.http_status">HTTP {{ attempt.http_status }}</span>
-              <span v-if="formatStage(attempt.stage)" class="attempt-badge">{{ formatStage(attempt.stage) }}</span>
-              <span v-if="formatErrorKind(attempt.error_kind)" class="attempt-badge">{{ formatErrorKind(attempt.error_kind) }}</span>
-              <span v-if="formatRetryable(attempt.retryable)" class="attempt-badge" :class="attempt.retryable ? 'badge-success' : 'badge-muted'">{{ formatRetryable(attempt.retryable) }}</span>
+              <span v-if="formatStage(attempt.stage)" class="attempt-badge" :class="errorStageBadgeClass(attempt.stage)">{{ formatStage(attempt.stage) }}</span>
+              <span v-if="formatErrorKind(attempt.error_kind)" class="attempt-badge" :class="errorKindBadgeClass(attempt.error_kind)">{{ formatErrorKind(attempt.error_kind) }}</span>
+              <span v-if="formatRetryable(attempt.retryable)" class="attempt-badge" :class="retryableBadgeClass(attempt.retryable)">{{ formatRetryable(attempt.retryable) }}</span>
             </div>
             <div v-if="attempt.error_message" class="attempt-error">{{ attempt.error_message }}</div>
             <code class="attempt-url">{{ attempt.upstream_url || '—' }}</code>
           </div>
         </article>
       </div>
-      <div v-else class="routing-empty">暂无路由回退尝试记录</div>
+      <div v-else class="routing-empty">{{ t('requestJourneys.attempts.empty') }}</div>
     </template>
   </section>
 </template>
@@ -237,6 +220,9 @@ function credentialLabel(attempt: RoutingAttempt): string {
 }
 .attempt-badge.badge-success { color: var(--success, var(--kx-color-success)); border-color: var(--success, var(--kx-color-success)); }
 .attempt-badge.badge-muted { color: var(--text-muted, var(--kx-text-secondary)); }
+/* 审计 F2-#2：与 ErrorDetailTab 共享同一套词表徽标 tone（utils/errorVocab.ts）。 */
+.attempt-badge.badge-orange { color: var(--warning, var(--kx-color-warning)); border-color: var(--warning, var(--kx-color-warning)); }
+.attempt-badge.badge-red { color: var(--danger, var(--kx-color-error)); border-color: var(--danger, var(--kx-color-error)); }
 .attempt-error { margin-top: 6px; font-size: 12px; word-break: break-word; }
 .attempt-url { display: block; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border, var(--kx-border-light)); color: var(--text-muted, var(--kx-text-secondary)); font-size: 11px; overflow-wrap: anywhere; }
 .journey-event-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }

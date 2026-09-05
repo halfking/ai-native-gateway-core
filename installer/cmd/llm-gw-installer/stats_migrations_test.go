@@ -68,6 +68,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"649_routing_analytics_probe_filter.sql":                           routingAnalyticsProbeFilterMigration649,
 		"650_auto_route_selection_treatment_attribution.sql":               autoRouteSelectionTreatmentAttributionMigration650,
 		"656_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration656,
+		"657_durable_llm_tasks_decision_history.sql":                       durableTasksDecisionHistoryMigration657,
 	}
 
 	for name, embedded := range expected {
