@@ -4823,11 +4823,22 @@ goalRetryLoopDone:
 				// fact that a client got an empty 200 only surfaced inside
 				// journal logs, which means an alert is set up days after
 				// the incident, not in time to act.
+				//
+				// 2026-09-05: candidates can legitimately be empty here
+				// ("all 0 candidates failed" — every credential for the
+				// model cooling/quota-exhausted); indexing candidates[0]
+				// panicked per request until the guard. Match the
+				// failureAttribution convention: no candidate, no attribution.
+				exhaustedProviderID, exhaustedCredentialID := "", ""
+				if len(candidates) > 0 {
+					exhaustedProviderID = strconv.Itoa(candidates[0].ProviderID)
+					exhaustedCredentialID = strconv.Itoa(candidates[0].CredentialID)
+				}
 				recordPrewarmedExhaustion(
 					string(execErrTyped.LastKind),
 					"model_not_found",
-					strconv.Itoa(candidates[0].ProviderID),
-					strconv.Itoa(candidates[0].CredentialID),
+					exhaustedProviderID,
+					exhaustedCredentialID,
 					clientModel,
 				)
 				writePrewarmedStreamErrorWithKind(w,
