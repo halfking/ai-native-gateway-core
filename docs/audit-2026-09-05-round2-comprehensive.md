@@ -55,10 +55,10 @@
 
 | # | 级别 | 修复 | 文件 |
 |---|------|------|------|
-| 14 | **P1**（D-2#1） | supplier_errors_hot 补注册后台 promoteSpecs 调度 + 注册表漂移守卫测试（hot 8h 不变式对该表重新生效） | bg/partition_manager.go + 测试 |
+| 14 | **P1**（D-2#1） | supplier_errors_hot 补注册后台 promoteSpecs 调度 + 注册表漂移守卫测试（bg 侧测试直接解析 admin 源文件双向断言 fnName 集合相等，规避 import 环；hot 8h 不变式对该表重新生效） | bg/partition_manager.go + 测试 |
 | 15 | **P1**（D-2#2） | V371 promote 函数从「temp+块外 DELETE+EXCEPTION 吞错」非原子模式（602 事故同款）改写为 656 模板单 CTE（显式列 + FOR UPDATE SKIP LOCKED） | deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql |
-| 16 | **P1**（E-#1） | V371 两个 RLS policy 补 `OR current_setting('app.bypass_rls',true)='true'` 旁路（对齐 V367）——修复非 superuser 应用角色下事实源写入/聚合/读端全链 42501 或恒空 | 同上 |
-| 17 | **P1**（G-#7/D-2#3） | 657 迁移孤儿修复：installer embeddata 嵌入 + main.go 登记 + stats_migrations_test expected map——闭环3 的 decision_history 在 installer 装机上真正生效 | installer/cmd/llm-gw-installer/* |
+| 16 | **P1**（E-#1） | V371 RLS policy 补 `OR current_setting('app.bypass_rls',true)='true'` 旁路（对齐 V367）——hot 表与**父表**（promote 以应用角色写父表、unified 视图 security_invoker 扫父表）两处；stats 表本为 `USING(true)` 全放行无需处理。已用非属主角色探针实测：无 GUC 时 INSERT 报 42501，SET bypass 后成功 | deploy/sql/migrations/V371__*.sql |
+| 17 | **P1**（G-#7/D-2#3） | 657 迁移孤儿修复：installer embeddata 嵌入 + main.go 三处登记 + **dbinit/runner.go StartupFiles 第四处**（漏掉则 SQL 被拷贝但永不执行）+ stats_migrations_test/runner_test 同步——闭环3 的 decision_history 在 installer 装机上真正生效 | installer/cmd/llm-gw-installer/* |
 | 18 | P2（D-2#4/H-2） | db.go 补 ensureAutoRouteSelectionsHotSchema（幂等建表+索引+视图）——只升二进制的存量库不再整批丢弃 selection | db/db.go |
 | 19 | P2（H-3/H-4） | promote 窗口下限（auto_route_selections_hot ≥5h 钳制）+ 批选条件改「settled 或 7d 兜底」——settle/promote 时序约束不再只靠默认值 | bg/partition_manager.go、sql/migrations/startup/656_*.sql + 测试 |
 | 20 | P2（D-2#5/E-#8） | supplier_error_stats 补 TTL cleanup（minute 桶）+ 聚合器水位推进（失败不推进自然重算，迟到行补聚） | bg/partition_manager.go、supplier_error_stats_aggregator.go |
@@ -78,16 +78,25 @@
 
 ```
 go build ./...                                          → exit 0
-go test ./internal/ir/ ./errorsx/ ./storage/... -count=1 → ok（含 5 组新回归）
+go test ./internal/ir/ ./errorsx/ ./storage/... -count=1 → ok（含 6 组新回归）
 go test ./domains/dispatch/ -count=1                    → ok（25s）
 go test ./domains/dispatch/ -race -count=1              → ok（33s）
 go test ./domains/streaming/... -count=1                → ok
-go test ./bg ./db ./installer/... -count=1              → ok（SQL 子代理）
+go test ./bg ./db -count=1                              → ok（SQL 子代理；含水位/注册漂移/ensure 新测试）
+go test ./installer/... -count=1（模块内）               → ok
+go test ./deploy/sql/verify/（kx-citus-pg17 真实容器）    → 7 组全 PASS：V371 原子 CTE + bypass policy 干净应用、
+                                                          8h 保留+批次上限、columnar 不可变、unified+RLS、
+                                                          UPSERT 幂等、迁移重放幂等；非属主角色 RLS 探针通过
+更新后 656 在本地 llm-gateway-pg 幂等重放 + hot 行为脚本 9 项全过
 web: npx vue-tsc --noEmit                                → 0 错误
-web: vitest i18n parity + CJK 棘轮 + 组件测试            → 全绿（SQL/FE 子代理）
+web: npx vitest run（全量）                              → 112 文件 / 792 用例全绿（连续两次）
+web: vitest src/i18n/                                    → parity 6 + CJK 棘轮 2 + keys_referenced 4 全绿，
+                                                          CJK 计数 6877→6836（基线更新，净降 41）
 ```
 
 （子代理详细验证输出见各分轴报告与提交信息）
+
+遗留提示：本地 llm-gateway-pg 已重放新 656，但 **V371 的新函数体/RLS bypass 尚未重放到该库**，需统一部署时执行（deploy-154 / pg-schema-sync 流程）。
 
 ## 五、已记录未修（下轮工作包候选）
 

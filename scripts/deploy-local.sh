@@ -38,6 +38,13 @@ fi
 # (every login returned "token generation failed") and previously issued
 # tokens stopped verifying (incident 2026-09-05, all 2.5.0.x local deploys).
 dl_load_project_env "$PROJECT_ROOT/.env.local"
+# Second normalization pass: when the caller had no DSN at all, the import
+# above is what sets LLM_GATEWAY_DATABASE_URL — fill the DATABASE_URL compat
+# alias from it (the first pass ran before the import and saw both empty).
+# Idempotent: with a caller-provided DSN both passes are no-ops.
+if [[ -z "${DATABASE_URL:-}" && -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
+  export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+fi
 if [[ "$DL_DATABASE_CONFIG_SOURCE" == "none" && -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
   DL_DATABASE_CONFIG_SOURCE=project-env
 fi

@@ -47,8 +47,8 @@ multi-line-value-must-survive
 EOF
 
 # 在接近干净的环境中执行一段加载逻辑，模拟不同调用方 shell。
-# 顺序镜像 deploy-local.sh：先做 DSN 归一化（caller DSN 占住规范键），
-# 再调用 dl_load_project_env 导入 .env.local。
+# 顺序镜像 deploy-local.sh：先 DSN 归一化（caller DSN 占住规范键），
+# 再 dl_load_project_env 导入，最后再做一次归一化回填 DATABASE_URL 别名。
 run_loader() {
     local caller_env="$1"
     env -i HOME="$HOME" PATH="$PATH" $caller_env /bin/bash -c '
@@ -61,8 +61,12 @@ run_loader() {
             export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
         fi
         dl_load_project_env "$2"
-        printf "dsn=%s|secret=%s" \
+        if [[ -z "${DATABASE_URL:-}" && -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
+            export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+        fi
+        printf "dsn=%s|alias=%s|secret=%s" \
             "${LLM_GATEWAY_DATABASE_URL:-}" \
+            "${DATABASE_URL:-}" \
             "${LLM_GATEWAY_SECRET_KEY:-}"
     ' _ "$LIB" "$TMPDIR_TEST/env.local"
 }
@@ -80,12 +84,12 @@ else
 fi
 
 echo ""
-echo "✅ 测试 2: 调用方完全干净时，文件中的键全部导入"
+echo "✅ 测试 2: 调用方完全干净时，文件中的键全部导入，且 DSN 兼容别名被回填"
 out="$(run_loader '')"
-if [[ "$out" == "dsn=postgres://fileuser:filepass@127.0.0.1:5432/filedb|secret=$SECRET" ]]; then
-    report "干净 shell 导入全部键" 0
+if [[ "$out" == "dsn=postgres://fileuser:filepass@127.0.0.1:5432/filedb|alias=postgres://fileuser:filepass@127.0.0.1:5432/filedb|secret=$SECRET" ]]; then
+    report "干净 shell 导入全部键 + DATABASE_URL 回填" 0
 else
-    report "干净 shell 导入全部键 —— got: $out" 1
+    report "干净 shell 导入全部键 + DATABASE_URL 回填 —— got: $out" 1
 fi
 
 echo ""

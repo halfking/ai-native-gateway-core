@@ -231,7 +231,8 @@ onBeforeUnmount(() => {
       <el-tab-pane :label="t('turnDigest.tabs.attachments')" name="attachments">
         <el-empty v-if="!detail?.attachments?.length" :description="t('turnDigest.noAttachments')" />
         <template v-else>
-          <!-- 审计 F2-#10：附件级失败用行内提示，不接管整个抽屉的错误态。 -->
+          <!-- Audit F2-#10: attachment failures render inline (scoped hint),
+               they must not take over the whole drawer error state. -->
           <p v-if="attachmentError" class="tdd-attachment-error" role="status" data-testid="tdd-attachment-error">
             {{ attachmentError }}
           </p>
