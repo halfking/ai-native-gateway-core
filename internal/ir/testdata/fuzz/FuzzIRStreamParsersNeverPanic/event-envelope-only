@@ -1,0 +1,2 @@
+go test fuzz v1
+string("event: content_block_delta\ndata: {}\n\n")

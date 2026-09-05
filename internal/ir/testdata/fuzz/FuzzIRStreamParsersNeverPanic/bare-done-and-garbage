@@ -1,0 +1,2 @@
+go test fuzz v1
+string("[DONE]\n\x00\x01\x02\ndata: \n\nDATA: not json")

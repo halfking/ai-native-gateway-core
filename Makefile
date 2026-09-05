@@ -53,6 +53,25 @@ vet-core: ## 核心 IR/调度/流式包的 go vet 检查
 bench-core: ## 核心 IR/调度/流式包的 benchmark（不运行普通测试）
 	$(GO) test $(CORE_GO_PACKAGES) -run '^$$' -bench . -benchmem -count=1 -timeout=600s
 
+# fuzz 失败样本回归流程（见 scripts/fuzz/README.md）
+FUZZTIME ?= 5s
+
+.PHONY: fuzz-smoke
+fuzz-smoke: ## 对全部 IR fuzz 目标限时运行（FUZZTIME=5s 可调）
+	bash scripts/fuzz/fuzz-regress.sh run $(FUZZTIME)
+
+.PHONY: fuzz-corpus-lint
+fuzz-corpus-lint: ## 对已入库 fuzz 语料做脱敏门禁
+	bash scripts/fuzz/sanitize_corpus.sh --all
+
+.PHONY: bench-baseline
+bench-baseline: ## 运行 bench-core 并更新基线文件（docs/perf/bench-baseline.txt）
+	bash scripts/perf/bench_compare.sh --update
+
+.PHONY: bench-check
+bench-check: ## 对照基线检查 benchmark 回归（阈值见 scripts/perf/README.md）
+	bash scripts/perf/bench_compare.sh --check
+
 .PHONY: integrity-smoke
 integrity-smoke: ## model integrity + durable queue planner smoke (requires PG*)
 	bash scripts/integrity_smoke_test.sh
