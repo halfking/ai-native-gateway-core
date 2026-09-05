@@ -49,10 +49,11 @@ bump-version（seq+1）→ 构建后端（CGO_ENABLED=0 GOOS=linux，注意 §3.
 - `auto_route_selections`：父表（含 650 的 4 个实验列）+ `_hot` heap + default/月分区 + ensure/promote 函数 + `auto_route_selections_all` 视图。
 - 路由分析 MV：`routing_analytics_7d`/`routing_audit_summary_7d`，源为窄视图 `routing_analytics_source`（db.go `routingAnalyticsMVSQL`；`sql/migrations/startup/up/632_*.sql` 仅是 DBA 镜像，见 §3.4）。
 
-### 2.5 健康态基线（回归参照，2026-09-05 06:49 CST 后）
-- PG 日志：**不应再出现**本项目相关 ERROR（§1 表中 4 类）；允许残留 §1 末段所列其他应用噪音。
+### 2.5 健康态基线（回归参照，2026-09-05 06:49 CST 后；16:02 起随 4cbcee0a 构建恢复并加强）
+> **⚠️ 2026-09-05 16:00 补记：PG 容器 09-05 00:17 重启后 stderr 不再进入 docker logs**（可用日志止于 09-04 16:04 CST，只读探针 `SELECT 1/0` 实测证实，详见外部噪音报告 §1.1）。下述第 1 条 PG 侧体检命令当前**失明不可用**，健康验证以第 2、3 条（网关侧日志 + 水印）为准；日志管道修复（需重建 PG 容器，本次受约束未执行）是 DBA 待办。
+- PG 日志（经网关侧观察等效）：**不应再出现**本项目相关 ERROR（§1 表中 4 类）；允许残留 §1 末段所列其他应用噪音。
 - `provider_error_aggregator_state.last_source_id` 随每 tick（默认 10min）单调前进；`provider_error_details.updated_at` 持续刷新。
-- partition_manager / MV refresher / 启动迁移：零 ERROR（`node_probe_worker "not eligible"` 为既有业务提示，见 §5 P1）。
+- partition_manager / MV refresher / 启动迁移：零 ERROR（node_probe "not eligible" 已于 16:02 起 4cbcee0a 构建根治，见 §6）。
 - 快速体检命令：
 ```bash
 docker logs llm-gateway-pg --since 30m 2>&1 | grep ERROR | sort | uniq -c
@@ -87,10 +88,24 @@ M  VERSION / version.json / web/public/version.json / web/public/menu-config.jso
 
 ---
 
-## 5. 下一阶段待执行事项（按优先级）
-- **P0 提交入库**：§4 变更 review 后 commit（建议拆两个 commit：修复主体 + 版本/部署副产物，或合一并注明）。
-- **P1 迁移补齐审计**：逐个核对 647/649/651/652/653/654 —— 是否已有等价 Go ensure（如 655 之于 db.go）？无则评估幂等性后加入修复序列；同步消除 §3.4 的 632 镜像旱雷（改写 SQL 文件与 db.go 对齐或在文件头声明只读告警）。
-- **P1 node_probe_worker 降噪**：`"automatic probe task is not eligible"` 每次启动刷 ~75 条 ERROR。入队前先做资格预检，或降级 WARN + 去重。
-- **P2 跨应用日志噪音清单化**：对 §1 末段所列其他应用错误产出归属报告（库/表/来源应用/建议）；仅当对应仓库本地可得且明确授权时才修改对方代码，否则只交付报告。
-- **P2 `canceling statement due to user request` 归因**：抓取带 STATEMENT 的样本定位来源（本项目 statement_timeout vs 其他应用）。
-- **P3 观测与防回归加固**：a) PG 日志 ERROR 归属监控（脚本或 Prometheus 指标：按错误类别打标 project/external）；b) 防回归测试：聚合器 SQL 禁止引用视图合成列、全仓静态扫描“`[]byte` 直接作为 jsonb 列参数”。
+## 5. 下一阶段待执行事项（按优先级）——**2026-09-05 下午第二阶段已全部完成**，勾销如下
+- ~~**P0 提交入库**~~ ✅ 已提交：`3344f3f17`（修复主体）+ `6f61d68c2`（版本副产物）；后续 `dc3c43015`（迁移补齐+node_probe 降噪，A/B 子代理产出）与 `5731a585`（jsonb 静态扫描修复 10 处，D 子代理产出）均已推上 origin/main。
+- ~~**P1 迁移补齐审计**~~ ✅ 结论：647/649 有 Go 等价（`ensureGoalClientSignalSchema` / `ensureRoutingAnalyticsMaterializedViews`+fast-path 重建），不入序列；651/652/653/654 无等价且幂等，已入修复序列并于 15:45 部署时在存量库**首次补跑成功**（`gateway_db_revision_sequences` 按文件标记齐全）；632 已重写为与 `routingAnalyticsMVSQL` 对齐的可重放版本（走 `routing_analytics_source`）。
+- ~~**P1 node_probe_worker 降噪**~~ ✅ 双管齐下：pump 候选 SQL 内联资格预筛（不合格行不再被选出）+ 确定性 gate 拒绝不消耗重试（单条 Info + `skipped_*` 指标）。16:02 起 4cbcee0a 构建上线，刷屏归零。
+- ~~**P2 跨应用日志噪音清单化**~~ ✅ 交付 `docs/2026-09-05-external-pg-noise-attribution.md`（8 类归属 + canceling statement 专节：553 条全部为本网关自身查询被客户端取消，主因 admin 节点矩阵查询 1500ms 预算，见其 §3.3 建议）。
+- ~~**P2 `canceling statement due to user request` 归因**~~ ✅ 并入上条报告 §3。
+- ~~**P3 观测与防回归加固**~~ ✅ a) `scripts/monitoring/pg-error-classifier.sh`（project/external/unknown 三类打标 + TSV/JSONL + 退出码 2 告警；**注意：PG docker logs 修复前该脚本无输入可分类**，已在历史窗口实测验证）；b) 契约测试新增禁止聚合 SQL 引用视图合成列 `source`（保留 `NULL::text AS source` 占位）；c) `internal/dbx/jsonb_param_static_test.go` 全仓静态扫描 []byte→jsonb（934 文件 0 违例，行注释 `// dbx:jsonb-safe` 可豁免），并修复扫出的 10 处真实违例。
+
+## 6. 第二阶段补记（2026-09-05 下午，环境事实更新）
+
+### 6.1 镜像回退事故与多副本部署竞争（重要环境事实）
+- 本仓库（syncfield/llm-gateway-go-2）**不是唯一构建部署源**：至少存在另一工作副本从 origin 拉代码构建并部署同一容器 `llm-gateway-local-8782`，双方共享 `~/kaixuan/llm-gateway-go/bin/` 发布目录与版本序号空间，且各自 bump（出现过 2.4.7.1940/1942/1944 与 2.5.0.1941/1942 并行的双版本线）。
+- 06:49 验证通过的修复版 2.5.0.1940 在 5 分钟内（06:54）被另一副本构建的 **2.4.7.1940（不含修复，二进制无 `provider_error_agg_src` 标记）** 顶替，导致聚合器 XX000 每 10min 失败持续约 9h、水印停在 16483。15:45 本阶段主代理部署 2.5.0.1941（git 5731a585）恢复；15:53、16:02 对方流水线又两度重建，16:02 起 `2.5.0.1942`（git 4cbcee0a，origin/main 已含本阶段全部提交）为当前运行版本，**全部修复生效**。
+- **教训**：排查"修复为何复发"先 `docker inspect .Config.Image` + `strings 容器内 /opt/llm-gateway-go/gateway` 验二进制标记，再查代码；`/version` 的 git_sha 是判定运行版本的事实源。
+
+### 6.2 新发现的待办（非本阶段范围，按优先级）
+1. **PG 容器日志管道断裂**（P1，DBA）：09-05 00:17 重启后 stderr 不再进 docker logs。需重建容器验证（本次受"不重启 llm-gateway-pg"约束未执行）；修复前 `pg-error-classifier.sh` 与 §2.5 第 1 条体检命令无输入。
+2. **`supplier_error_stats` 缺表**（P1，闭环1 遗留）：`bg/supplier_error_stats_aggregator.go` 每 10min rollup 失败（42P01，WARN 级有 fallback），全仓无该表 ensure/迁移——与 647-654 同类的"迁移缺口"，趋势 API（/api/errors/trend）读源为空。
+3. **telemetry 数字溢出**（P2）：`telemetry request db persist failed — numeric field overflow (SQLSTATE 22003)`，WARN 有 fallback，telemetry 列精度需加宽。
+4. **admin 节点矩阵查询 1500ms 预算不足**（P2）：canceling 噪音主因，见外部噪音报告 §3.3（加索引/降采样/放宽预算三选一）。
+5. `bin/current` 符号链接与运行容器可能不一致（双流水线竞争，16:02 时指向 2.4.7.1942 而容器跑 2.5.0.1942）——排查时以容器为准。
