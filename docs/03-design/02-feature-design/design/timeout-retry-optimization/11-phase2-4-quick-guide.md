@@ -354,7 +354,7 @@ func (cd *ContinuationDetector) GetCachedResponse(sessionID string) (*CachedResp
 #!/bin/bash
 # scripts/verify-phase0.sh
 
-PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg' psql -h 172.16.2.210 -U llm_gateway -d llm_gateway <<'EOF'
+PGPASSWORD='***REDACTED***' psql -h 172.16.2.210 -U llm_gateway -d llm_gateway <<'EOF'
 SELECT 
     '=== Phase 0 验证 ===' as section;
 
@@ -377,7 +377,7 @@ EOF
 #!/bin/bash
 # scripts/verify-phase2.sh
 
-PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg' psql -h 172.16.2.210 -U llm_gateway -d llm_gateway <<'EOF'
+PGPASSWORD='***REDACTED***' psql -h 172.16.2.210 -U llm_gateway -d llm_gateway <<'EOF'
 SELECT 
     '=== Phase 2 验证 ===' as section;
 

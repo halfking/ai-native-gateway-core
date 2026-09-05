@@ -37,7 +37,7 @@
 从 154 网关进程环境变量获取到 DSN：
 ```bash
 # /proc/22787/environ
-LLM_GATEWAY_DATABASE_URL=postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable
+LLM_GATEWAY_DATABASE_URL=postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disable
 ```
 
 **发现**：数据库不在 154 本机，而是内网 172.16.2.210（可能是专用 DB 节点或 252 的内网 IP）。

@@ -244,7 +244,7 @@ with PG statement logging enabled) as a next step. Findings:
   `Environment=LLM_GATEWAY_USE_NEW_PROBE_MODE=false`,
   `TimeoutStopSec` unset (defaults to 90s).
 - PG DSN in `/opt/llm-gateway-go/.env`:
-  `postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway`
+  `postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway`
   — PG is on a remote host (172.16.2.210, NOT local on 245 or 154).
 
 ### 10.2 PG side

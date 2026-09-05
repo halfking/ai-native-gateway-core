@@ -229,7 +229,7 @@ ssh -p 25022 root@47.97.111.154
 
 ### 数据库
 ```bash
-export PGPASSWORD='4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg'
+export PGPASSWORD='***REDACTED***'
 psql -h 172.16.2.210 -U llm_gateway -d llm_gateway
 ```
 
