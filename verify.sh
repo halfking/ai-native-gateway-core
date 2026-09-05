@@ -40,6 +40,9 @@ echo "[verify] migration checksums (sql/migrations/startup vs docs/db-changelog.
 echo "[verify] full Go tests"
 go test ./... -count=1 -timeout=300s
 
+echo "[verify] privacy compliance tests"
+./scripts/verify-privacy-compliance.sh
+
 echo "[verify] Go vet"
 go vet ./...
 
