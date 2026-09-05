@@ -73,8 +73,15 @@ var (
 	//   - outcome=success   — task inserted into credential_probe_queue
 	//   - outcome=duplicate — peer or earlier attempt already enqueued
 	//                          the same dedup_key (normal, not a failure)
-	//   - outcome=failed    — all retries exhausted; row of node_probe_state
-	//                          now carries last_err_code=queue_submit_failed
+	//   - outcome=skipped_ineligible / skipped_out_of_scope — deterministic
+	//                          gate rejection (2026-09-05 noise-reduction):
+	//                          logged once at Info, never retried,
+	//                          node_probe_state left untouched (disabled
+	//                          credential/provider is config state, not a
+	//                          queue_submit_failed infrastructure failure)
+	//   - outcome=failed    — all retries exhausted on a transient error;
+	//                          row of node_probe_state now carries
+	//                          last_err_code=queue_submit_failed
 	//
 	// Operators should alert on sustained rate(failed) > 0 because that
 	// means the durable probe queue is not draining requests that came

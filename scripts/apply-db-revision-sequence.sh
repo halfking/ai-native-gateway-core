@@ -62,6 +62,23 @@ psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (seq
 # adds the treatment-attribution columns that 656's promote/ensure functions
 # and all-view require on the parent; 656 creates the auto_route_selections
 # hot heap (no db.go ensure covers it).
+#
+# 2026-09-05 migration-completion audit (P1): 651/652/653/654 had no Go
+# ensure equivalent in db/db.go and were not covered by any track on
+# upgraded deployments (only the installer's fresh-install path ran them,
+# installer/internal/dbinit/runner.go). 647 and 649 do have Go equivalents
+# (db.ensureGoalClientSignalSchema at db/db.go:350 and
+# db.ensureRoutingAnalyticsMaterializedViews + routingAnalyticsMVSQL at
+# db/db.go:1081/937 respectively), so they stay out of this list.
+# 651 (request_logs_hot contract columns + minute-aggregator index),
+# 652 (system_monitor_fallback_queue table) and 653/654
+# (archive_credential_model_index canonical tuple + DETACH/DROP rewrite)
+# are mutually independent of the session_summaries/auto_route_selections
+# chain above, so they append safely after 656. 653 precedes 654 because
+# 654 supersedes 653's DELETE-based function body with the columnar-safe
+# DETACH PARTITION + DROP path (matching the installer's runner order);
+# all four are idempotent (IF NOT EXISTS / DROP FUNCTION IF EXISTS +
+# CREATE OR REPLACE).
 files=(
   "$ROOT_DIR/sql/migrations/startup/655_session_summaries_schema_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/560_session_summaries_tenant_uniqueness.sql"
@@ -73,6 +90,10 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/645_session_bodies_hot_request_unique_repair.sql"
   "$ROOT_DIR/sql/migrations/startup/650_auto_route_selection_treatment_attribution.sql"
   "$ROOT_DIR/sql/migrations/startup/656_auto_route_selections_hot.sql"
+  "$ROOT_DIR/sql/migrations/startup/651_provider_quality_hot_rollup.sql"
+  "$ROOT_DIR/sql/migrations/startup/652_system_monitor_fallback_queue.sql"
+  "$ROOT_DIR/sql/migrations/startup/653_archive_credential_model_index_canonical_return.sql"
+  "$ROOT_DIR/sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql"
 )
 for file in "${files[@]}"; do
   [[ -f "$file" ]] || { printf 'error: missing migration %s\n' "$file" >&2; exit 4; }
