@@ -243,3 +243,115 @@ exit code 0
 2. 为 benchmark 建立固定样本、历史结果和允许回归阈值。
 3. 在可观测性变更前先确认 core-quality CI 稳定运行若干轮。
 4. 完成容量/保留策略基线后，再开始 URSM v2 shadow/canary 迁移；本轮不改变路由权威模式。
+
+## 后续工作包交付（2026-09-05 第二批）
+
+上述第 1、2、4 项已在本批落地，第 3 项为纯观察项（见下）。
+
+### 1. fuzz 失败样本回归流程（已交付）
+
+组成：
+
+- `scripts/fuzz/fuzz-regress.sh` —— 驱动脚本。`run [fuzztime]` 对全部已登记 fuzz 目标限时运行；
+  失败时定位 Go fuzz 引擎自动最小化后的崩溃样本并做脱敏检查，打印入库命令。
+  `install <样本> <目标>` 经脱敏检查后把样本固化为 `internal/ir/testdata/fuzz/<目标>/` 回归语料，
+  并当场执行 `go test` 验证回归生效。
+- `scripts/fuzz/sanitize_corpus.sh` —— 脱敏门禁。扫描语料中的密钥/令牌/邮箱/内网 IP 等
+  结构特征（只输出截断片段，避免日志二次泄漏）；命中退出 1。误报走
+  `scripts/fuzz/allowlist.txt` 文件级放行（默认为空）。
+- `internal/ir/testdata/fuzz/` —— 14 个脱敏边界种子语料（深嵌套、数值溢出、类型混淆、
+  非法 UTF-8、重复键、CRLF/裸 DONE、未知事件类型等，全部合成数据）。
+  普通 `go test ./internal/ir` 即会执行，崩溃样本入库后自动成为永久回归用例。
+- Makefile：`make fuzz-smoke`（FUZZTIME 可调）、`make fuzz-corpus-lint`。
+- CI：core-quality job 在 fuzz smoke 前新增 `fuzz-corpus-lint` 步骤。
+
+约定：样本最小化由 `go test -fuzz` 内置完成，本流程不重复实现；`SKIP_SANITIZE=1`
+仅限本地调试。详见 `scripts/fuzz/README.md`。
+
+### 2. benchmark 基线与回归阈值（已交付）
+
+组成：
+
+- `docs/perf/bench-baseline.txt` —— 基线文件（含生成环境与 git 提交头），由
+  `make bench-baseline` 生成并人工提交。
+- `scripts/perf/bench_compare.sh` + `bench_compare.py` —— 运行核心包 benchmark 并解析；
+  `--check` 对照基线逐项比较，原始输出归档 `docs/perf/bench-history/`（已 gitignore，不入仓）。
+- 阈值：allocs/op 超过 +2% 且绝对差 ≥1 判回归；B/op +10%；ns/op +15%（默认），
+  可用 `scripts/perf/bench_thresholds.txt` 按基准名覆盖。ns/op 与 allocs/B 同超时按
+  allocs 优先报告。环境（go 版本/os/arch）与基线不一致时 allocs/B 回归仍拦截，
+  ns/op 回归降级 WARN——ns/op 跨机器不可比。
+- Makefile：`make bench-baseline`、`make bench-check`（BENCH_COUNT 可调，多次运行取 ns/op 最小值）。
+
+本轮基线以 12 项核心 benchmark 建档（较首轮报告新增 QueueProjectionSnapshot 等 4 项，
+因 bench-core 的包范围覆盖 `domains/dispatch` 与 `domains/streaming/...` 全部 benchmark）。
+首轮 8 项代表性数值与基线文件一致量级。详见 `scripts/perf/README.md`。
+
+### 3. core-quality CI 稳定性确认（观察项，未关闭）
+
+本仓库托管在私有 git 主机，本机 `gh` 不可用，无法代查运行历史。判定标准：
+core-quality job 连续若干轮 PR 通过（含本批新增的 corpus-lint 步骤）后，方可启动
+可观测性变更。本批未改动既有 CI 步骤语义。
+
+### 4. 容量/保留策略基线采集工具包（已交付，待实采）
+
+- `scripts/capacity-baseline/` —— 01 表与分区尺寸全景 / 02 分区家族保留覆盖 /
+  03 增长速率估计（archive 月度分区尺寸序列），`run.sh` 汇总输出带时间戳报告
+  （宿主机无 psql 时自动回退本地容器 `llm-gateway-pg`，或 `FORCE_PG_CONTAINER=1` 强制）。
+- 三个查询已在本地开发库实测通过；只读目录查询（pg_class/pg_inherits/pg_stat），无锁风险。
+- 本地实采首个信号：`ursm_node_snapshot_min` 已 6.6 GB（13.5M 行），是 URSM v2
+  容量门禁的首要观察对象。
+- 采集后按 `scripts/capacity-baseline/README.md` 模板整理为
+  `docs/perf/capacity-retention-baseline-<日期>.md` 提交，其"风险判定"结论即
+  URSM v2 shadow/canary 的前置门禁。生产/目标环境实采超出本批范围。
+
+#### 2026-09-05 第三批：本地开发库实采完成，门禁结论已产出
+
+- 完整实采报告：`docs/perf/capacity-retention-baseline-2026-09-05.md`
+  （原始输出已 gitignore；补用了表内时间跨度 + 精确 COUNT 推算增长斜率——
+  开发库无 archive 分区序列且 pg_stat 计数器近期被重置，03 号查询两个视角均不可用）。
+- **门禁结论：有条件通过。** URSM v2 停留 shadow（本地实测 `URSM_V2_MODE=shadow`
+  且 double-write 未开 → persist writer 禁用、不落盘）；进入 canary/authoritative 前
+  必须先给 `ursm_node_snapshot_min`（13.72M 行 / 6.6 GB / 占库 36%，唯一入口
+  `persist/writer.go` 仅 INSERT 无清理，148 MB/天）建立保留或分区机制，
+  并同批处理第二个无界增长表 `request_stage_events`（+60 MB/天）。
+- 顺带实测确认：`HOT_CRON_*` 默认值与库内热窗口精确吻合（request_logs_hot 恰 8 小时）；
+  `request_logs` 主表 / `stats_event_inbox` / `usage_facts` 均只有 default 分区、无月度滚动。
+- 生产/目标环境实采仍待具备凭据后执行，基线报告已附可复用查询。
+
+### 2026-09-05 第三批续：容量门禁项 1/2 整改交付（保留 cron 方案）
+
+按基线报告 §5 门禁结论，两张无界增长表的保留机制已代码交付（不改动 schema）：
+
+- `domains/ursm/v2/persist/retention.go`（`SnapshotRetentionWorker`，
+  `URSM_SNAPSHOT_RETENTION_DAYS` 默认 30）与
+  `internal/trace/stage_events_retention.go`（`StageEventsRetentionWorker`，
+  `STAGE_EVENTS_RETENTION_DAYS` 默认 7）：均为 1h tick、批 5000、每批独立事务、
+  单轮墙钟上限 10 分钟，显式设 0/负禁用；模仿 `requestjourney.RetentionWorker`
+  的接口解耦与幂等 Start/Stop 语义，两表均无 RLS 故无需 bypass_rls。
+- `cmd/gateway/main.go` 接线：snapshot 保留独立于 URSM v2 mode / persist writer
+  启用状态（shadow 未开 double-write 时的历史残留同样回收）；stage events 保留
+  与 journeyRetentionWorker 同点接线；shutdown 区统一 Stop。
+- 验证：`go build ./...` OK；两包单测与 `-race` 通过；`go vet` 三包干净；
+  `go test ./cmd/gateway` 通过；批量 DELETE 在开发库回滚事务内实测走索引
+  （ursm 5000 行 196 ms、stage events 5000 行 10 ms），13.7M 存量净删除约
+  10 分钟、按窗口上限分摊到数个 tick。`.env.local.example` 已补参数说明。
+- 门禁状态更新：第 1、2 项解除路径已落地，待部署重启后观察
+  `ursm.v2: snapshot retention` 日志确认存量回收；第 3 项（default 分区滚动）
+  仍开放。URSM v2 维持 shadow。
+
+### 验证记录
+
+```text
+go build ./...                OK
+make vet-core                 OK
+go test ./internal/ir         OK（含 14 个新语料种子回归）
+go test -race ./internal/ir   OK
+make fuzz-smoke               OK（2 目标 × 5s）
+make fuzz-corpus-lint         OK
+make bench-check              OK（12 项全可比，PASS）
+shellcheck 新增脚本           OK
+cap-baseline run.sh           OK（容器分支实采 4 组结果集）
+```
+
+负向用例：伪造 allocs 234→300 的样本被 `bench-check` 判 REG 并退出 1；
+含假密钥语料被 `sanitize_corpus.sh` 与 `fuzz-regress.sh install` 拒绝。

@@ -256,6 +256,10 @@ func main() {
 	var sanitizePatternDetector *sanitize.PatternDetector
 	var journeyObservationOutbox *requestjourney.ObservationOutbox
 	var journeyRetentionWorker *requestjourney.RetentionWorker
+	// 容量门禁整改（2026-09-05）：两张无界增长表的保留清理，
+	// 见 docs/perf/capacity-retention-baseline-2026-09-05.md §5。
+	var snapshotRetentionWorker *persist.SnapshotRetentionWorker
+	var stageEventsRetentionWorker *gwtrace.StageEventsRetentionWorker
 
 	// ── Persistent Logger & Resource Monitor ──────────────────────────────
 	// 2026-09-04: Initialize persistent logger for critical events (startup,
@@ -1161,6 +1165,18 @@ func main() {
 		} else {
 			slog.Info("ursm.v2: persist writer disabled", "mode", ursmV2Cfg.Mode,
 				"shadow_double_write", ursmV2Cfg.ShadowDoubleWrite)
+		}
+	}
+
+	// 快照保留清理独立于 URSM v2 mode / persist writer 的启用状态接线：
+	// shadow 未开 double-write 时 persist 不落盘，但历史残留行仍需回收，
+	// 且清理本身不依赖 Redis（容量基线 §5 门禁项 1 的解除条件）。
+	if dbConn != nil && dbConn.Enabled() {
+		snapshotRetentionWorker = persist.NewSnapshotRetentionWorker(dbConn.Pool(), persist.SnapshotRetentionConfigFromEnv())
+		if !snapshotRetentionWorker.Disabled() {
+			snapshotRetentionWorker.Start()
+		} else {
+			slog.Info("ursm.v2: snapshot retention disabled (URSM_SNAPSHOT_RETENTION_DAYS<=0)")
 		}
 	}
 
@@ -4922,6 +4938,13 @@ func main() {
 			if dbConn != nil && dbConn.Enabled() {
 				journeyRetentionWorker = requestjourney.NewRetentionWorker(dbConn.Pool())
 				journeyRetentionWorker.Start()
+				// 容量门禁整改（2026-09-05）：request_stage_events 与
+				// request_state_transitions 同属请求链路观测数据，
+				// 保留窗口默认同为 7 天（STAGE_EVENTS_RETENTION_DAYS 可调）。
+				stageEventsRetentionWorker = gwtrace.NewStageEventsRetentionWorker(dbConn.Pool(), gwtrace.StageEventsRetentionConfigFromEnv())
+				if !stageEventsRetentionWorker.Disabled() {
+					stageEventsRetentionWorker.Start()
+				}
 			}
 
 			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire
@@ -6685,6 +6708,14 @@ func main() {
 
 		if journeyRetentionWorker != nil {
 			journeyRetentionWorker.Stop()
+		}
+		// 容量门禁整改（2026-09-05）：保留清理 worker 优雅退出，
+		// Stop 会在退出前尽力清一次（幂等，未启动时是安全 no-op）。
+		if snapshotRetentionWorker != nil {
+			snapshotRetentionWorker.Stop()
+		}
+		if stageEventsRetentionWorker != nil {
+			stageEventsRetentionWorker.Stop()
 		}
 
 		if sessionCacheV2ForShutdown != nil {
