@@ -186,6 +186,13 @@ type NodeProbeWorker struct {
 	// Submit enqueues, the legacy loop() stops picking node_probe_state rows,
 	// and a ProbeQueueWorker + ProbeService own execution. nil = legacy path.
 	probeQueue *ProbeQueue
+	// enqueueFn (2026-09-05 noise-reduction) is the submitViaQueueSource test
+	// seam over ProbeQueue.Enqueue, following the same injectable-fn style as
+	// ProbeService.automaticEligibilityFn. It exists so the deterministic-gate
+	// skip (ErrProbeAutomaticIneligible / ErrProbeOutOfScope must not consume
+	// the retry budget) can be unit-tested without a live database. Production
+	// wiring leaves it nil and enqueue() falls through to probeQueue.Enqueue.
+	enqueueFn func(ctx context.Context, task ProbeQueueTask) (int64, bool, error)
 
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
@@ -626,6 +633,15 @@ func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqI
 	}
 }
 
+// enqueue routes submitViaQueueSource through ProbeQueue.Enqueue, or the
+// injected test seam when wired (see NodeProbeWorker.enqueueFn).
+func (w *NodeProbeWorker) enqueue(ctx context.Context, task ProbeQueueTask) (int64, bool, error) {
+	if w.enqueueFn != nil {
+		return w.enqueueFn(ctx, task)
+	}
+	return w.probeQueue.Enqueue(ctx, task)
+}
+
 // submitViaQueueSource is the source-parameterized enqueue used by Submit
 // ("request_failure") and the scheduled pump ("periodic"). The source feeds
 // the 自检 stream's origin badge and must stay inside the
@@ -637,8 +653,21 @@ func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqI
 //     (caller-provided or 5s fallback) bounds total wall time.
 //   - Duplicate dedup_keys are treated as success (peer or earlier attempt
 //     already enqueued the same task) and recorded under outcome="duplicate".
-//   - If all attempts fail, the final error is persisted to
-//     node_probe_state (UPDATE existing row or INSERT a placeholder row)
+//   - 2026-09-05 noise-reduction: deterministic gate rejections
+//     (ErrProbeAutomaticIneligible / ErrProbeOutOfScope) are NOT retried.
+//     They are evaluated from current credential/provider state at the queue
+//     boundary and cannot flip between retries, so the old retry loop only
+//     amplified one rejection into 3 WARNs + 1 ERROR per credential per pump
+//     cycle (~75 ERRORs/cycle, docs 2026-09-05-pg-error-audit §5 P1). They
+//     are now logged once at Info (mirroring the consumption-side branch in
+//     probe_queue_worker.go::processTask), recorded under
+//     outcome="skipped_ineligible" / "skipped_out_of_scope", and returned as
+//     (false, nil) so no caller re-arms the row or re-logs the failure.
+//     node_probe_state is deliberately left untouched (no
+//     queue_submit_failed stamp) — a gate rejection is a business skip, not
+//     an infrastructure failure.
+//   - If all attempts fail on a transient error, the final error is persisted
+//     to node_probe_state (UPDATE existing row or INSERT a placeholder row)
 //     so operators have a queryable trail and Submit callers observe
 //     non-nil error. We do NOT modify consecutive_failures /
 //     next_retry_at / paused: those belong to the probe execution layer
@@ -649,8 +678,9 @@ func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqI
 //     outcome=failed rates.
 //
 // Returns (inserted, err): inserted=true iff this call produced a
-// new credential_probe_queue row. False on duplicate or error. The
-// boolean is what pumpDueStatesToQueue's P1.2 holdoff branch consults.
+// new credential_probe_queue row. False on duplicate, deterministic gate
+// skip, or error. The boolean is what pumpDueStatesToQueue's P1.2 holdoff
+// branch consults.
 func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, parentReqID, source string) (bool, error) {
 	if w == nil || w.probeQueue == nil {
 		err := fmt.Errorf("probe queue not initialized")
@@ -690,7 +720,7 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 	)
 	for attempt := 1; attempt <= nodeProbeQueueSubmitMaxAttempts; attempt++ {
 		attemptCtx, attemptCancel := context.WithTimeout(ctx, time.Second)
-		_, ins, err := w.probeQueue.Enqueue(attemptCtx, task)
+		_, ins, err := w.enqueue(attemptCtx, task)
 		attemptCancel()
 		if err == nil {
 			inserted = ins
@@ -709,6 +739,27 @@ func (w *NodeProbeWorker) submitViaQueueSource(credID int, model, tenantID, pare
 					"credential_id", credID, "model", model, "source", source, "inserted", ins)
 			}
 			return inserted, nil
+		}
+		// 2026-09-05 noise-reduction: deterministic gate rejections must not
+		// consume the retry budget. The eligibility gate (probe_queue.go
+		// automaticTaskEligible) reads current credential/provider state and
+		// the URSM scope gate is static for the process lifetime, so neither
+		// can flip between two attempts milliseconds apart. Mirror the
+		// consumption-side branch (probe_queue_worker.go processTask: single
+		// Info + settle-as-skip) instead of 3 WARNs + 1 ERROR per credential
+		// per pump cycle. No persistSubmitFailure: a disabled credential or a
+		// disabled provider is a config state, not queue_submit_failed.
+		if errors.Is(err, ErrProbeAutomaticIneligible) || errors.Is(err, ErrProbeOutOfScope) {
+			outcome := "skipped_out_of_scope"
+			if errors.Is(err, ErrProbeAutomaticIneligible) {
+				outcome = "skipped_ineligible"
+			}
+			nodeProbeQueueSubmissionTotal.WithLabelValues(source, outcome).Inc()
+			nodeProbeQueueSubmissionDuration.WithLabelValues(source, outcome).Observe(time.Since(start).Seconds())
+			slog.Info("node_probe_worker: enqueue rejected by deterministic gate, skipped",
+				"credential_id", credID, "model", model, "source", source,
+				"outcome", outcome, "error", err)
+			return false, nil
 		}
 		if attempt == 1 {
 			firstAttemptErr = err
@@ -854,13 +905,7 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 	}
 	qCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	rows, err := w.db.Query(qCtx, `
-		SELECT nps.credential_id, nps.raw_model_name, COALESCE(c.tenant_id, 'default')
-		FROM node_probe_state nps
-		JOIN credentials c ON c.id = nps.credential_id
-		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
-		ORDER BY nps.next_retry_at
-		LIMIT $1`, nodeProbeQueuePumpBatch)
+	rows, err := w.db.Query(qCtx, pumpDueStatesSQL(), nodeProbeQueuePumpBatch)
 	if err != nil {
 		slog.Warn("node_probe_worker: pump due states query failed", "error", err)
 		return
@@ -923,6 +968,34 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 	if len(due) > 0 {
 		slog.Info("node_probe_worker: pumped due states to queue", "count", len(due))
 	}
+}
+
+// pumpDueStatesSQL is extracted for guard tests (same pattern as
+// probe_queue.go reviveExpiredReadySQL). Beyond the paused/due filters it
+// applies the SAME automatic-probe eligibility gate the queue enforces at
+// Enqueue (automaticProbeEligibilityExistsSQL — credential active +
+// lifecycle active + not manually disabled, provider enabled + not manually
+// disabled). Rows for disabled credentials/providers are rejected
+// deterministically at the queue boundary (ErrProbeAutomaticIneligible), so
+// pumping them could never succeed — it only produced the per-cycle
+// "enqueue via queue exhausted retries" ERROR spam (3 WARNs + 1 ERROR per
+// credential per 30s tick, ~75 ERRORs/cycle; docs
+// 2026-09-05-pg-error-audit-and-environment §5 P1). Keeping the gate in
+// WHERE (evaluated before ORDER BY/LIMIT) means ineligible rows do not
+// consume the nodeProbeQueuePumpBatch slots, and they re-enter the pump
+// automatically the moment their credential/provider is re-enabled — probe
+// semantics are unchanged, the futile enqueue attempts are gone. The outer
+// alias is `cred` so it cannot shadow the EXISTS fragment's own
+// `credentials c` / `providers p` aliases.
+func pumpDueStatesSQL() string {
+	return `
+		SELECT nps.credential_id, nps.raw_model_name, COALESCE(cred.tenant_id, 'default')
+		FROM node_probe_state nps
+		JOIN credentials cred ON cred.id = nps.credential_id
+		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
+		  AND ` + automaticProbeEligibilityExistsSQL("nps.credential_id") + `
+		ORDER BY nps.next_retry_at
+		LIMIT $1`
 }
 
 // publishProbeTask TaskType uses task.Command so node_probe / integrity_verify /
