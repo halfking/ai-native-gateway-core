@@ -1,0 +1,2 @@
+go test fuzz v1
+string("data: {\"type\":\"definitely_not_a_type\",\"index\":-1,\"delta\":null}")
