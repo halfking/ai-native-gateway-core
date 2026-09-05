@@ -1,6 +1,6 @@
 # 环境文档索引
 
-> 最后核对：2026-08-29
+> 最后核对：2026-09-05
 
 ## 规范环境总览
 
@@ -13,9 +13,9 @@
 
 | 环境 | 入口 |
 | --- | --- |
-| `local` / `dev` | [本机部署](deployment/LOCAL-HOST-DEPLOY.md)、仓库 `docker-compose.dev-research.yml` |
+| `local` / `dev` | [本机部署](deployment/LOCAL-HOST-DEPLOY.md)、[local-8782 环境状态快照](local-8782-env-state-20260905.md)、仓库 `docker-compose.dev-research.yml` |
 | `test` / `pms-test` / 252 | [部署总入口](../README.md)、K8s 测试 manifest |
-| `staging` / 245 / 154 | [Session V2 staging 验证](../../staging-validation-progress-20260829.md)、[部署切换审计](../../audit/2026-08-29-deployment-contract-audit.md) |
+| `staging` / 245 / 154 | [154 生产放行清单](154-production-release-checklist-20260905.md)、[Session V2 staging 验证](../../staging-validation-progress-20260829.md)、[部署切换审计](../../audit/2026-08-29-deployment-contract-audit.md) |
 | `production` | [部署总入口](../README.md)；真实发布必须走授权 pipeline |
 | `customer-host` / `customer-docker` | [客户安装总览](customer-install/README.md)及其平台子文档 |
 | `k8s-test` | [deploy 总导航](../../../deploy/README.md)和 `deploy/k8s/` manifest |

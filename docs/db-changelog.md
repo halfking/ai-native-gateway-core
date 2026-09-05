@@ -279,3 +279,9 @@ relying on it.
 |-----------|------|---------|--------|
 | 657 | `657_durable_llm_tasks_decision_history.sql` | `306f8103a45e873b5e0d8be9964f0be1bb761a8f111fd706462b38b6991fbd5c` | applied+verified |
 
+## 2026-09-05T08:24:44Z — deploy 245 build_seq 1945 (f6ea47da)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 658 | `658_auto_route_structured_features.sql` | `0f263e57d3c8ed25b9d1c6025af5c5b5bf4ad985dd18cb4eefb23d12b85feaf3` | applied+verified |
+
