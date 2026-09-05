@@ -74,8 +74,14 @@ func TestJournalSnapshot_PersistenceFailureIsolation(t *testing.T) {
 	// complete() should succeed even though the sink simulates a persistence failure.
 	p.complete(qr, ForwardOutcome{Result: "success"})
 
-	// Verify: persistence error was logged (in the real adapter via slog.Warn),
-	// but the complete() call succeeded and did not panic.
+	// Delivery is asynchronous (audit 2026-09-05 C-#4): wait for the worker
+	// to invoke the sink, then verify the error was "logged" exactly once and
+	// complete() succeeded without panicking.
+	waitFor(t, "persistence-failure sink invocation", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(loggedErrors) >= 1
+	})
 	mu.Lock()
 	errCount := len(loggedErrors)
 	mu.Unlock()
@@ -139,6 +145,13 @@ func TestJournalSnapshot_LargeJournal_CurrentBehavior(t *testing.T) {
 
 	p.complete(qr, ForwardOutcome{Result: "success"})
 
+	// Delivery is asynchronous (audit 2026-09-05 C-#4): poll until the worker
+	// has delivered the snapshot before asserting truncation metadata.
+	waitFor(t, "large-journal snapshot delivery", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(receivedSnap.Entries) > 0
+	})
 	mu.Lock()
 	snap := receivedSnap
 	mu.Unlock()
@@ -212,6 +225,12 @@ func TestJournalSnapshot_SmallJournal_NoTruncation(t *testing.T) {
 
 	p.complete(qr, ForwardOutcome{Result: "success"})
 
+	// Delivery is asynchronous (audit 2026-09-05 C-#4): poll for delivery.
+	waitFor(t, "small-journal snapshot delivery", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(receivedSnap.Entries) > 0
+	})
 	mu.Lock()
 	snap := receivedSnap
 	mu.Unlock()
@@ -438,6 +457,12 @@ func TestJournalSnapshot_Idempotency(t *testing.T) {
 
 		p.complete(qr, ForwardOutcome{Result: "success"})
 
+		// Delivery is asynchronous (audit 2026-09-05 C-#4): poll for delivery.
+		waitFor(t, "idempotency snapshot delivery", func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return len(receivedSnap.Entries) > 0
+		})
 		mu.Lock()
 		snap := receivedSnap
 		mu.Unlock()

@@ -60,6 +60,15 @@ Spec 轴审计实测：规划文档 53 条验收标准达成 **约 48 条（≈9
 （路由/凭证等子系统仍走既有 no-DB 降级，属后续波次）；StateStore 未接入 HTTP
 装配层；lite→full 数据迁移测试（full 侧工厂为桩）。
 
+**B2 接线更新（2026-09-05 审计后续工作包）**：telemetry 请求日志管道已桥接到
+存储工厂——`telemetry.Client.SetRequestLogSink` 注入缝 + `cmd/gateway/lite_telemetry_sink.go`
+实现：每条请求日志（in_progress INSERT 与终态 UPDATE）幂等 UPSERT 到 SQLite
+`request_logs`；终态且带会话 ID 与原文的条目额外记一轮会话 journal（`sessions` 行 +
+`session_turns` 元数据 + FileBodies `turn_N` 原文，轮号重启后从落盘最大值续排）。
+lite 部署的请求/会话内容不再空转，`/metrics/storage` writes 反映真实写入。
+仍未接线：StateStore（MemoryStateStore 进程内 KV，无天然生产消费者）、
+`retention.request_logs_days` 清理执行者（SQLite request_logs 仍无自动 trim）。
+
 ## 三、审计记录与修复对照
 
 三轴并行审计：Standards（规范符合性）、Spec（规格符合性）、正确性与安全。
@@ -105,6 +114,12 @@ Spec 轴审计实测：规划文档 53 条验收标准达成 **约 48 条（≈9
 `bg/cache_trimmer.go`、`bg/bodies_trimmer.go`、`monitoring/storage_metrics.go`、
 `tests/integration/dual_mode_test.go`、`benchmark_test.go`、`scripts/start-{lite,full}.sh`、
 `Dockerfile`（CGO 修复）、`config.example.yaml`、`go.mod`（go-sqlite3）+ vendor 同步。
+
+**B2 接线（2026-09-05）**：`domains/hooks/observability/telemetry/client.go`
+（RequestLogSink 注入缝，full 模式零变化）、`cmd/gateway/lite_telemetry_sink.go`
+（lite sink：request_logs UPSERT + 会话 journal + FileBodies 原文）、
+`storage/sqlite/request_log_store.go`（INSERT→幂等 UPSERT）、
+`storage/file/async_writer.go`（fsync 后 rename，B5）。
 
 **测试**：新增 60+ 测试用例（含 -race、路径遍历/注入/记账自愈回归）与 5 个基准。
 

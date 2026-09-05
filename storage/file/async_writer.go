@@ -226,6 +226,12 @@ func (w *AsyncFileWriter) writeAtomic(path string, data []byte) error {
 		_ = tmpFile.Close()
 		return fmt.Errorf("async file writer: write tmp %s: %w", tmp, err)
 	}
+	// fsync 后再 rename，保证 rename 生效时数据已抵达磁盘，
+	// 掉电/内核崩溃后不会留下已 rename 但内容缺失的目标文件。
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return fmt.Errorf("async file writer: fsync tmp %s: %w", tmp, err)
+	}
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("async file writer: close tmp %s: %w", tmp, err)
 	}

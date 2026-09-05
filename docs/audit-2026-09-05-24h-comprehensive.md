@@ -53,15 +53,25 @@ dispatch 域 accessor 迁移 100% 完成（生产代码字段直读为 0，仅�
 | 11 | P2 | ensureSessionSummariesCanonical 前置 to_regclass 守卫：表被 DROP 时告警跳过而非启动崩溃 | db/session_summaries_schema.go |
 | 12 | P1(FE) | V2 轮次附件「可见不可开」：TurnDigestDrawer 改走既有 `GET /api/attachments/{object}` 通道（404 签名端点弃用注记）；错误态 retry 按钮文案修复（8 语言 locale 补 retry 键） | web/src/components/session/TurnDigestDrawer.vue、web/src/api/sessions_v2.ts、locales/*/turnDigest.ts + 组件测试更新 |
 
+### 第二轮修复（2026-09-05 后续工作包，B/C 轴收敛）
+
+| # | 来源 | 修复 | 文件 |
+|---|------|------|------|
+| 13 | B4 | cache_v2 Invalidate 重播种窗口闭合：Get 的「L1.5 读+回填 L1」「L3 回填 L1+L1.5」、Set 写入与 Invalidate 删除改用按 tenant+session 哈希的 64 分片互斥锁（审计建议的「调序」方案经回归测试证伪不充分——Get 读到 L1.5 旧值后、回填 L1 前 Invalidate 可整体完成；L2 Redis IO 留锁外保持历史语义） | domains/session/v2/cache_v2.go + TestSessionCacheV2Lite_InvalidateVsGetNoReseed（200 轮并发） |
+| 14 | B2 | lite 五 store 接线生产路径：telemetry.Client 增 RequestLogSink 注入缝（Enabled 语义拆分 pgEnabled/requestSink，决策日志门槛不回退）；liteRequestLogSink 落盘 request_logs 幂等 UPSERT + 终态会话 journal（sessions/session_turns/FileBodies 原文，轮号重启续排）；full 模式零变化 | domains/hooks/observability/telemetry/client.go、cmd/gateway/lite_telemetry_sink.go、storage/sqlite/request_log_store.go、cmd/gateway/main.go + lite_telemetry_sink_test.go |
+| 15 | B5 | AsyncFileWriter fsync 后再 rename（CreateTemp 唯一临时名 HEAD 已有，本轮补 fsync + 并发回归测试） | storage/file/async_writer.go、async_writer_test.go |
+| 16 | C-#2 | dispatcher/failover/total drainer shutdown 排空：stopCh 分支非阻塞排空缓冲残留全部 complete(ErrShutdown)；排空前 mutex barrier + drainerWg/forwarderWg.Wait 保证生产者集合终结（闭合「排空后生产者再投递」竞态）；消费分支 shutdown.Load() 短路不执行 executor 回调 | domains/dispatch/dispatcher.go、failover.go、pipeline.go、metrics.go + TestStopDrainsDispatchInResidue/FailoverChResidue |
+| 17 | C-#4 | complete() 的 JournalSink 调用异步化：快照在 complete 内同步构造（qr 生命周期安全），经有界 journalCh（256）交单后台 worker 投递；队列满丢弃+打点（best-effort 契约）；Stop 有界排空（journalChMu 保护 close/send 不竞态，卡死 sink 不挂进程退出） | domains/dispatch/pipeline.go + TestJournalSnapshotSlowSinkDoesNotBlockComplete/StopDrainsQueuedSnapshots/QueueFullDrops |
+
 ## 四、已记录未修（下轮工作包候选，按优先级）
 
 ### P1/P2（建议下轮优先）
 
-1. **B2** lite 工厂五个 store（Session/Turns/RequestLog/Bodies/State）零生产调用方——SQLite 建库后无读写、body 无持久化、`/metrics/storage` writes 恒 0。属 dual-storage 完成报告「lite 请求路径未整体切换」边界的补充证据，需要独立工作包做装配接线。
-2. **B4** cache_v2 Invalidate 窗口内 L1.5 命中回填 L1 重播种（脏数据最长 30min）：失效顺序 L1.5→L1 或 Get 回填前二次检查。
-3. **B5** AsyncFileWriter 同路径并发写共用固定 `path+".tmp"`（当前无调用方，接线前必须改 CreateTemp）。
-4. **C-#2** dispatcher/failover worker shutdown 漏排空：缓冲队列残留请求永不 complete（survival 流 ctx 2h）。
-5. **C-#4** complete() 同步执行 JournalSink（a.mu 进程级串行 + 无超时 DB 调用），慢 DB 全局放大。
+1. ~~**B2** lite 工厂五个 store（Session/Turns/RequestLog/Bodies/State）零生产调用方——SQLite 建库后无读写、body 无持久化、`/metrics/storage` writes 恒 0。属 dual-storage 完成报告「lite 请求路径未整体切换」边界的补充证据，需要独立工作包做装配接线。~~ ✅ 第二轮已修（§三 #14）：telemetry 管线接 RequestLog/Session/Turns/Bodies 四 store；StateStore（进程内 KV 无生产消费者）与 request_logs 自动 trim 仍留边界，见 dual-storage-completion-report.md。
+2. ~~**B4** cache_v2 Invalidate 窗口内 L1.5 命中回填 L1 重播种（脏数据最长 30min）：失效顺序 L1.5→L1 或 Get 回填前二次检查。~~ ✅ 第二轮已修（§三 #13）：分片锁互斥方案（调序方案经测试证伪不充分）。
+3. ~~**B5** AsyncFileWriter 同路径并发写共用固定 `path+".tmp"`（当前无调用方，接线前必须改 CreateTemp）。~~ ✅ CreateTemp 为既有实现（非固定名）；第二轮补 fsync+rename 顺序与并发测试（§三 #15）。
+4. ~~**C-#2** dispatcher/failover worker shutdown 漏排空：缓冲队列残留请求永不 complete（survival 流 ctx 2h）。~~ ✅ 第二轮已修（§三 #16），并扩展覆盖 Tier-0 total 队列。
+5. ~~**C-#4** complete() 同步执行 JournalSink（a.mu 进程级串行 + 无超时 DB 调用），慢 DB 全局放大。~~ ✅ 第二轮已修（§三 #17）。
 6. **D-#2** settle outcome join 只读 request_logs_hot：若未来 settle 窗口再放宽需同步评估 promote 窗口（当前 4h<8h 已闭合）。
 7. **D-#3** 656 无网关侧 ensure（655 有）：只升二进制的存量库缺 hot 表 → selection 写入静默丢弃。
 8. **D-#4** `sql/tests/auto_route_selections_hot_tests.sql` 未接入任何自动执行。

@@ -62,7 +62,11 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 	// Safe against Stop's wg.Wait: newCredForwarder is only reached via
 	// getOrCreateForwarder under p.credMu with a shutdown guard, so the Add
 	// happens-before Stop's credMu section and therefore before wg.Wait.
+	// forwarderWg (audit 2026-09-05 C-#2) sub-tracks the same goroutine for
+	// the failover shutdown drain (failoverCh producers) — same Add/Done
+	// pairing, same safety argument.
 	pipe.wg.Add(1)
+	pipe.forwarderWg.Add(1)
 	go cf.loop()
 	return cf
 }
@@ -143,8 +147,12 @@ func (cf *credForwarder) HasCapacity() bool {
 // goroutine, so requests waiting for a credential slot remain visible in the
 // bounded queue instead of escaping into unbounded goroutines.
 func (cf *credForwarder) loop() {
-	// LIFO: cf.wg.Wait (registered second) runs first, so the pipeline-wide
-	// Done only fires after every in-flight attempt goroutine has exited.
+	// LIFO defers: cf.wg.Wait (registered last) runs first, then the
+	// pipeline-wide Done's — the forwarderWg Done (registered FIRST, runs
+	// LAST) only fires after every in-flight attempt goroutine has exited,
+	// so the failover shutdown drain's forwarderWg.Wait (audit 2026-09-05
+	// C-#2) implies no routeFailover producer is still running.
+	defer cf.pipe.forwarderWg.Done()
 	defer cf.pipe.wg.Done()
 	defer cf.wg.Wait()
 	for {

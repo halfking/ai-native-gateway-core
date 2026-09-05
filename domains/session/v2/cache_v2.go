@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
@@ -46,6 +47,29 @@ type SessionCacheV2 struct {
 	mode storage.StorageMode // 零值视为 full（见 effectiveMode）
 
 	db *pgxpool.Pool
+
+	// guards 是按 tenant+session 哈希分片的互斥锁，串行化三段临界区：
+	// Get 的「L1.5 读命中 + 回填 L1」、Get 的「L3 回填 L1+L1.5」、Set 的
+	// 「写 L1+L1.5」，以及 Invalidate 的「删 L1.5+L1」（audit B4）。
+	// 不加锁时并发 Get 与 Invalidate 竞争：Get 从 L1.5 读到旧状态后、回填
+	// L1 前，Invalidate 可能已删完 L1.5 与 L1，回填把已删除的旧状态重新
+	// 播种进 L1，此后无人清除，只能等 LRU 逐出（最长 30min）。分片而非
+	// per-session 锁是为了免去簿记清理；临界区只覆盖 L1/L1.5（内存+本地
+	// 文件），L2 Redis IO 留在锁外（其失效竞态不在 B4 范围，保留历史语义）。
+	guards [sessionGuardShards]sync.Mutex
+}
+
+// sessionGuardShards 是回填/失效互斥的分片数。64 片把无关 session 的锁
+// 冲突压到 ~1.5%，同时每片仅 8 字节、无清理负担。
+const sessionGuardShards = 64
+
+// guardFor 返回 tenant+session 对应的分片锁。
+func (c *SessionCacheV2) guardFor(tenantID, sessionID string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(tenantID))
+	_, _ = h.Write([]byte{0})
+	_, _ = h.Write([]byte(sessionID))
+	return &c.guards[h.Sum32()%sessionGuardShards]
 }
 
 // NewSessionCacheV2 creates a new V2 cache instance
@@ -179,19 +203,28 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 	// L1.5 (local file snapshot, lite mode only). 未命中/过期/损坏统一返回包装
 	// errCacheMiss 的错误，按缓存未命中继续回源；其他错误记日志后同样放行
 	// （缓存层 fail-open，绝不阻断主链路）。
+	// 读 + 回填在同一分片锁内（B4）：防止并发 Invalidate 落在「L1.5 命中」
+	// 与「回填 L1」之间把已删除的旧状态重新播种进 L1。
 	if c.effectiveMode() == storage.StorageModeLite && c.l1_5 != nil {
-		if state, err := c.l1_5.Get(tenantID, sessionID); err == nil && state != nil {
-			monitoring.Default().RecordL15Hit()
+		var l15State *SessionStateV2
+		g := c.guardFor(tenantID, sessionID)
+		g.Lock()
+		s, err := c.l1_5.Get(tenantID, sessionID)
+		if err == nil && s != nil {
+			l15State = s
 			if c.l1 != nil {
-				c.l1.Set(state)
+				c.l1.Set(s)
 			}
+		}
+		g.Unlock()
+		if l15State != nil {
+			monitoring.Default().RecordL15Hit()
 			slog.DebugContext(ctx, "cache v2 l1.5 hit", "session_id", sessionID)
-			return state, nil
-		} else {
-			monitoring.Default().RecordL15Miss()
-			if err != nil && !errors.Is(err, errCacheMiss) {
-				slog.WarnContext(ctx, "cache v2 l1.5 get failed", "session_id", sessionID, "error", err)
-			}
+			return l15State, nil
+		}
+		monitoring.Default().RecordL15Miss()
+		if err != nil && !errors.Is(err, errCacheMiss) {
+			slog.WarnContext(ctx, "cache v2 l1.5 get failed", "session_id", sessionID, "error", err)
 		}
 	}
 
@@ -226,15 +259,24 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 	if govMeta != nil {
 		state.GovernanceMeta = *govMeta
 	}
-	if c.l1 != nil {
-		c.l1.Set(state)
-	}
 	// 回填更热的层，让下一个请求不必再冷启动：
 	//   lite + l1_5 → 回填 L1.5；full + l2 → 回填 L2。
+	// L1/L1.5 的回填与 Invalidate 的删除共用分片锁（B4）：L3 读到的是读时刻
+	// 的旧数据，若回填与失效交错、失效落在回填之后，旧状态会残留在 L1/L1.5
+	// 直至 LRU/TTL 逐出。锁内无网络 IO（L2 回填留在锁外，不在 B4 范围）。
 	if c.effectiveMode() == storage.StorageModeLite && c.l1_5 != nil {
-		if err := c.l1_5.Set(state); err != nil {
+		g := c.guardFor(tenantID, sessionID)
+		g.Lock()
+		if c.l1 != nil {
+			c.l1.Set(state)
+		}
+		err = c.l1_5.Set(state)
+		g.Unlock()
+		if err != nil {
 			slog.WarnContext(ctx, "cache v2 l1.5 backfill failed", "session_id", sessionID, "error", err)
 		}
+	} else if c.l1 != nil {
+		c.l1.Set(state)
 	}
 	if c.effectiveMode() == storage.StorageModeFull && c.l2 != nil {
 		if err := c.l2.Set(ctx, state.TenantID, state.SessionID, &state.GovernanceMeta); err != nil {
@@ -249,20 +291,30 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 // full → L1 + L2(Redis 治理元数据)；lite → L1 + L1.5(文件快照)。
 // A nil state is a no-op (see CompressionMetaCache.Set) rather than a
 // nil-deref on state.TenantID. 缓存层 fail-open：下层写失败只记日志。
+// L1/L1.5 写入与 Invalidate 的删除共用分片锁（B4）。
 func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
 	if c == nil || state == nil {
 		return nil
 	}
-	if c.l1 != nil {
-		c.l1.Set(state)
-	}
 	if c.effectiveMode() == storage.StorageModeLite {
 		if c.l1_5 != nil {
-			if err := c.l1_5.Set(state); err != nil {
+			g := c.guardFor(state.TenantID, state.SessionID)
+			g.Lock()
+			if c.l1 != nil {
+				c.l1.Set(state)
+			}
+			err := c.l1_5.Set(state)
+			g.Unlock()
+			if err != nil {
 				slog.WarnContext(ctx, "cache v2 l1.5 set failed", "session_id", state.SessionID, "error", err)
 			}
+		} else if c.l1 != nil {
+			c.l1.Set(state)
 		}
 		return nil
+	}
+	if c.l1 != nil {
+		c.l1.Set(state)
 	}
 	if c.l2 == nil {
 		return nil
@@ -277,22 +329,38 @@ func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
 // Invalidate removes the session from every non-nil cache tier (L1, L1.5, L2).
 // 失效与 mode 无关：残留任何一层都会让下一次 Get 读到已被删除的状态，
 // 因此逐层尽力失效；L1.5 失败只记日志（fail-open），L2 的错误照历史语义返回。
+//
+// L1.5 与 L1 的删除在同一分片锁内、按冷 → 热顺序执行（B4）：Get 的回填
+// 路径（L1.5 命中回填 L1、L3 冷启动回填 L1+L1.5）与删除共享同一把分片锁，
+// 临界区互斥后 Invalidate 返回时不可能有并发回填再写入旧状态——不加锁时
+// Get 从 L1.5 读到旧状态后、回填 L1 前，Invalidate 可能已删完两层，回填把
+// 已删除的旧状态重新播种进 L1，只能等 LRU 逐出（最长 30min）。L2 的删除
+// 是 Redis IO，留在锁外（其与回填的竞态不在 B4 范围，保留历史语义）。
 func (c *SessionCacheV2) Invalidate(ctx context.Context, tenantID, sessionID string) error {
 	if c == nil {
 		return nil
 	}
-	if c.l1 != nil {
-		c.l1.Delete(tenantID, sessionID)
-	}
-	if c.l1_5 != nil {
-		if err := c.l1_5.Delete(tenantID, sessionID); err != nil {
-			slog.WarnContext(ctx, "cache v2 l1.5 delete failed", "session_id", sessionID, "error", err)
+	var l2Err error
+	if c.l2 != nil {
+		l2Err = c.l2.Delete(ctx, tenantID, sessionID)
+		if l2Err != nil {
+			slog.WarnContext(ctx, "cache v2 l2 delete failed", "session_id", sessionID, "error", l2Err)
 		}
 	}
-	if c.l2 == nil {
-		return nil
+	if c.l1_5 != nil || c.l1 != nil {
+		g := c.guardFor(tenantID, sessionID)
+		g.Lock()
+		if c.l1_5 != nil {
+			if err := c.l1_5.Delete(tenantID, sessionID); err != nil {
+				slog.WarnContext(ctx, "cache v2 l1.5 delete failed", "session_id", sessionID, "error", err)
+			}
+		}
+		if c.l1 != nil {
+			c.l1.Delete(tenantID, sessionID)
+		}
+		g.Unlock()
 	}
-	return c.l2.Delete(ctx, tenantID, sessionID)
+	return l2Err
 }
 
 // CompressionMetadata returns the compression portion of the current V2 state

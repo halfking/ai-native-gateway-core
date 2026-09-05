@@ -14,6 +14,8 @@ package v2
 import (
 	"context"
 	"errors"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -221,6 +223,48 @@ func TestSessionCacheV2Lite_InvalidateClearsAllTiers(t *testing.T) {
 	got, err = fresh.Get(ctx, "tenant-lite", "sess-del-002")
 	require.NoError(t, err)
 	assert.Nil(t, got)
+}
+
+// TestSessionCacheV2Lite_InvalidateVsGetNoReseed 锁定 B4 修复：并发 Get 与
+// Invalidate 竞争时，Invalidate 返回后 L1 不得残留从 L1.5 回填的旧状态。
+// 旧实现的失效顺序是 L1 → L1.5：Get 落在两步之间会从 L1.5 命中旧状态并
+// 回填 L1（重播种），此后无人清除，脏数据最长存活到 LRU 逐出。新顺序
+// （L2 → L1.5 → L1，L1 最后删）保证回填进来的数据终被清除。
+func TestSessionCacheV2Lite_InvalidateVsGetNoReseed(t *testing.T) {
+	const iterations = 200
+	ctx := context.Background()
+
+	for i := 0; i < iterations; i++ {
+		fc := newIntegrationFileCache(t)
+		c := NewSessionCacheV2WithMode(nil, "", 0, storage.StorageModeLite, fc)
+		tenant, session := "tenant-lite", "sess-race-"+strconv.Itoa(i)
+
+		// 仅种 L1.5（模拟只有文件层有旧数据的场景），L1 保持为空。
+		require.NoError(t, fc.Set(newIntegrationState(tenant, session, 7)))
+
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+		// 并发 Get：每次未命中 L1 都会从 L1.5 命中并回填 L1。
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					_, _ = c.Get(ctx, tenant, session)
+				}
+			}
+		}()
+		require.NoError(t, c.Invalidate(ctx, tenant, session))
+		close(stop)
+		wg.Wait()
+
+		// Invalidate 已返回：任何回填发生的时刻都先于 L1.Delete，L1 必须为空。
+		assert.Nil(t, c.l1.Get(tenant, session),
+			"iteration %d: Invalidate 返回后 L1 残留了 L1.5 回填的旧状态（B4 重播种）", i)
+	}
 }
 
 // ── full 模式（含零值 mode）：等价性 ─────────────────────────────────────
