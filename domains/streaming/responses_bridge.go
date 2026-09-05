@@ -218,9 +218,21 @@ func (s *responsesScaffold) finishInterrupted(gate *AttemptCommitGate, fullText,
 // accumulated visible text from all delta chunks. finishReason is the
 // raw OpenAI-form value ("stop" | "length" | "tool_calls" | ""); status
 // is the Responses API form ("completed" | "incomplete").
+// openaiFinishReasonIsError reports finish_reason values that signal abnormal
+// termination on OpenAI-compatible providers (content_filter/refusal and
+// GLM-style network_error/sensitive). These must not surface as a successful
+// "completed" terminal envelope.
+func openaiFinishReasonIsError(fr string) bool {
+	switch fr {
+	case "content_filter", "network_error", "sensitive", "error":
+		return true
+	}
+	return false
+}
+
 func (s *responsesScaffold) writeFinalEvents(fullText, finishReason string, inputTokens, outputTokens, totalTokens int) {
 	status := "completed"
-	if finishReason == "length" {
+	if finishReason == "length" || openaiFinishReasonIsError(finishReason) {
 		status = "incomplete"
 	}
 

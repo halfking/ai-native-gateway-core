@@ -1,6 +1,7 @@
 // Auto-translated draft (ar-SA) · 2026-07-02 · please review
 // common.ts — نصوص مشتركة: الأزرار، الحالات، الملاحظات، الترقيم.
 export default {
+  credentialFallback: 'بيانات اعتماد',
   button: {
     cancel: 'إلغاء',
     confirm: 'تأكيد',

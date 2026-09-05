@@ -106,4 +106,10 @@ export default {
     node: 'Node {node}',
     model: 'Model {model}',
   },
+  attempts: {
+    provider: 'Proveedor {id}',
+    model: 'Modelo: {value}',
+    credential: 'Credencial: {value}',
+    empty: 'No hay intentos de reserva de enrutamiento registrados',
+  },
 }

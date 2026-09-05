@@ -42,4 +42,5 @@ export default {
   openAttachment: 'Télécharger',
   retry: 'Réessayer',
   openingAttachment: 'Ouverture…',
+  openAttachmentFailed: 'Échec de l’ouverture de la pièce jointe',
 }

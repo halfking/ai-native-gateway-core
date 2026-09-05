@@ -31,10 +31,15 @@ import {
   loadCredentialLabels,
   loadCredentialLabelsForTenant,
 } from './useCredentialLabels'
+import { i18n } from '../i18n'
 
 function setTenant(tenantId: string): void {
   getCurrentTenantId.mockImplementation(() => tenantId)
   __setCurrentTenantIdResolver(() => tenantId)
+}
+
+function setLocale(locale: string): void {
+  ;(i18n.global.locale as unknown as { value: string }).value = locale
 }
 
 function mockSummary(credentials: Array<{ id: number; label: string }>): void {
@@ -51,6 +56,10 @@ function mockSummary(credentials: Array<{ id: number; label: string }>): void {
 beforeEach(() => {
   clearCredentialLabels()
   setTenant('default')
+  // 2026-09-05 audit F2-#3: the default credential prefix now resolves via
+  // i18n at call time, so pin the locale to keep the '凭据 #ID' assertions
+  // deterministic regardless of the host navigator language.
+  setLocale('zh-CN')
   getCredentialMonitorSummary.mockReset()
 })
 
@@ -87,6 +96,13 @@ describe('credentialDisplayName fallback', () => {
 
   it('returns 凭据 #ID before labels load', () => {
     expect(credentialDisplayName(99)).toBe('凭据 #99')
+  })
+
+  it('follows the active locale for the default prefix (audit F2-#3)', () => {
+    setLocale('en')
+    expect(credentialDisplayName(99)).toBe('Credential #99')
+    // An explicit prefix still wins over the i18n default (signature compat).
+    expect(credentialDisplayName(99, 'Key')).toBe('Key #99')
   })
 })
 

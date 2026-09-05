@@ -14,6 +14,7 @@ import { ApiError } from '../../api/_core'
 import SessionSummaryBar from '../../components/SessionSummaryBar.vue'
 import SessionTurnsTimeline from '../../components/session/SessionTurnsTimeline.vue'
 import TurnDigestDrawer from '../../components/session/TurnDigestDrawer.vue'
+import { useTurnTitleSummary } from '../../composables/useTurnTitleSummary'
 import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const route = useRoute()
@@ -29,15 +30,31 @@ let snapshotController: AbortController | null = null
 // at a stale turn after navigating between sessions.
 const digestOpen = ref(false)
 const digestTurnNo = ref<number | null>(null)
+// 2026-09-05 audit F2-#9: the turn detail response has no title/summary, so
+// the drawer's fallbacks come from the turns list (cached per session).
+const { ensureTurnTitleSummary, lookupTurnTitleSummary } = useTurnTitleSummary()
+const digestTitle = ref('')
+const digestSummary = ref('')
 
 function showDigest(payload: { turnNumber: number }) {
   digestTurnNo.value = payload.turnNumber
+  digestTitle.value = ''
+  digestSummary.value = ''
   digestOpen.value = true
+  void ensureTurnTitleSummary(sessionId.value).then(() => {
+    // Ignore the resolved lookup if the user already switched turns.
+    if (digestTurnNo.value !== payload.turnNumber) return
+    const item = lookupTurnTitleSummary(sessionId.value, payload.turnNumber)
+    digestTitle.value = item.title
+    digestSummary.value = item.summary
+  })
 }
 
 function closeDigest() {
   digestOpen.value = false
   digestTurnNo.value = null
+  digestTitle.value = ''
+  digestSummary.value = ''
 }
 
 async function loadSnapshot() {
@@ -102,6 +119,8 @@ onBeforeUnmount(() => {
         :model-value="digestOpen"
         :session-id="sessionId"
         :turn-no="digestTurnNo"
+        :title="digestTitle"
+        :summary="digestSummary"
         @update:model-value="(value: boolean) => { if (!value) closeDigest() }"
         @close="closeDigest"
       />

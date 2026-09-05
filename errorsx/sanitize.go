@@ -3,6 +3,7 @@ package errorsx
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // SanitizeErrorText strips well-known credential / token shapes from a raw
@@ -29,18 +30,53 @@ func SanitizeErrorText(in []byte, maxBytes int) []byte {
 	if len(in) == 0 {
 		return in
 	}
+	out := string(RedactCredentialShapes(in))
 	if maxBytes <= 0 {
 		maxBytes = 320
+	}
+	if len(out) > maxBytes {
+		out = truncateUTF8Safe(out, maxBytes)
+	}
+	return []byte(out)
+}
+
+// RedactCredentialShapes applies the SanitizeErrorText redaction patterns
+// WITHOUT a length cap, for full-body storage paths that must preserve the
+// body while stripping credential echoes (audit round2 E-#2).
+func RedactCredentialShapes(in []byte) []byte {
+	if len(in) == 0 {
+		return in
 	}
 	out := string(in)
 	out = bearerPattern.ReplaceAllString(out, "Bearer <redacted:bearer>")
 	out = apiKeyPattern.ReplaceAllString(out, "<redacted:api_key>")
 	out = longBlobPattern.ReplaceAllString(out, "<redacted:blob>")
 	out = headerEchoPattern.ReplaceAllString(out, "$1<redacted:header>")
-	if len(out) > maxBytes {
-		out = out[:maxBytes]
-	}
 	return []byte(out)
+}
+
+// truncateUTF8Safe cuts s to at most max bytes without splitting a UTF-8
+// sequence: a byte-truncated CJK/error message produced invalid UTF-8 that
+// PostgreSQL (UTF8 encoding) rejects on INSERT (audit round2, axis G).
+func truncateUTF8Safe(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	cut := s[:max]
+	// If we split a sequence, the final bytes are continuation bytes
+	// (10xxxxxx); walk back to the start of the last complete rune.
+	for i := 0; i < 3 && len(cut) > 0; i++ {
+		if utf8.RuneStart(cut[len(cut)-1]) {
+			break
+		}
+		cut = cut[:len(cut)-1]
+	}
+	// Drop a trailing rune that got chopped mid-sequence (its start byte
+	// survived but the continuation did not).
+	if r, size := utf8.DecodeLastRuneInString(cut); r == utf8.RuneError && size <= 1 {
+		cut = cut[:len(cut)-size]
+	}
+	return cut
 }
 
 var (

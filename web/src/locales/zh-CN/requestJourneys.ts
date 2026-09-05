@@ -106,4 +106,10 @@ export default {
     node: '节点 {node}',
     model: '模型 {model}',
   },
+  attempts: {
+    provider: '供应商 {id}',
+    model: '模型: {value}',
+    credential: '凭据: {value}',
+    empty: '暂无路由回退尝试记录',
+  },
 }

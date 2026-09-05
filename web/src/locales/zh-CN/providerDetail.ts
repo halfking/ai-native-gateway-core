@@ -257,6 +257,9 @@ export default {
     drawerFieldApiKey: 'API Key',
   },
   errorDetail: {
+    supplier: '供应商', errorCode: '错误码', requestId: '请求 ID',
+    stage: '阶段', retry: '重试', latency: '耗时',
+    openRequestTitle: '查看请求详情',
     title: '供应商错误明细', selectCredential: '请先从凭据列表选择凭据', windowTitle: '统计时间窗口',
     lastHour: '最近 1 小时', lastDay: '最近 24 小时', lastWeek: '最近 7 天', loading: '加载错误明细中…',
     loadFailed: '加载供应商错误明细失败', credential: '凭据', health: '健康状态', availability: '可用状态', circuit: '熔断状态',

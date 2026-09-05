@@ -35,6 +35,7 @@ import examples from './examples'
 import dataLifecycle from './dataLifecycle'
 import tuning from './tuning'
 import turnDigest from './turnDigest'
+import errorVocab from './errorVocab'
 import sessionTimeline from './sessionTimeline'
 import correlations from './correlations'
 import tenantModelPolicyPanel from './tenantModelPolicyPanel'
@@ -107,6 +108,7 @@ export default {
   dataLifecycle,
   tuning,
   turnDigest,
+  errorVocab,
   sessionTimeline,
   correlations,
   tenantModelPolicyPanel,

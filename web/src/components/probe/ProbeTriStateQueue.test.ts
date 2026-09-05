@@ -23,6 +23,11 @@ beforeEach(async () => {
   // 重置共享凭据标签缓存，避免其它测试串味。
   const { clearCredentialLabels } = await import('../../composables/useCredentialLabels')
   clearCredentialLabels()
+  // 2026-09-05 审计 F2-#3：credentialDisplayName 默认前缀改走 i18n（跟随
+  // 当前 locale）。固定 zh-CN，保证「凭据 #ID」断言不受宿主机
+  // navigator.language 影响。
+  const { i18n } = await import('../../i18n')
+  ;(i18n.global.locale as unknown as { value: string }).value = 'zh-CN'
 })
 
 // ── mock probeStreamStore 单例（SSE 通道） ────────────────────────────

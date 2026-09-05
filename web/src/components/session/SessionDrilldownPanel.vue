@@ -14,15 +14,23 @@ import { ref } from 'vue'
 import OnlineSessionsPanel from './OnlineSessionsPanel.vue'
 import SessionTurnsTimeline from './SessionTurnsTimeline.vue'
 import TurnDigestDrawer from './TurnDigestDrawer.vue'
+import { useTurnTitleSummary } from '../../composables/useTurnTitleSummary'
 import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
 
 const selectedSessionId = ref<string | null>(null)
 const digestOpen = ref(false)
 const digestTurnNo = ref<number | null>(null)
+// 2026-09-05 audit F2-#9: pass per-turn title/summary (turns list, cached per
+// session) into the drawer — the detail response never carries them.
+const { ensureTurnTitleSummary, lookupTurnTitleSummary } = useTurnTitleSummary()
+const digestTitle = ref('')
+const digestSummary = ref('')
 
 function clearDigestState() {
   digestOpen.value = false
   digestTurnNo.value = null
+  digestTitle.value = ''
+  digestSummary.value = ''
 }
 
 function openSession(sessionId: string) {
@@ -40,8 +48,19 @@ function openRequest(payload: { requestId: string }) {
 }
 
 function showDigest(payload: { turnNumber: number }) {
+  if (!selectedSessionId.value) return
+  const sessionId = selectedSessionId.value
   digestTurnNo.value = payload.turnNumber
+  digestTitle.value = ''
+  digestSummary.value = ''
   digestOpen.value = true
+  void ensureTurnTitleSummary(sessionId).then(() => {
+    // Ignore the resolved lookup if the user already switched turns/sessions.
+    if (selectedSessionId.value !== sessionId || digestTurnNo.value !== payload.turnNumber) return
+    const item = lookupTurnTitleSummary(sessionId, payload.turnNumber)
+    digestTitle.value = item.title
+    digestSummary.value = item.summary
+  })
 }
 
 function closeDigest() {
@@ -72,6 +91,8 @@ function closeDigest() {
           v-model="digestOpen"
           :session-id="selectedSessionId"
           :turn-no="digestTurnNo"
+          :title="digestTitle"
+          :summary="digestSummary"
           @close="closeDigest"
         />
       </div>

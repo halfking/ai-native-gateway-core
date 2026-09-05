@@ -310,7 +310,11 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				"server_error", "auto_route_decider_failed")
 			return
 		}
-		bodyBytes = newBody
+		// Flag-off auto returns (nil, nil, false): keep the original body
+		// instead of zeroing it (parity with the chat path nil guard).
+		if newBody != nil {
+			bodyBytes = newBody
+		}
 		attemptClientModel = reqBody.Model
 		if wire != nil {
 			writeAutoDecisionHeader(w, wire)

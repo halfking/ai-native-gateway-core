@@ -66,9 +66,11 @@ func SerializeResponsesRequest(req *InternalRequest) ([]byte, error) {
 	}
 
 	// System → top-level "instructions" (string). The Responses API does NOT
-	// accept a role=system input message; the prompt goes here.
-	if req.System != nil && req.System.Content != "" {
-		out["instructions"] = req.System.Content
+	// accept a role=system input message; the prompt goes here. Parts-only
+	// systems (Anthropic array / Gemini systemInstruction parse output) are
+	// flattened rather than silently dropped.
+	if text := systemPlainText(req.System); text != "" {
+		out["instructions"] = text
 	}
 
 	// Messages → input[] (array of {role, content:[typed blocks]}).

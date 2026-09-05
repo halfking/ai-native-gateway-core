@@ -5,30 +5,42 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# Load the project-local configuration when the caller did not provide a
-# database configuration explicitly.  Keep caller-provided values authoritative
-# so CI and production wrappers can inject their own DSN without being replaced.
-if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" && -f "$PROJECT_ROOT/.env.local" ]]; then
-  # .env.local prints a friendly summary when sourced; suppress it here because
-  # deploy-local owns its own redacted diagnostics and must not leak secrets.
-  source "$PROJECT_ROOT/.env.local" >/dev/null
-  DL_DATABASE_CONFIG_SOURCE=project-env
-else
+# shellcheck source=deploy-local-lib.sh
+source "$SCRIPT_DIR/deploy-local-lib.sh"
+# shellcheck source=deploy-lib/lock.sh
+source "$SCRIPT_DIR/deploy-lib/lock.sh"
+
+# Track whether the caller provided the database configuration before the
+# import below, so diagnostics can say where the DSN came from.
+DL_DATABASE_CONFIG_SOURCE=none
+if [[ -n "${LLM_GATEWAY_DATABASE_URL:-}" || -n "${DATABASE_URL:-}" ]]; then
   DL_DATABASE_CONFIG_SOURCE=caller
 fi
 
-# Config accepts DATABASE_URL as a compatibility fallback; normalize it once so
-# all local probes, migrations, and generated runtime env use one DSN.
+# Config accepts DATABASE_URL as a compatibility fallback; normalize it once
+# so all local probes, migrations, and generated runtime env use one DSN.
+# This must run BEFORE the .env.local import: a caller-supplied DSN then
+# occupies the canonical LLM_GATEWAY_DATABASE_URL key and wins over the
+# file's DSN instead of splitting the two keys across different values.
 if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -n "${DATABASE_URL:-}" ]]; then
   export LLM_GATEWAY_DATABASE_URL="$DATABASE_URL"
 fi
 if [[ -z "${DATABASE_URL:-}" && -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
   export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
 fi
-# shellcheck source=deploy-local-lib.sh
-source "$SCRIPT_DIR/deploy-local-lib.sh"
-# shellcheck source=deploy-lib/lock.sh
-source "$SCRIPT_DIR/deploy-lib/lock.sh"
+
+# Import the project-local configuration for every key the caller left unset
+# or empty; caller-provided values stay authoritative so CI and production
+# wrappers can inject their own DSN without being replaced. This import used
+# to run only when the caller had no DSN at all, so deploys launched from
+# shells that exported just DATABASE_URL skipped .env.local entirely and lost
+# LLM_GATEWAY_SECRET_KEY: the gateway came up unable to sign admin sessions
+# (every login returned "token generation failed") and previously issued
+# tokens stopped verifying (incident 2026-09-05, all 2.5.0.x local deploys).
+dl_load_project_env "$PROJECT_ROOT/.env.local"
+if [[ "$DL_DATABASE_CONFIG_SOURCE" == "none" && -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then
+  DL_DATABASE_CONFIG_SOURCE=project-env
+fi
 
 
 ACTION=deploy
@@ -454,6 +466,10 @@ stage_release() {
 write_instance_env() {
   local bundle="$1" port="$2"; export LLM_GATEWAY_VERSION_FILE="$bundle/version.json"
   dl_write_env "$bundle/env" "$port"
+  # Also covers the rollback/start recovery paths: a regenerated env without
+  # the signing key would bring up a gateway that breaks admin login at
+  # cutover instead of failing loudly here.
+  grep -q '^LLM_GATEWAY_SECRET_KEY=.\+$' "$bundle/env" || die "refusing to start instance :$port with an empty LLM_GATEWAY_SECRET_KEY (check .env.local or the calling environment)"
 }
 
 instance_name() { printf 'llm-gateway-local-%s\n' "$1"; }
@@ -584,6 +600,10 @@ migrate_database() {
 }
 
 deploy() {
+  # A gateway deployed without a JWT signing key cannot issue admin sessions
+  # ("token generation failed") and rejects every previously issued token.
+  # Fail before the build instead of discovering it after cutover.
+  [[ -n "${LLM_GATEWAY_SECRET_KEY:-}" ]] || die 'LLM_GATEWAY_SECRET_KEY is empty — refusing to deploy a gateway that cannot sign admin sessions (check .env.local or the calling environment)'
   bump_local_version
   ensure_release_available
   ensure_resources

@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
 )
@@ -854,7 +855,12 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 	var responseBodyText *string
 	if len(c.ResponseBody) > 0 {
-		v := string(c.ResponseBody)
+		// E-#2 (audit round2): upstream error bodies can echo credentials
+		// (Bearer / sk-* / api_key= on 401/403); the telemetry client only
+		// repairs UTF-8, it does not redact. Redact at the entry builder,
+		// same as the candidate-failure path; full body is preserved
+		// (redaction without truncation).
+		v := string(errorsx.RedactCredentialShapes(c.ResponseBody))
 		responseBodyText = &v
 	}
 
@@ -876,7 +882,7 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		requestPreviewPtr = strPtr(preview)
 	}
 	var responsePreviewPtr *string
-	if preview := responsePreview(c.ResponseBody); preview != "" {
+	if preview := responsePreview(errorsx.RedactCredentialShapes(c.ResponseBody)); preview != "" {
 		responsePreviewPtr = strPtr(preview)
 	}
 

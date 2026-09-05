@@ -240,6 +240,9 @@ export default {
     planTypeFailed: "plan_type の設定に失敗しました"
   },
   errorDetail: {
+    supplier: 'サプライヤー', errorCode: 'エラーコード', requestId: 'リクエスト ID',
+    stage: '段階', retry: '再試行', latency: '所要時間',
+    openRequestTitle: 'リクエスト詳細を開く',
     title: "供应商错误明细", selectCredential: "请先从凭据列表选择凭据", windowTitle: "统计时间窗口",
     lastHour: "最近 1 小时", lastDay: "最近 24 小时", lastWeek: "最近 7 天", loading: "加载错误明细中…",
     loadFailed: "加载供应商错误明细失败", credential: "凭据", health: "健康状态", availability: "可用状态", circuit: "熔断状态",

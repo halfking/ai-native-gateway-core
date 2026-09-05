@@ -7,6 +7,9 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, beforeEach } from 'vitest'
 import ActionTimeline from './ActionTimeline.vue'
 import { __testing, type ActionEvent, type LiveStreamEnvelope } from '../composables/liveStreamStore'
+// 2026-09-05 审计 F2-#3：credentialDisplayName 默认前缀走 app 级 i18n 单例，
+// 测试固定 zh-CN 才能稳定断言「凭据 #ID」回退文案。
+import { i18n } from '../i18n'
 
 function pushActions(...actions: ActionEvent[]) {
   __testing.handleEnvelope({
@@ -17,6 +20,7 @@ function pushActions(...actions: ActionEvent[]) {
 }
 
 beforeEach(() => {
+  ;(i18n.global.locale as unknown as { value: string }).value = 'zh-CN'
   __testing.resetStream()
 })
 

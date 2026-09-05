@@ -326,7 +326,7 @@ func serveSessionTurnDetailDB(db sessionTurnsDB, w http.ResponseWriter, r *http.
 		if errors.Is(err, context.Canceled) {
 			return
 		}
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "turn not found")
 			return
 		}
@@ -598,7 +598,7 @@ func (h *Handler) serveSessionTurnsBodies(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		slog.ErrorContext(r.Context(), "serveSessionTurnsBodies query failed",
 			"session_id", sessionID, "tenant_id", tenantID, "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "query turn bodies failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "query turn bodies failed")
 		return
 	}
 	defer rows.Close()
@@ -748,13 +748,13 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 		&snap.TaskType, &snap.ClientType, &snap.Topic, &snap.Intent, &userTags,
 		&saStatus, &saSchemaVersion, &saInputHash, &saSourceTaskID, &saUpdatedAt, &saPayloadRaw)
 	if err != nil {
-		if err.Error() == "no rows in result set" {
+		if errors.Is(err, pgx.ErrNoRows) {
 			writeJSON(w, http.StatusOK, map[string]any{"session_id": sessionID, "tenant_id": tenantID})
 			return
 		}
 		slog.ErrorContext(r.Context(), "serveSessionSnapshot query failed",
 			"session_id", sessionID, "tenant_id", tenantID, "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "query snapshot failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "query snapshot failed")
 		return
 	}
 	// LEFT JOIN miss → 所有分析列为 NULL, 用空串作为 "未分析" 哨兵。
@@ -799,7 +799,9 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 		Tenant:    tenantID,
 	}, tenantID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "summary failed: "+err.Error())
+		slog.ErrorContext(r.Context(), "serveSessionSummaryGenerate failed",
+			"session_id", sessionID, "tenant_id", tenantID, "error", err.Error())
+		writeError(w, http.StatusInternalServerError, "summary failed")
 		return
 	}
 
@@ -816,7 +818,9 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 		  )`,
 		sessionID, tenantID, summary.Title, summary.Summary, now)
 	if uerr != nil {
-		writeError(w, http.StatusInternalServerError, "update snapshot failed: "+uerr.Error())
+		slog.ErrorContext(r.Context(), "serveSessionSummaryGenerate update failed",
+			"session_id", sessionID, "tenant_id", tenantID, "error", uerr.Error())
+		writeError(w, http.StatusInternalServerError, "update snapshot failed")
 		return
 	}
 	if result.RowsAffected() == 0 {

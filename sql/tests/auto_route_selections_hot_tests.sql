@@ -80,28 +80,40 @@ DO $$ BEGIN
 END $$;
 
 -- ============================================================
--- 4. 超过 8 小时的行迁移到当月分区；8 小时内的行不动
+-- 4. 超过 8 小时且已结算（settled）的行迁移到当月分区；
+--    未结算行即使超过 8h 也留在 hot 等 settle worker
+--    （2026-09-05 audit H-4：promote 只搬终态行，7d 兜底防永滞）；
+--    8 小时内的新行不动
 -- ============================================================
-\echo '4. promote moves only cold rows'
+\echo '4. promote moves only settled cold rows'
 
 DO $$
 DECLARE v_tag text; n bigint; hot_cnt bigint;
 BEGIN
   SELECT tag INTO v_tag FROM test_ctx;
+  -- 已结算冷行（>retention 且 settled_at 非空）应被迁移
+  INSERT INTO auto_route_selections_hot (request_id, task_type, chosen_model, ts, reward, settled_at)
+  VALUES (v_tag || '_cold', 'code', 'test-model', now() - interval '9 hours', 0.5, now() - interval '8 hours');
+  -- 未结算冷行（>retention 但 settled_at 为空、未超 7d 兜底）必须留在 hot
   INSERT INTO auto_route_selections_hot (request_id, task_type, chosen_model, ts)
-  VALUES (v_tag || '_cold', 'code', 'test-model', now() - interval '9 hours');
+  VALUES (v_tag || '_unsettled', 'code', 'test-model', now() - interval '9 hours');
 
   n := promote_auto_route_selections_hot_to_partition(interval '8 hours', 100);
   IF n < 1 THEN RAISE EXCEPTION 'expected promote to move rows, got %', n; END IF;
 
   SELECT count(*) INTO hot_cnt FROM auto_route_selections_hot
-  WHERE request_id IN (v_tag, v_tag || '_cold');
-  IF hot_cnt <> 1 THEN
-    RAISE EXCEPTION 'expected only the fresh row left in hot, got %', hot_cnt;
+  WHERE request_id IN (v_tag, v_tag || '_cold', v_tag || '_unsettled');
+  IF hot_cnt <> 2 THEN
+    RAISE EXCEPTION 'expected fresh + unsettled rows left in hot, got %', hot_cnt;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM auto_route_selections_hot WHERE request_id = v_tag || '_unsettled'
+  ) THEN
+    RAISE EXCEPTION 'unsettled row within 7d fallback must stay in hot for the settle worker';
   END IF;
   IF (SELECT s.storage_tier FROM auto_route_selections_all s
       WHERE s.request_id = v_tag || '_cold') IS DISTINCT FROM 'parent' THEN
-    RAISE EXCEPTION 'cold row should be in parent tier';
+    RAISE EXCEPTION 'cold settled row should be in parent tier';
   END IF;
 END $$;
 

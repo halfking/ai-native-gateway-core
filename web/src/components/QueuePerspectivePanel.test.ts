@@ -7,6 +7,9 @@ import { __testing, liveStreamState } from '../composables/liveStreamStore'
 import { ApiError } from '../api/_core'
 import { _resetPersistState, flushPersist, liveStreamPreferencesStorageKey, readLiveStreamPreferences } from '../composables/liveStreamPreferences'
 import { clearCredentialLabels, loadCredentialLabels } from '../composables/useCredentialLabels'
+// 2026-09-05 审计 F2-#3：credentialDisplayName 默认前缀走 app 级 i18n 单例，
+// 测试需把该单例固定在 zh-CN（组件挂载用的是下面的局部 i18n 实例）。
+import { i18n as appI18n } from '../i18n'
 import { getCredentialMonitorSummary } from '../api/credential-monitor'
 
 const { getFeatured, resolveRouting, reorderCandidateBindings, getSlidingWindow, getSlidingWindowBatch, superAdmin, isAuthenticatedMock, mockedStore } = vi.hoisted(() => ({
@@ -98,6 +101,8 @@ describe('QueuePerspectivePanel', () => {
     localStorage.clear()
     _resetPersistState()
     clearCredentialLabels()
+    // 固定 app i18n 单例 locale，保证「凭据 #ID」回退断言稳定。
+    ;(appI18n.global.locale as unknown as { value: string }).value = 'zh-CN'
     liveStreamState.queue = {
       enabled: true,
       wired: true,

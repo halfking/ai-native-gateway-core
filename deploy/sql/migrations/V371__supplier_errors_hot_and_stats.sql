@@ -81,11 +81,18 @@ CREATE INDEX IF NOT EXISTS idx_supplier_errors_hot_tenant
     ON supplier_errors_hot (tenant_id, occurred_at DESC);
 
 -- RLS：租户隔离（与 candidate_failure_logs_hot 同模式）
+-- 2026-09-05 审计 E-#1：FORCE RLS + USING (tenant_id = current_setting(..., true))
+-- 在未设置 app.tenant_id 时比较为 NULL → 全链路（写入/聚合/admin 读端，
+-- Go 侧无任何 app.tenant_id set_config）42501 或恒空。补
+-- app.bypass_rls 旁路（对齐 V367 promote 场景既有模式）。
 ALTER TABLE supplier_errors_hot ENABLE ROW LEVEL SECURITY;
 ALTER TABLE supplier_errors_hot FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_supplier_errors_hot ON supplier_errors_hot;
 CREATE POLICY tenant_isolation_supplier_errors_hot ON supplier_errors_hot
-    USING (tenant_id = current_setting('app.tenant_id', true));
+    USING (
+        tenant_id = current_setting('app.tenant_id', true)
+        OR current_setting('app.bypass_rls', true) = 'true'
+    );
 
 -- ---------------------------------------------------------------------------
 -- 2. supplier_errors（月度 columnar 分区父表，历史不可变）
@@ -193,12 +200,18 @@ SELECT ensure_supplier_errors_partition((date_trunc('month', NOW()) + interval '
 
 -- ---------------------------------------------------------------------------
 -- 4. RLS：父表
+--    2026-09-05 审计 E-#1：promote 以应用角色写父表、admin 读端经
+--    supplier_errors_unified（security_invoker）扫父表，同样需要
+--    app.bypass_rls 旁路，否则 FORCE RLS 下历史侧整段不可见/不可写。
 -- ---------------------------------------------------------------------------
 ALTER TABLE supplier_errors ENABLE ROW LEVEL SECURITY;
 ALTER TABLE supplier_errors FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_supplier_errors ON supplier_errors;
 CREATE POLICY tenant_isolation_supplier_errors ON supplier_errors
-    USING (tenant_id = current_setting('app.tenant_id', true));
+    USING (
+        tenant_id = current_setting('app.tenant_id', true)
+        OR current_setting('app.bypass_rls', true) = 'true'
+    );
 
 -- ---------------------------------------------------------------------------
 -- 5. supplier_errors_unified 视图（hot ∪ historical，admin 读端唯一入口）
@@ -235,53 +248,74 @@ CREATE OR REPLACE FUNCTION promote_supplier_errors_hot_to_partition(
 RETURNS bigint
 LANGUAGE plpgsql AS $$
 DECLARE
-    n bigint := 0;
+    moved bigint := 0;
 BEGIN
+    -- 参数守卫（与 656 模板一致：错误直接上抛，由调用方记录）
+    IF p_retention IS NULL OR p_retention <= interval '0 seconds' THEN
+        RAISE EXCEPTION 'p_retention must be positive';
+    END IF;
+    IF p_batch_size IS NULL OR p_batch_size < 1 OR p_batch_size > 50000 THEN
+        RAISE EXCEPTION 'p_batch_size must be between 1 and 50000';
+    END IF;
+
     -- 确保目标分区存在（遍历 cold 行的月份）
     PERFORM ensure_supplier_errors_partition(m)
     FROM (
         SELECT DISTINCT date_trunc('month', occurred_at) AS m
         FROM supplier_errors_hot
-        WHERE occurred_at < now() - p_retention
+        WHERE occurred_at < statement_timestamp() - p_retention
         LIMIT 12
     ) months;
 
-    -- 临时表批量复制（V359 同模式：copy → delete → insert，失败回保留）
-    EXECUTE 'DROP TABLE IF EXISTS pg_temp._promote_supplier_errors_batch';
-    CREATE TEMP TABLE _promote_supplier_errors_batch ON COMMIT DROP AS
-    SELECT id, occurred_at, request_id, trace_id, tenant_id, session_id,
-           provider_id, supplier, credential_id, model, attempt_seq,
-           error_type, error_code, http_status, error_message,
-           is_retryable, stage, latency_ms, affected_users, request_metadata
-    FROM supplier_errors_hot
-    WHERE occurred_at < now() - p_retention
-    ORDER BY occurred_at
-    LIMIT p_batch_size;
+    -- 2026-09-05 审计 D-2#2：改为 656 模板式单条 data-modifying CTE。
+    -- 旧实现（temp table 复制 → 异常块外 DELETE → INSERT ... EXCEPTION 吞错）
+    -- 是 602 迁移注释记录过的真实事故模式：plpgsql EXCEPTION 子块只回滚
+    -- 子事务（INSERT），外层 DELETE 照样提交，INSERT 一旦失败该批错误明细
+    -- 即静默丢失，且 RAISE WARNING 还宣称 rows preserved in hot table。
+    -- 现版本 FOR UPDATE SKIP LOCKED → DELETE...RETURNING（显式列，防
+    -- schema drift 按位错配）→ INSERT，单语句原子：任何失败整体回滚、
+    -- 错误自然上抛（Go 侧 recordPromoteFailure 记录），不再吞 EXCEPTION。
+    WITH batch AS (
+        SELECT id FROM supplier_errors_hot
+        WHERE occurred_at < statement_timestamp() - p_retention
+        ORDER BY occurred_at, id
+        LIMIT p_batch_size
+        FOR UPDATE SKIP LOCKED
+    ), moved_rows AS (
+        DELETE FROM supplier_errors_hot h USING batch b
+        WHERE h.id = b.id
+        RETURNING h.id, h.occurred_at, h.request_id, h.trace_id, h.tenant_id,
+                  h.session_id, h.provider_id, h.supplier, h.credential_id,
+                  h.model, h.attempt_seq, h.error_type, h.error_code,
+                  h.http_status, h.error_message, h.is_retryable, h.stage,
+                  h.latency_ms, h.affected_users, h.request_metadata
+    ), inserted AS (
+        INSERT INTO supplier_errors (
+            id, occurred_at, request_id, trace_id, tenant_id,
+            session_id, provider_id, supplier, credential_id,
+            model, attempt_seq, error_type, error_code,
+            http_status, error_message, is_retryable, stage,
+            latency_ms, affected_users, request_metadata)
+        SELECT id, occurred_at, request_id, trace_id, tenant_id,
+               session_id, provider_id, supplier, credential_id,
+               model, attempt_seq, error_type, error_code,
+               http_status, error_message, is_retryable, stage,
+               latency_ms, affected_users, request_metadata
+        FROM moved_rows
+        RETURNING id
+    )
+    SELECT count(*) INTO moved FROM inserted;
 
-    GET DIAGNOSTICS n = ROW_COUNT;
-
-    IF n = 0 THEN
-        RETURN 0;
-    END IF;
-
-    DELETE FROM supplier_errors_hot
-    WHERE id IN (SELECT id FROM _promote_supplier_errors_batch);
-
-    BEGIN
-        INSERT INTO supplier_errors
-        SELECT * FROM _promote_supplier_errors_batch;
-    EXCEPTION WHEN OTHERS THEN
-        RAISE WARNING 'promote_supplier_errors_hot_to_partition: INSERT failed (%), rows preserved in hot table', SQLERRM;
-        n := 0;
-    END;
-
-    RETURN n;
+    RETURN moved;
 END;
 $$;
 
 COMMENT ON FUNCTION promote_supplier_errors_hot_to_partition(interval, int) IS
 'Promotes cold rows from supplier_errors_hot to monthly columnar partitions
-(default retention 8h, batch 5000). Registered in
+(default retention 8h, batch 5000). Atomic single data-modifying CTE
+(FOR UPDATE SKIP LOCKED -> DELETE RETURNING -> INSERT; 2026-09-05 audit
+D-2#2 replaced the temp-table + EXCEPTION body that could silently drop a
+batch on INSERT failure). Registered in
 admin.data_lifecycle_hot_partition.hotPromoteTableMap. Created by V371 (2026-09-05).';
 
 -- ---------------------------------------------------------------------------
@@ -324,6 +358,9 @@ CREATE INDEX IF NOT EXISTS idx_supplier_error_stats_error_type
 ALTER TABLE supplier_error_stats ENABLE ROW LEVEL SECURITY;
 ALTER TABLE supplier_error_stats FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation_supplier_error_stats ON supplier_error_stats;
+-- 2026-09-05 审计 E-#1 备注：预聚合表不含真实租户维度（credential_id=0
+-- 表示全凭据聚合），policy 刻意 USING (true) 全放行——聚合器/admin 读端
+-- 均无需 tenant GUC，也无 42501 风险；与 hot/父表不同，无需 bypass 旁路。
 CREATE POLICY tenant_isolation_supplier_error_stats ON supplier_error_stats
     USING (true);
 

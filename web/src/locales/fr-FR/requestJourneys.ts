@@ -106,4 +106,10 @@ export default {
     node: 'Node {node}',
     model: 'Model {model}',
   },
+  attempts: {
+    provider: 'Fournisseur {id}',
+    model: 'Modèle : {value}',
+    credential: 'Identifiant : {value}',
+    empty: 'Aucune tentative de repli de routage enregistrée',
+  },
 }

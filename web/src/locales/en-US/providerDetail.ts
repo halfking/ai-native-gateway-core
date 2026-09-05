@@ -244,6 +244,9 @@ export default {
     drawerFieldApiKey: "API Key",
   },
   errorDetail: {
+    supplier: 'Supplier', errorCode: 'Error code', requestId: 'Request ID',
+    stage: 'Stage', retry: 'Retry', latency: 'Latency',
+    openRequestTitle: 'Open request detail',
     title: "Vendor error detail", selectCredential: "Select a credential first", windowTitle: "Time window",
     lastHour: "Last 1 hour", lastDay: "Last 24 hours", lastWeek: "Last 7 days", loading: "Loading vendor errors…",
     loadFailed: "Failed to load vendor errors", credential: "Credential", health: "Health", availability: "Availability", circuit: "Circuit",

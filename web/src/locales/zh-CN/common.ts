@@ -1,6 +1,7 @@
 // common.ts — 全站复用文案：按钮、状态、操作反馈、分页等。
 // 高频词（取消/确认/启用/禁用/加载中）在多个模块引用，优先抽取。
 export default {
+  credentialFallback: '凭据',
   copied: '已复制',
   add: '添加',
   button: {

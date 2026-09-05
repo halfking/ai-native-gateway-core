@@ -30,6 +30,7 @@ import {
   type SessionTurnBodiesResponse,
 } from '../../api/sessions_v2'
 import TurnDigestDrawer from '../session/TurnDigestDrawer.vue'
+import { useTurnTitleSummary } from '../../composables/useTurnTitleSummary'
 
 const props = defineProps<{
   sessionId: string
@@ -50,16 +51,33 @@ const { t } = useI18n()
 // Digest drawer state — opened from a left-rail turn card in the "turns" sub-view.
 const digestDrawerOpen = ref(false)
 const digestDrawerTurnNo = ref<number | null>(null)
+// 2026-09-05 audit F2-#9: the turn detail response never carries title/summary,
+// so the drawer's fallbacks come from the turns list (cached per session).
+const { ensureTurnTitleSummary, lookupTurnTitleSummary } = useTurnTitleSummary()
+const digestDrawerTitle = ref('')
+const digestDrawerSummary = ref('')
 
 function showDigest(turnNo: number | null | undefined) {
   if (turnNo == null) return
+  const sessionId = props.sessionId
   digestDrawerTurnNo.value = turnNo
+  digestDrawerTitle.value = ''
+  digestDrawerSummary.value = ''
   digestDrawerOpen.value = true
+  void ensureTurnTitleSummary(sessionId).then(() => {
+    // Ignore the resolved lookup if the user already switched turns/sessions.
+    if (props.sessionId !== sessionId || digestDrawerTurnNo.value !== turnNo) return
+    const item = lookupTurnTitleSummary(sessionId, turnNo)
+    digestDrawerTitle.value = item.title
+    digestDrawerSummary.value = item.summary
+  })
 }
 
 function closeDigest() {
   digestDrawerOpen.value = false
   digestDrawerTurnNo.value = null
+  digestDrawerTitle.value = ''
+  digestDrawerSummary.value = ''
 }
 
 type Facet = 'integrated' | 'system' | 'user' | 'tool' | 'assistant' | 'children' | 'compress' | 'security'
@@ -519,6 +537,8 @@ function onDividerKeydown(e: KeyboardEvent) {
       :model-value="digestDrawerOpen"
       :session-id="sessionId"
       :turn-no="digestDrawerTurnNo"
+      :title="digestDrawerTitle"
+      :summary="digestDrawerSummary"
       @update:model-value="(value: boolean) => { if (!value) closeDigest() }"
       @close="closeDigest"
     />

@@ -28,6 +28,11 @@ func TestMigration655AutoRouteSelectionsHotContract(t *testing.T) {
 		"CREATE OR REPLACE FUNCTION public.ensure_auto_route_selections_partition",
 		"CREATE OR REPLACE FUNCTION public.promote_auto_route_selections_hot_to_partition",
 		"FOR UPDATE SKIP LOCKED",
+		// 2026-09-05 audit H-4: promote must only drain settled rows past the
+		// retention window, with a 7-day fallback so unsettled rows cannot
+		// strand in hot forever.
+		"settled_at IS NOT NULL AND ts < statement_timestamp() - p_retention",
+		"ts < statement_timestamp() - interval '7 days'",
 		"DELETE FROM public.auto_route_selections_hot",
 		"RETURNING h.id",
 		"INSERT INTO public.auto_route_selections (",

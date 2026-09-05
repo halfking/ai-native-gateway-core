@@ -639,7 +639,9 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 		}
 
 	case "redacted_thinking":
-		out["thinking"] = block.RedactedThinking
+		// A-#17: Anthropic wire format carries the encrypted payload under
+		// "data", not "thinking".
+		out["data"] = block.RedactedThinking
 
 	case "document":
 		// Serialize Anthropic document block

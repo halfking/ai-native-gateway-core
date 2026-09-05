@@ -376,7 +376,12 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
 
 		case "redacted_thinking":
-			if rt, ok := blockMap["thinking"].(string); ok {
+			// A-#17 (audit round2): the real wire format is
+			// {"type":"redacted_thinking","data":"..."}; fall back to the
+			// legacy "thinking" key for IR rows persisted by older builds.
+			if rt, ok := blockMap["data"].(string); ok {
+				irBlock.RedactedThinking = rt
+			} else if rt, ok := blockMap["thinking"].(string); ok {
 				irBlock.RedactedThinking = rt
 			}
 
@@ -459,7 +464,9 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
 		}
 	case "redacted_thinking":
-		if rt, ok := blockMap["thinking"].(string); ok {
+		if rt, ok := blockMap["data"].(string); ok {
+			irBlock.RedactedThinking = rt
+		} else if rt, ok := blockMap["thinking"].(string); ok {
 			irBlock.RedactedThinking = rt
 		}
 	}

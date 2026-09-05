@@ -217,26 +217,31 @@ func extractSignalsForAuto(reqBody *chatRequestBody, rawBody []byte) autoroute.C
 	return sigs
 }
 
-// estimateTokens uses a conservative heuristic: 4 chars per token for
-// latin, 1.5 per CJK rune. Returns 0 for empty input.
+// estimateTokens uses a conservative heuristic: 4 bytes per token for
+// latin/ASCII, 2 tokens per CJK rune (comment contract: 1 CJK char ≈ 1.5-2).
+// Returns 0 for empty input.
+//
+// H-5 (audit round2): the former single accumulator divided CJK counts by 4
+// too, valuing one CJK char at ~0.5 tokens and never tripping the
+// long_context route gate for Chinese requests.
 func estimateTokens(b []byte) int {
 	if len(b) == 0 {
 		return 0
 	}
-	tokens := 0
+	asciiBytes := 0
+	cjkRunes := 0
 	for i := 0; i < len(b); {
 		r, size := decodeRune(b[i:])
 		if r >= 0x4E00 && r <= 0x9FFF {
-			tokens += 2 // 1 CJK char ≈ 1.5-2 tokens
+			cjkRunes++
 		} else {
-			tokens++ // 1 ascii byte ≈ 0.25 token, so 4 bytes ≈ 1 token
-			// But we count per byte, so adjust by counting 4-byte groups
+			asciiBytes += size
 		}
 		i += size
 	}
-	// Adjust: the per-byte count for ASCII underweights, so divide by 4
-	// for ASCII portion. Cheap approximation; accuracy is ~±30%.
-	return tokens / 4
+	// ASCII: ~4 bytes per token. CJK: ~2 tokens per rune (conservative side
+	// of 1.5-2; overestimating is the safe direction for long-context gating).
+	return asciiBytes/4 + cjkRunes*2
 }
 
 // decodeRune decodes one UTF-8 rune from b. Returns (r, n). On invalid

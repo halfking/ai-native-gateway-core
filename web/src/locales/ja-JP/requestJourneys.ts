@@ -106,4 +106,10 @@ export default {
     node: 'Node {node}',
     model: 'Model {model}',
   },
+  attempts: {
+    provider: 'プロバイダー {id}',
+    model: 'モデル: {value}',
+    credential: '資格情報: {value}',
+    empty: 'ルーティングフォールバック試行の記録はありません',
+  },
 }
