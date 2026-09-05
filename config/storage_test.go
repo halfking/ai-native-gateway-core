@@ -431,3 +431,133 @@ func TestNormalizeModeTrimsWhitespace(t *testing.T) {
 		t.Fatalf("NormalizeMode() = %q, want %q", got, StorageModeLite)
 	}
 }
+
+// consistencyEnvKeys 列出一致性对账相关的全部环境变量，测试开头统一清空，
+// 避免宿主机环境污染。
+var consistencyEnvKeys = []string{
+	"LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED",
+	"LLM_GATEWAY_CONSISTENCY_INTERVAL_HOURS",
+	"LLM_GATEWAY_CONSISTENCY_IDLE_THRESHOLD_MIN",
+	"LLM_GATEWAY_CONSISTENCY_DELETE_ORPHANS",
+	"LLM_GATEWAY_CONSISTENCY_MAX_SESSIONS_PER_RUN",
+}
+
+// TestLiteConsistencyDefaults 验证一致性对账配置的默认值与显式覆盖：
+// 默认开启（Enabled 指针 nil → true）、report-only（delete_orphans=false）、
+// 24h 周期 / 10min 空闲阈值 / 单轮 500；显式配置一律保留。
+func TestLiteConsistencyDefaults(t *testing.T) {
+	cfg := &StorageConfig{Mode: "lite"}
+	cfg.ApplyLiteDefaults()
+
+	c := cfg.Lite.Consistency
+	if c.Enabled == nil || !*c.Enabled {
+		t.Fatalf("Consistency.Enabled = %v, want default true", c.Enabled)
+	}
+	if c.IntervalHours != 24 {
+		t.Fatalf("IntervalHours = %d, want 24", c.IntervalHours)
+	}
+	if c.IdleThresholdMin != 10 {
+		t.Fatalf("IdleThresholdMin = %d, want 10", c.IdleThresholdMin)
+	}
+	if c.DeleteOrphanBodies {
+		t.Fatal("DeleteOrphanBodies = true, want default false (report-only 恒安全)")
+	}
+	if c.MaxSessionsPerRun != 500 {
+		t.Fatalf("MaxSessionsPerRun = %d, want 500", c.MaxSessionsPerRun)
+	}
+
+	// 显式关闭不被默认值翻转；显式数值不被覆盖。
+	explicit := &StorageConfig{
+		Mode: "lite",
+		Lite: &LiteStorageConfig{SQLitePath: "/x/gw.db"},
+	}
+	f := false
+	explicit.Lite.Consistency.Enabled = &f
+	explicit.Lite.Consistency.IntervalHours = 6
+	explicit.Lite.Consistency.IdleThresholdMin = 30
+	explicit.Lite.Consistency.DeleteOrphanBodies = true
+	explicit.Lite.Consistency.MaxSessionsPerRun = 50
+	explicit.ApplyLiteDefaults()
+	c = explicit.Lite.Consistency
+	if c.Enabled == nil || *c.Enabled {
+		t.Fatalf("显式 false 被默认值覆盖: %v", c.Enabled)
+	}
+	if c.IntervalHours != 6 || c.IdleThresholdMin != 30 || c.MaxSessionsPerRun != 50 || !c.DeleteOrphanBodies {
+		t.Fatalf("显式配置被覆盖: %+v", c)
+	}
+}
+
+// TestLoadStorageConfigYAMLConsistency 验证 YAML consistency 段解析
+// （含显式 consistency_check_enabled: false 的区分能力）。
+func TestLoadStorageConfigYAMLConsistency(t *testing.T) {
+	for _, key := range consistencyEnvKeys {
+		t.Setenv(key, "")
+	}
+
+	path := filepath.Join(t.TempDir(), "storage.yaml")
+	contents := `storage_mode: lite
+lite_storage:
+  sqlite_path: /tmp/gateway/gw.db
+  consistency:
+    consistency_check_enabled: false
+    interval_hours: 12
+    idle_threshold_min: 30
+    delete_orphans: true
+    max_sessions_per_run: 100
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadStorageConfigFromYAML(path)
+	if err != nil {
+		t.Fatalf("LoadStorageConfigFromYAML() error = %v", err)
+	}
+	c := cfg.Lite.Consistency
+	if c.Enabled == nil || *c.Enabled {
+		t.Fatalf("Enabled = %v, want explicit false", c.Enabled)
+	}
+	if c.IntervalHours != 12 || c.IdleThresholdMin != 30 || c.MaxSessionsPerRun != 100 || !c.DeleteOrphanBodies {
+		t.Fatalf("consistency 段 = %+v, want parsed values", c)
+	}
+
+	// ApplyLiteDefaults 后显式 false 必须保留（默认值不得翻转）。
+	cfg.ApplyLiteDefaults()
+	if cfg.Lite.Consistency.Enabled == nil || *cfg.Lite.Consistency.Enabled {
+		t.Fatalf("ApplyLiteDefaults 翻转了显式 false: %v", cfg.Lite.Consistency.Enabled)
+	}
+}
+
+// TestLoadStorageConfigEnvConsistency 验证一致性对账的 env-only 配置路径。
+func TestLoadStorageConfigEnvConsistency(t *testing.T) {
+	for _, key := range consistencyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED", "false")
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_INTERVAL_HOURS", "6")
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_IDLE_THRESHOLD_MIN", "30")
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_DELETE_ORPHANS", "true")
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_MAX_SESSIONS_PER_RUN", "50")
+
+	cfg := LoadStorageConfigFromEnv()
+	if cfg.Lite == nil {
+		t.Fatal("Lite = nil, want env-created section")
+	}
+	c := cfg.Lite.Consistency
+	if c.Enabled == nil || *c.Enabled {
+		t.Fatalf("Enabled = %v, want env false", c.Enabled)
+	}
+	if c.IntervalHours != 6 || c.IdleThresholdMin != 30 || c.MaxSessionsPerRun != 50 || !c.DeleteOrphanBodies {
+		t.Fatalf("env consistency = %+v, want env values", c)
+	}
+
+	// 非法数值不覆盖（保持零值 → ApplyLiteDefaults 兜底）。
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_INTERVAL_HOURS", "-3")
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_DELETE_ORPHANS", "not-a-bool")
+	cfg = LoadStorageConfigFromEnv()
+	if cfg.Lite.Consistency.IntervalHours != 0 {
+		t.Fatalf("非法 IntervalHours 被采纳: %d", cfg.Lite.Consistency.IntervalHours)
+	}
+	if cfg.Lite.Consistency.DeleteOrphanBodies {
+		t.Fatal("非法 delete_orphans 值不应置位")
+	}
+}

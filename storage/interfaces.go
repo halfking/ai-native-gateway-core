@@ -56,3 +56,14 @@ type StateStore interface {
 	Get(ctx context.Context, key string) (interface{}, error)
 	Delete(ctx context.Context, key string) error
 }
+
+// IdleSessionLister 枚举「近期活跃且已空闲」的会话，供跨介质一致性对账
+// worker（bg.ConsistencyWorker，审计 B-#2）逐会话跑 Reconcile 使用。
+// 空闲判定（最后活动早于 idleBefore）是把在途写入挡在对账窗外的第一道
+// 护栏：lite 写序为 body 先落盘、meta 后提交，已空闲的会话不会再出现
+// 合法的「body→meta 在途窗口」。由 SQLiteSessionStore 实现。
+type IdleSessionLister interface {
+	// ListIdleSessions 返回最后活动时间早于 idleBefore 的会话（跨租户），
+	// 最近活跃优先、至多 limit 条（limit <= 0 由实现取默认页大小）。
+	ListIdleSessions(ctx context.Context, idleBefore time.Time, limit int) ([]*Session, error)
+}

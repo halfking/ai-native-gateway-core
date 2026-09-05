@@ -386,6 +386,14 @@ func serializeOpenAIMessageContent(blocks []ContentBlock) []map[string]any {
 					url = "data:" + mt + ";base64," + block.Image.Data
 				}
 
+				// A-#18(c): file_id-only 图片在 Chat Completions 上没有
+				// image_url 表达。输出 image_url:"" 会产生上游拒收的空字段，
+				// 因此跳过该块；损失由 reportSerializeOpenAILosses 显式上报
+				// （本函数拿不到 message 索引与 SourceProtocol）。
+				if url == "" && block.Image.FileID != "" {
+					continue
+				}
+
 				imageURL := map[string]any{"url": url}
 				// P1-1 fix (2026-07-13): Restore detail parameter if present
 				if block.Image.Detail != "" {
@@ -676,7 +684,14 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 		}
 		fileInner["file_data"] = url
 	case "file_id":
-		fileInner["file_id"] = doc.Source.Data
+		// A-#18(b): prefer the unified FileID field; fall back to Data for
+		// legacy rows (parse_openai used to encode the id there, and session
+		// restore collapses FileID into Data).
+		fid := doc.Source.FileID
+		if fid == "" {
+			fid = doc.Source.Data
+		}
+		fileInner["file_id"] = fid
 	case "text":
 		fileInner["file_data"] = doc.Source.Data
 	}
@@ -738,6 +753,23 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 	// concept. Skip when source == OpenAI Chat (same-protocol with target).
 	for i, msg := range req.Messages {
 		for j, block := range msg.Content {
+			// A-#18(c): a Files-API file_id image has no image_url
+			// representation on Chat Completions — the content serializer
+			// drops the block (never emits image_url:""). No same-protocol
+			// guard: parse_openai never produces FileID images, so any
+			// FileID here is cross-protocol or session-restored, and the
+			// drop is a real loss in both cases.
+			if block.Image != nil && block.Image.FileID != "" && block.Image.URL == "" && block.Image.Data == "" {
+				ReportProtocolLoss(
+					requestIDFromIR(req),
+					fieldPathMessageContent(i, j, "image.file_id"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIChat,
+					"loss",
+					"file_id image reference cannot be expressed as an OpenAI Chat image_url; block dropped",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
 			if src == ProtocolOpenAIChat {
 				continue
 			}

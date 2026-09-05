@@ -5,7 +5,8 @@
 // 职责边界（与 main.go 的分工）：
 //   - 本文件持有全部 lite 模式装配逻辑：加载存储配置（YAML + LLM_GATEWAY_* env）、
 //     初始化存储工厂（SQLite 三 store + FileBodies/Memory 单例）、L1.5 FileCache
-//     与后台清理任务（bg.CacheTrimmer / bg.BodiesTrimmer）；
+//     与后台任务（bg.CacheTrimmer / bg.BodiesTrimmer 两个 trimmer + 一致性对账
+//     worker bg.ConsistencyWorker，审计 B-#2 接线）；
 //   - main.go 仅在五个位置做最小插入：config 加载后调用 initStorageMode、
 //     lite 模式跳过 PG 初始化、telemetryClient 构造后注入 lite sink
 //     （见 lite_telemetry_sink.go，审计 B2）、SessionCacheV2 构造点走
@@ -48,6 +49,11 @@ type storageRuntime struct {
 	fileCache *v2.FileCache                  // L1.5 本地文件缓存（注入 SessionCacheV2）
 	mode      string                         // 当前为 "lite"（仅 lite 模式才会创建 runtime）
 
+	// consistencyWorker 是 lite 一致性对账 worker（审计 B-#2 接线）；
+	// 配置关闭或 session store 不支持空闲枚举时为 nil。快照持有仅供
+	// 测试断言与观测，生命周期由 trimmerCtx/trimmerWG 统一管理。
+	consistencyWorker *bg.ConsistencyWorker
+
 	// 关键路径快照：供启动日志与测试断言。
 	sqlitePath string
 	bodiesDir  string
@@ -55,6 +61,7 @@ type storageRuntime struct {
 	logsDir    string
 
 	// trimmers 生命周期：可取消 context 挂在这里，Shutdown 先取消再等退出。
+	// 挂载对象：cache/bodies 两个 trimmer + 一致性对账 worker（同生命周期）。
 	trimmerCancel context.CancelFunc
 	trimmerWG     sync.WaitGroup
 
@@ -147,6 +154,34 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 		bodiesTrimmer.Start(trimmerCtx)
 	}()
 
+	// 一致性对账 worker（审计 B-#2 接线）：lite 启动完成后低频（默认每日）
+	// 对「近期活跃且已空闲」的 session 跑 Reconcile。默认 report-only（结构化
+	// 日志告警，不动数据）；仅当配置显式 delete_orphans 时才删孤儿（删除路径
+	// 自带「删除前 meta 复检 + mtime 宽限」双保险，见 storage.RepairTurnArtifacts）。
+	// session store 不支持空闲枚举（非 SQLite 实现）时降级关闭并告警。
+	consistencyEnabled := lite.Consistency.Enabled != nil && *lite.Consistency.Enabled
+	if consistencyEnabled {
+		if lister, ok := f.NewSessionStore().(storage.IdleSessionLister); ok {
+			worker := bg.NewConsistencyWorker(lister, f.NewTurnsStore(), f.NewBodiesStore()).
+				WithInterval(time.Duration(lite.Consistency.IntervalHours) * time.Hour).
+				WithIdleThreshold(time.Duration(lite.Consistency.IdleThresholdMin) * time.Minute).
+				WithMaxSessions(lite.Consistency.MaxSessionsPerRun)
+			if lite.Consistency.DeleteOrphanBodies {
+				worker.WithAction(storage.RepairDeleteOrphanBodies)
+			}
+			rt.consistencyWorker = worker
+			rt.trimmerWG.Add(1)
+			go func() {
+				defer rt.trimmerWG.Done()
+				worker.Start(trimmerCtx)
+			}()
+		} else {
+			consistencyEnabled = false
+			slog.Warn("storage lite: session store 不支持空闲会话枚举，一致性对账 worker 未装配",
+				"session_store_type", fmt.Sprintf("%T", f.NewSessionStore()))
+		}
+	}
+
 	slog.Info("storage lite 模式已启用",
 		"sqlite_path", rt.sqlitePath,
 		"bodies_dir", rt.bodiesDir,
@@ -157,7 +192,12 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 		"async_writers", lite.AsyncWriters,
 		"retention_session_bodies_days", lite.Retention.SessionBodiesDays,
 		"retention_request_logs_days", lite.Retention.RequestLogsDays,
-		"retention_cache_hours", lite.Retention.CacheHours)
+		"retention_cache_hours", lite.Retention.CacheHours,
+		"consistency_check_enabled", consistencyEnabled,
+		"consistency_interval_hours", lite.Consistency.IntervalHours,
+		"consistency_idle_threshold_min", lite.Consistency.IdleThresholdMin,
+		"consistency_delete_orphans", lite.Consistency.DeleteOrphanBodies,
+		"consistency_max_sessions_per_run", lite.Consistency.MaxSessionsPerRun)
 	return rt, nil
 }
 
