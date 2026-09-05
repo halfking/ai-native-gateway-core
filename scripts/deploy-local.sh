@@ -9,6 +9,8 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/deploy-local-lib.sh"
 # shellcheck source=deploy-lib/lock.sh
 source "$SCRIPT_DIR/deploy-lib/lock.sh"
+# shellcheck source=deploy-lib/post-deploy-verify.sh
+source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
 
 # Track whether the caller provided the database configuration before the
 # import below, so diagnostics can say where the DSN came from.
@@ -570,6 +572,31 @@ PY
 
 record_success() { dl_record_verify "$ROOT_DIR" "$DL_DB_MODE" "$DL_REDIS_MODE" "$RELEASE_VERSION" "$(dl_active_port)"; }
 
+# A gateway deployed without LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY cannot
+# decrypt stored provider credentials (incident 2026-09-05: every apikey on
+# provider 587 showed decrypt_failed). The key travels through dl_write_env,
+# but a deploy from a checkout without .env.local still produces an empty
+# value — so fail closed when the target DB already holds ciphertext, and let
+# a genuinely fresh DB proceed on the SHA-256(SECRET_KEY) fallback.
+gate_credential_encryption_key() {
+  [[ -n "${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}" ]] && return 0
+  local count
+  count=$(psql_query "SELECT count(*) FROM credentials WHERE secret_ciphertext IS NOT NULL AND secret_ciphertext <> ''" 2>/dev/null) || count=''
+  if [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )); then
+    die "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY is empty but the database holds $count encrypted credential(s); the new gateway would be unable to decrypt any of them. Import .env.local or export the 245-synced SSOT key before deploying (incident 2026-09-05, provider 587)"
+  fi
+  warn 'LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY is empty and no stored credentials exist yet; AES keys will derive from SHA-256(LLM_GATEWAY_SECRET_KEY)'
+}
+
+# Post-cutover decrypt smoke: logs into the admin API and asserts the pinned
+# (or top-credential) providers still decrypt. Catches a keyring/binary
+# regression that healthz/readyz cannot see (245 incident 2026-09-04).
+dl_local_exec() { bash -c "$1"; }
+smoke_credential_decrypt() {
+  local port="$1" env_file="$2"
+  deploy_verify_credential_decrypt dl_local_exec "$port" "$env_file"
+}
+
 migrate_database() {
   apply_schema_if_empty
   export LLM_GATEWAY_DATABASE_URL DATABASE_URL
@@ -623,6 +650,7 @@ deploy() {
   binary=$(build_backend)
   build_frontend
   migrate_database "$binary"
+  gate_credential_encryption_key
   bundle=$(stage_release "$binary")
   release_build_lock
   active_port=$(dl_active_port); candidate_port=$(dl_candidate_port)
@@ -630,6 +658,9 @@ deploy() {
   start_instance "$bundle" "$candidate_port"
   if ! verify_instance "$candidate_port" "$bundle"; then
     stop_instance "$candidate_port"; die "candidate failed health/readiness/version gates; active release was preserved"
+  fi
+  if ! smoke_credential_decrypt "$candidate_port" "$bundle/env"; then
+    stop_instance "$candidate_port"; die "candidate failed credential decrypt smoke; active release was preserved"
   fi
   if [[ -n "${LLM_GATEWAY_UPSTREAM_FILE:-}" && -f "$LLM_GATEWAY_UPSTREAM_FILE" ]]; then
     printf 'server 127.0.0.1:%s;\n' "$candidate_port" > "$LLM_GATEWAY_UPSTREAM_FILE"
@@ -639,6 +670,11 @@ deploy() {
     stop_instance "$active_port"
     start_instance "$bundle" "$active_port"
     verify_instance "$active_port" "$bundle" || { stop_instance "$active_port"; [[ -e "$active_bundle" ]] && start_instance "$active_bundle" "$active_port"; die 'active cutover failed; previous release was restarted'; }
+    if ! smoke_credential_decrypt "$active_port" "$bundle/env"; then
+      stop_instance "$active_port"
+      [[ -e "$active_bundle" ]] && start_instance "$active_bundle" "$active_port"
+      die 'credential decrypt smoke failed after cutover; previous release was restarted'
+    fi
     stop_instance "$candidate_port"
     candidate_port="$active_port"
   fi

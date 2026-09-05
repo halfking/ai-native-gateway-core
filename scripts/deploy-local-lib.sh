@@ -295,7 +295,14 @@ dl_sha256() {
 # records instead of line-parsed text.
 dl_load_project_env() {
   local file="$1"
-  [[ -f "$file" ]] || return 0
+  if [[ ! -f "$file" ]]; then
+    # Silent skip is how a deploy from a clean checkout (no gitignored
+    # .env.local) came up with an empty LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY
+    # and every stored credential undecryptable (incident 2026-09-05,
+    # provider 587). Make the absence visible; deploy() gates the fatal case.
+    printf '[deploy-lib] warning: %s not found; keys/DSN must all come from the calling environment\n' "$file" >&2
+    return 0
+  fi
   local kv key val
   while IFS= read -r -d '' kv; do
     key="${kv%%=*}"
@@ -356,6 +363,7 @@ dl_write_env() {
     dl_emit_env_line LLM_GATEWAY_REDIS_DATA_DIR "$(dl_shared_redis_dir)"
     dl_emit_env_line LLM_GATEWAY_SECRET_KEY "${LLM_GATEWAY_SECRET_KEY:-}"
     dl_emit_env_line LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY "${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:-}"
+    dl_emit_env_line LLM_GATEWAY_DECRYPT_SMOKE_PROVIDER_ID "${LLM_GATEWAY_DECRYPT_SMOKE_PROVIDER_ID:-}"
     dl_emit_env_line LLM_GATEWAY_API_KEY "${LLM_GATEWAY_API_KEY:-}"
     dl_emit_env_line LLM_GATEWAY_ADMIN_API_KEY "${LLM_GATEWAY_ADMIN_API_KEY:-}"
     dl_emit_env_line LLM_GATEWAY_ADMIN_USER "${LLM_GATEWAY_ADMIN_USER:-}"
