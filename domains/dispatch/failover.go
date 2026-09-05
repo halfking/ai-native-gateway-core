@@ -17,6 +17,12 @@ type failoverItem struct {
 }
 
 // runFailover is a ③ Failover Mover worker.
+//
+// Shutdown (audit 2026-09-05 C-#2): every item still buffered in failoverCh
+// when stopCh fires is completed with ErrShutdown instead of being orphaned —
+// a dropped qr means its Submit caller blocks on qr.ResultCh until ctx
+// expiry. Mirrors runDispatcher's shutdownDrainDispatchIn. See
+// TestStopDrainsFailoverChResidue.
 func (p *Pipeline) runFailover() {
 	defer p.wg.Done()
 	for {
@@ -25,8 +31,41 @@ func (p *Pipeline) runFailover() {
 			if !ok {
 				return
 			}
+			if p.shutdown.Load() {
+				// stopCh is already closed and the select randomly picked the
+				// receive branch: buffered residue. Complete directly instead
+				// of walking the failover ladder on a stopped pipeline.
+				p.complete(it.qr, ForwardOutcome{Err: ErrShutdown})
+				continue
+			}
 			p.move(it.qr, it.out)
 		case <-p.stopCh:
+			p.shutdownDrainFailover()
+			return
+		}
+	}
+}
+
+// shutdownDrainFailover completes every item still buffered in failoverCh
+// with ErrShutdown (audit 2026-09-05 C-#2).
+//
+// Ordering guarantee: the sole producers of failoverCh are the
+// credForwarder loop goroutines (routeFailover from acquire/attempt).
+// Waiting for them FIRST — after a credMu barrier that makes the producer
+// set final (newCredForwarder is only reached via getOrCreateForwarder under
+// credMu with a shutdown guard) — guarantees nothing is handed to failoverCh
+// after the drain observes it empty. forwarderWg.Done fires after the loop's
+// cf.wg.Wait, so in-flight attempt goroutines (which may also call
+// routeFailover) are included.
+func (p *Pipeline) shutdownDrainFailover() {
+	p.credMu.Lock()
+	p.credMu.Unlock() // barrier: producer set is now final (no new forwarders)
+	p.forwarderWg.Wait()
+	for {
+		select {
+		case it := <-p.failoverCh:
+			p.complete(it.qr, ForwardOutcome{Err: ErrShutdown})
+		default:
 			return
 		}
 	}

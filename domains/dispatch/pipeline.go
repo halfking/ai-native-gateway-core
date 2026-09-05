@@ -124,6 +124,19 @@ type Pipeline struct {
 	started  atomic.Bool
 	shutdown atomic.Bool
 
+	// drainerWg / forwarderWg (audit 2026-09-05 C-#2) sub-track the producers
+	// of dispatchIn (runModelDrainer goroutines) and failoverCh (credForwarder
+	// loop goroutines) inside the pipeline-wide wg. Dispatcher/failover
+	// shutdown drains wait on them so the drain loop's "channel empty"
+	// observation is final: a worker that exited while a producer was still
+	// handing items in would orphan those requests (Submit caller hangs on
+	// qr.ResultCh until its ctx expires — 2h for survival streams).
+	// Add sites mirror wg's exactly (getOrCreateModelQueue / newCredForwarder,
+	// both shutdown-gated under modelMu / credMu), so a Wait that started after
+	// the matching Stop barrier can never race a late Add.
+	drainerWg   sync.WaitGroup
+	forwarderWg sync.WaitGroup
+
 	// V3.1 waterfall ring (recent completed request timelines for admin UI).
 	waterfallOnce sync.Once
 	waterfall     *waterfallRing
@@ -147,6 +160,21 @@ type Pipeline struct {
 	// SetJournalSink.
 	journalSinkMu sync.RWMutex
 	journalSink   JournalSink
+
+	// journal delivery queue (audit 2026-09-05 C-#4): complete() used to call
+	// sink.ApplyJournalSnapshot synchronously, putting an unbounded DB write on
+	// the serial completion path (the production sink serializes the whole
+	// process under one mutex). Snapshots are now built synchronously in
+	// complete() (qr is not safe to touch after complete returns) and handed
+	// to a single background worker through this bounded queue. Drops are
+	// best-effort-logged like every other terminal side-channel.
+	// journalChMu guards create/close/send: the send is non-blocking under the
+	// lock so a Stop-time close can never race an in-flight send (send on a
+	// closed channel would panic).
+	journalChMu   sync.Mutex
+	journalCh     chan journalDeliveryItem
+	journalClosed bool
+	journalWg     sync.WaitGroup
 
 	queueObservationMu   sync.RWMutex
 	queueObservationSink QueueObservationSink
@@ -989,6 +1017,31 @@ func (p *Pipeline) Stop() {
 	}
 	p.observationChMu.Unlock()
 	p.observationWg.Wait()
+	// Audit 2026-09-05 C-#4: close the journal snapshot delivery queue and
+	// give its worker a bounded drain window so the last batch of terminal
+	// snapshots is flushed before the process exits instead of dying in the
+	// FIFO. The close is under journalChMu so it cannot race an in-flight
+	// enqueueJournalSnapshot send; late senders see journalClosed and drop.
+	p.journalChMu.Lock()
+	p.journalClosed = true
+	if p.journalCh != nil {
+		close(p.journalCh)
+	}
+	p.journalChMu.Unlock()
+	journalDone := make(chan struct{})
+	go func() {
+		p.journalWg.Wait()
+		close(journalDone)
+	}()
+	select {
+	case <-journalDone:
+	case <-time.After(journalDrainTimeout):
+		// A wedged sink must not hang process exit; the worker keeps draining
+		// in the background and exits once the channel (already closed) is
+		// empty. Queued snapshots are lost — best-effort contract.
+		slog.Warn("dispatch: journal sink drain timed out on Stop, dropping queued snapshots",
+			"timeout", journalDrainTimeout)
+	}
 	p.queueMirror.Close()
 	// V6-W1.7: stop the cluster admission plane's background work (redis
 	// heartbeat loop) after every worker has drained.
@@ -1102,6 +1155,11 @@ func (p *Pipeline) runTotalDrainer() {
 			if p.shutdown.Load() {
 				p.releaseTotal(qr)
 				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+				// Audit 2026-09-05 C-#2: complete the CURRENT request only was
+				// not enough — the rest of the Tier-0 buffer (capacity 1000)
+				// must be drained too, or those Submit callers hang until
+				// their ctx expires.
+				p.drainTotalQueueResidue()
 				return
 			}
 			// v6 G-Ⅱ (定时请求): a future DueAt parks the request back
@@ -1122,6 +1180,7 @@ func (p *Pipeline) runTotalDrainer() {
 				p.releaseTotal(qr)
 				if p.shutdown.Load() {
 					p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+					p.drainTotalQueueResidue()
 					return
 				}
 				p.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
@@ -1129,17 +1188,29 @@ func (p *Pipeline) runTotalDrainer() {
 				p.releaseTotal(qr)
 			}
 		case <-p.stopCh:
-			for {
-				select {
-				case qr := <-p.totalQueue.ch:
-					if qr != nil {
-						p.releaseTotal(qr)
-						p.complete(qr, ForwardOutcome{Err: ErrShutdown})
-					}
-				default:
-					return
-				}
+			p.drainTotalQueueResidue()
+			return
+		}
+	}
+}
+
+// drainTotalQueueResidue completes every request still buffered in the Tier-0
+// total FIFO with ErrShutdown (audit 2026-09-05 C-#2). Non-blocking: producers
+// (Submit / onScheduledDue) check shutdown before tryEnqueue, so the buffer is
+// final for practical purposes by the time stopCh fired; anything that still
+// races in afterwards is the pre-existing Submit-vs-Stop admission window
+// (bounded by the caller's ctx), unchanged by this fix.
+func (p *Pipeline) drainTotalQueueResidue() {
+	for {
+		select {
+		case qr := <-p.totalQueue.ch:
+			if qr == nil {
+				continue
 			}
+			p.releaseTotal(qr)
+			p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		default:
+			return
 		}
 	}
 }
@@ -1162,6 +1233,15 @@ func (p *Pipeline) enqueueModelFromTotal(name string, qr *QueuedRequest) bool {
 		// No backend / local → free pass-through.
 		if p.reserveLane(ctxOf(qr), LaneModel, name, p.config().MaxQueueDepth, &qr.clusterModel) {
 			mq.mu.Lock()
+			// Audit 2026-09-05 C-#2: shutdown gate INSIDE the mq.mu section so
+			// check+send is atomic against drainModelQueueOnShutdown — a sender
+			// that already holds mq.ch must either have completed its send
+			// (the drain then collects the request) or never get in at all.
+			if p.shutdown.Load() {
+				mq.mu.Unlock()
+				p.releaseLaneAdmission(&qr.clusterModel)
+				return false
+			}
 			depth := mq.depth.Add(1)
 			metricModelQueueDepth.WithLabelValues().Inc()
 			select {
@@ -1302,6 +1382,16 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	qr.journeyMu.Lock()
 	enqueuedAt := time.Now()
 	mq.mu.Lock()
+	// Audit 2026-09-05 C-#2: shutdown gate INSIDE the mq.mu section (same
+	// rationale as enqueueModelFromTotal — check+send must be atomic against
+	// drainModelQueueOnShutdown so a raced enqueue can never land in a lane
+	// whose drainer already exited).
+	if p.shutdown.Load() {
+		mq.mu.Unlock()
+		qr.journeyMu.Unlock()
+		p.releaseLaneAdmission(&qr.clusterModel)
+		return false
+	}
 	// Reserve the observable depth before handing qr to mq.ch. The channel send
 	// can wake the drainer immediately; incrementing after a successful send
 	// races the drainer's decrement and leaves a phantom queue item.
@@ -1358,6 +1448,7 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 	mq := &modelQueue{name: name, ch: make(chan *QueuedRequest, p.config().MaxQueueDepth)}
 	p.models[name] = mq
 	p.wg.Add(1)
+	p.drainerWg.Add(1) // audit 2026-09-05 C-#2: sub-track dispatchIn producers
 	go p.runModelDrainer(mq)
 	return mq
 }
@@ -1374,8 +1465,14 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 // (with ErrShutdown) if stopCh wins the inner select. Otherwise qr is
 // silently dropped — its Submit caller blocks forever on qr.ResultCh and
 // the goroutine leaks. See TestStopNoDrainLoss.
+//
+// Shutdown also drains whatever is still BUFFERED in mq.ch (audit 2026-09-05
+// C-#2): Stop clears p.models and the drainer exits, so residue left in the
+// lane's channel would never be completed either. See
+// TestStopDrainsModelQueueResidue.
 func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 	defer p.wg.Done()
+	defer p.drainerWg.Done() // audit 2026-09-05 C-#2 (runs first; wg.Done last as before)
 	for {
 		select {
 		case qr := <-mq.ch:
@@ -1406,9 +1503,48 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 				// decremented; we MUST report outcome to the Submit caller
 				// or it leaks forever waiting on qr.ResultCh.
 				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+				// Anything still buffered in the lane has the same fate now
+				// that this drainer is about to exit.
+				p.drainModelQueueOnShutdown(mq)
 				return
 			}
 		case <-p.stopCh:
+			p.drainModelQueueOnShutdown(mq)
+			return
+		}
+	}
+}
+
+// drainModelQueueOnShutdown completes every request still buffered in a model
+// lane with ErrShutdown (audit 2026-09-05 C-#2). It runs under mq.mu so the
+// "channel is empty" observation is atomic w.r.t. enqueueModel /
+// enqueueModelFromTotal: both check p.shutdown INSIDE their mq.mu section
+// before sending, so once the drain observes an empty channel under the lock,
+// no later enqueue can land (any sender entering mq.mu afterwards observes
+// shutdown=true — Stop's shutdown store happens-before close(stopCh), which
+// happens-before this drain).
+func (p *Pipeline) drainModelQueueOnShutdown(mq *modelQueue) {
+	if p == nil || mq == nil {
+		return
+	}
+	mq.mu.Lock()
+	var residue []*QueuedRequest
+	for {
+		select {
+		case qr := <-mq.ch:
+			residue = append(residue, qr)
+		default:
+			mq.mu.Unlock()
+			for _, qr := range residue {
+				mq.depth.Add(-1)
+				metricModelQueueDepth.WithLabelValues().Dec()
+				p.releaseLaneAdmission(&qr.clusterModel)
+				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+			}
+			if n := len(residue); n > 0 {
+				slog.Warn("dispatch: model queue residue completed on shutdown",
+					"model", mq.name, "requests", n)
+			}
 			return
 		}
 	}
@@ -1510,11 +1646,19 @@ func (p *Pipeline) emitRequestTerminal(qr *QueuedRequest, out ForwardOutcome) {
 }
 
 // emitJournalSnapshot reads the optional terminal-time journal sink and, if
-// present and the journal is non-empty, delivers a detached snapshot. The
-// journal's terminal entry is already in the ring at this point (recordDecision
-// at the top of complete), so consumers see the full trace. Sink failures
-// are logged and dropped — terminal delivery is best-effort, like the
-// observation path.
+// present and the journal is non-empty, queues a detached snapshot for
+// delivery. The journal's terminal entry is already in the ring at this point
+// (recordDecision at the top of complete), so consumers see the full trace.
+//
+// Audit 2026-09-05 C-#4: the snapshot is BUILT synchronously here (qr's
+// lifecycle ends when complete returns — JournalSnapshot() returns a detached
+// copy, verified in journal.go) but DELIVERED asynchronously by a single
+// background worker: the production sink (main_dispatch_observation.go
+// journey adapter) serializes the whole process behind one mutex and performs
+// untimed DB writes, so a synchronous ApplyJournalSnapshot on the completion
+// path was a global head-of-line blocker whenever the DB degraded. Delivery
+// remains best-effort: a full queue drops the snapshot with a metric + log,
+// like every other terminal side-channel (observations, queue mirror).
 //
 // Per ADR 2026-08-28-requestjourney-journal-snapshot.md §Decision point 3,
 // snapshots are bounded by maxJournalSnapshotEvents. When the journal exceeds
@@ -1561,12 +1705,83 @@ func (p *Pipeline) emitJournalSnapshot(qr *QueuedRequest) {
 		CallerTenantID:   qr.TenantID, // trusted in dispatch's terminal path
 		CallerAuthorized: true,
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("dispatch journal sink panic", "request_id", qr.ID, "panic", r)
+	p.enqueueJournalSnapshot(journalDeliveryItem{
+		// Capture the request ctx (cancel-detached) now: qr is not safe to
+		// read after complete() returns.
+		ctx:  context.WithoutCancel(ctxOf(qr)),
+		snap: snap,
+	})
+}
+
+// journalDeliveryItem is one queued snapshot hand-off to the background
+// delivery worker. ctx is the completion-time request ctx with cancellation
+// stripped (mirrors the previous synchronous sink invocation).
+type journalDeliveryItem struct {
+	ctx  context.Context
+	snap JournalSnapshot
+}
+
+// journalDeliveryQueueCapacity bounds the snapshot FIFO between complete()
+// and the delivery worker. Sized for terminal-rate bursts; overflow drops.
+const journalDeliveryQueueCapacity = 256
+
+// journalDrainTimeout bounds how long Stop() waits for the delivery worker to
+// flush the queue on shutdown — enough to keep the last batch of snapshots
+// without letting a wedged sink hang process exit.
+const journalDrainTimeout = 5 * time.Second
+
+// enqueueJournalSnapshot hands one snapshot to the background delivery
+// worker, spawning the worker lazily on first use (a pipeline that never
+// wires a sink — or never completes a journaled request — pays nothing).
+// The send is non-blocking UNDER journalChMu so it can never race Stop's
+// close of the same channel (send-on-closed panics otherwise).
+func (p *Pipeline) enqueueJournalSnapshot(item journalDeliveryItem) {
+	p.journalChMu.Lock()
+	defer p.journalChMu.Unlock()
+	if p.journalClosed {
+		// Pipeline already stopped; the delivery worker is gone. Drop with a
+		// metric — terminal delivery is best-effort by contract.
+		metricJournalSnapshotDropped.WithLabelValues("stopped").Inc()
+		return
+	}
+	if p.journalCh == nil {
+		p.journalCh = make(chan journalDeliveryItem, journalDeliveryQueueCapacity)
+		p.journalWg.Add(1)
+		go p.runJournalDelivery()
+	}
+	select {
+	case p.journalCh <- item:
+	default:
+		// Queue full: drop rather than block the completion path (the very
+		// head-of-line blocking this queue exists to prevent).
+		metricJournalSnapshotDropped.WithLabelValues("queue_full").Inc()
+		slog.Warn("dispatch: journal snapshot delivery queue full, dropping snapshot",
+			"request_id", item.snap.RequestID,
+			"capacity", journalDeliveryQueueCapacity)
+	}
+}
+
+// runJournalDelivery is the single background consumer of the snapshot FIFO.
+// It reads the sink per item under journalSinkMu so SetJournalSink swaps at
+// runtime are honored (same contract as the observation worker).
+func (p *Pipeline) runJournalDelivery() {
+	defer p.journalWg.Done()
+	for item := range p.journalCh {
+		p.journalSinkMu.RLock()
+		sink := p.journalSink
+		p.journalSinkMu.RUnlock()
+		if sink == nil {
+			continue
 		}
-	}()
-	sink.ApplyJournalSnapshot(context.WithoutCancel(ctxOf(qr)), snap)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("dispatch journal sink panic", "request_id", item.snap.RequestID, "panic", r)
+				}
+			}()
+			sink.ApplyJournalSnapshot(item.ctx, item.snap)
+		}()
+	}
 }
 
 // resultLabel maps a ForwardOutcome to the closed-enum "result" label used by

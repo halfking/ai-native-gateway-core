@@ -15,20 +15,26 @@ import (
 const maxListRequestsLimit = 1000
 
 // 请求日志 SQL（时间存 Unix 秒；duration 存毫秒；Body 大字段不入库，仅记 has_body 标记）。
-const (
-	insertRequestSQL = `
+// 写入为 UPSERT：telemetry 管道对同一 request_id 先 INSERT（in_progress 占位）再
+// UPDATE（终态/用量回填），接线后（审计 B2）两类 op 复用本入口，重放取最新值。
+const insertRequestSQL = `
 INSERT INTO request_logs (request_id, tenant_id, session_id, ts, method, path, status_code, duration_ms, has_body)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);`
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(request_id) DO UPDATE SET
+	session_id   = excluded.session_id,
+	ts           = excluded.ts,
+	status_code  = excluded.status_code,
+	duration_ms  = excluded.duration_ms,
+	has_body     = excluded.has_body;`
 
-	selectRequestSQL = `
+const selectRequestSQL = `
 SELECT request_id, tenant_id, session_id, ts, method, path, status_code, duration_ms, COALESCE(has_body, 0) AS has_body
 FROM request_logs
 WHERE request_id = ?;`
 
-	selectRequestListSQL = `
+const selectRequestListSQL = `
 SELECT request_id, tenant_id, session_id, ts, method, path, status_code, duration_ms, COALESCE(has_body, 0) AS has_body
 FROM request_logs`
-)
 
 // SQLiteRequestLogStore 基于 SQLite 的请求日志存储，实现 storage.RequestLogStore。
 type SQLiteRequestLogStore struct {
@@ -43,8 +49,9 @@ func NewSQLiteRequestLogStore(db *sql.DB) *SQLiteRequestLogStore {
 	return &SQLiteRequestLogStore{db: db}
 }
 
-// WriteRequest 写入一条请求日志：Duration 按毫秒落库；Body 大字段不入库，
-// 仅记录 has_body 标记；Timestamp 为零值时自动取当前时间。
+// WriteRequest 写入一条请求日志（对同一 request_id 幂等 UPSERT，重放取最新值）：
+// Duration 按毫秒落库；Body 大字段不入库，仅记录 has_body 标记；
+// Timestamp 为零值时自动取当前时间。
 func (s *SQLiteRequestLogStore) WriteRequest(ctx context.Context, req *storage.RequestLog) error {
 	if req == nil {
 		return errors.New("sqlite: 请求日志不能为空")
