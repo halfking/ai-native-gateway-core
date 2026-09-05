@@ -57,6 +57,27 @@ type FullStorageConfig struct {
 	MaxConnections int    `yaml:"max_connections" env:"LLM_GATEWAY_STORAGE_MAX_CONNECTIONS"`
 }
 
+// LiteConsistencyConfig lite 跨介质一致性对账（后台 worker）配置。
+// 默认语义恒安全：worker 默认开启但 report-only（只对账 + 结构化日志，
+// 不删任何数据）；仅当 delete_orphans 显式开启时才删除孤儿，且删除路径
+// 仍受「删除前 meta 复检 + mtime 宽限」双保险保护（storage.RepairTurnArtifacts）。
+type LiteConsistencyConfig struct {
+	// Enabled 是否启用周期对账。指针类型区分「未配置（nil）→ 默认 true」
+	// 与 YAML/env 显式 false（关闭对账 worker）。
+	Enabled *bool `yaml:"consistency_check_enabled"`
+	// IntervalHours 对账周期（小时），默认 24（每日一次，低频）。
+	IntervalHours int `yaml:"interval_hours"`
+	// IdleThresholdMin 空闲阈值（分钟）：只对账最后活动早于该阈值的会话，
+	// 把「body 先落盘、meta 后提交」的在途写入挡在对账窗外，默认 10。
+	IdleThresholdMin int `yaml:"idle_threshold_min"`
+	// DeleteOrphanBodies 是否在对账之外删除已确认的孤儿 body 文件。
+	// 默认 false（report-only）；零值即安全默认，无需显式配置。
+	DeleteOrphanBodies bool `yaml:"delete_orphans"`
+	// MaxSessionsPerRun 单轮对账的会话数上限（bounded，防止首跑扫全库），
+	// 默认 500；超出部分留待下一轮按最近活跃优先继续。
+	MaxSessionsPerRun int `yaml:"max_sessions_per_run"`
+}
+
 // LiteStorageConfig lite 模式：SQLite 数据库 + 本地文件目录。
 type LiteStorageConfig struct {
 	SQLitePath string `yaml:"sqlite_path" env:"LLM_GATEWAY_SQLITE_PATH"`
@@ -77,6 +98,9 @@ type LiteStorageConfig struct {
 		RequestLogsDays   int `yaml:"request_logs_days"`
 		CacheHours        int `yaml:"cache_hours"`
 	} `yaml:"retention"`
+
+	// Consistency lite 跨介质一致性对账（后台 worker，审计 B-#2 接线）配置。
+	Consistency LiteConsistencyConfig `yaml:"consistency"`
 }
 
 // NormalizeMode 返回当前存储模式（原样转换，不做 trim 或归一化）。
@@ -175,6 +199,21 @@ func (c *StorageConfig) ApplyLiteDefaults() {
 	}
 	if l.Retention.CacheHours <= 0 {
 		l.Retention.CacheHours = 24
+	}
+	// 一致性对账（B-#2）：默认开启、每日一次、空闲阈值 10 分钟、单轮上限
+	// 500。DeleteOrphanBodies 零值即安全默认（false = report-only），不兜底。
+	if l.Consistency.Enabled == nil {
+		enabled := true
+		l.Consistency.Enabled = &enabled
+	}
+	if l.Consistency.IntervalHours <= 0 {
+		l.Consistency.IntervalHours = 24
+	}
+	if l.Consistency.IdleThresholdMin <= 0 {
+		l.Consistency.IdleThresholdMin = 10
+	}
+	if l.Consistency.MaxSessionsPerRun <= 0 {
+		l.Consistency.MaxSessionsPerRun = 500
 	}
 }
 
@@ -292,5 +331,70 @@ func applyEnvOverrides(cfg *StorageConfig) {
 		if cfg.Lite.LogsDir == "" {
 			cfg.Lite.LogsDir = v
 		}
+	}
+
+	// lite 一致性对账段（B-#2）：段缺失但 env 有值时自动创建，保证 env-only
+	// 部署同样可配置。
+	if v := os.Getenv("LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED"); v != "" {
+		if cfg.Lite == nil {
+			cfg.Lite = &LiteStorageConfig{}
+		}
+		applyOptionalBoolEnv(v, &cfg.Lite.Consistency.Enabled)
+	}
+	if v := os.Getenv("LLM_GATEWAY_CONSISTENCY_INTERVAL_HOURS"); v != "" {
+		if cfg.Lite == nil {
+			cfg.Lite = &LiteStorageConfig{}
+		}
+		applyPositiveIntEnv("LLM_GATEWAY_CONSISTENCY_INTERVAL_HOURS", &cfg.Lite.Consistency.IntervalHours)
+	}
+	if v := os.Getenv("LLM_GATEWAY_CONSISTENCY_IDLE_THRESHOLD_MIN"); v != "" {
+		if cfg.Lite == nil {
+			cfg.Lite = &LiteStorageConfig{}
+		}
+		applyPositiveIntEnv("LLM_GATEWAY_CONSISTENCY_IDLE_THRESHOLD_MIN", &cfg.Lite.Consistency.IdleThresholdMin)
+	}
+	if v := os.Getenv("LLM_GATEWAY_CONSISTENCY_DELETE_ORPHANS"); v != "" {
+		if cfg.Lite == nil {
+			cfg.Lite = &LiteStorageConfig{}
+		}
+		if parseBoolEnv(v) {
+			// 仅真值置位：假值与零值语义相同（report-only 恒安全默认）。
+			cfg.Lite.Consistency.DeleteOrphanBodies = true
+		}
+	}
+	if v := os.Getenv("LLM_GATEWAY_CONSISTENCY_MAX_SESSIONS_PER_RUN"); v != "" {
+		if cfg.Lite == nil {
+			cfg.Lite = &LiteStorageConfig{}
+		}
+		applyPositiveIntEnv("LLM_GATEWAY_CONSISTENCY_MAX_SESSIONS_PER_RUN", &cfg.Lite.Consistency.MaxSessionsPerRun)
+	}
+}
+
+// parseBoolEnv 解析布尔环境变量值：1/true/yes/on（大小写不敏感）为真，
+// 其余（0/false/no/off 或非法值）为假。
+func parseBoolEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// applyOptionalBoolEnv 把布尔 env 值写入「可选布尔」指针：仅在字段未配置
+// （nil）时写入，保留 YAML 显式配置不被覆盖；env 值非法时忽略保持 nil。
+func applyOptionalBoolEnv(v string, target **bool) {
+	if target == nil || *target != nil {
+		return
+	}
+	if parseBoolEnv(v) {
+		t := true
+		*target = &t
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "0", "false", "no", "off":
+		f := false
+		*target = &f
 	}
 }

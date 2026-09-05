@@ -273,3 +273,73 @@ func TestSessionConcurrentReadWrite(t *testing.T) {
 		t.Fatalf("ListSessions 返回总数 = %d, want %d", len(sessions), writers*perWriter)
 	}
 }
+
+// TestSessionListIdleSessions 覆盖 ListIdleSessions（一致性对账 worker 的
+// 空闲会话枚举，storage.IdleSessionLister）：只返回 updated_at 早于阈值的
+// 会话、最近活跃优先、limit 有界。
+func TestSessionListIdleSessions(t *testing.T) {
+	db := openTestDB(t)
+	store := NewSQLiteSessionStore(db)
+	ctx := context.Background()
+
+	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	// updated_at：idle-old 两个（base、base+1min）、active 一个（base+30min，
+	// 视为仍在空闲阈值内）。租户混合插入，验证枚举跨租户。
+	fixtures := []struct {
+		id        string
+		tenantID  string
+		updatedAt time.Time
+	}{
+		{"idle-1", "tenant-a", base},
+		{"idle-2", "tenant-b", base.Add(time.Minute)},
+		{"active", "tenant-a", base.Add(30 * time.Minute)},
+	}
+	for _, f := range fixtures {
+		sess := &storage.Session{ID: f.id, TenantID: f.tenantID, CreatedAt: base, UpdatedAt: f.updatedAt}
+		if err := store.CreateSession(ctx, sess); err != nil {
+			t.Fatalf("CreateSession %s: %v", f.id, err)
+		}
+	}
+
+	// 阈值取 base+10min：idle-1/idle-2 命中（跨租户），active 不命中。
+	idleBefore := base.Add(10 * time.Minute)
+	got, err := store.ListIdleSessions(ctx, idleBefore, 100)
+	if err != nil {
+		t.Fatalf("ListIdleSessions: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "idle-2" || got[1].ID != "idle-1" {
+		t.Fatalf("ListIdleSessions = %v, want [idle-2 idle-1]（updated_at 倒序）", ids(got))
+	}
+	for _, sess := range got {
+		if !sess.UpdatedAt.Before(idleBefore) {
+			t.Fatalf("session %s updated_at %v 不早于阈值 %v", sess.ID, sess.UpdatedAt, idleBefore)
+		}
+	}
+
+	// limit=1：只返回最近活跃的 idle-2。
+	got, err = store.ListIdleSessions(ctx, idleBefore, 1)
+	if err != nil {
+		t.Fatalf("ListIdleSessions(limit=1): %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "idle-2" {
+		t.Fatalf("limit=1 结果 = %v, want [idle-2]", ids(got))
+	}
+
+	// limit<=0：回退默认页大小（等价于不限本次数据量）。
+	got, err = store.ListIdleSessions(ctx, idleBefore, 0)
+	if err != nil {
+		t.Fatalf("ListIdleSessions(limit=0): %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("limit<=0 时长度 = %d, want 2", len(got))
+	}
+
+	// 阈值推到所有会话之后：空切片（非 nil）。
+	got, err = store.ListIdleSessions(ctx, base.Add(time.Hour), 100)
+	if err != nil {
+		t.Fatalf("ListIdleSessions(全空闲): %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("全空闲时长度 = %d, want 3", len(got))
+	}
+}

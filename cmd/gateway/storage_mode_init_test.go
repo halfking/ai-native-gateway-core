@@ -256,3 +256,59 @@ func TestSqlitePragmasFromLiteConfig(t *testing.T) {
 		"busy_timeout": "3000",
 	}, got)
 }
+
+// TestInitStorageModeConsistencyWorkerWiring 验证一致性对账 worker（审计
+// B-#2 接线）的装配规则：默认开启（report-only）、配置显式关闭时不装配、
+// delete_orphans 显式开启时删除策略生效；Shutdown 在首跑延迟内取消即可
+// 优雅退出（不等待 10 分钟）。
+func TestInitStorageModeConsistencyWorkerWiring(t *testing.T) {
+	// 默认配置（未配置 consistency 段）：ApplyLiteDefaults 补默认后启用。
+	cfg := liteStorageConfigForTest(t)
+	rt, err := initStorageMode(nil, cfg)
+	require.NoError(t, err)
+	require.NotNil(t, rt)
+	if rt.consistencyWorker == nil {
+		t.Fatal("consistencyWorker = nil, want assembled by default (consistency_check_enabled 默认 true)")
+	}
+	if rt.consistencyWorker.Action() != storage.RepairReportOnly {
+		t.Errorf("worker action = %v, want report_only (默认恒安全)", rt.consistencyWorker.Action())
+	}
+	rt.Shutdown() // 幂等优雅关闭：worker 处于首跑延迟中即被取消
+
+	// 配置显式关闭：不装配 worker。
+	disabled := liteStorageConfigForTest(t)
+	f := false
+	disabled.Lite.Consistency.Enabled = &f
+	rt2, err := initStorageMode(nil, disabled)
+	require.NoError(t, err)
+	require.NotNil(t, rt2)
+	if rt2.consistencyWorker != nil {
+		t.Error("consistencyWorker != nil, want nil when consistency_check_enabled=false")
+	}
+	rt2.Shutdown()
+
+	// delete_orphans 显式开启：删除策略注入（仍受复检+宽限双保险保护）。
+	deleter := liteStorageConfigForTest(t)
+	tr := true
+	deleter.Lite.Consistency.Enabled = &tr
+	deleter.Lite.Consistency.DeleteOrphanBodies = true
+	deleter.Lite.Consistency.IntervalHours = 6
+	deleter.Lite.Consistency.IdleThresholdMin = 30
+	deleter.Lite.Consistency.MaxSessionsPerRun = 50
+	rt3, err := initStorageMode(nil, deleter)
+	require.NoError(t, err)
+	require.NotNil(t, rt3)
+	if rt3.consistencyWorker == nil {
+		t.Fatal("consistencyWorker = nil, want assembled when explicitly enabled")
+	}
+	if rt3.consistencyWorker.Action() != storage.RepairDeleteOrphanBodies {
+		t.Errorf("worker action = %v, want delete_orphan_bodies", rt3.consistencyWorker.Action())
+	}
+	if rt3.consistencyWorker.Interval() != 6*time.Hour ||
+		rt3.consistencyWorker.IdleThreshold() != 30*time.Minute ||
+		rt3.consistencyWorker.MaxSessions() != 50 {
+		t.Errorf("worker knobs = %v/%v/%d, want 6h/30m/50",
+			rt3.consistencyWorker.Interval(), rt3.consistencyWorker.IdleThreshold(), rt3.consistencyWorker.MaxSessions())
+	}
+	rt3.Shutdown()
+}

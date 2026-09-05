@@ -323,7 +323,25 @@ func buildResponsesContent(msg Message) []map[string]any {
 // buildResponsesInputImage maps an IR image block to a Responses input_image.
 // Responses accepts either an image_url or a file_id; base64 is rebuilt as a
 // data URI (same convention as SerializeOpenAI's image_url handling).
+//
+// A-#18(c): file_id images are emitted natively as
+// {"type":"input_image","file_id":...} — mirroring parseResponsesInputImage,
+// which reads input_image.file_id — instead of a broken image_url:"" that
+// corrupted the same-protocol round trip.
 func buildResponsesInputImage(img *ImageSource) map[string]any {
+	// FileID takes precedence, matching the parser (a parsed file_id sets
+	// Type="file_id" even when image_url was also present).
+	if img.FileID != "" {
+		block := map[string]any{
+			"type":    "input_image",
+			"file_id": img.FileID,
+		}
+		if img.Detail != "" {
+			block["detail"] = img.Detail
+		}
+		return block
+	}
+
 	url := img.URL
 	if url == "" && img.Data != "" {
 		mt := img.MediaType
@@ -390,7 +408,14 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 		}
 		inner["file_data"] = url
 	case "file_id":
-		inner["file_id"] = doc.Source.Data
+		// A-#18(b): prefer the unified FileID field; fall back to Data for
+		// legacy rows (parse_openai used to encode the id there, and session
+		// restore collapses FileID into Data).
+		fid := doc.Source.FileID
+		if fid == "" {
+			fid = doc.Source.Data
+		}
+		inner["file_id"] = fid
 	default:
 		// text/unknown: carry the raw data as file_data.
 		if mt != "" {

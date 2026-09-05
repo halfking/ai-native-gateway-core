@@ -285,3 +285,9 @@ relying on it.
 |-----------|------|---------|--------|
 | 658 | `658_auto_route_structured_features.sql` | `0f263e57d3c8ed25b9d1c6025af5c5b5bf4ad985dd18cb4eefb23d12b85feaf3` | applied+verified |
 
+## 2026-09-05T09:24:51Z — deploy 245 build_seq 1948 (5378324d)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 659 | `659_legacy_promote_atomic_cte.sql` | `ea5476af92d859768d60af34e28764528ae10fe1616fa441c790f3a19927e1ea` | applied+verified |
+

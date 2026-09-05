@@ -655,6 +655,12 @@ func parseAnthropicDocuments(raw json.RawMessage) ([]Document, error) {
 				doc.Source.MediaType, _ = source["media_type"].(string)
 				doc.Source.Data, _ = source["data"].(string)
 				doc.Source.URL, _ = source["url"].(string)
+				// A-#18(a): Anthropic Files API top-level documents carry
+				// {"type":"file","file_id":"file_..."} — same shape as the
+				// message-level document block (parseAnthropicDocumentBlock).
+				// Without this the file_id was dropped and the round trip
+				// emitted a truncated {"source":{"type":"file"}}.
+				doc.Source.FileID, _ = source["file_id"].(string)
 			}
 
 			if cc, ok := docMap["cache_control"].(map[string]any); ok {

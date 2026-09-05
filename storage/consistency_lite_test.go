@@ -20,8 +20,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/storage"
 	"github.com/kaixuan/llm-gateway-go/storage/file"
@@ -170,13 +173,18 @@ func TestLiteReconcileOrphanBodyAndRepair(t *testing.T) {
 	assert.Empty(t, report.MissingBodies)
 
 	// 只报告策略：不动数据。
-	require.NoError(t, storage.RepairTurnArtifacts(ctx, report, h.bodies, storage.RepairReportOnly))
+	_, err = storage.RepairTurnArtifacts(ctx, report, h.bodies, h.turns, storage.RepairReportOnly, nil)
+	require.NoError(t, err)
 	still, err := storage.ReconcileTurnArtifacts(ctx, "tenant-a", "sess-orphan", h.bodies, h.turns)
 	require.NoError(t, err)
 	assert.Equal(t, []int{3}, still.OrphanBodies, "report-only must not delete data")
 
-	// 删除策略：孤儿清理，turn 1/2 不受影响。
-	require.NoError(t, storage.RepairTurnArtifacts(ctx, report, h.bodies, storage.RepairDeleteOrphanBodies))
+	// 删除策略（OrphanGrace 置负禁用 mtime 宽限：本用例聚焦孤儿身份而非
+	// 在途窗口，文件刚落盘属预期）：孤儿清理，turn 1/2 不受影响。
+	res, err := storage.RepairTurnArtifacts(ctx, report, h.bodies, h.turns,
+		storage.RepairDeleteOrphanBodies, &storage.RepairOptions{OrphanGrace: -1})
+	require.NoError(t, err)
+	assert.Equal(t, []int{3}, res.Deleted)
 	repaired, err := storage.ReconcileTurnArtifacts(ctx, "tenant-a", "sess-orphan", h.bodies, h.turns)
 	require.NoError(t, err)
 	assert.True(t, repaired.Consistent, "repair must restore consistency: %+v", repaired)
@@ -208,8 +216,10 @@ func TestLiteReconcileMissingBody(t *testing.T) {
 	assert.Equal(t, []int{2}, report.MissingBodies, "missing body must be reported")
 	assert.Empty(t, report.OrphanBodies)
 
-	// 任何策略都不伪造缺失内容。
-	require.NoError(t, storage.RepairTurnArtifacts(ctx, report, h.bodies, storage.RepairDeleteOrphanBodies))
+	// 任何策略都不伪造缺失内容（报告无孤儿，删除策略为 no-op）。
+	res, err := storage.RepairTurnArtifacts(ctx, report, h.bodies, h.turns, storage.RepairDeleteOrphanBodies, nil)
+	require.NoError(t, err)
+	assert.Empty(t, res.Deleted)
 	after, err := storage.ReconcileTurnArtifacts(ctx, "tenant-a", "sess-missing", h.bodies, h.turns)
 	require.NoError(t, err)
 	assert.Equal(t, []int{2}, after.MissingBodies, "missing content must never be fabricated")
@@ -230,4 +240,108 @@ func TestLiteBodyGzipRoundTrip(t *testing.T) {
 	body, err := h.bodies.Read(ctx, "tenant-b", "sess-gzip", 1)
 	require.NoError(t, err)
 	assert.JSONEq(t, req, string(body.Request), "large multibody content must roundtrip losslessly")
+}
+
+// bodyFilePath 按存储布局拼出单 turn body 文件路径（测试用于 Chtimes 回拨
+// mtime）：{dir}/bodies/{tenant}/{session 前 2 rune}/{session}/turn_{n}.json.gz。
+func bodyFilePath(h *liteHarness, tenantID, sessionID string, turnNo int) string {
+	runes := []rune(sessionID)
+	prefix := sessionID
+	if len(runes) > 2 {
+		prefix = string(runes[:2])
+	}
+	return filepath.Join(h.dir, "bodies", tenantID, prefix, sessionID, fmt.Sprintf("turn_%d.json.gz", turnNo))
+}
+
+// TestLiteRepairDoubleConfirmSkipsInFlightBody（G-#9 双保险之一：删除前复检）
+// 模拟「Reconcile 快照之后、Repair 之前 meta 提交」的在途竞态：Reconcile 把
+// 合法在途 turn 误报为孤儿，Repair 复检发现 meta 已存在 → 跳过删除、body
+// 内容完好；真正两次快照都不在 meta 中的孤儿仍被删除。
+func TestLiteRepairDoubleConfirmSkipsInFlightBody(t *testing.T) {
+	h := newLiteHarness(t)
+	ctx := context.Background()
+
+	writeTurn(t, h, "tenant-a", "sess-race", 1, `{"q":"1"}`, `{"a":"1"}`)
+	// 在途轮：body 已落盘、meta 尚未提交（正是写序窗口的方向）。
+	require.NoError(t, h.bodies.Write(ctx, &storage.SessionBody{
+		TenantID: "tenant-a", SessionID: "sess-race", TurnNo: 2,
+		Request: json.RawMessage(`{"q":"2"}`), Response: json.RawMessage(`{"a":"2"}`),
+	}))
+	// 真孤儿：body 落盘后进程崩溃，meta 永远不会提交。
+	require.NoError(t, h.bodies.Write(ctx, &storage.SessionBody{
+		TenantID: "tenant-a", SessionID: "sess-race", TurnNo: 3,
+		Request: json.RawMessage(`{"q":"3"}`), Response: json.RawMessage(`{"a":"3"}`),
+	}))
+
+	report, err := storage.ReconcileTurnArtifacts(ctx, "tenant-a", "sess-race", h.bodies, h.turns)
+	require.NoError(t, err)
+	assert.Equal(t, []int{2, 3}, report.OrphanBodies, "both in-flight and crashed orphans are flagged by the snapshot")
+
+	// 在途轮的 meta 在两次快照之间提交（竞态窗口闭合）。
+	require.NoError(t, h.turns.WriteTurnMeta(ctx, &storage.TurnMeta{
+		TenantID: "tenant-a", SessionID: "sess-race", TurnNo: 2,
+		CompressionStrategy: "none", PromptTokens: 102, CompletionTokens: 202,
+	}))
+
+	res, err := storage.RepairTurnArtifacts(ctx, report, h.bodies, h.turns,
+		storage.RepairDeleteOrphanBodies, &storage.RepairOptions{OrphanGrace: -1})
+	require.NoError(t, err)
+	assert.Equal(t, []int{2}, res.SkippedInFlight, "in-flight turn must be re-confirmed into meta and kept")
+	assert.Equal(t, []int{3}, res.Deleted, "turn absent from both snapshots must be deleted")
+
+	// 在途 body 内容完好（复检保住了它），meta 已提交后整体一致。
+	body, err := h.bodies.Read(ctx, "tenant-a", "sess-race", 2)
+	require.NoError(t, err, "in-flight body must survive repair")
+	assert.JSONEq(t, `{"q":"2"}`, string(body.Request))
+	final, err := storage.ReconcileTurnArtifacts(ctx, "tenant-a", "sess-race", h.bodies, h.turns)
+	require.NoError(t, err)
+	assert.True(t, final.Consistent, "after repair both sides must align: %+v", final)
+}
+
+// TestLiteRepairGraceSkipsFreshOrphanThenAgedDeleted（G-#9 双保险之二：
+// mtime 宽限）新鲜孤儿在默认宽限期内只报告不删；mtime 回拨超过宽限期后
+// 同一孤儿被正常删除。同时覆盖 FileBodiesStore.TurnFileModTime 契约。
+func TestLiteRepairGraceSkipsFreshOrphanThenAgedDeleted(t *testing.T) {
+	h := newLiteHarness(t)
+	ctx := context.Background()
+
+	writeTurn(t, h, "tenant-a", "sess-grace", 1, `{"q":"1"}`, `{"a":"1"}`)
+	require.NoError(t, h.bodies.Write(ctx, &storage.SessionBody{
+		TenantID: "tenant-a", SessionID: "sess-grace", TurnNo: 2,
+		Request: json.RawMessage(`{"q":"2"}`), Response: json.RawMessage(`{"a":"2"}`),
+	}))
+
+	// TurnFileModTime：存在 → 返回 mtime；不存在 → ErrNotFound 哨兵。
+	mt, err := h.bodies.TurnFileModTime(ctx, "tenant-a", "sess-grace", 2)
+	require.NoError(t, err)
+	assert.WithinDuration(t, time.Now(), mt, time.Minute, "fresh file mtime should be ~now")
+	_, err = h.bodies.TurnFileModTime(ctx, "tenant-a", "sess-grace", 99)
+	assert.ErrorIs(t, err, storage.ErrNotFound, "missing turn file must surface ErrNotFound")
+
+	report, err := storage.ReconcileTurnArtifacts(ctx, "tenant-a", "sess-grace", h.bodies, h.turns)
+	require.NoError(t, err)
+	assert.Equal(t, []int{2}, report.OrphanBodies)
+
+	// 默认宽限（nil opts → DefaultOrphanBodyGrace=10min）：新鲜孤儿跳过删除。
+	res, err := storage.RepairTurnArtifacts(ctx, report, h.bodies, h.turns,
+		storage.RepairDeleteOrphanBodies, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []int{2}, res.SkippedByGrace, "fresh orphan must stay within grace")
+	assert.Empty(t, res.Deleted)
+	_, readErr := h.bodies.Read(ctx, "tenant-a", "sess-grace", 2)
+	require.NoError(t, readErr, "fresh orphan body must not be deleted during grace")
+
+	// mtime 回拨到 2 倍宽限期之前：同一孤儿不再受宽限保护，被正常删除。
+	past := time.Now().Add(-2 * storage.DefaultOrphanBodyGrace)
+	path := bodyFilePath(h, "tenant-a", "sess-grace", 2)
+	require.NoError(t, os.Chtimes(path, past, past))
+
+	res, err = storage.RepairTurnArtifacts(ctx, report, h.bodies, h.turns,
+		storage.RepairDeleteOrphanBodies, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []int{2}, res.Deleted, "aged orphan must be deleted")
+	assert.Empty(t, res.SkippedByGrace)
+	final, err := storage.ReconcileTurnArtifacts(ctx, "tenant-a", "sess-grace", h.bodies, h.turns)
+	require.NoError(t, err)
+	assert.True(t, final.Consistent, "aged orphan cleanup restores consistency: %+v", final)
 }

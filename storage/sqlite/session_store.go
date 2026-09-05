@@ -17,11 +17,12 @@ const defaultListLimit = 100
 
 // 会话元数据 SQL（时间统一存 Unix 秒；metadata 存 JSON 字符串，nil map 存 NULL）。
 const (
-	insertSessionSQL = `INSERT INTO sessions (id, tenant_id, user_id, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?);`
-	selectSessionSQL = `SELECT id, tenant_id, user_id, created_at, updated_at, metadata FROM sessions WHERE tenant_id = ? AND id = ?;`
-	updateSessionSQL = `UPDATE sessions SET user_id = ?, updated_at = ?, metadata = ? WHERE tenant_id = ? AND id = ?;`
-	deleteSessionSQL = `DELETE FROM sessions WHERE tenant_id = ? AND id = ?;`
-	listSessionsSQL  = `SELECT id, tenant_id, user_id, created_at, updated_at, metadata FROM sessions WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?;`
+	insertSessionSQL    = `INSERT INTO sessions (id, tenant_id, user_id, created_at, updated_at, metadata) VALUES (?, ?, ?, ?, ?, ?);`
+	selectSessionSQL    = `SELECT id, tenant_id, user_id, created_at, updated_at, metadata FROM sessions WHERE tenant_id = ? AND id = ?;`
+	updateSessionSQL    = `UPDATE sessions SET user_id = ?, updated_at = ?, metadata = ? WHERE tenant_id = ? AND id = ?;`
+	deleteSessionSQL    = `DELETE FROM sessions WHERE tenant_id = ? AND id = ?;`
+	listSessionsSQL     = `SELECT id, tenant_id, user_id, created_at, updated_at, metadata FROM sessions WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?;`
+	listIdleSessionsSQL = `SELECT id, tenant_id, user_id, created_at, updated_at, metadata FROM sessions WHERE updated_at < ? ORDER BY updated_at DESC LIMIT ?;`
 )
 
 // SQLiteSessionStore 基于 SQLite 的会话元数据存储，实现 storage.SessionStore。
@@ -29,8 +30,12 @@ type SQLiteSessionStore struct {
 	db *sql.DB
 }
 
-// 编译期断言：确保实现 storage.SessionStore 接口。
-var _ storage.SessionStore = (*SQLiteSessionStore)(nil)
+// 编译期断言：确保实现 storage.SessionStore 与一致性对账的
+// storage.IdleSessionLister 接口。
+var (
+	_ storage.SessionStore      = (*SQLiteSessionStore)(nil)
+	_ storage.IdleSessionLister = (*SQLiteSessionStore)(nil)
+)
 
 // NewSQLiteSessionStore 创建会话元数据存储，db 一般来自 OpenSQLite。
 func NewSQLiteSessionStore(db *sql.DB) *SQLiteSessionStore {
@@ -198,6 +203,35 @@ func (s *SQLiteSessionStore) ListSessions(ctx context.Context, tenantID string, 
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("sqlite: 遍历会话列表失败: %w", err)
+	}
+	return sessions, nil
+}
+
+// ListIdleSessions 返回最后活动时间早于 idleBefore 的会话（跨租户），按
+// updated_at 倒序（最近活跃优先）至多 limit 条（limit <= 0 时取默认页大小）。
+// 供一致性对账 worker（bg.ConsistencyWorker，审计 B-#2）枚举「近期活跃且已
+// 空闲」的会话：空闲阈值把「body 先落盘、meta 后提交」的在途写入挡在对账
+// 窗外（storage.IdleSessionLister）。无数据时返回空切片（非 nil）。
+func (s *SQLiteSessionStore) ListIdleSessions(ctx context.Context, idleBefore time.Time, limit int) ([]*storage.Session, error) {
+	if limit <= 0 {
+		limit = defaultListLimit
+	}
+	rows, err := s.db.QueryContext(ctx, listIdleSessionsSQL, idleBefore.Unix(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: 查询空闲会话列表失败: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := make([]*storage.Session, 0, limit)
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, fmt.Errorf("sqlite: 扫描空闲会话行失败: %w", err)
+		}
+		sessions = append(sessions, sess)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sqlite: 遍历空闲会话列表失败: %w", err)
 	}
 	return sessions, nil
 }

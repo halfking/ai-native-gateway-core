@@ -654,11 +654,18 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 					source["media_type"] = block.Document.Source.MediaType
 				}
 				switch {
-				case block.Document.Source.Type == "file" || block.Document.Source.FileID != "":
+				case block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id" || block.Document.Source.FileID != "":
 					// Files API 预上传文档：{"type":"file","file_id":"file_..."}
+					// A-#18(b): OpenAI file 文档（parse_openai 现在写 FileID）
+					// 与历史 Data 编码（session 恢复行把 FileID 折叠进 Data）
+					// 都统一从这里输出，避免空源 {"type":"file_id"}。
 					source["type"] = "file"
-					if block.Document.Source.FileID != "" {
-						source["file_id"] = block.Document.Source.FileID
+					fid := block.Document.Source.FileID
+					if fid == "" && (block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id") {
+						fid = block.Document.Source.Data
+					}
+					if fid != "" {
+						source["file_id"] = fid
 					}
 				case block.Document.Source.Type == "base64" && block.Document.Source.Data != "":
 					source["data"] = block.Document.Source.Data
@@ -841,20 +848,49 @@ func serializeAnthropicCacheControl(cc []CacheControl) any {
 func serializeAnthropicDocuments(docs []Document) []map[string]any {
 	result := make([]map[string]any, 0, len(docs))
 	for _, doc := range docs {
-		docMap := map[string]any{
-			"type": doc.Type,
-			"source": map[string]any{
-				"type": doc.Source.Type,
-			},
+		source := map[string]any{
+			"type": doc.Source.Type,
 		}
 		if doc.Source.MediaType != "" {
-			docMap["source"].(map[string]any)["media_type"] = doc.Source.MediaType
+			source["media_type"] = doc.Source.MediaType
 		}
-		if doc.Source.Data != "" {
-			docMap["source"].(map[string]any)["data"] = doc.Source.Data
+		// A-#18(a): mirror the message-level document block switch — a Files
+		// API pre-uploaded document must emit {"type":"file","file_id":...},
+		// never a truncated {"type":"file"} with no id. IR-internal "file_id"
+		// maps to the wire type "file"; legacy rows that carry the id in Data
+		// (session restore collapses FileID into Data) still resolve.
+		switch {
+		case doc.Source.Type == "file" || doc.Source.Type == "file_id" || doc.Source.FileID != "":
+			source["type"] = "file"
+			fid := doc.Source.FileID
+			if fid == "" && (doc.Source.Type == "file" || doc.Source.Type == "file_id") {
+				fid = doc.Source.Data
+			}
+			if fid != "" {
+				source["file_id"] = fid
+			}
+		case doc.Source.Type == "base64" && doc.Source.Data != "":
+			source["data"] = doc.Source.Data
+		case doc.Source.Type == "url":
+			url := doc.Source.URL
+			if url == "" { // compatibility with pre-canonical IR rows
+				url = doc.Source.Data
+			}
+			if url != "" {
+				source["url"] = url
+			}
+		default:
+			// text/csv/unknown: keep the historical payload projection.
+			if doc.Source.Data != "" {
+				source["data"] = doc.Source.Data
+			}
+			if doc.Source.URL != "" {
+				source["url"] = doc.Source.URL
+			}
 		}
-		if doc.Source.URL != "" {
-			docMap["source"].(map[string]any)["url"] = doc.Source.URL
+		docMap := map[string]any{
+			"type":   doc.Type,
+			"source": source,
 		}
 		if doc.Title != "" {
 			docMap["title"] = doc.Title

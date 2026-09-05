@@ -22,13 +22,19 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/monitoring"
 	"github.com/kaixuan/llm-gateway-go/storage"
 )
 
-// 编译期断言：FileBodiesStore 必须实现 storage.BodiesStore 接口。
-var _ storage.BodiesStore = (*FileBodiesStore)(nil)
+// 编译期断言：FileBodiesStore 必须实现一致性对账相关的全部接口。
+var (
+	_ storage.BodiesStore     = (*FileBodiesStore)(nil)
+	_ storage.BodiesLister    = (*FileBodiesStore)(nil)
+	_ storage.TurnFileDeleter = (*FileBodiesStore)(nil)
+	_ storage.TurnFileStater  = (*FileBodiesStore)(nil)
+)
 
 // FileBodiesStore 会话内容文件存储。
 type FileBodiesStore struct {
@@ -241,6 +247,29 @@ func (s *FileBodiesStore) DeleteTurnFile(_ context.Context, tenantID, sessionID 
 			s.buildPath(tenantID, sessionID, turnNo), err)
 	}
 	return nil
+}
+
+// TurnFileModTime 返回单个 turn 内容文件的修改时间（mtime），实现
+// storage.TurnFileStater，供孤儿删除的宽限判定（storage.RepairTurnArtifacts
+// 的 G-#9 第二道保险）使用。文件不存在时返回包装 storage.ErrNotFound 的错误
+// （errors.Is 可命中）；其他 stat 失败原样带上下文返回，由调用方保守处理。
+func (s *FileBodiesStore) TurnFileModTime(_ context.Context, tenantID, sessionID string, turnNo int) (time.Time, error) {
+	if !validPathID(tenantID) {
+		return time.Time{}, fmt.Errorf("file bodies store: invalid tenantID %q", tenantID)
+	}
+	if !validPathID(sessionID) {
+		return time.Time{}, fmt.Errorf("file bodies store: invalid sessionID %q", sessionID)
+	}
+	path := s.buildPath(tenantID, sessionID, turnNo)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return time.Time{}, fmt.Errorf("file bodies store: turn %d of %s/%s: %w",
+				turnNo, tenantID, sessionID, storage.ErrNotFound)
+		}
+		return time.Time{}, fmt.Errorf("file bodies store: stat %s: %w", path, err)
+	}
+	return info.ModTime(), nil
 }
 
 // gunzip 解压一段 gzip 字节流；头或数据体损坏时返回带上下文的错误。
