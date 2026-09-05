@@ -1,6 +1,11 @@
 <script setup lang="ts">
 // UnifiedRequestSessionDrawer — dual-mode request/session detail shell.
 // 2026-08-28: 实时流泳道点击 → 抽屉首屏。
+// 2026-09-05 (F2-#5): loading/state 迁移到共享组合式函数
+//   useRequestDetailLoader（per-request 45s 缓存 + loadSeq 竞态守卫 +
+//   resetTransientState + ensureBodies 以 requestId 为键），修复抽屉自管
+//   加载的三类缺陷：并发覆盖（bodyless unified 覆盖已拉取的完整 body）、
+//   换轮不清态（A 轮正文串到 B 轮视图）、bodiesLoading 粘滞。
 //
 // 数据来源（与 request_logs body 列已迁移到 request_logs_bodies 一致）：
 //   - getRequestLogDetail (/api/logs/:id)：metadata 全量（token/cost/provider/
@@ -13,16 +18,13 @@
 //     与 /api/logs/:id 数据重复，主要用作 source 标签（memory/file/
 //     request_logs/session_turns）和 in_flight/persisted 持久化阶段。
 //   - getSessionSnapshot：会话级快照（标题、分析结果、最后模型/供应商），
-//     fire-and-forget，带 loadSeq + AbortSignal 防止快速切换时串写。
-import { computed, ref, watch } from 'vue'
+//     fire-and-forget，由组合式函数以 loadSeq + AbortSignal 防止快速切换串写。
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ApiError } from '../../api/_core'
-import { getRequestLogDetail, type RequestLogDetail } from '../../api/logs'
 import {
-  getUnifiedRequestDetail,
-  type UnifiedRequestDetail,
-} from '../../api/requestDetail'
-import { getSessionSnapshot } from '../../api/sessions_v2'
+  useRequestDetailLoader,
+  REQUEST_DETAIL_NOT_FOUND,
+} from '../../composables/useRequestDetailLoader'
 import RequestOverviewPanel from './RequestOverviewPanel.vue'
 import ConversationMessagesPanel from './ConversationMessagesPanel.vue'
 import FlowTimingPanel from './FlowTimingPanel.vue'
@@ -59,167 +61,99 @@ type Tab = 'overview' | 'chat' | 'flow' | 'compress' | 'routing' | 'raw'
 
 const viewMode = ref<DetailMode>(props.initialViewMode)
 const tab = ref<Tab>(props.initialTraceOpen ? 'flow' : 'overview')
-const loading = ref(false)
-const error = ref('')
-const log = ref<RequestLogDetail | null>(null)
-const unified = ref<UnifiedRequestDetail | null>(null)
-const sessionSnap = ref<Record<string, unknown> | null>(null)
-const activeRequestId = ref<string | null>(null)
-const warnings = ref<string[]>([])
 
-const sessionId = computed(
-  () => log.value?.gw_session_id || unified.value?.meta.gw_session_id || null,
-)
+// State (log/unified/sessionSnap/warnings/bodies*) lives in the shared
+// loader. loadMeta resets transient state per request and bumps the seq,
+// so an in-flight response from request A can never land in request B's
+// view, and bodiesLoading cannot get stuck after a switch.
+const loader = useRequestDetailLoader()
+const {
+  metaLoading: loading,
+  metaError,
+  metaWarnings: warnings,
+  log,
+  unified,
+  sessionSnap,
+  sessionId,
+  activeRequestId,
+  requestBody,
+  responseBody,
+  outboundBody,
+  bodiesLoading,
+  loadMeta,
+  ensureBodies,
+  dispose,
+} = loader
 
-// Body 优先级：unified（admin/request-detail，memory→request_logs→session_turns 多层回退）>
-//   log（/api/logs/:id，来自 request_logs_bodies_hot/_bodies）。
-// unified 在 in_flight（memory/file）路径下 body 才唯一可信；persisted 路径下
-// 与 log 同源（都是 request_logs_bodies），互为备份。
-const requestBody = computed(
-  () => unified.value?.bodies?.request_body ?? log.value?.request_body ?? null,
-)
-const responseBody = computed(
-  () => unified.value?.bodies?.response_body ?? log.value?.response_body ?? null,
-)
-const outboundBody = computed(
-  () => unified.value?.bodies?.outbound_body ?? log.value?.outbound_body ?? null,
+// metaError carries the REQUEST_DETAIL_NOT_FOUND sentinel for the
+// "both endpoints empty" case; the drawer renders it localized.
+const error = computed(() =>
+  metaError.value === REQUEST_DETAIL_NOT_FOUND
+    ? t('requestDetail.drawer.notFound')
+    : metaError.value,
 )
 
 const hasRouting = computed(() => !!log.value?.routing_attempts?.attempts?.length)
 
-// loadSeq：请求切换序号。快照/正文都是 fire-and-forget 异步，快速切换
-// A→B 时，A 的晚到响应不得写入 B 的视图（与 useRequestDetailLoader 同款守卫）。
-let loadSeq = 0
-let snapshotAbortController: AbortController | null = null
-// bodiesLoadedFor 记录哪个请求已拿到完整 body，切 tab 不重复拉取。
-let bodiesLoadedFor = ''
-const bodiesLoading = ref(false)
+// Body 优先级（unified > log）与多源回退语义由组合式函数的
+// requestBody/responseBody/outboundBody computed 提供，与迁移前一致。
+
+// Only these tabs need full bodies; overview stays on the
+// request_preview/response_preview fallback (no body fetch).
+function tabNeedsBodies(current: Tab): boolean {
+  return current === 'chat' || current === 'compress' || current === 'raw'
+}
+
+async function loadActiveTabBodies() {
+  const id = activeRequestId.value
+  if (!id || !tabNeedsBodies(tab.value)) return
+  // ensureBodies is keyed by requestId inside the composable: it re-checks
+  // activeRequestId after the fetch and records per-request body state in
+  // the per-request cache, so a turn switch can neither reuse the previous
+  // turn's bodies nor apply a stale fetch to the new view.
+  await ensureBodies(id)
+}
 
 watch(
   () => props.requestId,
   async (id) => {
-    activeRequestId.value = id
-    loadSeq++
-    if (snapshotAbortController) {
-      snapshotAbortController.abort()
-      snapshotAbortController = null
-    }
-    bodiesLoadedFor = ''
-    log.value = null
-    unified.value = null
-    sessionSnap.value = null
-    error.value = ''
-    warnings.value = []
     viewMode.value = props.initialViewMode
     tab.value = props.initialTraceOpen ? 'flow' : 'overview'
     if (!id) return
-    await loadRequest(id)
+    await loadMeta(id)
+    // The prop may have changed again while loadMeta was in flight — do not
+    // start a body fetch for a request that is no longer active.
+    if (id !== activeRequestId.value) return
+    await loadActiveTabBodies()
   },
   { immediate: true },
 )
 
-async function loadRequest(id: string) {
-  loading.value = true
-  error.value = ''
-  warnings.value = []
-  const currentSeq = loadSeq
-  try {
-    // 首屏 metadata-only（omitBody）：抽屉默认停在概览，QA 卡片用
-    // request_preview/response_preview 兜底；对话/压缩/原始JSON tab 切入时
-    // 再由 ensureBodies 按需拉完整正文，避免每次点击色块都打列存冷路径。
-    // 两端点并行拉取，失败一方降级（catch → null）由另一方兜底，
-    // 失败原因收集到 warnings 显式提示。
-    const [u, meta] = await Promise.all([
-      getUnifiedRequestDetail(id, { omitBody: true }).catch((e: unknown) => {
-        recordEndpointFailure('admin/request-detail', e)
-        return null
-      }),
-      getRequestLogDetail(id, { omitBody: true }).catch((e: unknown) => {
-        recordEndpointFailure('/api/logs/:id', e)
-        return null
-      }),
-    ])
-    if (currentSeq !== loadSeq) return
-    unified.value = u
-    log.value = meta
-    if (!u && !meta) {
-      error.value = t('requestDetail.drawer.notFound')
-      return
-    }
-    const sid = log.value?.gw_session_id || unified.value?.meta.gw_session_id
-    if (sid) {
-      snapshotAbortController = new AbortController()
-      const signal = snapshotAbortController.signal
-      void getSessionSnapshot(sid, { signal })
-        .then((snap) => {
-          if (currentSeq === loadSeq && !signal.aborted) {
-            sessionSnap.value = snap as Record<string, unknown>
-          }
-        })
-        .catch((e: unknown) => {
-          if (signal.aborted) return
-          recordEndpointFailure('sessions/:id/snapshot', e)
-          sessionSnap.value = null
-        })
-    }
-  } catch (e: unknown) {
-    if (currentSeq === loadSeq) {
-      error.value = e instanceof Error ? e.message : String(e)
-    }
-  } finally {
-    if (currentSeq === loadSeq) loading.value = false
-  }
-}
-
-// ensureBodies 按需加载完整正文（不带 omitBody），供对话/压缩/原始JSON tab。
-async function ensureBodies(id: string) {
-  if (!id || bodiesLoadedFor === id) return
-  if (unified.value?.bodies || log.value?.request_body) {
-    bodiesLoadedFor = id
-    return
-  }
-  const seq = loadSeq
-  bodiesLoading.value = true
-  try {
-    const [fullLog, fullUnified] = await Promise.all([
-      getRequestLogDetail(id).catch(() => null),
-      getUnifiedRequestDetail(id).catch(() => null),
-    ])
-    if (seq !== loadSeq || id !== activeRequestId.value) return
-    if (fullLog) log.value = fullLog
-    if (fullUnified) unified.value = fullUnified
-    if (fullLog || fullUnified) bodiesLoadedFor = id
-  } finally {
-    if (seq === loadSeq) bodiesLoading.value = false
-  }
-}
-
-// 切到需要正文的 tab 时按需加载（概览用 preview 兜底，不触发）。
-watch([tab, activeRequestId], () => {
-  if (tab.value === 'chat' || tab.value === 'compress' || tab.value === 'raw') {
-    const id = activeRequestId.value
-    if (id) void ensureBodies(id)
-  }
+// Switching to a body-consuming tab triggers the phased body fetch.
+watch(tab, () => {
+  void loadActiveTabBodies()
 })
 
-function recordEndpointFailure(endpoint: string, e: unknown) {
-  const detail = e instanceof ApiError
-    ? `HTTP ${e.status} ${e.message}`
-    : e instanceof Error
-      ? e.message
-      : String(e)
-  warnings.value.push(`${endpoint}: ${detail}`)
-}
+onUnmounted(() => dispose())
 
 async function onSelectTurn(requestId: string, _turn: number) {
-  activeRequestId.value = requestId
-  await loadRequest(requestId)
+  // Turn switch inside the session pane goes through the same path as the
+  // props watcher: loadMeta clears the previous turn's log/unified/snap/
+  // warnings and body state before fetching, so turn B never renders
+  // turn A's body (the old self-managed guard saw the residue and marked
+  // the new turn's bodies as already loaded).
+  await loadMeta(requestId)
+  if (requestId !== activeRequestId.value) return
+  await loadActiveTabBodies()
 }
 
 function openAsRequest(requestId: string) {
   viewMode.value = 'request'
-  activeRequestId.value = requestId
-  void loadRequest(requestId)
+  void (async () => {
+    await loadMeta(requestId)
+    if (requestId !== activeRequestId.value) return
+    await loadActiveTabBodies()
+  })()
   emit('openRequest', requestId)
 }
 

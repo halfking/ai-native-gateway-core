@@ -141,7 +141,6 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) ([]CredentialRef, bool) {
 	if err != nil || len(refs) == 0 {
 		return refs, false
 	}
-	refs = sortPriorityClusters(refs)
 	for _, ref := range refs {
 		if qr.hasTriedCredential(ref.CredentialID) {
 			continue

@@ -33,11 +33,6 @@
 {"text": "检查这段密钥处理逻辑是否符合安全规范", "label": "code_audit"}
 {"text": "Security review: is this auth middleware vulnerable to timing attacks?", "label": "code_audit"}
 {"text": "看看这个函数有没有内存泄漏或资源未释放的风险", "label": "code_audit"}
-{"text": "先制定计划：如何把单体应用拆成两个服务，列出步骤再讨论", "label": "planning"}
-{"text": "帮我制定一个为期两周的性能优化计划", "label": "planning"}
-{"text": "给出这个功能的技术方案：需要哪些模块、接口和里程碑", "label": "planning"}
-{"text": "Create a step-by-step migration plan for upgrading to PostgreSQL 16", "label": "planning"}
-{"text": "为下季度规划模型成本优化的路线图，先列目标再拆任务", "label": "planning"}
 {"text": "把这条用户输入分类：我要退款，输出对应标签", "label": "intent_classification"}
 {"text": "判断这条评论是正面还是负面：物流很快，包装完好", "label": "intent_classification"}
 {"text": "以下内容属于哪个意图：查余额、转账、投诉？内容：钱怎么还没到账", "label": "intent_classification"}

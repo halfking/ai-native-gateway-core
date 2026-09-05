@@ -2,6 +2,9 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createI18n } from 'vue-i18n'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import RequestLogDrawer from './RequestLogDrawer.vue'
+import ConversationMessagesPanel from './detail/ConversationMessagesPanel.vue'
+import SessionTurnsSyncPane from './detail/SessionTurnsSyncPane.vue'
+import { clearRequestDetailCache } from '../composables/useRequestDetailLoader'
 
 const { getRequestLogDetail, getUnifiedRequestDetail, getRequestTrace, getSessionCompare } = vi.hoisted(() => ({
   getRequestLogDetail: vi.fn(),
@@ -122,5 +125,137 @@ describe('RequestLogDrawer compatibility shell', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('流程')
     expect(getRequestTrace).toHaveBeenCalled()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// F2-#5 regression suite (2026-09-05): the unified drawer migrated its
+// loading logic to useRequestDetailLoader. These tests pin the drawer-level
+// behavior that used to break when it self-managed loading:
+//   1. concurrent override — bodyless meta responses must not clobber
+//      fetched bodies, and switching turns must never render the previous
+//      turn's bodies (cross-request residue);
+//   2. bodies loading must not get stuck after a turn switch mid-fetch.
+// ---------------------------------------------------------------------------
+
+const A_BODY = { messages: [{ role: 'user', content: 'from-turn-a' }] }
+const B_BODY = { messages: [{ role: 'user', content: 'from-turn-b' }] }
+
+function metaFor(id: string) {
+  return {
+    source: 'request_logs',
+    persistence: 'persisted',
+    meta: { request_id: id, gw_session_id: 'sess-1', request_status: 'success' },
+  }
+}
+
+function metaLogFor(id: string) {
+  return { request_id: id, gw_session_id: 'sess-1', request_status: 'success' }
+}
+
+async function clickButtonText(
+  wrapper: { findAll: (selector: string) => Array<{ text(): string; trigger(event: string): Promise<unknown> }> },
+  text: string,
+) {
+  const btn = wrapper.findAll('button').find((b) => b.text() === text)
+  if (!btn) throw new Error(`button "${text}" not found`)
+  await btn.trigger('click')
+}
+
+describe('UnifiedRequestSessionDrawer turn-switch regressions (F2-#5)', () => {
+  beforeEach(() => {
+    clearRequestDetailCache()
+    getUnifiedRequestDetail.mockReset()
+    getRequestLogDetail.mockReset()
+    getUnifiedRequestDetail.mockImplementation((id: string, opts?: { omitBody?: boolean }) => {
+      if (opts?.omitBody) return Promise.resolve(metaFor(id))
+      return Promise.resolve({
+        ...metaFor(id),
+        bodies: { request_body: id === 'req-a' ? A_BODY : B_BODY },
+      })
+    })
+    getRequestLogDetail.mockImplementation((id: string, opts?: { omitBody?: boolean }) => {
+      if (opts?.omitBody) return Promise.resolve(metaLogFor(id))
+      return Promise.resolve({
+        ...metaLogFor(id),
+        request_body: id === 'req-a' ? A_BODY : B_BODY,
+      })
+    })
+  })
+
+  afterEach(() => { vi.clearAllMocks() })
+
+  it('shows the new turn bodies after a session-pane turn switch (no previous-turn residue)', async () => {
+    const wrapper = mount(RequestLogDrawer, {
+      props: { requestId: 'req-a' },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+
+    // Chat tab triggers the phased body fetch for req-a.
+    await clickButtonText(wrapper, '对话')
+    await flushPromises()
+    expect(wrapper.findComponent(ConversationMessagesPanel).props('body')).toEqual(A_BODY)
+
+    // Switch to the session pane and select turn B (old bug: the residue
+    // guard saw turn A's body and marked turn B's bodies as loaded, so
+    // turn A's content rendered under turn B).
+    await clickButtonText(wrapper, '会话轮次')
+    await flushPromises()
+    const pane = wrapper.findComponent(SessionTurnsSyncPane)
+    expect(pane.exists()).toBe(true)
+    pane.vm.$emit('select-request', 'req-b', 2)
+    await flushPromises()
+
+    // Back to the single-request view: chat tab is still active and must
+    // now show turn B's own freshly fetched body.
+    await clickButtonText(wrapper, '单请求')
+    await flushPromises()
+    expect(wrapper.findComponent(ConversationMessagesPanel).props('body')).toEqual(B_BODY)
+  })
+
+  it('bodies loading indicator clears after a turn switch resolves mid-fetch (not sticky)', async () => {
+    // Turn B's full-body fetch hangs until we resolve it manually. Call
+    // order: (a, omitBody) → (a, full) → (b, omitBody) → (b, full)=pending.
+    let resolveBLog: (v: unknown) => void = () => {}
+    let resolveBUnified: (v: unknown) => void = () => {}
+    getUnifiedRequestDetail.mockImplementation((id: string, opts?: { omitBody?: boolean }) => {
+      if (opts?.omitBody) return Promise.resolve(metaFor(id))
+      if (id === 'req-b') return new Promise((resolve) => { resolveBUnified = resolve })
+      return Promise.resolve({ ...metaFor(id), bodies: { request_body: A_BODY } })
+    })
+    getRequestLogDetail.mockImplementation((id: string, opts?: { omitBody?: boolean }) => {
+      if (opts?.omitBody) return Promise.resolve(metaLogFor(id))
+      if (id === 'req-b') return new Promise((resolve) => { resolveBLog = resolve })
+      return Promise.resolve({ ...metaLogFor(id), request_body: A_BODY })
+    })
+
+    const wrapper = mount(RequestLogDrawer, {
+      props: { requestId: 'req-a' },
+      global: { plugins: [i18n] },
+    })
+    await flushPromises()
+    await clickButtonText(wrapper, '对话')
+    await flushPromises()
+    expect(wrapper.findComponent(ConversationMessagesPanel).props('body')).toEqual(A_BODY)
+    expect(wrapper.find('.drawer-body-scroll .drawer-loading').exists()).toBe(false)
+
+    // Switch turns while turn B's body fetch is still pending, then return
+    // to the single-request view: the loading state must show while the
+    // fetch is in flight and MUST clear once it resolves (old bug: the
+    // seq-captured finally left bodiesLoading stuck on true forever).
+    await clickButtonText(wrapper, '会话轮次')
+    await flushPromises()
+    wrapper.findComponent(SessionTurnsSyncPane).vm.$emit('select-request', 'req-b', 2)
+    await flushPromises()
+    await clickButtonText(wrapper, '单请求')
+    await flushPromises()
+    expect(wrapper.find('.drawer-body-scroll .drawer-loading').exists()).toBe(true)
+
+    resolveBLog({ ...metaLogFor('req-b'), request_body: B_BODY })
+    resolveBUnified({ ...metaFor('req-b'), bodies: { request_body: B_BODY } })
+    await flushPromises()
+    expect(wrapper.find('.drawer-body-scroll .drawer-loading').exists()).toBe(false)
+    expect(wrapper.findComponent(ConversationMessagesPanel).props('body')).toEqual(B_BODY)
   })
 })

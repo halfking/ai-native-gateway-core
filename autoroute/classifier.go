@@ -728,10 +728,6 @@ func rankSecondary(scores map[TaskType]float64, winner TaskType) []TaskScore {
 	return out
 }
 
-func buildReason(winner TaskType, reasoningHits, codeHits, creativeHits int, hasCodeBlock bool) string { //nolint:unused
-	return buildReasonEx(winner, reasoningHits, codeHits, creativeHits, hasCodeBlock, "")
-}
-
 // buildReasonEx is the extended version that also surfaces a pattern-match
 // reason when the winner was (partly) decided by the regex layer.
 // patternReason is "" when no pattern contributed to the winner.

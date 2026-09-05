@@ -64,7 +64,11 @@ describe('dashboard board tab contract', () => {
     expect(logs).toContain('<RequestLogDrawer')
     expect(logs).not.toContain('getRequestLogDetail')
     expect(drawerShell).toContain('UnifiedRequestSessionDrawer')
-    expect(unified).toContain('getRequestLogDetail')
+    // 2026-09-05 (F2-#5): the drawer migrated its loading logic to the shared
+    // useRequestDetailLoader composable (per-request cache + seq guards), so
+    // the contract is now "uses the shared loader" rather than importing the
+    // raw endpoints itself.
+    expect(unified).toContain('useRequestDetailLoader')
     expect(unified).not.toContain('getProviderRequestStats')
     expect(unified).not.toContain('providerStats')
   })

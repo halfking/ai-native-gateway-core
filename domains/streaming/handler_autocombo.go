@@ -202,13 +202,13 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 
 	results := make([]candResult, len(entries))
 	var (
-		wg       sync.WaitGroup
-		mu       sync.Mutex // 保护 slog 并发写
-		emptySet = make(map[int]struct{})
+		wg sync.WaitGroup
+		mu sync.Mutex // 保护 slog 并发写
 	)
 	for i, e := range entries {
 		if e.ProviderCode == "" || e.ModelID == "" {
-			emptySet[i] = struct{}{}
+			// 空 provider/model 行直接跳过，不参与并行解析；
+			// 空候选在外层 len() 检查统一兜底。
 			continue
 		}
 		i, e := i, e
@@ -232,7 +232,6 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 		}()
 	}
 	wg.Wait()
-	_ = emptySet // skip-list 在外层 len() 检查处理
 
 	pool := make([]provider.Candidate, 0, len(entries)*2)
 	policyRef := (*provider.Policy)(nil)

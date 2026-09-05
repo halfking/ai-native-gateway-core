@@ -1,5 +1,6 @@
 // useRequestDetailLoader — phased async load + short TTL cache per requestId.
 import { computed, ref, shallowRef } from 'vue'
+import { ApiError } from '../api/_core'
 import { getRequestLogDetail, type RequestLogDetail, type RoutingAttempt } from '../api/logs'
 import {
   getUnifiedRequestDetail,
@@ -24,6 +25,25 @@ export type DetailSection =
   | 'raw'
 
 const CACHE_TTL_MS = 45_000
+
+// Sentinel stored in metaError when both detail endpoints return nothing for
+// a request. Consumers match on this constant to render a localized message
+// (e.g. the drawer maps it to t('requestDetail.drawer.notFound')) instead of
+// string-matching a hardcoded Chinese literal.
+export const REQUEST_DETAIL_NOT_FOUND = '请求详情未找到'
+
+// 2026-09-05 (F2-#5): partial endpoint failures used to be silently swallowed
+// by the drawer's local loader while the drawer showed a warnings list. The
+// recorder moved here so every consumer of the composable gets the same
+// degradation visibility without re-implementing per-endpoint bookkeeping.
+function formatEndpointFailure(endpoint: string, e: unknown): string {
+  const detail = e instanceof ApiError
+    ? `HTTP ${e.status} ${e.message}`
+    : e instanceof Error
+      ? e.message
+      : String(e)
+  return `${endpoint}: ${detail}`
+}
 
 export type RequestDetailAttempt = WaterfallAttempt & {
   source?: 'journey' | 'waterfall' | 'synthesized'
@@ -172,6 +192,7 @@ export function useRequestDetailLoader() {
 
   const metaLoading = ref(false)
   const metaError = ref('')
+  const metaWarnings = ref<string[]>([])
   const log = ref<RequestLogDetail | null>(null)
   const unified = ref<UnifiedRequestDetail | null>(null)
   const sessionSnap = ref<Record<string, unknown> | null>(null)
@@ -224,6 +245,11 @@ export function useRequestDetailLoader() {
     bodiesLoaded.value = false
     bodiesLoading.value = false
     waterfallLoading.value = false
+    // 2026-09-05 (F2-#5): a metaError from the previous request (and any
+    // endpoint-failure warnings) must not survive a request switch — the
+    // drawer renders metaError inline even when the new request loads fine.
+    metaError.value = ''
+    metaWarnings.value = []
   }
 
   function applyEntry(e: CacheEntry) {
@@ -264,21 +290,77 @@ export function useRequestDetailLoader() {
     sessionSnap.value = null
     metaLoading.value = true
     try {
-      const [u, meta, durableJourney] = await Promise.all([
-        getUnifiedRequestDetail(requestId, { omitBody: true }).catch(() => null),
-        getRequestLogDetail(requestId, { omitBody: true }).catch(() => null),
-        getRequestJourney(requestId).catch(() => null),
+      // 2026-09-05 (F2-#5): record per-endpoint degradation in metaWarnings
+      // (both endpoints failing concurrently degrade to null → notFound;
+      // without the warnings list the partial failure would be invisible).
+      // 2026-09-05 (round2 audit P2-1): each catch re-checks seq before
+      // pushing — the user may have switched to another request while this
+      // fetch was still in flight, and a stale endpoint failure must not
+      // leak into the new view's freshly-cleared warnings list (same guard
+      // as the outer catch / ensureSessionSnap below).
+      const [u, meta] = await Promise.all([
+        getUnifiedRequestDetail(requestId, { omitBody: true }).catch((e: unknown) => {
+          if (seq === loadSeq.value) metaWarnings.value.push(formatEndpointFailure('admin/request-detail', e))
+          return null
+        }),
+        getRequestLogDetail(requestId, { omitBody: true }).catch((e: unknown) => {
+          if (seq === loadSeq.value) metaWarnings.value.push(formatEndpointFailure('/api/logs/:id', e))
+          return null
+        }),
       ])
+      // 2026-09-05 (round2 audit P3-3): the journey read is a cold columnar
+      // path and used to gate meta first paint inside the Promise.all above.
+      // Fire it out-of-band: it lands seq-guarded once resolved (and is
+      // merged into the cache entry so a TTL re-entry still restores it);
+      // failures stay silent — same degradation semantics as before, without
+      // delaying the drawer's full-panel loading.
+      void getRequestJourney(requestId)
+        .then((j) => {
+          if (seq !== loadSeq.value) return
+          journey.value = j
+          if (j) cachePut(requestId, { journey: j })
+        })
+        .catch(() => null)
       if (seq !== loadSeq.value) return
-      unified.value = u
-      log.value = meta
-      journey.value = durableJourney
-      if (!u && !meta) {
-        metaError.value = '请求详情未找到'
+      // 2026-09-05 (round2 audit P2-2): a same-seq ensureBodies (e.g. the
+      // fullscreen view's viewMode watcher fans out onSectionNeed in
+      // parallel with loadMeta) may have landed first and cached a
+      // bodiesLoaded entry for this id. The omitBody landing must not
+      // clobber those bodies — merge: meta fields come from the fresh
+      // responses, body-bearing fields stay from the cached entry.
+      const prior = cacheGet(requestId)
+      let landedU = u
+      let landedLog = meta
+      if (prior?.bodiesLoaded) {
+        landedU = u
+          ? (prior.unified?.bodies ? { ...u, bodies: prior.unified.bodies } : u)
+          : prior.unified
+        if (meta && prior.log) {
+          landedLog = {
+            ...prior.log,
+            ...meta,
+            request_body: meta.request_body ?? prior.log.request_body,
+            response_body: meta.response_body ?? prior.log.response_body,
+            outbound_body: meta.outbound_body ?? prior.log.outbound_body,
+          }
+        } else {
+          landedLog = meta ?? prior.log
+        }
+      }
+      unified.value = landedU
+      log.value = landedLog
+      if (!landedU && !landedLog) {
+        metaError.value = REQUEST_DETAIL_NOT_FOUND
         return
       }
-      cachePut(requestId, { log: meta, unified: u, journey: durableJourney, bodiesLoaded: false })
-      const sid = meta?.gw_session_id || u?.meta.gw_session_id
+      cachePut(requestId, {
+        log: landedLog,
+        unified: landedU,
+        // P2-2: never clear the bodiesLoaded marker the parallel
+        // ensureBodies just set — the merge above preserved its bodies.
+        bodiesLoaded: prior?.bodiesLoaded ?? false,
+      })
+      const sid = landedLog?.gw_session_id || landedU?.meta.gw_session_id
       if (sid) void ensureSessionSnap(sid, abort?.signal)
     } catch (e: unknown) {
       if (seq !== loadSeq.value) return
@@ -305,8 +387,11 @@ export function useRequestDetailLoader() {
       sessionSnap.value = snap
       const rid = log.value?.request_id || unified.value?.meta.request_id
       if (rid) cachePut(rid, { sessionSnap: snap })
-    } catch {
-      /* snapshot optional */
+    } catch (e: unknown) {
+      // Snapshot stays optional (sessionSnap keeps its previous/null value),
+      // but the drawer surfaces the degradation instead of failing silently.
+      if (seq !== loadSeq.value) return
+      metaWarnings.value.push(formatEndpointFailure('sessions/:id/snapshot', e))
     }
   }
 
@@ -406,10 +491,12 @@ export function useRequestDetailLoader() {
   return {
     metaLoading,
     metaError,
+    metaWarnings,
     log,
     unified,
     sessionSnap,
     sessionId,
+    activeRequestId,
     requestBody,
     responseBody,
     outboundBody,

@@ -407,24 +407,8 @@ func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 	}
 
 	// function_call_output items map to a tool-role message.
-	if itemType, _ := item["type"].(string); itemType == "function_call_output" {
-		callID, _ := item["call_id"].(string)
-		output := extractItemText(item)
-		if _, ok := item["output"]; ok {
-			// output already captured via extractItemText.
-		}
-		return &Message{
-			Role:       "tool",
-			ToolCallID: callID,
-			Content: []ContentBlock{{
-				Type: "tool_result",
-				ToolResult: &ToolResult{
-					ToolUseID: callID,
-					Content:   []ContentBlock{{Type: "text", Text: output}},
-				},
-			}},
-		}, "", nil
-	}
+	// (Handled by the early `itemType == "function_call_output"` branch above;
+	// a second copy here was unreachable and removed.)
 
 	return msg, "", nil
 }

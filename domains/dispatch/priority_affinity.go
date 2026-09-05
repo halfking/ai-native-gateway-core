@@ -3,7 +3,6 @@ package dispatch
 import (
 	"context"
 	"log/slog"
-	"sort"
 	"time"
 )
 
@@ -12,17 +11,6 @@ import (
 type SessionAffinitySink interface {
 	RecordSuccess(ctx context.Context, sessionID string, credential CredentialRef, model string) error
 	Invalidate(ctx context.Context, sessionID string, credentialID int) error
-}
-
-func sortPriorityClusters(refs []CredentialRef) []CredentialRef {
-	if len(refs) < 2 {
-		return refs
-	}
-	sorted := append([]CredentialRef(nil), refs...)
-	sort.SliceStable(sorted, func(i, j int) bool {
-		return sorted[i].PriorityCluster < sorted[j].PriorityCluster
-	})
-	return sorted
 }
 
 func (p *Pipeline) recordSessionAffinity(qr *QueuedRequest, out ForwardOutcome) {

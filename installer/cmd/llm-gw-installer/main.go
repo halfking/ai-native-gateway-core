@@ -256,6 +256,21 @@ var durableTasksDecisionHistoryMigration657 []byte
 //go:embed embeddata/startup/658_auto_route_structured_features.sql
 var autoRouteStructuredFeaturesMigration658 []byte
 
+//go:embed embeddata/startup/659_legacy_promote_atomic_cte.sql
+var legacyPromoteAtomicCTEMigration659 []byte
+
+//go:embed embeddata/startup/660_credential_model_weekly_peak_unique.sql
+var credentialModelWeeklyPeakUniqueMigration660 []byte
+
+//go:embed embeddata/startup/662_feature_distribution_stats.sql
+var featureDistributionStatsMigration662 []byte
+
+//go:embed embeddata/startup/663_training_export.sql
+var trainingExportMigration663 []byte
+
+//go:embed embeddata/startup/664_provider_error_details_agg_key_dedup.sql
+var providerErrorDetailsAggKeyDedupMigration664 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -998,6 +1013,11 @@ func copySQLBackup(root string) error {
 		"startup/656_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration656,
 		"startup/657_durable_llm_tasks_decision_history.sql":                       durableTasksDecisionHistoryMigration657,
 		"startup/658_auto_route_structured_features.sql":                           autoRouteStructuredFeaturesMigration658,
+		"startup/659_legacy_promote_atomic_cte.sql":                                legacyPromoteAtomicCTEMigration659,
+		"startup/660_credential_model_weekly_peak_unique.sql":                      credentialModelWeeklyPeakUniqueMigration660,
+		"startup/662_feature_distribution_stats.sql":                               featureDistributionStatsMigration662,
+		"startup/663_training_export.sql":                                          trainingExportMigration663,
+		"startup/664_provider_error_details_agg_key_dedup.sql":                     providerErrorDetailsAggKeyDedupMigration664,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {
@@ -1139,6 +1159,11 @@ func setupSQLDir() (string, func(), error) {
 		"startup/656_auto_route_selections_hot.sql":                                autoRouteSelectionsHotMigration656,
 		"startup/657_durable_llm_tasks_decision_history.sql":                       durableTasksDecisionHistoryMigration657,
 		"startup/658_auto_route_structured_features.sql":                           autoRouteStructuredFeaturesMigration658,
+		"startup/659_legacy_promote_atomic_cte.sql":                                legacyPromoteAtomicCTEMigration659,
+		"startup/660_credential_model_weekly_peak_unique.sql":                      credentialModelWeeklyPeakUniqueMigration660,
+		"startup/662_feature_distribution_stats.sql":                               featureDistributionStatsMigration662,
+		"startup/663_training_export.sql":                                          trainingExportMigration663,
+		"startup/664_provider_error_details_agg_key_dedup.sql":                     providerErrorDetailsAggKeyDedupMigration664,
 		"startup/session_turns_hot_bootstrap.sql":                                  sessionTurnsHotBootstrap,
 	}
 	for name, content := range files {

@@ -749,7 +749,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 	// accept the field via ExtensionsBag; round-trip is lossless).
 	if req.TopK != nil && src != ProtocolOpenAIChat && src != ProtocolOpenAIResponses {
 		ReportProtocolLoss(
-			requestIDFromIR(req),
+			"unknown",
 			"top_k",
 			ifaceNonEmpty(src, ProtocolAnthropicMessages),
 			ProtocolOpenAIChat,
@@ -775,7 +775,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 			// reporting that as lost would be a false positive).
 			if block.Type == "image" && block.Image != nil && block.Image.FileID != "" && block.Image.URL == "" && block.Image.Data == "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "image.file_id"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIChat,
@@ -794,7 +794,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 				(block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id") &&
 				block.Document.Source.FileID == "" && block.Document.Source.Data == "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "document.file_id"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIChat,
@@ -814,7 +814,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 						continue
 					}
 					ReportProtocolLoss(
-						requestIDFromIR(req),
+						"unknown",
 						fieldPathMessageContent(i, j, "tool_result.content["+smallItoa(k)+"].image"),
 						ifaceNonEmpty(src, ProtocolAnthropicMessages),
 						ProtocolOpenAIChat,
@@ -829,7 +829,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 			}
 			if block.Thinking != nil && block.Thinking.Signature != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "thinking.signature"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIChat,
@@ -840,7 +840,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 			}
 			if block.RedactedThinking != "" {
 				ReportProtocolLoss(
-					requestIDFromIR(req),
+					"unknown",
 					fieldPathMessageContent(i, j, "redacted_thinking"),
 					ifaceNonEmpty(src, ProtocolAnthropicMessages),
 					ProtocolOpenAIChat,
@@ -857,7 +857,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 	if src != ProtocolOpenAIChat {
 		if len(req.CacheControl) > 0 {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"cache_control",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -868,7 +868,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		}
 		if len(req.Documents) > 0 {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"documents",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -879,7 +879,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		}
 		if req.Thinking != nil {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"thinking",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -890,7 +890,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		}
 		if len(req.MCPServers) > 0 {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"mcp_servers",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -901,7 +901,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		}
 		if req.ContextManagement != nil {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"context_management",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -912,7 +912,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		}
 		if req.Container != nil {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"container",
 				ifaceNonEmpty(src, ProtocolAnthropicMessages),
 				ProtocolOpenAIChat,
@@ -955,7 +955,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 				continue
 			}
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				f.field,
 				ifaceNonEmpty(src, ProtocolOpenAIChat),
 				ProtocolOpenAIChat,
@@ -977,7 +977,7 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 		isOpenAISource := src == ProtocolOpenAIChat || src == ProtocolOpenAIResponses
 		if !isOpenAISource {
 			ReportProtocolLoss(
-				requestIDFromIR(req),
+				"unknown",
 				"previous_response_id",
 				ifaceNonEmpty(src, ProtocolOpenAIChat),
 				ProtocolOpenAIChat,
@@ -987,14 +987,6 @@ func reportSerializeOpenAILosses(req *InternalRequest) {
 			)
 		}
 	}
-}
-
-// requestIDFromIR returns the request id from the IR's first message raw
-// content if present, else "unknown". Today the IR does not carry an
-// explicit RequestID field; we keep a placeholder for cross-protocol
-// tests. Future revision may add RequestID to InternalRequest directly.
-func requestIDFromIR(_ *InternalRequest) string {
-	return "unknown"
 }
 
 // ifaceNonEmpty returns s if non-empty, otherwise the fallback.

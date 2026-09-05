@@ -6,6 +6,8 @@
 // 前端趋势图不再扫明细表。聚合按时间桶（minute/hour/day）× 维度
 // (supplier, credential_id, error_type, model) 分组，UPSERT 到
 // V371 定义的唯一键上，重复聚合幂等（审计要求：防重复聚合）。
+// 桶内另产出 retryable_count / stage_counts 分桶（2026-09-05 audit E-#6：
+// 可重试率与阶段分布的聚合载体），随覆盖式 UPSERT 逐桶刷新。
 //
 // 窗口语义（2026-09-05 audit D-2#7）：进程内维护 watermark（上次成功
 // rollup 的窗口上界）。每次 tick 重算 [watermark, now)，起点 now-10min
@@ -41,32 +43,74 @@ const supplierErrorStatsMaxWindow = 8 * time.Hour
 // error_count + success_count，其中 success 侧暂无逐行来源（成功请求不写
 // 错误表），取 0 —— error_rate 仅在接入成功计数（usage_ledger join）后
 // 才有意义，先保持列契约稳定。
+//
+// 2026-09-05 审计 E-#6：桶内同时产出 retryable_count（is_retryable=true
+// 行数）与 stage_counts（stage→计数 jsonb map）。UPSERT 键保持
+// (stat_time, granularity, supplier, credential_id, error_type, model)
+// 不变：retryable/stage 若提为维度键会把行数乘上组合数、并改变 hour/day
+// rollup 的分组语义；分桶计数随覆盖式 UPSERT 逐桶刷新，无重复累计。
+// stage_counts 用两层分组（先按 stage 计数再 jsonb_object_agg）是因为
+// jsonb_object_agg 不求和；空串 stage 保留为 "" 键（无损），读端映射 unknown。
 const supplierErrorStatsRollupSQL = `
+WITH base AS (
+    SELECT date_bin($1::interval, occurred_at, '2000-01-01'::timestamptz) AS stat_time,
+           supplier, credential_id, error_type, model,
+           request_id, affected_users, is_retryable, stage
+    FROM supplier_errors_hot
+    WHERE occurred_at >= $3 AND occurred_at < $4
+), bucket_totals AS (
+    SELECT stat_time, supplier, credential_id, error_type, model,
+           COUNT(*)::int AS error_count,
+           COUNT(DISTINCT request_id)::int AS unique_requests,
+           SUM(affected_users)::int AS affected_users,
+           SUM(CASE WHEN is_retryable THEN 1 ELSE 0 END)::int AS retryable_count
+    FROM base
+    GROUP BY 1, 2, 3, 4, 5
+), bucket_stages AS (
+    SELECT stat_time, supplier, credential_id, error_type, model,
+           jsonb_object_agg(stage, n) AS stage_counts
+    FROM (
+        SELECT stat_time, supplier, credential_id, error_type, model, stage,
+               COUNT(*)::int AS n
+        FROM base
+        GROUP BY 1, 2, 3, 4, 5, 6
+    ) per_stage
+    GROUP BY 1, 2, 3, 4, 5
+)
 INSERT INTO supplier_error_stats (
     stat_time, granularity, supplier, credential_id, error_type, model,
-    error_count, unique_requests, affected_users, success_count, total_requests
+    error_count, unique_requests, affected_users, success_count, total_requests,
+    retryable_count, stage_counts
 )
 SELECT
-    date_bin($1::interval, occurred_at, '2000-01-01'::timestamptz),
+    b.stat_time,
     $2,
-    supplier,
-    credential_id,
-    error_type,
-    model,
-    COUNT(*)::int,
-    COUNT(DISTINCT request_id)::int,
-    SUM(affected_users)::int,
+    b.supplier,
+    b.credential_id,
+    b.error_type,
+    b.model,
+    b.error_count,
+    b.unique_requests,
+    b.affected_users,
     0,
-    COUNT(*)::int
-FROM supplier_errors_hot
-WHERE occurred_at >= $3 AND occurred_at < $4
-GROUP BY 1, 2, 3, 4, 5, 6
+    b.error_count,
+    b.retryable_count,
+    COALESCE(s.stage_counts, '{}'::jsonb)
+FROM bucket_totals b
+LEFT JOIN bucket_stages s
+       ON b.stat_time = s.stat_time
+      AND b.supplier = s.supplier
+      AND b.credential_id = s.credential_id
+      AND b.error_type = s.error_type
+      AND b.model = s.model
 ON CONFLICT (stat_time, granularity, supplier, credential_id, error_type, model)
 DO UPDATE SET
     error_count     = EXCLUDED.error_count,
     unique_requests = EXCLUDED.unique_requests,
     affected_users  = EXCLUDED.affected_users,
     total_requests  = EXCLUDED.total_requests,
+    retryable_count = EXCLUDED.retryable_count,
+    stage_counts    = EXCLUDED.stage_counts,
     aggregated_at   = NOW()
 `
 
@@ -77,28 +121,66 @@ DO UPDATE SET
 // 桶都聚合了它范围内的**全部**子桶行——UPSERT 覆盖写才不会用部分窗口
 // 的残缺和覆盖完整桶。unique_requests 跨桶求和是上界近似（同一请求
 // 跨分钟会重复计数），明细级精确去重只有 hot join 一条路，不值得。
+// E-#6：retryable_count 直接跨桶求和；stage_counts 经 jsonb_each 展开、
+// 按 (桶, stage) 求和后再 jsonb_object_agg 合并（两级聚合绕开
+// "聚合函数内不能再聚合"的限制）。
 const supplierErrorStatsHourRollupSQL = `
+WITH bucket_totals AS (
+    SELECT date_trunc('hour', stat_time) AS stat_time,
+           supplier, credential_id, error_type, model,
+           SUM(error_count)::int AS error_count,
+           SUM(unique_requests)::int AS unique_requests,
+           SUM(affected_users)::int AS affected_users,
+           SUM(success_count)::int AS success_count,
+           SUM(total_requests)::int AS total_requests,
+           SUM(retryable_count)::int AS retryable_count
+    FROM supplier_error_stats
+    WHERE granularity = 'minute'
+      AND stat_time >= date_trunc('hour', $1::timestamptz)
+      AND stat_time < $2
+    GROUP BY 1, 2, 3, 4, 5
+), bucket_stages AS (
+    SELECT stat_time, supplier, credential_id, error_type, model,
+           jsonb_object_agg(stage, n) AS stage_counts
+    FROM (
+        SELECT date_trunc('hour', stat_time) AS stat_time,
+               supplier, credential_id, error_type, model,
+               e.key AS stage, SUM((e.value)::bigint)::int AS n
+        FROM supplier_error_stats src
+        CROSS JOIN LATERAL jsonb_each(src.stage_counts) e(key, value)
+        WHERE src.granularity = 'minute'
+          AND src.stat_time >= date_trunc('hour', $1::timestamptz)
+          AND src.stat_time < $2
+        GROUP BY 1, 2, 3, 4, 5, 6
+    ) per_stage
+    GROUP BY 1, 2, 3, 4, 5
+)
 INSERT INTO supplier_error_stats (
     stat_time, granularity, supplier, credential_id, error_type, model,
-    error_count, unique_requests, affected_users, success_count, total_requests
+    error_count, unique_requests, affected_users, success_count, total_requests,
+    retryable_count, stage_counts
 )
 SELECT
-    date_trunc('hour', stat_time),
+    b.stat_time,
     'hour',
-    supplier,
-    credential_id,
-    error_type,
-    model,
-    SUM(error_count)::int,
-    SUM(unique_requests)::int,
-    SUM(affected_users)::int,
-    SUM(success_count)::int,
-    SUM(total_requests)::int
-FROM supplier_error_stats
-WHERE granularity = 'minute'
-  AND stat_time >= date_trunc('hour', $1::timestamptz)
-  AND stat_time < $2
-GROUP BY 1, 3, 4, 5, 6
+    b.supplier,
+    b.credential_id,
+    b.error_type,
+    b.model,
+    b.error_count,
+    b.unique_requests,
+    b.affected_users,
+    b.success_count,
+    b.total_requests,
+    b.retryable_count,
+    COALESCE(s.stage_counts, '{}'::jsonb)
+FROM bucket_totals b
+LEFT JOIN bucket_stages s
+       ON b.stat_time = s.stat_time
+      AND b.supplier = s.supplier
+      AND b.credential_id = s.credential_id
+      AND b.error_type = s.error_type
+      AND b.model = s.model
 ON CONFLICT (stat_time, granularity, supplier, credential_id, error_type, model)
 DO UPDATE SET
     error_count     = EXCLUDED.error_count,
@@ -106,31 +188,68 @@ DO UPDATE SET
     affected_users  = EXCLUDED.affected_users,
     success_count   = EXCLUDED.success_count,
     total_requests  = EXCLUDED.total_requests,
+    retryable_count = EXCLUDED.retryable_count,
+    stage_counts    = EXCLUDED.stage_counts,
     aggregated_at   = NOW()
 `
 
 const supplierErrorStatsDayRollupSQL = `
+WITH bucket_totals AS (
+    SELECT date_trunc('day', stat_time) AS stat_time,
+           supplier, credential_id, error_type, model,
+           SUM(error_count)::int AS error_count,
+           SUM(unique_requests)::int AS unique_requests,
+           SUM(affected_users)::int AS affected_users,
+           SUM(success_count)::int AS success_count,
+           SUM(total_requests)::int AS total_requests,
+           SUM(retryable_count)::int AS retryable_count
+    FROM supplier_error_stats
+    WHERE granularity = 'hour'
+      AND stat_time >= date_trunc('day', $1::timestamptz)
+      AND stat_time < $2
+    GROUP BY 1, 2, 3, 4, 5
+), bucket_stages AS (
+    SELECT stat_time, supplier, credential_id, error_type, model,
+           jsonb_object_agg(stage, n) AS stage_counts
+    FROM (
+        SELECT date_trunc('day', stat_time) AS stat_time,
+               supplier, credential_id, error_type, model,
+               e.key AS stage, SUM((e.value)::bigint)::int AS n
+        FROM supplier_error_stats src
+        CROSS JOIN LATERAL jsonb_each(src.stage_counts) e(key, value)
+        WHERE src.granularity = 'hour'
+          AND src.stat_time >= date_trunc('day', $1::timestamptz)
+          AND src.stat_time < $2
+        GROUP BY 1, 2, 3, 4, 5, 6
+    ) per_stage
+    GROUP BY 1, 2, 3, 4, 5
+)
 INSERT INTO supplier_error_stats (
     stat_time, granularity, supplier, credential_id, error_type, model,
-    error_count, unique_requests, affected_users, success_count, total_requests
+    error_count, unique_requests, affected_users, success_count, total_requests,
+    retryable_count, stage_counts
 )
 SELECT
-    date_trunc('day', stat_time),
+    b.stat_time,
     'day',
-    supplier,
-    credential_id,
-    error_type,
-    model,
-    SUM(error_count)::int,
-    SUM(unique_requests)::int,
-    SUM(affected_users)::int,
-    SUM(success_count)::int,
-    SUM(total_requests)::int
-FROM supplier_error_stats
-WHERE granularity = 'hour'
-  AND stat_time >= date_trunc('day', $1::timestamptz)
-  AND stat_time < $2
-GROUP BY 1, 3, 4, 5, 6
+    b.supplier,
+    b.credential_id,
+    b.error_type,
+    b.model,
+    b.error_count,
+    b.unique_requests,
+    b.affected_users,
+    b.success_count,
+    b.total_requests,
+    b.retryable_count,
+    COALESCE(s.stage_counts, '{}'::jsonb)
+FROM bucket_totals b
+LEFT JOIN bucket_stages s
+       ON b.stat_time = s.stat_time
+      AND b.supplier = s.supplier
+      AND b.credential_id = s.credential_id
+      AND b.error_type = s.error_type
+      AND b.model = s.model
 ON CONFLICT (stat_time, granularity, supplier, credential_id, error_type, model)
 DO UPDATE SET
     error_count     = EXCLUDED.error_count,
@@ -138,6 +257,8 @@ DO UPDATE SET
     affected_users  = EXCLUDED.affected_users,
     success_count   = EXCLUDED.success_count,
     total_requests  = EXCLUDED.total_requests,
+    retryable_count = EXCLUDED.retryable_count,
+    stage_counts    = EXCLUDED.stage_counts,
     aggregated_at   = NOW()
 `
 
