@@ -191,6 +191,9 @@ func TestRepairGraceAndDegradedStater(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, res.Deleted)
 		assert.Empty(t, bodies.deleted)
+		// 2026-09-05 round2 复审 F3：已消失孤儿计入 Vanished 桶（审计对账
+		// 可解释），不再"凭空消失"。
+		assert.Equal(t, []int{2}, res.Vanished)
 	})
 
 	t.Run("deleter without stater skips grace but still deletes", func(t *testing.T) {

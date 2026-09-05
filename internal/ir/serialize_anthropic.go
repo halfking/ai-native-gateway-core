@@ -677,6 +677,20 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 					if url != "" {
 						source["url"] = url
 					}
+				default:
+					// 2026-09-05 round2 复审: text/csv/unknown source types
+					// (e.g. the real Anthropic wire form
+					// {"type":"text","media_type":...,"data":...}) must keep
+					// their payload on the same-protocol round trip — mirror
+					// the top-level serializeAnthropicDocuments default
+					// projection so the message-level switch does not emit a
+					// bare {"type":"text"} with the body silently dropped.
+					if block.Document.Source.Data != "" {
+						source["data"] = block.Document.Source.Data
+					}
+					if block.Document.Source.URL != "" {
+						source["url"] = block.Document.Source.URL
+					}
 				}
 				out["source"] = source
 			}

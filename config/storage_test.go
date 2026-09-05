@@ -561,3 +561,54 @@ func TestLoadStorageConfigEnvConsistency(t *testing.T) {
 		t.Fatal("非法 delete_orphans 值不应置位")
 	}
 }
+
+// TestConsistencyYAMLExplicitBeatsEnv（2026-09-05 round2 复审 F5a）：YAML 显式
+// consistency_check_enabled: true + env = false 时 YAML 必须胜出——env 只填充
+// YAML 未配置（nil）的指针字段（applyOptionalBoolEnv），不覆盖显式配置。
+func TestConsistencyYAMLExplicitBeatsEnv(t *testing.T) {
+	for _, key := range consistencyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED", "false")
+
+	path := filepath.Join(t.TempDir(), "storage.yaml")
+	contents := `storage_mode: lite
+lite_storage:
+  sqlite_path: /tmp/gateway/gw.db
+  consistency:
+    consistency_check_enabled: true
+`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadStorageConfigFromYAML(path)
+	if err != nil {
+		t.Fatalf("LoadStorageConfigFromYAML() error = %v", err)
+	}
+	c := cfg.Lite.Consistency
+	if c.Enabled == nil || !*c.Enabled {
+		t.Fatalf("Enabled = %v, want YAML explicit true（env false 不得覆盖显式配置）", c.Enabled)
+	}
+}
+
+// TestConsistencyEnvInvalidBoolFallsBackToDefault（2026-09-05 round2 复审
+// F5b）：env CHECK_ENABLED 为非法值（非 1/true/yes/on 与 0/false/no/off）时
+// 忽略不报错，指针保持 nil → ApplyLiteDefaults 兜底默认 true。
+func TestConsistencyEnvInvalidBoolFallsBackToDefault(t *testing.T) {
+	for _, key := range consistencyEnvKeys {
+		t.Setenv(key, "")
+	}
+	t.Setenv("LLM_GATEWAY_CONSISTENCY_CHECK_ENABLED", "notabool")
+
+	cfg := LoadStorageConfigFromEnv()
+	if cfg.Lite == nil {
+		t.Fatal("Lite = nil, want env-created section")
+	}
+	if cfg.Lite.Consistency.Enabled != nil {
+		t.Fatalf("Enabled = %v, want nil（非法 env 值不写入）", cfg.Lite.Consistency.Enabled)
+	}
+	cfg.ApplyLiteDefaults()
+	if cfg.Lite.Consistency.Enabled == nil || !*cfg.Lite.Consistency.Enabled {
+		t.Fatalf("Enabled = %v, want 默认 true", cfg.Lite.Consistency.Enabled)
+	}
+}

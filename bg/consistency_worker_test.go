@@ -27,22 +27,42 @@ type fakeIdleSessionLister struct {
 	sessions      []*storage.Session
 	gotIdleBefore time.Time
 	gotLimit      int
+	gotOffset     int
 	calls         int
 }
 
-func (f *fakeIdleSessionLister) ListIdleSessions(_ context.Context, idleBefore time.Time, limit int) ([]*storage.Session, error) {
+func (f *fakeIdleSessionLister) ListIdleSessions(_ context.Context, idleBefore time.Time, limit, offset int) ([]*storage.Session, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.gotIdleBefore, f.gotLimit = idleBefore, limit
+	f.gotIdleBefore, f.gotLimit, f.gotOffset = idleBefore, limit, offset
 	f.calls++
 	return f.sessions, nil
 }
 
 // snapshot 原子读取枚举参数快照（跨协程轮询用）。
-func (f *fakeIdleSessionLister) snapshot() (idleBefore time.Time, limit, calls int) {
+func (f *fakeIdleSessionLister) snapshot() (idleBefore time.Time, limit, offset, calls int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.gotIdleBefore, f.gotLimit, f.calls
+	return f.gotIdleBefore, f.gotLimit, f.gotOffset, f.calls
+}
+
+// fakePagingLister 按 LIMIT/OFFSET 分页语义对预设会话切片返回（2026-09-05
+// round2 复审 F1：验证 worker 的轮转偏移把全部空闲会话跨轮覆盖）。
+type fakePagingLister struct {
+	sessions   []*storage.Session
+	gotOffsets []int
+}
+
+func (f *fakePagingLister) ListIdleSessions(_ context.Context, _ time.Time, limit, offset int) ([]*storage.Session, error) {
+	f.gotOffsets = append(f.gotOffsets, offset)
+	if offset >= len(f.sessions) || offset < 0 {
+		return []*storage.Session{}, nil
+	}
+	end := offset + limit
+	if end > len(f.sessions) || limit <= 0 {
+		end = len(f.sessions)
+	}
+	return f.sessions[offset:end], nil
 }
 
 // fakeWorkerTurns 是可控 TurnsStore fake（key = "tenant/session"）。
@@ -151,13 +171,15 @@ func TestConsistencyWorker_RunOnce_ReportOnly(t *testing.T) {
 	w := NewConsistencyWorker(lister, turns, bodies)
 	require.NoError(t, w.RunOnce(context.Background()))
 
-	// report-only：不动任何数据。
+	// report-only：不动任何数据。统计经 LastRunStats 读取（F4）。
+	stats := w.LastRunStats()
 	assert.Empty(t, bodies.deleted, "report-only must not delete anything")
-	assert.Equal(t, 2, w.lastSessionsChecked)
-	assert.Equal(t, 2, w.lastInconsistent)
-	assert.Equal(t, 1, w.lastOrphans)
-	assert.Equal(t, 2, w.lastMissing, "sess-2 has meta 1,2 but no body files at all")
-	assert.Equal(t, 0, w.lastDeleted)
+	assert.Equal(t, 2, stats.SessionsChecked)
+	assert.Equal(t, 2, stats.Inconsistent)
+	assert.Equal(t, 1, stats.Orphans)
+	assert.Equal(t, 2, stats.Missing, "sess-2 has meta 1,2 but no body files at all")
+	assert.Equal(t, 0, stats.Deleted)
+	assert.Equal(t, 0, stats.Vanished)
 }
 
 func TestConsistencyWorker_RunOnce_DeleteMode(t *testing.T) {
@@ -170,7 +192,7 @@ func TestConsistencyWorker_RunOnce_DeleteMode(t *testing.T) {
 
 	// delete 模式：复检确认后的真孤儿被删（fake meta 中无 turn 2/3）。
 	assert.ElementsMatch(t, []string{"tenant-a/sess-1#2", "tenant-a/sess-1#3"}, bodies.deleted)
-	assert.Equal(t, 2, w.lastDeleted)
+	assert.Equal(t, 2, w.LastRunStats().Deleted)
 }
 
 // TestConsistencyWorker_RunOnce_KeepsDoubleConfirm 验证 worker 的删除路径
@@ -188,8 +210,8 @@ func TestConsistencyWorker_RunOnce_KeepsDoubleConfirm(t *testing.T) {
 	require.NoError(t, w.RunOnce(context.Background()))
 
 	assert.Empty(t, bodies.deleted, "in-flight turn must survive worker-driven repair")
-	assert.Equal(t, 0, w.lastDeleted)
-	assert.Equal(t, 1, w.lastOrphans, "snapshot still reports the (resolved) orphan")
+	assert.Equal(t, 0, w.LastRunStats().Deleted)
+	assert.Equal(t, 1, w.LastRunStats().Orphans, "snapshot still reports the (resolved) orphan")
 }
 
 func TestConsistencyWorker_RunOnce_BoundedAndIdleCutoff(t *testing.T) {
@@ -202,8 +224,9 @@ func TestConsistencyWorker_RunOnce_BoundedAndIdleCutoff(t *testing.T) {
 	require.NoError(t, w.RunOnce(context.Background()))
 	after := time.Now()
 
-	gotIdleBefore, gotLimit, _ := lister.snapshot()
+	gotIdleBefore, gotLimit, gotOffset, _ := lister.snapshot()
 	assert.Equal(t, 3, gotLimit, "max sessions bound must be passed to the lister")
+	assert.Equal(t, 0, gotOffset, "first run starts at rotation offset 0")
 	if gotIdleBefore.Before(before.Add(-5*time.Minute)) || gotIdleBefore.After(after.Add(-5*time.Minute)) {
 		t.Errorf("idleBefore = %v, want ~%v", gotIdleBefore, before.Add(-5*time.Minute))
 	}
@@ -219,7 +242,7 @@ func TestConsistencyWorker_RunOnce_EnumerationError(t *testing.T) {
 
 type failingIdleLister struct{ err error }
 
-func (f *failingIdleLister) ListIdleSessions(context.Context, time.Time, int) ([]*storage.Session, error) {
+func (f *failingIdleLister) ListIdleSessions(context.Context, time.Time, int, int) ([]*storage.Session, error) {
 	return nil, f.err
 }
 
@@ -229,9 +252,9 @@ func TestConsistencyWorker_RunOnce_PerSessionErrorContinues(t *testing.T) {
 	lister := &fakeIdleSessionLister{sessions: []*storage.Session{idleSession("t", "s")}}
 	w := NewConsistencyWorker(lister, &fakeWorkerTurns{metas: map[string][]int{}}, fakeBareBodies{})
 	require.NoError(t, w.RunOnce(context.Background()))
-	assert.Equal(t, 1, w.lastSessionsChecked)
-	assert.Equal(t, 0, w.lastInconsistent)
-	assert.Equal(t, 0, w.lastDeleted)
+	assert.Equal(t, 1, w.LastRunStats().SessionsChecked)
+	assert.Equal(t, 0, w.LastRunStats().Inconsistent)
+	assert.Equal(t, 0, w.LastRunStats().Deleted)
 }
 
 func TestConsistencyWorker_Start_LoopAndGracefulExit(t *testing.T) {
@@ -250,7 +273,7 @@ func TestConsistencyWorker_Start_LoopAndGracefulExit(t *testing.T) {
 	// 首跑延迟 + 至少一个周期：等待第二次枚举。
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		_, _, calls := lister.snapshot()
+		_, _, _, calls := lister.snapshot()
 		if calls >= 2 {
 			break
 		}
@@ -275,4 +298,85 @@ func turnMetasFor(turnNos ...int) []*storage.TurnMeta {
 		out = append(out, &storage.TurnMeta{TenantID: "tenant-a", SessionID: "sess-1", TurnNo: n})
 	}
 	return out
+}
+
+// fakeWorkerStatableBodies 在 fakeWorkerBodies 之上补 TurnFileStater，且恒报
+// ErrNotFound（文件已消失），用于 worker 侧 Vanished 桶透出（F3）。
+type fakeWorkerStatableBodies struct {
+	*fakeWorkerBodies
+}
+
+func (f *fakeWorkerStatableBodies) TurnFileModTime(_ context.Context, _, _ string, _ int) (time.Time, error) {
+	return time.Time{}, storage.ErrNotFound
+}
+
+// TestConsistencyWorker_RunOnce_RotatesAcrossPages（2026-09-05 round2 复审
+// F1）：空闲会话数超过单轮上限时，worker 按 OFFSET 轮转分页跨轮覆盖全部
+// 会话，末页不足一页即回绕 0——老会话不再被"恒取最新一页"饿死。
+func TestConsistencyWorker_RunOnce_RotatesAcrossPages(t *testing.T) {
+	const total, page = 5, 2
+	sessions := make([]*storage.Session, 0, total)
+	for i := 0; i < total; i++ {
+		sessions = append(sessions, idleSession("t", "s"+strconv.Itoa(i)))
+	}
+	lister := &fakePagingLister{sessions: sessions}
+	w := NewConsistencyWorker(lister, &fakeWorkerTurns{metas: map[string][]int{}}, &fakeWorkerBodies{}).
+		WithMaxSessions(page)
+
+	seen := map[string]bool{}
+	for round := 0; round < 4; round++ {
+		require.NoError(t, w.RunOnce(context.Background()))
+		stats := w.LastRunStats()
+		// 覆盖轨迹：满页 2 → 满页 2 → 末页 1（触发回绕）→ 回绕后 offset 0 又是满页。
+		want := []int{page, page, 1, page}[round]
+		assert.Equal(t, want, stats.SessionsChecked, "round %d: sessions checked", round)
+	}
+	assert.Equal(t, []int{0, 2, 4, 0}, lister.gotOffsets,
+		"offset must advance by page size and wrap to 0 on the short (last) page")
+	// 前三轮（offset 0/2/4）合并不重不漏覆盖全部 5 个会话。
+	for _, off := range []int{0, 2, 4} {
+		end := off + page
+		if end > total {
+			end = total
+		}
+		for _, sess := range sessions[off:end] {
+			seen[sess.ID] = true
+		}
+	}
+	assert.Len(t, seen, total, "all idle sessions must be covered across ceil(N/limit) rounds")
+}
+
+// TestConsistencyWorker_RunOnce_VanishedOrphans（2026-09-05 round2 复审 F3）：
+// 删除模式下 mtime 查询返回 ErrNotFound（文件已自行消失）的孤儿计入
+// Vanished 桶并在统计中透出，不再从结果聚合中"凭空消失"。
+func TestConsistencyWorker_RunOnce_VanishedOrphans(t *testing.T) {
+	lister := &fakeIdleSessionLister{sessions: []*storage.Session{idleSession("tenant-a", "sess-1")}}
+	turns := &fakeWorkerTurns{metas: map[string][]int{"tenant-a/sess-1": {1}}}
+	bodies := &fakeWorkerStatableBodies{fakeWorkerBodies: &fakeWorkerBodies{
+		turns: map[string][]int{"tenant-a/sess-1": {1, 2}}, // turn 2 文件已消失
+	}}
+
+	w := NewConsistencyWorker(lister, turns, bodies).WithAction(storage.RepairDeleteOrphanBodies)
+	require.NoError(t, w.RunOnce(context.Background()))
+
+	assert.Empty(t, bodies.deleted, "vanished orphan must not be deleted")
+	stats := w.LastRunStats()
+	assert.Equal(t, 0, stats.Deleted)
+	assert.Equal(t, 1, stats.Vanished, "vanished orphan must be counted in the run stats")
+}
+
+// TestNewConsistencyWorker_NilDependenciesPanic（2026-09-05 round2 复审 F9）：
+// 构造器对 nil 依赖 fail-fast（跟随包内 NewGoalRunActionScheduler 的 panic
+// 惯例），把装配错误从运行期 nil 接口调用提前到启动期。
+func TestNewConsistencyWorker_NilDependenciesPanic(t *testing.T) {
+	okTurns := &fakeWorkerTurns{}
+	okBodies := &fakeWorkerBodies{}
+	okLister := &fakeIdleSessionLister{}
+
+	assert.PanicsWithValue(t, "bg: consistency worker requires non-nil idle session lister",
+		func() { NewConsistencyWorker(nil, okTurns, okBodies) })
+	assert.PanicsWithValue(t, "bg: consistency worker requires non-nil turns store",
+		func() { NewConsistencyWorker(okLister, nil, okBodies) })
+	assert.PanicsWithValue(t, "bg: consistency worker requires non-nil bodies store",
+		func() { NewConsistencyWorker(okLister, okTurns, nil) })
 }

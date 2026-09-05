@@ -271,7 +271,7 @@ relying on it.
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 655 | `655_session_summaries_schema_reconcile.sql` | `b3e04d12647f89fc94e7e2901d381bcd2186b45a3b071d4314932552edfbde34` | applied+verified |
-| 656 | `656_auto_route_selections_hot.sql` | `5261ec209a5d5f89a3a745c742a9e815c9086305d73ed13c06213cbfa3ab1322` | applied+verified |
+| 656 | `656_auto_route_selections_hot.sql` | `d286e42f08e61688fda6a4b56eb8b2f83df4a57cf2117471ee60287789eb054a` | applied+verified |
 
 ## 2026-09-05T06:52:05Z — deploy 154 build_seq 1942 (3c51c2e3)
 
@@ -289,5 +289,5 @@ relying on it.
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
-| 659 | `659_legacy_promote_atomic_cte.sql` | `ea5476af92d859768d60af34e28764528ae10fe1616fa441c790f3a19927e1ea` | applied+verified |
+| 659 | `659_legacy_promote_atomic_cte.sql` | `ac7794c4b7982cb88b5fb8912516c27eec3ef76c0b39bd672a0e0135a119e472` | applied+verified |
 

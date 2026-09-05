@@ -407,15 +407,23 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 			url = doc.Source.Data
 		}
 		inner["file_data"] = url
-	case "file_id":
-		// A-#18(b): prefer the unified FileID field; fall back to Data for
-		// legacy rows (parse_openai used to encode the id there, and session
-		// restore collapses FileID into Data).
+	case "file", "file_id":
+		// 2026-09-05 round2 复审: Anthropic-native Files API documents parse
+		// with Type="file" (parse_anthropic keeps the wire type as-is) and
+		// must take the same path as IR-internal "file_id" — previously they
+		// fell into the default case and serialized an empty
+		// file_data:"" with the id dropped. Prefer the unified FileID field;
+		// fall back to Data for legacy rows (parse_openai used to encode the
+		// id there, and session restore collapses FileID into Data).
 		fid := doc.Source.FileID
 		if fid == "" {
 			fid = doc.Source.Data
 		}
-		inner["file_id"] = fid
+		// 空值护栏: a double-empty source has no identity left — omit the
+		// empty field; reportSerializeResponsesLosses records the loss.
+		if fid != "" {
+			inner["file_id"] = fid
+		}
 	default:
 		// text/unknown: carry the raw data as file_data.
 		if mt != "" {
@@ -700,6 +708,24 @@ func reportSerializeResponsesLosses(req *InternalRequest) {
 	// Per-message thinking.signature / redacted_thinking (Anthropic concept).
 	for i, msg := range req.Messages {
 		for j, block := range msg.Content {
+			// 2026-09-05 round2 复审: a document block typed as a Files-API
+			// reference whose FileID and Data are both empty serializes as an
+			// input_file with no file_id/file_data — the identity is lost on
+			// the wire. Parsers always fill the id, so a double-empty source
+			// is a real loss (degenerate programmatic IR only).
+			if block.Document != nil && block.Document.Source != nil &&
+				(block.Document.Source.Type == "file" || block.Document.Source.Type == "file_id") &&
+				block.Document.Source.FileID == "" && block.Document.Source.Data == "" {
+				ReportProtocolLoss(
+					requestIDFromIR(req),
+					fieldPathMessageContent(i, j, "document.file_id"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIResponses,
+					"loss",
+					"file_id document reference carries neither FileID nor Data; upstream receives an input_file with no id or data",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
 			if block.Thinking != nil && block.Thinking.Signature != "" {
 				ReportProtocolLoss(
 					requestIDFromIR(req),

@@ -74,7 +74,8 @@ type LiteConsistencyConfig struct {
 	// 默认 false（report-only）；零值即安全默认，无需显式配置。
 	DeleteOrphanBodies bool `yaml:"delete_orphans"`
 	// MaxSessionsPerRun 单轮对账的会话数上限（bounded，防止首跑扫全库），
-	// 默认 500；超出部分留待下一轮按最近活跃优先继续。
+	// 默认 500；空闲会话超过上限时 worker 按轮转偏移（OFFSET）跨轮分页，
+	// 全部空闲会话在 ceil(N/上限) 轮内覆盖（2026-09-05 round2 复审 F1）。
 	MaxSessionsPerRun int `yaml:"max_sessions_per_run"`
 }
 

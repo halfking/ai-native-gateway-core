@@ -17,7 +17,9 @@ package bg
 //     meta 后提交（cmd/gateway/lite_telemetry_sink.go），最后活动早于阈值
 //     的会话不会再出现合法的在途写入窗口；
 //   - 单轮会话数有上限（bounded，默认 500，最近活跃优先），防止首跑扫
-//     全库；超出部分留待下一轮继续。
+//     全库；超过上限时按轮转偏移（OFFSET）跨轮分页覆盖，N 个空闲会话在
+//     ceil(N/500) 轮内全部进入对账窗，老会话不会被永久饿死
+//     （2026-09-05 round2 复审 F1，替代旧实现"恒取最新一页"）。
 //
 // 生命周期照抄 bg/bodies_trimmer.go：Start(ctx) 阻塞式（调用方 `go w.Start(ctx)`
 // 启动），首跑延迟 initialDelay（默认 10 分钟，避开启动期资源争用），
@@ -28,6 +30,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/storage"
@@ -46,6 +49,23 @@ const (
 	defaultConsistencyInitialDelay = 10 * time.Minute
 )
 
+// ConsistencyRunStats 是最近一轮对账的统计快照（LastRunStats 返回的值类型，
+// 2026-09-05 round2 复审 F4：替代原先无锁、无 getter 的散装统计字段）。
+type ConsistencyRunStats struct {
+	// SessionsChecked 本轮枚举并检查的空闲会话数。
+	SessionsChecked int
+	// Inconsistent 检出跨介质不一致的会话数。
+	Inconsistent int
+	// Orphans 检出的孤儿 body 总数（有 body 无 meta）。
+	Orphans int
+	// Missing 检出的丢失 body 总数（有 meta 无 body，只报告不补偿）。
+	Missing int
+	// Deleted delete 模式下实际删除的孤儿 body 数。
+	Deleted int
+	// Vanished 删除前发现文件已自行消失的孤儿数（无须删除，计入报告）。
+	Vanished int
+}
+
 // ConsistencyWorker 定期对空闲会话跑跨介质一致性对账（审计 B-#2）。
 // 零值 action 即 storage.RepairReportOnly（默认安全）。
 type ConsistencyWorker struct {
@@ -59,17 +79,46 @@ type ConsistencyWorker struct {
 	interval      time.Duration // 对账周期，默认 24h
 	initialDelay  time.Duration // 启动后首跑延迟，默认 10 分钟
 
-	// 最近一次 RunOnce 的统计快照，供测试与监控读取。
+	// runMu 保护下列运行期可变状态（2026-09-05 round2 复审 F4）：统计字段
+	// 由 RunOnce 尾部写入、LastRunStats 读取；idleOffset 由 RunOnce 读写。
+	// 生产路径 Start 串行调用 RunOnce 本无竞态，加锁是为了让导出的 RunOnce
+	// 与监控读取（LastRunStats）并发调用时无数据竞争。
+	runMu sync.Mutex
+
+	// 最近一次 RunOnce 的统计快照，经 LastRunStats() 读取（供测试与监控）。
 	lastSessionsChecked int
 	lastInconsistent    int
 	lastOrphans         int
 	lastMissing         int
 	lastDeleted         int
+	lastVanished        int
+
+	// idleOffset 是空闲会话枚举的轮转偏移（2026-09-05 round2 复审 F1）：
+	// 单轮只取 maxSessions 条（updated_at 倒序、LIMIT/OFFSET 分页），每轮按
+	// 返回条数前移；返回不足一页说明已覆盖到最老端，回绕 0 下轮从头再扫。
+	// 这样 N 个空闲会话在 ceil(N/maxSessions) 轮内全部进入对账窗，消除
+	// 「恒取最新一页导致老会话永久饿死」的方向性盲区。
+	//
+	// 语义注记：重启后偏移归零可接受（重复对账已看过的会话无害，Reconcile
+	// 幂等只读）；轮间新会话进入/老会话被触碰导致的窗口漂移也可接受——本
+	// 机制的目标是跨轮全覆盖，不保证单轮内的精确游标语义。
+	idleOffset int
 }
 
 // NewConsistencyWorker 构造一致性对账 worker：默认 report-only、每日一次、
 // 空闲阈值 10 分钟、单轮上限 500、首跑延迟 10 分钟。各维度可用 With* 覆盖。
+// 任一依赖为 nil 时 panic fail-fast（跟随包内 NewGoalRunActionScheduler 的
+// 非法入参惯例，2026-09-05 round2 复审 F9：把装配错误从运行期提前到启动期）。
 func NewConsistencyWorker(sessions storage.IdleSessionLister, turns storage.TurnsStore, bodies storage.BodiesStore) *ConsistencyWorker {
+	if sessions == nil {
+		panic("bg: consistency worker requires non-nil idle session lister")
+	}
+	if turns == nil {
+		panic("bg: consistency worker requires non-nil turns store")
+	}
+	if bodies == nil {
+		panic("bg: consistency worker requires non-nil bodies store")
+	}
 	return &ConsistencyWorker{
 		sessions:      sessions,
 		turns:         turns,
@@ -135,6 +184,21 @@ func (w *ConsistencyWorker) IdleThreshold() time.Duration { return w.idleThresho
 // MaxSessions 返回单轮会话数上限。
 func (w *ConsistencyWorker) MaxSessions() int { return w.maxSessions }
 
+// LastRunStats 返回最近一轮对账的统计快照（值拷贝，2026-09-05 round2 复审
+// F4）：供监控读取；RunOnce 中途因 ctx 取消提前返回时不更新，保持上一轮值。
+func (w *ConsistencyWorker) LastRunStats() ConsistencyRunStats {
+	w.runMu.Lock()
+	defer w.runMu.Unlock()
+	return ConsistencyRunStats{
+		SessionsChecked: w.lastSessionsChecked,
+		Inconsistent:    w.lastInconsistent,
+		Orphans:         w.lastOrphans,
+		Missing:         w.lastMissing,
+		Deleted:         w.lastDeleted,
+		Vanished:        w.lastVanished,
+	}
+}
+
 // Start 阻塞式运行对账循环：先等 initialDelay（默认 10 分钟，避开启动期
 // 争资源），执行首轮，之后按 ticker 周期执行；ctx 取消时优雅退出。
 // 设计为由调用方 `go w.Start(ctx)` 启动，内部不再另起新协程。
@@ -172,16 +236,21 @@ func (w *ConsistencyWorker) Start(ctx context.Context) {
 	}
 }
 
-// RunOnce 执行一轮对账（供测试与手动触发）：枚举空闲会话（最近活跃优先、
-// 有界），逐会话 Reconcile；不一致会话输出结构化告警并按 action 处置孤儿。
-// 枚举失败返回 error；单会话对账/修复失败只告警并继续其余会话（尽力而为）。
+// RunOnce 执行一轮对账（供测试与手动触发）：按轮转偏移枚举空闲会话
+// （最近活跃优先、有界分页，2026-09-05 round2 复审 F1），逐会话 Reconcile；
+// 不一致会话输出结构化告警并按 action 处置孤儿。枚举失败返回 error；单会话
+// 对账/修复失败只告警并继续其余会话（尽力而为）。
 func (w *ConsistencyWorker) RunOnce(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
+	w.runMu.Lock()
+	offset := w.idleOffset
+	w.runMu.Unlock()
+
 	idleBefore := time.Now().Add(-w.idleThreshold)
-	sessions, err := w.sessions.ListIdleSessions(ctx, idleBefore, w.maxSessions)
+	sessions, err := w.sessions.ListIdleSessions(ctx, idleBefore, w.maxSessions, offset)
 	if err != nil {
 		return fmt.Errorf("consistency_worker: 枚举空闲会话失败: %w", err)
 	}
@@ -191,6 +260,7 @@ func (w *ConsistencyWorker) RunOnce(ctx context.Context) error {
 		orphans      int
 		missing      int
 		deleted      int
+		vanished     int
 	)
 	for _, sess := range sessions {
 		if err := ctx.Err(); err != nil {
@@ -227,30 +297,44 @@ func (w *ConsistencyWorker) RunOnce(ctx context.Context) error {
 			continue
 		}
 		deleted += len(res.Deleted)
-		if len(res.SkippedInFlight) > 0 || len(res.SkippedByGrace) > 0 {
+		vanished += len(res.Vanished)
+		if len(res.SkippedInFlight) > 0 || len(res.SkippedByGrace) > 0 || len(res.Vanished) > 0 {
 			slog.Info("consistency_worker: 孤儿删除部分被安全护栏跳过",
 				"tenant", report.TenantID,
 				"session", report.SessionID,
 				"skipped_in_flight", res.SkippedInFlight,
-				"skipped_by_grace", res.SkippedByGrace)
+				"skipped_by_grace", res.SkippedByGrace,
+				"vanished", res.Vanished)
 		}
 	}
 
+	// 轮转推进 + 统计快照同一把锁写入（F1/F4）：返回满一页说明可能还有更老
+	// 会话，偏移前移；返回不足一页说明本轮已覆盖到最老端，回绕 0 下轮从头。
+	w.runMu.Lock()
+	if len(sessions) < w.maxSessions {
+		w.idleOffset = 0
+	} else {
+		w.idleOffset = offset + len(sessions)
+	}
 	w.lastSessionsChecked = len(sessions)
 	w.lastInconsistent = inconsistent
 	w.lastOrphans = orphans
 	w.lastMissing = missing
 	w.lastDeleted = deleted
+	w.lastVanished = vanished
+	w.runMu.Unlock()
 
 	if inconsistent > 0 || deleted > 0 {
 		slog.Info("consistency_worker: 本轮对账完成",
 			"sessions_checked", len(sessions),
+			"session_offset", offset,
 			"max_sessions", w.maxSessions,
 			"idle_before", idleBefore.Format(time.RFC3339),
 			"inconsistent_sessions", inconsistent,
 			"orphan_bodies", orphans,
 			"missing_bodies", missing,
 			"deleted_orphans", deleted,
+			"vanished_orphans", vanished,
 			"action", w.action.String())
 	}
 	return nil
