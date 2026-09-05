@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/monitoring"
@@ -193,6 +194,53 @@ func (s *FileBodiesStore) Delete(ctx context.Context, tenantID, sessionID string
 // Close 关闭底层异步写入器（优雅排空队列后返回）。重复调用安全。
 func (s *FileBodiesStore) Close() error {
 	return s.writer.Close()
+}
+
+// ListTurns 返回某会话已落盘的 turn 编号（升序），供跨介质一致性对账
+// （storage.ReconcileTurnArtifacts）使用。目录不存在视为空会话。
+func (s *FileBodiesStore) ListTurns(_ context.Context, tenantID, sessionID string) ([]int, error) {
+	if !validPathID(tenantID) {
+		return nil, fmt.Errorf("file bodies store: invalid tenantID %q", tenantID)
+	}
+	if !validPathID(sessionID) {
+		return nil, fmt.Errorf("file bodies store: invalid sessionID %q", sessionID)
+	}
+	entries, err := os.ReadDir(s.sessionDir(tenantID, sessionID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []int{}, nil
+		}
+		return nil, fmt.Errorf("file bodies store: read session dir %s: %w",
+			s.sessionDir(tenantID, sessionID), err)
+	}
+	turns := make([]int, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		var turnNo int
+		if _, err := fmt.Sscanf(e.Name(), "turn_%d.json.gz", &turnNo); err == nil {
+			turns = append(turns, turnNo)
+		}
+	}
+	sort.Ints(turns)
+	return turns, nil
+}
+
+// DeleteTurnFile 删除单个 turn 的内容文件（孤儿清理），实现
+// storage.TurnFileDeleter。文件不存在时返回 nil（幂等）。
+func (s *FileBodiesStore) DeleteTurnFile(_ context.Context, tenantID, sessionID string, turnNo int) error {
+	if !validPathID(tenantID) {
+		return fmt.Errorf("file bodies store: invalid tenantID %q", tenantID)
+	}
+	if !validPathID(sessionID) {
+		return fmt.Errorf("file bodies store: invalid sessionID %q", sessionID)
+	}
+	if err := os.Remove(s.buildPath(tenantID, sessionID, turnNo)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("file bodies store: remove turn file %s: %w",
+			s.buildPath(tenantID, sessionID, turnNo), err)
+	}
+	return nil
 }
 
 // gunzip 解压一段 gzip 字节流；头或数据体损坏时返回带上下文的错误。

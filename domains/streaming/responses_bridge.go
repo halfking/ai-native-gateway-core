@@ -428,7 +428,8 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed redundant declaration.
 
 	runtimeCfg := currentStreamRuntimeConfig()
-	reader := bufio.NewReaderSize(resp.Body, anthropicSSEBufSize)
+	// 审计闭环6：ctx 取消时强制 Close 底层 body，解除阻塞中的 Read。
+	reader := bufio.NewReaderSize(newCtxCancellableBody(ctx, resp.Body), anthropicSSEBufSize)
 
 	var (
 		inputTokens  int
