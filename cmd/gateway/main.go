@@ -4450,6 +4450,15 @@ func main() {
 			defer approvalTimeoutWorker.Stop()
 			slog.Info("approval timeout worker started")
 		}
+
+		// 2026-09-06: 启动 AUTO 路由特征统计 worker (P2.3)。
+		// 每小时计算结构化特征分布和去重率，用于监控 ML 训练数据质量。
+		// 隐私保证：只访问结构化特征列，不查询 prompt/messages/response。
+		featureStatsWorker := bg.NewFeatureStatsWorker(dbConn.Pool(), 1*time.Hour)
+		featureStatsWorker.Start(context.Background())
+		defer featureStatsWorker.Stop()
+		slog.Info("feature stats worker started", "interval", "1h")
+
 		if !bgDataPlaneOnly {
 			taxonomySync = bg.NewTaxonomySync(dbConn.Pool(), "")
 			taxonomySync.Start(context.Background())
