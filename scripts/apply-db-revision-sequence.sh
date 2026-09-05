@@ -104,7 +104,7 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/652_system_monitor_fallback_queue.sql"
   "$ROOT_DIR/sql/migrations/startup/653_archive_credential_model_index_canonical_return.sql"
   "$ROOT_DIR/sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql"
-  "$ROOT_DIR/sql/migrations/startup/657_credential_model_weekly_peak_unique.sql"
+  "$ROOT_DIR/sql/migrations/startup/660_credential_model_weekly_peak_unique.sql"
   "$ROOT_DIR/deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql"
 )
 for file in "${files[@]}"; do

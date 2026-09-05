@@ -1,4 +1,4 @@
--- 657: credential_model_weekly_peak 周桶唯一索引
+-- 660: credential_model_weekly_peak 周桶唯一索引
 -- 2026-09-05 PG log audit: bg/weekly_peak_rollup.go 的 UPSERT 以
 -- ON CONFLICT (week_start, credential_id, raw_model) 为冲突目标，
 -- 但建表（sql/schema/01-schema.sql，来自 328a1e5）从未创建匹配的
@@ -23,8 +23,8 @@ BEGIN
           AND tablename  = 'credential_model_weekly_peak'
           AND indexname  = 'uq_credential_model_weekly_peak_bucket'
     ) THEN
-        RAISE EXCEPTION '657 VALIDATION FAIL: uq_credential_model_weekly_peak_bucket missing';
+        RAISE EXCEPTION '660 VALIDATION FAIL: uq_credential_model_weekly_peak_bucket missing';
     END IF;
-    RAISE NOTICE '657 VALIDATION OK: uq_credential_model_weekly_peak_bucket present';
+    RAISE NOTICE '660 VALIDATION OK: uq_credential_model_weekly_peak_bucket present';
 END
 $do$;
