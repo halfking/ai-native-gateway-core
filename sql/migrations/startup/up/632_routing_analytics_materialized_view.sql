@@ -1,215 +1,188 @@
 -- Migration 632: Create materialized views for routing analytics performance optimization
 --
 -- Purpose: Pre-aggregate hot query data for /api/admin/auto-route/analytics/* endpoints
---          to resolve timeout issues with request_logs_with_current_month_without_customer_id.
+--          (flow, matrix, audit) instead of aggregating 314K+ rows per request.
+--          Refreshed every 10 minutes by bg.MaterializedViewRefresher
+--          (REFRESH ... CONCURRENTLY + advisory lock).
 --
--- Root cause:
---   Analytics endpoints (flow, matrix, audit) aggregate 314K+ rows on every
---   request, causing 15s timeouts. No index can fix GROUP BY cost at this scale.
+-- ============================================================================
+-- REWRITTEN 2026-09-05 — this file is now replayable and matches db.go.
+-- ============================================================================
+-- The previous version of this file aggregated directly from the frozen
+-- request-log wrapper view `request_logs_with_current_month_without_customer_id`.
+-- That wrapper never gained the `origin_stage` probe-origin column, so replaying
+-- this file failed with SQLSTATE 42703 on any current database (observed
+-- 2026-09-04) and the file could never have reproduced the live behaviour.
 --
--- Solution:
---   Materialized views for the 7d window, refreshed every 10 minutes by
---   bg.MaterializedViewRefresher (REFRESH ... CONCURRENTLY + advisory lock).
+-- Actual behaviour is owned by db.ensureRoutingAnalyticsMaterializedViews
+-- (db/db.go) which builds both matviews from the narrow source view
+-- `routing_analytics_source` (request_logs_hot UNION ALL request_logs) via the
+-- shared `routingAnalyticsMVSQL` constant. This file now mirrors exactly that
+-- definition, so a direct replay reaches the same end state as the Go ensure
+-- path. Keep all three in sync: db/db.go, this file, and
+-- sql/migrations/startup/649_routing_analytics_probe_filter.sql (649 is the
+-- same rebuild shipped as the probe-filter migration; db.go's stale-definition
+-- gate rebuilds automatically whenever `origin_stage` is missing from any of
+-- the three view definitions).
 --
--- IMPORTANT — how this migration actually runs:
---   The startup migration engine is Go-driven (db.applyMigrationsOnce);
---   this file is the DBA-facing mirror of db.ensureRoutingAnalyticsMaterializedViews.
---   Editing only this file does NOT change database behaviour; keep both in sync.
+-- Historical design notes carried over from the original 632:
+--   - NULL-safety: is_auto_request is COALESCEd to FALSE in the view. GROUP BY
+--     keeps NULL and FALSE in separate buckets while the unique index maps both
+--     onto the same COALESCE key, which would make CREATE UNIQUE INDEX fail
+--     with a duplicate key and abort startup.
+--   - Tenant sentinel: tenant_id is TEXT; unique indexes use plain columns
+--     (expression indexes are rejected by REFRESH ... CONCURRENTLY, SQLSTATE
+--     55000 on prod PG17). GROUP BY collapses NULLs into one row per key, so
+--     plain-column uniqueness is safe.
+--   - effective_provider_id bakes in the COALESCE(provider_id, credential
+--     lookup) fallback from buildFlowL23Query (admin/analytics.go) so the
+--     L2→L3 Sankey reports the same 'unknown' provider share on materialized
+--     and base paths.
+--   - Legacy expression `_pkey` indexes (original 632 deploy) die together
+--     with the matviews dropped below; db.go keeps explicit
+--     `DROP INDEX IF EXISTS …_pkey` statements only because its no-drop
+--     index-repair path recreates the matviews in place.
 --
--- NULL-safety (2026-08-31 audit): is_auto_request is COALESCEd to FALSE in
--- the view. GROUP BY keeps NULL and FALSE in separate buckets while the unique
--- index maps both onto the same COALESCE key, which would make CREATE UNIQUE
--- INDEX fail with a duplicate key and abort startup. Normalizing here also
--- matches the base queries (`is_auto_request IS NOT TRUE` reads NULL as FALSE).
---
--- Tenant sentinel (2026-09-01 incident): tenant_id is TEXT; the unique
--- indexes COALESCE to a text sentinel (''). The original -1 integer
--- sentinel failed at analysis time with SQLSTATE 42804 ("COALESCE types
--- text and integer cannot be matched") AFTER the matviews were created
--- (autocommit batch), leaving every boot to fail migrations and exit in
--- no-DB mode before binding the listener. Production (252) was repaired
--- in place with ''-sentinel indexes; keep this file byte-compatible with
--- db.ensureRoutingAnalyticsMaterializedViews.
---
--- effective_provider_id bakes in the COALESCE(provider_id, credential lookup)
--- fallback from buildFlowL23Query (admin/analytics.go) so the L2→L3 Sankey
--- reports the same 'unknown' provider share on materialized and base paths.
---
--- Status: active
--- Idempotent: YES (IF NOT EXISTS throughout)
+-- Status: active (mirror of db.go; runtime behaviour owned by db.go)
+-- Idempotent: YES (DROP IF EXISTS + CREATE, safe to replay; rebuilds both
+--              matviews with a fresh 7-day aggregate on each run)
 -- Rollback: down/632_routing_analytics_materialized_view.down.sql
--- Related: db/db.go ensureRoutingAnalyticsMaterializedViews, bg/materialized_view_refresher.go,
---          admin/analytics_materialized.go
+-- Related:  db/db.go routingAnalyticsMVSQL + ensureRoutingAnalyticsMaterializedViews,
+--           bg/materialized_view_refresher.go, admin/analytics_materialized.go
 -- Changelog:
 --   2026-08-31  v1.0  Initial materialized view creation
 --   2026-08-31  v1.1  Audit fixes: NULL-safe is_auto_request, provider
 --                     credential fallback, plain-column unique index
 --   2026-09-01  v1.2  Incident fix: unique-index tenant sentinel -1 → ''
---                     (SQLSTATE 42804 on text tenant_id); aligned with the
---                     in-place repair applied to production (252)
+--                     (SQLSTATE 42804 on text tenant_id)
 --   2026-09-01  v1.3  Swap expression unique indexes (_pkey) for plain-column
---                     _ukey: REFRESH ... CONCURRENTLY rejects expression
---                     indexes (SQLSTATE 55000, prod PG17)
---
--- Performance target:
---   Query latency: 15s → <500ms
---   Refresh cost: ~5-10s per refresh (every 10 minutes)
+--                     _ukey (REFRESH ... CONCURRENTLY rejects expression
+--                     indexes, SQLSTATE 55000)
+--   2026-09-05  v2.0  REWRITE: read from routing_analytics_source
+--                     (hot UNION ALL parent) instead of the frozen
+--                     request-log wrapper; aligns byte-for-byte semantics
+--                     with db.go routingAnalyticsMVSQL / migration 649 so
+--                     direct replay no longer fails on missing
+--                     wrapper origin_stage (SQLSTATE 42703, seen 2026-09-04)
 
+\set ON_ERROR_STOP on
 BEGIN;
 
--- =============================================================================
--- 1. Primary materialized view: 7-day window analytics
--- =============================================================================
--- Aggregates all dimensions needed by matrix, flow, and audit endpoints.
--- Covers both auto-routing requests and explicit-model requests.
+-- The 7-day aggregate can exceed a shared host's 30s statement_timeout; same
+-- budget as the Go ensure path (db/db.go sets 10min on the pinned connection).
+SET LOCAL statement_timeout = '10min';
 
-CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
+DROP MATERIALIZED VIEW IF EXISTS public.routing_analytics_7d CASCADE;
+DROP MATERIALIZED VIEW IF EXISTS public.routing_audit_summary_7d CASCADE;
+
+-- Keep the historical request-log wrappers untouched. Their frozen column
+-- contracts include columns and casts that are not present in both base
+-- tables. Analytics gets its own narrow, stable source view instead.
+DROP VIEW IF EXISTS public.routing_analytics_source;
+
+CREATE VIEW public.routing_analytics_source AS
 SELECT
-  -- Time dimension (hourly buckets for granular drill-down)
+  ts,
+  task_type::text AS task_type,
+  outbound_model::text AS outbound_model,
+  client_model::text AS client_model,
+  work_type::text AS work_type,
+  provider_id::bigint AS provider_id,
+  credential_id::bigint AS credential_id,
+  is_auto_request::boolean AS is_auto_request,
+  tenant_id::text AS tenant_id,
+  request_id::text AS request_id,
+  success::boolean AS success,
+  latency_ms::numeric AS latency_ms,
+  cost_usd::numeric AS cost_usd,
+  origin_stage::text AS origin_stage
+FROM public.request_logs_hot
+UNION ALL
+SELECT
+  ts,
+  task_type::text AS task_type,
+  outbound_model::text AS outbound_model,
+  client_model::text AS client_model,
+  work_type::text AS work_type,
+  provider_id::bigint AS provider_id,
+  credential_id::bigint AS credential_id,
+  is_auto_request::boolean AS is_auto_request,
+  tenant_id::text AS tenant_id,
+  request_id::text AS request_id,
+  success::boolean AS success,
+  latency_ms::numeric AS latency_ms,
+  cost_usd::numeric AS cost_usd,
+  origin_stage::text AS origin_stage
+FROM public.request_logs;
+
+CREATE MATERIALIZED VIEW public.routing_analytics_7d AS
+SELECT
   DATE_TRUNC('hour', ts) AS time_bucket,
-
-  -- Task dimension (L1 classification or __specified__ synthetic key)
-  COALESCE(
-    NULLIF(task_type, ''),
-    CASE WHEN is_auto_request THEN 'unknown' ELSE '__specified__' END
-  ) AS effective_task_type,
-
-  -- Model dimension (outbound for auto, client for explicit)
+  COALESCE(NULLIF(task_type, ''), CASE WHEN is_auto_request THEN 'unknown' ELSE '__specified__' END) AS effective_task_type,
   COALESCE(NULLIF(outbound_model, ''), client_model) AS effective_model,
-
-  -- Work type dimension (for row=work_type matrix queries)
   COALESCE(NULLIF(work_type, ''), 'unknown') AS effective_work_type,
-
-  -- Provider dimension (for L2→L3 flow); credential fallback keeps parity
-  -- with buildFlowL23Query's COALESCE(rl.provider_id, credential lookup).
-  COALESCE(
-    provider_id,
-    (SELECT cr.provider_id FROM credentials cr WHERE cr.id = credential_id LIMIT 1)
-  ) AS effective_provider_id,
-
-  -- Request classification, NULL-normalized (see header note)
+  COALESCE(provider_id, (SELECT cr.provider_id FROM credentials cr WHERE cr.id = credential_id LIMIT 1)) AS effective_provider_id,
   COALESCE(is_auto_request, FALSE) AS is_auto_request,
-
-  -- Tenant scope (for multi-tenant filtering)
   tenant_id,
-
-  -- Aggregated metrics
   COUNT(*) AS request_count,
   COUNT(*) FILTER (WHERE success) AS success_count,
   COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
   COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
-
-  -- Latency metrics (percentiles)
   percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS p50_latency_ms,
   percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS p95_latency_ms,
   percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms) AS p99_latency_ms,
-
-  -- Cost metrics
   COALESCE(SUM(cost_usd), 0) AS total_cost_usd,
-
-  -- Refresh metadata
   NOW() AS refreshed_at
-
-FROM request_logs_with_current_month_without_customer_id
-
+FROM public.routing_analytics_source
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
   AND COALESCE(task_type, '') <> 'probe_triggered'
   AND COALESCE(request_id, '') NOT LIKE 'probe-%'
-  AND (
-    -- Include auto-routing requests
-    is_auto_request = TRUE
-    -- Include explicit-model requests (historical NULL treated as non-auto)
-    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-  )
-  -- Filter out rows with no usable model identifier
+  AND (is_auto_request = TRUE OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> ''))
   AND COALESCE(NULLIF(outbound_model, ''), client_model) IS NOT NULL
+GROUP BY time_bucket, effective_task_type, effective_model, effective_work_type,
+         effective_provider_id, is_auto_request, tenant_id;
 
-GROUP BY
-  time_bucket,
-  effective_task_type,
-  effective_model,
-  effective_work_type,
-  effective_provider_id,
-  is_auto_request,
-  tenant_id;
+-- Plain-column unique index: required for REFRESH ... CONCURRENTLY (PG
+-- rejects expression indexes, SQLSTATE 55000). See header notes.
+CREATE UNIQUE INDEX routing_analytics_7d_ukey
+  ON public.routing_analytics_7d (time_bucket, effective_task_type, effective_model,
+                                  effective_work_type, effective_provider_id,
+                                  is_auto_request, tenant_id);
+CREATE INDEX routing_analytics_7d_task_model_idx
+  ON public.routing_analytics_7d (effective_task_type, effective_model);
+CREATE INDEX routing_analytics_7d_time_idx
+  ON public.routing_analytics_7d (time_bucket DESC);
+CREATE INDEX routing_analytics_7d_tenant_idx
+  ON public.routing_analytics_7d (tenant_id) WHERE tenant_id IS NOT NULL;
 
--- Unique index for REFRESH ... CONCURRENTLY. PG rejects expression
--- indexes for concurrent refresh (SQLSTATE 55000, verified on prod PG17
--- 2026-09-01), so this must be plain columns. NULL keys are safe: GROUP BY
--- collapses NULLs into a single row per key. The old expression index
--- (_pkey) is dropped and replaced by _ukey; the rename makes the swap
--- idempotent under IF [NOT] EXISTS.
-DROP INDEX IF EXISTS routing_analytics_7d_pkey;
-CREATE UNIQUE INDEX IF NOT EXISTS routing_analytics_7d_ukey
-  ON routing_analytics_7d (
-    time_bucket,
-    effective_task_type,
-    effective_model,
-    effective_work_type,
-    effective_provider_id,
-    is_auto_request,
-    tenant_id
-  );
-
--- Covering indexes for common query patterns
-CREATE INDEX IF NOT EXISTS routing_analytics_7d_task_model_idx
-  ON routing_analytics_7d (effective_task_type, effective_model);
-
-CREATE INDEX IF NOT EXISTS routing_analytics_7d_time_idx
-  ON routing_analytics_7d (time_bucket DESC);
-
-CREATE INDEX IF NOT EXISTS routing_analytics_7d_tenant_idx
-  ON routing_analytics_7d (tenant_id)
-  WHERE tenant_id IS NOT NULL;
-
-COMMENT ON MATERIALIZED VIEW routing_analytics_7d IS
-  'Pre-aggregated 7-day routing analytics for /api/admin/auto-route/analytics/* endpoints. '
-  'Refreshed every 10 minutes by bg.MaterializedViewRefresher. '
-  'Created by migration 632 (2026-08-31).';
-
--- =============================================================================
--- 2. Audit summary view: simplified aggregates for /audit endpoint
--- =============================================================================
--- The audit endpoint needs only high-level counts, not per-task/model breakdown.
-
-CREATE MATERIALIZED VIEW IF NOT EXISTS routing_audit_summary_7d AS
+CREATE MATERIALIZED VIEW public.routing_audit_summary_7d AS
 SELECT
-  -- Tenant scope
   tenant_id,
-
-  -- High-level counts
   COUNT(*) AS total_requests,
   COUNT(*) FILTER (WHERE success) AS success_count,
   COUNT(*) FILTER (WHERE is_auto_request = TRUE) AS auto_request_count,
   COUNT(*) FILTER (WHERE is_auto_request IS NOT TRUE) AS specified_request_count,
-
-  -- Refresh metadata
   NOW() AS refreshed_at
-
-FROM request_logs_with_current_month_without_customer_id
-
+FROM public.routing_analytics_source
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND COALESCE(origin_stage, '') NOT IN ('self_check', 'node_probe', 'system_health', 'probe_direct', 'probe_v2', 'model_probe', 'passive_probe', 'manual')
   AND COALESCE(task_type, '') <> 'probe_triggered'
   AND COALESCE(request_id, '') NOT LIKE 'probe-%'
-  AND (
-    is_auto_request = TRUE
-    OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> '')
-  )
-
+  AND (is_auto_request = TRUE OR (is_auto_request IS NOT TRUE AND client_model IS NOT NULL AND client_model <> ''))
 GROUP BY tenant_id;
 
-DROP INDEX IF EXISTS routing_audit_summary_7d_pkey;
-CREATE UNIQUE INDEX IF NOT EXISTS routing_audit_summary_7d_ukey
-  ON routing_audit_summary_7d (tenant_id);
+CREATE UNIQUE INDEX routing_audit_summary_7d_ukey
+  ON public.routing_audit_summary_7d (tenant_id);
 
-COMMENT ON MATERIALIZED VIEW routing_audit_summary_7d IS
+COMMENT ON MATERIALIZED VIEW public.routing_analytics_7d IS
+  'Pre-aggregated 7-day routing analytics for /api/admin/auto-route/analytics/* endpoints. '
+  'Refreshed every 10 minutes by bg.MaterializedViewRefresher. '
+  'Mirror of db.go routingAnalyticsMVSQL (migration 632, rewritten 2026-09-05).';
+
+COMMENT ON MATERIALIZED VIEW public.routing_audit_summary_7d IS
   'High-level audit summary for /api/admin/auto-route/audit endpoint. '
   'Refreshed every 10 minutes by bg.MaterializedViewRefresher. '
-  'Created by migration 632 (2026-08-31).';
-
--- NOTE: no initial REFRESH here — CREATE MATERIALIZED VIEW populates the
--- view, and the background refresher keeps it current from then on.
+  'Mirror of db.go routingAnalyticsMVSQL (migration 632, rewritten 2026-09-05).';
 
 COMMIT;

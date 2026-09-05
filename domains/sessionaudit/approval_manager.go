@@ -111,14 +111,17 @@ func (m *ApprovalManager) Create(ctx context.Context, req *ApprovalRequest) (str
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// string() + ::text::jsonb (not []byte): the pool forces pgx
+	// SimpleProtocol, which binds []byte as bytea hex and any jsonb cast
+	// then fails with 22P02 (doc §3.2; internal/dbx/jsonb.go).
 	_, err = tx.Exec(ctx, `
 		INSERT INTO approval_queue (
 			id, session_id, tenant_id, request_id,
 			detect_result, snapshot,
 			status, created_at, expires_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		) VALUES ($1, $2, $3, $4, $5::text::jsonb, $6::text::jsonb, $7, $8, $9)
 	`, approvalID, req.SessionID, req.TenantID, req.RequestID,
-		detectResultJSON, snapshotJSON,
+		string(detectResultJSON), string(snapshotJSON),
 		ApprovalPending, time.Now(), expiresAt)
 	if err != nil {
 		return "", fmt.Errorf("insert approval queue: %w", err)
