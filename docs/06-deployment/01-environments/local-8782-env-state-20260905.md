@@ -53,18 +53,22 @@
 
 ## 4. 当前运行版本（快照时点）
 
+> 2026-09-05 16:05 (+08) 本地收敛重部署更新（B1，主代理会话）。
+
 | 项 | 值 |
 |---|---|
-| 8782 运行版本 | 2.5.0.1938（vcs.revision=`f27e412b9` + 构建 clone 的未提交改动，由并行会话部署） |
-| 8781 | 同 1938（当前代次候选） |
-| 功能等价性 | `f27e412b9..origin/main` 仅 test/docs/注释差异，特性行为与 main 等价 |
-| 特性复验证据 | origin/main 精确构建 2.5.0.1935（vcs.revision=`b08ea0607`）上完成端到端三连全绿，记录于 `docs/FEATURE-REQ-session-snapshot-and-request-detail.md` §4 |
+| 8782 运行版本 | **2.5.0.1943**（vcs.revision=`c087914eb` = 当时 origin/main tip，精确构建无漂移） |
+| 8781 | 同 1943（当前代次候选） |
+| 身份核验 | bundle `go version -m` vcs.revision=`c087914eb…` == bundle version.json git_sha=`c087914e`；`run/gateway.build` mtime=2026-09-05 16:05（本次部署时间） |
+| 特性复验证据 | 2.5.0.1943 上端到端三连全绿（2026-09-05 16:10）：`GET /api/logs/<request_id>` 200（65 字段、outbound_body 完整）、`?omit_body=1` 200（body 字段正确省略）、`GET /api/admin/sessions/<gw_session_id>/snapshot` 200（14 字段设计内形态）；健康三件 200/200/`2.5.0-c087914e` active。注：详情端点路径参数是 `request_id` 字符串，非热表数字 id |
+| 历史 | 此前 2.5.0.1935（vcs.revision=`b08ea0607`）端到端三连证据见 `docs/FEATURE-REQ-session-snapshot-and-request-detail.md` §4；1938/1942 为并行会话部署的多 clone 中间态，已被本次收敛覆盖 |
 
 ## 5. 遗留事项（下一阶段执行输入）
 
-1. **本地收敛**：8782 当前为 f27e412b9 系构建，待与并行会话协调后从同步 origin/main
-   的本仓库重部署一次，消除多 clone 漂移。
-   （状态：未完成，本轮 Phase B 执行中；B1 完成后更新 §4 运行版本。）
+1. **本地收敛**（已完成，2026-09-05 16:05）：8782 已从同步 origin/main 的本仓库重部署为
+   2.5.0.1943（vcs.revision=`c087914eb`），身份核验 + 端到端三连全绿，见 §4。
+   注意：首次部署尝试因 PG 瞬时 `can't assign requested address`（EADDRNOTAVAIL）在
+   migrate 步 fail-closed 退出、未晋升（合同正确行为），PG 恢复后重试成功。
 2. **同源漏洞排查**（已完成，2026-09-05）：`deploy-245.sh`/`deploy-154.sh`/`deploy-seamless.sh`/
    `deploy-local-lib.sh` 的吞错模式与 CGO=0 断裂排查已完成修复（含远端旧产物复用
    窗口），落地产物见事故文档 `docs/audit/2026-09-05-stale-binary-deploy.md` §5
