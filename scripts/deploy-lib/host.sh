@@ -161,18 +161,27 @@ host_stage_release() {
   [[ -f "$binary_src"  ]] || { echo "host_stage_release: missing binary_src $binary_src" >&2; return 1; }
   [[ -d "$web_src"     ]] || { echo "host_stage_release: missing web_src $web_src" >&2; return 1; }
 
-  install -m 0755 "$binary_src" "$bundle_dir/$bin_name"
-  cp -R "$web_src/." "$bundle_dir/web/"
-  if [[ -f version.json ]]; then cp version.json "$bundle_dir/version.json"; fi
-  if [[ -f VERSION      ]]; then cp VERSION      "$bundle_dir/VERSION"; fi
+  # 陈旧产物防线（同 deploy-local.sh build_backend / dl_stage_release，
+  # bc6e696b3）：本函数经 deploy-seamless.sh 的 `if ! host_stage_release …
+  # | sed` 管道语境调用，函数内失败命令不会触发 set -e（2026-09-05 陈旧
+  # 二进制事故的 bash 怪癖），必须逐项显式 return，绝不能依赖外层兜底。
+  # 先删旧 manifest：任何后续步骤失败都不残留上一轮的 SHA256SUMS。
+  rm -f "$bundle_dir/SHA256SUMS"
+  install -m 0755 "$binary_src" "$bundle_dir/$bin_name" || return 1
+  [[ -s "$bundle_dir/$bin_name" ]] || { echo "host_stage_release: staged binary is empty: $bundle_dir/$bin_name" >&2; return 1; }
+  cp -R "$web_src/." "$bundle_dir/web/" || return 1
+  if [[ -f version.json ]]; then cp version.json "$bundle_dir/version.json" || return 1; fi
+  if [[ -f VERSION      ]]; then cp VERSION      "$bundle_dir/VERSION"      || return 1; fi
 
   # 2026-07-19: Copy configs directory for sensitive_words.json and other runtime configs
   if [[ -d configs ]]; then
-    cp -R configs "$bundle_dir/configs"
+    cp -R configs "$bundle_dir/configs" || return 1
   fi
 
   # Checksums. Include runtime configs so a changed sensitive-word list
   # cannot be deployed without being detected by bundle verification.
+  # SHA256SUMS 最后生成且失败即删除：消费端 host_verify_bundle 对缺失/
+  # 残缺 manifest 必然 fail-closed（与 dl_stage_release 的语义一致）。
   (
     cd "$bundle_dir"
     sha256sum "$bin_name" version.json VERSION
@@ -181,7 +190,8 @@ host_stage_release() {
         sha256sum "$file"
       done < <(find configs -type f -print | sort)
     fi
-  ) > "$bundle_dir/SHA256SUMS"
+  ) > "$bundle_dir/SHA256SUMS" || { rm -f "$bundle_dir/SHA256SUMS"; return 1; }
+  [[ -s "$bundle_dir/SHA256SUMS" ]] || { rm -f "$bundle_dir/SHA256SUMS"; return 1; }
 
   # Initial deployment.json (verified=false). The orchestrator flips
   # this to true only after /healthz returns 2xx.
@@ -198,7 +208,11 @@ host_verify_bundle() {
   local ssh_cmd=$1 bundle_dir=$2
   local bin_name
   bin_name=$(host_binary_name "${HOST_STAGE_TARGET:-245}") || return 64
-  "$ssh_cmd" "cd '$bundle_dir' && sha256sum -c SHA256SUMS --strict >/dev/null 2>&1"
+  # Fail-closed 前置校验：manifest 缺失/为空/未覆盖 bundle 二进制时，
+  # `sha256sum -c` 要么对空 manifest 报错，要么只校验了列出的子集——
+  # 二进制本身可能从未被校验（陈旧/残缺 bundle 静默通过的事故同类窗口）。
+  # 显式要求 manifest 非空且含二进制条目后再做逐文件校验。
+  "$ssh_cmd" "cd '$bundle_dir' && test -s SHA256SUMS && grep -q '  $bin_name\$' SHA256SUMS && sha256sum -c SHA256SUMS --strict >/dev/null 2>&1"
 }
 
 # Restart the tracked service on the target host. Slice 1-4 only knows
@@ -478,7 +492,9 @@ host_atomic_switch() {
   # out of the way, otherwise nginx serves stale index.html.
   # 2026-07-21 fix: when deploying --no-frontend (release has no web/),
   # preserve the existing web symlink so the UI is not broken.
-  "$ssh_cmd" "set -e
+  # 陈旧产物防线（同 bc6e696b3）：符号链接切换失败绝不能被吞掉后继续
+  # restart——那会把旧 binary 重新拉起并让调用方误以为切换成功。
+  if ! "$ssh_cmd" "set -e
     ln -sfn '$release_dir' '$current_link'
     ln -sfn '$current_link/$bin_name' '$binary_link'
     if [ -d '$current_link/web' ]; then
@@ -491,7 +507,10 @@ host_atomic_switch() {
     if [ -d '$current_link/configs' ]; then
       ln -sfn '$current_link/configs' '$(dirname "$current_link")/configs'
     fi
-  "
+  "; then
+    echo "host_atomic_switch: symlink swap to $version failed on target; restart aborted (previous release left serving)" >&2
+    return 1
+  fi
 
   # Restart stays as a separate call because it returns only after
   # systemd has issued the SIGTERM; combining it with the heredoc
