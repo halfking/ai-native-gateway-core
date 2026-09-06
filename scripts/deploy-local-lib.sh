@@ -114,12 +114,15 @@ dl_detect_resources() {
     for c in llm-gateway-pg postgres kx-citus; do
       if docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "$c"; then DL_PG_CONTAINER=$c; break; fi
     done
-    # Three-level Redis discovery: named → docker-scan → host ss+redis-cli.
-    # The first level that yields a healthy endpoint short-circuits the rest.
-    if dl_redis_try_named; then
-      printf '[deploy-local] redis-discover: named → %s\n' "$DL_REDIS_CONTAINER" >&2
-    elif dl_redis_try_scan; then
-      printf '[deploy-local] redis-discover: scan → %s\n' "$DL_REDIS_CONTAINER" >&2
+    # Skip Redis detection in minimal mode
+    if [[ "${MINIMAL_DEPLOY:-0}" == 0 ]]; then
+      # Three-level Redis discovery: named → docker-scan → host ss+redis-cli.
+      # The first level that yields a healthy endpoint short-circuits the rest.
+      if dl_redis_try_named; then
+        printf '[deploy-local] redis-discover: named → %s\n' "$DL_REDIS_CONTAINER" >&2
+      elif dl_redis_try_scan; then
+        printf '[deploy-local] redis-discover: scan → %s\n' "$DL_REDIS_CONTAINER" >&2
+      fi
     fi
     if [[ -n "$DL_PG_CONTAINER" ]]; then
       DL_DB_MODE=docker
@@ -133,8 +136,11 @@ dl_detect_resources() {
     fi
   fi
   if [[ "$DL_DB_MODE" == none && -n "${LLM_GATEWAY_DATABASE_URL:-}" ]]; then DL_DB_MODE=external; fi
-  if [[ "$DL_REDIS_MODE" == none && -n "${LLM_GATEWAY_REDIS_ADDR:-}" ]]; then DL_REDIS_MODE=external; fi
-  if [[ "$DL_REDIS_MODE" == none ]] && dl_redis_try_system; then
+  if [[ "${MINIMAL_DEPLOY:-0}" == 1 ]]; then
+    DL_REDIS_MODE=minimal
+  elif [[ "$DL_REDIS_MODE" == none && -n "${LLM_GATEWAY_REDIS_ADDR:-}" ]]; then
+    DL_REDIS_MODE=external
+  elif [[ "$DL_REDIS_MODE" == none ]] && dl_redis_try_system; then
     printf '[deploy-local] redis-discover: system → %s\n' "$LLM_GATEWAY_REDIS_ADDR" >&2
   fi
   if [[ "$DL_DB_MODE" == none ]] && { _dl_have pg_isready || _dl_have psql; }; then
@@ -143,10 +149,21 @@ dl_detect_resources() {
   export DL_DOCKER DL_COMPOSE DL_PG_CONTAINER DL_REDIS_CONTAINER DL_PG_SOURCE DL_REDIS_SOURCE DL_PG_MOUNT_TYPE DL_REDIS_MOUNT_TYPE DL_DB_MODE DL_REDIS_MODE
 }
 
-# First-pass Redis discovery: hard-coded list of names the project or its
-# siblings commonly use. Returns 0 and sets DL_REDIS_CONTAINER on success.
+# First-pass Redis discovery: check environment variable first, then fall back
+# to hard-coded list of names the project or its siblings commonly use.
+# Returns 0 and sets DL_REDIS_CONTAINER on success.
 dl_redis_try_named() {
   local c
+  # Check if user specified a Redis container name via environment variable
+  if [[ -n "${LLM_GATEWAY_REDIS_CONTAINER:-}" ]]; then
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "$LLM_GATEWAY_REDIS_CONTAINER"; then
+      if dl_redis_container_ping "$LLM_GATEWAY_REDIS_CONTAINER"; then
+        DL_REDIS_CONTAINER=$LLM_GATEWAY_REDIS_CONTAINER
+        return 0
+      fi
+    fi
+  fi
+  # Fall back to common names
   for c in nbjl-redis llm-gateway-redis redis kx-redis; do
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -Fxq "$c"; then
       if dl_redis_container_ping "$c"; then
@@ -357,8 +374,14 @@ dl_write_env() {
     dl_emit_env_line LLM_GATEWAY_DATABASE_URL "${LLM_GATEWAY_DATABASE_URL:-}"
     dl_emit_env_line DATABASE_URL "${DATABASE_URL:-${LLM_GATEWAY_DATABASE_URL:-}}"
     dl_emit_env_line LLM_GATEWAY_PG_DATA_DIR "$(dl_shared_pg_dir)"
-    dl_emit_env_line LLM_GATEWAY_REDIS_ADDR "${LLM_GATEWAY_REDIS_ADDR:-}"
-    dl_emit_env_line LLM_GATEWAY_REDIS_PASSWORD "${LLM_GATEWAY_REDIS_PASSWORD:-}"
+    # In minimal mode, clear Redis configuration to force SQLite usage
+    if [[ "${DL_REDIS_MODE:-}" == "minimal" ]]; then
+      dl_emit_env_line LLM_GATEWAY_REDIS_ADDR ""
+      dl_emit_env_line LLM_GATEWAY_REDIS_PASSWORD ""
+    else
+      dl_emit_env_line LLM_GATEWAY_REDIS_ADDR "${LLM_GATEWAY_REDIS_ADDR:-}"
+      dl_emit_env_line LLM_GATEWAY_REDIS_PASSWORD "${LLM_GATEWAY_REDIS_PASSWORD:-}"
+    fi
     dl_emit_env_line LLM_GATEWAY_REDIS_DB "${LLM_GATEWAY_REDIS_DB:-2}"
     dl_emit_env_line LLM_GATEWAY_REDIS_DATA_DIR "$(dl_shared_redis_dir)"
     dl_emit_env_line LLM_GATEWAY_SECRET_KEY "${LLM_GATEWAY_SECRET_KEY:-}"

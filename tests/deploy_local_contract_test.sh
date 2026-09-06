@@ -155,6 +155,7 @@ mkdir -p "$version_project/scripts/deploy-lib" "$version_project/web/public" "$v
 cp "$ROOT/scripts/deploy-local.sh" "$version_project/scripts/deploy-local.sh"
 cp "$ROOT/scripts/deploy-local-lib.sh" "$version_project/scripts/deploy-local-lib.sh"
 cp "$ROOT/scripts/deploy-lib/lock.sh" "$version_project/scripts/deploy-lib/lock.sh"
+cp "$ROOT/scripts/deploy-lib/post-deploy-verify.sh" "$version_project/scripts/deploy-lib/post-deploy-verify.sh"
 cp "$ROOT/scripts/bump-version.sh" "$version_project/scripts/bump-version.sh"
 printf '{\n  "version": "2.4.7-test",\n  "git_tag": "2.4.7",\n  "git_sha": "deadbeef",\n  "build_seq": 10,\n  "build_date": "20260903",\n  "module": "llm-gateway-go"\n}\n' > "$version_project/version.json"
 printf '2.4.7-test\n' > "$version_project/VERSION"
@@ -171,6 +172,7 @@ mkdir -p "$collision_bundle"
 printf 'keep-me\n' > "$collision_bundle/sentinel"
 set +e
 HOME="$TMP/version-home" TMPDIR="$version_tmp" LLM_GATEWAY_ROOT="$version_install" \
+  LLM_GATEWAY_SECRET_KEY=contract-test-secret-do-not-use \
   bash "$version_project/scripts/deploy-local.sh" deploy --no-frontend >"$TMP/release-collision.out" 2>&1
 collision_rc=$?
 set -e
@@ -358,7 +360,7 @@ pass 'independent project roots do not share deployment state'
 grep -Fq 'ON_ERROR_STOP=1' "$ROOT/scripts/deploy-local.sh" || fail 'schema bootstrap must stop on SQL errors'
 grep -Fq 'gateway-migrate.log' "$ROOT/scripts/deploy-local.sh" || fail 'gateway migrate output must be persisted'
 grep -Fq 'structured report follows' "$ROOT/scripts/deploy-local.sh" || fail 'migration failure must print structured report'
-grep -Fq 'source "$PROJECT_ROOT/.env.local"' "$ROOT/scripts/deploy-local.sh" || fail 'local deployment must auto-load project .env.local'
+grep -Fq 'dl_load_project_env' "$ROOT/scripts/deploy-local.sh" || fail 'local deployment must auto-load project .env.local'
 if grep -Fq 'db_port=${db_port:-5432}' "$ROOT/scripts/deploy-local.sh"; then
   fail 'deployment must not fake an unpublished PostgreSQL host port'
 fi
