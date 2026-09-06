@@ -22,9 +22,9 @@
 /.kiro/
 /.security-audit/
 
-# Note: .agents/ is INTENTIONALLY tracked — it contains project-level skills
-# (e.g. .agents/skills/db-sync-252-local, .agents/skills/llm-gateway-deploy).
-# Do NOT add an ignore rule for .agents/ here.
+# Note: .agents/ is intentionally NOT tracked in this repo.
+# It is a local skill/task workspace (project skills db-sync-252-local,
+# llm-gateway-deploy live here on each machine), not shared code.
 
 # Build artifacts
 /gateway
