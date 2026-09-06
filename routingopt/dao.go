@@ -674,3 +674,41 @@ func (dao *FeedbackLogDAO) GetHumanCorrectionCounts(ctx context.Context, since t
 	`, since).Scan(&agreeing, &total)
 	return agreeing, total, err
 }
+
+// TaskAccuracyStat is the per-task-type routing accuracy over a time window.
+type TaskAccuracyStat struct {
+	Accuracy float64 // successful / total, [0, 1]
+	Samples  int     // total feedback rows for the task type
+}
+
+// GetTaskTypeAccuracy returns routing accuracy grouped by task_type since the
+// given time. Used by the confidence adjuster to dampen confidence for task
+// types where AUTO classification has been unreliable.
+func (dao *FeedbackLogDAO) GetTaskTypeAccuracy(ctx context.Context, since time.Time) (map[string]TaskAccuracyStat, error) {
+	if dao.pool == nil {
+		return map[string]TaskAccuracyStat{}, nil
+	}
+	rows, err := dao.pool.Query(ctx, `
+		SELECT task_type,
+		       SUM(CASE WHEN success THEN 1 ELSE 0 END)::float / NULLIF(COUNT(*), 0),
+		       COUNT(*)
+		FROM routing_feedback_log
+		WHERE created_at >= $1
+		GROUP BY task_type
+	`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]TaskAccuracyStat)
+	for rows.Next() {
+		var taskType string
+		var stat TaskAccuracyStat
+		if err := rows.Scan(&taskType, &stat.Accuracy, &stat.Samples); err != nil {
+			return nil, err
+		}
+		out[taskType] = stat
+	}
+	return out, rows.Err()
+}

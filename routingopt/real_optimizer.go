@@ -32,6 +32,9 @@ type RealOptimizer struct {
 	// ab optionally splits traffic: treatment gets the optimizer, control
 	// gets baseline routing (nil = 100% treatment, pre-A/B behaviour).
 	ab *ABGate
+	// confidence adjusts classification confidence from historical per-task
+	// accuracy (PostClassify hook).
+	confidence *ConfidenceAdjuster
 }
 
 // WithMLReranker attaches the P2.5 ONNX ML re-ranker. Returns the receiver
@@ -100,6 +103,7 @@ func NewRealOptimizer(pool *pgxpool.Pool) *RealOptimizer {
 		recommender: recommender,
 		integrator:  integrator,
 		learner:     learner,
+		confidence:  NewConfidenceAdjuster(pool),
 	}
 }
 
@@ -118,17 +122,13 @@ func (o *RealOptimizer) PreClassify(ctx context.Context, signals interface{}) (i
 	return o.enhancer.Enhance(ctx, signals, userID, meta.ClientType)
 }
 
-// PostClassify adjusts confidence after classification.
-//
-// Week 1: no-op (返回原始置信度)
-// Week 2: 根据历史准确率调整置信度
-//   - 高准确率任务类型: 提升置信度
-//   - 低准确率任务类型: 降低置信度
-//   - 人工纠正过的任务类型: 大幅调整
+// PostClassify adjusts confidence after classification using historical
+// per-task-type routing accuracy (learning from runtime behaviour):
+//   - 低准确率任务类型: 下调置信度 → 更早触发 LLM fallback 重分类
+//   - 高准确率任务类型: 小幅上调 → 保持 heuristic 快路径
+//   - 样本不足或读取失败: 原样返回（baseline 行为）
 func (o *RealOptimizer) PostClassify(ctx context.Context, taskType string, confidence float64) (float64, error) {
-	// Week 1: pass through unchanged
-	// Week 2: adjust based on historical accuracy
-	return confidence, nil
+	return o.confidence.PostClassify(ctx, taskType, confidence)
 }
 
 // RecommendModel re-ranks candidates using multi-objective optimization.
