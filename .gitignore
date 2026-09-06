@@ -60,6 +60,7 @@ Dockerfile.local
 .runtime/
 .playwright-mcp/
 .zcode/plans/
+.agents/
 .audit/
 .audit-workspace/
 .kiro/
