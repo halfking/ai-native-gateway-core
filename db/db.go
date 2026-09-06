@@ -167,6 +167,11 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureRoutingAnalyticsMaterializedViews(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-06 migration 664: orchestration_runtime_instances 表由外部编排服务在启动后立即写入，
+	// 必须在网关开始服务流量前就绪，否则后台 worker 会反复报错 "relation does not exist"。
+	if err := db.ensureOrchestrationRuntimeInstancesSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureApplicationsTable(migCtx); err != nil {
 		return err
 	}
@@ -941,6 +946,11 @@ func (d *DB) ensureRoutingAnalyticsColumns(ctx context.Context) error {
 // credential lookup) fallback that buildFlowL23Query (admin/analytics.go)
 // applies, so the L2→L3 Sankey shows the same 'unknown' provider share on
 // both the materialized and base paths.
+//
+// auto_profile is exposed because the admin auto-route profile distribution
+// (admin/auto_route.go) reads COALESCE(auto_profile, 'unknown') directly from
+// this source view. It must stay the LAST column in both UNION branches:
+// CREATE OR REPLACE VIEW can only append columns, never reorder existing ones.
 const routingAnalyticsMVSQL = `
 		-- Keep analytics isolated from the frozen request-log wrapper view. The
 		-- narrow source has stable types across hot and parent partitions and
@@ -963,7 +973,8 @@ const routingAnalyticsMVSQL = `
 		  success::boolean AS success,
 		  latency_ms::numeric AS latency_ms,
 		  cost_usd::numeric AS cost_usd,
-		  origin_stage::text AS origin_stage
+		  origin_stage::text AS origin_stage,
+		  auto_profile::text AS auto_profile
 		FROM request_logs_hot
 		UNION ALL
 		SELECT
@@ -980,7 +991,8 @@ const routingAnalyticsMVSQL = `
 		  success::boolean AS success,
 		  latency_ms::numeric AS latency_ms,
 		  cost_usd::numeric AS cost_usd,
-		  origin_stage::text AS origin_stage
+		  origin_stage::text AS origin_stage,
+		  auto_profile::text AS auto_profile
 		FROM request_logs;
 
 		CREATE MATERIALIZED VIEW IF NOT EXISTS routing_analytics_7d AS
@@ -1102,6 +1114,7 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_analytics_7d_ukey')
 			   AND EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname='public' AND indexname='routing_audit_summary_7d_ukey')
 			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
+			   AND POSITION('auto_profile' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_source'), true), '')) > 0
 			   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_analytics_7d'), true), '')) > 0
 		   AND POSITION('origin_stage' IN COALESCE(pg_get_viewdef(to_regclass('public.routing_audit_summary_7d'), true), '')) > 0
 	`).Scan(&upToDate); err == nil && upToDate {
@@ -1158,6 +1171,70 @@ func (d *DB) ensureRoutingAnalyticsMaterializedViews(ctx context.Context) error 
 		return err
 	}
 	slog.Info("routing analytics materialized views ensured (migration 632)")
+	return nil
+}
+
+// ensureOrchestrationRuntimeInstancesSchema mirrors
+// sql/migrations/startup/664_orchestration_and_stats_tables.sql.
+// This table is used by external orchestration services to register and track runtime instances.
+// It must exist at startup because background workers (e.g., orchestration registration)
+// attempt to write to it immediately after boot.
+func (d *DB) ensureOrchestrationRuntimeInstancesSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS orchestration_runtime_instances (
+		  id BIGSERIAL PRIMARY KEY,
+		  tenant_id TEXT NOT NULL,
+		  runtime_id TEXT NOT NULL,
+		  instance_id TEXT NOT NULL,
+		  host_id TEXT,
+		  endpoint TEXT,
+		  status TEXT,
+		  capabilities JSONB,
+		  registration_revision INTEGER NOT NULL DEFAULT 0,
+		  lease_epoch BIGINT,
+		  credential_id TEXT,
+		  last_heartbeat_at TIMESTAMPTZ,
+		  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		  CONSTRAINT uq_orchestration_runtime_instance UNIQUE (tenant_id, runtime_id, instance_id)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_orchestration_runtime_instances_tenant
+		  ON orchestration_runtime_instances(tenant_id);
+
+		CREATE INDEX IF NOT EXISTS idx_orchestration_runtime_instances_runtime
+		  ON orchestration_runtime_instances(runtime_id);
+
+		CREATE INDEX IF NOT EXISTS idx_orchestration_runtime_instances_status
+		  ON orchestration_runtime_instances(status) WHERE status IS NOT NULL;
+
+		CREATE INDEX IF NOT EXISTS idx_orchestration_runtime_instances_heartbeat
+		  ON orchestration_runtime_instances(last_heartbeat_at DESC NULLS LAST);
+
+		-- Trigger to update updated_at timestamp
+		CREATE OR REPLACE FUNCTION update_orchestration_runtime_instances_updated_at()
+		RETURNS TRIGGER AS $$
+		BEGIN
+		  NEW.updated_at = NOW();
+		  RETURN NEW;
+		END;
+		$$ LANGUAGE plpgsql;
+
+		DROP TRIGGER IF EXISTS trg_orchestration_runtime_instances_updated_at
+		  ON orchestration_runtime_instances;
+
+		CREATE TRIGGER trg_orchestration_runtime_instances_updated_at
+		  BEFORE UPDATE ON orchestration_runtime_instances
+		  FOR EACH ROW
+		  EXECUTE FUNCTION update_orchestration_runtime_instances_updated_at();
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure orchestration_runtime_instances schema: %w", err)
+	}
+	slog.Info("orchestration_runtime_instances schema ensured (migration 664)")
 	return nil
 }
 
@@ -5259,7 +5336,7 @@ CREATE INDEX IF NOT EXISTS idx_ars_hot_task_profile_ts ON public.auto_route_sele
 CREATE INDEX IF NOT EXISTS idx_ars_hot_session ON public.auto_route_selections_hot (session_id, ts DESC) WHERE session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_ars_hot_unsettled ON public.auto_route_selections_hot (ts) WHERE settled_at IS NULL;
 DROP VIEW IF EXISTS public.auto_route_selections_all;
-CREATE VIEW public.auto_route_selections_all AS
+CREATE OR REPLACE VIEW public.auto_route_selections_all AS
 SELECT id, request_id, session_id, task_id, tenant_id, ts, task_type, profile, classifier, confidence,
   canonical_id, chosen_model, candidate_rank, composite_score, affinity_score, affinity_applied,
   explore, fallback_used, success, latency_ms, cost_usd, reward, reward_source, settled_at,
