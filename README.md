@@ -1,273 +1,256 @@
-# LLM Gateway Go — 企业级 LLM 网关
+# AI Native Gateway
 
-> **让企业安全、合规、低成本地使用全球各类大模型与 AI 工具** —— 一套网关，统一管控、智能整合、自动升级。
+> Private-deployment LLM gateway with intelligent routing, multi-tenancy, and comprehensive observability
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
-[![Multi-Tenant](https://img.shields.io/badge/Multi--Tenant-RLS%20enabled-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/Version-v2.5.3-green.svg)](VERSION)
+
+[Quick Start](#quick-start) • [Features](#features) • [Architecture](docs/architecture.md) • [Comparison](docs/comparison.md) • [Roadmap](ROADMAP.md)
 
 ---
 
-## ✨ 核心功能
+## What is AI Native Gateway?
 
-### License 管理与分发
-- **在线激活**：通过主控端 `llm.kxpms.cn` 实时激活
-- **离线激活**：支持完全断网环境的 license 授权
-- **试用模式**：7 天免费试用（1 租户 / 基础 API）
-- **设备绑定**：基于硬件指纹的设备管理
+AI Native Gateway is an **open-source, self-hosted LLM gateway** that provides:
 
-### 实例注册与心跳
-- **自动注册**：实例启动时自动向主控端注册
-- **实时心跳**：60s 心跳上报 + 状态监控（online/degraded/offline）
-- **健康检查**：自动探测实例健康状态，支持 30s/2min 离线判定
-- **Token 续期**：24h JWT 自动续期
+- **Protocol Normalization**: OpenAI, Anthropic, Gemini, and Responses API compatibility
+- **Intelligent Routing**: Sticky sessions, health-based failover, tier fallback
+- **Multi-Tenancy**: PostgreSQL RLS-enforced tenant isolation
+- **Credential Management**: Provider health monitoring and credential pools
+- **Observability**: Real-time request streams, routing analytics, cost tracking
+- **Privacy**: 100% private deployment - all data stays in your infrastructure
 
-### 自动升级与回滚
-- **在线升级**：自动检查更新 + 一键升级（6h 检查周期）
-- **离线升级**：U 盘携带升级包 + 本地安装
-- **备份保护**：升级前自动备份 + 失败自动回退
-- **健康验证**：升级后 5s 健康检查，失败自动回退
-
-### 四种部署模式
-- **M1 单机部署**：二进制 + systemd（离线模式）
-- **M2 单机 Docker**：docker-compose 快速部署
-- **M3 K8s Sidecar**：kustomize 模板 + sidecar 心跳
-- **M4 K8s Operator**：CRD + 声明式管理（规划中）
+Built with **Go + PostgreSQL + Redis**, designed for organizations that need full control over their LLM infrastructure.
 
 ---
 
-## 🎯 核心能力
+## Quick Start
 
-| 能力维度 | 实现 |
-|----------|------|
-| **协议层** | OpenAI / Anthropic / Responses 兼容 + SSE 流式中继 + 请求体归档 |
-| **Agent 任务稳定性** | 全协议 pre-stream 心跳 + stall-only 超时(无 wall-clock cap)+ anthropic header 透传 + incremental integrity 掐流 |
-| **路由层** | 智能候选路由 + 粘性会话 + 自动路由（cost/quality 策略） |
-| **延迟感知** | p95 + 并发压力感知打分（design §2.1） + tier-plane SWRR |
-| **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 38+ 表 RLS |
-| **流量治理** | Token 限流 + 语义缓存 + 提示词压缩 + 滑窗算法 |
-| **请求级重试** | Goal RetryPolicy（cost-mode preset + 租户覆盖，Enabled 可关闭）|
-| **系统监测** | Redis FIFO 队列 + 30s dedup + 旧 worker 打标 + Vue Dashboard |
-| **审计** | 全链路审计 + DLQ + 磁盘回退 + OTel + Prometheus |
-| **License** | 在线/离线激活 + 设备管理 + CRL 撤销 + 过期续期 |
-| **升级** | 在线/离线升级 + 多平台 artifact 选择 + 自动回滚 |
-| **分发** | 自动化打包（upgrade-package builder + Cloudreve + version-check API） |
-| **部署** | M1-M4 四种模式 + systemd + Docker + K8s |
-
-详细架构见 [`docs/03-design/01-architecture/architecture/ARCHITECTURE.md`](docs/03-design/01-architecture/architecture/ARCHITECTURE.md)。
-
-### 模块导航
-
-| 模块 | 关键文件 | 职责 |
-|------|----------|------|
-| 网关入口 | `cmd/gateway/main.go`, `cmd/gateway/main_v2_pipeline.go` | 装配所有依赖、启动 HTTP/SSE |
-| 数据面 | `domains/streaming/`, `domains/streaming/executors/` | 流式中继 + 候选路由 + 重试 |
-| 流式完整性 | `domains/streaming/integrity/`, `domains/hooks/audit/stream_integrity.go` | 增量重复内容检测 + 异常事件审计(默认 record,abortable) |
-| 路由评分 | `domains/streaming/executors/router_scoring.go` | composite = penalties；P2C 取 min |
-| Goal 重试 | `domains/streaming/goal_retry_policy.go` | 租户策略 + `EffectiveMaxRetries()` |
-| 系统监测 | `bg/systemmonitor/{monitor,redis_queue,lua/claim}.go` | Redis 队列 + Lua 原子操作 |
-| 后台 worker | `bg/*` (~50 个 worker) | 主动探针 / 自适应 / 数据治理 |
-| 凭据健康 | `domains/credential/`, `domains/health/` | 内存 + Redis 双层 + 7 类错误分级 |
-| Admin API | `admin/` (163 个 handler) | 仪表盘 / 路由配置 / 审计 / 监控 |
-| 管理面板 | `web/` (Vue 3 + TS) | 双主题 + 实时请求流多维过滤器 |
-| 分发与升级 | `installer/`, `scripts/build-upgrade-package.sh` | M1-M4 + 离线升级包 + Maintain API |
-| 版本检查 | `internal/release/`, `installer/internal/upgrader/client.go` | /distribution/version-check |
-
----
-
-## 🚦 快速开始
-
-### 编译
+Deploy locally in under 10 minutes:
 
 ```bash
-# 克隆仓库
-git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
-cd llm-gateway-go
+# Clone repository
+git clone https://github.com/halfking/ai-native-gateway-core.git
+cd ai-native-gateway-core
 
-# 编译网关
-go build -o gateway ./cmd/gateway
+# Generate secure keys
+cp .env.quickstart.example .env
+# Edit .env with secure random values (see file for generation commands)
 
-# 编译安装器
-cd installer
-go build -o llm-gw-installer ./cmd/llm-gw-installer
-cd ..
-```
+# Start stack (PostgreSQL + Redis + Gateway)
+docker-compose -f docker-compose.quickstart.yml up -d
 
-### 激活
-
-```bash
-# 方式 1: 试用模式（7 天免费）
-./installer/llm-gw-installer activate --mode trial --email your@email.com
-
-# 方式 2: License Key 激活
-./installer/llm-gw-installer activate --mode online --license-key LIC-xxx
-
-# 方式 3: 离线激活（完全断网）
-./installer/llm-gw-installer activate --mode offline --request-file activation.req
-# ... 拷贝 activation.req 到联网电脑，上传到 llm.kxpms.cn/offline，获取 license.dat
-./installer/llm-gw-installer activate --mode offline --import-file license.dat
-```
-
-### 启动
-
-```bash
-# 启动网关（默认监听 :8781）
-LLM_GATEWAY_LISTEN=:8781 ./gateway
-
-# 健康检查
+# Verify health
 curl http://localhost:8781/healthz
-# 返回: {"status":"ok","version":"v2.5.3"}
+# {"status":"ok"}
+
+# Access admin UI
+open http://localhost:8781/admin
 ```
 
-### 升级
+See [Getting Started Guide](docs/getting-started.md) for detailed instructions.
 
-```bash
-# 检查更新
-./installer/llm-gw-installer upgrade check
+---
 
-# 在线升级
-./installer/llm-gw-installer upgrade apply --to v2.5.0
+## Screenshots
 
-# 回滚
-./installer/llm-gw-installer upgrade rollback --to v2.4.2
+### Dashboard - Real-time Request Monitoring
+
+![Dashboard Default View](docs/assets/screenshots/dashboard-default.png)
+*Real-time request stream with multi-dimensional filtering and provider visibility*
+
+### Routing Analytics
+
+![Routing V2 Dashboard](docs/assets/screenshots/routing-v2-dashboard.png)
+*Routing analytics with credential health monitoring and decision tracking*
+
+![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
+*Routing overview showing system-wide request flow*
+
+### Request Detail
+
+![Request Detail Drawer](docs/assets/screenshots/request-detail-drawer.png)
+*Detailed request inspection with processing pipeline visualization*
+
+---
+
+## Features
+
+### Core Gateway Capabilities
+
+- **Multi-Protocol Support**: OpenAI Chat/Completions, Anthropic Messages, Responses API, Gemini
+- **Streaming**: HTTP SSE relay with incremental integrity checks
+- **Authentication**: Bearer token validation with tenant isolation
+- **Rate Limiting**: Token-based quotas (TPM/RPM) with Redis-backed enforcement
+- **Audit Trail**: Request/response logging to PostgreSQL with sensitive data masking
+
+### Intelligent Routing
+
+- **Sticky Sessions**: Session-to-credential binding for conversation continuity
+- **Health-Based**: Automatic failover when providers degrade
+- **Tier Fallback**: Primary → Secondary → Tertiary credential routing
+- **Billing-Aware**: Prefer metered/free/quota credentials based on policy
+- **P2C Scoring**: Power-of-Two-Choices with latency and success rate
+
+### Multi-Tenancy
+
+- **Database-Level Isolation**: PostgreSQL Row-Level Security on 38+ tables
+- **Tenant/User/API Key hierarchy**: Secure credential management
+- **Per-Tenant Quotas**: Token limits, rate limits, cost caps
+- **Cross-Tenant Security**: RLS prevents data leakage at query level
+
+### Observability
+
+- **Real-Time Request Stream**: Live dashboard with multi-dimensional filtering
+- **Routing Analytics**: Task/model heatmaps, Sankey flow diagrams, decision replay
+- **Credential Monitor**: Provider health matrix with latency and success rate
+- **Cost Tracking**: Per-tenant token and cost accounting
+- **Prometheus Metrics**: `/metrics` endpoint for external monitoring
+
+### Admin Console
+
+Embedded Vue.js SPA (no separate frontend deployment):
+- Provider and credential management
+- Tenant/user/API key administration  
+- Request logs and session viewer
+- Routing dashboards and analytics
+- Data lifecycle management
+
+---
+
+## Architecture
+
+```
+Client → Gateway :8781 → [Auth → Protocol → IR → Router → Upstream]
+                              ↓           ↓
+                        PostgreSQL    Redis
 ```
 
----
+- **Data Plane**: Go binary handling LLM requests
+- **Control Plane**: Embedded Vue.js admin UI + REST API
+- **Storage**: PostgreSQL (durable state) + Redis (hot cache)
+- **Workers**: Background jobs for health probes, session summarization, billing
 
-## 🏛️ 架构简图
-
-```
-┌─────────────────────── 客户机器 ───────────────────────┐
-│  ~/llm-gateway/                                         │
-│   ├── gateway                    (主进程，:8781)        │
-│   ├── llm-gw-installer           (CLI 工具)            │
-│   ├── license.dat                (RSA 签名的 License)   │
-│   ├── VERSION                    (当前版本)            │
-│   └── compose.yml / systemd      (部署配置)            │
-└──────────────────────┬─────────────────────────────────┘
-                       │ HTTPS (TLS 1.3, Ed25519 签名)
-┌──────────────────────▼─────────────────────────────────┐
-│  主控端 llm.kxpms.cn:8443                               │
-│   ├─ /api/v1/license/*   (激活/续期/CRL)                │
-│   ├─ /api/v1/instances/* (注册/心跳/状态)               │
-│   └─ /api/v1/updates/*   (检查/下载/上报)               │
-└─────────────────────────────────────────────────────────┘
-```
+See [Architecture Documentation](docs/architecture.md) for details.
 
 ---
 
-## 🎛️ 产品功能预览
+## Deployment Modes
 
-> 以下功能模块均已上线，部署在 184 k3s 节点生产环境。
+| Mode | Description | Status |
+|------|-------------|--------|
+| **Docker Compose** | Quick start with included PostgreSQL/Redis | ✅ Recommended for evaluation |
+| **Binary + systemd** | Production deployment on Linux hosts | ✅ Supported with installer |
+| **Kubernetes** | Deployment + ConfigMap + Service manifests | ⚠️ Test-grade (not production-validated) |
 
-### 1. 凭据监控 — 多源模型 × 多凭据 的实时健康仪表盘
+**Production Requirements**:
+- External PostgreSQL 14+ and Redis 7+
+- TLS termination (reverse proxy)
+- Secrets management
+- Backup and monitoring
 
-
-- **19 凭据 × 18 模型** 二维可用性矩阵，一眼看出哪个凭据下哪个模型出问题
-- 每个凭据的 **P95 延迟**、滑动窗口成功率（最近 1 小时）、**并发槽位占用**
-- **指纹池 + 自适应探测** 自动避开被上游风控的 IP / UA，失败熔断无需人工介入
-
-### 2. 路由全景 — 双层路由 + 实时决策可观测
-
-
-- **L1 选模型**：Prompt → 8 类任务分类 → 6 维评分 → Profile 锁定
-- **L2 选凭据**：模型解吸 → Tier 回退 → 计费轮次 → P2C 评分 → 执行 / 熔断
-- **任务 × 模型热力图** 直观告诉你"什么任务该用什么模型"
-- **Sankey 路由流向** 实时展示 14,000+ 请求的最终去向（任务 → 模型 → 供应商）
-
-### 3. 请求日志 — 全链路可检索的会话级审计
-
-
-- 13,000+ 请求会话，**system prompt + 响应内容** 完整留存可逐条回放
-- 字段覆盖：任务类型、客户端模型、出站模型、供应商、Token、延迟、结束原因
-- 对接 **OTel + Prometheus**，可按 Key / 租户 / 时间段切片，便于排查与合规审计
-
-### 4. 数据生命周期 — 4 档热温冷分层 + 归档治理
-
-
-- **热数据 (0-7 天) / 温数据 (7-30 天) / 冷数据 (30-90 天) / 过期 (>90 天)** 自动分层
-- **归档预览** 先告知"执行后会动多少条记录"，再执行 — 防止误删
-- 增长趋势 + 租户分布，存储治理成本可视化
-
-### 5. 租户管理 — 多租户 + MaaS 计费一体化
-
-
-- 单租户维度下：**13 用户 / 38 密钥 / 7 天 14,208 请求 / 7.26 亿 Token / $295.50 成本**
-- **套餐 + 积分 + 加油包** 三段式计费模型，适合中国 SMB
-- MaaS 子菜单：标准模型 / 套餐与充值 / 消耗统计 / 钱包管理 / 账本流水
-
-### 6. 成本价格 — 1000+ 模型 Offer 覆盖可视化
-
-
-- **1045 个 Offer、410 个模型 100% 覆盖**，**CNY + USD 双币种**
-- 按凭据 × 模型 树形视图，一眼看出某个凭据下哪些模型还没定价
-- 状态维度：已定价（输入 / 输出）/ 免费 / 缺价 — 定价审计自动化
+See [Production Deployment](docs/deployment/) for details.
 
 ---
 
-## 🔀 双仓库策略
+## Comparison with Alternatives
 
-| Remote | URL | 用途 |
-|--------|-----|------|
-| `codeup` (origin) | `https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git` | **默认**（日常开发） |
-| `github` | `git@github.com:halfking/SI-LLM-Gateway.git` | **公开镜像**（阶段发布） |
+| Feature | AI Native Gateway | LiteLLM | Portkey | Kong AI |
+|---------|-------------------|---------|---------|---------|
+| **Deployment** | Private (self-hosted) | SaaS + OSS | SaaS | OSS |
+| **Multi-Tenancy** | Native (PG RLS) | Basic | Full (SaaS) | Via plugins |
+| **Admin UI** | Embedded Vue SPA | CLI | SaaS UI | Kong Manager |
+| **Data Residency** | 100% private | Depends | Cloud (SaaS) | Self-hosted |
+| **License** | Apache 2.0 | MIT | Proprietary | Apache 2.0 |
 
-```bash
-git push              # → codeup（无附加检查）
-git push github       # → github（自动严格扫描，命中即阻断）
-```
+**Choose AI Native Gateway if you need**:
+- Full data residency control (no external SaaS dependencies)
+- Deep multi-tenancy with database-level isolation
+- Embedded admin UI in single binary
+- Go performance and compiled artifact deployment
 
-敏感信息保护：`.githooks/pre-push` 推送 github 时自动运行 `scripts/scan-secrets.sh` 严格模式（49 规则）。
-详见 [`docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md`](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)。
+**Choose alternatives if you need**:
+- Maximum provider coverage (100+ providers) → LiteLLM
+- Zero-ops managed service → Portkey
+- General API gateway + LLM → Kong
 
----
-
-## 📚 文档索引
-
-| 类别 | 文档 |
-|------|------|
-| **部署总入口** | [`deploy/README.md`](deploy/README.md) — 现役部署物料、环境和发布门禁 |
-| **环境总览** | [`docs/06-deployment/01-environments/README.md`](docs/06-deployment/01-environments/README.md) — 环境、端口、平台支持矩阵 |
-| **客户安装** | [`docs/06-deployment/01-environments/customer-install/README.md`](docs/06-deployment/01-environments/customer-install/README.md) — host/Docker 客户路径 |
-| **升级与回滚** | [`docs/06-deployment/README.md`](docs/06-deployment/README.md) — 迁移兼容、健康检查和回滚门禁 |
-| **架构** | [`docs/03-design/01-architecture/architecture/ARCHITECTURE.md`](docs/03-design/01-architecture/architecture/ARCHITECTURE.md) — 当前架构方案 |
-| **会话优化V2** | [`docs/archive/process/session-optimization-v2/配置说明.md`](docs/archive/process/session-optimization-v2/配置说明.md) — Sessions V2 Feature Flag 配置与灰度发布 |
-| **双仓库** | [`docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md`](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md) — codeup ⇄ github 工作流 |
-| **安全** | [`SECURITY.md`](SECURITY.md) — 漏洞报告 + 扫描器用法 |
-| **贡献** | [`CONTRIBUTING.md`](CONTRIBUTING.md) — 开发规范 + 提交规范 |
+See [Detailed Comparison](docs/comparison.md) for more.
 
 ---
 
-## 📐 差异化定位
+## Roadmap
 
-| 维度 | 通用 AI Gateway | **SI-LLM-Gateway** |
-|------|-----------------|---------------------|
-| 部署 | SaaS / On-Prem | **完全私有部署**（已 184 k3s 生产） |
-| 数据合规 | 出域 | **数据全在企业内** |
-| 计费 | 用量计费（USD） | **套餐 + 积分 + 加油包**（适合中国 SMB） |
-| 上游模型 | 主打少数厂商 | **全模型 + 国产 + 本地** |
-| 多凭据指纹池 | 基础 | **50+ UA + 35 Accept-Language + 11 utls profile** |
-| MCP 工具网关 | 部分 | **Q3 2026 全量上线** |
-| 中文友好 | 一般 | **全中文 UI + 国内模型 + 支付宝接入** |
-| 多租户审计 | 标准 | **38+ 表 RLS + 43 轮审计 L1=0** |
+**Current (v2.x)**:
+- ✅ OpenAI/Anthropic/Gemini/Responses protocol support
+- ✅ Multi-tenant isolation with PostgreSQL RLS
+- ✅ Intelligent routing with sticky sessions
+- ✅ Vue.js admin console
+- ✅ Docker Compose quick start
 
----
+**Next (3-6 months)**:
+- 🚧 Enhanced cost/quality-aware routing
+- 🚧 Production-grade Kubernetes Helm charts
+- 🚧 Grafana dashboard templates
+- 🚧 Advanced observability (session forensics, decision replay)
 
-## 🤝 贡献
+**Exploring (6-12+ months)**:
+- 🔬 MCP (Model Context Protocol) gateway integration
+- 🔬 Agent-to-Agent protocol support
+- 🔬 Kubernetes Operator (CRD-based deployment)
 
-参见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。多租户改动必跑 `lint-tenant-scope-llmgw` / `lint-pg-rls` / `lint-otel-tenant` 三条 linter。
-
----
-
-## 🔐 安全
-
-- 漏洞报告：见 [`SECURITY.md`](SECURITY.md)
-- 公开仓库敏感信息保护：见 [`docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md`](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md)
-- 法务白名单：见 [`docs/02-resources/compliance/legal/disguise-compliance.md`](docs/02-resources/compliance/legal/disguise-compliance.md)
+See [ROADMAP.md](ROADMAP.md) for full details.
 
 ---
 
-## 📄 License
+## Documentation
 
-[Apache License 2.0](LICENSE)
+- [Getting Started](docs/getting-started.md) - Deploy in 10 minutes
+- [Architecture Overview](docs/architecture.md) - System design and components
+- [Configuration Reference](docs/configuration.md) - Environment variables and settings
+- [API Documentation](docs/api/) - Data plane and admin API specs
+- [Comparison](docs/comparison.md) - vs LiteLLM, Portkey, Kong
+- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
+
+---
+
+## Community & Support
+
+- **Issues**: [GitHub Issues](https://github.com/halfking/ai-native-gateway-core/issues) for bugs and feature requests
+- **Discussions**: [GitHub Discussions](https://github.com/halfking/ai-native-gateway-core/discussions) for questions
+- **Security**: See [SECURITY.md](SECURITY.md) for responsible disclosure
+- **Contributing**: See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup
+
+---
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development environment setup
+- Code style and testing requirements
+- Pull request process
+- Multi-tenancy security requirements
+
+---
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
+
+See [NOTICE](NOTICE) for required attributions when redistributing this software.
+
+**Commercial Use**: Apache 2.0 allows commercial use. When redistributing (as source or binary), you must retain copyright notices and the NOTICE file. Internal commercial use without redistribution does not require additional attribution beyond license compliance.
+
+---
+
+## Acknowledgments
+
+AI Native Gateway incorporates components from the following open-source projects:
+- Go standard library (BSD-3-Clause)
+- PostgreSQL driver (MIT)
+- Redis client (BSD-2-Clause)
+- Vue.js and Element Plus (MIT)
+- See [NOTICE](NOTICE) for complete list
+
+---
+
+Built with ❤️ by the AI Native Gateway community

@@ -1,257 +1,360 @@
-# Contributing to SI-LLM-Gateway
+# Contributing to AI Native Gateway
 
-感谢你考虑为 SI-LLM-Gateway 做出贡献！🎉
+Thank you for considering contributing! 🎉
 
-## 目录
-
-- [开发环境](#开发环境)
-- [开发流程](#开发流程)
-- [代码规范](#代码规范)
-- [测试要求](#测试要求)
-- [提交规范](#提交规范)
-- [Pull Request 流程](#pull-request-流程)
-- [多租户改动专项](#多租户改动专项)
+This guide will help you get started with development, testing, and submitting changes.
 
 ---
 
-## 开发环境
+## Code of Conduct
 
-### 必备工具
+Please read and follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
-- **Go** 1.21+ (`go version`)
-- **PostgreSQL** 14+ (本地或 Docker)
-- **Node.js** 18+ (前端开发)
-- **pnpm** 8+ (`npm install -g pnpm`)
-- **Python** 3.10+ (控制面 / 运维脚本)
+---
 
-### 初始化
+## Quick Start for Contributors
+
+### 1. Development Environment
+
+**Prerequisites:**
+- Go 1.21+ ([install](https://go.dev/dl/))
+- PostgreSQL 14+ (local or Docker)
+- Redis 7+ (local or Docker)
+- Node.js 18+ and pnpm 8+ (for frontend)
+- Git
+
+**Setup:**
 
 ```bash
-# 1. Fork & clone
-git clone https://codeup.aliyun.com/<your-fork>/llm-gateway-go.git
-cd llm-gateway-go
+# Fork the repository on GitHub, then:
+git clone https://github.com/YOUR_USERNAME/ai-native-gateway-core.git
+cd ai-native-gateway-core
 
-# 2. 安装 git 钩子
-./scripts/install-githooks.sh --pre-commit   # pre-commit: go vet + SQL lint
-./scripts/install-githooks.sh     # pre-push: 敏感信息扫描
+# Start local dependencies
+docker-compose -f docker-compose.quickstart.yml up -d postgres redis
 
-# 3. 拉取子模块（如有）
-git submodule update --init --recursive
+# Run database migrations
+make db-migrate  # or ./scripts/db-migrate.sh
 
-# 4. 启动本地依赖 (PG + Redis)
-docker compose up -d postgres redis
-
-# 5. 初始化 DB schema
-make db-init  # 或 ./scripts/db-init.sh
+# Build and run
+go build -o gateway ./cmd/gateway
+./gateway
 ```
 
----
-
-## 开发流程
-
-1. **从 `main` 创建分支**
-   ```bash
-   git checkout -b feat/your-feature
-   ```
-2. **编写代码 + 测试**（每个 PR 应有对应测试）
-3. **本地验证**
-   ```bash
-   go test ./...
-   go vet ./...
-   ./scripts/scan-secrets.sh --mode=strict --paths=.
-   ```
-4. **Commit + Push**（参考 [提交规范](#提交规范)）
-5. **开 PR**（参考 [PR 流程](#pull-request-流程)）
-
----
-
-## 代码规范
-
-### Go 风格
-
-- 遵循 [Effective Go](https://go.dev/doc/effective_go) + [Go Code Review Comments](https://github.com/golang/go/wiki/CodeReviewComments)
-- 使用 `gofmt` / `goimports` 格式化
-- 导出符号必须有 doc 注释（`// FooBar does ...`）
-- 错误处理：用 `fmt.Errorf("context: %w", err)` 包装
-
-### 包结构
-
-```
-relay/        # HTTP 请求中继
-routing/      # 路由规划与执行
-circuit/      # 熔断器
-pool/         # 身份绑定连接池
-identity/     # 身份管理
-upstream/     # 上游 LLM 客户端
-audit/        # 审计 pipeline
-middleware/   # HTTP 中间件
-admin/        # 管理 API (super_admin only)
-apihub/       # API 资产中心 (Q3 2026)
-armor/        # Model Armor (Q4 2026)
-a2a/          # A2A 协议 (Q1 2027)
-```
-
-### 命名约定
-
-| 类别        | 约定                           | 示例                              |
-| ----------- | ------------------------------ | --------------------------------- |
-| 包名        | 全小写，无下划线               | `routing`, `auth`             |
-| 接口        | 方法名 + er                    | `Reader`, `Executor`          |
-| 私有 struct | camelCase                      | `routePlan`                     |
-| 导出 struct | PascalCase                     | `RoutePlan`                     |
-| 常量        | PascalCase 或 UPPER_SNAKE      | `MaxRetries` 或 `MAX_RETRIES` |
-| 环境变量    | `LLM_GATEWAY_<MODULE>_<KEY>` | `LLM_GATEWAY_DB_DSN`            |
-
----
-
-## 测试要求
-
-### 必跑
+### 2. Run Tests
 
 ```bash
-go test ./...                    # 全部测试
-go test -race ./...              # race detector (推荐)
-./scripts/scan-secrets.sh --mode=strict
+# Unit tests
+make test
+
+# With race detector (recommended before PR)
+make test-race-core
+
+# Frontend tests
+cd web && pnpm install && pnpm test
 ```
 
-### 覆盖率
+### 3. Make Changes
 
-- 核心模块 (`relay/`, `routing/`, `circuit/`) 应保持 **≥ 80%** 覆盖率
-- 新增功能必须带单元测试
-- 集成测试加 `//go:build integration` tag，需要真实依赖
+```bash
+git checkout -b feature/your-feature-name
 
-### 测试命名
+# Make your changes...
 
-```go
-func TestExecutor_PickCandidate(t *testing.T) { ... }
-func TestExecutor_PickCandidate_NoCredentials(t *testing.T) { ... }
-func TestExecutor_PickCandidate_AllDisabled(t *testing.T) { ... }
+# Format and lint
+go fmt ./...
+golangci-lint run
+
+# Run tests
+make test
+```
+
+### 4. Submit Pull Request
+
+```bash
+git push origin feature/your-feature-name
+# Then open PR on GitHub
 ```
 
 ---
 
-## 提交规范
+## Development Workflow
 
-使用 [Conventional Commits](https://www.conventionalcommits.org/)：
+### Branch Naming
+
+- `feature/` - New features
+- `fix/` - Bug fixes
+- `docs/` - Documentation only
+- `refactor/` - Code refactoring
+- `test/` - Test improvements
+
+Examples:
+- `feature/add-ollama-provider`
+- `fix/routing-deadlock`
+- `docs/update-architecture-diagram`
+
+### Commit Messages
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
 <type>(<scope>): <short description>
 
 [optional body]
 
-[optional footer(s)]
+[optional footer]
 ```
 
-### Type
+**Types:**
+- `feat` - New feature
+- `fix` - Bug fix
+- `docs` - Documentation changes
+- `refactor` - Code refactoring
+- `test` - Test additions/improvements
+- `chore` - Build, dependencies, tooling
 
-| Type         | 用途                    |
-| ------------ | ----------------------- |
-| `feat`     | 新功能                  |
-| `fix`      | Bug 修复                |
-| `docs`     | 文档改动                |
-| `refactor` | 重构（无新功能 / 修复） |
-| `test`     | 测试相关                |
-| `chore`    | 杂项（依赖、CI、构建）  |
-| `perf`     | 性能优化                |
-
-### Scope
-
-- `relay` / `routing` / `circuit` / `pool` / `identity` / `audit` 等模块名
-- 或 `db` / `web` / `deploy` / `ci`
-
-### 示例
+**Examples:**
 
 ```
-feat(routing): multi-level sticky routing to prevent cross-model pollution
+feat(routing): add cost-aware credential selection
 
-The previous single-level sticky logic (gw_session_id -> credential)
-caused credential thrashing when a session re-prompted with a different
-model. Now we add (model_name, tenant_id) as a second-level stickiness
-key, so a session can hold the same upstream credential across model
-switches within the same tenant.
-
-See docs/2026-06-25-multi-level-sticky-implementation-report.md
+Implements P2C routing with cost weighting. When multiple 
+credentials are available, prefer lower-cost options while
+maintaining health-based failover.
 
 Closes #123
 ```
 
----
+```
+fix(streaming): prevent goroutine leak on client disconnect
 
-## Pull Request 流程
-
-1. **PR 标题**：与 commit message 一致 (`feat(scope): ...`)
-2. **PR 描述**：
-   - 背景 / 问题
-   - 解决方案
-   - 测试方式
-   - 截图 (如涉及 UI)
-   - 关联 issue
-3. **Reviewer 要求**：
-   - 至少 1 位 TL/架构师 approve
-   - 多租户改动需 TL + 安全负责人双 approve
-4. **CI 必须通过**：
-   - `go test ./...`
-   - `go vet ./...`
-   - `scan-secrets.sh` 干净
-   - migration 编号唯一
-5. **Squash merge** 到 `main`
+Ensure context cancellation propagates to upstream request
+when client disconnects mid-stream.
+```
 
 ---
 
-## 多租户改动专项
+## Code Guidelines
 
-**所有**涉及数据库的改动必须满足：
+### Go Style
 
-1. **RLS 验证**：
-   ```bash
-   make lint-pg-rls  # 自动检查新表是否启用 RLS
-   ```
-2. **Tenant scope linter**：
-   ```bash
-   make lint-tenant-scope-llmgw
-   ```
-3. **OTel tenant attribute**：
-   ```bash
-   make lint-otel-tenant
-   ```
-4. **新增表必填字段**：`tenant_id UUID NOT NULL`
-5. **跨租户读返回 `ErrNotFound`**（不返回 403，避免信息泄露）
+- Follow [Effective Go](https://go.dev/doc/effective_go)
+- Use `gofmt` (automatic with most editors)
+- Write doc comments for exported symbols
+- Keep functions small and focused
+- Prefer explicit error handling over panics
 
-详见 [`AGENTS.md`](AGENTS.md) §多租户审计。
+**Example:**
+
+```go
+// ProcessRequest handles an incoming LLM request with routing and retry logic.
+// It returns the response or an error if all retry attempts fail.
+func ProcessRequest(ctx context.Context, req *Request) (*Response, error) {
+    if err := validateRequest(req); err != nil {
+        return nil, fmt.Errorf("validation failed: %w", err)
+    }
+    // ...
+}
+```
+
+### Package Structure
+
+```
+cmd/          # Main applications
+  gateway/    # Gateway server entry point
+domains/      # Business logic domains
+  streaming/  # Request streaming and routing
+  credential/ # Credential management
+  tenant/     # Multi-tenancy
+admin/        # Admin API handlers
+web/          # Vue.js frontend
+docs/         # Documentation
+```
+
+### Testing Requirements
+
+**Unit Tests:**
+- Test file name: `*_test.go`
+- Function name: `TestFunctionName(t *testing.T)`
+- Use table-driven tests for multiple cases
+- Mock external dependencies
+
+**Example:**
+
+```go
+func TestRouterSelect(t *testing.T) {
+    tests := []struct {
+        name    string
+        input   []Credential
+        want    *Credential
+        wantErr bool
+    }{
+        {
+            name:  "selects healthy credential",
+            input: []Credential{{ID: 1, Healthy: true}},
+            want:  &Credential{ID: 1, Healthy: true},
+        },
+        // ...
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            got, err := RouterSelect(tt.input)
+            if (err != nil) != tt.wantErr {
+                t.Errorf("unexpected error: %v", err)
+            }
+            if !reflect.DeepEqual(got, tt.want) {
+                t.Errorf("got %v, want %v", got, tt.want)
+            }
+        })
+    }
+}
+```
+
+### Frontend Guidelines
+
+**Location:** `web/`
+
+- Vue 3 + TypeScript + Composition API
+- Element Plus for UI components
+- ECharts for visualizations
+- Follow existing component structure
+
+**Commands:**
+
+```bash
+cd web
+pnpm install        # Install dependencies
+pnpm dev            # Development server
+pnpm build          # Production build
+pnpm typecheck      # Type checking
+pnpm test           # Run tests
+```
 
 ---
 
-## 部署相关改动
+## Multi-Tenancy Requirements
 
-任何 `deploy/`、`cmd/gateway/main.go`、CI 脚本的改动：
+**CRITICAL**: All database operations must respect tenant isolation.
 
-- 必须在测试环境 (71 host docker) 跑通 `make deploy-test`
-- 必须有 `deploy-checkpoint.sh pre/post` 双 checkpoint
-- 必须在 184 k3s 跑 `pre-deploy-verification` 4 步门
-- **未经明确授权，禁止部署到 71 / 184 生产**
+### Rules
+
+1. **Every tenant-scoped table has `tenant_id UUID NOT NULL`**
+2. **PostgreSQL RLS is enabled on all tenant tables**
+3. **Queries use `tenant_id` filter or rely on RLS**
+4. **Cross-tenant reads must return `ErrNotFound`, not 403**
+
+### Verification
+
+Before PR, run:
+
+```bash
+# Check RLS is enabled on new tables
+make lint-pg-rls
+
+# Check tenant scope compliance
+make lint-tenant-scope-llmgw
+
+# Check OTel tenant attributes
+make lint-otel-tenant
+```
+
+### Example
+
+```go
+// ❌ BAD: No tenant filtering
+rows, err := db.Query("SELECT * FROM api_keys WHERE user_id = $1", userID)
+
+// ✅ GOOD: Explicit tenant filter (or rely on RLS)
+rows, err := db.Query(
+    "SELECT * FROM api_keys WHERE tenant_id = $1 AND user_id = $2",
+    tenantID, userID,
+)
+```
 
 ---
 
-## 文档
+## Pull Request Process
 
-- 重大功能更新同步到 `docs/` 目录
-- 季度规划更新到 `docs/产品方案/`
-- README 反映产品定位变化时，同步更新 `docs/产品方案/2026-06-23-llmgw-future-roadmap-and-product-design.md`
+### Before Opening PR
+
+- [ ] Tests pass locally (`make test`)
+- [ ] Code is formatted (`go fmt ./...`)
+- [ ] Linters pass (`golangci-lint run`)
+- [ ] Multi-tenancy linters pass (if applicable)
+- [ ] Documentation updated (if adding features)
+- [ ] Commit messages follow Conventional Commits
+
+### PR Description Template
+
+```markdown
+## Description
+Brief description of changes.
+
+## Type of Change
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Breaking change
+- [ ] Documentation update
+
+## Testing
+How have you tested this? Please describe.
+
+## Checklist
+- [ ] Tests added/updated
+- [ ] Documentation updated
+- [ ] Multi-tenancy compliance verified (if DB changes)
+- [ ] No sensitive data in code/logs
+```
+
+### Review Process
+
+1. Automated CI checks must pass
+2. At least one maintainer review required
+3. Multi-tenancy changes require security review
+4. Squash merge to `main` after approval
 
 ---
 
-## 行为准则
+## Getting Help
 
-- 尊重他人，友好沟通
-- 接受建设性批评
-- 关注社区利益
-- 详见 `CODE_OF_CONDUCT.md`（如有）
+- **Questions**: Open a [GitHub Discussion](https://github.com/halfking/ai-native-gateway-core/discussions)
+- **Bugs**: Open a [GitHub Issue](https://github.com/halfking/ai-native-gateway-core/issues)
+- **Chat**: Join discussions in issue comments
 
 ---
 
-## 联系方式
+## Documentation
 
-- 项目仓库：https://github.com/halfking/ai-native-gateway
-- 内部仓库：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
-- 内部 IM：halfking
-- 邮件：dev@internal.example.com
+When adding features, update:
+- `/docs/` - Architecture, configuration, guides
+- `README.md` - If adding major capability
+- `CHANGELOG.md` - For release notes
+- Code comments - Explain complex logic
+
+---
+
+## Release Process
+
+**For Maintainers Only**
+
+1. Update `VERSION` file
+2. Update `CHANGELOG.md`
+3. Create Git tag: `git tag v2.x.x`
+4. Push tag: `git push origin v2.x.x`
+5. GitHub Actions builds release artifacts
+6. Create GitHub Release with notes
+
+---
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the [Apache License 2.0](LICENSE).
+
+---
+
+## Recognition
+
+Contributors are listed in release notes and [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
+Thank you for making AI Native Gateway better! 🚀
