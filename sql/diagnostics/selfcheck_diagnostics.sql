@@ -180,7 +180,7 @@ SELECT
     cmb.unavailable_reason AS cmb_reason,
     mo.unavailable_reason AS offer_reason,
     cmb.updated_at AS cmb_updated,
-    mo.updated_at AS offer_updated
+    mo.last_seen_at AS offer_updated
 FROM credential_model_bindings cmb
 JOIN credentials c ON c.id = cmb.credential_id
 JOIN provider_models pm ON pm.id = cmb.provider_model_id
