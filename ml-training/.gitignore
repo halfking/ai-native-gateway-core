@@ -1,0 +1,12 @@
+# 训练数据、模型与报告不入库（隐私合规 + 体积）
+data/*
+!data/.gitkeep
+models/*
+!models/.gitkeep
+reports/*
+!reports/.gitkeep
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/

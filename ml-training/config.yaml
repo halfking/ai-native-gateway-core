@@ -1,0 +1,115 @@
+# P2.4 ML训练管道配置
+#
+# 特征列表与 exporter/parquet_schema.go 的 schema v1 对齐。
+# schema v2 新增字段（如 prompt_token_count, context_window_util, model_family, region）
+# 时，只需在 categorical_features / boolean_features / numeric_features 中追加即可，
+# 代码不需要改动。
+
+# ---------------------------------------------------------------------------
+# 数据源
+# ---------------------------------------------------------------------------
+data:
+  # Parquet训练数据（P2.2 llm-gw-exporter export 产物）
+  # 支持单个文件、glob模式、目录，或列表
+  parquet_paths:
+    - data/training_data.parquet
+  #  也可用 glob: - "data/exports/*.parquet"
+
+  # 人工标注（P2.1 llm-gw-annotator 导出的CSV，或从
+  # training_human_annotations 表导出的 CSV/Parquet）
+  # 留空表示纯自动标注数据训练
+  annotations_path: ""          # 例: data/annotations.csv
+  annotation_label_weight: 2.0  # 人工标注样本的权重倍数（任务要求 x2）
+  # 人工标注的标签列名候选（按顺序探测）：
+  #   human_label  —— training_human_annotations 表导出
+  #   human_provider —— llm-gw-annotator CSV 格式
+  annotation_label_columns: [human_label, human_provider]
+
+  # 数据清洗
+  drop_duplicate_request_ids: true
+  min_confidence: 0.0            # confidence 合法区间过滤 [min, max]
+  max_confidence: 1.0
+  min_label_frequency: 10        # 出现次数低于该值的标签整类丢弃（保证分层切分有效）
+
+  # 仅使用已结算且成功的样本训练（reward 非空的行才有 outcome 信号）
+  #   all          — 不过滤
+  #   success_only — success == true 的行
+  outcome_filter: all
+
+# ---------------------------------------------------------------------------
+# 标签
+# ---------------------------------------------------------------------------
+label:
+  column: chosen_model           # v1 schema 中的实际选择；人工标注存在时被覆盖
+  # 注意：人工标注（human_label）的取值空间是 provider（openai/anthropic/...），
+  # chosen_model 的取值空间是模型名。当前部署中二者一致（auto_label=provider），
+  # 若未来出现标签空间不一致，需在此处配置 label 映射表（阶段4处理）。
+
+# ---------------------------------------------------------------------------
+# 特征（schema v1，与 exporter/parquet_schema.go FieldNames() 对齐）
+# ---------------------------------------------------------------------------
+features:
+  categorical:
+    # 路由时已知的请求上下文
+    - task_type
+    - profile
+    - classifier
+    # 15个结构化特征中的类别特征
+    - detected_language
+    - prompt_length_bucket
+    - context_length_bucket
+    - turn_count_bucket
+    - intent_category
+    - domain_hint
+    - complexity_bucket
+  boolean:
+    - has_code_indicator
+    - has_math_indicator
+    - has_table_indicator
+    - has_multimedia_indicator
+    - latency_sensitive
+    - cost_sensitive
+  numeric:
+    - confidence
+  # 非特征列：request_id（关联标注）、timestamp、feature_version（过滤用）、
+  # content_hash（去重用）、chosen_model（标签）、success/latency_ms/reward（outcome）
+
+# ---------------------------------------------------------------------------
+# 划分（70/15/15，stratify=y）
+# ---------------------------------------------------------------------------
+split:
+  train: 0.70
+  val: 0.15
+  test: 0.15
+  random_state: 42
+
+# ---------------------------------------------------------------------------
+# 模型（RandomForest基线）
+# ---------------------------------------------------------------------------
+model:
+  type: random_forest
+  n_estimators: 100
+  max_depth: 20
+  min_samples_split: 100         # 100万样本防过拟合（planning doc建议值；小数据集可调小）
+  min_samples_leaf: 1
+  max_features: sqrt
+  class_weight: null             # null | "balanced"（样本已用人工标注x2加权时建议null）
+  random_state: 42
+  n_jobs: -1
+
+# ---------------------------------------------------------------------------
+# 评估
+# ---------------------------------------------------------------------------
+evaluation:
+  # 规则引擎基线的生产准确率（可从 llm-gw-annotator stats / annotation_stats
+  # 视图获取，例如 0.62）。测试集内含人工标注行时也会本地计算该指标。
+  rule_engine_accuracy: null
+  random_baseline_seed: 42
+  top_k_features: 20             # 特征重要性报告展示前K个
+
+# ---------------------------------------------------------------------------
+# 导出
+# ---------------------------------------------------------------------------
+export:
+  format: joblib                 # joblib | onnx | both
+  onnx_target_opset: 17
