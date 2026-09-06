@@ -1,0 +1,1442 @@
+[
+  {
+    "sample_hash": "001b6118ee05d53b",
+    "sample_idx": 0,
+    "conversation_length": 6565,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "testing",
+          "latency": 3.5967369079589844,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网关全场景测试方案",
+          "latency": 3.060687303543091,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "整合docs测试方案，结合本地环境模拟高并发场景，验证网关稳定性，修复bug并红绿切换部署。",
+          "latency": 3.49833083152771,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "testing",
+          "latency": 3.7499639987945557,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网关测试方案整合与验证",
+          "latency": 3.7549822330474854,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "整合完善测试方案，模拟多场景高并发验证网关稳定性，发现并修复bug，使用红绿部署确保业务不中断",
+          "latency": 3.184035062789917,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "8a4d31820f834275",
+    "sample_idx": 1,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6670620441436768,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.36573314666748047,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5748860836029053,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.223975896835327,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连接测试",
+          "latency": 2.1163859367370605,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送测试消息\"ping\"，验证系统响应。",
+          "latency": 3.184959888458252,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "484734c49c381c41",
+    "sample_idx": 2,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6868276596069336,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.36946916580200195,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5762519836425781,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 3.2544751167297363,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "测试连接",
+          "latency": 2.1536128520965576,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个简单的\"ping\"消息，未提出具体问题或请求，可能是在测试系统响应或开启对话。",
+          "latency": 3.7634048461914062,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "637b2fd3ecdfef58",
+    "sample_idx": 3,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6625981330871582,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.363753080368042,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5702338218688965,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.4469261169433594,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连通性测试",
+          "latency": 2.163684129714966,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了\"ping\"消息，这是一个测试连接或系统响应的简单请求。",
+          "latency": 3.3626229763031006,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "92ae1c2d8882cfae",
+    "sample_idx": 4,
+    "conversation_length": 20,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.7995500564575195,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络Ping指令",
+          "latency": 0.4752790927886963,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户输入“ping”，助手推测其指代网络相关概念。",
+          "latency": 0.6819519996643066,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.2391302585601807,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连接测试",
+          "latency": 2.216236114501953,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送\"ping\"测试消息，助手开始回应网络相关内容但对话未完成。",
+          "latency": 2.972277879714966,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "498ef0334e134979",
+    "sample_idx": 5,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6594798564910889,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.36313700675964355,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5673501491546631,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 1.9114949703216553,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连接测试",
+          "latency": 2.2894670963287354,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一条简单的 \"ping\" 测试消息，无实质性内容或请求。",
+          "latency": 2.7753958702087402,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "78a9ef25c2be8144",
+    "sample_idx": 6,
+    "conversation_length": 8,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.778083086013794,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping Pong",
+          "latency": 0.41730403900146484,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送ping，助手回复pong。",
+          "latency": 0.6276309490203857,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.5747509002685547,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "连接测试",
+          "latency": 2.418750047683716,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送 ping 测试消息，助手回复 pong 确认连接正常。",
+          "latency": 2.802126884460449,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "332c9d3f65c84fc3",
+    "sample_idx": 7,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.7068359851837158,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.36393213272094727,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5710420608520508,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 3.025705099105835,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "测试连接请求",
+          "latency": 2.836024761199951,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个简单的\"ping\"测试消息，可能用于检测系统响应或连接状态。",
+          "latency": 3.0997843742370605,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "52e0ed25a96bb045",
+    "sample_idx": 8,
+    "conversation_length": 8,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.8648169040679932,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping Pong",
+          "latency": 0.430560827255249,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送ping，助手回复pong。",
+          "latency": 0.6355800628662109,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.169546127319336,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "简单对话测试",
+          "latency": 3.0795860290527344,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送 ping 测试消息，助手回复 pong 确认连接正常。",
+          "latency": 3.3836138248443604,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "4812033fdfffd442",
+    "sample_idx": 9,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6960070133209229,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3699522018432617,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5800230503082275,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.213651180267334,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "测试连接",
+          "latency": 3.8803839683532715,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个简单的\"ping\"测试消息，没有提出具体问题或请求。",
+          "latency": 2.8422739505767822,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "1c1cd440c7a74439",
+    "sample_idx": 10,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.7629568576812744,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3727710247039795,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5863151550292969,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 1.9733471870422363,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "连接测试",
+          "latency": 3.018282890319824,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一条测试消息\"ping\"，没有实际任务或问题需要处理。",
+          "latency": 3.2524142265319824,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "14f8a55ec1aeea33",
+    "sample_idx": 11,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.7150881290435791,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3739151954650879,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5818741321563721,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.2930898666381836,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "连接测试",
+          "latency": 2.3361408710479736,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个简单的\"ping\"测试消息，未提出具体需求或问题。",
+          "latency": 2.8277628421783447,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "af11805c0020be35",
+    "sample_idx": 12,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.749244213104248,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3773379325866699,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5813949108123779,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.201319932937622,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "测试连接",
+          "latency": 2.1333932876586914,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一条测试消息\"ping\"，未进行实质性技术交流或任务请求。",
+          "latency": 3.2279109954833984,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "d87ebe0c0ee40724",
+    "sample_idx": 13,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 1.2768688201904297,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.4320027828216553,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.6392741203308105,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.8636791706085205,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连接测试",
+          "latency": 2.5738778114318848,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送简单的\"ping\"消息测试系统响应，无实际任务或问题需要处理。",
+          "latency": 3.817734956741333,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "572471678ae51717",
+    "sample_idx": 14,
+    "conversation_length": 47,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.7981240749359131,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping 测试",
+          "latency": 0.4824998378753662,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”，助手确认收到并准备回复。",
+          "latency": 0.6381540298461914,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.342180013656616,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "简单连接测试",
+          "latency": 2.539771795272827,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了\"ping\"测试消息，助手准备回应\"pong\"以确认连接正常。",
+          "latency": 2.8802309036254883,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "56fd28e68fbdc730",
+    "sample_idx": 15,
+    "conversation_length": 8241,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "architecture",
+          "latency": 3.7491960525512695,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "llm-gateway-go 组件分析",
+          "latency": 3.473656177520752,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "分析llm-gateway-go代码库，详述URSM v2、流式执行器及网关入口的关键组件职责与交互机制。",
+          "latency": 4.336416959762573,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "architecture",
+          "latency": 2.095175266265869,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "URSM网关组件分析",
+          "latency": 2.3323349952697754,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "分析 llm-gateway-go 代码库关键组件：URSM v2 状态管理、流式路由执行器、网关入口点及其健康检查和容错机制。",
+          "latency": 4.336016893386841,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "df5cf53a5a2d0a43",
+    "sample_idx": 16,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6751480102539062,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.37244391441345215,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5837137699127197,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.181746006011963,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连通性测试",
+          "latency": 2.3577170372009277,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个简单的\"ping\"测试消息，未包含具体任务或问题。",
+          "latency": 2.8271870613098145,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "6cbd5697d20eca60",
+    "sample_idx": 17,
+    "conversation_length": 8,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.8062021732330322,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping Pong",
+          "latency": 0.42423200607299805,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送ping，助手回复pong。",
+          "latency": 0.6395032405853271,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.832482099533081,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "简单测试对话",
+          "latency": 2.267193078994751,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送 ping 测试，助手回复 pong 确认连接正常。",
+          "latency": 3.251492738723755,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "a802bee76fa13804",
+    "sample_idx": 18,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.674257755279541,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.37087392807006836,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5783982276916504,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 3.6404449939727783,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连接测试",
+          "latency": 2.741201162338257,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一条测试消息\"ping\"，用于检查系统响应状态。",
+          "latency": 2.7472450733184814,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "f0318f22dd72b7ad",
+    "sample_idx": 19,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6800110340118408,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3854339122772217,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5821850299835205,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.486654043197632,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "测试连通性",
+          "latency": 3.261018753051758,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个测试性的\"ping\"消息，未提出具体问题或请求。",
+          "latency": 2.8114280700683594,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "a45b732d787ffc57",
+    "sample_idx": 20,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.7053811550140381,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3710167407989502,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5796589851379395,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 1.9403350353240967,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping 测试",
+          "latency": 2.408442974090576,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个测试消息 \"ping\"，验证系统响应。",
+          "latency": 2.59769606590271,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "1b4c88f7aef1b0a0",
+    "sample_idx": 21,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6824760437011719,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3721170425415039,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5813629627227783,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.194840908050537,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "连接测试",
+          "latency": 2.3140039443969727,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了\"ping\"测试消息，验证系统响应性。",
+          "latency": 3.2373039722442627,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "a5310b197a5a64c3",
+    "sample_idx": 22,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.7691938877105713,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.6467001438140869,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 1.0379469394683838,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.116687059402466,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连通性测试",
+          "latency": 2.5742347240448,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个简单的\"ping\"测试消息，未进行实质性对话或请求。",
+          "latency": 2.8024141788482666,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "25530ac311291840",
+    "sample_idx": 23,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6849339008331299,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3723268508911133,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5768520832061768,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.506636142730713,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "连接测试",
+          "latency": 3.845871925354004,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个简单的\"ping\"消息，可能是在测试系统连接或可用性。",
+          "latency": 2.932206153869629,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "fafb5b26f64498d8",
+    "sample_idx": 24,
+    "conversation_length": 25,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.7957360744476318,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "NVIDIA Ising 身份确认",
+          "latency": 0.478909969329834,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送ping，助手回应自己是NVIDIA Ising。",
+          "latency": 0.6347153186798096,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 4.96001410484314,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "简单问候测试",
+          "latency": 5.17042088508606,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送测试消息\"ping\"，助手回复自称\"NVIDIA Ising\"（可能是身份识别错误）。",
+          "latency": 3.859635829925537,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "36e1dc772b16277a",
+    "sample_idx": 25,
+    "conversation_length": 4239,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "summary",
+          "latency": 5.897547006607056,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "6个月测试验证总结",
+          "latency": 5.163909912109375,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "总结6个月测试验证进展，确认分支合并及镜像、导入、价格日期等bug修复，并列出下一步行动。",
+          "latency": 6.0265350341796875,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "summary",
+          "latency": 2.3884778022766113,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "6个月测试验证总结",
+          "latency": 2.943098783493042,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户请求为包含6个月测试验证总结的技术对话生成摘要，对话涉及master分支合并状态、bug修复（镜像写入、模块导入、价格生效日期）及最新运行记录。",
+          "latency": 3.93666410446167,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "599487d2f4ac9d1c",
+    "sample_idx": 26,
+    "conversation_length": 1741,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "coding",
+          "latency": 3.009004831314087,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "继续P2阶段任务规划",
+          "latency": 2.631361961364746,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户请求根据规划文档继续任务，助手读取文档后确认为继续P2阶段任务规划。",
+          "latency": 3.7829527854919434,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.442925214767456,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "继续P2阶段任务",
+          "latency": 3.031688928604126,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户要求根据规划文档继续P2阶段任务，助手正在读取文档了解待执行任务。",
+          "latency": 3.303508996963501,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "a57245a8e9c54584",
+    "sample_idx": 27,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6715099811553955,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.36949896812438965,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5800290107727051,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 2.57328200340271,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连通性测试",
+          "latency": 3.0502450466156006,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一条\"ping\"消息，通常用于测试系统响应或检查连接状态。",
+          "latency": 3.0673558712005615,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "d813b8b5dc71b004",
+    "sample_idx": 28,
+    "conversation_length": 6809,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "documentation",
+          "latency": 4.279262065887451,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "OpenCode-Pocket 认证接口报告",
+          "latency": 4.017765045166016,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "摘要：OpenCode-Pocket后端认证接口报告，涵盖登录、验证码登录、忘记密码及重置密码端点详情。",
+          "latency": 4.453446865081787,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "documentation",
+          "latency": 2.9894509315490723,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "OpenCode-Pocket 认证接口分析",
+          "latency": 2.558992862701416,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "OpenCode-Pocket后端认证系统包含登录、验证码登录、忘记密码和重置密码四个端点，使用JWT Bearer token认证，位于server_assistant.go和server_auth_extended.go中。",
+          "latency": 3.3009228706359863,
+          "error": null
+        }
+      }
+    }
+  },
+  {
+    "sample_hash": "0b94327778af2fe6",
+    "sample_idx": 29,
+    "conversation_length": 4,
+    "turn_count": 1,
+    "evaluations": {
+      "qwen-dflash2": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 0.6799840927124023,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "Ping",
+          "latency": 0.3712778091430664,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送“ping”以测试连接。",
+          "latency": 0.5812709331512451,
+          "error": null
+        }
+      },
+      "claude-sonnet-5": {
+        "classification": {
+          "success": true,
+          "content": "other",
+          "latency": 1.982408046722412,
+          "error": null
+        },
+        "title": {
+          "success": true,
+          "content": "网络连通性测试",
+          "latency": 3.908992052078247,
+          "error": null
+        },
+        "summary": {
+          "success": true,
+          "content": "用户发送了一个\"ping\"测试消息，用于检查系统响应。",
+          "latency": 3.74137020111084,
+          "error": null
+        }
+      }
+    }
+  }
+]
