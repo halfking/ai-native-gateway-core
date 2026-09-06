@@ -174,6 +174,12 @@ type RoutingFeedback struct {
 	// contains the correct provider. The feedback is weighted ×2 in accuracy
 	// calculations (ground truth).
 	HumanCorrection *string
+
+	// UserID is the API key ID from the routing request (0 = unauthenticated).
+	// Populated by autoroute.Decider so the integrator can update user affinity.
+	UserID int
+	// SessionID is X-Gw-Session-Id ("" = no session).
+	SessionID string
 }
 
 // OptimizerStats summarizes the plugin's performance for admin API.

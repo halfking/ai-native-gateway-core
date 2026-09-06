@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,8 +26,10 @@ import (
 type ModelRecommender struct {
 	stateDAO   *OptimizationStateDAO
 	metricsDAO *OptimizationMetricsDAO
-	
-	// Cached active state (refreshed every 5 minutes)
+
+	// Cached active state (refreshed every 5 minutes). Guarded by cacheMu —
+	// Recommend runs on concurrent request goroutines.
+	cacheMu          sync.Mutex
 	cachedState      *OptimizationState
 	cacheRefreshedAt time.Time
 	cacheTTL         time.Duration
@@ -56,18 +60,18 @@ func (r *ModelRecommender) Recommend(ctx context.Context, candidates []ModelCand
 	if len(candidates) == 0 {
 		return candidates, nil
 	}
-	
+
 	// 1. Load active optimization state (cached)
 	state, err := r.getActiveState(ctx)
 	if err != nil {
 		return candidates, fmt.Errorf("load optimization state: %w", err)
 	}
-	
+
 	// 2. ε-greedy exploration: 5% 随机选择
 	if shouldExplore(state.ExplorationRate) {
 		return exploreRandomly(candidates), nil
 	}
-	
+
 	// 3. Multi-objective scoring
 	scored := make([]scoredCandidate, 0, len(candidates))
 	for _, cand := range candidates {
@@ -77,36 +81,47 @@ func (r *ModelRecommender) Recommend(ctx context.Context, candidates []ModelCand
 			Score:     score,
 		})
 	}
-	
+
 	// 4. Sort by descending score
 	sortByScore(scored)
-	
+
 	// 5. Extract candidates
 	result := make([]ModelCandidate, len(scored))
 	for i, sc := range scored {
 		result[i] = sc.Candidate
 	}
-	
+
 	return result, nil
 }
 
+// SetActiveStateForTest injects an optimization state without a DB pool.
+// The injected state also primes the cache so Recommend never touches the DAO.
+func (r *ModelRecommender) SetActiveStateForTest(state *OptimizationState) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	r.cachedState = state
+	r.cacheRefreshedAt = time.Now()
+}
+
 // getActiveState returns the cached active optimization state.
-// Refreshes the cache if expired (TTL = 5 minutes).
+// Refreshes the cache if expired (TTL = 5 minutes). Safe for concurrent use.
 func (r *ModelRecommender) getActiveState(ctx context.Context) (*OptimizationState, error) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+
 	now := time.Now()
 	if r.cachedState != nil && now.Sub(r.cacheRefreshedAt) < r.cacheTTL {
 		return r.cachedState, nil
 	}
-	
-	// Cache miss or expired: load from DB
+
 	state, err := r.stateDAO.GetActive(ctx)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	r.cachedState = state
 	r.cacheRefreshedAt = now
-	
+
 	return state, nil
 }
 
@@ -122,22 +137,27 @@ func (r *ModelRecommender) computeScore(cand ModelCandidate, weights map[string]
 	w2 := getWeight(weights, "cost", 0.3)
 	w3 := getWeight(weights, "latency", 0.2)
 	w4 := getWeight(weights, "availability", 0.1)
-	
-	// Quality: from autoroute.Index (candidate.Score already normalized [0, 1])
+
+	// Quality: from autoroute.Index. Composite arrives on a 0-100 scale from
+	// the bridge; normalise defensively so quality (0.4 weight) cannot drown
+	// the other [0,1] dimensions (audit finding: 0.4×90 = 36 vs ≤0.1 others).
 	quality := cand.Score
-	
+	if quality > 1 {
+		quality = quality / 100
+	}
+
 	// Cost: normalized [0, 1] (lower is better, so use 1 - normalized_cost)
 	cost := cand.Cost // already normalized in ModelCandidate
-	
+
 	// Latency: normalized [0, 1] (lower is better, so use 1 - normalized_latency)
 	latency := cand.Latency // already normalized in ModelCandidate
-	
+
 	// Availability: success rate [0, 1] (higher is better)
 	availability := cand.Availability // already normalized in ModelCandidate
-	
+
 	// Multi-objective score (normalize to [0, 1])
 	score := w1*quality + w2*(1-cost) + w3*(1-latency) + w4*availability
-	
+
 	return score
 }
 
@@ -158,7 +178,7 @@ func shouldExplore(explorationRate float64) bool {
 	if explorationRate >= 1 {
 		return true
 	}
-	
+
 	// ε-greedy: P(explore) = explorationRate
 	return rand.Float64() < explorationRate
 }
@@ -172,20 +192,20 @@ func exploreRandomly(candidates []ModelCandidate) []ModelCandidate {
 	if n > 5 {
 		n = 5
 	}
-	
+
 	explored := make([]ModelCandidate, n)
 	copy(explored, candidates[:n])
-	
+
 	// Shuffle (Fisher-Yates)
 	rand.Shuffle(n, func(i, j int) {
 		explored[i], explored[j] = explored[j], explored[i]
 	})
-	
+
 	// Append remaining candidates (unchanged)
 	if len(candidates) > 5 {
 		explored = append(explored, candidates[5:]...)
 	}
-	
+
 	return explored
 }
 
@@ -195,17 +215,11 @@ type scoredCandidate struct {
 	Score     float64
 }
 
-// sortByScore sorts scored candidates by descending score (bubble sort for simplicity).
-// Week 2: use sort.Slice for performance.
+// sortByScore sorts scored candidates by descending score.
 func sortByScore(scored []scoredCandidate) {
-	n := len(scored)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if scored[j].Score < scored[j+1].Score {
-				scored[j], scored[j+1] = scored[j+1], scored[j]
-			}
-		}
-	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		return scored[i].Score > scored[j].Score
+	})
 }
 
 // ComputeFallbackChain precomputes the top-3 candidates for automatic failover.

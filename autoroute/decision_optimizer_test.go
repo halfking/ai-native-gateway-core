@@ -3,7 +3,9 @@ package autoroute
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/routingopt"
 )
@@ -225,4 +227,193 @@ func (f *failingOptimizer) RecordFeedback(ctx context.Context, feedback interfac
 
 func (f *failingOptimizer) GetStats(ctx context.Context) (interface{}, error) {
 	return nil, errors.New("simulated timeout")
+}
+
+// rankingOptimizer reverses the candidate order and records hook calls.
+// It proves the RecommendModel hook is actually wired into Decide and that
+// the re-ranking changes the chosen model.
+type rankingOptimizer struct {
+	mu         sync.Mutex
+	calls      int
+	feedbacks  []routingopt.RoutingFeedback
+	exploreAll bool // when true, RecommendModel returns an error to test fallback
+}
+
+func (r *rankingOptimizer) PreClassify(ctx context.Context, signals interface{}) (interface{}, error) {
+	return nil, nil
+}
+
+func (r *rankingOptimizer) PostClassify(ctx context.Context, taskType string, confidence float64) (float64, error) {
+	return confidence, nil
+}
+
+func (r *rankingOptimizer) RecommendModel(ctx context.Context, candidates interface{}, context interface{}) (interface{}, error) {
+	r.mu.Lock()
+	r.calls++
+	r.mu.Unlock()
+	if r.exploreAll {
+		return nil, errors.New("ranker down")
+	}
+	cands := candidates.([]routingopt.ModelCandidate)
+	out := make([]routingopt.ModelCandidate, len(cands))
+	for i, c := range cands {
+		out[len(cands)-1-i] = c
+	}
+	return out, nil
+}
+
+func (r *rankingOptimizer) RecordFeedback(ctx context.Context, feedback interface{}) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.feedbacks = append(r.feedbacks, feedback.(routingopt.RoutingFeedback))
+	return nil
+}
+
+func (r *rankingOptimizer) GetStats(ctx context.Context) (interface{}, error) {
+	return nil, nil
+}
+
+// TestDecide_RecommendModelHook_ReordersWinner proves the P2.2 RecommendModel
+// hook is wired into Decide: reversing the candidate list must flip the winner.
+func TestDecide_RecommendModelHook_ReordersWinner(t *testing.T) {
+	cls := &stubClassifier{name: "heuristic", out: &Classification{
+		Primary: TaskCode, Confidence: 0.9, Classifier: "heuristic",
+	}}
+	idx := &stubIndex{cands: []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "model-a", CredentialID: 1, RawModel: "model-a"},
+			Breakdown: ScoringBreakdown{Composite: 90, PriceScore: 80, SpeedScore: 70, Reliability: 95}},
+		{Candidate: Candidate{CanonicalName: "model-b", CredentialID: 2, RawModel: "model-b"},
+			Breakdown: ScoringBreakdown{Composite: 85, PriceScore: 60, SpeedScore: 90, Reliability: 80}},
+	}}
+
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	ranker := &rankingOptimizer{}
+	d.SetOptimizer(ranker)
+
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 42, "", "", "")
+	if err != nil {
+		t.Fatalf("Decide failed: %v", err)
+	}
+
+	ranker.mu.Lock()
+	calls := ranker.calls
+	ranker.mu.Unlock()
+
+	if calls != 1 {
+		t.Fatalf("RecommendModel should be called exactly once, got %d", calls)
+	}
+	if dec.ChosenModel != "model-b" {
+		t.Fatalf("reversed ranking should pick model-b, got %s", dec.ChosenModel)
+	}
+	if len(dec.CandidatesTopN) != 2 || dec.CandidatesTopN[0].Candidate.CanonicalName != "model-b" {
+		t.Fatalf("CandidatesTopN should follow the optimizer order, got %+v", dec.CandidatesTopN)
+	}
+	// Breakdown must survive the round-trip (winner is original model-b row).
+	if got := dec.CandidatesTopN[0].Breakdown.Composite; got != 85 {
+		t.Fatalf("Breakdown should be preserved through the bridge, got %v", got)
+	}
+}
+
+// TestDecide_RecommendModelHook_ErrorKeepsIndexOrder proves a plugin failure
+// degrades to the index order instead of breaking routing.
+func TestDecide_RecommendModelHook_ErrorKeepsIndexOrder(t *testing.T) {
+	cls := &stubClassifier{name: "heuristic", out: &Classification{
+		Primary: TaskCode, Confidence: 0.9, Classifier: "heuristic",
+	}}
+	idx := &stubIndex{cands: []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "model-a", CredentialID: 1, RawModel: "model-a"}},
+		{Candidate: Candidate{CanonicalName: "model-b", CredentialID: 2, RawModel: "model-b"}},
+	}}
+
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	ranker := &rankingOptimizer{exploreAll: true}
+	d.SetOptimizer(ranker)
+
+	dec, err := d.Decide(context.Background(), ClassificationSignals{}, 42, "", "", "")
+	if err != nil {
+		t.Fatalf("plugin error must not fail Decide: %v", err)
+	}
+	if dec.ChosenModel != "model-a" {
+		t.Fatalf("on plugin error the index winner must be kept, got %s", dec.ChosenModel)
+	}
+}
+
+// TestDecide_RecordFeedbackHook_CarriesRequestIdentity proves the feedback
+// hook fires on fresh decisions with the API-key/session identity attached.
+func TestDecide_RecordFeedbackHook_CarriesRequestIdentity(t *testing.T) {
+	cls := &stubClassifier{name: "heuristic", out: &Classification{
+		Primary: TaskChat, Confidence: 0.8, Classifier: "heuristic",
+	}}
+	idx := &stubIndex{cands: []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "model-a", CredentialID: 1, RawModel: "model-a"}},
+	}}
+
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	ranker := &rankingOptimizer{}
+	d.SetOptimizer(ranker)
+
+	if _, err := d.Decide(context.Background(), ClassificationSignals{}, 42, "", "", "sess-1"); err != nil {
+		t.Fatalf("Decide failed: %v", err)
+	}
+
+	// The feedback write is async — poll briefly for it to land.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		ranker.mu.Lock()
+		n := len(ranker.feedbacks)
+		var fb routingopt.RoutingFeedback
+		if n > 0 {
+			fb = ranker.feedbacks[0]
+		}
+		ranker.mu.Unlock()
+		if n > 0 {
+			if fb.UserID != 42 {
+				t.Fatalf("feedback should carry UserID=42, got %d", fb.UserID)
+			}
+			if fb.SessionID != "sess-1" {
+				t.Fatalf("feedback should carry SessionID=sess-1, got %q", fb.SessionID)
+			}
+			if fb.TaskType != string(TaskChat) || fb.PredictedProvider != "model-a" {
+				t.Fatalf("unexpected feedback: %+v", fb)
+			}
+			if fb.RequestID == "" {
+				t.Fatal("feedback RequestID must not be empty")
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("RecordFeedback was not called within 2s")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestDecide_SessionCacheHit_SkipsFeedback proves cache hits do not
+// double-count feedback for a reused decision.
+func TestDecide_SessionCacheHit_SkipsFeedback(t *testing.T) {
+	cls := &stubClassifier{name: "heuristic", out: &Classification{
+		Primary: TaskCode, Confidence: 0.9, Classifier: "heuristic",
+	}}
+	idx := &stubIndex{cands: []ScoredCandidate{
+		{Candidate: Candidate{CanonicalName: "model-a", CredentialID: 1, RawModel: "model-a"}},
+	}}
+
+	d := NewDecider(cls, nil, idx, NewMemoryProfileStore())
+	ranker := &rankingOptimizer{}
+	d.SetOptimizer(ranker)
+
+	if _, err := d.Decide(context.Background(), ClassificationSignals{}, 7, "", "", "sess-2"); err != nil {
+		t.Fatalf("first Decide failed: %v", err)
+	}
+	if _, err := d.Decide(context.Background(), ClassificationSignals{}, 7, "", "", "sess-2"); err != nil {
+		t.Fatalf("cached Decide failed: %v", err)
+	}
+
+	time.Sleep(50 * time.Millisecond) // allow async feedback to land
+	ranker.mu.Lock()
+	n := len(ranker.feedbacks)
+	ranker.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("cache hit must not record feedback, got %d records", n)
+	}
 }

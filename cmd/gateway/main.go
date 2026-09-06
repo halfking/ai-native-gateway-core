@@ -4707,6 +4707,11 @@ func main() {
 			}
 			// v2.1: Score() also reads profile weights from tuningStore.
 			autoroute.SetTuningStore(tuningStore)
+			// P2.2: routing optimization plugin (nil unless ROUTING_OPT_ENABLED=true;
+			// nil keeps routing byte-identical to the pre-P2.2 baseline).
+			if opt := buildRoutingOptimizer(dbConn.Pool()); opt != nil {
+				decider.SetOptimizer(opt)
+			}
 			chatHandler.SetAutoRoute(decider)
 			if routingExec != nil {
 				routingExec.SetDispatchModelRecommender(decider)

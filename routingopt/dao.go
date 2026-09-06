@@ -24,32 +24,32 @@ import (
 
 // OptimizationState represents a versioned snapshot of plugin parameters.
 type OptimizationState struct {
-	ID      int64     `db:"id"`
-	Version int       `db:"version"`
-	
+	ID      int64 `db:"id"`
+	Version int   `db:"version"`
+
 	// Classifier parameters (PostClassify confidence adjustment)
 	ClassifierWeights    map[string]float64 `db:"classifier_weights"`
 	ConfidenceThresholds map[string]float64 `db:"confidence_thresholds"`
-	
+
 	// Recommender parameters (RecommendModel multi-objective optimization)
 	RecommenderWeights map[string]float64 `db:"recommender_weights"` // quality/cost/latency/availability
 	ExplorationRate    float64            `db:"exploration_rate"`
-	
+
 	// Online learning parameters (AdaptiveLearner)
-	LearningRate      float64 `db:"learning_rate"`
-	AdaptationWindow  int     `db:"adaptation_window"`
-	
+	LearningRate     float64 `db:"learning_rate"`
+	AdaptationWindow int     `db:"adaptation_window"`
+
 	// Performance metrics (aggregated from routing_optimization_metrics)
-	OverallAccuracy     *float64           `db:"overall_accuracy"`
-	AccuracyByTask      map[string]float64 `db:"accuracy_by_task"`
-	AccuracyByProvider  map[string]float64 `db:"accuracy_by_provider"`
-	
+	OverallAccuracy    *float64           `db:"overall_accuracy"`
+	AccuracyByTask     map[string]float64 `db:"accuracy_by_task"`
+	AccuracyByProvider map[string]float64 `db:"accuracy_by_provider"`
+
 	// Version management
 	ActivatedAt   time.Time  `db:"activated_at"`
 	DeactivatedAt *time.Time `db:"deactivated_at"`
 	CreatedBy     string     `db:"created_by"`
 	Notes         *string    `db:"notes"`
-	
+
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -77,13 +77,13 @@ func (dao *OptimizationStateDAO) GetActive(ctx context.Context) (*OptimizationSt
 		ORDER BY activated_at DESC
 		LIMIT 1
 	`
-	
+
 	row := dao.pool.QueryRow(ctx, query)
 	state := &OptimizationState{}
-	
+
 	var classifierWeightsJSON, confidenceThresholdsJSON, recommenderWeightsJSON []byte
 	var accuracyByTaskJSON, accuracyByProviderJSON []byte
-	
+
 	err := row.Scan(
 		&state.ID, &state.Version, &classifierWeightsJSON, &confidenceThresholdsJSON,
 		&recommenderWeightsJSON, &state.ExplorationRate, &state.LearningRate, &state.AdaptationWindow,
@@ -94,7 +94,7 @@ func (dao *OptimizationStateDAO) GetActive(ctx context.Context) (*OptimizationSt
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Unmarshal JSONB fields
 	if err := json.Unmarshal(classifierWeightsJSON, &state.ClassifierWeights); err != nil {
 		return nil, fmt.Errorf("unmarshal classifier_weights: %w", err)
@@ -115,7 +115,7 @@ func (dao *OptimizationStateDAO) GetActive(ctx context.Context) (*OptimizationSt
 			return nil, fmt.Errorf("unmarshal accuracy_by_provider: %w", err)
 		}
 	}
-	
+
 	return state, nil
 }
 
@@ -143,14 +143,14 @@ func (dao *OptimizationStateDAO) Create(ctx context.Context, state *Optimization
 	if err != nil {
 		return 0, fmt.Errorf("marshal accuracy_by_provider: %w", err)
 	}
-	
+
 	// Begin transaction: deactivate old + insert new
 	tx, err := dao.pool.Begin(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	
+
 	// Deactivate previous active state
 	_, err = tx.Exec(ctx, `
 		UPDATE routing_optimization_state
@@ -160,7 +160,7 @@ func (dao *OptimizationStateDAO) Create(ctx context.Context, state *Optimization
 	if err != nil {
 		return 0, fmt.Errorf("deactivate old state: %w", err)
 	}
-	
+
 	// Insert new state
 	var id int64
 	err = tx.QueryRow(ctx, `
@@ -179,11 +179,11 @@ func (dao *OptimizationStateDAO) Create(ctx context.Context, state *Optimization
 	if err != nil {
 		return 0, fmt.Errorf("insert new state: %w", err)
 	}
-	
+
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit transaction: %w", err)
 	}
-	
+
 	return id, nil
 }
 
@@ -198,7 +198,7 @@ func (dao *OptimizationStateDAO) UpdateMetrics(ctx context.Context, overallAccur
 	if err != nil {
 		return fmt.Errorf("marshal accuracy_by_provider: %w", err)
 	}
-	
+
 	_, err = dao.pool.Exec(ctx, `
 		UPDATE routing_optimization_state
 		SET overall_accuracy = $1,
@@ -207,7 +207,7 @@ func (dao *OptimizationStateDAO) UpdateMetrics(ctx context.Context, overallAccur
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE deactivated_at IS NULL
 	`, overallAccuracy, accuracyByTaskJSON, accuracyByProviderJSON)
-	
+
 	return err
 }
 
@@ -219,30 +219,30 @@ func (dao *OptimizationStateDAO) UpdateMetrics(ctx context.Context, overallAccur
 type FeedbackLog struct {
 	ID        int64  `db:"id"`
 	RequestID string `db:"request_id"`
-	
+
 	// Routing decision
 	TaskType          string  `db:"task_type"`
 	PredictedProvider string  `db:"predicted_provider"`
 	Confidence        float64 `db:"confidence"`
-	
+
 	// Actual result
 	ActualLatencyMs *int     `db:"actual_latency_ms"`
 	ActualCost      *float64 `db:"actual_cost"`
 	Success         bool     `db:"success"`
 	ErrorType       *string  `db:"error_type"`
-	
+
 	// Context
 	Profile   *string `db:"profile"`
 	UserID    *string `db:"user_id"`
 	SessionID *string `db:"session_id"`
-	
+
 	// Human correction (from P2.1 training_human_annotations)
 	HasHumanCorrection bool       `db:"has_human_correction"`
 	CorrectProvider    *string    `db:"correct_provider"`
 	CorrectionReason   *string    `db:"correction_reason"`
 	Annotator          *string    `db:"annotator"`
 	AnnotatedAt        *time.Time `db:"annotated_at"`
-	
+
 	CreatedAt time.Time `db:"created_at"`
 }
 
@@ -272,7 +272,7 @@ func (dao *FeedbackLogDAO) Insert(ctx context.Context, log *FeedbackLog) (int64,
 		log.Profile, log.UserID, log.SessionID,
 		log.HasHumanCorrection, log.CorrectProvider, log.CorrectionReason, log.Annotator, log.AnnotatedAt,
 	).Scan(&id)
-	
+
 	return id, err
 }
 
@@ -289,7 +289,7 @@ func (dao *FeedbackLogDAO) GetByRequestID(ctx context.Context, requestID string)
 		ORDER BY created_at DESC
 		LIMIT 1
 	`
-	
+
 	log := &FeedbackLog{}
 	err := dao.pool.QueryRow(ctx, query, requestID).Scan(
 		&log.ID, &log.RequestID, &log.TaskType, &log.PredictedProvider, &log.Confidence,
@@ -301,7 +301,7 @@ func (dao *FeedbackLogDAO) GetByRequestID(ctx context.Context, requestID string)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	return log, nil
 }
 
@@ -317,13 +317,13 @@ func (dao *FeedbackLogDAO) GetRecentLogs(ctx context.Context, limit int) ([]*Fee
 		ORDER BY created_at DESC
 		LIMIT $1
 	`
-	
+
 	rows, err := dao.pool.Query(ctx, query, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var logs []*FeedbackLog
 	for rows.Next() {
 		log := &FeedbackLog{}
@@ -339,7 +339,7 @@ func (dao *FeedbackLogDAO) GetRecentLogs(ctx context.Context, limit int) ([]*Fee
 		}
 		logs = append(logs, log)
 	}
-	
+
 	return logs, rows.Err()
 }
 
@@ -357,13 +357,13 @@ func (dao *FeedbackLogDAO) GetHumanCorrections(ctx context.Context, since time.T
 		ORDER BY created_at DESC
 		LIMIT $2
 	`
-	
+
 	rows, err := dao.pool.Query(ctx, query, since, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	
+
 	var logs []*FeedbackLog
 	for rows.Next() {
 		log := &FeedbackLog{}
@@ -379,7 +379,7 @@ func (dao *FeedbackLogDAO) GetHumanCorrections(ctx context.Context, since time.T
 		}
 		logs = append(logs, log)
 	}
-	
+
 	return logs, rows.Err()
 }
 
@@ -391,29 +391,29 @@ func (dao *FeedbackLogDAO) GetHumanCorrections(ctx context.Context, since time.T
 type OptimizationMetrics struct {
 	ID         int64     `db:"id"`
 	TimeBucket time.Time `db:"time_bucket"`
-	
+
 	// Grouping dimensions (NULL = global aggregation)
 	TaskType          *string `db:"task_type"`
 	PredictedProvider *string `db:"predicted_provider"`
-	
+
 	// Aggregated metrics
 	TotalRequests      int      `db:"total_requests"`
 	SuccessfulRequests int      `db:"successful_requests"`
 	FailedRequests     int      `db:"failed_requests"`
 	AccuracyRate       *float64 `db:"accuracy_rate"`
-	
-	AvgConfidence  *float64 `db:"avg_confidence"`
-	AvgLatencyMs   *int     `db:"avg_latency_ms"`
-	AvgCost        *float64 `db:"avg_cost"`
-	
+
+	AvgConfidence *float64 `db:"avg_confidence"`
+	AvgLatencyMs  *int     `db:"avg_latency_ms"`
+	AvgCost       *float64 `db:"avg_cost"`
+
 	P50LatencyMs *int `db:"p50_latency_ms"`
 	P95LatencyMs *int `db:"p95_latency_ms"`
 	P99LatencyMs *int `db:"p99_latency_ms"`
-	
+
 	// Human annotation feedback
-	HumanCorrections   int      `db:"human_corrections"`
-	HumanAccuracyRate  *float64 `db:"human_accuracy_rate"`
-	
+	HumanCorrections  int      `db:"human_corrections"`
+	HumanAccuracyRate *float64 `db:"human_accuracy_rate"`
+
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -458,7 +458,7 @@ func (dao *OptimizationMetricsDAO) Upsert(ctx context.Context, metrics *Optimiza
 		metrics.P50LatencyMs, metrics.P95LatencyMs, metrics.P99LatencyMs,
 		metrics.HumanCorrections, metrics.HumanAccuracyRate,
 	)
-	
+
 	return err
 }
 
@@ -473,7 +473,7 @@ func (dao *OptimizationMetricsDAO) GetAggregatedMetrics(ctx context.Context, sin
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("query overall accuracy: %w", err)
 	}
-	
+
 	// Accuracy by task type
 	accuracyByTask = make(map[string]float64)
 	rows, err := dao.pool.Query(ctx, `
@@ -486,7 +486,7 @@ func (dao *OptimizationMetricsDAO) GetAggregatedMetrics(ctx context.Context, sin
 		return 0, nil, nil, fmt.Errorf("query accuracy by task: %w", err)
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var taskType string
 		var accuracy float64
@@ -498,7 +498,7 @@ func (dao *OptimizationMetricsDAO) GetAggregatedMetrics(ctx context.Context, sin
 	if err := rows.Err(); err != nil {
 		return 0, nil, nil, err
 	}
-	
+
 	// Accuracy by provider
 	accuracyByProvider = make(map[string]float64)
 	rows, err = dao.pool.Query(ctx, `
@@ -511,7 +511,7 @@ func (dao *OptimizationMetricsDAO) GetAggregatedMetrics(ctx context.Context, sin
 		return 0, nil, nil, fmt.Errorf("query accuracy by provider: %w", err)
 	}
 	defer rows.Close()
-	
+
 	for rows.Next() {
 		var provider string
 		var accuracy float64
@@ -523,7 +523,7 @@ func (dao *OptimizationMetricsDAO) GetAggregatedMetrics(ctx context.Context, sin
 	if err := rows.Err(); err != nil {
 		return 0, nil, nil, err
 	}
-	
+
 	return overallAccuracy, accuracyByTask, accuracyByProvider, nil
 }
 
@@ -535,18 +535,18 @@ func (dao *OptimizationMetricsDAO) GetAggregatedMetrics(ctx context.Context, sin
 type UserAffinity struct {
 	ID     int64  `db:"id"`
 	UserID string `db:"user_id"`
-	
+
 	// Task type distribution (recent 100 requests)
 	TaskTypeDistribution map[string]int     `db:"task_type_distribution"`
 	PreferredProviders   map[string]float64 `db:"preferred_providers"`
-	
+
 	// Statistics
-	TotalRequests  int       `db:"total_requests"`
-	LastRequestAt  time.Time `db:"last_request_at"`
-	
+	TotalRequests int       `db:"total_requests"`
+	LastRequestAt time.Time `db:"last_request_at"`
+
 	// Session pattern (auto-detected)
 	SessionPattern *string `db:"session_pattern"`
-	
+
 	CreatedAt time.Time `db:"created_at"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
@@ -570,10 +570,10 @@ func (dao *UserAffinityDAO) GetByUserID(ctx context.Context, userID string) (*Us
 		FROM routing_user_affinity
 		WHERE user_id = $1
 	`
-	
+
 	affinity := &UserAffinity{}
 	var taskTypeDistributionJSON, preferredProvidersJSON []byte
-	
+
 	err := dao.pool.QueryRow(ctx, query, userID).Scan(
 		&affinity.ID, &affinity.UserID, &taskTypeDistributionJSON, &preferredProvidersJSON,
 		&affinity.TotalRequests, &affinity.LastRequestAt, &affinity.SessionPattern,
@@ -582,7 +582,7 @@ func (dao *UserAffinityDAO) GetByUserID(ctx context.Context, userID string) (*Us
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Unmarshal JSONB fields
 	if err := json.Unmarshal(taskTypeDistributionJSON, &affinity.TaskTypeDistribution); err != nil {
 		return nil, fmt.Errorf("unmarshal task_type_distribution: %w", err)
@@ -590,7 +590,7 @@ func (dao *UserAffinityDAO) GetByUserID(ctx context.Context, userID string) (*Us
 	if err := json.Unmarshal(preferredProvidersJSON, &affinity.PreferredProviders); err != nil {
 		return nil, fmt.Errorf("unmarshal preferred_providers: %w", err)
 	}
-	
+
 	return affinity, nil
 }
 
@@ -604,7 +604,7 @@ func (dao *UserAffinityDAO) Upsert(ctx context.Context, affinity *UserAffinity) 
 	if err != nil {
 		return fmt.Errorf("marshal preferred_providers: %w", err)
 	}
-	
+
 	_, err = dao.pool.Exec(ctx, `
 		INSERT INTO routing_user_affinity (
 			user_id, task_type_distribution, preferred_providers,
@@ -620,6 +620,57 @@ func (dao *UserAffinityDAO) Upsert(ctx context.Context, affinity *UserAffinity) 
 	`, affinity.UserID, taskTypeDistributionJSON, preferredProvidersJSON,
 		affinity.TotalRequests, affinity.LastRequestAt, affinity.SessionPattern,
 	)
-	
+
 	return err
+}
+
+// markHumanCorrectionParams carries the P2.1 annotation fields written back
+// onto a routing_feedback_log row.
+type markHumanCorrectionParams struct {
+	CorrectProvider string
+	Reason          *string
+	Annotator       *string
+	AnnotatedAt     *time.Time
+}
+
+// MarkHumanCorrection flags the feedback row(s) for a request as
+// human-corrected. Idempotent: repeated calls refresh the correction fields.
+func (dao *FeedbackLogDAO) MarkHumanCorrection(ctx context.Context, requestID string, p markHumanCorrectionParams) error {
+	_, err := dao.pool.Exec(ctx, `
+		UPDATE routing_feedback_log
+		SET has_human_correction = TRUE,
+		    correct_provider = $2,
+		    correction_reason = $3,
+		    annotator = $4,
+		    annotated_at = $5
+		WHERE request_id = $1
+	`, requestID, p.CorrectProvider, p.Reason, p.Annotator, p.AnnotatedAt)
+	return err
+}
+
+// GetAutoAccuracyCounts returns (successful, total) feedback counts since the
+// given time, based on the success column (auto feedback only — human
+// corrections are weighted separately by the learner).
+func (dao *FeedbackLogDAO) GetAutoAccuracyCounts(ctx context.Context, since time.Time) (successful, total int, err error) {
+	err = dao.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0),
+		       COUNT(*)
+		FROM routing_feedback_log
+		WHERE created_at >= $1
+	`, since).Scan(&successful, &total)
+	return successful, total, err
+}
+
+// GetHumanCorrectionCounts returns (agreeing, total) human-corrected feedback
+// counts since the given time. "Agreeing" means the AUTO prediction matched
+// the annotator's correct provider (predicted_provider == correct_provider).
+func (dao *FeedbackLogDAO) GetHumanCorrectionCounts(ctx context.Context, since time.Time) (agreeing, total int, err error) {
+	err = dao.pool.QueryRow(ctx, `
+		SELECT COALESCE(SUM(CASE WHEN predicted_provider = correct_provider THEN 1 ELSE 0 END), 0),
+		       COUNT(*)
+		FROM routing_feedback_log
+		WHERE has_human_correction = TRUE
+		  AND created_at >= $1
+	`, since).Scan(&agreeing, &total)
+	return agreeing, total, err
 }

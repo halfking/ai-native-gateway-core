@@ -18,30 +18,44 @@ import (
 type AdaptiveLearner struct {
 	stateDAO    *OptimizationStateDAO
 	metricsDAO  *OptimizationMetricsDAO
+	feedbackDAO *FeedbackLogDAO
 	integrator  *FeedbackIntegrator
 }
 
 // NewAdaptiveLearner constructs a learner instance.
 func NewAdaptiveLearner(pool *pgxpool.Pool, integrator *FeedbackIntegrator) *AdaptiveLearner {
 	return &AdaptiveLearner{
-		stateDAO:   NewOptimizationStateDAO(pool),
-		metricsDAO: NewOptimizationMetricsDAO(pool),
-		integrator: integrator,
+		stateDAO:    NewOptimizationStateDAO(pool),
+		metricsDAO:  NewOptimizationMetricsDAO(pool),
+		feedbackDAO: NewFeedbackLogDAO(pool),
+		integrator:  integrator,
 	}
+}
+
+// WeightedAccuracy computes the human-annotation-weighted accuracy:
+//
+//	(autoCorrect + 2×humanCorrect) / (autoTotal + 2×humanTotal)
+//
+// Each human annotation counts double (P2.1 ground truth). Returns 0 when
+// there is no data yet.
+func WeightedAccuracy(autoCorrect, autoTotal, humanCorrect, humanTotal int) float64 {
+	total := autoTotal + 2*humanTotal
+	if total <= 0 {
+		return 0
+	}
+	correct := autoCorrect + 2*humanCorrect
+	if correct > total {
+		correct = total
+	}
+	return float64(correct) / float64(total)
 }
 
 // GetStats implements the GetStats hook.
 // Returns optimizer performance statistics for admin API.
 //
-// Week 1 骨架版本：
-//   - Overall accuracy: 从 routing_optimization_metrics 聚合（最近24小时）
-//   - Parameter version: 从 routing_optimization_state 读取
-//   - Human annotations used: 从 FeedbackIntegrator 查询
-//
-// Week 2 完整版本：
-//   - Weighted accuracy: human annotations × 2
-//   - Accuracy by task type / provider
-//   - Confidence distribution histogram
+// Accuracy blends auto feedback (success column) with human corrections
+// (P2.1 annotations, weight ×2) via WeightedAccuracy. When no feedback data
+// exists yet, falls back to the state's persisted overall_accuracy.
 func (l *AdaptiveLearner) GetStats(ctx context.Context) (*OptimizerStats, error) {
 	// 1. Get active optimization state
 	state, err := l.stateDAO.GetActive(ctx)
@@ -54,33 +68,38 @@ func (l *AdaptiveLearner) GetStats(ctx context.Context) (*OptimizerStats, error)
 			HumanAnnotationsUsed: 0,
 		}, nil
 	}
-	
-	// 2. Get aggregated metrics (last 24 hours)
+
+	// 2. Auto feedback counts (last 24 hours)
 	since := time.Now().Add(-24 * time.Hour)
-	overallAccuracy, _, _, err := l.metricsDAO.GetAggregatedMetrics(ctx, since)
-	if err != nil {
-		// Metrics not available: use state's overall_accuracy
-		if state.OverallAccuracy != nil {
-			overallAccuracy = *state.OverallAccuracy
+	autoCorrect, autoTotal, err := l.feedbackDAO.GetAutoAccuracyCounts(ctx, since)
+	overallAccuracy := 0.0
+	if err == nil && autoTotal > 0 {
+		// 3. Human correction counts (weight ×2, P2.1 ground truth)
+		humanAgreeing, humanTotal, herr := l.feedbackDAO.GetHumanCorrectionCounts(ctx, since)
+		if herr == nil {
+			overallAccuracy = WeightedAccuracy(autoCorrect, autoTotal, humanAgreeing, humanTotal)
 		} else {
-			overallAccuracy = 0.0
+			overallAccuracy = float64(autoCorrect) / float64(autoTotal)
 		}
+	} else if state.OverallAccuracy != nil {
+		// No recent feedback: fall back to the persisted aggregate
+		overallAccuracy = *state.OverallAccuracy
 	}
-	
-	// 3. Get human annotation count (last 24 hours)
+
+	// 4. Get human annotation count (last 24 hours)
 	humanAnnotationsUsed, err := l.integrator.GetHumanAnnotationStats(ctx, since)
 	if err != nil {
 		humanAnnotationsUsed = 0 // Ignore error, return 0
 	}
-	
-	// 4. Construct stats
+
+	// 5. Construct stats
 	stats := &OptimizerStats{
 		OverallAccuracy:      overallAccuracy,
 		ParameterVersion:     state.Version,
 		LastUpdated:          state.UpdatedAt,
 		HumanAnnotationsUsed: humanAnnotationsUsed,
 	}
-	
+
 	return stats, nil
 }
 
@@ -113,9 +132,9 @@ func (l *AdaptiveLearner) DetectAnomalies(ctx context.Context) ([]Anomaly, error
 
 // Anomaly represents a detected routing anomaly.
 type Anomaly struct {
-	Type        string    // "accuracy_drop", "latency_spike", "provider_failure"
-	Severity    string    // "warning", "critical"
-	Description string    // human-readable description
+	Type        string // "accuracy_drop", "latency_spike", "provider_failure"
+	Severity    string // "warning", "critical"
+	Description string // human-readable description
 	DetectedAt  time.Time
 	Metrics     map[string]float64 // relevant metrics
 }

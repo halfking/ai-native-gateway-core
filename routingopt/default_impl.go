@@ -19,7 +19,8 @@ import (
 // scoring, human annotation integration) is implemented in Week 2.
 //
 // Usage:
-//   decider.SetOptimizer(routingopt.NewDefaultOptimizer())
+//
+//	decider.SetOptimizer(routingopt.NewDefaultOptimizer())
 //
 // Zero overhead: when the Decider's optimizer field is nil, all plugin hooks
 // short-circuit with a single nil check. When set to DefaultOptimizer, the
