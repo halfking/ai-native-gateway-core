@@ -179,6 +179,12 @@ watch(timeRangePreset, () => {
   granularity.value = suggestedGranularity.value
 })
 
+// 2026-09-07 审计：手动切换粒度后必须重新拉数据 —— 否则网格按新粒度
+// 重排旧 bucket，meta.granularity 与后端数据错位。
+watch(granularity, () => {
+  loadHeatmap()
+})
+
 const granularityMs = computed(() => {
   const secs: Record<Granularity, number> = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '1d': 86400 }
   return secs[granularity.value] * 1000
@@ -430,6 +436,15 @@ function stopAutoRefresh() {
 function toggleAutoRefresh() {
   autoRefresh.value ? stopAutoRefresh() : startAutoRefresh()
 }
+
+// 2026-09-07 审计：切换自动刷新间隔时必须重启定时器 —— 否则新间隔只在
+// 下次手动开关自动刷新后才生效。
+watch(refreshInterval, () => {
+  if (autoRefresh.value && refreshTimer !== null) {
+    clearInterval(refreshTimer)
+    refreshTimer = window.setInterval(() => loadHeatmap(), refreshInterval.value * 1000)
+  }
+})
 
 // Cell click handler
 const selectedBucket = ref<{

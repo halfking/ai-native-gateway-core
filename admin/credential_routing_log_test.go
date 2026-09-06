@@ -44,11 +44,25 @@ func TestBuildRoutingLogSQL_StateChangeAndResultFilters(t *testing.T) {
 	if !strings.Contains(query, "mpr.state_change IN ('recovered', 'broke')") {
 		t.Fatal("state_change kind must filter probe branch to consensus flips")
 	}
+	// 2026-09-07 审计：state_change 查询里 probe 分支的行必须标注为
+	// state_change 并带出 flip 方向，而不是被标成 'probe'。
+	if !strings.Contains(query, "'state_change' AS kind") || !strings.Contains(query, "COALESCE(mpr.state_change, '') AS change") {
+		t.Fatal("probe branch must emit state_change kind and flip direction for state_change queries")
+	}
 	if !strings.Contains(query, "credential.model_toggle_online") {
 		t.Fatal("manual toggles missing")
 	}
 	if strings.Contains(query, "FROM routing_decision_log") {
 		t.Fatal("routing branch must be pruned for state_change kind")
+	}
+
+	// kind=all 时 probe 分支保持 'probe' 标注（完整自检时间线语义不变）。
+	qAll, _ := buildRoutingLogSQL(routingLogParams{Kind: "all", TimeStart: time.Now(), TimeEnd: time.Now(), Limit: 10})
+	if !strings.Contains(qAll, "'probe' AS kind") {
+		t.Fatal("kind=all must keep probe branch labeled 'probe'")
+	}
+	if strings.Contains(qAll, "'state_change' AS kind,") && !strings.Contains(qAll, "FROM routing_audit_log") {
+		t.Fatal("kind=all must not flip probe branch labeling")
 	}
 
 	q2, args2 := buildRoutingLogSQL(routingLogParams{Kind: "all", Result: "failed", TimeStart: time.Now(), TimeEnd: time.Now(), Limit: 10})
