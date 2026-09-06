@@ -1,4 +1,4 @@
--- Migration 664: Human Annotation Workflow for Training Data
+-- Migration 669: Human Annotation Workflow for Training Data
 -- Part of: P2.1 - Human Annotation Workflow
 -- Purpose: 支持人工标注低置信度AUTO路由样本，提升训练数据质量
 --
