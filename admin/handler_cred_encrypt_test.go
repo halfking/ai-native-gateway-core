@@ -51,7 +51,7 @@ func newTestHandlerWithKeyring(t *testing.T) *Handler {
 // Fernet base64-url "gAAAAA" prefix (NOT raw 0x80 bytes).
 func TestEncryptDecryptRoundTrip_FernetPath(t *testing.T) {
 	h := newTestHandler(t)
-	const plaintext = "sk-6213eaf3d65e73552f38d79342ee8ce5f12c15413a5363a6fd67d98b53fe0060"
+	const plaintext = "sk-000000000000000000000000000000000000000000000000000000000000"
 
 	envelope, err := h.encryptCred([]byte(plaintext))
 	if err != nil {

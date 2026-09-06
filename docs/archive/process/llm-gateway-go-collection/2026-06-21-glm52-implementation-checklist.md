@@ -100,7 +100,7 @@
 
 - [ ] **设置环境变量**
   ```bash
-  export K8S_SSH_PASSWORD='__REDACTED_SSH_PASSWORD__'
+  export K8S_SSH_PASSWORD='<REDACTED_SSH_PASSWORD>'
   ```
 
 - [ ] **运行部署脚本**

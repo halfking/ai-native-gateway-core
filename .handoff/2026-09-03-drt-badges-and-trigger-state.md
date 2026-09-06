@@ -16,7 +16,7 @@
 | `/api/system/background-tasks` | discovery/cycler/probe_loop/recovery 全 `alive: false`，仅 telemetry alive |
 | 数据库 | connected, 441µs |
 | Redis | connected, 333µs |
-| Admin token | `sk-IJo4RSiwpVXg5Vg1zzfn4rIetAqFvMV1sRYqwc5QLyRamBdg` |
+| Admin token | `<REDACTED_ADMIN_TOKEN>` |
 | JWT 登录 | `/api/auth/token` 正常，role=super_admin |
 
 ## 阶段 2 代码层定位

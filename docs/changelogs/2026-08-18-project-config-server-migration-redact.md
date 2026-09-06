@@ -6,7 +6,7 @@
 ## 1. 做了什么
 
 1. **服务端信息**：SSH `__INTERNAL_PUBLIC_IP__:25022` → `<env:HOST_154>:25022`；
-   默认用户 `admin` → `root`；明文密码 `__REDACTED_ADMIN_PASSWORD__` / `__REDACTED_SSH_PASSWORD__`
+   默认用户 `admin` → `root`；明文密码 `__REDACTED_SSH_PASSWORD__` / `__REDACTED_SSH_PASSWORD__`
    → `<env:SSHPASS>` 占位符。
 2. **数据库配置**：移除"通过 SSH 隧道连 127.0.0.1"叙述，改"直连 252 内网"；
    `postgres` 用户 → `<env:COMMON_PG_SUPERUSER>` (= `llm_gateway`)；
@@ -36,7 +36,7 @@
 - **rule 31 §1 强制**：154 替换 184 后，所有指向 184 的文档（特别是"AI 每次会话首读"的
   PROJECT_CONFIG.md）必须同步，否则 AI 会按错误 server 操作（SSH 超时、找不到服务单元）。
 - **rule 39 铁律 1**：仓库入仓文件零明文敏感值。
-  PROJECT_CONFIG.md 行 24-25 / 221 已暴露 `__REDACTED_ADMIN_PASSWORD__` + `__REDACTED_SSH_PASSWORD__`，
+  PROJECT_CONFIG.md 行 24-25 / 221 已暴露 `__REDACTED_SSH_PASSWORD__` + `__REDACTED_SSH_PASSWORD__`，
   且后者已被 `scripts/scan-secrets.replacements:11` 列为已知泄露
   （`__REDACTED_SSH_PASSWORD__==>__REDACTED_SSH_PASSWORD__`）—— 说明 git filter-repo 历史清洗
   走过，但当前文件未同步。
@@ -62,7 +62,7 @@
 
 ## 5. 遗留与风险
 
-- **当前 shell 中残留 `LLM_GATEWAY_ADMIN_PASSWORD=__REDACTED_ADMIN_PASSWORD__` 明文**（被 env-injector
+- **当前 shell 中残留 `LLM_GATEWAY_ADMIN_PASSWORD=__REDACTED_SSH_PASSWORD__` 明文**（被 env-injector
   list 输出捕获到）：不在本任务范围，但提示此前某次部署或 shell 初始化脚本把明文密码
   export 到了环境变量。建议 owner 单独 PR 排查：哪些脚本/配置会 export 明文密码？
   是否走 `<env:...>` 占位符更安全？本次未处理，避免越界（rule 11 §1 + rule 42）。

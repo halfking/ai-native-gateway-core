@@ -118,7 +118,7 @@ export GLM_API_KEY="__API_KEY_8__"
 ### 方式 B: 使用部署脚本（需要密码）
 
 ```bash
-export K8S_SSH_PASSWORD='__REDACTED_SSH_PASSWORD__'
+export K8S_SSH_PASSWORD='<REDACTED_SSH_PASSWORD>'
 ./scripts/deploy-glm52-enhancement.sh
 ```
 

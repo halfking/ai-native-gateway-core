@@ -145,7 +145,7 @@ ON CONFLICT (provider_code, tenant_id)  // 而非 (provider_code)
 
 ```bash
 # 修复 1: 移除硬编码凭据
-# 旧: export DB_252="postgres://kxuser:kxuser123@172.16.2.210:5432/..."
+# 旧: export DB_252="postgres://kxuser:<REDACTED_DB_PASSWORD>@172.16.2.210:5432/..."
 # 新: 强制读取环境变量
 if [ -z "$OMNIFREE_DATABASE_URL" ]; then
     echo "❌ 错误: 必须设置环境变量 OMNIFREE_DATABASE_URL"
@@ -317,7 +317,7 @@ psql "$OMNIFREE_DATABASE_URL" -f sql/migrations/075-omnifree-schema.down.sql
 主机: 172.16.2.210:5432
 数据库: llm_gateway
 用户: kxuser
-旧密码: kxuser123 (已泄露，已在代码库中存在数天)
+旧密码: <REDACTED_DB_PASSWORD> (已泄露，已在代码库中存在数天)
 ```
 
 **操作步骤**:

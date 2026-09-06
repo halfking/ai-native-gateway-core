@@ -10,7 +10,7 @@ services:
     environment:
       POSTGRES_DB: llm_gateway
       POSTGRES_USER: gateway_user
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_production}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
@@ -23,7 +23,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: redis-server --requirepass ${REDIS_PASSWORD:-change_me_in_production}
+    command: redis-server --requirepass "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
@@ -41,9 +41,9 @@ services:
     environment:
       - LLM_GATEWAY_ENV=development
       - LLM_GATEWAY_LISTEN=:8781
-      - LLM_GATEWAY_DATABASE_URL=postgres://gateway_user:${POSTGRES_PASSWORD:-change_me_in_production}@postgres:5432/llm_gateway?sslmode=disable
+      - LLM_GATEWAY_DATABASE_URL=postgres://gateway_user:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/llm_gateway?sslmode=disable
       - LLM_GATEWAY_REDIS_ADDR=redis:6379
-      - LLM_GATEWAY_REDIS_PASSWORD=${REDIS_PASSWORD:-change_me_in_production}
+      - LLM_GATEWAY_REDIS_PASSWORD=${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       - LLM_GATEWAY_REDIS_DB=0
       - LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=${CREDENTIAL_ENCRYPTION_KEY}
       - LLM_GATEWAY_API_KEY=${API_KEY}

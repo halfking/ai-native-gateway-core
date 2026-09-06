@@ -3,7 +3,7 @@
 **修复版本**: seq=1251, commit=ff28c65d
 **部署时间**: 2026-07-21
 **验证网站**: https://llmgateway.internal.example.com
-**登录凭证**: admin / __REDACTED_ADMIN_PASSWORD__
+**登录凭证**: admin / __REDACTED_SSH_PASSWORD__
 
 ---
 
@@ -21,7 +21,7 @@
 ### 步骤1: 登录仪表盘
 
 1. 访问 https://llmgateway.internal.example.com
-2. 使用 admin / __REDACTED_ADMIN_PASSWORD__ 登录
+2. 使用 admin / __REDACTED_SSH_PASSWORD__ 登录
 3. 进入"实时请求流"页面
 
 ### 步骤2: 浏览器Console监控（5-10分钟）
