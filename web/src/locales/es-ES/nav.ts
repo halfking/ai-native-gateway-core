@@ -22,6 +22,8 @@ export default {
     models: "Modelos y catálogo",
     routingOverview: "Panorama de enrutamiento",
     credentialMonitor: "Monitor de credenciales",
+    annotations: 'Anotación manual',
+    annotationStats: 'Estadísticas de anotación',
     probeHealth: "Salud del sondeo",
     systemMonitor: "Monitoreo del sistema",
     providers: "Proveedores",

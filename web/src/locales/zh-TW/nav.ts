@@ -23,6 +23,8 @@ export default {
     models: "模型與目錄",
     routingOverview: "路由全景",
     credentialMonitor: "憑證監控",
+    annotations: '人工標註',
+    annotationStats: '標註統計',
     probeHealth: "探測健康度",
     systemMonitor: "系統監測",
     providers: "供應商",

@@ -30,6 +30,8 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/jsonbody"
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -212,13 +214,35 @@ func (h *Handler) handleCredentialSessionPing(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protocol, catalogCode, apiKey, model string) (status, errorCode, message string) {
-	endpoint := strings.TrimRight(baseURL, "/") + "/chat/completions"
-	payload, err := json.Marshal(map[string]any{
-		"model":      model,
-		"max_tokens": 1,
-		"stream":     false,
-		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-	})
+	// 2026-09-06: 复用 providercap 动态协议适配，支持 anthropic-messages 等多协议。
+	// 之前硬编码 /chat/completions 导致 Anthropic 供应商 Ping 失败。
+	desc := providercap.Resolve(protocol, catalogCode)
+	endpoint := providercap.ProbeEndpointURL(baseURL, desc)
+	if endpoint == "" {
+		return "error", "invalid_protocol", "unsupported protocol or empty base URL"
+	}
+
+	// 根据协议构造请求体：Anthropic Messages vs OpenAI Chat Completions
+	var payload []byte
+	var err error
+	if desc.ChatProbeEndpoint == upstreamurl.EpMessages {
+		// Anthropic Messages API format
+		payload, err = json.Marshal(map[string]any{
+			"model":      model,
+			"max_tokens": 1,
+			"messages": []map[string]any{
+				{"role": "user", "content": "ping"},
+			},
+		})
+	} else {
+		// OpenAI Chat Completions format (default)
+		payload, err = json.Marshal(map[string]any{
+			"model":      model,
+			"max_tokens": 1,
+			"stream":     false,
+			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		})
+	}
 	if err != nil {
 		return "error", "encode_error", "could not encode ping request"
 	}
@@ -226,7 +250,7 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	if err != nil {
 		return "error", "invalid_endpoint", "provider endpoint is invalid"
 	}
-	setModelsAuthHeaders(req, protocol, apiKey)
+	providercap.ApplyAuthHeaders(req, desc, apiKey)
 	h.applyCatalogHeaderProfile(ctx, req, catalogCode)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
@@ -245,6 +269,10 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	if len(message) > 500 {
 		message = message[:500]
 	}
+	// 2026-09-06: 当供应商返回空响应体时，使用通用错误提示避免前端显示"会话 Ping 失败：error"
+	if message == "" {
+		message = fmt.Sprintf("provider returned HTTP %d with empty body", resp.StatusCode)
+	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return "auth_failed", "auth_failed", "credential rejected by provider"
@@ -260,10 +288,22 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 }
 
 func isChatPingResponse(body []byte) bool {
-	var response struct {
+	// OpenAI Chat Completions format
+	var oaiResp struct {
 		Choices json.RawMessage `json:"choices"`
 	}
-	return json.Unmarshal(body, &response) == nil && len(response.Choices) > 0
+	if json.Unmarshal(body, &oaiResp) == nil && len(oaiResp.Choices) > 0 {
+		return true
+	}
+	// Anthropic Messages format (2026-09-06)
+	var anthResp struct {
+		Type    string          `json:"type"`
+		Content json.RawMessage `json:"content"`
+	}
+	if json.Unmarshal(body, &anthResp) == nil && anthResp.Type == "message" && len(anthResp.Content) > 0 {
+		return true
+	}
+	return false
 }
 
 func (h *Handler) nodeProbeTargets(ctx context.Context, providerID int) ([]string, string, error) {
@@ -388,6 +428,22 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 		provider.InvalidateCandidateCacheForCredential(cid)
 	}
 
+	// 2026-09-06: provider 级批量启停也需要同步 URSM v2 manual_hold，
+	// 否则批量禁用/启用后 Redis 侧仍保留旧的运行态标记（尤其是重新启用时，
+	// manual_hold 未清除会继续阻断路由，即使 PG manual_disabled 已改为 false）。
+	// best-effort：单个 credential 的 URSM 同步失败不阻断整体响应，因为该
+	// 端点一次可能涉及数十个 credential；失败详情通过响应字段暴露给操作员，
+	// 操作员可对失败的 credential 单独调用 force_enable/force_disable 补偿。
+	ursmAppliedCount, ursmErrorCount := 0, 0
+	if h.ursmV2 != nil {
+		manualDisabled := !req.Enabled
+		for _, cid := range credIDs {
+			result := h.applyURSMManualDisabled(ctx, cid, manualDisabled, req.Reason, operatorID)
+			ursmAppliedCount += result.models - result.errors
+			ursmErrorCount += result.errors
+		}
+	}
+
 	slog.Info("node enable toggled",
 		"provider_id", providerID,
 		"enabled", req.Enabled,
@@ -412,6 +468,8 @@ func (h *Handler) handleNodeToggle(w http.ResponseWriter, r *http.Request) {
 		"credentials_affected":    tag.RowsAffected(),
 		"candidate_cache_cleared": len(credIDs),
 		"correlation_id":          correlationID,
+		"ursm_v2_models_applied":  ursmAppliedCount,
+		"ursm_v2_models_errored":  ursmErrorCount,
 	})
 }
 

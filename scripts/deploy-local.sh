@@ -55,6 +55,7 @@ fi
 ACTION=deploy
 DRY_RUN=0
 SKIP_FRONTEND=0
+MINIMAL_DEPLOY=0
 ROOT_OVERRIDE=
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-60}"
 KEEP_RELEASES="${KEEP_RELEASES:-3}"
@@ -81,6 +82,7 @@ Options:
   --root PATH             install root (otherwise OS default)
   --dry-run               print the plan without changing files, containers or processes
   --no-frontend           reuse the existing web/dist output
+  --minimal               minimal deployment using SQLite (no Redis required)
   --timeout SECS          health probe timeout (default: 60)
   --cleanup-downloads     remove the obsolete ~/Downloads/llm-gateway-files copies
                           (only after PG migration is verified). Off by default.
@@ -99,6 +101,15 @@ to repurpose a host port, or use --root to move the project.
 Existing PostgreSQL and Redis instances are reused; no data or password is reset
 automatically. A deploy allocates the next build sequence through
 scripts/bump-version.sh; --dry-run never changes version files.
+
+Minimal deployment mode (--minimal):
+  Uses SQLite instead of Redis for session storage. Suitable for development
+  and testing environments. Redis container is not required or created.
+
+Redis container configuration:
+  Set LLM_GATEWAY_REDIS_CONTAINER environment variable to specify a custom
+  Redis container name. If not set, auto-discovery will search for common
+  Redis container names (nbjl-redis, llm-gateway-redis, redis, kx-redis).
 EOF
 }
 
@@ -109,6 +120,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
       --root) ROOT_OVERRIDE=${2:?--root requires a path}; shift 2 ;;
       --dry-run) DRY_RUN=1; shift ;;
       --no-frontend) SKIP_FRONTEND=1; shift ;;
+      --minimal) MINIMAL_DEPLOY=1; shift ;;
       --timeout) HEALTH_TIMEOUT=${2:?--timeout requires seconds}; shift 2 ;;
       --cleanup-downloads) CLEANUP_DOWNLOADS=1; shift ;;
       -h|--help) usage; exit 0 ;;
@@ -159,10 +171,10 @@ RELEASE_VERSION="$(dl_release_name "$VERSION_JSON")"
 
 plan() {
   dl_detect_resources
-  printf 'ACTION=%s\nROOT=%s\nSHARED_ROOT=%s\nSHARED_PG_DIR=%s\nSHARED_REDIS_DIR=%s\nRELEASE=%s\nACTIVE=%s\nACTIVE_PORT=%s\nCANDIDATE_PORT=%s\nDOCKER=%s\nCOMPOSE=%s\nDATABASE_MODE=%s\nREDIS_MODE=%s\nPG_CONTAINER=%s\nREDIS_CONTAINER=%s\nCLEANUP_DOWNLOADS=%s\n' \
+  printf 'ACTION=%s\nROOT=%s\nSHARED_ROOT=%s\nSHARED_PG_DIR=%s\nSHARED_REDIS_DIR=%s\nRELEASE=%s\nACTIVE=%s\nACTIVE_PORT=%s\nCANDIDATE_PORT=%s\nDOCKER=%s\nCOMPOSE=%s\nDATABASE_MODE=%s\nREDIS_MODE=%s\nPG_CONTAINER=%s\nREDIS_CONTAINER=%s\nCLEANUP_DOWNLOADS=%s\nMINIMAL_DEPLOY=%s\n' \
     "$ACTION" "$ROOT_DIR" "$SHARED_ROOT" "$SHARED_PG_DIR" "$SHARED_REDIS_DIR" "$RELEASE_VERSION" \
     "$(dl_active_version)" "$(dl_active_port)" "$(dl_candidate_port)" \
-    "$DL_DOCKER" "$DL_COMPOSE" "$DL_DB_MODE" "$DL_REDIS_MODE" "${DL_PG_CONTAINER:-none}" "${DL_REDIS_CONTAINER:-none}" "$CLEANUP_DOWNLOADS"
+    "$DL_DOCKER" "$DL_COMPOSE" "$DL_DB_MODE" "$DL_REDIS_MODE" "${DL_PG_CONTAINER:-none}" "${DL_REDIS_CONTAINER:-none}" "$CLEANUP_DOWNLOADS" "$MINIMAL_DEPLOY"
   printf 'VERIFY_TOOL=deploy-local.sh\nVERIFY_DEVICE=local\nVERIFY_PASS=0\n'
 }
 
@@ -176,60 +188,94 @@ compose_cmd() {
 detect_existing_containers() {
   DL_PG_CONTAINER=""; DL_REDIS_CONTAINER=""
   if (( DL_DOCKER )); then
-    for c in llm-gateway-pg postgres kx-citus; do
-      if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_PG_CONTAINER=$c; break; fi
-    done
-    for c in llm-gateway-redis redis kx-redis nbjl-redis; do
-      if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_REDIS_CONTAINER=$c; break; fi
-    done
-    [[ -n "$DL_PG_CONTAINER" ]] && {
-      docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
-      DL_DB_MODE=docker
-      DL_PG_SOURCE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' "$DL_PG_CONTAINER" 2>/dev/null || true)
-      local db_url
-      db_url=$(dl_container_env "$DL_PG_CONTAINER" LLM_GATEWAY_DATABASE_URL)
-      [[ -z "$db_url" ]] && db_url=$(dl_container_env "$DL_PG_CONTAINER" DATABASE_URL)
-      if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
-        if [[ -n "$db_url" && "$db_url" =~ @((127\\.0\\.0\\.1)|(localhost))(:|/) ]]; then
-          local db_port
-          db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
-          if [[ -z "$db_port" ]]; then
-            die "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; publish a host port or set LLM_GATEWAY_DATABASE_URL to a reachable PostgreSQL DSN"
+    # Source smart discovery functions if available
+    if [[ -f "$SCRIPT_DIR/deploy-lib/smart-discovery.sh" ]]; then
+      # shellcheck source=deploy-lib/smart-discovery.sh
+      source "$SCRIPT_DIR/deploy-lib/smart-discovery.sh"
+      
+      # PostgreSQL smart discovery with priority and database checking
+      detect_postgres_container || true
+      
+      # Skip Redis detection in minimal mode
+      if [[ "${MINIMAL_DEPLOY:-0}" == 0 ]]; then
+        # Redis smart discovery with priority and connection testing
+        detect_redis_container || true
+      fi
+      
+      # Configure PostgreSQL if found
+      [[ -n "$DL_PG_CONTAINER" ]] && configure_postgres_container
+      
+      # Configure Redis if found
+      [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]] && configure_redis_container
+    else
+      # Fallback to original discovery logic if smart discovery not available
+      for c in llm-gateway-pg postgres kx-citus; do
+        if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_PG_CONTAINER=$c; break; fi
+      done
+      # Skip Redis detection in minimal mode
+      if [[ "${MINIMAL_DEPLOY:-0}" == 0 ]]; then
+        # Check environment variable first, then common names
+        if [[ -n "${LLM_GATEWAY_REDIS_CONTAINER:-}" ]]; then
+          if docker ps -a --format '{{.Names}}' | grep -Fxq "$LLM_GATEWAY_REDIS_CONTAINER"; then
+            DL_REDIS_CONTAINER=$LLM_GATEWAY_REDIS_CONTAINER
           fi
-          export LLM_GATEWAY_DATABASE_URL="$db_url" DATABASE_URL="$db_url"
         else
-          local db_user db_pass db_name db_port
-          db_user=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_USER); db_user=${db_user:-llm_gateway}
-          db_pass=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_PASSWORD)
-          db_name=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_DB); db_name=${db_name:-llm_gateway}
-          db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
-          if [[ -z "$db_port" ]]; then
-            die "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; publish a host port or set LLM_GATEWAY_DATABASE_URL to a reachable PostgreSQL DSN"
-          fi
-          if [[ -n "$db_pass" ]]; then
-            export LLM_GATEWAY_PG_USER="$db_user" LLM_GATEWAY_PG_PASSWORD="$db_pass" LLM_GATEWAY_PG_DATABASE="$db_name"
-            export LLM_GATEWAY_DATABASE_URL="postgresql://${db_user}:${db_pass}@127.0.0.1:${db_port}/${db_name}?sslmode=disable"
-            export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
-          fi
+          for c in llm-gateway-redis redis kx-redis nbjl-redis; do
+            if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_REDIS_CONTAINER=$c; break; fi
+          done
         fi
       fi
-    }
-    [[ -n "$DL_REDIS_CONTAINER" ]] && {
-      docker start "$DL_REDIS_CONTAINER" >/dev/null 2>&1 || true
-      DL_REDIS_MODE=docker
-      local redis_addr
-      redis_addr=$(dl_container_env "$DL_REDIS_CONTAINER" LLM_GATEWAY_REDIS_ADDR)
-      if [[ -z "$redis_addr" ]]; then
-        local redis_port
-        redis_port=$(docker port "$DL_REDIS_CONTAINER" 6379/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
-        redis_port=${redis_port:-6379}
-        if [[ "$redis_port" == "6379" && -n "${LLM_GATEWAY_REDIS_HOST_PORT:-}" ]]; then
-          redis_port="$LLM_GATEWAY_REDIS_HOST_PORT"
+      [[ -n "$DL_PG_CONTAINER" ]] && {
+        docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+        DL_DB_MODE=docker
+        DL_PG_SOURCE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' "$DL_PG_CONTAINER" 2>/dev/null || true)
+        local db_url
+        db_url=$(dl_container_env "$DL_PG_CONTAINER" LLM_GATEWAY_DATABASE_URL)
+        [[ -z "$db_url" ]] && db_url=$(dl_container_env "$DL_PG_CONTAINER" DATABASE_URL)
+        if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
+          if [[ -n "$db_url" && "$db_url" =~ @((127\\.0\\.0\\.1)|(localhost))(:|/) ]]; then
+            local db_port
+            db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+            if [[ -z "$db_port" ]]; then
+              warn "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; will use environment DATABASE_URL if available"
+              return 0
+            fi
+            export LLM_GATEWAY_DATABASE_URL="$db_url" DATABASE_URL="$db_url"
+          else
+            local db_user db_pass db_name db_port
+            db_user=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_USER); db_user=${db_user:-llm_gateway}
+            db_pass=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_PASSWORD)
+            db_name=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_DB); db_name=${db_name:-llm_gateway}
+            db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+            if [[ -z "$db_port" ]]; then
+              warn "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; will use environment DATABASE_URL if available"
+              return 0
+            fi
+            if [[ -n "$db_pass" ]]; then
+              export LLM_GATEWAY_PG_USER="$db_user" LLM_GATEWAY_PG_PASSWORD="$db_pass" LLM_GATEWAY_PG_DATABASE="$db_name"
+              export LLM_GATEWAY_DATABASE_URL="postgresql://${db_user}:${db_pass}@127.0.0.1:${db_port}/${db_name}?sslmode=disable"
+              export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+            fi
+          fi
         fi
-        redis_addr="127.0.0.1:${redis_port}"
-      fi
-      export LLM_GATEWAY_REDIS_ADDR="$redis_addr"
-    }
+      }
+      [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]] && {
+        docker start "$DL_REDIS_CONTAINER" >/dev/null 2>&1 || true
+        DL_REDIS_MODE=docker
+        local redis_addr
+        redis_addr=$(dl_container_env "$DL_REDIS_CONTAINER" LLM_GATEWAY_REDIS_ADDR)
+        if [[ -z "$redis_addr" ]]; then
+          local redis_port
+          redis_port=$(docker port "$DL_REDIS_CONTAINER" 6379/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+          redis_port=${redis_port:-6379}
+          if [[ "$redis_port" == "6379" && -n "${LLM_GATEWAY_REDIS_HOST_PORT:-}" ]]; then
+            redis_port="$LLM_GATEWAY_REDIS_HOST_PORT"
+          fi
+          redis_addr="127.0.0.1:${redis_port}"
+        fi
+        export LLM_GATEWAY_REDIS_ADDR="$redis_addr"
+      }
+    fi
   fi
 }
 
@@ -315,6 +361,7 @@ write_dependencies_compose() {
   if [[ -n "$redis_pass" ]]; then
     redis_command='["redis-server", "--appendonly", "yes", "--requirepass", "'"$redis_pass"'"]'
   fi
+  local redis_container_name="${LLM_GATEWAY_REDIS_CONTAINER:-llm-gateway-redis}"
   cat > "$file" <<EOF
 services:
   postgres:
@@ -336,7 +383,7 @@ services:
       retries: 20
   redis:
     image: \${LLM_GATEWAY_REDIS_IMAGE:-redis:7-alpine}
-    container_name: llm-gateway-redis
+    container_name: ${redis_container_name}
     restart: unless-stopped
     command: $redis_command
     volumes:
@@ -356,6 +403,54 @@ wait_container() {
   return 1
 }
 
+load_redis_image_if_needed() {
+  # Check if Redis image is already available
+  local redis_image="${LLM_GATEWAY_REDIS_IMAGE:-redis:7-alpine}"
+  if docker image inspect "$redis_image" >/dev/null 2>&1; then
+    log "Redis image $redis_image already available"
+    return 0
+  fi
+
+  # Try to load from base images directory
+  local base_images_dir="${DOCKER_BASE_IMAGES_DIR:-$HOME/work/docker-base-images}"
+  local arch
+  arch=$(uname -m)
+  local redis_tar=""
+
+  case "$arch" in
+    arm64|aarch64)
+      redis_tar="$base_images_dir/cache-mq/redis-7.4.3-alpine-arm64.tar.gz"
+      if [[ ! -f "$redis_tar" ]]; then
+        redis_tar="$base_images_dir/cache-mq/kx-redis-7.4.9-arm64.tar.gz"
+      fi
+      ;;
+    x86_64|amd64)
+      redis_tar="$base_images_dir/cache-mq/redis-7.0.15-alpine-amd64.tar.gz"
+      if [[ ! -f "$redis_tar" ]]; then
+        redis_tar="$base_images_dir/cache-mq/kx-redis-7.4.9-amd64.tar.gz"
+      fi
+      ;;
+    *)
+      warn "unknown architecture $arch; will try to pull Redis image from registry"
+      return 1
+      ;;
+  esac
+
+  if [[ -f "$redis_tar" ]]; then
+    log "loading Redis image from $redis_tar"
+    if docker load -i "$redis_tar" >/dev/null 2>&1; then
+      log "Redis image loaded successfully"
+      return 0
+    else
+      warn "failed to load Redis image from $redis_tar"
+      return 1
+    fi
+  else
+    log "Redis image tarball not found at $redis_tar"
+    return 1
+  fi
+}
+
 ensure_resources() {
   dl_detect_resources
   detect_existing_containers
@@ -363,20 +458,32 @@ ensure_resources() {
   migrate_existing_pg_to_shared || die 'existing PostgreSQL data migration failed; no application was started'
   local need_pg=0 need_redis=0
   [[ "$DL_DB_MODE" == none ]] && need_pg=1
-  [[ "$DL_REDIS_MODE" == none && -n "${LLM_GATEWAY_REDIS_ADDR:-}" ]] && need_redis=1
+  # In minimal mode, skip Redis entirely
+  if (( MINIMAL_DEPLOY == 0 )); then
+    [[ "$DL_REDIS_MODE" == none && -z "${LLM_GATEWAY_REDIS_ADDR:-}" ]] && need_redis=1
+  else
+    log "minimal deployment mode: skipping Redis"
+    DL_REDIS_MODE=minimal
+  fi
   dl_link_existing_data
   dl_prepare_layout "$need_pg" "$need_redis"
   if (( need_pg || need_redis )); then
     (( DL_DOCKER && DL_COMPOSE )) || die 'no usable PostgreSQL/Redis and Docker Compose is unavailable'
+    # Try to load Redis image from base images if needed
+    if (( need_redis )); then
+      load_redis_image_if_needed || log "will attempt to pull Redis image from registry"
+    fi
     local compose_file; compose_file=$(write_dependencies_compose)
     local -a services=()
     (( need_pg )) && services+=(postgres)
     (( need_redis )) && services+=(redis)
     compose_cmd --env-file "$RUN_DIR/dependencies.env" -f "$compose_file" up -d "${services[@]}"
     (( need_pg )) && DL_PG_CONTAINER=llm-gateway-pg
-    (( need_redis )) && DL_REDIS_CONTAINER=llm-gateway-redis
+    if (( need_redis )); then
+      DL_REDIS_CONTAINER="${LLM_GATEWAY_REDIS_CONTAINER:-llm-gateway-redis}"
+    fi
     if (( need_pg )); then wait_container llm-gateway-pg || die 'local PostgreSQL did not become healthy'; fi
-    if (( need_redis )); then wait_container llm-gateway-redis || die 'local Redis did not become healthy'; fi
+    if (( need_redis )); then wait_container "$DL_REDIS_CONTAINER" || die 'local Redis did not become healthy'; fi
     if (( need_pg )); then
       export LLM_GATEWAY_DATABASE_URL="postgresql://${LLM_GATEWAY_PG_USER:-llm_gateway}:${LLM_GATEWAY_PG_PASSWORD}@127.0.0.1:${LLM_GATEWAY_PG_PORT:-5432}/${LLM_GATEWAY_PG_DATABASE:-llm_gateway}?sslmode=disable"
       export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
@@ -695,7 +802,11 @@ verify() {
 
 status() {
   dl_detect_resources
-  printf 'root=%s\nactive=%s\nactive_port=%s\ndocker=%s\ndatabase=%s\nredis=%s\n' "$ROOT_DIR" "$(dl_active_version)" "$(dl_active_port)" "$DL_DOCKER" "$DL_DB_MODE" "$DL_REDIS_MODE"
+  detect_existing_containers
+  printf 'root=%s\nactive=%s\nactive_port=%s\ndocker=%s\ndatabase=%s\nredis=%s\nminimal_mode=%s\n' "$ROOT_DIR" "$(dl_active_version)" "$(dl_active_port)" "$DL_DOCKER" "$DL_DB_MODE" "$DL_REDIS_MODE" "$MINIMAL_DEPLOY"
+  if [[ -n "${DL_REDIS_CONTAINER:-}" ]]; then
+    printf 'redis_container=%s\n' "$DL_REDIS_CONTAINER"
+  fi
   if (( DL_DOCKER )); then docker ps --filter 'name=llm-gateway-local-' --format 'container={{.Names}} status={{.Status}}' || true; fi
 }
 

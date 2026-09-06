@@ -7,14 +7,13 @@
 #   ./scripts/pre-deploy-check.sh --partition-archive     # 含分区归档检查
 #   ./scripts/pre-deploy-check.sh --skip-db               # 跳过数据库检查
 
-set -e
+set -euo pipefail
 
 # 配置
 GATEWAY_URL="${GATEWAY_URL:-http://localhost:8781}"
 DB_HOST="${DB_HOST:-172.31.0.3}"
 DB_USER="${DB_USER:-llm_gateway}"
 DB_NAME="${DB_NAME:-llm_gateway}"
-DB_PASSWORD="${DB_PASSWORD:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
 
 # 参数解析
 CHECK_PARTITION_ARCHIVE=0
@@ -25,6 +24,10 @@ for arg in "$@"; do
     --skip-db)           SKIP_DB=1 ;;
   esac
 done
+
+if [ "$SKIP_DB" -eq 0 ]; then
+  : "${DB_PASSWORD:?DB_PASSWORD must be set unless --skip-db is used}"
+fi
 
 # 颜色
 RED='\033[0;31m'
@@ -39,19 +42,19 @@ FAILED_CHECKS=0
 
 # 日志函数
 check_start() {
-    ((TOTAL_CHECKS++))
+    ((TOTAL_CHECKS += 1))
     echo -ne "${YELLOW}[CHECK $TOTAL_CHECKS]${NC} $1 ... "
 }
 
 check_pass() {
     echo -e "${GREEN}✓ PASS${NC}"
-    ((PASSED_CHECKS++))
+    ((PASSED_CHECKS += 1))
 }
 
 check_fail() {
     echo -e "${RED}✗ FAIL${NC}"
     echo "  原因: $1"
-    ((FAILED_CHECKS++))
+    ((FAILED_CHECKS += 1))
 }
 
 check_warn() {
@@ -69,8 +72,12 @@ echo "LLM Gateway 部署前健康检查"
 echo "=========================================="
 echo "时间: $(date)"
 echo "网关: $GATEWAY_URL"
+if [ "$SKIP_DB" -eq 1 ]; then
+    echo "数据库检查: 已跳过 (--skip-db)"
+fi
 echo ""
 
+if [ "$SKIP_DB" -eq 0 ]; then
 # ============================================
 # 1. 基础设施检查
 # ============================================
@@ -193,6 +200,8 @@ else
     check_warn "$QUOTA_EXHAUSTED 个凭据配额耗尽"
 fi
 
+fi
+
 # ============================================
 # 4. 服务健康检查
 # ============================================
@@ -222,6 +231,7 @@ else
     check_fail "模型数量异常: $MODEL_COUNT"
 fi
 
+if [ "$SKIP_DB" -eq 0 ]; then
 # ============================================
 # 5. 性能检查
 # ============================================
@@ -327,6 +337,8 @@ if [ "$CHECK_PARTITION_ARCHIVE" = "1" ]; then
   else
     check_fail "credential_model_index 未分区（relkind=$RELKIND）"
   fi
+fi
+
 fi
 
 # ============================================
