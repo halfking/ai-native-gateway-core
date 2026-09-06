@@ -296,3 +296,4 @@ scripts/capacity-baseline/reports/
 
 # NAS 同步残片文件
 .!*
+data/

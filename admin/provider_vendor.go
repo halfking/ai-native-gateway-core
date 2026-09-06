@@ -60,14 +60,17 @@ func (h *Handler) loadCredentialRowLiteAny(ctx context.Context, credID int) (cre
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json,
+			COALESCE(p.kind, 'cloud'),
+			COALESCE(pc.capabilities, '{}'::jsonb)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.id = $1 AND c.status <> 'deleted' AND p.deleted_at IS NULL
 	`, credID).Scan(&c.id, &c.label, &c.providerID, &c.providerName,
 		&c.baseURL, &c.protocol, &c.catalogCode,
-		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON)
+		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON,
+		&c.providerKind, &c.catalogCaps)
 	return c, err
 }
 
@@ -409,6 +412,10 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	}
 
 	upserted, failed = h.enrollCredentialModels(ctx, cred.id, models)
+
+	// 2026-09-07 本地托管供应商：模型注册后立即回填 context window
+	//（ollama /api/show 与 catalog 兜底）。Best-effort，不影响 refresh 结果。
+	discovery.ApplyLocalContextWindows(ctx, h.db, cred.providerKind, cred.catalogCaps, cred.baseURL, cred.id, models, nil)
 
 	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model when the
 	// operator never set one. Mirrors the discovery worker so a manual

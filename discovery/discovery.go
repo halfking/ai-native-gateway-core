@@ -278,6 +278,8 @@ type credential struct {
 	ModelsEndpointTemplate *string // from provider_catalog, may be NULL
 	DiscoveryStrategy      string  // from provider_catalog
 	ModelsManifestJSON     *string // from provider_catalog, JSON manifest fallback
+	ProviderKind           string  // 2026-09-07: providers.kind — "local" 启用本地上下文回填
+	CatalogCapabilities    []byte  // 2026-09-07: provider_catalog.capabilities JSONB（本地托管元数据）
 }
 
 func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]credential, error) {
@@ -307,7 +309,9 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json,
+			COALESCE(p.kind, 'cloud'),
+			COALESCE(pc.capabilities, '{}'::jsonb)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
@@ -325,7 +329,9 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json,
+			COALESCE(p.kind, 'cloud'),
+			COALESCE(pc.capabilities, '{}'::jsonb)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
@@ -341,7 +347,7 @@ func (s *Service) loadCredentials(ctx context.Context, providerID int) ([]creden
 	var creds []credential
 	for rows.Next() {
 		var c credential
-		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.SecretCipher, &c.ModelsEndpointTemplate, &c.DiscoveryStrategy, &c.ModelsManifestJSON); err != nil {
+		if err := rows.Scan(&c.ID, &c.ProviderID, &c.ProviderName, &c.BaseURL, &c.Protocol, &c.CatalogCode, &c.SecretCipher, &c.ModelsEndpointTemplate, &c.DiscoveryStrategy, &c.ModelsManifestJSON, &c.ProviderKind, &c.CatalogCapabilities); err != nil {
 			slog.Warn("loadCredentials scan failed", "error", err)
 			continue
 		}
@@ -378,13 +384,15 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 	}
 
 	var (
-		models []string
-		err    error
+		models      []string
+		rawModelsJS []byte
+		err         error
 	)
+	isLocal := isLocalProviderKind(cred.ProviderKind)
 	if explicitTemplate && modelsURL != "" {
-		models, err = s.fetchModels(ctx, modelsURL, apiKey)
+		models, rawModelsJS, err = s.fetchModelsRaw(ctx, modelsURL, apiKey)
 	} else {
-		models, err = s.fetchModelsFromURLs(ctx, upstreamurl.ModelsURLCandidates(cred.BaseURL), apiKey)
+		models, rawModelsJS, err = s.fetchModelsRawFromURLs(ctx, upstreamurl.ModelsURLCandidates(cred.BaseURL), apiKey)
 	}
 	if err != nil {
 		slog.Debug("models API call failed, falling back to manifest",
@@ -410,6 +418,16 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 			continue
 		}
 		count++
+	}
+
+	// 2026-09-07 本地托管供应商：回填 context window。
+	// 本地 /v1/models 通常不带 context 信息，这里按优先级解析：
+	//   1. /v1/models 响应中的 max_model_len / context_length / context_window
+	//   2. ollama: POST /api/show 逐模型查询 model_info.*.context_length
+	//   3. catalog capabilities.default_context_window 兜底
+	// 结果写入 credential_model_bindings.context_window_override（source='local-discovery'）。
+	if isLocal {
+		s.applyLocalContextWindows(ctx, cred, models, rawModelsJS)
 	}
 
 	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model so the
@@ -505,31 +523,39 @@ func modelsEndpointURL(baseURL string, template *string) string {
 }
 
 func (s *Service) fetchModels(ctx context.Context, url, apiKey string) ([]string, error) {
+	models, _, err := s.fetchModelsRaw(ctx, url, apiKey)
+	return models, err
+}
+
+// fetchModelsRaw 返回模型列表和原始响应体。原始响应体供本地供应商
+// （kind='local'）解析 context window 字段（vLLM max_model_len 等）。
+func (s *Service) fetchModelsRaw(ctx context.Context, url, apiKey string) ([]string, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
+		return nil, nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return extractModelIDs(body)
+	models, err := extractModelIDs(body)
+	return models, body, err
 }
 
 func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey string) ([]string, error) {
@@ -547,6 +573,25 @@ func (s *Service) fetchModelsFromURLs(ctx context.Context, urls []string, apiKey
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("no models found from any candidate URL")
+}
+
+// fetchModelsRawFromURLs 同 fetchModelsFromURLs，但返回首个成功响应的原始
+// JSON（本地供应商的 context window 解析需要）。
+func (s *Service) fetchModelsRawFromURLs(ctx context.Context, urls []string, apiKey string) ([]string, []byte, error) {
+	var lastErr error
+	for _, u := range urls {
+		models, raw, err := s.fetchModelsRaw(ctx, u, apiKey)
+		if err == nil && len(models) > 0 {
+			return models, raw, nil
+		}
+		if err != nil {
+			lastErr = err
+		}
+	}
+	if lastErr != nil {
+		return nil, nil, lastErr
+	}
+	return nil, nil, fmt.Errorf("no models found from any candidate URL")
 }
 
 // extractModelIDs parses various /v1/models response formats.
