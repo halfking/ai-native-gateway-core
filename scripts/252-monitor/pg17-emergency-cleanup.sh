@@ -74,22 +74,28 @@ if [ "$LEVEL" = "L1" ] || [ "$LEVEL" = "L2" ] || [ "$LEVEL" = "L3" ]; then
     docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "DROP TABLE IF EXISTS $tname" >> "$LOG" 2>&1 || true
   done <<< "$DEAD_TABLES"
 
-  # 找 _default 分区（无业务价值）
+  # 找 _default 分区（需验证是否真的为空）
   DEFAULT_PARTS=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
-    SELECT child.relname
+    SELECT child.relname, parent.relname
     FROM pg_inherits i
     JOIN pg_class child  ON child.oid  = i.inhrelid
     JOIN pg_class parent ON parent.oid = i.inhparent
     WHERE child.relname LIKE '%_default'
       AND parent.relname IN ('request_logs','usage_ledger','request_wal','tool_usage_stats','routing_decision_log','credit_ledger','credential_model_index');
   ")
-  while IFS= read -r child; do
+  while IFS='|' read -r child parent; do
     [ -z "$child" ] && continue
-    echo "[$ts] L1 DROP default partition $child" >> "$LOG"
-    docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
-      ALTER TABLE ${child%_default} DETACH PARTITION $child;
-      DROP TABLE IF EXISTS $child;
-    " >> "$LOG" 2>&1 || true
+    # 验证是否真的为 0 行（防止意外删除有数据的默认分区）
+    row_count=$(docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "SELECT COUNT(*) FROM $child" 2>/dev/null || echo "-1")
+    if [ "$row_count" = "0" ]; then
+      echo "[$ts] L1 DROP default partition $child (verified 0 rows)" >> "$LOG"
+      docker_exec psql -U "$PG_USER" -d "$PG_DB" -tAc "
+        ALTER TABLE ${parent} DETACH PARTITION $child;
+        DROP TABLE IF EXISTS $child;
+      " >> "$LOG" 2>&1 || true
+    else
+      echo "[$ts] L1 SKIP default partition $child: has $row_count rows (NOT EMPTY!)" >> "$LOG"
+    fi
   done <<< "$DEFAULT_PARTS"
 fi
 
