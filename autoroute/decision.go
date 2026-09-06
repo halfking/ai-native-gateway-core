@@ -500,7 +500,8 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 
 	// P2.2: plugin re-ranking. Runs before explicit-default/override so
 	// admin pins and tenant defaults keep precedence over the optimizer.
-	recommended = d.recommendWithOptimizer(ctx, recommended, cls.Primary, profile, apiKeyID, sessionID, sigs.ClientType)
+	// P2.5: cls/sigs additionally feed the ONNX ML re-ranker's features.
+	recommended = d.recommendWithOptimizer(ctx, recommended, cls, sigs, profile, apiKeyID, sessionID, sigs.ClientType)
 
 	// Step 3a (M2): explicit default routing.
 	routingSource := "implicit_tag"

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,9 +14,12 @@ import (
 // routing_optimizer_init.go — P2.2: wires the routing optimization plugin
 // into the auto-route Decider when ROUTING_OPT_ENABLED=true.
 //
+// P2.5: additionally attaches the ONNX ML re-ranker when ROUTING_ML_ENABLED=true.
+//
 // Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md
-// Failure mode: construction problems (nil pool, disabled flag) degrade to
-// baseline routing (nil optimizer) — never block gateway startup.
+//         docs/ml/p2.5-go-onnx-inference.md
+// Failure mode: construction problems (nil pool, disabled flag, missing
+// model/runtime) degrade to baseline routing — never block gateway startup.
 
 // buildRoutingOptimizer constructs the P2.2 optimizer from feature flags.
 // Returns nil when the plugin is disabled or no DB pool is available; the
@@ -38,5 +42,39 @@ func buildRoutingOptimizer(pool *pgxpool.Pool) autoroute.RoutingOptimizer {
 		"feedback_integration", flags.EnableFeedbackIntegration,
 		"adaptive_learning", flags.EnableAdaptiveLearning,
 		"exploration_rate", flags.ExplorationRate)
+
+	// P2.5: optional ONNX ML re-ranker. Any failure degrades to the
+	// rule-engine order with a Warn — startup and routing continue.
+	optimizer = attachMLReranker(optimizer)
 	return optimizer
+}
+
+// attachMLReranker builds and attaches the P2.5 ONNX re-ranker when
+// ROUTING_ML_ENABLED=true. Returns the optimizer unchanged on any failure.
+func attachMLReranker(optimizer *routingopt.RealOptimizer) *routingopt.RealOptimizer {
+	mlFlags := settings.GetRoutingMLFlags()
+	if !mlFlags.Enabled {
+		slog.Info("routingopt: ML re-ranker disabled (ROUTING_ML_ENABLED=false)")
+		return optimizer
+	}
+	if mlFlags.ManifestPath == "" {
+		slog.Warn("routingopt: ML enabled but ROUTING_ML_MANIFEST_PATH unset, skipping")
+		return optimizer
+	}
+	selector, err := routingopt.NewMLSelector(context.Background(), routingopt.MLSelectorConfig{
+		ManifestPath:      mlFlags.ManifestPath,
+		ORTLibraryPath:    mlFlags.ORTLibraryPath,
+		IntraOpNumThreads: mlFlags.IntraOpNumThreads,
+	})
+	if err != nil {
+		slog.Warn("routingopt: ML re-ranker unavailable, rule-engine ordering stays active",
+			"err", err)
+		return optimizer
+	}
+	labels := selector.Manifest().LabelClasses
+	slog.Info("routingopt: ML re-ranker enabled",
+		"manifest", mlFlags.ManifestPath,
+		"labels", labels,
+		"min_confidence", mlFlags.MinConfidence)
+	return optimizer.WithMLReranker(routingopt.NewMLReranker(selector, mlFlags.MinConfidence))
 }

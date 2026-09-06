@@ -98,18 +98,28 @@ python -m src.evaluate --run models/20260907-101500
 ## 模型导出
 
 ```bash
-python -m src.export_model --run models/<run>              # joblib + ONNX
+python -m src.export_model --run models/<run>              # joblib + ONNX + manifest
 python -m src.export_model --run models/<run> --skip-onnx  # 只导出joblib
 ```
 
-ONNX输出的输入契约（阶段4 Go集成 `router/ml_router.go` 使用）：
+ONNX输出的输入契约（Go端 `routingopt.MLSelector` 消费，阶段4使用）：
 
-- 每个特征列一个命名输入，形状 `[None, 1]`
+- 每个特征列一个命名输入，形状 `[1, 1]`（batch=1）
   - 类别列：string张量，缺失/未知传 `"__missing__"`
   - 布尔列：int64张量，`1/0`，缺失传 `-1`
   - 数值列：float32张量，缺失传 `NaN`（图内中值填充）
+- 输出：`label`（string张量）+ `probabilities`（float张量，列序=
+  `manifest.json` 的 `label_classes`）
+- 导出必须 `zipmap=False`（概率为张量而非map，Go端onnxruntime_go只认张量）
+- `manifest.json` 是训练端↔Go端的加载契约（输入顺序/标签类目/缺失哨兵），
+  由 `export_model.py` 自动生成，详见 [docs/ml/p2.5-go-onnx-inference.md](../docs/ml/p2.5-go-onnx-inference.md)
 - 编码器/缩放器/随机森林全部在同一个ONNX图内，Go端不做任何特征变换
-- 输出：label(int64) + 每个标签的概率(float)
+
+Go推理测试fixture（小模型+manifest）一键复现：
+
+```bash
+.venv/bin/python scripts/make_go_fixture.py --out ../routingopt/testdata/ml_fixture
+```
 
 ## 测试
 

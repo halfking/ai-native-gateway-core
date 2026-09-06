@@ -71,12 +71,20 @@ def export_onnx(run_dir: str, target_opset: int = 17) -> str:
     features_cfg = run_config.get("features", {})
     initial_types = build_initial_types(features_cfg)
 
-    onnx_model = to_onnx(pipeline, initial_types=initial_types,
-                         target_opset={"": target_opset, "ai.onnx.ml": 3})
+    # zipmap=False: 概率输出为float32张量[N, n_classes]而非map，
+    # 这是Go端onnxruntime_go可消费的形态（manifest.label_classes对齐列序）
+    onnx_model = to_onnx(
+        pipeline, initial_types=initial_types,
+        target_opset={"": target_opset, "ai.onnx.ml": 3},
+        options={id(pipeline): {"zipmap": False}},
+    )
 
     out_path = os.path.join(run_dir, ONNX_NAME)
     with open(out_path, "wb") as fh:
         fh.write(onnx_model.SerializeToString())
+
+    # manifest：Go推理端（P2.5 routingopt.MLSelector）的加载契约
+    write_manifest(run_dir, pipeline, features_cfg, ONNX_NAME)
 
     # 可选验证：安装了onnxruntime则用哑输入跑一遍
     try:
@@ -86,6 +94,39 @@ def export_onnx(run_dir: str, target_opset: int = 17) -> str:
         sess.run(None, feed)
     except ImportError:
         pass  # onnxruntime未安装，跳过验证
+    return out_path
+
+
+MANIFEST_NAME = "manifest.json"
+
+
+def write_manifest(run_dir: str, pipeline: Any, features_cfg: dict[str, Any],
+                   model_file: str) -> str:
+    """写manifest.json：ONNX输入顺序、标签类目、缺失哨兵值。
+
+    Go端routingopt.MLSelector按此契约构造17个命名输入并解码标签，
+    训练端与推理端通过该文件解耦（无需共享Python运行时）。
+    """
+    labels = [str(c) for c in pipeline.named_steps["model"].classes_]
+    manifest = {
+        "schema_version": "v1",
+        "model_file": model_file,
+        "label_classes": labels,
+        "features": {
+            "categorical": list(features_cfg.get("categorical", [])),
+            "boolean": list(features_cfg.get("boolean", [])),
+            "numeric": list(features_cfg.get("numeric", [])),
+        },
+        # 与 data_loader.normalize_features 的契约一致
+        "missing_sentinels": {
+            "categorical": "__missing__",
+            "boolean_missing": -1,
+            "numeric": "NaN",
+        },
+    }
+    out_path = os.path.join(run_dir, MANIFEST_NAME)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, ensure_ascii=False, indent=2)
     return out_path
 
 
