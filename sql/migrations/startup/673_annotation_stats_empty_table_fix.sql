@@ -1,4 +1,4 @@
--- Migration 671: annotation_stats 空表 NULL 修复（P2.1 功能验证 hotfix）
+-- Migration 673: annotation_stats 空表 NULL 修复（P2.1 功能验证 hotfix）
 --
 -- Bug: 部署 669 后 /api/admin/annotations/stats 在空表上 500：
 --   "can't scan into dest[3] (col: accuracy_percent): cannot scan NULL
