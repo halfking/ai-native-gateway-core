@@ -56,7 +56,7 @@
 1. **`deploy/sql/DEPLOYMENT_PLAN.md` 归档**：整篇 v1.0 关于 184 + PG/Citus 部署，
    应 mv 到 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md`
    并加 deprecation banner。
-2. **`envs/` 仓库 Veritrans&9527 默认密码**：handoff 提到 owner 应排查
+2. **`envs/` 仓库 __REDACTED_SSH_PASSWORD__ 默认密码**：handoff 提到 owner 应排查
    哪些脚本 export 明文。当前 SSOT 设计如此（rule 47 §3 双写明文 + 加密），
    但屏幕/日志泄露风险由 owner 决策 rotation 周期。
 

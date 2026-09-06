@@ -84,7 +84,7 @@ curl http://localhost:8782/healthz
 # 获取管理员 Token
 TOKEN=$(curl -s -X POST http://localhost:8782/api/auth/token \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"Veritrans&9527"}' \
+  -d '{"username":"admin","password":"__REDACTED_SSH_PASSWORD__"}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
 
 # 测试会话 Ping

@@ -108,7 +108,7 @@ ORDER BY id;
 
 ```bash
 curl -X POST "http://qiyovo.com:3000/v1/chat/completions" \
-  -H "Authorization: Bearer sk-4JLfwKsx1m9IaSSYJZo7uzf09CfgyP6wSjQ8hcthSFabwNbW" \
+  -H "Authorization: Bearer <REDACTED_ADMIN_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-5.2",

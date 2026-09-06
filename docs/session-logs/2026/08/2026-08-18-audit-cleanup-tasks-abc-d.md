@@ -26,7 +26,7 @@
 ## 3. 为什么这样做
 
 - **任务 A**（rule 31 §1 + rule 39）：PROJECT_CONFIG.md 是 AI 每次会话首读文件，但其指向已废弃
-  的 184 server + 含明文密码 `Veritrans&9527` / `Kaixuan2026&#*9527`（后者已在
+  的 184 server + 含明文密码 `__REDACTED_SSH_PASSWORD__` / `__REDACTED_SSH_PASSWORD__`（后者已在
   `scripts/scan-secrets.replacements` 已知泄露列表）。不修会误导未来会话。
 - **任务 B**：3b6bdce18 已修复 metric 注册问题但未部署到 245；5 条告警规则
   (`CredentialReveal*Spike` / `*CachedAmplification` / `*NotFoundDrift` / `*TotalStalled`)
@@ -55,7 +55,7 @@
 
 ## 5. 遗留与风险
 
-- **shell 中 `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` 明文残留**（env-injector list 输出捕获）：
+- **shell 中 `LLM_GATEWAY_ADMIN_PASSWORD=__REDACTED_SSH_PASSWORD__` 明文残留**（env-injector list 输出捕获）：
   不在本任务范围（rule 11 §1 + rule 42 防止越界）。但提示此前某次部署/初始化脚本把
   明文密码 export 到环境变量。建议 owner 单独 PR 排查（哪些脚本会 export？是否走
   `<env:...>` 占位符更安全？）。

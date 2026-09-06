@@ -87,7 +87,7 @@ test_request_detail_contract() {
   assert_contains "detail test uses curl timeouts" "$DETAIL_API" '--connect-timeout 5 --max-time 30'
   production_url="https://llm.kxpms$(printf '.cn')"
   assert_not_contains "detail test has no hard-coded production URL" "$DETAIL_API" "$production_url"
-  assert_not_contains "detail test has no default password" "$DETAIL_API" 'Veritrans&9527'
+  assert_not_contains "detail test has no default password" "$DETAIL_API" '__REDACTED_SSH_PASSWORD__'
   assert_not_contains "detail test does not print token prefix" "$DETAIL_API" 'token: ${TOKEN:0:20}'
 }
 

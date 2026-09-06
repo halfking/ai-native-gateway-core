@@ -48,7 +48,7 @@
 cd __LOCAL_PATH_1__
 
 # 设置 SSH 密码
-export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
+export K8S_SSH_PASSWORD='<REDACTED_SSH_PASSWORD>'
 
 # 执行部署（全自动，6 个步骤）
 ./scripts/deploy-glm52-fix-now.sh
@@ -238,7 +238,7 @@ Layer 3: OpenAI 格式精细检测
 
 ```bash
 cd __LOCAL_PATH_1__
-export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
+export K8S_SSH_PASSWORD='<REDACTED_SSH_PASSWORD>'
 ./scripts/deploy-glm52-fix-now.sh
 ```
 

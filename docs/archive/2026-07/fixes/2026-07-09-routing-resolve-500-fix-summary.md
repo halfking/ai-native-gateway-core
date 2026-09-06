@@ -74,7 +74,7 @@ flowchart TD
     subgraph "🔬 测试验证"
         T1[browser-use 自动化测试]
         T2[打开 llm.kxpms.cn]
-        T3[登录 admin/Veritrans&9527]
+        T3[登录 admin/__REDACTED_SSH_PASSWORD__]
         T4[导航到路由全景页]
         T5[验证模型数据正常加载]
         T1 --> T2 --> T3 --> T4 --> T5

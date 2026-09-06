@@ -14,12 +14,12 @@ ENDPOINTS = {
     "claude-sonnet-5": {
         "url": "https://llm.kxpms.cn/v1",
         "model": "claude-sonnet-5",
-        "key": "sk-RZ8dm0zyw0Ab8T3vTWBuuy3TLR5HF0vwcy18UHInLcW1AsDz"
+        "key": "sk-REDACTED-SET-YOUR-GATEWAY-KEY"
     },
     "claude-opus-5": {
         "url": "https://llm.kxpms.cn/v1",
         "model": "claude-opus-5",
-        "key": "sk-jybFTc1JlrSUEJQlH9q1RxmkbJeOCQ6fdv2MWrDpTOff0Gh9"
+        "key": "sk-REDACTED-SET-YOUR-GATEWAY-KEY"
     },
     "qwen-baseline": {
         "url": "http://127.0.0.1:8082",

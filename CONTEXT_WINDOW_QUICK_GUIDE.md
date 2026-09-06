@@ -135,7 +135,7 @@ curl -X GET "https://llm.kxpms.cn/api/providers/{provider_id}/models" \
 ```bash
 # 测试 30K token 请求（在 32K 窗口内）
 curl -X POST "http://qiyovo.com:3000/v1/chat/completions" \
-  -H "Authorization: Bearer sk-4JLfwKsx1m9IaSSYJZo7uzf09CfgyP6wSjQ8hcthSFabwNbW" \
+  -H "Authorization: Bearer <REDACTED_ADMIN_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "glm-5.2",

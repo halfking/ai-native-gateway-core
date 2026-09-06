@@ -46,7 +46,7 @@ export GLM_API_KEY="your-actual-key"
 
 ### 2. 部署脚本（一键部署）
 ```bash
-export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
+export K8S_SSH_PASSWORD='<REDACTED_SSH_PASSWORD>'
 ./scripts/deploy-glm52-enhancement.sh
 ```
 

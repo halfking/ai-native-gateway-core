@@ -6,7 +6,7 @@
 ## 1. 做了什么
 
 1. **服务端信息**：SSH `14.103.112.184:25022` → `<env:HOST_154>:25022`；
-   默认用户 `admin` → `root`；明文密码 `Veritrans&9527` / `Kaixuan2026&#*9527`
+   默认用户 `admin` → `root`；明文密码 `__REDACTED_SSH_PASSWORD__` / `__REDACTED_SSH_PASSWORD__`
    → `<env:SSHPASS>` 占位符。
 2. **数据库配置**：移除"通过 SSH 隧道连 127.0.0.1"叙述，改"直连 252 内网"；
    `postgres` 用户 → `<env:COMMON_PG_SUPERUSER>` (= `llm_gateway`)；
@@ -36,9 +36,9 @@
 - **rule 31 §1 强制**：154 替换 184 后，所有指向 184 的文档（特别是"AI 每次会话首读"的
   PROJECT_CONFIG.md）必须同步，否则 AI 会按错误 server 操作（SSH 超时、找不到服务单元）。
 - **rule 39 铁律 1**：仓库入仓文件零明文敏感值。
-  PROJECT_CONFIG.md 行 24-25 / 221 已暴露 `Veritrans&9527` + `Kaixuan2026&#*9527`，
+  PROJECT_CONFIG.md 行 24-25 / 221 已暴露 `__REDACTED_SSH_PASSWORD__` + `__REDACTED_SSH_PASSWORD__`，
   且后者已被 `scripts/scan-secrets.replacements:11` 列为已知泄露
-  （`Kaixuan2026&#*9527==>__REDACTED_SSH_PASSWORD__`）—— 说明 git filter-repo 历史清洗
+  （`__REDACTED_SSH_PASSWORD__==>__REDACTED_SSH_PASSWORD__`）—— 说明 git filter-repo 历史清洗
   走过，但当前文件未同步。
 - **rule 47 互引**：占位符 `<env:HOST_154>` / `<env:SSHPASS>` / `<env:COMMON_PG_*>` 全部对应
   `~/workspace/ai-native-tools/envs/` SSOT（`common/ssh-keys.yaml`、`common/database.yaml`、
@@ -56,13 +56,13 @@
 - **scan-secrets.sh**（`bash scripts/scan-secrets.sh --paths=PROJECT_CONFIG.md`）：
   - 无 BLOCK；仅 8 条 INTERNAL_DOMAIN WARN（`llmgo.kxpms.cn` 等公网域名，rule 39 §5.1
     允许 public domain；不在 §5.1 8 类强制脱敏范围）。
-  - **关键**：`Kaixuan2026&#*9527` 文本已从 PROJECT_CONFIG.md 完全消失（diff 验证）。
+  - **关键**：`__REDACTED_SSH_PASSWORD__` 文本已从 PROJECT_CONFIG.md 完全消失（diff 验证）。
 - **pre-commit-check.sh**：`PASS=4 FAIL=0 WARN=0 SKIP=2`（go vet / SQL / migration NNN /
   migration down.sql 全过；vue-tsc 与 token compliance 因 web 文件未变更自动 skip）。
 
 ## 5. 遗留与风险
 
-- **当前 shell 中残留 `LLM_GATEWAY_ADMIN_PASSWORD=Veritrans&9527` 明文**（被 env-injector
+- **当前 shell 中残留 `LLM_GATEWAY_ADMIN_PASSWORD=__REDACTED_SSH_PASSWORD__` 明文**（被 env-injector
   list 输出捕获到）：不在本任务范围，但提示此前某次部署或 shell 初始化脚本把明文密码
   export 到了环境变量。建议 owner 单独 PR 排查：哪些脚本/配置会 export 明文密码？
   是否走 `<env:...>` 占位符更安全？本次未处理，避免越界（rule 11 §1 + rule 42）。

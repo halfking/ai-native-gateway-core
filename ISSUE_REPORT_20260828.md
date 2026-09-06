@@ -2,7 +2,7 @@
 
 **日期**: 2026-08-28  
 **环境**: https://llm.kxpms.cn (154服务器)  
-**测试用户**: admin / Veritrans&9527
+**测试用户**: admin / __REDACTED_SSH_PASSWORD__
 
 ## 问题概述
 

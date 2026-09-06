@@ -42,7 +42,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 func main() {
-	hash, _ := bcrypt.GenerateFromPassword([]byte("Veritrans&9527"), bcrypt.DefaultCost)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("__REDACTED_SSH_PASSWORD__"), bcrypt.DefaultCost)
 	fmt.Println(string(hash))
 }
 HASHEOF
@@ -58,7 +58,7 @@ docker exec r112_postgres psql -U kxuser -d llm_gateway -c "UPDATE users SET pas
 ## 默认凭据
 
 - **用户名**: admin
-- **密码**: Veritrans&9527
+- **密码**: __REDACTED_SSH_PASSWORD__
 - **角色**: super_admin
 
 ## 端口映射
@@ -152,7 +152,7 @@ with sync_playwright() as p:
     # 2. Login
     page.click('button:has-text("Sign in")')
     page.fill('input[type="text"]', 'admin')
-    page.fill('input[type="password"]', 'Veritrans&9527')
+    page.fill('input[type="password"]', '__REDACTED_SSH_PASSWORD__')
     page.click('button:has-text("登录")')
     time.sleep(5)
 

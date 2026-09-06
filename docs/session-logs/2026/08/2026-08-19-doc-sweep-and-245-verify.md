@@ -133,7 +133,7 @@ handoff §4.2 目标: "deploy b3036166d 修复版本到 245 + curl /metrics 验�
 1. **`deploy/sql/DEPLOYMENT_PLAN.md` 归档**: 整篇 v1.0 关于 184 + PG/Citus 部署。
    应 mv 到 `docs/archive/2026-07/specs/deployment-plan-v1-184-pg-citus.md` 并加
    deprecation banner。本会话未做（避免又一轮 ZCode rebase 循环）。
-2. **`envs/` 仓库 Veritrans&9527 默认密码**: env-injector list 输出明文暴露。
+2. **`envs/` 仓库 __REDACTED_SSH_PASSWORD__ 默认密码**: env-injector list 输出明文暴露。
    跨项目 SSOT 设计如此（rule 47 §3 双写明文 + 加密），但屏幕/日志泄露风险
    由 owner 决策 rotation 周期。本会话**不擅自动**（rule 10 §2.3 human_only）。
 

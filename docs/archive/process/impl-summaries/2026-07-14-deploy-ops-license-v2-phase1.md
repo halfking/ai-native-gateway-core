@@ -77,11 +77,11 @@ source configs/env-252.sh
 - Plaintext files: `.env.252`, `.env.kaixuan-1` gitignored (not tracked)
 
 **Credential values** (extracted from git history 947a003e7^):
-- `SSH_PASS_252=Kaixuan2026&#*9527`
+- `SSH_PASS_252=__REDACTED_SSH_PASSWORD__`
 - `PG_PASS_252=***REDACTED***`
 - `SSH_PASS_KAIXUAN1=kaixuan123`
 - `PG_PASS_KAIXUAN1=***REDACTED***`
-- `REGISTRY_PASS_KAIXUAN1=Veritrans&9527`
+- `REGISTRY_PASS_KAIXUAN1=__REDACTED_SSH_PASSWORD__`
 
 **Verification**:
 ```bash

@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PROJECT_CONFIG.md 敏感信息脱敏（rule 31 §1 + rule 39）**：
   - SSH 地址 `14.103.112.184:25022` → `<env:HOST_154>:25022`（184 已废弃，rule 31 §1）
   - 默认用户 `admin` → `root`（匹配 154 SSOT metadata.yaml）
-  - 默认密码 `Veritrans&9527`、`Kaixuan2026&#*9527`（已泄露，见 `scripts/scan-secrets.replacements`）→ 全改为 `<env:SSHPASS>` 占位符（SSOT：`common/ssh-keys.yaml` `SSH_PASSWORD_ENV_VAR`）
+  - 默认密码 `__REDACTED_SSH_PASSWORD__`、`__REDACTED_SSH_PASSWORD__`（已泄露，见 `scripts/scan-secrets.replacements`）→ 全改为 `<env:SSHPASS>` 占位符（SSOT：`common/ssh-keys.yaml` `SSH_PASSWORD_ENV_VAR`）
   - DB 配置：经 184 SSH 隧道 `127.0.0.1:5432` → 直连 252 内网 `<env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>`，DB 用户 `postgres` → `<env:COMMON_PG_SUPERUSER>` (=`llm_gateway`)，DB 密码 → `<env:COMMON_PG_SUPERUSER_PASS>`
   - SSH 命令示例：`ssh admin@14.103.112.184` + `sudo su -` + 明文密码 → 证书认证 `ssh -i <env:SSH_KEY_154> root@<env:HOST_154>` + sshpass fallback
   - DB 操作示例：移除 SSH tunnel，改用 `PGPASSWORD=<env:COMMON_PG_SUPERUSER_PASS> psql ...` 直连
@@ -116,7 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **PROJECT_CONFIG.md credential redact**（rule 31 §1 + rule 39）：
   - SSH 地址 `14.103.112.184:25022`（已废弃）→ `<env:HOST_154>:25022`（rule 31 §1：184 废弃）
   - 默认用户 `admin` → `root`（匹配 154 SSOT metadata.yaml）
-  - 默认密码 `Veritrans&9527` 与 Root 密码 `Kaixuan2026&#*9527`（已出现在 `scripts/scan-secrets.replacements` 的
+  - 默认密码 `__REDACTED_SSH_PASSWORD__` 与 Root 密码 `__REDACTED_SSH_PASSWORD__`（已出现在 `scripts/scan-secrets.replacements` 的
     已知泄露列表）→ 全部改为 `<env:SSHPASS>` 占位符（SSOT：`common/ssh-keys.yaml` `SSH_PASSWORD_ENV_VAR`）
   - 数据库配置：从"经 184 SSH 隧道连接 `127.0.0.1:5432`" 改为"直连 252 内网
     `<env:COMMON_PG_HOST_252>:<env:COMMON_PG_PORT_252>`"，DB 用户 `postgres` →

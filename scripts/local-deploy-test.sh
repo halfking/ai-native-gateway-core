@@ -98,7 +98,7 @@ require_local_test_config() {
     : "${LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY:=AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw}"
     : "${LLM_GATEWAY_LOCAL_TEST_JWT_SECRET:=local-dev-secret-do-not-use-in-production-12345678}"
     : "${LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY:=local-admin-test-token-do-not-use-in-production}"
-    : "${LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD:=Veritrans&9527}"
+    : "${LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD:=__REDACTED_SSH_PASSWORD__}"
     : "${LLM_GATEWAY_LOCAL_TEST_AUTH_TEST_TOKEN:=test-key}"
   fi
 
@@ -122,7 +122,7 @@ require_local_test_config() {
 
   if [[ "$insecure_defaults" != "1" ]]; then
     case "${LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD}|${LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY}|${LLM_GATEWAY_LOCAL_TEST_JWT_SECRET}|${LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY}|${LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD}|${LLM_GATEWAY_LOCAL_TEST_AUTH_TEST_TOKEN}" in
-      *"kxpass"*|*"AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"*|*"local-dev-secret-do-not-use-in-production-12345678"*|*"local-admin-test-token-do-not-use-in-production"*|*"Veritrans&9527"*|*"test-key"*)
+      *"kxpass"*|*"AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"*|*"local-dev-secret-do-not-use-in-production-12345678"*|*"local-admin-test-token-do-not-use-in-production"*|*"__REDACTED_SSH_PASSWORD__"*|*"test-key"*)
         err "known local test defaults require LLM_GATEWAY_LOCAL_TEST_ALLOW_INSECURE_DEFAULTS=1"
         exit 1
         ;;

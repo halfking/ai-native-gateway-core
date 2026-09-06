@@ -18,7 +18,7 @@ DB_CONFIG = {
 CLAUDE_CONFIG = {
     "url": "https://llm.kxpms.cn/v1/chat/completions",
     "model": "claude-sonnet-5",
-    "key": "sk-jybFTc1JlrSUEJQlH9q1RxmkbJeOCQ6fdv2MWrDpTOff0Gh9"
+    "key": "sk-REDACTED-SET-YOUR-GATEWAY-KEY"
 }
 
 TASK_CLASSIFICATION_PROMPT = """分析这段对话并分类任务类型。
