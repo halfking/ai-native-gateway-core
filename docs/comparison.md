@@ -1,21 +1,21 @@
 # Comparison with Other LLM Gateways
 
-This comparison focuses on **architecturally distinguishing features** rather than popularity metrics. All information is based on publicly available documentation as of 2026-09-06.
+This comparison focuses on **architecturally distinguishing features** rather than popularity metrics. All information is based on publicly available documentation as of 2026-09-07.
 
 ## Quick Comparison
 
-| Feature | AI Native Gateway | LiteLLM | Portkey | Kong AI Gateway |
-|---------|-------------------|---------|---------|-----------------|
-| **Deployment** | Private (self-hosted) | SaaS + OSS | SaaS + OSS | OSS (Enterprise avail) |
-| **Protocol Support** | OpenAI, Anthropic, Gemini, Responses | 100+ providers | OpenAI, Anthropic, Azure | Provider-agnostic plugins |
-| **Multi-Tenancy** | Native (PG RLS) | Basic | Full (SaaS) | Via Kong auth plugins |
-| **Streaming** | SSE with integrity checks | Yes | Yes | Yes |
-| **Routing** | Intelligent (sticky + health + tier) | Fallback + load balance | Basic fallback | Load balancing |
-| **Admin UI** | Embedded Vue SPA | CLI + proxy | Full SaaS UI | Kong Manager |
-| **Observability** | Prometheus + OTel + logs | Prometheus | Full SaaS analytics | Prometheus plugins |
-| **Cost Tracking** | Per-tenant token accounting | Basic | Advanced (SaaS) | Via plugins |
-| **Data Residency** | 100% private | Depends on mode | SaaS = cloud | Self-hosted option |
-| **License** | Apache 2.0 | MIT | Proprietary (SaaS) | Apache 2.0 |
+| Feature | AI Native Gateway | LiteLLM | OmniRoute | Portkey | Kong AI Gateway |
+|---------|-------------------|---------|-----------|---------|-----------------|
+| **Deployment** | Private (self-hosted) | SaaS + OSS | Self-hosted (Node) | SaaS + OSS | OSS (Enterprise avail) |
+| **Protocol Support** | OpenAI, Anthropic, Gemini, Responses | 100+ providers | Multi-provider catalog (project-declared 290+) | OpenAI, Anthropic, Azure | Provider-agnostic plugins |
+| **Multi-Tenancy** | Native (PG RLS) | Basic | Single-node oriented | Full (SaaS) | Via Kong auth plugins |
+| **Streaming** | SSE with integrity checks | Yes | Yes | Yes | Yes |
+| **Routing** | Two-layer (model + credential), health-aware | Fallback + load balance | Cost/cache/context/headroom scoring | Basic fallback | Load balancing |
+| **Admin UI** | Embedded Vue SPA | CLI + proxy | Web UI | Full SaaS UI | Kong Manager |
+| **Observability** | Prometheus + OTel + logs | Prometheus | Built-in dashboards | Full SaaS analytics | Prometheus plugins |
+| **Cost Tracking** | Per-tenant token accounting | Basic | Savings-oriented tracking | Advanced (SaaS) | Via plugins |
+| **Data Residency** | 100% private | Depends on mode | 100% private | SaaS = cloud | Self-hosted option |
+| **License** | Apache 2.0 | MIT | See upstream repo | Proprietary (SaaS) | Apache 2.0 |
 
 ## Detailed Feature Comparison
 
@@ -114,6 +114,38 @@ This comparison focuses on **architecturally distinguishing features** rather th
 - Embedded admin UI is preferred over separate management services
 - Cost-effective for small to medium LLM traffic
 
+### OmniRoute
+
+**Repository**: https://github.com/Rawbeew/omniroute (public project; feature notes below follow OmniRoute's own README claims — we have not independently verified its provider counts or savings figures)
+
+**What OmniRoute Does Best** (per its public documentation):
+- Self-hosted Node.js + SQLite architecture with a JS-based provider execution layer
+- Large multi-provider catalog (project-declared 290+ providers)
+- Request-aware routing strategies: cost, cache, context, and headroom scoring
+- Multi-stage context compression pipeline
+- Built-in MCP registry/policy concepts, A2A task semantics, and Fusion (multi-model coordination) as roadmap items
+- Savings-oriented cost tracking
+
+**What AI Native Gateway Emphasizes Differently**:
+- **Go + PostgreSQL/Redis vs Node + SQLite**: compiled data plane, RLS-enforced multi-tenancy, and horizontal-grade storage instead of a single-node embedded database
+- **Two-layer routing**: explicit model-selection layer (work-type classification + scoring) on top of credential selection — routing policy is observable and configurable per work type in the admin UI
+- **Operational observability built in**: live request stream, credential health matrix, task×model heatmaps, Sankey flow, and request-level compression/masking audit as first-class UI
+- **Tenancy and quotas**: tenant/user/API-key hierarchy with database-enforced isolation, per-tenant quotas and cost caps
+- **Health-aware dynamic switching**: continuous credential scoring with automatic degradation and recovery
+
+**Transparent disclosure — design influence**: AI Native Gateway's design explicitly studied OmniRoute as a reference (tracked in our internal integration-boundary review, snapshot 2026-08-21). We adopted *semantics* — cost/cache/context/headroom scoring dimensions, staged context compression, and MCP/A2A direction — through our own boundary review, and re-implemented them in Go on PostgreSQL; no Node/SQLite/JS-VM mechanics were ported, and upstream's declared numbers are treated as claims, not verified facts.
+
+**When to Choose OmniRoute**:
+- You want a Node.js-based self-hosted gateway with an embedded database
+- Its provider catalog and compression staging match your workflow
+- You prefer its JS execution model and tooling ecosystem
+
+**When to Choose AI Native Gateway**:
+- You need Go performance with PostgreSQL-grade durability and RLS multi-tenancy
+- Database-enforced tenant isolation and per-tenant quotas are requirements
+- You want deep routing/credential observability in an embedded admin UI
+- You prefer a gateway whose advanced routing policies hot-reload without restarts
+
 ## Architecture Philosophy
 
 | Aspect | AI Native Gateway | Typical Alternatives |
@@ -140,6 +172,11 @@ This comparison focuses on **architecturally distinguishing features** rather th
 - Python-centric tech stacks
 - Teams wanting maximum provider coverage
 - Simpler deployment with fewer components
+
+**OmniRoute is Best For**:
+- Node.js-centric teams wanting a self-hosted gateway
+- Single-machine deployments where an embedded database is acceptable
+- Users aligned with its provider catalog and compression pipeline design
 
 **Portkey/SaaS Gateways are Best For**:
 - Teams wanting zero operational overhead
@@ -174,6 +211,7 @@ Users should conduct their own benchmarks with representative workloads.
 ## Further Information
 
 - **LiteLLM**: https://docs.litellm.ai/
+- **OmniRoute**: https://github.com/Rawbeew/omniroute
 - **Portkey**: https://portkey.ai/docs
 - **Kong AI Gateway**: https://docs.konghq.com/gateway/latest/
 - **AI Native Gateway**: See [Getting Started](getting-started.md)
