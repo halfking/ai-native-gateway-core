@@ -198,13 +198,13 @@ See [Production Deployment](docs/deployment/) for details.
 
 ## Comparison with Alternatives
 
-| Feature | AI Native Gateway | LiteLLM | Portkey | Kong AI |
-|---------|-------------------|---------|---------|---------|
-| **Deployment** | Private (self-hosted) | SaaS + OSS | SaaS | OSS |
-| **Multi-Tenancy** | Native (PG RLS) | Basic | Full (SaaS) | Via plugins |
-| **Admin UI** | Embedded Vue SPA | CLI | SaaS UI | Kong Manager |
-| **Data Residency** | 100% private | Depends | Cloud (SaaS) | Self-hosted |
-| **License** | Apache 2.0 | MIT | Proprietary | Apache 2.0 |
+| Feature | AI Native Gateway | LiteLLM | OmniRoute | Portkey | Kong AI |
+|---------|-------------------|---------|-----------|---------|---------|
+| **Deployment** | Private (self-hosted) | SaaS + OSS | Self-hosted (Node) | SaaS | OSS |
+| **Multi-Tenancy** | Native (PG RLS) | Basic | Single-node oriented | Full (SaaS) | Via plugins |
+| **Admin UI** | Embedded Vue SPA | CLI | Web UI | SaaS UI | Kong Manager |
+| **Data Residency** | 100% private | Depends | 100% private | Cloud (SaaS) | Self-hosted |
+| **License** | Apache 2.0 | MIT | See upstream | Proprietary | Apache 2.0 |
 
 **Choose AI Native Gateway if you need**:
 - Full data residency control (no external SaaS dependencies)
@@ -214,6 +214,7 @@ See [Production Deployment](docs/deployment/) for details.
 
 **Choose alternatives if you need**:
 - Maximum provider coverage (100+ providers) → LiteLLM
+- Node.js-based self-hosted gateway with embedded DB → OmniRoute
 - Zero-ops managed service → Portkey
 - General API gateway + LLM → Kong
 
