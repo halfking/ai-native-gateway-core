@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/routingopt"
 )
 
 // TestBuildRoutingOptimizer_DisabledByDefault proves the P2.2 plugin stays
@@ -61,4 +63,24 @@ func TestBuildRoutingOptimizer_EnabledWithPool(t *testing.T) {
 		t.Fatalf("GetStats on fresh optimizer must not fail: %v", err)
 	}
 	_ = statsAny
+}
+
+// TestStartAdaptiveMaintenance_DisabledIsNoop proves the flag gate: with
+// ROUTING_OPT_ADAPTIVE_LEARNING unset/false no loop decision is made. The
+// function must return immediately without spawning work (no panic with a
+// nil-pool optimizer either — cold-start safety).
+func TestStartAdaptiveMaintenance_DisabledIsNoop(t *testing.T) {
+	t.Setenv("ROUTING_OPT_ADAPTIVE_LEARNING", "")
+	optimizer := routingopt.NewRealOptimizer(nil)
+	startAdaptiveMaintenance(optimizer, false) // must return, not block
+}
+
+// TestRunAdaptiveMaintenance_NilPoolIsQuiet proves one maintenance pass on an
+// unwired optimizer degrades to logs (ErrNoRows path) instead of panicking —
+// the worker must survive a cold DB.
+func TestRunAdaptiveMaintenance_NilPoolIsQuiet(t *testing.T) {
+	optimizer := routingopt.NewRealOptimizer(nil)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	optimizer.RunAdaptiveMaintenance(ctx) // must not panic
 }

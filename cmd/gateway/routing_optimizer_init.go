@@ -70,7 +70,38 @@ func buildRoutingOptimizer(pool *pgxpool.Pool) *routingopt.RealOptimizer {
 	}
 
 	setRoutingOptML(optimizer)
+
+	// P2.2 adaptive learning: background parameter checkpoint / anomaly
+	// detection loop, gated by ROUTING_OPT_ADAPTIVE_LEARNING (default false).
+	startAdaptiveMaintenance(optimizer, flags.EnableAdaptiveLearning)
 	return optimizer
+}
+
+// adaptiveMaintenanceInterval is the cadence of the online-learning loop
+// (design doc §2.4: background worker every 5 minutes).
+const adaptiveMaintenanceInterval = 5 * time.Minute
+
+// startAdaptiveMaintenance launches the periodic AdaptParameters /
+// DetectAnomalies loop when the flag is on. The first pass is deliberately
+// deferred by one full interval so gateway startup never competes with the
+// boot-time DB migration/refresh window; the process lifetime is the loop's
+// lifetime (same semantics as the other bg workers).
+func startAdaptiveMaintenance(optimizer *routingopt.RealOptimizer, enabled bool) {
+	if !enabled {
+		slog.Info("routingopt: adaptive learning disabled (ROUTING_OPT_ADAPTIVE_LEARNING=false)")
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(adaptiveMaintenanceInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			ctx, cancel := context.WithTimeout(context.Background(), adaptiveMaintenanceInterval)
+			optimizer.RunAdaptiveMaintenance(ctx)
+			cancel()
+		}
+	}()
+	slog.Info("routingopt: adaptive learning enabled",
+		"interval", adaptiveMaintenanceInterval)
 }
 
 // attachMLReranker builds and attaches the P2.5 ONNX re-ranker when

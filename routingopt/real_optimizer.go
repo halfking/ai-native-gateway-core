@@ -2,6 +2,7 @@ package routingopt
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -223,4 +224,30 @@ func (o *RealOptimizer) RecordFeedback(ctx context.Context, feedback interface{}
 // Returns: interface{} (*OptimizerStats)
 func (o *RealOptimizer) GetStats(ctx context.Context) (interface{}, error) {
 	return o.learner.GetStats(ctx)
+}
+
+// RunAdaptiveMaintenance runs one online-learning pass: parameter adaptation
+// (checkpoint / hold / anomaly) followed by anomaly detection. Called by the
+// cmd/gateway background worker on the ROUTING_OPT_ADAPTIVE_LEARNING cadence;
+// errors are logged, never propagated — a failed pass simply defers learning
+// to the next tick.
+func (o *RealOptimizer) RunAdaptiveMaintenance(ctx context.Context) {
+	if err := o.learner.AdaptParameters(ctx); err != nil {
+		if ctx.Err() == nil {
+			slog.WarnContext(ctx, "routingopt: adaptive pass failed", "err", err)
+		}
+		return
+	}
+	anomalies, err := o.learner.DetectAnomalies(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.WarnContext(ctx, "routingopt: anomaly detection failed", "err", err)
+		}
+		return
+	}
+	for _, a := range anomalies {
+		slog.WarnContext(ctx, "routingopt: routing anomaly",
+			"type", a.Type, "severity", a.Severity, "description", a.Description,
+			"metrics", a.Metrics)
+	}
 }
