@@ -46,7 +46,9 @@ for arg in "${ARGS[@]}"; do
   [[ "$arg" == --help || "$arg" == -h ]] && { sed -n '2,27p' "$0"; exit 0; }
 done
 if [[ " ${ARGS[*]} " == *' --dry-run '* ]]; then
-  printf '{"target":"154","active_port":"8782","candidate_port":"8781"}\n'
+  # Port literals MUST mirror targets.sh:154 (active_port "8781", candidate_port "8782");
+  # deploy-seamless.sh reads the same contract via target_field at deploy time.
+  printf '{"target":"154","active_port":"8781","candidate_port":"8782"}\n'
   exit 0
 fi
 
