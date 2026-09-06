@@ -58,9 +58,17 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// 2026-09-07 本地托管供应商（kind='local'）：本地推理服务不校验
+	// Authorization，允许 api_key 为空 —— 自动写入占位密钥（照常加密存储，
+	// 供 discovery/relay 的既有解密链路使用）。占位密钥不可轮转/修改。
+	providerKind := h.providerKindByID(r.Context(), providerID)
+	isLocal := isLocalKind(providerKind)
 	if req.APIKey == "" {
-		writeError(w, http.StatusBadRequest, "api_key required")
-		return
+		if !isLocal {
+			writeError(w, http.StatusBadRequest, "api_key required")
+			return
+		}
+		req.APIKey = localNoKeyPlaceholder
 	}
 	planType := "token"
 	if req.PlanType != nil && *req.PlanType != "" {
@@ -694,12 +702,21 @@ func (h *Handler) rotateCredentialPrimaryKeyWithOptions(w http.ResponseWriter, r
 	}
 	apiKeyBlank := strings.TrimSpace(req.APIKey) == ""
 	req.RawModelName = strings.TrimSpace(req.RawModelName)
+
+	// 2026-09-07 本地托管供应商：占位凭据由系统自动管理，不允许轮转。
+	// 放在入参校验之后 —— 无效输入的 400 语义与 DB 访问顺序保持与历史
+	// 行为一致（TestRotateCredentialPrimaryKeyRejectsInvalidInputBeforeDB
+	// 用 nil DB 验证"先校验后落库"契约）。
 	if apiKeyBlank || (!allowEmptyModel && req.RawModelName == "") {
 		if apiKeyBlank {
 			writeError(w, http.StatusBadRequest, "api_key required")
 		} else {
 			writeError(w, http.StatusBadRequest, "api_key and raw_model_name required")
 		}
+		return
+	}
+	if isLocalKind(h.providerKindByID(r.Context(), providerID)) {
+		writeError(w, http.StatusBadRequest, errLocalCredentialImmutable)
 		return
 	}
 

@@ -848,15 +848,22 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Catalog-based provider ──
-	var catProtocol, catBaseURL, catHeaderProfile string
+	var catProtocol, catBaseURL, catHeaderProfile, catKind string
 	err := h.db.QueryRow(ctx, `
-		SELECT protocol, base_url_template, COALESCE(header_profile_code,'')
+		SELECT protocol, base_url_template, COALESCE(header_profile_code,''), COALESCE(kind,'cloud')
 		FROM provider_catalog WHERE code = $1
-	`, catalogCode).Scan(&catProtocol, &catBaseURL, &catHeaderProfile)
+	`, catalogCode).Scan(&catProtocol, &catBaseURL, &catHeaderProfile, &catKind)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "unknown catalog code: "+catalogCode)
 		return
 	}
+
+	// 2026-09-07 本地托管供应商（migration 671）：catalog kind='local' 的条目
+	// （local-ollama / local-mlx-lm / ...）创建 kind='local' 供应商。
+	// base_url 默认取 catalog 模板（127.0.0.1 + 默认端口），Docker 部署时
+	// 调用方把它覆盖成 host.docker.internal:<port>/v1。创建成功后自动
+	// 生成占位凭据（本地服务不校验 API key，占位值不可修改）。
+	localKind := isLocalKind(catKind)
 
 	code := catalogCode
 	displayName := code
@@ -867,16 +874,33 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 	if req.BaseURL != nil && *req.BaseURL != "" {
 		baseURL = *req.BaseURL
 	}
+	if localKind {
+		if msg := validateLocalBaseURL(baseURL); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
 	protocol := catProtocol
 	if req.Protocol != nil && *req.Protocol != "" {
 		protocol = *req.Protocol
 	}
 
+	providerKind := "cloud"
+	if localKind {
+		providerKind = LocalProviderKind
+	}
+
 	var id int
 	// 2026-08-31: 同 custom 分支 —— 冲突行已软删除则复活，活跃冲突 409。
+	// 2026-09-07 本地托管：kind='local' 但 category 走 'self_host'
+	// （providers_category_check 不允许新枚举；self_host 语义一致）。
+	category := "official"
+	if localKind {
+		category = "self_host"
+	}
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO providers (tenant_id, code, display_name, base_url, protocol, catalog_code, is_custom, kind, category, enabled)
-		VALUES ('default', $1, $2, $3, $4, $5, FALSE, 'cloud', 'official', TRUE)
+		VALUES ('default', $1, $2, $3, $4, $5, FALSE, $6, $7, TRUE)
 		ON CONFLICT (tenant_id, code) DO UPDATE SET
 		    deleted_at = NULL,
 		    display_name = EXCLUDED.display_name,
@@ -887,16 +911,42 @@ func (h *Handler) createProvider(w http.ResponseWriter, r *http.Request) {
 		    updated_at = NOW()
 		WHERE providers.deleted_at IS NOT NULL
 		RETURNING id
-	`, code, displayName, baseURL, protocol, catalogCode).Scan(&id)
+	`, code, displayName, baseURL, protocol, catalogCode, providerKind, category).Scan(&id)
 	if err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || errors.Is(err, pgx.ErrNoRows) {
+			// 2026-09-07 本地供应商幂等注册：已存在的 kind='local' 供应商
+			// 不再一律 409 —— 渲染残留的 {host}/{port} 模板占位符（历史
+			// seed 出来的坏 base_url）并补建占位凭据后返回 200，让
+			// register-local-provider.sh 可以安全地重复执行。
+			if localKind {
+				if existingID, credID, ok := h.repairLocalProvider(ctx, code, baseURL); ok {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"id":            existingID,
+						"message":       "ok (repaired existing local provider)",
+						"kind":          LocalProviderKind,
+						"credential_id": credID,
+					})
+					return
+				}
+			}
 			writeError(w, http.StatusConflict, "provider already exists: "+code)
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "message": "ok"})
+
+	// 本地供应商：自动生成免 key 占位凭据（幂等，失败不影响供应商创建结果）。
+	credID := int64(0)
+	if localKind {
+		credID = h.ensureLocalCredential(ctx, id, displayName)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            id,
+		"message":       "ok",
+		"kind":          providerKind,
+		"credential_id": credID,
+	})
 }
 
 func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int) {
@@ -934,6 +984,23 @@ func (h *Handler) updateProvider(w http.ResponseWriter, r *http.Request, id int)
 
 	// Track whether base_url or protocol changed — if so, auto-reprobe all active credentials.
 	needsReprobe := false
+
+	// 2026-09-07 本地托管供应商保护：
+	//   - kind 不可改（local ↔ cloud 会破坏凭据/探活/计费契约）；
+	//   - base_url 仍允许改（Docker 部署切换 host.docker.internal 等场景），
+	//     但必须仍是回环/私网地址。
+	currentKind := h.providerKindByID(ctx, id)
+	isLocal := isLocalKind(currentKind)
+	if isLocal && req.Kind != nil && !isLocalKind(*req.Kind) {
+		writeError(w, http.StatusBadRequest, "cannot change kind of a local provider")
+		return
+	}
+	if isLocal && req.BaseURL != nil {
+		if msg := validateLocalBaseURL(*req.BaseURL); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+	}
 
 	if req.DisplayName != nil {
 		//nolint:errcheck // best-effort exec, non-critical
@@ -1162,9 +1229,9 @@ func (h *Handler) deleteProvider(w http.ResponseWriter, r *http.Request, id int)
 
 	h.writeAuditLog(r, "provider.deleted", "provider", id, map[string]any{
 		"soft_deleted":            true,
-		"cascaded_credential_cnt":  len(cascadedCredIDs),
-		"cascaded_credential_ids":  cascadedCredIDs,
-		"deleted_at":               now,
+		"cascaded_credential_cnt": len(cascadedCredIDs),
+		"cascaded_credential_ids": cascadedCredIDs,
+		"deleted_at":              now,
 	})
 
 	writeJSON(w, http.StatusOK, map[string]any{
