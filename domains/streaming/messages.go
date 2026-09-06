@@ -655,6 +655,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			W:                          streamWriter,
 			R:                          r,
 			BodyBytes:                  upstreamBody,
+			FailoverNotices:            executors.NewFailoverNoticeCollector(),
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,

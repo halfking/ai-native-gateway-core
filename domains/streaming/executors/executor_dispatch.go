@@ -334,13 +334,19 @@ func (e *Executor) executeViaDispatch(
 }
 
 // bridgeDispatchNotice builds the QueuedRequest.OnDispatchNotice transport
-// bridge for one request's ExecParams (v6 G-Ⅲ). Two drop situations on this
-// path were previously invisible:
+// bridge for one request's ExecParams (v6 G-Ⅲ). Notice transport by request
+// shape:
 //
-//   - non-streaming responses have no `: thinking:` SSE channel, so the
-//     notice is never surfaced: params.OnNodeJump is nil here (nothing to
-//     call), or the handler-side closure discards it because preStream is
-//     nil (preStream is only ever initialized for streaming requests);
+//   - non-streaming responses have no `: thinking:` SSE channel. Since
+//     2026-09-07 they surface notices through the FailoverNoticeHeader
+//     response header instead: when params.FailoverNotices is wired, the
+//     notice is collected and the header digest is (re)written in place —
+//     headers are still mutable because notices are pre-first-byte by
+//     construction (ADR-Disp-003) and a non-streaming response commits
+//     only with its final body. A non-streaming request WITHOUT a wired
+//     collector keeps the legacy behaviour: dropped + counted in
+//     metrics.DispatchNoticeDroppedTotal (reason=non_streaming), which is
+//     now a real anomaly signal worth alerting on;
 //   - a streaming request whose preStream keepalive was never initialized
 //     (feature disabled / startPreStreamKeepalive failed) silently swallows
 //     the notice inside the handler's `if preStream != nil` guard.
@@ -348,11 +354,24 @@ func (e *Executor) executeViaDispatch(
 //     protocol entries (handler.go / messages.go / responses.go) set it
 //     together with the preStream writer.
 //
-// Both drops are now counted in metrics.DispatchNoticeDroppedTotal. The
-// recording is side-effect free: the bridge runs the exact same calls as the
-// previous inline closure, so transport behaviour is bit-for-bit unchanged.
+// The prestream_uninit drop is counted in metrics.DispatchNoticeDroppedTotal.
+// The recording is side-effect free: the bridge runs the exact same calls as
+// the previous inline closure, so streaming transport behaviour is bit-for-bit
+// unchanged.
 func bridgeDispatchNotice(params *ExecParams) func(dispatch.DispatchNotice) {
 	return func(notice dispatch.DispatchNotice) {
+		if params != nil && !params.IsStream && params.FailoverNotices != nil {
+			params.FailoverNotices.Add(notice)
+			if params.W != nil {
+				if v := params.FailoverNotices.HeaderValue(); v != "" {
+					params.W.Header().Set(FailoverNoticeHeader, v)
+				}
+			}
+			if params.OnNodeJump != nil {
+				params.OnNodeJump(notice.Message)
+			}
+			return
+		}
 		if params == nil || params.OnNodeJump == nil {
 			metrics.RecordDispatchNoticeDropped(string(notice.Kind), dispatchNoticeDropReason(params))
 			return
@@ -368,9 +387,9 @@ func bridgeDispatchNotice(params *ExecParams) func(dispatch.DispatchNotice) {
 }
 
 // dispatchNoticeDropReason maps a dropped notice onto the closed reason enum:
-// a non-streaming request can never surface notices (no SSE channel exists),
-// while any other drop means a streaming request's preStream channel was not
-// initialized.
+// a non-streaming request without a wired FailoverNotices collector can never
+// surface notices (no SSE channel, no header digest), while any other drop
+// means a streaming request's preStream channel was not initialized.
 func dispatchNoticeDropReason(params *ExecParams) string {
 	if params == nil || !params.IsStream {
 		return metrics.DispatchNoticeDropReasonNonStreaming

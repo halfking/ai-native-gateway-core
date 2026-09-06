@@ -640,6 +640,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			R:                          r,
 			BodyBytes:                  chatBodyBytes,
 			ResponsesBodyBytes:         responsesBodyBytes,
+			FailoverNotices:            executors.NewFailoverNoticeCollector(),
 			IsStream:                   isStream,
 			StreamSurvivesClientCancel: explicitStreamSession(r.Context()),
 			PreStreamPrepared:          preStreamPrepared,
