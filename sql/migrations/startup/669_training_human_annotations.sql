@@ -244,9 +244,24 @@ COMMENT ON FUNCTION calculate_annotation_agreement() IS
 -- ============================================================================
 
 -- 约束1: auto_confidence必须在[0, 1]范围内
-ALTER TABLE training_human_annotations
-  ADD CONSTRAINT chk_auto_confidence_range
-  CHECK (auto_confidence >= 0.0 AND auto_confidence <= 1.0);
+-- 2026-09-07 idempotency fix: this file runs on the deploy-local revision
+-- sequence track, which re-runs any file that has no per-file marker yet.
+-- Bare ADD CONSTRAINT fails on replay (42710) after a partial first pass
+-- (the file is not transaction-wrapped, so earlier CREATEs autocommit and
+-- the marker is never written when any later statement fails) — blocking
+-- every subsequent migration in the sequence. Guard the constraint instead.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'chk_auto_confidence_range'
+      AND conrelid = 'public.training_human_annotations'::regclass
+  ) THEN
+    ALTER TABLE public.training_human_annotations
+      ADD CONSTRAINT chk_auto_confidence_range
+      CHECK (auto_confidence >= 0.0 AND auto_confidence <= 1.0);
+  END IF;
+END $$;
 
 -- 约束2: auto_label和human_label必须是有效的provider名称
 -- （暂不添加外键约束，因为provider列表可能动态变化）

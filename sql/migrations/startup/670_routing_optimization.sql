@@ -44,11 +44,11 @@ CREATE TABLE IF NOT EXISTS routing_optimization_state (
 );
 
 -- 只保留一个激活版本 (deactivated_at IS NULL)
-CREATE UNIQUE INDEX idx_opt_state_active ON routing_optimization_state (activated_at DESC)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_opt_state_active ON routing_optimization_state (activated_at DESC)
     WHERE deactivated_at IS NULL;
 
-CREATE INDEX idx_opt_state_version ON routing_optimization_state (version DESC);
-CREATE INDEX idx_opt_state_created ON routing_optimization_state (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_opt_state_version ON routing_optimization_state (version DESC);
+CREATE INDEX IF NOT EXISTS idx_opt_state_created ON routing_optimization_state (created_at DESC);
 
 COMMENT ON TABLE routing_optimization_state IS 'P2.2 路由优化插件参数和状态 (版本化存储)';
 COMMENT ON COLUMN routing_optimization_state.version IS '参数版本号 (单调递增)';
@@ -97,14 +97,14 @@ CREATE TABLE IF NOT EXISTS routing_feedback_log (
     CONSTRAINT latency_non_negative CHECK (actual_latency_ms IS NULL OR actual_latency_ms >= 0)
 );
 
-CREATE INDEX idx_feedback_request ON routing_feedback_log (request_id);
-CREATE INDEX idx_feedback_task_type ON routing_feedback_log (task_type, created_at DESC);
-CREATE INDEX idx_feedback_provider ON routing_feedback_log (predicted_provider, created_at DESC);
-CREATE INDEX idx_feedback_created ON routing_feedback_log (created_at DESC);
-CREATE INDEX idx_feedback_user ON routing_feedback_log (user_id, created_at DESC) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_feedback_request ON routing_feedback_log (request_id);
+CREATE INDEX IF NOT EXISTS idx_feedback_task_type ON routing_feedback_log (task_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_provider ON routing_feedback_log (predicted_provider, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON routing_feedback_log (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_user ON routing_feedback_log (user_id, created_at DESC) WHERE user_id IS NOT NULL;
 
 -- 人工标注快速查询 (用于计算加权准确率)
-CREATE INDEX idx_feedback_correction ON routing_feedback_log (has_human_correction, created_at DESC)
+CREATE INDEX IF NOT EXISTS idx_feedback_correction ON routing_feedback_log (has_human_correction, created_at DESC)
     WHERE has_human_correction = TRUE;
 
 COMMENT ON TABLE routing_feedback_log IS 'P2.2 路由决策实时反馈日志 (支持人工标注×2权重)';
@@ -151,10 +151,10 @@ CREATE TABLE IF NOT EXISTS routing_optimization_metrics (
     CONSTRAINT human_accuracy_rate_range CHECK (human_accuracy_rate IS NULL OR (human_accuracy_rate >= 0 AND human_accuracy_rate <= 1))
 );
 
-CREATE INDEX idx_metrics_bucket ON routing_optimization_metrics (time_bucket DESC);
-CREATE INDEX idx_metrics_task ON routing_optimization_metrics (task_type, time_bucket DESC) WHERE task_type IS NOT NULL;
-CREATE INDEX idx_metrics_provider ON routing_optimization_metrics (predicted_provider, time_bucket DESC) WHERE predicted_provider IS NOT NULL;
-CREATE INDEX idx_metrics_created ON routing_optimization_metrics (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_bucket ON routing_optimization_metrics (time_bucket DESC);
+CREATE INDEX IF NOT EXISTS idx_metrics_task ON routing_optimization_metrics (task_type, time_bucket DESC) WHERE task_type IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_metrics_provider ON routing_optimization_metrics (predicted_provider, time_bucket DESC) WHERE predicted_provider IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_metrics_created ON routing_optimization_metrics (created_at DESC);
 
 COMMENT ON TABLE routing_optimization_metrics IS 'P2.2 路由优化指标聚合表 (5分钟粒度)';
 COMMENT ON COLUMN routing_optimization_metrics.time_bucket IS '时间桶 (5分钟对齐): date_trunc(''minute'', ts)::timestamp - (EXTRACT(minute FROM ts)::int % 5) * interval ''1 minute''';
@@ -189,9 +189,9 @@ CREATE TABLE IF NOT EXISTS routing_user_affinity (
     CONSTRAINT total_requests_non_negative CHECK (total_requests >= 0)
 );
 
-CREATE INDEX idx_affinity_user ON routing_user_affinity (user_id);
-CREATE INDEX idx_affinity_updated ON routing_user_affinity (updated_at DESC);
-CREATE INDEX idx_affinity_last_request ON routing_user_affinity (last_request_at DESC);
+CREATE INDEX IF NOT EXISTS idx_affinity_user ON routing_user_affinity (user_id);
+CREATE INDEX IF NOT EXISTS idx_affinity_updated ON routing_user_affinity (updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_affinity_last_request ON routing_user_affinity (last_request_at DESC);
 
 COMMENT ON TABLE routing_user_affinity IS 'P2.2 用户亲和力缓存 (任务类型分布和 provider 偏好)';
 COMMENT ON COLUMN routing_user_affinity.task_type_distribution IS '任务类型分布: {"code": 60, "chat": 30, "reasoning": 10}';

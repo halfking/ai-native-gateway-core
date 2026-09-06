@@ -35,6 +35,10 @@ type RealOptimizer struct {
 	// confidence adjusts classification confidence from historical per-task
 	// accuracy (PostClassify hook).
 	confidence *ConfidenceAdjuster
+
+	// opts gates each hook per the ROUTING_OPT_* sub-flags and bounds hook
+	// latency (2026-09-07 audit P1: flags were logged but never consumed).
+	opts Options
 }
 
 // WithMLReranker attaches the P2.5 ONNX ML re-ranker. Returns the receiver
@@ -86,6 +90,8 @@ func (o *RealOptimizer) MLDiagnostics() map[string]any {
 }
 
 // NewRealOptimizer constructs a real optimizer with all modules wired.
+// Hook gates default to the documented flag semantics (all sub-hooks on,
+// 10ms hook timeout, no affinity DB query) — see DefaultOptions.
 //
 // Usage:
 //
@@ -93,7 +99,16 @@ func (o *RealOptimizer) MLDiagnostics() map[string]any {
 //	optimizer := routingopt.NewRealOptimizer(pool)
 //	decider.SetOptimizer(optimizer)
 func NewRealOptimizer(pool *pgxpool.Pool) *RealOptimizer {
+	return NewRealOptimizerWithOptions(pool, DefaultOptions())
+}
+
+// NewRealOptimizerWithOptions constructs a real optimizer with explicit
+// feature-flag gates. cmd/gateway maps settings.GetRoutingOptFlags() onto
+// Options so ROUTING_OPT_* sub-flags actually short-circuit their hooks
+// (2026-09-07 audit: the flags were logged but never consumed).
+func NewRealOptimizerWithOptions(pool *pgxpool.Pool, opts Options) *RealOptimizer {
 	enhancer := NewClassificationEnhancer(pool)
+	enhancer.loadAffinity = opts.LoadUserAffinity
 	recommender := NewModelRecommender(pool)
 	integrator := NewFeedbackIntegrator(pool, enhancer)
 	learner := NewAdaptiveLearner(pool, integrator)
@@ -104,6 +119,7 @@ func NewRealOptimizer(pool *pgxpool.Pool) *RealOptimizer {
 		integrator:  integrator,
 		learner:     learner,
 		confidence:  NewConfidenceAdjuster(pool),
+		opts:        opts,
 	}
 }
 
@@ -113,6 +129,15 @@ func NewRealOptimizer(pool *pgxpool.Pool) *RealOptimizer {
 // Parameter signals: interface{} (*autoroute.ClassificationSignals expected)
 // Returns: *EnhancedSignals (with GetOriginal() method)
 func (o *RealOptimizer) PreClassify(ctx context.Context, signals interface{}) (interface{}, error) {
+	if !o.opts.EnableClassificationEnhancement {
+		// Flag off: return the original signals untouched. decision.go only
+		// unwraps values exposing GetOriginal(), so a plain pass-through
+		// keeps the request on baseline signals with zero DB work.
+		return signals, nil
+	}
+	ctx, cancel := o.opts.hookContext(ctx)
+	defer cancel()
+
 	// Read per-request identity injected by autoroute.Decider (WithRequestMeta).
 	meta := RequestMetaFrom(ctx)
 	userID := ""
@@ -138,6 +163,11 @@ func (o *RealOptimizer) PostClassify(ctx context.Context, taskType string, confi
 // Parameter context: interface{} (RoutingContext expected)
 // Returns: interface{} ([]ModelCandidate)
 func (o *RealOptimizer) RecommendModel(ctx context.Context, candidates interface{}, routingContext interface{}) (interface{}, error) {
+	if !o.opts.EnableModelRecommendation {
+		// Flag off: baseline ranking passes through untouched.
+		return candidates, nil
+	}
+
 	// Type-assert candidates
 	cands, ok := candidates.([]ModelCandidate)
 	if !ok {
@@ -152,6 +182,8 @@ func (o *RealOptimizer) RecommendModel(ctx context.Context, candidates interface
 		routingCtx = RoutingContext{}
 	}
 
+	ctx, cancel := o.opts.hookContext(ctx)
+	defer cancel()
 	out, err := o.recommender.Recommend(ctx, cands, routingCtx)
 	if err != nil {
 		return nil, err
@@ -169,6 +201,12 @@ func (o *RealOptimizer) RecommendModel(ctx context.Context, candidates interface
 //
 // Parameter feedback: interface{} (RoutingFeedback expected)
 func (o *RealOptimizer) RecordFeedback(ctx context.Context, feedback interface{}) error {
+	if !o.opts.EnableFeedbackIntegration {
+		// Flag off: discard feedback (documented semantics of
+		// ROUTING_OPT_FEEDBACK_INTEGRATION=false).
+		return nil
+	}
+
 	// Type-assert feedback
 	fb, ok := feedback.(RoutingFeedback)
 	if !ok {

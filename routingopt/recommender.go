@@ -28,19 +28,30 @@ type ModelRecommender struct {
 	metricsDAO *OptimizationMetricsDAO
 
 	// Cached active state (refreshed every 5 minutes). Guarded by cacheMu —
-	// Recommend runs on concurrent request goroutines.
+	// Recommend runs on concurrent request goroutines. The DB refresh runs
+	// OUTSIDE cacheMu (double-checked locking): holding the lock across the
+	// query serialized every concurrent Decide() behind one slow DB round
+	// trip (2026-09-07 audit P1).
 	cacheMu          sync.Mutex
 	cachedState      *OptimizationState
 	cacheRefreshedAt time.Time
 	cacheTTL         time.Duration
+
+	// Negative cache: a failing GetActive (missing table, migration not yet
+	// applied) is remembered for negCacheTTL so the hot path neither hammers
+	// the DB once per request nor floods the log with identical warnings.
+	lastErr    error
+	negUntil   time.Time
+	negCacheTTL time.Duration
 }
 
 // NewModelRecommender constructs a recommender instance.
 func NewModelRecommender(pool *pgxpool.Pool) *ModelRecommender {
 	return &ModelRecommender{
-		stateDAO:   NewOptimizationStateDAO(pool),
-		metricsDAO: NewOptimizationMetricsDAO(pool),
-		cacheTTL:   5 * time.Minute, // 缓存 5 分钟
+		stateDAO:    NewOptimizationStateDAO(pool),
+		metricsDAO:  NewOptimizationMetricsDAO(pool),
+		cacheTTL:    5 * time.Minute, // 缓存 5 分钟
+		negCacheTTL: 30 * time.Second,
 	}
 }
 
@@ -67,8 +78,12 @@ func (r *ModelRecommender) Recommend(ctx context.Context, candidates []ModelCand
 		return candidates, fmt.Errorf("load optimization state: %w", err)
 	}
 
-	// 2. ε-greedy exploration: 5% 随机选择
-	if shouldExplore(state.ExplorationRate) {
+	// 2. ε-greedy exploration — rate is clamped to the documented [0, 0.2]
+	// envelope: a corrupt routing_optimization_state row (e.g. exploration_rate
+	// = 0.8) must not silently shuffle most production traffic
+	// (2026-09-07 audit P1; the DB value is the runtime lever, the env var
+	// only documents the default).
+	if shouldExplore(clampExplorationRate(state.ExplorationRate)) {
 		return exploreRandomly(candidates), nil
 	}
 
@@ -104,24 +119,42 @@ func (r *ModelRecommender) SetActiveStateForTest(state *OptimizationState) {
 }
 
 // getActiveState returns the cached active optimization state.
-// Refreshes the cache if expired (TTL = 5 minutes). Safe for concurrent use.
+// Refreshes the cache if expired (TTL = 5 minutes). The DB query executes
+// OUTSIDE the mutex: at most one stale read per refresh window per
+// in-flight request instead of serializing all of them (concurrent misses
+// may each query once — bounded by the 5-minute TTL, acceptable vs. the
+// head-of-line blocking the lock-inlined query caused). Failures are
+// negatively cached for 30s so a missing table degrades to baseline
+// routing without a per-request DB hit + warning flood. Safe for
+// concurrent use.
 func (r *ModelRecommender) getActiveState(ctx context.Context) (*OptimizationState, error) {
-	r.cacheMu.Lock()
-	defer r.cacheMu.Unlock()
-
 	now := time.Now()
+
+	r.cacheMu.Lock()
 	if r.cachedState != nil && now.Sub(r.cacheRefreshedAt) < r.cacheTTL {
+		r.cacheMu.Unlock()
 		return r.cachedState, nil
 	}
-
-	state, err := r.stateDAO.GetActive(ctx)
-	if err != nil {
+	if r.lastErr != nil && now.Before(r.negUntil) {
+		err := r.lastErr
+		r.cacheMu.Unlock()
 		return nil, err
 	}
+	r.cacheMu.Unlock()
 
+	state, err := r.stateDAO.GetActive(ctx)
+
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	if err != nil {
+		r.lastErr = err
+		r.negUntil = time.Now().Add(r.negCacheTTL)
+		return nil, err
+	}
+	r.lastErr = nil
+	r.negUntil = time.Time{}
 	r.cachedState = state
-	r.cacheRefreshedAt = now
-
+	r.cacheRefreshedAt = time.Now()
 	return state, nil
 }
 
@@ -167,6 +200,21 @@ func getWeight(weights map[string]float64, key string, defaultValue float64) flo
 		return w
 	}
 	return defaultValue
+}
+
+// maxExplorationRate is the documented upper bound for ε-greedy exploration
+// (settings.RoutingOptFeatureFlags.ExplorationRate: "Range: 0.0-0.2").
+const maxExplorationRate = 0.2
+
+// clampExplorationRate confines the runtime exploration rate to [0, 0.2].
+func clampExplorationRate(rate float64) float64 {
+	if rate < 0 {
+		return 0
+	}
+	if rate > maxExplorationRate {
+		return maxExplorationRate
+	}
+	return rate
 }
 
 // shouldExplore returns true with probability = exploration_rate.

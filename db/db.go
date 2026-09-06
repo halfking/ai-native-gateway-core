@@ -127,6 +127,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureRequestLogSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-07 migration 680 self-heal: /api/logs 读路径的 canonical 视图
+	// request_logs_with_current_month 被带外操作删除后没有任何机制重建，
+	// 所有列表/详情/聚合请求持续 42P01。幂等 ensure：视图健康时零 DDL。
+	// 必须在 ensureRequestLogSchema 之后（视图依赖 hot/parent 表存在）。
+	if err := db.ensureRequestLogsCurrentMonthView(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureRequestJourneyObservationSchema(migCtx); err != nil {
 		return err
 	}

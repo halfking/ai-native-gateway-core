@@ -153,14 +153,15 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/662_feature_distribution_stats.sql"
   "$ROOT_DIR/sql/migrations/startup/663_training_export.sql"
   "$ROOT_DIR/sql/migrations/startup/664_provider_error_details_agg_key_dedup.sql"
-  # 2026-09-06 PG log audit: the aggregation upsert in
-  # bg/provider_error_aggregator.go conflicts on a 9-part fingerprint
-  # (including LEFT(error_message, 200), contract of 639/V368), but the
-  # local index had been rebuilt without that part (out-of-repo 663 from a
-  # parallel session), so every aggregator tick failed 42P10 and the batch
-  # was lost. Restore the canonical index shape; idempotent (skips when the
-  # index already covers error_message).
-  "$ROOT_DIR/sql/migrations/startup/665_provider_error_details_fingerprint_index_repair.sql"
+  # 2026-09-07 24h-audit P0 adjudication: 665 is RETIRED from this track.
+  # It was written against the pre-664 world (639/V368 9-part fingerprint)
+  # and rebuilds the index WITH LEFT(error_message,200), while 664 (E-#3)
+  # plus the current Go upsert (bg/provider_error_aggregator.go) use the
+  # 8-part shape — running 665 after 664 makes every aggregator tick fail
+  # 42P10 and provider_error_details stops updating. 681 (appended below)
+  # converges databases that already ran 665 back to the 8-part shape.
+  # The 665 file itself stays in the repo untouched (checksum ledgers of
+  # databases that already applied it keep validating).
   # 2026-09-06 PG log audit: external orchestration services and statistics
   # collectors attempt to INSERT into orchestration_runtime_instances and
   # llm_hourly_stats, but these tables were never deployed (42P01 errors every
@@ -197,6 +198,40 @@ files=(
   # 引用与 bg/credential_recovery 冷却写入都失败 42703。
   # 编号 678:原编号 676,与远端 676_routing_opt_active_fix.sql 撞号,重编号到 678。
   "$ROOT_DIR/sql/migrations/startup/678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql"
+  # 2026-09-07 24h-audit (P0 deploy-gap): 669~676 were missing from this
+  # track entirely while their Go code is already on hot paths — annotation
+  # pages (training_human_annotations, 669/673/674), routing optimizer
+  # (routing_optimization_*, 670/676) and local-provider title/summary
+  # routing (671/672/675). On upgraded databases every request through
+  # those paths fails 42P01. All idempotent; numeric order; 676 is the
+  # renumbered (ex-671) single-active-state fix and must stay after 670.
+  "$ROOT_DIR/sql/migrations/startup/669_training_human_annotations.sql"
+  "$ROOT_DIR/sql/migrations/startup/670_routing_optimization.sql"
+  "$ROOT_DIR/sql/migrations/startup/671_local_provider_catalog.sql"
+  "$ROOT_DIR/sql/migrations/startup/672_local_first_title_summary_routing.sql"
+  "$ROOT_DIR/sql/migrations/startup/673_annotation_stats_empty_table_fix.sql"
+  "$ROOT_DIR/sql/migrations/startup/674_annotation_request_id_unique.sql"
+  "$ROOT_DIR/sql/migrations/startup/675_qwen38_family_vendor.sql"
+  "$ROOT_DIR/sql/migrations/startup/676_routing_opt_active_fix.sql"
+  # 681 converges the provider_error_details fingerprint index back to the
+  # 8-part shape (664/E-#3 authoritative, matches the Go ON CONFLICT target)
+  # on databases that already ran the retired 665. See the 665 note above.
+  # (原编号 678，与 678_request_logs_bodies_hot_unique_repair 撞号，重编号至 681。)
+  "$ROOT_DIR/sql/migrations/startup/681_provider_error_details_fingerprint_restore_8part.sql"
+  # 679: at most one live local placeholder credential per provider —
+  # closes ensureLocalCredential's check-then-act race (duplicate
+  # placeholder credentials doubled the local concurrency budget); folds
+  # existing duplicates (keeps min id) before creating the partial unique
+  # index. Idempotent.
+  "$ROOT_DIR/sql/migrations/startup/679_local_credential_unique.sql"
+  # 2026-09-07 incident (P0): the canonical query view
+  # request_logs_with_current_month was found dropped out-of-band on the
+  # shared local PG (wrapper views …_without_customer_id and
+  # …_without_request_class_due_at present, canonical absent), breaking every
+  # /api/logs request with 42P01. 680 is a staged, purely-additive rebuild of
+  # the 577+610 wrapper chain; db.ensureRequestLogsCurrentMonthView mirrors it
+  # at every boot. Idempotent no-op on a healthy database.
+  "$ROOT_DIR/sql/migrations/startup/680_request_logs_current_month_view_bootstrap.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

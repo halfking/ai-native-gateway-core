@@ -109,6 +109,14 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 		return
 	}
 
+	// 窗口与桶数上限：无界窗口（如 1970 起、1m 粒度）会触发全表扫描 +
+	// 千万级桶聚合，30s ctx 才能救回来（2026-09-07 审计 P2）。
+	const maxHeatmapWindow = 7 * 24 * time.Hour
+	if timeEnd.Sub(timeStart) > maxHeatmapWindow {
+		writeError(w, http.StatusBadRequest, "time range exceeds maximum of 7d")
+		return
+	}
+
 	// Validate and normalize granularity
 	if granularity == "" {
 		granularity = "1m"
@@ -116,6 +124,14 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 	bucketSeconds, err := granularitySeconds(granularity)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 桶数上限：窗口 ≤7d 之下再兜一层，防止极细粒度 × 长窗口组合
+	// （7d × 1m = 10080 桶）把响应与前端时间轴撑爆。
+	const maxHeatmapBuckets = 5000
+	if n := int(timeEnd.Sub(timeStart) / (time.Duration(bucketSeconds) * time.Second)); n > maxHeatmapBuckets {
+		writeError(w, http.StatusBadRequest, "bucket count exceeds maximum of 5000, use a coarser granularity")
 		return
 	}
 
@@ -158,7 +174,8 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 	})
 	if err != nil {
 		slog.Error("heatmap query failed", "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "heatmap query failed: "+err.Error())
+		// 不回传内部 SQL 错误细节（表名/约束名），只留 trace 线索给日志。
+		writeError(w, http.StatusInternalServerError, "heatmap query failed")
 		return
 	}
 

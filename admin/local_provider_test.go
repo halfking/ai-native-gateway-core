@@ -92,12 +92,19 @@ func TestLocalCredentialsImmutableMessage(t *testing.T) {
 
 func TestDefaultLocalBaseURLForCode(t *testing.T) {
 	cases := map[string]string{
-		"ollama":   "http://127.0.0.1:11434/v1",
-		"mlx":      "http://127.0.0.1:8080/v1",
-		"llamacpp": "http://127.0.0.1:8082/v1",
-		"lmstudio": "http://127.0.0.1:1234/v1",
-		"vllm":     "http://127.0.0.1:8000/v1",
-		"unknown":  "",
+		// migration 671 短 code 与脚本 local-* 前缀 code 两种命名都要命中
+		"ollama":          "http://127.0.0.1:11434/v1",
+		"local-ollama":    "http://127.0.0.1:11434/v1",
+		"mlx":             "http://127.0.0.1:8080/v1",
+		"local-mlx-lm":    "http://127.0.0.1:8080/v1",
+		"local-mlx-dspark": "http://127.0.0.1:8080/v1",
+		"llamacpp":        "http://127.0.0.1:8082/v1",
+		"local-llamacpp":  "http://127.0.0.1:8082/v1",
+		"lmstudio":        "http://127.0.0.1:1234/v1",
+		"local-lmstudio":  "http://127.0.0.1:1234/v1",
+		"vllm":            "http://127.0.0.1:8000/v1",
+		"local-vllm":      "http://127.0.0.1:8000/v1",
+		"unknown":         "",
 	}
 	for code, want := range cases {
 		if got := defaultLocalBaseURLForCode(code); got != want {

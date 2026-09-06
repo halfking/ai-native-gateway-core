@@ -35,12 +35,26 @@ func buildRoutingOptimizer(pool *pgxpool.Pool) *routingopt.RealOptimizer {
 		slog.Warn("autoroute: routing optimizer enabled but no DB pool, running baseline")
 		return nil
 	}
-	optimizer := routingopt.NewRealOptimizer(pool)
+	// Map env flags onto optimizer gates — before 2026-09-07 the sub-flags
+	// were only logged; the hooks ran unconditionally regardless of them.
+	hookTimeout := time.Duration(flags.MaxPluginLatencyMs) * time.Millisecond
+	if hookTimeout <= 0 || flags.MaxPluginLatencyMs > 100 {
+		hookTimeout = 10 * time.Millisecond // documented default / range clamp
+	}
+	opts := routingopt.Options{
+		EnableClassificationEnhancement: flags.EnableClassificationEnhancement,
+		EnableModelRecommendation:       flags.EnableModelRecommendation,
+		EnableFeedbackIntegration:       flags.EnableFeedbackIntegration,
+		LoadUserAffinity:                false, // EnhancedSignals 无下游消费者前保持关闭（Week 2）
+		HookTimeout:                     hookTimeout,
+	}
+	optimizer := routingopt.NewRealOptimizerWithOptions(pool, opts)
 	slog.Info("autoroute: routing optimizer enabled",
 		"classification_enhancement", flags.EnableClassificationEnhancement,
 		"model_recommendation", flags.EnableModelRecommendation,
 		"feedback_integration", flags.EnableFeedbackIntegration,
 		"adaptive_learning", flags.EnableAdaptiveLearning,
+		"max_plugin_latency_ms", flags.MaxPluginLatencyMs,
 		"exploration_rate", flags.ExplorationRate)
 
 	// P2.5: optional ONNX ML re-ranker. Any failure degrades to the
