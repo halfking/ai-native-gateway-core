@@ -127,7 +127,7 @@ func TestFreshInstallerSessionTurnsHotBootstrap(t *testing.T) {
 		"679 local credential unique index": `
 			SELECT count(*) = 1 FROM pg_indexes
 			WHERE schemaname = 'public' AND indexname = 'uq_credentials_local_placeholder_per_provider'`,
-		"680 current-month view":       `SELECT to_regclass('public.request_logs_with_current_month') IS NOT NULL`,
+		"680 current-month view": `SELECT to_regclass('public.request_logs_with_current_month') IS NOT NULL`,
 		"681 fingerprint index is 8-part (no error_message)": `
 			SELECT position('error_message' in pg_get_indexdef(
 				'public.idx_provider_error_details_tenant_cred_fingerprint'::regclass)) = 0`,
