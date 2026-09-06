@@ -5568,6 +5568,11 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 		beforeAfter["ursm_v2_admin_applied"] = true
 		beforeAfter["ursm_v2_cleared"] = true
 		beforeAfter["ursm_v2_models_covered"] = len(resetModels)
+	} else {
+		// 2026-09-06: URSM v2 未配置时，显式标记为不适用（避免前端误判为失败）
+		beforeAfter["ursm_v2_admin_applied"] = true
+		beforeAfter["ursm_v2_cleared"] = true
+		beforeAfter["ursm_v2_models_covered"] = 0
 	}
 
 	// Best-effort cache invalidation so the next request picks up the fresh state.
