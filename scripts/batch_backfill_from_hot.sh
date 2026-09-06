@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-DSN="${DSN:-postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable}"
+: "${DSN:?DSN must be set to the target database connection string}"
 BACKFILL_TOOL="${BACKFILL_TOOL:-/tmp/backfill_session_bodies}"
 DRY_RUN="${DRY_RUN:-false}"
 

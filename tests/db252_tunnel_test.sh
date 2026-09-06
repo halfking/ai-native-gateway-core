@@ -120,7 +120,7 @@ test_config_uses_native_clients_for_host_tunnel() {
 
 test_active_paths_have_no_stale_target_or_password_fallback() {
   local files=("$CONFIG" "$SYNC_WRAPPER" "$TABLE_COPY" "$STRUCTURE_AUDIT" "$DATA_AUDIT")
-  if grep -nE '172\.16\.2\.210:5432|4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg' "${files[@]}" >/dev/null 2>&1; then
+  if grep -nE '172\.16\.2\.210:5432|postgres(ql)?://[^[:space:]@/:]+:[^[:space:]@]+@' "${files[@]}" >/dev/null 2>&1; then
     log_fail "active sync paths retain stale target, embedded password, or unsafe import mode"
   else
     log_pass "active sync paths contain no stale target/password fallback"
