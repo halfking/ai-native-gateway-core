@@ -24,6 +24,8 @@ export default {
     models: 'Models & Catalog',
     routingOverview: 'Routing Overview',
     credentialMonitor: 'Credential Monitor',
+    annotations: 'Human Annotation',
+    annotationStats: 'Annotation Statistics',
     probeHealth: 'Probe Health',
     systemMonitor: 'System Monitoring',
     providers: 'Providers',

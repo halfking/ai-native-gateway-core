@@ -68,6 +68,10 @@ const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 
+// P2.1+ Human Annotation Web workflow (2026-09-06)
+const AnnotationView = () => import('./views/AnnotationView.vue')
+const AnnotationStatsView = () => import('./views/AnnotationStatsView.vue')
+
 // T9 — 请求注册表 / Journey 详情 / 连接注册台 / 节点恢复时间线（mock stage）
 const RequestRegistryView = () => import('./views/RequestRegistryView.vue')
 const RequestJourneyDetailView = () => import('./views/RequestJourneyDetailView.vue')
@@ -185,6 +189,9 @@ export const router = createRouter({
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/:key',     component: WorkTypesView, meta: { requiresSuper: true } },
+    // P2.1+ Human annotation Web workflow (2026-09-06): accessible by any authenticated user
+    { path: '/routing-v2/annotations',        component: AnnotationView },
+    { path: '/routing-v2/annotations/stats',  component: AnnotationStatsView },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },
     { path: '/tenants',            component: TenantsView,         meta: { requiresSuper: true } },

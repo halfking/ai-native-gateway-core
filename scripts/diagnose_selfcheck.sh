@@ -6,7 +6,7 @@
 # 用途: 快速诊断节点状态同步问题，生成诊断报告
 # =====================================================================
 
-set -e
+set -euo pipefail
 
 # 颜色定义
 RED='\033[0;31m'
@@ -97,7 +97,7 @@ else
     SELECT 
         c.id AS credential_id,
         c.label AS credential_label,
-        pv.name AS provider_name,
+        pv.display_name AS provider_name,
         pm.standardized_name,
         STRING_AGG(pm.raw_model_name, ', ' ORDER BY pm.raw_model_name) AS ambiguous_models,
         COUNT(DISTINCT pm.raw_model_name) AS model_count
@@ -106,7 +106,7 @@ else
     JOIN credential_model_bindings cmb ON c.id = cmb.credential_id
     JOIN provider_models pm ON cmb.provider_model_id = pm.id
     WHERE c.status = 'active' AND c.manual_disabled = FALSE
-    GROUP BY c.id, c.label, pv.name, pm.standardized_name
+    GROUP BY c.id, c.label, pv.display_name, pm.standardized_name
     HAVING COUNT(DISTINCT pm.raw_model_name) > 1
     ORDER BY model_count DESC
     LIMIT 20;

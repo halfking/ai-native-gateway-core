@@ -2,6 +2,7 @@
 // ar-SA/index.ts — تجميع جميع الوحدات العربية.
 import common from './common'
 import customer from './customer'
+import annotation from './annotation'
 import nav from './nav'
 import login from './login'
 import app from './app'
@@ -76,6 +77,7 @@ import requestDetail from './requestDetail'
 export default {
   common,
   customer,
+  annotation,
   nav,
   login,
   app,

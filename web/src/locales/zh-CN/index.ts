@@ -10,6 +10,7 @@ import keys from './keys'
 import requests from './requests'
 import trace from './trace'
 import credentialMonitor from './credentialMonitor'
+import annotation from './annotation'
 import providers from './providers'
 import landing from './landing'
 import dashboard from './dashboard'
@@ -83,6 +84,7 @@ export default {
   requests,
   trace,
   credentialMonitor,
+  annotation,
   providers,
   landing,
   dashboard,

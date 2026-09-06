@@ -269,6 +269,10 @@ func (h *Handler) runCredentialSessionPing(ctx context.Context, baseURL, protoco
 	if len(message) > 500 {
 		message = message[:500]
 	}
+	// 2026-09-06: 当供应商返回空响应体时，使用通用错误提示避免前端显示"会话 Ping 失败：error"
+	if message == "" {
+		message = fmt.Sprintf("provider returned HTTP %d with empty body", resp.StatusCode)
+	}
 	switch {
 	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 		return "auth_failed", "auth_failed", "credential rejected by provider"
