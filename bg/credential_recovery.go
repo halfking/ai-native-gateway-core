@@ -1094,6 +1094,10 @@ func expiredCmbRecoverySQL() string {
 // to halt or skip — the surrounding recover() logs and continues.
 func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
 	if r.probeSubmitter == nil {
+		// 2026-09-06 P2.3 fix: log ERROR instead of silently skipping.
+		// This helps detect initialization ordering issues where
+		// Start() was called before SetProbeSubmitter().
+		slog.Error("credential_recovery: probeSubmitter not wired, cannot recover expired bindings")
 		return nil
 	}
 	rows, err := r.db.Query(ctx, expiredCmbRecoverySQL())
@@ -1213,6 +1217,8 @@ func freshDegradedCmbSQL() string {
 // no direct write to cmb.available. Safe to call with a nil probeSubmitter.
 func (r *CredentialRecovery) recoverFreshDegradedBindings(ctx context.Context) error {
 	if r.probeSubmitter == nil {
+		// 2026-09-06 P2.3 fix: log ERROR instead of silently skipping.
+		slog.Error("credential_recovery: probeSubmitter not wired, cannot recover fresh degraded bindings")
 		return nil
 	}
 	rows, err := r.db.Query(ctx, freshDegradedCmbSQL())
@@ -1368,6 +1374,8 @@ func reconcileStaleNodeProbeStateSQL() string {
 // running on the same tick — collapse into a single enqueue per pair.
 func (r *CredentialRecovery) reconcileStaleNodeProbeStates(ctx context.Context) error {
 	if r.probeSubmitter == nil {
+		// 2026-09-06 P2.3 fix: log ERROR instead of silently skipping.
+		slog.Error("credential_recovery: probeSubmitter not wired, cannot reconcile stale node probe states")
 		return nil
 	}
 	rows, err := r.db.Query(ctx, reconcileStaleNodeProbeStateSQL())
