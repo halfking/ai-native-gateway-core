@@ -316,6 +316,8 @@ h1 {
 }
 .filter-bar select,
 .filter-bar input {
+  /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
+  width: auto;
   padding: 4px 8px;
   background: var(--bg);
   border: 1px solid var(--bg);

@@ -1592,6 +1592,8 @@ table code {
   gap: 4px;
 }
 .filter-sort-select {
+  /* width:auto 覆盖全局 select width:100%，避免下拉占满整行 */
+  width: auto;
   font-size: 12px;
   padding: 5px 8px;
   border-radius: 6px;

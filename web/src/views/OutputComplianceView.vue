@@ -649,6 +649,8 @@ onMounted(() => {
 
 .filter-input,
 .filter-select {
+  /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
+  width: auto;
   padding: 0.5rem 0.75rem;
   border: 1px solid var(--border);
   border-radius: 6px;

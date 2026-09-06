@@ -620,6 +620,8 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
 .form-select,
 .form-input {
+  /* width:auto 覆盖全局 input/select width:100%，筛选控件按内容宽度排布 */
+  width: auto;
   padding: 8px 12px;
   background: var(--bg);
   border: 1px solid var(--border);
