@@ -14,6 +14,9 @@
 # 2026-07-17: scratch working dir for ad-hoc notes / timers / handoffs (not part of repo)
 /.scratch/
 
+# 2026-09-06: audit workspace for review sessions (SQL scripts, temp reports)
+/.audit-workspace/
+
 # Build artifacts
 /gateway
 /gateway-v2
