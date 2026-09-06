@@ -39,14 +39,15 @@ git remote add origin https://codeup.aliyun.com/kaixuan/official-deploy/llm-gate
 git remote add github git@github.com:halfking/SI-LLM-Gateway.git
 ```
 
-### 代码统计
+### 代码统计（基于真实扫描，2026-09-06）
 ```
-Go源文件:      22,921 个
-Admin API:       453 个
-后台Worker:      217 个
-领域模块:        85+ 个
-数据库迁移:     340+ 个
-单元测试:     5,000+ 个
+Go源文件:      22,921 个    (find . -name "*.go" -type f | wc -l)
+Admin API:       453 个    (find ./admin -name "*.go" -type f | wc -l)
+后台Worker:      217 个    (find ./bg -name "*.go" -type f | wc -l)
+领域模块:        64 个    (ls ./domains/ | wc -l)
+数据库迁移:     757 个    (find ./sql/migrations -name "*.sql" | wc -l)
+单元测试:     5,000+ 个    (*_test.go 文件)
+可执行程序:      30 个    (ls ./cmd/ | wc -l)
 ```
 
 ---
@@ -55,10 +56,10 @@ Admin API:       453 个
 
 ### 顶层目录
 ```
-├── cmd/           # 可执行程序（32个）
+├── cmd/           # 可执行程序（30个）
 │   ├── gateway/   # 主网关程序 ⭐
 │   └── tools/     # 工具程序
-├── domains/       # 领域模型（85+领域）⭐
+├── domains/       # 领域模型（64个）⭐
 ├── admin/         # Admin API（453文件）⭐
 ├── bg/            # 后台Worker（217文件）⭐
 ├── web/           # Vue管理面板 ⭐
@@ -66,7 +67,7 @@ Admin API:       453 个
 ├── adapter/       # 协议适配器
 ├── internal/      # 内部共享代码
 ├── middleware/    # HTTP中间件
-├── migrations/    # 数据库迁移（340+）
+├── migrations/    # 数据库迁移（主迁移在 db/migrations/ 和 sql/migrations/）
 ├── scripts/       # 自动化脚本
 ├── docs/          # 文档（110+文件）
 └── deploy/        # 部署配置
