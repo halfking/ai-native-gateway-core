@@ -1494,7 +1494,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(cmstream.supported, FALSE) AS supports_native_responses_stream,
 				COALESCE(cc.evidence_json->>'cache_mode', '') AS cache_mode,
 				COALESCE(mo.manual_priority, 99)::int AS manual_priority,
-			COALESCE(mo.priority, FALSE) AS priority,
+			-- 2026-09-07 (678): model_offers 视图补了 priority 列(== manual_priority),
+			-- 但更稳的是直接引用 manual_priority:这是视图上唯一非空源,任何历史/未来
+			-- priority 别名变化不会再次引入 42703。
+			COALESCE(mo.manual_priority, 0) <> 0 AS priority,
 			COALESCE(mo.active_sessions, 0)::int AS active_sessions,
 			COALESCE(mo.consecutive_failures, 0)::int AS consecutive_failures,
 			COALESCE(mo.currency, 'USD') AS currency,
@@ -1678,7 +1681,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			)
 
 		ORDER BY
-			CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END,
+			-- 2026-09-07 (678): mo.priority 不在视图里;manual_priority>0 等价于"被手动置顶"。
+			CASE WHEN COALESCE(mo.manual_priority, 0) > 0 AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END,
 			CASE COALESCE(mo.billing_mode, 'per_token')
 				WHEN 'free' THEN 1
 				WHEN 'token_plan' THEN 1

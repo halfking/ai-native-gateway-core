@@ -92,7 +92,9 @@ func TestCandidateNativeResponsesCapabilityDBRead(t *testing.T) {
 func TestCandidatePriorityDBReadAndOrdering(t *testing.T) {
 	src := readProviderFile(t, "client.go")
 
-	selectNeedle := "COALESCE(mo.priority, FALSE) AS priority"
+	// 2026-09-07 (678): mo.priority 不在 model_offers 视图里(migration 678 把它
+	// 改为 manual_priority>0 的 boolean 表达式)。测试断言 SQL 形式同步切换。
+	selectNeedle := "COALESCE(mo.manual_priority, 0) <> 0 AS priority"
 	if !strings.Contains(src, selectNeedle) {
 		t.Fatalf("candidate query must read %s", selectNeedle)
 	}
@@ -104,7 +106,7 @@ func TestCandidatePriorityDBReadAndOrdering(t *testing.T) {
 		t.Fatalf("candidate row scan must bind priority between manual priority and active sessions")
 	}
 
-	orderNeedle := "CASE WHEN COALESCE(mo.priority, FALSE) AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END"
+	orderNeedle := "CASE WHEN COALESCE(mo.manual_priority, 0) > 0 AND COALESCE(c.quota_state, 'ok') = 'ok' THEN 0 ELSE 1 END"
 	orderAt := strings.Index(src, orderNeedle)
 	if orderAt < 0 {
 		t.Fatalf("candidate query must prioritize priority bindings with quota_state=ok")

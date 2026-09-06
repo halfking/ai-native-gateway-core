@@ -1,6 +1,10 @@
 {
   "version": "1.0.0",
+<<<<<<< Updated upstream
   "exported_at": "2026-09-06T21:26:21.501Z",
+=======
+  "exported_at": "2026-09-06T21:26:21.501Z",
+>>>>>>> Stashed changes
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",

@@ -370,3 +370,8 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 |-----------|------|---------|--------|
 | 677 | `677_session_summaries_canonical_bootstrap.sql` | `fc4d0e4ade86b019afd898b84d8e3d831b796b2faa6a6edc2a5ca3cc6220d348` | applied+verified |
 
+## 2026-09-07 — pending deploy (本轮合并:request_logs_bodies_hot 42P10 + model_offers 视图缺列)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 678 | `678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql` | `a859f41e485dcbd339a15dcaac374994dc2ed81c2faf65e8c582ea6b068a98d9` | pending |
