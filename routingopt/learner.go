@@ -2,6 +2,7 @@ package routingopt
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -103,31 +104,168 @@ func (l *AdaptiveLearner) GetStats(ctx context.Context) (*OptimizerStats, error)
 	return stats, nil
 }
 
-// AdaptParameters performs online parameter optimization.
-// Called by a background worker every 5 minutes.
+// Adaptation tuning constants (vars so tests can adjust without fixtures).
+var (
+	// adaptMinImprovement: a new parameter version is only created when the
+	// sliding-window weighted accuracy improves by more than this (2pp).
+	adaptMinImprovement = 0.02
+	// adaptDropThreshold: accuracy falling more than this below the active
+	// state's persisted accuracy is an anomaly — hold parameters, alert.
+	adaptDropThreshold = 0.05
+	// adaptExplorationDecay / Floor: when accuracy improves, taper ε-greedy
+	// exploration (we explore less when the current policy performs well).
+	adaptExplorationDecay = 0.8
+	adaptExplorationFloor = 0.01
+)
+
+// adaptDecision is the outcome of the adaptation policy for one evaluation.
+type adaptDecision int
+
+const (
+	adaptHold    adaptDecision = iota // insufficient evidence or no significant change
+	adaptUpdate                       // accuracy improved ≥ threshold → new parameter version
+	adaptAnomaly                      // accuracy dropped ≥ threshold → hold + alert
+)
+
+// decideAdaptation is the pure adaptation policy. prevAccuracy nil means the
+// active state has no persisted accuracy yet (first data lands → checkpoint).
+// samples is the sliding-window feedback count; below confidenceMinSamples
+// the policy always holds (same evidence bar as confidence adjustment).
+func decideAdaptation(prevAccuracy *float64, currAccuracy float64, samples int) (adaptDecision, string) {
+	if samples < confidenceMinSamples {
+		return adaptHold, "insufficient samples"
+	}
+	if prevAccuracy == nil {
+		return adaptUpdate, "first accuracy checkpoint"
+	}
+	delta := currAccuracy - *prevAccuracy
+	switch {
+	case delta >= adaptMinImprovement:
+		return adaptUpdate, "accuracy improved"
+	case delta <= -adaptDropThreshold:
+		return adaptAnomaly, "accuracy drop"
+	default:
+		return adaptHold, "within tolerance"
+	}
+}
+
+// currentWeightedAccuracy computes the 24h sliding-window accuracy with the
+// human-annotation ×2 weighting, plus the effective auto sample count.
+func (l *AdaptiveLearner) currentWeightedAccuracy(ctx context.Context) (accuracy float64, samples int, err error) {
+	since := time.Now().Add(-24 * time.Hour)
+	autoCorrect, autoTotal, err := l.feedbackDAO.GetAutoAccuracyCounts(ctx, since)
+	if err != nil {
+		return 0, 0, err
+	}
+	humanAgreeing, humanTotal, err := l.feedbackDAO.GetHumanCorrectionCounts(ctx, since)
+	if err != nil {
+		// Human counts are best-effort: fall back to auto-only accuracy.
+		return autoCorrectRatio(autoCorrect, autoTotal), autoTotal, nil
+	}
+	return WeightedAccuracy(autoCorrect, autoTotal, humanAgreeing, humanTotal), autoTotal + 2*humanTotal, nil
+}
+
+func autoCorrectRatio(correct, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(correct) / float64(total)
+}
+
+// AdaptParameters performs online parameter optimization over the 24h
+// sliding window. Called by a background worker every 5 minutes; gated by
+// ROUTING_OPT_ADAPTIVE_LEARNING at the call site.
 //
-// Week 1: 禁用（ROUTING_OPT_ADAPTIVE_LEARNING=false）
-// Week 2: 启用自适应学习
-//   - Bayesian Optimization for hyperparameters
-//   - Sliding window accuracy (最近1000次)
-//   - 异常检测: 准确率连续3个窗口下降>5%
-//   - 自动回滚: 新参数准确率<旧参数
+// Policy (conservative, fully auditable via optimization_state versions):
+//   - accuracy improved ≥2pp vs the active state → checkpoint a new version,
+//     tapering ε-greedy exploration by ×0.8 (floor 1%)
+//   - accuracy dropped ≥5pp → hold parameters and surface an anomaly
+//   - otherwise hold (no churn)
+//
+// Version creation is transactional in OptimizationStateDAO.Create (old
+// active row deactivated in the same tx), so a failed write leaves the
+// previous parameters untouched.
 func (l *AdaptiveLearner) AdaptParameters(ctx context.Context) error {
-	// Week 1: no-op (adaptive learning disabled)
-	// Week 2: implement Bayesian Optimization
+	state, err := l.stateDAO.GetActive(ctx)
+	if err != nil {
+		return err // no active state yet: nothing to adapt
+	}
+
+	accuracy, samples, err := l.currentWeightedAccuracy(ctx)
+	if err != nil {
+		return err
+	}
+
+	decision, reason := decideAdaptation(state.OverallAccuracy, accuracy, samples)
+	switch decision {
+	case adaptHold:
+		return nil
+	case adaptAnomaly:
+		slog.WarnContext(ctx, "routingopt: accuracy drop detected, holding parameters",
+			"current", accuracy, "persisted", state.OverallAccuracy, "samples", samples)
+		return nil
+	case adaptUpdate:
+	}
+
+	newState := *state
+	newState.ID = 0
+	newState.Version = state.Version + 1
+	newState.OverallAccuracy = &accuracy
+	newState.ExplorationRate = maxFloat(adaptExplorationFloor, state.ExplorationRate*adaptExplorationDecay)
+	newState.ActivatedAt = time.Now()
+	newState.DeactivatedAt = nil
+	newState.Notes = strPtr("adaptive checkpoint: " + reason)
+
+	if _, err := l.stateDAO.Create(ctx, &newState); err != nil {
+		return err
+	}
+	slog.InfoContext(ctx, "routingopt: parameter version created",
+		"version", newState.Version, "accuracy", accuracy,
+		"exploration_rate", newState.ExplorationRate, "reason", reason)
 	return nil
 }
 
-// DetectAnomalies detects accuracy drops and triggers alerts.
-//
-// Week 1: 禁用
-// Week 2: 实现异常检测
-//   - Accuracy drop > 5% for 3 consecutive 5-minute windows
-//   - Latency spike > 2x baseline
-//   - Provider failure rate > 20%
+// DetectAnomalies inspects the same sliding window as AdaptParameters and
+// reports an accuracy_drop anomaly when the weighted accuracy sits ≥5pp below
+// the active state's persisted accuracy. Other anomaly classes (latency spike,
+// provider failure) remain Week 3 scope.
 func (l *AdaptiveLearner) DetectAnomalies(ctx context.Context) ([]Anomaly, error) {
-	// Week 1: no anomalies
-	return nil, nil
+	state, err := l.stateDAO.GetActive(ctx)
+	if err != nil || state.OverallAccuracy == nil {
+		return nil, nil // nothing to compare against
+	}
+	accuracy, samples, err := l.currentWeightedAccuracy(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if samples < confidenceMinSamples {
+		return nil, nil
+	}
+	if *state.OverallAccuracy-accuracy < adaptDropThreshold {
+		return nil, nil
+	}
+	return []Anomaly{{
+		Type:        "accuracy_drop",
+		Severity:    "warning",
+		Description: "weighted routing accuracy dropped ≥5pp below the active parameter checkpoint",
+		DetectedAt:  time.Now(),
+		Metrics: map[string]float64{
+			"current_accuracy":   accuracy,
+			"persisted_accuracy": *state.OverallAccuracy,
+			"samples":            float64(samples),
+		},
+	}}, nil
+}
+
+func maxFloat(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func strPtr(s string) *string {
+	return &s
 }
 
 // Anomaly represents a detected routing anomaly.
