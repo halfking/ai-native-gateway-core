@@ -111,6 +111,14 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/645_session_bodies_hot_request_unique_repair.sql"
   "$ROOT_DIR/sql/migrations/startup/650_auto_route_selection_treatment_attribution.sql"
   "$ROOT_DIR/sql/migrations/startup/656_auto_route_selections_hot.sql"
+  # 2026-09-06 deploy-gap audit: 658 (structured feature columns on the
+  # auto_route_selections PARENT) has only its hot-table half mirrored by the
+  # Go ensure (db.ensureAutoRouteSelectionsHotSchema adds columns to _hot, then
+  # builds auto_route_selections_all referencing the parent's 658 columns), so
+  # on upgraded databases every boot fails 42703 (detected_language) and the
+  # deploy aborts at gateway migrate. Must run after 656 (hot heap + the
+  # promote function it redefines) and before the Go ensure chain.
+  "$ROOT_DIR/sql/migrations/startup/658_auto_route_structured_features.sql"
   "$ROOT_DIR/sql/migrations/startup/659_legacy_promote_atomic_cte.sql"
   "$ROOT_DIR/sql/migrations/startup/651_provider_quality_hot_rollup.sql"
   "$ROOT_DIR/sql/migrations/startup/652_system_monitor_fallback_queue.sql"
@@ -118,9 +126,50 @@ files=(
   "$ROOT_DIR/sql/migrations/startup/654_archive_credential_model_index_detach_drop.sql"
   "$ROOT_DIR/sql/migrations/startup/660_credential_model_weekly_peak_unique.sql"
   "$ROOT_DIR/sql/migrations/startup/661_session_summary_token_ratio_reassert.sql"
+  # 2026-09-06 PG log audit: bg/feature_stats_worker.go computes daily feature
+  # distributions and dedup rates for AUTO route ML training quality monitoring,
+  # but 662 (feature_distribution_stats + dedup_stats tables) had no deployment
+  # track and was missing on upgraded databases, causing 42P01 on every hourly
+  # worker tick. Must run before the bg worker starts.
   "$ROOT_DIR/sql/migrations/startup/662_feature_distribution_stats.sql"
   "$ROOT_DIR/sql/migrations/startup/663_training_export.sql"
   "$ROOT_DIR/sql/migrations/startup/664_provider_error_details_agg_key_dedup.sql"
+  # 2026-09-06 PG log audit: the aggregation upsert in
+  # bg/provider_error_aggregator.go conflicts on a 9-part fingerprint
+  # (including LEFT(error_message, 200), contract of 639/V368), but the
+  # local index had been rebuilt without that part (out-of-repo 663 from a
+  # parallel session), so every aggregator tick failed 42P10 and the batch
+  # was lost. Restore the canonical index shape; idempotent (skips when the
+  # index already covers error_message).
+  "$ROOT_DIR/sql/migrations/startup/665_provider_error_details_fingerprint_index_repair.sql"
+  # 2026-09-06 PG log audit: external orchestration services and statistics
+  # collectors attempt to INSERT into orchestration_runtime_instances and
+  # llm_hourly_stats, but these tables were never deployed (42P01 errors every
+  # 30s). Create them to support external integrations; the gateway itself does
+  # not write to these tables. The llm_hourly_stats hour column accepts only
+  # properly formatted TIMESTAMPTZ (YYYY-MM-DD HH:00:00+00); callers sending
+  # truncated formats like "2026-09-06T01" will fail (22007 invalid timestamp).
+  "$ROOT_DIR/sql/migrations/startup/666_orchestration_and_stats_tables.sql"
+  # 2026-09-06 PG log audit follow-up: external redclaw services send truncated
+  # timestamps like "2026-09-05T23" to llm_hourly_stats causing 22007 errors
+  # every hour. 665 provides 3 compatibility layers: (1) normalize_hour_timestamp()
+  # function to parse flexible formats, (2) upsert_llm_hourly_stats() stored
+  # procedure for safe insertion, (3) llm_hourly_stats_flexible view with INSTEAD
+  # OF trigger for zero-code-change compatibility. External services can choose any
+  # layer; the base table stays TIMESTAMPTZ for data integrity. Query
+  # llm_hourly_stats_usage_guide for integration examples.
+  "$ROOT_DIR/sql/migrations/startup/667_llm_hourly_stats_timestamp_fix.sql"
+  # 2026-09-06 PG log audit follow-up: 666 attempted BEFORE trigger but PG validates
+  # types before triggers run. Abandoned in favor of 667.
+  # "$ROOT_DIR/sql/migrations/startup/666_llm_hourly_stats_direct_trigger.sql"
+  # 2026-09-06 PG log audit final fix: 667 clarifies that external services must
+  # wrap their hour parameter in normalize_hour_timestamp() to use truncated formats.
+  # The recommended pattern is:
+  #   INSERT INTO llm_hourly_stats (hour, ...) VALUES (normalize_hour_timestamp($1), ...)
+  #   ON CONFLICT (hour) DO UPDATE ...
+  # This preserves ON CONFLICT support while accepting "2026-09-06T11" input.
+  # Alternative: call upsert_llm_hourly_stats(hour_text, ...) helper function.
+  "$ROOT_DIR/sql/migrations/startup/668_llm_hourly_stats_final_fix.sql"
   "$ROOT_DIR/deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql"
 )
 
@@ -142,6 +191,9 @@ intentional_function_chains=(
   # 654 supersedes 653's DELETE-based archive body with the columnar-safe
   # DETACH PARTITION + DROP path and must stay the later entry.
   'archive_credential_model_index|653_archive_credential_model_index_canonical_return.sql|654_archive_credential_model_index_detach_drop.sql|'
+  # 658 extends 656's promote body with the 15 structured feature columns and
+  # must stay the later entry.
+  'promote_auto_route_selections_hot_to_partition|656_auto_route_selections_hot.sql|658_auto_route_structured_features.sql|'
 )
 redefined_functions="$(
   for file in "${files[@]}"; do

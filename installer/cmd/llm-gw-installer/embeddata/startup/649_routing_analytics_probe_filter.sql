@@ -35,7 +35,8 @@ SELECT
   success::boolean AS success,
   latency_ms::numeric AS latency_ms,
   cost_usd::numeric AS cost_usd,
-  origin_stage::text AS origin_stage
+  origin_stage::text AS origin_stage,
+  auto_profile::text AS auto_profile
 FROM public.request_logs_hot
 UNION ALL
 SELECT
@@ -52,7 +53,8 @@ SELECT
   success::boolean AS success,
   latency_ms::numeric AS latency_ms,
   cost_usd::numeric AS cost_usd,
-  origin_stage::text AS origin_stage
+  origin_stage::text AS origin_stage,
+  auto_profile::text AS auto_profile
 FROM public.request_logs;
 
 CREATE MATERIALIZED VIEW public.routing_analytics_7d AS
