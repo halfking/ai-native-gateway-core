@@ -10,7 +10,7 @@
 #     mutable tag (local dev only — production builds must pin).
 
 ARG BASE_REGISTRY=registry.kxpms.cn/kx-base
-ARG GO_BASE_IMAGE=${BASE_REGISTRY}/golang:1.25-alpine
+ARG GO_BASE_IMAGE=${BASE_REGISTRY}/golang:1.27.1-alpine
 ARG GO_IMAGE_DIGEST=
 ARG RUNTIME_BASE_IMAGE=${BASE_REGISTRY}/alpine:3.22
 ARG RUNTIME_IMAGE_DIGEST=
