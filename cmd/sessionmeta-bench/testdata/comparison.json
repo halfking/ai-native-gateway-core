@@ -1,0 +1,152 @@
+[
+  {
+    "sample": "0f30f2f17c002879",
+    "tests": {
+      "baseline": {
+        "latency": 3.2284700870513916,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.6877021789550781,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "29c1dd97c37f5459",
+    "tests": {
+      "baseline": {
+        "latency": 0.7275869846343994,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.5085129737854004,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "d5f3bf8534085862",
+    "tests": {
+      "baseline": {
+        "latency": 0.7541441917419434,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.5114998817443848,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "7d576fddae09c569",
+    "tests": {
+      "baseline": {
+        "latency": 0.7398221492767334,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.5072991847991943,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "0dfd1eb88184710d",
+    "tests": {
+      "baseline": {
+        "latency": 0.7456691265106201,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.5052521228790283,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "660c6b288099347c",
+    "tests": {
+      "baseline": {
+        "latency": 2.0281031131744385,
+        "content": "",
+        "error": "'content'"
+      },
+      "dflash2": {
+        "latency": 20.88638687133789,
+        "content": "<tool_call>\n<function=Read>\n<parameter=file_path>\n/Users/xutaohuang/.agents/skills/llm-gateway-deploy-test/SKILL.md\n</parameter>\n</function>\n</tool_call>",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "90c628e9666656d8",
+    "tests": {
+      "baseline": {
+        "latency": 1.2007529735565186,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.7754409313201904,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "716448297d69fd25",
+    "tests": {
+      "baseline": {
+        "latency": 0.8388276100158691,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.7323741912841797,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "3f6429959a45ffff",
+    "tests": {
+      "baseline": {
+        "latency": 0.8189408779144287,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.7178590297698975,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  },
+  {
+    "sample": "d8ec02871c4d6f89",
+    "tests": {
+      "baseline": {
+        "latency": 0.793536901473999,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      },
+      "dflash2": {
+        "latency": 0.7292540073394775,
+        "content": "Pong! 🏓\n\nHow can I help you today?",
+        "error": null
+      }
+    }
+  }
+]

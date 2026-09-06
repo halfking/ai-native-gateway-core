@@ -1,0 +1,802 @@
+{
+  "summary": {
+    "total": 50,
+    "hit": 41,
+    "miss": 9,
+    "hit_rate": 82.0,
+    "model_stats": {
+      "kimi-k3": {
+        "total": 5,
+        "hit": 5,
+        "miss": 0
+      },
+      "minimax-m3": {
+        "total": 7,
+        "hit": 3,
+        "miss": 4
+      },
+      "glm-5.2": {
+        "total": 3,
+        "hit": 0,
+        "miss": 3
+      },
+      "claude-sonnet-5": {
+        "total": 16,
+        "hit": 16,
+        "miss": 0
+      },
+      "gpt-5.6-terra": {
+        "total": 8,
+        "hit": 6,
+        "miss": 2
+      },
+      "deepseek-v4-pro": {
+        "total": 4,
+        "hit": 4,
+        "miss": 0
+      },
+      "claude-opus-5": {
+        "total": 5,
+        "hit": 5,
+        "miss": 0
+      },
+      "deepseek-v4-flash": {
+        "total": 2,
+        "hit": 2,
+        "miss": 0
+      }
+    }
+  },
+  "details": [
+    {
+      "session_id": "gw_91706e52-36a1-48cf-9993-fa43ee483862",
+      "user_specified_model": "kimi-k3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 3,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_f88f63f4-982e-42da-829e-a1420abc22a7",
+      "user_specified_model": "minimax-m3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_47e57317-1976-4f36-bc74-9cbb341c0d3b",
+      "user_specified_model": "glm-5.2",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_3a568aff-63c4-408d-95a1-131f4d7fefd8",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_b084aab8-c4a7-466c-b67d-7fe86b6b7e67",
+      "user_specified_model": "kimi-k3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 3,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_b7ed6416-29e2-487b-8593-11a157ce04bd",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_e1351c48-9bf2-4eab-bf14-9ae11fb588e0",
+      "user_specified_model": "minimax-m3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_3d20b7ae-132b-47a5-b916-6f0eba76aa87",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_8914804c-fab0-4708-aac0-5d0e1e4685eb",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_2b4ee51f-59d6-4c9f-af52-b70e45316fcc",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_02bd5a94-196f-402b-8693-fad0c9da7533",
+      "user_specified_model": "gpt-5.6-terra",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 5,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_23a703db-ef13-412a-8085-9ac75b7645a0",
+      "user_specified_model": "gpt-5.6-terra",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 5,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_84314ff7-4aa7-4e38-8463-7cc7a0dc9e9d",
+      "user_specified_model": "kimi-k3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 3,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_f2be26c8-587b-4f4b-bdb1-51c2343a8ca7",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_97177399-feae-4041-b328-e3bdadf683df",
+      "user_specified_model": "gpt-5.6-terra",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 5,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_49522aa8-015d-460c-93a0-39f3df023308",
+      "user_specified_model": "deepseek-v4-pro",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_c33f9356-285b-43bf-9d78-e0c51a492dc5",
+      "user_specified_model": "claude-opus-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 6,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_13a2e314-2b27-4256-88bf-b4ceae4f8019",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_906fa721-bc62-4ca1-9a92-19e80da9845f",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_6011519c-224b-482b-9fc9-b3aa381d07f0",
+      "user_specified_model": "deepseek-v4-pro",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_93993195-6fa5-48c6-96c8-2f064f4dc160",
+      "user_specified_model": "deepseek-v4-pro",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_ed6c0fd4-8003-485b-a70d-65f2e08b3d26",
+      "user_specified_model": "claude-opus-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 6,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_3c8ec10a-c142-4e99-a95a-2480cc45dd4e",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_469b2524-436e-4a7c-a9f9-4bc7f149afd9",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_8a76c80e-2f1a-4d9f-8e63-146f01266e92",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_68848feb-0bd8-4ef8-a49e-c3ada48b5e7b",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_27696437-6aea-4fbf-9a1d-222304722dee",
+      "user_specified_model": "gpt-5.6-terra",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 5,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_8847d8a8-d80d-4bef-8e9b-66fa4f595468",
+      "user_specified_model": "glm-5.2",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_a675b346-d03c-40d1-9d4b-3db6bc1bacfb",
+      "user_specified_model": "minimax-m3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_00659dec-46e1-458d-b463-6598624a0da3",
+      "user_specified_model": "minimax-m3",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 1,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_41bc3180-0ae8-4b7d-899d-1788d8a23669",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_8c7c6b1f-9992-446b-b20b-1313e523181a",
+      "user_specified_model": "gpt-5.6-terra",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_d23d43b0-e872-4eac-934d-9fdd1dc66266",
+      "user_specified_model": "deepseek-v4-flash",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 1,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_0f64d717-3b0b-48cd-b64c-c3cf2a600a56",
+      "user_specified_model": "kimi-k3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 3,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_b46be908-a1af-4b59-8d4e-ee0d203eb108",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_e06878d3-eb3c-4459-b213-723e6aa0af8b",
+      "user_specified_model": "minimax-m3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_c464989f-d01a-4309-9336-80f76bd66b8e",
+      "user_specified_model": "gpt-5.6-terra",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_13d845b2-b27a-40e2-b183-6c3941944265",
+      "user_specified_model": "glm-5.2",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": false,
+      "rank": null,
+      "info": "not_in_list"
+    },
+    {
+      "session_id": "gw_deb78d9c-f154-43fb-8d7c-199234549fff",
+      "user_specified_model": "claude-opus-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 6,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_78c3c512-c29b-4feb-aa41-a04f38f4d4fb",
+      "user_specified_model": "kimi-k3",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 3,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_60aed67f-4805-4314-917b-35d65ebbec6a",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_53651253-d9e1-4927-8a0d-ef654e9a6b7d",
+      "user_specified_model": "claude-opus-5",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 6,
+      "info": "fallback"
+    },
+    {
+      "session_id": "gw_de278192-3f04-47bd-af9a-8772ca97f62f",
+      "user_specified_model": "gpt-5.6-terra",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 5,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_a93b190f-437d-47a3-b8c5-52ebf2a03ddd",
+      "user_specified_model": "minimax-m3",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 1,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_390b49d0-4a1a-44a4-a6b6-bdce5e0d5653",
+      "user_specified_model": "minimax-m3",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 1,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_a43f59f8-ab3c-4a77-9d41-4b0d5e48bc63",
+      "user_specified_model": "gpt-5.6-terra",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 5,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_154f7041-adff-46ac-a0e7-8315c7a5534e",
+      "user_specified_model": "deepseek-v4-flash",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 1,
+      "info": "primary"
+    },
+    {
+      "session_id": "gw_0c235151-5549-4f06-a20d-88cd4d66ca20",
+      "user_specified_model": "claude-opus-5",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 6,
+      "info": "fallback"
+    },
+    {
+      "session_id": "gw_ff501234-930c-4407-a2f8-437b85a62ef1",
+      "user_specified_model": "claude-sonnet-5",
+      "task_type": "agent_workflow",
+      "candidates": [
+        "minimax-m3",
+        "glm-5.2",
+        "kimi-k3",
+        "claude-sonnet-5",
+        "gpt-5.6-terra"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    },
+    {
+      "session_id": "gw_7fb676a3-4ccd-4636-a574-2e6d80180da8",
+      "user_specified_model": "deepseek-v4-pro",
+      "task_type": "general_chat",
+      "candidates": [
+        "deepseek-v4-flash",
+        "glm-5.1",
+        "kimi-k3",
+        "deepseek-v4-pro",
+        "claude-sonnet-5"
+      ],
+      "is_hit": true,
+      "rank": 4,
+      "info": "secondary"
+    }
+  ]
+}
