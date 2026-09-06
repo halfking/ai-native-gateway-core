@@ -247,4 +247,3 @@ All queries automatically enforce `tenant_id` filtering at database level.
 - [Environment & Configuration](environment.md) - Environment variables and settings
 - [Routing Analytics](deployment/routing-analytics-mv-deployment-guide.md) - Deep dive into routing logic
 - [Project Overview](PROJECT_OVERVIEW.md) - RLS and tenant isolation
-- [API Documentation](api/) - Admin and data plane APIs
