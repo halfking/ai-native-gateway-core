@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sklearn.ensemble import RandomForestClassifier  # noqa: E402
 
 from src import synthetic  # noqa: E402
-from src.data_loader import clean_data, load_config, load_parquet, merge_annotations  # noqa: E402
+from src.data_loader import clean_data, load_config, merge_annotations  # noqa: E402
 from src.data_loader import load_annotations, split_dataset  # noqa: E402
 from src.export_model import build_initial_types, write_manifest  # noqa: E402
 from src.feature_pipeline import build_pipeline, select_features  # noqa: E402
@@ -40,11 +40,10 @@ def main() -> int:
     cfg = load_config(str(CONFIG))
     features_cfg = cfg["features"]
 
-    df = load_parquet(str(CONFIG.parent / "data" / "synthetic_smoke.parquet")) \
-        if (CONFIG.parent / "data" / "synthetic_smoke.parquet").exists() \
-        else synthetic.generate_synthetic_training_data(n_rows=args.rows, seed=42)
-    if len(df) < args.rows:
-        df = synthetic.generate_synthetic_training_data(n_rows=args.rows, seed=42)
+    # 始终用当前代码现场生成（固定seed保证可复现）。
+    # 不读取data/下的旧parquet——那可能是旧词汇表版本生成的，
+    # 会导致fixture的ONNX编码器词表与运行时契约脱节。
+    df = synthetic.generate_synthetic_training_data(n_rows=args.rows, seed=42)
     df = clean_data(df, cfg.get("data", {}), features_cfg=features_cfg)
     df = merge_annotations(df, load_annotations(""), label_column="chosen_model")
 

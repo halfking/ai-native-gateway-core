@@ -106,6 +106,14 @@ func (d *Decider) recommendWithOptimizer(ctx context.Context, recommended []Scor
 	if d.optimizer == nil || len(recommended) < 2 {
 		return recommended
 	}
+	// A/B testing (P2.5): control-group requests skip the optimizer entirely
+	// and get byte-identical baseline rule-engine routing. The optional
+	// interface keeps the Decider decoupled from the gate implementation.
+	if ab, ok := d.optimizer.(interface {
+		EvaluateAB(sessionID string, apiKeyID int) bool
+	}); ok && !ab.EvaluateAB(sessionID, apiKeyID) {
+		return recommended
+	}
 	task := cls.Primary
 	routingCtx := routingopt.RoutingContext{
 		TaskType:  string(task),

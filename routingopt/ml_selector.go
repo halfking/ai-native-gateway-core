@@ -95,6 +95,11 @@ type MLSelectorConfig struct {
 type MLSelector struct {
 	manifest *MLManifest
 
+	// lifeMu serializes lifecycle (Close/hot-reload swap) against in-flight
+	// Predicts: Predict holds RLock, Close takes Lock — a swapped-out session
+	// is never destroyed while a prediction is still running on it.
+	lifeMu sync.RWMutex
+
 	mu          sync.Mutex // serializes Run over the shared tensors
 	session     *ort.AdvancedSession
 	catTensors  []*ort.StringTensor
@@ -238,6 +243,11 @@ func (s *MLSelector) Manifest() *MLManifest { return s.manifest }
 // fall back to rule-engine ordering on any error.
 func (s *MLSelector) Predict(ctx context.Context, f MLRouteFeatures) (*MLPrediction, error) {
 	start := time.Now()
+	s.lifeMu.RLock()
+	defer s.lifeMu.RUnlock()
+	if s.session == nil {
+		return nil, fmt.Errorf("%w: selector closed", ErrMLUnavailable)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -314,8 +324,8 @@ func (s *MLSelector) Predict(ctx context.Context, f MLRouteFeatures) (*MLPredict
 
 // Close releases the session and all tensors.
 func (s *MLSelector) Close() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
 	if s.session != nil {
 		_ = s.session.Destroy()
 		s.session = nil

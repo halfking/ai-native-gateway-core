@@ -29,6 +29,9 @@ type RealOptimizer struct {
 	// ml is the optional P2.5 ONNX re-ranker (nil = disabled; all ML paths
 	// short-circuit and RecommendModel output equals the rule-engine order).
 	ml *MLReranker
+	// ab optionally splits traffic: treatment gets the optimizer, control
+	// gets baseline routing (nil = 100% treatment, pre-A/B behaviour).
+	ab *ABGate
 }
 
 // WithMLReranker attaches the P2.5 ONNX ML re-ranker. Returns the receiver
@@ -36,6 +39,47 @@ type RealOptimizer struct {
 func (o *RealOptimizer) WithMLReranker(r *MLReranker) *RealOptimizer {
 	o.ml = r
 	return o
+}
+
+// WithABGate attaches the traffic-split gate (A/B testing). nil = always
+// treatment. Implements the ABTestEnabled/ABTestPercentage flags semantics.
+func (o *RealOptimizer) WithABGate(g *ABGate) *RealOptimizer {
+	o.ab = g
+	return o
+}
+
+// EvaluateAB reports whether this request is in the treatment group.
+// Part of the optional A/B contract the autoroute bridge type-asserts on.
+func (o *RealOptimizer) EvaluateAB(sessionID string, apiKeyID int) bool {
+	if o.ab == nil {
+		return true
+	}
+	return o.ab.Treatment(sessionID, apiKeyID)
+}
+
+// MLDiagnostics renders the P2.5 ML re-ranker state for the admin endpoint
+// (nil when ML is disabled). Read-only and allocation-light enough for
+// on-demand admin polling.
+func (o *RealOptimizer) MLDiagnostics() map[string]any {
+	if o.ml == nil {
+		return nil
+	}
+	diag := map[string]any{
+		"enabled": o.ml.Enabled(),
+		"stats":   o.ml.Stats.Snapshot(),
+		"ab_test": o.ab.Snapshot(),
+	}
+	if sel := o.ml.Selector(); sel != nil {
+		if m := sel.Manifest(); m != nil {
+			diag["manifest"] = map[string]any{
+				"schema_version": m.SchemaVersion,
+				"model_file":     m.ModelFile,
+				"label_classes":  m.LabelClasses,
+				"num_inputs":     m.NumInputs(),
+			}
+		}
+	}
+	return diag
 }
 
 // NewRealOptimizer constructs a real optimizer with all modules wired.
