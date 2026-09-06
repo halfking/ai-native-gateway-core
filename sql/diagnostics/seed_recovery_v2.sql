@@ -96,16 +96,16 @@ ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
 
 -- 3c. 凭据 103 全部 broken（应被守卫阻止）
 INSERT INTO credential_model_bindings (credential_id, provider_model_id, available, unavailable_reason, unavailable_at, unavailable_recover_at)
-SELECT 103, pm.id, FALSE, 'probe_broken', now() - INTERVAL '60 minutes', now() - INTERVAL '30 minutes'
+SELECT 103, pm.id, FALSE, 'model_probe_broken', now() - INTERVAL '60 minutes', now() - INTERVAL '30 minutes'
 FROM tmp_pm_v2 pm WHERE pm.raw_model_name IN ('recov-baichuan-4-pro', 'recov-baichuan-3-turbo')
 ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
   available = FALSE,
-  unavailable_reason = 'probe_broken',
+  unavailable_reason = 'model_probe_broken',
   unavailable_recover_at = now() - INTERVAL '30 minutes';
 
 -- 3d. 凭据 104 部分 broken（per-model 放宽 → 应被恢复）
 INSERT INTO credential_model_bindings (credential_id, provider_model_id, available, unavailable_reason, unavailable_at, unavailable_recover_at)
-SELECT 104, pm.id, FALSE, 'probe_broken', now() - INTERVAL '60 minutes', now() - INTERVAL '15 minutes'
+SELECT 104, pm.id, FALSE, 'model_probe_broken', now() - INTERVAL '60 minutes', now() - INTERVAL '15 minutes'
 FROM tmp_pm_v2 pm WHERE pm.raw_model_name = 'recov-baichuan-4-pro'
 UNION ALL
 SELECT 104, pm.id, FALSE, 'continuous_failure', now() - INTERVAL '15 minutes', now() - INTERVAL '5 minutes'
