@@ -1,5 +1,11 @@
 package settings
 
+import (
+	"os"
+	"strconv"
+	"strings"
+)
+
 // RoutingOptFeatureFlags controls P2.2 routing optimization plugin behavior.
 //
 // All flags default to false/disabled to ensure zero impact on existing routing
@@ -81,28 +87,67 @@ type RoutingOptFeatureFlags struct {
 	ABTestPercentage float64 `env:"ROUTING_OPT_AB_TEST_PERCENTAGE" default:"0.1"`
 }
 
-// GetRoutingOptFlags returns the routing optimization feature flags from the
-// global AppConfig. If AppConfig is nil or RoutingOpt field is missing, returns
-// default-disabled flags.
+// GetRoutingOptFlags returns the routing optimization feature flags, read
+// from environment variables (ROUTING_OPT_*) with the documented defaults.
+// Invalid values fall back to the default so a typo can never disable the
+// baseline safety properties (e.g. exploration-rate clamping happens in the
+// recommender regardless).
 //
 // Usage:
-//   flags := settings.GetRoutingOptFlags()
-//   if flags.Enabled {
-//       decider.SetOptimizer(routingopt.NewDefaultOptimizer())
-//   }
+//
+//	flags := settings.GetRoutingOptFlags()
+//	if flags.Enabled {
+//	    decider.SetOptimizer(routingopt.NewRealOptimizer(pool))
+//	}
 func GetRoutingOptFlags() *RoutingOptFeatureFlags {
-	// Real implementation reads from AppConfig.RoutingOpt field.
-	// Week 1 stub: return default-disabled flags.
-	// TODO(Week 1 Day 5): wire into main.go / cmd/llm-gateway startup
 	return &RoutingOptFeatureFlags{
-		Enabled:                         false, // master switch off by default
-		EnableClassificationEnhancement: true,
-		EnableModelRecommendation:       true,
-		EnableFeedbackIntegration:       true,
-		EnableAdaptiveLearning:          false, // disabled until Week 8
-		MaxPluginLatencyMs:              10,
-		ExplorationRate:                 0.05,
-		ABTestEnabled:                   false,
-		ABTestPercentage:                0.1,
+		Enabled:                         envBool("ROUTING_OPT_ENABLED", false),
+		EnableClassificationEnhancement: envBool("ROUTING_OPT_CLASSIFICATION_ENHANCEMENT", true),
+		EnableModelRecommendation:       envBool("ROUTING_OPT_MODEL_RECOMMENDATION", true),
+		EnableFeedbackIntegration:       envBool("ROUTING_OPT_FEEDBACK_INTEGRATION", true),
+		EnableAdaptiveLearning:          envBool("ROUTING_OPT_ADAPTIVE_LEARNING", false), // disabled until Week 8
+		MaxPluginLatencyMs:              envInt("ROUTING_OPT_MAX_PLUGIN_LATENCY_MS", 10),
+		ExplorationRate:                 envFloat("ROUTING_OPT_EXPLORATION_RATE", 0.05),
+		ABTestEnabled:                   envBool("ROUTING_OPT_AB_TEST_ENABLED", false),
+		ABTestPercentage:                envFloat("ROUTING_OPT_AB_TEST_PERCENTAGE", 0.1),
 	}
+}
+
+// envBool parses a boolean env var; empty or invalid → defaultValue.
+func envBool(key string, defaultValue bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return defaultValue
+	}
+	return v
+}
+
+// envInt parses an integer env var; empty or invalid → defaultValue.
+func envInt(key string, defaultValue int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return defaultValue
+	}
+	return v
+}
+
+// envFloat parses a float env var; empty or invalid → defaultValue.
+func envFloat(key string, defaultValue float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return defaultValue
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return v
 }

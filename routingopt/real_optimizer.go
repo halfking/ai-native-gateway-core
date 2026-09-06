@@ -2,6 +2,7 @@ package routingopt
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -20,7 +21,7 @@ import (
 //
 // Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md
 type RealOptimizer struct {
-	enhancer   *ClassificationEnhancer
+	enhancer    *ClassificationEnhancer
 	recommender *ModelRecommender
 	integrator  *FeedbackIntegrator
 	learner     *AdaptiveLearner
@@ -29,17 +30,18 @@ type RealOptimizer struct {
 // NewRealOptimizer constructs a real optimizer with all modules wired.
 //
 // Usage:
-//   pool := pgxpool.Connect(...)
-//   optimizer := routingopt.NewRealOptimizer(pool)
-//   decider.SetOptimizer(optimizer)
+//
+//	pool := pgxpool.Connect(...)
+//	optimizer := routingopt.NewRealOptimizer(pool)
+//	decider.SetOptimizer(optimizer)
 func NewRealOptimizer(pool *pgxpool.Pool) *RealOptimizer {
 	enhancer := NewClassificationEnhancer(pool)
 	recommender := NewModelRecommender(pool)
 	integrator := NewFeedbackIntegrator(pool, enhancer)
 	learner := NewAdaptiveLearner(pool, integrator)
-	
+
 	return &RealOptimizer{
-		enhancer:   enhancer,
+		enhancer:    enhancer,
 		recommender: recommender,
 		integrator:  integrator,
 		learner:     learner,
@@ -52,12 +54,13 @@ func NewRealOptimizer(pool *pgxpool.Pool) *RealOptimizer {
 // Parameter signals: interface{} (*autoroute.ClassificationSignals expected)
 // Returns: *EnhancedSignals (with GetOriginal() method)
 func (o *RealOptimizer) PreClassify(ctx context.Context, signals interface{}) (interface{}, error) {
-	// Extract user_id and user_agent from context
-	// Week 1: hardcoded defaults (Week 2: extract from request context)
-	userID := ""    // TODO: extract from context
-	userAgent := "" // TODO: extract from context
-	
-	return o.enhancer.Enhance(ctx, signals, userID, userAgent)
+	// Read per-request identity injected by autoroute.Decider (WithRequestMeta).
+	meta := RequestMetaFrom(ctx)
+	userID := ""
+	if meta.UserID > 0 {
+		userID = strconv.Itoa(meta.UserID)
+	}
+	return o.enhancer.Enhance(ctx, signals, userID, meta.ClientType)
 }
 
 // PostClassify adjusts confidence after classification.
@@ -86,14 +89,14 @@ func (o *RealOptimizer) RecommendModel(ctx context.Context, candidates interface
 		// Invalid type: return unchanged
 		return candidates, nil
 	}
-	
+
 	// Type-assert routing context
 	routingCtx, ok := routingContext.(RoutingContext)
 	if !ok {
 		// Invalid type: use empty context
 		routingCtx = RoutingContext{}
 	}
-	
+
 	return o.recommender.Recommend(ctx, cands, routingCtx)
 }
 
@@ -108,7 +111,7 @@ func (o *RealOptimizer) RecordFeedback(ctx context.Context, feedback interface{}
 		// Invalid type: ignore
 		return nil
 	}
-	
+
 	return o.integrator.RecordFeedback(ctx, fb)
 }
 

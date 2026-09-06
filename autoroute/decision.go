@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/routingopt"
 )
 
 // Decision is the top-level output of Decider.Decide. Consumed by
@@ -412,6 +414,16 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		}
 	}
 
+	// P2.2: attach request metadata so optimizer hooks can read
+	// userID/session/client without changing the interface signatures.
+	if d.optimizer != nil {
+		ctx = routingopt.WithRequestMeta(ctx, routingopt.RequestMeta{
+			UserID:     apiKeyID,
+			SessionID:  sessionID,
+			ClientType: sigs.ClientType,
+		})
+	}
+
 	// Step 1: resolve profile (header > sticky > default)
 	profile := d.resolveProfile(ctx, apiKeyID, headerProfile)
 
@@ -486,6 +498,10 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	}
 	recommended := d.index.Recommend(cls.Primary, sigs, profile, candidateTopN)
 
+	// P2.2: plugin re-ranking. Runs before explicit-default/override so
+	// admin pins and tenant defaults keep precedence over the optimizer.
+	recommended = d.recommendWithOptimizer(ctx, recommended, cls.Primary, profile, apiKeyID, sessionID, sigs.ClientType)
+
 	// Step 3a (M2): explicit default routing.
 	routingSource := "implicit_tag"
 	if flags := GetFeatureFlags(); flags != nil && flags.UseExplicitDefault && d.defaultRoutingStore != nil {
@@ -546,6 +562,8 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	}
 	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
+	// P2.2: fire-and-forget feedback for the learning loop (fresh decisions only).
+	d.recordFeedbackAsync(decision, apiKeyID, sessionID, sigs.ClientType)
 
 	// Step 4: cache the intent for this session
 	if sessionID != "" && d.intentCache != nil {
