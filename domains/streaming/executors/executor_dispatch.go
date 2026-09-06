@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // executor_dispatch.go implements the multi-tier dispatch pipeline
@@ -392,6 +393,17 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 		// 定时请求的 due time 超出允许窗口：客户端参数问题，不可重试。
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindClientBug}
 	default:
+		// 2026-09-07 (mock system test §5.3): the exhaustion cause chain
+		// (ExhaustedError.Unwrap) preserves the last concrete upstream error.
+		// When that is a rate limit, surface KindRateLimit instead of the
+		// blanket KindTransient so the handler's exhausted branch can return
+		// HTTP 429 + Retry-After to the client instead of 503 model_not_found
+		// (which stripped the Retry-After contract). Other upstream kinds
+		// deliberately keep the legacy transient mapping — their handler-side
+		// classification is unchanged.
+		if upstreamRateLimitKind(err) {
+			return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindRateLimit}
+		}
 		if ce, ok := err.(*dispatchErr); ok && ce != nil {
 			// Forward-path sentinels (circuit open / fp saturated / keys
 			// exhausted / no candidate): treat as transient exhaustion.
@@ -399,6 +411,14 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 		}
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindTransient}
 	}
+}
+
+// upstreamRateLimitKind reports whether the dispatch error chain terminates
+// in an upstream rate-limit error (HTTP 429 classified by the upstream
+// client), unwrapping through ExhaustedError.Cause and fmt.Errorf wrappers.
+func upstreamRateLimitKind(err error) bool {
+	var ue *upstreampkg.Error
+	return errors.As(err, &ue) && ue != nil && ue.Kind == errorsx.KindRateLimit
 }
 
 func (e *Executor) dispatchCandidatesForModel(ctx context.Context, d *dispatchCtx, model string) []provider.Candidate {
