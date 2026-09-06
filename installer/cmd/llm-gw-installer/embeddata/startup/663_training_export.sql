@@ -259,9 +259,8 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-COMMENT ON FUNCTION cleanup_stale_training_exports() IS 
-  'Automatically mark stale training exports (running > 24h) as failed. ' ||
-  'Should be called periodically (e.g., hourly cron job or at gateway startup).';
+COMMENT ON FUNCTION cleanup_stale_training_exports() IS
+  'Automatically mark stale training exports (running > 24h) as failed. Should be called periodically (e.g., hourly cron job or at gateway startup).';
 
 -- Migration完成标记
 -- Version: 663

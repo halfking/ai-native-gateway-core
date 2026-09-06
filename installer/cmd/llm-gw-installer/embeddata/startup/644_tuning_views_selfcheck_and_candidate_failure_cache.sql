@@ -133,7 +133,49 @@ BEGIN
 END
 $$;
 
--- ── C. Recreate candidate_failure_logs_unified ─────────────────────────────
+-- ── C. self_check_runs_error_type_check ─────────────────────────────────────
+-- Keep the startup/installer path aligned with the deploy migration V361. The
+-- runtime self-check writer emits the canonical errorsx categories below, while
+-- older installations may still contain the original http_* values. Rebuild
+-- only when the canonical taxonomy is absent and leave the constraint NOT VALID
+-- so historical rows do not block the upgrade.
+DO $$
+BEGIN
+    IF to_regclass('public.self_check_runs') IS NOT NULL THEN
+        IF EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid = 'public.self_check_runs'::regclass
+              AND conname = 'self_check_runs_error_type_check'
+              AND position('quota_periodic' in pg_get_constraintdef(oid)) > 0
+              AND position('model_deprecated' in pg_get_constraintdef(oid)) > 0
+        ) THEN
+            RAISE NOTICE 'Migration 644: self_check_runs_error_type_check already canonical, skipping';
+        ELSE
+            ALTER TABLE public.self_check_runs DROP CONSTRAINT IF EXISTS self_check_runs_error_type_check;
+
+            ALTER TABLE public.self_check_runs
+                ADD CONSTRAINT self_check_runs_error_type_check CHECK (
+                    error_type IS NULL
+                    OR error_type LIKE 'http_%'
+                    OR error_type = ANY (ARRAY[
+                        'none', 'timeout', 'network', 'transient', 'rate_limit', 'auth', 'auth_revoked',
+                        'quota', 'quota_periodic', 'quota_balance', 'quota_permanent', 'upstream_down',
+                        'upstream_overloaded', 'concurrent', 'stream_timeout', 'model_not_found',
+                        'model_deprecated', 'unsupported_feature', 'context_length_exceeded',
+                        'content_filter', 'tool_call_id_mismatch', 'empty_response', 'conversion_error',
+                        'upstream_context_loss', 'no_available_channel', 'canceled', 'client_bug',
+                        'parse_error', 'internal', 'unattributed', 'upstream_fail'
+                    ])
+                ) NOT VALID;
+
+            COMMENT ON CONSTRAINT self_check_runs_error_type_check ON public.self_check_runs IS
+            'Canonical errorsx taxonomy per deploy/sql/migrations/V361__self_check_runs_canonical_taxonomy.sql; legacy http_* values remain readable.';
+        END IF;
+    END IF;
+END
+$$;
+
+-- ── D. Recreate candidate_failure_logs_unified ─────────────────────────────
 -- The view UNION ALLs the hot window with the partitioned parent.
 -- Citus columnar partition metadata can drift from the planner's
 -- cache after attach/detach cycles; re-creating the view rebuilds

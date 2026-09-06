@@ -64,7 +64,7 @@ phase-21-schema-sync/
 
 ```bash
 cd services/llm-gateway-go/deploy/sql/phase-21-schema-sync/
-PGPASSWORD='CGpGfdG9De502/bdQYXD0Cr4akCVXaJ3' psql -h localhost -p 5434 -U kxuser -d postgres -f 00-RUN-ALL.sql
+PGPASSWORD="$PGPASSWORD" psql -h localhost -p 5434 -U kxuser -d postgres -f 00-RUN-ALL.sql
 ```
 
 But 00-RUN-ALL.sql is documentation only — the actual work is in the per-DB files.
@@ -73,7 +73,7 @@ But 00-RUN-ALL.sql is documentation only — the actual work is in the per-DB fi
 
 ```bash
 cd services/llm-gateway-go/deploy/sql/phase-21-schema-sync/
-PG='PGPASSWORD=CGpGfdG9De502/bdQYXD0Cr4akCVXaJ3 psql -h localhost -p 5434 -U kxuser'
+PG='PGPASSWORD="${PGPASSWORD:?set PGPASSWORD}" psql -h localhost -p 5434 -U kxuser'
 
 # Tables first (in dependency order: leaf DBs first)
 eval $PG -d llm_gateway -f llm_gateway-sync-from-184.sql
@@ -107,7 +107,7 @@ done
 After applying, verify with:
 
 ```bash
-PG='PGPASSWORD=CGpGfdG9De502/bdQYXD0Cr4akCVXaJ3 psql -h localhost -p 5434 -U kxuser'
+PG='PGPASSWORD="${PGPASSWORD:?set PGPASSWORD}" psql -h localhost -p 5434 -U kxuser'
 
 for db in llm_gateway casdoor kaixuan trendaradar crm brandmind brandmind_test doc_tools geo_flow smart_bidding stock_trading port_email memos aicms_db; do
     count=$(eval $PG -d "$db" -t -c 'SELECT COUNT(*) FROM pg_tables WHERE schemaname='\''public'\'';')

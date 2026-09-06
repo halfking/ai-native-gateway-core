@@ -94,7 +94,7 @@ else
   exit 1
 fi
 
-LOCAL_TABLE_COUNT=$(docker exec -e PGPASSWORD="${COMMON_PG_SUPERUSER_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}" llm-gateway-pg \
+LOCAL_TABLE_COUNT=$(docker exec -e PGPASSWORD="${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS must be set for local PostgreSQL checks}" llm-gateway-pg \
   psql -U llm_gateway -d llm_gateway -tAc "SELECT count(*) FROM pg_tables WHERE schemaname='public';" 2>/dev/null | tail -1 || echo 0)
 if [[ "$LOCAL_TABLE_COUNT" -gt 0 ]]; then
   pass "llm_gateway has $LOCAL_TABLE_COUNT tables"
@@ -145,7 +145,7 @@ heading "L2: 依赖连通"
 # Assign in this shell first (set -u would otherwise trip on the var if
 # env-injector hasn't been sourced). `docker exec -e` only forwards env
 # from the parent shell, not command-prefix assignments.
-export PGPASSWORD="${COMMON_PG_SUPERUSER_PASS:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
+export PGPASSWORD="${COMMON_PG_SUPERUSER_PASS:?COMMON_PG_SUPERUSER_PASS must be set for local PostgreSQL checks}"
 docker exec -e PGPASSWORD llm-gateway-pg \
   pg_isready -U llm_gateway -d llm_gateway 2>/dev/null | grep -q "accepting" \
   && pass "PG pg_isready" || fail "PG not ready"

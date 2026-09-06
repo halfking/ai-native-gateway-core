@@ -18,7 +18,7 @@ DB_HOST="10.43.237.99"
 DB_PORT="5432"
 DB_USER="llm_gateway"
 DB_NAME="llm_gateway"
-DB_PASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+: "${DB_PASSWORD:?DB_PASSWORD must be set for the target database}"
 SSH_HOST="root@47.97.111.154"  # 154 替代 184
 SSH_PORT="25022"
 

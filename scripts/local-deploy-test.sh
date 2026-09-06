@@ -26,7 +26,7 @@
 #   ./scripts/local-deploy-test.sh --help          # 帮助
 #
 # 端口映射:
-#   PG:       localhost:15432 → 5432 (kxuser/kxpass, db=llm_gateway)
+#   PG:       localhost:15432 → 5432 (configured local test database)
 #   Redis:    localhost:6379
 #   Mock:     http://localhost:18080
 #   Gateway:  http://localhost:8781
@@ -37,6 +37,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$ROOT_DIR/docker-compose.dev-research.yml"
+COMPOSE_ARGS=(-f "$COMPOSE_FILE")
+TEST_ENV_FILE=""
+TEST_COMPOSE_FILE=""
 
 REPORT_FILE="/tmp/llm-gateway-deploy-test-report.md"
 LOG_FILE="/tmp/llm-gateway-deploy-test.log"
@@ -76,9 +79,121 @@ for arg in "$@"; do
   esac
 done
 
+# ── 本地测试配置 ──
+# This script never silently supplies deployable credentials. The documented
+# offline test defaults are available only with an explicit opt-in.
+require_local_test_config() {
+  local insecure_defaults="${LLM_GATEWAY_LOCAL_TEST_ALLOW_INSECURE_DEFAULTS:-0}"
+  if [[ "$insecure_defaults" != "0" && "$insecure_defaults" != "1" ]]; then
+    err "LLM_GATEWAY_LOCAL_TEST_ALLOW_INSECURE_DEFAULTS must be 0 or 1"
+    exit 1
+  fi
+
+  if [[ "$insecure_defaults" == "1" ]]; then
+    : "${LLM_GATEWAY_LOCAL_TEST_PG_USER:=kxuser}"
+    : "${LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD:=kxpass}"
+    : "${LLM_GATEWAY_LOCAL_TEST_PG_DATABASE:=llm_gateway}"
+    : "${LLM_GATEWAY_LOCAL_TEST_PG_HOST:=localhost}"
+    : "${LLM_GATEWAY_LOCAL_TEST_PG_PORT:=15432}"
+    : "${LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY:=AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw}"
+    : "${LLM_GATEWAY_LOCAL_TEST_JWT_SECRET:=local-dev-secret-do-not-use-in-production-12345678}"
+    : "${LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY:=local-admin-test-token-do-not-use-in-production}"
+    : "${LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD:=Veritrans&9527}"
+    : "${LLM_GATEWAY_LOCAL_TEST_AUTH_TEST_TOKEN:=test-key}"
+  fi
+
+  : "${LLM_GATEWAY_LOCAL_TEST_PG_USER:?set LLM_GATEWAY_LOCAL_TEST_PG_USER}"
+  : "${LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD:?set LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD}"
+  : "${LLM_GATEWAY_LOCAL_TEST_PG_DATABASE:?set LLM_GATEWAY_LOCAL_TEST_PG_DATABASE}"
+  : "${LLM_GATEWAY_LOCAL_TEST_PG_HOST:?set LLM_GATEWAY_LOCAL_TEST_PG_HOST}"
+  : "${LLM_GATEWAY_LOCAL_TEST_PG_PORT:?set LLM_GATEWAY_LOCAL_TEST_PG_PORT}"
+  : "${LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY:?set LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY}"
+  : "${LLM_GATEWAY_LOCAL_TEST_JWT_SECRET:?set LLM_GATEWAY_LOCAL_TEST_JWT_SECRET}"
+  : "${LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY:?set LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY}"
+  : "${LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD:?set LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD}"
+  : "${LLM_GATEWAY_LOCAL_TEST_AUTH_TEST_TOKEN:?set LLM_GATEWAY_LOCAL_TEST_AUTH_TEST_TOKEN}"
+
+  if [[ -n "${LLM_GATEWAY_LOCAL_TEST_DATABASE_URL:-}" ]]; then
+    TEST_DATABASE_URL="$LLM_GATEWAY_LOCAL_TEST_DATABASE_URL"
+  else
+    TEST_DATABASE_URL="postgres://${LLM_GATEWAY_LOCAL_TEST_PG_USER}:${LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD}@${LLM_GATEWAY_LOCAL_TEST_PG_HOST}:${LLM_GATEWAY_LOCAL_TEST_PG_PORT}/${LLM_GATEWAY_LOCAL_TEST_PG_DATABASE}?sslmode=disable"
+  fi
+  [[ "$TEST_DATABASE_URL" =~ ^postgres(ql)?://[^[:space:]]+$ ]] || { err "LLM_GATEWAY_LOCAL_TEST_DATABASE_URL is invalid"; exit 1; }
+
+  if [[ "$insecure_defaults" != "1" ]]; then
+    case "${LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD}|${LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY}|${LLM_GATEWAY_LOCAL_TEST_JWT_SECRET}|${LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY}|${LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD}|${LLM_GATEWAY_LOCAL_TEST_AUTH_TEST_TOKEN}" in
+      *"kxpass"*|*"AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"*|*"local-dev-secret-do-not-use-in-production-12345678"*|*"local-admin-test-token-do-not-use-in-production"*|*"Veritrans&9527"*|*"test-key"*)
+        err "known local test defaults require LLM_GATEWAY_LOCAL_TEST_ALLOW_INSECURE_DEFAULTS=1"
+        exit 1
+        ;;
+    esac
+  fi
+
+  export TEST_DATABASE_URL
+  export LLM_GATEWAY_LOCAL_TEST_PG_USER
+  export LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD
+  export LLM_GATEWAY_LOCAL_TEST_PG_DATABASE
+  export LLM_GATEWAY_LOCAL_TEST_PG_HOST
+  export LLM_GATEWAY_LOCAL_TEST_PG_PORT
+  export LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY
+  export LLM_GATEWAY_LOCAL_TEST_JWT_SECRET
+  export LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY
+  export LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD
+}
+
+prepare_docker_test_config() {
+  [[ "$DEPLOY_MODE" == "docker" || "$SKIP_DB" == "false" ]] || return 0
+  [[ -z "$TEST_ENV_FILE" ]] || return 0
+
+  export POSTGRES_USER="$LLM_GATEWAY_LOCAL_TEST_PG_USER"
+  export POSTGRES_PASSWORD="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD"
+  export POSTGRES_DB="$LLM_GATEWAY_LOCAL_TEST_PG_DATABASE"
+  export POSTGRES_PORT="$LLM_GATEWAY_LOCAL_TEST_PG_PORT"
+
+  TEST_ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/llm-gateway-local-test-env.XXXXXX")
+  TEST_COMPOSE_FILE=$(mktemp "$ROOT_DIR/.llm-gateway-local-test-compose.XXXXXX.yml")
+  chmod 0600 "$TEST_ENV_FILE" "$TEST_COMPOSE_FILE"
+  cat >"$TEST_ENV_FILE" <<ENVEOF
+POSTGRES_USER=$LLM_GATEWAY_LOCAL_TEST_PG_USER
+POSTGRES_PASSWORD=$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD
+POSTGRES_DB=$LLM_GATEWAY_LOCAL_TEST_PG_DATABASE
+POSTGRES_PORT=$LLM_GATEWAY_LOCAL_TEST_PG_PORT
+LLM_GATEWAY_REDIS_ADDR=redis:6379
+LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY=$LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY
+LLM_GATEWAY_JWT_SECRET=$LLM_GATEWAY_LOCAL_TEST_JWT_SECRET
+LLM_GATEWAY_ADMIN_API_KEY=$LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY
+LLM_GATEWAY_SEED_ADMIN_PASSWORD=$LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD
+ENVEOF
+  python3 - "$COMPOSE_FILE" "$TEST_COMPOSE_FILE" "$TEST_ENV_FILE" <<'PY'
+from pathlib import Path
+import sys
+
+source, destination, env_file = map(Path, sys.argv[1:])
+content = source.read_text()
+needle = "      - .env.dev-research"
+if needle not in content:
+    raise SystemExit("docker-compose.dev-research.yml has no replaceable env_file entry")
+destination.write_text(content.replace(needle, f"      - {env_file}"))
+PY
+  COMPOSE_ARGS=(-f "$TEST_COMPOSE_FILE")
+}
+
+cleanup_test_config() {
+  [[ -z "$TEST_ENV_FILE" ]] || rm -f "$TEST_ENV_FILE"
+  [[ -z "$TEST_COMPOSE_FILE" ]] || rm -f "$TEST_COMPOSE_FILE"
+}
+trap cleanup_test_config EXIT
+
 # ════════════════════════════════════════════════════════════════════
-# 前置检查
-# ════════════════════════════════════════════════════════════════════
+resolve_compose_command() {
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE_CMD="docker compose"
+  else
+    command -v docker-compose >/dev/null 2>&1 || { err "docker-compose 未安装"; exit 1; }
+    COMPOSE_CMD="docker-compose"
+  fi
+}
+
 precheck() {
   heading "前置检查"
 
@@ -106,12 +221,10 @@ precheck() {
   fi
 
   # Docker compose 版本
-  if docker compose version >/dev/null 2>&1; then
-    COMPOSE_CMD="docker compose"
+  resolve_compose_command
+  if [[ "$COMPOSE_CMD" == "docker compose" ]]; then
     ok "docker compose $(docker compose version --short 2>/dev/null || echo 'v2')"
   else
-    COMPOSE_CMD="docker-compose"
-    command -v docker-compose >/dev/null 2>&1 || { err "docker-compose 未安装"; exit 1; }
     ok "docker-compose"
   fi
 
@@ -213,7 +326,7 @@ check_running_gateway() {
 
     heading "关闭旧网关"
     if [ "$DEPLOY_MODE" = "docker" ]; then
-      $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>&1 | tee -a "$LOG_FILE"
+      "${COMPOSE_CMD}" "${COMPOSE_ARGS[@]}" down 2>&1 | tee -a "$LOG_FILE"
       ok "旧网关已关闭"
       ok "端口已释放"
     else
@@ -230,13 +343,13 @@ start_deps() {
   heading "启动依赖栈"
 
   info "启动 postgres / redis / llm-mock / llm-mock-upstream / memora-mcp..."
-  $COMPOSE_CMD -f "$COMPOSE_FILE" up -d postgres redis llm-mock llm-mock-upstream memora-mcp 2>&1 | tee -a "$LOG_FILE"
+  "${COMPOSE_CMD}" "${COMPOSE_ARGS[@]}" up -d postgres redis llm-mock llm-mock-upstream memora-mcp 2>&1 | tee -a "$LOG_FILE"
 
   # 等待 postgres
   info "等待 postgres (max 60s)..."
   PG_OK=0
   for i in $(seq 1 60); do
-    if docker exec r112_postgres pg_isready -U kxuser -d postgres >/dev/null 2>&1; then
+    if docker exec r112_postgres pg_isready -U "$LLM_GATEWAY_LOCAL_TEST_PG_USER" -d postgres >/dev/null 2>&1; then
       ok "postgres ready (after ${i}s)"
       PG_OK=1; break
     fi
@@ -275,9 +388,9 @@ start_deps() {
 run_migrations() {
   heading "数据库迁移"
 
-  local PG_USER="kxuser"
-  local PG_PASS="kxpass"
-  local PG_DB="llm_gateway"
+  local PG_USER="$LLM_GATEWAY_LOCAL_TEST_PG_USER"
+  local PG_PASS="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD"
+  local PG_DB="$LLM_GATEWAY_LOCAL_TEST_PG_DATABASE"
   local PG_CONTAINER="r112_postgres"
   local ADMIN_DB="postgres"
 
@@ -352,7 +465,7 @@ run_migrations() {
           sub "mig: $name (幂等跳过)"
         else
           err "mig: $name 失败"
-          err "  手动排查: PGPASSWORD=$PG_PASS docker exec -i $PG_CONTAINER psql -U $PG_USER -d $PG_DB -f $mig"
+          err "  手动排查: docker exec -i $PG_CONTAINER psql -U $PG_USER -d $PG_DB -f $mig (provide PGPASSWORD securely)"
         fi
       fi
     done
@@ -383,18 +496,18 @@ gateway_env() {
   export LLM_GATEWAY_ENV="local"
   export LOG_LEVEL="info"
   export STICKY_MULTILEVEL_DEBUG="1"
-  export LLM_GATEWAY_DATABASE_URL="postgres://kxuser:kxpass@localhost:15432/llm_gateway?sslmode=disable"
+  export LLM_GATEWAY_DATABASE_URL="$TEST_DATABASE_URL"
   export LLM_GATEWAY_REDIS_ADDR="localhost:6379"
-  export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY="AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"
-  export LLM_GATEWAY_JWT_SECRET="local-dev-secret-do-not-use-in-production-12345678"
-  export LLM_GATEWAY_ADMIN_API_KEY="local-admin-test-token-do-not-use-in-production"
+  export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY="$LLM_GATEWAY_LOCAL_TEST_CREDENTIAL_ENCRYPTION_KEY"
+  export LLM_GATEWAY_JWT_SECRET="$LLM_GATEWAY_LOCAL_TEST_JWT_SECRET"
+  export LLM_GATEWAY_ADMIN_API_KEY="$LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY"
   export LLM_GATEWAY_CORS_ORIGINS="*"
   export LLM_GATEWAY_ATTACHMENT_DIR="/tmp/attachments"
   export LLM_GATEWAY_BACKUP_DIR="/tmp/llm-gateway-backups"
   export LLM_GATEWAY_UPSTREAM="http://localhost:18080"
-  export LLM_GATEWAY_SEED_ADMIN_PASSWORD="Veritrans&9527"
+  export LLM_GATEWAY_SEED_ADMIN_PASSWORD="$LLM_GATEWAY_LOCAL_TEST_SEED_ADMIN_PASSWORD"
   export OPS_NODE_REGION="local"
-  export OPS_COLLECT_URL="https://llm.kxpms.cn"
+  export OPS_COLLECT_URL="${OPS_COLLECT_URL:-}"
   if [ -d "$ROOT_DIR/web/dist" ]; then
     export LLM_GATEWAY_STATIC_DIR="$ROOT_DIR/web/dist"
   fi
@@ -414,12 +527,12 @@ switch_mock_upstream() {
   fi
   local sql="UPDATE public.providers SET base_url='$url' WHERE id=9001 AND base_url IS DISTINCT FROM '$url';"
 
-  if PGPASSWORD=kxpass docker exec -e PGPASSWORD=kxpass r112_postgres psql -U kxuser -d llm_gateway -v ON_ERROR_STOP=1 -c "$sql" >/dev/null 2>&1; then
+  if PGPASSWORD="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD" docker exec -e PGPASSWORD="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD" r112_postgres psql -U "$LLM_GATEWAY_LOCAL_TEST_PG_USER" -d "$LLM_GATEWAY_LOCAL_TEST_PG_DATABASE" -v ON_ERROR_STOP=1 -c "$sql" >/dev/null 2>&1; then
     sub "mock provider base_url → $url"
     return 0
   fi
   if command -v psql >/dev/null 2>&1; then
-    PGPASSWORD=kxpass psql -h localhost -p 15432 -U kxuser -d llm_gateway -v ON_ERROR_STOP=1 -c "$sql" >/dev/null 2>&1 && { sub "mock provider base_url → $url"; return 0; }
+    PGPASSWORD="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD" psql -h "$LLM_GATEWAY_LOCAL_TEST_PG_HOST" -p "$LLM_GATEWAY_LOCAL_TEST_PG_PORT" -U "$LLM_GATEWAY_LOCAL_TEST_PG_USER" -d "$LLM_GATEWAY_LOCAL_TEST_PG_DATABASE" -v ON_ERROR_STOP=1 -c "$sql" >/dev/null 2>&1 && { sub "mock provider base_url → $url"; return 0; }
   fi
   warn "无法更新 mock provider base_url (chat 转发可能失败)"
   return 1
@@ -465,13 +578,14 @@ start_gateway_native() {
 start_gateway_docker() {
   heading "启动 Gateway v1 (docker)"
 
-  $COMPOSE_CMD -f "$COMPOSE_FILE" rm -sf gateway 2>/dev/null || true
+  prepare_docker_test_config
+  "${COMPOSE_CMD}" "${COMPOSE_ARGS[@]}" rm -sf gateway 2>/dev/null || true
 
   info "切换 mock upstream 到 compose 内网地址..."
   switch_mock_upstream docker || true
 
   info "使用 Docker Compose 构建并启动 gateway..."
-  $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build gateway 2>&1 | tee -a "$LOG_FILE"
+  "${COMPOSE_CMD}" "${COMPOSE_ARGS[@]}" up -d --build gateway 2>&1 | tee -a "$LOG_FILE"
 
   info "等待 gateway v1 (max 90s)..."
   GW_OK=0
@@ -541,9 +655,9 @@ verify_l2_deps() {
   heading "L2: 依赖连通验证"
 
   # PostgreSQL
-  if docker exec r112_postgres pg_isready -U kxuser -d postgres >/dev/null 2>&1; then
+  if docker exec r112_postgres pg_isready -U "$LLM_GATEWAY_LOCAL_TEST_PG_USER" -d postgres >/dev/null 2>&1; then
     local db_ver
-    db_ver=$(PGPASSWORD=kxpass docker exec r112_postgres psql -U kxuser -d postgres -tAc "SELECT version()" 2>/dev/null | head -1 | cut -d',' -f1)
+    db_ver=$(PGPASSWORD="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD" docker exec -e PGPASSWORD="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD" r112_postgres psql -U "$LLM_GATEWAY_LOCAL_TEST_PG_USER" -d postgres -tAc "SELECT version()" 2>/dev/null | head -1 | cut -d',' -f1)
     pass "PostgreSQL: $db_ver"
   else
     fail "PostgreSQL 不可达"
@@ -551,7 +665,7 @@ verify_l2_deps() {
 
   # 数据库中有多少张表
   local table_count
-  table_count=$(PGPASSWORD=kxpass docker exec r112_postgres psql -U kxuser -d llm_gateway -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null || echo "?")
+  table_count=$(PGPASSWORD="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD" docker exec -e PGPASSWORD="$LLM_GATEWAY_LOCAL_TEST_PG_PASSWORD" r112_postgres psql -U "$LLM_GATEWAY_LOCAL_TEST_PG_USER" -d "$LLM_GATEWAY_LOCAL_TEST_PG_DATABASE" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';" 2>/dev/null || echo "?")
   pass "llm_gateway 数据库: $table_count 张表"
 
   # Redis
@@ -628,7 +742,7 @@ verify_l3_smoke() {
   info "检查 /metrics (admin Bearer)..."
   local metrics_code
   metrics_code=$(curl -sS -o /tmp/verify_metrics.txt -w "%{http_code}" \
-    -H "Authorization: Bearer local-admin-test-token-do-not-use-in-production" \
+    -H "Authorization: Bearer $LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY" \
     "$base/metrics" --max-time 10 || echo "000")
   if [ "$metrics_code" = "200" ]; then
     if grep -q "# TYPE" /tmp/verify_metrics.txt 2>/dev/null; then
@@ -657,7 +771,7 @@ verify_l4_business() {
   auth_code=$(curl -sS -o /tmp/verify_auth_chat.json -w "%{http_code}" \
     -X POST "$base/v1/chat/completions" \
     -H "Content-Type: application/json" \
-    -H "Authorization: Bearer test-key" \
+    -H "Authorization: Bearer $LLM_GATEWAY_LOCAL_TEST_AUTH_TEST_TOKEN" \
     -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello"}],"max_tokens":10}' \
     --max-time 30 || echo "000")
 
@@ -688,7 +802,7 @@ run_smoke_script() {
   heading "R1.12 Smoke 测试 (gateway v1 :8781)"
 
   local base="http://localhost:8781"
-  local admin_key="local-admin-test-token-do-not-use-in-production"
+  local admin_key="$LLM_GATEWAY_LOCAL_TEST_ADMIN_API_KEY"
 
   # 1. healthz
   local c1
@@ -741,8 +855,11 @@ cleanup() {
   heading "清理环境"
 
   if [ "$DEPLOY_MODE" = "docker" ]; then
+    require_local_test_config
+    prepare_docker_test_config
+    resolve_compose_command
     info "停止 Docker Compose 服务..."
-    $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>&1 | tee -a "$LOG_FILE"
+    "${COMPOSE_CMD}" "${COMPOSE_ARGS[@]}" down 2>&1 | tee -a "$LOG_FILE"
   else
     if [ -f "$PID_FILE" ]; then
       local pid; pid=$(cat "$PID_FILE")
@@ -795,7 +912,7 @@ EOF
 
 | 服务 | 地址 |
 |------|------|
-| PostgreSQL | \`localhost:15432\` (kxuser/kxpass, db=llm_gateway) |
+| PostgreSQL | \`$LLM_GATEWAY_LOCAL_TEST_PG_HOST:$LLM_GATEWAY_LOCAL_TEST_PG_PORT\` (user configured, db=$LLM_GATEWAY_LOCAL_TEST_PG_DATABASE) |
 | Redis | \`localhost:6379\` |
 | LLM Mock | \`http://localhost:18080\` |
 | Gateway v1 | \`http://localhost:8781\` |
@@ -829,6 +946,8 @@ case "$MODE" in
     exit 0
     ;;
   verify)
+    require_local_test_config
+    prepare_docker_test_config
     precheck
     verify_l1_health
     [ "$SKIP_DB" = "false" ] && verify_l2_deps
@@ -837,6 +956,8 @@ case "$MODE" in
     run_smoke_script
     ;;
   quick)
+    require_local_test_config
+    prepare_docker_test_config
     precheck
     check_running_gateway
     [ "$SKIP_DB" = "false" ] && { start_deps; run_migrations; }
@@ -847,6 +968,8 @@ case "$MODE" in
     run_smoke_script
     ;;
   full)
+    require_local_test_config
+    prepare_docker_test_config
     precheck
     check_running_gateway
     [ "$SKIP_DB" = "false" ] && { start_deps; run_migrations; }
@@ -882,7 +1005,7 @@ echo ""
 echo "管理命令:"
 echo "  查看日志:  tail -f $LOG_FILE"
 echo "  Gateway:   docker logs -f r112_gateway"
-echo "  PG:        PGPASSWORD=kxpass docker exec -it r112_postgres psql -U kxuser -d llm_gateway"
+echo "  PG:        docker exec -it r112_postgres psql -U $LLM_GATEWAY_LOCAL_TEST_PG_USER -d $LLM_GATEWAY_LOCAL_TEST_PG_DATABASE (provide PGPASSWORD securely)"
 echo "  Redis:     docker exec -it r112_redis redis-cli"
 echo "  停止服务:  $0 --clean"
 echo "  仅验证:    $0 --verify"
