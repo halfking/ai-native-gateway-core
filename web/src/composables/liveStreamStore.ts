@@ -11,6 +11,7 @@ import { reactive, computed, ref, type ComputedRef } from 'vue'
 import { authBearer } from '../store'
 import type { RouteIncidentUpdate } from '../types/routeIncident'
 import { usePersistedValue } from './usePersistedValue'
+import { applyIncidentUpdate } from './useRouteIncidents'
 
 export type LiveStatus = 'in_progress' | 'success' | 'failure' | 'rate_limited'
 
@@ -946,9 +947,7 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     return
   }
   if (env.type === 'incident_update' && env.incident) {
-    void import('./useRouteIncidents').then((mod) => {
-      mod.applyIncidentUpdate(env.incident!)
-    })
+    applyIncidentUpdate(env.incident!)
     return
   }
 }

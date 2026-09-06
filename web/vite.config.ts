@@ -23,6 +23,15 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     reportCompressedSize: false,
+    // 2026-09-07: echarts (gzip > 500 kB) and the route manifest push the
+    // legacy 500 kB warning limit on every build. The main entry chunk is
+    // dominated by __vite__mapDeps — a flat array of lazy-chunk filenames
+    // emitted by Rollup; real code is already code-split into vue/element/
+    // echarts/chart/i18n vendor chunks and per-route lazy chunks. Raise the
+    // warning limit to 1500 kB so deploy logs stay actionable instead of
+    // always red. Split echarts into its own chunk so pages that don't
+    // render charts (admin tables, login, settings) never load it.
+    chunkSizeWarningLimit: 1500,
     rollupOptions: {
       maxParallelFileOps: 128,
       output: {
@@ -32,6 +41,7 @@ export default defineConfig({
           'element-vendor': ['element-plus', '@element-plus/icons-vue'],
           'i18n-vendor': ['vue-i18n'],
           'chart-vendor': ['chart.js'],
+          'echarts-vendor': ['echarts', 'vue-chartjs'],
         },
       },
     },

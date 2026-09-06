@@ -1,4 +1,6 @@
--- 671_routing_opt_active_fix.sql
+-- 676_routing_opt_active_fix.sql
+-- (原编号 671，与 671_local_provider_catalog.sql 撞号，2026-09-07 重编号至 676。
+--  幂等迁移，已在旧编号下执行过的环境重复执行无副作用。)
 -- P2.2 fix: enforce at most ONE active row in routing_optimization_state.
 --
 -- Migration 670 created a partial unique index on activated_at
