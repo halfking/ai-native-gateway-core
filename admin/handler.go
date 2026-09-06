@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1464,33 +1465,37 @@ func (h *Handler) handleDefaultLimits(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// keyDefaultRateLimitRPM/Concurrent/TPM are settings_kv keys backing the
+// legacy app_settings table (Q4:C migration). The legacy table was dropped
+// from the canonical schema (sql/migrations/startup/022_settings_kv.sql) in
+// favor of settings_kv; the admin handler kept a SELECT/INSERT that hit
+// 42P01 on every boot, so we now read/write through settings.Global, which
+// is hot-reload-aware and matches the runtime path used by the gateway.
+const (
+	keyDefaultRateLimitRPM        = "default.rate_limit_rpm"
+	keyDefaultRateLimitConcurrent = "default.rate_limit_concurrent"
+	keyDefaultRateLimitTPM        = "default.rate_limit_tpm"
+)
+
 func (h *Handler) getDefaultLimits(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	_, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	var rateLimitRPM, rateLimitConcurrent *int
-	var rateLimitTPM *int
-
-	err := h.db.QueryRow(ctx, `
-		SELECT rate_limit_rpm, rate_limit_concurrent, rate_limit_tpm
-		FROM app_settings
-		WHERE tenant_id = 'default' AND app_id = 'gateway'
-	`).Scan(&rateLimitRPM, &rateLimitConcurrent, &rateLimitTPM)
-
-	if err != nil {
-		// Return hardcoded defaults if not found
-		writeJSON(w, http.StatusOK, map[string]any{
-			"rate_limit_rpm":        60,
-			"rate_limit_concurrent": 20,
-			"rate_limit_tpm":        nil,
-		})
-		return
+	rpm := settings.GetPlatformInt(keyDefaultRateLimitRPM, 60)
+	concurrent := settings.GetPlatformInt(keyDefaultRateLimitConcurrent, 20)
+	// TPM stays *int in the API contract: nil means "unset / no limit".
+	var tpm *int
+	if raw, _, err := settings.Global.EffectiveValue(settings.ScopePlatform, keyDefaultRateLimitTPM, ""); err == nil && len(raw) > 0 {
+		var v int
+		if jerr := json.Unmarshal(raw, &v); jerr == nil {
+			tpm = &v
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"rate_limit_rpm":        rateLimitRPM,
-		"rate_limit_concurrent": rateLimitConcurrent,
-		"rate_limit_tpm":        rateLimitTPM,
+		"rate_limit_rpm":        rpm,
+		"rate_limit_concurrent": concurrent,
+		"rate_limit_tpm":        tpm,
 	})
 }
 
@@ -1505,23 +1510,31 @@ func (h *Handler) setDefaultLimits(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
-
-	_, err := h.db.Exec(ctx, `
-		INSERT INTO app_settings (tenant_id, app_id, rate_limit_rpm, rate_limit_concurrent, rate_limit_tpm, updated_at)
-		VALUES ('default', 'gateway', $1, $2, $3, now())
-		ON CONFLICT (tenant_id, app_id) DO UPDATE SET
-			rate_limit_rpm = EXCLUDED.rate_limit_rpm,
-			rate_limit_concurrent = EXCLUDED.rate_limit_concurrent,
-			rate_limit_tpm = EXCLUDED.rate_limit_tpm,
-			updated_at = now()
-	`, req.RateLimitRPM, req.RateLimitConcurrent, req.RateLimitTPM)
-
-	if err != nil {
-		slog.Error("setDefaultLimits failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to save default limits")
+	if h.settingsStore == nil || settings.Global == nil {
+		writeError(w, http.StatusServiceUnavailable, "settings store unavailable")
 		return
+	}
+
+	if req.RateLimitRPM != nil {
+		if _, err := h.settingsStore.Set(settings.ScopePlatform, keyDefaultRateLimitRPM, *req.RateLimitRPM); err != nil {
+			slog.Error("setDefaultLimits rpm failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save default.rate_limit_rpm")
+			return
+		}
+	}
+	if req.RateLimitConcurrent != nil {
+		if _, err := h.settingsStore.Set(settings.ScopePlatform, keyDefaultRateLimitConcurrent, *req.RateLimitConcurrent); err != nil {
+			slog.Error("setDefaultLimits concurrent failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save default.rate_limit_concurrent")
+			return
+		}
+	}
+	if req.RateLimitTPM != nil {
+		if _, err := h.settingsStore.Set(settings.ScopePlatform, keyDefaultRateLimitTPM, *req.RateLimitTPM); err != nil {
+			slog.Error("setDefaultLimits tpm failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to save default.rate_limit_tpm")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

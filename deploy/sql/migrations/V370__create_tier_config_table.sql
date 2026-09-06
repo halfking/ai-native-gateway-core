@@ -13,9 +13,13 @@ CREATE TABLE IF NOT EXISTS task_type_tier_config (
     enabled BOOLEAN DEFAULT TRUE,      -- 是否启用该配置
     description TEXT,                  -- 配置描述（可选）
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    CONSTRAINT task_type_tier_config_unique UNIQUE(task_type, COALESCE(tenant_id, 0))
+    updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- 1b. NULL-coalescing 唯一索引（PG 不支持 UNIQUE 约束里直接写 COALESCE，
+-- 用 unique index 实现同名唯一性约束 task_type_tier_config_unique）
+CREATE UNIQUE INDEX IF NOT EXISTS task_type_tier_config_unique
+    ON task_type_tier_config (task_type, COALESCE(tenant_id, 0));
 
 -- 2. 添加表和字段注释
 COMMENT ON TABLE task_type_tier_config IS '任务类型到模型档位的映射配置表，支持全局和租户级别配置';
@@ -54,13 +58,41 @@ ALTER TABLE provider_models
 COMMENT ON COLUMN provider_models.tier IS '模型档位：tier-a(高性能)/tier-b(标准)/tier-c(经济)，根据价格自动计算或手动设置';
 
 -- 6. 根据价格初始化模型的tier字段
-UPDATE provider_models 
-SET tier = CASE
-    WHEN (COALESCE(unit_price_in_per_1m, 0) + COALESCE(unit_price_out_per_1m, 0)) > 15 THEN 'tier-a'
-    WHEN (COALESCE(unit_price_in_per_1m, 0) + COALESCE(unit_price_out_per_1m, 0)) > 5 THEN 'tier-b'
-    ELSE 'tier-c'
-END
-WHERE tier IS NULL;
+-- 原版基于 provider_models.unit_price_in_per_1m 等本地价格列；
+-- 本 codebase 的真实价格列在 model_pricing 表里，因此通过 canonical_id
+-- 镜像 model_pricing.tier 到 provider_models.tier。legacy schema
+-- （带 unit_price_in_*/out_per_1m 的旧库）走原 CASE 分支。
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='provider_models'
+          AND column_name='unit_price_in_per_1m'
+    ) THEN
+        UPDATE provider_models
+        SET tier = CASE
+            WHEN (COALESCE(unit_price_in_per_1m, 0) + COALESCE(unit_price_out_per_1m, 0)) > 15 THEN 'tier-a'
+            WHEN (COALESCE(unit_price_in_per_1m, 0) + COALESCE(unit_price_out_per_1m, 0)) > 5 THEN 'tier-b'
+            ELSE 'tier-c'
+        END
+        WHERE tier IS NULL;
+    ELSIF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='provider_models'
+          AND column_name='canonical_id'
+    ) AND EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name='model_pricing'
+          AND column_name='tier'
+    ) THEN
+        UPDATE provider_models pm
+        SET tier = mp.tier
+        FROM model_pricing mp
+        WHERE pm.canonical_id IS NOT NULL
+          AND pm.canonical_id = mp.id
+          AND pm.tier IS NULL;
+    END IF;
+END $$;
 
 -- 7. 创建provider_models的tier索引
 CREATE INDEX IF NOT EXISTS idx_provider_models_tier 
@@ -68,6 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_provider_models_tier
     WHERE available = TRUE;
 
 -- 8. 创建更新时间触发器
+DROP TRIGGER IF EXISTS trigger_task_type_tier_config_updated_at ON task_type_tier_config;
 CREATE OR REPLACE FUNCTION update_task_type_tier_config_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -85,20 +118,25 @@ CREATE TRIGGER trigger_task_type_tier_config_updated_at
 DO $$
 DECLARE
     config_count INT;
-    tier_a_count INT;
-    tier_b_count INT;
-    tier_c_count INT;
+    pm_tier_a_count INT;
+    pm_tier_b_count INT;
+    pm_tier_c_count INT;
+    mp_tier_a_count INT;
+    mp_tier_b_count INT;
+    mp_tier_c_count INT;
 BEGIN
     SELECT COUNT(*) INTO config_count FROM task_type_tier_config WHERE tenant_id IS NULL;
-    SELECT COUNT(*) INTO tier_a_count FROM provider_models WHERE tier = 'tier-a';
-    SELECT COUNT(*) INTO tier_b_count FROM provider_models WHERE tier = 'tier-b';
-    SELECT COUNT(*) INTO tier_c_count FROM provider_models WHERE tier = 'tier-c';
+    SELECT COUNT(*) INTO pm_tier_a_count FROM provider_models WHERE tier = 'tier-a';
+    SELECT COUNT(*) INTO pm_tier_b_count FROM provider_models WHERE tier = 'tier-b';
+    SELECT COUNT(*) INTO pm_tier_c_count FROM provider_models WHERE tier = 'tier-c';
+    SELECT COUNT(*) INTO mp_tier_a_count FROM model_pricing WHERE tier = 'tier-a';
+    SELECT COUNT(*) INTO mp_tier_b_count FROM model_pricing WHERE tier = 'tier-b';
+    SELECT COUNT(*) INTO mp_tier_c_count FROM model_pricing WHERE tier = 'tier-c';
     
     RAISE NOTICE '配置表初始化完成:';
     RAISE NOTICE '  任务类型配置数: %', config_count;
-    RAISE NOTICE '  Tier-A模型数: %', tier_a_count;
-    RAISE NOTICE '  Tier-B模型数: %', tier_b_count;
-    RAISE NOTICE '  Tier-C模型数: %', tier_c_count;
+    RAISE NOTICE '  ProviderModels tier A/B/C: % / % / %', pm_tier_a_count, pm_tier_b_count, pm_tier_c_count;
+    RAISE NOTICE '  ModelPricing   tier A/B/C: % / % / %', mp_tier_a_count, mp_tier_b_count, mp_tier_c_count;
     
     IF config_count != 10 THEN
         RAISE WARNING '任务类型配置数不正确，期望10个，实际%个', config_count;
