@@ -11,7 +11,7 @@
 ### 1.2 现有资源
 
 - NPS 代理服务部署在 252 服务器，监听 8080 端口
-- 订阅地址：`http://115.29.212.252:8080/subscribe?token=4956b9532968e00e9f0e710e4ccf262d`
+- 订阅地址：`http://<env:HOST_252_IP>:8080/subscribe?token=4956b9532968e00e9f0e710e4ccf262d`
 - 提供科学上网能力
 
 ### 1.3 目标
@@ -169,7 +169,7 @@ CREATE INDEX idx_provider_domains_catalog ON provider_domains(catalog_code);
 
 #### 3.1.1 NPS 订阅格式
 
-解析 `http://115.29.212.252:8080/subscribe?token=xxx`，返回格式：
+解析 `http://<env:HOST_252_IP>:8080/subscribe?token=xxx`，返回格式：
 - Base64 编码的节点列表
 - 每行一个节点 URI
 
@@ -436,7 +436,7 @@ Response:
     {
       "id": 1,
       "name": "NPS-252",
-      "subscribe_url": "http://115.29.212.252:8080/subscribe?token=***",
+      "subscribe_url": "http://<env:HOST_252_IP>:8080/subscribe?token=***",
       "status": "active",
       "node_count": 12,
       "last_fetch_at": "2026-08-29T10:00:00Z",
@@ -455,7 +455,7 @@ POST /api/proxy/subscriptions
 Request:
 {
   "name": "NPS-252",
-  "subscribe_url": "http://115.29.212.252:8080/subscribe?token=4956b9532968e00e9f0e710e4ccf262d",
+  "subscribe_url": "http://<env:HOST_252_IP>:8080/subscribe?token=4956b9532968e00e9f0e710e4ccf262d",
   "notes": "252 服务器 NPS 代理"
 }
 
@@ -687,7 +687,7 @@ Response:
 INSERT INTO proxy_subscriptions (name, subscribe_url, priority, notes)
 VALUES (
   'NPS-252',
-  'http://115.29.212.252:8080/subscribe?token=4956b9532968e00e9f0e710e4ccf262d',
+  'http://<env:HOST_252_IP>:8080/subscribe?token=4956b9532968e00e9f0e710e4ccf262d',
   100,
   '252 服务器 NPS 代理，用于访问海外供应商'
 );

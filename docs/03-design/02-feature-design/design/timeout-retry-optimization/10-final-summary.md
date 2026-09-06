@@ -90,7 +90,7 @@ config/
 ### Phase 0: 立即优化 ✅ (100%)
 
 **执行时间**: 22:48  
-**执行服务器**: 154 (47.97.111.154)
+**执行服务器**: 154 (<env:HOST_154_IP>)
 
 **配置变更**:
 ```diff
@@ -113,7 +113,7 @@ config/
 ### Phase 1: 数据库Schema ✅ (100%)
 
 **执行时间**: 23:15-23:45  
-**数据库**: 252 PG (172.16.2.210)
+**数据库**: 252 PG (<env:HOST_252_INTERNAL_IP>)
 
 **完成内容**:
 - ✅ system_settings 表（21行配置）
@@ -379,14 +379,14 @@ go test -v ./config -run TestTimeoutConfig
 
 ```bash
 # 154服务器
-Host: 47.97.111.154
+Host: <env:HOST_154_IP>
 Port: 25022
 User: root
 Config: /etc/llm-gateway-go/env
 Backup: /etc/llm-gateway-go/env.bak.20260722-224743
 
 # 252数据库
-Host: 172.16.2.210
+Host: <env:HOST_252_INTERNAL_IP>
 Port: 5432
 Database: llm_gateway
 User: llm_gateway
@@ -397,14 +397,14 @@ Password: ***REDACTED***
 
 ```bash
 # 查看服务状态
-ssh root@47.97.111.154 -p 25022 "systemctl status llm-gateway-go"
+ssh root@<env:HOST_154_IP> -p 25022 "systemctl status llm-gateway-go"
 
 # 查看配置
-ssh root@47.97.111.154 -p 25022 "cat /etc/llm-gateway-go/env | grep TIMEOUT"
+ssh root@<env:HOST_154_IP> -p 25022 "cat /etc/llm-gateway-go/env | grep TIMEOUT"
 
 # 连接数据库
 export PGPASSWORD='***REDACTED***'
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway
 
 # 查询超时配置
 SELECT * FROM system_settings WHERE category = 'timeout';

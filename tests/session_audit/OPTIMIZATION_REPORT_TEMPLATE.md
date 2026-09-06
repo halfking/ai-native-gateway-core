@@ -412,7 +412,7 @@ func (d *CachedDetector) Detect(ctx context.Context, content string) (*DetectRes
 
 ### A. 测试环境
 
-- **数据库**: PostgreSQL 17 @ 172.16.2.210:5432
+- **数据库**: PostgreSQL 17 @ <env:HOST_252_INTERNAL_IP>:5432
 - **数据量**: `{total_records}` 条
 - **测试时间**: `{test_duration}` 秒
 - **Go 版本**: go1.21

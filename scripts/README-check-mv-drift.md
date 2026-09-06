@@ -34,12 +34,12 @@ export LLM_GATEWAY_DATABASE_URL="postgresql://user:pass@host:5432/llm_gateway"
 
 ```bash
 # 154 服务器
-ssh -p 25022 root@47.97.111.154
+ssh -p 25022 root@<env:HOST_154_IP>
 export LLM_GATEWAY_DATABASE_URL=$(grep "^LLM_GATEWAY_DATABASE_URL=" /etc/llm-gateway-go/env | cut -d= -f2-)
 /opt/llm-gateway-go/scripts/check-routing-mv-drift.sh
 
 # 245 服务器
-ssh -p 25022 root@8.136.114.245
+ssh -p 25022 root@<env:HOST_245_IP>
 export LLM_GATEWAY_DATABASE_URL=$(grep "^LLM_GATEWAY_DATABASE_URL=" /etc/llm-gateway-go/env | cut -d= -f2-)
 /opt/llm-gateway-go/scripts/check-routing-mv-drift.sh
 ```
@@ -143,7 +143,7 @@ DRIFT_THRESHOLD=5  # 允许的最大差异百分比
 
 ## 相关文档
 
-- [TROUBLESHOOTING-routing-analytics.md](../TROUBLESHOOTING-routing-analytics.md) - 物化视图问题排查指南
+- [TROUBLESHOOTING-routing-analytics.md](../docs/troubleshooting/routing-analytics.md) - 物化视图问题排查指南
 - [bg/materialized_view_refresher.go](../bg/materialized_view_refresher.go) - 刷新器实现
 - [admin/analytics_materialized.go](../admin/analytics_materialized.go) - 物化视图查询逻辑
 

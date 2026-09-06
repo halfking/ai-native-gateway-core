@@ -14,7 +14,7 @@
 方案 C（抽象 `Store` 为接口，新增 `RedisStore` 实现）**技术可行**：
 - Redis 客户端已存在（`github.com/redis/go-redis/v9`）
 - Redis 共享工具包已存在（`internal/redis/safe_operations.go` + `script.go`，305 行）
-- 245 已有 Redis 客户端连接（`LLM_GATEWAY_REDIS_ADDR=172.16.2.210:6389`，DB 2）
+- 245 已有 Redis 客户端连接（`LLM_GATEWAY_REDIS_ADDR=<env:HOST_252_INTERNAL_IP>:6389`，DB 2）
 - 性能基线：PING 0-2ms，1MB 读 48ms / 写 54ms
 
 但**当前不应实施**：
@@ -34,7 +34,7 @@
 | Redis 客户端 | ✅ 已存在 | `github.com/redis/go-redis/v9`（vendor） |
 | Redis 共享工具包 | ✅ 已存在 | `internal/redis/safe_operations.go` + `script.go`（305 行） |
 | 现有 Redis Store 参考 | ✅ 已存在 | `domains/session/preprocess/redis_store.go`（827 行） |
-| 252 Redis 实例 | ✅ 运行中 | `172.16.2.210:6389`，密码 `Veritrans9900`，DB 0/1/2/9 |
+| 252 Redis 实例 | ✅ 运行中 | `<env:HOST_252_INTERNAL_IP>:6389`，密码 `Veritrans9900`，DB 0/1/2/9 |
 | 245 → 252 Redis | ✅ 可达 | PONG 成功，282µs 延迟（基线） |
 | 154 → 252 Redis | ✅ 可达 | （与 245 同源，未单独测） |
 
@@ -229,4 +229,4 @@ requestdetail_redis_fallback_total{kind="conn|timeout|proto"}
 - 多实例架构限制：`docs/archive/process/process/2026-07/KNOWN_LIMITATIONS_MULTI_INSTANCE.md`
 - 方案 D commit：`2a29eebf`
 - 方案 B deferred commit：`e8bf2e962`
-- env 配置：`envs/common/database.yaml`、`envs/servers/8.136.114.245/.env.secrets.plain.yaml`
+- env 配置：`envs/common/database.yaml`、`envs/servers/<env:HOST_245_IP>/.env.secrets.plain.yaml`

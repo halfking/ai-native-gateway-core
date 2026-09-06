@@ -36,5 +36,3 @@
 
 - [部署验证报告 - 154](../deployment/154-verification-20260829.md)
 - [部署验证报告 - 245](../deployment/245-verification-20260829.md)
-- [问题分析](../../.handoff/2026-08-29-glm5.2-degradation-analysis.md)
-- [修复总结](../../.handoff/2026-08-29-glm5.2-fix-summary.md)

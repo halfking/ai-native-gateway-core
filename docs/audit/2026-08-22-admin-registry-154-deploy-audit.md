@@ -4,7 +4,7 @@
 
 | 项 | 结果 |
 |---|---|
-| 目标 | **154 only**（llmgateway.internal.example.com → 47.97.111.154） |
+| 目标 | **154 only**（llmgateway.internal.example.com → <env:HOST_154_IP>） |
 | 245 | **未部署**（按老板要求） |
 | build_seq | **1673** |
 | git_sha | `da33273c` |

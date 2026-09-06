@@ -3,7 +3,7 @@
 **日期**: 2026-08-27  
 **审计人员**: ZCode Agent (sess_3688e482-f463-4b30-99ee-a3ff00491ec2)  
 **任务来源**: 用户报告"成功完成的请求在 dashboard 显示为进行中"  
-**环境**: 154 主服务 (47.97.111.154) + 245 备用 (8.136.114.245)，共享数据库 172.16.2.210:5432/llm_gateway (252 PG17+Citus)
+**环境**: 154 主服务 (<env:HOST_154_IP>) + 245 备用 (<env:HOST_245_IP>)，共享数据库 <env:HOST_252_INTERNAL_IP>:5432/llm_gateway (252 PG17+Citus)
 
 ---
 
@@ -90,7 +90,7 @@
 3. 统计卡住的 `in_progress` 记录的规模和特征
 
 **环境确认**:
-- 154 主服务: `postgres://llm_gateway:***@172.16.2.210:5432/llm_gateway`
+- 154 主服务: `postgres://llm_gateway:***@<env:HOST_252_INTERNAL_IP>:5432/llm_gateway`
 - 245 备用: 同一数据库实例
 - 数据库版本: PostgreSQL 17.10 (Debian) + Citus
 - 数据时间范围: 2026-08-25 15:37 ~ 2026-08-27 11:47，共 167,943 条记录

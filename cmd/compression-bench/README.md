@@ -201,7 +201,7 @@ Top strategies by bytes saved:
 
 ```bash
 # 1. 建立隧道
-ssh -p 25022 root@115.29.212.252 -L 25432:172.16.2.210:5432 -N -f
+ssh -p 25022 root@<env:HOST_252_IP> -L 25432:<env:HOST_252_INTERNAL_IP>:5432 -N -f
 
 # 2. 测试连接
 psql -h 127.0.0.1 -p 25432 -U llm_gateway -d llm_gateway -c "SELECT COUNT(*) FROM request_logs;"
@@ -215,8 +215,8 @@ go run ./cmd/compression-bench/ \
 ### 连接 PG（252 server，Kubernetes 共享）
 
 ```bash
-# 1. 建立隧道（PG17 在 252 上，172.16.2.210:5432）
-ssh -p 25022 root@<env:HOST_252> -L 25232:172.16.2.210:5432 -N -f
+# 1. 建立隧道（PG17 在 252 上，<env:HOST_252_INTERNAL_IP>:5432）
+ssh -p 25022 root@<env:HOST_252> -L 25232:<env:HOST_252_INTERNAL_IP>:5432 -N -f
 
 # 2. 运行 benchmark
 go run ./cmd/compression-bench/ \

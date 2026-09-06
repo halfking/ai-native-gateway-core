@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-09-05
 - **Related**: [ADR-0002-target-go-package-layout.md](ADR-0002-target-go-package-layout.md)、
-  [../dual-storage-implementation-tasks.md](../dual-storage-implementation-tasks.md)、
+  `docs/dual-storage-implementation-tasks.md`（已清理，见 git 历史）、
   [../storage/README.md](../storage/README.md)
 
 ## Context

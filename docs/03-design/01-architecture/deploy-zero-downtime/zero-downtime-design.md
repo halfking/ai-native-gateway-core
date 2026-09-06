@@ -12,7 +12,7 @@
 
 SSH 链路另外两个问题:
 - 每次 ssh 调用建新 TCP 连接 + 认证 (~150–300ms × N 命令)
-- 154 公网 IP `47.97.111.154` 偶发抖动, 直接 ssh 偶发 `Operation timed out`
+- 154 公网 IP `<env:HOST_154_IP>` 偶发抖动, 直接 ssh 偶发 `Operation timed out`
 
 ## 2. 已落地 (Phase 1 — 本次 PR)
 

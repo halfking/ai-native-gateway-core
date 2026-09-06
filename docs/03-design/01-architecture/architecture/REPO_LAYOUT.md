@@ -64,16 +64,15 @@
 | `pkg/` | 平台 | 仅 `logger`（历史遗留，见 ADR-0002） |
 | `adapter/` `cache/` `disguise/` `fault/` `hotconfig/` `envinjector/` `eventbus/` `errorsx/` `secret/` `durable/` `pending/` `modelcatalog/` `modelname/` `modeliqdata/` `observability→已并入 deploy` | 平台 | 单职责基础件（事件总线、错误、密钥、持久队列、待发件、模型目录/命名/IQ 数据、伪装、故障注入等） |
 | `_to_be_deleted/` | 过程 | 退役代码快照，删除受 `MIGRATION-MANIFEST.md` 门禁（B1 预发通过+观察期） |
-| `.handoff/` `.audit/` `.agents/` `.kiro/` `.zcode/` `.scratch/` | 过程 | 会话/技能过程状态，docs-archive 明确排除，**不要归档** |
+| `.agents/` `.kiro/` `.zcode/` `.scratch/` | 过程 | 会话/技能过程状态，docs-archive 明确排除，**不要归档**；`.handoff/` `.artifacts/` 已于 2026-09-07 清理并加入 gitignore（本地可再生成，不入库） |
 | `bin/` `dist/` `build/` `logs/` `data/` `node_modules/` | 生成物 | 构建输出与运行态，gitignore 覆盖；`make clean` 清 bin/ 与根二进制 |
 
 ## 顶层文件
 
 | 文件 | 说明 |
 |---|---|
-| `README.md` `CONTRIBUTING.md` `SECURITY.md` `LICENSE` `CHANGELOG.md` | 项目门面；CHANGELOG 按 rule 36 每提交更新 |
-| `PROJECT_CONFIG.md` | agent 会话协议（session 先读） |
-| `AUDIT_24H_20260817.md` | 活跃审计（archive README 白名单；B1 门禁相关，结项后归档） |
+| `README.md` `CONTRIBUTING.md` `SECURITY.md` `LICENSE` `CHANGELOG.md` `CODE_OF_CONDUCT.md` `SUPPORT.md` `ROADMAP.md` | 项目门面；CHANGELOG 按 rule 36 每提交更新 |
+| `docs/project-config.md` | agent 会话协议（session 先读；2026-09-07 自根目录迁入） |
 | `Makefile` `go.mod` `go.sum` `VERSION` `version.json` | 构建/版本 SSOT = `version.json`（`build_seq` 已废弃删除） |
 | `Dockerfile{,.incremental,.local-arm64,.web-patch}` `docker-compose{,.persistent,.dev-research,.deploy-test}.yml` | 镜像与编排 |
 | `config.example.yaml` `.env.example` `.env.*.enc` `.sops.yaml` | 配置样例与 sops 密文 |

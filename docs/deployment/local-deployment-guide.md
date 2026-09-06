@@ -54,7 +54,7 @@ openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 
 ```bash
 # 从 245 同步密钥到本地 .env.local
-ssh -p 25022 root@8.136.114.245 'grep -E "^(LLM_GATEWAY_SECRET_KEY|LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY)=" /opt/llm-gateway-go/.env' >> .env.local
+ssh -p 25022 root@<env:HOST_245_IP> 'grep -E "^(LLM_GATEWAY_SECRET_KEY|LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY)=" /opt/llm-gateway-go/.env' >> .env.local
 ```
 
 验证同步结果：
@@ -216,5 +216,5 @@ docker logs llm-gateway-go-active
 
 - [154 生产部署 SOP](./154-production-deployment-sop.md)
 - [故障排查指南 - 凭据解密失败](../troubleshooting/credential-decrypt-failed.md)
-- [2026-09-05 Provider 587 事故审计报告](../../AUDIT_CREDENTIAL_DECRYPT_FIX_20260905.md)
+- [2026-09-05 Provider 587 事故审计报告](../audit/2026-09-05-credential-decrypt-fix-audit.md)
 - [环境配置示例](.env.local.example)

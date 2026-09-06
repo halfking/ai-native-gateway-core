@@ -9,7 +9,7 @@ points its `LLM_GATEWAY_DATABASE_URL` at this container).
 - 154 runtime: `2.4.6-ad347ac6d-20260715-1055` (`/opt/llm-gateway-go/llm-gateway-go`),
   service `llm-gateway-go.service` active (PID 1279).
 - 154 → 252 routing: `env-252.sh` on 154 sets
-  `SSH_HOST=115.29.212.252`, `PG_HOST=localhost`, `PG_PORT=15432` (PG inside
+  `SSH_HOST=<env:HOST_252_IP>`, `PG_HOST=localhost`, `PG_PORT=15432` (PG inside
   `pg-252-pg17` container on 252).
 - 252 PG version: `PostgreSQL 17.10`.
 - `schema_migrations` ledger before apply: highest row `549|2026-08-21 14:04:25+08`.

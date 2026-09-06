@@ -227,8 +227,8 @@ llm-gateway-go-3/
 ## 📞 关键信息
 
 ### 服务器信息
-- **154服务器**: 47.97.111.154:25022
-- **252数据库**: 172.16.2.210:5432
+- **154服务器**: <env:HOST_154_IP>:25022
+- **252数据库**: <env:HOST_252_INTERNAL_IP>:5432
 - **数据库**: llm_gateway
 - **用户**: llm_gateway
 
@@ -241,15 +241,15 @@ llm-gateway-go-3/
 
 ```bash
 # 查看服务状态
-ssh root@47.97.111.154 -p 25022 "systemctl status llm-gateway-go"
+ssh root@<env:HOST_154_IP> -p 25022 "systemctl status llm-gateway-go"
 
 # 查看实时日志
-ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go -f"
+ssh root@<env:HOST_154_IP> -p 25022 "journalctl -u llm-gateway-go -f"
 
 # 连接数据库
-ssh root@47.97.111.154 -p 25022
+ssh root@<env:HOST_154_IP> -p 25022
 export PGPASSWORD='***REDACTED***'
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway
 
 # 查看配置
 SELECT * FROM system_settings WHERE category = 'timeout';

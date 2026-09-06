@@ -85,7 +85,7 @@ Based on scan results and visual relevance, the following 6 screenshots have bee
 
 1. ✅ Use the 23 clean screenshots for public documentation
 2. ❌ Do not publish the 5 suspicious screenshots
-3. 🔄 Future: Regenerate sensitive screenshots with demo data following `docs/SCREENSHOT_GUIDE.md`
+3. 🔄 Future: Regenerate sensitive screenshots with demo data following `docs/operations/screenshot-guide.md`
 
 ## Next Steps
 
@@ -97,3 +97,28 @@ Based on scan results and visual relevance, the following 6 screenshots have bee
 
 **Scan Script**: `scripts/scan-screenshots.sh`  
 **Scan Status**: ✓ Complete
+
+---
+
+## 2026-09-07 Recapture (Final Screenshots)
+
+The 6 published screenshots were re-captured from a live local deployment per updated requirements:
+
+**Method**: Playwright (headless Chromium, 1728×1050 viewport @2x), login via local admin session, each page given **15 seconds** to fully load data before capture.
+
+**Pages captured** (all reviewed manually for sensitive content — no credentials, internal IPs, or internal domains visible):
+
+| File | Page | Notes |
+|------|------|-------|
+| `dashboard-request-stream.png` | `/dashboard` | Real-time request stream, queue perspective, 64-node dispatch chain |
+| `routing-panorama.png` | `/routing-v2` | L1/L2 two-layer routing, task×model heatmap, Sankey flow |
+| `credential-monitor.png` | `/routing-v2/credentials` | 64 credentials with health states (aliases only, no keys) |
+| `work-types.png` | `/routing-v2/work-types` | 10 work types, 24h distribution, top models |
+| `free-pool.png` | `/free-pool` | Free-model pool with provider templates (all public signup URLs) |
+| `request-detail.png` | `/request-detail/:id` | Success request with masked API key (`sk-****`), compression record |
+
+**Rejected during review**:
+- Session timeline page (only 1 turn of data — visually empty, not representative)
+- An earlier failure-request capture (shows a provider timeout — replaced with a success request)
+
+**Sensitive-content check**: ✅ PASS — upstream API keys are masked by the gateway itself; only provider aliases and public platform URLs appear.

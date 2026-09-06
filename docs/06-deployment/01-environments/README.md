@@ -85,6 +85,4 @@
 - [客户安装](customer-install/README.md)
 - [部署总入口](../README.md)
 - [本机部署](deployment/LOCAL-HOST-DEPLOY.md)
-- [Session V2 staging 验证](../../staging-validation-progress-20260829.md)
 - [部署切换审计](../../audit/2026-08-29-deployment-contract-audit.md)
-- [下一阶段主代理提示词](../../next-phase-master-prompt-20260829.md)

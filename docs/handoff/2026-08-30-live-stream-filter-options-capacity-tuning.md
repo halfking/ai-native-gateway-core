@@ -275,7 +275,7 @@ assert.Equal(t, LiveStreamLaneVisibleLimit, len(lane.Requests))
 2. **252 测试环境验证**：
    ```bash
    # 运行诊断脚本
-   ssh -p 25022 root@115.29.212.252 \
+   ssh -p 25022 root@<env:HOST_252_IP> \
      "cd /path/to/llm-gateway-go && ./scripts/debug-live-stream-filters.sh"
    ```
 

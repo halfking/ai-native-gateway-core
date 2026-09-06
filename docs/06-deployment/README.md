@@ -25,7 +25,6 @@
 - 当前架构：`../03-design/01-architecture/architecture/ARCHITECTURE.md`
 - 运行时请求流：`../03-design/01-architecture/architecture/runtime-request-flow.md`
 - 测试矩阵：`../05-testing/01-strategy/test-matrix.md`
-- [下一阶段主代理提示词](../next-phase-master-prompt-20260829.md)
 
 ## 3. 依赖契约
 

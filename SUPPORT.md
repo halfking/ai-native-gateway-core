@@ -8,8 +8,8 @@ If you encounter issues or have questions about AI Native Gateway:
 
 - [Getting Started Guide](docs/getting-started.md)
 - [Architecture Overview](docs/architecture.md)
-- [Configuration Reference](docs/configuration.md)
-- [Troubleshooting](docs/troubleshooting.md)
+- [Environment & Configuration](docs/environment.md)
+- [Troubleshooting](docs/troubleshooting/)
 
 ### Community Support
 

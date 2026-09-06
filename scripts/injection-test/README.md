@@ -57,7 +57,7 @@ go run test-prompt-injection-detection.go
 ## 数据库连接
 
 默认连接信息：
-- **主机**: 172.16.2.210 (内网) 或 115.29.212.252 (外网)
+- **主机**: <env:HOST_252_INTERNAL_IP> (内网) 或 <env:HOST_252_IP> (外网)
 - **端口**: 5432
 - **数据库**: llm_gateway
 - **用户**: llm_gateway

@@ -1,9 +1,0 @@
-active
-MainPID=17597
-ExecMainStartTimestamp=日 2026-08-30 11:48:52 CST
-ActiveState=active
-SubState=running
-{"status":"ok","version":"2.4.7-e10c8425-20260829-1819","git_sha":"e10c8425","build_seq":1819,"build_date":"20260829","ready":true}
-
-ready_http=200
-{"status":"ready"}

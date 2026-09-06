@@ -24,7 +24,7 @@
 | R4 | **凭证泄露**（admin token / 客户 API key 出现在日志或 metrics label） | 中 | 极高 | `secret_scan` Job 红（**[待建]**）；`/admin/audit` 中出现 `redact=false` 命中 | 安全 Owner | 轮换全部受影响凭证；按 `docs/runbooks/secret-rotation.md` 走（**[待建]**，落地前按现有 `scripts/` 凭证轮换流程处置）；定位写入点并加 `redact` |
 | R5 | **流式分发在多副本下重放**（streaming disconnect/reconnect 导致上游收到重复请求，账单被双倍计） | 中 | 高 | 上游 provider 报告 duplicate request；账单对账 `delta > 5%` | 编排 Owner | 关闭受影响 provider；按"幂等键 + provider 去重窗口"补救；发退款工单 |
 | R6 | **Postgres 列存/分区漂移**（`pg-columnar-auto-rotate` 周期内未正确切换，导致审计查询扫全表） | 中 | 中 | `pg_stat_statements` 中 `idx scan` 命中率断崖；`partition_lag` 指标超阈值 | DBA Owner | 立即停止 rotate 周期任务；手动 `ANALYZE` 涉及表；回滚到上一分区模板 |
-| R7 | **流式 hot loop / OOM**（dispatch worker 反馈回环、缓冲无限增长） | 中 | 高 | Pod `RSS > 80% limit`；`stream_backpressure_drops` 计数飙升；`p99 TTFT` 翻倍 | 平台架构 | 立即缩容到 1 副本排障；按 [`docs/2026-08-19-streaming-error-root-cause.md`](../2026-08-19-streaming-error-root-cause.md) 抓 `pprof`；上熔断 |
+| R7 | **流式 hot loop / OOM**（dispatch worker 反馈回环、缓冲无限增长） | 中 | 高 | Pod `RSS > 80% limit`；`stream_backpressure_drops` 计数飙升；`p99 TTFT` 翻倍 | 平台架构 | 立即缩容到 1 副本排障；按 [`docs/2026-08-19-streaming-error-root-cause.md`](../audit/2026-08-19-streaming-error-root-cause.md) 抓 `pprof`；上熔断 |
 | R8 | **发散建议落地引入隐性耦合**（例如"工具路由 DAG"和"插件编排"争抢同一中间状态） | 中 | 中 | 同一指标被两套代码改写；集成测试出现 race | 平台架构 | 短期只允许其一上线；后续在 `internal/orchestration/` 边界文档（**[待建]** `api.md`，包内目前仅有 engine/loader/scheduler 代码）上明确边界 |
 | R9 | **可视化/PII 双写**（dashboard 把 tenant_id 当 label 暴露到前端） | 中 | 高 | 前端抓包出现 `tenant_id`；前端 PR 评审漏过 | 安全 + 前端 | 立即下线 dashboard 对应模块；前端改 `role-scoped fetch`；事后补 UI 自动化扫描 |
 | R10 | **指标/告警噪声**（指标过多、自检 Job 自我触发 → 团队疲劳 → 真告警被忽略） | 中 | 中 | 一周内 OnCall 收到 > 200 条同源告警；首次响应时间 > 30min | SRE | 启动"指标减肥"两周专项；按 05 的"告警降噪自检"清单逐项处理 |
@@ -199,7 +199,7 @@
 
 > 2026-08-24 审计核对：`docs/runbooks/` 现有 `empty-response-routing.md`、`stats-reconciliation-rollout.md`、`telemetry-sanitize-discarded.md`；下表中标注 **[待建]** 的文档尚未落盘，引用前先核对。
 
-- [`docs/2026-08-19-streaming-error-root-cause.md`](../2026-08-19-streaming-error-root-cause.md) → R5、R7（仓库根目录，非 `docs/runbooks/` 下）。
+- [`docs/2026-08-19-streaming-error-root-cause.md`](../audit/2026-08-19-streaming-error-root-cause.md) → R5、R7（仓库根目录，非 `docs/runbooks/` 下）。
 - `docs/runbooks/secret-rotation.md` **[待建]** → R4。
 - `docs/runbooks/incident-comms.md` **[待建]** → 第 3.4 节。
 - `docs/security/rls-leak.md` **[待建]** → R3。

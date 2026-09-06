@@ -51,7 +51,7 @@ Please provide:
 
 After the fix is released, we will:
 - Credit you in release notes (unless you prefer anonymity)
-- Add you to [SECURITY_ACKNOWLEDGMENTS.md](SECURITY_ACKNOWLEDGMENTS.md)
+- Acknowledge your report in release notes (with your permission)
 - Consider bounty/swag for critical findings (case-by-case)
 
 ---

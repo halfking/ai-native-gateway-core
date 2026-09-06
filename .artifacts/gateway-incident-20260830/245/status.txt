@@ -1,9 +1,0 @@
-active
-MainPID=495717
-ExecMainStartTimestamp=Sun 2026-08-30 11:46:37 CST
-ActiveState=active
-SubState=running
-{"status":"ok","version":"2.5.0-ec94734a-20260830-1818","git_sha":"ec94734a","build_seq":1818,"build_date":"20260830","ready":true}
-
-ready_http=200
-{"status":"ready"}

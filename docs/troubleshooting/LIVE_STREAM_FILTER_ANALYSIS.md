@@ -406,7 +406,7 @@ const availableProviders = computed(() => {
 #### 1. 检查 252 Redis 中的实际数据
 
 ```bash
-ssh -p 25022 root@115.29.212.252 "docker exec pms-redis redis-cli -a PASSWORD GET 'llmgw:live:req:<request_id>'"
+ssh -p 25022 root@<env:HOST_252_IP> "docker exec pms-redis redis-cli -a PASSWORD GET 'llmgw:live:req:<request_id>'"
 ```
 
 查看实际推送到前端的 tile 是否包含 `provider` 字段。
@@ -480,10 +480,10 @@ console.log('供应商列表:', Array.from(providers));
 
 ```bash
 # 检查 provider 维度的泳道
-ssh -p 25022 root@115.29.212.252 "docker exec pms-redis redis-cli -a PASSWORD KEYS 'llmgw:live:dim:provider:*'"
+ssh -p 25022 root@<env:HOST_252_IP> "docker exec pms-redis redis-cli -a PASSWORD KEYS 'llmgw:live:dim:provider:*'"
 
 # 检查每个泳道的大小
-ssh -p 25022 root@115.29.212.252 "docker exec pms-redis redis-cli -a PASSWORD ZCARD 'llmgw:live:dim:provider:pulian'"
+ssh -p 25022 root@<env:HOST_252_IP> "docker exec pms-redis redis-cli -a PASSWORD ZCARD 'llmgw:live:dim:provider:pulian'"
 ```
 
 ### 修复方案
@@ -550,7 +550,7 @@ const availableProviders = computed(() => {
 
 ```bash
 # 检查 Redis provider 维度泳道
-ssh -p 25022 root@115.29.212.252 "docker exec pms-redis redis-cli -a \$(grep REDIS_PASSWORD /path/to/.env | cut -d= -f2) KEYS 'llmgw:live:dim:provider:*'"
+ssh -p 25022 root@<env:HOST_252_IP> "docker exec pms-redis redis-cli -a \$(grep REDIS_PASSWORD /path/to/.env | cut -d= -f2) KEYS 'llmgw:live:dim:provider:*'"
 ```
 
 ### 优先级 2：前端实时检查（5 分钟）

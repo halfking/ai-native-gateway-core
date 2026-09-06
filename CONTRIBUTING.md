@@ -355,6 +355,6 @@ By contributing, you agree that your contributions will be licensed under the [A
 
 ## Recognition
 
-Contributors are listed in release notes and [CONTRIBUTORS.md](CONTRIBUTORS.md).
+Contributors are listed in release notes and the [GitHub contributors page](https://github.com/halfking/ai-native-gateway-core/graphs/contributors).
 
 Thank you for making AI Native Gateway better! 🚀

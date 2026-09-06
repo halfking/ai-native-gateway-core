@@ -1,7 +1,38 @@
 # docs/ — LLM Gateway 文档
 
 > 重构时间：2026-08-17 · 重构分支：`chore/docs-archive-2026-08` · 重构策略：保守归档 + 主题重组  
-> 最后更新：2026-09-06
+> 最后更新：2026-09-07
+
+---
+
+## 🧹 2026-09-07 根目录文档整理
+
+按项目文档规范清理仓库根目录（此前累积了 ~100 个过程文档）：
+
+- **根目录只保留约定文件**：`README.md`、`CHANGELOG.md`、`LICENSE`、`NOTICE`、`CONTRIBUTING.md`、`SECURITY.md`、`CODE_OF_CONDUCT.md`、`SUPPORT.md`、`ROADMAP.md`。
+- **仍有效的指南/参考迁入 docs/**（重命名为 kebab-case）：
+
+  | 原位置（根目录） | 新位置 |
+  |---|---|
+  | PROJECT_CONFIG.md | [project-config.md](./project-config.md) |
+  | BLUEGREEN_QUICKSTART.md | [deployment/bluegreen-quickstart.md](./deployment/bluegreen-quickstart.md) |
+  | LOCAL_DEPLOY_OPTIMIZATION.md | [deployment/local-deploy-optimization.md](./deployment/local-deploy-optimization.md) |
+  | DEPLOYMENT_QUICK_REFERENCE.md | [deployment/local-deploy-quick-reference.md](./deployment/local-deploy-quick-reference.md) |
+  | DEPLOYMENT_GUIDE.md（热力图专项） | [deployment/credential-monitor-heatmap-deployment-guide.md](./deployment/credential-monitor-heatmap-deployment-guide.md) |
+  | LOCAL_DEPLOYMENT_TEST_GUIDE / TESTING_INDEX / TESTING_README | [deployment/local-deployment-test-guide.md](./deployment/local-deployment-test-guide.md) 等 |
+  | CONTEXT_WINDOW_OVERRIDE_GUIDE / QUICK_GUIDE | [operations/context-window-override-guide.md](./operations/context-window-override-guide.md) 等 |
+  | RELEASE_CHECKLIST.md | [operations/release-checklist.md](./operations/release-checklist.md) |
+  | 154-service-status-and-monitoring.md | [operations/154-service-status-and-monitoring.md](./operations/154-service-status-and-monitoring.md) |
+  | SCREENSHOT_GUIDE.md | [operations/screenshot-guide.md](./operations/screenshot-guide.md) |
+  | git-best-practices.md | [standards/git-best-practices.md](./standards/git-best-practices.md) |
+  | README_MOCK_TESTING_FRAMEWORK.md / E2E_QUICK_REFERENCE.md | [05-testing/](./05-testing/) |
+  | TROUBLESHOOTING-routing-analytics / CREDENTIAL_CHECK_QUICK_FIX | [troubleshooting/](./troubleshooting/) |
+  | AUDIT_CREDENTIAL_DECRYPT_FIX_20260905.md | [audit/2026-09-05-credential-decrypt-fix-audit.md](./audit/2026-09-05-credential-decrypt-fix-audit.md) |
+  | QUICK-START.md（GLM-5.2 事故 Runbook） | archive/process/incidents/2026-09/ |
+
+- **过期过程文档已删除**：FINAL_* / COMPLETION_* / SELFCHECK_* / HANDOFF_* / 修复与验收报告、`.acc-task-stop-summary*`、`.handoff/`、`.artifacts/` 等 AI 会话产物（git 历史可恢复）；docs/ 顶层的重复验证报告（ERROR-EVIDENCE-MATRIX-20260904/05、LOCAL-VERIFICATION-REPORT-20260904/05 等）一并清理。
+- **docs/ 顶层审计/修复/设计文档归位**：`audit-2026-09-*.md` → [audit/](./audit/)、`2026-09-06-*-fix.md` → [fixes/](./fixes/)、热力图需求/实施 → [design/](./design/)。
+- **敏感信息脱敏**：全部活跃文档中的真实服务器 IP / SSH 密码 / 测试令牌替换为 `<env:HOST_154_IP>` 等占位符（对照 `.env.example`，真实值放本地环境变量）。
 
 ---
 
@@ -90,7 +121,7 @@ docs/
 |---|---|
 | 架构决策、API 契约 | [architecture/](./architecture/) · [api/](./api/) · [adr/](./adr/) |
 | 部署、迁移、配置 | [deployment/](./deployment/) · [deploy/](./deploy/) · [migrations/](./migrations/) |
-| 运维、Runbook、故障排查 | [operations/](./operations/) · [ops/](./ops/) · [runbooks/](./runbooks/) · [troubleshooting-guide.md](./operations/troubleshooting-guide.md) |
+| 运维、Runbook、故障排查 | [operations/](./operations/) · [ops/](./ops/) · [runbooks/](./runbooks/) · [troubleshooting/](./troubleshooting/) |
 | 设计文档、设计方案 | [design/](./design/) · [modules/](./modules/) · [features/](./features/) |
 | 价格、分区、模型 | [pricing/](./pricing/) · [partition/](./partition/) · [model-quality/](./model-quality/) · [model-iq/](./model-iq/) |
 | 安全、合规 | [security/](./security/) · [legal/](./legal/) |
