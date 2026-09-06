@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/installer/internal/dbinit"
@@ -62,6 +63,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"629_audit_attachments_cleanup.sql":                                auditAttachmentsCleanupMigration629,
 		"630_session_aggregate_outbox.sql":                                 sessionAggregateOutboxMigration630,
 		"631_provider_credential_soft_delete.sql":                          providerCredentialSoftDeleteMigration631,
+		"632_audit_attachments_filesystem_cleanup.sql":                     auditAttachmentsFilesystemCleanupMigration632,
 		"655_session_summaries_schema_reconcile.sql":                       sessionSummariesSchemaReconcileMigration655,
 		"635_drop_session_turns_unified.sql":                               dropSessionTurnsUnifiedMigration635,
 		"647_goal_client_signal.sql":                                       goalClientSignalMigration647,
@@ -75,6 +77,22 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"662_feature_distribution_stats.sql":                               featureDistributionStatsMigration662,
 		"663_training_export.sql":                                          trainingExportMigration663,
 		"664_provider_error_details_agg_key_dedup.sql":                     providerErrorDetailsAggKeyDedupMigration664,
+		"666_orchestration_and_stats_tables.sql":                           orchestrationAndStatsTablesMigration666,
+		"667_llm_hourly_stats_timestamp_fix.sql":                           llmHourlyStatsTimestampFixMigration667,
+		"668_llm_hourly_stats_final_fix.sql":                               llmHourlyStatsFinalFixMigration668,
+		"669_training_human_annotations.sql":                               trainingHumanAnnotationsMigration669,
+		"670_routing_optimization.sql":                                     routingOptimizationMigration670,
+		"671_local_provider_catalog.sql":                                   localProviderCatalogMigration671,
+		"672_local_first_title_summary_routing.sql":                        localFirstTitleSummaryRoutingMigration672,
+		"673_annotation_stats_empty_table_fix.sql":                         annotationStatsEmptyTableFixMigration673,
+		"674_annotation_request_id_unique.sql":                             annotationRequestIdUniqueMigration674,
+		"675_qwen38_family_vendor.sql":                                     qwen38FamilyVendorMigration675,
+		"676_routing_opt_active_fix.sql":                                   routingOptActiveFixMigration676,
+		"677_session_summaries_canonical_bootstrap.sql":                    sessionSummariesCanonicalBootstrapMigration677,
+		"678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql": requestLogsBodiesHotUniqueRepairMigration678,
+		"679_local_credential_unique.sql":                                  localCredentialUniqueMigration679,
+		"680_request_logs_current_month_view_bootstrap.sql":                requestLogsCurrentMonthViewBootstrapMigration680,
+		"681_provider_error_details_fingerprint_restore_8part.sql":         providerErrorDetailsFingerprintRestore8partMigration681,
 	}
 
 	for name, embedded := range expected {
@@ -201,11 +219,17 @@ func TestStatsStartupMigrationsAreWrittenToInstallerDirectories(t *testing.T) {
 	}
 }
 
-// TestStartupFilesAreAllEmbedded guards against the 2026-08-31 audit gap:
-// dbinit.Runner.StartupFiles referenced migrations (614/615/619 and later
-// 620-626) that were never added to the embed maps, so a fresh install would
-// fail in applySQL with "file not found". This test fails whenever a
-// StartupFiles entry has no counterpart in the setupSQLDir output.
+// TestStartupFilesAreAllEmbedded guards against two drift directions:
+//
+//  1. The 2026-08-31 audit gap: dbinit.Runner.StartupFiles referenced
+//     migrations (614/615/619 and later 620-626) that were never added to the
+//     embed maps, so a fresh install would fail in applySQL with "file not
+//     found". Checked as StartupFiles ⊆ setupSQLDir output.
+//  2. The 2026-09-07 audit gap: 632_audit_attachments_filesystem_cleanup.sql
+//     sat in embeddata/startup without a go:embed var or StartupFiles entry,
+//     so fresh installs silently lacked the table its runtime writer expects.
+//     Checked as embeddata/startup ReadDir ⊆ StartupFiles (*.down.sql exempt —
+//     the installer never applies rollbacks).
 func TestStartupFilesAreAllEmbedded(t *testing.T) {
 	t.Helper()
 
@@ -219,10 +243,26 @@ func TestStartupFilesAreAllEmbedded(t *testing.T) {
 	if len(runner.StartupFiles) == 0 {
 		t.Fatal("dbinit.Runner.StartupFiles is empty")
 	}
+	registered := make(map[string]struct{}, len(runner.StartupFiles))
 	for _, name := range runner.StartupFiles {
+		registered[name] = struct{}{}
 		path := filepath.Join(sqlDir, "startup", name)
 		if _, err := os.Stat(path); err != nil {
-			t.Errorf("StartupFiles entry %q is not provided by setupSQLDir — add the file to installer/cmd/llm-gw-installer/embeddata/startup/, the go:embed vars, and both embed maps in main.go: %v", name, err)
+			t.Errorf("StartupFiles entry %q is not provided by setupSQLDir — add the file to installer/cmd/llm-gw-installer/embeddata/startup/, the go:embed vars, and the embeddedSQLFiles map in main.go: %v", name, err)
+		}
+	}
+
+	entries, err := os.ReadDir(filepath.Join("embeddata", "startup"))
+	if err != nil {
+		t.Fatalf("read embeddata/startup: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || strings.HasSuffix(name, ".down.sql") {
+			continue
+		}
+		if _, ok := registered[name]; !ok {
+			t.Errorf("embeddata/startup file %q is not registered in dbinit.Runner.StartupFiles — wire it into runner.go StartupFiles plus the go:embed var and embeddedSQLFiles entry in main.go, or delete the stray copy", name)
 		}
 	}
 }
