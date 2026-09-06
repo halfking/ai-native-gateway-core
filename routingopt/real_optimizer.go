@@ -25,6 +25,17 @@ type RealOptimizer struct {
 	recommender *ModelRecommender
 	integrator  *FeedbackIntegrator
 	learner     *AdaptiveLearner
+
+	// ml is the optional P2.5 ONNX re-ranker (nil = disabled; all ML paths
+	// short-circuit and RecommendModel output equals the rule-engine order).
+	ml *MLReranker
+}
+
+// WithMLReranker attaches the P2.5 ONNX ML re-ranker. Returns the receiver
+// so it can be chained after NewRealOptimizer. A nil reranker is a no-op.
+func (o *RealOptimizer) WithMLReranker(r *MLReranker) *RealOptimizer {
+	o.ml = r
+	return o
 }
 
 // NewRealOptimizer constructs a real optimizer with all modules wired.
@@ -97,7 +108,16 @@ func (o *RealOptimizer) RecommendModel(ctx context.Context, candidates interface
 		routingCtx = RoutingContext{}
 	}
 
-	return o.recommender.Recommend(ctx, cands, routingCtx)
+	out, err := o.recommender.Recommend(ctx, cands, routingCtx)
+	if err != nil {
+		return nil, err
+	}
+	// P2.5: apply the ONNX ML re-ranker last so it adjusts (never replaces)
+	// the multi-objective rule-engine order. No-op when disabled/unavailable.
+	if o.ml.Enabled() && routingCtx.Features != nil {
+		out, _ = o.ml.Rerank(ctx, out, *routingCtx.Features)
+	}
+	return out, nil
 }
 
 // RecordFeedback records routing feedback asynchronously.

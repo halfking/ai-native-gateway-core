@@ -148,6 +148,11 @@ type RoutingContext struct {
 	UserID      int    // API key ID (0 = unauthenticated)
 	SessionID   string // X-Gw-Session-Id (empty = no session)
 	TimeContext TimeContext
+
+	// Features is the optional P2.5 structured-feature set for the ONNX
+	// ML re-ranker (nil = ML reranking unavailable for this request).
+	// Populated by autoroute.optimizer_bridge from StructuredFeatures.
+	Features *MLRouteFeatures
 }
 
 // TimeContext captures time-of-day and day-of-week for dynamic weight adjustment.

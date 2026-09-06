@@ -31,6 +31,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.39.0
 	github.com/xitongsys/parquet-go v1.6.2
 	github.com/xitongsys/parquet-go-source v0.0.0-20241021075129-b732d2ac9c9b
+	github.com/yalue/onnxruntime_go v1.36.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0

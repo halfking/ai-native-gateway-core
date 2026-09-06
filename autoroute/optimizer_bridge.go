@@ -98,15 +98,21 @@ func candidateKeyOf(sc ScoredCandidate) candidateKey {
 // Errors are logged and the original order is kept — the plugin must never
 // break routing. Called from Decide between index.Recommend and the
 // explicit-default/override strategies so admin pins keep precedence.
-func (d *Decider) recommendWithOptimizer(ctx context.Context, recommended []ScoredCandidate, task TaskType, profile Profile, apiKeyID int, sessionID, clientType string) []ScoredCandidate {
+//
+// P2.5: cls/sigs also build the MLRouteFeatures for the ONNX re-ranker;
+// the feature conversion only runs when an optimizer is wired, so the
+// no-plugin hot path stays identical to the pre-P2.2 baseline.
+func (d *Decider) recommendWithOptimizer(ctx context.Context, recommended []ScoredCandidate, cls *Classification, sigs ClassificationSignals, profile Profile, apiKeyID int, sessionID, clientType string) []ScoredCandidate {
 	if d.optimizer == nil || len(recommended) < 2 {
 		return recommended
 	}
+	task := cls.Primary
 	routingCtx := routingopt.RoutingContext{
 		TaskType:  string(task),
 		Profile:   string(profile),
 		UserID:    apiKeyID,
 		SessionID: sessionID,
+		Features:  toMLRouteFeatures(cls, sigs, string(profile)),
 	}
 	rerankedAny, err := d.optimizer.RecommendModel(ctx, toOptimizerCandidates(recommended), routingCtx)
 	if err != nil {
@@ -119,6 +125,33 @@ func (d *Decider) recommendWithOptimizer(ctx context.Context, recommended []Scor
 		return recommended
 	}
 	return applyOptimizerRanking(recommended, reranked)
+}
+
+// toMLRouteFeatures converts the classification result and structured
+// features (schema v1) into the ONNX input contract consumed by
+// routingopt.MLSelector. Pure conversion — no I/O, no content access beyond
+// the non-reversible StructuredFeatures extraction.
+func toMLRouteFeatures(cls *Classification, sigs ClassificationSignals, profile string) *routingopt.MLRouteFeatures {
+	sf := ExtractStructuredFeatures(sigs, profile)
+	return &routingopt.MLRouteFeatures{
+		TaskType:               string(cls.Primary),
+		Profile:                profile,
+		Classifier:             cls.Classifier,
+		Confidence:             cls.Confidence,
+		DetectedLanguage:       sf.DetectedLanguage,
+		PromptLengthBucket:     sf.PromptLengthBucket,
+		ContextLengthBucket:    sf.ContextLengthBucket,
+		TurnCountBucket:        sf.TurnCountBucket,
+		HasCodeIndicator:       sf.HasCodeIndicator,
+		HasMathIndicator:       sf.HasMathIndicator,
+		HasTableIndicator:      sf.HasTableIndicator,
+		HasMultimediaIndicator: sf.HasMultimediaIndicator,
+		IntentCategory:         sf.IntentCategory,
+		DomainHint:             sf.DomainHint,
+		ComplexityBucket:       sf.ComplexityBucket,
+		LatencySensitive:       sf.LatencySensitive,
+		CostSensitive:          sf.CostSensitive,
+	}
 }
 
 // recordFeedbackAsync fires the plugin's RecordFeedback hook in the
