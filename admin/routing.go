@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/catalog"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"     //nolint:depguard // emergency-repair state recovery (2026-08-15)
@@ -2985,6 +2986,14 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 			}
 			if familyVendor != nil && strings.TrimSpace(*familyVendor) != "" {
 				vendor = strings.TrimSpace(*familyVendor)
+			} else {
+				// 2026-09-07 (675): model_families 缺行（如管理端直接建
+				// family='qwen3.8' 的 canonical，没有对应 seed 行）或 vendor
+				// 为空时，按模型名前缀兜底推断，避免 qwen3.8-27b 落到「其他」
+				// 分组导致特色模型选择器 Alibaba 下找不到。
+				if v := catalog.InferVendor(cn, familyID); v != "" {
+					vendor = v
+				}
 			}
 			canonFamily[canonKey] = familyID
 			if _, exists := familyMeta[familyID]; !exists {
