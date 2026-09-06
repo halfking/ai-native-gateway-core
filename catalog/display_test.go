@@ -17,6 +17,24 @@ func TestResolveVendor(t *testing.T) {
 	}
 }
 
+func TestInferVendor(t *testing.T) {
+	// 675: family 行缺失（如 qwen3.8）或 vendor 为空时按名推断，不落「其他」。
+	cases := []struct {
+		name, family, want string
+	}{
+		{"qwen3.8-27b", "qwen3.8", "Alibaba"},
+		{"qwen3.8-max", "", "Alibaba"},
+		{"grok-5", "xai", "xAI"},
+		{"mimo-v2.5-pro", "xiaomi-mimo", "小米"},
+		{"totally-unknown-model", "unclassified", ""},
+	}
+	for _, tc := range cases {
+		if got := InferVendor(tc.name, tc.family); got != tc.want {
+			t.Errorf("InferVendor(%q,%q)=%q want %q", tc.name, tc.family, got, tc.want)
+		}
+	}
+}
+
 func TestEffectiveModality_minimaxM3(t *testing.T) {
 	if got := EffectiveModality("minimax-m3", "text"); got != "multimodal" {
 		t.Fatalf("got %q want multimodal", got)
