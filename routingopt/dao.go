@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -67,6 +68,9 @@ func NewOptimizationStateDAO(pool *pgxpool.Pool) *OptimizationStateDAO {
 // GetActive returns the currently active optimization state (deactivated_at IS NULL).
 // Returns sql.ErrNoRows if no active state exists.
 func (dao *OptimizationStateDAO) GetActive(ctx context.Context) (*OptimizationState, error) {
+	if dao.pool == nil {
+		return nil, pgx.ErrNoRows // unwired DAO (tests / cold start): no active state
+	}
 	query := `
 		SELECT id, version, classifier_weights, confidence_thresholds,
 		       recommender_weights, exploration_rate, learning_rate, adaptation_window,
