@@ -976,6 +976,8 @@ onBeforeUnmount(() => {
 }
 
 .filter-bar :deep(.input) {
+  /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
+  width: auto;
   min-width: 180px;
   padding: 6px 10px;
   font-size: 13px;

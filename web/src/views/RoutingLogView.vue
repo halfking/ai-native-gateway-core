@@ -179,7 +179,7 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
     <div class="log-toolbar">
       <div class="toolbar-row">
         <span class="label">时间范围</span>
-        <select v-model="timePreset" class="field-input" @change="resetAndLoad">
+        <select v-model="timePreset" class="field-input w-preset" @change="resetAndLoad">
           <option value="24h">最近24小时</option>
           <option value="today">今天</option>
           <option value="7d">最近7天</option>
@@ -188,12 +188,12 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
         </select>
 
         <span class="label">类型</span>
-        <select v-model="kindFilter" class="field-input" @change="resetAndLoad">
+        <select v-model="kindFilter" class="field-input w-kind" @change="resetAndLoad">
           <option v-for="o in kindOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
 
         <span class="label">结果</span>
-        <select v-model="resultFilter" class="field-input" @change="resetAndLoad">
+        <select v-model="resultFilter" class="field-input w-result" @change="resetAndLoad">
           <option v-for="o in resultOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
         </select>
 
@@ -217,9 +217,9 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 
       <div class="toolbar-row" v-if="timePreset === 'custom'">
         <span class="label">开始时间</span>
-        <input type="datetime-local" v-model="customTimeStart" class="field-input" @change="resetAndLoad" />
+        <input type="datetime-local" v-model="customTimeStart" class="field-input w-datetime" @change="resetAndLoad" />
         <span class="label">结束时间</span>
-        <input type="datetime-local" v-model="customTimeEnd" class="field-input" @change="resetAndLoad" />
+        <input type="datetime-local" v-model="customTimeEnd" class="field-input w-datetime" @change="resetAndLoad" />
       </div>
     </div>
 
@@ -373,6 +373,8 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
 }
 
 .field-input {
+  /* width:auto 覆盖全局 input/select width:100%，避免筛选控件占满整行 */
+  width: auto;
   padding: 4px 8px;
   font-size: 12px;
   border: 1px solid var(--border);
@@ -380,6 +382,11 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
   background: var(--bg);
   color: var(--text);
 }
+
+.field-input.w-preset { width: 128px; flex-shrink: 0; }
+.field-input.w-kind { width: 130px; flex-shrink: 0; }
+.field-input.w-result { width: 110px; flex-shrink: 0; }
+.field-input.w-datetime { width: 190px; flex-shrink: 0; }
 
 .model-input {
   width: 200px;

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useI18n } from 'vue-i18n'
 import {
   getCredentialHeatmap,
   toggleModelAvailability,
@@ -11,15 +10,19 @@ import {
   type HeatmapModel,
 } from '../api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+import { useFilterChips, type FilterChip } from '../composables/useFilterChips'
+import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 
 // CredentialHeatmapView — 热力图 tab
 // docs/FEATURE-REQ-credential-heatmap-routing-log.md §4:
 //   - 完整时间轴:无请求的桶渲染为空白占位格(§4.5)
-//   - 汇总行:同凭据所有模型 worst-status 合并(§4.3)
+//   - 汇总行:有绿即绿(任一模型 ready 则汇总绿色),色块内 n/m = 绿色模型数/有数据模型数
 //   - 模型视角:选择模型后仅显示该模型行(§4.4)
 //   - 色块详情抽屉带状态修正操作(§4.7)
+// UI 约束(2026-09-07 用户反馈):
+//   - 筛选条件默认折叠,折叠头外部仅以 chips 展示已选条件
+//   - 热力图为表格形式:横向时间座标列,所有行的色块按列对齐
 
-const { t } = useI18n()
 const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 
 // Time range presets
@@ -27,6 +30,17 @@ type TimeRangePreset = 'today' | '1h' | '6h' | '24h' | 'yesterday' | '7d' | 'mon
 const timeRangePreset = ref<TimeRangePreset>('today')
 const customTimeStart = ref('')
 const customTimeEnd = ref('')
+
+const TIME_PRESET_LABELS: Record<TimeRangePreset, string> = {
+  today: '今天',
+  '1h': '最近1小时',
+  '6h': '最近6小时',
+  '24h': '最近24小时',
+  yesterday: '昨天',
+  '7d': '最近7天',
+  month: '本月',
+  custom: '自定义',
+}
 
 // Granularity
 type Granularity = '1m' | '5m' | '15m' | '1h' | '1d'
@@ -37,6 +51,10 @@ const modelFilter = ref<string>('')
 const modelOptions = ref<string[]>([])
 const showAnomaliesOnly = ref(false)
 const excludeSelfTest = ref(true)
+
+// Collapsible filter panel (collapsed by default; chips outside show active
+// conditions — 2026-09-07 feedback)
+const filtersOpen = ref(false)
 
 // Data
 const loading = ref(false)
@@ -82,6 +100,16 @@ function toggleExpanded(credentialId: number) {
   } else {
     expandedCredentials.value.add(credentialId)
   }
+  saveExpandedState()
+}
+
+function expandAll() {
+  expandedCredentials.value = new Set(filteredCredentials.value.map(c => c.credential_id))
+  saveExpandedState()
+}
+
+function collapseAll() {
+  expandedCredentials.value = new Set()
   saveExpandedState()
 }
 
@@ -168,7 +196,7 @@ const statusColors: Record<string, string> = {
   no_data: '#e5e7eb',
 }
 
-// worst-status ranking: higher = worse; drives the aggregate 汇总 row
+// worst-status ranking: drives the aggregate 汇总 row when no model is green
 const statusRank: Record<string, number> = {
   ready: 1,
   manual_disabled: 1,
@@ -207,6 +235,14 @@ const timeAxis = computed<number[]>(() => {
   return axis
 })
 
+const axisTruncated = computed(() => {
+  if (!meta.value) return false
+  const start = new Date(meta.value.time_start).getTime()
+  const end = new Date(meta.value.time_end).getTime()
+  const step = granularityMs.value
+  return Math.floor((end - start) / step) + 1 > MAX_AXIS_BUCKETS
+})
+
 function bucketKey(ts: string | number): number {
   const t = typeof ts === 'number' ? ts : new Date(ts).getTime()
   return Math.floor(t / granularityMs.value) * granularityMs.value
@@ -223,9 +259,17 @@ function indexModel(model: HeatmapModel): IndexedModel {
   return { rawModelName: model.raw_model_name, byBucket }
 }
 
-// Aggregate 汇总 row: worst status across all of the credential's models (§4.3)
-function buildAggregate(cred: HeatmapCredential): IndexedModel {
-  const byBucket = new Map<number, HeatmapBucket>()
+// Aggregate 汇总 cell: "有绿即绿" — any ready model paints the cell green;
+// otherwise the worst remaining status wins. n/m = green models / models
+// with traffic in this bucket (2026-09-07 feedback).
+interface AggregateCell {
+  bucket: HeatmapBucket
+  readyCount: number
+  modelCount: number
+}
+
+function buildAggregate(cred: HeatmapCredential): Map<number, AggregateCell> {
+  const byBucket = new Map<number, AggregateCell>()
   const merged = new Map<number, HeatmapBucket[]>()
   for (const model of cred.models) {
     for (const b of model.buckets) {
@@ -246,20 +290,26 @@ function buildAggregate(cred: HeatmapCredential): IndexedModel {
       }
     }
     const sampleIds = arr.flatMap(b => b.sample_request_ids || []).slice(0, 10)
+    const statuses = arr.map(b => b.status)
+    const readyCount = statuses.filter(s => s === 'ready').length
     byBucket.set(k, {
-      time_bucket: new Date(k).toISOString(),
-      status: worstStatus(arr.map(b => b.status)),
-      total_requests: total,
-      success_count: success,
-      failed_count: failed,
-      success_rate: total > 0 ? success / total : 0,
-      avg_latency_ms: null,
-      p95_latency_ms: null,
-      error_distribution: errDist,
-      sample_request_ids: sampleIds,
+      bucket: {
+        time_bucket: new Date(k).toISOString(),
+        status: readyCount > 0 ? 'ready' : worstStatus(statuses),
+        total_requests: total,
+        success_count: success,
+        failed_count: failed,
+        success_rate: total > 0 ? success / total : 0,
+        avg_latency_ms: null,
+        p95_latency_ms: null,
+        error_distribution: errDist,
+        sample_request_ids: sampleIds,
+      },
+      readyCount,
+      modelCount: arr.length,
     })
   }
-  return { rawModelName: '__aggregate__', byBucket }
+  return byBucket
 }
 
 // Pre-index every (credential, model) once per load; templates read maps.
@@ -270,6 +320,43 @@ const indexedRows = computed(() => {
     aggregate: buildAggregate(cred),
   }))
 })
+
+// ── Collapsed-bar condition chips ─────────────────────────────────────────
+const filterChips = useFilterChips((): Array<FilterChip | false | null | undefined> => [
+  timeRangePreset.value !== 'today' && {
+    key: 'time',
+    label: `时间: ${TIME_PRESET_LABELS[timeRangePreset.value]}`,
+    onRemove: () => {
+      timeRangePreset.value = 'today'
+      customTimeStart.value = ''
+      customTimeEnd.value = ''
+      granularity.value = suggestedGranularity.value as Granularity
+      loadHeatmap()
+    },
+  },
+  granularity.value !== suggestedGranularity.value && {
+    key: 'granularity',
+    label: `粒度: ${granularity.value}`,
+    onRemove: () => { granularity.value = suggestedGranularity.value as Granularity },
+  },
+  !!modelFilter.value && {
+    key: 'model',
+    label: `模型: ${modelFilter.value}`,
+    onRemove: () => { modelFilter.value = ''; loadHeatmap() },
+  },
+  showAnomaliesOnly.value && {
+    key: 'anomalies',
+    label: '仅显示异常',
+    onRemove: () => { showAnomaliesOnly.value = false },
+  },
+  !excludeSelfTest.value && {
+    key: 'selftest',
+    label: '含自检流量',
+    onRemove: () => { excludeSelfTest.value = true; loadHeatmap() },
+  },
+])
+
+const activeFilterCount = computed(() => filterChips.value.length)
 
 // ── Load heatmap data ────────────────────────────────────────────────────
 async function loadHeatmap() {
@@ -414,6 +501,8 @@ function formatFullTime(ts: string | number): string {
 onMounted(() => {
   loadExpandedState()
   loadCredentialLabels()
+  // 初始粒度与时间范围建议值对齐，避免默认状态就出现"粒度"条件 chip
+  granularity.value = suggestedGranularity.value as Granularity
   loadHeatmap()
 })
 
@@ -424,73 +513,78 @@ onUnmounted(() => {
 
 <template>
   <div class="heatmap-container">
-    <!-- Toolbar -->
+    <!-- Collapsible toolbar: header row always visible; conditions inside the
+         panel; active conditions shown as chips when collapsed -->
     <div class="heatmap-toolbar">
-      <div class="toolbar-row">
-        <span class="label">时间范围</span>
-        <select v-model="timeRangePreset" class="field-input">
-          <option value="today">今天</option>
-          <option value="1h">最近1小时</option>
-          <option value="6h">最近6小时</option>
-          <option value="24h">最近24小时</option>
-          <option value="yesterday">昨天</option>
-          <option value="7d">最近7天</option>
-          <option value="month">本月</option>
-          <option value="custom">自定义</option>
-        </select>
-
-        <span class="label">粒度</span>
-        <select v-model="granularity" class="field-input">
-          <option value="1m">1分钟</option>
-          <option value="5m">5分钟</option>
-          <option value="15m">15分钟</option>
-          <option value="1h">1小时</option>
-          <option value="1d">1天</option>
-        </select>
-        <span class="hint-text" v-if="granularity !== suggestedGranularity">
-          (建议: {{ suggestedGranularity }})
+      <div class="toolbar-head" @click="filtersOpen = !filtersOpen">
+        <span class="filter-toggle">
+          <span class="chevron" aria-hidden="true">{{ filtersOpen ? '▲' : '▼' }}</span>
+          筛选条件
+          <span v-if="activeFilterCount" class="active-count">{{ activeFilterCount }} 项生效</span>
         </span>
-
-        <span class="label">模型</span>
-        <select v-model="modelFilter" class="field-input model-select" @change="loadHeatmap">
-          <option value="">全部模型</option>
-          <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
-          <option v-if="modelFilter && !modelOptions.includes(modelFilter)" :value="modelFilter">{{ modelFilter }}</option>
-        </select>
-
-        <label class="checkbox-label">
-          <input type="checkbox" v-model="excludeSelfTest" @change="loadHeatmap" />
-          排除自检
-        </label>
-
-        <label class="checkbox-label">
-          <input type="checkbox" v-model="showAnomaliesOnly" />
-          仅显示异常
-        </label>
-
         <span class="spacer"></span>
-
-        <label class="checkbox-label">
+        <label class="checkbox-label" @click.stop>
           <input type="checkbox" :checked="autoRefresh" @change="toggleAutoRefresh" />
           自动刷新
         </label>
-
-        <select v-model.number="refreshInterval" class="field-input" :disabled="!autoRefresh">
+        <select v-model.number="refreshInterval" class="field-input interval-select" :disabled="!autoRefresh" @click.stop>
           <option :value="10">10秒</option>
           <option :value="30">30秒</option>
           <option :value="60">60秒</option>
         </select>
-
-        <button class="btn btn-sm btn-primary" @click="loadHeatmap" :disabled="loading">
+        <button class="btn btn-sm btn-primary" @click.stop="loadHeatmap" :disabled="loading">
           {{ loading ? '加载中...' : '刷新' }}
         </button>
+        <span class="toggle-hint">{{ filtersOpen ? '收起' : '展开' }}</span>
       </div>
 
-      <div class="toolbar-row" v-if="timeRangePreset === 'custom'">
-        <span class="label">开始时间</span>
-        <input type="datetime-local" v-model="customTimeStart" class="field-input" />
-        <span class="label">结束时间</span>
-        <input type="datetime-local" v-model="customTimeEnd" class="field-input" />
+      <!-- Active-condition chips (visible when collapsed) -->
+      <ActiveFilterChips v-if="!filtersOpen && filterChips.length" :chips="filterChips" class="chips-row" />
+
+      <!-- Expanded conditions panel -->
+      <div v-show="filtersOpen" class="toolbar-panel">
+        <div class="panel-row">
+          <span class="label">时间</span>
+          <select v-model="timeRangePreset" class="field-input w-time">
+            <option v-for="(label, value) in TIME_PRESET_LABELS" :key="value" :value="value">{{ label }}</option>
+          </select>
+          <template v-if="timeRangePreset === 'custom'">
+            <input type="datetime-local" v-model="customTimeStart" class="field-input w-datetime" />
+            <span class="label">→</span>
+            <input type="datetime-local" v-model="customTimeEnd" class="field-input w-datetime" />
+          </template>
+          <span class="v-sep" aria-hidden="true"></span>
+          <span class="label">粒度</span>
+          <select v-model="granularity" class="field-input w-granularity">
+            <option value="1m">1分钟</option>
+            <option value="5m">5分钟</option>
+            <option value="15m">15分钟</option>
+            <option value="1h">1小时</option>
+            <option value="1d">1天</option>
+          </select>
+          <span class="hint-text" v-if="granularity !== suggestedGranularity">
+            建议 {{ suggestedGranularity }}
+          </span>
+        </div>
+        <div class="panel-row">
+          <span class="label">模型</span>
+          <select v-model="modelFilter" class="field-input w-model" @change="loadHeatmap">
+            <option value="">全部模型</option>
+            <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+            <option v-if="modelFilter && !modelOptions.includes(modelFilter)" :value="modelFilter">{{ modelFilter }}</option>
+          </select>
+          <label class="checkbox-label">
+            <input type="checkbox" v-model="excludeSelfTest" @change="loadHeatmap" />
+            排除自检
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" v-model="showAnomaliesOnly" />
+            仅显示异常
+          </label>
+          <span class="spacer"></span>
+          <button class="btn btn-sm" @click="expandAll">全部展开</button>
+          <button class="btn btn-sm" @click="collapseAll">全部收起</button>
+        </div>
       </div>
     </div>
 
@@ -503,7 +597,7 @@ onUnmounted(() => {
     <div v-if="meta" class="meta-info">
       时间范围: {{ formatFullTime(meta.time_start) }} - {{ formatFullTime(meta.time_end) }} ·
       粒度: {{ meta.granularity }} ·
-      时间桶: {{ timeAxis.length }} ·
+      时间桶: {{ timeAxis.length }}<template v-if="axisTruncated">(已截断)</template> ·
       {{ meta.duration_ms }}ms
     </div>
 
@@ -519,68 +613,60 @@ onUnmounted(() => {
       <p class="hint-text">请调整时间范围或筛选条件</p>
     </div>
 
-    <!-- Heatmap grid -->
-    <div v-else class="heatmap-grid">
-      <!-- Shared time axis header -->
-      <div class="credential-row axis-row">
-        <div class="heatmap-row">
-          <div class="row-label">时间轴</div>
-          <div class="cells-container">
-            <div v-for="t in timeAxis" :key="t" class="axis-cell"
-                 :title="formatFullTime(t)">{{ formatTime(t) }}</div>
-          </div>
-        </div>
-      </div>
-
-      <div v-for="row in indexedRows" :key="row.cred.credential_id" class="credential-row">
-        <div class="credential-header">
-          <button class="expand-btn" @click="toggleExpanded(row.cred.credential_id)">
-            {{ expandedCredentials.has(row.cred.credential_id) ? '▼' : '▶' }}
-          </button>
-          <div class="credential-info">
-            <div class="credential-label">
-              {{ credentialDisplayName(row.cred.credential_id, row.cred.label || `凭据 #${row.cred.credential_id}`) }}
-            </div>
-            <div class="credential-provider">{{ row.cred.provider_name }}</div>
-          </div>
-        </div>
-
-        <!-- Aggregate row: worst status across models (§4.3) -->
-        <div class="heatmap-row">
-          <div class="row-label">汇总</div>
-          <div class="cells-container">
-            <div v-for="t in timeAxis" :key="t"
-                 class="heatmap-cell"
-                 :class="row.aggregate.byBucket.has(t) ? '' : 'cell-blank'"
-                 :style="row.aggregate.byBucket.has(t) ? { backgroundColor: getStatusColor(row.aggregate.byBucket.get(t)!.status) } : {}"
-                 :title="row.aggregate.byBucket.has(t)
-                   ? `${formatFullTime(t)}: ${row.aggregate.byBucket.get(t)!.status}, ${row.aggregate.byBucket.get(t)!.total_requests} 请求`
-                   : `${formatFullTime(t)}: 无请求`"
-                 @click="row.aggregate.byBucket.get(t) && onCellClick(row.aggregate.byBucket.get(t)!, row.cred, '__aggregate__')">
-            </div>
-          </div>
-        </div>
-
-        <!-- Expanded model rows -->
-        <template v-if="expandedCredentials.has(row.cred.credential_id)">
-          <div v-for="model in row.models" :key="model.rawModelName" class="heatmap-row model-row">
-            <div class="row-label model-label">
-              <code>{{ model.rawModelName }}</code>
-            </div>
-            <div class="cells-container">
-              <div v-for="t in timeAxis" :key="t"
-                   class="heatmap-cell"
-                   :class="model.byBucket.has(t) ? '' : 'cell-blank'"
-                   :style="model.byBucket.has(t) ? { backgroundColor: getStatusColor(model.byBucket.get(t)!.status) } : {}"
-                   :title="model.byBucket.has(t)
-                     ? `${formatFullTime(t)}: ${model.byBucket.get(t)!.status}, ${model.byBucket.get(t)!.total_requests} 请求, ${(model.byBucket.get(t)!.success_rate * 100).toFixed(1)}% 成功率`
-                     : `${formatFullTime(t)}: 无请求`"
-                   @click="model.byBucket.get(t) && onCellClick(model.byBucket.get(t)!, row.cred, model.rawModelName)">
-              </div>
-            </div>
-          </div>
-        </template>
-      </div>
+    <!-- Heatmap table: horizontal time axis columns, cells aligned per column -->
+    <div v-else class="heatmap-scroll">
+      <table class="heatmap-table">
+        <colgroup>
+          <col class="col-label" />
+          <col v-for="t in timeAxis" :key="t" class="col-bucket" />
+        </colgroup>
+        <thead>
+          <tr>
+            <th class="corner-cell">时间 →</th>
+            <th v-for="t in timeAxis" :key="t" class="axis-cell" :title="formatFullTime(t)">{{ formatTime(t) }}</th>
+          </tr>
+        </thead>
+        <tbody v-for="row in indexedRows" :key="row.cred.credential_id" class="cred-section">
+          <tr class="cred-header-row">
+            <th :colspan="timeAxis.length + 1" class="cred-header-cell" @click="toggleExpanded(row.cred.credential_id)">
+              <span class="expand-icon" aria-hidden="true">{{ expandedCredentials.has(row.cred.credential_id) ? '▼' : '▶' }}</span>
+              <span class="credential-label">
+                {{ credentialDisplayName(row.cred.credential_id, row.cred.label || `凭据 #${row.cred.credential_id}`) }}
+              </span>
+              <span class="credential-provider">{{ row.cred.provider_name }} · {{ row.cred.models.length }} 模型</span>
+            </th>
+          </tr>
+          <!-- Summary row: 有绿即绿; n/m = 绿色模型数/有数据模型数 -->
+          <tr class="summary-row">
+            <td class="row-label">汇总</td>
+            <td v-for="t in timeAxis" :key="t"
+                class="cell summary-cell"
+                :class="{ blank: !row.aggregate.get(t) }"
+                :style="row.aggregate.get(t) ? { backgroundColor: getStatusColor(row.aggregate.get(t)!.bucket.status) } : {}"
+                :title="row.aggregate.get(t)
+                  ? `${formatFullTime(t)}: ${row.aggregate.get(t)!.bucket.status} · 绿色 ${row.aggregate.get(t)!.readyCount}/${row.aggregate.get(t)!.modelCount} 模型 · ${row.aggregate.get(t)!.bucket.total_requests} 请求`
+                  : `${formatFullTime(t)}: 无请求`"
+                @click="row.aggregate.get(t) && onCellClick(row.aggregate.get(t)!.bucket, row.cred, '__aggregate__')">
+              <span v-if="row.aggregate.get(t)" class="cell-count">{{ row.aggregate.get(t)!.readyCount }}/{{ row.aggregate.get(t)!.modelCount }}</span>
+            </td>
+          </tr>
+          <!-- Expanded model rows: each model shows its own true status color -->
+          <template v-if="expandedCredentials.has(row.cred.credential_id)">
+            <tr v-for="model in row.models" :key="model.rawModelName" class="model-row">
+              <td class="row-label model-label" :title="model.rawModelName"><code>{{ model.rawModelName }}</code></td>
+              <td v-for="t in timeAxis" :key="t"
+                  class="cell model-cell"
+                  :class="{ blank: !model.byBucket.get(t) }"
+                  :style="model.byBucket.get(t) ? { backgroundColor: getStatusColor(model.byBucket.get(t)!.status) } : {}"
+                  :title="model.byBucket.get(t)
+                    ? `${formatFullTime(t)}: ${model.byBucket.get(t)!.status}, ${model.byBucket.get(t)!.total_requests} 请求, ${(model.byBucket.get(t)!.success_rate * 100).toFixed(1)}% 成功率`
+                    : `${formatFullTime(t)}: 无请求`"
+                  @click="model.byBucket.get(t) && onCellClick(model.byBucket.get(t)!, row.cred, model.rawModelName)">
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
     </div>
 
     <!-- Legend -->
@@ -593,6 +679,9 @@ onUnmounted(() => {
       <span class="legend-item">
         <span class="legend-color legend-blank"></span>
         无数据(空白)
+      </span>
+      <span class="legend-item legend-rule">
+        汇总行: 任一模型绿色即显示绿色 · 色块内 n/m = 绿色模型数/有数据模型数
       </span>
     </div>
 
@@ -701,17 +790,64 @@ onUnmounted(() => {
   min-height: 600px;
 }
 
+/* ── Collapsible toolbar ─────────────────────────────────────────────── */
 .heatmap-toolbar {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
+  padding: 8px 12px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
-.toolbar-row {
+.toolbar-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  min-height: 28px;
+}
+
+.filter-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.chevron {
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.active-count {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent-h);
+  white-space: nowrap;
+}
+
+.chips-row {
+  padding-left: 2px;
+}
+
+.toolbar-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.panel-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -722,6 +858,7 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--muted);
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .hint-text {
@@ -729,7 +866,9 @@ onUnmounted(() => {
   color: var(--muted);
 }
 
+/* width:auto overrides the global input/select width:100% */
 .field-input {
+  width: auto;
   padding: 4px 8px;
   font-size: 12px;
   border: 1px solid var(--border);
@@ -738,8 +877,18 @@ onUnmounted(() => {
   color: var(--text);
 }
 
-.model-select {
-  max-width: 220px;
+.w-time { width: 128px; flex-shrink: 0; }
+.w-granularity { width: 92px; flex-shrink: 0; }
+.w-model { width: 220px; max-width: 320px; }
+.w-datetime { width: 190px; flex-shrink: 0; }
+.interval-select { width: 76px; flex-shrink: 0; }
+
+.v-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
+  margin: 0 2px;
 }
 
 .checkbox-label {
@@ -749,10 +898,15 @@ onUnmounted(() => {
   font-size: 12px;
   color: var(--text);
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.spacer {
-  flex: 1;
+.spacer { flex: 1; }
+
+.toggle-hint {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .error-banner {
@@ -797,116 +951,157 @@ onUnmounted(() => {
   to { transform: rotate(360deg); }
 }
 
-.heatmap-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.credential-row {
+/* ── Heatmap table ───────────────────────────────────────────────────── */
+.heatmap-scroll {
+  overflow: auto;
+  max-height: 72vh;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--card);
-  padding: 12px;
 }
 
-.axis-row {
+.heatmap-table {
+  border-collapse: separate;
+  border-spacing: 1px;
+  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+}
+
+.heatmap-table col.col-label { width: 130px; }
+.heatmap-table col.col-bucket { width: 38px; }
+
+.heatmap-table thead th {
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 3;
+  background: var(--bg-subtle, var(--card));
+  border-bottom: 1px solid var(--border);
+}
+
+.corner-cell {
+  position: sticky;
+  left: 0;
+  z-index: 4;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  text-align: left;
+  padding: 4px 8px;
+  white-space: nowrap;
 }
 
 .axis-cell {
-  min-width: 8px;
-  width: 12px;
-  height: 18px;
-  font-size: 8px;
+  font-size: 9px;
+  font-family: ui-monospace, monospace;
   color: var(--muted);
-  overflow: hidden;
+  text-align: center;
+  padding: 4px 0;
   white-space: nowrap;
-  flex-shrink: 0;
+  overflow: hidden;
 }
 
-.credential-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+.cred-section + .cred-section {
+  border-top: 2px solid var(--border);
 }
 
-.expand-btn {
-  background: transparent;
-  border: none;
+.cred-header-row th.cred-header-cell {
+  position: sticky;
+  top: 26px;
+  z-index: 2;
+  background: var(--bg-subtle, var(--card));
+  text-align: left;
+  padding: 5px 8px;
   cursor: pointer;
-  font-size: 14px;
-  color: var(--text);
-  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
 }
 
-.credential-info {
-  flex: 1;
+.expand-icon {
+  display: inline-block;
+  width: 16px;
+  font-size: 10px;
+  color: var(--muted);
 }
 
 .credential-label {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
   color: var(--text);
+  margin-left: 4px;
 }
 
 .credential-provider {
   font-size: 11px;
   color: var(--muted);
+  margin-left: 8px;
 }
 
-.heatmap-row {
-  display: grid;
-  grid-template-columns: 120px 1fr;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 4px;
-}
-
-.model-row {
-  margin-left: 20px;
-}
-
-.row-label {
+.heatmap-table td.row-label {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--card);
   font-size: 12px;
-  color: var(--muted);
   font-weight: 600;
+  color: var(--muted);
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 130px;
 }
 
 .model-label code {
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 400;
 }
 
-.cells-container {
-  display: flex;
-  gap: 2px;
-  overflow-x: auto;
-}
-
-.heatmap-cell {
-  min-width: 8px;
-  width: 12px;
-  height: 32px;
+/* Cells */
+.heatmap-table td.cell {
+  height: 22px;
+  padding: 0;
   border-radius: 2px;
   cursor: pointer;
-  transition: opacity 0.2s;
-  flex-shrink: 0;
+  transition: opacity 0.15s;
+  overflow: hidden;
 }
 
-.heatmap-cell:hover {
+.heatmap-table tr.model-row td.cell {
+  height: 16px;
+}
+
+.heatmap-table td.cell:hover {
   opacity: 0.8;
   outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
-.cell-blank {
+.heatmap-table td.cell.blank {
   background: transparent;
   border: 1px dashed var(--border);
   cursor: default;
 }
 
+.heatmap-table td.cell.blank:hover {
+  outline: none;
+  opacity: 1;
+}
+
+.cell-count {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  font-size: 9px;
+  font-weight: 700;
+  font-family: ui-monospace, monospace;
+  color: rgba(15, 23, 42, 0.82);
+  text-shadow: 0 0 2px rgba(255, 255, 255, 0.35);
+  user-select: none;
+  pointer-events: none;
+}
+
+/* ── Legend ──────────────────────────────────────────────────────────── */
 .legend {
   display: flex;
   align-items: center;
@@ -941,6 +1136,46 @@ onUnmounted(() => {
 .legend-blank {
   background: transparent;
   border-style: dashed;
+}
+
+.legend-rule {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+/* ── Detail drawer ───────────────────────────────────────────────────── */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 50;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.drawer-panel {
+  width: 420px;
+  max-width: 92vw;
+  height: 100%;
+  border-radius: 0;
+  overflow-y: auto;
+}
+
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-header h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.drawer-body {
+  padding: 16px;
 }
 
 .detail-section {
