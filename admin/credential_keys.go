@@ -161,6 +161,12 @@ func (h *Handler) addCredentialKey(w http.ResponseWriter, r *http.Request, provi
 		return
 	}
 
+	// 2026-09-07 本地托管供应商：凭据由系统自动管理，不允许追加 extra key。
+	if isLocalKind(h.providerKindByID(r.Context(), providerID)) {
+		writeError(w, http.StatusBadRequest, errLocalCredentialImmutable)
+		return
+	}
+
 	encrypted, err := h.encryptCred([]byte(req.APIKey))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encryption failed")

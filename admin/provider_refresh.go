@@ -332,6 +332,8 @@ type credentialRowLite struct {
 	modelsEndpointTpl  *string
 	discoveryStrategy  string
 	modelsManifestJSON *string
+	providerKind       string // 2026-09-07: providers.kind — "local" 触发上下文回填
+	catalogCaps        []byte // 2026-09-07: provider_catalog.capabilities JSONB
 }
 
 func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, providerID int) ([]credentialRowLite, error) {
@@ -371,7 +373,9 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json,
+			COALESCE(p.kind, 'cloud'),
+			COALESCE(pc.capabilities, '{}'::jsonb)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
@@ -402,7 +406,8 @@ func (h *Handler) fetchActiveCredentialsForProvider(ctx context.Context, provide
 		var c credentialRowLite
 		if err := rows.Scan(&c.id, &c.label, &c.providerID, &c.providerName,
 			&c.baseURL, &c.protocol, &c.catalogCode,
-			&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON); err != nil {
+			&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON,
+			&c.providerKind, &c.catalogCaps); err != nil {
 			continue
 		}
 		out = append(out, c)
@@ -420,14 +425,17 @@ func (h *Handler) loadCredentialRowLite(ctx context.Context, providerID, credID 
 			c.secret_ciphertext,
 			pc.models_endpoint_template,
 			COALESCE(pc.discovery_strategy, 'auto'),
-			pc.models_manifest_json
+			pc.models_manifest_json,
+			COALESCE(p.kind, 'cloud'),
+			COALESCE(pc.capabilities, '{}'::jsonb)
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN provider_catalog pc ON pc.code = COALESCE(NULLIF(p.catalog_code, ''), p.code)
 		WHERE c.id = $1 AND c.provider_id = $2 AND c.status <> 'deleted' AND p.deleted_at IS NULL
 	`, credID, providerID).Scan(&c.id, &c.label, &c.providerID, &c.providerName,
 		&c.baseURL, &c.protocol, &c.catalogCode,
-		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON)
+		&c.secretCipher, &c.modelsEndpointTpl, &c.discoveryStrategy, &c.modelsManifestJSON,
+		&c.providerKind, &c.catalogCaps)
 	return c, err
 }
 
