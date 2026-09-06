@@ -4786,6 +4786,53 @@ goalRetryLoopDone:
 				return
 			}
 
+			// 2026-09-07 (mock system test §5.3): when EVERY candidate failed
+			// with an upstream 429, propagate rate-limit semantics — HTTP 429
+			// + Retry-After (upstream hint preferred, bounded) — instead of
+			// the generic 503 model_not_found, which stripped the Retry-After
+			// contract and mis-signaled "gateway broken" to SDK backoff logic
+			// that special-cases 429. Single-candidate 429 avoidance (routing
+			// away from the limited node) is unchanged.
+			if execErrTyped.LastKind == errorsx.KindRateLimit {
+				retryAfter := overloadRetryAfterSeconds(execErr)
+				msg := fmt.Sprintf("Rate limited by all providers for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried)
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark("rate_limit",
+					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed (rate limited).", clientModel, execErrTyped.Tried),
+					providerID, credentialID)
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "rate_limit", failTrace, int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				debugInfo := map[string]any{
+					"stage":       "execution",
+					"kind":        string(execErrTyped.LastKind),
+					"tried":       execErrTyped.Tried,
+					"retryable":   true,
+					"retry_after": retryAfter,
+					"attempts":    execErrTyped.Attempts,
+				}
+				if preStreamPrepared {
+					exhaustedProviderID, exhaustedCredentialID := "", ""
+					if len(candidates) > 0 {
+						exhaustedProviderID = strconv.Itoa(candidates[0].ProviderID)
+						exhaustedCredentialID = strconv.Itoa(candidates[0].CredentialID)
+					}
+					recordPrewarmedExhaustion(
+						string(execErrTyped.LastKind),
+						"rate_limit",
+						exhaustedProviderID,
+						exhaustedCredentialID,
+						clientModel,
+					)
+					writePrewarmedStreamErrorWithKind(w, msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind))
+					return
+				}
+				writeErrorJSONWithKindProto(proto, w, http.StatusTooManyRequests, requestID,
+					msg, "rate_limit_error", "rate_limit", string(execErrTyped.LastKind), debugInfo)
+				return
+			}
+
 			// = "model_not_found" but surface the REAL underlying
 			// kind in error.kind + X-Gateway-Last-Kind header. Many
 			// in-the-wild failures labeled model_not_found are
