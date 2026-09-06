@@ -22,8 +22,9 @@
 /.kiro/
 /.security-audit/
 
-# 2026-09-07: agent scratch (skills/, tasks/, scratch notes) — local-only, never track
-/.agents/
+# Note: .agents/ is INTENTIONALLY tracked — it contains project-level skills
+# (e.g. .agents/skills/db-sync-252-local, .agents/skills/llm-gateway-deploy).
+# Do NOT add an ignore rule for .agents/ here.
 
 # Build artifacts
 /gateway
@@ -61,6 +62,7 @@ Dockerfile.local
 .zcode/plans/
 .audit/
 .audit-workspace/
+.kiro/
 .security-audit/
 .vite/
 
