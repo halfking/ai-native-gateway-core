@@ -190,6 +190,13 @@ files=(
   # Alternative: call upsert_llm_hourly_stats(hour_text, ...) helper function.
   "$ROOT_DIR/sql/migrations/startup/668_llm_hourly_stats_final_fix.sql"
   "$ROOT_DIR/deploy/sql/migrations/V371__supplier_errors_hot_and_stats.sql"
+  # 2026-09-07 PG log audit: migration 455 已声明把 request_logs_bodies_hot
+  # 唯一索引从 (request_id, ts) 切到 (request_id),但实测库上索引仍是
+  # (request_id, ts);每个 telemetry 写入触发 42P10。同时 model_offers 视图
+  # 缺 priority / unavailable_recover_at 列,provider/client.go 历史 mo.priority
+  # 引用与 bg/credential_recovery 冷却写入都失败 42703。
+  # 编号 678:原编号 676,与远端 676_routing_opt_active_fix.sql 撞号,重编号到 678。
+  "$ROOT_DIR/sql/migrations/startup/678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
