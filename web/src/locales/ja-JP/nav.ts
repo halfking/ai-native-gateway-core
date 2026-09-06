@@ -21,6 +21,8 @@ export default {
     models: "モデルとカタログ",
     routingOverview: "ルーティング概要",
     credentialMonitor: "認証情報モニター",
+    annotations: 'ヒューマンアノテーション',
+    annotationStats: 'アノテーション統計',
     probeHealth: "プローブヘルス",
     systemMonitor: "システム監視",
     providers: "プロバイダー",

@@ -1,0 +1,25 @@
+session_hash,model1_label,model2_label,model1_title,model2_title,reason
+29c1dd97c37f5459,debugging,summary,Network connectivity test,Network connectivity test,label disagreement or low confidence
+7d576fddae09c569,summary,debugging,User sends test message,Network connectivity check,label disagreement or low confidence
+3f6429959a45ffff,summary,summary,User sends minimal test message,User sends minimal test message,label disagreement or low confidence
+d8ec02871c4d6f89,debugging,summary,Network connectivity check,User sends a simple connectivity test message,label disagreement or low confidence
+b8ce000c8984b83e,testing,summary,Network connectivity test,Simple connectivity test,label disagreement or low confidence
+5ee06a618c5596f4,summary,debugging,Connectivity Test,Testing connectivity with ping command,label disagreement or low confidence
+ba6ad817f2c09342,summary,summary,User sends single-word test message,User sends a ping message,label disagreement or low confidence
+b75a47bc3e6e08f4,debugging,debugging,Network connectivity test,Network connectivity test,label disagreement or low confidence
+5113336a7dd920e6,summary,summary,User sends ping message,User sends minimal ping message,label disagreement or low confidence
+a59e551e5ef760c4,summary,debugging,User sends ping message,Network connectivity test,label disagreement or low confidence
+bfe56affe622b8bd,debugging,debugging,Network connectivity check using ping command,Testing system connectivity,label disagreement or low confidence
+87c40681bab74c88,summary,summary,User sent a ping message,User sent a connectivity test message,label disagreement or low confidence
+08bd30d6827ff418,debugging,debugging,Network connectivity test,Network connectivity test using ping command,label disagreement or low confidence
+4e3a2c2fb9f2247f,debugging,summary,User tests system responsiveness with ping command,User sends ping,label disagreement or low confidence
+68bafdac6ad676e1,debugging,summary,Testing system responsiveness with ping command,User sends ping message,label disagreement or low confidence
+450f95d8dc48466b,summary,debugging,User sends a ping message,Network connectivity test,label disagreement or low confidence
+7184f4998079cbfd,debugging,summary,Simple connectivity test using ping command,User connectivity check,label disagreement or low confidence
+fde0d314cdec7614,summary,debugging,User sends ping message,Network connectivity test,label disagreement or low confidence
+9d27ad291651b7f7,debugging,summary,Network connectivity test,User sent ping message,label disagreement or low confidence
+fc61450873cfb93a,summary,summary,User sent ping message,User sends ping message,label disagreement or low confidence
+838c4fa51a582f87,debugging,summary,Basic connectivity test,Simple connectivity test,label disagreement or low confidence
+a9044c0806da74c2,debugging,summary,Network connectivity test,User sent a ping message,label disagreement or low confidence
+97c0a09242aaa076,debugging,debugging,Network connectivity test,Network connectivity check,label disagreement or low confidence
+45e92d95abccaf5e,summary,summary,System check with ping command,User sends ping,label disagreement or low confidence

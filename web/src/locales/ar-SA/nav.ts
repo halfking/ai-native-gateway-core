@@ -21,6 +21,8 @@ export default {
     models: "النماذج والكتالوج",
     routingOverview: "نظرة التوجيه",
     credentialMonitor: "مراقبة بيانات الاعتماد",
+    annotations: 'التعليق اليدوي',
+    annotationStats: 'إحصاءات التعليق',
     probeHealth: "صحة الاستكشاف",
     systemMonitor: "مراقبة النظام",
     providers: "المزودون",

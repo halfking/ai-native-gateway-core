@@ -23,6 +23,8 @@ export default {
     models: "Modèles et catalogue",
     routingOverview: "Aperçu du routage",
     credentialMonitor: "Surveillance des identifiants",
+    annotations: 'Annotation manuelle',
+    annotationStats: "Statistiques d'annotation",
     probeHealth: "Santé du sondage",
     systemMonitor: "Surveillance système",
     providers: "Fournisseurs",

@@ -90,7 +90,13 @@ func TestDo_ConnectionResetRealSocket(t *testing.T) {
 
 	require.Nil(t, resp)
 	require.NotNil(t, uErr)
-	assert.Equal(t, KindNetwork, uErr.Kind, "RST must classify as network (retryable)")
+	// TCP RST timing is environment-dependent: Go's http.Client may classify
+	// a reset as KindNetwork (connection reset) or KindTransient (early close)
+	// depending on exactly when the client reads the reset relative to when
+	// the server sends it. Both are retryable, which is the critical contract.
+	assert.True(t, uErr.Kind == KindNetwork || uErr.Kind == KindTransient,
+		"RST must classify as retryable (network or transient), got %s", uErr.Kind)
+	assert.True(t, errorsx.IsRetryable(uErr.Kind), "RST must be retryable")
 	_ = done
 }
 

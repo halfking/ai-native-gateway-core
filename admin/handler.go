@@ -1302,6 +1302,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		}
 		autoH.RegisterAutoRouteRoutes(mux, h.superAdmin)
 
+		// P2.1+ Human annotation Web workflow (2026-09-06).
+		// admin middleware: allows any authenticated user to annotate samples.
+		// Annotation routes are registered here to keep them with other auto-route endpoints.
+		mux.HandleFunc("/api/admin/annotations/samples", admin(h.handleAnnotationSamples))
+		mux.HandleFunc("/api/admin/annotations/stats", admin(h.handleAnnotationStats))
+		mux.HandleFunc("/api/admin/annotations/batch", admin(h.handleBatchAnnotate))
+		mux.HandleFunc("/api/admin/annotations/", admin(h.handleDeleteAnnotation)) // DELETE /annotations/{request_id}
+		mux.HandleFunc("/api/admin/annotations", admin(h.handleCreateAnnotation))  // POST /annotations
+
 		// Phase 2a analytics (matrix / flow / model-task-index / decision-replay).
 		// superAdmin only: these expose cross-tenant credential/model routing
 		// internals and auto-route tuner metrics; tenant_admin must not see them.

@@ -334,3 +334,11 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 |-----------|------|---------|--------|
 | 664 | `664_provider_error_details_agg_key_dedup.sql` | `41b9a661e454b34201d5e92dc7543d1a63524aaa9ddec6243cba74eb2bd71a17` | file-ready（必须与 provider_error_aggregator 新 ON CONFLICT 目标同版本发布；误序任意一侧聚合 tick 报 42P10） |
 
+## 2026-09-06T13:16:48Z — deploy 154 build_seq 1988 (fc9ca616)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 667 | `667_llm_hourly_stats_timestamp_fix.sql` | `63d892c3fe0b9629c49d182f78333b3a05f37513924d47676ed66d6cd4517240` | applied+verified |
+| 668 | `668_llm_hourly_stats_final_fix.sql` | `58d32ca000633e9d2d19d77441f5a30fc2882b577d0892638c5a32cf9a862818` | applied+verified |
+| 670 | `670_routing_optimization.sql` | `4f8d984fbcab9e080a8c1d793436d932d7fc11680d613b5f5dc88abbb669bf84` | applied+verified |
+
