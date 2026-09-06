@@ -6,8 +6,11 @@
 // params.OnNodeJump → preStream `: thinking:` SSE 注释通道。链路末端存在
 // 两个此前完全无信号的静默丢弃点：
 //
-//  1. 非流式响应没有 SSE 思考通道，notice 无处投递（executor 桥上
-//     OnNodeJump 为 nil，或 handler 侧闭包因 preStream == nil 直接吞掉）；
+//  1. 非流式响应没有 SSE 思考通道。2026-09-07 起默认由
+//     X-Gateway-Failover-Notice 响应头消化（executor 桥收集 + base64(JSON)
+//     摘要，见 executors.FailoverNoticeHeader）；本 reason 因此只在该通道
+//     未接线（内部子执行 / 构造点遗漏）时才会增长 —— 一旦出现即为接线
+//     缺陷，适合直接告警；
 //  2. 流式请求的 preStream 未初始化（keepalive 功能关闭、
 //     startPreStreamKeepalive 失败等），handler 闭包的
 //     `if preStream != nil` 守卫静默丢弃。
@@ -35,8 +38,9 @@ import (
 
 // DispatchNotice 丢弃原因闭集。
 const (
-	// DispatchNoticeDropReasonNonStreaming: 请求是非流式响应，没有
-	// `: thinking:` SSE 通道，notice 按设计无法呈现。
+	// DispatchNoticeDropReasonNonStreaming: 请求是非流式响应，且没有接线
+	// FailoverNoticeCollector —— 既无 `: thinking:` SSE 通道也无响应头摘要，
+	// notice 按设计无法呈现。正常部署下恒为 0，增长即接线缺陷。
 	DispatchNoticeDropReasonNonStreaming = "non_streaming"
 	// DispatchNoticeDropReasonPreStreamUninit: 流式请求的 preStream
 	// keepalive 未初始化（功能关闭 / 启动失败 / 未桥接 OnNodeJump），

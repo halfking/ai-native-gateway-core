@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1134,6 +1135,78 @@ func (e *Executor) logClientResponse(params *ExecParams, protocol string, body [
 	}
 }
 
+// FailoverNoticeHeader is the non-streaming transport for dispatch notices
+// (v6 G-Ⅲ): the final response carries a base64(JSON) digest of every
+// pre-first-byte notice under this header. Streaming requests keep the
+// `: thinking:` SSE side-band and never set this header. Notices are
+// pre-first-byte by construction (ADR-Disp-003), so at notice time a
+// non-streaming response's headers are still mutable.
+const FailoverNoticeHeader = "X-Gateway-Failover-Notice"
+
+const (
+	// failoverNoticeMaxCount bounds the digest: keep the most recent notices
+	// (the final switch explains the served candidate) and stay far below
+	// realistic HTTP header size limits.
+	failoverNoticeMaxCount = 8
+	// failoverNoticeMaxMessage truncates over-verbose notice messages
+	// (rune-safe) — the header is a digest, not a log.
+	failoverNoticeMaxMessage = 200
+)
+
+// FailoverNoticeCollector accumulates dispatch notices for one request's
+// non-streaming response header. All methods are safe for concurrent use:
+// notices are delivered from dispatcher/failover goroutines while the
+// handler goroutine may read the digest.
+type FailoverNoticeCollector struct {
+	mu    sync.Mutex
+	items []dispatch.DispatchNotice
+}
+
+// NewFailoverNoticeCollector returns a ready-to-use collector. Wire it into
+// ExecParams.FailoverNotices at the protocol entry points (handler.go /
+// messages.go / responses.go); internal sub-executions may leave it nil.
+func NewFailoverNoticeCollector() *FailoverNoticeCollector {
+	return &FailoverNoticeCollector{}
+}
+
+// Add appends one notice, truncating its message and keeping only the most
+// recent failoverNoticeMaxCount entries.
+func (c *FailoverNoticeCollector) Add(n dispatch.DispatchNotice) {
+	if n.Message != "" {
+		runes := []rune(n.Message)
+		if len(runes) > failoverNoticeMaxMessage {
+			n.Message = string(runes[:failoverNoticeMaxMessage])
+		}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.items = append(c.items, n)
+	if len(c.items) > failoverNoticeMaxCount {
+		c.items = c.items[len(c.items)-failoverNoticeMaxCount:]
+	}
+}
+
+// HeaderValue renders the accumulated notices as base64(JSON array) for
+// FailoverNoticeHeader, or "" when nothing was collected. Marshal errors
+// (not expected for this struct) degrade to "" instead of failing the
+// response path.
+func (c *FailoverNoticeCollector) HeaderValue() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	items := c.items
+	c.mu.Unlock()
+	if len(items) == 0 {
+		return ""
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(raw)
+}
+
 type ExecParams struct {
 	W http.ResponseWriter
 	R *http.Request
@@ -1207,7 +1280,18 @@ type ExecParams struct {
 	// credential after a failure. The handler uses this to send a thinking
 	// event (SSE event: thinking) to the client, displaying node failover
 	// status without entering the conversation. Optional.
-	OnNodeJump           func(message string)
+	OnNodeJump func(message string)
+	// FailoverNotices accumulates pre-first-byte dispatch notices for
+	// non-streaming requests, whose transport has no `: thinking:` SSE
+	// side-band. The dispatch bridge renders the accumulated notices into
+	// the FailoverNoticeHeader response header so non-streaming clients
+	// still learn why (and how often) their request failovered before the
+	// final answer. Pointer-shared on purpose: ExecParams is copied by
+	// value across attempt boundaries (execute_attempt.go, executor_chat.go),
+	// so every copy observes the same collector. nil disables the channel —
+	// notices then fall back to the legacy DispatchNoticeDroppedTotal
+	// accounting.
+	FailoverNotices      *FailoverNoticeCollector
 	SuppressSuccessWrite bool
 	// AttachmentMetadata carries the extractor's stored-attachment records
 	// (MM-1) so the executor can swap inline base64 blocks for gateway URLs
