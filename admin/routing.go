@@ -1934,6 +1934,8 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 	if rawModel != "" {
 		models = append(models, rawModel)
 	} else {
+		// 2026-09-06: 整凭据 reset 时模型枚举失败应明确记录到 outcome，
+		// 避免静默跳过 URSM/fpslot 清理。
 		rows, err := h.db.Query(ctx, `
 			SELECT pm.raw_model_name
 			FROM credential_model_bindings cmb
@@ -1943,6 +1945,8 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 		if err != nil {
 			slog.Warn("emergency_repair: enumerate binding models failed",
 				"error", err, "cred", credentialID)
+			outcome["enum_models_error"] = err.Error()
+			met.RoutingCredentialResetTotal.WithLabelValues("enum_models", "error").Inc()
 		} else {
 			for rows.Next() {
 				var m string
@@ -1951,6 +1955,12 @@ func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, prov
 				}
 			}
 			rows.Close()
+			if len(models) == 0 {
+				slog.Warn("emergency_repair: credential has no bindings",
+					"cred", credentialID)
+				outcome["enum_models_empty"] = true
+			}
+			met.RoutingCredentialResetTotal.WithLabelValues("enum_models", "ok").Inc()
 		}
 	}
 
@@ -5524,9 +5534,15 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 	// disabled/fail_streak/cool_until_ms via ClearState. When RawModel is
 	// empty (whole-credential repair) the per-model loop covers every
 	// binding model instead of skipping URSM entirely.
+	// 2026-09-06: 改为必要步骤 — URSM 清理失败时阻断返回，避免 PG 成功但
+	// Redis 失败导致"数据库已恢复但流量仍被拦截"的不一致状态。
 	if h.ursmV2 != nil {
+		if len(resetModels) == 0 {
+			// 整凭据 reset 时模型枚举失败 — 明确拒绝，避免 URSM 被完全跳过
+			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "no_models").Inc()
+			return fmt.Errorf("force_enable: no binding models found for credential %d, cannot reset URSM", credentialID)
+		}
 		disabled := false
-		applied, cleared := 0, 0
 		for _, m := range resetModels {
 			adminAction := api.AdminAction{
 				Scope:          api.ScopeNode,
@@ -5539,22 +5555,18 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 				IssuedAtMs:     time.Now().UnixMilli(),
 			}
 			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
-				slog.Warn("force_enable: ursm.v2 apply_admin failed", "error", err, "cred", credentialID, "model", m)
 				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
-			} else {
-				applied++
-				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
+				return fmt.Errorf("force_enable: ursm.v2 apply_admin failed for model %s: %w", m, err)
 			}
+			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
 			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, credentialID, m); err != nil {
-				slog.Warn("force_enable: ursm.v2 clear_state failed", "error", err, "cred", credentialID, "model", m)
 				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "error").Inc()
-			} else {
-				cleared++
-				met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
+				return fmt.Errorf("force_enable: ursm.v2 clear_state failed for model %s: %w", m, err)
 			}
+			met.RoutingCredentialResetTotal.WithLabelValues("ursmv2", "ok").Inc()
 		}
-		beforeAfter["ursm_v2_admin_applied"] = len(resetModels) > 0 && applied == len(resetModels)
-		beforeAfter["ursm_v2_cleared"] = len(resetModels) > 0 && cleared == len(resetModels)
+		beforeAfter["ursm_v2_admin_applied"] = true
+		beforeAfter["ursm_v2_cleared"] = true
 		beforeAfter["ursm_v2_models_covered"] = len(resetModels)
 	}
 

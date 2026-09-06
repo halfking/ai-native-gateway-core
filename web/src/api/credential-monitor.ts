@@ -383,3 +383,86 @@ export function setManualDisabled(credentialId: number, disabled: boolean, reaso
     { credential_id: credentialId, manual_disabled: disabled, reason }
   )
 }
+
+// ── Credential Heatmap (2026-09-06) ──────────────────────────────────────
+//
+// Time-series visualization of credential health status across multiple
+// models and time buckets. Supports dynamic granularity (1m, 5m, 15m, 1h, 1d)
+// and filtering by credential IDs, model names, and time ranges.
+
+export interface HeatmapBucket {
+  time_bucket: string
+  status: string
+  total_requests: number
+  success_count: number
+  failed_count: number
+  success_rate: number
+  avg_latency_ms: number | null
+  p95_latency_ms: number | null
+  error_distribution: Record<string, number>
+  sample_request_ids: string[]
+}
+
+export interface HeatmapModel {
+  raw_model_name: string
+  buckets: HeatmapBucket[]
+}
+
+export interface HeatmapCredential {
+  credential_id: number
+  label: string
+  provider_name: string
+  models: HeatmapModel[]
+}
+
+export interface HeatmapMeta {
+  time_start: string
+  time_end: string
+  granularity: string
+  bucket_count: number
+  cache_hit: boolean
+  generated_at: string
+  expires_at: string
+  duration_ms: number
+}
+
+export interface HeatmapResponse {
+  meta: HeatmapMeta
+  credentials: HeatmapCredential[]
+}
+
+export interface HeatmapQueryOptions {
+  credentialIds?: number[]
+  models?: string[]
+  excludeSelfTest?: boolean
+}
+
+export function getCredentialHeatmap(
+  timeStart: string,
+  timeEnd: string,
+  granularity: '1m' | '5m' | '15m' | '1h' | '1d',
+  options?: HeatmapQueryOptions,
+  requestOptions?: RequestOptions,
+): Promise<HeatmapResponse> {
+  const params = new URLSearchParams()
+  params.set('time_start', timeStart)
+  params.set('time_end', timeEnd)
+  params.set('granularity', granularity)
+  
+  if (options?.excludeSelfTest !== undefined) {
+    params.set('exclude_self_test', String(options.excludeSelfTest))
+  }
+  if (options?.credentialIds?.length) {
+    params.set('credential_ids', options.credentialIds.join(','))
+  }
+  if (options?.models?.length) {
+    params.set('models', options.models.join(','))
+  }
+  
+  return req<HeatmapResponse>(
+    'GET',
+    `/api/credentials/heatmap?${params.toString()}`,
+    undefined,
+    requestOptions,
+  )
+}
