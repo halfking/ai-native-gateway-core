@@ -17,7 +17,7 @@ cd tests/session_audit
 
 ## 测试内容
 
-✅ **数据来源**: 252 数据库（172.16.2.210）最近 7 天的 10,000+ 条真实 LLM 响应  
+✅ **数据来源**: 252 数据库（<env:HOST_252_INTERNAL_IP>）最近 7 天的 10,000+ 条真实 LLM 响应  
 ✅ **敏感词**: 156+ 个（政治/色情/暴力/违禁品/诈骗/PII/Injection/Jailbreak）  
 ✅ **检测器**: FastDetector（Trie 树 + 正则表达式）  
 ✅ **存储**: 数据库表 + 统计视图  
@@ -53,7 +53,7 @@ cd tests/session_audit
 
 ### 2. 查看结果
 ```bash
-psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway
+psql -h <env:HOST_252_INTERNAL_IP> -p 5432 -U llm_gateway -d llm_gateway
 ```
 ```sql
 -- 查看性能统计

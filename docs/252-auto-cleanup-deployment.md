@@ -355,8 +355,7 @@ ssh root@252 '/opt/scripts/pg17-proactive-empty-table-cleanup.sh --force'
 **部署负责人**: zcode  
 **部署日期**: 2026-09-06  
 **相关文档**: 
-- [252-disk-cleanup-report-20260906.md](./252-disk-cleanup-report-20260906.md) - 磁盘清理报告
-- [scripts/252-monitor/README.md](./scripts/252-monitor/README.md) - 监控脚本文档
+- [scripts/252-monitor/README.md](../scripts/252-monitor/README.md) - 监控脚本文档
 
 **回滚联系**: 如需紧急回滚，请执行「七、回滚方案」中的命令
 

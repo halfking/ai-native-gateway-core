@@ -714,7 +714,7 @@ sudo systemctl restart llm-gateway
 - [功能模块指南](./MODULES_GUIDE.md) - 详细的模块说明
 - [架构设计](./03-design/01-architecture/architecture/ARCHITECTURE.md) - 架构详细设计
 - [部署指南](./06-deployment/README.md) - 部署与运维
-- [故障排查](./troubleshooting/README.md) - 详细故障排查手册
+- [故障排查](./troubleshooting/) - 详细故障排查手册
 
 ---
 

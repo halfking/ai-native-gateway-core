@@ -27,7 +27,7 @@
 ```
 客户端
     ↓ HTTPS
-DNS → 8.136.114.245 (245 公网 IP)
+DNS → <env:HOST_245_IP> (245 公网 IP)
     ↓ 443
 245 nginx (server_name llmgo.kxpms.cn)
     upstream llmgo_local_245 { server 127.0.0.1:8781; }
@@ -42,7 +42,7 @@ DNS → 8.136.114.245 (245 公网 IP)
 ```
 客户端
     ↓ HTTPS
-DNS → 115.29.212.252 (252 公网 IP)
+DNS → <env:HOST_252_IP> (252 公网 IP)
     ↓ 443
 252 nginx (server_name ~^(?<kxpms_host>(?:[^.]+\.)?kxpms\.cn)$ 通配)
     upstream kxpms_llm_backend {

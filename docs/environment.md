@@ -9,8 +9,8 @@
 ## 环境概览
 
 ### 测试环境（245）
-- **主机**: 8.136.114.245
-- **SSH**: `ssh -p 25022 root@8.136.114.245`
+- **主机**: <env:HOST_245_IP>
+- **SSH**: `ssh -p 25022 root@<env:HOST_245_IP>`
 - **服务**: llmgo-245.service
 - **端口**: 8781
 - **用途**: 预生产测试、新功能验证
@@ -30,14 +30,14 @@
 
 ### PostgreSQL 主库（252）
 ```
-Host: 172.16.2.210
+Host: <env:HOST_252_INTERNAL_IP>
 Port: 5432
 Database: llm_gateway
 User: llm_gateway
 Password: ***REDACTED***
 
 Connection String:
-postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disable
+postgres://llm_gateway:***REDACTED***@<env:HOST_252_INTERNAL_IP>:5432/llm_gateway?sslmode=disable
 ```
 
 ### 关键表
@@ -52,27 +52,27 @@ postgres://llm_gateway:***REDACTED***@172.16.2.210:5432/llm_gateway?sslmode=disa
 
 ### 查看服务状态
 ```bash
-ssh -p 25022 root@8.136.114.245 "systemctl status llmgo-245.service"
+ssh -p 25022 root@<env:HOST_245_IP> "systemctl status llmgo-245.service"
 ```
 
 ### 查看实时日志
 ```bash
-ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service -f"
+ssh -p 25022 root@<env:HOST_245_IP> "journalctl -u llmgo-245.service -f"
 ```
 
 ### 查看错误日志
 ```bash
-ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service --since '1 hour ago' | grep -E '(ERROR|WARN)'"
+ssh -p 25022 root@<env:HOST_245_IP> "journalctl -u llmgo-245.service --since '1 hour ago' | grep -E '(ERROR|WARN)'"
 ```
 
 ### 重启服务
 ```bash
-ssh -p 25022 root@8.136.114.245 "systemctl restart llmgo-245.service"
+ssh -p 25022 root@<env:HOST_245_IP> "systemctl restart llmgo-245.service"
 ```
 
 ### 查看服务版本
 ```bash
-curl http://8.136.114.245:8781/api/system/version
+curl http://<env:HOST_245_IP>:8781/api/system/version
 ```
 
 ---
@@ -81,7 +81,7 @@ curl http://8.136.114.245:8781/api/system/version
 
 ### 连接数据库
 ```bash
-ssh -p 25022 root@8.136.114.245 'PGPASSWORD="***REDACTED***" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway'
+ssh -p 25022 root@<env:HOST_245_IP> 'PGPASSWORD="***REDACTED***" psql -h <env:HOST_252_INTERNAL_IP> -p 5432 -U llm_gateway -d llm_gateway'
 ```
 
 ### 常用查询
@@ -167,7 +167,7 @@ FROM tool_use_requests;
 
 ### Prometheus 端点
 ```
-245: http://8.136.114.245:9090
+245: http://<env:HOST_245_IP>:9090
 154: 待补充
 ```
 
@@ -216,22 +216,22 @@ llm_gateway_survival_resume_blocked_total
 
 ### 1. 查找 malformed SSE frame
 ```bash
-ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service --since '24 hours ago' --no-pager | grep -i 'malformed'"
+ssh -p 25022 root@<env:HOST_245_IP> "journalctl -u llmgo-245.service --since '24 hours ago' --no-pager | grep -i 'malformed'"
 ```
 
 ### 2. 查找 JSON 解析错误
 ```bash
-ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service --since '24 hours ago' --no-pager | grep -i 'json.*fail'"
+ssh -p 25022 root@<env:HOST_245_IP> "journalctl -u llmgo-245.service --since '24 hours ago' --no-pager | grep -i 'json.*fail'"
 ```
 
 ### 3. 查找 survival resume blocked
 ```bash
-ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service --since '24 hours ago' --no-pager | grep -i 'resume_blocked'"
+ssh -p 25022 root@<env:HOST_245_IP> "journalctl -u llmgo-245.service --since '24 hours ago' --no-pager | grep -i 'resume_blocked'"
 ```
 
 ### 4. 统计错误频率
 ```bash
-ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service --since '24 hours ago' --no-pager | grep -E '(ERROR|WARN)' | cut -d' ' -f6- | sort | uniq -c | sort -rn | head -20"
+ssh -p 25022 root@<env:HOST_245_IP> "journalctl -u llmgo-245.service --since '24 hours ago' --no-pager | grep -E '(ERROR|WARN)' | cut -d' ' -f6- | sort | uniq -c | sort -rn | head -20"
 ```
 
 ---
@@ -241,7 +241,7 @@ ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service --since '24 hou
 ### 245 测试环境部署
 ```bash
 # 1. 登录服务器
-ssh -p 25022 root@8.136.114.245
+ssh -p 25022 root@<env:HOST_245_IP>
 
 # 2. 进入部署目录
 cd /opt/llm-gateway-go
@@ -251,7 +251,7 @@ cp gateway gateway.backup.$(date +%Y%m%d_%H%M%S)
 
 # 4. 拉取最新代码（或上传编译好的二进制）
 # git pull && go build ./cmd/gateway
-# 或 scp gateway root@8.136.114.245:/opt/llm-gateway-go/
+# 或 scp gateway root@<env:HOST_245_IP>:/opt/llm-gateway-go/
 
 # 5. 重启服务
 systemctl restart llmgo-245.service
@@ -357,11 +357,11 @@ journalctl -u llmgo-245.service -n 100
 ### 问题 2: 数据库连接失败
 ```bash
 # 测试数据库连接
-PGPASSWORD="..." psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -c "SELECT 1;"
+PGPASSWORD="..." psql -h <env:HOST_252_INTERNAL_IP> -p 5432 -U llm_gateway -d llm_gateway -c "SELECT 1;"
 
 # 检查网络
-ping 172.16.2.210
-telnet 172.16.2.210 5432
+ping <env:HOST_252_INTERNAL_IP>
+telnet <env:HOST_252_INTERNAL_IP> 5432
 ```
 
 ### 问题 3: 高错误率
@@ -370,7 +370,7 @@ telnet 172.16.2.210 5432
 # SQL 查询见上文"错误类型分布"
 
 # 查看最近失败的请求
-ssh -p 25022 root@8.136.114.245 "journalctl -u llmgo-245.service --since '10 minutes ago' | grep -i error | tail -50"
+ssh -p 25022 root@<env:HOST_245_IP> "journalctl -u llmgo-245.service --since '10 minutes ago' | grep -i error | tail -50"
 ```
 
 ---
@@ -389,7 +389,7 @@ cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go
 bash scripts/audit-incomplete-tool-calls.sh
 
 # 远程运行
-ssh -p 25022 root@8.136.114.245 'cd /opt/llm-gateway-go && bash scripts/audit-incomplete-tool-calls.sh'
+ssh -p 25022 root@<env:HOST_245_IP> 'cd /opt/llm-gateway-go && bash scripts/audit-incomplete-tool-calls.sh'
 ```
 
 ---

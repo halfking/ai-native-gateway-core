@@ -67,7 +67,7 @@ INFO CHECKPOINT: model_quality_worker started data_dir=./data/model-quality base
 ### 2. 245测试环境
 
 **配置特点**：
-- 使用245网关地址 (http://10.177.48.245:8787)
+- 使用245网关地址 (http://<env:HOST_245_GATEWAY_IP>:8787)
 - 检测周期24小时
 - 建议使用专用API key
 - 数据存储在服务器目录
@@ -76,15 +76,15 @@ INFO CHECKPOINT: model_quality_worker started data_dir=./data/model-quality base
 
 ```bash
 # 1. SSH到245服务器
-ssh user@10.177.48.245
+ssh user@<env:HOST_245_GATEWAY_IP>
 
 # 2. 执行SQL脚本配置
-psql -h 10.177.48.245 -d llm_gateway -f scripts/setup_model_quality_245.sql
+psql -h <env:HOST_245_GATEWAY_IP> -d llm_gateway -f scripts/setup_model_quality_245.sql
 
 # 3. 配置专用API key（重要！）
 # 首先创建专用API key（用于单独追踪质量测试的token消耗）
 # 然后更新配置
-psql -h 10.177.48.245 -d llm_gateway -c "
+psql -h <env:HOST_245_GATEWAY_IP> -d llm_gateway -c "
 UPDATE settings_kv 
 SET value = '你的专用API_KEY', updated_at = NOW() 
 WHERE key = 'model_quality.api_key';
@@ -95,7 +95,7 @@ mkdir -p /data/llm-gateway/model-quality
 chmod 755 /data/llm-gateway/model-quality
 
 # 5. 验证配置
-psql -h 10.177.48.245 -d llm_gateway -c "
+psql -h <env:HOST_245_GATEWAY_IP> -d llm_gateway -c "
 SELECT key, value, updated_at
 FROM settings_kv 
 WHERE category = 'model_quality' 
@@ -113,7 +113,7 @@ tail -f /var/log/llm-gateway/gateway.log | grep model_quality
 
 **验证清单**：
 - [ ] ✅ `model_quality.enabled` = true
-- [ ] ✅ `model_quality.base_url` = http://10.177.48.245:8787
+- [ ] ✅ `model_quality.base_url` = http://<env:HOST_245_GATEWAY_IP>:8787
 - [ ] ✅ `model_quality.api_key` 已配置（非空）
 - [ ] ✅ 数据目录存在且可写
 - [ ] ✅ 日志中看到 worker started
@@ -123,7 +123,7 @@ tail -f /var/log/llm-gateway/gateway.log | grep model_quality
 ### 3. 154生产环境
 
 **配置特点**：
-- 使用154生产网关地址 (http://10.177.48.154:8787)
+- 使用154生产网关地址 (http://<env:HOST_154_GATEWAY_IP>:8787)
 - 检测周期24小时
 - **必须**使用专用API key
 - 告警阈值更敏感（3%）
@@ -133,10 +133,10 @@ tail -f /var/log/llm-gateway/gateway.log | grep model_quality
 
 ```bash
 # 1. SSH到154服务器
-ssh user@10.177.48.154
+ssh user@<env:HOST_154_GATEWAY_IP>
 
 # 2. 执行SQL脚本配置
-psql -h 10.177.48.154 -d llm_gateway -f scripts/setup_model_quality_154.sql
+psql -h <env:HOST_154_GATEWAY_IP> -d llm_gateway -f scripts/setup_model_quality_154.sql
 
 # 3. ⚠️ 必须配置专用API key
 # 生产环境必须使用专用key，便于:
@@ -145,7 +145,7 @@ psql -h 10.177.48.154 -d llm_gateway -f scripts/setup_model_quality_154.sql
 # - 隔离测试流量
 
 # 创建专用API key
-psql -h 10.177.48.154 -d llm_gateway -c "
+psql -h <env:HOST_154_GATEWAY_IP> -d llm_gateway -c "
 -- 创建专用应用或使用现有测试应用的key
 -- 然后更新配置
 UPDATE settings_kv 
@@ -158,7 +158,7 @@ mkdir -p /data/llm-gateway/model-quality
 chmod 755 /data/llm-gateway/model-quality
 
 # 5. 验证配置（含安全检查）
-psql -h 10.177.48.154 -d llm_gateway -c "
+psql -h <env:HOST_154_GATEWAY_IP> -d llm_gateway -c "
 SELECT 
     key, 
     CASE WHEN key = 'model_quality.api_key' 
@@ -171,7 +171,7 @@ ORDER BY key;
 "
 
 # 6. 生产环境检查清单
-psql -h 10.177.48.154 -d llm_gateway -c "
+psql -h <env:HOST_154_GATEWAY_IP> -d llm_gateway -c "
 SELECT 
     CASE 
         WHEN (SELECT value FROM settings_kv WHERE key = 'model_quality.api_key') = '' 
@@ -194,7 +194,7 @@ tail -f /var/log/llm-gateway/gateway.log | grep model_quality
 
 **生产环境验证清单**：
 - [ ] ✅ `model_quality.enabled` = true
-- [ ] ✅ `model_quality.base_url` = http://10.177.48.154:8787
+- [ ] ✅ `model_quality.base_url` = http://<env:HOST_154_GATEWAY_IP>:8787
 - [ ] ✅ `model_quality.api_key` 已配置专用key（非空）
 - [ ] ✅ `model_quality.alert_threshold` = 3.0 (更敏感)
 - [ ] ✅ 数据目录存在且可写
@@ -271,7 +271,7 @@ grep "X-Gateway-Quality-Test" gateway.log
 | interval_hours | 6 | 24 | 24 |
 | alert_threshold | 5.0 | 5.0 | 3.0 |
 | data_dir | ./data/model-quality | /data/llm-gateway/model-quality | /data/llm-gateway/model-quality |
-| base_url | http://localhost:8787 | http://10.177.48.245:8787 | http://10.177.48.154:8787 |
+| base_url | http://localhost:8787 | http://<env:HOST_245_GATEWAY_IP>:8787 | http://<env:HOST_154_GATEWAY_IP>:8787 |
 | api_key | (空,用系统key) | 专用key | **必须**专用key |
 | test_timeout | 30秒 | 30秒 | 45秒 |
 
@@ -310,7 +310,7 @@ SELECT value FROM settings_kv WHERE key = 'model_quality.base_url';
 
 # 2. 检查API key是否有效
 curl -H "Authorization: Bearer YOUR_API_KEY" \
-     http://10.177.48.245:8787/v1/models
+     http://<env:HOST_245_GATEWAY_IP>:8787/v1/models
 
 # 3. 查看详细错误日志
 cat /data/llm-gateway/model-quality/alerts.log | jq '.'

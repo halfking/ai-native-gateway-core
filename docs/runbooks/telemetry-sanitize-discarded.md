@@ -21,12 +21,12 @@ series）。任何按模型归因的查询必须走 SQL（`request_logs_hot` / `
 
 ## First response：跑 doctor 脚本
 
-在网关主机（245 = `root@8.136.114.245`）上运行调查脚本，它会输出决策树所需的全部
+在网关主机（245 = `root@<env:HOST_245_IP>`）上运行调查脚本，它会输出决策树所需的全部
 证据。DB / Prometheus 地址用环境变量覆盖：
 
 ```bash
-scp scripts/diag/245-minimax-m3-requestlog-investigation.sh root@8.136.114.245:/tmp/diag-245.sh
-ssh root@8.136.114.245
+scp scripts/diag/245-minimax-m3-requestlog-investigation.sh root@<env:HOST_245_IP>:/tmp/diag-245.sh
+ssh root@<env:HOST_245_IP>
 cd /tmp && eval $(python3 -c "
 import re
 url = open('/opt/llm-gateway-go/.env').read()

@@ -26,7 +26,7 @@ After reviewing the existing screenshots in `gui-test-screenshots/` and `docs/sc
 
 **Phase 2 (Follow-up PR within 1 week)**: Add screenshots
 - Set up local demo environment with synthetic data
-- Follow `docs/SCREENSHOT_GUIDE.md` to capture clean screenshots
+- Follow `docs/operations/screenshot-guide.md` to capture clean screenshots
 - Review captures against `docs/assets/SCREENSHOT_AUDIT.md` checklist
 - Submit PR with 5-7 key screenshots
 
@@ -76,9 +76,9 @@ In README and docs, address missing screenshots proactively:
 ```markdown
 ## Screenshots
 
-*Screenshots will be added soon. Follow the [Getting Started Guide](docs/getting-started.md) to see the system in action.*
+*Screenshots will be added soon. Follow the [Getting Started Guide](../getting-started.md) to see the system in action.*
 
-In the meantime, see our [Architecture Diagram](docs/architecture.md#architecture-overview) for system design.
+In the meantime, see our [Architecture Diagram](../architecture.md#architecture-overview) for system design.
 ```
 
 ### Success Metrics

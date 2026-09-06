@@ -54,23 +54,37 @@ See [Getting Started Guide](docs/getting-started.md) for detailed instructions.
 
 ## Screenshots
 
-### Dashboard - Real-time Request Monitoring
+All screenshots are captured from a live local deployment (1728×1050, after full data load).
 
-![Dashboard Default View](docs/assets/screenshots/dashboard-default.png)
-*Real-time request stream with multi-dimensional filtering and provider visibility*
+### Dashboard — Real-Time Request Stream (Queue Perspective)
 
-### Routing Analytics
+![Dashboard Request Stream](docs/assets/screenshots/dashboard-request-stream.png)
+*Live request stream grouped by processing queue, with dispatch-chain stats (in-flight, p50/p95 latency, node availability) and per-model node health*
 
-![Routing V2 Dashboard](docs/assets/screenshots/routing-v2-dashboard.png)
-*Routing analytics with credential health monitoring and decision tracking*
+### Routing Panorama — Two-Layer Routing Analytics
 
 ![Routing Panorama](docs/assets/screenshots/routing-panorama.png)
-*Routing overview showing system-wide request flow*
+*L1 model selection (task classification → 6-dimension scoring) + L2 credential selection (tier fallback → billing round → P2C scoring), with task×model heatmap and Sankey flow (task → model → provider)*
 
-### Request Detail
+### Credential Monitor
 
-![Request Detail Drawer](docs/assets/screenshots/request-detail-drawer.png)
-*Detailed request inspection with processing pipeline visualization*
+![Credential Monitor](docs/assets/screenshots/credential-monitor.png)
+*64 upstream credentials with availability state (ready/suspended/disabled), health grade, model coverage, success rate, and concurrency slots*
+
+### Work-Type Configuration
+
+![Work Types](docs/assets/screenshots/work-types.png)
+*Task auto-classification (10 work types) with 24h distribution, top models, and routing decision stats*
+
+### Free Resource Pool
+
+![Free Pool](docs/assets/screenshots/free-pool.png)
+*Free-model resource pool: bring-your-own keys, provider templates (Groq, Google AI Studio, OpenRouter, SiliconFlow, Zhipu), and per-model routing priority*
+
+### Request Session Detail
+
+![Request Detail](docs/assets/screenshots/request-detail.png)
+*Full request inspection: Q&A replay, dispatch waterfall, routing & retry trail, trace, compression/masking record (note the masked API key `sk-****`), token & cache stats*
 
 ---
 
@@ -84,13 +98,26 @@ See [Getting Started Guide](docs/getting-started.md) for detailed instructions.
 - **Rate Limiting**: Token-based quotas (TPM/RPM) with Redis-backed enforcement
 - **Audit Trail**: Request/response logging to PostgreSQL with sensitive data masking
 
-### Intelligent Routing
+### Intelligent Routing (Two-Layer)
 
-- **Sticky Sessions**: Session-to-credential binding for conversation continuity
-- **Health-Based**: Automatic failover when providers degrade
-- **Tier Fallback**: Primary → Secondary → Tertiary credential routing
-- **Billing-Aware**: Prefer metered/free/quota credentials based on policy
-- **P2C Scoring**: Power-of-Two-Choices with latency and success rate
+- **L1 — Model Selection**: Prompt is auto-classified into work types (code generation, conversation, summarization…), then scored across 6 dimensions to lock a model profile — configurable per work type in the admin UI
+- **L2 — Credential Selection**: model resolution → tier fallback (primary → secondary → tertiary) → billing-round preference → P2C scoring (latency + success rate) → execute / circuit-break
+- **Sticky Sessions**: session-to-credential binding for conversation continuity across model switches
+- **Health-Aware Dynamic Switching**: credentials are automatically degraded (rate-limited, cooling down, unreachable) and recovered based on rolling success rates and probe results — traffic shifts to healthy candidates without manual intervention
+- **Hot Configuration**: routing policies, prompt-budget limits, and work-type settings reload at runtime (~5s) — no restart required
+
+### Intelligent Context Compression
+
+- **Automatic Prompt Compression**: when a request approaches the provider's actual context window (default trigger at ~80%), message-level compression runs before dispatch — long agent sessions fit smaller windows instead of failing
+- **Configurable Budget**: gateway-wide prompt acceptance limit (`gateway.max_prompt_tokens`, hot-reloadable) plus per-model context-window overrides
+- **Transparent Audit**: every compression event is recorded on the request (strategy, threshold, before/after sizes) and visible in the request detail view
+- **Multi-Mode Strategies**: selector pipeline per dispatch mode, with a forced-compression path for oversized bodies
+
+### Security & Data Masking
+
+- **Secret Masking**: API keys and tokens (OpenAI `sk-…`, Anthropic `sk-ant-…`, AWS `AKIA…`, generic Bearer / `x-api-key` headers) are masked in logs, session summaries, and archived request bodies before they hit storage
+- **Encrypted Credentials**: upstream provider keys are encrypted at rest (Fernet/AES) and shown masked (`sk-****`) in the UI
+- **Audit Trail**: full request/response logging with sensitive-field masking, OpenTelemetry + Prometheus integration
 
 ### Multi-Tenancy
 
@@ -137,11 +164,27 @@ See [Architecture Documentation](docs/architecture.md) for details.
 
 ## Deployment Modes
 
+AI Native Gateway supports both **full production stacks** and a **minimal single-machine local deployment**:
+
+### Full Deployment (production)
+
 | Mode | Description | Status |
 |------|-------------|--------|
 | **Docker Compose** | Quick start with included PostgreSQL/Redis | ✅ Recommended for evaluation |
 | **Binary + systemd** | Production deployment on Linux hosts | ✅ Supported with installer |
 | **Kubernetes** | Deployment + ConfigMap + Service manifests | ⚠️ Test-grade (not production-validated) |
+
+**Production stack**: Gateway + PostgreSQL 14+ (durable state, RLS) + Redis 7+ (hot state, rate limits) + embedded admin UI, with optional Prometheus/Grafana monitoring. Requires TLS termination, secrets management, and backups.
+
+### Local Minimal Deployment (single machine)
+
+Everything runs on one machine with one command — no external services to provision:
+
+```bash
+docker compose -f docker-compose.quickstart.yml up -d
+```
+
+This brings up PostgreSQL + Redis + the gateway (with embedded admin UI) as a self-contained local stack with persistent volumes and health checks. It is the same binary and schema as production — moving to production means pointing at managed PostgreSQL/Redis and adding TLS, not changing configuration semantics.
 
 **Production Requirements**:
 - External PostgreSQL 14+ and Redis 7+
@@ -205,11 +248,14 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 ## Documentation
 
 - [Getting Started](docs/getting-started.md) - Deploy in 10 minutes
+- [Project Overview](docs/PROJECT_OVERVIEW.md) - Features and module map
 - [Architecture Overview](docs/architecture.md) - System design and components
-- [Configuration Reference](docs/configuration.md) - Environment variables and settings
-- [API Documentation](docs/api/) - Data plane and admin API specs
+- [Environment & Configuration](docs/environment.md) - Deployment environments and variables
+- [API Documentation](docs/03-design/01-architecture/architecture/API.md) - Data plane and admin API specs
+- [Quick Reference](docs/QUICK_REFERENCE.md) - Common commands, endpoints, troubleshooting
 - [Comparison](docs/comparison.md) - vs LiteLLM, Portkey, Kong
-- [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
+- [Troubleshooting](docs/troubleshooting/) - Common issues and solutions
+- [Documentation Index](docs/INDEX.md) - Full docs navigation
 
 ---
 

@@ -54,7 +54,7 @@
 ### 245 binary 行为 regression（关键）
 245 上 build 1568 / 8f60c033 binary 应与 HEAD 一致，但 model=auto 行为是 fallback（decider 返回 nil wire，handler.go:2614 else 分支只设 `IsAutoRequest=true`，不写 `X-Gw-Auto-Decision`）。已验证：
 - DB v_routable_credential_models view 认可 `id=17 is_routable=t`
-- gateway 真连 172.16.2.210:5432 (user `llm_gateway`)
+- gateway 真连 <env:HOST_252_INTERNAL_IP>:5432 (user `llm_gateway`)
 - cache_state="expired" → db_empty, plan_count=0
 
 可能原因（需 245 维护者查）：

@@ -37,7 +37,7 @@
 
 ```bash
 # 252服务器
-psql -h 192.168.1.252 -U postgres -d llm_gateway \
+psql -h <env:LAN_GATEWAY_IP> -U postgres -d llm_gateway \
   -f deploy/sql/migrations/2026-07-26-provider-profile-system.sql
 
 # 本地Docker

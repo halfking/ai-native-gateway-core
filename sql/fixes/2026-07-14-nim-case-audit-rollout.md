@@ -152,7 +152,7 @@ PGPASSWORD=xxx psql -v ON_ERROR_STOP=1 -f sql/migrations/startup/397_runtime_log
 (`REMOTE_MODE=1` + `docker exec pg-252-pg17`)；由人工 / 部署脚本触发：
 
 ```bash
-ssh root@115.29.212.252 "set -a; . /opt/pms-dev/.runtime-secrets/infra.env; set +a; \
+ssh root@<env:HOST_252_IP> "set -a; . /opt/pms-dev/.runtime-secrets/infra.env; set +a; \
   bash /tmp/check-nvidia-nim-outbound-model-id-drift.sh"
 ```
 

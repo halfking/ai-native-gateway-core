@@ -5,20 +5,20 @@
 
 ## 1. 做了什么
 
-1. **服务端信息**：SSH `14.103.112.184:25022` → `<env:HOST_154>:25022`；
+1. **服务端信息**：SSH `<env:HOST_184_IP>:25022` → `<env:HOST_154>:25022`；
    默认用户 `admin` → `root`；明文密码 `__REDACTED_SSH_PASSWORD__` / `__REDACTED_SSH_PASSWORD__`
    → `<env:SSHPASS>` 占位符。
 2. **数据库配置**：移除"通过 SSH 隧道连 127.0.0.1"叙述，改"直连 252 内网"；
    `postgres` 用户 → `<env:COMMON_PG_SUPERUSER>` (= `llm_gateway`)；
    新增 `<env:COMMON_PG_SUPERUSER_PASS>` 密码占位。
-3. **服务器部署命令示例**：`ssh admin@14.103.112.184` + `sudo su -` + 明文 root 密码
+3. **服务器部署命令示例**：`ssh admin@<env:HOST_184_IP>` + `sudo su -` + 明文 root 密码
    → `ssh -i <env:SSH_KEY_154> root@<env:HOST_154>` + sshpass -e fallback。
 4. **数据库操作示例**：移除 SSH tunnel 步骤，改为 `PGPASSWORD=<env:COMMON_PG_SUPERUSER_PASS> psql ...`，
    并附 `.pgpass` 推荐写法（env-injector 注入一次后 psql 自动读取）。
 5. **文件头警告**：原"包含敏感信息，请勿提交到公共仓库"（与"文件已在仓内"自相矛盾）
    → 改为 "<env:KEY> 占位符 + env-injector/loader.sh 注入"提示。
 6. **服务单元名修正**（附带）：`llm-gateway` → `llm-gateway-go.service`
-   （与 `servers/47.97.111.154/metadata.yaml:19` SSOT 一致；之前命令会得到
+   （与 `servers/<env:HOST_154_IP>/metadata.yaml:19` SSOT 一致；之前命令会得到
    `Unit llm-gateway.service could not be found`）。
 
 ## 2. 改动清单
@@ -42,13 +42,13 @@
   走过，但当前文件未同步。
 - **rule 47 互引**：占位符 `<env:HOST_154>` / `<env:SSHPASS>` / `<env:COMMON_PG_*>` 全部对应
   `~/workspace/ai-native-tools/envs/` SSOT（`common/ssh-keys.yaml`、`common/database.yaml`、
-  `servers/47.97.111.154/metadata.yaml`），实现"代码引用占位符，env-injector 解析真值"。
+  `servers/<env:HOST_154_IP>/metadata.yaml`），实现"代码引用占位符，env-injector 解析真值"。
 - **附带单元名修正**：与 SSOT 一致性（避免命令失败误导后续会话）。
 
 ## 4. 验证结果
 
 - **占位符 SSOT 对账**（rule 47 §6.5 + rule 49）：
-  - `<env:HOST_154>` ↔ `envs/servers/47.97.111.154/metadata.yaml:1` ✓
+  - `<env:HOST_154>` ↔ `envs/servers/<env:HOST_154_IP>/metadata.yaml:1` ✓
   - `<env:SSH_KEY_154>` ↔ `envs/common/ssh-keys.yaml:4` (`~/.ssh/id_ed25519`) ✓
   - `<env:SSHPASS>` ↔ `envs/common/ssh-keys.yaml:9` (`SSH_PASSWORD_ENV_VAR: SSHPASS`) ✓
   - `<env:COMMON_PG_HOST_252>` / `_PORT_252` / `_SUPERUSER` / `_SUPERUSER_PASS`

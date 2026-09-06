@@ -43,7 +43,7 @@
 | 类别 | 文件 | 原因 |
 |------|------|------|
 | 迁移说明本身 | `PROJECT_CONFIG.md:22` | `154 = llm.kxpms.cn / llmgo.kxpms.cn 生产网关（2026-07 替换原 184 server，rule 31 §1）` — 记录迁移历史 |
-| 脱敏工具自身 | `scripts/redact-docs.py` (含 `pub_ip 14.103.112.184`) | 脱敏替换表，**必须**保留 IP 才能识别 |
+| 脱敏工具自身 | `scripts/redact-docs.py` (含 `pub_ip <env:HOST_184_IP>`) | 脱敏替换表，**必须**保留 IP 才能识别 |
 | 脱敏替换表 | `scripts/scan-secrets.replacements` | git filter-repo 替换表，**必须**保留 |
 | 历史归档（rule 36）| `docs/archive/**`、`docs/.archive-backup-20260817-190606/` | rule 36 归档后禁止修改 |
 | 历史 changelog 段 | `CHANGELOG.md` 历史段、`docs/changelogs/2026-08-18-*` | rule 36 保留原状 |
@@ -55,7 +55,7 @@
 
 ## 5. 验证
 
-- [x] `grep -rln "14.103.112.184"` 在 active docs 中仅剩 CHANGELOG/DEPLOYMENT_PLAN/RETIRED（合规豁免）
+- [x] `grep -rln "<env:HOST_184_IP>"` 在 active docs 中仅剩 CHANGELOG/DEPLOYMENT_PLAN/RETIRED（合规豁免）
 - [x] `grep -rln "184 server|/184\b|aliyun-184|production-184"` 在 active docs 中仅剩 CHANGELOG/PROJECT_CONFIG/scripts 注释（合规豁免）
 - [x] `git diff --stat` 12 处变更
 - [x] `file` UTF-8 校验（rule 43 §2.1）

@@ -7,7 +7,7 @@
 ## 1. 背景
 
 2026-08-18 OpenCode 完成 PROJECT_CONFIG.md redact（commit `d7ebf25f7`），但
-后续 sweep 发现 3 个**当前活跃文档**仍含旧 184 server（14.103.112.184）引用，
+后续 sweep 发现 3 个**当前活跃文档**仍含旧 184 server（<env:HOST_184_IP>）引用，
 不符合 rule 39"仓库内零明文"原则。本会话把这 3 处修掉。
 
 历史归档（`docs/archive/**` + `CHANGELOG.md` + `docs/changelogs/2026-08-18-*`）
@@ -19,7 +19,7 @@
 |---|------|-----|---------|------|
 | 1 | `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md` | 19 | .env 文件名 | `.env.184.enc` → `.env.154.enc` |
 | 2 | `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md` | 20 | .env 文件名 | `.env.71.enc` → `.env.252.enc` |
-| 3 | `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md` | 130 | 公网 IP 占位符示例 | `14.103.112.184` → `<env:HOST_154>` |
+| 3 | `docs/06-deployment/01-environments/deployment/CONFIGURATION_GUIDE.md` | 130 | 公网 IP 占位符示例 | `<env:HOST_184_IP>` → `<env:HOST_154>` |
 | 4 | `cmd/compression-bench/README.md` | 212-220 | 连接 K8s DB 端口转发示例 | 184 → 252 (PG17)，端口 18432 → 25232，DSN 走 `<env:LLM_GATEWAY_DB_PASS>` |
 | 5 | `cmd/verify-model-fetch/main.go` | 4 | 注释 host 说明 | `71/184` → `154/252` |
 

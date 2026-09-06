@@ -2,7 +2,6 @@
 
 > 维护方：llm-gateway-go 维护者
 > ACC 主规格：[`../../../official-deploy/services/agent-control-center/docs/其它模块需求/SPEC-LG-001-llm-gateway-go.md`](../../../official-deploy/services/agent-control-center/docs/其它模块需求/SPEC-LG-001-llm-gateway-go.md)
-> llm-gateway-go 视角总纲：[`../plan.md`](../plan.md)
 
 本文档是 ACC SPEC-LG-001 在 llm-gateway-go 视角的镜像。
 

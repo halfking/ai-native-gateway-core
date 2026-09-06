@@ -185,7 +185,7 @@ printf '%s' 'Bearer <token>' | \
 1. 部署代码到 245:
    ```bash
    # 245 上执行（需先 SSH）
-   ssh root@8.136.114.245
+   ssh root@<env:HOST_245_IP>
    cd /opt/llm-gateway-go
    git pull origin main
    # 编译 + 重启服务（按 245 现有部署脚本）
@@ -193,7 +193,7 @@ printf '%s' 'Bearer <token>' | \
 
 2. 重载 245 nginx:
    ```bash
-   ssh root@8.136.114.245
+   ssh root@<env:HOST_245_IP>
    nginx -t && systemctl reload nginx
    ```
 
@@ -219,7 +219,7 @@ printf '%s' 'Bearer <token>' | \
 **阶段 2: 154 生产灰度**
 1. 同样流程部署到 154:
    ```bash
-   ssh root@47.97.111.154
+   ssh root@<env:HOST_154_IP>
    cd /opt/llm-gateway-go
    git pull origin main
    # 编译 + 重启服务
@@ -227,7 +227,7 @@ printf '%s' 'Bearer <token>' | \
 
 2. 重载 154 nginx:
    ```bash
-   ssh root@47.97.111.154
+   ssh root@<env:HOST_154_IP>
    nginx -t && systemctl reload nginx
    ```
 

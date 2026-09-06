@@ -168,7 +168,7 @@ ON CONFLICT (canonical_name) DO UPDATE SET
 
 1. **建立 SSH 隧道**:
    ```bash
-   export SSHPASS='Kaixuan2026&#*9527'
+   export SSHPASS='<env:SSHPASS>'
    sshpass -e ssh -p 25022 -f -N -L 15432:172.16.2.210:5432 root@115.29.212.252
    ```
 

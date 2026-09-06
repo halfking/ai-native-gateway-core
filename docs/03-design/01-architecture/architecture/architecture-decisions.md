@@ -268,8 +268,8 @@ func LearnFromError(credential Credential, error APIError) {
 
 ## 背景
 
-2026-07-11 收到运营任务：把 `llm.kxpms.cn` 的域名 + 证书从 154 (老网关, 47.97.111.154) 接管到 252 (NPS 服务器, 115.29.212.252)，
-通过内网把请求转回 154 后端的 llm-gateway-go:8781 (172.16.2.209:8781)。
+2026-07-11 收到运营任务：把 `llm.kxpms.cn` 的域名 + 证书从 154 (老网关, <env:HOST_154_IP>) 接管到 252 (NPS 服务器, <env:HOST_252_IP>)，
+通过内网把请求转回 154 后端的 llm-gateway-go:8781 (<env:HOST_154_INTERNAL_IP>:8781)。
 
 约束：
 1. 必须使用 154 已有的 LE 证书（含 llm.kxpms.cn SAN），不重复申请
@@ -284,18 +284,18 @@ func LearnFromError(credential Credential, error APIError) {
               llm.kxpms.cn ──────────┐
                                       ▼
                   ┌───────────────────────────────────┐
-                  │ Aliyun 252 (115.29.212.252)      │
+                  │ Aliyun 252 (<env:HOST_252_IP>)      │
                   │ nps + nginx (kxpms-on-252.conf)  │
                   └────────────┬──────────────────────┘
                                │ HTTPS terminate
                                │ (cert: /etc/letsencrypt/live/kxpms.cn/fullchain.pem)
                                │ 252 nginx :9443 server { server_name llm.kxpms.cn; }
                                ▼
-                  upstream kxpms_llm_backend → http://172.16.2.209:8781
+                  upstream kxpms_llm_backend → http://<env:HOST_154_INTERNAL_IP>:8781
                                │
                                ▼
                   ┌───────────────────────────────────┐
-                  │ Aliyun 154 (47.97.111.154)        │
+                  │ Aliyun 154 (<env:HOST_154_IP>)        │
                   │ nginx 1.26.1 + llm-gateway-go    │
                   │ :443 llm.kxpms.cn (its own path) │
                   │ :8781 llm-gateway-go native       │

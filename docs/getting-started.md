@@ -89,13 +89,13 @@ curl http://localhost:8781/v1/chat/completions \
   }'
 ```
 
-**Note**: You need to configure upstream provider credentials before requests succeed. See [Configuration](configuration.md).
+**Note**: You need to configure upstream provider credentials before requests succeed. See [Environment & Configuration](environment.md).
 
 ### 6. Access Admin UI
 
 Open http://localhost:8781/admin in your browser.
 
-Default admin credentials are not set in quick start mode. See [Admin Setup](admin-setup.md) for creating the first admin user.
+Default admin credentials are not set in quick start mode. See [Quick Reference](QUICK_REFERENCE.md) for creating the first admin user.
 
 ## Next Steps
 
@@ -149,10 +149,10 @@ This quick start is **not production-ready**. For production:
 - Enable TLS/HTTPS
 - Configure proper secrets management
 - Set up backups and monitoring
-- Review [Production Deployment Guide](deployment/production.md)
+- Review [Production Deployment](deployment/)
 
 ## Support
 
-- [Troubleshooting Guide](troubleshooting.md)
-- [Configuration Reference](configuration.md)
+- [Troubleshooting](troubleshooting/)
+- [Environment & Configuration](environment.md)
 - [GitHub Issues](https://github.com/halfking/ai-native-gateway-core/issues)

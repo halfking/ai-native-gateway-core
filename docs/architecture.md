@@ -85,20 +85,45 @@ Handles all user-facing LLM requests with OpenAI/Anthropic/Responses/Gemini comp
 
 **Location**: `domains/streaming/executors/`
 
-**Routing Strategy**:
-1. **L1 - Model Selection**: Task classification → Model profile matching
-2. **L2 - Credential Selection**: 
-   - Availability filter (health status, admin_protected)
-   - Tenant and protocol compatibility
-   - Tier-based fallback (primary → secondary → tertiary)
-   - Billing mode preference (metered → free → quota)
-   - Sticky sessions (session_id → credential binding)
-   - P2C scoring (latency, success rate, concurrency)
+Requests flow through **two routing layers**, both observable in the Routing Panorama admin page:
+
+**L1 — Model Selection** (which model should serve this request?):
+1. Prompt auto-classification into **work types** (code generation, conversation, summarization, translation, CRM follow-up, …) — 10 built-in types, configurable per type in the admin UI
+2. **6-dimension scoring** of candidate models against the classified task
+3. Model profile locking (explicit `model` parameters bypass L1)
+
+**L2 — Credential Selection** (which upstream credential executes it?):
+1. Availability filter (health status, admin protection)
+2. Tenant and protocol compatibility
+3. **Tier-based fallback** (primary → secondary → tertiary credentials)
+4. Billing mode preference (metered → free → quota)
+5. **Sticky sessions** (session → credential binding, survives model switches)
+6. **P2C scoring** (Power-of-Two-Choices over latency, success rate, concurrency)
+
+**Dynamic switching**: credential health is continuously scored from rolling request outcomes and background probes. Failing credentials are automatically degraded (rate-limited / cooling down / unreachable → suspended) and traffic shifts to healthy candidates; recovery is automatic after cooldown. Routing policies and settings hot-reload at runtime (~5s) without restarts.
 
 **Current Status**:
-- ✅ Availability, tenant, protocol, tier, billing, sticky, P2C baseline
+- ✅ Work-type classification, availability, tenant, protocol, tier, billing, sticky, P2C baseline
+- ✅ Health-aware degradation/recovery, hot config reload
 - 🚧 Cost/quality/context-aware scoring (shadow mode, not default active)
 - 🔬 Advanced bandit algorithms (exploration phase)
+
+### Intelligent Context Compression
+
+**Location**: `domains/streaming/executors/compression_strategy.go`
+
+- **Trigger**: when the resolved prompt approaches the target model's actual context window (~80% by default), or when the body exceeds the gateway prompt budget
+- **Action**: message-level compression strategies run before dispatch — long agent sessions fit into smaller context windows instead of failing with context-length errors
+- **Budget controls**: gateway-wide `gateway.max_prompt_tokens` (hot-reloadable, ~5s) plus per-model context-window overrides
+- **Audit**: every compression is recorded on the request (strategy, threshold trigger, before/after token counts) and displayed in the request detail view
+
+### Security & Data Masking
+
+**Location**: `domains/secretmask/`
+
+- **Secret masking**: API keys and tokens are masked before persistence — OpenAI (`sk-…`), Anthropic (`sk-ant-…`), AWS (`AKIA…`), generic Bearer tokens, and `x-api-key` header forms; applied to request logs, session summaries, and archived request/response bodies
+- **Encrypted credentials**: upstream provider keys are encrypted at rest (Fernet/AES) and rendered masked (`sk-****`) in the admin UI
+- **Multi-tenancy**: PostgreSQL Row-Level Security on 38+ tables; cross-tenant reads return not-found rather than forbidden (no information leak)
 
 ### Multi-Tenancy
 
@@ -158,14 +183,15 @@ All queries automatically enforce `tenant_id` filtering at database level.
 
 | Mode | Description | Status |
 |------|-------------|--------|
-| **M1** | Binary + systemd | ✅ CURRENT (with installer) |
+| **Minimal local** | Single machine: Docker Compose with PostgreSQL + Redis + gateway | ✅ CURRENT (`docker-compose.quickstart.yml`) |
+| **M1** | Binary + systemd (external PG/Redis) | ✅ CURRENT (with installer) |
 | **M2** | Docker Compose | ✅ CURRENT (quickstart provided) |
 | **M3** | Kubernetes deployment/sidecar | ✅ PARTIAL (test-grade manifests) |
 | **M4** | Kubernetes Operator (CRD) | 🔬 TARGET (not implemented) |
 
-**Quick Start**: `docker-compose.quickstart.yml` includes PostgreSQL, Redis, and gateway.
+**Local minimal deployment**: `docker-compose.quickstart.yml` brings up PostgreSQL, Redis, and the gateway (with embedded admin UI) as a self-contained single-machine stack with persistent volumes and health checks.
 
-**Production**: Requires external PostgreSQL/Redis, TLS, secrets management, backups. See [Production Deployment](deployment/production.md).
+**Production**: Requires external PostgreSQL/Redis, TLS, secrets management, backups. See [Production Deployment](deployment/).
 
 ## Security Architecture
 
@@ -218,7 +244,7 @@ All queries automatically enforce `tenant_id` filtering at database level.
 ## Further Reading
 
 - [Getting Started](getting-started.md) - Deploy in 10 minutes
-- [Configuration Reference](configuration.md) - Environment variables and settings
-- [Routing Details](routing.md) - Deep dive into routing logic
-- [Multi-Tenancy](multi-tenancy.md) - RLS and tenant isolation
+- [Environment & Configuration](environment.md) - Environment variables and settings
+- [Routing Analytics](deployment/routing-analytics-mv-deployment-guide.md) - Deep dive into routing logic
+- [Project Overview](PROJECT_OVERVIEW.md) - RLS and tenant isolation
 - [API Documentation](api/) - Admin and data plane APIs

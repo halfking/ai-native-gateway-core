@@ -243,10 +243,10 @@ cd /path/to/llm-gateway-go-3
 go build -o llm-gateway-go cmd/gateway/main.go
 
 # 2. 上传到154
-scp -P 25022 llm-gateway-go root@47.97.111.154:/tmp/
+scp -P 25022 llm-gateway-go root@<env:HOST_154_IP>:/tmp/
 
 # 3. 备份当前版本
-ssh root@47.97.111.154 -p 25022 "
+ssh root@<env:HOST_154_IP> -p 25022 "
   systemctl stop llm-gateway-go
   cp /usr/local/bin/llm-gateway-go /usr/local/bin/llm-gateway-go.bak.$(date +%Y%m%d)
   mv /tmp/llm-gateway-go /usr/local/bin/
@@ -255,7 +255,7 @@ ssh root@47.97.111.154 -p 25022 "
 "
 
 # 4. 查看日志
-ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go -f" | grep timeout
+ssh root@<env:HOST_154_IP> -p 25022 "journalctl -u llm-gateway-go -f" | grep timeout
 ```
 
 **预期日志**：
@@ -269,7 +269,7 @@ INFO using TimeoutConfigAdapter from Phase 2
 
 ```bash
 # 1. 修改数据库配置
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway -c "
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway -c "
 UPDATE system_settings 
 SET value='120' 
 WHERE key='timeout.upstream_base_seconds';
@@ -291,7 +291,7 @@ INFO timeout config reloaded from DB updated=13 mode=adaptive base_timeout=120 c
 
 ```bash
 # 查询最近1小时的请求
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway <<'EOF'
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway <<'EOF'
 SELECT 
     request_id,
     effective_timeout_seconds,
@@ -329,7 +329,7 @@ WARN timeout config disabled (no DB), using static timeout from env
 **排查**：
 ```bash
 # 检查数据库连接
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway -c "SELECT 1;"
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway -c "SELECT 1;"
 
 # 检查system_settings表
 psql ... -c "SELECT * FROM system_settings WHERE category='timeout';"

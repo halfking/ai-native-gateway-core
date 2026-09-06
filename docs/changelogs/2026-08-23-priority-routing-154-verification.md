@@ -18,7 +18,7 @@
 | binary 路径 | `/opt/llm-gateway-go/current/llm-gateway-go` |
 | service | `llm-gateway-go.service` active |
 | env | `/etc/llm-gateway-go/env`（与 `secrets.env` 一致）|
-| PG | 阿里云 252 上 PG `pg-252-pg17`，DSN 指向 `172.16.2.210:5432` |
+| PG | 阿里云 252 上 PG `pg-252-pg17`，DSN 指向 `<env:HOST_252_INTERNAL_IP>:5432` |
 
 迁移 `568_credential_priority_flag.sql` 在 154 PG 已生效（`credential_model_bindings.priority boolean NOT NULL DEFAULT false` 存在）。无需重跑。
 

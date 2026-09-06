@@ -197,7 +197,7 @@ $ curl -s 'https://llmgo.kxpms.cn/api/admin/request-detail/9d0735a9...?omit_body
 {"source":"request_logs","persistence":"persisted","meta":{...}} # 200 OK, 17ms
 
 # Views exist
-$ psql -h 10.20.6.252 -U llmgw_admin -d llmgw -c "SELECT viewname FROM pg_views WHERE viewname LIKE '%_with_current_month';"
+$ psql -h <env:HOST_252_DB_IP> -U llmgw_admin -d llmgw -c "SELECT viewname FROM pg_views WHERE viewname LIKE '%_with_current_month';"
  request_logs_with_current_month
  request_logs_bodies_with_current_month
  session_turns_with_current_month

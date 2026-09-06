@@ -235,7 +235,7 @@ PG_DB="llm_gateway"
 **注意**: 需要先建立 SSH tunnel:
 
 ```bash
-export SSHPASS='Kaixuan2026&#*9527'
+export SSHPASS='<env:SSHPASS>'
 sshpass -e ssh -f -N -o ServerAliveInterval=30 \
   -L 15432:172.16.2.210:5432 \
   -p 25022 root@115.29.212.252
@@ -261,7 +261,7 @@ PG_DB="llm_gateway"
 pg_isready -h 192.168.31.8 -p 30432
 
 # 2. 建立 SSH tunnel (252)
-export SSHPASS='Kaixuan2026&#*9527'
+export SSHPASS='<env:SSHPASS>'
 sshpass -e ssh -f -N -L 15432:172.16.2.210:5432 -p 25022 root@115.29.212.252
 
 # 3. 执行同步

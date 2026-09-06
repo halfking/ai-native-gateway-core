@@ -165,7 +165,7 @@ WHERE provider_id = 587;
 **1. 从 245 同步正确的密钥**
 ```bash
 # 获取 245 的密钥
-ssh -p 25022 root@8.136.114.245 \
+ssh -p 25022 root@<env:HOST_245_IP> \
   'grep CREDENTIAL_ENCRYPTION_KEY /opt/llm-gateway-go/.env'
 
 # 写入本地 .env.local
@@ -334,7 +334,7 @@ ssh root@<server> "cd /opt/llm-gateway-go && ./scripts/verify_credential_decrypt
 ## 六、相关资源
 
 - [本地部署指南](../deployment/local-deployment-guide.md) - 密钥配置详细说明
-- [2026-09-05 Provider 587 事故审计报告](../../AUDIT_CREDENTIAL_DECRYPT_FIX_20260905.md) - 完整事故复盘
+- [2026-09-05 Provider 587 事故审计报告](../audit/2026-09-05-credential-decrypt-fix-audit.md) - 完整事故复盘
 - [.env.local.example](../../.env.local.example) - 环境变量配置模板
 - 代码修复: commit `0145f46d0` (2026-09-05)
 

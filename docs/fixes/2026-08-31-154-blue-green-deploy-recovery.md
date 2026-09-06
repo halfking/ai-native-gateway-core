@@ -1,6 +1,6 @@
 # env 154 blue-green 部署失败现场恢复 + 627 columnar-safe 重写（2026-08-31）
 
-**环境**：env 154 (47.97.111.154:25022)　**端点**： `http://127.0.0.1:8782`　**单元**：`llm-gateway-go-canary@8782.service`
+**环境**：env 154 (<env:HOST_154_IP>:25022)　**端点**： `http://127.0.0.1:8782`　**单元**：`llm-gateway-go-canary@8782.service`
 
 ## 事件
 

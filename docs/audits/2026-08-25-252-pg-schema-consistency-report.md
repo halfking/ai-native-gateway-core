@@ -8,8 +8,8 @@
 ## 时间与上下文
 
 - 扫描时间：2026-08-25 16:47 (CST)
-- 目标：阿里云 252 服务器 (8.136.114.245 → SSH tunnel → 115.29.212.252:25022)
-- PG 实例：pg-252-pg17 (kx-citus-pg17:amd64)，监听 172.16.2.210:5432
+- 目标：阿里云 252 服务器 (<env:HOST_245_IP> → SSH tunnel → <env:HOST_252_IP>:25022)
+- PG 实例：pg-252-pg17 (kx-citus-pg17:amd64)，监听 <env:HOST_252_INTERNAL_IP>:5432
 - 数据库：llm_gateway
 - 当前分支：fix-154-current-deploy @ e5724f5af
 - 角色：kxuser（只读，无 _hot 权限）→ 切 llm_gateway
@@ -266,11 +266,11 @@ hot 表多了 5 个 token 字段（audio/image/video/reasoning/provider），par
 
 ```bash
 # 1. 在 252 上确认 603、604 已生效
-ssh -p 25022 root@115.29.212.252 docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c \
+ssh -p 25022 root@<env:HOST_252_IP> docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c \
   "SELECT version, description, applied_at FROM schema_migrations WHERE version IN ('603','604')"
 
 # 2. 验证 promote 函数能正常工作（事务包裹）
-ssh -p 25022 root@115.29.212.252 docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c \
+ssh -p 25022 root@<env:HOST_252_IP> docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway -c \
   "BEGIN; SELECT promote_request_logs_hot_to_partition('7 days'::interval, 100); ROLLBACK;"
 ```
 

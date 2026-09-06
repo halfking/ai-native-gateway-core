@@ -30,10 +30,10 @@ services:        llm-gateway-go (systemd, port 8781)
 2. 154 自动起来 (`systemd default target`)
 3. `systemctl is-active llm-gateway-go nginx` 都应 `active`
 4. `curl -sS http://127.0.0.1:8781/healthz` 应返回 200 + `2.4.7-...`
-5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `172.16.2.209:8781` (=154)，**不是** 245。如果发现还是 245，跑：
+5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `<env:HOST_154_INTERNAL_IP>:8781` (=154)，**不是** 245。如果发现还是 245，跑：
 6. `systemctl show nginx | grep '^Restart='` → 必须 `Restart=always`（vendor unit 默认无，OOM 后不自愈；详见 changelog 2026-08-19）
    ```bash
-   ssh 252 'sed -i "s|server 172.16.2.241:8781 max_fails=2 fail_timeout=5s;|server 172.16.2.209:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
+   ssh 252 'sed -i "s|server <env:HOST_245_INTERNAL_IP>:8781 max_fails=2 fail_timeout=5s;|server <env:HOST_154_INTERNAL_IP>:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
    ssh 252 'nginx -t && nginx -s reload'
    ```
 
@@ -118,7 +118,7 @@ ssh 154 '
 - **`/etc/nginx/conf.d/llm-kxpms-cn.conf:27,28`** 仍有两个 `protocol options redefined` 警告 (重复 listen 80 + 443 + IPv4/IPv6)，不影响 serve。
   是 nginx 老问题，可在下次 maintain 时一起改。
 - **`/etc/nginx/conf.d/kxpms-cn-auth.conf:13,14, kxpms-cn-www.conf:13,14`** 警告是其他 service conf，不归 154 管。
-- **252 nginx kxpms-on-252.conf 现在 upstream 指向 172.16.2.209:8781 (154)**。如果 154 down，fallback 是 252 → 252 → 154 自然错误，不会 fallback 到 245 (除非手动改 nginx conf)。
+- **252 nginx kxpms-on-252.conf 现在 upstream 指向 <env:HOST_154_INTERNAL_IP>:8781 (154)**。如果 154 down，fallback 是 252 → 252 → 154 自然错误，不会 fallback 到 245 (除非手动改 nginx conf)。
 
 ## 7. cert 应急 / 失败时
 
@@ -201,7 +201,7 @@ ssh 154 'redis-cli dbsize'
   ```
 - 先 SSH 进 154 确认是否还有 deploy 进程在跑:
   ```bash
-  ssh -p 25022 root@47.97.111.154 'cat /var/lib/llm-gateway-go/deploy.lock/metadata; ps -p $(awk -F= "/^pid=/{sub(\"pid=\",\"\");print}" /var/lib/llm-gateway-go/deploy.lock/metadata)'
+  ssh -p 25022 root@<env:HOST_154_IP> 'cat /var/lib/llm-gateway-go/deploy.lock/metadata; ps -p $(awk -F= "/^pid=/{sub(\"pid=\",\"\");print}" /var/lib/llm-gateway-go/deploy.lock/metadata)'
   ```
   - **metadata 里的 PID 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
   - **PID 已死 / 主机重启过** → 用 `unlock-remote.sh` 清远端锁 (与本地 `unlock-local.sh` 平行设计):

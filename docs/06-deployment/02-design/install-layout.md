@@ -148,6 +148,6 @@ seamless 流程自动：
 ## 十、参考
 
 - [daemon-watchdog.md](./../04-runbooks/daemon-watchdog.md) — 守护与运维手册
-- [DEPLOY_154.md](../../DEPLOY_154.md), [DEPLOY_245.md](../../DEPLOY_245.md) — 中心机部署
-- [BLUEGREEN_QUICKSTART.md](../../../../BLUEGREEN_QUICKSTART.md) — 本地蓝绿
-- [LOCAL_DEPLOY_OPTIMIZATION.md](../../../../LOCAL_DEPLOY_OPTIMIZATION.md) — 本地蓝绿优化
+- [154 生产部署 SOP](../../deployment/154-production-deployment-sop.md) — 中心机部署
+- [BLUEGREEN_QUICKSTART.md](../../deployment/bluegreen-quickstart.md) — 本地蓝绿
+- [LOCAL_DEPLOY_OPTIMIZATION.md](../../deployment/local-deploy-optimization.md) — 本地蓝绿优化

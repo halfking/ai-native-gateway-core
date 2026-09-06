@@ -54,7 +54,7 @@ RestartSec=3
 
 ### 2. 252 nginx drop-in（同款配置）
 ```ini
-# /etc/systemd/system/nginx.service.d/override.conf on 115.29.212.252
+# /etc/systemd/system/nginx.service.d/override.conf on <env:HOST_252_IP>
 [Unit]
 StartLimitIntervalSec=300
 StartLimitBurst=10
@@ -194,7 +194,7 @@ fi
 
 **commit `00baa5319`** 已 push 到 `origin/main` (`f59e62773..00baa5319`)，pre-commit PASS=4 FAIL=0
 
-### 245 (`8.136.114.245`) 服务端
+### 245 (`<env:HOST_245_IP>`) 服务端
 | 文件 | 类型 | 说明 |
 |---|---|---|
 | `/etc/systemd/system/nginx.service.d/override.conf` | 新建 | drop-in: Restart=always / RestartSec=3 |
@@ -207,13 +207,13 @@ fi
 | `/tmp/pprof/245-heap-20260819-213655.pb.gz` | 新建 | pprof heap profile（42KB, 留待后续深挖 RSS vs Go heap） |
 | `/tmp/pprof/245-goroutine-20260819-213702.txt` | 新建 | goroutine profile（137 goroutines, 无明显泄漏） |
 
-### 154 (`47.97.111.154`) 服务端
+### 154 (`<env:HOST_154_IP>`) 服务端
 | 文件 | 类型 | 说明 |
 |---|---|---|
 | `/etc/systemd/system/nginx.service.d/override.conf` | 新建 | drop-in: Restart=always / RestartSec=3 |
 | `/etc/systemd/system/llm-gateway-go.service.d/override.conf` | 修改 | append: `MemoryAccounting=yes` + `MemoryLimit=2G` (cgroup v1 systemd v219) |
 
-### 252 (`115.29.212.252`) 服务端
+### 252 (`<env:HOST_252_IP>`) 服务端
 | 文件 | 类型 | 说明 |
 |---|---|---|
 | `/etc/systemd/system/nginx.service.d/override.conf` | 新建 | drop-in: Restart=always / RestartSec=3 (与 245/154 同款) |

@@ -4,7 +4,7 @@
 
 **执行时间**: 2026-07-22 22:48:33  
 **执行人**: AI Agent (自动化)  
-**目标服务器**: 154 (47.97.111.154:25022)  
+**目标服务器**: 154 (<env:HOST_154_IP>:25022)  
 **执行结果**: ✅ 成功
 
 ---
@@ -100,7 +100,7 @@ API响应: 正常
 
 ```bash
 # 查看实时日志，观察是否还有 stream_timeout
-ssh root@47.97.111.154 -p 25022 \
+ssh root@<env:HOST_154_IP> -p 25022 \
   "journalctl -u llm-gateway-go -f | grep -E 'minimax|timeout'"
 ```
 
@@ -174,7 +174,7 @@ GROUP BY client_model;
 ### 回滚步骤
 ```bash
 # 1. SSH到154
-ssh root@47.97.111.154 -p 25022
+ssh root@<env:HOST_154_IP> -p 25022
 
 # 2. 恢复备份
 cd /etc/llm-gateway-go
@@ -216,8 +216,8 @@ systemctl status llm-gateway-go
 
 ```bash
 # 最近5分钟超时率
-ssh root@47.97.111.154 -p 25022 "
-psql -h 172.16.2.210 -U postgres -d llm_gateway -c \"
+ssh root@<env:HOST_154_IP> -p 25022 "
+psql -h <env:HOST_252_INTERNAL_IP> -U postgres -d llm_gateway -c \"
 SELECT 
     COUNT(*) as total,
     COUNT(*) FILTER (WHERE success = false AND err_code LIKE '%timeout%') as timeout,
@@ -228,7 +228,7 @@ WHERE created_at > NOW() - INTERVAL '5 minutes';
 "
 
 # Minimax专项
-ssh root@47.97.111.154 -p 25022 "
+ssh root@<env:HOST_154_IP> -p 25022 "
 journalctl -u llm-gateway-go --since '10 minutes ago' --no-pager | 
   grep -c 'minimax.*stream_timeout'
 "

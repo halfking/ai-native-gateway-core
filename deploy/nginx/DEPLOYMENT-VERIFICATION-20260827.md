@@ -1,7 +1,7 @@
 # llm.kxpms.cn 405 修复部署验证报告
 
 **部署时间**: 2026-08-27 23:53:44  
-**服务器**: 47.97.111.154  
+**服务器**: <env:HOST_154_IP>  
 **状态**: ✅ 部署成功并验证通过
 
 ---
@@ -70,7 +70,7 @@ curl https://llm.kxpms.cn/readyz
 ### 3. 配置完整性检查 ✅
 
 ```bash
-ssh root@47.97.111.154 'grep -n "location" /etc/nginx/conf.d/llm-kxpms-cn.conf'
+ssh root@<env:HOST_154_IP> 'grep -n "location" /etc/nginx/conf.d/llm-kxpms-cn.conf'
 ```
 
 **已确认的路由顺序** (优先级从高到低):
@@ -138,7 +138,7 @@ timeout 120 systemctl reload nginx
 
 ### 回滚命令
 ```bash
-ssh root@47.97.111.154 'cp /etc/nginx/conf.d/llm-kxpms-cn.conf.backup-20260827-235344 /etc/nginx/conf.d/llm-kxpms-cn.conf && nginx -t && timeout 120 systemctl reload nginx'
+ssh root@<env:HOST_154_IP> 'cp /etc/nginx/conf.d/llm-kxpms-cn.conf.backup-20260827-235344 /etc/nginx/conf.d/llm-kxpms-cn.conf && nginx -t && timeout 120 systemctl reload nginx'
 ```
 
 **状态**: 已准备，未执行（修复成功无需回滚）
@@ -252,7 +252,7 @@ bd184b7ea fix(nginx): add missing /api/ routes for llm.kxpms.cn to resolve 405 o
 
 **部署执行**: ZCode AI Agent  
 **验证时间**: 2026-08-27 23:53:44  
-**服务器**: 47.97.111.154 (llm.kxpms.cn)  
+**服务器**: <env:HOST_154_IP> (llm.kxpms.cn)  
 **备份位置**: `/etc/nginx/conf.d/llm-kxpms-cn.conf.backup-20260827-235344`
 
 ---

@@ -197,7 +197,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 journalctl -u llm-gateway-go -f | grep "dynamic timeout"
 
 # 6. 查询数据库
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway -c "
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway -c "
 SELECT 
     request_id,
     effective_timeout_seconds,
@@ -354,7 +354,7 @@ func (cd *ContinuationDetector) GetCachedResponse(sessionID string) (*CachedResp
 #!/bin/bash
 # scripts/verify-phase0.sh
 
-PGPASSWORD='***REDACTED***' psql -h 172.16.2.210 -U llm_gateway -d llm_gateway <<'EOF'
+PGPASSWORD='***REDACTED***' psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway <<'EOF'
 SELECT 
     '=== Phase 0 验证 ===' as section;
 
@@ -377,7 +377,7 @@ EOF
 #!/bin/bash
 # scripts/verify-phase2.sh
 
-PGPASSWORD='***REDACTED***' psql -h 172.16.2.210 -U llm_gateway -d llm_gateway <<'EOF'
+PGPASSWORD='***REDACTED***' psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway <<'EOF'
 SELECT 
     '=== Phase 2 验证 ===' as section;
 

@@ -45,7 +45,7 @@
 |---|---|
 | PROJECT_CONFIG.md redact 彻底 | `bash scripts/scan-secrets.sh --paths=PROJECT_CONFIG.md` → 0 BLOCK，8 WARN（仅 `kxpms.cn` 公网域名）|
 | pre-commit-check.sh | PASS=4 FAIL=0 WARN=0 SKIP=2（go vet / SQL / migration NNN / migration down.sql 全过；vue-tsc 与 token compliance 因 web 文件未变更自动 skip）|
-| 占位符 ↔ SSOT 对账 | `<env:HOST_154>` ↔ `envs/servers/47.97.111.154/metadata.yaml:1` ✓；`<env:SSHPASS>` ↔ `envs/common/ssh-keys.yaml:9` ✓；`<env:COMMON_PG_*>` ↔ `envs/common/database.yaml:9-10,26-27` ✓ |
+| 占位符 ↔ SSOT 对账 | `<env:HOST_154>` ↔ `envs/servers/<env:HOST_154_IP>/metadata.yaml:1` ✓；`<env:SSHPASS>` ↔ `envs/common/ssh-keys.yaml:9` ✓；`<env:COMMON_PG_*>` ↔ `envs/common/database.yaml:9-10,26-27` ✓ |
 | 245 deploy 状态 | `curl http://localhost:8781/api/system/version` → `{"build_seq":1617,"git_sha":"d7ebf25f7","version":"v2.5.0"}` ✓ |
 | 245 metric 可见 | `curl /metrics` 输出 `llmgw_credential_reveal_failure_total{provider_id="0",reason="<7 reasons>"} = 0` 全部 7 系列 ✓ |
 | Prometheus 抓取 | `curl http://127.0.0.1:9090/api/v1/query?query=llmgw_credential_reveal_failure_total` → series count: 7 ✓ |

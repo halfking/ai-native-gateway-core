@@ -45,7 +45,7 @@ Status Code: 405 Method Not Allow
 
 ### 1. 备份当前配置
 ```bash
-ssh root@47.97.111.154
+ssh root@<env:HOST_154_IP>
 cd /etc/nginx/conf.d
 cp llm.kxpms.cn.conf llm.kxpms.cn.conf.backup-20260827
 ```
@@ -56,12 +56,12 @@ cp llm.kxpms.cn.conf llm.kxpms.cn.conf.backup-20260827
 ```bash
 # 在本地执行
 scp deploy/nginx/active-20260821/llm-kxpms-cn-154.conf.20260821-spa-fallback-only \
-    root@47.97.111.154:/etc/nginx/conf.d/llm.kxpms.cn.conf
+    root@<env:HOST_154_IP>:/etc/nginx/conf.d/llm.kxpms.cn.conf
 ```
 
 ### 3. 验证配置语法
 ```bash
-ssh root@47.97.111.154 'nginx -t'
+ssh root@<env:HOST_154_IP> 'nginx -t'
 ```
 
 预期输出：
@@ -72,7 +72,7 @@ nginx: configuration file /etc/nginx/nginx.conf test is successful
 
 ### 4. 重载 nginx
 ```bash
-ssh root@47.97.111.154 'systemctl reload nginx'
+ssh root@<env:HOST_154_IP> 'systemctl reload nginx'
 ```
 
 ### 5. 验证修复
@@ -139,7 +139,7 @@ location / {  # SPA fallback 只处理前端路由
 
 如果出现问题，快速回滚：
 ```bash
-ssh root@47.97.111.154 'cp /etc/nginx/conf.d/llm.kxpms.cn.conf.backup-20260827 /etc/nginx/conf.d/llm.kxpms.cn.conf && nginx -t && systemctl reload nginx'
+ssh root@<env:HOST_154_IP> 'cp /etc/nginx/conf.d/llm.kxpms.cn.conf.backup-20260827 /etc/nginx/conf.d/llm.kxpms.cn.conf && nginx -t && systemctl reload nginx'
 ```
 
 ## 验收标准

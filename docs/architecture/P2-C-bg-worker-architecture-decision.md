@@ -466,7 +466,7 @@ journalctl -u llm-gateway-go-bg -n 200 | grep -E "credRecovery|partitionManager|
 
 ## 参考资料
 
-- [handoff_20260901_021000.md](../../.handoff/handoff_20260901_021000.md) - 工作交接文档
+- handoff_20260901_021000.md（.handoff/ 已清理，见 git 历史）
 - [bg/materialized_view_refresher.go](../../bg/materialized_view_refresher.go) - MV refresher 实现
 - [bg/partition_manager.go](../../bg/partition_manager.go) - PartitionManager 实现
 - [cmd/gateway/main.go:2431](../../cmd/gateway/main.go#L2431) - bgDataPlaneOnly 定义

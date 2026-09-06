@@ -5,7 +5,7 @@
 **Phase**: Phase 1 - 数据库Schema扩展  
 **状态**: ✅ 成功完成  
 **执行时间**: 2026-07-22 23:30  
-**执行服务器**: 154 (47.97.111.154) → 252 PG (172.16.2.210)  
+**执行服务器**: 154 (<env:HOST_154_IP>) → 252 PG (<env:HOST_252_INTERNAL_IP>)  
 **耗时**: 约15分钟
 
 ---
@@ -309,7 +309,7 @@ WHERE ts > NOW() - INTERVAL '24 hours';
 ### 数据库连接
 ```bash
 export PGPASSWORD='***REDACTED***'
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway
 ```
 
 ### 执行的SQL命令

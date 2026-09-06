@@ -61,7 +61,7 @@ docker exec llm-gateway-pg psql -U postgres -d llm_gateway -c "\dt+ new_feature_
 ./scripts/sync-db-to-252.sh
 
 # 4. 验证252
-ssh root@115.29.212.252 -p 25022
+ssh root@<env:HOST_252_IP> -p 25022
 docker exec pg-252-pg17 psql -U postgres -d llm_gateway -c "\dt+ new_feature_*"
 ```
 
@@ -103,7 +103,7 @@ docker exec llm-gateway-pg psql -U postgres -d llm_gateway -c "\dt+ 表名"
 # 必需的环境变量：
 COMMON_PG_SUPERUSER_PASS   # 252数据库密码
 REMOTE_PG_IP               # 252内网IP (默认: 10.88.0.79)
-REMOTE_SSH_HOST            # 252外网IP (默认: 115.29.212.252)
+REMOTE_SSH_HOST            # 252外网IP (默认: <env:HOST_252_IP>)
 REMOTE_SSH_PORT            # SSH端口 (默认: 25022)
 LOCAL_TUNNEL_PORT          # 本地隧道端口 (默认: 15432)
 ```
@@ -114,7 +114,7 @@ LOCAL_TUNNEL_PORT          # 本地隧道端口 (默认: 15432)
 
 ```bash
 # 自动建立的隧道
-ssh -f -N -L 15432:10.88.0.79:5432 -p 25022 root@115.29.212.252
+ssh -f -N -L 15432:10.88.0.79:5432 -p 25022 root@<env:HOST_252_IP>
 ```
 
 ---
@@ -169,7 +169,7 @@ ssh -f -N -L 15432:10.88.0.79:5432 -p 25022 root@115.29.212.252
 
 ## 🔗 相关文档
 
-- [数据库双向对齐报告](../docs/2026-09-06-db-bidirectional-sync-report.md)
+- [数据库双向对齐报告](../docs/audit/2026-09-06-db-bidirectional-sync-report.md)
 - [252服务器环境配置](../configs/env-252.sh)
 
 ---

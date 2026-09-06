@@ -30,7 +30,7 @@
 
 - [ ] **Step 1**: SSH到154服务器
   ```bash
-  ssh root@47.97.111.154 -p 25022
+  ssh root@<env:HOST_154_IP> -p 25022
   ```
 
 - [ ] **Step 2**: 备份现有配置
@@ -101,7 +101,7 @@
   curl -s http://localhost:8080/healthz | jq
   
   # 从252检查154
-  curl -s http://172.16.2.210:8080/healthz | jq
+  curl -s http://<env:HOST_252_INTERNAL_IP>:8080/healthz | jq
   ```
 
 - [ ] **Step 10**: 监控30分钟，观察效果
@@ -115,7 +115,7 @@
 - [ ] **Step 1**: 连接到PostgreSQL
   ```bash
   # 从252连接
-  psql -h 172.16.2.210 -U postgres -d llm_gateway
+  psql -h <env:HOST_252_INTERNAL_IP> -U postgres -d llm_gateway
   ```
 
 - [ ] **Step 2**: 创建 system_settings 表

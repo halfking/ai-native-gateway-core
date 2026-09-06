@@ -102,4 +102,3 @@ bash scripts/lifecycle/preflight.sh \
 - [部署总入口](../../README.md)
 - [客户脚本](../../../../scripts/user/)
 - [生命周期脚本](../../../../scripts/lifecycle/)
-- [下一阶段主代理提示词](../../../next-phase-master-prompt-20260829.md)

@@ -6,7 +6,7 @@
 
 - ✅ Go 1.21+
 - ✅ PostgreSQL 客户端（psql）
-- ✅ 可访问 252 服务器数据库（172.16.2.210:5432）
+- ✅ 可访问 252 服务器数据库（<env:HOST_252_INTERNAL_IP>:5432）
 
 ### 2. 一键执行
 
@@ -22,7 +22,7 @@ chmod +x run_test.sh
 
 ```bash
 export PGPASSWORD="***REDACTED***"
-psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -f schema.sql
+psql -h <env:HOST_252_INTERNAL_IP> -p 5432 -U llm_gateway -d llm_gateway -f schema.sql
 ```
 
 **验证**:
@@ -106,7 +106,7 @@ cd tests/session_audit
   Min: 1 ms
 
 💡 查询结果:
-  psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway
+  psql -h <env:HOST_252_INTERNAL_IP> -p 5432 -U llm_gateway -d llm_gateway
   SELECT * FROM v_audit_performance_summary WHERE test_run_id = 'test_a1b2c3d4';
 ```
 
@@ -118,7 +118,7 @@ cd tests/session_audit
 
 ```sql
 -- 连接数据库
-psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway
+psql -h <env:HOST_252_INTERNAL_IP> -p 5432 -U llm_gateway -d llm_gateway
 
 -- 查询最新的测试结果
 SELECT 
@@ -338,7 +338,7 @@ WHERE test_run_id = 'test_a1b2c3d4';
 
 ```bash
 # 查询测试结果
-psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -c \
+psql -h <env:HOST_252_INTERNAL_IP> -p 5432 -U llm_gateway -d llm_gateway -c \
   "SELECT * FROM v_audit_performance_summary WHERE test_run_id = 'test_a1b2c3d4';" \
   > test_results.txt
 
@@ -355,12 +355,12 @@ cp OPTIMIZATION_REPORT_TEMPLATE.md OPTIMIZATION_REPORT_test_a1b2c3d4.md
 
 **症状**:
 ```
-❌ 连接数据库失败: dial tcp 172.16.2.210:5432: i/o timeout
+❌ 连接数据库失败: dial tcp <env:HOST_252_INTERNAL_IP>:5432: i/o timeout
 ```
 
 **解决方案**:
-1. 检查网络连接: `ping 172.16.2.210`
-2. 检查端口可达: `nc -zv 172.16.2.210 5432`
+1. 检查网络连接: `ping <env:HOST_252_INTERNAL_IP>`
+2. 检查端口可达: `nc -zv <env:HOST_252_INTERNAL_IP> 5432`
 3. 检查数据库密码是否正确
 4. 确认防火墙规则
 
@@ -373,7 +373,7 @@ ERROR: relation "audit_test_results" does not exist
 
 **解决方案**:
 ```bash
-psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -f schema.sql
+psql -h <env:HOST_252_INTERNAL_IP> -p 5432 -U llm_gateway -d llm_gateway -f schema.sql
 ```
 
 ### 问题 3: 编译失败

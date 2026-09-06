@@ -43,7 +43,7 @@
 - `docs/architecture/REPO_LAYOUT.md`（布局权威地图+入位规则）
 - `docs/adr/ADR-0002-target-go-package-layout.md`（Go 分层迁移路线）
 - 需线下轮换密钥：debug.go 签名/加密 key（base64 `AwoRGB8m...`）、volcengine ark key
-  `ark-a0e01643-...-dbc14`、（建议）8.136.114.154 root SSH 通道审计
+  `ark-a0e01643-...-dbc14`、（建议）<env:HOST_154_ALT_IP> root SSH 通道审计
 - 后续项：git 历史重写清除 70MB 二进制与密钥、Go 分层迁移（ADR-0002，B1 前置）
 
 ## 附记：后续项清理轮（同日晚间，已推送 main）

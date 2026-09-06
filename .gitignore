@@ -277,3 +277,22 @@ gui-test-screenshots/
 # 只提交 docs/perf/bench-baseline.txt 基线文件与整理后的容量基线文档）
 docs/perf/bench-history/
 scripts/capacity-baseline/reports/
+
+# ── 2026-09-07 文档整理：敏感文件防线 ──────────────────────────
+# .env 变体一律不入库（example 模板除外；真实值放本地环境变量）
+.env.*
+!.env.example
+!.env.*.example
+# 会话/交接过程产物（含环境细节，不入库）
+.handoff/
+.artifacts/
+.acc-task-stop-summary*
+.wave2a-*
+
+# ── 2026-09-07 工具缓存：vite/vitest runtime 产物不入库 ────────
+# vite dev server 与 vitest 测试运行产出的本地缓存目录；
+# 与 .codegraph/、.scratch/ 同属工具/构建缓存，无需随仓库分发。
+.vite/
+
+# NAS 同步残片文件
+.!*

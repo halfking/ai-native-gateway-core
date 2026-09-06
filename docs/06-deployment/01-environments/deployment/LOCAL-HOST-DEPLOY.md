@@ -44,7 +44,7 @@ docker start llm-gateway-pg nbjl-redis
 bash scripts/local-host-sync-db.sh
 
 # 3. 注入运行时凭据（必须，否则 deploy 拿不到 PG 密码）
-source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server 115.29.212.252
+source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server <env:HOST_252_IP>
 
 # 4. 编译并部署当前 HEAD
 bash scripts/local-host-deploy.sh deploy
@@ -208,7 +208,7 @@ echo "API_KEY=${LLM_GATEWAY_API_KEY:0:8}..."
 echo "ADMIN_KEY=${LLM_GATEWAY_ADMIN_API_KEY:0:8}..."
 
 # 重新 source
-source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server 115.29.212.252
+source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server <env:HOST_252_IP>
 ```
 
 ### 孤儿 gateway 进程

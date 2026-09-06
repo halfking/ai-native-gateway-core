@@ -42,7 +42,7 @@
 ### 3.1 失败点
 
 - `bash scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-local.sh --schema-only --dry-run` 在加载 source config 时报错:`SSH_PASS_252: SSH_PASS_252 not set — run env-injector inject --target=252`
-- `bash scripts/local-dev/verify-db-consistency.sh --verify` 试图自己 `ssh -f -N -L 15432:172.16.2.210:5432 252` 开 tunnel,但 ssh 走通后 psql 连 15432 时 `Connection refused`
+- `bash scripts/local-dev/verify-db-consistency.sh --verify` 试图自己 `ssh -f -N -L 15432:<env:HOST_252_INTERNAL_IP>:5432 252` 开 tunnel,但 ssh 走通后 psql 连 15432 时 `Connection refused`
 
 ### 3.2 根因分析（历史记录）
 
@@ -51,14 +51,14 @@
 | 问题 | 详情 | 影响 |
 |------|------|------|
 | **SSOT 凭据缺失** | `SSH_PASS_252` / `PG_PASS_252` 在 env-injector SSOT 中**根本不存在**。env-252.sh 文件中以 `${SSH_PASS_252:?...}` 占位,但 `env-injector inject aliyun-edge-252` 只 export 了 SSH 证书路径(`SSH_KEY_252`),没有密码。 | 任何依赖 `${SSH_PASS_252}` / `${PG_PASS_252}` 的脚本都会 hard fail |
-| **podman vs docker 拓扑变化** | 252 host 用 podman(不是 docker),容器 IP 在 podman cni `10.88.0.79`,但 env-252.sh 配置的隧道目标是 `172.16.2.210:5432`(这是 host eth0 IP,容器并未在该地址 listen)。 | ssh tunnel 连上后转发到错误目标,psql 拒绝 |
+| **podman vs docker 拓扑变化** | 252 host 用 podman(不是 docker),容器 IP 在 podman cni `10.88.0.79`,但 env-252.sh 配置的隧道目标是 `<env:HOST_252_INTERNAL_IP>:5432`(这是 host eth0 IP,容器并未在该地址 listen)。 | ssh tunnel 连上后转发到错误目标,psql 拒绝 |
 | **容器无 postgres 超级角色** | 252 的 `pg-252-pg17` 容器 initdb 时没创建 `postgres` 角色,只有各项目业务角色(`llm_gateway`, `acc_app` 等)。`pg_hba.conf` 默认对非-loopback 一律 `scram-sha-256`,没有密码就连不上。 | pg_dump via SSH 必须用业务角色 + 先在 socket 上做信任鉴权 |
 
 ### 3.3 本次 workaround (成功路径)
 
 ```bash
 # 1. 在 252 上 patch pg_hba.conf 临时允许 local socket trust(不修改对外 scram)
-ssh root@115.29.212.252 'docker exec pg-252-pg17 bash -c "
+ssh root@<env:HOST_252_IP> 'docker exec pg-252-pg17 bash -c "
   cat > /var/lib/postgresql/data/pg_hba.conf <<EOF
 local   all             all                                     trust
 host    all             all             127.0.0.1/32            trust
@@ -73,7 +73,7 @@ EOF
 "'
 
 # 2. SSH-streamed pg_dump,使用业务角色 llm_gateway(已有 catalog 读权限)
-ssh root@115.29.212.252 \
+ssh root@<env:HOST_252_IP> \
   'docker exec pg-252-pg17 pg_dump -U llm_gateway -d llm_gateway --schema-only --no-owner --no-acl' \
   > /tmp/252-schema.sql
 
@@ -102,8 +102,8 @@ docker exec llm-gateway-pg pg_dump -U llm_gateway -d llm_gateway --schema-only -
 
 - `env-252.sh` 第 13 行:`DOCKER_PG_CONTAINER="pg-252-pg17"`
 - 实际:`docker exec pg-252-pg17 ...` 在 252 host 上能跑(因为 podman 提供 docker-compatible socket alias),但 `DOCKER_HOST="${SSH_USER}@${SSH_HOST}"` 暗示走 SSH 到 252 用 docker 命令 — 现在 252 也仍是 docker 二进制兼容层(看起来 `docker` 是 podman 的 symlink)
-- 容器实际 IP 在 `10.88.0.79`(podman cni),不在 `172.16.2.210`
-- **建议**: 把 `TUNNEL_REMOTE_TARGET="172.16.2.210:5432"` 改为 `TUNNEL_REMOTE_TARGET="10.88.0.79:5432"`,并在 env-252.sh 注释中说明 "实际是 podman cni IP"
+- 容器实际 IP 在 `10.88.0.79`(podman cni),不在 `<env:HOST_252_INTERNAL_IP>`
+- **建议**: 把 `TUNNEL_REMOTE_TARGET="<env:HOST_252_INTERNAL_IP>:5432"` 改为 `TUNNEL_REMOTE_TARGET="10.88.0.79:5432"`,并在 env-252.sh 注释中说明 "实际是 podman cni IP"
 
 ### 4.3 容器缺 postgres 超级角色
 
@@ -143,8 +143,8 @@ docker exec llm-gateway-pg pg_dump -U llm_gateway -d llm_gateway --schema-only -
 
 - 项目根: `/Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2`
 - 当前 commit: `3896f727d` / branch: `main` (与 origin/main 同步,工作区干净)
-- 252 pg container: `pg-252-pg17` (podman container on 115.29.212.252)
-- 252 pg 容器实际 IP: `10.88.0.79` (podman cni, NOT `172.16.2.210`)
+- 252 pg container: `pg-252-pg17` (podman container on <env:HOST_252_IP>)
+- 252 pg 容器实际 IP: `10.88.0.79` (podman cni, NOT `<env:HOST_252_INTERNAL_IP>`)
 - 252 pg 用户角色: 仅业务角色 (`llm_gateway` 等),无 `postgres` 超级角色
 - 252 pg_hba 状态: 已恢复为原始 8 行(本次会话临时补丁已全部撤销,SIGHUP 已 reload)
 - 本地 pg container: `llm-gateway-pg` (docker on macOS, port 5432, user `llm_gateway`)

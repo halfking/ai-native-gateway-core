@@ -87,7 +87,7 @@ curl http://localhost:8080/api/system/version  # 或实际端口
 **154日志查询命令**:
 ```bash
 # 连接到154
-ssh root@47.97.111.154 -p 25022
+ssh root@<env:HOST_154_IP> -p 25022
 
 # 查看实时日志
 journalctl -u llm-gateway-go.service -f
@@ -132,7 +132,7 @@ tail -f /Users/xutaohuang/Library/Logs/openclaw/gateway.log | \
 ### 立即行动
 1. **SSH到154服务器**
    ```bash
-   ssh root@47.97.111.154 -p 25022
+   ssh root@<env:HOST_154_IP> -p 25022
    ```
 
 2. **设置日志监控**
@@ -153,7 +153,7 @@ tail -f /Users/xutaohuang/Library/Logs/openclaw/gateway.log | \
 如果想查看154上是否已经产生了新日志：
 
 ```bash
-ssh root@47.97.111.154 -p 25022 << 'EOF'
+ssh root@<env:HOST_154_IP> -p 25022 << 'EOF'
 # 查看部署后的所有日志
 journalctl -u llm-gateway-go.service --since "2026-09-04 23:48:00" | \
   grep -E "survival_decision_aggregate|fold_candidate_outcomes" | \
@@ -215,7 +215,7 @@ EOF
 **推荐的下一步操作**：
 ```bash
 # 连接154并持续监控
-ssh root@47.97.111.154 -p 25022
+ssh root@<env:HOST_154_IP> -p 25022
 journalctl -u llm-gateway-go.service -f | \
   grep --line-buffered -E "survival_decision_aggregate|fold_candidate_outcomes|error"
 ```

@@ -76,7 +76,7 @@ LARK_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx
 ```
 ❌ 物化视图数据一致性检查失败
 
-服务器: 154 (47.97.111.154)
+服务器: 154 (<env:HOST_154_IP>)
 检查时间: 2026-09-01 03:00:15
 
 问题详情:
@@ -122,7 +122,7 @@ LARK_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx
 
 ```bash
 # 在 154 服务器上
-ssh root@47.97.111.154
+ssh root@<env:HOST_154_IP>
 
 # 检查权限
 ls -l /opt/llm-gateway-go/scripts/check-routing-mv-drift.sh
@@ -171,7 +171,7 @@ tail -50 /opt/llm-gateway-go/logs/mv-drift-check.log
 
 ```bash
 # 在 245 服务器上执行相同的配置步骤
-ssh root@8.136.114.245
+ssh root@<env:HOST_245_IP>
 
 # 重复步骤 1-4
 ```
@@ -343,9 +343,9 @@ DROP MATERIALIZED VIEW IF EXISTS routing_audit_summary_7d;
 
 ### A. 相关文档
 
-- [TROUBLESHOOTING-routing-analytics.md](../TROUBLESHOOTING-routing-analytics.md) - 问题排查指南
+- [TROUBLESHOOTING-routing-analytics.md](../troubleshooting/routing-analytics.md) - 问题排查指南
 - [scripts/README-check-mv-drift.md](../../scripts/README-check-mv-drift.md) - 巡检脚本使用文档
-- [handoff_20260901_021000.md](../../.handoff/handoff_20260901_021000.md) - 工作交接文档
+- handoff_20260901_021000.md（.handoff/ 已清理，见 git 历史）
 
 ### B. 联系方式
 

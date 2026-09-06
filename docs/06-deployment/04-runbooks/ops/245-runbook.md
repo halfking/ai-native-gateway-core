@@ -33,9 +33,9 @@ services:        llmgo-245.service (systemd, port 8781, pre-prod vendor unit)
 2. 245 自动起来 (`systemd default target`)
 3. `systemctl is-active llmgo-245 nginx` 都应 `active`
 4. `curl -sS http://127.0.0.1:8781/healthz` 应返回 200 + `2.4.7-...`
-5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `172.16.2.241:8781` (=245)，**不是** 154 (172.16.2.209)。如果发现还是 209，跑：
+5. 252 nginx 上 `kxpms-on-252.conf` 应当把 `kxpms_llm_backend` 指向 `<env:HOST_245_INTERNAL_IP>:8781` (=245)，**不是** 154 (<env:HOST_154_INTERNAL_IP>)。如果发现还是 209，跑：
    ```bash
-   ssh 252 'sed -i "s|server 172.16.2.209:8781 max_fails=2 fail_timeout=5s;|server 172.16.2.241:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
+   ssh 252 'sed -i "s|server <env:HOST_154_INTERNAL_IP>:8781 max_fails=2 fail_timeout=5s;|server <env:HOST_245_INTERNAL_IP>:8781 max_fails=2 fail_timeout=5s;|" /etc/nginx/conf.d/kxpms-on-252.conf'
    ssh 252 'nginx -t && nginx -s reload'
    ```
 
@@ -125,8 +125,8 @@ ssh 245 '
 - **llmgo-245.service 是 pre-prod vendor unit**，不是通用 `llm-gateway-go.service`。
   deploy-245 / deploy-seamless / journalctl / systemctl 一律用 `llmgo-245`，不要用 unit 名 `llm-gateway-go`。
 - **certbot-renew.timer** 启用并独立于 154。`systemctl list-timers certbot-renew.timer` 显示 `Thu 2026-08-20 08:09:19 CST 9h left`（下次运行时间）。当前 245 上 certbot 管理的证书：**`download.kxpms.cn`**（2026-10-14 到期，VALID 55 天）。`llmgo.kxpms.cn` / `llm.kxpms.cn` 的证书是**手工放置**到 `/etc/letsencrypt/live/kxpms.cn/`（245 上由 nginx 持有，certbot **不管理**这两个证书，续签走手工流程）。
-- **252 nginx kxpms-on-252.conf 现在 upstream 指向 172.16.2.241:8781 (245)**。
-  245 是 pre-prod，154 production upstream = 172.16.2.209:8781。两个后端 IP 不混用，分别承载 llmgo.kxpms.cn / llm.kxpms.cn。
+- **252 nginx kxpms-on-252.conf 现在 upstream 指向 <env:HOST_245_INTERNAL_IP>:8781 (245)**。
+  245 是 pre-prod，154 production upstream = <env:HOST_154_INTERNAL_IP>:8781。两个后端 IP 不混用，分别承载 llmgo.kxpms.cn / llm.kxpms.cn。
 - **`/etc/nginx/conf.d/llm-kxpms-cn.conf`** 重复 listen 警告（80 + 443 + IPv4/IPv6）：已确认。`nginx -T | grep "^listen"` 在 245 上输出 `listen 80; × 6`、`listen 443 ssl http2; × 3`、`listen [::]:80; × 1`、`listen [::]:443 ssl; × 1`，属于 nginx 多 vhost + IPv4/IPv6 双栈声明。**nginx 启动时只 WARN 不 FAIL**，245 当前 active 无问题；与 154 模式相同。
 
 ## 7. cert 应急 / 失败时
@@ -208,7 +208,7 @@ ssh 245 'redis-cli -h "$COMMON_REDIS_HOST_252" -p "$COMMON_REDIS_PORT_252" dbsiz
 - 正常流程：`deploy` / `rollback` 获取后由 `deploy-seamless.sh` 的 EXIT trap 释放。仅当 **SSH 断开 / 主机重启 / 进程被 `kill -9`** 等极端情况下才会残留，导致下一次部署 fail-fast。
 - 先 SSH 进 245 确认是否还有 deploy 进程在跑:
   ```bash
-  ssh -p 25022 root@8.136.114.245 'cat /var/lib/llm-gateway-go/deploy.lock/metadata; ps -p $(awk -F= "/^pid=/{sub(\"pid=\",\"\");print}" /var/lib/llm-gateway-go/deploy.lock/metadata)'
+  ssh -p 25022 root@<env:HOST_245_IP> 'cat /var/lib/llm-gateway-go/deploy.lock/metadata; ps -p $(awk -F= "/^pid=/{sub(\"pid=\",\"\");print}" /var/lib/llm-gateway-go/deploy.lock/metadata)'
   ```
   - **metadata 里的 PID 还活着** → 那个 deploy 还在跑，别解锁，等它自然完成。
   - **PID 已死 / 主机重启过** → 用 `unlock-remote.sh` 清远端锁 (与本地 `unlock-local.sh` 平行设计):

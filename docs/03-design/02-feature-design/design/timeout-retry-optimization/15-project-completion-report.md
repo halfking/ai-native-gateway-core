@@ -462,10 +462,10 @@ go build -o llm-gateway-go cmd/gateway/main.go
 
 ```bash
 # 上传
-scp -P 25022 llm-gateway-go root@47.97.111.154:/tmp/
+scp -P 25022 llm-gateway-go root@<env:HOST_154_IP>:/tmp/
 
 # 备份并替换
-ssh root@47.97.111.154 -p 25022 "
+ssh root@<env:HOST_154_IP> -p 25022 "
   systemctl stop llm-gateway-go
   cp /usr/local/bin/llm-gateway-go /usr/local/bin/llm-gateway-go.bak.$(date +%Y%m%d)
   mv /tmp/llm-gateway-go /usr/local/bin/
@@ -477,7 +477,7 @@ ssh root@47.97.111.154 -p 25022 "
 ### 步骤3: 验证日志（15分钟）
 
 ```bash
-ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go -f" | grep -E "timeout|keepalive"
+ssh root@<env:HOST_154_IP> -p 25022 "journalctl -u llm-gateway-go -f" | grep -E "timeout|keepalive"
 ```
 
 **预期日志**:
@@ -667,24 +667,24 @@ SELECT * FROM v_timeout_effectiveness;
 
 ### 服务器信息
 
-- **154**: root@47.97.111.154:25022
-- **252 DB**: 172.16.2.210:5432/llm_gateway
+- **154**: root@<env:HOST_154_IP>:25022
+- **252 DB**: <env:HOST_252_INTERNAL_IP>:5432/llm_gateway
 
 ### 关键命令
 
 ```bash
 # 查看服务
-ssh root@47.97.111.154 -p 25022 "systemctl status llm-gateway-go"
+ssh root@<env:HOST_154_IP> -p 25022 "systemctl status llm-gateway-go"
 
 # 查看日志
-ssh root@47.97.111.154 -p 25022 "journalctl -u llm-gateway-go -f"
+ssh root@<env:HOST_154_IP> -p 25022 "journalctl -u llm-gateway-go -f"
 
 # 查询配置
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway \
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway \
   -c "SELECT * FROM system_settings WHERE category='timeout';"
 
 # 查询效果
-psql -h 172.16.2.210 -U llm_gateway -d llm_gateway \
+psql -h <env:HOST_252_INTERNAL_IP> -U llm_gateway -d llm_gateway \
   -c "SELECT * FROM v_timeout_effectiveness;"
 ```
 

@@ -52,7 +52,7 @@ migration 先于 binary 切换时，必须证明旧 binary 能读取新 schema�
 - `install.sh` 与 `installer/`：旧版 one-click/full-stack installer，使用前先核对当前环境总览。
 - `deploy/one-click/`：历史一键部署文档，端口/仓库/目录语义可能过期。
 - `deploy/DEPLOYMENT_GUIDE.md`：审批通知专项 runbook，不是 Gateway 总部署指南；其中不得保留真实凭据。
-- `QUICK-START.md`：当前内容是 GLM-5.2 事故 runbook，不是通用安装指南。
+- GLM-5.2 事故 runbook（原根目录 `QUICK-START.md`，2026-09-07 归档至 `docs/archive/process/incidents/2026-09/`）；通用安装指南见 `docs/getting-started.md`。
 
 历史资料如需更新，先标注 `legacy`/`archive` 和最后核对日期，不要复制旧 secret 或旧绝对路径。
 
