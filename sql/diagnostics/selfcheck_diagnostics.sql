@@ -14,7 +14,7 @@ SELECT
     c.id AS credential_id,
     c.label AS credential_label,
     c.provider_id,
-    pv.name AS provider_name,
+    pv.display_name AS provider_name,
     pm.standardized_name,
     STRING_AGG(pm.raw_model_name, ', ' ORDER BY pm.raw_model_name) AS ambiguous_models,
     COUNT(DISTINCT pm.raw_model_name) AS model_count,
@@ -25,7 +25,7 @@ JOIN credential_model_bindings cmb ON c.id = cmb.credential_id
 JOIN provider_models pm ON cmb.provider_model_id = pm.id
 WHERE c.status = 'active'
   AND c.manual_disabled = FALSE
-GROUP BY c.id, c.label, c.provider_id, pv.name, pm.standardized_name
+GROUP BY c.id, c.label, c.provider_id, pv.display_name, pm.standardized_name
 HAVING COUNT(DISTINCT pm.raw_model_name) > 1
 ORDER BY model_count DESC, c.id;
 
@@ -187,8 +187,9 @@ JOIN provider_models pm ON pm.id = cmb.provider_model_id
 LEFT JOIN model_offers mo 
     ON mo.credential_id = cmb.credential_id 
     AND mo.raw_model_name = pm.raw_model_name
-WHERE cmb.available != COALESCE(mo.available, TRUE)
-   OR cmb.unavailable_reason != mo.unavailable_reason
+WHERE mo.credential_id IS NULL
+   OR cmb.available IS DISTINCT FROM mo.available
+   OR cmb.unavailable_reason IS DISTINCT FROM mo.unavailable_reason
 ORDER BY cmb.updated_at DESC
 LIMIT 100;
 
