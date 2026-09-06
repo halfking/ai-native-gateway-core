@@ -32,8 +32,9 @@ fi
 #
 # Strips --force/--force-unlock from the argument list, sets the boolean flag
 # variable to 1, and writes the remaining tokens back into the args array
-# variable. Uses nameref (bash 4.3+) so the caller's variables
-# are updated in place.
+# variable. We avoid `local -n` (bash 4.3+) so the module keeps working on
+# macOS's bundled bash 3.2.57; instead we shell-quote the remaining tokens
+# with `printf %q` (bash 3.0+) and let `eval` rebuild the caller's array.
 extract_force_unlock() {
   local _flag_var=$1 _args_var=$2; shift 2
   local _flag=0
@@ -45,11 +46,16 @@ extract_force_unlock() {
       *)              _rest+=("$_arg") ;;
     esac
   done
-  # Write back through namerefs.
+  # Write back through the caller's variable names. `printf %q` is safe under
+  # bash 3.0+ and yields a single shell token per array element, preserving
+  # embedded spaces, single quotes, and `$` characters.
   printf -v "$_flag_var" '%s' "$_flag"
-  # Rebuild the caller's array in place.
-  local -n _args_ref="$_args_var"
-  _args_ref=("${_rest[@]}")
+  local _quoted="" _q
+  for _q in "${_rest[@]}"; do
+    printf -v _quoted '%s %q' "$_quoted" "$_q"
+  done
+  # shellcheck disable=SC2154
+  eval "$_args_var=( $_quoted )"
   return 0
 }
 
