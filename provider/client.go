@@ -464,28 +464,45 @@ func InvalidateAllCandidateCache() {
 // and K are bounded (cache holds at most a few hundred entries; PlanOrder
 // is the candidate count for one model) so the per-call cost is
 // negligible compared to the avoided DB roundtrips.
+//
+// 2026-09-07 (mock system test §5.1/§5.2): the global generation now only
+// advances when at least one cached plan actually contained this
+// credential. Background probe workers call this for every probe result;
+// with a large probe backlog the unconditional bump repeatedly
+// invalidated in-flight lookups for unrelated models, surfacing as 500
+// "candidate lookup invalidated after N attempts" (3–21% of raw requests
+// under 10-way concurrency). An invalidation that deletes nothing cannot
+// change any cached plan, so in-flight lookups stay valid.
 func InvalidateCandidateCacheForCredential(credentialID int) {
 	if defaultClient == nil || credentialID == 0 {
 		return
 	}
 	defaultClient.mu.Lock()
-	defer defaultClient.mu.Unlock()
-	defaultClient.candGeneration++
+	deleted := 0
 	for key, entry := range defaultClient.candCache {
 		if entry.value == nil {
 			delete(defaultClient.candCache, key)
+			deleted++
 			continue
 		}
 		for _, p := range entry.value.PlanOrder {
 			if p.CredentialID == credentialID {
 				delete(defaultClient.candCache, key)
+				deleted++
 				break
 			}
 		}
 	}
-	slog.Debug("candidate cache invalidated for credential",
-		"credential_id", credentialID,
-	)
+	if deleted > 0 {
+		defaultClient.candGeneration++
+	}
+	defaultClient.mu.Unlock()
+	if deleted > 0 {
+		slog.Debug("candidate cache invalidated for credential",
+			"credential_id", credentialID,
+			"entries_deleted", deleted,
+		)
+	}
 }
 
 // ResetKeyRotatorForCredential clears the shared in-memory multi-key rotation
@@ -668,6 +685,28 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		})
 		if errors.Is(err, errCandidateCacheInvalidated) {
 			invalidatedErr = err
+			// 2026-09-07 (mock system test §5.1): the fetch itself succeeded —
+			// the response was read from the DB moments ago and is fresher
+			// than any cached entry — so serve it directly (uncached) instead
+			// of retrying. Deliberately no generation re-check here: serving
+			// is the point of this branch.
+			if resp != nil {
+				policy, _ := c.getPolicyCached(ctx)
+				cands := c.enrichWithAPIKeys(ctx, resp)
+				if len(cands) == 0 && candidateCount(resp) > 0 {
+					logCandidateDiagnostic("enrich_empty",
+						"model", routeModel,
+						"profile", profile,
+						"tenant_id", tenantID,
+						"cache_key", key,
+						"invalidated_fetch_served", true,
+						"plan_count", planCount(resp),
+						"candidate_count", candidateCount(resp),
+						"enriched_count", len(cands),
+					)
+				}
+				return cands, policy, nil
+			}
 			continue
 		}
 		if err != nil {
@@ -753,7 +792,45 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		return cands, policy, nil
 	}
 
+	// 2026-09-07 (mock system test §5.1): retries exhausted on repeated
+	// invalidations without a usable fetch. Serve a stale-but-usable entry
+	// that survived the invalidations rather than failing the request with
+	// a 500 — at worst the plan is candidateCacheTTL+grace old, and the
+	// next request re-fetches fresh state anyway.
+	if cands, policy, ok := c.serveStaleOnGenerationExhausted(ctx, key, invalidatedErr); ok {
+		return cands, policy, nil
+	}
 	return nil, DefaultPolicy(), candidateGenerationRetryError(candidateGenerationTries, invalidatedErr)
+}
+
+// serveStaleOnGenerationExhausted is the last-resort fallback of
+// getCandidates after candidateGenerationTries consecutive invalidations:
+// serve a stale-but-usable cached entry instead of a hard 500. Reports
+// whether it served.
+func (c *Client) serveStaleOnGenerationExhausted(ctx context.Context, key string, invalidatedErr error) ([]Candidate, *Policy, bool) {
+	if invalidatedErr == nil || ctx.Err() != nil {
+		return nil, nil, false
+	}
+	c.mu.RLock()
+	staleEntry, ok := c.candCache[key]
+	c.mu.RUnlock()
+	if !ok || !staleCandidateCacheUsable(staleEntry, time.Now()) {
+		return nil, nil, false
+	}
+	cands := c.enrichWithAPIKeys(ctx, staleEntry.value)
+	if len(cands) == 0 {
+		return nil, nil, false
+	}
+	recordCandidateDiagnostic("generation_exhausted_stale")
+	slog.Warn("[candidate_diag] candidate lookup repeatedly invalidated, serving stale cache",
+		"cache_key", key,
+		"cache_age", time.Since(staleEntry.expires),
+		"plan_count", planCount(staleEntry.value),
+		"candidate_count", candidateCount(staleEntry.value),
+		"last_error", invalidatedErr.Error(),
+	)
+	policy, _ := c.getPolicyCached(ctx)
+	return cands, policy, true
 }
 
 func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fetch func() (*resolveResponse, error)) (*resolveResponse, bool, error) {
@@ -764,6 +841,16 @@ func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fe
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		if candidateGenerationChanged(queryGeneration, c.candGeneration) {
+			// 2026-09-07 (mock system test §5.1): when the DB fetch itself
+			// succeeded, return the just-fetched response alongside the
+			// invalidated error instead of discarding it. The data is
+			// fresher than anything in the cache — it was read moments ago —
+			// so the caller can serve it directly (uncached) rather than
+			// burning retries and eventually failing the request with 500.
+			if fetchErr == nil && resp != nil {
+				return candidateFlightResult{response: resp, generation: queryGeneration},
+					&candidateGenerationInvalidatedError{queried: queryGeneration, current: c.candGeneration}
+			}
 			return nil, &candidateGenerationInvalidatedError{queried: queryGeneration, current: c.candGeneration}
 		}
 		if fetchErr != nil {
@@ -792,6 +879,13 @@ func (c *Client) fetchCandidateGeneration(key string, queryGeneration uint64, fe
 		return candidateFlightResult{response: resp, generation: queryGeneration}, nil
 	})
 	if err != nil {
+		// Pass the invalidated error through, but keep a successfully
+		// fetched response (2026-09-07) so the caller can serve it without
+		// retrying — see the invalidated branch in getCandidates.
+		result, _ := v.(candidateFlightResult)
+		if errors.Is(err, errCandidateCacheInvalidated) && result.response != nil {
+			return result.response, shared, err
+		}
 		return nil, shared, err
 	}
 

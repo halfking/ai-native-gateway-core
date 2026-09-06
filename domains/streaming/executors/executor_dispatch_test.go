@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -22,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // TestDispatchErrMapping locks the contract that dispatch pipeline errors are
@@ -562,5 +564,45 @@ func TestCopyQueueTimestampsToError(t *testing.T) {
 	}
 	if ee.T9ResponseEndAt == nil || !ee.T9ResponseEndAt.Equal(t9) {
 		t.Fatalf("T9=%v", ee.T9ResponseEndAt)
+	}
+}
+
+// TestDispatchErrToExecuteErrorPreservesUpstreamRateLimit pins the
+// 2026-09-07 mock-system-test §5.3 fix: when the dispatch exhaustion chain
+// terminates in an upstream 429, the ExecuteError must carry KindRateLimit
+// so the handler returns HTTP 429 + Retry-After instead of 503
+// model_not_found. Other upstream kinds keep the legacy transient mapping.
+func TestDispatchErrToExecuteErrorPreservesUpstreamRateLimit(t *testing.T) {
+	upstreamErr := &upstreampkg.Error{
+		Kind:       errorsx.KindRateLimit,
+		Message:    "Rate limit",
+		StatusCode: 429,
+		RetryAfter: 7 * time.Second,
+	}
+
+	ee := dispatchErrToExecuteError(&dispatch.ExhaustedError{Cause: upstreamErr})
+	if !ee.Exhausted || ee.LastKind != errorsx.KindRateLimit {
+		t.Fatalf("exhausted rate-limit mapping = (Exhausted=%v, LastKind=%q), want exhausted rate_limit", ee.Exhausted, ee.LastKind)
+	}
+
+	// Other upstream kinds deliberately keep the blanket transient mapping
+	// (handler-side classification unchanged).
+	ee = dispatchErrToExecuteError(&dispatch.ExhaustedError{
+		Cause: &upstreampkg.Error{Kind: errorsx.KindUpstreamDown, StatusCode: 502},
+	})
+	if !ee.Exhausted || ee.LastKind != errorsx.KindTransient {
+		t.Fatalf("non-rate-limit mapping = (Exhausted=%v, LastKind=%q), want exhausted transient", ee.Exhausted, ee.LastKind)
+	}
+
+	// Deeply wrapped (fmt.Errorf %w) still unwraps.
+	ee = dispatchErrToExecuteError(fmt.Errorf("dispatch failed: %w", upstreamErr))
+	if ee.LastKind != errorsx.KindRateLimit {
+		t.Fatalf("wrapped rate-limit kind = %q, want rate_limit", ee.LastKind)
+	}
+
+	// Legacy sentinels keep their mappings.
+	ee = dispatchErrToExecuteError(dispatch.ErrNoRoute)
+	if !ee.Exhausted || ee.LastKind != errorsx.KindConcurrent {
+		t.Fatalf("ErrNoRoute mapping = (Exhausted=%v, LastKind=%q), want exhausted concurrent", ee.Exhausted, ee.LastKind)
 	}
 }
