@@ -25,6 +25,8 @@ export default {
     models: '模型与目录',
     routingOverview: '路由全景',
     credentialMonitor: '凭据监控',
+    annotations: '人工标注',
+    annotationStats: '标注统计',
     probeHealth: '探测健康度',
     systemMonitor: '系统自检',
     providers: '供应商',
