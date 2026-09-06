@@ -169,4 +169,23 @@
 
 ---
 
+## 7. 修复落地记录(2026-09-07 同日)
+
+§5 的问题已在代码层修复(构建序号 1997 起),验证方式与结果:
+
+| # | 问题 | 修复 | 验证 |
+|---|------|------|------|
+| 1 | [P1] 候选缓存竞态 500(`provider/client.go`) | ① `InvalidateCandidateCacheForCredential` 仅在实际删除了缓存条目时才递增全局 generation(无关凭据的探针写入不再作废进行中查找);② DB 抓取成功但撞上失效时,把刚抓取的新鲜响应直接返回给调用方(不写缓存),不再丢弃重试;③ 极端情况下重试耗尽,回退 stale 条目(`serveStaleOnGenerationExhausted`)而非 500 | 单测 ×3 + E2E:20 并发 × 300 请求,原始层 300/300 成功、0 个 500(修复前基线 3%~21%) |
+| 2 | [P2] 全局 generation 放大探针噪声 | 由 #1① 根治 | 同上;S1/S7 全局分担均匀 |
+| 3 | [P2] 全候选 429 传播语义(`executor_dispatch.go` + `handler.go`) | dispatch 错误映射(`dispatchErrToExecuteError`)从耗尽错误链中识别上游 `KindRateLimit` 并保留(原先一律压成 `KindTransient`);handler 耗尽分支对 rate_limit 返回 HTTP 429 + Retry-After(上游提示优先、有界)+ `code=rate_limit` | 单测 + E2E:三 mock 全限流时客户端收到 429/Retry-After=10/code=rate_limit(修复前为 503 model_not_found) |
+| 4 | [P3] `rate_limit_rpm=NULL` 语义陷阱 | 运维文档明确 NULL=tier 默认、显式 0=无限 | `docs/deployment/rate-limit-and-node-probe-semantics.md` §1 |
+| 5 | [P3] 部署 env 文件特殊字符 | native 模式改为解析式读取(`dl_load_env_file`,逐行 export,不做 shell 解析);写入侧保持 docker `--env-file` 原样格式不变 | shell 测试 `scripts/deploy-local-lib-envload_test.sh`(含 `&`/反引号/`$()` 值的原样导出断言) |
+| 6 | [P3] 节点探针排除窗口 | 预期自愈机制,已写入运维文档(含排查 SQL 与三表恢复要点) | 同上 §2 |
+
+运维语义汇总文档:`docs/deployment/rate-limit-and-node-probe-semantics.md`。
+
+**注**:验证期间实测到 #6 的排除窗口(限流风暴后路由短暂排除,`no_candidate`),按三表恢复流程(`credential_model_bindings` + `credentials` + `node_probe_state`)清理后立即恢复,与文档描述一致。
+
+---
+
 **报告生成**: 2026-09-07 · ZCode 综合系统测试

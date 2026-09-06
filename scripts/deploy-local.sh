@@ -653,7 +653,10 @@ EOF
     docker run -d --name "$name" --restart unless-stopped "${gateway_net_args[@]}" "${gateway_bind_args[@]}" --env-file "$runtime_env" -e "LLM_GATEWAY_LISTEN=:${port}" -e "LLM_GATEWAY_VERSION_FILE=/opt/llm-gateway-go/version.json" -p "127.0.0.1:${port}:${port}" "kx-llm-gateway-local:${RELEASE_VERSION}" >/dev/null
   else
     local pf; pf=$(pid_file "$port"); mkdir -p "$RUN_DIR" "$LOG_DIR"
-    source "$bundle/env"
+    # Parse instead of source: env values are written verbatim for docker
+    # --env-file and may contain shell metacharacters (e.g. '&' in the admin
+    # password), which `source` would treat as shell syntax.
+    dl_load_env_file "$bundle/env"
     LLM_GATEWAY_VERSION_FILE="$bundle/version.json" LLM_GATEWAY_LISTEN=":$port" \
       nohup "$bundle/gateway" >>"$LOG_DIR/gateway-${port}.log" 2>&1 &
     printf '%s\n' "$!" > "$pf"; chmod 0600 "$pf"

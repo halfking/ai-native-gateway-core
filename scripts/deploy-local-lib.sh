@@ -424,6 +424,24 @@ dl_emit_env_line() {
   fi
 }
 
+# Load a dl_write_env-produced env file WITHOUT shell-sourcing it.
+# Values are written verbatim (docker --env-file contract) so they may
+# contain shell metacharacters — an unquoted '&' in LLM_GATEWAY_ADMIN_PASSWORD
+# made `source` truncate the value and execute the rest as a command
+# (mock system test 2026-09-07 §5.5). Exporting the whole KEY=value word is
+# safe: bash treats the argument as a name=value assignment, never as syntax.
+dl_load_env_file() {
+  local file="$1" line
+  [[ -f "$file" ]] || { printf 'error: env file not found: %s\n' "$file" >&2; return 1; }
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" != *=* ]] && continue
+    # shellcheck disable=SC2163  # line deliberately holds the whole KEY=value word
+    export "$line" || { printf 'error: invalid env line: %s\n' "$line" >&2; return 1; }
+  done < "$file"
+}
+
 dl_stage_release() {
   local bundle="$1" binary="$2" web="$3" version_json="$4" version_file="$5" name="$6"
   # 本函数经 deploy-local.sh 的 var=$(stage_release ...) 赋值语境调用：
