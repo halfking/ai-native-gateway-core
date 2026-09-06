@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
 [![Multi-Tenant](https://img.shields.io/badge/Multi--Tenant-RLS%20enabled-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/Version-v2.4.7-green.svg)](VERSION)
+[![Version](https://img.shields.io/badge/Version-v2.5.3-green.svg)](VERSION)
 
 ---
 
@@ -113,11 +113,11 @@ cd ..
 
 ```bash
 # 启动网关（默认监听 :8781）
-./gateway --listen :8781
+LLM_GATEWAY_LISTEN=:8781 ./gateway
 
 # 健康检查
 curl http://localhost:8781/healthz
-# 返回: {"status":"ok","version":"v2.4.7"}
+# 返回: {"status":"ok","version":"v2.5.3"}
 ```
 
 ### 升级
