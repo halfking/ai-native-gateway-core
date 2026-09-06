@@ -3,7 +3,7 @@
 > Private-deployment LLM gateway with intelligent routing, multi-tenancy, and comprehensive observability
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Go Report](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
+[![Go Report](https://img.shields.io/badge/Go-1.27+-00ADD8.svg)](https://golang.org)
 
 [Quick Start](#quick-start) • [Features](#features) • [Architecture](docs/architecture.md) • [Comparison](docs/comparison.md) • [Roadmap](ROADMAP.md)
 

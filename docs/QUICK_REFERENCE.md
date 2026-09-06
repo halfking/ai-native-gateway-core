@@ -25,9 +25,9 @@
 ```
 项目名称:     LLM Gateway Go
 当前版本:     v2.5.3-c1fd9f4c-20260905-1957
-Go版本:       1.25.0
+Go版本:       1.27.1
 主入口:       cmd/gateway/main.go
-默认端口:     8781 (Gateway), 8782 (Admin)
+默认端口:     8781 (Gateway 与 Admin 同端口，/api/admin/*)
 ```
 
 ### 仓库地址
@@ -101,11 +101,11 @@ go build -o gateway ./cmd/gateway
 # 编译安装器
 cd installer && go build -o llm-gw-installer ./cmd/llm-gw-installer
 
-# 运行网关（开发模式）
-./gateway --config configs/dev.yaml --listen :8781
+# 运行网关（开发模式；无命令行 flag，配置经环境变量传入）
+LLM_GATEWAY_CONFIG_FILE=<yaml 配置文件> LLM_GATEWAY_LISTEN=:8781 ./gateway
 
 # 运行网关（生产模式）
-./gateway --config /etc/llm-gateway/config.yaml
+LLM_GATEWAY_CONFIG_FILE=/etc/llm-gateway/config.yaml ./gateway
 ```
 
 ### 测试
@@ -261,7 +261,7 @@ x-goog-api-key: xxx
 #### 认证
 ```bash
 # 登录
-POST http://localhost:8782/api/v1/auth/login
+POST http://localhost:8781/api/auth/token
 {
   "username": "admin",
   "password": "xxx"
@@ -277,64 +277,59 @@ POST http://localhost:8782/api/v1/auth/login
 #### 租户管理
 ```bash
 # 创建租户
-POST http://localhost:8782/api/v1/tenants
+POST http://localhost:8781/api/admin/tenants
 Authorization: Bearer eyJhbGc...
 
 # 查询租户列表
-GET http://localhost:8782/api/v1/tenants?page=1&page_size=20
+GET http://localhost:8781/api/admin/tenants?page=1&page_size=20
 
 # 租户详情
-GET http://localhost:8782/api/v1/tenants/:id
+GET http://localhost:8781/api/admin/tenants/:id
 
 # 更新租户
-PUT http://localhost:8782/api/v1/tenants/:id
+PUT http://localhost:8781/api/admin/tenants/:id
 
 # 删除租户
-DELETE http://localhost:8782/api/v1/tenants/:id
+DELETE http://localhost:8781/api/admin/tenants/:id
 ```
 
 #### 凭据管理
 ```bash
-# 创建凭据
-POST http://localhost:8782/api/v1/credentials
+# 凭据监控总览
+GET http://localhost:8781/api/credentials/monitor-summary
 
-# 凭据列表
-GET http://localhost:8782/api/v1/credentials?tenant_id=xxx
+# 凭据健康热力图
+GET http://localhost:8781/api/credentials/heatmap
 
-# 凭据健康状态
-GET http://localhost:8782/api/v1/credentials/:id/health
+# 查看凭据密钥
+POST http://localhost:8781/api/credentials/:id/reveal
 
-# 可用性矩阵
-GET http://localhost:8782/api/v1/credentials/matrix
+# 轮换凭据主 Key
+POST http://localhost:8781/api/credentials/:id/set-key
 ```
 
 #### 监控仪表盘
 ```bash
 # 总览
-GET http://localhost:8782/api/v1/dashboard/overview
+GET http://localhost:8781/api/admin/dashboard/board
 
-# 实时监控
-GET http://localhost:8782/api/v1/dashboard/realtime
+# 实时会话监控
+GET http://localhost:8781/api/admin/dashboard/session-active
 
 # 统计数据
-GET http://localhost:8782/api/v1/dashboard/stats?start=2026-09-01&end=2026-09-06
+GET http://localhost:8781/api/admin/stats
 ```
 
 #### 审计查询
 ```bash
-# 请求日志
-GET http://localhost:8782/api/v1/audit/requests?tenant_id=xxx&limit=100
+# 审计操作日志（super_admin）
+GET http://localhost:8781/api/admin/audit-logs?page=1&size=50
 
-# 会话记录
-GET http://localhost:8782/api/v1/audit/sessions?session_id=xxx
+# 会话审计记录
+GET http://localhost:8781/api/admin/session-audit?session_id=xxx
 
-# 导出审计
-POST http://localhost:8782/api/v1/audit/export
-{
-  "start_time": "2026-09-01T00:00:00Z",
-  "end_time": "2026-09-06T23:59:59Z",
-  "format": "csv"
-}
+# 导出会话审计
+GET http://localhost:8781/api/admin/session-audit/export?tenant_id=xxx
 ```
 
 ---
@@ -353,28 +348,21 @@ export DB_SSLMODE=disable
 export DB_MAX_CONNS=100
 
 # Redis
-export REDIS_HOST=localhost
+export LLM_GATEWAY_REDIS_ADDR=127.0.0.1:6379
 export REDIS_PORT=6379
 export REDIS_PASSWORD=xxx
 export REDIS_DB=0
 
 # 网关
-export GATEWAY_LISTEN=:8781
-export GATEWAY_MODE=production
-export GATEWAY_LOG_LEVEL=info
-
-# Admin
-export ADMIN_LISTEN=:8782
-export ADMIN_ENABLED=true
-
-# License
-export LICENSE_FILE=/etc/llm-gateway/license.dat
+export LLM_GATEWAY_LISTEN=:8781
+export LLM_GATEWAY_LOG_LEVEL=info
 
 # 对象存储（OSS/S3）
-export OSS_ENDPOINT=oss-cn-hangzhou.aliyuncs.com
 export OSS_ACCESS_KEY_ID=xxx
 export OSS_ACCESS_KEY_SECRET=xxx
 export OSS_BUCKET=llm-gateway
+
+# 完整变量清单以 config/config.go 为准
 ```
 
 ### 配置文件示例
@@ -523,16 +511,13 @@ LIMIT 10;
 
 ### Q1: 如何添加新凭据？
 ```bash
-# 通过Admin API
-curl -X POST http://localhost:8782/api/v1/credentials \
+# 通过Admin API（凭据挂在供应商下：创建供应商后在其下添加凭据，密钥经 /api/credentials/ 管理）
+curl -X POST http://localhost:8781/api/providers \
   -H "Authorization: Bearer xxx" \
   -H "Content-Type: application/json" \
   -d '{
-    "tenant_id": "xxx",
-    "provider": "openai",
-    "name": "OpenAI Key 1",
-    "api_key": "sk-xxx",
-    "models": ["gpt-4", "gpt-3.5-turbo"]
+    "code": "openai",
+    "display_name": "OpenAI"
   }'
 
 # 通过SQL
@@ -543,7 +528,7 @@ VALUES ('xxx', 'openai', 'OpenAI Key 1', 'sk-xxx', 'active');
 ### Q2: 如何查看某个请求的详细日志？
 ```bash
 # 通过Admin API
-curl http://localhost:8782/api/v1/audit/requests/req_xxx \
+curl http://localhost:8781/api/admin/connection-registry/req_xxx \
   -H "Authorization: Bearer xxx"
 
 # 通过SQL
