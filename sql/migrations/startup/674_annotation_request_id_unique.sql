@@ -1,4 +1,4 @@
--- Migration 672: training_human_annotations.request_id 唯一索引（P2.1 功能验证 hotfix）
+-- Migration 674: training_human_annotations.request_id 唯一索引（P2.1 功能验证 hotfix）
 --
 -- Bug: 部署 669 后 POST /api/admin/annotations 与 /batch 一律 500：
 --   "there is no unique or exclusion constraint matching the ON CONFLICT
