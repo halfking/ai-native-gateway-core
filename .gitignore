@@ -14,6 +14,9 @@
 # 2026-07-17: scratch working dir for ad-hoc notes / timers / handoffs (not part of repo)
 /.scratch/
 
+# 2026-09-06: audit workspace for review sessions (SQL scripts, temp reports)
+/.audit-workspace/
+
 # Build artifacts
 /gateway
 /gateway-v2
@@ -163,6 +166,9 @@ deploy/r*-*/
 # deploy/sql/objects/ 为 sync-objects.sh 生成的派生副本（SSOT = sql/objects/）
 deploy/sql/objects/
 
+
+# Historical-secret sources used only by public-mirror rewrite tooling.
+/scripts/scan-secrets.private.replacements
 
 # 环境变量（明文，不提交）
 # Spec cf8aad1a9 §SOPS and Credentials: only encrypted forms are

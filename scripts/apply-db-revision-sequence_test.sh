@@ -20,8 +20,10 @@ for required in \
 done
 
 # Keep the migration sequence explicit in the executable so deployment cannot
-# silently fall back to numeric directory ordering.
-sequence=$(grep -A40 '^files=(' "$SCRIPT")
+# silently fall back to numeric directory ordering. Do not use a fixed line
+# window here: the sequence is intentionally append-only and has grown beyond
+# the original 40-line contract fixture.
+sequence=$(awk '/^files=\(/{inside=1} inside{print} inside && /^\)/{exit}' "$SCRIPT")
 for required in 655 560 572 606 563 564 644 645 650 651 652 653 654 656 659 660 661 662 663 664 V371; do
   printf '%s\n' "$sequence" | grep -q "${required}_" || {
     printf 'missing sequence entry: %s\n' "$required" >&2

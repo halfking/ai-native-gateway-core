@@ -26,7 +26,7 @@ DB_HOST="172.16.2.210"
 DB_PORT="5432"
 DB_NAME="llm_gateway"
 DB_USER="llm_gateway"
-DB_PASS="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+DB_PASS="${LLM_GATEWAY_DB_PASSWORD:?LLM_GATEWAY_DB_PASSWORD must be set for database verification}"
 
 # 本地配置
 LOCAL_BINARY="${LOCAL_BINARY:-./gateway}"
