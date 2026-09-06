@@ -5957,6 +5957,7 @@ func main() {
 		adminGroup := e.Group("/api/admin", requireSuperAdmin)
 		licensingHandler.RegisterRoutes(adminGroup)
 		licensing.RegisterModuleRoutes(adminGroup, licensingStore)
+		registerRoutingOptMLRoutes(adminGroup) // P2.5: GET /api/admin/routing-opt/ml
 		slog.Info("Phase 2: Licensing API enabled (/api/admin/licenses, /api/admin/modules)")
 
 		// 2026-07-13: Customer-facing license endpoints. Unauthenticated by

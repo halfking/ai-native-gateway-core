@@ -13,16 +13,23 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-LANGS = ["zh", "en", "ja", "de", "es", None]
+# 词汇表与Go运行时（写入auto_route_selections的值）严格对齐：
+#   - autoroute/structured_features.go（buckets/enums）
+#   - autoroute/profile.go（Profile枚举）
+#   - autoroute/task_types*.go（TaskType枚举）
+#   - classifier字段：v3_heuristic/llm/heuristic/default（Classification.Classifier）
+# 这样合成fixture与真实训练数据共享同一ONNX编码器词表，避免unknown→-1退化。
+LANGS = ["zh", "en", "ja", "ko", "mixed", "unknown", None]
 LEN_BUCKETS = ["xs", "s", "m", "l", "xl", "xxl"]
-CTX_BUCKETS = ["none", "s", "m", "l", "xl"]
-TURN_BUCKETS = ["single", "few", "many"]
-INTENTS = ["qa", "generation", "analysis", "classification", "summarization", None]
-DOMAINS = ["tech", "finance", "medical", "education", "general", None]
-COMPLEXITY = ["simple", "moderate", "complex"]
-TASKS = ["chat", "completion", "embedding"]
-PROFILES = ["balanced", "cost", "speed", "quality"]
-CLASSIFIERS = ["heuristic_v1", "ml_v1"]
+CTX_BUCKETS = ["xs", "s", "m", "l", "xl"]
+TURN_BUCKETS = ["single", "few", "many", "very_many"]
+INTENTS = ["question", "instruction", "conversation", "analysis", "generation", None]
+DOMAINS = ["general", "technical", "business", "academic", "creative", None]
+COMPLEXITY = ["trivial", "simple", "moderate", "complex", "very_complex"]
+TASKS = ["chat", "reasoning", "code", "agent", "creative", "long_context",
+         "vision", "function_call"]
+PROFILES = ["smart", "speed_first", "cost_first"]
+CLASSIFIERS = ["v3_heuristic", "llm", "heuristic", "default"]
 MODELS = ["gpt-4", "claude-3.5-sonnet", "glm-4.6", "deepseek-v3"]
 
 BOOL_COLS = [
@@ -38,11 +45,11 @@ def generate_synthetic_training_data(
 ) -> pd.DataFrame:
     """生成n_rows条schema v1兼容的合成记录。
 
-    标签规则（可学习结构）:
-      - code/表格类请求 + quality profile  → claude-3.5-sonnet
-      - 长上下文 + analysis意图            → gpt-4
-      - 中文 + 简单请求                    → glm-4.6
-      - cost profile                       → deepseek-v3
+    标签规则（可学习结构，使用运行时词汇表）:
+      - code/agent任务 + 表格类请求               → claude-3.5-sonnet
+      - long_context任务 或 xl上下文 + analysis   → gpt-4
+      - 中文 + trivial/simple复杂度               → glm-4.6
+      - cost_first profile                        → deepseek-v3
       - 其余按启发式概率分布
     """
     rng = np.random.default_rng(seed)
@@ -51,24 +58,27 @@ def generate_synthetic_training_data(
     df = pd.DataFrame({
         "request_id": [f"syn_{i:08d}" for i in range(n)],
         "timestamp": (1_750_000_000_000 + rng.integers(0, 86_400_000, n)),
-        "task_type": rng.choice(TASKS, n, p=[0.75, 0.15, 0.10]),
-        "profile": rng.choice(PROFILES, n, p=[0.5, 0.2, 0.15, 0.15]),
-        "classifier": rng.choice(CLASSIFIERS, n, p=[0.9, 0.1]),
+        "task_type": rng.choice(TASKS, n,
+                                p=[0.45, 0.10, 0.15, 0.05, 0.05, 0.10, 0.05, 0.05]),
+        "profile": rng.choice(PROFILES, n, p=[0.6, 0.2, 0.2]),
+        "classifier": rng.choice(CLASSIFIERS, n, p=[0.8, 0.1, 0.08, 0.02]),
         "confidence": np.round(rng.beta(5, 2, n), 3),
     })
 
     optional_str = {
-        "detected_language": rng.choice(LANGS, n, p=[0.4, 0.3, 0.08, 0.07, 0.07, 0.08]),
+        "detected_language": rng.choice(
+            LANGS, n, p=[0.4, 0.3, 0.08, 0.07, 0.05, 0.05, 0.05]),
         "prompt_length_bucket": rng.choice(LEN_BUCKETS, n,
                                            p=[0.15, 0.25, 0.3, 0.15, 0.1, 0.05]),
         "context_length_bucket": rng.choice(CTX_BUCKETS, n,
                                             p=[0.3, 0.25, 0.2, 0.15, 0.1]),
-        "turn_count_bucket": rng.choice(TURN_BUCKETS, n, p=[0.4, 0.4, 0.2]),
+        "turn_count_bucket": rng.choice(TURN_BUCKETS, n, p=[0.35, 0.35, 0.2, 0.1]),
         "intent_category": rng.choice(INTENTS, n,
                                       p=[0.35, 0.25, 0.15, 0.1, 0.07, 0.08]),
         "domain_hint": rng.choice(DOMAINS, n,
-                                  p=[0.35, 0.15, 0.08, 0.1, 0.24, 0.08]),
-        "complexity_bucket": rng.choice(COMPLEXITY, n, p=[0.4, 0.4, 0.2]),
+                                  p=[0.4, 0.25, 0.12, 0.08, 0.1, 0.05]),
+        "complexity_bucket": rng.choice(COMPLEXITY, n,
+                                        p=[0.3, 0.3, 0.25, 0.1, 0.05]),
     }
     for col, values in optional_str.items():
         # None值通过choice概率注入，模拟Parquet的OPTIONAL列
@@ -86,21 +96,21 @@ def generate_synthetic_training_data(
     df["feature_version"] = "v1"
     df["content_hash"] = [f"{rng.integers(0, 2**63):016x}" for _ in range(n)]
 
-    # ---- 可学习标签结构 ----
+    # ---- 可学习标签结构（运行时词汇表）----
     labels = []
     for i in range(n):
         row = df.iloc[i]
         codey = bool(row["has_code_indicator"]) or bool(row["has_table_indicator"])
         long_ctx = row["context_length_bucket"] in ("l", "xl")
         zh = row["detected_language"] == "zh"
-        simple = row["complexity_bucket"] == "simple"
-        if codey and row["profile"] == "quality":
+        simple = row["complexity_bucket"] in ("trivial", "simple")
+        if codey and row["task_type"] in ("code", "agent"):
             labels.append("claude-3.5-sonnet")
         elif long_ctx and row["intent_category"] == "analysis":
             labels.append("gpt-4")
         elif zh and simple:
             labels.append("glm-4.6")
-        elif row["profile"] == "cost":
+        elif row["profile"] == "cost_first":
             labels.append("deepseek-v3")
         else:
             labels.append(rng.choice(MODELS, p=[0.4, 0.25, 0.2, 0.15]))

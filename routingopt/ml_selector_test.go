@@ -157,9 +157,9 @@ func TestMLSelectorEndToEnd(t *testing.T) {
 	t.Cleanup(func() { _ = sel.Close() })
 
 	pred, err := sel.Predict(context.Background(), MLRouteFeatures{
-		TaskType: "chat", Profile: "quality", Classifier: "heuristic",
+		TaskType: "chat", Profile: "smart", Classifier: "v3_heuristic",
 		Confidence: 0.85, DetectedLanguage: "en",
-		PromptLengthBucket: "m", ContextLengthBucket: "none",
+		PromptLengthBucket: "m", ContextLengthBucket: "xs",
 		TurnCountBucket: "single", IntentCategory: "question",
 		DomainHint: "general", ComplexityBucket: "simple",
 		HasTableIndicator: true,

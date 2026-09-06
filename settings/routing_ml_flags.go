@@ -34,6 +34,11 @@ type RoutingMLFlags struct {
 
 	// IntraOpNumThreads bounds per-inference CPU use (1 = hot-path safe).
 	IntraOpNumThreads int
+
+	// ReloadSeconds is the model hot-reload poll interval. 0 (default)
+	// disables auto-reload; the startup model serves until restart.
+	// Recommended: 30 for A/B production runs.
+	ReloadSeconds int
 }
 
 // GetRoutingMLFlags reads ROUTING_ML_* environment variables with safe
@@ -45,6 +50,7 @@ func GetRoutingMLFlags() *RoutingMLFlags {
 		ORTLibraryPath:    envString("ROUTING_ML_ORT_LIB_PATH", ""),
 		MinConfidence:     envFloat("ROUTING_ML_MIN_CONFIDENCE", 0.6),
 		IntraOpNumThreads: envInt("ROUTING_ML_INTRA_OP_THREADS", 1),
+		ReloadSeconds:     envInt("ROUTING_ML_RELOAD_SECONDS", 0),
 	}
 }
 
