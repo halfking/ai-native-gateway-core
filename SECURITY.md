@@ -1,113 +1,206 @@
-# Security Policy — SI-LLM-Gateway
+# Security Policy
 
-## 支持的版本
+## Supported Versions
 
-下表列出了 SI-LLM-Gateway 各个版本的安全更新支持情况：
+Security updates are provided for the following versions:
 
-| 版本 | 支持状态 |
-|------|----------|
-| `main` 分支最新 | ✅ 活跃支持 |
-| 最近 3 个 minor release | ✅ 接受安全修复 |
-| 更早版本 | ❌ 不再支持 |
-
----
-
-## 漏洞报告
-
-我们重视安全问题。**请勿**在 GitHub Issues 中公开披露安全漏洞。
-
-### 私密报告渠道
-
-📧 **邮箱**：security@internal.example.com（推荐中文/英文均可）
-
-请在邮件中包含：
-
-1. **漏洞描述**：简要说明问题
-2. **复现步骤**：详细的复现命令 / 请求 / 响应
-3. **影响范围**：哪些模块/版本受影响
-4. **严重度自评**（参考 [CVSS 3.1](https://www.first.org/cvss/calculator/3.1)）
-5. **披露计划**（如有）：你打算何时公开
-
-### 响应承诺
-
-| 阶段 | 时间 |
-|------|------|
-| 初步确认 | 收到报告后 3 个工作日内 |
-| 影响评估 | 5 个工作日内 |
-| 修复 / 缓解措施 | 视严重度：<br>🔴 严重 (RCE/Auth bypass) — 24-72h<br>🟡 中等 — 14 天<br>🟢 轻微 — 下个 release |
-| 公开致谢 | 修复发布后（如果你同意） |
+| Version | Supported |
+|---------|-----------|
+| `main` branch | ✅ Active development |
+| Latest 3 minor releases | ✅ Security fixes |
+| Older versions | ❌ No longer supported |
 
 ---
 
-## 公开致谢政策
+## Reporting a Vulnerability
 
-- 修复发布后，我们会在 [`SECURITY_ACKNOWLEDGMENTS.md`](SECURITY_ACKNOWLEDGMENTS.md) 中致谢报告者（除非你选择匿名）
-- 严重漏洞可酌情给予 bounty / swag（视公司政策）
+We take security seriously. **Please do NOT report security vulnerabilities through public GitHub issues.**
+
+### Private Reporting (Recommended)
+
+Use GitHub's private vulnerability reporting:
+
+1. Go to [Security Advisories](https://github.com/halfking/ai-native-gateway-core/security/advisories)
+2. Click "Report a vulnerability"
+3. Fill in the details
+
+### Email Reporting
+
+Alternatively, email: **security@example.com** (TODO: Update with actual contact)
+
+### What to Include
+
+Please provide:
+
+1. **Description**: Brief summary of the vulnerability
+2. **Reproduction Steps**: Detailed steps to reproduce
+3. **Impact**: Which components/versions are affected
+4. **Severity**: Your assessment (CVSS score if possible)
+5. **Disclosure Timeline**: Your intended disclosure date (if any)
+
+### Response Timeline
+
+| Stage | Timeframe |
+|-------|-----------|
+| Initial acknowledgment | 3 business days |
+| Impact assessment | 5 business days |
+| Fix development & testing | Severity-dependent:<br>🔴 Critical (RCE/Auth bypass): 24-72h<br>🟡 Medium: 14 days<br>🟢 Low: Next release |
+| Public disclosure | After fix is released |
+
+### Public Acknowledgment
+
+After the fix is released, we will:
+- Credit you in release notes (unless you prefer anonymity)
+- Add you to [SECURITY_ACKNOWLEDGMENTS.md](SECURITY_ACKNOWLEDGMENTS.md)
+- Consider bounty/swag for critical findings (case-by-case)
 
 ---
 
-## 已知的安全注意事项
+## Security Best Practices
 
-### 已主动脱敏的领域
+### Deployment Checklist
 
-参见 [`docs/REPO-MIRROR-POLICY.md`](docs/REPO-MIRROR-POLICY.md) 了解
-本仓库如何处理 codeup (内部) ⇄ github (公开) 双仓库同步时的敏感信息保护。
+Before production deployment, verify:
 
-### 法务白名单
+- [ ] All credentials use strong random values (32+ bytes)
+- [ ] `.env` files and secrets are in `.gitignore`
+- [ ] Database credentials use strong passwords
+- [ ] `LLM_GATEWAY_ADMIN_API_KEY` is a strong random value
+- [ ] HTTPS/TLS is enabled (reverse proxy or ingress)
+- [ ] Database connections use TLS (remove `sslmode=disable` for production)
+- [ ] Audit logging is enabled (not disabled)
+- [ ] Regular backups are configured
+- [ ] Credential rotation schedule is defined
+- [ ] Monitoring and alerting is set up
 
-[`docs/legal/disguise-compliance.md`](docs/legal/disguise-compliance.md) —
-`disguise/` 模块的请求伪装 (UA / TLS ClientHello rotation) 功能的法律合规说明。
-该功能**默认关闭**，需要法务审批后才可启用。
+### Environment Variables
 
-### 不安全的功能默认关闭
+**Never commit these to version control:**
+- `LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY`
+- `LLM_GATEWAY_SECRET_KEY`
+- `LLM_GATEWAY_API_KEY`
+- `LLM_GATEWAY_ADMIN_API_KEY`
+- `POSTGRES_PASSWORD`
+- `REDIS_PASSWORD`
+- Database connection strings with embedded passwords
 
-- **disguise/ 请求伪装** — 默认 `LLM_GATEWAY_DISGUISE_DISABLE=true`
-- **凭据自动重试** — 仅在凭证白名单内生效
-- **A2A 跨 Agent 调用** — 当前未上线（Q1 2027）
+Use environment variables, secrets managers (Vault, Kubernetes Secrets), or SOPS encryption.
+
+### Network Security
+
+- Bind services to `127.0.0.1` (localhost) by default
+- Use reverse proxy (Nginx, Traefik) for external access
+- Enable TLS/HTTPS for all external connections
+- Use firewall rules to restrict database/Redis access
+- Consider VPN or private network for multi-node deployments
+
+### Database Security
+
+- Enable PostgreSQL RLS (Row-Level Security) - **required for multi-tenancy**
+- Use strong database passwords (20+ characters)
+- Enable TLS for PostgreSQL connections
+- Restrict database user permissions (no SUPERUSER)
+- Regular backup and test restore procedures
+- Monitor for unusual query patterns
+
+### Credential Management
+
+- Upstream provider credentials are encrypted at rest (Fernet/AES-256-GCM)
+- Rotation is manual by default - establish a rotation schedule
+- Use dedicated service accounts per provider when possible
+- Monitor credential usage for anomalies
+- Revoke credentials immediately when compromised
 
 ---
 
-## 部署时的安全检查清单
+## Known Security Considerations
 
-部署到生产前请确认：
+### Multi-Tenancy Enforcement
 
-- [ ] 所有 `.env` / `secrets.json` / `*.pem` 已在 `.gitignore` 内
-- [ ] 数据库密码已用 Fernet 加密（不要明文存在 DB）
-- [ ] `LLM_GATEWAY_ADMIN_TOKEN` 已设置为强随机值
-- [ ] 启用 HTTPS（k3s ingress 用 cert-manager）
-- [ ] 启用 audit pipeline (不要禁用 DLQ)
-- [ ] 凭据轮换 cron 已配置
-- [ ] SIEM 推送已配置（v3.2 之后）
-- [ ] 已复跑 [`SECURITY-AUDIT-2026-06-28.md`](docs/SECURITY-AUDIT-2026-06-28.md) §7 附录的 11 条检测命令，未命中新增问题（特别是 NET-001/NET-005/NET-007/NET-008 这 4 项易回归）
-- [ ] 已跑 [`scripts/deploy-verify-network-security.sh`](scripts/deploy-verify-network-security.sh) 自动化部署验证（24 项检查）—— 见 [`docs/audit/2026-06-29-prod-verification.md`](docs/audit/2026-06-29-prod-verification.md)
+Multi-tenancy isolation relies on PostgreSQL RLS. **If RLS is disabled or bypassed, tenant isolation is compromised.**
 
----
-
-## 第三方依赖
-
-定期使用以下工具扫描依赖漏洞：
-
-```bash
-go list -m -u -mod=mod all  # 检查 Go 依赖更新
-go list -m -json -u all | jq '.Path + " " + .Version'  # 详细
+Verify RLS is active:
+```sql
+SELECT schemaname, tablename, rowsecurity 
+FROM pg_tables 
+WHERE schemaname = 'public' 
+  AND rowsecurity = false;
 ```
 
-严重 CVE 我们会在 minor release 中修复。
+Should return no rows for tenant-scoped tables.
+
+### API Key Security
+
+- Data plane API keys are tenant/user-scoped
+- Admin API keys have elevated privileges - guard carefully
+- Keys are validated on every request
+- Rotate keys regularly (30-90 days recommended)
+
+### Sensitive Data Logging
+
+Request/response bodies are logged by default for audit. Ensure:
+- Logs are stored securely (encrypted at rest)
+- Log access is restricted
+- Sensitive fields are masked (implemented via `secretmask` package)
+- Log retention complies with your data policy
 
 ---
 
-## 已发布的安全审计
+## Vulnerability Disclosure Policy
 
-按发布时间倒序，所有审计文档请见 [`docs/SECURITY-AUDIT-INDEX.md`](docs/SECURITY-AUDIT-INDEX.md) 索引。
+### Coordinated Disclosure
 
-最新：
+We follow **coordinated disclosure**:
+1. Researcher reports vulnerability privately
+2. We acknowledge and assess impact
+3. We develop and test fix
+4. We release fix and advisory
+5. Public disclosure after fix is available
 
-- **2026-06-28 — [网络/传输层审计](docs/SECURITY-AUDIT-2026-06-28.md)**：**v1.6 已修复全部 19/19 项**（含原 NET-001~011 审计 + NET-012/013 WIP build break + NET-014 v2 overlay 重复注册 + NET-015~019 业务安全补强）。剩余为常规维护与下一次发版前的 §7 一键检测脚本复跑。
+### Embargo Period
+
+Default embargo: **90 days** from initial report or until fix is released (whichever is sooner).
+
+If you need to disclose earlier, please discuss with us first.
 
 ---
 
-## 联系方式
+## Security Tooling
 
-- 安全邮箱：security@internal.example.com
-- 项目仓库：https://github.com/halfking/ai-native-gateway
-- 主仓库：https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
+### Secret Scanning
+
+Run before every commit to public repositories:
+
+```bash
+bash scripts/scan-secrets.sh --mode=strict
+```
+
+### Dependency Scanning
+
+Check for vulnerable dependencies:
+
+```bash
+go list -m -json all | nancy sleuth
+# or
+govulncheck ./...
+```
+
+### Static Analysis
+
+```bash
+golangci-lint run --timeout=5m
+```
+
+---
+
+## Past Security Advisories
+
+See [Security Advisories](https://github.com/halfking/ai-native-gateway-core/security/advisories) for published CVEs and fixes.
+
+---
+
+## Contact
+
+- **Security Reports**: security@example.com (TODO: Update)
+- **Project Repository**: https://github.com/halfking/ai-native-gateway-core
+- **General Support**: See [SUPPORT.md](SUPPORT.md)
