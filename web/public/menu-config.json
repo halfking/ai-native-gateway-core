@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-"exported_at": "2026-09-06T21:22:42.134Z",
+  "exported_at": "2026-09-06T21:26:21.501Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -118,6 +118,16 @@
           "labelKey": "nav.item.annotationStats",
           "icon": "🧮",
           "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/dashboard?tab=selfcheck",
+          "label": "系统自检",
+          "labelKey": "nav.item.systemMonitor",
+          "icon": "📈",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
           "pluginScope": "*"
         },
         {

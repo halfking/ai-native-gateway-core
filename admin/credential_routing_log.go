@@ -320,8 +320,15 @@ func buildRoutingLogSQL(p routingLogParams) (string, []any) {
 	}
 
 	probeStateFilter := ""
+	// kind=state_change 时 probe 分支只承载 consensus flips，行必须标注为
+	// state_change 并带出 flip 方向 —— 否则 recovered/broke 记录被标成
+	// probe，前端按 kind 过滤/展示会丢失状态变化语义（2026-09-07 审计修复）。
+	probeKindExpr := "'probe'"
+	probeChangeExpr := "NULL::text"
 	if p.Kind == "state_change" {
 		probeStateFilter = " AND mpr.state_change IN ('recovered', 'broke')"
+		probeKindExpr = "'state_change'"
+		probeChangeExpr = "COALESCE(mpr.state_change, '')"
 	}
 
 	if includeProbe {
@@ -329,8 +336,8 @@ func buildRoutingLogSQL(p routingLogParams) (string, []any) {
 		branches = append(branches, fmt.Sprintf(`
 		SELECT
 			mpr.created_at AS ts,
-			'probe' AS kind,
-			NULL::text AS change,
+			%s AS kind,
+			%s AS change,
 			COALESCE(mpr.raw_model_name, '') AS model,
 			mpr.credential_id AS credential_id,
 			COALESCE(c.label, '') AS credential_label,
@@ -347,7 +354,7 @@ func buildRoutingLogSQL(p routingLogParams) (string, []any) {
 		FROM model_probe_runs_with_current_month mpr
 		LEFT JOIN credentials c ON c.id = mpr.credential_id
 		LEFT JOIN providers p ON p.id = c.provider_id
-		WHERE %s%s`, where, probeStateFilter))
+		WHERE %s%s`, probeKindExpr, probeChangeExpr, where, probeStateFilter))
 	}
 
 	if includeStateChanges {

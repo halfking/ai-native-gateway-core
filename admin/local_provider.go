@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/url"
 	"strings"
 )
@@ -38,8 +39,47 @@ func isLocalKind(kind string) bool {
 // errLocalCredentialImmutable 是对本地供应商凭据执行写操作时的拒绝文案。
 const errLocalCredentialImmutable = "local provider credential is managed automatically and cannot be rotated or modified"
 
+// localPrivateCIDRs 是本地供应商 base_url 允许落内的回环/私网网段
+// （IPv4 回环 + RFC1918 + IPv6 回环/ULA）。刻意不含链路本地段
+// （169.254.0.0/16、fe80::/10）——云厂商 metadata 服务（169.254.169.254）
+// 是经典 SSRF 目标，不得借"本地供应商"配置放行。
+var localPrivateCIDRs = func() []*net.IPNet {
+	blocks := []string{
+		"127.0.0.0/8",   // IPv4 loopback
+		"10.0.0.0/8",    // RFC1918
+		"172.16.0.0/12", // RFC1918
+		"192.168.0.0/16",// RFC1918
+		"::1/128",       // IPv6 loopback
+		"fc00::/7",      // IPv6 ULA
+	}
+	out := make([]*net.IPNet, 0, len(blocks))
+	for _, b := range blocks {
+		_, n, err := net.ParseCIDR(b)
+		if err != nil {
+			panic("local_provider: bad CIDR literal: " + err.Error())
+		}
+		out = append(out, n)
+	}
+	return out
+}()
+
+// isLocalPrivateIP 精确判断字面 IP 是否属于回环/私网段。
+func isLocalPrivateIP(ip net.IP) bool {
+	for _, n := range localPrivateCIDRs {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // validateLocalBaseURL 确保本地供应商的 base_url 指向回环或私网地址。
 // 返回 "" 表示合法；否则返回面向操作者的错误文案。
+//
+// 判定规则（2026-09-07 审计收紧）：主机名必须是字面 IP 且精确落在
+// localPrivateCIDRs 网段内；域名一律拒绝（此前按 "10."/"192.168." 字符串
+// 前缀匹配，"10.evil.com"、"192.168.attacker.tld" 这类伪私网主机名会被放行）。
+// 保留 localhost 与 Docker 桌面 host.docker.internal 例外。
 func validateLocalBaseURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -55,38 +95,18 @@ func validateLocalBaseURL(raw string) string {
 		return "local provider base_url must use http(s): " + raw
 	}
 	host := strings.ToLower(u.Hostname())
-	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]" {
+	if host == "localhost" {
 		return ""
-	}
-	if strings.HasPrefix(host, "192.168.") || strings.HasPrefix(host, "10.") {
-		return ""
-	}
-	if strings.HasPrefix(host, "172.") {
-		// 172.16.0.0/12
-		parts := strings.SplitN(host, ".", 3)
-		if len(parts) >= 2 {
-			var second int
-			for _, ch := range parts[1] {
-				if ch < '0' || ch > '9' {
-					second = -1
-					break
-				}
-				second = second*10 + int(ch-'0')
-				if second > 99 {
-					second = -1
-					break
-				}
-			}
-			if second >= 16 && second <= 31 {
-				return ""
-			}
-		}
 	}
 	// Docker 桌面环境：网关容器经 host.docker.internal 访问宿主机本地服务。
 	if host == "host.docker.internal" || strings.HasSuffix(host, ".docker.internal") || host == "host.internal.internal" {
 		return ""
 	}
-	return "local provider base_url must point to a loopback/private host (got " + host + ")"
+	ip := net.ParseIP(host)
+	if ip == nil || !isLocalPrivateIP(ip) {
+		return "local provider base_url must point to a loopback/private host (got " + host + ")"
+	}
+	return ""
 }
 
 // ensureLocalCredential 为刚创建的本地供应商自动创建占位凭据。

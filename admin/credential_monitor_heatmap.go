@@ -80,7 +80,12 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 	timeStartStr := queryString(r, "time_start")
 	timeEndStr := queryString(r, "time_end")
 	granularity := queryString(r, "granularity")
-	excludeSelfTest := queryBool(r, "exclude_self_test")
+	// exclude_self_test 缺省 true（与上方文档及 FEATURE-REQ §4.2 一致）；
+	// 此前 queryBool 缺省返回 false，裸 API 调用方会把自检流量计入服务质量。
+	excludeSelfTest := true
+	if r.URL.Query().Has("exclude_self_test") {
+		excludeSelfTest = queryBool(r, "exclude_self_test")
+	}
 
 	if timeStartStr == "" || timeEndStr == "" {
 		writeError(w, http.StatusBadRequest, "time_start and time_end are required")

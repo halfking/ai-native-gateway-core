@@ -36,6 +36,9 @@ func TestValidateLocalBaseURL(t *testing.T) {
 		"http://172.31.255.255:8000/v1",
 		"http://host.docker.internal:8080/v1",
 		"https://127.0.0.1:8080/v1",
+		"http://[::1]:8080/v1",        // IPv6 回环
+		"http://[fd00::1]:8080/v1",    // IPv6 ULA
+		"http://127.8.8.8:11434/v1",   // 回环段非 .0.0.1 字面值
 	}
 	for _, u := range valid {
 		if msg := validateLocalBaseURL(u); msg != "" {
@@ -50,6 +53,13 @@ func TestValidateLocalBaseURL(t *testing.T) {
 		"https://api.openai.com/v1",    // 公网端点不允许
 		"http://8.136.114.245:8080/v1", // 公网 IP 不允许
 		"http://172.32.0.1:8000/v1",    // 172.32 超出私网段
+		// 2026-09-07 审计：字符串前缀匹配放行伪私网主机名（SSRF 面），必须拒绝。
+		"http://10.evil.com:8080/v1",
+		"http://192.168.attacker.tld:8080/v1",
+		"http://172.16.evil.com:8000/v1",
+		"http://metadata.google.internal/v1", // 云 metadata 端点
+		"http://169.254.169.254/latest",      // 云 metadata IP（链路本地不放行）
+		"http://0.0.0.0:8000/v1",             // 未指定地址
 	}
 	for _, u := range invalid {
 		if msg := validateLocalBaseURL(u); msg == "" {
