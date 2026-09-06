@@ -342,3 +342,18 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 | 668 | `668_llm_hourly_stats_final_fix.sql` | `58d32ca000633e9d2d19d77441f5a30fc2882b577d0892638c5a32cf9a862818` | applied+verified |
 | 670 | `670_routing_optimization.sql` | `4f8d984fbcab9e080a8c1d793436d932d7fc11680d613b5f5dc88abbb669bf84` | applied+verified |
 
+## 2026-09-06T17:56:32Z — deploy 154 build_seq 1996 (e39dfeb9)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 671 | `671_local_provider_catalog.sql` | `88fb18e1a71275100eee17bf3573c276ce2438a2ee960256a53ed7f685fa7c7b` | applied+verified |
+
+## 2026-09-06T19:54:40Z — deploy 154 build_seq 2005 (25b0238a)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 669 | `669_training_human_annotations.sql` | `87fb4454176594cdefb0c81aa51b9fbb14197199c2d68ff61906210a62526636` | applied+verified |
+| 672 | `672_local_first_title_summary_routing.sql` | `690a80f622dd537dbe762b18dc3889d3fc1ca63ae4d32abe7b725f780a36afe6` | applied+verified |
+| 673 | `673_annotation_stats_empty_table_fix.sql` | `99ab8c9e2da6e27f23763c669e49f39f6b8e3d5cf301594dccc11ba1ce3ab102` | applied+verified |
+| 674 | `674_annotation_request_id_unique.sql` | `3fabafce8e3f9e2aa2119ee67e594ba3aa74e99b53c5f6a0b9dc4512d1f927e6` | applied+verified |
+

@@ -147,6 +147,8 @@ func (m *CredentialMonitorHandlers) RegisterMonitorRoutes(mux *http.ServeMux, wr
 	mux.HandleFunc("/api/credentials/set-manual-disabled", wrap(m.handleSetManualDisabled))
 	// 2026-09-06: time-series heatmap visualization
 	mux.HandleFunc("/api/credentials/heatmap", wrap(m.handleCredentialHeatmap))
+	// 2026-09-07: merged routing/probe/state-change timeline (路由记录 tab)
+	mux.HandleFunc("/api/credentials/routing-log", wrap(m.handleCredentialRoutingLog))
 }
 
 // CredentialMonitorSummary represents a credential's monitoring state.

@@ -384,6 +384,80 @@ export function setManualDisabled(credentialId: number, disabled: boolean, reaso
   )
 }
 
+// ── Routing log timeline (2026-09-07) ────────────────────────────────────
+//
+// Merged time line for the 路由记录 tab: per-request routing decisions,
+// self-test (probe) runs, and status-change events (probe consensus flips +
+// manual model toggles). See docs/FEATURE-REQ-credential-heatmap-routing-log.md §5.
+
+export type RoutingLogKind = 'all' | 'routing' | 'probe' | 'state_change'
+export type RoutingLogResult = 'all' | 'success' | 'failed'
+
+export interface RoutingLogEntry {
+  ts: string
+  kind: 'routing' | 'probe' | 'state_change'
+  change?: 'recovered' | 'broke' | 'online' | 'offline'
+  model: string
+  credential_id?: number | null
+  credential_label: string
+  provider_name: string
+  success?: boolean | null
+  status: string
+  latency_ms?: number | null
+  error_code?: string | null
+  error_message?: string | null
+  request_id?: string | null
+  tier?: number | null
+  source: string
+  actor?: string | null
+}
+
+export interface RoutingLogMeta {
+  time_start: string
+  time_end: string
+  kind: string
+  model: string
+  result: string
+  limit: number
+  offset: number
+  duration_ms: number
+}
+
+export interface RoutingLogResponse {
+  meta: RoutingLogMeta
+  entries: RoutingLogEntry[]
+  total: number
+}
+
+export interface RoutingLogQueryOptions {
+  timeStart: string
+  timeEnd: string
+  kind?: RoutingLogKind
+  model?: string
+  result?: RoutingLogResult
+  credentialId?: number
+  limit?: number
+  offset?: number
+}
+
+export function getCredentialRoutingLog(options: RoutingLogQueryOptions, requestOptions?: RequestOptions) {
+  const params = new URLSearchParams()
+  params.set('time_start', options.timeStart)
+  params.set('time_end', options.timeEnd)
+  if (options.kind && options.kind !== 'all') params.set('kind', options.kind)
+  if (options.model) params.set('model', options.model)
+  if (options.result && options.result !== 'all') params.set('result', options.result)
+  if (options.credentialId) params.set('credential_id', String(options.credentialId))
+  if (options.limit) params.set('limit', String(options.limit))
+  if (options.offset) params.set('offset', String(options.offset))
+  return req<RoutingLogResponse>(
+    'GET',
+    `/api/credentials/routing-log?${params.toString()}`,
+    undefined,
+    requestOptions,
+  )
+}
+
 // ── Credential Heatmap (2026-09-06) ──────────────────────────────────────
 //
 // Time-series visualization of credential health status across multiple

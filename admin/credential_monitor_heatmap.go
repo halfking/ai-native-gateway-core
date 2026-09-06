@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,16 +12,16 @@ import (
 
 // HeatmapBucket represents a single time bucket in the heatmap.
 type HeatmapBucket struct {
-	TimeBucket        string             `json:"time_bucket"`
-	Status            string             `json:"status"`
-	TotalRequests     int                `json:"total_requests"`
-	SuccessCount      int                `json:"success_count"`
-	FailedCount       int                `json:"failed_count"`
-	SuccessRate       float64            `json:"success_rate"`
-	AvgLatencyMs      *int               `json:"avg_latency_ms"`
-	P95LatencyMs      *int               `json:"p95_latency_ms"`
-	ErrorDistribution map[string]int     `json:"error_distribution"`
-	SampleRequestIDs  []string           `json:"sample_request_ids"`
+	TimeBucket        string         `json:"time_bucket"`
+	Status            string         `json:"status"`
+	TotalRequests     int            `json:"total_requests"`
+	SuccessCount      int            `json:"success_count"`
+	FailedCount       int            `json:"failed_count"`
+	SuccessRate       float64        `json:"success_rate"`
+	AvgLatencyMs      *int           `json:"avg_latency_ms"`
+	P95LatencyMs      *int           `json:"p95_latency_ms"`
+	ErrorDistribution map[string]int `json:"error_distribution"`
+	SampleRequestIDs  []string       `json:"sample_request_ids"`
 }
 
 // HeatmapModel represents a model's heatmap data.
@@ -40,14 +41,14 @@ type HeatmapCredential struct {
 // HeatmapResponse is the response for the heatmap API.
 type HeatmapResponse struct {
 	Meta struct {
-		TimeStart    string `json:"time_start"`
-		TimeEnd      string `json:"time_end"`
-		Granularity  string `json:"granularity"`
-		BucketCount  int    `json:"bucket_count"`
-		CacheHit     bool   `json:"cache_hit"`
-		GeneratedAt  string `json:"generated_at"`
-		ExpiresAt    string `json:"expires_at"`
-		DurationMs   int64  `json:"duration_ms"`
+		TimeStart   string `json:"time_start"`
+		TimeEnd     string `json:"time_end"`
+		Granularity string `json:"granularity"`
+		BucketCount int    `json:"bucket_count"`
+		CacheHit    bool   `json:"cache_hit"`
+		GeneratedAt string `json:"generated_at"`
+		ExpiresAt   string `json:"expires_at"`
+		DurationMs  int64  `json:"duration_ms"`
 	} `json:"meta"`
 	Credentials []HeatmapCredential `json:"credentials"`
 }
@@ -67,15 +68,19 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	if m.h == nil || m.h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
 	// Parse and validate parameters
-		timeStartStr := queryString(r, "time_start")
-		timeEndStr := queryString(r, "time_end")
-		granularity := queryString(r, "granularity")
-		excludeSelfTest := queryBool(r, "exclude_self_test")
+	timeStartStr := queryString(r, "time_start")
+	timeEndStr := queryString(r, "time_end")
+	granularity := queryString(r, "granularity")
+	excludeSelfTest := queryBool(r, "exclude_self_test")
 
 	if timeStartStr == "" || timeEndStr == "" {
 		writeError(w, http.StatusBadRequest, "time_start and time_end are required")
@@ -103,7 +108,7 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 	if granularity == "" {
 		granularity = "1m"
 	}
-	pgGranularity, err := validateGranularity(granularity)
+	bucketSeconds, err := granularitySeconds(granularity)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -137,10 +142,10 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 	startedAt := time.Now()
 
 	// Execute heatmap query
-	credentials, err := m.queryHeatmapData(ctx, heatmapQueryParams{
+	credentials, err := runHeatmapQuery(ctx, m.h.db, heatmapQueryParams{
 		TimeStart:       timeStart,
 		TimeEnd:         timeEnd,
-		Granularity:     pgGranularity,
+		BucketSeconds:   bucketSeconds,
 		CredentialIDs:   credentialIDs,
 		Models:          models,
 		ExcludeSelfTest: excludeSelfTest,
@@ -171,25 +176,34 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 type heatmapQueryParams struct {
 	TimeStart       time.Time
 	TimeEnd         time.Time
-	Granularity     string // PostgreSQL interval format
+	BucketSeconds   int // bucket width in seconds (epoch-aligned)
 	CredentialIDs   []int
 	Models          []string
 	ExcludeSelfTest bool
 	TenantID        string
 }
 
-// queryHeatmapData executes the time-series aggregation query for the heatmap.
-func (m *CredentialMonitorHandlers) queryHeatmapData(ctx context.Context, p heatmapQueryParams) ([]HeatmapCredential, error) {
-	// Build WHERE clauses
+// runHeatmapQuery executes the time-series aggregation query for the heatmap.
+// The aggregation is split into CTEs on purpose: error distribution needs
+// COUNT per (bucket, error_kind) BEFORE jsonb_object_agg folds it into one
+// map — PostgreSQL rejects aggregate calls nested inside another aggregate
+// (SQLSTATE 42803). Failed-request samples reuse the same per-bucket grouping.
+func buildHeatmapSQL(p heatmapQueryParams) (string, []any) {
+	// Build WHERE clauses for the base CTE
 	whereClauses := []string{
 		"rl.ts >= $1",
 		"rl.ts < $2",
+		"rl.credential_id IS NOT NULL",
 	}
 	args := []any{p.TimeStart, p.TimeEnd}
 	argIdx := 3
 
 	if p.ExcludeSelfTest {
-		whereClauses = append(whereClauses, "COALESCE(rl.is_self_test, FALSE) = FALSE")
+		// Probe/self-test rows are marked on request_logs itself: legacy
+		// ActiveProbeWorker sets task_type='probe_triggered' and every probe
+		// path tags quality_flags with 'probe'. request_context_attrs.is_probe
+		// is NOT usable here — direct-probe rows carry no rca row at all.
+		whereClauses = append(whereClauses, "COALESCE(rl.task_type, '') <> 'probe_triggered' AND NOT ('probe' = ANY(rl.quality_flags))")
 	}
 
 	if p.TenantID != "" {
@@ -212,49 +226,119 @@ func (m *CredentialMonitorHandlers) queryHeatmapData(ctx context.Context, p heat
 
 	whereClause := strings.Join(whereClauses, " AND ")
 
-	// Main query: aggregate by (credential_id, model, time_bucket)
 	query := fmt.Sprintf(`
-		WITH time_buckets AS (
+		WITH base AS (
 			SELECT
 				rl.credential_id,
 				lower(COALESCE(rl.outbound_model, rl.client_model)) AS raw_model_name,
-				date_trunc('%s', rl.ts) AS time_bucket,
-				COUNT(*) AS total_requests,
-				COUNT(*) FILTER (WHERE rl.success) AS success_count,
-				COUNT(*) FILTER (WHERE NOT rl.success) AS failed_count,
-				ROUND(CAST(COUNT(*) FILTER (WHERE rl.success) AS numeric) / NULLIF(COUNT(*), 0), 4) AS success_rate,
-				ROUND(AVG(rl.latency_ms))::int AS avg_latency_ms,
-				percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms)::int AS p95_latency_ms,
-				jsonb_object_agg(
-					COALESCE(rl.error_kind, 'unknown'),
-					COUNT(*) FILTER (WHERE NOT rl.success AND rl.error_kind IS NOT NULL)
-				) FILTER (WHERE NOT rl.success AND rl.error_kind IS NOT NULL) AS error_distribution,
-				array_agg(rl.request_id ORDER BY rl.ts DESC) FILTER (WHERE NOT rl.success) AS failed_request_ids
+				to_timestamp(floor(EXTRACT(EPOCH FROM rl.ts) / %[1]d) * %[1]d) AS time_bucket,
+				rl.success,
+				rl.latency_ms,
+				rl.error_kind,
+				rl.request_id,
+				rl.ts
 			FROM request_logs_with_current_month rl
-			WHERE %s
-			GROUP BY rl.credential_id, raw_model_name, time_bucket
+			JOIN credentials c ON c.id = rl.credential_id
+			WHERE %[2]s
+		),
+		bucket_stats AS (
+			SELECT
+				credential_id,
+				raw_model_name,
+				time_bucket,
+				COUNT(*) AS total_requests,
+				COUNT(*) FILTER (WHERE success) AS success_count,
+				COUNT(*) FILTER (WHERE NOT success) AS failed_count,
+				ROUND(CAST(COUNT(*) FILTER (WHERE success) AS numeric) / NULLIF(COUNT(*), 0), 4) AS success_rate,
+				ROUND(AVG(latency_ms))::int AS avg_latency_ms,
+				percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms)::int AS p95_latency_ms
+			FROM base
+			GROUP BY credential_id, raw_model_name, time_bucket
+		),
+		error_counts AS (
+			SELECT
+				credential_id,
+				raw_model_name,
+				time_bucket,
+				error_kind,
+				COUNT(*) AS error_count
+			FROM base
+			WHERE NOT success AND error_kind IS NOT NULL
+			GROUP BY credential_id, raw_model_name, time_bucket, error_kind
+		),
+		error_agg AS (
+			SELECT
+				credential_id,
+				raw_model_name,
+				time_bucket,
+				jsonb_object_agg(error_kind, error_count) AS error_distribution
+			FROM error_counts
+			GROUP BY credential_id, raw_model_name, time_bucket
+		),
+		failed_samples AS (
+			SELECT
+				credential_id,
+				raw_model_name,
+				time_bucket,
+				ARRAY(
+					SELECT request_id
+					FROM base b2
+					WHERE b2.credential_id = b.credential_id
+					  AND b2.raw_model_name = b.raw_model_name
+					  AND b2.time_bucket = b.time_bucket
+					  AND NOT b2.success
+					ORDER BY b2.ts DESC
+					LIMIT 10
+				) AS sample_request_ids
+			FROM base b
+			WHERE NOT success
+			GROUP BY credential_id, raw_model_name, time_bucket
 		)
 		SELECT
 			c.id AS credential_id,
 			COALESCE(c.label, '') AS label,
 			COALESCE(p.display_name, p.catalog_code, '') AS provider_name,
-			tb.raw_model_name,
-			tb.time_bucket,
-			tb.total_requests,
-			tb.success_count,
-			tb.failed_count,
-			tb.success_rate,
-			tb.avg_latency_ms,
-			tb.p95_latency_ms,
-			COALESCE(tb.error_distribution, '{}'::jsonb) AS error_distribution,
-			COALESCE(ARRAY(SELECT unnest(tb.failed_request_ids) LIMIT 10), ARRAY[]::text[]) AS sample_request_ids
-		FROM time_buckets tb
-		JOIN credentials c ON c.id = tb.credential_id
+			bs.raw_model_name,
+			bs.time_bucket,
+			bs.total_requests,
+			bs.success_count,
+			bs.failed_count,
+			bs.success_rate,
+			bs.avg_latency_ms,
+			bs.p95_latency_ms,
+			COALESCE(ea.error_distribution, '{}'::jsonb) AS error_distribution,
+			COALESCE(fs.sample_request_ids, ARRAY[]::text[]) AS sample_request_ids
+		FROM bucket_stats bs
+		JOIN credentials c ON c.id = bs.credential_id
 		LEFT JOIN providers p ON p.id = c.provider_id
-		ORDER BY c.id, tb.raw_model_name, tb.time_bucket
-	`, p.Granularity, whereClause)
+		LEFT JOIN error_agg ea
+			ON ea.credential_id = bs.credential_id
+			AND ea.raw_model_name = bs.raw_model_name
+			AND ea.time_bucket = bs.time_bucket
+		LEFT JOIN failed_samples fs
+			ON fs.credential_id = bs.credential_id
+			AND fs.raw_model_name = bs.raw_model_name
+			AND fs.time_bucket = bs.time_bucket
+		ORDER BY c.id, bs.raw_model_name, bs.time_bucket
+	`, int(p.BucketSeconds), whereClause)
 
-	rows, err := m.h.db.Query(ctx, query, args...)
+	return query, args
+}
+
+// runHeatmapQuery executes the time-series aggregation query for the heatmap.
+//
+// The aggregation is split into CTEs on purpose:
+//   - error distribution needs COUNT per (bucket, error_kind) BEFORE
+//     jsonb_object_agg folds it into one map — PostgreSQL rejects aggregate
+//     calls nested inside another aggregate (SQLSTATE 42803);
+//   - failed-request samples reuse the same per-bucket grouping.
+//
+// Buckets are epoch-aligned via to_timestamp(floor(epoch/N)*N) because
+// date_trunc only accepts fixed field names, not '5 minutes'.
+func runHeatmapQuery(ctx context.Context, db pgxQueryer, p heatmapQueryParams) ([]HeatmapCredential, error) {
+	query, args := buildHeatmapSQL(p)
+
+	rows, err := db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query failed: %w", err)
 	}
@@ -262,23 +346,23 @@ func (m *CredentialMonitorHandlers) queryHeatmapData(ctx context.Context, p heat
 
 	// Parse results and group by credential -> model
 	credMap := make(map[int]*HeatmapCredential)
-	modelMap := make(map[string]*HeatmapModel) // key: "credID:modelName"
+	modelIndex := make(map[string]int) // key: "credID:modelName" -> index in cred.Models
 
 	for rows.Next() {
 		var (
-			credentialID      int
-			label             string
-			providerName      string
-			rawModelName      string
-			timeBucket        time.Time
-			totalRequests     int
-			successCount      int
-			failedCount       int
-			successRate       float64
-			avgLatencyMs      *int
-			p95LatencyMs      *int
-			errorDistJSON     []byte
-			sampleRequestIDs  []string
+			credentialID     int
+			label            string
+			providerName     string
+			rawModelName     string
+			timeBucket       time.Time
+			totalRequests    int
+			successCount     int
+			failedCount      int
+			successRate      float64
+			avgLatencyMs     *int
+			p95LatencyMs     *int
+			errorDistJSON    []byte
+			sampleRequestIDs []string
 		)
 
 		if err := rows.Scan(
@@ -294,7 +378,7 @@ func (m *CredentialMonitorHandlers) queryHeatmapData(ctx context.Context, p heat
 		// Parse error distribution
 		errorDist := make(map[string]int)
 		if len(errorDistJSON) > 0 {
-			if err := parseJSON(errorDistJSON, &errorDist); err != nil {
+			if err := json.Unmarshal(errorDistJSON, &errorDist); err != nil {
 				slog.Warn("error parsing error_distribution", "error", err.Error())
 			}
 		}
@@ -327,26 +411,18 @@ func (m *CredentialMonitorHandlers) queryHeatmapData(ctx context.Context, p heat
 			credMap[credentialID] = cred
 		}
 
-		// Get or create model
+		// Get or create model row (rows arrive ordered by credential, model, bucket)
 		modelKey := fmt.Sprintf("%d:%s", credentialID, rawModelName)
-		model, ok := modelMap[modelKey]
+		idx, ok := modelIndex[modelKey]
 		if !ok {
-			model = &HeatmapModel{
+			cred.Models = append(cred.Models, HeatmapModel{
 				RawModelName: rawModelName,
 				Buckets:      []HeatmapBucket{},
-			}
-			modelMap[modelKey] = model
-			cred.Models = append(cred.Models, *model)
+			})
+			idx = len(cred.Models) - 1
+			modelIndex[modelKey] = idx
 		}
-
-		// Append bucket to model
-		// Find the model in cred.Models and append
-		for i := range cred.Models {
-			if cred.Models[i].RawModelName == rawModelName {
-				cred.Models[i].Buckets = append(cred.Models[i].Buckets, bucket)
-				break
-			}
-		}
+		cred.Models[idx].Buckets = append(cred.Models[idx].Buckets, bucket)
 	}
 
 	if rows.Err() != nil {
@@ -376,21 +452,23 @@ func deriveStatusFromRate(successRate float64, totalRequests int) string {
 	return "unreachable"
 }
 
-// validateGranularity validates and converts granularity to PostgreSQL interval format.
-func validateGranularity(granularity string) (string, error) {
+// granularitySeconds converts a granularity label to its bucket width in
+// seconds. Buckets are epoch-aligned, so every granularity is representable —
+// unlike date_trunc which only accepts fixed field names.
+func granularitySeconds(granularity string) (int, error) {
 	switch granularity {
 	case "1m":
-		return "minute", nil
+		return 60, nil
 	case "5m":
-		return "5 minutes", nil
+		return 5 * 60, nil
 	case "15m":
-		return "15 minutes", nil
+		return 15 * 60, nil
 	case "1h":
-		return "hour", nil
+		return 60 * 60, nil
 	case "1d":
-		return "day", nil
+		return 24 * 60 * 60, nil
 	default:
-		return "", fmt.Errorf("invalid granularity: must be one of 1m, 5m, 15m, 1h, 1d")
+		return 0, fmt.Errorf("invalid granularity: must be one of 1m, 5m, 15m, 1h, 1d")
 	}
 }
 
@@ -410,12 +488,4 @@ func parseDuration(granularity string) time.Duration {
 	default:
 		return time.Minute
 	}
-}
-
-// parseJSON is a helper to unmarshal JSON bytes.
-func parseJSON(data []byte, v interface{}) error {
-	if len(data) == 0 || string(data) == "null" {
-		return nil
-	}
-	return nil // Simplified for now, should use json.Unmarshal
 }
