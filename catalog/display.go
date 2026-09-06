@@ -8,7 +8,7 @@ var familyVendor = map[string]string{
 	"anthropic-claude": "Anthropic", "anthropic": "Anthropic", "claude": "Anthropic",
 	"google-gemini": "Google", "gemini": "Google", "gemma": "Google",
 	"deepseek": "DeepSeek",
-	"qwen":     "Alibaba", "qwen2": "Alibaba", "qwen3": "Alibaba", "qwen3.5": "Alibaba", "qwen3.6": "Alibaba", "qwq": "Alibaba", "wan2": "Alibaba", "wan2.6": "Alibaba",
+	"qwen":     "Alibaba", "qwen2": "Alibaba", "qwen3": "Alibaba", "qwen3.5": "Alibaba", "qwen3.6": "Alibaba", "qwen3.8": "Alibaba", "qwq": "Alibaba", "wan2": "Alibaba", "wan2.6": "Alibaba",
 	"doubao":    "ByteDance",
 	"zhipu-glm": "Zhipu AI", "glm": "Zhipu AI",
 	"meta-llama": "Meta", "llama": "Meta", "llama2": "Meta", "llama3": "Meta", "codellama": "Meta",
@@ -78,6 +78,17 @@ func ResolveVendor(canonicalName, family, dbVendor string) string {
 		return HumanizeFamilyID(family)
 	}
 	return "其他"
+}
+
+// InferVendor resolves the vendor from known family ids and canonical name
+// prefixes only.  Unlike ResolveVendor it never falls back to HumanizeFamilyID
+// or 「其他」, so callers can keep their own default when inference fails.
+func InferVendor(canonicalName, family string) string {
+	family = strings.TrimSpace(family)
+	if v, ok := familyVendor[family]; ok {
+		return v
+	}
+	return inferVendorFromName(canonicalName)
 }
 
 func inferVendorFromName(name string) string {
