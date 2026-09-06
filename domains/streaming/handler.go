@@ -2456,6 +2456,21 @@ func (h *ChatHandler) serveWithExecutor(
 			if isBranchSessionID(sessionID) {
 				slog.Debug("branch session id preserved (no auto-create)",
 					"session_id", sessionID)
+			} else if strings.HasPrefix(sessionID, "gw_") {
+				// 2026-09-06 (pi plan risk #9): a client-supplied gw_ session
+				// id that Redis doesn't know yet is its FIRST request in a new
+				// session — honor the id verbatim, same contract as the
+				// /v1/responses handler (see the session resolution comment
+				// there). The previous auto-create REWROTE the id with a fresh
+				// gw_<uuid> on every request, so /v1/chat/completions callers
+				// tagging requests with X-Gw-Session-Id: gw_<dispatch_id> got a
+				// different session id per call: request_logs/sessions rows
+				// never grouped under the caller's id and correlation lookups
+				// found nothing. Session V2 turn aggregation keys off the
+				// request row's gw_session_id, so the sessions row for the
+				// client id is created by the normal completion path.
+				slog.Info("unknown client gw_ session honored without replacement",
+					"session_id", sessionID)
 			} else {
 				deviceSeed := r.Header.Get("X-Device-Seed")
 				if deviceSeed == "" {
