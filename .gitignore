@@ -164,6 +164,9 @@ deploy/r*-*/
 deploy/sql/objects/
 
 
+# Historical-secret sources used only by public-mirror rewrite tooling.
+/scripts/scan-secrets.private.replacements
+
 # 环境变量（明文，不提交）
 # Spec cf8aad1a9 §SOPS and Credentials: only encrypted forms are
 # trackable. Plaintext .env.* keys are sourced exclusively from

@@ -36,7 +36,7 @@ DB_HOST="172.16.2.210"
 DB_PORT="5432"
 DB_NAME="llm_gateway"
 DB_USER="llm_gateway"
-export PGPASSWORD="4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg"
+: "${PGPASSWORD:?PGPASSWORD must be set for session audit database initialization}"
 
 if command -v psql &> /dev/null; then
     echo "  正在测试数据库连接..."

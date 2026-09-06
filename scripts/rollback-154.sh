@@ -279,7 +279,7 @@ print_post_rollback_actions() {
     echo "   ssh -p $PROD_PORT $PROD_USER@$PROD_HOST \"journalctl -u $SERVICE_NAME -f\""
     echo ""
     echo "3. 检查最近请求成功率:"
-    echo "   ssh -p $PROD_PORT $PROD_USER@$PROD_HOST 'PGPASSWORD=\"4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg\" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -c \"SELECT COUNT(*) FILTER (WHERE success = true) * 100.0 / COUNT(*) AS success_rate FROM request_logs_hot WHERE ts >= NOW() - INTERVAL '\"'\"'10 minutes'\"'\"';\"'"
+    echo "   ssh -p $PROD_PORT $PROD_USER@$PROD_HOST 'PGPASSWORD=\"<set-LLM_GATEWAY_DB_PASSWORD>\" psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway -c \"SELECT COUNT(*) FILTER (WHERE success = true) * 100.0 / COUNT(*) AS success_rate FROM request_logs_hot WHERE ts >= NOW() - INTERVAL '\"'\"'10 minutes'\"'\"';\"'"
     echo ""
     echo "4. 保存失败日志用于分析:"
     echo "   ssh -p $PROD_PORT $PROD_USER@$PROD_HOST \"journalctl -u $SERVICE_NAME --since '30 minutes ago' --no-pager\" > rollback_logs_\$(date +%Y%m%d_%H%M%S).log"
