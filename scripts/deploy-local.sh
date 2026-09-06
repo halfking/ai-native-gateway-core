@@ -188,72 +188,94 @@ compose_cmd() {
 detect_existing_containers() {
   DL_PG_CONTAINER=""; DL_REDIS_CONTAINER=""
   if (( DL_DOCKER )); then
-    for c in llm-gateway-pg postgres kx-citus; do
-      if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_PG_CONTAINER=$c; break; fi
-    done
-    # Skip Redis detection in minimal mode
-    if [[ "${MINIMAL_DEPLOY:-0}" == 0 ]]; then
-      # Check environment variable first, then common names
-      if [[ -n "${LLM_GATEWAY_REDIS_CONTAINER:-}" ]]; then
-        if docker ps -a --format '{{.Names}}' | grep -Fxq "$LLM_GATEWAY_REDIS_CONTAINER"; then
-          DL_REDIS_CONTAINER=$LLM_GATEWAY_REDIS_CONTAINER
-        fi
-      else
-        for c in llm-gateway-redis redis kx-redis nbjl-redis; do
-          if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_REDIS_CONTAINER=$c; break; fi
-        done
+    # Source smart discovery functions if available
+    if [[ -f "$SCRIPT_DIR/deploy-lib/smart-discovery.sh" ]]; then
+      # shellcheck source=deploy-lib/smart-discovery.sh
+      source "$SCRIPT_DIR/deploy-lib/smart-discovery.sh"
+      
+      # PostgreSQL smart discovery with priority and database checking
+      detect_postgres_container || true
+      
+      # Skip Redis detection in minimal mode
+      if [[ "${MINIMAL_DEPLOY:-0}" == 0 ]]; then
+        # Redis smart discovery with priority and connection testing
+        detect_redis_container || true
       fi
-    fi
-    [[ -n "$DL_PG_CONTAINER" ]] && {
-      docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
-      DL_DB_MODE=docker
-      DL_PG_SOURCE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' "$DL_PG_CONTAINER" 2>/dev/null || true)
-      local db_url
-      db_url=$(dl_container_env "$DL_PG_CONTAINER" LLM_GATEWAY_DATABASE_URL)
-      [[ -z "$db_url" ]] && db_url=$(dl_container_env "$DL_PG_CONTAINER" DATABASE_URL)
-      if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
-        if [[ -n "$db_url" && "$db_url" =~ @((127\\.0\\.0\\.1)|(localhost))(:|/) ]]; then
-          local db_port
-          db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
-          if [[ -z "$db_port" ]]; then
-            warn "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; will use environment DATABASE_URL if available"
-            return 0
+      
+      # Configure PostgreSQL if found
+      [[ -n "$DL_PG_CONTAINER" ]] && configure_postgres_container
+      
+      # Configure Redis if found
+      [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]] && configure_redis_container
+    else
+      # Fallback to original discovery logic if smart discovery not available
+      for c in llm-gateway-pg postgres kx-citus; do
+        if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_PG_CONTAINER=$c; break; fi
+      done
+      # Skip Redis detection in minimal mode
+      if [[ "${MINIMAL_DEPLOY:-0}" == 0 ]]; then
+        # Check environment variable first, then common names
+        if [[ -n "${LLM_GATEWAY_REDIS_CONTAINER:-}" ]]; then
+          if docker ps -a --format '{{.Names}}' | grep -Fxq "$LLM_GATEWAY_REDIS_CONTAINER"; then
+            DL_REDIS_CONTAINER=$LLM_GATEWAY_REDIS_CONTAINER
           fi
-          export LLM_GATEWAY_DATABASE_URL="$db_url" DATABASE_URL="$db_url"
         else
-          local db_user db_pass db_name db_port
-          db_user=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_USER); db_user=${db_user:-llm_gateway}
-          db_pass=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_PASSWORD)
-          db_name=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_DB); db_name=${db_name:-llm_gateway}
-          db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
-          if [[ -z "$db_port" ]]; then
-            warn "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; will use environment DATABASE_URL if available"
-            return 0
-          fi
-          if [[ -n "$db_pass" ]]; then
-            export LLM_GATEWAY_PG_USER="$db_user" LLM_GATEWAY_PG_PASSWORD="$db_pass" LLM_GATEWAY_PG_DATABASE="$db_name"
-            export LLM_GATEWAY_DATABASE_URL="postgresql://${db_user}:${db_pass}@127.0.0.1:${db_port}/${db_name}?sslmode=disable"
-            export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
-          fi
+          for c in llm-gateway-redis redis kx-redis nbjl-redis; do
+            if docker ps -a --format '{{.Names}}' | grep -Fxq "$c"; then DL_REDIS_CONTAINER=$c; break; fi
+          done
         fi
       fi
-    }
-    [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]] && {
-      docker start "$DL_REDIS_CONTAINER" >/dev/null 2>&1 || true
-      DL_REDIS_MODE=docker
-      local redis_addr
-      redis_addr=$(dl_container_env "$DL_REDIS_CONTAINER" LLM_GATEWAY_REDIS_ADDR)
-      if [[ -z "$redis_addr" ]]; then
-        local redis_port
-        redis_port=$(docker port "$DL_REDIS_CONTAINER" 6379/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
-        redis_port=${redis_port:-6379}
-        if [[ "$redis_port" == "6379" && -n "${LLM_GATEWAY_REDIS_HOST_PORT:-}" ]]; then
-          redis_port="$LLM_GATEWAY_REDIS_HOST_PORT"
+      [[ -n "$DL_PG_CONTAINER" ]] && {
+        docker start "$DL_PG_CONTAINER" >/dev/null 2>&1 || true
+        DL_DB_MODE=docker
+        DL_PG_SOURCE=$(docker inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Source}}{{end}}{{end}}' "$DL_PG_CONTAINER" 2>/dev/null || true)
+        local db_url
+        db_url=$(dl_container_env "$DL_PG_CONTAINER" LLM_GATEWAY_DATABASE_URL)
+        [[ -z "$db_url" ]] && db_url=$(dl_container_env "$DL_PG_CONTAINER" DATABASE_URL)
+        if [[ -z "${LLM_GATEWAY_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
+          if [[ -n "$db_url" && "$db_url" =~ @((127\\.0\\.0\\.1)|(localhost))(:|/) ]]; then
+            local db_port
+            db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+            if [[ -z "$db_port" ]]; then
+              warn "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; will use environment DATABASE_URL if available"
+              return 0
+            fi
+            export LLM_GATEWAY_DATABASE_URL="$db_url" DATABASE_URL="$db_url"
+          else
+            local db_user db_pass db_name db_port
+            db_user=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_USER); db_user=${db_user:-llm_gateway}
+            db_pass=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_PASSWORD)
+            db_name=$(dl_container_env "$DL_PG_CONTAINER" POSTGRES_DB); db_name=${db_name:-llm_gateway}
+            db_port=$(docker port "$DL_PG_CONTAINER" 5432/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+            if [[ -z "$db_port" ]]; then
+              warn "PostgreSQL container $DL_PG_CONTAINER has no host port for 5432; will use environment DATABASE_URL if available"
+              return 0
+            fi
+            if [[ -n "$db_pass" ]]; then
+              export LLM_GATEWAY_PG_USER="$db_user" LLM_GATEWAY_PG_PASSWORD="$db_pass" LLM_GATEWAY_PG_DATABASE="$db_name"
+              export LLM_GATEWAY_DATABASE_URL="postgresql://${db_user}:${db_pass}@127.0.0.1:${db_port}/${db_name}?sslmode=disable"
+              export DATABASE_URL="$LLM_GATEWAY_DATABASE_URL"
+            fi
+          fi
         fi
-        redis_addr="127.0.0.1:${redis_port}"
-      fi
-      export LLM_GATEWAY_REDIS_ADDR="$redis_addr"
-    }
+      }
+      [[ -n "$DL_REDIS_CONTAINER" && "${MINIMAL_DEPLOY:-0}" == 0 ]] && {
+        docker start "$DL_REDIS_CONTAINER" >/dev/null 2>&1 || true
+        DL_REDIS_MODE=docker
+        local redis_addr
+        redis_addr=$(dl_container_env "$DL_REDIS_CONTAINER" LLM_GATEWAY_REDIS_ADDR)
+        if [[ -z "$redis_addr" ]]; then
+          local redis_port
+          redis_port=$(docker port "$DL_REDIS_CONTAINER" 6379/tcp 2>/dev/null | sed -n 's/.*://p' | head -n1 || true)
+          redis_port=${redis_port:-6379}
+          if [[ "$redis_port" == "6379" && -n "${LLM_GATEWAY_REDIS_HOST_PORT:-}" ]]; then
+            redis_port="$LLM_GATEWAY_REDIS_HOST_PORT"
+          fi
+          redis_addr="127.0.0.1:${redis_port}"
+        fi
+        export LLM_GATEWAY_REDIS_ADDR="$redis_addr"
+      }
+    fi
   fi
 }
 
