@@ -17,6 +17,14 @@
 # 2026-09-06: audit workspace for review sessions (SQL scripts, temp reports)
 /.audit-workspace/
 
+# 2026-09-07: per-session audit reports / notes (audit, kiro, security-audit)
+/.audit/
+/.kiro/
+/.security-audit/
+
+# 2026-09-07: agent scratch (skills/, tasks/, scratch notes) — local-only, never track
+/.agents/
+
 # Build artifacts
 /gateway
 /gateway-v2
@@ -51,6 +59,10 @@ Dockerfile.local
 .runtime/
 .playwright-mcp/
 .zcode/plans/
+.audit/
+.audit-workspace/
+.security-audit/
+.vite/
 
 # 编译产物 / 构建输出
 node_modules/
@@ -88,6 +100,7 @@ secrets.json
 *~
 .cursor/rules/
 .cursor/skills/
+.kiro/
 
 # 操作系统
 .DS_Store
@@ -287,12 +300,17 @@ scripts/capacity-baseline/reports/
 .handoff/
 .artifacts/
 .acc-task-stop-summary*
+# ── 2026-09-07 工具缓存：.zcode/ 是 ZCode CLI 的本地状态目录
+# （plans/ 会话计划、memory/ 项目记忆等），只用于本地工作流，
+# 无需入库；此前 .zcode/plans/ 已忽略，现在直接忽略整棵目录
+# 以防未来新增子目录被误追踪。
+.zcode/
 .wave2a-*
 
 # ── 2026-09-07 工具缓存：vite/vitest runtime 产物不入库 ────────
 # vite dev server 与 vitest 测试运行产出的本地缓存目录；
 # 与 .codegraph/、.scratch/ 同属工具/构建缓存，无需随仓库分发。
-.vite/
+# (已在文件上方合并声明,此处不重复)
 
 # NAS 同步残片文件
 .!*
