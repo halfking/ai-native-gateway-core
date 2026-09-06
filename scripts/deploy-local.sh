@@ -538,7 +538,27 @@ build_backend() {
   # 静默吞掉，两个新版本号打包了同一个 4 小时前的旧二进制）。
   rm -f "$out"
   if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/gateway); then
-    die "backend build failed (CGO_ENABLED=0 GOOS=$target_os GOARCH=$target_arch); refusing to continue with stale binary"
+    # 2026-09-07: 上游 0e3fa12f6 线引入了 CGO-only 依赖（mattn/go-sqlite3、
+    # yalue/onnxruntime_go，见 Dockerfile 2026-09-05 的 CGO_ENABLED=1 注），
+    # 纯静态 CGO=0 构建自此后必然失败（"build constraints exclude all Go
+    # files"）。宿主机不一定有 linux 交叉 C 工具链，因此回退到
+    # golang:1.27-alpine 容器内 CGO 构建：musl 产物可直接跑在默认
+    # alpine:3.22 运行时镜像上（LLM_GATEWAY_RUNTIME_IMAGE 可覆盖）。
+    need_cmd docker
+    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-golang:1.27-alpine}"
+    docker image inspect "$build_image" >/dev/null 2>&1 || docker pull "$build_image" >/dev/null \
+      || die "CGO fallback needs image $build_image and it is not pullable"
+    local cgo_out="$PROJECT_ROOT/.build-local/gateway.build"
+    mkdir -p "$PROJECT_ROOT/.build-local"
+    (cd "$PROJECT_ROOT" && HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker run --rm \
+        -v "$PWD":/src -w /src \
+        -e HOST_UID -e HOST_GID \
+        -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH="$target_arch" \
+        -e GOCACHE=/tmp/go-build-cache -e GOPATH=/tmp/go-path \
+        "$build_image" \
+        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w" -o /src/.build-local/gateway.build ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/gateway.build') \
+      || die "backend CGO container build failed (GOOS=linux GOARCH=$target_arch)"
+    mv -f "$cgo_out" "$out"
   fi
   [[ -s "$out" ]] || die "backend build produced no output at $out"
   printf '%s\n' "$out"
