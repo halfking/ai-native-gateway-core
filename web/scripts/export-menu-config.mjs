@@ -74,7 +74,7 @@ const NAV_GROUPS = [
       { path: '/routing-v2/credentials', label: '凭据监控', labelKey: 'nav.item.credentialMonitor', icon: '📊' },
       { path: '/routing-v2/annotations', label: '人工标注', labelKey: 'nav.item.annotations', icon: '✍️' },
       { path: '/routing-v2/annotations/stats', label: '标注统计', labelKey: 'nav.item.annotationStats', icon: '🧮' },
-      { path: '/probe-health', label: '探测健康度', labelKey: 'nav.item.probeHealth', icon: '🔍', super: true, hideForTenant: true },
+      // 2026-09-07: /probe-health folded into 凭据监控「探测健康」tab; menu entry removed.
       { path: '/providers', label: '供应商', labelKey: 'nav.item.providers', icon: '🔌', providerConsole: true },
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },

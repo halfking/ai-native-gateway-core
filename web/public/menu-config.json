@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-06T14:14:52.026Z",
+  "exported_at": "2026-09-06T19:58:06.779Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -105,13 +105,19 @@
           "pluginScope": "*"
         },
         {
-          "path": "/probe-health",
-          "label": "探测健康度",
-          "labelKey": "nav.item.probeHealth",
-          "icon": "🔍",
-          "super": true,
-          "hideForTenant": true,
-          "tenantScope": "default",
+          "path": "/routing-v2/annotations",
+          "label": "人工标注",
+          "labelKey": "nav.item.annotations",
+          "icon": "✍️",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/routing-v2/annotations/stats",
+          "label": "标注统计",
+          "labelKey": "nav.item.annotationStats",
+          "icon": "🧮",
+          "tenantScope": "*",
           "pluginScope": "*"
         },
         {

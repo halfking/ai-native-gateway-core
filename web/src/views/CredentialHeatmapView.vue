@@ -1,8 +1,23 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { getCredentialHeatmap, type HeatmapCredential, type HeatmapBucket, type HeatmapModel } from '../api'
+import {
+  getCredentialHeatmap,
+  toggleModelAvailability,
+  promoteCredential,
+  demoteCredential,
+  type HeatmapCredential,
+  type HeatmapBucket,
+  type HeatmapModel,
+} from '../api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
+
+// CredentialHeatmapView — 热力图 tab
+// docs/FEATURE-REQ-credential-heatmap-routing-log.md §4:
+//   - 完整时间轴:无请求的桶渲染为空白占位格(§4.5)
+//   - 汇总行:同凭据所有模型 worst-status 合并(§4.3)
+//   - 模型视角:选择模型后仅显示该模型行(§4.4)
+//   - 色块详情抽屉带状态修正操作(§4.7)
 
 const { t } = useI18n()
 const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
@@ -15,11 +30,11 @@ const customTimeEnd = ref('')
 
 // Granularity
 type Granularity = '1m' | '5m' | '15m' | '1h' | '1d'
-const granularity = ref<Granularity>('5m')
+const granularity = ref<Granularity>('15m')
 
 // Filters
-const providerFilter = ref(0)
-const modelFilter = ref<string[]>([])
+const modelFilter = ref<string>('')
+const modelOptions = ref<string[]>([])
 const showAnomaliesOnly = ref(false)
 const excludeSelfTest = ref(true)
 
@@ -136,6 +151,11 @@ watch(timeRangePreset, () => {
   granularity.value = suggestedGranularity.value
 })
 
+const granularityMs = computed(() => {
+  const secs: Record<Granularity, number> = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '1d': 86400 }
+  return secs[granularity.value] * 1000
+})
+
 // Status color mapping
 const statusColors: Record<string, string> = {
   ready: '#10b981',
@@ -148,15 +168,114 @@ const statusColors: Record<string, string> = {
   no_data: '#e5e7eb',
 }
 
+// worst-status ranking: higher = worse; drives the aggregate 汇总 row
+const statusRank: Record<string, number> = {
+  ready: 1,
+  manual_disabled: 1,
+  cooling: 2,
+  rate_limited: 2,
+  degraded: 2,
+  unreachable: 3,
+  auth_failed: 3,
+}
+
 function getStatusColor(status: string): string {
   return statusColors[status] || '#9ca3af'
 }
 
-// Load heatmap data
+function worstStatus(statuses: string[]): string {
+  let worst = 'no_data'
+  for (const s of statuses) {
+    if ((statusRank[s] ?? 0) > (statusRank[worst] ?? 0)) worst = s
+  }
+  return worst
+}
+
+// ── Complete timeline axis (§4.5) ────────────────────────────────────────
+// Buckets are epoch-aligned server-side (floor(epoch/N)*N); blank slots are
+// rendered for windows with no traffic. Capped to keep the DOM sane.
+const MAX_AXIS_BUCKETS = 720
+const timeAxis = computed<number[]>(() => {
+  if (!meta.value) return []
+  const start = new Date(meta.value.time_start).getTime()
+  const end = new Date(meta.value.time_end).getTime()
+  const step = granularityMs.value
+  const axis: number[] = []
+  for (let t = Math.floor(start / step) * step; t < end && axis.length < MAX_AXIS_BUCKETS; t += step) {
+    axis.push(t)
+  }
+  return axis
+})
+
+function bucketKey(ts: string | number): number {
+  const t = typeof ts === 'number' ? ts : new Date(ts).getTime()
+  return Math.floor(t / granularityMs.value) * granularityMs.value
+}
+
+interface IndexedModel {
+  rawModelName: string
+  byBucket: Map<number, HeatmapBucket>
+}
+
+function indexModel(model: HeatmapModel): IndexedModel {
+  const byBucket = new Map<number, HeatmapBucket>()
+  for (const b of model.buckets) byBucket.set(bucketKey(b.time_bucket), b)
+  return { rawModelName: model.raw_model_name, byBucket }
+}
+
+// Aggregate 汇总 row: worst status across all of the credential's models (§4.3)
+function buildAggregate(cred: HeatmapCredential): IndexedModel {
+  const byBucket = new Map<number, HeatmapBucket>()
+  const merged = new Map<number, HeatmapBucket[]>()
+  for (const model of cred.models) {
+    for (const b of model.buckets) {
+      const k = bucketKey(b.time_bucket)
+      const arr = merged.get(k) || []
+      arr.push(b)
+      merged.set(k, arr)
+    }
+  }
+  for (const [k, arr] of merged) {
+    const total = arr.reduce((s, b) => s + b.total_requests, 0)
+    const success = arr.reduce((s, b) => s + b.success_count, 0)
+    const failed = arr.reduce((s, b) => s + b.failed_count, 0)
+    const errDist: Record<string, number> = {}
+    for (const b of arr) {
+      for (const [kind, cnt] of Object.entries(b.error_distribution || {})) {
+        errDist[kind] = (errDist[kind] || 0) + cnt
+      }
+    }
+    const sampleIds = arr.flatMap(b => b.sample_request_ids || []).slice(0, 10)
+    byBucket.set(k, {
+      time_bucket: new Date(k).toISOString(),
+      status: worstStatus(arr.map(b => b.status)),
+      total_requests: total,
+      success_count: success,
+      failed_count: failed,
+      success_rate: total > 0 ? success / total : 0,
+      avg_latency_ms: null,
+      p95_latency_ms: null,
+      error_distribution: errDist,
+      sample_request_ids: sampleIds,
+    })
+  }
+  return { rawModelName: '__aggregate__', byBucket }
+}
+
+// Pre-index every (credential, model) once per load; templates read maps.
+const indexedRows = computed(() => {
+  return filteredCredentials.value.map(cred => ({
+    cred,
+    models: cred.models.map(indexModel),
+    aggregate: buildAggregate(cred),
+  }))
+})
+
+// ── Load heatmap data ────────────────────────────────────────────────────
 async function loadHeatmap() {
   loading.value = true
   error.value = null
-  
+
   try {
     const range = computedTimeRange.value
     const response = await getCredentialHeatmap(
@@ -165,12 +284,22 @@ async function loadHeatmap() {
       granularity.value,
       {
         excludeSelfTest: excludeSelfTest.value,
-        models: modelFilter.value.length ? modelFilter.value : undefined,
+        models: modelFilter.value ? [modelFilter.value] : undefined,
       }
     )
-    
+
     heatmapData.value = response.credentials
     meta.value = response.meta
+
+    // Keep a stable model list gathered from unfiltered loads so the model
+    // selector still offers alternatives while a filter is active.
+    if (!modelFilter.value) {
+      const names = new Set<string>()
+      for (const c of response.credentials) {
+        for (const m of c.models) names.add(m.raw_model_name)
+      }
+      modelOptions.value = Array.from(names).sort()
+    }
   } catch (e) {
     error.value = e instanceof Error ? e.message : String(e)
     console.error('Failed to load heatmap', e)
@@ -183,14 +312,10 @@ async function loadHeatmap() {
 const filteredCredentials = computed(() => {
   let result = heatmapData.value
 
-  if (providerFilter.value > 0) {
-    result = result.filter(c => c.credential_id === providerFilter.value)
-  }
-
   if (showAnomaliesOnly.value) {
     result = result.filter(c => {
-      return c.models.some(m => 
-        m.buckets.some(b => 
+      return c.models.some(m =>
+        m.buckets.some(b =>
           b.status !== 'ready' && b.status !== 'no_data'
         )
       )
@@ -228,18 +353,61 @@ const selectedBucket = ref<{
 
 function onCellClick(bucket: HeatmapBucket, credential: HeatmapCredential, model: string) {
   selectedBucket.value = { bucket, credential, model }
+  actionMessage.value = null
 }
 
 function closeDetailPopover() {
   selectedBucket.value = null
 }
 
+// ── Status correction actions (§4.7) ─────────────────────────────────────
+const actionReason = ref('')
+const actionBusy = ref(false)
+const actionMessage = ref<string | null>(null)
+
+async function runAction(kind: 'model-online' | 'model-offline' | 'promote' | 'demote') {
+  if (!selectedBucket.value || actionBusy.value) return
+  actionBusy.value = true
+  actionMessage.value = null
+  const credId = selectedBucket.value.credential.credential_id
+  const model = selectedBucket.value.model
+  const reason = actionReason.value.trim() || '凭据监控页热力图操作'
+  try {
+    if (kind === 'model-online' || kind === 'model-offline') {
+      if (model === '__aggregate__') {
+        actionMessage.value = '汇总行不针对单一模型,请展开后在具体模型行选择色块'
+        return
+      }
+      await toggleModelAvailability(credId, model, kind === 'model-online' ? 'online' : 'offline', reason)
+      actionMessage.value = `已${kind === 'model-online' ? '上线' : '下线'}模型 ${model}`
+    } else if (kind === 'promote') {
+      await promoteCredential(credId, reason)
+      actionMessage.value = `已恢复凭据 #${credId}`
+    } else {
+      await demoteCredential(credId, reason)
+      actionMessage.value = `已降级凭据 #${credId}`
+    }
+    await loadHeatmap()
+  } catch (e) {
+    actionMessage.value = `操作失败: ${e instanceof Error ? e.message : String(e)}`
+  } finally {
+    actionBusy.value = false
+  }
+}
+
 // Format timestamp
-function formatTime(ts: string): string {
+function formatTime(ts: string | number): string {
   const d = new Date(ts)
-  const h = String(d.getHours()).padStart(2, '0')
-  const m = String(d.getMinutes()).padStart(2, '0')
-  return `${h}:${m}`
+  const pad = (n: number) => String(n).padStart(2, '0')
+  if (granularity.value === '1d') return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+  if (granularity.value === '1h') return `${pad(d.getDate())}日${pad(d.getHours())}时`
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function formatFullTime(ts: string | number): string {
+  const d = new Date(ts)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 // Lifecycle
@@ -283,8 +451,15 @@ onUnmounted(() => {
           (建议: {{ suggestedGranularity }})
         </span>
 
+        <span class="label">模型</span>
+        <select v-model="modelFilter" class="field-input model-select" @change="loadHeatmap">
+          <option value="">全部模型</option>
+          <option v-for="m in modelOptions" :key="m" :value="m">{{ m }}</option>
+          <option v-if="modelFilter && !modelOptions.includes(modelFilter)" :value="modelFilter">{{ modelFilter }}</option>
+        </select>
+
         <label class="checkbox-label">
-          <input type="checkbox" v-model="excludeSelfTest" />
+          <input type="checkbox" v-model="excludeSelfTest" @change="loadHeatmap" />
           排除自检
         </label>
 
@@ -326,10 +501,9 @@ onUnmounted(() => {
 
     <!-- Meta info -->
     <div v-if="meta" class="meta-info">
-      时间范围: {{ formatTime(meta.time_start) }} - {{ formatTime(meta.time_end) }} ·
+      时间范围: {{ formatFullTime(meta.time_start) }} - {{ formatFullTime(meta.time_end) }} ·
       粒度: {{ meta.granularity }} ·
-      时间桶: {{ meta.bucket_count }} ·
-      {{ meta.cache_hit ? '缓存命中' : '实时生成' }} ·
+      时间桶: {{ timeAxis.length }} ·
       {{ meta.duration_ms }}ms
     </div>
 
@@ -347,44 +521,61 @@ onUnmounted(() => {
 
     <!-- Heatmap grid -->
     <div v-else class="heatmap-grid">
-      <div v-for="cred in filteredCredentials" :key="cred.credential_id" class="credential-row">
+      <!-- Shared time axis header -->
+      <div class="credential-row axis-row">
+        <div class="heatmap-row">
+          <div class="row-label">时间轴</div>
+          <div class="cells-container">
+            <div v-for="t in timeAxis" :key="t" class="axis-cell"
+                 :title="formatFullTime(t)">{{ formatTime(t) }}</div>
+          </div>
+        </div>
+      </div>
+
+      <div v-for="row in indexedRows" :key="row.cred.credential_id" class="credential-row">
         <div class="credential-header">
-          <button class="expand-btn" @click="toggleExpanded(cred.credential_id)">
-            {{ expandedCredentials.has(cred.credential_id) ? '▼' : '▶' }}
+          <button class="expand-btn" @click="toggleExpanded(row.cred.credential_id)">
+            {{ expandedCredentials.has(row.cred.credential_id) ? '▼' : '▶' }}
           </button>
           <div class="credential-info">
             <div class="credential-label">
-              {{ credentialDisplayName(cred.credential_id, cred.label || `凭据 #${cred.credential_id}`) }}
+              {{ credentialDisplayName(row.cred.credential_id, row.cred.label || `凭据 #${row.cred.credential_id}`) }}
             </div>
-            <div class="credential-provider">{{ cred.provider_name }}</div>
+            <div class="credential-provider">{{ row.cred.provider_name }}</div>
           </div>
         </div>
 
-        <!-- Aggregate row (all models combined) -->
+        <!-- Aggregate row: worst status across models (§4.3) -->
         <div class="heatmap-row">
           <div class="row-label">汇总</div>
           <div class="cells-container">
-            <!-- Aggregate logic: show worst status across all models for each time bucket -->
-            <div v-for="(bucket, idx) in cred.models[0]?.buckets || []" :key="idx" 
+            <div v-for="t in timeAxis" :key="t"
                  class="heatmap-cell"
-                 :style="{ backgroundColor: getStatusColor(bucket.status) }"
-                 :title="`${formatTime(bucket.time_bucket)}: ${bucket.status}`">
+                 :class="row.aggregate.byBucket.has(t) ? '' : 'cell-blank'"
+                 :style="row.aggregate.byBucket.has(t) ? { backgroundColor: getStatusColor(row.aggregate.byBucket.get(t)!.status) } : {}"
+                 :title="row.aggregate.byBucket.has(t)
+                   ? `${formatFullTime(t)}: ${row.aggregate.byBucket.get(t)!.status}, ${row.aggregate.byBucket.get(t)!.total_requests} 请求`
+                   : `${formatFullTime(t)}: 无请求`"
+                 @click="row.aggregate.byBucket.get(t) && onCellClick(row.aggregate.byBucket.get(t)!, row.cred, '__aggregate__')">
             </div>
           </div>
         </div>
 
         <!-- Expanded model rows -->
-        <template v-if="expandedCredentials.has(cred.credential_id)">
-          <div v-for="model in cred.models" :key="model.raw_model_name" class="heatmap-row model-row">
+        <template v-if="expandedCredentials.has(row.cred.credential_id)">
+          <div v-for="model in row.models" :key="model.rawModelName" class="heatmap-row model-row">
             <div class="row-label model-label">
-              <code>{{ model.raw_model_name }}</code>
+              <code>{{ model.rawModelName }}</code>
             </div>
             <div class="cells-container">
-              <div v-for="(bucket, idx) in model.buckets" :key="idx"
+              <div v-for="t in timeAxis" :key="t"
                    class="heatmap-cell"
-                   :style="{ backgroundColor: getStatusColor(bucket.status) }"
-                   :title="`${formatTime(bucket.time_bucket)}: ${bucket.total_requests} 请求, ${(bucket.success_rate * 100).toFixed(1)}% 成功率`"
-                   @click="onCellClick(bucket, cred, model.raw_model_name)">
+                   :class="model.byBucket.has(t) ? '' : 'cell-blank'"
+                   :style="model.byBucket.has(t) ? { backgroundColor: getStatusColor(model.byBucket.get(t)!.status) } : {}"
+                   :title="model.byBucket.has(t)
+                     ? `${formatFullTime(t)}: ${model.byBucket.get(t)!.status}, ${model.byBucket.get(t)!.total_requests} 请求, ${(model.byBucket.get(t)!.success_rate * 100).toFixed(1)}% 成功率`
+                     : `${formatFullTime(t)}: 无请求`"
+                   @click="model.byBucket.get(t) && onCellClick(model.byBucket.get(t)!, row.cred, model.rawModelName)">
               </div>
             </div>
           </div>
@@ -399,6 +590,10 @@ onUnmounted(() => {
         <span class="legend-color" :style="{ backgroundColor: color }"></span>
         {{ status }}
       </span>
+      <span class="legend-item">
+        <span class="legend-color legend-blank"></span>
+        无数据(空白)
+      </span>
     </div>
 
     <!-- Detail popover -->
@@ -412,7 +607,7 @@ onUnmounted(() => {
           <div class="detail-section">
             <div class="detail-row">
               <span class="detail-label">时间范围</span>
-              <span>{{ selectedBucket.bucket.time_bucket }}</span>
+              <span>{{ formatFullTime(selectedBucket.bucket.time_bucket) }} 起 1 个 {{ granularity }} 桶</span>
             </div>
             <div class="detail-row">
               <span class="detail-label">凭据</span>
@@ -420,7 +615,7 @@ onUnmounted(() => {
             </div>
             <div class="detail-row">
               <span class="detail-label">模型</span>
-              <code>{{ selectedBucket.model }}</code>
+              <code>{{ selectedBucket.model === '__aggregate__' ? '全部模型(汇总)' : selectedBucket.model }}</code>
             </div>
             <div class="detail-row">
               <span class="detail-label">状态</span>
@@ -474,6 +669,24 @@ onUnmounted(() => {
               </router-link>
             </div>
           </div>
+
+          <div class="detail-section correction-section">
+            <h4>状态修正</h4>
+            <input
+              v-model="actionReason"
+              class="field-input reason-input"
+              placeholder="操作原因 (可选)"
+            />
+            <div class="action-btns">
+              <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('model-online')">模型上线</button>
+              <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('model-offline')">模型下线</button>
+              <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('promote')">恢复凭据</button>
+              <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('demote')">降级凭据</button>
+            </div>
+            <p v-if="actionMessage" class="action-message" :class="{ fail: actionMessage.startsWith('操作失败') }">
+              {{ actionMessage }}
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -523,6 +736,10 @@ onUnmounted(() => {
   border-radius: 4px;
   background: var(--bg);
   color: var(--text);
+}
+
+.model-select {
+  max-width: 220px;
 }
 
 .checkbox-label {
@@ -593,6 +810,23 @@ onUnmounted(() => {
   padding: 12px;
 }
 
+.axis-row {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.axis-cell {
+  min-width: 8px;
+  width: 12px;
+  height: 18px;
+  font-size: 8px;
+  color: var(--muted);
+  overflow: hidden;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
 .credential-header {
   display: flex;
   align-items: center;
@@ -659,11 +893,18 @@ onUnmounted(() => {
   border-radius: 2px;
   cursor: pointer;
   transition: opacity 0.2s;
+  flex-shrink: 0;
 }
 
 .heatmap-cell:hover {
   opacity: 0.8;
   outline: 2px solid var(--accent);
+}
+
+.cell-blank {
+  background: transparent;
+  border: 1px dashed var(--border);
+  cursor: default;
 }
 
 .legend {
@@ -695,6 +936,11 @@ onUnmounted(() => {
   height: 16px;
   border-radius: 3px;
   border: 1px solid var(--border);
+}
+
+.legend-blank {
+  background: transparent;
+  border-style: dashed;
 }
 
 .detail-section {
@@ -742,5 +988,26 @@ onUnmounted(() => {
 
 .request-id-link a:hover {
   text-decoration: underline;
+}
+
+.correction-section .reason-input {
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.action-btns {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.action-message {
+  margin: 8px 0 0 0;
+  font-size: 12px;
+  color: var(--success);
+}
+
+.action-message.fail {
+  color: var(--danger);
 }
 </style>

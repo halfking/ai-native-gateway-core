@@ -45,7 +45,6 @@ const MaaSUsageView = () => import('./views/tenant/MaaSUsageView.vue')
 const MaaSOrderView = () => import('./views/tenant/MaaSOrderView.vue')
 const TenantModelsView = () => import('./views/tenant/TenantModelsView.vue')
 const CredentialMonitorView = () => import('./views/CredentialMonitorWithTabs.vue')
-const ProbeHealthView = () => import('./views/ProbeHealthView.vue')
 const ProbeHealthDetailView = () => import('./views/ProbeHealthDetailView.vue')
 const AgentRegistryView = () => import('./views/AgentRegistryView.vue')
 const FormatAnomaliesView = () => import('./views/FormatAnomaliesView.vue')
@@ -181,7 +180,10 @@ export const router = createRouter({
     { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
     { path: '/routing-v2/credentials', component: CredentialMonitorView }, // 2026-07-04: 允许 tenant_admin 访问
-    { path: '/probe-health',       component: ProbeHealthView,      meta: { requiresSuper: true } },
+    // 2026-09-07 probe-health integration: the standalone page folds into the
+    // credential monitor's super-only「探测健康」tab; keep /probe-health/detail
+    // (model drill-down) as-is.
+    { path: '/probe-health',       redirect: { path: '/routing-v2/credentials', query: { tab: 'probe-health' } } },
     { path: '/probe-health/detail', component: ProbeHealthDetailView, meta: { requiresSuper: true } },
     // 2026-07-23: 系统监测面板（v1）—— 入站需 super_admin 才能操作。
     // 设计依据 docs/会话优化v2/32-系统监测模块设计.md §5
