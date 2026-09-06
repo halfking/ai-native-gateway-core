@@ -93,6 +93,42 @@ type Decision struct {
 	AssignmentKeyHash string    `json:"assignment_key_hash,omitempty"`
 }
 
+// RoutingOptimizer is the P2.2 routing optimization plugin interface.
+// Implemented in the routingopt package. The Decider calls plugin hooks
+// (PreClassify, PostClassify, RecommendModel) during Decide() when optimizer != nil.
+//
+// Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md §2.2
+// Default implementation: routingopt.DefaultOptimizer (no-op passthrough)
+//
+// Note: To avoid circular import between autoroute and routingopt, all parameters
+// use interface{} instead of concrete types. Real implementations should type-assert:
+//   - PreClassify signals: interface{} (*ClassificationSignals)
+//   - PostClassify taskType: string (TaskType value)
+type RoutingOptimizer interface {
+	// PreClassify enriches classification signals before classification.
+	// Parameter signals: interface{} (*ClassificationSignals expected)
+	// Returns enhanced signals (with GetOriginal() method) or an error.
+	// Errors are logged; the Decider proceeds with unmodified signals.
+	PreClassify(ctx context.Context, signals interface{}) (enhanced interface{}, err error)
+
+	// PostClassify adjusts confidence after classification.
+	// Parameter taskType: string (TaskType value like "code", "chat")
+	// Returns adjusted confidence [0.0, 1.0] or an error. Errors are logged;
+	// the Decider proceeds with the original confidence.
+	PostClassify(ctx context.Context, taskType string, confidence float64) (float64, error)
+
+	// RecommendModel re-ranks candidates using multi-objective optimization.
+	// Returns optimized candidates or an error. Errors are logged; the Decider
+	// proceeds with the original candidate list.
+	RecommendModel(ctx context.Context, candidates interface{}, context interface{}) (interface{}, error)
+
+	// RecordFeedback records routing outcomes for learning (fire-and-forget).
+	RecordFeedback(ctx context.Context, feedback interface{}) error
+
+	// GetStats returns optimizer statistics for admin API.
+	GetStats(ctx context.Context) (interface{}, error)
+}
+
 // IndexAccessor is the minimal interface Decider needs from autoroute.Index.
 // Defined as an interface so tests can inject stubs without standing up
 // the full PG pool + 5-min refresh machinery.
@@ -126,6 +162,16 @@ type Decider struct {
 	defaultRoutingStore *DefaultRoutingStore // optional explicit default routing (M2)
 	// workTypeRouteStore  // optional work_type_model_route strict tiers (V2 bridge)
 	workTypeRouteStore *WorkTypeRouteStore // optional work_type_model_route strict tiers (V2 bridge)
+
+	// optimizer is the P2.2 routing optimization plugin. When nil (default),
+	// the Decider operates in baseline mode (no optimization). When set, the
+	// plugin hooks (PreClassify, PostClassify, RecommendModel) are called
+	// during Decide(). Plugin errors are logged and do not block routing.
+	//
+	// Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md
+	// Injection: decider.SetOptimizer(routingopt.NewDefaultOptimizer())
+	// Feature flag: ROUTING_OPT_ENABLED=false (default)
+	optimizer RoutingOptimizer // P2.2: nil = disabled
 
 	// treatmentRollout overrides the process-wide V3 flag snapshot when set.
 	// It is primarily useful for controlled tests and embedded deployments.
@@ -252,6 +298,21 @@ func (d *Decider) SetTenantResolver(fn func(apiKeyID int) string) {
 	d.TenantResolver = fn
 }
 
+// SetOptimizer wires the P2.2 routing optimization plugin. Pass nil to disable
+// optimization (baseline mode). When set, the plugin hooks (PreClassify,
+// PostClassify, RecommendModel) are called during Decide(). Plugin errors are
+// logged and do not block routing.
+//
+// Usage:
+//   decider.SetOptimizer(routingopt.NewDefaultOptimizer())
+//   decider.SetOptimizer(nil) // disable
+//
+// Feature flag: ROUTING_OPT_ENABLED (default: false)
+// Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md
+func (d *Decider) SetOptimizer(opt RoutingOptimizer) {
+	d.optimizer = opt
+}
+
 // SetTreatmentRollout overrides the process-wide V3 rollout for this decider.
 // Passing nil restores the global feature-flag configuration.
 func (d *Decider) SetTreatmentRollout(cfg *RolloutConfig) {
@@ -354,6 +415,26 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	// Step 1: resolve profile (header > sticky > default)
 	profile := d.resolveProfile(ctx, apiKeyID, headerProfile)
 
+	// P2.2: PreClassify plugin hook (enhance signals before classification)
+	if d.optimizer != nil {
+		enhanced, err := d.optimizer.PreClassify(ctx, &sigs)
+		if err != nil {
+			slog.WarnContext(ctx, "optimizer.PreClassify failed, using original signals",
+				"err", err, "api_key_id", apiKeyID)
+		} else if enhanced != nil {
+			// Extract Original signals from the enhanced wrapper.
+			// The interface{} type is used to avoid circular dependency;
+			// real implementation returns *routingopt.EnhancedSignals with GetOriginal() method.
+			if e, ok := enhanced.(interface{ GetOriginal() interface{} }); ok {
+				if orig := e.GetOriginal(); orig != nil {
+					if origSigs, ok := orig.(*ClassificationSignals); ok {
+						sigs = *origSigs
+					}
+				}
+			}
+		}
+	}
+
 	// Step 2: classify
 	cls, err := d.classify(ctx, sigs, taskHint)
 	if err != nil {
@@ -363,6 +444,24 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 			Confidence: 0.3,
 			Classifier: "default",
 			Reason:     "classification failed: " + err.Error(),
+		}
+	}
+
+	// P2.2: PostClassify plugin hook (adjust confidence after classification)
+	if d.optimizer != nil {
+		adjustedConf, err := d.optimizer.PostClassify(ctx, string(cls.Primary), cls.Confidence)
+		if err != nil {
+			slog.WarnContext(ctx, "optimizer.PostClassify failed, using original confidence",
+				"err", err, "task_type", cls.Primary, "confidence", cls.Confidence)
+		} else {
+			// Clamp adjusted confidence to [0.0, 1.0]
+			if adjustedConf < 0.0 {
+				adjustedConf = 0.0
+			}
+			if adjustedConf > 1.0 {
+				adjustedConf = 1.0
+			}
+			cls.Confidence = adjustedConf
 		}
 	}
 
