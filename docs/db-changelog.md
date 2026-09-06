@@ -357,3 +357,16 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 | 673 | `673_annotation_stats_empty_table_fix.sql` | `99ab8c9e2da6e27f23763c669e49f39f6b8e3d5cf301594dccc11ba1ce3ab102` | applied+verified |
 | 674 | `674_annotation_request_id_unique.sql` | `3fabafce8e3f9e2aa2119ee67e594ba3aa74e99b53c5f6a0b9dc4512d1f927e6` | applied+verified |
 
+## 2026-09-06T21:17:18Z — deploy 154 build_seq 2015 (2bffd6ca)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 675 | `675_qwen38_family_vendor.sql` | `9a774b81755329bbd979853da4f4b16d0409a27fda8c8c3665362eecddaf3fe0` | applied+verified |
+| 676 | `676_routing_opt_active_fix.sql` | `ef42d448d9cb61cdbd17fec194606b36b971dba026f6a7625963f7e1dd3e0baf` | applied+verified |
+
+## 2026-09-07T05:21:00Z — deploy 154 build_seq 2017 (2bffd6ca)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 677 | `677_session_summaries_canonical_bootstrap.sql` | `fc4d0e4ade86b019afd898b84d8e3d831b796b2faa6a6edc2a5ca3cc6220d348` | applied+verified |
+

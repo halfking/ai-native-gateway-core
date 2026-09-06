@@ -26,6 +26,15 @@ fi
 
 # Do not mutate a database whose required base relation is absent. In
 # particular, never rename/drop a same-named table from another product.
+#
+# 2026-09-07: shared PG instances (llm-gateway-pg with memora/kxmemory as
+# sibling products) routinely reach this gate with public.session_summaries
+# ABSENT — neither the gateway snapshot (skipped because the DB already
+# holds 700+ sibling tables) nor memora (which only overwrites the table
+# when it exists with a minimal shape) creates it. Instead of refusing,
+# bootstrap the canonical table via the dedicated 677 migration and let the
+# rest of the sequence proceed. After bootstrap the gate re-classifies the
+# state as 'canonical' so downstream migrations see a stable relation.
 base_state=$(psql_query "
 SELECT CASE
   WHEN to_regclass('public.session_summaries') IS NULL THEN 'missing'
@@ -41,10 +50,10 @@ SELECT CASE
   ELSE 'canonical'
 END")
 if [[ "$base_state" == missing ]]; then
-  printf 'error: public.session_summaries is missing; refusing repair sequence\n' >&2
-  exit 3
+  printf 'database schema state: missing (public.session_summaries absent; will bootstrap via 677)\n'
+else
+  printf 'database schema state: %s\n' "$base_state"
 fi
-printf 'database schema state: %s\n' "$base_state"
 
 sequence_name="session-summary-and-integrity-2026-09"
 # deploy-local.sh already serializes deployments with its build lock. Markers
@@ -101,6 +110,16 @@ psql_query "CREATE TABLE IF NOT EXISTS public.gateway_db_revision_sequences (seq
 # with origin/main's 657_durable_llm_tasks / 658_auto_route_structured_features,
 # so the weekly-peak repair moved to 660 and the reassert to 661.)
 files=(
+  # 2026-09-07 deploy-gap audit (P0): on shared PG instances where neither
+  # the gateway snapshot nor memora created public.session_summaries, the
+  # base_state=='missing' gate previously refused the whole sequence. 677
+  # bootstraps the canonical table with CREATE TABLE IF NOT EXISTS (no-op
+  # when memora already covers it) and MUST run before 655, which is the
+  # first migration that ALTERs the table — otherwise 655 fails with
+  # 'relation public.session_summaries does not exist' and the deploy aborts
+  # before any of the integrity / hot-heap / treatment-attribution chain
+  # below gets a chance to run. Idempotent; safe to re-run.
+  "$ROOT_DIR/sql/migrations/startup/677_session_summaries_canonical_bootstrap.sql"
   "$ROOT_DIR/sql/migrations/startup/655_session_summaries_schema_reconcile.sql"
   "$ROOT_DIR/sql/migrations/startup/560_session_summaries_tenant_uniqueness.sql"
   "$ROOT_DIR/sql/migrations/startup/572_session_summary_large_token_ratio.sql"
