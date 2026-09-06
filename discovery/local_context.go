@@ -18,9 +18,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -214,11 +215,19 @@ func firstPositive(vals ...int) int {
 // probeOllamaContextLengths 调 ollama POST /api/show 读取每个模型的
 // context_length（model_info 键形如 "qwen3.context_length"）。
 // 结果写回 perModel（就地更新），失败静默跳过。
+//
+// 注意 base_url 形态：catalog/providers 里 ollama 种子为
+// http://127.0.0.1:11434/v1（OpenAI 兼容面），而 /api/show 是 ollama 原生
+// API，挂在根路径——拼接前必须剥掉 /v1 后缀，否则 URL 变成
+// .../v1/api/show 必 404，整条回填分支静默退化为 catalog 默认值
+// （2026-09-07 审计 P1：真实上下文 40960 被记成 8192，长上下文请求被误拒）。
 func probeOllamaContextLengths(ctx context.Context, client *http.Client, baseURL string, models []string, perModel map[string]int) {
 	if client == nil {
 		client = http.DefaultClient
 	}
-	showURL := strings.TrimRight(baseURL, "/") + "/api/show"
+	root := strings.TrimRight(baseURL, "/")
+	root = strings.TrimSuffix(root, "/v1")
+	showURL := root + "/api/show"
 	probed := 0
 	for _, rawName := range models {
 		if probed >= localShowProbeLimit {
@@ -260,6 +269,10 @@ func probeOllamaContextLengths(ctx context.Context, client *http.Client, baseURL
 
 // parseOllamaShowContextLength 从 /api/show 响应中提取 context_length。
 // 响应形如 {"model_info": {"qwen3.context_length": 40960, ...}, ...}。
+// model_info 可能同时含多个架构键（如 general.context_length 与
+// qwen3.context_length），Go map 遍历序随机——这里做确定性择取：
+// 优先非 general.* 键，再按字典序；结果钳制到 [1024, 10M]，
+// 防本地服务异常返回把 context_window_override 校验打穿（审计 P3）。
 func parseOllamaShowContextLength(data []byte) int {
 	var doc struct {
 		ModelInfo map[string]any `json:"model_info"`
@@ -267,21 +280,48 @@ func parseOllamaShowContextLength(data []byte) int {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return 0
 	}
-	for k, v := range doc.ModelInfo {
-		if !strings.HasSuffix(strings.ToLower(k), ".context_length") && k != "context_length" {
-			continue
+	keys := make([]string, 0, len(doc.ModelInfo))
+	for k := range doc.ModelInfo {
+		if strings.HasSuffix(strings.ToLower(k), ".context_length") || k == "context_length" {
+			keys = append(keys, k)
 		}
-		switch n := v.(type) {
-		case float64:
-			if n > 0 {
-				return int(n)
+	}
+	sort.Strings(keys)
+	// 两轮：先挑非 general 前缀的键（模型架构键优先），没有再接受 general。
+	for _, preferNonGeneral := range []bool{true, false} {
+		for _, k := range keys {
+			if preferNonGeneral && strings.HasPrefix(strings.ToLower(k), "general.") {
+				continue
 			}
-		case string:
-			var parsed int
-			if _, err := fmt.Sscanf(strings.TrimSpace(n), "%d", &parsed); err == nil && parsed > 0 {
-				return parsed
+			if cl := contextLengthFromAny(doc.ModelInfo[k]); cl > 0 {
+				return cl
 			}
 		}
 	}
 	return 0
+}
+
+// contextLengthFromAny 解析一个 context_length 值并钳制到 [1024, 10M]。
+func contextLengthFromAny(v any) int {
+	var n float64
+	switch x := v.(type) {
+	case float64:
+		n = x
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(x))
+		if err != nil {
+			return 0
+		}
+		n = float64(parsed)
+	default:
+		return 0
+	}
+	if n < 1024 {
+		return 0
+	}
+	const maxContextLength = 10_000_000
+	if n > maxContextLength {
+		return maxContextLength
+	}
+	return int(n)
 }

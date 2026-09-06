@@ -2,7 +2,12 @@
 
 > 会话优化统一架构 Phase 1 · 子任务4
 > 包路径：`domains/hooks/promptoptimization/`
-> 状态：✅ 已实现并注册（默认关闭）
+> 状态：⚠️ **已实现、未接线**（2026-09-07 审计修正）
+>
+> 包代码与测试完整，但 `NewHookFromEnv` 在全仓库**没有任何调用点**：
+> `buildV2DispatchPipeline()` 注册的 20 个 stage 中不存在
+> `prompt_optimization`。设 `PROMPT_OPTIMIZATION_ENABLED=1`
+> **不会有任何效果也不会报错**。接线前本功能不生效。
 
 ## 功能概述
 
@@ -28,8 +33,10 @@ PhaseTransform:
 
 先优化再压缩：优化基于原始语义进行，压缩产物不会被重复优化。
 
-注册位置：`cmd/gateway/main_pipeline.go` 的 `buildV2DispatchPipeline()`，
-stage 名 `prompt_optimization`。
+注册位置（**规划**，尚未实施）：`cmd/gateway/main_pipeline.go` 的
+`buildV2DispatchPipeline()`，stage 名 `prompt_optimization`。
+接线时需在 Transform 阶段链中于 compression 之前注册
+`promptoptimization.NewHookFromEnv(...)`。
 
 ## 配置项（环境变量）
 

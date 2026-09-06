@@ -21,7 +21,11 @@ import (
 // Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md §2.1
 type ClassificationEnhancer struct {
 	affinityDAO *UserAffinityDAO
-	// redisCache  *redis.Client  // Week 2: Redis cache (TTL=1h)
+	// loadAffinity gates the per-request routing_user_affinity query.
+	// 默认 false：Classifier 尚不消费 EnhancedSignals（2026-09-07 审计：
+	// 查询结果被整体丢弃，等于每次 auto 请求白付一次 DB 往返），Week 2
+	// 把增强字段接入分类器后再由 Options.LoadUserAffinity 打开。
+	loadAffinity bool
 }
 
 // NewClassificationEnhancer constructs an enhancer instance.
@@ -51,8 +55,10 @@ func (e *ClassificationEnhancer) Enhance(ctx context.Context, signals interface{
 		TimeContext:    TimeContext{},
 	}
 
-	// 1. User affinity (从 DB 查询，Week 2 添加 Redis 缓存)
-	if userID != "" && userID != "0" {
+	// 1. User affinity (从 DB 查询，Week 2 添加 Redis 缓存)。
+	// loadAffinity=false 时跳过 DB——增强字段目前没有下游消费者，省掉
+	// 每 auto 请求一次的无效查询（2026-09-07 审计 P1）。
+	if e.loadAffinity && userID != "" && userID != "0" {
 		affinity, err := e.affinityDAO.GetByUserID(ctx, userID)
 		if err == nil && affinity != nil {
 			// 将 task type count 转换为 normalized distribution [0, 1]

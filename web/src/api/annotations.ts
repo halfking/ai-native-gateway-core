@@ -59,7 +59,8 @@ export interface ReasonDistribution {
 }
 
 export interface StatsResponse {
-  overall: AnnotationStats
+  // 后端 Overall 为指针（空表时 null，见 admin/annotation_handler.go）
+  overall: AnnotationStats | null
   by_provider: ProviderAccuracy[]
   by_annotator: AnnotatorStats[]
   by_reason: ReasonDistribution[]

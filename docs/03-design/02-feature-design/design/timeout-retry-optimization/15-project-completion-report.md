@@ -1,5 +1,11 @@
 # 🎉 超时优化项目完成报告
 
+> **📌 权威性声明（2026-09-07 审计）**：本报告是 timeout-retry-optimization
+> 系列的**唯一权威结论**；系列内其他文档（01~14 号）为历史快照，状态、
+> 路径与行数如有出入以本报告 + 2026-09-07 审计勘误注记为准
+> （勘误涉及：Phase 3 交付形态、监控四列无写入方、部署入口改为
+> `scripts/deploy-local.sh`）。
+
 ## 项目信息
 
 **项目名称**: LLM Gateway 超时优化  
@@ -142,39 +148,28 @@ ALTER TABLE request_logs ADD COLUMN keepalive_sent_count INT;
 
 ---
 
-### Phase 3: Keepalive & Node Switch ✅
+### Phase 3: Keepalive & Node Switch ⚠️（2026-09-07 审计勘误）
 
-**完成度**: 100%  
-**状态**: 代码完成，待集成测试
+**完成度**: 70%（按实际实现重述）  
+**状态**: keepalive 已落地；下文 KeepaliveSender/node_switch 为设计稿，未交付
 
-**交付物**:
-- KeepaliveSender：168行
-- 单元测试：4个，100%通过
-- Executor集成：KeepaliveInterval字段
+> **勘误（2026-09-07 24h 审计）**：本节最初声明的 `KeepaliveSender`（168 行）、
+> `event: node_switch` SSE 事件与 4 个 `TestKeepaliveSender_*` 测试在代码中
+> **均不存在**（全库 grep 零命中），按原文验收会误判。实际交付形态如下：
 
-**核心特性**:
+**实际落地（代码可验证）**:
+- **Pre-stream keepalive**：`domains/streaming/handler.go` 的
+  `pre_stream_keepalive` 路径 + Anthropic 流内 `maybeSendKeepalive`
+  （`: keepalive` SSE 注释帧），间隔来自 `TimeoutConfig`
+  （`cmd/gateway/main.go` 装配）。
+- **Executor 集成**：`KeepaliveInterval` 字段在 executor 配置中生效。
+- **failover 通知**：重试/切节点信息以 `DispatchNotice` → 流式
+  `: thinking:` 注释帧透出（`domains/dispatch/notice.go`），非流式路径
+  丢弃（已知限制，见审计报告）。
 
-1. **Keepalive心跳**:
-   - 格式：SSE (Server-Sent Events)
-   - 间隔：可配置，默认15秒
-   - 事件类型：`event: keepalive`
-   - 数据格式：`{"type":"keepalive","timestamp":...}`
-
-2. **节点切换通知**:
-   - 事件类型：`event: node_switch`
-   - 数据格式：`{"type":"node_switch","from_node":"...","to_node":"...","attempt":N,"reason":"..."}`
-   - 触发时机：重试切换节点时
-
-3. **优雅启停**:
-   - 自动启动：请求开始时
-   - 自动停止：请求结束时
-   - Goroutine清理：无泄漏
-
-**测试覆盖**:
-- ✅ TestKeepaliveSender_SendKeepalive
-- ✅ TestKeepaliveSender_SendNodeSwitch
-- ✅ TestKeepaliveSender_AutoSend
-- ✅ TestKeepaliveSender_NilSafety
+**未交付（Week 3 候选）**:
+- `event: node_switch` 结构化 SSE 事件（现为 thinking 注释摘要）
+- 独立 KeepaliveSender 组件与其单元测试
 
 ---
 
@@ -460,6 +455,10 @@ go build -o llm-gateway-go cmd/gateway/main.go
 
 ### 步骤2: 上传并部署（30分钟）
 
+> **⚠️ 2026-09-07 审计更新**：下述手工 systemctl 流程已过时，照做会绕过
+> 健康门控。现行标准部署入口为 `scripts/deploy-local.sh`（蓝绿 +
+> 健康检查），生产/本地环境一律走脚本；以下流程仅作故障应急参考。
+
 ```bash
 # 上传
 scp -P 25022 llm-gateway-go root@<env:HOST_154_IP>:/tmp/
@@ -490,11 +489,17 @@ INFO using TimeoutConfigAdapter from Phase 2
 
 ### 步骤4: 数据验证（30分钟）
 
+> **⚠️ 2026-09-07 审计更新**：`request_logs` 的
+> `effective_timeout_seconds / timeout_mode / is_continuation /
+> keepalive_sent_count` 四列与视图 `v_timeout_effectiveness`
+> **schema 已建、Go 侧尚无写入方**（全库 grep 仅 timeout_adapter.go
+> 内存字段）。以下验证 SQL 目前返回空集——属预期，待写入端落地后生效。
+
 ```sql
 -- 验证配置加载
 SELECT * FROM system_settings WHERE category='timeout';
 
--- 验证超时记录
+-- 验证超时记录（⚠️ 当前无 producer，恒为空）
 SELECT 
     effective_timeout_seconds,
     context_size_tokens,
@@ -505,7 +510,7 @@ WHERE ts > NOW() - INTERVAL '1 hour'
   AND effective_timeout_seconds IS NOT NULL
 GROUP BY 1, 2, 3;
 
--- 验证超时率
+-- 验证超时率（⚠️ 当前无 producer，恒为空）
 SELECT * FROM v_timeout_effectiveness;
 ```
 

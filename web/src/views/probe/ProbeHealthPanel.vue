@@ -208,6 +208,19 @@ onMounted(() => {
   if (autoRefresh.value) {
     refreshTimer = window.setInterval(refreshAll, 30000)
   }
+
+  // 开关与定时器双向联动：此前 checkbox 只是 v-model，取消勾选不会停掉
+  // 已启动的 30s 轮询（后台持续打 3 个 admin 接口），反向也永不启动
+  //（2026-09-07 审计 P1）。
+  watch(autoRefresh, (on) => {
+    if (refreshTimer) {
+      clearInterval(refreshTimer)
+      refreshTimer = null
+    }
+    if (on) {
+      refreshTimer = window.setInterval(refreshAll, 30000)
+    }
+  })
 })
 
 onUnmounted(() => {

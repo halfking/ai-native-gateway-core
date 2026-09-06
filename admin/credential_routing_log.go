@@ -147,7 +147,8 @@ func (m *CredentialMonitorHandlers) handleCredentialRoutingLog(w http.ResponseWr
 	entries, total, err := runRoutingLogQuery(ctx, m.h.db, params)
 	if err != nil {
 		slog.Error("routing log query failed", "error", err.Error())
-		writeError(w, http.StatusInternalServerError, "routing log query failed: "+err.Error())
+		// 不回传内部 SQL 错误细节（表名/约束名），只留 trace 线索给日志。
+		writeError(w, http.StatusInternalServerError, "routing log query failed")
 		return
 	}
 
@@ -191,6 +192,11 @@ func parseRoutingLogTimeRange(startStr, endStr string, def time.Duration) (time.
 	}
 	if timeEnd.Before(timeStart) {
 		return timeStart, timeEnd, fmt.Errorf("time_end must be after time_start")
+	}
+	// 显式传参同样钳制窗口上限：无界扫描会拖垮三路 UNION
+	// （2026-09-07 审计 P2；默认 24h 只保护缺省调用）。
+	if timeEnd.Sub(timeStart) > 7*24*time.Hour {
+		return timeStart, timeEnd, fmt.Errorf("time range exceeds maximum of 7d")
 	}
 	return timeStart, timeEnd, nil
 }

@@ -267,6 +267,8 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 	defer ticker.Stop()
 	pm.cleanupOldProviderErrorDetails(ctx)
 	pm.cleanupOldSupplierErrorStats(ctx)
+	pm.cleanupOldRoutingFeedbackLog(ctx)
+	pm.cleanupOldRoutingOptimizationMetrics(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -274,6 +276,8 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 		case <-ticker.C:
 			pm.cleanupOldProviderErrorDetails(ctx)
 			pm.cleanupOldSupplierErrorStats(ctx)
+			pm.cleanupOldRoutingFeedbackLog(ctx)
+			pm.cleanupOldRoutingOptimizationMetrics(ctx)
 		}
 	}
 }
@@ -1260,6 +1264,79 @@ func (pm *PartitionManager) cleanupOldSupplierErrorStats(ctx context.Context) {
 	}
 	if n := tag.RowsAffected(); n > 0 {
 		slog.Info("partition_manager: cleaned supplier_error_stats minute buckets",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldRoutingFeedbackLog deletes rows from routing_feedback_log older
+// than the configured TTL. The table takes one INSERT per auto-route
+// decision (routingopt feedback hook, migration 670) but is a plain heap —
+// no hot+partition promote, no other pruning — so without this it grows
+// linearly with decision volume and drags its five indexes along
+// (2026-09-07 audit P1). Until the table is migrated to the hot+partition
+// architecture this daily TTL is the growth bound.
+//
+// Retention: lifecycle.routing_feedback_log_ttl_days (default 14; the
+// learner only needs recent training signal).
+func (pm *PartitionManager) cleanupOldRoutingFeedbackLog(ctx context.Context) {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	retentionDays := settingsGetPlatformInt("lifecycle.routing_feedback_log_ttl_days", 14)
+	if retentionDays < 1 {
+		retentionDays = 14 // safety floor — never set to 0
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := pm.db.Exec(timeoutCtx,
+		`DELETE FROM routing_feedback_log
+		 WHERE created_at < now() - ($1 || ' days')::interval`,
+		retentionDays)
+	if err != nil {
+		// 42P01 (table missing, e.g. migration 670 not applied yet) is the
+		// expected steady state on deployments without the optimizer; keep
+		// it out of the error log to avoid a per-tick flood.
+		slog.Debug("partition_manager: routing_feedback_log cleanup skipped",
+			"error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("partition_manager: cleaned routing_feedback_log",
+			"deleted_rows", n, "retention_days", retentionDays)
+	}
+}
+
+// cleanupOldRoutingOptimizationMetrics deletes expired 5-minute metric
+// buckets from routing_optimization_metrics (migration 670). Insert rate is
+// low (one row per time_bucket × task_type × provider upsert) but the table
+// has no partition strategy and no other pruning.
+//
+// Retention: lifecycle.routing_optimization_metrics_ttl_days (default 30).
+func (pm *PartitionManager) cleanupOldRoutingOptimizationMetrics(ctx context.Context) {
+	if pm == nil || pm.db == nil {
+		return
+	}
+	retentionDays := settingsGetPlatformInt("lifecycle.routing_optimization_metrics_ttl_days", 30)
+	if retentionDays < 1 {
+		retentionDays = 30 // safety floor
+	}
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	tag, err := pm.db.Exec(timeoutCtx,
+		`DELETE FROM routing_optimization_metrics
+		 WHERE time_bucket < now() - ($1 || ' days')::interval`,
+		retentionDays)
+	if err != nil {
+		slog.Debug("partition_manager: routing_optimization_metrics cleanup skipped",
+			"error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("partition_manager: cleaned routing_optimization_metrics",
 			"deleted_rows", n, "retention_days", retentionDays)
 	}
 }

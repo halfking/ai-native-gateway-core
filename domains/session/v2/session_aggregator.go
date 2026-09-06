@@ -215,6 +215,9 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			$12,
 			$13
 		)
+		-- 租户守卫（2026-09-07 审计）：客户端提供的 gw_ 会话 id 在 Redis
+		-- 缓存过期后无法做归属校验，WHERE 挡住他租户 key 用同 id 混写
+		-- 本行计数/摘要 —— 冲突但不满足租户条件时整条 UPDATE 跳过。
 		ON CONFLICT (session_id, partition_date)
 		DO UPDATE SET
 			updated_at = EXCLUDED.updated_at,
@@ -227,6 +230,7 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 			last_model = EXCLUDED.last_model,
 			last_provider = EXCLUDED.last_provider,
 			client_type = EXCLUDED.client_type
+		WHERE public.sessions.tenant_id = EXCLUDED.tenant_id
 	`,
 		update.SessionID, update.TenantID,
 		update.UpdatedAt,

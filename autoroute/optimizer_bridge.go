@@ -13,6 +13,17 @@ import (
 // never accumulates goroutines on the hot path.
 const feedbackWriteTimeout = 200 * time.Millisecond
 
+// maxConcurrentFeedbackWrites caps the number of in-flight feedback
+// goroutines. Each write issues up to ~4 DB statements against the shared
+// gateway pool (feedback insert + affinity upsert + annotation lookup), so
+// an unbounded spawn-per-decision at high RPS starves request-path queries
+// (2026-09-07 audit P1). Excess feedback is dropped — it is best-effort
+// training data, never worth displacing user traffic.
+const maxConcurrentFeedbackWrites = 32
+
+// feedbackWriteSlots is the counting semaphore for recordFeedbackAsync.
+var feedbackWriteSlots = make(chan struct{}, maxConcurrentFeedbackWrites)
+
 // optimizer_bridge.go — P2.2: bridges autoroute candidate types to the
 // routingopt plugin DTOs and back. autoroute → routingopt is a one-way
 // import (routingopt never imports autoroute), so the conversion lives here.
@@ -178,7 +189,18 @@ func (d *Decider) recordFeedbackAsync(decision *Decision, apiKeyID int, sessionI
 		UserID:            apiKeyID,
 		SessionID:         sessionID,
 	}
+	select {
+	case feedbackWriteSlots <- struct{}{}:
+	default:
+		// Bound reached: drop instead of queueing — a burst of decisions
+		// must not convert feedback into pool pressure.
+		slog.DebugContext(context.Background(),
+			"optimizer.RecordFeedback dropped, write bound reached",
+			"task_type", decision.TaskType)
+		return
+	}
 	go func() {
+		defer func() { <-feedbackWriteSlots }()
 		ctx, cancel := context.WithTimeout(context.Background(), feedbackWriteTimeout)
 		defer cancel()
 		if err := d.optimizer.RecordFeedback(ctx, fb); err != nil {

@@ -1711,15 +1711,19 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// request-scoped. Without this, the legacy + IR paths' orphan-
 		// removal logs cannot be correlated to gateway request id in
 		// journald, defeating the purpose of the fix.
-		irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
 		// 2026-07-18 (audit): summarize the IR path's effect so we can
 		// prove in production logs that the fix actually fired for the
 		// offending request.
-		if lr, lf := len(irReq.Messages), len(irReq.Messages); lf != lr {
+		// 2026-09-07 (audit) fix: the previous comparison measured len()
+		// against itself and could never fire — capture the pre-fix count.
+		msgCountBefore := len(irReq.Messages)
+		irReq = ir.ValidateAndFixRequest(irReq, params.RequestID)
+		if lf := len(irReq.Messages); lf != msgCountBefore {
 			slog.Debug("finalizeOpenAIUpstreamBody: IR validate+fix applied",
 				"request_id", params.RequestID,
 				"path", "anthropic_to_openai_ir",
 				"model", params.Model,
+				"messages_before", msgCountBefore,
 				"messages", lf,
 			)
 		} else {

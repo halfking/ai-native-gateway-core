@@ -2,18 +2,24 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // local.go — 本地托管模型供应商（kind='local'）的共享辅助逻辑。
 //
 // 设计契约（2026-09-07，本地模型网关接入）：
-//   1. 本地供应商来自 provider_catalog 中 kind='local' 的条目
-//      （local-ollama / local-mlx-lm / local-mlx-dspark / local-llamacpp /
-//      local-lmstudio / local-vllm，见 migration 671）。
+//   1. 本地供应商来自 provider_catalog 中 kind='local' 的条目。
+//      code 命名有两种来源：migration 671 的短 code（ollama / mlx /
+//      llamacpp / lmstudio / vllm）与 scripts/local-models/
+//      register-local-provider.sh 的 local-* 前缀（local-ollama /
+//      local-mlx-lm / ...）。两种都支持（见
+//      defaultLocalBaseURLForCode 的归一化处理）。
 //   2. 本地服务不校验 Authorization，因此凭据不需要真实 API key：
 //      addCredential 对 local 供应商允许 api_key 为空，自动写入占位密钥
 //      localNoKeyPlaceholder（照常走 Fernet/AES 加密存储）。
@@ -135,12 +141,26 @@ func (h *Handler) ensureLocalCredential(ctx context.Context, providerID int, dis
 	// 路由器会把 balance<=0 的凭据按 "balance:zero" 过滤掉（2026-09-07
 	// 端到端实测踩坑）。给与常规凭据相同的默认余额；并发限制取保守小值，
 	// 避免 auto 路由把高并发流量全压到单进程本地推理服务上。
+	//
+	// 并发重入防护：ON CONFLICT 命中迁移 679 的局部唯一索引
+	// （每 provider 至多一条活着的 local 占位凭据），输掉竞争的一方
+	// 复读胜者，不再产生第二份并发额度。
 	var id int64
 	err = h.db.QueryRow(ctx, `
 		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, fp_slot_limit, balance_usd, plan_type)
-		VALUES ($1, $2, $3, 'active', 4, 4, 1000.0, 'free')
+		VALUES ($1, 'local', $2, 'active', 4, 4, 1000.0, 'free')
+		ON CONFLICT (provider_id) WHERE label = 'local' AND status <> 'deleted'
+		DO NOTHING
 		RETURNING id
-	`, providerID, "local", encrypted).Scan(&id)
+	`, providerID, encrypted).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// 输掉插入竞争：复用已有占位凭据。
+		err = h.db.QueryRow(ctx, `
+			SELECT id FROM credentials
+			WHERE provider_id = $1 AND label = 'local' AND status NOT IN ('deleted')
+			ORDER BY id LIMIT 1
+		`, providerID).Scan(&id)
+	}
 	if err != nil {
 		slog.Error("local provider: auto credential insert failed", "provider_id", providerID, "error", err)
 		return 0
@@ -209,11 +229,18 @@ func (h *Handler) repairLocalProvider(ctx context.Context, code, renderedBaseURL
 
 // defaultLocalBaseURLForCode 返回本地托管类型的回环默认端点（与 migration 671
 // capabilities.default_port 一致）。
-func defaultLocalBaseURLForCode(code string) string {
-	switch strings.ToLower(strings.TrimSpace(code)) {
+// code 形态在仓库里有两种来源：migration 671 用短 code（ollama/mlx/...），
+// scripts/local-models/register-local-provider.sh 用 local- 前缀 catalog code
+// （local-ollama / local-mlx-lm / local-mlx-dspark / ...）。这里两种都接受：
+// 剥掉 local- 前缀后匹配，mlx 的变体后缀一并归一——否则 repair 回退默认
+// 端口的分支对其中一种命名永远失效（2026-09-07 审计 P2）。
+func defaultLocalBaseURLForCode(catalogCode string) string {
+	code := strings.ToLower(strings.TrimSpace(catalogCode))
+	code = strings.TrimPrefix(code, "local-")
+	switch code {
 	case "ollama":
 		return "http://127.0.0.1:11434/v1"
-	case "mlx":
+	case "mlx", "mlx-lm", "mlx-dspark":
 		return "http://127.0.0.1:8080/v1"
 	case "llamacpp":
 		return "http://127.0.0.1:8082/v1"
