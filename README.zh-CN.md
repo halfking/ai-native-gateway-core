@@ -289,7 +289,7 @@ AI Native Gateway 同时支持**完整生产栈**与**单机最小化部署**：
 | 速查 | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) — 常用命令与排障 |
 | 对比 | [docs/comparison.md](docs/comparison.md) — vs LiteLLM / OmniRoute / Portkey / Kong |
 | 项目总览 | [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — 功能与模块地图 |
-| 文档总目录 | [docs/INDEX.md](docs/INDEX.md) — 全量文档导航 |
+| 文档总目录 | [docs/archive/2026-09/INDEX.md](docs/archive/2026-09/INDEX.md) — 全量文档导航 |
 | 双仓库策略 | [docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md) — codeup ⇄ github 工作流 |
 | 安全 | [SECURITY.md](SECURITY.md) — 漏洞报告 + 扫描器用法 |
 | 法务 | [docs/02-resources/compliance/legal/disguise-compliance.md](docs/02-resources/compliance/legal/disguise-compliance.md) — 请求伪装合规白名单 |
