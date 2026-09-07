@@ -30,6 +30,7 @@ package autoroute
 import (
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -207,6 +208,13 @@ var (
 	indexDrift    prometheus.Gauge
 	refreshTotal  prometheus.Counter
 	refreshFailed prometheus.Counter
+
+	// F-7: 路由决策耗时（毫秒）
+	decisionLatency prometheus.Histogram
+
+	// F-7: 缓存命中率计数器
+	cacheHitTotal  prometheus.Counter
+	cacheMissTotal prometheus.Counter
 )
 
 func registerRefreshMetrics() {
@@ -227,7 +235,24 @@ func registerRefreshMetrics() {
 		Name: routingMetricPrefix + "refresh_failed_total",
 		Help: "Autoroute index refresh attempts that failed.",
 	})
-	prometheus.MustRegister(indexEntries, indexDrift, refreshTotal, refreshFailed)
+	// F-7: 路由决策耗时直方图（毫秒）
+	decisionLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: routingMetricPrefix + "decision_latency_ms",
+		Help: "Routing decision latency in milliseconds (Decide/DecideV2 end-to-end). " +
+			"Buckets tuned to detect P99 > 10ms (routing hot path budget).",
+		Buckets: []float64{0.5, 1, 2, 5, 10, 20, 50, 100, 200},
+	})
+	// F-7: 缓存命中率计数器
+	cacheHitTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: routingMetricPrefix + "cache_hit_total",
+		Help: "Session intent cache hits (reused decision without reclassification).",
+	})
+	cacheMissTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: routingMetricPrefix + "cache_miss_total",
+		Help: "Session intent cache misses (required fresh classification).",
+	})
+	prometheus.MustRegister(indexEntries, indexDrift, refreshTotal, refreshFailed,
+		decisionLatency, cacheHitTotal, cacheMissTotal)
 }
 
 // recordRefreshOutcome is called at the end of Index.Refresh.
@@ -254,5 +279,28 @@ func recordRefreshOutcome(entries int, leakedEntries int, err error) {
 	}
 	if leakedEntries >= 0 && indexDrift != nil {
 		indexDrift.Set(float64(leakedEntries))
+	}
+}
+
+// F-7: recordDecisionLatency 记录路由决策耗时（毫秒）。
+// 在 Decide/DecideV2 入口使用 defer recordDecisionLatency(time.Now()) 调用。
+func recordDecisionLatency(start time.Time) {
+	if decisionLatency != nil {
+		elapsed := float64(time.Since(start).Microseconds()) / 1000.0
+		decisionLatency.Observe(elapsed)
+	}
+}
+
+// F-7: recordCacheHit 记录缓存命中（会话缓存复用决策）。
+func recordCacheHit() {
+	if cacheHitTotal != nil {
+		cacheHitTotal.Inc()
+	}
+}
+
+// F-7: recordCacheMiss 记录缓存未命中（需要重新分类）。
+func recordCacheMiss() {
+	if cacheMissTotal != nil {
+		cacheMissTotal.Inc()
 	}
 }

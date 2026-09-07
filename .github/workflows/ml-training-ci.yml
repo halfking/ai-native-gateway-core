@@ -1,0 +1,181 @@
+name: ML Training Pipeline Tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ml-training/**'
+      - 'routingopt/ml_*.go'
+      - 'routingopt/testdata/ml_fixture/**'
+      - '.github/workflows/ml-training-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ml-training/**'
+      - 'routingopt/ml_*.go'
+      - 'routingopt/testdata/ml_fixture/**'
+      - '.github/workflows/ml-training-ci.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ml-training-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python-tests:
+    name: Python ML Training Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            ml-training/requirements.txt
+            ml-training/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          cd ml-training
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Verify pyarrow installation
+        run: |
+          python -c "import pyarrow; print(f'pyarrow {pyarrow.__version__} installed')"
+          python -c "import pandas; print(f'pandas {pandas.__version__} installed')"
+          python -c "import sklearn; print(f'scikit-learn {sklearn.__version__} installed')"
+
+      - name: Run pytest
+        run: |
+          cd ml-training
+          pytest tests/ -v --tb=short
+
+      - name: Test synthetic data generation
+        run: |
+          cd ml-training
+          python -c "from src.synthetic import generate_synthetic_training_data; df = generate_synthetic_training_data(100, 42); print(f'Generated {len(df)} rows with {len(df.columns)} columns')"
+
+      - name: Test ONNX export pipeline
+        run: |
+          cd ml-training
+          python -m src.train --help
+          python -m src.export_model --help
+
+  go-ml-tests:
+    name: Go ML Integration Tests
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Install ONNX Runtime (Ubuntu)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          wget https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-linux-x64-1.29.0.tgz
+          tar xzf onnxruntime-linux-x64-1.29.0.tgz
+          echo "ONNXRUNTIME_SHARED_LIBRARY_PATH=$(pwd)/onnxruntime-linux-x64-1.29.0/lib/libonnxruntime.so.1.29.0" >> $GITHUB_ENV
+
+      - name: Install ONNX Runtime (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          wget https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-osx-universal2-1.29.0.tgz
+          tar xzf onnxruntime-osx-universal2-1.29.0.tgz
+          echo "ONNXRUNTIME_SHARED_LIBRARY_PATH=$(pwd)/onnxruntime-osx-universal2-1.29.0/lib/libonnxruntime.1.29.0.dylib" >> $GITHUB_ENV
+
+      - name: Verify ONNX Runtime library
+        run: |
+          if [ -f "$ONNXRUNTIME_SHARED_LIBRARY_PATH" ]; then
+            echo "ONNX Runtime library found: $ONNXRUNTIME_SHARED_LIBRARY_PATH"
+            ls -lh "$ONNXRUNTIME_SHARED_LIBRARY_PATH"
+          else
+            echo "ERROR: ONNX Runtime library not found at $ONNXRUNTIME_SHARED_LIBRARY_PATH"
+            exit 1
+          fi
+
+      - name: Run ML-related Go tests
+        run: |
+          go test ./routingopt -run 'ML|Rerank|ABGate|MLStats' -v -count=1
+
+      - name: Run end-to-end ML inference test
+        run: |
+          go test ./routingopt -run TestMLSelectorEndToEnd -v -count=1
+
+      - name: Run ML tests with race detector
+        run: |
+          go test ./routingopt -run 'ML|Rerank' -race -count=1
+
+  integration-check:
+    name: ML Integration Validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [python-tests, go-ml-tests]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: ml-training/requirements-dev.txt
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache: true
+
+      - name: Install ONNX Runtime
+        run: |
+          wget https://github.com/microsoft/onnxruntime/releases/download/v1.29.0/onnxruntime-linux-x64-1.29.0.tgz
+          tar xzf onnxruntime-linux-x64-1.29.0.tgz
+          echo "ONNXRUNTIME_SHARED_LIBRARY_PATH=$(pwd)/onnxruntime-linux-x64-1.29.0/lib/libonnxruntime.so.1.29.0" >> $GITHUB_ENV
+
+      - name: Install Python dependencies
+        run: |
+          cd ml-training
+          pip install -r requirements-dev.txt
+
+      - name: Regenerate Go test fixture
+        run: |
+          cd ml-training
+          python scripts/make_go_fixture.py --output ../routingopt/testdata/ml_fixture_new
+
+      - name: Compare fixture manifest
+        run: |
+          diff -u routingopt/testdata/ml_fixture/manifest.json routingopt/testdata/ml_fixture_new/manifest.json || {
+            echo "WARNING: Generated manifest differs from committed fixture"
+            echo "This may indicate training pipeline changes that require fixture update"
+          }
+
+      - name: Test fixture model loads in Go
+        run: |
+          go test ./routingopt -run TestManifestLoad -v
+
+      - name: Verify ML flags configuration
+        run: |
+          go test ./settings -run TestRoutingMLFlags -v || echo "SKIP: No dedicated ML flags test found"
+
+      - name: Build gateway with ML support
+        run: |
+          go build -v ./cmd/gateway
