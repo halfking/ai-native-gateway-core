@@ -129,21 +129,6 @@ validate_llm_gateway_protection() {
   esac
 }
 
-# Check for dangerous operations that require manual confirmation
-check_destructive_operations() {
-  local operation="$1"
-  local manifest_file="$2"
-  
-  # For now, flag any DROP operations as requiring manual review
-  # This is a placeholder - actual schema analysis will be implemented later
-  case "$operation" in
-    apply-schema|all)
-      echo "INFO: Schema operations require manual review of destructive changes" >&2
-      echo "  Any DROP INDEX/TABLE/CONSTRAINT operations must be confirmed separately" >&2
-      ;;
-  esac
-}
-
 # Validate database name patterns against exclusion rules
 validate_database_names() {
   local database_name="$1"
