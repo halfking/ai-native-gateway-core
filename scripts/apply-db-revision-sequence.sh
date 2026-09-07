@@ -232,6 +232,13 @@ files=(
   # the 577+610 wrapper chain; db.ensureRequestLogsCurrentMonthView mirrors it
   # at every boot. Idempotent no-op on a healthy database.
   "$ROOT_DIR/sql/migrations/startup/680_request_logs_current_month_view_bootstrap.sql"
+  # 2026-09-07 网关日志审计 (42703 x 92+): 469 只给 models_canonical 加了
+  # context_window_override 三列,provider_models 有同名列,但 model_offers
+  # 视图从未透出 —— provider/client.go:1507 的候选查询每个请求 42703
+  # "column mo.context_window_override does not exist"。682 按 678 的
+  # DROP+重建+重挂触发器模式给视图追加三列。独立、幂等,顺序仅要求在 678
+  # 之后(同为视图重建,后写者胜,两者追加的列互不重叠)。
+  "$ROOT_DIR/sql/migrations/startup/682_model_offers_context_window_columns.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

@@ -322,6 +322,9 @@ var requestLogsCurrentMonthViewBootstrapMigration680 []byte
 //go:embed embeddata/startup/681_provider_error_details_fingerprint_restore_8part.sql
 var providerErrorDetailsFingerprintRestore8partMigration681 []byte
 
+//go:embed embeddata/startup/682_model_offers_context_window_columns.sql
+var modelOffersContextWindowColumnsMigration682 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -424,6 +427,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/679_local_credential_unique.sql":                                        localCredentialUniqueMigration679,
 	"startup/680_request_logs_current_month_view_bootstrap.sql":                      requestLogsCurrentMonthViewBootstrapMigration680,
 	"startup/681_provider_error_details_fingerprint_restore_8part.sql":               providerErrorDetailsFingerprintRestore8partMigration681,
+	"startup/682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
