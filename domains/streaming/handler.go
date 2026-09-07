@@ -2471,6 +2471,29 @@ func (h *ChatHandler) serveWithExecutor(
 				// client id is created by the normal completion path.
 				slog.Info("unknown client gw_ session honored without replacement",
 					"session_id", sessionID)
+				// 2026-09-07: honoring alone left the id permanently unknown —
+				// every follow-up request reusing it hit ErrSessionNotFound
+				// again, so Touch/session state never engaged and turns could
+				// not accumulate coherently. Register the session record
+				// (idempotent) so repeat ids resolve normally. Best-effort +
+				// async: registration failure must never fail the request.
+				if ensurer, ok := h.sessionGetter.(interface {
+					EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, bool, error)
+				}); ok {
+					regDeviceSeed := r.Header.Get("X-Device-Seed")
+					if regDeviceSeed == "" {
+						regDeviceSeed = r.Header.Get("X-Machine-Id")
+					}
+					regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+					go func(sid string, key *authentication.KeyInfo, seed, task string) {
+						regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
+						defer regCancel()
+						if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
+							slog.Warn("session register (honored id) failed",
+								"session_id", sid, "error", err)
+						}
+					}(sessionID, keyInfo, regDeviceSeed, regTaskID)
+				}
 			} else {
 				deviceSeed := r.Header.Get("X-Device-Seed")
 				if deviceSeed == "" {
