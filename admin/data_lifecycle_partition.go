@@ -335,7 +335,14 @@ func (h *Handler) handleDataLifecycleArchivePartition(w http.ResponseWriter, r *
 	} else {
 		// Execute archive function
 		funcName := fmt.Sprintf("archive_%s", req.TableName)
-		query := fmt.Sprintf("SELECT status, rows_migrated, partition_dropped FROM %s($1)", funcName)
+		// SELECT * + $1::date, mirroring bg runArchive: a named column
+		// list breaks with 42703 against whichever function tuple shape
+		// is older (credential_model_index shipped rows_archived/
+		// rows_deleted in 318; 653/654 canonicalized it), and pgx sends
+		// the time.Time arg as timestamptz, which PG refuses to resolve
+		// against the functions' `date` parameter (42883). Both 3-tuple
+		// shapes scan positionally into (string, int64, bool).
+		query := fmt.Sprintf("SELECT * FROM %s($1::date)", funcName)
 
 		var status string
 		err := h.db.QueryRow(ctx, query, archiveDate).Scan(

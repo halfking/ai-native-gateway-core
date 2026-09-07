@@ -149,6 +149,19 @@ func TestArchiveSpecsScheduling(t *testing.T) {
 			t.Errorf("archive function %s not scheduled in archiveSpecs()", fn)
 		}
 	}
+
+	// drop_old_state_partitions (migration 391) returns a bare bigint
+	// count, not the (status, rows_migrated, partition_dropped) tuple the
+	// archive_* fns return; runArchive must probe it with the scalar query
+	// shape or every day-2 run dies with 42703 "column status does not
+	// exist" (pg log 2026-09-03/04 audit). The two archive_* fns must NOT
+	// be scalar.
+	for _, s := range specs {
+		wantScalar := s.fnName == "drop_old_state_partitions"
+		if s.scalarResult != wantScalar {
+			t.Errorf("archiveSpec %s scalarResult=%v, want %v", s.fnName, s.scalarResult, wantScalar)
+		}
+	}
 }
 
 func TestArchiveOldPartitionsDayWindow(t *testing.T) {

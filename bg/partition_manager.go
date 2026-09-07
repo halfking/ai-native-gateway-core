@@ -82,7 +82,7 @@ type PartitionManager struct {
 	db              *pgxpool.Pool
 	interval        time.Duration
 	promoteInterval time.Duration
-	errorAggregator *ProviderErrorAggregator // 2026-08-29: provider error aggregation
+	errorAggregator *ProviderErrorAggregator      // 2026-08-29: provider error aggregation
 	supplierStats   *SupplierErrorStatsAggregator // 2026-09-05: supplier_errors_hot → stats 预聚合（审计闭环1）
 
 	mu            sync.Mutex
@@ -113,6 +113,15 @@ type archiveSpec struct {
 	// will not implicitly down-cast timestamptz → date when resolving
 	// the function, so the call fails with "function does not exist".
 	argExpr string
+
+	// scalarResult marks functions that return a bare bigint instead of
+	// the (status, rows_migrated, partition_dropped) tuple — today only
+	// drop_old_state_partitions(p_retention_days int) from migration 391.
+	// Its argument is a retention-day count (not a month boundary) and its
+	// return is a plain count, so runArchive switches query shape per spec.
+	// SELECTing tuple columns from it fails with 42703 "column status does
+	// not exist" (pg log 2026-09-03/04 audit, EXPLAIN-verified).
+	scalarResult bool
 }
 
 func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {
@@ -739,19 +748,43 @@ func (pm *PartitionManager) runArchive(ctx context.Context, s archiveSpec, twoMo
 	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	// We use the lowest common shape: every archive_<table>() returns
-	// either a 3-tuple (status, rows_archived, rows_deleted) — CMI
-	// style — or a 3-tuple (status, rows_migrated, partition_dropped)
-	// — the other three. We scan into string + int64 + bool, which
-	// accepts both shapes regardless of which column name is used.
 	var status string
 	var rowsMigrated int64
 	var partitionDropped bool
 
-	err := pm.db.QueryRow(timeoutCtx,
-		"SELECT status, rows_migrated, partition_dropped FROM "+s.fnName+"($1)",
-		twoMonthsAgo,
-	).Scan(&status, &rowsMigrated, &partitionDropped)
+	var err error
+	if s.scalarResult {
+		// Scalar fns return the dropped-partition count directly; there is
+		// no status tuple to scan. 60 days mirrors the two-month hold that
+		// the tuple specs archive (twoMonthsAgo below).
+		var dropped int64
+		err = pm.db.QueryRow(timeoutCtx,
+			"SELECT "+s.fnName+"($1::int)", int(60),
+		).Scan(&dropped)
+		if err == nil {
+			status = "success"
+			rowsMigrated = dropped
+			partitionDropped = dropped > 0
+		}
+	} else {
+		// Two caller-side traps, both observed in the PG log 2026-09-03/04
+		// and EXPLAIN-verified against the live DB:
+		//   1. "$1" alone sends pgx's timestamptz for the functions' `date`
+		//      parameter — timestamptz→date is not an implicit cast, so the
+		//      call dies with 42883 "function ... does not exist". The
+		//      $1::date cast matches the argExpr convention documented on
+		//      archiveSpec.
+		//   2. A named column list breaks under column-name drift:
+		//      archive_credential_model_index shipped as (status,
+		//      rows_archived, rows_deleted) in 318 and 653/654 realigned it
+		//      to (status, rows_migrated, partition_dropped); whichever
+		//      shape the database still has, the other spelling fails with
+		//      42703. SELECT * scans either 3-tuple positionally.
+		err = pm.db.QueryRow(timeoutCtx,
+			"SELECT * FROM "+s.fnName+"($1::date)",
+			twoMonthsAgo,
+		).Scan(&status, &rowsMigrated, &partitionDropped)
+	}
 
 	if err != nil {
 		slog.Error("partition_manager: archive failed",
@@ -854,7 +887,7 @@ func ensureSpecs() []archiveSpec {
 func archiveSpecs() []archiveSpec {
 	return []archiveSpec{
 		{day: 1, fnName: "archive_routing_decision_log", label: "routing_decision_log"},
-		{day: 2, fnName: "drop_old_state_partitions", label: "state_tables"},
+		{day: 2, fnName: "drop_old_state_partitions", label: "state_tables", scalarResult: true},
 		{day: 3, fnName: "archive_credential_model_index", label: "credential_model_index"},
 	}
 }
