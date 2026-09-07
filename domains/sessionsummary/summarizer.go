@@ -223,7 +223,9 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 	// 2. 提取前 200 字符（避免 Prompt 过长）
 	truncated := firstMessage
 	if len(truncated) > 200 {
-		truncated = truncated[:200] + "..."
+		// 2026-09-08 audit: cut on rune boundaries — byte slicing shredded
+		// multi-byte CJK text into invalid UTF-8 that fed the summary LLM.
+		truncated = truncateRunes(truncated, 200) + "..."
 	}
 
 	// 3. 构建 Prompt
@@ -247,7 +249,7 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 
 	// 限制长度
 	if len(title) > 50 {
-		title = title[:50]
+		title = truncateRunes(title, 50)
 	}
 
 	// 5. 保存到数据库
@@ -307,7 +309,7 @@ func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage, sysPrefix str
 
 		content := msg.Content
 		if len(content) > 500 {
-			content = content[:500] + "..."
+			content = truncateRunes(content, 500) + "..."
 		}
 
 		// docs/omni-ref3 C2: redact pasted API keys / bearer tokens before this
@@ -940,4 +942,14 @@ func UpdateHandoffMetrics(ctx context.Context, db *sql.DB, m *HandoffMetricsSumm
 		m.TokensAtTrigger, m.MessagesAtTrigger, m.LastTriggerReason,
 		m.LastTriggerAt)
 	return err
+}
+
+// truncateRunes cuts s to at most n runes, keeping valid UTF-8. Byte slicing
+// produced malformed CJK tails into prompts and stored titles (2026-09-08).
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n])
 }

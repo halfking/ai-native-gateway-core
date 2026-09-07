@@ -16,6 +16,12 @@ func generateGwSessionID() string {
 }
 
 func (sm *Manager) CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceSeed, taskID string) (*Session, error) {
+	// 2026-09-08 audit: same defensive contract as EnsureV2WithID/BindAPIKey —
+	// nil-check the redis client at entry so a future caller wiring the
+	// manager without redis panics here as an error, not in a goroutine.
+	if sm == nil || sm.redis == nil || sm.redis.client == nil {
+		return nil, fmt.Errorf("session: create requires redis client")
+	}
 	if taskID == "" {
 		taskID = "default"
 	}

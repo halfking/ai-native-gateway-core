@@ -88,6 +88,15 @@ while IFS= read -r database; do
     grep -Fxq "$database" "$tmp/local"; then
     continue
   fi
+  # 2026-09-08 audit: the local loop above applies EXCLUDE_DB_REGEX before
+  # classification, the remote loop did not — a remote-only test/e2e/bench or
+  # llm_gateway_sync_* database would be classified REMOTE_ONLY and
+  # bootstrap-merged into the local instance wholesale, bypassing the
+  # exclusion policy entirely.
+  if [[ "$database" =~ $EXCLUDE_DB_REGEX ]]; then
+    printf 'EXCLUDED\t%s\t-\tNAME_POLICY\n' "$database" >>"$tmp/records"
+    continue
+  fi
   printf 'REMOTE_ONLY\t-\t%s\tBOOTSTRAP_LOCAL_FULL\n' \
     "$database" >>"$tmp/records"
 done <"$tmp/remote"
