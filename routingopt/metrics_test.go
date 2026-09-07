@@ -157,9 +157,17 @@ func TestMetricExplorationAndCacheCounters(t *testing.T) {
 	if got := after.CacheMiss - before.CacheMiss; got != 1 {
 		t.Fatalf("cache miss delta = %d, want 1", got)
 	}
-	// 命中率 = 3/4
-	if diff := after.CacheHitRate - 0.75; diff > 1e-9 || diff < -1e-9 {
-		t.Fatalf("cache hit rate = %v, want 0.75", after.CacheHitRate)
+	// 命中率公式校验：CacheHitRate == 全局 hits/(hits+miss)。
+	// P2.2 Track A 回填后，affinity_cache_test 等也会累加全局计数器，
+	// 因此不能假设总量恒为 3/4 —— 用公式断言代替硬编码值（增量断言
+	// 已在上面验证计数正确）。
+	total := after.CacheHits + after.CacheMiss
+	if total > 0 {
+		want := float64(after.CacheHits) / float64(total)
+		if diff := after.CacheHitRate - want; diff > 1e-9 || diff < -1e-9 {
+			t.Fatalf("cache hit rate = %v, want %v (hits=%d miss=%d)",
+				after.CacheHitRate, want, after.CacheHits, after.CacheMiss)
+		}
 	}
 }
 

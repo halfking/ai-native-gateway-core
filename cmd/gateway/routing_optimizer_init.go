@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/routingopt"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -15,6 +16,9 @@ import (
 // into the auto-route Decider when ROUTING_OPT_ENABLED=true.
 //
 // P2.5: additionally attaches the ONNX ML re-ranker when ROUTING_ML_ENABLED=true.
+// P2.2 Track A: attaches the Redis affinity cache when ROUTING_OPT_AFFINITY_CACHE=true
+// and a Redis client is available; Track C: attaches feedback batch counters
+// to the Prometheus collector.
 //
 // Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md
 //         docs/ml/p2.5-go-onnx-inference.md
@@ -22,10 +26,17 @@ import (
 // model/runtime) degrade to baseline routing — never block gateway startup.
 
 // buildRoutingOptimizer constructs the P2.2 optimizer from feature flags.
+// rdb is the shared fpSlotRedis client (may be nil when Redis is not
+// configured): it is only consumed when ROUTING_OPT_AFFINITY_CACHE=true —
+// nil there degrades the affinity cache to direct DB reads.
 // Returns nil when the plugin is disabled or no DB pool is available; the
 // caller then simply skips decider.SetOptimizer and routing behaviour is
 // byte-identical to the pre-P2.2 baseline.
-func buildRoutingOptimizer(pool *pgxpool.Pool) *routingopt.RealOptimizer {
+//
+// NOTE (Track B escape hatch): Options.ControlledSyncFallback 保持默认
+// false = 异步批量写入是主路径（无独立 env）。如需回退旧的同步单条
+// INSERT（受控排障场景），在该 Options 字面量里显式置 true 即可。
+func buildRoutingOptimizer(pool *pgxpool.Pool, rdb *redis.Client) *routingopt.RealOptimizer {
 	flags := settings.GetRoutingOptFlags()
 	if !flags.Enabled {
 		slog.Info("autoroute: routing optimizer disabled (ROUTING_OPT_ENABLED=false)")
@@ -47,6 +58,9 @@ func buildRoutingOptimizer(pool *pgxpool.Pool) *routingopt.RealOptimizer {
 		EnableFeedbackIntegration:       flags.EnableFeedbackIntegration,
 		LoadUserAffinity:                false, // EnhancedSignals 无下游消费者前保持关闭（Week 2）
 		HookTimeout:                     hookTimeout,
+		// ControlledSyncFallback 保持零值 false：异步批量为主路径（见函数注释）。
+		// EnableAffinityCache 只做装配门控，实际注入在下方 WithAffinityCache。
+		EnableAffinityCache: flags.AffinityCacheEnabled,
 	}
 	optimizer := routingopt.NewRealOptimizerWithOptions(pool, opts)
 	slog.Info("autoroute: routing optimizer enabled",
@@ -54,8 +68,29 @@ func buildRoutingOptimizer(pool *pgxpool.Pool) *routingopt.RealOptimizer {
 		"model_recommendation", flags.EnableModelRecommendation,
 		"feedback_integration", flags.EnableFeedbackIntegration,
 		"adaptive_learning", flags.EnableAdaptiveLearning,
+		"affinity_cache", flags.AffinityCacheEnabled && rdb != nil,
 		"max_plugin_latency_ms", flags.MaxPluginLatencyMs,
 		"exploration_rate", flags.ExplorationRate)
+
+	// P2.2 Track C: 反馈批量写入原子计数器 → Prometheus
+	// llmgw_routingopt_feedback_writes_total{result=ok|error|dropped}。
+	// batch 未建（同步回退路径 / nil pool）时注入零值计数器函数，保证
+	// 指标始终可被 scrape（三个 result 恒为 0）。
+	if batch := optimizer.FeedbackBatch(); batch != nil {
+		routingopt.AttachFeedbackCounters(batch.Counters)
+	} else {
+		routingopt.AttachFeedbackCounters(func() routingopt.FeedbackCounters {
+			return routingopt.FeedbackCounters{}
+		})
+	}
+
+	// P2.2 Track A: Redis 亲和力缓存。redis 客户端为 nil 或 flag 关闭时
+	// 跳过——enhancer 维持直查 DB（行为等同无缓存）。
+	if rdb != nil && flags.AffinityCacheEnabled {
+		optimizer.WithAffinityCache(routingopt.NewAffinityCache(pool, rdb))
+		slog.Info("routingopt: user-affinity Redis cache enabled",
+			"ttl", "1h", "negative_ttl", "30s")
+	}
 
 	// P2.5: optional ONNX ML re-ranker. Any failure degrades to the
 	// rule-engine order with a Warn — startup and routing continue.

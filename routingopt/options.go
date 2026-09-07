@@ -39,6 +39,14 @@ type Options struct {
 	// 刷盘，队列 10000，满则丢弃计数）。接线点：NewRealOptimizerWithOptions
 	// 应把它传给 FeedbackIntegrator.SetControlledSyncFallback。
 	ControlledSyncFallback bool
+
+	// EnableAffinityCache gates the Redis-backed user-affinity read cache
+	// (P2.2 Track A): true → cmd/gateway 用非 nil 的 redis.Client 构造
+	// AffinityCache 并经 RealOptimizer.WithAffinityCache 注入 enhancer；
+	// false（默认）或 redis 不可用 → 维持直查 DB。映射自 settings flag
+	// ROUTING_OPT_AFFINITY_CACHE。本字段只做装配门控——构造期一次性生效，
+	// 不在请求热路径上被读取。
+	EnableAffinityCache bool
 }
 
 // DefaultOptions returns the flag semantics documented in
@@ -52,6 +60,7 @@ func DefaultOptions() Options {
 		LoadUserAffinity:                false,
 		HookTimeout:                     10 * time.Millisecond,
 		ControlledSyncFallback:          false,
+		EnableAffinityCache:             false,
 	}
 }
 

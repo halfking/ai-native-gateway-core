@@ -126,6 +126,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
+	"github.com/kaixuan/llm-gateway-go/routingopt"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
@@ -826,6 +827,11 @@ func main() {
 	// 后台回填 session_turns.digest jsonb envelope（存量 NULL 行）。与 reaper
 	// 同一生命周期：dbConn 就绪后启动，pools.CloseAll 前排空 in-flight 批。
 	var sessionDigestBackfillForShutdown any
+	// routingOptimizerForShutdown — P2.2 Track B: 优雅关闭时在 DB pool
+	// 关闭前排空异步反馈批量队列（FlushFeedback）。buildRoutingOptimizer
+	// 成功时（ROUTING_OPT_ENABLED=true 且有 DB pool）非 nil，否则保持 nil
+	// （关闭路径零开销）。
+	var routingOptimizerForShutdown *routingopt.RealOptimizer
 	if cfg.RedisAddr != "" {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		// 2026-09-04 availability: bounded boot-ping retry so a Redis that
@@ -4709,8 +4715,11 @@ func main() {
 			autoroute.SetTuningStore(tuningStore)
 			// P2.2: routing optimization plugin (nil unless ROUTING_OPT_ENABLED=true;
 			// nil keeps routing byte-identical to the pre-P2.2 baseline).
-			if opt := buildRoutingOptimizer(dbConn.Pool()); opt != nil {
+			// fpSlotRedis（line ~800 函数级声明，此处的赋值早已顺序完成）供
+			// Track A 亲和力缓存复用同一 Redis 连接；nil 时缓存自动降级直查 DB。
+			if opt := buildRoutingOptimizer(dbConn.Pool(), fpSlotRedis); opt != nil {
 				decider.SetOptimizer(opt)
+				routingOptimizerForShutdown = opt
 			}
 			chatHandler.SetAutoRoute(decider)
 			if routingExec != nil {
@@ -6848,6 +6857,15 @@ func main() {
 		// turn-digest 第二阶段: 排空回填批。同样必须在 pools.CloseAll 之前，
 		// 让 in-flight 批的事务还能到达数据库。
 		stopSessionDigestBackfill(sessionDigestBackfillForShutdown)
+		// P2.2 Track B: 排空异步路由反馈批量队列。必须在 pools.CloseAll 之前
+		// （批量 INSERT 要还能到达 DB）；约 5s 超时防慢库拖住退出——队列本身
+		// 满时丢弃计数，Flush 失败只会在 routingopt 内部 slog，绝不阻塞退出。
+		if routingOptimizerForShutdown != nil {
+			flushCtx, flushCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			routingOptimizerForShutdown.FlushFeedback(flushCtx)
+			flushCancel()
+			slog.Info("routingopt: feedback queue flushed (graceful shutdown)")
+		}
 		lim.Stop()
 		pools.Stop()
 		pools.CloseAll()
