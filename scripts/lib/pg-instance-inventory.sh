@@ -3,25 +3,14 @@
 set -euo pipefail
 
 PG_INSTANCE_ROOT="${PG_INSTANCE_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-
-detect_envs_loader() {
-  local cursor="$PG_INSTANCE_ROOT"
-  while [[ "$cursor" != "/" ]]; do
-    if [[ "$(basename "$cursor")" == "ai-native-tools" &&
-      -r "$cursor/envs/loader.sh" ]]; then
-      printf '%s\n' "$cursor/envs/loader.sh"
-      return 0
-    fi
-    cursor="$(dirname "$cursor")"
-  done
-  return 1
-}
+# shellcheck disable=SC1091
+source "$PG_INSTANCE_ROOT/scripts/lib/pg-instance-env.sh"
 
 # Source environment configuration
 source_env_config() {
   local env_type="$1"
   local envs_loader
-  if ! envs_loader="$(detect_envs_loader)"; then
+  if ! envs_loader="$(pg_instance_detect_envs_loader)"; then
     echo "ERROR: envs loader not found - cannot load credentials" >&2
     return 1
   fi

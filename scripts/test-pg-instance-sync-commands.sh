@@ -71,20 +71,18 @@ error_output=$("$SYNC" backup 2>&1 || true)
 echo "$error_output" | grep -q "backup requires --yes"
 echo "✓ Backup guard is enforced"
 
-# Test 6: Unimplemented commands fail-closed
-echo "Test 6: Unimplemented commands fail..."
-for cmd in apply-schema apply-data verify all; do
-    if "$SYNC" "$cmd" 2>/dev/null; then
-        echo "ERROR: $cmd should fail (not implemented)" >&2
-        exit 1
-    fi
-    # Check error message contains "not implemented" 
-    error_output=$("$SYNC" "$cmd" 2>&1 || true)
-    if ! echo "$error_output" | grep -q "not implemented"; then
-        echo "ERROR: $cmd should show 'not implemented' error, got: $error_output" >&2
-        exit 1
-    fi
+# Test 6: Writer/verify commands require their guard flags
+echo "Test 6: Guarded commands require flags..."
+for cmd in apply-schema apply-data; do
+  error_output=$("$SYNC" "$cmd" 2>&1 || true)
+  echo "$error_output" | grep -q "requires --yes"
 done
-echo "✓ All unimplemented commands fail-closed"
+error_output=$("$SYNC" verify 2>&1 || true)
+echo "$error_output" | grep -q "verify requires readable --manifest"
+error_output=$("$SYNC" restore 2>&1 || true)
+echo "$error_output" | grep -q "restore requires --yes"
+error_output=$("$SYNC" all --yes 2>&1 || true)
+echo "$error_output" | grep -q "intentionally not auto-run"
+echo "✓ Guarded commands stay fail-closed without required flags"
 
 echo "All CLI tests passed"
