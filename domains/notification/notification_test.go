@@ -35,6 +35,24 @@ func newMockChannel(name string) *mockChannel {
 	return &mockChannel{name: name}
 }
 
+func TestWebhookChannelBlocksSSRFTargets(t *testing.T) {
+	channel := NewWebhookChannel(WebhookConfig{URL: "http://127.0.0.1:8080/webhook"})
+	for _, target := range []string{
+		"http://127.0.0.1:8080/webhook",
+		"http://localhost:8080/webhook",
+		"http://169.254.169.254/latest/meta-data/",
+	} {
+		channel.cfg.URL = target
+		err := channel.HealthCheck(context.Background())
+		if err == nil {
+			t.Fatalf("expected SSRF target %q to be blocked", target)
+		}
+		if !strings.Contains(strings.ToLower(err.Error()), "ssrf") {
+			t.Errorf("expected SSRF error for %q, got %v", target, err)
+		}
+	}
+}
+
 func TestWebhookChannelDoPostBodySnippetAndDrain(t *testing.T) {
 	const prefix = "upstream failure"
 	largeTail := strings.Repeat("x", 4096)
@@ -44,7 +62,7 @@ func TestWebhookChannelDoPostBodySnippetAndDrain(t *testing.T) {
 	}))
 	defer server.Close()
 
-	channel := NewWebhookChannel(WebhookConfig{URL: server.URL})
+	channel := NewWebhookChannel(WebhookConfig{URL: server.URL, Allowlist: []string{"127.0.0.1"}})
 	err := channel.doPost(context.Background(), []byte(`{"ok":true}`))
 	if err == nil {
 		t.Fatal("expected webhook error")
@@ -64,7 +82,7 @@ func TestWebhookChannelDoPostEmptyErrorBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	channel := NewWebhookChannel(WebhookConfig{URL: server.URL})
+	channel := NewWebhookChannel(WebhookConfig{URL: server.URL, Allowlist: []string{"127.0.0.1"}})
 	err := channel.doPost(context.Background(), []byte(`{}`))
 	if err == nil {
 		t.Fatal("expected webhook error")

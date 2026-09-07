@@ -1317,6 +1317,7 @@ func (h *Handler) handleSeedFromCatalog(w http.ResponseWriter, r *http.Request) 
 
 // SeedProvidersFromCatalog creates provider rows for every catalog entry that
 // does not yet exist. Safe to call on every startup (idempotent).
+// Returns the number of newly created providers.
 func SeedProvidersFromCatalog(ctx context.Context, db *pgxpool.Pool) (int, error) {
 	if db == nil {
 		return 0, nil
@@ -1349,7 +1350,75 @@ func SeedProvidersFromCatalog(ctx context.Context, db *pgxpool.Pool) (int, error
 	if err != nil {
 		return 0, err
 	}
-	return int(tag.RowsAffected()), nil
+	created := int(tag.RowsAffected())
+
+	// F-10: 为新创建的本地供应商自动创建占位凭据（2026-09-07 审计修复）。
+	// 本地供应商无计费概念，必须有可用凭据才能被路由选中。
+	if created > 0 {
+		ensureLocalCredentialsForSeededProviders(ctx, db)
+	}
+
+	return created, nil
+}
+
+// ensureLocalCredentialsForSeededProviders 为所有缺少凭据的本地供应商创建占位凭据。
+// Best-effort：失败只记日志，不阻塞 seed 流程。
+func ensureLocalCredentialsForSeededProviders(ctx context.Context, db *pgxpool.Pool) {
+	if db == nil {
+		return
+	}
+
+	// 查找所有没有活跃凭据的本地供应商
+	rows, err := db.Query(ctx, `
+		SELECT p.id, p.display_name
+		FROM providers p
+		WHERE p.tenant_id = 'default'
+		  AND p.deleted_at IS NULL
+		  AND p.kind = 'local'
+		  AND NOT EXISTS (
+			SELECT 1 FROM credentials c
+			WHERE c.provider_id = p.id AND c.status <> 'deleted'
+		)
+	`)
+	if err != nil {
+		slog.Warn("seed local credentials: query providers failed", "error", err)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var providerID int
+		var displayName string
+		if err := rows.Scan(&providerID, &displayName); err != nil {
+			continue
+		}
+
+		// 创建占位凭据（模拟 ensureLocalCredential 的核心逻辑）
+		// 注意：这里使用明文存储占位符，因为没有 Handler 的加密设施。
+		// 实际加密在 credential 首次使用时由路由器处理。
+		_, credErr := db.Exec(ctx, `
+			INSERT INTO credentials (
+				provider_id, label, secret_ciphertext, status,
+				concurrency_limit, fp_slot_limit, balance_usd, plan_type
+			)
+			VALUES ($1, 'local', $2, 'active', 4, 4, 1000.0, 'free')
+			ON CONFLICT (provider_id) WHERE label = 'local' AND status <> 'deleted'
+			DO NOTHING
+		`, providerID, []byte(localNoKeyPlaceholder))
+
+		if credErr != nil {
+			slog.Warn("seed local credentials: create credential failed",
+				"provider_id", providerID,
+				"provider", displayName,
+				"error", credErr,
+			)
+		} else {
+			slog.Info("seed local credentials: created placeholder credential",
+				"provider_id", providerID,
+				"provider", displayName,
+			)
+		}
+	}
 }
 
 func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Request, providerID int, credPath string) {

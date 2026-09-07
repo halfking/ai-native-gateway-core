@@ -30,6 +30,7 @@ package autoroute
 import (
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -207,52 +208,99 @@ var (
 	indexDrift    prometheus.Gauge
 	refreshTotal  prometheus.Counter
 	refreshFailed prometheus.Counter
+
+	// F-7: 路由决策耗时（毫秒）
+	decisionLatency prometheus.Histogram
+
+	// F-7: 缓存命中率计数器
+	cacheHitTotal  prometheus.Counter
+	cacheMissTotal prometheus.Counter
 )
 
-func registerRefreshMetrics() {
-	indexEntries = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: routingMetricPrefix + "index_entries",
-		Help: "Number of candidates in the in-memory autoroute index after the last successful refresh.",
-	})
-	indexDrift = prometheus.NewGauge(prometheus.GaugeOpts{
-		Name: routingMetricPrefix + "index_drift",
-		Help: "Number of in-memory autoroute index entries that are not currently routable in v_routable_credential_models. " +
-			"A value greater than zero indicates disabled, exhausted, unhealthy, or probe-backoff credentials leaked into the index.",
-	})
-	refreshTotal = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: routingMetricPrefix + "refresh_total",
-		Help: "Total autoroute index refresh attempts (success + failure).",
-	})
-	refreshFailed = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: routingMetricPrefix + "refresh_failed_total",
-		Help: "Autoroute index refresh attempts that failed.",
-	})
-	prometheus.MustRegister(indexEntries, indexDrift, refreshTotal, refreshFailed)
-}
+	func registerRefreshMetrics() {
+		indexEntries = prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: routingMetricPrefix + "index_entries",
+			Help: "Number of candidates in the in-memory autoroute index after the last successful refresh.",
+		})
+		indexDrift = prometheus.NewGauge(prometheus.GaugeOpts{
+			Name: routingMetricPrefix + "index_drift",
+			Help: "Number of in-memory autoroute index entries that are not currently routable in v_routable_credential_models. " +
+				"A value greater than zero indicates disabled, exhausted, unhealthy, or probe-backoff credentials leaked into the index.",
+		})
+		refreshTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: routingMetricPrefix + "refresh_total",
+			Help: "Total autoroute index refresh attempts (success + failure).",
+		})
+		refreshFailed = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: routingMetricPrefix + "refresh_failed_total",
+			Help: "Autoroute index refresh attempts that failed.",
+		})
+		// F-7: 路由决策耗时直方图（毫秒）
+		decisionLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name: routingMetricPrefix + "decision_latency_ms",
+			Help: "Routing decision latency in milliseconds (Decide/DecideV2 end-to-end). " +
+				"Buckets tuned to detect P99 > 10ms (routing hot path budget).",
+			Buckets: []float64{0.5, 1, 2, 5, 10, 20, 50, 100, 200},
+		})
+		// F-7: 缓存命中率计数器
+		cacheHitTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: routingMetricPrefix + "cache_hit_total",
+			Help: "Session intent cache hits (reused decision without reclassification).",
+		})
+		cacheMissTotal = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: routingMetricPrefix + "cache_miss_total",
+			Help: "Session intent cache misses (required fresh classification).",
+		})
+		prometheus.MustRegister(indexEntries, indexDrift, refreshTotal, refreshFailed,
+			decisionLatency, cacheHitTotal, cacheMissTotal)
+	}
 
-// recordRefreshOutcome is called at the end of Index.Refresh.
-//
-//   - entries: len of the refreshed candidate slice (0 on failure)
-//   - leakedEntries: COUNT of refreshed entries that do not have a matching
-//     is_routable row in v_routable_credential_models, or -1 when the probe
-//     itself failed (so drift is not published with stale data)
-//   - err: the refresh error (nil on success)
-//
-// All metrics are nil-safe (no-op before registration).
-func recordRefreshOutcome(entries int, leakedEntries int, err error) {
-	if refreshTotal != nil {
-		refreshTotal.Inc()
-	}
-	if err != nil {
-		if refreshFailed != nil {
-			refreshFailed.Inc()
+	// recordRefreshOutcome is called at the end of Index.Refresh.
+	//
+	//   - entries: len of the refreshed candidate slice (0 on failure)
+	//   - leakedEntries: COUNT of refreshed entries that do not have a matching
+	//     is_routable row in v_routable_credential_models, or -1 when the probe
+	//     itself failed (so drift is not published with stale data)
+	//   - err: the refresh error (nil on success)
+	//
+	// All metrics are nil-safe (no-op before registration).
+	func recordRefreshOutcome(entries int, leakedEntries int, err error) {
+		if refreshTotal != nil {
+			refreshTotal.Inc()
 		}
-		return
+		if err != nil {
+			if refreshFailed != nil {
+				refreshFailed.Inc()
+			}
+			return
+		}
+		if indexEntries != nil {
+			indexEntries.Set(float64(entries))
+		}
+		if leakedEntries >= 0 && indexDrift != nil {
+			indexDrift.Set(float64(leakedEntries))
+		}
 	}
-	if indexEntries != nil {
-		indexEntries.Set(float64(entries))
+
+	// F-7: recordDecisionLatency 记录路由决策耗时（毫秒）。
+	// 在 Decide/DecideV2 入口使用 defer recordDecisionLatency(time.Now()) 调用。
+	func recordDecisionLatency(start time.Time) {
+		if decisionLatency != nil {
+			elapsed := float64(time.Since(start).Microseconds()) / 1000.0
+			decisionLatency.Observe(elapsed)
+		}
 	}
-	if leakedEntries >= 0 && indexDrift != nil {
-		indexDrift.Set(float64(leakedEntries))
+
+	// F-7: recordCacheHit 记录缓存命中（会话缓存复用决策）。
+	func recordCacheHit() {
+		if cacheHitTotal != nil {
+			cacheHitTotal.Inc()
+		}
 	}
-}
+
+	// F-7: recordCacheMiss 记录缓存未命中（需要重新分类）。
+	func recordCacheMiss() {
+		if cacheMissTotal != nil {
+			cacheMissTotal.Inc()
+		}
+	}

@@ -190,7 +190,7 @@ def merge_annotations(
     annotations: pd.DataFrame,
     label_column: str = "chosen_model",
     weight: float = 2.0,
-    require_known_label: bool = False,
+    require_known_label: bool = True,
 ) -> pd.DataFrame:
     """将人工标注合并到训练数据：human_label优先，未标注行沿用自动标签。
 
@@ -200,9 +200,9 @@ def merge_annotations(
       is_annotated       是否被人工标注覆盖
       sample_weight      1.0（自动） / weight（人工标注）
 
-    require_known_label=True 时，human_label不在自动标签词表内的覆盖会被丢弃
+    require_known_label=True（默认）时，human_label不在自动标签词表内的覆盖会被丢弃
     （防止provider/模型两级标签空间混用污染词表），并在返回列
-    annotation_stats 中报告。
+    annotation_stats 中报告。设为 False 会允许新标签进入训练，可能导致标签空间不一致。
     """
     out = df.copy()
     out[RULE_CHOICE_COL] = out[label_column]
@@ -446,7 +446,7 @@ def load_training_data(cfg: dict[str, Any]) -> dict[str, Any]:
         df, annotations,
         label_column=label_column,
         weight=float(data_cfg.get("annotation_label_weight", 2.0)),
-        require_known_label=bool(data_cfg.get("annotation_require_known_label", False)),
+        require_known_label=bool(data_cfg.get("annotation_require_known_label", True)),
     )
     df = clean_data(df, data_cfg, features_cfg=features_cfg)
 

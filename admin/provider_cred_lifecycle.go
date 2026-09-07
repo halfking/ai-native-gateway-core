@@ -229,7 +229,7 @@ func (h *Handler) doHealthCheck(ctx context.Context, providerID, credID int, mod
 		apiModelsErr = &msg
 	} else {
 		start := time.Now()
-		models, source, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
+		models, source, _, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
 		healthLatencyMs = int(time.Since(start).Milliseconds())
 		effectiveSource = source
 

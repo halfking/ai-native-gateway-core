@@ -172,12 +172,30 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 		ExcludeSelfTest: excludeSelfTest,
 		TenantID:        tenantID,
 	})
+	queryDurationMs := time.Since(startedAt).Milliseconds()
+	
 	if err != nil {
-		slog.Error("heatmap query failed", "error", err.Error())
+		slog.Error("heatmap query failed", "error", err.Error(), "duration_ms", queryDurationMs)
 		// 不回传内部 SQL 错误细节（表名/约束名），只留 trace 线索给日志。
 		writeError(w, http.StatusInternalServerError, "heatmap query failed")
+		// 监控打点：失败查询
+		recordHeatmapQueryMetrics(false, queryDurationMs, len(credentialIDs), granularity)
 		return
 	}
+	
+	// 监控打点：成功查询
+	totalBuckets := 0
+	for _, cred := range credentials {
+		for _, model := range cred.Models {
+			totalBuckets += len(model.Buckets)
+		}
+	}
+	recordHeatmapQueryMetrics(true, queryDurationMs, totalBuckets, granularity)
+	slog.Info("heatmap query completed",
+		"duration_ms", queryDurationMs,
+		"credentials", len(credentials),
+		"total_buckets", totalBuckets,
+		"granularity", granularity)
 
 	// Build response
 	resp := HeatmapResponse{
@@ -187,12 +205,31 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 	resp.Meta.TimeEnd = timeEnd.Format(time.RFC3339)
 	resp.Meta.Granularity = granularity
 	resp.Meta.BucketCount = int(timeEnd.Sub(timeStart) / parseDuration(granularity))
+	// cache_hit 现由缓存层控制；无缓存层时恒为 false（实时查询）
 	resp.Meta.CacheHit = false
 	resp.Meta.GeneratedAt = time.Now().Format(time.RFC3339)
 	resp.Meta.ExpiresAt = time.Now().Add(1 * time.Minute).Format(time.RFC3339)
 	resp.Meta.DurationMs = time.Since(startedAt).Milliseconds()
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordHeatmapQueryMetrics 记录热图查询的可观测性指标。
+// 接入既有 slog 结构化日志体系，后续可迁移至 OpenTelemetry metrics。
+func recordHeatmapQueryMetrics(success bool, durationMs int64, dataPoints int, granularity string) {
+	status := "success"
+	if !success {
+		status = "failed"
+	}
+	
+	// 结构化日志打点：调用量、成功率、延迟分布
+	slog.Info("heatmap_query_metric",
+		"status", status,
+		"duration_ms", durationMs,
+		"data_points", dataPoints,
+		"granularity", granularity,
+		"slow_query", durationMs > 5000, // 慢查询阈值 5s
+	)
 }
 
 type heatmapQueryParams struct {
