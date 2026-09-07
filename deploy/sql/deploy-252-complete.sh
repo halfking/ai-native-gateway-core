@@ -1,13 +1,8 @@
 #!/bin/bash
 # 在252服务器上执行此脚本
 # SSH连接: ssh -p 25022 192.168.1.252
-#
-# 2026-09-07: 252 与本机一样，容器内唯一的登录角色是 llm_gateway，
-# 不是 postgres。脚本里所有 psql 调用统一走 PG_USER 模板，与
-# configs/env-252.sh 对齐。
 
 set -e
-PG_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}"
 
 echo "=========================================="
 echo "供应商画像系统 - 252服务器部署"
@@ -23,7 +18,7 @@ echo ""
 
 # 2. 执行数据库迁移
 echo "步骤 2: 执行数据库迁移..."
-psql -h localhost -U "$PG_USER" -d llm_gateway \
+psql -h localhost -U postgres -d llm_gateway \
   -f deploy/sql/migrations/2026-07-26-provider-profile-system.sql
 
 if [ $? -eq 0 ]; then
@@ -36,7 +31,7 @@ echo ""
 
 # 3. 验证表创建
 echo "步骤 3: 验证表创建..."
-TABLE_COUNT=$(psql -h localhost -U "$PG_USER" -d llm_gateway -t -c \
+TABLE_COUNT=$(psql -h localhost -U postgres -d llm_gateway -t -c \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname='public' AND tablename LIKE 'provider_profile%';")
 TABLE_COUNT=$(echo $TABLE_COUNT | xargs)
 echo "创建了 $TABLE_COUNT 个表（期望: 5）"
@@ -50,7 +45,7 @@ echo ""
 
 # 4. 验证索引创建
 echo "步骤 4: 验证索引创建..."
-INDEX_COUNT=$(psql -h localhost -U "$PG_USER" -d llm_gateway -t -c \
+INDEX_COUNT=$(psql -h localhost -U postgres -d llm_gateway -t -c \
   "SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public' AND indexname LIKE '%provider_profile%';")
 INDEX_COUNT=$(echo $INDEX_COUNT | xargs)
 echo "创建了 $INDEX_COUNT 个索引（期望: 10+）"
@@ -58,7 +53,7 @@ echo ""
 
 # 5. 验证 credentials 表扩展
 echo "步骤 5: 验证 credentials 表扩展..."
-AUTO_COLS=$(psql -h localhost -U "$PG_USER" -d llm_gateway -t -c \
+AUTO_COLS=$(psql -h localhost -U postgres -d llm_gateway -t -c \
   "SELECT COUNT(*) FROM information_schema.columns WHERE table_name='credentials' AND column_name LIKE 'auto_%';")
 AUTO_COLS=$(echo $AUTO_COLS | xargs)
 echo "添加了 $AUTO_COLS 个自动处理字段（期望: 4）"
@@ -66,7 +61,7 @@ echo ""
 
 # 6. 检查配置
 echo "步骤 6: 检查/添加配置..."
-psql -h localhost -U "$PG_USER" -d llm_gateway <<EOF
+psql -h localhost -U postgres -d llm_gateway <<EOF
 -- 确保 settings 表存在
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
