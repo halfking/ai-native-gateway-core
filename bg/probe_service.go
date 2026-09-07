@@ -5,7 +5,7 @@
 // ad-hoc per-worker HTTP executors with one place that:
 //
 //   - runs the two-round probe (direct upstream THEN credential-pinned gateway)
-//     and restores routing-visible state only after both rounds succeed;
+//     and restores routing-visible state when the direct upstream round succeeds;
 //   - applies all post-probe side effects (binding/credential/observed state,
 //     circuit success, candidate-cache invalidate, URSM v2, model-IQ trigger,
 //     pg_notify);
@@ -365,7 +365,11 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	})
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
-	backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
+	errCode := ""
+	if c := firstErrCode(direct, gw); c != nil {
+		errCode = *c
+	}
+	backoff := ProbeBackoffForErrCode(errCode, attempt)
 	// 2026-08-13: 常用模型失败回退缩短（probe.featured_backoff_multiplier，默认
 	// 50% → 更快重试恢复）；非常用按标准 7 步链。仅影响失败后的下次重试间隔，
 	// 不降低探测深度（仍走 direct+gateway 双轮）。
@@ -399,9 +403,7 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	}
 	s.worker.mirrorNodeProbeState(hbCtx, credID, model, attempt, success, direct, gw, now, backoff)
 
-	if success {
-		// Drop node_probe_failed immediately. applyOutcome already invalidated the
-		// candidate cache after committing both-round recovery side effects.
+	if direct.ok {
 		s.worker.notifyAutoRouteRefresh(hbCtx, credID)
 	} else {
 		if s.worker.modelQualityTrigger != nil && attempt >= 2 {
@@ -445,10 +447,6 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 			return ProbeQueueResult{Status: ProbeQueueSuccess, HTTPStatus: direct.httpStatus, LatencyMs: direct.latencyMs}, wrappedErr
 		}
 		nextRetryAt := now.Add(backoff)
-		errCode := ""
-		if c := firstErrCode(direct, gw); c != nil {
-			errCode = *c
-		}
 		return ProbeQueueResult{
 			Status:       ProbeQueueFailed,
 			ReasonCode:   errCode,
@@ -463,10 +461,6 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		return ProbeQueueResult{Status: ProbeQueueSuccess, HTTPStatus: direct.httpStatus, LatencyMs: direct.latencyMs}, nil
 	}
 	nextRetryAt := now.Add(backoff)
-	errCode := ""
-	if c := firstErrCode(direct, gw); c != nil {
-		errCode = *c
-	}
 	return ProbeQueueResult{
 		Status:       ProbeQueueFailed,
 		ReasonCode:   errCode,
@@ -620,7 +614,7 @@ func (s *ProbeService) applyOutcome(ctx context.Context, outcome probeOutcome) {
 		s.applyOutcomeFn(ctx, outcome)
 		return
 	}
-	if outcome.success {
+	if outcome.direct.ok {
 		s.worker.updateBindingAvailability(ctx, outcome.credentialID, outcome.model, true, "")
 		if s.worker.db != nil {
 			s.worker.updateCredentialHealth(ctx, outcome.credentialID)
