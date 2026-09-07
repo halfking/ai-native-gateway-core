@@ -122,7 +122,7 @@ All modules below are shipped and running in the k3s production deployment. Scre
 # Clone
 git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git ai-native-gateway
 cd ai-native-gateway
-# (GitHub mirror: git clone https://github.com/halfking/SI-LLM-Gateway.git)
+# (GitHub mirror: git clone https://github.com/halfking/ai-native-gateway-core.git)
 
 # Generate secure keys
 cp .env.quickstart.example .env
@@ -269,7 +269,7 @@ See [ROADMAP.md](ROADMAP.md) for full details.
 | Remote | URL | Purpose |
 |--------|-----|---------|
 | `codeup` (origin) | `https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git` | Default (daily development) |
-| `github` | `git@github.com:halfking/SI-LLM-Gateway.git` | Public mirror (staged releases) |
+| `github` | `git@github.com:halfking/ai-native-gateway-core.git` | Public mirror (staged releases) |
 
 ```bash
 git push              # → codeup (no extra checks)

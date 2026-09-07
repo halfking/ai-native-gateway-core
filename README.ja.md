@@ -122,7 +122,7 @@ AI Native Gateway は、AI エージェントと「バイブコーディング�
 # 1. クローン
 git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git ai-native-gateway
 cd ai-native-gateway
-# （GitHub ミラー：git clone https://github.com/halfking/SI-LLM-Gateway.git）
+# （GitHub ミラー：git clone https://github.com/halfking/ai-native-gateway-core.git）
 
 # 2. セキュアなキーを生成
 cp .env.quickstart.example .env
@@ -276,7 +276,7 @@ AI Native Gateway は**完全な本番スタック**と**シングルマシン�
 | Remote | URL | 用途 |
 |--------|-----|------|
 | `codeup`（origin） | `https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git` | デフォルト（日常開発） |
-| `github` | `git@github.com:halfking/SI-LLM-Gateway.git` | 公開ミラー（段階的リリース） |
+| `github` | `git@github.com:halfking/ai-native-gateway-core.git` | 公開ミラー（段階的リリース） |
 
 ```bash
 git push              # → codeup（追加チェックなし）

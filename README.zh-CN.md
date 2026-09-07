@@ -149,7 +149,7 @@ AI Native Gateway 是一个**开源、可私有部署的 AI 原生 LLM 网关**�
 # 1. 克隆
 git clone https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git ai-native-gateway
 cd ai-native-gateway
-# （GitHub 镜像：git clone https://github.com/halfking/SI-LLM-Gateway.git）
+# （GitHub 镜像：git clone https://github.com/halfking/ai-native-gateway-core.git）
 
 # 2. 生成安全密钥
 cp .env.quickstart.example .env
@@ -303,7 +303,7 @@ AI Native Gateway 同时支持**完整生产栈**与**单机最小化部署**：
 | Remote | URL | 用途 |
 |--------|-----|------|
 | `codeup`（origin） | `https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git` | 默认（日常开发） |
-| `github` | `git@github.com:halfking/SI-LLM-Gateway.git` | 公开镜像（阶段发布） |
+| `github` | `git@github.com:halfking/ai-native-gateway-core.git` | 公开镜像（阶段发布） |
 
 ```bash
 git push              # → codeup（无附加检查）
