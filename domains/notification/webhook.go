@@ -17,24 +17,36 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 	"github.com/kaixuan/llm-gateway-go/pkg/httputil"
 )
 
 // WebhookConfig Webhook 渠道配置。
 type WebhookConfig struct {
-	URL        string // 目标 URL
-	Secret     string // HMAC 签名密钥（空则不签名）
-	MaxRetries int    // 最大重试次数（默认 3）
-	TimeoutSec int    // 单次请求超时秒数（默认 30）
+	URL        string   // 目标 URL
+	Secret     string   // HMAC 签名密钥（空则不签名）
+	MaxRetries int      // 最大重试次数（默认 3）
+	TimeoutSec int      // 单次请求超时秒数（默认 30）
+	Allowlist  []string // SSRF 白名单（默认阻止所有私网地址）
 }
 
 // WebhookChannel HTTP Webhook 通知渠道。
 type WebhookChannel struct {
-	cfg    WebhookConfig
-	client *http.Client
+	cfg        WebhookConfig
+	safeClient *safehttpclient.SafeHTTPClient
 }
 
-// NewWebhookChannel 创建 Webhook 渠道。
+// NewWebhookChannel 创建 Webhook 渠道（带 SSRF 防护）。
+//
+// SSRF 防护（2026-09-07 W4-F6）：
+//   - 默认阻止所有私网地址、回环、链路本地（169.254.169.254 元数据）、组播
+//   - cfg.Allowlist 可放行受信任的内网服务（如 "10.0.0.0/8", "host.docker.internal"）
+//   - DNS 重绑定防御：连接时重新解析 DNS 并验证所有解析的 IP
+//   - 重定向目标同样受 SSRF 检查
+//
+// 与 admin/local_provider.go validateLocalBaseURL 的区别：
+//   - local_provider 只允许回环/私网（内部本地供应商）
+//   - webhook 默认只允许公网（外部回调），白名单例外处理内网通知端点
 func NewWebhookChannel(cfg WebhookConfig) *WebhookChannel {
 	if cfg.MaxRetries <= 0 {
 		cfg.MaxRetries = 3
@@ -43,10 +55,8 @@ func NewWebhookChannel(cfg WebhookConfig) *WebhookChannel {
 		cfg.TimeoutSec = 30
 	}
 	return &WebhookChannel{
-		cfg: cfg,
-		client: &http.Client{
-			Timeout: time.Duration(cfg.TimeoutSec) * time.Second,
-		},
+		cfg:        cfg,
+		safeClient: safehttpclient.NewWithAllowlist(time.Duration(cfg.TimeoutSec)*time.Second, cfg.Allowlist),
 	}
 }
 
@@ -97,7 +107,7 @@ func (c *WebhookChannel) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("webhook healthcheck: build request: %w", err)
 	}
-	resp, err := c.client.Do(req)
+	resp, err := c.safeClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("webhook healthcheck: %w", err)
 	}
@@ -164,7 +174,7 @@ func (c *WebhookChannel) doPost(ctx context.Context, body []byte) error {
 		req.Header.Set("X-Webhook-Timestamp", fmt.Sprintf("%d", time.Now().Unix()))
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := c.safeClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http post: %w", err)
 	}

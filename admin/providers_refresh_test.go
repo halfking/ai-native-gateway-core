@@ -383,7 +383,7 @@ func TestFetchVendorModels_HappyPath(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ids, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "test-key")
+	ids, _, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "test-key")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestFetchVendorModels_AuthRejected(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "bad-key")
+	_, _, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "bad-key")
 	if err == nil {
 		t.Fatal("expected error on 401, got nil")
 	}
@@ -415,7 +415,7 @@ func TestFetchVendorModels_5xxBubblesUp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "k")
+	_, _, err := h.fetchVendorModels(context.Background(), srv.URL+"/v1/models", testOpenAICred(), "k")
 	if err == nil {
 		t.Fatal("expected error on 502, got nil")
 	}
@@ -438,7 +438,7 @@ func TestFetchVendorModelsFromURLs_FirstCandidateFailsSecondSucceeds(t *testing.
 	}))
 	defer srv.Close()
 
-	ids, err := h.fetchVendorModelsFromURLs(context.Background(), []string{
+	ids, _, err := h.fetchVendorModelsFromURLs(context.Background(), []string{
 		srv.URL + "/bad/models",
 		srv.URL + "/v1/models",
 	}, testOpenAICred(), "test-key")
@@ -479,7 +479,7 @@ func TestResolveModelsForCredential_ManifestStrategyForceAPIUsesLiveAPI(t *testi
 		modelsManifestJSON: &manifest,
 	}
 
-	ids, source, err := h.resolveModelsForCredential(context.Background(), cred, "test-key", true)
+	ids, source, _, err := h.resolveModelsForCredential(context.Background(), cred, "test-key", true)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -516,7 +516,7 @@ func TestResolveModelsForCredential_UnlistedGlm52MergedFromManifest(t *testing.T
 		modelsManifestJSON: &manifest,
 	}
 
-	ids, source, err := h.resolveModelsForCredential(context.Background(), cred, "test-key", true)
+	ids, source, _, err := h.resolveModelsForCredential(context.Background(), cred, "test-key", true)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestResolveModelsForCredential_ManifestStrategyScheduledUsesManifestOnly(t 
 		modelsManifestJSON: &manifest,
 	}
 
-	ids, source, err := h.resolveModelsForCredential(context.Background(), cred, "", false)
+	ids, source, _, err := h.resolveModelsForCredential(context.Background(), cred, "", false)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
