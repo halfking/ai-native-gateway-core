@@ -48,6 +48,30 @@ func TestProbeBackoffForErrCodeClassifiesTransport(t *testing.T) {
 	}
 }
 
+// Rate-limit / concurrency kinds carry a scheduling interval in the policy
+// (3m / 5m). Re-probing a 429 after 5s just burns the limit again, so the
+// policy interval must act as a floor under the generic ladder.
+func TestProbeBackoffForKindRateLimitHonoursPolicyFloor(t *testing.T) {
+	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 1); got != 3*time.Minute {
+		t.Fatalf("rate_limit attempt 1 = %v, want 3m floor", got)
+	}
+	if got := ProbeBackoffForKind(errorsx.KindRateLimit, 7); got != 6*time.Hour {
+		t.Fatalf("rate_limit attempt 7 = %v, want ladder tail 6h", got)
+	}
+	if got := ProbeBackoffForErrCode("http_429", 2); got != 3*time.Minute {
+		t.Fatalf("http_429 attempt 2 = %v, want 3m floor", got)
+	}
+}
+
+func TestClassifyProbeErrCodeUnknownIsNotAuth(t *testing.T) {
+	if got := classifyProbeErrCode("gateway_pin_unsupported"); got != "" {
+		t.Fatalf("unknown code classified as %q, want empty (generic ladder)", got)
+	}
+	if got := ProbeBackoffForErrCode("gateway_pin_unsupported", 1); got != 5*time.Second {
+		t.Fatalf("unknown attempt 1 = %v, want generic ladder 5s", got)
+	}
+}
+
 func TestQueuePumpHoldoffDoesNotBuryFastRetry(t *testing.T) {
 	if nodeProbeQueuePumpHoldoff > time.Minute {
 		t.Fatalf("pump holdoff %v buries 5s/30s network retries", nodeProbeQueuePumpHoldoff)

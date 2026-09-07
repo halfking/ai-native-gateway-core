@@ -62,3 +62,12 @@ func ProjectRecovery(kind ErrorKind) RecoveryProjection {
 	}
 	return projection
 }
+
+// EffectiveRetryable reports whether the gateway should still recover this
+// kind — either by the generic retry loop or by walking the next candidate.
+// Admin/client retryable flags must use this, not IsRetryable alone:
+// empty_response is outside IsRetryable by design but is a candidate failover.
+func EffectiveRetryable(kind ErrorKind) bool {
+	p := ProjectRecovery(kind)
+	return p.GenericRetryable || p.CandidateFailover
+}

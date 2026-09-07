@@ -82,8 +82,8 @@ func TestBuildRow_RecoveryProjectionInContext(t *testing.T) {
 			row := w.buildRow("req", "tenant", "sess", 1, 2, "model", 0,
 				&upstreampkg.Error{Kind: tt.kind, Message: "failure"}, "", nil, nil,
 				map[string]any{"source": "test"})
-			if row.Retryable == nil || *row.Retryable {
-				t.Fatalf("retryable = %v, want false", row.Retryable)
+			if row.Retryable == nil || !*row.Retryable {
+				t.Fatalf("retryable = %v, want true (candidate failover is recoverable)", row.Retryable)
 			}
 			if row.Context["generic_retryable"] != false || row.Context["candidate_failover"] != true {
 				t.Fatalf("recovery context = %#v", row.Context)
