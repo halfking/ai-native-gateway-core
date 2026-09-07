@@ -5,8 +5,11 @@
 The PostgreSQL instance sync tool (`scripts/pg-instance-sync.sh`) provides safe, controlled synchronization of database schemas and data between PostgreSQL instances, with special protections for production data.
 
 Current status:
-- Implemented: inventory, deterministic plan, impact matrix, backup, missing-database bootstrap, guarded insert-only merge.
-- Fail-closed: common-database schema reconciliation, unified verify, and `all`.
+- Implemented: inventory, deterministic plan, impact matrix, backup,
+  missing-database bootstrap, additive schema, insert-only merge, verify,
+  and restore-into-new-database.
+- Fail-closed: unified `all` (steps have different risk gates) and automatic
+  `CONFLICT_LOCAL_WINS` application.
 - `llm_gateway` data is never copied; its schema scope is `public,maintain`.
 
 ## Commands
@@ -37,9 +40,13 @@ pg-instance-sync.sh plan \
 #### `verify`
 Verify sync results and validate database states.
 ```bash
-pg-instance-sync.sh verify --manifest manifest.tsv
+pg-instance-sync.sh verify --manifest manifest.tsv \
+  --policy configs/pg-sync-policy.conf --output-dir verify/ \
+  --impact-matrix impact/impact-matrix.tsv
 ```
-This command currently exits non-zero because unified verification is not implemented.
+It fails if any included remote database has FK orphans or disabled user
+triggers. Remaining non-owner/non-GRANT signature rows are written to
+`deferred-semantic.tsv` for review.
 
 ### Write Commands
 
@@ -61,14 +68,14 @@ Apply schema changes (DDL operations).
 ```bash
 pg-instance-sync.sh apply-schema --yes --manifest-hash <hash> --freshness-check --manifest manifest.tsv
 ```
-This command currently exits non-zero. Use the read-only impact matrix to review
-all additions and local-wins conflicts. The implemented additive executor is:
 ```bash
-scripts/pg-instance-schema-additive.sh --yes --freshness-check \
+pg-instance-sync.sh apply-schema --yes --freshness-check \
   --manifest manifest.tsv --manifest-hash <hash> \
   --policy configs/pg-sync-policy.conf \
   --impact-matrix impact/impact-matrix.tsv --work-dir <work-dir>
 ```
+The dispatcher calls `scripts/pg-instance-schema-additive.sh`. The standalone
+executor remains available:
 It applies only `ADD_LOCAL`/`ADD_REMOTE` objects. Relations are restored in
 `pre-data` and `post-data` transactions with functions between the two
 sections. It never applies `CONFLICT_LOCAL_WINS` and always skips
@@ -98,7 +105,8 @@ Apply data sync (DML operations with strict limitations).
 ```bash
 pg-instance-sync.sh apply-data --yes --manifest-hash <hash> --freshness-check --manifest manifest.tsv
 ```
-The unified command currently exits non-zero. The implemented executor is:
+The dispatcher calls `scripts/pg-instance-data-merge.sh`. The standalone
+executor remains available:
 ```bash
 scripts/pg-instance-data-merge.sh --yes --freshness-check \
   --manifest manifest.tsv --manifest-hash <hash> \
@@ -124,11 +132,13 @@ scripts/pg-instance-bootstrap.sh --yes --freshness-check \
 Bootstrap refuses to run if the target database already exists and validates
 the selected backup checksum before creating the database.
 
+#### `restore`
+Restore a checksummed dump into a **new** database name. Existing targets and
+`llm_gateway` are refused.
+
 #### `all`
-Execute complete sync pipeline.
-```bash
-pg-instance-sync.sh all --yes --manifest-hash <hash> --freshness-check --manifest manifest.tsv
-```
+Intentionally not auto-run. Use inventory → plan → impact → backup →
+bootstrap → apply-schema → apply-data → verify.
 
 ## Policy Configuration
 
@@ -201,7 +211,6 @@ The sync policy is defined in `configs/pg-sync-policy.conf`:
 ### `scripts/lib/pg-instance-guardrails.sh`
 - `validate_manifest_freshness()`: Hash and age validation
 - `validate_llm_gateway_protection()`: LLM data protection
-- `check_destructive_operations()`: Destructive operation detection
 - `validate_database_names()`: Name pattern validation
 
 ### `scripts/lib/252-db-tunnel.sh`
@@ -230,9 +239,16 @@ pg-instance-sync.sh plan \
 HASH=$(shasum -a 256 manifest.tsv | awk '{print $1}')
 ```
 
-4. **Apply schema changes:**
+4. **Apply schema and data, then verify:**
 ```bash
-pg-instance-sync.sh apply-schema --yes --manifest manifest.tsv --manifest-hash $HASH --freshness-check
+pg-instance-sync.sh apply-schema --yes --manifest manifest.tsv \
+  --manifest-hash $HASH --freshness-check --policy configs/pg-sync-policy.conf \
+  --impact-matrix impact/impact-matrix.tsv --work-dir work/schema
+pg-instance-sync.sh apply-data --yes --manifest manifest.tsv \
+  --manifest-hash $HASH --freshness-check --policy configs/pg-sync-policy.conf \
+  --impact-matrix impact/impact-matrix.tsv --work-dir work/data
+pg-instance-sync.sh verify --manifest manifest.tsv \
+  --policy configs/pg-sync-policy.conf --output-dir work/verify
 ```
 
 ### Policy Customization
@@ -274,6 +290,6 @@ Run the test suite:
 bash scripts/test-pg-instance-sync.sh                    # Basic CLI
 bash scripts/test-pg-instance-sync-commands.sh           # Command validation  
 bash scripts/test-pg-instance-sync-guardrails.sh         # Safety checks
-bash scripts/test-pg-instance-sync-integration.sh        # End-to-end
 bash scripts/test-pg-instance-inventory.sh               # Inventory collection
+bash scripts/test-pg-instance-verify.sh                  # verify/restore guards
 ```

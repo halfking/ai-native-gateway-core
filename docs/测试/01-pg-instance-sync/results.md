@@ -66,8 +66,8 @@
 
 ## Current implementation boundary
 
-- Standalone guarded executors implement backup, bootstrap, additive schema,
-  insert-only data merge, and impact verification.
-- The unified `apply-schema`, `apply-data`, `verify`, and `all` wrappers remain
-  fail-closed; use the standalone commands documented in
-  `docs/database/pg-instance-sync-guide.md`.
+- `pg-instance-sync.sh` now dispatches `apply-schema`, `apply-data`, `verify`,
+  and `restore`. Unified `all` remains fail-closed.
+- `verify` checks remote FK orphans and disabled user triggers.
+- `restore` creates a new database from a checksummed dump and refuses
+  `llm_gateway` plus any existing target.

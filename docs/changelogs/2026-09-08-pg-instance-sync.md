@@ -36,3 +36,5 @@ Date: 2026-09-08
 - A fresh completion pass found no missing included databases, applied
   insert-only convergence to all 24 eligible pairs, and returned zero FK
   orphans and zero disabled user triggers on every target.
+- Follow-up audit wired the dispatcher, added `verify`/`restore`, split the
+  env/write libraries, and distilled the reusable skill.
