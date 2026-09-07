@@ -132,7 +132,7 @@ bash scripts/pg-table-copy.sh --source configs/env-252.sh --target configs/env-l
 
 **症状**: 本地改完密码 → 重启/重建容器 → 密码回到旧值。
 
-**原因**: entrypoint **不会**在已有数据目录上改写密码（见 §2.2 机制更正）。出现该现象说明容器实际挂载的数据目录与预期不同（用 `docker inspect llm-gateway-pg --format '{{json .Mounts}}'` 核对；当前容器与 `recreate-llm-gateway-pg.sh` 均指向 `~/.agents-cache/llm-gateway-pg-data`，若看到其他路径说明挂的是另一个集群），或数据目录被清空后触发首次 initdb。
+**原因**: entrypoint **不会**在已有数据目录上改写密码（见 §2.2 机制更正）。出现该现象说明容器实际挂载的数据目录与预期不同（用 `docker inspect llm-gateway-pg --format '{{json .Mounts}}'` 核对；当前容器与 `scripts/local-dev/recreate-llm-gateway-pg.sh` 默认均指向 `~/kaixuan/postgres`，若看到其他路径说明挂的是另一个集群），或数据目录被清空后触发首次 initdb。
 
 **解决**: 先 `docker inspect llm-gateway-pg --format '{{json .Mounts}}'` 确认实际数据目录；密码按 §2.2 人工修正，禁止用脚本自动重置。
 
@@ -278,3 +278,5 @@ PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -
 | 2026-09-01 | 1.9 | 凭据改为仅通过 env loader 的 `COMMON_PG_SUPERUSER_PASS` alias 使用；SSH 改为 config/证书认证；隧道调用时动态解析 Podman IP 并以专属 control socket 清理；结构与数据审计均为完成门禁；退休两个旧同步入口 |
 | 2026-09-01 | 1.10 | **pg-table-copy.sh PHASE 8.5 自动调用 routing-mv fixup**：闭环 252-only 的 `routing_analytics_7d` / `routing_audit_summary_7d` 物化视图与 `columnar_insert_only_parents()` 函数漂移；fixup 脚本 v1.0 → v1.1，新增 `PG_FIXUP_DB` env（默认 `llm_gateway`）便于被主脚本通过 `PG_FIXUP_CONTAINER`/`USER`/`PASS`/`DB` 注入参数；同步流程不再需要手工跑 fixup（仍可独立调用，幂等）|
 | 2026-09-01 | 1.11 | **文档-代码一致性审计修订**（4 任务并行审计 + 本地复现验证）：① Q1 更正——默认 schema 模式不 DROP、无自动回滚（原文与代码相反）；② 移除不存在的 "SSH control socket" 机制描述（实现是所有权 PID 语义：只复用健康 listener、只 kill 自建 PID）；③ hot 表模式与脚本默认对齐（catalog 判定含 2025 分区；`*_archived`/`*_archive` 为后缀匹配，非中缀）；④ §3.3 数据目录表述更新（recreate 脚本与容器现均指向 `~/.agents-cache/llm-gateway-pg-data`）；⑤ 补录 `local-host-sync-db.sh` 包装入口（§3.1/§六），明确 `pg-table-copy.sh` 不管理隧道；⑥ 头部版本对齐变更记录 |
+| 2026-09-07 | 1.12 | **§5 Q2 数据目录表述二次更正**：实测 `docker inspect llm-gateway-pg --format '{{json .Mounts}}'` → 容器当前 bind 源为 `~/kaixuan/postgres`（21G base 已活跃），历史条目里写的 `~/.agents-cache/llm-gateway-pg-data` 已被新 SSOT 取代。`scripts/local-dev/recreate-llm-gateway-pg.sh:40,46` 同步把 `DATA_DIR` 改为 `${LLM_GATEWAY_PG_DATA_DIR:-$HOME/kaixuan/postgres}`（可覆盖），头部注释把旧 Downloads 路径标注为 rollback-only 副本，避免脚本绑定到错误目录导致 22G 真实数据"看似丢失"。§5 Q2 正文同步替换为 `~/kaixuan/postgres`。历史 v1.6 / v1.11 条目保留原貌，不修改历史。 |
+| 2026-09-07 | 1.13 | **本地 llm-gateway-pg 角色防御 + psql 调用修正**：新增 `scripts/local-dev/ensure-llm-gateway-pg-role.sh`，幂等 CREATE ROLE/CREATE DATABASE（缺则补、在则 no-op），由 `scripts/deploy-local.sh ensure_resources()` 末尾在 `DL_PG_CONTAINER=llm-gateway-pg` 路径下调用。修复 5 个本地脚本里 `-U postgres` → `-U "${LLM_GATEWAY_PG_USER:-llm_gateway}"`（`sync-db-to-252.sh`、`sync-db-from-252.sh`、`diagnose-nvidia-minimax.sh`、`fix_503_one_click.sh`、`install/backup.sh`）以及 `deploy/prometheus/.env.example`。**作用域仅限本地 llm-gateway-pg**，252/245 远端的 psql 调用保持原状（其各自数据库按各环境约定管理）。 |
