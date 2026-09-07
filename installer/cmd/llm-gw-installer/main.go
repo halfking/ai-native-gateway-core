@@ -328,6 +328,9 @@ var modelOffersContextWindowColumnsMigration682 []byte
 //go:embed embeddata/startup/683_session_dim_ownership_columns.sql
 var sessionDimOwnershipColumnsMigration683 []byte
 
+//go:embed embeddata/startup/684_drop_stale_provider_error_tenant_fingerprint.sql
+var dropStaleProviderErrorTenantFingerprintMigration684 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -432,6 +435,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/681_provider_error_details_fingerprint_restore_8part.sql":               providerErrorDetailsFingerprintRestore8partMigration681,
 	"startup/682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
 	"startup/683_session_dim_ownership_columns.sql":                                  sessionDimOwnershipColumnsMigration683,
+	"startup/684_drop_stale_provider_error_tenant_fingerprint.sql":                   dropStaleProviderErrorTenantFingerprintMigration684,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
