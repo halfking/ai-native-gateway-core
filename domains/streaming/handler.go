@@ -380,6 +380,11 @@ func isBranchSessionID(sessionID string) bool {
 	return strings.HasPrefix(sessionID, "gt_") || strings.HasPrefix(sessionID, "gs_")
 }
 
+// Deprecated (2026-09-08 结构审计): 仅身份契约单测引用。导出的非生产入口
+// 不再对齐 deriveGatewaySessionID 的确定性映射(会 mint 随机 gw_),新代码
+// 一律走生产 handler 的 initializeRequestIdentity 路径,防止复活
+// b02a5c385 修掉的"随机 gw_ 覆写客户端稳定 id"缺陷。下轮清理候选。
+//
 // InitializeRequestIdentity is the exported helper that establishes one
 // stable request identity (server-issued request_id, optional client
 // request_id, and a provisional gateway session id) at the HTTP
