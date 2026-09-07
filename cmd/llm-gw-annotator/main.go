@@ -43,6 +43,7 @@ var (
 	maxConfidence float64
 	limit         int
 	outputPath    string
+	sampling      string
 )
 
 func main() {
@@ -65,6 +66,7 @@ Workflow:
 
 Example:
   llm-gw-annotator export --start 2026-08-01 --end 2026-09-01 --max-confidence 0.7 --output annotations.csv
+  llm-gw-annotator export --start 2026-08-01 --end 2026-09-01 --sampling uncertain --limit 200 --output annotations.csv
   llm-gw-annotator validate annotations.csv
   llm-gw-annotator import annotations.csv
   llm-gw-annotator stats`,
@@ -96,13 +98,24 @@ The export process:
   3. Exclude already-annotated samples
   4. Write to CSV with empty annotation columns
 
+Sampling strategies (--sampling):
+  all        Order strictly by confidence ascending, lowest first (default,
+             identical to the P2.1 behavior)
+  uncertain  Active-learning uncertainty sampling: prefer confidence in
+             [0.4, 0.6] (model is least certain), backfill with confidence
+             < 0.4 when insufficient, with a per-task-type floor quota to
+             avoid one task type dominating the export. --start/--end,
+             --min/--max-confidence still filter candidates and --limit
+             still caps the total. CSV columns are identical in both modes.
+
 Privacy guarantee:
   - Query only accesses structured feature columns
   - Never touches prompt, messages, response columns
   - Output CSV contains only non-reversible features
 
 Example:
-  llm-gw-annotator export --start 2026-08-01 --end 2026-09-01 --max-confidence 0.7 --limit 100 --output annotations.csv`,
+  llm-gw-annotator export --start 2026-08-01 --end 2026-09-01 --max-confidence 0.7 --limit 100 --output annotations.csv
+  llm-gw-annotator export --start 2026-08-01 --end 2026-09-01 --sampling uncertain --limit 200 --output annotations.csv`,
 		RunE: runExport,
 	}
 
@@ -112,6 +125,7 @@ Example:
 	cmd.Flags().Float64Var(&maxConfidence, "max-confidence", 0.7, "Maximum confidence (default: 0.7)")
 	cmd.Flags().IntVar(&limit, "limit", 1000, "Max number of samples to export (default: 1000)")
 	cmd.Flags().StringVar(&outputPath, "output", "", "Output CSV file path (required)")
+	cmd.Flags().StringVar(&sampling, "sampling", "all", "Sampling strategy: all (confidence ascending, default) or uncertain (active-learning uncertainty sampling with per-task-type quotas)")
 
 	cmd.MarkFlagRequired("start")
 	cmd.MarkFlagRequired("end")
@@ -197,6 +211,13 @@ func runExport(cmd *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
+	// Validate sampling strategy
+	switch sampling {
+	case "all", "uncertain":
+	default:
+		return fmt.Errorf("invalid --sampling %q (must be \"all\" or \"uncertain\")", sampling)
+	}
+
 	// Parse date range
 	start, end, err := annotation.ParseDateRange(startDate, endDate)
 	if err != nil {
@@ -205,9 +226,9 @@ func runExport(cmd *cobra.Command, args []string) error {
 
 	// Build export config
 	config := annotation.ExportConfig{
-		StartDate: start,
-		EndDate:   end,
-		Limit:     limit,
+		StartDate:  start,
+		EndDate:    end,
+		Limit:      limit,
 		OutputPath: outputPath,
 	}
 
@@ -234,14 +255,25 @@ func runExport(cmd *cobra.Command, args []string) error {
 	}
 
 	// Execute export
-	fmt.Printf("Exporting to: %s\n", outputPath)
-	if err := exporter.Export(ctx, config); err != nil {
-		return fmt.Errorf("export failed: %w", err)
+	fmt.Printf("Exporting to: %s (sampling: %s)\n", outputPath, sampling)
+	var exported int
+	if sampling == "uncertain" {
+		// Active-learning uncertainty sampling: confidence [0.4, 0.6] first,
+		// backfill < 0.4, per-task-type floor quotas. --limit still caps total.
+		exported, err = exporter.ExportUncertain(ctx, config, annotation.DefaultUncertainSamplingOptions())
+		if err != nil {
+			return fmt.Errorf("export failed: %w", err)
+		}
+	} else {
+		if err := exporter.Export(ctx, config); err != nil {
+			return fmt.Errorf("export failed: %w", err)
+		}
+		exported = min(count, limit)
 	}
 
 	fmt.Printf("\n✅ Export completed successfully\n")
 	fmt.Printf("   Output: %s\n", outputPath)
-	fmt.Printf("   Samples: %d\n\n", min(count, limit))
+	fmt.Printf("   Samples: %d\n\n", exported)
 	fmt.Println("Next steps:")
 	fmt.Println("  1. Open the CSV file in Excel/Google Sheets")
 	fmt.Println("  2. Fill in: human_provider, is_correct, reason, annotator")
