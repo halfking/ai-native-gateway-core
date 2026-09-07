@@ -191,7 +191,9 @@ func (w *FeatureStatsWorker) computeDedupRate(ctx context.Context, statDate time
 			$1 AS stat_date,
 			dd.total_rows,
 			dd.unique_hashes,
-			ROUND(100.0 * (1.0 - dd.unique_hashes::numeric / NULLIF(dd.total_rows, 0)), 2) AS dedup_rate,
+			-- total_rows=0 时 NULLIF 产生 NULL,直接撞 dedup_stats.dedup_rate
+			-- 的 NOT NULL(23502,空表日首次聚合即失败);0 行即 0 去重率。
+			COALESCE(ROUND(100.0 * (1.0 - dd.unique_hashes::numeric / NULLIF(dd.total_rows, 0)), 2), 0) AS dedup_rate,
 			dd.total_rows - dd.unique_hashes AS duplicate_count,
 			COALESCE(
 				(SELECT jsonb_agg(jsonb_build_object('hash', content_hash, 'count', count) ORDER BY count DESC) 
