@@ -252,6 +252,17 @@ files=(
   # 同桶不同凭据+消息样例相同时,cred 仲裁者放行的 INSERT 撞 tenant 指纹。
   # 681 只收敛了 cred 指纹;684 按守卫 DROP 残留(cred 指纹在位且为 8 段才删)。
   "$ROOT_DIR/sql/migrations/startup/684_drop_stale_provider_error_tenant_fingerprint.sql"
+  # 2026-09-07 部署后观察 (22P02 x ~9/25min): task_default_routing(_audit)
+  # 是 421 的 bigint 租户形状(与 388 text 形状竞争),Go 全线按 text 扫描/
+  # 比较(*string、tenant_id = $2 OR 'default'),$2 被推断 bigint 后
+  # pgx 传 "default" → 22P02,每个无候选请求的 alternatives 兜底查询失败。
+  # 685 按守卫把两表 tenant_id 转 text,并按 388 的 '' 哨兵重建唯一索引。
+  "$ROOT_DIR/sql/migrations/startup/685_task_default_routing_tenant_text.sql"
+  # 2026-09-07 部署后观察 (ensure tick 42P17 每次复现): 本库
+  # session_module_executions_2026_10 上界被写成 '2026-11-01 08:00:00+08'
+  # (+08 字面量污染,多 8 小时),ensure 建 2026_11 必然 overlap。686 按守卫
+  # DETACH+重建为正确的 00:00:00+08 上界,含 default 分区行搬回兜底。
+  "$ROOT_DIR/sql/migrations/startup/686_fix_session_module_executions_2026_10_bounds.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

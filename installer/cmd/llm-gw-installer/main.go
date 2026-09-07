@@ -331,6 +331,9 @@ var sessionDimOwnershipColumnsMigration683 []byte
 //go:embed embeddata/startup/684_drop_stale_provider_error_tenant_fingerprint.sql
 var dropStaleProviderErrorTenantFingerprintMigration684 []byte
 
+//go:embed embeddata/startup/686_fix_session_module_executions_2026_10_bounds.sql
+var fixSessionModuleExecutions2026_10BoundsMigration686 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -436,6 +439,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
 	"startup/683_session_dim_ownership_columns.sql":                                  sessionDimOwnershipColumnsMigration683,
 	"startup/684_drop_stale_provider_error_tenant_fingerprint.sql":                   dropStaleProviderErrorTenantFingerprintMigration684,
+	"startup/686_fix_session_module_executions_2026_10_bounds.sql":                   fixSessionModuleExecutions2026_10BoundsMigration686,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
