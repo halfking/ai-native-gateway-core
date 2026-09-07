@@ -11,3 +11,9 @@
 | L1 executors | `go test ./domains/streaming/executors -count=1` | pass (23s) |
 
 P0/P1 用例 C01–C11 均由上述单测覆盖。本地 `~/kaixuan` 服务未更新。
+
+## 154 部署
+
+- 脚本：`bash scripts/deploy-154.sh --no-frontend`
+- 结果：`2054-57cbfb81`，active_port=8782，handoff 完成
+- 外网：`https://llm.kxpms.cn/healthz` → `status=ok` `build_seq=2054` `git_sha=57cbfb81`
