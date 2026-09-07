@@ -704,10 +704,42 @@ do_deploy() {
   # 终止 3) 产物非空校验。do_deploy 目前由顶层 case 直接调用、set -e 可
   # 兜底，但防线必须内建而不能依赖调用语境——一旦未来被包进 if/$( ) 赋值
   # 语境，函数内失败命令不再触发 set -e（2026-09-05 陈旧二进制事故根因）。
+  # CGO 回退（同 deploy-local.sh build_backend，2026-09-07）：上游引入
+  # CGO-only 依赖（mattn/go-sqlite3、yalue/onnxruntime_go，见 Dockerfile
+  # 2026-09-05 的 CGO_ENABLED=1 注）后，纯静态 CGO=0 构建必然失败（"build
+  # constraints exclude all Go files"）。macOS 宿主机没有 linux 交叉 C
+  # 工具链，回退到 golang:1.27-alpine 容器内 CGO 构建，musl 产物可直接
+  # 跑在 154 的 alpine 运行时上（LLM_GATEWAY_BUILD_IMAGE 可覆盖）。
   if ! CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o "$tmpbin" ./cmd/gateway; then
-    err "backend build failed (CGO_ENABLED=0 GOOS=linux GOARCH=amd64); refusing to continue with stale binary"
-    exit 1
+    command -v docker >/dev/null 2>&1 || {
+      err "CGO=0 构建失败且 docker 不可用，无法回退容器 CGO 构建; refusing to continue with stale binary"
+      exit 1
+    }
+    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-golang:1.27-alpine}"
+    docker image inspect "$build_image" >/dev/null 2>&1 || docker pull "$build_image" >/dev/null \
+      || { err "CGO 回退需要镜像 $build_image 且拉取失败; refusing to continue"; exit 1; }
+    local cgo_out="$PROJECT_ROOT/.build-local/seamless-binary"
+    mkdir -p "$PROJECT_ROOT/.build-local/.gocache"
+    log "CGO=0 构建失败，回退 $build_image 容器内 CGO 构建 (linux/amd64)"
+    # --platform linux/amd64 必须显式：Apple Silicon 上默认拉 arm64 镜像，
+    # 容器内 aarch64 gcc 构建GOARCH=amd64 目标报 "unrecognized command-line
+    # option '-m64'"；amd64 模拟容器内的 x86_64 gcc 才能出 musl amd64 产物。
+    # GOCACHE 挂到 .build-local/.gocache 跨次复用（模拟执行全量重编很慢）。
+    # -extldflags -static 产出纯静态 musl 产物：154 是 CentOS 7 裸机
+    # systemd（glibc 2.17，无 musl loader），动态链接 musl 二进制会 exec
+    # 失败；静态产物与原 CGO=0 部署形态兼容（154 无 onnxruntime.so，
+    # ML 路由懒加载失败仅降级，不影响启动）。
+    (cd "$PROJECT_ROOT" && HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker run --rm --platform linux/amd64 \
+        -v "$PROJECT_ROOT":/src -w /src \
+        -v "$PROJECT_ROOT/.build-local/.gocache":/tmp/go-build-cache \
+        -e HOST_UID -e HOST_GID \
+        -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=amd64 \
+        -e GOCACHE=/tmp/go-build-cache -e GOPATH=/tmp/go-path \
+        "$build_image" \
+        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w -extldflags -static" -o /src/.build-local/seamless-binary ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/seamless-binary') \
+      || { err "backend CGO container build failed (GOOS=linux GOARCH=amd64); refusing to continue with stale binary"; exit 1; }
+    mv -f "$cgo_out" "$tmpbin"
   fi
   [[ -s "$tmpbin" ]] || { err "backend build produced no output at $tmpbin"; exit 1; }
   ok "编译完成 ($(du -h "$tmpbin" | cut -f1))"
