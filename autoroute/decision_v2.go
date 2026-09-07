@@ -310,7 +310,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	d.populateShadow(ctx, sigs, decision)
 
 	// P2.2: fire-and-forget feedback for the learning loop (fresh decisions only).
-	d.recordFeedbackAsync(decision, apiKeyID, sessionID, sigs.ClientType)
+	d.recordFeedbackAsync(ctx, decision, apiKeyID, sessionID, sigs.ClientType)
 
 	slog.Info("autoroute.v2: decision made",
 		"chosen_model", decision.ChosenModel,

@@ -176,51 +176,52 @@ func toMLRouteFeatures(cls *Classification, sigs ClassificationSignals, profile 
 // recordFeedbackAsync fires the plugin's RecordFeedback hook in the
 // background with a short timeout. Fresh decisions only — session-cache
 // hits reuse an earlier decision and must not double-count feedback.
-func (d *Decider) recordFeedbackAsync(decision *Decision, apiKeyID int, sessionID, clientType string) {
+//
+// 2026-09-08 audit (Track A) — real-outcome backfill: when the relay layer
+// injected the real X-Request-Id into the Decide context (maybeResolveAuto →
+// WithRequestID), the feedback is STASHED in the outcome registry
+// (outcome_feedback.go) instead of being written here; the request-completion
+// path calls ReportRoutingOutcome with the terminal success/latency/cost and
+// the stashed row is written with the REAL outcome. Requests without a
+// correlation id keep the legacy behaviour: an immediate decision-time write
+// with the placeholder IsSuccess=true (the old open-loop semantics).
+func (d *Decider) recordFeedbackAsync(ctx context.Context, decision *Decision, apiKeyID int, sessionID, clientType string) {
 	if d.optimizer == nil || decision == nil {
 		return
 	}
-	fb := routingopt.RoutingFeedback{
-		RequestID:         feedbackRequestID(apiKeyID, decision.DecidedAt),
+	if requestID := requestIDFromContext(ctx); requestID != "" {
+		stashPendingFeedback(requestID, d.optimizer, newRoutingFeedback(requestID, decision, apiKeyID, sessionID))
+		return
+	}
+	// No correlation id (internal callers, tests): the outcome can never be
+	// matched, so write the legacy placeholder immediately.
+	dispatchFeedback(d.optimizer, newRoutingFeedback(feedbackRequestID(apiKeyID, decision.DecidedAt), decision, apiKeyID, sessionID))
+}
+
+// newRoutingFeedback builds the feedback DTO for one fresh decision.
+// IsSuccess starts as the decision-time placeholder (true); it is only
+// authoritative for the no-correlation-id legacy path — stashed entries are
+// overwritten by ReportRoutingOutcome before the row is written.
+func newRoutingFeedback(requestID string, decision *Decision, apiKeyID int, sessionID string) *routingopt.RoutingFeedback {
+	return &routingopt.RoutingFeedback{
+		RequestID:         requestID,
 		TaskType:          string(decision.TaskType),
 		PredictedProvider: decision.ChosenModel,
 		ActualProvider:    decision.ChosenModel,
-		IsSuccess:         true, // decision produced; upstream outcome backfill is Week 2
-		UserID:            apiKeyID,
-		SessionID:         sessionID,
+		// Classifier confidence at decision time (Classification.Confidence
+		// via Decision.Confidence) — replaces the integrator's hard-coded 0.8.
+		Confidence: decision.Confidence,
+		IsSuccess:  true, // placeholder; ReportRoutingOutcome fills the real outcome
+		UserID:     apiKeyID,
+		SessionID:  sessionID,
 	}
-	select {
-	case feedbackWriteSlots <- struct{}{}:
-	default:
-		// Bound reached: drop instead of queueing — a burst of decisions
-		// must not convert feedback into pool pressure.
-		slog.DebugContext(context.Background(),
-			"optimizer.RecordFeedback dropped, write bound reached",
-			"task_type", decision.TaskType)
-		return
-	}
-	go func() {
-		// 2026-09-08 audit: panic in a plugin chain would kill the process —
-		// this is a fire-and-forget write, a recovered panic only loses one
-		// feedback row (best-effort by contract).
-		defer func() {
-			if rec := recover(); rec != nil {
-				slog.WarnContext(context.Background(),
-					"optimizer.RecordFeedback panicked", "panic", rec)
-			}
-			<-feedbackWriteSlots
-		}()
-		ctx, cancel := context.WithTimeout(context.Background(), feedbackWriteTimeout)
-		defer cancel()
-		if err := d.optimizer.RecordFeedback(ctx, fb); err != nil {
-			slog.WarnContext(ctx, "optimizer.RecordFeedback failed", "err", err)
-		}
-	}()
 }
 
 // feedbackRequestID derives a stable-enough identifier for feedback rows when
-// the relay-layer request id is not plumbed into Decide (Week 2: take the
-// real request id from context).
+// the relay-layer request id was not plumbed into Decide. Correlatable
+// requests use the real X-Request-Id (see recordFeedbackAsync) so human
+// annotations keyed by request_id now match, and the outcome registry can
+// backfill the real result.
 func feedbackRequestID(apiKeyID int, decidedAt time.Time) string {
 	return fmt.Sprintf("auto-%d-%d", apiKeyID, decidedAt.UnixNano())
 }

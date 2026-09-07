@@ -1114,6 +1114,14 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 	if c.handler.telemetryClient != nil && c.handler.telemetryClient.Enabled() {
 		c.handler.telemetryClient.EmitRequestLogUpdate(reqLog)
 	}
+	// 2026-09-08 audit (Track A): auto-route failures are the signal the
+	// routing feedback loop was missing — before this, decision-time feedback
+	// was hardcoded IsSuccess=true and failures never reached the optimizer.
+	// The degenerate minimalTerminalEntry rows carry no IsAutoRequest marker,
+	// so they are (safely) skipped by the nil check.
+	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest {
+		autoroute.ReportRoutingOutcome(routingOutcomeFromEntry(reqLog))
+	}
 	// 2026-07-15: 侧表 request_context_attrs（best-effort）。
 	if c.handler.telemetryClient != nil {
 		if attrs := BuildContextAttrsEntry(c, c.KeyInfo, &c.meta, c.Request.Context()); attrs != nil {
@@ -1151,6 +1159,12 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 	if c.handler.telemetryClient != nil && c.handler.telemetryClient.Enabled() {
 		c.handler.telemetryClient.EmitRequestLogUpdate(reqLog)
 	}
+	// Track A note (2026-09-08): rate-limited requests deliberately do NOT
+	// report a routing outcome — the request never reached any upstream, so
+	// there is nothing to learn about the chosen model here. The stashed
+	// decision-time feedback simply expires via the registry TTL (legacy
+	// placeholder semantics), mirroring how the settle worker abandons
+	// selections with no request_log row.
 	if c.handler.telemetryClient != nil {
 		if attrs := BuildContextAttrsEntry(c, c.KeyInfo, &c.meta, c.Request.Context()); attrs != nil {
 			c.handler.telemetryClient.EmitContextAttrs(attrs)

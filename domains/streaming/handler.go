@@ -6115,6 +6115,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		h.emitTuningSignal(reqLog, reqLog.Success, latencyMs)
 	}
 
+	// 2026-09-08 audit (Track A): settle the routingopt feedback loop with the
+	// REAL upstream outcome. The decider used to record feedback at decision
+	// time with IsSuccess hardcoded true; the decision-time row is now parked
+	// in the autoroute outcome registry and backfilled here (and on the
+	// EmitFailure path) where success/latency/cost are final. Best-effort,
+	// non-blocking: a miss (cache reuse, already settled) is counted and
+	// dropped inside the registry.
+	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest {
+		autoroute.ReportRoutingOutcome(routingOutcomeFromEntry(reqLog))
+	}
+
 	// v2.2 (2026-06-22): auto-generate session title after first successful request.
 	// v2.3 (2026-08-05): pass requestBody + requestPreview in-memory; also fixed
 	// GwSessionID being nil on the success-path reqLog (see assignment above).

@@ -578,7 +578,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 	// P2.2: fire-and-forget feedback for the learning loop (fresh decisions only).
-	d.recordFeedbackAsync(decision, apiKeyID, sessionID, sigs.ClientType)
+	d.recordFeedbackAsync(ctx, decision, apiKeyID, sessionID, sigs.ClientType)
 
 	// Step 4: cache the intent for this session
 	if sessionID != "" && d.intentCache != nil {
