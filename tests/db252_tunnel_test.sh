@@ -64,6 +64,18 @@ test_invalid_container_ip_fails_before_forward() {
   rm -rf "$tmp"
 }
 
+test_preferred_network_selected_from_multiple() {
+  local tmp rc
+  tmp=$(MOCK_CONTAINER_IP=$'podman|10.88.0.79\nservice|10.89.0.2' \
+    run_helper_case unavailable \
+    '[[ "$(db252_resolve_remote_target)" == "10.88.0.79:5432" ]]')
+  rc=$(<"$tmp/rc")
+  [[ "$rc" -eq 0 && ! -f "$tmp/forwarded" ]] \
+    && log_pass "configured PG network is selected from multiple addresses" \
+    || log_fail "multi-network container should select REMOTE_PG_NETWORK"
+  rm -rf "$tmp"
+}
+
 test_existing_healthy_tunnel_is_reused() {
   local tmp rc
   tmp=$(run_helper_case healthy 'touch "$MOCK_STATE/occupied"; db252_tunnel_ensure; [[ "$DB252_TUNNEL_CREATED" == false ]]')
@@ -154,7 +166,7 @@ test_p1_scripts_use_managed_tunnel() {
     "$REPO_ROOT/scripts/partition/bodies-hot-repack-rollback.sh"
     "$REPO_ROOT/scripts/partition/index-drift-align.sh"
   )
-  local f missing_tunnel stale
+  local f missing_tunnel
   missing_tunnel=0
   for f in "${files[@]}"; do
     grep -q 'scripts/lib/252-db-tunnel.sh' "$f" || missing_tunnel=1
@@ -204,6 +216,7 @@ test_sync_control_guards_present() {
 
 echo "── managed 252 database tunnel tests ──────────────────────────"
 test_invalid_container_ip_fails_before_forward
+test_preferred_network_selected_from_multiple
 test_existing_healthy_tunnel_is_reused
 test_unhealthy_listener_is_never_replaced
 test_created_tunnel_is_owned_and_cleaned_up
