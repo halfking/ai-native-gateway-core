@@ -38,6 +38,11 @@ type RoutingLogEntry struct {
 	Tier            *int    `json:"tier,omitempty"`
 	Source          string  `json:"source"` // gateway | scheduler | manual | routing_4xx | ...
 	Actor           *string `json:"actor,omitempty"`
+	// F-4 audit fields (2026-09-07): probe http_status, routing sticky/outbound_model, unified detail
+	HTTPStatus    *int    `json:"http_status,omitempty"`    // probe: upstream HTTP status code
+	Sticky        *bool   `json:"sticky,omitempty"`         // routing: whether sticky routing was used
+	OutboundModel *string `json:"outbound_model,omitempty"` // routing: actual model sent to provider
+	Detail        *string `json:"detail,omitempty"`         // unified: additional context (JSON or text)
 }
 
 // RoutingLogResponse is the response envelope for /api/credentials/routing-log.
@@ -145,12 +150,25 @@ func (m *CredentialMonitorHandlers) handleCredentialRoutingLog(w http.ResponseWr
 
 	startedAt := time.Now()
 	entries, total, err := runRoutingLogQuery(ctx, m.h.db, params)
+	queryDurationMs := time.Since(startedAt).Milliseconds()
+	
 	if err != nil {
-		slog.Error("routing log query failed", "error", err.Error())
+		slog.Error("routing log query failed", "error", err.Error(), "duration_ms", queryDurationMs)
 		// 不回传内部 SQL 错误细节（表名/约束名），只留 trace 线索给日志。
 		writeError(w, http.StatusInternalServerError, "routing log query failed")
+		// 监控打点：失败查询
+		recordRoutingLogQueryMetrics(false, queryDurationMs, 0, kind, result)
 		return
 	}
+
+	// 监控打点：成功查询
+	recordRoutingLogQueryMetrics(true, queryDurationMs, len(entries), kind, result)
+	slog.Info("routing log query completed",
+		"duration_ms", queryDurationMs,
+		"entries", len(entries),
+		"total", total,
+		"kind", kind,
+		"result", result)
 
 	resp := RoutingLogResponse{
 		Entries: entries,
@@ -163,10 +181,29 @@ func (m *CredentialMonitorHandlers) handleCredentialRoutingLog(w http.ResponseWr
 			Result:     result,
 			Limit:      limit,
 			Offset:     offset,
-			DurationMs: time.Since(startedAt).Milliseconds(),
+			DurationMs: queryDurationMs,
 		},
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordRoutingLogQueryMetrics 记录路由日志查询的可观测性指标。
+// 接入既有 slog 结构化日志体系，后续可迁移至 OpenTelemetry metrics。
+func recordRoutingLogQueryMetrics(success bool, durationMs int64, entryCount int, kind, result string) {
+	status := "success"
+	if !success {
+		status = "failed"
+	}
+	
+	// 结构化日志打点：调用量、成功率、延迟分布
+	slog.Info("routing_log_query_metric",
+		"status", status,
+		"duration_ms", durationMs,
+		"entry_count", entryCount,
+		"kind", kind,
+		"result", result,
+		"slow_query", durationMs > 3000, // 慢查询阈值 3s（三路 UNION 比热图轻）
+	)
 }
 
 // parseRoutingLogTimeRange parses an RFC3339 window, falling back to
@@ -318,7 +355,15 @@ func buildRoutingLogSQL(p routingLogParams) (string, []any) {
 			rdl.request_id::text AS request_id,
 			rdl.tier,
 			'gateway' AS source,
-			NULL::text AS actor
+			NULL::text AS actor,
+			NULL::int AS http_status,
+			rdl.sticky_hit AS sticky,
+			rdl.outbound_model,
+			CASE
+				WHEN rdl.failure_stage IS NOT NULL THEN
+					COALESCE(rdl.failure_stage || ': ' || rdl.failure_detail_code, rdl.failure_stage)
+				ELSE NULL
+			END AS detail
 		FROM routing_decision_log rdl
 		LEFT JOIN credentials c ON c.id = rdl.chosen_credential_id
 		LEFT JOIN providers p ON p.id = rdl.chosen_provider_id
@@ -356,7 +401,15 @@ func buildRoutingLogSQL(p routingLogParams) (string, []any) {
 			NULL::text AS request_id,
 			NULL::int AS tier,
 			COALESCE(mpr.triggered_by, 'scheduler') AS source,
-			NULL::text AS actor
+			NULL::text AS actor,
+			mpr.http_status,
+			NULL::boolean AS sticky,
+			NULL::text AS outbound_model,
+			CASE
+				WHEN mpr.state_change IS NOT NULL THEN 'state_change: ' || mpr.state_change
+				WHEN mpr.error_message IS NOT NULL AND mpr.error_message != '' THEN mpr.error_message
+				ELSE NULL
+			END AS detail
 		FROM model_probe_runs_with_current_month mpr
 		LEFT JOIN credentials c ON c.id = mpr.credential_id
 		LEFT JOIN providers p ON p.id = c.provider_id
@@ -385,7 +438,11 @@ func buildRoutingLogSQL(p routingLogParams) (string, []any) {
 			NULL::text AS request_id,
 			NULL::int AS tier,
 			'manual' AS source,
-			al.actor
+			al.actor,
+			NULL::int AS http_status,
+			NULL::boolean AS sticky,
+			NULL::text AS outbound_model,
+			COALESCE(al.after_json->>'reason', NULL) AS detail
 		FROM routing_audit_log al
 		LEFT JOIN credentials c ON c.id = (al.after_json->>'credential_id')::int
 		LEFT JOIN providers p ON p.id = c.provider_id
@@ -436,6 +493,7 @@ func runRoutingLogQuery(ctx context.Context, db pgxQueryer, p routingLogParams) 
 			&e.CredentialID, &credLabel, &provName, &e.Success,
 			&status, &e.LatencyMs, &e.ErrorCode, &e.ErrorMessage,
 			&e.RequestID, &e.Tier, &source, &e.Actor,
+			&e.HTTPStatus, &e.Sticky, &e.OutboundModel, &e.Detail,
 		); err != nil {
 			slog.Warn("routing log row scan failed", "error", err.Error())
 			continue

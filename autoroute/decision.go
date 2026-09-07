@@ -373,6 +373,9 @@ func (d *Decider) effectiveLLMThreshold() float64 {
 //   - Caches intent for sessionID (10min TTL, best-effort)
 //   - Returns Decision including the chosen model + top-N candidates
 func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
+	// F-7: record end-to-end routing decision latency on every return path.
+	defer recordDecisionLatency(time.Now())
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -384,35 +387,45 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 			requestedWorkType = ""
 		}
 	}
-	// Step 0: check session intent cache (skip if no sessionID or cache disabled)
-	if sessionID != "" && d.intentCache != nil {
-		// 2026-07-27 concurrency fix: use IncrementHit so the read-modify-write
-		// of HitCount happens under a single write lock. The previous
-		// Get→HitCount++→Put pattern raced across concurrent requests on the
-		// same session (same count read, last Put wins → hits undercounted,
-		// drift threshold fires late).
-		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
-			if cached.WorkType != requestedWorkType {
-				d.intentCache.Invalidate(sessionID)
-			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
-				decision := &Decision{
-					ChosenModel:        cached.ChosenModel,
-					ChosenCredentialID: cached.CredentialID,
-					ChosenRawModel:     cached.ChosenModel,
-					TaskType:           cached.TaskType,
-					Confidence:         cached.Confidence,
-					Profile:            cached.Profile,
-					Classifier:         "session_cache",
-					Reason:             "reused session intent (within " + d.IntentCacheTTL.String() + " TTL)",
-					DecidedAt:          time.Now(),
-					RoutingSource:      "session_cache",
+		// Step 0: check session intent cache (skip if no sessionID or cache disabled)
+		if sessionID != "" && d.intentCache != nil {
+			// 2026-07-27 concurrency fix: use IncrementHit so the read-modify-write
+			// of HitCount happens under a single write lock. The previous
+			// Get→HitCount++→Put pattern raced across concurrent requests on the
+			// same session (same count read, last Put wins → hits undercounted,
+			// drift threshold fires late).
+			if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
+				if cached.WorkType != requestedWorkType {
+					d.intentCache.Invalidate(sessionID)
+					recordCacheMiss() // F-7: workType mismatch invalidated cache
+				} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
+					recordCacheHit() // F-7: cache reused
+					decision := &Decision{
+						ChosenModel:        cached.ChosenModel,
+						ChosenCredentialID: cached.CredentialID,
+						ChosenRawModel:     cached.ChosenModel,
+						TaskType:           cached.TaskType,
+						Confidence:         cached.Confidence,
+						Profile:            cached.Profile,
+						Classifier:         "session_cache",
+						Reason:             "reused session intent (within " + d.IntentCacheTTL.String() + " TTL)",
+						DecidedAt:          time.Now(),
+						RoutingSource:      "session_cache",
+					}
+					d.annotateTreatment(ctx, apiKeyID, decision)
+					d.populateShadow(ctx, sigs, decision)
+					return decision, nil
+				} else {
+					recordCacheMiss() // F-7: shouldReclassify triggered
 				}
-				d.annotateTreatment(ctx, apiKeyID, decision)
-				d.populateShadow(ctx, sigs, decision)
-				return decision, nil
+			} else {
+				recordCacheMiss() // F-7: session not in cache
+			}
+		} else {
+			if sessionID != "" {
+				recordCacheMiss() // F-7: cache disabled but sessionID present
 			}
 		}
-	}
 
 	// P2.2: attach request metadata so optimizer hooks can read
 	// userID/session/client without changing the interface signatures.

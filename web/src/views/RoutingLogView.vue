@@ -321,6 +321,22 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer) })
                       {{ e.request_id }}
                     </router-link>
                   </div>
+                  <div class="detail-item" v-if="e.http_status != null && e.kind === 'probe'">
+                    <span class="detail-label">HTTP 状态码</span>
+                    <span class="mono">{{ e.http_status }}</span>
+                  </div>
+                  <div class="detail-item" v-if="e.sticky != null && e.kind === 'routing'">
+                    <span class="detail-label">粘性路由</span>
+                    <span>{{ e.sticky ? '是' : '否' }}</span>
+                  </div>
+                  <div class="detail-item" v-if="e.outbound_model && e.kind === 'routing'">
+                    <span class="detail-label">出站模型</span>
+                    <span class="mono">{{ e.outbound_model }}</span>
+                  </div>
+                  <div class="detail-item detail-full" v-if="e.detail">
+                    <span class="detail-label">详细信息</span>
+                    <pre class="error-pre">{{ e.detail }}</pre>
+                  </div>
                 </div>
               </td>
             </tr>
