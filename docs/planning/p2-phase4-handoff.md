@@ -6,14 +6,16 @@
 **本文档用途**: 剩余工作全部需要生产数据或线上环境，代码层面的工作已收尾。
 每节含可直接拷贝给新会话的执行提示词。
 
-> **⚠️ 2026-09-07 数据核查结论（任务1前置核查已完成）**：154/245/252 共用同一
-> PG（172.16.2.210/llm_gateway，已逐一核实三台 DB URL），`auto_route_selections`
-> 全链路（hot/分区/_all 视图）**0 行**，`training_human_annotations` 0 行，生产
-> 6 天日志零 `model=auto` 流量（245 为 traffic-only 角色无写入路径）。任务1/2
-> 前置条件当前不成立；导出工具链已在 245 实测健康（export 在空集守卫处按预期
-> 失败）。数据到位后的完整执行步骤见
-> [docs/ml/p2.4-real-data-evaluation.md](../ml/p2.4-real-data-evaluation.md) §5
-> runbook，无需重做本轮排查。
+> **✅ 2026-09-08 任务1完成（真实数据重训闭环）**：经 §5 runbook 选项B（154
+> 旁路 datagen 实例回放 `model=auto`）产出 2.2 万+ 行真实选择记录；期间发现
+> 并修复三个生产缺陷（promote 函数漂移丢特征列、chat 记录路径 signals 丢失、
+> exporter 扫描 bug，详见
+> [docs/ml/p2.4-real-data-evaluation.md](../ml/p2.4-real-data-evaluation.md)
+> §8）。去重后 4,636 行唯一特征向量训练 `models/real-v1`：**新内容上 top-1
+> 复现率 61.5%**（9 类，多数类基线 39.5%，零泄漏），ONNX+manifest 已导出。
+> 门禁判定**条件性通过**（§9.3）："ML vs 规则引擎"正式比较依赖任务2 A/B
+> 实验本身；10% 灰度零风险可启动，**前置：§8.2 修复须先随部署火车上线**
+> （当前线上 slots 二进制仍带信号丢失缺陷）。产物与完整实测见评估文档 §9。
 
 ---
 
