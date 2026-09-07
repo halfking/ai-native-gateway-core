@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Added
+- **PostgreSQL Instance Sync Tool (2026-09-08)**: 新增实例 inventory、确定性 plan、结构影响矩阵、校验备份、缺库 bootstrap 和 insert-only 数据合并。
+  - **Safety**: manifest 绑定生成时间、两端 inventory 和 policy SHA-256；`llm_gateway` 永久禁止数据同步
+  - **Data merge**: 显式列 `INSERT ... ON CONFLICT DO NOTHING`、写入契约与无键表摘要门禁、序列仅向上推进
+  - **Schema add**: 新增双向 additive-only 执行器，按 pre-data → function → post-data 单事务分段恢复，并将 owner 差异独立审计
+  - **Fail closed**: 共有库 schema reconcile、统一 verify 和 `all` 尚未实现，命令明确返回非零
+
 ### Fixed
 - **网关错误策略与请求流日志 (2026-09-08)**：供应商空响应/过载/网络/EPIPE/survival `committed_output` 的有效可恢复投影与节点动作对齐；`candidate_failure_logs.retryable` 对 empty_response 不再误标 false；过载入队探测；MiniMax `minimax[>[...]<]` 工具文本泄漏 unwrap + 宽松 `<tool_call>` 识别；survival 终端帧补 `reason`/`retryable`；增加 `request_flow` 结构化日志。文档：`docs/测试/02-gateway-error-policy/`。
 
