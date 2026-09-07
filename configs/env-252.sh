@@ -25,6 +25,7 @@ SSH_PASS="${SSH_PASS_252:-}"
 # ── Remote container ───────────────────────────────────────────────────────
 REMOTE_PG_CONTAINER="pg-252-pg17"
 REMOTE_PG_PORT="5432"
+REMOTE_PG_NETWORK="${REMOTE_PG_NETWORK:-podman}"
 DOCKER_PG_CONTAINER="$REMOTE_PG_CONTAINER"
 
 # ── PostgreSQL ─────────────────────────────────────────────────────────────
