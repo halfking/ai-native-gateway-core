@@ -1,4 +1,4 @@
--- Migration 682: model_offers 视图补 context_window_override / _source / _updated_at 列
+-- Migration 682: model_offers 视图补 context_window 三列 + updated_at
 --
 -- Background (2026-09-07 网关日志审计, 42703 x 92+):
 --   provider/client.go:1507 的候选查询引用
@@ -18,7 +18,8 @@
 
 DO $$
 DECLARE
-  v_has_col boolean;
+  v_has_ctx boolean;
+  v_has_updated boolean;
   v_insert_trg text;
   v_update_trg text;
   v_delete_trg text;
@@ -27,9 +28,14 @@ BEGIN
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = 'public' AND table_name = 'model_offers'
       AND column_name = 'context_window_override'
-  ) INTO v_has_col;
-  IF v_has_col THEN
-    RAISE NOTICE 'model_offers already exposes context_window_override; skipping';
+  ) INTO v_has_ctx;
+  SELECT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'model_offers'
+      AND column_name = 'updated_at'
+  ) INTO v_has_updated;
+  IF v_has_ctx AND v_has_updated THEN
+    RAISE NOTICE 'model_offers already exposes context_window_override + updated_at; skipping';
     RETURN;
   END IF;
 
@@ -73,7 +79,8 @@ BEGIN
            cmb.active_sessions, cmb.consecutive_failures, cmb.admin_protected,
            cmb.context_window_override,
            cmb.context_window_source,
-           cmb.context_window_updated_at
+           cmb.context_window_updated_at,
+           cmb.updated_at
     FROM credential_model_bindings cmb
     JOIN provider_models pm ON pm.id = cmb.provider_model_id
   $v$;
@@ -82,6 +89,6 @@ BEGIN
   IF v_update_trg IS NOT NULL THEN EXECUTE v_update_trg; END IF;
   IF v_delete_trg IS NOT NULL THEN EXECUTE v_delete_trg; END IF;
 
-  RAISE NOTICE 'rebuilt model_offers view with context_window_override/_source/_updated_at; triggers reattached';
+  RAISE NOTICE 'rebuilt model_offers view with context_window_override/_source/_updated_at/updated_at; triggers reattached';
 END
 $$;
