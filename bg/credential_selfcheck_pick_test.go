@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/recentmodels"
@@ -65,6 +66,12 @@ func TestSelectSelfcheckPrimaryNeverChoosesUnrankedModel(t *testing.T) {
 	)
 	if model != "" || strategy != "" {
 		t.Fatalf("selectSelfcheckPrimary()=(%q,%q), want no random fallback", model, strategy)
+	}
+}
+
+func TestCredentialSelfcheckWindowIsFifteenMinutes(t *testing.T) {
+	if credentialSelfcheckWindow != 15*time.Minute {
+		t.Fatalf("self-check window = %v, want 15m so failed credentials can recover the same day", credentialSelfcheckWindow)
 	}
 }
 

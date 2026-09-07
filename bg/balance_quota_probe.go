@@ -390,7 +390,9 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 			slog.Warn("balance_quota_probe: scan failed", "error", err)
 			continue
 		}
-		if p.probeSubmitter != nil {
+		if p.probeNowAsync != nil {
+			p.probeNowAsync(credID)
+		} else if p.probeSubmitter != nil {
 			p.probeSubmitter(credID)
 		}
 		p.recordBalanceCheck(credID, "scheduled")
