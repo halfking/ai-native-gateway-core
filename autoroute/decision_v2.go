@@ -4,18 +4,35 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/routingopt"
 )
 
 // DecideV2 是新的决策逻辑，集成了：
 //  1. 会话缓存可用性重校验
 //  2. 调用 RecommendV2 进行候选推荐
 //  3. 改进的审计与日志
+//  4. P2.2 optimizer 插件集成（PreClassify/PostClassify/RecommendModel/RecordFeedback）
 //
 // 通过 Feature Flag 控制是否启用。
 func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
+	// F-7: 监控路由决策耗时
+	defer recordDecisionLatency(time.Now())
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// P2.2: attach request metadata so optimizer hooks can read
+	// userID/session/client without changing the interface signatures.
+	if d.optimizer != nil {
+		ctx = routingopt.WithRequestMeta(ctx, routingopt.RequestMeta{
+			UserID:     apiKeyID,
+			SessionID:  sessionID,
+			ClientType: sigs.ClientType,
+		})
+	}
+
 	// 类型断言：获取具体的 *Index 类型以访问 V2 方法
 	idx, ok := d.index.(*Index)
 	if !ok {
@@ -119,6 +136,26 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// Step 1: 解析 profile
 	profile := d.resolveProfile(ctx, apiKeyID, headerProfile)
 
+	// P2.2: PreClassify plugin hook (enhance signals before classification)
+	if d.optimizer != nil {
+		enhanced, err := d.optimizer.PreClassify(ctx, &sigs)
+		if err != nil {
+			slog.WarnContext(ctx, "optimizer.PreClassify failed, using original signals",
+				"err", err, "api_key_id", apiKeyID)
+		} else if enhanced != nil {
+			// Extract Original signals from the enhanced wrapper.
+			// The interface{} type is used to avoid circular dependency;
+			// real implementation returns *routingopt.EnhancedSignals with GetOriginal() method.
+			if e, ok := enhanced.(interface{ GetOriginal() interface{} }); ok {
+				if orig := e.GetOriginal(); orig != nil {
+					if origSigs, ok := orig.(*ClassificationSignals); ok {
+						sigs = *origSigs
+					}
+				}
+			}
+		}
+	}
+
 	// Step 2: 任务分类
 	cls, err := d.classify(ctx, sigs, taskHint)
 	if err != nil {
@@ -132,6 +169,24 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		slog.Warn("autoroute.v2: classification failed, using default chat",
 			"error", err,
 		)
+	}
+
+	// P2.2: PostClassify plugin hook (adjust confidence after classification)
+	if d.optimizer != nil {
+		adjustedConf, err := d.optimizer.PostClassify(ctx, string(cls.Primary), cls.Confidence)
+		if err != nil {
+			slog.WarnContext(ctx, "optimizer.PostClassify failed, using original confidence",
+				"err", err, "task_type", cls.Primary, "confidence", cls.Confidence)
+		} else {
+			// Clamp adjusted confidence to [0.0, 1.0]
+			if adjustedConf < 0.0 {
+				adjustedConf = 0.0
+			}
+			if adjustedConf > 1.0 {
+				adjustedConf = 1.0
+			}
+			cls.Confidence = adjustedConf
+		}
 	}
 
 	// Step 3: 候选推荐（使用新逻辑）
@@ -166,6 +221,11 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		FullCandidateSet: keepFullCandidateSet,
 		FilterNotes:      &filterReasons,
 	})
+
+	// P2.2: plugin re-ranking. Runs before explicit-default/override so
+	// admin pins and tenant defaults keep precedence over the optimizer.
+	// P2.5: cls/sigs additionally feed the ONNX ML re-ranker's features.
+	recommended = d.recommendWithOptimizer(ctx, recommended, cls, sigs, profile, apiKeyID, sessionID, sigs.ClientType)
 
 	// Step 3a (M2): 路由来源标签。V2 不调用 defaultRoutingStore（explicit_default
 	// 是 V1 的隐式 tag 路径；V2 用 channel-quality routing 取代），所以 V2 的
@@ -248,6 +308,9 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	}
 	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
+
+	// P2.2: fire-and-forget feedback for the learning loop (fresh decisions only).
+	d.recordFeedbackAsync(decision, apiKeyID, sessionID, sigs.ClientType)
 
 	slog.Info("autoroute.v2: decision made",
 		"chosen_model", decision.ChosenModel,

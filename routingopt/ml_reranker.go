@@ -73,6 +73,7 @@ func (r *MLReranker) Rerank(ctx context.Context, cands []ModelCandidate,
 	pred, err := sel.Predict(ctx, feat)
 	latency := time.Since(start)
 	if err != nil {
+		RecordONNXInferenceError()
 		r.Stats.Record(false, false, false, false, latency)
 		slog.WarnContext(ctx, "routingopt: ML predict failed, keeping rule-engine order",
 			"err", err)

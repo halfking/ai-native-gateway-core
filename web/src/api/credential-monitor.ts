@@ -410,6 +410,11 @@ export interface RoutingLogEntry {
   tier?: number | null
   source: string
   actor?: string | null
+  // F-4 (2026-09-07 audit): contract fields per FEATURE-REQ §5
+  http_status?: number | null      // probe: upstream HTTP status code
+  sticky?: boolean | null          // routing: sticky_hit (session affinity)
+  outbound_model?: string | null   // routing: model sent to provider
+  detail?: string | null           // unified: additional context/metadata
 }
 
 export interface RoutingLogMeta {
