@@ -32,6 +32,13 @@ type Options struct {
 	// RecommendModel) via context timeout. 0 → 不加超时（沿用请求 ctx）。
 	// 设计目标 P99 ≤ 10ms（ROUTING_OPT_MAX_PLUGIN_LATENCY_MS）。
 	HookTimeout time.Duration
+
+	// ControlledSyncFallback keeps the legacy synchronous feedback INSERT
+	// path (P2.2 Track B): true → RecordFeedback 走旧的单条同步 INSERT；
+	// false（默认）→ 非阻塞入队异步批量写入（pgx.Batch，满 100 条或每 5s
+	// 刷盘，队列 10000，满则丢弃计数）。接线点：NewRealOptimizerWithOptions
+	// 应把它传给 FeedbackIntegrator.SetControlledSyncFallback。
+	ControlledSyncFallback bool
 }
 
 // DefaultOptions returns the flag semantics documented in
@@ -44,6 +51,7 @@ func DefaultOptions() Options {
 		EnableFeedbackIntegration:       true,
 		LoadUserAffinity:                false,
 		HookTimeout:                     10 * time.Millisecond,
+		ControlledSyncFallback:          false,
 	}
 }
 
