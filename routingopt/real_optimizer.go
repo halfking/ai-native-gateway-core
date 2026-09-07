@@ -147,6 +147,9 @@ func NewRealOptimizerWithOptions(pool *pgxpool.Pool, opts Options) *RealOptimize
 	enhancer.loadAffinity = opts.LoadUserAffinity
 	recommender := NewModelRecommender(pool)
 	integrator := NewFeedbackIntegrator(pool, enhancer)
+	// Track B escape hatch：ControlledSyncFallback=true 时 Integrator 走旧的
+	// 同步 INSERT 路径（默认 false=异步批量）。不接线该 Option 就只是死字段。
+	integrator.SetControlledSyncFallback(opts.ControlledSyncFallback)
 	learner := NewAdaptiveLearner(pool, integrator)
 
 	return &RealOptimizer{
