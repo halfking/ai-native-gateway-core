@@ -87,7 +87,7 @@ const (
 	nodeProbeQueuePumpBatch = 20
 	// nodeProbeQueuePumpHoldoff advances a pumped row's next_retry_at so the
 	// same row is not re-enqueued on every tick while the queue drains it.
-	nodeProbeQueuePumpHoldoff = 10 * time.Minute
+	nodeProbeQueuePumpHoldoff = 45 * time.Second
 	// A bounded batch keeps a large outage from monopolizing the worker.
 	nodeProbeBatchSize = 8
 
@@ -1073,7 +1073,10 @@ func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID in
 		    last_err_detail = NULL,
 		    updated_at = now()
 	`, credentialID, rawModel)
-	return err
+	if err != nil {
+		return err
+	}
+	return syncHealthyNodeSurfaces(ctx, db, credentialID, rawModel)
 }
 
 // finishProbe releases the inFlight slot for key AND detaches every
@@ -2389,20 +2392,7 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 		return
 	}
 	if available {
-		_, _ = w.db.Exec(ctx, `
-			UPDATE credential_model_bindings cmb
-			SET available = TRUE,
-			    unavailable_reason = NULL,
-			    unavailable_at = NULL,
-			    unavailable_recover_at = NULL,
-			    probe_revert_at = NULL,
-			    updated_at = now()
-			FROM provider_models pm
-			WHERE pm.id = cmb.provider_model_id
-			  AND cmb.credential_id = $1
-			  AND pm.raw_model_name = $2
-			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-			`, credID, model)
+		_, _ = w.db.Exec(ctx, healthyBindingSQL(), credID, model)
 		return
 	}
 	_, _ = w.db.Exec(ctx, `
@@ -2422,21 +2412,7 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 }
 
 func (w *NodeProbeWorker) updateCredentialHealth(ctx context.Context, credID int) {
-	_, _ = w.db.Exec(ctx, `
-		UPDATE credentials
-		SET health_status = 'healthy',
-		    health_error = NULL,
-		    health_checked_at = now(),
-		    availability_state = 'ready',
-		    availability_recover_at = NULL,
-		    state_reason_code = NULL,
-		    state_reason_detail = NULL,
-		    state_updated_at = now()
-		WHERE id = $1
-		  AND lifecycle_status = 'active'
-		  AND COALESCE(manual_disabled, FALSE) = FALSE
-		  AND COALESCE(quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
-	`, credID)
+	_, _ = w.db.Exec(ctx, healthyCredentialSQL(), credID)
 }
 
 func (w *NodeProbeWorker) updateURSMv2ProbeState(ctx context.Context, tenantID string, credID int, model string, success bool, latencyMs int) {

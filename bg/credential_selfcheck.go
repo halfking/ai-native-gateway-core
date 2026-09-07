@@ -29,7 +29,7 @@ import (
 )
 
 const credentialSelfcheckCycleInterval = 5 * time.Minute
-const credentialSelfcheckWindow = 24 * time.Hour
+const credentialSelfcheckWindow = 15 * time.Minute
 
 type credentialSelfcheckDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
