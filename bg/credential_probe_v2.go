@@ -527,12 +527,12 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			}
 		}
 
-			// P2: fast reprobe after auth_failed or unreachable. Route through the
-			// deduplicating submitter so cycle scans share the same pending mark and
-			// lifecycle handling as quota-triggered probes.
-			if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
-				c.SubmitFastProbe(s.ID)
-			}
+		// P2: fast reprobe after auth_failed or unreachable. Route through the
+		// deduplicating submitter so cycle scans share the same pending mark and
+		// lifecycle handling as quota-triggered probes.
+		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
+			c.SubmitFastProbe(s.ID)
+		}
 
 	}
 
@@ -1478,7 +1478,6 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
-		  AND COALESCE(c.default_probe_model, '') <> ''
 	`, credID).Scan(
 		&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 		&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
@@ -1496,6 +1495,16 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		return
 	}
 	s.APIKey = apiKey
+	if strings.TrimSpace(s.DefaultProbeModel) == "" {
+		if models := c.loadBoundRawModelsAll(timeoutCtx, credID); len(models) > 0 {
+			s.DefaultProbeModel = models[0]
+		}
+	}
+	if strings.TrimSpace(s.DefaultProbeModel) == "" {
+		slog.Debug("credential probe v2: ProbeNow skipped (no probe model)",
+			"credential_id", credID)
+		return
+	}
 	probeStart := time.Now()
 	ok, errMsg := c.probeCredential(timeoutCtx, s)
 	var pr probeResult
@@ -1521,6 +1530,9 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 	}
 	pr.HealthProbeModel = s.DefaultProbeModel
 	c.writeHealth(timeoutCtx, credID, pr)
+	if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
+		c.onQuotaRecovered(credID, "probe_now")
+	}
 }
 
 // probeOne is kept as a private alias for the internal fast-reprobe path
