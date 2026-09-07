@@ -133,8 +133,12 @@ func (r *ModelRecommender) getActiveState(ctx context.Context) (*OptimizationSta
 
 	r.cacheMu.Lock()
 	if r.cachedState != nil && now.Sub(r.cacheRefreshedAt) < r.cacheTTL {
+		// 先在锁内取快照再解锁：直接 `Unlock(); return r.cachedState` 会让
+		// 读落在锁外，与并发 SetActiveStateForTest/刷新写形成数据竞争
+		//（-race 实测报警，2026-09-07）。
+		state := r.cachedState
 		r.cacheMu.Unlock()
-		return r.cachedState, nil
+		return state, nil
 	}
 	if r.lastErr != nil && now.Before(r.negUntil) {
 		err := r.lastErr
