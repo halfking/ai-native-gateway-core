@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/paramguard"
 	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 	"github.com/kaixuan/llm-gateway-go/pool"
@@ -991,11 +992,18 @@ func (e *Executor) executeOpenAI(
 						})
 					e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 					slog.Warn("credential concurrent-overload, failing over to next candidate",
+						"request_id", params.RequestID,
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"status", resp.StatusCode,
 						"body_digest", safeUpstreamBodyDigest(body[:min(n, 120)]), "body_bytes", min(n, 120),
 					)
+					requestflow.Log(requestflow.Event{
+						Stage: "failover", RequestID: params.RequestID, Model: params.Model,
+						ProviderID: cand.ProviderID, CredentialID: cand.CredentialID,
+						Kind: string(errorsx.KindConcurrent), Action: "switch_node",
+						Reason: "provider_concurrent_overload", Retryable: true, Attempt: attempt,
+					})
 				}
 				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
 					// Context-length retry path: if the upstream rejected
@@ -1205,18 +1213,18 @@ func (e *Executor) executeOpenAI(
 						"chunk_count", streamOutcome.ChunkCount,
 					)
 					return &ExecuteResult{
-							Response:       resp,
-							Candidate:      cand,
-							LatencyMs:      latencyMs,
-							RequestBody:    append([]byte(nil), bodyBytes...),
-							InboundBody:    sourceBody,
-							RoutingTracker: params.RoutingTracker,
-						}, &streamInterruptedError{
-							reason:       streamOutcome.Reason,
-							credentialID: cand.CredentialID,
-							resumable:    false,
-							kind:         errorsx.KindCanceled,
-						}
+						Response:       resp,
+						Candidate:      cand,
+						LatencyMs:      latencyMs,
+						RequestBody:    append([]byte(nil), bodyBytes...),
+						InboundBody:    sourceBody,
+						RoutingTracker: params.RoutingTracker,
+					}, &streamInterruptedError{
+						reason:       streamOutcome.Reason,
+						credentialID: cand.CredentialID,
+						resumable:    false,
+						kind:         errorsx.KindCanceled,
+					}
 				}
 				if streamOutcome.Interrupted {
 					isResumable := streamOutcome.Resumable && streamOutcome.ChunkCount < e.StreamRetryThreshold
@@ -1299,22 +1307,22 @@ func (e *Executor) executeOpenAI(
 					}
 
 					return &ExecuteResult{
-							Response:    resp,
-							Candidate:   cand,
-							LatencyMs:   latencyMs,
-							RequestBody: append([]byte(nil), bodyBytes...),
-							// Phase D (2026-06-22): inbound body for audit logging
-							InboundBody: sourceBody,
-							// 2026-06-19 quality fix mode: capture any flags the
-							// stream reader observed before the interrupt fired.
-							QualityFlags:   streamQualityFlags,
-							QualityScore:   streamQualityScore,
-							RoutingTracker: params.RoutingTracker,
-						}, &streamInterruptedError{
-							reason: streamOutcome.Reason, credentialID: cand.CredentialID,
-							resumable: isResumable, kind: streamKind,
-							statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
-						}
+						Response:    resp,
+						Candidate:   cand,
+						LatencyMs:   latencyMs,
+						RequestBody: append([]byte(nil), bodyBytes...),
+						// Phase D (2026-06-22): inbound body for audit logging
+						InboundBody: sourceBody,
+						// 2026-06-19 quality fix mode: capture any flags the
+						// stream reader observed before the interrupt fired.
+						QualityFlags:   streamQualityFlags,
+						QualityScore:   streamQualityScore,
+						RoutingTracker: params.RoutingTracker,
+					}, &streamInterruptedError{
+						reason: streamOutcome.Reason, credentialID: cand.CredentialID,
+						resumable: isResumable, kind: streamKind,
+						statusCode: resp.StatusCode, rawError: streamOutcome.Reason,
+					}
 				}
 				recordAttemptSuccess(streamOutcome.ChunkCount)
 				return &ExecuteResult{
@@ -1375,6 +1383,12 @@ func (e *Executor) executeOpenAI(
 					"client_model", params.Model,
 					"status", resp.StatusCode,
 				)
+				requestflow.Log(requestflow.Event{
+					Stage: "failover", RequestID: params.RequestID, Model: params.Model,
+					ProviderID: cand.ProviderID, CredentialID: cand.CredentialID,
+					Kind: string(errorsx.KindEmptyResponse), Action: "switch_node",
+					Reason: "empty_response_candidate_failover", Retryable: true,
+				})
 				return nil, &upstreampkg.Error{
 					Kind:       errorsx.KindEmptyResponse,
 					Message:    "upstream returned empty response (zero content)",

@@ -139,6 +139,36 @@ func FormatMiniMaxError(statusCode int, statusMsg string) string {
 	return fmt.Sprintf("MiniMax error %d", statusCode)
 }
 
+// UnwrapMiniMaxTokenWrappers removes MiniMax streaming token wrappers of the
+// form minimax[>[payload]<] that otherwise leak into client-visible text
+// (observed as minimax[>[<tool_call>...]<]minimax[>[]<]... on m3).
+func UnwrapMiniMaxTokenWrappers(text string) string {
+	const open = "minimax[>["
+	const close = "]<]"
+	if !strings.Contains(text, open) {
+		return text
+	}
+	var b strings.Builder
+	rest := text
+	for {
+		i := strings.Index(rest, open)
+		if i < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:i])
+		rest = rest[i+len(open):]
+		j := strings.Index(rest, close)
+		if j < 0 {
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:j])
+		rest = rest[j+len(close):]
+	}
+	return b.String()
+}
+
 func cleanMinimaxLeakFields(message map[string]json.RawMessage) bool {
 	changed := false
 	for _, field := range []string{"reasoning_content", "content"} {
@@ -147,7 +177,15 @@ func cleanMinimaxLeakFields(message map[string]json.RawMessage) bool {
 			continue
 		}
 		var text string
-		if json.Unmarshal(raw, &text) != nil || !strings.Contains(text, "<function_calls>") {
+		if json.Unmarshal(raw, &text) != nil {
+			continue
+		}
+		if strings.Contains(text, "minimax[>[") {
+			text = UnwrapMiniMaxTokenWrappers(text)
+			message[field], _ = json.Marshal(text)
+			changed = true
+		}
+		if !strings.Contains(text, "<function_calls>") {
 			continue
 		}
 		start := strings.Index(text, "<function_calls>")

@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Fixed
+- **网关错误策略与请求流日志 (2026-09-08)**：供应商空响应/过载/网络/EPIPE/survival `committed_output` 的有效可恢复投影与节点动作对齐；`candidate_failure_logs.retryable` 对 empty_response 不再误标 false；过载入队探测；MiniMax `minimax[>[...]<]` 工具文本泄漏 unwrap + 宽松 `<tool_call>` 识别；survival 终端帧补 `reason`/`retryable`；增加 `request_flow` 结构化日志。文档：`docs/测试/02-gateway-error-policy/`。
+
 - **自检及时恢复 (2026-09-08)**：错误/偶发网络探测不再爬到 1h/6h 长尾（短链 5s→15s→30s→60s）；额度探测保持 2m/5m 并在 `ProbeNow` 成功后立即通知路由缓存。直连探测成功或业务成功即写回 binding/credential（含 `quota_state=ok`）。新增当天成功节点 15 分钟有界扫描，失败凭据自检窗口从 24h 收到 15m。
   - **审计修正（同日第二轮）**: 业务成功写回在健康态改为 0 行无副作用（修复每次成功无条件 UPDATE `credentials` 的热行写放大）；同步清 `quota_recover_at`；限流/并发退避以策略间隔 3m/5m/15m 为下限；当天成功扫描健康节点 1h 复扫、`cmb.available=FALSE` 必扫；凭据自检按最久未检轮转；`ProbeNow` 回退优先可路由 binding。
   - **文档**: `docs/changelogs/2026-09-08-selfcheck-timely-recovery.md`, `docs/01-requirements/functional/FR-selfcheck-timely-recovery.md`, `docs/测试/01-selfcheck-timely-recovery/`（含 `audit.md`）

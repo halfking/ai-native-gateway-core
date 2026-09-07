@@ -223,22 +223,27 @@ func renderSurvivalTerminal(sw *SerializedStreamWriter, protocol ClientProtocol,
 	if sw == nil {
 		return
 	}
-	reasonJSON, _ := json.Marshal("gateway request survival ended: " + decision.Reason)
-	actionJSON, _ := json.Marshal("gateway_survival_" + decision.Action.String())
+	retryable := decision.Action == TaskActionRetryNow || decision.Action == TaskActionWaitRecovery
+	code := "gateway_survival_" + decision.Action.String()
+	message := "gateway request survival ended: " + decision.Reason
+	reasonJSON, _ := json.Marshal(message)
+	actionJSON, _ := json.Marshal(code)
+	retryJSON, _ := json.Marshal(retryable)
+	reasonCodeJSON, _ := json.Marshal(decision.Reason)
 	var frames string
 	switch protocol {
 	case ProtocolAnthropic:
 		frames = fmt.Sprintf(
-			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":%s}}\n\n",
-			reasonJSON)
+			"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":%s,\"reason\":%s,\"retryable\":%s,\"code\":%s}}\n\n",
+			reasonJSON, reasonCodeJSON, retryJSON, actionJSON)
 	case ProtocolOpenAIResponses:
 		frames = fmt.Sprintf(
-			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":%s,\"message\":%s}}}\n\n",
-			actionJSON, reasonJSON)
+			"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":%s,\"message\":%s,\"reason\":%s,\"retryable\":%s}}}\n\n",
+			actionJSON, reasonJSON, reasonCodeJSON, retryJSON)
 	default: // OpenAI Chat
 		frames = fmt.Sprintf(
-			"data: {\"error\":{\"message\":%s,\"type\":\"server_error\",\"code\":%s}}\n\ndata: [DONE]\n\n",
-			reasonJSON, actionJSON)
+			"data: {\"error\":{\"message\":%s,\"type\":\"server_error\",\"code\":%s,\"reason\":%s,\"retryable\":%s}}\n\ndata: [DONE]\n\n",
+			reasonJSON, actionJSON, reasonCodeJSON, retryJSON)
 	}
 	if _, err := sw.Write([]byte(frames)); err == nil {
 		sw.Flush()

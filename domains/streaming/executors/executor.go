@@ -1893,12 +1893,9 @@ func freeCredentialsTolerateTransient(billingMode string, kind errorsx.ErrorKind
 //   - it records lastTransientCred for the sync retry loop's inline probe
 //   - it emits the "trying next candidate" log line
 //
-// The previous comment here claimed this was "streaming's ONLY failover
-// safeguard" and that a missing kind "silently becomes all_candidates_failed".
-// That was wrong and actively misleading: KindNetwork and KindConcurrent are
-// IsRetryable and absent from this list, yet they fail over correctly today —
-// purely because of where the closing brace sits. Anyone adding a kind here
-// expecting to switch failover on would be changing nothing.
+// Failover still happens if a kind is missing (the loop falls through).
+// KindNetwork and KindConcurrent are listed so lastTransientCred and the
+// "trying next candidate" log stay consistent with IsRetryable.
 //
 // The flip side is the real hazard: appending any statement after that
 // `continue` converts both it and the credential-fatal `continue` above it from
@@ -1914,7 +1911,9 @@ func isTransientFailoverKind(kind errorsx.ErrorKind) bool {
 		errorsx.KindUpstreamDown,
 		errorsx.KindUpstreamOverloaded,
 		errorsx.KindEmptyResponse,
-		errorsx.KindNoAvailableChannel:
+		errorsx.KindNoAvailableChannel,
+		errorsx.KindNetwork,
+		errorsx.KindConcurrent:
 		return true
 	}
 	return false

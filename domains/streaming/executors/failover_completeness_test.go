@@ -32,12 +32,10 @@ func TestFailoverKindCoverage_EveryRetryableKindIsHandled(t *testing.T) {
 		errorsx.KindStreamTimeout,
 	}
 
-	// Kinds that reach the next candidate only by falling off the end of the
-	// loop body. Keeping them enumerated makes the implicit path auditable.
-	implicitOnly := map[errorsx.ErrorKind]bool{
-		errorsx.KindNetwork:    true,
-		errorsx.KindConcurrent: true,
-	}
+	// KindNetwork / KindConcurrent used to fall off the loop body. They are
+	// now explicit so "trying next candidate" logs and lastTransientCred stay
+	// consistent with IsRetryable.
+	implicitOnly := map[errorsx.ErrorKind]bool{}
 
 	for _, kind := range retryable {
 		t.Run(string(kind), func(t *testing.T) {

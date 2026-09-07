@@ -16,9 +16,9 @@ import (
 // all_candidates_failed and the client sees a hard 503 even though a healthy
 // sibling credential was sitting idle.
 //
-// KindUpstreamOverloaded is deliberately NOT modelled on KindConcurrent, which
-// is absent from this list precisely because a genuine concurrency signal is
-// meant to stop the walk and let the concurrency tuner react.
+// KindConcurrent used to be implicit (loop fallthrough). It is now explicit so
+// lastTransientCred and the trying-next log match IsRetryable. The tuner still
+// reacts via writeProtocolCredentialStateOnError.
 func TestIsTransientFailoverKind_UpstreamOverloadedFailsOver(t *testing.T) {
 	tests := []struct {
 		name string
@@ -34,9 +34,8 @@ func TestIsTransientFailoverKind_UpstreamOverloadedFailsOver(t *testing.T) {
 		{"stream_timeout_fails_over", errorsx.KindStreamTimeout, true},
 		{"empty_response_fails_over", errorsx.KindEmptyResponse, true},
 
-		// Boundary: concurrent stays out. If a future change adds it here,
-		// that is a deliberate behaviour change and this row should fail.
-		{"concurrent_stays_out", errorsx.KindConcurrent, false},
+		{"concurrent_fails_over", errorsx.KindConcurrent, true},
+		{"network_fails_over", errorsx.KindNetwork, true},
 
 		// Credential-fatal and client-side kinds have their own branches
 		// upstream of this predicate and must not be swept in.

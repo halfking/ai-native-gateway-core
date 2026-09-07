@@ -701,6 +701,12 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if degradedFunctionRe.MatchString(msg) {
 			return KindUpstreamDown
 		}
+		if isBrokenPipeMessage(msg) {
+			if isClientWriteBrokenPipe(msg) {
+				return KindCanceled
+			}
+			return KindNetwork
+		}
 		if eofWithoutDoneRe.MatchString(msg) {
 			// EOF without [DONE] is most often a benign provider quirk
 			// (e.g. MiniMax omits the [DONE] sentinel on successful
@@ -1347,4 +1353,15 @@ func IsClientBug(kind ErrorKind) bool {
 	default:
 		return false
 	}
+}
+
+func isBrokenPipeMessage(msg string) bool {
+	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "epipe")
+}
+
+func isClientWriteBrokenPipe(msg string) bool {
+	if !isBrokenPipeMessage(msg) {
+		return false
+	}
+	return strings.Contains(msg, "write:") || strings.Contains(msg, "write tcp")
 }

@@ -4712,7 +4712,7 @@ goalRetryLoopDone:
 					"stage":             "execution",
 					"kind":              string(execErrTyped.LastKind),
 					"tried":             execErrTyped.Tried,
-					"retryable":         errorsx.IsRetryable(execErrTyped.LastKind),
+					"retryable":         errorsx.EffectiveRetryable(execErrTyped.LastKind),
 					"upstream_status":   upstreamStatusCode,
 					"failure_origin":    "upstream_credential",
 					"client_key_status": "valid",
@@ -4940,7 +4940,7 @@ goalRetryLoopDone:
 					"kind":      string(execErrTyped.LastKind),
 					"attempts":  execErrTyped.Attempts,
 					"tried":     execErrTyped.Tried,
-					"retryable": errorsx.IsRetryable(execErrTyped.LastKind),
+					"retryable": errorsx.EffectiveRetryable(execErrTyped.LastKind),
 				})
 			return
 		}
@@ -4988,7 +4988,7 @@ goalRetryLoopDone:
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			debugInfo["kind"] = string(execErrTyped.LastKind)
 			debugInfo["attempts"] = execErrTyped.Attempts
-			debugInfo["retryable"] = errorsx.IsRetryable(execErrTyped.LastKind)
+			debugInfo["retryable"] = errorsx.EffectiveRetryable(execErrTyped.LastKind)
 		}
 		if preStreamPrepared {
 			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
