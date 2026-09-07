@@ -14,7 +14,10 @@ const (
 	todaySuccessProbeInterval    = 15 * time.Minute
 	todaySuccessProbeLookback    = 24 * time.Hour
 	todaySuccessProbeBatch       = 40
-	todaySuccessHealthySkipAfter = 15 * time.Minute
+	// Healthy pairs are re-probed at most hourly (same cadence as the
+	// node_probe_state success re-arm). Business success already stamps
+	// last_attempt_at, so busy healthy nodes are never probed at all.
+	todaySuccessHealthySkipAfter = time.Hour
 )
 
 type todaySuccessProbeDB interface {
@@ -117,9 +120,10 @@ func todaySuccessProbeSQL() string {
 		       OR pm.outbound_model_name = rl.outbound_model)
 		  AND (
 		      nps.credential_id IS NULL
+		      OR COALESCE(cmb.available, FALSE) = FALSE
 		      OR COALESCE(nps.last_direct_ok, FALSE) = FALSE
 		      OR nps.last_attempt_at IS NULL
-		      OR nps.last_attempt_at < now() - interval '15 minutes'
+		      OR nps.last_attempt_at < now() - interval '60 minutes'
 		  )
 		GROUP BY rl.credential_id, pm.raw_model_name
 		ORDER BY MAX(rl.ts) DESC, rl.credential_id, pm.raw_model_name
