@@ -200,7 +200,16 @@ func (d *Decider) recordFeedbackAsync(decision *Decision, apiKeyID int, sessionI
 		return
 	}
 	go func() {
-		defer func() { <-feedbackWriteSlots }()
+		// 2026-09-08 audit: panic in a plugin chain would kill the process —
+		// this is a fire-and-forget write, a recovered panic only loses one
+		// feedback row (best-effort by contract).
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.WarnContext(context.Background(),
+					"optimizer.RecordFeedback panicked", "panic", rec)
+			}
+			<-feedbackWriteSlots
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), feedbackWriteTimeout)
 		defer cancel()
 		if err := d.optimizer.RecordFeedback(ctx, fb); err != nil {

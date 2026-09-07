@@ -37,7 +37,7 @@ func TestLarkBotChannel_SendCard_Integration(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL})
+	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	card := &InteractiveCard{
 		Header:   CardHeader{Title: "标题", Template: "blue"},
 		Elements: []CardElement{{Type: ElementTypeText, Text: "hi"}},
@@ -64,7 +64,7 @@ func TestLarkBotChannel_Send_Integration(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL})
+	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	msg := &Message{
 		ID: "m1", Title: "T", Content: "C",
 		Recipients: []string{"ou_1", "ou_2"},
@@ -85,7 +85,7 @@ func TestLarkBotChannel_RefreshToken_Retries(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL})
+	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	if err := ch.ensureAccessToken(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestLarkBotChannel_HealthCheck_Integration(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL})
+	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	if err := ch.HealthCheck(context.Background()); err != nil {
 		t.Errorf("HealthCheck: %v", err)
 	}
@@ -191,6 +191,7 @@ func TestDingTalkChannel_Webhook_Integration(t *testing.T) {
 
 	ch := NewDingTalkChannel(DingTalkConfig{
 		WebhookURL: srv.URL,
+		Allowlist:  []string{"127.0.0.1"},
 		SignSecret: "sec",
 	})
 
@@ -214,7 +215,7 @@ func TestDingTalkChannel_SendCard_Webhook(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewDingTalkChannel(DingTalkConfig{WebhookURL: srv.URL})
+	ch := NewDingTalkChannel(DingTalkConfig{WebhookURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	card := &InteractiveCard{
 		Header:   CardHeader{Title: "审批"},
 		Elements: []CardElement{{Type: ElementTypeText, Text: "x"}},
@@ -236,7 +237,7 @@ func TestDingTalkChannel_AppMode_HealthCheck(t *testing.T) {
 	defer srv.Close()
 
 	ch := NewDingTalkChannel(DingTalkConfig{
-		AppKey: "k", AppSecret: "s", AgentID: "1", BaseURL: srv.URL,
+		AppKey: "k", AppSecret: "s", AgentID: "1", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"},
 	})
 	if err := ch.HealthCheck(context.Background()); err != nil {
 		t.Errorf("HealthCheck: %v", err)
@@ -257,7 +258,7 @@ func TestDingTalkChannel_AppMode_Send(t *testing.T) {
 	defer srv.Close()
 
 	ch := NewDingTalkChannel(DingTalkConfig{
-		AppKey: "k", AppSecret: "s", AgentID: "1", BaseURL: srv.URL,
+		AppKey: "k", AppSecret: "s", AgentID: "1", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"},
 	})
 	if err := ch.Send(context.Background(), &Message{ID: "m1", Title: "T", Content: "C"}); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -278,7 +279,7 @@ func TestDingTalkChannel_AppMode_SendCard(t *testing.T) {
 	defer srv.Close()
 
 	ch := NewDingTalkChannel(DingTalkConfig{
-		AppKey: "k", AppSecret: "s", AgentID: "1", BaseURL: srv.URL,
+		AppKey: "k", AppSecret: "s", AgentID: "1", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"},
 	})
 	card := &InteractiveCard{
 		Header:   CardHeader{Title: "审批"},
@@ -299,7 +300,7 @@ func TestDingTalkChannel_AppMode_HealthCheck_Failure(t *testing.T) {
 	defer srv.Close()
 
 	ch := NewDingTalkChannel(DingTalkConfig{
-		AppKey: "k", AppSecret: "s", AgentID: "1", BaseURL: srv.URL,
+		AppKey: "k", AppSecret: "s", AgentID: "1", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"},
 	})
 	if err := ch.HealthCheck(context.Background()); err == nil {
 		t.Error("expected health check failure")
@@ -317,7 +318,7 @@ func TestWeChatChannel_Webhook_SendCard(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewWeChatChannel(WeChatConfig{WebhookURL: srv.URL})
+	ch := NewWeChatChannel(WeChatConfig{WebhookURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	card := &InteractiveCard{Header: CardHeader{Title: "X"}}
 	if err := ch.SendCard(context.Background(), card); err != nil {
 		t.Fatalf("SendCard: %v", err)
@@ -346,7 +347,7 @@ func TestLarkBotChannel_Send_FailurePerRecipient(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL})
+	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	msg := &Message{ID: "m", Title: "T", Content: "C", Recipients: []string{"ou_1", "ou_2"}}
 	if err := ch.Send(context.Background(), msg); err != nil {
 		t.Fatalf("Send: %v", err)
@@ -363,7 +364,7 @@ func TestLarkBotChannel_TokenEndpointError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL})
+	ch := NewLarkBotChannel(LarkBotConfig{AppID: "a", AppSecret: "b", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	if err := ch.HealthCheck(context.Background()); err == nil {
 		t.Error("expected health check error")
 	}
@@ -382,7 +383,7 @@ func TestDingTalkChannel_PostSigned_Failure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewDingTalkChannel(DingTalkConfig{WebhookURL: srv.URL})
+	ch := NewDingTalkChannel(DingTalkConfig{WebhookURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	if err := ch.Send(context.Background(), &Message{Title: "T", Content: "C"}); err == nil {
 		t.Error("expected send error")
 	}
@@ -466,7 +467,7 @@ func TestWeChatChannel_Webhook_Integration(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewWeChatChannel(WeChatConfig{WebhookURL: srv.URL})
+	ch := NewWeChatChannel(WeChatConfig{WebhookURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	if err := ch.Send(context.Background(), &Message{Title: "T", Content: "C"}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -482,7 +483,7 @@ func TestWeChatChannel_AppMode_GetToken(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewWeChatChannel(WeChatConfig{CorpID: "c", CorpSecret: "s", AgentID: "1", BaseURL: srv.URL})
+	ch := NewWeChatChannel(WeChatConfig{CorpID: "c", CorpSecret: "s", AgentID: "1", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	if err := ch.HealthCheck(context.Background()); err != nil {
 		t.Errorf("HealthCheck: %v", err)
 	}
@@ -505,7 +506,7 @@ func TestWeChatChannel_AppMode_SendCard(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewWeChatChannel(WeChatConfig{CorpID: "c", CorpSecret: "s", AgentID: "1", BaseURL: srv.URL})
+	ch := NewWeChatChannel(WeChatConfig{CorpID: "c", CorpSecret: "s", AgentID: "1", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	card := &InteractiveCard{
 		Header:   CardHeader{Title: "审批"},
 		Elements: []CardElement{{Type: ElementTypeText, Text: "x"}},
@@ -528,7 +529,7 @@ func TestWeChatChannel_AppMode_SendMessage(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewWeChatChannel(WeChatConfig{CorpID: "c", CorpSecret: "s", AgentID: "1", BaseURL: srv.URL})
+	ch := NewWeChatChannel(WeChatConfig{CorpID: "c", CorpSecret: "s", AgentID: "1", BaseURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	if err := ch.Send(context.Background(), &Message{Title: "T", Content: "C", Recipients: []string{"u1"}}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
@@ -562,7 +563,7 @@ func TestWeChatChannel_HealthCheck_Webhook(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ch := NewWeChatChannel(WeChatConfig{WebhookURL: srv.URL})
+	ch := NewWeChatChannel(WeChatConfig{WebhookURL: srv.URL, Allowlist: []string{"127.0.0.1"}})
 	if err := ch.HealthCheck(context.Background()); err != nil {
 		t.Errorf("HealthCheck: %v", err)
 	}

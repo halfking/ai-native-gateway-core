@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"
+	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1168,7 +1169,7 @@ func TestLarkBotChannel_SendJSON_RetriesOn429(t *testing.T) {
 
 	channel := &LarkBotChannel{
 		config:     LarkBotConfig{BaseURL: srv.URL},
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		httpClient: safehttpclient.NewWithAllowlist(5*time.Second, []string{"127.0.0.1"}),
 	}
 	if err := channel.sendJSON(context.Background(), "/messages", map[string]any{"foo": "bar"}); err != nil {
 		t.Fatalf("sendJSON: %v", err)
