@@ -284,7 +284,7 @@ func (e *TrainingExporter) queryRecords(ctx context.Context, config *ExportConfi
 	query := `
 		SELECT 
 		  request_id,
-		  EXTRACT(EPOCH FROM ts) * 1000 AS timestamp,
+		  (EXTRACT(EPOCH FROM ts) * 1000)::bigint AS timestamp,
 		  task_type,
 		  profile,
 		  classifier,
@@ -303,7 +303,7 @@ func (e *TrainingExporter) queryRecords(ctx context.Context, config *ExportConfi
 		  latency_sensitive,
 		  cost_sensitive,
 		  feature_version,
-		  content_hash,
+		  COALESCE(content_hash, '') AS content_hash,
 		  chosen_model,
 		  success,
 		  latency_ms,
@@ -445,11 +445,23 @@ func (e *TrainingExporter) dedupRecords(records []*TrainingDataRecord, strategy 
 		var key string
 		switch strategy {
 		case "content_hash":
-			key = rec.ContentHash
+			// 旧行（promote 丢列窗口写入）content_hash 可能为空串；
+			// 空值不能作为去重键，否则全部行坍缩成一条。回退 request_id。
+			if rec.ContentHash == "" {
+				key = "req:" + rec.RequestID
+			} else {
+				key = rec.ContentHash
+			}
 		case "request_id":
-			key = rec.RequestID
+			key = "req:" + rec.RequestID
 		default:
-			key = rec.ContentHash // 默认使用content_hash
+			// 未知策略按 content_hash 处理；空值同样回退 request_id，
+			// 避免旧行全部坍缩成一条（与 content_hash 分支同一陷阱）。
+			if rec.ContentHash == "" {
+				key = "req:" + rec.RequestID
+			} else {
+				key = rec.ContentHash
+			}
 		}
 
 		if !seen[key] {
