@@ -484,16 +484,16 @@ Admin API文件:      453 个
 
 ### 8.2 模块文档
 
-- [智能路由](./design/AUTO_SELECTION_SPEC.md) - 自动路由规格
-- [模型质量](./model-quality/README.md) - 模型质量监控
-- [会话管理](./user-guide/session-management.md) - 会话管理指南
-- [安全特性](./security/SECURITY_FEATURES.md) - 安全功能说明
+- [智能路由](./03-design/02-feature-design/design/AUTO_SELECTION_SPEC.md) - 自动路由规格
+- [模型质量](./03-design/02-feature-design/model-quality/README.md) - 模型质量监控
+- [会话管理](./04-implementation/deliverables/user-guide/session-management.md) - 会话管理指南
+- [安全特性](./03-design/05-security-design/security/SECURITY_FEATURES.md) - 安全功能说明
 
 ### 8.3 运维文档
 
-- [快速启动](./operations/QUICKSTART.md) - 快速启动指南
-- [故障排查](./operations/troubleshooting-guide.md) - 故障排查手册
-- [升级指南](./operations/UPGRADE.md) - 升级操作指南
+- [快速启动](./06-deployment/04-runbooks/operations/QUICKSTART.md) - 快速启动指南
+- [故障排查](./archive/2026-08/retired-71-troubleshooting-guide.md) - 故障排查手册（已归档）
+- [升级指南](./06-deployment/04-runbooks/operations/UPGRADE.md) - 升级操作指南
 - [监控告警](./monitoring/README.md) - 监控配置指南
 
 ---
@@ -502,7 +502,7 @@ Admin API文件:      453 个
 
 - **项目地址**: https://github.com/halfking/ai-native-gateway-core
 - **内部仓库**: https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
-- **文档索引**: [docs/INDEX.md](./INDEX.md)
+- **文档索引**: [docs/archive/2026-09/INDEX.md](./archive/2026-09/INDEX.md)
 - **变更日志**: [docs/changelogs/](./changelogs/)
 
 ---

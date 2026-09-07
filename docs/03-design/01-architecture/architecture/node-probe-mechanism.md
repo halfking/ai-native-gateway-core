@@ -20,8 +20,8 @@ NodeProbe 是 LLM Gateway 的核心健康检查机制，负责主动探测 (cred
 ### 1.2 设计目标
 
 - ✅ **快速恢复**: 首次探测 5s 后触发，最快 35s 完成双轮验证
-- ✅ **避免雪崩**: 指数退避 (5s → 30s → 60s → 5m → 1h → 2h → 24h)
-- ✅ **跨实例协调**: Redis SELECT FOR UPDATE SKIP LOCKED 防止重复探测
+- ✅ **避免雪崩**: 指数退避 (5s → 30s → 60s → 5m → 1h → 2h → 6h)
+- ✅ **跨实例协调**: PostgreSQL SELECT FOR UPDATE SKIP LOCKED 防止重复探测
 - ✅ **精确诊断**: 记录完整的请求/响应上下文到 `node_probe_runs` 表
 
 ---
