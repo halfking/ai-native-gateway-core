@@ -38,3 +38,10 @@ Date: 2026-09-08
   orphans and zero disabled user triggers on every target.
 - Follow-up audit wired the dispatcher, added `verify`/`restore`, split the
   env/write libraries, and distilled the reusable skill.
+- Pre-merge audit against latest `main`: `main` was already an ancestor of
+  this branch (zero divergent commits, no conflicts). ShellCheck 0.11.0
+  reported zero findings at warning severity across all 14 changed scripts,
+  and all seven sync/tunnel test suites passed on the merged tree. No code
+  corrections were required; the fail-closed guardrails (manifest hash and
+  provenance, `llm_gateway` three-layer data protection, allowlist hash
+  enforcement, ownership-safe tunnel teardown) were re-verified by test.
