@@ -36,9 +36,12 @@
 //     the gateway-side plugins (auth, transform, billing,
 //     rate-limit) are not blocking the path.
 //
-// Both rounds must succeed (HTTP 200 + a tool call echo) for the
-// attempt to count as success.  Either failure advances the backoff
-// ladder.
+// The direct round is the source of truth for node availability: a
+// direct success restores the binding even when the pinned gateway round
+// fails (2026-09-08 — gateway-side pin/URSM failures used to keep a healthy
+// upstream red). Both rounds must succeed (HTTP 200 + a tool call echo)
+// for the attempt to count as a full success; otherwise the backoff
+// ladder keeps re-probing.
 //
 // Outbound X-LLM-Origin-* headers
 // ────────────────────────────────
@@ -945,8 +948,9 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 		// produced a new row in credential_probe_queue (vs. dedup-collapsing
 		// an existing one). For the holdoff branch it does not matter —
 		// either way the queue now owns the task — so we keep the P1.2
-		// behaviour: any non-error advance the next_retry_at by 10 minutes
-		// so the next tick doesn't re-pump before the queue can claim the row.
+		// behaviour: any non-error advances next_retry_at by
+		// nodeProbeQueuePumpHoldoff so the next tick doesn't re-pump before
+		// the queue can claim the row.
 		if _, err := w.submitViaQueueSource(r.credID, r.model, r.tenant, "", "periodic"); err != nil {
 			slog.Warn("node_probe_worker: pump submit failed, will retry in next cycle",
 				"credential_id", r.credID, "model", r.model, "error", err)
@@ -1048,6 +1052,11 @@ func nonBlockingWake(ch chan<- struct{}) {
 // was too long for upstream changes (key rotation, quota change,
 // model deprecation) to be detected. Capped to 1h so the asset
 // health probe + credential_recovery ticker can act within an hour.
+//
+// 2026-09-08: also writes through to credential_model_bindings and
+// credentials (syncHealthyNodeSurfaces). The executor calls this on every
+// successful business request, so both statements are guarded to be 0-row
+// no-ops when the surfaces are already healthy.
 func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID int, rawModel string) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO node_probe_state (

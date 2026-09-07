@@ -13,8 +13,11 @@ func TestTodaySuccessProbeCadenceIsBounded(t *testing.T) {
 	if todaySuccessProbeBatch > 50 {
 		t.Fatalf("batch = %d, want ≤50 so the scan stays cheap", todaySuccessProbeBatch)
 	}
-	if todaySuccessHealthySkipAfter != 15*time.Minute {
-		t.Fatalf("healthy skip = %v, want 15m", todaySuccessHealthySkipAfter)
+	// Healthy pairs already prove themselves through business traffic
+	// (MarkNodeProbeHealthy stamps last_attempt_at). Re-probing them more
+	// often than the 1h success cadence of node_probe_state is waste.
+	if todaySuccessHealthySkipAfter != time.Hour {
+		t.Fatalf("healthy skip = %v, want 1h", todaySuccessHealthySkipAfter)
 	}
 }
 
@@ -26,7 +29,8 @@ func TestTodaySuccessProbeSQLTargetsTodayBusinessSuccess(t *testing.T) {
 		"rl.success = TRUE",
 		"NOT COALESCE('probe' = ANY(rl.quality_flags), FALSE)",
 		"last_direct_ok, FALSE) = FALSE",
-		"interval '15 minutes'",
+		"COALESCE(cmb.available, FALSE) = FALSE",
+		"interval '60 minutes'",
 		"LIMIT $1",
 	} {
 		if !strings.Contains(sql, marker) {
