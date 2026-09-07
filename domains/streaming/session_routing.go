@@ -138,7 +138,9 @@ func splitSessionFieldList(raw string) []string {
 	return out
 }
 
-func extractSessionIDFromRequest(r *http.Request, body []byte) string { //nolint:unused
+// 2026-09-08: 过期的 //nolint:unused 已删除 — 该函数被 messages.go 与
+// responses.go 的会话解析调用,并非死代码。
+func extractSessionIDFromRequest(r *http.Request, body []byte) string {
 	if sessionID := extractSessionIDFromBody(body); sessionID != "" {
 		return sessionID
 	}
