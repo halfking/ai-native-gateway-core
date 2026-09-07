@@ -546,11 +546,19 @@ build_backend() {
     # alpine:3.22 运行时镜像上（LLM_GATEWAY_RUNTIME_IMAGE 可覆盖）。
     need_cmd docker
     local build_image="${LLM_GATEWAY_BUILD_IMAGE:-golang:1.27-alpine}"
-    docker image inspect "$build_image" >/dev/null 2>&1 || docker pull "$build_image" >/dev/null \
+    # Ensure we pull the correct platform image matching target architecture
+    local platform_flag=""
+    if [[ "$target_arch" == "arm64" || "$target_arch" == "aarch64" ]]; then
+      platform_flag="--platform=linux/arm64"
+    elif [[ "$target_arch" == "amd64" || "$target_arch" == "x86_64" ]]; then
+      platform_flag="--platform=linux/amd64"
+    fi
+    docker image inspect "$build_image" >/dev/null 2>&1 || docker pull $platform_flag "$build_image" >/dev/null \
       || die "CGO fallback needs image $build_image and it is not pullable"
     local cgo_out="$PROJECT_ROOT/.build-local/gateway.build"
     mkdir -p "$PROJECT_ROOT/.build-local"
     (cd "$PROJECT_ROOT" && HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker run --rm \
+        $platform_flag \
         -v "$PWD":/src -w /src \
         -e HOST_UID -e HOST_GID \
         -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH="$target_arch" \
