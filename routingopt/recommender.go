@@ -40,8 +40,8 @@ type ModelRecommender struct {
 	// Negative cache: a failing GetActive (missing table, migration not yet
 	// applied) is remembered for negCacheTTL so the hot path neither hammers
 	// the DB once per request nor floods the log with identical warnings.
-	lastErr    error
-	negUntil   time.Time
+	lastErr     error
+	negUntil    time.Time
 	negCacheTTL time.Duration
 }
 
@@ -84,6 +84,7 @@ func (r *ModelRecommender) Recommend(ctx context.Context, candidates []ModelCand
 	// (2026-09-07 audit P1; the DB value is the runtime lever, the env var
 	// only documents the default).
 	if shouldExplore(clampExplorationRate(state.ExplorationRate)) {
+		recordExplorationRequest() // P2.2 Track C: ε-greedy exploration counter
 		return exploreRandomly(candidates), nil
 	}
 

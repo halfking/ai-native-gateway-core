@@ -1312,6 +1312,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/annotations/", admin(h.handleDeleteAnnotation)) // DELETE /annotations/{request_id}
 		mux.HandleFunc("/api/admin/annotations", admin(h.handleCreateAnnotation))  // POST /annotations
 
+		// P2.2 Track C (2026-09-07): routing-opt admin API — stats / accuracy /
+		// parameters. DB-only: aggregates routing_feedback_log +
+		// routing_optimization_state through h.db (no in-memory optimizer
+		// dependency); nil pool → 503. Same admin middleware as annotations.
+		mux.HandleFunc("/api/admin/routing-opt/stats", admin(h.handleRoutingOptStats))
+		mux.HandleFunc("/api/admin/routing-opt/accuracy", admin(h.handleRoutingOptAccuracy))
+		mux.HandleFunc("/api/admin/routing-opt/parameters", admin(h.handleRoutingOptParameters))
+
 		// Phase 2a analytics (matrix / flow / model-task-index / decision-replay).
 		// superAdmin only: these expose cross-tenant credential/model routing
 		// internals and auto-route tuner metrics; tenant_admin must not see them.
