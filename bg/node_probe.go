@@ -1622,6 +1622,15 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) bool {
 // credential_recovery tick re-submitting it. Widened to 7 days so a due
 // (next_retry_at <= now()) row is always eligible; the bound remains only to
 // keep centuries-old orphan rows out of the worker.
+//
+// 2026-09-08 self-check audit: the scan now applies the same
+// automaticProbeEligibilityExistsSQL gate as pumpDueStatesSQL / ProbeQueue
+// enqueue. The legacy tick path (LLM_GATEWAY_PROBE_QUEUE_ENABLED=false
+// kill-switch) previously probed manually-disabled / retired credentials
+// forever — spending probe calls against a credential the operator retired
+// and letting the failure path flip its cmb state. Gating here (evaluated
+// before ORDER BY/LIMIT) also keeps ineligible rows from consuming the
+// pick; they re-enter automatically when the credential is re-enabled.
 func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, bool, error) {
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
@@ -1641,7 +1650,7 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 			       OR last_gateway_ok IS DISTINCT FROM TRUE)
 			  AND (last_attempt_at >= now() - interval '7 days'
 			       OR updated_at >= now() - interval '7 days')
-
+			  AND `+automaticProbeEligibilityExistsSQL("node_probe_state.credential_id")+`
 		ORDER BY next_retry_at ASC
 		LIMIT 1
 		FOR UPDATE SKIP LOCKED
@@ -2291,6 +2300,7 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		WHERE c.id = $1 AND pm.raw_model_name = $2
 		  AND c.status IN ('active', 'cooling', 'degraded')
 		  AND c.lifecycle_status = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE AND p.manual_disabled = FALSE
 		LIMIT 1
 	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
@@ -2303,8 +2313,11 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		// isMissingBindingErr short-circuits to a fake success, deletes
 		// node_probe_state and never writes URSM — the credential becomes
 		// unprobeable and unmonitorable. Retry once with only the
-		// human-intent gates (provider enabled + not manual_disabled) so
-		// direct evidence can still be collected for such credentials.
+		// human-intent gates (credential/provider not manual_disabled +
+		// provider enabled) so direct evidence can still be collected for
+		// such credentials. Credential-level manual_disabled stays a hard
+		// gate in BOTH rounds (2026-09-08 self-check audit): it is exactly
+		// the human-intent signal this fallback promises to honour.
 		var looseErr error
 		looseErr = w.db.QueryRow(queryCtx, `
 			SELECT c.secret_ciphertext,
@@ -2315,6 +2328,7 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 			JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			WHERE c.id = $1 AND pm.raw_model_name = $2
+			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 			  AND p.enabled = TRUE AND p.manual_disabled = FALSE
 			LIMIT 1
 		`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
