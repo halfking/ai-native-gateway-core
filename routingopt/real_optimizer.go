@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -130,6 +131,7 @@ func NewRealOptimizerWithOptions(pool *pgxpool.Pool, opts Options) *RealOptimize
 // Parameter signals: interface{} (*autoroute.ClassificationSignals expected)
 // Returns: *EnhancedSignals (with GetOriginal() method)
 func (o *RealOptimizer) PreClassify(ctx context.Context, signals interface{}) (interface{}, error) {
+	defer recordHookLatency("preclassify", time.Now()) // P2.2 Track C: hook latency (short-circuits included)
 	if !o.opts.EnableClassificationEnhancement {
 		// Flag off: return the original signals untouched. decision.go only
 		// unwraps values exposing GetOriginal(), so a plain pass-through
@@ -154,6 +156,7 @@ func (o *RealOptimizer) PreClassify(ctx context.Context, signals interface{}) (i
 //   - 高准确率任务类型: 小幅上调 → 保持 heuristic 快路径
 //   - 样本不足或读取失败: 原样返回（baseline 行为）
 func (o *RealOptimizer) PostClassify(ctx context.Context, taskType string, confidence float64) (float64, error) {
+	defer recordHookLatency("postclassify", time.Now()) // P2.2 Track C: hook latency
 	return o.confidence.PostClassify(ctx, taskType, confidence)
 }
 
@@ -164,6 +167,7 @@ func (o *RealOptimizer) PostClassify(ctx context.Context, taskType string, confi
 // Parameter context: interface{} (RoutingContext expected)
 // Returns: interface{} ([]ModelCandidate)
 func (o *RealOptimizer) RecommendModel(ctx context.Context, candidates interface{}, routingContext interface{}) (interface{}, error) {
+	defer recordHookLatency("recommend", time.Now()) // P2.2 Track C: hook latency
 	if !o.opts.EnableModelRecommendation {
 		// Flag off: baseline ranking passes through untouched.
 		return candidates, nil
@@ -249,5 +253,10 @@ func (o *RealOptimizer) RunAdaptiveMaintenance(ctx context.Context) {
 		slog.WarnContext(ctx, "routingopt: routing anomaly",
 			"type", a.Type, "severity", a.Severity, "description", a.Description,
 			"metrics", a.Metrics)
+	}
+	// P2.2 Track C: 每轮维护后顺手刷新加权准确率 gauge。纯可观测性，
+	// best-effort：失败不影响维护流程（ctx 取消时 GetStats 自会报错跳过）。
+	if stats, serr := o.learner.GetStats(ctx); serr == nil {
+		SetWeightedAccuracy(stats.OverallAccuracy)
 	}
 }
