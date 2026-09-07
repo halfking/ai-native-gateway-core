@@ -36,7 +36,7 @@ Go版本:       1.27.1
 git remote add origin https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git
 
 # 公开镜像仓库
-git remote add github git@github.com:halfking/SI-LLM-Gateway.git
+git remote add github git@github.com:halfking/ai-native-gateway-core.git
 ```
 
 ### 代码统计（基于真实扫描，2026-09-06）

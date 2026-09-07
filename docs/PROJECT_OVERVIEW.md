@@ -500,7 +500,7 @@ Admin API文件:      453 个
 
 ## 9. 联系方式
 
-- **项目地址**: https://github.com/halfking/SI-LLM-Gateway
+- **项目地址**: https://github.com/halfking/ai-native-gateway-core
 - **内部仓库**: https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go
 - **文档索引**: [docs/INDEX.md](./INDEX.md)
 - **变更日志**: [docs/changelogs/](./changelogs/)
