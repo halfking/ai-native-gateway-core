@@ -81,7 +81,9 @@ pg_instance_restore_schema() {
       return 1
     }
     {
-      printf 'BEGIN;\nALTER EVENT TRIGGER %s DISABLE;\n' "$event_trigger"
+      printf 'BEGIN;\nSET lock_timeout=%s; SET statement_timeout=%s;\n' \
+        "'${DATA_LOCK_TIMEOUT_MS:-10000}'" "'${DATA_APPLY_TIMEOUT_MS:-1800000}'"
+      printf 'ALTER EVENT TRIGGER %s DISABLE;\n' "$event_trigger"
       "$REMOTE_PG_RESTORE_BIN" --exit-on-error --section="$section" \
         --no-owner --no-privileges -f - "$archive"
       printf 'ALTER EVENT TRIGGER %s ENABLE;\nCOMMIT;\n' "$event_trigger"
@@ -91,12 +93,15 @@ pg_instance_restore_schema() {
     return
   fi
   if [[ "$side" == "local" ]]; then
-    docker exec -i -e PGPASSWORD="$LOCAL_PG_PASS" "$LOCAL_PG_CONTAINER" \
+    docker exec -i -e PGPASSWORD="$LOCAL_PG_PASS" \
+      -e PGOPTIONS="-c statement_timeout=${DATA_APPLY_TIMEOUT_MS:-1800000} -c lock_timeout=${DATA_LOCK_TIMEOUT_MS:-10000}" \
+      "$LOCAL_PG_CONTAINER" \
       pg_restore --exit-on-error --single-transaction \
       --section="$section" --no-owner --no-privileges -U "$LOCAL_PG_USER" \
       -d "$database" <"$archive"
   else
-    PGPASSWORD="$REMOTE_PG_PASS" "$REMOTE_PG_RESTORE_BIN" \
+    PGOPTIONS="-c statement_timeout=${DATA_APPLY_TIMEOUT_MS:-1800000} -c lock_timeout=${DATA_LOCK_TIMEOUT_MS:-10000}" \
+      PGPASSWORD="$REMOTE_PG_PASS" "$REMOTE_PG_RESTORE_BIN" \
       --exit-on-error --single-transaction --section="$section" \
       --no-owner --no-privileges \
       -h "$REMOTE_PG_HOST" -p "$REMOTE_PG_TUNNEL_PORT" \

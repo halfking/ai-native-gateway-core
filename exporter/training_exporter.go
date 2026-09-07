@@ -487,8 +487,20 @@ func (e *TrainingExporter) writeParquetFile(records []*TrainingDataRecord, outpu
 	if err != nil {
 		return 0, fmt.Errorf("create parquet writer failed: %w", err)
 	}
+	// 2026-09-08 audit: WriteStop is NOT idempotent (it re-flushes and
+	// re-serializes the footer), and the success path below already calls it
+	// explicitly — a bare defer double-stopped the writer and appended a
+	// second footer to the file. Guard with once semantics instead.
+	writeStopOnce := true
+	stopParquet := func() error {
+		if !writeStopOnce {
+			return nil
+		}
+		writeStopOnce = false
+		return pw.WriteStop()
+	}
 	defer func() {
-		if err := pw.WriteStop(); err != nil {
+		if err := stopParquet(); err != nil {
 			slog.Error("failed to stop parquet writer during cleanup", "error", err)
 		}
 	}()
@@ -528,8 +540,9 @@ func (e *TrainingExporter) writeParquetFile(records []*TrainingDataRecord, outpu
 		slog.Info("export progress - completed", "written", totalRecords, "total", totalRecords, "percent", "100.0%")
 	}
 
-	// 显式调用WriteStop以捕获错误（defer会在失败时再次调用，但会被忽略）
-	if err := pw.WriteStop(); err != nil {
+	// 显式调用 WriteStop 以捕获错误（defer 通过 once 守卫不会重复调用 —
+	// WriteStop 非幂等,二次调用会向文件追加第二个 footer）
+	if err := stopParquet(); err != nil {
 		return 0, fmt.Errorf("write stop failed: %w", err)
 	}
 
