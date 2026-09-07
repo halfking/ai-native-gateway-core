@@ -375,3 +375,18 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 678 | `678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql` | `a859f41e485dcbd339a15dcaac374994dc2ed81c2faf65e8c582ea6b068a98d9` | pending |
+## 2026-09-07T02:38:02Z — deploy 154 build_seq 2048 (3a4498fb)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 677 | `677_session_summaries_canonical_bootstrap.sql` | `fc4d0e4ade86b019afd898b84d8e3d831b796b2faa6a6edc2a5ca3cc6220d348` | applied+verified |
+| 678 | `678_request_logs_bodies_hot_unique_repair_and_model_offers_columns.sql` | `a859f41e485dcbd339a15dcaac374994dc2ed81c2faf65e8c582ea6b068a98d9` | applied+verified |
+| 679 | `679_local_credential_unique.sql` | `4b2203225e141ca59d72fa7c5c865cbf7ef712a8b1ddadba62e0f8038c1c50af` | applied+verified |
+| 680 | `680_request_logs_current_month_view_bootstrap.sql` | `a96f25ed0cd9e6f29fb0d027320aca6362b3ea0940ff74922b0772f2b768467e` | applied+verified |
+| 681 | `681_provider_error_details_fingerprint_restore_8part.sql` | `d15b0c04b896ce894df54ce1218799ad0576d60dce60bd41af71f44aa898f06f` | applied+verified |
+| 682 | `682_model_offers_context_window_columns.sql` | `8def676f760b5dbfb393d9b9e953e2b5cbba7646fb7da91fea65cba72f5ef839` | applied+verified |
+| 683 | `683_session_dim_ownership_columns.sql` | `3fff8a52ec71e2898a2e65b36eba88acb28cdc88554a3ef90af2883404cddfae` | applied+verified |
+| 684 | `684_drop_stale_provider_error_tenant_fingerprint.sql` | `6ebdd2297001cf36f0a83349b3e1142625be5d02be6fef8cecd3da120710ec4e` | applied+verified |
+| 685 | `685_task_default_routing_tenant_text.sql` | `8a72257381fcfbe434246dad86e6ef9cb0e336168bbb79f3530e10db33e227f9` | applied+verified |
+| 686 | `686_fix_session_module_executions_2026_10_bounds.sql` | `77801ac8174c35f4e91d0904ed9200963503e4c078f8c61ebc876a3fb491a41f` | applied+verified |
+
