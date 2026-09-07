@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Fixed
+- **自检及时恢复 (2026-09-08)**：错误/偶发网络探测不再爬到 1h/6h 长尾（短链 5s→15s→30s→60s）；额度探测保持 2m/5m 并在 `ProbeNow` 成功后立即通知路由缓存。直连探测成功或业务成功即写回 binding/credential（含 `quota_state=ok`）。新增当天成功节点 15 分钟有界扫描，失败凭据自检窗口从 24h 收到 15m。
+  - **文档**: `docs/changelogs/2026-09-08-selfcheck-timely-recovery.md`, `docs/测试/01-selfcheck-timely-recovery/`
+
 - **Turn Digest/L2 集成审计修复 (2026-09-04)**：统一 Turn 列表延迟字段为 `latency_ms`，补强 dual 路由 shadow 对比可观测性与独立超时上下文；修复流式 L2 shadow 短流 verdict、flush 观测漏记和空缓存 panic，并恢复 autoroute treatment attribution 编译契约。
 
  修复 sp1/spi-3 的 glm-5.2 模型频繁被网关降级的问题。直连供应商工作正常，但通过网关访问时经常被标记为 continuous_failure 导致不可用。

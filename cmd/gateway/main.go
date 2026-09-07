@@ -3410,6 +3410,7 @@ func main() {
 	var credentialSelfcheckWorker *bg.CredentialSelfcheckWorker
 	var nodeProbeWorker *bg.NodeProbeWorker
 	var dailyProbeAudit *bg.DailyProbeAudit
+	var todaySuccessProbe *bg.TodaySuccessProbe
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
 	// 2026-08-31: Materialized view refresher for routing analytics performance
@@ -4073,6 +4074,9 @@ func main() {
 				dailyProbeAudit = bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbeWorker)
 				dailyProbeAudit.Start(context.Background())
 				slog.Info("CHECKPOINT: daily_probe_audit started")
+				todaySuccessProbe = bg.NewTodaySuccessProbe(dbConn.Pool(), nodeProbeWorker)
+				todaySuccessProbe.Start(context.Background())
+				slog.Info("CHECKPOINT: today_success_probe started")
 				// Wire stateManager → node_probe so consecutive
 				// failures >= threshold trigger the new path
 				// (replaces the legacy active_probe wiring above).
@@ -6755,6 +6759,9 @@ func main() {
 
 		// Stop new probe/self-check workers before closing telemetry or the
 		// database pool they use.
+		if todaySuccessProbe != nil {
+			todaySuccessProbe.Stop()
+		}
 		if dailyProbeAudit != nil {
 			dailyProbeAudit.Stop()
 		}
