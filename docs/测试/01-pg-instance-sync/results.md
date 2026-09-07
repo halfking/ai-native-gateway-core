@@ -40,11 +40,14 @@
   were rebuilt in one transaction. The follow-up `acc_db` insert-only merge
   succeeded; FK orphans and disabled triggers remained zero, and its 13
   unvalidated constraints match local.
-- The hashed durable SQL SSOT allowlist added 12 `llm_gateway` relations plus
+- The hashed, SSOT-grounded public-object allowlist added 12 `llm_gateway`
+  relations plus
   four required parent-table columns. All five new base tables contain zero
   rows, confirming schema-only behavior. The 150 non-owner/non-GRANT signature
   records for the newly created objects match local exactly; the columnar
   event trigger is enabled and the task-tier update trigger exists.
+- `llm_gateway.maintain` was comparison-only in this run. Its authoritative
+  migrations belong to the separate `ai-native-maintain` project.
 - Common-database schema reconciliation remains pending. `apply-schema`,
   unified `verify`, and `all` continue to fail closed.
 

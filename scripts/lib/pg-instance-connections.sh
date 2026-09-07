@@ -217,7 +217,7 @@ pg_instance_local_data_dump() {
 
 pg_instance_remote_apply_file() {
   local database="$1" file="$2"
-  PGOPTIONS='-c statement_timeout=0' PGPASSWORD="$REMOTE_PG_PASS" \
+  PGOPTIONS="-c statement_timeout=${DATA_APPLY_TIMEOUT_MS:-1800000} -c lock_timeout=${DATA_LOCK_TIMEOUT_MS:-10000}" PGPASSWORD="$REMOTE_PG_PASS" \
     "$REMOTE_PSQL_BIN" -X -v ON_ERROR_STOP=1 --single-transaction \
     -h "$REMOTE_PG_HOST" -p "$REMOTE_PG_TUNNEL_PORT" \
     -U "$REMOTE_PG_USER" -d "$database" -f "$file"
@@ -226,7 +226,7 @@ pg_instance_remote_apply_file() {
 pg_instance_remote_sequence_floor() {
   local database="$1"
   local sql="$PG_INSTANCE_ROOT/scripts/sql/pg-instance-sequence-floor.sql"
-  PGOPTIONS='-c statement_timeout=0' PGPASSWORD="$REMOTE_PG_PASS" \
+  PGOPTIONS="-c statement_timeout=${DATA_APPLY_TIMEOUT_MS:-1800000} -c lock_timeout=${DATA_LOCK_TIMEOUT_MS:-10000}" PGPASSWORD="$REMOTE_PG_PASS" \
     "$REMOTE_PSQL_BIN" -X -v ON_ERROR_STOP=1 --single-transaction \
     -h "$REMOTE_PG_HOST" -p "$REMOTE_PG_TUNNEL_PORT" \
     -U "$REMOTE_PG_USER" -d "$database" -f "$sql"

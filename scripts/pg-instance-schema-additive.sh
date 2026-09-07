@@ -167,8 +167,13 @@ foundation_sql() {
         ;;
       CONSTRAINT)
         query="
-          SELECT format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s;',
-            n.nspname,c.relname,con.conname,pg_get_constraintdef(con.oid,true))
+          SELECT format(
+            'DO \$pg\$ BEGIN IF NOT EXISTS (' ||
+            'SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass(%L) ' ||
+            'AND conname=%L) THEN EXECUTE %L; END IF; END \$pg\$;',
+            n.nspname||'.'||c.relname, con.conname,
+            format('ALTER TABLE %I.%I ADD CONSTRAINT %I %s',
+              n.nspname,c.relname,con.conname,pg_get_constraintdef(con.oid,true)))
           FROM pg_constraint con JOIN pg_class c ON c.oid=con.conrelid
           JOIN pg_namespace n ON n.oid=c.relnamespace
           WHERE n.nspname=:'schema' AND c.relname=:'object'
@@ -180,7 +185,11 @@ foundation_sql() {
         ;;
       INDEX)
         query="
-          SELECT pg_get_indexdef(idx.oid) || ';'
+          SELECT regexp_replace(
+            pg_get_indexdef(idx.oid),
+            '^CREATE (UNIQUE )?INDEX ',
+            E'CREATE \\\\1INDEX IF NOT EXISTS '
+          ) || ';'
           FROM pg_index i JOIN pg_class tbl ON tbl.oid=i.indrelid
           JOIN pg_class idx ON idx.oid=i.indexrelid
           JOIN pg_namespace n ON n.oid=tbl.relnamespace

@@ -268,5 +268,7 @@ done <"$tmp/remote"
   LC_ALL=C sort "$tmp/records"
 } >"$manifest_file"
 printf 'manifest: %s\n' "$manifest_file"
+printf 'manifest_hash: %s\n' \
+  "$(shasum -a 256 "$manifest_file" | awk '{print $1}')"
 
 fi  # End of plan command execution
