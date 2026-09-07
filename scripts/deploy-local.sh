@@ -547,18 +547,36 @@ build_backend() {
     need_cmd docker
     local build_image="${LLM_GATEWAY_BUILD_IMAGE:-golang:1.27-alpine}"
     # Ensure we pull the correct platform image matching target architecture
-    local platform_flag=""
+    local docker_platform
     if [[ "$target_arch" == "arm64" || "$target_arch" == "aarch64" ]]; then
-      platform_flag="--platform=linux/arm64"
+      docker_platform="linux/arm64"
     elif [[ "$target_arch" == "amd64" || "$target_arch" == "x86_64" ]]; then
-      platform_flag="--platform=linux/amd64"
+      docker_platform="linux/amd64"
+    else
+      die "unsupported target architecture: $target_arch (expected arm64 or amd64)"
     fi
-    docker image inspect "$build_image" >/dev/null 2>&1 || docker pull $platform_flag "$build_image" >/dev/null \
-      || die "CGO fallback needs image $build_image and it is not pullable"
+    # Pull with explicit platform to ensure we get the right architecture
+    # Check if image exists AND has the correct platform; force re-pull on mismatch
+    local need_pull=0
+    if docker image inspect "$build_image" >/dev/null 2>&1; then
+      local existing_platform
+      existing_platform=$(docker image inspect "$build_image" --format='{{.Os}}/{{.Architecture}}' 2>/dev/null | head -n1)
+      if [[ "$existing_platform" != "$docker_platform" ]]; then
+        log "cached image $build_image is $existing_platform but need $docker_platform; re-pulling"
+        need_pull=1
+      fi
+    else
+      need_pull=1
+    fi
+    if (( need_pull )); then
+      log "pulling build image $build_image for platform $docker_platform"
+      docker pull --platform="$docker_platform" "$build_image" >/dev/null \
+        || die "CGO fallback needs image $build_image and it is not pullable"
+    fi
     local cgo_out="$PROJECT_ROOT/.build-local/gateway.build"
     mkdir -p "$PROJECT_ROOT/.build-local"
     (cd "$PROJECT_ROOT" && HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker run --rm \
-        $platform_flag \
+        --platform="$docker_platform" \
         -v "$PWD":/src -w /src \
         -e HOST_UID -e HOST_GID \
         -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH="$target_arch" \
