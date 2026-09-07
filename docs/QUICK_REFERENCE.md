@@ -392,7 +392,7 @@ redis:
 
 admin:
   enabled: true
-  listen: ":8782"
+  listen: ":8781"
   cors_origins: ["http://localhost:3000"]
 
 logging:
@@ -581,8 +581,9 @@ WHERE created_at < NOW() - INTERVAL '90 days';
 # 1. 检查端口占用
 lsof -i :8781
 
-# 2. 检查配置文件
-./gateway --config config.yaml --validate
+# 2. 检查配置文件（无命令行 flag；配置经 LLM_GATEWAY_CONFIG_FILE 环境变量加载）
+LLM_GATEWAY_CONFIG_FILE=config.yaml ./gateway
+# 日志出现 "config: loaded YAML file" 即配置有效；出现 "config: failed to load YAML file" 则回退仅环境变量
 
 # 3. 检查数据库连接
 psql -h localhost -U postgres -d llm_gateway -c "SELECT 1;"
