@@ -25,7 +25,7 @@
 
 - `go build ./...` / `go vet ./bg/` 通过
 - `go test ./bg ./errorsx ./domains/nodehealth ./domains/credential ./domains/streaming/...` 全绿
-- `golangci-lint` 本机版本（go1.26 构建）低于项目 go1.27.1，无法运行；以 `go vet` 代替
+- `golangci-lint` 由 brew 2.12.2（go1.26.2 构建）升到 2.13.2（go1.27.0 构建，最新稳定），`golangci-lint run --new-from-rev=b5048363a ./bg/ ./errorsx/ ./cmd/gateway/` 0 issues（修了 `today_success_probe.go` 一处 gofmt）；`bg/` 全量仍有 85 条历史遗留，不在本任务范围
 
 ## 未做
 

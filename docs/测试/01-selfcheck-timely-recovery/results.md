@@ -23,6 +23,6 @@ P0 用例 SC-01～SC-06 由 `probe_recovery_policy_test.go`、`probe_service_tes
 
 第二轮审计新增用例：`TestHealthyWriteThroughSQLIsNoOpWhenAlreadyHealthy`、`TestProbeBackoffForKindRateLimitHonoursPolicyFloor`、`TestClassifyProbeErrCodeUnknownIsNotAuth`、`TestPickDueCredentialRotatesLeastRecentlyChecked`、`TestProbeNowFallbackPrefersAvailableBinding`；审计结论见 `audit.md`。
 
-`golangci-lint` 本机构建版本（go1.26）低于项目目标 go1.27.1 无法运行，以 `go vet` 代替。
+Lint：`golangci-lint` 升至 2.13.2（go1.27.0 构建），`golangci-lint run --new-from-rev=b5048363a ./bg/ ./errorsx/ ./cmd/gateway/` → 0 issues。Go 工具链 1.27.1 已是最新稳定版，与 `go.mod` 一致。
 
 未连生产库，未做 UI 实测。
