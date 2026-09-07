@@ -153,7 +153,9 @@ restore_backup() {
         read -p "是否恢复数据库? (yes/no) " -r
         if [[ $REPLY =~ ^[Yy]es$ ]]; then
             echo "   恢复数据库..."
-            ssh_exec "psql -h localhost -U postgres llm_gateway < $BACKUP_PATH/db_backup.sql"
+            # 2026-09-07: 同 deploy-to-245.sh 备注，245/252/本地统一约定
+            # 唯一登录角色是 llm_gateway；走 LLM_GATEWAY_PG_USER 模板。
+            ssh_exec "PGPASSWORD=\"\${DB_PASS:-}\" psql -h localhost -U \"\${LLM_GATEWAY_PG_USER:-llm_gateway}\" llm_gateway < $BACKUP_PATH/db_backup.sql"
             echo "   ✅ 数据库已恢复"
         else
             echo "   ⏭️  跳过数据库恢复"

@@ -128,9 +128,12 @@ backup_current() {
     fi"
     
     # 备份数据库（可选）
+    # 2026-09-07: 245 服务器与 252/本地遵循同一约定（kx-citus-pg17 镜像
+    # 唯一登录角色是 llm_gateway）。改用 ${LLM_GATEWAY_PG_USER:-llm_gateway}，
+    # 与 deploy/sql/deploy-252-complete.sh、apply-db-revision-sequence.sh 对齐。
     log "备份数据库..."
     ssh_exec "if command -v pg_dump &>/dev/null; then \
-        pg_dump -h localhost -U postgres llm_gateway > $BACKUP_PATH/db_backup.sql 2>/dev/null || true; \
+        PGPASSWORD=\"\${DB_PASS:-}\" pg_dump -h localhost -U \"\${LLM_GATEWAY_PG_USER:-llm_gateway}\" llm_gateway > $BACKUP_PATH/db_backup.sql 2>/dev/null || true; \
     fi"
     
     # 记录备份信息
