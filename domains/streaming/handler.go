@@ -326,7 +326,16 @@ func initializeRequestIdentity(r *http.Request) RequestIdentity {
 	}
 	identity.SessionID = sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
 	if identity.SessionID == "" {
-		identity.SessionID = generateSystemSessionID()
+		// 2026-09-08: a stable legacy client identity (e.g. ZCode's
+		// bare-UUID x-session-id) must win over the provisional random.
+		// Stamping a fresh gw_<uuid> here shadowed the client's id, and the
+		// chat handler then honored the RANDOM one — request rows from one
+		// client conversation never grouped and session turns stayed at 1.
+		if legacy := extractSessionIDFromHeaders(r); legacy != "" {
+			identity.SessionID = deriveGatewaySessionID(legacy)
+		} else {
+			identity.SessionID = generateSystemSessionID()
+		}
 		r.Header.Set("X-Gw-Session-Id", identity.SessionID)
 	}
 	identity.ClientType = strings.TrimSpace(r.Header.Get("X-Gw-Client-Type"))
@@ -2407,6 +2416,11 @@ func (h *ChatHandler) serveWithExecutor(
 		sessionID = extractSessionIDFromHeaders(r)
 	}
 	if sessionID != "" {
+		// 2026-09-08: a stable non-gateway client identity (e.g. ZCode's
+		// bare-UUID x-session-id) maps deterministically onto gw_<id>;
+		// letting it fall through to the CreateV2 fallback minted a fresh
+		// gw_<uuid> per request and turn aggregation never left 1.
+		sessionID = deriveGatewaySessionID(sessionID)
 		// Only inherit the request header for the lookup; the final
 		// resolved value is written back via applyResolvedGatewaySession
 		// once assignment finishes.

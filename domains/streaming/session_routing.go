@@ -19,6 +19,27 @@ var SessionHeadersPriority = []string{
 	"X-Thread-Id",
 }
 
+// deriveGatewaySessionID maps a non-gateway client session identity onto the
+// canonical gateway namespace instead of discarding it. Clients in the wild
+// (e.g. ZCode's per-session bare-UUID x-session-id) send a STABLE id with no
+// gw_/gt_/gs_ prefix; the previous behaviour treated such ids as unknown and
+// minted a fresh gw_<uuid> per request via the CreateV2 fallback, so one
+// client conversation never grouped under a single request_logs.gw_session_id
+// and session_turns stayed at turn 1 forever. Deriving "gw_" + <client id>
+// keeps the gateway namespace canonical while making the mapping
+// deterministic: the derived id registers via the honored gw_ branch
+// (EnsureV2WithID) and resolves via Get→Touch from the second request on, so
+// turns accumulate per client session. Input must already be sanitized.
+func deriveGatewaySessionID(sessionID string) string {
+	if sessionID == "" ||
+		strings.HasPrefix(sessionID, "gw_") ||
+		strings.HasPrefix(sessionID, "gt_") ||
+		strings.HasPrefix(sessionID, "gs_") {
+		return sessionID
+	}
+	return "gw_" + sessionID
+}
+
 func extractSessionIDFromHeaders(r *http.Request) string {
 	if r == nil {
 		return ""
