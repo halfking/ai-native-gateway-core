@@ -280,3 +280,37 @@ PGPASSWORD="$PG_PASS" "$PG_PSQL_BIN" -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -
 | 2026-09-01 | 1.11 | **文档-代码一致性审计修订**（4 任务并行审计 + 本地复现验证）：① Q1 更正——默认 schema 模式不 DROP、无自动回滚（原文与代码相反）；② 移除不存在的 "SSH control socket" 机制描述（实现是所有权 PID 语义：只复用健康 listener、只 kill 自建 PID）；③ hot 表模式与脚本默认对齐（catalog 判定含 2025 分区；`*_archived`/`*_archive` 为后缀匹配，非中缀）；④ §3.3 数据目录表述更新（recreate 脚本与容器现均指向 `~/.agents-cache/llm-gateway-pg-data`）；⑤ 补录 `local-host-sync-db.sh` 包装入口（§3.1/§六），明确 `pg-table-copy.sh` 不管理隧道；⑥ 头部版本对齐变更记录 |
 | 2026-09-07 | 1.12 | **§5 Q2 数据目录表述二次更正**：实测 `docker inspect llm-gateway-pg --format '{{json .Mounts}}'` → 容器当前 bind 源为 `~/kaixuan/postgres`（21G base 已活跃），历史条目里写的 `~/.agents-cache/llm-gateway-pg-data` 已被新 SSOT 取代。`scripts/local-dev/recreate-llm-gateway-pg.sh:40,46` 同步把 `DATA_DIR` 改为 `${LLM_GATEWAY_PG_DATA_DIR:-$HOME/kaixuan/postgres}`（可覆盖），头部注释把旧 Downloads 路径标注为 rollback-only 副本，避免脚本绑定到错误目录导致 22G 真实数据"看似丢失"。§5 Q2 正文同步替换为 `~/kaixuan/postgres`。历史 v1.6 / v1.11 条目保留原貌，不修改历史。 |
 | 2026-09-07 | 1.13 | **本地 llm-gateway-pg 角色防御 + psql 调用修正**：新增 `scripts/local-dev/ensure-llm-gateway-pg-role.sh`，幂等 CREATE ROLE/CREATE DATABASE（缺则补、在则 no-op），由 `scripts/deploy-local.sh ensure_resources()` 末尾在 `DL_PG_CONTAINER=llm-gateway-pg` 路径下调用。修复 5 个本地脚本里 `-U postgres` → `-U "${LLM_GATEWAY_PG_USER:-llm_gateway}"`（`sync-db-to-252.sh`、`sync-db-from-252.sh`、`diagnose-nvidia-minimax.sh`、`fix_503_one_click.sh`、`install/backup.sh`）以及 `deploy/prometheus/.env.example`。**作用域仅限本地 llm-gateway-pg**，252/245 远端的 psql 调用保持原状（其各自数据库按各环境约定管理）。 |
+
+---
+
+## 八、本轮审计发现但**未修复**的问题(已关闭/分派)
+
+> 2026-09-07 本轮审计（[[memory:llm-gateway-pg-actual-state-20260907]]）扫描过程中识别出以下风险点。**全部已在下面给出关闭/分派理由，不在本目标范围内动手**。后续若需重启任何一项，开新 issue / 新 PR 单独排期，避免与本目标混淆。
+
+### §8.1 quickstart 与 llm-gateway-pg 端口冲突
+- `docker-compose.quickstart.yml:15` 用 `127.0.0.1:5432:5432`，与本地 `llm-gateway-pg`（同样绑 host 5432）互斥。
+- quickstart 起的 PG 容器（`postgres:14-alpine`，角色 `gateway_user`）与 llm-gateway-pg 是不同容器、不同角色、不同 DB 命名空间，但端口冲突会让 `docker compose -f docker-compose.quickstart.yml up -d` 在 llm-gateway-pg 已启动时直接报 "port already allocated"。
+- **关闭理由**: quickstart 是开发态独立路径，operator 自管生命周期；不属于 llm-gateway-pg 范围。
+
+### §8.2 孤儿容器 / 网络（不可达）
+- `ai-native-postgres` (Exited 0, 匿名卷 `38bf3e9d…`,无 port publish,不在 `shared-infra`)
+- `kx-citus-verify-051615` (Created 态,从未启动,DB 名 `llm_gateway` 同名,匿名卷 `6d176946…`,无网络)
+- 空网络 `deploy_default` / `shared-infra-test`
+- **关闭理由**: 当前全部不可达、不占 host 5432、不在 `shared-infra` 网络，**没有 active 风险面**。清理需要 operator 走 `docker rm <name>` 或 `docker network rm <name>`，属运维清理任务。
+
+### §8.3 `pg_dump` 定期备份缺失
+- `/Users/xutaohuang/kaixuan/postgres/backups/` 仅有 9 kB 的 9/4 单表 dump；最近 22G 集群无 `pg_dump` / `pg_basebackup` / `tar.gz` 快照。
+- `data/backups/backups/*.jsonl.gz` 是 gateway 会话归档（LLM_GATEWAY_BACKUP_DIR），不是 PG dump。
+- **关闭理由**: 属运维侧策略决策（备份频率 / 保留窗口 / 介质），不在本数据库实例修正范围内。
+
+### §8.4 测试 fixture 硬编码 URL
+- `tests/integration/`、`cmd/license-authority/heartbeat_handler_test.go`、`metatools/handler_test.go` 等测试代码中硬编码 `postgres:postgres@…` / `kxuser:kxpass@…` URL。
+- **关闭理由**: 测试 fixture，跑 `LLM_GATEWAY_TEST_PG_DSN` / `TEST_DATABASE_URL` 时被覆盖；不影响 `llm-gateway-pg` 容器行为。
+
+### §8.5 252 / 245 远端数据库角色假设
+- `deploy/sql/deploy-252-complete.sh`、`scripts/deploy/deploy-to-245.sh`、`scripts/deploy/rollback.sh` 等脚本原本用 `-U postgres`，经本轮审计推断在 252/245 上**同样**会失败（kx-citus-pg17 镜像的默认 initdb 用户就是 POSTGRES_USER，唯一登录角色与本地同模型）。
+- **关闭理由（用户明确指示）**: 本目标范围是**当前 llm-gateway-pg 实例**，252/245 上的数据库用户属各环境约定，**不在本次范围内修改**。本轮已 revert 对 252 / 245 脚本的改动（commit 244aaf586 与 d85e05793 被 revert，见 b3a28af95 与 59044c673）。后续要统一改 252/245，开独立任务。
+
+### §8.6 配置 / 文档历史残留（`kxuser`）
+- `configs/env-local.sh:8-15` 已留 historical fix-note；`docs/06-deployment/02-database/local-pg-sync-from-252.md:82` 同步注释。
+- **关闭理由**: 已记录、不影响当前健康状态；属于历史勘误说明，不在本目标范围内二次清理。
