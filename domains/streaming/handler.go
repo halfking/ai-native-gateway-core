@@ -2500,6 +2500,16 @@ func (h *ChatHandler) serveWithExecutor(
 					}
 					regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
 					go func(sid string, key *authentication.KeyInfo, seed, task string) {
+						// 2026-09-08 audit: a bare goroutine panic would kill the
+						// whole process (http.Server recovery does not cover user
+						// goroutines) — never let best-effort registration crash
+						// the gateway.
+						defer func() {
+							if rec := recover(); rec != nil {
+								slog.Warn("session register (honored id) panicked",
+									"session_id", sid, "panic", rec)
+							}
+						}()
 						regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
 						defer regCancel()
 						if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
