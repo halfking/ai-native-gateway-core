@@ -31,6 +31,12 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
+# 2026-09-07: llm-gateway-pg (kx-citus-pg17) 的本地超级用户是 llm_gateway，不是
+# postgres（旧脚本对 252 远端假设的 postgres 在本地不存在）。所有本地
+# docker exec 改用 LLM_GATEWAY_PG_USER 模板，与 apply-db-revision-sequence.sh
+# 一致；远端 252 调用仍按远端自己的环境（PG_USER_*）解析，保留 postgres。
+LOCAL_PG_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}"
+
 # 默认参数
 DRY_RUN=false
 FULL_SYNC=false
@@ -103,7 +109,7 @@ if [ "$FULL_SYNC" = true ] || [ ! -f "$TEMP_DIR/sync_from_local_to_252_no_tx.sql
   log_info "生成同步SQL脚本..."
   
   # 获取本地表列表
-  docker exec llm-gateway-pg psql -U postgres -d llm_gateway -t -c \
+  docker exec llm-gateway-pg psql -U "$LOCAL_PG_USER" -d llm_gateway -t -c \
     "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename;" \
     | tr -d ' ' > "$TEMP_DIR/local_tables.txt"
   
@@ -141,7 +147,7 @@ if [ "$FULL_SYNC" = true ] || [ ! -f "$TEMP_DIR/sync_from_local_to_252_no_tx.sql
     fi
     
     log_info "  导出表: $table"
-    docker exec llm-gateway-pg pg_dump -U postgres -d llm_gateway \
+    docker exec llm-gateway-pg pg_dump -U "$LOCAL_PG_USER" -d llm_gateway \
       --schema-only --no-owner --no-privileges \
       -t "public.$table" \
       2>/dev/null >> "$OUTPUT_SQL" || {
@@ -166,7 +172,7 @@ if [ -n "$SPECIFIC_TABLES" ]; then
   
   for table in $SPECIFIC_TABLES; do
     log_info "  导出表: $table"
-    docker exec llm-gateway-pg pg_dump -U postgres -d llm_gateway \
+    docker exec llm-gateway-pg pg_dump -U "$LOCAL_PG_USER" -d llm_gateway \
       --schema-only --no-owner --no-privileges \
       -t "public.$table" \
       2>/dev/null >> "$SPECIFIC_SQL"
@@ -203,7 +209,7 @@ PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" /opt/homebrew/opt/libpq/bin/psql \
 # 6. 验证结果
 log_info "验证同步结果..."
 
-LOCAL_COUNT=$(docker exec llm-gateway-pg psql -U postgres -d llm_gateway -t -c \
+LOCAL_COUNT=$(docker exec llm-gateway-pg psql -U "$LOCAL_PG_USER" -d llm_gateway -t -c \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname='public';" | tr -d ' ')
 
 REMOTE_COUNT=$(PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" /opt/homebrew/opt/libpq/bin/psql \
