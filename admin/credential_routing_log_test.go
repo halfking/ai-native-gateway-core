@@ -123,7 +123,7 @@ func TestRunRoutingLogQuery_MapsRows(t *testing.T) {
 	end := time.Now()
 	httpStatus := 503
 	detail := "network timeout"
-	
+
 	mock.ExpectQuery(`SELECT COUNT\(\*\) OVER\(\) AS total, u\.\*[\s\S]*UNION ALL[\s\S]*ORDER BY u\.ts DESC`).
 		WithArgs(start, end, 100, 0).
 		WillReturnRows(pgxmock.NewRows([]string{
@@ -158,7 +158,7 @@ func TestRunRoutingLogQuery_MapsRows(t *testing.T) {
 	if first.HTTPStatus != nil || first.Sticky != nil || first.OutboundModel != nil {
 		t.Fatalf("state_change should have nil F-4 fields: %+v", first)
 	}
-	
+
 	second := entries[1]
 	if second.Success == nil || *second.Success {
 		t.Fatalf("probe success mapping wrong: %+v", second)
@@ -177,7 +177,7 @@ func TestRunRoutingLogQuery_MapsRows(t *testing.T) {
 	if second.Sticky != nil || second.OutboundModel != nil {
 		t.Fatalf("probe should have nil sticky/outbound_model: %+v", second)
 	}
-	
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}
@@ -215,8 +215,10 @@ func TestBuildRoutingLogSQL_F4ContractFields(t *testing.T) {
 		t.Fatal("probe branch missing state_change for detail")
 	}
 
-	// State_change branch must have NULL placeholders for probe/routing-specific fields
-	auditBranch := query[strings.Index(query, "FROM routing_audit_log"):]
+	// Audit branch (last UNION arm) must have NULL placeholders for
+	// probe/routing-specific fields. Slice from the last UNION ALL so the
+	// branch's SELECT list — which precedes its FROM clause — is included.
+	auditBranch := query[strings.LastIndex(query, "UNION ALL"):]
 	if testing.Verbose() {
 		t.Logf("Audit branch:\n%s\n", auditBranch)
 	}
@@ -235,44 +237,44 @@ func TestBuildRoutingLogSQL_F4ContractFields(t *testing.T) {
 // F-7 修复：接入既有 monitor 打点体系（调用量/失败率/慢查询指标）
 func TestRecordRoutingLogQueryMetrics(t *testing.T) {
 	tests := []struct {
-		name        string
-		success     bool
-		durationMs  int64
-		entryCount  int
-		kind        string
-		result      string
-		wantStatus  string
-		wantSlow    bool
+		name       string
+		success    bool
+		durationMs int64
+		entryCount int
+		kind       string
+		result     string
+		wantStatus string
+		wantSlow   bool
 	}{
 		{
-			name:        "successful_fast_query",
-			success:     true,
-			durationMs:  500,
-			entryCount:  50,
-			kind:        "all",
-			result:      "all",
-			wantStatus:  "success",
-			wantSlow:    false,
+			name:       "successful_fast_query",
+			success:    true,
+			durationMs: 500,
+			entryCount: 50,
+			kind:       "all",
+			result:     "all",
+			wantStatus: "success",
+			wantSlow:   false,
 		},
 		{
-			name:        "successful_slow_query",
-			success:     true,
-			durationMs:  4000,
-			entryCount:  100,
-			kind:        "routing",
-			result:      "success",
-			wantStatus:  "success",
-			wantSlow:    true,
+			name:       "successful_slow_query",
+			success:    true,
+			durationMs: 4000,
+			entryCount: 100,
+			kind:       "routing",
+			result:     "success",
+			wantStatus: "success",
+			wantSlow:   true,
 		},
 		{
-			name:        "failed_query",
-			success:     false,
-			durationMs:  200,
-			entryCount:  0,
-			kind:        "probe",
-			result:      "failed",
-			wantStatus:  "failed",
-			wantSlow:    false,
+			name:       "failed_query",
+			success:    false,
+			durationMs: 200,
+			entryCount: 0,
+			kind:       "probe",
+			result:     "failed",
+			wantStatus: "failed",
+			wantSlow:   false,
 		},
 	}
 
@@ -284,4 +286,3 @@ func TestRecordRoutingLogQueryMetrics(t *testing.T) {
 		})
 	}
 }
-

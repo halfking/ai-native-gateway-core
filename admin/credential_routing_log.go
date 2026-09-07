@@ -151,7 +151,7 @@ func (m *CredentialMonitorHandlers) handleCredentialRoutingLog(w http.ResponseWr
 	startedAt := time.Now()
 	entries, total, err := runRoutingLogQuery(ctx, m.h.db, params)
 	queryDurationMs := time.Since(startedAt).Milliseconds()
-	
+
 	if err != nil {
 		slog.Error("routing log query failed", "error", err.Error(), "duration_ms", queryDurationMs)
 		// 不回传内部 SQL 错误细节（表名/约束名），只留 trace 线索给日志。
@@ -194,7 +194,7 @@ func recordRoutingLogQueryMetrics(success bool, durationMs int64, entryCount int
 	if !success {
 		status = "failed"
 	}
-	
+
 	// 结构化日志打点：调用量、成功率、延迟分布
 	slog.Info("routing_log_query_metric",
 		"status", status,
