@@ -67,10 +67,15 @@ INSTALL_MODE="${INSTALL_MODE:-auto}"
 # auto 探测规则：INSTALL_ROOT/docker-compose.yml 存在 → docker，否则 host。
 _uname_s="$(uname -s)"
 case "$_uname_s" in
-  Darwin*) default_root="$HOME/Downloads/llm-gateway-files" ;;
-  Linux*)  default_root=/opt/llm-gateway ;;
-  *) default_root=/opt/llm-gateway ;;
+  Darwin*) default_root="$HOME/kaixuan/llm-gateway-go" ;;
+  Linux*)  default_root=/opt/kaixuan/llm-gateway-go ;;
+  *) default_root="$HOME/kaixuan/llm-gateway-go" ;;
 esac
+if [[ -z "${INSTALL_ROOT:-}" && -d /opt/llm-gateway ]]; then
+  default_root=/opt/llm-gateway
+elif [[ -z "${INSTALL_ROOT:-}" && -d "$HOME/Downloads/llm-gateway-files" ]]; then
+  default_root="$HOME/Downloads/llm-gateway-files"
+fi
 INSTALL_ROOT="${INSTALL_ROOT:-$default_root}"
 GATEWAY_PORT="${GATEWAY_PORT:-8080}"
 POSTGRES_USER="${POSTGRES_USER:-llm_user}"

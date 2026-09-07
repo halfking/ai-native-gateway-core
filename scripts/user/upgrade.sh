@@ -105,16 +105,22 @@ fi
 
 MAINTAIN_BASE="${MAINTAIN_BASE:-https://llmgo.kxpms.cn/maintain-api}"
 CHANNEL="${CHANNEL:-stable}"
-INSTALL_ROOT="${INSTALL_ROOT:-/opt/llm-gateway}"
+if [[ -z "${INSTALL_ROOT:-}" ]]; then
+  if [[ -d /opt/llm-gateway ]]; then INSTALL_ROOT=/opt/llm-gateway
+  elif [[ -d "${HOME}/Downloads/llm-gateway-files" ]]; then INSTALL_ROOT="${HOME}/Downloads/llm-gateway-files"
+  else
+    case "$(uname -s)" in
+      Darwin*) INSTALL_ROOT="${HOME}/kaixuan/llm-gateway-go" ;;
+      Linux*) INSTALL_ROOT=/opt/kaixuan/llm-gateway-go ;;
+      *) INSTALL_ROOT="${HOME}/kaixuan/llm-gateway-go" ;;
+    esac
+  fi
+fi
 INSTANCE_ID="${INSTANCE_ID:-$(cat "${INSTALL_ROOT}/instance_id" 2>/dev/null || true)}"
 CURRENT_VERSION="${CURRENT_VERSION:-$(cat "${INSTALL_ROOT}/VERSION" 2>/dev/null || echo v0.0.0)}"
-HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8080/healthz}"
-# 第二阶段就绪探针：/readyz 通常在启动后才会返回 200，用来区分"进程在跑"与
-# "已经处理完自检并能对外服务"。
+HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8781/healthz}"
 READYZ_URL="${READYZ_URL:-${HEALTH_URL%/healthz}/readyz}"
-# 第三阶段版本端点：必须能解析出与新二进制对应的版本号——如果切完后还能
-# 解析到旧版本，说明回滚/启动并未真正生效。
-VERSION_PROBE_URL="${VERSION_PROBE_URL:-${MAINTAIN_BASE%/maintain-api}/maintain/version}"
+VERSION_PROBE_URL="${VERSION_PROBE_URL:-}"
 HEALTH_RETRIES="${HEALTH_RETRIES:-30}"
 DRY_RUN="${DRY_RUN:-0}"
 TARGET_VERSION="${TARGET_VERSION:-}"

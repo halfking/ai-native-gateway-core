@@ -73,41 +73,33 @@ detect_arch() {
 }
 
 # ── INSTALL_ROOT 智能探测 ────────────────────────────────────────────────
-# 决策矩阵（按用户原话"macOS=~/kaixuan/, linux=/opt/, windows=D:kaixuan/"实现）：
-#   macOS  : ~/Downloads/llm-gateway-files（与 local-host-deploy.sh 一致）
-#            └─ ~/Downloads 不可写 → ~/.local/llm-gateway
-#   Linux  : /opt/llm-gateway
-#            └─ /opt 不可写 → ~/.local/llm-gateway
-#   Windows: /d/kaixuan/llm-gateway (D:/kaixuan/llm-gateway)
-#            └─ /d 不存在或不可写 → /c/llm-gateway (C:/llm-gateway)
-# 环境变量 INSTALL_ROOT 永远最高优先级。
+# 与 maintain scripts/user/lib/kaixuan-layout.sh 一致：
+#   显式 INSTALL_ROOT > 旧根 /opt/llm-gateway 或 ~/Downloads/llm-gateway-files
+#   > macOS ~/kaixuan/llm-gateway-go / Linux /opt/kaixuan/llm-gateway-go
+#   > Windows D:/kaixuan/llm-gateway-go（否则 C:/）
+# 不自动搬迁旧树。
 detect_install_root() {
   if [[ -n "${INSTALL_ROOT:-}" ]]; then
     printf '%s\n' "$INSTALL_ROOT"
     return 0
   fi
+  if [[ -d /opt/llm-gateway ]]; then
+    printf '%s\n' /opt/llm-gateway
+    return 0
+  fi
+  if [[ -d "${HOME}/Downloads/llm-gateway-files" ]]; then
+    printf '%s\n' "${HOME}/Downloads/llm-gateway-files"
+    return 0
+  fi
   local p
   p="$(detect_platform)"
   case "$p" in
-    darwin)
-      if [[ -w "$HOME/Downloads" ]]; then
-        printf '%s\n' "$HOME/Downloads/llm-gateway-files"
-      else
-        printf '%s\n' "$HOME/.local/llm-gateway"
-      fi ;;
-    linux)
-      if [[ -w /opt ]]; then
-        printf '/opt/llm-gateway\n'
-      else
-        printf '%s\n' "$HOME/.local/llm-gateway"
-      fi ;;
+    darwin) printf '%s\n' "${HOME}/kaixuan/llm-gateway-go" ;;
+    linux) printf '%s\n' "/opt/kaixuan/llm-gateway-go" ;;
     windows)
-      # /d = D:, /c = C: (Git Bash / MSYS / Cygwin 约定)
-      if [[ -d /d && -w /d ]]; then
-        printf '/d/kaixuan/llm-gateway\n'
-      else
-        printf '/c/llm-gateway\n'
-      fi ;;
+      if [[ -d /d && -w /d ]]; then printf '/d/kaixuan/llm-gateway-go\n'
+      elif [[ -d /c && -w /c ]]; then printf '/c/kaixuan/llm-gateway-go\n'
+      else printf '%s\n' "${HOME}/kaixuan/llm-gateway-go"; fi ;;
   esac
 }
 
