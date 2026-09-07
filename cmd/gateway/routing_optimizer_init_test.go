@@ -14,11 +14,11 @@ import (
 // off unless ROUTING_OPT_ENABLED=true — routing must be baseline-identical.
 func TestBuildRoutingOptimizer_DisabledByDefault(t *testing.T) {
 	t.Setenv("ROUTING_OPT_ENABLED", "")
-	if got := buildRoutingOptimizer(nil); got != nil {
+	if got := buildRoutingOptimizer(nil, nil); got != nil {
 		t.Fatalf("optimizer must be nil when flag is unset, got %T", got)
 	}
 	t.Setenv("ROUTING_OPT_ENABLED", "false")
-	if got := buildRoutingOptimizer(nil); got != nil {
+	if got := buildRoutingOptimizer(nil, nil); got != nil {
 		t.Fatalf("optimizer must be nil when flag is false, got %T", got)
 	}
 }
@@ -27,7 +27,7 @@ func TestBuildRoutingOptimizer_DisabledByDefault(t *testing.T) {
 // flag without a DB pool degrades to baseline instead of panicking.
 func TestBuildRoutingOptimizer_EnabledWithoutPoolDegrades(t *testing.T) {
 	t.Setenv("ROUTING_OPT_ENABLED", "true")
-	if got := buildRoutingOptimizer(nil); got != nil {
+	if got := buildRoutingOptimizer(nil, nil); got != nil {
 		t.Fatalf("enabled flag with nil pool must degrade to nil, got %T", got)
 	}
 }
@@ -42,7 +42,7 @@ func TestBuildRoutingOptimizer_EnabledWithPool(t *testing.T) {
 	}
 	defer pool.Close()
 
-	got := buildRoutingOptimizer(pool)
+	got := buildRoutingOptimizer(pool, nil)
 	if got == nil {
 		t.Fatal("enabled flag with pool must return a non-nil optimizer")
 	}

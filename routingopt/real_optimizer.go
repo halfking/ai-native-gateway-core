@@ -50,6 +50,40 @@ func (o *RealOptimizer) WithMLReranker(r *MLReranker) *RealOptimizer {
 	return o
 }
 
+// =============================================================================
+// 装配/关闭桥接（P2.2 Track A 接线用，纯 passthrough，不含业务逻辑）
+// =============================================================================
+
+// WithAffinityCache attaches the Redis-backed user-affinity read cache
+// (P2.2 Track A) to the enhancer. nil cache = 直查 DB（清除缓存）。
+// Returns the receiver for chaining.
+func (o *RealOptimizer) WithAffinityCache(c *AffinityCache) *RealOptimizer {
+	if o != nil && o.enhancer != nil {
+		o.enhancer.SetAffinityCache(c)
+	}
+	return o
+}
+
+// FlushFeedback drains the async feedback batch queue (P2.2 Track B).
+// cmd/gateway 优雅关闭在 DB pool 关闭前调用（约 5s 超时 ctx）；同步路径
+// / 未接线时是安全 no-op。
+func (o *RealOptimizer) FlushFeedback(ctx context.Context) {
+	if o == nil {
+		return
+	}
+	o.integrator.Flush(ctx)
+}
+
+// FeedbackBatch exposes the async batch writer for Track C counter wiring
+// (routingopt.AttachFeedbackCounters(batch.Counters))。batch 未建（同步
+// 路径 / nil pool）时返回 nil，调用方需给零值计数器函数兜底。
+func (o *RealOptimizer) FeedbackBatch() *FeedbackBatchWriter {
+	if o == nil {
+		return nil
+	}
+	return o.integrator.FeedbackBatch()
+}
+
 // WithABGate attaches the traffic-split gate (A/B testing). nil = always
 // treatment. Implements the ABTestEnabled/ABTestPercentage flags semantics.
 func (o *RealOptimizer) WithABGate(g *ABGate) *RealOptimizer {

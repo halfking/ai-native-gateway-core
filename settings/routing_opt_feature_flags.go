@@ -85,6 +85,17 @@ type RoutingOptFeatureFlags struct {
 	// Range: 0.01-0.5 (1%-50%)
 	// Recommended rollout: 10% → 25% → 50% → 100% (disable A/B test at 100%)
 	ABTestPercentage float64 `env:"ROUTING_OPT_AB_TEST_PERCENTAGE" default:"0.1"`
+
+	// AffinityCacheEnabled enables the Redis-backed user-affinity read cache
+	// (P2.2 Track A): routing_user_affinity reads in PreClassify /
+	// UpdateUserAffinity go through a Redis hash cache (key
+	// routingopt:affinity:<userID>, TTL 1h, negative cache 30s). Requires a
+	// non-nil Redis client and Enabled=true; Redis 不可用或 flag 关闭时
+	// 自动退化为直查 DB（行为等同无缓存）。
+	//
+	// Default: false (直接查 DB)
+	// Requires: Enabled=true, Redis configured
+	AffinityCacheEnabled bool `env:"ROUTING_OPT_AFFINITY_CACHE" default:"false"`
 }
 
 // GetRoutingOptFlags returns the routing optimization feature flags, read
@@ -110,6 +121,7 @@ func GetRoutingOptFlags() *RoutingOptFeatureFlags {
 		ExplorationRate:                 envFloat("ROUTING_OPT_EXPLORATION_RATE", 0.05),
 		ABTestEnabled:                   envBool("ROUTING_OPT_AB_TEST_ENABLED", false),
 		ABTestPercentage:                envFloat("ROUTING_OPT_AB_TEST_PERCENTAGE", 0.1),
+		AffinityCacheEnabled:            envBool("ROUTING_OPT_AFFINITY_CACHE", false),
 	}
 }
 
