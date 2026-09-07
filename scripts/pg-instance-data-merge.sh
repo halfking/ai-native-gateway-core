@@ -45,6 +45,15 @@ mkdir -p "$work_dir"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/lib/pg-instance-connections.sh"
 pg_instance_connections_init
+if [[ "$dry_run" == false ]]; then
+  if ! docker inspect -f '{{.State.Running}}' "$LOCAL_PG_CONTAINER" |
+    grep -qx true; then
+    die "local PostgreSQL container is not running: $LOCAL_PG_CONTAINER"
+  elif ! docker exec "$LOCAL_PG_CONTAINER" pg_dump --help |
+    grep -Fq -- '--on-conflict-do-nothing'; then
+    die "local pg_dump lacks --on-conflict-do-nothing support"
+  fi
+fi
 pg_instance_tunnel_open
 trap pg_instance_tunnel_close EXIT
 
@@ -83,8 +92,8 @@ while IFS=$'\t' read -r classification local_db remote_db mode; do
     pg_instance_data_signature remote "$remote_db" "" "$remote_data"
     keyless_drift=false
     while IFS= read -r table; do
-      local_row="$(grep -E "^${table//./\\.}\\|" "$local_data" || true)"
-      remote_row="$(grep -E "^${table//./\\.}\\|" "$remote_data" || true)"
+      local_row="$(awk -F'|' -v name="$table" '$1==name {print; exit}' "$local_data")"
+      remote_row="$(awk -F'|' -v name="$table" '$1==name {print; exit}' "$remote_data")"
       if [[ -z "$local_row" || "$local_row" != "$remote_row" ]]; then
         keyless_drift=true
         break

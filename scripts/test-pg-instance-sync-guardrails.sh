@@ -83,6 +83,7 @@ echo "✓ LLM Gateway full bootstrap blocked"
 # Test 3: LLM Gateway schema operations should be allowed
 echo "Test 3: LLM Gateway schema protection..."
 cat >"$tmp/llm-schema-manifest.tsv" <<'EOF'
+#local_inventory_file	/tmp/llm_gateway_project/inventory.tsv
 classification	local_database	remote_database	mode
 COMMON	llm_gateway	llm_gateway	SCHEMA_ONLY
 EOF

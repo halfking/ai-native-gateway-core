@@ -82,7 +82,11 @@ validate_llm_gateway_protection() {
   case "$operation" in
     apply-data)
       # apply-data must never touch llm_gateway databases with data modes
-      if grep -E "llm_gateway.*(SCHEMA_AND_INSERT_ONLY|CREATE_REMOTE_AND_INSERT_ONLY|BOOTSTRAP_LOCAL_FULL)" "$manifest_file" >/dev/null; then
+      if awk -F'\t' '
+        $1!~/^#/ && ($2=="llm_gateway" || $3=="llm_gateway") &&
+          $4!="SCHEMA_ONLY" {found=1}
+        END {exit found ? 0 : 1}
+      ' "$manifest_file"; then
         echo "ERROR: Data operations on llm_gateway databases are permanently prohibited" >&2
         echo "  Operation: $operation" >&2
         echo "  LLM Gateway data must never be modified by sync operations" >&2
@@ -102,21 +106,24 @@ validate_llm_gateway_protection() {
     all)
       # 'all' command should skip data operations on llm_gateway but allow schema
       # This is validated during execution, not planning - just ensure SCHEMA_ONLY mode
-      if grep -q "llm_gateway" "$manifest_file"; then
-        if ! grep -E "llm_gateway.*SCHEMA_ONLY" "$manifest_file" >/dev/null; then
-          echo "ERROR: llm_gateway databases must use SCHEMA_ONLY mode for 'all' command" >&2
-          echo "  Data operations will be skipped for llm_gateway, schema operations allowed" >&2
-          return 1
-        fi
+      if awk -F'\t' '
+        $1!~/^#/ && ($2=="llm_gateway" || $3=="llm_gateway") &&
+          $4!="SCHEMA_ONLY" {found=1}
+        END {exit found ? 0 : 1}
+      ' "$manifest_file"; then
+        echo "ERROR: llm_gateway databases must use SCHEMA_ONLY mode for 'all' command" >&2
+        return 1
       fi
       ;;
     apply-schema)
       # Schema operations on llm_gateway are allowed but must be schema-only
-      if grep -q "llm_gateway" "$manifest_file"; then
-        if ! grep -E "llm_gateway.*SCHEMA_ONLY" "$manifest_file" >/dev/null; then
-          echo "ERROR: llm_gateway databases must use SCHEMA_ONLY mode" >&2
-          return 1
-        fi
+      if awk -F'\t' '
+        $1!~/^#/ && ($2=="llm_gateway" || $3=="llm_gateway") &&
+          $4!="SCHEMA_ONLY" {found=1}
+        END {exit found ? 0 : 1}
+      ' "$manifest_file"; then
+        echo "ERROR: llm_gateway databases must use SCHEMA_ONLY mode" >&2
+        return 1
       fi
       ;;
   esac

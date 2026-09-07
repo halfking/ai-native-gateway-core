@@ -72,7 +72,7 @@ scripts/pg-instance-schema-additive.sh --yes --freshness-check \
 It applies only `ADD_LOCAL`/`ADD_REMOTE` objects. Relations are restored in
 `pre-data` and `post-data` transactions with functions between the two
 sections. It never applies `CONFLICT_LOCAL_WINS` and always skips
-`llm_gateway` unless a hashed SSOT allowlist is supplied:
+`llm_gateway` unless a hashed, reviewed public-object allowlist is supplied:
 ```bash
 ALLOWLIST=configs/pg-sync-llm-ssot-allowlist.txt
 scripts/pg-instance-schema-additive.sh --yes --freshness-check \
@@ -82,8 +82,16 @@ scripts/pg-instance-schema-additive.sh --yes --freshness-check \
   --policy configs/pg-sync-policy.conf \
   --impact-matrix impact/impact-matrix.tsv --work-dir <work-dir>
 ```
-The allowlist contains durable `public`/`maintain` SSOT objects only; local
-integration objects and expired time partitions remain excluded.
+The allowlist anchors durable `public` object names to this repository's SQL,
+but the executor still obtains DDL from the reviewed live local database. It
+is therefore SSOT-grounded, not a deterministic SQL-to-DDL generator. For the
+curated deterministic `public` migration path, use
+`scripts/apply-db-revision-sequence.sh`.
+
+This repository does not own `llm_gateway.maintain` DDL. That schema must be
+migrated by `ai-native-maintain/internal/migrations`; the policy includes it
+for comparison only. Local integration objects and expired time partitions
+remain excluded from the public allowlist.
 
 #### `apply-data`
 Apply data sync (DML operations with strict limitations).

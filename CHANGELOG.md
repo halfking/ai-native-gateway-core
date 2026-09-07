@@ -4,9 +4,9 @@
 
 ### Added
 - **PostgreSQL Instance Sync Tool (2026-09-08)**: 新增实例 inventory、确定性 plan、结构影响矩阵、校验备份、缺库 bootstrap 和 insert-only 数据合并。
-  - **Safety**: manifest 绑定生成时间、两端 inventory 和 policy SHA-256；`llm_gateway` 永久禁止数据同步
+  - **Safety**: manifest 绑定生成时间、两端 inventory 和 policy SHA-256；输出 hash；`llm_gateway` 永久禁止数据同步；数据写入采用有界 statement/lock timeout
   - **Data merge**: 显式列 `INSERT ... ON CONFLICT DO NOTHING`、写入契约与无键表摘要门禁、序列仅向上推进
-  - **Schema add**: 新增双向 additive-only 执行器，按 pre-data → function → post-data 单事务分段恢复，并将 owner 差异独立审计
+  - **Schema add**: 新增双向 additive-only 执行器，按 pre-data → function → post-data 单事务分段恢复，约束/索引重试幂等，并将 owner 差异独立审计；`maintain` schema 由外部 ai-native-maintain migration SSOT 管理
   - **Fail closed**: 共有库 schema reconcile、统一 verify 和 `all` 尚未实现，命令明确返回非零
 
 ### Fixed
