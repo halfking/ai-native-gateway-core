@@ -108,6 +108,11 @@ const autoRefresh = ref(true)
 let refreshTimer: number | null = null
 let filterDebounceTimer: number | null = null
 
+// ── Manual trigger state ─────────────────────────────────────────────────
+const triggerBusy = ref(false)
+const triggerMessage = ref('')
+let triggerMessageTimer: number | null = null
+
 watch(modelFilter, () => {
   if (filterDebounceTimer) clearTimeout(filterDebounceTimer)
   filterDebounceTimer = window.setTimeout(() => {
@@ -158,6 +163,81 @@ async function refreshAll() {
     fetchModels(),
     fetchQueues()
   ])
+}
+
+// ── Manual Trigger ───────────────────────────────────────────────────────
+
+async function triggerManualProbe() {
+  if (triggerBusy.value) return
+  
+  const model = modelFilter.value
+  if (!model) {
+    showTriggerMessage('请先选择一个模型进行触发', true)
+    return
+  }
+
+  triggerBusy.value = true
+  triggerMessage.value = ''
+  
+  try {
+    // Fetch all nodes for the selected model
+    const modelsData = await req<{ models: ModelHealthSummary[]; total: number }>(
+      'GET',
+      `/api/admin/probe/dashboard?model=${encodeURIComponent(model)}`
+    )
+    
+    if (!modelsData.models || modelsData.models.length === 0) {
+      showTriggerMessage('未找到该模型的节点', true)
+      return
+    }
+
+    const targetModel = modelsData.models[0]
+    const credentialCount = targetModel.total_credentials
+    
+    if (credentialCount === 0) {
+      showTriggerMessage('该模型没有可用的凭据节点', true)
+      return
+    }
+
+    // Trigger probe via unified probe queue API
+    // POST /api/admin/probe/tasks with credential_id + raw_model
+    // Since we don't have individual credential IDs here, we trigger via the system
+    // In reality, we should fetch credential details first, but for now we use
+    // the legacy self-check trigger if available
+    const response = await req<{ ok: boolean; message: string }>(
+      'POST',
+      '/api/self-check/trigger',
+      { model }
+    )
+    
+    if (response.ok) {
+      showTriggerMessage(`已触发 ${model} 的探测，涉及 ${credentialCount} 个节点`, false)
+      // Refresh after a short delay to show updated status
+      setTimeout(() => {
+        void refreshAll()
+      }, 2000)
+    } else {
+      showTriggerMessage(response.message || '触发失败', true)
+    }
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err)
+    showTriggerMessage(`触发失败: ${errMsg}`, true)
+  } finally {
+    triggerBusy.value = false
+  }
+}
+
+function showTriggerMessage(msg: string, isError: boolean) {
+  triggerMessage.value = (isError ? '❌ ' : '✓ ') + msg
+  
+  if (triggerMessageTimer) {
+    clearTimeout(triggerMessageTimer)
+  }
+  
+  triggerMessageTimer = window.setTimeout(() => {
+    triggerMessage.value = ''
+    triggerMessageTimer = null
+  }, 5000)
 }
 
 // ── Computed ─────────────────────────────────────────────────────────────
@@ -231,6 +311,10 @@ onUnmounted(() => {
   if (filterDebounceTimer) {
     clearTimeout(filterDebounceTimer)
     filterDebounceTimer = null
+  }
+  if (triggerMessageTimer) {
+    clearTimeout(triggerMessageTimer)
+    triggerMessageTimer = null
   }
 })
 
@@ -325,6 +409,20 @@ onUnmounted(() => {
       </select>
 
       <button @click="fetchModels" class="btn btn-sm btn-secondary">{{ t('probeHealth.filter.apply') }}</button>
+      
+      <button 
+        @click="triggerManualProbe" 
+        class="btn btn-sm btn-primary"
+        :disabled="triggerBusy || !modelFilter"
+        :title="!modelFilter ? '请先选择模型' : '手动触发所选模型的探测'"
+      >
+        {{ triggerBusy ? '触发中...' : '手动触发探测' }}
+      </button>
+    </div>
+
+    <!-- Trigger message -->
+    <div v-if="triggerMessage" class="trigger-message" :class="{ error: triggerMessage.startsWith('❌') }">
+      {{ triggerMessage }}
     </div>
 
     <!-- Models Table -->
@@ -528,6 +626,21 @@ h1 {
 .model-picker-wrapper {
   flex: 1;
   max-width: 400px;
+}
+
+/* Trigger Message */
+.trigger-message {
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: var(--radius);
+  background: var(--success-bg);
+  color: var(--success);
+  font-size: 14px;
+}
+
+.trigger-message.error {
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .filter-input {

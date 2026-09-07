@@ -24,6 +24,10 @@ data:
   #   human_label  —— training_human_annotations 表导出
   #   human_provider —— llm-gw-annotator CSV 格式
   annotation_label_columns: [human_label, human_provider]
+  # 标签空间污染防护（默认 true）：
+  # true  — 人工标注的标签必须在自动标签词表中（防止 provider/模型标签混用）
+  # false — 允许新标签进入训练集（可能导致标签不一致，仅特殊场景使用）
+  annotation_require_known_label: true
 
   # 数据清洗
   drop_duplicate_request_ids: true

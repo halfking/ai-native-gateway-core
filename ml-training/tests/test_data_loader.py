@@ -104,6 +104,23 @@ def test_merge_annotations_require_known_label_drops_unknown(synthetic_parquet):
     assert stats["overrides_applied"] == 1
 
 
+def test_merge_annotations_default_requires_known_label(synthetic_parquet):
+    """F-8 修复：验证 require_known_label 默认为 True 防止标签空间污染"""
+    df = load_parquet(str(synthetic_parquet))
+    ann = pd.DataFrame({
+        "request_id": [df["request_id"].iloc[0], df["request_id"].iloc[1]],
+        "human_label": ["gpt-4", "unknown_label_pollutes_space"],
+    })
+    # 不传 require_known_label 参数，应使用默认值 True
+    merged = merge_annotations(df, ann, label_column="chosen_model")
+    stats = merged.attrs["annotation_stats"]
+    # 未知标签应被丢弃
+    assert stats["overrides_dropped_unknown_label"] == 1
+    assert stats["overrides_applied"] == 1
+    # 验证未知标签确实没有进入训练集
+    assert "unknown_label_pollutes_space" not in merged[LABEL_COL].values
+
+
 def test_merge_annotations_empty_keeps_autolabels(config_without_annotations,
                                                   synthetic_parquet):
     df = load_parquet(str(synthetic_parquet))

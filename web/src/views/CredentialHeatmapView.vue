@@ -5,6 +5,7 @@ import {
   toggleModelAvailability,
   promoteCredential,
   demoteCredential,
+  setManualDisabled,
   type HeatmapCredential,
   type HeatmapBucket,
   type HeatmapModel,
@@ -467,7 +468,7 @@ const actionReason = ref('')
 const actionBusy = ref(false)
 const actionMessage = ref<string | null>(null)
 
-async function runAction(kind: 'model-online' | 'model-offline' | 'promote' | 'demote') {
+async function runAction(kind: 'model-online' | 'model-offline' | 'promote' | 'demote' | 'enable' | 'disable') {
   if (!selectedBucket.value || actionBusy.value) return
   actionBusy.value = true
   actionMessage.value = null
@@ -485,9 +486,15 @@ async function runAction(kind: 'model-online' | 'model-offline' | 'promote' | 'd
     } else if (kind === 'promote') {
       await promoteCredential(credId, reason)
       actionMessage.value = `已恢复凭据 #${credId}`
-    } else {
+    } else if (kind === 'demote') {
       await demoteCredential(credId, reason)
       actionMessage.value = `已降级凭据 #${credId}`
+    } else if (kind === 'enable') {
+      await setManualDisabled(credId, false, reason)
+      actionMessage.value = `已启用凭据 #${credId}`
+    } else if (kind === 'disable') {
+      await setManualDisabled(credId, true, reason)
+      actionMessage.value = `已停用凭据 #${credId}`
     }
     await loadHeatmap()
   } catch (e) {
@@ -786,6 +793,10 @@ onUnmounted(() => {
               <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('model-offline')">模型下线</button>
               <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('promote')">恢复凭据</button>
               <button class="btn btn-sm" :disabled="actionBusy" @click="runAction('demote')">降级凭据</button>
+            </div>
+            <div class="action-btns" style="margin-top: 8px;">
+              <button class="btn btn-sm btn-success" :disabled="actionBusy" @click="runAction('enable')">启用凭据</button>
+              <button class="btn btn-sm btn-danger" :disabled="actionBusy" @click="runAction('disable')">停用凭据</button>
             </div>
             <p v-if="actionMessage" class="action-message" :class="{ fail: actionMessage.startsWith('操作失败') }">
               {{ actionMessage }}

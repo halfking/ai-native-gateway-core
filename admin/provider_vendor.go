@@ -94,16 +94,18 @@ func resolveModelsEndpointURL(baseURL string, template *string) (url string, exp
 // forceAPI=true (manual refresh / health probe): always try vendor API first
 // even when discovery_strategy is "manifest"; manifest is fallback only.
 // forceAPI=false (scheduled discovery): manifest_only and empty template skip API.
-func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentialRowLite, apiKey string, forceAPI bool) (models []string, source string, err error) {
+// Returns models, source, rawJSON, and error. rawJSON is the raw response body
+// from the vendor API (nil when source is manifest-only).
+func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentialRowLite, apiKey string, forceAPI bool) (models []string, source string, rawJSON []byte, err error) {
 	desc := providercap.Resolve(cred.protocol, cred.catalogCode)
 	if !desc.SupportsModelsEndpoint {
 		// Anthropic-compatible upstreams (e.g. minimax /anthropic) have no /models
 		// listing; use catalog manifest when operator forces a refresh or probe.
 		models, mErr := extractManifestModels(cred.modelsManifestJSON)
 		if mErr != nil || len(models) == 0 {
-			return nil, "none", fmt.Errorf("provider has no /models endpoint and manifest is empty")
+			return nil, "none", nil, fmt.Errorf("provider has no /models endpoint and manifest is empty")
 		}
-		return models, "manifest_only", nil
+		return models, "manifest_only", nil, nil
 	}
 
 	modelsURL, explicitTemplate := resolveModelsEndpointURL(cred.baseURL, cred.modelsEndpointTpl)
@@ -111,16 +113,16 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 	if skipAPI {
 		models, err = extractManifestModels(cred.modelsManifestJSON)
 		if err != nil || len(models) == 0 {
-			return nil, "manifest_only", err
+			return nil, "manifest_only", nil, err
 		}
-		return models, "manifest_only", nil
+		return models, "manifest_only", nil, nil
 	}
 
 	var fetchErr error
 	if explicitTemplate && modelsURL != "" {
-		models, fetchErr = h.fetchVendorModelsFromURLs(ctx, []string{modelsURL}, cred, apiKey)
+		models, rawJSON, fetchErr = h.fetchVendorModelsFromURLs(ctx, []string{modelsURL}, cred, apiKey)
 	} else {
-		models, fetchErr = h.fetchVendorModelsFromURLs(ctx, modelsURLCandidatesForCred(cred.baseURL, cred.modelsEndpointTpl, desc), cred, apiKey)
+		models, rawJSON, fetchErr = h.fetchVendorModelsFromURLs(ctx, modelsURLCandidatesForCred(cred.baseURL, cred.modelsEndpointTpl, desc), cred, apiKey)
 	}
 	if fetchErr == nil && len(models) > 0 {
 		// Merge in catalog-manifest models that the live /models list omits.
@@ -131,20 +133,20 @@ func (h *Handler) resolveModelsForCredential(ctx context.Context, cred credentia
 		manifestModels, _ := extractManifestModels(cred.modelsManifestJSON)
 		if len(manifestModels) > 0 {
 			models = mergeModelIDs(models, manifestModels)
-			return models, "api+manifest", nil
+			return models, "api+manifest", rawJSON, nil
 		}
-		return models, "api", nil
+		return models, "api", rawJSON, nil
 	}
 
 	// Fallback to manifest when API fails or returns empty.
 	fallback, _ := extractManifestModels(cred.modelsManifestJSON)
 	if len(fallback) > 0 {
-		return fallback, "manifest", nil
+		return fallback, "manifest", nil, nil
 	}
 	if fetchErr != nil {
-		return nil, "api", fetchErr
+		return nil, "api", nil, fetchErr
 	}
-	return nil, "api", fmt.Errorf("no models found from vendor API or manifest")
+	return nil, "api", nil, fmt.Errorf("no models found from vendor API or manifest")
 }
 
 // mergeModelIDs appends manifest entries that are not already present in the
@@ -276,7 +278,7 @@ func (h *Handler) VerifyAllCredentialModelFetches(ctx context.Context, providerI
 			cred.modelsEndpointTpl = tplPtr
 		}
 
-		models, source, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
+		models, source, _, fetchErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
 		res.Source = source
 		res.ModelCount = len(models)
 		if fetchErr != nil {
@@ -386,7 +388,7 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 		return 0, 0, fmt.Errorf("decrypt credential: %w", decErr)
 	}
 
-	models, source, fErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
+	models, source, rawJSON, fErr := h.resolveModelsForCredential(ctx, cred, apiKey, true)
 	if len(models) == 0 {
 		var msg string
 		if fErr != nil {
@@ -415,7 +417,8 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 
 	// 2026-09-07 本地托管供应商：模型注册后立即回填 context window
 	//（ollama /api/show 与 catalog 兜底）。Best-effort，不影响 refresh 结果。
-	discovery.ApplyLocalContextWindows(ctx, h.db, cred.providerKind, cred.catalogCaps, cred.baseURL, cred.id, models, nil)
+	// F-11 修复：传递 rawJSON（之前为 nil）。
+	discovery.ApplyLocalContextWindows(ctx, h.db, cred.providerKind, cred.catalogCaps, cred.baseURL, cred.id, models, rawJSON)
 
 	// 2026-08-31 hzx-2 round-4: auto-fill default_probe_model when the
 	// operator never set one. Mirrors the discovery worker so a manual
@@ -523,10 +526,10 @@ func (h *Handler) applyCatalogHeaderProfile(ctx context.Context, req *http.Reque
 	}
 }
 
-func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred credentialRowLite, apiKey string) ([]string, error) {
+func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred credentialRowLite, apiKey string) ([]string, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	setModelsAuthHeaders(req, cred.protocol, apiKey)
 	h.applyCatalogHeaderProfile(ctx, req, cred.catalogCode)
@@ -535,21 +538,22 @@ func (h *Handler) fetchVendorModels(ctx context.Context, url string, cred creden
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
+		return nil, nil, &modelresponse.HTTPBodyError{StatusCode: resp.StatusCode, Body: body}
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return parseVendorModelsBody(body)
+	models, parseErr := parseVendorModelsBody(body)
+	return models, body, parseErr
 }
 
 // DebugFetchVendorModelsRaw is a diagnostic helper: it fetches the given URL
@@ -621,21 +625,23 @@ func (h *Handler) DebugChatProbe(ctx context.Context, credID int, model string) 
 
 // fetchVendorModelsFromURLs tries catalog-resolved candidate URLs in order;
 // requires HTTP 200 with a parseable model list (used by refresh + health probe).
-func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, cred credentialRowLite, apiKey string) ([]string, error) {
+// Returns models, rawJSON, and error. rawJSON is the raw response body from the
+// first successful URL.
+func (h *Handler) fetchVendorModelsFromURLs(ctx context.Context, urls []string, cred credentialRowLite, apiKey string) ([]string, []byte, error) {
 	var lastErr error
 	for _, u := range urls {
-		models, err := h.fetchVendorModels(ctx, u, cred, apiKey)
+		models, rawJSON, err := h.fetchVendorModels(ctx, u, cred, apiKey)
 		if err == nil && len(models) > 0 {
-			return models, nil
+			return models, rawJSON, nil
 		}
 		if err != nil {
 			lastErr = err
 		}
 	}
 	if lastErr != nil {
-		return nil, lastErr
+		return nil, nil, lastErr
 	}
-	return nil, fmt.Errorf("no models found from any candidate URL")
+	return nil, nil, fmt.Errorf("no models found from any candidate URL")
 }
 
 func parseVendorModelsBody(data []byte) ([]string, error) {
