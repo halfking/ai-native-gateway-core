@@ -47,6 +47,21 @@ fi
 printf 'acc_db\n' >"$tmp/local.tsv"
 echo "✓ Changed inventory is rejected"
 
+# The schema executor must parse and reject an incorrect allowlist hash before
+# initializing any database connections.
+printf 'public.example\n' >"$tmp/allowlist.txt"
+printf 'action\tlocal_database\tremote_database\tkind\tschema\tobject\tsub_name\tlocal_hash\tremote_hash\n' \
+  >"$tmp/impact.tsv"
+allowlist_error="$(
+  bash "$ROOT/scripts/pg-instance-schema-additive.sh" --yes --freshness-check \
+    --manifest "$tmp/test-manifest.tsv" --manifest-hash "$correct_hash" \
+    --policy "$tmp/policy.conf" --impact-matrix "$tmp/impact.tsv" \
+    --work-dir "$tmp/schema-work" --llm-ssot-allowlist "$tmp/allowlist.txt" \
+    --llm-ssot-allowlist-hash wrong 2>&1 || true
+)"
+grep -Fq "LLM SSOT allowlist hash mismatch" <<<"$allowlist_error"
+echo "✓ LLM SSOT allowlist hash validation is executable"
+
 # Test 2: LLM Gateway protection for apply-data
 echo "Test 2: LLM Gateway data protection..."
 cat >"$tmp/llm-data-manifest.tsv" <<'EOF'

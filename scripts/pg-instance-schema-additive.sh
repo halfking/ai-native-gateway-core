@@ -43,8 +43,11 @@ validate_llm_gateway_protection apply-schema "$manifest"
 if [[ -n "$llm_ssot_allowlist" ]]; then
   [[ -r "$llm_ssot_allowlist" && -n "$llm_ssot_allowlist_hash" ]] ||
     die "LLM SSOT allowlist requires readable file and hash"
-  [[ "$(shasum -a 256 "$llm_ssot_allowlist" | awk '{print $1}')" ==
-    "$llm_ssot_allowlist_hash" ]] || die "LLM SSOT allowlist hash mismatch"
+  actual_allowlist_hash="$(
+    shasum -a 256 "$llm_ssot_allowlist" | awk '{print $1}'
+  )"
+  [[ "$actual_allowlist_hash" == "$llm_ssot_allowlist_hash" ]] ||
+    die "LLM SSOT allowlist hash mismatch"
 fi
 LLM_SCHEMA_EVENT_TRIGGER=""
 # shellcheck disable=SC1090
