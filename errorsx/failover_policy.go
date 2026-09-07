@@ -84,11 +84,12 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.ReasonCode = "provider_concurrent_overload"
 	case KindUpstreamOverloaded:
 		// A relay-side overload is recoverable capacity pressure. Delay the
-		// next attempt, preserve the upstream body in request logs, and keep
-		// the credential-model binding routable for later traffic.
+		// next attempt, keep the binding routable, and enqueue a probe so the
+		// node is re-checked instead of staying unmarked while shedding load.
 		decision.Scope = ScopeModel
 		decision.RetryAfter = parseRetryAfter(retryAfterHeader, DefaultOverloadRetryDelay)
-		decision.EnqueueProbe = false
+		decision.EnqueueProbe = true
+		decision.ProbeFanout = 1
 		decision.ReasonCode = "provider_upstream_overloaded"
 	case KindNoAvailableChannel:
 		// 2026-08-09: OneAPI/new-api distributor "no available channel for

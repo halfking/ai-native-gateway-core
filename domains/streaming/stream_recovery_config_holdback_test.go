@@ -10,13 +10,14 @@ import (
 // (glm-5.2, minimax-m3, minimax-text-01) receive extended holdback windows.
 func TestRecoveryHoldbackForModel_UnstableModels(t *testing.T) {
 	tests := []struct {
-		model           string
-		wantWindow      time.Duration
-		wantMaxChunks   int
-		description     string
+		model         string
+		wantWindow    time.Duration
+		wantMaxChunks int
+		description   string
 	}{
 		{"glm-5.2", 10 * time.Second, 50, "glm-5.2 should get extended window"},
 		{"minimax-m3", 10 * time.Second, 50, "minimax-m3 should get extended window"},
+		{"minimax-m3-high", 10 * time.Second, 50, "minimax-m3 prefix should get extended window"},
 		{"minimax-text-01", 10 * time.Second, 50, "minimax-text-01 should get extended window"},
 	}
 
@@ -110,7 +111,11 @@ func TestIsUnstableModel(t *testing.T) {
 		unstable bool
 	}{
 		{"glm-5.2", true},
+		{"GLM-5.2", true},
+		{"glm-5.2-high", true},
 		{"minimax-m3", true},
+		{"minimax-m3-high", true},
+		{"vendor/minimax-m3", true},
 		{"minimax-text-01", true},
 		{"gpt-4o", false},
 		{"claude-3-5-sonnet-20241022", false},

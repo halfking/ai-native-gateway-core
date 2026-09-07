@@ -26,5 +26,20 @@ func TestProjectRecoveryKeepsGenericRetrySemanticsSeparate(t *testing.T) {
 			got.TransparentResume != tt.transparent || got.EffectiveAction != tt.action || got.Reason != tt.reason {
 			t.Errorf("ProjectRecovery(%q) = %#v", tt.kind, got)
 		}
+		if EffectiveRetryable(tt.kind) != (tt.generic || tt.failover) {
+			t.Errorf("EffectiveRetryable(%q) = %v, want %v", tt.kind, EffectiveRetryable(tt.kind), tt.generic || tt.failover)
+		}
+	}
+}
+
+func TestEffectiveRetryable_EmptyResponseIsRecoverable(t *testing.T) {
+	if IsRetryable(KindEmptyResponse) {
+		t.Fatal("empty_response must stay outside IsRetryable")
+	}
+	if !EffectiveRetryable(KindEmptyResponse) {
+		t.Fatal("empty_response must be effectively retryable via candidate failover")
+	}
+	if EffectiveRetryable(KindAuth) {
+		t.Fatal("auth must not be effectively retryable")
 	}
 }
