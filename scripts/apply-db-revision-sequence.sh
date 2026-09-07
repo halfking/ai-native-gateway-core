@@ -246,6 +246,12 @@ files=(
   # 文件重放 358,其 update_session_summary() 体会覆盖 572|563|661 链的
   # 661 终版(clobber guard 有意维护)。幂等,独立,顺序无要求。
   "$ROOT_DIR/sql/migrations/startup/683_session_dim_ownership_columns.sql"
+  # 2026-09-07 部署后观察 (聚合器 tick 23505 间歇复现): 坏 665 残留的
+  # idx_provider_error_details_tenant_fingerprint(键含 LEFT(error_message,200)、
+  # 无 credential_id)与 664/E-#3 权威的 tenant_cred_fingerprint 语义打架 ——
+  # 同桶不同凭据+消息样例相同时,cred 仲裁者放行的 INSERT 撞 tenant 指纹。
+  # 681 只收敛了 cred 指纹;684 按守卫 DROP 残留(cred 指纹在位且为 8 段才删)。
+  "$ROOT_DIR/sql/migrations/startup/684_drop_stale_provider_error_tenant_fingerprint.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
