@@ -83,8 +83,11 @@ func (sm *Manager) CreateV2(ctx context.Context, apiKeyID int, tenantID, deviceS
 // session never becomes resolvable, so Touch/session-scoped state can never
 // engage and turns cannot accumulate coherently.
 func (sm *Manager) EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*Session, bool, error) {
-	if sm == nil || sessionID == "" || apiKeyID <= 0 {
-		return nil, false, fmt.Errorf("session: ensure requires session id and api key")
+	// 2026-09-07 audit: mirror BindAPIKey's guard — the caller invokes this
+	// from a goroutine, and a nil redis client panicking there would take
+	// down the whole process, not just this registration.
+	if sm == nil || sm.redis == nil || sm.redis.client == nil || sessionID == "" || apiKeyID <= 0 {
+		return nil, false, fmt.Errorf("session: ensure requires redis client, session id and api key")
 	}
 	if existing, err := sm.Get(ctx, sessionID); err == nil && existing != nil {
 		return existing, false, nil
