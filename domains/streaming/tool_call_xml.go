@@ -5,6 +5,7 @@ import (
 	"html"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -284,13 +285,43 @@ func parseLooseToolCalls(text string) (string, []map[string]any) {
 		if inner == "" {
 			continue
 		}
-		args, _ := json.Marshal(map[string]any{"input": inner})
+		// 2026-09-08 audit: many vendors (Qwen-style) emit the tool call as a
+		// bare JSON object {"name":...,"arguments":...} inside <tool_call>.
+		// Extract the real name/arguments when the inner payload parses as
+		// JSON; otherwise keep the historical {"input": <raw>} wrap. A fixed
+		// name="tool" makes downstream agents fail with "no such tool" and
+		// aborts their loop — worse than the leak it replaces.
+		name := "tool"
+		args := "{}"
+		var asJSON map[string]any
+		if err := json.Unmarshal([]byte(inner), &asJSON); err == nil && asJSON != nil {
+			if n, ok := asJSON["name"].(string); ok && strings.TrimSpace(n) != "" {
+				name = strings.TrimSpace(n)
+				switch rawArgs := asJSON["arguments"].(type) {
+				case string:
+					args = rawArgs
+				default:
+					if rawArgs != nil {
+						if b, err := json.Marshal(rawArgs); err == nil {
+							args = string(b)
+						}
+					}
+				}
+			}
+		}
+		if args == "{}" && name == "tool" {
+			wrapped, _ := json.Marshal(map[string]any{"input": inner})
+			args = string(wrapped)
+		}
+		// 2026-09-08 audit: rune('a'+i) produces non-letter bytes past i=25 —
+		// use a decimal index so ids stay [A-Za-z0-9] like OpenAI ids.
+		id := strings.ReplaceAll("call_"+time.Now().UTC().Format("20060102150405.000000000")+"_"+strconv.Itoa(i), ".", "")
 		toolCalls = append(toolCalls, map[string]any{
-			"id":   strings.ReplaceAll("call_"+time.Now().UTC().Format("20060102150405.000000000")+"_"+string(rune('a'+i)), ".", ""),
+			"id":   id,
 			"type": "function",
 			"function": map[string]any{
-				"name":      "tool",
-				"arguments": string(args),
+				"name":      name,
+				"arguments": args,
 			},
 		})
 	}

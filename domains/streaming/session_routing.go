@@ -3,10 +3,13 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -221,4 +224,58 @@ func detectAndHandleModelSwitch(
 
 func generateSystemSessionID() string {
 	return "gw_" + uuid.New().String()
+}
+
+// normalizeAndRegisterClientSession 2026-09-08: 将 /v1/messages 与
+// /v1/responses 的"客户端已提供 id"分支与 chat 路径(handler.go)对齐 —
+// b02a5c385 的确定性映射 + 幂等注册此前只接了 chat:
+//  1. 非网关稳定身份(裸 UUID x-session-id)确定性映射 gw_<id>;否则异构
+//     命名空间直接落 request_logs.gw_session_id,session_turns 轮次聚合恒 1;
+//  2. Redis 未知的受信 gw_ id(新会话首请求)幂等注册 EnsureV2WithID(异步、
+//     尽力而为、带 panic 防护)— 否则每次后续请求都重复 ErrSessionNotFound,
+//     Touch 与轮次状态永不生效。branch 命名空间(gt_/gs_)不注册,与 chat 一致。
+// 返回规范化后的 sessionID 与解析到的 SessionInfo(可为 nil)。
+func normalizeAndRegisterClientSession(
+	r *http.Request,
+	sessionID string,
+	getter interface {
+		Get(ctx context.Context, id string) (*session.Session, error)
+	},
+	keyInfo *authentication.KeyInfo,
+) (string, *session.Session) {
+	sessionID = deriveGatewaySessionID(sessionID)
+	if getter == nil || keyInfo == nil || r == nil {
+		return sessionID, nil
+	}
+	si, getErr := getter.Get(r.Context(), sessionID)
+	if getErr == nil && si != nil {
+		return sessionID, si
+	}
+	if getErr == session.ErrSessionNotFound &&
+		strings.HasPrefix(sessionID, "gw_") && !isBranchSessionID(sessionID) {
+		if ensurer, ok := getter.(interface {
+			EnsureV2WithID(ctx context.Context, sessionID string, apiKeyID int, tenantID, deviceSeed, taskID string) (*session.Session, bool, error)
+		}); ok {
+			regDeviceSeed := r.Header.Get("X-Device-Seed")
+			if regDeviceSeed == "" {
+				regDeviceSeed = r.Header.Get("X-Machine-Id")
+			}
+			regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
+			go func(sid string, key *authentication.KeyInfo, seed, task string) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						slog.Warn("session register (honored id) panicked",
+							"session_id", sid, "panic", rec)
+					}
+				}()
+				regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer regCancel()
+				if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
+					slog.Warn("session register (honored id) failed",
+						"session_id", sid, "error", err)
+				}
+			}(sessionID, keyInfo, regDeviceSeed, regTaskID)
+		}
+	}
+	return sessionID, nil
 }
