@@ -40,8 +40,8 @@ type ModelRecommender struct {
 	// Negative cache: a failing GetActive (missing table, migration not yet
 	// applied) is remembered for negCacheTTL so the hot path neither hammers
 	// the DB once per request nor floods the log with identical warnings.
-	lastErr    error
-	negUntil   time.Time
+	lastErr     error
+	negUntil    time.Time
 	negCacheTTL time.Duration
 }
 
@@ -84,6 +84,7 @@ func (r *ModelRecommender) Recommend(ctx context.Context, candidates []ModelCand
 	// (2026-09-07 audit P1; the DB value is the runtime lever, the env var
 	// only documents the default).
 	if shouldExplore(clampExplorationRate(state.ExplorationRate)) {
+		recordExplorationRequest() // P2.2 Track C: ε-greedy exploration counter
 		return exploreRandomly(candidates), nil
 	}
 
@@ -132,8 +133,12 @@ func (r *ModelRecommender) getActiveState(ctx context.Context) (*OptimizationSta
 
 	r.cacheMu.Lock()
 	if r.cachedState != nil && now.Sub(r.cacheRefreshedAt) < r.cacheTTL {
+		// 先在锁内取快照再解锁：直接 `Unlock(); return r.cachedState` 会让
+		// 读落在锁外，与并发 SetActiveStateForTest/刷新写形成数据竞争
+		//（-race 实测报警，2026-09-07）。
+		state := r.cachedState
 		r.cacheMu.Unlock()
-		return r.cachedState, nil
+		return state, nil
 	}
 	if r.lastErr != nil && now.Before(r.negUntil) {
 		err := r.lastErr
