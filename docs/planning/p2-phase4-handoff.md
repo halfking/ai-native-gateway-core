@@ -6,6 +6,15 @@
 **本文档用途**: 剩余工作全部需要生产数据或线上环境，代码层面的工作已收尾。
 每节含可直接拷贝给新会话的执行提示词。
 
+> **⚠️ 2026-09-07 数据核查结论（任务1前置核查已完成）**：154/245/252 共用同一
+> PG（172.16.2.210/llm_gateway，已逐一核实三台 DB URL），`auto_route_selections`
+> 全链路（hot/分区/_all 视图）**0 行**，`training_human_annotations` 0 行，生产
+> 6 天日志零 `model=auto` 流量（245 为 traffic-only 角色无写入路径）。任务1/2
+> 前置条件当前不成立；导出工具链已在 245 实测健康（export 在空集守卫处按预期
+> 失败）。数据到位后的完整执行步骤见
+> [docs/ml/p2.4-real-data-evaluation.md](../ml/p2.4-real-data-evaluation.md) §5
+> runbook，无需重做本轮排查。
+
 ---
 
 ## 前置状态速览
