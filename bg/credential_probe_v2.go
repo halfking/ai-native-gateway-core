@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1387,6 +1388,27 @@ func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(ctx context.Co
 //
 // Errors and empty result both return nil — callers fall back to the
 // probe-model-only list.
+// fallbackProbeModel picks a probe model for credentials that never had
+// default_probe_model configured (2026-09-08: ProbeNow used to skip them
+// silently, so quota recovery never fired). Prefer a binding that is still
+// routable — an unavailable binding tells us nothing about the credential —
+// and only then fall back to any bound model. Results are sorted so the
+// choice is stable across ticks.
+func (c *CredentialProbeV2) fallbackProbeModel(ctx context.Context, credID int) string {
+	pick := func(models []string) string {
+		if len(models) == 0 {
+			return ""
+		}
+		sorted := append([]string(nil), models...)
+		sort.Strings(sorted)
+		return sorted[0]
+	}
+	if m := pick(c.loadBoundRawModels(ctx, credID)); m != "" {
+		return m
+	}
+	return pick(c.loadBoundRawModelsAll(ctx, credID))
+}
+
 func (c *CredentialProbeV2) loadBoundRawModelsAll(ctx context.Context, credID int) []string {
 	if c.db == nil {
 		return nil
@@ -1496,9 +1518,7 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 	}
 	s.APIKey = apiKey
 	if strings.TrimSpace(s.DefaultProbeModel) == "" {
-		if models := c.loadBoundRawModelsAll(timeoutCtx, credID); len(models) > 0 {
-			s.DefaultProbeModel = models[0]
-		}
+		s.DefaultProbeModel = c.fallbackProbeModel(timeoutCtx, credID)
 	}
 	if strings.TrimSpace(s.DefaultProbeModel) == "" {
 		slog.Debug("credential probe v2: ProbeNow skipped (no probe model)",

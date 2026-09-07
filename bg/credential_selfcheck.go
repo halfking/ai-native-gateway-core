@@ -251,7 +251,11 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(l.last_at, '1970-01-01'::timestamptz) < now() - $1::interval
-		ORDER BY e.last_error_at DESC, l.last_at NULLS FIRST, c.id
+		-- 2026-09-08: least-recently-checked first. With a 15m window and one
+		-- pick per 5m tick, newest-error-first let 3 noisy credentials starve
+		-- everything else; rotating on l.last_at guarantees every erroring
+		-- credential gets its turn.
+		ORDER BY COALESCE(l.last_at, '1970-01-01'::timestamptz) ASC, e.last_error_at DESC, c.id
 		LIMIT 1`, fmt.Sprintf("%d seconds", int(credentialSelfcheckWindow.Seconds()))).Scan(&id)
 	if err != nil {
 		if err == pgx.ErrNoRows {

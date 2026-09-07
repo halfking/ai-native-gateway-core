@@ -21,12 +21,21 @@
 | 额度退避 | 固定 2m / 5m |
 | pump holdoff | 10m → 45s |
 | applyOutcome | 直连成功即恢复 |
-| 业务成功 | 同步 cmb + credential + `quota_state=ok` |
-| ProbeNow | 无 default_probe_model 时用 binding 回退；成功通知 `probe_now` |
+| 业务成功 | 同步 cmb + credential + `quota_state=ok` / `quota_recover_at=NULL`；已健康时 0 行 |
+| 限流/并发退避 | 策略间隔 3m/5m/15m 作为通用链下限 |
+| ProbeNow | 无 default_probe_model 时优先可路由 binding 回退；成功通知 `probe_now` |
 | 余额额度 tick | 优先 `ProbeNowAsync` |
-| 当天成功扫描 | 15 分钟、最多 40 对、跳过 15 分钟内已健康 |
-| 凭据自检窗口 | 24h → 15m |
+| 当天成功扫描 | 15 分钟、最多 40 对；失败/不可用/未探测必扫，健康 1h 复扫 |
+| 凭据自检窗口 | 24h → 15m，最久未检优先轮转 |
+
+## 审计（第二轮）
+
+首轮合入后自审发现 8 项（P0 1 / P1 3 / P2 4），全部修正，详见
+`docs/测试/01-selfcheck-timely-recovery/audit.md`。P0 是业务成功写回在健康态
+仍无条件 UPDATE `credentials` 的热行写放大。
+
+需求整理：`docs/01-requirements/functional/FR-selfcheck-timely-recovery.md`。
 
 ## 验证
 
-`go test ./bg ./errorsx -count=1`
+`go build ./... && go vet ./bg/ && go test ./bg ./errorsx ./domains/nodehealth ./domains/credential ./domains/streaming/...`

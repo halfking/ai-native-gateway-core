@@ -19,7 +19,9 @@ var NetworkProbeBackoffChain = []time.Duration{
 
 // ProbeBackoffForKind returns the next retry delay for an automatic probe.
 // Quota uses the fixed policy cadence; transport errors stay on the short
-// chain; everything else keeps the historical 7-step ladder.
+// chain; everything else keeps the historical 7-step ladder, with the
+// policy interval (3m rate-limit / 5m concurrent / 15m no-channel) acting
+// as a floor so a 429 is never re-probed after 5s.
 func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 	policy := errorsx.AutomaticProbePolicyFor(kind)
 	if policy.Fixed && policy.Interval > 0 {
@@ -32,7 +34,11 @@ func ProbeBackoffForKind(kind errorsx.ErrorKind, attempt int) time.Duration {
 		errorsx.KindUpstreamContextLoss:
 		return ChainBackoffIndex(attempt, NetworkProbeBackoffChain)
 	}
-	return ChainBackoffIndex(attempt, NodeProbeBackoffChain)
+	delay := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
+	if policy.Enabled && policy.Interval > delay {
+		return policy.Interval
+	}
+	return delay
 }
 
 // ProbeBackoffForErrCode maps a probe/audit error code onto ProbeBackoffForKind.
@@ -68,5 +74,8 @@ func classifyProbeErrCode(code string) errorsx.ErrorKind {
 	if strings.HasPrefix(c, "http_0") {
 		return errorsx.KindNetwork
 	}
-	return errorsx.KindAuth
+	// Unknown / auth / pin-unsupported codes: no automatic policy, plain
+	// generic ladder. Returning an empty kind keeps the caller honest — it
+	// is not "auth", we simply have no transport evidence.
+	return ""
 }
