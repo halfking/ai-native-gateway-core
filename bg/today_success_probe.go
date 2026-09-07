@@ -11,9 +11,9 @@ import (
 )
 
 const (
-	todaySuccessProbeInterval    = 15 * time.Minute
-	todaySuccessProbeLookback    = 24 * time.Hour
-	todaySuccessProbeBatch       = 40
+	todaySuccessProbeInterval = 15 * time.Minute
+	todaySuccessProbeLookback = 24 * time.Hour
+	todaySuccessProbeBatch    = 40
 	// Healthy pairs are re-probed at most hourly (same cadence as the
 	// node_probe_state success re-arm). Business success already stamps
 	// last_attempt_at, so busy healthy nodes are never probed at all.
