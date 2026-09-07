@@ -27,24 +27,38 @@ _db252_psql() {
 # Resolves the currently running Podman/Docker container address on 252.
 # A container CNI address is intentionally not persisted in configuration.
 db252_resolve_remote_target() {
-  local ips ip
-  # The Go-template braces are literal input for the remote docker-compatible
-  # runtime; the configured container name is expanded locally.
+  local endpoints selected network ip
+  # Include network names because the PG container may join service-specific
+  # networks in addition to Podman's default bridge.
   # shellcheck disable=SC2029
-  ips=$(ssh "$SSH_TARGET" "docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{println}}{{end}}' '$REMOTE_PG_CONTAINER'" 2>/dev/null) || {
+  endpoints=$(ssh "$SSH_TARGET" "docker inspect -f '{{range \$name, \$net := .NetworkSettings.Networks}}{{\$name}}|{{\$net.IPAddress}}{{println}}{{end}}' '$REMOTE_PG_CONTAINER'" 2>/dev/null) || {
     _db252_log "cannot inspect remote container '$REMOTE_PG_CONTAINER' through SSH target '$SSH_TARGET'"
     return 1
   }
 
-  ips=$(printf '%s\n' "$ips" | sed '/^[[:space:]]*$/d' | sort -u)
-  if [[ $(printf '%s\n' "$ips" | wc -l | tr -d ' ') -ne 1 ]]; then
-    _db252_log "expected exactly one IPv4 address for '$REMOTE_PG_CONTAINER', got: ${ips:-none}"
+  endpoints=$(printf '%s\n' "$endpoints" | sed '/^[[:space:]]*$/d' | sort -u)
+  if [[ "$endpoints" != *"|"* &&
+    $(printf '%s\n' "$endpoints" | wc -l | tr -d ' ') -eq 1 ]]; then
+    selected="$endpoints"
+  elif [[ -n "${REMOTE_PG_NETWORK:-}" ]]; then
+    selected=$(printf '%s\n' "$endpoints" | awk -F'|' -v n="$REMOTE_PG_NETWORK" '$1==n {print; exit}')
+    if [[ -z "$selected" ]]; then
+      _db252_log "network '$REMOTE_PG_NETWORK' not found for '$REMOTE_PG_CONTAINER'"
+      return 1
+    fi
+  elif [[ $(printf '%s\n' "$endpoints" | wc -l | tr -d ' ') -eq 1 ]]; then
+    selected="$endpoints"
+  else
+    _db252_log "multiple container networks found; set REMOTE_PG_NETWORK"
     return 1
   fi
 
-  ip=$(printf '%s\n' "$ips")
+  network="${selected%%|*}"
+  ip="${selected#*|}"
+  # Backward compatibility for runtimes/mocks that return only an address.
+  [[ "$selected" == *"|"* ]] || { network="legacy"; ip="$selected"; }
   if [[ ! "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-    _db252_log "container '$REMOTE_PG_CONTAINER' returned an invalid IPv4 address: $ip"
+    _db252_log "container '$REMOTE_PG_CONTAINER' network '$network' returned an invalid IPv4 address: $ip"
     return 1
   fi
   IFS=. read -r a b c d <<< "$ip"
