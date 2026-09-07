@@ -306,8 +306,9 @@ func (d *Decider) SetTenantResolver(fn func(apiKeyID int) string) {
 // logged and do not block routing.
 //
 // Usage:
-//   decider.SetOptimizer(routingopt.NewDefaultOptimizer())
-//   decider.SetOptimizer(nil) // disable
+//
+//	decider.SetOptimizer(routingopt.NewDefaultOptimizer())
+//	decider.SetOptimizer(nil) // disable
 //
 // Feature flag: ROUTING_OPT_ENABLED (default: false)
 // Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md
@@ -387,45 +388,45 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 			requestedWorkType = ""
 		}
 	}
-		// Step 0: check session intent cache (skip if no sessionID or cache disabled)
-		if sessionID != "" && d.intentCache != nil {
-			// 2026-07-27 concurrency fix: use IncrementHit so the read-modify-write
-			// of HitCount happens under a single write lock. The previous
-			// Get→HitCount++→Put pattern raced across concurrent requests on the
-			// same session (same count read, last Put wins → hits undercounted,
-			// drift threshold fires late).
-			if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
-				if cached.WorkType != requestedWorkType {
-					d.intentCache.Invalidate(sessionID)
-					recordCacheMiss() // F-7: workType mismatch invalidated cache
-				} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
-					recordCacheHit() // F-7: cache reused
-					decision := &Decision{
-						ChosenModel:        cached.ChosenModel,
-						ChosenCredentialID: cached.CredentialID,
-						ChosenRawModel:     cached.ChosenModel,
-						TaskType:           cached.TaskType,
-						Confidence:         cached.Confidence,
-						Profile:            cached.Profile,
-						Classifier:         "session_cache",
-						Reason:             "reused session intent (within " + d.IntentCacheTTL.String() + " TTL)",
-						DecidedAt:          time.Now(),
-						RoutingSource:      "session_cache",
-					}
-					d.annotateTreatment(ctx, apiKeyID, decision)
-					d.populateShadow(ctx, sigs, decision)
-					return decision, nil
-				} else {
-					recordCacheMiss() // F-7: shouldReclassify triggered
+	// Step 0: check session intent cache (skip if no sessionID or cache disabled)
+	if sessionID != "" && d.intentCache != nil {
+		// 2026-07-27 concurrency fix: use IncrementHit so the read-modify-write
+		// of HitCount happens under a single write lock. The previous
+		// Get→HitCount++→Put pattern raced across concurrent requests on the
+		// same session (same count read, last Put wins → hits undercounted,
+		// drift threshold fires late).
+		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
+			if cached.WorkType != requestedWorkType {
+				d.intentCache.Invalidate(sessionID)
+				recordCacheMiss() // F-7: workType mismatch invalidated cache
+			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
+				recordCacheHit() // F-7: cache reused
+				decision := &Decision{
+					ChosenModel:        cached.ChosenModel,
+					ChosenCredentialID: cached.CredentialID,
+					ChosenRawModel:     cached.ChosenModel,
+					TaskType:           cached.TaskType,
+					Confidence:         cached.Confidence,
+					Profile:            cached.Profile,
+					Classifier:         "session_cache",
+					Reason:             "reused session intent (within " + d.IntentCacheTTL.String() + " TTL)",
+					DecidedAt:          time.Now(),
+					RoutingSource:      "session_cache",
 				}
+				d.annotateTreatment(ctx, apiKeyID, decision)
+				d.populateShadow(ctx, sigs, decision)
+				return decision, nil
 			} else {
-				recordCacheMiss() // F-7: session not in cache
+				recordCacheMiss() // F-7: shouldReclassify triggered
 			}
 		} else {
-			if sessionID != "" {
-				recordCacheMiss() // F-7: cache disabled but sessionID present
-			}
+			recordCacheMiss() // F-7: session not in cache
 		}
+	} else {
+		if sessionID != "" {
+			recordCacheMiss() // F-7: cache disabled but sessionID present
+		}
+	}
 
 	// P2.2: attach request metadata so optimizer hooks can read
 	// userID/session/client without changing the interface signatures.

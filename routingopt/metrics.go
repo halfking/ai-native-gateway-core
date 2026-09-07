@@ -151,29 +151,29 @@ func registerRoutingOptMetrics() {
 			Name: routingOptMetricPrefix + "cache_hits_total",
 			Help: "Routing-optimizer cache hits (populated by Track A classification cache).",
 		})
-			cacheMiss = prometheus.NewCounter(prometheus.CounterOpts{
-				Name: routingOptMetricPrefix + "cache_miss_total",
-				Help: "Routing-optimizer cache misses (populated by Track A classification cache).",
-			})
-			// F-7: ONNX 推理错误计数（包括 runtime 不可用和 Predict 失败）
-			onnxInferenceErrors = prometheus.NewCounter(prometheus.CounterOpts{
-				Name: routingOptMetricPrefix + "onnx_inference_errors_total",
-				Help: "ONNX inference failures (unavailable runtime, Predict errors). " +
-					"ML routing falls back to rule-engine order on any error.",
-			})
-			weightedAccuracy = prometheus.NewGauge(prometheus.GaugeOpts{
+		cacheMiss = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: routingOptMetricPrefix + "cache_miss_total",
+			Help: "Routing-optimizer cache misses (populated by Track A classification cache).",
+		})
+		// F-7: ONNX 推理错误计数（包括 runtime 不可用和 Predict 失败）
+		onnxInferenceErrors = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: routingOptMetricPrefix + "onnx_inference_errors_total",
+			Help: "ONNX inference failures (unavailable runtime, Predict errors). " +
+				"ML routing falls back to rule-engine order on any error.",
+		})
+		weightedAccuracy = prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: routingOptMetricPrefix + "weighted_accuracy",
 			Help: "Human-annotation-weighted routing accuracy (auto + 2*human) / (total + 2*human), refreshed by RunAdaptiveMaintenance.",
 		})
 		feedbackWrites = &feedbackWritesCollector{}
 
-			prometheus.MustRegister(
-				preClassifyMs, postClassifyMs, recommendMs,
-				explorationRequests,
-				cacheHits, cacheMiss, onnxInferenceErrors,
-				weightedAccuracy,
-				feedbackWrites,
-			)
+		prometheus.MustRegister(
+			preClassifyMs, postClassifyMs, recommendMs,
+			explorationRequests,
+			cacheHits, cacheMiss, onnxInferenceErrors,
+			weightedAccuracy,
+			feedbackWrites,
+		)
 	})
 }
 
