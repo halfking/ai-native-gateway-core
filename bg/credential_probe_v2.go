@@ -1386,8 +1386,6 @@ func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(ctx context.Co
 // Sibling to loadBoundRawModels (which keeps the cmb.available=TRUE filter
 // for the failure branch where the cache mirrors current DB state).
 //
-// Errors and empty result both return nil — callers fall back to the
-// probe-model-only list.
 // fallbackProbeModel picks a probe model for credentials that never had
 // default_probe_model configured (2026-09-08: ProbeNow used to skip them
 // silently, so quota recovery never fired). Prefer a binding that is still
@@ -1409,6 +1407,14 @@ func (c *CredentialProbeV2) fallbackProbeModel(ctx context.Context, credID int) 
 	return pick(c.loadBoundRawModelsAll(ctx, credID))
 }
 
+// loadBoundRawModelsAll returns distinct raw_model_name values bound to a
+// credential WITHOUT filtering on cmb.available. Used by the healthy probe
+// branch so the cache fan-out reflects the freshly recovered binding set,
+// including bindings that had been marked unavailable during the prior
+// balance_exhausted window.
+//
+// Errors and empty result both return nil — callers fall back to the
+// probe-model-only list.
 func (c *CredentialProbeV2) loadBoundRawModelsAll(ctx context.Context, credID int) []string {
 	if c.db == nil {
 		return nil
