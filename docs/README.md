@@ -43,7 +43,7 @@
 | **[项目总览](./PROJECT_OVERVIEW.md)** | 项目概述、架构设计、核心功能模块 ⭐ | 2026-09-06 |
 | **[功能模块指南](./MODULES_GUIDE.md)** | 详细的模块功能说明与使用指南 ⭐ | 2026-09-06 |
 | **[快速参考手册](./QUICK_REFERENCE.md)** | 常用命令、API端点、故障排查 ⭐ | 2026-09-06 |
-| **[文档索引](./INDEX.md)** | 按主题组织的文档快速定位 | 2026-08-17 |
+| **[文档索引](./index.md)** | 按主题组织的文档快速定位 | 2026-08-17 |
 
 ---
 
@@ -52,7 +52,7 @@
 ```
 docs/
 ├── README.md                ← 本文件：导览
-├── INDEX.md                 ← 主题索引（按功能/模块）
+├── index.md                 ← 主题索引（按功能/模块）
 │
 ├── adr/                     架构决策记录（2 个 ADR）
 ├── api/                     API 契约（OpenAPI / YAML，2 份）
@@ -167,3 +167,6 @@ git revert <commit-sha>
 **最后更新**：2026-08-17
 **维护者**：LLM Gateway Team
 **分支**：`chore/docs-archive-2026-08`（未推送）
+## 归档（2026-09-08 整理）
+
+根目录 19 篇一次性交付/测试/审计报告与 docs 根 10 篇过程文档已归档至 `archive/2026-{07,08,09}/`；`INDEX.md`（与 `index.md` 完全重复）已归档，主题索引以 `index.md` 为准；设计类文档（proxy-management-design、perf 基线、FEATURE-REQ×2）移至 `03-design/`。只归档不删除。
