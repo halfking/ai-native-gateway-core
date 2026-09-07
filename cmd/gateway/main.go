@@ -4090,7 +4090,9 @@ func main() {
 				// this wiring those rows stay excluded from routing until
 				// an operator manually clears and re-fetches the model list.
 				// The probe worker is the authoritative writer of cmb.available
-				// — it only flips when direct + gateway probe rounds succeed.
+				// — per the FR-5 timely-recovery contract (applyOutcome) it
+				// restores availability on a direct probe success; the pinned
+				// gateway round only refines the evidence.
 				if credRecovery != nil {
 					credRecovery.SetProbeSubmitter(func(credID int, model string) {
 						nodeProbeWorker.Submit(credID, model, "default", "expired-binding-recovery")

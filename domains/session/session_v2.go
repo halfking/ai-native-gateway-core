@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 func generateGwSessionID() string {
@@ -119,28 +120,52 @@ func (sm *Manager) EnsureV2WithID(ctx context.Context, sessionID string, apiKeyI
 	sessionKeyRedis := "session:key:" + sessionKey
 	activeKeyRedis := fmt.Sprintf("session:apiKey:%d:active", apiKeyID)
 
-	pipe := sm.redis.client.Pipeline()
-	pipe.HSet(ctx, "session:"+sessionID, map[string]any{
-		"api_key_id":          strconv.Itoa(apiKeyID),
-		"tenant_id":           tenantID,
-		"session_key":         sessionKey,
-		"task_id":             taskID,
-		"namespace":           "gw",
-		"created_at":          now.Format(time.RFC3339),
-		"last_active":         now.Format(time.RFC3339),
-		"expires_at":          session.ExpiresAt.Format(time.RFC3339),
-		"devices":             string(devicesJSON),
-		"provider_cache_info": string(cacheInfoJSON),
-	})
-	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
-	// NX: a concurrent first-request may have created the index already —
-	// never let a later registration steal an existing session:key mapping.
-	pipe.SetNX(ctx, sessionKeyRedis, sessionID, sm.ttl)
-	pipe.SAdd(ctx, activeKeyRedis, sessionID)
-	pipe.Expire(ctx, activeKeyRedis, sm.ttl)
-	_, err := pipe.Exec(ctx)
+	// 2026-09-08 audit: the previous pipeline HSet-unconditionally wrote
+	// session:<id> between the Get check and the write (check-then-act).
+	// Two different api keys concurrently first-using the same legacy id
+	// both passed the Get→NotFound gate, and the later pipeline stole the
+	// hash — the first key then hit a permanent (TTL-lived) 403 on every
+	// follow-up request. The script makes exists-check + write atomic:
+	// first writer wins, the loser falls through to the re-Get below and
+	// keeps the pre-registration "honored, unresolvable" behavior instead
+	// of acquiring someone else's session.
+	ensureScript := redis.NewScript(`
+if redis.call('EXISTS', KEYS[1]) == 1 then
+  return 0
+end
+redis.call('HSET', KEYS[1], unpack(ARGV, 1, #ARGV - 2))
+redis.call('EXPIRE', KEYS[1], tonumber(ARGV[#ARGV - 1]))
+redis.call('SET', KEYS[2], ARGV[#ARGV], 'NX', 'EX', tonumber(ARGV[#ARGV - 1]))
+redis.call('SADD', KEYS[3], ARGV[#ARGV])
+redis.call('EXPIRE', KEYS[3], tonumber(ARGV[#ARGV - 1]))
+return 1
+`)
+	fields := []any{
+		"api_key_id", strconv.Itoa(apiKeyID),
+		"tenant_id", tenantID,
+		"session_key", sessionKey,
+		"task_id", taskID,
+		"namespace", "gw",
+		"created_at", now.Format(time.RFC3339),
+		"last_active", now.Format(time.RFC3339),
+		"expires_at", session.ExpiresAt.Format(time.RFC3339),
+		"devices", string(devicesJSON),
+		"provider_cache_info", string(cacheInfoJSON),
+	}
+	args := append(fields, int(sm.ttl/time.Second), sessionID)
+	created, err := ensureScript.Run(ctx, sm.redis.client,
+		[]string{"session:" + sessionID, sessionKeyRedis, activeKeyRedis}, args...).Int()
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to ensure session v2 in redis: %w", err)
+	}
+	if created == 0 {
+		// Race lost: the id was registered concurrently. Re-read so the
+		// caller gets the real owner's record (created=false).
+		existing, gerr := sm.Get(ctx, sessionID)
+		if gerr != nil {
+			return nil, false, gerr
+		}
+		return existing, false, nil
 	}
 
 	return session, true, nil
