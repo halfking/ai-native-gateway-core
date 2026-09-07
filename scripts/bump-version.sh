@@ -92,9 +92,28 @@ GIT_TAG_PATCH=$(echo "$GIT_TAG" | sed 's/^v//')   # "2.4.1"
 # 新版本号
 HEAD_SHA=$(git rev-parse --short=8 HEAD 2>/dev/null || echo "$CURRENT_GIT_SHA")
 HEAD_DATE=$(date -u +%Y%m%d)
-NEW_SEQ=$((CURRENT_SEQ + 1))
-if [[ -n "$TARGET_SEQ" && "$TARGET_SEQ" -gt "$NEW_SEQ" ]]; then
-  NEW_SEQ="$TARGET_SEQ"
+
+# build_seq 反映代码变更，不是部署计数。
+#
+# 修复前：每次 bump 永远 +1 (CURRENT_SEQ+1)。后果是 245 上一次部署停在
+# 1957，而之后 91 次仅到 154 的重新部署把 build_seq 顶到 2048——同一份
+# commit 在两台机器上 build_seq 漂移 91。deploy-seamless 的 bump-version
+# 调用未区分"重跑同一 commit"与"代码真变了"。
+#
+# 修复后：仅当 git_sha 或 build_date 与 SSOT 不同（说明代码/日期变了）
+# 才递增；否则保留原 seq，使同代码多次部署 build_seq 一致。--seq 显式
+# 指定仍然尊重（修漂移或强制 +N）。
+SAME_CODE=0
+if [[ "$HEAD_SHA" == "$CURRENT_GIT_SHA" && "$HEAD_DATE" == "$(python3 -c "import json;print(json.load(open('$VERSION_JSON'))['build_date'])" 2>/dev/null)" ]]; then
+  SAME_CODE=1
+fi
+if (( SAME_CODE == 1 )) && [[ -z "$TARGET_SEQ" ]]; then
+  NEW_SEQ="$CURRENT_SEQ"
+else
+  NEW_SEQ=$((CURRENT_SEQ + 1))
+  if [[ -n "$TARGET_SEQ" && "$TARGET_SEQ" -gt "$NEW_SEQ" ]]; then
+    NEW_SEQ="$TARGET_SEQ"
+  fi
 fi
 NEW_VERSION="${GIT_TAG_PATCH}-${HEAD_SHA}-${HEAD_DATE}-${NEW_SEQ}"
 NOW_DATE=$(date -u +%Y-%m-%d)
@@ -103,6 +122,9 @@ echo "📌 bump-version"
 echo "   current: seq=$CURRENT_SEQ version=$CURRENT_VERSION"
 echo "   target:  seq=$NEW_SEQ version=$NEW_VERSION"
 echo "   date:    $HEAD_DATE"
+if (( SAME_CODE == 1 )) && [[ -z "$TARGET_SEQ" ]]; then
+  echo "   ↳ git_sha/build_date 未变化，seq 保持不变（同代码重跑）"
+fi
 
 # ── dry-run 提前退出 ─────────────────────────────────────────────
 if [[ "$DRY_RUN" == "true" ]]; then
