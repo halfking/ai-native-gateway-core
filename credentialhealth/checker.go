@@ -528,6 +528,20 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 // only cmb. That assumption was wrong — v_routable_credential_models.is_routable
 // also requires availability_state='ready' (see 2026-06-22 defect 4).
 func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
+	// 2026-09-08 self-check audit: every surface below now carries a
+	// credential-level manual_disabled guard. Without it the 1-minute tick
+	// could flip a manually-disabled credential (or its bindings) back to
+	// available/ready, overriding operator intent — the routing layer would
+	// only stay correct where it ALSO re-checks manual_disabled downstream,
+	// and the admin UI would show a ready state the operator explicitly
+	// turned off. Bound to lifecycle/status intentionally NOT added here:
+	// degraded/cooling credentials are exactly the population this worker
+	// exists to restore; only human disable intent must block recovery.
+	cmbManualGuard := `EXISTS (
+		SELECT 1 FROM credentials c
+		WHERE c.id = cmb.credential_id
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+	)`
 	cmbTag, err := db.Exec(ctx, `
 		UPDATE credential_model_bindings cmb
 		SET available              = TRUE,
@@ -544,6 +558,7 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 		               cmb.unavailable_at + INTERVAL '30 seconds') IS NOT NULL
 		  AND COALESCE(cmb.unavailable_recover_at,
 		               cmb.unavailable_at + INTERVAL '30 seconds') < now()
+		  AND `+cmbManualGuard+`
 	`)
 	if err != nil {
 		return 0, fmt.Errorf("recover expired credential_model_bindings: %w", err)
@@ -580,6 +595,11 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
 		  AND COALESCE(mo.unavailable_recover_at,
 		               mo.unavailable_at + INTERVAL '30 seconds') < now()
+		  AND EXISTS (
+			SELECT 1 FROM credentials c
+			WHERE c.id = mo.credential_id
+			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  )
 	`)
 	if err != nil {
 		return int(cmbTag.RowsAffected()), fmt.Errorf("recover expired model_offers: %w", err)
@@ -614,6 +634,7 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 		      OR COALESCE(quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  )
 		  AND lifecycle_status = 'active'
+		  AND COALESCE(manual_disabled, FALSE) = FALSE
 			AND NOT (
 			    -- Match bg/credential_recovery.go: only block credential-level
 			    -- recovery when every bound model is broken and unavailable.
