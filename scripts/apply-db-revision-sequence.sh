@@ -239,6 +239,13 @@ files=(
   # DROP+重建+重挂触发器模式给视图追加三列。独立、幂等,顺序仅要求在 678
   # 之后(同为视图重建,后写者胜,两者追加的列互不重叠)。
   "$ROOT_DIR/sql/migrations/startup/682_model_offers_context_window_columns.sql"
+  # 2026-09-07 网关日志审计 (42703 x ~19/min): internal/sessionv2mirror 的
+  # session_dim upsert 引用 api_key_id/application_*/owner_*/end_user_id/
+  # client_id 七列,但本库 session_dim 停留在 350 的窄形状,358 的 ALTER
+  # 从未落地。683 只取 358:25-45 的列+索引段(定义完全一致) —— 不能整
+  # 文件重放 358,其 update_session_summary() 体会覆盖 572|563|661 链的
+  # 661 终版(clobber guard 有意维护)。幂等,独立,顺序无要求。
+  "$ROOT_DIR/sql/migrations/startup/683_session_dim_ownership_columns.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

@@ -325,6 +325,9 @@ var providerErrorDetailsFingerprintRestore8partMigration681 []byte
 //go:embed embeddata/startup/682_model_offers_context_window_columns.sql
 var modelOffersContextWindowColumnsMigration682 []byte
 
+//go:embed embeddata/startup/683_session_dim_ownership_columns.sql
+var sessionDimOwnershipColumnsMigration683 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -428,6 +431,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/680_request_logs_current_month_view_bootstrap.sql":                      requestLogsCurrentMonthViewBootstrapMigration680,
 	"startup/681_provider_error_details_fingerprint_restore_8part.sql":               providerErrorDetailsFingerprintRestore8partMigration681,
 	"startup/682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
+	"startup/683_session_dim_ownership_columns.sql":                                  sessionDimOwnershipColumnsMigration683,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
