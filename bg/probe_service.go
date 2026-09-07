@@ -295,8 +295,10 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		return ProbeQueueResult{}, err
 	}
 
-	// Round 1 is evidence only. A direct success must not restore routing-visible
-	// state before the pinned gateway round has verified the same node.
+	// Round 1 is evidence. Per the FR-5 timely-recovery contract (see
+	// applyOutcome), a direct success DOES restore routing-visible state
+	// immediately — the optional pinned gateway round only refines the
+	// evidence, it is not a gate.
 	direct := s.directRound(hbCtx, credID, model)
 	if err := probeRunContextErr(ctx, hbCtx, task); err != nil {
 		if errors.Is(err, ErrProbeLeaseLost) && ctx.Err() == nil {

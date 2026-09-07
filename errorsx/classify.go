@@ -702,9 +702,13 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 			return KindUpstreamDown
 		}
 		if isBrokenPipeMessage(msg) {
-			if isClientWriteBrokenPipe(msg) {
-				return KindCanceled
-			}
+			// 2026-09-08 审计：不按消息猜测 broken pipe 的方向。ClassifyError
+			// 的全部调用方分类的是上游尝试错误（client.Do 上传请求体时上游
+			// 断开同样产生 "write tcp ...: write: broken pipe"，文本形态与
+			// 向客户端写完全一致），此前把 write 形态判为 KindCanceled 让
+			// 请求发送阶段的上游故障从可重试退化为终态、跳过故障转移与
+			// 凭据状态写入。客户端断开由 errors.Is(err, context.Canceled)
+			// 及 stream_recovery 自身的消息匹配负责，不经过这里。
 			return KindNetwork
 		}
 		if eofWithoutDoneRe.MatchString(msg) {
@@ -1357,11 +1361,4 @@ func IsClientBug(kind ErrorKind) bool {
 
 func isBrokenPipeMessage(msg string) bool {
 	return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "epipe")
-}
-
-func isClientWriteBrokenPipe(msg string) bool {
-	if !isBrokenPipeMessage(msg) {
-		return false
-	}
-	return strings.Contains(msg, "write:") || strings.Contains(msg, "write tcp")
 }

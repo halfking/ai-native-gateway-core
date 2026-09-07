@@ -91,7 +91,10 @@ func (p *TodaySuccessProbe) run(ctx context.Context) {
 			slog.Warn("today success probe scan failed", "error", err)
 			continue
 		}
-		p.worker.Submit(credID, model, "default", "today-success-probe")
+		// source=selfcheck（FR-selfcheck-timely-recovery）：这是主动恢复
+		// 扫描，不是业务失败反应；走 Submit 会把审计行静默归因为
+		// request_failure，看板与自检流 origin 徽章全部失真。
+		p.worker.SubmitWithSource(credID, model, "default", "today-success-probe", "selfcheck")
 		submitted++
 	}
 	if err := rows.Err(); err != nil {

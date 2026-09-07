@@ -1,8 +1,10 @@
 // affinity_cache.go — P2.2 Track A: routing_user_affinity 的 Redis 读缓存。
 //
 // 包装 UserAffinityDAO.GetByUserID：
-//   - Redis hash 缓存 task_type_distribution 与 preferred_providers
-//     （key routingopt:affinity:<userID>，TTL 1h）
+//   - Redis hash 缓存 task_type_distribution、preferred_providers 与
+//     total_requests（key routingopt:affinity:<userID>，TTL 1h）。
+//     total_requests 必须入缓存：UpdateUserAffinity 以 Get 结果为读-改-写
+//     基线回写 DB，缺它会把 DB 计数反复重置为 1
 //   - miss 回源 DB 并回填 Redis；DB 也 miss（ErrNoRows）→ 负缓存 30s，
 //     窗口内直接返回"无数据"，不重复回源
 //   - 构造时 redis.Client 为 nil → 直查 DB 降级（行为等同无缓存，不 panic）
@@ -30,6 +32,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -45,6 +48,7 @@ const affinityKeyPrefix = "routingopt:affinity:"
 const (
 	affinityFieldTTD = "task_type_distribution" // map[string]int JSON
 	affinityFieldPP  = "preferred_providers"    // map[string]float64 JSON
+	affinityFieldTR  = "total_requests"         // 十进制 int（读-改-写基线）
 	affinityFieldNeg = "negative"               // "1" = 负缓存标记
 )
 
@@ -193,7 +197,7 @@ func (c *AffinityCache) getFromDBAndFill(ctx context.Context, userID, key string
 	}
 }
 
-// fillPositive 写入正缓存：两个 hash field + 正 TTL。HDel 清掉可能残留
+// fillPositive 写入正缓存：三个 hash field + 正 TTL。HDel 清掉可能残留
 // 的负缓存标记（同一 key 先负后正的场景）。失败仅日志——下次读自动重填。
 func (c *AffinityCache) fillPositive(ctx context.Context, key string, aff *UserAffinity) {
 	ttd, err1 := json.Marshal(aff.TaskTypeDistribution)
@@ -208,6 +212,7 @@ func (c *AffinityCache) fillPositive(ctx context.Context, key string, aff *UserA
 	pipe.HSet(ctx, key, map[string]interface{}{
 		affinityFieldTTD: ttd,
 		affinityFieldPP:  pp,
+		affinityFieldTR:  strconv.Itoa(aff.TotalRequests),
 	})
 	pipe.Expire(ctx, key, c.ttl)
 	if _, err := pipe.Exec(ctx); err != nil {
@@ -227,7 +232,8 @@ func (c *AffinityCache) fillNegative(ctx context.Context, key string) {
 	}
 }
 
-// decodeAffinity 从 HGetAll 结果还原 UserAffinity（只填两个缓存字段）。
+// decodeAffinity 从 HGetAll 结果还原 UserAffinity（只填缓存携带的负载
+// 字段；user_id 由调用方持有，UpdateUserAffinity 回写前自行归位）。
 func decodeAffinity(fields map[string]string) (*UserAffinity, error) {
 	aff := &UserAffinity{}
 	if raw, ok := fields[affinityFieldTTD]; ok {
@@ -239,6 +245,15 @@ func decodeAffinity(fields map[string]string) (*UserAffinity, error) {
 		if err := json.Unmarshal([]byte(raw), &aff.PreferredProviders); err != nil {
 			return nil, err
 		}
+	}
+	// total_requests 缺失（旧版本条目/字段版本混用）按 0 基线处理——
+	// 仅回写路径受影响一次，Invalidate 后自然重填。
+	if raw, ok := fields[affinityFieldTR]; ok {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, err
+		}
+		aff.TotalRequests = n
 	}
 	return aff, nil
 }

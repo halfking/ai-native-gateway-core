@@ -490,6 +490,30 @@ func (w *NodeProbeWorker) loop(ctx context.Context) {
 	}
 }
 
+// SubmitWithSource is Submit with an explicit queue source. source 落到
+// credential_probe_queue.source 与 node_probe_runs.trigger_kind，供自检流
+// origin 徽章与审计归因消费，必须是 538 迁移 CHECK 约束允许的枚举值
+// （request_failure/periodic/external_async/admin/integrity_probe_planner/
+// selfcheck）。2026-09-08 审计：主动扫描器（today-success 等）此前走
+// Submit 被静默归因为 request_failure，审计与看板全部失真。legacy 直写
+// 路径（probeQueue == nil）没有 source 列，回退 Submit 语义。
+func (w *NodeProbeWorker) SubmitWithSource(credID int, model, tenantID, parentReqID, source string) {
+	if w == nil {
+		return
+	}
+	if model == "" {
+		return
+	}
+	if w.probeQueue != nil {
+		if _, err := w.submitViaQueueSource(credID, model, tenantID, parentReqID, source); err != nil {
+			slog.Warn("node_probe_worker: submit via queue failed",
+				"credential_id", credID, "model", model, "source", source, "error", err)
+		}
+		return
+	}
+	w.Submit(credID, model, tenantID, parentReqID)
+}
+
 // Submit enqueues a (credID, model) pair for probing.  Called by the
 // state manager when a real request fails.  Idempotent: if the row
 // is currently in flight (in-memory `inFlight` map in cycle) the
