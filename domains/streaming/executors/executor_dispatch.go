@@ -554,6 +554,20 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 				)
 				failureLogged = true
 			}
+			// 2026-09-08 audit (re-wiring): the legacy sync candidate loop that
+			// called HealthTracker.OnError was retired in f7eb0eb1b and nothing
+			// re-attached the failure side — the 80% hard-degrade, kind-gradient
+			// thresholds, probe gating and concurrency auto-tune all went dark,
+			// and the admin sliding window only ever accumulated successes
+			// (monitor showed a permanent 100%). The dispatch defer is the one
+			// funnel every candidate failure passes through. OnError is async
+			// and its checker enforces the empty_response/overload/client-bug
+			// skip list internally, so gateway-side benign rejections never
+			// hard-degrade a credential.
+			if e.HealthTracker != nil && cand.CredentialID > 0 {
+				e.HealthTracker.OnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, kind,
+					params.R.Header.Get("X-Request-Id"))
+			}
 		} else if result, ok := out.Result.(*ExecuteResult); ok && result != nil && result.Response != nil {
 			out.HTTPStatus = result.Response.StatusCode
 		}
