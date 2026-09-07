@@ -331,8 +331,13 @@ dl_load_project_env() {
   done < <(
     # .env.local prints a friendly summary when sourced; suppress it so
     # deploy diagnostics stay redacted and the env dump stays clean.
+    # set -a is load-bearing: the file uses plain KEY=VALUE dotenv
+    # assignments (no `export`), which land as shell-only variables that
+    # `env -0` never sees. Without it the loader imports zero keys and
+    # deploy() dies on the empty SECRET_KEY gate (incident 2026-09-07,
+    # "LLM_GATEWAY_SECRET_KEY is empty" on an otherwise valid .env.local).
     # shellcheck disable=SC1090
-    { source "$file" >/dev/null 2>&1; env -0; }
+    { set -a; source "$file" >/dev/null 2>&1; set +a; env -0; }
   )
 }
 
