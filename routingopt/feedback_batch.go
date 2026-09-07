@@ -176,7 +176,7 @@ func (w *FeedbackBatchWriter) startWorker() {
 	if w.cfg.DisableWorker {
 		return
 	}
-	w.startOnce.Do(func() { go w.run() })
+	w.startOnce.Do(func() { go w.runGuarded() })
 }
 
 // run is the background worker: write when BatchSize entries accumulate or
@@ -207,6 +207,29 @@ func (w *FeedbackBatchWriter) run() {
 				w.writeBatch(ctx, buf)
 				buf = buf[:0]
 			}
+		}
+	}
+}
+
+// runGuarded 2026-09-08 audit: a panic inside run() used to kill the worker
+// permanently — the bounded queue then filled up and Enqueue silently dropped
+// every subsequent feedback entry (StatsDropped was the only trace, and the
+// optimizer's learning input vanished). Restart the loop with backoff; the
+// in-flight buffer may lose one batch at most, matching the drop-on-full
+// contract.
+func (w *FeedbackBatchWriter) runGuarded() {
+	for {
+		func() {
+			defer func() {
+				if rec := recover(); rec != nil {
+					slog.Error("feedback_batch writer panicked, restarting",
+						"panic", rec)
+				}
+			}()
+			w.run()
+		}()
+		select {
+		case <-time.After(w.cfg.FlushInterval):
 		}
 	}
 }

@@ -130,7 +130,14 @@ func (c *WebhookChannel) postWithRetry(ctx context.Context, payload any) error {
 	var lastErr error
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<(attempt-1)) * time.Second
+			// 2026-09-08 audit: clamp the shift so an extreme MaxRetries can't
+			// overflow time.Duration into negative territory (attempt >= 34),
+			// which would turn the exponential backoff into a tight retry loop.
+			shift := attempt - 1
+			if shift > 6 {
+				shift = 6
+			}
+			backoff := time.Duration(1<<shift) * time.Second
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("webhook channel: cancelled during retry: %w", ctx.Err())

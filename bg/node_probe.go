@@ -2092,7 +2092,7 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 		r.errCode = code
 		r.timedOut = timedOut
 		if timedOut {
-			r.errDetail = fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(w.client.Timeout/time.Second), credID, endpoint, bodyModel)
+			r.errDetail = fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(w.probeClient.Timeout/time.Second), credID, endpoint, bodyModel)
 		} else {
 			r.errDetail = fmt.Sprintf("upstream %s: %s (cred_id=%d, url=%s, model=%s)", code, err.Error(), credID, endpoint, bodyModel)
 		}
@@ -2383,11 +2383,15 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		// signature mismatch?) was swallowed. We log the full chain
 		// here so the next no_candidates outage is root-causable
 		// from a single grep on "node_probe_worker: decrypt failed".
+		// 2026-09-08 audit: log only the key id and payload length — the old
+		// "envelope_prefix" put ciphertext bytes ("v1:<kid>:<b64>") into the
+		// log stream, violating the key-material-never-in-logs baseline.
 		slog.Error("node_probe_worker: decrypt failed",
 			"credential_id", credID, "model", model,
 			"keyring_nil", w.keyring == nil,
 			"enc_key_len", len(w.encKey),
-			"envelope_prefix", s[:min(len(s), 24)],
+			"envelope_kid", decryptEnvelopeKid(s),
+			"envelope_len", len(s),
 			"error", err.Error())
 		return "", "", "", "", 0, fmt.Errorf("decrypt: %w", err)
 	}
@@ -2596,4 +2600,14 @@ func firstErrDetail(a, b nodeProbeRoundResult) *string {
 func nodeProbeDedupHash(credID int, model string) string {
 	h := sha256.Sum256([]byte(fmt.Sprintf("%d|%s", credID, model)))
 	return hex.EncodeToString(h[:8])
+}
+
+// decryptEnvelopeKid extracts the key id from a "v1:<kid>:<ciphertext>"
+// envelope for operator diagnostics without emitting ciphertext bytes.
+func decryptEnvelopeKid(envelope string) string {
+	parts := strings.SplitN(envelope, ":", 3)
+	if len(parts) >= 2 {
+		return parts[1]
+	}
+	return ""
 }

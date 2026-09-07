@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 	"io"
 	"log/slog"
 	"net/http"
@@ -42,12 +43,16 @@ type DingTalkConfig struct {
 	AgentID   string // 应用 AgentID（App 模式）
 
 	BaseURL string // 可选，默认 https://oapi.dingtalk.com
+
+	// Allowlist 2026-09-08 audit: SSRF 白名单(默认拦私网/回环/元数据端点)。
+	// 自建内网端点(如内网钉钉网关)在此放行,如 "10.0.0.0/8" 或 "127.0.0.1"。
+	Allowlist []string
 }
 
 // DingTalkChannel 钉钉通知渠道。
 type DingTalkChannel struct {
 	config     DingTalkConfig
-	httpClient *http.Client
+	httpClient *safehttpclient.SafeHTTPClient
 }
 
 // NewDingTalkChannel 创建钉钉渠道。
@@ -56,8 +61,11 @@ func NewDingTalkChannel(config DingTalkConfig) *DingTalkChannel {
 		config.BaseURL = "https://oapi.dingtalk.com"
 	}
 	return &DingTalkChannel{
-		config:     config,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		config: config,
+		// 2026-09-08 audit: 与 webhook 渠道(F-6)对齐 — 管理端可配 BaseURL 的
+		// 出口一律走 safehttpclient(拦私网/元数据端点 + DNS 重绑定防御)。
+		// 默认打公有云 API 不受影响;自建内网端点经 config.Allowlist 放行。
+		httpClient: safehttpclient.NewWithAllowlist(30*time.Second, config.Allowlist),
 	}
 }
 
