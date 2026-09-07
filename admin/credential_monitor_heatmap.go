@@ -173,7 +173,7 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 		TenantID:        tenantID,
 	})
 	queryDurationMs := time.Since(startedAt).Milliseconds()
-	
+
 	if err != nil {
 		slog.Error("heatmap query failed", "error", err.Error(), "duration_ms", queryDurationMs)
 		// 不回传内部 SQL 错误细节（表名/约束名），只留 trace 线索给日志。
@@ -182,7 +182,7 @@ func (m *CredentialMonitorHandlers) handleCredentialHeatmap(w http.ResponseWrite
 		recordHeatmapQueryMetrics(false, queryDurationMs, len(credentialIDs), granularity)
 		return
 	}
-	
+
 	// 监控打点：成功查询
 	totalBuckets := 0
 	for _, cred := range credentials {
@@ -221,7 +221,7 @@ func recordHeatmapQueryMetrics(success bool, durationMs int64, dataPoints int, g
 	if !success {
 		status = "failed"
 	}
-	
+
 	// 结构化日志打点：调用量、成功率、延迟分布
 	slog.Info("heatmap_query_metric",
 		"status", status,
