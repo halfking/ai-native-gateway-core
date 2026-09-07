@@ -410,27 +410,14 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	// Record the selection for the feedback loop. IDs and numbers only — no
 	// prompt or conversation content (see telemetry.AutoSelection). Best-effort,
 	// non-blocking: the async writer drops on a full queue rather than stalling.
-	recordAutoSelection(r, sessionID, decision)
+	//
+	// Pass the wire we already built (it carries wire.signals) — re-deriving a
+	// fresh wire here loses the signals, and ExtractStructuredFeatures would
+	// then compute every bucket from empty prompts (language=unknown, xs,
+	// constant content_hash), leaving the training columns useless.
+	recordAutoSelectionFromWire(r, sessionID, wire)
 
 	return rewritten, wire, false
-}
-
-// recordAutoSelection enqueues one auto_route_selections row from a Decision.
-//
-// MEDIUM-6 fix: the Explore flag is recorded here (deterministically, by
-// hashing the same requestID with the same ratio the scoring path used) so
-// the P3 acceptance criterion — applied-group reward vs explore-group reward —
-// has an observable explore arm. Without this, llmgw_autoroute_explore_total is
-// flat-zero and the shadow/rollout split is invisible.
-//
-// canonical_id and tenant_id are not set here — the settle worker backfills
-// them from request_logs_hot (see CRITICAL-2 Fix A). Storing the canonical
-// *name* now keeps the row useful even if the id is never resolved.
-func recordAutoSelection(r *http.Request, sessionID string, decision *autoroute.Decision) {
-	if decision == nil {
-		return
-	}
-	recordAutoSelectionFromWire(r, sessionID, decisionToWire(decision))
 }
 
 // recordAutoSelectionFromWire is the protocol-neutral selection sink used by
@@ -441,11 +428,19 @@ func recordAutoSelectionFromWire(r *http.Request, sessionID string, wire *autoRo
 	if r == nil || wire == nil {
 		return
 	}
+	telemetry.WriteAutoSelection(buildAutoSelection(r, sessionID, wire))
+}
 
+// buildAutoSelection translates the resolved wire into a telemetry row. The
+// structured features MUST be derived from wire.signals — the signals the
+// decider actually saw. Deriving them from a fresh/zero-value signals struct
+// yields degenerate training columns (language=unknown, xs buckets, a single
+// content_hash for every request; the 2026-09-07 dataset defect).
+func buildAutoSelection(r *http.Request, sessionID string, wire *autoRouteDecision) telemetry.AutoSelection {
 	// Extract structured features v1 from signals (non-reversible, privacy-safe)
 	features := autoroute.ExtractStructuredFeatures(wire.signals, wire.Profile)
 
-	telemetry.WriteAutoSelection(telemetry.AutoSelection{
+	return telemetry.AutoSelection{
 		RequestID:         r.Header.Get("X-Request-Id"),
 		SessionID:         sessionID,
 		TaskID:            sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id")),
@@ -480,7 +475,7 @@ func recordAutoSelectionFromWire(r *http.Request, sessionID string, wire *autoRo
 		CostSensitive:          features.CostSensitive,
 		FeatureVersion:         features.FeatureVersion,
 		ContentHash:            features.ContentHash,
-	})
+	}
 }
 
 func maxInt(value, fallback int) int {
