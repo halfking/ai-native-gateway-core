@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -268,6 +269,42 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 	return title, nil
 }
 
+// capByTurn caps messages by distinct turn (RequestID), keeping the first
+// maxTurns complete turns in slice order. 2026-09-09 audit round 3: the
+// per-turn digest source expands each turn into a user+assistant pair
+// sharing the turn's RequestID, so a plain [:10] slice silently halved the
+// summarized window to 5 turns. For one-message-per-turn sources (V1/V2)
+// this is byte-identical to the old [:n]. Messages with an empty RequestID
+// each count as their own turn (never merged), preserving old behaviour for
+// sources that don't populate it.
+func capByTurn(messages []SessionMessage, maxTurns int) []SessionMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	seen := make(map[string]struct{}, maxTurns)
+	turns := 0
+	cut := len(messages)
+	for i, m := range messages {
+		if m.RequestID == "" {
+			if turns == maxTurns {
+				cut = i
+				break
+			}
+			turns++
+			continue
+		}
+		if _, dup := seen[m.RequestID]; !dup {
+			if turns == maxTurns {
+				cut = i
+				break
+			}
+			seen[m.RequestID] = struct{}{}
+			turns++
+		}
+	}
+	return messages[:cut]
+}
+
 // buildSummaryPrompt 构建总结 Prompt。
 //
 // 2026-08-26: 新增 sysPrefix 参数 —— 会话系统提示词前缀（前
@@ -295,11 +332,8 @@ func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage, sysPrefix str
 	}
 	sb.WriteString("对话内容：\n---\n")
 
-	// 最多包含前 10 条消息
-	maxMessages := 10
-	if len(messages) > maxMessages {
-		messages = messages[:maxMessages]
-	}
+	// 最多包含前 10 轮（按 RequestID 计轮，见 capByTurn）
+	messages = capByTurn(messages, 10)
 
 	for i, msg := range messages {
 		role := "用户"
@@ -356,11 +390,10 @@ func (s *Summarizer) buildRollingPrompt(prevSummary string, newMessages []Sessio
 	}
 	sb.WriteString("\n新增对话：\n---\n")
 
-	// 最多包含最新 10 条消息
-	maxMessages := 10
-	if len(newMessages) > maxMessages {
-		newMessages = newMessages[len(newMessages)-maxMessages:]
-	}
+	// 最多包含最新 10 轮（按 RequestID 计轮，见 capByTurn）
+	slices.Reverse(newMessages)
+	newMessages = capByTurn(newMessages, 10)
+	slices.Reverse(newMessages)
 	for i, msg := range newMessages {
 		role := "用户"
 		if msg.Role == "assistant" {

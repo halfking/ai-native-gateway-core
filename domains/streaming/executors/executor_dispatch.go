@@ -812,6 +812,18 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 		switch cand.Protocol {
 		case "anthropic-messages":
 			result, execErr = e.executeAnthropic(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
+		case "gemini-generate":
+			// 2026-09-09 audit round 3: the catalog advertises
+			// gemini-generate as an outbound protocol, but no executor
+			// branch exists — falling into executeOpenAI built OpenAI chat
+			// requests against Gemini endpoints, producing 4xx attributed to
+			// the credential instead of "unsupported feature" (which enters
+			// the normal failover/classification path without poisoning the
+			// credential's error stats with bogus protocol noise).
+			result, execErr = nil, &upstreampkg.Error{
+				Kind:    errorsx.KindUnsupportedFeature,
+				Message: "gemini-generate dispatch not implemented; candidate skipped",
+			}
 		default:
 			result, execErr = e.executeOpenAI(execParams, cand, dctx.retryPerCred, dctx.tTotal, fpLease)
 		}
