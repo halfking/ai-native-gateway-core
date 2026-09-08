@@ -15,6 +15,15 @@ import (
 
 // TransportFactory 根据配置选择 IRTransport 或 LegacyTransport。
 //
+// Deprecated (2026-09-09 audit round 3, 生产不可达纠偏)：NewTransportFactory/
+// TransportFactory.Pick/IRTransport.ConvertStream 全仓无生产调用点——生产
+// 流式由 cmd/gateway/main.go 接线的 executors/bridges 承担（TransportIRConverter
+// 默认开，不经过本工厂），TRANSPORT_LAYER_IR_ENABLED（含 docker-compose.yml
+// 中的 true）实际无消费者。本轮 A#2/6ebd5f30c 修复的 SerializeAnthropic/
+// processStreamLine 缺陷因此对生产零影响（test-only 路径）。后续轨道二选一：
+// 真接线（先补 SerializeAnthropic 的 message_start 前置与 content_block
+// 生命周期，见 anthropic_stream_golden 缺陷）或整体下线本工厂与开关。
+//
 // 灰度策略（优先级从高到低）：
 //  1. 全局开关 TRANSPORT_LAYER_IR_ENABLED
 //  2. 租户白名单 TRANSPORT_IR_TENANT_WHITELIST
