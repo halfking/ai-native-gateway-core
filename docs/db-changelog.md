@@ -390,3 +390,21 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 | 685 | `685_task_default_routing_tenant_text.sql` | `8a72257381fcfbe434246dad86e6ef9cb0e336168bbb79f3530e10db33e227f9` | applied+verified |
 | 686 | `686_fix_session_module_executions_2026_10_bounds.sql` | `77801ac8174c35f4e91d0904ed9200963503e4c078f8c61ebc876a3fb491a41f` | applied+verified |
 
+## 2026-09-07T22:43:46Z — deploy 154 build_seq 2058 (ffb16e1f)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 687 | `687_fix_473_partition_0800_bounds.sql` | `f612e23d87a0366009cb582f496be1a66b3840f2d7c4ded9585995a142dc6280` | applied+verified |
+
+## 2026-09-08T07:28:22Z — deploy 245 build_seq 2060 (370d8246)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 688 | `688_promote_default_retention_align_go_scheduler.sql` | `2e5dd01be9cfea63e97c6d209f11201e88bf83bfb7cee62edff8aa73f85872f0` | applied+verified |
+
+
+## 2026-09-09T04:55:35Z — deploy local build_seq 2063 (d5204b3b) — FreeDiscovery MVP
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 084 | `084-freediscovery-schema.sql` | `2c96f0761653bdcd5677000ccebfcb2799559648969b37c9afb3b5f646b97cdf` | applied+verified (本地 llm-gateway 库, psql 手动应用 + RLS 双租户实测) |
