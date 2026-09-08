@@ -402,3 +402,9 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 |-----------|------|---------|--------|
 | 688 | `688_promote_default_retention_align_go_scheduler.sql` | `2e5dd01be9cfea63e97c6d209f11201e88bf83bfb7cee62edff8aa73f85872f0` | applied+verified |
 
+
+## 2026-09-09T04:55:35Z — deploy local build_seq 2063 (d5204b3b) — FreeDiscovery MVP
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 084 | `084-freediscovery-schema.sql` | `2c96f0761653bdcd5677000ccebfcb2799559648969b37c9afb3b5f646b97cdf` | applied+verified (本地 llm-gateway 库, psql 手动应用 + RLS 双租户实测) |
