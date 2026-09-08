@@ -630,7 +630,23 @@ bump_local_version() {
 
 ensure_release_available() {
   local bundle="${1:-$BIN_DIR/$RELEASE_VERSION}"
-  [[ ! -e "$bundle" && ! -L "$bundle" ]] || die "release already exists: $bundle (use a new version/build)"
+  [[ ! -e "$bundle" && ! -L "$bundle" ]] && return 0
+  # bundle 目录已存在：可能是上一次同代码/同日重跑的残留（同 git_sha +
+  # UTC 日期不变时 bump-version 故意保持 seq 不变，2026-09-05 漂移修复
+  # 后），也可能是上一次部署在 dl_stage_release 早期失败留下的半截空目录。
+  # 判别标准是 SHA256SUMS：dl_stage_release 只在 gateway/web/version.json/
+  # VERSION 全部 cp/install 成功后才生成 SHA256SUMS（deploy-local-lib.sh
+  # :471-472），因此 SHA256SUMS 缺失 = 半截残留，安全 rm -rf；存在则是一
+  # 份完整的旧产物（可能正在被 dl_atomic_switch 之外的流程引用，但 deploy-
+  # local 没有 active → 老 bundle 的链接，因此 rm -rf 后重新 stage 即可）。
+  # 远程 deploy-seamless.sh 在 upload_release 里另有"current 指向即拒绝覆
+  # 盖"的保护，本地不适用。
+  if [[ -e "$bundle/SHA256SUMS" ]]; then
+    warn "release $bundle already exists (intact); removing to allow same-version redeploy"
+  else
+    warn "stale incomplete release $bundle (no SHA256SUMS) from a prior failed deploy; removing"
+  fi
+  rm -rf "$bundle" || die "failed to remove stale release directory: $bundle"
 }
 
 
