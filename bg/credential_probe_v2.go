@@ -706,9 +706,17 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 	runChat := func() (bool, string) {
 		if desc.ChatProbeEndpoint == upstreamurl.EpMessages {
 			msgURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
+			if blocked, reason := providercap.EgressBlocked(msgURL); blocked {
+				providercap.WarnBlocked("probe_v2.chat", msgURL, reason)
+				return false, "egress blocked: " + reason
+			}
 			return c.miniAnthropic(ctx, httpClient, s.APIKey, s.DefaultProbeModel, msgURL, 20)
 		}
 		chatURL := providercap.ProbeEndpointURL(s.BaseURL, desc)
+		if blocked, reason := providercap.EgressBlocked(chatURL); blocked {
+			providercap.WarnBlocked("probe_v2.chat", chatURL, reason)
+			return false, "egress blocked: " + reason
+		}
 		ok, errMsg := c.miniChat(ctx, httpClient, s.APIKey, s.DefaultProbeModel, chatURL, 1)
 		if !ok && strings.Contains(errMsg, "max_tokens") {
 			// Some legacy gateways reject max_tokens < 2; retry with 2.
@@ -1576,6 +1584,12 @@ func (c *CredentialProbeV2) probeBalance(ctx context.Context, s v2Snapshot) (flo
 	desc := providercap.Resolve(s.ProviderProtocol, s.CatalogCode)
 	balURL := providercap.BalanceURL(s.BaseURL, desc)
 	if balURL == "" {
+		return 0, false
+	}
+	// 2026-09-09 audit round 3 (#10): balance probes carry s.APIKey to an
+	// admin-configured URL — never send it into a metadata range.
+	if blocked, reason := providercap.EgressBlocked(balURL); blocked {
+		providercap.WarnBlocked("probe_v2.balance", balURL, reason)
 		return 0, false
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, balURL, nil)
