@@ -135,6 +135,10 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 	finalFinishReason := ""
 	outputTokens := 0
 	inputTokens := 0
+	// 2026-09-09 audit round 3: OpenAI-compatible upstreams surface prompt
+	// cache hits as usage.prompt_tokens_details.cached_tokens; without this
+	// the capture's cache columns stayed NULL for every such stream.
+	cachedTokens := 0
 
 	// Phase 4 stream-end split: lazy probing of the running text content
 	// prefix. Most upstreams emit plain text and we want incremental
@@ -237,11 +241,20 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 				if v, ok := usage["completion_tokens"].(float64); ok {
 					outputTokens = int(v)
 				}
+				if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+					if v, ok := details["cached_tokens"].(float64); ok {
+						cachedTokens = int(v)
+					}
+				}
 			}
 			if capture != nil {
 				pt := inputTokens
 				ct := outputTokens
-				capture.ObserveUsage(&pt, &ct, nil, nil)
+				var cr *int
+				if cachedTokens > 0 {
+					cr = &cachedTokens
+				}
+				capture.ObserveUsage(&pt, &ct, cr, nil)
 			}
 		}
 

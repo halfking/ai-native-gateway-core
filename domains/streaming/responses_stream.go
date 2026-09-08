@@ -140,6 +140,9 @@ func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.R
 	finalFinishReason := ""
 	promptTokens := 0
 	completionTokens := 0
+	// 2026-09-09 audit round 3: surface usage.prompt_tokens_details.cached_tokens
+	// so the capture's cache columns stop being NULL on streaming responses.
+	cachedTokens := 0
 	upstreamDoneReceived := false
 
 	firstLine, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, runtimeCfg.firstByteTimeout)
@@ -187,11 +190,20 @@ func StreamResponsesSSE(ctx context.Context, w http.ResponseWriter, resp *http.R
 				if v, ok := usage["completion_tokens"].(float64); ok {
 					completionTokens = int(v)
 				}
+				if details, ok := usage["prompt_tokens_details"].(map[string]any); ok {
+					if v, ok := details["cached_tokens"].(float64); ok {
+						cachedTokens = int(v)
+					}
+				}
 			}
 			if capture != nil {
 				pt := promptTokens
 				ct := completionTokens
-				capture.ObserveUsage(&pt, &ct, nil, nil)
+				var cr *int
+				if cachedTokens > 0 {
+					cr = &cachedTokens
+				}
+				capture.ObserveUsage(&pt, &ct, cr, nil)
 			}
 		}
 

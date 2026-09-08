@@ -779,8 +779,14 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 	// P1-2 fix (2026-08-28): ctx is now a function parameter, removed from var block.
 	var (
-		inputTokens         int
-		outputTokens        int
+		inputTokens  int
+		outputTokens int
+		// 2026-09-09 audit round 3: carry Anthropic cache tokens through the
+		// bridge so the terminal synthesized usage chunk (and the capture it
+		// feeds) no longer loses them — request_logs cache columns were NULL
+		// for every Anthropic-upstream stream.
+		cacheReadTokens     int
+		cacheWriteTokens    int
 		finishReason        *string
 		toolCallIndex       int
 		emittedRole         bool
@@ -1015,6 +1021,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 									PromptTokens:     inputTokens,
 									CompletionTokens: outputTokens,
 									TotalTokens:      inputTokens + outputTokens,
+									CacheReadTokens:  intPtrIfPositive(cacheReadTokens),
+									CacheWriteTokens: intPtrIfPositive(cacheWriteTokens),
 								},
 								FinishReason:   "stop",
 								SourceProtocol: ir.ProtocolAnthropicMessages,
@@ -1084,6 +1092,12 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				}
 				if chunk.Usage.CompletionTokens > 0 {
 					outputTokens = chunk.Usage.CompletionTokens
+				}
+				if chunk.Usage.CacheReadTokens != nil {
+					cacheReadTokens = *chunk.Usage.CacheReadTokens
+				}
+				if chunk.Usage.CacheWriteTokens != nil {
+					cacheWriteTokens = *chunk.Usage.CacheWriteTokens
 				}
 			}
 
@@ -1326,6 +1340,8 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 						PromptTokens:     inputTokens,
 						CompletionTokens: outputTokens,
 						TotalTokens:      inputTokens + outputTokens,
+						CacheReadTokens:  intPtrIfPositive(cacheReadTokens),
+						CacheWriteTokens: intPtrIfPositive(cacheWriteTokens),
 					},
 					FinishReason:   fr,
 					SourceProtocol: ir.ProtocolAnthropicMessages,
@@ -1835,4 +1851,14 @@ func normalizeBridgeOpenAIToolDefinitions(tools []any) []any {
 		out = append(out, tool)
 	}
 	return out
+}
+
+// intPtrIfPositive returns a pointer to v when v > 0, else nil — used for
+// optional cache-token fields so zero counters stay absent from the wire and
+// from the audit capture (2026-09-09 audit round 3).
+func intPtrIfPositive(v int) *int {
+	if v > 0 {
+		return &v
+	}
+	return nil
 }
