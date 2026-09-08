@@ -1409,7 +1409,11 @@ func SetV2DispatchAnalysisResources(
 					// request_logs. Same platform flag as shouldUseV2, default true,
 					// hot-reloadable to false to revert to V1 reads.
 					if settings.GetPlatformBool("sessions_v2_compression_read", true) {
-						summaryService.SetMessageSource(sessionsummary.NewV2SessionBodiesSource(pool))
+						// 24h 审计第二轮 B#4：默认仍走 V2 源；per-turn digest
+						// 层（sessions_summary_per_turn_digest，默认关）开启时
+						// 摘要输入改为逐轮 user+assistant 人读摘要，关闭时该源
+						// 逐字节委托 V2 源，行为不变。
+						summaryService.SetMessageSource(sessionsummary.NewPerTurnDigestSource(pool))
 					}
 					deps.SessionSummarizer = sessionSummaryWorkerAdapter{summarizer: summaryService}
 				}
