@@ -262,7 +262,7 @@ AI Native Gateway は**完全な本番スタック**と**シングルマシン�
 | クイックリファレンス | [docs/QUICK_REFERENCE.md](docs/QUICK_REFERENCE.md) — よく使うコマンドとトラブルシューティング |
 | 比較 | [docs/comparison.md](docs/comparison.md) — vs LiteLLM / OmniRoute / Portkey / Kong |
 | プロジェクト概要 | [docs/PROJECT_OVERVIEW.md](docs/PROJECT_OVERVIEW.md) — 機能とモジュールマップ |
-| ドキュメント索引 | [docs/INDEX.md](docs/INDEX.md) — 全ドキュメントナビゲーション |
+| ドキュメント索引 | [docs/archive/2026-09/INDEX.md](docs/archive/2026-09/INDEX.md) — 全ドキュメントナビゲーション |
 | デュアルリポジトリ | [docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md](docs/06-deployment/04-runbooks/operations/REPO-MIRROR-POLICY.md) — codeup ⇄ GitHub ワークフロー |
 | セキュリティ | [SECURITY.md](SECURITY.md) — 脆弱性報告 + スキャナの使い方 |
 | 法務 | [docs/02-resources/compliance/legal/disguise-compliance.md](docs/02-resources/compliance/legal/disguise-compliance.md) — リクエスト偽装のコンプライアンスホワイトリスト |
