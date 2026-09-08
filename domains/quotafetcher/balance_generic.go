@@ -58,6 +58,12 @@ func (f *balanceFetcher) Fetch(ctx context.Context, req FetchRequest) (*QuotaInf
 		// unsupported here. Caller falls back to DB Preflight.
 		return nil, nil
 	}
+	// 2026-09-09 audit round 3 (#10): this request carries req.APIKey to an
+	// admin-configured URL — never send it into a metadata range.
+	if blocked, reason := providercap.EgressBlocked(balURL); blocked {
+		providercap.WarnBlocked("quotafetcher.balance", balURL, reason)
+		return nil, nil
+	}
 
 	f.throttle.Acquire(ctx)
 
