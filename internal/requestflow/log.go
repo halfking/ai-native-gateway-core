@@ -17,11 +17,19 @@ type Event struct {
 	Retryable    bool
 	Committed    bool
 	Attempt      int
+	// From/ToCredentialID carry the candidate transition for node_switch
+	// events (audit 2026-09-08 #3, dispatch V2 coverage). Zero means "not
+	// applicable"; Attrs omits them so every pre-existing line keeps its
+	// exact attribute list.
+	FromCredentialID int
+	ToCredentialID   int
 }
 
-// Attrs returns the stable slog attribute list for this event.
+// Attrs returns the stable slog attribute list for this event. The
+// from/to_credential_id pair is appended only when set (node_switch events)
+// so the base schema stays byte-identical for the other stages.
 func (e Event) Attrs() []any {
-	return []any{
+	attrs := []any{
 		"event", "request_flow",
 		"stage", e.Stage,
 		"request_id", e.RequestID,
@@ -35,6 +43,13 @@ func (e Event) Attrs() []any {
 		"committed", e.Committed,
 		"attempt", e.Attempt,
 	}
+	if e.FromCredentialID != 0 || e.ToCredentialID != 0 {
+		attrs = append(attrs,
+			"from_credential_id", e.FromCredentialID,
+			"to_credential_id", e.ToCredentialID,
+		)
+	}
+	return attrs
 }
 
 // Log writes one request_flow line. Never include bodies, keys, or prompts.
