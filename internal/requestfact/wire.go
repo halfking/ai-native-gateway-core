@@ -15,6 +15,7 @@ func (f CanonicalRequestFact) MarshalJSON() ([]byte, error) {
 		Response    *ResponseContent    `json:"response,omitempty"`
 		Usage       *Usage              `json:"usage,omitempty"`
 		Timeline    *Timeline           `json:"timeline,omitempty"`
+		Metadata    *Metadata           `json:"metadata,omitempty"`
 		Attachments json.RawMessage     `json:"attachments,omitempty"`
 		Extensions  json.RawMessage     `json:"extensions,omitempty"`
 		Warnings    []ConversionWarning `json:"warnings,omitempty"`
@@ -30,6 +31,7 @@ func (f CanonicalRequestFact) MarshalJSON() ([]byte, error) {
 		Response:    nonEmptyResponseContent(f.Response),
 		Usage:       nonEmptyUsage(f.Usage),
 		Timeline:    nonEmptyTimeline(f.Timeline),
+		Metadata:    nonEmptyMetadata(f.Metadata),
 		Attachments: f.Attachments,
 		Extensions:  f.Extensions,
 		Warnings:    f.Warnings,
@@ -123,6 +125,13 @@ func nonEmptyResponseContent(value ResponseContent) *ResponseContent {
 
 func nonEmptyUsage(value Usage) *Usage {
 	if value == (Usage{}) {
+		return nil
+	}
+	return &value
+}
+
+func nonEmptyMetadata(value Metadata) *Metadata {
+	if value.IsZero() {
 		return nil
 	}
 	return &value

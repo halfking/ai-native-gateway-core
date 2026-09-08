@@ -123,6 +123,23 @@ type Integrity struct {
 	ResponseBodySHA256 string `json:"response_body_sha256,omitempty"`
 }
 
+// Metadata carries the gateway-side request metadata block (audit 2026-09-08
+// #5): project, user-supplied tags, end-user id, and the session turn total.
+// All fields are optional; the zero block is omitted on the wire. See
+// ProjectRequestMetadata for the IR → fact projection and the source of each
+// field.
+type Metadata struct {
+	Project   string   `json:"project,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
+	UserID    string   `json:"user_id,omitempty"`
+	TurnTotal int      `json:"turn_total,omitempty"`
+}
+
+// IsZero reports whether the block carries no metadata at all.
+func (m Metadata) IsZero() bool {
+	return m.Project == "" && len(m.Tags) == 0 && m.UserID == "" && m.TurnTotal == 0
+}
+
 // CanonicalRequestFact is the once-built terminal request fact. It is a
 // versioned domain document, not a request_logs or session_v2 table model.
 type CanonicalRequestFact struct {
@@ -134,6 +151,7 @@ type CanonicalRequestFact struct {
 	Response    ResponseContent     `json:"response,omitempty"`
 	Usage       Usage               `json:"usage,omitempty"`
 	Timeline    Timeline            `json:"timeline,omitempty"`
+	Metadata    Metadata            `json:"metadata,omitempty"`
 	Attachments json.RawMessage     `json:"attachments,omitempty"`
 	Extensions  json.RawMessage     `json:"extensions,omitempty"`
 	Warnings    []ConversionWarning `json:"warnings,omitempty"`

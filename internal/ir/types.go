@@ -511,6 +511,15 @@ type DocumentSource struct {
 type Metadata struct {
 	UserID    string            `json:"user_id,omitempty"`
 	RequestID string            `json:"request_id,omitempty"`
+	// Gateway session/project context carriers (audit 2026-09-08 #5).
+	// Protocol parsers never set these: the handler layer injects them from
+	// request context / session metadata (X-Gw-Project-Id, session user_tags
+	// from X-Gw-Tags, session total_turns) so the requestfact projection has
+	// one carrier. The upstream serializers ignore them — only user_id /
+	// request_id / Other are ever emitted on the wire.
+	Project   string            `json:"project,omitempty"`
+	Tags      []string          `json:"tags,omitempty"`
+	TurnTotal int               `json:"turn_total,omitempty"`
 	Other     map[string]string `json:"other,omitempty"`
 }
 

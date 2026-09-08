@@ -125,6 +125,19 @@ func (c goldenCorpusCase) buildFact(t *testing.T, document ContentDocument) Cano
 		}},
 		Integrity: Integrity{RequestBodySHA256: BodySHA256([]byte(c.body))},
 	}
+	// Audit 2026-09-08 #5: fill the metadata block through the production
+	// projection chain (gateway context → IR carrier → ProjectRequestMetadata)
+	// so the golden roundtrip asserts the real path rather than a hand-built
+	// block. user_id exercises the OpenAI-`user` fallback on purpose; the
+	// Anthropic metadata.user_id preference is covered by the projection's
+	// own unit tests.
+	gatewayIR := &ir.InternalRequest{User: "user-golden"}
+	InjectGatewayMetadata(gatewayIR, GatewayMetadata{
+		Project:   "project-golden",
+		Tags:      []string{"golden", "roundtrip"},
+		TurnTotal: 3,
+	})
+	fact.Metadata = ProjectRequestMetadata(gatewayIR)
 	if c.response != nil {
 		fact.Response = ResponseContent{
 			RawBody:       json.RawMessage(c.response.rawBody),
@@ -308,6 +321,13 @@ func goldenAssertDecodedFact(t *testing.T, decoded *RequestArchiveEnvelope, want
 	gotRouting, wantRouting := decoded.Payload.Routing, want.Payload.Routing
 	if gotRouting != wantRouting {
 		t.Fatalf("decoded routing = %+v, want %+v", gotRouting, wantRouting)
+	}
+
+	// Audit 2026-09-08 #5: the gateway metadata block must survive the
+	// roundtrip field-for-field. Metadata carries a slice, so compare with
+	// reflect.DeepEqual instead of struct equality.
+	if !reflect.DeepEqual(decoded.Payload.Metadata, want.Payload.Metadata) {
+		t.Fatalf("decoded metadata = %+v, want %+v", decoded.Payload.Metadata, want.Payload.Metadata)
 	}
 
 	gotRequest, wantRequest := decoded.Payload.Request, want.Payload.Request
