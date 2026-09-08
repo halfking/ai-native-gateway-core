@@ -58,7 +58,10 @@ type Handler struct {
 	secret               string
 	encKey               []byte
 	keyring              *secret.Keyring // AES-256-GCM keyring; nil → Fernet legacy
-	discSvc              *discovery.Service
+	// freeDiscovery (2026-09-09): 免费资源自动发现服务 (084 迁移三表).
+	// SetFreeDiscovery 在启动时注入; nil = 路由返回 503 (no-DB 模式).
+	freeDiscovery *freeDiscoveryDeps
+	discSvc       *discovery.Service
 	credCycler           *bg.CredentialCycler
 	credRecov            *bg.CredentialRecovery
 	envCleaner           *bg.EnvelopeCleaner
@@ -1247,6 +1250,20 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/session-crosstalk", h.admin(h.handleSessionCrosstalkCheck))
 	mux.HandleFunc("/api/tasks/", admin(h.handleTasks))
 	mux.HandleFunc("/api/free-pool/status", h.admin(h.handleFreePoolStatus))
+	// ── 免费资源自动发现 (2026-09-09, 084 迁移) ──
+	mux.HandleFunc("GET /api/free-discovery/templates", h.admin(h.handleFreeDiscoveryTemplates))
+	mux.HandleFunc("POST /api/free-discovery/templates", h.admin(h.handleFreeDiscoveryTemplates))
+	mux.HandleFunc("GET /api/free-discovery/templates/presets", h.admin(h.handleFreeDiscoveryPresets))
+	mux.HandleFunc("POST /api/free-discovery/templates/import-orbi", h.admin(h.handleFreeDiscoveryImportOrbi))
+	mux.HandleFunc("GET /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+	mux.HandleFunc("PUT /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+	mux.HandleFunc("PATCH /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+	mux.HandleFunc("DELETE /api/free-discovery/templates/{id}", h.admin(h.handleFreeDiscoveryTemplateByID))
+	mux.HandleFunc("POST /api/free-discovery/scan", h.admin(h.handleFreeDiscoveryScan))
+	mux.HandleFunc("GET /api/free-discovery/tasks", h.admin(h.handleFreeDiscoveryTasks))
+	mux.HandleFunc("GET /api/free-discovery/tasks/{id}", h.admin(h.handleFreeDiscoveryTask))
+	mux.HandleFunc("GET /api/free-discovery/tasks/{id}/results", h.admin(h.handleFreeDiscoveryTaskResults))
+	mux.HandleFunc("POST /api/free-discovery/import", h.admin(h.handleFreeDiscoveryImport))
 	mux.HandleFunc("/api/free-pool/register", h.superAdmin(h.handleFreePoolRegister))
 	mux.HandleFunc("/api/free-pool/models", h.admin(h.handleFreePoolModels))
 	mux.HandleFunc("/api/free-pool/catalog", h.admin(h.handleFreePoolCatalog))

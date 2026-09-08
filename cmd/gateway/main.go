@@ -2782,6 +2782,13 @@ func main() {
 		if adminHandler != nil {
 			adminHandler.StartProxyRuntime()
 		}
+		// ── 免费资源自动发现 (2026-09-09, 084 迁移) ──
+		// stdlib 桥接 + credential keyring 注入; no-DB 模式下 SetFreeDiscovery
+		// 内部跳过, 路由在请求时返回 503.
+		if dbConn != nil && dbConn.Enabled() {
+			adminHandler.SetFreeDiscovery(dbConn.Stdlib(), keyring)
+			slog.Info("free-discovery admin routes wired", "keyring", keyring != nil)
+		}
 		// 会话优化 v4 (T4/R1.6): 流式连接注册表 — request_id → 客户端写出
 		// 流，供心跳/思考帧桥接回写与 /api/admin/connection-registry 只读
 		// 投影；写 deadline 默认 30s（G7：慢/僵死客户端按断开处理）。
