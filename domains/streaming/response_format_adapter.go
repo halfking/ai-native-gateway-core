@@ -279,6 +279,12 @@ func (arc *AdaptiveResponseConverter) convertToFormat(
 }
 
 // ConvertStreamChunk 自适应转换流式响应块
+//
+// Deprecated (2026-09-09 audit round 3, 结构清理清单 #11)：AdaptiveResponseConverter
+// 与 ConvertStreamChunk 全仓无生产调用点，且与 ir_transport 同期审查确认存在
+// 同类缺陷——无 content_block 脚手架、无跨帧 usage 合并，deriveResponsesMessageID
+// 与 ir_transport 双实现且边界条件不一致（>=24 vs >24）。保留仅防历史引用误接；
+// 严禁在新代码中接线，待下轮确认无引用后物理删除。
 func (arc *AdaptiveResponseConverter) ConvertStreamChunk(
 	sessionID string,
 	clientProtocol string,
