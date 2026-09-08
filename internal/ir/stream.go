@@ -32,10 +32,23 @@ type StreamChunk struct {
 
 	// Metadata (present in all chunk types)
 	ID             string `json:"id"`               // Chunk ID (OpenAI: chatcmpl-xxx, Anthropic: msg_xxx)
-	Model          string `json:"model"`            // Model name
-	Created        int64  `json:"created"`          // Unix timestamp (OpenAI style; 0 if not available)
-	FinishReason   string `json:"finish_reason"`    // When stream ends: "stop" | "length" | "tool_calls" | etc.
-	CandidateIndex int    `json:"candidate_index"`  // Gemini candidate index (zero is the backward-compatible default)
+	Model          string `json:"model"`             // Model name
+	Created        int64  `json:"created"`           // Unix timestamp (OpenAI style; 0 if not available)
+	FinishReason   string `json:"finish_reason"`     // When stream ends: "stop" | "length" | "tool_calls" | etc.
+	CandidateIndex int    `json:"candidate_index"`   // Gemini candidate index (zero is the backward-compatible default)
+
+	// StopReason carries the source protocol's NATIVE termination reason
+	// (audit-r2 A#2, 2026-09-08). FinishReason is normalized to the OpenAI
+	// vocabulary, which is lossy for Anthropic targets: e.g. "stop_sequence"
+	// maps to "stop" and would round-trip back as "end_turn". Serializers
+	// targeting Anthropic prefer StopReason over re-mapping FinishReason so
+	// Anthropic→Anthropic passthrough is lossless.
+	StopReason string `json:"stop_reason,omitempty"`
+
+	// StopSequence carries the Anthropic message_delta stop_sequence value —
+	// the matched custom sequence when stop_reason=="stop_sequence". OpenAI
+	// has no equivalent.
+	StopSequence string `json:"stop_sequence,omitempty"`
 
 	// Source protocol tracking (used by Serializer to determine output format)
 	SourceProtocol string `json:"source_protocol"` // "openai-chat" | "anthropic-messages"
@@ -585,7 +598,8 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 	case "message_delta":
 		var evt struct {
 			Delta struct {
-				StopReason *string `json:"stop_reason"`
+				StopReason   *string `json:"stop_reason"`
+				StopSequence *string `json:"stop_sequence"`
 			} `json:"delta"`
 			Usage struct {
 				OutputTokens int `json:"output_tokens"`
@@ -606,8 +620,16 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 		}
 
 		if evt.Delta.StopReason != nil {
+			// audit-r2 A#2 (2026-09-08): keep the NATIVE stop_reason alongside
+			// the OpenAI-normalized FinishReason. FinishReason alone is lossy
+			// on the Anthropic target ("stop_sequence"→"stop"→"end_turn");
+			// StopReason lets the Anthropic serializer round-trip exactly.
+			chunk.StopReason = *evt.Delta.StopReason
 			// Map Anthropic stop_reason to OpenAI finish_reason
 			chunk.FinishReason = mapAnthropicFinishReasonToOpenAI(*evt.Delta.StopReason)
+		}
+		if evt.Delta.StopSequence != nil {
+			chunk.StopSequence = *evt.Delta.StopSequence
 		}
 
 		return chunk, nil
@@ -849,39 +871,59 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 		return fmt.Sprintf("event: error\ndata: %s\n\n", data)
 
 	case ChunkTypeUsage:
-		// Anthropic emits usage in message_start and message_delta
-		if c.Usage != nil && c.Usage.PromptTokens > 0 {
-			// message_start (input tokens)
+		// Anthropic emits usage in message_start and message_delta:
+		//   message_start  → input_tokens (+ cache tokens, output_tokens:0)
+		//   message_delta  → output_tokens (+ stop_reason)
+		//
+		// audit-r2 A#2 (2026-09-08): the previous if/else-if treated the two
+		// frames as mutually exclusive, so a single IR usage frame carrying
+		// BOTH halves (the OpenAI final usage chunk: prompt_tokens AND
+		// completion_tokens) took the message_start branch and silently
+		// dropped CompletionTokens — Anthropic clients never learned the
+		// output token count. Now each present half is emitted in protocol
+		// shape, from the same chunk when both are present.
+		if c.Usage == nil {
+			return ""
+		}
+
+		var output strings.Builder
+
+		hasInputSide := c.Usage.PromptTokens > 0 ||
+			c.Usage.CacheReadTokens != nil || c.Usage.CacheWriteTokens != nil
+		if hasInputSide {
+			usage := map[string]any{
+				// message_start always reports output_tokens (0 until the
+				// final count arrives in message_delta), matching upstream.
+				"input_tokens":  c.Usage.PromptTokens,
+				"output_tokens": 0,
+			}
+			if c.Usage.CacheWriteTokens != nil {
+				usage["cache_creation_input_tokens"] = *c.Usage.CacheWriteTokens
+			}
+			if c.Usage.CacheReadTokens != nil {
+				usage["cache_read_input_tokens"] = *c.Usage.CacheReadTokens
+			}
 			body := map[string]any{
 				"type": "message_start",
 				"message": map[string]any{
 					"id":    msgID,
 					"model": model,
-					"usage": map[string]any{
-						"input_tokens": c.Usage.PromptTokens,
-					},
+					"usage": usage,
 				},
 			}
 			data, _ := json.Marshal(body)
-			return fmt.Sprintf("event: message_start\ndata: %s\n\n", data)
-		} else if c.Usage != nil && c.Usage.CompletionTokens > 0 {
-			// message_delta (output tokens)
-			delta := map[string]any{}
-			if c.FinishReason != "" {
-				stopReason := mapOpenAIFinishReasonToAnthropic(c.FinishReason)
-				delta["stop_reason"] = stopReason
-			}
-			body := map[string]any{
-				"type":  "message_delta",
-				"delta": delta,
-				"usage": map[string]any{
-					"output_tokens": c.Usage.CompletionTokens,
-				},
-			}
-			data, _ := json.Marshal(body)
-			return fmt.Sprintf("event: message_delta\ndata: %s\n\n", data)
+			fmt.Fprintf(&output, "event: message_start\ndata: %s\n\n", data)
 		}
-		return ""
+
+		if body, ok := buildAnthropicMessageDelta(c); ok {
+			data, _ := json.Marshal(body)
+			fmt.Fprintf(&output, "event: message_delta\ndata: %s\n\n", data)
+		}
+
+		if output.Len() == 0 {
+			return ""
+		}
+		return output.String()
 
 	case ChunkTypeDelta:
 		if c.Delta == nil {
@@ -950,11 +992,64 @@ func (c *StreamChunk) SerializeAnthropic(msgID string, model string) string {
 			}
 		}
 
+		// audit-r2 A#2 (2026-09-08): a delta chunk can carry stream
+		// termination info — the OpenAI terminal chunk (delta:{} +
+		// finish_reason) or an Anthropic message_delta whose output_tokens
+		// count had not arrived yet. The old code dropped FinishReason on
+		// this branch entirely, so Anthropic clients never received the
+		// message_delta/stop_reason event that tells them WHY the stream
+		// ended (end_turn vs tool_use vs max_tokens...).
+		if body, ok := buildAnthropicMessageDelta(c); ok {
+			data, _ := json.Marshal(body)
+			fmt.Fprintf(&output, "event: message_delta\ndata: %s\n\n", data)
+		}
+
 		return output.String()
 
 	default:
 		return ""
 	}
+}
+
+// buildAnthropicMessageDelta constructs the Anthropic message_delta payload
+// for a chunk carrying termination info: stop_reason / stop_sequence and/or
+// output_tokens. Returns ok=false when the chunk has nothing this frame
+// should carry (plain content deltas, keep-alives).
+//
+// stop_reason resolution prefers the native chunk.StopReason (lossless
+// Anthropic→Anthropic passthrough) and falls back to re-mapping the
+// OpenAI-normalized FinishReason (OpenAI→Anthropic conversion).
+func buildAnthropicMessageDelta(c *StreamChunk) (map[string]any, bool) {
+	stopReason := ""
+	if c.StopReason != "" {
+		stopReason = c.StopReason
+	} else if c.FinishReason != "" {
+		stopReason = mapOpenAIFinishReasonToAnthropic(c.FinishReason)
+	}
+
+	outputTokens := 0
+	if c.Usage != nil && c.Usage.CompletionTokens > 0 {
+		outputTokens = c.Usage.CompletionTokens
+	}
+
+	if stopReason == "" && c.StopSequence == "" && outputTokens == 0 {
+		return nil, false
+	}
+
+	delta := map[string]any{}
+	if stopReason != "" {
+		delta["stop_reason"] = stopReason
+	}
+	if c.StopSequence != "" {
+		delta["stop_sequence"] = c.StopSequence
+	}
+	return map[string]any{
+		"type":  "message_delta",
+		"delta": delta,
+		"usage": map[string]any{
+			"output_tokens": outputTokens,
+		},
+	}, true
 }
 
 // SerializeResponses serializes StreamChunk IR to OpenAI Responses API SSE

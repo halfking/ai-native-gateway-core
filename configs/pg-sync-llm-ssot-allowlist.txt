@@ -1,0 +1,14 @@
+public.prompt_injection_detections
+public.prompt_injection_stats_enhanced
+public.session_cluster_members
+public.session_clusters
+public.session_embeddings
+public.session_optimization_suggestions
+public.session_optimization_suggestions_id_seq
+public.task_type_tier_config
+public.task_type_tier_config_id_seq
+public.update_task_type_tier_config_updated_at
+public.v_unified_probe_failing
+public.v_unified_probe_suspicious
+public.v_unified_probe_urgent
+public.v_unified_probe_watchdog

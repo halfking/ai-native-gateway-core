@@ -20,8 +20,8 @@ NodeProbe 是 LLM Gateway 的核心健康检查机制，负责主动探测 (cred
 ### 1.2 设计目标
 
 - ✅ **快速恢复**: 首次探测 5s 后触发，最快 35s 完成双轮验证
-- ✅ **避免雪崩**: 指数退避 (5s → 30s → 60s → 5m → 1h → 2h → 24h)
-- ✅ **跨实例协调**: Redis SELECT FOR UPDATE SKIP LOCKED 防止重复探测
+- ✅ **避免雪崩**: 指数退避 (5s → 30s → 60s → 5m → 1h → 2h → 6h)
+- ✅ **跨实例协调**: PostgreSQL SELECT FOR UPDATE SKIP LOCKED 防止重复探测
 - ✅ **精确诊断**: 记录完整的请求/响应上下文到 `node_probe_runs` 表
 
 ---
@@ -650,9 +650,15 @@ var NodeProbeBackoffChain = []time.Duration{
     5 * time.Minute,    // attempt 4
     1 * time.Hour,      // attempt 5
     2 * time.Hour,      // attempt 6
-    24 * time.Hour,     // attempt 7+
+    6 * time.Hour,      // attempt 7+ (cap)
 }
 ```
+
+> 2026-07-24 变更：末级封顶由 24h 收紧为 **6h**（`bg/probe_backoff.go`
+> `NodeProbeBackoffChain`，见归档 changelog
+> `2026-07-24-node-probe-backoff-6h-fix.md`）——24h 使一次性故障的节点在
+> 退避链尾部长时间脱离自检视野；6h 在控制探测成本的同时保证恢复探测的
+> 及时性。本节与 `system_settings.error_probe.backoff_chain` 示例均已对齐。
 
 **更新逻辑**:
 ```go
@@ -990,9 +996,13 @@ SELECT * FROM system_settings WHERE setting_key = 'error_probe';
   "enabled": true,
   "consecutive_threshold": 2,   // 连续失败 N 次触发探测
   "timeout_seconds": 30,
-  "backoff_chain": [5, 30, 60, 300, 3600, 7200, 86400]
+  "backoff_chain": [5, 30, 60, 300, 3600, 7200, 21600]
 }
 ```
+
+> `backoff_chain` 末级为 6h 封顶（21600 秒），与
+> `bg/probe_backoff.go` 的 `NodeProbeBackoffChain` 保持一致
+> （2026-07-24 由 24h 收紧，见 §5.2 说明）。
 
 ---
 

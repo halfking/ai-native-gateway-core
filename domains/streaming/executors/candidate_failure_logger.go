@@ -258,7 +258,7 @@ func (w *CandidateFailureWriter) buildRow(
 		row.ErrorKind = string(kind)
 	}
 	projection := errorsx.ProjectRecovery(kind)
-	retryable := projection.GenericRetryable
+	retryable := errorsx.EffectiveRetryable(kind)
 	row.Retryable = &retryable
 	row.Context = recoveryContext(extraContext, projection)
 	return row

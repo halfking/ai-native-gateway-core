@@ -250,6 +250,48 @@ func TestFeedbackIntegrator_AnonymousSkipsAffinity(t *testing.T) {
 	}
 }
 
+// TestFeedbackIntegrator_ConfidencePassthrough (2026-09-08 audit Track A)
+// proves the integrator persists the real decision-time confidence and only
+// falls back to the legacy hard-coded 0.8 for zero-valued (pre-Track-A)
+// feedback.
+func TestFeedbackIntegrator_ConfidencePassthrough(t *testing.T) {
+	writer := &stubFeedbackWriter{}
+	affinity := &stubAffinity{}
+	i := &FeedbackIntegrator{feedback: writer, enhancer: affinity, pool: nil}
+
+	if err := i.RecordFeedback(context.Background(), RoutingFeedback{
+		RequestID: "req-conf-1", TaskType: "code",
+		PredictedProvider: "model-a", IsSuccess: true,
+		Confidence: 0.42, UserID: 1,
+	}); err != nil {
+		t.Fatalf("RecordFeedback failed: %v", err)
+	}
+	if writer.inserted[0].Confidence != 0.42 {
+		t.Fatalf("real confidence must be persisted, got %f", writer.inserted[0].Confidence)
+	}
+
+	if err := i.RecordFeedback(context.Background(), RoutingFeedback{
+		RequestID: "req-conf-2", TaskType: "code",
+		PredictedProvider: "model-a", IsSuccess: true,
+		Confidence: 0, // pre-Track-A caller: no confidence populated
+	}); err != nil {
+		t.Fatalf("RecordFeedback failed: %v", err)
+	}
+	if writer.inserted[1].Confidence != 0.8 {
+		t.Fatalf("zero confidence must fall back to legacy 0.8, got %f", writer.inserted[1].Confidence)
+	}
+	if err := i.RecordFeedback(context.Background(), RoutingFeedback{
+		RequestID: "req-conf-3", TaskType: "code",
+		PredictedProvider: "model-a", IsSuccess: true,
+		Confidence: -1,
+	}); err != nil {
+		t.Fatalf("RecordFeedback failed: %v", err)
+	}
+	if writer.inserted[2].Confidence != 0.8 {
+		t.Fatalf("negative confidence must fall back to legacy 0.8, got %f", writer.inserted[2].Confidence)
+	}
+}
+
 // =============================================================================
 // RequestMeta context 往返
 // =============================================================================

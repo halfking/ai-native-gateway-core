@@ -174,6 +174,14 @@ type RoutingFeedback struct {
 	Latency           time.Duration
 	Cost              float64 // request cost in USD (computed from token usage)
 
+	// Confidence is the classifier confidence at decision time ([0,1]).
+	// Source: autoroute.Classification.Confidence, carried on
+	// autoroute.Decision.Confidence and filled by
+	// autoroute.Decider.recordFeedbackAsync (2026-09-08 audit Track A —
+	// replaces the integrator's hard-coded 0.8). Values <= 0 from older
+	// callers fall back to the legacy 0.8 in FeedbackIntegrator.
+	Confidence float64
+
 	// HumanCorrection: optional correction from P2.1 training_human_annotations.
 	// When a human annotator marks the AUTO prediction as incorrect, this field
 	// contains the correct provider. The feedback is weighted ×2 in accuracy

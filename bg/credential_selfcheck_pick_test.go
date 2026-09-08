@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/kaixuan/llm-gateway-go/recentmodels"
@@ -68,6 +69,12 @@ func TestSelectSelfcheckPrimaryNeverChoosesUnrankedModel(t *testing.T) {
 	}
 }
 
+func TestCredentialSelfcheckWindowIsFifteenMinutes(t *testing.T) {
+	if credentialSelfcheckWindow != 15*time.Minute {
+		t.Fatalf("self-check window = %v, want 15m so failed credentials can recover the same day", credentialSelfcheckWindow)
+	}
+}
+
 func TestPickDueCredentialFiltersByCredentialRun(t *testing.T) {
 	src, err := os.ReadFile("credential_selfcheck.go")
 	if err != nil {
@@ -75,6 +82,21 @@ func TestPickDueCredentialFiltersByCredentialRun(t *testing.T) {
 	}
 	if !strings.Contains(string(src), "scr.model_name = 'cred-' || c.id::text") {
 		t.Fatal("per-credential self-check watermark filter missing")
+	}
+}
+
+// With a 15m window and LIMIT 1 per 5m tick, ordering by the newest error
+// first lets 3 noisy credentials starve everyone else. Least-recently
+// checked must win so every erroring credential rotates through.
+func TestPickDueCredentialRotatesLeastRecentlyChecked(t *testing.T) {
+	src, err := os.ReadFile("credential_selfcheck.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(src)
+	order := strings.Index(body, "ORDER BY COALESCE(l.last_at, '1970-01-01'::timestamptz) ASC, e.last_error_at DESC, c.id")
+	if order < 0 {
+		t.Fatal("pickDueCredential must order by least-recently-checked before newest error")
 	}
 }
 

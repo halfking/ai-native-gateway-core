@@ -15,6 +15,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
+	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -360,6 +361,33 @@ func (e *Executor) executeViaDispatch(
 // unchanged.
 func bridgeDispatchNotice(params *ExecParams) func(dispatch.DispatchNotice) {
 	return func(notice dispatch.DispatchNotice) {
+		// Audit 2026-09-08 #3: request_flow coverage for dispatch V2 candidate
+		// switches. The notice already carries the from→to endpoints and the
+		// failover cause — record the line BEFORE the transport branches so it
+		// fires even when the client-facing channel drops the notice
+		// (non-streaming without a collector, prestream_uninit). Same
+		// zero-blocking semantics as every other requestflow.Log call site.
+		// DispatchNotice carries no provider_id, so the field stays 0 here
+		// (credential_id + from/to_credential_id identify the transition).
+		if notice.Kind == dispatch.NoticeKindNodeSwitch || notice.Kind == dispatch.NoticeKindModelSwitch {
+			var requestID string
+			if params != nil {
+				requestID = params.RequestID
+			}
+			requestflow.Log(requestflow.Event{
+				Stage:            "dispatch",
+				RequestID:        requestID,
+				Model:            notice.ToModel,
+				CredentialID:     notice.ToCredentialID,
+				Kind:             string(notice.Kind),
+				Action:           "switch_node",
+				Reason:           notice.ErrorKind,
+				Retryable:        true,
+				Attempt:          notice.Attempt,
+				FromCredentialID: notice.FromCredentialID,
+				ToCredentialID:   notice.ToCredentialID,
+			})
+		}
 		if params != nil && !params.IsStream && params.FailoverNotices != nil {
 			params.FailoverNotices.Add(notice)
 			if params.W != nil {
@@ -553,6 +581,20 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 					out.Err, kind, nil, nil, extra,
 				)
 				failureLogged = true
+			}
+			// 2026-09-08 audit (re-wiring): the legacy sync candidate loop that
+			// called HealthTracker.OnError was retired in f7eb0eb1b and nothing
+			// re-attached the failure side — the 80% hard-degrade, kind-gradient
+			// thresholds, probe gating and concurrency auto-tune all went dark,
+			// and the admin sliding window only ever accumulated successes
+			// (monitor showed a permanent 100%). The dispatch defer is the one
+			// funnel every candidate failure passes through. OnError is async
+			// and its checker enforces the empty_response/overload/client-bug
+			// skip list internally, so gateway-side benign rejections never
+			// hard-degrade a credential.
+			if e.HealthTracker != nil && cand.CredentialID > 0 {
+				e.HealthTracker.OnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, kind,
+					params.R.Header.Get("X-Request-Id"))
 			}
 		} else if result, ok := out.Result.(*ExecuteResult); ok && result != nil && result.Response != nil {
 			out.HTTPStatus = result.Response.StatusCode
@@ -783,6 +825,17 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	}
 	kind := e.recordDispatchError(params, cand, execErr)
 
+	// Audit 2026-09-08 #3: request_flow coverage for dispatch V2 stream
+	// interruptions. forwardForDispatch is the funnel every protocol
+	// executor's mid-stream failure passes through; the reason/resumable
+	// fields already extracted for the failure log carry the interruption
+	// position (reason) here too. Client disconnects surface on the same
+	// line with reason client_cancel/client_disconnected and KindCanceled.
+	var sie *streamInterruptedError
+	if errors.As(execErr, &sie) && sie != nil {
+		logDispatchStreamInterrupted(params, cand, kind, sie)
+	}
+
 	// candidate_failure_logs (migration 300 + V358 session_id): one row per
 	// failed dispatch attempt. Ported from the retired legacy sync loop —
 	// both of ee2565046's call sites (generic per-candidate failure +
@@ -798,8 +851,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			extra = map[string]any{}
 		}
 		extra["supplier"] = cand.CatalogCode
-		var sie *streamInterruptedError
-		if errors.As(execErr, &sie) && sie != nil {
+		if sie != nil {
 			extra["stream_reason"] = sie.reason
 			extra["stream_resumable"] = sie.resumable
 			extra["upstream_status_code"] = sie.statusCode
@@ -980,7 +1032,8 @@ var (
 //   - perAttemptLatencyMs only (no end-to-end latency), matching the legacy
 //     candidate-loop convention
 //
-// nil-safe: writer == nil is a no-op (mirrors LogFailure's own contract).
+// nil-safe: writer == nil skips only the hot-table write (mirrors LogFailure's
+// own contract); the request_flow line above it still fires.
 func logDispatchPreflightRejection(
 	writer *CandidateFailureWriter,
 	params *ExecParams,
@@ -991,9 +1044,6 @@ func logDispatchPreflightRejection(
 	kind errorsx.ErrorKind,
 	extra map[string]any,
 ) {
-	if writer == nil {
-		return
-	}
 	if params == nil || dctx == nil || rejErr == nil {
 		return
 	}
@@ -1004,6 +1054,27 @@ func logDispatchPreflightRejection(
 		extra["candidates_left"] = len(dctx.candidates)
 	}
 	extra["supplier"] = cand.CatalogCode
+	// Audit 2026-09-08 #3: request_flow coverage for dispatch V2 preflight
+	// rejections (fp-slot saturation / circuit-open / limiter / key-rotation).
+	// Fires independently of the failure-log writer so the rejection is
+	// visible on the request_flow channel even when the hot-table writer is
+	// not wired. rejection_type is the low-cardinality reason; the errorsx
+	// kind goes on the kind field.
+	requestflow.Log(requestflow.Event{
+		Stage:        "preflight",
+		RequestID:    params.RequestID,
+		Model:        cand.RawModel,
+		ProviderID:   cand.ProviderID,
+		CredentialID: cand.CredentialID,
+		Kind:         string(kind),
+		Action:       "preflight_reject",
+		Reason:       preflightRejectionReason(extra, rejErr),
+		Retryable:    true,
+		Attempt:      params.AttemptNo,
+	})
+	if writer == nil {
+		return
+	}
 	perAttemptMs := int(time.Since(startedAt).Milliseconds())
 	writer.LogFailureWithKind(
 		params.R.Header.Get("X-Request-Id"),
@@ -1019,6 +1090,39 @@ func logDispatchPreflightRejection(
 		&perAttemptMs,
 		extra,
 	)
+}
+
+// logDispatchStreamInterrupted emits the request_flow stream_interrupted line
+// for one dispatch V2 forward outcome (audit 2026-09-08 #3). Pure observation,
+// zero blocking: requestflow.Log is a fire-and-forget slog write.
+func logDispatchStreamInterrupted(
+	params *ExecParams,
+	cand provider.Candidate,
+	kind errorsx.ErrorKind,
+	sie *streamInterruptedError,
+) {
+	requestflow.Log(requestflow.Event{
+		Stage:        "dispatch",
+		RequestID:    params.RequestID,
+		Model:        cand.RawModel,
+		ProviderID:   cand.ProviderID,
+		CredentialID: cand.CredentialID,
+		Kind:         string(kind),
+		Action:       "stream_interrupted",
+		Reason:       sie.reason,
+		Retryable:    sie.resumable,
+		Attempt:      params.AttemptNo,
+	})
+}
+
+// preflightRejectionReason picks the low-cardinality rejection_type every
+// logDispatchPreflightRejection call site stamps into extra; the raw error
+// message is only the fallback when a future call site forgets the stamp.
+func preflightRejectionReason(extra map[string]any, rejErr error) string {
+	if rt, ok := extra["rejection_type"].(string); ok && rt != "" {
+		return rt
+	}
+	return rejErr.Error()
 }
 
 type dispatchErr struct{ msg string }

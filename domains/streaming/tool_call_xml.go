@@ -5,13 +5,17 @@ import (
 	"html"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+
+	vendorstrip "github.com/kaixuan/llm-gateway-go/internal/vendorstrip"
 )
 
 var (
-	xmlToolCallRE = regexp.MustCompile(`(?s)<tool_call>\s*<function=([A-Za-z_][\w.-]*)>(.*?)</function>\s*</tool_call>`)
-	xmlParamRE    = regexp.MustCompile(`(?s)<parameter=([A-Za-z_][\w.-]*)>(.*?)</parameter>`)
+	xmlToolCallRE   = regexp.MustCompile(`(?s)<tool_call>\s*<function=([A-Za-z_][\w.-]*)>(.*?)</function>\s*</tool_call>`)
+	xmlParamRE      = regexp.MustCompile(`(?s)<parameter=([A-Za-z_][\w.-]*)>(.*?)</parameter>`)
+	looseToolCallRE = regexp.MustCompile(`(?s)<tool_call>\s*(.*?)\s*</tool_call>`)
 
 	// minimaxStyleRE matches the MiniMax M2.7 tool-call XML shape:
 	//   <minimax:tool_call>
@@ -42,7 +46,7 @@ func coerceXMLToolCallsInChatResponse(body []byte, toolsRequested bool) []byte {
 		return body
 	}
 	bodyStr := string(body)
-	if !strings.Contains(bodyStr, "<tool_call>") && !strings.Contains(bodyStr, "<minimax:tool_call>") {
+	if !strings.Contains(bodyStr, "<tool_call>") && !strings.Contains(bodyStr, "<minimax:tool_call>") && !strings.Contains(bodyStr, "minimax[>[") {
 		return body
 	}
 	var resp map[string]any
@@ -139,7 +143,7 @@ func (c *streamXMLToolCallCoercer) apply(line string, toolsRequested bool) strin
 			continue
 		}
 		candidate := c.fragment + content
-		if c.fragment == "" && !strings.Contains(content, "<tool_call>") && !strings.Contains(content, "<minimax:tool_call>") {
+		if c.fragment == "" && !strings.Contains(content, "<tool_call>") && !strings.Contains(content, "<minimax:tool_call>") && !strings.Contains(content, "minimax[>[") {
 			continue
 		}
 		if len(candidate) > maxStreamXMLToolCallBytes {
@@ -187,7 +191,7 @@ func coerceXMLToolCallsInStreamLine(line string, toolsRequested bool) string {
 	if !toolsRequested || !strings.HasPrefix(line, "data: ") {
 		return line
 	}
-	if !strings.Contains(line, "<tool_call>") && !strings.Contains(line, "<minimax:tool_call>") {
+	if !strings.Contains(line, "<tool_call>") && !strings.Contains(line, "<minimax:tool_call>") && !strings.Contains(line, "minimax[>[") {
 		return line
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
@@ -243,6 +247,7 @@ func coerceXMLToolCallsInStreamLine(line string, toolsRequested bool) string {
 }
 
 func parseXMLToolCalls(text string) (string, []map[string]any) {
+	text = vendorstrip.UnwrapMiniMaxTokenWrappers(text)
 	// Try the Xiaomi MiMo / generic shape first.
 	if strings.Contains(text, "<tool_call>") && strings.Contains(text, "<function=") {
 		if remaining, calls := parseXMLWith(text, xmlToolCallRE, xmlParamRE); len(calls) > 0 {
@@ -255,7 +260,76 @@ func parseXMLToolCalls(text string) (string, []map[string]any) {
 			return remaining, calls
 		}
 	}
+	if strings.Contains(text, "<tool_call>") && strings.Contains(text, "</tool_call>") {
+		if remaining, calls := parseLooseToolCalls(text); len(calls) > 0 {
+			slog.Info("request_flow", "event", "request_flow", "stage", "minimax_tool_text_coerced",
+				"kind", "conversion", "action", "coerce_tool_call", "retryable", false)
+			return remaining, calls
+		}
+	}
 	return text, nil
+}
+
+func parseLooseToolCalls(text string) (string, []map[string]any) {
+	matches := looseToolCallRE.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return text, nil
+	}
+	var toolCalls []map[string]any
+	var builder strings.Builder
+	cursor := 0
+	for i, match := range matches {
+		builder.WriteString(text[cursor:match[0]])
+		cursor = match[1]
+		inner := strings.TrimSpace(text[match[2]:match[3]])
+		if inner == "" {
+			continue
+		}
+		// 2026-09-08 audit: many vendors (Qwen-style) emit the tool call as a
+		// bare JSON object {"name":...,"arguments":...} inside <tool_call>.
+		// Extract the real name/arguments when the inner payload parses as
+		// JSON; otherwise keep the historical {"input": <raw>} wrap. A fixed
+		// name="tool" makes downstream agents fail with "no such tool" and
+		// aborts their loop — worse than the leak it replaces.
+		name := "tool"
+		args := "{}"
+		var asJSON map[string]any
+		if err := json.Unmarshal([]byte(inner), &asJSON); err == nil && asJSON != nil {
+			if n, ok := asJSON["name"].(string); ok && strings.TrimSpace(n) != "" {
+				name = strings.TrimSpace(n)
+				switch rawArgs := asJSON["arguments"].(type) {
+				case string:
+					args = rawArgs
+				default:
+					if rawArgs != nil {
+						if b, err := json.Marshal(rawArgs); err == nil {
+							args = string(b)
+						}
+					}
+				}
+			}
+		}
+		if args == "{}" && name == "tool" {
+			wrapped, _ := json.Marshal(map[string]any{"input": inner})
+			args = string(wrapped)
+		}
+		// 2026-09-08 audit: rune('a'+i) produces non-letter bytes past i=25 —
+		// use a decimal index so ids stay [A-Za-z0-9] like OpenAI ids.
+		id := strings.ReplaceAll("call_"+time.Now().UTC().Format("20060102150405.000000000")+"_"+strconv.Itoa(i), ".", "")
+		toolCalls = append(toolCalls, map[string]any{
+			"id":   id,
+			"type": "function",
+			"function": map[string]any{
+				"name":      name,
+				"arguments": args,
+			},
+		})
+	}
+	builder.WriteString(text[cursor:])
+	if len(toolCalls) == 0 {
+		return text, nil
+	}
+	return strings.TrimSpace(builder.String()), toolCalls
 }
 
 // parseXMLWith runs the supplied tool-call + parameter regexes against

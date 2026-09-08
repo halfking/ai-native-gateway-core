@@ -211,6 +211,31 @@ func TestTrainingExporterDeduplication(t *testing.T) {
 		assert.Len(t, deduped, 5, "should not deduplicate by request_id (all unique)")
 	})
 
+	t.Run("DedupByContentHash_EmptyHashFallsBackToRequestID", func(t *testing.T) {
+		// promote 丢列窗口写入的旧行 content_hash 为空串（COALESCE 后）；
+		// 空值不能作为去重键，否则全部旧行坍缩成一条（2026-09-08 导出缺陷）。
+		legacy := []*TrainingDataRecord{
+			{RequestID: "old-1", ContentHash: ""},
+			{RequestID: "old-2", ContentHash: ""},
+			{RequestID: "old-3", ContentHash: "hash-A"},
+			{RequestID: "old-4", ContentHash: "hash-A"},
+		}
+		deduped := exporter.dedupRecords(legacy, "content_hash")
+		assert.Len(t, deduped, 3, "empty-hash rows kept individually, hash-A collapsed to one")
+		assert.Equal(t, "old-1", deduped[0].RequestID)
+		assert.Equal(t, "old-2", deduped[1].RequestID)
+		assert.Equal(t, "old-3", deduped[2].RequestID)
+	})
+
+	t.Run("DedupByUnknownStrategy_EmptyHashFallsBackToRequestID", func(t *testing.T) {
+		legacy := []*TrainingDataRecord{
+			{RequestID: "old-1", ContentHash: ""},
+			{RequestID: "old-2", ContentHash: ""},
+		}
+		deduped := exporter.dedupRecords(legacy, "whatever")
+		assert.Len(t, deduped, 2, "default branch must not collapse empty-hash rows either")
+	})
+
 	t.Run("NoDedupe", func(t *testing.T) {
 		deduped := exporter.dedupRecords(records, "none")
 		assert.Len(t, deduped, 5, "should not deduplicate when strategy is 'none'")

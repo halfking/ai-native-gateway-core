@@ -121,8 +121,11 @@ func (i *FeedbackIntegrator) RecordFeedback(ctx context.Context, feedback Routin
 		RequestID:         feedback.RequestID,
 		TaskType:          feedback.TaskType,
 		PredictedProvider: feedback.PredictedProvider,
-		Confidence:        0.8, // TODO: extract from Decision
-		Success:           feedback.IsSuccess,
+		// 2026-09-08 audit Track A: real classifier confidence from the
+		// decision (RoutingFeedback.Confidence); <= 0 (older callers that
+		// predate the field) falls back to the legacy hard-coded 0.8.
+		Confidence: feedbackConfidence(feedback.Confidence),
+		Success:    feedback.IsSuccess,
 
 		// Actual metrics
 		ActualLatencyMs: toIntPtr(int(feedback.Latency.Milliseconds())),
@@ -264,6 +267,17 @@ func (i *FeedbackIntegrator) GetHumanAnnotationStats(ctx context.Context, since 
 	`, since).Scan(&count)
 
 	return count, err
+}
+
+// feedbackConfidence returns the decision-time classifier confidence, falling
+// back to the legacy hard-coded 0.8 when the caller did not populate it
+// (zero-value RoutingFeedback from pre-Track-A call sites). Backward
+// compatible: existing rows and thresholds keep their meaning.
+func feedbackConfidence(c float64) float64 {
+	if c <= 0 {
+		return 0.8
+	}
+	return c
 }
 
 // toIntPtr converts int to *int (helper for nullable fields).

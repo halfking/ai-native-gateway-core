@@ -35,6 +35,10 @@ type V3Classifier struct {
 
 // NewV3Classifier constructs a V3 classifier with the given keyword set.
 // When enableV3 is false, it delegates to the legacy HeuristicClassifier.
+
+// Deprecated (2026-09-08 结构审计): 全仓无生产调用点 — 生产链路用
+// NewHeuristicClassifierWithTuning(cmd/gateway/main.go)。V3 分类器保留
+// 供实验对照,下轮清理候选。删除前先跑 grep 确认无新调用。
 func NewV3Classifier(keywords V3KeywordSet, thresholds HeuristicThresholds, enableV3 bool) *V3Classifier {
 	if thresholds.LongContextTokens == 0 {
 		thresholds = DefaultHeuristicThresholds()

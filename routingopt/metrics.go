@@ -63,6 +63,9 @@ var (
 	cacheHits prometheus.Counter
 	cacheMiss prometheus.Counter
 
+	// F-7: ONNX inference failures, including unavailable runtime and Predict errors.
+	onnxInferenceErrors prometheus.Counter
+
 	weightedAccuracy prometheus.Gauge
 
 	// feedbackWrites 通过自定义 Collector 在 scrape 时读取注入的原子
@@ -152,6 +155,12 @@ func registerRoutingOptMetrics() {
 			Name: routingOptMetricPrefix + "cache_miss_total",
 			Help: "Routing-optimizer cache misses (populated by Track A classification cache).",
 		})
+		// F-7: ONNX 推理错误计数（包括 runtime 不可用和 Predict 失败）
+		onnxInferenceErrors = prometheus.NewCounter(prometheus.CounterOpts{
+			Name: routingOptMetricPrefix + "onnx_inference_errors_total",
+			Help: "ONNX inference failures (unavailable runtime, Predict errors). " +
+				"ML routing falls back to rule-engine order on any error.",
+		})
 		weightedAccuracy = prometheus.NewGauge(prometheus.GaugeOpts{
 			Name: routingOptMetricPrefix + "weighted_accuracy",
 			Help: "Human-annotation-weighted routing accuracy (auto + 2*human) / (total + 2*human), refreshed by RunAdaptiveMaintenance.",
@@ -161,7 +170,7 @@ func registerRoutingOptMetrics() {
 		prometheus.MustRegister(
 			preClassifyMs, postClassifyMs, recommendMs,
 			explorationRequests,
-			cacheHits, cacheMiss,
+			cacheHits, cacheMiss, onnxInferenceErrors,
 			weightedAccuracy,
 			feedbackWrites,
 		)
@@ -221,6 +230,14 @@ func RecordCacheHit() {
 func RecordCacheMiss() {
 	if cacheMiss != nil {
 		cacheMiss.Inc()
+	}
+}
+
+// RecordONNXInferenceError records an ONNX inference failure. The routing path
+// remains fail-open and falls back to rule-engine ordering.
+func RecordONNXInferenceError() {
+	if onnxInferenceErrors != nil {
+		onnxInferenceErrors.Inc()
 	}
 }
 

@@ -31,6 +31,12 @@ log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
+# 2026-09-07: llm-gateway-pg (kx-citus-pg17) 的本地超级用户是 llm_gateway，不是
+# postgres（旧脚本对 252 远端假设的 postgres 在本地不存在）。所有本地
+# docker exec 改用 LLM_GATEWAY_PG_USER 模板，与 apply-db-revision-sequence.sh
+# 一致；远端 252 调用仍按远端自己的环境（PG_USER_*）解析。
+LOCAL_PG_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}"
+
 # 默认参数
 DRY_RUN=false
 FULL_SYNC=false
@@ -107,7 +113,7 @@ if [ "$FULL_SYNC" = true ] || [ -n "$SPECIFIC_TABLES" ]; then
     log_info "仅同步指定的表: $SPECIFIC_TABLES"
   else
     # 获取本地表列表
-    docker exec llm-gateway-pg psql -U postgres -d llm_gateway -t -c \
+    docker exec llm-gateway-pg psql -U "$LOCAL_PG_USER" -d llm_gateway -t -c \
       "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename;" \
       | tr -d ' ' > "$TEMP_DIR/local_tables.txt"
     
@@ -155,7 +161,7 @@ else
   log_info "使用增量模式，检查新表..."
   
   # 获取差异
-  docker exec llm-gateway-pg psql -U postgres -d llm_gateway -t -c \
+  docker exec llm-gateway-pg psql -U "$LOCAL_PG_USER" -d llm_gateway -t -c \
     "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename;" \
     | tr -d ' ' > "$TEMP_DIR/local_tables.txt"
   
@@ -198,7 +204,7 @@ fi
 
 log_info "开始同步到本地..."
 
-docker exec -i llm-gateway-pg psql -U postgres -d llm_gateway \
+docker exec -i llm-gateway-pg psql -U "$LOCAL_PG_USER" -d llm_gateway \
   < "$OUTPUT_SQL" \
   2>&1 | tee "$TEMP_DIR/sync_from_252_$(date +%Y%m%d_%H%M%S).log" | \
   grep -E "(CREATE TABLE|CREATE SEQUENCE|CREATE INDEX|ERROR)" | \
@@ -213,7 +219,7 @@ docker exec -i llm-gateway-pg psql -U postgres -d llm_gateway \
 # 5. 验证结果
 log_info "验证同步结果..."
 
-LOCAL_COUNT=$(docker exec llm-gateway-pg psql -U postgres -d llm_gateway -t -c \
+LOCAL_COUNT=$(docker exec llm-gateway-pg psql -U "$LOCAL_PG_USER" -d llm_gateway -t -c \
   "SELECT COUNT(*) FROM pg_tables WHERE schemaname='public';" | tr -d ' ')
 
 REMOTE_COUNT=$(PGPASSWORD="$COMMON_PG_SUPERUSER_PASS" /opt/homebrew/opt/libpq/bin/psql \

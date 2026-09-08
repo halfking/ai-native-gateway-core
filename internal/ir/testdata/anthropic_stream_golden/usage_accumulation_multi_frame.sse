@@ -1,0 +1,18 @@
+event: content_block_delta
+data: {"delta":{"text":"a","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message_start
+data: {"message":{"id":"chatcmpl-4","model":"gpt-4o","usage":{"input_tokens":100,"output_tokens":0}},"type":"message_start"}
+
+event: content_block_delta
+data: {"delta":{"text":"b","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message_start
+data: {"message":{"id":"chatcmpl-4","model":"gpt-4o","usage":{"input_tokens":100,"output_tokens":0}},"type":"message_start"}
+
+event: message_delta
+data: {"delta":{"stop_reason":"end_turn"},"type":"message_delta","usage":{"output_tokens":20}}
+
+event: message_stop
+data: {"type":"message_stop"}
+

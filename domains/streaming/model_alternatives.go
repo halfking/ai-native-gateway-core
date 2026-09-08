@@ -214,7 +214,12 @@ task_models AS (
     FROM task_default_routing
     WHERE $3 <> ''
       AND task_type = $3
-      AND (tenant_id = $2 OR tenant_id = 'default')
+      AND (tenant_id = $2 OR tenant_id IS NULL)
+      -- 2026-09-08 audit: the platform-level default row is tenant_id IS NULL
+      -- (477/480 seeds INSERT without tenant_id; admin/auto_route_defaults.go
+      -- NULLs it). The literal 'default' belongs to routing_policy's own
+      -- convention — copied here it matched nothing, so tier-1 task_match
+      -- came up empty whenever only the platform default routing existed.
     GROUP BY canonical_model
 ),
 usage_7d AS (

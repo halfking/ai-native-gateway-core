@@ -12,6 +12,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/requestflow"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -861,6 +862,14 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				"provider_id", lastProviderID,
 				"raw_model", lastRawModel,
 			)...)
+			requestflow.Log(requestflow.Event{
+				Stage: "survival", RequestID: params.RequestID, Model: lastRawModel,
+				ProviderID: lastProviderID, Kind: strings.Join(attemptKinds, ","),
+				Action: res.Decision.Action.String(), Reason: res.Decision.Reason,
+				Retryable: false,
+				Committed: res.FinalAttempt.CommitState >= CommitStateContent || res.Decision.Reason == "l2_alignment_miss",
+				Attempt:   res.Attempts,
+			})
 			return res
 		}
 	}
