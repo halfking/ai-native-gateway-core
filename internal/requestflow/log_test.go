@@ -44,3 +44,28 @@ func TestEventAttrs_IncludeDecisionFields(t *testing.T) {
 		}
 	}
 }
+
+// Audit 2026-09-08 #3: node_switch events carry the candidate transition
+// endpoints; zero-valued From/To fields must not change the base schema.
+func TestEventAttrs_NodeSwitchEndpoints(t *testing.T) {
+	base := Event{Stage: "survival", RequestID: "req-1"}.Attrs()
+	if len(base) != 24 {
+		t.Fatalf("base attrs len = %d, want 24 (from/to must stay omitted when zero)", len(base))
+	}
+
+	e := Event{
+		Stage:            "dispatch",
+		RequestID:        "req-2",
+		Action:           "switch_node",
+		FromCredentialID: 11,
+		ToCredentialID:   22,
+	}
+	attrs := e.Attrs()
+	got := map[string]any{}
+	for i := 0; i+1 < len(attrs); i += 2 {
+		got[fmt.Sprint(attrs[i])] = attrs[i+1]
+	}
+	if got["from_credential_id"] != 11 || got["to_credential_id"] != 22 {
+		t.Fatalf("from/to attrs = %#v/%#v, want 11/22", got["from_credential_id"], got["to_credential_id"])
+	}
+}
