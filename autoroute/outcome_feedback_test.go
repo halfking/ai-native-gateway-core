@@ -21,7 +21,7 @@ func resetOutcomeRegistry(t *testing.T) {
 	t.Helper()
 	pendingFeedbackMu.Lock()
 	pendingFeedback = map[string]*pendingFeedbackEntry{}
-	pendingFeedbackOrder = nil
+	pendingFeedbackOrder.Init()
 	pendingFeedbackMu.Unlock()
 }
 
@@ -153,10 +153,11 @@ func TestRecordFeedback_WithoutRequestID_KeepsLegacyPlaceholder(t *testing.T) {
 	}
 }
 
-// TestRecordFeedback_OutcomeArrivesLate tests the TTL janitor: a stashed
-// decision whose request never reports is flushed with the legacy placeholder
-// semantics instead of being lost.
-func TestRecordFeedback_OutcomeArrivesLate(t *testing.T) {
+// TestRecordFeedback_OutcomeNeverArrivesIsDropped tests the TTL janitor: a
+// stashed decision whose request never reports is dropped — counted, never
+// written. A placeholder IsSuccess=true row would label rate-limited/crashed
+// requests as routing successes (2026-09-09 audit round 3).
+func TestRecordFeedback_OutcomeNeverArrivesIsDropped(t *testing.T) {
 	resetOutcomeRegistry(t)
 	oldTTL := pendingFeedbackTTL
 	pendingFeedbackTTL = 5 * time.Millisecond
@@ -169,18 +170,32 @@ func TestRecordFeedback_OutcomeArrivesLate(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	evictExpiredPendingFeedback()
 
-	fbs := waitForFeedback(t, ranker, 1)
-	if !fbs[0].IsSuccess {
-		t.Fatal("TTL-expired feedback keeps the legacy placeholder outcome")
+	time.Sleep(50 * time.Millisecond)
+	ranker.mu.Lock()
+	n := len(ranker.feedbacks)
+	ranker.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("TTL-expired decision must not be written as placeholder, got %d rows", n)
 	}
 	if _, _, _, expired, _ := outcomeStatsSnapshot(); expired < 1 {
 		t.Fatalf("expiry should be counted, stats=%v", outcomeStatsTuple())
 	}
+
+	// A late outcome for an already-expired decision is an orphan, not a row.
+	ReportRoutingOutcome(RoutingOutcome{RequestID: "req-late", Success: true})
+	time.Sleep(50 * time.Millisecond)
+	ranker.mu.Lock()
+	n = len(ranker.feedbacks)
+	ranker.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("late outcome after expiry must be orphaned, got %d rows", n)
+	}
 }
 
 // TestRecordFeedback_RegistryBoundEvictsOldest proves the registry never
-// grows unbounded: overflowing it flushes the oldest stashed decision
-// (placeholder semantics) rather than blocking or dropping the new one.
+// grows unbounded: overflowing it evicts the oldest stashed decision (dropped
+// and counted, since its outcome never arrived) rather than blocking or
+// dropping the new one.
 func TestRecordFeedback_RegistryBoundEvictsOldest(t *testing.T) {
 	resetOutcomeRegistry(t)
 	oldMax := maxPendingFeedback
@@ -193,15 +208,21 @@ func TestRecordFeedback_RegistryBoundEvictsOldest(t *testing.T) {
 			t.Fatalf("Decide %d failed: %v", i, err)
 		}
 	}
-	// req-a (oldest) must have been flushed with placeholder semantics.
-	fbs := waitForFeedback(t, ranker, 1)
-	if fbs[0].RequestID != "req-a" || !fbs[0].IsSuccess {
-		t.Fatalf("oldest entry should be flushed as placeholder, got %+v", fbs[0])
+	// req-a (oldest) was evicted without a write; only the two newest stay
+	// pending, both settle for real.
+	time.Sleep(50 * time.Millisecond)
+	ranker.mu.Lock()
+	n := len(ranker.feedbacks)
+	ranker.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("evicted entry must not be written as placeholder, got %d rows", n)
 	}
-	// The two newest stay pending; both still settle for real.
+	if _, _, _, expired, _ := outcomeStatsSnapshot(); expired < 1 {
+		t.Fatalf("eviction should be counted, stats=%v", outcomeStatsTuple())
+	}
 	ReportRoutingOutcome(RoutingOutcome{RequestID: "req-b", Success: false})
 	ReportRoutingOutcome(RoutingOutcome{RequestID: "req-c", Success: true})
-	fbs = waitForFeedback(t, ranker, 3)
+	fbs := waitForFeedback(t, ranker, 2)
 	byID := map[string]bool{}
 	for _, fb := range fbs {
 		byID[fb.RequestID] = fb.IsSuccess

@@ -21,10 +21,13 @@ package autoroute
 //     tuning signals and terminal request_logs rows). The stashed feedback is
 //     popped, filled with the REAL outcome, and written through the same
 //     bounded fire-and-forget dispatch as before.
-//  3. Requests that never report an outcome (process crash, unknown entry
-//     paths) are evicted after pendingFeedbackTTL by a lazy janitor and written
-//     with the legacy placeholder semantics (IsSuccess=true) so feedback
-//     volume for those paths matches the pre-Track-A behaviour.
+//  3. Requests that never report an outcome (rate-limited before execution,
+//     process crash, >TTL streams) are evicted after pendingFeedbackTTL by a
+//     lazy janitor and DROPPED — counted, never written. A decision whose
+//     outcome never arrived carries no learnable signal, and writing the old
+//     IsSuccess=true placeholder would turn every such request into a false
+//     positive training row (2026-09-09 audit round 3: rate-limited auto
+//     requests were systematically labelled success).
 //
 // Import direction: domains/streaming already imports autoroute (decider
 // wiring); ReportRoutingOutcome is called from that side, so no new edge —
@@ -35,10 +38,11 @@ package autoroute
 // write still goes through the feedbackWriteSlots bounded semaphore with
 // drop-on-full semantics and a panic-recovering goroutine. The registry
 // itself is bounded (maxPendingFeedback) and never blocks Decide: an
-// overflowing stash evicts the oldest entry (which is flushed with legacy
-// placeholder semantics through the same bounded path).
+// overflowing stash evicts the oldest entry (dropped, counted — same
+// no-signal-no-write rule as the TTL janitor).
 
 import (
+	"container/list"
 	"context"
 	"log/slog"
 	"sync"
@@ -72,78 +76,75 @@ type pendingFeedbackEntry struct {
 	fb        *routingopt.RoutingFeedback
 	optimizer RoutingOptimizer
 	stashedAt time.Time
+	// elem is this entry's node in pendingFeedbackOrder, giving O(1) removal
+	// (2026-09-09 audit round 3: the old []string order index made every
+	// removal an O(n) scan+shift inside the global mutex — on the Decide hot
+	// path when the registry ran near capacity).
+	elem *list.Element
 }
 
 var (
 	// pendingFeedbackTTL is how long a stashed decision waits for its outcome
-	// before the janitor flushes it with legacy placeholder semantics. Longer
-	// than any sane request (streams included); var so tests can shrink it.
+	// before the janitor drops it. Longer than any sane request (streams
+	// included); var so tests can shrink it.
 	pendingFeedbackTTL = 10 * time.Minute
 
 	// maxPendingFeedback bounds the registry. 8k pending decisions ≈ tens of
-	// KB; beyond that the oldest entries are flushed early rather than letting
-	// a reporting outage grow memory without bound. Var so tests can shrink it.
+	// KB; beyond that the oldest entries are evicted (dropped, counted) rather
+	// than letting a reporting outage grow memory without bound. Var so tests
+	// can shrink it.
 	maxPendingFeedback = 8192
 
 	pendingFeedbackMu    sync.Mutex
 	pendingFeedback      = map[string]*pendingFeedbackEntry{}
-	pendingFeedbackOrder []string // insertion order, for O(1) oldest eviction
+	pendingFeedbackOrder list.List // insertion-ordered request ids, for O(1) oldest eviction
 
 	pendingJanitorOnce sync.Once
 
 	// Observability counters (read by RoutingOutcomeStats; asserted in tests).
 	outcomeMatched atomic.Int64 // ReportRoutingOutcome found its decision
 	outcomeOrphan  atomic.Int64 // outcome with no stashed decision (non-auto request, cache hit, already settled)
-	outcomeExpired atomic.Int64 // janitor/TTL flushes with placeholder semantics
+	outcomeExpired atomic.Int64 // entries dropped on TTL/eviction — outcome never arrived, never written
 	outcomeDropped atomic.Int64 // bounded semaphore full — write shed, matching decision-time semantics
 	outcomeStashed atomic.Int64 // decisions parked awaiting an outcome
 )
 
 // stashPendingFeedback parks a decision-time feedback under its request id.
-// Never blocks: when the registry is full the oldest entry is flushed early
-// (legacy placeholder semantics). Re-stashing the same request id (client
-// retry reusing X-Request-Id) flushes the previous entry the same way so a
-// decision can never be silently lost.
+// Never blocks: when the registry is full the oldest entry is evicted early
+// (dropped, counted — no outcome ever arrived for it). Re-stashing the same
+// request id (client retry reusing X-Request-Id) evicts the previous entry
+// the same way so a decision can never be silently lost.
 func stashPendingFeedback(requestID string, optimizer RoutingOptimizer, fb *routingopt.RoutingFeedback) {
 	startPendingJanitor()
-	var deferred []*pendingFeedbackEntry // flushed after the lock is released
+	var evicted int // counted after the lock is released
 	pendingFeedbackMu.Lock()
-	// Same id stashed twice: ship the previous entry now (placeholder
-	// outcome) and let the new decision own the id.
+	// Same id stashed twice: drop the previous entry (its request either
+	// crashed or was superseded) and let the new decision own the id.
 	if old := pendingFeedback[requestID]; old != nil {
 		removePendingLocked(requestID)
-		deferred = append(deferred, old)
+		evicted++
 	}
-	// Capacity guard: flush the oldest entries before inserting.
-	for len(pendingFeedback) >= maxPendingFeedback && len(pendingFeedbackOrder) > 0 {
-		oldest := pendingFeedbackOrder[0]
-		if e := pendingFeedback[oldest]; e != nil {
-			removePendingLocked(oldest)
-			deferred = append(deferred, e)
-			continue
-		}
-		break
+	// Capacity guard: evict the oldest entries before inserting.
+	for len(pendingFeedback) >= maxPendingFeedback && pendingFeedbackOrder.Len() > 0 {
+		front := pendingFeedbackOrder.Front()
+		removePendingLocked(front.Value.(string))
+		evicted++
 	}
-	pendingFeedback[requestID] = &pendingFeedbackEntry{fb: fb, optimizer: optimizer, stashedAt: time.Now()}
-	pendingFeedbackOrder = append(pendingFeedbackOrder, requestID)
+	entry := &pendingFeedbackEntry{fb: fb, optimizer: optimizer, stashedAt: time.Now()}
+	entry.elem = pendingFeedbackOrder.PushBack(requestID)
+	pendingFeedback[requestID] = entry
 	pendingFeedbackMu.Unlock()
-	for _, e := range deferred {
-		dispatchFeedback(e.optimizer, e.fb)
-		outcomeExpired.Add(1)
-	}
+	outcomeExpired.Add(int64(evicted))
 	outcomeStashed.Add(1)
 }
 
 // removePendingLocked deletes a request id from both the map and the
-// insertion-order index. Caller holds pendingFeedbackMu.
+// insertion-order index, both O(1). Caller holds pendingFeedbackMu.
 func removePendingLocked(requestID string) {
-	delete(pendingFeedback, requestID)
-	for i, id := range pendingFeedbackOrder {
-		if id == requestID {
-			pendingFeedbackOrder = append(pendingFeedbackOrder[:i], pendingFeedbackOrder[i+1:]...)
-			return
-		}
+	if e := pendingFeedback[requestID]; e != nil && e.elem != nil {
+		pendingFeedbackOrder.Remove(e.elem)
 	}
+	delete(pendingFeedback, requestID)
 }
 
 // takePendingFeedback pops the stashed feedback for a request id, or nil.
@@ -158,29 +159,29 @@ func takePendingFeedback(requestID string) *pendingFeedbackEntry {
 	return entry
 }
 
-// evictExpiredPendingFeedback flushes entries whose request never reported an
+// evictExpiredPendingFeedback drops entries whose request never reported an
 // outcome within pendingFeedbackTTL. Called by the lazy janitor (and directly
-// by tests). Expired entries keep the pre-Track-A semantics: written with the
-// decision-time placeholder (IsSuccess=true) rather than dropped, so feedback
-// volume on paths that never report matches the old behaviour.
+// by tests). Expired decisions are counted, never written: without a real
+// outcome there is nothing to learn, and a placeholder IsSuccess=true row
+// would inject false positives into the optimizer (see header note 3).
 func evictExpiredPendingFeedback() {
 	cutoff := time.Now().Add(-pendingFeedbackTTL)
-	var expired []*pendingFeedbackEntry
+	var expired int
 	pendingFeedbackMu.Lock()
-	// pendingFeedbackOrder is insertion-ordered, so everything to flush sits
+	// pendingFeedbackOrder is insertion-ordered, so everything to drop sits
 	// at the head; stop at the first fresh entry.
-	for len(pendingFeedbackOrder) > 0 {
-		e := pendingFeedback[pendingFeedbackOrder[0]]
+	for pendingFeedbackOrder.Len() > 0 {
+		frontID := pendingFeedbackOrder.Front().Value.(string)
+		e := pendingFeedback[frontID]
 		if e == nil || !e.stashedAt.Before(cutoff) {
 			break
 		}
-		expired = append(expired, e)
-		removePendingLocked(pendingFeedbackOrder[0])
+		removePendingLocked(frontID)
+		expired++
 	}
 	pendingFeedbackMu.Unlock()
-	for _, e := range expired {
-		dispatchFeedback(e.optimizer, e.fb)
-		outcomeExpired.Add(1)
+	if expired > 0 {
+		outcomeExpired.Add(int64(expired))
 	}
 }
 
@@ -190,16 +191,25 @@ func evictExpiredPendingFeedback() {
 func startPendingJanitor() {
 	pendingJanitorOnce.Do(func() {
 		go func() {
-			defer func() {
-				if rec := recover(); rec != nil {
-					// 2026-09-08 audit: a janitor panic must not kill the process.
-					slog.Error("autoroute outcome janitor panicked", "panic", rec)
-				}
-			}()
 			ticker := time.NewTicker(time.Minute)
 			defer ticker.Stop()
 			for range ticker.C {
-				evictExpiredPendingFeedback()
+				// Recover per tick (2026-09-09 audit round 3): a recover on
+				// the goroutine body would let one panic permanently kill the
+				// sweep; per-tick recovery keeps the janitor alive.
+				func() {
+					defer func() {
+						if rec := recover(); rec != nil {
+							slog.Error("autoroute outcome janitor tick panicked", "panic", rec)
+						}
+					}()
+					evictExpiredPendingFeedback()
+				}()
+				if stashed, matched, orphan, expired, dropped := RoutingOutcomeStats(); stashed > 0 {
+					slog.Debug("autoroute outcome registry stats",
+						"stashed", stashed, "matched", matched,
+						"orphan", orphan, "expired", expired, "dropped", dropped)
+				}
 			}
 		}()
 	})
