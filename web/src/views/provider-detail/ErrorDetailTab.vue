@@ -11,6 +11,7 @@ import {
 import {
   errorKindBadgeClass,
   errorKindI18nKey,
+  errorStageBadgeClass,
   errorStageI18nKey,
   rawVocabFallback,
   retryableBadgeClass,
@@ -141,10 +142,23 @@ onBeforeUnmount(() => {
         <section class="section-block">
           <h3>{{ pd('summary') }}</h3>
           <table v-if="data.error_summary.length" class="data-table">
-            <thead><tr><th>{{ pd('errorKind') }}</th><th>{{ pd('count') }}</th><th>{{ pd('statusCodes') }}</th><th>{{ pd('lastSeen') }}</th></tr></thead>
+            <thead><tr><th>{{ pd('errorKind') }}</th><th>{{ pd('count') }}</th><th>{{ pd('retryableCount') }}</th><th>{{ pd('stageDist') }}</th><th>{{ pd('statusCodes') }}</th><th>{{ pd('lastSeen') }}</th></tr></thead>
             <tbody><tr v-for="item in data.error_summary" :key="item.error_kind">
               <td><span class="badge" :class="errorKindBadgeClass(item.error_kind)">{{ formatErrorKind(item.error_kind) }}</span></td>
-              <td>{{ item.count }}</td><td>{{ item.distinct_status_codes }}</td><td>{{ formatTime(item.last_seen) }}</td>
+              <td>{{ item.count }}</td>
+              <td>{{ item.retryable_count ?? 0 }}/{{ item.count }}</td>
+              <td>
+                <template v-if="item.stage_counts && Object.keys(item.stage_counts).length">
+                  <span
+                    v-for="(n, stage) in item.stage_counts"
+                    :key="stage"
+                    class="badge stage-badge"
+                    :class="errorStageBadgeClass(stage)"
+                  >{{ formatStage(stage) }}×{{ n }}</span>
+                </template>
+                <template v-else>—</template>
+              </td>
+              <td>{{ item.distinct_status_codes }}</td><td>{{ formatTime(item.last_seen) }}</td>
             </tr></tbody>
           </table>
           <div v-else class="empty-hint">{{ pd('noErrors') }}</div>
@@ -203,6 +217,8 @@ onBeforeUnmount(() => {
 /* 审计 F2-#2：与 RoutingAttemptsTimeline 共享词表徽标 tone（badge class 同名）。 */
 .badge-success { background: var(--success-bg); color: var(--success); }
 .badge-muted { background: var(--neutral-bg); color: var(--muted); }
+/* 审计 R3：错误分布表的阶段分布徽标（同词表 tone，仅补间距）。 */
+.stage-badge { margin-right: 4px; margin-bottom: 2px; display: inline-block; }
 .request-link {
   max-width: 180px; padding: 0; border: 0; background: none; color: var(--accent);
   font: inherit; font-family: monospace; cursor: pointer; text-align: left;

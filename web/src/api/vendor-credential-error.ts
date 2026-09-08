@@ -27,6 +27,9 @@ export interface VendorErrorKindStat {
   count: number
   last_seen: string
   distinct_status_codes: number
+  /** 2026-09-05 审计 E-#6 additive 字段，2026-09-09 审计 R3 接入展示。 */
+  retryable_count?: number
+  stage_counts?: Record<string, number>
 }
 
 export interface VendorRecentFailure {
