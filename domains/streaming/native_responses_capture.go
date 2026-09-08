@@ -53,8 +53,14 @@ func observeNativeResponsesEvent(capture *audit.StreamCapture, event NativeRespo
 func observeNativeUsage(capture *audit.StreamCapture, usage map[string]json.RawMessage) {
 	input := nativeInt(usage, "input_tokens")
 	output := nativeInt(usage, "output_tokens")
+	// 2026-09-09 audit round 3: native Responses usage carries cache hits in
+	// input_tokens_details.cached_tokens — feed it through to the capture.
+	var cacheRead *int
+	if details, ok := nativeObject(usage, "input_tokens_details"); ok {
+		cacheRead = nativeInt(details, "cached_tokens")
+	}
 	if input != nil || output != nil {
-		capture.ObserveUsage(input, output, nil, nil)
+		capture.ObserveUsage(input, output, cacheRead, nil)
 	}
 }
 
