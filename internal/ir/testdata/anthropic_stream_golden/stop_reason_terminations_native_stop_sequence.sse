@@ -1,0 +1,12 @@
+event: message_start
+data: {"message":{"id":"msg_04","model":"claude-sonnet-4","usage":{"input_tokens":9,"output_tokens":0}},"type":"message_start"}
+
+event: content_block_delta
+data: {"delta":{"text":"partial","type":"text_delta"},"index":0,"type":"content_block_delta"}
+
+event: message_delta
+data: {"delta":{"stop_reason":"stop_sequence","stop_sequence":"\n\nNEXT"},"type":"message_delta","usage":{"output_tokens":7}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
