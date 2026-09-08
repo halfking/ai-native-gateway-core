@@ -37,6 +37,8 @@ package bg
 
 import (
 	"context"
+	"log/slog"
+	"runtime/debug"
 	"sync"
 )
 
@@ -94,6 +96,16 @@ func (b *BaseWorker) Start(parent context.Context, runFn func(context.Context)) 
 	b.started = true
 	b.mu.Unlock()
 	go func() {
+		// 2026-09-09 audit round 3: 20+ bg workers build on this scaffold;
+		// one unexpected panic (bad JSON, index OOB) in any runFn previously
+		// took down the whole process. Recover at the scaffold so the panic
+		// is contained to the worker (it still exits; the supervisor /
+		// systemd unit owns restart), with the stack logged for triage.
+		defer func() {
+			if rec := recover(); rec != nil {
+				slog.Error("bg worker panicked", "worker", b.name, "panic", rec, "stack", string(debug.Stack()))
+			}
+		}()
 		runFn(ctx)
 	}()
 	return true

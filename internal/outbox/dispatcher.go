@@ -319,8 +319,16 @@ func (d *Dispatcher) markFailed(ctx context.Context, ex execer, id int64, newAtt
 		d.markDLQ(ctx, ex, id, newAttempts, errMsg)
 		return
 	}
-	// Exponential backoff: 2^(attempts-1) seconds
-	backoff := time.Duration(1<<uint(newAttempts-1)) * time.Second
+	// Exponential backoff: 2^(attempts-1) seconds, shift clamped (2026-09-09
+	// audit round 3) — maxAttempts is operator-configurable and a value ≥ 33
+	// would overflow time.Duration into a negative backoff, making
+	// next_retry_at "now" and triggering a tight-retry storm. Mirrors the
+	// webhook.go clamp.
+	shift := uint(newAttempts - 1)
+	if shift > 6 {
+		shift = 6 // cap at 64s
+	}
+	backoff := time.Duration(1<<shift) * time.Second
 	nextRetry := time.Now().Add(backoff)
 	const query = `
 		UPDATE outbox_events
