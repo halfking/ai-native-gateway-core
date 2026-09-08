@@ -631,18 +631,25 @@ bump_local_version() {
 ensure_release_available() {
   local bundle="${1:-$BIN_DIR/$RELEASE_VERSION}"
   [[ ! -e "$bundle" && ! -L "$bundle" ]] && return 0
-  # bundle 目录已存在：可能是上一次同代码/同日重跑的残留（同 git_sha +
-  # UTC 日期不变时 bump-version 故意保持 seq 不变，2026-09-05 漂移修复
-  # 后），也可能是上一次部署在 dl_stage_release 早期失败留下的半截空目录。
+  # bundle 目录已存在（同名 collision 只有两种来源）：同版本重部署时撞上
+  # current 正指向的 active 发布（2026-09-05 漂移修复后同 git_sha+同日重跑
+  # seq 不变），或上次部署在 dl_stage_release 早期失败留下的残留目录。
   # 判别标准是 SHA256SUMS：dl_stage_release 只在 gateway/web/version.json/
   # VERSION 全部 cp/install 成功后才生成 SHA256SUMS（deploy-local-lib.sh
-  # :471-472），因此 SHA256SUMS 缺失 = 半截残留，安全 rm -rf；存在则是一
-  # 份完整的旧产物（可能正在被 dl_atomic_switch 之外的流程引用，但 deploy-
-  # local 没有 active → 老 bundle 的链接，因此 rm -rf 后重新 stage 即可）。
-  # 远程 deploy-seamless.sh 在 upload_release 里另有"current 指向即拒绝覆
-  # 盖"的保护，本地不适用。
+  # :471-472），因此 SHA256SUMS 缺失 = 半截残留。
+  # active 发布绝不能原地 rm -rf：运行中实例的 web/env/version.json 都在
+  # 里面，删除后若 build/migrate/stage 任一步失败，current 悬空且回滚守卫
+  # （[[ -e "$active_bundle" ]]）静默跳过（2026-09-09 审计修正 0c465a815
+  # 引入的缺陷）。改为整体 mv 到 .prev-<epoch> 后缀：同文件系统 rename，
+  # 运行中进程不受影响，旧目录仍是 rollback() 可发现的有效回滚目标。
+  if [[ "$(basename "$bundle")" == "$(dl_active_version)" ]]; then
+    local aside="${bundle}.prev-$(date +%s)"
+    warn "release $bundle is the active deployment; moving it aside to $(basename "$aside") before restaging"
+    mv "$bundle" "$aside" || die "failed to move active release aside: $bundle"
+    return 0
+  fi
   if [[ -e "$bundle/SHA256SUMS" ]]; then
-    warn "release $bundle already exists (intact); removing to allow same-version redeploy"
+    warn "release $bundle already exists (intact, not active); removing to allow same-version redeploy"
   else
     warn "stale incomplete release $bundle (no SHA256SUMS) from a prior failed deploy; removing"
   fi
