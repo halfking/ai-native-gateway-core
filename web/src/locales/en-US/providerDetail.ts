@@ -251,7 +251,7 @@ export default {
     lastHour: "Last 1 hour", lastDay: "Last 24 hours", lastWeek: "Last 7 days", loading: "Loading vendor errors…",
     loadFailed: "Failed to load vendor errors", credential: "Credential", health: "Health", availability: "Availability", circuit: "Circuit",
     consecutiveFailures: "Consecutive failures", balance: "Balance", summary: "Error distribution", errorKind: "Error kind", count: "Count",
-    statusCodes: "Status code types", lastSeen: "Last seen", noErrors: "No errors in this window", recentFailures: "Recent failures",
+    statusCodes: "Status code types", retryableCount: "Retryable", stageDist: "Stage distribution", lastSeen: "Last seen", noErrors: "No errors in this window", recentFailures: "Recent failures",
     time: "Time", model: "Model", kind: "Kind", httpStatus: "HTTP status", message: "Message", upstreamPreview: "Upstream preview",
     noRecentFailures: "No recent failures", qualityScores: "Provider quality, last 7 days", date: "Date", totalScore: "Total score",
     availabilityScore: "Availability", stabilityScore: "Stability", noQualityScores: "No quality scores",

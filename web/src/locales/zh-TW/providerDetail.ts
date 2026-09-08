@@ -246,7 +246,7 @@ export default {
     lastHour: '最近 1 小時', lastDay: '最近 24 小時', lastWeek: '最近 7 天', loading: '載入錯誤中…',
     loadFailed: '載入供應商錯誤失敗', credential: '憑證', health: '健康狀態', availability: '可用性', circuit: '熔斷狀態',
     consecutiveFailures: '連續失敗', balance: '餘額', summary: '錯誤分佈', errorKind: '錯誤類型', count: '次數',
-    statusCodes: '狀態碼類型', lastSeen: '最近發生', noErrors: '窗口內沒有錯誤', recentFailures: '最近失敗',
+    statusCodes: '狀態碼類型', retryableCount: '可重試', stageDist: '階段分布', lastSeen: '最近發生', noErrors: '窗口內沒有錯誤', recentFailures: '最近失敗',
     time: '時間', model: '模型', kind: '錯誤類型', httpStatus: 'HTTP 狀態', message: '錯誤訊息', upstreamPreview: '上游回應預覽',
     noRecentFailures: '沒有最近失敗', qualityScores: '近 7 天品質評分', date: '日期', totalScore: '綜合評分',
     availabilityScore: '可用性評分', stabilityScore: '穩定性評分', noQualityScores: '尚無品質評分',
