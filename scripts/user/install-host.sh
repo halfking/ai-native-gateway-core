@@ -17,39 +17,29 @@
 # 关闭交互：NO_INTERACTIVE=1；跳过网络：DRY_RUN=1。
 set -euo pipefail
 
-# 智能探测默认 INSTALL_ROOT。canonical 实现见 scripts/user/lib/common.sh;
-# 这里内嵌一份是为了保持 curl | bash 直接调用时仍能跑（curl stdin 时 BASH_SOURCE[0]=/dev/stdin，
-# 无法用 `source "$(dirname ...)/lib/common.sh"`）。
-# 决策矩阵：
-#   macOS  : ~/Downloads/llm-gateway-files → ~/Downloads 不可写 → ~/.local/llm-gateway
-#   Linux  : /opt/llm-gateway             → /opt 不可写 → ~/.local/llm-gateway
-#   Windows: D:/kaixuan/llm-gateway        → D: 不可写 → C:/llm-gateway
-# INSTALL_ROOT 环境变量始终最高优先级。
+# 智能探测默认 INSTALL_ROOT。与 maintain kaixuan-layout.sh 对齐。
+# curl | bash 时无法 source lib，故内嵌同一决策。
 detect_install_root() {
   if [[ -n "${INSTALL_ROOT:-}" ]]; then
     printf '%s\n' "$INSTALL_ROOT"
     return 0
   fi
+  if [[ -d /opt/llm-gateway ]]; then
+    printf '%s\n' /opt/llm-gateway
+    return 0
+  fi
+  if [[ -d "${HOME}/Downloads/llm-gateway-files" ]]; then
+    printf '%s\n' "${HOME}/Downloads/llm-gateway-files"
+    return 0
+  fi
   case "$(uname -s)" in
-    Darwin*)
-      if [[ -w "$HOME/Downloads" ]]; then
-        printf '%s\n' "$HOME/Downloads/llm-gateway-files"
-      else
-        printf '%s\n' "$HOME/.local/llm-gateway"
-      fi ;;
-    Linux*)
-      if [[ -w /opt ]]; then
-        printf '/opt/llm-gateway\n'
-      else
-        printf '%s\n' "$HOME/.local/llm-gateway"
-      fi ;;
+    Darwin*) printf '%s\n' "${HOME}/kaixuan/llm-gateway-go" ;;
+    Linux*) printf '%s\n' "/opt/kaixuan/llm-gateway-go" ;;
     MINGW*|MSYS*|CYGWIN*)
-      if [[ -d /d && -w /d ]]; then
-        printf '/d/kaixuan/llm-gateway\n'
-      else
-        printf '/c/llm-gateway\n'
-      fi ;;
-    *) printf '/opt/llm-gateway\n' ;;
+      if [[ -d /d && -w /d ]]; then printf '/d/kaixuan/llm-gateway-go\n'
+      elif [[ -d /c && -w /c ]]; then printf '/c/kaixuan/llm-gateway-go\n'
+      else printf '%s\n' "${HOME}/kaixuan/llm-gateway-go"; fi ;;
+    *) printf '%s\n' "${HOME}/kaixuan/llm-gateway-go" ;;
   esac
 }
 
