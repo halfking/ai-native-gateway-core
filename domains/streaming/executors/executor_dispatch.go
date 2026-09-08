@@ -588,11 +588,16 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			// thresholds, probe gating and concurrency auto-tune all went dark,
 			// and the admin sliding window only ever accumulated successes
 			// (monitor showed a permanent 100%). The dispatch defer is the one
-			// funnel every candidate failure passes through. OnError is async
-			// and its checker enforces the empty_response/overload/client-bug
-			// skip list internally, so gateway-side benign rejections never
-			// hard-degrade a credential.
-			if e.HealthTracker != nil && cand.CredentialID > 0 {
+			// funnel every candidate failure passes through.
+			// 2026-09-09 audit round 3: pre-upstream admission rejections
+			// (circuit open / key rotation exhausted / concurrency admission —
+			// exactly the sentinels dispatchFailureStage maps to a stage) never
+			// reached the provider, and the checker's skip list does NOT cover
+			// circuit_open/rate_limit — under load they accumulated into the 1h
+			// window and hard-degraded healthy credentials (self-reinforcing
+			// circuit). Only upstream-evidenced failures feed the tracker.
+			if _, preflightReason := dispatchFailureStage(out.Err); preflightReason == "" &&
+				e.HealthTracker != nil && cand.CredentialID > 0 {
 				e.HealthTracker.OnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, kind,
 					params.R.Header.Get("X-Request-Id"))
 			}
