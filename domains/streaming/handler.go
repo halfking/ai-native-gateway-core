@@ -326,7 +326,16 @@ func initializeRequestIdentity(r *http.Request) RequestIdentity {
 	}
 	identity.SessionID = sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
 	if identity.SessionID == "" {
-		identity.SessionID = generateSystemSessionID()
+		// 2026-09-08: a stable legacy client identity (e.g. ZCode's
+		// bare-UUID x-session-id) must win over the provisional random.
+		// Stamping a fresh gw_<uuid> here shadowed the client's id, and the
+		// chat handler then honored the RANDOM one — request rows from one
+		// client conversation never grouped and session turns stayed at 1.
+		if legacy := extractSessionIDFromHeaders(r); legacy != "" {
+			identity.SessionID = deriveGatewaySessionID(legacy)
+		} else {
+			identity.SessionID = generateSystemSessionID()
+		}
 		r.Header.Set("X-Gw-Session-Id", identity.SessionID)
 	}
 	identity.ClientType = strings.TrimSpace(r.Header.Get("X-Gw-Client-Type"))
@@ -371,6 +380,11 @@ func isBranchSessionID(sessionID string) bool {
 	return strings.HasPrefix(sessionID, "gt_") || strings.HasPrefix(sessionID, "gs_")
 }
 
+// Deprecated (2026-09-08 结构审计): 仅身份契约单测引用。导出的非生产入口
+// 不再对齐 deriveGatewaySessionID 的确定性映射(会 mint 随机 gw_),新代码
+// 一律走生产 handler 的 initializeRequestIdentity 路径,防止复活
+// b02a5c385 修掉的"随机 gw_ 覆写客户端稳定 id"缺陷。下轮清理候选。
+//
 // InitializeRequestIdentity is the exported helper that establishes one
 // stable request identity (server-issued request_id, optional client
 // request_id, and a provisional gateway session id) at the HTTP
@@ -2407,6 +2421,11 @@ func (h *ChatHandler) serveWithExecutor(
 		sessionID = extractSessionIDFromHeaders(r)
 	}
 	if sessionID != "" {
+		// 2026-09-08: a stable non-gateway client identity (e.g. ZCode's
+		// bare-UUID x-session-id) maps deterministically onto gw_<id>;
+		// letting it fall through to the CreateV2 fallback minted a fresh
+		// gw_<uuid> per request and turn aggregation never left 1.
+		sessionID = deriveGatewaySessionID(sessionID)
 		// Only inherit the request header for the lookup; the final
 		// resolved value is written back via applyResolvedGatewaySession
 		// once assignment finishes.
@@ -2486,6 +2505,16 @@ func (h *ChatHandler) serveWithExecutor(
 					}
 					regTaskID := sanitizeRequestCorrelationID(r.Header.Get("X-Gw-Task-Id"))
 					go func(sid string, key *authentication.KeyInfo, seed, task string) {
+						// 2026-09-08 audit: a bare goroutine panic would kill the
+						// whole process (http.Server recovery does not cover user
+						// goroutines) — never let best-effort registration crash
+						// the gateway.
+						defer func() {
+							if rec := recover(); rec != nil {
+								slog.Warn("session register (honored id) panicked",
+									"session_id", sid, "panic", rec)
+							}
+						}()
 						regCtx, regCancel := context.WithTimeout(context.Background(), 2*time.Second)
 						defer regCancel()
 						if _, _, err := ensurer.EnsureV2WithID(regCtx, sid, key.ID, key.TenantID, seed, task); err != nil {
@@ -4712,7 +4741,7 @@ goalRetryLoopDone:
 					"stage":             "execution",
 					"kind":              string(execErrTyped.LastKind),
 					"tried":             execErrTyped.Tried,
-					"retryable":         errorsx.IsRetryable(execErrTyped.LastKind),
+					"retryable":         errorsx.EffectiveRetryable(execErrTyped.LastKind),
 					"upstream_status":   upstreamStatusCode,
 					"failure_origin":    "upstream_credential",
 					"client_key_status": "valid",
@@ -4940,7 +4969,7 @@ goalRetryLoopDone:
 					"kind":      string(execErrTyped.LastKind),
 					"attempts":  execErrTyped.Attempts,
 					"tried":     execErrTyped.Tried,
-					"retryable": errorsx.IsRetryable(execErrTyped.LastKind),
+					"retryable": errorsx.EffectiveRetryable(execErrTyped.LastKind),
 				})
 			return
 		}
@@ -4988,7 +5017,7 @@ goalRetryLoopDone:
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok {
 			debugInfo["kind"] = string(execErrTyped.LastKind)
 			debugInfo["attempts"] = execErrTyped.Attempts
-			debugInfo["retryable"] = errorsx.IsRetryable(execErrTyped.LastKind)
+			debugInfo["retryable"] = errorsx.EffectiveRetryable(execErrTyped.LastKind)
 		}
 		if preStreamPrepared {
 			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
@@ -6084,6 +6113,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			latencyMs = *reqLog.LatencyMs
 		}
 		h.emitTuningSignal(reqLog, reqLog.Success, latencyMs)
+	}
+
+	// 2026-09-08 audit (Track A): settle the routingopt feedback loop with the
+	// REAL upstream outcome. The decider used to record feedback at decision
+	// time with IsSuccess hardcoded true; the decision-time row is now parked
+	// in the autoroute outcome registry and backfilled here (and on the
+	// EmitFailure path) where success/latency/cost are final. Best-effort,
+	// non-blocking: a miss (cache reuse, already settled) is counted and
+	// dropped inside the registry.
+	if reqLog.IsAutoRequest != nil && *reqLog.IsAutoRequest {
+		autoroute.ReportRoutingOutcome(routingOutcomeFromEntry(reqLog))
 	}
 
 	// v2.2 (2026-06-22): auto-generate session title after first successful request.

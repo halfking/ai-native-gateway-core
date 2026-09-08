@@ -93,6 +93,13 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"679_local_credential_unique.sql":                                        localCredentialUniqueMigration679,
 		"680_request_logs_current_month_view_bootstrap.sql":                      requestLogsCurrentMonthViewBootstrapMigration680,
 		"681_provider_error_details_fingerprint_restore_8part.sql":               providerErrorDetailsFingerprintRestore8partMigration681,
+		"682_model_offers_context_window_columns.sql":                            modelOffersContextWindowColumnsMigration682,
+		"683_session_dim_ownership_columns.sql":                                  sessionDimOwnershipColumnsMigration683,
+		"684_drop_stale_provider_error_tenant_fingerprint.sql":                   dropStaleProviderErrorTenantFingerprintMigration684,
+		"685_task_default_routing_tenant_text.sql":                               taskDefaultRoutingTenantTextMigration685,
+		"686_fix_session_module_executions_2026_10_bounds.sql":                   fixSessionModuleExecutions2026_10BoundsMigration686,
+		"687_fix_473_partition_0800_bounds.sql":                                  fix473Partition0800BoundsMigration687,
+		"688_promote_default_retention_align_go_scheduler.sql":                   promoteDefaultRetentionAlignGoSchedulerMigration688,
 	}
 
 	for name, embedded := range expected {

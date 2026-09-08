@@ -19,8 +19,12 @@
 #   bash scripts/local-dev/recreate-llm-gateway-pg.sh
 # -----------------------------------------------------------------------------
 # Preconditions:
-#   - Existing data dir $HOME/Downloads/llm-gateway-files/postgres/data
-#     (canonical local PG17 data source selected 2026-09-03)
+#   - Existing data dir matches the live llm-gateway-pg bind source. Default:
+#     $HOME/kaixuan/postgres (the actual bind source observed on 2026-09-07;
+#     see docker inspect llm-gateway-pg .Mounts). Override via
+#     LLM_GATEWAY_PG_DATA_DIR. The historical $HOME/Downloads/llm-gateway-files
+#     path is retained as a rollback copy only — do NOT point the live
+#     container at it; doing so makes the real 22G bind look lost.
 #   - Image kx-citus-pg17:offline-arm64 available locally
 #   - Docker network shared-infra exists
 #   - Source 252 credentials loaded via envs loader.sh
@@ -33,11 +37,13 @@ PROJECT="llm-gateway-go"
 SERVER="115.29.212.252"
 CONTAINER_NAME="llm-gateway-pg"
 IMAGE="kx-citus-pg17:offline-arm64"
-# 2026-09-03: canonical local recovery source selected by operator. The
-# previous .agents-cache directory remains untouched as a rollback copy.
-# Port 15432 is reserved exclusively for the 252 SSH tunnel; local PG owns
-# host loopback port 5432.
-DATA_DIR="$HOME/Downloads/llm-gateway-files/postgres/data"
+# 2026-09-07: align DATA_DIR with the actual bind source observed on the
+# running container (`docker inspect llm-gateway-pg .Mounts` →
+# /Users/xutaohuang/kaixuan/postgres). The previous Downloads path is kept
+# as a rollback copy in operator notes — never point a fresh container at
+# it; doing so masks the real 22G bind. Port 15432 is reserved exclusively
+# for the 252 SSH tunnel; local PG owns host loopback port 5432.
+DATA_DIR="${LLM_GATEWAY_PG_DATA_DIR:-$HOME/kaixuan/postgres}"
 PORT_BIND="127.0.0.1:5432:5432"
 NETWORK="shared-infra"
 

@@ -1,14 +1,18 @@
 #!/bin/bash
 # 模型智商 503 紧急修复 - 一键执行脚本
 # 在服务器上执行此脚本
+#
+# 2026-09-07: 默认走 LLM_GATEWAY_PG_USER；本地 llm-gateway-pg 唯一登录
+# 角色是 llm_gateway（旧默认 postgres 在该容器上不存在）。
 
 set -e
+PG_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}"
 
 echo "=== 模型智商 503 紧急修复 ==="
 echo ""
 
 echo "步骤 1: 检查数据库设置"
-CURRENT_VALUE=$(psql -U postgres -d llm_gateway -t -c "SELECT value FROM settings_kv WHERE key = 'model_quality.enabled';" 2>/dev/null | tr -d ' ')
+CURRENT_VALUE=$(psql -U "$PG_USER" -d llm_gateway -t -c "SELECT value FROM settings_kv WHERE key = 'model_quality.enabled';" 2>/dev/null | tr -d ' ')
 
 if [ -z "$CURRENT_VALUE" ]; then
     echo "✓ 数据库中没有设置，使用代码默认值（true）"
@@ -16,7 +20,7 @@ elif [ "$CURRENT_VALUE" = "false" ]; then
     echo "✗ 发现问题：数据库中设置为 false"
     echo ""
     echo "步骤 2: 删除数据库设置"
-    psql -U postgres -d llm_gateway -c "DELETE FROM settings_kv WHERE key = 'model_quality.enabled';"
+    psql -U "$PG_USER" -d llm_gateway -c "DELETE FROM settings_kv WHERE key = 'model_quality.enabled';"
     echo "✓ 已删除，将使用代码默认值（true）"
 else
     echo "✓ 数据库设置为: $CURRENT_VALUE"

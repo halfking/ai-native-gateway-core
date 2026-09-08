@@ -68,9 +68,10 @@ func assertAffinityEqual(t *testing.T, got, want *UserAffinity) {
 		}
 		return
 	}
-	// 只比较两个被缓存的分布字段：缓存条目按设计只存
-	// task_type_distribution / preferred_providers（Enhance 仅消费它们），
-	// 其余列（如 user_id）以 DB 为准，不随缓存还原。
+	// 只比较被缓存的负载字段：缓存条目按设计只存
+	// task_type_distribution / preferred_providers / total_requests
+	// （Enhance/UpdateUserAffinity 只消费它们），其余列（如 user_id、
+	// 时间戳）以 DB 为准，不随缓存还原。
 	for k, v := range want.TaskTypeDistribution {
 		if got.TaskTypeDistribution[k] != v {
 			t.Fatalf("task_type_distribution[%q]: got %d want %d", k, got.TaskTypeDistribution[k], v)
@@ -86,6 +87,9 @@ func assertAffinityEqual(t *testing.T, got, want *UserAffinity) {
 	}
 	if len(got.PreferredProviders) != len(want.PreferredProviders) {
 		t.Fatalf("preferred_providers size: got %d want %d", len(got.PreferredProviders), len(want.PreferredProviders))
+	}
+	if got.TotalRequests != want.TotalRequests {
+		t.Fatalf("total_requests: got %d want %d", got.TotalRequests, want.TotalRequests)
 	}
 }
 
@@ -362,5 +366,83 @@ func TestAffinityCache_NegativeHitNotCounted(t *testing.T) {
 	}
 	if d := (Snapshot().CacheHits - before.CacheHits) + (Snapshot().CacheMiss - before.CacheMiss); d != 0 {
 		t.Fatalf("negative-cache hits must not be counted, delta=%d", d)
+	}
+}
+
+// TestBuildAffinityUpdate_CacheHitKeepsUserAndTotal：UpdateUserAffinity 的
+// 读-改-写基线经缓存命中还原时，回写载荷必须带正确的 user_id 且
+// total_requests 跨命中累加（而非重置）。回归背景：缓存初版未存
+// total_requests、decodeAffinity 无法还原 user_id，缓存命中路径会把
+// upsert 写进 user_id=” 的错行并把 DB 计数反复重置为 1。
+func TestBuildAffinityUpdate_CacheHitKeepsUserAndTotal(t *testing.T) {
+	src := &stubAffinitySource{aff: sampleAffinity("42")} // DB baseline: total=100
+	cache, mr := newTestCache(t, src, time.Hour, 30*time.Second)
+	enhancer := &ClassificationEnhancer{affinityCache: cache} // affinityDAO 不参与（不 upsert）
+	ctx := context.Background()
+
+	// 第 1 次：miss 回源（基线 total=100）→ 变更后应为 101，并回填缓存。
+	aff1, err := enhancer.buildAffinityUpdate(ctx, "42", "code", "anthropic")
+	if err != nil {
+		t.Fatalf("first update: %v", err)
+	}
+	if aff1.UserID != "42" {
+		t.Fatalf("first update user_id = %q, want 42", aff1.UserID)
+	}
+	if aff1.TotalRequests != 101 {
+		t.Fatalf("first update total = %d, want 101", aff1.TotalRequests)
+	}
+
+	// 第 2 次（未 Invalidate）：纯缓存命中 → 基线必须还原为 DB 状态的
+	// 100（而非 decode 缺字段的 0），变更后 101；user_id 必须归位
+	// （decodeAffinity 本身不携带键）。
+	aff2, err := enhancer.buildAffinityUpdate(ctx, "42", "chat", "openai")
+	if err != nil {
+		t.Fatalf("second update (cache hit): %v", err)
+	}
+	if aff2.UserID != "42" {
+		t.Fatalf("cache-hit update user_id = %q, want 42 (empty user_id would upsert a junk row)", aff2.UserID)
+	}
+	if aff2.TotalRequests != 101 {
+		t.Fatalf("cache-hit update total = %d, want 101 (a 1 here means total_requests was reset by decode)", aff2.TotalRequests)
+	}
+	if aff2.TaskTypeDistribution["code"] != 60 || aff2.TaskTypeDistribution["chat"] != 31 {
+		t.Fatalf("cache-hit distribution baseline lost: %v", aff2.TaskTypeDistribution)
+	}
+	if got := src.callCount(); got != 1 {
+		t.Fatalf("second update must be served from cache, got %d DAO calls", got)
+	}
+
+	// upsert+Invalidate（UpdateUserAffinity 成功路径）之后，DB 假设已更新为
+	// aff2 状态（total=101）→ 下次读回源拿到新基线，变更后 102。
+	src.setAffinity(aff2)
+	cache.Invalidate("42")
+	if mr.Exists(affinityKeyPrefix + "42") {
+		t.Fatal("Invalidate must delete the cache entry after upsert")
+	}
+	aff3, err := enhancer.buildAffinityUpdate(ctx, "42", "code", "anthropic")
+	if err != nil {
+		t.Fatalf("third update after invalidate: %v", err)
+	}
+	if aff3.TotalRequests != 102 {
+		t.Fatalf("post-invalidate baseline must come from refreshed DB state, total = %d, want 102", aff3.TotalRequests)
+	}
+}
+
+// TestBuildAffinityUpdate_NilDistributionMap：分布列还原为 nil map（null
+// JSON 场景）时更新不得 panic——补齐 map 后正常累加。
+func TestBuildAffinityUpdate_NilDistributionMap(t *testing.T) {
+	aff := sampleAffinity("7")
+	aff.TaskTypeDistribution = nil // json.Unmarshal("null") 的还原结果
+	src := &stubAffinitySource{aff: aff}
+	cache, _ := newTestCache(t, src, time.Hour, 30*time.Second)
+	enhancer := &ClassificationEnhancer{affinityCache: cache}
+	ctx := context.Background()
+
+	got, err := enhancer.buildAffinityUpdate(ctx, "7", "code", "anthropic")
+	if err != nil {
+		t.Fatalf("update on nil distribution map: %v", err)
+	}
+	if got.TaskTypeDistribution["code"] != 1 {
+		t.Fatalf("distribution after update = %v, want code=1", got.TaskTypeDistribution)
 	}
 }

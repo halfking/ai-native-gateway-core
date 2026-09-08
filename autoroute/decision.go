@@ -306,8 +306,9 @@ func (d *Decider) SetTenantResolver(fn func(apiKeyID int) string) {
 // logged and do not block routing.
 //
 // Usage:
-//   decider.SetOptimizer(routingopt.NewDefaultOptimizer())
-//   decider.SetOptimizer(nil) // disable
+//
+//	decider.SetOptimizer(routingopt.NewDefaultOptimizer())
+//	decider.SetOptimizer(nil) // disable
 //
 // Feature flag: ROUTING_OPT_ENABLED (default: false)
 // Design: docs/p2-ml-routing/p2.2-routing-optimization-plugin-design.md
@@ -373,6 +374,9 @@ func (d *Decider) effectiveLLMThreshold() float64 {
 //   - Caches intent for sessionID (10min TTL, best-effort)
 //   - Returns Decision including the chosen model + top-N candidates
 func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
+	// F-7: record end-to-end routing decision latency on every return path.
+	defer recordDecisionLatency(time.Now())
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -394,7 +398,9 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
 			if cached.WorkType != requestedWorkType {
 				d.intentCache.Invalidate(sessionID)
+				recordCacheMiss() // F-7: workType mismatch invalidated cache
 			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
+				recordCacheHit() // F-7: cache reused
 				decision := &Decision{
 					ChosenModel:        cached.ChosenModel,
 					ChosenCredentialID: cached.CredentialID,
@@ -410,7 +416,15 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 				d.annotateTreatment(ctx, apiKeyID, decision)
 				d.populateShadow(ctx, sigs, decision)
 				return decision, nil
+			} else {
+				recordCacheMiss() // F-7: shouldReclassify triggered
 			}
+		} else {
+			recordCacheMiss() // F-7: session not in cache
+		}
+	} else {
+		if sessionID != "" {
+			recordCacheMiss() // F-7: cache disabled but sessionID present
 		}
 	}
 
@@ -564,7 +578,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	d.annotateTreatment(ctx, apiKeyID, decision)
 	d.populateShadow(ctx, sigs, decision)
 	// P2.2: fire-and-forget feedback for the learning loop (fresh decisions only).
-	d.recordFeedbackAsync(decision, apiKeyID, sessionID, sigs.ClientType)
+	d.recordFeedbackAsync(ctx, decision, apiKeyID, sessionID, sigs.ClientType)
 
 	// Step 4: cache the intent for this session
 	if sessionID != "" && d.intentCache != nil {

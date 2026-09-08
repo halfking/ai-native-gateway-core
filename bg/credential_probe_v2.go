@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -527,12 +528,12 @@ func (c *CredentialProbeV2) cycleAll(ctx context.Context) {
 			}
 		}
 
-			// P2: fast reprobe after auth_failed or unreachable. Route through the
-			// deduplicating submitter so cycle scans share the same pending mark and
-			// lifecycle handling as quota-triggered probes.
-			if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
-				c.SubmitFastProbe(s.ID)
-			}
+		// P2: fast reprobe after auth_failed or unreachable. Route through the
+		// deduplicating submitter so cycle scans share the same pending mark and
+		// lifecycle handling as quota-triggered probes.
+		if pr.AvailabilityState == "auth_failed" || pr.AvailabilityState == "unreachable" {
+			c.SubmitFastProbe(s.ID)
+		}
 
 	}
 
@@ -1385,6 +1386,33 @@ func (c *CredentialProbeV2) restoreAllBindingsOnCredentialSuccess(ctx context.Co
 // Sibling to loadBoundRawModels (which keeps the cmb.available=TRUE filter
 // for the failure branch where the cache mirrors current DB state).
 //
+// fallbackProbeModel picks a probe model for credentials that never had
+// default_probe_model configured (2026-09-08: ProbeNow used to skip them
+// silently, so quota recovery never fired). Prefer a binding that is still
+// routable — an unavailable binding tells us nothing about the credential —
+// and only then fall back to any bound model. Results are sorted so the
+// choice is stable across ticks.
+func (c *CredentialProbeV2) fallbackProbeModel(ctx context.Context, credID int) string {
+	pick := func(models []string) string {
+		if len(models) == 0 {
+			return ""
+		}
+		sorted := append([]string(nil), models...)
+		sort.Strings(sorted)
+		return sorted[0]
+	}
+	if m := pick(c.loadBoundRawModels(ctx, credID)); m != "" {
+		return m
+	}
+	return pick(c.loadBoundRawModelsAll(ctx, credID))
+}
+
+// loadBoundRawModelsAll returns distinct raw_model_name values bound to a
+// credential WITHOUT filtering on cmb.available. Used by the healthy probe
+// branch so the cache fan-out reflects the freshly recovered binding set,
+// including bindings that had been marked unavailable during the prior
+// balance_exhausted window.
+//
 // Errors and empty result both return nil — callers fall back to the
 // probe-model-only list.
 func (c *CredentialProbeV2) loadBoundRawModelsAll(ctx context.Context, credID int) []string {
@@ -1478,7 +1506,6 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
-		  AND COALESCE(c.default_probe_model, '') <> ''
 	`, credID).Scan(
 		&s.ID, &s.Status, &s.LifecycleStatus, &s.ManualDisabled,
 		&s.QuotaState, &s.ProviderEnabled, &s.ProviderManualDisabled,
@@ -1496,6 +1523,14 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 		return
 	}
 	s.APIKey = apiKey
+	if strings.TrimSpace(s.DefaultProbeModel) == "" {
+		s.DefaultProbeModel = c.fallbackProbeModel(timeoutCtx, credID)
+	}
+	if strings.TrimSpace(s.DefaultProbeModel) == "" {
+		slog.Debug("credential probe v2: ProbeNow skipped (no probe model)",
+			"credential_id", credID)
+		return
+	}
 	probeStart := time.Now()
 	ok, errMsg := c.probeCredential(timeoutCtx, s)
 	var pr probeResult
@@ -1521,6 +1556,9 @@ func (c *CredentialProbeV2) ProbeNow(ctx context.Context, credID int) {
 	}
 	pr.HealthProbeModel = s.DefaultProbeModel
 	c.writeHealth(timeoutCtx, credID, pr)
+	if ok && pr.AvailabilityState == "ready" && c.onQuotaRecovered != nil {
+		c.onQuotaRecovered(credID, "probe_now")
+	}
 }
 
 // probeOne is kept as a private alias for the internal fast-reprobe path

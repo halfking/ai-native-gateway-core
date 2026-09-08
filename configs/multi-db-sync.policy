@@ -1,0 +1,20 @@
+# Policy for multi-db sync between local llm-gateway-pg and 252's pg17 docker.
+# Each db_name declares its sync mode:
+#   structure-only    sync DDL only, skip all data (e.g. llm_gateway)
+#   structure+data    sync DDL and ordinary-table data
+# Hot/partitioned tables (pg_class.relkind='p' or relispartition) are
+# ALWAYS structure-only regardless of db.mode — this is a global rule
+# applied by the orchestrator. data mode only applies to ordinary tables
+# (pg_class.relkind='r') that are not partitions.
+#
+# Conflict resolution: when 252 and local disagree, LOCAL wins for
+# structure; for data, local is treated as the source of truth and is
+# pushed to 252 (row-level: INSERT/UPSERT/DELETE as appropriate).
+
+llm_gateway = structure-only
+
+# Add other product databases here as they appear on 252's pg17.
+# Each line: <db_name> = <mode>
+# Example:
+#   memora       = structure+data
+#   agent_companion = structure-only

@@ -128,7 +128,7 @@ func TestProbeServiceLegacyUnpinnedGatewayCannotRecover(t *testing.T) {
 	}
 }
 
-func TestProbeServiceDefaultOutcomeHooksRecoverOnlyAfterBothSuccess(t *testing.T) {
+func TestProbeServiceDefaultOutcomeHooksRecoverOnDirectSuccess(t *testing.T) {
 	observer := &probeStateObserver{}
 	var invalidations, circuitRecoveries int
 	worker := &NodeProbeWorker{
@@ -142,12 +142,12 @@ func TestProbeServiceDefaultOutcomeHooksRecoverOnlyAfterBothSuccess(t *testing.T
 		credentialID: 42, model: "model-a", direct: nodeProbeRoundResult{ok: true, providerID: 7},
 		gateway: nodeProbeRoundResult{errCode: "http_503"}, recoverAt: time.Now().Add(5 * time.Minute),
 	})
-	failed := observer.last(t)
-	if failed.Available || failed.HealthStatus != "unreachable" || failed.LastError != "http_503" || failed.RecoverAt == nil {
-		t.Fatalf("failed observed state = %+v", failed)
+	recoveredDirect := observer.last(t)
+	if !recoveredDirect.Available || recoveredDirect.HealthStatus != "healthy" {
+		t.Fatalf("direct-ok observed state = %+v", recoveredDirect)
 	}
-	if invalidations != 1 || circuitRecoveries != 0 {
-		t.Fatalf("failure hooks: invalidations=%d circuit_recoveries=%d", invalidations, circuitRecoveries)
+	if invalidations != 1 || circuitRecoveries != 1 {
+		t.Fatalf("direct-ok hooks: invalidations=%d circuit_recoveries=%d", invalidations, circuitRecoveries)
 	}
 
 	service.applyOutcome(context.Background(), probeOutcome{
@@ -158,7 +158,7 @@ func TestProbeServiceDefaultOutcomeHooksRecoverOnlyAfterBothSuccess(t *testing.T
 	if !recovered.Available || recovered.HealthStatus != "healthy" {
 		t.Fatalf("recovered observed state = %+v", recovered)
 	}
-	if invalidations != 2 || circuitRecoveries != 1 {
+	if invalidations != 2 || circuitRecoveries != 2 {
 		t.Fatalf("success hooks: invalidations=%d circuit_recoveries=%d", invalidations, circuitRecoveries)
 	}
 }
@@ -167,7 +167,7 @@ func TestProbeServiceFailureBackoffChain(t *testing.T) {
 	for _, tc := range []struct {
 		attempt int
 		want    time.Duration
-	}{{1, 5 * time.Second}, {3, time.Minute}, {8, 6 * time.Hour}} {
+	}{{1, 5 * time.Second}, {3, 30 * time.Second}, {8, time.Minute}} {
 		t.Run(tc.want.String(), func(t *testing.T) {
 			service := newTestProbeService(
 				nodeProbeRoundResult{errCode: "network_error"},

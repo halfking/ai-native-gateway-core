@@ -284,7 +284,7 @@ func (e *TrainingExporter) queryRecords(ctx context.Context, config *ExportConfi
 	query := `
 		SELECT 
 		  request_id,
-		  EXTRACT(EPOCH FROM ts) * 1000 AS timestamp,
+		  (EXTRACT(EPOCH FROM ts) * 1000)::bigint AS timestamp,
 		  task_type,
 		  profile,
 		  classifier,
@@ -303,7 +303,7 @@ func (e *TrainingExporter) queryRecords(ctx context.Context, config *ExportConfi
 		  latency_sensitive,
 		  cost_sensitive,
 		  feature_version,
-		  content_hash,
+		  COALESCE(content_hash, '') AS content_hash,
 		  chosen_model,
 		  success,
 		  latency_ms,
@@ -445,11 +445,23 @@ func (e *TrainingExporter) dedupRecords(records []*TrainingDataRecord, strategy 
 		var key string
 		switch strategy {
 		case "content_hash":
-			key = rec.ContentHash
+			// 旧行（promote 丢列窗口写入）content_hash 可能为空串；
+			// 空值不能作为去重键，否则全部行坍缩成一条。回退 request_id。
+			if rec.ContentHash == "" {
+				key = "req:" + rec.RequestID
+			} else {
+				key = rec.ContentHash
+			}
 		case "request_id":
-			key = rec.RequestID
+			key = "req:" + rec.RequestID
 		default:
-			key = rec.ContentHash // 默认使用content_hash
+			// 未知策略按 content_hash 处理；空值同样回退 request_id，
+			// 避免旧行全部坍缩成一条（与 content_hash 分支同一陷阱）。
+			if rec.ContentHash == "" {
+				key = "req:" + rec.RequestID
+			} else {
+				key = rec.ContentHash
+			}
 		}
 
 		if !seen[key] {
@@ -475,8 +487,20 @@ func (e *TrainingExporter) writeParquetFile(records []*TrainingDataRecord, outpu
 	if err != nil {
 		return 0, fmt.Errorf("create parquet writer failed: %w", err)
 	}
+	// 2026-09-08 audit: WriteStop is NOT idempotent (it re-flushes and
+	// re-serializes the footer), and the success path below already calls it
+	// explicitly — a bare defer double-stopped the writer and appended a
+	// second footer to the file. Guard with once semantics instead.
+	writeStopOnce := true
+	stopParquet := func() error {
+		if !writeStopOnce {
+			return nil
+		}
+		writeStopOnce = false
+		return pw.WriteStop()
+	}
 	defer func() {
-		if err := pw.WriteStop(); err != nil {
+		if err := stopParquet(); err != nil {
 			slog.Error("failed to stop parquet writer during cleanup", "error", err)
 		}
 	}()
@@ -516,8 +540,9 @@ func (e *TrainingExporter) writeParquetFile(records []*TrainingDataRecord, outpu
 		slog.Info("export progress - completed", "written", totalRecords, "total", totalRecords, "percent", "100.0%")
 	}
 
-	// 显式调用WriteStop以捕获错误（defer会在失败时再次调用，但会被忽略）
-	if err := pw.WriteStop(); err != nil {
+	// 显式调用 WriteStop 以捕获错误（defer 通过 once 守卫不会重复调用 —
+	// WriteStop 非幂等,二次调用会向文件追加第二个 footer）
+	if err := stopParquet(); err != nil {
 		return 0, fmt.Errorf("write stop failed: %w", err)
 	}
 

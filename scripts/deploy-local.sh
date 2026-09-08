@@ -496,6 +496,23 @@ ensure_resources() {
   fi
   if [[ "$DL_DB_MODE" == none ]]; then die 'no PostgreSQL instance found; set LLM_GATEWAY_DATABASE_URL or enable Docker'; fi
   export DL_DB_MODE DL_REDIS_MODE
+  # Idempotent role/database bootstrap for the local llm-gateway-pg container.
+  # Safe on a healthy cluster (no-op when llm_gateway role + db already exist;
+  # never alters passwords or touches table data). Skipped silently for any
+  # other PG container or non-docker database modes. See
+  # scripts/local-dev/ensure-llm-gateway-pg-role.sh for the create-only
+  # contract that mirrors recreate-llm-gateway-pg.sh policy guard.
+  if [[ "$DL_DB_MODE" == docker && "$DL_PG_CONTAINER" == llm-gateway-pg \
+        && -x "$SCRIPT_DIR/local-dev/ensure-llm-gateway-pg-role.sh" ]]; then
+    log 'running idempotent role/db bootstrap against llm-gateway-pg (data-safe)'
+    if ! LLM_GATEWAY_PG_CONTAINER="$DL_PG_CONTAINER" \
+         LLM_GATEWAY_PG_USER="${LLM_GATEWAY_PG_USER:-llm_gateway}" \
+         LLM_GATEWAY_PG_PASSWORD="${LLM_GATEWAY_PG_PASSWORD:-}" \
+         LLM_GATEWAY_PG_DATABASE="${LLM_GATEWAY_PG_DATABASE:-llm_gateway}" \
+         bash "$SCRIPT_DIR/local-dev/ensure-llm-gateway-pg-role.sh"; then
+      warn 'role/db bootstrap returned non-zero; continuing (cluster may already be healthy)'
+    fi
+  fi
 }
 
 psql_query() {

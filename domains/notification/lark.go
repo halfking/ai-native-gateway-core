@@ -28,22 +28,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 	"golang.org/x/sync/singleflight"
 )
 
 // LarkBotConfig 飞书机器人配置。
 type LarkBotConfig struct {
-	AppID             string // 应用 ID
-	AppSecret         string // 应用 Secret（敏感）
-	VerificationToken string // 回调验证 Token
-	EncryptKey        string // 回调加密 Key（敏感）
-	BaseURL           string // 可选，默认 https://open.feishu.cn
+	AppID             string   // 应用 ID
+	AppSecret         string   // 应用 Secret（敏感）
+	VerificationToken string   // 回调验证 Token
+	EncryptKey        string   // 回调加密 Key（敏感）
+	BaseURL           string   // 可选，默认 https://open.feishu.cn
+	Allowlist         []string // SSRF 白名单(默认拦私网/回环/元数据端点,自建内网端点放行)
 }
 
 // LarkBotChannel 飞书通知渠道。
 type LarkBotChannel struct {
 	config      LarkBotConfig
-	httpClient  *http.Client
+	httpClient  *safehttpclient.SafeHTTPClient
 	tokenMu     sync.RWMutex
 	accessToken string
 	tokenExpire time.Time
@@ -57,8 +59,11 @@ func NewLarkBotChannel(config LarkBotConfig) *LarkBotChannel {
 		config.BaseURL = "https://open.feishu.cn"
 	}
 	return &LarkBotChannel{
-		config:     config,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		config: config,
+		// 2026-09-08 audit: 与 webhook 渠道(F-6)对齐 — 管理端可配 BaseURL 的
+		// 出口一律走 safehttpclient(拦私网/元数据端点 + DNS 重绑定防御)。
+		// 默认打公有云 API 不受影响;自建内网端点经 config.Allowlist 放行。
+		httpClient: safehttpclient.NewWithAllowlist(30*time.Second, config.Allowlist),
 	}
 }
 

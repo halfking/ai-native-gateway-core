@@ -177,8 +177,16 @@ func RecoveryHoldbackForModel(model string) (window time.Duration, maxChunks int
 // that warrant an extended holdback window. This list is curated based on
 // production observations and can be extended as new unstable models are identified.
 func isUnstableModel(model string) bool {
-	switch model {
-	case "glm-5.2", "minimax-m3", "minimax-text-01":
+	m := strings.ToLower(strings.TrimSpace(model))
+	if i := strings.LastIndex(m, "/"); i >= 0 {
+		m = m[i+1:]
+	}
+	switch {
+	case m == "glm-5.2" || strings.HasPrefix(m, "glm-5.2-"):
+		return true
+	case m == "minimax-m3" || strings.HasPrefix(m, "minimax-m3-"):
+		return true
+	case m == "minimax-text-01":
 		return true
 	default:
 		return false

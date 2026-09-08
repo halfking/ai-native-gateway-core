@@ -43,11 +43,11 @@ func TestRenderSurvivalTerminalFramesPerProtocol(t *testing.T) {
 		contains []string
 	}{
 		{"anthropic error event", ProtocolAnthropic,
-			[]string{"event: error\n", `"type":"error"`}},
+			[]string{"event: error\n", `"type":"error"`, `"reason":"terminal_candidate"`, `"retryable":false`}},
 		{"responses failed event", ProtocolOpenAIResponses,
-			[]string{"event: response.failed\n", "gateway_survival_fail_terminal"}},
+			[]string{"event: response.failed\n", "gateway_survival_fail_terminal", `"reason":"terminal_candidate"`}},
 		{"chat error frame + done", ProtocolOpenAIChat,
-			[]string{`"error"`, "data: [DONE]\n\n"}},
+			[]string{`"error"`, "data: [DONE]\n\n", `"reason":"terminal_candidate"`, `"retryable":false`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -219,6 +219,26 @@ func (e *ClassificationEnhancer) UpdateUserAffinity(ctx context.Context, userID 
 		return nil // 匿名用户不更新
 	}
 
+	affinity, err := e.buildAffinityUpdate(ctx, userID, taskType, provider)
+	if err != nil {
+		return err
+	}
+
+	// Upsert to DB（写穿 DB，缓存一致性靠成功后的 del-on-write）
+	if err := e.affinityDAO.Upsert(ctx, affinity); err != nil {
+		return err
+	}
+	if e.affinityCache != nil {
+		e.affinityCache.Invalidate(userID)
+	}
+	return nil
+}
+
+// buildAffinityUpdate 产生 UpdateUserAffinity 待 upsert 的完整记录：
+// 经 getAffinity 取读-改-写基线（缓存命中时省一次 DB 往返；基线可能滞后
+// 至多一个 TTL，与本就存在的并发 last-write-wins 同量级），再套用本次
+// task_type/provider 样本。独立成函数以便对缓存命中基线做无 DB 回归测试。
+func (e *ClassificationEnhancer) buildAffinityUpdate(ctx context.Context, userID string, taskType string, provider string) (*UserAffinity, error) {
 	// 获取当前 affinity（如果不存在则初始化）。缓存感知访问器对"无数据"
 	// 返回 (nil, nil)，与 DAO 的 ErrNoRows 一样走首次建档分支。
 	affinity, err := e.getAffinity(ctx, userID)
@@ -232,8 +252,16 @@ func (e *ClassificationEnhancer) UpdateUserAffinity(ctx context.Context, userID 
 			LastRequestAt:        time.Now(),
 		}
 	}
+	// 缓存命中的基线只含分布/计数等负载字段，不含键（decodeAffinity 无法
+	// 还原 user_id）——回写前强制归位，否则 Upsert 会按 ON CONFLICT
+	// (user_id) 写进 user_id='' 的错行。
+	affinity.UserID = userID
 
 	// 更新 task type distribution (简单计数，Week 2 改为滑动窗口)
+	if affinity.TaskTypeDistribution == nil {
+		// 分布列出现 null JSON（DAO/缓存还原为 nil map）时直接写入会 panic。
+		affinity.TaskTypeDistribution = make(map[string]int)
+	}
 	affinity.TaskTypeDistribution[taskType]++
 	affinity.TotalRequests++
 	affinity.LastRequestAt = time.Now()
@@ -250,14 +278,7 @@ func (e *ClassificationEnhancer) UpdateUserAffinity(ctx context.Context, userID 
 	// Week 1: 简单 session pattern 推断（基于 task type 分布）
 	affinity.SessionPattern = inferSessionPattern(affinity.TaskTypeDistribution)
 
-	// Upsert to DB（写穿 DB，缓存一致性靠成功后的 del-on-write）
-	if err := e.affinityDAO.Upsert(ctx, affinity); err != nil {
-		return err
-	}
-	if e.affinityCache != nil {
-		e.affinityCache.Invalidate(userID)
-	}
-	return nil
+	return affinity, nil
 }
 
 // getAffinity 是缓存感知的亲和力读取访问器：注入了 AffinityCache 时走

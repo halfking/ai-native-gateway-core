@@ -161,3 +161,39 @@ func startsWith(s, prefix string) bool {
 	}
 	return s[:len(prefix)] == prefix
 }
+
+// TestInitializeRequestIdentityLegacySessionWinsOverProvisional locks the
+// 2026-09-08 fix: a stable legacy client identity (ZCode's bare-UUID
+// x-session-id) must map deterministically onto gw_<id> and be stamped into
+// the request header BEFORE the random provisional minting can shadow it.
+// The stamped value must be identical across requests carrying the same
+// legacy id — that is what lets the honored gw_ branch register it once and
+// let every follow-up resolve via Get→Touch, so request rows group per
+// client session and session turns accumulate.
+func TestInitializeRequestIdentityLegacySessionWinsOverProvisional(t *testing.T) {
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req1.Header.Set("X-Session-Id", "de9f325e-2d25-428c-917c-94b006ac761a")
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req2.Header.Set("X-Session-Id", "de9f325e-2d25-428c-917c-94b006ac761a")
+
+	first := initializeRequestIdentity(req1)
+	second := initializeRequestIdentity(req2)
+
+	want := "gw_de9f325e-2d25-428c-917c-94b006ac761a"
+	if first.SessionID != want {
+		t.Fatalf("legacy identity must derive %q, got %q", want, first.SessionID)
+	}
+	if second.SessionID != want {
+		t.Fatalf("derived identity must be stable across requests, got %q", second.SessionID)
+	}
+	if req1.Header.Get("X-Gw-Session-Id") != want {
+		t.Fatalf("request header must carry the derived id: got %q", req1.Header.Get("X-Gw-Session-Id"))
+	}
+
+	// Canonical header still wins verbatim.
+	req3 := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req3.Header.Set("X-Gw-Session-Id", "gw_canonical-123")
+	if got := initializeRequestIdentity(req3); got.SessionID != "gw_canonical-123" {
+		t.Fatalf("canonical header must be honoured verbatim, got %q", got.SessionID)
+	}
+}

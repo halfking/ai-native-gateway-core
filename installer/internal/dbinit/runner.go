@@ -119,6 +119,13 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"679_local_credential_unique.sql",
 			"680_request_logs_current_month_view_bootstrap.sql",
 			"681_provider_error_details_fingerprint_restore_8part.sql",
+			"682_model_offers_context_window_columns.sql",
+			"683_session_dim_ownership_columns.sql",
+			"684_drop_stale_provider_error_tenant_fingerprint.sql",
+			"685_task_default_routing_tenant_text.sql",
+			"686_fix_session_module_executions_2026_10_bounds.sql",
+			"687_fix_473_partition_0800_bounds.sql",
+			"688_promote_default_retention_align_go_scheduler.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}

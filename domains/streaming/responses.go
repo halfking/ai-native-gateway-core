@@ -413,14 +413,13 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	} else {
-		// Client provided session ID — resolve SessionInfo for context
-		// propagation, but honor the client's ID even if Redis doesn't
-		// know it yet (first request in a new session).
-		if keyInfo != nil && h.chatHandler.sessionGetter != nil {
-			if si, getErr := h.chatHandler.sessionGetter.Get(r.Context(), sessionID); getErr == nil && si != nil {
-				sessionInfo = si
-			}
-		}
+		// Client provided session ID — 2026-09-08: normalize to the gateway
+		// namespace (deriveGatewaySessionID) and register unknown honored ids
+		// via EnsureV2WithID, mirroring the chat handler path. The previous
+		// verbatim honor left bare-UUID client identities in a heterogeneous
+		// namespace (turn aggregation stuck at 1) and never registered the
+		// session, so every follow-up request re-hit ErrSessionNotFound.
+		sessionID, sessionInfo = normalizeAndRegisterClientSession(r, sessionID, h.chatHandler.sessionGetter, keyInfo)
 	}
 	if sessionID == "" {
 		sessionID = provisionalSessionID

@@ -434,11 +434,17 @@ func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.Reques
 	// pendingEvent 跟踪 Anthropic SSE 的 event: 行类型，等待对应的 data: 行
 	pendingEvent := ""
 
+	// audit-r2 A#2 (2026-09-08): 跨帧 usage 累计。Anthropic 协议把 usage
+	// 拆在两帧（message_start 带 input_tokens/cache，message_delta 带
+	// output_tokens）；OpenAI 客户端期望最后一帧 usage 自身字段齐全，
+	// 序列化器是逐帧无状态的，必须在编排层合并。
+	var usageAcc streamUsageAccumulator
+
 	for {
 		line, err := br.ReadBytes('\n')
 
 		if len(line) > 0 {
-			if writeErr := t.processStreamLine(tc, envelope, line, &pendingEvent); writeErr != nil {
+			if writeErr := t.processStreamLine(tc, envelope, line, &pendingEvent, &usageAcc); writeErr != nil {
 				// 关键写入错误 → 立即终止
 				if t.cb != nil {
 					t.cb.RecordError()
@@ -484,7 +490,7 @@ func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.Reques
 //   - 空行（事件分隔）：清空 pendingEvent
 //
 // 解析错误时：slog.Warn + 记录到熔断器，但继续处理（不让单错杀全流）。
-func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain.RequestEnvelope, line []byte, pendingEvent *string) error {
+func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain.RequestEnvelope, line []byte, pendingEvent *string, usageAcc *streamUsageAccumulator) error {
 	trimmed := bytes.TrimRight(line, "\r\n")
 	trimmedSpace := bytes.TrimSpace(trimmed)
 
@@ -535,6 +541,19 @@ func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain
 		return nil
 	}
 
+	// 跨帧 usage 合并（audit-r2 A#2）：Anthropic 上游把 usage 拆在
+	// message_start（input/cache）与 message_delta（output）两帧。目标是
+	// Anthropic 时保持原生拆帧（SDK 自行累计）；目标是 OpenAI 等期望单帧
+	// 完整 usage 的协议时，把累计结果回填到 usage 帧，最终帧字段齐全。
+	if chunk.Usage != nil {
+		usageAcc.Observe(chunk.Usage)
+		if !isAnthropicClientProtocol(tc.ClientProtocol) {
+			if merged := usageAcc.Snapshot(); merged != nil {
+				chunk.Usage = merged
+			}
+		}
+	}
+
 	// 序列化为客户端协议
 	clientData := t.serializeClientChunk(tc, env, chunk)
 	*pendingEvent = ""
@@ -543,16 +562,12 @@ func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain
 		return nil
 	}
 
-	// 写入客户端（Responses API 的 SerializeResponses 已返回完整 SSE 事件）
-	if tc.ClientProtocol == "openai-responses" {
-		if _, err := fmt.Fprintf(tc.W, "%s", clientData); err != nil {
-			return err
-		}
-	} else {
-		// OpenAI Chat / Anthropic Messages：只需 data: 包装
-		if _, err := fmt.Fprintf(tc.W, "data: %s\n\n", clientData); err != nil {
-			return err
-		}
+	// 写入客户端：三个序列化器都已返回完整 SSE 文本——OpenAI
+	// "data: {...}\n\n"、Anthropic "event: ...\ndata: {...}\n\n"、Responses
+	// 完整事件。这里必须裸写，再包一层 data: 会产生 "data: data: {...}"，
+	// 任何客户端都无法解析（audit-r2 A#2 后续发现）。
+	if _, err := fmt.Fprintf(tc.W, "%s", clientData); err != nil {
+		return err
 	}
 	if f, ok := tc.W.(http.Flusher); ok {
 		f.Flush()
@@ -622,6 +637,74 @@ func deriveResponsesMessageID(requestID string) string {
 		return "msg_" + requestID[8:24]
 	}
 	return "msg_" + requestID
+}
+
+// isAnthropicClientProtocol 判断客户端协议是否为 Anthropic Messages。
+func isAnthropicClientProtocol(protocol string) bool {
+	return protocol == "anthropic-messages" || protocol == "anthropic"
+}
+
+// streamUsageAccumulator 合并流式过程中的多帧 usage（audit-r2 A#2，2026-09-08）。
+//
+// Anthropic 上游的 usage 拆在两帧：message_start 携带 input_tokens 与
+// cache tokens，message_delta 携带 output_tokens；OpenAI 上游则是单个
+// 最终 usage 帧全量携带。IR 序列化器逐帧无状态，无法跨帧合并，因此在
+// 编排层维护累计状态：每个 usage 帧进入时 Observe，序列化前用 Snapshot
+// 回填，保证目标协议（OpenAI Chat 等）看到的最终 usage 帧字段齐全，
+// 不再出现 input 与 output 互斥覆盖。
+type streamUsageAccumulator struct {
+	u *ir.StreamUsage
+}
+
+// Observe 吸收一帧 usage。零值字段不覆盖已累计的正值（Anthropic 的
+// message_start 帧 output_tokens 恒为 0，不能抹掉后续帧的计数）。
+func (a *streamUsageAccumulator) Observe(u *ir.StreamUsage) {
+	if u == nil {
+		return
+	}
+	if a.u == nil {
+		a.u = &ir.StreamUsage{}
+	}
+	if u.PromptTokens > 0 {
+		a.u.PromptTokens = u.PromptTokens
+	}
+	if u.CompletionTokens > 0 {
+		a.u.CompletionTokens = u.CompletionTokens
+	}
+	if u.TotalTokens > 0 {
+		a.u.TotalTokens = u.TotalTokens
+	}
+	if u.CacheReadTokens != nil {
+		a.u.CacheReadTokens = u.CacheReadTokens
+	}
+	if u.CacheWriteTokens != nil {
+		a.u.CacheWriteTokens = u.CacheWriteTokens
+	}
+	if u.ReasoningTokens != nil {
+		a.u.ReasoningTokens = u.ReasoningTokens
+	}
+	if u.ImageTokens != nil {
+		a.u.ImageTokens = u.ImageTokens
+	}
+	if u.AudioTokens != nil {
+		a.u.AudioTokens = u.AudioTokens
+	}
+	if u.VideoTokens != nil {
+		a.u.VideoTokens = u.VideoTokens
+	}
+}
+
+// Snapshot 返回当前累计 usage 的副本。上游从未给出 total_tokens 时
+// （Anthropic 两帧都没有 total），按 prompt+completion 补齐。
+func (a *streamUsageAccumulator) Snapshot() *ir.StreamUsage {
+	if a.u == nil {
+		return nil
+	}
+	cp := *a.u
+	if cp.TotalTokens == 0 && (cp.PromptTokens > 0 || cp.CompletionTokens > 0) {
+		cp.TotalTokens = cp.PromptTokens + cp.CompletionTokens
+	}
+	return &cp
 }
 
 // parseRequest 解析客户端请求到 IR。

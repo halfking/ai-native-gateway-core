@@ -812,3 +812,59 @@ func TestParseAnthropicResponse_PreservesNonObjectToolInput(t *testing.T) {
 		t.Errorf("anthropic output lost tool input: %s", string(anthropicOut))
 	}
 }
+
+// 2026-09-08 audit regression: a response that narrates before calling tools
+// ("让我先看一下…") must keep its prose — the Responses output[] used to drop
+// all text blocks once ToolCalls were present.
+func TestSerializeResponsesResponse_TextWithToolCalls(t *testing.T) {
+	ir := &InternalResponse{
+		ID:           "resp_txt_tool",
+		Model:        "gpt-4o",
+		Created:      1234567890,
+		Role:         "assistant",
+		Content:      []ResponseContentBlock{{Type: "text", Text: "让我先查一下"}},
+		ToolCalls: []ResponseToolCall{{
+			ID:        "call_1",
+			Name:      "get_weather",
+			Arguments: `{"city":"北京"}`,
+		}},
+		FinishReason: "tool_calls",
+		Usage:        ResponseUsage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}
+
+	body, err := SerializeResponsesResponse(ir, "")
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("json unmarshal: %v", err)
+	}
+
+	output, ok := parsed["output"].([]any)
+	if !ok || len(output) != 2 {
+		t.Fatalf("output should have 2 items (message + function_call), got %v", parsed["output"])
+	}
+
+	first, ok := output[0].(map[string]any)
+	if !ok || first["type"] != "message" {
+		t.Fatalf("first output item should be the narrated message, got %v", output[0])
+	}
+	content, ok := first["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("message content missing: %v", first["content"])
+	}
+	text := content[0].(map[string]any)["text"].(string)
+	if text != "让我先查一下" {
+		t.Errorf("narration text = %q, want 让我先查一下", text)
+	}
+
+	second := output[1].(map[string]any)
+	if second["type"] != "function_call" {
+		t.Errorf("second output item type = %v, want function_call", second["type"])
+	}
+	if second["name"] != "get_weather" {
+		t.Errorf("function_call name = %v, want get_weather", second["name"])
+	}
+}

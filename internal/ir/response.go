@@ -789,8 +789,8 @@ func SerializeResponsesResponse(ir *InternalResponse, clientModel string) ([]byt
 
 // buildResponsesResponseOutput assembles the Responses API `output[]` array
 // from IR. Ordering mirrors what domains/streaming/responses.go previously
-// hand-wrote: reasoning first (if any), then either a single message item
-// or one function_call item per tool call.
+// hand-wrote: reasoning first (if any), then a message item (also emitted
+// alongside tool calls when the model narrates), else one function_call per tool call.
 func buildResponsesResponseOutput(ir *InternalResponse, msgID, status string) []map[string]any {
 	output := make([]map[string]any, 0, 2)
 
@@ -814,6 +814,24 @@ func buildResponsesResponseOutput(ir *InternalResponse, msgID, status string) []
 	}
 
 	if len(ir.ToolCalls) > 0 {
+		// 2026-09-08 audit: a response that speaks BEFORE calling tools
+		// ("让我先看一下…") used to lose its prose entirely here — the early
+		// return only emitted function_call items and textContent became a
+		// dead variable. Responses clients contract on the accompanying
+		// message item for the assistant's narration, so emit it first.
+		if textContent != "" {
+			output = append(output, map[string]any{
+				"type":   "message",
+				"id":     msgID,
+				"status": status,
+				"role":   "assistant",
+				"content": []map[string]any{{
+					"type":        "output_text",
+					"text":        textContent,
+					"annotations": []any{},
+				}},
+			})
+		}
 		for index, tc := range ir.ToolCalls {
 			item := map[string]any{
 				"type":      "function_call",
