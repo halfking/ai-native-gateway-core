@@ -562,16 +562,12 @@ func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain
 		return nil
 	}
 
-	// 写入客户端（Responses API 的 SerializeResponses 已返回完整 SSE 事件）
-	if tc.ClientProtocol == "openai-responses" {
-		if _, err := fmt.Fprintf(tc.W, "%s", clientData); err != nil {
-			return err
-		}
-	} else {
-		// OpenAI Chat / Anthropic Messages：只需 data: 包装
-		if _, err := fmt.Fprintf(tc.W, "data: %s\n\n", clientData); err != nil {
-			return err
-		}
+	// 写入客户端：三个序列化器都已返回完整 SSE 文本——OpenAI
+	// "data: {...}\n\n"、Anthropic "event: ...\ndata: {...}\n\n"、Responses
+	// 完整事件。这里必须裸写，再包一层 data: 会产生 "data: data: {...}"，
+	// 任何客户端都无法解析（audit-r2 A#2 后续发现）。
+	if _, err := fmt.Fprintf(tc.W, "%s", clientData); err != nil {
+		return err
 	}
 	if f, ok := tc.W.(http.Flusher); ok {
 		f.Flush()

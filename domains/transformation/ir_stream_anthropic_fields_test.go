@@ -35,9 +35,8 @@ data: {"type":"message_stop"}
 `
 
 // extractSSEJSONFrames 从 ConvertStream 输出中剥掉 SSE 包装，取出所有 JSON 负载。
-// 注意：当前 processStreamLine 对非 Responses 客户端会把序列化结果再包一层
-// "data: "（独立缺陷，另行跟踪），因此这里对每行循环剥前缀，保持本测试只
-// 聚焦字段级断言、不依赖帧包装形态。
+// 对每行循环剥前缀只是容错；正常 wire 形态由
+// TestIRTransport_WireFormat_NoDoubleDataPrefix 单独锁定。
 func extractSSEJSONFrames(t *testing.T, body, marker string) []map[string]any {
 	t.Helper()
 	var frames []map[string]any
@@ -313,5 +312,69 @@ func TestStreamUsageAccumulator_MergeSemantics(t *testing.T) {
 	acc.Observe(&ir.StreamUsage{ReasoningTokens: &reasoning})
 	if got := acc.Snapshot().ReasoningTokens; got == nil || *got != 5 {
 		t.Errorf("merged reasoning = %v, want 5", got)
+	}
+}
+
+// wire 格式回归（audit-r2 A#2 后续发现）：三个序列化器都返回完整 SSE 文本，
+// processStreamLine 必须裸写。修复前 Chat/Anthropic 分支再包一层 "data: "，
+// 产出 "data: data: {...}"（OpenAI 目标）/"data: event: ..."（Anthropic 目标），
+// 任何客户端都无法解析。
+func TestIRTransport_WireFormat_NoDoubleDataPrefix(t *testing.T) {
+	tr := NewIRTransport()
+
+	openAISSE := "data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+		"data: {\"id\":\"c1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n"
+
+	cases := []struct {
+		name      string
+		client    string
+		upstream  string
+		clientSSE string
+	}{
+		{"anthropic_client", "anthropic-messages", "openai-chat", openAISSE},
+		{"openai_client", "openai-chat", "anthropic-messages", anthropicSSEWithCache},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			resp := mockSSEUpstreamResponse(t, tc.clientSSE)
+			env := domain.NewEnvelopeBuilder("wire-format-" + tc.name).
+				WithTransport(&domain.TransportContext{
+					W:                w,
+					IsStream:         true,
+					ClientProtocol:   tc.client,
+					UpstreamProtocol: tc.upstream,
+					ClientModel:      "claude-sonnet-4-20250514",
+				}).
+				Build()
+
+			if err := tr.ConvertStream(context.Background(), env, resp); err != nil {
+				t.Fatalf("ConvertStream: %v", err)
+			}
+			body := w.Body.String()
+
+			if strings.Contains(body, "data: data:") {
+				t.Errorf("double data: prefix in output:\n%s", body)
+			}
+			if strings.Contains(body, "data: event:") {
+				t.Errorf("event line wrapped in data: prefix:\n%s", body)
+			}
+			// 每个 data: 行的负载必须是合法 JSON（剥一层前缀即成功）。
+			for _, line := range strings.Split(body, "\n") {
+				line = strings.TrimRight(line, "\r")
+				if !strings.HasPrefix(line, "data: ") {
+					continue
+				}
+				payload := strings.TrimPrefix(line, "data: ")
+				if payload == "[DONE]" {
+					continue
+				}
+				var m map[string]any
+				if err := json.Unmarshal([]byte(payload), &m); err != nil {
+					t.Errorf("data line payload not JSON (%q): %v", payload, err)
+				}
+			}
+		})
 	}
 }
