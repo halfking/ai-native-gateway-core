@@ -455,7 +455,20 @@ dl_stage_release() {
   # 步骤失败都 return 1 且不留 SHA256SUMS，保证消费端 dl_verify_release
   # （|| die）对残缺 bundle 必然 fail-closed。
   mkdir -p "$bundle" || return 1
-  install -m 0755 "$binary" "$bundle/gateway" || return 1
+  # 2026-09-09：之前 install 失败只看到 bash 自带的 'No such file or
+  # directory'，操作员误以为是脚本 bug。这里把"binary 不存在"翻译成
+  # 明确信号——build_backend 一定把 binary 写到 $out，$binary 由调用方
+  # 传入 = build_backend 的输出。若 binary 不在，说明 build_backend
+  # 这一步**没有把 $out 留给 dl_stage_release**（并发 deploy 互踩、
+  # 容器构建 SIGKILL 后遗症、或 docker run 返回 0 但产物不在）。
+  if [[ ! -s "$binary" ]]; then
+    printf '    [stage] binary missing or empty: %s\n' "$binary" >&2
+    printf '    [stage] build_backend must produce the binary before stage_release.\n' >&2
+    printf '    [stage] Likely cause: concurrent deploy on shared RUN_DIR, or CGO build silently failed.\n' >&2
+    printf '    [stage] Inspect: %s/build-host.log, %s/build-cgo*.log\n' "$RUN_DIR" "$RUN_DIR" >&2
+    return 1
+  fi
+  install -m 0755 "$binary" "$bundle/gateway" || { printf '    [stage] install failed: cannot copy %s to %s/gateway\n' "$binary" "$bundle" >&2; return 1; }
   [[ -s "$bundle/gateway" ]] || return 1
   if [[ -d "$web" ]]; then
     cp -R "$web" "$bundle/web" || return 1
