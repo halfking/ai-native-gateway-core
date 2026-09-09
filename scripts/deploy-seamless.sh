@@ -39,6 +39,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# P1.1 SSOT 软链后，deploy-lib/db-changelog.sh 的 repo_root 第三级 fallback
+# （BASH_SOURCE/../..）解析到共享库目录而非本仓库，迁移 ledger 逐版本核对会因
+# canonical 文件 glob 为空而拒绝部署。这里显式钉住 resolver 的 override #1。
+export DB_CHANGELOG_REPO_ROOT="$PROJECT_ROOT"
+[[ -d "$DB_CHANGELOG_REPO_ROOT/sql/migrations" ]] || {
+  echo "FATAL: DB_CHANGELOG_REPO_ROOT=$DB_CHANGELOG_REPO_ROOT 下没有 sql/migrations" >&2
+  exit 64
+}
+
 # source 共享部署库 SSOT（P1.1）：_shared-lib.sh 导出 AIAN_DEPLOY_LIB 并预载
 # deploy-prereqs.sh + deploy-image-resolution.sh；其余按需从 $AIAN_DEPLOY_LIB 加载。
 # 历史副本留档于 deploy-lib.legacy/；scripts/deploy-lib 为共享 SSOT 的相对软链
