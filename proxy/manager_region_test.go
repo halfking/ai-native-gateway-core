@@ -19,9 +19,9 @@ func TestIsRegionBanned(t *testing.T) {
 		{"no ban", "US", nil, nil, false},
 		{"sub ban hit", "US", []string{"US"}, nil, true},
 		{"node ban hit (uppercase)", "US", nil, []string{"US"}, true},
-		{"node ban mixed case (caller normalizes)", "US", nil, []string{"us"}, false},
+		{"node ban mixed case", "US", nil, []string{"us"}, true},
 		{"both miss", "JP", []string{"US"}, []string{"HK"}, false},
-		{"whitespace tolerant (caller should normalize)", "US", []string{" US "}, nil, false},
+		{"whitespace tolerant", " US ", []string{" US "}, nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -78,7 +78,7 @@ func (f *fakeStoreForBans) GetNode(context.Context, int) (*Node, error) {
 	return nil, errors.New("not used")
 }
 func (f *fakeStoreForBans) UpdateNode(context.Context, *Node) error { return nil }
-func (f *fakeStoreForBans) DeleteNode(context.Context, int) error  { return nil }
+func (f *fakeStoreForBans) DeleteNode(context.Context, int) error   { return nil }
 func (f *fakeStoreForBans) DeleteNodesBySubscription(context.Context, int) error {
 	return nil
 }
@@ -90,7 +90,7 @@ func (f *fakeStoreForBans) ListDomains(context.Context) ([]*Domain, error) {
 	return nil, nil
 }
 func (f *fakeStoreForBans) UpdateDomain(context.Context, *Domain) error { return nil }
-func (f *fakeStoreForBans) DeleteDomain(context.Context, int) error    { return nil }
+func (f *fakeStoreForBans) DeleteDomain(context.Context, int) error     { return nil }
 
 // TestSelectBestNodeRespectsRegionBan 验证订阅层 / 节点层禁用地区都能生效。
 func TestSelectBestNodeRespectsRegionBan(t *testing.T) {
@@ -166,5 +166,27 @@ func TestSwapStateResetsOnSelect(t *testing.T) {
 	state := mgr.CurrentSelection()
 	if state == nil || state.CurrentNodeID != best.ID {
 		t.Fatalf("CurrentSelection = %+v, want node_id=%d", state, best.ID)
+	}
+}
+
+func TestForceSwapExcludesCurrentNode(t *testing.T) {
+	store := &fakeStoreForBans{
+		subs: []*Subscription{{ID: 1, Status: "active"}},
+		nodes: []*Node{
+			{ID: 1, SubscriptionID: 1, Name: "current", Protocol: ProtocolHTTP, Server: "127.0.0.1", Port: 8001, Status: "active", Location: "HK", ResponseTimeMs: 10},
+			{ID: 2, SubscriptionID: 1, Name: "backup", Protocol: ProtocolHTTP, Server: "127.0.0.1", Port: 8002, Status: "active", Location: "JP", ResponseTimeMs: 20},
+		},
+	}
+	mgr := NewManager(store, nil, nil)
+	mgr.refreshAllSubscriptionBans(context.Background())
+	if _, err := mgr.SelectBestNode(context.Background(), intPtr(1)); err != nil {
+		t.Fatalf("initial selection: %v", err)
+	}
+	selected, err := mgr.ForceSwap(context.Background(), intPtr(1))
+	if err != nil {
+		t.Fatalf("ForceSwap: %v", err)
+	}
+	if selected == nil || selected.ID == 1 {
+		t.Fatalf("ForceSwap selected current node: %+v", selected)
 	}
 }

@@ -21,10 +21,10 @@ type cacheEntry struct {
 // activeSelection 记录 Manager 当前对外暴露的"已被选中的节点"，供 swap loop
 // 主动探测并按策略切换。subscriptionID=nil 表示全局选择。
 type activeSelection struct {
-	subscriptionID    *int
-	nodeID            int
-	lastProbeAt       time.Time
-	consecutiveFails  int
+	subscriptionID   *int
+	nodeID           int
+	lastProbeAt      time.Time
+	consecutiveFails int
 }
 
 // Manager 代理管理器
@@ -55,8 +55,8 @@ type Manager struct {
 	subscriptionBans sync.Map // subscription_id -> []string
 
 	// 配置
-	autoRefreshInterval  time.Duration
-	healthCheckInterval  time.Duration
+	autoRefreshInterval   time.Duration
+	healthCheckInterval   time.Duration
 	unknownDomainStrategy string        // direct/proxy/probe
 	cacheTTL              time.Duration // 缓存 TTL，默认 5 分钟
 	autoDisableThreshold  int
@@ -229,12 +229,12 @@ func (m *Manager) GetSelectionPolicy() SelectionPolicy {
 
 // SelectionState 汇总当前 Manager 选择/切流的可观测状态，给 admin UI 用。
 type SelectionState struct {
-	CurrentNodeID   int       `json:"current_node_id"`
-	CurrentSubID    *int      `json:"current_subscription_id,omitempty"`
-	LastProbeAt     time.Time `json:"last_probe_at"`
-	LastProbeOK     bool      `json:"last_probe_ok"`
-	ConsecutiveFails int      `json:"consecutive_fails"`
-	ProbeIntervalMs int       `json:"probe_interval_ms"`
+	CurrentNodeID    int       `json:"current_node_id"`
+	CurrentSubID     *int      `json:"current_subscription_id,omitempty"`
+	LastProbeAt      time.Time `json:"last_probe_at"`
+	LastProbeOK      bool      `json:"last_probe_ok"`
+	ConsecutiveFails int       `json:"consecutive_fails"`
+	ProbeIntervalMs  int       `json:"probe_interval_ms"`
 }
 
 // CurrentSelection 返回当前被选中的节点状态（活跃选择中最近一次）。
@@ -284,7 +284,14 @@ func (m *Manager) SelectNodeWithLocation(ctx context.Context, subscriptionID *in
 	return m.selectNode(ctx, subscriptionID, requestKey, preferredLocation, false)
 }
 
-func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKey, preferredLocation string, bestOnly bool) (_ *Node, err error) {
+func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKey, preferredLocation string, bestOnly bool) (*Node, error) {
+	return m.selectNodeExcluding(ctx, subscriptionID, requestKey, preferredLocation, bestOnly, 0)
+}
+
+// selectNodeExcluding selects a node while omitting excludeNodeID when non-zero.
+// It is used by ForceSwap so a threshold-triggered swap cannot reselect the
+// failing active node.
+func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, requestKey, preferredLocation string, bestOnly bool, excludeNodeID int) (_ *Node, err error) {
 	startedAt := time.Now()
 	result := "store_error"
 	defer func() {
@@ -300,11 +307,10 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 	} else {
 		candidates, cachePresent = m.getAllActiveCachedNodes(time.Now())
 	}
-	// A present-but-empty subscription snapshot is a valid negative cache. Only
-	// an absent snapshot should fall back to the store for a targeted selection.
-	// Global selection still falls back when its aggregate cache has no nodes,
-	// because a partially warmed cache cannot prove that the store is empty.
-	if (subscriptionID != nil && !cachePresent) || (subscriptionID == nil && len(candidates) == 0) {
+	// Global selection must query the store because the aggregate cache cannot
+	// prove that every subscription is covered (new or empty subscriptions may not
+	// have a cache entry yet). Targeted selections can use a present snapshot.
+	if subscriptionID == nil || (subscriptionID != nil && !cachePresent) {
 		candidates, err = m.store.ListNodes(ctx, subscriptionID)
 		if err != nil {
 			return nil, fmt.Errorf("list nodes: %w", err)
@@ -312,8 +318,8 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 		if subscriptionID != nil {
 			m.setCacheWithTTL(*subscriptionID, candidates, time.Now())
 		}
-		// Store implementations may reuse mutable objects; never expose those
-		// pointers to selection or load-balancer code on a cache miss.
+		// Store implementations may reuse mutable objects; isolate the selection
+		// path from later health-check writes.
 		candidates = cloneNodes(candidates)
 	}
 
@@ -331,6 +337,9 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 	regionBanned := 0
 	for _, node := range candidates {
 		if node == nil || node.Status != "active" || node.PasswordDecryptFailed || node.ConsecutiveFailures >= threshold {
+			continue
+		}
+		if excludeNodeID != 0 && node.ID == excludeNodeID {
 			continue
 		}
 		if !node.Dialable() {
@@ -864,24 +873,31 @@ func (m *Manager) GetProxyTransportForNode(subscriptionID *int, node *Node) (*ht
 	return m.transportFactory.Get(subID, proxyURLStr)
 }
 
-// ForceSwap 主动重选一次最优节点（不依赖外部触发）。如果发现更优选择则
-// 把对应的订阅 Transport 失效，下次请求会按新节点建立 Transport。
-// 返回重新选中的节点（可能与当前 active 相同）；无候选时返回 nil。
+// ForceSwap 主动重选一个不同于当前 active 的最优节点（不依赖外部触发）。
+// 成功切换时使对应订阅 Transport 失效；没有备用节点时保留当前 active 状态，
+// 让连续失败计数继续反映真实故障，而不会因重新选择同一节点而被重置。
 func (m *Manager) ForceSwap(ctx context.Context, subscriptionID *int) (*Node, error) {
 	subID := 0
 	if subscriptionID != nil {
 		subID = *subscriptionID
 	}
-	candidate, err := m.SelectBestNode(ctx, subscriptionID)
+	key := selectionKey(subscriptionID)
+	m.activeMu.Lock()
+	current := m.active[key]
+	excludeNodeID := 0
+	if current != nil {
+		excludeNodeID = current.nodeID
+	}
+	m.activeMu.Unlock()
+
+	candidate, err := m.selectNodeExcluding(ctx, subscriptionID, "", "", true, excludeNodeID)
 	if err != nil {
-		// 当前没有可用节点；清掉 active selection 即可。
-		key := selectionKey(subscriptionID)
-		m.activeMu.Lock()
-		delete(m.active, key)
-		m.activeMu.Unlock()
+		if excludeNodeID != 0 {
+			return nil, fmt.Errorf("no alternative proxy node for swap from node %d: %w", excludeNodeID, err)
+		}
 		return nil, err
 	}
-	key := selectionKey(subscriptionID)
+
 	m.activeMu.Lock()
 	cur, existed := m.active[key]
 	m.active[key] = &activeSelection{
@@ -891,14 +907,13 @@ func (m *Manager) ForceSwap(ctx context.Context, subscriptionID *int) (*Node, er
 	}
 	m.activeMu.Unlock()
 	if existed && cur != nil && cur.nodeID != candidate.ID {
-		// 选中的节点变了 → 失效订阅 Transport，下次 GetProxyTransportForNode 会重建。
 		m.InvalidateTransport(subID)
 		if m.metrics != nil {
 			m.metrics.IncAutoSwap("forced")
 		}
 		slog.Info("proxy: forced swap", "from", cur.nodeID, "to", candidate.ID)
 	} else if m.metrics != nil {
-		m.metrics.IncAutoSwap("noop")
+		m.metrics.IncAutoSwap("forced")
 	}
 	return candidate, nil
 }
@@ -1031,7 +1046,7 @@ func (m *Manager) swapLoop() {
 		case <-m.ctx.Done():
 			return
 		}
-		m.runSwapTick(context.Background(), threshold)
+		m.runSwapTick(m.ctx, threshold)
 	}
 }
 
@@ -1149,10 +1164,11 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 		return HealthCheckSummary{}
 	}
 
-	// 2. 过滤需要探活的节点（基于智能间隔），并按 ProxyURL 分组去重
+	// 2. 过滤需要探活的节点（基于智能间隔），并按代理+探活目标分组去重。
+	// 同一代理入口请求不同 HealthCheckURL 时不能共享探测结果。
 	type nodeGroup struct {
-		proxyURL string
-		nodes    []*Node // 相同 URL 的所有节点
+		probeKey string
+		nodes    []*Node // 相同代理入口和探活目标的节点
 	}
 	urlToGroup := make(map[string]*nodeGroup)
 	totalNodes := 0
@@ -1187,14 +1203,14 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 			continue
 		}
 
-		// 按 URL 分组
-		if _, exists := urlToGroup[proxyURL]; !exists {
-			urlToGroup[proxyURL] = &nodeGroup{
-				proxyURL: proxyURL,
+		probeKey := proxyURL + "\x00" + strings.TrimSpace(node.HealthCheckURL)
+		if _, exists := urlToGroup[probeKey]; !exists {
+			urlToGroup[probeKey] = &nodeGroup{
+				probeKey: probeKey,
 				nodes:    []*Node{node},
 			}
 		} else {
-			urlToGroup[proxyURL].nodes = append(urlToGroup[proxyURL].nodes, node)
+			urlToGroup[probeKey].nodes = append(urlToGroup[probeKey].nodes, node)
 		}
 
 		// 统计健康/不健康节点数
@@ -1205,7 +1221,7 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 		}
 	}
 
-	// 3. 构建去重后的节点列表（每个 URL 只取一个代表节点）
+	// 3. 构建去重后的节点列表（每个代理+探活目标只取一个代表节点）
 	uniqueNodes := make([]*Node, 0, len(urlToGroup))
 	for _, group := range urlToGroup {
 		uniqueNodes = append(uniqueNodes, group.nodes[0]) // 取第一个节点作为代表
@@ -1309,6 +1325,10 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 						"node", node.Name, "error", redactErr(result.err), "latency_ms", result.latency)
 				}
 			}
+
+			// Keep active swap state authoritative with global health results.
+			subID := node.SubscriptionID
+			m.recordProbeResult(&subID, node.ID, result.ok)
 
 			nodesToUpdate = append(nodesToUpdate, node)
 		}
@@ -1691,16 +1711,16 @@ func extractDomain(rawURL string) string {
 
 // RegionStats 按地区汇总的可观测统计。
 type RegionStats struct {
-	Region         string  `json:"region"`
-	Total          int     `json:"total"`
-	Dialable       int     `json:"dialable"`
-	Active         int     `json:"active"`
-	Unhealthy      int     `json:"unhealthy"`
-	Banned         int     `json:"banned"`           // 当前被订阅+节点禁用地区命中的节点数
-	AvgLatencyMs   int     `json:"avg_latency_ms"`   // 成功探活的平均响应时间（毫秒）
-	BestLatencyMs  int     `json:"best_latency_ms"`
-	BestNodeID     int     `json:"best_node_id"`
-	BestNodeName   string  `json:"best_node_name"`
+	Region        string `json:"region"`
+	Total         int    `json:"total"`
+	Dialable      int    `json:"dialable"`
+	Active        int    `json:"active"`
+	Unhealthy     int    `json:"unhealthy"`
+	Banned        int    `json:"banned"`         // 当前被订阅+节点禁用地区命中的节点数
+	AvgLatencyMs  int    `json:"avg_latency_ms"` // 成功探活的平均响应时间（毫秒）
+	BestLatencyMs int    `json:"best_latency_ms"`
+	BestNodeID    int    `json:"best_node_id"`
+	BestNodeName  string `json:"best_node_name"`
 }
 
 // RegionStatsReport 返回按地区分组的节点健康快照，供 admin UI 的"地区分布"视图。
