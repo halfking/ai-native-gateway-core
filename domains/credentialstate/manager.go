@@ -313,7 +313,16 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	now := time.Now()
 	state.LastFailureAt = &now
 	state.LastUpdatedAt = now
-	state.ConsecutiveFails++
+	// 2026-09-08 audit: cap the counter so the transient tiered backoff
+	// composed from ConsecutiveFails (lines 461-468) remains meaningful
+	// under sustained failures. Without the cap the counter grows without
+	// bound, every subsequent failure enters the >5 branch, and a
+	// credential recovering from a 30s failure window to a healthy 5m one
+	// can never progress back to the fast tier.
+	const consecutiveFailsCap = 10
+	if state.ConsecutiveFails < consecutiveFailsCap {
+		state.ConsecutiveFails++
+	}
 	state.LastError = string(errKind)
 	state.Source = "request"
 
@@ -350,9 +359,15 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	// short-lived (per-minute windows); probing after the FIRST failure lets
 	// the node recover in seconds instead of waiting for the threshold-2
 	// fallback while the router keeps excluding it (docs/会话优化v3/29 §A3).
+	// 2026-09-08 audit: REMOVE KindRateLimit from the immediate set again.
+	// FR-3 (docs/01-requirements/functional/FR-selfcheck-timely-recovery.md)
+	// mandates that rate-limited probes must not fire faster than the policy
+	// floor (3 minutes); the previous 2026-08-15 change violated that by
+	// causing a 429's first failure to be probed immediately. Rate limit
+	// recovery is detected via the scheduled 3m/5m/15m probe, not by
+	// flood-on-429.
 	probeImmediately := errKind == errorsx.KindNetwork ||
 		errKind == errorsx.KindTimeout ||
-		errKind == errorsx.KindRateLimit ||
 		errKind == errorsx.KindUpstreamDown ||
 		errKind == errorsx.KindUpstreamOverloaded ||
 		errKind == errorsx.KindStreamTimeout ||
