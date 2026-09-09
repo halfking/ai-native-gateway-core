@@ -96,3 +96,47 @@ func TestCredRecoveryEnvContract(t *testing.T) {
 		})
 	}
 }
+
+// TestQuotaProbeEnvContract mirrors TestCredRecoveryEnvContract for the
+// 2026-09-10 quota-probe family opt-out (LLM_GATEWAY_QUOTA_PROBE_DISABLED):
+// credProbeV2 / PeriodicQuotaProbe / BalanceQuotaProbe now run on data-plane
+// and traffic-only nodes by default so hard-quota credentials
+// (permanently_exhausted / balance_exhausted) regain an automatic recovery
+// path; only the literal "true" opts a split-topology operator out.
+func TestQuotaProbeEnvContract(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     string
+		set     bool
+		wantOpt bool
+	}{
+		{name: "unset is no opt-out", env: "", set: false, wantOpt: false},
+		{name: "true opts out", env: "true", set: true, wantOpt: true},
+		{name: "TRUE (case insensitive) opts out", env: "TRUE", set: true, wantOpt: true},
+		{name: "Trailing whitespace tolerated", env: "  true  ", set: true, wantOpt: true},
+		{name: "false does NOT opt out", env: "false", set: true, wantOpt: false},
+		{name: "1 does NOT opt out (only literal true)", env: "1", set: true, wantOpt: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			envName := "LLM_GATEWAY_QUOTA_PROBE_DISABLED"
+			orig, hadOrig := os.LookupEnv(envName)
+			defer func() {
+				if hadOrig {
+					os.Setenv(envName, orig)
+				} else {
+					os.Unsetenv(envName)
+				}
+			}()
+			if tc.set {
+				os.Setenv(envName, tc.env)
+			} else {
+				os.Unsetenv(envName)
+			}
+			if got := IsQuotaProbeDisabled(); got != tc.wantOpt {
+				t.Fatalf("IsQuotaProbeDisabled() = %v, want %v (env=%q set=%v)",
+					got, tc.wantOpt, tc.env, tc.set)
+			}
+		})
+	}
+}
