@@ -575,3 +575,18 @@ grep -Fq 'Inspect: %s/build-host.log' "$ROOT/scripts/deploy-local-lib.sh" \
 grep -Fq 'Inspect: %s/build-host.log, %s/build-cgo' "$ROOT/scripts/deploy-local-lib.sh" \
   || fail 'dl_stage_release: missing-binary hint must reference both build-host.log and build-cgo*.log'
 pass 'CGO fallback atomic concurrent-safe contract ($$ suffix + install-not-mv + missing-binary diagnosis) locked down'
+
+# 2026-09-09 用户报 "localhost:8782/ 无法访问"复盘：build_backend 内部
+# 的 log() 调用全部写 stdout，而 deploy() 用 binary=$(build_backend)
+# 捕获返回值 —— CGO 回退分支里每行 log 输出都被吞进 $binary，stage_release
+# 拿到多行"cached image ... re-pulling / /Users/.../gateway.build"
+# 当成 binary 路径，install 报"binary missing or empty"。修法：log()
+# 必须写 stderr（与 warn/die 一致），让 $() 捕获只能拿到 build_backend
+# 的 printf '%s\n' "$out" 一行。
+log_defn=$(grep -E '^log\(\)' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$log_defn" ]] || fail 'deploy-local.sh must define log()'
+[[ "$log_defn" == *'>&2'* ]] || fail "deploy-local.sh log() must write to stderr (&>2); got: $log_defn"
+# 双重保险：binary=$(build_backend) 这一行必须存在且 log() 已修
+grep -Fq 'binary=$(build_backend)' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'deploy() must capture build_backend output via $()'
+pass 'log() stderr contract locked: $binary=$() capture must not absorb log output as path'

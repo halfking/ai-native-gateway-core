@@ -145,7 +145,7 @@ SHARED_REDIS_RUN_DIR=$(dl_redis_run_dir)
 VERSION_JSON="$PROJECT_ROOT/version.json"
 VERSION_FILE="$PROJECT_ROOT/VERSION"
 
-log() { printf '[deploy-local] %s\n' "$*"; }
+log() { printf '[deploy-local] %s\n' "$*" >&2; }
 warn() { printf '[deploy-local] warning: %s\n' "$*" >&2; }
 die() { printf '[deploy-local] error: %s\n' "$*" >&2; exit 1; }
 
