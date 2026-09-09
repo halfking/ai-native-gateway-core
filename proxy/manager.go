@@ -692,6 +692,38 @@ func (m *Manager) healthCheckPolicy() (threshold int, disable, recover bool) {
 	return m.autoDisableThreshold, m.autoDisableEnabled, m.autoRecoverEnabled
 }
 
+// skipReason 描述 health-check 过滤节点时跳过的原因。
+type skipReason string
+
+const (
+	skipReasonStatus        skipReason = "status"
+	skipReasonUndialable    skipReason = "undialable"
+	skipReasonPwdDecrypt    skipReason = "password_decrypt_failed"
+	skipReasonProxyURLEmpty skipReason = "proxy_url_empty"
+)
+
+// shouldSkipForHealthCheck 是所有 health-check 入口统一的节点过滤闸门。
+//
+// 审计修复 (2026-09-09 P2-#6)：PasswordDecryptFailed 检查此前只覆盖
+// HealthCheckNode / HealthCheckSubscriptionNow 单点；swapProbeOne 与
+// healthCheckAllNodesInner 会继续以密文密码探测——代理返回 407 的同时
+// 静默消耗 1 次失败计数。统一到一处，四个入口共用同一语义。
+func (m *Manager) shouldSkipForHealthCheck(node *Node) (skipReason, bool) {
+	if node == nil {
+		return "nil", true
+	}
+	if node.Status != "active" && node.Status != "unhealthy" {
+		return skipReasonStatus, true
+	}
+	if !node.Dialable() {
+		return skipReasonUndialable, true
+	}
+	if node.PasswordDecryptFailed {
+		return skipReasonPwdDecrypt, true
+	}
+	return "", false
+}
+
 // applyHealthCheckResult applies the shared node state transition for a health check.
 // Probe metrics and logging remain with the individual health-check paths.
 func (m *Manager) applyHealthCheckResult(node *Node, ok bool, latency int, checkedAt time.Time) {
@@ -716,22 +748,26 @@ func (m *Manager) applyHealthCheckResult(node *Node, ok bool, latency int, check
 }
 
 // HealthCheckNode 健康检查单个节点
+//
+// 审计修正 (2026-09-09 P0)：GetNode 必须在 nodeProbeLock 内执行。原实现
+// 在锁外读快照（CF=0）→ 锁内 apply+落库（CF=1），两个并发各自读到 0、
+// 各写 1，一次失败被静默吞掉。读-改-写全程持锁才原子。
 func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
+	mu := m.nodeProbeLock(nodeID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	node, err := m.store.GetNode(ctx, nodeID)
 	if err != nil {
 		return fmt.Errorf("get node: %w", err)
 	}
-	if node.PasswordDecryptFailed {
-		if m.metrics != nil {
+	if reason, skip := m.shouldSkipForHealthCheck(node); skip {
+		// 审计修复 (2026-09-09 P2-#6)：统一闸门（原散落的 pwd-decrypt 单点检查）。
+		if reason == skipReasonPwdDecrypt && m.metrics != nil {
 			m.metrics.IncPasswordDecryptFailed()
 		}
-		return fmt.Errorf("health check node %d: password decryption failed", nodeID)
+		return fmt.Errorf("health check node %d: %s", nodeID, reason)
 	}
-
-	// 串行化同一节点 ID 的并发探活，避免 checker.Check 与并发 update-back 竞态。
-	mu := m.nodeProbeLock(nodeID)
-	mu.Lock()
-	defer mu.Unlock()
 
 	startTime := time.Now()
 	responseTimeMs, err := m.checker.Check(ctx, node)
@@ -967,22 +1003,26 @@ func (m *Manager) HealthCheckSubscriptionNow(ctx context.Context, subscriptionID
 		if n == nil {
 			continue
 		}
-		if n.Status != "active" && n.Status != "unhealthy" {
-			continue
-		}
-		if n.PasswordDecryptFailed {
-			summary.Skipped++
-			continue
-		}
-		if !n.Dialable() {
-			summary.Skipped++
+		// 审计修复 (2026-09-09 P2-#6)：统一闸门；Skipped 计数保持原语义
+		//（undialable 与 pwd-decrypt 均计入）。
+		if reason, skip := m.shouldSkipForHealthCheck(n); skip {
+			if reason == skipReasonUndialable || reason == skipReasonPwdDecrypt {
+				summary.Skipped++
+			}
+			if reason == skipReasonPwdDecrypt && m.metrics != nil {
+				m.metrics.IncPasswordDecryptFailed()
+			}
 			continue
 		}
 		toCheck = append(toCheck, n)
 	}
 	for res := range m.checker.CheckConcurrent(ctx, toCheck, 16) {
+		// 审计修正 (2026-09-09 P0)：GetNode 在锁内，保证读-改-写原子。
+		mu := m.nodeProbeLock(res.NodeID)
+		mu.Lock()
 		node, gerr := m.store.GetNode(ctx, res.NodeID)
 		if gerr != nil {
+			mu.Unlock()
 			slog.Warn("proxy: health check subscription: get node failed", "node_id", res.NodeID, "error", gerr)
 			continue
 		}
@@ -997,11 +1037,13 @@ func (m *Manager) HealthCheckSubscriptionNow(ctx context.Context, subscriptionID
 			summary.Failed++
 		}
 		if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
+			mu.Unlock()
 			slog.Warn("proxy: health check subscription: update node failed", "node_id", node.ID, "error", uerr)
 			continue
 		}
 		m.updateNodeInCache(node)
 		m.recordProbeResult(&subID, node.ID, res.OK)
+		mu.Unlock()
 	}
 	if summary.OK > 0 {
 		summary.AvgMs /= summary.OK
@@ -1059,6 +1101,11 @@ func (m *Manager) healthCheckLoop() {
 
 // swapLoop 周期性探测当前 active 节点；连续失败达到 SwapFailureThreshold 则
 // 触发 ForceSwap 让下个请求走新节点 + 失效订阅 Transport。
+//
+// 审计修复 (2026-09-09 P2-#11)：单次 swap tick 使用独立 30s timeout context
+// （与 refreshLoop / healthCheckLoop 对齐）——Stop 触发 cancel() 后 in-flight
+// 探测经 swapProbeOne 的 nodeProbeLock 内 checker.Check(ctx,…) 立即收到
+// ctx.Done() 提前退出，不再被 15s probe 超时逐节点串行拖住 Stop。
 func (m *Manager) swapLoop() {
 	defer m.wg.Done()
 	for {
@@ -1079,7 +1126,9 @@ func (m *Manager) swapLoop() {
 		case <-m.ctx.Done():
 			return
 		}
-		m.runSwapTick(m.ctx, threshold)
+		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+		m.runSwapTick(ctx, threshold)
+		cancel()
 	}
 }
 
@@ -1103,26 +1152,34 @@ func (m *Manager) runSwapTick(ctx context.Context, threshold int) {
 }
 
 // swapProbeOne 对单个 active selection 做一次主动探测。
+//
+// 审计修正 (2026-09-09 P0)：GetNode 在 nodeProbeLock 内执行，保证
+// 读-改-写（读快照 → apply → 落库 → 写缓存）对同一 node_id 原子。
 func (m *Manager) swapProbeOne(ctx context.Context, sel *activeSelection, threshold int) {
 	if sel == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	// 串行化与 HealthCheckNode / healthCheckAllNodesInner 的并发探活，
+	// 防止 checker.Check 与 update-back 在同一 *Node 上重叠写。
+	mu := m.nodeProbeLock(sel.nodeID)
+	mu.Lock()
+	defer mu.Unlock()
 	node, err := m.store.GetNode(ctx, sel.nodeID)
 	if err != nil {
 		// 节点已删，清理。
 		m.forgetActiveSelection(sel.subscriptionID, sel.nodeID)
 		return
 	}
-	if !node.Dialable() {
+	if reason, skip := m.shouldSkipForHealthCheck(node); skip {
+		// 审计修复 (2026-09-09 P2-#6)：PasswordDecryptFailed 节点不再以密文
+		// 密码探测（代理 407 + 静默 +1 失败计数）；status/undialable 同样跳过。
+		if reason == skipReasonPwdDecrypt && m.metrics != nil {
+			m.metrics.IncPasswordDecryptFailed()
+		}
 		return
 	}
-	// 串行化与 HealthCheckNode / healthCheckAllNodesInner 的并发探活，
-	// 防止 checker.Check 与 update-back 在同一 *Node 上重叠写。
-	mu := m.nodeProbeLock(node.ID)
-	mu.Lock()
-	defer mu.Unlock()
 	if node.Status == "unhealthy" {
 		// 已被全局探活标记为 unhealthy：视为失败 1 次计入，连续达阈值即切流。
 		// 同步写回内存状态与持久层，避免 selectNode 的 threshold 过滤看不到进展。
@@ -1230,9 +1287,19 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 
 		totalNodes++
 
-		// 跳过不可拨号的节点
-		if !node.Dialable() {
-			skippedUndialable++
+		// 审计修复 (2026-09-09 P2-#6)：过滤走统一闸门，包含
+		// Dialable/PasswordDecryptFailed 层；pwd-decrypt 节点记录指标并
+		// 计入 skipped，不再以密文密码探测。
+		if reason, skip := m.shouldSkipForHealthCheck(node); skip {
+			switch reason {
+			case skipReasonUndialable:
+				skippedUndialable++
+			case skipReasonPwdDecrypt:
+				if m.metrics != nil {
+					m.metrics.IncPasswordDecryptFailed()
+				}
+				skippedUndialable++
+			}
 			continue
 		}
 
@@ -1330,7 +1397,13 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 	}
 
 	// 5. 将结果分发到所有相同 URL 的节点，并设置下次探活时间
-	nodesToUpdate := make([]*Node, 0, len(uniqueNodes)*2)
+	//
+	// 审计修正 (2026-09-09 P0)：每个节点在 nodeProbeLock 内完成
+	// "GetNode 新鲜快照 → applyHealthCheckResult → UpdateNode →
+	// updateNodeInCache" 全序列。原实现 apply 在锁内但作用于 ListNodes
+	// 的旧快照，DB/缓存写入被拆到后面的批量阶段——与并发的
+	// HealthCheckNode / swapProbeOne 互相覆盖 ConsecutiveFailures。
+	// 合并到锁内一步后不再需要独立的批量落库/写缓存阶段。
 	successCount := 0
 	failedCount := 0
 
@@ -1344,11 +1417,20 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 
 		// 将结果应用到该 URL 的所有节点
 		for _, node := range group.nodes {
-			// 串行化同一节点 ID 的并发探活，防止与 HealthCheckNode/swapProbeOne
-			// 同时写入 applyHealthCheckResult + recordProbeResult + UpdateNode。
 			nmu := m.nodeProbeLock(node.ID)
 			nmu.Lock()
-			m.applyHealthCheckResult(node, result.ok, result.latency, result.checkedAt)
+			fresh, gerr := m.store.GetNode(ctx, node.ID)
+			if gerr != nil {
+				nmu.Unlock()
+				slog.Warn("proxy: global health check: get node failed", "node_id", node.ID, "error", gerr)
+				continue
+			}
+			m.applyHealthCheckResult(fresh, result.ok, result.latency, result.checkedAt)
+			if uerr := m.store.UpdateNode(ctx, fresh); uerr != nil {
+				slog.Warn("proxy: global health check: update node failed", "node_id", fresh.ID, "error", uerr)
+			}
+			m.updateNodeInCache(fresh)
+			nmu.Unlock()
 
 			if result.ok {
 				// 健康节点：10 分钟后再探活。
@@ -1365,7 +1447,7 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 				failedCount++
 				if m.metrics != nil {
 					m.metrics.IncHealthFailure()
-					m.metrics.ObserveNodeConsecutiveFailures(node.ConsecutiveFailures)
+					m.metrics.ObserveNodeConsecutiveFailures(fresh.ConsecutiveFailures)
 				}
 
 				if len(group.nodes) == 1 {
@@ -1376,51 +1458,13 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 			}
 
 			// Keep active swap state authoritative with global health results.
-			subID := node.SubscriptionID
-			m.recordProbeResult(&subID, node.ID, result.ok)
-
-			nodesToUpdate = append(nodesToUpdate, node)
-			nmu.Unlock()
+			subID := fresh.SubscriptionID
+			m.recordProbeResult(&subID, fresh.ID, result.ok)
 		}
 	}
 
-	// 6. 批量更新数据库（分批，每批 50 个节点）
-	//
-	// 审计修复 (2026-09-09 P0 回归)：BatchUpdateNodes 虽是单事务，但必须
-	// 在 per-node 锁内执行。原因：applyHealthCheckResult 锁内修改 in-memory
-	// node 后释放锁（line 1337），此时若 BatchUpdateNodes 无锁写入，会覆盖
-	// 其他 goroutine（HealthCheckNode/swapProbeOne/HealthCheckSubscriptionNow）
-	// 已落库的新状态，造成 ConsecutiveFailures 丢失更新。
-	//
-	// 权衡：牺牲 BatchUpdateNodes 单事务原子性（50 节点 1 SQL → 50 次单节点
-	// SQL），换取并发安全。真实场景批量 <10 节点，性能影响可控。
-	batchSize := 50
-	for i := 0; i < len(nodesToUpdate); i += batchSize {
-		end := i + batchSize
-		if end > len(nodesToUpdate) {
-			end = len(nodesToUpdate)
-		}
-		batch := nodesToUpdate[i:end]
-
-		// PgStore 和非 PgStore 统一走 per-node 锁保护的单节点更新
-		for _, node := range batch {
-			mu := m.nodeProbeLock(node.ID)
-			mu.Lock()
-			if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
-				slog.Warn("proxy: batch update node failed", "node_id", node.ID, "error", uerr)
-			}
-			mu.Unlock()
-		}
-	}
-
-	// 7. 批量更新缓存（缓存更新也在 per-node 锁内，保证"apply→DB→cache"
-	// 三步对同一 node_id 完全串行）
-	for _, node := range nodesToUpdate {
-		mu := m.nodeProbeLock(node.ID)
-		mu.Lock()
-		m.updateNodeInCache(node)
-		mu.Unlock()
-	}
+	// 6/7. （已合并到步骤 5）批量落库与批量写缓存阶段移除——旧实现把
+	// DB/缓存写入拆到锁外的批量阶段，持旧快照覆盖并发写入方的新状态。
 
 	// 8. 更新指标
 	if m.metrics != nil {
