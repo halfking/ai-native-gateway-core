@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
@@ -399,10 +400,14 @@ func (s *Summarizer) buildRollingPrompt(prevSummary string, newMessages []Sessio
 		if msg.Role == "assistant" {
 			role = "助手"
 		}
+		// 审计 R8：与全量摘要路径（buildSummaryPrompt）同级——粘贴进对话的
+		// key/token 不得原文进入总结 LLM 的 prompt；截断走 rune 边界防止
+		// CJK 字节切片产生非法 UTF-8。
 		content := msg.Content
-		if len(content) > 300 {
-			content = content[:300] + "..."
+		if utf8.RuneCountInString(content) > 300 {
+			content = truncateRunes(content, 300) + "..."
 		}
+		content = secretmask.MaskSecrets(content)
 		fmt.Fprintf(&sb, "\n[消息 %d - %s]:\n%s\n", i+1, role, content)
 	}
 	sb.WriteString("---\n")
