@@ -183,6 +183,19 @@ func (r *AutoIndexRefresher) RefreshOnce(ctx context.Context) error {
 // that refreshes credential_model_index_hot for one bucket. Exposed for the
 // SQL-shape regression tests (2026-09-10: an extra ")" in half-2 plus an
 // ungrouped outer reference in half-1 kept the rollup failing on every tick).
+//
+// 2026-09-10 (PG log audit): RefreshOnce runs from BOTH the 5-min ticker and
+// the auto_route_refresh LISTEN listener with no mutual exclusion. The
+// DELETE+INSERT pair is not atomic, so two overlapping runs interleave as
+// DELETE(A) → DELETE(B) → INSERT(A) → INSERT(B) and the second INSERT hits
+//   duplicate key value violates unique constraint "idx_credential_model_index_hot_unique"
+// (observed 2026-09-10 04:18 CST). Re-adding ON CONFLICT DO UPDATE makes each
+// INSERT idempotent against rows a concurrent run already committed. The
+// 2026-07-20 P2-#6 reason ON CONFLICT was originally dropped — "cannot affect
+// row a second time" (21000) within ONE statement — cannot recur here: the
+// DISTINCT ON (bucket, credential_id, raw_model) tail already guarantees a
+// single row per conflict key per statement, so the clause now only ever
+// resolves against rows committed by the *other* run.
 func credentialModelIndexRollupSQLs() (deleteSQL, insertSQL string) {
 	deleteSQL = `DELETE FROM credential_model_index_hot
 			WHERE (bucket, credential_id, raw_model) IN (
@@ -193,7 +206,7 @@ func credentialModelIndexRollupSQLs() (deleteSQL, insertSQL string) {
 	    billing_mode, unit_price_in_per_1m, unit_price_out_per_1m, context_window,
 	    success_rate, p95_latency_ms, active_sessions, concurrency_limit, pressure_ratio,
 	    score_smart, score_speed_first, score_cost_first
-	) ` + rollupCredentialModelIndexSQL
+	) ` + rollupCredentialModelIndexSQL + rollupCredentialModelIndexONCONFLICT
 	return deleteSQL, insertSQL
 }
 

@@ -4,6 +4,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# P1.1 SSOT 软链后，deploy-lib/db-changelog.sh 的 repo_root 第三级 fallback
+# 解析到共享库目录而非本仓库；显式钉住 resolver 的 override #1（与 seamless 同）。
+export DB_CHANGELOG_REPO_ROOT="$PROJECT_ROOT"
+[[ -d "$DB_CHANGELOG_REPO_ROOT/sql/migrations" ]] || {
+  echo "FATAL: DB_CHANGELOG_REPO_ROOT=$DB_CHANGELOG_REPO_ROOT 下没有 sql/migrations" >&2
+  exit 64
+}
 
 # shellcheck source=deploy-local-lib.sh
 source "$SCRIPT_DIR/deploy-local-lib.sh"
@@ -594,7 +601,11 @@ build_backend() {
     # 重解析，保留原 need_pull 防线）→ 离线 tar(~/work/{docker-base-images,
     # docker-base-image}/lang-base，dash 命名) → registry.itestu.cn → docker
     # hub；返回 0 保证本地可 inspect 该镜像且平台匹配。
-    if ! resolve_build_image "$build_image" "$docker_platform"; then
+    # >&2（2026-09-10）：SSOT 的进度日志（hit/loading/Loaded image）走 stdout，
+    # 而 build_backend 的 stdout 被 binary=$(build_backend) 当返回值捕获；
+    # 不重定向时镜像未命中场景（如 arm64 首次 load 离线 tar）会把
+    # "Loaded image: ..." 混进 $binary，stage_release 的 [[ -s ]] 必失败。
+    if ! resolve_build_image "$build_image" "$docker_platform" >&2; then
       die "CGO fallback needs image $build_image ($docker_platform); tried local cache, offline tar in ~/work/{docker-base-images,docker-base-image}/lang-base/, registry.itestu.cn/lang-base/kx-base-golang and docker hub"
     fi
     local cgo_out="$PROJECT_ROOT/.build-local/gateway.build.$$"
