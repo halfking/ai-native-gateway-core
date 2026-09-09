@@ -203,6 +203,8 @@ func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.R
 	if RequireSuperAdminForWrite(w, r) {
 		return
 	}
+	// 限制请求体大小, 防止恶意巨文件 (实际 Orbi 模板通常 < 100 KB).
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1 MiB
 	var file freediscovery.OrbiProviderFile
 	if err := json.NewDecoder(r.Body).Decode(&file); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid Orbi template JSON: "+err.Error())
@@ -224,20 +226,24 @@ func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.R
 			errs = append(errs, "<empty provider key>: skipped")
 			continue
 		}
-		// 仅接受 Orbi 的 "$VAR" env 引用惯例; 其余值 (如 local-qwen 的 "local")
-		// 视为 keyless, 避免 ResolveAPIKey 按错误 env 名解析
-		apiKeyEnv := ""
-		if strings.HasPrefix(p.APIKey, "$") {
-			apiKeyEnv = p.APIKey
-		}
+		// 复用 ValidateCreate 前置校验, 失败记入 errs 而不阻断其它 provider.
 		req := &freediscovery.CreateTemplateRequest{
 			ProviderCode:   code,
-			DisplayName:    strings.ToUpper(code[:1]) + code[1:],
+			DisplayName:    freediscovery.TrimmedDisplayName(strings.ToUpper(string([]rune(code)[:1])) + code[1:]),
 			BaseURL:        p.BaseURL,
 			APIType:        freediscovery.APIType(p.API),
-			APIKeyEnv:      apiKeyEnv,
+			APIKeyEnv:      "", // Orbi 模板的 apiKey 是 "$VAR" 引用; CreateTemplateRequest 接受后端 env 引用, 由 Create 校验
 			ModelsEndpoint: "/models",
 			CreatedBy:      actor,
+		}
+		// Orbi apiKey 字段约定: "$VAR" 表示 env 引用 (保留); 其它值视为字面量, 不作为 env 名解析.
+		if strings.HasPrefix(p.APIKey, "$") {
+			req.APIKeyEnv = p.APIKey
+		}
+		if msg := req.ValidateCreate(); msg != "" {
+			failed++
+			errs = append(errs, code+": "+msg)
+			continue
 		}
 		if _, err := deps.templates.Create(r.Context(), tenant, req); err != nil {
 			// 单个 provider 失败不阻断其余导入
@@ -247,8 +253,14 @@ func (h *Handler) handleFreeDiscoveryImportOrbi(w http.ResponseWriter, r *http.R
 		}
 		created++
 	}
+	status := "ok"
+	if failed > 0 && created > 0 {
+		status = "partial" // 部分成功: 调用方可继续查看 errors
+	} else if failed > 0 && created == 0 {
+		status = "failed"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"created": created, "failed": failed, "errors": errs,
+		"created": created, "failed": failed, "errors": errs, "status": status,
 	})
 }
 
@@ -404,7 +416,7 @@ func (h *Handler) handleFreeDiscoveryImport(w http.ResponseWriter, r *http.Reque
 
 	summary, err := deps.importer.Import(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, fdStatusFor(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -426,17 +438,32 @@ func fdActor(r *http.Request) string {
 }
 
 // fdStatusFor 领域错误 → HTTP 状态码.
+//
+// 优先用 errors.Is 匹配 sentinel 错误, 避免误把任意含 "not found" 的内部错误
+// 映射为 404; 仅当不是 sentinel 时回退到字符串包含判断 (兼容旧错误消息).
 func fdStatusFor(err error) int {
 	switch {
 	case errors.Is(err, freediscovery.ErrTemplateNotFound),
-		strings.Contains(err.Error(), "not found"):
+		errors.Is(err, freediscovery.ErrImportTaskNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, freediscovery.ErrTemplateDisabled),
+		errors.Is(err, freediscovery.ErrImportTaskNotReady),
+		errors.Is(err, freediscovery.ErrTaskStateConflict):
+		return http.StatusConflict
 	case strings.Contains(err.Error(), "required"),
 		strings.Contains(err.Error(), "invalid"),
 		strings.Contains(err.Error(), "must be"),
 		strings.Contains(err.Error(), "must start"),
 		strings.Contains(err.Error(), "only allows"),
-		strings.Contains(err.Error(), "cannot be empty"):
+		strings.Contains(err.Error(), "cannot be empty"),
+		strings.Contains(err.Error(), "must use"),
+		strings.Contains(err.Error(), "userinfo"),
+		strings.Contains(err.Error(), "fragment"),
+		strings.Contains(err.Error(), "loopback"),
+		strings.Contains(err.Error(), "private"),
+		strings.Contains(err.Error(), "link-local"),
+		strings.Contains(err.Error(), "control characters"),
+		strings.Contains(err.Error(), "exceeds maximum length"):
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

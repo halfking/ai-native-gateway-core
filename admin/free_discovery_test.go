@@ -193,6 +193,30 @@ func TestFreeDiscovery_Import_MissingTaskID400(t *testing.T) {
 	}
 }
 
+// TestFreeDiscovery_Import_StatusForSentinels 验证 import handler 把领域 sentinel
+// 错误映射为正确的 HTTP 状态码 (404 / 409), 而不是写死 500.
+//
+// Regression: 之前 import handler 直接返回 500, 导致 ErrImportTaskNotFound /
+// ErrImportTaskNotReady 的契约失效. audit-fix (2026-09-09) 已修, 此测试守住.
+func TestFreeDiscovery_Import_StatusForSentinels(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		expect int
+	}{
+		{"not found → 404", freediscovery.ErrImportTaskNotFound, http.StatusNotFound},
+		{"not ready → 409", freediscovery.ErrImportTaskNotReady, http.StatusConflict},
+		{"task state conflict → 409", freediscovery.ErrTaskStateConflict, http.StatusConflict},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fdStatusFor(tc.err); got != tc.expect {
+				t.Fatalf("fdStatusFor(%v)=%d, want %d", tc.err, got, tc.expect)
+			}
+		})
+	}
+}
+
 func TestFreeDiscovery_MethodNotAllowed(t *testing.T) {
 	h, _ := newFreeDiscoveryTestHandler(t)
 

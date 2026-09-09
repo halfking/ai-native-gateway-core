@@ -190,48 +190,109 @@ func capacityPenaltyForWeight(weight int) float64 {
 
 // calculateConcurrencyScore 计算全局并发压力分数
 // 返回 0.0-1.0，值越大表示压力越大
+//
+// 2026-09-09 P0 修复：dispatch 路径走 AcquireAllNoCredLayer 绕过了 Limiter
+// 的 credential 信号量，所以 r.Limiter.Credential().Used() 在生产环境恒为
+// 0，导致 P2C 永远靠 weight tie-break 分摊，而不是按实时并发分摊。
+// 优先读 Router.LiveLoad（dispatch 真正 Acquire 的 PeakCollector）；
+// 仅在 LiveLoad 不可用或返回 0 时回退到 Limiter 的语义。
 func calculateConcurrencyScore(c provider.Candidate, r *Router, ctx context.Context) float64 {
-	if r.Limiter == nil {
+	if r == nil {
 		return 0.5
 	}
-
-	cred := r.Limiter.Credential(c.ProviderID, c.CredentialID)
-	capacity := cred.Capacity()
+	capacity := concurrencyCapacity(c, r)
 	if capacity <= 0 {
 		return 0.5
 	}
 
-	pressure := float64(cred.Used()) / float64(capacity)
+	used := liveInFlight(c, r)
+	if used <= 0 && r.Limiter != nil {
+		// Fallback: limiter may carry stale-but-non-zero signal in legacy
+		// deployments where dispatch_v2 is off and dispatch uses AcquireAll.
+		used = int64(r.Limiter.Credential(c.ProviderID, c.CredentialID).Used())
+	}
+	pressure := float64(used) / float64(capacity)
 	if pressure > 1.0 {
 		pressure = 1.0
 	}
-
 	return pressure
 }
 
 // calculateIdentityScore 计算单 identity 压力分数
+//
+// 同样的修复：优先读 LiveLoad，再回退 Limiter；同一份实时信号被两个
+// scoring 维度共用，避免 weight tie-break 替代真正的并发分摊。
 func calculateIdentityScore(c provider.Candidate, r *Router) float64 {
-	if r.Limiter == nil {
+	if r == nil {
 		return 0.5
 	}
 
-	cred := r.Limiter.Credential(c.ProviderID, c.CredentialID)
-	if cred == nil {
+	capacity := concurrencyCapacity(c, r)
+	if capacity <= 0 {
 		return 0.5
 	}
 
-	inFlight := cred.Used()
-	capacity := cred.Capacity()
-	if capacity == 0 {
-		return 0.5
+	used := liveInFlight(c, r)
+	if used <= 0 && r.Limiter != nil {
+		used = int64(r.Limiter.Credential(c.ProviderID, c.CredentialID).Used())
 	}
-
-	pressure := float64(inFlight) / float64(capacity)
+	pressure := float64(used) / float64(capacity)
 	if pressure > 1.0 {
 		pressure = 1.0
 	}
-
 	return pressure
+}
+
+// concurrencyCapacity returns the per-credential capacity for scoring.
+//
+// Two valid source paths exist, depending on which dispatch path is wired:
+//
+//  1. dispatch_v2 (LiveLoad wired): PeakCollector is the source of truth
+//     for in-flight counts; the Limiter's credential semaphore is bypassed
+//     (AcquireAllNoCredLayer) and its seeded capacity is just the global
+//     default (DefaultCredentialLimit = 50). We MUST use the per-credential
+//     ConcurrencyLimit from the candidate snapshot (sourced from the DB),
+//     otherwise every credential looks underused and the saturation
+//     penalty never fires.
+//
+//  2. Legacy dispatch (LiveLoad nil): Limiter is the source of truth
+//     for both count and capacity (AcquireAll acquires the credential
+//     semaphore). The Limiter may have been hot-updated via
+//     SetCredentialCapacity, so its Capacity() reflects the live
+//     effective limit and is preferred over the DB snapshot.
+//
+// The signal that distinguishes the two is Router.LiveLoad. We do NOT
+// prefer Limiter when LiveLoad is wired because its capacity would be
+// the global default rather than the per-credential limit.
+func concurrencyCapacity(c provider.Candidate, r *Router) int {
+	if r.LiveLoad != nil {
+		// dispatch_v2 path: take capacity from the candidate snapshot
+		// (sourced from credentials.concurrency_limit in the DB).
+		if c.ConcurrencyLimit != nil && *c.ConcurrencyLimit > 0 {
+			return *c.ConcurrencyLimit
+		}
+		return 0
+	}
+	// Legacy path: Limiter is authoritative.
+	if r.Limiter != nil {
+		if cap := r.Limiter.Credential(c.ProviderID, c.CredentialID).Capacity(); cap > 0 {
+			return cap
+		}
+	}
+	if c.ConcurrencyLimit != nil && *c.ConcurrencyLimit > 0 {
+		return *c.ConcurrencyLimit
+	}
+	return 0
+}
+
+// liveInFlight returns the live in-flight count for this credential-model
+// pair from Router.LiveLoad. Returns 0 when the provider is nil (which is
+// the signal for "fall back to Limiter").
+func liveInFlight(c provider.Candidate, r *Router) int64 {
+	if r.LiveLoad == nil {
+		return 0
+	}
+	return r.LiveLoad.GetLiveConcurrent(int64(c.CredentialID), c.RawModel)
 }
 
 // calculateLatencyScore 计算延迟分数
@@ -304,33 +365,33 @@ func envFloat(key string, fallback float64) float64 {
 // candidatePressure 计算 candidate 当前的并发压力
 // (在 0-1.5 范围: 1.0+ 表示超载)
 //
-// Realtime concurrency is read from Router.Limiter (the same source used by
-// calculateConcurrencyScore/calculateIdentityScore). When no limiter is
-// available, or the credential has no usable capacity, we fall back to the
-// static ConcurrencyLimit and ultimately a neutral 0.5 — preserving the prior
-// "unknown ⇒ medium" semantics instead of a hard constant.
+// 2026-09-09 P0 修复：和 calculateConcurrencyScore 一样，优先读
+// Router.LiveLoad（dispatch 真正 Acquire 的 PeakCollector），再回退
+// 到 Limiter、ConcurrencyLimit、ActiveSessions 三级 fallback。
+// 之前 dispatch_v2 路径下恒返回 0 / 0.5（取决于 Limiter 与 ConcurrencyLimit
+// 是否存在），让 calculateHeadroom / calculateLatencyScore 完全失去信号。
 func candidatePressure(c provider.Candidate, r *Router) float64 {
-	// Prefer realtime in-flight pressure from the global limiter.
-	if r != nil && r.Limiter != nil {
-		cred := r.Limiter.Credential(c.ProviderID, c.CredentialID)
-		capacity := cred.Capacity()
-		if capacity > 0 {
-			return float64(cred.Used()) / float64(capacity)
-		}
+	if r == nil {
+		return 0.5
 	}
-	// Fall back to static config: if a concurrency limit is known but we have
-	// no realtime count, ActiveSessions (if reported) gives a coarse estimate.
-	if c.ConcurrencyLimit != nil && *c.ConcurrencyLimit > 0 {
-		if c.ActiveSessions > 0 {
-			p := float64(c.ActiveSessions) / float64(*c.ConcurrencyLimit)
+	capacity := concurrencyCapacity(c, r)
+	if capacity > 0 {
+		used := liveInFlight(c, r)
+		if used <= 0 && r.Limiter != nil {
+			// Legacy dispatch (AcquireAll) carries non-zero here.
+			used = int64(r.Limiter.Credential(c.ProviderID, c.CredentialID).Used())
+		}
+		if used > 0 {
+			p := float64(used) / float64(capacity)
 			if p > 1.0 {
 				p = 1.0
 			}
 			return p
 		}
-		return 0.5 // 有限流但无实时数据: 假设中等
+		return 0.5 // 有限流但实时 in-flight=0: 中性
 	}
-	return 0.5 // 无限流: 假设中等
+	// 无 capacity 线索（既没有 ConcurrencyLimit 也没有 Limiter）: 中性
+	return 0.5
 }
 
 // calculateHeadroom bonus (P2-#5 §3.1): 奖励并发富裕的 candidate

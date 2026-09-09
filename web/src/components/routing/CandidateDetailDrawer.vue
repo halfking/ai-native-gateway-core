@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RoutingCandidate } from '../../api/routing'
+import { formatDateTime } from '../../utils/datetime'
 
 const { t } = useI18n()
 
@@ -23,8 +24,7 @@ interface FlagRow {
 }
 
 const fmtTime = (iso: string | null | undefined): string => {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleString()
+  return formatDateTime(iso)
 }
 
 const isActive = (s: string | null | undefined): boolean => !!s && s === 'active'

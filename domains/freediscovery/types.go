@@ -9,6 +9,7 @@
 package freediscovery
 
 import (
+	"strings"
 	"time"
 )
 
@@ -253,8 +254,11 @@ func (r *CreateTemplateRequest) ValidateCreate() string {
 	if r.BaseURL == "" {
 		return "base_url is required"
 	}
-	if !isValidBaseURL(r.BaseURL) {
-		return "base_url must start with http:// or https://"
+	if msg := isValidBaseURL(r.BaseURL); msg != "" {
+		return msg
+	}
+	if msg := isValidModelsEndpoint(r.ModelsEndpoint); msg != "" {
+		return msg
 	}
 	if r.APIType == "" {
 		r.APIType = APITypeOpenAICompletions
@@ -284,10 +288,6 @@ func isValidProviderCode(s string) bool {
 	return true
 }
 
-func isValidBaseURL(s string) bool {
-	return len(s) > 8 && (startsWith(s, "http://") || startsWith(s, "https://"))
-}
-
 func isValidTosVerdict(s string) bool {
 	switch s {
 	case "ok", "caution", "ambiguous", "avoid", "unknown":
@@ -296,6 +296,17 @@ func isValidTosVerdict(s string) bool {
 	return false
 }
 
-func startsWith(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
+// TrimmedDisplayName 计算前端可安全显示的展示名; 截断 + 去除前后空白 + 限制长度.
+// 复用 rune 计算以避免按字节切 UTF-8 造成乱码.
+func TrimmedDisplayName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	runes := []rune(s)
+	const maxRunes = 200
+	if len(runes) > maxRunes {
+		runes = runes[:maxRunes]
+	}
+	return string(runes)
 }

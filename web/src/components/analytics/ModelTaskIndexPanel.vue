@@ -2,6 +2,7 @@
 import { ref, watch, onMounted } from 'vue'
 import { getModelTaskIndex, type ModelTaskIndexItem } from '../../api-autoroute'
 import { useCredentialLabels } from '../../composables/useCredentialLabels'
+import { formatDateTime } from '../../utils/datetime'
 
 const props = defineProps<{
   taskType?: string
@@ -64,7 +65,7 @@ onMounted(() => {
     <div v-else-if="warning && !items.length" class="empty-hint">{{ warning }}</div>
     <div v-else-if="!items.length" class="empty-hint">该任务类型暂无指数数据</div>
     <template v-else>
-      <div v-if="bucket" class="mti-meta text-muted">数据桶 {{ new Date(bucket).toLocaleString() }}</div>
+      <div v-if="bucket" class="mti-meta text-muted">数据桶 {{ formatDateTime(bucket) }}</div>
       <div class="table-scroll">
         <table class="dense-table">
           <thead>

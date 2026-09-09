@@ -57,7 +57,8 @@ export default {
       scan: "掃描",
       delete: "刪除",
       deleteConfirm: "確認刪除模板「{name}」？已產生的發現任務與結果不受影響。",
-      deleted: "模板已刪除：{name}"
+      deleted: "模板已刪除：{name}",
+      disabledScanHint: "模板已停用，請先啟用後再掃描"
     },
   scan: {
       title: "觸發發現",

@@ -115,6 +115,17 @@ func (w *ursmShadowWorker) stopAndWait() {
 type Router struct {
 	Sticky  *StickyCache
 	Limiter *credential.Limiter
+	// LiveLoad returns the current in-flight count for a credential-model
+	// pair. This is the authoritative signal for load-aware P2C selection —
+	// the Limiter's credential semaphore is intentionally bypassed by the
+	// dispatch path (AcquireAllNoCredLayer), so the Limiter alone always
+	// reports 0 in production. PeakCollector (which is acquired/released by
+	// the dispatch path) is the source of truth. Nil means "unavailable,
+	// fall back to Limiter only" (preserves pre-fix behaviour for tests
+	// that don't wire the collector).
+	LiveLoad interface {
+		GetLiveConcurrent(credID int64, model string) int64
+	}
 	// FpSlots is the credential-level concurrency tracker. When set,
 	// loadScore includes FP slot pressure in its P2C selection.
 	FpSlots interface {

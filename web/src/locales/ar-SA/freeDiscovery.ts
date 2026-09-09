@@ -57,7 +57,8 @@ export default {
       scan: "مسح",
       delete: "حذف",
       deleteConfirm: "حذف القالب \"{name}\"؟ المهام ونتائج الاكتشاف الموجودة لن تتأثر.",
-      deleted: "تم حذف القالب: {name}"
+      deleted: "تم حذف القالب: {name}",
+      disabledScanHint: "القالب معطل — يرجى تمكينه قبل الفحص"
     },
   scan: {
       title: "بدء الاكتشاف",

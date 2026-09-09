@@ -127,9 +127,10 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"687_fix_473_partition_0800_bounds.sql",
 			"688_promote_default_retention_align_go_scheduler.sql",
 			"689_candidate_failure_logs_partitions_heap.sql",
-				"690_session_summaries_archived_ttl_index.sql",
-				"691_proxy_region_policy.sql",
-				"session_turns_hot_bootstrap.sql",
+			"690_session_summaries_archived_ttl_index.sql",
+			"691_proxy_region_policy.sql",
+			"692_session_summaries_user_intent_widen.sql",
+			"session_turns_hot_bootstrap.sql",
 		},
 	}
 }

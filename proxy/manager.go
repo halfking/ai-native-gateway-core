@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,10 +22,10 @@ type cacheEntry struct {
 // activeSelection 记录 Manager 当前对外暴露的"已被选中的节点"，供 swap loop
 // 主动探测并按策略切换。subscriptionID=nil 表示全局选择。
 type activeSelection struct {
-	subscriptionID    *int
-	nodeID            int
-	lastProbeAt       time.Time
-	consecutiveFails  int
+	subscriptionID   *int
+	nodeID           int
+	lastProbeAt      time.Time
+	consecutiveFails int
 }
 
 // Manager 代理管理器
@@ -53,10 +54,14 @@ type Manager struct {
 	nextHealthChecks sync.Map // node_id -> time.Time
 	// subscriptionBans 缓存订阅级禁用地区，避免每次 selectNode 都查 DB。
 	subscriptionBans sync.Map // subscription_id -> []string
+	// nodeProbes 把同一节点 ID 的探活串行化（HealthCheckNode / swapProbeOne /
+	// healthCheckAllNodesInner 的 per-node 分支），防止并发的 checker.Check + write-back
+	// 对同一个 *Node 对象产生竞态。值是 *sync.Mutex，按需 lazy 创建。
+	nodeProbes sync.Map // node_id -> *sync.Mutex
 
 	// 配置
-	autoRefreshInterval  time.Duration
-	healthCheckInterval  time.Duration
+	autoRefreshInterval   time.Duration
+	healthCheckInterval   time.Duration
 	unknownDomainStrategy string        // direct/proxy/probe
 	cacheTTL              time.Duration // 缓存 TTL，默认 5 分钟
 	autoDisableThreshold  int
@@ -113,21 +118,30 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 // Start 启动定时任务。多次调用只会启动一组后台任务。
 func (m *Manager) Start() {
 	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
 	if m.started || m.stopped {
+		m.lifecycleMu.Unlock()
 		return
 	}
 	m.started = true
-
-	if err := m.loadAllNodesIntoCache(); err != nil {
-		slog.Error("proxy: failed to load nodes into cache", "error", err)
-	}
 	// Keep lifecycleMu while adding workers so Stop cannot call Wait concurrently
-	// with WaitGroup.Add.
-	m.wg.Add(3)
+	// with WaitGroup.Add. The initial DB load is registered here too so Stop's
+	// wg.Wait blocks until any in-flight loadAllNodesIntoCache returns (audit
+	// #10 P2).
+	m.wg.Add(4)
+	go m.initialCacheLoad()
 	go m.refreshLoop()
 	go m.healthCheckLoop()
 	go m.swapLoop()
+	m.lifecycleMu.Unlock()
+}
+
+// initialCacheLoad runs the startup DB load off the lifecycleMu critical section
+// so Stop() does not block on a slow ListNodes call.
+func (m *Manager) initialCacheLoad() {
+	defer m.wg.Done()
+	if err := m.loadAllNodesIntoCache(); err != nil {
+		slog.Error("proxy: failed to load nodes into cache", "error", err)
+	}
 }
 
 // Stop 停止定时任务，并关闭可关闭的检查器及 Transport 工厂。
@@ -208,12 +222,16 @@ func (m *Manager) SetSelectionPolicy(p SelectionPolicy) {
 // LoadSelectionPolicy 从 Store 读取全局策略并下发到 LoadBalancer。
 // 用于网关启动后从数据库恢复上次保存的策略。
 func (m *Manager) LoadSelectionPolicy(ctx context.Context) error {
-	pg, ok := m.store.(*PgStore)
-	if !ok {
+	if m.store == nil {
 		return nil
 	}
-	policy, err := pg.GetSelectionPolicy(ctx)
+	policy, err := m.store.LoadSelectionPolicy(ctx)
 	if err != nil {
+		// 非 PgStore 实现可以选择返回 ErrUnsupported；启动时退回到默认策略，
+		// 不应阻塞 Manager 的健康检查 / 探活后台任务。
+		if errors.Is(err, ErrUnsupported) {
+			return nil
+		}
 		return err
 	}
 	m.SetSelectionPolicy(policy)
@@ -229,12 +247,12 @@ func (m *Manager) GetSelectionPolicy() SelectionPolicy {
 
 // SelectionState 汇总当前 Manager 选择/切流的可观测状态，给 admin UI 用。
 type SelectionState struct {
-	CurrentNodeID   int       `json:"current_node_id"`
-	CurrentSubID    *int      `json:"current_subscription_id,omitempty"`
-	LastProbeAt     time.Time `json:"last_probe_at"`
-	LastProbeOK     bool      `json:"last_probe_ok"`
-	ConsecutiveFails int      `json:"consecutive_fails"`
-	ProbeIntervalMs int       `json:"probe_interval_ms"`
+	CurrentNodeID    int       `json:"current_node_id"`
+	CurrentSubID     *int      `json:"current_subscription_id,omitempty"`
+	LastProbeAt      time.Time `json:"last_probe_at"`
+	LastProbeOK      bool      `json:"last_probe_ok"`
+	ConsecutiveFails int       `json:"consecutive_fails"`
+	ProbeIntervalMs  int       `json:"probe_interval_ms"`
 }
 
 // CurrentSelection 返回当前被选中的节点状态（活跃选择中最近一次）。
@@ -284,7 +302,14 @@ func (m *Manager) SelectNodeWithLocation(ctx context.Context, subscriptionID *in
 	return m.selectNode(ctx, subscriptionID, requestKey, preferredLocation, false)
 }
 
-func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKey, preferredLocation string, bestOnly bool) (_ *Node, err error) {
+func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKey, preferredLocation string, bestOnly bool) (*Node, error) {
+	return m.selectNodeExcluding(ctx, subscriptionID, requestKey, preferredLocation, bestOnly, 0)
+}
+
+// selectNodeExcluding selects a node while omitting excludeNodeID when non-zero.
+// It is used by ForceSwap so a threshold-triggered swap cannot reselect the
+// failing active node.
+func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, requestKey, preferredLocation string, bestOnly bool, excludeNodeID int) (_ *Node, err error) {
 	startedAt := time.Now()
 	result := "store_error"
 	defer func() {
@@ -300,11 +325,10 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 	} else {
 		candidates, cachePresent = m.getAllActiveCachedNodes(time.Now())
 	}
-	// A present-but-empty subscription snapshot is a valid negative cache. Only
-	// an absent snapshot should fall back to the store for a targeted selection.
-	// Global selection still falls back when its aggregate cache has no nodes,
-	// because a partially warmed cache cannot prove that the store is empty.
-	if (subscriptionID != nil && !cachePresent) || (subscriptionID == nil && len(candidates) == 0) {
+	// Global selection must query the store because the aggregate cache cannot
+	// prove that every subscription is covered (new or empty subscriptions may not
+	// have a cache entry yet). Targeted selections can use a present snapshot.
+	if subscriptionID == nil || (subscriptionID != nil && !cachePresent) {
 		candidates, err = m.store.ListNodes(ctx, subscriptionID)
 		if err != nil {
 			return nil, fmt.Errorf("list nodes: %w", err)
@@ -312,8 +336,8 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 		if subscriptionID != nil {
 			m.setCacheWithTTL(*subscriptionID, candidates, time.Now())
 		}
-		// Store implementations may reuse mutable objects; never expose those
-		// pointers to selection or load-balancer code on a cache miss.
+		// Store implementations may reuse mutable objects; isolate the selection
+		// path from later health-check writes.
 		candidates = cloneNodes(candidates)
 	}
 
@@ -331,6 +355,9 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 	regionBanned := 0
 	for _, node := range candidates {
 		if node == nil || node.Status != "active" || node.PasswordDecryptFailed || node.ConsecutiveFailures >= threshold {
+			continue
+		}
+		if excludeNodeID != 0 && node.ID == excludeNodeID {
 			continue
 		}
 		if !node.Dialable() {
@@ -528,20 +555,24 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 
 	// 使用事务方法原子性地删除旧节点并插入新节点，避免中断导致订阅变空。
 	if pgStore, ok := m.store.(*PgStore); ok {
-		if err := pgStore.RefreshSubscriptionNodes(ctx, subscriptionID, nodes); err != nil {
+		// 审计 #9 P2：单事务同时提交节点集合 + 订阅 metadata，
+		// 避免之前 RefreshSubscriptionNodes + UpdateSubscription 两步间
+		// 出现 "nodes 已刷新但 metadata 仍是上一次状态" 的不一致窗口。
+		if err := pgStore.RefreshSubscriptionAndMetadata(ctx, subscriptionID, nodes, sub); err != nil {
 			sub.NodeCount = 0
 			sub.LastFetchAt = time.Now()
 			sub.LastFetchStatus = "failed"
 			sub.LastError = SanitizeSubscriptionError(
 				fmt.Sprintf("transaction failed: %v", err), sub.SubscribeURL)
 
+			// 事务失败后尝试补救落库 metadata（best-effort；不再次尝试事务）
 			_ = m.store.UpdateSubscription(ctx, sub)
 
 			// 记录失败指标
 			if m.metrics != nil {
 				m.metrics.ObserveSubscriptionRefresh("failed", time.Since(startTime).Seconds())
 			}
-			return fmt.Errorf("refresh nodes in transaction: %w", err)
+			return fmt.Errorf("refresh nodes and metadata in transaction: %w", err)
 		}
 	} else {
 		// 回退到非事务方法（用于测试或非 PgStore 实现）
@@ -574,13 +605,15 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 		}
 	}
 
-	// 4. 更新订阅状态
+	// 4. 更新订阅状态（PgStore 路径已通过 RefreshSubscriptionAndMetadata 同步落库）
 	sub.NodeCount = len(nodes)
 	sub.LastFetchAt = time.Now()
 	sub.LastFetchStatus = "success"
 	sub.LastError = ""
-	if err := m.store.UpdateSubscription(ctx, sub); err != nil {
-		return fmt.Errorf("update subscription: %w", err)
+	if _, isPg := m.store.(*PgStore); !isPg {
+		if err := m.store.UpdateSubscription(ctx, sub); err != nil {
+			return fmt.Errorf("update subscription: %w", err)
+		}
 	}
 
 	// 5. 刷新内存缓存；仅在缓存成功更新后失效旧的订阅 Transport，
@@ -659,6 +692,38 @@ func (m *Manager) healthCheckPolicy() (threshold int, disable, recover bool) {
 	return m.autoDisableThreshold, m.autoDisableEnabled, m.autoRecoverEnabled
 }
 
+// skipReason 描述 health-check 过滤节点时跳过的原因。
+type skipReason string
+
+const (
+	skipReasonStatus        skipReason = "status"
+	skipReasonUndialable    skipReason = "undialable"
+	skipReasonPwdDecrypt    skipReason = "password_decrypt_failed"
+	skipReasonProxyURLEmpty skipReason = "proxy_url_empty"
+)
+
+// shouldSkipForHealthCheck 是所有 health-check 入口统一的节点过滤闸门。
+//
+// 审计修复 (2026-09-09 P2-#6)：PasswordDecryptFailed 检查此前只覆盖
+// HealthCheckNode / HealthCheckSubscriptionNow 单点；swapProbeOne 与
+// healthCheckAllNodesInner 会继续以密文密码探测——代理返回 407 的同时
+// 静默消耗 1 次失败计数。统一到一处，四个入口共用同一语义。
+func (m *Manager) shouldSkipForHealthCheck(node *Node) (skipReason, bool) {
+	if node == nil {
+		return "nil", true
+	}
+	if node.Status != "active" && node.Status != "unhealthy" {
+		return skipReasonStatus, true
+	}
+	if !node.Dialable() {
+		return skipReasonUndialable, true
+	}
+	if node.PasswordDecryptFailed {
+		return skipReasonPwdDecrypt, true
+	}
+	return "", false
+}
+
 // applyHealthCheckResult applies the shared node state transition for a health check.
 // Probe metrics and logging remain with the individual health-check paths.
 func (m *Manager) applyHealthCheckResult(node *Node, ok bool, latency int, checkedAt time.Time) {
@@ -683,16 +748,25 @@ func (m *Manager) applyHealthCheckResult(node *Node, ok bool, latency int, check
 }
 
 // HealthCheckNode 健康检查单个节点
+//
+// 审计修正 (2026-09-09 P0)：GetNode 必须在 nodeProbeLock 内执行。原实现
+// 在锁外读快照（CF=0）→ 锁内 apply+落库（CF=1），两个并发各自读到 0、
+// 各写 1，一次失败被静默吞掉。读-改-写全程持锁才原子。
 func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
+	mu := m.nodeProbeLock(nodeID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	node, err := m.store.GetNode(ctx, nodeID)
 	if err != nil {
 		return fmt.Errorf("get node: %w", err)
 	}
-	if node.PasswordDecryptFailed {
-		if m.metrics != nil {
+	if reason, skip := m.shouldSkipForHealthCheck(node); skip {
+		// 审计修复 (2026-09-09 P2-#6)：统一闸门（原散落的 pwd-decrypt 单点检查）。
+		if reason == skipReasonPwdDecrypt && m.metrics != nil {
 			m.metrics.IncPasswordDecryptFailed()
 		}
-		return fmt.Errorf("health check node %d: password decryption failed", nodeID)
+		return fmt.Errorf("health check node %d: %s", nodeID, reason)
 	}
 
 	startTime := time.Now()
@@ -787,7 +861,7 @@ func (m *Manager) ReloadCache() error {
 			m.cacheLocks.Delete(subID)
 			m.forgetLoadBalancerState(subID)
 			m.subscriptionBans.Delete(subID)
-			m.forgetActiveSelection(&subID, -1)
+			// Orphan-sweep of m.active for this subscription runs in the block below.
 		}
 		return true
 	})
@@ -864,24 +938,31 @@ func (m *Manager) GetProxyTransportForNode(subscriptionID *int, node *Node) (*ht
 	return m.transportFactory.Get(subID, proxyURLStr)
 }
 
-// ForceSwap 主动重选一次最优节点（不依赖外部触发）。如果发现更优选择则
-// 把对应的订阅 Transport 失效，下次请求会按新节点建立 Transport。
-// 返回重新选中的节点（可能与当前 active 相同）；无候选时返回 nil。
+// ForceSwap 主动重选一个不同于当前 active 的最优节点（不依赖外部触发）。
+// 成功切换时使对应订阅 Transport 失效；没有备用节点时保留当前 active 状态，
+// 让连续失败计数继续反映真实故障，而不会因重新选择同一节点而被重置。
 func (m *Manager) ForceSwap(ctx context.Context, subscriptionID *int) (*Node, error) {
 	subID := 0
 	if subscriptionID != nil {
 		subID = *subscriptionID
 	}
-	candidate, err := m.SelectBestNode(ctx, subscriptionID)
+	key := selectionKey(subscriptionID)
+	m.activeMu.Lock()
+	current := m.active[key]
+	excludeNodeID := 0
+	if current != nil {
+		excludeNodeID = current.nodeID
+	}
+	m.activeMu.Unlock()
+
+	candidate, err := m.selectNodeExcluding(ctx, subscriptionID, "", "", true, excludeNodeID)
 	if err != nil {
-		// 当前没有可用节点；清掉 active selection 即可。
-		key := selectionKey(subscriptionID)
-		m.activeMu.Lock()
-		delete(m.active, key)
-		m.activeMu.Unlock()
+		if excludeNodeID != 0 {
+			return nil, fmt.Errorf("no alternative proxy node for swap from node %d: %w", excludeNodeID, err)
+		}
 		return nil, err
 	}
-	key := selectionKey(subscriptionID)
+
 	m.activeMu.Lock()
 	cur, existed := m.active[key]
 	m.active[key] = &activeSelection{
@@ -891,14 +972,13 @@ func (m *Manager) ForceSwap(ctx context.Context, subscriptionID *int) (*Node, er
 	}
 	m.activeMu.Unlock()
 	if existed && cur != nil && cur.nodeID != candidate.ID {
-		// 选中的节点变了 → 失效订阅 Transport，下次 GetProxyTransportForNode 会重建。
 		m.InvalidateTransport(subID)
 		if m.metrics != nil {
 			m.metrics.IncAutoSwap("forced")
 		}
 		slog.Info("proxy: forced swap", "from", cur.nodeID, "to", candidate.ID)
 	} else if m.metrics != nil {
-		m.metrics.IncAutoSwap("noop")
+		m.metrics.IncAutoSwap("forced")
 	}
 	return candidate, nil
 }
@@ -923,18 +1003,26 @@ func (m *Manager) HealthCheckSubscriptionNow(ctx context.Context, subscriptionID
 		if n == nil {
 			continue
 		}
-		if n.Status != "active" && n.Status != "unhealthy" {
-			continue
-		}
-		if !n.Dialable() {
-			summary.Skipped++
+		// 审计修复 (2026-09-09 P2-#6)：统一闸门；Skipped 计数保持原语义
+		//（undialable 与 pwd-decrypt 均计入）。
+		if reason, skip := m.shouldSkipForHealthCheck(n); skip {
+			if reason == skipReasonUndialable || reason == skipReasonPwdDecrypt {
+				summary.Skipped++
+			}
+			if reason == skipReasonPwdDecrypt && m.metrics != nil {
+				m.metrics.IncPasswordDecryptFailed()
+			}
 			continue
 		}
 		toCheck = append(toCheck, n)
 	}
 	for res := range m.checker.CheckConcurrent(ctx, toCheck, 16) {
+		// 审计修正 (2026-09-09 P0)：GetNode 在锁内，保证读-改-写原子。
+		mu := m.nodeProbeLock(res.NodeID)
+		mu.Lock()
 		node, gerr := m.store.GetNode(ctx, res.NodeID)
 		if gerr != nil {
+			mu.Unlock()
 			slog.Warn("proxy: health check subscription: get node failed", "node_id", res.NodeID, "error", gerr)
 			continue
 		}
@@ -949,11 +1037,13 @@ func (m *Manager) HealthCheckSubscriptionNow(ctx context.Context, subscriptionID
 			summary.Failed++
 		}
 		if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
+			mu.Unlock()
 			slog.Warn("proxy: health check subscription: update node failed", "node_id", node.ID, "error", uerr)
 			continue
 		}
 		m.updateNodeInCache(node)
 		m.recordProbeResult(&subID, node.ID, res.OK)
+		mu.Unlock()
 	}
 	if summary.OK > 0 {
 		summary.AvgMs /= summary.OK
@@ -1011,6 +1101,11 @@ func (m *Manager) healthCheckLoop() {
 
 // swapLoop 周期性探测当前 active 节点；连续失败达到 SwapFailureThreshold 则
 // 触发 ForceSwap 让下个请求走新节点 + 失效订阅 Transport。
+//
+// 审计修复 (2026-09-09 P2-#11)：单次 swap tick 使用独立 30s timeout context
+// （与 refreshLoop / healthCheckLoop 对齐）——Stop 触发 cancel() 后 in-flight
+// 探测经 swapProbeOne 的 nodeProbeLock 内 checker.Check(ctx,…) 立即收到
+// ctx.Done() 提前退出，不再被 15s probe 超时逐节点串行拖住 Stop。
 func (m *Manager) swapLoop() {
 	defer m.wg.Done()
 	for {
@@ -1031,7 +1126,9 @@ func (m *Manager) swapLoop() {
 		case <-m.ctx.Done():
 			return
 		}
-		m.runSwapTick(context.Background(), threshold)
+		ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+		m.runSwapTick(ctx, threshold)
+		cancel()
 	}
 }
 
@@ -1055,23 +1152,43 @@ func (m *Manager) runSwapTick(ctx context.Context, threshold int) {
 }
 
 // swapProbeOne 对单个 active selection 做一次主动探测。
+//
+// 审计修正 (2026-09-09 P0)：GetNode 在 nodeProbeLock 内执行，保证
+// 读-改-写（读快照 → apply → 落库 → 写缓存）对同一 node_id 原子。
 func (m *Manager) swapProbeOne(ctx context.Context, sel *activeSelection, threshold int) {
 	if sel == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
+	// 串行化与 HealthCheckNode / healthCheckAllNodesInner 的并发探活，
+	// 防止 checker.Check 与 update-back 在同一 *Node 上重叠写。
+	mu := m.nodeProbeLock(sel.nodeID)
+	mu.Lock()
+	defer mu.Unlock()
 	node, err := m.store.GetNode(ctx, sel.nodeID)
 	if err != nil {
 		// 节点已删，清理。
 		m.forgetActiveSelection(sel.subscriptionID, sel.nodeID)
 		return
 	}
-	if !node.Dialable() {
+	if reason, skip := m.shouldSkipForHealthCheck(node); skip {
+		// 审计修复 (2026-09-09 P2-#6)：PasswordDecryptFailed 节点不再以密文
+		// 密码探测（代理 407 + 静默 +1 失败计数）；status/undialable 同样跳过。
+		if reason == skipReasonPwdDecrypt && m.metrics != nil {
+			m.metrics.IncPasswordDecryptFailed()
+		}
 		return
 	}
 	if node.Status == "unhealthy" {
 		// 已被全局探活标记为 unhealthy：视为失败 1 次计入，连续达阈值即切流。
+		// 同步写回内存状态与持久层，避免 selectNode 的 threshold 过滤看不到进展。
+		m.applyHealthCheckResult(node, false, 0, time.Now())
+		if uerr := m.store.UpdateNode(ctx, node); uerr == nil {
+			m.updateNodeInCache(node)
+		} else {
+			slog.Warn("proxy: swap probe: update node failed", "node_id", node.ID, "error", uerr)
+		}
 		m.recordProbeResult(sel.subscriptionID, sel.nodeID, false)
 	} else {
 		latency, err := m.checker.Check(ctx, node)
@@ -1149,10 +1266,11 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 		return HealthCheckSummary{}
 	}
 
-	// 2. 过滤需要探活的节点（基于智能间隔），并按 ProxyURL 分组去重
+	// 2. 过滤需要探活的节点（基于智能间隔），并按代理+探活目标分组去重。
+	// 同一代理入口请求不同 HealthCheckURL 时不能共享探测结果。
 	type nodeGroup struct {
-		proxyURL string
-		nodes    []*Node // 相同 URL 的所有节点
+		probeKey string
+		nodes    []*Node // 相同代理入口和探活目标的节点
 	}
 	urlToGroup := make(map[string]*nodeGroup)
 	totalNodes := 0
@@ -1169,9 +1287,19 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 
 		totalNodes++
 
-		// 跳过不可拨号的节点
-		if !node.Dialable() {
-			skippedUndialable++
+		// 审计修复 (2026-09-09 P2-#6)：过滤走统一闸门，包含
+		// Dialable/PasswordDecryptFailed 层；pwd-decrypt 节点记录指标并
+		// 计入 skipped，不再以密文密码探测。
+		if reason, skip := m.shouldSkipForHealthCheck(node); skip {
+			switch reason {
+			case skipReasonUndialable:
+				skippedUndialable++
+			case skipReasonPwdDecrypt:
+				if m.metrics != nil {
+					m.metrics.IncPasswordDecryptFailed()
+				}
+				skippedUndialable++
+			}
 			continue
 		}
 
@@ -1187,14 +1315,14 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 			continue
 		}
 
-		// 按 URL 分组
-		if _, exists := urlToGroup[proxyURL]; !exists {
-			urlToGroup[proxyURL] = &nodeGroup{
-				proxyURL: proxyURL,
+		probeKey := proxyURL + "\x00" + strings.TrimSpace(node.HealthCheckURL)
+		if _, exists := urlToGroup[probeKey]; !exists {
+			urlToGroup[probeKey] = &nodeGroup{
+				probeKey: probeKey,
 				nodes:    []*Node{node},
 			}
 		} else {
-			urlToGroup[proxyURL].nodes = append(urlToGroup[proxyURL].nodes, node)
+			urlToGroup[probeKey].nodes = append(urlToGroup[probeKey].nodes, node)
 		}
 
 		// 统计健康/不健康节点数
@@ -1205,7 +1333,7 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 		}
 	}
 
-	// 3. 构建去重后的节点列表（每个 URL 只取一个代表节点）
+	// 3. 构建去重后的节点列表（每个代理+探活目标只取一个代表节点）
 	uniqueNodes := make([]*Node, 0, len(urlToGroup))
 	for _, group := range urlToGroup {
 		uniqueNodes = append(uniqueNodes, group.nodes[0]) // 取第一个节点作为代表
@@ -1269,7 +1397,13 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 	}
 
 	// 5. 将结果分发到所有相同 URL 的节点，并设置下次探活时间
-	nodesToUpdate := make([]*Node, 0, len(uniqueNodes)*2)
+	//
+	// 审计修正 (2026-09-09 P0)：每个节点在 nodeProbeLock 内完成
+	// "GetNode 新鲜快照 → applyHealthCheckResult → UpdateNode →
+	// updateNodeInCache" 全序列。原实现 apply 在锁内但作用于 ListNodes
+	// 的旧快照，DB/缓存写入被拆到后面的批量阶段——与并发的
+	// HealthCheckNode / swapProbeOne 互相覆盖 ConsecutiveFailures。
+	// 合并到锁内一步后不再需要独立的批量落库/写缓存阶段。
 	successCount := 0
 	failedCount := 0
 
@@ -1283,7 +1417,20 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 
 		// 将结果应用到该 URL 的所有节点
 		for _, node := range group.nodes {
-			m.applyHealthCheckResult(node, result.ok, result.latency, result.checkedAt)
+			nmu := m.nodeProbeLock(node.ID)
+			nmu.Lock()
+			fresh, gerr := m.store.GetNode(ctx, node.ID)
+			if gerr != nil {
+				nmu.Unlock()
+				slog.Warn("proxy: global health check: get node failed", "node_id", node.ID, "error", gerr)
+				continue
+			}
+			m.applyHealthCheckResult(fresh, result.ok, result.latency, result.checkedAt)
+			if uerr := m.store.UpdateNode(ctx, fresh); uerr != nil {
+				slog.Warn("proxy: global health check: update node failed", "node_id", fresh.ID, "error", uerr)
+			}
+			m.updateNodeInCache(fresh)
+			nmu.Unlock()
 
 			if result.ok {
 				// 健康节点：10 分钟后再探活。
@@ -1300,7 +1447,7 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 				failedCount++
 				if m.metrics != nil {
 					m.metrics.IncHealthFailure()
-					m.metrics.ObserveNodeConsecutiveFailures(node.ConsecutiveFailures)
+					m.metrics.ObserveNodeConsecutiveFailures(fresh.ConsecutiveFailures)
 				}
 
 				if len(group.nodes) == 1 {
@@ -1310,44 +1457,14 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 				}
 			}
 
-			nodesToUpdate = append(nodesToUpdate, node)
+			// Keep active swap state authoritative with global health results.
+			subID := fresh.SubscriptionID
+			m.recordProbeResult(&subID, fresh.ID, result.ok)
 		}
 	}
 
-	// 6. 批量更新数据库（分批，每批 50 个节点）
-	batchSize := 50
-	for i := 0; i < len(nodesToUpdate); i += batchSize {
-		end := i + batchSize
-		if end > len(nodesToUpdate) {
-			end = len(nodesToUpdate)
-		}
-		batch := nodesToUpdate[i:end]
-
-		// 使用事务批量更新
-		if pgStore, ok := m.store.(*PgStore); ok {
-			if err := pgStore.BatchUpdateNodes(ctx, batch); err != nil {
-				slog.Error("proxy: batch update nodes failed", "error", err, "batch_size", len(batch))
-				// 降级到逐个更新
-				for _, node := range batch {
-					if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
-						slog.Warn("proxy: update node failed", "node_id", node.ID, "error", uerr)
-					}
-				}
-			}
-		} else {
-			// 非 PgStore 实现，逐个更新
-			for _, node := range batch {
-				if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
-					slog.Warn("proxy: update node failed", "node_id", node.ID, "error", uerr)
-				}
-			}
-		}
-	}
-
-	// 7. 批量更新缓存
-	for _, node := range nodesToUpdate {
-		m.updateNodeInCache(node)
-	}
+	// 6/7. （已合并到步骤 5）批量落库与批量写缓存阶段移除——旧实现把
+	// DB/缓存写入拆到锁外的批量阶段，持旧快照覆盖并发写入方的新状态。
 
 	// 8. 更新指标
 	if m.metrics != nil {
@@ -1368,15 +1485,24 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 	summary.OK = successCount
 	summary.Failed = failedCount
 	if successCount > 0 {
+		// Per-representative averaging: each dedup group contributes a single
+		// latency sample; dividing by node count would silently halve the value
+		// whenever multiple nodes share proxy+health URL.
+		perRep := 0
 		for _, g := range urlToGroup {
-			if r, ok := checkResults[g.nodes[0].ID]; ok && r.ok {
-				summary.AvgMs += r.latency
-				if r.latency > summary.MaxMs {
-					summary.MaxMs = r.latency
-				}
+			r, ok := checkResults[g.nodes[0].ID]
+			if !ok || !r.ok {
+				continue
 			}
+			summary.AvgMs += r.latency
+			if r.latency > summary.MaxMs {
+				summary.MaxMs = r.latency
+			}
+			perRep++
 		}
-		summary.AvgMs /= successCount
+		if perRep > 0 {
+			summary.AvgMs /= perRep
+		}
 	}
 
 	elapsed := time.Since(startTime)
@@ -1439,7 +1565,10 @@ func redactErr(err error) string {
 }
 
 func (m *Manager) loadAllNodesIntoCache() error {
-	ctx := context.Background()
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	nodes, err := m.store.ListNodes(ctx, nil)
 	if err != nil {
 		return err
@@ -1534,10 +1663,22 @@ func (m *Manager) getNodesFromCacheWithTTL(subscriptionID int, now time.Time) ([
 }
 
 func (m *Manager) refreshCacheAsync(subscriptionID int) {
-	if _, loaded := m.cacheRefreshes.LoadOrStore(subscriptionID, struct{}{}); loaded {
+	// 串行化 wg.Add(1) 与 Stop() 的 wg.Wait()：Stop 调用前会持有 lifecycleMu，
+	// 这里同样在锁内做 LoadOrStore + wg.Add(1)，避免请求路径上的 Add 晚于
+	// Stop 内部的 Wait 导致 WaitGroup 进入未定义状态。
+	m.lifecycleMu.Lock()
+	if m.stopped {
+		m.lifecycleMu.Unlock()
 		return
 	}
+	if _, loaded := m.cacheRefreshes.LoadOrStore(subscriptionID, struct{}{}); loaded {
+		m.lifecycleMu.Unlock()
+		return
+	}
+	m.wg.Add(1)
+	m.lifecycleMu.Unlock()
 	go func() {
+		defer m.wg.Done()
 		defer m.cacheRefreshes.Delete(subscriptionID)
 		ctx, cancel := context.WithTimeout(m.ctx, 10*time.Second)
 		defer cancel()
@@ -1667,6 +1808,13 @@ func (m *Manager) getCacheLock(subscriptionID int) *sync.RWMutex {
 	return v.(*sync.RWMutex)
 }
 
+// nodeProbeLock 取得该节点 ID 的互斥锁。HealthCheckNode / swapProbeOne / 批量
+// 探活的 per-node 分支都应在进入探活前 Lock、写回后 Unlock，避免并发读写 *Node。
+func (m *Manager) nodeProbeLock(nodeID int) *sync.Mutex {
+	v, _ := m.nodeProbes.LoadOrStore(nodeID, &sync.Mutex{})
+	return v.(*sync.Mutex)
+}
+
 func (m *Manager) nextHealthCheckAt(nodeID int) (time.Time, bool) {
 	value, ok := m.nextHealthChecks.Load(nodeID)
 	if !ok {
@@ -1691,16 +1839,16 @@ func extractDomain(rawURL string) string {
 
 // RegionStats 按地区汇总的可观测统计。
 type RegionStats struct {
-	Region         string  `json:"region"`
-	Total          int     `json:"total"`
-	Dialable       int     `json:"dialable"`
-	Active         int     `json:"active"`
-	Unhealthy      int     `json:"unhealthy"`
-	Banned         int     `json:"banned"`           // 当前被订阅+节点禁用地区命中的节点数
-	AvgLatencyMs   int     `json:"avg_latency_ms"`   // 成功探活的平均响应时间（毫秒）
-	BestLatencyMs  int     `json:"best_latency_ms"`
-	BestNodeID     int     `json:"best_node_id"`
-	BestNodeName   string  `json:"best_node_name"`
+	Region        string `json:"region"`
+	Total         int    `json:"total"`
+	Dialable      int    `json:"dialable"`
+	Active        int    `json:"active"`
+	Unhealthy     int    `json:"unhealthy"`
+	Banned        int    `json:"banned"`         // 当前被订阅+节点禁用地区命中的节点数
+	AvgLatencyMs  int    `json:"avg_latency_ms"` // 成功探活的平均响应时间（毫秒）
+	BestLatencyMs int    `json:"best_latency_ms"`
+	BestNodeID    int    `json:"best_node_id"`
+	BestNodeName  string `json:"best_node_name"`
 }
 
 // RegionStatsReport 返回按地区分组的节点健康快照，供 admin UI 的"地区分布"视图。

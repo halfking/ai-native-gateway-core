@@ -1356,6 +1356,10 @@ func main() {
 		// nil(redis 不可用) 时 SetRedisStore 退化为纯内存/DB 旧行为。
 		stickyCache.SetRedisStore(stickyStore)
 		router := executors.NewRouter(stickyCache, lim)
+		// 2026-09-09 P0 修复：dispatch 路径绕过 Limiter 的 credential 信号量，
+		// 导致 routing 永远按 weight 而不是实时并发分摊。把 PeakCollector
+		// 注入 Router.LiveLoad，使 P2C 拿到真正的 in-flight 计数。
+		router.LiveLoad = peakCollector
 		routingRouter = router
 
 		// Connect FpSlots to Router for load-aware P2C selection
@@ -3536,8 +3540,48 @@ func main() {
 		materializedViewRefresher.Start()
 	}
 
-	if dbConn != nil && dbConn.Enabled() && !cfg.IsTrafficOnly() {
-		slog.Info("CHECKPOINT: inside bg services enabled block")
+	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
+	// instances as well, not just on the active-role primary.
+	//
+	// Root cause (245/154 prod, 2026-09-09): the primary llm-gateway-go.service
+	// on 154 was inactive (canary had replaced it via the blue-green swap).
+	// Every canary unit pins RUNTIME_ROLE=traffic-only (deploy/llm-gateway-go-
+	// canary@.service:27), and `!cfg.IsTrafficOnly()` therefore prevented
+	// credRecovery.Start on every running instance. As a result the
+	// `quota_periodic_recover` / `availability_recover` / `expired-binding`
+	// ticks never fired; credentials in periodic_exhausted / suspended with
+	// quota_recover_at <= now() stayed stuck for hours, blocking routing
+	// even after upstream balance had been restored (see hzx cred 41 stuck on
+	// `availability_state=suspended / quota_state=permanently_exhausted`
+	// for ~9h after `unavailable_recover_at` elapsed).
+	//
+	// Rationale for running the loop on traffic-only nodes:
+	//   - The probe queue uses ON CONFLICT DO NOTHING on dedup_key, so two
+	//     instances queuing the same (cred, model) pair collapse into one
+	//     entry — duplicate ticks are safe.
+	//   - The recovery UPDATE statements only flip rows currently in a
+	//     failure state with a past recover_at; idempotent re-runs converge.
+	//   - The 30s tick is cheap relative to the active chat workload.
+	//   - The same precedent already exists for materializedViewRefresher
+	//     above (line 3465), explicitly "OUTSIDE the !IsTrafficOnly() block"
+	//     because the analytics endpoints it feeds are served by canaries.
+	//
+	// Operators retain full control via two opt-out levers:
+	//   1. Set LLM_GATEWAY_CRED_RECOVERY_DISABLED=true to skip the loop.
+	//   2. Set LLM_GATEWAY_CRED_RECOVERY_INTERVAL_SECONDS=0 to keep the
+	//      worker alive (Start() runs) but make the ticker idle.
+	//
+	// 2026-09-10 audit note: this gate swap intentionally unlocks the WHOLE
+	// bg-services block below (not just credRecovery) on traffic-only nodes,
+	// restoring the pre-2026-08-31 always-on behaviour on clusters where the
+	// canaries are the only instances. The quota-probe family nested inside
+	// has its own gate + opt-out further down (LLM_GATEWAY_QUOTA_PROBE_DISABLED);
+	// see docs/audit/2026-09-10-selfcheck-recovery-gate-audit.md for the full
+	// worker/gate matrix and residual-risk notes.
+	if dbConn != nil && dbConn.Enabled() && !config.IsCredRecoveryDisabled() {
+		slog.Info("CHECKPOINT: inside bg services enabled block",
+			"runtime_role", cfg.RuntimeRole,
+			"cred_recovery_disabled", config.IsCredRecoveryDisabled())
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		// 会话优化 v4 (T5/R4.4): 36h 成功回看扫描 — 探测结果以 Recover(30)
 		// 优先级回写 URSM；扫描间隔/回看窗口走 settings_kv 热配置。
@@ -3708,7 +3752,21 @@ func main() {
 
 		// 900-series: v2 mini-chat probe (spec §5) — independent of v1 cycler
 		slog.Info("CHECKPOINT: before credProbeV2 block", "bgDataPlaneOnly", bgDataPlaneOnly)
-		if !bgDataPlaneOnly {
+		// 2026-09-10 P0 audit fix: on clusters whose only instances are
+		// traffic-only / data-plane canaries (154/245 since the 2026-08-31
+		// blue-green pinning), this block is the ONLY home of the
+		// quota-recovery probe family — credProbeV2 (the ProbeNow executor),
+		// PeriodicQuotaProbe and BalanceQuotaProbe. credential_recovery's SQL
+		// deliberately refuses to auto-flip hard-quota credentials
+		// (quota_state='permanently_exhausted' / 'balance_exhausted') and
+		// defers them to BalanceQuotaProbe → writeHealth, so the bare
+		// `!bgDataPlaneOnly` gate left recharged credentials such as MiniMax
+		// cred 41 (hzx) with zero automatic recovery path even after the
+		// 2026-09-09 credential_recovery fix. Run the family by default on
+		// every node; operators with a genuine split topology can restore the
+		// strict behaviour via LLM_GATEWAY_QUOTA_PROBE_DISABLED=true
+		// (config.IsQuotaProbeDisabled).
+		if !bgDataPlaneOnly || !config.IsQuotaProbeDisabled() {
 			slog.Info("CHECKPOINT: before NewCredentialProbeV2")
 			credProbeV2 = bg.NewCredentialProbeV2(dbConn.Pool(), fernetKey)
 			if keyring != nil {
