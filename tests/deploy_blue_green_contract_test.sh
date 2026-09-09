@@ -7,7 +7,14 @@ fail(){ printf 'FAIL %s\n' "$1" >&2; ((fail++)); }
 require(){ local d=$1 p=$2 f=$3; grep -Eq "$p" "$f" && pass "$d" || fail "$d"; }
 
 require 'runtime role is declared' 'RuntimeRole.*LLM_GATEWAY_RUNTIME_ROLE' "$ROOT/config/config.go"
-require 'traffic-only disables background block' 'dbConn != nil && dbConn.Enabled\(\) && !cfg.IsTrafficOnly\(\)' "$ROOT/cmd/gateway/main.go"
+# 2026-09-09: contract evolved from the original "traffic-only disables ALL
+# background" pin (74f502762). 16068c099 (2026-09-01) deliberately runs the MV
+# refresher on traffic-only blue-green instances via Redis token-bucket leader
+# election, and f56598b59 (2026-09-09) runs credential_recovery there too (P0
+# on 245/154). Background WRITERS are now gated by bgDataPlaneOnly: traffic-only
+# implies data-plane-only background mode instead of "no background at all".
+require 'traffic-only implies data-plane-only bg mode' 'bgDataPlaneOnly := strings\.EqualFold\(cfg\.BGMode, "data-plane"\) \|\| cfg\.IsTrafficOnly\(\)' "$ROOT/cmd/gateway/main.go"
+require 'data-plane mode gates background writer block' 'if !bgDataPlaneOnly' "$ROOT/cmd/gateway/main.go"
 require 'version exposes runtime role' '"runtime_role"' "$ROOT/domains/streaming/handler.go"
 require '154 has candidate port' 'candidate_port "8782"' "$ROOT/scripts/deploy-lib/targets.sh"
 require '245 has candidate unit' 'llmgo-245-canary@.service' "$ROOT/scripts/deploy-lib/targets.sh"
