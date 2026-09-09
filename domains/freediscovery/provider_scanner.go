@@ -6,9 +6,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 )
 
 // maxScanBodyBytes 上游响应体积上限 (防御恶意/异常端点).
@@ -23,8 +24,11 @@ type ProviderScanner interface {
 // HTTPScanner 基于 OpenAI 兼容 GET {base_url}{models_endpoint} 的通用扫描器.
 // Groq / OpenRouter / SiliconFlow / 智谱 等 openai-completions 提供商共用,
 // 差异通过 freeOf / poolKeyOf / quotaEstimator 钩子注入.
+//
+// doer 出站: 安全生产默认使用 safehttpclient (阻断私网/回环/链路本地/云元数据,
+// 防 DNS rebinding), 测试可注入 httptest.Server client.
 type HTTPScanner struct {
-	client *http.Client
+	doer func(req *http.Request) (*http.Response, error)
 
 	// freeOf 判断上游模型条目是否属于免费层 (nil = openAICompatibleFreeOf 默认规则)
 	freeOf func(m modelEntry) bool
@@ -34,12 +38,15 @@ type HTTPScanner struct {
 	quotaEstimator func(m modelEntry) (monthly, daily int64)
 }
 
-// NewHTTPScanner 构造通用扫描器 (httpClient nil = 默认 30s 超时).
+// NewHTTPScanner 构造通用扫描器. httpClient 为 nil 时使用 safehttpclient 作为安全默认
+// (阻断私网/回环/链路本地/cloud metadata, 防 DNS rebinding).
+// 生产部署应使用 nil 让其自动获取安全 transport; 仅测试场景可注入 httptest.NewServer client.
 func NewHTTPScanner(httpClient *http.Client) *HTTPScanner {
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+	if httpClient != nil {
+		return &HTTPScanner{doer: httpClient.Do}
 	}
-	return &HTTPScanner{client: httpClient}
+	safe := safehttpclient.New(30 * time.Second)
+	return &HTTPScanner{doer: safe.Do}
 }
 
 // modelEntry 上游 /models 响应的单个条目 (OpenAI 兼容形态 + 常见扩展字段).
@@ -117,7 +124,7 @@ func (s *HTTPScanner) ScanModels(ctx context.Context, tpl *ProviderTemplate, api
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	resp, err := s.client.Do(req)
+	resp, err := s.doer(req)
 	if err != nil {
 		return nil, fmt.Errorf("freediscovery: scan %s: %w", tpl.ProviderCode, err)
 	}
@@ -223,14 +230,10 @@ func inferFreeType(m modelEntry) string {
 	}
 }
 
-// joinURL 拼接 base 与 endpoint, 处理斜杠边界.
+// joinURL 安全拼接 base 与 endpoint (使用 URL 解析器而非字符串拼接).
+//
+// endpoint 必须已通过 isValidModelsEndpoint 校验 (相对路径、不含 scheme/host).
+// 出站 HTTP 请求安全策略由 safehttpclient 在 transport 层提供, 此处仅负责 URL 构造.
 func joinURL(base, endpoint string) (string, error) {
-	if _, err := url.Parse(base); err != nil {
-		return "", fmt.Errorf("invalid base_url %q: %w", base, err)
-	}
-	base = strings.TrimRight(base, "/")
-	if !strings.HasPrefix(endpoint, "/") {
-		endpoint = "/" + endpoint
-	}
-	return base + endpoint, nil
+	return joinBaseAndEndpoint(base, endpoint)
 }

@@ -75,9 +75,26 @@ func (e *DiscoveryEngine) scannerFor(tpl *ProviderTemplate) ProviderScanner {
 }
 
 // Run 执行一次发现任务. 返回任务终态.
+//
+// 状态机 (2026-09-09 audit-fix):
+//   - Run 入口先校验模板存在且 enabled, 否则 ErrTemplateNotFound / ErrTemplateDisabled
+//   - createTask 写 pending (started_at NULL)
+//   - updateTask(running) 同时设置 started_at, 必须从 pending 转换, 检查 RowsAffected
+//   - 扫描成功/失败后 updateTask(success/failed), 必须从 running 转换, 检查 RowsAffected
+//   - 任意 UPDATE 失配返回 ErrTaskStateConflict, 防止乱序更新
 func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*DiscoveryTask, error) {
 	if req.TriggerType == "" {
 		req.TriggerType = TriggerManual
+	}
+
+	// 0. 前置模板校验: 拒绝禁用模板 (禁用模板可能携带过期密钥, 触发扫描
+	//    将消耗上游 API 配额且写入失败任务; 与 List(enabledOnly) 保持一致).
+	tpl, err := e.templates.Get(ctx, req.TenantID, req.TemplateID)
+	if err != nil {
+		return nil, err
+	}
+	if !tpl.Enabled {
+		return nil, ErrTemplateDisabled
 	}
 
 	// 1. 创建任务 (pending)
@@ -86,31 +103,30 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 		return nil, err
 	}
 
-	// 2. 标记 running
-	if err := e.updateTask(ctx, task, TaskStatusRunning, nil, nil); err != nil {
+	// 2. 标记 running (启动时间在此写入; 同时检查 RowsAffected 防并发覆盖)
+	if err := e.updateTask(ctx, task, TaskStatusRunning, TaskStatusPending, nil, nil); err != nil {
 		return nil, err
 	}
+	now := timeNow().UTC()
+	task.StartedAt = &now
+	task.Status = TaskStatusRunning
 
-	// 3. 加载模板 + 解析密钥
-	tpl, err := e.templates.Get(ctx, req.TenantID, req.TemplateID)
-	if err != nil {
-		return e.fail(ctx, task, fmt.Errorf("load template: %w", err))
-	}
+	// 3. 解析密钥
 	apiKey, _, err := e.templates.ResolveAPIKey(ctx, tpl)
 	if err != nil {
-		return e.fail(ctx, task, fmt.Errorf("resolve api key: %w", err))
+		return e.fail(ctx, task, TaskStatusRunning, fmt.Errorf("resolve api key: %w", err))
 	}
 
 	// 4. 选择扫描器 (提供商装配优先, 协议兜底)
 	scanner := e.scannerFor(tpl)
 	if scanner == nil {
-		return e.fail(ctx, task, fmt.Errorf("no scanner for provider %q (api_type %q)", tpl.ProviderCode, tpl.APIType))
+		return e.fail(ctx, task, TaskStatusRunning, fmt.Errorf("no scanner for provider %q (api_type %q)", tpl.ProviderCode, tpl.APIType))
 	}
 
 	// 5. 扫描
 	models, err := scanner.ScanModels(ctx, tpl, apiKey)
 	if err != nil {
-		return e.fail(ctx, task, err)
+		return e.fail(ctx, task, TaskStatusRunning, err)
 	}
 
 	// 6. ToS 初判 (共享池/配额钩子已在 scanner 装配层生效)
@@ -120,12 +136,12 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 
 	// 7. 结果落库 (pending)
 	if err := e.saveResults(ctx, task, models); err != nil {
-		return e.fail(ctx, task, err)
+		return e.fail(ctx, task, TaskStatusRunning, err)
 	}
 
 	// 8. 任务完成
 	found := len(models)
-	if err := e.updateTask(ctx, task, TaskStatusSuccess, &found, nil); err != nil {
+	if err := e.updateTask(ctx, task, TaskStatusSuccess, TaskStatusRunning, &found, nil); err != nil {
 		return nil, err
 	}
 
@@ -136,7 +152,7 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 	return e.GetTask(ctx, req.TenantID, task.ID)
 }
 
-// createTask 写入 pending 任务行.
+// createTask 写入 pending 任务行. started_at 保留 NULL, 由 running 状态写入.
 func (e *DiscoveryEngine) createTask(ctx context.Context, req DiscoveryRequest) (*DiscoveryTask, error) {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -148,7 +164,7 @@ func (e *DiscoveryEngine) createTask(ctx context.Context, req DiscoveryRequest) 
 		return nil, err
 	}
 
-	// 冗余 provider_code: 从模板读取, 任务留痕
+	// provider_code 从模板读取, 任务留痕 (RLS 同事务内可见).
 	var providerCode string
 	if err := tx.QueryRowContext(ctx,
 		`SELECT provider_code FROM provider_templates WHERE id=$1`, req.TemplateID,
@@ -160,14 +176,13 @@ func (e *DiscoveryEngine) createTask(ctx context.Context, req DiscoveryRequest) 
 	}
 
 	var id int64
-	now := timeNow().UTC()
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO discovery_tasks (
-			tenant_id, template_id, provider_code, status, trigger_type, triggered_by, started_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7)
+			tenant_id, template_id, provider_code, status, trigger_type, triggered_by
+		) VALUES ($1,$2,$3,$4,$5,$6)
 		RETURNING id`,
 		req.TenantID, req.TemplateID, providerCode, string(TaskStatusPending),
-		string(req.TriggerType), nullableStr(req.TriggeredBy), now,
+		string(req.TriggerType), nullableStr(req.TriggeredBy),
 	).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("freediscovery: insert task: %w", err)
@@ -176,17 +191,19 @@ func (e *DiscoveryEngine) createTask(ctx context.Context, req DiscoveryRequest) 
 		return nil, fmt.Errorf("freediscovery: commit task: %w", err)
 	}
 
-	started := now
 	return &DiscoveryTask{
 		ID: id, TenantID: req.TenantID, TemplateID: &req.TemplateID,
 		ProviderCode: providerCode, Status: TaskStatusPending,
 		TriggerType: req.TriggerType, TriggeredBy: req.TriggeredBy,
-		StartedAt: &started,
 	}, nil
 }
 
-// updateTask 更新任务状态与统计.
-func (e *DiscoveryEngine) updateTask(ctx context.Context, task *DiscoveryTask, status TaskStatus, modelsFound, modelsImported *int) error {
+// updateTask 更新任务状态与统计; expectedFrom 为状态机前置条件, 0 行返回 ErrTaskStateConflict.
+// running 状态会同步写入 started_at.
+func (e *DiscoveryEngine) updateTask(
+	ctx context.Context, task *DiscoveryTask, status TaskStatus,
+	expectedFrom TaskStatus, modelsFound, modelsImported *int,
+) error {
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("freediscovery: begin tx: %w", err)
@@ -197,27 +214,41 @@ func (e *DiscoveryEngine) updateTask(ctx context.Context, task *DiscoveryTask, s
 		return err
 	}
 
-	var completedAt any
+	var completedAt, startedAt any
 	if status == TaskStatusSuccess || status == TaskStatusFailed {
 		completedAt = timeNow().UTC()
 	}
+	if status == TaskStatusRunning {
+		startedAt = completedAt
+		// running 不强制写入 completed_at (避免覆盖)
+		completedAt = nil
+	}
 
-	_, err = tx.ExecContext(ctx, `
+	res, err := tx.ExecContext(ctx, `
 		UPDATE discovery_tasks SET status=$2,
 			models_found=COALESCE($3, models_found),
 			models_imported=COALESCE($4, models_imported),
-			completed_at=$5
-		WHERE id=$1`,
-		task.ID, string(status), modelsFound, modelsImported, completedAt)
+			started_at=COALESCE($5, started_at),
+			completed_at=COALESCE($6, completed_at)
+		WHERE id=$1 AND tenant_id=$7 AND status=$8`,
+		task.ID, string(status), modelsFound, modelsImported, startedAt, completedAt,
+		task.TenantID, string(expectedFrom))
 	if err != nil {
 		return fmt.Errorf("freediscovery: update task %d: %w", task.ID, err)
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("freediscovery: update task %d: %w", task.ID, ErrTaskStateConflict)
 	}
 	return tx.Commit()
 }
 
 // fail 标记任务失败并返回 (任务体, 原错误). 任务体供 handler 在
 // 扫描失败时仍返回 200 + failed 任务详情 (docs §3.4 契约); 不吞错.
-func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, cause error) (*DiscoveryTask, error) {
+//
+// 仅在 expectedFrom 状态 (一般为 running) 下可转换; 0 行表示状态机被破坏,
+// 返回的 error 仍包裹 cause, 让 handler 透传; 任务体仍然失败状态供 UI 展示.
+func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, expectedFrom TaskStatus, cause error) (*DiscoveryTask, error) {
 	task.Status = TaskStatusFailed
 	task.ErrorMessage = cause.Error()
 
@@ -230,12 +261,22 @@ func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, cause e
 	if err := setTenantTx(ctx, tx, task.TenantID); err != nil {
 		return task, cause
 	}
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE discovery_tasks SET status=$2, error_message=$3, completed_at=$4 WHERE id=$1`,
-		task.ID, string(TaskStatusFailed), task.ErrorMessage, timeNow().UTC()); err != nil {
+	res, err := tx.ExecContext(ctx, `
+		UPDATE discovery_tasks SET status=$2, error_message=$3, completed_at=$4
+		WHERE id=$1 AND tenant_id=$5 AND status=$6`,
+		task.ID, string(TaskStatusFailed), task.ErrorMessage, timeNow().UTC(),
+		task.TenantID, string(expectedFrom))
+	if err != nil {
 		slog.Error("freediscovery: failed to mark task failed",
 			"task_id", task.ID, "error", err)
 		return task, cause
+	}
+	rows, _ := res.RowsAffected()
+	if rows == 0 {
+		// 状态机冲突: 让上层知道是并发问题, 但任务体仍标记失败 (handler 决策).
+		slog.Warn("freediscovery: fail transition rejected by state guard",
+			"task_id", task.ID, "expected_from", string(expectedFrom))
+		return task, fmt.Errorf("%w: %v", ErrTaskStateConflict, cause)
 	}
 	if err := tx.Commit(); err != nil {
 		slog.Error("freediscovery: failed to commit failure mark", "task_id", task.ID, "error", err)

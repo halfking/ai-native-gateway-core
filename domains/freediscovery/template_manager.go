@@ -16,6 +16,14 @@ import (
 // ErrTemplateNotFound 模板不存在 (含 RLS 隔离后不可见的他租户模板)
 var ErrTemplateNotFound = errors.New("freediscovery: provider template not found")
 
+// ErrTemplateDisabled 模板已停用 (admin 可观察但扫描入口必须拒绝, 防止
+// 携带上游 API key 的扫描请求对停用模板执行). 调用方应映射为 409 Conflict.
+var ErrTemplateDisabled = errors.New("freediscovery: provider template is disabled")
+
+// ErrTaskStateConflict 任务状态机转换被拒绝 (重复 POST 扫描、并发覆盖等).
+// 调用方应映射为 409 Conflict.
+var ErrTaskStateConflict = errors.New("freediscovery: task state transition rejected")
+
 // TemplateManager 供应商模板 CRUD. 所有读写均走 RLS:
 // 事务内先 SET LOCAL app.current_tenant, 与 075/084 迁移的
 // tenant_isolation_* 策略契约一致 (参考 freeresource.QuotaTracker 同款实现).
@@ -203,8 +211,8 @@ func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64,
 		cur.DisplayName = *req.DisplayName
 	}
 	if req.BaseURL != nil {
-		if !isValidBaseURL(*req.BaseURL) {
-			return nil, errors.New("freediscovery: base_url must start with http:// or https://")
+		if msg := isValidBaseURL(*req.BaseURL); msg != "" {
+			return nil, errors.New("freediscovery: " + msg)
 		}
 		cur.BaseURL = *req.BaseURL
 	}
@@ -226,6 +234,9 @@ func (m *TemplateManager) Update(ctx context.Context, tenantID string, id int64,
 		cur.APIKeyEncrypted = nil
 	}
 	if req.ModelsEndpoint != nil && *req.ModelsEndpoint != "" {
+		if msg := isValidModelsEndpoint(*req.ModelsEndpoint); msg != "" {
+			return nil, errors.New("freediscovery: " + msg)
+		}
 		cur.ModelsEndpoint = *req.ModelsEndpoint
 	}
 	if req.QuotaEndpoint != nil {
