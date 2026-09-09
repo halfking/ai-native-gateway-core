@@ -109,6 +109,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
+import { formatDateTime } from '../../utils/datetime'
 import {
   Loading, QuestionFilled, InfoFilled, WarningFilled,
   SuccessFilled, Right, Clock
@@ -280,19 +281,19 @@ const jumpToPenaltySource = (penalty: PenaltyItem) => {
   }
 }
 
-// 时间格式化
-const formatTime = (timeStr: string): string => {
-  if (!timeStr) return '—'
-  const date = new Date(timeStr)
-  return date.toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
+// 时间格式化（审计 R3#10：统一走 utils/datetime.ts）
+const formatTime = (timeStr: string): string =>
+  formatDateTime(timeStr, {
+    locale: 'zh-CN',
+    options: {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    },
   })
-}
 
 // Lifecycle
 onMounted(() => {

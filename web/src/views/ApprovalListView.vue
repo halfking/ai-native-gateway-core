@@ -6,6 +6,7 @@ import { useRouter } from 'vue-router'
 import { getApprovalList, approveApproval, rejectApproval, getApprovalStats, type ApprovalItem, type ApprovalStats } from '../api/approval'
 import { isSuperAdmin } from '../store'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { formatRelativeTime } from '../utils/datetime'
 import AppSpinner from '../components/AppSpinner.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -109,28 +110,22 @@ function getStatusLabel(status: string): string {
   return labels[status] || status
 }
 
+// 审计 R3#10：相对时间统一走 utils/datetime.formatRelativeTime
+//（超过 7 天回退绝对时间，与原实现一致）。
 function formatDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-  const seconds = Math.floor(diff / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
-
-  if (days > 7) {
-    return date.toLocaleDateString(localeRef.value, {
+  return formatRelativeTime(dateStr, {
+    justNow: t('approval.list.relativeTime.justNow'),
+    minutesAgo: (n) => t('approval.list.relativeTime.minutesAgo', { n }),
+    hoursAgo: (n) => t('approval.list.relativeTime.hoursAgo', { n }),
+    daysAgo: (n) => t('approval.list.relativeTime.daysAgo', { n }),
+    older: (d) => d.toLocaleDateString(localeRef.value, {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit'
-    })
-  }
-  if (days > 0) return t('approval.list.relativeTime.daysAgo', { n: days })
-  if (hours > 0) return t('approval.list.relativeTime.hoursAgo', { n: hours })
-  if (minutes > 0) return t('approval.list.relativeTime.minutesAgo', { n: minutes })
-  return t('approval.list.relativeTime.justNow')
+    }),
+  })
 }
 
 function formatCost(cost?: number): string {
