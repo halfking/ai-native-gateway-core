@@ -555,20 +555,24 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 
 	// 使用事务方法原子性地删除旧节点并插入新节点，避免中断导致订阅变空。
 	if pgStore, ok := m.store.(*PgStore); ok {
-		if err := pgStore.RefreshSubscriptionNodes(ctx, subscriptionID, nodes); err != nil {
+		// 审计 #9 P2：单事务同时提交节点集合 + 订阅 metadata，
+		// 避免之前 RefreshSubscriptionNodes + UpdateSubscription 两步间
+		// 出现 "nodes 已刷新但 metadata 仍是上一次状态" 的不一致窗口。
+		if err := pgStore.RefreshSubscriptionAndMetadata(ctx, subscriptionID, nodes, sub); err != nil {
 			sub.NodeCount = 0
 			sub.LastFetchAt = time.Now()
 			sub.LastFetchStatus = "failed"
 			sub.LastError = SanitizeSubscriptionError(
 				fmt.Sprintf("transaction failed: %v", err), sub.SubscribeURL)
 
+			// 事务失败后尝试补救落库 metadata（best-effort；不再次尝试事务）
 			_ = m.store.UpdateSubscription(ctx, sub)
 
 			// 记录失败指标
 			if m.metrics != nil {
 				m.metrics.ObserveSubscriptionRefresh("failed", time.Since(startTime).Seconds())
 			}
-			return fmt.Errorf("refresh nodes in transaction: %w", err)
+			return fmt.Errorf("refresh nodes and metadata in transaction: %w", err)
 		}
 	} else {
 		// 回退到非事务方法（用于测试或非 PgStore 实现）
@@ -601,13 +605,15 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 		}
 	}
 
-	// 4. 更新订阅状态
+	// 4. 更新订阅状态（PgStore 路径已通过 RefreshSubscriptionAndMetadata 同步落库）
 	sub.NodeCount = len(nodes)
 	sub.LastFetchAt = time.Now()
 	sub.LastFetchStatus = "success"
 	sub.LastError = ""
-	if err := m.store.UpdateSubscription(ctx, sub); err != nil {
-		return fmt.Errorf("update subscription: %w", err)
+	if _, isPg := m.store.(*PgStore); !isPg {
+		if err := m.store.UpdateSubscription(ctx, sub); err != nil {
+			return fmt.Errorf("update subscription: %w", err)
+		}
 	}
 
 	// 5. 刷新内存缓存；仅在缓存成功更新后失效旧的订阅 Transport，

@@ -468,6 +468,98 @@ func (s *PgStore) RefreshSubscriptionNodes(ctx context.Context, subscriptionID i
 	return nil
 }
 
+// RefreshSubscriptionAndMetadata 在单个事务内删除旧节点、插入新节点，并同步
+// 写入订阅 metadata（node_count / last_fetch_at / last_fetch_status / last_error）。
+// 审计 #9 P2：之前的 RefreshSubscriptionNodes + UpdateSubscription 是两步操作，
+// 中间任何中断都会留下"nodes 已刷新但 metadata 仍显示上一次状态"的不一致窗口。
+// 当 sub 参数携带最新 metadata 时，本方法一步完成全部写入。
+func (s *PgStore) RefreshSubscriptionAndMetadata(ctx context.Context, subscriptionID int, nodes []*Node, sub *Subscription) error {
+	if sub == nil {
+		return fmt.Errorf("proxy: RefreshSubscriptionAndMetadata requires sub")
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("proxy: begin refresh-and-metadata transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	const deleteQ = `DELETE FROM proxy_nodes WHERE subscription_id = $1`
+	if _, err := tx.Exec(ctx, deleteQ, subscriptionID); err != nil {
+		return fmt.Errorf("proxy: delete old nodes in refresh-and-metadata transaction: %w", err)
+	}
+
+	const insertQ = `
+		INSERT INTO proxy_nodes
+			(subscription_id, name, protocol, server, port, username, password, config, location, status, health_check_url, banned_regions)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id, created_at, updated_at`
+
+	for _, node := range nodes {
+		pw := node.Password
+		if s.enc != nil && pw != "" {
+			enc, err := s.enc([]byte(pw))
+			if err != nil {
+				return fmt.Errorf("proxy: encrypt node %q password in refresh-and-metadata transaction: %w", node.Name, err)
+			}
+			pw = enc
+		}
+		row := tx.QueryRow(ctx, insertQ,
+			subscriptionID,
+			node.Name,
+			node.Protocol,
+			node.Server,
+			node.Port,
+			node.Username,
+			pw,
+			marshalConfig(node.Config),
+			node.Location,
+			node.Status,
+			node.HealthCheckURL,
+			normalizeRegions(node.BannedRegions),
+		)
+		if err := row.Scan(&node.ID, &node.CreatedAt, &node.UpdatedAt); err != nil {
+			return fmt.Errorf("proxy: insert node %q in refresh-and-metadata transaction: %w", node.Name, err)
+		}
+	}
+
+	const updateQ = `
+		UPDATE proxy_subscriptions
+		SET name = $1,
+			subscribe_url = $2,
+			status = $3,
+			node_count = $4,
+			priority = $5,
+			notes = $6,
+			last_fetch_status = $7,
+			last_error = $8,
+			last_fetch_at = $9,
+			banned_regions = $10,
+			updated_at = NOW()
+		WHERE id = $11`
+	if _, err := tx.Exec(ctx, updateQ,
+		sub.Name,
+		sub.SubscribeURL,
+		sub.Status,
+		sub.NodeCount,
+		sub.Priority,
+		sub.Notes,
+		sub.LastFetchStatus,
+		sub.LastError,
+		timePtrOrNil(sub.LastFetchAt),
+		normalizeRegions(sub.BannedRegions),
+		sub.ID,
+	); err != nil {
+		return fmt.Errorf("proxy: update subscription %d metadata in transaction: %w", sub.ID, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("proxy: commit refresh-and-metadata transaction: %w", err)
+	}
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Domain CRUD
 // ---------------------------------------------------------------------------
