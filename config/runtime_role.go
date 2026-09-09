@@ -62,3 +62,25 @@ func IsCredRecoveryDisabled() bool {
 // always reach IsCredRecoveryDisabled and never accidentally depend on a
 // renamed internal helper.
 func isCredRecoveryDisabledForTest() bool { return IsCredRecoveryDisabled() }
+
+// IsQuotaProbeDisabled reports whether an operator has opted the quota-probe
+// family (credProbeV2 / PeriodicQuotaProbe / BalanceQuotaProbe and their
+// probe-picker helpers) out of running on data-plane / traffic-only nodes
+// via the LLM_GATEWAY_QUOTA_PROBE_DISABLED environment variable. Same narrow
+// contract as IsCredRecoveryDisabled: only the literal "true"
+// (case-insensitive, trimmed) counts.
+//
+// 2026-09-10 P0 audit fix (follow-up to the 2026-09-09 credential_recovery
+// fix): the credential_recovery SQL deliberately defers hard-quota
+// credentials (quota_state='permanently_exhausted' / 'balance_exhausted')
+// to BalanceQuotaProbe → writeHealth, and credProbeV2 is the ProbeNow
+// executor both quota ticks rely on. Those workers used to live behind the
+// bare `!bgDataPlaneOnly` gate, so on clusters whose only instances are
+// traffic-only canaries (154/245 since the 2026-08-31 blue-green pinning)
+// a recharged credential such as MiniMax cred 41 had NO automatic recovery
+// path at all. The family now runs by default everywhere; operators with a
+// true split topology (separate control-plane primary) can restore the old
+// behaviour by exporting this variable on the data-plane candidates.
+func IsQuotaProbeDisabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("LLM_GATEWAY_QUOTA_PROBE_DISABLED")), "true")
+}
