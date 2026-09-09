@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, watch } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
 import { fmtDateTimeShort, fmtDateCompact } from '../i18n/useFormat'
@@ -399,7 +400,7 @@ function fmtTrendPeriod(s: string, period: PeriodType) {
     if (m) return `${m[1].slice(2)}年${parseInt(m[2], 10)}月`
     return s
   }
-  return new Date(s).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
+  return formatDateTime(s, { locale: 'zh-CN', options: { month: '2-digit', day: '2-digit' } })
 }
 
 function fmtNum(n: number | string | null | undefined, decimals = 0): string {

@@ -7,6 +7,7 @@
 // endpoints). It adds a fingerprint-drift tab, which the format
 // anomalies view has no equivalent for.
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { computed, onMounted, ref } from 'vue'
 import {
@@ -108,13 +109,16 @@ function severityClass(severity: string) {
 
 function fmtTime(value?: string) {
   if (!value) return '—'
-  return new Date(value).toLocaleString(localeRef.value, {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
+  return formatDateTime(value, {
+    locale: localeRef.value,
+    options: {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    },
   })
 }
 

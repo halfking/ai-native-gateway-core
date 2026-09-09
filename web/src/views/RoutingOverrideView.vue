@@ -12,6 +12,7 @@
 //   4. Extend modal (per-row)
 
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import {
   getRoutingOverrides,
@@ -338,7 +339,7 @@ onMounted(loadOverrides)
             <td class="reason">{{ o.reason }}</td>
             <td>
               <span v-if="o.expires_at" :class="{ 'text-warn': isExpiring(o) }">
-                {{ new Date(o.expires_at).toLocaleString() }}
+                {{ formatDateTime(o.expires_at) }}
               </span>
               <span v-else class="text-muted">permanent</span>
             </td>

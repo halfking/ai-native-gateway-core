@@ -17,6 +17,7 @@
 // 跳；scope=all（super_admin 全局入站）的卡片按 RequestJourneyQueues 同款
 // 规则禁用跳转，避免暴露跨租户详情）。
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { formatTimeOnly } from '../utils/datetime'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { getRequestJourneyQueues } from '../api/request-journeys'
@@ -98,7 +99,7 @@ function outcomeLabel(o?: 'success' | 'failure' | 'canceled'): string {
 
 function fmtClock(ms?: number): string {
   if (!ms) return '—'
-  return new Date(ms).toLocaleTimeString(locale.value, { hour12: false })
+  return formatTimeOnly(ms, { locale: locale.value, options: { hour12: false } })
 }
 
 function fmtMs(v?: number): string {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { store } from '../store'
 import { fmtDateCompact } from '../i18n/useFormat'
@@ -236,7 +237,7 @@ function confidenceBadgeClass(confidence: number): string {
 
 function fmtTime(s: string | undefined) {
   if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value, { hour12: false })
+  return formatDateTime(s, { locale: localeRef.value, options: { hour12: false } })
 }
 
 onMounted(load)

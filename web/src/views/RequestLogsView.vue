@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed, onBeforeUnmount, watch } from 'vue'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
 import { useRoute, useRouter } from 'vue-router'
@@ -831,11 +832,11 @@ function resetPageAndLoad() {
 }
 
 function fmtTs(ts: string) {
-  return new Date(ts).toLocaleString(localeRef.value, { hour12: false })
+  return formatDateTime(ts, { locale: localeRef.value, options: { hour12: false } })
 }
 
 function fmtTime(ts: string) {
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return formatTimeOnly(ts, { locale: 'zh-CN', options: { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' } })
 }
 
 function token(v: number | null | undefined, usageSource?: 'llm' | 'estimated' | null) {

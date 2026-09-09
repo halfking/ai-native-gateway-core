@@ -2,6 +2,7 @@
 // MaaSAccountView.vue — /tenant/account 页面（我的账户 / 管理员只读账户视图）。
 // 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime } from '../../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { RouterLink } from 'vue-router'
@@ -45,7 +46,7 @@ function fmtCredits(n: number) {
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
+  return formatDateTime(s, { locale: localeRef.value, options: { dateStyle: 'short', timeStyle: 'short' } })
 }
 
 function fmtPrice(cents: number) {

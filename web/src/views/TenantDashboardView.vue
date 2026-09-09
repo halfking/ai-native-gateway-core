@@ -6,6 +6,7 @@
 //   - 模型用量 Top-N + 趋势图表，沿用 TenantDashboardView v2 的可视化
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { RouterLink, useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
@@ -119,7 +120,7 @@ function fmtNum(n: number | undefined) {
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString(localeRef.value, { dateStyle: 'short', timeStyle: 'short' })
+  return formatDateTime(s, { locale: localeRef.value, options: { dateStyle: 'short', timeStyle: 'short' } })
 }
 
 function creditsDisplay(v: number | null | undefined) {

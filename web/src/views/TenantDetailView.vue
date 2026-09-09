@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { useRoute, useRouter, RouterLink } from 'vue-router'
 import {
@@ -245,7 +246,7 @@ function statusLabel(s: string) {
 
 function fmtTime(s: string) {
   if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
+  return formatDateTime(s, { locale: localeRef.value })
 }
 
 function fmtNum(n?: number) {

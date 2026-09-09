@@ -300,7 +300,7 @@
                 </div>
                 <div class="param">
                   <label>最近活跃</label>
-                  <span class="param-val">{{ selectedOffer.last_seen_at ? new Date(selectedOffer.last_seen_at).toLocaleString() : '-' }}</span>
+                  <span class="param-val">{{ selectedOffer.last_seen_at ? formatDateTime(selectedOffer.last_seen_at) : '-' }}</span>
                 </div>
               </div>
             </div>
@@ -482,6 +482,7 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { store, isReadOnlyMode, authBearer } from '../store'
 import ModelPicker from '../components/ModelPicker.vue'
