@@ -153,6 +153,11 @@ type QueuedRequest struct {
 	RequestClass string
 	// journalSeq is the last allocated journal sequence number.
 	journalSeq int
+	// journalMu serializes recordDecision/JournalSnapshot against the
+	// ownership-handoff races (audit 2026-09-10 P0): dispatch/failover can
+	// still be writing a post-I/O decision while Submit's ctx-expiry path
+	// runs complete() on another goroutine — both append to AttemptJournal.
+	journalMu sync.Mutex
 
 	// noticeSeq orders DispatchNotice delivery per request (single owner).
 	noticeSeq int
