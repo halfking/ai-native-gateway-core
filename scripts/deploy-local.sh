@@ -601,7 +601,11 @@ build_backend() {
     # 重解析，保留原 need_pull 防线）→ 离线 tar(~/work/{docker-base-images,
     # docker-base-image}/lang-base，dash 命名) → registry.itestu.cn → docker
     # hub；返回 0 保证本地可 inspect 该镜像且平台匹配。
-    if ! resolve_build_image "$build_image" "$docker_platform"; then
+    # >&2（2026-09-10）：SSOT 的进度日志（hit/loading/Loaded image）走 stdout，
+    # 而 build_backend 的 stdout 被 binary=$(build_backend) 当返回值捕获；
+    # 不重定向时镜像未命中场景（如 arm64 首次 load 离线 tar）会把
+    # "Loaded image: ..." 混进 $binary，stage_release 的 [[ -s ]] 必失败。
+    if ! resolve_build_image "$build_image" "$docker_platform" >&2; then
       die "CGO fallback needs image $build_image ($docker_platform); tried local cache, offline tar in ~/work/{docker-base-images,docker-base-image}/lang-base/, registry.itestu.cn/lang-base/kx-base-golang and docker hub"
     fi
     local cgo_out="$PROJECT_ROOT/.build-local/gateway.build.$$"
