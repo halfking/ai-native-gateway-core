@@ -83,8 +83,11 @@ type LiteConsistencyConfig struct {
 type LiteStorageConfig struct {
 	SQLitePath string `yaml:"sqlite_path" env:"LLM_GATEWAY_SQLITE_PATH"`
 	BodiesDir  string `yaml:"bodies_dir" env:"LLM_GATEWAY_BODIES_DIR"`
-	CacheDir   string `yaml:"cache_dir" env:"LLM_GATEWAY_CACHE_DIR"`
-	LogsDir    string `yaml:"logs_dir" env:"LLM_GATEWAY_LOGS_DIR"`
+	// BodiesCodec 会话体落盘压缩编码："zstd"（默认）或 "gzip"（回退）。
+	// 读路径按文件后缀双格式兼容，切换不影响存量数据。
+	BodiesCodec string `yaml:"bodies_codec" env:"LLM_GATEWAY_BODIES_CODEC"`
+	CacheDir    string `yaml:"cache_dir" env:"LLM_GATEWAY_CACHE_DIR"`
+	LogsDir     string `yaml:"logs_dir" env:"LLM_GATEWAY_LOGS_DIR"`
 
 	// SQLitePragmas SQLite 连接初始化时执行的 PRAGMA 调优项。
 	SQLitePragmas SQLitePragmasConfig `yaml:"sqlite_pragmas"`
@@ -140,6 +143,9 @@ func (c *StorageConfig) Validate() error {
 		if strings.TrimSpace(c.Lite.SQLitePath) == "" {
 			return fmt.Errorf(`storage_mode "lite" requires lite_storage.sqlite_path (env LLM_GATEWAY_SQLITE_PATH)`)
 		}
+		if codec := strings.ToLower(strings.TrimSpace(c.Lite.BodiesCodec)); codec != "" && codec != "zstd" && codec != "gzip" {
+			return fmt.Errorf(`lite_storage.bodies_codec %q: must be "zstd" or "gzip"`, c.Lite.BodiesCodec)
+		}
 	default:
 		if strings.TrimSpace(c.Mode) == "" {
 			return fmt.Errorf(`storage_mode is empty: must be "full" or "lite" (yaml storage_mode or env LLM_GATEWAY_STORAGE_MODE)`)
@@ -164,6 +170,9 @@ func (c *StorageConfig) ApplyLiteDefaults() {
 	}
 	if strings.TrimSpace(l.BodiesDir) == "" {
 		l.BodiesDir = "./data/session_bodies"
+	}
+	if strings.TrimSpace(l.BodiesCodec) == "" {
+		l.BodiesCodec = "zstd"
 	}
 	if strings.TrimSpace(l.CacheDir) == "" {
 		l.CacheDir = "./data/cache"

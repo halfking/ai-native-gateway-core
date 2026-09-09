@@ -215,7 +215,10 @@ func (f *StorageFactory) liteBodiesStore() *filestore.FileBodiesStore {
 	f.liteMu.Lock()
 	defer f.liteMu.Unlock()
 	if f.bodiesStore == nil {
-		f.bodiesStore = filestore.NewFileBodiesStore(f.config.BodiesDir, f.bodiesWorkers())
+		// 落盘编码取自 config（默认 zstd，gzip 可回退）；读路径双格式兼容，
+		// 详见 filestore.ParseCodec 与 storage.StorageConfig.BodiesCodec。
+		f.bodiesStore = filestore.NewFileBodiesStore(f.config.BodiesDir, f.bodiesWorkers(),
+			filestore.WithCodec(filestore.ParseCodec(f.config.BodiesCodec)))
 	}
 	return f.bodiesStore
 }
