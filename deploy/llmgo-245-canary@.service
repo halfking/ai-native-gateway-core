@@ -33,7 +33,7 @@ Environment=LLM_GATEWAY_RUNTIME_ROLE=traffic-only
 # 部署闸门拒绝）。候选只影响预热阶段，把预算提到 75s：高于实测 ~40s 的
 # schema-ensure 耗时、低于 systemd TimeoutStartSec=90s 文档上限。
 # 详见 docs/deployment/audit/2026-09-09-deploy-scripts.md §7 窗口执行记录。
-Environment=LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=75
+Environment=LLM_GATEWAY_DB_BOOT_RETRY_SECONDS=75s
 
 # Per-instance identity, unified with env 154's llm-gateway-go-canary@.service:
 # %i is the candidate port and ALTERNATES between 8781 and 8782 on every
