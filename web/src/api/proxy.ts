@@ -186,6 +186,7 @@ export function createProxyNode(data: {
   username?: string
   password?: string
   location?: string
+  banned_regions?: string[]
   health_check_url?: string
 }): Promise<ProxyNode> {
   return req<ProxyNode>('POST', '/api/proxy/nodes', data)
@@ -222,7 +223,7 @@ export function getProxyPolicy(): Promise<{ ok: boolean; policy: ProxySelectionP
 }
 
 export function setProxyPolicy(policy: Partial<ProxySelectionPolicy>): Promise<{ ok: boolean; policy: ProxySelectionPolicy }> {
-  return req('PUT', '/api/proxy/policy/', policy)
+  return req('PUT', '/api/proxy/policy', policy)
 }
 
 export function getProxyRegions(): Promise<{ items: ProxyRegionStats[]; total: number }> {
