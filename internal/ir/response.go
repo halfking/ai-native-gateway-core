@@ -530,11 +530,10 @@ func buildOpenAIResponseContent(ir *InternalResponse) any {
 		case "text":
 			blocks = append(blocks, map[string]any{"type": "text", "text": c.Text})
 		case "tool_use":
-			blocks = append(blocks, map[string]any{
-				"type": "tool_use",
-				"id":   c.ID,
-				"name": c.Name,
-			})
+			// 审计 R8 P2：OpenAI chat 客户端的工具调用唯一规范形态是
+			// tool_calls 数组（下方已发射，带完整 input）。content 数组里
+			// 的 tool_use 块（且无 input 字段）是 Anthropic 形态的残留，
+			// 严格 SDK 校验会拒绝——不再重复发射。
 		}
 	}
 
