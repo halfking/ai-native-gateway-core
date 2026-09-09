@@ -153,6 +153,13 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureSessionSummariesCanonical(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-10 (handoff-20260910): 471/690 drifted out of the applied set
+	// (a '471' ledger row from 2026-08-07 belongs to older content), leaving
+	// session_summaries without archived_at — the TTL trimmer then dies with
+	// 42703 on every boot and rows can never be archived.
+	if err := db.ensureSessionSummariesArchivalSchema(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-05 migration 656 (audit D-2#4/H-2): auto_route_selections_hot
 	// 网关侧幂等 ensure。只升二进制未重跑 656 的存量库上，AUTO 路由 selection
 	// 写入（telemetry selection_writer 批量 INSERT）整批静默丢弃、settle/affinity
@@ -372,7 +379,325 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureProxyManagementCanonicalSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-10 (handoff-20260910): 689 (columnar→heap monthly partitions +
+	// per-table TTL drop functions) never reached ensure-chain environments,
+	// so the opslog trimmer's row-level DELETE kept dying on ColumnarScan.
+	if err := db.ensureCandidateFailureLogsHeapPartitions(migCtx); err != nil {
+		return err
+	}
 	db.ensureProbeHealthDashboardViews(migCtx)
+	return nil
+}
+
+// ensureSessionSummariesArchivalSchema mirrors sql/migrations/startup/
+// 471_session_summaries_archival.sql + 690_session_summaries_archived_ttl_index.sql.
+//
+// 2026-09-10: the live DB's schema_migrations carried a '471' row written on
+// 2026-08-07, but that number had since been re-pointed at the archival
+// migration — numeric-file migrations are never re-applied once their version
+// is in the ledger, so the columns below never materialised. Without them the
+// session_summaries TTL trimmer fails with "column archived_at does not
+// exist" on every boot and domains/sessionarchive cannot archive rows.
+// Idempotent, and a no-op on databases where 471/690 already applied.
+func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMPTZ;
+		ALTER TABLE public.session_summaries ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+
+		-- 471 backfill: rows predating the column read as "last touched at
+		-- last request". Converges: the summary writer leaves it NULL and the
+		-- archival predicates treat NULL as "not accessed recently".
+		UPDATE public.session_summaries SET last_accessed_at = last_request_at
+		WHERE last_accessed_at IS NULL;
+
+		CREATE INDEX IF NOT EXISTS idx_session_summaries_archival
+			ON public.session_summaries (archived_at, last_accessed_at, last_request_at)
+			WHERE archived_at IS NULL;
+		CREATE INDEX IF NOT EXISTS idx_session_summaries_archived
+			ON public.session_summaries (archived_at, last_request_at)
+			WHERE archived_at IS NOT NULL;
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('471', 'session_summaries_archival'),
+		       ('690', 'session_summaries archived ttl index')
+		ON CONFLICT (version) DO NOTHING;
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure session_summaries archival schema: %w", err)
+	}
+	slog.Info("session_summaries archival schema ensured")
+	return nil
+}
+
+// ensureCandidateFailureLogsHeapPartitionsSQL mirrors the executable body of
+// sql/migrations/startup/689_candidate_failure_logs_partitions_heap.sql
+// (function replacements, columnar→heap conversion with row-count
+// conservation, and the post-conversion verification), wrapped in one
+// transaction exactly like the migration file.
+const ensureCandidateFailureLogsHeapPartitionsSQL = `
+BEGIN;
+SET LOCAL statement_timeout = '10min';
+
+CREATE OR REPLACE FUNCTION public.ensure_candidate_failure_logs_partition(target_ts timestamp with time zone)
+RETURNS text
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    month_start    date := date_trunc('month', target_ts)::date;
+    month_end      date := (date_trunc('month', target_ts) + interval '1 month')::date;
+    partition_name text := 'candidate_failure_logs_' || to_char(month_start, 'YYYY_MM');
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_class
+                   WHERE relname = partition_name
+                     AND relnamespace = 'public'::regnamespace) THEN
+        -- 689: heap (was columnar). Row-level DELETE (the 7d TTL trim path
+        -- in bg/opslog_trimmer.go) and the hot→monthly promote chain both
+        -- need UPDATE/DELETE-capable storage; columnar partitions are
+        -- append-only (established by migration 562).
+        EXECUTE format(
+            'CREATE TABLE %I PARTITION OF candidate_failure_logs
+             FOR VALUES FROM (%L) TO (%L)',
+            partition_name, month_start, month_end
+        );
+        RAISE NOTICE 'ensure_candidate_failure_logs_partition: created % as heap', partition_name;
+    END IF;
+    RETURN partition_name;
+END;
+$$;
+
+COMMENT ON FUNCTION ensure_candidate_failure_logs_partition(timestamp with time zone) IS
+'Ensure monthly partition for candidate_failure_logs (heap since 689).
+Columnar partitions are append-only, which broke the 7d TTL row-level DELETE
+path (bg/opslog_trimmer.go) and the hot→monthly promote chain.';
+
+CREATE OR REPLACE FUNCTION public.drop_old_state_partition_table(
+    p_parent_name text,
+    p_retention_days integer
+)
+RETURNS bigint
+LANGUAGE plpgsql
+AS $function$
+DECLARE
+    total_dropped bigint := 0;
+    cutoff_ts timestamptz;
+    r record;
+    partition_name text;
+    partition_year int;
+    partition_month int;
+    partition_first_day date;
+BEGIN
+    IF p_retention_days < 1 THEN
+        RAISE WARNING 'drop_old_state_partition_table: retention_days=% < 1, clamping to 1', p_retention_days;
+        p_retention_days := 1;
+    END IF;
+    cutoff_ts := NOW() - (p_retention_days || ' days')::interval;
+
+    FOR r IN
+        SELECT c.relname AS partname
+        FROM pg_inherits i
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_class c ON c.oid = i.inhrelid
+        WHERE p.relname = p_parent_name
+          AND c.relname ~ ('^' || p_parent_name || '_\d{4}_\d{2}$')
+    LOOP
+        partition_name := r.partname;
+        BEGIN
+            partition_year := split_part(partition_name, '_', array_length(string_to_array(partition_name, '_'), 1) - 1)::int;
+            partition_month := split_part(partition_name, '_', array_length(string_to_array(partition_name, '_'), 1))::int;
+            partition_first_day := make_date(partition_year, partition_month, 1);
+
+            IF (partition_first_day + INTERVAL '1 month' - INTERVAL '1 day') < cutoff_ts THEN
+                EXECUTE format('DROP TABLE IF EXISTS %I', partition_name);
+                total_dropped := total_dropped + 1;
+                RAISE DEBUG 'drop_old_state_partition_table: dropped %', partition_name;
+            END IF;
+        EXCEPTION WHEN OTHERS THEN
+            RAISE WARNING 'drop_old_state_partition_table: failed to parse % (%)', partition_name, SQLERRM;
+        END;
+    END LOOP;
+
+    RETURN total_dropped;
+END;
+$function$;
+
+COMMENT ON FUNCTION drop_old_state_partition_table(text, int) IS
+    'Drops monthly partitions older than the given retention for ONE parent
+table (per-table TTL). Added by migration 689 so candidate_failure_logs can
+drop at its own 7d TTL while other state tables keep 30d. Used by
+bg.partition_manager. Idempotent.';
+
+CREATE OR REPLACE FUNCTION public.drop_old_state_partitions(p_retention_days int DEFAULT 30)
+RETURNS bigint
+LANGUAGE plpgsql
+AS $function$
+DECLARE
+    total_dropped bigint := 0;
+    target_tables text[] := ARRAY[
+        'routing_decision_log',
+        'candidate_failure_logs',
+        'handoff_logs',
+        'model_probe_runs',
+        'credential_model_index'
+    ];
+    parent_name text;
+BEGIN
+    IF p_retention_days < 1 THEN
+        RAISE WARNING 'drop_old_state_partitions: retention_days=% < 1, clamping to 1', p_retention_days;
+        p_retention_days := 1;
+    END IF;
+
+    FOREACH parent_name IN ARRAY target_tables LOOP
+        total_dropped := total_dropped + drop_old_state_partition_table(parent_name, p_retention_days);
+    END LOOP;
+
+    RETURN total_dropped;
+END;
+$function$;
+
+COMMENT ON FUNCTION drop_old_state_partitions(int) IS
+    'Drops monthly partitions older than the given retention for state/routing
+tables (single retention applied to all tables). Since 689 this delegates to
+drop_old_state_partition_table(); bg.partition_manager calls the per-table
+function directly with each table''s own lifecycle TTL. Idempotent.';
+
+-- Convert every remaining columnar monthly partition to heap, preserving
+-- data: DETACH → rename bak → rebuild same-bound heap partition → copy back
+-- → row-count conservation check → drop bak. Heap partitions are skipped.
+DO $$
+DECLARE
+    r record;
+    v_part   text;
+    v_bak    text;
+    v_bound  text;
+    v_src    bigint;
+    v_dst    bigint;
+    v_moved  bigint;
+BEGIN
+    FOR r IN
+        SELECT c.relname::text AS part,
+               pg_get_expr(c.relpartbound, c.oid) AS bound
+          FROM pg_class c
+          JOIN pg_am am ON am.oid = c.relam
+          JOIN pg_namespace n ON n.oid = c.relnamespace
+          JOIN pg_inherits i ON i.inhrelid = c.oid
+          JOIN pg_class p ON p.oid = i.inhparent
+         WHERE n.nspname = 'public'
+           AND p.relname = 'candidate_failure_logs'
+           AND am.amname = 'columnar'
+         ORDER BY c.relname
+    LOOP
+        v_part  := r.part;
+        v_bound := r.bound;
+        v_bak   := v_part || '_col2heap_bak';
+
+        IF v_bound IS NULL THEN
+            RAISE EXCEPTION '689: % has no partition bound — manual investigation needed', v_part;
+        END IF;
+
+        EXECUTE format('SELECT count(*) FROM public.%I', v_part) INTO v_src;
+
+        RAISE NOTICE '689: converting % (storage=columnar, rows=%, bound=%)',
+                     v_part, v_src, v_bound;
+
+        EXECUTE format('ALTER TABLE public.candidate_failure_logs DETACH PARTITION public.%I', v_part);
+        EXECUTE format('ALTER TABLE public.%I RENAME TO %I', v_part, v_bak);
+
+        EXECUTE format(
+            'CREATE TABLE public.%I PARTITION OF public.candidate_failure_logs %s',
+            v_part, v_bound);
+
+        EXECUTE format('INSERT INTO public.%I SELECT * FROM public.%I', v_part, v_bak);
+        GET DIAGNOSTICS v_moved = ROW_COUNT;
+        EXECUTE format('SELECT count(*) FROM public.%I', v_part) INTO v_dst;
+
+        IF v_dst <> v_src OR v_moved <> v_src THEN
+            RAISE EXCEPTION '689: row conservation FAILED for % (src=%, moved=%, dst=%) — aborting, transaction will roll back',
+                            v_part, v_src, v_moved, v_dst;
+        END IF;
+
+        EXECUTE format('DROP TABLE public.%I', v_bak);
+
+        RAISE NOTICE '689: converted % to heap, rows conserved (%)', v_part, v_dst;
+    END LOOP;
+
+    IF NOT FOUND THEN
+        RAISE NOTICE '689: no columnar partitions found under candidate_failure_logs — nothing to convert';
+    END IF;
+END $$;
+
+-- Post-conversion verification: no columnar partitions, no leftover bak
+-- tables, no detached monthly tables. Any failure rolls the whole ensure back.
+DO $$
+DECLARE
+    v_columnar int;
+    v_baks     int;
+    v_detached int;
+BEGIN
+    SELECT count(*) INTO v_columnar
+      FROM pg_class c
+      JOIN pg_am am ON am.oid = c.relam
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_inherits i ON i.inhrelid = c.oid
+      JOIN pg_class p ON p.oid = i.inhparent
+     WHERE n.nspname = 'public'
+       AND p.relname = 'candidate_failure_logs'
+       AND am.amname = 'columnar';
+
+    SELECT count(*) INTO v_baks
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public'
+       AND c.relname LIKE 'candidate_failure_logs_%_col2heap_bak';
+
+    SELECT count(*) INTO v_detached
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+     WHERE n.nspname = 'public'
+       AND c.relname ~ '^candidate_failure_logs_\d{4}_\d{2}$'
+       AND c.relkind = 'r'
+       AND NOT EXISTS (
+           SELECT 1 FROM pg_inherits i
+            WHERE i.inhrelid = c.oid
+              AND i.inhparent = 'public.candidate_failure_logs'::regclass);
+
+    IF v_columnar > 0 THEN
+        RAISE EXCEPTION '689: VERIFY FAIL — % columnar partition(s) remain', v_columnar;
+    END IF;
+    IF v_baks > 0 THEN
+        RAISE EXCEPTION '689: VERIFY FAIL — % leftover _col2heap_bak table(s)', v_baks;
+    END IF;
+    IF v_detached > 0 THEN
+        RAISE EXCEPTION '689: VERIFY FAIL — % candidate_failure_logs table(s) detached from parent', v_detached;
+    END IF;
+END $$;
+
+INSERT INTO public.schema_migrations (version, description)
+VALUES ('689', 'candidate_failure_logs partitions heap')
+ON CONFLICT (version) DO NOTHING;
+
+COMMIT;
+`
+
+// ensureCandidateFailureLogsHeapPartitions mirrors
+// sql/migrations/startup/689_candidate_failure_logs_partitions_heap.sql.
+//
+// 2026-09-10: 689 shipped only as a numeric migration file, which binary-managed
+// environments never execute — every monthly partition stayed columnar, the
+// 7d TTL DELETE in bg/opslog_trimmer.go kept failing with "UPDATE and CTID
+// scans not supported for ColumnarScan", and drop_old_state_partition_table
+// (which bg/partition_manager.go calls) did not exist. Idempotent: the
+// conversion loop is a no-op once all partitions are heap.
+func (d *DB) ensureCandidateFailureLogsHeapPartitions(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	if _, err := d.pool.Exec(ctx, ensureCandidateFailureLogsHeapPartitionsSQL); err != nil {
+		return fmt.Errorf("ensure candidate_failure_logs heap partitions: %w", err)
+	}
+	slog.Info("candidate_failure_logs heap partitions ensured")
 	return nil
 }
 
