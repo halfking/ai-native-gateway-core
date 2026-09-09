@@ -370,6 +370,38 @@ func TestStreamAnthropicPassthrough_ForwardsUnterminatedFinalFrame(t *testing.T)
 	assert.True(t, out.Resumable)
 }
 
+func TestStreamOpenAIToAnthropicSSE_EmitsEstimatedInputTokensAtMessageStart(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"hello"},"finish_reason":null}]}` + "\n\n" +
+				"data: [DONE]\n\n",
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSEWithDiagnostics(context.Background(), rec, resp,
+		"claude-test", "gpt-test", "req-estimate", nil, nil, nil, 37)
+	require.False(t, out.Interrupted, "bridge outcome = %+v", out)
+
+	var messageStart map[string]any
+	for _, event := range strings.Split(rec.Body.String(), "\n\n") {
+		if !strings.Contains(event, "event: message_start") {
+			continue
+		}
+		dataLine := strings.TrimPrefix(strings.Split(event, "\n")[1], "data: ")
+		require.NoError(t, json.Unmarshal([]byte(dataLine), &messageStart))
+		break
+	}
+	require.NotNil(t, messageStart)
+	message, ok := messageStart["message"].(map[string]any)
+	require.True(t, ok)
+	usage, ok := message["usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, float64(37), usage["input_tokens"])
+	assert.Equal(t, float64(0), usage["output_tokens"])
+}
+
 func TestStreamOpenAIToAnthropicSSE_SplitsDoneJoinedToJSON(t *testing.T) {
 	resp := &http.Response{
 		Body: io.NopCloser(strings.NewReader(

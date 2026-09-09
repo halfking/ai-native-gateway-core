@@ -18,6 +18,8 @@ import {
   retryableI18nKey,
 } from '../../utils/errorVocab'
 import { openRequestDetailPage } from '../../utils/openRequestDetailPage'
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts（全站单一实现）。
+import { formatDateTime } from '../../utils/datetime'
 
 const props = defineProps<{
   credentialId?: number
@@ -61,11 +63,6 @@ let requestSequence = 0
 let requestController: AbortController | null = null
 
 const hasCredential = computed(() => Number.isInteger(props.credentialId) && (props.credentialId ?? 0) > 0)
-
-function formatTime(value: string | null | undefined): string {
-  if (!value) return '—'
-  return new Date(value).toLocaleString()
-}
 
 function formatScore(value: number | null | undefined): string {
   return value == null ? '—' : value.toFixed(1)
@@ -158,7 +155,7 @@ onBeforeUnmount(() => {
                 </template>
                 <template v-else>—</template>
               </td>
-              <td>{{ item.distinct_status_codes }}</td><td>{{ formatTime(item.last_seen) }}</td>
+              <td>{{ item.distinct_status_codes }}</td><td>{{ formatDateTime(item.last_seen) }}</td>
             </tr></tbody>
           </table>
           <div v-else class="empty-hint">{{ pd('noErrors') }}</div>
@@ -169,7 +166,7 @@ onBeforeUnmount(() => {
           <table v-if="data.recent_failures.length" class="data-table failures-table">
             <thead><tr><th>{{ pd('time') }}</th><th>{{ pd('requestId') }}</th><th>{{ pd('model') }}</th><th>{{ pd('supplier') }}</th><th>{{ pd('kind') }}</th><th>{{ pd('errorCode') }}</th><th>{{ pd('httpStatus') }}</th><th>{{ pd('stage') }}</th><th>{{ pd('retry') }}</th><th>{{ pd('latency') }}</th><th>{{ pd('message') }}</th><th>{{ pd('upstreamPreview') }}</th></tr></thead>
             <tbody><tr v-for="item in data.recent_failures" :key="`${item.request_id}-${item.attempt_index}-${item.ts}`">
-              <td>{{ formatTime(item.ts) }}</td>
+              <td>{{ formatDateTime(item.ts) }}</td>
               <td>
                 <button
                   v-if="item.request_id"

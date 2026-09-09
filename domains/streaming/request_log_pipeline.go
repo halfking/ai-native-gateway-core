@@ -1159,6 +1159,20 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 	if c.handler.telemetryClient != nil && c.handler.telemetryClient.Enabled() {
 		c.handler.telemetryClient.EmitRequestLogUpdate(reqLog)
 	}
+	// 2026-09-09 audit round 3 (#4): rate-limited requests previously left NO
+	// routing_decision_log signal at all — the only gateway early-exit class
+	// that didn't (every other early exit goes through emitFailedDecisionLog).
+	// Emit an explicit not-run-class row so a rate-limit storm is visible in
+	// the decision log, not just request_logs. Reuses the EXISTING vocabulary
+	// (no new enum): success=false, error_class/failure_detail_code = the
+	// rate-limit error code (rate_limit_exceeded / key_throttled / ...),
+	// failure_stage="gateway" — the documented two-value stage enum already
+	// means "never reached an upstream provider". chosen_provider_id /
+	// chosen_credential_id stay nil (nothing was chosen, nothing ran), so
+	// provider/credential-scoped aggregations (ErrorDetailTab, candidate
+	// failure stats) are unaffected; the row only surfaces in
+	// request-scoped decision views.
+	c.emitRateLimitedDecisionLog(errCode)
 	// Track A note (2026-09-08): rate-limited requests deliberately do NOT
 	// report a routing outcome — the request never reached any upstream, so
 	// there is nothing to learn about the chosen model here. The stashed
@@ -1176,6 +1190,54 @@ func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, provider
 // failAndMark emits a failure row immediately (explicit exit paths).
 func (c *RequestLogContext) failAndMark(errCode, errMsg string, providerID, credentialID *int) {
 	c.EmitFailure(errCode, errMsg, providerID, credentialID)
+}
+
+// emitRateLimitedDecisionLog writes the explicit not-run-class
+// routing_decision_log row for a gateway rate-limit rejection (2026-09-09
+// audit round 3 #4). Shape mirrors emitFailedDecisionLog: success=false,
+// error_class = failure_detail_code = errCode, candidates_tried=0 — plus
+// failure_stage="gateway" (the existing two-value stage enum meaning "never
+// reached an upstream provider", which is exactly the rate-limit case).
+// No provider/credential is attributed: the request was never dispatched,
+// so provider-scoped error statistics cannot be polluted. Best-effort, same
+// Enabled()/nil guards as the sibling emitters.
+func (c *RequestLogContext) emitRateLimitedDecisionLog(errCode string) {
+	if c == nil || c.handler == nil || c.handler.telemetryClient == nil || !c.handler.telemetryClient.Enabled() {
+		return
+	}
+	c.handler.telemetryClient.EmitDecisionLog(c.buildRateLimitedDecisionEntry(errCode))
+}
+
+// buildRateLimitedDecisionEntry projects a gateway rate-limit rejection onto
+// the not-run-class routing_decision_log row. Pure: no I/O, safe on nil
+// receiver (returns a minimal row with the required identity fields).
+func (c *RequestLogContext) buildRateLimitedDecisionEntry(errCode string) *telemetry.DecisionLogEntry {
+	entry := &telemetry.DecisionLogEntry{
+		RequestID:         "",
+		TenantID:          "default",
+		Model:             "<unknown>",
+		Success:           false,
+		ErrorClass:        strPtr(errCode),
+		FailureStage:      strPtr("gateway"),
+		FailureDetailCode: strPtr(errCode),
+	}
+	if c == nil {
+		return entry
+	}
+	entry.RequestID = c.RequestID
+	entry.LatencyMs = c.LatencyMs()
+	clientModel := c.ClientModel
+	if clientModel == "" {
+		clientModel = "<unknown>"
+	}
+	entry.Model = clientModel
+	entry.ClientModel = strPtr(clientModel)
+	if ki := c.KeyInfo; ki != nil {
+		kid := ki.ID
+		entry.APIKeyID = &kid
+		entry.TenantID = ki.TenantID
+	}
+	return entry
 }
 
 // applySessionCompressorFields copies v3 session compressor outbound fields

@@ -12,6 +12,7 @@ import {
 } from '../api'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { useFilterChips, type FilterChip } from '../composables/useFilterChips'
+import { formatDateTimeIso } from '../utils/datetime'
 import ActiveFilterChips from '../components/ActiveFilterChips.vue'
 
 // CredentialHeatmapView — 热力图 tab
@@ -513,10 +514,10 @@ function formatTime(ts: string | number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// Format timestamp（审计 R3#10：tooltip 全时间戳统一走 utils/datetime.ts；
+// 轴刻度按粒度压缩的 formatTime 属图表领域逻辑，保留本地实现）
 function formatFullTime(ts: string | number): string {
-  const d = new Date(ts)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return formatDateTimeIso(ts)
 }
 
 // Lifecycle

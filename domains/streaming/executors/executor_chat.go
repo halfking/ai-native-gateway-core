@@ -1166,11 +1166,15 @@ func (e *Executor) executeOpenAI(
 						params.ClientProtocol == "anthropic-messages" &&
 						cand.Protocol != "anthropic-messages":
 						// P1-2 fix (2026-08-28): Pass ctx for context propagation to gate.
+						// 审计 R3 #2 (2026-09-09): params.BodyBytes 此时仍是客户端原始
+						// Anthropic 体(上游体在 bodyBytes 中另行转换),以其估算
+						// message_start.usage.input_tokens,替代恒 0。
 						streamOutcome = e.OpenAIToAnthropicStream(
 							params.R.Context(), streamSink, resp,
 							params.ClientModel, outboundModel,
 							diagnosticRequestID(params),
 							params.Capture, nil,
+							estimateAnthropicInputTokens(params.BodyBytes),
 						)
 					case e.OpenAIToResponsesStream != nil &&
 						params.ClientProtocol == "openai-responses" &&

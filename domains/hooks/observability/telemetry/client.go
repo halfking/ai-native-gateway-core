@@ -150,8 +150,14 @@ type Client struct {
 	// on the caller's goroutine and MUST be non-blocking (use select
 	// with default for channel sends). May be nil.
 	onEmitted func(entry *RequestLogEntry)
-	fallback  dbdegradation.BackupWriter
-	degraded  atomic.Bool
+
+	// onDecisionEmitted mirrors onEmitted for decision rows: invoked
+	// synchronously inside EmitDecisionLog after the liveness guards pass
+	// (not stopped, PG enabled), before the queue/sync-insert decision.
+	// Registered via SetOnDecisionLogEmitted. May be nil.
+	onDecisionEmitted func(entry *DecisionLogEntry)
+	fallback          dbdegradation.BackupWriter
+	degraded          atomic.Bool
 
 	// outboxWriter (optional): writes request.completed events to outbox_events
 	// in the same transaction as request_logs INSERT for Gateway → ASM delivery.
@@ -477,6 +483,18 @@ func NewClient() *Client {
 	return newClientWithBufSize(4096)
 }
 
+// NewClientWithRequestLogDB constructs a client around an injected
+// request-log DB surface (Exec/QueryRow/Begin). Production wiring uses
+// NewClient + SetDB(*pgxpool.Pool); this constructor exists so OUT-of-package
+// tests (domains/streaming) can drive decision-log emission with pgxmock —
+// it is the exported spelling of the in-package `&Client{requestLogDB: mockDB}`
+// literal. The worker lifecycle is identical to NewClient.
+func NewClientWithRequestLogDB(db requestLogDB) *Client {
+	c := newClientWithBufSize(4096)
+	c.requestLogDB = db
+	return c
+}
+
 // inferRequestTypeV32 derives the V3.2 request_type from the entry's existing
 // fields. Returns "main" for a plain client request (the column DEFAULT).
 // Precedence: explicit RequestType > compression > origin_actor > parent link.
@@ -678,6 +696,22 @@ func (c *Client) SetOnRequestLogEmitted(fn func(entry *RequestLogEntry)) {
 	c.lifecycleMu.Unlock()
 }
 
+// SetOnDecisionLogEmitted registers a hook invoked synchronously inside
+// EmitDecisionLog (before the queue/sync-insert decision), whenever the
+// client is live enough to accept a decision row (not stopped, PG enabled).
+// It mirrors SetOnRequestLogEmitted: runs on the caller's goroutine and MUST
+// be non-blocking. Primary consumer is test capture (routing_decision_log
+// has no lite sink, so a real DB pool would otherwise be required to observe
+// emissions); production code may use it for live mirrors.
+//
+// 2026-09-09 audit round 3 (#4): introduced for the rate-limited
+// not-run-class decision row wiring test.
+func (c *Client) SetOnDecisionLogEmitted(fn func(entry *DecisionLogEntry)) {
+	c.lifecycleMu.Lock()
+	c.onDecisionEmitted = fn
+	c.lifecycleMu.Unlock()
+}
+
 func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
 	if c == nil {
 		return
@@ -689,6 +723,16 @@ func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
 	// 在 flush 侧以 errNoTelemetryDB 反复告警。
 	if c.stopped.Load() || !c.pgEnabled() {
 		return
+	}
+	if c.onDecisionEmitted != nil {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Warn("telemetry onDecisionEmitted panic", "request_id", entry.RequestID)
+				}
+			}()
+			c.onDecisionEmitted(entry)
+		}()
 	}
 	select {
 	case c.queue <- entry:

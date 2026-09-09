@@ -3,6 +3,7 @@ import { ref, onMounted, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
 import { fmtDateTimeShort, fmtDateCompact } from '../i18n/useFormat'
+import { useActionMessage } from '../composables/useActionMessage'
 import { useRoute, useRouter } from 'vue-router'
 import { getKeyDetail, updateKeyLimits, type ApiKey, type UpdateKeyLimitsRequest } from '../api'
 import {
@@ -39,8 +40,8 @@ const limitsForm = ref<UpdateKeyLimitsRequest>({
   rate_limit_tpm: null,
 })
 const limitsSaving = ref(false)
-const limitsErr = ref('')
-const limitsSuccess = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage。
+const { message: limitsSuccess, error: limitsErr, notifySuccess: notifyLimitsOk, notifyError: notifyLimitsErr, clear: clearLimitsMsg } = useActionMessage()
 
 type LimitMode = 'default' | 'unlimited' | 'custom'
 const rpmMode = ref<LimitMode>('default')
@@ -64,8 +65,7 @@ function initLimitsForm() {
   rpmMode.value = limitModeFromValue(k.rate_limit_rpm, true)
   concurrentMode.value = limitModeFromValue(k.rate_limit_concurrent, true)
   tpmMode.value = limitModeFromValue(k.rate_limit_tpm, false)
-  limitsErr.value = ''
-  limitsSuccess.value = ''
+  clearLimitsMsg()
 }
 
 function openLimitsEditor() {
@@ -96,11 +96,10 @@ function validateLimitsForm(): string | null {
 }
 
 async function saveLimits() {
-  limitsErr.value = ''
-  limitsSuccess.value = ''
+  clearLimitsMsg()
   const validationErr = validateLimitsForm()
   if (validationErr) {
-    limitsErr.value = validationErr
+    notifyLimitsErr(validationErr)
     return
   }
   limitsSaving.value = true
@@ -111,11 +110,11 @@ async function saveLimits() {
       rate_limit_tpm: modeToValue(tpmMode.value, limitsForm.value.rate_limit_tpm),
     }
     await updateKeyLimits(keyId.value, data)
-    limitsSuccess.value = t('keys.detail.limitsSaved')
+    notifyLimitsOk(t('keys.detail.limitsSaved'))
     showLimitsEditor.value = false
     await loadKey()
   } catch (e: unknown) {
-    limitsErr.value = e instanceof Error ? e.message : t('keys.common.saveFailed')
+    notifyLimitsErr(e instanceof Error ? e.message : t('keys.common.saveFailed'))
   } finally {
     limitsSaving.value = false
   }
