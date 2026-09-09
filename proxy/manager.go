@@ -1379,6 +1379,15 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 	}
 
 	// 6. 批量更新数据库（分批，每批 50 个节点）
+	//
+	// 审计修复 (2026-09-09 P0 回归)：BatchUpdateNodes 虽是单事务，但必须
+	// 在 per-node 锁内执行。原因：applyHealthCheckResult 锁内修改 in-memory
+	// node 后释放锁（line 1337），此时若 BatchUpdateNodes 无锁写入，会覆盖
+	// 其他 goroutine（HealthCheckNode/swapProbeOne/HealthCheckSubscriptionNow）
+	// 已落库的新状态，造成 ConsecutiveFailures 丢失更新。
+	//
+	// 权衡：牺牲 BatchUpdateNodes 单事务原子性（50 节点 1 SQL → 50 次单节点
+	// SQL），换取并发安全。真实场景批量 <10 节点，性能影响可控。
 	batchSize := 50
 	for i := 0; i < len(nodesToUpdate); i += batchSize {
 		end := i + batchSize
@@ -1387,30 +1396,24 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 		}
 		batch := nodesToUpdate[i:end]
 
-		// 使用事务批量更新
-		if pgStore, ok := m.store.(*PgStore); ok {
-			if err := pgStore.BatchUpdateNodes(ctx, batch); err != nil {
-				slog.Error("proxy: batch update nodes failed", "error", err, "batch_size", len(batch))
-				// 降级到逐个更新
-				for _, node := range batch {
-					if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
-						slog.Warn("proxy: update node failed", "node_id", node.ID, "error", uerr)
-					}
-				}
+		// PgStore 和非 PgStore 统一走 per-node 锁保护的单节点更新
+		for _, node := range batch {
+			mu := m.nodeProbeLock(node.ID)
+			mu.Lock()
+			if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
+				slog.Warn("proxy: batch update node failed", "node_id", node.ID, "error", uerr)
 			}
-		} else {
-			// 非 PgStore 实现，逐个更新
-			for _, node := range batch {
-				if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
-					slog.Warn("proxy: update node failed", "node_id", node.ID, "error", uerr)
-				}
-			}
+			mu.Unlock()
 		}
 	}
 
-	// 7. 批量更新缓存
+	// 7. 批量更新缓存（缓存更新也在 per-node 锁内，保证"apply→DB→cache"
+	// 三步对同一 node_id 完全串行）
 	for _, node := range nodesToUpdate {
+		mu := m.nodeProbeLock(node.ID)
+		mu.Lock()
 		m.updateNodeInCache(node)
+		mu.Unlock()
 	}
 
 	// 8. 更新指标
