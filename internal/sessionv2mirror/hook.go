@@ -86,46 +86,114 @@ func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.Reque
 		}
 
 		// Bound the shadow write so a slow DB cannot stall telemetry.
-		timeoutMs := settings.GetPlatformInt("sessions_v2.write_timeout_ms", 500)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
-		defer cancel()
+		//
+		// 2026-09-10 (PG log audit): the 500ms default covered begin-tx →
+		// two advisory locks → MAX(turn_no) → insert turn → insert bodies →
+		// outbox → commit, and the hook runs ON the telemetry worker
+		// goroutine (see Client.persistRequestLog) despite the documented
+		// "must be cheap and non-blocking" contract. Local PG showed the
+		// gateway emitting 246 `canceling statement due to user request`
+		// errors in 6h (pgx cancelling on ctx deadline) while the database
+		// itself sat at 1.76% CPU with 37 idle connections — i.e. the
+		// budget, not the database, was the bottleneck. Dispatch the write
+		// to a bounded goroutine pool so the worker only pays for the entry
+		// → ProcessedRequest parse, and raise the default budget to 2000ms.
+		// The setting stays runtime-tunable via
+		// settings_kv['sessions_v2.write_timeout_ms'].
+		timeout := time.Duration(settings.GetPlatformInt("sessions_v2.write_timeout_ms", defaultShadowWriteTimeoutMs)) * time.Millisecond
 
-		// session_dim 维度维护（任务/项目/属主/客户端）：与 V2 写入同一
-		// 超时预算，独立 best-effort —— V2 写失败也不影响维度更新。
-		for _, dim := range dims {
-			if dim == nil {
-				continue
-			}
-			if err := dim.UpsertSessionDim(ctx, entry); err != nil {
-				slog.Warn("sessionv2mirror: session_dim upsert failed",
-					"request_id", entry.RequestID,
-					"session_id", *entry.GwSessionID,
-					"error", err)
-			}
+		run := func() { runShadowWrite(writer, req, entry, dims, timeout) }
+		if !shadowWriteDispatchAsync {
+			run()
+			return
 		}
-
-		if err := writer.Write(ctx, req); err != nil {
-			slog.Warn("sessionv2mirror: V2 shadow write failed",
-				"request_id", entry.RequestID,
-				"session_id", *entry.GwSessionID,
-				"error", err)
-			// P0-2 (audit §3.6 R-3.3): count this lost-row event so the
-			// Grafana rule in deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
-			// can fire. V2 sessions tables are migration 430 (shadow write
-			// during cutover); losing rows during the cutover window is the
-			// exact "data drift" failure mode the audit calls out.
+		select {
+		case shadowWriteSema <- struct{}{}:
+			go func() {
+				defer func() { <-shadowWriteSema }()
+				run()
+			}()
+		default:
+			// All shadow-write slots are busy (DB slow / request burst). The
+			// worker contract forbids blocking here, so retain the entry in
+			// the bounded backlog instead of queueing unbounded goroutines.
 			metrics.Global().RecordShadowWriteFailure("session_v2")
-			// Spec §12 GAP 2: also retain the failed entry in the
-			// in-process backlog so it is observable (gauge) and drainable
-			// rather than dropped on the floor with only a counter. The
-			// backlog is bounded (FIFO eviction at cap); it is not
-			// persisted — dbdegradation.RingBuffer covers WAL fallback.
 			appendBacklog(BacklogItem{
 				RequestID: entry.RequestID,
 				Req:       req,
 				Entry:     entry,
 			})
 		}
+	}
+}
+
+const (
+	// defaultShadowWriteTimeoutMs is the wall-clock budget for one shadow
+	// write (dims upsert + full V2 write). 500ms was exceeded 153 times in
+	// ~2.8h on the local deployment (2026-09-10); 2000ms still bounds the
+	// write strictly while absorbing bursts and cold-cache plans.
+	defaultShadowWriteTimeoutMs = 2000
+
+	// shadowWriteConcurrency caps concurrent shadow writes. Each slot holds
+	// one pgxpool connection for up to the write budget; 8 keeps the mirror
+	// well inside db.MaxConns=32 alongside the primary request_logs path.
+	shadowWriteConcurrency = 8
+)
+
+// shadowWriteSema bounds how many shadow writes run concurrently.
+var shadowWriteSema = make(chan struct{}, shadowWriteConcurrency)
+
+// shadowWriteDispatchAsync hands the DB write to a goroutine so the
+// telemetry worker goroutine is never blocked by mirror latency. Tests set
+// it to false to run writes inline and assert synchronously.
+var shadowWriteDispatchAsync = true
+
+// runShadowWrite executes one best-effort shadow write with its own timeout
+// budget. Called either inline (tests) or on a semaphore-bounded goroutine.
+//
+// Race note: this may run after the telemetry worker called
+// entry.releaseBodies() — that nils RequestBody/ResponseBody/OutboundBody,
+// and neither the dims writer nor the V2 writer reads those fields (req is
+// the deep-parsed snapshot), so the hand-off is race-free.
+func runShadowWrite(w V2Writer, req *v2.ProcessedRequest, entry *telemetry.RequestLogEntry, dims []DimWriter, timeout time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	// session_dim 维度维护（任务/项目/属主/客户端）：与 V2 写入同一
+	// 超时预算，独立 best-effort —— V2 写失败也不影响维度更新。
+	for _, dim := range dims {
+		if dim == nil {
+			continue
+		}
+		if err := dim.UpsertSessionDim(ctx, entry); err != nil {
+			slog.Warn("sessionv2mirror: session_dim upsert failed",
+				"request_id", entry.RequestID,
+				"session_id", *entry.GwSessionID,
+				"error", err)
+		}
+	}
+
+	if err := w.Write(ctx, req); err != nil {
+		slog.Warn("sessionv2mirror: V2 shadow write failed",
+			"request_id", entry.RequestID,
+			"session_id", *entry.GwSessionID,
+			"error", err)
+		// P0-2 (audit §3.6 R-3.3): count this lost-row event so the
+		// Grafana rule in deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
+		// can fire. V2 sessions tables are migration 430 (shadow write
+		// during cutover); losing rows during the cutover window is the
+		// exact "data drift" failure mode the audit calls out.
+		metrics.Global().RecordShadowWriteFailure("session_v2")
+		// Spec §12 GAP 2: also retain the failed entry in the
+		// in-process backlog so it is observable (gauge) and drainable
+		// rather than dropped on the floor with only a counter. The
+		// backlog is bounded (FIFO eviction at cap); it is not
+		// persisted — dbdegradation.RingBuffer covers WAL fallback.
+		appendBacklog(BacklogItem{
+			RequestID: entry.RequestID,
+			Req:       req,
+			Entry:     entry,
+		})
 	}
 }
 
