@@ -103,6 +103,18 @@ func (qr *QueuedRequest) requestClass() string {
 // "why is this request queued AGAIN", which stays meaningful after the
 // request ended (08 号 tests pin this).
 func (qr *QueuedRequest) recordDecision(entry JournalEntry) JournalEntry {
+	// audit 2026-09-10 P0: the single-owner invariant cannot hold across
+	// I/O — dispatch()/tryModelChangeOutcome/scheduleCapacityRetry re-enter
+	// here after modelResolve/route DB calls while Submit's ctx-expiry path
+	// may have already run complete() on another goroutine. Serialize the
+	// journal mutation and refuse non-terminal entries once the terminal
+	// CAS has fired, so AttemptJournal can never tear and no entry can
+	// follow the terminal record (invariant 3).
+	qr.journalMu.Lock()
+	defer qr.journalMu.Unlock()
+	if qr.completed.Load() && !isTerminalAction(entry.Action) {
+		return entry
+	}
 	qr.journalSeq++
 	entry.Seq = qr.journalSeq
 	if entry.At.IsZero() {
@@ -163,7 +175,14 @@ func terminalActionOf(out ForwardOutcome) NextActionKind {
 // journal never flows into process-wide stores. After the terminal entry the
 // ring is immutable, so a terminal-time snapshot stays valid.
 func (qr *QueuedRequest) JournalSnapshot() []JournalEntry {
-	if qr == nil || len(qr.AttemptJournal) == 0 {
+	if qr == nil {
+		return nil
+	}
+	// audit 2026-09-10 P0: copy under journalMu so a concurrent
+	// recordDecision append cannot race the len/copy pair.
+	qr.journalMu.Lock()
+	defer qr.journalMu.Unlock()
+	if len(qr.AttemptJournal) == 0 {
 		return nil
 	}
 	out := make([]JournalEntry, len(qr.AttemptJournal))
