@@ -691,11 +691,43 @@ write_instance_env() {
 instance_name() { printf 'llm-gateway-local-%s\n' "$1"; }
 pid_file() { printf '%s/gateway-%s.pid\n' "$RUN_DIR" "$1"; }
 
+# Wait for a TCP port to be free after a previous container was killed.
+# 2026-09-09 现象：active cutover 偶发失败，8782 verify 在 60s 内 /healthz
+# 持续 connection refused；同时段 8781 candidate 一切正常。docker rm -f
+# 在 macOS Docker Desktop 上偶尔不会立即释放 host port（端口处于
+# TIME_WAIT 或 per-namespace 端口分配未回收），新容器 docker run 时
+# -p 127.0.0.1:8782:8782 静默 bind 失败，curl /healthz 永远拿不到 200，
+# verify_instance 返回 1 后被 fail-closed 当成"release 不健康"die。
+# 修法：stop_instance 在 docker rm -f 之后等端口真正空闲再返回，避免
+# 调用方拿一个还没释放的端口去 docker run（最多等 30s，curl 退出码 7
+# = connection refused 算成功空闲信号；其他错误码继续等）。
+dl_wait_port_free() {
+  local port="$1" deadline=$(( $(date +%s) + 30 )) attempt=0
+  while (( $(date +%s) < deadline )); do
+    attempt=$(( attempt + 1 ))
+    if curl -fsS --max-time 1 "http://127.0.0.1:${port}/healthz" >/dev/null 2>&1; then
+      sleep 1
+      continue
+    fi
+    [[ $attempt -gt 1 ]] && printf '    [stop] port %s free after %d probe(s)\n' "$port" "$attempt" >&2
+    return 0
+  done
+  printf '    [stop] warning: port %s still appears busy after 30s; start may fail with EADDRINUSE\n' "$port" >&2
+  return 1
+}
+
 stop_instance() {
   local port="$1" name; name=$(instance_name "$port")
   if (( DL_DOCKER )) && docker ps -a --format '{{.Names}}' | grep -Fxq "$name"; then docker rm -f "$name" >/dev/null 2>&1 || true; fi
   local pf; pf=$(pid_file "$port")
   if [[ -f "$pf" ]]; then kill "$(cat "$pf")" 2>/dev/null || true; rm -f "$pf"; fi
+  # 2026-09-09：docker rm -f 之后立即 docker run 同端口偶发 EADDRINUSE
+  # （macOS Docker Desktop 端口分配/TIME_WAIT 释放慢）。verify_instance
+  # 拿到 connection refused 就会在 60s 后 die，破坏 active cutover。
+  # stop_instance 等端口真正空闲再返回，让 start_instance 的 docker run
+  # 一定拿到端口。仅在 Docker 模式下有意义（host-mode pid_file 路径
+  # 不参与 port 释放）。
+  if (( DL_DOCKER )); then dl_wait_port_free "$port" || true; fi
 }
 
 start_instance() {
@@ -767,10 +799,24 @@ verify_instance() {
   local port="$1" bundle="$2" body expected expected_seq
   expected=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version", ""))' "$bundle/version.json")
   expected_seq=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("build_seq", ""))' "$bundle/version.json")
-  dl_wait_http "http://127.0.0.1:${port}/healthz" "$HEALTH_TIMEOUT" || return 1
-  dl_wait_http "http://127.0.0.1:${port}/readyz" "$HEALTH_TIMEOUT" || return 1
-  body=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/version") || return 1
-  VERSION_BODY="$body" EXPECTED="$expected" EXPECTED_BUILD_SEQ="$expected_seq" python3 - <<'PY'
+  # 2026-09-09：active cutover 偶发 verify 失败（"previous release was
+  # restarted"），但 verify_instance 只 return 1 不告诉操作员哪一步超时
+  # —— /healthz / /readyz / /version / version 一致性 都是候选原因，
+  # 仅凭"failed"无法定位是端口 TIME_WAIT 释放慢、容器启动慢、还是
+  # bundle 和 binary 不一致。每步都打 stderr 让操作员立刻看到断点。
+  if ! dl_wait_http "http://127.0.0.1:${port}/healthz" "$HEALTH_TIMEOUT"; then
+    printf '    [verify] %s:%s: /healthz did not return 200 within %ss\n' "$port" "$bundle" "$HEALTH_TIMEOUT" >&2
+    return 1
+  fi
+  if ! dl_wait_http "http://127.0.0.1:${port}/readyz" "$HEALTH_TIMEOUT"; then
+    printf '    [verify] %s:%s: /readyz did not return 200 within %ss\n' "$port" "$bundle" "$HEALTH_TIMEOUT" >&2
+    return 1
+  fi
+  if ! body=$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/version" 2>&1); then
+    printf '    [verify] %s:%s: /version curl failed within 5s: %s\n' "$port" "$bundle" "$body" >&2
+    return 1
+  fi
+  if ! VERSION_BODY="$body" EXPECTED="$expected" EXPECTED_BUILD_SEQ="$expected_seq" python3 - <<'PY'
 import json, os, sys
 x=json.loads(os.environ['VERSION_BODY'])
 if x.get('version') != os.environ['EXPECTED']:
@@ -778,6 +824,12 @@ if x.get('version') != os.environ['EXPECTED']:
 if str(x.get('build_seq')) != os.environ['EXPECTED_BUILD_SEQ']:
     print('build_seq mismatch', x, file=sys.stderr); raise SystemExit(1)
 PY
+  then
+    printf '    [verify] %s:%s: /version body did not match bundle metadata\n' "$port" "$bundle" >&2
+    return 1
+  fi
+  printf '    [verify] %s:%s: ok (version=%s build_seq=%s)\n' "$port" "$bundle" "$expected" "$expected_seq" >&2
+  return 0
 }
 
 record_success() { dl_record_verify "$ROOT_DIR" "$DL_DB_MODE" "$DL_REDIS_MODE" "$RELEASE_VERSION" "$(dl_active_port)"; }
