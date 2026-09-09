@@ -39,21 +39,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# source 共享库
+# source 共享部署库 SSOT（P1.1）：_shared-lib.sh 导出 AIAN_DEPLOY_LIB 并预载
+# deploy-prereqs.sh + deploy-image-resolution.sh；其余按需从 $AIAN_DEPLOY_LIB 加载。
+# 历史副本留档于 deploy-lib.legacy/；scripts/deploy-lib 为共享 SSOT 的相对软链
+# （deploy-154/245 等旧入口与 tests/ 仍经它加载）。
+# shellcheck source=_shared-lib.sh
+source "$SCRIPT_DIR/_shared-lib.sh"
 # shellcheck source=deploy-lib/targets.sh
-source "$SCRIPT_DIR/deploy-lib/targets.sh"
+source "$AIAN_DEPLOY_LIB/targets.sh"
 # shellcheck source=deploy-lib/ssh-retry.sh
-source "$SCRIPT_DIR/deploy-lib/ssh-retry.sh"
+source "$AIAN_DEPLOY_LIB/ssh-retry.sh"
 # shellcheck source=deploy-lib/lock.sh
-source "$SCRIPT_DIR/deploy-lib/lock.sh"
+source "$AIAN_DEPLOY_LIB/lock.sh"
 # shellcheck source=deploy-lib/host.sh
-source "$SCRIPT_DIR/deploy-lib/host.sh"
+source "$AIAN_DEPLOY_LIB/host.sh"
 # shellcheck source=deploy-lib/post-deploy-verify.sh
-source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
+source "$AIAN_DEPLOY_LIB/post-deploy-verify.sh"
 # shellcheck source=deploy-lib/db-changelog.sh
-source "$SCRIPT_DIR/deploy-lib/db-changelog.sh"
+source "$AIAN_DEPLOY_LIB/db-changelog.sh"
 # shellcheck source=deploy-lib/zero-downtime.sh
-source "$SCRIPT_DIR/deploy-lib/zero-downtime.sh"
+source "$AIAN_DEPLOY_LIB/zero-downtime.sh"
 
 GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; RED=$'\033[0;31m'; BLUE=$'\033[0;34m'; NC=$'\033[0m'
 log()  { echo -e "${BLUE}[seamless]${NC} $*"; }
@@ -721,40 +726,14 @@ do_deploy() {
       err "CGO=0 构建失败且 docker 不可用，无法回退容器 CGO 构建; refusing to continue with stale binary"
       exit 1
     }
-local build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27-alpine-amd64}"
-    # 解析顺序：docker image inspect → 离线 tar 自动 load → registry pull → 失败。
-    # Apple Silicon + 离线场景下默认镜像无法走 docker pull 拿到 linux/amd64，
-    # 必须先尝试 ~/work/{docker-base-images,docker-base-image}/lang-base/
-    # 下预烘焙的 tar.gz（见 ~/.agents/skills/kx-base-golang-build）。
-    if ! docker image inspect "$build_image" >/dev/null 2>&1; then
-      local loaded=0
-      for tar_dir in \
-        "$HOME/work/docker-base-images/lang-base" \
-        "$HOME/work/docker-base-image/lang-base"; do
-        local tar_file="${tar_dir}/kx-base-golang-1.27-alpine-amd64.tar.gz"
-        if [[ -f "$tar_file" ]]; then
-          log "本地镜像 $build_image 缺失, 尝试从 $tar_file load"
-          if gunzip -c "$tar_file" | docker load >/dev/null 2>&1 \
-            && docker tag kx-base/golang:1.27-alpine-amd64 "$build_image" 2>/dev/null \
-            && docker image inspect "$build_image" >/dev/null 2>&1; then
-            ok "已从离线 tar load $build_image"
-            loaded=1; break
-          fi
-        fi
-      done
-      if [[ "$loaded" -eq 0 ]]; then
-        # 兜底: registry.itestu.cn 上有同 tag 镜像 (2026-09-09 后)
-        local remote_image="registry.itestu.cn/lang-base/kx-base-golang:1.27-alpine-amd64"
-        log "本地/离线均不可用, 尝试从 $remote_image pull"
-        if docker pull "$remote_image" >/dev/null 2>&1 \
-          && docker tag "$remote_image" "$build_image" 2>/dev/null \
-          && docker image inspect "$build_image" >/dev/null 2>&1; then
-          ok "已从 $remote_image pull 并 tag 为 $build_image"
-        else
-          err "CGO 回退需要镜像 $build_image; 本地/离线/registry 均不可用; refusing to continue"
-          exit 1
-        fi
-      fi
+    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27-alpine-amd64}"
+    # 镜像解析走共享 SSOT resolve_build_image（UNIFICATION-PLAN-2026-09-09 §3.3，
+    # P1.1 抽离原内联三层块）：docker inspect(含 linux/amd64 平台校验) → 离线
+    # tar 自动 load(~/work/{docker-base-images,docker-base-image}/lang-base) →
+    # registry.itestu.cn pull → docker hub 兜底；返回 0 保证本地可 inspect 该镜像。
+    if ! resolve_build_image "$build_image" "linux/amd64"; then
+      err "CGO 回退需要镜像 $build_image; 本地/离线/registry/docker hub 均不可用; refusing to continue"
+      exit 1
     fi
     # 2026-09-09：与 deploy-local.sh build_backend 同样加固——cgo_out
     # 用 $$ 后缀独占文件名，docker run 写到 .$$ 文件再原子 install

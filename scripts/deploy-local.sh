@@ -7,10 +7,14 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=deploy-local-lib.sh
 source "$SCRIPT_DIR/deploy-local-lib.sh"
+# 共享部署库 SSOT（P1.1）：导出 AIAN_DEPLOY_LIB 并预载 prereqs + 镜像解析。
+# 历史副本留档于 deploy-lib.legacy/；scripts/deploy-lib 为共享 SSOT 的相对软链。
+# shellcheck source=_shared-lib.sh
+source "$SCRIPT_DIR/_shared-lib.sh"
 # shellcheck source=deploy-lib/lock.sh
-source "$SCRIPT_DIR/deploy-lib/lock.sh"
+source "$AIAN_DEPLOY_LIB/lock.sh"
 # shellcheck source=deploy-lib/post-deploy-verify.sh
-source "$SCRIPT_DIR/deploy-lib/post-deploy-verify.sh"
+source "$AIAN_DEPLOY_LIB/post-deploy-verify.sh"
 
 # Track whether the caller provided the database configuration before the
 # import below, so diagnostics can say where the DSN came from.
@@ -189,9 +193,9 @@ detect_existing_containers() {
   DL_PG_CONTAINER=""; DL_REDIS_CONTAINER=""
   if (( DL_DOCKER )); then
     # Source smart discovery functions if available
-    if [[ -f "$SCRIPT_DIR/deploy-lib/smart-discovery.sh" ]]; then
+    if [[ -f "$AIAN_DEPLOY_LIB/smart-discovery.sh" ]]; then
       # shellcheck source=deploy-lib/smart-discovery.sh
-      source "$SCRIPT_DIR/deploy-lib/smart-discovery.sh"
+      source "$AIAN_DEPLOY_LIB/smart-discovery.sh"
       
       # PostgreSQL smart discovery with priority and database checking
       detect_postgres_container || true
@@ -576,7 +580,6 @@ build_backend() {
     need_cmd docker
     local build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27-alpine-amd64}"
     local cgo_log="$RUN_DIR/build-cgo.log"
-    local cgo_pull_log="$RUN_DIR/build-cgo-pull.log"
     # Ensure we pull the correct platform image matching target architecture
     local docker_platform
     if [[ "$target_arch" == "arm64" || "$target_arch" == "aarch64" ]]; then
@@ -586,60 +589,13 @@ build_backend() {
     else
       die "unsupported target architecture: $target_arch (expected arm64 or amd64)"
     fi
-    # Pull with explicit platform to ensure we get the right architecture
-    # Check if image exists AND has the correct platform; force re-pull on mismatch
-    local need_pull=0
-    if docker image inspect "$build_image" >/dev/null 2>&1; then
-      local existing_platform
-      existing_platform=$(docker image inspect "$build_image" --format='{{.Os}}/{{.Architecture}}' 2>/dev/null | head -n1)
-      if [[ "$existing_platform" != "$docker_platform" ]]; then
-        log "cached image $build_image is $existing_platform but need $docker_platform; re-pulling"
-        need_pull=1
-      fi
-    else
-      need_pull=1
-    fi
-    if (( need_pull )); then
-      # 解析顺序：离线 tar 自动 load (~/work/{docker-base-images,
-      # docker-base-image}/lang-base/kx-base-golang-1.27-alpine-amd64.tar.gz)
-      # → registry.itestu.cn pull → docker hub pull。Apple Silicon + 离线
-      # 场景下默认镜像无法走 docker hub 拿到对应平台，必须先尝试离线 tar。
-      # 见 ~/.agents/skills/kx-base-golang-build。
-      local loaded=0
-      local platform_tag=""
-      if [[ "$docker_platform" == "linux/amd64" ]]; then platform_tag="1.27-alpine-amd64"; else platform_tag="1.27-alpine-${target_arch}"; fi
-      for tar_dir in \
-        "$HOME/work/docker-base-images/lang-base" \
-        "$HOME/work/docker-base-image/lang-base"; do
-        local tar_file="${tar_dir}/kx-base-golang-${platform_tag}.tar.gz"
-        if [[ -f "$tar_file" ]]; then
-          log "尝试从 $tar_file load"
-          if gunzip -c "$tar_file" | docker load >/dev/null 2>&1 \
-            && docker tag "kx-base/golang:${platform_tag}" "$build_image" 2>/dev/null \
-            && docker image inspect "$build_image" >/dev/null 2>&1; then
-            ok "已从离线 tar load $build_image"
-            loaded=1; need_pull=0; break
-          fi
-        fi
-      done
-      if (( need_pull )); then
-        local remote_image="registry.itestu.cn/lang-base/kx-base-golang:${platform_tag}"
-        log "本地/离线均不可用, 尝试从 $remote_image pull (--platform=$docker_platform)"
-        if docker pull --platform="$docker_platform" "$remote_image" >/dev/null 2>"$cgo_pull_log" \
-          && docker tag "$remote_image" "$build_image" 2>/dev/null \
-          && docker image inspect "$build_image" >/dev/null 2>&1; then
-          ok "已从 $remote_image pull 并 tag 为 $build_image"
-          loaded=1; need_pull=0
-        fi
-      fi
-      if (( loaded == 0 )); then
-        log "falling back to docker pull $build_image for platform $docker_platform"
-        if ! docker pull --platform="$docker_platform" "$build_image" >/dev/null 2>"$cgo_pull_log"; then
-          printf '    [cgo-pull stderr follows]\n' >&2
-          sed 's/^/    /' "$cgo_pull_log" >&2 || true
-          die "CGO fallback needs image $build_image and it is not pullable (full stderr: $cgo_pull_log); also tried offline tar in ~/work/{docker-base-images,docker-base-image}/lang-base/ and registry.itestu.cn/lang-base/kx-base-golang"
-        fi
-      fi
+    # 镜像解析走共享 SSOT resolve_build_image（UNIFICATION-PLAN-2026-09-09 §3.3，
+    # P1.1 抽离原内联块）：本地 cache 含平台校验（平台不符视为未命中自动
+    # 重解析，保留原 need_pull 防线）→ 离线 tar(~/work/{docker-base-images,
+    # docker-base-image}/lang-base，dash 命名) → registry.itestu.cn → docker
+    # hub；返回 0 保证本地可 inspect 该镜像且平台匹配。
+    if ! resolve_build_image "$build_image" "$docker_platform"; then
+      die "CGO fallback needs image $build_image ($docker_platform); tried local cache, offline tar in ~/work/{docker-base-images,docker-base-image}/lang-base/, registry.itestu.cn/lang-base/kx-base-golang and docker hub"
     fi
     local cgo_out="$PROJECT_ROOT/.build-local/gateway.build.$$"
     mkdir -p "$PROJECT_ROOT/.build-local"

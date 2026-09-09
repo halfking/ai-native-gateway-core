@@ -154,8 +154,11 @@ version_tmp="$TMP/version-tmp"
 mkdir -p "$version_project/scripts/deploy-lib" "$version_project/web/public" "$version_project/web/dist" "$version_tmp"
 cp "$ROOT/scripts/deploy-local.sh" "$version_project/scripts/deploy-local.sh"
 cp "$ROOT/scripts/deploy-local-lib.sh" "$version_project/scripts/deploy-local-lib.sh"
-cp "$ROOT/scripts/deploy-lib/lock.sh" "$version_project/scripts/deploy-lib/lock.sh"
-cp "$ROOT/scripts/deploy-lib/post-deploy-verify.sh" "$version_project/scripts/deploy-lib/post-deploy-verify.sh"
+# P1.1: deploy-local.sh sources scripts/_shared-lib.sh, which resolves the
+# shared deploy-library SSOT from AIAN_DEPLOY_LIB (the sandbox redirects HOME,
+# so the $HOME-workspace default would not resolve there).
+cp "$ROOT/scripts/_shared-lib.sh" "$version_project/scripts/_shared-lib.sh"
+AIAN_DEPLOY_LIB_FIXTURE="$(cd "$ROOT/../.." && pwd)/deploy-lib"
 cp "$ROOT/scripts/bump-version.sh" "$version_project/scripts/bump-version.sh"
 printf '{\n  "version": "2.4.7-test",\n  "git_tag": "2.4.7",\n  "git_sha": "deadbeef",\n  "build_seq": 10,\n  "build_date": "20260903",\n  "module": "llm-gateway-go"\n}\n' > "$version_project/version.json"
 printf '2.4.7-test\n' > "$version_project/VERSION"
@@ -173,6 +176,7 @@ printf 'keep-me\n' > "$collision_bundle/sentinel"
 set +e
 HOME="$TMP/version-home" TMPDIR="$version_tmp" LLM_GATEWAY_ROOT="$version_install" \
   LLM_GATEWAY_SECRET_KEY=contract-test-secret-do-not-use \
+  AIAN_DEPLOY_LIB="$AIAN_DEPLOY_LIB_FIXTURE" \
   bash "$version_project/scripts/deploy-local.sh" deploy --no-frontend >"$TMP/release-collision.out" 2>&1
 collision_rc=$?
 set -e
