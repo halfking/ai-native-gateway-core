@@ -4,6 +4,14 @@
 # Purpose: Deploy Phase 0 optimization to 245 server
 # Target: root@8.136.114.245:25022
 # Reference: skills/deploy-245/SKILL.md
+#
+# ⚠️  DEPRECATED 2026-09-09 — 不要用于生产 154/245 部署 ⚠️
+#     本脚本 service 名用 'llm-gateway.service'，路径 '/opt/llm-gateway/'，
+#     与生产 'llmgo-245.service' + '/opt/llm-gateway-go/' 不一致；
+#     也无 env→users admin 密码同步、无凭据冒烟，误跑会重启错服务
+#     且无法察觉密码漂移。生产 245 部署请用：
+#         bash scripts/deploy-245.sh
+#     该入口 exec deploy-seamless.sh deploy 245，step 9.1 自动同步密码。
 # ============================================================================
 
 set -euo pipefail
