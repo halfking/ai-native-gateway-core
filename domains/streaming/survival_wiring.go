@@ -145,6 +145,7 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	lastRawModel := ""
 	lastKinds := ""
 	lastCommitState := ""
+	attemptHistory := ""
 	if res.FinalAttempt != nil {
 		lastCommitState = res.FinalAttempt.CommitState.String()
 		if res.FinalAttempt.ExecResult != nil {
@@ -164,6 +165,22 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		}
 		lastKinds = strings.Join(kinds, ",")
 	}
+	if len(res.History.PriorAttempts) > 0 {
+		historyParts := make([]string, 0, len(res.History.PriorAttempts))
+		for _, prior := range res.History.PriorAttempts {
+			historyParts = append(historyParts, fmt.Sprintf("%d:%d/%d/%s/%s/%s", prior.AttemptNo, prior.ProviderID,
+				prior.CredentialID, prior.Model, prior.Kind, prior.Action))
+			if res.FinalAttempt == nil || res.FinalAttempt.ExecResult == nil {
+				if prior.ProviderID != 0 {
+					lastProviderID = prior.ProviderID
+				}
+				if prior.Model != "" {
+					lastRawModel = prior.Model
+				}
+			}
+		}
+		attemptHistory = strings.Join(historyParts, ";")
+	}
 	slog.Info("request_survival_finished",
 		"request_id", params.RequestID,
 		"succeed", res.Succeed,
@@ -176,6 +193,7 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		"provider_id", lastProviderID,
 		"raw_model", lastRawModel,
 		"client_model", params.Model,
+		"attempt_history", attemptHistory,
 	)
 	if durable != nil {
 		var body []byte
