@@ -20,7 +20,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/monitoring"
@@ -40,6 +42,7 @@ type FileBodiesStore struct {
 	baseDir string           // 存储根目录
 	writer  *AsyncFileWriter // 复用异步写入器完成落盘
 	codec   Codec            // 新写内容的压缩编码（读路径始终兼容全部已知编码）
+	mu      sync.Mutex       // 串行化同一 store 的写/删，避免删除后排队写回
 }
 
 // StoreOption 定制 FileBodiesStore 的可选项。
@@ -112,6 +115,8 @@ func (s *FileBodiesStore) turnPath(codec Codec, tenantID, sessionID string, turn
 // Write 序列化并压缩一条会话内容后交由异步写入器落盘。
 // Write 阻塞直到该文件写入完成（成功或失败），便于调用方确认落盘结果。
 func (s *FileBodiesStore) Write(ctx context.Context, body *storage.SessionBody) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if body == nil {
 		return errors.New("file bodies store: body is nil")
 	}
@@ -209,6 +214,8 @@ func (s *FileBodiesStore) ReadRange(ctx context.Context, tenantID, sessionID str
 // Delete 删除整个会话目录（含全部轮次文件）。
 // 目录不存在时同样返回 nil（幂等）。
 func (s *FileBodiesStore) Delete(ctx context.Context, tenantID, sessionID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !validPathID(tenantID) {
 		return fmt.Errorf("file bodies store: invalid tenantID %q", tenantID)
 	}
@@ -253,14 +260,22 @@ func (s *FileBodiesStore) ListTurns(_ context.Context, tenantID, sessionID strin
 			continue
 		}
 		for _, codec := range AllCodecs() {
-			var turnNo int
-			if _, err := fmt.Sscanf(e.Name(), "turn_%d"+codec.Suffix(), &turnNo); err == nil {
-				if _, ok := seen[turnNo]; !ok {
-					turns = append(turns, turnNo)
-					seen[turnNo] = struct{}{}
-				}
-				break
+			prefix := "turn_"
+			suffix := codec.Suffix()
+			name := e.Name()
+			if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+				continue
 			}
+			turnText := strings.TrimSuffix(strings.TrimPrefix(name, prefix), suffix)
+			turnNo, parseErr := strconv.Atoi(turnText)
+			if parseErr != nil {
+				continue
+			}
+			if _, ok := seen[turnNo]; !ok {
+				turns = append(turns, turnNo)
+				seen[turnNo] = struct{}{}
+			}
+			break
 		}
 	}
 	sort.Ints(turns)
@@ -271,6 +286,8 @@ func (s *FileBodiesStore) ListTurns(_ context.Context, tenantID, sessionID strin
 // storage.TurnFileDeleter。新旧编码后缀都删（同轮混存时避免清残留），
 // 文件不存在时返回 nil（幂等）。
 func (s *FileBodiesStore) DeleteTurnFile(_ context.Context, tenantID, sessionID string, turnNo int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !validPathID(tenantID) {
 		return fmt.Errorf("file bodies store: invalid tenantID %q", tenantID)
 	}

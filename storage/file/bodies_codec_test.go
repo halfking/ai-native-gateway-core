@@ -117,7 +117,27 @@ func TestZstdStoreReadsGzipLegacy(t *testing.T) {
 }
 
 // TestListTurnsMixedCodecs 新旧编码混存的目录必须能完整列出轮次
-//（一致性对账 storage.ReconcileTurnArtifacts 依赖此清单）。
+// （一致性对账 storage.ReconcileTurnArtifacts 依赖此清单）。
+func TestListTurnsRejectsInvalidSuffixes(t *testing.T) {
+	s := newCodecTestStore(t, 1, CodecZstd)
+	dir := filepath.Join(s.baseDir, "tenant-p", "se", "sess-parse")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"turn_1.json.zst.bak", "turn_2.json.gzx", "turn_x.json.zst"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("ignored"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	turns, err := s.ListTurns(context.Background(), "tenant-p", "sess-parse")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 0 {
+		t.Fatalf("ListTurns() = %v, want no turns for invalid suffixes", turns)
+	}
+}
+
 func TestListTurnsMixedCodecs(t *testing.T) {
 	s := newCodecTestStore(t, 2, CodecGzip)
 	ctx := context.Background()
@@ -221,7 +241,7 @@ func BenchmarkFileBodiesWrite(b *testing.B) {
 }
 
 // TestCodecCompressedSizes 同一负载下 gzip 与 zstd 的产物大小对照
-//（go test -v 可见），作为报告 §3 结论在本仓负载上的抽样验证。
+// （go test -v 可见），作为报告 §3 结论在本仓负载上的抽样验证。
 func TestCodecCompressedSizes(t *testing.T) {
 	raw, err := json.Marshal(makeBenchmarkBody())
 	if err != nil {

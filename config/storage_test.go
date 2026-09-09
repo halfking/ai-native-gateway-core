@@ -107,6 +107,9 @@ func TestApplyLiteDefaultsFillsAllDefaults(t *testing.T) {
 	if l.BodiesDir != "./data/session_bodies" {
 		t.Fatalf("BodiesDir = %q, want ./data/session_bodies", l.BodiesDir)
 	}
+	if l.BodiesCodec != "zstd" {
+		t.Fatalf("BodiesCodec = %q, want zstd", l.BodiesCodec)
+	}
 	if l.CacheDir != "./data/cache" {
 		t.Fatalf("CacheDir = %q, want ./data/cache", l.CacheDir)
 	}
@@ -195,7 +198,7 @@ func TestLoadStorageConfigFromYAML(t *testing.T) {
 	for _, key := range []string{
 		"LLM_GATEWAY_STORAGE_MODE", "LLM_GATEWAY_POSTGRES_URL", "LLM_GATEWAY_REDIS_URL",
 		"LLM_GATEWAY_STORAGE_MAX_CONNECTIONS", "LLM_GATEWAY_SQLITE_PATH",
-		"LLM_GATEWAY_BODIES_DIR", "LLM_GATEWAY_CACHE_DIR", "LLM_GATEWAY_LOGS_DIR",
+		"LLM_GATEWAY_BODIES_DIR", "LLM_GATEWAY_BODIES_CODEC", "LLM_GATEWAY_CACHE_DIR", "LLM_GATEWAY_LOGS_DIR",
 	} {
 		t.Setenv(key, "")
 	}
@@ -205,6 +208,7 @@ func TestLoadStorageConfigFromYAML(t *testing.T) {
 lite_storage:
   sqlite_path: /tmp/gateway/gw.db
   bodies_dir: /tmp/gateway/bodies
+  bodies_codec: zstd
   cache_dir: /tmp/gateway/cache
   logs_dir: /tmp/gateway/logs
   sqlite_pragmas:
@@ -235,7 +239,7 @@ lite_storage:
 		t.Fatal("Lite = nil, want parsed section")
 	}
 	if l.SQLitePath != "/tmp/gateway/gw.db" || l.BodiesDir != "/tmp/gateway/bodies" ||
-		l.CacheDir != "/tmp/gateway/cache" || l.LogsDir != "/tmp/gateway/logs" {
+		l.BodiesCodec != "zstd" || l.CacheDir != "/tmp/gateway/cache" || l.LogsDir != "/tmp/gateway/logs" {
 		t.Fatalf("lite dirs = %q/%q/%q/%q, want parsed values", l.SQLitePath, l.BodiesDir, l.CacheDir, l.LogsDir)
 	}
 	if l.SQLitePragmas.JournalMode != "WAL" || l.SQLitePragmas.CacheSizeKB != 32000 ||
@@ -281,7 +285,7 @@ func TestLoadStorageConfigFromYAMLEnvOverrides(t *testing.T) {
 	for _, key := range []string{
 		"LLM_GATEWAY_STORAGE_MODE", "LLM_GATEWAY_POSTGRES_URL", "LLM_GATEWAY_REDIS_URL",
 		"LLM_GATEWAY_STORAGE_MAX_CONNECTIONS", "LLM_GATEWAY_SQLITE_PATH",
-		"LLM_GATEWAY_BODIES_DIR", "LLM_GATEWAY_CACHE_DIR", "LLM_GATEWAY_LOGS_DIR",
+		"LLM_GATEWAY_BODIES_DIR", "LLM_GATEWAY_BODIES_CODEC", "LLM_GATEWAY_CACHE_DIR", "LLM_GATEWAY_LOGS_DIR",
 	} {
 		t.Setenv(key, "")
 	}
@@ -293,6 +297,7 @@ func TestLoadStorageConfigFromYAMLEnvOverrides(t *testing.T) {
 	}
 	t.Setenv("LLM_GATEWAY_SQLITE_PATH", "/env/gw.db")
 	t.Setenv("LLM_GATEWAY_BODIES_DIR", "/env/bodies")
+	t.Setenv("LLM_GATEWAY_BODIES_CODEC", "gzip")
 	t.Setenv("LLM_GATEWAY_CACHE_DIR", "/env/cache")
 	t.Setenv("LLM_GATEWAY_LOGS_DIR", "/env/logs")
 
@@ -304,7 +309,7 @@ func TestLoadStorageConfigFromYAMLEnvOverrides(t *testing.T) {
 		t.Fatal("Lite = nil, want env-created section")
 	}
 	if cfg.Lite.SQLitePath != "/env/gw.db" || cfg.Lite.BodiesDir != "/env/bodies" ||
-		cfg.Lite.CacheDir != "/env/cache" || cfg.Lite.LogsDir != "/env/logs" {
+		cfg.Lite.BodiesCodec != "gzip" || cfg.Lite.CacheDir != "/env/cache" || cfg.Lite.LogsDir != "/env/logs" {
 		t.Fatalf("lite fields = %#v, want env values", cfg.Lite)
 	}
 
