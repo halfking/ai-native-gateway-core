@@ -47,3 +47,11 @@
   分层兼容，迁移成本为一次性 import 替换。
 - 约束：`domains/` 下的包只允许依赖 `storage`（接口）与 `monitoring`，不允许
   直接依赖 `storage/factory` 及各实现子包——工厂仅在 `cmd/gateway` 装配层使用。
+
+## Amendment (2026-09-10)
+
+lite 实现子包 `storage/memory` 更名为 `storage/lite`（package `memory` →
+`lite`，类型 `MemoryStateStore` 名称不变）：原包名 "memory" 与 full 模式的
+Redis 状态存储同义易混，且无法表达"这是 lite 模式的持久化实现之一"。
+依赖方向不变（`storage/lite → storage ← storage/factory`），本 ADR 其余
+决定不受影响；正文表格中的 `storage/memory` 按历史记录保留原文。

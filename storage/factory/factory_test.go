@@ -16,7 +16,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/storage"
 	filestore "github.com/kaixuan/llm-gateway-go/storage/file"
-	memorystore "github.com/kaixuan/llm-gateway-go/storage/memory"
+	litestore "github.com/kaixuan/llm-gateway-go/storage/lite"
 	sqlitestore "github.com/kaixuan/llm-gateway-go/storage/sqlite"
 )
 
@@ -77,10 +77,10 @@ func TestNewStorageFactoryLiteMode(t *testing.T) {
 	require.NotNil(t, rl)
 	assert.IsType(t, &sqlitestore.SQLiteRequestLogStore{}, rl)
 
-	// lite 模式 StateStore 为内存实现（memorystore.MemoryStateStore）
+	// lite 模式 StateStore 为内存实现（litestore.MemoryStateStore）
 	st := f.NewStateStore()
 	require.NotNil(t, st)
-	assert.IsType(t, &memorystore.MemoryStateStore{}, st)
+	assert.IsType(t, &litestore.MemoryStateStore{}, st)
 	require.NoError(t, st.Set(context.Background(), "k", "v", time.Minute))
 	v, err := st.Get(context.Background(), "k")
 	require.NoError(t, err)

@@ -3,12 +3,12 @@
 // lite 模式（SQLite + File + Memory，真实实现）。
 //
 // 架构说明：工厂独立于根 storage 包而存在——根包仅保留存储接口、数据类型
-// 与哨兵错误，各实现子包（storage/sqlite、storage/memory、storage/file）反向
+// 与哨兵错误，各实现子包（storage/sqlite、storage/lite、storage/file）反向
 // 依赖根包获取这些类型。若把工厂放在根包，根包将无法 import 实现包
 // （构成 import cycle），因此工厂单独成包，依赖方向为：
 //
 //	storage/factory ──► storage（接口/类型/错误）
-//	storage/factory ──► storage/sqlite、storage/memory、storage/file（实现）
+//	storage/factory ──► storage/sqlite、storage/lite、storage/file（实现）
 package factory
 
 import (
@@ -27,7 +27,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/storage"
 	filestore "github.com/kaixuan/llm-gateway-go/storage/file"
-	memorystore "github.com/kaixuan/llm-gateway-go/storage/memory"
+	litestore "github.com/kaixuan/llm-gateway-go/storage/lite"
 	sqlitestore "github.com/kaixuan/llm-gateway-go/storage/sqlite"
 )
 
@@ -41,7 +41,7 @@ var (
 	_ storage.TurnsStore      = (*sqlitestore.SQLiteTurnsStore)(nil)
 	_ storage.RequestLogStore = (*sqlitestore.SQLiteRequestLogStore)(nil)
 	_ storage.BodiesStore     = (*filestore.FileBodiesStore)(nil)
-	_ storage.StateStore      = (*memorystore.MemoryStateStore)(nil)
+	_ storage.StateStore      = (*litestore.MemoryStateStore)(nil)
 )
 
 // StorageFactory 存储工厂，按存储模式创建并持有底层连接资源，
@@ -58,7 +58,7 @@ type StorageFactory struct {
 	// 新建，首次创建后复用同一实例，由 Close 统一优雅关闭。
 	liteMu      sync.Mutex
 	bodiesStore *filestore.FileBodiesStore
-	stateStore  *memorystore.MemoryStateStore
+	stateStore  *litestore.MemoryStateStore
 
 	closeOnce sync.Once
 	closeErr  error
@@ -262,11 +262,11 @@ func (f *StorageFactory) NewStateStore() storage.StateStore {
 // liteStateStore 返回 lite 模式状态存储单例。
 // MemoryStateStore 持有 KV 数据与后台过期清理协程，多实例之间数据不共享且
 // 会泄漏协程，因此与会话内容存储一样做惰性单例，由 Close 统一关闭（停止清理协程）。
-func (f *StorageFactory) liteStateStore() *memorystore.MemoryStateStore {
+func (f *StorageFactory) liteStateStore() *litestore.MemoryStateStore {
 	f.liteMu.Lock()
 	defer f.liteMu.Unlock()
 	if f.stateStore == nil {
-		f.stateStore = memorystore.NewMemoryStateStore()
+		f.stateStore = litestore.NewMemoryStateStore()
 	}
 	return f.stateStore
 }

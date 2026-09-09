@@ -1,9 +1,9 @@
-// Package memory 提供双模式存储架构中 lite 模式的进程内 KV 状态存储，
+// Package lite 提供双模式存储架构中 lite 模式的进程内 KV 状态存储，
 // 用于替代 full 模式下的 Redis StateStore。
 //
 // 语义对齐 Redis：过期即不存在（Get 返回 storage.ErrNotFound），
 // ErrExpired 哨兵在本实现中保留不用。
-package memory
+package lite
 
 import (
 	"context"
@@ -20,7 +20,7 @@ const defaultSweepInterval = 30 * time.Second
 // errClosed 私有哨兵错误：存储 Close 之后调用 Set 返回该错误。
 // Get 在 Close 后返回 storage.ErrNotFound（存储已关闭，视同全部不可见）；
 // Delete 保持幂等，Close 后仍返回 nil。
-var errClosed = errors.New("memory: state store closed")
+var errClosed = errors.New("lite: state store closed")
 
 // item 存储条目：值 + 过期时间。
 type item struct {

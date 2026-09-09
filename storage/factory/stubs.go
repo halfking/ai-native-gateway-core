@@ -7,7 +7,7 @@
 // 替换这些桩。
 //
 // lite 模式不使用桩：工厂已直接接线到真实实现包
-// （storage/sqlite、storage/memory、storage/file），见 factory.go。
+// （storage/sqlite、storage/lite、storage/file），见 factory.go。
 package factory
 
 import (
