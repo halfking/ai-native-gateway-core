@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -525,7 +526,7 @@ watch(activeTab, (tab) => {
         <span class="chip">{{ t('workTypes.topBar.chipAuto24h') }} <strong>{{ stats?.total_auto ?? audit.total_auto_requests }}</strong></span>
         <span class="chip">{{ t('workTypes.topBar.chipType') }} <strong>{{ workTypes.length || wtStatsEntries.length }}</strong></span>
         <span class="chip">{{ t('workTypes.topBar.chipSuccessRate') }} <strong>{{ fmt(audit.success_rate * 100, 1) }}%</strong></span>
-        <span v-if="syncMeta?.last_synced_at" class="chip">{{ t('workTypes.topBar.chipLastSync') }} <strong>{{ new Date(syncMeta.last_synced_at).toLocaleString() }}</strong></span>
+        <span v-if="syncMeta?.last_synced_at" class="chip">{{ t('workTypes.topBar.chipLastSync') }} <strong>{{ formatDateTime(syncMeta.last_synced_at) }}</strong></span>
       </div>
     </div>
 
@@ -596,7 +597,7 @@ watch(activeTab, (tab) => {
               <thead><tr><th>{{ t('workTypes.overview.decisionsTableTime') }}</th><th>{{ t('workTypes.overview.decisionsTableL1') }}</th><th>{{ t('workTypes.overview.decisionsTableProfile') }}</th><th>{{ t('workTypes.overview.decisionsTableModel') }}</th><th>{{ t('workTypes.overview.decisionsTableStatus') }}</th></tr></thead>
               <tbody>
                 <tr v-for="d in decisions" :key="d.request_id">
-                  <td>{{ new Date(d.ts).toLocaleTimeString() }}</td>
+                  <td>{{ formatTimeOnly(d.ts) }}</td>
                   <td><span class="badge badge-blue">{{ d.task_type || '-' }}</span></td>
                   <td>{{ d.auto_profile || '-' }}</td>
                   <td class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</td>

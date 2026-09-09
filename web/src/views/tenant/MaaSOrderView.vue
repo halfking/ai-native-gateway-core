@@ -2,6 +2,7 @@
 // MaaSOrderView.vue — /tenant/orders/:id 订单支付页。
 // 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { formatDateTime } from '../../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { useRoute } from 'vue-router'
@@ -34,7 +35,7 @@ function fmtCredits(n: number) {
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString(localeRef.value)
+  return formatDateTime(s, { locale: localeRef.value })
 }
 
 function statusLabel(s: string) {

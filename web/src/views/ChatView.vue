@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { deleteGatewaySession, getAvailableModels, type PopularModel } from '../api'
 import { projectAvailableModels } from '../utils/availableModels'
@@ -134,9 +135,9 @@ function formatSessionTime(ts: number): string {
   const d = new Date(ts)
   const now = new Date()
   if (d.toDateString() === now.toDateString()) {
-    return d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    return formatTimeOnly(d, { locale: 'zh-CN', options: { hour: '2-digit', minute: '2-digit' } })
   }
-  return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+  return formatDateTime(d, { locale: 'zh-CN', options: { month: 'short', day: 'numeric' } })
 }
 
 function stripFailedAssistantTail<T extends { role: string; content: string }>(msgs: T[]): T[] {

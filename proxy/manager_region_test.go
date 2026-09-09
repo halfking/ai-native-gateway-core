@@ -149,6 +149,76 @@ func TestSelectBestNodeRespectsRegionBan(t *testing.T) {
 	}
 }
 
+// TestSelectNodeWithLocationNormalizesRegion (R4 #7)
+// 地域亲和匹配必须与 IsRegionBanned 同口径：大小写/首尾空白不分裂同一地区。
+func TestSelectNodeWithLocationNormalizesRegion(t *testing.T) {
+	nodes := []*Node{
+		{ID: 1, Name: "US-A", Location: "US"},
+		{ID: 2, Name: "JP-B", Location: "JP"},
+	}
+	cases := []struct {
+		name     string
+		affinity LocationAffinityPolicy
+		preferred string
+		wantID   int
+	}{
+		{"require_same mixed case", AffinityRequireSame, "us", 1},
+		{"require_same whitespace", AffinityRequireSame, " us ", 1},
+		{"prefer_same whitespace", AffinityPreferSame, "us ", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lb := NewLoadBalancer(StrategyBestOnly)
+			lb.SetLocationAffinity(tc.affinity)
+			got := lb.SelectNodeWithLocation(nodes, 1, "req", tc.preferred)
+			if got == nil || got.ID != tc.wantID {
+				t.Fatalf("SelectNodeWithLocation(%q, affinity=%s) = %+v, want node id=%d",
+					tc.preferred, tc.affinity, got, tc.wantID)
+			}
+		})
+	}
+
+	// 纯空白 preferred 等价于无偏好：require_same 下不能把候选集清空成 nil。
+	lb := NewLoadBalancer(StrategyBestOnly)
+	lb.SetLocationAffinity(AffinityRequireSame)
+	if got := lb.SelectNodeWithLocation(nodes, 1, "req", "   "); got == nil {
+		t.Fatalf("whitespace-only preferred must fall back to full candidate set, got nil")
+	}
+}
+
+// TestRegionStatsReportMergesCaseVariants (R4 #7)
+// RegionStatsReport 分桶走 normalizeRegion："US" 与 "us " 必须合并为一个桶。
+func TestRegionStatsReportMergesCaseVariants(t *testing.T) {
+	store := &fakeStoreForBans{
+		subs: []*Subscription{{ID: 1, Status: "active"}},
+		nodes: []*Node{
+			{ID: 1, SubscriptionID: 1, Name: "a", Protocol: ProtocolHTTP, Server: "127.0.0.1", Port: 8001, Status: "active", Location: "US"},
+			{ID: 2, SubscriptionID: 1, Name: "b", Protocol: ProtocolHTTP, Server: "127.0.0.1", Port: 8002, Status: "active", Location: " us "},
+			{ID: 3, SubscriptionID: 1, Name: "c", Protocol: ProtocolHTTP, Server: "127.0.0.1", Port: 8003, Status: "active", Location: "jp"},
+		},
+	}
+	mgr := NewManager(store, nil, nil)
+	stats, err := mgr.RegionStatsReport(context.Background())
+	if err != nil {
+		t.Fatalf("RegionStatsReport: %v", err)
+	}
+	byRegion := make(map[string]RegionStats, len(stats))
+	for _, s := range stats {
+		byRegion[s.Region] = s
+	}
+	if len(stats) != 2 {
+		t.Fatalf("got %d buckets (%v), want 2 (US merged, JP)", len(stats), stats)
+	}
+	us, ok := byRegion["US"]
+	if !ok || us.Total != 2 {
+		t.Fatalf("US bucket = %+v, want Total=2 under key \"US\"", us)
+	}
+	jp, ok := byRegion["JP"]
+	if !ok || jp.Total != 1 {
+		t.Fatalf("JP bucket = %+v, want Total=1 under key \"JP\"", jp)
+	}
+}
+
 // TestSetSelectionPolicyAppliesToLoadBalancer 验证策略切换能下发到 LoadBalancer。
 func TestSetSelectionPolicyAppliesToLoadBalancer(t *testing.T) {
 	mgr := NewManager(&fakeStoreForBans{}, nil, nil)

@@ -2,6 +2,7 @@
 // MaaSUsageView.vue — /tenant/usage 页面（我的消耗 / 管理员只读消耗视图）。
 // 2026-07-12: 文案全面接入 i18n。
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime } from '../../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../../i18n'
 import { RouterLink } from 'vue-router'
@@ -75,7 +76,7 @@ function fmtNum(n: number | undefined) {
 
 function fmtTime(s: string) {
   if (!s) return '—'
-  return new Date(s).toLocaleString(localeRef.value)
+  return formatDateTime(s, { locale: localeRef.value })
 }
 
 function typeLabel(entryType: string) {
