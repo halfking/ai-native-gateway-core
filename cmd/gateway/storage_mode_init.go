@@ -218,6 +218,42 @@ func (r *storageRuntime) newSessionCacheV2(db *pgxpool.Pool, redisAddr string, r
 	return v2.NewSessionCacheV2WithMode(db, redisAddr, redisDB, storage.StorageModeLite, r.fileCache)
 }
 
+// GetProviderStore 返回 lite 模式的 provider catalog store（full 模式返回 nil）。
+// 调用方需要类型断言为 *sqlitestore.SQLiteProviderStore 或 domains/provider.Store。
+func (r *storageRuntime) GetProviderStore() interface{} {
+	if r == nil || r.factory == nil {
+		return nil
+	}
+	return r.factory.NewProviderStore()
+}
+
+// GetCredentialStore 返回 lite 模式的 credential store（full 模式返回 nil）。
+// 调用方需要类型断言为 *sqlitestore.SQLiteCredentialStore 或 domains/credential.Store。
+func (r *storageRuntime) GetCredentialStore() interface{} {
+	if r == nil || r.factory == nil {
+		return nil
+	}
+	return r.factory.NewCredentialStore()
+}
+
+// GetModelStore 返回 lite 模式的 model catalog store（full 模式返回 nil）。
+// 调用方需要类型断言为 *sqlitestore.SQLiteModelStore。
+func (r *storageRuntime) GetModelStore() interface{} {
+	if r == nil || r.factory == nil {
+		return nil
+	}
+	return r.factory.NewModelStore()
+}
+
+// GetBindingStore 返回 lite 模式的 credential-model binding store（full 模式返回 nil）。
+// 调用方需要类型断言为 *sqlitestore.SQLiteBindingStore。
+func (r *storageRuntime) GetBindingStore() interface{} {
+	if r == nil || r.factory == nil {
+		return nil
+	}
+	return r.factory.NewBindingStore()
+}
+
 // Shutdown 优雅关闭存储运行时：先取消清理任务（有界等待退出），再关闭工厂
 // （幂等，内部会排空 FileBodiesStore 的异步写队列保证落盘）。
 // nil-safe 且可重入（full/未启用模式 no-op；重复调用仅首次生效）。
