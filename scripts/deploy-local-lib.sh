@@ -472,14 +472,72 @@ PY
   [[ -s "$bundle/SHA256SUMS" ]] || { rm -f "$bundle/SHA256SUMS"; return 1; }
 }
 
+# 准备 bundle 目录供 dl_stage_release 写入：
+#   - 目录不存在：no-op，返回 0
+#   - 目录存在且就是 active 发布：mv 到 .prev-<epoch> 让路
+#   - 目录存在且含完整 SHA256SUMS（旧发布）：mv 到 .prev-<epoch> 让路
+#   - 目录存在但完全空（上次 dl_stage_release 在 mkdir -p 之后被打断留下
+#     的残留，例如 Ctrl+C、容器构建 SIGKILL、build_backend 失败导致 install
+#     找不到 gateway.build ——这就是 deploy-local-lib.sh:483 的
+#     'SHA256SUMS: No such file or directory' 根因）：rmdir 自愈，允许本次
+#     deploy 继续
+#   - 目录存在且 *包含任何文件*（含隐藏文件）：fail-closed，要求人工确认，
+#     因为可能是操作员数据；这是 deploy_local_contract_test 用 sentinel
+#     文件守护的契约底线
+#
+# 2026-09-09 事故修正：早期实现的 rm -rf 会静默销毁含任意内容的同名目录
+# （0c465a815），现已替换为只对"完全空"目录自愈，其余一律 fail-closed。
+dl_ensure_release_available() {
+  local bundle="${1:-}"
+  local active_version="${2:-}"
+  local aside
+  [[ -n "$bundle" ]] || return 64
+  if [[ -z "$active_version" ]]; then
+    active_version=$(dl_active_version 2>/dev/null || printf '')
+  fi
+  [[ ! -e "$bundle" && ! -L "$bundle" ]] && return 0
+  if [[ -n "$active_version" && "$(basename "$bundle")" == "$active_version" ]]; then
+    aside="${bundle}.prev-$(date +%s)"
+    printf '[deploy-local] warning: release %s is the active deployment; moving it aside to %s before restaging\n' "$bundle" "$(basename "$aside")" >&2
+    mv "$bundle" "$aside" || { printf 'error: failed to move active release aside: %s\n' "$bundle" >&2; return 1; }
+    return 0
+  fi
+  if [[ -e "$bundle/SHA256SUMS" ]]; then
+    aside="${bundle}.prev-$(date +%s)"
+    printf '[deploy-local] warning: release %s already exists (intact, not active); moving it aside to %s to allow same-version redeploy\n' "$bundle" "$(basename "$aside")" >&2
+    mv "$bundle" "$aside" || { printf 'error: failed to move release aside: %s\n' "$bundle" >&2; return 1; }
+    return 0
+  fi
+  if [[ -d "$bundle" ]] && [[ -z "$(ls -A "$bundle" 2>/dev/null || true)" ]]; then
+    printf '[deploy-local] warning: release %s is empty (residue from a previous failed deploy); auto-cleaning and retrying staging\n' "$bundle" >&2
+    rmdir "$bundle" || { printf 'error: failed to remove empty residue dir: %s (manual cleanup required)\n' "$bundle" >&2; return 1; }
+    return 0
+  fi
+  printf 'error: release already exists: %s (no SHA256SUMS — not a verifiable release; inspect and remove it manually if it is a stale artifact)\n' "$bundle" >&2
+  return 1
+}
+
 dl_verify_release() {
   local b="$1" line sum path actual
+  # dl_stage_release 在 staging 任一关键步骤失败后会主动 rm -f SHA256SUMS
+  # （deploy-local-lib.sh :471-472 注释），所以这里读不到 SHA256SUMS 不
+  # 是 bash 自带的 'No such file or directory' 重定向错误，而是 staging
+  # 早期失败的明确信号。把它翻译成可读错误，避免操作员误以为是脚本
+  # bug 或文件权限问题（2026-09-09 事故：'SHA256SUMS: No such file or
+  # directory' 让操作员去查 ~/.bashrc，没意识到是 staging 早期失败残留）。
+  if [[ ! -f "$b/SHA256SUMS" ]]; then
+    printf 'error: %s/SHA256SUMS is missing — the bundle was never successfully staged (dl_stage_release failed before the final checksum generation)\n' "$b" >&2
+    return 1
+  fi
   (cd "$b" && while IFS= read -r line; do
     sum=${line%% *}
     path=${line#*  }
-    [[ -f "$path" ]] || return 1
+    [[ -f "$path" ]] || { printf 'error: SHA256SUMS references missing file: %s\n' "$path" >&2; return 1; }
     actual=$(dl_sha256 "$path" | cut -d ' ' -f1)
-    [[ "$actual" == "$sum" ]] || return 1
+    if [[ "$actual" != "$sum" ]]; then
+      printf 'error: checksum mismatch for %s (expected %s, got %s)\n' "$path" "$sum" "$actual" >&2
+      return 1
+    fi
   done < SHA256SUMS)
 }
 dl_mark_verified() { python3 - "$1/deployment.json" <<'PY'
