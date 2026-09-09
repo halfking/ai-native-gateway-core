@@ -1356,6 +1356,10 @@ func main() {
 		// nil(redis 不可用) 时 SetRedisStore 退化为纯内存/DB 旧行为。
 		stickyCache.SetRedisStore(stickyStore)
 		router := executors.NewRouter(stickyCache, lim)
+		// 2026-09-09 P0 修复：dispatch 路径绕过 Limiter 的 credential 信号量，
+		// 导致 routing 永远按 weight 而不是实时并发分摊。把 PeakCollector
+		// 注入 Router.LiveLoad，使 P2C 拿到真正的 in-flight 计数。
+		router.LiveLoad = peakCollector
 		routingRouter = router
 
 		// Connect FpSlots to Router for load-aware P2C selection

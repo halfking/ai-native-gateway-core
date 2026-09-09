@@ -280,13 +280,34 @@ SELECT
     -- success rate over the bucket window
     COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) AS success_rate,
     COALESCE(percentile_cont(0.95) WITHIN GROUP (ORDER BY rl.latency_ms)::int, 1000) AS p95_latency_ms,
-    -- active_sessions / concurrency_limit / pressure_ratio:
-    --   advisory fields, set to 0 here (no subquery).
-    --   The customer_cost_view recomputes active_concurrent live from
-    --   request_logs so this static value is informational only.
-    0                          AS active_sessions,
+    -- 2026-09-09 P0 修复：active_sessions 从 credential_model_peak_1m 的
+    -- 最新桶拉取（dispatch 的 PeakCollector 每分钟写入），驱动 autoroute 的
+    -- 并发感知压力评分。之前硬编码 0 让所有候选的 pressure_score=100，
+    -- P2C 永远退化为 capacity-weight tie-break，导致一组候选扛下全部流量。
+    -- 没数据时回落 0（保持与 cold-start baseline 的安全行为一致）。
+    COALESCE((
+      SELECT GREATEST(p.peak_concurrent, 0)
+      FROM credential_model_peak_1m p
+      WHERE p.credential_id = rl.credential_id
+        AND p.raw_model = COALESCE(rl.outbound_model, rl.client_model)
+        AND p.bucket <= $1
+      ORDER BY p.bucket DESC
+      LIMIT 1
+    ), 0) AS active_sessions,
     MAX(cr.concurrency_limit)  AS concurrency_limit,
-    0::numeric                 AS pressure_ratio,
+    -- pressure_ratio 从 active_sessions / concurrency_limit 计算（NULL/0 安全）。
+    CASE
+      WHEN MAX(cr.concurrency_limit) IS NULL OR MAX(cr.concurrency_limit) <= 0 THEN 0
+      ELSE LEAST(1.0, COALESCE((
+        SELECT GREATEST(p.peak_concurrent, 0)::numeric
+        FROM credential_model_peak_1m p
+        WHERE p.credential_id = rl.credential_id
+          AND p.raw_model = COALESCE(rl.outbound_model, rl.client_model)
+          AND p.bucket <= $1
+        ORDER BY p.bucket DESC
+        LIMIT 1
+      ), 0) / MAX(cr.concurrency_limit))
+    END AS pressure_ratio,
     -- Simplified pre-computed scores (no subquery; pressure assumed 0).
     -- smart weights: price=25 speed=25 stab=20 match=25 pressure=10 ctx=15
     (COALESCE(100 * (1 - LEAST(1.0, AVG(mo.unit_price_in_per_1m + mo.unit_price_out_per_1m) / 20.0)), 50) * 0.25
@@ -350,9 +371,31 @@ SELECT
     mc.context_window,
     0.9::numeric(5,4)                   AS success_rate,
     1000::int                           AS p95_latency_ms,
-    0::int                              AS active_sessions,
+    -- 2026-09-09 P0：cold-start baseline 也从 credential_model_peak_1m 拉
+    -- 最新并发；若冷启动凭据此前无流量，回落 0（与原行为一致）。
+    COALESCE((
+      SELECT GREATEST(p.peak_concurrent, 0)
+      FROM credential_model_peak_1m p
+      WHERE p.credential_id = v.credential_id
+        AND p.raw_model = pm.raw_model_name
+        AND p.bucket <= $1
+      ORDER BY p.bucket DESC
+      LIMIT 1
+    ), 0)::int AS active_sessions,
     c.concurrency_limit,
-    0::numeric(5,4)                     AS pressure_ratio,
+    -- 同步计算 pressure_ratio，与 traffic 半保持对称。
+    CASE
+      WHEN c.concurrency_limit IS NULL OR c.concurrency_limit <= 0 THEN 0::numeric(5,4)
+      ELSE LEAST(1.0, COALESCE((
+        SELECT GREATEST(p.peak_concurrent, 0)::numeric
+        FROM credential_model_peak_1m p
+        WHERE p.credential_id = v.credential_id
+          AND p.raw_model = pm.raw_model_name
+          AND p.bucket <= $1
+        ORDER BY p.bucket DESC
+        LIMIT 1
+      ), 0) / c.concurrency_limit)::numeric(5,4))
+    END AS pressure_ratio,
     50::numeric(8,4)                    AS score_smart,
     50::numeric(8,4)                    AS score_speed_first,
     50::numeric(8,4)                    AS score_cost_first,
