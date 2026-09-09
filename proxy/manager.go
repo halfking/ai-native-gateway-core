@@ -1598,13 +1598,20 @@ func (m *Manager) getNodesFromCacheWithTTL(subscriptionID int, now time.Time) ([
 }
 
 func (m *Manager) refreshCacheAsync(subscriptionID int) {
-	if _, loaded := m.cacheRefreshes.LoadOrStore(subscriptionID, struct{}{}); loaded {
+	// 串行化 wg.Add(1) 与 Stop() 的 wg.Wait()：Stop 调用前会持有 lifecycleMu，
+	// 这里同样在锁内做 LoadOrStore + wg.Add(1)，避免请求路径上的 Add 晚于
+	// Stop 内部的 Wait 导致 WaitGroup 进入未定义状态。
+	m.lifecycleMu.Lock()
+	if m.stopped {
+		m.lifecycleMu.Unlock()
 		return
 	}
-	// 跟踪后台刷新 goroutine，使 Stop() 在 in-flight 刷新完成后再返回，
-	// 避免后台刷新与 Stop 的 ReloadCache 出现竞态。Stop 会先 cancel ctx，
-	// 这里在 WaitGroup 上 Add/Done 配对使用（不持有 lifecycleMu，与 R2 注释一致）。
+	if _, loaded := m.cacheRefreshes.LoadOrStore(subscriptionID, struct{}{}); loaded {
+		m.lifecycleMu.Unlock()
+		return
+	}
 	m.wg.Add(1)
+	m.lifecycleMu.Unlock()
 	go func() {
 		defer m.wg.Done()
 		defer m.cacheRefreshes.Delete(subscriptionID)

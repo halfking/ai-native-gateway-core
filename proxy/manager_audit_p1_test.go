@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 	"time"
 )
@@ -254,22 +253,3 @@ func TestR4StopCancelsSlowSwapProbeOne(t *testing.T) {
 	// 释放 stuckHealthChecker 的 stopCh 以便复用的测试桩不会泄露。
 	close(stuck.stopCh)
 }
-
-// silentHealthChecker 是 TestR4HealthCheckNodeSkipsPasswordDecryptFailed 的
-// 辅助：每次 Check 返回 OK 但不记录"已被调用"，避免 strictChecker 强约束。
-type silentHealthChecker struct{}
-
-func (s *silentHealthChecker) Check(context.Context, *Node) (int, error) {
-	return 1, nil
-}
-func (s *silentHealthChecker) CheckConcurrent(ctx context.Context, nodes []*Node, _ int) <-chan HealthCheckResult {
-	ch := make(chan HealthCheckResult, len(nodes))
-	for _, n := range nodes {
-		ch <- HealthCheckResult{NodeID: n.ID, NodeName: n.Name, OK: true, Latency: 1, CheckedAt: time.Now()}
-	}
-	close(ch)
-	return ch
-}
-
-// 引用 fmt 防止 import 抖动被 goimports 自动删除。
-var _ = fmt.Sprintf
