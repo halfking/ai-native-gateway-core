@@ -1,6 +1,10 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"strings"
+)
 
 const (
 	RuntimeRoleActive      = "active"
@@ -36,3 +40,25 @@ func (c *Config) ValidateRuntimeRole() error {
 	c.RuntimeRole = role
 	return nil
 }
+
+// IsCredRecoveryDisabled reports whether an operator has opted the
+// credential_recovery worker out via the LLM_GATEWAY_CRED_RECOVERY_DISABLED
+// environment variable. The check is intentionally narrow — only the literal
+// "true" (case-insensitive, trimmed) counts — so an unset, empty, "false",
+// or "1" value keeps the recovery loop running.
+//
+// 2026-09-09 P0 fix: the recovery worker is allowed (and required) to run on
+// traffic-only instances so a cluster with no active-role primary can still
+// self-heal credentials whose quota / availability recover_at has elapsed.
+// Operators who want the original strict opt-in (only the active-role
+// instance runs the loop) can revert to that behaviour by exporting this
+// variable on every node.
+func IsCredRecoveryDisabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("LLM_GATEWAY_CRED_RECOVERY_DISABLED")), "true")
+}
+
+// isCredRecoveryDisabledForTest is the test-only alias used by
+// runtime_role_test.go. Kept as a separate name so production callers
+// always reach IsCredRecoveryDisabled and never accidentally depend on a
+// renamed internal helper.
+func isCredRecoveryDisabledForTest() bool { return IsCredRecoveryDisabled() }

@@ -3536,8 +3536,40 @@ func main() {
 		materializedViewRefresher.Start()
 	}
 
-	if dbConn != nil && dbConn.Enabled() && !cfg.IsTrafficOnly() {
-		slog.Info("CHECKPOINT: inside bg services enabled block")
+	// 2026-09-09 P0 fix: credential_recovery MUST run on traffic-only
+	// instances as well, not just on the active-role primary.
+	//
+	// Root cause (245/154 prod, 2026-09-09): the primary llm-gateway-go.service
+	// on 154 was inactive (canary had replaced it via the blue-green swap).
+	// Every canary unit pins RUNTIME_ROLE=traffic-only (deploy/llm-gateway-go-
+	// canary@.service:27), and `!cfg.IsTrafficOnly()` therefore prevented
+	// credRecovery.Start on every running instance. As a result the
+	// `quota_periodic_recover` / `availability_recover` / `expired-binding`
+	// ticks never fired; credentials in periodic_exhausted / suspended with
+	// quota_recover_at <= now() stayed stuck for hours, blocking routing
+	// even after upstream balance had been restored (see hzx cred 41 stuck on
+	// `availability_state=suspended / quota_state=permanently_exhausted`
+	// for ~9h after `unavailable_recover_at` elapsed).
+	//
+	// Rationale for running the loop on traffic-only nodes:
+	//   - The probe queue uses ON CONFLICT DO NOTHING on dedup_key, so two
+	//     instances queuing the same (cred, model) pair collapse into one
+	//     entry — duplicate ticks are safe.
+	//   - The recovery UPDATE statements only flip rows currently in a
+	//     failure state with a past recover_at; idempotent re-runs converge.
+	//   - The 30s tick is cheap relative to the active chat workload.
+	//   - The same precedent already exists for materializedViewRefresher
+	//     above (line 3461), explicitly "OUTSIDE the !IsTrafficOnly() block"
+	//     because the analytics endpoints it feeds are served by canaries.
+	//
+	// Operators retain full control via two opt-out levers:
+	//   1. Set LLM_GATEWAY_CRED_RECOVERY_DISABLED=true to skip the loop.
+	//   2. Set LLM_GATEWAY_CRED_RECOVERY_INTERVAL_SECONDS=0 to keep the
+	//      worker alive (Start() runs) but make the ticker idle.
+	if dbConn != nil && dbConn.Enabled() && !config.IsCredRecoveryDisabled() {
+		slog.Info("CHECKPOINT: inside bg services enabled block",
+			"runtime_role", cfg.RuntimeRole,
+			"cred_recovery_disabled", config.IsCredRecoveryDisabled())
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		// 会话优化 v4 (T5/R4.4): 36h 成功回看扫描 — 探测结果以 Recover(30)
 		// 优先级回写 URSM；扫描间隔/回看窗口走 settings_kv 热配置。
