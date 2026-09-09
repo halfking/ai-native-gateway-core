@@ -6,6 +6,16 @@ pass(){ printf 'PASS %s\n' "$1"; }
 fail(){ printf 'FAIL %s\n' "$1" >&2; ((fail++)); }
 require(){ local d=$1 p=$2 f=$3; grep -Eq "$p" "$f" && pass "$d" || fail "$d"; }
 
+# 2026-09-10 audit R8 P1: scripts/deploy-lib is a symlink into the shared
+# ai-native-tools deploy-lib SSOT. If it dangles, every grep below on that
+# path would false-PASS via `! grep` semantics — assert resolvability first.
+if [[ ! -f "$ROOT/scripts/deploy-lib/targets.sh" ]]; then
+  fail "deploy-lib symlink resolves (target: $(readlink "$ROOT/scripts/deploy-lib" 2>/dev/null || echo '?'))"
+  printf 'FAIL %s\n' "  fix: ln -sfn ../../../../ai-native-tools/deploy-lib $ROOT/scripts/deploy-lib" >&2
+  exit 1
+fi
+pass 'deploy-lib symlink resolves'
+
 require 'runtime role is declared' 'RuntimeRole.*LLM_GATEWAY_RUNTIME_ROLE' "$ROOT/config/config.go"
 # 2026-09-09: contract evolved from the original "traffic-only disables ALL
 # background" pin (74f502762). 16068c099 (2026-09-01) deliberately runs the MV
