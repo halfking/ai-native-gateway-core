@@ -57,7 +57,8 @@ export default {
       scan: "Scannen",
       delete: "Löschen",
       deleteConfirm: "Vorlage \"{name}\" löschen? Bestehende Discovery-Aufgaben und -Ergebnisse bleiben unberührt.",
-      deleted: "Vorlage gelöscht: {name}"
+      deleted: "Vorlage gelöscht: {name}",
+      disabledScanHint: "Vorlage deaktiviert — vor dem Scan aktivieren"
     },
   scan: {
       title: "Discovery auslösen",

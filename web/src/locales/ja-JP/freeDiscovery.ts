@@ -57,7 +57,8 @@ export default {
       scan: "スキャン",
       delete: "削除",
       deleteConfirm: "テンプレート「{name}」を削除しますか？既存の探索タスクと結果には影響しません。",
-      deleted: "テンプレートを削除しました：{name}"
+      deleted: "テンプレートを削除しました：{name}",
+      disabledScanHint: "テンプレートが無効です。スキャン前に有効化してください"
     },
   scan: {
       title: "探索を実行",

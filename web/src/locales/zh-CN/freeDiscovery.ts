@@ -59,7 +59,8 @@ export default {
       scan: '扫描',
       delete: '删除',
       deleteConfirm: '确认删除模板「{name}」？已产生的发现任务与结果不受影响。',
-      deleted: '模板已删除：{name}'
+      deleted: '模板已删除：{name}',
+      disabledScanHint: '模板已停用，请先启用后再扫描'
     },
   scan: {
       title: '触发发现',

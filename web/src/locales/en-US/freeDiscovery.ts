@@ -58,7 +58,8 @@ export default {
       scan: 'Scan',
       delete: 'Delete',
       deleteConfirm: 'Delete template "{name}"? Existing discovery tasks and results are unaffected.',
-      deleted: 'Template deleted: {name}'
+      deleted: 'Template deleted: {name}',
+      disabledScanHint: 'Template is disabled — enable it before scanning'
     },
   scan: {
       title: 'Trigger discovery',

@@ -69,9 +69,15 @@ func RecordRoutingSourceForRequest(requestID string, source statesource.RoutingS
 }
 
 // RecordConversionPathForRequest records the conversion_path
-// ("ir" | "legacy") for a single request. Called by the
-// TransportFactory.Pick instrumentation point. Best-effort: a request
-// whose routing source was never recorded (entry absent) still gets a
+// ("ir" | "legacy") for a single request. Was originally wired to the
+// retired Transformation TransportFactory.Pick instrumentation point
+// (see ADR docs/adr/2026-09-09-ir-transport-layer-retirement.md); the
+// factory was removed on 2026-09-09. The function remains in place so
+// applyRoutingMetadata in request_log_pipeline.go can still surface a
+// pre-recorded conversion_path if a future instrumentation hook writes
+// one. No production caller writes this field today, so in practice
+// conversionPath is always empty. Best-effort: a request whose routing
+// source was never recorded (entry absent) still gets a
 // conversion_path entry so the request_logs metadata captures the
 // transport decision even on the off/no-v2 path.
 func RecordConversionPathForRequest(requestID, path string) {
