@@ -12,6 +12,7 @@ package admin
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -134,16 +135,16 @@ func toProxySubscriptionViews(subs []*proxy.Subscription) []proxySubscriptionVie
 type proxyNodeView struct {
 	ID                    int        `json:"id"`
 	SubscriptionID        int        `json:"subscription_id"`
-	Name        string                 `json:"name"`
-	Protocol    string                 `json:"protocol"`
-	Server      string                 `json:"server"`
-	Port        int                    `json:"port"`
-	Username    string                 `json:"username,omitempty"`
-	HasPassword bool                   `json:"has_password"`
-	Dialable    bool                   `json:"dialable"`
-	Location    string                 `json:"location,omitempty"`
-	BannedRegions []string              `json:"banned_regions"`
-	Status      string                 `json:"status"`
+	Name                  string     `json:"name"`
+	Protocol              string     `json:"protocol"`
+	Server                string     `json:"server"`
+	Port                  int        `json:"port"`
+	Username              string     `json:"username,omitempty"`
+	HasPassword           bool       `json:"has_password"`
+	Dialable              bool       `json:"dialable"`
+	Location              string     `json:"location,omitempty"`
+	BannedRegions         []string   `json:"banned_regions"`
+	Status                string     `json:"status"`
 	HealthCheckURL        string     `json:"health_check_url,omitempty"`
 	LastHealthCheckAt     *time.Time `json:"last_health_check_at"`
 	LastHealthCheckStatus string     `json:"last_health_check_status,omitempty"`
@@ -344,11 +345,11 @@ func (h *Handler) listProxySubscriptions(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name         string   `json:"name"`
-		SubscribeURL string   `json:"subscribe_url"`
-		Priority     int      `json:"priority"`
-		Notes        string   `json:"notes"`
-		Status       string   `json:"status"`
+		Name          string   `json:"name"`
+		SubscribeURL  string   `json:"subscribe_url"`
+		Priority      int      `json:"priority"`
+		Notes         string   `json:"notes"`
+		Status        string   `json:"status"`
 		BannedRegions []string `json:"banned_regions"`
 	}
 	if err := readJSONRequired(r, &req); err != nil {
@@ -664,6 +665,10 @@ func (h *Handler) createProxyNode(w http.ResponseWriter, r *http.Request) {
 	if healthCheckURL == "" {
 		healthCheckURL = "https://www.google.com/generate_204"
 	}
+	if err := validateHealthCheckURL(healthCheckURL); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid health_check_url: "+err.Error())
+		return
+	}
 
 	mgr, store := h.proxyRuntime()
 	node := &proxy.Node{
@@ -796,14 +801,14 @@ func (h *Handler) healthCheckProxySubscription(w http.ResponseWriter, r *http.Re
 	}
 	_ = mgr.ReloadCache()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":               true,
-		"subscription_id":  id,
-		"total":            summary.Total,
-		"ok_count":         summary.OK,
-		"failed_count":     summary.Failed,
-		"skipped":          summary.Skipped,
-		"avg_latency_ms":   summary.AvgMs,
-		"max_latency_ms":   summary.MaxMs,
+		"ok":              true,
+		"subscription_id": id,
+		"total":           summary.Total,
+		"ok_count":        summary.OK,
+		"failed_count":    summary.Failed,
+		"skipped":         summary.Skipped,
+		"avg_latency_ms":  summary.AvgMs,
+		"max_latency_ms":  summary.MaxMs,
 	})
 }
 
@@ -824,13 +829,13 @@ func (h *Handler) handleProxyHealthCheckAll(w http.ResponseWriter, r *http.Reque
 	summary := mgr.HealthCheckAllNodesNow(ctx)
 	_ = mgr.ReloadCache()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"total":           summary.Total,
-		"ok_count":        summary.OK,
-		"failed_count":    summary.Failed,
-		"skipped":         summary.Skipped,
-		"avg_latency_ms":  summary.AvgMs,
-		"max_latency_ms":  summary.MaxMs,
+		"ok":             true,
+		"total":          summary.Total,
+		"ok_count":       summary.OK,
+		"failed_count":   summary.Failed,
+		"skipped":        summary.Skipped,
+		"avg_latency_ms": summary.AvgMs,
+		"max_latency_ms": summary.MaxMs,
 	})
 }
 
@@ -857,9 +862,9 @@ func (h *Handler) handleProxySwap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{
-		"ok":           true,
-		"selected":     toProxyNodeView(node),
-		"swap_state":   mgr.CurrentSelection(),
+		"ok":         true,
+		"selected":   toProxyNodeView(node),
+		"swap_state": mgr.CurrentSelection(),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -885,9 +890,9 @@ func (h *Handler) handleProxyGetPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":               true,
-		"policy":           mgr.GetSelectionPolicy(),
-		"swap_state":       mgr.CurrentSelection(),
+		"ok":         true,
+		"policy":     mgr.GetSelectionPolicy(),
+		"swap_state": mgr.CurrentSelection(),
 	})
 }
 
@@ -1014,8 +1019,8 @@ func (h *Handler) handleProxyNodeRegionBan(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true,
-		"id": id,
+		"ok":             true,
+		"id":             id,
 		"banned_regions": node.BannedRegions,
 	})
 }
@@ -1153,6 +1158,24 @@ func validateSubscribeURL(raw string) error {
 
 // normalizeRegionList 规整地区码切片：去空白 + 转大写 + 去重 + 保序。
 // 与 proxy.normalizeRegions 行为一致，但 admin 不应反向引用 proxy 私有函数。
+func validateHealthCheckURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return errors.New("must be an absolute http or https URL")
+	}
+	if u.User != nil {
+		return errors.New("must not include userinfo")
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") || host == "ip6-localhost" {
+		return errors.New("local hosts are not allowed")
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsLinkLocalMulticast()) {
+		return errors.New("private, loopback, link-local, and unspecified IPs are not allowed")
+	}
+	return nil
+}
+
 func normalizeRegionList(in []string) []string {
 	if in == nil {
 		return []string{}
