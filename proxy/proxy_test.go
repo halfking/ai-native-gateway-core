@@ -509,18 +509,60 @@ type fakeStore struct {
 	nodes        []*Node
 	listErr      error
 	subscription *Subscription
+	subscriptions []*Subscription
 	listCalls    int
 }
 
 func (f *fakeStore) GetSubscription(_ context.Context, id int) (*Subscription, error) {
-	if f.subscription == nil || f.subscription.ID != id {
-		return nil, errors.New("subscription not found")
+	if f.subscription != nil && f.subscription.ID == id {
+		return f.subscription, nil
 	}
-	return f.subscription, nil
+	for _, sub := range f.subscriptions {
+		if sub != nil && sub.ID == id {
+			return sub, nil
+		}
+	}
+	return nil, errors.New("subscription not found")
+}
+
+func (f *fakeStore) ListSubscriptions(_ context.Context) ([]*Subscription, error) {
+	out := append([]*Subscription(nil), f.subscriptions...)
+	if f.subscription != nil {
+		out = append(out, f.subscription)
+	}
+	return out, nil
+}
+
+func (f *fakeStore) CreateSubscription(_ context.Context, sub *Subscription) error {
+	sub.ID = len(f.subscriptions) + 1
+	f.subscriptions = append(f.subscriptions, sub)
+	return nil
 }
 
 func (f *fakeStore) UpdateSubscription(_ context.Context, sub *Subscription) error {
-	f.subscription = sub
+	if f.subscription != nil && f.subscription.ID == sub.ID {
+		f.subscription = sub
+		return nil
+	}
+	for i, s := range f.subscriptions {
+		if s != nil && s.ID == sub.ID {
+			f.subscriptions[i] = sub
+			return nil
+		}
+	}
+	f.subscriptions = append(f.subscriptions, sub)
+	return nil
+}
+
+func (f *fakeStore) DeleteSubscription(_ context.Context, id int) error {
+	kept := f.subscriptions[:0]
+	for _, s := range f.subscriptions {
+		if s != nil && s.ID == id {
+			continue
+		}
+		kept = append(kept, s)
+	}
+	f.subscriptions = kept
 	return nil
 }
 
