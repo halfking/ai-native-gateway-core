@@ -16,9 +16,9 @@ import (
 //   - LLM_GATEWAY_RAW_LOG_DIR: 日志目录路径 (默认 ./logs/raw_data)
 //   - LLM_GATEWAY_RAW_LOG_MAX_SIZE: 单文件最大字节数 (默认且上限 100MB)
 //
-// 2026-07-28: This helper is still consulted by the historical
-// initEnhancedIRTransport path (now removed). The main wiring lives in
-// cmd/gateway/main.go:948 onward and uses the default-on async logger.
+// 现状（2026-09-10）：main 装配已改用默认开启的 async raw logger
+// （cmd/gateway/main.go），本函数当前无调用方，仅为保留上述环境变量契约；
+// 连同 logging.RawDataLogger 的下线属破坏性清理，另行处理。
 func initRawDataLogger() *logging.RawDataLogger {
 	enabledStr := os.Getenv("LLM_GATEWAY_RAW_LOG_ENABLED")
 	enabled := enabledStr == "true"
@@ -71,15 +71,8 @@ func initSemanticAnalyzer() *ir.SemanticAnalyzer {
 	return analyzer
 }
 
-// 2026-07-28: removed initAnomalyReporter (mutex-based reporter is now
-// deleted) and initEnhancedIRTransport (dead code: not referenced from
-// main.go since the default-on async raw logger + LockFreeAnomalyReporter
-// wiring lives inline in main.go).
-//
-// Environment variables retained:
-//   - LLM_GATEWAY_RAW_LOG_DIR
-//   - LLM_GATEWAY_RAW_LOG_MAX_SIZE
-//   - LLM_GATEWAY_RAW_LOG_ENABLED
+// 环境变量契约（历史实现已下线，变量读取点如下）：
+//   - LLM_GATEWAY_RAW_LOG_DIR / _MAX_SIZE / _ENABLED → initRawDataLogger
 //   - LLM_GATEWAY_ANOMALY_REPORTER_ENABLED  → read directly in main.go
 //   - LLM_GATEWAY_ANOMALY_ENDPOINT          → read directly in main.go
 //   - LLM_GATEWAY_SEMANTIC_ANALYSIS_ENABLED → handled by initSemanticAnalyzer
