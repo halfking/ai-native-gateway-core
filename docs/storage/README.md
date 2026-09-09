@@ -129,7 +129,7 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
 
 关键路径规则（按 rune 切分 sessionID 前 2 位，多字节字符安全）：
 
-- 轮次 body：`{bodies_dir}/{tenantID}/{sessionID前2位}/{sessionID}/turn_{turnNo}.json.{gz|zst}`；编码由 `lite_storage.bodies_codec`（默认 `zstd`，可回退 `gzip`）决定，读路径兼容两种后缀。
+- 轮次 body：`{bodies_dir}/{tenantID}/{sessionID前2位}/{sessionID}/turn_{turnNo}.json.{gz|zst}`；编码由 `lite_storage.bodies_codec`（安全默认 `gzip`，灰度验证后可用 `zstd`）决定，读路径兼容两种后缀。
 - L1.5 快照：`{cache_dir}/{tenantID}/{sessionID前2位}/{sessionID}.json`
 
 ## 快速开始

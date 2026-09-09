@@ -172,7 +172,9 @@ func (c *StorageConfig) ApplyLiteDefaults() {
 		l.BodiesDir = "./data/session_bodies"
 	}
 	if strings.TrimSpace(l.BodiesCodec) == "" {
-		l.BodiesCodec = "zstd"
+		// 默认保持历史 gzip，避免新二进制写入 zstd 后旧二进制回滚不可读。
+		// 经过灰度验证后再显式配置 bodies_codec=zstd。
+		l.BodiesCodec = "gzip"
 	}
 	if strings.TrimSpace(l.CacheDir) == "" {
 		l.CacheDir = "./data/cache"
