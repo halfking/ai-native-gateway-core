@@ -118,21 +118,30 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 // Start 启动定时任务。多次调用只会启动一组后台任务。
 func (m *Manager) Start() {
 	m.lifecycleMu.Lock()
-	defer m.lifecycleMu.Unlock()
 	if m.started || m.stopped {
+		m.lifecycleMu.Unlock()
 		return
 	}
 	m.started = true
-
-	if err := m.loadAllNodesIntoCache(); err != nil {
-		slog.Error("proxy: failed to load nodes into cache", "error", err)
-	}
 	// Keep lifecycleMu while adding workers so Stop cannot call Wait concurrently
-	// with WaitGroup.Add.
-	m.wg.Add(3)
+	// with WaitGroup.Add. The initial DB load is registered here too so Stop's
+	// wg.Wait blocks until any in-flight loadAllNodesIntoCache returns (audit
+	// #10 P2).
+	m.wg.Add(4)
+	go m.initialCacheLoad()
 	go m.refreshLoop()
 	go m.healthCheckLoop()
 	go m.swapLoop()
+	m.lifecycleMu.Unlock()
+}
+
+// initialCacheLoad runs the startup DB load off the lifecycleMu critical section
+// so Stop() does not block on a slow ListNodes call.
+func (m *Manager) initialCacheLoad() {
+	defer m.wg.Done()
+	if err := m.loadAllNodesIntoCache(); err != nil {
+		slog.Error("proxy: failed to load nodes into cache", "error", err)
+	}
 }
 
 // Stop 停止定时任务，并关闭可关闭的检查器及 Transport 工厂。
@@ -1503,7 +1512,10 @@ func redactErr(err error) string {
 }
 
 func (m *Manager) loadAllNodesIntoCache() error {
-	ctx := context.Background()
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	nodes, err := m.store.ListNodes(ctx, nil)
 	if err != nil {
 		return err
