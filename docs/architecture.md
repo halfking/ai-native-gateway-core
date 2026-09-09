@@ -139,6 +139,10 @@ All queries automatically enforce `tenant_id` filtering at database level.
 
 ### Storage
 
+Storage is dual-mode (`storage/` package tree; factory dispatch in `storage/factory`):
+
+**Default — Full mode (`LLM_GATEWAY_STORAGE_MODE` unset or `full`)**:
+
 **PostgreSQL 14+**:
 - Core data (tenants, users, api_keys, credentials, providers, models)
 - Request logs and audit trail
@@ -150,6 +154,13 @@ All queries automatically enforce `tenant_id` filtering at database level.
 - Live request stream (FIFO queue with dedup)
 - Rate limit buckets (token/TPM/RPM)
 - Credential availability cache (30s TTL)
+
+**Optional — Lite mode (`LLM_GATEWAY_STORAGE_MODE=lite`)**: zero-dependency single-binary mode (no PostgreSQL/Redis). The gateway skips PG/Redis init and routes the session storage interfaces to:
+- **SQLite** (`storage/sqlite/`): session/turn metadata, request logs, provider/credential/model catalog (WAL + busy_timeout pragmas)
+- **Local files** (`storage/file/`): request/response bodies via async writer; L1.5 file cache
+- **In-process KV** (`storage/lite.MemoryStateStore`): runtime state that Redis carries in full mode
+
+The two modes share the same `storage` interfaces; per-store mapping table and configuration reference live in [docs/storage/README.md](storage/README.md) and [lite-mode quick reference](design/lite-mode-quick-ref.md). The proxy node-management store (`proxy.Store`, subscriptions/nodes/selection policy) remains PostgreSQL-only and is not part of this dual-mode switch.
 
 ### Observability
 
@@ -184,6 +195,7 @@ All queries automatically enforce `tenant_id` filtering at database level.
 | Mode | Description | Status |
 |------|-------------|--------|
 | **Minimal local** | Single machine: Docker Compose with PostgreSQL + Redis + gateway | ✅ CURRENT (`docker-compose.quickstart.yml`) |
+| **Lite (single binary)** | `LLM_GATEWAY_STORAGE_MODE=lite`: SQLite + local files, no PostgreSQL/Redis | ✅ CURRENT (session/data-plane storage; proxy node management requires PG) |
 | **M1** | Binary + systemd (external PG/Redis) | ✅ CURRENT (with installer) |
 | **M2** | Docker Compose | ✅ CURRENT (quickstart provided) |
 | **M3** | Kubernetes deployment/sidecar | ✅ PARTIAL (test-grade manifests) |
