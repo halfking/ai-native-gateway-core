@@ -33,6 +33,7 @@ export default {
     pricing: '成本价格',
     modelPricing: '定价管理',
     freePool: '免费资源',
+    freeDiscovery: '免费发现',
     tenants: '租户管理',
     users: '用户管理',
     keys: 'API 密钥',

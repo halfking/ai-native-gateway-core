@@ -165,6 +165,7 @@ func (h *Handler) handleFreeDiscoveryPresets(w http.ResponseWriter, r *http.Requ
 		ProviderCode string `json:"provider_code"`
 		DisplayName  string `json:"display_name"`
 		BaseURL      string `json:"base_url"`
+		APIType      string `json:"api_type"`
 		APIKeyEnv    string `json:"api_key_env"`
 		TosVerdict   string `json:"tos_verdict"`
 		TosNotes     string `json:"tos_notes"`
@@ -179,6 +180,7 @@ func (h *Handler) handleFreeDiscoveryPresets(w http.ResponseWriter, r *http.Requ
 			ProviderCode: p.ProviderCode,
 			DisplayName:  p.DisplayName,
 			BaseURL:      p.BaseURL,
+			APIType:      string(p.APIType),
 			APIKeyEnv:    p.APIKeyEnv,
 			TosVerdict:   p.TosVerdict,
 			TosNotes:     p.TosNotes,

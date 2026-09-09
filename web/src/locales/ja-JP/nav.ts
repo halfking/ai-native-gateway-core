@@ -29,6 +29,7 @@ export default {
     pricing: "コスト価格",
     modelPricing: "価格管理",
     freePool: "無料リソース",
+    freeDiscovery: "無料リソース発見",
     routingDefaults: "Routing Defaults",
     tenants: "テナント管理",
     users: "ユーザー管理",

@@ -29,6 +29,7 @@ export default {
     pricing: "تكلفة التسعير",
     modelPricing: "إدارة التسعير",
     freePool: "الموارد المجانية",
+    freeDiscovery: "اكتشاف الموارد المجانية",
     routingDefaults: "Routing Defaults",
     tenants: "إدارة المستأجرين",
     users: "إدارة المستخدمين",

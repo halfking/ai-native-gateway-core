@@ -25,6 +25,7 @@ import decisions from './decisions'
 import decisionsView from './decisionsView'
 import auditLog from './auditLog'
 import freePool from './freePool'
+import freeDiscovery from './freeDiscovery'
 import models from './models'
 import pricingManagement from './pricingManagement'
 import standardModelPricing from './standardModelPricing'
@@ -100,6 +101,7 @@ export default {
   decisionsView,
   auditLog,
   freePool,
+  freeDiscovery,
   models,
   pricingManagement,
   standardModelPricing,

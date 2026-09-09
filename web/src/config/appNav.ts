@@ -143,6 +143,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/pricing', label: '成本价格', labelKey: 'nav.item.pricing', icon: '📉', platformOps: true, hideForTenant: true },
       { path: '/model-pricing', label: '定价管理', labelKey: 'nav.item.modelPricing', icon: '💰', platformOps: true, hideForTenant: true },
       { path: '/free-pool', label: '免费资源', labelKey: 'nav.item.freePool', icon: '🎁', super: true, hideForTenant: true },
+      { path: '/free-discovery', label: '免费发现', labelKey: 'nav.item.freeDiscovery', icon: '🔍', super: true, hideForTenant: true },
     ],
   },
   {
