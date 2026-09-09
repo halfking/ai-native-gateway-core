@@ -796,7 +796,7 @@ func (m *Manager) ReloadCache() error {
 			m.cacheLocks.Delete(subID)
 			m.forgetLoadBalancerState(subID)
 			m.subscriptionBans.Delete(subID)
-			m.forgetActiveSelection(&subID, -1)
+			// Orphan-sweep of m.active for this subscription runs in the block below.
 		}
 		return true
 	})
@@ -939,6 +939,10 @@ func (m *Manager) HealthCheckSubscriptionNow(ctx context.Context, subscriptionID
 			continue
 		}
 		if n.Status != "active" && n.Status != "unhealthy" {
+			continue
+		}
+		if n.PasswordDecryptFailed {
+			summary.Skipped++
 			continue
 		}
 		if !n.Dialable() {
@@ -1087,6 +1091,13 @@ func (m *Manager) swapProbeOne(ctx context.Context, sel *activeSelection, thresh
 	}
 	if node.Status == "unhealthy" {
 		// 已被全局探活标记为 unhealthy：视为失败 1 次计入，连续达阈值即切流。
+		// 同步写回内存状态与持久层，避免 selectNode 的 threshold 过滤看不到进展。
+		m.applyHealthCheckResult(node, false, 0, time.Now())
+		if uerr := m.store.UpdateNode(ctx, node); uerr == nil {
+			m.updateNodeInCache(node)
+		} else {
+			slog.Warn("proxy: swap probe: update node failed", "node_id", node.ID, "error", uerr)
+		}
 		m.recordProbeResult(sel.subscriptionID, sel.nodeID, false)
 	} else {
 		latency, err := m.checker.Check(ctx, node)
@@ -1388,15 +1399,24 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 	summary.OK = successCount
 	summary.Failed = failedCount
 	if successCount > 0 {
+		// Per-representative averaging: each dedup group contributes a single
+		// latency sample; dividing by node count would silently halve the value
+		// whenever multiple nodes share proxy+health URL.
+		perRep := 0
 		for _, g := range urlToGroup {
-			if r, ok := checkResults[g.nodes[0].ID]; ok && r.ok {
-				summary.AvgMs += r.latency
-				if r.latency > summary.MaxMs {
-					summary.MaxMs = r.latency
-				}
+			r, ok := checkResults[g.nodes[0].ID]
+			if !ok || !r.ok {
+				continue
 			}
+			summary.AvgMs += r.latency
+			if r.latency > summary.MaxMs {
+				summary.MaxMs = r.latency
+			}
+			perRep++
 		}
-		summary.AvgMs /= successCount
+		if perRep > 0 {
+			summary.AvgMs /= perRep
+		}
 	}
 
 	elapsed := time.Since(startTime)
