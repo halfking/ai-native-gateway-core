@@ -394,7 +394,7 @@ SELECT
           AND p.bucket <= $1
         ORDER BY p.bucket DESC
         LIMIT 1
-      ), 0) / c.concurrency_limit)::numeric(5,4))
+      ), 0) / c.concurrency_limit)::numeric(5,4)
     END AS pressure_ratio,
     50::numeric(8,4)                    AS score_smart,
     50::numeric(8,4)                    AS score_speed_first,
