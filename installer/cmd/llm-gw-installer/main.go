@@ -349,6 +349,9 @@ var candidateFailureLogsPartitionsHeapMigration689 []byte
 //go:embed embeddata/startup/690_session_summaries_archived_ttl_index.sql
 var sessionSummariesArchivedTTLIndexMigration690 []byte
 
+//go:embed embeddata/startup/691_proxy_region_policy.sql
+var proxyRegionPolicyMigration691 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -460,6 +463,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/688_promote_default_retention_align_go_scheduler.sql":                   promoteDefaultRetentionAlignGoSchedulerMigration688,
 	"startup/689_candidate_failure_logs_partitions_heap.sql":                         candidateFailureLogsPartitionsHeapMigration689,
 	"startup/690_session_summaries_archived_ttl_index.sql":                           sessionSummariesArchivedTTLIndexMigration690,
+	"startup/691_proxy_region_policy.sql":                                            proxyRegionPolicyMigration691,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
