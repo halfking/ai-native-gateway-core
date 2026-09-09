@@ -1660,6 +1660,7 @@ func main() {
 			clientModel, outboundModel, requestID string,
 			cap *audit.StreamCapture,
 			pcAny any,
+			inputTokensEstimate int,
 		) executors.StreamOutcome {
 			tenantID := extractTenantIDFromUpstreamResp(resp)
 			var pc *streaming.PendingCapturer
@@ -1672,7 +1673,9 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			// 审计 R3 #2 (2026-09-09)：透传 executor 基于请求体的 input_tokens 估算值，
+			// 写入 message_start.usage.input_tokens（此前恒 0）。
+			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(ctx, w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics, inputTokensEstimate)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}

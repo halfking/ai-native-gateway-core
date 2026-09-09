@@ -443,13 +443,19 @@ type ChatResponseToAnthropicFunc func(body []byte, clientModel, requestID string
 
 // OpenAIToAnthropicSSEFunc is the Q2 streaming **response** counterpart
 // of AnthropicToOpenAIStream: reads OpenAI-format SSE upstream and
-// writes Anthropic-format SSE to the client. Used by executeOpenAI
-// when ClientProtocol == "anthropic-messages" AND the upstream is
+// writes Anthropic-format SSE to the client. Used by executeOpenAI when
+// ClientProtocol == "anthropic-messages" AND the upstream is
 // OpenAI-shaped (cand.Protocol != "anthropic-messages").
+//
+// inputTokensEstimate is the request-derived prompt token estimate written
+// into the client's message_start.usage.input_tokens (审计 R3 #2). The
+// OpenAI upstream only reports prompt_tokens (if ever) at stream end,
+// while Anthropic clients need it at stream head; see
+// input_token_estimate.go. 0 means "no estimate available" (legacy wire).
 //
 // Wired from main.go (streaming.StreamOpenAIToAnthropicSSE).
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
-type OpenAIToAnthropicSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any) StreamOutcome
+type OpenAIToAnthropicSSEFunc func(ctx context.Context, w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc any, inputTokensEstimate int) StreamOutcome
 
 // SanitizeAnthropicToolsFunc strips OpenAI/custom tool type wrappers from
 // an Anthropic Messages request body before forwarding to upstream.
