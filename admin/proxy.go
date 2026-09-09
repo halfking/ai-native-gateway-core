@@ -27,7 +27,7 @@ import (
 const proxyRefreshTimeout = 20 * time.Second
 
 // proxyRuntime 惰性初始化代理管理器，避免改动所有 Handler 构造点。
-func (h *Handler) proxyRuntime() (*proxy.Manager, *proxy.PgStore) {
+func (h *Handler) proxyRuntime() (*proxy.Manager, proxy.Store) {
 	h.proxyOnce.Do(func() {
 		if h.db == nil {
 			return
@@ -880,6 +880,13 @@ func (h *Handler) handleProxyPolicy(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// handleProxyPolicySlash 专门处理 /api/proxy/policy/ 的 trailing-slash 形式，
+// 返回 405 而不是让 net/http 默认 404（trailing-slash 路径不会被 mux 默认
+// 路由到无尾斜杠的处理函数；之前会被 mux 当成 404）。
+func (h *Handler) handleProxyPolicySlash(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusMethodNotAllowed, "method not allowed; canonical path is /api/proxy/policy (no trailing slash)")
 }
 
 // handleProxyGetPolicy GET /api/proxy/policy  返回当前策略 + 切流状态。

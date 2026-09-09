@@ -85,7 +85,9 @@ export interface ProxyStatus {
   selection_error: string
   warning: string
   regions: ProxyRegionStats[]
-  policy: ProxySelectionPolicy
+  // 审计修复 R6：policy / swap_state 在 DB 尚未持久化或 Manager 未初始化
+  // 时返回 null（之前 ProxyStatus 被声明为必有，访问 .policy.swap_* 会崩溃）。
+  policy: ProxySelectionPolicy | null
   swap_state: ProxySelectionState | null
 }
 

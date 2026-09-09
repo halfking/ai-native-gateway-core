@@ -577,9 +577,9 @@ func (s *PgStore) DeleteDomain(ctx context.Context, id int) error {
 // SelectionPolicy (proxy_selection_policy 单行表，id=1)
 // ---------------------------------------------------------------------------
 
-// GetSelectionPolicy 读取全局出口选择策略。表为空（迁移前启动）时返回默认值，
-// 保证调用方总能拿到可用值。
-func (s *PgStore) GetSelectionPolicy(ctx context.Context) (SelectionPolicy, error) {
+// LoadSelectionPolicy 读取全局出口选择策略。表为空（迁移前启动）时返回默认值，
+// 保证调用方总能拿到可用值。是 Store.LoadSelectionPolicy 的实现。
+func (s *PgStore) LoadSelectionPolicy(ctx context.Context) (SelectionPolicy, error) {
 	const q = `
 		SELECT load_balance_strategy, location_affinity,
 		       auto_disable_threshold, auto_disable_enabled, auto_recover_enabled,
@@ -634,6 +634,11 @@ func (s *PgStore) GetSelectionPolicy(ctx context.Context) (SelectionPolicy, erro
 		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted swap_failure_threshold %d", swapThr)
 	}
 	return policy, nil
+}
+
+// GetSelectionPolicy 保留旧名以兼容外部代码。
+func (s *PgStore) GetSelectionPolicy(ctx context.Context) (SelectionPolicy, error) {
+	return s.LoadSelectionPolicy(ctx)
 }
 
 // UpsertSelectionPolicy 写入或覆盖（id=1）全局策略。
