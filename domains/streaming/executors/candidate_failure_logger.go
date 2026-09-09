@@ -313,11 +313,23 @@ func recoveryContext(extra map[string]any, projection errorsx.RecoveryProjection
 // marshalContext renders a map as compact JSON string, returning nil when the
 // input is empty so the column is NULL (not an empty object).
 // Returns string instead of []byte to match the $N::text::jsonb cast pattern.
+// 审计 R8 P2：context 值含自由文本（err_msg / upstream_raw_error /
+// preflight_reason 等，supplier_error_logger 的投影表对每个字符串做了
+// sanitizeErrorString，事实源表不能弱一档）——逐字符串值脱敏后再序列化，
+// 防止上游错误体回显的 Bearer/sk- 落入 candidate_failure_logs_hot.context。
 func marshalContext(m map[string]any) any {
 	if len(m) == 0 {
 		return nil
 	}
-	b, err := json.Marshal(m)
+	sanitized := make(map[string]any, len(m))
+	for k, v := range m {
+		if s, ok := v.(string); ok {
+			sanitized[k] = sanitizeErrorString(s, 512)
+			continue
+		}
+		sanitized[k] = v
+	}
+	b, err := json.Marshal(sanitized)
 	if err != nil {
 		return nil
 	}
