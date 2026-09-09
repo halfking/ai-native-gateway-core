@@ -4926,6 +4926,23 @@ func main() {
 			handoffTrimmer.Start(context.Background())
 			defer handoffTrimmer.Stop()
 
+			// 2026-09-09 (审计 R3#1): OpslogTrimmer 的行删路径此前是死代码
+			//(全仓无接线),加上 689 之前 columnar 分区 append-only,即使
+			// 接线了 DELETE 也必败。689 转 heap 后行删可用,这里正式接线:
+			// candidate_failure_logs 7d TTL(lifecycle.candidate_failure_logs_ttl_days)
+			// + credential_probe_model_log 30d TTL,每日一轮。
+			opslogTrimmer := bg.NewOpslogTrimmer(dbConn.Pool())
+			opslogTrimmer.Start(context.Background())
+			defer opslogTrimmer.Stop()
+
+			// 2026-09-09 (审计 R3#4): session_summaries 归档行 TTL
+			//(lifecycle.session_summaries_ttl_days,默认 90d)。
+			// 471 起归档但从不删除,表无界增长;每日分批 DELETE
+			// (单批 ≤5000),索引自迁移 690 idx_session_summaries_archived。
+			sessionSummariesTrimmer := bg.NewSessionSummariesTrimmer(dbConn.Pool())
+			sessionSummariesTrimmer.Start(context.Background())
+			defer sessionSummariesTrimmer.Stop()
+
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
 			// mode to avoid write load on the secondary instance.
