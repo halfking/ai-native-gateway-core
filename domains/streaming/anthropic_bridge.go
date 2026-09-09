@@ -796,6 +796,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		bufferedToolArgs    strings.Builder
 		currentToolCallID   string
 		initialArgsSent     bool
+		// audit R8 P2: when content_block_start carried partial input, the
+		// start fragment is emitted immediately; stash it so stop can validate
+		// start+continuation as one JSON document and append the tail.
+		sentInitialToolArgs string
 		messageStopReceived bool
 		emittedContent      bool
 		// Anthropic signature_delta has no OpenAI Chat Completions wire
@@ -1137,6 +1141,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex, evt.ContentBlock.ID, evt.ContentBlock.Name, &args, true))
 							toolCallIndex++
 							initialArgsSent = true
+							sentInitialToolArgs = args
 						} else {
 							writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex, evt.ContentBlock.ID, evt.ContentBlock.Name, nil, false))
 							toolCallIndex++
@@ -1183,7 +1188,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 								SourceProtocol: ir.ProtocolAnthropicMessages,
 							})
 						case "input_json_delta":
-							if !initialArgsSent && evt.Delta.PartialJSON != "" {
+							// audit R8 P2: buffer unconditionally — content_block_start
+							// may carry partial input AND deltas may continue it (legal
+							// Anthropic shape); dropping them truncated tool arguments.
+							if evt.Delta.PartialJSON != "" {
 								bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
 							}
 						case "signature_delta":
@@ -1222,7 +1230,28 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 				case "content_block_stop":
 					flushBufferedText()
-					if !initialArgsSent && bufferedToolArgs.Len() > 0 {
+					if initialArgsSent && bufferedToolArgs.Len() > 0 {
+						// audit R8 P2: content_block_start.input arrives as a
+						// complete JSON value (json.RawMessage extraction), so
+						// start+continuation is only valid when the deltas
+						// genuinely extend the document; junk deltas after a
+						// complete start (relay shape) must NOT invalidate the
+						// already-streamed fragment. Validate the whole doc:
+						// valid → append the continuation; invalid → discard
+						// the tail and keep the initial fragment (pre-fix wire
+						// shape), flagging the anomaly.
+						args := sentInitialToolArgs + bufferedToolArgs.String()
+						validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
+						if vErr != nil {
+							if capture != nil {
+								capture.AddQualityFlag("tool_args_continuation_discarded")
+							}
+						} else if len(validated) > len(sentInitialToolArgs) {
+							continuation := validated[len(sentInitialToolArgs):]
+							writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex-1, currentToolCallID, "", &continuation, true))
+						}
+						bufferedToolArgs.Reset()
+					} else if !initialArgsSent && bufferedToolArgs.Len() > 0 {
 						args := bufferedToolArgs.String()
 						chunk.AnnotateArgumentsJSON(args)
 						if chunk.Quality != "verified" {
@@ -1251,6 +1280,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 					}
 					currentToolCallID = ""
 					initialArgsSent = false
+					sentInitialToolArgs = ""
 
 				case "message_start", "message_delta":
 				}
