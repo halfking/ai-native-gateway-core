@@ -217,3 +217,43 @@ func TestQ2ToolCallMultiIndexParity(t *testing.T) {
 	assert.GreaterOrEqual(t, strings.Count(wire, `"content_block_stop"`), 3, wire)
 	assert.Contains(t, wire, `"stop_reason":"tool_use"`)
 }
+
+// TestQ2NativeReasoningContentStreamsAsThinkingBlock pins the audit R8 P1
+// fix: DeepSeek R1 / GLM-Z1 style upstreams stream reasoning in
+// delta.reasoning_content. The bridge must surface it as a thinking block —
+// not silently drop the chain-of-thought — and keep content blocks strictly
+// sequential (thinking closes before the text block reopens on a fresh index).
+func TestQ2NativeReasoningContentStreamsAsThinkingBlock(t *testing.T) {
+	body := strings.Join([]string{
+		`data: {"id":"s1","choices":[{"delta":{"reasoning_content":"step one "}}]}`,
+		`data: {"id":"s1","choices":[{"delta":{"reasoning_content":"step two"}}]}`,
+		`data: {"id":"s1","choices":[{"delta":{"content":"final answer"}}]}`,
+		`data: {"id":"s1","choices":[{"delta":{},"finish_reason":"stop"}]}`,
+		`data: [DONE]`,
+		"",
+	}, "\n")
+	resp := &http.Response{
+		Body:    io.NopCloser(strings.NewReader(body)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(context.Background(), rec, resp, "deepseek-r1", "deepseek-r1", "req-q2-reasoning", nil, nil)
+
+	assert.False(t, out.Interrupted)
+	wire := rec.Body.String()
+	assert.Contains(t, wire, `"type":"thinking"`, "thinking block must be opened")
+	assert.Contains(t, wire, `"thinking_delta"`)
+	assert.Contains(t, wire, "step one ")
+	assert.Contains(t, wire, "step two")
+	// Text must survive and land after the thinking block closed.
+	assert.Contains(t, wire, `"text_delta"`)
+	assert.Contains(t, wire, "final answer")
+	thinkingIdx := strings.Index(wire, `"type":"thinking"`)
+	textAfterThinking := strings.Index(wire, "final answer")
+	assert.Greater(t, textAfterThinking, thinkingIdx)
+	// Matched start/stop pairs: text block 0 + thinking block + replayed text block.
+	starts := strings.Count(wire, `"content_block_start"`)
+	stops := strings.Count(wire, `"content_block_stop"`)
+	assert.Equal(t, starts, stops, wire)
+}
