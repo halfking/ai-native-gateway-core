@@ -4,6 +4,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# P1.1 SSOT 软链后，deploy-lib/db-changelog.sh 的 repo_root 第三级 fallback
+# 解析到共享库目录而非本仓库；显式钉住 resolver 的 override #1（与 seamless 同）。
+export DB_CHANGELOG_REPO_ROOT="$PROJECT_ROOT"
+[[ -d "$DB_CHANGELOG_REPO_ROOT/sql/migrations" ]] || {
+  echo "FATAL: DB_CHANGELOG_REPO_ROOT=$DB_CHANGELOG_REPO_ROOT 下没有 sql/migrations" >&2
+  exit 64
+}
 
 # shellcheck source=deploy-local-lib.sh
 source "$SCRIPT_DIR/deploy-local-lib.sh"
