@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-09T01:33:09.920Z",
+  "exported_at": "2026-09-09T01:37:36.034Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -164,6 +164,16 @@
           "label": "免费资源",
           "labelKey": "nav.item.freePool",
           "icon": "🎁",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/free-discovery",
+          "label": "免费发现",
+          "labelKey": "nav.item.freeDiscovery",
+          "icon": "🔍",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",

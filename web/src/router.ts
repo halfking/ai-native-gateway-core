@@ -30,6 +30,7 @@ const ProviderDetailView = () => import('./views/ProviderDetailView.vue')
 const PricingManagementView = () => import('./views/PricingManagementView.vue')
 const StandardModelPricingView = () => import('./views/StandardModelPricingView.vue')
 const FreePoolView = () => import('./views/FreePoolView.vue')
+const FreeDiscoveryView = () => import('./views/FreeDiscoveryView.vue')
 const TenantsView = () => import('./views/TenantsView.vue')
 const TenantDetailView = () => import('./views/TenantDetailView.vue')
 const RoutingDashboardView = () => import('./views/RoutingDashboardView.vue')
@@ -196,6 +197,7 @@ export const router = createRouter({
     { path: '/routing-v2/annotations/stats',  component: AnnotationStatsView },
     { path: '/routing-policy',     component: RoutingPolicyView,   meta: { requiresSuper: true } },
     { path: '/free-pool',          component: FreePoolView,        meta: { requiresSuper: true } },
+    { path: '/free-discovery',     component: FreeDiscoveryView,   meta: { requiresSuper: true } },
     { path: '/tenants',            component: TenantsView,         meta: { requiresSuper: true } },
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },

@@ -30,6 +30,7 @@ export default {
     pricing: "Precios de coste",
     modelPricing: "Gestión de precios",
     freePool: "Pool gratuito",
+    freeDiscovery: "Descubrimiento gratuito",
     routingDefaults: "Routing Defaults",
     tenants: "Inquilinos",
     users: "Usuarios",

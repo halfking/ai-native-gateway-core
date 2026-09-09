@@ -32,6 +32,7 @@ export default {
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
     freePool: 'Free Resources',
+    freeDiscovery: 'Free Discovery',
     tenants: 'Tenant Management',
     users: 'User Management',
     keys: 'API Keys',

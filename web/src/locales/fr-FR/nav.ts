@@ -31,6 +31,7 @@ export default {
     pricing: "Tarification des coûts",
     modelPricing: "Gestion des tarifs",
     freePool: "Pool gratuit",
+    freeDiscovery: "Découverte gratuite",
     routingDefaults: "Routing Defaults",
     tenants: "Locataires",
     users: "Utilisateurs",

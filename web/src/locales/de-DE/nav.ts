@@ -31,6 +31,7 @@ export default {
     pricing: "Kostenpreise",
     modelPricing: "Preisverwaltung",
     freePool: "Kostenloser Pool",
+    freeDiscovery: "Free-Discovery",
     routingDefaults: "Routing Defaults",
     tenants: "Mandanten",
     users: "Benutzer",
