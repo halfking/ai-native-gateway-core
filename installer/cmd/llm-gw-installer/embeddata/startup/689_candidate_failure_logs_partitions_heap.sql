@@ -36,6 +36,13 @@
 
 BEGIN;
 
+-- 252/154 shared PG enforces statement_timeout=30s by default; the
+-- columnar→heap data-move INSERT SELECT (26281+ rows on the
+-- candidate_failure_logs_2026_09 partition during the 2026-09-09 audit)
+-- blew past 30s on the production cluster and aborted the whole
+-- transaction. Same idiom as 632/649: raise it for this transaction only.
+SET LOCAL statement_timeout = '10min';
+
 -- ═══════════════════════════════════════════════════════════════
 -- 1. 替换 ensure_candidate_failure_logs_partition 为 heap 版本
 -- ═══════════════════════════════════════════════════════════════

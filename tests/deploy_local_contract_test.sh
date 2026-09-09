@@ -466,3 +466,78 @@ if grep -Fq 'db_port=${db_port:-5432}' "$ROOT/scripts/deploy-local.sh"; then
   fail 'deployment must not fake an unpublished PostgreSQL host port'
 fi
 pass 'local migration failures preserve structured diagnostics and fail closed'
+
+# 蓝绿切换契约 + controlled restart 兜底（2026-09-09 audit）：
+# 这两类分支一旦混用，traffic 切换时机与 candidate/active 端口语义
+# 会被无声破坏。grep 守门比跑真 deploy 更稳：未来谁改这两条 if 的语义
+# （譬如挪走 LLM_GATEWAY_UPSTREAM_FILE 的检查、或在 controlled restart
+# 之前 stop 8782），都会被这个测试抓到。
+#   - 蓝绿分支：仅在 LLM_GATEWAY_UPSTREAM_FILE 存在时启用，必须写
+#     upstream config 后跳过 controlled restart（不 stop 8782、不动
+#     8782 上的 active process、candidate_port 与 active-port 解耦）
+#   - controlled restart 分支：兜底路径，明确 stop active + start
+#     bundle at active port + verify + (失败时) rollback to active_bundle
+#     + die
+grep -Fq 'if [[ -n "${LLM_GATEWAY_UPSTREAM_FILE:-}" && -f "$LLM_GATEWAY_UPSTREAM_FILE" ]]; then' \
+  "$ROOT/scripts/deploy-local.sh" \
+  || fail 'blue-green branch must gate on LLM_GATEWAY_UPSTREAM_FILE presence'
+grep -Fq "printf 'server 127.0.0.1:%s;\\n' \"\$candidate_port\" > \"\$LLM_GATEWAY_UPSTREAM_FILE\"" \
+  "$ROOT/scripts/deploy-local.sh" \
+  || fail 'blue-green branch must write the new candidate port to LLM_GATEWAY_UPSTREAM_FILE'
+# controlled restart 兜底分支的存在与顺序：warn → stop active → start
+# at active port → verify → (失败) rollback → die。验证关键动词全部
+# 出现在该分支顺序内。
+blue_green_line=$(grep -n 'if \[\[ -n "${LLM_GATEWAY_UPSTREAM_FILE:-}"' "$ROOT/scripts/deploy-local.sh" | cut -d: -f1)
+[[ -n "$blue_green_line" ]] || fail 'cannot locate blue-green branch line'
+cr_line=$(grep -n "warn 'no local proxy configured" "$ROOT/scripts/deploy-local.sh" | cut -d: -f1)
+[[ -n "$cr_line" ]] || fail 'cannot locate controlled restart warning'
+(( blue_green_line < cr_line )) || fail 'blue-green branch must come before controlled restart fallback'
+stop_active_line=$(awk -v start="$cr_line" 'NR>=start && /stop_instance "\$active_port"/ { print NR; exit }' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$stop_active_line" ]] || fail 'controlled restart must stop_instance $active_port'
+start_active_line=$(awk -v start="$stop_active_line" 'NR>=start && /start_instance "\$bundle" "\$active_port"/ { print NR; exit }' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$start_active_line" ]] || fail 'controlled restart must start_instance $bundle at $active_port'
+(( stop_active_line < start_active_line )) || fail 'controlled restart: stop active_port must precede start active_port'
+verify_active_line=$(awk -v start="$start_active_line" 'NR>=start && /verify_instance "\$active_port"/ { print NR; exit }' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$verify_active_line" ]] || fail 'controlled restart must verify_instance $active_port'
+rollback_line=$(awk -v start="$verify_active_line" 'NR>=start && /die .active cutover failed/ { print NR; exit }' "$ROOT/scripts/deploy-local.sh")
+[[ -n "$rollback_line" ]] || fail 'controlled restart must roll back + die on verify failure'
+# atomic switch 必须在 controlled restart 验证/rollback 之后运行 —— 否则
+# 失败的 cutover 会留下 active 指向新 release 的脏状态，破坏 rollback。
+atomic_line=$(grep -n 'dl_atomic_switch "\$RELEASE_VERSION"' "$ROOT/scripts/deploy-local.sh" | cut -d: -f1)
+[[ -n "$atomic_line" ]] || fail 'cannot locate dl_atomic_switch call'
+(( rollback_line < atomic_line )) || fail 'dl_atomic_switch must run AFTER controlled restart verify/rollback (failure paths must die before any switch)'
+pass 'blue-green vs controlled restart branch ordering locked down by grep contract'
+
+# dl_wait_port_free 是 stop_instance 在 Docker 模式下的最后一步。该守
+# 护一旦挪走/改名，TIME_WAIT 端口分配慢 → EADDRINUSE → 静默 start
+# 失败 → verify 60s 后才暴露的整条 active cutover 失败链就会回来。
+grep -Fq 'dl_wait_port_free' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'stop_instance must call dl_wait_port_free to guard against TIME_WAIT port-release races'
+grep -Fq 'DL_DOCKER )); then dl_wait_port_free' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'dl_wait_port_free must be gated on DL_DOCKER (host-mode pid_file kill does not need port wait)'
+# verify_instance 必须保留每步 stderr 诊断（不能让下次故障回到 "failed
+# with no detail" 的状态）
+grep -Fq '[verify] %s:%s: /healthz did not return 200' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'verify_instance must print which step timed out (healthz)'
+grep -Fq '[verify] %s:%s: /readyz did not return 200' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'verify_instance must print which step timed out (readyz)'
+grep -Fq '[verify] %s:%s: ok (version=%s build_seq=%s)' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'verify_instance must print success body (version, build_seq)'
+pass 'stop_instance port-wait guard + verify_instance diagnostics locked down'
+
+# dl_ensure_release_available 的三类 fail-closed / 一类 self-heal 分支：
+# 这是 2026-09-09 empty residue 自愈的契约，任何改动都会让前一次
+# deploy-local 半途中断后留下空目录无法 retry。grep 守住 4 条：
+#   1. active 版本：mv 到 .prev-<epoch>（不原地 rm -rf）
+#   2. 完整旧发布（SHA256SUMS 存在）：mv 到 .prev-<epoch>
+#   3. 真正空目录：rmdir 自愈（带 residue 提示）
+#   4. 含任意文件（含隐藏）：fail-closed 拒删
+grep -Fq 'is the active deployment; moving it aside' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_ensure_release_available: active-version branch must mv to .prev-<epoch> (no in-place rm -rf)'
+grep -Fq 'already exists (intact, not active); moving it aside' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_ensure_release_available: intact-old-release branch must mv to .prev-<epoch>'
+grep -Fq 'is empty (residue from a previous failed deploy); auto-cleaning' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_ensure_release_available: empty-residue branch must rmdir (self-heal) with warning'
+grep -Fq 'no SHA256SUMS — not a verifiable release' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_ensure_release_available: dir-with-file branch must fail-closed (sentinel contract)'
+pass 'dl_ensure_release_available 4-branch contract (active / intact / empty self-heal / fail-closed) locked down'

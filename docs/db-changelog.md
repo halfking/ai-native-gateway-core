@@ -431,3 +431,11 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 - 夹具库三类验证(空表/有数据/幂等)作为迁移交付质量门。
 
 **记录人**：zcode | **生效日期**：2026-09-09 | **审计轮次**：24h 审计第三轮 Track E 遗留项 #12
+## 2026-09-09T04:01:14Z — deploy 154 build_seq 2068 (d9b149cb)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 689 | `689_candidate_failure_logs_partitions_heap.sql` | `aed5de975dfd19319e3321707e6fff0a1235869b869253de25a33f055622b71f` | applied+verified |
+| 690 | `690_session_summaries_archived_ttl_index.sql` | `70d6be69c186eed7d6a2180037f5b856754989bc05058f4d88eefe9e34840815` | applied+verified |
+| 691 | `691_proxy_region_policy.sql` | `cb1715cae3a1616fcfec64f19af4df18916f49761cf1ffb7a39717dde86af65c` | applied+verified |
+
