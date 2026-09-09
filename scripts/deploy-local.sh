@@ -554,15 +554,23 @@ build_backend() {
   # step_release 打包（2026-09-05 事故：编译失败被赋值语境的 set -e 怪癖
   # 静默吞掉，两个新版本号打包了同一个 4 小时前的旧二进制）。
   rm -f "$out"
-  if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/gateway); then
+  if ! (cd "$PROJECT_ROOT" && CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" go build -trimpath -ldflags='-s -w' -o "$out" ./cmd/gateway) 2>"$RUN_DIR/build-host.log"; then
     # 2026-09-07: 上游 0e3fa12f6 线引入了 CGO-only 依赖（mattn/go-sqlite3、
     # yalue/onnxruntime_go，见 Dockerfile 2026-09-05 的 CGO_ENABLED=1 注），
     # 纯静态 CGO=0 构建自此后必然失败（"build constraints exclude all Go
     # files"）。宿主机不一定有 linux 交叉 C 工具链，因此回退到
     # golang:1.27-alpine 容器内 CGO 构建：musl 产物可直接跑在默认
     # alpine:3.22 运行时镜像上（LLM_GATEWAY_RUNTIME_IMAGE 可覆盖）。
+    #
+    # 2026-09-09 进一步加固：之前 docker run 的 stderr 被 '>/dev/null'
+    # 吞掉，go build 失败时操作员看到的就是空的 bash 错误；现在每个
+    # 关键步骤都把 stderr 落到 $RUN_DIR/build-cgo-*.log，并用 [[ -s ]]
+    # 验证 cgo_out 真的写出来了，避免 mv 一个空文件（mv -f 找不到源
+    # 时只 print 不返回 1，致命失败被静默吞掉）。
     need_cmd docker
     local build_image="${LLM_GATEWAY_BUILD_IMAGE:-golang:1.27-alpine}"
+    local cgo_log="$RUN_DIR/build-cgo.log"
+    local cgo_pull_log="$RUN_DIR/build-cgo-pull.log"
     # Ensure we pull the correct platform image matching target architecture
     local docker_platform
     if [[ "$target_arch" == "arm64" || "$target_arch" == "aarch64" ]]; then
@@ -587,21 +595,40 @@ build_backend() {
     fi
     if (( need_pull )); then
       log "pulling build image $build_image for platform $docker_platform"
-      docker pull --platform="$docker_platform" "$build_image" >/dev/null \
-        || die "CGO fallback needs image $build_image and it is not pullable"
+      if ! docker pull --platform="$docker_platform" "$build_image" >/dev/null 2>"$cgo_pull_log"; then
+        printf '    [cgo-pull stderr follows]\n' >&2
+        sed 's/^/    /' "$cgo_pull_log" >&2 || true
+        die "CGO fallback needs image $build_image and it is not pullable (full stderr: $cgo_pull_log)"
+      fi
     fi
     local cgo_out="$PROJECT_ROOT/.build-local/gateway.build"
     mkdir -p "$PROJECT_ROOT/.build-local"
-    (cd "$PROJECT_ROOT" && HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker run --rm \
+    if ! (cd "$PROJECT_ROOT" && HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker run --rm \
         --platform="$docker_platform" \
         -v "$PWD":/src -w /src \
         -e HOST_UID -e HOST_GID \
         -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH="$target_arch" \
         -e GOCACHE=/tmp/go-build-cache -e GOPATH=/tmp/go-path \
         "$build_image" \
-        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w" -o /src/.build-local/gateway.build ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/gateway.build') \
-      || die "backend CGO container build failed (GOOS=linux GOARCH=$target_arch)"
-    mv -f "$cgo_out" "$out"
+        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w" -o /src/.build-local/gateway.build ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/gateway.build') 2>"$cgo_log"; then
+      printf '    [cgo-build stderr follows]\n' >&2
+      sed 's/^/    /' "$cgo_log" >&2 || true
+      die "backend CGO container build failed (GOOS=linux GOARCH=$target_arch); full log: $cgo_log"
+    fi
+    # docker run 返回 0 但 .build-local/gateway.build 缺失意味着容器内的
+    # sh -c 在最后一节失败前已经悄悄 return 0（极少见），或者 chown 写
+    # 到了别的路径。给出明确诊断而非把 mv 静默失败继续往下走。
+    if [[ ! -s "$cgo_out" ]]; then
+      printf '    [cgo-build host log follows]\n' >&2
+      sed 's/^/    /' "$cgo_log" >&2 || true
+      ls -la "$PROJECT_ROOT/.build-local/" >&2 || true
+      die "backend CGO build produced no output at $cgo_out (docker run returned 0 but the file is missing or empty); inspect $cgo_log"
+    fi
+    if ! mv -f "$cgo_out" "$out" 2>"$RUN_DIR/build-cgo-mv.log"; then
+      printf '    [cgo-mv stderr follows]\n' >&2
+      sed 's/^/    /' "$RUN_DIR/build-cgo-mv.log" >&2 || true
+      die "failed to mv $cgo_out -> $out (see $RUN_DIR/build-cgo-mv.log)"
+    fi
   fi
   [[ -s "$out" ]] || die "backend build produced no output at $out"
   printf '%s\n' "$out"
@@ -629,40 +656,25 @@ bump_local_version() {
 }
 
 ensure_release_available() {
-  local bundle="${1:-$BIN_DIR/$RELEASE_VERSION}"
-  local aside
-  [[ ! -e "$bundle" && ! -L "$bundle" ]] && return 0
-  # bundle 目录已存在（同名 collision 只有两种来源）：同版本重部署时撞上
-  # current 正指向的 active 发布（2026-09-05 漂移修复后同 git_sha+同日重跑
-  # seq 不变），或上次部署在 dl_stage_release 早期失败留下的残留目录。
-  # 判别标准是 SHA256SUMS：dl_stage_release 只在 gateway/web/version.json/
-  # VERSION 全部 cp/install 成功后才生成 SHA256SUMS（deploy-local-lib.sh
-  # :471-472）。active 发布绝不能原地 rm -rf（运行中实例的 web/env 都在
-  # 里面）；完整旧发布用同文件系统 mv 到 .prev-<epoch> 让路，运行中进程
-  # 不受影响且目录仍是 rollback() 可发现的有效回滚目标。无 SHA256SUMS 的
-  # 目录无法证明是发布产物（可能是误放进来的任意数据），按
-  # deploy_local_contract_test 契约 fail-closed 拒删，要求人工确认
-  # （2026-09-09 修正：0c465a815 引入的 rm -rf 会静默销毁未知目录）。
-  if [[ "$(basename "$bundle")" == "$(dl_active_version)" ]]; then
-    aside="${bundle}.prev-$(date +%s)"
-    warn "release $bundle is the active deployment; moving it aside to $(basename "$aside") before restaging"
-    mv "$bundle" "$aside" || die "failed to move active release aside: $bundle"
-    return 0
-  fi
-  if [[ -e "$bundle/SHA256SUMS" ]]; then
-    aside="${bundle}.prev-$(date +%s)"
-    warn "release $bundle already exists (intact, not active); moving it aside to $(basename "$aside") to allow same-version redeploy"
-    mv "$bundle" "$aside" || die "failed to move release aside: $bundle"
-    return 0
-  fi
-  die "release already exists: $bundle (no SHA256SUMS — not a verifiable release; inspect and remove it manually if it is a stale artifact)"
+  # 薄包装：把 deploy-local.sh 的 BIN_DIR/RELEASE_VERSION/dl_active_version
+  # 状态透传给 dl_ensure_release_available（lib 层函数，详见
+  # deploy-local-lib.sh 中的契约注释）。lib 版本是测试友好的纯函数，
+  # 这里只是把脚本级状态和它接通：所有真正的逻辑、fail-closed 边界和
+  # self-heal 分支都在 lib 里单测覆盖。
+  dl_ensure_release_available "${1:-$BIN_DIR/$RELEASE_VERSION}" "$(dl_active_version 2>/dev/null || printf '')"
 }
 
 
 stage_release() {
   local binary="$1" bundle="$BIN_DIR/$RELEASE_VERSION"
   ensure_release_available "$bundle"
-  dl_stage_release "$bundle" "$binary" "$PROJECT_ROOT/web/dist" "$VERSION_JSON" "$VERSION_FILE" "$RELEASE_VERSION"
+  # dl_stage_release 的失败路径会主动 rm -f SHA256SUMS（2026-09-05
+  # 陈旧二进制事故的 set -e 怪癖防御）。一旦失败，必须 fail closed 且
+  # 给出明确错误，让后续 dl_verify_release 不会撞上 bash 自带的
+  # 'SHA256SUMS: No such file or directory' 这种让人误以为是脚本 bug
+  # 的晦涩信息。
+  dl_stage_release "$bundle" "$binary" "$PROJECT_ROOT/web/dist" "$VERSION_JSON" "$VERSION_FILE" "$RELEASE_VERSION" \
+    || die "release staging failed at $bundle — bundle is incomplete (no SHA256SUMS); the binary install or checksum generation failed. Check the [deploy-local] logs above for the failing step."
   dl_verify_release "$bundle" || die 'release checksum verification failed'
   printf '%s\n' "$bundle"
 }

@@ -191,6 +191,107 @@ PY
 [[ ! -e "$version_tmp/kx-llm-gateway-build.lock" ]] || fail 'build lock was not released after the early collision'
 pass 'local deploy automatically bumps build_seq and rejects the bumped collision before side effects'
 
+# Empty-residue self-heal (2026-09-09 事故): same deploy bumped twice with
+# git_sha 未变化 → build_seq 不变 → 上次 deploy 在 dl_stage_release 的
+# mkdir -p 之后被打断（Ctrl+C / 容器构建被 SIGKILL），留下一个空目录。
+# self-heal 分支必须 rmdir 这类目录并允许 deploy 继续；带文件的 collision
+# 仍须 fail-closed（sentinel 测试就是这条防线的护栏）。直接调 lib 函数
+# 而非 source deploy-local.sh（后者会跑完整 deploy 主体）。
+residue_install="$TMP/residue-install"
+residue_tmp="$TMP/residue-tmp"
+mkdir -p "$residue_install/bin/2.5.4.9999"   # 真正的空目录，模拟打断残留
+HOME="$TMP/residue-home" TMPDIR="$residue_tmp" LLM_GATEWAY_ROOT="$residue_install" \
+  bash -c '
+    set -euo pipefail
+    source "'"$ROOT"'/scripts/deploy-local-lib.sh"
+    BIN_DIR="$LLM_GATEWAY_ROOT/bin"
+    # empty residue: must self-heal (rmdir) — deploy can continue
+    dl_ensure_release_available "$BIN_DIR/2.5.4.9999" \
+      || { echo "FAIL: empty residue was not self-healed"; exit 1; }
+    [[ ! -e "$BIN_DIR/2.5.4.9999" ]] || { echo "FAIL: empty residue dir still present"; exit 1; }
+    # missing dir: no-op, return 0
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10000" \
+      || { echo "FAIL: missing-dir branch returned non-zero"; exit 1; }
+    # dir with file: must STILL fail-closed (sentinel contract)
+    mkdir -p "$BIN_DIR/2.5.4.10001"
+    printf "keep-me\n" > "$BIN_DIR/2.5.4.10001/sentinel"
+    set +e
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10001" 2>/dev/null
+    rc=$?
+    set -e
+    [[ "$rc" -ne 0 ]] || { echo "FAIL: dir-with-file should fail-closed (got rc=0)"; exit 1; }
+    [[ -e "$BIN_DIR/2.5.4.10001/sentinel" ]] || { echo "FAIL: sentinel was removed by self-heal"; exit 1; }
+    # dir with hidden file (.DS_Store-style): must STILL fail-closed (only
+    # truly-empty dirs are residue; anything present is operator data)
+    mkdir -p "$BIN_DIR/2.5.4.10002"
+    : > "$BIN_DIR/2.5.4.10002/.DS_Store"
+    set +e
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10002" 2>/dev/null
+    rc=$?
+    set -e
+    [[ "$rc" -ne 0 ]] || { echo "FAIL: dir-with-hidden-file should fail-closed"; exit 1; }
+    [[ -e "$BIN_DIR/2.5.4.10002/.DS_Store" ]] || { echo "FAIL: hidden file was removed"; exit 1; }
+    # active version branch: bundle dir matching dl_active_version is moved aside
+    mkdir -p "$BIN_DIR/2.5.4.10003"
+    printf "active\n" > "$BIN_DIR/2.5.4.10003/SHA256SUMS"
+    mkdir -p "$LLM_GATEWAY_ROOT/run"
+    printf "2.5.4.10003\n" > "$LLM_GATEWAY_ROOT/run/active-version"
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10003" "2.5.4.10003" \
+      || { echo "FAIL: active-version move-aside did not return 0"; exit 1; }
+    [[ ! -e "$BIN_DIR/2.5.4.10003" ]] || { echo "FAIL: active dir not moved aside"; exit 1; }
+    shopt -s nullglob
+    prev_matches=("$BIN_DIR"/2.5.4.10003.prev-*)
+    shopt -u nullglob
+    [[ ${#prev_matches[@]} -ge 1 ]] || { echo "FAIL: no .prev-<epoch> sibling created (matches=${prev_matches[*]})"; exit 1; }
+    [[ -d "${prev_matches[0]}" ]] || { echo "FAIL: .prev-<epoch> sibling is not a directory"; exit 1; }
+    # intact old release branch: SHA256SUMS present → moved aside
+    mkdir -p "$BIN_DIR/2.5.4.10004"
+    printf "old\n" > "$BIN_DIR/2.5.4.10004/SHA256SUMS"
+    dl_ensure_release_available "$BIN_DIR/2.5.4.10004" "2.5.4.9999" \
+      || { echo "FAIL: intact-old-release move-aside did not return 0"; exit 1; }
+    [[ ! -e "$BIN_DIR/2.5.4.10004" ]] || { echo "FAIL: intact-old-release dir not moved aside"; exit 1; }
+  ' || fail 'dl_ensure_release_available self-heal + side-branch contract'
+pass 'empty residue dirs self-heal; non-empty/intact/active dirs handled correctly'
+
+# dl_verify_release 必须对缺失 SHA256SUMS 给出明确错误，而非让 bash 的
+# 'No such file or directory' 重定向错误冒到操作员脸上。
+# 注意：$TMP 在子 bash -c 中需要 export，否则 HOME="$TMP" 这类赋值在
+# 子 shell 里会因 set -u 报错。
+export TMP
+empty_bundle="$TMP/install/bin/dl-verify-empty"
+mkdir -p "$empty_bundle"
+set +e
+out=$(HOME="$TMP" LLM_GATEWAY_ROOT="$TMP/install" bash -c '
+  source "'"$ROOT"'/scripts/deploy-local-lib.sh"
+  dl_verify_release "'"$empty_bundle"'"
+' 2>&1)
+rc=$?
+set -e
+[[ "$rc" -ne 0 ]] || fail 'dl_verify_release must fail when SHA256SUMS is missing'
+[[ "$out" == *"SHA256SUMS is missing"* ]] \
+  || fail "dl_verify_release missing-file message should be self-explanatory (got: $out)"
+[[ "$out" == *"never successfully staged"* ]] \
+  || fail "dl_verify_release message should reference staging (got: $out)"
+# 反向校验：checksum 不匹配时也必须是 self-explanatory，不能只是 return 1
+bad_bundle="$TMP/install/bin/dl-verify-bad"
+mkdir -p "$bad_bundle"
+printf 'placeholder\n' > "$bad_bundle/version.json"
+printf '0000000000000000000000000000000000000000000000000000000000000000  version.json\n' > "$bad_bundle/SHA256SUMS"
+set +e
+out=$(HOME="$TMP" LLM_GATEWAY_ROOT="$TMP/install" bash -c '
+  source "'"$ROOT"'/scripts/deploy-local-lib.sh"
+  dl_verify_release "'"$bad_bundle"'"
+' 2>&1)
+mismatch_rc=$?
+set -e
+[[ "$mismatch_rc" -ne 0 ]] || fail 'dl_verify_release must fail on checksum mismatch'
+[[ "$out" == *"checksum mismatch"* ]] \
+  || fail "dl_verify_release checksum mismatch should be self-explanatory (got: $out)"
+[[ "$out" == *"version.json"* ]] \
+  || fail "dl_verify_release checksum mismatch should name the offending file (got: $out)"
+rm -rf "$empty_bundle" "$bad_bundle"
+pass 'dl_verify_release surfaces explicit errors for missing SHA256SUMS and checksum mismatches'
+
 for f in scripts/deploy-local-lib.sh scripts/deploy-local.sh scripts/deploy-154.sh scripts/deploy-245.sh; do
   bash -n "$ROOT/$f" || fail "bash syntax: $f"
 done
