@@ -416,7 +416,7 @@ func (h *Handler) handleFreeDiscoveryImport(w http.ResponseWriter, r *http.Reque
 
 	summary, err := deps.importer.Import(r.Context(), req)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeError(w, fdStatusFor(err), err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
