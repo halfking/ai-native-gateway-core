@@ -9,6 +9,14 @@ import {
   healthCheckProxyNode,
   deleteProxyNode,
   getProxyStatus,
+  healthCheckAllProxyNodes,
+  healthCheckProxySubscription,
+  forceSwapProxy,
+  getProxyPolicy,
+  setProxyPolicy,
+  getProxyRegions,
+  setProxyNodeRegionBan,
+  updateProxySubscription,
 } from './proxy'
 
 // Mock fetch globally
@@ -203,11 +211,22 @@ describe('proxy API client', () => {
       protocol: 'http',
       server: '127.0.0.1',
       port: 7897,
+      banned_regions: ['US', 'JP'],
     })
     expect(result).toEqual(mockResp)
     expect(globalThis.fetch).toHaveBeenCalledWith(
       '/api/proxy/nodes',
-      expect.objectContaining({ method: 'POST' })
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          subscription_id: 1,
+          name: 'bridge',
+          protocol: 'http',
+          server: '127.0.0.1',
+          port: 7897,
+          banned_regions: ['US', 'JP'],
+        }),
+      })
     )
   })
 
@@ -262,5 +281,43 @@ describe('proxy API client', () => {
       '/api/proxy/status',
       expect.objectContaining({ method: 'GET' })
     )
+  })
+
+  it('calls batch health, swap, policy, region, and ban endpoints with the expected payloads', async () => {
+    const responses = [
+      { ok: true, total: 2 },
+      { ok: true, total: 1 },
+      { ok: true, selected: nodeItem, swap_state: null },
+      { ok: true, policy: { load_balance_strategy: 'round_robin' }, swap_state: null },
+      { ok: true, policy: { load_balance_strategy: 'latency' } },
+      { items: [{ region: 'US', total: 2 }], total: 1 },
+      { ok: true, id: 5, banned_regions: ['US'] },
+      { ...subscriptionItem, banned_regions: ['US'] },
+    ]
+    for (const response of responses) {
+      ;(globalThis.fetch as any).mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(response),
+      })
+    }
+
+    await healthCheckAllProxyNodes()
+    await healthCheckProxySubscription(3)
+    await forceSwapProxy(3)
+    await getProxyPolicy()
+    await setProxyPolicy({ load_balance_strategy: 'latency' })
+    await getProxyRegions()
+    await setProxyNodeRegionBan(5, ['US'])
+    await updateProxySubscription(1, { priority: 10, banned_regions: ['US'] })
+
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(1, '/api/proxy/health-check-all', expect.objectContaining({ method: 'POST' }))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(2, '/api/proxy/subscriptions/3/health-check', expect.objectContaining({ method: 'POST' }))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(3, '/api/proxy/swap', expect.objectContaining({ method: 'POST', body: JSON.stringify({ subscription_id: 3 }) }))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(4, '/api/proxy/policy', expect.objectContaining({ method: 'GET' }))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(5, '/api/proxy/policy', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ load_balance_strategy: 'latency' }) }))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(6, '/api/proxy/regions', expect.objectContaining({ method: 'GET' }))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(7, '/api/proxy/nodes/5/region-ban', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ banned_regions: ['US'] }) }))
+    expect(globalThis.fetch).toHaveBeenNthCalledWith(8, '/api/proxy/subscriptions/1', expect.objectContaining({ method: 'PUT', body: JSON.stringify({ priority: 10, banned_regions: ['US'] }) }))
   })
 })

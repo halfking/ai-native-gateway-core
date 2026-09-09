@@ -1292,8 +1292,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/proxy/nodes/", h.superAdmin(h.handleProxyNodes))
 	mux.HandleFunc("/api/proxy/health-check-all", h.superAdmin(h.handleProxyHealthCheckAll))
 	mux.HandleFunc("/api/proxy/swap", h.superAdmin(h.handleProxySwap))
-	mux.HandleFunc("/api/proxy/policy", h.superAdmin(h.handleProxyGetPolicy))
-	mux.HandleFunc("/api/proxy/policy/", h.superAdmin(h.handleProxySetPolicy))
+	mux.HandleFunc("/api/proxy/policy", h.superAdmin(h.handleProxyPolicy))
 	mux.HandleFunc("/api/proxy/regions", h.superAdmin(h.handleProxyRegions))
 	if h.freePoolSSE != nil {
 		mux.HandleFunc("/api/free-pool/stream", h.admin(h.freePoolSSE.HandleStream))

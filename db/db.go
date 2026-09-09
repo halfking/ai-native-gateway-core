@@ -5238,10 +5238,26 @@ func (d *DB) ensureProxyManagementCanonicalSchema(ctx context.Context) error {
 					ALTER TABLE public.providers ADD CONSTRAINT providers_proxy_subscription_id_fkey FOREIGN KEY (proxy_subscription_id) REFERENCES public.proxy_subscriptions(id) ON DELETE SET NULL NOT VALID;
 				END IF;
 			END $$;
-		CREATE INDEX IF NOT EXISTS idx_providers_egress ON public.providers(egress_profile) WHERE egress_profile IS NOT NULL;
-		CREATE INDEX IF NOT EXISTS idx_providers_proxy_sub ON public.providers(proxy_subscription_id) WHERE proxy_subscription_id IS NOT NULL;
-		INSERT INTO public.schema_migrations (version, description) VALUES ('646', 'canonical proxy management schema') ON CONFLICT (version) DO NOTHING;
-	`)
+			CREATE INDEX IF NOT EXISTS idx_providers_egress ON public.providers(egress_profile) WHERE egress_profile IS NOT NULL;
+			CREATE INDEX IF NOT EXISTS idx_providers_proxy_sub ON public.providers(proxy_subscription_id) WHERE proxy_subscription_id IS NOT NULL;
+
+			ALTER TABLE public.proxy_subscriptions ADD COLUMN IF NOT EXISTS banned_regions TEXT[] NOT NULL DEFAULT '{}';
+			ALTER TABLE public.proxy_nodes ADD COLUMN IF NOT EXISTS banned_regions TEXT[] NOT NULL DEFAULT '{}';
+			CREATE TABLE IF NOT EXISTS public.proxy_selection_policy (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				load_balance_strategy VARCHAR(32) NOT NULL DEFAULT 'best_only' CHECK (load_balance_strategy IN ('best_only', 'round_robin', 'weighted_rr', 'least_conn', 'consistent_hash')),
+				location_affinity VARCHAR(32) NOT NULL DEFAULT 'any' CHECK (location_affinity IN ('any', 'prefer_same', 'require_same')),
+				auto_disable_threshold INTEGER NOT NULL DEFAULT 3 CHECK (auto_disable_threshold > 0),
+				auto_disable_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				auto_recover_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+				swap_check_interval_ms INTEGER NOT NULL DEFAULT 30000 CHECK (swap_check_interval_ms >= 1000),
+				swap_failure_threshold INTEGER NOT NULL DEFAULT 2 CHECK (swap_failure_threshold > 0),
+				updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+			);
+			INSERT INTO public.proxy_selection_policy (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+			INSERT INTO public.schema_migrations (version, description) VALUES ('691', 'proxy region avoidance and auto-switch selection policy') ON CONFLICT (version) DO NOTHING;
+		`)
+
 	if err != nil {
 		return fmt.Errorf("ensure proxy management canonical schema: %w", err)
 	}
