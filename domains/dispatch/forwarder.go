@@ -172,24 +172,7 @@ func (cf *credForwarder) loop() {
 			if !ok {
 				return
 			}
-			// The producer holds handoffMu while publishing node_enqueued after
-			// the channel send. Wait for that publication before the forwarder
-			// can emit node_selected, preserving lifecycle order without holding
-			// the lock during governor waits or upstream I/O.
-			cf.handoffMu.Lock()
-			cf.handoffMu.Unlock()
-			// V6-W1.7: the request left the cred lane — return the cluster
-			// slot (no-op without a redis backend).
-			cf.pipe.releaseLaneAdmission(&qr.clusterCred)
-			gov, acquired := cf.acquire(qr)
-			if !acquired {
-				continue
-			}
-			depth := cf.depth.Add(-1)
-			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
-			cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
-			cf.wg.Add(1)
-			go cf.attempt(qr, gov)
+			cf.dispatchOne(qr)
 		case <-cf.wakeCh:
 			// replaceDepth swapped the channel while we were parked on the old
 			// one. Reclaim any request that raced the swap into the displaced
@@ -206,6 +189,50 @@ func (cf *credForwarder) loop() {
 			return
 		}
 	}
+}
+
+// dispatchOne forwards one popped request: handoff barrier → lane release →
+// governor acquire → attempt goroutine. Recover-per-item (the C-#14 pattern
+// shared by runTotalDrainer and attempt; audit R8): an unrecovered panic
+// previously killed the loop goroutine — this credential's queue stalled
+// until Stop and its governor lease stranded until TTL — now the lease is
+// released and the request completed before the loop continues.
+func (cf *credForwarder) dispatchOne(qr *QueuedRequest) {
+	var gov Governor
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("cred forwarder loop panic recovered",
+				"request_id", qr.ID,
+				"credential_id", cf.cred.CredentialID,
+				"panic", recovered)
+			if gov != nil {
+				gov.Release(qr)
+			}
+			cf.pipe.complete(qr, ForwardOutcome{
+				Err:       fmt.Errorf("cred forwarder panic: %v", recovered),
+				ErrorKind: "dispatch_panic",
+			})
+		}
+	}()
+	// The producer holds handoffMu while publishing node_enqueued after
+	// the channel send. Wait for that publication before the forwarder
+	// can emit node_selected, preserving lifecycle order without holding
+	// the lock during governor waits or upstream I/O.
+	cf.handoffMu.Lock()
+	cf.handoffMu.Unlock()
+	// V6-W1.7: the request left the cred lane — return the cluster
+	// slot (no-op without a redis backend).
+	cf.pipe.releaseLaneAdmission(&qr.clusterCred)
+	g, acquired := cf.acquire(qr)
+	if !acquired {
+		return
+	}
+	gov = g
+	depth := cf.depth.Add(-1)
+	metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+	cf.pipe.observeQueue(QueueObservation{Kind: QueueCredentialDepth, CredentialID: cf.cred.CredentialID, Mode: cf.cred.ConcurrencyMode, Depth: depth, Delta: -1, AbsoluteDepth: true})
+	cf.wg.Add(1)
+	go cf.attempt(qr, gov)
 }
 
 // drainAndComplete non-blockingly drains cf.queue, completing every
