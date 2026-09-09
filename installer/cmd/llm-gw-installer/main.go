@@ -343,6 +343,12 @@ var fix473Partition0800BoundsMigration687 []byte
 //go:embed embeddata/startup/688_promote_default_retention_align_go_scheduler.sql
 var promoteDefaultRetentionAlignGoSchedulerMigration688 []byte
 
+//go:embed embeddata/startup/689_candidate_failure_logs_partitions_heap.sql
+var candidateFailureLogsPartitionsHeapMigration689 []byte
+
+//go:embed embeddata/startup/690_session_summaries_archived_ttl_index.sql
+var sessionSummariesArchivedTTLIndexMigration690 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -452,6 +458,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/686_fix_session_module_executions_2026_10_bounds.sql":                   fixSessionModuleExecutions2026_10BoundsMigration686,
 	"startup/687_fix_473_partition_0800_bounds.sql":                                  fix473Partition0800BoundsMigration687,
 	"startup/688_promote_default_retention_align_go_scheduler.sql":                   promoteDefaultRetentionAlignGoSchedulerMigration688,
+	"startup/689_candidate_failure_logs_partitions_heap.sql":                         candidateFailureLogsPartitionsHeapMigration689,
+	"startup/690_session_summaries_archived_ttl_index.sql":                           sessionSummariesArchivedTTLIndexMigration690,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 
