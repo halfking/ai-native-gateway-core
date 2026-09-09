@@ -253,3 +253,52 @@ func TestR4StopCancelsSlowSwapProbeOne(t *testing.T) {
 	// 释放 stuckHealthChecker 的 stopCh 以便复用的测试桩不会泄露。
 	close(stuck.stopCh)
 }
+
+// slowListStore 让 ListNodes(nil) 阻塞直到 ctx 取消或 stopCh 关闭；
+// 用于验证 Start() 不再持 lifecycleMu 同步等待 DB 加载（audit #10）。
+type slowListStore struct {
+	fakeStoreForBans
+	stopCh chan struct{}
+}
+
+func (s *slowListStore) ListNodes(ctx context.Context, _ *int) ([]*Node, error) {
+	select {
+	case <-s.stopCh:
+		return nil, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// TestR4AuditP2_StartDoesNotBlockOnDBLoad 验证 Start() 立即返回，Stop() 也不会
+// 在 slowListStore 阻塞 ListNodes 时挂起——Stop 应通过 ctx 取消让 DB 加载 goroutine
+// 退出，并在合理时间内返回（audit #10 P2）。
+func TestR4AuditP2_StartDoesNotBlockOnDBLoad(t *testing.T) {
+	store := &slowListStore{stopCh: make(chan struct{})}
+	mgr := NewManager(store, nil, nil)
+
+	startReturned := make(chan struct{})
+	go func() {
+		mgr.Start()
+		close(startReturned)
+	}()
+	select {
+	case <-startReturned:
+	case <-time.After(1 * time.Second):
+		t.Fatalf("Start did not return within 1s; lifecycleMu was held across DB load")
+	}
+
+	stopReturned := make(chan struct{})
+	go func() {
+		mgr.Stop()
+		close(stopReturned)
+	}()
+	// 给 Stop 一个短窗期：wg.Wait 必须等到 initialCacheLoad goroutine 退出。
+	// slowListStore 看到 ctx.Done() 后立刻返回 ListNodes(nil, nil)，预期总耗时 < 1s。
+	select {
+	case <-stopReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("Stop did not return within 2s; initial DB load goroutine did not honor ctx")
+	}
+	close(store.stopCh)
+}
