@@ -345,3 +345,55 @@ func TestGlobalHealthCheckSkipsPwdDecryptFailed(t *testing.T) {
 		t.Fatalf("summary.Failed = %d, want 0 (pwd-decrypt node must be skipped, not failed)", summary.Failed)
 	}
 }
+
+// TestGlobalHealthCheckFeedsActiveSwapCounter（R4 #5 守门）：调度全局探活
+// （healthCheckAllNodesInner 步骤 5）的结果必须经 recordProbeResult 回灌
+// active swap 计数器——失败递增、成功归零。若回灌缺失，ForceSwap 的
+// consecutiveFails >= threshold 触发条件永远等不到全局探活证据。
+// 双计数核对：applyHealthCheckResult 只动 node 级 ConsecutiveFailures，
+// recordProbeResult 只动 selection 级 consecutiveFails，一次探测各计一次。
+func TestGlobalHealthCheckFeedsActiveSwapCounter(t *testing.T) {
+	subID := 1
+	newActiveManager := func(checker HealthChecker) (*sharedNodeStore, *Manager) {
+		store := newSharedNodeStore([]*Node{{
+			ID: 1, SubscriptionID: 1, Name: "active", Protocol: ProtocolHTTP,
+			Server: "127.0.0.1", Port: 8006, Status: "active", Location: "HK",
+		}})
+		mgr := NewManager(store, nil, checker)
+		mgr.activeMu.Lock()
+		mgr.active[selectionKey(&subID)] = &activeSelection{subscriptionID: &subID, nodeID: 1}
+		mgr.activeMu.Unlock()
+		return store, mgr
+	}
+	activeFails := func(mgr *Manager) (int, time.Time) {
+		mgr.activeMu.Lock()
+		defer mgr.activeMu.Unlock()
+		sel := mgr.active[selectionKey(&subID)]
+		return sel.consecutiveFails, sel.lastProbeAt
+	}
+
+	// 失败方向：全局探活失败 → active consecutiveFails 递增。
+	store, mgr := newActiveManager(&failingChecker{})
+	mgr.HealthCheckAllNodesNow(context.Background())
+	fails, probedAt := activeFails(mgr)
+	if fails != 1 {
+		t.Fatalf("after failed global probe: active consecutiveFails = %d, want 1", fails)
+	}
+	if probedAt.IsZero() {
+		t.Fatal("after failed global probe: lastProbeAt not set (recordProbeResult not called)")
+	}
+	if got := store.updateCountFor(1); got != 1 {
+		t.Fatalf("node-level UpdateNode count = %d, want 1", got)
+	}
+
+	// 成功方向：已有失败计数的 active 节点被全局探活确认健康 → 归零。
+	_, mgr2 := newActiveManager(&stubHealthChecker{})
+	mgr2.activeMu.Lock()
+	mgr2.active[selectionKey(&subID)] = &activeSelection{subscriptionID: &subID, nodeID: 1, consecutiveFails: 2}
+	mgr2.activeMu.Unlock()
+	mgr2.HealthCheckAllNodesNow(context.Background())
+	fails2, _ := activeFails(mgr2)
+	if fails2 != 0 {
+		t.Fatalf("after successful global probe: active consecutiveFails = %d, want 0 (reset)", fails2)
+	}
+}

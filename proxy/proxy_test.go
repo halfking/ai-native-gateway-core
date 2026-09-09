@@ -726,11 +726,11 @@ func TestManagerTargetedSelectionKeepsSubscriptionCachesIndependent(t *testing.T
 	mgr.setCacheWithTTL(1, []*Node{{
 		ID: 101, SubscriptionID: 1, Name: "subscription-one", Protocol: ProtocolHTTP,
 		Server: "one.local", Port: 8080, Status: "active", ResponseTimeMs: 10,
-	}}, time.Now())
+	}}, time.Now(), true)
 	mgr.setCacheWithTTL(2, []*Node{{
 		ID: 202, SubscriptionID: 2, Name: "subscription-two", Protocol: ProtocolHTTP,
 		Server: "two.local", Port: 8081, Status: "active", ResponseTimeMs: 10,
-	}}, time.Now())
+	}}, time.Now(), true)
 
 	one, err := mgr.SelectBestNode(context.Background(), intPtr(1))
 	if err != nil || one.ID != 101 {
@@ -743,8 +743,8 @@ func TestManagerTargetedSelectionKeepsSubscriptionCachesIndependent(t *testing.T
 	if store.listCalls != 0 {
 		t.Fatalf("targeted cache selections caused %d store lookups, want 0", store.listCalls)
 	}
-	cachedOne, _, present := mgr.getNodesFromCacheWithTTL(1, time.Now())
-	if !present || len(cachedOne) != 1 || cachedOne[0].ID != 101 {
+	cachedOne, _, present, covered := mgr.getNodesFromCacheWithTTL(1, time.Now())
+	if !present || !covered || len(cachedOne) != 1 || cachedOne[0].ID != 101 {
 		t.Fatalf("subscription one cache was replaced: present=%v nodes=%+v", present, cachedOne)
 	}
 }
@@ -753,13 +753,102 @@ func TestManagerCacheUsesEmptySnapshotAsNegativeCache(t *testing.T) {
 	store := &fakeStore{}
 	mgr := NewManager(store, nil, nil)
 	const subscriptionID = 11
-	mgr.setCacheWithTTL(subscriptionID, []*Node{}, time.Now())
+	mgr.setCacheWithTTL(subscriptionID, []*Node{}, time.Now(), true)
 
 	if _, err := mgr.SelectBestNode(context.Background(), intPtr(subscriptionID)); err == nil {
 		t.Fatal("empty cached subscription should have no selectable node")
 	}
 	if store.listCalls != 0 {
 		t.Fatalf("empty cached subscription caused %d store lookups, want 0", store.listCalls)
+	}
+}
+
+// TestManagerSelectionFallsBackOnUncoveredCacheEntry (R4 #1)
+// present 但 covered=false 的缓存条目不得作为选择依据：selectNodeExcluding
+// 必须回源 store 拿完整候选集，而不是拿着不完整的快照报"无可用节点"。
+func TestManagerSelectionFallsBackOnUncoveredCacheEntry(t *testing.T) {
+	store := &fakeStore{
+		nodes: []*Node{{
+			ID: 501, SubscriptionID: 1, Name: "from-store", Protocol: ProtocolHTTP,
+			Server: "store.local", Port: 8082, Status: "active", ResponseTimeMs: 10,
+		}},
+	}
+	mgr := NewManager(store, nil, nil)
+	mgr.setCacheWithTTL(1, []*Node{}, time.Now(), false)
+
+	node, err := mgr.SelectBestNode(context.Background(), intPtr(1))
+	if err != nil || node == nil || node.ID != 501 {
+		t.Fatalf("selection on uncovered entry = node=%v err=%v, want store node 501", node, err)
+	}
+	if store.listCalls != 1 {
+		t.Fatalf("uncovered entry caused %d store lookups, want 1", store.listCalls)
+	}
+
+	// 回源写入的条目必须是 covered 的：第二次选择直接命中缓存，不再回源。
+	if _, _, _, covered := mgr.getNodesFromCacheWithTTL(1, time.Now()); !covered {
+		t.Fatal("store-fallback entry must be written as covered")
+	}
+	mgr.SelectBestNode(context.Background(), intPtr(1))
+	if store.listCalls != 1 {
+		t.Fatalf("covered follow-up selection caused extra store lookups (%d), want 1", store.listCalls)
+	}
+}
+
+// TestFullCacheLoadInstallsNegativeCacheForEmptySubs (R4 #13)
+// 全量加载（loadAllNodesIntoCache / ReloadCache）按节点分组时空订阅不产生
+// 缓存条目；negative-cache 契约要求为它们安装 present-but-empty 的 covered
+// 条目，使首个 targeted selection 直接命中负缓存而不回源 store。
+func TestFullCacheLoadInstallsNegativeCacheForEmptySubs(t *testing.T) {
+	newStore := func() *fakeStore {
+		return &fakeStore{
+			subscriptions: []*Subscription{
+				{ID: 1, Name: "has-nodes", Status: "active"},
+				{ID: 2, Name: "empty", Status: "active"},
+			},
+			nodes: []*Node{{
+				ID: 101, SubscriptionID: 1, Name: "only-node", Protocol: ProtocolHTTP,
+				Server: "one.local", Port: 8080, Status: "active", ResponseTimeMs: 10,
+			}},
+		}
+	}
+	assertNegativeCache := func(t *testing.T, mgr *Manager, store *fakeStore, phase string, wantLookups int) {
+		t.Helper()
+		nodes, _, present, covered := mgr.getNodesFromCacheWithTTL(2, time.Now())
+		if !present || !covered || len(nodes) != 0 {
+			t.Fatalf("[%s] sub 2 cache = present=%v covered=%v len=%d, want present-but-empty covered entry",
+				phase, present, covered, len(nodes))
+		}
+		if _, err := mgr.SelectBestNode(context.Background(), intPtr(2)); err == nil {
+			t.Fatalf("[%s] empty sub 2 selection should fail with no selectable node", phase)
+		}
+		// lookups 只含加载路径自身消耗（ListNodes(nil) 每次全量加载 1 次）；
+		// 负缓存命中不得再回源。
+		if store.listCalls != wantLookups {
+			t.Fatalf("[%s] store lookups = %d, want %d (load only; negative-cache hit must not fall back)",
+				phase, store.listCalls, wantLookups)
+		}
+	}
+
+	store := newStore()
+	mgr := NewManager(store, nil, nil)
+	mgr.loadAllNodesIntoCache()
+	assertNegativeCache(t, mgr, store, "loadAllNodesIntoCache", 1)
+
+	store2 := newStore()
+	mgr2 := NewManager(store2, nil, nil)
+	mgr2.loadAllNodesIntoCache()
+	// 模拟空订阅的条目已在缓存中，再走一次 ReloadCache：清扫必须豁免
+	// store 中仍存在的空订阅，而不是把负缓存条目当孤儿删掉。
+	mgr2.ReloadCache()
+	assertNegativeCache(t, mgr2, store2, "ReloadCache", 2)
+
+	// 订阅从 store 删除后，其负缓存条目必须被孤儿清扫移除。
+	store2.subscriptions = store2.subscriptions[:1]
+	if err := mgr2.ReloadCache(); err != nil {
+		t.Fatalf("ReloadCache after sub removal: %v", err)
+	}
+	if _, _, present, _ := mgr2.getNodesFromCacheWithTTL(2, time.Now()); present {
+		t.Fatal("negative-cache entry for removed subscription must be swept")
 	}
 }
 
@@ -776,17 +865,17 @@ func TestManagerCacheReturnsDeepIsolatedNodeSnapshot(t *testing.T) {
 			"items":  []interface{}{map[string]interface{}{"value": "one"}},
 		},
 	}
-	mgr.setCacheWithTTL(3, []*Node{original}, time.Now())
+	mgr.setCacheWithTTL(3, []*Node{original}, time.Now(), true)
 
-	snapshot, _, present := mgr.getNodesFromCacheWithTTL(3, time.Now())
-	if !present || len(snapshot) != 1 {
+	snapshot, _, present, covered := mgr.getNodesFromCacheWithTTL(3, time.Now())
+	if !present || !covered || len(snapshot) != 1 {
 		t.Fatalf("cache snapshot present=%v len=%d", present, len(snapshot))
 	}
 	snapshot[0].Server = "mutated.local"
 	snapshot[0].Config["nested"].(map[string]interface{})["token"] = "mutated"
 	snapshot[0].Config["items"].([]interface{})[0].(map[string]interface{})["value"] = "mutated"
 
-	again, _, _ := mgr.getNodesFromCacheWithTTL(3, time.Now())
+	again, _, _, _ := mgr.getNodesFromCacheWithTTL(3, time.Now())
 	if again[0].Server != "bridge.local" {
 		t.Fatalf("cached server mutated through snapshot: %q", again[0].Server)
 	}
