@@ -626,6 +626,11 @@ func scanIndexRow(rows interface {
 	var priceIn, priceOut, successRate *float64
 	var routingTier *int16
 	var unavailableReason *string
+	// 2026-09-10 fix: credentials with no concurrency_limit roll up as NULL
+	// into the hot table (half-2 cold-start baseline). Scan via pointer and
+	// default to 0 — the pressure formula below already treats 0 as
+	// "unknown → no penalty".
+	var concurrencyLimit *int
 	// CHANNEL_QUALITY_ROUTING: 新增字段用 *string/*bool 以允许 NULL
 	// （早期迁移期间 providers 关联缺失时不会让整个 refresh 失败）。
 	var providerCategory *string
@@ -641,7 +646,7 @@ func scanIndexRow(rows interface {
 		&billingMode,
 		&priceIn, &priceOut,
 		&successRate, &c.P95LatencyMs,
-		&c.ActiveSessions, &c.ConcurrencyLimit,
+		&c.ActiveSessions, &concurrencyLimit,
 		&routingTier, &unavailableReason,
 		&providerCategory, &providerKind, &isFree,
 		&costTier,
@@ -670,6 +675,9 @@ func scanIndexRow(rows interface {
 	}
 	if successRate != nil {
 		c.SuccessRate = *successRate
+	}
+	if concurrencyLimit != nil {
+		c.ConcurrencyLimit = *concurrencyLimit
 	}
 	if routingTier != nil {
 		switch {
