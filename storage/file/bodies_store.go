@@ -2,22 +2,21 @@
 //
 // 存储布局（分层目录，避免单目录文件过多）：
 //
-//	{baseDir}/{tenantID}/{sessionID前2位}/{sessionID}/turn_{turnNo}.json.gz
+//	{baseDir}/{tenantID}/{sessionID前2位}/{sessionID}/turn_{turnNo}.json.{gz|zst}
 //
-// 每个轮次为一个独立文件，内容为 SessionBody 的 JSON 序列化后再经 gzip
-// 压缩的字节流（LLM 请求/响应原文重复度高，gzip 通常可节省 70% 以上空间）。
-// 写入经由 AsyncFileWriter 异步落盘（临时文件 + rename 原子写），
-// 读取为同步操作（os.ReadFile + gzip 解压 + json 反序列化）。
+// 每个轮次为一个独立文件，内容为 SessionBody 的 JSON 序列化后再经压缩
+// 的字节流（LLM 请求/响应原文重复度高，压缩通常可节省 70% 以上空间）。
+// 压缩编码由 codec 决定（gzip 为历史默认；zstd 为 2026-09 起的推荐默认，
+// 后缀即编码标识，详见 codec.go），写入经由 AsyncFileWriter 异步落盘
+// （临时文件 + rename 原子写），读取为同步操作（os.ReadFile + 解压 +
+// json 反序列化），读路径按编码兜底顺序依次尝试，gzip 存量无需迁移。
 package file
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -40,15 +39,44 @@ var (
 type FileBodiesStore struct {
 	baseDir string           // 存储根目录
 	writer  *AsyncFileWriter // 复用异步写入器完成落盘
+	codec   Codec            // 新写内容的压缩编码（读路径始终兼容全部已知编码）
+}
+
+// StoreOption 定制 FileBodiesStore 的可选项。
+type StoreOption func(*FileBodiesStore)
+
+// WithCodec 指定新写内容的压缩编码；零值构造函数默认 CodecGzip（历史行为），
+// 生产装配经 factory 传入 config（默认 CodecZstd）。
+func WithCodec(c Codec) StoreOption {
+	return func(s *FileBodiesStore) { s.codec = c }
 }
 
 // NewFileBodiesStore 创建会话内容文件存储。
 // workers 透传给底层 AsyncFileWriter（<=0 时由其取默认值 4）。
-func NewFileBodiesStore(baseDir string, workers int) *FileBodiesStore {
-	return &FileBodiesStore{
+func NewFileBodiesStore(baseDir string, workers int, opts ...StoreOption) *FileBodiesStore {
+	s := &FileBodiesStore{
 		baseDir: baseDir,
 		writer:  NewAsyncFileWriter(workers),
+		codec:   CodecGzip,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(s)
+		}
+	}
+	return s
+}
+
+// readCodecs 返回读路径的编码尝试顺序：配置编码优先，其余按 AllCodecs
+// 兜底（去重），保证新旧编码混存的目录可无迁移读取。
+func (s *FileBodiesStore) readCodecs() []Codec {
+	order := []Codec{s.codec}
+	for _, c := range AllCodecs() {
+		if c != s.codec {
+			order = append(order, c)
+		}
+	}
+	return order
 }
 
 // sessionPrefix 返回 sessionID 的前 2 位作为分层目录名；不足 2 位时用全量。
@@ -74,11 +102,11 @@ func (s *FileBodiesStore) sessionDir(tenantID, sessionID string) string {
 	return filepath.Join(s.baseDir, tenantID, sessionPrefix(sessionID), sessionID)
 }
 
-// buildPath 返回指定轮次内容文件的存储路径：
-// {baseDir}/{tenantID}/{sessionID前2位}/{sessionID}/turn_{turnNo}.json.gz
-func (s *FileBodiesStore) buildPath(tenantID, sessionID string, turnNo int) string {
+// turnPath 返回指定编码下某轮次内容文件的存储路径：
+// {baseDir}/{tenantID}/{sessionID前2位}/{sessionID}/turn_{turnNo}{suffix}
+func (s *FileBodiesStore) turnPath(codec Codec, tenantID, sessionID string, turnNo int) string {
 	return filepath.Join(s.sessionDir(tenantID, sessionID),
-		fmt.Sprintf("turn_%d.json.gz", turnNo))
+		fmt.Sprintf("turn_%d%s", turnNo, codec.Suffix()))
 }
 
 // Write 序列化并压缩一条会话内容后交由异步写入器落盘。
@@ -101,21 +129,16 @@ func (s *FileBodiesStore) Write(ctx context.Context, body *storage.SessionBody) 
 			body.TurnNo, body.TenantID, body.SessionID, err)
 	}
 
-	// gzip 压缩：必须先 Close 刷新残余字节，再从缓冲区取出完整压缩流
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write(data); err != nil {
-		return fmt.Errorf("file bodies store: gzip write turn %d of %s/%s: %w",
-			body.TurnNo, body.TenantID, body.SessionID, err)
-	}
-	if err := zw.Close(); err != nil {
-		return fmt.Errorf("file bodies store: gzip close turn %d of %s/%s: %w",
+	// 压缩（编码由 s.codec 决定，后缀即编码标识）
+	compressed, err := s.codec.encode(data)
+	if err != nil {
+		return fmt.Errorf("file bodies store: compress turn %d of %s/%s: %w",
 			body.TurnNo, body.TenantID, body.SessionID, err)
 	}
 
 	// 写入指标（审计 P1：/metrics/storage 的 writes 此前恒为零）
-	writeErr := s.writer.Write(s.buildPath(body.TenantID, body.SessionID, body.TurnNo), buf.Bytes())
-	monitoring.Default().RecordWrite(len(buf.Bytes()), writeErr)
+	writeErr := s.writer.Write(s.turnPath(s.codec, body.TenantID, body.SessionID, body.TurnNo), compressed)
+	monitoring.Default().RecordWrite(len(compressed), writeErr)
 	if writeErr != nil {
 		return fmt.Errorf("file bodies store: write turn %d of %s/%s: %w",
 			body.TurnNo, body.TenantID, body.SessionID, writeErr)
@@ -124,8 +147,10 @@ func (s *FileBodiesStore) Write(ctx context.Context, body *storage.SessionBody) 
 }
 
 // Read 读取并解压指定轮次的会话内容。
-// 文件不存在时返回 storage.ErrNotFound（可用 errors.Is 判定）；
-// gzip 或 JSON 损坏时返回带路径上下文的错误。
+// 文件不存在时返回 storage.ErrNotFound（可用 errors.Is 判定）；读取按
+// readCodecs 顺序尝试各编码后缀（配置编码优先），历史 gzip 文件无需迁移。
+// 压缩流或 JSON 损坏时返回带路径上下文的错误（不做跨编码重试：后缀即
+// 编码标识，命中即定性）。
 func (s *FileBodiesStore) Read(ctx context.Context, tenantID, sessionID string, turnNo int) (*storage.SessionBody, error) {
 	if !validPathID(tenantID) {
 		return nil, fmt.Errorf("file bodies store: invalid tenantID %q", tenantID)
@@ -134,31 +159,33 @@ func (s *FileBodiesStore) Read(ctx context.Context, tenantID, sessionID string, 
 		return nil, fmt.Errorf("file bodies store: invalid sessionID %q", sessionID)
 	}
 
-	path := s.buildPath(tenantID, sessionID, turnNo)
-	compressed, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// 统一转换为哨兵错误，供上层用 errors.Is 判定
-			return nil, fmt.Errorf("file bodies store: turn %d of %s/%s: %w",
-				turnNo, tenantID, sessionID, storage.ErrNotFound)
+	for _, codec := range s.readCodecs() {
+		path := s.turnPath(codec, tenantID, sessionID, turnNo)
+		compressed, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // 尝试下一编码后缀
+			}
+			return nil, fmt.Errorf("file bodies store: read %s: %w", path, err)
 		}
-		return nil, fmt.Errorf("file bodies store: read %s: %w", path, err)
-	}
 
-	data, err := gunzip(compressed)
-	if err != nil {
-		return nil, fmt.Errorf("file bodies store: decompress %s: %w", path, err)
-	}
+		data, err := codec.decode(compressed)
+		if err != nil {
+			return nil, fmt.Errorf("file bodies store: decompress %s: %w", path, err)
+		}
 
-	var body storage.SessionBody
-	if err := json.Unmarshal(data, &body); err != nil {
-		return nil, fmt.Errorf("file bodies store: unmarshal %s: %w", path, err)
+		var body storage.SessionBody
+		if err := json.Unmarshal(data, &body); err != nil {
+			return nil, fmt.Errorf("file bodies store: unmarshal %s: %w", path, err)
+		}
+		return &body, nil
 	}
-	return &body, nil
+	return nil, fmt.Errorf("file bodies store: turn %d of %s/%s: %w",
+		turnNo, tenantID, sessionID, storage.ErrNotFound)
 }
 
 // ReadRange 按轮次区间 [startTurn, endTurn] 逐个读取会话内容。
-// 缺失的轮次（仅 ErrNotFound）自动跳过；其他错误（如 gzip 损坏）立即中止返回。
+// 缺失的轮次（仅 ErrNotFound）自动跳过；其他错误（如压缩流损坏）立即中止返回。
 // startTurn > endTurn 时返回空切片。
 func (s *FileBodiesStore) ReadRange(ctx context.Context, tenantID, sessionID string, startTurn, endTurn int) ([]*storage.SessionBody, error) {
 	if startTurn > endTurn {
@@ -220,13 +247,20 @@ func (s *FileBodiesStore) ListTurns(_ context.Context, tenantID, sessionID strin
 			s.sessionDir(tenantID, sessionID), err)
 	}
 	turns := make([]int, 0, len(entries))
+	seen := make(map[int]struct{}, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		var turnNo int
-		if _, err := fmt.Sscanf(e.Name(), "turn_%d.json.gz", &turnNo); err == nil {
-			turns = append(turns, turnNo)
+		for _, codec := range AllCodecs() {
+			var turnNo int
+			if _, err := fmt.Sscanf(e.Name(), "turn_%d"+codec.Suffix(), &turnNo); err == nil {
+				if _, ok := seen[turnNo]; !ok {
+					turns = append(turns, turnNo)
+					seen[turnNo] = struct{}{}
+				}
+				break
+			}
 		}
 	}
 	sort.Ints(turns)
@@ -234,7 +268,8 @@ func (s *FileBodiesStore) ListTurns(_ context.Context, tenantID, sessionID strin
 }
 
 // DeleteTurnFile 删除单个 turn 的内容文件（孤儿清理），实现
-// storage.TurnFileDeleter。文件不存在时返回 nil（幂等）。
+// storage.TurnFileDeleter。新旧编码后缀都删（同轮混存时避免清残留），
+// 文件不存在时返回 nil（幂等）。
 func (s *FileBodiesStore) DeleteTurnFile(_ context.Context, tenantID, sessionID string, turnNo int) error {
 	if !validPathID(tenantID) {
 		return fmt.Errorf("file bodies store: invalid tenantID %q", tenantID)
@@ -242,17 +277,20 @@ func (s *FileBodiesStore) DeleteTurnFile(_ context.Context, tenantID, sessionID 
 	if !validPathID(sessionID) {
 		return fmt.Errorf("file bodies store: invalid sessionID %q", sessionID)
 	}
-	if err := os.Remove(s.buildPath(tenantID, sessionID, turnNo)); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("file bodies store: remove turn file %s: %w",
-			s.buildPath(tenantID, sessionID, turnNo), err)
+	for _, codec := range AllCodecs() {
+		path := s.turnPath(codec, tenantID, sessionID, turnNo)
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("file bodies store: remove turn file %s: %w", path, err)
+		}
 	}
 	return nil
 }
 
 // TurnFileModTime 返回单个 turn 内容文件的修改时间（mtime），实现
 // storage.TurnFileStater，供孤儿删除的宽限判定（storage.RepairTurnArtifacts
-// 的 G-#9 第二道保险）使用。文件不存在时返回包装 storage.ErrNotFound 的错误
-// （errors.Is 可命中）；其他 stat 失败原样带上下文返回，由调用方保守处理。
+// 的 G-#9 第二道保险）使用。按 readCodecs 顺序探测各编码后缀；全部不存在时
+// 返回包装 storage.ErrNotFound 的错误（errors.Is 可命中）；其他 stat 失败
+// 原样带上下文返回，由调用方保守处理。
 func (s *FileBodiesStore) TurnFileModTime(_ context.Context, tenantID, sessionID string, turnNo int) (time.Time, error) {
 	if !validPathID(tenantID) {
 		return time.Time{}, fmt.Errorf("file bodies store: invalid tenantID %q", tenantID)
@@ -260,29 +298,17 @@ func (s *FileBodiesStore) TurnFileModTime(_ context.Context, tenantID, sessionID
 	if !validPathID(sessionID) {
 		return time.Time{}, fmt.Errorf("file bodies store: invalid sessionID %q", sessionID)
 	}
-	path := s.buildPath(tenantID, sessionID, turnNo)
-	info, err := os.Stat(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return time.Time{}, fmt.Errorf("file bodies store: turn %d of %s/%s: %w",
-				turnNo, tenantID, sessionID, storage.ErrNotFound)
+	for _, codec := range s.readCodecs() {
+		path := s.turnPath(codec, tenantID, sessionID, turnNo)
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue // 尝试下一编码后缀
+			}
+			return time.Time{}, fmt.Errorf("file bodies store: stat %s: %w", path, err)
 		}
-		return time.Time{}, fmt.Errorf("file bodies store: stat %s: %w", path, err)
+		return info.ModTime(), nil
 	}
-	return info.ModTime(), nil
-}
-
-// gunzip 解压一段 gzip 字节流；头或数据体损坏时返回带上下文的错误。
-func gunzip(data []byte) ([]byte, error) {
-	zr, err := gzip.NewReader(bytes.NewReader(data))
-	if err != nil {
-		return nil, fmt.Errorf("gzip header: %w", err)
-	}
-	defer zr.Close()
-
-	raw, err := io.ReadAll(zr)
-	if err != nil {
-		return nil, fmt.Errorf("gzip body: %w", err)
-	}
-	return raw, nil
+	return time.Time{}, fmt.Errorf("file bodies store: turn %d of %s/%s: %w",
+		turnNo, tenantID, sessionID, storage.ErrNotFound)
 }

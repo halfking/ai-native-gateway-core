@@ -2,7 +2,9 @@ package bg
 
 // bodies_trimmer.go — 双模式存储架构 Task 5.2：会话 bodies 保留策略 Worker。
 //
-// 会话 body 目录结构：{bodiesDir}/{tenantID}/{sid前2位}/{sessionID}/turn_N.json.gz。
+// 会话 body 目录结构：{bodiesDir}/{tenantID}/{sid前2位}/{sessionID}/turn_N.json.{gz|zst}
+// （后缀随落盘编码，2026-09 zstd 引入后两种并存；本 worker 按会话目录整删，
+// 对编码无感）。
 // 本 worker 定期（默认 6 小时）三层遍历 租户/前缀/会话 目录，会话目录
 // mtime 超过 retention 时整目录删除（先 dirSize 统计体积再 RemoveAll），
 // 并统计删除会话数与释放字节数。清理后顺带删除变空的父目录（前缀/租户）。
