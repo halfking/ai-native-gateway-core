@@ -35,6 +35,12 @@ func withShadowFlags(t *testing.T, fn func()) {
 		// later test in the same binary sees the settings-backed gate.
 		return false
 	}))
+	// 2026-09-10: shadow writes dispatch to a semaphore-bounded goroutine
+	// in production; run them inline here so hook() returns after the
+	// write and post-fn assertions stay deterministic.
+	prevAsync := shadowWriteDispatchAsync
+	shadowWriteDispatchAsync = false
+	defer func() { shadowWriteDispatchAsync = prevAsync }()
 	fn()
 }
 
@@ -166,6 +172,12 @@ func TestBacklog_ConcurrentAppends(t *testing.T) {
 	// finish). Restore on exit so other tests see the default gate.
 	setShadowWriteEnabledForTest(func() bool { return true })
 	defer setShadowWriteEnabledForTest(func() bool { return false })
+	// Inline dispatch: with the production async hand-off, hook() returns
+	// before the failing write appends to the backlog, so the final drain
+	// below could race the in-flight goroutines.
+	prevAsync := shadowWriteDispatchAsync
+	shadowWriteDispatchAsync = false
+	defer func() { shadowWriteDispatchAsync = prevAsync }()
 
 	var wg sync.WaitGroup
 	// Append workers.

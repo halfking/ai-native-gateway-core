@@ -1386,7 +1386,17 @@ func (p *Pipeline) onScheduledDue(qr *QueuedRequest, dueAt time.Time) {
 		Message: "定时请求到期，开始执行",
 		RetryAt: dueAt,
 	})
+	// The first admission (Submit → parkScheduledRequest → releaseTotal)
+	// already consumed the take-once release token. Re-arm it before the
+	// second enqueue, otherwise the drainer's release CAS-fails and this
+	// Tier-0 slot leaks permanently (audit 2026-09-10 P0: cumulative
+	// total_queue_full once enough scheduled requests have passed through).
+	qr.totalQueueDone.Store(false)
 	if !p.admitTotal(ctxOf(qr), qr) || !p.totalQueue.tryEnqueue(qr) {
+		// Nothing entered the local queue; re-consume the token so the
+		// take-once release inside complete() cannot decrement a slot that
+		// was never taken.
+		qr.totalQueueDone.Store(true)
 		p.releaseClusterTotal(qr)
 		metricOverflow.WithLabelValues("total_queue_full_on_due").Inc()
 		p.observeOverflow("total_queue_full_on_due")
