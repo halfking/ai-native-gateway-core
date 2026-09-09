@@ -7,15 +7,13 @@
 
 import { computed } from 'vue'
 import type { TurnListItem } from '../api/sessions_v2'
+import { formatDateTime } from '../utils/datetime'
 
 const props = defineProps<{ turn: TurnListItem; active: boolean }>()
 const emit = defineEmits<{ (e: 'open', turn: TurnListItem): void }>()
 
 const tagClass = (v: string) => `tag-${v || 'skip'}`
-const ts = computed(() => {
-  try { return new Date(props.turn.ts).toLocaleString() }
-  catch { return props.turn.ts }
-})
+const ts = computed(() => formatDateTime(props.turn.ts))
 </script>
 
 <template>

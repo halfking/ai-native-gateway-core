@@ -7,6 +7,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Plus, Minus, Money, CircleCheck } from '@element-plus/icons-vue'
 import { useDashboard } from '../composables/useDashboard'
+import { formatDateTime } from '../utils/datetime'
 import DashboardStatsRow, { type DashboardStats } from './analytics/DashboardStatsRow.vue'
 import SessionTrendChart from './analytics/SessionTrendChart.vue'
 import HealthGradeChart from './analytics/HealthGradeChart.vue'
@@ -124,7 +125,7 @@ function onDaysClick(next: number) {
       <div class="panel-toolbar">
         <div class="panel-toolbar__meta">
           <span v-if="lastUpdated" class="meta-text">
-            {{ t('sessions.stats.lastUpdated') }}: {{ lastUpdated.toLocaleString() }}
+            {{ t('sessions.stats.lastUpdated') }}: {{ formatDateTime(lastUpdated) }}
             <span v-if="responseTime"> · {{ responseTime }}ms</span>
           </span>
           <span v-if="periodLabel" class="period-banner">
