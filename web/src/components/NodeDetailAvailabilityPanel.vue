@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { RoutingCandidate } from '../api/routing'
+import { formatDateTime } from '../utils/datetime'
 
 const props = defineProps<{
   candidate: RoutingCandidate | null
@@ -17,8 +18,7 @@ interface FlagRow {
 }
 
 const fmtTime = (iso: string | null | undefined): string => {
-  if (!iso) return '—'
-  return new Date(iso).toLocaleString()
+  return formatDateTime(iso)
 }
 
 const isActive = (s: string | null | undefined) => !!s && s === 'active'

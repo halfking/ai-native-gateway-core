@@ -42,6 +42,7 @@ import {
   STATUS_BORDER_COLORS,
   STATUS_BORDER_WIDTHS,
 } from '../composables/liveStreamColors'
+import { formatDateTime } from '../utils/datetime'
 
 const props = defineProps<{
   request: LiveRequest
@@ -166,11 +167,7 @@ const tooltip = computed(() => {
   }
   if (r.cost_usd != null) lines.push(`Cost: $${r.cost_usd.toFixed(4)}`)
   if (r.request_id) lines.push(`ID: ${r.request_id.slice(0, 8)}`)
-  try {
-    lines.push(`Time: ${new Date(r.ts).toLocaleString(locale.value)}`)
-  } catch {
-    /* ignore */
-  }
+  lines.push(`Time: ${formatDateTime(r.ts, { locale: locale.value })}`)
   return lines.join('\n')
 })
 
