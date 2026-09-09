@@ -719,7 +719,13 @@ do_deploy() {
     local build_image="${LLM_GATEWAY_BUILD_IMAGE:-golang:1.27-alpine}"
     docker image inspect "$build_image" >/dev/null 2>&1 || docker pull "$build_image" >/dev/null \
       || { err "CGO 回退需要镜像 $build_image 且拉取失败; refusing to continue"; exit 1; }
-    local cgo_out="$PROJECT_ROOT/.build-local/seamless-binary"
+    # 2026-09-09：与 deploy-local.sh build_backend 同样加固——cgo_out
+    # 用 $$ 后缀独占文件名，docker run 写到 .$$ 文件再原子 install
+    # 到 $tmpbin；并发 deploy（远端 + 本地 deploy-local 同跑、或外部
+    # 清理工具触碰 .build-local）不会让 cgo_out 在 docker run 完成到
+    # install 之间被互踩，导致 install 报"No such file"但 stage_release
+    # 没炸——最后在远端 dl_verify_release 撞上"no SHA256SUMS"。
+    local cgo_out="$PROJECT_ROOT/.build-local/seamless-binary.$$"
     mkdir -p "$PROJECT_ROOT/.build-local/.gocache"
     log "CGO=0 构建失败，回退 $build_image 容器内 CGO 构建 (linux/amd64)"
     # --platform linux/amd64 必须显式：Apple Silicon 上默认拉 arm64 镜像，
@@ -737,9 +743,19 @@ do_deploy() {
         -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH=amd64 \
         -e GOCACHE=/tmp/go-build-cache -e GOPATH=/tmp/go-path \
         "$build_image" \
-        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w -extldflags -static" -o /src/.build-local/seamless-binary ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/seamless-binary') \
+        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w -extldflags -static" -o /src/.build-local/seamless-binary.'"$$"' ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/seamless-binary.'"$$") \
       || { err "backend CGO container build failed (GOOS=linux GOARCH=amd64); refusing to continue with stale binary"; exit 1; }
-    mv -f "$cgo_out" "$tmpbin"
+    if [[ ! -s "$cgo_out" ]]; then
+      err "CGO container build produced no output at $cgo_out (docker run returned 0 but file is missing or empty)"
+      rm -f "$cgo_out"
+      exit 1
+    fi
+    if ! install -m 0755 "$cgo_out" "$tmpbin"; then
+      err "failed to install $cgo_out -> $tmpbin"
+      rm -f "$cgo_out"
+      exit 1
+    fi
+    rm -f "$cgo_out"
   fi
   [[ -s "$tmpbin" ]] || { err "backend build produced no output at $tmpbin"; exit 1; }
   ok "编译完成 ($(du -h "$tmpbin" | cut -f1))"

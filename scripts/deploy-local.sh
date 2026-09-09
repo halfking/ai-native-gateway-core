@@ -601,8 +601,15 @@ build_backend() {
         die "CGO fallback needs image $build_image and it is not pullable (full stderr: $cgo_pull_log)"
       fi
     fi
-    local cgo_out="$PROJECT_ROOT/.build-local/gateway.build"
+    local cgo_out="$PROJECT_ROOT/.build-local/gateway.build.$$"
     mkdir -p "$PROJECT_ROOT/.build-local"
+    # 2026-09-09：之前 cgo_out 用固定名 gateway.build，并发 deploy（本地
+    # vs 远端 seamless 同时跑、或者 build-host.log 被外部清理工具触碰）
+    # 会让 cgo_out 在 docker run 完成到 mv 之间被另一进程 rm，导致 mv
+    # 报"No such file"但 build_backend 没炸——stage_release 拿着不存在的
+    # $out 去 install，最后在 dl_verify_release 撞上 "no SHA256SUMS"。
+    # 用 $$ 后缀给每次 build 一个独占路径，docker run 写到 .$$ 文件，mv
+    # 到 $out 是单一原子动作；任何并发 deploy 不会互踩产物。
     if ! (cd "$PROJECT_ROOT" && HOST_UID="$(id -u)" HOST_GID="$(id -g)" docker run --rm \
         --platform="$docker_platform" \
         -v "$PWD":/src -w /src \
@@ -610,25 +617,33 @@ build_backend() {
         -e CGO_ENABLED=1 -e GOOS=linux -e GOARCH="$target_arch" \
         -e GOCACHE=/tmp/go-build-cache -e GOPATH=/tmp/go-path \
         "$build_image" \
-        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w" -o /src/.build-local/gateway.build ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/gateway.build') 2>"$cgo_log"; then
+        sh -c 'apk add --no-cache gcc musl-dev >/dev/null && go build -trimpath -ldflags="-s -w" -o /src/.build-local/gateway.build.'"$$"' ./cmd/gateway && chown "$HOST_UID:$HOST_GID" /src/.build-local/gateway.build.'"$$") 2>"$cgo_log"; then
       printf '    [cgo-build stderr follows]\n' >&2
       sed 's/^/    /' "$cgo_log" >&2 || true
       die "backend CGO container build failed (GOOS=linux GOARCH=$target_arch); full log: $cgo_log"
     fi
-    # docker run 返回 0 但 .build-local/gateway.build 缺失意味着容器内的
-    # sh -c 在最后一节失败前已经悄悄 return 0（极少见），或者 chown 写
-    # 到了别的路径。给出明确诊断而非把 mv 静默失败继续往下走。
+    # docker run 返回 0 但产物缺失意味着容器内的 sh -c 在最后一节失败前
+    # 已经悄悄 return 0（极少见），或者 chown 写到了别的路径。给出明确
+    # 诊断而非把 mv 静默失败继续往下走。
     if [[ ! -s "$cgo_out" ]]; then
       printf '    [cgo-build host log follows]\n' >&2
       sed 's/^/    /' "$cgo_log" >&2 || true
       ls -la "$PROJECT_ROOT/.build-local/" >&2 || true
+      rm -f "$cgo_out"  # cleanup stale $$ file
       die "backend CGO build produced no output at $cgo_out (docker run returned 0 but the file is missing or empty); inspect $cgo_log"
     fi
-    if ! mv -f "$cgo_out" "$out" 2>"$RUN_DIR/build-cgo-mv.log"; then
-      printf '    [cgo-mv stderr follows]\n' >&2
+    # 用 install 而非 mv：原子替换 + 显式 mtime，便于后续检查。
+    # mv -f 找不到源时只 print 不返回 1（bash 的 mv builtin 怪癖），且
+    # 即便返回 1 也可能被 set -e 吞掉（之前用 `if ! mv ...` 守门但仍然
+    # 失败过——偶发的 docker fsync race）。install 出错时一定有非零退出
+    # 且 print 明确的 stat 失败原因，让 stage_release 永远不会拿到空 $out。
+    if ! install -m 0755 "$cgo_out" "$out" 2>"$RUN_DIR/build-cgo-mv.log"; then
+      printf '    [cgo-install stderr follows]\n' >&2
       sed 's/^/    /' "$RUN_DIR/build-cgo-mv.log" >&2 || true
-      die "failed to mv $cgo_out -> $out (see $RUN_DIR/build-cgo-mv.log)"
+      rm -f "$cgo_out"
+      die "failed to install $cgo_out -> $out (see $RUN_DIR/build-cgo-mv.log)"
     fi
+    rm -f "$cgo_out"
   fi
   [[ -s "$out" ]] || die "backend build produced no output at $out"
   printf '%s\n' "$out"

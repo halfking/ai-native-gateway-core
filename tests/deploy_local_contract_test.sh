@@ -541,3 +541,37 @@ grep -Fq 'is empty (residue from a previous failed deploy); auto-cleaning' "$ROO
 grep -Fq 'no SHA256SUMS — not a verifiable release' "$ROOT/scripts/deploy-local-lib.sh" \
   || fail 'dl_ensure_release_available: dir-with-file branch must fail-closed (sentinel contract)'
 pass 'dl_ensure_release_available 4-branch contract (active / intact / empty self-heal / fail-closed) locked down'
+
+# CGO 容器构建的并发安全契约（2026-09-09 用户再次"还是出错！"）：
+# 之前的 cgo_out 用固定名 gateway.build，并发 deploy（本地 deploy-local
+# 跑 + 远端 deploy-seamless 同跑、外部清理工具触碰 .build-local）会
+# 让 cgo_out 在 docker run 完成到 mv 之间被互踩，mv 报"No such file"
+# 但 build_backend 不炸（mv -f 找不到源时只 print 不返回 1），最后
+# stage_release 拿着空 $out 去 install 撞上 dl_verify_release 的
+# "no SHA256SUMS"。grep 守住 3 条：
+#   1. cgo_out 路径必须带 $$ 后缀（每次 build 独占文件名）
+#   2. mv -f 不许出现；改用 install -m 0755（原子 + 显式失败码）
+#   3. dl_stage_release 必须在 install 前 print $binary 是否存在，
+#      把 "No such file" 翻译成 build_backend 失败的明确信号
+grep -Fq 'gateway.build.$$' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'CGO fallback: cgo_out must use $$ suffix (per-PID) to prevent concurrent-deploy races'
+grep -Fq 'seamless-binary.$$' "$ROOT/scripts/deploy-seamless.sh" \
+  || fail 'CGO fallback (seamless): cgo_out must use $$ suffix (per-PID) to prevent concurrent-deploy races'
+# mv -f 之后的 [ $cgo_out 路径 ] 必须消失（被 install 替换）
+if grep -nE 'mv -f "\$cgo_out"' "$ROOT/scripts/deploy-local.sh" "$ROOT/scripts/deploy-seamless.sh" >/dev/null 2>&1; then
+  fail 'CGO fallback must use install -m 0755 (not mv -f) to atomically install the binary; mv -f swallows missing-source errors'
+fi
+grep -Fq 'install -m 0755 "$cgo_out" "$out"' "$ROOT/scripts/deploy-local.sh" \
+  || fail 'CGO fallback: install -m 0755 $cgo_out $out must replace mv -f (atomic + explicit error)'
+grep -Fq 'install -m 0755 "$cgo_out" "$tmpbin"' "$ROOT/scripts/deploy-seamless.sh" \
+  || fail 'CGO fallback (seamless): install -m 0755 $cgo_out $tmpbin must replace mv -f'
+# dl_stage_release 必须把"binary 不存在"翻译成 build_backend 失败的
+# 明确信号（否则 stage 静默吃掉，verify 报 "no SHA256SUMS"，操作员
+# 永远看不到真因）。
+grep -Fq 'binary missing or empty' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_stage_release: must diagnose missing/empty binary with explicit hint (build_backend path)'
+grep -Fq 'Inspect: %s/build-host.log' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_stage_release: missing-binary hint must point operators at build-host.log + build-cgo*.log'
+grep -Fq 'Inspect: %s/build-host.log, %s/build-cgo' "$ROOT/scripts/deploy-local-lib.sh" \
+  || fail 'dl_stage_release: missing-binary hint must reference both build-host.log and build-cgo*.log'
+pass 'CGO fallback atomic concurrent-safe contract ($$ suffix + install-not-mv + missing-binary diagnosis) locked down'
