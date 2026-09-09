@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useActionMessage } from '../composables/useActionMessage'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -882,7 +883,7 @@ watch(activeTab, async (tab) => {
                   {{ m.auto_generated ? '是' : '否' }}
                 </span>
               </td>
-              <td class="muted small">{{ m.updated_at ? new Date(m.updated_at).toLocaleString('zh-CN') : '-' }}</td>
+              <td class="muted small">{{ m.updated_at ? formatDateTime(m.updated_at, { locale: 'zh-CN' }) : '-' }}</td>
               <td>
                 <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" @click="openNameMappingModal(m)">编辑</button>
                 <button v-if="!readOnly && !m.auto_generated" class="btn btn-ghost btn-sm" style="color:#dc3545" @click="removeNameMapping(m.id)">删除</button>

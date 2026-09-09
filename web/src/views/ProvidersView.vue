@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
@@ -560,7 +561,7 @@ function timeText(v?: string | null): string {
   if (!v) return '—'
   const d = new Date(v)
   if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleString(localeRef.value, { hour12: false })
+  return formatDateTime(d, { locale: localeRef.value, options: { hour12: false } })
 }
 
 function money(v: number | string | null | undefined): string {

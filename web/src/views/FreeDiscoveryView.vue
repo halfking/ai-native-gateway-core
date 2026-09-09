@@ -10,6 +10,7 @@
 // 扫描失败时后端仍返回 200 + status=failed 任务体, UI 需展示 error_message。
 
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 import { ref, computed, onMounted } from 'vue'
 import {
   listFreeDiscoveryTemplates,
@@ -384,7 +385,7 @@ function fmtTime(iso: string | null): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString()
+  return formatDateTime(d)
 }
 
 function fmtNum(n: number): string {

@@ -4,6 +4,7 @@
 // 2026-07-12 创建
 
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import {
   fetchSelfCheckSettings,
   updateSelfCheckSettings,
@@ -278,7 +279,7 @@ function fmtMs(v: number | undefined): string {
 
 function fmtTime(s: string | undefined): string {
   if (!s) return '—'
-  return new Date(s).toLocaleString()
+  return formatDateTime(s)
 }
 
 function fmtRelative(s: string | undefined): string {

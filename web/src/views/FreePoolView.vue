@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatTimeOnly } from '../utils/datetime'
 import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import {
   getFreePoolStatus,
@@ -689,7 +690,7 @@ onUnmounted(() => {
         <span
           class="freshness-badge"
           :class="[freshnessClass, { 'live-pulse': liveBadge }]"
-          :title="fetchedAt ? new Date(fetchedAt).toLocaleTimeString() : ''"
+          :title="fetchedAt ? formatTimeOnly(fetchedAt) : ''"
         >
           <span class="fresh-dot" aria-hidden="true"></span>
           {{ fetchedAt ? freshnessLabel : '未加载' }}

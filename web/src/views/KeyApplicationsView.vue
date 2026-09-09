@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import {
   listKeyApplications,
@@ -110,7 +111,7 @@ async function handleReveal(app: KeyApplication) {
 
 function fmtTs(ts: string | null) {
   if (!ts) return '—'
-  return new Date(ts).toLocaleString(localeRef.value, { hour12: false })
+  return formatDateTime(ts, { locale: localeRef.value, options: { hour12: false } })
 }
 
 function statusBadge(status: string) {

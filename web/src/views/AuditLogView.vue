@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { localeRef } from '../i18n'
 import { fmtDateCompact } from '../i18n/useFormat'
 import { ref, onMounted, computed } from 'vue'
@@ -86,12 +87,12 @@ function actionLabel(action: string): string {
 
 function fmtTime(s: string) {
   if (!s) return t('auditLog.dash')
-  return new Date(s).toLocaleTimeString(localeRef.value, { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return formatTimeOnly(s, { locale: localeRef.value, options: { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' } })
 }
 
 function fmtTs(s: string) {
   if (!s) return t('auditLog.dash')
-  return new Date(s).toLocaleString(localeRef.value, { hour12: false })
+  return formatDateTime(s, { locale: localeRef.value, options: { hour12: false } })
 }
 
 function fmtJson(v: unknown): string {
