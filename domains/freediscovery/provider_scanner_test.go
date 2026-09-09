@@ -4,17 +4,33 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/safehttpclient"
 )
 
+// testTemplate 构造测试模板.
 func testTemplate() *ProviderTemplate {
 	return &ProviderTemplate{
 		ID: 1, ProviderCode: "groq", DisplayName: "Groq",
 		BaseURL: "https://api.groq.test/openai/v1",
 		APIType: APITypeOpenAICompletions, ModelsEndpoint: "/models",
 	}
+}
+
+// scannerForTest 返回一个 SafeHTTPClient 包装 (allowlist 含 httptest server 的 host),
+// 用于本地单元测试. 生产路径 (NewHTTPScanner(nil)) 仍走默认严格 SSRF 阻断.
+func scannerForTest(t *testing.T, baseURL string) *HTTPScanner {
+	t.Helper()
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		t.Fatalf("parse baseURL: %v", err)
+	}
+	safe := safehttpclient.NewWithAllowlist(30*time.Second, []string{u.Hostname()})
+	return &HTTPScanner{doer: safe.Do}
 }
 
 func TestHTTPScanner_ScanModels_OpenAIEnvelope(t *testing.T) {
@@ -38,9 +54,12 @@ func TestHTTPScanner_ScanModels_OpenAIEnvelope(t *testing.T) {
 	tpl := testTemplate()
 	tpl.BaseURL = srv.URL + "/openai/v1"
 
-	// 通过引擎的 scannerFor 获取 Groq 装配 (FreeOf=全部模型) — 真实路径
+	// 通过引擎的 scannerFor 获取 Groq 装配 (FreeOf=全部模型) — 真实路径.
 	engine := NewDiscoveryEngine(nil, nil)
-	models, err := engine.scannerFor(tpl).ScanModels(context.Background(), tpl, "sk-test")
+	// 将默认 safehttpclient 替换为测试客户端 (127.0.0.1 allowlist).
+	preset := engine.scannerFor(tpl).(*HTTPScanner)
+	preset.doer = scannerForTest(t, tpl.BaseURL).doer
+	models, err := preset.ScanModels(context.Background(), tpl, "sk-test")
 	if err != nil {
 		t.Fatalf("ScanModels: %v", err)
 	}
@@ -56,7 +75,7 @@ func TestHTTPScanner_ScanModels_OpenAIEnvelope(t *testing.T) {
 	if models[0].RawMetadata == nil {
 		t.Fatal("raw metadata must be preserved")
 	}
-	// Groq 预设钩子: 全部模型免费层可用 + 每日配额估算
+	// Groq 预设钩子: 全部模型免费层可用 + 每日配额估算.
 	if models[0].DailyTokens != 14400 {
 		t.Fatalf("groq quota hook missing: %+v", models[0])
 	}
@@ -78,14 +97,13 @@ func TestHTTPScanner_ScanModels_OpenRouterFreeOnly(t *testing.T) {
 	tpl.ProviderCode = "openrouter"
 	tpl.BaseURL = srv.URL
 
-	s := NewHTTPScanner(nil)
+	s := scannerForTest(t, srv.URL)
 	models, err := s.ScanModels(context.Background(), tpl, "sk-or")
 	if err != nil {
 		t.Fatalf("ScanModels: %v", err)
 	}
-	// 只保留 :free 后缀 (零定价判定的另一分支: pricing 均 0 也算, 但 gpt-5 有非零定价;
-	// meta-llama/broken 无定价字段 → pricing 为空 → 零定价判定 true 但 :free 缺失;
-	// 默认规则: HasSuffix(":free") OR (pricing_prompt != "" AND 零定价) → broken 被排除)
+	// 默认规则: HasSuffix(":free") OR (pricing_prompt != "" AND 零定价).
+	// gpt-5 非零定价 → 排除; broken 无定价字段 → pricing 为空 → 零定价判定 true 但 :free 缺失 → 也被排除.
 	if len(models) != 1 || models[0].ModelID != "google/gemma-4-31b-it:free" {
 		t.Fatalf("want only the :free model, got %+v", models)
 	}
@@ -102,7 +120,7 @@ func TestHTTPScanner_ScanModels_KeylessOmitsAuthHeader(t *testing.T) {
 	tpl := testTemplate()
 	tpl.BaseURL = srv.URL
 
-	s := NewHTTPScanner(nil)
+	s := scannerForTest(t, srv.URL)
 	if _, err := s.ScanModels(context.Background(), tpl, ""); err != nil {
 		t.Fatalf("keyless scan: %v", err)
 	}
@@ -121,7 +139,7 @@ func TestHTTPScanner_ScanModels_UpstreamError(t *testing.T) {
 	tpl := testTemplate()
 	tpl.BaseURL = srv.URL
 
-	s := NewHTTPScanner(nil)
+	s := scannerForTest(t, srv.URL)
 	_, err := s.ScanModels(context.Background(), tpl, "bad-key")
 	if err == nil || !strings.Contains(err.Error(), "401") {
 		t.Fatalf("upstream 401 must fail loudly, got %v", err)
@@ -137,7 +155,7 @@ func TestHTTPScanner_ScanModels_MalformedJSON(t *testing.T) {
 	tpl := testTemplate()
 	tpl.BaseURL = srv.URL
 
-	s := NewHTTPScanner(nil)
+	s := scannerForTest(t, srv.URL)
 	_, err := s.ScanModels(context.Background(), tpl, "k")
 	if err == nil || !strings.Contains(err.Error(), "parse") {
 		t.Fatalf("malformed response must fail, got %v", err)
@@ -153,7 +171,7 @@ func TestHTTPScanner_ScanModels_BareArray(t *testing.T) {
 	tpl := testTemplate()
 	tpl.BaseURL = srv.URL
 
-	s := NewHTTPScanner(nil)
+	s := scannerForTest(t, srv.URL)
 	models, err := s.ScanModels(context.Background(), tpl, "k")
 	if err != nil {
 		t.Fatalf("bare array must parse: %v", err)
@@ -175,14 +193,14 @@ func TestHTTPScanner_ScanModels_ContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	s := NewHTTPScanner(nil)
+	s := scannerForTest(t, srv.URL)
 	if _, err := s.ScanModels(ctx, tpl, "k"); err == nil {
 		t.Fatal("deadline must produce error")
 	}
 }
 
 func TestHTTPScanner_CustomHooks(t *testing.T) {
-	s := NewHTTPScanner(nil)
+	s := scannerForTest(t, "http://placeholder.invalid")
 	s.poolKeyOf = func(m modelEntry) string { return "custom-pool" }
 	s.quotaEstimator = func(m modelEntry) (int64, int64) { return 100, 50 }
 
@@ -190,6 +208,8 @@ func TestHTTPScanner_CustomHooks(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data": [{"id": "x:free", "pricing_prompt": "0", "pricing_completion": "0"}]}`))
 	}))
 	defer srv.Close()
+
+	s.doer = scannerForTest(t, srv.URL).doer
 
 	tpl := testTemplate()
 	tpl.BaseURL = srv.URL

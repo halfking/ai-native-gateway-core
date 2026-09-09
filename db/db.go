@@ -5255,6 +5255,10 @@ func (d *DB) ensureProxyManagementCanonicalSchema(ctx context.Context) error {
 				updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 			);
 			INSERT INTO public.proxy_selection_policy (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+			-- Keep the canonical-schema ledger entry for databases upgraded directly
+			-- by the binary, not only by the external startup migration runner.
+			INSERT INTO public.schema_migrations (version, description)
+			VALUES ('646', 'canonical proxy management schema') ON CONFLICT (version) DO NOTHING;
 			INSERT INTO public.schema_migrations (version, description) VALUES ('691', 'proxy region avoidance and auto-switch selection policy') ON CONFLICT (version) DO NOTHING;
 		`)
 

@@ -141,7 +141,7 @@ export function getFreeDiscoveryPresets(): Promise<{ presets: FreeDiscoveryPrese
 /** 整体直传 Orbi pi-providers JSON: {"providers": {"groq": {...}}} */
 export function importFreeDiscoveryOrbiTemplate(
   file: { providers: Record<string, { baseUrl: string; api: string; apiKey: string }> },
-): Promise<{ created: number; failed: number; errors: string[] }> {
+): Promise<{ created: number; failed: number; errors: string[]; status: 'ok' | 'partial' | 'failed' }> {
   return req('POST', '/api/free-discovery/templates/import-orbi', file)
 }
 
