@@ -271,6 +271,62 @@ func (f *StorageFactory) liteStateStore() *memorystore.MemoryStateStore {
 	return f.stateStore
 }
 
+// NewProviderStore 创建 provider catalog 存储。
+// full 模式返回 nil（暂未实现 PG provider store）；lite 模式返回 SQLite 实现。
+func (f *StorageFactory) NewProviderStore() interface{} {
+	switch f.mode {
+	case storage.StorageModeFull:
+		// TODO: 实现 PG provider store
+		return nil
+	case storage.StorageModeLite:
+		return sqlitestore.NewSQLiteProviderStore(f.sqlDB)
+	default:
+		return nil
+	}
+}
+
+// NewCredentialStore 创建 credential 存储。
+// full 模式返回 nil（暂未实现 PG credential store）；lite 模式返回 SQLite 实现。
+func (f *StorageFactory) NewCredentialStore() interface{} {
+	switch f.mode {
+	case storage.StorageModeFull:
+		// TODO: 实现 PG credential store
+		return nil
+	case storage.StorageModeLite:
+		return sqlitestore.NewSQLiteCredentialStore(f.sqlDB)
+	default:
+		return nil
+	}
+}
+
+// NewModelStore 创建 model catalog 存储。
+// full 模式返回 nil（暂未实现 PG model store）；lite 模式返回 SQLite 实现。
+func (f *StorageFactory) NewModelStore() interface{} {
+	switch f.mode {
+	case storage.StorageModeFull:
+		// TODO: 实现 PG model store
+		return nil
+	case storage.StorageModeLite:
+		return sqlitestore.NewSQLiteModelStore(f.sqlDB)
+	default:
+		return nil
+	}
+}
+
+// NewBindingStore 创建 credential-model binding 存储。
+// full 模式返回 nil（暂未实现 PG binding store）；lite 模式返回 SQLite 实现。
+func (f *StorageFactory) NewBindingStore() interface{} {
+	switch f.mode {
+	case storage.StorageModeFull:
+		// TODO: 实现 PG binding store
+		return nil
+	case storage.StorageModeLite:
+		return sqlitestore.NewSQLiteBindingStore(f.sqlDB)
+	default:
+		return nil
+	}
+}
+
 // GetPgPool 返回 full 模式下的 PostgreSQL 连接池（lite 模式返回 nil）。
 // 供主程序集成等需要直接操作连接池的场景使用。
 func (f *StorageFactory) GetPgPool() *pgxpool.Pool {

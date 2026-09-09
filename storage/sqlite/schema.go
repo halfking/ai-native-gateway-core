@@ -70,6 +70,79 @@ CREATE TABLE IF NOT EXISTS configs (
 	value      TEXT NOT NULL,
 	updated_at INTEGER
 );
+
+-- Lite catalog: providers 供应商表
+CREATE TABLE IF NOT EXISTS providers (
+	id          TEXT PRIMARY KEY,
+	name        TEXT NOT NULL,
+	base_url    TEXT NOT NULL,
+	protocol    TEXT NOT NULL,
+	auth_type   TEXT,
+	models_json TEXT,
+	headers_json TEXT,
+	timeout_sec INTEGER DEFAULT 30,
+	disabled    INTEGER DEFAULT 0,
+	metadata_json TEXT,
+	last_health_check INTEGER,
+	consecutive_fails INTEGER DEFAULT 0,
+	created_at  INTEGER NOT NULL,
+	updated_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_providers_disabled ON providers (disabled, updated_at DESC);
+
+-- Lite catalog: credentials 凭据表（仅存密文）
+CREATE TABLE IF NOT EXISTS credentials (
+	id          TEXT PRIMARY KEY,
+	tenant_id   TEXT NOT NULL,
+	provider_id TEXT NOT NULL,
+	model       TEXT,
+	encrypted_key BLOB NOT NULL,
+	priority    INTEGER DEFAULT 50,
+	status      TEXT NOT NULL DEFAULT 'active',
+	max_concurrent INTEGER DEFAULT 0,
+	metadata_json TEXT,
+	last_health_check INTEGER,
+	consecutive_fails INTEGER DEFAULT 0,
+	created_at  INTEGER NOT NULL,
+	updated_at  INTEGER NOT NULL,
+	FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_credentials_tenant    ON credentials (tenant_id, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_credentials_provider  ON credentials (provider_id, status);
+CREATE INDEX IF NOT EXISTS idx_credentials_model     ON credentials (model, status);
+
+-- Lite catalog: models 模型目录表
+CREATE TABLE IF NOT EXISTS models (
+	id               TEXT PRIMARY KEY,
+	canonical_name   TEXT NOT NULL UNIQUE,
+	family           TEXT,
+	modality         TEXT,
+	context_window   INTEGER DEFAULT 0,
+	supports_stream  INTEGER DEFAULT 0,
+	supports_tools   INTEGER DEFAULT 0,
+	input_cost_per1k REAL DEFAULT 0,
+	output_cost_per1k REAL DEFAULT 0,
+	metadata_json    TEXT,
+	created_at       INTEGER NOT NULL,
+	updated_at       INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_models_family ON models (family);
+
+-- Lite catalog: credential_model_bindings 凭据-模型绑定表
+CREATE TABLE IF NOT EXISTS credential_model_bindings (
+	credential_id TEXT NOT NULL,
+	model_id      TEXT NOT NULL,
+	available     INTEGER DEFAULT 1,
+	created_at    INTEGER NOT NULL,
+	PRIMARY KEY (credential_id, model_id),
+	FOREIGN KEY (credential_id) REFERENCES credentials(id) ON DELETE CASCADE,
+	FOREIGN KEY (model_id) REFERENCES models(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_bindings_model ON credential_model_bindings (model_id, available);
 `
 
 // Pragma 单条 PRAGMA 配置项。
