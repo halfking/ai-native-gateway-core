@@ -101,6 +101,15 @@ func (f *fakeStoreForBans) ListDomains(context.Context) ([]*Domain, error) {
 func (f *fakeStoreForBans) UpdateDomain(context.Context, *Domain) error { return nil }
 func (f *fakeStoreForBans) DeleteDomain(context.Context, int) error     { return nil }
 
+// LoadSelectionPolicy / UpsertSelectionPolicy 默认无操作；测试覆盖 R4 时由
+// 具体测试用例重写或注入行为。
+func (f *fakeStoreForBans) LoadSelectionPolicy(context.Context) (SelectionPolicy, error) {
+	return DefaultSelectionPolicy(), nil
+}
+func (f *fakeStoreForBans) UpsertSelectionPolicy(context.Context, SelectionPolicy) error {
+	return nil
+}
+
 // TestSelectBestNodeRespectsRegionBan 验证订阅层 / 节点层禁用地区都能生效。
 func TestSelectBestNodeRespectsRegionBan(t *testing.T) {
 	store := &fakeStoreForBans{

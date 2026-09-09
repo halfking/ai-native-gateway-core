@@ -84,7 +84,7 @@ type Handler struct {
 	// 避免改动所有 Handler 构造点。请求路径不会启动后台 goroutine。
 	proxyOnce  sync.Once
 	proxyMgr   *proxy.Manager
-	proxyStore *proxy.PgStore
+	proxyStore proxy.Store
 	// balanceQuotaProbe (2026-08-23 hzx-2 audit) backs the admin
 	// "force re-check after recharge" endpoint. nil → the route is
 	// still registered (URL stays stable across deployments); the
@@ -1293,6 +1293,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/proxy/health-check-all", h.superAdmin(h.handleProxyHealthCheckAll))
 	mux.HandleFunc("/api/proxy/swap", h.superAdmin(h.handleProxySwap))
 	mux.HandleFunc("/api/proxy/policy", h.superAdmin(h.handleProxyPolicy))
+	// 审计修复 R5：trailing-slash 路径返回 405 而不是让 net/http 默认 404，
+	// 防止浏览器/代理在自动重定向时吞掉错误。
+	mux.HandleFunc("/api/proxy/policy/", h.superAdmin(h.handleProxyPolicySlash))
 	mux.HandleFunc("/api/proxy/regions", h.superAdmin(h.handleProxyRegions))
 	if h.freePoolSSE != nil {
 		mux.HandleFunc("/api/free-pool/stream", h.admin(h.freePoolSSE.HandleStream))

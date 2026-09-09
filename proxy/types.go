@@ -4,6 +4,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"strconv"
@@ -143,7 +144,16 @@ type Store interface {
 	ListDomains(ctx context.Context) ([]*Domain, error)
 	UpdateDomain(ctx context.Context, domain *Domain) error
 	DeleteDomain(ctx context.Context, id int) error
+
+	// SelectionPolicy 持久化：proxy_selection_policy 表（id=1 单行）。
+	// 非 PgStore 实现可以返回 ErrUnsupported 以让 Manager 走默认策略。
+	LoadSelectionPolicy(ctx context.Context) (SelectionPolicy, error)
+	UpsertSelectionPolicy(ctx context.Context, policy SelectionPolicy) error
 }
+
+// ErrUnsupported 表示当前 Store 不支持该操作。Manager 启动期 / 写策略时检测到
+// 该错误，会静默退回到默认策略（与之前没有 PG 实现时的行为保持一致）。
+var ErrUnsupported = errors.New("proxy: operation not supported by store")
 
 // Parser 订阅解析器接口
 type Parser interface {

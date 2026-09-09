@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -53,6 +54,10 @@ type Manager struct {
 	nextHealthChecks sync.Map // node_id -> time.Time
 	// subscriptionBans 缓存订阅级禁用地区，避免每次 selectNode 都查 DB。
 	subscriptionBans sync.Map // subscription_id -> []string
+	// nodeProbes 把同一节点 ID 的探活串行化（HealthCheckNode / swapProbeOne /
+	// healthCheckAllNodesInner 的 per-node 分支），防止并发的 checker.Check + write-back
+	// 对同一个 *Node 对象产生竞态。值是 *sync.Mutex，按需 lazy 创建。
+	nodeProbes sync.Map // node_id -> *sync.Mutex
 
 	// 配置
 	autoRefreshInterval   time.Duration
@@ -208,12 +213,16 @@ func (m *Manager) SetSelectionPolicy(p SelectionPolicy) {
 // LoadSelectionPolicy 从 Store 读取全局策略并下发到 LoadBalancer。
 // 用于网关启动后从数据库恢复上次保存的策略。
 func (m *Manager) LoadSelectionPolicy(ctx context.Context) error {
-	pg, ok := m.store.(*PgStore)
-	if !ok {
+	if m.store == nil {
 		return nil
 	}
-	policy, err := pg.GetSelectionPolicy(ctx)
+	policy, err := m.store.LoadSelectionPolicy(ctx)
 	if err != nil {
+		// 非 PgStore 实现可以选择返回 ErrUnsupported；启动时退回到默认策略，
+		// 不应阻塞 Manager 的健康检查 / 探活后台任务。
+		if errors.Is(err, ErrUnsupported) {
+			return nil
+		}
 		return err
 	}
 	m.SetSelectionPolicy(policy)
@@ -704,6 +713,11 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 		return fmt.Errorf("health check node %d: password decryption failed", nodeID)
 	}
 
+	// 串行化同一节点 ID 的并发探活，避免 checker.Check 与并发 update-back 竞态。
+	mu := m.nodeProbeLock(nodeID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	startTime := time.Now()
 	responseTimeMs, err := m.checker.Check(ctx, node)
 	elapsed := time.Since(startTime)
@@ -1089,6 +1103,11 @@ func (m *Manager) swapProbeOne(ctx context.Context, sel *activeSelection, thresh
 	if !node.Dialable() {
 		return
 	}
+	// 串行化与 HealthCheckNode / healthCheckAllNodesInner 的并发探活，
+	// 防止 checker.Check 与 update-back 在同一 *Node 上重叠写。
+	mu := m.nodeProbeLock(node.ID)
+	mu.Lock()
+	defer mu.Unlock()
 	if node.Status == "unhealthy" {
 		// 已被全局探活标记为 unhealthy：视为失败 1 次计入，连续达阈值即切流。
 		// 同步写回内存状态与持久层，避免 selectNode 的 threshold 过滤看不到进展。
@@ -1310,6 +1329,10 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 
 		// 将结果应用到该 URL 的所有节点
 		for _, node := range group.nodes {
+			// 串行化同一节点 ID 的并发探活，防止与 HealthCheckNode/swapProbeOne
+			// 同时写入 applyHealthCheckResult + recordProbeResult + UpdateNode。
+			nmu := m.nodeProbeLock(node.ID)
+			nmu.Lock()
 			m.applyHealthCheckResult(node, result.ok, result.latency, result.checkedAt)
 
 			if result.ok {
@@ -1342,6 +1365,7 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 			m.recordProbeResult(&subID, node.ID, result.ok)
 
 			nodesToUpdate = append(nodesToUpdate, node)
+			nmu.Unlock()
 		}
 	}
 
@@ -1577,7 +1601,12 @@ func (m *Manager) refreshCacheAsync(subscriptionID int) {
 	if _, loaded := m.cacheRefreshes.LoadOrStore(subscriptionID, struct{}{}); loaded {
 		return
 	}
+	// 跟踪后台刷新 goroutine，使 Stop() 在 in-flight 刷新完成后再返回，
+	// 避免后台刷新与 Stop 的 ReloadCache 出现竞态。Stop 会先 cancel ctx，
+	// 这里在 WaitGroup 上 Add/Done 配对使用（不持有 lifecycleMu，与 R2 注释一致）。
+	m.wg.Add(1)
 	go func() {
+		defer m.wg.Done()
 		defer m.cacheRefreshes.Delete(subscriptionID)
 		ctx, cancel := context.WithTimeout(m.ctx, 10*time.Second)
 		defer cancel()
@@ -1705,6 +1734,13 @@ func (m *Manager) updateNodeInCache(node *Node) {
 func (m *Manager) getCacheLock(subscriptionID int) *sync.RWMutex {
 	v, _ := m.cacheLocks.LoadOrStore(subscriptionID, &sync.RWMutex{})
 	return v.(*sync.RWMutex)
+}
+
+// nodeProbeLock 取得该节点 ID 的互斥锁。HealthCheckNode / swapProbeOne / 批量
+// 探活的 per-node 分支都应在进入探活前 Lock、写回后 Unlock，避免并发读写 *Node。
+func (m *Manager) nodeProbeLock(nodeID int) *sync.Mutex {
+	v, _ := m.nodeProbes.LoadOrStore(nodeID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 func (m *Manager) nextHealthCheckAt(nodeID int) (time.Time, bool) {

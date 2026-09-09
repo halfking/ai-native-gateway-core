@@ -599,6 +599,15 @@ func (f *fakeStore) ListNodes(_ context.Context, subscriptionID *int) ([]*Node, 
 	return out, nil
 }
 
+// LoadSelectionPolicy / UpsertSelectionPolicy 让 fakeStore 满足 Store 接口；
+// 嵌入的 Store 接口默认值为 nil，添加新的接口方法后必须显式提供以避免 panic。
+func (f *fakeStore) LoadSelectionPolicy(context.Context) (SelectionPolicy, error) {
+	return DefaultSelectionPolicy(), nil
+}
+func (f *fakeStore) UpsertSelectionPolicy(context.Context, SelectionPolicy) error {
+	return nil
+}
+
 func TestManagerGetProxyTransportForNodeUsesSpecifiedNode(t *testing.T) {
 	mgr := NewManager(&fakeStore{}, nil, nil)
 	subscriptionID := 7
