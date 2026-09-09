@@ -7,6 +7,7 @@ import { getApprovalList, approveApproval, rejectApproval, getApprovalStats, typ
 import { isSuperAdmin } from '../store'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { formatRelativeTime } from '../utils/datetime'
+import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -17,8 +18,8 @@ const router = useRouter()
 const loading = ref(false)
 const approvals = ref<ApprovalItem[]>([])
 const stats = ref<ApprovalStats | null>(null)
-const error = ref<string | null>(null)
-const successMessage = ref<string | null>(null)
+// 审计 R3#10：操作反馈条统一走 useActionMessage（自动消失/计时器清理收敛）。
+const { message: successMessage, error, notifySuccess, notifyError, clearMessage, clearError } = useActionMessage()
 
 // Filters
 const statusFilter = ref<string>('pending')
@@ -135,7 +136,7 @@ function formatCost(cost?: number): string {
 
 async function loadApprovals() {
   loading.value = true
-  error.value = null
+  clearError()
 
   try {
     const params = {
@@ -155,7 +156,7 @@ async function loadApprovals() {
     totalPages.value = response.total_pages
     currentPage.value = response.page
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.loadListFailed')
+    notifyError(e.message || t('approval.list.errors.loadListFailed'))
   } finally {
     loading.value = false
   }
@@ -176,12 +177,11 @@ async function quickApprove(item: ApprovalItem) {
 
   try {
     await approveApproval(item.request_id)
-    successMessage.value = t('approval.list.success.approved')
-    setTimeout(() => successMessage.value = null, 3000)
+    notifySuccess(t('approval.list.success.approved'))
     await loadApprovals()
     await loadStats()
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.approveFailed')
+    notifyError(e.message || t('approval.list.errors.approveFailed'))
   }
 }
 
@@ -193,12 +193,11 @@ async function quickReject(item: ApprovalItem) {
 
   try {
     await rejectApproval(item.request_id, reason)
-    successMessage.value = t('approval.list.success.rejected')
-    setTimeout(() => successMessage.value = null, 3000)
+    notifySuccess(t('approval.list.success.rejected'))
     await loadApprovals()
     await loadStats()
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.rejectFailed')
+    notifyError(e.message || t('approval.list.errors.rejectFailed'))
   }
 }
 
@@ -276,13 +275,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     <div v-if="error" class="message message-error">
       <span class="message-icon">❌</span>
       {{ error }}
-      <button class="message-close" @click="error = null">×</button>
+      <button class="message-close" @click="clearError">×</button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
       <span class="message-icon">✅</span>
       {{ successMessage }}
-      <button class="message-close" @click="successMessage = null">×</button>
+      <button class="message-close" @click="clearMessage">×</button>
     </div>
 
     <!-- Stats Cards -->

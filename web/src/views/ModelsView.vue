@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
+import { useActionMessage } from '../composables/useActionMessage'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -98,8 +99,14 @@ const showFeaturedDrawer = ref(false)
 const featuredArray = ref<string[]>([])
 const featuredLoading = ref(false)
 const featuredSaving = ref(false)
-const featuredError = ref('')
-const featuredMessage = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage。
+const {
+  message: featuredMessage,
+  error: featuredError,
+  notifySuccess: notifyFeaturedOk,
+  notifyError: notifyFeaturedErr,
+  clear: clearFeaturedMsg,
+} = useActionMessage()
 const featuredRecommendPreview = ref<FeaturedModel[]>([])
 const featuredRecommendLoading = ref(false)
 const featuredRecommendMessage = ref('')
@@ -112,9 +119,14 @@ const nameMappingsTotal = ref(0)
 const nameMappingsPage = ref(1)
 const nameMappingsPageSize = ref(50)
 const nameMappingsLoading = ref(false)
-const nameMappingsError = ref('')
+const {
+  message: nameMappingsMessage,
+  error: nameMappingsError,
+  notifySuccess: notifyNameMappingsOk,
+  notifyError: notifyNameMappingsErr,
+  clearError: clearNameMappingsError,
+} = useActionMessage()
 const nameMappingsSearch = ref('')
-const nameMappingsMessage = ref('')
 const showNameMappingModal = ref(false)
 const editingNameMapping = ref<ModelNameMapping | null>(null)
 const nameMappingForm = ref({ raw_model_name: '', standardized_name: '', description: '' })
@@ -260,7 +272,7 @@ async function loadModels() {
 
 async function loadNameMappings() {
   nameMappingsLoading.value = true
-  nameMappingsError.value = ''
+  clearNameMappingsError()
   try {
     const r = await listModelNameMappings({
       page: nameMappingsPage.value,
@@ -270,20 +282,19 @@ async function loadNameMappings() {
     nameMappings.value = r.items
     nameMappingsTotal.value = r.total
   } catch (e: unknown) {
-    nameMappingsError.value = e instanceof Error ? e.message : '加载失败'
+    notifyNameMappingsErr(e instanceof Error ? e.message : '加载失败')
   } finally {
     nameMappingsLoading.value = false
   }
 }
 
 async function syncNameMappings() {
-  nameMappingsMessage.value = ''
   try {
     const r = await syncModelNameMappings()
-    nameMappingsMessage.value = `同步完成：从 provider_models 导入了 ${r.provider_models} 条映射`
+    notifyNameMappingsOk(`同步完成：从 provider_models 导入了 ${r.provider_models} 条映射`)
     await loadNameMappings()
   } catch (e: unknown) {
-    nameMappingsMessage.value = e instanceof Error ? e.message : '同步失败'
+    notifyNameMappingsErr(e instanceof Error ? e.message : '同步失败')
   }
 }
 
@@ -310,11 +321,11 @@ function closeNameMappingModal() {
 
 async function saveNameMapping() {
   if (!nameMappingForm.value.raw_model_name.trim() || !nameMappingForm.value.standardized_name.trim()) {
-    nameMappingsError.value = '原始名称和标准名称都不能为空'
+    notifyNameMappingsErr('原始名称和标准名称都不能为空')
     return
   }
   nameMappingSaving.value = true
-  nameMappingsError.value = ''
+  clearNameMappingsError()
   try {
     if (editingNameMapping.value) {
       await updateModelNameMapping(editingNameMapping.value.id, {
@@ -331,7 +342,7 @@ async function saveNameMapping() {
     closeNameMappingModal()
     await loadNameMappings()
   } catch (e: unknown) {
-    nameMappingsError.value = e instanceof Error ? e.message : '保存失败'
+    notifyNameMappingsErr(e instanceof Error ? e.message : '保存失败')
   } finally {
     nameMappingSaving.value = false
   }
@@ -343,7 +354,7 @@ async function removeNameMapping(id: number) {
     await deleteModelNameMapping(id)
     await loadNameMappings()
   } catch (e: unknown) {
-    nameMappingsError.value = e instanceof Error ? e.message : '删除失败'
+    notifyNameMappingsErr(e instanceof Error ? e.message : '删除失败')
   }
 }
 
@@ -664,8 +675,7 @@ async function loadDiscoveryStatus() {
 
 async function openFeaturedDrawer() {
   showFeaturedDrawer.value = true
-  featuredError.value = ''
-  featuredMessage.value = ''
+  clearFeaturedMsg()
   featuredRecommendPreview.value = []
   featuredRecommendMessage.value = ''
   try {
@@ -673,7 +683,7 @@ async function openFeaturedDrawer() {
     const r = await getFeatured()
     featuredArray.value = (r.featured_models || []).slice()
   } catch (e: unknown) {
-    featuredError.value = e instanceof Error ? e.message : t('models.loadFeaturedFailed')
+    notifyFeaturedErr(e instanceof Error ? e.message : t('models.loadFeaturedFailed'))
     featuredArray.value = []
   } finally {
     featuredLoading.value = false
@@ -682,23 +692,21 @@ async function openFeaturedDrawer() {
 
 function closeFeaturedDrawer() {
   showFeaturedDrawer.value = false
-  featuredError.value = ''
-  featuredMessage.value = ''
+  clearFeaturedMsg()
   featuredRecommendPreview.value = []
   featuredRecommendMessage.value = ''
 }
 
 async function saveFeatured() {
   featuredSaving.value = true
-  featuredError.value = ''
-  featuredMessage.value = ''
+  clearFeaturedMsg()
   try {
     const list = featuredArray.value.map((s) => s.trim()).filter(Boolean)
     const r = await patchFeatured(list)
     featuredArray.value = (r.featured_models || []).slice()
-    featuredMessage.value = `特色模型已更新（${list.length}）`
+    notifyFeaturedOk(`特色模型已更新（${list.length}）`)
   } catch (e: unknown) {
-    featuredError.value = e instanceof Error ? e.message : t('models.saveFailed')
+    notifyFeaturedErr(e instanceof Error ? e.message : t('models.saveFailed'))
   } finally {
     featuredSaving.value = false
   }

@@ -18,6 +18,7 @@ import {
 import ModelCatalogFilterBar from '../components/ModelCatalogFilterBar.vue'
 import { useModelCatalogFilters } from '../composables/useModelCatalogFilters'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { useActionMessage } from '../composables/useActionMessage'
 
 const { t } = useI18n()
 
@@ -26,8 +27,8 @@ type RateField = 'in' | 'out' | 'cache_in' | 'cache_out' | 'image' | 'audio' | '
 
 const loading = ref(false)
 const savingSettings = ref(false)
-const error = ref('')
-const settingsMsg = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage。
+const { message: settingsMsg, error, notifySuccess, notifyError, clear: clearActionMsg } = useActionMessage()
 const models = ref<AdminMaasModelRate[]>([])
 const settings = ref<MaasAdminSettings | null>(null)
 
@@ -166,7 +167,6 @@ function effectiveGlobal(field: RateField) {
 
 async function load() {
   loading.value = true
-  error.value = ''
   try {
     const rates = await getAdminMaasModelRates()
     models.value = rates.items ?? []
@@ -179,7 +179,7 @@ async function load() {
       global_discount: rates.settings.global_discount ?? 1,
     }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('standardModelPricing.loadFailed')
+    notifyError(e instanceof Error ? e.message : t('standardModelPricing.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -188,8 +188,7 @@ async function load() {
 async function saveSettings() {
   if (!settings.value) return
   savingSettings.value = true
-  settingsMsg.value = ''
-  error.value = ''
+  clearActionMsg()
   try {
     await updateAdminMaasSettings({
       cents_per_credit: settings.value.cents_per_credit,
@@ -200,10 +199,10 @@ async function saveSettings() {
       global_discount: settings.value.global_discount ?? 1,
       currency_display: settings.value.currency_display,
     })
-    settingsMsg.value = t('standardModelPricing.saved')
+    notifySuccess(t('standardModelPricing.saved'))
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('standardModelPricing.saveFailed')
+    notifyError(e instanceof Error ? e.message : t('standardModelPricing.saveFailed'))
   } finally {
     savingSettings.value = false
   }
@@ -237,17 +236,17 @@ async function saveEdit() {
   if (!editRow.value) return
   if (!editForm.value.manual_in && !editForm.value.manual_out && !editForm.value.manual_cache_in && !editForm.value.manual_cache_out &&
       !editForm.value.manual_image && !editForm.value.manual_audio && !editForm.value.manual_video) {
-    error.value = t('standardModelPricing.needOneManual')
+    notifyError(t('standardModelPricing.needOneManual'))
     return
   }
   savingRow.value = true
-  error.value = ''
+  clearActionMsg()
   try {
     await upsertAdminMaasModelRate(editRow.value.canonical_id, { ...editForm.value })
     closeEdit()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('standardModelPricing.saveFailed')
+    notifyError(e instanceof Error ? e.message : t('standardModelPricing.saveFailed'))
   } finally {
     savingRow.value = false
   }
@@ -256,23 +255,23 @@ async function saveEdit() {
 async function resetAll(row: AdminMaasModelRate) {
   if (!row.is_custom) return
   if (!(await confirmDialog(`${t('standardModelPricing.editModal.resetConfirm').replace('{name}', row.display_name)}`))) return
-  error.value = ''
+  clearActionMsg()
   try {
     await deleteAdminMaasModelRate(row.canonical_id)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('standardModelPricing.resetFailed')
+    notifyError(e instanceof Error ? e.message : t('standardModelPricing.resetFailed'))
   }
 }
 
 async function resetField(row: AdminMaasModelRate, field: RateField) {
-  error.value = ''
+  clearActionMsg()
   try {
     await resetAdminMaasModelRateFields(row.canonical_id, [field])
     if (editRow.value?.canonical_id === row.canonical_id) closeEdit()
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('standardModelPricing.resetFailed')
+    notifyError(e instanceof Error ? e.message : t('standardModelPricing.resetFailed'))
   }
 }
 

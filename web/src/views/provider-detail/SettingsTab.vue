@@ -13,6 +13,7 @@ import {
   type ProviderSetting,
 } from '../../api'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import { useActionMessage } from '../../composables/useActionMessage'
 
 const { t: td } = useI18n()
 const ps = (k: string, params?: Record<string, unknown>): string =>
@@ -25,7 +26,15 @@ const emit = defineEmits(['refresh'])
 // Provider settings state
 const providerSettings = ref<ProviderSetting[]>([])
 const settingsLoading = ref(false)
-const settingsMsg = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage（语义 success/error 取代
+// 旧的内容 includes('失败') 启发式 + 散落 setTimeout）。
+const {
+  message: settingsMsg,
+  error: settingsErr,
+  notifySuccess: notifySettingsOk,
+  notifyError: notifySettingsErr,
+  clear: clearSettingsMsg,
+} = useActionMessage()
 
 // Editable settings values
 const compressionMode = ref<string | null>(null)
@@ -43,7 +52,13 @@ const editDiscountRate = ref(props.provider.discount_rate)
 const editEgressProfile = ref(props.provider.egress_profile || 'direct')
 const editNotes = ref(props.provider.notes || '')
 const saving = ref(false)
-const msg = ref('')
+const {
+  message: msg,
+  error: msgErr,
+  notifySuccess: notifyMsgOk,
+  notifyError: notifyMsgErr,
+  clear: clearMsg,
+} = useActionMessage()
 const batchMsg = ref('')
 const batchLoading = ref(false)
 const checking = ref(false)
@@ -56,7 +71,7 @@ onMounted(async () => {
 
 async function loadProviderSettings() {
   settingsLoading.value = true
-  settingsMsg.value = ''
+  clearSettingsMsg()
   try {
     const resp = await getProviderSettings(props.provider.id)
     providerSettings.value = resp.settings || []
@@ -74,64 +89,61 @@ async function loadProviderSettings() {
       })
     }
   } catch (e: unknown) {
-    settingsMsg.value = ps('settingsLoadFailed', { msg: e instanceof Error ? e.message : String(e) })
+    notifySettingsErr(ps('settingsLoadFailed', { msg: e instanceof Error ? e.message : String(e) }))
   } finally {
     settingsLoading.value = false
   }
 }
 
 async function saveCompressionMode(mode: string | null) {
-  settingsMsg.value = ''
+  clearSettingsMsg()
   try {
     if (mode === null) {
       // Delete override (revert to platform default)
       await deleteProviderSetting(props.provider.id, 'compression.mode')
       compressionMode.value = null
-      settingsMsg.value = ps('settingsRestored')
+      notifySettingsOk(ps('settingsRestored'))
     } else {
       await setProviderSetting(props.provider.id, 'compression.mode', mode)
       compressionMode.value = mode
-      settingsMsg.value = ps('settingsSaved')
+      notifySettingsOk(ps('settingsSaved'))
     }
-    setTimeout(() => { settingsMsg.value = '' }, 3000)
   } catch (e: unknown) {
-    settingsMsg.value = ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) })
+    notifySettingsErr(ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) }))
   }
 }
 
 async function saveCacheEnabled(enabled: boolean | null) {
-  settingsMsg.value = ''
+  clearSettingsMsg()
   try {
     if (enabled === null) {
       await deleteProviderSetting(props.provider.id, 'cache.enabled')
       cacheEnabled.value = null
-      settingsMsg.value = ps('settingsRestored')
+      notifySettingsOk(ps('settingsRestored'))
     } else {
       await setProviderSetting(props.provider.id, 'cache.enabled', enabled)
       cacheEnabled.value = enabled
-      settingsMsg.value = ps('settingsCacheSaved')
+      notifySettingsOk(ps('settingsCacheSaved'))
     }
-    setTimeout(() => { settingsMsg.value = '' }, 3000)
   } catch (e: unknown) {
-    settingsMsg.value = ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) })
+    notifySettingsErr(ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) }))
   }
 }
 
 async function saveFormatConversion(enabled: boolean | null) {
-  settingsMsg.value = ''
+  clearSettingsMsg()
   try {
     if (enabled === null) {
       await deleteProviderSetting(props.provider.id, 'format_conversion.enabled')
       formatConversionEnabled.value = null
-      settingsMsg.value = ps('settingsRestored')
+      notifySettingsOk(ps('settingsRestored'))
     } else {
       await setProviderSetting(props.provider.id, 'format_conversion.enabled', enabled)
       formatConversionEnabled.value = enabled
-      settingsMsg.value = ps('settingsFormatSaved')
+      notifySettingsOk(ps('settingsFormatSaved'))
     }
-    setTimeout(() => { settingsMsg.value = '' }, 3000)
   } catch (e: unknown) {
-    settingsMsg.value = ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) })
+    notifySettingsErr(ps('settingsSaveFailed', { msg: e instanceof Error ? e.message : String(e) }))
   }
 }
 
@@ -156,7 +168,7 @@ function fmtTime(v: string | null | undefined) {
 
 async function save() {
   saving.value = true
-  msg.value = ''
+  clearMsg()
   try {
     await updateProvider(props.provider.id, {
       display_name: editName.value,
@@ -169,11 +181,10 @@ async function save() {
       egress_profile: editEgressProfile.value,
       notes: editNotes.value,
     })
-    msg.value = ps('saveSuccess')
+    notifyMsgOk(ps('saveSuccess'))
     emit('refresh')
-    setTimeout(() => { msg.value = '' }, 3000)
   } catch (e: unknown) {
-    msg.value = ps('saveFailed', { msg: e instanceof Error ? e.message : String(e) })
+    notifyMsgErr(ps('saveFailed', { msg: e instanceof Error ? e.message : String(e) }))
   } finally {
     saving.value = false
   }
@@ -214,7 +225,10 @@ async function runHealthCheck() {
     <!-- Provider-level Settings Override Section -->
     <section class="card settings-section">
       <h3 class="section-title">{{ ps('overrideTitle') }} <span style="font-size:12px;color:var(--muted)">{{ ps('overrideScope') }}</span></h3>
-      <div v-if="settingsMsg" class="alert" :class="settingsMsg.includes('失败') ? 'alert-danger' : 'alert-success'">
+      <div v-if="settingsErr" class="alert alert-danger">
+        {{ settingsErr }}
+      </div>
+      <div v-if="settingsMsg" class="alert alert-success">
         {{ settingsMsg }}
       </div>
       <div v-if="settingsLoading" class="empty">{{ ps('settingsLoading') }}</div>
@@ -347,7 +361,8 @@ async function runHealthCheck() {
           <button class="btn btn-primary btn-sm" @click="save" :disabled="saving">
             {{ saving ? ps('saving') : ps('save') }}
           </button>
-          <span v-if="msg" class="form-hint" :class="{ 'form-hint--error': msg.startsWith(ps('saveFailed').substring(0, 2)) }">{{ msg }}</span>
+          <span v-if="msg" class="form-hint">{{ msg }}</span>
+          <span v-else-if="msgErr" class="form-hint form-hint--error">{{ msgErr }}</span>
         </div>
       </div>
     </section>

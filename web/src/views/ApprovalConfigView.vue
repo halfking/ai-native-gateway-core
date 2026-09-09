@@ -5,13 +5,14 @@ import { getApprovalConfig, updateApprovalConfig, type ApprovalConfig } from '..
 import ApproverManager from '../components/ApproverManager.vue'
 import NotificationChannels from '../components/NotificationChannels.vue'
 import ApprovalRules from '../components/ApprovalRules.vue'
+import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
 
 const { t } = useI18n()
 const loading = ref(false)
 const saving = ref(false)
-const error = ref<string | null>(null)
-const successMessage = ref<string | null>(null)
+// 审计 R3#10：操作反馈条统一走 useActionMessage。
+const { message: successMessage, error, notifySuccess, notifyError } = useActionMessage()
 
 const config = ref<ApprovalConfig>({
   enabled: false,
@@ -36,7 +37,6 @@ const timeoutActionOptions = computed(() => [
 
 async function loadConfig() {
   loading.value = true
-  error.value = null
   try {
     const loadedConfig = await getApprovalConfig()
     // Ensure notification_channels is always an object (2026-07-08: fix undefined access)
@@ -47,7 +47,7 @@ async function loadConfig() {
       approvers: loadedConfig.approvers || [],
     }
   } catch (e: any) {
-    error.value = e.message || t('approval.config.errors.loadFailed')
+    notifyError(e.message || t('approval.config.errors.loadFailed'))
     console.error('Failed to load approval config:', e)
   } finally {
     loading.value = false
@@ -56,17 +56,12 @@ async function loadConfig() {
 
 async function saveConfig() {
   saving.value = true
-  error.value = null
-  successMessage.value = null
 
   try {
     await updateApprovalConfig(config.value)
-    successMessage.value = t('approval.config.success.saved')
-    setTimeout(() => {
-      successMessage.value = null
-    }, 3000)
+    notifySuccess(t('approval.config.success.saved'))
   } catch (e: any) {
-    error.value = e.message || t('approval.config.errors.saveFailed')
+    notifyError(e.message || t('approval.config.errors.saveFailed'))
   } finally {
     saving.value = false
   }
