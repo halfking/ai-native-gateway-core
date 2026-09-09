@@ -9,9 +9,12 @@ export interface ProxySubscription {
   subscribe_url: string
   status: string
   node_count: number
+  banned_regions: string[]
+  priority?: number
   last_fetch_at: string | null
   last_fetch_status: string
   last_error: string
+  notes?: string
   created_at: string
   updated_at: string
 }
@@ -27,6 +30,7 @@ export interface ProxyNode {
   has_password: boolean // 绝不返回密码原文
   dialable: boolean // 是否可被 Go 直接拨号（http/https/socks5）
   location: string
+  banned_regions: string[]
   status: string
   health_check_url: string
   last_health_check_at: string | null
@@ -36,6 +40,37 @@ export interface ProxyNode {
   consecutive_failures: number
   created_at: string
   updated_at: string
+}
+
+export interface ProxySelectionPolicy {
+  load_balance_strategy: string
+  location_affinity: string
+  auto_disable_threshold: number
+  auto_disable_enabled: boolean
+  auto_recover_enabled: boolean
+  swap_check_interval_ms: number
+  swap_failure_threshold: number
+}
+
+export interface ProxySelectionState {
+  current_node_id: number
+  current_subscription_id?: number | null
+  last_probe_at: string
+  consecutive_fails: number
+  probe_interval_ms: number
+}
+
+export interface ProxyRegionStats {
+  region: string
+  total: number
+  dialable: number
+  active: number
+  unhealthy: number
+  banned: number
+  avg_latency_ms: number
+  best_latency_ms: number
+  best_node_id: number
+  best_node_name: string
 }
 
 export interface ProxyStatus {
@@ -49,6 +84,9 @@ export interface ProxyStatus {
   selected_node: ProxyNode | null
   selection_error: string
   warning: string
+  regions: ProxyRegionStats[]
+  policy: ProxySelectionPolicy
+  swap_state: ProxySelectionState | null
 }
 
 export interface ProxyHealthCheckResult {
@@ -56,6 +94,12 @@ export interface ProxyHealthCheckResult {
   status_code?: number
   response_time_ms?: number
   error?: string
+  total?: number
+  ok_count?: number
+  failed_count?: number
+  skipped?: number
+  avg_latency_ms?: number
+  max_latency_ms?: number
 }
 
 // 后端列表端点统一返回 { items: [...], total: N } 信封（与 /api/admin/center/* 等一致），
@@ -157,4 +201,45 @@ export function deleteProxyNode(id: number): Promise<{ ok: boolean }> {
 
 export function getProxyStatus(): Promise<ProxyStatus> {
   return req<ProxyStatus>('GET', '/api/proxy/status')
+}
+
+// ── 批量探活 / 切流 / 策略 / 地区统计 ──
+
+export function healthCheckAllProxyNodes(): Promise<ProxyHealthCheckResult> {
+  return req<ProxyHealthCheckResult>('POST', '/api/proxy/health-check-all')
+}
+
+export function healthCheckProxySubscription(subscriptionID: number): Promise<ProxyHealthCheckResult> {
+  return req<ProxyHealthCheckResult>('POST', `/api/proxy/subscriptions/${subscriptionID}/health-check`)
+}
+
+export function forceSwapProxy(subscriptionID?: number): Promise<{ ok: boolean; selected: ProxyNode; swap_state: ProxySelectionState | null }> {
+  return req('POST', '/api/proxy/swap', subscriptionID ? { subscription_id: subscriptionID } : {})
+}
+
+export function getProxyPolicy(): Promise<{ ok: boolean; policy: ProxySelectionPolicy; swap_state: ProxySelectionState | null }> {
+  return req('GET', '/api/proxy/policy')
+}
+
+export function setProxyPolicy(policy: Partial<ProxySelectionPolicy>): Promise<{ ok: boolean; policy: ProxySelectionPolicy }> {
+  return req('PUT', '/api/proxy/policy/', policy)
+}
+
+export function getProxyRegions(): Promise<{ items: ProxyRegionStats[]; total: number }> {
+  return req('GET', '/api/proxy/regions')
+}
+
+export function setProxyNodeRegionBan(nodeID: number, bannedRegions: string[]): Promise<{ ok: boolean; id: number; banned_regions: string[] }> {
+  return req('PUT', `/api/proxy/nodes/${nodeID}/region-ban`, { banned_regions: bannedRegions })
+}
+
+export function updateProxySubscription(id: number, data: Partial<{
+  name: string
+  subscribe_url: string
+  status: string
+  priority: number
+  notes: string
+  banned_regions: string[]
+}>): Promise<ProxySubscription> {
+  return req<ProxySubscription>('PUT', `/api/proxy/subscriptions/${id}`, data)
 }
