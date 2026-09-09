@@ -107,8 +107,8 @@ func TestApplyLiteDefaultsFillsAllDefaults(t *testing.T) {
 	if l.BodiesDir != "./data/session_bodies" {
 		t.Fatalf("BodiesDir = %q, want ./data/session_bodies", l.BodiesDir)
 	}
-	if l.BodiesCodec != "zstd" {
-		t.Fatalf("BodiesCodec = %q, want zstd", l.BodiesCodec)
+	if l.BodiesCodec != "gzip" {
+		t.Fatalf("BodiesCodec = %q, want gzip rollback-safe default", l.BodiesCodec)
 	}
 	if l.CacheDir != "./data/cache" {
 		t.Fatalf("CacheDir = %q, want ./data/cache", l.CacheDir)
