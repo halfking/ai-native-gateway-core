@@ -272,9 +272,19 @@ PY" 2>/dev/null | tail -n1) || verdict="VERDICT=FAIL reason=ssh_or_python_error"
       ;;
     VERDICT=FAIL*)
       _deploy_verify_err "${verdict}"
-      _deploy_verify_err "系统性解密失败 — keyring env 与 DB 不一致, 或 binary 回归了解密路径"
-      _deploy_verify_err "对照: 245/154 共享 252 PG, LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY 必须一致"
-      _deploy_verify_err "诊断: journalctl -u <unit> | grep -iE 'decrypt|fernet' + 手工 GET /api/providers/<id>/credentials"
+      case "$verdict" in
+        *admin_login_failed*)
+          # 登录 401 是密码漂移，不是解密回归：handleLogin 只查 users 表且
+          # 用户存在时绝不回退 env（admin/auth.go）。按 keyring 故障排查会白费一轮。
+          _deploy_verify_err "admin 登录失败 — users 表哈希与 env LLM_GATEWAY_ADMIN_PASSWORD 漂移（登录只查 users 表, 不回退 env）"
+          _deploy_verify_err "修复: 154/245 → scripts/ops/sync-admin-password-from-env.sh <154|245>; 本地 → 重跑 deploy-local（自带 env→users 同步）"
+          ;;
+        *)
+          _deploy_verify_err "系统性解密失败 — keyring env 与 DB 不一致, 或 binary 回归了解密路径"
+          _deploy_verify_err "对照: 245/154 共享 252 PG, LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY 必须一致"
+          _deploy_verify_err "诊断: journalctl -u <unit> | grep -iE 'decrypt|fernet' + 手工 GET /api/providers/<id>/credentials"
+          ;;
+      esac
       return 1
       ;;
     *)
