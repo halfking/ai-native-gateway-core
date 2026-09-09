@@ -171,6 +171,13 @@ func (h *vendorCredentialErrorHandlers) loadVendorCredentialMeta(ctx context.Con
 	if err != nil {
 		return c, fmt.Errorf("load credential metadata failed: %w (credential_id=%d)", err, id)
 	}
+	// Defense in depth (audit R8 P1): health_error is written by the HC
+	// probe from the raw upstream error body; rows written before the
+	// bg-side sanitize landed may still carry credential echoes.
+	if c.HealthError != nil {
+		s := string(errorsx.SanitizeErrorText([]byte(*c.HealthError), 320))
+		c.HealthError = &s
+	}
 	return c, nil
 }
 
