@@ -810,6 +810,10 @@ func (h *Handler) healthCheckProxySubscription(w http.ResponseWriter, r *http.Re
 // handleProxyHealthCheckAll POST /api/proxy/health-check-all
 // 立即对所有节点做并发探活，跳过智能间隔节流；适合 admin "立即重新探活"按钮。
 func (h *Handler) handleProxyHealthCheckAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	mgr, _ := h.proxyRuntime()
 	if mgr == nil {
 		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
@@ -832,6 +836,10 @@ func (h *Handler) handleProxyHealthCheckAll(w http.ResponseWriter, r *http.Reque
 
 // handleProxySwap POST /api/proxy/swap  强制重新选择最优节点，可选 body {"subscription_id":N}
 func (h *Handler) handleProxySwap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	mgr, _ := h.proxyRuntime()
 	if mgr == nil {
 		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
@@ -854,6 +862,19 @@ func (h *Handler) handleProxySwap(w http.ResponseWriter, r *http.Request) {
 		"swap_state":   mgr.CurrentSelection(),
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleProxyPolicy dispatches GET/PUT to canonical /api/proxy/policy path.
+// GET returns current policy + swap state; PUT updates policy and persists to DB.
+func (h *Handler) handleProxyPolicy(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleProxyGetPolicy(w, r)
+	case http.MethodPut:
+		h.handleProxySetPolicy(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 // handleProxyGetPolicy GET /api/proxy/policy  返回当前策略 + 切流状态。
@@ -943,6 +964,10 @@ func (h *Handler) handleProxySetPolicy(w http.ResponseWriter, r *http.Request) {
 
 // handleProxyRegions GET /api/proxy/regions  返回按地区聚合的统计。
 func (h *Handler) handleProxyRegions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	mgr, _ := h.proxyRuntime()
 	if mgr == nil {
 		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
@@ -958,6 +983,10 @@ func (h *Handler) handleProxyRegions(w http.ResponseWriter, r *http.Request) {
 
 // handleProxyNodeRegionBan PUT /api/proxy/nodes/{id}/region-ban  覆盖节点层禁用地区。
 func (h *Handler) handleProxyNodeRegionBan(w http.ResponseWriter, r *http.Request, id int) {
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
 	mgr, store := h.proxyRuntime()
 	if mgr == nil || store == nil {
 		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
@@ -1062,6 +1091,9 @@ func (h *Handler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if regions, rerr := mgr.RegionStatsReport(ctx); rerr == nil {
 		resp["regions"] = regions
+	} else {
+		resp["regions"] = []proxy.RegionStats{}
+		resp["regions_error"] = rerr.Error()
 	}
 	resp["policy"] = mgr.GetSelectionPolicy()
 	resp["swap_state"] = mgr.CurrentSelection()

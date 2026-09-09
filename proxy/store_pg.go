@@ -603,24 +603,62 @@ func (s *PgStore) GetSelectionPolicy(ctx context.Context) (SelectionPolicy, erro
 		return DefaultSelectionPolicy(), fmt.Errorf("proxy: get selection policy: %w", err)
 	}
 	policy := DefaultSelectionPolicy()
-	policy.LoadBalanceStrategy = LoadBalanceStrategy(strategy)
-	policy.LocationAffinity = LocationAffinityPolicy(affinity)
+	// Validate and canonicalize loaded values; reject unknown/corrupt persisted data.
+	switch LoadBalanceStrategy(strategy) {
+	case StrategyBestOnly, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyLeastConnections, StrategyConsistentHash:
+		policy.LoadBalanceStrategy = LoadBalanceStrategy(strategy)
+	default:
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted load_balance_strategy %q", strategy)
+	}
+	switch LocationAffinityPolicy(affinity) {
+	case AffinityAny, AffinityPreferSame, AffinityRequireSame:
+		policy.LocationAffinity = LocationAffinityPolicy(affinity)
+	default:
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted location_affinity %q", affinity)
+	}
 	if thresh > 0 {
 		policy.AutoDisableThreshold = thresh
+	} else {
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted auto_disable_threshold %d", thresh)
 	}
 	policy.AutoDisableEnabled = disable
 	policy.AutoRecoverEnabled = recover
-	if swapInt > 0 {
+	if swapInt >= 1000 {
 		policy.SwapCheckIntervalMs = swapInt
+	} else {
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted swap_check_interval_ms %d", swapInt)
 	}
 	if swapThr > 0 {
 		policy.SwapFailureThreshold = swapThr
+	} else {
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted swap_failure_threshold %d", swapThr)
 	}
 	return policy, nil
 }
 
 // UpsertSelectionPolicy 写入或覆盖（id=1）全局策略。
 func (s *PgStore) UpsertSelectionPolicy(ctx context.Context, p SelectionPolicy) error {
+	// Validate before persisting; the migration CHECK constraints will also reject
+	// invalid values, but explicit validation provides clearer error messages.
+	switch p.LoadBalanceStrategy {
+	case StrategyBestOnly, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyLeastConnections, StrategyConsistentHash:
+	default:
+		return fmt.Errorf("proxy: invalid load_balance_strategy %q", p.LoadBalanceStrategy)
+	}
+	switch p.LocationAffinity {
+	case AffinityAny, AffinityPreferSame, AffinityRequireSame:
+	default:
+		return fmt.Errorf("proxy: invalid location_affinity %q", p.LocationAffinity)
+	}
+	if p.AutoDisableThreshold <= 0 {
+		return fmt.Errorf("proxy: auto_disable_threshold must be > 0, got %d", p.AutoDisableThreshold)
+	}
+	if p.SwapCheckIntervalMs < 1000 {
+		return fmt.Errorf("proxy: swap_check_interval_ms must be >= 1000, got %d", p.SwapCheckIntervalMs)
+	}
+	if p.SwapFailureThreshold <= 0 {
+		return fmt.Errorf("proxy: swap_failure_threshold must be > 0, got %d", p.SwapFailureThreshold)
+	}
 	const q = `
 		INSERT INTO proxy_selection_policy
 			(id, load_balance_strategy, location_affinity,
