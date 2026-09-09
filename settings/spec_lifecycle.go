@@ -16,7 +16,7 @@ func LifecycleSpecs() []*Spec {
 		// 请求记录类表保持 hot 1d（依赖月度分区长期保留）。
 		// 所有这些设置通过 DROP PARTITION 或 TimescaleDB retention policy 实施。
 		{Key: "lifecycle.routing_decision_log_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "routing_decision_log 保留天数", DescriptionLong: "routing_decision_log 月度分区保留天数。超过此时长的分区会被 archive_routing_decision_log 自动 DROP。默认 30 天。", Unit: "天"},
-		{Key: "lifecycle.candidate_failure_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "candidate_failure_logs 保留天数", DescriptionLong: "candidate_failure_logs 月度分区保留天数。默认 30 天。", Unit: "天"},
+		{Key: "lifecycle.candidate_failure_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 7, DangerLevel: Warning, HotReload: true, Description: "candidate_failure_logs 保留天数", DescriptionLong: "candidate_failure_logs 月度分区的行级 DELETE 保留天数(bg/opslog_trimmer.go,689 起分区为 heap 可删)+ 按表 TTL 的分区 DROP(dropOldStatePartitions)。所有查询窗口仅 5 分钟,7 天已远超 RCA 需求;此前 spec 默认 30 与 Go/trimmer 默认 7 漂移,2026-09-09 审计 R3 统一为 7。默认 7 天。", Unit: "天"},
 		{Key: "lifecycle.handoff_logs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "handoff_logs 保留天数", DescriptionLong: "handoff_logs 月度分区保留天数。默认 30 天。", Unit: "天"},
 		{Key: "lifecycle.credential_model_call_history_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 30, DangerLevel: Warning, HotReload: true, Description: "credential_model_call_history 保留天数", DescriptionLong: "credential_model_call_history TimescaleDB chunk 保留天数。通过 TimescaleDB retention policy 实施。默认 30 天（原 7 天）。", Unit: "天"},
 		{Key: "lifecycle.model_probe_runs_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 14, DangerLevel: Warning, HotReload: true, Description: "model_probe_runs hot 表保留天数", DescriptionLong: "model_probe_runs_hot 的 DELETE 保留天数（纯 hot 表策略，2026-07-14 起不再 promote 到 columnar 分区）。超过此时长的行会被 cleanupOldModelProbeRuns() 直接 DELETE。默认 14 天。", Unit: "天"},
@@ -31,6 +31,14 @@ func LifecycleSpecs() []*Spec {
 		// 请求/响应 body 仅用于调试/导出，常规运营很少看 >1 天的 body。
 		// 超过此天数的月度分区会被 drop_old_request_logs_bodies_partitions() 自动 DROP。
 		{Key: "lifecycle.request_logs_bodies_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(365), Default: 7, DangerLevel: Warning, HotReload: true, Description: "request_logs_bodies 保留天数", DescriptionLong: "request_logs_bodies 月度分区保留天数。body 仅用于调试，超过此天数的分区会被自动 DROP。默认 7 天。", Unit: "天"},
+
+		// 2026-09-09 (审计 R3#4): session_summaries 归档行 TTL。
+		// 471 起归档(domains/sessionarchive 把 30d 不活跃的行
+		// SET archived_at = NOW())但归档行从不删除,表无界增长。
+		// bg.SessionSummariesTrimmer 分批 DELETE「已归档且归档时间
+		// 早于此刻」的行;索引自迁移 690
+		// (idx_session_summaries_archived,partial on archived_at)。
+		{Key: "lifecycle.session_summaries_ttl_days", Type: TypeInt, Scope: ScopePlatform, Category: CategoryLifecycle, Min: floatPtr(1), Max: floatPtr(3650), Default: 90, DangerLevel: Warning, HotReload: true, Description: "session_summaries 归档保留天数", DescriptionLong: "session_summaries 已归档行(archived_at IS NOT NULL)的 DELETE 保留天数。归档后保留 90 天供合规/审计回溯,超过后被 SessionSummariesTrimmer 分批删除(单批 ≤5000 行)。默认 90 天。活跃行(archived_at IS NULL)不受影响。", Unit: "天"},
 
 		// 2026-07-13: 请求记录类表保留期 - 默认 1 天（hot 表）。
 		// 业务方可通过 setting 调整。注意：月度分区仍由 partition_manager 自动创建，
