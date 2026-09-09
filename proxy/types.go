@@ -197,21 +197,28 @@ func DefaultSelectionPolicy() SelectionPolicy {
 	}
 }
 
+// normalizeRegion 统一 region 比较口径：去首尾空白 + 转大写。所有 region
+// 相等判断（地区禁用、亲和匹配、统计分桶）必须经过它，避免 PgStore 之外的
+// 写入路径（手工录入、非 PgStore 实现）因大小写/空白差异分裂同一地区。
+func normalizeRegion(s string) string {
+	return strings.ToUpper(strings.TrimSpace(s))
+}
+
 // IsRegionBanned 判断给定的 region（节点 Location）是否被订阅层+节点层禁用。
 // 任一层包含即视为禁用（集合并集）。输入在函数边界统一 trim + 大写，避免
 // 非 PgStore 实现或手工录入因大小写/空白差异绕过地区规避规则。
 func IsRegionBanned(region string, subscriptionBans, nodeBans []string) bool {
-	region = strings.ToUpper(strings.TrimSpace(region))
+	region = normalizeRegion(region)
 	if region == "" {
 		return false
 	}
 	for _, r := range subscriptionBans {
-		if strings.ToUpper(strings.TrimSpace(r)) == region {
+		if normalizeRegion(r) == region {
 			return true
 		}
 	}
 	for _, r := range nodeBans {
-		if strings.ToUpper(strings.TrimSpace(r)) == region {
+		if normalizeRegion(r) == region {
 			return true
 		}
 	}

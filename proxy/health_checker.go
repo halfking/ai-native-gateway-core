@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,6 +139,20 @@ func (c *HTTPHealthChecker) Close() {
 
 // Check 探测节点健康状态，返回耗时（毫秒）。
 // 2xx/3xx 视为健康；4xx/5xx 返回带状态码的错误。
+// healthTargetURL 返回节点实际探测的目标 URL：去首尾空白，空值回退默认
+// 探测地址。全局批量探活的分组键（healthCheckAllNodesInner 的 probeKey）
+// 必须与本函数同源——分组口径与探测口径一致，才不会把同代理不同探活目标
+// 的节点合并，也不会因空白差异把同一目标拆成两组。
+func healthTargetURL(node *Node) string {
+	if node == nil {
+		return defaultHealthCheckURL
+	}
+	if target := strings.TrimSpace(node.HealthCheckURL); target != "" {
+		return target
+	}
+	return defaultHealthCheckURL
+}
+
 func (c *HTTPHealthChecker) Check(ctx context.Context, node *Node) (int, error) {
 	if node == nil {
 		return 0, errors.New("proxy: health check on nil node")
@@ -149,10 +164,7 @@ func (c *HTTPHealthChecker) Check(ctx context.Context, node *Node) (int, error) 
 			node.Name, node.Protocol, net.JoinHostPort(node.Server, strconv.Itoa(node.Port)))
 	}
 
-	targetURL := node.HealthCheckURL
-	if targetURL == "" {
-		targetURL = defaultHealthCheckURL
-	}
+	targetURL := healthTargetURL(node)
 
 	if ctx == nil {
 		ctx = context.Background()

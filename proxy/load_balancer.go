@@ -97,17 +97,19 @@ func (lb *LoadBalancer) SelectNode(nodes []*Node, subscriptionID int, requestKey
 	return lb.selectLocked(nodes, subscriptionID, requestKey)
 }
 
-// SelectNodeWithLocation 根据策略和地域亲和性选择节点。
+// SelectNodeWithLocation 根据策略和地域亲和性选择节点。地域比较走
+// normalizeRegion 统一口径（trim + 大写），与地区禁用判定一致。
 func (lb *LoadBalancer) SelectNodeWithLocation(nodes []*Node, subscriptionID int, requestKey, preferredLocation string) *Node {
 	lb.mu.Lock()
 	defer lb.mu.Unlock()
-	if len(nodes) == 0 || lb.locationAffinity == AffinityAny || preferredLocation == "" {
+	preferred := normalizeRegion(preferredLocation)
+	if len(nodes) == 0 || lb.locationAffinity == AffinityAny || preferred == "" {
 		return lb.selectLocked(nodes, subscriptionID, requestKey)
 	}
 
 	sameLocation := make([]*Node, 0, len(nodes))
 	for _, node := range nodes {
-		if node.Location == preferredLocation {
+		if normalizeRegion(node.Location) == preferred {
 			sameLocation = append(sameLocation, node)
 		}
 	}

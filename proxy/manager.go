@@ -13,10 +13,14 @@ import (
 	"time"
 )
 
-// cacheEntry 缓存条目，包含节点列表和过期时间（阶段 2 优化：TTL 机制）
+// cacheEntry 缓存条目，包含节点列表和过期时间（阶段 2 优化：TTL 机制）。
+// covered 表示 nodes 是该订阅在 store.ListNodes 下的完整快照：只有 covered
+// 条目可用于节点选择；未来的部分写入路径必须写 covered=false，选择路径会
+// 因此回源 store，而不是拿到不完整的候选集。
 type cacheEntry struct {
 	nodes     []*Node
 	expiresAt time.Time
+	covered   bool
 }
 
 // activeSelection 记录 Manager 当前对外暴露的"已被选中的节点"，供 swap loop
@@ -319,22 +323,24 @@ func (m *Manager) selectNodeExcluding(ctx context.Context, subscriptionID *int, 
 	}()
 
 	var candidates []*Node
-	var cachePresent bool
+	var cachePresent, cacheCovered bool
 	if subscriptionID != nil {
-		candidates, _, cachePresent = m.getNodesFromCacheWithTTL(*subscriptionID, time.Now())
+		candidates, _, cachePresent, cacheCovered = m.getNodesFromCacheWithTTL(*subscriptionID, time.Now())
 	} else {
 		candidates, cachePresent = m.getAllActiveCachedNodes(time.Now())
 	}
-	// Global selection must query the store because the aggregate cache cannot
-	// prove that every subscription is covered (new or empty subscriptions may not
-	// have a cache entry yet). Targeted selections can use a present snapshot.
-	if subscriptionID == nil || (subscriptionID != nil && !cachePresent) {
+	// Coverage contract: a targeted selection may only trust a present cache
+	// snapshot when its entry is a complete store.ListNodes result (covered).
+	// Global selection always queries the store: per-entry coverage cannot prove
+	// the aggregate spans every subscription (empty subscriptions may have no
+	// entry, and the subscription set itself is not cached).
+	if subscriptionID == nil || !cachePresent || !cacheCovered {
 		candidates, err = m.store.ListNodes(ctx, subscriptionID)
 		if err != nil {
 			return nil, fmt.Errorf("list nodes: %w", err)
 		}
 		if subscriptionID != nil {
-			m.setCacheWithTTL(*subscriptionID, candidates, time.Now())
+			m.setCacheWithTTL(*subscriptionID, candidates, time.Now(), true)
 		}
 		// Store implementations may reuse mutable objects; isolate the selection
 		// path from later health-check writes.
@@ -854,9 +860,17 @@ func (m *Manager) ReloadCache() error {
 	// 审计修复 (2026-08-30)：同步清理 cacheLocks 中的孤儿锁，防止长期运行的内存泄漏
 	// 审计修复 (2026-09-01 P2)：同步清理负载均衡器的 per-subscription 游标，
 	// 否则 roundRobinIndex/weightedCurrent 只增不减，节点全下线的订阅永久泄漏条目。
+	// R4 #13 negative-cache 契约：先为"store 中存在但无节点"的订阅安装
+	// present-but-empty 条目；孤儿清扫对这些订阅（含空订阅）豁免，只清
+	// store 里已不存在的订阅。
+	knownSubIDs := m.installNegativeCacheEntries(ctx, nodesBySubscription)
+
 	m.nodesCache.Range(func(key, _ interface{}) bool {
 		subID := key.(int)
 		if _, exists := nodesBySubscription[subID]; !exists {
+			if _, known := knownSubIDs[subID]; known {
+				return true
+			}
 			m.nodesCache.Delete(subID)
 			m.cacheLocks.Delete(subID)
 			m.forgetLoadBalancerState(subID)
@@ -868,7 +882,7 @@ func (m *Manager) ReloadCache() error {
 
 	now := time.Now()
 	for subID, nodes := range nodesBySubscription {
-		m.setCacheWithTTL(subID, nodes, now)
+		m.setCacheWithTTL(subID, nodes, now, true)
 	}
 
 	// 重新加载订阅级禁用地区。
@@ -1315,7 +1329,9 @@ func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) H
 			continue
 		}
 
-		probeKey := proxyURL + "\x00" + strings.TrimSpace(node.HealthCheckURL)
+		// 分组键与探测目标同源（healthTargetURL）：同代理 + 同探活目标
+		// 才共享探测结果，空白/默认值差异不再拆组或误并组。
+		probeKey := proxyURL + "\x00" + healthTargetURL(node)
 		if _, exists := urlToGroup[probeKey]; !exists {
 			urlToGroup[probeKey] = &nodeGroup{
 				probeKey: probeKey,
@@ -1584,8 +1600,10 @@ func (m *Manager) loadAllNodesIntoCache() error {
 	// 存入缓存（带 TTL）
 	now := time.Now()
 	for subID, nodes := range nodesBySubscription {
-		m.setCacheWithTTL(subID, nodes, now)
+		m.setCacheWithTTL(subID, nodes, now, true)
 	}
+	// R4 #13 negative-cache 契约：空订阅同样安装 covered 空条目。
+	m.installNegativeCacheEntries(ctx, nodesBySubscription)
 
 	// 启动时同步订阅级禁用地区。
 	m.refreshAllSubscriptionBans(ctx)
@@ -1619,7 +1637,7 @@ func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) bo
 		}
 	}
 
-	m.setCacheWithTTL(subscriptionID, nodes, time.Now())
+	m.setCacheWithTTL(subscriptionID, nodes, time.Now(), true)
 	// 顺手刷新 banned 缓存。
 	m.refreshSubscriptionBans(ctx, subscriptionID)
 	return true
@@ -1638,28 +1656,28 @@ func (m *Manager) forgetLoadBalancerState(subscriptionID int) {
 
 // getNodesFromCache 已废弃，使用 getNodesFromCacheWithTTL 替代
 func (m *Manager) getNodesFromCache(subscriptionID int) []*Node {
-	nodes, _, _ := m.getNodesFromCacheWithTTL(subscriptionID, time.Now())
+	nodes, _, _, _ := m.getNodesFromCacheWithTTL(subscriptionID, time.Now())
 	return nodes
 }
 
-// getNodesFromCacheWithTTL returns an isolated snapshot, freshness, and cache
-// presence. Expired snapshots remain available for this request while one
-// asynchronous refresh is in flight, so callers neither block nor create a
-// database thundering herd.
-func (m *Manager) getNodesFromCacheWithTTL(subscriptionID int, now time.Time) ([]*Node, bool, bool) {
+// getNodesFromCacheWithTTL returns an isolated snapshot, freshness, cache
+// presence, and coverage. Expired snapshots remain available for this request
+// while one asynchronous refresh is in flight, so callers neither block nor
+// create a database thundering herd.
+func (m *Manager) getNodesFromCacheWithTTL(subscriptionID int, now time.Time) ([]*Node, bool, bool, bool) {
 	mu := m.getCacheLock(subscriptionID)
 	mu.RLock()
 	defer mu.RUnlock()
 	value, ok := m.nodesCache.Load(subscriptionID)
 	if !ok {
-		return nil, false, false
+		return nil, false, false, false
 	}
 	entry := value.(*cacheEntry)
 	fresh := now.Before(entry.expiresAt)
 	if !fresh {
 		m.refreshCacheAsync(subscriptionID)
 	}
-	return cloneNodes(entry.nodes), fresh, true
+	return cloneNodes(entry.nodes), fresh, true, entry.covered
 }
 
 func (m *Manager) refreshCacheAsync(subscriptionID int) {
@@ -1686,14 +1704,44 @@ func (m *Manager) refreshCacheAsync(subscriptionID int) {
 	}()
 }
 
-// setCacheWithTTL 设置缓存，带 TTL（阶段 2 优化）
-func (m *Manager) setCacheWithTTL(subscriptionID int, nodes []*Node, now time.Time) {
+// installNegativeCacheEntries 落实 R4 #13 negative-cache 契约：全量加载按
+// 节点分组时，"store 中存在但没有任何节点"的订阅不会自然产生缓存条目，
+// 该订阅的 targeted selection 在首个请求前会每次回源 ListNodes。本函数为
+// 这些订阅安装 present-but-empty 的 covered 条目（空节点集是合法的完整
+// 快照），并返回当前 store 的全部订阅 ID，供 ReloadCache 的孤儿清扫豁免
+// 这些条目。ListSubscriptions 失败时返回 nil（降级为不安装、清扫不豁免）。
+func (m *Manager) installNegativeCacheEntries(ctx context.Context, nodesBySubscription map[int][]*Node) map[int]struct{} {
+	subs, err := m.store.ListSubscriptions(ctx)
+	if err != nil {
+		slog.Warn("proxy: install negative cache entries: list subscriptions failed", "error", err)
+		return nil
+	}
+	known := make(map[int]struct{}, len(subs))
+	now := time.Now()
+	for _, sub := range subs {
+		if sub == nil {
+			continue
+		}
+		known[sub.ID] = struct{}{}
+		if _, hasNodes := nodesBySubscription[sub.ID]; hasNodes {
+			continue
+		}
+		m.setCacheWithTTL(sub.ID, []*Node{}, now, true)
+	}
+	return known
+}
+
+// setCacheWithTTL 设置缓存，带 TTL（阶段 2 优化）。covered 必须反映 nodes
+// 是否为该订阅在 store.ListNodes 下的完整快照；当前全部写入点都来自
+// ListNodes，因此传 true。
+func (m *Manager) setCacheWithTTL(subscriptionID int, nodes []*Node, now time.Time, covered bool) {
 	mu := m.getCacheLock(subscriptionID)
 	mu.Lock()
 	defer mu.Unlock()
 	entry := &cacheEntry{
 		nodes:     cloneNodes(nodes),
 		expiresAt: now.Add(m.cacheTTL),
+		covered:   covered,
 	}
 	m.nodesCache.Store(subscriptionID, entry)
 }
@@ -1870,7 +1918,8 @@ func (m *Manager) RegionStatsReport(ctx context.Context) ([]RegionStats, error) 
 		if n == nil {
 			continue
 		}
-		region := n.Location
+		// 分桶用 normalizeRegion 口径，"US" 与 "us " 归入同一地区。
+		region := normalizeRegion(n.Location)
 		if region == "" {
 			region = "(unknown)"
 		}
@@ -1909,7 +1958,7 @@ func (m *Manager) RegionStatsReport(ctx context.Context) ([]RegionStats, error) 
 			if n == nil {
 				continue
 			}
-			eff := n.Location
+			eff := normalizeRegion(n.Location)
 			if eff == "" {
 				eff = "(unknown)"
 			}
