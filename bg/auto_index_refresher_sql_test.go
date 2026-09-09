@@ -93,3 +93,27 @@ func TestRollupSQL_Half2PressureRatioShape(t *testing.T) {
 		t.Errorf("half-2 pressure_ratio expression drifted; expected balanced form:\n%s", want)
 	}
 }
+
+// TestRollupSQL_InsertCarriesOnConflict pins the 2026-09-10 PG-log-audit fix:
+// the 5-min ticker and the auto_route_refresh LISTEN listener can run
+// RefreshOnce concurrently, and the non-atomic DELETE+INSERT pair then makes
+// the second INSERT fail with
+//
+//	duplicate key value violates unique constraint "idx_credential_model_index_hot_unique"
+//
+// (observed 2026-09-10 04:18 CST). The INSERT must carry ON CONFLICT
+// (bucket, credential_id, raw_model) DO UPDATE so an overlapping run upserts
+// instead of erroring; the DELETE wrapper must stay a plain DELETE.
+func TestRollupSQL_InsertCarriesOnConflict(t *testing.T) {
+	deleteSQL, insertSQL := credentialModelIndexRollupSQLs()
+	// Strip -- comments first: the rollup body's prose mentions ON CONFLICT
+	// historically; only executable SQL matters here.
+	strippedDelete := stripSQLCommentsAndLiterals(deleteSQL)
+	strippedInsert := stripSQLCommentsAndLiterals(insertSQL)
+	if !strings.Contains(strippedInsert, "ON CONFLICT (bucket, credential_id, raw_model) DO UPDATE") {
+		t.Errorf("insert SQL lost the ON CONFLICT guard against concurrent ticker/listener refreshes")
+	}
+	if strings.Contains(strippedDelete, "ON CONFLICT") {
+		t.Errorf("DELETE wrapper must not carry ON CONFLICT")
+	}
+}
