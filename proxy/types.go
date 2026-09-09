@@ -4,9 +4,11 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -32,36 +34,36 @@ type Subscription struct {
 	Priority        int       `json:"priority"`
 	// BannedRegions 是订阅层禁用的地区码集合（如 {US,JP}）。其下节点的 Location
 	// 若落入该集合，则在出口选择阶段被过滤掉，用于把"地区规避"作为订阅级策略。
-	BannedRegions []string `json:"banned_regions"`
-	Notes         string   `json:"notes"`
+	BannedRegions []string  `json:"banned_regions"`
+	Notes         string    `json:"notes"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // Node 代理节点
 type Node struct {
-	ID                    int                    `json:"id"`
-	SubscriptionID        int                    `json:"subscription_id"`
-	Name                  string                 `json:"name"`
-	Protocol              string                 `json:"protocol"` // http/https/socks5/ss/vmess/trojan
-	Server                string                 `json:"server"`
-	Port                  int                    `json:"port"`
-	Username              string                 `json:"username,omitempty"`
-	Password              string                 `json:"password,omitempty"` // 已加密
-	Config                map[string]interface{} `json:"config,omitempty"`
-	Location              string                 `json:"location,omitempty"`
+	ID             int                    `json:"id"`
+	SubscriptionID int                    `json:"subscription_id"`
+	Name           string                 `json:"name"`
+	Protocol       string                 `json:"protocol"` // http/https/socks5/ss/vmess/trojan
+	Server         string                 `json:"server"`
+	Port           int                    `json:"port"`
+	Username       string                 `json:"username,omitempty"`
+	Password       string                 `json:"password,omitempty"` // 已加密
+	Config         map[string]interface{} `json:"config,omitempty"`
+	Location       string                 `json:"location,omitempty"`
 	// BannedRegions 是节点层禁用的地区码集合；与 Subscription.BannedRegions 取并集。
 	// 出口选择时若节点 Location 命中其中之一，则被过滤。
-	BannedRegions []string               `json:"banned_regions"`
-	Status        string                 `json:"status"` // active/disabled/unhealthy
-	HealthCheckURL        string                 `json:"health_check_url"`
-	LastHealthCheckAt     time.Time              `json:"last_health_check_at"`
-	LastHealthCheckStatus string                 `json:"last_health_check_status"` // success/failed/timeout
-	ResponseTimeMs        int                    `json:"response_time_ms"`
-	SuccessRate           float64                `json:"success_rate"`
-	ConsecutiveFailures   int                    `json:"consecutive_failures"`
-	CreatedAt             time.Time              `json:"created_at"`
-	UpdatedAt             time.Time              `json:"updated_at"`
+	BannedRegions         []string  `json:"banned_regions"`
+	Status                string    `json:"status"` // active/disabled/unhealthy
+	HealthCheckURL        string    `json:"health_check_url"`
+	LastHealthCheckAt     time.Time `json:"last_health_check_at"`
+	LastHealthCheckStatus string    `json:"last_health_check_status"` // success/failed/timeout
+	ResponseTimeMs        int       `json:"response_time_ms"`
+	SuccessRate           float64   `json:"success_rate"`
+	ConsecutiveFailures   int       `json:"consecutive_failures"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 	// 审计修复 (2026-08-29)：问题 11 - 解密失败标志，避免密文被当作明文使用。
 	PasswordDecryptFailed bool `json:"password_decrypt_failed,omitempty"`
 }
@@ -142,7 +144,16 @@ type Store interface {
 	ListDomains(ctx context.Context) ([]*Domain, error)
 	UpdateDomain(ctx context.Context, domain *Domain) error
 	DeleteDomain(ctx context.Context, id int) error
+
+	// SelectionPolicy 持久化：proxy_selection_policy 表（id=1 单行）。
+	// 非 PgStore 实现可以返回 ErrUnsupported 以让 Manager 走默认策略。
+	LoadSelectionPolicy(ctx context.Context) (SelectionPolicy, error)
+	UpsertSelectionPolicy(ctx context.Context, policy SelectionPolicy) error
 }
+
+// ErrUnsupported 表示当前 Store 不支持该操作。Manager 启动期 / 写策略时检测到
+// 该错误，会静默退回到默认策略（与之前没有 PG 实现时的行为保持一致）。
+var ErrUnsupported = errors.New("proxy: operation not supported by store")
 
 // Parser 订阅解析器接口
 type Parser interface {
@@ -164,13 +175,13 @@ type HealthChecker interface {
 // selectNode 中过滤 unhealthy / 连续失败节点时使用；Swap* 控制自动切流后台
 // goroutine 的频率与切流门槛（详见 manager.swapLoop）。
 type SelectionPolicy struct {
-	LoadBalanceStrategy   LoadBalanceStrategy   `json:"load_balance_strategy"`
-	LocationAffinity      LocationAffinityPolicy `json:"location_affinity"`
-	AutoDisableThreshold  int                   `json:"auto_disable_threshold"`
-	AutoDisableEnabled    bool                  `json:"auto_disable_enabled"`
-	AutoRecoverEnabled    bool                  `json:"auto_recover_enabled"`
-	SwapCheckIntervalMs   int                   `json:"swap_check_interval_ms"`
-	SwapFailureThreshold  int                   `json:"swap_failure_threshold"`
+	LoadBalanceStrategy  LoadBalanceStrategy    `json:"load_balance_strategy"`
+	LocationAffinity     LocationAffinityPolicy `json:"location_affinity"`
+	AutoDisableThreshold int                    `json:"auto_disable_threshold"`
+	AutoDisableEnabled   bool                   `json:"auto_disable_enabled"`
+	AutoRecoverEnabled   bool                   `json:"auto_recover_enabled"`
+	SwapCheckIntervalMs  int                    `json:"swap_check_interval_ms"`
+	SwapFailureThreshold int                    `json:"swap_failure_threshold"`
 }
 
 // DefaultSelectionPolicy 返回合理默认。
@@ -187,18 +198,20 @@ func DefaultSelectionPolicy() SelectionPolicy {
 }
 
 // IsRegionBanned 判断给定的 region（节点 Location）是否被订阅层+节点层禁用。
-// 任一层包含即视为禁用（集合并集）。
+// 任一层包含即视为禁用（集合并集）。输入在函数边界统一 trim + 大写，避免
+// 非 PgStore 实现或手工录入因大小写/空白差异绕过地区规避规则。
 func IsRegionBanned(region string, subscriptionBans, nodeBans []string) bool {
+	region = strings.ToUpper(strings.TrimSpace(region))
 	if region == "" {
 		return false
 	}
 	for _, r := range subscriptionBans {
-		if r == region {
+		if strings.ToUpper(strings.TrimSpace(r)) == region {
 			return true
 		}
 	}
 	for _, r := range nodeBans {
-		if r == region {
+		if strings.ToUpper(strings.TrimSpace(r)) == region {
 			return true
 		}
 	}

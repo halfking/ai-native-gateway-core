@@ -11,6 +11,7 @@ import {
   type CredentialModelStatus,
   type ModelToggleAction,
 } from '../api/credential-monitor'
+import { formatDateTime } from '../utils/datetime'
 
 const props = defineProps<{
   credentialId: number
@@ -74,9 +75,7 @@ function pct(value: number | null | undefined): string {
 }
 
 function fmtTime(value: string | null | undefined): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+  return formatDateTime(value)
 }
 
 async function withRowBusy(model: string, fn: () => Promise<void>) {

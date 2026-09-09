@@ -266,9 +266,9 @@ func TestProxyRoutesAuth(t *testing.T) {
 func TestProxyNewRoutesMethodEnforcement(t *testing.T) {
 	h := NewHandler(nil, "test-secret", nil)
 	tests := []struct {
-		path         string
-		wrongMethod  string
-		handler      func(http.ResponseWriter, *http.Request)
+		path        string
+		wrongMethod string
+		handler     func(http.ResponseWriter, *http.Request)
 	}{
 		{"/api/proxy/health-check-all", http.MethodGet, h.handleProxyHealthCheckAll},
 		{"/api/proxy/swap", http.MethodGet, h.handleProxySwap},
@@ -285,5 +285,18 @@ func TestProxyNewRoutesMethodEnforcement(t *testing.T) {
 					tc.wrongMethod, tc.path, rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestValidateHealthCheckURLRejectsSSRFTargets(t *testing.T) {
+	for _, raw := range []string{"file:///etc/passwd", "http://127.0.0.1/ping", "http://10.0.0.1/ping", "http://[::1]/ping", "http://user:pass@example.com/ping", "http://localhost/ping"} {
+		if err := validateHealthCheckURL(raw); err == nil {
+			t.Errorf("validateHealthCheckURL(%q) unexpectedly succeeded", raw)
+		}
+	}
+	for _, raw := range []string{"https://example.com/ping", "http://8.8.8.8/ping"} {
+		if err := validateHealthCheckURL(raw); err != nil {
+			t.Errorf("validateHealthCheckURL(%q) = %v", raw, err)
+		}
 	}
 }

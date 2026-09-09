@@ -161,6 +161,22 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 		)
 	}
 
+	// 2026-09-09: defensive-coerce nil text[] columns to empty arrays.
+	// session_summaries.tags (NOT NULL DEFAULT '{}'::text[]) was being
+	// violated when callers (e.g. admin/auto_summary_generator.go) leave
+	// the Tags field unset, so pgx sends NULL and PostgreSQL rejects with
+	// SQLSTATE 23502. key_topics is nullable so the same coerce is harmless.
+	// Coercing at the persistence layer makes the contract local to one
+	// place instead of requiring every caller to remember to set [].
+	tags := sum.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	keyTopics := sum.KeyTopics
+	if keyTopics == nil {
+		keyTopics = []string{}
+	}
+
 	const query = `
 		INSERT INTO session_summaries (
 			session_key, tenant_id, title, summary, key_topics,
@@ -188,11 +204,11 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 		sum.TenantID,
 		title,
 		summaryText,
-		sum.KeyTopics,
+		keyTopics,
 		userIntent,
 		sum.AgentType,
 		sum.ExpertType,
-		sum.Tags,
+		tags,
 		sum.LastSummarized,
 		firstReq,
 		lastReq,

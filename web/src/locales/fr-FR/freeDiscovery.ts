@@ -57,7 +57,8 @@ export default {
       scan: "Scanner",
       delete: "Supprimer",
       deleteConfirm: "Supprimer le modèle « {name} » ? Les tâches et résultats de découverte existants ne sont pas affectés.",
-      deleted: "Modèle supprimé : {name}"
+      deleted: "Modèle supprimé : {name}",
+      disabledScanHint: "Modèle désactivé — activez-le avant l'analyse"
     },
   scan: {
       title: "Lancer la découverte",

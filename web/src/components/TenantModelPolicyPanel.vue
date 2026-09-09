@@ -18,6 +18,7 @@ import { ref, onMounted } from 'vue'
 import { localeRef } from '../i18n'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 import {
   listTenantModelPolicies,
   createTenantModelPolicy,
@@ -121,8 +122,7 @@ async function restore(p: TenantModelPolicy) {
 }
 
 function fmtTime(s: string | null) {
-  if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
+  return formatDateTime(s, { locale: localeRef.value, empty: '-' })
 }
 
 function actionLabel(a: string) {

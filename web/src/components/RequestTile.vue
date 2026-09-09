@@ -22,6 +22,7 @@ import {
   type LiveRequest,
 } from '../composables/liveStreamStore'
 import { credentialDisplayName } from '../composables/useCredentialLabels'
+import { formatDateTime } from '../utils/datetime'
 import ActionTimeline from './ActionTimeline.vue'
 
 const { t, locale } = useI18n()
@@ -237,9 +238,7 @@ const tooltipText = computed(() => {
   if (props.tile.cost_usd != null) lines.push(tooltipLine(`${tip}.cost`, `$${props.tile.cost_usd.toFixed(4)}`))
   if (props.tile.request_id) lines.push(tooltipLine(`${tip}.requestId`, props.tile.request_id.slice(0, 12)))
   if (props.tile.timestamp) {
-    try {
-      lines.push(tooltipLine(`${tip}.time`, new Date(props.tile.timestamp).toLocaleString()))
-    } catch { /* ignore */ }
+    lines.push(tooltipLine(`${tip}.time`, formatDateTime(props.tile.timestamp)))
   }
   return lines.join('\n')
 })

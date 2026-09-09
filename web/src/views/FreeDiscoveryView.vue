@@ -388,7 +388,9 @@ function fmtTime(iso: string | null): string {
 }
 
 function fmtNum(n: number): string {
-  return n > 0 ? String(n) : '—'
+  // 0 是合法值 (无配额/无限额), 仅 null/undefined 显示破折号
+  if (n == null) return '—'
+  return String(n)
 }
 
 async function loadAll(): Promise<void> {
@@ -566,7 +568,12 @@ onMounted(loadAll)
                 </td>
                 <td class="muted">{{ fmtTime(tpl.created_at) }}</td>
                 <td class="actions-cell">
-                  <button class="btn btn-sm btn-ghost" @click="scanTemplateId = tpl.id; startScan()">
+                  <button
+                    class="btn btn-sm btn-ghost"
+                    :disabled="!tpl.enabled || scanning"
+                    :title="!tpl.enabled ? t('freeDiscovery.tpl.disabledScanHint') : ''"
+                    @click="scanTemplateId = tpl.id; startScan()"
+                  >
                     {{ t('freeDiscovery.tpl.scan') }}
                   </button>
                   <button class="btn btn-sm btn-ghost danger" @click="removeTemplate(tpl)">
