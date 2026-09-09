@@ -630,30 +630,32 @@ bump_local_version() {
 
 ensure_release_available() {
   local bundle="${1:-$BIN_DIR/$RELEASE_VERSION}"
+  local aside
   [[ ! -e "$bundle" && ! -L "$bundle" ]] && return 0
   # bundle 目录已存在（同名 collision 只有两种来源）：同版本重部署时撞上
   # current 正指向的 active 发布（2026-09-05 漂移修复后同 git_sha+同日重跑
   # seq 不变），或上次部署在 dl_stage_release 早期失败留下的残留目录。
   # 判别标准是 SHA256SUMS：dl_stage_release 只在 gateway/web/version.json/
   # VERSION 全部 cp/install 成功后才生成 SHA256SUMS（deploy-local-lib.sh
-  # :471-472），因此 SHA256SUMS 缺失 = 半截残留。
-  # active 发布绝不能原地 rm -rf：运行中实例的 web/env/version.json 都在
-  # 里面，删除后若 build/migrate/stage 任一步失败，current 悬空且回滚守卫
-  # （[[ -e "$active_bundle" ]]）静默跳过（2026-09-09 审计修正 0c465a815
-  # 引入的缺陷）。改为整体 mv 到 .prev-<epoch> 后缀：同文件系统 rename，
-  # 运行中进程不受影响，旧目录仍是 rollback() 可发现的有效回滚目标。
+  # :471-472）。active 发布绝不能原地 rm -rf（运行中实例的 web/env 都在
+  # 里面）；完整旧发布用同文件系统 mv 到 .prev-<epoch> 让路，运行中进程
+  # 不受影响且目录仍是 rollback() 可发现的有效回滚目标。无 SHA256SUMS 的
+  # 目录无法证明是发布产物（可能是误放进来的任意数据），按
+  # deploy_local_contract_test 契约 fail-closed 拒删，要求人工确认
+  # （2026-09-09 修正：0c465a815 引入的 rm -rf 会静默销毁未知目录）。
   if [[ "$(basename "$bundle")" == "$(dl_active_version)" ]]; then
-    local aside="${bundle}.prev-$(date +%s)"
+    aside="${bundle}.prev-$(date +%s)"
     warn "release $bundle is the active deployment; moving it aside to $(basename "$aside") before restaging"
     mv "$bundle" "$aside" || die "failed to move active release aside: $bundle"
     return 0
   fi
   if [[ -e "$bundle/SHA256SUMS" ]]; then
-    warn "release $bundle already exists (intact, not active); removing to allow same-version redeploy"
-  else
-    warn "stale incomplete release $bundle (no SHA256SUMS) from a prior failed deploy; removing"
+    aside="${bundle}.prev-$(date +%s)"
+    warn "release $bundle already exists (intact, not active); moving it aside to $(basename "$aside") to allow same-version redeploy"
+    mv "$bundle" "$aside" || die "failed to move release aside: $bundle"
+    return 0
   fi
-  rm -rf "$bundle" || die "failed to remove stale release directory: $bundle"
+  die "release already exists: $bundle (no SHA256SUMS — not a verifiable release; inspect and remove it manually if it is a stale artifact)"
 }
 
 
@@ -793,6 +795,63 @@ smoke_credential_decrypt() {
   deploy_verify_credential_decrypt dl_local_exec "$port" "$env_file"
 }
 
+# Local counterpart of deploy-seamless.sh step 9.1 (env → users 同步): before
+# the decrypt smoke, rewrite users.<admin>'s bcrypt hash from the exact env
+# file the smoke authenticates with. handleLogin only checks the users table
+# and never falls back to env (admin/auth.go), so an out-of-band hash edit
+# (2026-09-07: a stale bundle-env password was hashed into users.admin) leaves
+# every later deploy dead-locked behind a 401 the gateway cannot self-heal.
+# Opt out with DEPLOY_SYNC_ADMIN_PASSWORD=false.
+sync_admin_password_from_env() {
+  local env_file="$1" port="$2" user pw hash old_hash backup=""
+  # Read first matching line for each key, then take everything after the
+  # first '=' (cut -d= -f2-) so a value containing '=' or trailing spaces
+  # survives intact. grep -m1 stops at the first hit so a duplicate assignment
+  # downstream cannot silently override the admin user/password we use here.
+  user=$(grep -m1 '^LLM_GATEWAY_ADMIN_USER=' "$env_file" 2>/dev/null | cut -d= -f2-)
+  pw=$(grep -m1 '^LLM_GATEWAY_ADMIN_PASSWORD=' "$env_file" 2>/dev/null | cut -d= -f2-)
+  # Strip surrounding single/double quotes that dotenv style permits.
+  user=${user%\"}; user=${user#\"}; user=${user%\'}; user=${user#\'}
+  pw=${pw%\"}; pw=${pw#\"}; pw=${pw%\'}; pw=${pw#\'}
+  if [[ -z "$user" || -z "$pw" ]]; then
+    warn 'LLM_GATEWAY_ADMIN_USER/PASSWORD empty in env; skipping admin password sync'
+    return 0
+  fi
+  user=${user//\'/\'\'}
+  hash=$( (cd "$PROJECT_ROOT" && printf '%s' "$pw" | go run scripts/ops/bcrypt-hash.go) ) \
+    || { warn 'bcrypt hashing failed; skipping admin password sync'; return 0; }
+  old_hash=$(psql_query "SELECT password_hash FROM users WHERE username='$user'" 2>/dev/null) || old_hash=''
+  if [[ -n "$old_hash" ]]; then
+    backup="$RUN_DIR/admin-password-hash.$(date +%Y%m%dT%H%M%S).bak"
+    # %s writes the bcrypt hash verbatim — no $ expansion, no trailing newline.
+    printf '%s' "$old_hash" > "$backup"; printf '\n' >> "$backup"
+    chmod 0600 "$backup"
+  fi
+  if ! psql_query "UPDATE users SET password_hash='$hash', must_change_password=false, updated_at=now() WHERE username='$user'" >/dev/null; then
+    warn 'admin password sync UPDATE failed; continuing (decrypt smoke remains the gate)'
+    return 0
+  fi
+  log "admin password synced env → users (user=$user, prior hash: ${backup:-none})"
+  local probe
+  probe=$(python3 - "$port" "$user" "$pw" <<'PY'
+import json, sys, urllib.error, urllib.request
+port, user, pw = sys.argv[1], sys.argv[2], sys.argv[3]
+request = urllib.request.Request(
+    'http://127.0.0.1:%s/api/auth/token' % port,
+    data=json.dumps({'username': user, 'password': pw}).encode(),
+    headers={'Content-Type': 'application/json'}, method='POST')
+try:
+    urllib.request.urlopen(request, timeout=5)
+    print('ok')
+except urllib.error.HTTPError as error:
+    print(error.code)
+except Exception:
+    print('000')
+PY
+)
+  [[ "$probe" == "ok" ]] || warn "admin login probe after sync returned ${probe:-000} (continuing; decrypt smoke remains the gate)"
+}
+
 migrate_database() {
   apply_schema_if_empty
   export LLM_GATEWAY_DATABASE_URL DATABASE_URL
@@ -854,6 +913,9 @@ deploy() {
   start_instance "$bundle" "$candidate_port"
   if ! verify_instance "$candidate_port" "$bundle"; then
     stop_instance "$candidate_port"; die "candidate failed health/readiness/version gates; active release was preserved"
+  fi
+  if [[ "${DEPLOY_SYNC_ADMIN_PASSWORD:-true}" == "true" ]]; then
+    sync_admin_password_from_env "$bundle/env" "$candidate_port"
   fi
   if ! smoke_credential_decrypt "$candidate_port" "$bundle/env"; then
     stop_instance "$candidate_port"; die "candidate failed credential decrypt smoke; active release was preserved"
