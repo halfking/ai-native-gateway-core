@@ -168,7 +168,6 @@ LLM_GATEWAY_DATABASE_URL=postgres://fake:fake@127.0.0.1:5432/fake
 LLM_GATEWAY_ADMIN_USER=fake-admin
 LLM_GATEWAY_ADMIN_PASSWORD=fake-password
 LLM_GATEWAY_LISTEN=:8781
-TRANSPORT_LAYER_IR_ENABLED=true
 ENVEND
   chmod 0600 "$H/opt/llm-gateway-go/.env"
 

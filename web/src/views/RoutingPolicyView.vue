@@ -6,6 +6,7 @@ import {
   getScoringWeights, updateScoringWeights,
   type RoutingPolicy, type ScoringWeights,
 } from '../api'
+import { useActionMessage } from '../composables/useActionMessage'
 import ModelPicker from '../components/ModelPicker.vue'
 
 const { t } = useI18n()
@@ -16,8 +17,8 @@ const draft    = ref<Partial<RoutingPolicy>>({})
 const featuredArray = ref<string[]>([])
 const loading  = ref(false)
 const saving   = ref(false)
-const error    = ref('')
-const message  = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage。
+const { message, error, notifySuccess, notifyError, clear: clearActionMsg } = useActionMessage()
 
 const weights   = ref<ScoringWeights>({
   price: 10,
@@ -47,7 +48,6 @@ const formulaPreview = computed(() => {
 
 async function load() {
   loading.value = true
-  error.value = ''
   try {
     policy.value = await getPolicy()
     draft.value  = { ...policy.value }
@@ -57,7 +57,7 @@ async function load() {
     weights.value = w
     weightsDraft.value = { ...w }
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('routing.loadFailed')
+    notifyError(e instanceof Error ? e.message : t('routing.loadFailed'))
   } finally {
     loading.value = false
   }
@@ -80,21 +80,20 @@ const weightsDirty = computed(() => {
 
 async function savePolicy() {
   if (!dirtyKeys.value.length) {
-    message.value = t('routing.noChanges')
+    notifySuccess(t('routing.noChanges'))
     return
   }
   saving.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const patch: Record<string, unknown> = { actor: 'admin' }
     for (const k of dirtyKeys.value) patch[k] = (draft.value as any)[k]
     const updated = await patchPolicy(patch as Partial<RoutingPolicy>)
     policy.value = updated
     draft.value  = { ...updated }
-    message.value = t('routing.updatedPolicy')
+    notifySuccess(t('routing.updatedPolicy'))
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('routing.saveFailed')
+    notifyError(e instanceof Error ? e.message : t('routing.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -102,14 +101,13 @@ async function savePolicy() {
 
 async function saveWeights() {
   saving.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     await updateScoringWeights(weightsDraft.value)
     weights.value = { ...weightsDraft.value }
-    message.value = t('routing.updatedWeights')
+    notifySuccess(t('routing.updatedWeights'))
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('routing.saveFailed')
+    notifyError(e instanceof Error ? e.message : t('routing.saveFailed'))
   } finally {
     saving.value = false
   }
@@ -117,15 +115,14 @@ async function saveWeights() {
 
 async function saveFeatured() {
   saving.value = true
-  error.value = ''
-  message.value = ''
+  clearActionMsg()
   try {
     const list = featuredArray.value.map(s => s.trim()).filter(Boolean)
     await patchFeatured(list)
-    message.value = `特色模型已更新（${list.length}）`
+    notifySuccess(`特色模型已更新（${list.length}）`)
     await load()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : t('routing.saveFailed')
+    notifyError(e instanceof Error ? e.message : t('routing.saveFailed'))
   } finally {
     saving.value = false
   }

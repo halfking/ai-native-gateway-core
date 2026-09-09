@@ -387,6 +387,7 @@ import { ElMessage, ElRadioGroup, ElRadioButton } from 'element-plus'
 import { confirmDialog } from '../../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '@/i18n'
+import { formatDateTime } from '@/utils/datetime'
 import { req } from '@/api/_core'
 import {
   promoteHotTable, dropPartition, listLifecycleJobs, getLifecycleJob,
@@ -787,9 +788,11 @@ function formatDuration(ms: number): string {
   return `${m}m ${rs}s`
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString(localeRef.value, {
-    month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  return formatDateTime(iso, {
+    locale: localeRef.value,
+    options: { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' },
   })
 }
 

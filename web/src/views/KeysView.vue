@@ -7,6 +7,7 @@ import { getKeys, createKey, revokeKey, revealKey, approveKey, disableKey, enabl
 import { store, clearApiKey, setApiKey, setPreferredChatKeyId, isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 import FilterInput from '../components/FilterInput.vue'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { useActionMessage } from '../composables/useActionMessage'
 
 const { t } = useI18n()
 
@@ -216,8 +217,8 @@ const createdKey = ref<KeyCreatedResponse | null>(null)
 const defaultLimits = ref<DefaultLimits>({ rate_limit_rpm: 12, rate_limit_concurrent: 6, rate_limit_tpm: null })
 const showDefaultLimits = ref(false)
 const limitsSaving = ref(false)
-const limitsErr = ref('')
-const limitsSuccess = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage。
+const { message: limitsSuccess, error: limitsErr, notifySuccess: notifyLimitsOk, notifyError: notifyLimitsErr, clear: clearLimitsMsg } = useActionMessage()
 
 // Copy feedback
 const copiedId = ref<string | null>(null)
@@ -500,8 +501,7 @@ async function loadDefaultLimits() {
 }
 
 async function saveDefaultLimits() {
-  limitsErr.value = ''
-  limitsSuccess.value = ''
+  clearLimitsMsg()
   limitsSaving.value = true
   try {
     const data = { ...defaultLimits.value }
@@ -509,18 +509,17 @@ async function saveDefaultLimits() {
       data.rate_limit_tpm = null
     }
     await setDefaultLimits(data as DefaultLimits)
-    limitsSuccess.value = t('keys.savedToast')
+    notifyLimitsOk(t('keys.savedToast'))
     showDefaultLimits.value = false
   } catch (e: unknown) {
-    limitsErr.value = e instanceof Error ? e.message : t('keys.saveFailed')
+    notifyLimitsErr(e instanceof Error ? e.message : t('keys.saveFailed'))
   } finally {
     limitsSaving.value = false
   }
 }
 
 function openDefaultLimits() {
-  limitsErr.value = ''
-  limitsSuccess.value = ''
+  clearLimitsMsg()
   showDefaultLimits.value = true
   loadDefaultLimits()
 }

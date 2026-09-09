@@ -52,13 +52,24 @@ func StreamOpenAIToAnthropicSSE(
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
 	return StreamOpenAIToAnthropicSSEWithDiagnostics(
-		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+		ctx, w, resp, clientModel, outboundModel, requestID, capture, pc, nil, 0,
 	)
 }
 
 // StreamOpenAIToAnthropicSSEWithDiagnostics converts an OpenAI stream with
 // optional best-effort diagnostics.
 // P1-2 fix (2026-08-28): Added ctx parameter for context propagation to gate.
+//
+// inputTokensEstimate (审计 R3 #2, 2026-09-09): request-derived prompt token
+// estimate emitted in message_start.usage.input_tokens. OpenAI upstreams
+// report prompt_tokens only in the final usage chunk (or not at all), while
+// Anthropic protocol requires input_tokens at stream head — SSE cannot
+// retroactively amend message_start, and Anthropic's message_delta.usage
+// carries only output_tokens. Claude Code et al. use that value for context
+// management; a hardcoded 0 systematically under-counts and delays
+// auto-compaction until overflow. 0 keeps the legacy wire shape. When the
+// real usage arrives mid-stream it is logged (estimate vs actual) for
+// estimator calibration and fed to the audit capture as before.
 func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	ctx context.Context,
 	w http.ResponseWriter,
@@ -67,6 +78,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
+	inputTokensEstimate int,
 ) (outcome StreamOutcome) {
 	bodyCloser := &onceReadCloser{ReadCloser: resp.Body}
 	//nolint:errcheck // best-effort close
@@ -294,7 +306,12 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		"message": map[string]any{
 			"id": msgID, "type": "message", "role": "assistant", "content": []any{},
 			"model": clientModel, "stop_reason": nil, "stop_sequence": nil,
-			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
+			// 审计 R3 #2 (2026-09-09)：input_tokens 用请求体估算值（estimateAnthropicInputTokens，
+			// executor 侧传入）而非恒 0。OpenAI 上游的 prompt_tokens 通常只出现在流尾
+			// usage 帧（甚至缺失），而 Anthropic 客户端（Claude Code 等）在流首就需要
+			// 该值管理上下文；SSE 不可回写，message_delta.usage 又仅承载 output_tokens，
+			// 故流首估算、流尾仅做日志比对。0 表示无估算可用（保持旧线上形状）。
+			"usage": map[string]any{"input_tokens": inputTokensEstimate, "output_tokens": 0},
 		},
 	}
 	captureSSE("message_start", initialMsg)
@@ -372,6 +389,17 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 						cachedTokens = int(v)
 					}
 				}
+			}
+			// 审计 R3 #2 (2026-09-09)：流首 message_start 已按估算值发出（SSE
+			// 不可回写），真实 prompt_tokens 到达后在此记录偏差，供估算器校准
+			// 与运维观测；真实值同时进入下方审计 capture。
+			if inputTokens > 0 && inputTokensEstimate > 0 {
+				slog.Debug("anthropic stream: input_tokens estimate vs actual",
+					"request_id", requestID,
+					"estimated_input_tokens", inputTokensEstimate,
+					"actual_input_tokens", inputTokens,
+					"delta", inputTokens-inputTokensEstimate,
+				)
 			}
 			if capture != nil {
 				pt := inputTokens
@@ -669,7 +697,6 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 		return false
 	}
-
 
 	if firstLine != "" {
 		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(firstLine)

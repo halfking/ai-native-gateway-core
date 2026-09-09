@@ -6,6 +6,8 @@ import { useRouter } from 'vue-router'
 import { getApprovalList, approveApproval, rejectApproval, getApprovalStats, type ApprovalItem, type ApprovalStats } from '../api/approval'
 import { isSuperAdmin } from '../store'
 import { confirmDialog } from '../composables/useConfirmDialog'
+import { formatRelativeTime } from '../utils/datetime'
+import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
 import EmptyState from '../components/EmptyState.vue'
 
@@ -16,8 +18,8 @@ const router = useRouter()
 const loading = ref(false)
 const approvals = ref<ApprovalItem[]>([])
 const stats = ref<ApprovalStats | null>(null)
-const error = ref<string | null>(null)
-const successMessage = ref<string | null>(null)
+// 审计 R3#10：操作反馈条统一走 useActionMessage（自动消失/计时器清理收敛）。
+const { message: successMessage, error, notifySuccess, notifyError, clearMessage, clearError } = useActionMessage()
 
 // Filters
 const statusFilter = ref<string>('pending')
@@ -109,28 +111,22 @@ function getStatusLabel(status: string): string {
   return labels[status] || status
 }
 
+// 审计 R3#10：相对时间统一走 utils/datetime.formatRelativeTime
+//（超过 7 天回退绝对时间，与原实现一致）。
 function formatDate(dateStr: string): string {
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diff = now.getTime() - date.getTime()
-  const seconds = Math.floor(diff / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const days = Math.floor(hours / 24)
-
-  if (days > 7) {
-    return date.toLocaleDateString(localeRef.value, {
+  return formatRelativeTime(dateStr, {
+    justNow: t('approval.list.relativeTime.justNow'),
+    minutesAgo: (n) => t('approval.list.relativeTime.minutesAgo', { n }),
+    hoursAgo: (n) => t('approval.list.relativeTime.hoursAgo', { n }),
+    daysAgo: (n) => t('approval.list.relativeTime.daysAgo', { n }),
+    older: (d) => d.toLocaleDateString(localeRef.value, {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit'
-    })
-  }
-  if (days > 0) return t('approval.list.relativeTime.daysAgo', { n: days })
-  if (hours > 0) return t('approval.list.relativeTime.hoursAgo', { n: hours })
-  if (minutes > 0) return t('approval.list.relativeTime.minutesAgo', { n: minutes })
-  return t('approval.list.relativeTime.justNow')
+    }),
+  })
 }
 
 function formatCost(cost?: number): string {
@@ -140,7 +136,7 @@ function formatCost(cost?: number): string {
 
 async function loadApprovals() {
   loading.value = true
-  error.value = null
+  clearError()
 
   try {
     const params = {
@@ -160,7 +156,7 @@ async function loadApprovals() {
     totalPages.value = response.total_pages
     currentPage.value = response.page
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.loadListFailed')
+    notifyError(e.message || t('approval.list.errors.loadListFailed'))
   } finally {
     loading.value = false
   }
@@ -181,12 +177,11 @@ async function quickApprove(item: ApprovalItem) {
 
   try {
     await approveApproval(item.request_id)
-    successMessage.value = t('approval.list.success.approved')
-    setTimeout(() => successMessage.value = null, 3000)
+    notifySuccess(t('approval.list.success.approved'))
     await loadApprovals()
     await loadStats()
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.approveFailed')
+    notifyError(e.message || t('approval.list.errors.approveFailed'))
   }
 }
 
@@ -198,12 +193,11 @@ async function quickReject(item: ApprovalItem) {
 
   try {
     await rejectApproval(item.request_id, reason)
-    successMessage.value = t('approval.list.success.rejected')
-    setTimeout(() => successMessage.value = null, 3000)
+    notifySuccess(t('approval.list.success.rejected'))
     await loadApprovals()
     await loadStats()
   } catch (e: any) {
-    error.value = e.message || t('approval.list.errors.rejectFailed')
+    notifyError(e.message || t('approval.list.errors.rejectFailed'))
   }
 }
 
@@ -281,13 +275,13 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
     <div v-if="error" class="message message-error">
       <span class="message-icon">❌</span>
       {{ error }}
-      <button class="message-close" @click="error = null">×</button>
+      <button class="message-close" @click="clearError">×</button>
     </div>
 
     <div v-if="successMessage" class="message message-success">
       <span class="message-icon">✅</span>
       {{ successMessage }}
-      <button class="message-close" @click="successMessage = null">×</button>
+      <button class="message-close" @click="clearMessage">×</button>
     </div>
 
     <!-- Stats Cards -->

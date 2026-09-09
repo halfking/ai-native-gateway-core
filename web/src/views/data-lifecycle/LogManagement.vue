@@ -8,6 +8,7 @@ import {
   type LogConfig, type LogFile, type LogStats, type LogOpResult,
 } from '../../api'
 import { confirmDialog } from '../../composables/useConfirmDialog'
+import { formatDateTime } from '../../utils/datetime'
 
 const { t } = useI18n()
 const config = ref<LogConfig | null>(null)
@@ -167,9 +168,9 @@ async function doCleanup() {
   }
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTime(s: string | null): string {
-  if (!s) return '-'
-  return new Date(s).toLocaleString(localeRef.value)
+  return formatDateTime(s, { locale: localeRef.value, empty: '-' })
 }
 
 onMounted(() => {

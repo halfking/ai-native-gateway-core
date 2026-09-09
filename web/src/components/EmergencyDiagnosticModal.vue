@@ -7,6 +7,7 @@ import { authBearer } from '../store'
 import { credentialDisplayName, useCredentialLabels } from '../composables/useCredentialLabels'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 
 const props = defineProps<{
   visible: boolean
@@ -147,14 +148,11 @@ function handleClose() {
   emit('close')
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTimestamp(ts: string): string {
-  const d = new Date(ts)
-  return d.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
+  return formatDateTime(ts, {
+    locale: 'zh-CN',
+    options: { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' },
   })
 }
 

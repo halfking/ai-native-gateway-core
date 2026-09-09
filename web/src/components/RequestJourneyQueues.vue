@@ -16,6 +16,7 @@ import {
 } from '../api/request-journeys'
 import { isSuperAdmin, store } from '../store'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+import { formatTimeOnly } from '../utils/datetime'
 
 const { t, locale } = useI18n()
 // 2026-08-23 凭据显示：订阅标签缓存 revision，让异步加载完成后
@@ -185,15 +186,12 @@ function statusOf(snapshot: RequestJourneySnapshot): string {
   return 'queued'
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTime(value: string | undefined): string {
-  if (!value) return '—'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(locale.value, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(date)
+  return formatTimeOnly(value, {
+    locale: locale.value,
+    options: { hour: '2-digit', minute: '2-digit', second: '2-digit' },
+  })
 }
 
 function openDialog() {
