@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { getApprovalConfig, updateApprovalConfig, type ApprovalConfig } from '../api/approval'
+import { useActionMessage } from '../composables/useActionMessage'
 import ApproverManager from './ApproverManager.vue'
 import NotificationChannels from './NotificationChannels.vue'
 import ApprovalRules from './ApprovalRules.vue'
@@ -10,16 +11,8 @@ const { t } = useI18n()
 
 const loading = ref(false)
 const saving = ref(false)
-const error = ref<string | null>(null)
-const successMessage = ref<string | null>(null)
-const successMessageTimer = ref<ReturnType<typeof setTimeout> | null>(null)
-
-onUnmounted(() => {
-  if (successMessageTimer.value) {
-    clearTimeout(successMessageTimer.value)
-    successMessageTimer.value = null
-  }
-})
+// 审计 R3#10：操作反馈条统一走 useActionMessage（timer 清理收进 composable）。
+const { message: successMessage, error, notifySuccess, notifyError } = useActionMessage()
 
 const config = ref<ApprovalConfig>({
   enabled: false,
@@ -45,11 +38,10 @@ const timeoutActionOptions = computed(() => [
 
 async function loadConfig() {
   loading.value = true
-  error.value = null
   try {
     config.value = await getApprovalConfig()
   } catch (e: any) {
-    error.value = e.message || t('sessions.config.loadError')
+    notifyError(e.message || t('sessions.config.loadError'))
   } finally {
     loading.value = false
   }
@@ -57,21 +49,12 @@ async function loadConfig() {
 
 async function saveConfig() {
   saving.value = true
-  error.value = null
-  successMessage.value = null
 
   try {
     await updateApprovalConfig(config.value)
-    successMessage.value = t('sessions.config.saveSuccess')
-    if (successMessageTimer.value) {
-      clearTimeout(successMessageTimer.value)
-    }
-    successMessageTimer.value = setTimeout(() => {
-      successMessage.value = null
-      successMessageTimer.value = null
-    }, 3000)
+    notifySuccess(t('sessions.config.saveSuccess'))
   } catch (e: any) {
-    error.value = e.message || t('sessions.config.saveError')
+    notifyError(e.message || t('sessions.config.saveError'))
   } finally {
     saving.value = false
   }

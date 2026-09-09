@@ -4,6 +4,7 @@ import { ref, onMounted, computed } from 'vue'
 import { listSettings, updateSetting, SettingItem } from '../api/settings'
 import { req } from '../api/_core'
 import { fmtDateTime24h } from '../i18n/useFormat'
+import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
 
 const { t } = useI18n({ useScope: 'global' })
@@ -102,8 +103,8 @@ const config = ref<OutputComplianceConfig>({
 
 const configLoading = ref(false)
 const configSaving = ref(false)
-const configError = ref('')
-const configSuccess = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage（自动消失/计时器清理收敛）。
+const { message: configSuccess, error: configError, notifySuccess, notifyError, clearError: clearConfigError } = useActionMessage()
 
 const filterTenantID = ref('')
 const filterCheckType = ref('')
@@ -164,7 +165,7 @@ async function loadRecords() {
 // ========== 加载配置 ==========
 async function loadConfig() {
   configLoading.value = true
-  configError.value = ''
+  clearConfigError()
   try {
     const settings = await listSettings({ category: 'output_compliance' })
     const items = 'items' in settings ? settings.items : (settings as unknown as SettingItem[])
@@ -211,7 +212,7 @@ async function loadConfig() {
       }
     }
   } catch (e: unknown) {
-    configError.value = e instanceof Error ? e.message : String(e)
+    notifyError(e instanceof Error ? e.message : String(e))
   } finally {
     configLoading.value = false
   }
@@ -220,8 +221,7 @@ async function loadConfig() {
 // ========== 保存配置 ==========
 async function saveConfig() {
   configSaving.value = true
-  configError.value = ''
-  configSuccess.value = ''
+  clearConfigError()
   try {
     const mapping: Record<keyof OutputComplianceConfig, string> = {
       enabled: 'output_compliance.enabled',
@@ -253,10 +253,9 @@ async function saveConfig() {
     for (const [key, settingKey] of Object.entries(mapping)) {
       await updateSetting(settingKey, { value: (config.value as any)[key] })
     }
-    configSuccess.value = t('outputCompliance.config.saveSuccess')
-    setTimeout(() => { configSuccess.value = '' }, 3000)
+    notifySuccess(t('outputCompliance.config.saveSuccess'))
   } catch (e: unknown) {
-    configError.value = e instanceof Error ? e.message : String(e)
+    notifyError(e instanceof Error ? e.message : String(e))
   } finally {
     configSaving.value = false
   }

@@ -33,6 +33,7 @@ import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
 import { formatDateTime } from '../utils/datetime'
+import { useActionMessage } from '../composables/useActionMessage'
 
 const { t } = useI18n()
 
@@ -45,7 +46,8 @@ const migrationCoverage = computed(() => {
   return Math.min(100, Math.max(0, value))
 })
 const loading = ref(false)
-const error = ref<string | null>(null)
+// 审计 R3#10：操作反馈条统一走 useActionMessage（错误 6s 自动清除收进 composable）。
+const { error, notifyError } = useActionMessage({ errorTimeoutMs: 6000 })
 const triggerBusy = ref(false)
 const concurrencyBusy = ref(false)
 const showConcurrencyDialog = ref(false)
@@ -66,7 +68,7 @@ async function loadStats() {
   try {
     stats.value = await fetchSystemMonitorStats()
   } catch (e) {
-    error.value = (e as Error).message
+    notifyError((e as Error).message)
   }
 }
 
@@ -75,7 +77,7 @@ async function loadRecentRuns() {
     const r = await fetchSystemMonitorRecentRuns(50)
     recentRuns.value = r.runs
   } catch (e) {
-    // 不覆盖现有 error.value（更严重的）
+    // 静默忽略（不覆盖已展示的更严重错误）
   }
 }
 
@@ -104,7 +106,7 @@ async function handleStartAll() {
     pushToast(t('probeHealth.systemTriggeredToast', { n: r.triggered, failed: r.failed }))
     await loadStats()
   } catch (e) {
-    error.value = `start-all failed: ${(e as Error).message}`
+    notifyError(`start-all failed: ${(e as Error).message}`)
   }
   triggerBusy.value = false
 }
@@ -117,7 +119,7 @@ async function handleStopAll() {
     pushToast(t('probeHealth.systemStoppedToast', { n: r.stopped }))
     await loadStats()
   } catch (e) {
-    error.value = `stop-all failed: ${(e as Error).message}`
+    notifyError(`stop-all failed: ${(e as Error).message}`)
   }
   triggerBusy.value = false
 }
@@ -125,7 +127,7 @@ async function handleStopAll() {
 async function handleScopedTrigger() {
   if (scopeMode.value === 'credential') {
     if (!scopeId.value || scopeId.value <= 0) {
-      error.value = '请输入凭据 ID'; return
+      notifyError('请输入凭据 ID'); return
     }
     triggerBusy.value = true
     try {
@@ -133,12 +135,12 @@ async function handleScopedTrigger() {
       pushToast(`按凭据 ${scopeId.value} 触发 ${r.triggered}/${r.total} 任务`)
       showScopeDialog.value = false
     } catch (e) {
-      error.value = `by-credential failed: ${(e as Error).message}`
+      notifyError(`by-credential failed: ${(e as Error).message}`)
     }
     triggerBusy.value = false
   } else if (scopeMode.value === 'provider') {
     if (!scopeId.value || scopeId.value <= 0) {
-      error.value = '请输入供应商 ID'; return
+      notifyError('请输入供应商 ID'); return
     }
     triggerBusy.value = true
     try {
@@ -146,12 +148,12 @@ async function handleScopedTrigger() {
       pushToast(`按供应商 ${scopeId.value} 触发 ${r.triggered}/${r.total} 任务 (direct + http_ping 1:1)`)
       showScopeDialog.value = false
     } catch (e) {
-      error.value = `by-provider failed: ${(e as Error).message}`
+      notifyError(`by-provider failed: ${(e as Error).message}`)
     }
     triggerBusy.value = false
   } else {
     if (!scopeModelName.value.trim()) {
-      error.value = '请输入模型名'; return
+      notifyError('请输入模型名'); return
     }
     triggerBusy.value = true
     try {
@@ -159,7 +161,7 @@ async function handleScopedTrigger() {
       pushToast(`按模型 ${scopeModelName.value} 触发 ${r.triggered}/${r.total} 任务`)
       showScopeDialog.value = false
     } catch (e) {
-      error.value = `by-model failed: ${(e as Error).message}`
+      notifyError(`by-model failed: ${(e as Error).message}`)
     }
     triggerBusy.value = false
   }
@@ -181,7 +183,7 @@ async function openConcurrencyDialog() {
 
 async function saveConcurrency() {
   if (editingConcurrency.value < 1 || editingConcurrency.value > 32) {
-    error.value = 'concurrency 必须在 1-32 之间'
+    notifyError('concurrency 必须在 1-32 之间')
     return
   }
   concurrencyBusy.value = true
@@ -191,7 +193,7 @@ async function saveConcurrency() {
     showConcurrencyDialog.value = false
     await loadStats()
   } catch (e) {
-    error.value = `update concurrency failed: ${(e as Error).message}`
+    notifyError(`update concurrency failed: ${(e as Error).message}`)
   }
   concurrencyBusy.value = false
 }
@@ -212,7 +214,7 @@ async function submitOne() {
     })
     pushToast(`已入队 task_id=${r.task_id}`)
   } catch (e) {
-    error.value = `submit failed: ${(e as Error).message}`
+    notifyError(`submit failed: ${(e as Error).message}`)
   }
   triggerBusy.value = false
 }
@@ -354,9 +356,6 @@ onBeforeUnmount(() => {
   sseCleanup?.()
 })
 
-watch(() => error.value, (v) => {
-  if (v) setTimeout(() => { error.value = null }, 6000)
-})
 </script>
 
 <template>

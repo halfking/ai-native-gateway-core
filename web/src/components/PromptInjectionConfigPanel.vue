@@ -10,6 +10,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { useActionMessage } from '../composables/useActionMessage'
 import {
   getCategoryMeta,
   getSeverityTagType,
@@ -36,8 +37,9 @@ const router = useRouter()
 // ---------------------------------------------------------------------------
 const loading = ref(true)
 const savingPolicy = ref(false)
-const error = ref('')
-const success = ref('')
+// 审计 R3#10：操作反馈条统一走 useActionMessage（1800ms 保存闪条收敛到
+// successTimeoutMs，timer 清理收进 composable）。
+const { message: success, error, notifySuccess, notifyError, clearError } = useActionMessage({ successTimeoutMs: 1800 })
 
 const policy = ref<PromptInjectionPolicy | null>(null)
 const rules = ref<PromptInjectionRule[]>([])
@@ -52,7 +54,6 @@ const expandedRules = ref<Set<number>>(new Set())
 
 let policySaveTimer: ReturnType<typeof setTimeout> | null = null
 let ruleSeverityTimer: ReturnType<typeof setTimeout> | null = null
-let successClearTimer: ReturnType<typeof setTimeout> | null = null
 const ruleBusy = new Set<number>()
 
 // ---------------------------------------------------------------------------
@@ -60,7 +61,7 @@ const ruleBusy = new Set<number>()
 // ---------------------------------------------------------------------------
 async function load() {
   loading.value = true
-  error.value = ''
+  clearError()
   // Reset state on reload so we don't auto-save the just-loaded policy.
   flushPolicySave(true)
   flushSeverityUpdates(true)
@@ -69,7 +70,7 @@ async function load() {
     policy.value = policyRes
     rules.value = rulesRes.rules
   } catch (e: any) {
-    error.value = e?.message || t('sessions.config.promptInjectionLoadError')
+    notifyError(e?.message || t('sessions.config.promptInjectionLoadError'))
   } finally {
     loading.value = false
   }
@@ -79,7 +80,6 @@ onMounted(load)
 onBeforeUnmount(() => {
   flushPolicySave(true)
   flushSeverityUpdates(true)
-  if (successClearTimer) clearTimeout(successClearTimer)
 })
 
 // ---------------------------------------------------------------------------
@@ -140,12 +140,7 @@ function flushPolicySave(cancelOnly = false) {
 }
 
 function showSavedFlash() {
-  success.value = t('sessions.config.promptInjectionPolicySaveSuccess')
-  if (successClearTimer) clearTimeout(successClearTimer)
-  successClearTimer = setTimeout(() => {
-    success.value = ''
-    successClearTimer = null
-  }, 1800)
+  notifySuccess(t('sessions.config.promptInjectionPolicySaveSuccess'))
 }
 
 function schedulePolicySave() {
@@ -159,7 +154,7 @@ function schedulePolicySave() {
       await updatePolicy(policy.value)
       showSavedFlash()
     } catch (e: any) {
-      error.value = e?.message || t('sessions.config.promptInjectionSaveError')
+      notifyError(e?.message || t('sessions.config.promptInjectionSaveError'))
     } finally {
       savingPolicy.value = false
     }
