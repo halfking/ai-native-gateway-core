@@ -57,7 +57,8 @@ export default {
       scan: "Escanear",
       delete: "Eliminar",
       deleteConfirm: "¿Eliminar la plantilla \"{name}\"? Las tareas y resultados de descubrimiento existentes no se ven afectados.",
-      deleted: "Plantilla eliminada: {name}"
+      deleted: "Plantilla eliminada: {name}",
+      disabledScanHint: "Plantilla deshabilitada — habilítela antes de escanear"
     },
   scan: {
       title: "Iniciar descubrimiento",
