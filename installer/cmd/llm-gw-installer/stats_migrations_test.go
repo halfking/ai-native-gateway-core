@@ -100,6 +100,8 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"686_fix_session_module_executions_2026_10_bounds.sql":                   fixSessionModuleExecutions2026_10BoundsMigration686,
 		"687_fix_473_partition_0800_bounds.sql":                                  fix473Partition0800BoundsMigration687,
 		"688_promote_default_retention_align_go_scheduler.sql":                   promoteDefaultRetentionAlignGoSchedulerMigration688,
+		"689_candidate_failure_logs_partitions_heap.sql":                         candidateFailureLogsPartitionsHeapMigration689,
+		"690_session_summaries_archived_ttl_index.sql":                           sessionSummariesArchivedTTLIndexMigration690,
 	}
 
 	for name, embedded := range expected {
