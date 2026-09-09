@@ -5,7 +5,7 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
 - **full 模式**：PostgreSQL + Redis，面向生产 / 多实例部署。数据全部落外部数据库，支持水平扩展与蓝绿发布。
 - **lite 模式**：SQLite + 本地文件 + 进程内存，面向本地开发与单机轻量部署。零外部依赖，开箱即用。
 
-模式定义见 `storage/interfaces.go`（`storage.StorageModeFull` / `storage.StorageModeLite`），配置加载与校验见 `config/storage.go`，工厂分派见 `storage/factory` 子包（`storage/factory/factory.go`）——根包 `storage` 仅保留接口、数据类型、哨兵错误与 `StorageConfig`，工厂独立成包以避免 import cycle。lite 模式工厂已接线到真实实现（`storage/sqlite` 三个 store + `storage/file.FileBodiesStore` 惰性单例 + `storage/memory.MemoryStateStore` 单例）；full 模式工厂保留桩（见下文说明）。
+模式定义见 `storage/interfaces.go`（`storage.StorageModeFull` / `storage.StorageModeLite`），配置加载与校验见 `config/storage.go`，工厂分派见 `storage/factory` 子包（`storage/factory/factory.go`）——根包 `storage` 仅保留接口、数据类型、哨兵错误与 `StorageConfig`，工厂独立成包以避免 import cycle。lite 模式工厂已接线到真实实现（`storage/sqlite` 三个 store + `storage/file.FileBodiesStore` 惰性单例 + `storage/lite.MemoryStateStore` 单例）；full 模式工厂保留桩（见下文说明）。
 
 ## 架构总览
 
@@ -93,7 +93,7 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
 | 轮次元数据 | `storage.TurnsStore` | SQLite `session_turns` 表（`SQLiteTurnsStore`） | 工厂桩（同上） | `storage/sqlite/turns_store.go` |
 | 会话内容（大对象） | `storage.BodiesStore` | 本地文件 gzip + `AsyncFileWriter` 异步落盘（`FileBodiesStore`，工厂内惰性单例） | 工厂桩（同上） | `storage/file/bodies_store.go`、`storage/file/async_writer.go` |
 | 请求日志 | `storage.RequestLogStore` | SQLite `request_logs` 表（`SQLiteRequestLogStore`） | 工厂桩（同上） | `storage/sqlite/request_log_store.go` |
-| 运行时状态 | `storage.StateStore` | 进程内存 `MemoryStateStore`（工厂内惰性单例） | 工厂桩（Redis 桩，同上） | `storage/memory/state_store.go` |
+| 运行时状态 | `storage.StateStore` | 进程内存 `MemoryStateStore`（工厂内惰性单例） | 工厂桩（Redis 桩，同上） | `storage/lite/state_store.go` |
 | SQLite 打开与 Schema | `sqlite.OpenSQLite` / `InitSchema` | DSN 参数 + ConnectHook 配置 PRAGMA，幂等建表 | — | `storage/sqlite/schema.go` |
 | L1 内存缓存 | `CompressionMetaCache`（包内类型） | 共用 | 共用 | `domains/session/v2/cache_v2.go` |
 | L1.5 文件缓存 | `FileCache`（包内类型） | 仅 lite 读路径使用 | 不使用 | `domains/session/v2/cache_v2_file.go` |

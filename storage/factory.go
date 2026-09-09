@@ -1,6 +1,6 @@
 // 本文件保留双模式存储的配置类型。
 // 存储工厂本体位于子包 storage/factory（github.com/kaixuan/llm-gateway-go/storage/factory）：
-// 各实现子包（storage/sqlite、storage/memory、storage/file）反向依赖根包获取
+// 各实现子包（storage/sqlite、storage/lite、storage/file）反向依赖根包获取
 // 接口与类型，根包若 import 实现包将构成 import cycle，因此工厂必须独立成包，
 // 依赖方向详见 storage/factory 包文档。
 package storage
