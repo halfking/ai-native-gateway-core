@@ -708,17 +708,54 @@ do_deploy() {
   # CGO-only 依赖（mattn/go-sqlite3、yalue/onnxruntime_go，见 Dockerfile
   # 2026-09-05 的 CGO_ENABLED=1 注）后，纯静态 CGO=0 构建必然失败（"build
   # constraints exclude all Go files"）。macOS 宿主机没有 linux 交叉 C
-  # 工具链，回退到 golang:1.27-alpine 容器内 CGO 构建，musl 产物可直接
-  # 跑在 154 的 alpine 运行时上（LLM_GATEWAY_BUILD_IMAGE 可覆盖）。
+  # 工具链，回退到 kx-base/golang:1.27-alpine-amd64 容器内 CGO 构建，
+  # musl 产物可直接跑在 154 的 alpine 运行时上（LLM_GATEWAY_BUILD_IMAGE 可覆盖）。
+  # 默认值 2026-09-09 改：原 golang:1.27-alpine 在离线 + Apple Silicon 上
+  # 会去 Docker Hub 拉 amd64 失败；kx-base/golang:1.27-alpine-amd64 在
+  # ~/work/docker-base-images/lang-base/ 与 ~/work/docker-base-image/lang-base/
+  # 都有离线 tar.gz，且已推 registry.itestu.cn/lang-base/kx-base-golang
+  # 兜底。重新构建/保存：~/work/docker-base-images/scripts/build-kx-base-golang-1.27-alpine.sh
   if ! CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o "$tmpbin" ./cmd/gateway; then
     command -v docker >/dev/null 2>&1 || {
       err "CGO=0 构建失败且 docker 不可用，无法回退容器 CGO 构建; refusing to continue with stale binary"
       exit 1
     }
-    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-golang:1.27-alpine}"
-    docker image inspect "$build_image" >/dev/null 2>&1 || docker pull "$build_image" >/dev/null \
-      || { err "CGO 回退需要镜像 $build_image 且拉取失败; refusing to continue"; exit 1; }
+    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27-alpine-amd64}"
+    # 解析顺序：docker image inspect → 离线 tar 自动 load → registry pull → 失败。
+    # Apple Silicon + 离线场景下默认镜像无法走 docker pull 拿到 linux/amd64，
+    # 必须先尝试 ~/work/{docker-base-images,docker-base-image}/lang-base/
+    # 下预烘焙的 tar.gz（见 ~/.agents/skills/kx-base-golang-build）。
+    if ! docker image inspect "$build_image" >/dev/null 2>&1; then
+      local loaded=0
+      for tar_dir in \
+        "$HOME/work/docker-base-images/lang-base" \
+        "$HOME/work/docker-base-image/lang-base"; do
+        local tar_file="${tar_dir}/kx-base-golang-1.27-alpine-amd64.tar.gz"
+        if [[ -f "$tar_file" ]]; then
+          log "本地镜像 $build_image 缺失, 尝试从 $tar_file load"
+          if gunzip -c "$tar_file" | docker load >/dev/null 2>&1 \
+            && docker tag kx-base/golang:1.27-alpine-amd64 "$build_image" 2>/dev/null \
+            && docker image inspect "$build_image" >/dev/null 2>&1; then
+            ok "已从离线 tar load $build_image"
+            loaded=1; break
+          fi
+        fi
+      done
+      if [[ "$loaded" -eq 0 ]]; then
+        # 兜底: registry.itestu.cn 上有同 tag 镜像 (2026-09-09 后)
+        local remote_image="registry.itestu.cn/lang-base/kx-base-golang:1.27-alpine-amd64"
+        log "本地/离线均不可用, 尝试从 $remote_image pull"
+        if docker pull "$remote_image" >/dev/null 2>&1 \
+          && docker tag "$remote_image" "$build_image" 2>/dev/null \
+          && docker image inspect "$build_image" >/dev/null 2>&1; then
+          ok "已从 $remote_image pull 并 tag 为 $build_image"
+        else
+          err "CGO 回退需要镜像 $build_image; 本地/离线/registry 均不可用; refusing to continue"
+          exit 1
+        fi
+      fi
+    fi
     local cgo_out="$PROJECT_ROOT/.build-local/seamless-binary"
     mkdir -p "$PROJECT_ROOT/.build-local/.gocache"
     log "CGO=0 构建失败，回退 $build_image 容器内 CGO 构建 (linux/amd64)"

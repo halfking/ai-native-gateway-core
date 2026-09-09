@@ -559,8 +559,14 @@ build_backend() {
     # yalue/onnxruntime_go，见 Dockerfile 2026-09-05 的 CGO_ENABLED=1 注），
     # 纯静态 CGO=0 构建自此后必然失败（"build constraints exclude all Go
     # files"）。宿主机不一定有 linux 交叉 C 工具链，因此回退到
-    # golang:1.27-alpine 容器内 CGO 构建：musl 产物可直接跑在默认
-    # alpine:3.22 运行时镜像上（LLM_GATEWAY_RUNTIME_IMAGE 可覆盖）。
+    # kx-base/golang:1.27-alpine-amd64 容器内 CGO 构建：musl 产物可直接
+    # 跑在默认 alpine:3.22 运行时镜像上（LLM_GATEWAY_RUNTIME_IMAGE 可覆盖）。
+    #
+    # 默认值 2026-09-09 改：原 golang:1.27-alpine 在离线 + Apple Silicon 上
+    # 会去 Docker Hub 拉 amd64 失败；kx-base/golang:1.27-alpine-amd64 在
+    # ~/work/docker-base-images/lang-base/ 与 ~/work/docker-base-image/lang-base/
+    # 都有离线 tar.gz，且已推 registry.itestu.cn/lang-base/kx-base-golang
+    # 兜底。重新构建/保存：~/work/docker-base-images/scripts/build-kx-base-golang-1.27-alpine.sh
     #
     # 2026-09-09 进一步加固：之前 docker run 的 stderr 被 '>/dev/null'
     # 吞掉，go build 失败时操作员看到的就是空的 bash 错误；现在每个
@@ -568,7 +574,7 @@ build_backend() {
     # 验证 cgo_out 真的写出来了，避免 mv 一个空文件（mv -f 找不到源
     # 时只 print 不返回 1，致命失败被静默吞掉）。
     need_cmd docker
-    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-golang:1.27-alpine}"
+    local build_image="${LLM_GATEWAY_BUILD_IMAGE:-kx-base/golang:1.27-alpine-amd64}"
     local cgo_log="$RUN_DIR/build-cgo.log"
     local cgo_pull_log="$RUN_DIR/build-cgo-pull.log"
     # Ensure we pull the correct platform image matching target architecture
@@ -594,11 +600,45 @@ build_backend() {
       need_pull=1
     fi
     if (( need_pull )); then
-      log "pulling build image $build_image for platform $docker_platform"
-      if ! docker pull --platform="$docker_platform" "$build_image" >/dev/null 2>"$cgo_pull_log"; then
-        printf '    [cgo-pull stderr follows]\n' >&2
-        sed 's/^/    /' "$cgo_pull_log" >&2 || true
-        die "CGO fallback needs image $build_image and it is not pullable (full stderr: $cgo_pull_log)"
+      # 解析顺序：离线 tar 自动 load (~/work/{docker-base-images,
+      # docker-base-image}/lang-base/kx-base-golang-1.27-alpine-amd64.tar.gz)
+      # → registry.itestu.cn pull → docker hub pull。Apple Silicon + 离线
+      # 场景下默认镜像无法走 docker hub 拿到对应平台，必须先尝试离线 tar。
+      # 见 ~/.agents/skills/kx-base-golang-build。
+      local loaded=0
+      local platform_tag=""
+      if [[ "$docker_platform" == "linux/amd64" ]]; then platform_tag="1.27-alpine-amd64"; else platform_tag="1.27-alpine-${target_arch}"; fi
+      for tar_dir in \
+        "$HOME/work/docker-base-images/lang-base" \
+        "$HOME/work/docker-base-image/lang-base"; do
+        local tar_file="${tar_dir}/kx-base-golang-${platform_tag}.tar.gz"
+        if [[ -f "$tar_file" ]]; then
+          log "尝试从 $tar_file load"
+          if gunzip -c "$tar_file" | docker load >/dev/null 2>&1 \
+            && docker tag "kx-base/golang:${platform_tag}" "$build_image" 2>/dev/null \
+            && docker image inspect "$build_image" >/dev/null 2>&1; then
+            ok "已从离线 tar load $build_image"
+            loaded=1; need_pull=0; break
+          fi
+        fi
+      done
+      if (( need_pull )); then
+        local remote_image="registry.itestu.cn/lang-base/kx-base-golang:${platform_tag}"
+        log "本地/离线均不可用, 尝试从 $remote_image pull (--platform=$docker_platform)"
+        if docker pull --platform="$docker_platform" "$remote_image" >/dev/null 2>"$cgo_pull_log" \
+          && docker tag "$remote_image" "$build_image" 2>/dev/null \
+          && docker image inspect "$build_image" >/dev/null 2>&1; then
+          ok "已从 $remote_image pull 并 tag 为 $build_image"
+          loaded=1; need_pull=0
+        fi
+      fi
+      if (( loaded == 0 )); then
+        log "falling back to docker pull $build_image for platform $docker_platform"
+        if ! docker pull --platform="$docker_platform" "$build_image" >/dev/null 2>"$cgo_pull_log"; then
+          printf '    [cgo-pull stderr follows]\n' >&2
+          sed 's/^/    /' "$cgo_pull_log" >&2 || true
+          die "CGO fallback needs image $build_image and it is not pullable (full stderr: $cgo_pull_log); also tried offline tar in ~/work/{docker-base-images,docker-base-image}/lang-base/ and registry.itestu.cn/lang-base/kx-base-golang"
+        fi
       fi
     fi
     local cgo_out="$PROJECT_ROOT/.build-local/gateway.build"
