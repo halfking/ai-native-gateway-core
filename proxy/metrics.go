@@ -40,6 +40,9 @@ type Metrics struct {
 	// Transport 连接池指标
 	transportCacheSize          prometheus.Gauge
 	transportInvalidationsTotal prometheus.Counter
+
+	// 自动切流指标（按来源：auto=后台探活触发 / forced=API 显式触发 / noop=无变化）。
+	autoSwapTotal *prometheus.CounterVec
 }
 
 // NewMetrics 在给定的 Registerer 上注册代理指标。reg 为 nil 时使用默认注册表。
@@ -135,6 +138,12 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 			Name: "llm_gateway_proxy_transport_invalidations_total",
 			Help: "Transport 连接池失效累计次数",
 		}),
+
+		// 自动切流指标
+		autoSwapTotal: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "llm_gateway_proxy_auto_swap_total",
+			Help: "代理自动/手动切流次数（按来源：auto / forced / noop）",
+		}, []string{"source"}),
 	}
 
 	// 注册现有指标
@@ -166,6 +175,9 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 	// 注册 Transport 连接池指标
 	m.transportCacheSize = registerOrGetGauge(reg, m.transportCacheSize)
 	m.transportInvalidationsTotal = registerOrGetCounter(reg, m.transportInvalidationsTotal)
+
+	// 注册自动切流指标
+	m.autoSwapTotal = registerOrGetCounterVec(reg, m.autoSwapTotal)
 
 	return m
 }
@@ -303,6 +315,14 @@ func (m *Metrics) SetTransportCacheSize(size int) {
 // IncTransportInvalidation 记录一次 Transport 连接池失效。
 func (m *Metrics) IncTransportInvalidation() {
 	m.transportInvalidationsTotal.Inc()
+}
+
+// IncAutoSwap 记录一次自动/手动切流。source ∈ {auto, forced, noop}。
+func (m *Metrics) IncAutoSwap(source string) {
+	if m == nil || m.autoSwapTotal == nil {
+		return
+	}
+	m.autoSwapTotal.WithLabelValues(source).Inc()
 }
 
 // truncateID 截取 ID 的前 n 位，避免高基数标签。

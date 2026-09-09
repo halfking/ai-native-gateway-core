@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -70,6 +71,28 @@ func marshalConfig(cfg map[string]interface{}) *string {
 	return &s
 }
 
+// normalizeRegions 把字符串切片规整成"去空白、去空、大写、保持顺序去重"，保证
+// 写入/读取一致。
+func normalizeRegions(in []string) []string {
+	if len(in) == 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, r := range in {
+		r = strings.TrimSpace(strings.ToUpper(r))
+		if r == "" {
+			continue
+		}
+		if _, ok := seen[r]; ok {
+			continue
+		}
+		seen[r] = struct{}{}
+		out = append(out, r)
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Subscription CRUD
 // ---------------------------------------------------------------------------
@@ -78,8 +101,8 @@ func marshalConfig(cfg map[string]interface{}) *string {
 func (s *PgStore) CreateSubscription(ctx context.Context, sub *Subscription) error {
 	const q = `
 		INSERT INTO proxy_subscriptions
-			(name, subscribe_url, status, node_count, priority, notes, last_fetch_status, last_error, last_fetch_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			(name, subscribe_url, status, node_count, priority, notes, last_fetch_status, last_error, last_fetch_at, banned_regions)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		RETURNING id, created_at, updated_at`
 
 	row := s.pool.QueryRow(ctx, q,
@@ -92,6 +115,7 @@ func (s *PgStore) CreateSubscription(ctx context.Context, sub *Subscription) err
 		sub.LastFetchStatus,
 		sub.LastError,
 		timePtrOrNil(sub.LastFetchAt),
+		normalizeRegions(sub.BannedRegions),
 	)
 	if err := row.Scan(&sub.ID, &sub.CreatedAt, &sub.UpdatedAt); err != nil {
 		return fmt.Errorf("proxy: create subscription: %w", err)
@@ -103,7 +127,7 @@ func (s *PgStore) CreateSubscription(ctx context.Context, sub *Subscription) err
 func (s *PgStore) GetSubscription(ctx context.Context, id int) (*Subscription, error) {
 	const q = `
 		SELECT id, name, subscribe_url, status, last_fetch_at, last_fetch_status,
-			last_error, node_count, priority, notes, created_at, updated_at
+			last_error, node_count, priority, notes, banned_regions, created_at, updated_at
 		FROM proxy_subscriptions
 		WHERE id = $1`
 
@@ -121,7 +145,7 @@ func (s *PgStore) GetSubscription(ctx context.Context, id int) (*Subscription, e
 func (s *PgStore) ListSubscriptions(ctx context.Context) ([]*Subscription, error) {
 	const q = `
 		SELECT id, name, subscribe_url, status, last_fetch_at, last_fetch_status,
-			last_error, node_count, priority, notes, created_at, updated_at
+			last_error, node_count, priority, notes, banned_regions, created_at, updated_at
 		FROM proxy_subscriptions
 		ORDER BY id`
 
@@ -145,8 +169,9 @@ func (s *PgStore) UpdateSubscription(ctx context.Context, sub *Subscription) err
 			last_fetch_status = $7,
 			last_error = $8,
 			last_fetch_at = $9,
+			banned_regions = $10,
 			updated_at = NOW()
-		WHERE id = $10`
+		WHERE id = $11`
 
 	_, err := s.pool.Exec(ctx, q,
 		sub.Name,
@@ -158,6 +183,7 @@ func (s *PgStore) UpdateSubscription(ctx context.Context, sub *Subscription) err
 		sub.LastFetchStatus,
 		sub.LastError,
 		timePtrOrNil(sub.LastFetchAt),
+		normalizeRegions(sub.BannedRegions),
 		sub.ID,
 	)
 	if err != nil {
@@ -192,8 +218,8 @@ func (s *PgStore) CreateNode(ctx context.Context, node *Node) error {
 
 	const q = `
 		INSERT INTO proxy_nodes
-			(subscription_id, name, protocol, server, port, username, password, config, location, status, health_check_url)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			(subscription_id, name, protocol, server, port, username, password, config, location, status, health_check_url, banned_regions)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, created_at, updated_at`
 
 	row := s.pool.QueryRow(ctx, q,
@@ -208,6 +234,7 @@ func (s *PgStore) CreateNode(ctx context.Context, node *Node) error {
 		node.Location,
 		node.Status,
 		node.HealthCheckURL,
+		normalizeRegions(node.BannedRegions),
 	)
 	if err := row.Scan(&node.ID, &node.CreatedAt, &node.UpdatedAt); err != nil {
 		return fmt.Errorf("proxy: create node: %w", err)
@@ -220,7 +247,7 @@ func (s *PgStore) GetNode(ctx context.Context, id int) (*Node, error) {
 	const q = `
 		SELECT id, subscription_id, name, protocol, server, port, username, password, config,
 			location, status, health_check_url, last_health_check_at, last_health_check_status,
-			response_time_ms, success_rate, consecutive_failures, created_at, updated_at
+			response_time_ms, success_rate, consecutive_failures, banned_regions, created_at, updated_at
 		FROM proxy_nodes
 		WHERE id = $1`
 
@@ -240,7 +267,7 @@ func (s *PgStore) ListNodes(ctx context.Context, subscriptionID *int) ([]*Node, 
 	q := `
 		SELECT id, subscription_id, name, protocol, server, port, username, password, config,
 			location, status, health_check_url, last_health_check_at, last_health_check_status,
-			response_time_ms, success_rate, consecutive_failures, created_at, updated_at
+			response_time_ms, success_rate, consecutive_failures, banned_regions, created_at, updated_at
 		FROM proxy_nodes`
 	args := []interface{}{}
 	if subscriptionID != nil {
@@ -285,8 +312,9 @@ func (s *PgStore) UpdateNode(ctx context.Context, node *Node) error {
 			response_time_ms = $14,
 			success_rate = $15,
 			consecutive_failures = $16,
+			banned_regions = $17,
 			updated_at = NOW()
-		WHERE id = $17`
+		WHERE id = $18`
 
 	_, err := s.pool.Exec(ctx, q,
 		node.SubscriptionID,
@@ -305,6 +333,7 @@ func (s *PgStore) UpdateNode(ctx context.Context, node *Node) error {
 		node.ResponseTimeMs,
 		node.SuccessRate,
 		node.ConsecutiveFailures,
+		normalizeRegions(node.BannedRegions),
 		node.ID,
 	)
 	if err != nil {
@@ -399,8 +428,8 @@ func (s *PgStore) RefreshSubscriptionNodes(ctx context.Context, subscriptionID i
 	// 2. 插入新节点
 	const insertQ = `
 		INSERT INTO proxy_nodes
-			(subscription_id, name, protocol, server, port, username, password, config, location, status, health_check_url)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			(subscription_id, name, protocol, server, port, username, password, config, location, status, health_check_url, banned_regions)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		RETURNING id, created_at, updated_at`
 
 	for _, node := range nodes {
@@ -425,6 +454,7 @@ func (s *PgStore) RefreshSubscriptionNodes(ctx context.Context, subscriptionID i
 			node.Location,
 			node.Status,
 			node.HealthCheckURL,
+			normalizeRegions(node.BannedRegions),
 		)
 		if err := row.Scan(&node.ID, &node.CreatedAt, &node.UpdatedAt); err != nil {
 			return fmt.Errorf("proxy: insert node %q in transaction: %w", node.Name, err)
@@ -544,6 +574,121 @@ func (s *PgStore) DeleteDomain(ctx context.Context, id int) error {
 }
 
 // ---------------------------------------------------------------------------
+// SelectionPolicy (proxy_selection_policy 单行表，id=1)
+// ---------------------------------------------------------------------------
+
+// GetSelectionPolicy 读取全局出口选择策略。表为空（迁移前启动）时返回默认值，
+// 保证调用方总能拿到可用值。
+func (s *PgStore) GetSelectionPolicy(ctx context.Context) (SelectionPolicy, error) {
+	const q = `
+		SELECT load_balance_strategy, location_affinity,
+		       auto_disable_threshold, auto_disable_enabled, auto_recover_enabled,
+		       swap_check_interval_ms, swap_failure_threshold
+		FROM proxy_selection_policy
+		WHERE id = 1`
+	row := s.pool.QueryRow(ctx, q)
+	var (
+		strategy string
+		affinity string
+		thresh   int
+		disable  bool
+		recover  bool
+		swapInt  int
+		swapThr  int
+	)
+	if err := row.Scan(&strategy, &affinity, &thresh, &disable, &recover, &swapInt, &swapThr); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DefaultSelectionPolicy(), nil
+		}
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: get selection policy: %w", err)
+	}
+	policy := DefaultSelectionPolicy()
+	// Validate and canonicalize loaded values; reject unknown/corrupt persisted data.
+	switch LoadBalanceStrategy(strategy) {
+	case StrategyBestOnly, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyLeastConnections, StrategyConsistentHash:
+		policy.LoadBalanceStrategy = LoadBalanceStrategy(strategy)
+	default:
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted load_balance_strategy %q", strategy)
+	}
+	switch LocationAffinityPolicy(affinity) {
+	case AffinityAny, AffinityPreferSame, AffinityRequireSame:
+		policy.LocationAffinity = LocationAffinityPolicy(affinity)
+	default:
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted location_affinity %q", affinity)
+	}
+	if thresh > 0 {
+		policy.AutoDisableThreshold = thresh
+	} else {
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted auto_disable_threshold %d", thresh)
+	}
+	policy.AutoDisableEnabled = disable
+	policy.AutoRecoverEnabled = recover
+	if swapInt >= 1000 {
+		policy.SwapCheckIntervalMs = swapInt
+	} else {
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted swap_check_interval_ms %d", swapInt)
+	}
+	if swapThr > 0 {
+		policy.SwapFailureThreshold = swapThr
+	} else {
+		return DefaultSelectionPolicy(), fmt.Errorf("proxy: invalid persisted swap_failure_threshold %d", swapThr)
+	}
+	return policy, nil
+}
+
+// UpsertSelectionPolicy 写入或覆盖（id=1）全局策略。
+func (s *PgStore) UpsertSelectionPolicy(ctx context.Context, p SelectionPolicy) error {
+	// Validate before persisting; the migration CHECK constraints will also reject
+	// invalid values, but explicit validation provides clearer error messages.
+	switch p.LoadBalanceStrategy {
+	case StrategyBestOnly, StrategyRoundRobin, StrategyWeightedRoundRobin, StrategyLeastConnections, StrategyConsistentHash:
+	default:
+		return fmt.Errorf("proxy: invalid load_balance_strategy %q", p.LoadBalanceStrategy)
+	}
+	switch p.LocationAffinity {
+	case AffinityAny, AffinityPreferSame, AffinityRequireSame:
+	default:
+		return fmt.Errorf("proxy: invalid location_affinity %q", p.LocationAffinity)
+	}
+	if p.AutoDisableThreshold <= 0 {
+		return fmt.Errorf("proxy: auto_disable_threshold must be > 0, got %d", p.AutoDisableThreshold)
+	}
+	if p.SwapCheckIntervalMs < 1000 {
+		return fmt.Errorf("proxy: swap_check_interval_ms must be >= 1000, got %d", p.SwapCheckIntervalMs)
+	}
+	if p.SwapFailureThreshold <= 0 {
+		return fmt.Errorf("proxy: swap_failure_threshold must be > 0, got %d", p.SwapFailureThreshold)
+	}
+	const q = `
+		INSERT INTO proxy_selection_policy
+			(id, load_balance_strategy, location_affinity,
+			 auto_disable_threshold, auto_disable_enabled, auto_recover_enabled,
+			 swap_check_interval_ms, swap_failure_threshold, updated_at)
+		VALUES (1, $1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (id) DO UPDATE SET
+			load_balance_strategy   = EXCLUDED.load_balance_strategy,
+			location_affinity       = EXCLUDED.location_affinity,
+			auto_disable_threshold  = EXCLUDED.auto_disable_threshold,
+			auto_disable_enabled   = EXCLUDED.auto_disable_enabled,
+			auto_recover_enabled   = EXCLUDED.auto_recover_enabled,
+			swap_check_interval_ms  = EXCLUDED.swap_check_interval_ms,
+			swap_failure_threshold  = EXCLUDED.swap_failure_threshold,
+			updated_at              = NOW()`
+	if _, err := s.pool.Exec(ctx, q,
+		string(p.LoadBalanceStrategy),
+		string(p.LocationAffinity),
+		p.AutoDisableThreshold,
+		p.AutoDisableEnabled,
+		p.AutoRecoverEnabled,
+		p.SwapCheckIntervalMs,
+		p.SwapFailureThreshold,
+	); err != nil {
+		return fmt.Errorf("proxy: upsert selection policy: %w", err)
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // 扫描辅助
 // ---------------------------------------------------------------------------
 
@@ -588,12 +733,13 @@ func (s *PgStore) scanSubscriptionRow(scan func(...interface{}) error) (*Subscri
 		nodeCount        int
 		priority         int
 		notes            *string
+		bannedRegions    []string
 		createdAt        time.Time
 		updatedAt        time.Time
 	)
 	if err := scan(
 		&id, &name, &subscribeURL, &status, &lastFetchAt, &lastFetchStatus,
-		&lastError, &nodeCount, &priority, &notes, &createdAt, &updatedAt,
+		&lastError, &nodeCount, &priority, &notes, &bannedRegions, &createdAt, &updatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -605,6 +751,7 @@ func (s *PgStore) scanSubscriptionRow(scan func(...interface{}) error) (*Subscri
 		Status:          status,
 		NodeCount:       nodeCount,
 		Priority:        priority,
+		BannedRegions:   normalizeRegions(bannedRegions),
 		CreatedAt:       createdAt,
 		UpdatedAt:       updatedAt,
 	}
@@ -671,13 +818,14 @@ func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 		responseTimeMs         *int
 		successRate            *float64
 		consecutiveFailures    *int
+		bannedRegions          []string
 		createdAt              time.Time
 		updatedAt              time.Time
 	)
 	if err := scan(
 		&id, &subscriptionID, &name, &protocol, &server, &port, &username, &password, &config,
 		&location, &status, &healthCheckURL, &lastHealthCheckAt, &lastHealthCheckStatus,
-		&responseTimeMs, &successRate, &consecutiveFailures, &createdAt, &updatedAt,
+		&responseTimeMs, &successRate, &consecutiveFailures, &bannedRegions, &createdAt, &updatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -691,6 +839,7 @@ func (s *PgStore) scanNodeRow(scan func(...interface{}) error) (*Node, error) {
 		Port:              port,
 		Status:            status,
 		HealthCheckURL:    healthCheckURL,
+		BannedRegions:     normalizeRegions(bannedRegions),
 		CreatedAt:         createdAt,
 		UpdatedAt:         updatedAt,
 	}
