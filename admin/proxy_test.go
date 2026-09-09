@@ -262,3 +262,28 @@ func TestProxyRoutesAuth(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyNewRoutesMethodEnforcement(t *testing.T) {
+	h := NewHandler(nil, "test-secret", nil)
+	tests := []struct {
+		path         string
+		wrongMethod  string
+		handler      func(http.ResponseWriter, *http.Request)
+	}{
+		{"/api/proxy/health-check-all", http.MethodGet, h.handleProxyHealthCheckAll},
+		{"/api/proxy/swap", http.MethodGet, h.handleProxySwap},
+		{"/api/proxy/policy", http.MethodDelete, h.handleProxyPolicy},
+		{"/api/proxy/regions", http.MethodPost, h.handleProxyRegions},
+	}
+	for _, tc := range tests {
+		t.Run(tc.path+" "+tc.wrongMethod, func(t *testing.T) {
+			req := httptest.NewRequest(tc.wrongMethod, tc.path, nil)
+			rec := httptest.NewRecorder()
+			tc.handler(rec, req)
+			if rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusServiceUnavailable {
+				t.Errorf("%s %s: got status %d, want 405 or 503; body: %s",
+					tc.wrongMethod, tc.path, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}

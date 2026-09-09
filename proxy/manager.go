@@ -18,6 +18,15 @@ type cacheEntry struct {
 	expiresAt time.Time
 }
 
+// activeSelection 记录 Manager 当前对外暴露的"已被选中的节点"，供 swap loop
+// 主动探测并按策略切换。subscriptionID=nil 表示全局选择。
+type activeSelection struct {
+	subscriptionID    *int
+	nodeID            int
+	lastProbeAt       time.Time
+	consecutiveFails  int
+}
+
 // Manager 代理管理器
 type Manager struct {
 	store   Store
@@ -33,7 +42,7 @@ type Manager struct {
 	// metrics 代理子系统 Prometheus 指标。
 	metrics *Metrics
 
-	// 内存缓存：subscription_id -> cacheEntry（阶段 2 优化：从 []*Node 改为带 TTL 的 cacheEntry）
+	// 内存缓存：subscription_id -> cacheEntry（（阶段 2 优化：从 []*Node 改为带 TTL 的 cacheEntry）
 	nodesCache sync.Map
 	// cacheLocks protects copy-on-write updates for one subscription.
 	cacheLocks sync.Map // subscription_id -> *sync.RWMutex
@@ -42,15 +51,25 @@ type Manager struct {
 	// nextHealthChecks is process-local scheduling state. It is intentionally not
 	// persisted: after restart, nodes are safely eligible for a fresh probe.
 	nextHealthChecks sync.Map // node_id -> time.Time
+	// subscriptionBans 缓存订阅级禁用地区，避免每次 selectNode 都查 DB。
+	subscriptionBans sync.Map // subscription_id -> []string
 
 	// 配置
-	autoRefreshInterval   time.Duration
-	healthCheckInterval   time.Duration
+	autoRefreshInterval  time.Duration
+	healthCheckInterval  time.Duration
 	unknownDomainStrategy string        // direct/proxy/probe
 	cacheTTL              time.Duration // 缓存 TTL，默认 5 分钟
 	autoDisableThreshold  int
 	autoDisableEnabled    bool
 	autoRecoverEnabled    bool
+
+	// 当前生效的全局选择策略（持久化到 proxy_selection_policy 表）。
+	selectionPolicy SelectionPolicy
+
+	// activeSelection 跟踪每个 subscription 的当前选中节点，供 swapLoop 主动探测。
+	activeMu  sync.Mutex
+	active    map[string]*activeSelection // key = subscriptionKey(subscriptionID)
+	activeSeq uint64                      // for stable IDs in metrics
 
 	// 审计修复 (2026-08-29)：问题 7 - 增加 context 用于优雅停止后台 goroutine。
 	ctx         context.Context
@@ -76,6 +95,8 @@ func NewManager(store Store, parser Parser, checker HealthChecker) *Manager {
 		loadBalancer:          NewLoadBalancer(StrategyBestOnly),
 		transportFactory:      factory,
 		metrics:               metrics,
+		selectionPolicy:       DefaultSelectionPolicy(),
+		active:                make(map[string]*activeSelection),
 		autoRefreshInterval:   time.Hour,
 		healthCheckInterval:   5 * time.Minute,
 		unknownDomainStrategy: "direct",
@@ -103,9 +124,10 @@ func (m *Manager) Start() {
 	}
 	// Keep lifecycleMu while adding workers so Stop cannot call Wait concurrently
 	// with WaitGroup.Add.
-	m.wg.Add(2)
+	m.wg.Add(3)
 	go m.refreshLoop()
 	go m.healthCheckLoop()
+	go m.swapLoop()
 }
 
 // Stop 停止定时任务，并关闭可关闭的检查器及 Transport 工厂。
@@ -166,6 +188,85 @@ func (m *Manager) SetAutoDisablePolicy(maxFailures int, autoDisable, autoRecover
 	m.selectionMu.Unlock()
 }
 
+// SetSelectionPolicy 替换当前生效的策略并下发到 LoadBalancer。
+// 调用方负责自行持久化到 proxy_selection_policy 表（admin handler 写入后调用）。
+func (m *Manager) SetSelectionPolicy(p SelectionPolicy) {
+	m.selectionMu.Lock()
+	defer m.selectionMu.Unlock()
+	m.selectionPolicy = p
+	m.autoDisableThreshold = p.AutoDisableThreshold
+	m.autoDisableEnabled = p.AutoDisableEnabled
+	m.autoRecoverEnabled = p.AutoRecoverEnabled
+	if m.loadBalancer == nil {
+		m.loadBalancer = NewLoadBalancer(p.LoadBalanceStrategy)
+	} else {
+		m.loadBalancer.SetStrategy(p.LoadBalanceStrategy)
+	}
+	m.loadBalancer.SetLocationAffinity(p.LocationAffinity)
+}
+
+// LoadSelectionPolicy 从 Store 读取全局策略并下发到 LoadBalancer。
+// 用于网关启动后从数据库恢复上次保存的策略。
+func (m *Manager) LoadSelectionPolicy(ctx context.Context) error {
+	pg, ok := m.store.(*PgStore)
+	if !ok {
+		return nil
+	}
+	policy, err := pg.GetSelectionPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	m.SetSelectionPolicy(policy)
+	return nil
+}
+
+// GetSelectionPolicy 返回当前生效的策略副本。
+func (m *Manager) GetSelectionPolicy() SelectionPolicy {
+	m.selectionMu.Lock()
+	defer m.selectionMu.Unlock()
+	return m.selectionPolicy
+}
+
+// SelectionState 汇总当前 Manager 选择/切流的可观测状态，给 admin UI 用。
+type SelectionState struct {
+	CurrentNodeID   int       `json:"current_node_id"`
+	CurrentSubID    *int      `json:"current_subscription_id,omitempty"`
+	LastProbeAt     time.Time `json:"last_probe_at"`
+	LastProbeOK     bool      `json:"last_probe_ok"`
+	ConsecutiveFails int      `json:"consecutive_fails"`
+	ProbeIntervalMs int       `json:"probe_interval_ms"`
+}
+
+// CurrentSelection 返回当前被选中的节点状态（活跃选择中最近一次）。
+func (m *Manager) CurrentSelection() *SelectionState {
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	var best *SelectionState
+	for _, sel := range m.active {
+		if sel == nil {
+			continue
+		}
+		state := &SelectionState{
+			CurrentNodeID:    sel.nodeID,
+			LastProbeAt:      sel.lastProbeAt,
+			ConsecutiveFails: sel.consecutiveFails,
+		}
+		if sel.subscriptionID != nil {
+			id := *sel.subscriptionID
+			state.CurrentSubID = &id
+		}
+		if best == nil || state.LastProbeAt.After(best.LastProbeAt) {
+			best = state
+		}
+	}
+	m.selectionMu.Lock()
+	if best != nil {
+		best.ProbeIntervalMs = m.selectionPolicy.SwapCheckIntervalMs
+	}
+	m.selectionMu.Unlock()
+	return best
+}
+
 // SelectBestNode selects the best available node and intentionally ignores the
 // configured load-balancing strategy for backward compatibility.
 func (m *Manager) SelectBestNode(ctx context.Context, subscriptionID *int) (*Node, error) {
@@ -217,13 +318,17 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 	}
 
 	m.selectionMu.Lock()
-	defer m.selectionMu.Unlock()
 	threshold := m.autoDisableThreshold
 	if threshold <= 0 {
 		threshold = 3
 	}
+	// 订阅层禁用地区：每个候选节点按其所在订阅取出订阅 banned，做并集过滤。
+	subscriptionBans := m.subscriptionBansSnapshot(subscriptionID)
+	m.selectionMu.Unlock()
+
 	activeNodes := make([]*Node, 0, len(candidates))
 	undialable := 0
+	regionBanned := 0
 	for _, node := range candidates {
 		if node == nil || node.Status != "active" || node.PasswordDecryptFailed || node.ConsecutiveFailures >= threshold {
 			continue
@@ -232,21 +337,33 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 			undialable++
 			continue
 		}
+		if IsRegionBanned(node.Location, subscriptionBans[node.SubscriptionID], node.BannedRegions) {
+			regionBanned++
+			continue
+		}
 		activeNodes = append(activeNodes, node)
 	}
 	if len(activeNodes) == 0 {
-		if undialable > 0 {
+		switch {
+		case regionBanned > 0:
+			result = "region_banned"
+			if m.metrics != nil {
+				m.metrics.IncEgressSelection("region_banned")
+			}
+			return nil, fmt.Errorf("all %d candidate(s) excluded by region ban (subscription banned regions: %v)", regionBanned, subscriptionBans)
+		case undialable > 0:
 			result = "no_dialable"
 			if m.metrics != nil {
 				m.metrics.IncEgressSelection("undialable")
 			}
 			return nil, fmt.Errorf("no dialable proxy node: %d node(s) use protocols Go cannot proxy directly (trojan/vless/vmess/ss); expose them via a local mihomo/xray http or socks5 bridge and register that endpoint instead", undialable)
+		default:
+			result = "no_available"
+			if m.metrics != nil {
+				m.metrics.IncEgressSelection("none")
+			}
+			return nil, fmt.Errorf("no available active nodes")
 		}
-		result = "no_available"
-		if m.metrics != nil {
-			m.metrics.IncEgressSelection("none")
-		}
-		return nil, fmt.Errorf("no available active nodes")
 	}
 
 	sort.Slice(activeNodes, func(i, j int) bool {
@@ -263,6 +380,7 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 	if bestOnly {
 		selected = activeNodes[0]
 	} else {
+		m.selectionMu.Lock()
 		if m.loadBalancer == nil {
 			m.loadBalancer = NewLoadBalancer(StrategyBestOnly)
 		}
@@ -275,6 +393,7 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 		} else {
 			selected = m.loadBalancer.SelectNode(activeNodes, subID, requestKey)
 		}
+		m.selectionMu.Unlock()
 	}
 	if selected == nil {
 		result = "no_available"
@@ -287,7 +406,70 @@ func (m *Manager) selectNode(ctx context.Context, subscriptionID *int, requestKe
 	if m.metrics != nil {
 		m.metrics.IncEgressSelection("dialable")
 	}
+	m.recordActiveSelection(subscriptionID, selected)
 	return selected, nil
+}
+
+// subscriptionBansSnapshot 返回 subscription_id → banned regions 的快照。
+// 调用方需持有 m.selectionMu。
+func (m *Manager) subscriptionBansSnapshot(filter *int) map[int][]string {
+	out := make(map[int][]string)
+	m.subscriptionBans.Range(func(key, value interface{}) bool {
+		subID, ok := key.(int)
+		if !ok {
+			return true
+		}
+		if filter != nil && subID != *filter {
+			// 当筛选特定订阅时，全局 cache 中的"其它订阅"也一起返回，便于
+			// 全局 SelectBestNode 调用方；不会泄漏禁用到候选之外。
+		}
+		if bans, ok := value.([]string); ok {
+			out[subID] = bans
+		}
+		return true
+	})
+	return out
+}
+
+// recordActiveSelection 记录一个被选中的节点，供 swapLoop 主动探测。
+func (m *Manager) recordActiveSelection(subscriptionID *int, node *Node) {
+	if node == nil {
+		return
+	}
+	key := selectionKey(subscriptionID)
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	cur, ok := m.active[key]
+	if !ok || cur.nodeID != node.ID {
+		cur = &activeSelection{
+			subscriptionID: subscriptionID,
+			nodeID:         node.ID,
+		}
+		m.active[key] = cur
+	}
+	if cur.lastProbeAt.IsZero() {
+		cur.lastProbeAt = time.Now()
+	}
+}
+
+// selectionKey 把 subscription_id 序列化为 map key（nil → "global"）。
+func selectionKey(subscriptionID *int) string {
+	if subscriptionID == nil {
+		return "global"
+	}
+	return fmt.Sprintf("sub:%d", *subscriptionID)
+}
+
+// forgetActiveSelection 在节点/订阅被删除时清理，避免 swapLoop 持续探测已删节点。
+func (m *Manager) forgetActiveSelection(subscriptionID *int, nodeID int) {
+	key := selectionKey(subscriptionID)
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	cur, ok := m.active[key]
+	if !ok || cur.nodeID != nodeID {
+		return
+	}
+	delete(m.active, key)
 }
 
 // RequiresProxy 判断域名是否需要代理
@@ -407,6 +589,9 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 		m.InvalidateTransport(subscriptionID)
 	}
 
+	// 6. 同步订阅级禁用地区到本地缓存，供 selectNode 直接使用。
+	m.refreshSubscriptionBans(ctx, subscriptionID)
+
 	// 记录成功指标
 	if m.metrics != nil {
 		m.metrics.ObserveSubscriptionRefresh("success", time.Since(startTime).Seconds())
@@ -414,6 +599,56 @@ func (m *Manager) RefreshSubscription(ctx context.Context, subscriptionID int) e
 
 	slog.Info("proxy: subscription refreshed", "id", subscriptionID, "node_count", len(nodes))
 	return nil
+}
+
+// refreshSubscriptionBans 把订阅级 banned_regions 同步到内存缓存。
+// LoadCache / RefreshSubscription / Subscription PUT 后调用，保证 selectNode
+// 看到最新的禁用集合，避免仍命中已被禁用的节点。
+func (m *Manager) refreshSubscriptionBans(ctx context.Context, subscriptionID int) {
+	sub, err := m.store.GetSubscription(ctx, subscriptionID)
+	if err != nil {
+		slog.Warn("proxy: refresh subscription bans: get failed", "id", subscriptionID, "error", err)
+		return
+	}
+	if len(sub.BannedRegions) == 0 {
+		m.subscriptionBans.Delete(subscriptionID)
+		return
+	}
+	bans := make([]string, len(sub.BannedRegions))
+	copy(bans, sub.BannedRegions)
+	m.subscriptionBans.Store(subscriptionID, bans)
+}
+
+// refreshAllSubscriptionBans 启动时或 ReloadCache 时调用，把全部订阅的
+// banned_regions 加载到内存。
+func (m *Manager) refreshAllSubscriptionBans(ctx context.Context) {
+	subs, err := m.store.ListSubscriptions(ctx)
+	if err != nil {
+		slog.Warn("proxy: refresh all subscription bans: list failed", "error", err)
+		return
+	}
+	seen := make(map[int]struct{}, len(subs))
+	for _, sub := range subs {
+		seen[sub.ID] = struct{}{}
+		if len(sub.BannedRegions) == 0 {
+			m.subscriptionBans.Delete(sub.ID)
+			continue
+		}
+		bans := make([]string, len(sub.BannedRegions))
+		copy(bans, sub.BannedRegions)
+		m.subscriptionBans.Store(sub.ID, bans)
+	}
+	// 清掉已删除订阅的残留。
+	m.subscriptionBans.Range(func(key, _ interface{}) bool {
+		id, ok := key.(int)
+		if !ok {
+			return true
+		}
+		if _, exists := seen[id]; !exists {
+			m.subscriptionBans.Delete(id)
+		}
+		return true
+	})
 }
 
 // healthCheckPolicy returns a consistent snapshot while callers may update the
@@ -498,7 +733,29 @@ func (m *Manager) HealthCheckNode(ctx context.Context, nodeID int) error {
 	// 更新缓存
 	m.updateNodeInCache(node)
 
+	// 把这次探活结果也回灌给 swap 状态。
+	subID := node.SubscriptionID
+	m.recordProbeResult(&subID, node.ID, err == nil)
+
 	return nil
+}
+
+// recordProbeResult 由 HealthCheckNode / swapLoop 调用，更新当前 active 状态的
+// 最近探测时间与连续失败计数。
+func (m *Manager) recordProbeResult(subscriptionID *int, nodeID int, ok bool) {
+	key := selectionKey(subscriptionID)
+	m.activeMu.Lock()
+	defer m.activeMu.Unlock()
+	cur, ok2 := m.active[key]
+	if !ok2 || cur.nodeID != nodeID {
+		return
+	}
+	cur.lastProbeAt = time.Now()
+	if ok {
+		cur.consecutiveFails = 0
+	} else {
+		cur.consecutiveFails++
+	}
 }
 
 // ReloadCache 重新从数据库加载节点缓存。
@@ -529,6 +786,8 @@ func (m *Manager) ReloadCache() error {
 			m.nodesCache.Delete(subID)
 			m.cacheLocks.Delete(subID)
 			m.forgetLoadBalancerState(subID)
+			m.subscriptionBans.Delete(subID)
+			m.forgetActiveSelection(&subID, -1)
 		}
 		return true
 	})
@@ -537,6 +796,33 @@ func (m *Manager) ReloadCache() error {
 	for subID, nodes := range nodesBySubscription {
 		m.setCacheWithTTL(subID, nodes, now)
 	}
+
+	// 重新加载订阅级禁用地区。
+	m.refreshAllSubscriptionBans(ctx)
+	// 清掉已不存在的节点的 active selection。
+	m.activeMu.Lock()
+	for key, sel := range m.active {
+		if sel == nil {
+			continue
+		}
+		if sel.subscriptionID != nil {
+			if _, exists := nodesBySubscription[*sel.subscriptionID]; !exists {
+				delete(m.active, key)
+				continue
+			}
+		}
+		found := false
+		for _, n := range nodes {
+			if n.ID == sel.nodeID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			delete(m.active, key)
+		}
+	}
+	m.activeMu.Unlock()
 
 	return nil
 }
@@ -578,6 +864,109 @@ func (m *Manager) GetProxyTransportForNode(subscriptionID *int, node *Node) (*ht
 	return m.transportFactory.Get(subID, proxyURLStr)
 }
 
+// ForceSwap 主动重选一次最优节点（不依赖外部触发）。如果发现更优选择则
+// 把对应的订阅 Transport 失效，下次请求会按新节点建立 Transport。
+// 返回重新选中的节点（可能与当前 active 相同）；无候选时返回 nil。
+func (m *Manager) ForceSwap(ctx context.Context, subscriptionID *int) (*Node, error) {
+	subID := 0
+	if subscriptionID != nil {
+		subID = *subscriptionID
+	}
+	candidate, err := m.SelectBestNode(ctx, subscriptionID)
+	if err != nil {
+		// 当前没有可用节点；清掉 active selection 即可。
+		key := selectionKey(subscriptionID)
+		m.activeMu.Lock()
+		delete(m.active, key)
+		m.activeMu.Unlock()
+		return nil, err
+	}
+	key := selectionKey(subscriptionID)
+	m.activeMu.Lock()
+	cur, existed := m.active[key]
+	m.active[key] = &activeSelection{
+		subscriptionID: subscriptionID,
+		nodeID:         candidate.ID,
+		lastProbeAt:    time.Now(),
+	}
+	m.activeMu.Unlock()
+	if existed && cur != nil && cur.nodeID != candidate.ID {
+		// 选中的节点变了 → 失效订阅 Transport，下次 GetProxyTransportForNode 会重建。
+		m.InvalidateTransport(subID)
+		if m.metrics != nil {
+			m.metrics.IncAutoSwap("forced")
+		}
+		slog.Info("proxy: forced swap", "from", cur.nodeID, "to", candidate.ID)
+	} else if m.metrics != nil {
+		m.metrics.IncAutoSwap("noop")
+	}
+	return candidate, nil
+}
+
+// HealthCheckAllNodesNow 在 HTTP 路径上供 admin "批量探活" 按钮使用；与
+// healthCheckAllNodes 逻辑一致，但只跑一次、不修改 nextHealthChecks 节流表。
+func (m *Manager) HealthCheckAllNodesNow(ctx context.Context) HealthCheckSummary {
+	return m.healthCheckAllNodesInner(ctx, true)
+}
+
+// HealthCheckSubscriptionNow 对单个订阅下全部可拨号节点做并发探活并写回。
+// 用于 admin UI 上的"对单个订阅批量探活"按钮。
+func (m *Manager) HealthCheckSubscriptionNow(ctx context.Context, subscriptionID int) (HealthCheckSummary, error) {
+	subID := subscriptionID
+	nodes, err := m.store.ListNodes(ctx, &subID)
+	if err != nil {
+		return HealthCheckSummary{}, fmt.Errorf("list nodes: %w", err)
+	}
+	var toCheck []*Node
+	summary := HealthCheckSummary{Total: len(nodes)}
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		if n.Status != "active" && n.Status != "unhealthy" {
+			continue
+		}
+		if !n.Dialable() {
+			summary.Skipped++
+			continue
+		}
+		toCheck = append(toCheck, n)
+	}
+	for res := range m.checker.CheckConcurrent(ctx, toCheck, 16) {
+		node, gerr := m.store.GetNode(ctx, res.NodeID)
+		if gerr != nil {
+			slog.Warn("proxy: health check subscription: get node failed", "node_id", res.NodeID, "error", gerr)
+			continue
+		}
+		m.applyHealthCheckResult(node, res.OK, res.Latency, res.CheckedAt)
+		if res.OK {
+			summary.OK++
+			summary.AvgMs += res.Latency
+			if res.Latency > summary.MaxMs {
+				summary.MaxMs = res.Latency
+			}
+		} else {
+			summary.Failed++
+		}
+		if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
+			slog.Warn("proxy: health check subscription: update node failed", "node_id", node.ID, "error", uerr)
+			continue
+		}
+		m.updateNodeInCache(node)
+		m.recordProbeResult(&subID, node.ID, res.OK)
+	}
+	if summary.OK > 0 {
+		summary.AvgMs /= summary.OK
+	}
+	if m.metrics != nil {
+		for i := 0; i < summary.Failed; i++ {
+			m.metrics.IncHealthFailure()
+		}
+		m.metrics.SetNodeCounts(summary.Total, summary.Total-summary.Skipped, summary.Total-summary.OK-summary.Skipped)
+	}
+	return summary, nil
+}
+
 // 内部方法
 
 func (m *Manager) refreshLoop() {
@@ -610,12 +999,107 @@ func (m *Manager) healthCheckLoop() {
 		case <-ticker.C:
 			// 使用带超时的 context，避免阻塞 stopCh
 			ctx, cancel := context.WithTimeout(m.ctx, 10*time.Minute)
-			m.healthCheckAllNodes(ctx)
+			m.healthCheckAllNodesInner(ctx, false)
 			cancel()
 		case <-m.stopCh:
 			return
 		case <-m.ctx.Done():
 			return
+		}
+	}
+}
+
+// swapLoop 周期性探测当前 active 节点；连续失败达到 SwapFailureThreshold 则
+// 触发 ForceSwap 让下个请求走新节点 + 失效订阅 Transport。
+func (m *Manager) swapLoop() {
+	defer m.wg.Done()
+	for {
+		m.selectionMu.Lock()
+		intervalMs := m.selectionPolicy.SwapCheckIntervalMs
+		threshold := m.selectionPolicy.SwapFailureThreshold
+		m.selectionMu.Unlock()
+		if intervalMs <= 0 {
+			intervalMs = 30000
+		}
+		if threshold <= 0 {
+			threshold = 2
+		}
+		select {
+		case <-time.After(time.Duration(intervalMs) * time.Millisecond):
+		case <-m.stopCh:
+			return
+		case <-m.ctx.Done():
+			return
+		}
+		m.runSwapTick(context.Background(), threshold)
+	}
+}
+
+// runSwapTick 执行一次 swap tick：对每个 active selection 做主动探测并按策略切流。
+func (m *Manager) runSwapTick(ctx context.Context, threshold int) {
+	m.activeMu.Lock()
+	if len(m.active) == 0 {
+		m.activeMu.Unlock()
+		return
+	}
+	pending := make([]*activeSelection, 0, len(m.active))
+	for _, sel := range m.active {
+		if sel != nil {
+			pending = append(pending, sel)
+		}
+	}
+	m.activeMu.Unlock()
+	for _, sel := range pending {
+		m.swapProbeOne(ctx, sel, threshold)
+	}
+}
+
+// swapProbeOne 对单个 active selection 做一次主动探测。
+func (m *Manager) swapProbeOne(ctx context.Context, sel *activeSelection, threshold int) {
+	if sel == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	node, err := m.store.GetNode(ctx, sel.nodeID)
+	if err != nil {
+		// 节点已删，清理。
+		m.forgetActiveSelection(sel.subscriptionID, sel.nodeID)
+		return
+	}
+	if !node.Dialable() {
+		return
+	}
+	if node.Status == "unhealthy" {
+		// 已被全局探活标记为 unhealthy：视为失败 1 次计入，连续达阈值即切流。
+		m.recordProbeResult(sel.subscriptionID, sel.nodeID, false)
+	} else {
+		latency, err := m.checker.Check(ctx, node)
+		m.applyHealthCheckResult(node, err == nil, latency, time.Now())
+		if uerr := m.store.UpdateNode(ctx, node); uerr == nil {
+			m.updateNodeInCache(node)
+		} else {
+			slog.Warn("proxy: swap probe: update node failed", "node_id", node.ID, "error", uerr)
+		}
+		m.recordProbeResult(sel.subscriptionID, sel.nodeID, err == nil)
+		if err != nil {
+			slog.Warn("proxy: swap probe failed",
+				"node", node.Name, "error", redactErr(err), "latency_ms", latency)
+		}
+	}
+
+	// 看看是否需要切流。
+	m.activeMu.Lock()
+	cur, ok := m.active[selectionKey(sel.subscriptionID)]
+	m.activeMu.Unlock()
+	if !ok || cur == nil || cur.nodeID != sel.nodeID {
+		return
+	}
+	if cur.consecutiveFails >= threshold {
+		if _, err := m.ForceSwap(ctx, sel.subscriptionID); err != nil {
+			slog.Warn("proxy: auto swap failed", "subscription_id", sel.subscriptionID, "error", err)
+		} else if m.metrics != nil {
+			m.metrics.IncAutoSwap("auto")
 		}
 	}
 }
@@ -648,6 +1132,12 @@ func (m *Manager) refreshAllSubscriptions(ctx context.Context) {
 }
 
 func (m *Manager) healthCheckAllNodes(ctx context.Context) {
+	m.healthCheckAllNodesInner(ctx, false)
+}
+
+// healthCheckAllNodesInner 是健康检查全节点的核心实现；forcible=true 时跳过
+// nextHealthChecks 节流，供 admin "批量探活"按钮使用。
+func (m *Manager) healthCheckAllNodesInner(ctx context.Context, forcible bool) HealthCheckSummary {
 	startTime := time.Now()
 	now := time.Now()
 
@@ -656,7 +1146,7 @@ func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 	allNodes, err := m.store.ListNodes(ctx, nil)
 	if err != nil {
 		slog.Error("proxy: failed to list all nodes for health check", "error", err)
-		return
+		return HealthCheckSummary{}
 	}
 
 	// 2. 过滤需要探活的节点（基于智能间隔），并按 ProxyURL 分组去重
@@ -685,9 +1175,11 @@ func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 			continue
 		}
 
-		if next, ok := m.nextHealthCheckAt(node.ID); ok && now.Before(next) {
-			skippedByInterval++
-			continue
+		if !forcible {
+			if next, ok := m.nextHealthCheckAt(node.ID); ok && now.Before(next) {
+				skippedByInterval++
+				continue
+			}
 		}
 
 		proxyURL := node.ProxyURL()
@@ -734,12 +1226,15 @@ func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 		"undialable_skipped", skippedUndialable,
 		"interval_skipped", skippedByInterval,
 		"healthy_to_check", healthyNodes,
-		"unhealthy_to_check", unhealthyNodes)
+		"unhealthy_to_check", unhealthyNodes,
+		"forcible", forcible)
+
+	summary := HealthCheckSummary{Total: totalNodes, Skipped: skippedUndialable}
 
 	// 如果没有需要探活的节点，直接返回
 	if len(uniqueNodes) == 0 {
 		slog.Debug("proxy: no nodes to health check at this time")
-		return
+		return summary
 	}
 
 	// 4. 并发探活去重后的节点
@@ -792,12 +1287,16 @@ func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 
 			if result.ok {
 				// 健康节点：10 分钟后再探活。
-				m.scheduleNextHealthCheck(node.ID, now.Add(10*time.Minute))
+				if !forcible {
+					m.scheduleNextHealthCheck(node.ID, now.Add(10*time.Minute))
+				}
 				successCount++
 
 			} else {
 				// 不健康节点：1 分钟后再探活（加快恢复检测）。
-				m.scheduleNextHealthCheck(node.ID, now.Add(time.Minute))
+				if !forcible {
+					m.scheduleNextHealthCheck(node.ID, now.Add(time.Minute))
+				}
 				failedCount++
 				if m.metrics != nil {
 					m.metrics.IncHealthFailure()
@@ -866,6 +1365,20 @@ func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 		m.metrics.SetNodeCounts(len(allNodes), dialableCount, unhealthyCount)
 	}
 
+	summary.OK = successCount
+	summary.Failed = failedCount
+	if successCount > 0 {
+		for _, g := range urlToGroup {
+			if r, ok := checkResults[g.nodes[0].ID]; ok && r.ok {
+				summary.AvgMs += r.latency
+				if r.latency > summary.MaxMs {
+					summary.MaxMs = r.latency
+				}
+			}
+		}
+		summary.AvgMs /= successCount
+	}
+
 	elapsed := time.Since(startTime)
 	slog.Info("proxy: global health check completed",
 		"total_nodes", totalNodes,
@@ -874,7 +1387,9 @@ func (m *Manager) healthCheckAllNodes(ctx context.Context) {
 		"interval_skipped", skippedByInterval,
 		"success", successCount,
 		"failed", failedCount,
-		"elapsed_ms", elapsed.Milliseconds())
+		"elapsed_ms", elapsed.Milliseconds(),
+		"forcible", forcible)
+	return summary
 }
 
 // HealthCheckSummary 一次订阅并发探活的汇总。
@@ -890,79 +1405,7 @@ type HealthCheckSummary struct {
 // HealthCheckSubscription 对单个订阅下的节点做并发探活，并把结果写回 Store 与缓存。
 // 相比逐节点串行（每次请求 + 100ms sleep），并发受限于并发度，100+ 节点整体耗时显著下降。
 func (m *Manager) HealthCheckSubscription(ctx context.Context, subscriptionID int) (HealthCheckSummary, error) {
-	var summary HealthCheckSummary
-	nodes, err := m.store.ListNodes(ctx, &subscriptionID)
-	if err != nil {
-		return summary, fmt.Errorf("list nodes: %w", err)
-	}
-
-	var toCheck []*Node
-	for _, n := range nodes {
-		if n.Status != "active" && n.Status != "unhealthy" {
-			continue
-		}
-		summary.Total++
-		if !n.Dialable() {
-			summary.Skipped++
-			continue
-		}
-		toCheck = append(toCheck, n)
-	}
-
-	for res := range m.checker.CheckConcurrent(ctx, toCheck, 16) {
-		node, gerr := m.store.GetNode(ctx, res.NodeID)
-		if gerr != nil {
-			slog.Warn("proxy: health check: get node failed", "node_id", res.NodeID, "error", gerr)
-			continue
-		}
-		if m.metrics != nil {
-			status := "failed"
-			if res.OK {
-				status = "success"
-				m.metrics.ObserveNodeResponseTime(float64(res.Latency))
-			}
-			m.metrics.IncHealthCheck(status)
-			m.metrics.ObserveHealthCheckDuration(float64(res.Latency) / 1000)
-		}
-		m.applyHealthCheckResult(node, res.OK, res.Latency, res.CheckedAt)
-		if res.OK {
-			summary.OK++
-			summary.AvgMs += res.Latency
-			if res.Latency > summary.MaxMs {
-				summary.MaxMs = res.Latency
-			}
-		} else {
-			summary.Failed++
-
-			if m.metrics != nil {
-				m.metrics.ObserveNodeConsecutiveFailures(node.ConsecutiveFailures)
-			}
-
-			slog.Warn("proxy: health check failed",
-				"node", node.Name, "error", redactErr(res.Err), "latency_ms", res.Latency)
-		}
-
-		if uerr := m.store.UpdateNode(ctx, node); uerr != nil {
-			slog.Warn("proxy: health check: update node failed", "node_id", node.ID, "error", uerr)
-			continue
-		}
-		m.updateNodeInCache(node)
-	}
-	if summary.OK > 0 {
-		summary.AvgMs /= summary.OK
-	}
-	// 指标：探活失败累计 + 节点计数（可拨号 = 总数 - 不可拨号跳过项）。
-	if m.metrics != nil {
-		for i := 0; i < summary.Failed; i++ {
-			m.metrics.IncHealthFailure()
-		}
-		dialable := summary.Total - summary.Skipped
-		if dialable < 0 {
-			dialable = 0
-		}
-		m.metrics.SetNodeCounts(summary.Total, dialable, summary.Total-summary.OK-summary.Skipped)
-	}
-	return summary, nil
+	return m.HealthCheckSubscriptionNow(ctx, subscriptionID)
 }
 
 // SanitizeSubscriptionError removes the complete subscription URL, including
@@ -1015,6 +1458,12 @@ func (m *Manager) loadAllNodesIntoCache() error {
 		m.setCacheWithTTL(subID, nodes, now)
 	}
 
+	// 启动时同步订阅级禁用地区。
+	m.refreshAllSubscriptionBans(ctx)
+	// 启动时如果 DB 中已有策略，则加载。
+	if err := m.LoadSelectionPolicy(ctx); err != nil {
+		slog.Warn("proxy: load selection policy on start", "error", err)
+	}
 	return nil
 }
 
@@ -1025,7 +1474,7 @@ func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) bo
 		return false
 	}
 
-	// 审计修复 (2026-09-01 P2)：订阅刷新后节点集为空（例如上游清空了节点列表）
+	// 审计修复 (2026-09-01 P2)：订阅刷新后节点集为空（例如上游已删了节点列表）
 	// 时，同步丢弃该订阅的负载均衡游标。否则 roundRobinIndex/weightedCurrent
 	// 中该订阅的条目只增不减，长期运行下累积泄漏。
 	if len(nodes) == 0 {
@@ -1042,6 +1491,8 @@ func (m *Manager) loadNodesIntoCache(ctx context.Context, subscriptionID int) bo
 	}
 
 	m.setCacheWithTTL(subscriptionID, nodes, time.Now())
+	// 顺手刷新 banned 缓存。
+	m.refreshSubscriptionBans(ctx, subscriptionID)
 	return true
 }
 
@@ -1144,6 +1595,9 @@ func cloneNode(node *Node) *Node {
 		return nil
 	}
 	cloned := *node
+	if node.BannedRegions != nil {
+		cloned.BannedRegions = append([]string(nil), node.BannedRegions...)
+	}
 	cloned.Config = cloneConfig(node.Config)
 	return &cloned
 }
@@ -1233,4 +1687,99 @@ func extractDomain(rawURL string) string {
 		return ""
 	}
 	return u.Hostname()
+}
+
+// RegionStats 按地区汇总的可观测统计。
+type RegionStats struct {
+	Region         string  `json:"region"`
+	Total          int     `json:"total"`
+	Dialable       int     `json:"dialable"`
+	Active         int     `json:"active"`
+	Unhealthy      int     `json:"unhealthy"`
+	Banned         int     `json:"banned"`           // 当前被订阅+节点禁用地区命中的节点数
+	AvgLatencyMs   int     `json:"avg_latency_ms"`   // 成功探活的平均响应时间（毫秒）
+	BestLatencyMs  int     `json:"best_latency_ms"`
+	BestNodeID     int     `json:"best_node_id"`
+	BestNodeName   string  `json:"best_node_name"`
+}
+
+// RegionStatsReport 返回按地区分组的节点健康快照，供 admin UI 的"地区分布"视图。
+func (m *Manager) RegionStatsReport(ctx context.Context) ([]RegionStats, error) {
+	nodes, err := m.store.ListNodes(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list nodes: %w", err)
+	}
+	m.selectionMu.Lock()
+	bansSnapshot := m.subscriptionBansSnapshot(nil)
+	m.selectionMu.Unlock()
+
+	type bucket struct {
+		stats RegionStats
+	}
+	buckets := make(map[string]*bucket)
+	order := make([]string, 0)
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		region := n.Location
+		if region == "" {
+			region = "(unknown)"
+		}
+		b, ok := buckets[region]
+		if !ok {
+			b = &bucket{stats: RegionStats{Region: region}}
+			buckets[region] = b
+			order = append(order, region)
+		}
+		b.stats.Total++
+		if n.Dialable() {
+			b.stats.Dialable++
+		}
+		switch n.Status {
+		case "active":
+			b.stats.Active++
+		case "unhealthy":
+			b.stats.Unhealthy++
+		}
+		if IsRegionBanned(n.Location, bansSnapshot[n.SubscriptionID], n.BannedRegions) {
+			b.stats.Banned++
+		}
+		if n.LastHealthCheckStatus == "success" && n.ResponseTimeMs > 0 {
+			if b.stats.BestLatencyMs == 0 || n.ResponseTimeMs < b.stats.BestLatencyMs {
+				b.stats.BestLatencyMs = n.ResponseTimeMs
+				b.stats.BestNodeID = n.ID
+				b.stats.BestNodeName = n.Name
+			}
+		}
+	}
+	// 计算平均。
+	for _, region := range order {
+		b := buckets[region]
+		var sum, count int
+		for _, n := range nodes {
+			if n == nil {
+				continue
+			}
+			eff := n.Location
+			if eff == "" {
+				eff = "(unknown)"
+			}
+			if eff != region {
+				continue
+			}
+			if n.LastHealthCheckStatus == "success" && n.ResponseTimeMs > 0 {
+				sum += n.ResponseTimeMs
+				count++
+			}
+		}
+		if count > 0 {
+			b.stats.AvgLatencyMs = sum / count
+		}
+	}
+	out := make([]RegionStats, 0, len(order))
+	for _, region := range order {
+		out = append(out, buckets[region].stats)
+	}
+	return out, nil
 }

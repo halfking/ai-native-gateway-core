@@ -76,6 +76,7 @@ type proxySubscriptionView struct {
 	LastError       string     `json:"last_error"`
 	NodeCount       int        `json:"node_count"`
 	Priority        int        `json:"priority"`
+	BannedRegions   []string   `json:"banned_regions"`
 	Notes           string     `json:"notes"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
@@ -112,6 +113,7 @@ func toProxySubscriptionView(s *proxy.Subscription) proxySubscriptionView {
 		LastError:       proxy.SanitizeSubscriptionError(s.LastError, s.SubscribeURL),
 		NodeCount:       s.NodeCount,
 		Priority:        s.Priority,
+		BannedRegions:   normalizeRegionList(s.BannedRegions),
 		Notes:           s.Notes,
 		CreatedAt:       s.CreatedAt,
 		UpdatedAt:       s.UpdatedAt,
@@ -132,15 +134,16 @@ func toProxySubscriptionViews(subs []*proxy.Subscription) []proxySubscriptionVie
 type proxyNodeView struct {
 	ID                    int        `json:"id"`
 	SubscriptionID        int        `json:"subscription_id"`
-	Name                  string     `json:"name"`
-	Protocol              string     `json:"protocol"`
-	Server                string     `json:"server"`
-	Port                  int        `json:"port"`
-	Username              string     `json:"username,omitempty"`
-	HasPassword           bool       `json:"has_password"`
-	Dialable              bool       `json:"dialable"`
-	Location              string     `json:"location,omitempty"`
-	Status                string     `json:"status"`
+	Name        string                 `json:"name"`
+	Protocol    string                 `json:"protocol"`
+	Server      string                 `json:"server"`
+	Port        int                    `json:"port"`
+	Username    string                 `json:"username,omitempty"`
+	HasPassword bool                   `json:"has_password"`
+	Dialable    bool                   `json:"dialable"`
+	Location    string                 `json:"location,omitempty"`
+	BannedRegions []string              `json:"banned_regions"`
+	Status      string                 `json:"status"`
 	HealthCheckURL        string     `json:"health_check_url,omitempty"`
 	LastHealthCheckAt     *time.Time `json:"last_health_check_at"`
 	LastHealthCheckStatus string     `json:"last_health_check_status,omitempty"`
@@ -167,6 +170,7 @@ func toProxyNodeView(n *proxy.Node) proxyNodeView {
 		HasPassword:           n.Password != "",
 		Dialable:              n.Dialable(),
 		Location:              n.Location,
+		BannedRegions:         normalizeRegionList(n.BannedRegions),
 		Status:                n.Status,
 		HealthCheckURL:        n.HealthCheckURL,
 		LastHealthCheckAt:     lastHealthCheckAt,
@@ -233,6 +237,15 @@ func (h *Handler) handleProxySubscriptions(w http.ResponseWriter, r *http.Reques
 		h.refreshProxySubscription(w, r, id)
 		return
 	}
+	// /api/proxy/subscriptions/{id}/health-check  POST
+	if len(parts) == 2 && parts[1] == "health-check" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.healthCheckProxySubscription(w, r, id)
+		return
+	}
 	if len(parts) != 1 {
 		writeError(w, http.StatusNotFound, "unknown proxy subscription route")
 		return
@@ -292,6 +305,15 @@ func (h *Handler) handleProxyNodes(w http.ResponseWriter, r *http.Request) {
 		h.healthCheckProxyNode(w, r, id)
 		return
 	}
+	// /api/proxy/nodes/{id}/region-ban  PUT (覆盖节点层禁用地区)
+	if len(parts) == 2 && parts[1] == "region-ban" {
+		if r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.handleProxyNodeRegionBan(w, r, id)
+		return
+	}
 	if len(parts) != 1 {
 		writeError(w, http.StatusNotFound, "unknown proxy node route")
 		return
@@ -322,11 +344,12 @@ func (h *Handler) listProxySubscriptions(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name         string `json:"name"`
-		SubscribeURL string `json:"subscribe_url"`
-		Priority     int    `json:"priority"`
-		Notes        string `json:"notes"`
-		Status       string `json:"status"`
+		Name         string   `json:"name"`
+		SubscribeURL string   `json:"subscribe_url"`
+		Priority     int      `json:"priority"`
+		Notes        string   `json:"notes"`
+		Status       string   `json:"status"`
+		BannedRegions []string `json:"banned_regions"`
 	}
 	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
@@ -353,15 +376,20 @@ func (h *Handler) createProxySubscription(w http.ResponseWriter, r *http.Request
 
 	_, store := h.proxyRuntime()
 	sub := &proxy.Subscription{
-		Name:         req.Name,
-		SubscribeURL: req.SubscribeURL,
-		Status:       status,
-		Priority:     req.Priority,
-		Notes:        req.Notes,
+		Name:          req.Name,
+		SubscribeURL:  req.SubscribeURL,
+		Status:        status,
+		Priority:      req.Priority,
+		Notes:         req.Notes,
+		BannedRegions: normalizeRegionList(req.BannedRegions),
 	}
 	if err := store.CreateSubscription(r.Context(), sub); err != nil {
 		writeError(w, http.StatusInternalServerError, "create subscription: "+err.Error())
 		return
+	}
+	// 同步订阅层禁用地区到 manager 缓存。
+	if mgr, _ := h.proxyRuntime(); mgr != nil {
+		mgr.ReloadCache()
 	}
 	writeJSON(w, http.StatusCreated, toProxySubscriptionView(sub))
 }
@@ -378,18 +406,19 @@ func (h *Handler) getProxySubscription(w http.ResponseWriter, r *http.Request, i
 
 func (h *Handler) updateProxySubscription(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		Name         *string `json:"name"`
-		SubscribeURL *string `json:"subscribe_url"`
-		Status       *string `json:"status"`
-		Priority     *int    `json:"priority"`
-		Notes        *string `json:"notes"`
+		Name          *string   `json:"name"`
+		SubscribeURL  *string   `json:"subscribe_url"`
+		Status        *string   `json:"status"`
+		Priority      *int      `json:"priority"`
+		Notes         *string   `json:"notes"`
+		BannedRegions *[]string `json:"banned_regions"`
 	}
 	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 
-	_, store := h.proxyRuntime()
+	mgr, store := h.proxyRuntime()
 	sub, err := store.GetSubscription(r.Context(), id)
 	if err != nil {
 		writeProxyLookupError(w, err, "subscription")
@@ -426,10 +455,20 @@ func (h *Handler) updateProxySubscription(w http.ResponseWriter, r *http.Request
 	if req.Notes != nil {
 		sub.Notes = *req.Notes
 	}
+	if req.BannedRegions != nil {
+		sub.BannedRegions = normalizeRegionList(*req.BannedRegions)
+	}
 
 	if err := store.UpdateSubscription(r.Context(), sub); err != nil {
 		writeError(w, http.StatusInternalServerError, "update subscription: "+err.Error())
 		return
+	}
+	// 刷新缓存，让 selectNode 立即看到新的禁用地区。
+	if mgr != nil {
+		if err := mgr.ReloadCache(); err != nil {
+			writeError(w, http.StatusInternalServerError, "reload cache: "+err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, toProxySubscriptionView(sub))
 }
@@ -570,19 +609,20 @@ func (h *Handler) listProxyNodes(w http.ResponseWriter, r *http.Request) {
 }
 
 // createProxyNode 手工登记节点。最主要的用途是登记本地 mihomo/xray 网桥入口
-// （protocol=http/socks5, server=127.0.0.1, port=7897），让 trojan/vless 订阅可用。
+// （protocol=http/socks5, server=127.0.0.1, port=7897），），让 trojan/vless 订阅可用。
 func (h *Handler) createProxyNode(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SubscriptionID int    `json:"subscription_id"`
-		Name           string `json:"name"`
-		Protocol       string `json:"protocol"`
-		Server         string `json:"server"`
-		Port           int    `json:"port"`
-		Username       string `json:"username"`
-		Password       string `json:"password"`
-		Location       string `json:"location"`
-		HealthCheckURL string `json:"health_check_url"`
-		Status         string `json:"status"`
+		SubscriptionID int      `json:"subscription_id"`
+		Name           string   `json:"name"`
+		Protocol       string   `json:"protocol"`
+		Server         string   `json:"server"`
+		Port           int      `json:"port"`
+		Username       string   `json:"username"`
+		Password       string   `json:"password"`
+		Location       string   `json:"location"`
+		BannedRegions  []string `json:"banned_regions"`
+		HealthCheckURL string   `json:"health_check_url"`
+		Status         string   `json:"status"`
 	}
 	if err := readJSONRequired(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
@@ -635,6 +675,7 @@ func (h *Handler) createProxyNode(w http.ResponseWriter, r *http.Request) {
 		Username:       req.Username,
 		Password:       req.Password,
 		Location:       req.Location,
+		BannedRegions:  normalizeRegionList(req.BannedRegions),
 		HealthCheckURL: healthCheckURL,
 		Status:         status,
 	}
@@ -734,6 +775,251 @@ func (h *Handler) healthCheckProxyNode(w http.ResponseWriter, r *http.Request, i
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// healthCheckProxySubscription POST /api/proxy/subscriptions/{id}/health-check
+// 对单个订阅下全部可拨号节点做并发探活（不依赖智能间隔，立即探测）。
+func (h *Handler) healthCheckProxySubscription(w http.ResponseWriter, r *http.Request, id int) {
+	mgr, store := h.proxyRuntime()
+	if mgr == nil || store == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
+	if _, err := store.GetSubscription(r.Context(), id); err != nil {
+		writeProxyLookupError(w, err, "subscription")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	summary, err := mgr.HealthCheckSubscriptionNow(ctx, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "health check subscription: "+err.Error())
+		return
+	}
+	_ = mgr.ReloadCache()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"subscription_id":  id,
+		"total":            summary.Total,
+		"ok_count":         summary.OK,
+		"failed_count":     summary.Failed,
+		"skipped":          summary.Skipped,
+		"avg_latency_ms":   summary.AvgMs,
+		"max_latency_ms":   summary.MaxMs,
+	})
+}
+
+// handleProxyHealthCheckAll POST /api/proxy/health-check-all
+// 立即对所有节点做并发探活，跳过智能间隔节流；适合 admin "立即重新探活"按钮。
+func (h *Handler) handleProxyHealthCheckAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mgr, _ := h.proxyRuntime()
+	if mgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	summary := mgr.HealthCheckAllNodesNow(ctx)
+	_ = mgr.ReloadCache()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"total":           summary.Total,
+		"ok_count":        summary.OK,
+		"failed_count":    summary.Failed,
+		"skipped":         summary.Skipped,
+		"avg_latency_ms":  summary.AvgMs,
+		"max_latency_ms":  summary.MaxMs,
+	})
+}
+
+// handleProxySwap POST /api/proxy/swap  强制重新选择最优节点，可选 body {"subscription_id":N}
+func (h *Handler) handleProxySwap(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mgr, _ := h.proxyRuntime()
+	if mgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
+	var req struct {
+		SubscriptionID *int `json:"subscription_id"`
+	}
+	_ = readJSON(r, &req)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	node, err := mgr.ForceSwap(ctx, req.SubscriptionID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "force swap: "+err.Error())
+		return
+	}
+	resp := map[string]any{
+		"ok":           true,
+		"selected":     toProxyNodeView(node),
+		"swap_state":   mgr.CurrentSelection(),
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleProxyPolicy dispatches GET/PUT to canonical /api/proxy/policy path.
+// GET returns current policy + swap state; PUT updates policy and persists to DB.
+func (h *Handler) handleProxyPolicy(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.handleProxyGetPolicy(w, r)
+	case http.MethodPut:
+		h.handleProxySetPolicy(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+// handleProxyGetPolicy GET /api/proxy/policy  返回当前策略 + 切流状态。
+func (h *Handler) handleProxyGetPolicy(w http.ResponseWriter, r *http.Request) {
+	mgr, _ := h.proxyRuntime()
+	if mgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":               true,
+		"policy":           mgr.GetSelectionPolicy(),
+		"swap_state":       mgr.CurrentSelection(),
+	})
+}
+
+// handleProxySetPolicy PUT /api/proxy/policy  更新策略并持久化到 DB。
+func (h *Handler) handleProxySetPolicy(w http.ResponseWriter, r *http.Request) {
+	mgr, store := h.proxyRuntime()
+	if mgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
+	var req struct {
+		LoadBalanceStrategy  string `json:"load_balance_strategy"`
+		LocationAffinity     string `json:"location_affinity"`
+		AutoDisableThreshold int    `json:"auto_disable_threshold"`
+		AutoDisableEnabled   *bool  `json:"auto_disable_enabled"`
+		AutoRecoverEnabled   *bool  `json:"auto_recover_enabled"`
+		SwapCheckIntervalMs  int    `json:"swap_check_interval_ms"`
+		SwapFailureThreshold int    `json:"swap_failure_threshold"`
+	}
+	if err := readJSONRequired(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	current := mgr.GetSelectionPolicy()
+	policy := current
+	if req.LoadBalanceStrategy != "" {
+		switch proxy.LoadBalanceStrategy(req.LoadBalanceStrategy) {
+		case proxy.StrategyBestOnly, proxy.StrategyRoundRobin, proxy.StrategyWeightedRoundRobin,
+			proxy.StrategyLeastConnections, proxy.StrategyConsistentHash:
+			policy.LoadBalanceStrategy = proxy.LoadBalanceStrategy(req.LoadBalanceStrategy)
+		default:
+			writeError(w, http.StatusBadRequest, "unknown load_balance_strategy")
+			return
+		}
+	}
+	if req.LocationAffinity != "" {
+		switch proxy.LocationAffinityPolicy(req.LocationAffinity) {
+		case proxy.AffinityAny, proxy.AffinityPreferSame, proxy.AffinityRequireSame:
+			policy.LocationAffinity = proxy.LocationAffinityPolicy(req.LocationAffinity)
+		default:
+			writeError(w, http.StatusBadRequest, "unknown location_affinity")
+			return
+		}
+	}
+	if req.AutoDisableThreshold > 0 {
+		policy.AutoDisableThreshold = req.AutoDisableThreshold
+	}
+	if req.AutoDisableEnabled != nil {
+		policy.AutoDisableEnabled = *req.AutoDisableEnabled
+	}
+	if req.AutoRecoverEnabled != nil {
+		policy.AutoRecoverEnabled = *req.AutoRecoverEnabled
+	}
+	if req.SwapCheckIntervalMs > 0 {
+		if req.SwapCheckIntervalMs < 1000 {
+			writeError(w, http.StatusBadRequest, "swap_check_interval_ms must be >= 1000")
+			return
+		}
+		policy.SwapCheckIntervalMs = req.SwapCheckIntervalMs
+	}
+	if req.SwapFailureThreshold > 0 {
+		policy.SwapFailureThreshold = req.SwapFailureThreshold
+	}
+	// 持久化到 DB。
+	if store != nil {
+		if err := store.UpsertSelectionPolicy(r.Context(), policy); err != nil {
+			writeError(w, http.StatusInternalServerError, "persist policy: "+err.Error())
+			return
+		}
+	}
+	mgr.SetSelectionPolicy(policy)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "policy": policy})
+}
+
+// handleProxyRegions GET /api/proxy/regions  返回按地区聚合的统计。
+func (h *Handler) handleProxyRegions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mgr, _ := h.proxyRuntime()
+	if mgr == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
+	regions, err := mgr.RegionStatsReport(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "region stats: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": regions, "total": len(regions)})
+}
+
+// handleProxyNodeRegionBan PUT /api/proxy/nodes/{id}/region-ban  覆盖节点层禁用地区。
+func (h *Handler) handleProxyNodeRegionBan(w http.ResponseWriter, r *http.Request, id int) {
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	mgr, store := h.proxyRuntime()
+	if mgr == nil || store == nil {
+		writeError(w, http.StatusServiceUnavailable, "proxy runtime not configured")
+		return
+	}
+	node, err := store.GetNode(r.Context(), id)
+	if err != nil {
+		writeProxyLookupError(w, err, "node")
+		return
+	}
+	var req struct {
+		BannedRegions []string `json:"banned_regions"`
+	}
+	if err := readJSONRequired(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	node.BannedRegions = normalizeRegionList(req.BannedRegions)
+	if err := store.UpdateNode(r.Context(), node); err != nil {
+		writeError(w, http.StatusInternalServerError, "update node: "+err.Error())
+		return
+	}
+	if err := mgr.ReloadCache(); err != nil {
+		writeError(w, http.StatusInternalServerError, "reload cache: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true,
+		"id": id,
+		"banned_regions": node.BannedRegions,
+	})
+}
+
 // ── 汇总状态 ──────────────────────────────────────────────────────────────
 
 func (h *Handler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
@@ -803,6 +1089,14 @@ func (h *Handler) handleProxyStatus(w http.ResponseWriter, r *http.Request) {
 	} else {
 		resp["selected_node"] = toProxyNodeView(best)
 	}
+	if regions, rerr := mgr.RegionStatsReport(ctx); rerr == nil {
+		resp["regions"] = regions
+	} else {
+		resp["regions"] = []proxy.RegionStats{}
+		resp["regions_error"] = rerr.Error()
+	}
+	resp["policy"] = mgr.GetSelectionPolicy()
+	resp["swap_state"] = mgr.CurrentSelection()
 	if warn := undialableWarning(len(nodes), dialable); warn != "" {
 		resp["warning"] = warn
 	}
@@ -855,6 +1149,31 @@ func validateSubscribeURL(raw string) error {
 		return errors.New("subscribe_url must include a host")
 	}
 	return nil
+}
+
+// normalizeRegionList 规整地区码切片：去空白 + 转大写 + 去重 + 保序。
+// 与 proxy.normalizeRegions 行为一致，但 admin 不应反向引用 proxy 私有函数。
+func normalizeRegionList(in []string) []string {
+	if in == nil {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, r := range in {
+		r = strings.TrimSpace(strings.ToUpper(r))
+		if r == "" {
+			continue
+		}
+		if _, ok := seen[r]; ok {
+			continue
+		}
+		seen[r] = struct{}{}
+		out = append(out, r)
+	}
+	if len(out) == 0 {
+		return []string{}
+	}
+	return out
 }
 
 func writeProxyLookupError(w http.ResponseWriter, err error, kind string) {
