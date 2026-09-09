@@ -30,9 +30,12 @@ type Subscription struct {
 	LastError       string    `json:"last_error"`
 	NodeCount       int       `json:"node_count"`
 	Priority        int       `json:"priority"`
-	Notes           string    `json:"notes"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	// BannedRegions 是订阅层禁用的地区码集合（如 {US,JP}）。其下节点的 Location
+	// 若落入该集合，则在出口选择阶段被过滤掉，用于把"地区规避"作为订阅级策略。
+	BannedRegions []string `json:"banned_regions"`
+	Notes         string   `json:"notes"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // Node 代理节点
@@ -47,7 +50,10 @@ type Node struct {
 	Password              string                 `json:"password,omitempty"` // 已加密
 	Config                map[string]interface{} `json:"config,omitempty"`
 	Location              string                 `json:"location,omitempty"`
-	Status                string                 `json:"status"` // active/disabled/unhealthy
+	// BannedRegions 是节点层禁用的地区码集合；与 Subscription.BannedRegions 取并集。
+	// 出口选择时若节点 Location 命中其中之一，则被过滤。
+	BannedRegions []string               `json:"banned_regions"`
+	Status        string                 `json:"status"` // active/disabled/unhealthy
 	HealthCheckURL        string                 `json:"health_check_url"`
 	LastHealthCheckAt     time.Time              `json:"last_health_check_at"`
 	LastHealthCheckStatus string                 `json:"last_health_check_status"` // success/failed/timeout
@@ -150,4 +156,51 @@ type HealthChecker interface {
 	Check(ctx context.Context, node *Node) (responseTimeMs int, err error)
 	// CheckConcurrent 对一批节点做并发健康检查，结果通过 channel 返回。
 	CheckConcurrent(ctx context.Context, nodes []*Node, concurrency int) <-chan HealthCheckResult
+}
+
+// SelectionPolicy 全局出口选择策略（持久化到 proxy_selection_policy 表）。
+//
+// 负载均衡/亲和性字段直接转发给 LoadBalancer；autoDisable* 由 Manager 在
+// selectNode 中过滤 unhealthy / 连续失败节点时使用；Swap* 控制自动切流后台
+// goroutine 的频率与切流门槛（详见 manager.swapLoop）。
+type SelectionPolicy struct {
+	LoadBalanceStrategy   LoadBalanceStrategy   `json:"load_balance_strategy"`
+	LocationAffinity      LocationAffinityPolicy `json:"location_affinity"`
+	AutoDisableThreshold  int                   `json:"auto_disable_threshold"`
+	AutoDisableEnabled    bool                  `json:"auto_disable_enabled"`
+	AutoRecoverEnabled    bool                  `json:"auto_recover_enabled"`
+	SwapCheckIntervalMs   int                   `json:"swap_check_interval_ms"`
+	SwapFailureThreshold  int                   `json:"swap_failure_threshold"`
+}
+
+// DefaultSelectionPolicy 返回合理默认。
+func DefaultSelectionPolicy() SelectionPolicy {
+	return SelectionPolicy{
+		LoadBalanceStrategy:  StrategyBestOnly,
+		LocationAffinity:     AffinityAny,
+		AutoDisableThreshold: 3,
+		AutoDisableEnabled:   true,
+		AutoRecoverEnabled:   true,
+		SwapCheckIntervalMs:  30000,
+		SwapFailureThreshold: 2,
+	}
+}
+
+// IsRegionBanned 判断给定的 region（节点 Location）是否被订阅层+节点层禁用。
+// 任一层包含即视为禁用（集合并集）。
+func IsRegionBanned(region string, subscriptionBans, nodeBans []string) bool {
+	if region == "" {
+		return false
+	}
+	for _, r := range subscriptionBans {
+		if r == region {
+			return true
+		}
+	}
+	for _, r := range nodeBans {
+		if r == region {
+			return true
+		}
+	}
+	return false
 }
