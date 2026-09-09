@@ -326,6 +326,14 @@ func applyEnvOverrides(cfg *StorageConfig) {
 			cfg.Lite.BodiesDir = v
 		}
 	}
+	if v := os.Getenv("LLM_GATEWAY_BODIES_CODEC"); v != "" {
+		if cfg.Lite == nil {
+			cfg.Lite = &LiteStorageConfig{}
+		}
+		if cfg.Lite.BodiesCodec == "" {
+			cfg.Lite.BodiesCodec = v
+		}
+	}
 	if v := os.Getenv("LLM_GATEWAY_CACHE_DIR"); v != "" {
 		if cfg.Lite == nil {
 			cfg.Lite = &LiteStorageConfig{}

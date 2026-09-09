@@ -78,6 +78,9 @@ full_storage:
 lite_storage:
   sqlite_path: "./data/llm-gateway.db"
   bodies_dir: "./data/session_bodies"
+  # 会话体落盘编码：zstd（默认）；回滚/兼容旧二进制时可设为 gzip。
+  # 读路径同时兼容 .json.zst 与历史 .json.gz。
+  bodies_codec: "zstd"
   cache_dir: "./data/cache"
   logs_dir: "./data/request_logs"
   sqlite_pragmas:
