@@ -4,9 +4,10 @@ package proxy
 //
 // 重建于 2026-09-09 审计修正批次：原版本随 backup-r5-work 分支基于旧实现
 // （nodeWriteLocks），本版本适配 main 的 nodeProbeLock 命名与
-// RefreshSubscriptionAndMetadata 等远程并行修复，并新增批量路径
-// （healthCheckAllNodesInner → PgStore.BatchUpdateNodes 快速路径）的
-// P0 回归守门——5486952e8 修复的正是这条路径绕过 per-node 锁的问题。
+// RefreshSubscriptionAndMetadata 等远程并行修复，并保留全局落库路径
+// （healthCheckAllNodesInner 步骤 5）与单节点探测并发不丢更新的 P0 回归
+// 守门——5486952e8 修复的正是旧无锁批量快速路径绕过 per-node 锁的问题，
+// 该快速路径（PgStore.BatchUpdateNodes）已于 2026-09-10 退役删除。
 //
 // fake 设计原则：
 //   - ListNodes / GetNode 返回 cloneNode 隔离快照（模拟真实 PgStore 的
@@ -45,8 +46,8 @@ func (p *perNodeState) leave() { atomic.AddInt32(&p.cur, -1) }
 
 func (p *perNodeState) maxObserved() int32 { return atomic.LoadInt32(&p.max) }
 
-// sharedNodeStore 满足 Store 接口的并发测试桩（不含 BatchUpdateNodes，
-// 用于触发 healthCheckAllNodesInner 的非 PgStore 降级路径）。
+// sharedNodeStore 满足 Store 接口的并发测试桩（无批量方法，
+// 触发 healthCheckAllNodesInner 的逐节点落库路径）。
 type sharedNodeStore struct {
 	mu          sync.Mutex
 	nodes       map[int]*Node
@@ -167,21 +168,6 @@ func (f *failingChecker) CheckConcurrent(_ context.Context, nodes []*Node, _ int
 	return ch
 }
 
-// batchStore 在 sharedNodeStore 上实现 BatchUpdateNodes（与 Store 接口对齐；
-// manager 全局路径审计修正后已不走此方法，保留接口兼容）。
-type batchStore struct {
-	*sharedNodeStore
-}
-
-func (b *batchStore) BatchUpdateNodes(ctx context.Context, nodes []*Node) error {
-	for _, n := range nodes {
-		if err := b.sharedNodeStore.UpdateNode(ctx, n); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // TestHealthCheckNodeNoLostUpdates：32 并发单节点探活，失败计数必须精确累加。
 func TestHealthCheckNodeNoLostUpdates(t *testing.T) {
 	node := &Node{ID: 7, SubscriptionID: 1, Name: "race-target", Protocol: ProtocolHTTP, Server: "127.0.0.1", Port: 8000, Status: "active"}
@@ -270,11 +256,12 @@ func TestHealthCheckSubscriptionNowNoLostUpdates(t *testing.T) {
 
 // TestBatchPathRacesWithSingleNodeProbe（P0 守门）：healthCheckAllNodesInner
 // 的全局落库路径与单节点 HealthCheckNode 并发时，失败计数必须精确累加。
-// 审计修正后全局路径在 per-node 锁内完成 GetNode→apply→UpdateNode→cache，
-// 不再走无锁的 BatchUpdateNodes 快速路径（5486952e8 + 后续重构）。
+// 审计修正后全局路径在 per-node 锁内完成 GetNode→apply→UpdateNode→cache
+// （5486952e8 + 后续重构）；旧无锁批量快速路径 PgStore.BatchUpdateNodes
+// 已随 2026-09-10 退役批次删除，本测试继续钉住全局路径的 per-node 串行化。
 func TestBatchPathRacesWithSingleNodeProbe(t *testing.T) {
 	node := &Node{ID: 1, SubscriptionID: 1, Name: "batch-race", Protocol: ProtocolHTTP, Server: "127.0.0.1", Port: 8003, Status: "active"}
-	store := &batchStore{sharedNodeStore: newSharedNodeStore([]*Node{node})}
+	store := newSharedNodeStore([]*Node{node})
 	mgr := NewManager(store, nil, &failingChecker{})
 	mgr.SetAutoDisablePolicy(1_000_000, true, false)
 
