@@ -59,7 +59,8 @@ IR 转换,`main.go:1537`)+ `domains/transformation/anthropic` 桥承担,不经�
 
 1. 消除"两套并行流式实现"的维护负担与 test-only 修复假覆盖的根因。
 2. `TRANSPORT_LAYER_IR_ENABLED` 从配置面消失;已部署环境中该变量变为无害的未消费项,可随下次发布清理。
-3. 已知遗留(随下线一并接受,不再修复):
+3. `domains/transformation/anthropic` 的流式半区(`StreamAnthropicPassthrough`/`StreamAnthropicSSEToOpenAI`/`StreamOpenAIToAnthropicSSE`/`StreamWriter`/`DeriveStreamContext`/`ConvertAnthropicRequestToChat`/`ConvertAnthropicResponseToChat` 等)原以 LegacyTransport 为唯一外部消费者,现成为孤儿(包内 `ConvertChatRequestToAnthropic`/`IsAnthropicStreamEmpty`/`ValidateStreamingToolArgs` 仍被活跃桥引用,必须保留)。与 `domains/streaming` 的活体实现系既有的复制粘贴双份,建议后续独立批次清理,本批次不扩删以免波及共享未导出 helper。
+4. 已知遗留(随下线一并接受,不再修复):
    - `internal/ir` 的 StreamChunk.SerializeAnthropic 缺 message_start 前置缓冲、content_block_start/stop 生命周期、signature_delta 透出;
    - `ir.InternalResponse` 缺原生 StopReason/StopSequence 承载字段,Anthropic→IR→Anthropic 往返 stop_reason 有损(经 OpenAI 归一化映射)。
    两者仅影响未来若重新接线路径时的保真度,对现行生产路径无影响(现行桥为手写 bridge,不经过这两个函数)。
