@@ -32,6 +32,7 @@ import SwimLane from '../components/SwimLane.vue'
 import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
 import { confirmDialog } from '../composables/useConfirmDialog'
 import { useI18n } from 'vue-i18n'
+import { formatDateTime } from '../utils/datetime'
 
 const { t } = useI18n()
 
@@ -335,11 +336,9 @@ function pushToast(msg: string) {
   }, 3500)
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTime(s: string | null | undefined) {
-  if (!s) return '—'
-  const d = new Date(s)
-  if (isNaN(d.getTime())) return s
-  return d.toLocaleString()
+  return formatDateTime(s)
 }
 
 // ── 生命周期 ─────────────────────────────────────────────

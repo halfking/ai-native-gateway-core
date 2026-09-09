@@ -1,4 +1,7 @@
 import type { CenterInstance, RegionStats } from '../../api/ops'
+// 审计 R3#10：相对时间实现收敛至 utils/datetime.ts，本模块保留同名导出
+// 作为既有调用点/测试的兼容门面。
+import { formatRelativeTime as formatRelativeTimeShared } from '../../utils/datetime'
 
 export interface RegionBucket {
   region: string
@@ -59,18 +62,7 @@ export function formatRelativeTime(
     daysAgo: (n: number) => string
   },
 ): string {
-  if (!iso) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const diff = Date.now() - d.getTime()
-  // Guard against epoch / far-future / multi-year garbage (e.g. "739816d ago")
-  if (diff < -60_000 || diff > 366 * 24 * 3600_000) return ''
-  if (diff < 60_000) return labels.justNow
-  const mins = Math.round(diff / 60_000)
-  if (mins < 60) return labels.minutesAgo(mins)
-  const hours = Math.round(mins / 60)
-  if (hours < 24) return labels.hoursAgo(hours)
-  return labels.daysAgo(Math.round(hours / 24))
+  return formatRelativeTimeShared(iso, labels)
 }
 
 export function successRate(ok: number, total: number): number | null {

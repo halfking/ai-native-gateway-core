@@ -9,6 +9,7 @@ import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import CredentialStatusBar from '../components/CredentialStatusBar.vue'
 import { credentialDisplayState } from '../utils/credentialStatus'
+import { formatCompactDateTime } from '../utils/datetime'
 import { isSuperAdmin } from '../store'
 
 Chart.register(...registerables)
@@ -774,25 +775,14 @@ async function loadHistory(requestSeq = modelRequestSeq) {
   }
 }
 
+// 审计 R3#10：紧凑时间戳统一走 utils/datetime.ts。
 function formatTs(ts: string) {
   // '2026-06-23T10:00:00Z' -> '06-23 10:00'
-  const d = new Date(ts)
-  if (isNaN(d.getTime())) return ts
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  const h = String(d.getHours()).padStart(2, '0')
-  const min = String(d.getMinutes()).padStart(2, '0')
-  return `${m}-${day} ${h}:${min}`
+  return formatCompactDateTime(ts)
 }
 
 function formatRefreshAt(d: Date | null): string {
-  if (!d) return '尚未刷新'
-  const month = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  const hour = String(d.getHours()).padStart(2, '0')
-  const minute = String(d.getMinutes()).padStart(2, '0')
-  const second = String(d.getSeconds()).padStart(2, '0')
-  return `${month}-${day} ${hour}:${minute}:${second}`
+  return formatCompactDateTime(d, { withSeconds: true, empty: '尚未刷新' })
 }
 
 function formatCacheMeta(meta: CredentialMonitorMeta | null): string {

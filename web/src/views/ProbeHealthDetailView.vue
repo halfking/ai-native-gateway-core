@@ -9,6 +9,7 @@ import { getRequestLogs } from '../api/logs'
 import { getSlidingWindow } from '../api/credential-monitor'
 import { useCredentialLabels } from '../composables/useCredentialLabels'
 import { store } from '../store'
+import { formatDateTime } from '../utils/datetime'
 
 const route = useRoute()
 const router = useRouter()
@@ -372,19 +373,12 @@ function getPriorityBadge(priority: string): string {
   }
 }
 
+// 审计 R3#10：时间格式化统一走 utils/datetime.ts。
 function formatTime(ts?: string): string {
-  if (!ts) return '—'
-  try {
-    return new Date(ts).toLocaleString(localeRef.value, {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-    })
-  } catch {
-    return ts
-  }
+  return formatDateTime(ts, {
+    locale: localeRef.value,
+    options: { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' },
+  })
 }
 
 function formatDuration(minutes: number): string {
@@ -405,7 +399,7 @@ function formatPrice(p: number | string | null | undefined, currency: string | n
 }
 
 function formatTimestamp(ts: number): string {
-  return new Date(ts).toLocaleString(localeRef.value)
+  return formatDateTime(ts, { locale: localeRef.value })
 }
 
 onMounted(() => {
