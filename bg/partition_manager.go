@@ -410,61 +410,74 @@ func (pm *PartitionManager) archiveOldPartitionsIfNeeded(ctx context.Context) {
 	pm.cleanupOldRuntimeAlertEvents(ctx)
 }
 
-// dropOldStatePartitions calls the SQL helper
-// `drop_old_state_partitions(retention_days)` which drops monthly
-// partitions older than the retention window for state tables
-// (routing_decision_log, candidate_failure_logs, handoff_logs,
-// credential_model_call_history, model_probe_runs, etc.).
+// stateTableTTLSpec describes one parent table dropped via the SQL helper
+// drop_old_state_partition_table(parent, retention_days) (migration 689),
+// each with its OWN lifecycle TTL. Tables without a dedicated lifecycle
+// setting fall back to the given default.
+type stateTableTTLSpec struct {
+	parent   string // partitioned parent table name
+	setting  string // lifecycle.*_ttl_days settings_kv key
+	fallback int    // default when the setting is absent
+}
+
+// stateTableTTLSpecs mirrors the target_tables list inside
+// drop_old_state_partitions (migrations 391/689) — one entry per parent,
+// each dropped at its own retention. candidate_failure_logs is 7d
+// (2026-09-09 审计 R3#2: 旧行为取全部表 TTL 的 max 且 floor 30d,导致
+// 7d 语义脱节;689 起逐表传参,不再取 max/floor)。model_probe_runs
+// 已退出分区策略(纯 hot 表),无月度分区,该条目天然空转,保留只为
+// 与 SQL 侧 target_tables 对齐。credential_model_index 用它自己的
+// lifecycle.credential_model_index_ttl_days(默认 7,与
+// cleanupOldCredentialModelIndex 的 7d 语义一致)。
+func stateTableTTLSpecs() []stateTableTTLSpec {
+	return []stateTableTTLSpec{
+		{parent: "routing_decision_log", setting: "lifecycle.routing_decision_log_ttl_days", fallback: 30},
+		{parent: "candidate_failure_logs", setting: "lifecycle.candidate_failure_logs_ttl_days", fallback: 7},
+		{parent: "handoff_logs", setting: "lifecycle.handoff_logs_ttl_days", fallback: 30},
+		{parent: "model_probe_runs", setting: "lifecycle.model_probe_runs_ttl_days", fallback: 14},
+		{parent: "credential_model_index", setting: "lifecycle.credential_model_index_ttl_days", fallback: 7},
+	}
+}
+
+// dropOldStatePartitions drops expired monthly partitions for the state
+// tables, each at its own per-table retention (lifecycle.<table>_ttl_days,
+// read fresh from settings.Global on every call so changes take effect on
+// the next partition_manager tick).
 //
-// 2026-07-13 状态表精简：
-//   - 状态/路由类表默认 30 天 DROP PARTITION
-//   - 请求记录类表（usage_ledger、request_wal、credit_ledger、tool_usage_stats）
-//     默认 1 天（hot 表，依赖月度分区长期保留但不 DROP）
-//   - credential_probe_model_log 是列存储堆表，需通过单独清理任务
+// 2026-09-09 审计 R3#2: previously this computed the MAX across all state
+// table TTLs and clamped to a 30-day floor, then made a single
+// drop_old_state_partitions(maxDays) call — candidate_failure_logs (7d
+// semantics) therefore never dropped before 30d. Since migration 689 the
+// SQL helper drop_old_state_partition_table(parent, days) takes one parent
+// per call, so we iterate the tables and pass each its own TTL. No max, no
+// 30d floor: tables with an explicitly shorter TTL (7d) drop at 7d; the
+// safety floor is the per-call `days < 1` clamp inside the SQL function.
 //
 // Designed to run on day-2 of the month (matches archiveSpecs()).
-// Per-table retention is read fresh from settings.Global on every call
-// (lifecycle.*_ttl_days) so changes take effect on the next
-// partition_manager tick (1h by default). Returns the number of
-// partitions dropped; logs a single summary line.
 func (pm *PartitionManager) dropOldStatePartitions(ctx context.Context, s archiveSpec) {
-	timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
+	for _, spec := range stateTableTTLSpecs() {
+		days := settingsGetPlatformInt(spec.setting, spec.fallback)
+		if days < 1 {
+			days = spec.fallback // safety floor — never 0 (would wipe history)
+		}
 
-	// Pass the smallest TTL as the global retention — individual
-	// partitions older than ANY of the per-table TTLs are eligible to
-	// drop. The SQL function does per-table policy enforcement.
-	// We use the maximum across all state tables so we don't
-	// accidentally drop partitions still needed.
-	maxDays := settingsGetPlatformInt("lifecycle.routing_decision_log_ttl_days", 30)
-	if d := settingsGetPlatformInt("lifecycle.candidate_failure_logs_ttl_days", 30); d > maxDays {
-		maxDays = d
-	}
-	if d := settingsGetPlatformInt("lifecycle.handoff_logs_ttl_days", 30); d > maxDays {
-		maxDays = d
-	}
-	if d := settingsGetPlatformInt("lifecycle.credential_model_call_history_ttl_days", 30); d > maxDays {
-		maxDays = d
-	}
-	if d := settingsGetPlatformInt("lifecycle.model_probe_runs_ttl_days", 90); d > maxDays {
-		maxDays = d
-	}
-	if maxDays < 30 {
-		maxDays = 30 // safety floor — never set to less than 30d
-	}
-
-	var dropped int64
-	err := pm.db.QueryRow(timeoutCtx,
-		"SELECT drop_old_state_partitions($1)", maxDays,
-	).Scan(&dropped)
-	if err != nil {
-		slog.Error("partition_manager: state table drop failed",
-			"label", s.label, "ttl_days", maxDays, "error", err)
-		return
-	}
-	if dropped > 0 {
-		slog.Info("partition_manager: state table drop ran",
-			"label", s.label, "ttl_days", maxDays, "partitions_dropped", dropped)
+		timeoutCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+		var dropped int64
+		err := pm.db.QueryRow(timeoutCtx,
+			"SELECT drop_old_state_partition_table($1, $2)", spec.parent, days,
+		).Scan(&dropped)
+		cancel()
+		if err != nil {
+			slog.Error("partition_manager: state table drop failed",
+				"label", s.label, "parent", spec.parent,
+				"ttl_days", days, "error", err)
+			continue
+		}
+		if dropped > 0 {
+			slog.Info("partition_manager: state table drop ran",
+				"label", s.label, "parent", spec.parent,
+				"ttl_days", days, "partitions_dropped", dropped)
+		}
 	}
 }
 

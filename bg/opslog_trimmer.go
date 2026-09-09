@@ -26,6 +26,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -47,6 +48,15 @@ type OpslogTrimmer struct {
 	stop         chan struct{}
 	done         chan struct{}
 	stopOnce     sync.Once
+
+	// cflFailStreak counts consecutive candidate_failure_logs DELETE
+	// failures across TrimOnce calls; reset on the first success.
+	// 2026-09-09 (审计 R3#1): before migration 689 the DELETE died on
+	// append-only columnar partitions and the failure was only
+	// slog.Warn'd, silently disabling the 7d TTL path. Escalate to
+	// slog.Error with the streak so a persistently broken delete path
+	// is visible in error-level monitoring.
+	cflFailStreak atomic.Int64
 }
 
 // NewOpslogTrimmer constructs the worker with default 7-day
@@ -116,6 +126,11 @@ func (t *OpslogTrimmer) TrimOnce(ctx context.Context) (cflDeleted, cpmDeleted in
 	start := time.Now()
 
 	// candidate_failure_logs (uses ts column per migration 300 schema).
+	// 2026-09-09 (审计 R3#1): 689 converted the monthly partitions from
+	// append-only columnar to heap, so this row-level DELETE works again.
+	// Failures are escalated to slog.Error with a consecutive-failure
+	// streak (cflFailStreak) so a persistently broken delete path is
+	// visible at error level instead of being swallowed as a Warn.
 	res1, err := t.pool.Exec(ctx, `
 		DELETE FROM candidate_failure_logs
 		WHERE id IN (
@@ -126,8 +141,17 @@ func (t *OpslogTrimmer) TrimOnce(ctx context.Context) (cflDeleted, cpmDeleted in
 		)
 	`, cflRetention.String())
 	if err != nil {
-		slog.Warn("opslog_trimmer: candidate_failure_logs delete failed", "error", err)
+		streak := t.cflFailStreak.Add(1)
+		slog.Error("opslog_trimmer: candidate_failure_logs delete failed (consecutive)",
+			"error", err,
+			"fail_streak", streak,
+			"ttl_days", cflDays,
+			"hint", "pre-689 columnar partitions or missing table leave this TTL path dead; check partition storage via pg_am.relam")
 	} else {
+		if t.cflFailStreak.Load() > 0 {
+			slog.Info("opslog_trimmer: candidate_failure_logs delete recovered", "after_failures", t.cflFailStreak.Load())
+		}
+		t.cflFailStreak.Store(0)
 		cflDeleted = res1.RowsAffected()
 	}
 
