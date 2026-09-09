@@ -84,6 +84,7 @@ async function createFromPreset(p: FreeDiscoveryPreset): Promise<void> {
       provider_code: p.provider_code,
       display_name: p.display_name,
       base_url: p.base_url,
+      api_type: p.api_type,
       api_key_env: p.api_key_env,
       tos_verdict: p.tos_verdict === 'unknown' ? 'ambiguous' : p.tos_verdict,
       tos_notes: p.tos_notes,

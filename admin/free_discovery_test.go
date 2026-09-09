@@ -108,17 +108,24 @@ func TestFreeDiscovery_PresetsIncludeGroqAndOpenRouter(t *testing.T) {
 		Presets []struct {
 			ProviderCode string `json:"provider_code"`
 			APIKeyEnv    string `json:"api_key_env"`
+			APIType      string `json:"api_type"`
 		} `json:"presets"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	codes := map[string]bool{}
+	apiTypes := map[string]string{}
 	for _, p := range resp.Presets {
 		codes[p.ProviderCode] = true
+		apiTypes[p.ProviderCode] = p.APIType
 	}
 	if !codes["groq"] || !codes["openrouter"] {
 		t.Fatalf("groq/openrouter presets missing: %v", codes)
+	}
+	// 回归: google-ai-studio 必须返回正确的 api_type (前端依赖此字段显示协议适配提示)
+	if apiTypes["google-ai-studio"] != string(freediscovery.APITypeGoogleGenerativeAI) {
+		t.Fatalf("google-ai-studio api_type = %q, want %q", apiTypes["google-ai-studio"], freediscovery.APITypeGoogleGenerativeAI)
 	}
 }
 
