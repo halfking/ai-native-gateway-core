@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatTimeOnly } from '../utils/datetime'
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { getDecisions, type RoutingDecision } from '../api'
 import ModelPicker from '../components/ModelPicker.vue'
@@ -82,7 +83,7 @@ async function load() {
 }
 
 function fmtTs(ts: string) {
-  return new Date(ts).toLocaleTimeString('zh-CN', { hour12: false })
+  return formatTimeOnly(ts, { locale: 'zh-CN', options: { hour12: false } })
 }
 
 function traceList(v: unknown): string {

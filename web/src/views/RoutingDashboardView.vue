@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
+import { formatDateTime, formatTimeOnly } from '../utils/datetime'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -876,7 +877,7 @@ const heroChips = computed(() => {
       chips.push({ label: t('routing.mappings'), value: String(wtSyncMeta.value.route_count) })
       if (wtSyncMeta.value.last_synced_at) {
         const d = new Date(wtSyncMeta.value.last_synced_at)
-        chips.push({ label: t('routing.accSync'), value: d.toLocaleString() })
+        chips.push({ label: t('routing.accSync'), value: formatDateTime(d) })
       }
     }
     return chips
@@ -1103,7 +1104,7 @@ onUnmounted(() => stopPoll())
                 :class="{ active: modalDecisionId === d.request_id }"
                 @click="openDecisionModal(d.request_id)"
               >
-                <span class="text-muted">{{ new Date(d.ts).toLocaleString() }}</span>
+                <span class="text-muted">{{ formatDateTime(d.ts) }}</span>
                 <span class="badge badge-blue">{{ d.task_type || '-' }}</span>
                 <span v-if="d.work_type" class="badge badge-gray">{{ d.work_type }}</span>
                 <span class="model-name">{{ d.outbound_model || d.auto_decision?.chosen_model || '-' }}</span>
@@ -1517,7 +1518,7 @@ onUnmounted(() => stopPoll())
             </thead>
             <tbody>
               <tr v-for="(e, i) in resolveLog" :key="i">
-                <td>{{ new Date(e.ts).toLocaleTimeString() }}</td>
+                <td>{{ formatTimeOnly(e.ts) }}</td>
                 <td class="model-name">{{ e.model }}</td>
                 <td>{{ e.profile || '—' }}</td>
                 <td class="mono-sm text-muted">{{ e.path }}</td>
@@ -1594,7 +1595,7 @@ onUnmounted(() => stopPoll())
             <tbody>
               <template v-for="d in decisions" :key="d.request_id">
                 <tr class="model-row" @click="onExpandDecision(d.request_id)">
-                  <td>{{ new Date(d.ts).toLocaleTimeString() }}</td>
+                  <td>{{ formatTimeOnly(d.ts) }}</td>
                   <td><span class="badge badge-blue">{{ d.task_type || d.auto_decision?.task_type || '-' }}</span></td>
                   <td>{{ d.auto_profile || d.auto_decision?.profile || '-' }}</td>
                   <td class="model-name">{{ d.auto_decision?.chosen_model || d.outbound_model || '-' }}</td>

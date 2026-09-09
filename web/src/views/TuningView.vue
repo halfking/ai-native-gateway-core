@@ -11,6 +11,7 @@
 // (bearer token from store).
 
 import { ref, computed, onMounted } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import {
   getTuningProposals,
@@ -269,7 +270,7 @@ onMounted(async () => {
           <template v-for="p in proposals" :key="p.id">
             <tr>
               <td>{{ p.id }}</td>
-              <td>{{ new Date(p.ts).toLocaleString() }}</td>
+              <td>{{ formatDateTime(p.ts) }}</td>
               <td><span class="badge">{{ categoryLabel(p.category) }}</span></td>
               <td>{{ p.task_type ?? '—' }}</td>
               <td class="mono">{{ JSON.stringify(p.proposal) }}</td>

@@ -6,7 +6,7 @@ import { useRouter } from 'vue-router'
 import { getApprovalList, approveApproval, rejectApproval, getApprovalStats, type ApprovalItem, type ApprovalStats } from '../api/approval'
 import { isSuperAdmin } from '../store'
 import { confirmDialog } from '../composables/useConfirmDialog'
-import { formatRelativeTime } from '../utils/datetime'
+import { formatDateTime, formatRelativeTime } from '../utils/datetime'
 import { useActionMessage } from '../composables/useActionMessage'
 import AppSpinner from '../components/AppSpinner.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -119,12 +119,15 @@ function formatDate(dateStr: string): string {
     minutesAgo: (n) => t('approval.list.relativeTime.minutesAgo', { n }),
     hoursAgo: (n) => t('approval.list.relativeTime.hoursAgo', { n }),
     daysAgo: (n) => t('approval.list.relativeTime.daysAgo', { n }),
-    older: (d) => d.toLocaleDateString(localeRef.value, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
+    older: (d) => formatDateTime(d, {
+      locale: localeRef.value,
+      options: {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      },
     }),
   })
 }

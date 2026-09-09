@@ -5,6 +5,7 @@
  */
 
 import { computed } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { RefreshRight, Grid, Timer, WarningFilled } from '@element-plus/icons-vue'
@@ -161,7 +162,7 @@ function handleRefresh() {
         <el-table-column prop="count" :label="t('common.count') || 'Count'" width="100" align="right" />
         <el-table-column prop="last_occurred" :label="t('common.lastOccurred') || 'Last Occurred'" width="180">
           <template #default="{ row }">
-            {{ new Date(row.last_occurred).toLocaleString() }}
+            {{ formatDateTime(row.last_occurred) }}
           </template>
         </el-table-column>
       </el-table>
@@ -184,7 +185,7 @@ function handleRefresh() {
         </el-table-column>
         <el-table-column prop="executed_at" :label="t('common.time') || 'Time'" width="180">
           <template #default="{ row }">
-            {{ new Date(row.executed_at).toLocaleString() }}
+            {{ formatDateTime(row.executed_at) }}
           </template>
         </el-table-column>
         <el-table-column prop="error_message" :label="t('common.errorColumn')" show-overflow-tooltip />

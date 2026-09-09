@@ -4,6 +4,7 @@
 // 单凭据视角：列出过去一段时间的关键恢复事件。数据来自
 // GET /api/admin/node-health/{credential_id}/timeline（node_probe_runs）。
 import { ref, computed, onMounted, watch } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import {
@@ -38,7 +39,7 @@ function fmtTime(iso?: string): string {
   if (!iso) return '—'
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return '—'
-  return d.toLocaleString(locale.value, { hour12: false })
+  return formatDateTime(d, { locale: locale.value, options: { hour12: false } })
 }
 
 function fmtMs(ms?: number): string {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
+import { formatDateTime } from '../utils/datetime'
 import { useI18n } from 'vue-i18n'
 import { getAnnotationStats, type StatsResponse } from '../api/annotations'
 
@@ -190,7 +191,7 @@ onMounted(load)
                     {{ a.accuracy_percent.toFixed(1) }}%
                   </span>
                 </td>
-                <td>{{ new Date(a.last_annotation_at).toLocaleString() }}</td>
+                <td>{{ formatDateTime(a.last_annotation_at) }}</td>
               </tr>
             </tbody>
           </table>
