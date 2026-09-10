@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/lib/pq"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // ImportService 把审查通过的发现结果批量导入 free_resource_catalog.
@@ -117,10 +119,13 @@ func (s *ImportService) Import(ctx context.Context, req ImportRequest) (*ImportS
 		switch outcome {
 		case outcomeImported:
 			summary.Imported++
+			metrics.FreeDiscoveryImportTotal.WithLabelValues("imported").Inc()
 		case outcomeSkipped:
 			summary.Skipped++
+			metrics.FreeDiscoveryImportTotal.WithLabelValues("skipped").Inc()
 		case outcomeConflicted:
 			summary.Conflicted++
+			metrics.FreeDiscoveryImportTotal.WithLabelValues("conflicted").Inc()
 		}
 	}
 
@@ -153,8 +158,8 @@ func (s *ImportService) Import(ctx context.Context, req ImportRequest) (*ImportS
 type importOutcome string
 
 const (
-	outcomeImported  importOutcome = "imported"
-	outcomeSkipped   importOutcome = "skipped"
+	outcomeImported   importOutcome = "imported"
+	outcomeSkipped    importOutcome = "skipped"
 	outcomeConflicted importOutcome = "conflicted"
 )
 
