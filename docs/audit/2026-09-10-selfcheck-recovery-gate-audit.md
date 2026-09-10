@@ -42,3 +42,41 @@
 
 - `go build ./...`、`go vet ./config ./cmd/gateway` 通过（见提交前运行记录）
 - `go test ./config ./domains/credentialstate` 全绿（含新增 TestQuotaProbeEnvContract）
+
+## 部署与修复收口（2026-09-11 凌晨）
+
+### 部署时间线
+
+| 时间(CST) | 事件 | 结果 |
+|---|---|---|
+| 04:1x | 首次 deploy-245（候选 8782） | EnsureSchema statement timeout（57014）自动回滚，2078 保持 active |
+| 05:07 | 二次 deploy-245 | 迁移 693 ALTER TABLE 在 252 PG 锁等待超时，未切流 |
+| ~05:20 | **252 PG 磁盘写满事故** | `/`（197G）100%，新建连接 FATAL `could not write init file`，pg-252-pg17 容器随之离线（"Initialized"），154 生产 DB 层短暂中断 |
+| ~05:26 | 磁盘处置 | 元凶：并行会话的 `llm_gateway-pre-sync-20260911.dump`（7GB，残缺）+ 昨夜 `252_pg_dumpall.sql`（49GB）+ podman 悬空镜像。`docker image prune`（实为 podman）回收 ~27GB；两个 dump 由其属主自行清理。PG 自愈重启恢复，最终 42GB 可用 |
+| 05:32 | deploy-245 成功 | 2079-fe640764（693 已由守护脚本预应用，切换前迁移瞬时通过），总 86s |
+| 05:40 | deploy-154 成功 | 2079-fe640764，总 151s |
+| 05:48 | deploy-245（修复） | 2080-69420603，75s |
+| 05:51 | deploy-154（修复） | 2080-69420603，76s |
+
+### F2 之后的两个 probeSubmitter 新根因（部署后仍报错，均已修复）
+
+1. **245：env 门控（非代码）**。`/opt/llm-gateway-go/.env:242` 设 `LLM_GATEWAY_USE_NEW_PROBE_MODE=false`，`shouldStartNewProbeWorkers()` 整体为假，main.go credRecovery 接线块被静默跳过（每 30s 三连 ERROR，60 条/10min）。已改为 `true` 对齐 154；顺带删除同文件一行字面 `\n` 损坏的 `LLM_GATEWAY_RECOVERY_L2_MODE` 残行（有效值仍为后面的 `=off`，行为不变）。备份：`.env.bak-20260911-probefix`。
+2. **154：URSM v2 authoritative 分支缺接线（真实代码缺口）**。154 以 authoritative 模式运行（无 credentialstate.Manager），nodeProbeWorker 走 main.go 独立 fallback 分支，该分支从未给 credRecovery `SetProbeSubmitter`。旧构建 2073 因 traffic-only 门整个 bg 块不跑而无声；f56598b59 放行后 worker 起来才暴露（同 pid 既打 "node_probe_worker started" 又打 "probeSubmitter not wired"）。修复 `69420603b`：authoritative 分支镜像标准分支的接线（含 SetProbeSubmitterImmediate 与 OnQuotaRecovered hook），journald 出现 `credRecovery: expired-binding probe submitter wired (authoritative)`。
+
+### 部署后验证证据（两节点 2080-69420603）
+
+- 245（port 8781）/154（port 8781）healthz 200 ready:true；`postgres disabled` 0 条；`probeSubmitter not wired` 0 条。
+- 245: `credRecovery: expired-binding probe submitter wired`、`node_probe_worker started (api_key_resolved:true)`、`credential_selfcheck_worker started`；`balance_quota_probe` 每 2min 提交（count 7→10）；`credential_recovery: stale node_probe_state rows handed to probe queue` 每 30s（31–48 pairs）。
+- 154: `...submitter wired (authoritative)`、`balance_quota_probe count=10`、stale-state 投递 50 pairs/12 creds。
+- 共享库层面：quota-probe 家族现覆盖 13 个 permanently_exhausted 凭据（12 active 全部入轨；47 sp1-2 仍 `status=disabled` 被 status 资格门挡住，与 cred 41 原状态同类，留待运维决策，本轮未动）。
+
+### cred 41 / cred 42 终态
+
+- **cred 42 (hzx-2)**：`active/ready/ok`，22 条 binding `available=false` 为 0，`v_routable_credential_models` 11/11 可路由。**恢复闭环完成**。
+- **cred 41 (hzx)**：新增发现——其 `status='disabled'`（08-21 即已置，`manual_disabled=f`）挡在 BalanceQuotaProbe 资格 SQL（`status='active'`）之外，F1 审计未覆盖此层；探针族全部代码（writeHealth 等）均不翻 `status`，故单纯部署 F1 无法自动恢复。本轮经 admin API `PATCH /api/providers/14/credentials/41 {"status":"active"}` 解锁资格（**非** force_enable，availability/quota 未动）。之后 BalanceQuotaProbe 每 2min 真实探测（05:40/05:50/05:52/05:54…），上游持续返回 **402 payment required**，探针诚实拒绝翻牌（`writeHealth skipped stale result`）。**结论：网关侧恢复链路完好且已被端到端验证；当前阻塞在上游 MiniMax 账户侧（余额未生效或非同一账户/子账户）**。上游放行后下一轮 2min 探针将自动翻 ready/ok，无需人工干预。
+
+### 本轮新增变更
+
+- `cmd/gateway/main.go`（69420603b）：authoritative 分支 credRecovery 接线补齐（+21 行）。
+- 245 `.env`：USE_NEW_PROBE_MODE 纠偏 + 损坏行清理（节点侧变更，不入库）。
+- DB：迁移 693（`provider_models_canonical_cleared_at`）已应用并登记 schema_migrations（05:32:46，列由锁窗口守护预加、记账由部署 runner 完成）；cred 41 status 经 admin API 置 active（审计走 admin 链路）。
