@@ -219,6 +219,34 @@ func isStrictTokenSuffix(suffix, name string) bool {
 	return true
 }
 
+// SplitVendorPrefix splits "z-ai/glm-5.2" into ("z-ai", "glm-5.2") using
+// the LAST slash, matching StripProviderPrefix. Names without a slash get
+// an empty prefix.
+//
+// Exported for tooling that must apply the exact same vendor-prefix rule as
+// the matcher (e.g. the junk-canonical governance tool in
+// scripts/govern-junk-canonical); the lowercase result is intentional.
+func SplitVendorPrefix(raw string) (prefix, base string) {
+	return splitVendorPrefix(raw)
+}
+
+// JoinVendorBase re-attaches a vendor prefix as a family token, the exact
+// inverse shape SplitVendorPrefix produced: ("z-ai", "glm-5.2") →
+// "z-ai-glm-5.2". Exported alongside SplitVendorPrefix for the same
+// tooling reason.
+func JoinVendorBase(prefix, base string) string {
+	return joinVendorBase(prefix, base)
+}
+
+// IsStrictTokenSuffix reports whether suffix is a proper token-level suffix
+// of name ("opus-5" ⊂ "claude-opus-5") and strictly shorter — the shape the
+// pre-2026-09-10 prefix-stripping discovery code produced when it seeded
+// junk standard rows. Exported for the junk-canonical governance tool so
+// its detector cannot drift from the matcher's tokenization.
+func IsStrictTokenSuffix(suffix, name string) bool {
+	return isStrictTokenSuffix(suffix, name)
+}
+
 // splitVendorPrefix splits "z-ai/glm-5.2" into ("z-ai", "glm-5.2") using
 // the LAST slash, matching StripProviderPrefix. Names without a slash get
 // an empty prefix.
