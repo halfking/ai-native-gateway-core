@@ -423,3 +423,133 @@ func TestRemoveSkippedProbeSQLGuard(t *testing.T) {
 		}
 	}
 }
+
+// recordingSkipQueue is a probeSkipQueue stub with a configurable Remove
+// outcome; every observed step (Remove, mirror delete, SSE publish) is
+// appended to one shared log so the ownership ordering is assertable.
+type recordingSkipQueue struct {
+	removeErr   error
+	removed     bool
+	record      func(string)
+	removedTask ProbeQueueTask
+	reason      string
+}
+
+func (q *recordingSkipQueue) Remove(_ context.Context, task ProbeQueueTask) (bool, error) {
+	q.record("remove")
+	q.removedTask = task
+	if q.removeErr != nil {
+		return false, q.removeErr
+	}
+	return q.removed, nil
+}
+
+func (q *recordingSkipQueue) publishRemovedTransition(task ProbeQueueTask, reason string) {
+	q.record("publish")
+	q.removedTask = task
+	q.reason = reason
+}
+
+// newRemovalTestService wires a bare ProbeService whose skip removal runs
+// through the stub queue, with the mirror delete recorded into the same step
+// log instead of touching a worker DB. The returned snapshot fn returns the
+// ordered step log.
+func newRemovalTestService(q *recordingSkipQueue) (*ProbeService, func() []string) {
+	var mu sync.Mutex
+	var steps []string
+	q.record = func(step string) {
+		mu.Lock()
+		defer mu.Unlock()
+		steps = append(steps, step)
+	}
+	service := &ProbeService{worker: &NodeProbeWorker{}}
+	service.skipQueue = q
+	service.deleteStateFn = func(context.Context, int, string) { q.record("deleteState") }
+	return service, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), steps...)
+	}
+}
+
+func TestRemoveSkippedProbeRemoveErrorStopsBeforeMirrorAndSSE(t *testing.T) {
+	// Remove 报错（DB 故障等）→ 只有一次 Remove 尝试；镜像与 SSE 都不能碰。
+	q := &recordingSkipQueue{removeErr: errors.New("db down")}
+	service, steps := newRemovalTestService(q)
+
+	task := necessityTask()
+	task.LeaseToken = "lease-1"
+	service.removeSkippedProbe(context.Background(), task, SkipReasonAllNodesHealthy)
+
+	if got := steps(); len(got) != 1 || got[0] != "remove" {
+		t.Fatalf("steps = %v, want [remove] only (mirror/SSE must not fire)", got)
+	}
+}
+
+func TestRemoveSkippedProbeLeaseLostLeavesMirrorAndSSE(t *testing.T) {
+	// Remove 返回 removed=false（租约丢失/别处已完成）→ 新所有者可能正在执行，
+	// 镜像行与 SSE 磁贴必须留给新所有者。
+	q := &recordingSkipQueue{removed: false}
+	service, steps := newRemovalTestService(q)
+
+	task := necessityTask()
+	task.LeaseToken = "lease-1"
+	service.removeSkippedProbe(context.Background(), task, SkipReasonLastProbeHealthy)
+
+	if got := steps(); len(got) != 1 || got[0] != "remove" {
+		t.Fatalf("steps = %v, want [remove] only (state must be left to the new owner)", got)
+	}
+}
+
+func TestRemoveSkippedProbeMissingQueueOrLease(t *testing.T) {
+	// queue 未接线或租约为空：没有任何所有权凭证，三个副作用都不能发生。
+	t.Run("queue nil", func(t *testing.T) {
+		service := &ProbeService{worker: &NodeProbeWorker{}}
+		var mirrorDeletes int
+		service.deleteStateFn = func(context.Context, int, string) { mirrorDeletes++ }
+
+		task := necessityTask()
+		task.LeaseToken = "lease-1"
+		service.removeSkippedProbe(context.Background(), task, SkipReasonAllNodesHealthy)
+		if mirrorDeletes != 0 {
+			t.Fatal("mirror deleted without any queue wired")
+		}
+	})
+	t.Run("lease empty", func(t *testing.T) {
+		q := &recordingSkipQueue{removed: true}
+		service, steps := newRemovalTestService(q)
+
+		task := necessityTask() // LeaseToken stays empty
+		service.removeSkippedProbe(context.Background(), task, SkipReasonAllNodesHealthy)
+		if got := steps(); len(got) != 0 {
+			t.Fatalf("steps = %v, want none (no lease, no ownership proof)", got)
+		}
+	})
+}
+
+func TestRemoveSkippedProbeSuccessDeletesMirrorThenPublishes(t *testing.T) {
+	// 成功路径编排: queue 行删除（所有权证明）→ 镜像删除 → SSE 终态。
+	q := &recordingSkipQueue{removed: true}
+	service, steps := newRemovalTestService(q)
+
+	task := necessityTask()
+	task.LeaseToken = "lease-1"
+	service.removeSkippedProbe(context.Background(), task, SkipReasonAllNodesHealthy)
+
+	got := steps()
+	want := []string{"remove", "deleteState", "publish"}
+	if len(got) != len(want) {
+		t.Fatalf("steps = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("steps = %v, want %v (order matters: ownership proof first)", got, want)
+		}
+	}
+	if q.removedTask.ID != task.ID {
+		t.Fatalf("published task id = %d, want %d", q.removedTask.ID, task.ID)
+	}
+	if !strings.HasPrefix(q.reason, skipReasonSSEPrefix+": "+SkipReasonAllNodesHealthy) {
+		t.Fatalf("published reason = %q, want prefix %q", q.reason, skipReasonSSEPrefix+": "+SkipReasonAllNodesHealthy)
+	}
+}

@@ -107,6 +107,15 @@ type NodeHealthEvidenceSource interface {
 	NodeHealthEvidence(ctx context.Context, tenant string, credentialID int, models []string) (map[string]NodeHealthEvidence, error)
 }
 
+// probeSkipQueue narrows the queue surface the skip-removal path touches:
+// the lease-guarded row DELETE (the ownership proof) and the terminal SSE
+// transition. *ProbeQueue implements it; tests stub it because ProbeQueue's
+// pgxpool cannot be built on sqlmock.
+type probeSkipQueue interface {
+	Remove(ctx context.Context, task ProbeQueueTask) (bool, error)
+	publishRemovedTransition(task ProbeQueueTask, reason string)
+}
+
 // nodeProbeRunSummary is the slice of the previous probe-cycle audit row that
 // condition ② needs.
 type nodeProbeRunSummary struct {
@@ -324,6 +333,19 @@ func (s *ProbeService) healthEvidenceOf(ctx context.Context, tenant string, cred
 	return evidence, nil
 }
 
+// skipRemovalQueue returns the queue the skip path removes through. A nil
+// *ProbeQueue must surface as a nil interface (typed-nil would fall through
+// the "no queue" guard into Remove's own unavailable-database error).
+func (s *ProbeService) skipRemovalQueue() probeSkipQueue {
+	if s.skipQueue != nil {
+		return s.skipQueue
+	}
+	if s.queue == nil {
+		return nil
+	}
+	return s.queue
+}
+
 // removeSkippedProbe is the "从队列及数据库中移除" half of the skip path.
 // The queue row is hard-deleted (lease-guarded), the node_probe_state mirror
 // row is deleted so the 30s pump cannot re-enqueue the same node, and the
@@ -340,8 +362,9 @@ func (s *ProbeService) removeSkippedProbe(ctx context.Context, task ProbeQueueTa
 		s.removeSkippedFn(ctx, task, reason)
 		return
 	}
+	queue := s.skipRemovalQueue()
 	credID := int(task.CredentialID)
-	if s.queue == nil || task.LeaseToken == "" {
+	if queue == nil || task.LeaseToken == "" {
 		// No queue wired (or no lease): nothing ownership-guarded to do; the
 		// caller only reaches this with a claimed task in production.
 		slog.Warn("probe_necessity: skip removal skipped — queue or lease token missing",
@@ -350,7 +373,7 @@ func (s *ProbeService) removeSkippedProbe(ctx context.Context, task ProbeQueueTa
 	}
 	// 1. Queue row (credential_probe_queue) — the queue itself lives in the
 	//    database, so the hard DELETE removes the request from both.
-	removed, err := s.queue.Remove(ctx, task)
+	removed, err := queue.Remove(ctx, task)
 	if err != nil {
 		slog.Warn("probe_necessity: removing skipped queue row failed",
 			"queue_id", task.ID, "credential_id", credID, "model", task.RawModel, "error", err)
@@ -364,10 +387,20 @@ func (s *ProbeService) removeSkippedProbe(ctx context.Context, task ProbeQueueTa
 	// 2. Database mirror row — must go before returning: pumpDueStatesToQueue
 	//    scans it every 30s and would re-enqueue the node probe we just
 	//    decided to drop.
-	s.worker.deleteNodeProbeState(ctx, credID, task.RawModel)
+	s.deleteNodeProbeStateMirror(ctx, credID, task.RawModel)
 	// 3. SSE terminal transition so the dashboard tile does not hang in-flight.
-	s.queue.publishRemovedTransition(task, skipReasonSSEPrefix+": "+reason)
+	queue.publishRemovedTransition(task, skipReasonSSEPrefix+": "+reason)
 	slog.Info("probe_necessity: self-check skipped as unnecessary, removed from queue and database",
 		"queue_id", task.ID, "credential_id", credID, "model", task.RawModel,
 		"source", task.Source, "reason", reason)
+}
+
+// deleteNodeProbeStateMirror drops the node_probe_state row behind the
+// skipped queue entry.
+func (s *ProbeService) deleteNodeProbeStateMirror(ctx context.Context, credID int, model string) {
+	if s.deleteStateFn != nil {
+		s.deleteStateFn(ctx, credID, model)
+		return
+	}
+	s.worker.deleteNodeProbeState(ctx, credID, model)
 }
