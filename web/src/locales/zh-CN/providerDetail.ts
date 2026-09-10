@@ -257,6 +257,7 @@ export default {
     drawerFieldApiKey: 'API Key',
   },
   errorDetail: {
+    healthLatency: '探活时延', healthError: '探活错误',
     supplier: '供应商', errorCode: '错误码', requestId: '请求 ID',
     stage: '阶段', retry: '重试', latency: '耗时',
     openRequestTitle: '查看请求详情',

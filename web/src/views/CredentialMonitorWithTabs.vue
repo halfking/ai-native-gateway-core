@@ -6,14 +6,17 @@ import CredentialMonitorView from './CredentialMonitorView.vue'
 import CredentialHeatmapView from './CredentialHeatmapView.vue'
 import RoutingLogView from './RoutingLogView.vue'
 import ProbeHealthPanel from './probe/ProbeHealthPanel.vue'
+import ErrorTrendPanel from './errors/ErrorTrendPanel.vue'
 import SegTabs, { type SegTab } from '../components/SegTabs.vue'
 
 // CredentialMonitorWithTabs — host of the /routing-v2/credentials page tabs
 // (docs/FEATURE-REQ-credential-heatmap-routing-log.md §3).
 // The 探测健康 tab is super_admin only: it embeds the former /probe-health
 // page, which was super-gated end to end.
+// The 错误趋势 tab (R12 候选18) is tenant-safe: /api/errors/trend is
+// tenant-scoped server-side (EffectiveTenantIDAll).
 
-type ViewTab = 'list' | 'heatmap' | 'routing-log' | 'probe-health'
+type ViewTab = 'list' | 'heatmap' | 'routing-log' | 'error-trend' | 'probe-health'
 const activeTab = ref<ViewTab>('list')
 const route = useRoute()
 const router = useRouter()
@@ -22,6 +25,7 @@ const tabs = ref<SegTab[]>([
   { value: 'list', label: '列表视图' },
   { value: 'heatmap', label: '热力图' },
   { value: 'routing-log', label: '路由记录' },
+  { value: 'error-trend', label: '错误趋势' },
 ])
 
 const isSuper = isSuperAdmin()
@@ -31,7 +35,7 @@ if (isSuper) {
 
 function normalizeTab(v: unknown): ViewTab | null {
   const s = String(v)
-  if (s === 'list' || s === 'heatmap' || s === 'routing-log') return s
+  if (s === 'list' || s === 'heatmap' || s === 'routing-log' || s === 'error-trend') return s
   if (s === 'probe-health' || s === 'probe') return isSuper ? 'probe-health' : null
   return null
 }
@@ -67,6 +71,7 @@ watch(activeTab, (v) => {
     <CredentialMonitorView v-if="activeTab === 'list'" />
     <CredentialHeatmapView v-else-if="activeTab === 'heatmap'" />
     <RoutingLogView v-else-if="activeTab === 'routing-log'" />
+    <ErrorTrendPanel v-else-if="activeTab === 'error-trend'" />
     <ProbeHealthPanel v-else-if="activeTab === 'probe-health'" embedded />
   </div>
 </template>
