@@ -112,7 +112,12 @@ func (l *PassiveProbeListener) resetCountersOnSuccess(ctx context.Context) {
 		SET consecutive_count = 0
 		FROM (
 			SELECT DISTINCT credential_id, COALESCE(outbound_model, client_model) AS raw_model_name
-			FROM request_logs
+			-- 2026-09-10 minimax-prod-v2 incident: the bare request_logs
+			-- parent only holds cold rows (max(ts) was a full day stale on
+			-- 154), so recent successes were invisible and "consecutive"
+			-- streaks never reset. pollNewErrors already reads the
+			-- current-month surface; every recent-window read must too.
+			FROM request_logs_with_current_month
 			WHERE success = TRUE
 			  AND ts > NOW() - INTERVAL '5 minutes'
 			  AND credential_id IS NOT NULL
@@ -207,7 +212,10 @@ func (l *PassiveProbeListener) pollNewErrors(ctx context.Context) {
 		    SELECT credential_id,
 		           COALESCE(outbound_model, client_model) AS raw_model_name,
 		           COUNT(*) AS total
-		    FROM request_logs
+		    -- 2026-09-10: same cold-parent staleness as resetCountersOnSuccess —
+		    -- recent traffic lives in request_logs_hot, which only the
+		    -- current-month surface exposes.
+		    FROM request_logs_with_current_month
 		    WHERE ts > NOW() - INTERVAL '5 minutes'
 		      AND credential_id IS NOT NULL
 		      AND outbound_model IS NOT NULL
@@ -353,11 +361,21 @@ func (l *PassiveProbeListener) reviewResolution(ctx context.Context) {
 		// pair during the reviewing window. If so, the credential recovered.
 		// Use 6 minutes (not 5) to cover async telemetry lag — request_logs
 		// rows may arrive a few seconds after the actual response.
+		// 2026-09-10 minimax-prod-v2 incident: the success check ran against
+		// the cold request_logs parent, so it saw ZERO successes for any
+		// recent window while request_logs_hot held 472 successes for
+		// (cred 21, MiniMax-M3) at 2026-09-10 12:57 — the review then marked
+		// a demonstrably healthy credential unreachable right after the
+		// operator force-enabled it. Read the current-month surface (the
+		// same one pollNewErrors accumulates errors from) and compare model
+		// names case-insensitively: raw_model_name here is the stored
+		// COALESCE(outbound, client) which can differ in case from the
+		// logged columns ('MiniMax-M3' vs 'minimax-m3').
 		var successes int
 		err := l.db.QueryRow(ctx, `
-			SELECT COUNT(*) FROM request_logs
+			SELECT COUNT(*) FROM request_logs_with_current_month
 			WHERE credential_id = $1
-			  AND COALESCE(outbound_model, client_model) = $2
+			  AND LOWER(COALESCE(outbound_model, client_model)) = LOWER($2)
 			  AND success = TRUE
 			  AND ts > NOW() - INTERVAL '6 minutes'
 		`, p.credentialID, p.rawModel).Scan(&successes)

@@ -1492,7 +1492,10 @@ func (w *NodeProbeWorker) emitSyncAudit(
 	}
 	now := time.Now()
 	durationMs := int(now.Sub(startedAt).Milliseconds())
-	success := direct.ok && gw.ok
+	// 2026-09-10: keep node_probe_runs.success semantics consistent with
+	// runOne and probeRecovered — direct-round health. The gateway round
+	// stays visible through the gateway_* columns.
+	success := direct.ok
 	cleaned := make(map[string]string, len(direct.requestHeaders))
 	for k, v := range direct.requestHeaders {
 		switch k {
@@ -1756,7 +1759,20 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	// Round 2: gateway — now sees the restored state from the direct round
 	gw := w.probeGateway(ctx, credID, model)
 
-	success := direct.ok && gw.ok
+	// 2026-09-10 hzx-2/minimax-prod-v2 incident: the failure ladder and
+	// success bookkeeping must reflect the DIRECT round only. The gateway
+	// round is a composite E2E request routed through this gateway by model
+	// name, so its failure is not always attributable to the probed node:
+	// cred 42 (hzx-2) MiniMax-M2.7-highspeed 2026-09-10 12:56–13:01 recorded
+	// direct 200 ×5 against the node's own decrypted key while every gateway
+	// round returned upstream 401 invalid_key — the healthy node laddered to
+	// consecutive_failures=5 within minutes of a manual force-enable and
+	// showed as degraded. Same doctrine as probeRecovered (direct-only) and
+	// the 2026-08-18 URSM direct-only fix below. The gateway anomaly stays
+	// observable: gateway_* columns in node_probe_runs plus last_gateway_ok /
+	// last_err_code / last_err_detail now carry the actual gateway outcome in
+	// the success branch instead of hardcoded TRUE/NULL.
+	success := direct.ok
 	// 2026-08-18: URSM availability reflects the direct (upstream) round only.
 	// The gateway round is itself routed through the URSM v2 filter; when the
 	// node key is missing/expired the round 503s circularly and writing that
@@ -1802,13 +1818,13 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 					paused = FALSE,
 					last_run_id = NULL,
 					last_direct_ok = TRUE,
-					last_gateway_ok = TRUE,
-					last_err_code = NULL,
-					last_err_detail = NULL,
+					last_gateway_ok = $3,
+					last_err_code = $4,
+					last_err_detail = $5,
 					in_flight_until = NULL,
 					updated_at = now()
 				WHERE credential_id = $1 AND raw_model_name = $2
-			`, credID, model); err != nil {
+			`, credID, model, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw)); err != nil {
 
 			w.logNodeProbeStateUpdateWarning("success", direct.providerID, credID, model, trigger.parentID, err)
 		}
