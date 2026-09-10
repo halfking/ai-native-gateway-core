@@ -77,8 +77,12 @@ func decisionHistoryOf(qr *QueuedRequest) errorsx.DecisionHistory {
 	if qr == nil {
 		return errorsx.DecisionHistory{}
 	}
-	history := errorsx.DecisionHistory{LastSeq: len(qr.AttemptJournal)}
-	for _, entry := range qr.JournalSnapshot() {
+	// audit 2026-09-11: take ONE locked snapshot — the previous unlocked
+	// len(qr.AttemptJournal) raced recordDecision's append/shift and could
+	// disagree with the snapshot iterated below.
+	snapshot := qr.JournalSnapshot()
+	history := errorsx.DecisionHistory{LastSeq: len(snapshot)}
+	for _, entry := range snapshot {
 		history.PriorAttempts = append(history.PriorAttempts, errorsx.PriorAttempt{
 			Seq: entry.Seq, AttemptNo: entry.Attempt, Model: entry.Model,
 			ProviderID: entry.ProviderID, CredentialID: entry.CredentialID,
