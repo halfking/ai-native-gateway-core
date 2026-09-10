@@ -122,7 +122,7 @@
 1. 📘 [实施现状 - 架构概览](./lite-mode-implementation-status.md#1-架构概览)
 2. 📐 [ADR-7 - 工厂模式](./lite-mode-architecture-decisions.md#adr-7-模式切换与工厂模式)
 3. 💻 查看接口：`storage/interfaces.go`
-4. 💻 参考实现：`storage/sqlite/`, `storage/file/`, `storage/memory/`
+4. 💻 参考实现：`storage/sqlite/`, `storage/file/`, `storage/lite/`
 
 ---
 
@@ -265,7 +265,7 @@ config/
 |---------|------|---------|------|
 | 单元测试 | `storage/sqlite/*_test.go` | CRUD + 分页 + 查询 | 25 |
 | 单元测试 | `storage/file/*_test.go` | 读写 + 压缩 + 异步 | 27 |
-| 单元测试 | `storage/memory/*_test.go` | KV + TTL + 过期 | 10 |
+| 单元测试 | `storage/lite/*_test.go` | KV + TTL + 过期 | 8 |
 | 单元测试 | `storage/consistency_test.go` | 对账 + 修复 | 13 |
 | 集成测试 | `cmd/gateway/*_test.go` | 完整装配 + 配置 | 8 |
 | **总计** | | | **83** |

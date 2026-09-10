@@ -156,7 +156,7 @@ data/
 
 ### 2.4 内存状态存储 ✅
 
-**文件**: `storage/memory/state_store.go`
+**文件**: `storage/lite/state_store.go`
 
 **特性**:
 - `sync.RWMutex` 保护并发访问
@@ -182,7 +182,7 @@ type StorageFactory struct {
     
     // lite 模式惰性单例
     bodiesStore *filestore.FileBodiesStore
-    stateStore  *memorystore.MemoryStateStore
+    stateStore  *lite.MemoryStateStore
 }
 
 func NewStorageFactory(cfg *StorageConfig) (*StorageFactory, error)
