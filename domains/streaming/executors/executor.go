@@ -1287,6 +1287,15 @@ type ExecParams struct {
 	// event (SSE event: thinking) to the client, displaying node failover
 	// status without entering the conversation. Optional.
 	OnNodeJump func(message string)
+	// OnMidStreamFailure is invoked when a streaming response dies
+	// terminal AFTER chunks already reached the client (audit R9
+	// candidate 17): ADR-Disp-003 forbids switching nodes post-first-byte,
+	// so without this callback the client sees the connection simply stop
+	// mid-answer with no explanation. The handler bridges it to the
+	// preStream `: thinking:` SSE comment side-band (parser-safe, never
+	// enters the conversation). Optional; nil disables the channel.
+	// Rollback switch: LLM_GATEWAY_MIDSTREAM_FAILURE_NOTICE=false.
+	OnMidStreamFailure func(message string)
 	// FailoverNotices accumulates pre-first-byte dispatch notices for
 	// non-streaming requests, whose transport has no `: thinking:` SSE
 	// side-band. The dispatch bridge renders the accumulated notices into
@@ -3104,6 +3113,67 @@ func mayRetryInterruptedStream(params *ExecParams, interrupted *streamInterrupte
 		}
 	}
 	return true
+}
+
+// midStreamFailureNoticeEnabled is the rollback switch for the candidate-17
+// mid-stream terminal notice (LLM_GATEWAY_MIDSTREAM_FAILURE_NOTICE, default
+// on). Same env-restart semantics as the other LLM_GATEWAY_* stream toggles.
+func midStreamFailureNoticeEnabled() bool {
+	raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_MIDSTREAM_FAILURE_NOTICE"))
+	if raw == "" {
+		return true
+	}
+	on, err := strconv.ParseBool(strings.ToLower(raw))
+	if err != nil {
+		return true
+	}
+	return on
+}
+
+// maybeNotifyMidStreamFailure emits the post-first-byte terminal-failure
+// side-band (audit R9 candidate 17).
+//
+// When a stream dies after chunks already reached the client, ADR-Disp-003
+// forbids a transparent node switch (dispatch/forwarder.go treats
+// BytesSent=true as terminal), so the request is over — but until now the
+// client had no in-band hint: the SSE stream just stopped mid-answer. This
+// fires the OnMidStreamFailure callback once per terminal interruption so
+// the handler can write a `: thinking:` SSE comment frame (parser-safe for
+// opencode's Zod union, never enters the conversation).
+//
+// Called from the forwardForDispatch funnel — the one path every protocol
+// executor's mid-stream failure passes through — right where bytesSent is
+// settled, which is by construction the terminal decision point (sent>0 ⇒
+// dispatcher completes the request without failover).
+//
+// Skipped for client-side interruptions (cancel/disconnect): the recipient
+// is gone, and a stale comment frame could mask the real close reason.
+func maybeNotifyMidStreamFailure(params *ExecParams, sie *streamInterruptedError, bytesSent bool) {
+	if params == nil || params.OnMidStreamFailure == nil || sie == nil || !bytesSent {
+		return
+	}
+	if isClientStreamInterruption(sie.kind, sie.reason) {
+		return
+	}
+	if !midStreamFailureNoticeEnabled() {
+		slog.Debug("executor: mid-stream failure notice suppressed by switch",
+			"request_id", params.RequestID,
+			"reason", sie.reason,
+		)
+		return
+	}
+	sent := 0
+	if params.Capture != nil {
+		sent, _ = params.Capture.ChunkCountersSnapshot()
+	}
+	msg := fmt.Sprintf("upstream stream interrupted (%s) after %d chunk(s); no further failover possible, stream closing", sie.reason, sent)
+	slog.Info("executor: mid-stream terminal failure notice emitted",
+		"request_id", params.RequestID,
+		"credential_id", sie.credentialID,
+		"reason", sie.reason,
+		"chunks_sent", sent,
+	)
+	params.OnMidStreamFailure(msg)
 }
 
 // upstreamRetryAfterHint extracts an upstream-requested retry delay from
