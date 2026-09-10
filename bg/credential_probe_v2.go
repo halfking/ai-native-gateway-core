@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/probeutil"
 	"github.com/kaixuan/llm-gateway-go/internal/providercap"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
@@ -865,11 +866,11 @@ func (c *CredentialProbeV2) miniChat(ctx context.Context, httpClient *http.Clien
 }
 
 func truncateBody(b []byte) string {
-	s := strings.TrimSpace(string(b))
-	if len(s) > 200 {
-		return s[:200]
-	}
-	return s
+	// audit R8 P1: 401/403 error bodies often echo the very credential being
+	// probed (Bearer token / sk- key). Redact before the text lands in
+	// credentials.health_error, which admin UI renders verbatim; cut on
+	// UTF-8 boundaries so CJK bodies stay valid UTF-8 for PostgreSQL.
+	return string(errorsx.SanitizeErrorText([]byte(strings.TrimSpace(string(b))), 200))
 }
 
 // miniAnthropic sends a single-shot /v1/messages request with x-api-key +

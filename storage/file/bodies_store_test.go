@@ -199,7 +199,7 @@ func TestReadRange(t *testing.T) {
 	}
 
 	// 删除 turn 3 后，区间 (1,5) 应跳过缺失轮次返回 4 条
-	missing := s.buildPath("tenant-a", "sess-range", 3)
+	missing := s.turnPath(CodecGzip, "tenant-a", "sess-range", 3)
 	if err := os.Remove(missing); err != nil {
 		t.Fatalf("os.Remove(%s) error = %v", missing, err)
 	}
@@ -311,7 +311,7 @@ func TestBodiesWriteAfterClose(t *testing.T) {
 func TestReadCorruptedData(t *testing.T) {
 	s := newTestStore(t, 2)
 	ctx := context.Background()
-	path := s.buildPath("tenant-a", "sess-bad", 1)
+	path := s.turnPath(CodecGzip, "tenant-a", "sess-bad", 1)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll error = %v", err)
 	}

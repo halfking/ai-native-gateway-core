@@ -652,6 +652,13 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					preStream.writeThinking(message)
 				}
 			},
+			// 审计 R9 候选 17：首字节后流中终态失败补发同款注释帧，
+			// 让客户端在连接关闭前拿到失败原因（不进会话内容）。
+			OnMidStreamFailure: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
 			OnStreamHeartbeat: func() error {
 				if preStream != nil {
 					return preStream.session.Heartbeat()

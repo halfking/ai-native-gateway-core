@@ -110,6 +110,7 @@ func initStorageMode(cfg *config.Config, storageCfg *config.StorageConfig) (*sto
 		Mode:          storage.StorageModeLite,
 		SQLitePath:    lite.SQLitePath,
 		BodiesDir:     lite.BodiesDir,
+		BodiesCodec:   lite.BodiesCodec,
 		CacheDir:      lite.CacheDir,
 		LogsDir:       lite.LogsDir,
 		AsyncWriters:  lite.AsyncWriters,
