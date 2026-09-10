@@ -77,8 +77,12 @@ while (stack.length) {
 const deadViews = [];
 const deadComponents = [];
 const deadOther = [];
+const ambient = [];
 for (const f of allFiles) {
   if (!/\.(vue|ts)$/.test(f) || isTest(f)) continue;
+  // Ambient declarations (*.d.ts) are consumed by tsconfig, never imported —
+  // listing them as "dead" is misleading.
+  if (/\.d\.ts$/.test(f)) { ambient.push(f); continue; }
   if (reachable.has(f)) continue;
   const norm = f.replace(/\\/g, '/');
   const rel = path.relative(ROOT, f).replace(/\\/g, '/');
@@ -93,6 +97,11 @@ console.log('DEAD COMPONENTS:', deadComponents.length);
 deadComponents.forEach(v => console.log('  ', v));
 console.log('DEAD OTHER:', deadOther.length);
 deadOther.forEach(v => console.log('  ', v));
+// REMINDER: deadOther needs manual curation before deletion — it includes
+// test tooling (e.g. i18n/scanner.ts is imported by keys_referenced.test.ts)
+// that reachability-by-import cannot see.
+console.log('AMBIENT (not dead, excluded):', ambient.length);
+ambient.forEach(v => console.log('  ', path.relative(ROOT, v).replace(/\\/g, '/')));
 
 // Orphaned test files: tests whose subject is unreachable.
 const deadStems = new Set();
