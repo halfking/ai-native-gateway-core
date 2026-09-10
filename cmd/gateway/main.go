@@ -4303,6 +4303,27 @@ func main() {
 			}
 			nodeProbeWorker.Start(context.Background())
 			slog.Info("authoritative URSM v2 node_probe_worker started")
+			// 2026-09-11 fix: mirror branch-1's credRecovery wiring. The
+			// authoritative fallback path starts its own nodeProbeWorker but
+			// never handed credRecovery a submitter, so after f56598b59
+			// unlocked the bg block on traffic-only canaries every 30s tick
+			// logged "probeSubmitter not wired" and expired-binding recovery
+			// never enqueued probes (observed on 154, URSM v2 authoritative).
+			// See docs/audit/2026-09-10-selfcheck-recovery-gate-audit.md.
+			if credRecovery != nil {
+				credRecovery.SetProbeSubmitter(func(credID int, model string) {
+					nodeProbeWorker.Submit(credID, model, "default", "expired-binding-recovery")
+				})
+				credRecovery.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+				credRecovery.SetOnQuotaRecovered(func(credID int, source string) {
+					provider.InvalidateCandidateCacheForCredential(credID)
+					metrics.RoutingCredentialQuotaRecoveredNotifyTotal.WithLabelValues(source).Inc()
+				})
+				if credProbeV2 != nil {
+					credRecovery.SetProbeSubmitterImmediate(credProbeV2.ProbeNowAsync)
+				}
+				slog.Info("credRecovery: expired-binding probe submitter wired (authoritative)")
+			}
 		}
 
 		// 2026-08-29: system_health_worker and model_quality_worker do not depend
