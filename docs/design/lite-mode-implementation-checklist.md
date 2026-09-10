@@ -138,6 +138,11 @@ Phase 5: ░░░░░░░░   0% ⏳
 ### 目标
 实现运行时状态的内存存储，替代 Redis 在单机场景下的功能。
 
+> 2026-09-11 路径勘误（R10 审计，配套 storage/lite 命名迁移）：实际实现
+> 落地为 `storage/lite/state_store.go`（`MemoryStateStore` 单一文件），
+> 未按下列 4.1–4.4 的计划拆分为 storage/memory/ 下的独立文件。标题中的
+> 旧路径仅保留计划原貌，现状以 `docs/storage/README.md` 为准。
+
 ### 子任务
 
 #### 4.1 KV 存储 (storage/memory/kv_store.go)
