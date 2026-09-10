@@ -57,7 +57,7 @@ export LLM_GATEWAY_SQLITE_PATH=/var/lib/llm-gateway/gateway.db
 | **会话元数据** | SQLite | `storage/sqlite/session_store.go` | 会话 CRUD + 查询 |
 | **轮次元数据** | SQLite | `storage/sqlite/turns_store.go` | 轮次信息索引 |
 | **会话内容** | 文件 + gzip | `storage/file/bodies_store.go` | 大对象存储（200KB-5MB） |
-| **运行时状态** | 内存 KV | `storage/memory/state_store.go` | 限流计数/锁等 |
+| **运行时状态** | 内存 KV | `storage/lite/state_store.go` | 限流计数/锁等 |
 | **异步写入** | Go channel | `storage/file/async_writer.go` | 后台写入队列 |
 | **一致性对账** | Worker | `storage/consistency.go` | 检测修复数据不一致 |
 | **存储工厂** | 工厂模式 | `storage/factory/factory.go` | 模式切换 |
@@ -360,7 +360,7 @@ storage_consistency_check_total{result="orphan_bodies"}
 | **SQLite Schema** | `storage/sqlite/schema.go` |
 | **文件内容存储** | `storage/file/bodies_store.go` |
 | **异步写入器** | `storage/file/async_writer.go` |
-| **内存状态存储** | `storage/memory/state_store.go` |
+| **内存状态存储** | `storage/lite/state_store.go` |
 | **一致性对账** | `storage/consistency.go` |
 | **存储工厂** | `storage/factory/factory.go` |
 | **主程序集成** | `cmd/gateway/storage_mode_init.go` |
