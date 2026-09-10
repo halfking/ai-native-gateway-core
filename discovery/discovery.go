@@ -38,6 +38,15 @@ type Service struct {
 	discovered  int
 	keyring     *secret.Keyring
 	fernetKey   []byte
+
+	// 2026-09-10: short-lived snapshot of the active standard-model
+	// catalog used by matchExistingCanonicalCached so the per-model
+	// upsert loop links to existing standard rows without re-scanning
+	// models_canonical for every raw name. Guarded by canonMu, NOT the
+	// status mu above (different contention profile).
+	canonMu       sync.Mutex
+	canonCatalog  []canonicalRef
+	canonCachedAt time.Time
 }
 
 // NewService creates a new discovery service.
@@ -653,36 +662,54 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 	//     "z-ai/glm-5.2", Meta "meta/llama-3.3-70b-instruct") and is kept
 	//     unchanged in provider_models.raw_model_name.
 	canonicalRawName := modelname.CanonicalizeClientModel(rawName)
-	canonicalName := NormalizeModelName(rawName)
-	family := InferFamily(canonicalName)
+	standardizedName := NormalizeModelName(rawName)
 
-	// Upsert into models_canonical. The INSERT path writes a seed tags
-	// array with `family:<id>` so a freshly discovered model is never
-	// visible in the /models family-chip filter with an empty tag set
-	// (2026-06-20 incident: 459 active models had family=... but
-	// tags='{}', making the family chip in ModelsView's quick-filter
-	// row return 0 rows). The ON CONFLICT branch:
-	//   1. preserves any existing tag set the admin might have
-	//      edited by hand, and only appends `family:<id>` if not
-	//      already there;
-	//   2. normalizes a stale "split" family id (e.g. existing row
-	//      has family='claude' from a pre-P1 scan, but the canonical
-	//      id is 'anthropic-claude') — when the existing family is
-	//      one of the known split tokens we update to the canonical
-	//      form and swap the corresponding family:<id> tag; an
-	//      admin-edited family that *differs* from what we'd
-	//      compute (i.e. NOT a known split token) is left alone so
-	//      we don't trample manual classifications.
-	//
-	// 2026-07-14: canonical_name is now always written as lowercase so
-	// internal SQL joins don't need `lower(...) = lower(...)` wrappers.
-	//
-	// 2026-07-20: modality is seeded using modelname.InferModality for
-	// zero-cost initialization. Actual probe validation happens later.
-	inferredModality := modelname.InferModality(rawName)
-
+	// 2026-09-10: prefer matching the raw name to an EXISTING standard
+	// model over deriving a fresh canonical from it. Provider feeds like
+	// "cluade/opus-5" or "grok/4.6" used to seed junk standard rows
+	// ("opus-5" / "4.6" — NormalizeRouteKey simply drops the vendor
+	// prefix) even though "claude-opus-5" / "grok-4.6" were already in
+	// models_canonical. A confident match (score ≥ AutoLinkThreshold)
+	// reuses that standard row and its name for standardized_name.
 	var canonicalID int
-	err := s.db.QueryRow(ctx, `
+	var canonicalName string
+	matchedRef, matched := s.matchExistingCanonicalCached(ctx, rawName)
+	if matched {
+		canonicalID = matchedRef.id
+		canonicalName = matchedRef.name
+		standardizedName = matchedRef.name
+		slog.Debug("raw model matched to existing standard model",
+			"raw_model_name", rawName,
+			"canonical_name", canonicalName)
+	} else {
+		canonicalName = NormalizeModelName(rawName)
+		family := InferFamily(canonicalName)
+		// Upsert into models_canonical. The INSERT path writes a seed tags
+		// array with `family:<id>` so a freshly discovered model is never
+		// visible in the /models family-chip filter with an empty tag set
+		// (2026-06-20 incident: 459 active models had family=... but
+		// tags='{}', making the family chip in ModelsView's quick-filter
+		// row return 0 rows). The ON CONFLICT branch:
+		//   1. preserves any existing tag set the admin might have
+		//      edited by hand, and only appends `family:<id>` if not
+		//      already there;
+		//   2. normalizes a stale "split" family id (e.g. existing row
+		//      has family='claude' from a pre-P1 scan, but the canonical
+		//      id is 'anthropic-claude') — when the existing family is
+		//      one of the known split tokens we update to the canonical
+		//      form and swap the corresponding family:<id> tag; an
+		//      admin-edited family that *differs* from what we'd
+		//      compute (i.e. NOT a known split token) is left alone so
+		//      we don't trample manual classifications.
+		//
+		// 2026-07-14: canonical_name is now always written as lowercase so
+		// internal SQL joins don't need `lower(...) = lower(...)` wrappers.
+		//
+		// 2026-07-20: modality is seeded using modelname.InferModality for
+		// zero-cost initialization. Actual probe validation happens later.
+		inferredModality := modelname.InferModality(rawName)
+
+		err := s.db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
 		VALUES ($1, $2, ARRAY['family:' || $2]::text[], 'discovery', 'active', $4)
 		ON CONFLICT (canonical_name) DO UPDATE SET
@@ -744,8 +771,9 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 			END
 		RETURNING id
 	`, canonicalName, family, splitFamilyIDs, inferredModality).Scan(&canonicalID)
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 
 	// Upsert into model_aliases. raw_name is also enforced lowercase here
@@ -772,9 +800,12 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		ctx,
 		s.db,
 		cred.ID,
-		rawName,                              // provider-facing: keep casing
-		canonicalRawName,                     // client-facing lowercase key (no vendor prefix)
-		modelname.NormalizeRouteKey(rawName), // 2026-07-14: standardized_name = stripped lower
+		rawName,          // provider-facing: keep casing
+		canonicalRawName, // client-facing lowercase key (no vendor prefix)
+		// 2026-07-14: lowercase stripped form; 2026-09-10: when the raw
+		// name matched an existing standard model, standardizedName now
+		// carries that canonical name instead of a truncated raw name.
+		standardizedName,
 		&canonicalID,
 	)
 }
@@ -818,12 +849,26 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	if db == nil {
 		return 0, "", fmt.Errorf("database not configured")
 	}
-	canonicalName = NormalizeModelName(rawName)
-	family := InferFamily(canonicalName)
-	inferredModality := modelname.InferModality(rawName)
 	if source == "" {
 		source = "discovery"
 	}
+
+	// 2026-09-10: match against the EXISTING standard-model catalog first
+	// (see upsertModel). Only when no catalog name scores above
+	// AutoLinkThreshold do we fall back to seeding a new canonical row
+	// derived from the raw name.
+	if lister, ok := db.(canonicalListQuerier); ok {
+		if ref, matched := matchExistingCanonical(ctx, lister, rawName); matched {
+			if aliasErr := seedCanonicalAliases(ctx, db, rawName, ref.id, ref.name); aliasErr != nil {
+				return 0, "", aliasErr
+			}
+			return ref.id, ref.name, nil
+		}
+	}
+
+	canonicalName = NormalizeModelName(rawName)
+	family := InferFamily(canonicalName)
+	inferredModality := modelname.InferModality(rawName)
 
 	err = db.QueryRow(ctx, `
 		INSERT INTO models_canonical (canonical_name, family, tags, source, status, modality)
@@ -892,6 +937,35 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	}
 
 	return canonicalID, canonicalName, nil
+}
+
+// seedCanonicalAliases writes the alias rows that make rawName (and its
+// generated variants) resolve to canonicalID. Shared by the matched-standard
+// fast path and the legacy seed-new-canonical path of
+// EnsureCanonicalAndAliases.
+func seedCanonicalAliases(ctx context.Context, db modelcatalog.Querier, rawName string, canonicalID int, canonicalName string) error {
+	aliases := GenerateAliases(rawName, canonicalName)
+	seenAliases := make(map[string]struct{}, len(aliases))
+	for _, alias := range aliases {
+		normalizedAlias := modelname.CanonicalizeClientModel(alias)
+		if normalizedAlias == "" {
+			continue
+		}
+		if _, seen := seenAliases[normalizedAlias]; seen {
+			continue
+		}
+		seenAliases[normalizedAlias] = struct{}{}
+		if _, execErr := db.Exec(ctx, `
+			INSERT INTO model_aliases (canonical_id, raw_name, status)
+			VALUES ($1, $2, 'active')
+			ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+				status = 'active',
+				updated_at = NOW()
+		`, canonicalID, normalizedAlias); execErr != nil {
+			return fmt.Errorf("upsert model_alias %q: %w", normalizedAlias, execErr)
+		}
+	}
+	return nil
 }
 
 // expireStaleModels marks any model_offers row that wasn't returned by the

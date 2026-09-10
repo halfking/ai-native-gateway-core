@@ -660,6 +660,19 @@ export interface ModelOfferSuggestion {
   offer_id: number
   raw_model_name: string
   rule_based: string
+  // 2026-09-10: backend matches the raw name against the standard-model
+  // catalog (vendor-prefix re-join + bounded typo tolerance, e.g.
+  // "cluade/opus-5" → "claude-opus-5", "grok/4.6" → "grok-4.6").
+  // suggested_canonical_id is 0 when no match clears the confidence
+  // threshold.
+  suggested_canonical_id: number
+  matches: Array<{
+    id: number
+    canonical_name: string
+    display_name: string | null
+    family: string | null
+    score: number
+  }>
   canonical_options: Array<{
     id: number
     canonical_name: string
@@ -678,6 +691,10 @@ export function updateModelOffer(
   body: {
     standardized_name?: string | null
     canonical_id?: number | null
+    // 2026-09-10: explicit unlink of the standard model. Needed because
+    // "canonical_id": null is indistinguishable from an omitted field and
+    // the model_offers view trigger masks NULL writes with COALESCE.
+    clear_canonical?: boolean
     // outbound_model_name is the upstream-side model identifier (e.g. a
     // Volcano Ark endpoint ID like "ep-20241227XXXX").  Pass an empty
     // string to clear it (revert to raw_model_name).

@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
 func (h *Handler) handleProviderModelOffer(w http.ResponseWriter, r *http.Request, providerID int, offerPath string) {
@@ -72,6 +73,12 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	var req struct {
 		StandardizedName *string `json:"standardized_name"`
 		CanonicalID      *int    `json:"canonical_id"`
+		// ClearCanonicalID unlinks the standard model entirely. Needed as a
+		// separate flag because "canonical_id": null is indistinguishable
+		// from an omitted field, AND because the model_offers INSTEAD OF
+		// UPDATE trigger COALESCEs canonical_id — a NULL write through the
+		// view would silently keep the old value.
+		ClearCanonicalID bool `json:"clear_canonical"`
 		// OutboundModelName is the upstream-side model identifier — e.g. a
 		// Volcano Ark endpoint ID like "ep-20241227XXXX".  When set, the
 		// gateway uses this instead of raw_model_name when calling the
@@ -112,7 +119,22 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		return
 	}
 
-	if req.CanonicalID != nil {
+	if req.ClearCanonicalID {
+		// Write provider_models directly: the view trigger's COALESCE
+		// would keep the old canonical_id on a NULL write.
+		//nolint:errcheck // best-effort exec, non-critical
+		h.db.Exec(ctx, `
+			UPDATE provider_models
+			SET canonical_id = NULL, updated_at = now()
+			WHERE id = (
+				SELECT pm.id FROM provider_models pm
+				JOIN model_offers mo ON mo.raw_model_name = pm.raw_model_name
+				JOIN credentials c ON c.id = pm.provider_id AND c.id = mo.credential_id
+				WHERE mo.id = $1
+				LIMIT 1
+			)
+		`, offerID)
+	} else if req.CanonicalID != nil {
 		var canonName string
 		err := h.db.QueryRow(ctx, `SELECT canonical_name FROM models_canonical WHERE id = $1`, *req.CanonicalID).Scan(&canonName)
 		if err != nil {
@@ -295,11 +317,28 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	// process-wide cache so the next page render re-reads the DB.
 	// 522: context_window also feeds the candidate trim threshold, so a
 	// calibration change must flush the cache too.
-	if req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil || req.ContextWindow != nil {
+	if req.ClearCanonicalID || req.CanonicalID != nil || req.StandardizedName != nil || req.OutboundModelName != nil || req.ContextWindow != nil {
 		InvalidateAvailableModelsCache()
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+type canonicalOption struct {
+	ID            int    `json:"id"`
+	CanonicalName string `json:"canonical_name"`
+	DisplayName   string `json:"display_name"`
+	Family        string `json:"family"`
+}
+
+// canonicalMatch is one ranked entry of the standard-model matching result
+// (modelname.MatchStandardModels) returned in the suggestions payload.
+type canonicalMatch struct {
+	ID            int     `json:"id"`
+	CanonicalName string  `json:"canonical_name"`
+	DisplayName   string  `json:"display_name"`
+	Family        string  `json:"family"`
+	Score         float64 `json:"score"`
 }
 
 func (h *Handler) getModelOfferSuggestions(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
@@ -327,26 +366,58 @@ func (h *Handler) getModelOfferSuggestions(w http.ResponseWriter, r *http.Reques
 	}
 	defer rows.Close()
 
-	type canonicalOption struct {
-		ID            int    `json:"id"`
-		CanonicalName string `json:"canonical_name"`
-		DisplayName   string `json:"display_name"`
-		Family        string `json:"family"`
-	}
 	options := make([]canonicalOption, 0)
+	names := make([]string, 0, 64)
 	for rows.Next() {
 		var o canonicalOption
 		if err := rows.Scan(&o.ID, &o.CanonicalName, &o.DisplayName, &o.Family); err != nil {
 			continue
 		}
 		options = append(options, o)
+		names = append(names, o.CanonicalName)
+	}
+
+	// 2026-09-10: match the raw name against the standard-model catalog
+	// instead of echoing the raw name back. "cluade/opus-5" now suggests
+	// canonical "claude-opus-5" (re-join vendor prefix + typo tolerance)
+	// and "grok/4.6" suggests "grok-4.6" (prefix join). rule_based keeps
+	// its legacy meaning (a suggested standardized_name string) but is
+	// now the matched standard name when one is confident enough.
+	byName := make(map[string]canonicalOption, len(options))
+	for _, o := range options {
+		byName[strings.ToLower(o.CanonicalName)] = o
+	}
+	ranked := modelname.MatchStandardModels(rawName, names)
+	matches := make([]canonicalMatch, 0, 8)
+	suggestedID := 0
+	ruleBased := modelname.NormalizeRouteKey(rawName)
+	if len(ranked) > 0 && ranked[0].Score >= modelname.AutoLinkThreshold {
+		if o, ok := byName[strings.ToLower(ranked[0].Name)]; ok {
+			suggestedID = o.ID
+			ruleBased = o.CanonicalName
+		}
+	}
+	for _, m := range ranked {
+		o, ok := byName[strings.ToLower(m.Name)]
+		if !ok {
+			continue
+		}
+		matches = append(matches, canonicalMatch{
+			ID: o.ID, CanonicalName: o.CanonicalName,
+			DisplayName: o.DisplayName, Family: o.Family, Score: m.Score,
+		})
+		if len(matches) >= 8 {
+			break
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"offer_id":          offerID,
-		"raw_model_name":    rawName,
-		"rule_based":        rawName,
-		"canonical_options": options,
+		"offer_id":               offerID,
+		"raw_model_name":         rawName,
+		"rule_based":             ruleBased,
+		"suggested_canonical_id": suggestedID,
+		"matches":                matches,
+		"canonical_options":      options,
 	})
 }
 
