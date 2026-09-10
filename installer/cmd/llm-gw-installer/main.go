@@ -355,6 +355,9 @@ var proxyRegionPolicyMigration691 []byte
 //go:embed embeddata/startup/692_session_summaries_user_intent_widen.sql
 var sessionSummariesUserIntentWidenMigration692 []byte
 
+//go:embed embeddata/startup/693_provider_models_canonical_cleared_at.sql
+var providerModelsCanonicalClearedAtMigration693 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -468,6 +471,7 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/690_session_summaries_archived_ttl_index.sql":                           sessionSummariesArchivedTTLIndexMigration690,
 	"startup/691_proxy_region_policy.sql":                                            proxyRegionPolicyMigration691,
 	"startup/692_session_summaries_user_intent_widen.sql":                            sessionSummariesUserIntentWidenMigration692,
+	"startup/693_provider_models_canonical_cleared_at.sql":                           providerModelsCanonicalClearedAtMigration693,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

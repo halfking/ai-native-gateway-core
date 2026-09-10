@@ -189,6 +189,102 @@ func TestUpsertSQL_AdminProtectedGuard(t *testing.T) {
 	}
 }
 
+// TestUpsertSQL_CanonicalClearedGuard pins the migration-693 admin-unbind
+// contract: the provider_models ON CONFLICT branch must refuse the incoming
+// EXCLUDED.canonical_id when provider_models.canonical_cleared_at is set —
+// otherwise the next discovery refresh silently re-links an offer the
+// operator unbound (the COALESCE alone always writes EXCLUDED through,
+// because discovery passes a non-NULL canonical_id).
+func TestUpsertSQL_CanonicalClearedGuard(t *testing.T) {
+	s := upsertCredentialModelSQL
+
+	pmConflict := strings.Index(s, "ON CONFLICT (provider_id, raw_model_name)")
+	if pmConflict < 0 {
+		t.Fatal("provider_models ON CONFLICT clause not found in upsert SQL")
+	}
+	// Scope to the provider_models branch only: it ends at its RETURNING id.
+	branchEnd := strings.Index(s[pmConflict:], "RETURNING id")
+	if branchEnd < 0 {
+		t.Fatal("could not locate the end of the provider_models ON CONFLICT branch")
+	}
+	branch := s[pmConflict : pmConflict+branchEnd]
+
+	for _, want := range []string{
+		// The marker gate...
+		"canonical_cleared_at IS NOT NULL",
+		// ...must keep the STORED canonical_id (NULL right after an admin
+		// unlink) rather than adopting EXCLUDED...
+		"THEN provider_models.canonical_id",
+		// ...and the legacy COALESCE must survive for unmarked rows.
+		"ELSE COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id)",
+	} {
+		if !strings.Contains(branch, want) {
+			t.Errorf("provider_models ON CONFLICT branch is missing %q (admin unbind would be overwritten by the next discovery refresh)", want)
+		}
+	}
+
+	// The canonical_id assignment must be a CASE guarded on the marker — a
+	// bare COALESCE assignment means the guard was dropped.
+	if !strings.Contains(branch, "canonical_id = CASE") {
+		t.Error("canonical_id assignment must be guarded by a CASE on canonical_cleared_at")
+	}
+}
+
+// TestManualInsertSQL_LiftsClearedMarkerOnExplicitRelink pins the other half
+// of the migration-693 contract for the manual-enroll path: an operator
+// manually (re)linking a canonical model must CLEAR the admin-unbind marker
+// (otherwise InsertManualCredentialModel could never undo an unlink), while
+// an enroll without a canonical ID preserves the marker.
+func TestManualInsertSQL_LiftsClearedMarkerOnExplicitRelink(t *testing.T) {
+	s := insertManualCredentialModelSQL
+
+	pmConflict := strings.Index(s, "ON CONFLICT (provider_id, raw_model_name)")
+	if pmConflict < 0 {
+		t.Fatal("provider_models ON CONFLICT clause not found in manual insert SQL")
+	}
+	branchEnd := strings.Index(s[pmConflict:], "RETURNING id")
+	if branchEnd < 0 {
+		t.Fatal("could not locate the end of the provider_models ON CONFLICT branch")
+	}
+	branch := s[pmConflict : pmConflict+branchEnd]
+
+	for _, want := range []string{
+		"canonical_cleared_at = CASE",
+		"WHEN EXCLUDED.canonical_id IS NOT NULL THEN NULL",
+		"ELSE provider_models.canonical_cleared_at",
+	} {
+		if !strings.Contains(branch, want) {
+			t.Errorf("manual insert provider_models ON CONFLICT branch is missing %q (a manual re-link would not lift the admin-unbind marker)", want)
+		}
+	}
+}
+
+// TestUpsertCredentialModel_ExecutesParametrizedSQL exercises the wrapper
+// end-to-end against pgxmock: the caller's canonicalID pointer must reach
+// the SQL as the $5 binding. The cleared-row semantics themselves live in
+// the SQL text and are pinned structurally by
+// TestUpsertSQL_CanonicalClearedGuard — pgxmock cannot execute SQL.
+func TestUpsertCredentialModel_ExecutesParametrizedSQL(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	canonicalID := 7
+	mock.ExpectExec("INSERT INTO provider_models").
+		WithArgs(42, "z-ai/glm-5.2", "glm-5.2", "glm-5.2", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	if err := UpsertCredentialModel(context.Background(), mock, 42,
+		"z-ai/glm-5.2", "glm-5.2", "glm-5.2", &canonicalID); err != nil {
+		t.Fatalf("UpsertCredentialModel: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 // TestAutoFillDefaultProbeModel_SourceLabel pins the constant that the
 // daily DefaultProbePicker repick loop uses to recognise refresh-time
 // auto-fills. If this constant changes, the corresponding
@@ -262,6 +358,7 @@ func TestAutoFillDefaultProbeModel_SQLContract(t *testing.T) {
 //   - default_probe_model_source = 'manual' (operator pinned it),
 //   - cmb has no routable binding yet (transient state right after
 //     credential creation, before the first refresh completes).
+//
 // All three are normal operating conditions and must not surface as
 // errors to the discovery / admin refresh callers.
 func TestAutoFillDefaultProbeModel_NoRowsIsNotAnError(t *testing.T) {

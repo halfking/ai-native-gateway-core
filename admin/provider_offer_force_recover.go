@@ -144,9 +144,15 @@ func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQueri
 		// PROVIDER id and never matched a single row, silently no-oping.
 		// The cmb.id = $1 locator is regression-pinned by
 		// TestUpdateModelOffer_ClearCanonical_UsesBindingJoin.
+		// Migration 693: canonical_cleared_at is the persistent admin-unbind
+		// marker — without it the next discovery refresh re-linked the offer
+		// via UpsertCredentialModel's COALESCE(EXCLUDED.canonical_id, ...)
+		// within one cycle, so the operator's unlink silently reverted.
 		tag, err := db.Exec(ctx, `
 			UPDATE provider_models pm
-			SET canonical_id = NULL, updated_at = now()
+			SET canonical_id = NULL,
+			    canonical_cleared_at = now(),
+			    updated_at = now()
 			WHERE pm.id = (
 				SELECT cmb.provider_model_id FROM credential_model_bindings cmb
 				WHERE cmb.id = $1
@@ -168,6 +174,21 @@ func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQueri
 		}
 		//nolint:errcheck // best-effort exec, non-critical
 		db.Exec(ctx, `UPDATE model_offers SET canonical_id = $1 WHERE id = $2`, *req.CanonicalID, offerID)
+		// Migration 693: an explicit canonical re-link (this PATCH, i.e. the
+		// operator picking a standard model in the frontend) lifts the
+		// admin-unbind marker so discovery maintains the link again. The
+		// model_offers INSTEAD OF UPDATE trigger doesn't know the column,
+		// so clear it on the base table, using the same binding locator as
+		// the clear_canonical branch above.
+		//nolint:errcheck // best-effort exec, non-critical
+		db.Exec(ctx, `
+			UPDATE provider_models
+			SET canonical_cleared_at = NULL, updated_at = now()
+			WHERE id = (
+				SELECT cmb.provider_model_id FROM credential_model_bindings cmb
+				WHERE cmb.id = $1
+			)
+		`, offerID)
 		if req.StandardizedName == nil {
 			//nolint:errcheck // best-effort exec, non-critical
 			db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, canonName, offerID)
@@ -375,11 +396,20 @@ func serveModelOfferSuggestions(w http.ResponseWriter, r *http.Request, db offer
 	defer cancel()
 
 	var rawName string
+	var canonicalCleared bool
+	// Migration 693: also fetch whether the operator unbound this offer
+	// (provider_models.canonical_cleared_at IS NOT NULL). model_offers.id
+	// IS credential_model_bindings.id (view definition), so the binding→
+	// provider_models hop locates the exact base row.
 	err := db.QueryRow(ctx, `
-		SELECT mo.raw_model_name FROM model_offers mo
+		SELECT mo.raw_model_name,
+		       (pm.canonical_cleared_at IS NOT NULL) AS canonical_cleared
+		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
+		JOIN credential_model_bindings cmb ON cmb.id = mo.id
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE mo.id = $1 AND c.provider_id = $2
-	`, offerID, providerID).Scan(&rawName)
+	`, offerID, providerID).Scan(&rawName, &canonicalCleared)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "offer not found")
 		return
@@ -426,7 +456,13 @@ func serveModelOfferSuggestions(w http.ResponseWriter, r *http.Request, db offer
 	matches := make([]canonicalMatch, 0, 8)
 	suggestedID := 0
 	ruleBased := modelname.NormalizeRouteKey(rawName)
-	if len(ranked) > 0 && ranked[0].Score >= modelname.AutoLinkThreshold {
+	// Migration 693: an admin-unbound offer gets no auto-suggestion —
+	// suggesting the very model the operator explicitly unlinked would
+	// invite a one-click undo of their decision. suggested_canonical_id
+	// stays 0 (the established "no confident match" value the frontend
+	// already handles); the ranked matches list is still returned so the
+	// operator keeps the options to re-link by hand.
+	if !canonicalCleared && len(ranked) > 0 && ranked[0].Score >= modelname.AutoLinkThreshold {
 		if o, ok := byName[strings.ToLower(ranked[0].Name)]; ok {
 			suggestedID = o.ID
 			ruleBased = o.CanonicalName
@@ -451,8 +487,11 @@ func serveModelOfferSuggestions(w http.ResponseWriter, r *http.Request, db offer
 		"raw_model_name":         rawName,
 		"rule_based":             ruleBased,
 		"suggested_canonical_id": suggestedID,
-		"matches":                matches,
-		"canonical_options":      options,
+		// Migration 693: lets the UI distinguish "no confident match" from
+		// "admin unbound, suggestion intentionally suppressed".
+		"canonical_cleared": canonicalCleared,
+		"matches":           matches,
+		"canonical_options": options,
 	})
 }
 

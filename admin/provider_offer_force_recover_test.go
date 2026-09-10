@@ -142,6 +142,7 @@ type suggestionsResponseJSON struct {
 	RawModelName         string           `json:"raw_model_name"`
 	RuleBased            string           `json:"rule_based"`
 	SuggestedCanonicalID int              `json:"suggested_canonical_id"`
+	CanonicalCleared     bool             `json:"canonical_cleared"`
 	Matches              []offerMatchJSON `json:"matches"`
 	CanonicalOptions     []struct {
 		ID            int    `json:"id"`
@@ -149,6 +150,14 @@ type suggestionsResponseJSON struct {
 		DisplayName   string `json:"display_name"`
 		Family        string `json:"family"`
 	} `json:"canonical_options"`
+}
+
+// suggestionLookupRows shapes the offers lookup of
+// serveModelOfferSuggestions (migration 693): the raw name plus whether the
+// operator admin-unbound the offer (provider_models.canonical_cleared_at
+// IS NOT NULL).
+func suggestionLookupRows(rawName string, cleared bool) *pgxmock.Rows {
+	return pgxmock.NewRows([]string{"raw_model_name", "canonical_cleared"}).AddRow(rawName, cleared)
 }
 
 func suggestionsCatalogRows(ids []int, names []string) *pgxmock.Rows {
@@ -180,7 +189,7 @@ func TestModelOfferSuggestions_ConfidentMatch(t *testing.T) {
 
 	mock.ExpectQuery(`FROM model_offers mo`).
 		WithArgs(301, 2).
-		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name"}).AddRow("cluade/opus-5"))
+		WillReturnRows(suggestionLookupRows("cluade/opus-5", false))
 	mock.ExpectQuery(`FROM models_canonical`).
 		WillReturnRows(suggestionsCatalogRows(
 			[]int{7, 8},
@@ -227,7 +236,7 @@ func TestModelOfferSuggestions_NoConfidentMatch(t *testing.T) {
 	rawName := "totally-unknown-widget"
 	mock.ExpectQuery(`FROM model_offers mo`).
 		WithArgs(301, 2).
-		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name"}).AddRow(rawName))
+		WillReturnRows(suggestionLookupRows(rawName, false))
 	mock.ExpectQuery(`FROM models_canonical`).
 		WillReturnRows(suggestionsCatalogRows([]int{7}, []string{"claude-opus-5"}))
 
@@ -272,7 +281,7 @@ func TestModelOfferSuggestions_MatchesSortedCappedAt8(t *testing.T) {
 
 	mock.ExpectQuery(`FROM model_offers mo`).
 		WithArgs(301, 2).
-		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name"}).AddRow("anthropic/claude-opus-5"))
+		WillReturnRows(suggestionLookupRows("anthropic/claude-opus-5", false))
 	mock.ExpectQuery(`FROM models_canonical`).
 		WillReturnRows(suggestionsCatalogRows(ids, names))
 
@@ -314,6 +323,53 @@ func offerLookupRows() *pgxmock.Rows {
 	return pgxmock.NewRows([]string{"id", "raw_model_name"}).AddRow(301, "some-raw")
 }
 
+// Migration 693: an admin-unbound offer (canonical_cleared_at set) gets no
+// auto-suggestion — suggesting the very model the operator unlinked invites
+// a one-click undo of that decision. suggested_canonical_id falls back to 0
+// and canonical_cleared flags why, while the ranked matches are still
+// returned so the operator keeps manual re-link options.
+func TestModelOfferSuggestions_ClearedOfferSuppressesSuggestion(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery(`FROM model_offers mo`).
+		WithArgs(301, 2).
+		WillReturnRows(suggestionLookupRows("cluade/opus-5", true))
+	mock.ExpectQuery(`FROM models_canonical`).
+		WillReturnRows(suggestionsCatalogRows(
+			[]int{7, 8},
+			[]string{"claude-haiku-4.5", "claude-opus-5"},
+		))
+
+	rec := rec()
+	serveModelOfferSuggestions(rec, newReq(http.MethodGet, "/api/providers/2/offers/301/suggestions", nil), mock, 2, 301)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeSuggestionsResponse(t, rec)
+	if !resp.CanonicalCleared {
+		t.Fatal("canonical_cleared=false, want true for an admin-unbound offer")
+	}
+	if resp.SuggestedCanonicalID != 0 {
+		t.Fatalf("suggested_canonical_id=%d, want 0 for an admin-unbound offer (the unlink must not be auto-suggested back)",
+			resp.SuggestedCanonicalID)
+	}
+	if resp.RuleBased != modelname.NormalizeRouteKey("cluade/opus-5") {
+		t.Fatalf("rule_based=%q, want the legacy NormalizeRouteKey form (no matched-name promotion)",
+			resp.RuleBased)
+	}
+	if len(resp.Matches) == 0 {
+		t.Fatal("matches empty, want the ranked list preserved for a manual re-link")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // offerResultRows shapes the final SELECT the handler uses to render the
 // response (13 columns; NULLs for untouched fields).
 func offerResultRows() *pgxmock.Rows {
@@ -340,7 +396,10 @@ func TestUpdateModelOffer_ClearCanonical_UsesBindingJoin(t *testing.T) {
 	mock.ExpectQuery(`FROM model_offers mo`).
 		WithArgs(301, 2).
 		WillReturnRows(offerLookupRows())
-	mock.ExpectExec(`(?s)UPDATE provider_models pm\s+SET canonical_id = NULL.*cmb\.id = \$1`).
+	// Migration 693: the clear must stamp the persistent admin-unbind
+	// marker in the same UPDATE — a bare canonical_id = NULL is undone by
+	// the next discovery refresh.
+	mock.ExpectExec(`(?s)UPDATE provider_models pm\s+SET canonical_id = NULL,\s+canonical_cleared_at = now\(\),.*cmb\.id = \$1`).
 		WithArgs(301).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectQuery(`LEFT JOIN credential_model_bindings cmb`).
@@ -380,7 +439,7 @@ func TestUpdateModelOffer_ClearCanonical_NoRowsStillOK(t *testing.T) {
 	mock.ExpectQuery(`FROM model_offers mo`).
 		WithArgs(301, 2).
 		WillReturnRows(offerLookupRows())
-	mock.ExpectExec(`(?s)UPDATE provider_models pm\s+SET canonical_id = NULL.*cmb\.id = \$1`).
+	mock.ExpectExec(`(?s)UPDATE provider_models pm\s+SET canonical_id = NULL,\s+canonical_cleared_at = now\(\),.*cmb\.id = \$1`).
 		WithArgs(301).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
 	mock.ExpectQuery(`LEFT JOIN credential_model_bindings cmb`).
@@ -415,6 +474,12 @@ func TestUpdateModelOffer_SetCanonical_MirrorsStandardizedName(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"canonical_name"}).AddRow("claude-opus-5"))
 	mock.ExpectExec(`UPDATE model_offers SET canonical_id`).
 		WithArgs(7, 301).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	// Migration 693: an explicit canonical re-link lifts the admin-unbind
+	// marker on the base table — the model_offers INSTEAD OF UPDATE trigger
+	// cannot see canonical_cleared_at.
+	mock.ExpectExec(`(?s)UPDATE provider_models\s+SET canonical_cleared_at = NULL.*cmb\.id = \$1`).
+		WithArgs(301).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectExec(`UPDATE model_offers SET standardized_name`).
 		WithArgs("claude-opus-5", 301).
