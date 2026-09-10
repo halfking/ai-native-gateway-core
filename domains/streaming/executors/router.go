@@ -1030,7 +1030,7 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		var sorted []provider.Candidate
 		if r.Bandit != nil {
 			// Thompson Sampling Bandit ordering (with pressure factor)
-			sorted = r.banditOrder(bucket)
+			sorted = r.banditOrder(ctx, bucket)
 		} else {
 			// Legacy P2C ordering (load-aware)
 			sorted = p2cOrder(bucket, r)
@@ -1655,7 +1655,7 @@ func SortByCompositeScore(candidates []provider.Candidate, weights ScoringWeight
 // banditOrder orders candidates using Thompson Sampling bandit algorithm.
 // This provides intelligent credential selection based on historical performance.
 // Falls back to P2C if any step fails.
-func (r *Router) banditOrder(cands []provider.Candidate) []provider.Candidate {
+func (r *Router) banditOrder(ctx context.Context, cands []provider.Candidate) []provider.Candidate {
 	if len(cands) <= 1 || r.Bandit == nil {
 		return cands
 	}
@@ -1672,19 +1672,18 @@ func (r *Router) banditOrder(cands []provider.Candidate) []provider.Candidate {
 		credID := fmt.Sprintf("%d", c.CredentialID)
 		banditScore := r.Bandit.Sample(credID)
 
-		// Apply pressure factor to avoid overloading high-performing credentials
+		// Apply pressure factor to avoid overloading high-performing credentials.
+		// 2026-09-10 (audit R9 candidate 6): read the same LiveLoad signal as
+		// calculateConcurrencyScore. The Limiter's credential semaphore is
+		// bypassed by dispatch_v2 (AcquireAllNoCredLayer), so Used() was always
+		// 0 in production and this factor sat pinned at 1.0 — wiring the Bandit
+		// would then have funnelled traffic onto the best-scoring credential
+		// until saturation (the 245 m3 93/7 skew). The capacity>0 guard keeps
+		// the old "unknown capacity → no damping" semantics for candidates
+		// without a ConcurrencyLimit.
 		pressureFactor := 1.0
-		if r.Limiter != nil {
-			cred := r.Limiter.Credential(c.ProviderID, c.CredentialID)
-			capacity := cred.Capacity()
-			if capacity > 0 {
-				pressure := float64(cred.Used()) / float64(capacity)
-				if pressure > 1.0 {
-					pressure = 1.0
-				}
-				// pressureFactor: 1.0 when empty, 0.0 when saturated
-				pressureFactor = 1.0 - pressure
-			}
+		if concurrencyCapacity(c, r) > 0 {
+			pressureFactor = 1.0 - calculateConcurrencyScore(c, r, ctx)
 		}
 
 		// Final score: bandit × pressure
