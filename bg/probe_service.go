@@ -160,6 +160,16 @@ type ProbeService struct {
 	queue *ProbeQueue
 	scope ProbeScope
 
+	// Necessity-gate seams (2026-09-11 自检必要性检查). healthEvidence is the
+	// Redis-backed node-state reader (URSM v2 adapter in production); when
+	// nil the gate is disabled and every probe runs. The *Fn fields are the
+	// injectable counterparts used by focused unit tests — see
+	// probe_necessity.go for the condition semantics.
+	healthEvidence  NodeHealthEvidenceSource
+	siblingModelsFn func(ctx context.Context, credID int, model string) ([]string, error)
+	lastProbeRunFn  func(ctx context.Context, credID int, model string) (*nodeProbeRunSummary, error)
+	removeSkippedFn func(ctx context.Context, task ProbeQueueTask, reason string)
+
 	// Test seams keep Run behavior testable without an upstream, gateway, or DB.
 	// Production construction leaves these nil and uses the worker methods below.
 	directRoundFn  func(context.Context, int, string) nodeProbeRoundResult
@@ -272,6 +282,38 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		attempt = 1
 	}
 	startedAt := time.Now()
+
+	// Necessity gate (2026-09-11 自检必要性检查): automatic node_probe tasks
+	// get one last look at the current Redis node state + previous probe
+	// cycle BEFORE any probe work starts. When either skip condition holds
+	// the probe is not executed at all and the request is removed from the
+	// queue and the database (removeSkippedProbe), so the worker must not
+	// Complete it — ErrProbeNotNecessary tells it so. Manual (admin)
+	// tasks bypass the gate: operators explicitly asked for evidence, and
+	// the queue's own eligibility convention keeps manual probes available
+	// for diagnosis. Evidence read errors fail open (probe executes).
+	//
+	// The gate runs on the queue worker's loop (Workers=1 by default) with
+	// the claim lease already ticking, so the evidence reads are bounded by
+	// probeNecessityGateTimeout — an over-budget read fails open exactly
+	// like an error instead of stalling the whole probe pipeline.
+	if task.Automatic {
+		gateCtx, gateCancel := context.WithTimeout(ctx, probeNecessityGateTimeout)
+		reasonCode, detail, err := s.probeUnnecessary(gateCtx, task)
+		gateCancel()
+		if err != nil {
+			slog.Debug("probe_necessity: gate unavailable, running probe",
+				"queue_id", task.ID, "credential_id", credID, "model", model, "error", err)
+		} else if reasonCode != "" {
+			probeNecessitySkipTotal.WithLabelValues(reasonCode).Inc()
+			s.removeSkippedProbe(ctx, task, reasonCode+": "+detail)
+			return ProbeQueueResult{
+				Status:       ProbeQueueSuccess,
+				ReasonCode:   reasonCode,
+				ReasonDetail: detail,
+			}, fmt.Errorf("%w: %s (queue_id=%d cred=%d model=%s)", ErrProbeNotNecessary, reasonCode, task.ID, credID, model)
+		}
+	}
 
 	// Lease heartbeat (2026-08-18): refresh lease_until every
 	// ProbeQueueHeartbeatInterval while Run() does its work. Without this, a

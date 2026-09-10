@@ -21,6 +21,13 @@ var ErrProbeLeaseLost = errors.New("probe queue lease lost")
 var ErrProbeOutOfScope = errors.New("probe queue task is outside strict canary scope")
 var ErrProbeAutomaticIneligible = errors.New("automatic probe task is not eligible")
 
+// ErrProbeNotNecessary signals that the self-check necessity gate decided the
+// probe no longer needs to run (需求: 自检必要性检查). The probe was skipped
+// BEFORE execution and its queue row + node_probe_state mirror were already
+// removed by the skip path, so callers must not Complete/re-arm the task —
+// the row is gone and a newer owner may not exist at all.
+var ErrProbeNotNecessary = errors.New("probe queue task is not necessary")
+
 // ProbeScope is implemented by URSM v2 Manager. Keeping this tiny interface
 // avoids coupling the durable queue to the URSM package's concrete type.
 type ProbeScope interface {
@@ -334,6 +341,53 @@ func (q *ProbeQueue) publishRearmTransition(task ProbeQueueTask, nextRunAt *time
 	})
 }
 
+// publishRemovedTransition emits the terminal transition for a task that the
+// necessity gate skipped and hard-removed (2026-09-11 自检必要性检查). The
+// queue row is gone, so without this event the 自检 tab tile would stay
+// "in-flight" forever. SSE has no dedicated "skipped" tile — mirror Cancel's
+// convention and render terminal-dismissed ("fail") with the skip reason.
+func (q *ProbeQueue) publishRemovedTransition(task ProbeQueueTask, reason string) {
+	if q == nil {
+		return
+	}
+	providerName, providerCode := q.lookupProviderName(task.ProviderID)
+	if q.detailSink != nil {
+		q.detailSink.PublishProbeTransition(ProbeTaskTransition{
+			ID:           probeQueueLifecycleID(task),
+			TaskType:     probeQueueTaskType(task.Command),
+			Source:       task.Source,
+			Status:       "fail",
+			CredentialID: task.CredentialID,
+			ProviderID:   task.ProviderID,
+			ProviderName: providerName,
+			ProviderCode: providerCode,
+			RawModel:     task.RawModel,
+			Attempt:      task.Attempt,
+			Origin:       probeQueueOriginFromSource(task.Source),
+			Reason:       reason,
+			TimestampMs:  time.Now().UnixMilli(),
+		})
+		return
+	}
+	if q.probeSink == nil {
+		return
+	}
+	q.probeSink.PublishProbeEvent(ProbeStreamEvent{
+		ID:           probeQueueLifecycleID(task),
+		TaskType:     probeQueueTaskType(task.Command),
+		Source:       task.Source,
+		Status:       "fail",
+		CredentialID: task.CredentialID,
+		ProviderID:   task.ProviderID,
+		ProviderName: providerName,
+		ProviderCode: providerCode,
+		RawModel:     task.RawModel,
+		Attempt:      task.Attempt,
+		Reason:       reason,
+		TimestampMs:  time.Now().UnixMilli(),
+	})
+}
+
 // probeQueueLifecycleID mirrors the legacy SSE id convention (dedup_key, or
 // integrity:<id> fallback when the key is missing).
 func probeQueueLifecycleID(task ProbeQueueTask) string {
@@ -470,6 +524,43 @@ func (q *ProbeQueue) Cancel(ctx context.Context, dedupKey string) (int64, error)
 // shape, and so it always matches the key used at Enqueue time.
 func (q *ProbeQueue) CancelNodeProbe(ctx context.Context, credentialID int64, model string) (int64, error) {
 	return q.Cancel(ctx, buildNodeProbeTaskID(int(credentialID), model))
+}
+
+// removeSkippedProbeSQL is extracted for guard tests. The necessity-skip path
+// hard-DELETES the claimed row (需求: 探测请求从队列及数据库中移除) instead of
+// parking it in a terminal status, so the row must be removed from the queue
+// AND from the database in one statement. Required invariants:
+//   - only the row this worker still owns is touched: status='running' AND
+//     lease_token matches (same guard shape as Complete/OwnsLease), so a task
+//     whose lease was reclaimed is never deleted by its stale owner;
+//   - deleting the row also frees the partial unique dedup index
+//     (uq_credential_probe_queue_dedup_active covers ready/running only), so a
+//     fresh failure can immediately re-enqueue a new probe for the same node.
+func removeSkippedProbeSQL() string {
+	return `
+		DELETE FROM credential_probe_queue
+		WHERE id=$1 AND status='running' AND lease_token=$2::uuid`
+}
+
+// Remove deletes a claimed task row from credential_probe_queue entirely —
+// the necessity-skip counterpart of Cancel (which keeps the row as a
+// 'cancelled' audit record). Used by the self-check necessity gate: when a
+// probe is skipped as unnecessary the requirement is removal from the queue
+// AND the database, not a terminal status. Lease-guarded: a worker that lost
+// its lease removes nothing (returns 0 rows). Deleting the row also releases
+// the dedup_key, so a subsequent real failure can enqueue a fresh probe.
+func (q *ProbeQueue) Remove(ctx context.Context, task ProbeQueueTask) (bool, error) {
+	if q == nil || q.db == nil {
+		return false, fmt.Errorf("remove probe failed: database is unavailable (queue_id=%d)", task.ID)
+	}
+	if task.LeaseToken == "" {
+		return false, fmt.Errorf("remove probe failed: empty lease_token (queue_id=%d)", task.ID)
+	}
+	tag, err := q.db.Exec(ctx, removeSkippedProbeSQL(), task.ID, task.LeaseToken)
+	if err != nil {
+		return false, fmt.Errorf("remove probe failed: %w (queue_id=%d)", err, task.ID)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 // BuildProbeDedupKey derives the canonical dedup key for a probe task so
