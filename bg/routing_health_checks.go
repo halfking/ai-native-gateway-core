@@ -17,7 +17,12 @@ type HealthCheckDef struct {
 
 func AllHealthChecks() []HealthCheckDef {
 	return []HealthCheckDef{
-		{CheckID: "canonical_id_null", Severity: "critical", Query: `SELECT pm.id, pm.raw_model_name, mc.id FROM provider_models pm JOIN models_canonical mc ON mc.canonical_name = pm.raw_model_name WHERE pm.canonical_id IS NULL ORDER BY pm.id LIMIT 200`},
+		// canonical_cleared_at (migration 693) guards every auto re-link:
+		// a row the operator explicitly unbound must not be flagged as
+		// critical here, or the check list keeps offering a one-click fix
+		// that undoes the admin decision — and autoFixCanonicalID below
+		// would silently re-link it on its next pass.
+		{CheckID: "canonical_id_null", Severity: "critical", Query: `SELECT pm.id, pm.raw_model_name, mc.id FROM provider_models pm JOIN models_canonical mc ON mc.canonical_name = pm.raw_model_name WHERE pm.canonical_id IS NULL AND pm.canonical_cleared_at IS NULL ORDER BY pm.id LIMIT 200`},
 		{CheckID: "billing_mismatch", Severity: "warning", Query: `SELECT cmb.id, c.id || ':' || pm.raw_model_name, c.plan_type, cmb.billing_mode FROM credential_model_bindings cmb JOIN credentials c ON c.id = cmb.credential_id JOIN provider_models pm ON pm.id = cmb.provider_model_id WHERE c.plan_type IN ('token_plan','code_plan','agent_plan') AND cmb.billing_mode NOT IN ('token_plan','code_plan','agent_plan') ORDER BY cmb.id LIMIT 200`},
 		{CheckID: "probe_missing", Severity: "warning", Query: `SELECT cmb.id, c.id || ':' || pm.raw_model_name, pm.raw_model_name, c.id FROM credential_model_bindings cmb JOIN provider_models pm ON pm.id = cmb.provider_model_id JOIN credentials c ON c.id = cmb.credential_id WHERE cmb.available = TRUE AND c.status = 'active' AND c.lifecycle_status = 'active' AND NOT EXISTS (SELECT 1 FROM model_probe_state mps WHERE mps.credential_id = cmb.credential_id AND mps.raw_model_name = pm.raw_model_name) ORDER BY cmb.id LIMIT 200`},
 		{CheckID: "family_unknown", Severity: "warning", Query: `SELECT id, canonical_name, canonical_name, canonical_name FROM models_canonical WHERE (family = 'unknown' OR family IS NULL) AND canonical_name ~* '^(claude|gpt|o[1-4]|llama|gemini|gemma|mistral|mixtral|ministral|glm|kimi|moonshot|step|stepfun|doubao|seed|qwen|deepseek|minimax|mimo|baichuan|yi|spark|xinghuo|pangu|ernie|wenxin|hunyuan|abab|falcon|nemotron|phi|sonar|grok|command|embed|rerank|bloom|pythia)' ORDER BY id LIMIT 200`},
@@ -152,11 +157,15 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 }
 
 func autoFixCanonicalID(ctx context.Context, db *pgxpool.Pool, now time.Time) (int, error) {
+	// Migration 693: same guard as the canonical_id_null check query — the
+	// marker (canonical_cleared_at) records an operator unbind, and this
+	// exact-match auto-fix must never resurrect it.
 	tag, err := db.Exec(ctx, `
 		UPDATE provider_models pm
 		SET canonical_id = mc.id
 		FROM models_canonical mc
 		WHERE pm.canonical_id IS NULL
+		  AND pm.canonical_cleared_at IS NULL
 		  AND pm.raw_model_name = mc.canonical_name`)
 	if err != nil {
 		return 0, err
