@@ -225,7 +225,9 @@ async function saveNode() {
       canonical_id: updated.canonical_id,
       // 2026-09-11 audit: propagate the resolved canonical name too, or the
       // identity chip shows the stale name until the list is refetched.
-      canonical_name: updated.canonical_name,
+      // API returns null for an unbound offer; ModelOffer uses undefined so
+      // the `canonical_name || standardized_name` fallbacks keep working.
+      canonical_name: updated.canonical_name ?? undefined,
       outbound_model_name: updated.outbound_model_name ?? '',
       context_window: updated.context_window,
       context_window_override: updated.context_window_override,
