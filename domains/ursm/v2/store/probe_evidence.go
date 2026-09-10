@@ -2,48 +2,101 @@ package store
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	redissafe "github.com/kaixuan/llm-gateway-go/internal/redis"
 )
 
-// ProbeHealthEvidence reads one node hash directly from Redis. It deliberately
-// does not use PipelineNodeViews: probe preflight must not inherit the routing
+// ProbeHealthEvidence reads node hashes directly from Redis in batched
+// pipelines — one TYPE+HGETALL pipeline for all primary keys plus at most one
+// more for the dual-mode legacy fallbacks. Key selection mirrors
+// PipelineNodeViews (doc 14 §5.2.1/§5.3): legacy reads the legacy key only;
+// dual reads the canonical key and falls back to the exact-tuple legacy key on
+// a miss (or straight to legacy when the canonical grammar cannot represent
+// the tuple); canonical never falls back. It deliberately does not reuse
+// PipelineNodeViews itself: probe preflight must not inherit the routing
 // reader's mirror, expired-cool half-open, or availability defaults.
 func (s *Store) ProbeHealthEvidence(ctx context.Context, prefix, tenant string, credentialID int, models []string) ([]api.ProbeHealthEvidence, error) {
 	out := make([]api.ProbeHealthEvidence, len(models))
 	if s == nil || s.rdb == nil {
 		return nil, ErrRedisUnavailable
 	}
+	if len(models) == 0 {
+		return out, nil
+	}
+
+	type slot struct {
+		model    string
+		primary  string // key read in the first pipeline; "" ⇒ no read at all
+		fallback string // legacy key used in dual mode when the primary misses
+		raw      map[string]string
+	}
+	mode := s.schemaMode
+	slots := make([]slot, len(models))
+	primaryKeys := make([]string, 0, len(models))
+	primaryIndexes := make([]int, 0, len(models))
 	for i, model := range models {
-		out[i].RawModel = model
-		raw, err := s.probeEvidenceHash(ctx, prefix, tenant, credentialID, model)
-		if err != nil {
-			return nil, err
+		sl := slot{model: model}
+		if mode == KeySchemaModeLegacy {
+			sl.primary = NodeKeyForTenant(prefix, tenant, credentialID, model)
+		} else if k2, err := K2KeySetForTenant(prefix, tenant, credentialID, model); err == nil {
+			sl.primary = k2.Node
+			if mode == KeySchemaModeDual {
+				sl.fallback = NodeKeyForTenant(prefix, tenant, credentialID, model)
+			}
+		} else if mode == KeySchemaModeDual {
+			sl.primary = NodeKeyForTenant(prefix, tenant, credentialID, model)
 		}
-		out[i] = probeEvidenceFromHash(model, raw, time.Now())
+		if sl.primary != "" {
+			primaryKeys = append(primaryKeys, sl.primary)
+			primaryIndexes = append(primaryIndexes, i)
+		}
+		slots[i] = sl
+	}
+	primaryResults, err := redissafe.SafeHGetAllPipeline(ctx, s.rdb.Pipeline(), primaryKeys)
+	if err != nil {
+		return nil, fmt.Errorf("ursm.v2: probe evidence read: %w", err)
+	}
+	now := time.Now()
+	pending := make([]int, 0, len(models))
+	for j, i := range primaryIndexes {
+		sl := &slots[i]
+		res := primaryResults[j]
+		if res.Err != nil && !errors.Is(res.Err, redissafe.ErrKeyNotFound) {
+			return nil, fmt.Errorf("ursm.v2: probe evidence node %q: %w", sl.primary, res.Err)
+		}
+		sl.raw = res.Fields
+		if len(sl.raw) == 0 && sl.fallback != "" {
+			pending = append(pending, i)
+		}
+	}
+	for i, sl := range slots {
+		if sl.fallback == "" || len(sl.raw) > 0 {
+			out[i] = probeEvidenceFromHash(sl.model, sl.raw, now)
+		}
+	}
+	if len(pending) > 0 {
+		fallbackKeys := make([]string, len(pending))
+		for j, i := range pending {
+			fallbackKeys[j] = slots[i].fallback
+		}
+		fallbackResults, err := redissafe.SafeHGetAllPipeline(ctx, s.rdb.Pipeline(), fallbackKeys)
+		if err != nil {
+			return nil, fmt.Errorf("ursm.v2: probe evidence fallback read: %w", err)
+		}
+		for j, i := range pending {
+			res := fallbackResults[j]
+			if res.Err != nil && !errors.Is(res.Err, redissafe.ErrKeyNotFound) {
+				return nil, fmt.Errorf("ursm.v2: probe evidence fallback node %q: %w", slots[i].fallback, res.Err)
+			}
+			out[i] = probeEvidenceFromHash(slots[i].model, res.Fields, now)
+		}
 	}
 	return out, nil
-}
-
-func (s *Store) probeEvidenceHash(ctx context.Context, prefix, tenant string, credentialID int, model string) (map[string]string, error) {
-	legacy := NodeKeyForTenant(prefix, tenant, credentialID, model)
-	if s.schemaMode == KeySchemaModeLegacy {
-		return s.rdb.HGetAll(ctx, legacy).Result()
-	}
-	k2, err := K2KeySetForTenant(prefix, tenant, credentialID, model)
-	if err != nil {
-		if s.schemaMode == KeySchemaModeDual {
-			return s.rdb.HGetAll(ctx, legacy).Result()
-		}
-		return nil, nil // canonical grammar cannot represent this tuple
-	}
-	raw, err := s.rdb.HGetAll(ctx, k2.Node).Result()
-	if err != nil || len(raw) != 0 || s.schemaMode == KeySchemaModeCanonical {
-		return raw, err
-	}
-	return s.rdb.HGetAll(ctx, legacy).Result()
 }
 
 func probeEvidenceFromHash(model string, raw map[string]string, now time.Time) api.ProbeHealthEvidence {

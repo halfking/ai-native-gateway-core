@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -94,6 +95,109 @@ func TestProbeHealthEvidenceRejectsMalformedAndLegacyRequestState(t *testing.T) 
 		}
 	}
 }
+
+func TestProbeHealthEvidenceBatchedMixedKeySources(t *testing.T) {
+	ctx := context.Background()
+	s, mr := newTestStore(t)
+	defer mr.Close()
+	prefix, tenant := "evidence:batch:", "tenant:one"
+	models := []string{"m:k2only", "m:legacyonly", "m:both", "m:missing", "m:errored"}
+	k2nodes := make(map[string]string, len(models))
+	for _, m := range models {
+		ks, err := K2KeySetForTenant(prefix, tenant, 7, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		k2nodes[m] = ks.Node
+	}
+	// k2-only: dual must read the canonical key.
+	mr.HSet(k2nodes["m:k2only"], "available", "1")
+	// legacy-only: dual must fall back to the legacy key on the k2 miss.
+	mr.HSet(NodeKeyForTenant(prefix, tenant, 7, "m:legacyonly"), "available", "1")
+	// both: the non-empty k2 hash must win even though the legacy hash says
+	// the node is down.
+	mr.HSet(k2nodes["m:both"], "available", "1")
+	mr.HSet(NodeKeyForTenant(prefix, tenant, 7, "m:both"), "available", "0")
+	// k2 errored: known but not healthy.
+	mr.HSet(k2nodes["m:errored"], "available", "0")
+
+	s.SetKeySchemaMode(KeySchemaModeDual)
+	got, err := s.ProbeHealthEvidence(ctx, prefix, tenant, 7, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []struct{ known, healthy bool }{
+		{true, true},  // k2-only
+		{true, true},  // legacy-only via fallback
+		{true, true},  // both → k2 wins
+		{false, false}, // missing everywhere
+		{true, false}, // k2 errored
+	} {
+		if got[i].RawModel != models[i] {
+			t.Fatalf("order: [%d]=%q want %q", i, got[i].RawModel, models[i])
+		}
+		if got[i].Known != want.known || got[i].Healthy != want.healthy {
+			t.Fatalf("%s = %+v, want known=%v healthy=%v", models[i], got[i], want.known, want.healthy)
+		}
+	}
+}
+
+func TestProbeHealthEvidenceLegacyTenantTupleBatch(t *testing.T) {
+	ctx := context.Background()
+	s, mr := newTestStore(t)
+	defer mr.Close()
+	// Empty tenant: the canonical grammar cannot represent the tuple, so the
+	// read source is decided purely by the schema mode.
+	prefix := "evidence:batch-legacy:"
+	mr.HSet(NodeKeyForTenant(prefix, "", 7, "m1"), "available", "1")
+
+	s.SetKeySchemaMode(KeySchemaModeLegacy)
+	got, err := s.ProbeHealthEvidence(ctx, prefix, "", 7, []string{"m1", "m2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[0].Known || !got[0].Healthy || got[1].Known {
+		t.Fatalf("legacy mode = %+v", got)
+	}
+
+	s.SetKeySchemaMode(KeySchemaModeCanonical)
+	got, err = s.ProbeHealthEvidence(ctx, prefix, "", 7, []string{"m1", "m2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[0].Known || got[1].Known {
+		t.Fatalf("canonical mode must not read legacy for unrepresentable tuples = %+v", got)
+	}
+}
+
+func TestProbeHealthEvidenceBatchLargeCredential(t *testing.T) {
+	ctx := context.Background()
+	s, mr := newTestStore(t)
+	defer mr.Close()
+	// The sibling limit is 500; exercise the batched path at that scale with
+	// every model present only in the legacy hash (maximum dual fallback).
+	prefix, tenant := "evidence:batch-large:", "tenant:one"
+	models := make([]string, 0, probeNecessitySiblingLimitForStoreTest)
+	for i := 0; i < probeNecessitySiblingLimitForStoreTest; i++ {
+		m := fmt.Sprintf("m:%03d", i)
+		models = append(models, m)
+		mr.HSet(NodeKeyForTenant(prefix, tenant, 7, m), "available", "1")
+	}
+	s.SetKeySchemaMode(KeySchemaModeDual)
+	got, err := s.ProbeHealthEvidence(ctx, prefix, tenant, 7, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ev := range got {
+		if ev.RawModel != models[i] || !ev.Known || !ev.Healthy {
+			t.Fatalf("[%d] = %+v", i, ev)
+		}
+	}
+}
+
+// probeNecessitySiblingLimitForStoreTest mirrors bg.probeNecessitySiblingLimit
+// without importing the bg package.
+const probeNecessitySiblingLimitForStoreTest = 500
 
 func TestProbeHealthEvidenceRequestWatermarks(t *testing.T) {
 	ctx := context.Background()
