@@ -240,6 +240,7 @@ export default {
     planTypeFailed: "Échec de la définition de plan_type"
   },
   errorDetail: {
+    healthLatency: 'Latence de sonde', healthError: 'Erreur de sonde',
     supplier: 'Fournisseur', errorCode: 'Code d’erreur', requestId: 'ID de requête',
     stage: 'Étape', retry: 'Réessai', latency: 'Durée',
     openRequestTitle: 'Ouvrir le détail de la requête',

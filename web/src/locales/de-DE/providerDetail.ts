@@ -240,6 +240,7 @@ export default {
     planTypeFailed: "plan_type konnte nicht gesetzt werden"
   },
   errorDetail: {
+    healthLatency: 'Probe-Latenz', healthError: 'Probe-Fehler',
     supplier: 'Anbieter', errorCode: 'Fehlercode', requestId: 'Anfrage-ID',
     stage: 'Phase', retry: 'Wiederholung', latency: 'Dauer',
     openRequestTitle: 'Anfragedetails öffnen',

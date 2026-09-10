@@ -240,6 +240,7 @@ export default {
     planTypeFailed: "plan_type の設定に失敗しました"
   },
   errorDetail: {
+    healthLatency: 'ヘルスチェック遅延', healthError: 'ヘルスチェックエラー',
     supplier: 'サプライヤー', errorCode: 'エラーコード', requestId: 'リクエスト ID',
     stage: '段階', retry: '再試行', latency: '所要時間',
     openRequestTitle: 'リクエスト詳細を開く',
