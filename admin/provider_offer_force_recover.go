@@ -34,9 +34,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 )
+
+// offerQuerier is the DB surface the model-offer handlers need. Both
+// *pgxpool.Pool (production) and pgxmock.PgxPoolIface (handler-level
+// regression tests, provider_offer_force_recover_test.go) satisfy it —
+// same mockability pattern as pgxQueryer in quality_correlations.go.
+type offerQuerier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 func (h *Handler) handleProviderModelOffer(w http.ResponseWriter, r *http.Request, providerID int, offerPath string) {
 	if offerPath == "" {
@@ -70,6 +82,10 @@ func (h *Handler) handleProviderModelOffer(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
+	serveUpdateModelOffer(w, r, h.db, providerID, offerID)
+}
+
+func serveUpdateModelOffer(w http.ResponseWriter, r *http.Request, db offerQuerier, providerID, offerID int) {
 	var req struct {
 		StandardizedName *string `json:"standardized_name"`
 		CanonicalID      *int    `json:"canonical_id"`
@@ -109,7 +125,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 
 	var currentID int
 	var rawName string
-	err := h.db.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		WHERE mo.id = $1 AND c.provider_id = $2
@@ -126,7 +142,9 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		// (model_offers.id IS credential_model_bindings.id) — the previous
 		// "c.id = pm.provider_id" join compared a credential id against a
 		// PROVIDER id and never matched a single row, silently no-oping.
-		tag, err := h.db.Exec(ctx, `
+		// The cmb.id = $1 locator is regression-pinned by
+		// TestUpdateModelOffer_ClearCanonical_UsesBindingJoin.
+		tag, err := db.Exec(ctx, `
 			UPDATE provider_models pm
 			SET canonical_id = NULL, updated_at = now()
 			WHERE pm.id = (
@@ -143,16 +161,16 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		}
 	} else if req.CanonicalID != nil {
 		var canonName string
-		err := h.db.QueryRow(ctx, `SELECT canonical_name FROM models_canonical WHERE id = $1`, *req.CanonicalID).Scan(&canonName)
+		err := db.QueryRow(ctx, `SELECT canonical_name FROM models_canonical WHERE id = $1`, *req.CanonicalID).Scan(&canonName)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "canonical model not found")
 			return
 		}
 		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE model_offers SET canonical_id = $1 WHERE id = $2`, *req.CanonicalID, offerID)
+		db.Exec(ctx, `UPDATE model_offers SET canonical_id = $1 WHERE id = $2`, *req.CanonicalID, offerID)
 		if req.StandardizedName == nil {
 			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, canonName, offerID)
+			db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, canonName, offerID)
 			// 2026-06-19 audit: mirror the write to the underlying
 			// provider_models table.  model_offers is a VIEW with an
 			// INSTEAD OF UPDATE trigger that re-derives standardized_name
@@ -164,7 +182,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 			// previous join compared a credential id against the PROVIDER
 			// id column and never updated anything.
 			//nolint:errcheck // best-effort exec, non-critical
-			h.db.Exec(ctx, `
+			db.Exec(ctx, `
 				UPDATE provider_models
 				SET standardized_name = $1, updated_at = now()
 				WHERE id = (
@@ -177,13 +195,13 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 
 	if req.StandardizedName != nil {
 		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID)
+		db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID)
 		// 2026-06-19 audit: mirror to provider_models so the view's
 		// INSTEAD OF UPDATE trigger cannot re-clobber the value.
 		// 2026-09-11 audit fix: same provider-id/credential-id join bug as
 		// above — see the canonical_id branch for details.
 		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `
+		db.Exec(ctx, `
 			UPDATE provider_models
 			SET standardized_name = $1, updated_at = now()
 			WHERE id = (
@@ -198,7 +216,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	// Use NULLIF('') so that an explicit empty string clears the column
 	// (reverting to raw_model_name at query time).
 	if req.OutboundModelName != nil {
-		if _, err := h.db.Exec(ctx, `
+		if _, err := db.Exec(ctx, `
 			UPDATE model_offers
 			SET outbound_model_name = NULLIF($1, ''),
 			    updated_at = NOW()
@@ -220,7 +238,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 			writeError(w, http.StatusBadRequest, "invalid billing_mode")
 			return
 		}
-		if _, err := h.db.Exec(ctx, `
+		if _, err := db.Exec(ctx, `
 				UPDATE credential_model_bindings
 				SET unit_price_in_per_1m = COALESCE($1, unit_price_in_per_1m),
 				    unit_price_out_per_1m = COALESCE($2, unit_price_out_per_1m),
@@ -232,7 +250,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 			writeError(w, http.StatusInternalServerError, "update pricing failed")
 			return
 		}
-		invalidateRoutingCaches(r.Context(), h.db, "credential_model_bindings", offerID)
+		invalidateRoutingCaches(r.Context(), db, "credential_model_bindings", offerID)
 	}
 
 	// credential_model_bindings row directly (not via the model_offers view)
@@ -244,7 +262,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	// an operator decision.
 	if req.ContextWindow != nil {
 		if *req.ContextWindow > 0 {
-			if _, err := h.db.Exec(ctx, `
+			if _, err := db.Exec(ctx, `
 				UPDATE credential_model_bindings
 				SET context_window_override = $1,
 				    context_window_source = 'manual',
@@ -256,7 +274,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 				return
 			}
 		} else {
-			if _, err := h.db.Exec(ctx, `
+			if _, err := db.Exec(ctx, `
 				UPDATE credential_model_bindings
 				SET context_window_override = NULL,
 				    context_window_source = 'catalog',
@@ -283,7 +301,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		// Migration 524 widens the DB trigger to NOTIFY on the column, but we
 		// also fire an explicit NOTIFY here (matching the other manual-override
 		// endpoints) so a missed DB-event path can't strand sibling processes.
-		invalidateRoutingCaches(r.Context(), h.db, "credential_model_bindings", offerID)
+		invalidateRoutingCaches(r.Context(), db, "credential_model_bindings", offerID)
 	}
 
 	var result struct {
@@ -302,7 +320,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		BillingMode           *string  `json:"billing_mode"`
 	}
 	//nolint:errcheck // scan error non-critical
-	h.db.QueryRow(ctx, `
+	db.QueryRow(ctx, `
 		SELECT mo.id, mo.raw_model_name, mo.standardized_name, mo.canonical_id,
 		       mc.canonical_name, mo.outbound_model_name,
 		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
@@ -349,11 +367,15 @@ type canonicalMatch struct {
 }
 
 func (h *Handler) getModelOfferSuggestions(w http.ResponseWriter, r *http.Request, providerID, offerID int) {
+	serveModelOfferSuggestions(w, r, h.db, providerID, offerID)
+}
+
+func serveModelOfferSuggestions(w http.ResponseWriter, r *http.Request, db offerQuerier, providerID, offerID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	var rawName string
-	err := h.db.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		SELECT mo.raw_model_name FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		WHERE mo.id = $1 AND c.provider_id = $2
@@ -363,7 +385,7 @@ func (h *Handler) getModelOfferSuggestions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	rows, err := h.db.Query(ctx, `
+	rows, err := db.Query(ctx, `
 		SELECT id, canonical_name, COALESCE(display_name,''), COALESCE(family,'')
 		FROM models_canonical WHERE status = 'active' ORDER BY canonical_name
 	`)

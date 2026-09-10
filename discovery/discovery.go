@@ -681,6 +681,20 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 		slog.Debug("raw model matched to existing standard model",
 			"raw_model_name", rawName,
 			"canonical_name", canonicalName)
+		// 2026-09-11: the fast path used to return before the ON CONFLICT
+		// maintenance below ever ran, so a matched row never got the
+		// family:<id> tag backfill, the split-family normalization, or the
+		// 2026-08-09 sticky-modality repair (a matched row stuck at
+		// modality='text' 503s every image request). Re-apply the same
+		// three rules with one guarded UPDATE. Best-effort: the matched
+		// row itself is valid, so a failed repair must not block alias /
+		// binding ingestion.
+		if err := maintainMatchedCanonical(ctx, s.db, matchedRef.id, matchedRef.name, rawName); err != nil {
+			slog.Warn("matched canonical maintenance failed",
+				"canonical_id", matchedRef.id,
+				"raw_model_name", rawName,
+				"error", err)
+		}
 	} else {
 		canonicalName = NormalizeModelName(rawName)
 		family := InferFamily(canonicalName)
@@ -859,6 +873,15 @@ func EnsureCanonicalAndAliases(ctx context.Context, db modelcatalog.Querier, raw
 	// derived from the raw name.
 	if lister, ok := db.(canonicalListQuerier); ok {
 		if ref, matched := matchExistingCanonical(ctx, lister, rawName); matched {
+			// 2026-09-11: maintenance parity with Service.upsertModel —
+			// see maintainMatchedCanonical. Best-effort (warn-only),
+			// matching the policy there.
+			if maintErr := maintainMatchedCanonical(ctx, db, ref.id, ref.name, rawName); maintErr != nil {
+				slog.Warn("matched canonical maintenance failed",
+					"canonical_id", ref.id,
+					"raw_model_name", rawName,
+					"error", maintErr)
+			}
 			if aliasErr := seedCanonicalAliases(ctx, db, rawName, ref.id, ref.name); aliasErr != nil {
 				return 0, "", aliasErr
 			}
