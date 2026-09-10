@@ -18,12 +18,13 @@ describe('useFormat', () => {
     expect(text).toMatch(/01:23:45/)
   })
 
-  it('fmtDateTimeWithSeconds returns empty string for invalid input', () => {
+  it('fmtDateTimeWithSeconds returns the — sentinel for invalid input', () => {
     const { fmtDateTimeWithSeconds } = useFormat()
-    expect(fmtDateTimeWithSeconds(undefined)).toBe('')
-    expect(fmtDateTimeWithSeconds(null)).toBe('')
-    expect(fmtDateTimeWithSeconds('')).toBe('')
-    expect(fmtDateTimeWithSeconds('not-a-date')).toBe('')
+    // R12 候选21: unified on the repo-mainstream '—' sentinel (was '').
+    expect(fmtDateTimeWithSeconds(undefined)).toBe('—')
+    expect(fmtDateTimeWithSeconds(null)).toBe('—')
+    expect(fmtDateTimeWithSeconds('')).toBe('—')
+    expect(fmtDateTimeWithSeconds('not-a-date')).toBe('—')
   })
 
   it('fmtDateTimeWithSeconds renders seconds where fmtDateTime would not', () => {
