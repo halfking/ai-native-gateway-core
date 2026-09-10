@@ -14,6 +14,7 @@ package discovery
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -40,10 +41,12 @@ type canonicalListQuerier interface {
 const canonicalCatalogTTL = time.Minute
 
 // loadActiveCanonicalCatalog reads every active standard-model name.
+// Ordered by id so case-variant duplicates resolve deterministically.
 func loadActiveCanonicalCatalog(ctx context.Context, q canonicalListQuerier) ([]canonicalRef, error) {
 	rows, err := q.Query(ctx, `
 		SELECT id, canonical_name FROM models_canonical
 		WHERE status = 'active' AND canonical_name <> ''
+		ORDER BY id
 	`)
 	if err != nil {
 		return nil, err
@@ -107,7 +110,11 @@ func (s *Service) matchExistingCanonicalCached(ctx context.Context, rawName stri
 		fresh, err := loadActiveCanonicalCatalog(ctx, s.db)
 		if err != nil {
 			// Matching is an optimization over the legacy path — a
-			// failed read must not fail discovery.
+			// failed read must not fail discovery, but it silently
+			// reverts ingestion to the seed-new-canonical behaviour, so
+			// make the degradation visible.
+			slog.Warn("standard-model catalog load failed; discovery will seed new canonical rows without matching",
+				"error", err)
 			return canonicalRef{}, false
 		}
 		s.canonMu.Lock()
