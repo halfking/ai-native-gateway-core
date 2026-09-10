@@ -22,8 +22,8 @@
 1. **P2：`ProbeHealthEvidence` 批量化**（`domains/ursm/v2/store/probe_evidence.go`）— **已完成（2026-09-11，本轮）**
    已改为 Redis Pipeline（复用 `redissafe.SafeHGetAllPipeline` 双段 TYPE+HGETALL 管道，键选择规则与 `PipelineNodeViews` 一致）：全部主键一轮取回，dual 模式 miss 的键再有至多一轮 legacy 回退管道——一次闸门的 Redis 交互从最多 1+2×500 次串行 RTT 降为 ≤2 轮管道。新增批量混合来源（k2-only/legacy-only/双写/缺失）、legacy-only tuple、500 规模单测。
 
-2. **P2：`removeSkippedProbe` 分支测试缺口**
-   Remove 报错提前返回、removed=false 不碰镜像/SSE、queue nil 警告三条分支无单测（需要 sqlmock 或将 `ProbeQueue.Remove` 抽接口缝）。仓库已 vendor `DATA-DOG/go-sqlmock`。
+2. **P2：`removeSkippedProbe` 分支测试缺口** — **已完成（2026-09-11，本轮）**
+   `ProbeQueue` 的移除面收窄为 `probeSkipQueue` 接口缝（`Remove` + `publishRemovedTransition`，因 `ProbeQueue` 的 pgxpool 无法用 sqlmock 构造），镜像删除加 `deleteStateFn` 函数缝。新增 4 例：Remove 报错只停在队列行、removed=false（租约丢失）不碰镜像/SSE、queue/lease 缺失三副作用全不发生、成功路径编排顺序 remove→deleteState→publish 及 SSE reason 前缀断言。顺带修复 typed-nil 接口陷阱（`skipRemovalQueue` 须把 nil `*ProbeQueue` 显式转成 nil 接口，否则落入 Remove 的 unavailable-database 分支）。
 
 3. **P2：镜像行删除失败的 churn 抑制**
    `deleteNodeProbeState` 失败时 pump 会 30s 级"重入队→再跳过→再删"循环（方向收敛、不漏探，但磁贴反复翻动）。可在删除失败时即时重试一次，或 pump 侧对刚被跳过的 (cred,model) 做短 TTL 抑制。

@@ -169,6 +169,15 @@ type ProbeService struct {
 	siblingModelsFn func(ctx context.Context, credID int, model string) ([]string, error)
 	lastProbeRunFn  func(ctx context.Context, credID int, model string) (*nodeProbeRunSummary, error)
 	removeSkippedFn func(ctx context.Context, task ProbeQueueTask, reason string)
+	// skipQueue overrides the queue the skip-removal path runs through —
+	// tests stub it (Remove + publishRemovedTransition) instead of building
+	// a *ProbeQueue on a live pgxpool. Production leaves it nil so removal
+	// goes through queue.
+	skipQueue probeSkipQueue
+	// deleteStateFn overrides the node_probe_state mirror delete in the
+	// skip-removal path (tests only; production uses
+	// worker.deleteNodeProbeState).
+	deleteStateFn func(ctx context.Context, credID int, model string)
 
 	// Test seams keep Run behavior testable without an upstream, gateway, or DB.
 	// Production construction leaves these nil and uses the worker methods below.
