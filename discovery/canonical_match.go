@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/kaixuan/llm-gateway-go/modelcatalog"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 )
 
@@ -128,4 +129,79 @@ func (s *Service) matchExistingCanonicalCached(ctx context.Context, rawName stri
 		return canonicalRef{}, false
 	}
 	return bestCanonicalMatch(rawName, catalog)
+}
+
+// maintainMatchedCanonical re-applies the models_canonical maintenance that
+// the INSERT ... ON CONFLICT branch performs (family:<id> tag backfill,
+// split-family normalization, sticky-modality upgrade) to a row reached via
+// the matched-standard path, which returns before that branch runs.
+//
+// 2026-09-11: the matched fast path used to skip all of it, so a row linked
+// from a provider feed never got the family tag the /models family-chip
+// filter needs, never normalized a legacy split family ("claude" →
+// "anthropic-claude"), and — worst — kept a stale modality='text' forever
+// when inference had moved on. Because loadCandidatesByModalityDB only
+// admits modality IN ('vision','multimodal') for an image request, such a
+// row 503s every image call (the 2026-08-09 sticky-modality bug, reintroduced
+// for matched rows by the fast path).
+//
+// One guarded UPDATE mirrors the three ON CONFLICT CASE branches exactly;
+// the WHERE admits only rows that still need a change, so healthy rows cost
+// a single no-op index hit instead of a write on every discovery pass:
+//   - family unchanged but the family:<id> tag is missing → append it;
+//   - family is a known split token → normalize to the canonical form and
+//     swap the family:<old> tag for family:<new>;
+//   - modality is still the column default 'text' and inference now claims
+//     something richer → adopt it (upgrade-only, never a downgrade, never
+//     over a super_admin override which always sets a non-'text' value).
+//
+// An admin-edited family that differs from the computed one (i.e. NOT a
+// known split token) is left alone, exactly like the ON CONFLICT ELSE
+// branch — only the modality clause can still admit such a row.
+func maintainMatchedCanonical(ctx context.Context, db modelcatalog.Querier, canonicalID int, canonicalName, rawName string) error {
+	if db == nil {
+		return nil
+	}
+	family := InferFamily(canonicalName)
+	inferredModality := modelname.InferModality(rawName)
+	_, err := db.Exec(ctx, `
+		UPDATE models_canonical
+		SET family = CASE
+				WHEN family = $2
+				THEN family
+				WHEN family = ANY($3::text[])
+				THEN $2
+				ELSE family
+			END,
+			tags = CASE
+				WHEN family = $2
+				THEN (
+					SELECT array_agg(DISTINCT t)
+					FROM unnest(tags || ARRAY['family:' || $2]) AS t
+				)
+				WHEN family = ANY($3::text[])
+				THEN (
+					SELECT array_agg(DISTINCT t)
+					FROM unnest(
+						array_remove(
+							array_remove(tags, 'family:' || family),
+							'family:' || $2
+						) || ARRAY['family:' || $2]
+					) AS t
+				)
+				ELSE tags
+			END,
+			modality = CASE
+				WHEN modality = 'text' AND $4 <> 'text'
+				THEN $4
+				ELSE modality
+			END
+		WHERE id = $1
+		  AND (
+			(family = $2 AND NOT tags @> ARRAY['family:' || $2])
+			OR family = ANY($3::text[])
+			OR (modality = 'text' AND $4 <> 'text')
+		  )
+	`, canonicalID, family, splitFamilyIDs, inferredModality)
+	return err
 }
