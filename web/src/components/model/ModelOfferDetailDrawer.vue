@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, watch, ref } from 'vue'
+import { reactive, watch, ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import type { ModelOffer } from '../../api/providers'
 import {
@@ -36,6 +36,9 @@ const saving = ref(false)
 const saveErr = ref('')
 const toggling = ref(false)
 const suggest = ref<ModelOfferSuggestion | null>(null)
+// Top ranked standard-model matches for the chip row (backend ranks by
+// modelname similarity; see MatchStandardModels).
+const topMatches = computed(() => (suggest.value?.matches ?? []).slice(0, 5))
 const initialContextWindow = ref<number | null>(null)
 const initialPrices = reactive({
   unit_price_in_per_1m: null as number | null,
@@ -94,18 +97,45 @@ async function loadSuggest() {
   if (!props.offer) return
   try {
     suggest.value = await getModelOfferSuggestions(props.providerId, props.offer.id)
+    autoApplyBestMatch()
   } catch {
     suggest.value = null
   }
 }
 
+// 2026-09-10: the backend now matches the raw name against the standard
+// model catalog ("cluade/opus-5" → "claude-opus-5", "grok/4.6" →
+// "grok-4.6"). Pre-fill the fields the operator left empty so 保存节点
+// persists the association in one click — never overwrite values that are
+// already set (manually or by a previous save).
+function autoApplyBestMatch() {
+  const s = suggest.value
+  if (!s || !props.offer) return
+  const best = s.matches?.[0]
+  const bestId = best?.id ?? (s.suggested_canonical_id || 0)
+  if (!best || !bestId) return
+  if (draft.canonical_id == null && bestId) draft.canonical_id = bestId
+  if (!draft.standardized_name.trim()) draft.standardized_name = best.canonical_name
+}
+
 function applyRuleBased() {
-  if (!suggest.value?.rule_based) return
+  if (!suggest.value) return
+  const best = suggest.value.matches?.[0]
+  if (best) {
+    applyMatch(best)
+    return
+  }
+  if (!suggest.value.rule_based) return
   draft.standardized_name = suggest.value.rule_based
   const match = suggest.value.canonical_options.find(
     c => (c.canonical_name || '').toLowerCase() === draft.standardized_name.toLowerCase(),
   )
   draft.canonical_id = match ? match.id : null
+}
+
+function applyMatch(m: { id: number; canonical_name: string }) {
+  draft.standardized_name = m.canonical_name
+  draft.canonical_id = m.id
 }
 
 function priceChanged(field: PriceField): boolean {
@@ -135,6 +165,12 @@ async function saveNode() {
       standardized_name: draft.standardized_name.trim() || null,
       canonical_id: draft.canonical_id,
       outbound_model_name: draft.outbound_model_name.trim(),
+    }
+    // Unlinking a canonical needs the explicit flag: the backend cannot
+    // tell "canonical_id: null" (clear) from an omitted field, and the
+    // model_offers view trigger would mask a NULL write anyway.
+    if (draft.canonical_id == null && props.offer.canonical_id != null) {
+      body.clear_canonical = true
     }
     const rawCw = draft.context_window
     if (rawCw !== initialContextWindow.value) {
@@ -303,6 +339,24 @@ function goCanonical() {
             规则建议
             <button type="button" class="btn btn-sm btn-ghost" @click="applyRuleBased">{{ suggest.rule_based }}</button>
           </div>
+          <div v-if="topMatches.length" class="match-list">
+            <label class="field-label">标准模型匹配（按相似度）</label>
+            <div class="match-chips">
+              <button
+                v-for="(m, i) in topMatches"
+                :key="m.id"
+                type="button"
+                class="match-chip"
+                :class="{ active: draft.canonical_id === m.id }"
+                :title="`相似度 ${(m.score * 100).toFixed(0)}%`"
+                @click="applyMatch(m)"
+              >
+                <code>{{ m.canonical_name }}</code>
+                <span v-if="i === 0 && m.score >= 0.85" class="badge match-best">最佳</span>
+                <span class="match-score">{{ (m.score * 100).toFixed(0) }}%</span>
+              </button>
+            </div>
+          </div>
           <label class="field-label">关联 canonical</label>
           <select
             class="field-input"
@@ -385,6 +439,18 @@ function goCanonical() {
 .avail-badge.off { background: color-mix(in srgb, var(--danger) 20%, transparent); }
 .field-label { display: block; margin-top: 8px; font-size: 12px; color: var(--muted); }
 .field-input { width: 100%; margin-top: 4px; }
+.match-list { margin-top: 2px; }
+.match-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+.match-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; cursor: pointer; font-size: 12px;
+}
+.match-chip:hover { border-color: var(--accent); }
+.match-chip.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.match-chip.active code { color: var(--accent); }
+.match-score { color: var(--muted); font-size: 11px; }
+.badge.match-best { background: color-mix(in srgb, var(--success) 25%, transparent); }
 .price-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 @media (max-width: 520px) { .price-grid { grid-template-columns: 1fr; } }
 </style>
