@@ -19,8 +19,8 @@
 
 ## 遗留任务（按优先级）
 
-1. **P2：`ProbeHealthEvidence` 批量化**（`domains/ursm/v2/store/probe_evidence.go`）
-   现状为逐模型串行 `HGetAll`（dual 键模式下 ×2），一次闸门最多 1+500 次 RTT。已有 3s 闸门超时兜底，但建议改为 Redis Pipeline 一次取回全部节点哈希，消除大面积凭据下的超时 fail-open。
+1. **P2：`ProbeHealthEvidence` 批量化**（`domains/ursm/v2/store/probe_evidence.go`）— **已完成（2026-09-11，本轮）**
+   已改为 Redis Pipeline（复用 `redissafe.SafeHGetAllPipeline` 双段 TYPE+HGETALL 管道，键选择规则与 `PipelineNodeViews` 一致）：全部主键一轮取回，dual 模式 miss 的键再有至多一轮 legacy 回退管道——一次闸门的 Redis 交互从最多 1+2×500 次串行 RTT 降为 ≤2 轮管道。新增批量混合来源（k2-only/legacy-only/双写/缺失）、legacy-only tuple、500 规模单测。
 
 2. **P2：`removeSkippedProbe` 分支测试缺口**
    Remove 报错提前返回、removed=false 不碰镜像/SSE、queue nil 警告三条分支无单测（需要 sqlmock 或将 `ProbeQueue.Remove` 抽接口缝）。仓库已 vendor `DATA-DOG/go-sqlmock`。
