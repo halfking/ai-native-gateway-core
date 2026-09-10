@@ -73,7 +73,8 @@
 ### cred 41 / cred 42 终态
 
 - **cred 42 (hzx-2)**：`active/ready/ok`，22 条 binding `available=false` 为 0，`v_routable_credential_models` 11/11 可路由。**恢复闭环完成**。
-- **cred 41 (hzx)**：新增发现——其 `status='disabled'`（08-21 即已置，`manual_disabled=f`）挡在 BalanceQuotaProbe 资格 SQL（`status='active'`）之外，F1 审计未覆盖此层；探针族全部代码（writeHealth 等）均不翻 `status`，故单纯部署 F1 无法自动恢复。本轮经 admin API `PATCH /api/providers/14/credentials/41 {"status":"active"}` 解锁资格（**非** force_enable，availability/quota 未动）。之后 BalanceQuotaProbe 每 2min 真实探测（05:40/05:50/05:52/05:54…），上游持续返回 **402 payment required**，探针诚实拒绝翻牌（`writeHealth skipped stale result`）。**结论：网关侧恢复链路完好且已被端到端验证；当前阻塞在上游 MiniMax 账户侧（余额未生效或非同一账户/子账户）**。上游放行后下一轮 2min 探针将自动翻 ready/ok，无需人工干预。
+- **cred 41 (hzx)**：新增发现——其 `status='disabled'`（08-21 即已置，`manual_disabled=f`）挡在 BalanceQuotaProbe 资格 SQL（`status='active'`）之外，F1 审计未覆盖此层；探针族全部代码（writeHealth 等）均不翻 `status`，故单纯部署 F1 无法自动恢复。本轮经 admin API `PATCH /api/providers/14/credentials/41 {"status":"active"}` 解锁资格（**非** force_enable，availability/quota 未动）。之后 BalanceQuotaProbe 每 2min 真实探测（05:40/05:50/05:52/05:54…），上游持续返回 **402 payment required**，探针诚实拒绝翻牌（`writeHealth skipped stale result`）。
+  - **上游定性（2026-09-11 06:1x，服务端 reveal 后直连复测，key 未落任何日志）**：cred 41 key → HTTP 402 `insufficient_balance_error "insufficient balance (1008)"`；同一时刻 cred 42 key → HTTP 200 正常 completion。**key 有效、鉴权通过，所属账户余额为零——充值未进入该 key 对应的 MiniMax 账户/分组**（对比 cred 42 正常，疑似充到了别的账户）。上游充值到位后，网关下一轮 2min 探针自动翻 ready/ok，无需任何人工干预。
 
 ### 本轮新增变更
 
