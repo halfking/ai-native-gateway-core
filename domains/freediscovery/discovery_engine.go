@@ -4,9 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // DiscoveryEngine 发现引擎: 加载模板 → 解析密钥 → 扫描上游 → ToS 初判 →
@@ -48,11 +51,11 @@ func NewDiscoveryEngine(db *sql.DB, templates *TemplateManager) *DiscoveryEngine
 		e.providerScanners[code] = hs
 	}
 
-	// 协议兜底: google/anthropic 的模型发现 MVP 阶段复用 openai 形态扫描
-	// (真协议适配后在此替换 scanner)
+	// 协议兜底: google-ai-studio 使用 Gemini 真协议 (models[] 形态),
+	// 其余协议继续复用 openai 形态扫描 (anthropic 走 x-api-key 适配器).
 	e.fallbackScanners[APITypeOpenAICompletions] = NewHTTPScanner(nil)
-	e.fallbackScanners[APITypeGoogleGenerativeAI] = NewHTTPScanner(nil)
-	e.fallbackScanners[APITypeAnthropic] = NewHTTPScanner(nil)
+	e.fallbackScanners[APITypeGoogleGenerativeAI] = NewGoogleGenerativeAIScanner(nil)
+	e.fallbackScanners[APITypeAnthropic] = NewAnthropicScanner(nil)
 	return e
 }
 
@@ -91,9 +94,13 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 	//    将消耗上游 API 配额且写入失败任务; 与 List(enabledOnly) 保持一致).
 	tpl, err := e.templates.Get(ctx, req.TenantID, req.TemplateID)
 	if err != nil {
+		if errors.Is(err, ErrTemplateNotFound) {
+			metrics.FreeDiscoveryScansTotal.WithLabelValues("", "template_not_found").Inc()
+		}
 		return nil, err
 	}
 	if !tpl.Enabled {
+		metrics.FreeDiscoveryScansTotal.WithLabelValues(tpl.ProviderCode, "template_disabled").Inc()
 		return nil, ErrTemplateDisabled
 	}
 
@@ -110,46 +117,67 @@ func (e *DiscoveryEngine) Run(ctx context.Context, req DiscoveryRequest) (*Disco
 	now := timeNow().UTC()
 	task.StartedAt = &now
 	task.Status = TaskStatusRunning
+	scanStart := timeNow()
+	metrics.FreeDiscoveryActiveScans.Inc()
 
 	// 3. 解析密钥
 	apiKey, _, err := e.templates.ResolveAPIKey(ctx, tpl)
 	if err != nil {
-		return e.fail(ctx, task, TaskStatusRunning, fmt.Errorf("resolve api key: %w", err))
+		return e.fail(ctx, task, TaskStatusRunning, fmt.Errorf("resolve api key: %w", err), scanStart)
 	}
 
 	// 4. 选择扫描器 (提供商装配优先, 协议兜底)
 	scanner := e.scannerFor(tpl)
 	if scanner == nil {
-		return e.fail(ctx, task, TaskStatusRunning, fmt.Errorf("no scanner for provider %q (api_type %q)", tpl.ProviderCode, tpl.APIType))
+		return e.fail(ctx, task, TaskStatusRunning, fmt.Errorf("no scanner for provider %q (api_type %q)", tpl.ProviderCode, tpl.APIType), scanStart)
 	}
 
 	// 5. 扫描
 	models, err := scanner.ScanModels(ctx, tpl, apiKey)
 	if err != nil {
-		return e.fail(ctx, task, TaskStatusRunning, err)
+		return e.fail(ctx, task, TaskStatusRunning, err, scanStart)
 	}
 
 	// 6. ToS 初判 (共享池/配额钩子已在 scanner 装配层生效)
 	for i := range models {
 		models[i].TosVerdict, models[i].TosNotes = e.tos.Check(tpl, models[i].ModelID)
+		if models[i].TosVerdict == "avoid" || models[i].TosVerdict == "caution" {
+			metrics.FreeDiscoveryTosViolationsTotal.WithLabelValues(tpl.ProviderCode, models[i].TosVerdict).Inc()
+		}
 	}
 
 	// 7. 结果落库 (pending)
 	if err := e.saveResults(ctx, task, models); err != nil {
-		return e.fail(ctx, task, TaskStatusRunning, err)
+		return e.fail(ctx, task, TaskStatusRunning, err, scanStart)
 	}
 
 	// 8. 任务完成
 	found := len(models)
 	if err := e.updateTask(ctx, task, TaskStatusSuccess, TaskStatusRunning, &found, nil); err != nil {
+		metrics.FreeDiscoveryActiveScans.Dec()
 		return nil, err
 	}
+
+	metrics.FreeDiscoveryActiveScans.Dec()
+	metrics.FreeDiscoveryScansTotal.WithLabelValues(tpl.ProviderCode, "success").Inc()
+	metrics.FreeDiscoveryScanDurationSeconds.Observe(timeSince(scanStart).Seconds())
+	metrics.FreeDiscoveryModelsDiscoveredTotal.Observe(float64(found))
+	metrics.FreeDiscoveryResourcesDiscoveredTotal.Add(float64(found))
 
 	slog.Info("freediscovery: task completed",
 		"tenant_id", req.TenantID, "task_id", task.ID,
 		"provider_code", tpl.ProviderCode, "models_found", found)
 
 	return e.GetTask(ctx, req.TenantID, task.ID)
+}
+
+// failScanMetrics 记录扫描失败路径的可观测性指标 (终态 + 耗时).
+func failScanMetrics(provider string, cause error, scanStart time.Time) {
+	metrics.FreeDiscoveryActiveScans.Dec()
+	metrics.FreeDiscoveryScansTotal.WithLabelValues(provider, "failed").Inc()
+	if !scanStart.IsZero() {
+		metrics.FreeDiscoveryScanDurationSeconds.Observe(timeSince(scanStart).Seconds())
+	}
 }
 
 // createTask 写入 pending 任务行. started_at 保留 NULL, 由 running 状态写入.
@@ -248,7 +276,9 @@ func (e *DiscoveryEngine) updateTask(
 //
 // 仅在 expectedFrom 状态 (一般为 running) 下可转换; 0 行表示状态机被破坏,
 // 返回的 error 仍包裹 cause, 让 handler 透传; 任务体仍然失败状态供 UI 展示.
-func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, expectedFrom TaskStatus, cause error) (*DiscoveryTask, error) {
+// scanStart 非零时同步落扫描耗时/终态指标.
+func (e *DiscoveryEngine) fail(ctx context.Context, task *DiscoveryTask, expectedFrom TaskStatus, cause error, scanStart ...time.Time) (*DiscoveryTask, error) {
+	failScanMetrics(task.ProviderCode, cause, firstTime(scanStart))
 	task.Status = TaskStatusFailed
 	task.ErrorMessage = cause.Error()
 
@@ -499,4 +529,15 @@ func nullableTime(dst **time.Time, v sql.NullTime) {
 		t := v.Time
 		*dst = &t
 	}
+}
+
+// timeNow/timeSince 独立时钟入口, 测试可注入.
+var timeSince = time.Since
+
+// firstTime 返回变长参数中的第一个 time.Time; 空参返回零值.
+func firstTime(ts []time.Time) time.Time {
+	if len(ts) == 0 {
+		return time.Time{}
+	}
+	return ts[0]
 }

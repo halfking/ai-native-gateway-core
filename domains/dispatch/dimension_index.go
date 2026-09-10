@@ -228,7 +228,10 @@ func (ix *DimensionIndex) Complete(qr *QueuedRequest, out ForwardOutcome, now ti
 	// the trace always ends on a terminal action. Idempotent — a terminal
 	// tail is never extended (invariant 3). Nothing is copied into the
 	// dimension entries (scope correction: trace follows the request).
-	if n := len(qr.AttemptJournal); n == 0 || !isTerminalAction(qr.AttemptJournal[n-1].Action) {
+	// audit 2026-09-11: the tail check goes through journalTailIsTerminal —
+	// the raw len/index read here raced recordDecision outside journalMu
+	// (same window the 2026-09-10 P0 fix closed).
+	if !qr.journalTailIsTerminal() {
 		terminalKind := out.ErrorKind
 		if terminalKind == "" && out.Err != nil {
 			terminalKind = classifyError(out.Err)

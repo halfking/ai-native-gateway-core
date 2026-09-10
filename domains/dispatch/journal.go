@@ -189,3 +189,20 @@ func (qr *QueuedRequest) JournalSnapshot() []JournalEntry {
 	copy(out, qr.AttemptJournal)
 	return out
 }
+
+// journalTailIsTerminal reports whether the last journal entry is a terminal
+// action. audit 2026-09-11: DimensionIndex.Complete previously did the
+// len/index dance on the raw slice outside journalMu — the same
+// append/ring-shift window the 2026-09-10 P0 fix closed for
+// recordDecision/JournalSnapshot — so the tail check could race a concurrent
+// post-I/O decision and misclassify the backfill. Locked tail read keeps the
+// "terminal tail is never extended" invariant race-free.
+func (qr *QueuedRequest) journalTailIsTerminal() bool {
+	if qr == nil {
+		return false
+	}
+	qr.journalMu.Lock()
+	defer qr.journalMu.Unlock()
+	n := len(qr.AttemptJournal)
+	return n > 0 && isTerminalAction(qr.AttemptJournal[n-1].Action)
+}

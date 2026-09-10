@@ -129,7 +129,7 @@ type Storage interface {
 - 事务保证数据一致性
 - 支持审计和合规需求
 
-**Lite 模式实现** (`storage/memory/*.go`):
+**Lite 模式实现** (`storage/lite/state_store.go`；2026-09-11 勘误，原稿写作 `storage/memory/*.go`，storage/lite 命名迁移后统一以 `storage/lite` 为准):
 - 基于 `sync.Map` 的并发安全内存存储
 - 数据结构针对快速读写优化
 - 无磁盘 I/O，性能极高
@@ -214,7 +214,7 @@ registry.MustRegister(requestCounter, latencyHistogram, ...)
 | `config/storage.go` | 存储配置定义和验证 | ✅ 已实现 |
 | `storage/interfaces.go` | 统一存储接口 | ✅ 已实现 |
 | `storage/factory/factory.go` | 存储实例工厂 | ✅ 已实现 |
-| `storage/memory/*.go` | 内存存储实现 | ✅ 已实现 |
+| `storage/lite/state_store.go` | 内存存储实现（2026-09-11 勘误，原稿 `storage/memory/*.go`） | ✅ 已实现 |
 | `cmd/gateway/storage_mode_init.go` | 启动时模式初始化 | ✅ 已实现 |
 | `cmd/gateway/lite_telemetry_sink_test.go` | Lite 模式遥测测试 | ✅ 已实现 |
 
@@ -312,7 +312,7 @@ BenchmarkLiteMode_GetConversation-8    50000    0.05ms/op   100B/op
 
 **1. 内存使用优化**
 ```go
-// storage/memory/storage.go
+// storage/lite/storage.go（2026-09-11 勘误：规划草稿中的路径，实际实现见 storage/lite/state_store.go）
 // 当前: 无限制增长可能导致 OOM
 // 优化: 添加 LRU 淘汰策略
 
@@ -382,7 +382,7 @@ storage:
 **5. 数据快照功能**
 
 ```go
-// storage/memory/snapshot.go
+// storage/lite/snapshot.go（2026-09-11 勘误：规划草稿中的路径，实际实现见 storage/lite/state_store.go）
 func (s *MemoryStorage) Snapshot(path string) error {
     // 定期将内存数据序列化到磁盘
     // 重启时可选择性恢复
@@ -642,7 +642,7 @@ helm rollback llm-gateway 0
 - 配置层: `config/storage.go`, `config/storage_test.go`
 - 接口定义: `storage/interfaces.go`
 - 工厂实现: `storage/factory/factory.go`
-- 内存实现: `storage/memory/*.go`
+- 内存实现: `storage/lite/state_store.go`（2026-09-11 勘误，原稿 `storage/memory/*.go`）
 - 初始化逻辑: `cmd/gateway/storage_mode_init.go`
 - 集成测试: `tests/integration/dual_mode_test.go`
 

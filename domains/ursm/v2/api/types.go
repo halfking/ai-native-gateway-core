@@ -75,6 +75,18 @@ func IsValidHealthStatus(s string) bool {
 	return false
 }
 
+// ProbeHealthEvidence is a fresh Redis-backed health snapshot used by probe
+// preflight. Known is false when the persisted state cannot prove a safe,
+// unambiguous health decision.
+type ProbeHealthEvidence struct {
+	RawModel           string
+	Known              bool
+	Healthy            bool
+	LastRequestAt      time.Time
+	LastRequestFailed  bool
+	LastRequestErrorAt time.Time
+}
+
 type NodeView struct {
 	ProviderID           int       `json:"provider_id"`
 	CredentialID         int       `json:"credential_id"`

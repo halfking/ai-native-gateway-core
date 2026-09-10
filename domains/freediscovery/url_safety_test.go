@@ -18,7 +18,7 @@ func TestIsValidBaseURL(t *testing.T) {
 	}{
 		{"", "required"},
 		{"ftp://api.x.com", "must use http"},
-		{"//api.x.com/v1", "must use http"},     // 无 scheme
+		{"//api.x.com/v1", "must use http"},      // 无 scheme
 		{"javascript:alert(1)", "must use http"}, // 不允许 scheme
 		{"https://user:pass@api.x.com/v1", "userinfo"},
 		{"https://api.x.com/v1#frag", "fragment"},
@@ -56,7 +56,7 @@ func TestIsValidModelsEndpoint(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"models", "relative"},   // 缺前导 /
+		{"models", "relative"}, // 缺前导 /
 		{"//api.x.com/models", "scheme-relative"},
 		{"https://api.x.com/models", "relative path"},
 		{"http://api.x.com/models", "relative path"},
