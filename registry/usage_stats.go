@@ -26,10 +26,16 @@ func (tr *ToolRegistry) RecordToolCall(ctx context.Context, toolID, tenantID, st
 	//   UNIQUE (tool_id, tenant_id, usage_date, created_at)
 	// (constraint name
 	//   tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key).
-	// We try the column-tuple form first (production safe) and fall
-	// back to the named constraint when the local schema diverges.
-	// INSERT directly targets tool_usage_stats_hot (the canonical
-	// write target per the 2026-07 hot-table architecture).
+	// INSERT targets tool_usage_stats_hot (the canonical write target per
+	// the 2026-07 hot-table architecture, guaranteed by startup migration
+	// 348 on every boot).
+	//
+	// 2026-09-10 (audit R9 candidate 11): the old fallback on hot-insert
+	// failure wrote straight into the partitioned parent, splitting one
+	// logical day across hot and parent rows and double-counting the
+	// union view reads. Hot is a boot-migration guarantee — a missing hot
+	// table is a schema fault and must surface as an error, not silently
+	// fork the write path.
 	query := `
 		INSERT INTO tool_usage_stats_hot
 			(tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at)
@@ -51,26 +57,8 @@ func (tr *ToolRegistry) RecordToolCall(ctx context.Context, toolID, tenantID, st
 		errorDelta = 1
 	}
 
-	_, err := tr.db.Exec(ctx, query, toolID, tenantID, successDelta, errorDelta, latencyMs)
-	if err != nil {
-		// Fallback: tool_usage_stats_hot may not exist in some env;
-		// use parent table instead.
-		partitionedQuery := `
-			INSERT INTO tool_usage_stats
-				(tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at)
-			VALUES ($1, $2, CURRENT_DATE, 1, $3, $4, $5, NOW())
-			ON CONFLICT ON CONSTRAINT tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key
-			DO UPDATE SET
-				call_count = tool_usage_stats.call_count + 1,
-				success_count = tool_usage_stats.success_count + $3,
-				error_count = tool_usage_stats.error_count + $4,
-				avg_latency_ms = (tool_usage_stats.avg_latency_ms * tool_usage_stats.call_count + $5) / (tool_usage_stats.call_count + 1),
-				last_called_at = NOW(),
-				updated_at = NOW()
-		`
-		if _, perr := tr.db.Exec(ctx, partitionedQuery, toolID, tenantID, successDelta, errorDelta, latencyMs); perr != nil {
-			return fmt.Errorf("failed to update tool_usage_stats (partitioned): %w (original: %v)", perr, err)
-		}
+	if _, err := tr.db.Exec(ctx, query, toolID, tenantID, successDelta, errorDelta, latencyMs); err != nil {
+		return fmt.Errorf("failed to update tool_usage_stats_hot: %w", err)
 	}
 
 	// 2. 记录详细事件（异步，不阻塞主流程）
@@ -90,14 +78,23 @@ func (tr *ToolRegistry) RecordToolCall(ctx context.Context, toolID, tenantID, st
 }
 
 // GetUsageStats 获取工具使用统计
+//
+// 2026-09-10 (audit R9 candidate 11): 读 tool_usage_stats_with_current_month
+// 视图（348 建，hot ∪ parent）而非直查父表——父表缺当前 8h 热窗口数据。
+// 按天 GROUP BY 聚合：hot 与 parent 对同一 (tool,tenant,date) 理论上不重叠
+// （写入只落 hot，promote 原子搬运），但历史 fallback 写入已造成过的双行
+// 分裂若存在，聚合保证每天恰好一行、计数不丢。
 func (tr *ToolRegistry) GetUsageStats(ctx context.Context, toolID, tenantID string, days int) ([]*UsageStats, error) {
 	if tr.db == nil {
 		return nil, nil
 	}
 
 	query := `
-		SELECT tool_id, tenant_id, usage_date, call_count, success_count, error_count, avg_latency_ms, last_called_at
-		FROM tool_usage_stats
+		SELECT tool_id, tenant_id, usage_date,
+		       SUM(call_count)::bigint, SUM(success_count)::bigint, SUM(error_count)::bigint,
+		       COALESCE(SUM(avg_latency_ms::bigint * call_count) / NULLIF(SUM(call_count), 0), 0)::int,
+		       MAX(last_called_at)
+		FROM tool_usage_stats_with_current_month
 		WHERE usage_date >= CURRENT_DATE - ($1::int * INTERVAL '1 day')
 	`
 	args := []interface{}{days}
@@ -111,7 +108,7 @@ func (tr *ToolRegistry) GetUsageStats(ctx context.Context, toolID, tenantID stri
 		args = append(args, tenantID)
 	}
 
-	query += " ORDER BY usage_date DESC, tool_id"
+	query += " GROUP BY tool_id, tenant_id, usage_date ORDER BY usage_date DESC, tool_id"
 
 	rows, err := tr.db.Query(ctx, query, args...)
 	if err != nil {
@@ -137,14 +134,16 @@ func (tr *ToolRegistry) GetUsageStats(ctx context.Context, toolID, tenantID stri
 }
 
 // GetTopTools 获取最常用的工具
+// 2026-09-10 (audit R9 candidate 11): 同 GetUsageStats，改查联合视图
+// 覆盖 8h 热窗口；SUM 已按 union 全量求和，天然免疫双行分裂的丢读。
 func (tr *ToolRegistry) GetTopTools(ctx context.Context, tenantID string, limit int, days int) ([]*UsageStats, error) {
 	if tr.db == nil {
 		return nil, nil
 	}
 
 	query := `
-		SELECT tool_id, tenant_id, SUM(call_count) as total_calls, SUM(success_count) as total_success, SUM(error_count) as total_error
-		FROM tool_usage_stats
+		SELECT tool_id, tenant_id, SUM(call_count)::bigint as total_calls, SUM(success_count)::bigint as total_success, SUM(error_count)::bigint as total_error
+		FROM tool_usage_stats_with_current_month
 		WHERE usage_date >= CURRENT_DATE - $1
 	`
 	args := []interface{}{days}
