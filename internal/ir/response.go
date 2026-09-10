@@ -221,6 +221,13 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 			})
 		case "thinking":
 			if c.Thinking != "" {
+				// R12 候选4: join with a newline — multiple thinking blocks
+				// concatenated without a separator glued texts together
+				// ("thought1thought2"); this also matches the semantics the
+				// retired hand-written fallback converter used.
+				if ir.ReasoningContent != "" {
+					ir.ReasoningContent += "\n"
+				}
 				ir.ReasoningContent += c.Thinking
 			}
 			// PR-2 (2026-06-24): always append the thinking block, even

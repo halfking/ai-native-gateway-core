@@ -22,7 +22,7 @@ import (
 func TestConvertBlockMessage_AutoNormalizesInputText(t *testing.T) {
 	message := convertBlockMessage("user", []any{
 		map[string]any{"type": "input_text", "text": "请对12小时内的修订进行审计，并总结完成情况，给出改进意见。"},
-	})
+	})[0]
 	content, ok := message["content"].(string)
 	if !ok {
 		t.Fatalf("content = %#v, want string (audit invariant: no empty/multipart content)", message["content"])
@@ -37,7 +37,7 @@ func TestConvertBlockMessage_AutoNormalizesInputText(t *testing.T) {
 func TestConvertBlockMessage_AutoNormalizesInputImage(t *testing.T) {
 	message := convertBlockMessage("user", []any{
 		map[string]any{"type": "input_image", "image_url": map[string]any{"url": "https://example.test/a.png"}},
-	})
+	})[0]
 	parts, ok := message["content"].([]any)
 	if !ok {
 		t.Fatalf("expected content parts for image, got %#v", message["content"])
@@ -65,7 +65,7 @@ func TestConvertBlockMessage_PreservesInputFileAndAudio(t *testing.T) {
 	t.Run("input_file", func(t *testing.T) {
 		message := convertBlockMessage("user", []any{
 			map[string]any{"type": "input_file", "file_id": "file_abc123"},
-		})
+		})[0]
 		parts, ok := message["content"].([]map[string]any)
 		if !ok || len(parts) != 1 || parts[0]["file_id"] != "file_abc123" {
 			t.Fatalf("input_file dropped: %#v", message["content"])
@@ -77,7 +77,7 @@ func TestConvertBlockMessage_PreservesInputFileAndAudio(t *testing.T) {
 				"type":        "input_audio",
 				"input_audio": map[string]any{"format": "wav"},
 			},
-		})
+		})[0]
 		parts, ok := message["content"].([]map[string]any)
 		if !ok || len(parts) != 1 {
 			t.Fatalf("input_audio dropped: %#v", message["content"])
@@ -96,7 +96,7 @@ func TestConvertBlockMessage_MixedInputTextAndToolUse(t *testing.T) {
 	message := convertBlockMessage("assistant", []any{
 		map[string]any{"type": "input_text", "text": "工具调用"},
 		map[string]any{"type": "tool_use", "id": "toolu_1", "name": "search", "input": map[string]any{}},
-	})
+	})[0]
 	role := message["role"].(string)
 	if role != "assistant" {
 		t.Fatalf("role lost: %v", role)
