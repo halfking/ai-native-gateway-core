@@ -29,6 +29,14 @@ type Querier interface {
 //   - Manually disabled bindings (available=false AND unavailable_reason LIKE 'manual%')
 //     keep their availability flags unchanged.
 //   - All other states (including legacy soft-delete reason='deleted') are re-enabled.
+//   - canonical_cleared_at IS NOT NULL (migration 693, admin unbind marker):
+//     the ON CONFLICT branch keeps the stored canonical_id — i.e. NULL after
+//     an operator unlink — and refuses the incoming EXCLUDED value. Discovery
+//     (discovery.Service.upsertModel, the only non-nil canonicalID caller)
+//     and the admin per-provider refresh path therefore can no longer
+//     silently re-link an offer the operator unbound; only an explicit
+//     operator action (admin PATCH canonical_id / InsertManualCredentialModel
+//     with a canonical ID) clears the marker.
 //
 // 2026-07-14: enforces the gateway-wide case rule:
 //   - rawName is the PROVIDER-facing name (e.g. NVIDIA NIM "z-ai/glm-5.2",
@@ -78,7 +86,16 @@ upsert_pm AS (
     SELECT cred.provider_id, $2, $3, $5, $4, TRUE, 'discovery', NOW() FROM cred
     ON CONFLICT (provider_id, raw_model_name) DO UPDATE SET
         canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name, provider_models.canonical_raw_name),
-        canonical_id = COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id),
+        -- Migration 693: an admin unbind (canonical_cleared_at set by
+        -- clear_canonical) must survive discovery refreshes. The COALESCE
+        -- alone would re-link the row on the very next cycle because
+        -- discovery always passes a non-NULL canonical_id, so gate the
+        -- write on the marker and keep the stored (NULL) value instead.
+        canonical_id = CASE
+            WHEN provider_models.canonical_cleared_at IS NOT NULL
+            THEN provider_models.canonical_id
+            ELSE COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id)
+        END,
         standardized_name = COALESCE(EXCLUDED.standardized_name, provider_models.standardized_name),
         source = 'discovery',
         last_seen_at = NOW(),
@@ -150,6 +167,10 @@ type ManualInsertParams struct {
 // credential_model_bindings with admin_protected=TRUE so discovery/refresh
 // will not overwrite or expire the row.
 //
+// Migration 693: when p.CanonicalID names a standard model, an existing
+// admin-unbind marker (provider_models.canonical_cleared_at) is lifted —
+// a manual enroll with an explicit canonical ID is an operator re-link.
+//
 // Returns the credential_model_bindings.id (model_offers.id).
 func InsertManualCredentialModel(ctx context.Context, db Querier, p ManualInsertParams) (bindingID int64, err error) {
 	if strings.TrimSpace(p.RawName) == "" {
@@ -191,6 +212,14 @@ upsert_pm AS (
     ON CONFLICT (provider_id, raw_model_name) DO UPDATE SET
         canonical_raw_name = COALESCE(EXCLUDED.canonical_raw_name, provider_models.canonical_raw_name),
         canonical_id = COALESCE(EXCLUDED.canonical_id, provider_models.canonical_id),
+        -- Migration 693: naming a canonical model here is an explicit
+        -- operator (re)link, so it lifts the admin-unbind marker; without
+        -- an EXCLUDED canonical_id the marker (and the unlink it records)
+        -- is preserved.
+        canonical_cleared_at = CASE
+            WHEN EXCLUDED.canonical_id IS NOT NULL THEN NULL
+            ELSE provider_models.canonical_cleared_at
+        END,
         standardized_name = COALESCE(EXCLUDED.standardized_name, provider_models.standardized_name),
         outbound_model_name = COALESCE(EXCLUDED.outbound_model_name, provider_models.outbound_model_name),
         source = 'manual',
