@@ -192,7 +192,9 @@ func TestConvertAnthropicResponseToChat_ToolCalls(t *testing.T) {
 	assert.Equal(t, "tu_1", first_call["id"])
 	fn, _ := first_call["function"].(map[string]any)
 	assert.Equal(t, "get_weather", fn["name"])
-	assert.Equal(t, `{"city":"SF"}`, fn["arguments"])
+	// IR-backed conversion preserves the raw input JSON verbatim (R12 候选4),
+	// spacing included — the retired fallback re-marshalled it compacted.
+	assert.Equal(t, `{"city": "SF"}`, fn["arguments"])
 }
 
 func TestStreamAnthropicSSEToOpenAI_WrappedEOFWithoutMessageStopIsInterrupted(t *testing.T) {

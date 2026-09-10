@@ -29,10 +29,14 @@ import (
 )
 
 type messagesRequestBody struct {
-	Model         string          `json:"model"`
-	Messages      json.RawMessage `json:"messages"`
-	MaxTokens     int             `json:"max_tokens"`
-	System        string          `json:"system,omitempty"`
+	Model     string          `json:"model"`
+	Messages  json.RawMessage `json:"messages"`
+	MaxTokens int             `json:"max_tokens"`
+	// System is json.RawMessage because Anthropic accepts BOTH shapes — a
+	// plain string and an array of content blocks (possibly with
+	// cache_control). Declaring it string made any block-array system
+	// hard-fail the whole body unmarshal (R12 候选4).
+	System        json.RawMessage `json:"system,omitempty"`
 	Stream        bool            `json:"stream"`
 	Temperature   *float64        `json:"temperature,omitempty"`
 	TopP          *float64        `json:"top_p,omitempty"`
@@ -835,8 +839,10 @@ func convertToChatBody(req *messagesRequestBody) map[string]any {
 	}
 
 	var messages []any
-	if req.System != "" {
-		messages = append(messages, map[string]any{"role": "system", "content": req.System})
+	if len(req.System) > 0 && string(req.System) != "null" {
+		if sys := convertAnthropicSystem(req.System); sys != "" {
+			messages = append(messages, map[string]any{"role": "system", "content": sys})
+		}
 	}
 
 	var rawMessages []json.RawMessage
@@ -845,8 +851,9 @@ func convertToChatBody(req *messagesRequestBody) map[string]any {
 			for _, raw := range rawMessages {
 				var msg map[string]any
 				if json.Unmarshal(raw, &msg) == nil {
-					converted := convertAnthropicMessage(msg)
-					messages = append(messages, converted)
+					for _, converted := range convertAnthropicMessage(msg) {
+						messages = append(messages, converted)
+					}
 				}
 			}
 		}
@@ -898,32 +905,72 @@ func ConvertAnthropicBodyToOpenAI(bodyBytes []byte) ([]byte, error) {
 	return json.Marshal(chatBody)
 }
 
-func convertAnthropicMessage(msg map[string]any) map[string]any {
+// convertAnthropicMessage converts one Anthropic Messages message into zero
+// or more OpenAI chat messages. It returns a slice because a user message
+// carrying parallel tool_result blocks expands into one {"role":"tool"}
+// message PER result (R12 候选4).
+func convertAnthropicMessage(msg map[string]any) []map[string]any {
 	role, _ := msg["role"].(string)
 	content := msg["content"]
 
 	switch role {
 	case "user", "assistant":
 	default:
-		return msg
+		return []map[string]any{msg}
 	}
 
 	switch c := content.(type) {
 	case string:
-		return map[string]any{"role": role, "content": c}
+		return []map[string]any{{"role": role, "content": c}}
 	case []any:
 		return convertBlockMessage(role, c)
 	default:
-		return map[string]any{"role": role, "content": fmt.Sprint(c)}
+		return []map[string]any{{"role": role, "content": fmt.Sprint(c)}}
 	}
 }
 
-func convertBlockMessage(role string, blocks []any) map[string]any {
+// convertBlockMessage converts one Anthropic content-block message into
+// OpenAI chat message(s), preserving block order. Each tool_result becomes
+// its own {"role":"tool","tool_call_id":...} message — the previous
+// implementation returned at the FIRST tool_result, silently dropping every
+// parallel tool result and any trailing text (R12 候选4). Non-tool blocks
+// accumulate into a single trailing message with the source role.
+func convertBlockMessage(role string, blocks []any) []map[string]any {
+	out := make([]map[string]any, 0, len(blocks))
 	var textParts []string
 	var toolCalls []map[string]any
 	var passthrough []map[string]any
 	var contentParts []any
 	var hasNonTextContent bool
+
+	// flushRoleMessage appends the accumulated non-tool content as one
+	// message with the source role (assistant tool_calls / user content).
+	flushRoleMessage := func() {
+		if len(toolCalls) > 0 {
+			result := map[string]any{
+				"role":       role,
+				"tool_calls": toolCalls,
+			}
+			if hasNonTextContent {
+				result["content"] = contentParts
+			} else if len(textParts) > 0 {
+				result["content"] = strings.Join(textParts, "\n")
+			}
+			out = append(out, result)
+			return
+		}
+		if hasNonTextContent {
+			out = append(out, map[string]any{"role": role, "content": contentParts})
+			return
+		}
+		if len(passthrough) > 0 {
+			out = append(out, map[string]any{"role": role, "content": passthrough})
+			return
+		}
+		if len(textParts) > 0 {
+			out = append(out, map[string]any{"role": role, "content": strings.Join(textParts, "\n")})
+		}
+	}
 
 	for _, b := range blocks {
 		block, ok := b.(map[string]any)
@@ -955,11 +1002,11 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 				toolUseID, _ = block["id"].(string)
 			}
 			content := extractBlockText(block["content"])
-			return map[string]any{
+			out = append(out, map[string]any{
 				"role":         "tool",
 				"tool_call_id": toolUseID,
 				"content":      content,
-			}
+			})
 		case "image":
 			source, _ := block["source"].(map[string]any)
 			if source != nil {
@@ -987,26 +1034,30 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 			contentParts = append(contentParts, block)
 		}
 	}
-	if len(toolCalls) > 0 {
-		result := map[string]any{
-			"role":       role,
-			"tool_calls": toolCalls,
-		}
-		if hasNonTextContent {
-			result["content"] = contentParts
-		} else if len(textParts) > 0 {
-			result["content"] = strings.Join(textParts, "\n")
-		}
-		return result
+	flushRoleMessage()
+	if len(out) == 0 {
+		// A message with no recognised content still yields one (empty)
+		// message so the chat body keeps a valid turn.
+		return []map[string]any{{"role": role, "content": ""}}
 	}
-	if hasNonTextContent {
-		return map[string]any{"role": role, "content": contentParts}
-	}
+	return out
+}
 
-	if len(passthrough) > 0 {
-		return map[string]any{"role": role, "content": passthrough}
+// convertAnthropicSystem accepts both Anthropic system shapes — a plain
+// string or an array of content blocks (e.g. text blocks with cache_control)
+// — and returns the joined plain text for the OpenAI system message.
+// R12 候选4: the field was previously declared string, so a block-array
+// system hard-failed the whole body unmarshal and the request 400'd.
+func convertAnthropicSystem(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
 	}
-	return map[string]any{"role": role, "content": strings.Join(textParts, "\n")}
+	var blocks []any
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		return extractBlockText(blocks)
+	}
+	return ""
 }
 
 func extractBlockText(content any) string {
