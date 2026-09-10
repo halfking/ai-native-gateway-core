@@ -4118,6 +4118,12 @@ func main() {
 					}
 					probeService := bg.NewProbeService(nodeProbeWorker, queueExecutor)
 					probeService.SetProbeQueue(probeQueue)
+					// 2026-09-11 自检必要性检查: feed the gate fresh Redis node
+					// state (URSM v2 node hashes) so unnecessary probes are
+					// skipped and removed from queue + database before execution.
+					if ursmV2Mgr != nil {
+						probeService.SetHealthEvidenceSource(ursmV2EvidenceSource{manager: ursmV2Mgr})
+					}
 					if ursmV2Mgr != nil && ursmV2Mgr.StrictCanary() {
 						probeService.SetScope(ursmV2Mgr)
 					}
@@ -4281,6 +4287,16 @@ func main() {
 				}
 				ps := bg.NewProbeService(nodeProbeWorker, queueExecutor)
 				ps.SetProbeQueue(probeQueue)
+				// 2026-09-11 自检必要性检查: same Redis-backed gate as the
+				// credentialstate path above.
+				if ursmV2Mgr != nil {
+					ps.SetHealthEvidenceSource(ursmV2EvidenceSource{manager: ursmV2Mgr})
+				}
+				// Mirror the first wiring site's strict-canary identity gate —
+				// authoritative fallback deployments run the same queue worker.
+				if ursmV2Mgr != nil && ursmV2Mgr.StrictCanary() {
+					ps.SetScope(ursmV2Mgr)
+				}
 				probeQueueWorker.SetProbeService(ps)
 				nodeProbeWorker.SetProbeQueue(probeQueue)
 			}

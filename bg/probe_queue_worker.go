@@ -47,6 +47,12 @@ type ProbeQueueWorker struct {
 	// cache still excludes credential" gap on the fast_probe path
 	// (ProbeQueueWorker + ProbeService + NodeProbeWorker.Submit).
 	onQuotaRecovered func(credID int, source string)
+
+	// completeFn (audit 2026-09-11) is the test seam over complete(); nil
+	// falls through to the real ProbeQueue.Complete path. Exists so tests
+	// can assert that a necessity-skipped (ErrProbeNotNecessary) task is
+	// NOT completed against its already-deleted queue row.
+	completeFn func(ctx context.Context, task ProbeQueueTask, result ProbeQueueResult)
 }
 
 // SetProbeService injects the node-probe execution owner after construction
@@ -183,6 +189,15 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 	if task.Command == "node_probe" && w.cfg.ProbeService != nil {
 		result, err := w.cfg.ProbeService.Run(ctx, task)
 		if err != nil {
+			// Necessity gate (2026-09-11 自检必要性检查): the probe was
+			// skipped before execution and its queue row + node_probe_state
+			// mirror were already deleted by the skip path. There is nothing
+			// left to Complete — completing would only log a confusing
+			// 0-rows "lease lost" warning against a deleted row.
+			if errors.Is(err, ErrProbeNotNecessary) {
+				slog.Info("probe_service skipped unnecessary task", "queue_id", task.ID, "reason", result.ReasonCode)
+				return
+			}
 			if errors.Is(err, ErrProbeOutOfScope) || errors.Is(err, ErrProbeAutomaticIneligible) {
 				slog.Info("probe_service skipped task", "queue_id", task.ID, "reason", result.ReasonCode)
 				w.complete(ctx, task, result)
@@ -292,6 +307,13 @@ func (w *ProbeQueueWorker) completeNodeProbe(ctx context.Context, task ProbeQueu
 }
 
 func (w *ProbeQueueWorker) complete(ctx context.Context, task ProbeQueueTask, result ProbeQueueResult) {
+	if w == nil {
+		return
+	}
+	if w.completeFn != nil {
+		w.completeFn(ctx, task, result)
+		return
+	}
 	if err := w.cfg.Queue.Complete(ctx, task, result); err != nil {
 		if errors.Is(err, ErrProbeLeaseLost) {
 			slog.Info("probe queue task completion skipped after lease loss", "queue_id", taskID(task))

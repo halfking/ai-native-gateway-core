@@ -98,6 +98,22 @@ end
 -- advance independently per set but stay in lockstep because every event is
 -- applied to both inside this one script.
 local function apply_set(node_key, w1, w5, w30)
+  -- Record request evidence after the shared duplicate gate but before source
+  -- priority. A probe-owned state cannot mask a later request error; success
+  -- never clears the monotonic error watermark. >= defines same-ms order.
+  local previous_request_at = tonumber(redis.call("HGET", node_key, "last_request_at_ms") or "0") or 0
+  if now_ms >= previous_request_at then
+    redis.call("HSET", node_key,
+      "last_request_at_ms", tostring(now_ms),
+      "last_request_failed", success == "0" and "1" or "0")
+  end
+  if success == "0" then
+    local previous_error_at = tonumber(redis.call("HGET", node_key, "last_request_error_at_ms") or "0") or 0
+    if now_ms >= previous_error_at then
+      redis.call("HSET", node_key, "last_request_error_at_ms", tostring(now_ms))
+    end
+  end
+
   local event_seq = redis.call("HINCRBY", node_key, "event_seq", 1)
   local member = success .. ":" .. tostring(now_ms) .. ":" .. tostring(event_seq) .. ":" .. req_id
 

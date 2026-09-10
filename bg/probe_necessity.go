@@ -43,11 +43,19 @@ import (
 )
 
 // probeNecessitySiblingLimit bounds the sibling enumeration per credential.
-// A credential exposing hundreds of models only ever needs enough siblings to
-// answer "is anything under this credential errored" — one errored node fails
-// condition ① regardless of position, so truncation can only flip a skip into
-// a probe (fail-open), never the reverse.
-const probeNecessitySiblingLimit = 200
+// Truncation has a real cost: an errored sibling beyond the limit is not seen,
+// which can flip condition ① from "must probe" to "skip". 500 is far above any
+// realistic per-credential binding count, and the residual risk is bounded:
+// the skip only happens when the CURRENT node is provably healthy in Redis, so
+// the probe being skipped was for a node that already looks fine.
+const probeNecessitySiblingLimit = 500
+
+// probeNecessityGateTimeout bounds the whole gate (sibling query + evidence
+// reads + previous-probe lookup). The gate runs on the queue worker's loop
+// before the lease heartbeat starts; without a deadline a slow Redis/DB would
+// stall the single-worker probe pipeline and burn the claim lease. An
+// over-budget gate fails open exactly like an evidence error.
+const probeNecessityGateTimeout = 3 * time.Second
 
 // Skip reason codes (ReasonCode in ProbeQueueResult / metric label).
 const (
@@ -81,8 +89,11 @@ type NodeHealthEvidence struct {
 	// last error, health status healthy/absent.
 	Healthy bool
 	// LastRequestAt is the timestamp of the most recent request event.
-	LastRequestAt time.Time
-	// LastRequestFailed mirrors the latest request outcome.
+	// LastRequestFailed mirrors the latest request outcome. Both are carried
+	// for observability/debugging; the gate's conditions derive normality
+	// from Healthy + the LastRequestErrorAt watermark, which already subsume
+	// them (any failed request bumps fail_streak, making Healthy false).
+	LastRequestAt     time.Time
 	LastRequestFailed bool
 	// LastRequestErrorAt is the error watermark: the most recent request
 	// failure timestamp (zero when no failed request was ever recorded).
@@ -112,9 +123,10 @@ func (s *ProbeService) SetHealthEvidenceSource(src NodeHealthEvidenceSource) {
 }
 
 // SetSiblingModelsFn overrides how the gate enumerates the other nodes
-// (raw model names) bound to a credential. Production leaves it nil and uses
-// the credential_model_bindings × provider_models query.
-func (s *ProbeService) SetSiblingModelsFn(fn func(ctx context.Context, credID int) ([]string, error)) {
+// (raw model names) bound to a credential, excluding the probed model itself.
+// Production leaves it nil and uses the credential_model_bindings ×
+// provider_models query.
+func (s *ProbeService) SetSiblingModelsFn(fn func(ctx context.Context, credID int, model string) ([]string, error)) {
 	if s != nil {
 		s.siblingModelsFn = fn
 	}
@@ -159,7 +171,7 @@ func (s *ProbeService) probeUnnecessary(ctx context.Context, task ProbeQueueTask
 func (s *ProbeService) conditionAllNodesHealthy(ctx context.Context, task ProbeQueueTask) (string, string, error) {
 	credID := int(task.CredentialID)
 	model := task.RawModel
-	siblings, err := s.siblingModels(ctx, credID)
+	siblings, err := s.siblingModels(ctx, credID, model)
 	if err != nil {
 		return "", "", fmt.Errorf("list sibling nodes: %w", err)
 	}
@@ -171,7 +183,17 @@ func (s *ProbeService) conditionAllNodesHealthy(ctx context.Context, task ProbeQ
 	if err != nil {
 		return "", "", err
 	}
-	if current, ok := evidence[model]; ok && current.Known && !current.Healthy {
+	// The current node MUST have a readable Redis state to prove "没有出错".
+	// A missing/undecodable hash (TTL expiry ≠ no traffic — the glm-5.2
+	// node-keys-expired outage shape recorded in main.go) must fail OPEN:
+	// skipping here would hard-delete the recovery probe, the recovery
+	// scanner would resubmit it every minute, and the credential could never
+	// recover through a probe — an infinite skip loop.
+	current, ok := evidence[model]
+	if !ok || !current.Known {
+		return "", "", nil
+	}
+	if !current.Healthy {
 		return "", "", nil // 当前模型状态出错 → 必须探测
 	}
 	for _, sibling := range siblings {
@@ -228,21 +250,23 @@ func (s *ProbeService) conditionLastProbeHealthy(ctx context.Context, task Probe
 }
 
 // siblingModels enumerates the other nodes (raw model names) bound to the
-// credential — "同一凭据下其它节点".
-func (s *ProbeService) siblingModels(ctx context.Context, credID int) ([]string, error) {
+// credential, excluding the probed model itself — "同一凭据下其它节点".
+// DISTINCT guards against a binding graph that joins out duplicated names.
+func (s *ProbeService) siblingModels(ctx context.Context, credID int, model string) ([]string, error) {
 	if s.siblingModelsFn != nil {
-		return s.siblingModelsFn(ctx, credID)
+		return s.siblingModelsFn(ctx, credID, model)
 	}
 	if s.worker == nil || s.worker.db == nil {
 		return nil, fmt.Errorf("no worker db wired for sibling lookup")
 	}
 	rows, err := s.worker.db.Query(ctx, `
-		SELECT pm.raw_model_name
+		SELECT DISTINCT pm.raw_model_name
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		WHERE cmb.credential_id = $1
+		  AND pm.raw_model_name <> $2
 		ORDER BY pm.raw_model_name
-		LIMIT $2`, credID, probeNecessitySiblingLimit)
+		LIMIT $3`, credID, model, probeNecessitySiblingLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -305,31 +329,44 @@ func (s *ProbeService) healthEvidenceOf(ctx context.Context, tenant string, cred
 // row is deleted so the 30s pump cannot re-enqueue the same node, and the
 // 自检 SSE tile gets a terminal transition. Best-effort: failures are logged,
 // never panic, and never turn the skip into an execution.
+//
+// Ordering matters: the lease-guarded queue-row DELETE is the ownership
+// proof. Only when it actually removed the row do we touch node_probe_state
+// and publish the SSE transition — if the lease was lost, another worker owns
+// the task and may be legitimately executing it, so its state mirror and
+// dashboard tile must be left alone.
 func (s *ProbeService) removeSkippedProbe(ctx context.Context, task ProbeQueueTask, reason string) {
 	if s.removeSkippedFn != nil {
 		s.removeSkippedFn(ctx, task, reason)
 		return
 	}
 	credID := int(task.CredentialID)
-	// 1. Database mirror row — must go first: pumpDueStatesToQueue scans it
-	//    every 30s and would re-enqueue the node probe we just decided to drop.
-	s.worker.deleteNodeProbeState(ctx, credID, task.RawModel)
-	// 2. Queue row (credential_probe_queue) — the queue itself lives in the
+	if s.queue == nil || task.LeaseToken == "" {
+		// No queue wired (or no lease): nothing ownership-guarded to do; the
+		// caller only reaches this with a claimed task in production.
+		slog.Warn("probe_necessity: skip removal skipped — queue or lease token missing",
+			"queue_id", task.ID, "credential_id", credID, "model", task.RawModel)
+		return
+	}
+	// 1. Queue row (credential_probe_queue) — the queue itself lives in the
 	//    database, so the hard DELETE removes the request from both.
-	if s.queue != nil && task.LeaseToken != "" {
-		removed, err := s.queue.Remove(ctx, task)
-		if err != nil {
-			slog.Warn("probe_necessity: removing skipped queue row failed",
-				"queue_id", task.ID, "credential_id", credID, "model", task.RawModel, "error", err)
-		} else if !removed {
-			slog.Info("probe_necessity: skipped queue row already gone (lease lost or completed elsewhere)",
-				"queue_id", task.ID, "credential_id", credID, "model", task.RawModel)
-		}
+	removed, err := s.queue.Remove(ctx, task)
+	if err != nil {
+		slog.Warn("probe_necessity: removing skipped queue row failed",
+			"queue_id", task.ID, "credential_id", credID, "model", task.RawModel, "error", err)
+		return
 	}
+	if !removed {
+		slog.Info("probe_necessity: skipped queue row already gone (lease lost or completed elsewhere), leaving state to the new owner",
+			"queue_id", task.ID, "credential_id", credID, "model", task.RawModel)
+		return
+	}
+	// 2. Database mirror row — must go before returning: pumpDueStatesToQueue
+	//    scans it every 30s and would re-enqueue the node probe we just
+	//    decided to drop.
+	s.worker.deleteNodeProbeState(ctx, credID, task.RawModel)
 	// 3. SSE terminal transition so the dashboard tile does not hang in-flight.
-	if s.queue != nil {
-		s.queue.publishRemovedTransition(task, skipReasonSSEPrefix+": "+reason)
-	}
+	s.queue.publishRemovedTransition(task, skipReasonSSEPrefix+": "+reason)
 	slog.Info("probe_necessity: self-check skipped as unnecessary, removed from queue and database",
 		"queue_id", task.ID, "credential_id", credID, "model", task.RawModel,
 		"source", task.Source, "reason", reason)

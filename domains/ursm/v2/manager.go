@@ -1123,6 +1123,16 @@ func (m *Manager) SetSeedForTest(ctx context.Context, s CandidateSeed) error {
 	})
 }
 
+// ProbeHealthEvidence returns fresh, identity-scoped Redis evidence for probe
+// preflight. It bypasses the routing LRU/mirror and does not apply routing's
+// expired-cool half-open behavior; unknown state is returned as Known=false.
+func (m *Manager) ProbeHealthEvidence(ctx context.Context, tenant string, credentialID int, models []string) ([]api.ProbeHealthEvidence, error) {
+	if m == nil || m.store == nil {
+		return nil, fmt.Errorf("ursm.v2: nil manager/store")
+	}
+	return m.store.ProbeHealthEvidence(ctx, m.cfg.RedisKeyPrefix, tenant, credentialID, models)
+}
+
 // RecordRequest is the executor sidecar entry point. It is a no-op
 // when:
 //

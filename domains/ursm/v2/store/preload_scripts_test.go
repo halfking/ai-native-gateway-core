@@ -111,10 +111,10 @@ func TestScriptSizes(t *testing.T) {
 
 	// The two hot-path monsters that motivated preloading (audit data):
 	// any regression here changes the fallback network cost.
-	if s := sizes["record_request.lua"]; s != 11469 {
-		t.Errorf("record_request.lua size = %d, want 11469 (update if script changed intentionally)", s)
-	}
-	if s := sizes["record_request_dual.lua"]; s != 10437 {
-		t.Errorf("record_request_dual.lua size = %d, want 10437 (update if script changed intentionally)", s)
-	}
+		if s := sizes["record_request.lua"]; s != 12303 {
+			t.Errorf("record_request.lua size = %d, want 12303 (update if script changed intentionally)", s)
+		}
+		if s := sizes["record_request_dual.lua"]; s != 11227 {
+			t.Errorf("record_request_dual.lua size = %d, want 11227 (update if script changed intentionally)", s)
+		}
 }
