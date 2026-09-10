@@ -209,6 +209,10 @@ func (h *candidateFailureHandlers) getCandidateFailuresByCredential(w http.Respo
 			writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
 			return
 		}
+		if x.UpstreamResponsePreview != nil {
+			s := string(errorsx.SanitizeErrorText([]byte(*x.UpstreamResponsePreview), 320))
+			x.UpstreamResponsePreview = &s
+		}
 		out = append(out, x)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
