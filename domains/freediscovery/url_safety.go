@@ -5,7 +5,53 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
+
+// recordURLSafetyBlocked 将一次 URL safety 拒绝落入指标.
+// reason 采用低基数分类: <field>_<class>, field ∈ base_url/models_endpoint,
+// class 由拒绝消息归类 (required/scheme/hostname/blocked_ip/userinfo/...).
+func recordURLSafetyBlocked(field, msg string) {
+	metrics.FreeDiscoveryURLSafetyBlockedTotal.WithLabelValues(field + "_" + classifyURLSafetyRejection(msg)).Inc()
+}
+
+// classifyURLSafetyRejection 把人类可读的校验消息归入低基数枚举.
+// 未知消息兜底为 "other", 保证标签基数有界.
+func classifyURLSafetyRejection(msg string) string {
+	switch {
+	case strings.Contains(msg, "is required"):
+		return "required"
+	case strings.Contains(msg, "exceeds maximum length"):
+		return "too_long"
+	case strings.Contains(msg, "control characters"):
+		return "control_chars"
+	case strings.Contains(msg, "must use http"):
+		return "scheme"
+	case strings.Contains(msg, "must contain a hostname"):
+		return "hostname"
+	case strings.Contains(msg, "userinfo"):
+		return "userinfo"
+	case strings.Contains(msg, "fragment"):
+		return "fragment"
+	case strings.Contains(msg, "loopback"), strings.Contains(msg, "private"),
+		strings.Contains(msg, "link-local"), strings.Contains(msg, "multicast"),
+		strings.Contains(msg, "broadcast"), strings.Contains(msg, "unspecified"):
+		return "blocked_ip"
+	case strings.Contains(msg, "@ character"):
+		return "parser_bypass"
+	case strings.Contains(msg, "whitespace"):
+		return "whitespace"
+	case strings.Contains(msg, "relative path"):
+		return "not_relative"
+	case strings.Contains(msg, "scheme-relative"):
+		return "scheme_relative"
+	case strings.Contains(msg, "invalid"):
+		return "invalid_url"
+	default:
+		return "other"
+	}
+}
 
 // URL 校验与端点安全工具 (2026-09-09 audit-fix)。
 //
@@ -20,15 +66,24 @@ import (
 
 // maxBaseURLLen 与 maxEndpointLen 防止异常长输入触发解析器开销.
 const (
-	maxBaseURLLen   = 2048
-	maxEndpointLen  = 512
+	maxBaseURLLen  = 2048
+	maxEndpointLen = 512
 )
 
 // isValidBaseURL 校验 base_url: 仅 http/https scheme, 拒绝 userinfo/fragment/控制字符,
 // 拒绝 loopback/private/link-local/multicast/metadata 等危险 IP 字面量.
 //
 // 返回非空字符串表示错误 (与 isValidProviderCode 风格保持一致).
+// 每次拒绝同步递增 freediscovery_url_safety_blocked_total{reason}.
 func isValidBaseURL(raw string) string {
+	msg := validateBaseURL(raw)
+	if msg != "" {
+		recordURLSafetyBlocked("base_url", msg)
+	}
+	return msg
+}
+
+func validateBaseURL(raw string) string {
 	if raw == "" {
 		return "base_url is required"
 	}
@@ -76,7 +131,16 @@ func isValidBaseURL(raw string) string {
 
 // isValidModelsEndpoint 校验 models_endpoint: 必须以单斜杠开头 (相对路径),
 // 拒绝 scheme、`//host` 协议相对 URL、含 userinfo 的绝对 URL 与控制字符.
+// 每次拒绝同步递增 freediscovery_url_safety_blocked_total{reason}.
 func isValidModelsEndpoint(raw string) string {
+	msg := validateModelsEndpoint(raw)
+	if msg != "" {
+		recordURLSafetyBlocked("models_endpoint", msg)
+	}
+	return msg
+}
+
+func validateModelsEndpoint(raw string) string {
 	if raw == "" {
 		// 默认值在调用处补 /models; 空串允许通过 (调用方填默认值).
 		return ""

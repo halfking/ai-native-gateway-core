@@ -72,6 +72,23 @@ if dedup_enabled then
   end
 end
 
+-- Record request evidence after the duplicate gate but before source priority.
+-- Request failures must remain visible even when a higher-priority probe owns
+-- adjudication fields; later success/probe events cannot erase the error
+-- watermark. Same-millisecond events use monotonic max semantics.
+local previous_request_at = tonumber(redis.call("HGET", node_key, "last_request_at_ms") or "0") or 0
+if now_ms >= previous_request_at then
+  redis.call("HSET", node_key,
+    "last_request_at_ms", tostring(now_ms),
+    "last_request_failed", success == "0" and "1" or "0")
+end
+if success == "0" then
+  local previous_error_at = tonumber(redis.call("HGET", node_key, "last_request_error_at_ms") or "0") or 0
+  if now_ms >= previous_error_at then
+    redis.call("HSET", node_key, "last_request_error_at_ms", tostring(now_ms))
+  end
+end
+
 -- A request event is unique even when request IDs are empty or repeated. The
 -- leading success flag lets the counter maintenance below avoid parsing IDs.
 local event_seq = redis.call("HINCRBY", node_key, "event_seq", 1)
