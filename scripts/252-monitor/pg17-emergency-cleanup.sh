@@ -49,6 +49,13 @@ if [ "$AUTO" = "true" ]; then
   # 自动触发则升级到 L2
   LEVEL="L2"
   echo "[$ts] auto-triggered, escalate to L2" >> "$LOG"
+  # 先清文件系统层（/tmp 大文件、悬空镜像等），再跑 PG 操作。
+  # 2026-09-11 复盘：磁盘 100%（0 可用）时 VACUUM FULL 因无临时空间必然失败，
+  # 日志留下 "100% -> 100%" 的空转记录。
+  if [ -x /opt/scripts/cleanup-known-junk.sh ]; then
+    echo "[$ts] running filesystem cleanup first to free VACUUM FULL workspace" >> "$LOG"
+    /opt/scripts/cleanup-known-junk.sh --force-now >> "$LOG" 2>&1 || true
+  fi
 fi
 
 if [ "$ASSUME_YES" = "false" ] && [ -t 0 ]; then
