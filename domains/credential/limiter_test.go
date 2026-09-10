@@ -380,6 +380,45 @@ func TestLimiterRecoveryLoop(t *testing.T) {
 	}
 }
 
+// TestRecoveryStepRespectsHotUpdatedCapacity guards R12 候选7: the recovery
+// loop must not pull an admin hot-updated (lowered) credential capacity back
+// toward the process-wide default. Before the fix, three recoveryStep cycles
+// (~15 min in production) restored the default regardless of SetCredentialCapacity.
+func TestRecoveryStepRespectsHotUpdatedCapacity(t *testing.T) {
+	l := NewWithLimits(100, 10, 50, 5)
+	defer l.Stop()
+
+	// Admin lowers the credential to 3 via the hot-reload hook.
+	l.SetCredentialCapacity(1, 9, 3)
+	s := l.Credential(1, 9)
+	if s.Capacity() != 3 {
+		t.Fatalf("after hot-update: got capacity %d, want 3", s.Capacity())
+	}
+
+	// Repeated recovery cycles must leave the lowered limit untouched.
+	for i := 0; i < fullRecoveryCycles; i++ {
+		l.recoveryStep()
+		if s.Capacity() != 3 {
+			t.Fatalf("recovery step %d pulled hot-updated capacity back: got %d, want 3", i+1, s.Capacity())
+		}
+	}
+
+	// A shrink below the hot limit still recovers — but only up to the hot value.
+	s.Shrink(0.5) // ceil(3*0.5) = 2
+	l.recoveryStep()
+	if s.Capacity() != 3 {
+		t.Fatalf("shrunken semaphore should recover exactly to hot limit: got %d, want 3", s.Capacity())
+	}
+
+	// A credential without a hot update still recovers to the default baseline.
+	other := l.Credential(2, 1)
+	other.Shrink(0.5) // 25
+	l.recoveryStep()
+	if other.Capacity() <= 25 {
+		t.Fatalf("non-hot-updated credential should recover toward default: got %d", other.Capacity())
+	}
+}
+
 // TestKeyResizesCapacity verifies that raising a key's rate_limit_concurrent at
 // runtime (via admin API) takes effect on the already-cached per-key semaphore,
 // rather than being pinned to the capacity it was first created with.
