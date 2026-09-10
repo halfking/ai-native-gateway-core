@@ -91,6 +91,68 @@ func TestMatchStandardModels_RejectsWrongGeneration(t *testing.T) {
 	}
 }
 
+// 2026-09-11 audit: discovery pre-2026-09-10 seeded junk canonical rows by
+// stripping the vendor prefix ("cluade/opus-5" → canonical "opus-5"). With
+// such a row present it scores 0.99 (base-exact) and would outrank the
+// correct "claude-opus-5" (0.886). The vendor-prefix disambiguation must
+// promote the re-joined typo match above the junk base row.
+func TestMatchStandardModels_JunkBaseRowDoesNotWin(t *testing.T) {
+	catalog := []string{"opus-5", "claude-opus-5", "4.6", "grok-4.6"}
+
+	best := BestStandardModelMatch("cluade/opus-5", catalog)
+	if best == nil || best.Name != "claude-opus-5" {
+		t.Fatalf("junk base row must not win, got %+v", best)
+	}
+	matches := MatchStandardModels("cluade/opus-5", catalog)
+	if matches[0].Name != "claude-opus-5" {
+		t.Fatalf("ranked[0] = %q, want claude-opus-5 promoted over junk opus-5", matches[0].Name)
+	}
+	for i := 1; i < len(matches); i++ {
+		if matches[i].Score > matches[i-1].Score {
+			t.Fatalf("ranking not monotonic after demotion: %v", matches)
+		}
+	}
+
+	// Dash-form raw with a junk "4-6" row: cross-form re-join to the real
+	// standard must win too.
+	if best := BestStandardModelMatch("grok/4-6", catalog); best == nil || best.Name != "grok-4.6" {
+		t.Fatalf("cross-form re-join must beat junk base row, got %+v", best)
+	}
+}
+
+// A true vendor-qualified name must keep preferring the established BASE
+// row — exact joined hits never trigger the junk demotion.
+func TestMatchStandardModels_VendorSlugStillPrefersBase(t *testing.T) {
+	catalog := []string{"glm-5.2", "z-ai-glm-5.2"}
+	best := BestStandardModelMatch("z-ai/glm-5.2", catalog)
+	if best == nil || best.Name != "glm-5.2" {
+		t.Fatalf("vendor-slug raw must prefer established base row, got %+v", best)
+	}
+}
+
+// Suffix VARIANTS of a base model are distinct models: when only the base
+// standard row exists, a "-thinking"/"-fast" raw name must keep seeding its
+// own canonical instead of silently folding into the base (containment is
+// capped below AutoLinkThreshold for non-suffix-aligned candidates).
+func TestMatchStandardModels_VariantDoesNotFoldIntoBase(t *testing.T) {
+	catalog := []string{"claude-opus-5", "grok-4.6"}
+	for _, raw := range []string{"claude-opus-5-thinking", "claude/opus-5-thinking", "grok-4.6-fast"} {
+		if best := BestStandardModelMatch(raw, catalog); best != nil && best.Score >= AutoLinkThreshold {
+			t.Fatalf("variant %q must not auto-fold into base, matched %+v", raw, best)
+		}
+	}
+}
+
+// Vendor-qualified full names keep the suffix-aligned containment channel
+// (0.90): "anthropic/" is a prefix, not a variant suffix.
+func TestMatchStandardModels_VendorQualifiedStillAutoLinks(t *testing.T) {
+	catalog := []string{"claude-opus-5", "claude-opus-5-thinking"}
+	best := BestStandardModelMatch("anthropic/claude-opus-5", catalog)
+	if best == nil || best.Name != "claude-opus-5" || best.Score < AutoLinkThreshold {
+		t.Fatalf("vendor-qualified raw must auto-link to base, got %+v", best)
+	}
+}
+
 func TestMatchStandardModels_PrefersExactOverVariants(t *testing.T) {
 	catalog := []string{"claude-opus-5-thinking", "claude-opus-5", "claude-opus-5-lab"}
 	best := BestStandardModelMatch("cluade/opus-5", catalog)

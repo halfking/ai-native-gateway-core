@@ -39,6 +39,10 @@ const suggest = ref<ModelOfferSuggestion | null>(null)
 // Top ranked standard-model matches for the chip row (backend ranks by
 // modelname similarity; see MatchStandardModels).
 const topMatches = computed(() => (suggest.value?.matches ?? []).slice(0, 5))
+// 2026-09-11 audit: auto-apply runs at most once per offer — re-running it
+// after every save would silently resurrect a canonical the operator just
+// cleared (the watcher refires loadSuggest when the parent swaps the offer).
+const autoAppliedOffers = new Set<number>()
 const initialContextWindow = ref<number | null>(null)
 const initialPrices = reactive({
   unit_price_in_per_1m: null as number | null,
@@ -94,43 +98,60 @@ watch(() => props.offer, (o) => {
 }, { immediate: true })
 
 async function loadSuggest() {
-  if (!props.offer) return
+  const offer = props.offer
+  if (!offer) return
   try {
-    suggest.value = await getModelOfferSuggestions(props.providerId, props.offer.id)
+    const s = await getModelOfferSuggestions(props.providerId, offer.id)
+    // 2026-09-11 audit: stale-response guard — the operator may have
+    // switched to another offer while this request was in flight; never
+    // apply (or display) suggestions for the wrong offer.
+    if (props.offer?.id !== offer.id) return
+    suggest.value = s
     autoApplyBestMatch()
   } catch {
-    suggest.value = null
+    if (props.offer?.id === offer.id) suggest.value = null
   }
 }
 
-// 2026-09-10: the backend now matches the raw name against the standard
-// model catalog ("cluade/opus-5" → "claude-opus-5", "grok/4.6" →
-// "grok-4.6"). Pre-fill the fields the operator left empty so 保存节点
-// persists the association in one click — never overwrite values that are
-// already set (manually or by a previous save).
+// 2026-09-10: the backend matches the raw name against the standard model
+// catalog ("cluade/opus-5" → "claude-opus-5", "grok/4.6" → "grok-4.6").
+// 2026-09-11 audit: ONLY pre-fill when the backend itself is confident —
+// suggested_canonical_id is non-zero exactly when the top match clears the
+// 0.85 AutoLinkThreshold. matches[] also carries weak (>0.30) candidates
+// for display; auto-applying those would silently persist wrong
+// associations (e.g. raw "4.6" → "glm-4.6" at ~60%). Empty fields only —
+// never overwrite values the operator set or saved.
 function autoApplyBestMatch() {
   const s = suggest.value
-  if (!s || !props.offer) return
-  const best = s.matches?.[0]
-  const bestId = best?.id ?? (s.suggested_canonical_id || 0)
-  if (!best || !bestId) return
-  if (draft.canonical_id == null && bestId) draft.canonical_id = bestId
+  const offer = props.offer
+  if (!s || !offer) return
+  // One attempt per drawer session: a later suggestion reload (the watch
+  // refires after every save) must not resurrect a canonical the operator
+  // deliberately cleared or changed.
+  if (autoAppliedOffers.has(offer.id)) return
+  autoAppliedOffers.add(offer.id)
+  // suggested_canonical_id is non-zero exactly when the top match clears
+  // the backend's 0.85 AutoLinkThreshold; matches[] alone also carries
+  // weak (>0.30) candidates that must never be auto-applied.
+  if (s.suggested_canonical_id <= 0) return
+  const best = s.matches?.find(m => m.id === s.suggested_canonical_id)
+  if (!best) return
+  if (draft.canonical_id == null) draft.canonical_id = best.id
   if (!draft.standardized_name.trim()) draft.standardized_name = best.canonical_name
 }
 
 function applyRuleBased() {
-  if (!suggest.value) return
-  const best = suggest.value.matches?.[0]
-  if (best) {
-    applyMatch(best)
-    return
-  }
-  if (!suggest.value.rule_based) return
-  draft.standardized_name = suggest.value.rule_based
-  const match = suggest.value.canonical_options.find(
-    c => (c.canonical_name || '').toLowerCase() === draft.standardized_name.toLowerCase(),
+  const s = suggest.value
+  if (!s || !s.rule_based) return
+  // Apply exactly what the button shows; the ranked chips are the way to
+  // pick a matched canonical. If the rule-based name is not itself a
+  // canonical row, keep the current association instead of silently
+  // clearing it.
+  draft.standardized_name = s.rule_based
+  const match = s.canonical_options.find(
+    c => (c.canonical_name || '').toLowerCase() === s.rule_based.toLowerCase(),
   )
-  draft.canonical_id = match ? match.id : null
+  if (match) draft.canonical_id = match.id
 }
 
 function applyMatch(m: { id: number; canonical_name: string }) {
@@ -202,6 +223,9 @@ async function saveNode() {
       ...props.offer,
       standardized_name: updated.standardized_name,
       canonical_id: updated.canonical_id,
+      // 2026-09-11 audit: propagate the resolved canonical name too, or the
+      // identity chip shows the stale name until the list is refetched.
+      canonical_name: updated.canonical_name,
       outbound_model_name: updated.outbound_model_name ?? '',
       context_window: updated.context_window,
       context_window_override: updated.context_window_override,
@@ -343,7 +367,7 @@ function goCanonical() {
             <label class="field-label">标准模型匹配（按相似度）</label>
             <div class="match-chips">
               <button
-                v-for="(m, i) in topMatches"
+                v-for="m in topMatches"
                 :key="m.id"
                 type="button"
                 class="match-chip"
@@ -352,7 +376,7 @@ function goCanonical() {
                 @click="applyMatch(m)"
               >
                 <code>{{ m.canonical_name }}</code>
-                <span v-if="i === 0 && m.score >= 0.85" class="badge match-best">最佳</span>
+                <span v-if="m.id === suggest?.suggested_canonical_id" class="badge match-best">最佳</span>
                 <span class="match-score">{{ (m.score * 100).toFixed(0) }}%</span>
               </button>
             </div>

@@ -122,18 +122,25 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 	if req.ClearCanonicalID {
 		// Write provider_models directly: the view trigger's COALESCE
 		// would keep the old canonical_id on a NULL write.
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `
-			UPDATE provider_models
+		// 2026-09-11 audit fix: locate the row via the binding
+		// (model_offers.id IS credential_model_bindings.id) — the previous
+		// "c.id = pm.provider_id" join compared a credential id against a
+		// PROVIDER id and never matched a single row, silently no-oping.
+		tag, err := h.db.Exec(ctx, `
+			UPDATE provider_models pm
 			SET canonical_id = NULL, updated_at = now()
-			WHERE id = (
-				SELECT pm.id FROM provider_models pm
-				JOIN model_offers mo ON mo.raw_model_name = pm.raw_model_name
-				JOIN credentials c ON c.id = pm.provider_id AND c.id = mo.credential_id
-				WHERE mo.id = $1
-				LIMIT 1
+			WHERE pm.id = (
+				SELECT cmb.provider_model_id FROM credential_model_bindings cmb
+				WHERE cmb.id = $1
 			)
 		`, offerID)
+		if err != nil {
+			slog.Warn("clear canonical_id failed",
+				"offer_id", offerID, "provider_id", providerID, "error", err)
+		} else if tag.RowsAffected() == 0 {
+			slog.Warn("clear canonical_id matched no provider_models row",
+				"offer_id", offerID, "provider_id", providerID)
+		}
 	} else if req.CanonicalID != nil {
 		var canonName string
 		err := h.db.QueryRow(ctx, `SELECT canonical_name FROM models_canonical WHERE id = $1`, *req.CanonicalID).Scan(&canonName)
@@ -152,16 +159,17 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 			// from raw_model_name on conflict, which was clobbering the
 			// admin's manual edit ("一会就被刷新").  Writing both sides
 			// keeps the view and the base table in lockstep.
+			// 2026-09-11 audit fix: locate the row via the binding
+			// (model_offers.id IS credential_model_bindings.id).  The
+			// previous join compared a credential id against the PROVIDER
+			// id column and never updated anything.
 			//nolint:errcheck // best-effort exec, non-critical
 			h.db.Exec(ctx, `
 				UPDATE provider_models
-				SET standardized_name = $1
+				SET standardized_name = $1, updated_at = now()
 				WHERE id = (
-					SELECT pm.id FROM provider_models pm
-					JOIN model_offers mo ON mo.raw_model_name = pm.raw_model_name
-					JOIN credentials c ON c.id = pm.provider_id AND c.id = mo.credential_id
-					WHERE mo.id = $2
-					LIMIT 1
+					SELECT cmb.provider_model_id FROM credential_model_bindings cmb
+					WHERE cmb.id = $2
 				)
 			`, canonName, offerID)
 		}
@@ -172,16 +180,15 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 		h.db.Exec(ctx, `UPDATE model_offers SET standardized_name = $1 WHERE id = $2`, *req.StandardizedName, offerID)
 		// 2026-06-19 audit: mirror to provider_models so the view's
 		// INSTEAD OF UPDATE trigger cannot re-clobber the value.
+		// 2026-09-11 audit fix: same provider-id/credential-id join bug as
+		// above — see the canonical_id branch for details.
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `
 			UPDATE provider_models
-			SET standardized_name = $1
+			SET standardized_name = $1, updated_at = now()
 			WHERE id = (
-				SELECT pm.id FROM provider_models pm
-				JOIN model_offers mo ON mo.raw_model_name = pm.raw_model_name
-				JOIN credentials c ON c.id = pm.provider_id AND c.id = mo.credential_id
-				WHERE mo.id = $2
-				LIMIT 1
+				SELECT cmb.provider_model_id FROM credential_model_bindings cmb
+				WHERE cmb.id = $2
 			)
 		`, *req.StandardizedName, offerID)
 	}
@@ -375,6 +382,12 @@ func (h *Handler) getModelOfferSuggestions(w http.ResponseWriter, r *http.Reques
 		}
 		options = append(options, o)
 		names = append(names, o.CanonicalName)
+	}
+	// 2026-09-11 audit: don't silently truncate the catalog on a
+	// mid-iteration connection failure.
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "scan catalog failed: "+err.Error())
+		return
 	}
 
 	// 2026-09-10: match the raw name against the standard-model catalog
