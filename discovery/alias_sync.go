@@ -259,9 +259,9 @@ func (s *AliasSyncService) Status() map[string]any {
 func (s *AliasSyncService) GenerateRoutingRulesReport(ctx context.Context) (string, error) {
 	var sb strings.Builder
 
-	sb.WriteString("# 模型路由规则报告\n\n")
+	sb.WriteString("# Model Routing Rules Report\n\n")
 
-	sb.WriteString("## 按Provider分组\n\n")
+	sb.WriteString("## By Provider\n\n")
 	rows, err := s.db.Query(ctx, `
 		SELECT p.display_name, p.code, COUNT(DISTINCT mo.raw_model_name) as model_count
 		FROM providers p
@@ -283,10 +283,10 @@ func (s *AliasSyncService) GenerateRoutingRulesReport(ctx context.Context) (stri
 		if err := rows.(interface{ Scan(...any) error }).Scan(&name, &code, &count); err != nil {
 			continue
 		}
-		fmt.Fprintf(&sb, "- %s (%s): %d 模型\n", name, code, count)
+		fmt.Fprintf(&sb, "- %s (%s): %d models\n", name, code, count)
 	}
 
-	sb.WriteString("\n## 按Family分组\n\n")
+	sb.WriteString("\n## By Family\n\n")
 	rows2, err := s.db.Query(ctx, `
 		SELECT family, COUNT(*) as count
 		FROM models_canonical
@@ -306,7 +306,7 @@ func (s *AliasSyncService) GenerateRoutingRulesReport(ctx context.Context) (stri
 		if err := rows2.(interface{ Scan(...any) error }).Scan(&family, &count); err != nil {
 			continue
 		}
-		fmt.Fprintf(&sb, "- %s: %d 模型\n", family, count)
+		fmt.Fprintf(&sb, "- %s: %d models\n", family, count)
 	}
 
 	return sb.String(), nil
