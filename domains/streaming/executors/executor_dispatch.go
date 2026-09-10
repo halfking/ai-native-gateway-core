@@ -851,6 +851,11 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 	var sie *streamInterruptedError
 	if errors.As(execErr, &sie) && sie != nil {
 		logDispatchStreamInterrupted(params, cand, kind, sie)
+		// Audit R9 candidate 17: bytesSent=true is by construction the
+		// terminal decision point (dispatcher completes without failover,
+		// see dispatch/forwarder.go ADR-Disp-003 guard) — emit the
+		// post-first-byte `: thinking:` side-band here, once.
+		maybeNotifyMidStreamFailure(params, sie, bytesSent)
 	}
 
 	// candidate_failure_logs (migration 300 + V358 session_id): one row per
