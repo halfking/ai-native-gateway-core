@@ -536,3 +536,37 @@ func TestPipelineMirrorsScheduledLifecycle(t *testing.T) {
 		t.Fatalf("request never completed")
 	}
 }
+
+// TestScheduledRequestReAdmissionDoesNotLeakTotalSlot pins the audit
+// 2026-09-10 P0 fix: the take-once total-queue release token must be re-armed
+// when a parked scheduled request re-enters Tier-0, otherwise every scheduled
+// request permanently consumes one totalExecutionQueue slot and the gateway
+// eventually rejects everything with total_queue_full.
+func TestScheduledRequestReAdmissionDoesNotLeakTotalSlot(t *testing.T) {
+	f := &fakeDeps{
+		refsByModel:  map[string][]CredentialRef{"gpt4": {cred(1, ModeConcurrency, 5)}},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	const scheduled = 5
+	for i := 0; i < scheduled; i++ {
+		qr := NewQueuedRequest("sched-leak", "t", "gpt4", context.Background(), "payload")
+		qr.DueAt = time.Now().Add(300 * time.Millisecond)
+		if _, err := p.Submit(context.Background(), qr); err != nil {
+			t.Fatalf("submit %d: unexpected err: %v", i, err)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) && !qr.completed.Load() {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !qr.completed.Load() {
+			t.Fatalf("request %d never completed", i)
+		}
+		if got := p.totalQueue.depth(); got != 0 {
+			t.Fatalf("after request %d: total queue depth = %d, want 0 (slot leaked)", i, got)
+		}
+	}
+}

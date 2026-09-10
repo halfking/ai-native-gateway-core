@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-09-09T21:49:25.208Z",
+  "exported_at": "2026-09-10T01:15:49.448Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -262,20 +262,38 @@
           "pluginScope": "*"
         },
         {
-          "path": "/plugins/ai-session-manager/sessions",
-          "label": "会话列表",
-          "labelKey": "nav.item.pluginSessions",
-          "icon": "💬",
+          "path": "/admin/turns",
+          "label": "轮次列表",
+          "labelKey": "nav.item.turns",
+          "icon": "🔄",
           "super": true,
           "hideForTenant": true,
-          "external": true,
-          "plugin": "ai-session-manager",
           "tenantScope": "default",
-          "pluginScope": "plugin"
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/request-registry",
+          "label": "请求注册表",
+          "labelKey": "nav.item.requestRegistry",
+          "icon": "📑",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/admin/connection-registry",
+          "label": "连接注册台",
+          "labelKey": "nav.item.connectionRegistry",
+          "icon": "🔗",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
         }
       ],
       "tenantScope": "mixed",
-      "pluginScope": "mixed"
+      "pluginScope": "*"
     },
     {
       "id": "data-ops",
@@ -515,6 +533,26 @@
           "label": "接入示例",
           "labelKey": "nav.item.examples",
           "icon": "📝",
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/maintain/ops/autoupdate",
+          "label": "自动更新",
+          "labelKey": "nav.item.opsAutoUpdate",
+          "icon": "🚀",
+          "external": true,
+          "opsPlatform": true,
+          "activateWhenNotActivated": true,
+          "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/maintain/donate",
+          "label": "赞助与捐赠",
+          "labelKey": "nav.item.supportDonate",
+          "icon": "💖",
+          "external": true,
           "tenantScope": "*",
           "pluginScope": "*"
         }

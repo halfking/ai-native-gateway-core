@@ -104,9 +104,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", contentType)
+	// 审计 R8 P2：上传 MIME 客户端可控，禁用浏览器 MIME 嗅探，
+	// 防 Content-Type 被嗅探改写绕过下方的强制下载。
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 
-	// 图片类型支持内联显示；非图片强制下载。
-	if !strings.HasPrefix(contentType, "image/") {
+	// 图片类型支持内联显示；非图片强制下载。SVG 是可携带脚本的 XML
+	// 文档（image/ 前缀判断对它失效），内联渲染即网关域存储型 XSS，
+	// 单独强制下载。
+	if !strings.HasPrefix(contentType, "image/") || contentType == "image/svg+xml" {
 		filename := filepath.Base(relPath)
 		w.Header().Set("Content-Disposition",
 			fmt.Sprintf("attachment; filename=%q", filename))

@@ -21,6 +21,13 @@ type StorageConfig struct {
 	CacheDir   string
 	LogsDir    string
 
+	// BodiesCodec lite 模式会话体（turn 文件）落盘压缩编码：
+	// "zstd"（推荐默认）或 "gzip"（历史行为回退）；空串/未知值回落 gzip。
+	// 文件后缀即编码标识（.json.zst / .json.gz），读路径双格式兼容，
+	// 切换无需迁移存量数据（2026-09-10 zstd 引入，详见 workspace docs
+	// zstd-compression-analysis-2026-09-10.md）。
+	BodiesCodec string
+
 	// AsyncWriters lite 模式下 BodiesStore 后台异步写 worker 数；
 	// <=0 时工厂回落默认值 4（见 factory 包 defaultFileWorkers）。
 	AsyncWriters int

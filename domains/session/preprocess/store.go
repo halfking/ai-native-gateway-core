@@ -114,10 +114,18 @@ type StoreOptions struct {
 	// Zero or negative disables L1.
 	L1BudgetBytes int64
 
-	// CompressSanitized/CompressCompressed enable gzip at rest for those
-	// layers (R11.7: sanitized/compressed 可压缩保存).
+	// CompressSanitized/CompressCompressed enable at-rest compression for
+	// those layers (R11.7: sanitized/compressed 可压缩保存).
 	CompressSanitized  bool
 	CompressCompressed bool
+
+	// Codec selects the at-rest compression algorithm for newly written
+	// payloads: "gzip" (default, historical) or "zstd" (2026-09 introduced;
+	// better ratio and an order of magnitude faster, see workspace docs
+	// zstd-compression-analysis-2026-09-10.md).  Reads always honour the
+	// per-artifact encoding tag, so gzip/zstd coexist seamlessly and the
+	// switch is gray-safe.  Unknown values fall back to gzip.
+	Codec string
 
 	// KeyVersion is the key namespace version; defaults to "v1".
 	KeyVersion string
@@ -138,6 +146,15 @@ func (o *StoreOptions) now() time.Time {
 		return o.Now()
 	}
 	return time.Now()
+}
+
+// codec 返回落盘压缩编码标记（encodingGZIP / encodingZSTD）；
+// 空值与未知值一律回落 gzip（历史行为）。
+func (o *StoreOptions) codec() string {
+	if o.Codec == encodingZSTD {
+		return encodingZSTD
+	}
+	return encodingGZIP
 }
 
 func (o *StoreOptions) ttlFor(kind ArtifactKind) time.Duration {

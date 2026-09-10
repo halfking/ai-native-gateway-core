@@ -30,6 +30,7 @@ import (
 const (
 	encodingAESGCM = "aesgcm-v1"
 	encodingGZIP   = "gzip"
+	encodingZSTD   = "zstd"
 	encodingPlain  = "plain"
 
 	fieldTurnNo  = "turn_no"
@@ -216,15 +217,33 @@ func (s *RedisArtifactStore) encodePayload(tenantID, sessionID string, kind Arti
 		return sealed, encodingAESGCM, nil
 	case ArtifactSanitized:
 		if s.opts.CompressSanitized {
-			return gzipBytes(payload), encodingGZIP, nil
+			return s.compressBytes(payload)
 		}
 		return payload, encodingPlain, nil
 	default:
 		if s.opts.CompressCompressed {
-			return gzipBytes(payload), encodingGZIP, nil
+			return s.compressBytes(payload)
 		}
 		return payload, encodingPlain, nil
 	}
+}
+
+// compressBytes 按配置编码压缩并返回 (bytes, encodingTag)。写入编码随
+// StoreOptions.Codec 灰度切换（gzip 为历史默认）；读取端按 manifest 中的
+// encoding 标记分发，新旧编码混存可无缝并存。
+func (s *RedisArtifactStore) compressBytes(payload []byte) ([]byte, string, error) {
+	if s.opts.codec() == encodingZSTD {
+		compressed, err := zstdBytes(payload)
+		if err != nil {
+			return nil, "", fmt.Errorf("preprocess: zstd compress: %w", err)
+		}
+		return compressed, encodingZSTD, nil
+	}
+	compressed, err := gzipBytes(payload)
+	if err != nil {
+		return nil, "", fmt.Errorf("preprocess: gzip compress: %w", err)
+	}
+	return compressed, encodingGZIP, nil
 }
 
 func (s *RedisArtifactStore) decodePayload(tenantID, sessionID string, kind ArtifactKind, encoding string, data []byte) ([]byte, error) {
@@ -238,6 +257,12 @@ func (s *RedisArtifactStore) decodePayload(tenantID, sessionID string, kind Arti
 		out, err := gunzipBytes(data)
 		if err != nil {
 			return nil, fmt.Errorf("%w: gunzip: %v", ErrArtifactCorrupted, err)
+		}
+		return out, nil
+	case encodingZSTD:
+		out, err := unzstdBytes(data)
+		if err != nil {
+			return nil, fmt.Errorf("%w: unzstd: %v", ErrArtifactCorrupted, err)
 		}
 		return out, nil
 	case encodingPlain:

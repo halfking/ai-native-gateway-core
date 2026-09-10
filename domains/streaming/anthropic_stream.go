@@ -203,6 +203,23 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			flusher.Flush()
 		}
 	}
+	// Native reasoning_content (DeepSeek R1 / GLM-Z1 / QwQ, audit R8 P1):
+	// reasoning deltas land in their own thinking block so Anthropic clients
+	// see the chain-of-thought instead of silently losing it. Mirrors the
+	// non-stream converter (chat_to_anthropic_response.go): a signature-less
+	// thinking block — these upstreams do not provide one.
+	reasoningBlockOpen := false
+	reasoningBlockIdx := 0
+	closeReasoningBlock := func() {
+		if !reasoningBlockOpen {
+			return
+		}
+		reasoningBlockOpen = false
+		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": reasoningBlockIdx})
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}
 	// midStreamHalt is set when processLine detects an upstream error encoded
 	// outside its normal channel — OpenAI-style data: {"error":{...}} chunks
 	// (several second-tier OpenAI-compatible upstreams send mid-stream errors
@@ -518,6 +535,57 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 
 		textDelta, _ := delta["content"].(string)
+
+		// audit R8 P1: native reasoning_content → thinking_delta on a
+		// dedicated block. Text after the first reasoning delta can no
+		// longer target the closed implicit block 0, so it is redirected
+		// into the buffering accumulator and replayed by the Phase 4 split
+		// into a fresh block (Anthropic sequential-block rule).
+		if reasoningDelta, _ := delta["reasoning_content"].(string); reasoningDelta != "" {
+			if !reasoningBlockOpen {
+				closeTextBlock()
+				reasoningBlockIdx = nextToolBlockIdx
+				nextToolBlockIdx++
+				writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{
+					"type":          "content_block_start",
+					"index":         reasoningBlockIdx,
+					"content_block": map[string]any{"type": "thinking", "thinking": ""},
+				})
+				reasoningBlockOpen = true
+				if capture != nil {
+					capture.MarkThinkingBlock()
+				}
+				if textAccMode == textAccProbing && probeBuf.Len() > 0 {
+					bufferedText.WriteString(probeBuf.String())
+					probeBuf.Reset()
+				}
+				textAccMode = textAccBuffering
+			}
+			writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+				"type":  "content_block_delta",
+				"index": reasoningBlockIdx,
+				"delta": map[string]any{"type": "thinking_delta", "thinking": reasoningDelta},
+			})
+			if flusher != nil {
+				flusher.Flush()
+			}
+			chunkCount++
+			lastSend = time.Now()
+			if capture != nil {
+				capture.ObserveChunk(&ir.StreamChunk{
+					Type: ir.ChunkTypeDelta,
+					Delta: &ir.StreamDelta{
+						ReasoningContent: reasoningDelta,
+						DeltaType:        "reasoning",
+					},
+					SourceProtocol: ir.ProtocolOpenAIChat,
+				})
+				if capture.IntegrityBreached() {
+					return true
+				}
+			}
+		}
+
 		if textDelta != "" {
 			chunkCount++
 			// Phase 4 of 4: route the text delta through the accumulator
@@ -652,9 +720,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					}
 
 					// Anthropic content blocks are sequential: close the
-					// implicit text block (index 0) before opening the first
-					// tool_use block.
+					// implicit text block (index 0) and any open thinking
+					// block before opening the first tool_use block.
 					closeTextBlock()
+					closeReasoningBlock()
 					// Once the text block is closed, any further text_delta
 					// upstream emits would target an already-closed block and
 					// violate Anthropic's protocol. Buffer them instead and
@@ -807,6 +876,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	pendingContent := (textAccMode == textAccProbing && probeBuf.Len() > 0) ||
 		(textAccMode == textAccBuffering && bufferedText.Len() > 0)
 	if (!outcome.Interrupted || !outcome.Resumable) && (gate.MayWriteTerminal() || pendingContent) {
+		// The reasoning block streams live (already committed to the wire);
+		// close it before the flush split opens any fresh text blocks so
+		// block indices stay strictly sequential.
+		closeReasoningBlock()
 		switch textAccMode {
 		case textAccProbing:
 			if probeBuf.Len() > 0 {

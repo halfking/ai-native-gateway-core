@@ -4074,6 +4074,13 @@ func (h *ChatHandler) serveWithExecutor(
 					preStream.writeThinking(message)
 				}
 			},
+			// 审计 R9 候选 17：首字节后流中终态失败（ADR-Disp-003 禁止切节点）
+			// 补发同款 `: thinking:` 注释帧，客户端在连接关闭前拿到原因。
+			OnMidStreamFailure: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
 			// 探测结束（无论恢复/失败）→ 如果 keepalive 还在跑就 resume，
 			// 让正常流式响应或后续错误路径不再卡在 pause 状态。
 			OnProbeHoldEnd: func(recovered bool) {

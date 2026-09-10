@@ -192,6 +192,60 @@ func (d *DB) ensureSessionSummariesCanonical(ctx context.Context) error {
 
 		CREATE INDEX IF NOT EXISTS idx_session_summaries_search
 		    ON public.session_summaries USING gin (search_vector);
+
+		-- 审计 R8 (2026-09-10)：692 将 user_intent widen 至 varchar(200)
+		-- （50 上限令 P95≈110 字符的自动摘要在每次 upsert 上 22001 失败）。
+		-- 数字迁移到不了纯 ensure 链环境，这里按 information_schema 条件
+		-- 收敛；列被 v_session_flow 依赖，widen 前后同义 DROP/CREATE
+		-- （视图定义与 692 逐字一致）。
+		DO $$
+		DECLARE
+		    cur_len integer;
+		BEGIN
+		    SELECT character_maximum_length INTO cur_len
+		      FROM information_schema.columns
+		     WHERE table_schema = 'public'
+		       AND table_name = 'session_summaries'
+		       AND column_name = 'user_intent';
+		    IF cur_len IS NOT NULL AND cur_len < 200 THEN
+		        DROP VIEW IF EXISTS public.v_session_flow;
+		        ALTER TABLE public.session_summaries
+		            ALTER COLUMN user_intent TYPE varchar(200);
+		        CREATE VIEW public.v_session_flow AS
+		        SELECT
+		          s.session_key,
+		          s.tenant_id,
+		          s.gw_project_id,
+		          s.gw_task_id,
+		          s.title,
+		          s.summary,
+		          s.user_intent,
+		          s.first_request_at,
+		          s.last_request_at,
+		          s.duration_seconds,
+		          s.request_count,
+		          s.success_count,
+		          s.error_count,
+		          s.total_cost_usd,
+		          s.total_tokens,
+		          s.total_prompt_tokens,
+		          s.total_completion_tokens,
+		          s.user_tags,
+		          s.session_status,
+		          s.models_used,
+		          s.primary_model,
+		          LAG(s.session_key) OVER (PARTITION BY s.tenant_id, s.gw_task_id ORDER BY s.first_request_at) as prev_session_key,
+		          LAG(s.title) OVER (PARTITION BY s.tenant_id, s.gw_task_id ORDER BY s.first_request_at) as prev_session_title,
+		          LEAD(s.session_key) OVER (PARTITION BY s.tenant_id, s.gw_task_id ORDER BY s.first_request_at) as next_session_key,
+		          LEAD(s.title) OVER (PARTITION BY s.tenant_id, s.gw_task_id ORDER BY s.first_request_at) as next_session_title,
+		          ROW_NUMBER() OVER (PARTITION BY s.tenant_id, s.gw_task_id ORDER BY s.first_request_at) as session_order_in_task,
+		          LAG(s.session_key) OVER (PARTITION BY s.tenant_id, s.gw_project_id ORDER BY s.first_request_at) as prev_session_in_project,
+		          LEAD(s.session_key) OVER (PARTITION BY s.tenant_id, s.gw_project_id ORDER BY s.first_request_at) as next_session_in_project
+		        FROM public.session_summaries s
+		        WHERE s.gw_task_id IS NOT NULL OR s.gw_project_id IS NOT NULL;
+		        COMMENT ON VIEW public.v_session_flow IS '会话流程视图：显示会话在任务/项目中的前后关系';
+		    END IF;
+		END $$;
 	`)
 	if err != nil {
 		return err

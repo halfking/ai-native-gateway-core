@@ -20,6 +20,7 @@
 package admin
 
 import (
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"context"
 	"errors"
 	"log/slog"
@@ -104,6 +105,10 @@ func (h *Handler) handleProviderProbeHistory(w http.ResponseWriter, r *http.Requ
 		); err != nil {
 			continue
 		}
+		// Defense in depth (audit R8 P1): rows written before the bg-side
+		// sanitize landed may still carry credential echoes — re-sanitize on
+		// read so the admin response can never expose a key surface.
+		r.ErrorMessage = string(errorsx.SanitizeErrorText([]byte(r.ErrorMessage), 320))
 		out = append(out, r)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

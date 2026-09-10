@@ -556,3 +556,50 @@ func (w *bridgeWriter) Flush()                      {}
 func newBridgePendingCapturer(maxBytes int) *pendingCapturer {
 	return NewPendingCapturer(maxBytes)
 }
+
+// TestQ3InitialInputThenInputJSONDeltaContinuation pins the audit R8 P2
+// handling of input_json_delta fragments that follow a content_block_start
+// carrying non-empty tool input. content_block_start.input arrives as a
+// complete JSON value (json.RawMessage extraction), so junk deltas after
+// complete args must NOT corrupt or invalidate the already-streamed
+// fragment; a genuine extension (validator-passes) is appended.
+func TestQ3InitialInputThenInputJSONDeltaContinuation(t *testing.T) {
+	body := strings.Join([]string{
+		"event: message_start\n",
+		"data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-test\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+		"\n",
+		"event: content_block_start\n",
+		"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\",\"input\":{\"city\":\"Tokyo\"}}}\n",
+		"\n",
+		"event: content_block_delta\n",
+		"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\",\\\"junk\\\":1}\"}}\n",
+		"\n",
+		"event: content_block_stop\n",
+		"data: {\"type\":\"content_block_stop\",\"index\":0}\n",
+		"\n",
+		"event: message_delta\n",
+		"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"}}\n",
+		"\n",
+		"event: message_stop\n",
+		"data: {\"type\":\"message_stop\"}\n",
+		"\n",
+	}, "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	rec := httptest.NewRecorder()
+	out := StreamAnthropicSSEToOpenAI(context.Background(), rec, resp, "claude-test", "claude-test", "req-q3-args-cont", nil, nil)
+	require.False(t, out.Interrupted)
+
+	output := rec.Body.String()
+	assert.Contains(t, output, `{\"city\":\"Tokyo\"}`, output)
+	assert.NotContains(t, output, "junk", output)
+	assert.Contains(t, output, `"finish_reason":"tool_calls"`)
+}

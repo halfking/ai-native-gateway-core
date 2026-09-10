@@ -115,11 +115,11 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
 ├── llm-gateway.db                  # SQLite 主库（sqlite_path）
 │   ├── llm-gateway.db-wal          # WAL 模式自动生成的预写日志
 │   └── llm-gateway.db-shm          # WAL 共享内存索引文件
-├── session_bodies/                 # bodies_dir：会话内容（gzip）
+├── session_bodies/                 # bodies_dir：会话内容（默认 gzip；可选 zstd）
 │   └── {tenantID}/
 │       └── {sessionID前2位}/       # 分片目录，避免单目录文件过多
 │           └── {sessionID}/
-│               └── turn_{N}.json.gz   # 每轮次一个文件
+│               └── turn_{N}.json.{gz|zst}   # 每轮次一个文件
 ├── cache/                          # cache_dir：L1.5 文件缓存
 │   └── {tenantID}/
 │       └── {sessionID前2位}/
@@ -129,7 +129,7 @@ LLM Gateway 支持两种存储后端，通过 `storage_mode` 一次性切换，�
 
 关键路径规则（按 rune 切分 sessionID 前 2 位，多字节字符安全）：
 
-- 轮次 body：`{bodies_dir}/{tenantID}/{sessionID前2位}/{sessionID}/turn_{turnNo}.json.gz`
+- 轮次 body：`{bodies_dir}/{tenantID}/{sessionID前2位}/{sessionID}/turn_{turnNo}.json.{gz|zst}`；编码由 `lite_storage.bodies_codec`（安全默认 `gzip`，灰度验证后可用 `zstd`）决定，读路径兼容两种后缀。
 - L1.5 快照：`{cache_dir}/{tenantID}/{sessionID前2位}/{sessionID}.json`
 
 ## 快速开始
