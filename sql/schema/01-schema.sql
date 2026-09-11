@@ -1655,6 +1655,54 @@ Idempotent. Added 2026-06-30 in migration 319.';
 
 
 --
+-- Name: ensure_credit_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_credit_ledger_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    partition_name text;
+    start_date timestamp with time zone;
+    end_date   timestamp with time zone;
+BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+
+    start_date := date_trunc('month', target_month);
+    end_date   := start_date + interval '1 month';
+    partition_name := 'credit_ledger_' || to_char(start_date, 'YYYY_MM');
+
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    EXECUTE format(
+        'CREATE TABLE public.%I PARTITION OF public.credit_ledger FOR VALUES FROM (%L) TO (%L)',
+        partition_name, start_date, end_date
+    );
+
+    RAISE NOTICE 'ensure_credit_ledger_partition: created %', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION ensure_credit_ledger_partition(target_month timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.ensure_credit_ledger_partition(target_month timestamp with time zone) IS 'Ensure a monthly credit_ledger partition exists for the given month (heap storage).
+Called by bg.PartitionManager on every tick for current + next month.
+Parent-table indexes auto-propagate. Idempotent.
+Originally in migration 334; recreated in 475 to fix production silent-skip.';
+
+
+--
 -- Name: ensure_model_probe_runs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1758,8 +1806,14 @@ BEGIN
 
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
+        -- 2026-08-23 (migration 562): switched from columnar to heap.
+        -- request_wal is a heap parent; columnar partitions blocked the
+        -- hot→monthly promote path. Kept in sync with
+        -- ensure_request_wal_partition(timestamptz) (the active call
+        -- site). This orphan is retained for backwards compatibility
+        -- but now matches the active function's storage policy.
         EXECUTE format(
-            'CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L) USING columnar',
+            'CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)',
             partition_name, next_month_start, next_month_end
         );
     END IF;
@@ -1822,12 +1876,19 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
+        -- 2026-08-23 (migration 562): switched from columnar to heap. The
+        -- body columns (request_body / outbound_body / response_body jsonb)
+        -- are TOAST-heavy (~350 KB avg) and the hot→monthly promote path
+        -- issues INSERT-then-DELETE-when-retried cycles; columnar blocks
+        -- UPDATE/DELETE so the bodies pipeline silently stalled, leaving
+        -- request_logs_bodies_hot unbounded. request_logs_archive remains
+        -- columnar (it's a read-only tiered store, see archive_request_logs).
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF request_logs_bodies
-             FOR VALUES FROM (%L) TO (%L) USING columnar',
+             FOR VALUES FROM (%L) TO (%L)',
             partition_name, month_start, month_end
         );
-        RAISE NOTICE 'ensure_request_logs_bodies_partition: created % as columnar', partition_name;
+        RAISE NOTICE 'ensure_request_logs_bodies_partition: created % as heap', partition_name;
     END IF;
 END;
 $$;
@@ -1971,6 +2032,54 @@ COMMENT ON FUNCTION public.ensure_sessions_v2_partitions(target_date date) IS 'E
      Called by bg.PartitionManager alongside ensure_request_logs_partition.
      session_bodies uses heap storage because response bodies can be updated.
      Created: 2026-07-17, Migration 430';
+
+
+--
+-- Name: ensure_tool_usage_stats_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_tool_usage_stats_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    partition_name text;
+    start_date date;
+    end_date   date;
+BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+
+    start_date := date_trunc('month', target_month)::date;
+    end_date   := (start_date + interval '1 month')::date;
+    partition_name := 'tool_usage_stats_' || to_char(start_date, 'YYYY_MM');
+
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    EXECUTE format(
+        'CREATE TABLE public.%I PARTITION OF public.tool_usage_stats FOR VALUES FROM (%L) TO (%L)',
+        partition_name, start_date, end_date
+    );
+
+    RAISE NOTICE 'ensure_tool_usage_stats_partition: created %', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION ensure_tool_usage_stats_partition(target_month timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.ensure_tool_usage_stats_partition(target_month timestamp with time zone) IS 'Ensure a monthly tool_usage_stats partition exists for the given month (heap storage).
+Called by bg.PartitionManager on every tick for current + next month.
+Parent-table indexes auto-propagate. Idempotent.
+Originally in migration 335; recreated in 475 to fix production silent-skip.';
 
 
 --

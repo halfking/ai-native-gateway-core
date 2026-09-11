@@ -1583,10 +1583,36 @@ $$;
 -- Name: ensure_candidate_failure_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_candidate_failure_logs_partition(target_ts timestamp with time zone) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_candidate_failure_logs_partition(target_ts timestamp with time zone) RETURNS text
     LANGUAGE plpgsql
     AS $$
+DECLARE
+    month_start    date;
+    month_end      date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    partition_name := 'candidate_failure_logs_' || to_char(month_start, 'YYYY_MM');
+
+    IF NOT EXISTS (SELECT 1 FROM pg_class
+                   WHERE relname = partition_name
+                     AND relnamespace = 'public'::regnamespace) THEN
+        -- 689: heap (was columnar). Row-level DELETE (the 7d TTL trim path
+        -- in bg/opslog_trimmer.go) and the hot→monthly promote chain both
+        -- need UPDATE/DELETE-capable storage; columnar partitions are
+        -- append-only (established by migration 562).
+        EXECUTE format(
+            'CREATE TABLE %I PARTITION OF candidate_failure_logs
+             FOR VALUES FROM (%L) TO (%L)',
+            partition_name, month_start, month_end
+        );
+        RAISE NOTICE 'ensure_candidate_failure_logs_partition: created % as heap', partition_name;
+    END IF;
+    -- 689: dropped the former ELSE-branch enforce_columnar_partition() call —
+    -- partitions are heap now and must stay heap.
+    RETURN partition_name;
 END;
 $$;
 
@@ -1595,14 +1621,19 @@ $$;
 -- Name: ensure_credential_model_index_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_credential_model_index_partition(target_month timestamp with time zone) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_credential_model_index_partition(target_month timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start date := date_trunc('month', target_month)::date;
-    month_end   date := (date_trunc('month', target_month) + interval '1 month')::date;
-    partition_name text := 'credential_model_index_' || to_char(month_start, 'YYYY_MM');
+    month_start date;
+    month_end   date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_month)::date;
+    month_end := (date_trunc('month', target_month) + interval '1 month')::date;
+    partition_name := 'credential_model_index_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
@@ -1627,6 +1658,54 @@ Idempotent. Added 2026-06-30 in migration 319.';
 
 
 --
+-- Name: ensure_credit_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.ensure_credit_ledger_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    partition_name text;
+    start_date timestamp with time zone;
+    end_date   timestamp with time zone;
+BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+
+    start_date := date_trunc('month', target_month);
+    end_date   := start_date + interval '1 month';
+    partition_name := 'credit_ledger_' || to_char(start_date, 'YYYY_MM');
+
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    EXECUTE format(
+        'CREATE TABLE public.%I PARTITION OF public.credit_ledger FOR VALUES FROM (%L) TO (%L)',
+        partition_name, start_date, end_date
+    );
+
+    RAISE NOTICE 'ensure_credit_ledger_partition: created %', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION ensure_credit_ledger_partition(target_month timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.ensure_credit_ledger_partition(target_month timestamp with time zone) IS 'Ensure a monthly credit_ledger partition exists for the given month (heap storage).
+Called by bg.PartitionManager on every tick for current + next month.
+Parent-table indexes auto-propagate. Idempotent.
+Originally in migration 334; recreated in 475 to fix production silent-skip.';
+
+
+--
 -- Name: ensure_model_probe_runs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -1645,14 +1724,19 @@ $$;
 -- Name: ensure_next_month_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_next_month_archive_partition() RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_next_month_archive_partition() RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
-		    next_month_start date := date_trunc('month', now() + interval '1 month')::date;
-		    next_month_end   date := date_trunc('month', now() + interval '2 months')::date;
-		    partition_name   text := 'request_logs_archive_' || to_char(next_month_start, 'YYYY_MM');
+		    next_month_start date;
+		    next_month_end   date;
+		    partition_name   text;
 		BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    next_month_start := date_trunc('month', now() + interval '1 month')::date;
+    next_month_end := date_trunc('month', now() + interval '2 months')::date;
+    partition_name := 'request_logs_archive_' || to_char(next_month_start, 'YYYY_MM');
+
 		    IF NOT EXISTS (SELECT 1 FROM pg_class
 		                   WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
 		        EXECUTE format(
@@ -1675,14 +1759,19 @@ COMMENT ON FUNCTION public.ensure_next_month_archive_partition() IS 'Pre-create 
 -- Name: ensure_next_month_cmi_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_next_month_cmi_archive_partition() RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_next_month_cmi_archive_partition() RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
-		    next_month_start date := date_trunc('month', now() + interval '1 month')::date;
-		    next_month_end   date := date_trunc('month', now() + interval '2 months')::date;
-		    partition_name   text := 'credential_model_index_archive_' || to_char(next_month_start, 'YYYY_MM');
+		    next_month_start date;
+		    next_month_end   date;
+		    partition_name   text;
 		BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    next_month_start := date_trunc('month', now() + interval '1 month')::date;
+    next_month_end := date_trunc('month', now() + interval '2 months')::date;
+    partition_name := 'credential_model_index_archive_' || to_char(next_month_start, 'YYYY_MM');
+
 		    IF NOT EXISTS (SELECT 1 FROM pg_class
 		                   WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
 		        EXECUTE format(
@@ -1705,18 +1794,29 @@ COMMENT ON FUNCTION public.ensure_next_month_cmi_archive_partition() IS 'Pre-cre
 -- Name: ensure_next_month_request_wal_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_next_month_request_wal_partition() RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_next_month_request_wal_partition() RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    next_month_start date := date_trunc('month', now() + interval '1 month')::date;
-    next_month_end   date := date_trunc('month', now() + interval '2 months')::date;
-    partition_name   text := 'request_wal_' || to_char(next_month_start, 'YYYY_MM');
+    next_month_start date;
+    next_month_end   date;
+    partition_name   text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    next_month_start := date_trunc('month', now() + interval '1 month')::date;
+    next_month_end := date_trunc('month', now() + interval '2 months')::date;
+    partition_name := 'request_wal_' || to_char(next_month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
+        -- 2026-08-23 (migration 562): switched from columnar to heap.
+        -- request_wal is a heap parent; columnar partitions blocked the
+        -- hot→monthly promote path. Kept in sync with
+        -- ensure_request_wal_partition(timestamptz) (the active call
+        -- site). This orphan is retained for backwards compatibility
+        -- but now matches the active function's storage policy.
         EXECUTE format(
-            'CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L) USING columnar',
+            'CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)',
             partition_name, next_month_start, next_month_end
         );
     END IF;
@@ -1728,14 +1828,19 @@ $$;
 -- Name: ensure_next_month_routing_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_next_month_routing_archive_partition() RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_next_month_routing_archive_partition() RETURNS void
     LANGUAGE plpgsql
     AS $$
 		DECLARE
-		    next_month_start date := date_trunc('month', now() + interval '1 month')::date;
-		    next_month_end   date := date_trunc('month', now() + interval '2 months')::date;
-		    partition_name   text := 'routing_decision_log_archive_' || to_char(next_month_start, 'YYYY_MM');
+		    next_month_start date;
+		    next_month_end   date;
+		    partition_name   text;
 		BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    next_month_start := date_trunc('month', now() + interval '1 month')::date;
+    next_month_end := date_trunc('month', now() + interval '2 months')::date;
+    partition_name := 'routing_decision_log_archive_' || to_char(next_month_start, 'YYYY_MM');
+
 		    IF NOT EXISTS (SELECT 1 FROM pg_class
 		                   WHERE relname = partition_name AND relnamespace = 'public'::regnamespace) THEN
 		        EXECUTE format(
@@ -1758,23 +1863,35 @@ COMMENT ON FUNCTION public.ensure_next_month_routing_archive_partition() IS 'Pre
 -- Name: ensure_request_logs_bodies_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_request_logs_bodies_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_request_logs_bodies_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start    date := date_trunc('month', target_ts)::date;
-    month_end      date := (date_trunc('month', target_ts) + interval '1 month')::date;
-    partition_name text := 'request_logs_bodies_' || to_char(month_start, 'YYYY_MM');
+    month_start    date;
+    month_end      date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    partition_name := 'request_logs_bodies_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
+        -- 2026-08-23 (migration 562): switched from columnar to heap. The
+        -- body columns (request_body / outbound_body / response_body jsonb)
+        -- are TOAST-heavy (~350 KB avg) and the hot→monthly promote path
+        -- issues INSERT-then-DELETE-when-retried cycles; columnar blocks
+        -- UPDATE/DELETE so the bodies pipeline silently stalled, leaving
+        -- request_logs_bodies_hot unbounded. request_logs_archive remains
+        -- columnar (it's a read-only tiered store, see archive_request_logs).
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF request_logs_bodies
-             FOR VALUES FROM (%L) TO (%L) USING columnar',
+             FOR VALUES FROM (%L) TO (%L)',
             partition_name, month_start, month_end
         );
-        RAISE NOTICE 'ensure_request_logs_bodies_partition: created % as columnar', partition_name;
+        RAISE NOTICE 'ensure_request_logs_bodies_partition: created % as heap', partition_name;
     END IF;
 END;
 $$;
@@ -1784,14 +1901,19 @@ $$;
 -- Name: ensure_request_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_request_logs_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_request_logs_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start   date := date_trunc('month', target_ts)::date;
-    month_end     date := (date_trunc('month', target_ts) + interval '1 month')::date;
-    part_name     text := 'request_logs_' || to_char(month_start, 'YYYY_MM');
+    month_start   date;
+    month_end     date;
+    part_name     text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    part_name := 'request_logs_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name) THEN
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF request_logs FOR VALUES FROM (%L) TO (%L)',
@@ -1817,23 +1939,33 @@ $$;
 -- Name: ensure_request_wal_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_request_wal_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_request_wal_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
     LANGUAGE plpgsql
-    AS $$ DECLARE month_start date := date_trunc('month', target_ts)::date; month_end date := (date_trunc('month', target_ts) + interval '1 month')::date; part_name text := 'request_wal_' || to_char(month_start, 'YYYY_MM'); BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name AND relnamespace = 'public'::regnamespace) THEN EXECUTE format('CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)', part_name, month_start, month_end); END IF; END; $$;
+    AS $$ DECLARE month_start date; month_end date; part_name text; BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    part_name := 'request_wal_' || to_char(month_start, 'YYYY_MM');
+ IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name AND relnamespace = 'public'::regnamespace) THEN EXECUTE format('CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)', part_name, month_start, month_end); END IF; END; $$;
 
 
 --
 -- Name: ensure_routing_decision_log_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_routing_decision_log_partition(target_month timestamp with time zone) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_routing_decision_log_partition(target_month timestamp with time zone) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start date := date_trunc('month', target_month)::date;
-    month_end   date := (date_trunc('month', target_month) + interval '1 month')::date;
-    partition_name text := 'routing_decision_log_' || to_char(month_start, 'YYYY_MM');
+    month_start date;
+    month_end   date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_month)::date;
+    month_end := (date_trunc('month', target_month) + interval '1 month')::date;
+    partition_name := 'routing_decision_log_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
@@ -1906,17 +2038,70 @@ COMMENT ON FUNCTION public.ensure_sessions_v2_partitions(target_date date) IS 'E
 
 
 --
--- Name: ensure_usage_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+-- Name: ensure_tool_usage_stats_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_usage_ledger_partition(target_month timestamp with time zone) RETURNS void
+CREATE FUNCTION public.ensure_tool_usage_stats_partition(target_month timestamp with time zone DEFAULT now()) RETURNS text
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start    date := date_trunc('month', target_month)::date;
-    month_end      date := (date_trunc('month', target_month) + interval '1 month')::date;
-    partition_name text := 'usage_ledger_' || to_char(month_start, 'YYYY_MM');
+    partition_name text;
+    start_date date;
+    end_date   date;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+
+    start_date := date_trunc('month', target_month)::date;
+    end_date   := (start_date + interval '1 month')::date;
+    partition_name := 'tool_usage_stats_' || to_char(start_date, 'YYYY_MM');
+
+    IF EXISTS (
+        SELECT 1 FROM pg_class c
+        JOIN pg_namespace n ON c.relnamespace = n.oid
+        WHERE c.relname = partition_name
+          AND n.nspname = 'public'
+    ) THEN
+        RETURN partition_name || ' (already exists)';
+    END IF;
+
+    EXECUTE format(
+        'CREATE TABLE public.%I PARTITION OF public.tool_usage_stats FOR VALUES FROM (%L) TO (%L)',
+        partition_name, start_date, end_date
+    );
+
+    RAISE NOTICE 'ensure_tool_usage_stats_partition: created %', partition_name;
+    RETURN partition_name;
+END;
+$$;
+
+
+--
+-- Name: FUNCTION ensure_tool_usage_stats_partition(target_month timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.ensure_tool_usage_stats_partition(target_month timestamp with time zone) IS 'Ensure a monthly tool_usage_stats partition exists for the given month (heap storage).
+Called by bg.PartitionManager on every tick for current + next month.
+Parent-table indexes auto-propagate. Idempotent.
+Originally in migration 335; recreated in 475 to fix production silent-skip.';
+
+
+--
+-- Name: ensure_usage_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE OR REPLACE FUNCTION public.ensure_usage_ledger_partition(target_month timestamp with time zone) RETURNS void
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+    month_start    date;
+    month_end      date;
+    partition_name text;
+BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_month)::date;
+    month_end := (date_trunc('month', target_month) + interval '1 month')::date;
+    partition_name := 'usage_ledger_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
