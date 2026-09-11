@@ -24,6 +24,17 @@ import (
 // in the request_logs_hot ∩ request_logs column intersection — the hot table
 // is missing the column, same drift family as the 573 body-column gap).
 // Switching it today would 42703 at runtime; fix the hot-table column first.
+//
+// 2026-09-12 audit round: same doctrine extended to candidate_failure_logs —
+// the writer (domains/streaming/executors/candidate_failure_logger.go)
+// inserts into candidate_failure_logs_hot, so the bare parent only holds
+// promoted (cold) rows; with the partition promote failing (P5 duplicate key,
+// since 09-10) its max(ts) ran 8h+ stale while the hot table was served
+// minutes earlier. Covered files:
+//   - candidate_failure_monitor.go: staleness max(ts) + 5-minute alert scan
+//     + auto-cool cfl CTE (stale alert fired / alerts + auto-cool blind)
+//   - daily_probe_audit.go: 3-day candidate branch (under-scan)
+//   - model_probe.go: 5-minute passive-boost pick (always empty)
 func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 	re := regexp.MustCompile(`(?i)FROM\s+request_logs(\w*)`)
 	for _, file := range []string{
@@ -49,6 +60,31 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 		}
 	}
 
+	// 2026-09-12: same blindness, candidate_failure_logs family. The writer
+	// feeds the hot table; the bare parent only holds promoted rows.
+	reCfl := regexp.MustCompile(`(?i)FROM\s+candidate_failure_logs(\w*)`)
+	for _, file := range []string{
+		"candidate_failure_monitor.go",
+		"daily_probe_audit.go",
+		"model_probe.go",
+	} {
+		contents, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		matches := reCfl.FindAllStringSubmatch(string(contents), -1)
+		if len(matches) == 0 {
+			t.Fatalf("%s: no candidate_failure_logs reads found — query surface moved?", file)
+		}
+		for _, m := range matches {
+			if m[1] != "_with_current_month" {
+				t.Fatalf("%s reads the cold %q surface — recent-window reads must "+
+					"use candidate_failure_logs_with_current_month (writer feeds the "+
+					"hot table; bare parent only holds promoted rows)", file, m[0])
+			}
+		}
+	}
+
 	// Lock the conscious exclusion: the drift scanner must not silently move
 	// to the view while system_fingerprint is missing from the hot table —
 	// and equally must not grow a SECOND bare-parent reader unreviewed.
@@ -60,5 +96,17 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 		t.Fatalf("integrity_fingerprint_drift.go bare-parent reader count changed (%d): "+
 			"re-audit before touching — view lacks system_fingerprint until the "+
 			"hot-table column drift is fixed", n)
+	}
+
+	// Lock the other conscious exclusion: opslog_trimmer deletes aged rows
+	// from the bare parent on purpose — retention semantics (the UNION view
+	// is not deletable, and hot rows must survive the trim window).
+	trimmer, err := os.ReadFile("opslog_trimmer.go")
+	if err != nil {
+		t.Fatalf("read opslog_trimmer.go: %v", err)
+	}
+	if n := len(reCfl.FindAllStringSubmatch(string(trimmer), -1)); n != 2 {
+		t.Fatalf("opslog_trimmer.go bare-parent candidate_failure_logs site count changed (%d): "+
+			"retention deletes must stay on the deletable parent — re-audit before touching", n)
 	}
 }
