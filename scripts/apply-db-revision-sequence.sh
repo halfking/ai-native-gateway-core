@@ -270,6 +270,13 @@ files=(
   # （IF NOT EXISTS 守卫 + DO 块），db.go 侧另有 ensureProviderModelsCanonicalClearedAt
   # 自愈镜像兜底。
   "$ROOT_DIR/sql/migrations/startup/693_provider_models_canonical_cleared_at.sql"
+  # 2026-09-12 通道同步：694 把 13 个 ensure_* 分区函数的边界计算固定在
+  # Asia/Shanghai（SET LOCAL），消除 UTC 会话下月初边界偏移 8h 的 473 类
+  # 缝隙复发面。共享 252 PG 的迁移账本已于 2026-09-11 21:28 记录 applied
+  # （695 重编号时确认 690-694 已占用），升级库按账本跳过、其余环境正常
+  # 应用；纯 CREATE OR REPLACE FUNCTION，幂等收敛，序列内无同名函数冲突
+  # （各 ensure_* 的更早定义文件均不在本序列），故无需 clobber chain 登记。
+  "$ROOT_DIR/sql/migrations/startup/694_partition_ensure_timezone.sql"
   # 2026-09-12 同款升级通道缺口：695 promote final-success 冲突自愈（P2
   # 冷迁移停滞根因的数据面修复）同样只存在于仓库文件，db.go 无 ensure 镜像、
   # 本序列此前止于 693。原编号 694 在共享 252 PG 的迁移账本里已被其他项目
@@ -279,6 +286,14 @@ files=(
   # （688 体 + demote 步骤），幂等收敛，down 无。必须在 693 之后（无依赖，
   # 顺序仅为序列递增约定）。
   "$ROOT_DIR/sql/migrations/startup/695_request_logs_promote_final_success_self_heal.sql"
+  # 2026-09-12 视图列缺口：696 给 request_logs_with_current_month 追加
+  # system_fingerprint lateral 阶段（487 加父表列、603 补 hot 列，但视图基础
+  # 包装的列交集在 603 之前冻结，链上从未重建）。integrity_fingerprint_drift
+  # 的 7 天窗口读者因此一直钉在裸父表（近期窗口失明教义的有意排除项）。
+  # 纯 CREATE OR REPLACE VIEW（尾部追加列，无 DROP），幂等收敛，down 无。
+  # 编号前已查生产双账本：696 在 gateway_db_revision_sequences 与
+  # schema_migrations 均未被本库或其他项目占用。
+  "$ROOT_DIR/sql/migrations/startup/696_request_logs_view_system_fingerprint.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

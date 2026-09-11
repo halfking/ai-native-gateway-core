@@ -19,11 +19,11 @@ import (
 //   - shared_pick.go: 7-day most-used probe-model pick (stale pick)
 //   - daily_probe_audit.go: 3-day lookback for daily submissions (under-scan)
 //
-// Deliberately NOT covered: integrity_fingerprint_drift.go still reads the
-// bare parent because system_fingerprint is absent from the view (it is not
-// in the request_logs_hot ∩ request_logs column intersection — the hot table
-// is missing the column, same drift family as the 573 body-column gap).
-// Switching it today would 42703 at runtime; fix the hot-table column first.
+// Previously NOT covered: integrity_fingerprint_drift.go stayed on the bare
+// parent while system_fingerprint was absent from the view (hot column added
+// by 603, but the base wrapper's intersection was frozen pre-603). Migration
+// 696 appended the column to the view and the scanner switched — the
+// exclusion is now an inclusion pinned at the bottom of this test.
 //
 // 2026-09-12 audit round: same doctrine extended to candidate_failure_logs —
 // the writer (domains/streaming/executors/candidate_failure_logger.go)
@@ -85,17 +85,28 @@ func TestRecentWindowReadsUseCurrentMonthSurface(t *testing.T) {
 		}
 	}
 
-	// Lock the conscious exclusion: the drift scanner must not silently move
-	// to the view while system_fingerprint is missing from the hot table —
-	// and equally must not grow a SECOND bare-parent reader unreviewed.
+	// 2026-09-12: the drift scanner's exclusion is LIFTED. Migration 696
+	// appended system_fingerprint to request_logs_with_current_month (the
+	// base wrapper's hot∩parent intersection had been frozen before 603
+	// added the column to the hot table), so the scanner now reads the view
+	// like every other recent-window reader. The remaining guard flips
+	// accordingly: every request_logs-family FROM in the drift scanner must
+	// stay on the _with_current_month surface — no silent regression to the
+	// bare parent, no new bare-parent reader unreviewed.
 	drift, err := os.ReadFile("integrity_fingerprint_drift.go")
 	if err != nil {
 		t.Fatalf("read integrity_fingerprint_drift.go: %v", err)
 	}
-	if n := len(re.FindAllStringSubmatch(string(drift), -1)); n != 1 {
-		t.Fatalf("integrity_fingerprint_drift.go bare-parent reader count changed (%d): "+
-			"re-audit before touching — view lacks system_fingerprint until the "+
-			"hot-table column drift is fixed", n)
+	driftMatches := re.FindAllStringSubmatch(string(drift), -1)
+	if len(driftMatches) == 0 {
+		t.Fatalf("integrity_fingerprint_drift.go: no request_logs reads found — query surface moved?")
+	}
+	for _, m := range driftMatches {
+		if m[1] != "_with_current_month" {
+			t.Fatalf("integrity_fingerprint_drift.go reads the cold %q surface — the 7-day "+
+				"fingerprint window is a recent-window read and must use "+
+				"request_logs_with_current_month (migration 696 added the column to the view)", m[0])
+		}
 	}
 
 	// Lock the other conscious exclusion: opslog_trimmer deletes aged rows

@@ -1,6 +1,12 @@
 // Package bg — integrity_fingerprint_drift.go
 //
 // 2026-07-28: per-(cred, model) system_fingerprint drift detector.
+// 2026-09-12: read surface switched from the bare request_logs parent to
+// request_logs_with_current_month (migration 696 appended system_fingerprint
+// to the view; until then the switch would 42703, see
+// bg/recent_surface_reads_test.go). The 7-day rolling window is a
+// recent-window read — the bare parent only holds promoted cold rows and ran
+// days stale during the 2026-09-10 minimax-prod-v2 incident.
 //
 // Algorithm (rewritten 2026-07-28 to fix the "window fragmentation"
 // regression in the previous implementation):
@@ -152,7 +158,7 @@ func (w *IntegrityFingerprintDrift) scanDrift(ctx context.Context) error {
 	rows, err := w.db.Query(ctx, `
 		WITH business AS (
 		    SELECT credential_id, raw_model_name, system_fingerprint, ts
-		    FROM request_logs
+		    FROM request_logs_with_current_month
 		    WHERE ts > NOW() - ($1::int * INTERVAL '1 day')
 		      AND system_fingerprint IS NOT NULL
 		      AND credential_id IS NOT NULL
