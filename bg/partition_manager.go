@@ -22,6 +22,12 @@ func settingsGetPlatformInt(key string, fallback int) int {
 // daily ensure/archive maintenance cycle.
 const DefaultPromoteInterval = 1 * time.Hour
 
+// partitionTZ is the partition-boundary calendar (687/694/699 convention):
+// month bounds are Asia/Shanghai calendar months. FixedZone follows the
+// domains/streaming precedent — Shanghai has no DST, and a fixed offset
+// avoids a runtime tzdata dependency in minimal containers.
+var partitionTZ = time.FixedZone("Asia/Shanghai", 8*60*60)
+
 // DefaultRetentionWindow is the *_default "hot data" keep-window. Rows
 // in *_default whose ts_col is older than (now - DefaultRetentionWindow)
 // are eligible to be migrated to the matching monthly partition by the
@@ -294,18 +300,30 @@ func (pm *PartitionManager) runCleanup(ctx context.Context) {
 // ensureNextMonthPartitions creates partitions for current and next month
 // for every table we manage. Idempotent: each underlying
 // ensure_<table>_partition() function checks for existence first.
+//
+// 2026-09-12 (694/699 follow-up): partition bounds are Asia/Shanghai
+// calendar months (687/694 convention), so "current/next month" is derived
+// in that calendar rather than the server's local zone. Date-signature
+// functions additionally receive the calendar day as a literal string — a
+// timestamptz→date cast reads the session TimeZone, so a UTC session inside
+// the [00:00, 08:00) +08 window of day 1 would derive the previous
+// Shanghai month and pre-create the wrong partition.
 func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 	specs := ensureSpecs()
 	for offset := 0; offset <= 1; offset++ {
-		targetMonth := time.Now().AddDate(0, offset, 0)
+		targetMonth := time.Now().In(partitionTZ).AddDate(0, offset, 0)
 		for _, s := range specs {
 			argExpr := s.argExpr
 			if argExpr == "" {
 				argExpr = "$1"
 			}
+			var arg any = targetMonth
+			if argExpr == "$1::date" {
+				arg = targetMonth.Format("2006-01-02")
+			}
 			timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			_, err := pm.db.Exec(timeoutCtx,
-				"SELECT "+s.fnName+"("+argExpr+")", targetMonth)
+				"SELECT "+s.fnName+"("+argExpr+")", arg)
 			cancel()
 			if err != nil {
 				slog.Error("partition_manager: ensure partition failed",

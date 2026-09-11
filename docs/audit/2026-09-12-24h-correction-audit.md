@@ -70,3 +70,22 @@
 - 子代理覆盖：分区存储（promote/trim/边界/改道/对账）、供应商错误（写入/聚合/降级/呈现/681/684 幂等）、队列并发（dispatch 终态/churn 有界/raw sink/submit gate/ticker/goroutine/map 竞态）、会话 IR（别名确定性/协议转换/流式保真/计费/690/692）、双存储+迁移通道（四通道对等/sqlite 对等/clobber 守卫）、Web（datetime/死代码/路由对齐/指标对齐/控件复用）。
 - 本轮修复后验证：`go build ./...`、`go vet ./...`（全仓零输出）、`go test ./modelname/ ./internal/logging/ ./bg/`（全绿）、`cd installer && go test ./...`（全绿，含 TestStartupFilesAreAllEmbedded 与 691-695 byte-equality）。
 - pre-commit 六项门禁（go vet / SQL SET+占位符 / 迁移编号唯一 / down.sql 配对 / vue-tsc / token 合规）逐提交全过。
+
+## 六、第三轮后记：两项 P1 闭环（2026-09-12 深夜，同日第三会话）
+
+### §四.1 promote 时区钉扎 → 迁移 698（2ad8d64ad）
+- **编号核对三重**：本地/远端 git 无 698；共享 252 生产双账本 `gateway_db_revision_sequences`/`schema_migrations` 均 0 命中（账本顶端为 697，证明 695-697 已在生产应用）。
+- **范围修正**：审计原文"16 个 promote_*"实为全部 18 个 promote 文件中 **9 个 `*_hot_to_partition`** 含 `date_trunc` 月份分组（9 个 `*_default_batch` 不做月份计算，无需钉扎）；model_probe_runs promote 已退役（partition_manager.go:939 注释）。
+- **体谱系验证**：request_logs = 697 线上体（695 自愈 + fingerprint 三列）+ 钉扎；其余 8 个经逐函数切取比对 **byte-identical 于 688 线上体**（659 原子 CTE 形状、688 对齐 Go 调度器默认值）+ 钉扎——objects/ 是 688 谱系而非 659，迁移以 objects/ 机械变换生成，无回退。
+- **clobber 守卫实战**：guard 抓出 659（在序列数组内）与 698 的 7 个同名函数重定义，登记 7 条 `659|698` 链 + 扩展 request_logs 链 `695|697|698`；guard 只查顺序不查内容，内容等价由上述逐函数比对补位。688 不在序列数组（guard 盲区），已写入 chain 注释留档。
+- **五点同步**：embeddata 副本（byte-identical）/go:embed/embeddedSQLFiles/runner.go StartupFiles/byte-equality 映射全接；本地 llm-gateway-pg ROLLBACK 包裹全文件执行（9×CREATE FUNCTION+账本 upsert，零残留）。
+
+### §四.2 IR 未知块 → 计数+可观测+conversion 归因（b2639182b）
+- **决策**：不抢救 text（server_tool_use 等承载工具载荷而非文本，语义不安全）；采用计数+可观测，并修正错误归因。
+- **实现**：`ParseAnthropicResponse` 补 default 分支记录 `UnknownBlockTypes`（去重、上限 8）+ `OnlyUnsupportedBlocks()` 判定；executor IR 路径对 unknown-only 以 **KindConversion 失败**（消息含块型）——stage=gateway → 拒计费（网关吸收自身能力缺口，归因诚实）、供应商不再被 bandit/weight-nudge 按 empty_response 降权、conversion_error 可按块型 SQL 检索；legacy 转换器守卫同款拆分。
+- **行为变化**：IR 主线从"序列化成空 body 按 success 计费"转为 conversion 失败（可 failover）；mixed 响应已知块保留不再静默丢未知块；真空响应维持 empty_response 桶。
+- **残留**（记录不阻塞）：`ParseOpenAIResponse` 的 `parseOpenAIResponseContentBlock` 对未知块保留为不透明 IR 块，序列化层静默丢弃——OpenAI 侧同族问题呈不同故障形状（空序列化、按 success 计费），待下轮评估是否同款处理。
+
+### 并行会话协同（同窗口）
+- f08e0a95b（并行会话）收敛三处 01-schema baseline（§四.3 的 dump 陈旧主体）；**699_supplier_errors_ensure_timezone_pin** 在其暂存区推进中（对应 §四.11 supplier_errors ensure 缺定义 + cfl 同款钉扎补漏），与本轮 698 无文件重叠。
+- 竞态纪律生效：两轮提交均用精确 pathspec（`git commit -- <paths>`），699 的 staged 集合在本会话两次提交间完好无损。
