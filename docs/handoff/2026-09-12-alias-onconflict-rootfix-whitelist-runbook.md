@@ -80,6 +80,7 @@ curl /healthz                                              # 2.5.4-17de96f1-2026
 6. **并行会话 696 drift scanner 在本机每周期报 42703 WARN**（`integrity_fingerprint_drift: scan failed — column "raw_model_name" does not exist`）：2089 部署首次把 83bf582dd 的 scanner 带到本地容器，而本地库视图尚未具备其期望列（696/697 已随部署 revision-sequence 入账，疑似 scanner 与视图定义的列名错位）——属 necessity-gate/system-fingerprint 工作流在途事项，非本轮引入，未处置。
 7. 共享工作区双会话并行：本轮工作区混有 necessity-gate 会话的未提交改动（partition_manager、db.go、grafana/prometheus、logging 等），本轮提交严格限定在本轮文件；**后续会话提交前必须按文件逐一核对归属，严禁 git add -A**。
 8. win11 侧 CRLF 复发类（8af09c799 曾把部署链脚本提交成 CRLF 阻断 deploy）——建议补 .gitattributes 强制 LF。
+9. **推送挂起**：本轮 3 提交（dcd4ea46f 审计修正、54f312d68 2089 版本身份、5b01f2929 handoff）已在本地 main，但 `git merge origin/main` 被并行会话对 docs/audit、necessity-gate handoff、installer/{main,stats_migrations_test,runner} 的**未提交改动**挡住（合并会覆盖其工作区编辑）——不可代为提交/贮藏。待该会话完成其提交周期后 merge + push 即可（其 round-25 addendum fa106fef2 已在远端，合并时注意 handoff 文档双方同日追加）。
 
 ## 下一轮提示词
 
