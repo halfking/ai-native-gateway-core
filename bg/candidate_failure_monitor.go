@@ -192,7 +192,11 @@ func (m *CandidateFailureMonitor) checkStaleness(ctx context.Context) error {
 	if err := m.db.QueryRow(ctx, `
 		SELECT
 			(SELECT max(ts) FROM candidate_failure_logs),
-			(SELECT max(ts) FROM request_logs WHERE ts >= now() - interval '5 minutes')
+			-- 2026-09-11: recent-window reads must use the current-month
+			-- surface — the bare request_logs parent only holds cold rows
+			-- (max(ts) a day+ stale on 154), so "gateway has recent activity"
+			-- evaluated false and staleness alerts never fired.
+			(SELECT max(ts) FROM request_logs_with_current_month WHERE ts >= now() - interval '5 minutes')
 	`).Scan(&lastFailure, &lastRequest); err != nil {
 		return err
 	}
@@ -292,13 +296,16 @@ func (m *CandidateFailureMonitor) checkAlerts(ctx context.Context) error {
 // recover_at = now() + coolMinutes. The recovery worker (credential_recovery.go)
 // will restore 'ready' once recover_at passes — unless auto-cool fires again.
 func (m *CandidateFailureMonitor) checkAutoCool(ctx context.Context) error {
-	// Pull recent candidate_failure_logs + attempt count from request_logs
+	// Pull recent candidate_failure_logs + the request-log attempt count
 	// for the same window. Two CTEs joined by credential.
+	// 2026-09-11: the 5-minute attempt window must read the current-month
+	// surface — on the bare parent (cold rows only) win was always empty, so
+	// auto-cool never saw current traffic and never fired.
 	rows, err := m.db.Query(ctx, `
 		WITH win AS (
 		    SELECT credential_id, COUNT(*) FILTER (WHERE lower(COALESCE(request_status, '')) = 'failure') AS fails,
 		                  COUNT(*) AS attempts
-		    FROM request_logs
+		    FROM request_logs_with_current_month
 		    WHERE ts >= now() - interval '5 minutes'
 		      AND credential_id IS NOT NULL
 		    GROUP BY credential_id

@@ -296,6 +296,21 @@ func TestRunOneMissingBindingDropsOrphanStateRow(t *testing.T) {
 	if idxLog > idxFail {
 		t.Fatalf("missing-binding branch must run BEFORE the failure UPDATE branch (idxLog=%d, idxFail=%d)", idxLog, idxFail)
 	}
+	// R12 audit closure (2026-09-11): the branch must persist the forensic
+	// node_probe_runs row it promises via the shared insertNodeProbeRun
+	// helper, mirroring ProbeService.Run's unified-queue branch (gw round
+	// never ran: direct passed for both rounds, success=false, nextSec=0).
+	branchEnd := strings.Index(body[idxLog:], "// Round 2: gateway")
+	if branchEnd < 0 {
+		t.Fatalf("missing-binding branch terminator (// Round 2: gateway) not found")
+	}
+	branch := body[idxLog : idxLog+branchEnd]
+	if !strings.Contains(branch, "w.insertNodeProbeRun(") {
+		t.Fatalf("missing-binding branch must persist the forensic audit row via w.insertNodeProbeRun")
+	}
+	if !strings.Contains(branch, "direct, direct, false") {
+		t.Fatalf("missing-binding audit row must record direct as both rounds with success=false")
+	}
 }
 
 // TestNodeProbeSuccessNextRetryOneHour pins BUG #6 fix (2026-07-22):

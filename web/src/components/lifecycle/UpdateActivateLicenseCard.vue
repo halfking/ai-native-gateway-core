@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { LicenseStatus } from '../../api/updateActivate'
+import { formatDateTime } from '../../utils/datetime'
 import { isLicenseActive, licenseStateLabel } from '../../utils/labels'
 
 /** UpdateActivateLicenseCard — 复用 /maintain/activate 的 status-panel 样式，
@@ -29,17 +30,13 @@ const isActive = computed(() => isLicenseActive(props.status?.state))
 const expiresDisplay = computed(() => {
   const ts = props.status?.expires_at
   if (!ts) return ''
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return ts
-  return d.toLocaleString()
+  return formatDateTime(ts, { empty: '' })
 })
 
 const heartbeatDisplay = computed(() => {
   const ts = props.status?.last_heartbeat
   if (!ts) return ''
-  const d = new Date(ts)
-  if (Number.isNaN(d.getTime())) return ts
-  return d.toLocaleString()
+  return formatDateTime(ts, { empty: '' })
 })
 </script>
 

@@ -73,10 +73,13 @@ func PickProbeModelForCredential(ctx context.Context, db pickDB, credID int) (Pi
 	// Priority 1: most-used client_model in request_logs (7d).
 	// request_logs uses the boolean success column (NOT status_code);
 	// request_status stores the upstream HTTP code as text when present.
+	// 2026-09-11: read the current-month surface — the bare parent only
+	// holds cold rows, so the 7d window was blind to the most recent days
+	// of traffic and picked a stale "most-used" model.
 	var topModel string
 	err = db.QueryRow(ctx, `
 		SELECT client_model
-		FROM request_logs
+		FROM request_logs_with_current_month
 		WHERE credential_id = $1
 		  AND ts > now() - interval '7 days'
 		  AND success = TRUE

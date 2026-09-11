@@ -73,14 +73,23 @@ func (a *DailyProbeAudit) Stop() {
 	a.stopOnce.Do(func() { close(a.stopCh) })
 }
 
-func (a *DailyProbeAudit) run(ctx context.Context) {
-	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	rows, err := a.db.Query(queryCtx, `
+// dailyProbeAuditSQL is extracted for guard tests (same pattern as
+// pumpDueStatesSQL). The UNION's request_logs branch is binding-anchored by
+// its own cmb/pm JOINs, but the candidate_failure_logs branch is a raw
+// (credential_id, raw_model_name) projection — historical pairs keep being
+// submitted for the whole 72h lookback window even after their binding chain
+// is broken, and every such submission is a doomed run (queue claim →
+// in-flight tile → endpoint-build "no rows" → missing-binding drop +
+// fake-success audit row). The outer binding-chain EXISTS (same predicate
+// shape as pumpDueStatesSQL's — existence only, both columns correlated, pm
+// JOINed so a dangling cmb.provider_model_id is filtered) covers the UNION:
+// redundant-but-true for branch 1, filtering for branch 2.
+func dailyProbeAuditSQL() string {
+	return `
 		SELECT DISTINCT credential_id, raw_model_name
 		FROM (
 			SELECT rl.credential_id, pm.raw_model_name
-			FROM request_logs rl
+			FROM request_logs_with_current_month rl
 			JOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			WHERE rl.ts >= now() - interval '3 days'
@@ -97,7 +106,20 @@ func (a *DailyProbeAudit) run(ctx context.Context) {
 			  AND raw_model_name <> ''
 		) recent
 		WHERE credential_id > 0 AND raw_model_name <> ''
-		ORDER BY credential_id, raw_model_name`)
+		  AND EXISTS (
+			SELECT 1
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE cmb.credential_id = recent.credential_id
+			  AND pm.raw_model_name = recent.raw_model_name
+		  )
+		ORDER BY credential_id, raw_model_name`
+}
+
+func (a *DailyProbeAudit) run(ctx context.Context) {
+	queryCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	rows, err := a.db.Query(queryCtx, dailyProbeAuditSQL())
 	if err != nil {
 		slog.Warn("daily probe audit query failed", "error", err)
 		return

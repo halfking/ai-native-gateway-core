@@ -113,3 +113,34 @@
 - `5367d6f84` test：removeSkippedProbe 分支序 pin + typed-nil trap 修复（`bg/probe_necessity.go`）。
 
 部署决策留待下一窗口：necessity gate 为 fail-open、测试全绿，但 245/154 刚稳定约 2h 且 cred 恢复链路正在产出证据，不建议立即追部署；等 cred 41 上游充值归属确认后一并上 2081。
+
+## R12 P2/P3 修复（2026-09-11 08:45–09:10）
+
+### P2 修复：node_probe_runs attempt 越界（代码已改，待 2081 部署生效）
+
+**根因定位**（三写路径穷举）：
+
+| 写路径 | attempt 来源 | 是否可能越界 |
+|---|---|---|
+| legacy runOne INSERT（`bg/node_probe.go`） | `consecutive_failures + 1` | **是**——2026-07-15 P0 取消 attempt 7 封顶暂停后，consecutive_failures 无上界增长（8,9,10…），cf≥7 即触发 23514。154 走 legacy 分支（URSM authoritative 无统一队列），故线上 404 由它产生 |
+| 统一队列 ProbeService → `insertNodeProbeRun` | `task.Attempt`（Claim 时 `attempt < max_attempts` 才领取，+1 后 ∈[1,7]） | 否（且入口已有 `<=0→1` 钳位） |
+| sync_request 审计（`emitSyncAudit`） | 字面量 1 | 否 |
+
+attempt=0 来源：现行代码三路径均不可产生（legacy cf+1≥1、队列钳位、sync 固定 1）；若历史日志出现过 0，只能来自更老构建，无需代码动作。
+
+**修复**：新增 `clampAuditAttempt(a)`（钳到 [1, nodeProbeMaxAttempts]），应用于 legacy runOne INSERT 与共享 `insertNodeProbeRun`。审计行语义=「梯子最多 7 轮」，封顶后多轮写 attempt=7，真实失败计数仍以 `node_probe_state.consecutive_failures` 为准。Agent B 的错误可见性语义不变（metric + ERROR + runOne 返回错误 → cycle WARN）。顺带给 `insertNodeProbeRun` 接上与 `emitSyncAudit` 相同的 `auditDB` seam（生产两者同源，行为不变；期间踩 typed-nil interface 陷阱——nil `*pgxpool.Pool` 赋给接口后非 nil，靠存量测试 `TestProbeServiceManualTaskBypassesAutomaticEligibility` 抓住，已在代码注释记录）。新增 `TestClampAuditAttempt`、`TestInsertNodeProbeRunClampsAttempt`（pgxmock），bg 包全绿。
+
+### P3 修复：154 nginx `/api/v1/collect/*` 分流（节点侧变更，不入库）
+
+- `/etc/nginx/conf.d/llm-kxpms-cn.conf` 在 `/api/v1/ops/` 块后新增 `location /api/v1/collect/` → `http://127.0.0.1:8443`（license-authority），写法照抄 ops 块。备份：`llm-kxpms-cn.conf.backup-collect-route-20260911-*`。`nginx -t` 通过后 reload。
+- **验证**：无 token `POST /api/v1/collect/runtime` 404→**401**（打到 instance-token 中间件，路由已通）；`/api/v1/ops/heartbeat` 401 不受影响；`/healthz` 200；reload 后网关侧 collect 404 计数=0。
+- **作用范围**：245 的 collector 同样上报 `https://llm.kxpms.cn`（OPS_COLLECT_URL 两节点一致，access log 见 08:58:40–42 来自 8.136.114.245 的 404），本次 154 nginx 单点修复对两节点 collector 同时生效。access log：`/var/log/nginx/llm-kxpms-cn-access.log`。
+- 实施教训：第一次经 ssh+awk 插入时换行丢失、整块并成一行注释（`nginx -t` 仍通过、reload 成功但路由未生效）；用无 token 请求观测 301（80 端口跳 https）才暴露。重插后以 diff 行数+https curl 双重验证。**教训：远端改配置后必须 diff 核对插入形态，不能只信 nginx -t。**
+
+### 新发现（转 R12 候选 P4，本轮不修）
+
+- 154 journald 每分钟 `ursm.v2: persist collect failed`：redis key `ursm:v2:node:default:42:MiniMax-M3:request_dedup:<sha>` **expected hash, got string**——同 key 命名空间存在双写方（一方写 string、URSM persist 期望 hash），cred 42 MiniMax-M3 的 persist 持续失败。建议 R13 排查 request_dedup 写入方与 URSM 读取方的类型契约。
+
+### 巡检通道修正（更新 runbook 认知）
+
+本地 macOS 直连 `172.16.2.210:5432` 超时（2026-09-11 实测）；可用通道改为 **ssh 245（有 /usr/bin/psql 且可达 PG）→ source `/etc/llm-gateway-go/env` → `psql "$LLM_GATEWAY_DATABASE_URL"`**，DSN 不出机器。

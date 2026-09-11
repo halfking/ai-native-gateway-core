@@ -176,8 +176,10 @@ type ProbeService struct {
 	skipQueue probeSkipQueue
 	// deleteStateFn overrides the node_probe_state mirror delete in the
 	// skip-removal path (tests only; production uses
-	// worker.deleteNodeProbeState).
-	deleteStateFn func(ctx context.Context, credID int, model string)
+	// worker.deleteNodeProbeState). The returned error drives the bounded
+	// immediate retry + persistent-failure accounting in
+	// deleteNodeProbeStateMirror (see probe_necessity.go).
+	deleteStateFn func(ctx context.Context, credID int, model string) error
 
 	// Test seams keep Run behavior testable without an upstream, gateway, or DB.
 	// Production construction leaves these nil and uses the worker methods below.
@@ -365,7 +367,15 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 		slog.Warn("probe_service: dropping probe for (cred, model) with no binding row",
 			"credential_id", credID, "model", model)
 		s.worker.emitProbe(hbCtx, credID, 0, model, model, "direct", attempt, trigger, direct)
-		s.worker.deleteNodeProbeState(hbCtx, credID, model)
+		// Stays best-effort: since pumpDueStatesSQL filters binding-less
+		// pairs (2026-09-11 P3, handoff 遗留项 5), no recurring scheduler
+		// revisits a pair whose binding chain is broken, so this branch is
+		// one-shot (manual tasks, or tasks enqueued before the binding
+		// vanished). A failed DELETE can at worst leave one orphan row that
+		// the pump picks up again only once the binding is (re)created —
+		// at which point it probes normally — so the skip path's
+		// retry/counter machinery would not change the outcome here.
+		_ = s.worker.deleteNodeProbeState(hbCtx, credID, model)
 		// Still write the audit row so dashboards don't lose the signal.
 		now := time.Now()
 		if err := s.insertAuditRowWithLeaseCheck(hbCtx, hbCtx, task, credID, model, triggerKind, attempt, 0, direct, direct, false, startedAt, now, int(now.Sub(startedAt).Milliseconds())); err != nil {
@@ -731,15 +741,21 @@ func firstErrDetailString(a, b nodeProbeRoundResult) string {
 // These are thin wrappers so the side-effect/audit SQL lives in one place
 // (node_probe.go) and both the legacy cycle() path and the queue path share it.
 
-func (w *NodeProbeWorker) deleteNodeProbeState(ctx context.Context, credID int, model string) {
+// deleteNodeProbeState drops a node_probe_state row (orphan cleanup and the
+// necessity skip path). Best-effort: the DELETE error is logged here AND
+// returned, so callers that care about the churn a surviving row causes
+// (deleteNodeProbeStateMirror's bounded retry) can react.
+func (w *NodeProbeWorker) deleteNodeProbeState(ctx context.Context, credID int, model string) error {
 	if w.db == nil {
-		return
+		return nil
 	}
 	if _, err := w.db.Exec(ctx, `DELETE FROM node_probe_state WHERE credential_id = $1 AND raw_model_name = $2`,
 		credID, model); err != nil {
 		slog.Warn("probe_service: failed to drop orphan state row",
 			"credential_id", credID, "model", model, "error", err)
+		return err
 	}
+	return nil
 }
 
 func (w *NodeProbeWorker) notifyAutoRouteRefresh(ctx context.Context, credID int) {
@@ -806,15 +822,28 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 // silent swallow + a CHECK constraint that rejected unified-queue sources).
 func (w *NodeProbeWorker) insertNodeProbeRun(ctx context.Context, credID int, model, triggerKind string,
 	attempt, nextSec int, direct, gw nodeProbeRoundResult, success bool, startedAt, now time.Time, durationMs int) error {
-	if w.db == nil {
+	// Same auditDB seam as emitSyncAudit: auditDB (interface, mockable) first,
+	// falling back to the pool. In production they are the same pool.
+	// Note: a nil *pgxpool.Pool assigned to the interface is non-nil, so the
+	// pool must be nil-checked before the assignment.
+	auditDB := w.auditDB
+	if auditDB == nil {
+		if w.db == nil {
+			return nil
+		}
+		auditDB = w.db
+	}
+	if auditDB == nil {
 		return nil
 	}
+	// R12 P2: keep the audit column inside the attempt_check domain (1..7).
+	attempt = clampAuditAttempt(attempt)
 	requestHeadersJSON := probeHeadersJSON(direct.requestHeaders)
 	timeoutAtMs := 0
 	if direct.errCode == "network_error" && direct.latencyMs >= 14900 {
 		timeoutAtMs = direct.latencyMs
 	}
-	_, err := w.db.Exec(ctx, `
+	_, err := auditDB.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,

@@ -1015,6 +1015,25 @@ func (w *NodeProbeWorker) pumpDueStatesToQueue(ctx context.Context) {
 // semantics are unchanged, the futile enqueue attempts are gone. The outer
 // alias is `cred` so it cannot shadow the EXISTS fragment's own
 // `credentials c` / `providers p` aliases.
+//
+// 2026-09-11 P3 (handoff 2026-09-11-selfcheck-necessity-gate 遗留项 5): the
+// pump also filters rows whose binding chain is broken — no
+// credential_model_bindings row, dangling cmb.provider_model_id, or
+// provider_models.raw_model_name mismatch. resolveDirectTarget returns "no
+// rows" for exactly these pairs, so each pumped row ran a full doomed probe
+// lifecycle (claim → in-flight tile → endpoint-build failure → audit row)
+// and the missing-binding short-circuit in ProbeService.Run then dropped the
+// state with a best-effort DELETE — which, on failure, left the row behind
+// for the next pump tick to re-enqueue: the same churn loop the necessity
+// skip path had, minus the retry or the counters. The pump is the ONLY
+// recurring scheduler that ignored the binding chain (every
+// credential_recovery path — recoverExpiredBindings, the stale-state
+// reconciler, the lookback scan — JOINs it), so filtering here closes the
+// loop at its source. The predicate is deliberate EXISTENCE ONLY (no
+// available/manual gates): resolveDirectTarget probes any pair whose binding
+// merely exists, so a stricter filter would stop pumping probeable rows, and
+// a (re)created binding lets the row re-enter the pump automatically —
+// mirroring the eligibility gate's re-entry semantics.
 func pumpDueStatesSQL() string {
 	return `
 		SELECT nps.credential_id, nps.raw_model_name, COALESCE(cred.tenant_id, 'default')
@@ -1022,6 +1041,13 @@ func pumpDueStatesSQL() string {
 		JOIN credentials cred ON cred.id = nps.credential_id
 		WHERE nps.paused = FALSE AND nps.next_retry_at <= now()
 		  AND ` + automaticProbeEligibilityExistsSQL("nps.credential_id") + `
+		  AND EXISTS (
+			SELECT 1
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE cmb.credential_id = nps.credential_id
+			  AND pm.raw_model_name = nps.raw_model_name
+		  )
 		ORDER BY nps.next_retry_at
 		LIMIT $1`
 }
@@ -1677,6 +1703,28 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 	return credID, model, true, nil
 }
 
+// clampAuditAttempt constrains the attempt number written to node_probe_runs
+// to the table's CHECK domain (node_probe_runs_attempt_check: 1..7).
+//
+// R12 P2 (2026-09-11): since the 2026-07-15 P0 fix removed the pause at
+// nodeProbeMaxAttempts, the legacy runOne path keeps incrementing
+// node_probe_state.consecutive_failures past 7, and attempt = cf+1 grows
+// unbounded — every probe of a long-failing (cred, model) pair then died on
+// the audit INSERT with SQLSTATE 23514, losing the audit row after the probe
+// had already run. The audit ladder only has 7 rounds, so clamp the audit
+// metadata; the true failure count stays authoritative in node_probe_state.
+// The unified-queue path clamps task.Attempt to [1, max_attempts] already,
+// so this is a no-op there.
+func clampAuditAttempt(a int) int {
+	if a < 1 {
+		return 1
+	}
+	if a > nodeProbeMaxAttempts {
+		return nodeProbeMaxAttempts
+	}
+	return a
+}
+
 // runOne executes the two-round probe and updates the state row +
 // audit log accordingly.  triggerKind is recorded on node_probe_runs;
 // "" defaults to "request_failure".
@@ -1753,6 +1801,21 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		`, credID, model); err != nil {
 			slog.Warn("node_probe_worker: failed to drop orphan state row",
 				"credential_id", credID, "model", model, "error", err)
+		}
+		// R12 audit closure (2026-09-11): the branch comment promises one
+		// node_probe_runs forensic row, but the code never wrote it — the
+		// unified ProbeService.Run missing-binding branch does (direct passed
+		// for both rounds, success=false, nextSec=0), so dashboards lost the
+		// signal on legacy-path drops. Mirror it. The DELETE above already
+		// stopped the re-pick churn, so a failed audit write must not undo
+		// the cleanup — surface it like the normal legacy path instead.
+		now := time.Now()
+		if err := w.insertNodeProbeRun(ctx, credID, model, triggerKind, attempt, 0,
+			direct, direct, false, startedAt, now, int(now.Sub(startedAt).Milliseconds())); err != nil {
+			auditPersistFailedTotal.WithLabelValues(triggerKind).Inc()
+			slog.Error("node_probe: node_probe_runs audit insert failed (missing-binding drop)",
+				"credential_id", credID, "model", model, "trigger_kind", triggerKind, "error", err)
+			return fmt.Errorf("audit insert: %w", err)
 		}
 		return nil
 	}
@@ -1930,7 +1993,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			$23, $24::text::jsonb, $25, $26,
 			$27, $28
 		)`,
-		credID, model, triggerKind, attempt, nextSec,
+		credID, model, triggerKind, clampAuditAttempt(attempt), nextSec,
 		direct.ok, direct.httpStatus, direct.errCode, direct.latencyMs, direct.errDetail,
 		gw.ok, gw.httpStatus, gw.errCode, gw.latencyMs, gw.errDetail,
 		success, startedAt, now, durationMs,

@@ -1,5 +1,6 @@
 // sessionDetailExport.ts — build + download full session markdown from detail page.
 import { getRequestLogDetail, getRequestLogs, type RequestLogDetail } from '../api/logs'
+import { formatDateTime } from './datetime'
 import { fetchSessionTurnsTree, type SessionTurnTreeItem } from '../api/sessionTurnsTree'
 import { getSessionSnapshot } from '../api/sessions_v2'
 import {
@@ -108,7 +109,7 @@ export async function buildSessionDetailMarkdown(input: SessionExportInput): Pro
   lines.push(`# ${title}`)
   lines.push('')
   lines.push(`- Session ID: \`${sid}\``)
-  lines.push(`- 导出时间: ${new Date().toLocaleString()}`)
+  lines.push(`- 导出时间: ${formatDateTime(new Date())}`)
   if (totalTurns != null) lines.push(`- 轮次数: ${totalTurns}`)
   if (totalCost != null) lines.push(`- 总费用: $${Number(totalCost).toFixed(4)}`)
   if (typeof snap.last_model === 'string' && snap.last_model) {
