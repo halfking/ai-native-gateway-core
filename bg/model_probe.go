@@ -793,7 +793,7 @@ func (r *ModelProbeRunner) reconcileBrokenConfirmedBindings(ctx context.Context)
 func (r *ModelProbeRunner) applyPassiveBoosts(ctx context.Context) {
 	rows, err := r.db.Query(ctx, `
 		SELECT DISTINCT credential_id, raw_model_name
-		FROM candidate_failure_logs
+		FROM candidate_failure_logs_with_current_month
 		WHERE ts > NOW() - INTERVAL '5 minutes'
 	`)
 	if err != nil {

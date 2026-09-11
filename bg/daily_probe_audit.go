@@ -100,7 +100,9 @@ func dailyProbeAuditSQL() string {
 			       OR pm.outbound_model_name = rl.outbound_model)
 			UNION ALL
 			SELECT credential_id, raw_model_name
-			FROM candidate_failure_logs
+			-- 2026-09-12: current-month surface — the 3-day lookback on the
+			-- bare parent misses every row still sitting in the hot table.
+			FROM candidate_failure_logs_with_current_month
 			WHERE ts >= now() - interval '3 days'
 			  AND credential_id IS NOT NULL
 			  AND raw_model_name <> ''
