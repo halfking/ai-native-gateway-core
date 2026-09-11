@@ -871,16 +871,23 @@ func ensureSpecs() []archiveSpec {
 		// supplier_errors 下月分区不预建，promote 只能靠函数内自 ensure 兜底，
 		// ensure 日志/可观测链路缺一张表。
 		{fnName: "ensure_supplier_errors_partition", label: "supplier_errors"}, // Migration V371 (2026-09-05)
+		// 2026-09-12 审计（694 跟进）：candidate_failure_logs 的 ensure 自
+		// 689/694 起是真实 body（heap 分区 + Asia/Shanghai 边界钉扎），旧注释
+		// 「空 body」已失真。不预建时，cfl 分区只能靠 promote 函数内按会话
+		// 时区自 ensure——UTC 会话在每月 1 日 00:00–08:00+08 会把缝隙行路由
+		// 到不存在的 +08 当月分区，整批 promote 永久失败、行滞留 hot 直至
+		// 被 7d TTL trim 静默删除（473 同族复发面）。接入后本循环保证当前
+		// 与次月分区始终先于 promote 存在。
+		{fnName: "ensure_candidate_failure_logs_partition", label: "candidate_failure_logs"}, // Migration 689/694
 
 		// model_probe_runs 已切换为纯 hot 表策略（2026-07-14），
 		// 不再 promote 到 columnar 分区，所以也不需要 ensure。
 		// {fnName: "ensure_model_probe_runs_partition", label: "model_probe_runs"}, // Migration 385 (retired)
 		//
-		// 以下两张表有意不接入：
+		// 以下一张表有意不接入：
 		//   routing_decision_log_archive —— 仅 archive job（每月 1-3 日）写入，
 		//     archive_routing_decision_log() 自建目标分区。
-		//   candidate_failure_logs —— ensure 函数是空 body（见 sql/objects/
-		//     functions/），实际走 hot 表 + promote 架构。
+		// （candidate_failure_logs 已于 2026-09-12 接入，见上方 689/694 注。）
 	}
 }
 
