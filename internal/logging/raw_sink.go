@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -133,8 +134,23 @@ type rawFrameLocation struct {
 // §8「双实现长期并存漂移」缓解措施）。record 在每次成功写出后调用：
 // 从写出后的 (file, offset) 反推批内每条的起始偏移；批内跨 rotate 边界时
 // cursor 变负即停止索引（2026-08-06 P1-2 修复语义，勿改）。
+//
+// 2026-09-12 审计：sync.Map 原先只增不删，高并发下按请求数无界增长
+// （每请求约 4 个 key）。现在带插入序号与容量上限，超过 rawFrameIndexMax
+// 后做一次 Range 淘汰最旧的四分之三，摊还 O(1)。被淘汰的仅是重放定位
+// 索引，raw JSONL 文件本身不受影响。
 type rawFrameIndex struct {
-	m sync.Map // key: "requestID|direction" -> rawFrameLocation
+	m     sync.Map // key: "requestID|direction" -> rawFrameIndexEntry
+	seq   atomic.Uint64
+	count atomic.Int64
+}
+
+// rawFrameIndexMax 是索引条目软上限；淘汰一次性保留最近 1/4。
+const rawFrameIndexMax = 100_000
+
+type rawFrameIndexEntry struct {
+	loc rawFrameLocation
+	seq uint64
 }
 
 func (fi *rawFrameIndex) record(entries []RawDataEntry, postWrite func() (string, int64)) {
@@ -165,8 +181,33 @@ func (fi *rawFrameIndex) record(entries []RawDataEntry, postWrite func() (string
 		}
 		cursor = nextCursor
 		key := entries[i].RequestID + "|" + entries[i].Direction
-		fi.m.Store(key, rawFrameLocation{File: file, Offset: cursor})
+		entry := rawFrameIndexEntry{loc: rawFrameLocation{File: file, Offset: cursor}, seq: fi.seq.Add(1)}
+		if _, existed := fi.m.LoadOrStore(key, entry); existed {
+			fi.m.Store(key, entry)
+		} else {
+			fi.count.Add(1)
+		}
 	}
+	fi.evictIfNeeded()
+}
+
+// evictIfNeeded 在超过容量上限时淘汰最旧条目。竞态下 count 可能与真实
+// 条数有偏差（并发插入丢失计数），只影响下次淘汰的触发时机，不影响正确性。
+func (fi *rawFrameIndex) evictIfNeeded() {
+	if fi.count.Load() <= rawFrameIndexMax {
+		return
+	}
+	keepAbove := fi.seq.Load() - rawFrameIndexMax/4
+	survivors := int64(0)
+	fi.m.Range(func(key, v any) bool {
+		if e, ok := v.(rawFrameIndexEntry); ok && e.seq < keepAbove {
+			fi.m.Delete(key)
+			return true
+		}
+		survivors++
+		return true
+	})
+	fi.count.Store(survivors)
 }
 
 func (fi *rawFrameIndex) lookup(requestID, direction string) (file string, offset int64, ok bool) {
@@ -174,8 +215,9 @@ func (fi *rawFrameIndex) lookup(requestID, direction string) (file string, offse
 		return "", 0, false
 	}
 	if v, hit := fi.m.Load(requestID + "|" + direction); hit {
-		loc := v.(rawFrameLocation)
-		return loc.File, loc.Offset, true
+		if e, ok := v.(rawFrameIndexEntry); ok {
+			return e.loc.File, e.loc.Offset, true
+		}
 	}
 	return "", 0, false
 }

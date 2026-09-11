@@ -317,10 +317,16 @@ func (l *AsyncRawDataLogger) noteDroppedEntry(requestID, direction string, env R
 		"request_id", requestID,
 		"direction", direction,
 		"dropped_total", dropped)
-	if l.overflowReporter != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		l.overflowReporter.ReportRawLogOverflow(ctx, env, uint64(dropped))
+	// 2026-09-12 审计（对齐 buffered_raw_sink 的锁外上报）：本方法在
+	// stateMu.RLock 持有期内被调用，2s HTTP 上报会把 SetOverflowReporter
+	// 写者与 Close 阻塞在锁上。快照 reporter 后在独立 goroutine 上报；
+	// CAS 时间窗已把并发上报限到每窗口一次。
+	if rep := l.overflowReporter; rep != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			rep.ReportRawLogOverflow(ctx, env, uint64(dropped))
+		}()
 	}
 }
 

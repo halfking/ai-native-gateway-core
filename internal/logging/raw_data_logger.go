@@ -278,8 +278,20 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 	defer l.mu.Unlock()
 
 	if l.file == nil {
-		slog.Warn("raw_data_logger: file not initialized")
-		return
+		// 2026-09-12 审计：rotate 失败会清空 l.file，若只报警不重建，
+		// 一次瞬时故障（ENOSPC 抖动等）= 审计管道静默死亡直到重启，
+		// 且初始失败仅 +1，持续丢数无信号。这里每批惰性重试重建；
+		// 仍失败则计数，让 rawaudit_write_failed_total 持续反映丢失面。
+		// Close 之后的 write 必须保持 noop 契约（TestRawSinkContract_
+		// CloseThenLogIsNoop），不得重建文件。
+		if l.closed {
+			return
+		}
+		if err := l.rotate(); err != nil {
+			slog.Error("raw_data_logger: lazy re-open after earlier rotate failure", "err", err)
+			metrics.Global().RecordRawAuditWriteFailure()
+			return
+		}
 	}
 
 	for _, entry := range entries {
@@ -339,8 +351,16 @@ func (l *RawDataLogger) writeEntriesFallible(entries []RawDataEntry) (int, error
 	defer l.mu.Unlock()
 
 	if l.file == nil {
-		slog.Warn("raw_data_logger: file not initialized")
-		return 0, fmt.Errorf("raw_data_logger: file not initialized")
+		// 同 writeEntries 的惰性重建：rotate 失败后不允许 sink 永久死亡；
+		// Close 之后保持 noop 契约。
+		if l.closed {
+			return 0, fmt.Errorf("raw_data_logger: closed")
+		}
+		if err := l.rotate(); err != nil {
+			slog.Error("raw_data_logger: lazy re-open after earlier rotate failure", "err", err)
+			metrics.Global().RecordRawAuditWriteFailure()
+			return 0, fmt.Errorf("raw_data_logger: lazy re-open failed: %w", err)
+		}
 	}
 
 	written := 0
