@@ -286,6 +286,14 @@ files=(
   # （688 体 + demote 步骤），幂等收敛，down 无。必须在 693 之后（无依赖，
   # 顺序仅为序列递增约定）。
   "$ROOT_DIR/sql/migrations/startup/695_request_logs_promote_final_success_self_heal.sql"
+  # 2026-09-12 视图列缺口：696 给 request_logs_with_current_month 追加
+  # system_fingerprint lateral 阶段（487 加父表列、603 补 hot 列，但视图基础
+  # 包装的列交集在 603 之前冻结，链上从未重建）。integrity_fingerprint_drift
+  # 的 7 天窗口读者因此一直钉在裸父表（近期窗口失明教义的有意排除项）。
+  # 纯 CREATE OR REPLACE VIEW（尾部追加列，无 DROP），幂等收敛，down 无。
+  # 编号前已查生产双账本：696 在 gateway_db_revision_sequences 与
+  # schema_migrations 均未被本库或其他项目占用。
+  "$ROOT_DIR/sql/migrations/startup/696_request_logs_view_system_fingerprint.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
