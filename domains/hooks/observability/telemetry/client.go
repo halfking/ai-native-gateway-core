@@ -63,29 +63,6 @@ func quoteIdent(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
-// claimClientHolder 让 claimSessionFinalSuccess (无 Client 上下文的顶层函数)
-// 能拿到当前 gateway 实例的 Client. cmd/gateway/main.go 在 NewClient 后调用
-// SetClaimClient 一次, 单测无需设置 (holder 为 nil 时走 nil 分区安全路径).
-var (
-	claimClientMu sync.RWMutex
-	claimClient   *Client
-)
-
-// SetClaimClient 注册当前实例的 Client, 给 columnar-safe claim 路径使用.
-// 生产仅调用一次, 单测无需调用 (直接走 DB mock).
-func SetClaimClient(c *Client) {
-	claimClientMu.Lock()
-	claimClient = c
-	claimClientMu.Unlock()
-}
-
-func loadClientForClaim() *Client {
-	claimClientMu.RLock()
-	c := claimClient
-	claimClientMu.RUnlock()
-	return c
-}
-
 // OutboxWriter writes events to outbox_events table for Gateway → ASM delivery.
 // Implemented by internal/outbox.Writer. Nil-safe (checked before use).
 type OutboxWriter interface {
@@ -1671,7 +1648,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// claim, SQLSTATE 23505 from uq_request_logs_hot_final_success_session)
 	// degrades to a normal success row — never fails the business write.
 	if shouldClaimFinalSuccess(entry) {
-		claimSessionFinalSuccess(ctx, tx, entry.RequestID)
+		claimSessionFinalSuccess(ctx, c, tx, entry.RequestID)
 	}
 
 	// Publish only the session opener here. The request is provisional until
@@ -2273,7 +2250,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	// RowsAffected==0 fallback above re-enters insertRequestLog, which
 	// claims on its own.
 	if shouldClaimFinalSuccess(entry) {
-		claimSessionFinalSuccess(ctx, tx, entry.RequestID)
+		claimSessionFinalSuccess(ctx, c, tx, entry.RequestID)
 	}
 	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" && requestLogEntryTerminal(entry) {
 		completed, err := buildRequestCompletedEvent(ctx, tx, entry)
@@ -2394,19 +2371,21 @@ func (c *Client) heapRequestLogsPartitions(ctx context.Context, tx pgx.Tx) []str
 	return cached
 }
 
-func claimSessionFinalSuccess(ctx context.Context, tx pgx.Tx, requestID string) {
+func claimSessionFinalSuccess(ctx context.Context, c *Client, tx pgx.Tx, requestID string) {
 	// 2026-08-25: 列存分区安全. 旧实现直接 `FROM request_logs promoted` 半连接,
 	// 在 columnar 分区上会触发 0A000 (CTID scan over columnar). 改为只在
 	// pg_class.relam='h' 的 request_logs_<year>_<month> 月度分区里查, columnar
 	// 月份自动跳过. 没有 heap 月份时降级为跳过 (依赖 hot 唯一索引 + 8h 保留 +
 	// sql/scripts/report_duplicate_session_success.sql 兜底).
 	//
-	// 单调用上下文拿不到 Client 实例, 用一个包级 holder (loadClientForClaim)
-	// 拿到 *Client. 这条路径仅 claim 调用, holder 仅设一次 (cmd/gateway/main.go
-	// 创建 Client 后调用 SetClaimClient); 拿不到时按 0 个 heap 分区处理.
-	c := loadClientForClaim()
+	// 2026-09-12 (P2 冷迁移停滞根因): Client 由调用方 (*Client 方法) 直传,
+	// 不再走包级 holder + SetClaimClient. 2026-08-26 merge d2cbaf88b 回退
+	// main.go 后 holder 从未被重新接线, 生产 claim 一直走 nil 分支 — promoted
+	// 守卫整段跳过, 跨 8h promote 边界的长会话第二次成功 claim 出第二条
+	// is_final_success=TRUE, promote 撞 uq_<partition>_final_success_session
+	// (23505) 整批回滚, 冷迁移停摆 2.5 天. 直传后编译器保证接线不再可丢;
+	// c==nil 仅剩单测/退化场景 (守卫跳过, 依赖 promote 侧 694 自愈 demote).
 	if c == nil {
-		// 没有 Client (单测 / 无 DB), 用保守 SQL (不含 columnar 关联)
 		claimSessionFinalSuccessExec(ctx, tx, requestID, nil)
 		return
 	}
