@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -83,6 +84,19 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 
 	for iter.Next(ctx) {
 		k := iter.Val()
+
+		// request_dedup markers (<nodeKey>:request_dedup:<sha256hex>,
+		// record_request.go requestDedupKey) are STRING flags written with
+		// SET NX EX, not node state hashes. The legacy grammar's trailing
+		// rejoin would "decode" them into a node tuple and SafeHGetAll's
+		// wrong-type error would abort the whole snapshot batch every tick
+		// (P4, docs/audit/2026-09-12-r14-observation-p5p4-readonly.md §C).
+		// They are not snapshot state: skip before parse — same exemption
+		// the migration preflight already applies. Unknown wrong-type keys
+		// must still abort below.
+		if strings.Contains(k, ":request_dedup:") {
+			continue
+		}
 
 		// 4. Decode the node key under either grammar. A key neither
 		// grammar can decode is ambiguous: it is excluded from the
