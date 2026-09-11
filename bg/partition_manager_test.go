@@ -40,6 +40,10 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		"ensure_handoff_logs_partition":              false, // Migration 532
 		"ensure_auto_route_selections_partition":     false, // Migration 656
 		"ensure_supplier_errors_partition":           false, // Migration V371 (2026-09-05, D-2#13)
+		// 2026-09-12 审计（694 跟进）：cfl ensure 自 689/694 是真实 body，
+		// 接入预建以消除 UTC 会话下月初缝隙行 promote 失败 + 7d trim 静默
+		// 删数据的复发面（473 同族）。
+		"ensure_candidate_failure_logs_partition": false, // Migration 689/694
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
