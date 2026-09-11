@@ -61,6 +61,13 @@ type BufferedRawSink struct {
 	closed   bool
 	closeErr error
 
+	// flushMu（R12 审计修正）串行化「换出→写盘→逐帧索引」整段：Sync 与
+	// flushWorker 并发刷盘时，各批的反推偏移必须基于本批写完后的游标，
+	// 否则 LookupFrame 得到看似合法实则错位的结果（逻辑竞态，-race 不可
+	// 检出）。Close 的排空/stub/底层 Sync+Close 同样在其保护内。锁序
+	// flushMu → bufMu → baseLogger 内部锁，无反向嵌套。
+	flushMu sync.Mutex
+
 	wake   chan struct{} // 容量 1 的非阻塞通知
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -200,7 +207,7 @@ func (s *BufferedRawSink) LogConversionError(requestID, protocol, direction, ste
 	}
 	entry := makeRawEntry(direction, requestID, protocol, body, nil, step, RawCorrelationEnvelope{})
 	entry.Error = err.Error()
-	dropped := s.offerLocked(entry, requestID, direction, protocol, step, RawCorrelationEnvelope{})
+	dropped := s.offerLocked(entry, requestID, direction, protocol, step, RawCorrelationEnvelope{}, err.Error())
 	rep := s.overflowReporter
 	s.bufMu.Unlock()
 	if dropped {
@@ -217,7 +224,7 @@ func (s *BufferedRawSink) offerWithEnvelope(direction, requestID, protocol strin
 		return
 	}
 	entry := makeRawEntry(direction, requestID, protocol, body, headers, conversionStep, env)
-	dropped := s.offerLocked(entry, requestID, direction, protocol, conversionStep, env)
+	dropped := s.offerLocked(entry, requestID, direction, protocol, conversionStep, env, "")
 	rep := s.overflowReporter
 	s.bufMu.Unlock()
 	if dropped {
@@ -228,7 +235,11 @@ func (s *BufferedRawSink) offerWithEnvelope(direction, requestID, protocol strin
 // offerLocked 入缓冲（调用方必须持有 bufMu）。缓冲字节预算不足时改写为
 // overflow stub（与 Async 队列满语义对齐：原 payload 丢弃、信封保留）；
 // stub 也放不下则丢弃并返回 true，由调用方在锁外做限频告警 + anomaly 上报。
-func (s *BufferedRawSink) offerLocked(entry RawDataEntry, requestID, direction, protocol, conversionStep string, env RawCorrelationEnvelope) bool {
+// stubErr 非空时覆写 stub 的 Error（conversion error 路径与 Async 对齐：
+// 用原始错误文本替代 queue-full marker）；Headers 非空时随 stub 保留，
+// client_request 方向保留原始 DataSize（R12 审计奇偶性修正，与 Async
+// 各方向 stub 字段一一对应）。
+func (s *BufferedRawSink) offerLocked(entry RawDataEntry, requestID, direction, protocol, conversionStep string, env RawCorrelationEnvelope, stubErr string) bool {
 	est := estimateEntryBytes(entry)
 	if s.bufBytes+est <= s.maxBytes {
 		s.entries = append(s.entries, entry)
@@ -240,6 +251,13 @@ func (s *BufferedRawSink) offerLocked(entry RawDataEntry, requestID, direction, 
 		return false
 	}
 	stub := makeOverflowStub(direction, requestID, protocol, conversionStep, env)
+	stub.Headers = entry.Headers
+	if direction == "client_request" {
+		stub.DataSize = entry.DataSize
+	}
+	if stubErr != "" {
+		stub.Error = stubErr
+	}
 	estStub := estimateEntryBytes(stub)
 	if s.bufBytes+estStub <= s.maxBytes {
 		s.entries = append(s.entries, stub)
@@ -315,7 +333,15 @@ func (s *BufferedRawSink) flushWorker() {
 // flushBuffered 排空式刷盘：在 bufMu 下整体换出缓冲，一次写出（单次
 // fsync，fsync 节奏由此由 FlushEvery 决定——这正是 Buffered 与 Async 的
 // 差异点），随后更新逐帧索引。worker tick/wake、Sync、Close 共用。
+// 整段持 flushMu（审计修正）：换出与写盘/索引的顺序对并发 flusher 唯一化，
+// 反推偏移不被并发批写盘污染。
 func (s *BufferedRawSink) flushBuffered() {
+	s.flushMu.Lock()
+	defer s.flushMu.Unlock()
+	s.flushBufferedLocked()
+}
+
+func (s *BufferedRawSink) flushBufferedLocked() {
 	s.bufMu.Lock()
 	if len(s.entries) == 0 {
 		s.bufMu.Unlock()
@@ -384,6 +410,12 @@ func (s *BufferedRawSink) Sync() error {
 // 排空缓冲 → 写 close_drained stub（与 Async 现网行为对齐，预研 §8：
 // buffered 灰度硬前置）→ base.Sync → base.Close。首次调用记住错误，
 // 后续调用返回同一错误。
+//
+// R12 审计修正：排空批同样写入逐帧索引（与 Async 的 Close 经 flushBatch
+// 被索引保持对称），整段持 flushMu 与并发 Sync/worker 串行。
+// raw_log_close_drained anomaly 在 Buffered 结构上不可触达：closed 置位与
+// 缓冲换出在同一 bufMu 临界区完成，此后 offer 全部早退，不存在"关停后
+// 仍有残留"路径——stub 由 Accepted>0 触发，等价能力不缺失。
 func (s *BufferedRawSink) Close() error {
 	s.closeOnce.Do(func() {
 		s.bufMu.Lock()
@@ -400,35 +432,31 @@ func (s *BufferedRawSink) Close() error {
 		s.cancel()
 		<-s.done // worker 退出（其退出前补刷的缓冲已被换出，为 no-op）
 
+		// 与并发 Sync/worker 的刷盘段串行（含 stub 与底层 Sync/Close）。
+		s.flushMu.Lock()
+		defer s.flushMu.Unlock()
+
 		if s.base == nil {
 			return
 		}
 		if s.base.sinkEnabled() {
 			if len(batch) > 0 {
 				s.writeWithRetry(batch)
+				s.frameIndex.record(batch, s.base.peekPostWriteLocation)
 			}
-			s.bufMu.Lock()
-			remaining := len(s.entries)
-			rep := s.overflowReporter
-			s.bufMu.Unlock()
 			stats := s.Stats()
-			if remaining > 0 || stats.Accepted > 0 {
+			if stats.Accepted > 0 {
 				closeEntry := RawDataEntry{
 					Timestamp:       time.Now(),
 					RequestID:       "raw_logger",
 					Direction:       "close_drained",
 					Protocol:        "raw_logger",
-					DataSize:        int(remaining),
+					DataSize:        stats.Buffered,
 					ConversionStep:  "shutdown",
-					Error:           fmt.Sprintf("accepted=%d dropped=%d flushed=%d remaining=%d write_errors=%d", stats.Accepted, stats.Dropped, stats.FlushCount, remaining, stats.WriteErrors),
+					Error:           fmt.Sprintf("accepted=%d dropped=%d flushed=%d remaining=%d write_errors=%d", stats.Accepted, stats.Dropped, stats.FlushCount, stats.Buffered, stats.WriteErrors),
 					RawDataEncoding: "json",
 				}
 				s.base.writeEntry(closeEntry)
-			}
-			if remaining > 0 && rep != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-				defer cancel()
-				rep.ReportRawLogCloseDrained(ctx, RawCorrelationEnvelope{}, uint64(remaining))
 			}
 			if err := s.base.Sync(); err != nil && s.closeErr == nil {
 				s.closeErr = err

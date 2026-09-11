@@ -212,6 +212,113 @@ func TestBufferedRawSink_CloseWritesDrainedStub(t *testing.T) {
 	if !sawDrained {
 		t.Fatalf("expected close_drained stub entry")
 	}
+	// R12 审计修正回归：Close 排空批同样写入逐帧索引（与 Async 对称），
+	// 优雅关闭后 LookupFrame 仍可命中最后一批条目。
+	if _, _, ok := s.LookupFrame("close-r", "upstream_request"); !ok {
+		t.Errorf("LookupFrame after Close missed; close-drain batch was not frame-indexed")
+	}
+}
+
+// TestBufferedRawSink_OverflowStubFieldParity 锁定 overflow stub 与 Async
+// 的字段奇偶（R12 审计发现 2）：client_request stub 保留 Headers 与原始
+// DataSize；conversion error stub 的 Error 是原始错误文本而非 marker。
+// maxBytes 用估算函数精确构造「第 1 条 + stub 恰好放下、第 2 条放不下」
+// 的确定性布局。
+func TestBufferedRawSink_OverflowStubFieldParity(t *testing.T) {
+	dir := t.TempDir()
+	env := RawCorrelationEnvelope{GWSessionID: "s-parity"}
+	body := make([]byte, 512) // 主体远大于 stub 差值，保证 est(entry) > est(stub)
+	headers := map[string]string{"h": "v1"}
+	probe := makeRawEntry("client_request", "par-r", "openai-chat", body, headers, "pre_parse", env)
+	stub := makeOverflowStub("client_request", "par-r", "openai-chat", "pre_parse", env)
+	// 镜像 offerLocked 的奇偶增强，估算才与实现一致。
+	stub.Headers = probe.Headers
+	stub.DataSize = probe.DataSize
+	maxBytes := estimateEntryBytes(probe) + estimateEntryBytes(stub)
+
+	s, err := NewBufferedRawSink(dir, 1024*1024, true, BufferedRawSinkConfig{
+		BatchSize:  1000,
+		FlushEvery: 10 * time.Second,
+		MaxBytes:   maxBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	s.LogClientRequestWithEnvelope("par-r", "openai-chat", body, headers, "pre_parse", env)
+	s.LogClientRequestWithEnvelope("par-r", "openai-chat", body, headers, "pre_parse", env) // 超预算 → stub
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var sawReal, sawStub bool
+	for _, e := range readSinkEntries(t, dir, false) {
+		if e.Direction != "overflow" {
+			if e.Headers["h"] == "v1" {
+				sawReal = true
+			}
+			continue
+		}
+		sawStub = true
+		if e.Headers["h"] != "v1" {
+			t.Errorf("client_request overflow stub lost Headers: %+v", e.Headers)
+		}
+		if e.DataSize != len(body) {
+			t.Errorf("client_request overflow stub DataSize = %d, want %d", e.DataSize, len(body))
+		}
+		if !strings.Contains(e.Error, "raw_log_queue_full:client_request") {
+			t.Errorf("overflow stub Error = %q, want queue-full marker", e.Error)
+		}
+		if e.GWSessionID != "s-parity" {
+			t.Errorf("overflow stub lost envelope: %+v", e)
+		}
+	}
+	if !sawReal || !sawStub {
+		t.Fatalf("expected 1 real entry + 1 overflow stub (real=%v stub=%v)", sawReal, sawStub)
+	}
+}
+
+// TestBufferedRawSink_ConversionErrorStubCarriesErrText 锁定 conversion
+// error 的 stub 奇偶：Async 侧 stub 的 Error 用原始错误文本覆盖 marker，
+// Buffered 必须一致。
+func TestBufferedRawSink_ConversionErrorStubCarriesErrText(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("{\"conv\":1}")
+	probe := makeRawEntry("upstream_response", "cerr-r", "openai-chat", body, nil, "pre_parse", RawCorrelationEnvelope{})
+	probe.Error = "boom-text" // LogConversionError 会给真实条目带上 Error，估算必须一致
+	stub := makeOverflowStub("upstream_response", "cerr-r", "openai-chat", "pre_parse", RawCorrelationEnvelope{})
+	stub.Error = "boom-text" // 镜像 offerLocked 的 stubErr 覆盖
+	maxBytes := estimateEntryBytes(probe) + estimateEntryBytes(stub)
+
+	s, err := NewBufferedRawSink(dir, 1024*1024, true, BufferedRawSinkConfig{
+		BatchSize:  1000,
+		FlushEvery: 10 * time.Second,
+		MaxBytes:   maxBytes,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	s.LogConversionError("cerr-r", "openai-chat", "upstream_response", "pre_parse", body, errors.New("boom-text"))
+	s.LogConversionError("cerr-r", "openai-chat", "upstream_response", "pre_parse", body, errors.New("boom-text")) // → stub
+
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var sawStub bool
+	for _, e := range readSinkEntries(t, dir, false) {
+		if e.Direction == "overflow" {
+			sawStub = true
+			if e.Error != "boom-text" {
+				t.Errorf("conversion stub Error = %q, want original error text (Async parity)", e.Error)
+			}
+		}
+	}
+	if !sawStub {
+		t.Fatalf("expected an overflow stub entry")
+	}
 }
 
 // TestBufferedRawSink_LookupFrame 覆盖逐帧定位能力（FrameLookup，灰度硬

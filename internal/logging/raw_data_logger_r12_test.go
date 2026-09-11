@@ -156,11 +156,29 @@ func TestAsyncRawDataLogger_FrameIndexRotationBoundary(t *testing.T) {
 		t.Errorf("fb-C frame at offset %d resolves to wrong line: %s", offsetC, line)
 	}
 
-	// fb-A / fb-B 位于更早的文件，cursor 变负停止索引 → 必须 miss
-	//（而不是给出错误位置）。
+	// fb-A / fb-B 位于更早的文件：batch 未被 ticker 拆分时 cursor 变负
+	// 停止索引（miss）；若重载 CI 下 worker ticker 抢先刷出前缀批，它们
+	// 会被正常索引（hit）。两种结果都合法，唯一不允许的是伪位置——命中
+	// 时必须能读回正确条目。
 	for _, rid := range []string{"fb-A", "fb-B"} {
-		if f, o, ok := l.LookupFrame(rid, "upstream_request"); ok {
-			t.Errorf("%s must not be indexed across rotation boundary, got (%q,%d)", rid, f, o)
+		f, o, ok := l.LookupFrame(rid, "upstream_request")
+		if !ok {
+			continue
+		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatalf("%s: read indexed file %s: %v", rid, f, err)
+		}
+		if o < 0 || o >= int64(len(data)) {
+			t.Errorf("%s: indexed offset %d out of bounds (file %d bytes)", rid, o, len(data))
+			continue
+		}
+		line := data[o:]
+		if nl := strings.IndexByte(string(line), '\n'); nl >= 0 {
+			line = line[:nl]
+		}
+		if !strings.Contains(string(line), `"request_id":"`+rid+`"`) {
+			t.Errorf("%s: indexed frame at offset %d resolves to wrong line: %s", rid, o, line)
 		}
 	}
 
