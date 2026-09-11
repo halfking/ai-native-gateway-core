@@ -98,6 +98,50 @@ Evidence behind the keep decision: zero requests ever routed here
 one alias (its own name). If OpenRouter traffic ever becomes relevant, the
 row should be revisited as a whole — not resolved via a redirect.
 
+### Adding a whitelist entry
+
+The map in `plan.go` is the whitelist's system of record — there is no
+`-whitelist` flag and no DB table, on purpose (rationale below). To keep a
+row the diagnosis flags as junk-shaped:
+
+1. **Diagnose.** Run `go run ./scripts/govern-junk-canonical -json` against
+   the target database and collect the row's evidence: seeding path
+   (provider + raw name), references and aliases pointing at it, the tied
+   targets the pair test produces, and its full request history
+   (`request_logs` by `canonical_id`, all time).
+2. **Decide.** Whitelisting is for rows with no single correct identity
+   (like `free`); if one target is actually right, fix the data instead
+   (`-apply` or the SQL template) rather than pinning the junk shape.
+3. **Edit `plan.go`.** Add the entry to `OperatorWhitelist`: key = the
+   lowercase canonical name, value = the rationale — seeding path, why
+   re-pointing is semantically wrong, traffic evidence with dates. Keep it
+   3–6 lines; a future operator must be able to re-derive the decision from
+   the string alone.
+4. **Mirror the story here.** Add one README paragraph under the example
+   above, operator-facing.
+5. **Pin it with a test.** If the entry exercises a new invariant, extend
+   `plan_test.go` (the `free` entry has a test pinning its
+   `VerdictWhitelisted` verdict and its exclusion from the gate catalog).
+6. **Commit code + README together** and re-run the diagnosis: the row must
+   now report `whitelisted` (with the reason) and stop blocking or
+   misleading the rest of the plan.
+
+Removal runs the same path in reverse — but per the map's contract, never
+remove an entry without re-running the diagnosis and re-examining the row
+against current evidence.
+
+**Why no `-whitelist` flag and no DB table.** The whitelist is a *decision
+ledger*, not runtime configuration: every entry needs evidence, a written
+rationale, a reviewable diff and a test. A CLI flag would let entries bypass
+that trail and vanish with the shell history; a DB table would spread the
+ledger across environments whose junk populations differ (a local-only keep
+could silently mask a production row or vice versa) and would forfeit the
+compile-time invariant tests that pin gate behavior. The tool is one-shot
+and operator-run with an entry frequency of roughly one per junk remediation
+cycle, so recompiling costs nothing; and the tool's own rule of never
+mutating schema as a side effect would otherwise force bootstrap/migration
+handling in every environment the DSN can point at.
+
 Rows whose aliases are only the old pipeline's self-variants (`opus_5`,
 `4-6`) do **not** count as foreign — they are part of the junk and get
 re-pointed by apply.
