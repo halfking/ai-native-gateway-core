@@ -2,6 +2,7 @@ package modelname
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -370,6 +371,42 @@ func TestNormalizeRouteKeyAliases(t *testing.T) {
 // every such pair — independent of the surrounding alphabetic
 // tokens.  This is the property the user asked for: "no hard-coded
 // rules, automatically adapts to future model versions".
+// 2026-09-12 审计（f494d0695 跟进）：versionPunctuationCartesian 的输出
+// 曾按 map 迭代序返回，消费方全部 first-hit-wins——同一输入跨进程/重启会
+// 命中不同 canonical。锁定输出必须严格有序（确定性），并锁定顺序无关的
+// 集合等价。
+func TestVersionPunctuationCartesian_Deterministic(t *testing.T) {
+	inputs := []string{
+		"qwen2.5-72b-instruct",
+		"qwen2-5-72b-instruct",
+		"glm-5.1",
+		"deepseek-v3-1",
+		"claude-opus-4.8",
+	}
+	for _, in := range inputs {
+		out := versionPunctuationCartesian(in)
+		if !sort.StringsAreSorted(out) {
+			t.Fatalf("versionPunctuationCartesian(%q) not sorted: %v", in, out)
+		}
+		set := map[string]bool{}
+		for _, v := range out {
+			set[v] = true
+		}
+		if len(set) != len(out) {
+			t.Fatalf("versionPunctuationCartesian(%q) has duplicates: %v", in, out)
+		}
+		want := collectNumberPairVariants(NormalizeRouteKey(in))
+		if len(set) != len(want) {
+			t.Fatalf("variant set size drift for %q: got %d want %d", in, len(set), len(want))
+		}
+		for _, w := range want {
+			if !set[w] {
+				t.Fatalf("variant %q (of %q) missing from output %v", w, in, out)
+			}
+		}
+	}
+}
+
 func TestNormalizeRouteKeyAliases_FamilyAgnostic(t *testing.T) {
 	// For each input, take the canonical NormalizeRouteKey and swap
 	// each version punctuation both ways; the resolver variants must
