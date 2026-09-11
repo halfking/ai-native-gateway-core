@@ -181,7 +181,10 @@ func (s *AliasSyncService) cleanOrphanedAliases(ctx context.Context, result *Ali
 
 	for _, id := range toDisable {
 		//nolint:errcheck // best-effort exec, non-critical
-		s.db.Exec(ctx, `UPDATE model_aliases SET status = 'inactive' WHERE id = $1`, id)
+		// 2026-09-12: 'inactive' is not in the model_aliases_status_check
+		// vocabulary (active/disabled/deprecated/hidden) — these updates
+		// used to fail the check constraint on every row, silently.
+		s.db.Exec(ctx, `UPDATE model_aliases SET status = 'disabled' WHERE id = $1`, id)
 	}
 
 	return nil
@@ -219,7 +222,9 @@ func (s *AliasSyncService) syncCanonicalNames(ctx context.Context, result *Alias
 		`, r.CanonicalID).Scan(&canonicalName)
 		if err != nil {
 			//nolint:errcheck // best-effort exec, non-critical
-			s.db.Exec(ctx, `UPDATE model_aliases SET status = 'inactive' WHERE canonical_id = $1`, r.CanonicalID)
+			// 2026-09-12: 'inactive' fails model_aliases_status_check;
+			// 'disabled' is the legal soft-off (see cleanOrphanedAliases).
+			s.db.Exec(ctx, `UPDATE model_aliases SET status = 'disabled' WHERE canonical_id = $1`, r.CanonicalID)
 			result.CleanedAliases++
 		}
 	}
@@ -232,13 +237,33 @@ func (s *AliasSyncService) rebuildAliasIndex(ctx context.Context, result *AliasS
 	// 395) is the lowercased client-facing key and is now what we mirror
 	// into model_aliases.raw_name. raw_model_name is preserved for the
 	// upstream HTTP body and stays in its original casing.
+	//
+	// 2026-09-12: ON CONFLICT (raw_name) never worked — model_aliases has no
+	// unique index on raw_name (only uq_model_aliases_canonical_raw on
+	// (canonical_id, raw_name), added in migration 357), so this statement
+	// failed with 42P10 on every run. The NOT EXISTS guard skips raw_names
+	// that already have an active alias (to any canonical); the
+	// (canonical_id, raw_name) arbiter with DO UPDATE reactivates pairs that
+	// survive only in a non-active status — DO NOTHING would leave an
+	// available offer without an active alias when its exact pair exists as
+	// 'deprecated' (observed live). canonical_id needs its own IS NOT NULL
+	// filter: model_offers is a view and canonical_id is nullable even when
+	// canonical_raw_name is set (23502, observed live).
 	err := s.db.Exec(ctx, `
 		INSERT INTO model_aliases (raw_name, canonical_id, status)
 		SELECT DISTINCT mo.canonical_raw_name, mo.canonical_id, 'active'
 		FROM model_offers mo
 		WHERE mo.available = TRUE
 		  AND mo.canonical_raw_name IS NOT NULL
-		ON CONFLICT (raw_name) DO NOTHING
+		  AND mo.canonical_id IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM model_aliases ma
+			WHERE ma.raw_name = mo.canonical_raw_name
+			  AND ma.status = 'active'
+		  )
+		ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+			status = 'active',
+			updated_at = now()
 	`)
 	if err != nil {
 		return err

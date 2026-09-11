@@ -176,12 +176,47 @@ func (t *TaxonomySync) upsertCanonical(ctx context.Context, familyID string, ver
 }
 
 func (t *TaxonomySync) upsertAlias(ctx context.Context, canonicalID int, rawName, canonicalName string) error {
-	_, err := t.db.Exec(ctx, `
+	// 2026-09-12: ON CONFLICT (raw_name) never worked — model_aliases has no
+	// unique index on raw_name (only uq_model_aliases_canonical_raw on
+	// (canonical_id, raw_name), added in migration 357), so every alias
+	// upsert failed with 42P10 and the caller swallowed the error ("taxonomy
+	// sync completed ... aliases 0" even with a populated YAML).
+	//
+	// Semantics "taxonomy is authoritative", adapted to the real constraint:
+	// the taxonomy mapping is inserted/reactivated (arbiter
+	// (canonical_id, raw_name)), then competing rows for the same raw_name
+	// pointing at other canonicals are demoted to 'disabled' rather than
+	// repointed — repointing N duplicate rows onto one canonical is
+	// impossible under the pair constraint (23505, observed live) and
+	// demotion keeps the rows for ops review while shrinking the ambiguity
+	// the resolver ORDER BY root-fix has to tolerate ('disabled' is in the
+	// model_aliases_status_check vocabulary and invisible to the resolver's
+	// COALESCE(status,'active')='active' filter; 'inactive' is NOT a legal
+	// value and silently fails the check constraint).
+	//
+	// Two plain statements on purpose: a WITH ... DO UPDATE ... RETURNING
+	// CTE guarded by NOT EXISTS is unsafe here — data-modifying CTEs run
+	// concurrently with the main query on the same snapshot, so the guard
+	// can fire before the UPDATE's RETURNING rows land. Order matters:
+	// the authoritative row must exist before competitors are demoted, so a
+	// crash between the two leaves the taxonomy mapping active, never the
+	// competitor. The pair is racy only against other writers in the
+	// microseconds between the statements; the sync runs every 6h on a
+	// single control-plane node.
+	if _, err := t.db.Exec(ctx, `
 		INSERT INTO model_aliases (raw_name, canonical_id, status)
 		VALUES (lower($1), $2, 'active')
-		ON CONFLICT (raw_name) DO UPDATE SET
-			canonical_id = EXCLUDED.canonical_id,
-			status = 'active'
+		ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+			status = 'active',
+			updated_at = now()
+	`, rawName, canonicalID); err != nil {
+		return err
+	}
+	_, err := t.db.Exec(ctx, `
+		UPDATE model_aliases
+		SET status = 'disabled', updated_at = now()
+		WHERE raw_name = lower($1)
+		  AND canonical_id <> $2
 	`, rawName, canonicalID)
 	return err
 }

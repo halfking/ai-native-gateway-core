@@ -37,6 +37,10 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 		"customer_id",
 		"request_class",
 		"due_at",
+		// Migration 696 contract: system_fingerprint rides the canonical
+		// lateral stage when the base wrapper's frozen intersection lacks it;
+		// the shape probe keeps both wrapper generations idempotent.
+		"baseHasFingerprint",
 		"NOT IN ('customer_id', 'request_class', 'due_at')",
 		"LEFT JOIN LATERAL",
 		// The fast path must short-circuit on a healthy view so a no-op boot
@@ -52,8 +56,8 @@ func TestApplyMigrationsIncludesRequestLogsViewEnsure(t *testing.T) {
 // Live round-trip: rebuild the whole wrapper chain from scratch hot/parent
 // tables inside a dedicated scratch database, then verify the canonical view
 // matches the production column contract (108 base + customer_id +
-// request_class + due_at = 111) and that a HOT_ONLY hot column never breaks
-// the UNION.
+// request_class + due_at + system_fingerprint = 112) and that a HOT_ONLY hot
+// column never breaks the UNION.
 //
 // Gated on LLM_GATEWAY_TEST_PG_DSN so CI stays offline-green; run locally:
 //
@@ -179,31 +183,32 @@ func TestRequestLogsCurrentMonthViewEnsureRoundTrip(t *testing.T) {
 	`).Scan(&baseCount); err != nil {
 		t.Fatalf("count base columns: %v", err)
 	}
-	if colCount != baseCount+3 { // base + customer_id + request_class + due_at
-		t.Fatalf("canonical view column count = %d, want %d (base %d + customer_id + request_class + due_at)",
-			colCount, baseCount+3, baseCount)
+	if colCount != baseCount+4 { // base + customer_id + request_class + due_at + system_fingerprint (696)
+		t.Fatalf("canonical view column count = %d, want %d (base %d + customer_id + request_class + due_at + system_fingerprint)",
+			colCount, baseCount+4, baseCount)
 	}
 
 	// HOT_ONLY column must be absent from the view; appended columns present.
-	var hotOnly, hasClass, hasDueAt, hasCustomer bool
+	var hotOnly, hasClass, hasDueAt, hasCustomer, hasFingerprint bool
 	if err := pool.QueryRow(ctx, `
 		SELECT
 			bool_or(column_name = 'caller_id'),
 			bool_or(column_name = 'request_class'),
 			bool_or(column_name = 'due_at'),
-			bool_or(column_name = 'customer_id')
+			bool_or(column_name = 'customer_id'),
+			bool_or(column_name = 'system_fingerprint')
 		FROM information_schema.columns
 		WHERE table_schema = 'public'
 		  AND table_name = 'request_logs_with_current_month'
-	`).Scan(&hotOnly, &hasClass, &hasDueAt, &hasCustomer); err != nil {
+	`).Scan(&hotOnly, &hasClass, &hasDueAt, &hasCustomer, &hasFingerprint); err != nil {
 		t.Fatalf("probe view column contract: %v", err)
 	}
 	if hotOnly {
 		t.Error("HOT_ONLY column caller_id leaked into the canonical view")
 	}
-	if !hasClass || !hasDueAt || !hasCustomer {
-		t.Errorf("appended columns missing (request_class=%v due_at=%v customer_id=%v)",
-			hasClass, hasDueAt, hasCustomer)
+	if !hasClass || !hasDueAt || !hasCustomer || !hasFingerprint {
+		t.Errorf("appended columns missing (request_class=%v due_at=%v customer_id=%v system_fingerprint=%v)",
+			hasClass, hasDueAt, hasCustomer, hasFingerprint)
 	}
 
 	// Data round-trip through the view from both sides of the UNION.

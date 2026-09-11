@@ -16,11 +16,12 @@ import (
 // 只有读路径挂——这类"表在、视图没了"的状态没有任何 migration 会重建
 // （610 之后再无 migration 触碰该视图），网关也没有启动自愈，于是持续报错。
 //
-// 重建按 577 + 610 的包装链分阶段补齐，列契约 = 基础 108 列 UNION +
-// customer_id (577) + request_class/due_at (610)。基础列取 hot∩parent 交集
-// （排除三个后追加列），因此 hot 的 HOT_ONLY 列（caller_id 等）永远不会
-// 撑爆 UNION——这正是 341 式 "SELECT * FROM hot UNION ALL SELECT * FROM
-// parent" 重放在 603 之后必失败、进而留下"视图已删未建"的根因。
+// 重建按 577 + 610 + 696 的包装链分阶段补齐，列契约 = 基础 108 列 UNION +
+// customer_id (577) + request_class/due_at (610) + system_fingerprint (696)。
+// 基础列取 hot∩parent 交集（排除后追加列），因此 hot 的 HOT_ONLY 列
+// （caller_id 等）永远不会撑爆 UNION——这正是 341 式 "SELECT * FROM hot
+// UNION ALL SELECT * FROM parent" 重放在 603 之后必失败、进而留下"视图已删
+// 未建"的根因。
 //
 // 编号 SQL 文件供 DBA 同步流程与 deploy-local 修复轨道使用；本函数保证
 // 二进制启动即生效（幂等：视图健康时零 DDL）。
@@ -111,24 +112,46 @@ func (d *DB) ensureRequestLogsCurrentMonthView(ctx context.Context) error {
 		}
 	}
 
-	// Migration 610 阶段：lateral 追加 request_class/due_at（canonical）。
-	if _, err := d.pool.Exec(ctx, `
+	// Migration 610+696 阶段：lateral 追加 request_class/due_at（canonical），
+	// 并按基础包装形状决定是否追加 system_fingerprint（696，与
+	// sql/migrations/startup/696 同形）。post-603 动态推导的基础交集已含
+	// system_fingerprint（680 引导/自愈重建路径），此时 canonical 经 v.* 继承，
+	// 再 lateral 追加会重复列（CREATE 直接失败）；pre-603 冻结链（生产现网）
+	// 基础包装缺列，需 lateral 追加。列名消费者不受两种形状的列序差异影响。
+	var baseHasFingerprint bool
+	if err := d.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_schema = 'public'
+			  AND table_name = 'request_logs_with_current_month_without_customer_id'
+			  AND column_name = 'system_fingerprint'
+		)
+	`).Scan(&baseHasFingerprint); err != nil {
+		return fmt.Errorf("probe base wrapper system_fingerprint: %w", err)
+	}
+	fingerprintSelect := ""
+	if !baseHasFingerprint {
+		fingerprintSelect = ", source.system_fingerprint"
+	}
+	canonicalDDL := fmt.Sprintf(`
 		CREATE VIEW public.request_logs_with_current_month AS
-		SELECT v.*, source.request_class, source.due_at
+		SELECT v.*, source.request_class, source.due_at%s
 		FROM public.request_logs_with_current_month_without_request_class_due_at v
 		LEFT JOIN LATERAL (
-			SELECT h.request_class, h.due_at
+			SELECT h.request_class, h.due_at, h.system_fingerprint
 			FROM public.request_logs_hot h
 			WHERE h.request_id = v.request_id AND h.ts = v.ts
 			UNION ALL
-			SELECT p.request_class, p.due_at
+			SELECT p.request_class, p.due_at, p.system_fingerprint
 			FROM public.request_logs p
 			WHERE p.request_id = v.request_id AND p.ts = v.ts
 			LIMIT 1
 		) source ON true
-	`); err != nil {
+	`, fingerprintSelect)
+	if _, err := d.pool.Exec(ctx, canonicalDDL); err != nil {
 		return fmt.Errorf("rebuild request_logs_with_current_month view: %w", err)
 	}
-	slog.Info("request_logs_with_current_month view chain restored (self-heal 680)")
+	slog.Info("request_logs_with_current_month view chain restored (self-heal 680+696)",
+		"base_wrapper_carries_fingerprint", baseHasFingerprint)
 	return nil
 }

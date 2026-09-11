@@ -6101,6 +6101,16 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		}
 	}
 
+	// 2026-09-12 指纹写路径贯通：上游 X-System-Fingerprint 此前只进
+	// integrity detector 的 context JSONB，request_logs_hot.system_fingerprint
+	// 专用列全表零行（603 建列后从未接线），7 天漂移检测器空转。此处统一
+	// 盖章（流式/非流式共用 emitTelemetry），经 persistSystemFingerprint 落列、
+	// 迁移 697 起 promote 携带进分区。
+	systemFingerprint := integrityHeader(result.Response, "X-System-Fingerprint")
+	if systemFingerprint != "" {
+		reqLog.SystemFingerprint = &systemFingerprint
+	}
+
 	h.telemetryClient.EmitRequestLogUpdate(reqLog)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
@@ -6202,7 +6212,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			RawModel:           result.Candidate.RawModel,
 			RespModel:          streamRespModelForIntegrity(capture, responseBody),
 			ProviderResponseID: integrityHeader(result.Response, "X-Request-Id"),
-			SystemFingerprint:  integrityHeader(result.Response, "X-System-Fingerprint"),
+			SystemFingerprint:  systemFingerprint,
 			UsageSource:        strValueOrEmpty(reqLog.UsageSource),
 			FinishReason:       strValueOrEmpty(reqLog.UpstreamFinishReason),
 			PromptTokens:       reqLog.PromptTokens,

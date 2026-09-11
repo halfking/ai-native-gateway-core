@@ -227,7 +227,13 @@ type RequestLogEntry struct {
 	// 由 handler 从 ExecParams.DispatchDueAt（X-Gw-Due-At 头）推导并盖章。
 	RequestClass *string `json:"request_class,omitempty"`
 	// DueAt 是定时请求的到期时刻（scheduled 时非 nil；immediate 为 nil）。
-	DueAt         *time.Time `json:"due_at,omitempty"`
+	DueAt *time.Time `json:"due_at,omitempty"`
+	// SystemFingerprint 是上游 X-System-Fingerprint 响应头（2026-09-12 挂账
+	// 闭环）：此前仅被 integrity detector 写入 context JSONB，603 建的专用列
+	// 全表零行、7 天漂移检测器空转。现由 handler emitTelemetry 盖章，经
+	// persistSystemFingerprint 落 request_logs_hot 专用列，697 起随 promote
+	// 进月度分区。nil = 上游未返回该头。
+	SystemFingerprint *string `json:"system_fingerprint,omitempty"`
 	ClientModel   *string    `json:"client_model,omitempty"`
 	OutboundModel *string    `json:"outbound_model,omitempty"`
 	CredentialID  *int       `json:"credential_id,omitempty"`
@@ -1595,6 +1601,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
 		return err
 	}
+	if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
+		return err
+	}
 
 	// 2026-07-22 Ticket #10: Persist full bodies in request_logs_bodies_hot.
 	// 2026-08-24 Phase 1 body storage optimization: outbound_body now also
@@ -2218,6 +2227,9 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	if err := upsertProtocolMetadata(ctx, tx, entry); err != nil {
 		return err
 	}
+	if err := persistSystemFingerprint(ctx, tx, entry); err != nil {
+		return err
+	}
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
 		var promptAdd, completionAdd int64
@@ -2277,6 +2289,24 @@ func upsertProtocolMetadata(ctx context.Context, tx pgx.Tx, entry *RequestLogEnt
 		       protocol_conversion = COALESCE(protocol_conversion, $4)
 		 WHERE request_id = $1
 	`, entry.RequestID, entry.ClientProtocol, entry.UpstreamProtocol, entry.ProtocolConversion)
+	return err
+}
+
+// persistSystemFingerprint 把 entry.SystemFingerprint 落到
+// request_logs_hot.system_fingerprint 专用列（2026-09-12 指纹写路径贯通，
+// 迁移 697 使其随 promote 进月度分区）。独立小 UPDATE 而非改 99 参数终态
+// UPDATE：零参数重排风险，且覆盖 UPDATE 主语句与 RowsAffected==0 回落
+// INSERT 两条路径（调用点在回落之后）。指纹每上游部署一份，last-write-wins；
+// entry 未携带时 no-op，历史语句集合不变。
+func persistSystemFingerprint(ctx context.Context, tx pgx.Tx, entry *RequestLogEntry) error {
+	if entry == nil || entry.SystemFingerprint == nil || *entry.SystemFingerprint == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `
+		UPDATE request_logs_hot
+		   SET system_fingerprint = $2
+		 WHERE request_id = $1
+	`, entry.RequestID, *entry.SystemFingerprint)
 	return err
 }
 
