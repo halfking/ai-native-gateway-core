@@ -102,11 +102,11 @@
 - **输入缺失声明（按 D 项要求如实区分）**：本工作区无生产环境/指标抓取通道，运维反馈渠道不在会话内。任务 A 的"部署后观察"与任务 B 的触发条件（运维反馈）本轮均无数据输入，故**代码零改动**；本轮产出 = B 项的无条件静态排查（不依赖数据、结论确定性成立）+ A 项可执行观测 runbook 与升级判据 + main 合并态复核。
 - **main 合并态复核（只读）**：origin/main 仍为 b37b68b51（与第五轮验证对象同一提交，交叉编译结论沿用，未重跑）。三个指标均以 promauto 注册（`bg/probe_necessity.go`）；pump 绑定链过滤（`pumpDueStatesSQL`）、daily audit 绑定链过滤（`dailyProbeAuditSQL`）、skip 路径有界重试与计数器在位。
 - **A 项观测 runbook（部署后执行）**：
-  - 抓取：`/metrics` 挂在 admin 端口且需 admin token（`cmd/gateway/main.go` NET-008 注释处）——`curl -s -H "Authorization: Bearer <admin-key>" http://<admin-host>:<admin-port>/metrics | grep llmgw_node_probe_necessity`。注意仓库 Grafana 仪表盘（`deploy/grafana/*.json`）**尚未包含**这三个指标，观测期用原始抓取，如需面板需另行添加。
+  - 抓取：`/metrics` 挂在 admin 端口且需 admin token（`cmd/gateway/main.go` NET-008 注释处；`Authorization: Bearer <token>` 格式经 `middleware/admin_token_mw.go` 核实）——`curl -s -H "Authorization: Bearer <admin-key>" http://<admin-host>:<admin-port>/metrics | grep llmgw_node_probe_necessity`；返回 503 说明生产环境未配置 `LLM_GATEWAY_ADMIN_API_KEY`（production/staging 拒绝而非 fail-open），先补配置再观测。注意仓库 Grafana 仪表盘（`deploy/grafana/*.json`）**尚未包含**这三个指标，观测期用原始抓取，如需面板需另行添加。
   - 判读：`mirror_delete_retry_total` 偶发增长 = 瞬时失败被同轮吸收（设计行为）；`mirror_delete_failed_total` 持续增长（24h 窗口）→ 按遗留项 6 升级短 TTL 抑制（硬条件不变：不漏真实故障探测、证据错误 fail-open、manual/admin 绕过、lease 丢失不删新 owner 状态）；两者平稳且 skipped 磁贴占比稳定 → 记录结论、关闭观察项；`skip_total{reason}` 异常高 → 排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属。
 - **B 项静态排查（本轮完成；结论先于运维反馈，供触发时直接使用）**：
   - **显示面机制**：自检 tab 逐节点泳道 `GET /api/admin/probe/node-tasks`（`admin/probe_dashboard.go` `queryProbeNodeTasks`）**直读 `node_probe_state`、无绑定链过滤**——孤儿行（绑定断裂）满足其 WHERE（未暂停且 next_retry_at 到期）→ 以**永久 'pending' 磁贴**长期显示，last_direct_ok/latency 等列为陈旧值。这是 381fbf50d pump 过滤引入的**确定性显示面变化**：过滤前孤儿行被 pump 周期重提→探测→missing-binding 丢弃（删除通常成功，磁贴走完生命周期后消失）；过滤后永不再被调度，磁贴常驻。即第四轮"无 churn，可接受"的残余面在 tab 上的真实形态是"常驻陈旧磁贴"，当时未记录，本轮补记。
-  - **清理口径全量清点**（生产代码仅两处 `DELETE FROM node_probe_state`）：missing-binding 丢弃（`bg/node_probe.go:1799`）对孤儿行**不可达**（不再被任何调度口提交）；skip 路径镜像删除（`bg/probe_service.go:752`）仅对已提交任务生效。`handleNodeProbeStateReset`（`admin/probe_history.go`）只 UPDATE 重置、不删除；`TriggerAllSync` 从 cmb 枚举（绑定锚定），既不重提也不清理孤儿；`MarkNodeProbeHealthy` 仅在业务请求成功时写行，解绑后无业务请求不会重建行（唯一理论残留：解绑瞬间的在途请求，有界）。**结论：孤儿行现状口径 = 等绑定重建自然恢复（EXISTS 变真 → pump 重提 → 正常探测或丢弃）或运维手工 SQL 删除，无自动回收路径。**
+  - **清理口径全量清点**（生产代码仅两处 `DELETE FROM node_probe_state`；第七轮审计修正措辞）：missing-binding 丢弃（`bg/node_probe.go:1799`）对孤儿行在**自动调度口不可达**（pump/daily audit/recovery 均已过滤或锚定），但 **admin 手动提交可达**——`POST /api/admin/probe/tasks`（`admin/probe_dashboard.go` `handleProbeTaskCreate`，任务不设 `Automatic`，而 Enqueue 的资格门仅在 `task.Automatic` 时生效）可对孤儿对一次性入队：注定失败运行在 endpoint-build 阶段失败（无出站 HTTP）后由 missing-binding 分支删除孤儿行——**免 SQL 的一等清理路径**（web 前端对该端点仅 GET，无按对按钮，目前是 API 级操作）；skip 路径镜像删除（`bg/probe_service.go:752`）仅对已提交任务生效。`handleNodeProbeStateReset`（`admin/probe_history.go`）只 UPDATE 重置、不删除；`TriggerAllSync` 从 cmb 枚举（绑定锚定），既不重提也不清理孤儿；`MarkNodeProbeHealthy` 仅在业务请求成功时写行，解绑后无业务请求不会重建行（唯一理论残留：解绑瞬间的在途请求，有界）。**结论（第七轮审计修正后口径）：孤儿行清理 = ①绑定重建自然恢复（EXISTS 变真 → pump 重提 → 正常探测或丢弃）；②运维经 admin API 对该对手动提交一次探测（行被 missing-binding 分支删除）；③手工 SQL 批量清理。无自动回收路径。**
   - **运维临时清理 SQL（反馈属实且等不及绑定重建时）**：
     ```sql
     DELETE FROM node_probe_state nps
@@ -119,37 +119,50 @@
   - **升级设计预案（运维反馈属实时实施，先失败测试）**：首选**显示侧**——`queryProbeNodeTasks` 的 WHERE 并入绑定链 EXISTS（与 pumpDueStatesSQL 同谓词形态：双列关联、JOIN pm、只查存在性），磁贴只显示"存在可执行任务"的行，绑定重建后磁贴自然回归；SQL 抽取为可守卫函数（同 `dailyProbeAuditSQL` 模式）+ 文本守卫测试，零数据风险。备选**数据侧周期 GC**（宽限期删除，如绑定断裂且 updated_at < now()-7d，保守起见 paused 行不动）——新增调度面，风险高于显示侧，仅在表膨胀成为实际问题时考虑，默认不做。运维反馈到达时还需与反馈方确认"自检 tab"具体指哪个面板（node-tasks 泳道 vs SSE 实时流——SSE 流对孤儿行本就不产生事件，常驻陈旧磁贴只能是泳道）。
 - **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
 - **验证记录（C: 本地打桩副本 lgw-p2test，bg/ 与 origin/main 逐文件一致、仅 `diskUsagePercent` 桩差异）**：定向守卫族 `go test -mod=vendor -count=1 -run 'TestDailyProbeAuditSQL|TestPumpDueStatesSQL|TestProbeNecessity|TestSkipMirrorDelete|TestSkipRemoval|TestSkipPersistence|TestRemoveSkipped' ./bg/` → **25 例全 PASS**；全量 `./bg/` → 17 例失败，**逐一核对与既知基线完全一致**（16 例 CRLF 源文本断言 + 1 例 symlink 权限；本年以来失败名单首次完整留档于 `lgw-p2test/fails_r6.txt`）。本轮零代码改动，未重跑交叉编译（b37b68b51 与第五轮同一提交，结论沿用）；win/arm64 `-race` 依旧不支持，未跑。
-- **遗留风险**：①观测依赖人工抓取（无面板、无告警规则），failed_total 持续增长可能晚发现——若运维接受可后续补 Grafana 面板或告警；②孤儿行常驻磁贴问题已证成但未修复（等触发），升级预案与临时 SQL 就绪；③本记录的清理口径清点基于静态审读，若运维手工 SQL 执行前应先在只读副本核数。
+- **遗留风险**：①necessity 三指标观测依赖人工抓取——无面板，且 `deploy/prometheus/rules/alerts.yml` 的探测管线告警（NodeProbeQueueSubmissionFailuresHigh 等）**未覆盖** necessity 指标，failed_total 持续增长可能晚发现；若运维接受，面板加 `deploy/grafana/`、告警规则加 `alerts.yml` 是自然位置；②孤儿行常驻磁贴问题已证成但未修复（等触发），升级预案、admin API 清理路径与批量 SQL 三条口径就绪；③本记录的清理口径清点基于静态审读，批量 SQL 执行前应先在只读副本核数。
+
+## 审计记录（2026-09-11 第七轮，针对 9d7ea65c8 第六轮零代码记录）
+
+- **核验通过的主干断言**：三指标 promauto 注册与 reason 取值（`not_necessary_all_nodes_healthy` / `not_necessary_last_probe_healthy`）；`/metrics` 路由与 admin token 中间件（`Authorization: Bearer` 格式经 `middleware/admin_token_mw.go` 全文核实成立）；`queryProbeNodeTasks` 的 WHERE/CASE 语义（孤儿行渲染为永久 'pending' 磁贴）；`node_probe_state` 清理点全量（生产代码两处 DELETE；`deploy/sql` 侧无 retention/pg_cron 任务）；`TriggerAllSync` cmb 锚定；`MarkNodeProbeHealthy` 解绑后不可达；临时 SQL 谓词形态与 pump 过滤器一致；`handleProviderProbeStates`（providers 页自动测试 tab）读 model_probe_runs/passive_probe_state/request_logs，**不**读 node_probe_state，非孤儿显示面。
+- **发现 1（表述过强，已随本提交修正第六轮记录）**：第六轮"missing-binding 丢弃对孤儿行不可达（不再被任何调度口提交）"过强——自动调度口不可达成立，但 admin `POST /api/admin/probe/tasks`（路由注册于 `RegisterProbeDashboardRoutes`，`handleProbeTaskCreate` 构造的任务不设 `Automatic`，而 `ProbeQueue.Enqueue` 的资格门仅在 `task.Automatic` 时生效）可对孤儿对一次性提交：注定失败运行（endpoint-build 前失败、无出站 HTTP）后由 missing-binding 分支删除该行。这构成**免 SQL 的一等清理路径**，与第五轮不变量无冲突（manual/admin 本就在"无调度入口"例外清单内）。web 前端对该端点仅 GET（`web/src/views/probe/ProbeHealthPanel.vue:203` 的 POST 注释陈旧，实际代码走模型级 `/api/self-check/trigger`），故该清理路径目前为 API 级操作。
+- **发现 2（表述不准，已修正）**：第六轮"无面板、无告警规则"——准确说法是 necessity 三指标无面板、且未被 `deploy/prometheus/rules/alerts.yml` 覆盖（该文件存在，含 NodeProbeQueueSubmissionFailuresHigh 等探测管线告警）。升级时告警加 `alerts.yml`、面板加 `deploy/grafana/` 是自然位置。
+- **发现 3（runbook 补强）**：补 503 语义——production/staging 下 `LLM_GATEWAY_ADMIN_API_KEY` 未配置时 `/metrics` 返回 503（显式拒绝而非 fail-open，`admin_token_mw.go`），观测前先确认配置。
+- **范围界定**：本轮纯文档审计修正，不改任何代码与 SQL；第六轮测试结论（定向 25 守卫绿 / 全量 17 例失败=基线）不受影响。
 
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第二轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第三轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
-第六轮"——含观测 runbook、孤儿行清理口径排查结论与升级设计预案）、遗留任务第 6 项。
-背景：全部代码跟进已合入 main（最新 b37b68b51），第六轮为零代码改动轮：B 项静态
-排查已完成——自检 tab 泳道 queryProbeNodeTasks 直读 node_probe_state 无绑定过滤，
-孤儿行会以永久 pending 磁贴常驻；清理口径 = 绑定重建自然恢复或运维手工 SQL；
-显示侧/数据侧升级预案已写入 handoff。指标 /metrics 在 admin 端口需 admin token，
-仓库 Grafana 面板尚未包含 necessity 三指标。
+第六轮"（观测 runbook 与孤儿行清理口径）与"审计记录 第七轮"（对第六轮的审计修正：
+admin API 清理路径、alerts.yml 覆盖面、503 语义））、遗留任务第 6 项。
+背景：全部代码跟进已合入 main（代码最新 b37b68b51，文档至第七轮审计提交）。
+第六轮为零代码改动轮；孤儿行已证成三层清理口径：①绑定重建自然恢复；②运维经
+POST /api/admin/probe/tasks（不设 Automatic，绕过资格门）对孤儿对提交一次探测即
+删行（免 SQL，endpoint-build 前失败无出站 HTTP）；③handoff 内批量 SQL。显示侧
+治本预案（queryProbeNodeTasks WHERE 并入绑定链 EXISTS）就绪未实施。necessity 三
+指标 /metrics 在 admin 端口（Authorization: Bearer，未配 key 生产返回 503），
+Grafana 面板与 alerts.yml 均未覆盖。
 注意：主工作区检出的 fix/r13-logging-hygiene 属于并行 R13 日志工作，不要混入本任务；
 工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
 继续用 git worktree 从 origin/main 拉独立分支实施；Windows 验证用 C: 副本
-lgw-p2test（bg/ 已与 b37b68b51 一致，仅 cp 变更文件；基线对照务必 CRLF 同口径）。
+lgw-p2test（bg/ 已与 b37b68b51 一致，仅 cp 变更文件；基线对照务必 CRLF 同口径，
+17 例预存失败名单见 lgw-p2test/fails_r6.txt）。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
-A. 若已获得生产 /metrics 抓取数据（第六轮 runbook 的判读规则）：
+A. 若已获得生产 /metrics 抓取数据（runbook 判读规则）：
    - mirror_delete_failed_total 持续增长 → 实施短 TTL 抑制（硬条件不变：不漏真实
      故障探测、证据错误 fail-open、manual/admin 绕过、lease 丢失不删新 owner 状态）；
-   - 两者平稳 → 在 handoff 记录结论并关闭遗留项 6（可顺带评估补 Grafana 面板）。
-B. 若运维确认"模型解绑/改名后自检 tab 长期显示陈旧节点"：按第六轮预案实施显示侧
-   修复（queryProbeNodeTasks WHERE 并入绑定链 EXISTS，SQL 抽取可守卫 + 先红后绿
-   测试）；先与反馈方确认面板口径。实施前可给出临时 SQL 供运维清急。
+   - 两者平稳 → 在 handoff 记录结论并关闭遗留项 6；可顺带评估给 necessity 指标补
+     Grafana 面板（deploy/grafana/）与告警规则（deploy/prometheus/rules/alerts.yml）。
+B. 若运维确认"模型解绑/改名后自检 tab 长期显示陈旧节点"：先给应急口径（admin API
+   提交一次探测即删行，或批量 SQL），再按预案实施显示侧治本修复（queryProbeNodeTasks
+   WHERE 并入绑定链 EXISTS，SQL 抽取可守卫 + 先红后绿测试），实施前与反馈方确认
+   面板口径（node-tasks 泳道 vs SSE 流）。
 C. lastProbeRun 维持关闭；除非出现乱序完成记录反例。
-D. 验证如实区分通过/环境受限/未验证；bg 全量 Windows 本地 17 例预存失败
-   （16 例 CRLF 源文本断言 + 1 例 symlink 权限）名单见 lgw-p2test/fails_r6.txt。
+D. 验证如实区分通过/环境受限/未验证。
 
 完成后输出：结论/根因、改动文件与关键行为、测试命令与结果、遗留风险、
 更新本 handoff、下一轮提示词。
