@@ -1,3 +1,5 @@
+import { formatDateTime } from '../utils/datetime'
+
 /**
  * LLM Gateway - 质量画像 API TypeScript 类型定义
  *
@@ -337,11 +339,14 @@ export function formatQualityScore(score: number): string {
  * 格式化时间
  */
 export function formatCalculatedAt(isoString: string): string {
-  return new Date(isoString).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return formatDateTime(isoString, {
+    locale: 'zh-CN',
+    options: {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    },
+  })
 }

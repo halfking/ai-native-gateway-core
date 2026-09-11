@@ -1,4 +1,5 @@
 import { ref, computed } from 'vue'
+import { formatTimeOnly } from '../utils/datetime'
 import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import {
   getMemoraSessions,
@@ -182,7 +183,10 @@ export function displayKey(s: MemoraSession): string {
 
 export function fmtTime(v: string | null | undefined) {
   if (!v) return '—'
-  return new Date(v).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  return formatTimeOnly(v, {
+    locale: 'zh-CN',
+    options: { hour: '2-digit', minute: '2-digit', second: '2-digit' },
+  })
 }
 
 export function fmtScore(v: number) {

@@ -56,6 +56,7 @@ import { credentialDisplayName as credentialLabelById, useCredentialLabels } fro
 import RequestProcessingTrail from './RequestProcessingTrail.vue'
 import NodeDetailDrawer from './NodeDetailDrawer.vue'
 import { openRequestDetailPage } from '../utils/openRequestDetailPage'
+import { formatTimeOnly } from '../utils/datetime'
 import ModelIOStrips from './ModelIOStrips.vue'
 
 // 2026-08-28: 接收上层筛选条件（从 LiveRequestStreamV2 的 useLiveStreamFilters 传入）
@@ -1080,14 +1081,7 @@ function formatLatency(ms: number | null | undefined): string {
 }
 
 function formatTs(ts: string | undefined): string {
-  if (!ts) return ''
-  try {
-    const d = new Date(ts)
-    if (Number.isNaN(d.getTime())) return ts
-    return d.toLocaleTimeString()
-  } catch {
-    return ts
-  }
+  return formatTimeOnly(ts, { empty: '' })
 }
 
 // ── 请求记录行可读性（2026-09-01）：行内展示请求 ID + 标题 ─────────────────
