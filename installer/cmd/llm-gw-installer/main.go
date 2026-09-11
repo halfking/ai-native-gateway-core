@@ -364,6 +364,12 @@ var partitionEnsureTimezoneMigration694 []byte
 //go:embed embeddata/startup/695_request_logs_promote_final_success_self_heal.sql
 var requestLogsPromoteFinalSuccessSelfHealMigration695 []byte
 
+//go:embed embeddata/startup/696_request_logs_view_system_fingerprint.sql
+var requestLogsViewSystemFingerprintMigration696 []byte
+
+//go:embed embeddata/startup/697_request_logs_promote_system_fingerprint.sql
+var requestLogsPromoteSystemFingerprintMigration697 []byte
+
 //go:embed embeddata/startup/session_turns_hot_bootstrap.sql
 var sessionTurnsHotBootstrap []byte
 
@@ -480,6 +486,8 @@ var embeddedSQLFiles = map[string][]byte{
 	"startup/693_provider_models_canonical_cleared_at.sql":                           providerModelsCanonicalClearedAtMigration693,
 	"startup/694_partition_ensure_timezone.sql":                                      partitionEnsureTimezoneMigration694,
 	"startup/695_request_logs_promote_final_success_self_heal.sql":                   requestLogsPromoteFinalSuccessSelfHealMigration695,
+	"startup/696_request_logs_view_system_fingerprint.sql":                           requestLogsViewSystemFingerprintMigration696,
+	"startup/697_request_logs_promote_system_fingerprint.sql":                        requestLogsPromoteSystemFingerprintMigration697,
 	"startup/session_turns_hot_bootstrap.sql":                                        sessionTurnsHotBootstrap,
 }
 

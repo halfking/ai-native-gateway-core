@@ -43,8 +43,13 @@
 ## 四、遗留风险（按优先级，未在本轮修复）
 
 ### P1-级（下一轮首位）
-1. **promote 函数族月份路由仍读会话时区**（本轮用预建缓解了 cfl 暴露面，但 16 个 promote_* 函数体的 `date_trunc('month', ts)` 本身未钉 +08）。生产集群 default TZ=Asia/Shanghai 故当前无害；任何 UTC 会话环境（新宿主机、维护连接、裸 pgx）仍触发批次失败。**建议 696 迁移**：对 promote 函数体统一加 `SET LOCAL TIME ZONE 'Asia/Shanghai'`（694 同款），机械变换+5点同步，注意 696 编号需先 fetch 核对远端。
+1. **promote 函数族月份路由仍读会话时区**（本轮用预建缓解了 cfl 暴露面，但 16 个 promote_* 函数体的 `date_trunc('month', ts)` 本身未钉 +08）。生产集群 default TZ=Asia/Shanghai 故当前无害；任何 UTC 会话环境（新宿主机、维护连接、裸 pgx）仍触发批次失败。**建议 698 迁移**（696/697 已被 fingerprint 线占用）：对 promote 函数体统一加 `SET LOCAL TIME ZONE 'Asia/Shanghai'`（694 同款），机械变换+5点同步，编号先 fetch 核对远端。
 2. **IR 未知 content block 静默丢弃**（`internal/ir/response.go:191-257` switch 无 default）：上游仅返回未知块（server_tool_use 等）→ empty_response 硬失败 → failover 重试 + billing.go 拒计入账（上游成本网关吸收）。需产品决策：抢救 text 还是计数+可观测。
+
+### 后记（同日二次合并补充，2026-09-12 晚）
+- 远端 fingerprint 线（696 视图列 + 697 promote 携带 X-System-Fingerprint，83bf582dd/d03f0ada4）落地时只做了 embeddata 拷贝、四点未接线——TestStartupFilesAreAllEmbedded direction-2 在合并树上红，已由 1f17dc2ac 补齐（byte-equality 映射同步扩到 697）。
+- 并行会话 055cecc78 将 694 回滚改为 replace-safe 并把 689 自愈收敛到 694 体，与本审计 §二 的 694 项互补。
+- 8af09c799 已登记 promote 695→697 intentional function chain；clobber 守卫经核无其他缺口。
 
 ### P2-级
 3. **dump 基线局部陈旧**：`sql/schema/01-schema.sql` 与 baseline 的 `ensure_request_logs_bodies_partition` 仍是 pre-562 columnar 体；`ensure_credit_ledger_partition`/`ensure_tool_usage_stats_partition` 在 dump 中无定义（悬空 PERFORM）；695 的 promote 体未回写 sql/objects/functions；installer 的 01-schema.sql 嵌入版无 694 pinning。全新安装路径靠后续 startup 迁移自愈，但**纯基线重导路径会复现 bodies columnar 停摆**（§5.5 重导法验证）。
