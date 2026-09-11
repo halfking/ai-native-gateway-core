@@ -151,6 +151,11 @@ type AsyncRawDataLogger struct {
 	// path can correlate anomalies to the raw line that produced them.
 	// R12: 实现与 BufferedRawSink 共享（rawFrameIndex，杜绝双实现漂移）。
 	frameIndex rawFrameIndex
+	// flushMu（R12 审计修正）串行化「出队→写盘→逐帧索引」，使 Sync 与
+	// flushWorker 并发刷盘时各批的反推偏移不被对方写盘污染。锁序
+	// flushMu → baseLogger 内部锁；flushBatchLocked 仅在已持 flushMu 时
+	// 调用（Close 排空段复用）。
+	flushMu sync.Mutex
 	// overflowReporter (2026-07-28 §5.8) is invoked from
 	// noteDroppedEntry when the queue is full (after the in-band
 	// overflow stub fails to enqueue) and from Close() when the
@@ -450,7 +455,19 @@ func (l *AsyncRawDataLogger) flushWorker() {
 // frameIndex so callers (anomaly reporter, audit viewer) can find
 // the raw entry by (requestID, direction) without resorting to the
 // global CurrentLocation() racy path.
+//
+// R12 审计修正：flushMu 串行化「出队→写盘→索引」整段。R12 新增的 Sync
+// 使 record 可与 flushWorker 并发执行——若两批并发写盘，后 record 的一批
+// 会以另一批写出后的游标反推偏移，LookupFrame 得到看似合法实则错位的
+// (file, offset)。这是逻辑竞态，-race 不可检出；Close 排空同样经
+// flushMu 串行（见 Close）。锁序：flushMu → baseLogger 内部锁，无反向嵌套。
 func (l *AsyncRawDataLogger) flushBatch() {
+	l.flushMu.Lock()
+	defer l.flushMu.Unlock()
+	l.flushBatchLocked()
+}
+
+func (l *AsyncRawDataLogger) flushBatchLocked() {
 	for {
 		entries := l.queue.TryDequeueBatch(l.batchSize)
 		if len(entries) == 0 {
@@ -470,6 +487,10 @@ func (l *AsyncRawDataLogger) flushBatch() {
 // 随后的 baseLogger.Sync() 与仍在途的并发 worker 批次互斥，保证其在
 // Sync 返回前完成写出。与 Close 不同，Sync 不停 worker；disabled /
 // 已关闭返回 nil。Sync 进行中新入队的条目不在此屏障保证内。
+//
+// R12 审计修正：排空以 5*flushDelay（与 Close 同款 deadline）为界——
+// 持续生产者使队列永不归零时，超时返回错误而不是无限等待，避免把
+// "屏障未达成"伪装成成功。
 func (l *AsyncRawDataLogger) Sync() error {
 	l.stateMu.RLock()
 	closed := l.closed.Load()
@@ -478,8 +499,12 @@ func (l *AsyncRawDataLogger) Sync() error {
 	if closed || base == nil || !base.sinkEnabled() {
 		return nil
 	}
+	deadline := time.Now().Add(5 * l.flushDelay)
 	for l.queue.Size() > 0 {
 		l.flushBatch()
+		if l.queue.Size() > 0 && time.Now().After(deadline) {
+			return fmt.Errorf("async_raw_logger: sync drain deadline (%s) exceeded with %d entries pending", 5*l.flushDelay, l.queue.Size())
+		}
 	}
 	return base.Sync()
 }
@@ -529,10 +554,17 @@ func (l *AsyncRawDataLogger) Close() error {
 		l.stateMu.Unlock()
 		l.cancel()
 		<-l.done
+
+		// R12 审计修正：排空 + stub + 底层 Sync/Close 全段持 flushMu，
+		// 与并发 Sync 路径的 flushBatch 串行——stub 写盘不得插进其他批的
+		// 「写盘→索引」之间污染反推偏移。
+		l.flushMu.Lock()
+		defer l.flushMu.Unlock()
+
 		// Drain for up to 5*flushDelay (default 5s).
 		deadline := time.Now().Add(5 * l.flushDelay)
 		for time.Now().Before(deadline) && l.queue.Size() > 0 {
-			l.flushBatch()
+			l.flushBatchLocked()
 		}
 		// Emit close_drained stub entry capturing remaining state.
 		stats := l.queue.Stats()
@@ -551,10 +583,15 @@ func (l *AsyncRawDataLogger) Close() error {
 			if l.baseLogger != nil {
 				l.baseLogger.writeEntry(closeEntry)
 			}
-			if l.overflowReporter != nil {
+			// R12 审计修正：overflowReporter 的读在本段无 stateMu 保护，
+			// 快照化与 SetOverflowReporter 的写互斥。
+			l.stateMu.RLock()
+			rep := l.overflowReporter
+			l.stateMu.RUnlock()
+			if rep != nil {
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				defer cancel()
-				l.overflowReporter.ReportRawLogCloseDrained(ctx, RawCorrelationEnvelope{}, remaining)
+				rep.ReportRawLogCloseDrained(ctx, RawCorrelationEnvelope{}, remaining)
 			}
 		}
 		if l.baseLogger != nil {

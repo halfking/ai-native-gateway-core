@@ -257,6 +257,20 @@ R12 可立项。事实核查推翻了"legacy 无 fsync/Async 无定时刷盘"的
 4. **-race 执行**：本机为 windows/arm64（race 不支持），已用 zig cc 交叉编译验证 linux/arm64 下含 -race 的测试二进制可编译；-race 运行验证由 Linux CI 承接。无 -race 全量测试本机全绿（`./internal/logging/...`、`./domains/streaming/...`）。
 5. **盲点 2/4 的测试形态**：rotate 失败经 baseDir 消失法跨平台注入（磁盘满/权限注入不可移植）；Close 排空 deadline 覆盖确定性路径（未饱和队列在 500ms 内排空 + stub），deadline 超时分支保持实现内审查。
 
+## 13. 审计修正记录（2026-09-11，独立审计 7 项发现全部闭环）
+
+实施批合入后由独立审计代理复审（并发正确性 / 契约奇偶性 / 错误处理 / 接线 / 测试质量五维），7 项发现当日全部修复：
+
+1. **[major] frameIndex 并发错位**：R12 新增的 Sync 使「写盘→反推偏移」可与 flushWorker 并发，后索引的一批会以另一批写出后的游标反推，LookupFrame 得到看似合法实则错位的结果（逻辑竞态，-race 不可检出）。修复：Async/Buffered 各引入 flushMu 串行化「出队/换出→写盘→索引」整段，Close 的排空+stub+底层 Sync/Close 亦在其保护内；锁序 flushMu→bufMu/stateMu→base.mu 无反向嵌套。
+2. **[minor] overflow stub 字段奇偶**：Buffered 的 stub 此前丢失 Headers/DataSize、错误文本被 marker 覆盖，与 Async 各方向 stub 不一致（灰度切换会无声改变审计内容）。修复：offerLocked 对齐 Async——Headers 非空随 stub 保留、client_request 方向保留原始 DataSize、conversion error 的 stub.Error 用原始错误文本覆盖 marker；新增两个专项奇偶测试。
+3. **[minor] Async.Sync 无界排空**：持续生产者可使 `for queue.Size()>0` 永不退出。修复：与 Close 同款 5*flushDelay deadline，超时返回错误（不把"屏障未达成"伪装成成功）。
+4. **[minor] Buffered Close 排空批未写帧索引**：与 Async 不对称，优雅关闭后最后一批 LookupFrame 永远 miss。修复：writeWithRetry 后补 frameIndex.record，并加回归断言。
+5. **[minor] Async Close 无锁读 overflowReporter**：快照化（RLock 下取引用）。注：noteDroppedEntry 的读在调用方 stateMu.RLock 保护内，本就安全。
+6. **[nit] Buffered Close 的 remaining>0 分支为死代码**：closed 置位与缓冲换出同临界区，结构上无残留路径，raw_log_close_drained anomaly 不可触达（stub 由 Accepted>0 触发，等价能力不缺失）。已删除并注释说明。
+7. **[minor] 跨 rotate 边界测试的 ~90ms ticker 竞态窗**：重载 CI 下 worker 可抢刷前缀批使"必须 miss"断言偶发失败。修复：改为容错断言——miss 合法，命中则必须能读回正确条目（伪位置仍然会被抓住）。
+
+顺带核实：rebase 期间他人未提交改动（VERSION/deploy-lib/.lnk 等）完好；domains/streaming 曾出现的 TestAnthropicSSEPassthroughCancellationStopsReader 失败为全量并行重跑的负载性 flake（单独复跑 0.4s 通过），非本改动回归。
+
 ## 引用
 
 - internal/logging/raw_data_logger.go、async_raw_logger.go（行号见 §2）
