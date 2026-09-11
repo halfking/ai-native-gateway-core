@@ -85,3 +85,13 @@
 | P2 冷迁移停滞 | ❌ 仍存在 | 父表 `max(ts)=2026-09-09 17:16`（95,665 行）；hot 实时（92,589 行，23:42）；视图=两者之和 ✓；**近 6h 父表 0 行新增 → promotion worker 未在搬运**，hot 表将持续增长，需单独排查 promote 调度 |
 
 附注：8781 实例 21:31:34 的 failed 状态是蓝绿切换时旧实例 drain 超时被 SIGKILL 的痕迹（stop-sigterm timed out → 9/KILL），非崩溃；可留意优雅停止超时是否偏紧。154 上的临时只读诊断脚本（`/tmp/gw-readonly.py`、`/tmp/incident.sql`）已清理。
+
+## 8. 同款失明种子修复（2026-09-11 深夜追加）
+
+审计确认 `bg/` 内还有三处近期窗口读裸 `request_logs` 父表，均已切换 `request_logs_with_current_month` 并加回归锁（`bg/recent_surface_reads_test.go`）：
+
+- `bg/candidate_failure_monitor.go` — checkStaleness 5 分钟活动探测（父表失明 → staleness 告警永不触发）、checkAutoCool 5 分钟失败率窗口（auto-cool 永不触发）
+- `bg/shared_pick.go` — 7 天最常用探测模型选取（近期流量不可见 → 选取陈旧模型）
+- `bg/daily_probe_audit.go` — 3 天回看每日提交清单（近 2 天流量不可见 → 漏扫）
+
+**有意不切**：`bg/integrity_fingerprint_drift.go` 所需 `system_fingerprint` 列不在视图（hot∩parent 交集缺失，hot 表列漂移，同 573 body 列缺口家族）——先修 hot 表列再切，回归测试已钉住该排除决定。生产视图列覆盖经 154 只读查询实证（client_model/outbound_model/success/is_auto_request/task_type/request_status 均在）。
