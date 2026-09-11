@@ -39,7 +39,7 @@
    同一 dedup_key 不允许并发 ready/running，实践中与 `completed_at DESC` 等价且索引友好；未发现任何真实反例，此项按原方案关闭，仅在出现乱序完成记录的反例时重开。
 
 6. **运维观察项（上线后）**
-   观察：`llmgw_node_probe_necessity_skip_total` 增速、自检 tab "skipped_not_necessary" 磁贴占比、以及 `llmgw_node_probe_necessity_mirror_delete_retry_total`（瞬时失败吸收量）与 `llmgw_node_probe_necessity_mirror_delete_failed_total`（**持续失败告警源**）。若 failed_total 持续增长（说明某 (cred,model) 的镜像 DELETE 长期不收敛、磁贴仍按 pump 周期翻动），按原方案升级：对刚被跳过的 (credential_id, raw_model) 引入短 TTL 抑制（pump 侧或闸门侧均可，抑制窗口必须短于真实故障的重探测需求）。若 skip 率异常高，优先排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属是否一致。**抓取命令与判读规则见"本轮记录（第六轮）"的观测 runbook。**
+   观察：`llmgw_node_probe_necessity_skip_total` 增速、自检 tab "skipped_not_necessary" 磁贴占比、以及 `llmgw_node_probe_necessity_mirror_delete_retry_total`（瞬时失败吸收量）与 `llmgw_node_probe_necessity_mirror_delete_failed_total`（**持续失败告警源**）。若 failed_total 持续增长（说明某 (cred,model) 的镜像 DELETE 长期不收敛、磁贴仍按 pump 周期翻动），按原方案升级：对刚被跳过的 (credential_id, raw_model) 引入短 TTL 抑制（pump 侧或闸门侧均可，抑制窗口必须短于真实故障的重探测需求）。若 skip 率异常高，优先排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属是否一致。**抓取命令与判读规则见"本轮记录（第六轮）"的观测 runbook。第八轮已补 `NodeProbeNecessityMirrorDeleteFailedHigh` 告警与 `selfcheck-necessity-dashboard.json` 面板（随仓库交付，运维按 deploy/prometheus/README 的 provisioning 流程加载后，failed_total 持续增长会自动告警，不再依赖人工抓取）。**
 
 7. **工作区遗留脏文件（非本特性，未处置，需原作者确认）**
    - `D docs/02-resources/research/pricing/scripts/vendor_pricing_table.py`
@@ -129,34 +129,42 @@
 - **发现 3（runbook 补强）**：补 503 语义——production/staging 下 `LLM_GATEWAY_ADMIN_API_KEY` 未配置时 `/metrics` 返回 503（显式拒绝而非 fail-open，`admin_token_mw.go`），观测前先确认配置。
 - **范围界定**：本轮纯文档审计修正，不改任何代码与 SQL；第六轮测试结论（定向 25 守卫绿 / 全量 17 例失败=基线）不受影响。
 
+## 本轮记录（2026-09-11 第八轮，观测工具补齐）
+
+- **任务选择说明**：第七轮提示词按输入分派（生产指标数据 / 运维反馈），两者本轮仍未到达。与其第三轮记录阻塞，本轮落地第六/七轮已标记的遗留风险①的补齐手段——necessity 三指标的告警与面板（纯 deploy 工件，**零网关/探测行为改动**）；TTL 抑制等真正的行为升级仍严格锁在数据门后。
+- **告警规则**（`deploy/prometheus/rules/alerts.yml`，node-probe 家族所在组）：`NodeProbeNecessityMirrorDeleteFailedHigh` = `increase(llmgw_node_probe_necessity_mirror_delete_failed_total[10m]) > 5`，`for: 5m`，severity warning。阈值依据：单 (cred,model) 卡住时 pump 按周期（约 30s holdoff）重提，每轮 ≥1 次失败计数，10 分钟 >5 即代表至少一对处于翻动循环；零星 <5 的增量是 DB 瞬时抖动的如实计数，不告警——与第六轮 runbook 判读规则一致。形状刻意对齐同组既有 `NodeProbeQueueSubmissionFailuresHigh`。
+- **Grafana 面板**（`deploy/grafana/selfcheck-necessity-dashboard.json`，新文件，uid `llm-gateway-selfcheck-necessity`）：三个 timeseries——skip 按原因（5m）、镜像删除同轮重试（10m）、重试后仍失败（10m，红色阈值 5 与告警表达式一致）。schema 惯例（Grafana 8.0、字符串 datasource、panel 结构）逐项对照 `proxy-overview-dashboard.json`。`deploy/grafana/README.md` 同步：面板清单新增第 5 节、导入文件列表、指标说明新增"自检必要性指标"小节。
+- **验证记录**：便携 Go + vendored `yaml.v3` / `encoding/json` 结构化校验——alerts.yml 解析为 6 groups 且新告警 expr/for/severity 完整；面板 JSON 有效、3 个 timeseries target 非空。**环境受限（如实标注）**：`promtool` 不可用（无 Docker），PromQL 未经 promtool check——但 expr 与同组既有告警同形（`increase(counter[10m]) > N`），指标名逐一对照 `bg/probe_necessity.go` 注册名核实；Grafana 导入未实测（无实例），导入即验。无 Go/SQL 改动，不涉及测试套件与交叉编译。
+- **硬条件核对**：网关代码、SQL、闸门路径、探测语义零改动；本轮只是把"人工记得 curl"变成"告警自动触发"，不预支任何按数据才定的升级。
+- **范围界定**：`web/src/views/probe/ProbeHealthPanel.vue:203` 的陈旧 POST 注释（第七轮发现）本轮**未**修——web 目录单独改动不值得混入 deploy 工件提交，留作记录；运维侧需按 `deploy/prometheus/README.md` 的 provisioning/UI 流程实际加载规则与面板后，观测链路才生效。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第三轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第四轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
-第六轮"（观测 runbook 与孤儿行清理口径）与"审计记录 第七轮"（对第六轮的审计修正：
-admin API 清理路径、alerts.yml 覆盖面、503 语义））、遗留任务第 6 项。
-背景：全部代码跟进已合入 main（代码最新 b37b68b51，文档至第七轮审计提交）。
-第六轮为零代码改动轮；孤儿行已证成三层清理口径：①绑定重建自然恢复；②运维经
-POST /api/admin/probe/tasks（不设 Automatic，绕过资格门）对孤儿对提交一次探测即
-删行（免 SQL，endpoint-build 前失败无出站 HTTP）；③handoff 内批量 SQL。显示侧
-治本预案（queryProbeNodeTasks WHERE 并入绑定链 EXISTS）就绪未实施。necessity 三
-指标 /metrics 在 admin 端口（Authorization: Bearer，未配 key 生产返回 503），
-Grafana 面板与 alerts.yml 均未覆盖。
+第六轮"（runbook 与孤儿行三层清理口径）、"审计记录 第七轮"、"本轮记录 第八轮"
+（告警+面板已随仓库交付））、遗留任务第 6 项。
+背景：代码最新 b37b68b51，deploy 工件至第八轮提交。观测链路已齐：告警
+NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）+
+面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
+provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
+自然恢复 / POST /api/admin/probe/tasks 提交一次探测即删行 / 批量 SQL；显示侧
+治本预案（queryProbeNodeTasks WHERE 并入绑定链 EXISTS）就绪未实施。
 注意：主工作区检出的 fix/r13-logging-hygiene 属于并行 R13 日志工作，不要混入本任务；
 工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
 继续用 git worktree 从 origin/main 拉独立分支实施；Windows 验证用 C: 副本
-lgw-p2test（bg/ 已与 b37b68b51 一致，仅 cp 变更文件；基线对照务必 CRLF 同口径，
-17 例预存失败名单见 lgw-p2test/fails_r6.txt）。
+lgw-p2test（仅 cp 变更文件；基线对照务必 CRLF 同口径，17 例预存失败名单见
+lgw-p2test/fails_r6.txt）。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
-A. 若已获得生产 /metrics 抓取数据（runbook 判读规则）：
-   - mirror_delete_failed_total 持续增长 → 实施短 TTL 抑制（硬条件不变：不漏真实
-     故障探测、证据错误 fail-open、manual/admin 绕过、lease 丢失不删新 owner 状态）；
-   - 两者平稳 → 在 handoff 记录结论并关闭遗留项 6；可顺带评估给 necessity 指标补
-     Grafana 面板（deploy/grafana/）与告警规则（deploy/prometheus/rules/alerts.yml）。
+A. 若已获得生产 /metrics 数据或告警触发记录（runbook 判读规则）：
+   - mirror_delete_failed_total 持续增长 / 告警 firing → 实施短 TTL 抑制（硬条件
+     不变：不漏真实故障探测、证据错误 fail-open、manual/admin 绕过、lease 丢失
+     不删新 owner 状态），先补失败测试；
+   - 两者平稳 → 在 handoff 记录结论并关闭遗留项 6。
 B. 若运维确认"模型解绑/改名后自检 tab 长期显示陈旧节点"：先给应急口径（admin API
    提交一次探测即删行，或批量 SQL），再按预案实施显示侧治本修复（queryProbeNodeTasks
    WHERE 并入绑定链 EXISTS，SQL 抽取可守卫 + 先红后绿测试），实施前与反馈方确认
