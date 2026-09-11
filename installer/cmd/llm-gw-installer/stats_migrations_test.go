@@ -110,6 +110,8 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"693_provider_models_canonical_cleared_at.sql":         providerModelsCanonicalClearedAtMigration693,
 		"694_partition_ensure_timezone.sql":                    partitionEnsureTimezoneMigration694,
 		"695_request_logs_promote_final_success_self_heal.sql": requestLogsPromoteFinalSuccessSelfHealMigration695,
+		"696_request_logs_view_system_fingerprint.sql":         requestLogsViewSystemFingerprintMigration696,
+		"697_request_logs_promote_system_fingerprint.sql":      requestLogsPromoteSystemFingerprintMigration697,
 	}
 
 	for name, embedded := range expected {
