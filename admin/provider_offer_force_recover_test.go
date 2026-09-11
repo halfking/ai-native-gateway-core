@@ -192,12 +192,8 @@ func TestModelOfferSuggestions_ConfidentMatch(t *testing.T) {
 		WillReturnRows(suggestionLookupRows("cluade/opus-5", false))
 	mock.ExpectQuery(`FROM models_canonical`).
 		WillReturnRows(suggestionsCatalogRows(
-			// 2026-09-11 audit fix: the pairing was swapped — id 7 zipped to
-			// "claude-haiku-4.5" while the assertions below expect id 7 to BE
-			// claude-opus-5, so this test could never pass (the author's
-			// win-arm64 environment cannot run these cgo-dependent tests).
 			[]int{7, 8},
-			[]string{"claude-opus-5", "claude-haiku-4.5"},
+			[]string{"claude-haiku-4.5", "claude-opus-5"},
 		))
 
 	rec := rec()
@@ -207,8 +203,10 @@ func TestModelOfferSuggestions_ConfidentMatch(t *testing.T) {
 	}
 
 	resp := decodeSuggestionsResponse(t, rec)
-	if resp.SuggestedCanonicalID != 7 {
-		t.Fatalf("suggested_canonical_id=%d, want 7 (claude-opus-5)", resp.SuggestedCanonicalID)
+	// Catalog rows pair id 7 = claude-haiku-4.5, id 8 = claude-opus-5; the
+	// suggestion must carry the id OF the matched standard name.
+	if resp.SuggestedCanonicalID != 8 {
+		t.Fatalf("suggested_canonical_id=%d, want 8 (claude-opus-5)", resp.SuggestedCanonicalID)
 	}
 	if resp.RuleBased != "claude-opus-5" {
 		t.Fatalf("rule_based=%q, want the matched standard name", resp.RuleBased)
@@ -375,22 +373,21 @@ func TestModelOfferSuggestions_ClearedOfferSuppressesSuggestion(t *testing.T) {
 }
 
 // offerResultRows shapes the final SELECT the handler uses to render the
-// response (13 columns; NULLs for untouched fields).
-//
-// billing_mode stays NULL on purpose: pgxmock v4 cannot deliver ANY non-NULL
-// value into a **T destination (its row Scan has no reflection path for
-// pointer-to-pointer — verified 2026-09-11), so a non-NULL "per_token" left
-// result.BillingMode nil via the handler's ignored Scan error, and
-// TestUpdateModelOffer_ClearCanonical_UsesBindingJoin's BillingMode assertion
-// could never pass. The binding-join UPDATE regexp remains the actual
-// regression guard; the assertion below pins the NULL passthrough instead.
+// response (13 columns; NULLs for untouched fields). Non-NULL values for
+// pointer-typed scan targets (context_window *int, billing_mode *string) are
+// passed as pointers: pgxmock's reflect-based Scan cannot convert a raw
+// int64/string into a **int/**string destination the way real pgx does, and
+// the first failing column silently truncates the rest of the scan (the
+// handler's scan error is deliberately non-fatal).
 func offerResultRows() *pgxmock.Rows {
+	contextWindow := 128000
+	billingMode := "per_token"
 	return pgxmock.NewRows([]string{
 		"id", "raw_model_name", "standardized_name", "canonical_id",
 		"canonical_name", "outbound_model_name", "context_window",
 		"context_window_override", "unit_price_in_per_1m", "unit_price_out_per_1m",
 		"cache_read_price_per_1m", "cache_write_price_per_1m", "billing_mode",
-	}).AddRow(301, "some-raw", nil, nil, nil, nil, int64(128000), nil, nil, nil, nil, nil, nil)
+	}).AddRow(301, "some-raw", nil, nil, nil, nil, &contextWindow, nil, nil, nil, nil, nil, &billingMode)
 }
 
 // 2026-09-11 join-fix regression guard: clear_canonical must NULL
@@ -432,7 +429,7 @@ func TestUpdateModelOffer_ClearCanonical_UsesBindingJoin(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.ID != 301 || resp.CanonicalID != nil || resp.BillingMode != nil {
+	if resp.ID != 301 || resp.CanonicalID != nil || resp.BillingMode == nil || *resp.BillingMode != "per_token" {
 		t.Fatalf("response=%+v", resp)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
