@@ -2384,7 +2384,7 @@ func claimSessionFinalSuccess(ctx context.Context, c *Client, tx pgx.Tx, request
 	// 守卫整段跳过, 跨 8h promote 边界的长会话第二次成功 claim 出第二条
 	// is_final_success=TRUE, promote 撞 uq_<partition>_final_success_session
 	// (23505) 整批回滚, 冷迁移停摆 2.5 天. 直传后编译器保证接线不再可丢;
-	// c==nil 仅剩单测/退化场景 (守卫跳过, 依赖 promote 侧 694 自愈 demote).
+	// c==nil 仅剩单测/退化场景 (守卫跳过, 依赖 promote 侧 695 自愈 demote).
 	if c == nil {
 		claimSessionFinalSuccessExec(ctx, tx, requestID, nil)
 		return
