@@ -131,6 +131,7 @@ func NewRunner(citusContainer, dbUser, dbName, sqlDir string) *Runner {
 			"691_proxy_region_policy.sql",
 			"692_session_summaries_user_intent_widen.sql",
 			"693_provider_models_canonical_cleared_at.sql",
+			"694_partition_ensure_timezone.sql",
 			"session_turns_hot_bootstrap.sql",
 		},
 	}
