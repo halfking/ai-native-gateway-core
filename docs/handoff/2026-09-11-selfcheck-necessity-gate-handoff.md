@@ -30,8 +30,8 @@
 3. **P2：镜像行删除失败的 churn 抑制** — **已完成（2026-09-11，5e65c21f1，feat/necessity-p2-churn-suppression）**
    `deleteNodeProbeState` 失败 → pump 30s 重入队 → 闸门再跳过 → 再删 的循环已用失败测试稳定复现（一次瞬时删除失败 = 2 轮完整 skip 生命周期 = 磁贴翻动 2 次）。修复：删除失败后**同轮有界即时重试一次**（200ms 延迟，吸收锁等待/序列化失败/瞬时连接抖动）；仍失败则落 `llmgw_node_probe_necessity_mirror_delete_failed_total` 计数 + ERROR 日志（pump 重入队即天然的重试安全网，绝不执行探测）；ctx 中途取消不再发起重试但也计入持续失败。硬条件全部保持：重试在租约所有权证明（队列行删除成功）之后才发生；闸门决策路径零改动（不漏探、证据错误仍 fail-open、manual/admin 仍绕过）。测试 16→22 例（churn 复现、持续失败有界+计数、ctx 取消三例新增），详见下方"本轮记录"。
 
-4. **P3：missing-binding 丢弃路径的同类 churn 面** — **已完成（2026-09-11，本轮，feat/necessity-p3-binding-pump-gate）**
-   只读可达性确认：pump 是唯一不查绑定链的循环调度入口——`pumpDueStatesSQL` 只带 credential/provider 资格门，而 credential_recovery 全部路径（`reconcileStaleNodeProbeStateSQL`、`lookbackCandidateSQL`、expired/fresh-degraded 绑定恢复）都以 cmb/pm 绑定链为锚。绑定链断裂（无 cmb 行 / 悬空 provider_model_id / pm.raw_model_name 改名）的镜像行会被 pump 反复入队：每轮真实执行探测轮次 1（endpoint build 阶段失败）→ best-effort 删镜像 → 删除失败则行残留、下个 holdoff 周期再循环（与 P2 同形，但无重试也无计数）。修复采用**结构性断源**（pump 资格过滤，而非复用重试编排）：`pumpDueStatesSQL` 的 WHERE 并入绑定链 EXISTS（`credential_model_bindings cmb JOIN provider_models pm`，双列关联防漂移；刻意只查存在性、不加 available/manual 门——resolveDirectTarget 对仅存在的绑定即可探测，更严会把可探测对挡在 pump 外；绑定重建后行自然重回 pump，与资格门重入语义一致）。missing-binding 分支注释同步改写（一次性自愈语义，不再"经 pump 重入队"）；恢复路径与 manual/admin 零改动。新增守卫测试 `TestPumpDueStatesSQLFiltersMissingBindingPairs`（先红后绿），详见"本轮记录（第四轮）"。
+4. **P3：missing-binding 丢弃路径的同类 churn 面** — **已完成（2026-09-11，本轮，feat/necessity-p3-binding-pump-gate；第五轮审计扩展，381fbf50d 及审计提交）**
+   只读可达性确认：pump 不查绑定链——`pumpDueStatesSQL` 只带 credential/provider 资格门，而 credential_recovery 全部路径（`reconcileStaleNodeProbeStateSQL`、`lookbackCandidateSQL`、expired/fresh-degraded 绑定恢复）都以 cmb/pm 绑定链为锚（第五轮审计修正："pump 唯一"不成立——`DailyProbeAudit` 的 candidate_failure_logs 分支是第二个 24h 低频绑定盲区，已随审计一并过滤，见下方审计记录）。绑定链断裂（无 cmb 行 / 悬空 provider_model_id / pm.raw_model_name 改名）的镜像行会被 pump 反复入队：每轮真实执行探测轮次 1（endpoint build 阶段失败）→ best-effort 删镜像 → 删除失败则行残留、下个 holdoff 周期再循环（与 P2 同形，但无重试也无计数）。修复采用**结构性断源**（pump 资格过滤，而非复用重试编排）：`pumpDueStatesSQL` 的 WHERE 并入绑定链 EXISTS（`credential_model_bindings cmb JOIN provider_models pm`，双列关联防漂移；刻意只查存在性、不加 available/manual 门——resolveDirectTarget 对仅存在的绑定即可探测，更严会把可探测对挡在 pump 外；绑定重建后行自然重回 pump，与资格门重入语义一致）。missing-binding 分支注释同步改写（一次性自愈语义，不再"经 pump 重入队"）；恢复路径与 manual/admin 零改动。新增守卫测试 `TestPumpDueStatesSQLFiltersMissingBindingPairs`（先红后绿），详见"本轮记录（第四轮）"。
 
 ### 未完成的遗留任务
 
@@ -78,7 +78,7 @@
 
 - **任务选择说明**：上一轮提示词给出 A（上线观察）/ B（遗留项 5）二选一按数据定。本轮执行 B：B 的第一步（只读可达性确认）不依赖生产数据，且分析结论为**结构性成立**（不依赖任何运维偶然条件），故直接实施断源修复；A 的上线观察仍完整保留给部署后（遗留项 6）。
 - **可达性分析（只读）**：三条入队来源逐一核对——
-  1. pump（`pumpDueStatesSQL`）：只带 credential/provider 资格门，**不查绑定链**；且对已资格过的行（status=active + lifecycle=active + provider enabled + 非手动停用），`resolveDirectTarget` 严格查询的 credential/provider 门全部满足，其"no rows"只剩绑定链断裂一种成因（宽松重试不改变结论，仅 c.status IS NULL 的边缘经宽松查询成功、不落入 missing-binding）。
+  1. pump（`pumpDueStatesSQL`）：只带 credential/provider 资格门，**不查绑定链**；且对已资格过的行（status=active + lifecycle=active + provider enabled + 非手动停用），`resolveDirectTarget` 严格查询的 credential/provider 门全部满足，其"no rows"只剩绑定链断裂一种成因（宽松重试不改变结论，仅 c.status / c.lifecycle_status IS NULL 的边缘经宽松查询成功、不落入 missing-binding；第五轮审计就地修正此处表述）。
   2. credential_recovery：全部绑定锚定——`reconcileStaleNodeProbeStateSQL` JOIN cmb+pm 且 cmb.available=TRUE，`lookbackCandidateSQL` FROM cmb 起步，expired/fresh-degraded 恢复直接以 cmb 行为对象。
   3. 手动/管理任务：绕过资格与闸门（操作员在场，一次性）。
 
@@ -88,16 +88,28 @@
 - **硬条件核对**：绑定缺失对**不漏探**——无绑定即无路由，探测无从执行；绑定重建后行自然重回 pump（next_retry_at 仍到期），与资格门"重新启用即重入"语义一致；paused 行不受影响（pump 本就不取）；manual/admin 绕过原样；闸门路径（`bg/probe_necessity.go`）零改动。
 - **验证记录**：C: 本地打桩副本（`lgw-p2test`，复用既有副本、仅 cp 三个变更文件）执行 `go test -mod=vendor -count=1 ./bg/`：定向守卫 3 例全绿；全量套件 17 例失败经 **CRLF 同口径基线对照实验**确认与 origin/main 完全一致（16 例源文本断言 + 1 例 symlink 权限，均为预存环境限制，Linux CI 不受影响）。注意基线对照的方法坑：用 `git show` 直出的 LF 文件做基线会"少"4 例源文本失败（假差异），须按 autocrlf 检出口径把基线文件转成 CRLF 再跑才是同口径对照。`GOOS=linux GOARCH=arm64` zig cc 交叉编译 `./bg/... ./cmd/gateway/...` 通过。win/arm64 不支持 `-race`，未跑（与既往轮次相同）。
 
+## 审计记录（2026-09-11 第五轮，针对 381fbf50d P3 pump 过滤）
+
+- **调用面全量清点（验证第四轮"调度入口唯一性"论断）**：穷举 `NodeProbeWorker.Submit` / `SubmitWithSource` / `submitViaQueue*` / `ProbeQueue.Enqueue` 调用方——pump（第四轮已过滤）、`SubmitWithSource`（状态机的请求失败事件驱动，一次性，非调度器）、**`DailyProbeAudit`（24h 循环——发现 1，见下）**、credential_recovery 四条路径（全部绑定锚定）、`CredentialAutoHealWorker` 周期+OneShot（`dueAutoHealSQL` FROM cmb 起步，绑定锚定）、main.go 两处 expired-binding-recovery（以绑定事件自身为锚）、admin/手动（操作员在场）。另有 `BalanceQuotaProbe`/`PeriodicQuotaProbe`（CredentialProbeV2 凭据级配额探测，非 node_probe 管线）与 `system_monitor_adapter`（integrity_verify 任务），均不相关。
+- **发现 1（实质，已修复）：`DailyProbeAudit` 的 candidate_failure_logs 分支不查绑定链。** UNION 的 request_logs 分支自带 cmb/pm JOIN（绑定锚定），但 candidate_failure_logs 分支是裸 (credential_id, raw_model_name) 投影——绑定链断裂的历史对在整个 72h 回看窗口内每天被重复提交，每次都是注定失败运行（queue claim → 磁贴 in-flight → endpoint-build "no rows" → missing-binding 丢弃 + 一条 fake-success 审计行）。**影响有界性核实**：统一队列模式下 `Submit` 不 UPSERT `node_probe_state`（直接入队），pump 过滤器也不重提该对，故不构成第四轮定义的 churn 循环，仅是低频噪声（每对 ≤3 次，随日志老化自然停止）。修复：SQL 抽取为 `dailyProbeAuditSQL()`（守卫可测，同 `pumpDueStatesSQL` 模式）+ 外层绑定链 EXISTS（同一谓词形态：双列关联、JOIN pm、只查存在性；对 request_logs 分支冗余但为真）+ 新守卫测试 `TestDailyProbeAuditSQLFiltersMissingBindingPairs`（先红后绿）。修复后不变量成立：**除 manual/admin 外，无任何调度入口会提交绑定链断裂的 (cred, model) 对**。
+- **发现 2（表述修正）**：第四轮记录的 NULL 边缘应为 `c.status` **或 `c.lifecycle_status`** IS NULL（两者行为相同：严格查询不命中、宽松查询命中、不落入 missing-binding），已就地修正。
+- **索引核查（性能）**：两处绑定链 EXISTS 的探测路径均由 `idx_cmb_credential_provider_model (credential_id, provider_model_id)` 前导列覆盖，pm 走主键——与 `resolveDirectTarget` / recovery 对账器同型访问路径，pump 与 daily audit 均无新增全表扫描面。
+- **范围界定**：本轮不改 `Submit` 的事件驱动语义、不改 candidate_failure_logs 写入侧（写入本就是历史事实记录，过滤责任在消费侧调度口）；`daily_probe_audit_test.go` 为新建守卫文件（此前该 worker 无测试）。
+- **验证记录**：C: 本地打桩副本（lgw-p2test）`go test -mod=vendor -count=1 ./bg/`：守卫 4 例（pump 3 + daily audit 1）全绿；全量套件 17 例失败与 CRLF 同口径基线完全一致（16 例源文本断言 + 1 例 symlink 权限，预存环境限制，Linux CI 不受影响）。`GOOS=linux GOARCH=arm64` zig cc 交叉编译 `./bg/... ./cmd/gateway/...` 通过。win/arm64 不支持 `-race`，未跑（与既往轮次相同）。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
 请继续 llm-gateway-go 自检必要性闸门（necessity gate）的收尾工作。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
-先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录"
-与"未完成的遗留任务"）、bg/node_probe.go（pumpDueStatesSQL 的绑定链过滤）。
-背景：闸门/证据批量化/skip 路径 churn 抑制/missing-binding pump 过滤均已合入 main
-（62e8f6f41、11af45216、dc8463e28、ef3280194、5e65c21f1 及本轮 P3 提交）。
+先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"审计记录
+第五轮"与"未完成的遗留任务"）、bg/node_probe.go（pumpDueStatesSQL 的绑定链过滤）、
+bg/daily_probe_audit.go（dailyProbeAuditSQL 的绑定链过滤）。
+背景：闸门/证据批量化/skip 路径 churn 抑制/missing-binding pump 过滤/第五轮审计
+（daily audit 绑定链过滤）均已合入 main（62e8f6f41、11af45216、dc8463e28、
+ef3280194、5e65c21f1、381fbf50d 及审计提交）。审计结论：除 manual/admin 外，
+无任何调度入口会提交绑定链断裂的 (cred, model) 对。
 注意：主工作区检出的 fix/r13-logging-hygiene 属于并行 R13 日志工作，不要混入本任务；
 工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
 建议用 git worktree 从 origin/main 拉独立分支实施；Windows 验证按 handoff
