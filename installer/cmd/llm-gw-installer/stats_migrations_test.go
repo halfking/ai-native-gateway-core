@@ -102,6 +102,14 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"688_promote_default_retention_align_go_scheduler.sql":                   promoteDefaultRetentionAlignGoSchedulerMigration688,
 		"689_candidate_failure_logs_partitions_heap.sql":                         candidateFailureLogsPartitionsHeapMigration689,
 		"690_session_summaries_archived_ttl_index.sql":                           sessionSummariesArchivedTTLIndexMigration690,
+		// 691-695: extend byte-equality coverage; the map previously stopped
+		// at 690, leaving later embed copies unverified against canonical
+		// (2026-09-12 audit finding).
+		"691_proxy_region_policy.sql":                          proxyRegionPolicyMigration691,
+		"692_session_summaries_user_intent_widen.sql":          sessionSummariesUserIntentWidenMigration692,
+		"693_provider_models_canonical_cleared_at.sql":         providerModelsCanonicalClearedAtMigration693,
+		"694_partition_ensure_timezone.sql":                    partitionEnsureTimezoneMigration694,
+		"695_request_logs_promote_final_success_self_heal.sql": requestLogsPromoteFinalSuccessSelfHealMigration695,
 	}
 
 	for name, embedded := range expected {
