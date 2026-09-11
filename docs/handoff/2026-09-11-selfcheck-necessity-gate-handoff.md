@@ -205,29 +205,40 @@
 ## 本轮记录（2026-09-12 第十五轮，上线观察轮第九轮——无输入记录阻塞 + 合并态复核）
 
 - **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮零代码改动，产出 = main 合并态复核 + worktree/基线留档验活 + 本记录。
-- **main 合并态复核（只读，git fetch 实查）**：origin/main 自 2027067ac 前进一跳至 **323ba7a79**——即第十四轮 handoff 提交本身（docs-only，单文件 32+/15-；第十四轮分支 docs/necessity-gate-round14 已 fast-forward 合入 main）。`git diff 2027067ac..origin/main` 除该 handoff 文件外为空：**bg/、deploy/ 零变化**——fails_r8.txt（17 例）基线口径继续有效（无需重测）、deploy 契约测试结论沿用第十四轮（两包 ok）。观测五件套在 origin/main 逐项复验在位：alerts.yml 告警 1 处、alerts_test.go 契约钉 1 处、面板 uid 1 处、dashboard_test.go 恰 3 个 Test 函数、README 引用 2 处；本 handoff 文件未被并行线改动。
+- **main 合并态复核（只读，git fetch 实查）**：origin/main 自 2027067ac 前进一跳至 **323ba7a79**——即第十四轮 handoff 提交本身（docs-only，单文件 32+/15-；第十四轮分支 docs/necessity-gate-round14 已 fast-forward 合入 main）。`git diff 2027067ac..origin/main` 除该 handoff 文件外为空：**bg/、deploy/ 零变化**——fails_r8.txt（17 例）基线口径继续有效（无需重测）、deploy 契约测试结论沿用第十四轮（两包 ok）。观测五件套在 origin/main 逐项复验在位：alerts.yml 告警 1 处、alerts_test.go 契约钉 1 处、面板 uid 1 处、dashboard_test.go 恰 3 个 Test 函数、README 引用 2 处。本 handoff 文件未被并行线改动（第十六轮审计修正：原文复验所用 diff 在当时 origin/main=323ba7a79 下与自身比较恒空、不构成证据；结论换用提交清单实证另证成立——`git log 2027067ac..323ba7a79 -- <本文件>` 仅 323ba7a79 一提交，该文件全部 diff 来自第十四轮提交自身）。
 - **协作环境验活（按第十四轮警示执行，本轮通过）**：`git worktree list` + worktree 内 `git status` → lgw-necessity-p2 存活、检出 docs/necessity-gate-round14（=323ba7a79）且工作区干净——第十四轮重建的 worktree 未再被外部清理；go-cost worktree 仍标 prunable（deploy-lib 线对象，不属本特性，未处置）。C: 副本 lgw-p2test（`AppData/Local/lgw-p2test`）与 fails_r6/r7/r8.txt 三份基线留档均在位，fails_r8.txt 实测含 17 例失败行。本轮无代码改动，未重跑任何测试套件——被验证对象与第十四轮验证对象逐字节一致（bg/deploy 零变化），结论沿用；win/arm64 `-race` 不支持、promtool/Grafana 导入不可用口径不变。
 - **顺带核实（只读）**：`web/src/views/probe/ProbeHealthPanel.vue` 约 203 行的陈旧 POST 注释仍在（第七/八轮记录项，实际代码走模型级 `/api/self-check/trigger`）——继续留作记录，不为注释单独起 web 提交。
 - **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
 - **验证记录（如实区分）**：**通过**——合并态复核（增量=第十四轮 docs 提交本身，bg/deploy 零变化）、观测五件套逐项复验、worktree/副本/基线留档验活。**环境受限**——promtool 与 Grafana 导入不可用（沿用第八/九/十轮口径）；win/arm64 `-race` 不支持未跑。**未验证**——观测链路是否已被运维实际 provisioning、生产指标状态（无通道）。
 - **遗留风险**：与第十四轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。
 
+## 审计记录（2026-09-12 第十六轮，针对 00cbdb595 第十五轮记录）
+
+- **核验通过的主干断言**：第十五轮的合并态复核数据全部属实——`git diff 2027067ac..323ba7a79 --stat` 单文件（本 handoff，32+/15-），bg/ 与 deploy/ 空 diff；五件套计数 1/1/1/3/2 逐项复现；worktree 验活、fails_r8.txt=17 例失败行、ProbeHealthPanel.vue 陈旧注释三项均有会话内取证在案；第十五轮提交 00cbdb595 本身仅含本 handoff 单文件（24+/14-），与"零代码改动"声明一致。
+- **发现 1（时效，实质记录项）**：第十五轮推送后 origin/main 再前进两跳——71a7055f6（R13 抽屉修复线的收尾审计文档 `docs/handoff/2026-09-11-r13-drawer-fixes-closure.md` +11 行，docs-only）与 0b711fc45（将其并入 main 的 merge）。增量定性：`git diff 00cbdb595..0b711fc45` 仅上述 r13 文件——**bg/、deploy/、本 handoff 零变化**，fails_r8.txt 基线与 deploy 契约结论继续有效；第十五轮"复核点 323ba7a79"随即被 0b711fc45 取代（第十二轮"docs-only 轮的复核点推送即过时"教训再次应验，下一轮提示词基准已更新至 0b711fc45）。
+- **发现 2（复验方式空洞，表述修正，已就地修正第十五轮记录）**：第十五轮"本 handoff 文件未被并行线改动"的复验命令在当时 origin/main=323ba7a79 下是与自身 diff（恒空），不构成证据。结论本身成立，以提交清单实证另证：`git log 2027067ac..323ba7a79 -- <本文件>` 仅 323ba7a79 一提交，即该文件全部 diff 来自第十四轮提交自身。第十五轮记录已换用该口径。
+- **发现 3（路径缺失，已补强"验证环境说明"）**：本 handoff 从未写明 C: 副本 lgw-p2test 的完整路径（散落在第三/六轮记录与协作记忆中，第十五轮提示词只加了"AppData/Local 下"）。本轮在"验证环境说明"节补全绝对路径，消除下一轮的定位成本。
+- **范围界定**：本轮纯文档审计修正，零代码/SQL/deploy 工件改动；不重跑任何测试套件（第十五轮未产生新被测对象；bg/deploy 自第十四轮验证点起零变化，fails_r8.txt 判据继续有效）。
+- **验证记录（如实区分）**：**通过**——第十五轮断言逐条取证（diff stat/提交清单/五件套计数）、新头两跳增量定性。**环境受限/未验证**——口径同第十五轮（promtool/Grafana 导入、win/arm64 `-race`、运维 provisioning 状态均无通道）。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第十轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第十一轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
 第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
 "审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
 已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
-"本轮记录 第十五轮"（323ba7a79 合并态复核：该提交即第十四轮 docs 提交本身，
-bg/deploy 零变化，fails_r8.txt 基线继续有效；worktree/副本验活通过；遗留风险清单））、
+"本轮记录 第十五轮"+"审计记录 第十六轮"（第十五轮合并态复核 323ba7a79：
+bg/deploy 零变化，fails_r8.txt 基线继续有效，worktree/副本验活通过；第十六轮审计
+逐条取证通过并把复核点推进到 0b711fc45——R13 抽屉线 docs 两跳、与本特性零交集；
+另修正第十五轮一处空洞复验表述、验证环境说明补 lgw-p2test 完整路径））、
 遗留任务第 6 项。
-背景：观测工件齐全且已全部合入 main（第十五轮在 323ba7a79 复验）；main 代码头以
-git fetch 实查为准。bg/ 后续仍可能被外部提交移动——跑 bg 套件前先
-`git diff 323ba7a79..<新头> -- bg/` 确认；bg/ 没变直接以 lgw-p2test/fails_r8.txt
+背景：观测工件齐全且已全部合入 main（第十五/十六轮复核至 0b711fc45）；main 代码头
+以 git fetch 实查为准。bg/ 后续仍可能被外部提交移动——跑 bg 套件前先
+`git diff 0b711fc45..<新头> -- bg/` 确认；bg/ 没变直接以 lgw-p2test/fails_r8.txt
 （17 例）为回归判据，变了先 CRLF 同口径重测基线再跑。
 告警 NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）
 + 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
@@ -261,4 +272,4 @@ D. 验证如实区分通过/环境受限/未验证。
 
 ## 验证环境说明
 
-本工作区（Z: 网络盘）无 Go/Docker/WSL。便携工具链保留在 `C:\Users\xutaohuang\AppData\Local\golang-dist`（Go 1.27.1 / llvm-mingw / zig）。`bg` 包含 Linux 专属 `syscall.Statfs_t`，Windows 本地验证需在副本中将 `storage_retention_worker.go` 的 `diskUsagePercent` 打桩后再 `go test -mod=vendor ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc）。部署目标验证用 `GOOS=linux GOARCH=arm64` + `zig cc -target aarch64-linux-musl` 交叉编译。
+本工作区（Z: 网络盘）无 Go/Docker/WSL。便携工具链保留在 `C:\Users\xutaohuang\AppData\Local\golang-dist`（Go 1.27.1 / llvm-mingw / zig）。Windows 本地验证用 C: 本地打桩副本 **`C:\Users\xutaohuang\AppData\Local\lgw-p2test`**（第十六轮审计补全路径；历轮基线留档 fails_r6/r7/r8.txt 同目录，当前判据为 fails_r8.txt 17 例）。`bg` 包含 Linux 专属 `syscall.Statfs_t`，Windows 本地验证需在副本中将 `storage_retention_worker.go` 的 `diskUsagePercent` 打桩后再 `go test -mod=vendor ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc）。部署目标验证用 `GOOS=linux GOARCH=arm64` + `zig cc -target aarch64-linux-musl` 交叉编译。
