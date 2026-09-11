@@ -11,15 +11,24 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // offerListSQLColumns are the shared SELECT columns for provider-wide and
-// credential-scoped model lists. The base list omits `provider_models.source`
-// because that column was added by domain migration 361 (2026-08-22) and may
-// not be present on installs that have not yet applied the rollout. We probe
-// the schema once at startup and pick the matching constant below.
+// credential-scoped model lists. Two columns are resolved against the live
+// schema at startup:
+//
+//   - `provider_models.source` was added by domain migration 361 (2026-08-22)
+//     and may not be present on installs that have not yet applied the rollout.
+//   - `model_offers.provider_modality` exists in the baseline schema and in
+//     every fresh install, but the model_offers view on upgraded installs was
+//     last rebuilt by migrations whose view body predates that alias (678's
+//     rebuild, the newest, does not carry it). Querying it unconditionally
+//     500s those environments with SQLSTATE 42703 — observed live on the
+//     local upgraded install as
+//     GET /api/providers/36994/credentials/77/models → "column
+//     mo.provider_modality does not exist" (2026-09-11).
+//
+// We probe both columns once at startup and pick the matching constants.
 const offerListSQLColumns = `
 		SELECT mo.id, mo.credential_id, COALESCE(c.label,'') AS credential_label,
 		       COALESCE(mo.raw_model_name,''), COALESCE(mo.standardized_name,''),
@@ -38,7 +47,7 @@ const offerListSQLColumns = `
 		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name, ''),
 		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
 		       mo.context_window_override,
-		       COALESCE(NULLIF(TRIM(mc.modality), ''), COALESCE(NULLIF(TRIM(mo.provider_modality), ''), 'text')),
+		       COALESCE(NULLIF(TRIM(mc.modality), ''), __MO_MODALITY__),
 		       COALESCE(mc.multimodal_caps, '{}'::text[]),
 		       mc.reasoning_caps,
 		       COALESCE(mc.status, 'active'),
@@ -57,11 +66,25 @@ const offerListSQLColumns = `
 // offerListSQLWithSource is used after migration 361 has added
 // `provider_models.source` (defaulting 'discovery'). Earlier installs that
 // pre-date the migration fall back to offerListSQLCompat to keep the endpoint
-// returning 200 instead of 500.
+// returning 200 instead of 500. The modality pair follows the same contract:
+// the with-column form keeps the view-level fallback, the compat form leans
+// on the canonical modality alone (always present on models_canonical).
 const (
 	offerListSQLWithSource = `COALESCE(pm.source, '')`
 	offerListSQLCompat     = `''::text`
+
+	moModalityWithColumn = `COALESCE(NULLIF(TRIM(mo.provider_modality), ''), 'text')`
+	moModalityCompat     = `'text'`
 )
+
+// renderOfferListSQL substitutes both schema-dependent placeholders. The
+// tokens are distinct so the two strings.Replace calls cannot collide.
+func renderOfferListSQL(pmSource, moModality string) string {
+	return strings.Replace(
+		strings.Replace(offerListSQLColumns, "__PM_SOURCE__", pmSource, 1),
+		"__MO_MODALITY__", moModality, 1,
+	)
+}
 
 var (
 	offerListSQLOnce sync.Once
@@ -69,70 +92,82 @@ var (
 )
 
 // resolveOfferListSQL probes the live schema once for the presence of
-// `provider_models.source` and caches the matching SQL. Safe to call before
-// the first query — the value is then served from the atomic cache.
-//
-// Migration 361 (sql/migrations/domain/361_standard_provider_models.sql,
-// 2026-08-22) added the column with `ADD COLUMN IF NOT EXISTS`. Until that
-// migration runs on a given environment, `pm.source` does not exist and the
-// pre-migration SQL would error out with "column pm.source does not exist",
-// which surfaced as 500 on GET /api/providers/{id}/models. Probing here keeps
-// the endpoint functional on both pre- and post-migration schemas.
-func resolveOfferListSQL(ctx context.Context, db *pgxpool.Pool) string {
+// `provider_models.source` and `model_offers.provider_modality`, caching the
+// matching SQL. Safe to call before the first query — the value is then
+// served from the atomic cache. The modality probe is what keeps the
+// credential-scoped list (and every other consumer of this shared DTO) on a
+// 200 on upgraded installs whose model_offers view predates the alias.
+func resolveOfferListSQL(ctx context.Context, db offerQuerier) string {
 	offerListSQLOnce.Do(func() {
 		if db == nil {
-			offerListSQLVal.Store(strings.Replace(offerListSQLColumns, "__PM_SOURCE__", offerListSQLCompat, 1))
+			offerListSQLVal.Store(renderOfferListSQL(offerListSQLCompat, moModalityCompat))
 			return
 		}
 		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		var hasSource bool
+		var hasSource, hasProviderModality bool
 		err := db.QueryRow(probeCtx, `
 			SELECT EXISTS (
 				SELECT 1 FROM information_schema.columns
 				WHERE table_schema = 'public'
 				  AND table_name = 'provider_models'
 				  AND column_name = 'source'
+			),
+			EXISTS (
+				SELECT 1 FROM information_schema.columns
+				WHERE table_schema = 'public'
+				  AND table_name = 'model_offers'
+				  AND column_name = 'provider_modality'
 			)
-		`).Scan(&hasSource)
+		`).Scan(&hasSource, &hasProviderModality)
 		if err != nil {
 			slog.Warn("resolveOfferListSQL: probe failed; using compat SQL", "error", err)
-			offerListSQLVal.Store(strings.Replace(offerListSQLColumns, "__PM_SOURCE__", offerListSQLCompat, 1))
+			offerListSQLVal.Store(renderOfferListSQL(offerListSQLCompat, moModalityCompat))
 			return
 		}
+		pmSource := offerListSQLCompat
 		if hasSource {
-			offerListSQLVal.Store(strings.Replace(offerListSQLColumns, "__PM_SOURCE__", offerListSQLWithSource, 1))
+			pmSource = offerListSQLWithSource
 		} else {
 			slog.Info("resolveOfferListSQL: provider_models.source missing; using compat SQL (migration 361 not applied)")
-			offerListSQLVal.Store(strings.Replace(offerListSQLColumns, "__PM_SOURCE__", offerListSQLCompat, 1))
 		}
+		moModality := moModalityCompat
+		if hasProviderModality {
+			moModality = moModalityWithColumn
+		} else {
+			slog.Info("resolveOfferListSQL: model_offers.provider_modality missing; using compat SQL (view predates the modality alias)")
+		}
+		offerListSQLVal.Store(renderOfferListSQL(pmSource, moModality))
 	})
 	v, _ := offerListSQLVal.Load().(string)
 	if v == "" {
 		// First call before Do() entered (race-safe fallback).
-		return strings.Replace(offerListSQLColumns, "__PM_SOURCE__", offerListSQLCompat, 1)
+		return renderOfferListSQL(offerListSQLCompat, moModalityCompat)
 	}
 	return v
 }
 
 // offerListSQLFor returns the offer-list SQL using the given pool to probe the
-// schema once. Use this from handler methods that have access to h.db.
-func offerListSQLFor(ctx context.Context, db *pgxpool.Pool) string {
+// schema once. The offerQuerier seam (instead of *pgxpool.Pool) lets the
+// credential-scoped handler run against pgxmock like its provider-wide
+// sibling. Use this from handler methods that have access to h.db.
+func offerListSQLFor(ctx context.Context, db offerQuerier) string {
 	return resolveOfferListSQL(ctx, db)
 }
 
 // offerListSQL is the shared SELECT used by provider-wide and credential-scoped
 // model lists. Extra capability columns feed the unified UI.
 //
-// Kept as a `var` (not const) because we resolve the placeholder at first
+// Kept as a `var` (not const) because we resolve the placeholders at first
 // access via offerListSQLFor. Existing call sites that concatenate this with
 // a WHERE clause continue to work transparently — the const was renamed to
 // offerListSQLColumns above so this symbol now points at the runtime-resolved
-// value through the legacy default (compat SQL, no pm.source).
+// value through the legacy default (compat SQL: no pm.source, no view-level
+// provider_modality).
 //
 // DEPRECATED: prefer offerListSQLFor(ctx, h.db) inside handler methods so the
 // schema probe uses the live pool.
-var offerListSQL = strings.Replace(offerListSQLColumns, "__PM_SOURCE__", offerListSQLCompat, 1)
+var offerListSQL = renderOfferListSQL(offerListSQLCompat, moModalityCompat)
 
 type modelOfferDTO struct {
 	ID                    int             `json:"id"`
