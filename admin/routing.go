@@ -5520,6 +5520,17 @@ func (h *Handler) applyForceEnable(ctx context.Context, credentialID int, rawMod
 		return fmt.Errorf("force_enable: commit failed: %w", err)
 	}
 	met.RoutingCredentialResetTotal.WithLabelValues("db", "ok").Inc()
+
+	// A force-enable is also an operator recovery point for credentials that
+	// were ejected after an upstream auth failure. Drop the in-process primary
+	// plaintext cache so the next request reads the current ciphertext rather
+	// than replaying a stale key. Reset the shared multi-key health state too;
+	// otherwise keys marked failed by the old auth result remain exhausted even
+	// after the credential has been repaired.
+	provider.InvalidateCredentialKeyCache(credentialID)
+	provider.ResetKeyRotatorForCredential(credentialID)
+	beforeAfter["credential_key_cache_invalidated"] = true
+	beforeAfter["credential_key_rotator_reset"] = true
 	beforeAfter["previous_manual_disabled"] = currentDisabled
 	beforeAfter["previous_availability_state"] = availState
 	beforeAfter["new_manual_disabled"] = false
