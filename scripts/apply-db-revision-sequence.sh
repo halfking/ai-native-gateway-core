@@ -294,6 +294,12 @@ files=(
   # 编号前已查生产双账本：696 在 gateway_db_revision_sequences 与
   # schema_migrations 均未被本库或其他项目占用。
   "$ROOT_DIR/sql/migrations/startup/696_request_logs_view_system_fingerprint.sql"
+  # 2026-09-12 指纹写路径贯通:697 把 system_fingerprint 追加进 promote 的
+  # RETURNING/INSERT/SELECT 三列清单尾部(695 体),使 telemetry 新落的
+  # request_logs_hot.system_fingerprint 列随晋升进月度分区——否则 8h 窗口外
+  # 漂移检测即失明(晋升行丢列,父表默认 NULL)。列在 hot(603)/parent(487)
+  # 均已存在,纯 CREATE OR REPLACE,幂等收敛,down 无。697 已查生产双账本空闲。
+  "$ROOT_DIR/sql/migrations/startup/697_request_logs_promote_system_fingerprint.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
