@@ -443,6 +443,14 @@ func (d *DB) ensureSessionSummariesArchivalSchema(ctx context.Context) error {
 // (function replacements, columnar→heap conversion with row-count
 // conservation, and the post-conversion verification), wrapped in one
 // transaction exactly like the migration file.
+//
+// 2026-09-12 (migration 694 follow-up): the candidate ensure function here
+// converges to 694's final body — all month derivation moved out of DECLARE
+// initializers and behind SET LOCAL TIME ZONE 'Asia/Shanghai'. This ensure
+// reruns on every binary startup; without the pin it would overwrite the
+// timezone-corrected function that migration 694 installed, resurrecting the
+// 473-class 8h gap on UTC sessions (declaration initializers evaluate before
+// any in-body SET LOCAL could take effect).
 const ensureCandidateFailureLogsHeapPartitionsSQL = `
 BEGIN;
 SET LOCAL statement_timeout = '10min';
@@ -452,10 +460,15 @@ RETURNS text
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    month_start    date := date_trunc('month', target_ts)::date;
-    month_end      date := (date_trunc('month', target_ts) + interval '1 month')::date;
-    partition_name text := 'candidate_failure_logs_' || to_char(month_start, 'YYYY_MM');
+    month_start    date;
+    month_end      date;
+    partition_name text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    partition_name := 'candidate_failure_logs_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class
                    WHERE relname = partition_name
                      AND relnamespace = 'public'::regnamespace) THEN
