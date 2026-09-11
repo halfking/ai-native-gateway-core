@@ -89,7 +89,7 @@ func dailyProbeAuditSQL() string {
 		SELECT DISTINCT credential_id, raw_model_name
 		FROM (
 			SELECT rl.credential_id, pm.raw_model_name
-			FROM request_logs rl
+			FROM request_logs_with_current_month rl
 			JOIN credential_model_bindings cmb ON cmb.credential_id = rl.credential_id
 			JOIN provider_models pm ON pm.id = cmb.provider_model_id
 			WHERE rl.ts >= now() - interval '3 days'
