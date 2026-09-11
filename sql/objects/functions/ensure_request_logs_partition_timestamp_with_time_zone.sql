@@ -2,14 +2,19 @@
 -- Name: ensure_request_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
 
-CREATE FUNCTION public.ensure_request_logs_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
+CREATE OR REPLACE FUNCTION public.ensure_request_logs_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
     LANGUAGE plpgsql
     AS $$
 DECLARE
-    month_start   date := date_trunc('month', target_ts)::date;
-    month_end     date := (date_trunc('month', target_ts) + interval '1 month')::date;
-    part_name     text := 'request_logs_' || to_char(month_start, 'YYYY_MM');
+    month_start   date;
+    month_end     date;
+    part_name     text;
 BEGIN
+    SET LOCAL TIME ZONE 'Asia/Shanghai';
+    month_start := date_trunc('month', target_ts)::date;
+    month_end := (date_trunc('month', target_ts) + interval '1 month')::date;
+    part_name := 'request_logs_' || to_char(month_start, 'YYYY_MM');
+
     IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name) THEN
         EXECUTE format(
             'CREATE TABLE %I PARTITION OF request_logs FOR VALUES FROM (%L) TO (%L)',

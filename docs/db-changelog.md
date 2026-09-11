@@ -451,3 +451,9 @@ apply-db-revision-sequence.sh、dbinit runner、installer embed maps、aggregato
 |-----------|------|---------|--------|
 | 693 | `693_provider_models_canonical_cleared_at.sql` | `603a0bb6df55e67611abf0f12488d6e4f5fa2667a66f26c105d4b66db0521976` | applied+verified |
 
+## 2026-09-11T13:28:02Z — deploy 245 build_seq 2081 (ab2a3c8e)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 694 | `694_partition_ensure_timezone.sql` | `8a3015a58e5799c135c6ab886e2e798066c008c9ef3897f8fd5905a164b4efb3` | applied+verified |
+
