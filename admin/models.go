@@ -15,6 +15,41 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 )
 
+// Alias create/bulk-import statements. 2026-09-12: both used to arbitrate on
+// the expression (raw_name, COALESCE(quantization,''), COALESCE(surface,'')),
+// but model_aliases has no such unique index — only
+// uq_model_aliases_canonical_raw (canonical_id, raw_name) — so every create
+// failed with 42P10 since 2cef36255 introduced them. Rewritten onto the real
+// pair arbiter, plus an explicit demote of cross-canonical competitors: the
+// original DO UPDATE carried canonical_id = EXCLUDED (repoint the raw_name to
+// the model being edited), which the pair constraint cannot express for a
+// row owned by another canonical — demotion to 'disabled' is the
+// pair-compatible equivalent, matching the taxonomy sync semantics.
+// Unlike the automatic sync paths, the admin upsert reactivates a
+// 'disabled' target unconditionally: the API call itself is the operator's
+// explicit decision.
+const aliasUpsertSQL = `
+	INSERT INTO model_aliases (canonical_id, raw_name, quantization, surface, notes, client_profiles, status, updated_at)
+	VALUES ($1, $2, $3, $4, $5, $6, 'active', NOW())
+	ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
+		quantization = EXCLUDED.quantization,
+		surface = EXCLUDED.surface,
+		notes = EXCLUDED.notes,
+		client_profiles = COALESCE(EXCLUDED.client_profiles, model_aliases.client_profiles),
+		status = 'active',
+		updated_at = NOW()
+	RETURNING id
+`
+
+// aliasDemoteCompetitorsSQL retires every OTHER canonical's active alias for
+// the same raw_name, so the operator's mapping is the only one that routes.
+// Already non-active rows are left untouched (no label churn).
+const aliasDemoteCompetitorsSQL = `
+	UPDATE model_aliases
+	SET status = 'disabled', updated_at = NOW()
+	WHERE raw_name = $1 AND canonical_id <> $2 AND status = 'active'
+`
+
 func (h *Handler) handleModels(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
@@ -849,15 +884,13 @@ func (h *Handler) handleModelAliases(w http.ResponseWriter, r *http.Request, mod
 	}
 
 	var aliasID int
-	err := h.db.QueryRow(ctx, `
-		INSERT INTO model_aliases (canonical_id, raw_name, quantization, surface, notes, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, 'active', NOW())
-		ON CONFLICT (raw_name, COALESCE(quantization,''), COALESCE(surface,''))
-		DO UPDATE SET canonical_id = EXCLUDED.canonical_id, notes = EXCLUDED.notes, status = 'active', updated_at = NOW()
-		RETURNING id
-	`, modelID, req.RawName, quantization, surface, notes).Scan(&aliasID)
+	err := h.db.QueryRow(ctx, aliasUpsertSQL, modelID, req.RawName, quantization, surface, notes, nil).Scan(&aliasID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create alias failed: "+err.Error())
+		return
+	}
+	if _, err := h.db.Exec(ctx, aliasDemoteCompetitorsSQL, req.RawName, modelID); err != nil {
+		writeError(w, http.StatusInternalServerError, "demote competing aliases failed: "+err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -895,27 +928,19 @@ func (h *Handler) createAliasesBulk(w http.ResponseWriter, r *http.Request, mode
 			continue
 		}
 		var aliasID int
-		err := h.db.QueryRow(ctx, `
-			INSERT INTO model_aliases (canonical_id, raw_name, notes, status, client_profiles, updated_at)
-			VALUES ($1, $2, $3, 'active', $4, NOW())
-			ON CONFLICT (raw_name, COALESCE(quantization,''), COALESCE(surface,''))
-			DO UPDATE SET canonical_id = EXCLUDED.canonical_id,
-			              notes = COALESCE(EXCLUDED.notes, model_aliases.notes),
-			              status = 'active',
-			              client_profiles = COALESCE(EXCLUDED.client_profiles, model_aliases.client_profiles),
-			              updated_at = NOW()
-			RETURNING id
-		`, modelID, name, notes, req.ClientProfiles).Scan(&aliasID)
+		err := h.db.QueryRow(ctx, aliasUpsertSQL, modelID, name, nil, nil, notes, req.ClientProfiles).Scan(&aliasID)
 		if err != nil {
 			continue
 		}
+		//nolint:errcheck // best-effort demote; the upsert already succeeded
+		h.db.Exec(ctx, aliasDemoteCompetitorsSQL, name, modelID)
 		created = append(created, map[string]any{
-			"id":              aliasID,
-			"canonical_id":    modelID,
-			"raw_name":        name,
-			"status":          "active",
+			"id":           aliasID,
+			"canonical_id": modelID,
+			"raw_name":     name,
+			"status":       "active",
 			"client_profiles": req.ClientProfiles,
-			"notes":           notes,
+			"notes":        notes,
 		})
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{

@@ -246,7 +246,10 @@ func (s *AliasSyncService) rebuildAliasIndex(ctx context.Context, result *AliasS
 	// (canonical_id, raw_name) arbiter with DO UPDATE reactivates pairs that
 	// survive only in a non-active status — DO NOTHING would leave an
 	// available offer without an active alias when its exact pair exists as
-	// 'deprecated' (observed live). canonical_id needs its own IS NOT NULL
+	// 'deprecated' (observed live). A 'disabled' pair is an explicit
+	// operator kill and stays disabled (same rule as the taxonomy sync; the
+	// audit round 2026-09-12 added the WHERE guard). canonical_id needs its
+	// own IS NOT NULL
 	// filter: model_offers is a view and canonical_id is nullable even when
 	// canonical_raw_name is set (23502, observed live).
 	err := s.db.Exec(ctx, `
@@ -264,6 +267,7 @@ func (s *AliasSyncService) rebuildAliasIndex(ctx context.Context, result *AliasS
 		ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
 			status = 'active',
 			updated_at = now()
+		WHERE model_aliases.status <> 'disabled'
 	`)
 	if err != nil {
 		return err
