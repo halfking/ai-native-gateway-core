@@ -1,63 +1,74 @@
-# Handoff: junk canonical 治理后的独立收尾轮 —— review free 白名单 / 全局别名卫生 / 694 升级通道 + 本机部署 2085
+# Handoff: junk canonical 治理后的独立收尾轮 —— review free 白名单 / 别名卫生（含审计返工）/ 694 通道 + 本机部署 2086
 
-**日期**: 2026-09-12
-**状态**: ✅ 三项全部闭环（free 定夺 + 别名卫生清零 + 694 通道修复与 2085 部署）
-**运行环境**: 本机容器 kx-llm-gateway-local:2.5.4.2085（46e3bc7e→bump 5a877aa9d），@8782 健康检查 ok
+**日期**: 2026-09-12（含同日审计返工）
+**状态**: ✅ 三项闭环 + 审计发现一处重大缺陷已根修；本机 kx-llm-gateway-local:**2.5.4.2086**（f494d069）@8782
 **前置**: 20260912-junk-canonical-remediation（14 行弃用、37/37 可路由）遗留三项
 
 ---
 
-## 任务①：review `free`（models_canonical 2664333）定夺 —— 保留 + 白名单
+## 结论 / 根因
 
-**语义取证（决定性）**：
-- openrouter（provider 21，raw `openrouter/free`，pm 2661145）**全历史零流量**：`request_logs` 中 `canonical_id=2664333` 0 行、`provider_id=21` 0 行（该 provider 从未承载过请求）。
-- provider 21 的 2026-08-25 discovery 里，所有 per-model `:free` 变体（`z-ai/glm-5.2:free`、`minimax/minimax-m3:free`、`nvidia/nemotron-3-ultra-550b-a55b:free`…）各自有专属 canonical 行；唯独裸 `openrouter/free` 被剥前缀种成 junk `free`。
-- `openrouter/free` 无单一模型身份（OpenRouter 免费池伪形态）：govern 工具 pair-test 证据 0.99×5 同分（glm-5.2:free / inkling:free / minimax-m3:free / laguna-s-2.1:free / lfm-2.5-2.6b:free），重指向任一都是错的。
-- 引用面：仅 1 条 pm + 1 条自名别名，无 work_type_model_route 引用。
+1. **任务① review `free`（2664333）= 免费池伪模型，保留 + 白名单**。证据：openrouter（provider 21）全历史零流量（canonical 2664333 与 provider 21 在 request_logs 均 0 行）；provider 21 discovery 里所有 per-model `:free` 变体各有专属 canonical，唯独裸 `openrouter/free` 被剥前缀种成 junk；0.99×5 同分（glm-5.2:free / inkling:free / minimax-m3:free / laguna-s-2.1:free / lfm-2.5-2.6b:free），重指向任一皆错。落地为工具机制：govern-junk-canonical 新增 `VerdictWhitelisted` + `OperatorWhitelist`（白名单覆盖一切 verdict、永不作为重定向落点，诊断仍透明展示）。
+2. **任务② 别名卫生 —— 初版数据修复被审计判定无效，已根修为 resolver 确定性解析**。
+   - 初版：371 多目的地活跃拼写 = 369 惰性（241 同名遮蔽 + 128 跨形 variant 拦截）+ 2 真歧义（`deepseek-v4`、`doubao-embedding`），按"bare 家族名 → undated 基准行"定夺做了单事务弃用（5 行）。
+   - **审计发现（重大）**：部署 2085 后 33 分钟内 5 行全部被复活（updated_at=03:13:29-31 = 新容器 discovery 首轮）。根因：`NormalizeRouteKey` 剥日期后缀（`-260425`）、`stripWrapperVariants` 再剥 wrapper token（`flash`/`vision`），因此**每个 provider 的 dated raw 都按设计生成 bare 家族别名指向自己的 canonical**（实测 `deepseek/deepseek-v4-flash-260425` → 变体集含 `deepseek-v4-flash` 与 `deepseek-v4`），`EnsureCanonicalAndAliases` 用 `ON CONFLICT DO UPDATE SET status='active'` 无条件复活。discovery 每小时一轮——数据层弃用永远撑不过一个周期。
+   - **真缺陷是两个 resolver 的别名查询 `LIMIT 1` 无 ORDER BY（不确定命中）**。根修（f494d0695）：`resolve/resolve.go` 与 `provider/client.go` 的别名相 + raw_fallback 共 4 处加 `ORDER BY length(mc.canonical_name), mc.canonical_name`——最短名 = 最基准/undated 行，与 matcher `betterMatch` 的 tie-break 同一约定。operator 语义（`deepseek-v4`→deepseek-v4-flash(120)、`doubao-embedding`→doubao-embedding-vision(47)）从数据层搬到解析层，**天然持久**；5 条复活的别名行保留 active（无害且不可消除）。
+3. **任务③ migration 694 升级通道修复 + 部署**。预检发现 694 与 693 同款缺口（只进仓库文件，db.go 无 ensure、apply 清单止于 693）→ 已加进 `scripts/apply-db-revision-sequence.sh`（46e3bc7e2）并本机入账（双账本 + 函数体含 demote 自愈）。部署 2085（5a877aa9d）后审计轮再部署 **2086**（f494d0695 / bump b89799340）；一次 cutover 因启动耗时 >60s 竞态失败回滚，重跑即成（VERIFY_PASS=1）。
+4. **端到端实测（真实请求）**：`POST /v1/chat/completions` model=`deepseek-v4` → 响应 success，`request_logs_hot`: `canonical_model=deepseek-v4-flash`、`canonical_id=120`、provider 34——在别名行被复活（122350 行 active）的情况下由 ORDER BY 决定落点，持久性得证。
 
-**定夺：免费池伪模型 → 保留 + 白名单**。落地为工具机制（非文档一笔）：
-- `scripts/govern-junk-canonical/plan.go` 新增 `VerdictWhitelisted` + `OperatorWhitelist`（name→rationale，`free` 首条带全部证据）。白名单覆盖一切 verdict（即使将来算出 fixable 也不动）；诊断仍以 whitelisted 桶 + 理由透明呈现；BuildApplyPlan 天然不产 plan，且 whitelisted 行留在 suspectIDs → 永不作为重定向落点。
-- main.go 报告：suspects 计数行、逐行理由、尾部 note 均含 whitelisted。
-- 测试：`TestDiagnoseAmbiguousTargetsRelegatedToReview` 临时清空白名单继续覆盖 tie→review 路径；新增 `TestDiagnoseWhitelistOverridesReview` 断言 verdict/reason/无 plan/无重定向落白名单行。
-- README：verdicts 增 whitelisted；新增 Operator whitelist 章节（free 的完整证据与 2026-09-12 决策）。
-- 复诊：`go run ./scripts/govern-junk-canonical` → suspects: 1 (0 fixable, 0 review, 0 withheld, 1 whitelisted)。
-- 提交：`e3ff2e45f`。若 OpenRouter 流量将来变得相关，应作为整体重访该行，而非重定向。
-
-## 任务②：全局别名卫生轮 —— 371 多目的地 = 369 惰性 + 2 真歧义（已逐条定夺修复）
-
-**方法（关键：按 resolver 代码语义分类，不按直觉）**。`resolve/resolve.go` 查找顺序 = ① variant 矩阵逐个 canonical 精确匹配（`NormalizeRouteKeyAliases`：点位笛卡尔积 + wrapper 剥离，首中即胜，确定性）→ ② 同序别名 `LIMIT 1` **无 ORDER BY**。故"canonical 同名遮蔽"只是惰性的一种——**跨形 variant 的 canonical 拦截同样使别名不可达**。
-- 一次性分析器（/tmp/aliasaudit，replace 引 modelname）精确复刻该顺序：371 个多目的地活跃拼写中 **369 个 canonical-intercept（惰性，含 241 个同名遮蔽 + 128 个跨形拦截）**，真歧义仅 2 个。上轮担心的 `claude-haiku-4-5` 标点双胞胎属前者（`claude-haiku-4-5` 本身是活跃 canonical 352，canonical 路径确定性命中）。
-- 两拼写全历史零流量（歧义从未实际触发）。
-
-**逐条定夺**（原则：bare 家族名 → undated 基准行；dated 快照经自身 canonical 名 opt-in）：
-1. `deepseek-v4`：→ **deepseek-v4-flash (120)**（work_type_model_route 5 个 work_type 的 pinned primary，90 天 2252 次 vs pro 1571 次）；弃用 → deepseek-v4-flash-260425 (122350) 行。
-2. `doubao-embedding`：→ **doubao-embedding-vision (47)**（5 目的地中唯一 undated 基准行；家族 90 天流量≈0）；弃用 4 条 dated 快照行（5724/122286/122304/122331）。
-
-执行：先 `pg_dump --data-only --table=model_aliases` 备份（/tmp/backup_alias_hygiene_20260912_030557.sql），单事务 2 条 UPDATE + DO 块复核（各拼写活跃目的地数=1 且=定夺目标、无活跃别名指向死 canonical）。**禁批量盲改遵守**：仅 2 项、逐条裁量。
-外部复核：重导数据重跑分类器 → **true-ambiguity 0**，369 全部 canonical-intercept。
-
-## 任务③：migration 694 升级通道修复 + 本机部署 2082→2085
-
-**部署前预检发现同款缺口（693-class）**：694 只存在于仓库文件（installer 全新安装路径），db.go 无 ensure 镜像、apply-db-revision-sequence.sh 清单止于 693——升级库无任何通道应用它。已在预检阶段修复（而非部署后补救）：
-- `scripts/apply-db-revision-sequence.sh` 增补 694 条目（提交 `46e3bc7e2`）；运行脚本 → 仅 694 真正应用（`CREATE FUNCTION`），gateway_db_revision_sequences 登记_marker；补 `schema_migrations` '694' 行与 693 双账本对齐。
-- 验证：`pg_get_functiondef(promote_request_logs_hot_to_partition)` 含 demote 自愈块。
-- 注：687/688 亦未入账（早于本轮即如此、无任何错误信号）；694 体=688 全量+demote，应用后本库 promote 函数已是对齐形态。687 的分区上界守卫修复未见本库对应 42P17，未越界处理。
-
-**部署**（local-deploy 配方照做）：docker stop → `bash scripts/deploy-local.sh deploy` → **2.5.4.2085**（8781/8782 双实例 verify ok，凭据解密冒烟 587 providers/7 creds/0 failed）；版本身份 chore(release) 提交 `5a877aa9d`（menu-config.json churn 还原未提交）。部署后：0 条 42703/42P17/23505，routing_health_checker 正常完成，data-lifecycle hot cron 正常。
-
-## 改动与数据变更清单
+## 改动文件与关键行为
 
 | 对象 | 变更 | 提交 |
 |---|---|---|
-| scripts/govern-junk-canonical/{plan.go,main.go,plan_test.go,README.md} | whitelisted verdict + OperatorWhitelist(free) | e3ff2e45f |
-| model_aliases | 5 行弃用（deepseek-v4→122350；doubao-embedding→4 快照行） | 数据态（备份见上） |
-| scripts/apply-db-revision-sequence.sh | 增补 694 | 46e3bc7e2 |
+| scripts/govern-junk-canonical/{plan.go,main.go,plan_test.go,README.md} | whitelisted verdict + OperatorWhitelist(free，含全部证据) | e3ff2e45f |
+| scripts/apply-db-revision-sequence.sh | 增补 694（693-class 升级通道缺口） | 46e3bc7e2 |
 | VERSION/version.json/web/public/version.json | 2085 bump | 5a877aa9d |
-| DB | 694 入账（双账本）+ promote 函数自愈体 | 部署路径 |
+| docs/handoff（本文初版） | ebee70a8f + merge win11 R14 docs 886860aa6 | |
+| resolve/resolve.go, provider/client.go | 4 处别名解析加确定性 ORDER BY（根修） | f494d0695 |
+| scripts/govern-junk-canonical/{plan.go,plan_test.go} | 白名单不变量结构化：whitelisted 行从证据对手目录（minusC）与 apply gate catalog 排除，杜绝"建议/重定向到白名单行"；+ 合成白名单测试直查 gateCatalog | f494d0695（同笔） |
+| VERSION 等 | 2086 bump | b89799340 |
+| DB | 694 双账本入账 + promote 函数自愈体；task② 的 5 行弃用被 discovery 复活后**保留 active**（无害） | 数据态 |
 
-## 遗留 / 备注
+注：历史中 7f468a888（necessity gate round 18）为并行会话提交，先于 f494d0695 入本机 main，随本轮一并推送。
 
-1. 备份均在 /tmp（junk 轮 `backup_junk_canonical_20260912_0147.sql`、本轮 `backup_alias_hygiene_20260912_030557.sql`）——重启即失，需长期留存请转移。
-2. `openrouter/free` 重访条件：provider 21 出现真实流量时整体重审（届时先看 discovery 是否已修复伪模型种行）。
-3. 687/688 未入账为既存状态，无错误信号；若未来出现 request_logs 分区上界 42P17 再按 687 处理。
-4. 别名卫生的分析器在 /tmp/aliasaudit（一次性），方法已录本档：分类必须按 resolver variant 矩阵语义，同名遮蔽≠惰性全集。
+## 测试命令与结果
+
+```
+go build ./...                                                    # ok
+go test ./resolve/ ./provider/ ./scripts/govern-junk-canonical/ ./modelname/
+                                                                  # 全 ok
+set -a; source .env.local; set +a
+go run ./scripts/govern-junk-canonical                            # suspects: 1 (0 fixable, 0 review, 0 withheld, 1 whitelisted)
+bash scripts/apply-db-revision-sequence.sh                        # 仅 694 真正应用（CREATE FUNCTION），余 already applied
+docker exec llm-gateway-pg psql ...                               # 694 双账本 1/1；pg_get_functiondef 含 demote 自愈块
+# 实证 SQL：新 ORDER BY 下 deepseek-v4→120 / doubao-embedding→47
+docker stop llm-gateway-local-8782 && bash scripts/deploy-local.sh deploy
+                                                                  # 首次 cutover readyz 60s 竞态失败回滚；重跑 VERIFY_PASS=1
+curl /healthz                                                     # 2.5.4-f494d069-20260911-2086, ready
+# 端到端：真实 chat 请求 model=deepseek-v4 → success
+# request_logs_hot: canonical_model=deepseek-v4-flash, canonical_id=120, provider 34
+# 部署后日志：0 条 42703/42P17/23505，无 panic/fatal
+```
+
+## 审计结论（双轴自审）
+
+- **Standards 轴**：Fix A 与 matcher tie-break（短名优先、字典序）同一约定，注释引用依据；4 处同改保证两个 resolver 一致；Fix B 把 README 已声明的不变量（白名单行永不作为重定向目标）结构化，合成白名单测试同时断言建议目标与 gateCatalog。
+- **Spec 轴**：任务边界未扩大——未动 GenerateAliasVariants（bare 别名覆盖是有意的客户端兼容面，删除会影响生产拼写习惯）；未动 687/688（无错误信号）；数据层不再反复弃用（与 discovery 设计对抗无意义）。
+- **过程轴（本次审计的核心教训）**：数据态变更的"外部复核"必须在**部署完成且 discovery 首轮跑过之后**再做一次——本轮初版复核（部署前）通过、部署 33 分钟后即被系统自身行为推翻。
+
+## 遗留风险
+
+1. **bg/taxonomy_sync.go 与 discovery/alias_sync.go 的 `ON CONFLICT (raw_name)` 无对应唯一索引**——两路径一旦执行必报错（被 warn 吞掉）。属既存缺陷，本轮未处理；若 taxonomy/别名索引功能要启用需先修。
+2. 白名单 `free`（4 字符）理论上可在未来某个多目的地拼写集里因"最短名优先"胜出——当前唯一入边是自名别名且 provider 21 零流量，风险理论性；若 OpenRouter 接入变现实应整体重审该行。
+3. 687/688 本机未入账为既存状态（无错误信号）；694 体已含 688 全量，promote 函数已是对齐形态。
+4. 备份均在 /tmp（`backup_junk_canonical_20260912_0147.sql`、`backup_alias_hygiene_20260912_030557.sql`）——重启即失。
+5. request_logs 主表 15 分钟窗口查不到新请求是正常现象（先落 `request_logs_hot`，8h promote），验证时查 hot 表。
+6. deploy-local 的 readyz 60s 窗口在冷启动重负载（apihub sync + discovery 首轮 + 587 providers）下可能不够——失败重跑即可，非代码缺陷。
+
+## 下一轮提示词
+
+> 聚焦目标：收尾轮审计返工（f494d0695/b89799340，本机 2086 在跑）后的独立项。三项可选（按优先级）：① 修 bg/taxonomy_sync.go 与 discovery/alias_sync.go 的 `ON CONFLICT (raw_name)` 无唯一索引缺陷（先确认两路径是否有启用方与调用频率，再决定是建 partial unique index 还是改写 SQL，注意 rebuildAliasIndex 语义是 INSERT IGNORE）；② 白名单机制运营化——`free` 的"最短名胜出"理论风险与 OperatorWhitelist 的增补流程文档化（评估是否值得加 -whitelist flag 或 DB 表驱动）；③ 观察一轮 discovery 周期（约 1h）后复核两 bare 拼写的解析仍落 120/47，确认 ORDER BY 在生产形态下稳定。约束：不自动开新审计轮；数据操作先备份、单事务、事务内复核；建议 skills：handoff、session-audit-gate、browser-use:control-browser
+
+## 相关记忆
+
+`provider-model-drawer-verification`（已更新：②持久性修正、2086）、`local-deploy-gotchas`、`routing-local-provider-gotchas`、`llm-gateway-local-db`。
