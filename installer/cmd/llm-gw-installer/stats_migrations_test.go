@@ -113,6 +113,7 @@ func TestStatsStartupMigrationsMatchCanonicalSources(t *testing.T) {
 		"696_request_logs_view_system_fingerprint.sql":         requestLogsViewSystemFingerprintMigration696,
 		"697_request_logs_promote_system_fingerprint.sql":      requestLogsPromoteSystemFingerprintMigration697,
 		"698_promote_hot_partition_timezone_pin.sql":           promoteHotPartitionTimezonePinMigration698,
+		"699_supplier_errors_ensure_timezone_pin.sql":          supplierErrorsEnsureTimezonePinMigration699,
 	}
 
 	for name, embedded := range expected {
