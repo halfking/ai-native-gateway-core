@@ -184,36 +184,63 @@
 - **验证记录（如实区分）**：**通过**——全量 bg 新基线对照（17 例集合与 fails_r6.txt 一致，fails_r7.txt 留档）、定向守卫 25 例 PASS、CRLF 转换口径 cmp 校验。**环境受限**——源文本断言类测试在 CRLF 检出下无法在 Windows 通过（由 Linux CI 覆盖）；win/arm64 `-race` 不支持未跑（与既往轮次相同）；promtool/Grafana 导入不可用（沿用第八/九轮口径）。**未验证**——观测链路是否已被运维实际 provisioning、生产指标状态（无通道）。
 - **遗留风险**：与第十二轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。
 
+## 本轮记录（2026-09-12 第十四轮，上线观察轮第八轮——无输入记录阻塞 + bg 基线随外部变更重测）
+
+- **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮零代码改动，产出 = main 合并态复核（会话窗口内 origin/main 两次前进的增量定性）+ bg/ 基线重测（fails_r8.txt 留档）+ deploy 契约复跑 + 协作环境异常处置记录。
+- **main 合并态复核（只读，两次 fetch 实查）**：本轮窗口内 origin/main 前进两跳——d5be9203b（= b9a4153e8 第十三轮文档 + **d812e1a53 bg 读表面修复** + f3c30ef6e R12 收尾审计 + 合并）→ **2027067ac**（R13 日志线经 4eaa4cf59 合入 main：internal/logging raw-sink 系列与 deploy/prometheus 的 R12/R13 观测工件 + admin/web offer 修复系列 + 其收尾文档）。增量定性：
+  - **d812e1a53（本轮基线重测对象）**：request_logs 裸父表读改走 `request_logs_with_current_month` 当月表共 4 处（candidate_failure_monitor 的 5min staleness 与 auto-cool、`dailyProbeAuditSQL` 的 request_logs 分支 FROM、shared_pick 7d 选型），并新增守卫 `TestRecentWindowReadsUseCurrentMonthSurface`（表面后缀正则断言，CRLF 不敏感）。**必要性闸门/skip/pump 路径零涉及；`dailyProbeAuditSQL` 的绑定链 EXISTS 外层过滤未动（diff 只改内层 request_logs 分支 FROM）**；candidate_failure_logs 分支未动；孤儿行三层清理口径不变。
+  - **2027067ac（R13 合入）**：`git diff d5be9203b..2027067ac -- bg/` 为空——bg/ 零变化，**基线重测对新头字节级有效**；deploy 变化面全在 R12/R13 raw-sink 观测工件（shadow-write-failures.yaml、r12-raw-sink-rollout.json、docker-compose、prometheus.yml），非本特性面。
+  - **观测五件套复验在位（2027067ac）**：alerts.yml 告警 1 处、alerts_test.go 契约钉 1 处、面板 uid 1 处、dashboard_test.go 恰 3 个 Test 函数、README 引用 2 处。本 handoff 文件未被并行线改动。
+- **bg/ 基线重测（本轮确定性产出；按任务书警示执行）**：d812e1a53 移动 bg/ 后重测，**lgw-p2test/fails_r8.txt 为当前基线，fails_r7.txt 作废**。
+  - **同步方法（CRLF 同口径，先校验后应用）**：以第十三轮同步产物 node_probe.go / node_probe_test.go 对 `git show 29db47ad8:<file> | unix2dos` 做 cmp 逐字节口径校验（完全一致）后，同口径应用 4 个文件（candidate_failure_monitor.go、daily_probe_audit.go、shared_pick.go、新增 recent_surface_reads_test.go）。
+  - **副本卫生发现（本轮新记）**：全量清点暴露两个守卫测试文件行尾口径混杂——node_probe_submit_gate_test.go 前 258 行 CRLF（第四轮 cp 自工作区检出）+ 259-300 行（后加的守卫段）LF；daily_probe_audit_test.go 整文件 LF。两者与 blob 做 LF 直出 cmp **内容逐字节一致，无真实漂移**；统一归一 CRLF 后清点仅剩 storage_retention_worker.go 桩一处差异（与第十三轮口径相同）。
+  - **结果**：全量 `go test -mod=vendor -count=1 ./bg/`（CGO_ENABLED=1 CC=aarch64-w64-mingw32-gcc GOPROXY=off）→ **17 例失败，排序无关集合与 fails_r7.txt 完全一致**（唯一 diff 是 TestWalkDirSafe 的计时数字 0.01s vs 0.00s）——d812e1a53 未改变 Windows 预存失败面（16 例源文本断言 + 1 例 symlink 权限，Linux CI 不受影响）。新守卫 TestRecentWindowReadsUseCurrentMonthSurface **通过**（不在失败集）。
+  - **定向守卫族 25 例全绿**（第六轮同一 `-run` 正则）——d812e1a53 之后 necessity gate 全部关键测试依旧通过。deploy 契约 `go test -mod=vendor -count=1 ./deploy/grafana/ ./deploy/prometheus/rules/` → **两包 ok**（dashboard_test.go 3 例结构在新头复验在位；副本 deploy 文件与 blob 逐字节一致，deploy 测试无源文本断言、行尾不敏感）。
+  - **交叉编译**：`GOOS=linux GOARCH=arm64` zig cc `./bg/... ./cmd/gateway/...` 通过（对 d5be9203b 内容执行；bg/ 与 2027067ac 字节一致，覆盖本特性编译面；cmd/internal 的 R13 增量归该线自验）。
+- **会话期协作环境异常（记录给下一轮）**：本轮窗口内并行工作线动作频繁——lgw-necessity-p2 worktree 的管理元数据被外部清掉（`.git/worktrees/` 仅剩 go-cost 条目，目录成僵尸链接，git 报 "not a repository: (NULL)"）；主工作区检出被切到 main（R13 合并后）；R13 的 C:/tmp 两个 worktree 一并消失。本轮处置：确认目录干净且 docs/necessity-gate-round12 已推送后 rm 重建（`git worktree add -B docs/necessity-gate-round14 origin/main`，基于 2027067ac）。**下一轮开工先 `git worktree list` + worktree 内 `git status` 验活，失效即重建**。主工作区脏文件清单缩小（VERSION、admin/credential_models*.go、version.json、web/public/*.json 等已被 R13 合并吸收），余下 D vendor_pricing_table.py / M incidents 文档 / D scripts/deploy-lib / ?? *.lnk 仍严禁触碰。
+- **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
+- **验证记录（如实区分）**：**通过**——bg 新基线对照（17 例集合与 fails_r7.txt 一致）、定向守卫 25 例、deploy 契约两包、交叉编译。**环境受限**——源文本断言类 16 例在 CRLF 检出下无法 Windows 通过（Linux CI 职责）；win/arm64 `-race` 不支持未跑；promtool/Grafana 导入不可用（沿用第八/九/十轮口径）。**未验证**——观测链路是否已被运维实际 provisioning、生产指标状态（无通道）。
+- **遗留风险**：与第十三轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。环境注记：bg 基线两轮内被外部提交两度移动（fails_r6→r7→r8），**触碰 bg 前先 diff 自上轮复核点确认基线口径仍有效**。
+
+## 本轮记录（2026-09-12 第十五轮，上线观察轮第九轮——无输入记录阻塞 + 合并态复核）
+
+- **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮零代码改动，产出 = main 合并态复核 + worktree/基线留档验活 + 本记录。
+- **main 合并态复核（只读，git fetch 实查）**：origin/main 自 2027067ac 前进一跳至 **323ba7a79**——即第十四轮 handoff 提交本身（docs-only，单文件 32+/15-；第十四轮分支 docs/necessity-gate-round14 已 fast-forward 合入 main）。`git diff 2027067ac..origin/main` 除该 handoff 文件外为空：**bg/、deploy/ 零变化**——fails_r8.txt（17 例）基线口径继续有效（无需重测）、deploy 契约测试结论沿用第十四轮（两包 ok）。观测五件套在 origin/main 逐项复验在位：alerts.yml 告警 1 处、alerts_test.go 契约钉 1 处、面板 uid 1 处、dashboard_test.go 恰 3 个 Test 函数、README 引用 2 处；本 handoff 文件未被并行线改动。
+- **协作环境验活（按第十四轮警示执行，本轮通过）**：`git worktree list` + worktree 内 `git status` → lgw-necessity-p2 存活、检出 docs/necessity-gate-round14（=323ba7a79）且工作区干净——第十四轮重建的 worktree 未再被外部清理；go-cost worktree 仍标 prunable（deploy-lib 线对象，不属本特性，未处置）。C: 副本 lgw-p2test（`AppData/Local/lgw-p2test`）与 fails_r6/r7/r8.txt 三份基线留档均在位，fails_r8.txt 实测含 17 例失败行。本轮无代码改动，未重跑任何测试套件——被验证对象与第十四轮验证对象逐字节一致（bg/deploy 零变化），结论沿用；win/arm64 `-race` 不支持、promtool/Grafana 导入不可用口径不变。
+- **顺带核实（只读）**：`web/src/views/probe/ProbeHealthPanel.vue` 约 203 行的陈旧 POST 注释仍在（第七/八轮记录项，实际代码走模型级 `/api/self-check/trigger`）——继续留作记录，不为注释单独起 web 提交。
+- **C 项**：`lastProbeRun` 保持 `started_at DESC`，无反例，维持关闭。
+- **验证记录（如实区分）**：**通过**——合并态复核（增量=第十四轮 docs 提交本身，bg/deploy 零变化）、观测五件套逐项复验、worktree/副本/基线留档验活。**环境受限**——promtool 与 Grafana 导入不可用（沿用第八/九/十轮口径）；win/arm64 `-race` 不支持未跑。**未验证**——观测链路是否已被运维实际 provisioning、生产指标状态（无通道）。
+- **遗留风险**：与第十四轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第八轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第十轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
 第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
 "审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
 已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
-"本轮记录 第十三轮"（合并态复核 + bg/ 基线重测：fails_r7.txt 已是当前
-origin/main 口径基线，fails_r6.txt 作废））、遗留任务第 6 项。
-背景：观测工件齐全且已全部合入 main（第十二/十三轮复验）；main 代码头以 git fetch
-实查为准。6490fd981（R12 P2/P3 收尾）变更了 bg/node_probe.go 的 legacy
-missing-binding 分支（补写 node_probe_runs 取证行，DELETE 清理语义不变）——
-必要性闸门/skip/pump/daily-audit 路径未涉及；第十三轮已在其上重测 bg 基线：
-全量失败集合与 fails_r6.txt 完全一致、定向守卫 25 例全绿。
+"本轮记录 第十五轮"（323ba7a79 合并态复核：该提交即第十四轮 docs 提交本身，
+bg/deploy 零变化，fails_r8.txt 基线继续有效；worktree/副本验活通过；遗留风险清单））、
+遗留任务第 6 项。
+背景：观测工件齐全且已全部合入 main（第十五轮在 323ba7a79 复验）；main 代码头以
+git fetch 实查为准。bg/ 后续仍可能被外部提交移动——跑 bg 套件前先
+`git diff 323ba7a79..<新头> -- bg/` 确认；bg/ 没变直接以 lgw-p2test/fails_r8.txt
+（17 例）为回归判据，变了先 CRLF 同口径重测基线再跑。
 告警 NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）
 + 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
 provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
 自然恢复 / POST /api/admin/probe/tasks 提交一次探测即删行（自 6490fd981 起同时
 留一条 success=false 取证行，属预期信号非异常）/ 批量 SQL；显示侧
 治本预案（queryProbeNodeTasks WHERE 并入绑定链 EXISTS）就绪未实施。
-注意：主工作区检出的 fix/r13-logging-hygiene 属于并行 R13 日志工作，不要混入本任务；
-工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
-继续用 git worktree 从 origin/main 拉独立分支实施；Windows 验证用 C: 副本
-lgw-p2test（仅 cp 变更文件；deploy 包验证需同步 deploy/grafana/ 的 README.md
-与面板 JSON；基线对照务必 CRLF 同口径——`git show <rev>:<file> | unix2dos`
-口径已第十三轮 cmp 校验）。若 origin/main 的 bg/ 再次被外部提交变更，跑 bg
-套件前须先重测基线；否则直接以 lgw-p2test/fails_r7.txt（17 例）为回归判据。
+注意：主工作区现检出 main；工作区遗留脏文件（docs 两处、scripts/deploy-lib、
+*.lnk）严禁 add/clean/恢复。继续用 git worktree 从 origin/main 拉独立分支实施
+（开工先验活：`git worktree list` + worktree 内 git status，元数据被清即 rm 重建）；
+Windows 验证用 C: 副本 lgw-p2test（AppData/Local 下；仅 cp 变更文件；deploy 包
+验证需同步 deploy/grafana/ 的 README.md 与面板 JSON；基线对照务必 CRLF 同口径
+——`git show <rev>:<file> | unix2dos`）。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
 A. 若已获得生产 /metrics 数据或告警触发记录（runbook 判读规则）：
