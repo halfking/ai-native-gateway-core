@@ -169,10 +169,11 @@ groups:
           description: "近 10 分钟 NodeProbeWorker 发生 {{ $value }} 次重试（source={{ $labels.source }}），请观察失败告警是否同步升高。"
 
       # 2026-09-11（necessity gate 遗留项 6）：自检必要性 skip 路径的镜像删除
-      # 在同轮即时重试后仍失败。单个 (credential, raw_model) 卡住时 pump 按
-      # 周期（约 30s holdoff）反复重提，每轮贡献 ≥1 次失败计数——10 分钟 >5
-      # 即代表至少一对处于"跳过→删除失败→磁贴翻动"循环；零星 <5 的增量是
-      # DB 瞬时抖动被计数器如实记录，不需要处理。
+      # 在同轮即时重试后仍失败。单个 (credential, raw_model) 卡住时 pump 反复
+      # 重提（pump tick 30s、行级 holdoff 45s，实际周期约 60s ≈ 10 次/10 分钟），
+      # 每轮贡献 ≥1 次失败计数——10 分钟 >5 即代表至少一对处于"跳过→删除失败
+      # →磁贴翻动"循环；零星 <5 的增量是 DB 瞬时抖动被计数器如实记录，不需要
+      # 处理。
       - alert: NodeProbeNecessityMirrorDeleteFailedHigh
         expr: increase(llmgw_node_probe_necessity_mirror_delete_failed_total[10m]) > 5
         for: 5m
