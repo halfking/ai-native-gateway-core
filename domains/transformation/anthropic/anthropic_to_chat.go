@@ -30,6 +30,15 @@ func ConvertAnthropicResponseToChat(in []byte, clientModel string) ([]byte, erro
 		parsed.Role = "assistant"
 	}
 	if len(parsed.Content) == 0 && len(parsed.ToolCalls) == 0 && parsed.ReasoningContent == "" {
+		// 2026-09-12 audit P1: distinguish "upstream sent nothing" from
+		// "upstream sent block types the gateway cannot represent". The
+		// caller maps converter errors to errorsx.KindConversion (stage
+		// gateway → billing refused, provider NOT demoted); naming the
+		// types makes the failure SQL-greppable in request_logs.
+		if len(parsed.UnknownBlockTypes) > 0 {
+			return nil, fmt.Errorf("unsupported upstream content block types %v from model %s",
+				parsed.UnknownBlockTypes, parsed.Model)
+		}
 		return nil, fmt.Errorf("empty response from model %s", parsed.Model)
 	}
 	return ir.SerializeOpenAIResponse(parsed, clientModel)

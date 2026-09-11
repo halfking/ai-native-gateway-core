@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -51,6 +52,16 @@ type InternalResponse struct {
 	// transport layer for lossless round-trip conversion (same semantics as
 	// InternalRequest.Extensions).
 	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
+
+	// UnknownBlockTypes lists response content block types the parser does
+	// not model (Anthropic "server_tool_use", "web_search_tool_result",
+	// "container_upload", future upstream additions). The types are recorded
+	// so consumers can distinguish "upstream sent nothing" from "upstream
+	// sent content the gateway cannot represent" — 2026-09-12 audit P1:
+	// unknown-only responses used to flatten into an empty parse and get
+	// misclassified as empty_response, demoting the provider and refusing
+	// billing for real upstream work. Deduped, capped at 8.
+	UnknownBlockTypes []string `json:"unknown_block_types,omitempty"`
 }
 
 // ResponseContentBlock represents a single content element in a response.
@@ -130,6 +141,20 @@ type ResponseUsage struct {
 }
 
 // ─── Parse ─────────────────────────────────────────────────────────────────
+
+// maxUnknownBlockTypes bounds UnknownBlockTypes; the list is for
+// classification and logging, not lossless inventory.
+const maxUnknownBlockTypes = 8
+
+// OnlyUnsupportedBlocks reports whether the response carried no content the
+// gateway can represent (no text / tool_use / thinking) but DID carry unknown
+// content block types. Such a response must not be classified as an empty
+// upstream response: the upstream did real billable work, the gateway lacks
+// the conversion for what it returned.
+func (ir *InternalResponse) OnlyUnsupportedBlocks() bool {
+	return len(ir.Content) == 0 && len(ir.ToolCalls) == 0 &&
+		ir.ReasoningContent == "" && len(ir.UnknownBlockTypes) > 0
+}
 
 // ParseAnthropicResponse parses an Anthropic Messages API response body into IR.
 func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
@@ -252,6 +277,16 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 				Type: "redacted_thinking",
 				Data: payload,
 			})
+		default:
+			// Unknown block type (server_tool_use, web_search_tool_result,
+			// container_upload, ...). Fabricating content from it would be
+			// semantically unsafe (these blocks carry tool payloads, not
+			// text), so record the type and let the empty-response guards
+			// attribute the response as unsupported rather than empty.
+			if c.Type != "" && len(ir.UnknownBlockTypes) < maxUnknownBlockTypes &&
+				!slices.Contains(ir.UnknownBlockTypes, c.Type) {
+				ir.UnknownBlockTypes = append(ir.UnknownBlockTypes, c.Type)
+			}
 		}
 	}
 
