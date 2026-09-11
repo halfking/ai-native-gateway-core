@@ -1,7 +1,7 @@
 # Handoff: junk canonical 治理后的独立收尾轮 —— review free 白名单 / 别名卫生（含审计返工）/ 694 通道 + 本机部署 2086
 
 **日期**: 2026-09-12（含同日审计返工）
-**状态**: ✅ 三项闭环 + 审计发现一处重大缺陷已根修；本机 kx-llm-gateway-local:**2.5.4.2086**（f494d069）@8782
+**状态**: ✅ 三项闭环 + 审计发现一处重大缺陷已根修；本机 kx-llm-gateway-local:**2.5.4.2087**（607a785f，合并 win11 R15 695-renumber 后）@8782
 **前置**: 20260912-junk-canonical-remediation（14 行弃用、37/37 可路由）遗留三项
 
 ---
@@ -13,7 +13,7 @@
    - 初版：371 多目的地活跃拼写 = 369 惰性（241 同名遮蔽 + 128 跨形 variant 拦截）+ 2 真歧义（`deepseek-v4`、`doubao-embedding`），按"bare 家族名 → undated 基准行"定夺做了单事务弃用（5 行）。
    - **审计发现（重大）**：部署 2085 后 33 分钟内 5 行全部被复活（updated_at=03:13:29-31 = 新容器 discovery 首轮）。根因：`NormalizeRouteKey` 剥日期后缀（`-260425`）、`stripWrapperVariants` 再剥 wrapper token（`flash`/`vision`），因此**每个 provider 的 dated raw 都按设计生成 bare 家族别名指向自己的 canonical**（实测 `deepseek/deepseek-v4-flash-260425` → 变体集含 `deepseek-v4-flash` 与 `deepseek-v4`），`EnsureCanonicalAndAliases` 用 `ON CONFLICT DO UPDATE SET status='active'` 无条件复活。discovery 每小时一轮——数据层弃用永远撑不过一个周期。
    - **真缺陷是两个 resolver 的别名查询 `LIMIT 1` 无 ORDER BY（不确定命中）**。根修（f494d0695）：`resolve/resolve.go` 与 `provider/client.go` 的别名相 + raw_fallback 共 4 处加 `ORDER BY length(mc.canonical_name), mc.canonical_name`——最短名 = 最基准/undated 行，与 matcher `betterMatch` 的 tie-break 同一约定。operator 语义（`deepseek-v4`→deepseek-v4-flash(120)、`doubao-embedding`→doubao-embedding-vision(47)）从数据层搬到解析层，**天然持久**；5 条复活的别名行保留 active（无害且不可消除）。
-3. **任务③ migration 694 升级通道修复 + 部署**。预检发现 694 与 693 同款缺口（只进仓库文件，db.go 无 ensure、apply 清单止于 693）→ 已加进 `scripts/apply-db-revision-sequence.sh`（46e3bc7e2）并本机入账（双账本 + 函数体含 demote 自愈）。部署 2085（5a877aa9d）后审计轮再部署 **2086**（f494d0695 / bump b89799340）；一次 cutover 因启动耗时 >60s 竞态失败回滚，重跑即成（VERIFY_PASS=1）。
+3. **任务③ migration 694 升级通道修复 + 部署**。预检发现 694 与 693 同款缺口（只进仓库文件，db.go 无 ensure、apply 清单止于 693）→ 已加进 `scripts/apply-db-revision-sequence.sh`（46e3bc7e2）并本机入账（双账本 + 函数体含 demote 自愈）。审计轮部署 2086（f494d0695）时一次 cutover 因启动耗时 >60s 竞态失败回滚，重跑即成（VERIFY_PASS=1）。**win11 R15 同期把 694 重编号为 695**（共享 252 PG 账本里 694 已被其他项目占用、pending 判定跳过致自愈永不生效；生产 conflict_pairs 7→0、hot 96k 已排空）；合并 607a785f 后本机部署 **2087**：695 条目端到端验证通过（幂等重放 CREATE OR REPLACE + 新账本标记入账，旧 694 标记保留历史），schema_migrations 本地行同步更名 695。
 4. **端到端实测（真实请求）**：`POST /v1/chat/completions` model=`deepseek-v4` → 响应 success，`request_logs_hot`: `canonical_model=deepseek-v4-flash`、`canonical_id=120`、provider 34——在别名行被复活（122350 行 active）的情况下由 ORDER BY 决定落点，持久性得证。
 
 ## 改动文件与关键行为
