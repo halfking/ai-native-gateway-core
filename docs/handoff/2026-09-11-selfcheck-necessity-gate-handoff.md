@@ -146,17 +146,26 @@
 - **验证记录**：`go test -mod=vendor -count=1 ./deploy/prometheus/rules/`（C: 副本 lgw-p2test，alerts.yml + alerts_test.go 同步后）→ **6 例全 PASS**。promtool 与 Grafana 导入依旧环境受限（表述同第八轮）。
 - **范围界定**：alerts.yml 注释修正 + alerts_test.go 追加契约钉（test-only）+ handoff 修正；面板 JSON、README 无需改动。
 
+## 本轮记录（2026-09-11 第十轮，上线观察轮第四轮——无输入记录阻塞 + 面板契约钉）
+
+- **输入缺失声明（按 D 项要求如实区分）**：`git fetch` 复核 origin/main 仍为 8bfd402ca（无新提交），任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮代码产出 = 一项不依赖输入的确定性收尾（见下）；无任何网关/探测/SQL 行为改动。
+- **面板侧契约测试（`deploy/grafana/dashboard_test.go`，新文件，test-only）**：第九轮把告警契约钉入 `alerts_test.go` 后，第八轮交付的面板 JSON 仍只有一次性脚本校验（tmp_yamlcheck，未提交）——指标改名、面板删除、结构破坏都不会在 CI 红。新增 3 例补齐观测链路最后一处无防回归保护的工件：①`TestSelfcheckNecessityDashboardPinsAllThreeCounters`——uid=`llm-gateway-selfcheck-necessity`、恰好 3 个 timeseries、三个 necessity 指标各恰有一个 expr 引用、expr 低基数守卫（禁 `tenant=`/`model=`，对齐 alerts_test.go 全文件守卫语义，仅作用于 expr 字段以免误伤 description 文本）；②`TestSelfcheckNecessityDashboardFailureThresholdMatchesAlert`——failed_total 面板红色阈值必须 = 5，与 `NodeProbeNecessityMirrorDeleteFailedHigh` 的 `increase(...[10m]) > 5` 保持第八轮刻意对齐的契约；③`TestGrafanaReadmeListsSelfcheckNecessityDashboard`——README 必须引用面板文件名（防改名失联）。
+- **意外发现（副本卫生，顺带证明测试有效）**：lgw-p2test 的 `deploy/grafana/README.md` 是旧版（第八轮只同步了 alerts.yml 与面板 JSON，README 未同步）——README 契约测试首跑即红并暴露该滞后，同步后绿。变异验证（先红后绿）：把面板 JSON 中 `skip_total` 临时改名 → `TestSelfcheckNecessityDashboardPinsAllThreeCounters` 红（"expected exactly one panel expr"）→ 恢复 → 绿。
+- **验证记录（C: 副本 lgw-p2test，同步 dashboard_test.go + 面板 JSON + README）**：`go test -mod=vendor -count=1 ./deploy/grafana/ ./deploy/prometheus/rules/` → **grafana 3 例 + rules 6 例全 PASS**（rules 包重跑确认第九轮告警契约不受影响）。环境受限（与第八/九轮相同）：promtool 与 Grafana 导入仍不可用，PromQL/导入未实测——但 expr 指标名现已由本契约测试钉住，改名即 CI 红。无 Go 运行时/SQL/闸门路径改动，不涉及 bg 套件与交叉编译（b37b68b51 与第五/六轮同一代码提交，结论沿用）。
+- **遗留风险**：与第九轮相同，无新增。观测链路（告警+面板）等运维按 deploy/prometheus/README provisioning 流程加载后生效；TTL 抑制、显示侧治本等升级继续等待对应输入。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第四轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第五轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
-第六轮"（runbook 与孤儿行三层清理口径）、"审计记录 第七轮"、"本轮记录 第八轮"
-（告警+面板已随仓库交付）、"审计记录 第九轮"（告警契约已钉入 alerts_test.go））、
+第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
+"审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
+已钉入 deploy/grafana/dashboard_test.go——至此观测链路全部工件均有 CI 防回归保护））、
 遗留任务第 6 项。
-背景：代码最新 b37b68b51，deploy 工件至第九轮提交。观测链路已齐：告警
+背景：代码最新 b37b68b51，观测工件至第十轮提交。告警
 NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）+
 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
 provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
@@ -165,8 +174,8 @@ provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应�
 注意：主工作区检出的 fix/r13-logging-hygiene 属于并行 R13 日志工作，不要混入本任务；
 工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
 继续用 git worktree 从 origin/main 拉独立分支实施；Windows 验证用 C: 副本
-lgw-p2test（仅 cp 变更文件；基线对照务必 CRLF 同口径，17 例预存失败名单见
-lgw-p2test/fails_r6.txt）。
+lgw-p2test（仅 cp 变更文件；deploy 包验证需同步 deploy/grafana/ 的 README.md
+与面板 JSON；基线对照务必 CRLF 同口径，17 例预存失败名单见 lgw-p2test/fails_r6.txt）。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
 A. 若已获得生产 /metrics 数据或告警触发记录（runbook 判读规则）：
