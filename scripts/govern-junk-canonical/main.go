@@ -141,7 +141,7 @@ func main() {
 		os.Exit(1)
 	}
 	n := countVerdict(verify, VerdictFixable)
-	fmt.Printf("\napply finished: %d row(s) remediated. post-apply diagnosis: %d fixable row(s) remaining (review/withheld rows are reported, never auto-fixed).\n",
+	fmt.Printf("\napply finished: %d row(s) remediated. post-apply diagnosis: %d fixable row(s) remaining (review/withheld/whitelisted rows are reported, never auto-fixed).\n",
 		applied, n)
 	if n > 0 {
 		os.Exit(1)
@@ -273,8 +273,8 @@ func printReport(d *Diagnosis) {
 	fmt.Printf("=== junk canonical diagnosis ===\n")
 	fmt.Printf("active canonical rows: %d | prefixed raw names: %d | min score: %.2f\n",
 		d.ActiveCanonicalRows, d.PrefixedRawNames, d.MinScore)
-	fmt.Printf("suspects: %d (fixable %d, review %d, withheld %d)\n",
-		len(d.Suspects), counts[VerdictFixable], counts[VerdictReview], counts[VerdictWithheld])
+	fmt.Printf("suspects: %d (fixable %d, review %d, withheld %d, whitelisted %d)\n",
+		len(d.Suspects), counts[VerdictFixable], counts[VerdictReview], counts[VerdictWithheld], counts[VerdictWhitelisted])
 
 	for _, s := range d.Suspects {
 		fmt.Printf("\n--- [%s] %q id=%d source=%q ---\n", s.Verdict, s.Row.Name, s.Row.ID, s.Row.Source)
@@ -305,15 +305,21 @@ func printReport(d *Diagnosis) {
 		} else {
 			fmt.Printf("  evidence: none\n")
 		}
-		if s.Target != nil {
+		if s.Target != nil && s.Verdict != VerdictWhitelisted {
 			fmt.Printf("  suggested target: %q (score %.3f)\n", s.Target.Name, s.Target.Score)
-		} else if s.Verdict != VerdictWithheld {
+		} else if s.Target == nil && s.Verdict != VerdictWithheld && s.Verdict != VerdictWhitelisted {
 			fmt.Printf("  suggested target: none ≥ %.2f — needs manual review\n", d.MinScore)
+		}
+		if s.WhitelistReason != "" {
+			fmt.Printf("  whitelisted: %s\n", s.WhitelistReason)
 		}
 	}
 
 	if counts[VerdictReview] > 0 || counts[VerdictWithheld] > 0 {
 		fmt.Printf("\nnote: review/withheld rows are listed above but -apply never touches them.\n")
+	}
+	if counts[VerdictWhitelisted] > 0 {
+		fmt.Printf("note: %d whitelisted row(s) are kept by operator decision (see scripts/govern-junk-canonical/plan.go OperatorWhitelist).\n", counts[VerdictWhitelisted])
 	}
 }
 

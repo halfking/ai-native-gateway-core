@@ -1262,7 +1262,11 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 		}, nil
 	}
 
-	// (2) alias match across the variant matrix.
+	// (2) alias match across the variant matrix. ORDER BY length(name), name:
+	// a raw_name can map to multiple canonicals (discovery seeds the bare
+	// family alias for every date-suffix/wrapper-stripped raw, one per
+	// provider canonical), so LIMIT 1 without ORDER BY was nondeterministic.
+	// Shortest = the most-base/undated row, same tie-break as the matcher.
 	for _, v := range variants {
 		err := c.dbPool.QueryRow(ctx, `
 			SELECT mc.id, mc.canonical_name
@@ -1277,6 +1281,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			      OR $2 = ANY(ma.client_profiles)
 			      OR $2 = ''
 			  )
+			ORDER BY length(mc.canonical_name), mc.canonical_name
 			LIMIT 1
 		`, modelname.CanonicalizeClientModel(v), profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
@@ -1304,7 +1309,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 
 	// (3) full original client_model as a final fallback (covers
 	// case-sensitivity edge cases where the operator stored the
-	// alias in mixed case).
+	// alias in mixed case). Same deterministic ORDER BY as phase (2).
 	if rawLookup != "" && rawLookup != strings.ToLower(modelname.NormalizeRouteKey(model)) {
 		err := c.dbPool.QueryRow(ctx, `
 			SELECT mc.id, mc.canonical_name
@@ -1319,6 +1324,7 @@ func (c *Client) resolveModelDB(ctx context.Context, model, profile string) (*re
 			      OR $2 = ANY(ma.client_profiles)
 			      OR $2 = ''
 			  )
+			ORDER BY length(mc.canonical_name), mc.canonical_name
 			LIMIT 1
 		`, rawLookup, profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {

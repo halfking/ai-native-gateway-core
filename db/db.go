@@ -146,6 +146,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureProviderSoftDelete(migCtx); err != nil {
 		return err
 	}
+	// 2026-09-11 migration 693: provider_models.canonical_cleared_at 是管理员
+	// 解绑持久化标记，clear_canonical PATCH / discovery upsert / 健康检查都在
+	// 读它。升级库缺列时这些路径整体 42703（实测），必须在服务流量前补齐。
+	if err := db.ensureProviderModelsCanonicalClearedAt(migCtx); err != nil {
+		return err
+	}
 	// 2026-09-05 migration 655: session_summaries 表结构对账（memora 覆盖事件
 	// 修复）。触发器 trg_update_session_summary 与 admin 读路径都按 canonical
 	// 列访问该表，缺列时请求日志写入与 /api/admin/sessions/:id/snapshot 等
@@ -1228,6 +1234,38 @@ func (d *DB) ensureProviderSoftDelete(ctx context.Context) error {
 		return err
 	}
 	slog.Info("provider/credential soft-delete schema ensured (migration 631)")
+	return nil
+}
+
+// ensureProviderModelsCanonicalClearedAt mirrors sql/migrations/startup/
+// 693_provider_models_canonical_cleared_at.sql.
+//
+// 2026-09-11 部署缺口实测：693 只进了仓库文件与 installer 全新安装路径，
+// 升级库没有任何通道应用它（revision sequence 止于 686），新二进制的
+// clear_canonical PATCH、modelcatalog.UpsertCredentialModel 与
+// routing_health_checker 的 canonical_id_null 查询每个周期报
+// SQLSTATE 42703，直到手工补列。本 ensure 让网关启动即自愈，与
+// ensureProviderSoftDelete（631）同一"二进制启动即生效"的兜底模式。
+// 幂等：ADD COLUMN IF NOT EXISTS，已应用库上为 no-op。
+func (d *DB) ensureProviderModelsCanonicalClearedAt(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE public.provider_models
+		    ADD COLUMN IF NOT EXISTS canonical_cleared_at TIMESTAMPTZ;
+
+		COMMENT ON COLUMN public.provider_models.canonical_cleared_at IS
+		    '管理员解绑标记。非空表示运营者已显式解绑 canonical_id，discovery 等自动路径不得写回 canonical_id；显式重新关联时置回 NULL。';
+
+		INSERT INTO public.schema_migrations (version, description)
+		VALUES ('693', 'provider_models canonical_cleared_at admin-unbind marker')
+		ON CONFLICT (version) DO NOTHING;
+	`)
+	if err != nil {
+		return fmt.Errorf("ensure provider_models canonical_cleared_at: %w", err)
+	}
+	slog.Info("provider_models canonical_cleared_at ensured (migration 693)")
 	return nil
 }
 

@@ -73,6 +73,12 @@ type PrometheusRecorder struct {
 	shadowWriteFailed   *prometheus.CounterVec
 	ringBufferDropped   prometheus.Counter
 	rawAuditWriteFailed prometheus.Counter
+	rawSinkFlushSeconds *prometheus.HistogramVec
+	rawSinkBatchSize    *prometheus.HistogramVec
+	rawSinkDropped      *prometheus.CounterVec
+	rawSinkCloseSeconds *prometheus.HistogramVec
+	rawSinkCloseTimeout *prometheus.CounterVec
+	rawSinkFrameLookup  *prometheus.CounterVec
 
 	// streamSynthDoneTotal (P1 hot-patch 2026-08-06): counts streams
 	// where the gateway had to inject "data: [DONE]\n\n" because the
@@ -406,6 +412,30 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 				Help: "Raw audit JSONL write/rotate/sync failures (immutable local audit pipeline)",
 			},
 		),
+		rawSinkFlushSeconds: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{Name: "llm_gateway_raw_sink_flush_duration_seconds", Help: "Raw sink flush duration by sink mode", Buckets: prometheus.DefBuckets},
+			[]string{"sink"},
+		),
+		rawSinkBatchSize: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{Name: "llm_gateway_raw_sink_flush_batch_size", Help: "Raw sink entries per flush by sink mode", Buckets: []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000}},
+			[]string{"sink"},
+		),
+		rawSinkDropped: promauto.NewCounterVec(
+			prometheus.CounterOpts{Name: "llm_gateway_raw_sink_dropped_total", Help: "Raw sink entries dropped by sink mode and reason"},
+			[]string{"sink", "reason"},
+		),
+		rawSinkCloseSeconds: promauto.NewHistogramVec(
+			prometheus.HistogramOpts{Name: "llm_gateway_raw_sink_close_drain_duration_seconds", Help: "Raw sink close drain duration by sink mode", Buckets: prometheus.DefBuckets},
+			[]string{"sink"},
+		),
+		rawSinkCloseTimeout: promauto.NewCounterVec(
+			prometheus.CounterOpts{Name: "llm_gateway_raw_sink_close_drain_timeout_total", Help: "Raw sink close drain operations that exceeded their deadline"},
+			[]string{"sink"},
+		),
+		rawSinkFrameLookup: promauto.NewCounterVec(
+			prometheus.CounterOpts{Name: "llm_gateway_raw_sink_frame_lookup_total", Help: "Raw sink frame lookup outcomes by sink mode"},
+			[]string{"sink", "result"},
+		),
 
 		// P1 hot-patch 2026-08-06: stream synthesized [DONE] counter.
 		streamSynthDoneTotal: promauto.NewCounter(
@@ -679,6 +709,34 @@ func (p *PrometheusRecorder) RecordRawAuditWriteFailure() {
 	p.rawAuditWriteFailed.Inc()
 }
 
+// RecordRawSinkFlush records the observed flush duration and actual batch size.
+func (p *PrometheusRecorder) RecordRawSinkFlush(mode string, duration time.Duration, batchSize int) {
+	p.rawSinkFlushSeconds.WithLabelValues(mode).Observe(duration.Seconds())
+	if batchSize > 0 {
+		p.rawSinkBatchSize.WithLabelValues(mode).Observe(float64(batchSize))
+	}
+}
+
+// RecordRawSinkDropped records entries lost by the raw sink queue/buffer.
+func (p *PrometheusRecorder) RecordRawSinkDropped(mode, reason string, count uint64) {
+	if count > 0 {
+		p.rawSinkDropped.WithLabelValues(mode, reason).Add(float64(count))
+	}
+}
+
+// RecordRawSinkCloseDrain records close drain latency and deadline misses.
+func (p *PrometheusRecorder) RecordRawSinkCloseDrain(mode string, duration time.Duration, timedOut bool) {
+	p.rawSinkCloseSeconds.WithLabelValues(mode).Observe(duration.Seconds())
+	if timedOut {
+		p.rawSinkCloseTimeout.WithLabelValues(mode).Inc()
+	}
+}
+
+// RecordRawSinkFrameLookup records a hit or miss without request labels.
+func (p *PrometheusRecorder) RecordRawSinkFrameLookup(mode, result string) {
+	p.rawSinkFrameLookup.WithLabelValues(mode, result).Inc()
+}
+
 // RecordStreamSynthesizedDone (P1 hot-patch 2026-08-06) increments the
 // counter when domains/streaming/stream.go has to inject a trailing
 // "data: [DONE]\n\n" because the upstream closed without one.
@@ -711,7 +769,7 @@ func (p *PrometheusRecorder) RecordURSMv2ShadowResult(result string) {
 //
 //   - provider: upstream provider name (e.g., "anthropic", "openai")
 //   - stage: "first_frame" (before any client output, resumable retry) |
-//            "mid_stream" (after chunks sent, frame skipped)
+//     "mid_stream" (after chunks sent, frame skipped)
 //
 // High rates indicate unstable upstreams (minimax-m3, glm-5.2) sending
 // incomplete JSON (bare "{", truncated objects). Operators monitor
@@ -728,7 +786,7 @@ func (p *PrometheusRecorder) RecordMalformedSSEFrame(provider, stage string) {
 //     (strips date suffixes, provider prefixes, and feature tokens) so the
 //     Prometheus label never carries per-model high cardinality (GW-00).
 //   - reason: "incomplete_tool_call_interrupted" (stream ended before message_stop) |
-//             "incomplete_tool_call_after_done" (message_stop received but tool_result missing)
+//     "incomplete_tool_call_after_done" (message_stop received but tool_result missing)
 //
 // High rates indicate unstable Anthropic upstreams or mid-stream interruptions
 // during tool execution. Operators monitor rate(incomplete_tool_call_total[5m])
@@ -776,8 +834,8 @@ func (p *PrometheusRecorder) RecordJournalSnapshotApplied(tenantID string, succe
 // a journal snapshot is rejected due to deduplication. No tenant_id per GW-00.
 //
 //   - reason: "already_completed" (durable receipt found) |
-//             "version_conflict" (hash mismatch) |
-//             "not_claimed" (failed to acquire lease)
+//     "version_conflict" (hash mismatch) |
+//     "not_claimed" (failed to acquire lease)
 func (p *PrometheusRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string) {
 	p.journalSnapshotDeduplicatedTotal.WithLabelValues(reason).Inc()
 }

@@ -17,10 +17,17 @@ import (
 )
 
 func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, providerID int) {
+	serveGetProviderModels(w, r, h.db, providerID)
+}
+
+// serveGetProviderModels is the offerQuerier seam of the provider-wide model
+// list, mirroring serveModelOfferSuggestions — same pgxmock testability
+// pattern as provider_offer_force_recover.go.
+func serveGetProviderModels(w http.ResponseWriter, r *http.Request, db offerQuerier, providerID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rows, err := h.db.Query(ctx, `
+	rows, err := db.Query(ctx, `
 		SELECT mo.id, mo.credential_id, COALESCE(c.label,'') AS credential_label,
 		       COALESCE(mo.raw_model_name,''), COALESCE(mo.standardized_name,''),
 		       mo.canonical_id, COALESCE(mo.outbound_model_name,'') AS display_name,
@@ -32,7 +39,11 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 		       mc.standard_iq::float8,
 		       niq.overall_score::float8, niq.avg_score::float8,
 		       COALESCE(niq.sample_count, 0), niq.tested_at,
-		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name),
+		       -- 2026-09-11 audit: the trailing '' keeps a never-matched offer
+		       -- (canonical_id NULL + standardized_name NULL) from NULLing this
+		       -- column — scanned into a non-pointer string, that NULL errored
+		       -- every subsequent Scan and silently truncated the list.
+		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name, ''),
 		       -- 522: 凭据×模型级上下文窗口。effective 为三级覆盖链结果，override
 		       -- 即本 binding 上手工/发现的覆盖值（NULL=未覆盖，回落到标准目录）。
 		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
@@ -114,6 +125,13 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 	}
 	if offers == nil {
 		offers = []modelOffer{}
+	}
+	// 2026-09-11 audit: a mid-iteration failure must not masquerade as a
+	// complete catalog — 500 beats a silently truncated list the operator
+	// cannot tell is truncated.
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		return
 	}
 	writeJSON(w, http.StatusOK, offers)
 }
@@ -252,7 +270,9 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 		       mc.standard_iq::float8,
 		       niq.overall_score::float8, niq.avg_score::float8,
 		       COALESCE(niq.sample_count, 0), niq.tested_at,
-		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name),
+		       -- 2026-09-11 audit: same NULL guard as getProviderModels — a
+		       -- never-matched offer must not NULL this non-pointer string.
+		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name, ''),
 		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
 		       mo.context_window_override
 		FROM model_offers mo
@@ -275,31 +295,31 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 	defer rows.Close()
 
 	type modelOffer struct {
-		ID                  int        `json:"id"`
-		CredentialID        int        `json:"credential_id"`
-		CredentialLabel     string     `json:"credential_label"`
-		RawModelName        string     `json:"raw_model_name"`
-		StandardizedName    string     `json:"standardized_name"`
-		CanonicalID         *int       `json:"canonical_id"`
-		DisplayName         string     `json:"display_name"`
-		Available           bool       `json:"available"`
-		UnavailableReason   *string    `json:"unavailable_reason"`
-		UnavailableAt       *time.Time `json:"unavailable_at"`
-		P95LatencyMs        *int       `json:"p95_latency_ms"`
-		SuccessRate         *float64   `json:"success_rate"`
-		InputPrice          *float64   `json:"input_price"`
-		OutputPrice         *float64   `json:"output_price"`
-		LastSeenAt          *time.Time `json:"last_seen_at"`
-		RoutingTier         string     `json:"routing_tier"`
-		AvailabilitySource  string     `json:"availability_source"`
-		CanonicalStandardIQ *float64   `json:"canonical_standard_iq"`
-		CanonicalName       string     `json:"canonical_name"`
-		NodeIQ              *float64   `json:"node_iq"`
-		NodeIQAvg           *float64   `json:"node_iq_avg"`
-		NodeIQSampleCount   int        `json:"node_iq_sample_count"`
-		NodeIQTestedAt      *time.Time `json:"node_iq_tested_at"`
-		ContextWindow         *int `json:"context_window"`
-		ContextWindowOverride *int `json:"context_window_override"`
+		ID                    int        `json:"id"`
+		CredentialID          int        `json:"credential_id"`
+		CredentialLabel       string     `json:"credential_label"`
+		RawModelName          string     `json:"raw_model_name"`
+		StandardizedName      string     `json:"standardized_name"`
+		CanonicalID           *int       `json:"canonical_id"`
+		DisplayName           string     `json:"display_name"`
+		Available             bool       `json:"available"`
+		UnavailableReason     *string    `json:"unavailable_reason"`
+		UnavailableAt         *time.Time `json:"unavailable_at"`
+		P95LatencyMs          *int       `json:"p95_latency_ms"`
+		SuccessRate           *float64   `json:"success_rate"`
+		InputPrice            *float64   `json:"input_price"`
+		OutputPrice           *float64   `json:"output_price"`
+		LastSeenAt            *time.Time `json:"last_seen_at"`
+		RoutingTier           string     `json:"routing_tier"`
+		AvailabilitySource    string     `json:"availability_source"`
+		CanonicalStandardIQ   *float64   `json:"canonical_standard_iq"`
+		CanonicalName         string     `json:"canonical_name"`
+		NodeIQ                *float64   `json:"node_iq"`
+		NodeIQAvg             *float64   `json:"node_iq_avg"`
+		NodeIQSampleCount     int        `json:"node_iq_sample_count"`
+		NodeIQTestedAt        *time.Time `json:"node_iq_tested_at"`
+		ContextWindow         *int       `json:"context_window"`
+		ContextWindowOverride *int       `json:"context_window_override"`
 	}
 
 	offers := make([]modelOffer, 0)
@@ -324,6 +344,10 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 		}
 		o.AvailabilitySource = classifyAvailability(o.Available, o.UnavailableReason)
 		offers = append(offers, o)
+	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "scan failed: "+err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

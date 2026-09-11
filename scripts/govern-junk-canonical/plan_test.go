@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -218,7 +219,13 @@ func TestDiagnoseIdempotentOnRemediatedDB(t *testing.T) {
 // score is shared by DIFFERENT target rows (junk "free" tying at 0.99 with
 // "glm-5.2:free", "minimax-m3:free", …) the corpus disagrees about where
 // the name belongs — the row is reported as review, never auto-remediated.
+// `free` is on OperatorWhitelist, so this test clears the whitelist to
+// exercise the tie→review path in isolation.
 func TestDiagnoseAmbiguousTargetsRelegatedToReview(t *testing.T) {
+	saved := OperatorWhitelist
+	OperatorWhitelist = nil
+	defer func() { OperatorWhitelist = saved }()
+
 	canonical := append(fixtureCanonical(),
 		CanonicalRow{ID: 11, Name: "glm-5.2:free", Status: "active", Source: "provider_refresh"},
 		CanonicalRow{ID: 12, Name: "minimax-m3:free", Status: "active", Source: "provider_refresh"},
@@ -245,6 +252,88 @@ func TestDiagnoseAmbiguousTargetsRelegatedToReview(t *testing.T) {
 	}
 	if plans := BuildApplyPlan(d, modelname.AutoLinkThreshold); len(plans) != 2 {
 		t.Errorf("apply plans = %d, want 2 (the review row must not produce a plan)", len(plans))
+	}
+}
+
+// TestDiagnoseWhitelistOverridesReview replays the production `free` case
+// (OpenRouter free-pool pseudo-model, targets tied at 0.99) WITH the
+// operator whitelist in place: the row stays reported — as whitelisted,
+// with the recorded rationale — but is never remediated, and it must never
+// appear as a redirect target for any other suspect.
+func TestDiagnoseWhitelistOverridesReview(t *testing.T) {
+	if _, ok := OperatorWhitelist["free"]; !ok {
+		t.Fatalf("precondition: `free` must be on OperatorWhitelist")
+	}
+	canonical := append(fixtureCanonical(),
+		CanonicalRow{ID: 11, Name: "glm-5.2:free", Status: "active", Source: "provider_refresh"},
+		CanonicalRow{ID: 12, Name: "minimax-m3:free", Status: "active", Source: "provider_refresh"},
+		CanonicalRow{ID: 13, Name: "free", Status: "active", Source: "provider_refresh"},
+	)
+	corpus := append(fixtureCorpus(), "openrouter/free", "z-ai/glm-5.2:free", "minimax/minimax-m3:free")
+	d := Diagnose(canonical, fixtureAliases(), fixtureRefs(), corpus, modelname.AutoLinkThreshold)
+
+	s := suspectByName(d, "free")
+	if s == nil {
+		t.Fatal("whitelisted row must still be reported, not silently dropped")
+	}
+	if s.Verdict != VerdictWhitelisted {
+		t.Errorf("free verdict = %q, want whitelisted", s.Verdict)
+	}
+	if s.WhitelistReason == "" {
+		t.Error("whitelisted row must carry its rationale")
+	}
+	if s.Target == nil {
+		t.Error("whitelisted row still reports its evidence target for transparency")
+	}
+	if plans := BuildApplyPlan(d, modelname.AutoLinkThreshold); len(plans) != 2 {
+		t.Errorf("apply plans = %d, want 2 (whitelisted row must not produce a plan)", len(plans))
+	}
+	for _, p := range BuildApplyPlan(d, modelname.AutoLinkThreshold) {
+		if p.TargetID == 13 {
+			t.Errorf("redirect plan targets the whitelisted row: %+v", p)
+		}
+		for _, r := range p.RefRedirects {
+			if r.ToCanonicalID == 13 {
+				t.Errorf("redirect lands on the whitelisted row: %+v", r)
+			}
+		}
+	}
+}
+
+// TestWhitelistRowNeverServesAsRemediationTarget pins the structural half
+// of the whitelist invariant: a whitelisted row must never become a
+// remediation target — not via a suspect's aggregated suggestion, not via
+// an apply-time per-reference redirect, even when the row itself produces
+// no evidence (and is therefore absent from the suspects). The synthetic
+// whitelist entry on "glm-5.2" turns junk "5.2" (strict token suffix of
+// glm-5.2's base) into a suspect whose ONLY gate-passing rival is the
+// whitelisted row — with the exclusion in place it must produce no
+// evidence at all instead of a poisoned "fixable → whitelisted row" plan.
+func TestWhitelistRowNeverServesAsRemediationTarget(t *testing.T) {
+	saved := OperatorWhitelist
+	defer func() { OperatorWhitelist = saved }()
+	OperatorWhitelist = map[string]string{"glm-5.2": "synthetic operator pin for the invariant test"}
+
+	canonical := append(fixtureCanonical(),
+		CanonicalRow{ID: 14, Name: "5.2", Status: "active", Source: "discovery"}, // junk suffix of glm-5.2
+	)
+	d := Diagnose(canonical, fixtureAliases(), fixtureRefs(), fixtureCorpus(), modelname.AutoLinkThreshold)
+
+	if s := suspectByName(d, "5.2"); s != nil {
+		t.Errorf("suspect whose only gate-passing rival is whitelisted must not be flagged with a poisoned target, got verdict=%q target=%v", s.Verdict, s.Target)
+	}
+	for _, s := range d.Suspects {
+		if s.Target == nil {
+			continue
+		}
+		if _, wl := OperatorWhitelist[strings.ToLower(s.Target.Name)]; wl {
+			t.Errorf("suspect %q suggests whitelisted target %q", s.Row.Name, s.Target.Name)
+		}
+	}
+	for _, n := range d.gateCatalogNames {
+		if _, wl := OperatorWhitelist[strings.ToLower(n)]; wl {
+			t.Errorf("whitelisted row %q must not be in the apply gate catalog", n)
+		}
 	}
 }
 

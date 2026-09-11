@@ -183,6 +183,14 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 		}, nil
 	}
 
+	// Alias phase: a raw_name can legitimately map to MULTIPLE canonicals —
+	// discovery seeds the bare family alias (`deepseek-v4`) for every raw
+	// whose date suffix / wrapper token it strips (`deepseek-v4-flash-260425`
+	// → `deepseek-v4-flash` → `deepseek-v4`), one per provider canonical.
+	// LIMIT 1 without ORDER BY was nondeterministic over that set; ORDER BY
+	// length(name), name resolves it to the most-base (undated) row — the
+	// same "shorter name wins, then alphabetical" tie-break the matcher's
+	// betterMatch uses.
 	for _, v := range variants {
 		err := r.dbPool.QueryRow(ctx, `
 			SELECT mc.id, mc.canonical_name
@@ -197,6 +205,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			      OR $2 = ANY(ma.client_profiles)
 			      OR $2 = ''
 			  )
+			ORDER BY length(mc.canonical_name), mc.canonical_name
 			LIMIT 1
 		`, modelname.CanonicalizeClientModel(v), profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {
@@ -237,6 +246,7 @@ func (r *Resolver) resolveDB(ctx context.Context, clientModel, clientProfile str
 			      OR $2 = ANY(ma.client_profiles)
 			      OR $2 = ''
 			  )
+			ORDER BY length(mc.canonical_name), mc.canonical_name
 			LIMIT 1
 		`, rawLookup, profile).Scan(&canonicalID, &canonicalName)
 		if err == nil && canonicalID != nil {

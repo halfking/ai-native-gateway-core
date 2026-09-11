@@ -27,6 +27,7 @@ func TestAsyncRawDataLogger_OverflowEmitsAnomaly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = logger.Close() })
 
 	var (
 		mu      sync.Mutex

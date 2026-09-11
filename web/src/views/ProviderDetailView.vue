@@ -259,6 +259,7 @@ watch(providerId, () => {
         v-if="tab==='models' && canManageProvider"
         :provider-id="providerId"
         :focus-offer="modelsFocusOffer"
+        :can-manage="canManageProvider"
       />
       <QualityTab v-if="tab==='quality'" :provider-id="providerId" />
       <LogsTab v-if="tab==='logs'" :provider-id="providerId" />

@@ -54,6 +54,10 @@ func TestNoopRecorder(t *testing.T) {
 	r.RecordShadowWriteFailure("session_v2")
 	r.RecordRingBufferDropped(3)
 	r.RecordRawAuditWriteFailure()
+	r.RecordRawSinkFlush("buffered", 2*time.Millisecond, 7)
+	r.RecordRawSinkDropped("buffered", "buffer_full", 2)
+	r.RecordRawSinkCloseDrain("buffered", time.Millisecond, false)
+	r.RecordRawSinkFrameLookup("buffered", "hit")
 }
 
 // TestPrometheusRecorder 测试 Prometheus 实现
@@ -149,6 +153,32 @@ func TestPrometheusRecorder_URSMv2ShadowCounters(t *testing.T) {
 // promauto which registers to the default global registry; creating
 // a second recorder would panic with "duplicate metrics collector
 // registration attempted").
+func TestPrometheusRecorder_R12RawSinkMetrics(t *testing.T) {
+	r := testRecorder
+	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
+		m := &dto.Metric{}
+		if err := counter.Write(m); err != nil {
+			t.Fatalf("counter.Write: %v", err)
+		}
+		return m.GetCounter().GetValue()
+	}
+	beforeDrop := readCounter(r.rawSinkDropped.WithLabelValues("buffered", "buffer_full"))
+	beforeLookup := readCounter(r.rawSinkFrameLookup.WithLabelValues("buffered", "hit"))
+	r.RecordRawSinkFlush("buffered", 2*time.Millisecond, 7)
+	r.RecordRawSinkDropped("buffered", "buffer_full", 2)
+	r.RecordRawSinkCloseDrain("buffered", time.Millisecond, true)
+	r.RecordRawSinkFrameLookup("buffered", "hit")
+	if got := readCounter(r.rawSinkDropped.WithLabelValues("buffered", "buffer_full")); got != beforeDrop+2 {
+		t.Fatalf("raw sink dropped=%v, want %v", got, beforeDrop+2)
+	}
+	if got := readCounter(r.rawSinkFrameLookup.WithLabelValues("buffered", "hit")); got != beforeLookup+1 {
+		t.Fatalf("frame lookup hit=%v, want %v", got, beforeLookup+1)
+	}
+	if r.rawSinkFlushSeconds.WithLabelValues("buffered") == nil {
+		t.Fatal("flush histogram was not initialized")
+	}
+}
+
 func TestPrometheusRecorder_ShadowWriteCounters(t *testing.T) {
 	r := testRecorder
 
