@@ -12,7 +12,8 @@ X-System-Fingerprint 响应头由 streaming integrity 捕获后只写入 detecto
 
 ## 同步面
 
-- 通道：apply-db-revision-sequence.sh +697（697 已查生产双账本空闲——694 跨项目撞号教训落实）。
+- 通道：apply-db-revision-sequence.sh +697（697 已查生产双账本空闲——694 跨项目撞号教训落实）；695/697 重定义同一函数已登记 intentional_function_chains（697 为最终定义），函数覆盖守卫在首次应用时按设计拦截、登记后放行。
+- **生产应用（2026-09-12 05:58）**：通道全序执行成功；函数体三列清单=3、695 demote 保留；schema_migrations 695/696/697 对齐。
 - 基线三面同步到 697 体：sql/objects/functions/promote_request_logs_*.sql、deploy/sql/schemas/baseline/01-schema.sql、installer embeddata/01-schema.sql（顺带补齐 695 demote 的基线漂移）。
 - installer embeddata/startup 补 695/696/697 三个缺失迁移（695/696 为并行线重编号时的预存遗漏）。
 

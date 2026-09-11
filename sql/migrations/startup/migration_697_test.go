@@ -65,6 +65,12 @@ func TestMigration697PromoteSystemFingerprint(t *testing.T) {
 		t.Fatalf("apply-db-revision-sequence.sh does not carry migration 697 — " +
 			"upgrade-database deployments would never apply it")
 	}
+	// 695 与 697 重定义同一函数：必须登记为 intentional chain（697 为最终
+	// 定义），否则函数覆盖守卫会在部署通道上直接拒绝整个序列。
+	chain := "promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|"
+	if !strings.Contains(string(seq), chain) {
+		t.Fatalf("apply-db-revision-sequence.sh missing intentional_function_chains entry %q", chain)
+	}
 
 	// Installer embeddata must ship the migration for fresh installs. 695
 	// and 696 were found missing there (pre-existing embeddata drift) — 697

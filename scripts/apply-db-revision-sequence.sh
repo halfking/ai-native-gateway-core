@@ -323,6 +323,9 @@ intentional_function_chains=(
   # 658 extends 656's promote body with the 15 structured feature columns and
   # must stay the later entry.
   'promote_auto_route_selections_hot_to_partition|656_auto_route_selections_hot.sql|658_auto_route_structured_features.sql|'
+  # 697 appends system_fingerprint to the three explicit column lists on top
+  # of 695's body (self-heal demote kept) and must stay the later entry.
+  'promote_request_logs_hot_to_partition|695_request_logs_promote_final_success_self_heal.sql|697_request_logs_promote_system_fingerprint.sql|'
 )
 redefined_functions="$(
   for file in "${files[@]}"; do
