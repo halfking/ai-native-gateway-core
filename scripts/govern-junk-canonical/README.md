@@ -67,13 +67,36 @@ Verdicts:
 - **fixable** — a single target clears all four conditions. `-apply`
   remediates it.
 - **review** — junk evidence exists, but the top score is tied between
-  different targets (e.g. junk `free` tying at 0.99 with `glm-5.2:free`,
-  `inkling:free`, …). Never auto-remediated.
+  different targets. Never auto-remediated.
 - **withheld-foreign-alias** — junk evidence exists, but an ACTIVE alias
   spelling something *other than the row's own name* routes here (observed:
   client-facing `v4`, `3.8`, `5-3` landing on the junk `v4-flash`,
   `3.8-flash`, `5.3-flash` rows). Those aliases are live routing state an
   operator should decide about; never auto-remediated.
+- **whitelisted** — the row matches the junk shape but is on the operator
+  whitelist (below): an operator examined it and decided to KEEP it. Still
+  reported (with the recorded rationale) so diagnosis stays transparent;
+  never auto-remediated and never eligible as a redirect target.
+
+## Operator whitelist
+
+`OperatorWhitelist` in `plan.go` holds canonical names that match the
+detection shape but are kept **on purpose**, each with the rationale that
+drove the decision. Add an entry only after examining the row's traffic and
+reference surface; entries must never be removed without re-running the
+diagnosis and re-examining the row.
+
+**`free` (kept 2026-09-12).** Seeded by provider 21 (OpenRouter) from the
+raw name `openrouter/free`. It is OpenRouter's free-pool pseudo-model: it
+has no single model identity — OpenRouter's per-model free variants
+(`z-ai/glm-5.2:free`, `minimax/minimax-m3:free`, …) each already have their
+own canonical row — so the pair test ties at 0.99 across five different
+`:free` targets and re-pointing the row at any one of them would be wrong.
+Evidence behind the keep decision: zero requests ever routed here
+(`request_logs`: 0 rows with `canonical_id = 2664333` and 0 rows for
+`provider_id = 21`, all time), one reference (`provider_models` 2661145),
+one alias (its own name). If OpenRouter traffic ever becomes relevant, the
+row should be revisited as a whole — not resolved via a redirect.
 
 Rows whose aliases are only the old pipeline's self-variants (`opus_5`,
 `4-6`) do **not** count as foreign — they are part of the junk and get

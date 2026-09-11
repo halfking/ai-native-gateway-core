@@ -232,15 +232,13 @@ func Shutdown() error {
 	// 2026-08-26 Phase A: stop the Bleve indexer first so no late
 	// record slips in while we close lumberjack.
 	DisableBleveFanout()
-	type syncCloser interface {
-		Sync() error
-		Close() error
-	}
 	var firstErr error
-	if c, ok := effectiveLogWriter.(syncCloser); ok {
+	if c, ok := effectiveLogWriter.(interface{ Sync() error }); ok {
 		if err := c.Sync(); err != nil && !errors.Is(err, os.ErrInvalid) {
 			firstErr = err
 		}
+	}
+	if c, ok := effectiveLogWriter.(interface{ Close() error }); ok {
 		if err := c.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}

@@ -29,7 +29,7 @@ const { fmtDateTime } = useFormat()
 const { credentialDisplayName, loadCredentialLabels } = useCredentialLabels()
 onMounted(() => { void loadCredentialLabels() })
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   providerId: number
   /**
    * When set, the drawer for the matching offer opens as soon as offers
@@ -38,7 +38,15 @@ const props = defineProps<{
    * Cleared once consumed.
    */
   focusOffer?: { credential_id: number; raw_model_name: string } | null
-}>()
+  /**
+   * 2026-09-11 audit: drives the offer drawer's :can-edit. The tab is only
+   * rendered for super admins (v-if="canManageProvider" upstream), but the
+   * prop still has to be threaded explicitly — it used to fall through to
+   * the drawer's false default, leaving every field disabled and 保存节点
+   * unclickable on this page (the read-only trap the verification round hit).
+   */
+  canManage?: boolean
+}>(), { canManage: false })
 
 const offers = ref<ModelOffer[]>([])
 const loading = ref(false)
@@ -641,6 +649,7 @@ load()
       :provider-id="providerId"
       :offer="selected"
       :sibling-offers="offers"
+      :can-edit="canManage"
       @close="closeDrawer"
       @updated="onOfferUpdated"
       @iq-tested="load"

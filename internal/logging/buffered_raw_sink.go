@@ -266,6 +266,7 @@ func (s *BufferedRawSink) offerLocked(entry RawDataEntry, requestID, direction, 
 		return false
 	}
 	s.dropped.Add(1)
+	metrics.Global().RecordRawSinkDropped("buffered", "buffer_full", 1)
 	return true
 }
 
@@ -336,16 +337,20 @@ func (s *BufferedRawSink) flushWorker() {
 // 整段持 flushMu（审计修正）：换出与写盘/索引的顺序对并发 flusher 唯一化，
 // 反推偏移不被并发批写盘污染。
 func (s *BufferedRawSink) flushBuffered() {
+	started := time.Now()
 	s.flushMu.Lock()
 	defer s.flushMu.Unlock()
-	s.flushBufferedLocked()
+	batch := s.flushBufferedLocked()
+	if batch > 0 {
+		metrics.Global().RecordRawSinkFlush("buffered", time.Since(started), batch)
+	}
 }
 
-func (s *BufferedRawSink) flushBufferedLocked() {
+func (s *BufferedRawSink) flushBufferedLocked() int {
 	s.bufMu.Lock()
 	if len(s.entries) == 0 {
 		s.bufMu.Unlock()
-		return
+		return 0
 	}
 	batch := s.entries
 	s.entries = nil
@@ -355,6 +360,7 @@ func (s *BufferedRawSink) flushBufferedLocked() {
 	s.writeWithRetry(batch)
 	s.flushCount.Add(1)
 	s.frameIndex.record(batch, s.base.peekPostWriteLocation)
+	return len(batch)
 }
 
 // writeWithRetry 带有限重试的写出（预研 §4 写失败降级）：对尚未写出的
@@ -376,6 +382,7 @@ func (s *BufferedRawSink) writeWithRetry(batch []RawDataEntry) {
 		}
 		if attempt >= s.maxWriteAttempt {
 			s.dropped.Add(uint64(len(remaining)))
+			metrics.Global().RecordRawSinkDropped("buffered", "write_failure", uint64(len(remaining)))
 			metrics.Global().RecordRawAuditWriteFailure()
 			slog.Error("buffered_raw_sink: write failed, dropping batch remainder",
 				"dropped", len(remaining),
@@ -418,6 +425,10 @@ func (s *BufferedRawSink) Sync() error {
 // 仍有残留"路径——stub 由 Accepted>0 触发，等价能力不缺失。
 func (s *BufferedRawSink) Close() error {
 	s.closeOnce.Do(func() {
+		started := time.Now()
+		defer func() {
+			metrics.Global().RecordRawSinkCloseDrain("buffered", time.Since(started), false)
+		}()
 		s.bufMu.Lock()
 		if s.closed {
 			s.bufMu.Unlock()
@@ -472,7 +483,13 @@ func (s *BufferedRawSink) Close() error {
 // LookupFrame 返回 (requestID, direction) 最近一次已落盘条目的位置
 // （FrameLookup 能力，Buffered 灰度硬前置，预研 §10 问题 4）。
 func (s *BufferedRawSink) LookupFrame(requestID, direction string) (file string, offset int64, ok bool) {
-	return s.frameIndex.lookup(requestID, direction)
+	file, offset, ok = s.frameIndex.lookup(requestID, direction)
+	result := "miss"
+	if ok {
+		result = "hit"
+	}
+	metrics.Global().RecordRawSinkFrameLookup("buffered", result)
+	return file, offset, ok
 }
 
 // Stats 返回缓冲统计（Buffered 专属，不伪装 QueueStats）。

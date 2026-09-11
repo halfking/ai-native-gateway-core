@@ -12,14 +12,17 @@ import (
 )
 
 // ProbeHealthEvidence reads node hashes directly from Redis in batched
-// pipelines — one TYPE+HGETALL pipeline for all primary keys plus at most one
-// more for the dual-mode legacy fallbacks. Key selection mirrors
-// PipelineNodeViews (doc 14 §5.2.1/§5.3): legacy reads the legacy key only;
-// dual reads the canonical key and falls back to the exact-tuple legacy key on
-// a miss (or straight to legacy when the canonical grammar cannot represent
-// the tuple); canonical never falls back. It deliberately does not reuse
-// PipelineNodeViews itself: probe preflight must not inherit the routing
-// reader's mirror, expired-cool half-open, or availability defaults.
+// pipelines — all primary keys go through one SafeHGetAllPipeline call (a
+// TYPE exec followed by an HGETALL exec) and dual-mode legacy fallbacks go
+// through at most one more such call, so a gate batch costs at most four
+// pipeline execs instead of two serial HGetAll round-trips per model. Key
+// selection mirrors PipelineNodeViews (doc 14 §5.2.1/§5.3): legacy reads the
+// legacy key only; dual reads the canonical key and falls back to the
+// exact-tuple legacy key on a miss (or straight to legacy when the canonical
+// grammar cannot represent the tuple); canonical never falls back. It
+// deliberately does not reuse PipelineNodeViews itself: probe preflight must
+// not inherit the routing reader's mirror, expired-cool half-open, or
+// availability defaults.
 func (s *Store) ProbeHealthEvidence(ctx context.Context, prefix, tenant string, credentialID int, models []string) ([]api.ProbeHealthEvidence, error) {
 	out := make([]api.ProbeHealthEvidence, len(models))
 	if s == nil || s.rdb == nil {

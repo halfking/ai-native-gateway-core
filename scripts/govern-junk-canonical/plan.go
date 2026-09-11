@@ -79,7 +79,30 @@ const (
 	// something other than the row's own name points here; manual review
 	// first.
 	VerdictWithheld Verdict = "withheld-foreign-alias"
+	// VerdictWhitelisted — the row matches the junk shape but is on
+	// OperatorWhitelist: an operator examined it and decided to KEEP the row
+	// (re-pointing it at any standard row would be semantically wrong).
+	// Whitelist overrides every other verdict, so -apply never touches the
+	// row even if a unique target would clear the gate.
+	VerdictWhitelisted Verdict = "whitelisted"
 )
+
+// OperatorWhitelist lists canonical names that match the junk detection
+// shape but which an operator examined and confirmed to KEEP, with the
+// rationale. Whitelisted rows are still reported (verdict "whitelisted",
+// with the reason) so future diagnosis runs stay transparent, but they are
+// never remediated and never eligible as redirect targets.
+//
+// Entries must never be removed without re-running the diagnosis and
+// re-examining the row.
+var OperatorWhitelist = map[string]string{
+	"free": "OpenRouter free-pool pseudo-model (raw 'openrouter/free', provider 21): " +
+		"it has no single model identity — OpenRouter's per-model free variants " +
+		"('z-ai/glm-5.2:free', 'minimax/minimax-m3:free', …) are canonical rows of their own — " +
+		"so re-pointing it at any one tied target (0.99 ×5) would be wrong. " +
+		"Operator decision 2026-09-12: keep the row; zero requests ever routed here " +
+		"(request_logs: 0 rows for canonical_id=2664333 and 0 for provider_id=21, all time).",
+}
 
 // CandidateSources lists the models_canonical.source values written by the
 // auto-seeding paths that used the prefix-stripping logic. Curated sources
@@ -105,6 +128,9 @@ type Suspect struct {
 	Aliases  []AliasRow                    // every alias row pointing at Row, any status
 	Evidence []Evidence                    // top matches only, best first
 	Target   *modelname.StandardModelMatch // aggregated suggestion, nil = none ≥ min score
+	// WhitelistReason is set iff Verdict == VerdictWhitelisted: the
+	// OperatorWhitelist rationale for keeping the row.
+	WhitelistReason string
 }
 
 // Diagnosis is the full phase-1 result.
@@ -237,9 +263,18 @@ func Diagnose(canonical []CanonicalRow, aliases []AliasRow, providerModels []Pro
 			}
 			minusC := make([]string, 0, len(activeNames))
 			for _, n := range activeNames {
-				if !strings.EqualFold(n, c.Name) {
-					minusC = append(minusC, n)
+				if strings.EqualFold(n, c.Name) {
+					continue
 				}
+				// Whitelisted rows are never remediation targets: excluding
+				// them from the rival catalog means a suspect whose ONLY
+				// confident landing is a whitelisted row produces no
+				// evidence (nothing to suggest), instead of a plan that
+				// would redirect into a row the operator decided to keep.
+				if _, whitelisted := OperatorWhitelist[strings.ToLower(n)]; whitelisted {
+					continue
+				}
+				minusC = append(minusC, n)
 			}
 			for _, m := range modelname.MatchStandardModels(re.raw, minusC) {
 				if m.Score < minScore {
@@ -302,25 +337,37 @@ func Diagnose(canonical []CanonicalRow, aliases []AliasRow, providerModels []Pro
 				}
 			}
 		}
+		// Operator whitelist has the final say: a row an operator confirmed
+		// to keep is reported as whitelisted (with the reason) no matter
+		// what the evidence would otherwise suggest.
+		if reason, ok := OperatorWhitelist[strings.ToLower(c.Name)]; ok {
+			s.Verdict = VerdictWhitelisted
+			s.WhitelistReason = reason
+		}
 		d.Suspects = append(d.Suspects, s)
 	}
 
 	// Gate catalog for the apply-time per-reference scoring: everything
 	// active except the suspects, so a redirect can never land on a row the
-	// tool is about to deprecate.
+	// tool is about to deprecate — and never on a whitelisted row either,
+	// even when the whitelist kept it out of the suspects.
 	d.suspectIDs = map[int64]bool{}
 	for _, s := range d.Suspects {
 		d.suspectIDs[s.Row.ID] = true
 	}
 	for _, c := range canonical {
-		if c.Status == "active" && !d.suspectIDs[c.ID] {
-			d.gateCatalogNames = append(d.gateCatalogNames, c.Name)
+		if c.Status != "active" || d.suspectIDs[c.ID] {
+			continue
 		}
+		if _, whitelisted := OperatorWhitelist[strings.ToLower(c.Name)]; whitelisted {
+			continue
+		}
+		d.gateCatalogNames = append(d.gateCatalogNames, c.Name)
 	}
 
 	sort.Slice(d.Suspects, func(i, j int) bool {
 		if d.Suspects[i].Verdict != d.Suspects[j].Verdict {
-			order := map[Verdict]int{VerdictFixable: 0, VerdictReview: 1, VerdictWithheld: 2}
+			order := map[Verdict]int{VerdictFixable: 0, VerdictReview: 1, VerdictWithheld: 2, VerdictWhitelisted: 3}
 			return order[d.Suspects[i].Verdict] < order[d.Suspects[j].Verdict]
 		}
 		return d.Suspects[i].Row.Name < d.Suspects[j].Row.Name

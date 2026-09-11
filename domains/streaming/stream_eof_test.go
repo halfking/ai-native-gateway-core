@@ -12,8 +12,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -275,6 +275,10 @@ func (c *countingRecorder) SetPoolHealthyCredentials(_ string, _ int)           
 func (c *countingRecorder) RecordShadowWriteFailure(_ string)                    {}
 func (c *countingRecorder) RecordRingBufferDropped(_ uint64)                     {}
 func (c *countingRecorder) RecordRawAuditWriteFailure()                          {}
+func (c *countingRecorder) RecordRawSinkFlush(string, time.Duration, int)        {}
+func (c *countingRecorder) RecordRawSinkDropped(string, string, uint64)          {}
+func (c *countingRecorder) RecordRawSinkCloseDrain(string, time.Duration, bool)  {}
+func (c *countingRecorder) RecordRawSinkFrameLookup(string, string)              {}
 func (c *countingRecorder) RecordURSMv2ShadowResult(_ string)                    {}
 func (c *countingRecorder) RecordMalformedSSEFrame(_, _ string)                  {}
 func (c *countingRecorder) RecordStreamSynthesizedDone()                         { c.synth++ }
@@ -283,7 +287,7 @@ func (c *countingRecorder) RecordSuccessEmptyResponse(_, _, _ string)           
 func (c *countingRecorder) RecordJournalSnapshotStored(_ string)                 {}
 func (c *countingRecorder) RecordJournalSnapshotApplied(_ string, _ bool)        {}
 func (c *countingRecorder) RecordJournalSnapshotDeduplicated(_, _ string)        {}
-func (c *countingRecorder) RecordLiveStreamRecordDropped(_ string)              {}
+func (c *countingRecorder) RecordLiveStreamRecordDropped(_ string)               {}
 
 // Compile-time check that countingRecorder satisfies metrics.Recorder.
 var _ metrics.Recorder = (*countingRecorder)(nil)

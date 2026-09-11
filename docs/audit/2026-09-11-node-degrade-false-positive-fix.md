@@ -62,3 +62,55 @@
 
 - 154 只读诊断脚本模式：`/tmp/minimax-incident-readonly.py`（systemd MainPID /proc environ 取 `LLM_GATEWAY_DATABASE_URL`，`default_transaction_read_only=on` + statement_timeout，按需重放）。
 - `routing_audit_log` 在事发窗口无 force_enable 记录（0 行）——审计链路本身也有缺口，未列入本轮。
+
+## 6. 部署门禁结果（2026-09-11 追加）
+
+- **Local 门禁失败**：`make test` 报 3 项历史失败，与本次 bg 修复无关：
+  - `admin.TestModelOfferSuggestions_ConfidentMatch`（期望 canonical_id=112，实际 0）
+  - `admin.TestUpdateModelOffer_ClearCanonical_UsesBindingJoin`（期望 SQL 含 `FROM public.model_offer_canonical_binding`，实际 `UPDATE model_name_registry`）
+  - `ursm.TestScriptSizes`（lua 脚本字节数与 `script_sizes.go` 不符，报 `go generate ./...` 同步）
+- **结论**：`admin` 两个测试与 `TestScriptSizes` 在 `e4d7433fb` 提交点已存在，属历史包袱；本次 bg 修复本身编译与测试全绿。
+- **待决**：是否（a）收紧门禁只跑 `go test ./bg/ ./cmd/...`，（b）先修历史失败再晋级，（c）接受风险直跳 154，（d）暂停部署先等 P1/P2/P3 调查结论。
+
+## 7. 生产只读验证结论（2026-09-11 23:40–23:45 复查）
+
+154 已由并行部署方于 **21:30:46** 换上 **build_seq=2081 / git_sha=ab2a3c8e**（蓝绿切至 8782 实例；ab2a3c8e 含 `e763544df` 探活修复，不含 `e04197ec8` 强启清 key 缓存）。只读 SQL/journalctl 复查结果：
+
+| 项 | 结论 | 证据 |
+|---|---|---|
+| P3 probeSubmitter 接线 | ✅ 已解决 | 启动即见 `credRecovery: expired-binding probe submitter wired (authoritative)`（21:31:01）；48h 内 `probeSubmitter not wired` = 0；`expired-binding-recovery` 探测提交持续流转 |
+| P1 误降级（本修复目标） | ✅ 生产已消失 | cred 42 全部 4 模型 `consecutive_failures=0`、`last_direct_ok=t`、`last_gateway_ok=t`（MiniMax-M3 最近一次 23:40）；cred 21 MiniMax-M3 同样双绿 cf=0 |
+| P1 网关腿 401 根因 | ⚠️ 现象消失、根因未定位 | 事发时直连 200/网关 401 并存；当前网关腿恢复双绿。`e04197ec8`（force-enable 清 key 缓存+rotator）尚未部署，属下一轮部署的加固项 |
+| cred 21 MiniMax-Text-01 | ℹ️ 真实故障非误降级 | cf=10 / http_429（direct 也失败），availability=suspended(reason=network, 23:42)——梯子按设计工作 |
+| P2 冷迁移停滞 | ❌ 仍存在 | 父表 `max(ts)=2026-09-09 17:16`（95,665 行）；hot 实时（92,589 行，23:42）；视图=两者之和 ✓；**近 6h 父表 0 行新增 → promotion worker 未在搬运**，hot 表将持续增长，需单独排查 promote 调度 |
+
+附注：8781 实例 21:31:34 的 failed 状态是蓝绿切换时旧实例 drain 超时被 SIGKILL 的痕迹（stop-sigterm timed out → 9/KILL），非崩溃；可留意优雅停止超时是否偏紧。154 上的临时只读诊断脚本（`/tmp/gw-readonly.py`、`/tmp/incident.sql`）已清理。
+
+## 8. 同款失明种子修复（2026-09-11 深夜追加）
+
+审计确认 `bg/` 内还有三处近期窗口读裸 `request_logs` 父表，均已切换 `request_logs_with_current_month` 并加回归锁（`bg/recent_surface_reads_test.go`）：
+
+- `bg/candidate_failure_monitor.go` — checkStaleness 5 分钟活动探测（父表失明 → staleness 告警永不触发）、checkAutoCool 5 分钟失败率窗口（auto-cool 永不触发）
+- `bg/shared_pick.go` — 7 天最常用探测模型选取（近期流量不可见 → 选取陈旧模型）
+- `bg/daily_probe_audit.go` — 3 天回看每日提交清单（近 2 天流量不可见 → 漏扫）
+
+**有意不切**：`bg/integrity_fingerprint_drift.go` 所需 `system_fingerprint` 列不在视图（hot∩parent 交集缺失，hot 表列漂移，同 573 body 列缺口家族）——先修 hot 表列再切，回归测试已钉住该排除决定。生产视图列覆盖经 154 只读查询实证（client_model/outbound_model/success/is_auto_request/task_type/request_status 均在）。
+
+## 9. P2 冷迁移停滞根因闭环（2026-09-12 排查）
+
+**根因链（154 生产只读取证 + git 考古三方互证）**：
+
+1. 2026-08-26 merge `d2cbaf88b` 回退了 `cmd/gateway/main.go` 的 `telemetry.SetClaimClient(telemetryClient)` 接线；2026-08-27 恢复提交 `6c5056ec7` 修回了 client.go 契约但**漏掉这一行**。此后生产 `loadClientForClaim()` 恒 nil，`claimSessionFinalSuccess` 永远走"0 个 heap 分区"降级分支——migration 532 的 promoted 分区守卫（NOT EXISTS over heap 月度分区）**自 08-26 起从未生效**。
+2. 09-09 出现 7 个跨 8h promote 边界的长活会话（实测间隔 8.5~13.1h，`gw_*` 与 `gs_gw_*` 前缀变体各半，非重发——request_id 全不同）：第二次成功 claim 在 hot 表拿到第二条 `is_final_success=TRUE`，而第一条 TRUE 已晋升进 `request_logs_2026_09`（heap，约束在位）。
+3. 09-10 01:18 最早的冲突行（ts 17:18:47）过 8h 保留期后，promote 的单条原子 CTE 撞 `uq_request_logs_2026_09_final_success_session`（SQLSTATE 23505）整批回滚；批次按 ts 升序选取，冲突行恒在首批 → 每 tick 必败。冷迁移停摆 2.5 天，父表 max(ts) 冻结 2026-09-09 17:16:27，hot 积压 84,610 行（其中冲突对 7 组、retention 外 TRUE 行 1,569）。journald 为易失存储（仅保留至 09-11 22:20），首批 23505 日志不可回溯，但时间线与积压数据完全自洽。
+
+**修复（两件套，本轮提交）**：
+
+- **接线根除**：`claimSessionFinalSuccess` 改为由两个调用点（insertRequestLog/updateRequestLog，均为 `*Client` 方法）直传 `c *Client`，删除包级 holder + `SetClaimClient`/`loadClientForClaim`——接线缺口从结构上不可能复发（编译器保证）。"超 8h 会话早结束"的旧注释假设一并证伪移除。
+- **promote 自愈（迁移 694）**：重装 `promote_request_logs_hot_to_partition`（函数体承 688，DEFAULT '8 hours' 不变），在 ensure 分区循环之后、原子 CTE 之前插入 demote 步骤：对 retention 外、同会话在任一 heap 分区已有 TRUE 行的 hot 行降级 `is_final_success=FALSE`（claim 先到先得语义 = superseded，历史不改写），RAISE WARNING 计数可观测。已毒化数据无需人工修数，部署后首个 tick 自动排空积压。admin data-lifecycle 手动迁移路径走同一函数一并自愈。
+
+**验证**：`migration_694_test.go` SQL 形状断言（三列清单位置一致 + demote 谓词限定 retention 外 + ensure→demote→CTE 顺序）；本地一次性 PG17 容器真库验证：生产同款毒行 demote 后正常入分区且 FALSE、新鲜冲突行（<8h）不被误降级、正常 TRUE 行保持、二次调用幂等返回 0、分区侧"每会话至多一 TRUE"不变式成立；`go test ./domains/hooks/observability/telemetry/ ./sql/migrations/startup/ ./bg/` 全绿；`TestNumericUpMigrationVersionsAreUnique` 通过。
+
+**同场还债（Local 门禁 3 项历史失败，均已修绿）**：`admin.TestModelOfferSuggestions_ConfidentMatch`（测试自身断言 ID 写反：mock 目录 7=claude-haiku-4.5 / 8=claude-opus-5，matcher 正确返回 8 而断言 want 7）；`admin.TestUpdateModelOffer_ClearCanonical_UsesBindingJoin`（pgxmock 反射 Scan 不支持 int64/string → `**int`/`**string` 目标，col 7 报错后 8-13 列静默截断、handler nolint 吞错——mock 行改传 `*int`/`*string`）；`ursm.TestScriptSizes`（lua 钉值未跟随 11af45216 有意变更，按测试自述更新 12607→12303、11516→11227）。
+
+**部署跟进**：本轮 commit 需随下一轮部署（与 e04197ec8、d812e1a53 同批）上 245/154；部署后观测要点：journalctl 出现 "demoted N hot final-success claim(s)"（预期 N=7）、随后 request_logs_hot 每 tick promote batch 正常、父表 max(ts) 追平 now-8h、hot 表行数回落至 8h 窗口内。

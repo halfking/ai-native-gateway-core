@@ -263,6 +263,22 @@ files=(
   # (+08 字面量污染,多 8 小时),ensure 建 2026_11 必然 overlap。686 按守卫
   # DETACH+重建为正确的 00:00:00+08 上界,含 default 分区行搬回兜底。
   "$ROOT_DIR/sql/migrations/startup/686_fix_session_module_executions_2026_10_bounds.sql"
+  # 2026-09-11 部署缺口审计（本机实测）：693 只进了仓库文件与 installer
+  # 全新安装路径，升级库无任何通道应用它（本序列止于 686，db.go 也无 ensure
+  # 镜像），新二进制的 clear_canonical / discovery upsert /
+  # routing_health_checker 每个周期报 42703 column does not exist。文件幂等
+  # （IF NOT EXISTS 守卫 + DO 块），db.go 侧另有 ensureProviderModelsCanonicalClearedAt
+  # 自愈镜像兜底。
+  "$ROOT_DIR/sql/migrations/startup/693_provider_models_canonical_cleared_at.sql"
+  # 2026-09-12 同款升级通道缺口：695 promote final-success 冲突自愈（P2
+  # 冷迁移停滞根因的数据面修复）同样只存在于仓库文件，db.go 无 ensure 镜像、
+  # 本序列此前止于 693。原编号 694 在共享 252 PG 的迁移账本里已被其他项目
+  # 的 694_partition_ensure_timezone.sql 占用（2026-09-11 21:28），deploy
+  # pending 判定按账本记录跳过、自愈永不生效，故 2026-09-12 重编号为 695。
+  # 纯 CREATE OR REPLACE promote_request_logs_hot_to_partition
+  # （688 体 + demote 步骤），幂等收敛，down 无。必须在 693 之后（无依赖，
+  # 顺序仅为序列递增约定）。
+  "$ROOT_DIR/sql/migrations/startup/695_request_logs_promote_final_success_self_heal.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563

@@ -105,6 +105,10 @@ func TestHotTablePromoteAlertsUseRegisteredLowCardinalityMetrics(t *testing.T) {
 	require.Contains(t, byAlert["NodeProbeQueueSubmissionFailuresHigh"].expr, "llmgw_node_probe_queue_submission_total")
 	require.Contains(t, byAlert, "NodeProbeQueueSubmissionRetriesHigh")
 	require.Contains(t, byAlert["NodeProbeQueueSubmissionRetriesHigh"].expr, "llmgw_node_probe_queue_submission_retries_total")
+	// 2026-09-11 necessity gate 遗留项 6：skip 路径镜像删除持续失败告警。
+	require.Contains(t, byAlert, "NodeProbeNecessityMirrorDeleteFailedHigh")
+	require.Contains(t, byAlert["NodeProbeNecessityMirrorDeleteFailedHigh"].expr, "llmgw_node_probe_necessity_mirror_delete_failed_total")
+	require.Equal(t, "5m", byAlert["NodeProbeNecessityMirrorDeleteFailedHigh"].wait)
 
 	text := string(data)
 	require.False(t, strings.Contains(text, "tenant="))
