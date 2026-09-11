@@ -80,3 +80,37 @@ func TestGetProviderModels_UsesOfferListSQLFor_NotLegacyConstant(t *testing.T) {
 		t.Fatalf("offerListSQLFor(nil) and offerListSQL must agree on the compat fallback.\nfor=%q\nlegacy=%q", sql, offerListSQL)
 	}
 }
+
+// TestOfferListSQLColumns_MoModalityPlaceholderOnce pins the second
+// schema-dependent placeholder. 2026-09-11 live regression: the shared DTO
+// queried `mo.provider_modality` unconditionally and the model_offers view on
+// upgraded installs (last rebuilt by migration 678, whose view body predates
+// the alias) answered SQLSTATE 42703 — GET
+// /api/providers/36994/credentials/77/models returned
+// "column mo.provider_modality does not exist" 500.
+func TestOfferListSQLColumns_MoModalityPlaceholderOnce(t *testing.T) {
+	if n := strings.Count(offerListSQLColumns, "__MO_MODALITY__"); n != 1 {
+		t.Fatalf("__MO_MODALITY__ must appear exactly once; got %d", n)
+	}
+	if !strings.Contains(offerListSQLColumns, "COALESCE(NULLIF(TRIM(mc.modality), ''), __MO_MODALITY__)") {
+		t.Fatal("offerListSQLColumns must keep the canonical-modality COALESCE wrapping the __MO_MODALITY__ placeholder")
+	}
+}
+
+// TestOfferListSQLFor_NilPool_ExcludesProviderModality guards the compat
+// fallback for the stale-view case: without a live schema probe the resolved
+// SQL must never reference `mo.provider_modality`, or upgraded installs 500
+// with 42703 again. The canonical modality stays so the column count (and
+// therefore scanModelOfferDTO) is unchanged between variants.
+func TestOfferListSQLFor_NilPool_ExcludesProviderModality(t *testing.T) {
+	sql := offerListSQLFor(context.Background(), nil)
+	if strings.Contains(sql, "mo.provider_modality") {
+		t.Fatalf("compat SQL must not reference mo.provider_modality; GET /api/providers/{id}/credentials/{cid}/models would 500 on a stale model_offers view. Query:\n%s", sql)
+	}
+	if !strings.Contains(sql, "'text'") {
+		t.Fatal("compat modality term must fall back to 'text'")
+	}
+	if !strings.Contains(sql, "mc.modality") {
+		t.Fatal("compat SQL must keep the canonical modality column")
+	}
+}
