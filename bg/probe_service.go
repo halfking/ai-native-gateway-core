@@ -806,15 +806,28 @@ func (w *NodeProbeWorker) mirrorNodeProbeState(ctx context.Context, credID int, 
 // silent swallow + a CHECK constraint that rejected unified-queue sources).
 func (w *NodeProbeWorker) insertNodeProbeRun(ctx context.Context, credID int, model, triggerKind string,
 	attempt, nextSec int, direct, gw nodeProbeRoundResult, success bool, startedAt, now time.Time, durationMs int) error {
-	if w.db == nil {
+	// Same auditDB seam as emitSyncAudit: auditDB (interface, mockable) first,
+	// falling back to the pool. In production they are the same pool.
+	// Note: a nil *pgxpool.Pool assigned to the interface is non-nil, so the
+	// pool must be nil-checked before the assignment.
+	auditDB := w.auditDB
+	if auditDB == nil {
+		if w.db == nil {
+			return nil
+		}
+		auditDB = w.db
+	}
+	if auditDB == nil {
 		return nil
 	}
+	// R12 P2: keep the audit column inside the attempt_check domain (1..7).
+	attempt = clampAuditAttempt(attempt)
 	requestHeadersJSON := probeHeadersJSON(direct.requestHeaders)
 	timeoutAtMs := 0
 	if direct.errCode == "network_error" && direct.latencyMs >= 14900 {
 		timeoutAtMs = direct.latencyMs
 	}
-	_, err := w.db.Exec(ctx, `
+	_, err := auditDB.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,

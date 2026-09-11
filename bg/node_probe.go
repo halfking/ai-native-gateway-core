@@ -1677,6 +1677,28 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 	return credID, model, true, nil
 }
 
+// clampAuditAttempt constrains the attempt number written to node_probe_runs
+// to the table's CHECK domain (node_probe_runs_attempt_check: 1..7).
+//
+// R12 P2 (2026-09-11): since the 2026-07-15 P0 fix removed the pause at
+// nodeProbeMaxAttempts, the legacy runOne path keeps incrementing
+// node_probe_state.consecutive_failures past 7, and attempt = cf+1 grows
+// unbounded — every probe of a long-failing (cred, model) pair then died on
+// the audit INSERT with SQLSTATE 23514, losing the audit row after the probe
+// had already run. The audit ladder only has 7 rounds, so clamp the audit
+// metadata; the true failure count stays authoritative in node_probe_state.
+// The unified-queue path clamps task.Attempt to [1, max_attempts] already,
+// so this is a no-op there.
+func clampAuditAttempt(a int) int {
+	if a < 1 {
+		return 1
+	}
+	if a > nodeProbeMaxAttempts {
+		return nodeProbeMaxAttempts
+	}
+	return a
+}
+
 // runOne executes the two-round probe and updates the state row +
 // audit log accordingly.  triggerKind is recorded on node_probe_runs;
 // "" defaults to "request_failure".
@@ -1912,7 +1934,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		timeoutAtMs = direct.latencyMs
 	}
 
-	_, err = w.db.Exec(ctx, `
+		_, err = w.db.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
@@ -1930,7 +1952,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			$23, $24::text::jsonb, $25, $26,
 			$27, $28
 		)`,
-		credID, model, triggerKind, attempt, nextSec,
+		credID, model, triggerKind, clampAuditAttempt(attempt), nextSec,
 		direct.ok, direct.httpStatus, direct.errCode, direct.latencyMs, direct.errDetail,
 		gw.ok, gw.httpStatus, gw.errCode, gw.latencyMs, gw.errDetail,
 		success, startedAt, now, durationMs,
