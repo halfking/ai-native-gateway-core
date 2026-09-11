@@ -3,6 +3,7 @@ package logging
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,89 @@ func forceCloseHandle(t *testing.T, l *RawDataLogger) {
 	}
 	if err := l.file.Close(); err != nil {
 		t.Fatalf("pre-close: %v", err)
+	}
+}
+
+func TestRawDataLogger_RotateRetriesExistingCandidate(t *testing.T) {
+	dir := t.TempDir()
+	fixed := time.Date(2026, time.September, 11, 12, 34, 56, 123456789, time.UTC)
+	oldNow := rawDataLoggerNow
+	rawDataLoggerNow = func() time.Time { return fixed }
+	t.Cleanup(func() { rawDataLoggerNow = oldNow })
+
+	candidate := filepath.Join(dir, fmt.Sprintf("raw_data_%s_%d.jsonl", fixed.Format("20060102_150405.000000000"), fixed.UnixNano()))
+	if err := os.WriteFile(candidate, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := NewRawDataLogger(dir, 1024*1024, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+
+	path, _ := l.CurrentLocation()
+	if path == candidate {
+		t.Fatalf("rotate reused existing candidate %q", candidate)
+	}
+	if !strings.HasPrefix(filepath.Base(path), "raw_data_") || !strings.HasSuffix(path, ".jsonl") {
+		t.Fatalf("rotated path %q is outside raw_data_*.jsonl contract", path)
+	}
+	l.LogUpstreamRequest("retry-rotate", "openai-chat", []byte("payload"), "pre_parse")
+	if !l.HasFile() {
+		t.Fatal("logger lost its file after collision retry")
+	}
+}
+
+func TestRawDataLogger_RotateFailureClearsClosedHandle(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewRawDataLogger(dir, 1024*1024, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	l.baseDir = filepath.Join(dir, "missing")
+	if err := l.rotate(); err == nil {
+		t.Fatal("expected rotate failure")
+	}
+	if l.file != nil {
+		t.Fatalf("file handle retained after rotate failure: %v", l.file)
+	}
+	if l.HasFile() {
+		t.Fatal("HasFile reported true after rotate failure")
+	}
+	if err := l.Close(); err != nil {
+		t.Fatalf("Close after rotate failure: %v", err)
+	}
+}
+
+func TestRawDataLogger_RotateExhaustedCollisionsClearsClosedHandle(t *testing.T) {
+	dir := t.TempDir()
+	l, err := NewRawDataLogger(dir, 1024*1024, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+
+	fixed := time.Date(2026, time.September, 11, 12, 34, 56, 123456789, time.UTC)
+	oldNow := rawDataLoggerNow
+	rawDataLoggerNow = func() time.Time { return fixed }
+	defer func() { rawDataLoggerNow = oldNow }()
+	for attempt := 0; attempt < rawDataLoggerRotateAttempts; attempt++ {
+		name := fmt.Sprintf("raw_data_%s_%d", fixed.Format("20060102_150405.000000000"), fixed.UnixNano())
+		if attempt > 0 {
+			name += fmt.Sprintf("_%d", attempt)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+".jsonl"), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := l.rotate(); err == nil {
+		t.Fatal("expected rotate failure after exhausting collisions")
+	}
+	if l.file != nil {
+		t.Fatalf("file handle retained after exhausted collisions: %v", l.file)
 	}
 }
 

@@ -118,10 +118,10 @@ func readAll(files []string) (string, error) {
 //
 // We exercise the synchronous logger (not the Async wrapper) so the offset
 // is observable immediately after each write. Two assertions matter:
-//   1. After a successful write the offset monotonically increases and the
-//      path matches the rotated file.
-//   2. Rotating to a new file changes the returned path (i.e. operators
-//      see the most recent file when the report lands).
+//  1. After a successful write the offset monotonically increases and the
+//     path matches the rotated file.
+//  2. Rotating to a new file changes the returned path (i.e. operators
+//     see the most recent file when the report lands).
 func TestRawDataLogger_CurrentLocation(t *testing.T) {
 	dir := t.TempDir()
 	logger, err := NewRawDataLogger(dir, 1024*1024, true)
@@ -296,9 +296,18 @@ func TestLockFreeAnomalyReporter_StampsRawLogLocation(t *testing.T) {
 	// omitempty); a freshly rotated file legitimately starts at 0. We
 	// therefore only assert the file key is present and the offset
 	// round-trips through the locator's signature.
-	if !strings.Contains(string(body), `"raw_log_file":"`+report.RawLogFile+`"`) {
+	var encoded struct {
+		Anomalies []struct {
+			RawLogFile string `json:"raw_log_file"`
+		} `json:"anomalies"`
+	}
+	if err := json.Unmarshal(body, &encoded); err != nil {
+		t.Fatalf("decode raw_log_file payload: %v", err)
+	}
+	if len(encoded.Anomalies) == 0 || encoded.Anomalies[0].RawLogFile != report.RawLogFile {
 		t.Errorf("expected raw_log_file value to round-trip in payload, got %s", body)
 	}
+
 }
 
 // TestLockFreeAnomalyReporter_NilLocatorLeavesFieldsEmpty confirms that
