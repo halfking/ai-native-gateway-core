@@ -1,0 +1,28 @@
+{
+  "dashboard": {
+    "title": "LLM Gateway - R12 Raw Sink Rollout",
+    "tags": ["llm-gateway", "r12", "raw-sink"],
+    "timezone": "browser",
+    "schemaVersion": 39,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {"id": 1, "title": "Raw audit write failures", "type": "timeseries", "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8}, "targets": [{"expr": "increase(llm_gateway_rawaudit_write_failed_total[5m])", "legendFormat": "write/rotate/sync failures", "refId": "A"}]},
+      {"id": 2, "title": "Flush latency P50/P95/P99", "type": "timeseries", "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8}, "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le, sink) (rate(llm_gateway_raw_sink_flush_duration_seconds_bucket[15m])))", "legendFormat": "P50 {{sink}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le, sink) (rate(llm_gateway_raw_sink_flush_duration_seconds_bucket[15m])))", "legendFormat": "P95 {{sink}}", "refId": "B"},
+        {"expr": "histogram_quantile(0.99, sum by (le, sink) (rate(llm_gateway_raw_sink_flush_duration_seconds_bucket[15m])))", "legendFormat": "P99 {{sink}}", "refId": "C"}
+      ]},
+      {"id": 3, "title": "Actual flush batch size", "type": "timeseries", "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8}, "targets": [
+        {"expr": "histogram_quantile(0.50, sum by (le, sink) (rate(llm_gateway_raw_sink_flush_batch_size_bucket[15m])))", "legendFormat": "P50 {{sink}}", "refId": "A"},
+        {"expr": "histogram_quantile(0.95, sum by (le, sink) (rate(llm_gateway_raw_sink_flush_batch_size_bucket[15m])))", "legendFormat": "P95 {{sink}}", "refId": "B"}
+      ]},
+      {"id": 4, "title": "Dropped entries", "type": "timeseries", "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8}, "targets": [{"expr": "increase(llm_gateway_raw_sink_dropped_total[5m])", "legendFormat": "{{sink}} / {{reason}}", "refId": "A"}]},
+      {"id": 5, "title": "Close drain latency", "type": "timeseries", "gridPos": {"x": 0, "y": 16, "w": 12, "h": 8}, "targets": [{"expr": "histogram_quantile(0.99, sum by (le, sink) (rate(llm_gateway_raw_sink_close_drain_duration_seconds_bucket[1h])))", "legendFormat": "P99 {{sink}}", "refId": "A"}]},
+      {"id": 6, "title": "Frame correlation hit rate", "type": "timeseries", "gridPos": {"x": 12, "y": 16, "w": 12, "h": 8}, "targets": [{"expr": "sum by (sink) (rate(llm_gateway_raw_sink_frame_lookup_total{result=\"hit\"}[15m])) / clamp_min(sum by (sink) (rate(llm_gateway_raw_sink_frame_lookup_total[15m])), 1e-9)", "legendFormat": "{{sink}} hit rate", "refId": "A"}]}
+    ],
+    "templating": {"list": []},
+    "annotations": {"list": []}
+  },
+  "overwrite": true
+}

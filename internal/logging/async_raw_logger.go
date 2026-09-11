@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // LockFreeQueue 无锁队列，用于异步日志和异常报告
@@ -303,6 +305,7 @@ func (l *AsyncRawDataLogger) SetOverflowReporter(rep *LockFreeAnomalyReporter) {
 func (l *AsyncRawDataLogger) noteDroppedEntry(requestID, direction string, env RawCorrelationEnvelope) {
 	now := time.Now().UnixNano()
 	last := l.lastDropWarn.Load()
+	metrics.Global().RecordRawSinkDropped("legacy", "queue_full", 1)
 	if now-last < int64(dropWarnInterval) {
 		return
 	}
@@ -468,16 +471,22 @@ func (l *AsyncRawDataLogger) flushBatch() {
 }
 
 func (l *AsyncRawDataLogger) flushBatchLocked() {
+	started := time.Now()
+	total := 0
 	for {
 		entries := l.queue.TryDequeueBatch(l.batchSize)
 		if len(entries) == 0 {
-			return
+			break
 		}
+		total += len(entries)
 		l.baseLogger.writeEntries(entries)
 		l.frameIndex.record(entries, l.baseLogger.peekPostWriteLocation)
 		if len(entries) < l.batchSize {
-			return
+			break
 		}
+	}
+	if total > 0 {
+		metrics.Global().RecordRawSinkFlush("legacy", time.Since(started), total)
 	}
 }
 
@@ -534,9 +543,16 @@ func (l *RawDataLogger) peekPostWriteLocation() (string, int64) {
 // without falling back to the global CurrentLocation() racy path.
 func (l *AsyncRawDataLogger) LookupFrame(requestID, direction string) (file string, offset int64, ok bool) {
 	if l == nil {
+		metrics.Global().RecordRawSinkFrameLookup("legacy", "miss")
 		return "", 0, false
 	}
-	return l.frameIndex.lookup(requestID, direction)
+	file, offset, ok = l.frameIndex.lookup(requestID, direction)
+	result := "miss"
+	if ok {
+		result = "hit"
+	}
+	metrics.Global().RecordRawSinkFrameLookup("legacy", result)
+	return file, offset, ok
 }
 
 // Close 关闭异步日志记录器
@@ -549,6 +565,10 @@ func (l *AsyncRawDataLogger) LookupFrame(requestID, direction string) (file stri
 // operators see the anomaly in the dashboard.
 func (l *AsyncRawDataLogger) Close() error {
 	l.closeOnce.Do(func() {
+		started := time.Now()
+		defer func() {
+			metrics.Global().RecordRawSinkCloseDrain("legacy", time.Since(started), l.queue.Size() > 0)
+		}()
 		l.stateMu.Lock()
 		l.closed.Store(true)
 		l.stateMu.Unlock()
