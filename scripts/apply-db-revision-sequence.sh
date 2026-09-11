@@ -263,6 +263,13 @@ files=(
   # (+08 字面量污染,多 8 小时),ensure 建 2026_11 必然 overlap。686 按守卫
   # DETACH+重建为正确的 00:00:00+08 上界,含 default 分区行搬回兜底。
   "$ROOT_DIR/sql/migrations/startup/686_fix_session_module_executions_2026_10_bounds.sql"
+  # 2026-09-11 部署缺口审计（本机实测）：693 只进了仓库文件与 installer
+  # 全新安装路径，升级库无任何通道应用它（本序列止于 686，db.go 也无 ensure
+  # 镜像），新二进制的 clear_canonical / discovery upsert /
+  # routing_health_checker 每个周期报 42703 column does not exist。文件幂等
+  # （IF NOT EXISTS 守卫 + DO 块），db.go 侧另有 ensureProviderModelsCanonicalClearedAt
+  # 自愈镜像兜底。
+  "$ROOT_DIR/sql/migrations/startup/693_provider_models_canonical_cleared_at.sql"
 )
 
 # 2026-09-05 PG log audit follow-up (function clobber guard): 572 and 563
