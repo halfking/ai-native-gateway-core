@@ -21,7 +21,11 @@
 //   - credential_probe_queue row: hard DELETE via ProbeQueue.Remove
 //     (lease-guarded) — this frees the dedup_key for a future real failure;
 //   - node_probe_state mirror row: DELETE via deleteNodeProbeState — otherwise
-//     pumpDueStatesToQueue would re-enqueue the same node within 30s;
+//     pumpDueStatesToQueue would re-enqueue the same node within 30s. A
+//     failed DELETE gets one bounded immediate retry (a surviving mirror row
+//     churns the tile through a full lifecycle per pump tick); persistent
+//     failure is escalated to a counter + ERROR log instead of retrying
+//     forever;
 //   - the 自检 SSE tile gets a terminal "skipped" transition instead of
 //     hanging in-flight.
 //
@@ -66,6 +70,12 @@ const (
 // skipReasonSSEPrefix marks a terminal SSE transition as a necessity skip.
 const skipReasonSSEPrefix = "skipped_not_necessary"
 
+// probeNecessityMirrorDeleteRetryDelay is the pause before the one immediate
+// mirror-delete retry. Just enough for a lock holder or a dead pooled
+// connection to clear; the skip-removal path runs on the queue worker's loop,
+// so this delay is bounded and paid only on the failure path.
+const probeNecessityMirrorDeleteRetryDelay = 200 * time.Millisecond
+
 var probeNecessitySkipTotal = promauto.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "llmgw_node_probe_necessity_skip_total",
@@ -73,6 +83,21 @@ var probeNecessitySkipTotal = promauto.NewCounterVec(
 	},
 	[]string{"reason"},
 )
+
+// Mirror-delete churn observability (P2, 2026-09-11): a failed node_probe_state
+// DELETE leaves the mirror row behind, so the 30s pump re-enqueues the node,
+// the gate re-skips it, and the 自检 tile flips through another full lifecycle
+// — once per pump tick for as long as the delete keeps failing. retry_total
+// watches transient failures absorbed in-cycle; failed_total is the
+// persistent-failure alarm (bounded retries exhausted or context died mid-way).
+var probeNecessityMirrorDeleteRetries = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "llmgw_node_probe_necessity_mirror_delete_retry_total",
+	Help: "Immediate in-cycle retries of a failed node_probe_state mirror delete in the necessity skip path.",
+})
+var probeNecessityMirrorDeleteFailures = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "llmgw_node_probe_necessity_mirror_delete_failed_total",
+	Help: "node_probe_state mirror deletes that failed even after the bounded immediate retry; the 30s pump re-enqueues and re-skips these nodes until the delete converges.",
+})
 
 // NodeHealthEvidence is the bg-local view of one node's Redis cache state.
 // It mirrors the fields of the URSM node hash that the necessity gate needs;
@@ -396,11 +421,43 @@ func (s *ProbeService) removeSkippedProbe(ctx context.Context, task ProbeQueueTa
 }
 
 // deleteNodeProbeStateMirror drops the node_probe_state row behind the
-// skipped queue entry.
+// skipped queue entry. A failed DELETE here is the churn engine: the queue
+// row is already gone, but the surviving mirror row makes the 30s pump
+// re-enqueue the node, the gate re-skips it, and the tile flips through
+// another full pending → in-flight → skipped lifecycle. Transient DB faults
+// (lock wait, serialization failure, momentary connection blip) dominate the
+// failure mass, so one bounded immediate retry absorbs them in-cycle; a
+// still-failing delete is escalated to
+// llmgw_node_probe_necessity_mirror_delete_failed_total + an ERROR log rather
+// than retried forever — the pump re-entry loop is the safety net that keeps
+// re-attempting the delete every tick without ever executing the probe.
 func (s *ProbeService) deleteNodeProbeStateMirror(ctx context.Context, credID int, model string) {
-	if s.deleteStateFn != nil {
-		s.deleteStateFn(ctx, credID, model)
+	del := func() error {
+		if s.deleteStateFn != nil {
+			return s.deleteStateFn(ctx, credID, model)
+		}
+		return s.worker.deleteNodeProbeState(ctx, credID, model)
+	}
+	firstErr := del()
+	if firstErr == nil {
 		return
 	}
-	s.worker.deleteNodeProbeState(ctx, credID, model)
+	select {
+	case <-time.After(probeNecessityMirrorDeleteRetryDelay):
+	case <-ctx.Done():
+		// Run context died mid-retry (worker shutdown). The mirror row
+		// survives and the pump will re-enqueue — surface that as a
+		// persistent failure instead of letting the churn stay silent.
+		probeNecessityMirrorDeleteFailures.Inc()
+		slog.Error("probe_necessity: node_probe_state mirror delete retry abandoned — context done, pump will re-enqueue and re-skip this node",
+			"credential_id", credID, "model", model, "delete_error", firstErr.Error(), "ctx_error", ctx.Err())
+		return
+	}
+	probeNecessityMirrorDeleteRetries.Inc()
+	if err := del(); err == nil {
+		return
+	}
+	probeNecessityMirrorDeleteFailures.Inc()
+	slog.Error("probe_necessity: node_probe_state mirror delete failed after immediate retry — 30s pump will re-enqueue and re-skip this node until the delete converges",
+		"credential_id", credID, "model", model)
 }

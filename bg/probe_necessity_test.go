@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // staticEvidenceSource is a NodeHealthEvidenceSource stub returning a fixed
@@ -464,7 +466,10 @@ func newRemovalTestService(q *recordingSkipQueue) (*ProbeService, func() []strin
 	}
 	service := &ProbeService{worker: &NodeProbeWorker{}}
 	service.skipQueue = q
-	service.deleteStateFn = func(context.Context, int, string) { q.record("deleteState") }
+	service.deleteStateFn = func(context.Context, int, string) error {
+		q.record("deleteState")
+		return nil
+	}
 	return service, func() []string {
 		mu.Lock()
 		defer mu.Unlock()
@@ -506,7 +511,10 @@ func TestRemoveSkippedProbeMissingQueueOrLease(t *testing.T) {
 	t.Run("queue nil", func(t *testing.T) {
 		service := &ProbeService{worker: &NodeProbeWorker{}}
 		var mirrorDeletes int
-		service.deleteStateFn = func(context.Context, int, string) { mirrorDeletes++ }
+		service.deleteStateFn = func(context.Context, int, string) error {
+			mirrorDeletes++
+			return nil
+		}
 
 		task := necessityTask()
 		task.LeaseToken = "lease-1"
@@ -551,5 +559,138 @@ func TestRemoveSkippedProbeSuccessDeletesMirrorThenPublishes(t *testing.T) {
 	}
 	if !strings.HasPrefix(q.reason, skipReasonSSEPrefix+": "+SkipReasonAllNodesHealthy) {
 		t.Fatalf("published reason = %q, want prefix %q", q.reason, skipReasonSSEPrefix+": "+SkipReasonAllNodesHealthy)
+	}
+}
+
+// TestSkipMirrorDeleteTransientFailureRetriedWithinCycle reproduces the P2
+// churn loop: 镜像行删除失败一次（瞬时 DB 故障）→ node_probe_state 行残留 →
+// pump 30s 后重入队 → 闸门再跳过 → 再删。每一轮 skip 都是磁贴的一次完整
+// 生命周期（pending → in-flight → skipped），所以一次瞬时删除失败就让磁贴
+// 翻动两轮；只要删除一直失败，循环就不收敛。期望：删除失败在同一轮内
+// 有界即时重试一次，瞬时故障在第一个 pump 周期内消化，磁贴只翻动一轮。
+//
+// The deleteStateFn seam here models the database: a failed delete leaves the
+// mirror row in place (pump will re-enqueue), a successful delete removes it
+// (loop ends). Each service.Run models one pump → claim → skip → delete cycle.
+func TestSkipMirrorDeleteTransientFailureRetriedWithinCycle(t *testing.T) {
+	src := &staticEvidenceSource{evidence: map[string]NodeHealthEvidence{
+		"model-a": {Known: true, Healthy: true},
+	}}
+	q := &recordingSkipQueue{removed: true}
+	service, steps := newRemovalTestService(q)
+	// Attach the gate so Run() takes the skip path through the real removal.
+	service.healthEvidence = src
+	service.siblingModelsFn = func(context.Context, int, string) ([]string, error) {
+		return nil, nil
+	}
+	service.lastProbeRunFn = func(context.Context, int, string) (*nodeProbeRunSummary, error) {
+		return nil, nil
+	}
+	service.automaticEligibilityFn = func(context.Context, ProbeQueueTask) (bool, error) { return true, nil }
+	service.directRoundFn = func(context.Context, int, string) nodeProbeRoundResult {
+		t.Error("probe body executed for a necessity-skipped task")
+		return nodeProbeRoundResult{}
+	}
+
+	mirrorGone := false
+	mirrorAttempts := 0
+	service.deleteStateFn = func(context.Context, int, string) error {
+		mirrorAttempts++
+		if mirrorAttempts == 1 {
+			// 第 1 次：删除失败，镜像行残留，pump 会重入队。
+			return errors.New("db: deadlock detected")
+		}
+		mirrorGone = true // 第 2 次（同轮即时重试）成功：故障是瞬时的
+		return nil
+	}
+
+	task := necessityTask()
+	task.LeaseToken = "lease-1"
+	cycles := 0
+	for cycles < 5 && !mirrorGone {
+		if _, err := service.Run(context.Background(), task); !errors.Is(err, ErrProbeNotNecessary) {
+			t.Fatalf("cycle %d: err = %v, want ErrProbeNotNecessary", cycles+1, err)
+		}
+		cycles++
+	}
+	publishes := 0
+	for _, step := range steps() {
+		if step == "publish" {
+			publishes++
+		}
+	}
+	if cycles != 1 || publishes != 1 {
+		t.Fatalf("transient mirror-delete failure did not converge within one cycle: %d skip cycle(s), %d tile flip(s) — a single failed delete churns the tile through repeated pending→in-flight→skipped lifecycles", cycles, publishes)
+	}
+}
+
+// TestSkipMirrorDeletePersistentFailureBoundedWithCounter pins the failure
+// posture when the delete keeps failing: exactly one immediate retry (不无界
+// 重试硬砸 DB)，但所有权顺序的副作用照常完成（队列行已删、SSE 终态已发布，
+// 磁贴不能挂着），持续失败必须落在
+// llmgw_node_probe_necessity_mirror_delete_failed_total 上供告警。
+func TestSkipMirrorDeletePersistentFailureBoundedWithCounter(t *testing.T) {
+	q := &recordingSkipQueue{removed: true}
+	service, steps := newRemovalTestService(q)
+	attempts := 0
+	service.deleteStateFn = func(context.Context, int, string) error {
+		attempts++
+		q.record("deleteState")
+		return errors.New("db down")
+	}
+	retriesBefore := testutil.ToFloat64(probeNecessityMirrorDeleteRetries)
+	failuresBefore := testutil.ToFloat64(probeNecessityMirrorDeleteFailures)
+
+	task := necessityTask()
+	task.LeaseToken = "lease-1"
+	service.removeSkippedProbe(context.Background(), task, SkipReasonAllNodesHealthy)
+
+	if attempts != 2 {
+		t.Fatalf("mirror delete attempts = %d, want 2 (first try + one bounded immediate retry)", attempts)
+	}
+	got := strings.Join(steps(), ",")
+	if want := "remove,deleteState,deleteState,publish"; got != want {
+		t.Fatalf("steps = %q, want %q (queue row + SSE terminal must survive a failing mirror delete)", got, want)
+	}
+	if delta := testutil.ToFloat64(probeNecessityMirrorDeleteRetries) - retriesBefore; delta != 1 {
+		t.Fatalf("retry counter delta = %v, want 1", delta)
+	}
+	if delta := testutil.ToFloat64(probeNecessityMirrorDeleteFailures) - failuresBefore; delta != 1 {
+		t.Fatalf("persistent-failure counter delta = %v, want 1", delta)
+	}
+}
+
+// TestSkipMirrorDeleteRetryAbortsOnContextDone: run ctx 已取消（worker 关停
+// 等）时不再发起第二次删除尝试，但持续失败计数必须落——镜像行残留、pump
+// 会重入队，这个 churn 不能静默。队列行删除与 SSE 终态不受影响。
+func TestSkipMirrorDeleteRetryAbortsOnContextDone(t *testing.T) {
+	q := &recordingSkipQueue{removed: true}
+	service, steps := newRemovalTestService(q)
+	attempts := 0
+	service.deleteStateFn = func(context.Context, int, string) error {
+		attempts++
+		q.record("deleteState")
+		return errors.New("db down")
+	}
+	retriesBefore := testutil.ToFloat64(probeNecessityMirrorDeleteRetries)
+	failuresBefore := testutil.ToFloat64(probeNecessityMirrorDeleteFailures)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	task := necessityTask()
+	task.LeaseToken = "lease-1"
+	service.removeSkippedProbe(ctx, task, SkipReasonAllNodesHealthy)
+
+	if attempts != 1 {
+		t.Fatalf("mirror delete attempts = %d, want 1 (cancelled context must not re-attempt)", attempts)
+	}
+	if delta := testutil.ToFloat64(probeNecessityMirrorDeleteRetries) - retriesBefore; delta != 0 {
+		t.Fatalf("retry counter delta = %v, want 0 (no retry attempt on a dead context)", delta)
+	}
+	if delta := testutil.ToFloat64(probeNecessityMirrorDeleteFailures) - failuresBefore; delta != 1 {
+		t.Fatalf("persistent-failure counter delta = %v, want 1 (surviving mirror row must be visible)", delta)
+	}
+	if got := strings.Join(steps(), ","); got != "remove,deleteState,publish" {
+		t.Fatalf("steps = %q, want %q (queue row + SSE terminal unaffected)", got, "remove,deleteState,publish")
 	}
 }
