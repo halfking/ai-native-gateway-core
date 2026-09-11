@@ -293,6 +293,7 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 		if l.currentSize+int64(len(data)) > l.maxSize {
 			if err := l.rotate(); err != nil {
 				slog.Error("raw_data_logger: failed to rotate log", "err", err)
+				metrics.Global().RecordRawAuditWriteFailure()
 				return
 			}
 		}
@@ -316,6 +317,7 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 
 	if err := l.file.Sync(); err != nil {
 		slog.Error("raw_data_logger: failed to sync file", "err", err)
+		metrics.Global().RecordRawAuditWriteFailure()
 	}
 }
 
@@ -354,6 +356,7 @@ func (l *RawDataLogger) writeEntriesFallible(entries []RawDataEntry) (int, error
 		if l.currentSize+int64(len(data)) > l.maxSize {
 			if err := l.rotate(); err != nil {
 				slog.Error("raw_data_logger: failed to rotate log", "err", err)
+				metrics.Global().RecordRawAuditWriteFailure()
 				return written, err
 			}
 		}
@@ -373,6 +376,7 @@ func (l *RawDataLogger) writeEntriesFallible(entries []RawDataEntry) (int, error
 
 	if err := l.file.Sync(); err != nil {
 		slog.Error("raw_data_logger: failed to sync file", "err", err)
+		metrics.Global().RecordRawAuditWriteFailure()
 		return len(entries), err
 	}
 	return len(entries), nil
