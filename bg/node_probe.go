@@ -1802,6 +1802,21 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			slog.Warn("node_probe_worker: failed to drop orphan state row",
 				"credential_id", credID, "model", model, "error", err)
 		}
+		// R12 audit closure (2026-09-11): the branch comment promises one
+		// node_probe_runs forensic row, but the code never wrote it — the
+		// unified ProbeService.Run missing-binding branch does (direct passed
+		// for both rounds, success=false, nextSec=0), so dashboards lost the
+		// signal on legacy-path drops. Mirror it. The DELETE above already
+		// stopped the re-pick churn, so a failed audit write must not undo
+		// the cleanup — surface it like the normal legacy path instead.
+		now := time.Now()
+		if err := w.insertNodeProbeRun(ctx, credID, model, triggerKind, attempt, 0,
+			direct, direct, false, startedAt, now, int(now.Sub(startedAt).Milliseconds())); err != nil {
+			auditPersistFailedTotal.WithLabelValues(triggerKind).Inc()
+			slog.Error("node_probe: node_probe_runs audit insert failed (missing-binding drop)",
+				"credential_id", credID, "model", model, "trigger_kind", triggerKind, "error", err)
+			return fmt.Errorf("audit insert: %w", err)
+		}
 		return nil
 	}
 	// Round 2: gateway — now sees the restored state from the direct round
@@ -1960,7 +1975,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		timeoutAtMs = direct.latencyMs
 	}
 
-		_, err = w.db.Exec(ctx, `
+	_, err = w.db.Exec(ctx, `
 		INSERT INTO node_probe_runs (
 			credential_id, raw_model_name, trigger_kind, attempt, next_retry_seconds,
 			direct_ok, direct_http_status, direct_err_code, direct_latency_ms, direct_err_detail,
