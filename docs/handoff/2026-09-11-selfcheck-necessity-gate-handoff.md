@@ -154,18 +154,28 @@
 - **验证记录（C: 副本 lgw-p2test，同步 dashboard_test.go + 面板 JSON + README）**：`go test -mod=vendor -count=1 ./deploy/grafana/ ./deploy/prometheus/rules/` → **grafana 3 例 + rules 6 例全 PASS**（rules 包重跑确认第九轮告警契约不受影响）。环境受限（与第八/九轮相同）：promtool 与 Grafana 导入仍不可用，PromQL/导入未实测——但 expr 指标名现已由本契约测试钉住，改名即 CI 红。无 Go 运行时/SQL/闸门路径改动，不涉及 bg 套件与交叉编译（b37b68b51 与第五/六轮同一代码提交，结论沿用）。
 - **遗留风险**：与第九轮相同，无新增。观测链路（告警+面板）等运维按 deploy/prometheus/README provisioning 流程加载后生效；TTL 抑制、显示侧治本等升级继续等待对应输入。
 
+## 本轮记录（2026-09-11 第十一轮，上线观察轮第五轮——无输入记录阻塞 + 合并态复核）
+
+- **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮零代码改动，产出 = main 合并态复核 + 本记录。
+- **main 合并态复核（只读，本轮确定性产出）**：`git fetch` 后 origin/main 前进至 f7c59617d，增量核对：第十轮提交 1a19dc1ea 已在 origin/main 历史中（`merge-base --is-ancestor` 通过）——观测链路全部工件（`alerts.yml` 告警、`alerts_test.go` 契约、`selfcheck-necessity-dashboard.json`、`dashboard_test.go` 契约、grafana README）**均已随 main 交付，无未合并内容**；f7c59617d 本身是另一工作线的审计文档（`docs/audit/2026-09-11-node-degrade-false-positive-fix.md`，node 强启误降级修复门禁记录），与本特性无关。网关/探测/SQL 代码自 b37b68b51 起零变化，第五/六/十轮的测试与交叉编译结论全部沿用。
+- **虚警排除（合并态复核顺带）**：本地 main 检出（fix/r13-logging-hygiene，落后 origin）与观测分支的 diff 中出现 `deploy/...conf.20260821-spa-fallback-only`，核实属已合并的 nginx 修复提交 48487ec74（另一工作线），非本特性遗留，未处置。
+- **验证记录（如实区分）**：本轮除 handoff 文档外零改动，未重跑测试/编译——被验证对象与本轮复核对象逐字节一致（1a19dc1ea 的 deploy 契约测试 3+6 例、bg 定向守卫 25 例、交叉编译结论沿用第十轮）。观测链路是否已被运维按 deploy/prometheus/README 实际 provisioning（告警/面板是否生效）无生产通道可查，**未验证**。
+- **遗留风险**：与第十轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。
+
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第五轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第六轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
 第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
 "审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
-已钉入 deploy/grafana/dashboard_test.go——至此观测链路全部工件均有 CI 防回归保护））、
+已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
+"本轮记录 第十一轮"（全部观测工件已确认合入 origin/main，无未合并内容））、
 遗留任务第 6 项。
-背景：代码最新 b37b68b51，观测工件至第十轮提交。告警
+背景：代码最新 b37b68b51，观测工件至第十轮提交且已全部合入 main（第十一轮复核）。
+告警
 NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）+
 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
 provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
