@@ -1,0 +1,14 @@
+# 共享工作区跨 macOS / Linux / Windows 协作。
+# 2026-09-12 起 CRLF 整文件重写已两次阻断/污染协作（handoff 文档、deploy 脚本、
+# 33 文件工作区污染），统一文本文件 LF；add 时 CRLF 自动归一，杜绝整文件重写提交。
+* text=auto eol=lf
+
+# 既有 CRLF 内容按字节原样保留，不做行尾规范化
+*.csv -text
+vendor/** -text
+
+# cmd.exe 对 LF 敏感：批处理统一 CRLF 检出（索引内仍为 LF）
+*.bat text eol=crlf
+
+# Windows 快捷方式等二进制杂物按二进制处理
+*.lnk binary
