@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -295,6 +296,43 @@ func TestDiagnoseWhitelistOverridesReview(t *testing.T) {
 			if r.ToCanonicalID == 13 {
 				t.Errorf("redirect lands on the whitelisted row: %+v", r)
 			}
+		}
+	}
+}
+
+// TestWhitelistRowNeverServesAsRemediationTarget pins the structural half
+// of the whitelist invariant: a whitelisted row must never become a
+// remediation target — not via a suspect's aggregated suggestion, not via
+// an apply-time per-reference redirect, even when the row itself produces
+// no evidence (and is therefore absent from the suspects). The synthetic
+// whitelist entry on "glm-5.2" turns junk "5.2" (strict token suffix of
+// glm-5.2's base) into a suspect whose ONLY gate-passing rival is the
+// whitelisted row — with the exclusion in place it must produce no
+// evidence at all instead of a poisoned "fixable → whitelisted row" plan.
+func TestWhitelistRowNeverServesAsRemediationTarget(t *testing.T) {
+	saved := OperatorWhitelist
+	defer func() { OperatorWhitelist = saved }()
+	OperatorWhitelist = map[string]string{"glm-5.2": "synthetic operator pin for the invariant test"}
+
+	canonical := append(fixtureCanonical(),
+		CanonicalRow{ID: 14, Name: "5.2", Status: "active", Source: "discovery"}, // junk suffix of glm-5.2
+	)
+	d := Diagnose(canonical, fixtureAliases(), fixtureRefs(), fixtureCorpus(), modelname.AutoLinkThreshold)
+
+	if s := suspectByName(d, "5.2"); s != nil {
+		t.Errorf("suspect whose only gate-passing rival is whitelisted must not be flagged with a poisoned target, got verdict=%q target=%v", s.Verdict, s.Target)
+	}
+	for _, s := range d.Suspects {
+		if s.Target == nil {
+			continue
+		}
+		if _, wl := OperatorWhitelist[strings.ToLower(s.Target.Name)]; wl {
+			t.Errorf("suspect %q suggests whitelisted target %q", s.Row.Name, s.Target.Name)
+		}
+	}
+	for _, n := range d.gateCatalogNames {
+		if _, wl := OperatorWhitelist[strings.ToLower(n)]; wl {
+			t.Errorf("whitelisted row %q must not be in the apply gate catalog", n)
 		}
 	}
 }

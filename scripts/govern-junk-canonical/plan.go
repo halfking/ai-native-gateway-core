@@ -263,9 +263,18 @@ func Diagnose(canonical []CanonicalRow, aliases []AliasRow, providerModels []Pro
 			}
 			minusC := make([]string, 0, len(activeNames))
 			for _, n := range activeNames {
-				if !strings.EqualFold(n, c.Name) {
-					minusC = append(minusC, n)
+				if strings.EqualFold(n, c.Name) {
+					continue
 				}
+				// Whitelisted rows are never remediation targets: excluding
+				// them from the rival catalog means a suspect whose ONLY
+				// confident landing is a whitelisted row produces no
+				// evidence (nothing to suggest), instead of a plan that
+				// would redirect into a row the operator decided to keep.
+				if _, whitelisted := OperatorWhitelist[strings.ToLower(n)]; whitelisted {
+					continue
+				}
+				minusC = append(minusC, n)
 			}
 			for _, m := range modelname.MatchStandardModels(re.raw, minusC) {
 				if m.Score < minScore {
@@ -340,15 +349,20 @@ func Diagnose(canonical []CanonicalRow, aliases []AliasRow, providerModels []Pro
 
 	// Gate catalog for the apply-time per-reference scoring: everything
 	// active except the suspects, so a redirect can never land on a row the
-	// tool is about to deprecate.
+	// tool is about to deprecate — and never on a whitelisted row either,
+	// even when the whitelist kept it out of the suspects.
 	d.suspectIDs = map[int64]bool{}
 	for _, s := range d.Suspects {
 		d.suspectIDs[s.Row.ID] = true
 	}
 	for _, c := range canonical {
-		if c.Status == "active" && !d.suspectIDs[c.ID] {
-			d.gateCatalogNames = append(d.gateCatalogNames, c.Name)
+		if c.Status != "active" || d.suspectIDs[c.ID] {
+			continue
 		}
+		if _, whitelisted := OperatorWhitelist[strings.ToLower(c.Name)]; whitelisted {
+			continue
+		}
+		d.gateCatalogNames = append(d.gateCatalogNames, c.Name)
 	}
 
 	sort.Slice(d.Suspects, func(i, j int) bool {
