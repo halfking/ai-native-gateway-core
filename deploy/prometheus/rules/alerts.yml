@@ -168,6 +168,22 @@ groups:
           summary: "后台节点探测队列提交重试次数偏高"
           description: "近 10 分钟 NodeProbeWorker 发生 {{ $value }} 次重试（source={{ $labels.source }}），请观察失败告警是否同步升高。"
 
+      # 2026-09-11（necessity gate 遗留项 6）：自检必要性 skip 路径的镜像删除
+      # 在同轮即时重试后仍失败。单个 (credential, raw_model) 卡住时 pump 反复
+      # 重提（pump tick 30s、行级 holdoff 45s，实际周期约 60s ≈ 10 次/10 分钟），
+      # 每轮贡献 ≥1 次失败计数——10 分钟 >5 即代表至少一对处于"跳过→删除失败
+      # →磁贴翻动"循环；零星 <5 的增量是 DB 瞬时抖动被计数器如实记录，不需要
+      # 处理。
+      - alert: NodeProbeNecessityMirrorDeleteFailedHigh
+        expr: increase(llmgw_node_probe_necessity_mirror_delete_failed_total[10m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: node-probe
+        annotations:
+          summary: "自检 skip 路径 node_probe_state 镜像删除持续失败"
+          description: "近 10 分钟 necessity skip 镜像删除在重试后仍失败 {{ $value }} 次，node_probe_state 行残留导致自检磁贴按 pump 周期反复翻动。请检查数据库锁等待/连接池，定位卡住的 (credential_id, raw_model)；瞬时吸收量参考 llmgw_node_probe_necessity_mirror_delete_retry_total，升级预案见 docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md 遗留项 6。"
+
       # 2026-08-12: node-probe 同步路径 + 路由状态源告警。
       # 覆盖范围说明：仅覆盖请求热路径上的 ProbeSync（no_candidates 触发）
       # 与 routing_state_source 外层标签。后台 NodeProbeWorker 的探测结果只

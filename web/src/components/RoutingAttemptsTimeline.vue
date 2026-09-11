@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import type { RoutingAttempt } from '../api'
 import type { RequestJourneyEvent } from '../api/request-journeys'
 import { credentialDisplayName, loadCredentialLabels } from '../composables/useCredentialLabels'
+import { formatTimeOnly } from '../utils/datetime'
 import {
   attemptResultI18nKey,
   errorKindBadgeClass,
@@ -90,14 +91,15 @@ function eventDetails(event: RequestJourneyEvent): string[] {
 }
 
 function formatEventTime(value: string): string {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return new Intl.DateTimeFormat(locale.value, {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    fractionalSecondDigits: 3,
-  }).format(date)
+  return formatTimeOnly(value, {
+    locale: locale.value,
+    options: {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      fractionalSecondDigits: 3,
+    },
+  })
 }
 
 // 结构化错误维度（审计闭环2/8）：优先展示低基数 error_kind /

@@ -1,5 +1,6 @@
 // turnsListHelpers.ts — TurnsListView 纯函数：标签、分组、参数、格式化
 import type { TurnsSessionGroup, TurnsSessionsParams } from '../../api/turns'
+import { formatDateTime } from '../../utils/datetime'
 
 export type TurnsGroupBy = 'project' | 'owner' | 'client' | 'apikey' | 'flat'
 
@@ -78,7 +79,7 @@ export function shortSessionId(value?: string): string {
 }
 
 export function summaryMeta(session: TurnsSessionGroup): string {
-  return [session.summary_model, session.summary_generated_at && new Date(session.summary_generated_at).toLocaleString()]
+  return [session.summary_model, session.summary_generated_at && formatDateTime(session.summary_generated_at)]
     .filter(Boolean)
     .join(' · ')
 }

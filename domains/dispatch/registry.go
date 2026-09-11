@@ -265,10 +265,11 @@ func (r *LifecycleRegistry) MarkRetryScheduled(requestID string, retryAt time.Ti
 		return
 	}
 	if entry.State == LifecycleCompleted {
-		// Defensive revival (spec: "completed 转 pending"): remove from the
-		// completed FIFO and re-admit as an unfinished pending entry.
-		r.removeCompletedLocked(requestID)
-		r.unfinishedCount++
+		// A terminal request must never be revived by a late retry callback.
+		// The scheduler may race completion; keeping it completed prevents
+		// zombie entries from re-entering pending after their ResultCh closed.
+		r.mu.Unlock()
+		return
 	}
 	entry.State = LifecyclePending
 	at := retryAt

@@ -57,3 +57,49 @@ func TestProbeHeadersJSONReturnsJSONText(t *testing.T) {
 		t.Fatalf("probeHeadersJSON() = %q", got)
 	}
 }
+
+// R12 P2: node_probe_runs_attempt_check rejects attempt outside 1..7, and the
+// legacy runOne attempt (consecutive_failures+1) grows past 7 once the 7-attempt
+// pause was removed. The audit write must clamp instead of failing (23514).
+func TestClampAuditAttempt(t *testing.T) {
+	cases := []struct{ in, want int }{
+		{-3, 1}, {0, 1}, {1, 1}, {4, 4}, {7, 7}, {8, 7}, {12, 7},
+	}
+	for _, c := range cases {
+		if got := clampAuditAttempt(c.in); got != c.want {
+			t.Fatalf("clampAuditAttempt(%d) = %d, want %d", c.in, got, c.want)
+		}
+	}
+}
+
+func TestInsertNodeProbeRunClampsAttempt(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectExec("INSERT INTO node_probe_runs").
+		WithArgs(
+			7, "raw-model", "request_failure", 7, 300,
+			false, 0, "", 0, "",
+			false, 0, "", 0, "",
+			false, pgxmock.AnyArg(), pgxmock.AnyArg(), 5,
+			"raw-model", "", 0,
+			"", "{}", "", "",
+			0, false,
+		).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	worker := &NodeProbeWorker{auditDB: mock}
+	// attempt=11 would violate the CHECK (BETWEEN 1 AND 7); the insert must
+	// receive the clamped value 7.
+	if err := worker.insertNodeProbeRun(context.Background(), 7, "raw-model", "request_failure",
+		11, 300, nodeProbeRoundResult{}, nodeProbeRoundResult{}, false,
+		time.Now().Add(-5*time.Millisecond), time.Now(), 5); err != nil {
+		t.Fatalf("insertNodeProbeRun(attempt=11) = %v, want nil", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}

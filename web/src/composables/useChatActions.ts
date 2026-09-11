@@ -5,6 +5,7 @@ import {
   type TokenUsage,
 } from './useChatCompletions'
 import { localeRef } from '../i18n'
+import { formatDateTime } from '../utils/datetime'
 
 export type ExportableMessage = ChatCompletionMessage & {
   requestedModel?: string
@@ -44,7 +45,7 @@ export function formatSessionExport(opts: {
   const lines = [
     opts.title,
     `模型: ${opts.modelLabel}`,
-    `导出时间: ${new Date().toLocaleString(localeRef.value)}`,
+    `导出时间: ${formatDateTime(new Date(), { locale: localeRef.value })}`,
   ]
   if (opts.usage && (opts.usage.promptTokens > 0 || opts.usage.completionTokens > 0)) {
     lines.push(

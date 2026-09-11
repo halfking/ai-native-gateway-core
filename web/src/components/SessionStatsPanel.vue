@@ -63,7 +63,8 @@ const dashboardStats = computed<DashboardStats>(() => {
 const periodLabel = computed(() => {
   const ov = overview.value
   if (!ov?.period_start || !ov?.period_end) return ''
-  return `${new Date(ov.period_start).toLocaleDateString()} → ${new Date(ov.period_end).toLocaleDateString()}`
+  const dateOptions: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'numeric', day: 'numeric' }
+  return `${formatDateTime(ov.period_start, { options: dateOptions })} → ${formatDateTime(ov.period_end, { options: dateOptions })}`
 })
 
 const trendSummary = computed(() => trend.value?.summary ?? null)
