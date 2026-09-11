@@ -36,3 +36,14 @@
 ## 下机注意
 - 下次部署前不要还原 VERSION/version.json（main 已带 2082 身份）；`web/public/menu-config.json` 的时间戳 churn 永远不要提交。
 - 若 deploy 报 "gateway already healthy"：先 `docker stop llm-gateway-local-8782`。
+
+## 会话审计（收口，2026-09-12 补记）
+
+- **方式**：本仓库无 `.acc-session-policy` / `scripts/session-governance.sh`（非 opt-in）→ 按 session-audit-gate 约定降级为轻量双轴自审（降级原因即此，记录于本节）。
+- **Spec 轴**：对照 handoff 四步（部署→浏览器复验→govern 诊断→两机集成）逐条核对——全部完成，无越界（未 force-push、未 -apply、测试行已还原原状、13 条 withheld 未动）。
+- **Standards 轴**：`git diff d5be9203b..main` 通读；F6 沿用同文件 pm.source 探针先例与 offerQuerier seam 惯例；gofmt/vet 干净；无重复/坏味道。
+- **合并丢合核查**：main 侧（5f1979f9a→d5be9203b）未触碰本轮 4 个 admin 文件；merge 净带入 `admin/routing.go +11`（win11 侧），无丢合无重复。
+- **生产探针证据**：2082 容器日志出现 `resolveOfferListSQL: model_offers.provider_modality missing; using compat SQL` —— 探针按设计评估真实 schema 并显式选择 compat，非偶然走通。
+- **同类 42703 暴露面扫描**：baseline 视图 33 列 vs 本地 33 列，缺 `provider_modality`（已被 F6 compat 覆盖）与 `created_at`（全仓无 Go 引用，无害）；`mo.priority` 本地存在。**model_offers 视图无其他潜伏 42703**。
+- **2082 上的 UI 复验**：页头 `#2082`；`claude/opus-5` 行抽屉复开，12 个可交互控件在位（模态下拉、保存按钮等），行数据为还原后的原状（opus-5 / —）。
+- **已知局限（记录不修）**：探针 sync.Once 取首个请求的 pool 且失败即终身 compat（安全侧默认，重启恢复）；compat 模式下无 canonical 关联的行 modality 恒为 'text'（数据降级换取 200，升级环境视图补齐 provider_modality 后自动恢复完整数据）。
