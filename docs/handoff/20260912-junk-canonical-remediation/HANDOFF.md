@@ -58,7 +58,7 @@ SQL 复核（治理事务内 + 会后审计，全过）：
 
 1. **review `free`（id 2664333）仍在**：junk 形态成立但目标同分（0.99×5），工具与人工都不该盲指。若要处置需运营者确认 `openrouter/free` 的语义（疑似 OpenRouter 免费池伪模型，重连到任一具体模型都是错的），建议单独一轮或加白名单。
 2. **既存别名多目的地歧义（非本轮引入）**：如 `deepseek-v4` 同时活跃于 deepseek-v4-flash(120) 与 deepseek-v4-flash-260425、`claude-haiku-4-5` 标点双胞胎等——canonical 精确匹配优先可拦截同名 canonical，但非 canonical 拼写仍走 `LIMIT 1` 不确定命中。本轮治理严格缩小了该问题面（消除了 5.3/4.6 双重路由），剩余面属全局别名卫生，建议独立治理轮。
-3. **本机部署滞后**：运行容器仍为 2082（cf7256f6），main 已至 2084 线（含 migration 694 self-heal）。下次 deploy-local 会跨越两个版本；migration 694 在 request_logs 侧，与本次数据态无关。
+3. **本机部署滞后**：运行容器仍为 2082（cf7256f6），main 已至 2084 线（含 migration 694 self-heal，后重编号 695）。下次 deploy-local 会跨越两个版本；migration 694 在 request_logs 侧，与本次数据态无关。
 4. **request_logs.canonical_model 历史数据**保留 junk 名（按工具设计，仅分析用途不影响路由）。
 5. 治理备份在本机 /tmp（重启即失），如需长期留存请转移到持久存储。
 
