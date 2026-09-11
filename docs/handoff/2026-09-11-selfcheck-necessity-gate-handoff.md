@@ -157,35 +157,51 @@
 ## 本轮记录（2026-09-11 第十一轮，上线观察轮第五轮——无输入记录阻塞 + 合并态复核）
 
 - **输入缺失声明（按 D 项要求如实区分）**：任务书未携带生产 /metrics 数据或告警触发记录，运维反馈未到达。按分派规则 **A 不触发**（TTL 抑制继续锁在数据门后）、**B 不触发**（显示侧治本修复继续锁在运维反馈门后，应急口径三层已就绪）、**C 维持关闭**（无乱序完成反例）。本轮零代码改动，产出 = main 合并态复核 + 本记录。
-- **main 合并态复核（只读，本轮确定性产出）**：`git fetch` 后 origin/main 前进至 f7c59617d，增量核对：第十轮提交 1a19dc1ea 已在 origin/main 历史中（`merge-base --is-ancestor` 通过）——观测链路全部工件（`alerts.yml` 告警、`alerts_test.go` 契约、`selfcheck-necessity-dashboard.json`、`dashboard_test.go` 契约、grafana README）**均已随 main 交付，无未合并内容**；f7c59617d 本身是另一工作线的审计文档（`docs/audit/2026-09-11-node-degrade-false-positive-fix.md`，node 强启误降级修复门禁记录），与本特性无关。网关/探测/SQL 代码自 b37b68b51 起零变化，第五/六/十轮的测试与交叉编译结论全部沿用。
-- **虚警排除（合并态复核顺带）**：本地 main 检出（fix/r13-logging-hygiene，落后 origin）与观测分支的 diff 中出现 `deploy/...conf.20260821-spa-fallback-only`，核实属已合并的 nginx 修复提交 48487ec74（另一工作线），非本特性遗留，未处置。
+- **main 合并态复核（只读，本轮确定性产出）**：`git fetch` 后 origin/main 前进至 f7c59617d，增量核对：第十轮提交 1a19dc1ea 已在 origin/main 历史中（`merge-base --is-ancestor` 通过）——观测链路全部工件（`alerts.yml` 告警、`alerts_test.go` 契约、`selfcheck-necessity-dashboard.json`、`dashboard_test.go` 契约、grafana README）**均已随 main 交付，无未合并内容**；f7c59617d 本身是另一工作线的审计文档（`docs/audit/2026-09-11-node-degrade-false-positive-fix.md`，node 强启误降级修复门禁记录），与本特性无关。网关/探测/SQL 代码自 b37b68b51 起零变化，第五/六/十轮的测试与交叉编译结论全部沿用。【第十二轮审计注记：此结论仅覆盖至 f7c59617d——本记录推送后 6490fd981（R12 P2/P3 收尾）变更了 bg/ 探测代码，bg 相关结论随之失效，失效面与处置见"审计记录 第十二轮"。】
+- **虚警排除（合并态复核顺带；第十二轮审计修正措辞）**：与观测分支 diff 出现 `deploy/...conf.20260821-spa-fallback-only` 的基准是本地 **main 分支引用**（b37b68b51，`git fetch` 不更新本地分支引用），**不是** fix/r13-logging-hygiene 检出（那是另一条分支，与此 diff 无关）；该文件属另一工作线（R12/ops nginx 线）的正常提交内容，非本特性遗留，未处置。教训：SMB 仓库的本地分支引用长期落后，一切对照以 origin/main 为准。
 - **验证记录（如实区分）**：本轮除 handoff 文档外零改动，未重跑测试/编译——被验证对象与本轮复核对象逐字节一致（1a19dc1ea 的 deploy 契约测试 3+6 例、bg 定向守卫 25 例、交叉编译结论沿用第十轮）。观测链路是否已被运维按 deploy/prometheus/README 实际 provisioning（告警/面板是否生效）无生产通道可查，**未验证**。
 - **遗留风险**：与第十轮相同，无新增。剩余开启项全部外部门控：TTL 抑制 ← 生产 failed_total 数据；显示侧治本 ← 运维反馈；孤儿行批量 SQL 执行前 ← 只读副本核数；工作区脏文件 ← 原作者确认。
+
+## 审计记录（2026-09-11 第十二轮，针对 674ccab80 第十一轮记录）
+
+- **核验通过的主干断言（写入时点均真）**：①第十轮 1a19dc1ea 为 origin/main 祖先，观测五件套齐全——审计时在前进后的 origin/main（8488a0838）上复验仍齐全：alerts.yml 告警 1 处、alerts_test.go 契约钉 1 处、面板 uid 1 处、dashboard_test.go 恰 3 例、README 引用 2 处；②f7c59617d 为 docs-only（单文件审计文档）；③`git diff b37b68b51 f7c59617d -- bg/ cmd/ domains/ internal/ deploy/sql/ web/` 为空——第十一轮"网关/探测/SQL 代码零变化、结论沿用"在写入时点成立。
+- **发现 1（时效缺陷，实质）：第十一轮记录推送后 main 立即前进，"结论沿用"随之失效。** 6490fd981（R12 P2/P3 收尾）+ 合并 8488a0838 变更 `bg/node_probe.go`（legacy `runOne` missing-binding 分支 +17/-1）与 `bg/node_probe_test.go`（+15）——**bg/ 基线自 b37b68b51 起移动**。连锁失效面：①17 例预存失败名单（lgw-p2test/fails_r6.txt）是 b37b68b51 的 CRLF 口径，node_probe.go 源文本变化可能改变 16 例源文本断言失败集，**下次跑 bg 套件前须重测当前基线**，不得直接拿 fails_r6.txt 当回归判据；②"bg 定向守卫 25 例全绿"不覆盖新 bg/ 代码（6490fd981 提交说明自称 `go test ./bg/...` green，属该工作线自验，环境/失败口径未在本 handoff 留档）；③第十一轮刷新的下一轮提示词写着"代码最新 b37b68b51"，已随本审计整体更正。
+- **发现 2（行为交互评估，无需代码改动）**：6490fd981 恰落在本 handoff 记载的一等清理路径分支上——legacy `runOne` missing-binding 分支（`bg/node_probe.go:1802` 附近）在 best-effort DELETE **之后**补写一条 `node_probe_runs` 取证行（success=false、两轮均 direct、nextSec=0，镜像统一路径既有行为）；INSERT 失败走 `auditPersistFailedTotal` + ERROR + wrapped return，**不回滚 DELETE**（提交声明与 diff 双重核实）。与本特性口径的兼容性结论：孤儿行（`node_probe_state`）三层清理口径不变；admin API"提交一次探测即删行"删行语义不变，仅仪表盘多一条**预期内**的失败取证行（非异常信号，勿误判为故障）；闸门/skip/pump/daily-audit 路径零涉及（diff 只碰 runOne、其测试与一处 gofmt 修复）。第六/七轮相关记录表述仍准确，本条即为补充。
+- **发现 3（表述修正，已就地修正第十一轮记录）**："虚警排除"把 diff 基准误写为"本地 main 检出（fix/r13-logging-hygiene）"——实际基准是本地 **main 分支引用**（b37b68b51），与 fix/r13-logging-hygiene 检出无关；已就地修正。
+- **范围界定**：本轮纯文档审计修正（handoff），零代码/SQL/deploy 工件改动；不重跑测试套件（无新被测对象；bg 新基线重测留给下次触碰 bg 的轮次，已在下一轮提示词以"bg/ 基线警示"标注）。
+- **验证记录（如实区分）**：全部断言基于 `git diff` / `git show | grep` / `git merge-base --is-ancestor` 只读取证（origin/main=8488a0838；SMB 上用路径限定命令）。未运行任何测试套件——本轮没有可运行的新验证对象，环境受限说明同"验证环境说明"节。
 
 ## 下一轮提示词（可直接复制）
 
 ```text
-请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第六轮）。
+请继续 llm-gateway-go 自检必要性闸门（necessity gate）收尾——上线观察轮（第七轮）。
 工作目录：Z:\workspace\ai-native-tools\syncfield\llm-gateway-go-4
 
 先阅读：docs/handoff/2026-09-11-selfcheck-necessity-gate-handoff.md（重点"本轮记录
 第六轮"（runbook 与孤儿行三层清理口径）、"本轮记录 第八轮"（告警+面板已随仓库交付）、
 "审计记录 第九轮"（告警契约已钉入 alerts_test.go）、"本轮记录 第十轮"（面板契约
 已钉入 deploy/grafana/dashboard_test.go——观测链路全部工件均有 CI 防回归保护）、
-"本轮记录 第十一轮"（全部观测工件已确认合入 origin/main，无未合并内容））、
-遗留任务第 6 项。
-背景：代码最新 b37b68b51，观测工件至第十轮提交且已全部合入 main（第十一轮复核）。
+"本轮记录 第十一轮"+"审计记录 第十二轮"（合并态复核；bg/ 基线被 R12 6490fd981
+移动后的失效面清单与处置口径））、遗留任务第 6 项。
+背景：观测工件齐全且已全部合入 main（第十二轮复验）；main 代码头以 git fetch 实查
+为准。第十一轮推送后 6490fd981（R12 P2/P3 收尾）变更了 bg/node_probe.go 的 legacy
+missing-binding 分支（补写 node_probe_runs 取证行，DELETE 清理语义不变）——
+必要性闸门/skip/pump/daily-audit 路径未涉及。
 告警
 NodeProbeNecessityMirrorDeleteFailedHigh（failed_total 10m 增量 >5，warning）+
 面板 selfcheck-necessity-dashboard.json——运维按 deploy/prometheus/README 的
 provisioning 流程加载后即自动告警，无需人工 curl。孤儿行应急口径三层：绑定重建
-自然恢复 / POST /api/admin/probe/tasks 提交一次探测即删行 / 批量 SQL；显示侧
+自然恢复 / POST /api/admin/probe/tasks 提交一次探测即删行（自 6490fd981 起同时
+留一条 success=false 取证行，属预期信号非异常）/ 批量 SQL；显示侧
 治本预案（queryProbeNodeTasks WHERE 并入绑定链 EXISTS）就绪未实施。
 注意：主工作区检出的 fix/r13-logging-hygiene 属于并行 R13 日志工作，不要混入本任务；
 工作区遗留脏文件（docs 两处、scripts/deploy-lib、*.lnk）严禁 add/clean/恢复。
 继续用 git worktree 从 origin/main 拉独立分支实施；Windows 验证用 C: 副本
 lgw-p2test（仅 cp 变更文件；deploy 包验证需同步 deploy/grafana/ 的 README.md
-与面板 JSON；基线对照务必 CRLF 同口径，17 例预存失败名单见 lgw-p2test/fails_r6.txt）。
+与面板 JSON；基线对照务必 CRLF 同口径）。**bg/ 基线警示**：lgw-p2test/fails_r6.txt
+的 17 例名单是 b37b68b51 口径，bg/node_probe.go 已被 6490fd981 变更——跑 bg
+套件前必须先对当前 origin/main 重测基线并 CRLF 同口径对照，不得直接拿
+fails_r6.txt 当回归判据。
 
 本轮任务（按输入分派，无输入则如实记录阻塞）：
 A. 若已获得生产 /metrics 数据或告警触发记录（runbook 判读规则）：
