@@ -51,6 +51,13 @@ type Recorder interface {
 	RecordRingBufferDropped(count uint64)
 	RecordRawAuditWriteFailure()
 
+	// R12 raw sink rollout observability. Labels are deliberately limited to
+	// sink mode, outcome, and reason; request identifiers never become labels.
+	RecordRawSinkFlush(mode string, duration time.Duration, batchSize int)
+	RecordRawSinkDropped(mode, reason string, count uint64)
+	RecordRawSinkCloseDrain(mode string, duration time.Duration, timedOut bool)
+	RecordRawSinkFrameLookup(mode, result string)
+
 	// StreamSynthesizedDone (P1 hot-patch 2026-08-06): count streams where
 	// the gateway had to inject a trailing "data: [DONE]\n\n" frame because
 	// the upstream closed without one (observed on MiniMax provider 14 /
@@ -147,10 +154,10 @@ func (n *NoopRecorder) RecordAdapterConversion(provider, direction string, durat
 func (n *NoopRecorder) RecordAdapterFailure(provider, reason string)                               {}
 func (n *NoopRecorder) RecordAdapterTokens(provider, tokenType string, count int)                  {}
 func (n *NoopRecorder) SetAdapterActive(provider string, active bool)                              {}
-func (n *NoopRecorder) RecordSchedulerSelection(providerID string, duration time.Duration)       {}
-func (n *NoopRecorder) UpdateSchedulerWeight(providerID string, weight int)                      {}
-func (n *NoopRecorder) UpdateSchedulerCurrentWeight(providerID string, weight int)               {}
-func (n *NoopRecorder) UpdateSchedulerEffectiveWeight(providerID string, weight int)             {}
+func (n *NoopRecorder) RecordSchedulerSelection(providerID string, duration time.Duration)         {}
+func (n *NoopRecorder) UpdateSchedulerWeight(providerID string, weight int)                        {}
+func (n *NoopRecorder) UpdateSchedulerCurrentWeight(providerID string, weight int)                 {}
+func (n *NoopRecorder) UpdateSchedulerEffectiveWeight(providerID string, weight int)               {}
 func (n *NoopRecorder) SetSchedulerAvailableCredentials(count int)                                 {}
 func (n *NoopRecorder) RecordSafetyCheck(checkType string, duration time.Duration)                 {}
 func (n *NoopRecorder) RecordSafetyAction(action, severity string)                                 {}
@@ -164,9 +171,13 @@ func (n *NoopRecorder) SetPoolActiveCredentials(poolID string, count int)       
 func (n *NoopRecorder) SetPoolHealthyCredentials(poolID string, count int)                         {}
 
 // P0-2 ShadowWrite methods — no-op fallbacks.
-func (n *NoopRecorder) RecordShadowWriteFailure(kind string) {}
-func (n *NoopRecorder) RecordRingBufferDropped(count uint64) {}
-func (n *NoopRecorder) RecordRawAuditWriteFailure()          {}
+func (n *NoopRecorder) RecordShadowWriteFailure(kind string)                                       {}
+func (n *NoopRecorder) RecordRingBufferDropped(count uint64)                                       {}
+func (n *NoopRecorder) RecordRawAuditWriteFailure()                                                {}
+func (n *NoopRecorder) RecordRawSinkFlush(mode string, duration time.Duration, batchSize int)      {}
+func (n *NoopRecorder) RecordRawSinkDropped(mode, reason string, count uint64)                     {}
+func (n *NoopRecorder) RecordRawSinkCloseDrain(mode string, duration time.Duration, timedOut bool) {}
+func (n *NoopRecorder) RecordRawSinkFrameLookup(mode, result string)                               {}
 
 // P1 hot-patch 2026-08-06: stream synthesized [DONE] terminator counter
 // (see Recorder interface comment for rationale).
@@ -185,9 +196,9 @@ func (n *NoopRecorder) RecordIncompleteToolCall(model, reason string) {}
 func (n *NoopRecorder) RecordSuccessEmptyResponse(model, providerID, tenantID string) {}
 
 // 2026-08-29: journal snapshot lifecycle counters.
-func (n *NoopRecorder) RecordJournalSnapshotStored(tenantID string)                       {}
-func (n *NoopRecorder) RecordJournalSnapshotApplied(tenantID string, success bool)        {}
-func (n *NoopRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string)         {}
+func (n *NoopRecorder) RecordJournalSnapshotStored(tenantID string)                {}
+func (n *NoopRecorder) RecordJournalSnapshotApplied(tenantID string, success bool) {}
+func (n *NoopRecorder) RecordJournalSnapshotDeduplicated(tenantID, reason string)  {}
 
 // 2026-08-31 (P2-2): live-stream Redis-record silent-drop counter.
 func (n *NoopRecorder) RecordLiveStreamRecordDropped(reason string) {}

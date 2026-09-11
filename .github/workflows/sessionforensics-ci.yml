@@ -228,6 +228,19 @@ jobs:
       - name: Run identity unit tests (race detector)
         run: go test -race -count=1 ./admin -run 'Test(SignToken|MultiIssuer|ResolveToken|Identity|Authenticate)' ./domains/identity/...
 
+  raw-sink-race:
+    name: Raw sink + streaming tests (race)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache: true
+      - name: Run logging and streaming race tests
+        run: go test -race -count=1 -timeout=600s ./internal/logging/... ./domains/streaming/...
+
   core-quality:
     # Keep this scope limited to the pure Go core packages. The repository's
     # full test graph contains DB/network integration suites and must not be
