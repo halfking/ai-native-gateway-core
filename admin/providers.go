@@ -1498,6 +1498,19 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "models":
+		// 2026-09-11 audit: handleCredentialModels (credential_models.go:
+		// GET list / POST manual add / DELETE clear) and the per-credential
+		// refresh were implemented but never routed — the frontend's
+		// CredentialModelsPanel got "404 page not found" and the only
+		// interactive model-offer drawer surface was unreachable.
+		h.handleCredentialModels(w, r, providerID, credID)
+	case "refresh-models":
+		if r.Method == http.MethodPost {
+			h.refreshCredentialModels(w, r, providerID, credID)
+		} else {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	case "manual-disabled":
 		if r.Method == http.MethodPatch {
 			h.setCredentialManualDisabled(w, r, providerID, credID)
