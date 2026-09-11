@@ -70,6 +70,12 @@
 - ~~candidate_failure_logs 写入停更~~ → 已定性为读面假警报，2084 修复关闭。
 - **P4（仍开放）**：ursm.v2 persist collect failed（redis expected hash got string）。
 - 252 PG 瞬时语句超时（57014）今晚三处命中（首部署 ensure、vacuum worker、首次候选重试）——量级尚低，列入观察。
+
+### R14 轮结果（2026-09-12 T+40min 观察，见 docs/audit/2026-09-12-r14-observation-p5p4-readonly.md）
+
+- P5 根因已由并行会话闭环（`8f4c13970` 接线根除 + 迁移 694 demote 自愈，独立复核成立），**待下一轮部署**；父表水位修正为 09-09 19:35:29（停摆期内有 SKIP LOCKED 并发越迁，非严格每 tick 必败）。
+- P4 严重度上调：根因=persist.Collect 误吞 `request_dedup` string 标记键整批 abort，`ursm_node_snapshot_min` 停摆自 09-11 21:16；修复方案已产出（同上文档 C 节）。
+- 2084 观察合格：staleness 恒 0，auto-cool 对 cred 18/19/8（100% 真故障）首次真实翻牌。
 - cred 41：探针持续命中，等用户侧充值归属核对；cred 42 ready/ok。
 
 ## 关联
