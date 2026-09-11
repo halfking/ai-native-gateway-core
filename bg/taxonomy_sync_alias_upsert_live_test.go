@@ -80,7 +80,9 @@ func TestTaxonomyUpsertAlias_Live(t *testing.T) {
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO model_aliases (raw_name, canonical_id, status)
-		VALUES ('zz-alias-dup', $1, 'active'), ('zz-alias-dup', $2, 'active')
+		VALUES ('zz-alias-dup', $1, 'active'), ('zz-alias-dup', $2, 'active'),
+		       ('zz-alias-oped', $1, 'disabled'),
+		       ('zz-alias-depr', $2, 'deprecated')
 	`, idA, idB); err != nil {
 		t.Fatalf("seed ambiguous alias: %v", err)
 	}
@@ -97,6 +99,8 @@ func TestTaxonomyUpsertAlias_Live(t *testing.T) {
           - zz-alias-shared
           - zz-alias-dup
           - zz-alias-new
+          - zz-alias-oped
+          - zz-alias-depr
       - canonical_name: zz-test-canonical-b
         display_name: ZZ Test B
         aliases:
@@ -157,4 +161,29 @@ func TestTaxonomyUpsertAlias_Live(t *testing.T) {
 	}
 	// Fresh alias inserts exactly one row (arbiter is (canonical_id, raw_name)).
 	assertAliases("zz-alias-new", idA, 1)
+
+	// Operator intent beats the 6h sync: a 'disabled' target pair stays
+	// disabled even though the YAML still maps it.
+	assertStatus(t, pool, ctx, "zz-alias-oped", idA, "disabled")
+
+	// Demotion only relabels ACTIVE competitors: the 'deprecated' competitor
+	// keeps its label (already invisible to the resolver), while the taxonomy
+	// mapping for the same raw_name is active.
+	assertAliases("zz-alias-depr", idA, 1)
+	assertStatus(t, pool, ctx, "zz-alias-depr", idB, "deprecated")
+}
+
+func assertStatus(t *testing.T, pool *pgxpool.Pool, ctx context.Context, rawName string, wantCanonicalID int, wantStatus string) {
+	t.Helper()
+	var status string
+	err := pool.QueryRow(ctx, `
+		SELECT status FROM model_aliases
+		WHERE raw_name = $1 AND canonical_id = $2
+	`, rawName, wantCanonicalID).Scan(&status)
+	if err != nil {
+		t.Fatalf("status %s@%d: %v", rawName, wantCanonicalID, err)
+	}
+	if status != wantStatus {
+		t.Fatalf("%s@%d: status %q, want %q", rawName, wantCanonicalID, status, wantStatus)
+	}
 }

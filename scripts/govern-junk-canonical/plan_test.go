@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -458,5 +460,34 @@ func TestIsStrictTokenSuffixExport(t *testing.T) {
 	}
 	if got := modelname.JoinVendorBase(prefix, base); got != "z-ai-glm-5.2" {
 		t.Errorf("JoinVendorBase = %q", got)
+	}
+}
+
+// 2026-09-12: pin the -json output contract — WhitelistReason must be
+// serialized (operators re-derive the keep decision from it), and a
+// whitelisted suspect must never carry a remediation Target.
+func TestJSONOutputCarriesWhitelistReason(t *testing.T) {
+	d := &Diagnosis{
+		Suspects: []Suspect{
+			{
+				Row:             CanonicalRow{ID: 2664333, Name: "free", Status: "active", Source: "discovery"},
+				Verdict:         VerdictWhitelisted,
+				WhitelistReason: "operator keep: openrouter free-pool pseudo-model",
+			},
+		},
+	}
+	// Encode exactly like main.go's -json path (indented Encoder).
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(d); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `"WhitelistReason": "operator keep: openrouter free-pool pseudo-model"`) {
+		t.Errorf("-json output must carry the whitelist reason verbatim, got:\n%s", out)
+	}
+	if strings.Contains(out, `"Target": {`) {
+		t.Errorf("whitelisted suspect must not serialize a remediation Target, got:\n%s", out)
 	}
 }

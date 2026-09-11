@@ -192,7 +192,12 @@ func (t *TaxonomySync) upsertAlias(ctx context.Context, canonicalID int, rawName
 	// the resolver ORDER BY root-fix has to tolerate ('disabled' is in the
 	// model_aliases_status_check vocabulary and invisible to the resolver's
 	// COALESCE(status,'active')='active' filter; 'inactive' is NOT a legal
-	// value and silently fails the check constraint).
+	// value and silently fails the check constraint). Two operator-intent
+	// guards: a 'disabled' taxonomy target is never reactivated (an
+	// explicit operator kill beats the 6h sync; the admin create path has
+	// no such guard because the API call itself is the operator acting),
+	// and only ACTIVE competitors are demoted ('deprecated'/'hidden' rows
+	// are already invisible — relabeling them is pointless churn).
 	//
 	// Two plain statements on purpose: a WITH ... DO UPDATE ... RETURNING
 	// CTE guarded by NOT EXISTS is unsafe here — data-modifying CTEs run
@@ -209,6 +214,7 @@ func (t *TaxonomySync) upsertAlias(ctx context.Context, canonicalID int, rawName
 		ON CONFLICT (canonical_id, raw_name) DO UPDATE SET
 			status = 'active',
 			updated_at = now()
+		WHERE model_aliases.status <> 'disabled'
 	`, rawName, canonicalID); err != nil {
 		return err
 	}
@@ -217,6 +223,7 @@ func (t *TaxonomySync) upsertAlias(ctx context.Context, canonicalID int, rawName
 		SET status = 'disabled', updated_at = now()
 		WHERE raw_name = lower($1)
 		  AND canonical_id <> $2
+		  AND status = 'active'
 	`, rawName, canonicalID)
 	return err
 }
