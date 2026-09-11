@@ -41,6 +41,37 @@
 - cred 41：`suspended/permanently_exhausted`，探针持续命中（01:36:42），等用户侧充值归属核对，无网关侧动作；cred 42 `ready/ok`。
 - 运维注意：蓝绿切换后 active_port 轮换至 8782，直连 8781 的探测会落空；journald 单元名两节点不同（245=`llmgo-245-canary@*`，154=`llm-gateway-go-canary@*`）。
 
+## 修订记录（2026-09-12 审计轮，2084 跟进部署）
+
+本会话收口前按审计门禁对 2083 部署与本文档全量复核。项目未启用 session-governance 门禁（无 `.acc-session-policy`），按 skill 口径降级为轻量自审（降级原因在此记录）：git 证据链 + 双节点线上新鲜采证 + 声明逐条核对。
+
+### 审计结论（2083 部署本身）
+
+- 声明逐条属实：push 内容（20ea7d4f0 恰 4 文件、menu-config churn 未提交）、bump 单调（2080→2082→2083 无撞号）、d812e1a53 不在 2082-cf7256f6、两节点 2083 门禁数据、PG attempt 越界=0、cred 41/42 状态——全部与线上实测一致。并行会话 round-17 文档亦独立确认 "release 2083 confirmed live"。
+- 无未知错误面：245 剩余 ERROR 经放宽口径逐一核验均为已知家族（502/503/executor canceled 流量噪音、P5 双通道、vacuum worker 57014 瞬时——与首次部署超时同源的 252 负载）。
+- 退役 8781 单元 `failed`（Result=timeout，SIGKILL/9）：drain 超出 TimeoutStopSec 被 systemd 击杀，属既有蓝绿退役路径行为，非本次缺陷。
+
+### 实质发现与错误归因更正
+
+本文档原"修复生效的直接证据"一节把 154 的 `candidate_failure_monitor: failure log is stale` 记为"暴露 candidate_failure_logs 写入停更的真实异常"——**归因错误，已更正**：
+
+- 实测写入方**一直健康**：`candidate_failure_logger` 写的是 **`candidate_failure_logs_hot` 热表**（max(ts) 距查询 4 分钟，10min 12 行）；父表 max(ts)=09-11 17:39 只是最后一次提升水位。
+- 假警报根因：monitor 的 staleness 探针读**裸父表** `candidate_failure_logs`——与 d812e1a53 所修 request_logs **同一族冷父表盲区**，该轮漏掉了 candidate_failure_logs 家族。同盲区还波及 checkAlerts（5min 窗恒空，从不告警）、auto-cool cfl CTE（recent_failures 钉 0）、model_probe passive boost（5min 选型恒空）、daily_probe_audit 3 天 candidate 分支（少扫）。
+- **修复（d249604c7，已随 2084 上线两节点）**：6 处读面切 `candidate_failure_logs_with_current_month`（视图已在库）；守卫测试扩展锁 candidate_failure_logs 面 3 文件 + opslog_trimmer 父表 DELETE 排除锁定（UNION 视图不可删，保留语义必须留在父表）。
+
+### 2084 验证（3c1195f2，245 切换 46s / 154 切换 4s，active 轮换回 8781）
+
+- 两节点 healthz/readyz 2084 ready；**staleness 假警报归零**（修复前每周期触发）；23514=0；非已知噪音 ERROR=0；collector 公网 401；PG attempt 越界=0；bg 接线在位。
+- 部署前已将改后 SQL 在生产库只读试跑（视图列兼容、staleness 双探针全新鲜、checkAlerts 可见真实近期失败）。
+
+### 转 R14（更新）
+
+- **P5（仍开放）**：`uq_request_logs_2026_09_final_success_session` 23505，双节点、双通道（partition_manager promote + data-lifecycle hot cron）确认。读面已全部切走，但提升长期失败会使父表/历史分区持续缺数，仍需根治。
+- ~~candidate_failure_logs 写入停更~~ → 已定性为读面假警报，2084 修复关闭。
+- **P4（仍开放）**：ursm.v2 persist collect failed（redis expected hash got string）。
+- 252 PG 瞬时语句超时（57014）今晚三处命中（首部署 ensure、vacuum worker、首次候选重试）——量级尚低，列入观察。
+- cred 41：探针持续命中，等用户侧充值归属核对；cred 42 ready/ok。
+
 ## 关联
 
 - 前置：docs/audit/2026-09-11-deploy-closeout-2081-r12-p2p3.md（P2/P3 闭环、P4/P5 立项）
