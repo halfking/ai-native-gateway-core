@@ -128,7 +128,10 @@ type QueueStats struct {
 // AsyncRawDataLogger 异步原始数据日志记录器
 // 使用无锁队列替代同步写入，提升性能
 type AsyncRawDataLogger struct {
-	baseLogger *RawDataLogger
+	// R12（2026-09-11）：从 *RawDataLogger 具体类型收窄为包内窄接口
+	// rawEntryWriter（预研 §3.4，R10b 下线阻塞点的实际解除动作）。
+	// 公开构造函数签名不变。
+	baseLogger rawEntryWriter
 	queue      *LockFreeQueue[RawDataEntry]
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -146,21 +149,14 @@ type AsyncRawDataLogger struct {
 	// that request and direction. Populated by the flush worker after
 	// each successful writeEntries call so callers in the request hot
 	// path can correlate anomalies to the raw line that produced them.
-	frameIndex sync.Map // key: string("rid|dir") -> rawFrameLocation
+	// R12: 实现与 BufferedRawSink 共享（rawFrameIndex，杜绝双实现漂移）。
+	frameIndex rawFrameIndex
 	// overflowReporter (2026-07-28 §5.8) is invoked from
 	// noteDroppedEntry when the queue is full (after the in-band
 	// overflow stub fails to enqueue) and from Close() when the
 	// shutdown drain deadline (5*flushDelay) expires with items
 	// remaining. nil disables the path.
 	overflowReporter *LockFreeAnomalyReporter
-}
-
-// rawFrameLocation is the value type stored in AsyncRawDataLogger.frameIndex.
-// File is the absolute path of the rotated log file at the time the
-// entry was written; Offset is the start byte of the entry's JSON line.
-type rawFrameLocation struct {
-	File   string
-	Offset int64
 }
 
 // dropWarnInterval 队列满告警的最小间隔
@@ -213,7 +209,7 @@ func (l *AsyncRawDataLogger) LogClientRequestWithEnvelope(
 ) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
-	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.sinkEnabled() {
 		return
 	}
 
@@ -224,29 +220,9 @@ func (l *AsyncRawDataLogger) LogClientRequestWithEnvelope(
 		// correlation envelope so the operator can still join with
 		// request_logs and the anomaly endpoint can dedupe across
 		// processes.
-		overflow := RawDataEntry{
-			Timestamp:        time.Now(),
-			RequestID:        requestID,
-			Direction:        "overflow",
-			Protocol:         protocol,
-			DataSize:         len(body),
-			Headers:          headers,
-			ConversionStep:   conversionStep,
-			ClientRequestID:  env.ClientRequestID,
-			GWSessionID:      env.GWSessionID,
-			GWTaskID:         env.GWTaskID,
-			ParentRequestID:  env.ParentRequestID,
-			TenantID:         env.TenantID,
-			ApplicationID:    env.ApplicationID,
-			APIKeyID:         env.APIKeyID,
-			ProviderID:       env.ProviderID,
-			CredentialID:     env.CredentialID,
-			AttemptNo:        env.AttemptNo,
-			UpstreamEndpoint: env.UpstreamEndpoint,
-			TraceID:          env.TraceID,
-			SpanID:           env.SpanID,
-			Error:            "raw_log_queue_full",
-		}
+		overflow := makeOverflowStub("client_request", requestID, protocol, conversionStep, env)
+		overflow.Headers = entry.Headers
+		overflow.DataSize = len(body)
 		if !l.queue.Enqueue(overflow) {
 			l.noteDroppedEntry(requestID, "client_request", env)
 		}
@@ -256,6 +232,9 @@ func (l *AsyncRawDataLogger) LogClientRequestWithEnvelope(
 // makeEntry builds a RawDataEntry from the supplied envelope, computing
 // the SHA-256 of the body so the raw log can be verified against the
 // request_logs row and the anomaly endpoint.
+//
+// R12: 实现下放为包级 makeRawEntry（Async/Buffered 共用，Headers 拷贝
+// 语义见 raw_sink.go）。
 func (l *AsyncRawDataLogger) makeEntry(
 	direction, requestID, protocol string,
 	body []byte,
@@ -263,35 +242,7 @@ func (l *AsyncRawDataLogger) makeEntry(
 	conversionStep string,
 	env RawCorrelationEnvelope,
 ) RawDataEntry {
-	entry := RawDataEntry{
-		Timestamp:        time.Now(),
-		RequestID:        requestID,
-		Direction:        direction,
-		Protocol:         protocol,
-		DataSize:         len(body),
-		RawData:          encodeRawData(body),
-		RawDataEncoding:  "base64",
-		Headers:          headers,
-		ConversionStep:   conversionStep,
-		ClientRequestID:  env.ClientRequestID,
-		GWSessionID:      env.GWSessionID,
-		GWTaskID:         env.GWTaskID,
-		ParentRequestID:  env.ParentRequestID,
-		TenantID:         env.TenantID,
-		ApplicationID:    env.ApplicationID,
-		APIKeyID:         env.APIKeyID,
-		ProviderID:       env.ProviderID,
-		CredentialID:     env.CredentialID,
-		AttemptNo:        env.AttemptNo,
-		UpstreamEndpoint: env.UpstreamEndpoint,
-		TraceID:          env.TraceID,
-		SpanID:           env.SpanID,
-		ChunkIndex:       env.ChunkIndex,
-	}
-	if len(body) > 0 {
-		entry.SHA256 = hashBytes(body)
-	}
-	return entry
+	return makeRawEntry(direction, requestID, protocol, body, headers, conversionStep, env)
 }
 
 // RawCorrelationEnvelope carries the request correlation fields used by
@@ -382,13 +333,13 @@ func (l *AsyncRawDataLogger) LogUpstreamRequestWithEnvelope(
 ) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
-	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.sinkEnabled() {
 		return
 	}
 
 	entry := l.makeEntry("upstream_request", requestID, protocol, body, nil, conversionStep, env)
 	if !l.queue.Enqueue(entry) {
-		overflow := l.makeOverflowEntry("upstream_request", requestID, protocol, conversionStep, env)
+		overflow := makeOverflowStub("upstream_request", requestID, protocol, conversionStep, env)
 		if !l.queue.Enqueue(overflow) {
 			l.noteDroppedEntry(requestID, "upstream_request", env)
 		}
@@ -410,13 +361,13 @@ func (l *AsyncRawDataLogger) LogUpstreamResponseWithEnvelope(
 ) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
-	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.sinkEnabled() {
 		return
 	}
 
 	entry := l.makeEntry("upstream_response", requestID, protocol, body, nil, conversionStep, env)
 	if !l.queue.Enqueue(entry) {
-		overflow := l.makeOverflowEntry("upstream_response", requestID, protocol, conversionStep, env)
+		overflow := makeOverflowStub("upstream_response", requestID, protocol, conversionStep, env)
 		if !l.queue.Enqueue(overflow) {
 			l.noteDroppedEntry(requestID, "upstream_response", env)
 		}
@@ -440,13 +391,13 @@ func (l *AsyncRawDataLogger) LogClientResponseWithEnvelope(
 ) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
-	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.sinkEnabled() {
 		return
 	}
 
 	entry := l.makeEntry("client_response", requestID, protocol, body, nil, conversionStep, env)
 	if !l.queue.Enqueue(entry) {
-		overflow := l.makeOverflowEntry("client_response", requestID, protocol, conversionStep, env)
+		overflow := makeOverflowStub("client_response", requestID, protocol, conversionStep, env)
 		if !l.queue.Enqueue(overflow) {
 			l.noteDroppedEntry(requestID, "client_response", env)
 		}
@@ -457,43 +408,18 @@ func (l *AsyncRawDataLogger) LogClientResponseWithEnvelope(
 func (l *AsyncRawDataLogger) LogConversionError(requestID, protocol, direction, step string, body []byte, err error) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
-	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.sinkEnabled() {
 		return
 	}
 
 	entry := l.makeEntry(direction, requestID, protocol, body, nil, step, RawCorrelationEnvelope{})
 	entry.Error = err.Error()
 	if !l.queue.Enqueue(entry) {
-		overflow := l.makeOverflowEntry(direction, requestID, protocol, step, RawCorrelationEnvelope{})
+		overflow := makeOverflowStub(direction, requestID, protocol, step, RawCorrelationEnvelope{})
 		overflow.Error = err.Error()
 		if !l.queue.Enqueue(overflow) {
 			l.noteDroppedEntry(requestID, "error", RawCorrelationEnvelope{})
 		}
-	}
-}
-
-func (l *AsyncRawDataLogger) makeOverflowEntry(direction, requestID, protocol, conversionStep string, env RawCorrelationEnvelope) RawDataEntry {
-	return RawDataEntry{
-		Timestamp:        time.Now(),
-		RequestID:        requestID,
-		Direction:        "overflow",
-		Protocol:         protocol,
-		DataSize:         0,
-		ConversionStep:   conversionStep,
-		ClientRequestID:  env.ClientRequestID,
-		GWSessionID:      env.GWSessionID,
-		GWTaskID:         env.GWTaskID,
-		ParentRequestID:  env.ParentRequestID,
-		TenantID:         env.TenantID,
-		ApplicationID:    env.ApplicationID,
-		APIKeyID:         env.APIKeyID,
-		ProviderID:       env.ProviderID,
-		CredentialID:     env.CredentialID,
-		AttemptNo:        env.AttemptNo,
-		UpstreamEndpoint: env.UpstreamEndpoint,
-		TraceID:          env.TraceID,
-		SpanID:           env.SpanID,
-		Error:            "raw_log_queue_full:" + direction,
 	}
 }
 
@@ -531,54 +457,31 @@ func (l *AsyncRawDataLogger) flushBatch() {
 			return
 		}
 		l.baseLogger.writeEntries(entries)
-		l.recordFrameLocations(entries)
+		l.frameIndex.record(entries, l.baseLogger.peekPostWriteLocation)
 		if len(entries) < l.batchSize {
 			return
 		}
 	}
 }
 
-// recordFrameLocations indexes the most recent flushed entries under
-// (requestID, direction). The start offset is reconstructed by
-// subtracting the JSON-line length from currentOffset (which points
-// past the end of the last write). When a rotation happens inside
-// the batch, the second batch segment lands in a different file —
-// we detect this by checking if cursor goes negative and stop indexing
-// the remaining entries (they're in a prior file we no longer have handle to).
-// Best-effort; not worth a per-entry lock.
-//
-// 2026-08-06 FIX (P1-2): Stop indexing when cursor goes negative to avoid
-// incorrect file/offset pairs when batch crosses rotation boundary.
-func (l *AsyncRawDataLogger) recordFrameLocations(entries []RawDataEntry) {
-	if l == nil || l.baseLogger == nil || len(entries) == 0 {
-		return
+// Sync 实现 RawSink 的持久化屏障（R12，预研 §3.2）：先排空队列再对底层
+// 文件 fsync。返回 nil 时，Sync 调用前已入队的条目保证已写出并 fsync：
+// 排空循环确保这些条目已被出队（baseLogger.writeEntries 持底层互斥锁），
+// 随后的 baseLogger.Sync() 与仍在途的并发 worker 批次互斥，保证其在
+// Sync 返回前完成写出。与 Close 不同，Sync 不停 worker；disabled /
+// 已关闭返回 nil。Sync 进行中新入队的条目不在此屏障保证内。
+func (l *AsyncRawDataLogger) Sync() error {
+	l.stateMu.RLock()
+	closed := l.closed.Load()
+	base := l.baseLogger
+	l.stateMu.RUnlock()
+	if closed || base == nil || !base.sinkEnabled() {
+		return nil
 	}
-	// Walk the slice in reverse, peeling off the entry's JSON-line
-	// size from the post-write offset one at a time. This keeps each
-	// entry's start offset exact without re-marshalling.
-	file, cursor := l.baseLogger.peekPostWriteLocation()
-	if file == "" {
-		return
+	for l.queue.Size() > 0 {
+		l.flushBatch()
 	}
-	for i := len(entries) - 1; i >= 0; i-- {
-		lineSize := int64(len(entries[i].RawDataEncodingJSON())) + 1 // +1 for trailing newline
-		if lineSize <= 1 {
-			// empty RawData; treat as one byte placeholder.
-			lineSize = 1
-		}
-		nextCursor := cursor - lineSize
-		if nextCursor < 0 {
-			// Batch crosses file rotation boundary. The remaining entries
-			// are in a prior file; stop indexing to avoid incorrect location.
-			slog.Debug("recordFrameLocations: batch crosses rotation boundary, stopping early",
-				"entries_indexed", len(entries)-i-1,
-				"entries_total", len(entries))
-			break
-		}
-		cursor = nextCursor
-		key := entries[i].RequestID + "|" + entries[i].Direction
-		l.frameIndex.Store(key, rawFrameLocation{File: file, Offset: cursor})
-	}
+	return base.Sync()
 }
 
 // peekPostWriteLocation returns the path and offset that the base
@@ -589,6 +492,9 @@ func (l *AsyncRawDataLogger) recordFrameLocations(entries []RawDataEntry) {
 // written", which is the same number after a write — so we just
 // reuse it. (See RawDataLogger.writeEntries, which advances
 // currentOffset under the same l.mu the helper acquires.)
+//
+// R12: 逐帧索引逻辑本身已下放为 Async/Buffered 共用的 rawFrameIndex
+// （见 raw_sink.go）；本方法仍是底层位置的读取口。
 func (l *RawDataLogger) peekPostWriteLocation() (string, int64) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -602,15 +508,10 @@ func (l *RawDataLogger) peekPostWriteLocation() (string, int64) {
 // (file, offset) to populate AnomalyReport.RawLogFile/RawLogOffset
 // without falling back to the global CurrentLocation() racy path.
 func (l *AsyncRawDataLogger) LookupFrame(requestID, direction string) (file string, offset int64, ok bool) {
-	if l == nil || requestID == "" || direction == "" {
+	if l == nil {
 		return "", 0, false
 	}
-	key := requestID + "|" + direction
-	if v, hit := l.frameIndex.Load(key); hit {
-		loc := v.(rawFrameLocation)
-		return loc.File, loc.Offset, true
-	}
-	return "", 0, false
+	return l.frameIndex.lookup(requestID, direction)
 }
 
 // Close 关闭异步日志记录器
@@ -684,7 +585,7 @@ func (l *AsyncRawDataLogger) Stats() QueueStats {
 func (l *AsyncRawDataLogger) CurrentLocation() (file string, offset int64) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
-	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.sinkEnabled() {
 		return "", 0
 	}
 	return l.baseLogger.CurrentLocation()
@@ -695,7 +596,7 @@ func (l *AsyncRawDataLogger) CurrentLocation() (file string, offset int64) {
 func (l *AsyncRawDataLogger) HasFile() bool {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
-	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.sinkEnabled() {
 		return false
 	}
 	return l.baseLogger.HasFile()

@@ -8,7 +8,7 @@ func TestConvertBlockMessage_PreservesTextAroundImage(t *testing.T) {
 		map[string]any{"type": "image", "source": map[string]any{
 			"type": "base64", "media_type": "image/png", "data": "Zm9v",
 		}},
-	})
+	})[0]
 	parts, ok := message["content"].([]any)
 	if !ok || len(parts) != 2 {
 		t.Fatalf("content = %#v, want two content parts", message["content"])

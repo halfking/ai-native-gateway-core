@@ -239,6 +239,7 @@ export default {
     planTypeFailed: "設定 plan_type 失敗"
   },
   errorDetail: {
+    healthLatency: '探測延遲', healthError: '探測錯誤',
     supplier: '供應商', errorCode: '錯誤碼', requestId: '請求 ID',
     stage: '階段', retry: '重試', latency: '耗時',
     openRequestTitle: '查看請求詳情',

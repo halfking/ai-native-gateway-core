@@ -65,6 +65,7 @@ import routingOverride from './routingOverride'
 import routingDefault from './routingDefault'
 import approval from './approval'
 import probeHealth from './probeHealth'
+import errorTrend from './errorTrend'
 import tenantModels from './tenantModels'
 import publicPortal from './public'
 import requestJourneys from './requestJourneys'
@@ -140,6 +141,7 @@ export default {
   routingDefault,
   approval,
   probeHealth,
+  errorTrend,
   tenantModels,
   public: publicPortal,
   requestJourneys,

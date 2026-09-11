@@ -42,6 +42,12 @@ type RawDataLogger struct {
 	// 即历史写入字节总数（受 mu 保护）。
 	currentPath   string
 	currentOffset int64
+
+	// R12（2026-09-11）幂等 Close 契约：首次 Close 关闭文件并记住错误，
+	// 后续调用返回同一错误（预研 §2.3 勘误 6：此前仅靠 file==nil 近似
+	// 幂等，无法区分"已关闭"与"rotate 失败等未初始化"状态）。
+	closed   bool
+	closeErr error
 }
 
 // RawDataEntry 原始数据日志条目
@@ -303,6 +309,82 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 	}
 }
 
+// writeEntriesFallible 是 writeEntries 的可错变体，供 BufferedRawSink 的
+// 写失败重试降级使用（R12 预研 §4）。返回已完整写出的条目数与首个错误：
+//   - rotate / 写失败：返回 (已写出条数, err)；失败批次剩余条目不再写出，
+//     由调用方决定重试或丢弃（与 writeEntries 的"静默丢弃剩余"同源行为，
+//     此处显式化为返回值）。
+//   - marshal 失败：单条跳过，计入已写出（与 writeEntries 的 continue 对齐）。
+//   - fsync 失败：条目已全部写出，返回 (len(entries), err)——调用方不得
+//     重试，否则会重复写已落盘条目。
+//
+// metric（RecordRawAuditWriteFailure）与 slog 行为与 writeEntries 一致。
+func (l *RawDataLogger) writeEntriesFallible(entries []RawDataEntry) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.file == nil {
+		slog.Warn("raw_data_logger: file not initialized")
+		return 0, fmt.Errorf("raw_data_logger: file not initialized")
+	}
+
+	written := 0
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			slog.Error("raw_data_logger: failed to marshal entry", "err", err)
+			written++
+			continue
+		}
+		data = append(data, '\n')
+
+		if l.currentSize+int64(len(data)) > l.maxSize {
+			if err := l.rotate(); err != nil {
+				slog.Error("raw_data_logger: failed to rotate log", "err", err)
+				return written, err
+			}
+		}
+
+		n, err := l.file.Write(data)
+		if err != nil {
+			slog.Error("raw_data_logger: failed to write entry", "err", err)
+			// P0-2 (audit §3.6 R-3.4): 同 writeEntries —— 计数审计管道
+			// 失败，供 rawaudit_write_failed_total 告警规则消费。
+			metrics.Global().RecordRawAuditWriteFailure()
+			return written, err
+		}
+		l.currentSize += int64(n)
+		l.currentOffset += int64(n)
+		written++
+	}
+
+	if err := l.file.Sync(); err != nil {
+		slog.Error("raw_data_logger: failed to sync file", "err", err)
+		return len(entries), err
+	}
+	return len(entries), nil
+}
+
+// Sync 将已接受条目落盘并 fsync（RawSink 屏障语义，R12）。同步直写路径
+// 每批 writeEntries 末尾已 fsync，这里对最后一次写盘后的文件再补一次
+// Sync，作为显式屏障；disabled / 尚无文件时返回 nil。
+func (l *RawDataLogger) Sync() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.enabled || l.file == nil {
+		return nil
+	}
+	return l.file.Sync()
+}
+
+// sinkEnabled 报告 sink 是否接受条目（rawEntryWriter 契约）。
+func (l *RawDataLogger) sinkEnabled() bool {
+	return l.enabled
+}
+
 // rotate 回转日志文件
 func (l *RawDataLogger) rotate() error {
 	// 关闭当前文件
@@ -378,7 +460,8 @@ func (l *RawDataLogger) cleanupOldFiles(keepCount int) {
 	}
 }
 
-// Close 关闭日志记录器
+// Close 关闭日志记录器。幂等（R12 契约）：首次调用关闭文件并记住错误，
+// 后续调用返回同一错误。
 func (l *RawDataLogger) Close() error {
 	if !l.enabled {
 		return nil
@@ -387,11 +470,15 @@ func (l *RawDataLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.file != nil {
-		return l.file.Close()
+	if l.closed {
+		return l.closeErr
 	}
-
-	return nil
+	l.closed = true
+	if l.file != nil {
+		l.closeErr = l.file.Close()
+		l.file = nil
+	}
+	return l.closeErr
 }
 
 // CurrentLocation returns the path of the raw data log file currently

@@ -16,16 +16,22 @@ import { localeRef } from './index'
 export function useFormat() {
   const currentLocale = computed(() => localeRef.value || 'en')
 
+  // R12 候选21: the composable functions below used to return '' on
+  // null/invalid input while the rest of the repo (utils/datetime.ts, the
+  // module-level P1-7 helpers) uses the '—' sentinel. '—' is the mainstream
+  // sentinel — all four now agree, so empty table cells render the same dash
+  // everywhere.
+
   /**
    * Format a date-time value in the current locale.
-   * If value is missing, returns ''.
+   * If value is missing, returns '—'.
    *
    * See module-level locale caveat regarding `hour12: false`.
    */
   function fmtDateTime(value?: string | number | Date | null): string {
-    if (value === undefined || value === null || value === '') return ''
+    if (value === undefined || value === null || value === '') return '—'
     const date = value instanceof Date ? value : new Date(value)
-    if (Number.isNaN(date.getTime())) return ''
+    if (Number.isNaN(date.getTime())) return '—'
     try {
       return new Intl.DateTimeFormat(currentLocale.value, {
         year: 'numeric',
@@ -47,9 +53,9 @@ export function useFormat() {
    * requests that finish within the same minute).
    */
   function fmtDateTimeWithSeconds(value?: string | number | Date | null): string {
-    if (value === undefined || value === null || value === '') return ''
+    if (value === undefined || value === null || value === '') return '—'
     const date = value instanceof Date ? value : new Date(value)
-    if (Number.isNaN(date.getTime())) return ''
+    if (Number.isNaN(date.getTime())) return '—'
     try {
       return new Intl.DateTimeFormat(currentLocale.value, {
         year: 'numeric',
@@ -66,9 +72,9 @@ export function useFormat() {
   }
 
   function fmtDate(value?: string | number | Date | null): string {
-    if (value === undefined || value === null || value === '') return ''
+    if (value === undefined || value === null || value === '') return '—'
     const date = value instanceof Date ? value : new Date(value)
-    if (Number.isNaN(date.getTime())) return ''
+    if (Number.isNaN(date.getTime())) return '—'
     try {
       return new Intl.DateTimeFormat(currentLocale.value, {
         year: 'numeric',
@@ -81,7 +87,7 @@ export function useFormat() {
   }
 
   function fmtNumber(n?: number | null, opts?: Intl.NumberFormatOptions): string {
-    if (n === undefined || n === null || Number.isNaN(n)) return ''
+    if (n === undefined || n === null || Number.isNaN(n)) return '—'
     try {
       return new Intl.NumberFormat(currentLocale.value, opts).format(n)
     } catch {

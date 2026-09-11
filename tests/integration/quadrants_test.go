@@ -183,8 +183,9 @@ func TestQuadrant2_AnthropicClientToChatUpstream(t *testing.T) {
 
 // Q3: OpenAI Chat Completions client -> Anthropic Messages upstream.
 // The gateway MUST convert the chat body to Anthropic shape and use
-// x-api-key authentication. The upstream response MUST be converted back to chat
-// shape, dropping thinking blocks and recording _kxg_meta.has_thinking.
+// x-api-key authentication. The upstream response MUST be converted back to
+// chat shape, preserving thinking in reasoning_content (IR-backed converter)
+// without the private _kxg_meta field.
 func TestQuadrant3_ChatClientToAnthropicUpstream(t *testing.T) {
 	upstreamResp := []byte(`{
 		"id":"msg_3","type":"message","role":"assistant","model":"MiniMax-M2.7",
@@ -244,9 +245,9 @@ func TestQuadrant3_ChatClientToAnthropicUpstream(t *testing.T) {
 		t.Errorf("Q3 body should preserve max_tokens after conversion: %s", cap.body)
 	}
 
-	// Gateway converts Anthropic response back to chat shape; thinking
-	// blocks MUST be dropped (OpenAI content is a string) and reported
-	// in _kxg_meta for operator visibility.
+	// Gateway converts Anthropic response back to chat shape; thinking is
+	// preserved in reasoning_content (IR-backed converter, R12 候选4) and the
+	// private _kxg_meta field no longer leaks into client-visible bodies.
 	chatResp, err := relay.ConvertAnthropicResponseToChat(upstreamBody, "MiniMax-M2.7")
 	if err != nil {
 		t.Fatalf("ConvertAnthropicResponseToChat: %v", err)
@@ -254,18 +255,15 @@ func TestQuadrant3_ChatClientToAnthropicUpstream(t *testing.T) {
 	var parsed struct {
 		Choices []struct {
 			Message struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
+				Role             string          `json:"role"`
+				Content          json.RawMessage `json:"content"`
+				ReasoningContent string          `json:"reasoning_content"`
 			} `json:"message"`
 		} `json:"choices"`
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`
 		} `json:"usage"`
-		KxgMeta struct {
-			HasThinking           bool `json:"has_thinking"`
-			ThinkingBlocksDropped int  `json:"thinking_blocks_dropped"`
-		} `json:"_kxg_meta"`
 	}
 	if err := json.Unmarshal(chatResp, &parsed); err != nil {
 		t.Fatalf("parse chat-shape response: %v body=%s", err, chatResp)
@@ -273,14 +271,20 @@ func TestQuadrant3_ChatClientToAnthropicUpstream(t *testing.T) {
 	if len(parsed.Choices) == 0 {
 		t.Fatalf("Q3 chat response has no choices: %s", chatResp)
 	}
-	if parsed.Choices[0].Message.Content != "hi back" {
-		t.Errorf("Q3 chat response content = %q, want \"hi back\" (thinking block must be dropped)", parsed.Choices[0].Message.Content)
+	// Text survives as the single content block; thinking moved to
+	// reasoning_content.
+	var blocks []map[string]any
+	if err := json.Unmarshal(parsed.Choices[0].Message.Content, &blocks); err != nil {
+		t.Fatalf("Q3 content should be a block array, got: %s", parsed.Choices[0].Message.Content)
 	}
-	if !parsed.KxgMeta.HasThinking {
-		t.Errorf("Q3 _kxg_meta.has_thinking = false, want true (thinking block present in upstream response)")
+	if len(blocks) != 1 || blocks[0]["text"] != "hi back" {
+		t.Errorf("Q3 content blocks = %v, want single text block \"hi back\"", blocks)
 	}
-	if parsed.KxgMeta.ThinkingBlocksDropped != 1 {
-		t.Errorf("Q3 _kxg_meta.thinking_blocks_dropped = %d, want 1", parsed.KxgMeta.ThinkingBlocksDropped)
+	if parsed.Choices[0].Message.ReasoningContent != "plan" {
+		t.Errorf("Q3 reasoning_content = %q, want \"plan\"", parsed.Choices[0].Message.ReasoningContent)
+	}
+	if strings.Contains(string(chatResp), "_kxg_meta") {
+		t.Errorf("Q3 response leaks private _kxg_meta field: %s", chatResp)
 	}
 }
 

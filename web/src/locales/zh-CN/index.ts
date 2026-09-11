@@ -63,6 +63,7 @@ import qualityCorrelations from './qualityCorrelations'
 import routingAudit from './routingAudit'
 import routingOverride from './routingOverride'
 import probeHealth from './probeHealth'
+import errorTrend from './errorTrend'
 import approval from './approval'
 import tenantModels from './tenantModels'
 import publicPortal from './public'
@@ -138,6 +139,7 @@ export default {
   routingAudit,
   routingOverride,
   probeHealth,
+  errorTrend,
   approval,
   tenantModels,
   customer,

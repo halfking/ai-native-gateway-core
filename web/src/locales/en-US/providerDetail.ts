@@ -244,6 +244,7 @@ export default {
     drawerFieldApiKey: "API Key",
   },
   errorDetail: {
+    healthLatency: 'Probe latency', healthError: 'Probe error',
     supplier: 'Supplier', errorCode: 'Error code', requestId: 'Request ID',
     stage: 'Stage', retry: 'Retry', latency: 'Latency',
     openRequestTitle: 'Open request detail',
