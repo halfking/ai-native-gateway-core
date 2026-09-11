@@ -95,6 +95,8 @@
 
 **使用场景:** 上线观察（handoff 遗留项 6 判读规则：retry 偶发增长为设计内吸收；failed 持续增长触发 `NodeProbeNecessityMirrorDeleteFailedHigh` 告警）；skip 异常偏高时优先排查 Redis 键 schema（legacy/k2/dual）与 tenant 归属
 
+**双机观测口径（2026-09-12 修正）:** 生产观测目标为 245 与 154 两台网关机（handoff 第二十五轮）——skip 面板按 `instance` 分系列（`sum by (instance, reason)`），retry/failures 面板图例带 `{{instance}}`；`instance` 需在抓取侧钉为 `gateway-<节点>-<槽位>`（蓝绿轮换 8781/8782 不漂移），抓取目标模板见 `deploy/prometheus/prometheus.yml` 的 `llm-gateway-prod` 注释块与 `deploy/prometheus/NATIVE-245-DEPLOY.md` 的"双机观测接入"节。没有双机抓取数据时面板为空，属未接入而非故障。
+
 ---
 
 ## 导入步骤

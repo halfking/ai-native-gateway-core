@@ -76,8 +76,8 @@
       "pluginVersion": "8.0.0",
       "targets": [
         {
-          "expr": "sum by (reason) (increase(llmgw_node_probe_necessity_skip_total[5m]))",
-          "legendFormat": "{{reason}}",
+          "expr": "sum by (instance, reason) (increase(llmgw_node_probe_necessity_skip_total[5m]))",
+          "legendFormat": "{{instance}} {{reason}}",
           "refId": "A"
         }
       ],
@@ -143,7 +143,7 @@
       "targets": [
         {
           "expr": "increase(llmgw_node_probe_necessity_mirror_delete_retry_total[10m])",
-          "legendFormat": "in-cycle retries",
+          "legendFormat": "{{instance}} in-cycle retries",
           "refId": "A"
         }
       ],
@@ -213,7 +213,7 @@
       "targets": [
         {
           "expr": "increase(llmgw_node_probe_necessity_mirror_delete_failed_total[10m])",
-          "legendFormat": "post-retry failures",
+          "legendFormat": "{{instance}} post-retry failures",
           "refId": "A"
         }
       ],

@@ -105,6 +105,24 @@ func TestSelfcheckNecessityDashboardFailureThresholdMatchesAlert(t *testing.T) {
 	require.True(t, found, "failure panel must define a red threshold step")
 }
 
+// TestSelfcheckNecessityDashboardSkipPanelBreaksDownByInstance pins the
+// 2026-09-12 requirement correction: observation targets BOTH production
+// gateways (245 and 154), so the skip panel must keep the per-instance
+// dimension — a bare `sum by (reason)` merges the two nodes and one node's
+// skip spike is invisible next to the other node's baseline.
+func TestSelfcheckNecessityDashboardSkipPanelBreaksDownByInstance(t *testing.T) {
+	_, exprs := loadSelfcheckNecessityDashboard(t)
+
+	for i := range exprs {
+		if strings.Contains(exprs[i], "llmgw_node_probe_necessity_skip_total") {
+			require.Contains(t, exprs[i], "sum by (instance, reason)",
+				"skip panel must not aggregate away per-node series (245 and 154 are observed individually)")
+			return
+		}
+	}
+	t.Fatal("skip_total expr missing from dashboard")
+}
+
 func TestGrafanaReadmeListsSelfcheckNecessityDashboard(t *testing.T) {
 	data, err := os.ReadFile("README.md")
 	require.NoError(t, err)
